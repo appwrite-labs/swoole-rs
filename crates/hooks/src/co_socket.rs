@@ -459,7 +459,7 @@ impl Co {
     /// thread's reactor: false without a socket or a reactor. The record's own
     /// network socket, which `~Socket()` takes off the reactor as it frees it.
     #[must_use]
-    pub fn register(self, add: bool, events: c_int) -> bool {
+    pub fn register(self, add: bool, events: swoole_rs_reactor::Events) -> bool {
         use swoole_rs_reactor::event_api::{event_add, event_set};
         let change = if add { event_add } else { event_set };
         self.record()
@@ -477,7 +477,7 @@ impl Co {
         self.record()
             .socket
             .get()
-            .is_some_and(|network| interest(network, kind, 0))
+            .is_some_and(|network| interest(network, kind, swoole_rs_reactor::Events::NONE))
     }
 
     /// The record's metadata, `None` once released.

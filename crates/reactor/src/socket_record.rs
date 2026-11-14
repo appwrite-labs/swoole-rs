@@ -60,7 +60,7 @@ pub struct SocketFields {
     pub fd_type: c_int,
     /// `swSocketType`.
     pub socket_type: c_int,
-    pub events: c_int,
+    pub events: crate::Events,
     pub enable_tcp_nodelay: bool,
     pub kernel_nobufs: bool,
     pub removed: bool,
@@ -232,7 +232,7 @@ impl SocketRecord {
                 fd: 0,
                 fd_type: 0,
                 socket_type: 0,
-                events: 0,
+                events: crate::Events::NONE,
                 enable_tcp_nodelay: false,
                 kernel_nobufs: false,
                 removed: false,

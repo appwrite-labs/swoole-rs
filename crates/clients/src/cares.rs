@@ -18,7 +18,7 @@ use swoole_rs_corebase::constants::{EventType, FdType, SW_DNS_SERVER_PORT};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::sys::Text;
 use swoole_rs_error::ErrorCode;
-use swoole_rs_reactor::{Event, Running, Socket, SocketRecord, event_api};
+use swoole_rs_reactor::{Event, Events, Running, Socket, SocketRecord, event_api};
 
 /// A channel's socket-state callback: `(query, fd, readable, writable)`.
 type SocketState = extern "C" fn(&Query, c_int, c_int, c_int);
@@ -175,13 +175,13 @@ impl event_api::Deferred for Detached {
 }
 extern "C" fn socket_state(query: &Query, fd: i32, readable: i32, writable: i32) {
     let events = if readable != 0 {
-        EventType::SW_EVENT_READ as i32
+        Events::READ
     } else {
-        0
+        Events::NONE
     } | if writable != 0 {
-        EventType::SW_EVENT_WRITE as i32
+        Events::WRITE
     } else {
-        0
+        Events::NONE
     };
     let registered = query
         .sockets
@@ -190,7 +190,7 @@ extern "C" fn socket_state(query: &Query, fd: i32, readable: i32, writable: i32)
         .find(|&&(watched, _)| watched == fd)
         .map(|&(_, wrapper)| wrapper);
     let wrapper = if let Some(wrapper) = registered {
-        if events == 0 {
+        if events.is_empty() {
             // Remove the registered native socket before detaching its descriptor.
             _ = event_api::event_del(wrapper);
             // `Socket::free` of a wrapper whose descriptor c-ares keeps.
@@ -216,7 +216,7 @@ extern "C" fn socket_state(query: &Query, fd: i32, readable: i32, writable: i32)
         }
         wrapper
     } else {
-        if events == 0 {
+        if events.is_empty() {
             log::warning(ORIGIN, format_args!("error events, fd={fd}"));
             return;
         }
@@ -229,12 +229,12 @@ extern "C" fn socket_state(query: &Query, fd: i32, readable: i32, writable: i32)
         query.sockets.borrow_mut().push((fd, wrapper));
         wrapper
     };
-    if wrapper.read(|wrapper| wrapper.events) != 0 {
-        // Update this registered wrapper, which lives until it is detached above.
-        _ = event_api::event_set(wrapper, events);
-    } else {
+    if wrapper.read(|wrapper| wrapper.events).is_empty() {
         // Register this fresh wrapper.
         _ = event_api::event_add(wrapper, events);
+    } else {
+        // Update this registered wrapper, which lives until it is detached above.
+        _ = event_api::event_set(wrapper, events);
     }
 }
 extern "C" fn host(query: &Query, status: i32, timeouts: i32, entry: Option<&libc::hostent>) {

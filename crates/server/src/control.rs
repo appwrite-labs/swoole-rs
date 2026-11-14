@@ -159,7 +159,7 @@ pub(crate) fn stop_master_thread(serv: Server<'_>) {
         .command_pipe()
         .and_then(swoole_rs_tls::socket_pair::SocketPair::master_end)
     {
-        reactor.change(master, swoole_rs_reactor::ChangeOp::Del, 0);
+        reactor.del(master);
     }
     clear_timer(serv);
     if serv.config().max_wait_time.get() > 0 {
@@ -409,7 +409,8 @@ mod tests {
             (*live.state().config()).single_thread.set(true);
             (*live.state().config()).max_wait_time.set(3);
         }
-        live.reactor().add(live.port_socket(), 1);
+        live.reactor()
+            .add(live.port_socket(), swoole_rs_reactor::Events::from_bits(1));
         stop_master_thread(serv);
         assert!(live.reactor().handle().wait_exit(), "draining");
         assert!(

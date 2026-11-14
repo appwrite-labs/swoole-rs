@@ -326,7 +326,7 @@ unsafe fn running(reactor: *mut Reactor) -> swoole_rs_ffi::Running<'static> {
 unsafe fn event_add_or_update(socket: *mut Socket, event: c_int) -> c_int {
     // SAFETY: as the caller guarantees.
     let socket = unsafe { swoole_rs_ffi::Socket::from_ptr(socket.cast()) }.unwrap();
-    if swoole_rs_ffi::event_api::add_or_update(socket, event) {
+    if swoole_rs_ffi::event_api::add_or_update(socket, swoole_rs_ffi::Events::from_bits(event)) {
         SW_OK
     } else {
         SW_ERR

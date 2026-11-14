@@ -41,7 +41,12 @@ pub unsafe extern "C" fn reactor_change(
     };
     // SAFETY: as the caller promises.
     let reactor = unsafe { crate::Running::new(reactor.cast_mut()) };
-    if change(reactor, socket, crate::ChangeOp::from_code(op), events) {
+    if change(
+        reactor,
+        socket,
+        crate::ChangeOp::from_code(op),
+        crate::Events::from_bits(events),
+    ) {
         0
     } else {
         -1
@@ -58,7 +63,7 @@ pub fn change(
     reactor: crate::Running<'_>,
     socket: crate::Socket<'static>,
     op: crate::ChangeOp,
-    events: c_int,
+    events: crate::Events,
 ) -> bool {
     let request = crate::change::Request::new(socket, op);
     // The log reaches no reactor.
@@ -72,7 +77,7 @@ pub fn interest(
     reactor: crate::Running<'_>,
     socket: crate::Socket<'static>,
     kind: crate::Interest,
-    event: c_int,
+    event: crate::Events,
 ) -> bool {
     crate::change::interest_change(socket, kind, event)
         .is_none_or(|(op, events)| change(reactor, socket, op, events))
@@ -84,7 +89,8 @@ pub fn interest(
 pub fn reactor_del(reactor: crate::Running<'_>, socket: crate::Socket<'_>) -> bool {
     let request = crate::change::Request::Del(socket);
     // The log reaches no reactor.
-    reactor.with(|state| crate::change::apply(state, request, 0, swr_v1_reactor_log))
+    reactor
+        .with(|state| crate::change::apply(state, request, crate::Events::NONE, swr_v1_reactor_log))
 }
 
 /// `int Reactor::interest(Socket *socket, uint32_t kind, int event) const`.
@@ -106,11 +112,13 @@ pub unsafe extern "C" fn reactor_interest(
         return -1;
     };
     let kind = crate::Interest::from_code(kind);
-    let Some((op, events)) = crate::change::interest_change(record, kind, event) else {
+    let Some((op, events)) =
+        crate::change::interest_change(record, kind, crate::Events::from_bits(event))
+    else {
         return 0;
     };
     // SAFETY: as the caller promises.
-    unsafe { reactor_change(reactor, socket, op.code(), events) }
+    unsafe { reactor_change(reactor, socket, op.code(), events.bits()) }
 }
 
 /// `void Reactor::set_handler(int fd_type, int event, ReactorHandler handler)`:

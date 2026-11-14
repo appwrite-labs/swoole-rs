@@ -44,7 +44,9 @@ pub(crate) fn fd_poll_fake(fd: &mut pollfd, timeout: c_int, socket: Option<Co>) 
 pub extern "C" fn swr_v1_hook_fd_poll(fd: c_int, event: c_int) -> pollfd {
     pollfd {
         fd,
-        events: swoole_rs_reactor::swr_v1_reactor_poll_events_to(event),
+        events: swoole_rs_reactor::swr_v1_reactor_poll_events_to(
+            swoole_rs_reactor::Events::from_bits(event),
+        ),
         revents: 0,
     }
 }

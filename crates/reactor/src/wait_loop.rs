@@ -147,8 +147,6 @@ struct Loop<'a> {
     ready: std::cell::Cell<usize>,
 }
 
-const SW_EVENT_ONCE: c_int = 1 << 12;
-
 const READ: u32 = 1;
 const WRITE: u32 = 2;
 const HANGUP: u32 = 4;
@@ -538,11 +536,15 @@ fn registered(socket: Socket<'_>) -> bool {
 }
 
 fn oneshot(ops: &Loop<'_>, socket: Socket<'_>, live: impl Fn() -> bool) {
-    if live() && socket.read(|record| record.events) & SW_EVENT_ONCE != 0 {
+    if live()
+        && socket
+            .read(|record| record.events)
+            .intersects(crate::Events::ONCE)
+    {
         if ops.backend == BackendKind::Epoll {
             // epoll's oneshot entry is already disarmed, so only the registry forgets it.
             ops.reactor
-                .with(|state| state.record(socket, crate::ChangeOp::Del, 0));
+                .with(|state| state.record(socket, crate::ChangeOp::Del, crate::Events::NONE));
         } else {
             // poll and kqueue run `Reactor::del`, which logs a failure.
             _ = crate::reactor_upstream::reactor_del(ops.reactor, socket);
@@ -636,7 +638,12 @@ mod tests {
         let state = crate::reactor_state::tests::state(kind, 4);
         let mut fds = [0; 2];
         assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
-        let events = 512 | if socket_once { SW_EVENT_ONCE } else { 0 };
+        let events = crate::Events::from_bits(512)
+            | if socket_once {
+                crate::Events::ONCE
+            } else {
+                crate::Events::NONE
+            };
         let mut socket = crate::SocketRecord::with_fd(fds[0], 5);
         let token: *mut c_void = (&raw mut socket).cast();
         unsafe {

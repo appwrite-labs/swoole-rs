@@ -9,6 +9,7 @@ use crate::records::{Connection, Lookup};
 use core::ffi::{c_int, c_long, c_void};
 use core::ptr;
 use swoole_rs_corebase::ServerEvent;
+use swoole_rs_reactor::Events;
 
 use crate::objects::worker_pipe;
 use crate::reactor_handle::Reactor;
@@ -25,9 +26,7 @@ use crate::reactor_ops::ReactorContext;
 use crate::{ServerState, factory, server_methods as methods, view};
 
 /// `SW_EVENT_READ`, `Server::THREAD_REACTOR`, `SW_EVENT_WRITE` and `SW_FD_PIPE`.
-const SW_EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
 const THREAD_REACTOR: u8 = 2;
-const SW_EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
 const FD_PIPE: c_int = 3;
 /// `Server::CLOSE_ACTIVELY`.
 const CLOSE_ACTIVELY: c_int = 1 << 2;
@@ -75,8 +74,8 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
     reactor.set_max_socket(tables.max_connection);
     reactor.set_close(Some(entry::close_connection));
     handle.set_error_handler(entry::on_close);
-    handle.set_handler(FD_PIPE, SW_EVENT_READ, on_pipe_read);
-    handle.set_handler(FD_PIPE, SW_EVENT_WRITE, entry::on_pipe_write);
+    handle.set_handler(FD_PIPE, Events::READ, on_pipe_read);
+    handle.set_handler(FD_PIPE, Events::WRITE, entry::on_pipe_write);
     let reactors = config.reactor_num.get();
     // Listen on this thread's UDP ports.
     if config.have_dgram_sock.get() {
@@ -96,7 +95,7 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
             port.config()
                 .thread_id
                 .set(crate::reactor_ops::pthread_self());
-            if !handle.change(socket, swoole_rs_reactor::ChangeOp::Add, SW_EVENT_READ) {
+            if !handle.change(socket, swoole_rs_reactor::ChangeOp::Add, Events::READ) {
                 return Some(-1);
             }
         }
@@ -109,7 +108,7 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
         let worker = worker(server, id)?;
         crate::worker_methods::init_event_worker(server, worker);
         if let Some(sock) = pipe_socket(&bus, worker_pipe(worker, false)) {
-            let _ = handle.add(sock, SW_EVENT_READ);
+            let _ = handle.add(sock, Events::READ);
         }
         if config.heartbeat_check_interval.get() > 0 {
             thread.heartbeat_timer.set(heartbeat_timer(state, handle));
@@ -134,7 +133,7 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
             return Some(-1);
         };
         let sock = pipe_socket(&bus, worker_pipe(worker, true));
-        if sock.is_none_or(|sock| !handle.add(sock, SW_EVENT_READ)) {
+        if sock.is_none_or(|sock| !handle.add(sock, Events::READ)) {
             return Some(-1);
         }
         // Only synchronous sends go to the notify pipe: thread-safe, no separate memory.
@@ -200,7 +199,7 @@ pub(crate) fn start_reactor_threads(serv: view::Server<'_>) -> bool {
             return false;
         }
         if let Some(socket) = serv.port_socket_at(index) {
-            reactor.change(socket, swoole_rs_reactor::ChangeOp::Add, SW_EVENT_READ);
+            reactor.change(socket, swoole_rs_reactor::ChangeOp::Add, Events::READ);
         }
     }
     methods::store_listen_socket(serv);
@@ -431,7 +430,7 @@ pub(crate) fn shutdown(ctx: &ReactorContext<'_>) -> Option<()> {
     let bus = thread.message_bus();
     for w in (0..config.worker_num.get()).filter(|&w| owns(i64::from(w), reactors, id)) {
         if let Some(sock) = pipe_socket(&bus, worker_pipe(worker(serv, w)?, true)) {
-            reactor.interest(sock, swoole_rs_reactor::Interest::RemoveRead, 0);
+            reactor.interest(sock, swoole_rs_reactor::Interest::RemoveRead);
         }
     }
     each_connection(state, |conn| {
@@ -440,7 +439,7 @@ pub(crate) fn shutdown(ctx: &ReactorContext<'_>) -> Option<()> {
         };
         let reading = !conn.peer_closed() && !sock.read(|s| s.removed);
         if reading && owns(i64::from(conn.fd()), reactors, id) {
-            reactor.interest(sock, swoole_rs_reactor::Interest::RemoveRead, 0);
+            reactor.interest(sock, swoole_rs_reactor::Interest::RemoveRead);
         }
     });
     reactor.handle().set_wait_exit(true);

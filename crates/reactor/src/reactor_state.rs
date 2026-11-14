@@ -580,7 +580,7 @@ impl ReactorState {
         &mut self,
         socket: Socket<'_>,
         op: crate::ChangeOp,
-        events: c_int,
+        events: crate::Events,
     ) -> bool {
         socket.edit(|record| {
             match op {
@@ -596,7 +596,7 @@ impl ReactorState {
                     self.registry.set(record.fd, events);
                 }
                 crate::ChangeOp::Del => {
-                    record.events = 0;
+                    record.events = crate::Events::NONE;
                     record.removed = true;
                     self.registry.remove(record.fd);
                 }
@@ -628,7 +628,7 @@ pub(crate) mod tests {
         owner: *mut ReactorState,
         socket: *mut SocketRecord,
         op: crate::ChangeOp,
-        events: c_int,
+        events: crate::Events,
     ) -> bool {
         unsafe { (*owner).record(Socket::from_ptr(socket).unwrap(), op, events) }
     }
@@ -657,18 +657,28 @@ pub(crate) mod tests {
                 state.owner,
                 &raw mut socket,
                 crate::ChangeOp::Add,
-                512
+                crate::Events::from_bits(512)
             ));
-            assert_eq!(socket.events, 512);
+            assert_eq!(socket.events, crate::Events::from_bits(512));
             assert!(!socket.removed);
             assert_eq!(
                 crate::swr_v1_reactor_registry_count(state.registry.as_ref()),
                 1
             );
-            record(state.owner, &raw mut socket, crate::ChangeOp::Set, 1024);
-            assert_eq!(socket.events, 1024);
-            record(state.owner, &raw mut socket, crate::ChangeOp::Del, 0);
-            assert_eq!(socket.events, 0);
+            record(
+                state.owner,
+                &raw mut socket,
+                crate::ChangeOp::Set,
+                crate::Events::from_bits(1024),
+            );
+            assert_eq!(socket.events, crate::Events::from_bits(1024));
+            record(
+                state.owner,
+                &raw mut socket,
+                crate::ChangeOp::Del,
+                crate::Events::NONE,
+            );
+            assert_eq!(socket.events, crate::Events::NONE);
             assert!(socket.removed);
             assert_eq!(
                 crate::swr_v1_reactor_registry_count(state.registry.as_ref()),
@@ -703,7 +713,7 @@ pub(crate) mod tests {
                     state.owner,
                     &raw mut socket,
                     crate::ChangeOp::Add,
-                    512
+                    crate::Events::from_bits(512)
                 ));
                 #[cfg(target_os = "linux")]
                 if kind == 1 {
@@ -713,7 +723,7 @@ pub(crate) mod tests {
                             crate::ChangeOp::Add,
                             fds[0],
                             ptr::from_mut(&mut socket).cast(),
-                            512
+                            crate::Events::from_bits(512)
                         ),
                         0
                     );
@@ -725,7 +735,7 @@ pub(crate) mod tests {
                             descriptor,
                             fds[0],
                             ptr::from_mut(&mut socket).cast(),
-                            512
+                            crate::Events::from_bits(512)
                         ),
                         Ok(())
                     );

@@ -15,10 +15,7 @@ use swoole_rs_corebase::log;
 use swoole_rs_reactor::event_api::{
     event_add, event_del, swoole_event_is_available, swoole_event_is_running,
 };
-use swoole_rs_reactor::{Socket, SocketRecord, UringOps};
-
-/// `SW_EVENT_READ`.
-const EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
+use swoole_rs_reactor::{Events, Socket, SocketRecord, UringOps};
 
 /// The thread's `Iouring`: the engine (none if the ring could not be created) and
 /// its fd's record on the thread's reactor, whose destroy callback takes the instance.
@@ -143,7 +140,7 @@ fn create() -> Iouring {
         swoole_rs_reactor::Priority::IouringSubmit,
         submit,
     );
-    if !event_add(socket, EVENT_READ) {
+    if !event_add(socket, Events::READ) {
         log::sys_error(
             origin,
             format_args!("Failed to add io_uring ring fd to the event loop"),

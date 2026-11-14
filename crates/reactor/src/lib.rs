@@ -60,6 +60,9 @@ pub use wait::*;
 mod flush;
 pub use flush::*;
 
+mod events;
+pub use events::*;
+
 mod socket_timeouts;
 pub use socket_timeouts::*;
 
