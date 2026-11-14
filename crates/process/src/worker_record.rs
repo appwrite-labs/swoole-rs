@@ -937,16 +937,17 @@ mod public_pid_array_tests {
         count: u32,
         pid: c_int,
     ) -> *mut WorkerRecord {
-        unsafe {
-            crate::worker_registry::find_array(
-                workers.cast(),
-                count,
-                size_of::<WorkerRecord>(),
-                core::mem::offset_of!(WorkerRecord, pid),
-                pid,
+        use crate::process_pool::{PoolRecord, PoolRef};
+        let mut pools = [PoolRecord::empty(), PoolRecord::empty()];
+        let [event_pool, task_pool] = pools.each_mut().map(|pool| unsafe { PoolRef::new(pool) });
+        let view = unsafe {
+            crate::server_workers::ServerWorkers::new(
+                (event_pool, workers, count),
+                (task_pool, 0),
+                (core::ptr::null_mut(), 0),
             )
-        }
-        .cast()
+        };
+        crate::server_workers::swr_v1_process_server_worker_by_pid(&view, None, pid)
     }
 
     #[test]

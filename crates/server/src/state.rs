@@ -132,7 +132,7 @@ impl ServerState {
             true,
             libc::SOCK_DGRAM,
         ));
-        let (master, end) = (pair.master_socket, pair.worker_socket);
+        let (master, end) = pair.raw_ends();
         if master.is_null() || end.is_null() {
             swoole_rs_tls::socket_pair::drop(&mut pair);
             return false;
@@ -152,11 +152,8 @@ impl ServerState {
     /// `task_notify_pipes.emplace_back(new Pipe(true))`: false, closing it, when
     /// the pipe isn't ready.
     pub(crate) fn push_task_pipe(&self) -> bool {
-        let mut storage = Box::new(core::mem::MaybeUninit::<SocketPair>::uninit());
-        swoole_rs_tls::socket_pair::pipe_new(&mut storage, true);
-        // SAFETY: the constructor initialised it.
-        let mut pair = unsafe { storage.assume_init() };
-        let ready = !pair.master_socket.is_null() && !pair.worker_socket.is_null();
+        let mut pair = Box::new(swoole_rs_tls::socket_pair::pipe(true));
+        let ready = pair.master_end().is_some() && pair.worker_end().is_some();
         if !ready {
             swoole_rs_tls::socket_pair::drop(&mut pair);
             return false;

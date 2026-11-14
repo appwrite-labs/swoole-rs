@@ -174,7 +174,7 @@ fn free_pipes(pool: Pool<'_>) {
 /// `new UnixSocket(true, SOCK_DGRAM)` for `worker`: 0 (and no pipes) when it fails.
 fn new_pipe(pool: Pool<'_>, worker: Record<'_>) -> i64 {
     let mut built = Box::new(unix_socket(true, libc::SOCK_DGRAM));
-    let (master, end) = (built.master_socket, built.worker_socket);
+    let (master, end) = built.raw_ends();
     if master.is_null() || end.is_null() {
         socket_pair::drop(&mut built);
         // The pool forgets the list when this fails.

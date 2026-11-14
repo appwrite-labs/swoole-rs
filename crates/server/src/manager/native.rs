@@ -93,7 +93,7 @@ pub(crate) fn start_manager_process(serv: view::Server<'_>) -> bool {
     if pool.message_box().is_null() && !methods::create_message_box(pool, MESSAGE_BOX_SIZE) {
         return false;
     }
-    if serv.workers().user_count > 0 {
+    if serv.workers().user_count() > 0 {
         let workers = worker_methods::create_user_workers(serv);
         let created = !workers.is_null();
         // SAFETY: in the master before it forks or starts a thread; `config` isn't
@@ -135,7 +135,7 @@ fn main(serv: view::Server<'_>) {
             return;
         }
     }
-    for at in 0..serv.workers().user_count {
+    for at in 0..serv.user_worker_num() {
         if spawn(serv, spawn_user_worker, serv.pending_worker(at)) < 0 {
             log::sys_error(ORIGIN, format_args!("failed to fork user worker"));
             return;
@@ -447,7 +447,7 @@ extern "C" fn signal_handler(signo: c_int) {
             }
             let config = serv.config();
             let all = config.worker_num.get() + config.task_worker_num.get();
-            let all = all + u32::try_from(serv.workers().user_count).unwrap_or(u32::MAX);
+            let all = all + u32::try_from(serv.workers().user_count()).unwrap_or(u32::MAX);
             for id in 0..all {
                 kill(worker_at(serv, id).map_or(0, Worker::pid), libc::SIGWINCH);
             }

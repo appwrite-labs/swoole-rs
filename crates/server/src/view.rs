@@ -428,15 +428,19 @@ impl<'a> Server<'a> {
     #[must_use]
     pub fn workers(self) -> ServerWorkers<'a> {
         let config = self.config();
-        ServerWorkers {
-            event_pool: self.event_pool_ref(),
-            task_pool: self.task_pool_ref(),
-            event_workers: config.workers.as_ptr().cast(),
-            user_workers: config.user_workers.as_ptr().cast(),
-            event_count: config.worker_num.get(),
-            task_count: config.task_worker_num.get(),
-            user_count: self.user_worker_num(),
-        }
+        let events = (
+            self.event_pool_ref(),
+            config.workers.as_ptr().cast(),
+            config.worker_num.get(),
+        );
+        let tasks = (self.task_pool_ref(), config.task_worker_num.get());
+        let users = (config.user_workers.as_ptr().cast(), self.user_worker_num());
+        // SAFETY: `create` maps `workers` with `worker_num` records, and the factory's
+        // start `user_workers` with one per added user worker (`add_worker` refuses
+        // once the factory exists); each stays mapped, as the counts stay, until the
+        // server is destroyed after its pools stop. The same arrays `worker_record`
+        // lends records of.
+        unsafe { ServerWorkers::new(events, tasks, users) }
     }
 
     /// `Server::get_worker(id)`: event workers, then task workers, then user
@@ -456,7 +460,6 @@ impl<'a> Server<'a> {
 
     /// The `index`th user worker `worker_methods::add_worker` added, or `None` past the
     /// last.
-    #[cfg(feature = "upstream-symbols")]
     pub(crate) fn pending_worker(self, index: usize) -> Option<Worker<'a>> {
         let &worker = self.registry().pending().get(index)?;
         // SAFETY: null, or a live worker `add_worker` added, which outlives the server

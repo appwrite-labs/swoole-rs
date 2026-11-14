@@ -64,8 +64,8 @@ fn manager(serv: view::Server<'_>) -> std::sync::Arc<ThreadManager> {
 /// `serv->get_all_worker_num()`.
 fn all_worker_num(serv: view::Server<'_>) -> u32 {
     let workers = serv.workers();
-    let users = u32::try_from(workers.user_count).unwrap_or(u32::MAX);
-    workers.event_count + workers.task_count + users
+    let users = u32::try_from(workers.user_count()).unwrap_or(u32::MAX);
+    workers.event_count() + workers.task_count() + users
 }
 
 /// The manager thread's slot, after every worker's; the master's is next.
@@ -139,7 +139,7 @@ pub(crate) fn factory_start(serv: view::Server<'_>) -> bool {
     crate::process_factory::native::create_worker_pipes(serv)
         && create_event_workers(serv)
         && (config.task_worker_num.get() == 0 || start_check(serv.task_pool_ref()))
-        && (serv.workers().user_count == 0 || user_workers())
+        && (serv.user_worker_num() == 0 || user_workers())
 }
 
 /// `Server::start_worker_threads`: the task, event and user worker threads, the
@@ -153,7 +153,7 @@ fn start_worker_threads(serv: view::Server<'_>) -> bool {
     for id in 0..workers {
         spawn(serv, id, WorkerType::Event);
     }
-    let users = u32::try_from(serv.workers().user_count).unwrap_or(u32::MAX);
+    let users = u32::try_from(serv.workers().user_count()).unwrap_or(u32::MAX);
     for id in 0..users {
         spawn(serv, tasks + workers + id, WorkerType::User);
     }
