@@ -591,14 +591,10 @@ pub(crate) fn c_text(bytes: &[u8]) -> CString {
 
 /// `new Client(type, async)`: the client, or the errno of its failed socket.
 pub(crate) fn create(kind: c_int, is_async: bool) -> Result<Cli, c_int> {
-    let cli = swoole_rs_clients::client::swr_v1_clients_new(kind, is_async);
-    if cli.is_null() {
-        Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0))
-    } else {
-        // SAFETY: a new client from `swr_v1_clients_new`, which stays live until
-        // `destroy` frees it as its last operation.
-        Ok(Cli(unsafe { client::Handle::new(cli) }))
-    }
+    // Live until `destroy` frees it as its last operation.
+    client::create(kind, is_async)
+        .map(Cli)
+        .ok_or_else(|| std::io::Error::last_os_error().raw_os_error().unwrap_or(0))
 }
 
 /// `delete cli`, after the length callable of `package_length_func`.

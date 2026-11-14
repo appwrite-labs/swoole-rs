@@ -815,6 +815,13 @@ fn is_dgram(kind: c_int) -> bool {
 /// when the socket could not be made (logged as upstream's constructor does).
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut Client {
+    create(kind, is_async).map_or(core::ptr::null_mut(), |handle| handle.0)
+}
+
+/// [`swr_v1_clients_new`] as a handle on the new client, live until
+/// [`Handle::free`]; None with errno set when the socket could not be made.
+#[must_use]
+pub fn create(kind: c_int, is_async: bool) -> Option<Handle> {
     let fd_type = if is_stream(kind) {
         FD_STREAM_CLIENT
     } else {
@@ -826,7 +833,7 @@ pub extern "C" fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut Client
         let error = errno();
         log::sys_warning(c"Client", format_args!("socket() failed"));
         set_errno(error);
-        return core::ptr::null_mut();
+        return None;
     };
     let mut client = Box::new(Client {
         record: Cell::new(ClientRecord {
@@ -872,7 +879,7 @@ pub extern "C" fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut Client
     swr_v1_socket_domain_and_type(kind, &mut client.domain, &mut kind_out);
     let client = Box::into_raw(client);
     record.edit(|record| record.object = client.cast());
-    client
+    Some(Handle(client))
 }
 
 impl Handle {
