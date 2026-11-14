@@ -196,7 +196,7 @@ impl Facts for Live<'_> {
             .map(|(name, id, types)| Command {
                 name: Json::utf8(&name),
                 id: id.into(),
-                accepted_process_types: types.into(),
+                accepted_process_types: types.0.into(),
             })
             .collect()
     }

@@ -4,12 +4,38 @@
 //! and performs the route (a pipe write, a task, a manager message or the
 //! master's own handler).
 
-/// `Server::Command::ProcessType`.
-pub const MASTER: i32 = 1 << 1;
-pub const REACTOR_THREAD: i32 = 1 << 2;
-pub const EVENT_WORKER: i32 = 1 << 3;
-pub const TASK_WORKER: i32 = 1 << 4;
-pub const MANAGER: i32 = 1 << 5;
+/// `Server::Command::ProcessType` bits: one process type, or the set a command
+/// accepts.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ProcessTypes(pub i32);
+
+impl ProcessTypes {
+    /// Whether the two share a process type.
+    #[must_use]
+    pub const fn intersects(self, other: Self) -> bool {
+        self.0 & other.0 != 0
+    }
+}
+
+impl From<i32> for ProcessTypes {
+    fn from(bits: i32) -> Self {
+        Self(bits)
+    }
+}
+
+impl core::ops::BitOr for ProcessTypes {
+    type Output = Self;
+    fn bitor(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
+
+pub const MASTER: ProcessTypes = ProcessTypes(1 << 1);
+pub const REACTOR_THREAD: ProcessTypes = ProcessTypes(1 << 2);
+pub const EVENT_WORKER: ProcessTypes = ProcessTypes(1 << 3);
+pub const TASK_WORKER: ProcessTypes = ProcessTypes(1 << 4);
+pub const MANAGER: ProcessTypes = ProcessTypes(1 << 5);
 
 /// Where a command goes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,11 +95,11 @@ pub struct CommandInput {
     pub base_mode: bool,
     pub master: bool,
     /// The command's `accepted_process_types`.
-    pub accepted_types: i32,
+    pub accepted_types: ProcessTypes,
     /// In base mode, this worker's id.
     pub worker_id: u32,
     pub process_id: u32,
-    pub process_type: i32,
+    pub process_type: ProcessTypes,
     pub reactor_num: u32,
     pub worker_num: u32,
     pub task_worker_num: u32,
@@ -126,7 +152,7 @@ pub fn route(input: &CommandInput) -> Result<CommandRoute, Rejected> {
         process_type = MASTER;
         process_id = 0;
     }
-    if process_type & input.accepted_types == 0 {
+    if !process_type.intersects(input.accepted_types) {
         return fail(Rejection::UnsupportedType, process_id);
     }
     // The limit and its rejection; no id reaches `u32::MAX`.
