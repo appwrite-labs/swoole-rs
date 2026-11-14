@@ -299,11 +299,11 @@ mod tests {
         assert_eq!(admit(0, 0), 1);
         let owner = ProxyState::new(true);
         let texts: [&[u8]; 3] = [b"127.0.0.1", b"", b""];
-        assert_eq!(owner.configure(texts, 1080, false, 1).status, 0);
+        assert_eq!(owner.configure(texts, 1080, false, 1), Ok(()));
         let p = &Socks5Proxy::new(&owner);
         owner.update(|fields| fields.dns_tunnel = 1);
         let target_host = vec![b'a'; usize::from(u8::MAX)];
-        assert_eq!(owner.set_string(3, &target_host), 0);
+        assert!(owner.set_string(3, &target_host));
         owner.update(|fields| fields.target_port = 80);
 
         assert_eq!(pack_connect_request(p), 262);
@@ -314,7 +314,7 @@ mod tests {
         let port = &buf[5 + target_host.len()..7 + target_host.len()];
         assert_eq!(u16::from_be_bytes([port[0], port[1]]), 80);
 
-        assert_eq!(owner.set_string(3, &[b'a'; 256]), 0);
+        assert!(owner.set_string(3, &[b'a'; 256]));
         assert_eq!(pack_connect_request(p), -1);
         assert_eq!(log::last_error(), HANDSHAKE_FAILED);
     }
@@ -323,7 +323,7 @@ mod tests {
     fn handshake_steps_through_auth_and_connect() {
         let owner = ProxyState::new(true);
         let texts: [&[u8]; 3] = [b"proxy", b"user", b"pass"];
-        assert_eq!(owner.configure(texts, 1080, true, 1).status, 0);
+        assert_eq!(owner.configure(texts, 1080, true, 1), Ok(()));
         assert_eq!(admit(4, 4), 2);
         assert_eq!(admit(251, 0), 0);
         let p = &Socks5Proxy::new(&owner);

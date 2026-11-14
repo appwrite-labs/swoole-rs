@@ -1135,7 +1135,8 @@ pub fn set_proxy(
             config => {
                 let owner = ProxyState::new(true);
                 let texts = [host, user, password];
-                owner.configure(texts, port, config == 2, this.socket_type());
+                // An allocation failure leaves the strings it didn't reach empty.
+                _ = owner.configure(texts, port, config == 2, this.socket_type());
                 Some(owner)
             }
         }

@@ -67,15 +67,6 @@ pub extern "C" fn swr_v1_core_proxy_new(socks: bool) -> PreparedProxy {
 pub extern "C" fn swr_v1_core_proxy_free(owner: Option<Box<ProxyState>>) {
     drop(owner);
 }
-#[repr(C)]
-pub struct ProxyCopyResult {
-    pub status: i32,
-    pub index: u32,
-}
-const COPIED: ProxyCopyResult = ProxyCopyResult {
-    status: 0,
-    index: 0,
-};
 impl ProxyState {
     /// An empty proxy; a SOCKS5 one (`socks`) has a packet.
     #[must_use]
@@ -120,16 +111,15 @@ impl ProxyState {
                 .map_or(&[0][..], StringSlot::bytes_with_nul)
         })
     }
-    /// Sets the string at `index`: 0, or -2 when the allocation fails or past the
-    /// four.
+    /// Sets the string at `index`: false when the allocation fails or past the four.
     ///
     /// # Panics
     /// While a string is borrowed.
-    pub fn set_string(&self, index: usize, value: &[u8]) -> i32 {
+    pub fn set_string(&self, index: usize, value: &[u8]) -> bool {
         self.strings
             .borrow_mut()
             .get_mut(index)
-            .map_or(-2, |slot| slot.set(value))
+            .is_some_and(|slot| slot.set(value) == 0)
     }
     /// The SOCKS5 packet, none for an HTTP proxy.
     ///
@@ -141,23 +131,23 @@ impl ProxyState {
     /// Configures a fresh proxy after its protocol's credential check: the host,
     /// then the port (and for SOCKS5 the tunnel and socket type), then the
     /// credentials when `authenticated`.
+    ///
+    /// # Errors
+    ///
+    /// The index of the string whose allocation failed.
     pub fn configure(
         &self,
         texts: [&[u8]; 3],
         port: i32,
         authenticated: bool,
         socket_type: i32,
-    ) -> ProxyCopyResult {
+    ) -> Result<(), usize> {
         for (index, value) in texts.into_iter().enumerate() {
             if index != 0 && !authenticated {
                 break;
             }
-            let status = self.set_string(index, value);
-            if status != 0 {
-                return ProxyCopyResult {
-                    status,
-                    index: u32::try_from(index).unwrap_or(0),
-                };
+            if !self.set_string(index, value) {
+                return Err(index);
             }
             if index == 0 {
                 let socks = self.packet.is_some();
@@ -170,7 +160,7 @@ impl ProxyState {
                 });
             }
         }
-        COPIED
+        Ok(())
     }
 }
 
@@ -181,8 +171,7 @@ mod tests {
     fn native_views_see_rust_writes() {
         let prepared = swr_v1_core_proxy_new(true);
         let owner = unsafe { &*prepared.owner };
-        let configured = owner.configure([b"host", b"", b""], 80, false, 1);
-        assert_eq!(configured.status, 0);
+        assert_eq!(owner.configure([b"host", b"", b""], 80, false, 1), Ok(()));
         assert_eq!(unsafe { (*prepared.fields).port }, 80);
         let host = unsafe { crate::swr_v1_core_string_view(&*prepared.strings[0]) };
         assert_eq!(unsafe { std::ffi::CStr::from_ptr(host.data) }, c"host");
