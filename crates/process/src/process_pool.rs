@@ -18,6 +18,7 @@ use std::ptr;
 use std::sync::atomic::AtomicU32;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::DataHead;
+use swoole_rs_memory::ChannelInitError;
 
 use crate::armed_timer::ArmedTimer;
 use crate::os::{getpid, kill};
@@ -1038,16 +1039,16 @@ fn new_message_box(size: usize, maxlen: usize) -> *mut c_void {
     let record = memory.as_ptr().cast();
     // SAFETY: fresh shared memory of the size the record needs.
     match unsafe { swoole_rs_memory::swr_v1_memory_channel_init(record, size, maxlen, FLAGS) } {
-        0 => return memory.into_raw(),
-        1 => {
+        Ok(()) => return memory.into_raw(),
+        Err(ChannelInitError::Pipe) => {
             log::sys_warning(c"Channel::make", format_args!("pipe() failed"));
             log::warning(c"Channel::make", format_args!("notify_fd init failed"));
         }
-        2 => log::warning(
+        Err(ChannelInitError::Mutex) => log::warning(
             c"Channel::make",
             format_args!("pthread_mutex_init() failed"),
         ),
-        _ => {}
+        Err(ChannelInitError::Invalid) => {}
     }
     memory.free();
     ptr::null_mut()
