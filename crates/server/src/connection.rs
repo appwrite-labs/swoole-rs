@@ -16,7 +16,6 @@ use crate::{Connection, Mode, view};
 const ACCEPT_MAX_COUNT: u32 = 64;
 const MAX_CONNECTION: u32 = 100_000;
 const SESSION_LIST_SIZE: u32 = 1024 * 1024;
-const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
 /// `SW_SOCK_TCP`, `SW_SOCK_TCP6`.
 const SOCK_TCP: c_int = 1;
 const SOCK_TCP6: c_int = 3;
@@ -29,14 +28,14 @@ fn errno() -> c_int {
 
 /// `Server::accept_connection`: up to `SW_ACCEPT_MAX_COUNT` sockets per readable
 /// event on `reactor`, this thread's.
-pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) -> c_int {
+pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) {
     let server_fd = event.fd();
     let Some(listener) = event.socket() else {
-        return OK;
+        return;
     };
     // A listening socket's object is its port.
     let Some(port) = serv.state().listed_port(listener.read(|l| l.object)) else {
-        return OK;
+        return;
     };
     for _ in 0..ACCEPT_MAX_COUNT {
         let accepted = listener.edit(swoole_rs_reactor::SocketFields::accept);
@@ -47,7 +46,7 @@ pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) ->
             if accept_failed(serv, errno()) {
                 continue;
             }
-            return OK;
+            return;
         };
         if i64::from(sock.fd()) >= i64::from(serv.max_connection()) {
             let m = format_args!("Too many connections [now: {}]", sock.fd());
@@ -59,12 +58,12 @@ pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) ->
             );
             abort(serv, reactor, Some(port), sock);
             disable_accept(serv);
-            return OK;
+            return;
         }
         if port.config().ssl != 0 {
             if !(crate::port_config::methods().ssl_create)(port.config(), Some(sock)) {
                 abort(serv, reactor, Some(port), sock);
-                return OK;
+                return;
             }
         } else {
             sock.edit(|s| {
@@ -73,7 +72,7 @@ pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) ->
         }
         let Some(conn) = add(serv, port, sock, server_fd) else {
             abort(serv, reactor, Some(port), sock);
-            return OK;
+            return;
         };
         sock.edit(|s| s.chunk_size = SW_SEND_BUFFER_SIZE);
         let started = if serv.config().single_thread.get() {
@@ -83,10 +82,9 @@ pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) ->
         };
         if !started {
             abort(serv, reactor, Some(port), sock);
-            return OK;
+            return;
         }
     }
-    OK
 }
 
 /// Whether the batch retries after `accept()` failed with `errno`. Out of
@@ -478,10 +476,14 @@ mod tests {
     use std::io::{ErrorKind, Read};
     use std::net::TcpStream;
 
+    const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
+
+    /// The read handler's status, which upstream's accept always returns `SW_OK`.
     fn accept_on(live: &LiveServer) -> c_int {
         // SAFETY: the listener, live for the event's life.
         let event = unsafe { Event::new(live.listener_fd, 0, 1, live.listener().cast()) };
-        accept(live.server(), live.reactor(), &event)
+        accept(live.server(), live.reactor(), &event);
+        OK
     }
 
     #[test]
