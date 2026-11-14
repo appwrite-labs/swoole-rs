@@ -8,7 +8,7 @@
 //! effect when this crate asks through [`PoolNative::call`].
 //!
 //! A callback that can reach PHP runs through [`PoolNative::callback`] inside
-//! the bailout trap; when it bails out, the export returns [`RAISE`] and its
+//! the bailout trap; when it bails out, the export returns [`Bailed`] and its
 //! native caller raises the bailout again once the Rust frames are gone.
 
 use crate::task_file::Packed;
@@ -703,9 +703,6 @@ pub trait PoolNative: Sync {
     /// Report a worker loop's warning.
     fn warn(&self, call: &PoolCall, warning: crate::pool::Warning);
 }
-
-/// An export's result when a callback bailed out: the caller raises it.
-pub const RAISE: i64 = i64::MIN;
 
 const SW_OK: i64 = swoole_rs_corebase::constants::ResultCode::SW_OK as i64;
 const SW_ERR: i64 = swoole_rs_corebase::constants::ResultCode::SW_ERR as i64;
@@ -1679,27 +1676,31 @@ impl<H: PoolHost> Pool<'_, H> {
 
     /// `ProcessPool::run_with_*_protocol` and `run_async`: the worker's loop; -1 for
     /// a `worker` that is none of the pool's.
-    fn main(&mut self, worker: *mut WorkerRecord, protocol: Option<Protocol>) -> i64 {
+    fn main(
+        &mut self,
+        worker: *mut WorkerRecord,
+        protocol: Option<Protocol>,
+    ) -> Result<i64, Bailed> {
         let Some(protocol) = protocol else {
-            return self.run_async(worker);
+            return Ok(self.run_async(worker));
         };
         if protocol == Protocol::Message {
             if self.ipc_mode() != IpcMode::UnixSock {
                 self.op(Op::Log(Log::NeedsUnixsock), 1);
-                return SW_ERR;
+                return Ok(SW_ERR);
             }
             // The loop reads the bus: without one (it couldn't be made) there's no loop.
             if self.message_bus().is_null() && !self.create_message_bus() {
-                return SW_ERR;
+                return Ok(SW_ERR);
             }
         }
         if self.ipc().is_null() {
             // A pool `create` never made.
-            return SW_ERR;
+            return Ok(SW_ERR);
         }
         let Some(own) = self.p.worker_of(worker) else {
             // None of the pool's workers.
-            return SW_ERR;
+            return Ok(SW_ERR);
         };
         let worker_id = own.id();
         let ipc_mode = if self.use_msgqueue() {
@@ -1719,11 +1720,9 @@ impl<H: PoolHost> Pool<'_, H> {
             event_size: self.h.event_size(),
         };
         self.at_worker_enter(worker);
-        if self.h.run_loop(&pool_loop, protocol).is_err() {
-            return RAISE;
-        }
+        self.h.run_loop(&pool_loop, protocol)?;
         self.op(Op::TimerFree, 0);
-        SW_OK
+        Ok(SW_OK)
     }
 
     /// `ProcessPool::run_async`.
@@ -2086,18 +2085,20 @@ pub extern "C" fn swr_v1_worker_symbol(kind: c_int) -> std::ffi::c_char {
 }
 
 /// `ProcessPool::run_with_*_protocol`, or `run_async` for no `protocol`:
-/// `worker`'s loop in `pool`. The loop's return value, or [`RAISE`]; -1 when `worker`
+/// `worker`'s loop in `pool`: the loop's return value, -1 when `worker`
 /// is none of the pool's ([`PoolRef::worker_of`]).
-#[must_use]
+///
+/// # Errors
+/// [`Bailed`] when a callback bailed out; the caller raises it.
 pub fn pool_run_main(
     native: &dyn PoolNative,
     pool: PoolRef<'_>,
     worker: Worker<'_>,
     protocol: Option<Protocol>,
-) -> i64 {
+) -> Result<i64, Bailed> {
     match pool.worker_of(worker.raw()) {
         Some(worker) => with(native, pool, |p| p.main(worker.raw(), protocol)),
-        None => SW_ERR,
+        None => Ok(SW_ERR),
     }
 }
 
@@ -2515,7 +2516,10 @@ mod tests {
         let mut fixture = Fixture::new(1);
         let mut pool = fixture.pool(Script::default());
         pool.set_ipc_mode(IpcMode::MsgQueue);
-        assert_eq!(pool.main(pool.worker(0), Some(Protocol::Message)), SW_ERR);
+        assert!(matches!(
+            pool.main(pool.worker(0), Some(Protocol::Message)),
+            Ok(SW_ERR)
+        ));
         assert_eq!(pool.h.log, [(Op::Log(Log::NeedsUnixsock), 1)]);
     }
 

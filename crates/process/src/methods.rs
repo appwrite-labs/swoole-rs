@@ -45,7 +45,7 @@ fn native() -> &'static dyn PoolNative {
 
 /// A method's result; a callback's bailout is raised once the method's frames are
 /// gone. This frame holds nothing, so the `longjmp` may cross it.
-fn raised<T: Default>(result: Result<T, Bailed>) -> T {
+pub fn raised<T: Default>(result: Result<T, Bailed>) -> T {
     result.unwrap_or_else(|Bailed| {
         raise_bailout();
         T::default()
