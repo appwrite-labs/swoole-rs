@@ -264,7 +264,7 @@ pub extern "C" fn dispatch(request: &AsyncEvent) -> *mut AsyncEvent {
     with_current(|threads| {
         fields.task_id = threads.pool.map_or(0, Pool::task_id);
         fields.timestamp = microtime();
-        fields.pipe_socket = threads.pipe.master_socket.cast();
+        fields.pipe_socket = threads.pipe.raw_ends().0.cast();
         let event = copy(&fields);
         // The event stays live until a worker sends it back.
         if let Some(pool) = threads.pool {

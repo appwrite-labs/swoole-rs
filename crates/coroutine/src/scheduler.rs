@@ -6,7 +6,7 @@
 //! build without `upstream-symbols`; facade.rs builds the rest on them.
 use crate::context::{self, Context, Native};
 use crate::coroutine::{self as ops, Co, Sched};
-use crate::{Canceler, Coroutine, Hooks, Routine, Scheduler};
+use crate::{Canceler, Coroutine, CoroutineTask, Hooks, Routine, Scheduler};
 use core::cell::UnsafeCell;
 use core::ffi::{c_long, c_void};
 use core::ptr::{self, NonNull};
@@ -180,9 +180,14 @@ pub fn current_native() -> *mut c_void {
 
 /// Sets the running coroutine's task, which the swap callbacks get; nothing
 /// outside one.
-pub fn set_current_task(task: *mut c_void) {
+///
+/// # Safety
+/// `task` is the kind of object this thread's swap callbacks take, and stays live
+/// until the close callback of the running coroutine has run; no other coroutine
+/// has it as its task.
+pub unsafe fn set_current_task(task: NonNull<c_void>) {
     if let Some(co) = Co::current(Sched::this()) {
-        co.with(|co| co.task = task);
+        co.with(|co| co.task = Some(CoroutineTask(task)));
     }
 }
 

@@ -9,7 +9,7 @@
 //! the case fails on it once the server stops, from whichever process it failed in.
 //! `SyncClient` is a blocking `TcpStream`: `send` writes it all, `recv` is one read.
 
-use super::case::{TimerNode, swoole_timer_after, swoole_timer_del};
+use super::case::{TimerNode, swoole_timer_after};
 use super::*;
 use crate::{TEST_LOG_FILE, TEST_STR};
 use std::io::{Read, Write};
@@ -607,8 +607,8 @@ fn reopen_log() {
 unsafe extern "C" fn reopen_log2_start(_: *mut c_void, serv: *mut c_void) {
     let serv = Server(serv);
     timer_after(50, move || {
-        // SAFETY: in the running master, whose server `SwooleG.server` is.
-        unsafe { server_methods::master_signal_handler(SIGWINCH) };
+        // In the running master, whose server `SwooleG.server` is.
+        server_methods::master_signal_handler(SIGWINCH);
         timer_after(50, move || {
             shutdown(serv);
         });
@@ -1706,7 +1706,7 @@ fn base_event_worker_pool_cleanup() {
 
     assert_eq!(server.start(), SW_OK);
     // SAFETY: `server.get_event_worker_pool()`, in the server's shared memory.
-    let pool = unsafe { &*server.view().workers().event_pool.raw() };
+    let pool = unsafe { &*server.view().event_pool_ref().raw() };
     assert!(pool.pipes().is_null());
     assert!(pool.registry().is_null());
     assert!(pool.message_box().is_null());
@@ -1955,13 +1955,11 @@ unsafe extern "C" fn send_timeout_receive(
             .socket
             .cast::<u8>()
             .add(SOCKET_RECV_TIMER)
-            .cast::<*mut TimerNode>()
+            .cast::<Option<swoole_rs_corebase::timer_key::Held>>()
     };
-    if !recv_timer.is_null() {
-        // SAFETY: the socket's live timer.
-        unsafe { swoole_timer_del(*recv_timer) };
+    if let Some(timer) = recv_timer.take() {
+        swoole_rs_ffi::del_id(timer);
     }
-    *recv_timer = ptr::null_mut();
     // SAFETY: the socket's first member is its fd.
     set_buffer_size(unsafe { *conn.socket.cast::<c_int>() }, 65536);
 

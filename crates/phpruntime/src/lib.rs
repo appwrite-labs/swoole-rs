@@ -184,6 +184,27 @@ mod registration {
         safe fn swr_zend_stream_factory_set(body: swr_zend_stream_factory_body);
     }
 
+    #[cfg(feature = "curl")]
+    unsafe extern "C" {
+        /// crates/curl's native curl (`swoole_rs_curl.h`): its classes, constants
+        /// and handlers, registered under the module's number.
+        safe fn swoole_native_curl_minit(module_number: c_int);
+        /// Native curl's MSHUTDOWN, which has nothing to release.
+        safe fn swoole_native_curl_mshutdown();
+    }
+
+    /// Native curl.
+    #[cfg(feature = "curl")]
+    pub(super) fn curl(minit: &Minit) {
+        swoole_native_curl_minit(minit.module());
+    }
+
+    /// Native curl's MSHUTDOWN.
+    #[cfg(feature = "curl")]
+    pub(super) fn curl_shutdown() {
+        swoole_native_curl_mshutdown();
+    }
+
     /// The coroutine transport factory's body, [`crate::stream::transport_factory_body`].
     pub(super) fn transport_factory(_minit: &Minit) {
         swr_zend_stream_factory_set(Some(crate::stream::transport_factory_body));
@@ -198,13 +219,6 @@ mod registration {
     pub(super) fn async_file(_minit: &Minit) {
         php_register_url_stream_wrapper(c"async.file".into(), &sw_php_plain_files_wrapper);
     }
-}
-
-#[cfg(feature = "curl")]
-unsafe extern "C" {
-    /// crates/curl's native curl (`swoole_rs_curl.h`).
-    fn swoole_native_curl_minit(module_number: i32);
-    fn swoole_native_curl_mshutdown();
 }
 
 /// `php_swoole_runtime_minit`: `Swoole\Runtime` (not instantiable), the
@@ -223,10 +237,7 @@ pub fn php_swoole_runtime_minit(minit: &Minit) {
     registration::transport_factory(minit);
     transport::register_async(factory());
     #[cfg(feature = "curl")]
-    // SAFETY: MINIT, with the module's number.
-    unsafe {
-        swoole_native_curl_minit(minit.module());
-    }
+    registration::curl(minit);
     registration::proc_open(minit);
     registration::async_file(minit);
 }
@@ -234,10 +245,7 @@ pub fn php_swoole_runtime_minit(minit: &Minit) {
 /// `php_swoole_runtime_mshutdown`: native curl's.
 pub extern "C" fn php_swoole_runtime_mshutdown() {
     #[cfg(feature = "curl")]
-    // SAFETY: MSHUTDOWN, after its MINIT.
-    unsafe {
-        swoole_native_curl_mshutdown();
-    }
+    registration::curl_shutdown();
 }
 
 swoole_rs_zend::handlers! {

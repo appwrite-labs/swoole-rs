@@ -141,37 +141,6 @@ impl WorkerRegistry {
     }
 }
 
-/// Scan a caller-owned record array in its original order, including direct PID writes.
-/// This accepts both the original native Worker and its canonical Rust layout, without
-/// per-record callbacks or a cached PID index that could miss an earlier duplicate.
-/// # Safety
-/// `array` is null or a live array of `count` records, each `stride` bytes, with an
-/// initialized `c_int` PID at `pid_offset`. Reads follow the caller's synchronization.
-pub unsafe fn find_array(
-    array: *mut c_void,
-    count: u32,
-    stride: usize,
-    pid_offset: usize,
-    pid: c_int,
-) -> *mut c_void {
-    if array.is_null() {
-        return core::ptr::null_mut();
-    }
-    for index in 0..usize::try_from(count).unwrap_or_default() {
-        let record = array.cast::<u8>().wrapping_add(index.wrapping_mul(stride));
-        #[expect(
-            clippy::cast_ptr_alignment,
-            reason = "Byte-strided native records may be unaligned; the only access uses read_unaligned"
-        )]
-        let slot = record.wrapping_add(pid_offset).cast::<c_int>();
-        // SAFETY: the caller lends this record's initialized PID bytes; no whole-record borrow.
-        if unsafe { slot.read_unaligned() } == pid {
-            return record.cast();
-        }
-    }
-    core::ptr::null_mut()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,26 +163,6 @@ mod tests {
         assert!(reg.unregister(100));
         assert!(!reg.unregister(100));
         assert!(reg.lookup(100).is_null());
-    }
-
-    #[test]
-    fn array_lookup_reads_unaligned_slots_and_keeps_first_match_after_raw_writes() {
-        let mut bytes = [0_u8; 26];
-        let array = bytes.as_mut_ptr().cast::<c_void>();
-        // The first record's PID, written through `array`: a write to `bytes` would end it.
-        let pid = array.cast::<u8>().wrapping_add(3).cast::<[u8; 4]>();
-        unsafe {
-            assert_eq!(find_array(array, 2, 13, 3, 0), array);
-            pid.write(9_i32.to_ne_bytes());
-            assert_eq!(
-                find_array(array, 2, 13, 3, 0),
-                array.cast::<u8>().add(13).cast()
-            );
-            pid.write(0_i32.to_ne_bytes());
-            assert_eq!(find_array(array, 2, 13, 3, 0), array);
-            assert!(find_array(array, 2, 13, 3, 7).is_null());
-            assert!(find_array(core::ptr::null_mut(), 2, 13, 3, 0).is_null());
-        }
     }
 
     thread_local! {

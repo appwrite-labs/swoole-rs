@@ -488,13 +488,7 @@ enum Io<'a, S: ReadSlot = MaybeUninit<u8>> {
     Sendfile(&'a mut SocketFileRequest, usize),
 }
 
-/// writev(2) of `vectors`.
-#[must_use]
-pub fn writev(fd: c_int, vectors: &[IoSlice<'_>]) -> isize {
-    let count = vectors.len().c_cast::<c_int>();
-    // SAFETY: an `IoSlice` is ABI-compatible with an iovec, of readable bytes.
-    unsafe { libc::writev(fd, vectors.as_ptr().cast(), count) }
-}
+pub use swoole_rs_corebase::sys::writev;
 
 impl<S: ReadSlot> SyncEffects for Call<'_, S> {
     /// Read on each wait, as upstream's `wait_event` reads `this->fd`: a signal
@@ -860,7 +854,7 @@ impl OutputEffects for Output<'_> {
 
     fn sent(&self) {
         self.0.edit(|record| {
-            if !record.output.send_timer.is_null() {
+            if record.output.send_timer.is_some() {
                 record.last_sent_time = steady_ms();
             }
         });
@@ -907,39 +901,47 @@ const HALFCLOSE_REPAIRS: bool = cfg!(feature = "halfclose");
 #[must_use]
 pub fn socket_handle_sendfile(socket: Socket<'_>) -> bool {
     let hooks = Output(socket);
-    let front = with_queue(socket, |queue| queue.map(|queue| queue.front()));
-    let Some(Ok(front)) = front else {
-        swoole_rs_corebase::fatal("sendfile on a socket with nothing queued");
-    };
-    if front.kind != swoole_rs_buffer::EntryKind::Sendfile {
-        swoole_rs_corebase::fatal("sendfile's queued entry is not a file");
-    }
-    // SAFETY: a sendfile token: only `socket_sendfile_async` queues one, as a request
-    // the queue keeps until the pop below.
-    let request = unsafe { &mut *front.token.cast::<SocketFileRequest>() };
-    request.cork(&hooks);
-    let (rv, requested) = send_chunk(socket, request);
-    if rv < 0 && errno() == libc::EINTR && HALFCLOSE_REPAIRS {
-        return true;
-    }
-    let result = request.sent(&hooks, rv, requested);
-    socket.edit(|record| result.publish(&mut record.output));
-    if result.warn {
-        let at = request.fields().begin;
-        let name = String::from_utf8_lossy(request.path());
-        log::sys_warning(
-            c"Socket::handle_sendfile",
-            format_args!("sendfile({name}, {at}, {}) failed", result.requested),
-        );
-    }
-    if result.pop {
-        match with_queue(socket, |queue| queue.map(swoole_rs_buffer::Buffer::pop)) {
-            Some(Ok(detached)) => detached.dispose(),
-            Some(Err(swoole_rs_buffer::Error::Empty)) => {}
-            _ => swoole_rs_corebase::fatal("popping the send queue failed"),
+    // The effects send the request's file and never reach the queue itself.
+    let (code, detached) = with_queue(socket, |queue| {
+        let Some(queue) = queue else {
+            swoole_rs_corebase::fatal("sendfile on a socket with nothing queued");
+        };
+        let Some(request) = queue.front_file::<SocketFileRequest>() else {
+            if queue.front().is_err() {
+                swoole_rs_corebase::fatal("sendfile on a socket with nothing queued");
+            }
+            swoole_rs_corebase::fatal("sendfile's queued entry is not a file");
+        };
+        request.cork(&hooks);
+        let (rv, requested) = send_chunk(socket, request);
+        if rv < 0 && errno() == libc::EINTR && HALFCLOSE_REPAIRS {
+            return (0, None);
         }
+        let result = request.sent(&hooks, rv, requested);
+        socket.edit(|record| result.publish(&mut record.output));
+        if result.warn {
+            let at = request.fields().begin;
+            let name = String::from_utf8_lossy(request.path());
+            log::sys_warning(
+                c"Socket::handle_sendfile",
+                format_args!("sendfile({name}, {at}, {}) failed", result.requested),
+            );
+        }
+        let detached = if result.pop {
+            match queue.pop() {
+                Ok(detached) => Some(detached),
+                Err(swoole_rs_buffer::Error::Empty) => None,
+                Err(_) => swoole_rs_corebase::fatal("popping the send queue failed"),
+            }
+        } else {
+            None
+        };
+        (result.code, detached)
+    });
+    if let Some(detached) = detached {
+        detached.dispose();
     }
-    result.code >= 0
+    code >= 0
 }
 
 /// `int Socket::sendfile_async(const char *filename, off_t offset, size_t length)`:
@@ -954,27 +956,17 @@ pub fn socket_sendfile_async(
     let Some(request) = file_request(filename, offset, length) else {
         return false;
     };
-    let request = Box::into_raw(request);
     if socket.read(|record| record.output.out_buffer.is_none()) {
         let buffer = swoole_rs_buffer::cpp::new_buffer(65536);
         socket.edit(|record| record.output.out_buffer = Some(buffer));
     }
-    let dispose: Option<unsafe extern "C" fn(*mut c_void)> = Some(SocketFileRequest::dispose);
+    // A refused request is dropped with its file.
     let status = with_queue(socket, |queue| {
-        // SAFETY: the queue now owns the request, which only `dispose` frees.
-        queue.map_or(Err(swoole_rs_buffer::Error::Invalid), |queue| unsafe {
-            queue.push(
-                swoole_rs_buffer::EntryKind::Sendfile,
-                request.cast(),
-                dispose,
-            )
+        queue.map_or(Err(swoole_rs_buffer::Error::Invalid), |queue| {
+            queue.push_file(request)
         })
     });
-    if status.is_err() {
-        // SAFETY: the queue refused the request, which is still ours.
-        unsafe { SocketFileRequest::dispose(request.cast()) };
-        buffer_check(status);
-    }
+    buffer_check(status);
     true
 }
 
@@ -1116,11 +1108,8 @@ pub unsafe extern "C-unwind" fn socket_free(socket: *mut SocketRecord) {
                 [record.in_buffer.take(), record.output.out_buffer.take()],
             )
         });
-        for timer in timers {
-            if !timer.is_null() {
-                // SAFETY: the socket's live timer.
-                unsafe { swoole_rs_timer::swoole_timer_del(timer.cast()) };
-            }
+        for timer in timers.into_iter().flatten() {
+            swoole_rs_timer::del_id(timer);
         }
         // `delete in_buffer; delete out_buffer`.
         drop(buffers);
@@ -1438,15 +1427,8 @@ mod tests {
         left.output.out_buffer = Some(native);
         let (path, name) = temp_file("swoole-sendfile-async", b"abcdef");
         let socket = &raw mut left;
-        let request = Box::into_raw(file_request(&name, 1, 0).unwrap());
-        let dispose: Option<unsafe extern "C" fn(*mut c_void)> = Some(SocketFileRequest::dispose);
-        let queued = unsafe {
-            (*queue).push(
-                swoole_rs_buffer::EntryKind::Sendfile,
-                request.cast(),
-                dispose,
-            )
-        };
+        let request = file_request(&name, 1, 0).unwrap();
+        let queued = unsafe { (*queue).push_file(request) };
         assert_eq!(queued, Ok(()));
         assert!(
             file_request(c"/nonexistent/x", 0, 0).is_none(),

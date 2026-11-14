@@ -8,7 +8,7 @@ use crate::{
     aliases::{self, Receiver},
 };
 use std::{
-    ffi::{CStr, c_int},
+    ffi::{CStr, c_int, c_void},
     ptr, slice,
     sync::atomic::{AtomicPtr, Ordering},
 };
@@ -17,12 +17,23 @@ use swoole_rs_zend::{
     bailout::{Bailout, trap},
     opcode::Handler,
     sys::{
-        IS_ARRAY, IS_CONST, IS_RESOURCE, IS_STRING, IS_VAR, swr_zend_efree,
-        swr_zend_push_nested_call, swr_zend_try_call_known, swr_zend_zval_release,
+        IS_ARRAY, IS_CONST, IS_RESOURCE, IS_STRING, IS_VAR, swr_zend_efree, swr_zend_zval_release,
         zend_execute_data, zend_function, zval,
     },
     value,
 };
+
+unsafe extern "C" {
+    /// `zend_vm_stack_push_call_frame(ZEND_CALL_NESTED_FUNCTION, function,
+    /// num_args, object)`: the new frame on the VM stack, which Zend always
+    /// pushes, for as long as the caller says it lives.
+    #[link_name = "swr_zend_push_nested_call"]
+    fn push_nested_call<'a>(
+        function: *mut zend_function,
+        num_args: u32,
+        object: *mut c_void,
+    ) -> &'a mut zend_execute_data;
+}
 
 /// Upstream's `CallInfo`: what the handler hands the method call's frame in
 /// `run_time_cache`. `this` is the receiver's live zval, which the method call
@@ -91,18 +102,16 @@ impl Handler for MethodCall {
             Receiver::Stream => &METHODS[2],
         }
         .load(Ordering::Relaxed);
-        // SAFETY: a registered function; the frame passes `object` as upstream does.
-        let call =
-            unsafe { swr_zend_push_nested_call(method, op.extended_value, object.as_ptr().cast()) };
-        // SAFETY: the frame just pushed, which nothing else reaches until this
-        // frame's `call` names it below.
-        let pushed = unsafe { &mut *call };
+        // SAFETY: a registered function; the frame passes `object` as upstream
+        // does. The frame just pushed lives until its call ends, and nothing
+        // else reaches it until this frame's `call` names it below.
+        let pushed = unsafe { push_nested_call(method, op.extended_value, object.as_ptr().cast()) };
         pushed.run_time_cache = info.cast();
         // SAFETY: this live frame's header; the operands borrowed above are slots
         // after it, and no Zend code runs while it is borrowed.
         let current = unsafe { &mut *frame.as_ptr() };
         pushed.prev_execute_data = current.call;
-        current.call = call;
+        current.call = ptr::from_mut(pushed);
         frame.skip(1);
         CONTINUE
     }
@@ -115,22 +124,6 @@ fn arguments(prefix: &[zval], frame: &Call) -> Vec<zval> {
         .filter_map(|n| frame.value(n))
         .map(Value::copy_value);
     prefix.iter().copied().chain(passed).collect()
-}
-
-/// `zend_call_known_function(function, ..., retval, count, argv)` under
-/// `zend_try`.
-/// # Safety
-/// `function` is live and `value` a writable return slot.
-unsafe fn call(
-    function: *mut zend_function,
-    value: *mut zval,
-    argv: &mut [zval],
-) -> Result<(), Bailout> {
-    // A frame's argument count plus one at most.
-    let count = u32::try_from(argv.len()).unwrap_or(u32::MAX);
-    // SAFETY: per the caller; Zend copies the arguments and keeps no pointer to `argv`.
-    let bailed = unsafe { swr_zend_try_call_known(function, value, count, argv.as_mut_ptr()) };
-    if bailed != 0 { Err(Bailout) } else { Ok(()) }
 }
 
 /// Upstream's `call_method`: call the function `receiver`'s method names with
@@ -176,8 +169,7 @@ unsafe fn call_method(receiver: Receiver, frame: *mut zend_execute_data, value: 
 fn call_alias(alias: &CStr, info: &mut CallInfo, frame: &Call) -> Result<(), Bailout> {
     // `zend_hash_str_find_ptr(EG(function_table), ...)`: a function table holds
     // each function as a pointer.
-    let found = frame.php().function_table().find(alias.to_bytes());
-    let Some(function) = found.and_then(Value::pointer) else {
+    let Some(function) = frame.php().function(alias.to_bytes()) else {
         swoole_rs_zend::throw_error(&crate::typed::message(&[
             b"The function `",
             alias.to_bytes(),
@@ -188,8 +180,7 @@ fn call_alias(alias: &CStr, info: &mut CallInfo, frame: &Call) -> Result<(), Bai
     // A plain copy, as upstream's.
     let this = info.this;
     let mut argv = arguments(slice::from_ref(&this), frame);
-    // SAFETY: the registered function just found, and the frame's return slot.
-    unsafe { call(function.cast(), frame.return_value(), &mut argv) }?;
+    frame.call_known(function, &mut argv)?;
     if u32::from(info.op1_type) == IS_VAR {
         // SAFETY: a C body releasing the receiver (`CallInfo::this`), which
         // may run destructors.
@@ -215,30 +206,18 @@ fn move_first(args: &mut [zval], position: usize) {
 struct Wrapper {
     name: &'static CStr,
     position: usize,
-    /// Null, or `name`'s function once [`Wrapper::forward`] looked it up.
-    function: AtomicPtr<zend_function>,
 }
 
 impl Wrapper {
-    const fn new(name: &'static CStr, position: usize) -> Self {
-        Self {
-            name,
-            position,
-            function: AtomicPtr::new(ptr::null_mut()),
-        }
-    }
-
     /// Call the function with the arguments of `frame`, the wrapper's own.
     fn forward(&self, frame: &Call) {
-        let mut target = self.function.load(Ordering::Relaxed);
-        if target.is_null() {
-            target = frame.php().compiled_function(self.name);
-            self.function.store(target, Ordering::Relaxed);
-        }
+        // A core function, which this thread's compiler always knows.
+        let Some(target) = frame.php().compiled_function(self.name) else {
+            return;
+        };
         let mut argv = arguments(&[], frame);
         move_first(&mut argv, self.position);
-        // SAFETY: a registered core function and the frame's return slot.
-        swoole_rs_zend::bailout::raise(unsafe { call(target, frame.return_value(), &mut argv) });
+        swoole_rs_zend::bailout::raise(frame.call_known(target, &mut argv));
     }
 }
 
@@ -249,7 +228,10 @@ macro_rules! wrappers {
             use super::{Call, Wrapper};
             $(
                 pub(super) fn $handler(frame: &Call) {
-                    static WRAPPER: Wrapper = Wrapper::new($function, $position);
+                    const WRAPPER: Wrapper = Wrapper {
+                        name: $function,
+                        position: $position,
+                    };
                     WRAPPER.forward(frame);
                 }
             )*

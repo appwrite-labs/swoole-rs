@@ -421,16 +421,17 @@ pub(crate) fn start_master_thread(serv: view::Server<'_>, reactor: Reactor) -> b
 pub(crate) fn store_listen_socket(serv: view::Server<'_>) {
     let state = serv.state();
     let tables = state.tables_ref();
-    for (index, &listen) in tables.ports().iter().enumerate() {
-        let Some(socket) = serv.port_socket_at(index) else {
+    for &listen in tables.ports() {
+        let (ls, port) = (listen.raw(), listen.config());
+        let Some(socket) = port.listening_socket() else {
             continue;
         };
-        let (ls, port, fd) = (listen.raw(), listen.config(), socket.fd());
+        let fd = socket.fd();
         let Some(conn) = tables.connection_at(fd) else {
             continue;
         };
         conn.set_fd(fd);
-        conn.set_socket(port.socket_ptr().cast());
+        conn.set_socket(Some(socket));
         conn.set_socket_type(port.r#type);
         conn.set_object(ls);
         let mut info = conn.info();
@@ -546,7 +547,7 @@ fn free_server(serv: view::Server<'_>) {
 /// What `Server::destroy` frees of a base-mode server whose single worker bailed out
 /// of its loop: the base factory's connection list and counts, the server's lists and
 /// its factory. It runs none of the shutdown (callbacks, hooks, signals, ports), only
-/// marks the server shut down, so `swr_v1_server_delete` frees the rest.
+/// marks the server shut down, so the last `SharedServer` drop frees the rest.
 pub(crate) fn release_abandoned_base(serv: view::Server<'_>) {
     let state = serv.state();
     if let Some(gs) = crate::shared::server_counters(state) {

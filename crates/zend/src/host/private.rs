@@ -215,13 +215,18 @@ pub fn named_call_into(name: &[u8], args: &[Owned], retval: &Owned) {
     // Never more than the slice holds.
     let argc = u32::try_from(args.len()).unwrap_or(0);
     let argv = args.as_ptr().cast_mut().cast::<zval>();
-    let retval = retval.as_ptr();
     let mut result = -1;
     // SAFETY: a live name, `argc` live arguments (`Owned` is a transparent
     // zval) and a writable result; Zend's macro invocation is one leaf effect
     // inside the C trap.
     bailed(unsafe {
-        sys::swr_zend_try_facade_user_call(function.as_ptr(), argc, argv, retval, &raw mut result)
+        sys::swr_zend_try_facade_user_call(
+            function.as_ptr(),
+            argc,
+            argv,
+            retval.as_ptr(),
+            &raw mut result,
+        )
     });
     if bailout::pending() {
         // Upstream never ran past a bailout to release the name.
@@ -232,12 +237,9 @@ pub fn named_call_into(name: &[u8], args: &[Owned], retval: &Owned) {
         std::mem::forget(function);
     } else {
         if result != 0 {
-            // SAFETY: failed named invocation publishes null before name cleanup.
-            unsafe {
-                (*retval).u1 = sys::_zval_struct__bindgen_ty_1 {
-                    type_info: sys::IS_NULL,
-                }
-            };
+            // A failed named invocation publishes null before name cleanup, in
+            // the slot the failed call left undefined.
+            retval.lend(|value| *value = Owned::null());
         }
         // The local function-name string owns one reference.
         drop(function);

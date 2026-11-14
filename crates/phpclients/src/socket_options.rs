@@ -328,11 +328,11 @@ fn set(s: &Array, socket: Co) -> Result<bool, Stop> {
     {
         let on = v.truthy();
         let nodelay = c_int::from(on);
-        if let Some(net) = socket.net()
-            && swoole_rs_reactor::swr_v1_socket_tcp_nodelay(net.fd(), nodelay)
-        {
-            net.edit(|record| record.tcp_nodelay = on);
-        }
+        socket.with_net(|net| {
+            if swoole_rs_reactor::swr_v1_socket_tcp_nodelay(net.fd(), nodelay) {
+                net.edit(|record| record.tcp_nodelay = on);
+            }
+        });
     }
     if !set_protocol(s, socket)? {
         ret = false;
@@ -482,7 +482,7 @@ pub(crate) fn enable_ssl(socket: Co) -> bool {
 
 /// The coroutine socket's descriptor, from its `network::Socket` record.
 pub(crate) fn fd(socket: Co) -> c_int {
-    socket.net().map_or(-1, swoole_rs_reactor::Socket::fd)
+    socket.with_net(|net| net.fd()).unwrap_or(-1)
 }
 
 pub(crate) fn errno() -> c_int {

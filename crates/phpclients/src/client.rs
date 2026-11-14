@@ -413,8 +413,8 @@ fn sendto(call: &Call) {
         return call.set_bool(false);
     };
     if socket
-        .net()
-        .is_some_and(|net| net.read(SocketFields::is_tcp))
+        .with_net(|net| net.read(SocketFields::is_tcp))
+        .unwrap_or(false)
         && !verify_port(port)
     {
         warn(true, "The port is invalid");

@@ -19,7 +19,7 @@ use swoole_rs_corebase::{
 use swoole_rs_zend::{
     Call, Class, E_WARNING,
     bailout::{self, Bailout},
-    report,
+    contain_with, report,
     sys::{
         HashTable, swr_zend_after_fork, swr_zend_execute_ex_reset, swr_zend_execute_ex_restore,
         swr_zend_fatal_error, swr_zend_leak_check, swr_zend_module_globals,
@@ -333,21 +333,13 @@ enum Phase<'a> {
 fn run(steps: Vec<Step>, phase: Phase<'_>) -> Result<(), Bailout> {
     for step in steps {
         match (step, phase) {
-            // SAFETY: a family's MINIT step, which registers with Zend and keeps
-            // nothing that needs a drop where Zend could bail out or where the
-            // bailout it returns is raised; neither does the closure.
-            (Step::Minit(step), Phase::Minit(minit)) => unsafe {
-                bailout::trap_with(|| bailout::raise(step(minit)))
-            },
-            // SAFETY: a MINIT step, which registers with Zend and keeps nothing
-            // that needs a drop where Zend could bail out; neither does the closure.
-            (Step::Typed(step), Phase::Minit(minit)) => unsafe {
-                bailout::trap_with(|| step(minit))
-            },
-            // SAFETY: an MSHUTDOWN step, likewise.
-            (Step::Shutdown(step), Phase::Mshutdown(mshutdown)) => unsafe {
-                bailout::trap_with(|| step(mshutdown))
-            },
+            // A family's MINIT step, whose returned bailout is raised inside
+            // the trap.
+            (Step::Minit(step), Phase::Minit(minit)) => {
+                contain_with(|| bailout::raise(step(minit)))
+            }
+            (Step::Typed(step), Phase::Minit(minit)) => contain_with(|| step(minit)),
+            (Step::Shutdown(step), Phase::Mshutdown(mshutdown)) => contain_with(|| step(mshutdown)),
             // SAFETY: a C or C++ hook that Zend may run at this phase; the shim's
             // setjmp sits between this frame and the hook.
             (Step::Hook(hook), _) => flag(unsafe { swr_zend_try_hook(Some(hook)) }),

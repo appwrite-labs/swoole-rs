@@ -28,29 +28,32 @@ pub const ERROR_CANCELED: i32 = -3;
 pub const CANCELED: u32 = 1;
 pub const TIMEDOUT: u32 = 2;
 
-pub struct Channel<T> {
+/// A channel of `T` whose waiters are the host's coroutine handles, `W`.
+pub struct Channel<T, W = *mut c_void> {
     capacity: usize,
     closed: bool,
     error: i32,
     data: VecDeque<T>,
-    producers: VecDeque<*mut c_void>,
-    consumers: VecDeque<*mut c_void>,
+    producers: VecDeque<W>,
+    consumers: VecDeque<W>,
 }
 
 /// The host's coroutines, for one operation.
 pub trait Effects {
+    /// The host's handle on a coroutine.
+    type Waiter: Copy + PartialEq;
     /// The current coroutine, queued as a waiter.
-    fn current(&self) -> *mut c_void;
+    fn current(&self) -> Self::Waiter;
     /// Suspends the current coroutine, already queued as a waiter, until it
     /// is resumed, canceled or its timeout fires. The timer is deleted before
     /// this returns `CANCELED` and/or `TIMEDOUT` bits; the operation then
     /// removes the waiter ([`Channel::remove`]) before anything else runs.
     fn wait(&mut self) -> u32;
     /// Resumes a waiter just taken from a queue.
-    fn resume(&mut self, co: *mut c_void);
+    fn resume(&mut self, co: Self::Waiter);
 }
 
-impl<T> Channel<T> {
+impl<T, W: Copy + PartialEq> Channel<T, W> {
     #[must_use]
     pub fn new(capacity: usize) -> Self {
         Self {
@@ -63,7 +66,7 @@ impl<T> Channel<T> {
         }
     }
 
-    fn queue(&mut self, role: Role) -> &mut VecDeque<*mut c_void> {
+    fn queue(&mut self, role: Role) -> &mut VecDeque<W> {
         match role {
             Role::Producer => &mut self.producers,
             Role::Consumer => &mut self.consumers,
@@ -71,7 +74,7 @@ impl<T> Channel<T> {
     }
 
     /// Drops every queued `co` waiter of `role`: a timeout or cancel before resume.
-    pub fn remove(&mut self, role: Role, co: *mut c_void) {
+    pub fn remove(&mut self, role: Role, co: W) {
         self.queue(role).retain(|&entry| entry != co);
     }
 
@@ -113,7 +116,7 @@ impl<T> Channel<T> {
 
 /// `f` of the channel, which no other borrow reaches meanwhile: the cell is not
 /// `Sync`, and `f` (only the bodies below) runs no effect.
-fn with<T, R>(ch: &UnsafeCell<Channel<T>>, f: impl FnOnce(&mut Channel<T>) -> R) -> R {
+fn with<T, W, R>(ch: &UnsafeCell<Channel<T, W>>, f: impl FnOnce(&mut Channel<T, W>) -> R) -> R {
     // SAFETY: as above.
     f(unsafe { &mut *ch.get() })
 }
@@ -129,7 +132,7 @@ pub struct Stats {
 }
 
 /// The channel's [`Stats`].
-pub fn stats<T>(ch: &UnsafeCell<Channel<T>>) -> Stats {
+pub fn stats<T, W: Copy + PartialEq>(ch: &UnsafeCell<Channel<T, W>>) -> Stats {
     with(ch, |c| Stats {
         error: c.error,
         length: c.length(),
@@ -140,13 +143,13 @@ pub fn stats<T>(ch: &UnsafeCell<Channel<T>>) -> Stats {
 }
 
 /// [`Channel::pop_data`]: the oldest item without waiting.
-pub fn take<T>(ch: &UnsafeCell<Channel<T>>) -> Option<T> {
+pub fn take<T, W: Copy + PartialEq>(ch: &UnsafeCell<Channel<T, W>>) -> Option<T> {
     with(ch, Channel::pop_data)
 }
 
 /// Queues the current coroutine as a `role` waiter and suspends it. Returns the
 /// error to report, or `ERROR_OK` to proceed.
-fn wait<T>(ch: &UnsafeCell<Channel<T>>, fx: &mut impl Effects, role: Role) -> i32 {
+fn wait<T, F: Effects>(ch: &UnsafeCell<Channel<T, F::Waiter>>, fx: &mut F, role: Role) -> i32 {
     let co = fx.current();
     with(ch, |c| c.queue(role).push_back(co));
     let flags = fx.wait();
@@ -163,7 +166,7 @@ fn wait<T>(ch: &UnsafeCell<Channel<T>>, fx: &mut impl Effects, role: Role) -> i3
 }
 
 /// Sets the error unless it is `ERROR_OK`; whether it was.
-fn ok<T>(ch: &UnsafeCell<Channel<T>>, status: i32) -> bool {
+fn ok<T, W>(ch: &UnsafeCell<Channel<T, W>>, status: i32) -> bool {
     if status != ERROR_OK {
         with(ch, |c| c.error = status);
     }
@@ -172,7 +175,7 @@ fn ok<T>(ch: &UnsafeCell<Channel<T>>, status: i32) -> bool {
 
 /// `Channel::pop`: the oldest item, or None with the error set. After the
 /// final resume the channel is not touched.
-pub fn pop<T>(ch: &UnsafeCell<Channel<T>>, fx: &mut impl Effects) -> Option<T> {
+pub fn pop<T, F: Effects>(ch: &UnsafeCell<Channel<T, F::Waiter>>, fx: &mut F) -> Option<T> {
     let (closed, wait_first) = with(ch, |c| {
         (
             c.closed && c.data.is_empty(),
@@ -208,7 +211,11 @@ pub fn pop<T>(ch: &UnsafeCell<Channel<T>>, fx: &mut impl Effects) -> Option<T> {
 /// final resume the channel is not touched.
 /// # Errors
 /// `data`, not queued: the channel is closed, or the wait timed out or was canceled.
-pub fn push<T>(ch: &UnsafeCell<Channel<T>>, fx: &mut impl Effects, data: T) -> Result<(), T> {
+pub fn push<T, F: Effects>(
+    ch: &UnsafeCell<Channel<T, F::Waiter>>,
+    fx: &mut F,
+    data: T,
+) -> Result<(), T> {
     let (closed, wait_first) = with(ch, |c| (c.closed, c.is_full() || !c.producers.is_empty()));
     if closed {
         ok(ch, ERROR_CLOSED);
@@ -239,7 +246,7 @@ pub fn push<T>(ch: &UnsafeCell<Channel<T>>, fx: &mut impl Effects, data: T) -> R
 }
 
 /// `Channel::close`: wakes producers, then consumers.
-pub fn close<T>(ch: &UnsafeCell<Channel<T>>, fx: &mut impl Effects) -> bool {
+pub fn close<T, F: Effects>(ch: &UnsafeCell<Channel<T, F::Waiter>>, fx: &mut F) -> bool {
     if with(ch, |c| std::mem::replace(&mut c.closed, true)) {
         return false;
     }

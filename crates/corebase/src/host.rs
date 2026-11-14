@@ -30,7 +30,52 @@ unsafe extern "C" {
     safe fn backtrace_symbols(
         frames: &[*mut c_void; Frames::All as usize],
         size: Filled,
-    ) -> *mut *mut c_char;
+    ) -> Option<Symbols>;
+}
+
+/// `backtrace_symbols`' block, freed on drop. Only `backtrace_symbols` makes one.
+#[cfg(any(all(target_os = "linux", target_env = "gnu"), target_vendor = "apple"))]
+#[repr(transparent)]
+struct Symbols(ptr::NonNull<Text<'static>>);
+
+/// A `Symbols` block with the count it was made for.
+#[cfg(any(all(target_os = "linux", target_env = "gnu"), target_vendor = "apple"))]
+struct Symbolized(Symbols, Filled);
+
+#[cfg(any(all(target_os = "linux", target_env = "gnu"), target_vendor = "apple"))]
+impl Symbolized {
+    /// The first `filled` of `frames`, symbolized; none when that fails.
+    fn of(frames: &[*mut c_void; Frames::All as usize], filled: Filled) -> Option<Self> {
+        backtrace_symbols(frames, filled).map(|symbols| Self(symbols, filled))
+    }
+
+    /// One string per frame.
+    fn lines(&self) -> &[Text<'_>] {
+        let count = usize::try_from(self.1.0).unwrap_or(0);
+        // SAFETY: backtrace_symbols made the block for `count` frames: `count`
+        // NUL-terminated strings, each a `Text` until the block is freed, which
+        // needs `self`.
+        unsafe { std::slice::from_raw_parts(self.0.0.as_ptr(), count) }
+    }
+}
+
+#[cfg(any(all(target_os = "linux", target_env = "gnu"), target_vendor = "apple"))]
+impl Drop for Symbols {
+    fn drop(&mut self) {
+        /// The block a dropped `Symbols` held: only this drop makes one, once per
+        /// block, so `free` releases each block once.
+        #[repr(transparent)]
+        struct Released(ptr::NonNull<Text<'static>>);
+        #[expect(
+            suspicious_runtime_symbol_definitions,
+            reason = "`free`'s C signature; declared safe because it takes only a \
+                      `Released`, the one malloc'd block a `Symbols` owned"
+        )]
+        unsafe extern "C" {
+            safe fn free(block: Released);
+        }
+        free(Released(self.0));
+    }
 }
 
 /// How many frames `backtrace` filled: from 0 to the array's length. Only
@@ -158,20 +203,13 @@ pub extern "C" fn swoole_print_backtrace() {
     {
         let mut frames = [ptr::null_mut::<c_void>(); 16];
         let filled = Filled::of(backtrace(&mut frames, Frames::All));
-        let symbols = backtrace_symbols(&frames, filled);
-        if symbols.is_null() {
+        let Some(symbols) = Symbolized::of(&frames, filled) else {
             return;
-        }
-        let count = usize::try_from(filled.0).unwrap_or(0);
-        // SAFETY: backtrace_symbols returns `count` NUL-terminated strings, each a
-        // `Text` until the array is freed below.
-        let lines = unsafe { std::slice::from_raw_parts(symbols.cast::<Text<'_>>(), count) };
-        for line in lines {
+        };
+        for line in symbols.lines() {
             crate::sys::print(line.get().to_bytes());
             put("\n");
         }
-        // SAFETY: backtrace_symbols' array is one malloc'd block.
-        unsafe { libc::free(symbols.cast()) };
     }
 }
 
@@ -432,8 +470,7 @@ pub extern "C" fn swoole_rand_any() -> c_int {
 #[must_use]
 #[cfg_attr(feature = "upstream-symbols", unsafe(export_name = "_Z9sw_mallocm"))]
 pub extern "C" fn sw_malloc(size: usize) -> *mut c_void {
-    // SAFETY: malloc has no preconditions.
-    unsafe { libc::malloc(size) }
+    crate::sys::malloc(size)
 }
 
 /// `void sw_free(void *)`.

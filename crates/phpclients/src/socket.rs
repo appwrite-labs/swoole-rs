@@ -293,9 +293,7 @@ pub(crate) fn strerror(code: c_int) -> Cow<'static, CStr> {
 fn constructed(call: &Call) -> Option<Co> {
     let socket = Sock::this(call).and_then(Sock::co);
     if socket.is_none() {
-        let (code, message) = native::UNCONSTRUCTED;
-        // SAFETY: a fatal error; the handler owns nothing it skips.
-        unsafe { swoole_rs_corebase::fatal_error(code, message) };
+        native::unconstructed();
         call.set_bool(false);
     }
     socket
@@ -710,7 +708,7 @@ fn read_vector(call: &Call, socket: Co, op: c_int, array: &Array, timeout: f64) 
     let total: usize = buffers.iter().map(ZBuf::capacity).sum();
     let mut vectors: Vec<_> = buffers
         .iter_mut()
-        .map(|buffer| std::io::IoSliceMut::new(native::room(buffer)))
+        .map(|buffer| swoole_rs_hooks::vector::ReadVec::new(buffer.spare_capacity_mut()))
         .collect();
     let (read, stopped, offset) =
         socket.vector(co::Vectors::Read(&mut vectors), op & 1 == 1, timeout);

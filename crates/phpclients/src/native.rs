@@ -58,6 +58,15 @@ pub(crate) fn swoole_rs_php_error(level: c_int, fatal: bool, message: &CStr) {
 /// `swoole_fatal_error`'s arguments for a method called before the constructor.
 pub(crate) const UNCONSTRUCTED: (c_int, &CStr) = (WRONG_OPERATION, c"must call constructor first");
 
+/// Swoole's fatal error for an unconstructed object, whose bailout the
+/// handler raises last.
+pub(crate) fn unconstructed() {
+    bailout::defer(swoole_rs_phpswoole::swoole_fatal_error(
+        UNCONSTRUCTED.0,
+        UNCONSTRUCTED.1,
+    ));
+}
+
 /// `new SocketImpl(...)`: by family (`domain`, `kind`, `protocol`) or by
 /// `swSocketType` (`kind`), over `fd` unless it is negative.
 /// # Errors
@@ -142,18 +151,16 @@ impl Co {
         self.0
     }
 
-    /// The `network::Socket` (`get_socket()`), while the socket is open.
-    pub(crate) fn net<'a>(self) -> Option<Net<'a>> {
-        // SAFETY: null or an open socket's live record, read fresh on every use.
-        unsafe { Net::from_ptr(self.0.socket()) }
+    /// `f` over the `network::Socket` (`get_socket()`), while the socket is open:
+    /// None before it opens. The handle lives only for the call.
+    pub(crate) fn with_net<T>(self, f: impl FnOnce(Net<'_>) -> T) -> Option<T> {
+        self.0.with_network(f)
     }
 
     /// The socket's buffers are zend strings from now on.
     pub fn use_zend_strings(self) {
-        let allocator = swoole_rs_phpswoole::sw_zend_string_allocator();
-        // SAFETY: the static zend string allocator, a `swoole::Allocator`.
-        let allocator = unsafe { &*allocator.cast::<swoole_rs_buffer::string::Allocator>() };
-        self.0.set_buffer_allocator(Some(allocator));
+        self.0
+            .set_buffer_allocator(Some(swoole_rs_phpswoole::zend_string_buffers()));
     }
 
     /// `socket_coro_init`'s socket half: zero copy and the zend string
@@ -178,9 +185,7 @@ impl Co {
     /// `move_fd()`: the socket forgets its fd, which stays open.
     pub(crate) fn move_fd(self) {
         self.0.set_sock_fd(-1);
-        if let Some(net) = self.net() {
-            net.edit(|record| record.fd = -1);
-        }
+        self.with_net(|net| net.edit(|record| record.fd = -1));
     }
 
     /// `close()` inside `zend_try`.
@@ -376,28 +381,40 @@ impl Co {
     /// `recvfrom` into `buffer`'s room under a read timeout of `timeout`.
     pub(crate) fn recvfrom(self, buffer: &mut ZBuf, timeout: f64) -> ssize_t {
         let _timeout = self.timeout(timeout, TIMEOUT_READ);
-        let received = self.0.recvfrom_peer(room(buffer));
-        filled(buffer, received)
+        self.fill(None, buffer)
     }
 
     /// One receiving [`Transfer`] into `buffer`'s room under `timeout`.
     pub(crate) fn receive(self, op: Transfer, buffer: &mut ZBuf, timeout: f64) -> ssize_t {
         let _timeout = (!matches!(op, Transfer::Peek)).then(|| self.timeout(timeout, TIMEOUT_READ));
-        let out = room(buffer);
+        self.fill(Some(op), buffer)
+    }
+
+    /// One receiving [`Transfer`] (`recvfrom` for none) into `buffer`'s room,
+    /// counting what it wrote there.
+    fn fill(self, op: Option<Transfer>, buffer: &mut ZBuf) -> ssize_t {
+        let out = buffer.spare_capacity_mut();
         let received = match op {
-            Transfer::Peek => self.0.peek(out),
-            Transfer::RecvAll => self.0.recv_all(out),
-            Transfer::RecvLine => self.0.recv_line(out),
-            Transfer::RecvWithBuffer => self.0.recv_with_buffer(out),
-            _ => self.0.recv(out),
+            None => self.0.recvfrom_peer(out),
+            Some(Transfer::Peek) => self.0.peek(out),
+            Some(Transfer::RecvAll) => self.0.recv_all(out),
+            Some(Transfer::RecvLine) => self.0.recv_line(out),
+            Some(Transfer::RecvWithBuffer) => self.0.recv_with_buffer(out),
+            Some(_) => self.0.recv(out),
         };
-        filled(buffer, received)
+        if let Ok(count) = usize::try_from(received) {
+            let len = buffer.capacity().min(buffer.len() + count);
+            // SAFETY: each of these receives returns the count of the room's first
+            // slots it wrote, and the room ends at the capacity.
+            unsafe { buffer.set_len(len) };
+        }
+        received
     }
 
     /// `get_addr()` and `get_port()`.
     pub(crate) fn address(self) -> (CString, c_int) {
-        self.net()
-            .map_or_else(|| (CString::default(), 0), net_address)
+        self.with_net(net_address)
+            .unwrap_or_else(|| (CString::default(), 0))
     }
 
     pub(crate) fn sendto(self, address: &[u8], port: i64, data: &[u8]) -> ssize_t {
@@ -501,13 +518,13 @@ impl Co {
 
     /// `get_ssl() != nullptr`.
     pub(crate) fn has_ssl(self) -> bool {
-        self.net()
-            .is_some_and(|net| net.read(|record| !record.ssl().is_null()))
+        self.with_net(|net| net.read(|record| !record.ssl().is_null()))
+            .unwrap_or(false)
     }
 
     /// The peer certificate; the socket has TLS.
     pub(crate) fn peer_cert(self) -> Option<ZString> {
-        self.net().and_then(peer_cert)
+        self.with_net(peer_cert).flatten()
     }
 
     pub(crate) fn verify_peer(self, allow_self_signed: bool) -> bool {
@@ -540,25 +557,23 @@ pub(crate) fn length_callable(socket: Co, value: &Value) {
 }
 
 /// A live `network::Client` (crates/clients' state), from [`create`] until
-/// [`destroy`].
+/// [`destroy`]: crates/clients' handle, made once by `create`.
 #[derive(Clone, Copy)]
-pub(crate) struct Cli(pub(crate) *mut Client);
+pub(crate) struct Cli(client::Handle);
 
 impl Cli {
-    pub(crate) fn get<'a>(self) -> &'a Client {
-        // SAFETY: a live client, as the type promises.
-        unsafe { &*self.0 }
+    pub(crate) fn get(&self) -> &Client {
+        self.0.client()
     }
 
     /// `cli->socket`, while the client has one.
-    pub(crate) fn net<'a>(self) -> Option<Net<'a>> {
+    pub(crate) fn net(&self) -> Option<Net<'_>> {
         self.get().socket()
     }
 
     /// crates/clients' handle on the client.
     pub(crate) fn handle(self) -> client::Handle {
-        // SAFETY: a live client, as the type promises.
-        unsafe { client::Handle::new(self.0) }
+        self.0
     }
 
     /// Run `op`, one of crates/clients' client methods, inside `zend_try`.
@@ -569,9 +584,8 @@ impl Cli {
         op: impl FnOnce(client::Handle) -> T,
     ) -> Result<T, Bailout> {
         let (handle, mut result) = (self.handle(), T::default());
-        // SAFETY: crates/clients' operations own nothing a bailout would skip
-        // dropping, and the closure holds only the caller's borrows and scalars.
-        unsafe { bailout::trap_with(|| result = op(handle)) }?;
+        // crates/clients' operations own nothing a bailout would skip dropping.
+        swoole_rs_zend::contain_with(|| result = op(handle))?;
         Ok(result)
     }
 }
@@ -588,7 +602,9 @@ pub(crate) fn create(kind: c_int, is_async: bool) -> Result<Cli, c_int> {
     if cli.is_null() {
         Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0))
     } else {
-        Ok(Cli(cli))
+        // SAFETY: a new client from `swr_v1_clients_new`, which stays live until
+        // `destroy` frees it as its last operation.
+        Ok(Cli(unsafe { client::Handle::new(cli) }))
     }
 }
 
@@ -604,8 +620,8 @@ pub(crate) fn destroy(cli: Cli) -> Result<(), Bailout> {
         // SAFETY: `destroy` is the client's last operation.
         unsafe { handle.free() };
     };
-    // SAFETY: as in `Cli::run`.
-    unsafe { bailout::trap_with(free) }
+    // As in `Cli::run`.
+    swoole_rs_zend::contain_with(free)
 }
 
 /// Drop a `package_length_func` owner, out of its socket or client.
@@ -646,25 +662,6 @@ pub(crate) fn peer_cert(socket: Net<'_>) -> Option<ZString> {
     let mut buffer = vec![0_u8; swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE as usize];
     let length = swoole_rs_tls::upstream::socket_ssl_peer_certificate_pem(socket, &mut buffer)?;
     Some(ZString::new(buffer.get(..length).unwrap_or(&buffer)))
-}
-
-/// The unwritten room of `buffer`.
-pub(crate) fn room(buffer: &mut ZBuf) -> &mut [u8] {
-    let written = buffer.len();
-    let room = buffer.capacity() - written;
-    let at = buffer.as_mut_ptr().wrapping_add(written);
-    // SAFETY: `capacity()` bytes are writable from the start, so `room` from `at`.
-    unsafe { std::slice::from_raw_parts_mut(at, room) }
-}
-
-/// Count the `received` bytes a transfer wrote into `buffer`'s [`room`].
-pub(crate) fn filled<T: Copy + TryInto<usize>>(buffer: &mut ZBuf, received: T) -> T {
-    if let Ok(count) = received.try_into() {
-        let len = buffer.capacity().min(buffer.len() + count);
-        // SAFETY: the transfer wrote `count` bytes of the room it was given.
-        unsafe { buffer.set_len(len) };
-    }
-    received
 }
 
 /// [`address`] of `socket`'s `info`, copied out of the record.

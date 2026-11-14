@@ -258,7 +258,7 @@ pub(crate) fn add_command(serv: Server<'_>, add: &AddCommand<'_>) -> bool {
 fn new_command_pipe(serv: Server<'_>) -> bool {
     use swoole_rs_tls::socket_pair::{drop, unix_socket};
     let mut pipe = Box::new(unix_socket(false, libc::SOCK_DGRAM));
-    if pipe.master_socket.is_null() || pipe.worker_socket.is_null() {
+    if pipe.master_end().is_none() || pipe.worker_end().is_none() {
         drop(&mut pipe);
         return false;
     }

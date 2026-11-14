@@ -126,7 +126,7 @@ pub(crate) fn timer_available() -> bool {
 /// fired, before it is freed: its id, or none.
 pub(crate) fn timer_add(ms: c_long, multi: &Multi) -> Option<swoole_rs_timer::Held> {
     let multi = ptr::from_ref(multi);
-    swoole_rs_timer::add_fn_held(ms, false, move || {
+    swoole_rs_timer::add_fn(ms, false, move || {
         // SAFETY: the multi deletes its timer before it is freed.
         let multi = unsafe { &*multi };
         multi.timer.set(None);

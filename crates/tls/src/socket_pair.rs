@@ -11,7 +11,7 @@ use std::mem::MaybeUninit;
 use std::ptr;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log;
-use swoole_rs_reactor::socket_upstream::{make_socket_fd, socket_set_fd_option};
+use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_reactor::{SOCKET_DEFAULTS, Socket, SocketRecord, swr_v1_socket_buffer_size};
 
 /// `SW_FD_PIPE`, `SW_EVENT_READ`, `SW_TIMEOUT_ALL` and `SW_OK`.
@@ -24,13 +24,15 @@ const CLOSE_WORKER: c_int = 2;
 
 /// `swoole::SocketPair` (`SWR_SOCKET_PAIR_RECORD_FIELDS`); `Pipe` and `UnixSocket`
 /// add nothing to it.
+/// The two ends are private: each is `None` or a socket the pair made and frees only
+/// in its close, so a handle to one never outlives a borrow of the pair.
 #[repr(C)]
 pub struct SocketPair {
     pub blocking: bool,
     pub timeout: f64,
     pub socks: [c_int; 2],
-    pub master_socket: *mut SocketRecord,
-    pub worker_socket: *mut SocketRecord,
+    master_socket: Option<Socket<'static>>,
+    worker_socket: Option<Socket<'static>>,
 }
 
 // SAFETY: a pair owns its two socket records (`open` makes them, `drop` frees them),
@@ -51,8 +53,8 @@ fn open(blocking: bool, unix: Option<c_int>, origin: &CStr) -> (SocketPair, bool
         blocking,
         timeout,
         socks: [0; 2],
-        master_socket: ptr::null_mut(),
-        worker_socket: ptr::null_mut(),
+        master_socket: None,
+        worker_socket: None,
     };
     let socks = match unix {
         Some(protocol) => swoole_rs_corebase::sys::socketpair(libc::AF_UNIX, protocol, 0),
@@ -64,8 +66,9 @@ fn open(blocking: bool, unix: Option<c_int>, origin: &CStr) -> (SocketPair, bool
         return (pair, false);
     };
     pair.socks = socks;
-    pair.master_socket = make_socket_fd(pair.socks[1], FD_PIPE);
-    pair.worker_socket = make_socket_fd(pair.socks[0], FD_PIPE);
+    let end = |fd| Box::new(SocketRecord::with_fd(fd, FD_PIPE)).into_socket();
+    pair.master_socket = Some(end(pair.socks[1]));
+    pair.worker_socket = Some(end(pair.socks[0]));
     set_blocking(&mut pair, blocking);
     (pair, true)
 }
@@ -76,7 +79,13 @@ fn open(blocking: bool, unix: Option<c_int>, origin: &CStr) -> (SocketPair, bool
     unsafe(export_name = "_ZN6swoole4PipeC1Eb")
 )]
 pub extern "C" fn pipe_new(this: &mut MaybeUninit<SocketPair>, blocking: bool) -> *mut SocketPair {
-    this.write(open(blocking, None, c"Pipe").0)
+    this.write(pipe(blocking))
+}
+
+/// `Pipe(blocking)` by value: both ends null when it failed.
+#[must_use]
+pub fn pipe(blocking: bool) -> SocketPair {
+    open(blocking, None, c"Pipe").0
 }
 
 /// `UnixSocket(bool blocking, int protocol)`: also sets both ends' kernel buffers to
@@ -110,11 +119,18 @@ pub fn unix_socket(blocking: bool, protocol: c_int) -> SocketPair {
 
 /// The two ends, master first (None once closed).
 fn ends(pair: &SocketPair) -> [Option<Socket<'_>>; 2] {
-    // SAFETY: a pair's open ends are live sockets, freed only by its close.
-    [pair.master_socket, pair.worker_socket].map(|end| unsafe { Socket::from_ptr(end) })
+    [pair.master_socket, pair.worker_socket]
 }
 
 impl SocketPair {
+    /// The two ends' records, master first: null once closed. For a worker record
+    /// that keeps them while the pair lives.
+    #[must_use]
+    pub fn raw_ends(&self) -> (*mut SocketRecord, *mut SocketRecord) {
+        let raw = |end: Option<Socket<'_>>| end.map_or(ptr::null_mut(), Socket::as_ptr);
+        (raw(self.master_socket), raw(self.worker_socket))
+    }
+
     /// The master's end, or `None` once closed.
     #[must_use]
     pub fn master_end(&self) -> Option<Socket<'_>> {
@@ -206,13 +222,13 @@ pub fn clean(this: &SocketPair) {
 }
 
 /// Frees the end in `slot`; false when it is already closed.
-fn close_end(slot: &mut *mut SocketRecord) -> bool {
-    if slot.is_null() {
+fn close_end(slot: &mut Option<Socket<'static>>) -> bool {
+    let Some(socket) = slot.take() else {
         return false;
-    }
-    // SAFETY: a pair's open end is a live socket, which only its close frees.
-    unsafe { socket_free(*slot) };
-    *slot = ptr::null_mut();
+    };
+    // SAFETY: a pair's open end is a live socket, which only its close frees, and
+    // the pair no longer holds it.
+    unsafe { socket_free(socket.as_ptr()) };
     true
 }
 
@@ -263,7 +279,7 @@ mod tests {
 
     fn round_trip(mut pair: SocketPair) {
         let this = &raw mut pair;
-        assert!(!pair.master_socket.is_null() && !pair.worker_socket.is_null());
+        assert!(pair.master_socket.is_some() && pair.worker_socket.is_some());
         let sent = *b"wire";
         let mut received = [0_u8; 4];
         assert_eq!(write_from(unsafe { &*this }, &sent), Some(4));
@@ -275,11 +291,11 @@ mod tests {
         assert!(read(unsafe { &*this }, &mut received).is_none());
         set_timeout(unsafe { &mut *this }, 2.5);
         assert_eq!(pair.timeout, 2.5);
-        assert_eq!(unsafe { (*pair.worker_socket).fields.timeouts.read }, 2.5);
+        assert_eq!(unsafe { (*pair.raw_ends().1).fields.timeouts.read }, 2.5);
         assert!(close(unsafe { &mut *this }, CLOSE_MASTER));
         assert!(!close(unsafe { &mut *this }, CLOSE_MASTER));
         assert!(close(unsafe { &mut *this }, 0));
-        assert!(pair.worker_socket.is_null());
+        assert!(pair.worker_socket.is_none());
         drop(&mut pair);
     }
 
@@ -305,6 +321,6 @@ mod tests {
         let failed = pair(|this| {
             unix_socket_new(this, false, -1);
         });
-        assert!(failed.master_socket.is_null() && failed.worker_socket.is_null());
+        assert!(failed.master_socket.is_none() && failed.worker_socket.is_none());
     }
 }

@@ -61,7 +61,7 @@ mod c {
 
     // POSIX's prototypes, the same on every Unix this builds for. Each reads
     // its integers, reads a `Text` up to its NUL, or reads or writes the one object
-    // its reference names. `calloc` and `strndup` return null or a fresh
+    // its reference names. `malloc`, `calloc` and `strndup` return null or a fresh
     // allocation; `strtoul` stores a pointer into its text, or leaves `end` alone. A
     // `sigset_t` is plain bits the set calls read or write whole, and a signal number
     // outside the set is an error they return. `fork` takes nothing and touches no
@@ -69,8 +69,8 @@ mod c {
     // what their child goes on to do.
     #[expect(
         suspicious_runtime_symbol_definitions,
-        reason = "`close` keeps its C signature; it is declared safe because it takes a plain \
-                  value and touches no caller memory"
+        reason = "`close` and `malloc` keep their C signatures; they are declared safe because \
+                  each takes plain values and touches no caller memory"
     )]
     unsafe extern "C" {
         pub(crate) safe fn socket(domain: c_int, kind: c_int, protocol: c_int) -> c_int;
@@ -95,6 +95,7 @@ mod c {
         pub(crate) safe fn chdir(path: Text<'_>) -> c_int;
         pub(crate) safe fn chroot(path: Text<'_>) -> c_int;
         pub(crate) safe fn mkdir(path: Text<'_>, mode: mode_t) -> c_int;
+        pub(crate) safe fn malloc(size: usize) -> *mut c_void;
         pub(crate) safe fn calloc(count: usize, size: usize) -> *mut c_void;
         /// At most `length` bytes of `text`, in a `malloc` allocation.
         pub(crate) safe fn strndup(text: Text<'_>, length: usize) -> *mut c_char;
@@ -220,7 +221,7 @@ mod c {
 pub use c::kqueue;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 pub use c::malloc_trim;
-pub(crate) use c::{calloc, fork, getrlimit, srandom, uname};
+pub(crate) use c::{calloc, fork, getrlimit, malloc, srandom, uname};
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub use c::{epoll_create, epoll_ctl, signalfd};
 pub use c::{
@@ -229,9 +230,32 @@ pub use c::{
 
 /// A byte a read may overwrite with any value: `u8`, or one not yet written
 /// (`CppString::spare`). Readers only write their buffer, so they take either.
-pub trait ReadSlot: sealed::Sealed {}
-impl ReadSlot for u8 {}
-impl ReadSlot for MaybeUninit<u8> {}
+pub trait ReadSlot: sealed::Sealed + Sized {
+    /// Copy what fits of `bytes` to the start of `slots`: the count copied.
+    fn copy_in(slots: &mut [Self], bytes: &[u8]) -> usize;
+}
+
+impl ReadSlot for u8 {
+    #[inline]
+    fn copy_in(slots: &mut [Self], bytes: &[u8]) -> usize {
+        let n = slots.len().min(bytes.len());
+        if let (Some(to), Some(from)) = (slots.get_mut(..n), bytes.get(..n)) {
+            to.copy_from_slice(from);
+        }
+        n
+    }
+}
+
+impl ReadSlot for MaybeUninit<u8> {
+    #[inline]
+    fn copy_in(slots: &mut [Self], bytes: &[u8]) -> usize {
+        let n = slots.len().min(bytes.len());
+        if let (Some(to), Some(from)) = (slots.get_mut(..n), bytes.get(..n)) {
+            to.write_copy_of_slice(from);
+        }
+        n
+    }
+}
 
 mod sealed {
     /// Only one-byte types every bit pattern initializes.

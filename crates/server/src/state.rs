@@ -45,14 +45,14 @@ pub struct ServerState {
     )]
     pub(crate) msg_ids: std::sync::OnceLock<&'static core::sync::atomic::AtomicU64>,
     /// `Server::task_notify_pipes`: a blocking `Pipe` per event worker, which
-    /// `task_sync` waits on; `swr_v1_server_delete` closes them, as `~Server` did.
+    /// `task_sync` waits on; the last `SharedServer` drop closes them, as `~Server` did.
     #[expect(
         clippy::vec_box,
         reason = "`task_pipe` hands out addresses that outlive the lock"
     )]
     task_pipes: std::sync::Mutex<Vec<Box<SocketPair>>>,
     /// `Server::worker_pipes`: each event worker's `UnixSocket`, which
-    /// `swr_v1_server_delete` closes, as `~Server` did.
+    /// the last `SharedServer` drop closes, as `~Server` did.
     #[cfg_attr(
         not(all(feature = "upstream-symbols", not(test))),
         expect(dead_code, reason = "only the hybrid makes pipes")
@@ -132,7 +132,7 @@ impl ServerState {
             true,
             libc::SOCK_DGRAM,
         ));
-        let (master, end) = (pair.master_socket, pair.worker_socket);
+        let (master, end) = pair.raw_ends();
         if master.is_null() || end.is_null() {
             swoole_rs_tls::socket_pair::drop(&mut pair);
             return false;
@@ -152,11 +152,8 @@ impl ServerState {
     /// `task_notify_pipes.emplace_back(new Pipe(true))`: false, closing it, when
     /// the pipe isn't ready.
     pub(crate) fn push_task_pipe(&self) -> bool {
-        let mut storage = Box::new(core::mem::MaybeUninit::<SocketPair>::uninit());
-        swoole_rs_tls::socket_pair::pipe_new(&mut storage, true);
-        // SAFETY: the constructor initialised it.
-        let mut pair = unsafe { storage.assume_init() };
-        let ready = !pair.master_socket.is_null() && !pair.worker_socket.is_null();
+        let mut pair = Box::new(swoole_rs_tls::socket_pair::pipe(true));
+        let ready = pair.master_end().is_some() && pair.worker_end().is_some();
         if !ready {
             swoole_rs_tls::socket_pair::drop(&mut pair);
             return false;

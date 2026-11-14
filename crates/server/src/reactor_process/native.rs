@@ -5,7 +5,7 @@ use swoole_rs_corebase::ServerEvent;
 use swoole_rs_process::methods::ExitStatus;
 use swoole_rs_process::process_pool::{Hooks, IpcMode, PoolRef};
 use swoole_rs_process::task_file::Packed;
-use swoole_rs_process::worker_record::{Worker, WorkerType};
+use swoole_rs_process::worker_record::Worker;
 use swoole_rs_reactor::{Event, Running};
 
 use crate::base_factory::SendData;
@@ -21,11 +21,9 @@ const CLOSE_ACTIVELY: c_int = 1 << 2;
 /// The event worker pool over the server's workers.
 pub(crate) fn create_pool(serv: view::Server<'_>) -> bool {
     let config = serv.config();
-    let workers = serv.workers();
-    let pool = workers.event_pool.raw();
-    // The server's event pool, reset as `*pool = {}` did.
-    workers.event_pool.reset();
     let pool_ref = serv.event_pool_ref();
+    // The server's event pool, reset as `*pool = {}` did.
+    pool_ref.reset();
     let ipc = IpcMode::UnixSock.code().into();
     if !swoole_rs_process::methods::create(pool_ref, config.worker_num.get(), 0, ipc) {
         return false;
@@ -44,25 +42,11 @@ pub(crate) fn create_pool(serv: view::Server<'_>) -> bool {
     // SAFETY: both hooks read the pool's `ptr` as the server that owns the pool, which
     // is what this sets it to; the server outlives its event pool.
     unsafe { pool_ref.install(&hooks) };
-    // SAFETY: as above.
-    let record = unsafe { &mut *pool };
-    record.max_wait_time = config.max_wait_time.get();
-    record.use_msgqueue = false;
-    let count = config.worker_num.get() as usize;
-    // SAFETY: the pool's and the server's worker arrays, `count` records each.
-    unsafe { core::ptr::copy_nonoverlapping(record.workers(), workers.event_workers, count) };
-    // SAFETY: the server's `count` (`worker_num`) event worker records, which live
-    // as long as the server and so its event pool.
-    unsafe { record.set_workers(workers.event_workers) };
-    // `create` set the pool's `worker_num` to `count`, so these are the server's records.
-    for (id, index) in (0u32..).zip(0..count) {
-        if let Some(worker) = record.worker(index) {
-            // SAFETY: the server's event pool, which lives as long as these records.
-            unsafe { worker.set_pool(pool_ref) };
-            worker.set_id(id);
-            worker.set_kind(WorkerType::Event.code());
-        }
-    }
+    pool_ref.set_max_wait_time(config.max_wait_time.get());
+    pool_ref.set_use_msgqueue(false);
+    // `create` set the pool's `worker_num` to the server's, so the pool's records
+    // become the server's.
+    serv.workers().adopt_event_workers();
     true
 }
 
@@ -129,9 +113,9 @@ fn dispatch(serv: view::Server<'_>, reactor: Reactor, bus: Bus<'_>) -> bool {
         }
         Some(ServerEvent::SendData) => {
             let workers = serv.workers();
-            let all = u64::from(workers.event_count)
-                + u64::from(workers.task_count)
-                + workers.user_count as u64;
+            let all = u64::from(workers.event_count())
+                + u64::from(workers.task_count())
+                + workers.user_count() as u64;
             let worker = info.reactor_id;
             if u64::try_from(worker).is_ok_and(|id| id < all) {
                 let packet = bus.packet();
