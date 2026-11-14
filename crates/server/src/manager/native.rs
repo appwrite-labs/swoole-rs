@@ -85,13 +85,13 @@ fn kill_workers(serv: view::Server<'_>, category: c_int, origin: &core::ffi::CSt
 /// `Server::start_manager_process()`: fork the manager (the base mode's master is
 /// its own manager).
 #[must_use]
-pub(crate) fn start_manager_process(serv: view::Server<'_>) -> c_int {
+pub(crate) fn start_manager_process(serv: view::Server<'_>) -> bool {
     if !worker_methods::create_event_workers(serv) {
-        return -1;
+        return false;
     }
     let pool = serv.event_pool_ref();
     if pool.message_box().is_null() && !methods::create_message_box(pool, MESSAGE_BOX_SIZE) {
-        return -1;
+        return false;
     }
     if serv.workers().user_count > 0 {
         let workers = worker_methods::create_user_workers(serv);
@@ -100,7 +100,7 @@ pub(crate) fn start_manager_process(serv: view::Server<'_>) -> c_int {
         // read after the write.
         unsafe { serv.config_mut() }.user_workers = workers;
         if !created {
-            return -1;
+            return false;
         }
     }
     if serv.config().mode_ == Mode::Base {
@@ -108,9 +108,9 @@ pub(crate) fn start_manager_process(serv: view::Server<'_>) -> c_int {
     } else if swoole_rs_corebase::fork_exec(|| main(serv)) < 0 {
         let m = format_args!("failed fork manager process");
         log::sys_warning(c"Server::start_manager_process", m);
-        return -1;
+        return false;
     }
-    0
+    true
 }
 
 /// The manager process: start the task pool, fork the workers, then reap.

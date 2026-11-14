@@ -19,7 +19,7 @@ const FD_PIPE: c_int = 3;
 const CLOSE_ACTIVELY: c_int = 1 << 2;
 
 /// The event worker pool over the server's workers.
-pub(crate) fn create_pool(serv: view::Server<'_>) -> c_int {
+pub(crate) fn create_pool(serv: view::Server<'_>) -> bool {
     let config = serv.config();
     let workers = serv.workers();
     let pool = workers.event_pool.raw();
@@ -28,7 +28,7 @@ pub(crate) fn create_pool(serv: view::Server<'_>) -> c_int {
     let pool_ref = serv.event_pool_ref();
     let ipc = IpcMode::UnixSock.code().into();
     if !swoole_rs_process::methods::create(pool_ref, config.worker_num.get(), 0, ipc) {
-        return -1;
+        return false;
     }
     swoole_rs_process::methods::set_max_request(
         pool_ref,
@@ -63,7 +63,7 @@ pub(crate) fn create_pool(serv: view::Server<'_>) -> c_int {
             worker.set_kind(WorkerType::Event.code());
         }
     }
-    0
+    true
 }
 
 /// `pool->main_loop`: `Server::reactor_process_main_loop` over the pool's worker.

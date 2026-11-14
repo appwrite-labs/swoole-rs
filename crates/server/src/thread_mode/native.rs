@@ -39,7 +39,13 @@ pub(crate) fn run(serv: view::Server<'_>, operation: ThreadOp) -> i64 {
             destroy_factory(serv);
             0
         }
-        ThreadOp::StartWorkers => i64::from(start_worker_threads(serv)),
+        ThreadOp::StartWorkers => {
+            if start_worker_threads(serv) {
+                0
+            } else {
+                -1
+            }
+        }
         ThreadOp::StopWorkers => {
             stop_worker_threads(serv);
             0
@@ -138,7 +144,7 @@ pub(crate) fn factory_start(serv: view::Server<'_>) -> bool {
 
 /// `Server::start_worker_threads`: the task, event and user worker threads, the
 /// manager thread, then the master thread's listeners and loop.
-fn start_worker_threads(serv: view::Server<'_>) -> c_int {
+fn start_worker_threads(serv: view::Server<'_>) -> bool {
     let config = serv.config();
     let (workers, tasks) = (config.worker_num.get(), config.task_worker_num.get());
     for id in 0..tasks {
@@ -153,7 +159,7 @@ fn start_worker_threads(serv: view::Server<'_>) -> c_int {
     }
     spawn(serv, manager_thread_id(serv), WorkerType::Manager);
     if swoole_rs_reactor::swoole_event_init(0) < 0 {
-        return -1;
+        return false;
     }
     let reactor = Reactor::thread();
     for at in 0..serv.ports().len() {
@@ -165,7 +171,7 @@ fn start_worker_threads(serv: view::Server<'_>) -> c_int {
         }
         if !(crate::port_config::methods().listen)(port.config()) {
             swoole_rs_reactor::swoole_event_free();
-            return -1;
+            return false;
         }
         if let Some(socket) = serv.port_socket_at(at) {
             reactor.add(socket, EVENT_READ);

@@ -73,13 +73,14 @@ pub fn destroy_running(serv: view::Server<'_>) {
     }
 }
 
-/// `Server::start_master_thread(reactor)`, on the master's reactor.
+/// `Server::start_master_thread(reactor)`, on the master's reactor: whether its loop
+/// ran and ended cleanly.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 #[must_use]
 pub(crate) fn start_master_thread(
     serv: view::Server<'_>,
     reactor: crate::reactor_handle::Reactor,
-) -> c_int {
+) -> bool {
     crate::startup::start_master_thread(serv, reactor)
 }
 
