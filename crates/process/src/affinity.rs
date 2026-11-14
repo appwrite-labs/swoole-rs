@@ -37,7 +37,7 @@ pub fn worker_affinity(
     let errno = || std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
     let mut current = CpuSet::empty();
     let pid = crate::os::getpid();
-    if current.get_process(pid) < 0 {
+    if !current.get_process(pid) {
         return Err(AffinityError::Get(errno()));
     }
     let allowed = |cpu: usize| {
@@ -49,16 +49,10 @@ pub fn worker_affinity(
     };
     let mut selected = CpuSet::empty();
     selected.insert(cpu);
-    let error = if thread {
-        selected.set_thread()
-    } else {
-        if selected.set_process(pid) < 0 {
-            return Err(AffinityError::Set(errno()));
-        }
-        0
-    };
-    if error != 0 {
-        return Err(AffinityError::Set(error));
+    if thread {
+        selected.set_thread().map_err(AffinityError::Set)?;
+    } else if !selected.set_process(pid) {
+        return Err(AffinityError::Set(errno()));
     }
     Ok(())
 }

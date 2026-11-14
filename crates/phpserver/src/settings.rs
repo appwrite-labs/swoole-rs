@@ -548,7 +548,7 @@ fn workers(s: &Settings) -> Step {
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn affinity() -> Result<Vec<c_int>, c_int> {
     let mut set = swoole_rs_ossupport::CpuSet::empty();
-    if set.get_process(swoole_rs_corebase::sys::getpid()) < 0 {
+    if !set.get_process(swoole_rs_corebase::sys::getpid()) {
         return Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
     }
     Ok(set
