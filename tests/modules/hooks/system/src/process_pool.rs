@@ -304,7 +304,7 @@ unsafe fn pool_listen_host(
     backlog: c_int,
 ) -> c_int {
     // SAFETY: as the caller guarantees; 1 is SW_SOCK_TCP.
-    unsafe {
+    let listened = unsafe {
         pm::listen_socket(
             swoole_rs_process::process_pool::PoolRef::new(pool.cast_mut().cast()),
             1,
@@ -312,18 +312,20 @@ unsafe fn pool_listen_host(
             port,
             backlog,
         )
-    }
+    };
+    if listened { SW_OK } else { SW_ERR }
 }
 
 unsafe fn pool_listen_file(pool: *const Pool, file: *const c_char, backlog: c_int) -> c_int {
     // SAFETY: as the caller guarantees.
-    unsafe {
+    let listened = unsafe {
         pm::listen_unix(
             swoole_rs_process::process_pool::PoolRef::new(pool.cast_mut().cast()),
             std::ffi::CStr::from_ptr(file),
             backlog,
         )
-    }
+    };
+    if listened { SW_OK } else { SW_ERR }
 }
 
 unsafe fn pool_set_protocol(pool: *mut Pool, protocol: Protocol) {
@@ -443,10 +445,11 @@ unsafe fn pool_response(pool: *const Pool, data: *const c_char, length: u32) -> 
         unsafe { std::slice::from_raw_parts(data.cast(), length as usize) }
     };
     // SAFETY: as the caller guarantees.
-    pm::response(
+    let written = pm::response(
         unsafe { swoole_rs_process::process_pool::PoolRef::new(pool.cast_mut().cast()) },
         data,
-    )
+    );
+    if written { SW_OK } else { SW_ERR }
 }
 
 unsafe fn pool_add_worker(pool: *const Pool, worker: *mut Worker) {

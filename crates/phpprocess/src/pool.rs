@@ -711,7 +711,7 @@ fn listen(call: &Call) {
     if let Some(socket) = swoole_rs_server::view::pool_ipc_listener(view) {
         _ = socket.edit(|record| socket_set_fd_option(record, 0, 1));
     }
-    call.set_bool(listened >= 0);
+    call.set_bool(listened);
 }
 
 fn write(call: &Call) {
@@ -731,7 +731,7 @@ fn write(call: &Call) {
     }
     let length = data.len().c_cast::<u32>() as usize;
     let written = methods::response(view, data.get(..length).unwrap_or(data));
-    call.set_bool(written >= 0);
+    call.set_bool(written);
 }
 
 fn send_message(call: &Call) {
