@@ -409,13 +409,14 @@ unsafe fn pool_push_message(
     length: usize,
 ) -> c_int {
     // SAFETY: as the caller guarantees.
-    unsafe {
+    let pushed = unsafe {
         pm::push_message(
             swoole_rs_process::process_pool::PoolRef::new(pool.cast_mut().cast()),
             kind,
             std::slice::from_raw_parts(data.cast(), length),
         )
-    }
+    };
+    if pushed { SW_OK } else { SW_ERR }
 }
 
 unsafe fn pool_send_message(

@@ -129,10 +129,11 @@ run_methods! {
 }
 
 /// `ProcessPool::push_message(event)`: the `EventData` with `head` (its `len` set to
-/// `data`'s) and `data`.
+/// `data`'s) and `data`; false when the pool has no message box, `data` does not
+/// fit, or the push fails.
 #[must_use]
-pub fn push_event(pool: PoolRef<'_>, head: &swoole_rs_corebase::DataHead, data: &[u8]) -> c_int {
-    c_int::narrow(swr_v1_process_pool_push_event(native(), pool, head, data))
+pub fn push_event(pool: PoolRef<'_>, head: &swoole_rs_corebase::DataHead, data: &[u8]) -> bool {
+    swr_v1_process_pool_push_event(native(), pool, head, data)
 }
 
 /// `ProcessPool::stop(worker)`; nothing when `worker` is none of the pool's.
@@ -172,14 +173,14 @@ pub fn create(pool: PoolRef<'_>, worker_num: u32, key: c_int, mode: c_int) -> c_
 
 /// `ProcessPool::push_message(type, data, length)`.
 #[must_use]
-pub fn push_message(pool: PoolRef<'_>, kind: u8, data: &[u8]) -> c_int {
-    c_int::narrow(swr_v1_process_pool_push(native(), pool, kind, data))
+pub fn push_message(pool: PoolRef<'_>, kind: u8, data: &[u8]) -> bool {
+    swr_v1_process_pool_push(native(), pool, kind, data)
 }
 
 /// `push_message(SW_WORKER_MESSAGE_STOP, WorkerStopMessage { pid, worker_id })`:
 /// the C layout's 4-byte pid, 2-byte id and 2 bytes of padding.
 #[must_use]
-pub fn push_stop(pool: PoolRef<'_>, pid: c_int, worker_id: u16) -> c_int {
+pub fn push_stop(pool: PoolRef<'_>, pid: c_int, worker_id: u16) -> bool {
     /// `SW_WORKER_MESSAGE_STOP`.
     const WORKER_MESSAGE_STOP: u8 = 1;
     let ([a, b, c, d], [e, f]) = (pid.to_ne_bytes(), worker_id.to_ne_bytes());
