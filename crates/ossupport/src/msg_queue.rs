@@ -167,44 +167,45 @@ impl QueueRecord {
     }
 
     /// Receive into a `QueueNode` (a `long` type, then room for its payload) a
-    /// message of the type it holds. A failure leaves errno as the last error, and
-    /// warns unless it is `ENOMSG` or `EINTR`.
-    pub fn pop(&self, node: &mut [u8]) -> isize {
+    /// message of the type it holds: its payload length. A failure (`None`) leaves
+    /// errno as the last error, and warns unless it is `ENOMSG` or `EINTR`.
+    pub fn pop(&self, node: &mut [u8]) -> Option<usize> {
         let Some((kind, size)) = node_parts(node) else {
             invalid();
-            return -1;
+            return None;
         };
         self.receive(node, kind, size)
     }
 
     /// [`Self::pop`] into a `QueueNode` held in words: the type it holds, then room
     /// for `size` payload bytes.
-    pub fn pop_words(&self, node: &mut [u64], size: usize) -> isize {
+    pub fn pop_words(&self, node: &mut [u64], size: usize) -> Option<usize> {
         let kind = node.first().map_or(0, |kind| kind.cast_signed());
         self.receive(node, kind, size)
     }
 
     /// `msgrcv` into `node` of a message of type `kind` with at most `size` payload
     /// bytes; a node too short for them is `EINVAL`.
-    fn receive(&self, node: &mut [impl Pod], kind: c_long, size: usize) -> isize {
+    fn receive(&self, node: &mut [impl Pod], kind: c_long, size: usize) -> Option<usize> {
         if size_of_val(node) < size_of::<c_long>().saturating_add(size) {
             invalid();
-            return -1;
+            return None;
         }
         // SAFETY: `node` is writable for a `long` type and at least `size` payload
         // bytes, checked above, and any bytes are a value of its plain elements.
         let result = unsafe { msgrcv(self.id, node.as_mut_ptr().cast(), size, kind, self.flags) };
-        if result < 0 {
-            let error = errno();
-            log::set_last_error(error);
-            if !matches!(error, libc::ENOMSG | libc::EINTR) {
-                sys_warning(
-                    c"MsgQueue::pop",
-                    format_args!("msgrcv({}, {size}, {kind}) failed", self.id),
-                );
-            }
+        if let Ok(length) = usize::try_from(result) {
+            return Some(length);
         }
-        result
+        let error = errno();
+        log::set_last_error(error);
+        if !matches!(error, libc::ENOMSG | libc::EINTR) {
+            sys_warning(
+                c"MsgQueue::pop",
+                format_args!("msgrcv({}, {size}, {kind}) failed", self.id),
+            );
+        }
+        None
     }
 
     /// The queue's message count and bytes; `None` leaves errno.
@@ -355,10 +356,12 @@ mod tests {
             bytes
         }
 
-        /// Receives into the node as `pop(node, size)` did.
+        /// Receives into the node as upstream's `pop(node, size)`: its length or -1.
         fn pop(&mut self, queue: &QueueRecord, size: usize) -> isize {
             let mut bytes = self.bytes(size);
-            let received = queue.pop(&mut bytes);
+            let received = queue
+                .pop(&mut bytes)
+                .map_or(-1, |length| isize::try_from(length).unwrap());
             let (kind, payload) = bytes.split_at(size_of::<c_long>());
             self.mtype = c_long::from_ne_bytes(kind.try_into().unwrap());
             self.mdata[..size].copy_from_slice(payload);
@@ -444,7 +447,7 @@ mod tests {
         };
         assert!(!queue.push(&short), "push");
         assert!(einval(), "push's errno and last error");
-        assert_eq!(queue.pop(&mut short), -1, "pop");
+        assert_eq!(queue.pop(&mut short), None, "pop");
         assert!(einval(), "pop's errno and last error");
     }
 
