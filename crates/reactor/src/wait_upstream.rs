@@ -99,7 +99,7 @@ mod registry {
     }
 
     fn timed_out() -> bool {
-        swoole_rs_coroutine::current_resume_code() == Some(swoole_rs_coroutine::RC_TIMEDOUT)
+        swoole_rs_coroutine::current_resume_code() == Some(swoole_rs_coroutine::Resume::TimedOut)
     }
 
     pub(super) static COROUTINES: Coroutines = Coroutines {

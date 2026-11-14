@@ -7,7 +7,7 @@ use std::{
     ffi::{CStr, c_int, c_long, c_void},
 };
 use swoole_rs_corebase::CCast;
-use swoole_rs_coroutine::RC_CANCELED;
+use swoole_rs_coroutine::Resume;
 use swoole_rs_zend::{
     E_ERROR, bailout,
     sys::{swr_zend_callable, zend_execute_data, zval},
@@ -330,9 +330,8 @@ pub(crate) fn yield_ex(co: Co, timeout: f64) -> bool {
     swoole_rs_coroutine::yield_resumed(wait(co, timeout))
 }
 
-/// [`yield_ex`] without its last error: the resume code (`RC_TIMEDOUT`,
-/// `RC_CANCELED` or another when resumed).
-pub(crate) fn wait(co: Co, timeout: f64) -> i32 {
+/// [`yield_ex`] without its last error: how the yield ended.
+pub(crate) fn wait(co: Co, timeout: f64) -> Resume {
     swoole_rs_coroutine::yield_timed(co, timeout)
 }
 
@@ -453,7 +452,7 @@ pub(crate) fn cancel(co: Co) -> bool {
 
 /// `co->is_canceled()` of a live coroutine.
 pub(crate) fn is_canceled(co: Co) -> bool {
-    live(co).resume_code == RC_CANCELED
+    live(co).resume_code == Resume::Canceled
 }
 
 /// `co->is_end()`: a context that ended is closed and freed before anything
