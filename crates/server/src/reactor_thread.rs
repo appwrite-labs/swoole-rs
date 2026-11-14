@@ -53,22 +53,20 @@ fn receive_packets(
         return SW_ERR;
     };
     let kind = conn.socket_type();
-    // SAFETY: the datagram server's connection, whose object is its live port.
-    let Some(port) = (unsafe { view::Port::from_raw(conn.object()) }) else {
+    let Some(port) = state.listed_port(conn.object()) else {
         return SW_ERR;
     };
     let dtls = port.config().is_dtls();
     let head = size_of::<DgramPacket>();
-    let mut task = SendData {
-        info: DataHead {
-            server_fd: crate::base_factory::low16(fd),
-            reactor_id: swoole_rs_corebase::thread_id().cast_signed(),
-            kind: swoole_rs_corebase::ServerEvent::RecvDgram.code(),
-            time: microtime(),
-            ..DataHead::default()
-        },
-        data: buffer.cast_const().cast(),
+    let info = DataHead {
+        server_fd: crate::base_factory::low16(fd),
+        reactor_id: swoole_rs_corebase::thread_id().cast_signed(),
+        kind: swoole_rs_corebase::ServerEvent::RecvDgram.code(),
+        time: microtime(),
+        ..DataHead::default()
     };
+    // SAFETY: no payload yet (`len` 0); each packet's length is set below.
+    let mut task = unsafe { SendData::from_raw(info, buffer.cast_const().cast()) };
     let base = state.config_ref().mode_ == Mode::Base;
     loop {
         // SAFETY: the caller's buffer, which holds a packet head and its datagram.
@@ -100,8 +98,10 @@ fn receive_packets(
             return hybrid().dtls_accept(serv, reactor, port, &pkt.socket_addr, datagram);
         }
         pkt.length = length;
-        task.info.fd = pkt.sender();
-        task.info.len = u32::try_from(head).unwrap_or(0).saturating_add(length);
+        task.set_fd(pkt.sender());
+        // SAFETY: the packet head and the `length` bytes just received behind it, in the
+        // caller's buffer, which nothing writes until the dispatch returns.
+        unsafe { task.set_len(u32::try_from(head).unwrap_or(0).saturating_add(length)) };
         let dispatched = if base {
             // Base mode hands it to this process's worker as it does a connection's data.
             crate::base_factory::dispatch(serv, &mut task, true)

@@ -2,7 +2,7 @@
 //! and close ([`crate::lifecycle`]). The readable callbacks answer their effects
 //! in [`crate::read_native`].
 
-use std::ffi::{CStr, c_char, c_int, c_void};
+use std::ffi::{CStr, c_char, c_int};
 use std::ptr;
 use std::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::CCast;
@@ -14,7 +14,7 @@ use swoole_rs_corebase::net_types::{
     GetPackageLength, GetPackageLengthSize, OnPackage, SocketAddress,
 };
 use swoole_rs_reactor::socket_upstream::make_typed;
-use swoole_rs_reactor::{Event, Running, SocketFields, SocketRecord};
+use swoole_rs_reactor::{Running, SocketFields, SocketRecord};
 #[cfg(not(test))]
 pub(crate) use swoole_rs_tls::upstream::socket_free;
 
@@ -27,7 +27,7 @@ pub(crate) const FD_DGRAM_SERVER: c_int = 2;
 /// `SW_SOCK_NONBLOCK` and `SW_SOCK_CLOEXEC`.
 const SOCK_NONBLOCK: c_int = swoole_rs_corebase::constants::SocketFlag::SW_SOCK_NONBLOCK as c_int;
 const SOCK_CLOEXEC: c_int = swoole_rs_corebase::constants::SocketFlag::SW_SOCK_CLOEXEC as c_int;
-use swoole_rs_server::port_config::PortConfig;
+use swoole_rs_server::port_config::{PortConfig, ReadEvent, Reader};
 use swoole_rs_server::view;
 
 use swoole_rs_http_ffi::request_free;
@@ -342,15 +342,6 @@ const CALLBACKS: Callbacks = {
     }
 };
 
-/// A port's `int (*onRead)(Reactor *, ListenPort *, Event *)`, as the server's connection
-/// read calls it: under its reactor, with the port and the connection's event.
-type Reader = unsafe extern "C" fn(Running<'_>, view::Port<'_>, &mut Event) -> c_int;
-
-/// A readable callback's address.
-fn reader(function: Reader) -> *mut c_void {
-    function as *mut c_void
-}
-
 /// `init_protocol` over the port's settings; `dtls` is `is_dtls()`, asked of a
 /// datagram port only.
 fn init_protocol_over(config: &PortConfig, dtls: impl FnOnce() -> bool) {
@@ -361,7 +352,7 @@ fn init_protocol_over(config: &PortConfig, dtls: impl FnOnce() -> bool) {
     let on_read = config
         .protocol
         .update(|protocol| init_protocol_callbacks(config, protocol));
-    config.on_read.store(on_read, Relaxed);
+    config.on_read.set(Some(on_read));
 }
 
 /// The readable callback of the port's settings, whose protocol callbacks and
@@ -369,7 +360,7 @@ fn init_protocol_over(config: &PortConfig, dtls: impl FnOnce() -> bool) {
 fn init_protocol_callbacks(
     config: &PortConfig,
     protocol: &mut swoole_rs_corebase::net_types::Protocol,
-) -> *mut c_void {
+) -> Reader {
     let c = &CALLBACKS;
     if config.open_eof_check.get() {
         if u32::from(protocol.package_eof_len) > SW_DATA_EOF_MAXLEN {
@@ -378,13 +369,13 @@ fn init_protocol_callbacks(
             protocol.package_eof_len = max;
         }
         protocol.on_package = Some(c.dispatch_task);
-        reader(readable_callback_eof)
+        readable_callback_eof
     } else if config.open_length_check.get() {
         if protocol.package_length_type != 0 {
             protocol.get_package_length = Some(c.default_length);
         }
         protocol.on_package = Some(c.dispatch_task);
-        reader(readable_callback_length)
+        readable_callback_length
     } else if config.open_http_protocol.get() {
         if config.open_http2_protocol.get() && config.open_websocket_protocol.get() {
             protocol.get_package_length = Some(c.http_length);
@@ -401,16 +392,16 @@ fn init_protocol_callbacks(
         }
         protocol.package_length_offset = 0;
         protocol.package_body_offset = 0;
-        reader(readable_callback_http)
+        readable_callback_http
     } else if config.open_mqtt_protocol.get() {
         swoole_rs_protocols_ffi::set_protocol(protocol);
         protocol.on_package = Some(c.dispatch_task);
-        reader(readable_callback_length)
+        readable_callback_length
     } else if config.open_redis_protocol.get() {
         protocol.on_package = Some(c.dispatch_task);
-        reader(readable_callback_redis)
+        readable_callback_redis
     } else {
-        reader(readable_callback_raw)
+        readable_callback_raw
     }
 }
 
@@ -486,11 +477,8 @@ use tests::on_read;
 macro_rules! readable_callbacks {
     ($(fn $name:ident = $kind:ident;)*) => {$(
         /// One readable callback kind.
-        /// # Safety
-        /// As [`on_read`].
-        unsafe extern "C" fn $name(reactor: Running<'_>, port: view::Port<'_>, event: &mut Event) -> c_int {
-            // SAFETY: the caller's contract.
-            unsafe { on_read(reactor, port, event, Readable::$kind) }
+        fn $name(reactor: Running<'_>, port: view::Port<'_>, read: ReadEvent<'_>) -> c_int {
+            on_read(reactor, port, read, Readable::$kind)
         }
     )*};
 }
@@ -507,6 +495,7 @@ readable_callbacks! {
 mod tests {
     use super::*;
     use crate::lifecycle::{context_create, ssl_init};
+    use std::ffi::c_void;
     use swoole_rs_server::port_config;
 
     /// The port at `at`, as the server passes one of its own.
@@ -541,11 +530,16 @@ mod tests {
         unsafe { SocketRecord::free(socket) };
     }
 
+    /// A readable callback's address.
+    fn reader(function: Reader) -> *mut c_void {
+        function as *mut c_void
+    }
+
     /// Tests link no C++: the readable kind stands in for the read.
-    pub(super) unsafe fn on_read(
+    pub(super) fn on_read(
         _: Running<'_>,
         _: view::Port<'_>,
-        _: &mut Event,
+        _: ReadEvent<'_>,
         kind: Readable,
     ) -> c_int {
         kind as c_int
@@ -956,7 +950,7 @@ mod tests {
             "no framing"
         );
         assert!(
-            config.on_read.load(Relaxed).is_null(),
+            config.on_read.address().is_null(),
             "no reader before init_protocol"
         );
     }
@@ -1105,7 +1099,7 @@ mod tests {
             }
             init_protocol_over(config, || panic!("a stream port asks no DTLS fact"));
             let p = config.protocol.get();
-            assert_eq!(config.on_read.load(Relaxed), on_read, "{flags}: reader");
+            assert_eq!(config.on_read.address(), on_read, "{flags}: reader");
             assert_eq!(
                 package(p.on_package),
                 package(on_package),
@@ -1155,7 +1149,7 @@ mod tests {
             config.r#type = kind;
             init_protocol_over(config, || dtls);
             assert_eq!(
-                !config.on_read.load(Relaxed).is_null(),
+                !config.on_read.address().is_null(),
                 initialized,
                 "type {kind}, dtls {dtls}"
             );

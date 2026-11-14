@@ -389,11 +389,13 @@ pub(crate) mod tests {
             _: Server<'_>,
             send: &mut crate::base_factory::SendData,
         ) -> bool {
-            hear(Call::Dispatch(send.info.fd, send.info.kind, send.info.len))
+            let info = send.info();
+            hear(Call::Dispatch(info.fd, info.kind, info.len))
         }
 
         fn base_pass(&self, _: Server<'_>, send: &crate::base_factory::SendData) {
-            hear(Call::BasePass(send.info.fd, send.info.kind, send.info.len));
+            let info = send.info();
+            hear(Call::BasePass(info.fd, info.kind, info.len));
         }
 
         fn accept_event(&self, _: Server<'_>, head: &mut DataHead) {
@@ -401,11 +403,8 @@ pub(crate) mod tests {
         }
 
         fn forward(&self, _: Server<'_>, send: &crate::base_factory::SendData) -> bool {
-            hear(Call::Forward(
-                send.info.fd,
-                send.info.kind,
-                send.info.reactor_id,
-            ))
+            let info = send.info();
+            hear(Call::Forward(info.fd, info.kind, info.reactor_id))
         }
 
         fn dtls_accept(
@@ -449,7 +448,7 @@ pub(crate) mod tests {
             to: crate::process_factory::Pipe,
             send: &mut crate::base_factory::SendData,
         ) -> bool {
-            hear(Call::Process(to, send.info.fd, send.info.kind))
+            hear(Call::Process(to, send.info().fd, send.info().kind))
         }
 
         fn step(&self, _: Server<'_>, step: Step) -> c_int {
@@ -463,10 +462,7 @@ pub(crate) mod tests {
         }
 
         fn factory_finish(&self, _: Server<'_>, send: &mut crate::base_factory::SendData) -> bool {
-            let info = &send.info;
-            // SAFETY: a sendfile task: its 16-byte head, then its name and NUL.
-            let task =
-                unsafe { core::slice::from_raw_parts(send.data.cast::<u8>(), info.len as usize) };
+            let (info, task) = (send.info(), send.payload());
             let word = |at: usize| u64::from_ne_bytes(task[at..at + 8].try_into().unwrap());
             let mut name = [0; 8];
             let given = &task[16..task.len().min(24)];

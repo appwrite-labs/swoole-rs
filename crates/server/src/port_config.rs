@@ -14,6 +14,63 @@ use swoole_rs_tls::{DtlsSession, SslVersion, TlsContext, swr_v1_tls_owner_view};
 use crate::records::ConnectionRecord;
 use crate::view::Port;
 
+/// A readable event on a live connection of `server`, which the server's connection
+/// read lends a port's [`Reader`] on the connection's reactor thread, which alone
+/// touches the connection meanwhile. Only that read makes one.
+pub struct ReadEvent<'a> {
+    server: crate::view::Server<'a>,
+    event: &'a mut swoole_rs_reactor::Event,
+}
+
+impl<'a> ReadEvent<'a> {
+    /// The read's server and its event, which is the connection's as lent: the reader
+    /// reads the connection off it before anything changes it.
+    pub(crate) fn new(
+        server: crate::view::Server<'a>,
+        event: &'a mut swoole_rs_reactor::Event,
+    ) -> Self {
+        Self { server, event }
+    }
+
+    /// The server and the event.
+    #[must_use]
+    pub fn into_parts(self) -> (crate::view::Server<'a>, &'a mut swoole_rs_reactor::Event) {
+        (self.server, self.event)
+    }
+}
+
+/// `int (*onRead)(Reactor *, ListenPort *, Event *)`: a port's readable callback, which
+/// the server's connection read calls under the running reactor, with the
+/// connection's port.
+pub type Reader = fn(swoole_rs_reactor::Running<'_>, Port<'_>, ReadEvent<'_>) -> c_int;
+
+/// `ListenPort::onRead`'s slot: null, or a [`Reader`].
+#[repr(transparent)]
+pub struct ReaderSlot(AtomicPtr<c_void>);
+
+impl ReaderSlot {
+    /// The slot holds `reader`.
+    pub fn set(&self, reader: Option<Reader>) {
+        let raw = reader.map_or(core::ptr::null_mut(), |reader| reader as *mut c_void);
+        self.0.store(raw, Relaxed);
+    }
+
+    /// The reader the slot holds.
+    #[must_use]
+    pub fn get(&self) -> Option<Reader> {
+        let raw = self.0.load(Relaxed);
+        // SAFETY: the slot is private and `set` stores only null or a `Reader`, a fn
+        // pointer, which `Option` lays out with null as `None`.
+        unsafe { core::mem::transmute::<*mut c_void, Option<Reader>>(raw) }
+    }
+
+    /// The reader's address, null for none.
+    #[must_use]
+    pub fn address(&self) -> *mut c_void {
+        self.0.load(Relaxed)
+    }
+}
+
 /// The `ListenPort` methods crates/ports defines and the server calls. Ports
 /// depends on this crate, so `swoole_init` (crates/ffi) registers them with
 /// [`set_methods`]. A port is one of the server's live `ListenPort`s
@@ -116,7 +173,7 @@ pub struct PortConfig {
     /// `ListenPort::protocol`, which native code reads and writes by reference.
     pub protocol: Shared<Protocol>,
     /// `ListenPort::onRead`, the readable callback `init_protocol` picks.
-    pub on_read: AtomicPtr<c_void>,
+    pub on_read: ReaderSlot,
     /// `ListenPort::ssl_context`: the port's `SSLContext` (one reference to its
     /// Rust owner), or none: a nullable `SSLContext *` to native code.
     pub ssl_context: Option<TlsContext>,
@@ -285,7 +342,7 @@ impl PortConfig {
             websocket_protocol: Published::default(),
             host: Box::default(),
             protocol: Shared::new(default_protocol()),
-            on_read: AtomicPtr::new(core::ptr::null_mut()),
+            on_read: ReaderSlot(AtomicPtr::new(core::ptr::null_mut())),
             ssl_context: None,
             tls: Box::default(),
             length_owner: Shared::new(None),

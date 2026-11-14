@@ -95,6 +95,10 @@ unsafe extern "C" {
     /// `php_url_encode`: it reads the lent bytes (an `IoSlice` is an iovec) and
     /// returns a new string; no PHP code runs.
     safe fn swr_bytes_url_encode(bytes: IoSlice<'_>) -> *mut zend_string;
+    /// `json_decode(text, true)` of the lent bytes (an `IoSlice` is an iovec)
+    /// into `out`, in place of what it held, which is not released; false when
+    /// they are not JSON. Objects decode as arrays, so no PHP code runs.
+    safe fn swr_bytes_json_decode(text: IoSlice<'_>, out: &Owned);
 }
 
 /// A borrowed zval. Zend may change what it points to (refcounts, a
@@ -280,7 +284,7 @@ impl Value {
     #[must_use]
     #[inline]
     pub fn custom<T: crate::Custom>(&self) -> Option<&T> {
-        crate::object::custom_in(self.object_ref()?)
+        self.object_ref()?.custom()
     }
 
     /// `Z_PTR_P` of a pointer (`IS_PTR`), as function and class tables hold.
@@ -1186,10 +1190,7 @@ impl Owned {
     #[must_use]
     pub fn json_decode(text: &[u8]) -> Self {
         let decoded = Self::default();
-        // SAFETY: the text's bytes, only read, and an undefined slot this owns.
-        unsafe {
-            crate::sys::swr_zend_json_decode(text.as_ptr().cast(), text.len(), decoded.as_ptr());
-        };
+        swr_bytes_json_decode(IoSlice::new(text), &decoded);
         decoded
     }
 

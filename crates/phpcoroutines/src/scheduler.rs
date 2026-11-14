@@ -361,11 +361,7 @@ fn can_exit() -> Result<bool, Bailout> {
     if !handle.call(&mut [], Some(Value::of(&mut retval)), false)? {
         host::try_fatal_error(E_ERROR, c"Coroutine can_exit callback handler error")?;
     }
-    let exception = swoole_rs_zend::host::exception();
-    if !exception.is_null() {
-        // SAFETY: zend_exception_error(EG(exception), E_ERROR), inside a trap.
-        unsafe { bailout::trap(z::swr_zend_facade_exception_error, exception.cast()) }?;
-    }
+    swoole_rs_zend::host::uncaught_exception()?;
     // The last reference once the condition replaced itself: a bailout its
     // destructor deferred is raised by the reactor's callback.
     drop(handle);

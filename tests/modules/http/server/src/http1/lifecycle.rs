@@ -1436,16 +1436,12 @@ unsafe extern "C" fn base_receive(_: *mut c_void, serv: *mut c_void, req: *mut R
     );
 
     clear_last_error();
-    let sd = swoole_rs_server::SendData {
-        info: swoole_rs_corebase::DataHead {
-            fd: client_fd,
-            kind: SW_SERVER_EVENT_CLOSE,
-            ..Default::default()
-        },
-        data: ptr::null(),
-    };
-    // SAFETY: a `SendData` with no data.
-    let sent = unsafe { server_methods::send_to_connection(serv.view(), &sd) };
+    let sd = swoole_rs_server::SendData::empty(swoole_rs_corebase::DataHead {
+        fd: client_fd,
+        kind: SW_SERVER_EVENT_CLOSE,
+        ..Default::default()
+    });
+    let sent = server_methods::send_to_connection(serv.view(), &sd);
     expect(sent == SW_ERR, "send_to_connection(&sd) == SW_ERR");
     expect(
         last_error() == SW_ERROR_SESSION_NOT_EXIST,

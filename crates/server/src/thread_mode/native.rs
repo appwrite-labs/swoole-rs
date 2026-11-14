@@ -48,12 +48,10 @@ pub(crate) fn run(serv: view::Server<'_>, operation: ThreadOp) -> i64 {
 }
 
 /// The server's thread factory's manager; thread mode's server has one.
-fn manager(serv: view::Server<'_>) -> &ThreadManager {
-    let factory = serv.config().factory_;
-    let manager = (serv.config().mode_ == Mode::Thread && !factory.is_null())
-        // SAFETY: the server's live factory, which `factory::new` made.
-        .then(|| unsafe { factory::manager(factory) });
-    let manager = manager.flatten();
+fn manager(serv: view::Server<'_>) -> std::sync::Arc<ThreadManager> {
+    let manager = (serv.config().mode_ == Mode::Thread)
+        .then(|| factory::manager(serv.state()))
+        .flatten();
     manager.unwrap_or_else(|| swoole_rs_corebase::fatal("thread mode without its factory"))
 }
 
@@ -109,7 +107,7 @@ fn create_factory(serv: view::Server<'_>) -> *mut c_void {
     tables.connection_list = list;
     tables.install_reactor_threads(threads);
     tables.reactor_pipe_num = 1;
-    factory::new_thread(all_worker_num(serv) as usize + 1)
+    factory::new_thread(state, all_worker_num(serv) as usize + 1)
 }
 
 /// `Server::destroy_thread_factory`: the connections and the reactor threads.
@@ -183,7 +181,7 @@ fn start_worker_threads(serv: view::Server<'_>) -> c_int {
 /// `Server::stop_worker_threads`: the manager thread, then each worker.
 fn stop_worker_threads(serv: view::Server<'_>) {
     // `ThreadFactory::terminate_manager_thread()`.
-    let manager = manager(serv);
+    let manager = &manager(serv);
     manager.push(Wake::Exit);
     // The manager thread may still be joining workers when the server stops:
     // reclaim it first, so it has surely exited.
@@ -249,7 +247,8 @@ fn body(serv: view::Server<'_>, id: u32, kind: WorkerType) {
         swoole_rs_timer::swoole_timer_create(true);
     }
     let mut main = Main { serv, slot, worker };
-    let thread = manager(serv).thread(id as usize);
+    let factory = manager(serv);
+    let thread = factory.thread(id as usize);
     // SAFETY: `thread_main` over the `Main` it is lent, which outlives the call.
     unsafe { worker_thread_start(thread, thread_main, (&raw mut main).cast()) };
     if bus.is_some() {
@@ -257,7 +256,7 @@ fn body(serv: view::Server<'_>, id: u32, kind: WorkerType) {
     }
     drop(bus);
     if worker.is_some() {
-        manager(serv).push(Wake::Exited(slot));
+        factory.push(Wake::Exited(slot));
     } else {
         if serv.state().running() {
             let m = format_args!("Fatal Error: manager thread exits abnormally");
@@ -308,7 +307,7 @@ unsafe extern "C" fn thread_main(main: *mut c_void) {
     let Some(worker) = *worker else {
         let callbacks = &serv.state().callbacks;
         callbacks.call_server(ServerSlot::ManagerStart, serv);
-        wait(serv, manager(serv));
+        wait(serv, &manager(serv));
         callbacks.call_server(ServerSlot::ManagerStop, serv);
         return;
     };
@@ -400,7 +399,7 @@ pub(crate) fn reload_worker_threads(serv: view::Server<'_>, reload_all_workers: 
         );
         return false;
     }
-    let manager = manager(serv);
+    let manager = &manager(serv);
     // One reload at a time.
     if !manager.begin_reload(reload_all_workers) {
         log::set_last_error(E::SW_ERROR_OPERATION_NOT_SUPPORT as c_int);

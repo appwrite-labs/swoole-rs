@@ -37,9 +37,6 @@ zend_string *swr_zend_number_format(zend_long number);
  * if it bailed out; *out is a request string, or NULL on failure or bailout. */
 int swr_zend_try_json_encode(zval *value, zend_string **out);
 
-/* json_decode(text, true) into `out` (depth 0, as Server::command passes), or false. */
-void swr_zend_json_decode(const char *text, size_t length, zval *out);
-
 /* Swoole's zend::json_decode inside zend_try: json_decode()'s empty-string and
  * depth checks, then php_json_decode_ex into `out`. 1 if it bailed out. */
 int swr_zend_try_json_decode_ex(zval *out, const char *text, size_t length, zend_long options, zend_long depth);

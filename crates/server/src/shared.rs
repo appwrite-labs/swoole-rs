@@ -222,6 +222,8 @@ mod tests {
             tables.connection_list = crate::records::tests::naming(&mut connections);
             tables.session_list = crate::records::tests::naming(&mut sessions);
             tables.max_connection = 3;
+            // The server's port, which the test still frees.
+            let _ = (*state).push_port(Box::from_raw(config));
             count_send(&*state, 1, 4);
             count_send(&*state, 0, 3);
         }

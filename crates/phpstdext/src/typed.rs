@@ -4,6 +4,7 @@
 //! overrides, and the `ASSIGN_DIM`/`UNSET_DIM`/`FE_RESET_RW` opcode handlers.
 use crate::{CONTINUE, DISPATCH, Frame, Op};
 use std::{
+    cell::Cell,
     ffi::{CStr, CString, c_int},
     marker::PhantomData,
     mem::offset_of,
@@ -97,22 +98,13 @@ impl<'a> Typed<'a> {
     pub(crate) fn of(value: &'a Value) -> Option<Self> {
         // The table pointer, not a borrow of the table, so it reaches the
         // definition behind the table.
-        let ht = value.array_ptr()?;
-        // SAFETY: the zval holds the table while borrowed.
-        let flags = unsafe { flags_of(ht).read() };
-        (flags & TYPED != 0).then_some(Self {
-            ht,
+        // The zval holds the table while borrowed; it is a typed array once
+        // its flag says so, and this is returned only then.
+        let table = Self {
+            ht: value.array_ptr()?,
             live: PhantomData,
-        })
-    }
-
-    /// # Safety
-    /// `ht` is a typed array live for `'a`.
-    pub(crate) unsafe fn from_table(ht: *mut HashTable) -> Self {
-        Self {
-            ht,
-            live: PhantomData,
-        }
+        };
+        (table.flags().get() & TYPED != 0).then_some(table)
     }
 
     /// The table, for Zend's hash API.
@@ -120,10 +112,18 @@ impl<'a> Typed<'a> {
         self.ht
     }
 
+    /// `HT_FLAGS(ht)`, which Zend rewrites in place as it changes the table.
+    fn flags(self) -> &'a Cell<u32> {
+        // SAFETY: a live table for `'a` (every `Typed` is made from one), whose
+        // flags word Zend writes only through pointers, never a reference; `Cell`
+        // is a transparent `u32`.
+        unsafe { &*flags_of(self.ht).cast::<Cell<u32>>() }
+    }
+
     /// Flag the table typed again, after a builtin rebuilt it in place.
     fn mark(self) {
-        // SAFETY: a live table; only its flags change.
-        unsafe { *flags_of(self.ht) |= TYPED };
+        let flags = self.flags();
+        flags.set(flags.get() | TYPED);
     }
 
     fn header(self) -> &'a TypeInfo {
@@ -506,8 +506,12 @@ pub(crate) unsafe fn separate<'a>(value: &'a Value, source: Typed<'a>) -> Typed<
     unsafe { ptr::copy_nonoverlapping(ht, copy, 1) };
     // SAFETY: the source holds `extra` bytes of definition; the copy has room.
     unsafe { ptr::copy_nonoverlapping(source_info.cast::<u8>(), info_of(copy).cast(), extra) };
-    // SAFETY: the table just made, with the definition copied behind it.
-    let own = unsafe { Typed::from_table(copy) };
+    // The table just made, with the definition copied behind it, which
+    // `container` holds for `'a` in place of `ht`.
+    let own = Typed {
+        ht: copy,
+        live: PhantomData,
+    };
     own.mark();
     // SAFETY: an array zval, which now holds the copy.
     unsafe { (*container).value = zend_value { arr: copy } };
@@ -652,8 +656,12 @@ fn fill(call: &Call, parsed: &Parsed, init: Option<&Value>) -> Result<(), Failur
     );
     // SAFETY: room for the definition behind the table just made.
     unsafe { definition.write(info_of(array)) };
-    // SAFETY: the table just made, with its definition.
-    let typed = unsafe { Typed::from_table(array) };
+    // The table just made, with its definition, which `made` holds below and
+    // this frame keeps until it returns it.
+    let typed = Typed {
+        ht: array,
+        live: PhantomData,
+    };
     typed.mark();
     let mut made = Owned::default();
     // SAFETY: `ZVAL_ARR(made, array)`: `made` takes the new table's reference.

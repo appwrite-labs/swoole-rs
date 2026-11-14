@@ -61,6 +61,13 @@ pub struct ServerState {
     worker_pipes: std::sync::Mutex<Vec<Box<SocketPair>>>,
     /// A worker thread asked to shut down: the thread manager respawns no worker.
     pub(crate) stopping: AtomicBool,
+    /// Thread mode's factory's manager, from its factory's creation to its deletion.
+    #[cfg_attr(
+        not(all(feature = "upstream-symbols", not(test))),
+        expect(dead_code, reason = "only the hybrid makes factories")
+    )]
+    pub(crate) thread_manager:
+        std::sync::Mutex<Option<std::sync::Arc<crate::thread_mode::ThreadManager>>>,
 }
 
 /// A native thread entry: `void (*)(void *serv, uint64_t arg)`.
@@ -110,6 +117,7 @@ impl ServerState {
             task_pipes: std::sync::Mutex::new(Vec::new()),
             worker_pipes: std::sync::Mutex::new(Vec::new()),
             stopping: AtomicBool::new(false),
+            thread_manager: std::sync::Mutex::new(None),
         }
     }
 

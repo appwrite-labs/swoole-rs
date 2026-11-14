@@ -30,8 +30,8 @@ pub(crate) type Callback = unsafe extern "C-unwind" fn(timer: *mut c_void, node:
 type Destructor = unsafe extern "C-unwind" fn(node: *mut TimerNode);
 /// A callback of the node's data alone, for `swr_v1_timer_add_plain`'s callers.
 pub type Plain = swoole_rs_reactor::DeferCall;
-/// `abandon_selection`'s pending Zend bailout.
-pub type Bailout = unsafe extern "C-unwind" fn();
+/// `abandon_selection`'s pending Zend bailout, raised once the node is gone.
+pub type Bailout = extern "C-unwind" fn();
 
 /// A node's fields, for `Swoole\Timer::info()`.
 #[derive(Debug, Clone, Copy)]
@@ -376,8 +376,8 @@ impl Owner {
         // SAFETY: `add` boxed it; the queue no longer holds it.
         drop(unsafe { Box::from_raw(node) });
         if let Some(bailout) = self.pending_bailout.take() {
-            // SAFETY: abandon_selection's bailout; it longjmps over plain frames.
-            unsafe { bailout() };
+            // It may longjmp, over these frames, which hold nothing to drop.
+            bailout();
         }
     }
 

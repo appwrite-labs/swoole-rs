@@ -37,6 +37,19 @@ pub struct Sqlite3Stmt {
     _opaque: [u8; 0],
 }
 
+/// The connection the driver gives up to `sqlite3_close`: null, or live and used by
+/// nothing else during the call. Only the close exports' parameters make one, where the
+/// C caller's contract stands for the constructor; it is not `Copy`, so it is closed
+/// once.
+#[repr(transparent)]
+pub struct OwnedDb(*mut Sqlite3);
+
+/// The close a pool thread may run: the owner moves into it, and is closed at most once.
+fn close(close: impl FnOnce(OwnedDb) -> c_int, db: OwnedDb) -> c_int {
+    let mut call = Some((close, db));
+    offload(|| call.take().map_or(0, |(close, db)| close(db)))
+}
+
 /// `sqlite3_exec`'s row callback.
 pub type ExecCallback =
     Option<unsafe extern "C" fn(*mut c_void, c_int, *mut *mut c_char, *mut *mut c_char) -> c_int>;
@@ -66,8 +79,11 @@ unsafe extern "C" {
         argument: *mut c_void,
         errmsg: *mut *mut c_char,
     ) -> c_int;
-    fn sqlite3_close(db: *mut Sqlite3) -> c_int;
-    fn sqlite3_close_v2(db: *mut Sqlite3) -> c_int;
+    /// Closes the connection (nothing for a null one), or, while statements remain,
+    /// refuses with `SQLITE_BUSY` and leaves it open: it takes the owner either way.
+    safe fn sqlite3_close(db: OwnedDb) -> c_int;
+    /// As `sqlite3_close`, deferring the close to the last statement's finalize.
+    safe fn sqlite3_close_v2(db: OwnedDb) -> c_int;
     fn sqlite3_step(stmt: *mut Sqlite3Stmt) -> c_int;
 }
 
@@ -153,22 +169,17 @@ pub unsafe extern "C" fn swoole_sqlite3_exec(
     offload(|| unsafe { sqlite3_exec(db, sql, callback, argument, errmsg) })
 }
 
-/// `swoole_sqlite3_close`.
-/// # Safety
-/// As `sqlite3_close`.
+/// `swoole_sqlite3_close`. `sqlite3_close`'s whole contract is the owned connection
+/// the type carries.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_sqlite3_close(db: *mut Sqlite3) -> c_int {
-    // SAFETY: per the caller.
-    offload(|| unsafe { sqlite3_close(db) })
+pub extern "C" fn swoole_sqlite3_close(db: OwnedDb) -> c_int {
+    close(|db| sqlite3_close(db), db)
 }
 
-/// `swoole_sqlite3_close_v2`.
-/// # Safety
-/// As `sqlite3_close_v2`.
+/// `swoole_sqlite3_close_v2`, as [`swoole_sqlite3_close`].
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_sqlite3_close_v2(db: *mut Sqlite3) -> c_int {
-    // SAFETY: per the caller.
-    offload(|| unsafe { sqlite3_close_v2(db) })
+pub extern "C" fn swoole_sqlite3_close_v2(db: OwnedDb) -> c_int {
+    close(|db| sqlite3_close_v2(db), db)
 }
 
 /// `swoole_sqlite3_step`.

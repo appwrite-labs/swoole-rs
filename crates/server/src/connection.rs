@@ -35,8 +35,8 @@ pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) ->
     let Some(listener) = event.socket() else {
         return OK;
     };
-    // SAFETY: a listening socket's object is its port, which outlives its reactor.
-    let Some(port) = (unsafe { view::Port::from_raw(listener.read(|l| l.object)) }) else {
+    // A listening socket's object is its port.
+    let Some(port) = serv.state().listed_port(listener.read(|l| l.object)) else {
         return OK;
     };
     for _ in 0..ACCEPT_MAX_COUNT {

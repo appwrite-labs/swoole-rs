@@ -3,9 +3,8 @@
 //! mode keeps the base factory's dispatch, finish, notify and end, as upstream's
 //! `ThreadFactory : BaseFactory` did.
 use core::ffi::{c_int, c_long, c_void};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use swoole_rs_corebase::ServerEvent;
-
-use core::ptr;
 
 use crate::base_factory::SendData;
 use crate::thread_mode::{ThreadManager, ThreadOp};
@@ -90,10 +89,7 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> c
         Step::ClearSignals => signal_upstream::clear(),
         Step::DestroyProcessFactory => crate::process_factory::native::destroy(serv),
         Step::DestroyTaskPool => swoole_rs_process::methods::destroy(serv.task_pool_ref()),
-        Step::DeleteFactory => {
-            // SAFETY: `delete factory_`, which the caller then forgets.
-            unsafe { delete(state.config_ref().factory_) };
-        }
+        Step::DeleteFactory => delete(state),
         Step::Listen(index) | Step::ClosePortSocket(index) | Step::CreatePortSocket(index) => {
             let Some(port) = state.tables_ref().ports().get(index) else {
                 return -1;
@@ -171,45 +167,39 @@ extern "C" fn accept_command_result(
 }
 use crate::Mode;
 
-/// `swoole::Factory` (upstream's `swoole_server.h`): thread mode's manager state
-/// (`crates/server/src/thread_mode.rs`), none in the other modes. Its members take the
-/// server whose `factory_` it is, so it keeps no pointer back to it.
-pub(crate) struct Factory {
-    manager: Option<Box<ThreadManager>>,
-}
+/// What `factory_` holds once a factory is made: only whether it is set is read. The
+/// factory's one member, thread mode's manager, is the state's
+/// ([`ServerState::thread_manager`]); every other member dispatches on the mode.
+static FACTORY: u8 = 0;
 
-/// A server's factory, with thread mode's `manager` or none.
-pub(crate) fn new(manager: Option<Box<ThreadManager>>) -> *mut c_void {
-    Box::into_raw(Box::new(Factory { manager })).cast()
+/// A server's factory: [`FACTORY`]'s address, for `factory_`.
+pub(crate) fn new() -> *mut c_void {
+    core::ptr::from_ref(&FACTORY).cast_mut().cast()
 }
 
 /// `new ThreadFactory(serv)`: a factory whose manager holds `threads` threads, one
 /// for each worker and the manager.
-pub(crate) fn new_thread(threads: usize) -> *mut c_void {
-    new(Some(Box::new(ThreadManager::new(threads))))
+pub(crate) fn new_thread(state: &ServerState, threads: usize) -> *mut c_void {
+    *lock(&state.thread_manager) = Some(Arc::new(ThreadManager::new(threads)));
+    new()
 }
 
-/// Thread mode's manager of the factory at `factory`; none for another mode's.
-///
-/// # Safety
-/// `factory` is a live factory [`new`] made.
-pub(crate) unsafe fn manager<'a>(factory: *mut c_void) -> Option<&'a ThreadManager> {
-    // SAFETY: as the caller guarantees.
-    let factory = unsafe { &*factory.cast::<Factory>() };
-    factory.manager.as_deref()
+/// Thread mode's manager; none for another mode's factory, or before one is made.
+pub(crate) fn manager(state: &ServerState) -> Option<Arc<ThreadManager>> {
+    lock(&state.thread_manager).clone()
 }
 
-/// `delete factory_`: thread mode's joins its threads and frees its manager first,
-/// as `~ThreadFactory` did.
-///
-/// # Safety
-/// `factory` is a factory [`new`] made, not used again.
-pub(crate) unsafe fn delete(factory: *mut c_void) {
-    // SAFETY: as the caller guarantees.
-    let factory = unsafe { Box::from_raw(factory.cast::<Factory>()) };
-    if let Some(manager) = factory.manager {
+/// `delete factory_`: thread mode's joins its threads, which still reach the manager
+/// as they exit, and then frees it, as `~ThreadFactory` did.
+pub(crate) fn delete(state: &ServerState) {
+    if let Some(manager) = manager(state) {
         manager.join_all();
     }
+    drop(lock(&state.thread_manager).take());
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// The server's factory, and its mode.
@@ -231,9 +221,8 @@ pub(crate) fn start(serv: crate::view::Server<'_>) -> bool {
 pub(crate) fn shutdown(serv: crate::view::Server<'_>) -> bool {
     match of(serv.state()) {
         (_, Mode::Process) => crate::process_factory::native::shutdown(serv),
-        (factory, Mode::Thread) => {
-            // SAFETY: the server's live factory.
-            if let Some(manager) = unsafe { manager(factory) } {
+        (_, Mode::Thread) => {
+            if let Some(manager) = manager(serv.state()) {
                 manager.join_all();
             }
             true
@@ -264,10 +253,7 @@ pub(crate) fn finish(serv: crate::view::Server<'_>, send: &SendData) -> bool {
 pub(crate) fn notify(serv: crate::view::Server<'_>, head: &mut DataHead) -> bool {
     if serv.config().mode_ == Mode::Process {
         // A dispatch of the event with no data.
-        let mut task = SendData {
-            info: *head,
-            data: ptr::null(),
-        };
+        let mut task = SendData::empty(*head);
         crate::process_factory::dispatch(serv, &mut task)
     } else {
         crate::base_factory::notify(serv, head)
@@ -316,7 +302,7 @@ impl crate::hybrid::Hybrid for Linked {
     }
 
     fn factory_new(&self, _: crate::view::Server<'_>) -> *mut c_void {
-        new(None)
+        new()
     }
 
     fn task_pool(
@@ -411,13 +397,10 @@ impl crate::hybrid::Hybrid for Linked {
 
     fn send_shutdown(&self, serv: crate::view::Server<'_>) -> bool {
         // A worker may run as a user that cannot signal the master.
-        let send = SendData {
-            info: DataHead {
-                kind: ServerEvent::ShutdownSignal.code(),
-                ..DataHead::default()
-            },
-            data: ptr::null(),
-        };
+        let send = SendData::empty(DataHead {
+            kind: ServerEvent::ShutdownSignal.code(),
+            ..DataHead::default()
+        });
         // `serv->get_reactor_pipe_socket(0, 0)`.
         let Some(pipe) = serv.worker_pipe(0, false) else {
             return false;

@@ -24,12 +24,11 @@ use swoole_rs_http::llhttp::{self, Callbacks, Parser};
 use swoole_rs_inflate::{Inflate, brotli, zstd};
 use swoole_rs_phpstubs::http_client_coro;
 use swoole_rs_zend::{
-    Array, ArrayMut, Call, Class, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Value,
-    ZStr, ZString,
+    Array, ArrayMut, Call, Class, Custom, CustomClass, Minit, ObjectRef, Owned, OwnedArray, Props,
+    Value, ZStr, ZString,
     bailout::{self, Bailout},
     host::callable::Callable,
-    object_zval,
-    sys::{ZEND_ACC_PUBLIC, zend_class_entry, zend_object},
+    sys::{ZEND_ACC_PUBLIC, zend_object},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -260,10 +259,6 @@ fn sys_error(message: &[u8]) {
     swoole_rs_phpswoole::sys_warning(message);
 }
 
-fn ce() -> *mut zend_class_entry {
-    CLIENT.entry()
-}
-
 /// Property access on a client object.
 mod props {
     use super::{CLIENT, Call};
@@ -334,7 +329,11 @@ impl Conn {
     /// Writes on the client object, which owns the client and so this conn.
     fn props(&self) -> Props<'_> {
         // SAFETY: the object outlives its client's conn; the class declares every name written.
-        unsafe { Props::new(ce(), self.object) }
+        let object = unsafe { ObjectRef::from_ptr(self.object) };
+        // Never null: `Client::new` takes a constructor's `$this`.
+        let object =
+            object.unwrap_or_else(|| swoole_rs_corebase::fatal("a client without its object"));
+        Props::of(Some(&*CLIENT), object)
     }
 }
 
@@ -363,9 +362,9 @@ impl Client {
     fn call_write(&self, callable: &Callable, data: &[u8]) -> Result<bool, Bailout> {
         // The string argument's reference, released when it drops.
         let data = Owned::string(ZString::new(data));
-        // SAFETY: the object outlives its client, so the call; it is borrowed
-        // for the call as upstream's `ZVAL_OBJ`.
-        let this = unsafe { object_zval(self.object) };
+        // The object outlives its client, so the call; it is borrowed for the
+        // call as upstream's `ZVAL_OBJ`.
+        let this = self.props().object().copy_value();
         let mut args = [this, data.copy_value()];
         callable.call(&mut args, None, false)
     }

@@ -63,10 +63,7 @@ pub fn send(serv: Server<'_>, session_id: core::ffi::c_long, data: &[u8]) -> boo
             first => to_connection(serv, &info, data, first) == SW_OK,
         }
     } else {
-        let mut send = SendData {
-            info,
-            data: data.as_ptr().cast(),
-        };
+        let mut send = SendData::new(info, data);
         crate::hybrid::hybrid().factory_finish(serv, &mut send)
     };
     if sent {
@@ -167,22 +164,13 @@ fn send_now(state: &ServerState, session_id: core::ffi::c_long, data: &[u8]) -> 
 /// `Server::send_to_connection(send)`: `SW_OK` or `SW_ERR`, and 0 (upstream's
 /// `false`) where a send fails after the connection was found.
 ///
-/// # Safety
-/// `send` lends `info.len` readable bytes at `data` (a `SendfileTask` and its name
-/// for a file), or none.
+/// A file's payload is its `SendfileTask` and name.
 #[expect(
     clippy::must_use_candidate,
     reason = "callers ignore the result where upstream's do"
 )]
-pub unsafe fn send_to_connection(serv: Server<'_>, send: &SendData) -> c_int {
-    let len = send.info.len as usize;
-    let data = if len == 0 || send.data.is_null() {
-        &[][..]
-    } else {
-        // SAFETY: as the caller guarantees.
-        unsafe { core::slice::from_raw_parts(send.data.cast::<u8>(), len) }
-    };
-    to_connection(serv, &send.info, data, None)
+pub fn send_to_connection(serv: Server<'_>, send: &SendData) -> c_int {
+    to_connection(serv, send.info(), send.payload(), None)
 }
 
 /// [`send_to_connection`] of the event `info` with the bytes `data` it carries.
@@ -446,9 +434,7 @@ mod tests {
         }
         /// `send_to_connection` of an event of `kind` with `data` to `session`.
         fn send(&self, kind: ServerEvent, session: i64, data: &[u8]) -> c_int {
-            let send = event(kind, session, data);
-            // SAFETY: `data` is live for the call.
-            unsafe { send_to_connection(self.serv(), &send) }
+            send_to_connection(self.serv(), &event(kind, session, data))
         }
         /// The reactor records its closes, as the server's would close them.
         fn closes(&self) {
@@ -485,16 +471,13 @@ mod tests {
         0
     }
 
-    fn event(kind: ServerEvent, session: i64, data: &[u8]) -> SendData {
-        SendData {
-            info: DataHead {
-                fd: session,
-                kind: kind.code(),
-                len: data.len().c_cast::<u32>(),
-                ..DataHead::default()
-            },
-            data: data.as_ptr().cast(),
-        }
+    fn event(kind: ServerEvent, session: i64, data: &[u8]) -> SendData<'_> {
+        let info = DataHead {
+            fd: session,
+            kind: kind.code(),
+            ..DataHead::default()
+        };
+        SendData::new(info, data)
     }
 
     #[test]
@@ -631,7 +614,7 @@ mod tests {
     fn a_send_made_first_is_not_repeated() {
         let mut a = Accepted::new();
         let data = b"0123456789";
-        let info = event(ServerEvent::SendData, 1, data).info;
+        let info = *event(ServerEvent::SendData, 1, data).info();
         assert_eq!(
             send_now(a.live.state(), 1, data),
             Some(10),

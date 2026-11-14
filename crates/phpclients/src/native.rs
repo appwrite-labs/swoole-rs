@@ -103,8 +103,7 @@ impl NewSocket {
 /// # Errors
 /// Starting the reactor bailed out.
 pub(crate) fn check_reactor() -> Result<(), Bailout> {
-    // SAFETY: starting the reactor holds nothing a bailout would skip dropping.
-    unsafe { bailout::trap_with(swoole_rs_phpruntime::check_reactor) }
+    swoole_rs_zend::contain(swoole_rs_phpruntime::check_reactor)
 }
 
 /// Whether the build has an optional SSL option: the host name (0) or grease

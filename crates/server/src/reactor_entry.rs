@@ -57,6 +57,18 @@ impl RecvData {
         let data = payload.get(start..start + head.length as usize)?;
         Some((head.socket_type, head.socket_addr, data))
     }
+
+    /// The sender an `onPacket` payload's `DgramPacket` head names; `None` if the
+    /// payload ends before the address does.
+    pub(crate) fn datagram_sender(&self) -> Option<SocketAddress> {
+        let start = core::mem::offset_of!(DgramPacket, socket_addr);
+        let address = self
+            .payload()
+            .get(start..start + size_of::<SocketAddress>())?;
+        // SAFETY: `size_of::<SocketAddress>()` bytes, read unaligned; every field is
+        // plain data.
+        Some(unsafe { address.as_ptr().cast::<SocketAddress>().read_unaligned() })
+    }
 }
 
 /// `DgramPacket`'s head; the datagram follows.
@@ -209,19 +221,19 @@ pub unsafe extern "C-unwind" fn dispatch_task(
         if len > 0 {
             c.recv_queued_bytes.fetch_add(len, SeqCst);
         }
-        let task = crate::base_factory::SendData {
-            info: DataHead {
-                server_fd: crate::base_factory::low16(c.server_fd),
-                reactor_id: c.reactor_id.into(),
-                ext_flags: rdata.info.ext_flags,
-                kind: swoole_rs_corebase::ServerEvent::RecvData.code(),
-                time: c.last_recv_time,
-                fd: c.fd.into(),
-                len,
-                ..DataHead::default()
-            },
-            data: rdata.data.cast(),
+        let info = DataHead {
+            server_fd: crate::base_factory::low16(c.server_fd),
+            reactor_id: c.reactor_id.into(),
+            ext_flags: rdata.info.ext_flags,
+            kind: swoole_rs_corebase::ServerEvent::RecvData.code(),
+            time: c.last_recv_time,
+            fd: c.fd.into(),
+            len,
+            ..DataHead::default()
         };
+        // SAFETY: the caller's `RecvData`, whose `len` bytes at `data` (or null) stay
+        // readable and unwritten until the dispatch returns.
+        let task = unsafe { crate::base_factory::SendData::from_raw(info, rdata.data.cast()) };
         (
             server.port_of_fd(c.fd),
             c.reactor_id,
@@ -236,7 +248,7 @@ pub unsafe extern "C-unwind" fn dispatch_task(
         if mode == crate::Mode::Base {
             // The reader's word that the payload is its whole receive buffer, which
             // only a worker in the reader's own thread may act on.
-            task.info.flags = rdata.info.flags & crate::base_factory::POP_PTR;
+            task.set_flags(rdata.info.flags & crate::base_factory::POP_PTR);
         }
         crate::base_factory::dispatch(server, &mut task, mode == crate::Mode::Base)
     };

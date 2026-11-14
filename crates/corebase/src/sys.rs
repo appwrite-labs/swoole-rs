@@ -547,9 +547,45 @@ pub fn print(bytes: &[u8]) {
 #[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
 #[must_use]
 pub fn kevent_change(kq: c_int, change: &libc::kevent) -> c_int {
-    let (none, no_wait) = (std::ptr::null_mut(), std::ptr::null());
-    // SAFETY: one live change record, and no output records.
-    unsafe { libc::kevent(kq, change, 1, none, 0, no_wait) }
+    kevent::kevent(
+        kq,
+        change,
+        kevent::Count::One,
+        None,
+        kevent::Count::Zero,
+        None,
+    )
+}
+
+/// `kevent(2)` declared for one change and no events out.
+#[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
+mod kevent {
+    use libc::c_int;
+
+    /// A count of `kevent` records: each value is the length of the one record, or
+    /// of none, that its parameter is given.
+    #[repr(i32)]
+    pub(super) enum Count {
+        Zero = 0,
+        One = 1,
+    }
+
+    /// No value: a null-only event list.
+    pub(super) enum Nothing {}
+
+    // libc's. It reads the `changes` count of records at `change`, which is one, and
+    // writes at most the `count` given for `events`, which is none; a null timeout
+    // returns at once. It keeps nothing, so it is declared `safe`.
+    unsafe extern "C" {
+        pub(super) safe fn kevent(
+            kq: c_int,
+            change: &libc::kevent,
+            changes: Count,
+            events: Option<&'static mut Nothing>,
+            count: Count,
+            timeout: Option<&libc::timespec>,
+        ) -> c_int;
+    }
 }
 
 /// `if_nametoindex(3)`: the interface's index, 0 with errno set when there is none.

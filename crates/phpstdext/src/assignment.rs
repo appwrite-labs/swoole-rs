@@ -194,7 +194,8 @@ fn assign_op(op: Op, data: Data, own: Typed, key: &Value) -> Result<(), Bailout>
         // Dimension lookup failed before the operation's result exists.
         return data.abandon(op);
     };
-    let target = element.referent();
+    // The element's slot, or its reference's, which the element keeps alive.
+    let target = element.referred();
     // The reference whose typed property sources Zend must verify, if any.
     if let Some(typed_reference) = element.typed_reference() {
         // SAFETY: the native typed-reference operation preserves PHP source
@@ -208,13 +209,8 @@ fn assign_op(op: Op, data: Data, own: Typed, key: &Value) -> Result<(), Bailout>
             return data.abandon(op);
         }
         // SAFETY: Zend applies the exact current opcode to the live element and value.
-        leaf(unsafe { swr_phpstdext_binary(target, value.as_ptr(), op.at) })?;
+        leaf(unsafe { swr_phpstdext_binary(target.as_ptr(), value.as_ptr(), op.at) })?;
     }
-    // SAFETY: the element's live slot, or its reference's, after the operation.
-    let Some(target) = (unsafe { Value::from_ptr(target) }) else {
-        // Never: a referent is not null.
-        return data.abandon(op);
-    };
     data.publish(op, target)
 }
 
