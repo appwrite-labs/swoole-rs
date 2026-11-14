@@ -555,7 +555,7 @@ fn free_server(serv: view::Server<'_>) {
 /// What `Server::destroy` frees of a base-mode server whose single worker bailed out
 /// of its loop: the base factory's connection list and counts, the server's lists and
 /// its factory. It runs none of the shutdown (callbacks, hooks, signals, ports), only
-/// marks the server shut down, so `swr_v1_server_delete` frees the rest.
+/// marks the server shut down, so the last `SharedServer` drop frees the rest.
 pub(crate) fn release_abandoned_base(serv: view::Server<'_>) {
     let state = serv.state();
     if let Some(gs) = crate::shared::server_counters(state) {

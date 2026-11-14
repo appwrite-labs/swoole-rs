@@ -491,7 +491,23 @@ mod tests {
     use crate::lifecycle::{context_create, ssl_init};
     use std::ffi::c_void;
     use swoole_rs_server::ConnectionRecord;
-    use swoole_rs_server::port_config;
+
+    /// The server's port settings, and the two raw steps these tests take on a port
+    /// they made themselves.
+    mod port_config {
+        use std::ffi::c_void;
+        pub(super) use swoole_rs_server::port_config::*;
+
+        /// The settings of a port, which is their box.
+        pub(super) unsafe fn of<'a>(port: *mut c_void) -> &'a mut PortConfig {
+            unsafe { &mut *port.cast::<PortConfig>() }
+        }
+
+        /// Frees `swr_v1_port_config_new`'s box.
+        pub(super) unsafe fn swr_v1_port_config_free(config: *mut PortConfig) {
+            drop(unsafe { Box::from_raw(config) });
+        }
+    }
 
     /// The port at `at`, as the server passes one of its own.
     fn port_at<'a>(at: *mut c_void) -> view::Port<'a> {

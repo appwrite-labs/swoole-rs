@@ -138,7 +138,7 @@ frames and expected values; its HTTP/2 frame is the bytes `http2::init_settings`
 `http2::pack_setting_frame` write, as a constant (crates/http2's tests cover that function).
 
 The HTTP/1 TESTs that start a server are `server/src/http1.rs`, in the same binary and
-phase: `swr_v1_server_new`/`_delete` (crates/server/src/server_object.rs)
+phase: `SharedServer::new` and its drop (crates/server/src/server_object.rs)
 make and delete the `Server`, and the cases set its configuration, callback slots,
 tables, port configuration and static-handler sets through the Rust records
 whose pointers head the `Server` and its `ListenPort`s, whose layouts each new server checks against

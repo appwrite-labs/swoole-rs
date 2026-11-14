@@ -45,9 +45,9 @@ pub extern "C" fn swr_v1_server_new(mode: c_int) -> *mut c_void {
         );
         swoole_rs_corebase::fatal("out of memory for the server's counters");
     }
-    // SAFETY: a fresh mapping of a whole `ServerGS`, which starts with the counters,
-    // freed only by `swr_v1_server_delete` after the message bus.
-    let counters = unsafe { crate::swr_v1_server_shared_init(gs) };
+    // SAFETY: a fresh mapping of a whole `ServerGS`, which starts with the counters
+    // and nothing reads yet, freed only by the last share's drop after the message bus.
+    let counters = crate::swr_v1_server_shared_init(unsafe { &mut *gs.cast() });
     config.mode_ = Mode::from_code(mode.into())
         .unwrap_or_else(|| swoole_rs_corebase::fatal("an unknown server mode"));
     tables.message_bus = Some(Box::new(crate::pool_native::new_bus(
@@ -59,7 +59,7 @@ pub extern "C" fn swr_v1_server_new(mode: c_int) -> *mut c_void {
         .set(&counters.pipe_packet_msg_id)
         .unwrap_or_default();
     let (config, tables) = (fresh.config(), fresh.tables());
-    // The state lives until `swr_v1_server_delete` frees it.
+    // The state lives until the last share's drop frees it.
     let state = Box::into_raw(fresh);
     let object = Box::new(ServerObject {
         state,
@@ -74,40 +74,6 @@ pub extern "C" fn swr_v1_server_new(mode: c_int) -> *mut c_void {
     serv
 }
 
-/// `delete serv`: destroys a server still running in its master, deletes its
-/// ports, closes its pipes, then frees the CPU list, the shared record, the
-/// message bus, the state and the object. It stops being `SwooleG.server`.
-///
-/// # Safety
-/// `serv` came from [`swr_v1_server_new`] and is not used again.
-#[unsafe(no_mangle)]
-pub unsafe extern "C-unwind" fn swr_v1_server_delete(serv: *mut c_void) {
-    // SAFETY: per the caller, `serv` is a live `Server` for the call.
-    let serv = unsafe { view::Server::from_raw(serv) };
-    crate::server_methods::destroy_running(serv);
-    for port in serv.ports() {
-        // SAFETY: a live port is its settings' box, deleted once.
-        PortConfig::delete(unsafe { Box::from_raw(port.raw().cast::<PortConfig>()) });
-    }
-    let object_ptr = serv.raw();
-    // The server's state, which its object owns until the last step below.
-    let state = serv.state();
-    // SAFETY: the object `swr_v1_server_new` boxed, freed once.
-    let object = unsafe { Box::from_raw(object_ptr.cast::<ServerObject>()) };
-    state.close_pipes();
-    // SAFETY: the state's configuration, which nothing else uses now.
-    let config = unsafe { &mut *object.config };
-    let mut gs = core::mem::take(&mut config.gs);
-    // SAFETY: `swr_v1_server_new`'s boxed state, not used again. Its tables own the
-    // message bus.
-    drop(unsafe { Box::from_raw(object.state) });
-    // After the bus, which numbers its messages from a counter in here.
-    gs.free();
-    if swoole_rs_corebase::swr_v1_core_server() == object_ptr {
-        swoole_rs_corebase::swr_v1_core_set_server(ptr::null_mut());
-    }
-}
-
 /// A server [`SharedServer::new`] made, which deletes it with its last share.
 struct Owner(*mut c_void);
 
@@ -117,10 +83,37 @@ unsafe impl Send for Owner {}
 // SAFETY: as above.
 unsafe impl Sync for Owner {}
 
+/// `delete serv` of the server no share names any more: destroys it if it still
+/// runs in its master, deletes its ports, closes its pipes, then frees the CPU list,
+/// the shared record, the message bus, the state and the object. It stops being
+/// `SwooleG.server`.
 impl Drop for Owner {
     fn drop(&mut self) {
-        // SAFETY: `swr_v1_server_new`'s server, which no share names any more.
-        unsafe { swr_v1_server_delete(self.0) };
+        // SAFETY: `swr_v1_server_new`'s server, which only this owner names and so is
+        // live until this drop frees it.
+        let serv = unsafe { view::Server::from_raw(self.0) };
+        crate::server_methods::destroy_running(serv);
+        for port in serv.ports() {
+            // SAFETY: a live port is its settings' box, deleted once.
+            PortConfig::delete(unsafe { Box::from_raw(port.raw().cast::<PortConfig>()) });
+        }
+        let object_ptr = serv.raw();
+        // The server's state, which its object owns until the last step below.
+        let state = serv.state();
+        // SAFETY: the object `swr_v1_server_new` boxed, freed once.
+        let object = unsafe { Box::from_raw(object_ptr.cast::<ServerObject>()) };
+        state.close_pipes();
+        // SAFETY: the state's configuration, which nothing else uses now.
+        let config = unsafe { &mut *object.config };
+        let mut gs = core::mem::take(&mut config.gs);
+        // SAFETY: `swr_v1_server_new`'s boxed state, not used again. Its tables own the
+        // message bus.
+        drop(unsafe { Box::from_raw(object.state) });
+        // After the bus, which numbers its messages from a counter in here.
+        gs.free();
+        if swoole_rs_corebase::swr_v1_core_server() == object_ptr {
+            swoole_rs_corebase::swr_v1_core_set_server(ptr::null_mut());
+        }
     }
 }
 
@@ -136,8 +129,7 @@ static LATEST: Mutex<Weak<Owner>> = Mutex::new(Weak::new());
 pub struct SharedServer(Arc<Owner>);
 
 impl SharedServer {
-    /// `new Server(mode)` ([`swr_v1_server_new`]), deleted
-    /// ([`swr_v1_server_delete`]) when its last share drops.
+    /// `new Server(mode)` ([`swr_v1_server_new`]), deleted when its last share drops.
     #[must_use]
     pub fn new(mode: c_int) -> Self {
         let owner = Arc::new(Owner(swr_v1_server_new(mode)));

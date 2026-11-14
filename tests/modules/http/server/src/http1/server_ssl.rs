@@ -130,8 +130,7 @@ impl Port {
     }
 
     fn ssl_init(self) -> bool {
-        // SAFETY: a live SSL port, which nothing else borrows meanwhile.
-        swoole_rs_ports::lifecycle::ssl_init(unsafe { swoole_rs_server::port_config::of(self.0) })
+        swoole_rs_ports::lifecycle::ssl_init(self.settings())
     }
 }
 

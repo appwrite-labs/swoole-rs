@@ -41,7 +41,7 @@ const WRONG_OPERATION: c_int = 509;
 
 /// `f` over the process's server (`sw_server()`), or `None` while it has none.
 /// Each `f` here reads the server's config and worker records and returns; none
-/// reaches `swr_v1_server_delete`, and the view can't outlive the call.
+/// drops the server's last share, and the view can't outlive the call.
 fn with_server<R>(f: impl FnOnce(view::Server<'_>) -> R) -> Option<R> {
     // SAFETY: nothing deletes the server while `f`, a read, runs.
     unsafe { view::Server::current() }.map(f)

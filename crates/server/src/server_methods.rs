@@ -32,11 +32,8 @@ pub fn store_listen_socket(serv: view::Server<'_>) {
 }
 
 /// `Server::master_signal_handler(signo)`: the signal over `SwooleG.server`.
-///
-/// # Safety
-/// Runs as a signal handler while `SwooleG.server` is live.
-pub unsafe extern "C-unwind" fn master_signal_handler(signo: c_int) {
-    // SAFETY: as the caller guarantees.
+pub extern "C" fn master_signal_handler(signo: c_int) {
+    // SAFETY: the master's signal runs while its server lives; the view ends with it.
     if let Some(serv) = unsafe { view::Server::current() } {
         crate::control::signal(serv, signo);
     }

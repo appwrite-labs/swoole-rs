@@ -173,19 +173,11 @@ pub fn set_worker_thread_start(start: Option<WorkerThreadStart>) {
     *lock(&WORKER_THREAD_START) = start;
 }
 
-/// `serv->worker_thread_start(thread, fn)`, from a `ThreadFactory` thread.
-///
-/// # Safety
-/// `run(context)` is the thread's body, safe to call on this thread.
-unsafe fn worker_thread_start(thread: &Thread, run: WorkerMain, context: *mut c_void) {
-    // Copied out: a guard in the match would be held while the body runs, and every
-    // other thread's start would wait for it.
-    let start = *lock(&WORKER_THREAD_START);
-    match start {
-        Some(start) => start(thread, run, context),
-        // SAFETY: per the caller.
-        None => unsafe { run(context) },
-    }
+/// `serv->worker_thread_start`: the starter [`set_worker_thread_start`] registered,
+/// or `None` for upstream's default, which runs the body directly. Copied out: a
+/// guard held while the body runs would make every other thread's start wait for it.
+fn worker_thread_start() -> Option<WorkerThreadStart> {
+    *lock(&WORKER_THREAD_START)
 }
 
 #[cfg(test)]
@@ -220,12 +212,16 @@ mod tests {
             unsafe { run(context.wrapping_byte_add(0x10)) };
         }
         let thread = Thread::default();
-        // SAFETY (test): as above.
-        unsafe { worker_thread_start(&thread, run, core::ptr::without_provenance_mut(0x10)) };
+        // A thread's start, as `native`'s `body` runs its main.
+        let start = |context| match worker_thread_start() {
+            Some(start) => start(&thread, run, context),
+            // SAFETY (test): as above.
+            None => unsafe { run(context) },
+        };
+        start(core::ptr::without_provenance_mut(0x10));
         assert!(RAN.swap(false, Ordering::AcqRel));
         set_worker_thread_start(Some(hook));
-        // SAFETY (test): as above.
-        unsafe { worker_thread_start(&thread, run, core::ptr::null_mut()) };
+        start(core::ptr::null_mut());
         set_worker_thread_start(None);
         assert!(RAN.load(Ordering::Acquire));
     }

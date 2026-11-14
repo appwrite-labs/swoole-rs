@@ -607,8 +607,8 @@ fn reopen_log() {
 unsafe extern "C" fn reopen_log2_start(_: *mut c_void, serv: *mut c_void) {
     let serv = Server(serv);
     timer_after(50, move || {
-        // SAFETY: in the running master, whose server `SwooleG.server` is.
-        unsafe { server_methods::master_signal_handler(SIGWINCH) };
+        // In the running master, whose server `SwooleG.server` is.
+        server_methods::master_signal_handler(SIGWINCH);
         timer_after(50, move || {
             shutdown(serv);
         });

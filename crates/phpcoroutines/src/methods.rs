@@ -12,7 +12,7 @@ use crate::{
 };
 use std::{
     cell::{Cell, RefCell},
-    ffi::{c_long, c_void},
+    ffi::c_long,
     mem::ManuallyDrop,
     ptr,
     rc::Rc,
@@ -99,7 +99,7 @@ fn defer(call: &Call) {
         call.set_bool(false);
         return;
     };
-    host::current_safe();
+    host::require_coroutine();
     context::defer(callable.keep(None));
 }
 
@@ -125,7 +125,7 @@ fn exists(call: &Call) {
         call.set_bool(false);
         return;
     };
-    call.set_bool(!host::by_cid(cid).is_null());
+    call.set_bool(host::by_cid(cid).is_some());
 }
 
 per_thread! {
@@ -156,7 +156,7 @@ fn set_yielded(cid: c_long, yielded: bool) -> bool {
 fn yield_(call: &Call) {
     let co = host::current_safe();
     set_yielded(host::cid(co), true);
-    swoole_rs_coroutine::yield_with_cancel(co, cancel_yield);
+    swoole_rs_coroutine::yield_with_cancel(co.raw(), move |_| cancel_yield(co));
     if host::is_canceled(co) {
         host::set_last_error(SW_ERROR_CO_CANCELED);
         call.set_bool(false);
@@ -165,7 +165,7 @@ fn yield_(call: &Call) {
     call.set_bool(true);
 }
 
-fn cancel_yield(co: *mut c_void) -> bool {
+fn cancel_yield(co: host::Co) -> bool {
     set_yielded(host::cid(co), false);
     host::resume(co);
     true
@@ -178,14 +178,14 @@ fn resume(call: &Call) {
         return;
     };
     let co = host::by_cid(cid);
-    if co.is_null() || !set_yielded(cid, false) {
+    let Some(co) = co.filter(|_| set_yielded(cid, false)) else {
         host::fatal_error(
             E_WARNING,
             c"can not resume the coroutine which is in IO operation or non-existent",
         );
         call.set_bool(false);
         return;
-    }
+    };
     host::resume(co);
     call.set_bool(true);
 }
@@ -194,7 +194,7 @@ fn resume(call: &Call) {
 /// holds it until it closes or the join gives up.
 pub(crate) struct Join {
     pending: RefCell<Vec<Ctx>>,
-    co: *mut c_void,
+    co: host::Co,
     canceled: Cell<bool>,
 }
 
@@ -304,19 +304,17 @@ fn join(call: &Call) {
 /// when `throw`.
 pub(crate) fn throw_exception(cid: c_long, throw: bool, ce: *mut zend_class_entry) -> bool {
     if !throw {
-        let co = host::by_cid(cid);
-        if co.is_null() {
+        let Some(co) = host::by_cid(cid) else {
             host::set_last_error(SW_ERROR_CO_NOT_EXISTS);
             return false;
-        }
+        };
         return host::cancel(co);
     }
-    let Some(task) = context::by_cid(cid).filter(|task| !task.co().is_null()) else {
+    let Some((task, co)) = context::by_cid(cid).and_then(|task| Some((task, task.co()?))) else {
         host::set_last_error(SW_ERROR_CO_NOT_EXISTS);
         return false;
     };
-    let co = task.co();
-    let is_current = co == host::current();
+    let is_current = Some(co) == host::current();
     let (pending, class) = task.exception();
     if !is_current && !pending.is_null() && class == ce {
         host::set_last_error(SW_ERROR_CO_CANCELED);
@@ -372,11 +370,11 @@ fn set_time_limit(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let co = host::current_safe();
-    if timeout <= 0.0 || co.is_null() {
+    let co = host::require_coroutine();
+    let Some(co) = co.filter(|_| timeout > 0.0) else {
         call.set_bool(false);
         return;
-    }
+    };
     let cid = host::cid(co);
     let Some(ctx) = context::current_task() else {
         call.set_bool(false);

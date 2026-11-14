@@ -7,7 +7,7 @@ use crate::{
 };
 use std::{
     cell::{Cell, RefCell},
-    ffi::{c_char, c_int, c_long, c_void},
+    ffi::{c_char, c_int, c_long},
     ptr,
     sync::{
         Arc, Mutex, PoisonError,
@@ -229,7 +229,7 @@ pub(crate) fn shutdown() -> bool {
 unsafe extern "C" fn interrupt_function(execute_data: *mut zend_execute_data) {
     let task = context::current();
     let (co, enabled, last) = (task.co(), task.enable_scheduler(), task.last_msec());
-    if !co.is_null()
+    if let Some(co) = co
         && interrupt_running()
         && enabled
         && host::absolute_msec() - last > MAX_EXEC_MSEC
@@ -250,12 +250,12 @@ unsafe extern "C" fn interrupt_function(execute_data: *mut zend_execute_data) {
 }
 
 /// `coro_interrupt_resume`: the loop resumes the coroutine the interrupt yielded.
-struct InterruptResume(*mut c_void);
+struct InterruptResume(host::Co);
 
 impl swoole_rs_reactor::event_api::Deferred for InterruptResume {
     fn run(self) {
         let co = self.0;
-        if !co.is_null() && !host::is_end(co) {
+        if !host::is_end(co) {
             host::resume(co);
         }
     }

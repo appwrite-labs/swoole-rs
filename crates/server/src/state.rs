@@ -45,14 +45,14 @@ pub struct ServerState {
     )]
     pub(crate) msg_ids: std::sync::OnceLock<&'static core::sync::atomic::AtomicU64>,
     /// `Server::task_notify_pipes`: a blocking `Pipe` per event worker, which
-    /// `task_sync` waits on; `swr_v1_server_delete` closes them, as `~Server` did.
+    /// `task_sync` waits on; the last `SharedServer` drop closes them, as `~Server` did.
     #[expect(
         clippy::vec_box,
         reason = "`task_pipe` hands out addresses that outlive the lock"
     )]
     task_pipes: std::sync::Mutex<Vec<Box<SocketPair>>>,
     /// `Server::worker_pipes`: each event worker's `UnixSocket`, which
-    /// `swr_v1_server_delete` closes, as `~Server` did.
+    /// the last `SharedServer` drop closes, as `~Server` did.
     #[cfg_attr(
         not(all(feature = "upstream-symbols", not(test))),
         expect(dead_code, reason = "only the hybrid makes pipes")

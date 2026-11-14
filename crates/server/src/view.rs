@@ -93,7 +93,7 @@ impl<'a> Server<'a> {
     /// none.
     ///
     /// # Safety
-    /// The server is not deleted during `'a`: `swr_v1_server_delete` frees it before
+    /// The server is not deleted during `'a`: the last `SharedServer` drop frees it before
     /// it clears `SwooleG.server`, so a view kept past that dangles.
     #[must_use]
     pub unsafe fn current() -> Option<Self> {
@@ -657,8 +657,9 @@ impl<'a> Port<'a> {
     /// reads the fields written.
     #[must_use]
     pub unsafe fn config_mut(self) -> &'a mut PortConfig {
-        // SAFETY: per the caller.
-        unsafe { crate::port_config::of(self.raw()) }
+        // SAFETY: a live port is its settings (`from_raw`), and per the caller nothing
+        // else accesses them while the borrow lasts.
+        unsafe { &mut *self.raw().cast::<PortConfig>() }
     }
 
     /// `f` over the port's listening socket, or `None` before it has one (or after

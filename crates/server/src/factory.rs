@@ -51,9 +51,7 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> c
         }
         Step::Ignore(signo) => _ = signal_upstream::set(signo, Handler::NONE, false),
         Step::Handle(signo) => {
-            let handler = crate::server_methods::master_signal_handler as *const () as usize;
-            // SAFETY: the master's handler, which runs while `SwooleG.server` is live.
-            let handler = unsafe { Handler::from_raw(handler) };
+            let handler = Handler::new(crate::server_methods::master_signal_handler);
             _ = signal_upstream::set(signo, handler, false);
         }
         Step::CommandHandler => {

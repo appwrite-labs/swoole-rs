@@ -244,16 +244,6 @@ impl PortConfig {
     }
 }
 
-/// The settings of a `ListenPort`, which is their box (`server_object::port_new`).
-///
-/// # Safety
-/// `port` is a live `ListenPort`, and nothing else accesses its settings while
-/// the borrow lasts.
-pub unsafe fn of<'a>(port: *mut c_void) -> &'a mut PortConfig {
-    // SAFETY: per the caller; the port is its settings.
-    unsafe { &mut *port.cast::<PortConfig>() }
-}
-
 /// The protocol a new port starts with: network-u32 length framing and the
 /// default EOF; `object::port_new` then stores the server.
 fn default_protocol() -> Protocol {
@@ -385,14 +375,5 @@ impl PortConfig {
         // SAFETY: the record of a port `destroy` never closed (a server never started),
         // which nothing else holds. Its descriptor stays open to the exit, as upstream's.
         unsafe { swoole_rs_reactor::SocketRecord::free(self.take_socket_ptr()) };
-    }
-}
-
-/// # Safety
-/// `config` is a unique live allocation from `config_new`; no views remain.
-pub unsafe fn swr_v1_port_config_free(config: *mut PortConfig) {
-    if !config.is_null() {
-        // SAFETY: the native base releases its unique allocation after all derived members.
-        drop(unsafe { Box::from_raw(config) });
     }
 }

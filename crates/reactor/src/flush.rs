@@ -102,11 +102,8 @@ mod tests {
             match kind {
                 EntryKind::Close => swr_cpp_buffer_typed_close(buffer),
                 EntryKind::Sendfile => {
-                    unsafe extern "C" fn keep(_: *mut c_void) {}
                     let handle = buffer.queue();
-                    let status = unsafe {
-                        (*handle).push(EntryKind::Sendfile, std::ptr::dangling_mut(), Some(keep))
-                    };
+                    let status = unsafe { (*handle).push_file(Box::new(())) };
                     assert_eq!(status, Ok(()));
                 }
                 EntryKind::Data => buffer.append(b"x"),

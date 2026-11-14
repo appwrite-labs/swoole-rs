@@ -433,8 +433,7 @@ pub(crate) unsafe fn swr_case_ssl_server(
     set_ssl_path(port.ssl_context(), CERT_FILE, cert);
     set_ssl_path(port.ssl_context(), KEY_FILE, key);
     tls_fields(port.ssl_context()).http = 1;
-    // SAFETY: the live port, which nothing else borrows meanwhile.
-    let _ = lifecycle::ssl_init(unsafe { swoole_rs_server::port_config::of(port.0) });
+    let _ = lifecycle::ssl_init(port.settings());
     let created = serv.create();
     serv.on_start(on_start);
     serv.on_worker_start(on_worker_start);
@@ -704,8 +703,7 @@ pub(crate) unsafe fn swr_case_ssl_sni(
     key: *const c_char,
 ) {
     let port = Server(serv).get_primary_port();
-    // SAFETY: the live port, which nothing else borrows meanwhile.
-    let config = unsafe { swoole_rs_server::port_config::of(port.0) };
+    let config = port.settings();
     let context = lifecycle::context_dup(config);
     set_ssl_path(context.as_ptr().cast(), CERT_FILE, cert);
     set_ssl_path(context.as_ptr().cast(), KEY_FILE, key);
@@ -736,6 +734,5 @@ pub(crate) unsafe fn swr_case_ssl_client_ca(serv: *mut c_void, cafile: *const c_
 
 pub(crate) unsafe fn swr_case_ssl_init(serv: *mut c_void) -> bool {
     let port = Server(serv).get_primary_port();
-    // SAFETY: the live primary port, which nothing else borrows meanwhile.
-    lifecycle::ssl_init(unsafe { swoole_rs_server::port_config::of(port.0) })
+    lifecycle::ssl_init(port.settings())
 }

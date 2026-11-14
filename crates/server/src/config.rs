@@ -556,7 +556,7 @@ mod tests {
             assert_eq!((*ports[1]).object_id, 2);
             free_state(state);
             for port in ports {
-                crate::port_config::swr_v1_port_config_free(port);
+                drop(Box::from_raw(port));
             }
         }
     }

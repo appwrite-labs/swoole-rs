@@ -64,7 +64,8 @@ pub(crate) struct Context {
     /// The coroutine's callable, laid out as `zend::Function`.
     call: swr_zend_callable,
     return_value: zval,
-    co: *mut c_void,
+    /// The coroutine, which outlives its context; none for the main context.
+    co: Option<host::Co>,
     fiber: *mut zend_fiber_context,
     fiber_init_notified: bool,
     enable_scheduler: bool,
@@ -88,7 +89,7 @@ impl Context {
         vm: swoole_rs_zend::zeroed(),
         call: swoole_rs_zend::zeroed(),
         return_value: swoole_rs_zend::UNDEF,
-        co: ptr::null_mut(),
+        co: None,
         fiber: ptr::null_mut(),
         fiber_init_notified: false,
         enable_scheduler: false,
@@ -138,7 +139,7 @@ macro_rules! fields {
 }
 
 fields! {
-    co, set_co: *mut c_void;
+    co, set_co: Option<host::Co>;
     fiber, set_fiber: *mut zend_fiber_context;
     fiber_init_notified, set_fiber_init_notified: bool;
     enable_scheduler, set_enable_scheduler: bool;
@@ -395,7 +396,7 @@ pub(crate) extern "C" fn on_close(task: CoroutineTask) {
 pub(crate) unsafe fn open(args: *mut c_void) -> Option<Ctx> {
     // SAFETY: per the caller.
     let args = unsafe { &*args.cast::<Args>() };
-    let co = host::current();
+    let co = host::current()?;
     let pcid = host::origin_cid(co);
     let ctx = swoole_rs_zend::value::emalloc(size_of::<Context>()).cast::<Context>();
     // Built in place: a `Context::EMPTY` literal is staged on the stack and
@@ -410,7 +411,7 @@ pub(crate) unsafe fn open(args: *mut c_void) -> Option<Ctx> {
     unsafe { defer.write(Vec::new()) };
     // Every field now holds a valid value, and the context lives until `on_close`.
     let this = Ctx(NonNull::new(ctx)?);
-    this.set_co(co);
+    this.set_co(Some(co));
     this.set_pcid(pcid);
     this.set_enable_scheduler(true);
     // SAFETY: a new PHP context, the kind `on_yield`, `on_resume` and `on_close`
@@ -524,7 +525,8 @@ pub(crate) fn close(ctx: Ctx) {
     fiber_try_destroy(ctx, origin(ctx));
     // A context-owned __destruct() may have rearmed the time limit.
     if ctx.time_limited()
-        && let Some(timer) = swap_time_limit(ctx, host::cid(ctx.co()), None)
+        && let Some(co) = ctx.co()
+        && let Some(timer) = swap_time_limit(ctx, host::cid(co), None)
     {
         swoole_rs_timer::del_id(timer);
     }
@@ -537,7 +539,7 @@ pub(crate) fn close(ctx: Ctx) {
 /// `init_main_context`, at RINIT.
 pub(crate) fn init_main() {
     let main = main();
-    main.set_co(ptr::null_mut());
+    main.set_co(None);
     main.set_fiber_init_notified(true);
     // At RINIT: no exception is being dispatched.
     main.set_fiber(main.with_vm(|vm| swr_zend_coroutine_main(vm)));
@@ -589,7 +591,10 @@ fn fiber_status(ctx: Ctx) -> zend_fiber_status {
     if ctx.fiber() == main().fiber() {
         return zend_fiber_status_ZEND_FIBER_STATUS_RUNNING;
     }
-    match host::state_of(ctx.co()) {
+    let Some(co) = ctx.co() else {
+        return zend_fiber_status_ZEND_FIBER_STATUS_RUNNING;
+    };
+    match host::state_of(co) {
         State::Init => zend_fiber_status_ZEND_FIBER_STATUS_INIT,
         State::Waiting => zend_fiber_status_ZEND_FIBER_STATUS_SUSPENDED,
         State::Running => zend_fiber_status_ZEND_FIBER_STATUS_RUNNING,
