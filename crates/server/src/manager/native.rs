@@ -322,7 +322,7 @@ impl Reap for Reaping<'_> {
         let pool = serv.event_pool_ref();
         if pool.read_message() {
             let mut msg = EventData([0; EVENT_DATA_SIZE]);
-            while methods::pop_message(pool, &mut msg.0) > 0 {
+            while methods::pop_message(pool, &mut msg.0).is_some_and(|length| length > 0) {
                 if !serv.state().running() {
                     continue;
                 }

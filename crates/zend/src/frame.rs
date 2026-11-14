@@ -25,22 +25,27 @@ impl Call {
     /// It is not; Zend has thrown.
     #[inline]
     pub fn func(&self, n: u32) -> Result<(), Invalid> {
-        self.callable(n).map(drop)
+        let (mut fci, mut fcc) = (crate::EMPTY_FCI, crate::EMPTY_FCC);
+        self.callable(n, &mut fci, &mut fcc)
     }
 
-    /// `Z_PARAM_FUNC` of passed argument `n` (1-based): the callable it names,
-    /// resolved. The call info borrows the argument's value (no reference of
-    /// its own), as Zend's macro leaves it.
+    /// `Z_PARAM_FUNC` of passed argument `n` (1-based) into `fci` and `fcc`: the
+    /// callable it names, resolved. The call info borrows the argument's value (no
+    /// reference of its own), as Zend's macro leaves it.
     /// # Errors
     /// It is not callable; Zend has raised its parameter error.
     /// # Panics
     /// Argument `n` was not passed (the caller's arity check allows it).
-    pub fn callable(&self, n: u32) -> Result<(zend_fcall_info, zend_fcall_info_cache), Invalid> {
-        let (mut fci, mut fcc) = (crate::EMPTY_FCI, crate::EMPTY_FCC);
+    pub fn callable(
+        &self,
+        n: u32,
+        fci: &mut zend_fcall_info,
+        fcc: &mut zend_fcall_info_cache,
+    ) -> Result<(), Invalid> {
         let arg = self.arg_value(n).as_ptr();
-        // SAFETY: passed argument `n`, live for the call, and two writable locals.
-        if unsafe { swr_zend_parse_func(arg, n, &raw mut fci, &raw mut fcc) } != 0 {
-            Ok((fci, fcc))
+        // SAFETY: passed argument `n`, live for the call, and two writable records.
+        if unsafe { swr_zend_parse_func(arg, n, fci, fcc) } != 0 {
+            Ok(())
         } else {
             Err(Invalid)
         }

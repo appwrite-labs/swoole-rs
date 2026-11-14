@@ -127,38 +127,48 @@ pub extern "C" fn swoole_daemon(nochdir: c_int, noclose: c_int) -> c_int {
     rv
 }
 
+/// A step of `swoole_set_isolation` that failed.
+#[derive(Debug, PartialEq, Eq)]
+enum IsolationStep {
+    GroupLookup,
+    UserLookup,
+    Setgid,
+    Setuid,
+    Chdir,
+    Chroot,
+}
+
 /// `swoole_set_isolation`: look up the group and user, switch gid then uid, then
 /// chroot and `chdir("/")`; empty names skip their step. `warn` hears each failed
-/// step as it happens (errno intact): 1 group lookup, 2 user lookup, 3 setgid,
-/// 4 setuid, 5 `chdir("/")`, 6 chroot.
-fn isolate(group: &CStr, user: &CStr, root: &CStr, mut warn: impl FnMut(u32)) {
+/// step as it happens (errno intact).
+fn isolate(group: &CStr, user: &CStr, root: &CStr, mut warn: impl FnMut(IsolationStep)) {
     let mut gid = None;
     if !group.is_empty() {
         gid = swoole_rs_corebase::sys::group_id(group);
         if gid.is_none() {
-            warn(1);
+            warn(IsolationStep::GroupLookup);
         }
     }
     let mut uid = None;
     if !user.is_empty() {
         uid = swoole_rs_corebase::sys::user_id(user);
         if uid.is_none() {
-            warn(2);
+            warn(IsolationStep::UserLookup);
         }
     }
     if gid.is_some_and(|gid| setgid(gid) < 0) {
-        warn(3);
+        warn(IsolationStep::Setgid);
     }
     if uid.is_some_and(|uid| setuid(uid) < 0) {
-        warn(4);
+        warn(IsolationStep::Setuid);
     }
     if !root.is_empty() {
         if swoole_rs_corebase::sys::chroot(root) == 0 {
             if swoole_rs_corebase::sys::chdir(c"/") < 0 {
-                warn(5);
+                warn(IsolationStep::Chdir);
             }
         } else {
-            warn(6);
+            warn(IsolationStep::Chroot);
         }
     }
 }
@@ -173,12 +183,16 @@ pub fn set_isolation(group: &CStr, user: &CStr, root: &CStr) {
         root.to_string_lossy(),
     );
     isolate(group, user, root, |step| match step {
-        1 => log::warning(origin, format_args!("get group [{g}] info failed")),
-        2 => log::warning(origin, format_args!("get user [{u}] info failed")),
-        3 => log::sys_warning(origin, format_args!("setgid to [{g}] failed")),
-        4 => log::sys_warning(origin, format_args!("setuid to [{u}] failed")),
-        5 => log::sys_warning(origin, format_args!("chdir('/') failed")),
-        _ => log::sys_warning(origin, format_args!("chroot('{r}') failed")),
+        IsolationStep::GroupLookup => {
+            log::warning(origin, format_args!("get group [{g}] info failed"));
+        }
+        IsolationStep::UserLookup => {
+            log::warning(origin, format_args!("get user [{u}] info failed"));
+        }
+        IsolationStep::Setgid => log::sys_warning(origin, format_args!("setgid to [{g}] failed")),
+        IsolationStep::Setuid => log::sys_warning(origin, format_args!("setuid to [{u}] failed")),
+        IsolationStep::Chdir => log::sys_warning(origin, format_args!("chdir('/') failed")),
+        IsolationStep::Chroot => log::sys_warning(origin, format_args!("chroot('{r}') failed")),
     });
 }
 
@@ -330,7 +344,11 @@ mod tests {
         assert!(steps.is_empty(), "nothing to do");
         let missing = c"swr-no-such-name";
         isolate(missing, missing, c"", |step| steps.push(step));
-        assert_eq!(steps, [1, 2], "both lookups fail and nothing is switched");
+        assert_eq!(
+            steps,
+            [IsolationStep::GroupLookup, IsolationStep::UserLookup],
+            "both lookups fail and nothing is switched"
+        );
     }
 
     #[test]
@@ -390,16 +408,18 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri models one CPU")]
     fn os_cpu_affinity() {
         use crate::CpuSet;
+        // The libc calls' 0 or -1, which upstream's assertions compare.
+        let status = |done: bool| if done { 0 } else { -1 };
         let pid = swoole_rs_corebase::sys::getpid();
         let mut affinity = CpuSet::empty();
-        assert_eq!(affinity.get_process(pid), 0);
+        assert_eq!(status(affinity.get_process(pid)), 0);
         let ori_affinity = affinity;
 
         affinity = CpuSet::empty();
         affinity.insert(1);
 
-        assert_eq!(affinity.set_process(pid), 0);
-        assert_eq!(affinity.get_process(pid), 0);
+        assert_eq!(status(affinity.set_process(pid)), 0);
+        assert_eq!(status(affinity.get_process(pid)), 0);
 
         // SW_CPU_NUM, as swoole_init sets it.
         let cpu_n = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) }.max(1);
@@ -407,7 +427,7 @@ mod tests {
             assert_eq!(affinity.contains(i), i == 1, "cpu {i}");
         }
 
-        assert_eq!(ori_affinity.set_process(pid), 0);
+        assert_eq!(status(ori_affinity.set_process(pid)), 0);
     }
 
     /// Upstream's `os.set_isolation`: unknown names and a missing chroot only warn. It runs

@@ -300,20 +300,17 @@ impl Pool {
 }
 
 /// `AsyncThreads::callback`: reads up to `SW_AIO_EVENT_NUM` (128) completed event
-/// tokens from the pipe and hands each to `complete`. Returns how many, or -1 if
+/// tokens from the pipe and hands each to `complete`. Returns how many, or none if
 /// the read failed (errno intact for native's warning).
-pub fn complete(fd: c_int, mut complete: impl FnMut(usize)) -> isize {
+pub fn complete(fd: c_int, mut complete: impl FnMut(usize)) -> Option<usize> {
     const TOKEN: usize = size_of::<usize>();
     let mut events = [0_u8; 128 * TOKEN];
     let n = swoole_rs_corebase::sys::read(fd, &mut events);
-    if n < 0 {
-        return -1;
-    }
-    let count = n.unsigned_abs() / TOKEN;
+    let count = usize::try_from(n).ok()? / TOKEN;
     for token in events.as_chunks::<TOKEN>().0.iter().take(count) {
         complete(usize::from_ne_bytes(*token));
     }
-    count.cast_signed()
+    Some(count)
 }
 
 #[cfg(test)]
@@ -495,11 +492,11 @@ mod tests {
             .unwrap_or_else(|e| unreachable!("{e}"));
         assert_eq!(
             super::complete(reader.as_raw_fd(), complete),
-            2,
+            Some(2),
             "two tokens"
         );
         assert_eq!(*lock(&COMPLETED), [7, 9], "in pipe order");
-        assert_eq!(super::complete(-1, complete), -1, "read failure");
+        assert_eq!(super::complete(-1, complete), None, "read failure");
     }
 
     const NSIG: c_int = if cfg!(target_os = "linux") { 65 } else { 32 };

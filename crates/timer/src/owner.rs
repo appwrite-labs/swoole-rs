@@ -396,16 +396,19 @@ impl Owner {
         let now = self.relative_msec();
         // The queue boxes the node only once it has room for it, so a refused node
         // drops here with the closure.
-        let (status, view) = self.queue.borrow_mut().add(now, msec, persistent, || {
+        let added = self.queue.borrow_mut().add(now, msec, persistent, || {
             Box::into_raw(Box::new(node)).cast()
         });
-        if status != Status::Ok {
-            warning(
-                c"add",
-                format_args!("Rust timer add failed: status={status:?}"),
-            );
-            return None;
-        }
+        let view = match added {
+            Ok(view) => view,
+            Err(status) => {
+                warning(
+                    c"add",
+                    format_args!("Rust timer add failed: status={status:?}"),
+                );
+                return None;
+            }
+        };
         let node = apply(&view);
         let next = swr_v1_timer_rearm_after_add(self.next_msec.get(), msec);
         if next != self.next_msec.get() {
@@ -435,14 +438,11 @@ impl Owner {
     /// value, as for [`Self::delay`].
     #[cfg(test)]
     fn update(&self, id: i64, exec_msec: i64) {
-        let (status, view) = {
+        let view = {
             let mut queue = self.queue.borrow_mut();
-            match queue.update(id, exec_msec) {
-                (Status::Ok, view) => (Status::Ok, view),
-                _ => queue.get(id),
-            }
+            queue.update(id, exec_msec).or_else(|_| queue.get(id))
         };
-        if status == Status::Ok {
+        if let Ok(view) = view {
             apply(&view);
         }
     }
@@ -454,8 +454,8 @@ impl Owner {
         else {
             return;
         };
-        let (status, view) = self.queue.borrow_mut().update(id, deadline);
-        if status == Status::Ok {
+        let updated = self.queue.borrow_mut().update(id, deadline);
+        if let Ok(view) = updated {
             apply(&view);
         }
     }
@@ -479,10 +479,9 @@ impl Owner {
 
     /// Ends the selection and arms the next wakeup; false if Rust refused.
     fn end(&self) -> bool {
-        let (status, delay) = self.queue.borrow_mut().end();
-        if status != Status::Ok {
+        let Ok(delay) = self.queue.borrow_mut().end() else {
             return false;
-        }
+        };
         self.next_msec.set(delay);
         self.set(delay);
         true
@@ -501,10 +500,11 @@ impl Owner {
             return;
         }
         let begin = self.queue.borrow_mut().begin(now);
-        if begin == Status::Busy || begin == Status::Closing {
-            return;
+        match begin {
+            Ok(()) => {}
+            Err(Status::Busy | Status::Closing) => return,
+            Err(status) => check(status),
         }
-        check(begin);
         loop {
             let (status, view) = self.queue.borrow_mut().select_next();
             if status == Status::Empty || status == Status::Closing {
@@ -555,8 +555,10 @@ impl Owner {
                 if status != Status::Release {
                     swoole_rs_corebase::fatal("a timer completed without releasing");
                 }
-                if stats.selecting {
-                    check(queue.end().0);
+                if stats.selecting
+                    && let Err(status) = queue.end()
+                {
+                    check(status);
                 }
                 (stats.active_id != 0, view)
             };

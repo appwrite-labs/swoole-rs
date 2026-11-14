@@ -451,7 +451,13 @@ fn worker_ops(pool: Pool<'_>, worker: Record<'_>, op: Op, arg: u64) -> Option<i6
             let add = |pipe| Reactor::thread().add(pipe, EVENT_READ);
             i64::from(worker_pipe(worker, false).map_or(-1, add))
         }
-        Op::PushStop => i64::from(push_stop(pool, worker.pid(), worker.id().c_cast::<u16>())),
+        Op::PushStop => {
+            if push_stop(pool, worker.pid(), worker.id().c_cast::<u16>()) {
+                0
+            } else {
+                -1
+            }
+        }
         Op::WorkerError => {
             let status = exit_status(arg);
             worker_report_error(worker, &status);

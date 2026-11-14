@@ -11,8 +11,9 @@ use swoole_rs_tls::upstream::{
     socket_ssl_accept, socket_ssl_check_host, socket_ssl_connect, socket_ssl_verify,
 };
 use swoole_rs_tls::{
-    Lent, OwnedTlsContext, OwnedTlsFields, SslNewError, TlsContext, owner_fields, owner_host_name,
-    swoole_ssl_init, swr_v1_tls_owner_socket_context, swr_v1_tls_owner_socket_session,
+    Lent, OwnedTlsContext, OwnedTlsFields, SocketContextError, SslNewError, TlsContext,
+    owner_fields, owner_host_name, swoole_ssl_init, swr_v1_tls_owner_socket_context,
+    swr_v1_tls_owner_socket_session,
 };
 
 /// `SW_EVENT_READ` and `SW_EVENT_RDWR`.
@@ -93,20 +94,19 @@ impl Co {
                 swr_v1_tls_owner_socket_context(unsafe { Lent::new(&owner) }, socket, http2, true)
             })
         });
-        let made = made.unwrap_or(2);
-        match made {
-            1 => {
+        match made.unwrap_or(Err(SocketContextError::Create)) {
+            Ok(()) => true,
+            Err(SocketContextError::UnsupportedDtls) => {
                 log::warning(
                     c"Socket::ssl_context_create",
                     format_args!("DTLS support require openssl-1.1 or later"),
                 );
                 false
             }
-            2 => {
+            Err(SocketContextError::Create) => {
                 set_err(self, SSL_CREATE_CONTEXT_FAILED);
                 false
             }
-            _ => true,
         }
     }
 

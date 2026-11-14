@@ -630,15 +630,12 @@ mod tests {
         let mut socket = crate::SocketRecord::with_fd(fds[0], 5);
         let token: *mut c_void = (&raw mut socket).cast();
         unsafe {
-            assert_eq!(
-                crate::reactor_state::tests::record(
-                    state.owner,
-                    &raw mut socket,
-                    crate::ChangeOp::Add,
-                    events
-                ),
-                0
-            );
+            assert!(crate::reactor_state::tests::record(
+                state.owner,
+                &raw mut socket,
+                crate::ChangeOp::Add,
+                events
+            ));
             assert!((*state.handlers).set(5, 512, Some(read)));
             let descriptor = (*state.owner).backend_fd;
             #[cfg(target_os = "linux")]
@@ -658,7 +655,7 @@ mod tests {
             if kind == 2 {
                 assert_eq!(
                     crate::registration::kqueue_add(descriptor, fds[0], token, events),
-                    0
+                    Ok(())
                 );
             }
             assert_eq!(libc::write(fds[1], b"a".as_ptr().cast(), 1), 1);

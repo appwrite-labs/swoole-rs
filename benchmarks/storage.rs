@@ -52,7 +52,7 @@ fn run(name: &str, rounds: usize) -> u64 {
                 let chunk = if name == "buffer-16k" { 16384 } else { 1024 };
                 let mut owner = buffer::Buffer::create(chunk).unwrap();
                 for _ in 0..rounds {
-                    assert_eq!(owner.append(&bytes), 0);
+                    assert!(owner.append(&bytes).is_ok());
                     while let Ok(view) = owner.front() {
                         sum = sum.wrapping_add(*view.data as u64 + view.length as u64);
                         assert!(owner.pop().unwrap().token().is_null());
@@ -69,11 +69,11 @@ fn run(name: &str, rounds: usize) -> u64 {
                 for round in 0..rounds {
                     for id in 1..=512 {
                         let token = ptr::without_provenance_mut(id as usize);
-                        assert_eq!(owner.add(0, 513 - id, false, token).0, 0);
+                        assert!(owner.add(0, 513 - id, false, || token).is_ok());
                     }
                     for id in 1..=512 {
                         let (status, view) = owner.remove((round * 512 + id) as i64);
-                        assert_eq!(status, 3);
+                        assert_eq!(status, timer::Status::Release);
                         assert_eq!(view.token.addr(), id);
                         sum += view.deadline as u64;
                     }
@@ -85,13 +85,12 @@ fn run(name: &str, rounds: usize) -> u64 {
                 let mut owner = timer::Timer::default();
                 for id in 1..=n {
                     let token = ptr::without_provenance_mut(id);
-                    assert_eq!(owner.add(0, id as i64, false, token).0, 0);
+                    assert!(owner.add(0, id as i64, false, || token).is_ok());
                 }
                 for round in 0..rounds {
                     for id in 1..=n {
                         let deadline = ((id * 7919 + round * 17) % (n * 4)) as i64;
-                        let (status, view) = owner.update(id as i64, deadline);
-                        assert_eq!(status, 0);
+                        let view = owner.update(id as i64, deadline).unwrap();
                         assert_eq!(view.id, id as i64);
                         assert_eq!(view.deadline, deadline);
                         sum = sum.wrapping_add(view.deadline as u64);
@@ -99,7 +98,7 @@ fn run(name: &str, rounds: usize) -> u64 {
                 }
                 for id in 1..=n {
                     let (status, view) = owner.remove(id as i64);
-                    assert_eq!(status, 3);
+                    assert_eq!(status, timer::Status::Release);
                     assert_eq!(view.token.addr(), id);
                 }
                 assert!(owner.idle());

@@ -9,7 +9,6 @@
 //! `invalid_argument`, which no first-party code catches, so the process ended either way.
 //! Nothing here calls C++: entry disposers are the Rust sendfile request's, so no C++
 //! exception can unwind into these frames.
-use crate::OK;
 use crate::typed::Front;
 use std::mem::MaybeUninit;
 
@@ -21,8 +20,8 @@ pub struct CppBuffer {
     queue: *mut std::ffi::c_void,
 }
 
-fn check(status: i32) {
-    if status != OK {
+fn check(status: Result<(), crate::Error>) {
+    if status.is_err() {
         swoole_rs_corebase::fatal("a buffer queue operation failed");
     }
 }

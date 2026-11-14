@@ -1,7 +1,9 @@
 //! `HttpProxy`'s create, pack and handshake over corebase's proxy owner, which the
 //! clients and hooks call, over crates/http's CONNECT formatting.
 use swoole_rs_corebase::{ProxyState, VERSION, log, set_errno};
-use swoole_rs_http::{HttpProxyRequest, proxy_authorization, proxy_handshake, proxy_pack};
+use swoole_rs_http::{
+    Handshake, HttpProxyRequest, proxy_authorization, proxy_handshake, proxy_pack,
+};
 
 const HANDSHAKE_FAILED: i32 = 7103;
 
@@ -79,10 +81,10 @@ pub fn proxy_connect(state: &ProxyState, host: &[u8], output: &mut [u8]) -> usiz
 #[must_use]
 pub fn proxy_accept(input: &[u8]) -> bool {
     let status = proxy_handshake(input);
-    if status == -2 {
+    if status == Handshake::Rejected {
         log::set_last_error(HANDSHAKE_FAILED);
     }
-    status == 1
+    status == Handshake::Accepted
 }
 
 /// The cases of the former `tests/modules/http/proxy_gate.cc` and `dispatch_gate.cc`,

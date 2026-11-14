@@ -49,13 +49,16 @@ impl Callable {
     /// # Errors
     /// Argument `n` is not callable; Zend has raised its parameter error.
     pub fn parse(call: &Call, n: u32) -> Result<Parsed, Invalid> {
-        let (fci, fcc) = call.callable(n)?;
         // Zend's allocator, for one callable (`ecalloc`).
         let raw = emalloc(size_of::<swr_zend_callable>()).cast::<swr_zend_callable>();
-        // SAFETY: fresh storage, which `emalloc` never returns null for and
-        // aligns for the record: written whole before anything reads it.
-        unsafe { raw.write(swr_zend_callable { fci, fcc }) };
+        // SAFETY: fresh storage; all-zero is an empty callable.
+        unsafe { raw.write_bytes(0, 1) };
         let mut this = Parsed(raw);
+        let callable = this.record();
+        if let Err(invalid) = call.callable(n, &mut callable.fci, &mut callable.fcc) {
+            this.discard();
+            return Err(invalid);
+        }
         let callable = this.record();
         callable.fci.param_count = call.num_args().saturating_sub(n);
         callable.fci.params = if callable.fci.param_count > 0 {

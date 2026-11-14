@@ -90,8 +90,8 @@ mod tests {
     fn fills_within_its_room_and_stays_put() {
         let mut registry = Registry::default();
         let socket = |n: usize| n as *mut c_void;
-        assert_eq!(registry.put(3, socket(30), SW_EVENT_READ), 0);
-        assert_eq!(registry.put(4, socket(40), SW_EVENT_WRITE), 0);
+        assert!(registry.put(3, socket(30), SW_EVENT_READ));
+        assert!(registry.put(4, socket(40), SW_EVENT_WRITE));
         let mut snapshot = PollSnapshot::new(1);
         let entries = snapshot.entries();
         assert_eq!(snapshot.fill(&registry), 1);

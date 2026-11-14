@@ -381,7 +381,7 @@ pub fn stop_async_worker(serv: view::Server<'_>, worker: Worker<'_>) {
         Mode::Process => {
             let pid = std::process::id().cast_signed();
             let id = u16::try_from(worker.id()).unwrap_or(u16::MAX);
-            if push_stop(serv.event_pool_ref(), pid, id) < 0 {
+            if !push_stop(serv.event_pool_ref(), pid, id) {
                 let m = format_args!("failed to push WORKER_STOP message");
                 log::sys_warning(c"Server::stop_async_worker", m);
             }

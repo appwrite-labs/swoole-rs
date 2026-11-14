@@ -52,12 +52,11 @@ use crate::sys::{Text, close, dup2, errno, set_errno};
 
 /// `int swoole_shell_exec(const char *command, pid_t *pid, bool get_error_stream)`:
 /// run `command` under `/bin/sh -c` with its stdout (and stderr when
-/// `get_error_stream`) on a pipe. Returns the read end, or -1 when `pipe` or
-/// `fork` fails (the latter warns). The child's pid goes in `pid`.
-pub fn swoole_shell_exec(command: &CStr, pid: &mut libc::pid_t, get_error_stream: bool) -> c_int {
-    let Some([read, write]) = crate::sys::pipe() else {
-        return -1;
-    };
+/// `get_error_stream`) on a pipe. Returns the read end and the child's pid, or none
+/// when `pipe` or `fork` fails (the latter warns).
+#[must_use]
+pub fn swoole_shell_exec(command: &CStr, get_error_stream: bool) -> Option<(c_int, libc::pid_t)> {
+    let [read, write] = crate::sys::pipe()?;
     // The child only makes async-signal-safe calls before exec, as upstream's did.
     let child = crate::sys::fork();
     if child == -1 {
@@ -66,7 +65,7 @@ pub fn swoole_shell_exec(command: &CStr, pid: &mut libc::pid_t, get_error_stream
         close(write);
         set_errno(error);
         crate::log::sys_warning(c"swoole_shell_exec", format_args!("fork() failed"));
-        return -1;
+        return None;
     }
     if child == 0 {
         close(read);
@@ -98,9 +97,8 @@ pub fn swoole_shell_exec(command: &CStr, pid: &mut libc::pid_t, get_error_stream
         // exit(3), which runs the process's exit handlers, as upstream's child did.
         std::process::exit(127);
     }
-    *pid = child;
     close(write);
-    read
+    Some((read, child))
 }
 
 /// `printf` of text that holds no conversion, to C's stdout.
@@ -772,9 +770,8 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri can't spawn a process")]
     fn shell_exec_pipes_the_command_output() {
-        let mut pid = 0;
-        let fd = swoole_shell_exec(c"echo out; echo err >&2", &mut pid, true);
-        assert!(fd >= 0 && pid > 0, "spawned");
+        let (fd, pid) = swoole_shell_exec(c"echo out; echo err >&2", true).expect("spawned");
+        assert!(pid > 0, "spawned");
         let mut output = Vec::new();
         let mut chunk = [0u8; 64];
         loop {

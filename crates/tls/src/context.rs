@@ -906,39 +906,45 @@ fn new_ssl_index() -> c_int {
     unsafe(export_name = "_Z15swoole_ssl_initv")
 )]
 pub extern "C" fn swoole_ssl_init() {
-    match swr_v1_tls_init() {
-        1 => log::error(
-            c"swoole_ssl_init",
-            format_args!("OPENSSL_init_ssl() failed"),
-        ),
-        2 => log::error(
-            c"swoole_ssl_init",
-            format_args!("SSL_get_ex_new_index() failed"),
-        ),
-        _ => {}
-    }
+    let failed = match swr_v1_tls_init() {
+        Ok(()) => return,
+        Err(TlsInitError::Init) => "OPENSSL_init_ssl",
+        Err(TlsInitError::Index) => "SSL_get_ex_new_index",
+    };
+    log::error(c"swoole_ssl_init", format_args!("{failed}() failed"));
 }
 
-/// 0 done (or already), 1 `OPENSSL_init_ssl` failed, 2 an index failed.
-pub fn swr_v1_tls_init() -> c_int {
+/// The step of TLS initialization that failed.
+#[derive(Debug, PartialEq, Eq)]
+pub enum TlsInitError {
+    /// `OPENSSL_init_ssl`.
+    Init,
+    /// An `SSL_get_ex_new_index`.
+    Index,
+}
+
+/// Initializes OpenSSL and the `ex_data` indexes; done, or already done.
+/// # Errors
+/// The step that failed.
+pub fn swr_v1_tls_init() -> Result<(), TlsInitError> {
     if INITIALIZED.load(Ordering::Acquire) {
-        return 0;
+        return Ok(());
     }
     if OPENSSL_init_ssl(INIT_OPTIONS, None) == 0 {
-        return 1;
+        return Err(TlsInitError::Init);
     }
     let connection = new_ssl_index();
     if connection < 0 {
-        return 2;
+        return Err(TlsInitError::Index);
     }
     CONNECTION_INDEX.store(connection, Ordering::Release);
     let port = new_ssl_index();
     if port < 0 {
-        return 2;
+        return Err(TlsInitError::Index);
     }
     PORT_INDEX.store(port, Ordering::Release);
     INITIALIZED.store(true, Ordering::Release);
-    0
+    Ok(())
 }
 
 /// `void swoole_ssl_destroy()`: the next init allocates fresh indexes.
@@ -1304,7 +1310,7 @@ mod tests {
 
     #[test]
     fn init_and_error_text() {
-        assert_eq!(swr_v1_tls_init(), 0);
+        assert_eq!(swr_v1_tls_init(), Ok(()));
         assert!(swr_v1_tls_connection_index() >= 0);
         assert_ne!(swr_v1_tls_connection_index(), swr_v1_tls_port_index());
         unsafe { ERR_clear_error() };

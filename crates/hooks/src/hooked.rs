@@ -89,15 +89,15 @@ fn keep(fd: c_int, socket: Co, replace: bool) {
     drop(socket_map::insert(fd, socket, replace).map(Owned));
 }
 
-/// A new native socket's fd once the map holds it, or -1 (deleting it) if it has none.
-fn adopt(socket: Co) -> c_int {
+/// A new native socket's fd once the map holds it, or none (deleting it) if it has none.
+fn adopt(socket: Co) -> Option<c_int> {
     let fd = socket.sock_fd();
     if fd < 0 {
         drop(Owned(socket));
-        return -1;
+        return None;
     }
     keep(fd, socket, true);
-    fd
+    Some(fd)
 }
 
 /// The ring's host when `io_uring` takes the call, as upstream's `SW_USE_IOURING`.
@@ -112,7 +112,7 @@ pub extern "C" fn swoole_coroutine_socket(domain: c_int, kind: c_int, protocol: 
     if coroutine().is_none() {
         return sys::socket(domain, kind, protocol);
     }
-    adopt((SOCKETS.open)(domain, kind, protocol))
+    adopt((SOCKETS.open)(domain, kind, protocol)).unwrap_or(-1)
 }
 
 /// Hooked `send(2)`.
@@ -230,9 +230,10 @@ pub fn poll_fake(fds: &mut [pollfd], timeout: c_int) -> c_int {
         return -1;
     };
     let socket = hooked(fd.fd).map(|(_, socket)| socket);
-    match fd_poll_fake(fd, timeout, socket) {
-        2 => sys::poll(core::slice::from_mut(fd), timeout),
-        result => result,
+    if fd_poll_fake(fd, timeout, socket) {
+        1
+    } else {
+        sys::poll(core::slice::from_mut(fd), timeout)
     }
 }
 
@@ -275,7 +276,7 @@ pub extern "C" fn swoole_coroutine_socket_create(fd: c_int) -> c_int {
         return -1;
     }
     let socket = (SOCKETS.wrap)(fd);
-    if adopt(socket) < 0 {
+    if adopt(socket).is_none() {
         return -1;
     }
     socket.net(|wrapped| wrapped.set_fd_option(1, -1));
@@ -311,13 +312,28 @@ pub extern "C" fn swoole_coroutine_socket_set_timeout(
     which: c_int,
     timeout: f64,
 ) -> c_int {
-    fd_timeout(hooked(fd).map(|(_, socket)| socket), which, timeout, false)
+    status(fd_timeout(
+        hooked(fd).map(|(_, socket)| socket),
+        which,
+        timeout,
+        false,
+    ))
 }
 
 /// The DNS and connect timeouts of `fd`'s socket: 0, or -1 with errno `EINVAL`.
 #[unsafe(no_mangle)]
 pub extern "C" fn swoole_coroutine_socket_set_connect_timeout(fd: c_int, timeout: f64) -> c_int {
-    fd_timeout(hooked(fd).map(|(_, socket)| socket), 0, timeout, true)
+    status(fd_timeout(
+        hooked(fd).map(|(_, socket)| socket),
+        0,
+        timeout,
+        true,
+    ))
+}
+
+/// `SW_OK` (0) or `SW_ERR` (-1).
+fn status(done: bool) -> c_int {
+    if done { 0 } else { -1 }
 }
 
 /// Wait up to `timeout` for `event` on `fd`: `SW_OK` (0) or `SW_ERR` (-1).

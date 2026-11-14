@@ -63,32 +63,41 @@ impl CpuSet {
             .is_some_and(|word| word & (1 << (cpu % c_ulong::BITS as usize)) != 0)
     }
 
-    /// `sched_getaffinity(pid)` into this set: 0, or -1 with `errno` set.
-    pub fn get_process(&mut self, pid: libc::pid_t) -> c_int {
-        process_get(pid, SetBytes::Set, self)
-    }
-
-    /// `sched_setaffinity(pid)`: 0, or -1 with `errno` set.
+    /// `sched_getaffinity(pid)` into this set; false with `errno` set.
     #[must_use]
-    pub fn set_process(&self, pid: libc::pid_t) -> c_int {
-        process_set(pid, SetBytes::Set, self)
+    pub fn get_process(&mut self, pid: libc::pid_t) -> bool {
+        process_get(pid, SetBytes::Set, self) == 0
     }
 
-    /// `pthread_getaffinity_np(pthread_self())` into this set: 0 or an error number.
-    pub fn get_thread(&mut self) -> c_int {
-        thread_get(CurrentThread::get(), SetBytes::Set, self)
-    }
-
-    /// `pthread_setaffinity_np(pthread_self())`: 0 or an error number.
+    /// `sched_setaffinity(pid)`; false with `errno` set.
     #[must_use]
-    pub fn set_thread(&self) -> c_int {
-        thread_set(CurrentThread::get(), SetBytes::Set, self)
+    pub fn set_process(&self, pid: libc::pid_t) -> bool {
+        process_set(pid, SetBytes::Set, self) == 0
+    }
+
+    /// `pthread_getaffinity_np(pthread_self())` into this set.
+    /// # Errors
+    /// The call's error number.
+    pub fn get_thread(&mut self) -> Result<(), c_int> {
+        errno_result(thread_get(CurrentThread::get(), SetBytes::Set, self))
+    }
+
+    /// `pthread_setaffinity_np(pthread_self())`.
+    /// # Errors
+    /// The call's error number.
+    pub fn set_thread(&self) -> Result<(), c_int> {
+        errno_result(thread_set(CurrentThread::get(), SetBytes::Set, self))
     }
 
     /// The set's CPUs, ascending.
     pub fn cpus(&self) -> impl Iterator<Item = usize> + '_ {
         (0..Self::SIZE).filter(|&cpu| self.contains(cpu))
     }
+}
+
+/// A pthread call's result: 0, or the error number it returns.
+fn errno_result(error: c_int) -> Result<(), c_int> {
+    if error == 0 { Ok(()) } else { Err(error) }
 }
 
 #[cfg(test)]
@@ -110,11 +119,11 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no affinity calls")]
     fn the_calling_thread_and_process() {
         let mut thread = CpuSet::empty();
-        assert_eq!(thread.get_thread(), 0);
+        assert_eq!(thread.get_thread(), Ok(()));
         assert!(thread.cpus().count() > 0);
-        assert_eq!(thread.set_thread(), 0);
+        assert_eq!(thread.set_thread(), Ok(()));
         let mut process = CpuSet::empty();
-        assert_eq!(process.get_process(0), 0);
+        assert!(process.get_process(0));
         assert!(process.cpus().count() > 0);
     }
 }

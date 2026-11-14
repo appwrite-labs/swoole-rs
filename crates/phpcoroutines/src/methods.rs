@@ -58,11 +58,14 @@ swoole_rs_zend::handlers! {
 
 /// `go()`/`Co::create()`: `(callable $func, mixed ...$params)`.
 fn create(call: &Call) {
-    let parsed = call.arity(1, u32::MAX).and_then(|()| call.callable(1));
-    let Ok((mut fci, mut fcc)) = parsed else {
+    let (mut fci, mut fcc) = (swoole_rs_zend::EMPTY_FCI, swoole_rs_zend::EMPTY_FCC);
+    let parsed = call
+        .arity(1, u32::MAX)
+        .and_then(|()| call.callable(1, &mut fci, &mut fcc));
+    if parsed.is_err() {
         call.set_bool(false);
         return;
-    };
+    }
     let argc = call.num_args() - 1;
     let argv = if argc > 0 {
         call.zval(2)

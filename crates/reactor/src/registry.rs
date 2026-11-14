@@ -34,13 +34,10 @@ impl Registry {
             .map_or(ptr::null_mut(), |entry| entry.0)
     }
 
-    /// `Reactor::_add`/`_set`: maps `fd` to `socket` registered for `events`; 0, or -2
-    /// if allocation fails or `fd` is negative (the registry is then unchanged).
-    pub(crate) fn put(&mut self, fd: c_int, socket: *mut c_void, events: c_int) -> c_int {
-        match slot(fd) {
-            Some(fd) if self.sockets.insert(fd, (socket, events)).is_ok() => 0,
-            _ => -2,
-        }
+    /// `Reactor::_add`/`_set`: maps `fd` to `socket` registered for `events`; false, leaving
+    /// the registry unchanged, if allocation fails or `fd` is negative.
+    pub(crate) fn put(&mut self, fd: c_int, socket: *mut c_void, events: c_int) -> bool {
+        slot(fd).is_some_and(|fd| self.sockets.insert(fd, (socket, events)).is_ok())
     }
 
     /// `Reactor::_set`: the events `fd` is registered for, if it is.
@@ -98,14 +95,11 @@ mod tests {
         let socket = |n: usize| n as *mut c_void;
         assert_eq!(swr_v1_reactor_registry_count(None), 0);
         assert!(swr_v1_reactor_registry_get(None, 3).is_null());
-        assert_eq!(registry.put(3, socket(30), SW_EVENT_READ), 0);
-        assert_eq!(registry.put(4, socket(40), SW_EVENT_WRITE), 0);
-        assert_eq!(
-            registry.put(5, socket(50), SW_EVENT_READ | SW_EVENT_WRITE),
-            0
-        );
-        assert_eq!(registry.put(4, socket(40), 1 << 11), 0);
-        assert_eq!(registry.put(-1, socket(10), SW_EVENT_READ), -2);
+        assert!(registry.put(3, socket(30), SW_EVENT_READ));
+        assert!(registry.put(4, socket(40), SW_EVENT_WRITE));
+        assert!(registry.put(5, socket(50), SW_EVENT_READ | SW_EVENT_WRITE));
+        assert!(registry.put(4, socket(40), 1 << 11));
+        assert!(!registry.put(-1, socket(10), SW_EVENT_READ));
         registry.remove(5);
         registry.remove(9);
         assert_eq!(registry.count(), 2);

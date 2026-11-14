@@ -129,10 +129,11 @@ run_methods! {
 }
 
 /// `ProcessPool::push_message(event)`: the `EventData` with `head` (its `len` set to
-/// `data`'s) and `data`.
+/// `data`'s) and `data`; false when the pool has no message box, `data` does not
+/// fit, or the push fails.
 #[must_use]
-pub fn push_event(pool: PoolRef<'_>, head: &swoole_rs_corebase::DataHead, data: &[u8]) -> c_int {
-    c_int::narrow(swr_v1_process_pool_push_event(native(), pool, head, data))
+pub fn push_event(pool: PoolRef<'_>, head: &swoole_rs_corebase::DataHead, data: &[u8]) -> bool {
+    swr_v1_process_pool_push_event(native(), pool, head, data)
 }
 
 /// `ProcessPool::stop(worker)`; nothing when `worker` is none of the pool's.
@@ -172,14 +173,14 @@ pub fn create(pool: PoolRef<'_>, worker_num: u32, key: c_int, mode: c_int) -> c_
 
 /// `ProcessPool::push_message(type, data, length)`.
 #[must_use]
-pub fn push_message(pool: PoolRef<'_>, kind: u8, data: &[u8]) -> c_int {
-    c_int::narrow(swr_v1_process_pool_push(native(), pool, kind, data))
+pub fn push_message(pool: PoolRef<'_>, kind: u8, data: &[u8]) -> bool {
+    swr_v1_process_pool_push(native(), pool, kind, data)
 }
 
 /// `push_message(SW_WORKER_MESSAGE_STOP, WorkerStopMessage { pid, worker_id })`:
 /// the C layout's 4-byte pid, 2-byte id and 2 bytes of padding.
 #[must_use]
-pub fn push_stop(pool: PoolRef<'_>, pid: c_int, worker_id: u16) -> c_int {
+pub fn push_stop(pool: PoolRef<'_>, pid: c_int, worker_id: u16) -> bool {
     /// `SW_WORKER_MESSAGE_STOP`.
     const WORKER_MESSAGE_STOP: u8 = 1;
     let ([a, b, c, d], [e, f]) = (pid.to_ne_bytes(), worker_id.to_ne_bytes());
@@ -265,13 +266,14 @@ unsafe extern "C-unwind" {
 /// `ProcessPool::listen(socket_file, backlog)`: a unix stream listener.
 #[cfg(feature = "upstream-symbols")]
 #[must_use]
-pub fn listen_unix(pool: PoolRef<'_>, file: &CStr, backlog: c_int) -> c_int {
+pub fn listen_unix(pool: PoolRef<'_>, file: &CStr, backlog: c_int) -> bool {
     // 5 is SW_SOCK_UNIX_STREAM.
     listen_socket(pool, 5, file, 0, backlog)
 }
 
 /// `ProcessPool::listen(host, port, backlog)` on a socket of `kind` (`SW_SOCK_*`),
-/// made by `make_server_socket`.
+/// made by `make_server_socket`. False when the pool is not an `SW_IPC_SOCKET` pool
+/// or the listener cannot be made.
 #[cfg(feature = "upstream-symbols")]
 #[must_use]
 pub fn listen_socket(
@@ -280,7 +282,7 @@ pub fn listen_socket(
     host: &CStr,
     port: c_int,
     backlog: c_int,
-) -> c_int {
+) -> bool {
     listen(pool.record(), host, port, || {
         // SAFETY: crates/tls's `make_server_socket` over a NUL-terminated host, read
         // for the call: a native socket the caller owns, or null.
@@ -292,12 +294,7 @@ pub fn listen_socket(
 /// then owns and frees, or null): only an `SW_IPC_SOCKET` pool has a stream
 /// listener, which it records with its address.
 #[cfg(any(feature = "upstream-symbols", test))]
-fn listen(
-    pool: &PoolRecord,
-    host: &CStr,
-    port: c_int,
-    make: impl FnOnce() -> *mut c_void,
-) -> c_int {
+fn listen(pool: &PoolRecord, host: &CStr, port: c_int, make: impl FnOnce() -> *mut c_void) -> bool {
     if pool.ipc_mode != crate::process_pool::IpcMode::Socket {
         // SW_LOG_WARNING, SW_ERROR_OPERATION_NOT_SUPPORT.
         swoole_rs_corebase::log::error_log(
@@ -306,37 +303,36 @@ fn listen(
             c"ProcessPool::listen",
             format_args!("not support, ipc_mode must be SW_IPC_SOCKET"),
         );
-        return -1;
+        return false;
     }
     if pool
         .with_ipc(|ipc| swr_v1_process_pool_ipc_address(ipc, host, port))
         .is_none()
     {
-        return -1;
+        return false;
     }
     let socket = make();
     if socket.is_null() {
-        return -1;
+        return false;
     }
     // The pool now owns the listener.
     pool.with_ipc(|ipc| swr_v1_process_pool_ipc_set_listener(ipc, socket));
-    0
+    true
 }
 
 /// `ProcessPool::response(data, length)`: append to the stream connection's reply.
+/// False, setting `SW_ERROR_INVALID_PARAMS`, when there is no connection to answer.
 #[must_use]
-pub fn response(pool: PoolRef<'_>, data: &[u8]) -> c_int {
-    if pool
+pub fn response(pool: PoolRef<'_>, data: &[u8]) -> bool {
+    let written = pool
         .record()
         .with_ipc(|ipc| swr_v1_process_pool_ipc_respond(ipc, data))
-        .unwrap_or(false)
-    {
-        0
-    } else {
+        .unwrap_or(false);
+    if !written {
         // SW_ERROR_INVALID_PARAMS.
         swoole_rs_corebase::log::set_last_error(505);
-        -1
     }
+    written
 }
 
 /// `ProcessPool::send_message(worker_id, message, length)`: to the worker's
@@ -378,10 +374,10 @@ pub fn send_message(pool: PoolRef<'_>, worker_id: u32, message: &[u8]) -> bool {
 ///
 /// The pool's box is the one `create` made with `SW_CHAN_LOCK`.
 #[must_use]
-pub fn pop_message(pool: PoolRef<'_>, data: &mut [u8]) -> c_int {
+pub fn pop_message(pool: PoolRef<'_>, data: &mut [u8]) -> Option<usize> {
     pool.record()
         .message_box_channel()
-        .map_or(-1, |message_box| message_box.pop(data, true))
+        .and_then(|message_box| message_box.pop(data, true))
 }
 
 /// `Worker::set_max_request(max_request, grace)`: this process's request limit.
@@ -650,10 +646,7 @@ pub(crate) mod tests {
         pool.ipc = pool_ipc_new(true);
         pool.ipc_mode = crate::process_pool::IpcMode::UnixSock;
         let refused = listen(&pool, c"127.0.0.1", 9501, || make(1, 9501));
-        assert_eq!(
-            refused, -1,
-            "an SW_IPC_UNIXSOCK pool has no stream listener"
-        );
+        assert!(!refused, "an SW_IPC_UNIXSOCK pool has no stream listener");
         assert_eq!(
             logged("ProcessPool::listen"),
             [(
@@ -666,14 +659,14 @@ pub(crate) mod tests {
         );
         pool.ipc_mode = crate::process_pool::IpcMode::Socket;
         let failed = listen(&pool, c"127.0.0.1", 9502, || make(1, 9502));
-        assert_eq!(failed, -1, "no socket, no listener");
+        assert!(!failed, "no socket, no listener");
         // SAFETY: the pool's IPC state.
         assert!(
             swr_v1_process_pool_ipc_listener(unsafe { &*pool.ipc }).is_null(),
             "none kept"
         );
         let listened = listen(&pool, c"127.0.0.1", 9501, || make(1, 9501));
-        assert_eq!(listened, 0, "listening");
+        assert!(listened, "listening");
         // SAFETY: the pool's IPC state.
         let listener = swr_v1_process_pool_ipc_listener(unsafe { &*pool.ipc });
         assert_eq!(
@@ -698,7 +691,7 @@ pub(crate) mod tests {
         let mut pool: PoolRecord = unsafe { std::mem::zeroed() };
         let mut out = [0u8; 16];
         let none = pop_message(PoolRef::from(&mut pool), &mut out);
-        assert_eq!(none, -1, "no box");
+        assert_eq!(none, None, "no box");
         let mut memory = vec![0u64; swr_v1_memory_channel_bytes(256, 16).div_ceil(8)];
         let record = memory.as_mut_ptr().cast::<Record>();
         // SAFETY: the buffer is aligned and as long as the record needs; 2 is SW_CHAN_LOCK.
@@ -710,22 +703,14 @@ pub(crate) mod tests {
         pool.message_box = record.cast();
         for message in [&b"first"[..], b"second"] {
             // SAFETY: the record made above.
-            assert_eq!(unsafe { &*record }.push(message), 0, "pushed");
+            assert!(unsafe { &*record }.push(message), "pushed");
         }
         let n = pop_message(PoolRef::from(&mut pool), &mut out);
-        assert_eq!(
-            &out[..usize::try_from(n).unwrap_or(0)],
-            b"first",
-            "oldest first"
-        );
+        assert_eq!(&out[..n.unwrap_or(0)], b"first", "oldest first");
         let n = pop_message(PoolRef::from(&mut pool), &mut out);
-        assert_eq!(
-            &out[..usize::try_from(n).unwrap_or(0)],
-            b"second",
-            "then the next"
-        );
+        assert_eq!(&out[..n.unwrap_or(0)], b"second", "then the next");
         let n = pop_message(PoolRef::from(&mut pool), &mut out);
-        assert_eq!(n, -1, "then empty");
+        assert_eq!(n, None, "then empty");
     }
 
     #[test]
@@ -733,11 +718,7 @@ pub(crate) mod tests {
         // SAFETY: a zeroed record is a pool before `create`.
         let mut pool: PoolRecord = unsafe { std::mem::zeroed() };
         pool.ipc = pool_ipc_new(true);
-        assert_eq!(
-            response(PoolRef::from(&mut pool), b"ok"),
-            -1,
-            "no connection"
-        );
+        assert!(!response(PoolRef::from(&mut pool), b"ok"), "no connection");
         assert_eq!(
             swoole_rs_corebase::log::last_error(),
             505,

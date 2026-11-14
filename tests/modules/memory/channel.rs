@@ -26,7 +26,7 @@ fn channel_fifo_spill_wrap_peek_and_capacity_match_independent_model() {
         seed ^= seed << 17;
         if seed & 3 != 0 {
             let bytes = vec![seed.c_cast::<u8>(); (seed % 25) as usize];
-            if swr_v1_memory_channel_in(&mut c, &bytes) == 0 {
+            if swr_v1_memory_channel_in(&mut c, &bytes) {
                 model.push_back(bytes);
             }
         } else {
@@ -40,16 +40,16 @@ fn channel_fifo_spill_wrap_peek_and_capacity_match_independent_model() {
             );
             if let Some(front) = model.front() {
                 if front.len() <= capacity.c_cast::<usize>() {
-                    assert_eq!(status, front.len().c_cast::<i32>());
+                    assert_eq!(status, Some(front.len()));
                     assert_eq!(&output[..front.len()], front);
                     if consume != 0 {
                         model.pop_front();
                     }
                 } else {
-                    assert_eq!(status, -1);
+                    assert_eq!(status, None);
                 }
             } else {
-                assert_eq!(status, -1);
+                assert_eq!(status, None);
             }
         }
         assert_eq!(c.num.c_cast::<usize>(), model.len());
@@ -83,7 +83,7 @@ fn invalid_wrap_tags_reject_push_peek_and_pop_without_writes() {
             };
             let before = state(&c);
             let byte = 42u8;
-            assert_eq!(swr_v1_memory_channel_in(&mut c, &[byte]), -1);
+            assert!(!swr_v1_memory_channel_in(&mut c, &[byte]));
             assert_eq!(state(&c), before);
             assert_eq!(memory, [0xab; 16]);
 
@@ -99,7 +99,10 @@ fn invalid_wrap_tags_reject_push_peek_and_pop_without_writes() {
             let before = state(&c);
             for consume in [false, true] {
                 let mut output = [0xcdu8; 4];
-                assert_eq!(swr_v1_memory_channel_out(&mut c, &mut output, consume), -1);
+                assert_eq!(
+                    swr_v1_memory_channel_out(&mut c, &mut output, consume),
+                    None
+                );
                 assert_eq!(state(&c), before);
                 assert_eq!(memory, before_memory);
                 assert_eq!(output, [0xcd; 4]);
@@ -145,16 +148,15 @@ fn invalid_configuration_is_rejected_before_accessing_queue_storage() {
         let before_memory = memory;
         let before = (c.head, c.tail, c.head_tag, c.tail_tag, c.num, c.bytes);
         let input = 42u8;
-        assert_eq!(
-            swr_v1_memory_channel_in(&mut c, &[input]),
-            -1,
+        assert!(
+            !swr_v1_memory_channel_in(&mut c, &[input]),
             "push boundary {case}"
         );
         for consume in [false, true] {
             let mut output = [0xcdu8; 4];
             assert_eq!(
                 swr_v1_memory_channel_out(&mut c, &mut output, consume),
-                -1,
+                None,
                 "output boundary {case}"
             );
             assert_eq!(output, [0xcd; 4]);
@@ -201,7 +203,7 @@ fn every_short_copy_width_and_spilled_record_preserves_exact_payload_and_boundar
                 c.mem = memory.as_mut_ptr();
             }
             let start = c.tail.c_cast::<usize>();
-            assert_eq!(swr_v1_memory_channel_in(&mut c, &input), 0);
+            assert!(swr_v1_memory_channel_in(&mut c, &input));
             assert_eq!(&memory[..start], vec![0xab; start]);
             assert_eq!(&memory[start + 4..start + 4 + length], input);
             assert!(
@@ -214,7 +216,7 @@ fn every_short_copy_width_and_spilled_record_preserves_exact_payload_and_boundar
                 let mut output = vec![0xcdu8; length];
                 assert_eq!(
                     swr_v1_memory_channel_out(&mut c, &mut output, consume),
-                    length.c_cast::<i32>()
+                    Some(length)
                 );
                 assert_eq!(output, input);
                 if !consume {
@@ -246,14 +248,14 @@ fn record_locks_signals_and_prints_like_native_channel() {
         );
         let live = unsafe { &*record };
         assert_eq!(live.queue(|queue| queue.mem), record.wrapping_add(1).cast());
-        assert_eq!(live.push(b"life"), 0);
+        assert!(live.push(b"life"));
         let mut output = [0u8; 32];
-        assert_eq!(live.pop(&mut output, false), 4);
-        assert_eq!(live.pop(&mut output, true), 4);
+        assert_eq!(live.pop(&mut output, false), Some(4));
+        assert_eq!(live.pop(&mut output, true), Some(4));
         assert_eq!(&output[..4], b"life");
         if flags & NOTIFY != 0 {
-            assert_eq!(live.signal(true), 0, "notify");
-            assert_eq!(live.signal(false), 0, "wait");
+            assert!(live.signal(true), "notify");
+            assert!(live.signal(false), "wait");
         }
         unsafe { swr_v1_memory_channel_close(record) };
     }
@@ -321,18 +323,21 @@ impl Native {
     fn live(&self) -> &Record {
         unsafe { &*self.record() }
     }
+    /// `push`: 0, or -1 (`SW_ERR`) when it doesn't fit.
     fn push(&self, data: &[u8]) -> i32 {
-        self.live().push(data)
+        if self.live().push(data) { 0 } else { -1 }
     }
     /// `pop` (`consume`) or `peek`: -1 (`SW_ERR`) when empty.
     fn take(&self, buf: &mut [u8], consume: u32) -> i32 {
-        self.live().pop(buf, consume != 0)
+        self.live()
+            .pop(buf, consume != 0)
+            .map_or(-1, CCast::c_cast::<i32>)
     }
     fn wait(&self) -> i32 {
-        self.live().signal(false)
+        if self.live().signal(false) { 0 } else { -1 }
     }
     fn notify(&self) -> i32 {
-        self.live().signal(true)
+        if self.live().signal(true) { 0 } else { -1 }
     }
 }
 

@@ -456,16 +456,16 @@ impl Co {
     }
 
     /// `Reactor::change`'s add (`add`) or set of the open socket for `events`, on the
-    /// thread's reactor: 0, or -1 without a socket or a reactor. The record's own
+    /// thread's reactor: false without a socket or a reactor. The record's own
     /// network socket, which `~Socket()` takes off the reactor as it frees it.
     #[must_use]
-    pub fn register(self, add: bool, events: c_int) -> c_int {
+    pub fn register(self, add: bool, events: c_int) -> bool {
         use swoole_rs_reactor::event_api::{event_add, event_set};
         let change = if add { event_add } else { event_set };
         self.record()
             .socket
             .get()
-            .map_or(-1, |network| change(network, events))
+            .is_some_and(|network| change(network, events) == 0)
     }
 
     /// `Reactor::interest(socket, kind, 0)` of the open socket on the thread's reactor,

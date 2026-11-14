@@ -305,15 +305,16 @@ fn start_child(worker: Worker<'_>, this: &Value) -> c_int {
         (worker.redirect_stdout, libc::STDOUT_FILENO),
         (worker.redirect_stderr, libc::STDERR_FILENO),
     ] {
-        if redirect && swoole_rs_corebase::sys::dup2(worker.pipe, target) < 0 {
+        // Without a pipe, `dup2(-1, …)` fails as upstream's does.
+        if redirect && swoole_rs_corebase::sys::dup2(worker.pipe.unwrap_or(-1), target) < 0 {
             sys(E_WARNING, &message!("dup2() failed"));
         }
     }
     crate::signal::clean();
     if let Some(props) = this.props(Some(&PROCESS)) {
         props.long(c"pid", i64::from(worker.pid));
-        if worker.pipe >= 0 {
-            props.long(c"pipe", i64::from(worker.pipe));
+        if let Some(pipe) = worker.pipe {
+            props.long(c"pipe", i64::from(pipe));
         }
     }
     let coroutine = this
@@ -364,9 +365,13 @@ fn construct(call: &Call) {
         return refuse(format!("{name} can only be used in PHP CLI mode"));
     }
     match host::construct_guard() {
-        1 => return refuse(format!("{name} can't be used in master process")),
-        2 => return refuse(format!("unable to create {name} with async-io threads")),
-        _ => {}
+        Err(host::ConstructRefusal::Master) => {
+            return refuse(format!("{name} can't be used in master process"));
+        }
+        Err(host::ConstructRefusal::AsyncThreads) => {
+            return refuse(format!("unable to create {name} with async-io threads"));
+        }
+        Ok(()) => {}
     }
     drop(name);
     // Upstream makes the worker before parsing, so a failed parse leaves it set.
@@ -404,8 +409,7 @@ fn construct(call: &Call) {
             } else {
                 libc::SOCK_DGRAM
             };
-            let fd = worker::open_pipe(worker, socket_type);
-            if fd < 0 {
+            let Some(fd) = worker::open_pipe(worker, socket_type) else {
                 call.throw(
                     swoole_rs_phpswoole::exception(),
                     c"failed to create unix soccket",
@@ -413,7 +417,7 @@ fn construct(call: &Call) {
                 );
                 call.set_bool(false);
                 return;
-            }
+            };
             call.update_property_long(Some(&PROCESS), c"pipe", i64::from(fd));
         }
     }
@@ -695,7 +699,7 @@ fn read(call: &Call) {
     let Some(worker) = checked(process) else {
         return;
     };
-    if view(worker).pipe < 0 {
+    if view(worker).pipe.is_none() {
         fatal(E_WARNING, &message!("no pipe, cannot read from pipe"));
         call.set_bool(false);
         return;
@@ -737,7 +741,7 @@ fn write(call: &Call) {
     let Some(worker) = checked(process) else {
         return;
     };
-    if view(worker).pipe < 0 {
+    if view(worker).pipe.is_none() {
         fatal(E_WARNING, &message!("no pipe, cannot write into pipe"));
         call.set_bool(false);
         return;
@@ -755,12 +759,12 @@ fn export_socket(call: &Call) {
     let Some(process) = this(call) else {
         return;
     };
-    let pipe = process.worker.get().map_or(-1, |worker| view(worker).pipe);
-    if pipe < 0 {
+    let pipe = process.worker.get().and_then(|worker| view(worker).pipe);
+    let Some(pipe) = pipe else {
         fatal(E_WARNING, &message!("no pipe, cannot export stream"));
         call.set_bool(false);
         return;
-    }
+    };
     let mut socket = process.socket.borrow_mut();
     if socket.is_none() {
         let stream = i64::from(process.pipe_type.get()) == PIPE_TYPE_STREAM;
@@ -948,7 +952,7 @@ fn close(call: &Call) {
         return;
     };
     let view = view(worker);
-    if view.pipe < 0 {
+    if view.pipe.is_none() {
         fatal(E_WARNING, &message!("no pipe, cannot close the pipe"));
         call.set_bool(false);
         return;
@@ -989,7 +993,7 @@ fn set_timeout(call: &Call) {
     let Some(worker) = checked(this(call)) else {
         return;
     };
-    if view(worker).pipe < 0 {
+    if view(worker).pipe.is_none() {
         fatal(E_WARNING, &message!("no pipe, cannot setTimeout the pipe"));
         call.set_bool(false);
         return;
@@ -1008,7 +1012,7 @@ fn set_blocking(call: &Call) {
     let Some(worker) = process
         .worker
         .get()
-        .filter(|worker| view(*worker).pipe >= 0)
+        .filter(|worker| view(*worker).pipe.is_some())
     else {
         fatal(E_WARNING, &message!("no pipe, cannot setBlocking the pipe"));
         call.set_bool(false);

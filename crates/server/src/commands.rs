@@ -182,7 +182,7 @@ pub(crate) fn send(serv: Server<'_>, c: &CommandSend<'_>) -> bool {
         };
         head(&mut info);
         let pool = serv.event_pool_ref();
-        return swoole_rs_process::methods::push_event(pool, &info, data) >= 0;
+        return swoole_rs_process::methods::push_event(pool, &info, data);
     }
     if c.target == Target::TaskWorker {
         let mut buf = swoole_rs_process::task_file::TaskBuffer::default();

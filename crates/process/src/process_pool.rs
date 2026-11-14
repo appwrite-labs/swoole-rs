@@ -957,8 +957,8 @@ pub(crate) trait PoolHost {
     /// `Channel::make(size, sizeof(EventData), SW_CHAN_LOCK | SW_CHAN_SHM)`: the
     /// pool's new message box, or null.
     fn new_box(&mut self, size: u64) -> *mut c_void;
-    /// `message_box->push(message)`, under the box's lock: 0, or -1.
-    fn push_box(&mut self, message: &[u8]) -> i64;
+    /// `message_box->push(message)`, under the box's lock: false when it fails.
+    fn push_box(&mut self, message: &[u8]) -> bool;
     /// Frees the pool's message box, if it has one, and forgets it.
     fn free_box(&mut self);
 }
@@ -1015,11 +1015,11 @@ impl PoolHost for Native<'_> {
         new_message_box(size, self.native.event_size())
     }
 
-    fn push_box(&mut self, message: &[u8]) -> i64 {
+    fn push_box(&mut self, message: &[u8]) -> bool {
         self.pool
             .record()
             .message_box_channel()
-            .map_or(SW_ERR, |channel| channel.push(message).into())
+            .is_some_and(|channel| channel.push(message))
     }
 
     fn free_box(&mut self) {
@@ -1764,7 +1764,7 @@ impl<H: PoolHost> Pool<'_, H> {
         }
         // An EventData's bytes, which each pop overwrites.
         let mut event = [0; swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize];
-        while crate::methods::pop_message(self.p, &mut event) > 0 {
+        while crate::methods::pop_message(self.p, &mut event).is_some_and(|length| length > 0) {
             if !self.running() {
                 continue;
             }
@@ -1846,25 +1846,22 @@ impl<H: PoolHost> Pool<'_, H> {
 
     /// `ProcessPool::push_message(msg)`: the `EventData` with `head` and `data` into
     /// the message box, then wake the master.
-    fn push_event(&mut self, head: &DataHead, data: &[u8]) -> i64 {
+    fn push_event(&mut self, head: &DataHead, data: &[u8]) -> bool {
         if self.message_box().is_null() || data.len() > self.h.event_size() - EVENT_DATA {
-            return SW_ERR;
+            return false;
         }
         let head = DataHead {
             len: u32::try_from(data.len()).unwrap_or(u32::MAX),
             ..*head
         };
         let message = [&head_view(&head)[..], data].concat();
-        if self.h.push_box(&message) < 0 {
-            return SW_ERR;
-        }
-        kill(self.master_pid(), libc::SIGIO).into()
+        self.h.push_box(&message) && kill(self.master_pid(), libc::SIGIO) == 0
     }
 
     /// `ProcessPool::push_message(type, data, length)`.
-    fn push(&mut self, kind: u8, data: &[u8]) -> i64 {
+    fn push(&mut self, kind: u8, data: &[u8]) -> bool {
         if self.message_box().is_null() {
-            return SW_ERR;
+            return false;
         }
         assert!(
             data.len() < self.h.event_size() - EVENT_DATA,
@@ -2066,7 +2063,7 @@ pub fn swr_v1_process_pool_push(
     pool: PoolRef<'_>,
     kind: u8,
     data: &[u8],
-) -> i64 {
+) -> bool {
     with(native, pool, |p| p.push(kind, data))
 }
 
@@ -2076,7 +2073,7 @@ pub fn swr_v1_process_pool_push_event(
     pool: PoolRef<'_>,
     head: &DataHead,
     data: &[u8],
-) -> i64 {
+) -> bool {
     with(native, pool, |p| p.push_event(head, data))
 }
 
@@ -2286,8 +2283,8 @@ mod tests {
         fn new_box(&mut self, size: u64) -> *mut c_void {
             pointer(self.op(ptr::null_mut(), Op::NewMessageBox, size))
         }
-        fn push_box(&mut self, message: &[u8]) -> i64 {
-            self.op(ptr::null_mut(), Op::BoxPush, message.len() as u64)
+        fn push_box(&mut self, message: &[u8]) -> bool {
+            self.op(ptr::null_mut(), Op::BoxPush, message.len() as u64) >= 0
         }
         fn free_box(&mut self) {
             if let Some(mut record) = self.record
@@ -2584,10 +2581,10 @@ mod tests {
     fn push_message_needs_a_message_box_then_wakes_the_master() {
         let mut fixture = Fixture::new(0);
         let mut pool = fixture.pool(Script::default());
-        assert_eq!(pool.push(1, b"ab"), SW_ERR);
+        assert!(!pool.push(1, b"ab"));
         record(&mut pool).message_box = ptr::dangling_mut();
         pool.h.answers.insert(Op::BoxPush, -1);
-        assert_eq!(pool.push(1, b"ab"), SW_ERR);
+        assert!(!pool.push(1, b"ab"));
         assert_eq!(ops(&pool), [Op::BoxPush]);
     }
 

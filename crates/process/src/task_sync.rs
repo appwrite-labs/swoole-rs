@@ -170,9 +170,15 @@ impl<'a> ResultSlot<'a> {
 
 /// Copies `data` over the start of `words`, a word at a time; the bytes after it stay.
 fn copy_words(words: &[AtomicU32], data: &[u8]) {
-    for (word, chunk) in words.iter().zip(data.chunks(4)) {
+    let (whole, tail) = data.as_chunks::<4>();
+    let mut words = words.iter();
+    // `whole` leads the zip, so its end takes no word from `words`.
+    for (&bytes, word) in whole.iter().zip(words.by_ref()) {
+        word.store(u32::from_ne_bytes(bytes), Ordering::Relaxed);
+    }
+    if let Some(word) = words.next().filter(|_| !tail.is_empty()) {
         let mut bytes = word.load(Ordering::Relaxed).to_ne_bytes();
-        for (to, from) in bytes.iter_mut().zip(chunk) {
+        for (to, from) in bytes.iter_mut().zip(tail) {
             *to = *from;
         }
         word.store(u32::from_ne_bytes(bytes), Ordering::Relaxed);
@@ -441,6 +447,19 @@ fn now() -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copy_words_keeps_the_tail_in_place() {
+        let words: Vec<AtomicU32> = (0..20).map(|_| AtomicU32::new(u32::MAX)).collect();
+        let data: Vec<u8> = (0..59).collect();
+        copy_words(&words, &data);
+        let read: Vec<u8> = words
+            .iter()
+            .flat_map(|word| word.load(Ordering::Relaxed).to_ne_bytes())
+            .collect();
+        assert_eq!(read[..59], data[..]);
+        assert!(read[59..].iter().all(|&byte| byte == 0xff));
+    }
 
     /// A scripted server: dispatch results, notifications.
     #[derive(Default)]

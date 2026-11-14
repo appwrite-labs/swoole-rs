@@ -107,7 +107,7 @@ mod tests {
                     let status = unsafe {
                         (*handle).push(EntryKind::Sendfile, std::ptr::dangling_mut(), Some(keep))
                     };
-                    assert_eq!(status, 0);
+                    assert_eq!(status, Ok(()));
                 }
                 EntryKind::Data => buffer.append(b"x"),
             }
