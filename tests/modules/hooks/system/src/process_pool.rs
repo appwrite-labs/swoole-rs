@@ -345,19 +345,21 @@ unsafe fn pool_dispatch_sync(
     worker_id: *mut c_int,
 ) -> c_int {
     // SAFETY: as the caller guarantees.
-    unsafe {
+    let sent = unsafe {
         pm::dispatch(
             swoole_rs_process::process_pool::PoolRef::new(pool.cast()),
             swoole_rs_process::task_file::Packed::from_raw(data.cast()),
             &mut *worker_id,
             true,
         )
-    }
+    };
+    if sent { SW_OK } else { SW_ERR }
 }
 
 unsafe fn pool_start(pool: *mut Pool) -> c_int {
     // SAFETY: as the caller guarantees.
-    unsafe { pm::start(swoole_rs_process::process_pool::PoolRef::new(pool.cast())) }
+    let started = unsafe { pm::start(swoole_rs_process::process_pool::PoolRef::new(pool.cast())) };
+    if started { SW_OK } else { SW_ERR }
 }
 
 unsafe fn pool_wait(pool: *mut Pool) -> c_int {
@@ -402,7 +404,10 @@ unsafe fn pool_stop(pool: *mut Pool, worker: *mut Worker) {
 
 unsafe fn pool_create_message_bus(pool: *mut Pool) -> c_int {
     // SAFETY: as the caller guarantees.
-    unsafe { pm::create_message_bus(swoole_rs_process::process_pool::PoolRef::new(pool.cast())) }
+    let created = unsafe {
+        pm::create_message_bus(swoole_rs_process::process_pool::PoolRef::new(pool.cast()))
+    };
+    if created { SW_OK } else { SW_ERR }
 }
 
 unsafe fn pool_push_message(

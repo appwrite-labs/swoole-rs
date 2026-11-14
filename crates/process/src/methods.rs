@@ -109,11 +109,11 @@ macro_rules! run_methods {
 }
 
 run_methods! {
-    fn create_message_box(size: usize) -> c_int = Run::CreateMessageBox(size as u64);
-    fn create_message_bus() -> c_int = Run::CreateMessageBus;
+    fn create_message_box(size: usize) -> bool = Run::CreateMessageBox(size as u64);
+    fn create_message_bus() -> bool = Run::CreateMessageBus;
     fn set_protocol(protocol: Protocol) -> () = Run::SetProtocol(protocol);
-    fn start_check() -> c_int = Run::StartCheck;
-    fn start() -> c_int = Run::Start;
+    fn start_check() -> bool = Run::StartCheck;
+    fn start() -> bool = Run::Start;
     fn drop_reload_task() -> () = Run::DropReloadTask;
     fn reload() -> bool = Run::Reload;
     fn reopen_logger() -> () = Run::ReopenLogger;
@@ -188,14 +188,8 @@ pub fn dispatch(
     task: Packed<'_>,
     worker_id: &mut c_int,
     blocking: bool,
-) -> c_int {
-    c_int::narrow(swr_v1_process_pool_dispatch_event(
-        native(),
-        pool,
-        task.bytes(),
-        worker_id,
-        blocking,
-    ))
+) -> bool {
+    swr_v1_process_pool_dispatch_event(native(), pool, task.bytes(), worker_id, blocking)
 }
 
 /// `ProcessPool::add_worker(worker)`: keeps an existing entry for the pid; nothing

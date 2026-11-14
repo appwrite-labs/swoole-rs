@@ -134,7 +134,7 @@ pub(crate) fn factory_start(serv: view::Server<'_>) -> bool {
     };
     crate::process_factory::native::create_worker_pipes(serv)
         && create_event_workers(serv)
-        && (config.task_worker_num.get() == 0 || start_check(serv.task_pool_ref()) >= 0)
+        && (config.task_worker_num.get() == 0 || start_check(serv.task_pool_ref()))
         && (serv.workers().user_count == 0 || user_workers())
 }
 

@@ -1371,7 +1371,7 @@ impl<H: PoolHost> Pool<'_, H> {
         }
         self.set_workers(workers);
         self.set_worker_num(worker_num);
-        if self.create_message_box(SW_MESSAGE_BOX_SIZE) < 0 {
+        if !self.create_message_box(SW_MESSAGE_BOX_SIZE) {
             return false;
         }
         match mode {
@@ -1414,29 +1414,29 @@ impl<H: PoolHost> Pool<'_, H> {
     }
 
     /// `ProcessPool::create_message_box`.
-    fn create_message_box(&mut self, size: u64) -> i64 {
+    fn create_message_box(&mut self, size: u64) -> bool {
         let message_box = self.h.new_box(size);
         if message_box.is_null() {
-            return SW_ERR;
+            return false;
         }
         self.set_message_box(message_box);
-        SW_OK
+        true
     }
 
     /// `ProcessPool::create_message_bus`.
-    fn create_message_bus(&mut self) -> i64 {
+    fn create_message_bus(&mut self) -> bool {
         if self.ipc_mode() != IpcMode::UnixSock {
             self.op(Op::Log(Log::NeedsUnixsock), 0);
-            return SW_ERR;
+            return false;
         }
         if !self.message_bus().is_null() {
             self.op(Op::Log(Log::BusExists), 0);
-            return SW_ERR;
+            return false;
         }
         let bus = pointer::<c_void>(self.op(Op::NewMessageBus, 0));
         if bus.is_null() {
             self.op(Op::Log(Log::Alloc), 1);
-            return SW_ERR;
+            return false;
         }
         self.set_message_bus(bus);
         #[cfg(target_os = "linux")]
@@ -1452,11 +1452,7 @@ impl<H: PoolHost> Pool<'_, H> {
         };
         #[cfg(not(target_os = "linux"))]
         let size = SW_IPC_MAX_SIZE;
-        if self.op(Op::BusBuffer, size) == 0 {
-            SW_ERR
-        } else {
-            SW_OK
-        }
+        self.op(Op::BusBuffer, size) != 0
     }
 
     /// `ProcessPool::set_protocol`: how the workers receive (`crate::pool`'s loops).
@@ -1479,14 +1475,14 @@ impl<H: PoolHost> Pool<'_, H> {
     }
 
     /// `ProcessPool::start_check`.
-    fn start_check(&mut self) -> i64 {
+    fn start_check(&mut self) -> bool {
         if self.ipc_mode() == IpcMode::Socket
             && self
                 .with_ipc(|ipc| swr_v1_process_pool_ipc_listener(ipc).is_null())
                 .unwrap_or(true)
         {
             self.op(Op::Log(Log::MustListen), 0);
-            return SW_ERR;
+            return false;
         }
         self.set_running(true);
         self.set_started(true);
@@ -1503,23 +1499,23 @@ impl<H: PoolHost> Pool<'_, H> {
             worker.set_kind(self.kind());
             self.on(worker.raw(), Op::UnlimitPipes, 0);
         }
-        SW_OK
+        true
     }
 
     /// `ProcessPool::start`.
-    fn start(&mut self) -> Result<i64, Bailed> {
-        if self.start_check() < 0 {
-            return Ok(SW_ERR);
+    fn start(&mut self) -> Result<bool, Bailed> {
+        if !self.start_check() {
+            return Ok(false);
         }
         if self.on_start().is_some() {
             self.h.callback(Callback::Start, ptr::null_mut())?;
         }
         for index in 0..self.worker_num() {
             if self.spawn(self.worker(index))? < 0 {
-                return Ok(SW_ERR);
+                return Ok(false);
             }
         }
-        Ok(SW_OK)
+        Ok(true)
     }
 
     /// `ProcessPool::spawn`: fork `worker`, which runs its loop and exits.
@@ -1689,7 +1685,7 @@ impl<H: PoolHost> Pool<'_, H> {
                 return SW_ERR;
             }
             // The loop reads the bus: without one (it couldn't be made) there's no loop.
-            if self.message_bus().is_null() && self.create_message_bus() < 0 {
+            if self.message_bus().is_null() && !self.create_message_bus() {
                 return SW_ERR;
             }
         }
@@ -1872,13 +1868,13 @@ impl<H: PoolHost> Pool<'_, H> {
     /// `ProcessPool::dispatch`/`dispatch_sync(EventData *)`: to the stream
     /// listener, or a worker's pipe or queue (scheduled when `*worker_id` is
     /// negative). An `event` shorter than its head's length is refused.
-    fn dispatch(&mut self, event: &[u8], worker_id: &mut c_int, blocking: bool) -> i64 {
+    fn dispatch(&mut self, event: &[u8], worker_id: &mut c_int, blocking: bool) -> bool {
         let Some(&len) = event.get(EVENT_LEN..).and_then(<[u8]>::first_chunk) else {
-            return SW_ERR;
+            return false;
         };
         let size = u32::from_ne_bytes(len).saturating_add(HEAD_SIZE);
         let Some(event) = event.get(..size as usize) else {
-            return SW_ERR;
+            return false;
         };
         if self.use_socket() {
             let send = |ipc: Option<&PoolIpc>| {
@@ -1887,7 +1883,7 @@ impl<H: PoolHost> Pool<'_, H> {
             let sent = self
                 .with_ipc(|ipc| send(Some(ipc)))
                 .unwrap_or_else(|| send(None));
-            return if sent { SW_OK } else { SW_ERR };
+            return sent;
         }
         if *worker_id < 0 {
             *worker_id = if self.schedule_by_sysvmsg() {
@@ -1897,7 +1893,7 @@ impl<H: PoolHost> Pool<'_, H> {
             };
         }
         let Some(native) = self.h.native() else {
-            return SW_ERR;
+            return false;
         };
         let workers = |index| {
             u32::try_from(index)
@@ -1905,7 +1901,7 @@ impl<H: PoolHost> Pool<'_, H> {
                 .filter(|&index| index < self.worker_num())
                 .map(|index| self.worker_at(index))
         };
-        let sent = crate::pool::pool_dispatch(
+        crate::pool::pool_dispatch(
             native,
             self.p,
             workers,
@@ -1914,8 +1910,7 @@ impl<H: PoolHost> Pool<'_, H> {
             worker_id,
             event,
             blocking,
-        );
-        if sent { SW_OK } else { SW_ERR }
+        )
     }
 
     /// `ProcessPool::schedule`: the next idle worker, round robin; the last one
@@ -2081,7 +2076,7 @@ pub fn swr_v1_process_pool_dispatch_event(
     event: &[u8],
     worker_id: &mut c_int,
     blocking: bool,
-) -> i64 {
+) -> bool {
     with(native, pool, |p| p.dispatch(event, worker_id, blocking))
 }
 
@@ -2131,14 +2126,14 @@ pub(crate) fn run_op(
 impl<H: PoolHost> Pool<'_, H> {
     fn run(&mut self, worker: *mut WorkerRecord, run: Run) -> i64 {
         match run {
-            Run::CreateMessageBox(size) => self.create_message_box(size),
-            Run::CreateMessageBus => self.create_message_bus(),
+            Run::CreateMessageBox(size) => self.create_message_box(size).into(),
+            Run::CreateMessageBus => self.create_message_bus().into(),
             Run::SetProtocol(protocol) => {
                 self.set_protocol(protocol);
                 SW_OK
             }
-            Run::StartCheck => self.start_check(),
-            Run::Start => raise_or(self.start()),
+            Run::StartCheck => self.start_check().into(),
+            Run::Start => raise_or(self.start().map(i64::from)),
             Run::Spawn => raise_or(self.spawn(worker)),
             Run::Stop => {
                 self.stop(worker);
@@ -2457,7 +2452,7 @@ mod tests {
         let mut pool = fixture.pool(Script::default());
         pool.set_start_id(5);
         pool.set_kind(4);
-        assert_eq!(pool.start_check(), SW_OK);
+        assert!(pool.start_check());
         assert!(pool.running() && record(&mut pool).started);
         assert_eq!(pool.master_pid(), getpid());
         // SAFETY: the fixture's records.
@@ -2473,7 +2468,7 @@ mod tests {
         let mut pool = fixture.pool(Script::default());
         pool.set_ipc_mode(IpcMode::Socket);
         pool.set_ipc(pool_ipc_new(true));
-        assert_eq!(pool.start_check(), SW_ERR);
+        assert!(!pool.start_check());
         assert_eq!(ops(&pool), [Op::Log(Log::MustListen)]);
         pool.destroy();
     }
@@ -2605,7 +2600,7 @@ mod tests {
         let mut worker_id = -1;
         // Blocking, then over a stream (upstream's async dispatch).
         for blocking in [true, false] {
-            assert_eq!(pool.dispatch(&event, &mut worker_id, blocking), SW_OK);
+            assert!(pool.dispatch(&event, &mut worker_id, blocking));
             let mut received = Vec::new();
             listener
                 .accept()
@@ -2627,7 +2622,7 @@ mod tests {
         crate::pool::swr_v1_process_pool_ipc_address(unsafe { &mut *ipc }, &file, 0);
         record(&mut pool).ipc = ipc;
         for blocking in [true, false] {
-            assert_eq!(pool.dispatch(&event, &mut worker_id, blocking), SW_ERR);
+            assert!(!pool.dispatch(&event, &mut worker_id, blocking));
         }
         record(&mut pool).ipc = ptr::null_mut();
         // SAFETY: as above.
