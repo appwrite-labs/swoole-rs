@@ -1,12 +1,11 @@
-//! Incremental legacy byte-range parsing; native constructs response headers/tasks.
+//! Incremental legacy byte-range parsing for the owned static HTTP context.
 use super::{HttpSpan, INVALID};
-#[repr(C)]
 #[derive(Default)]
 pub(crate) struct HttpRangeState {
-    pub(crate) cursor: usize,
-    pub(crate) total: usize,
-    pub(crate) started: u32,
-    pub(crate) done: u32,
+    cursor: usize,
+    total: usize,
+    started: bool,
+    done: bool,
 }
 fn decimal(input: &[u8], at: &mut usize) -> Option<usize> {
     let start = *at;
@@ -28,7 +27,7 @@ fn next(input: &[u8], size: usize, state: &mut HttpRangeState) -> Result<Option<
     if state.cursor > input.len() {
         return Err(INVALID);
     }
-    if state.done != 0 {
+    if state.done {
         return Ok(None);
     }
     loop {
@@ -67,7 +66,7 @@ fn next(input: &[u8], size: usize, state: &mut HttpRangeState) -> Result<Option<
             state.cursor = at + 1;
         } else {
             state.cursor = at;
-            state.done = 1;
+            state.done = true;
         }
         if start < end {
             let length = end - start;
@@ -78,9 +77,9 @@ fn next(input: &[u8], size: usize, state: &mut HttpRangeState) -> Result<Option<
             }));
         }
         if start == 0 {
-            state.done = 1;
+            state.done = true;
         }
-        if state.done != 0 {
+        if state.done {
             return Ok(None);
         }
     }
@@ -88,14 +87,14 @@ fn next(input: &[u8], size: usize, state: &mut HttpRangeState) -> Result<Option<
 impl HttpRangeState {
     pub(crate) fn step(&mut self, input: &[u8], size: usize, span: &mut HttpSpan) -> i32 {
         *span = HttpSpan::default();
-        if self.started == 0 {
-            self.started = 1;
+        if !self.started {
+            self.started = true;
             if input.is_empty() {
-                self.done = 1;
+                self.done = true;
                 return 0;
             }
             if !crate::case_prefix(input, b"bytes=") {
-                self.done = 1;
+                self.done = true;
                 return 2;
             }
             self.cursor = 6;
@@ -107,7 +106,7 @@ impl HttpRangeState {
             }
             Ok(None) => 0,
             Err(status) => {
-                self.done = 1;
+                self.done = true;
                 status
             }
         }
