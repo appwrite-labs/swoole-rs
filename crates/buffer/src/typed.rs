@@ -1,5 +1,5 @@
 //! The queue's front cursor and its native tokens (sendfile requests, CLOSE markers).
-use super::{Buffer, EMPTY, Entry, INVALID, NOMEM, OK, c_void};
+use super::{Buffer, Entry, Error, c_void};
 
 type Dispose = Option<unsafe extern "C" fn(*mut c_void)>;
 
@@ -65,18 +65,26 @@ impl Detached {
 
 impl Buffer {
     /// Transfer a native sendfile token, or enqueue a payload-free CLOSE marker (with or
-    /// without a token); a data entry has no token, so is `INVALID`. Custody transfers on
-    /// OK only.
+    /// without a token); a data entry has no token, so is `Invalid`. Custody transfers on
+    /// `Ok` only.
+    /// # Errors
+    /// `Invalid` for a data kind or a token that does not match it, `NoMem` when the queue
+    /// cannot grow.
     /// # Safety
     /// `value` is unique to this queue, and `dispose(value)` is sound once and doesn't
     /// unwind; Rust stores the function address and only [`Detached::dispose`] calls it.
-    pub unsafe fn push(&mut self, kind: Kind, value: *mut c_void, dispose: Dispose) -> i32 {
+    pub unsafe fn push(
+        &mut self,
+        kind: Kind,
+        value: *mut c_void,
+        dispose: Dispose,
+    ) -> Result<(), Error> {
         if !match kind {
             Kind::Sendfile => !value.is_null() && dispose.is_some(),
             Kind::Close => value.is_null() == dispose.is_none(),
             Kind::Data => false,
         } {
-            return INVALID;
+            return Err(Error::Invalid);
         }
         self.push_token(Token {
             kind,
@@ -86,7 +94,9 @@ impl Buffer {
     }
 
     /// Enqueue a payload-free CLOSE marker.
-    pub fn push_close(&mut self) -> i32 {
+    /// # Errors
+    /// `NoMem` when the queue cannot grow.
+    pub fn push_close(&mut self) -> Result<(), Error> {
         self.push_token(Token {
             kind: Kind::Close,
             value: std::ptr::null_mut(),
@@ -94,25 +104,25 @@ impl Buffer {
         })
     }
 
-    fn push_token(&mut self, token: Token) -> i32 {
+    fn push_token(&mut self, token: Token) -> Result<(), Error> {
         if self.entries.try_reserve(1).is_err() {
-            return NOMEM;
+            return Err(Error::NoMem);
         }
         self.entries.push_back(Entry::TypedToken(token));
-        OK
+        Ok(())
     }
 
     /// The first entry's facts. A data entry's bytes stay the queue's until it is popped.
     /// # Errors
-    /// `EMPTY` for an empty queue.
-    pub fn front(&self) -> Result<Front, i32> {
+    /// `Empty` for an empty queue.
+    pub fn front(&self) -> Result<Front, Error> {
         let mut result = Front {
             offset: self.cursor.offset,
             generation: self.cursor.generation,
             ..Front::default()
         };
         match self.entries.front() {
-            None => return Err(EMPTY),
+            None => return Err(Error::Empty),
             Some(Entry::Data(bytes)) => {
                 result.length = super::chunk_length(bytes);
                 result.data = bytes.as_ptr().cast_mut();
@@ -136,28 +146,30 @@ impl Buffer {
 
     /// Commit a positive ordinary DATA send against the observed front identity.
     /// This updates only the cursor, retaining full queued-byte accounting until pop.
-    pub fn consume(&mut self, generation: u64, offset: u32, count: u32) -> i32 {
+    /// # Errors
+    /// `Invalid` when the front is not that data entry or `count` passes its end.
+    pub fn consume(&mut self, generation: u64, offset: u32, count: u32) -> Result<(), Error> {
         let cursor = &mut self.cursor;
         let Some(Entry::Data(bytes)) = self.entries.front() else {
-            return INVALID;
+            return Err(Error::Invalid);
         };
         if generation != cursor.generation
             || offset != cursor.offset
             || count > super::chunk_length(bytes) - cursor.offset
         {
-            return INVALID;
+            return Err(Error::Invalid);
         }
         cursor.offset += count;
-        OK
+        Ok(())
     }
 
     /// Detach exactly one entry. The caller takes the token's custody and disposes it
     /// outside the queue.
     /// # Errors
-    /// `EMPTY` for an empty queue.
-    pub fn pop(&mut self) -> Result<Detached, i32> {
+    /// `Empty` for an empty queue.
+    pub fn pop(&mut self) -> Result<Detached, Error> {
         let Some(entry) = self.entries.pop_front() else {
-            return Err(EMPTY);
+            return Err(Error::Empty);
         };
         let effect = match entry {
             Entry::Data(bytes) => {
@@ -193,10 +205,10 @@ mod tests {
         assert_eq!(mem::offset_of!(Front, token), 24);
         assert_eq!(mem::offset_of!(Front, generation), 32);
         let mut queue = Buffer::create(3).unwrap();
-        assert_eq!(queue.append(b"abcdefg"), OK);
+        assert_eq!(queue.append(b"abcdefg"), Ok(()));
         assert_eq!(
             unsafe { queue.push(Kind::Close, ptr::null_mut(), None) },
-            OK
+            Ok(())
         );
         let mut total = 7;
         for bytes in [b"abc".as_slice(), b"def".as_slice(), b"g".as_slice()] {
@@ -209,11 +221,11 @@ mod tests {
             );
             assert_eq!(queue.front_data(), bytes);
             let generation = view.generation;
-            assert_eq!(queue.consume(generation, 0, 1), OK);
+            assert_eq!(queue.consume(generation, 0, 1), Ok(()));
             let view = queue.front().unwrap();
             assert_eq!(view.offset, 1);
             assert_eq!(queue.length, total);
-            assert_eq!(queue.consume(generation, 1, view.length - 1), OK);
+            assert_eq!(queue.consume(generation, 1, view.length - 1), Ok(()));
             let detached = queue.pop().unwrap();
             assert!(detached.token.is_null() && detached.dispose.is_none());
             total -= u32::try_from(bytes.len()).unwrap();
@@ -222,14 +234,14 @@ mod tests {
         assert_eq!(queue.front().unwrap().kind, Kind::Close);
         assert_eq!(queue.front_data(), b"");
         queue.pop().unwrap();
-        assert_eq!(queue.front().err(), Some(EMPTY));
+        assert_eq!(queue.front().err(), Some(Error::Empty));
         let mut native_payload = 37u32;
         let token = ptr::from_mut(&mut native_payload).cast();
         // One reified pointer: each cast of `never_called` may get its own address.
         let dispose: unsafe extern "C" fn(*mut c_void) = never_called;
         assert_eq!(
             unsafe { queue.push(Kind::Sendfile, token, Some(dispose)) },
-            OK
+            Ok(())
         );
         let view = queue.front().unwrap();
         assert_eq!((view.kind, view.token), (Kind::Sendfile, token));

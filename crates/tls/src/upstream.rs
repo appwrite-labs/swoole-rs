@@ -44,12 +44,11 @@ const LOG_NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_
 const LOG_WARNING: c_int = 4;
 const FILE_EMPTY: c_int = 702;
 const INVALID_PARAMS: c_int = 505;
-/// `SW_SOCKET_CORK_MIN_SIZE` and the typed queue's `SWR_BUFFER_EMPTY`.
+/// `SW_SOCKET_CORK_MIN_SIZE`.
 const CORK_MIN_SIZE: usize = 65536;
 /// `SW_FD_STREAM_SERVER`.
 const FD_STREAM_SERVER: c_int = 1;
 const SOCK_CLOEXEC: c_int = SocketFlag::SW_SOCK_CLOEXEC as c_int;
-const BUFFER_EMPTY: i32 = 1;
 const VERIFY_FAILED: c_int = ErrorCode::SW_ERROR_SSL_VERIFY_FAILED as c_int;
 const BAD_PROTOCOL: c_int = ErrorCode::SW_ERROR_SSL_BAD_PROTOCOL as c_int;
 const EVENT_READ: c_int = EventType::SW_EVENT_READ as c_int;
@@ -818,8 +817,8 @@ pub fn sendfile_sync(
 
 /// A failed Rust queue status. Native `Buffer` raises it as a C++ exception that
 /// nothing catches, so the process ends either way; here it aborts.
-pub(crate) fn buffer_check(status: i32) {
-    if status != 0 {
+pub(crate) fn buffer_check(status: Result<(), swoole_rs_buffer::Error>) {
+    if status.is_err() {
         swoole_rs_corebase::fatal("a send queue operation failed");
     }
 }
@@ -936,7 +935,7 @@ pub fn socket_handle_sendfile(socket: Socket<'_>) -> c_int {
     if result.pop {
         match with_queue(socket, |queue| queue.map(swoole_rs_buffer::Buffer::pop)) {
             Some(Ok(detached)) => detached.dispose(),
-            Some(Err(BUFFER_EMPTY)) => {}
+            Some(Err(swoole_rs_buffer::Error::Empty)) => {}
             _ => swoole_rs_corebase::fatal("popping the send queue failed"),
         }
     }
@@ -963,7 +962,7 @@ pub fn socket_sendfile_async(
     let dispose: Option<unsafe extern "C" fn(*mut c_void)> = Some(SocketFileRequest::dispose);
     let status = with_queue(socket, |queue| {
         // SAFETY: the queue now owns the request, which only `dispose` frees.
-        queue.map_or(-1, |queue| unsafe {
+        queue.map_or(Err(swoole_rs_buffer::Error::Invalid), |queue| unsafe {
             queue.push(
                 swoole_rs_buffer::EntryKind::Sendfile,
                 request.cast(),
@@ -971,7 +970,7 @@ pub fn socket_sendfile_async(
             )
         })
     });
-    if status != 0 {
+    if status.is_err() {
         // SAFETY: the queue refused the request, which is still ours.
         unsafe { SocketFileRequest::dispose(request.cast()) };
         buffer_check(status);
@@ -1452,7 +1451,7 @@ mod tests {
                 dispose,
             )
         };
-        assert_eq!(queued, 0);
+        assert_eq!(queued, Ok(()));
         assert!(
             file_request(c"/nonexistent/x", 0, 0).is_none(),
             "a file that won't open is refused"
@@ -1460,7 +1459,7 @@ mod tests {
         let handle = unsafe { Socket::from_ptr(socket) }.unwrap();
         assert_eq!(socket_handle_sendfile(handle), 0);
         assert_eq!(read_all(&right, 5), b"bcdef");
-        assert_eq!(unsafe { (*queue).append(b"tail") }, 0);
+        assert_eq!(unsafe { (*queue).append(b"tail") }, Ok(()));
         assert_eq!(socket_handle_send(handle), 0);
         assert_eq!(read_all(&right, 4), b"tail");
         assert_eq!(unsafe { (*queue).stats() }, (0, 0), "both chunks popped");

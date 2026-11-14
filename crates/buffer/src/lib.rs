@@ -29,11 +29,18 @@ use std::mem::MaybeUninit;
 use std::{mem, slice};
 pub use typed::{Detached as TypedDetached, Front as TypedFront, Kind as EntryKind};
 
-const OK: i32 = 0;
-const EMPTY: i32 = 1;
-const INVALID: i32 = -1;
-const OVERFLOW: i32 = -2;
-const NOMEM: i32 = -3;
+/// Why a queue operation failed; the queue is unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Error {
+    /// `front` or `pop` of an empty queue.
+    Empty,
+    /// An argument outside the operation's contract.
+    Invalid,
+    /// The queue's byte or entry count would overflow.
+    Overflow,
+    /// An allocation failed.
+    NoMem,
+}
 
 /// A data chunk's length: chunks hold at most `chunk_size: u32` bytes (`appendv`).
 #[expect(
@@ -82,8 +89,8 @@ pub fn try_box<T>(initialize: impl FnOnce() -> T) -> Option<Box<T>> {
 impl Buffer {
     /// A new queue; chunk size 0 means `INT32_MAX`.
     /// # Errors
-    /// `NOMEM` when the allocation fails.
-    pub fn create(chunk_size: u32) -> Result<Box<Self>, i32> {
+    /// `NoMem` when the allocation fails.
+    pub fn create(chunk_size: u32) -> Result<Box<Self>, Error> {
         try_box(|| Self {
             entries: VecDeque::new(),
             recycled: Vec::new(),
@@ -96,7 +103,7 @@ impl Buffer {
             length: 0,
             cursor: typed::Cursor::default(),
         })
-        .ok_or(NOMEM)
+        .ok_or(Error::NoMem)
     }
 
     // Limit idle retention to 64 KiB and 64 descriptors per queue. Recycling is
@@ -112,7 +119,7 @@ impl Buffer {
         bytes.clear();
         self.recycled.push(bytes);
     }
-    fn block(&mut self, size: usize) -> Result<Vec<u8>, i32> {
+    fn block(&mut self, size: usize) -> Result<Vec<u8>, Error> {
         if let Some(index) = self
             .recycled
             .iter()
@@ -123,12 +130,15 @@ impl Buffer {
             return Ok(bytes);
         }
         let mut bytes = Vec::new();
-        bytes.try_reserve_exact(size).map_err(|_| NOMEM)?;
+        bytes.try_reserve_exact(size).map_err(|_| Error::NoMem)?;
         Ok(bytes)
     }
 
     /// Copies `data` into new entries, atomically: on failure nothing changes.
-    pub fn append(&mut self, data: &[u8]) -> i32 {
+    /// # Errors
+    /// `Overflow` past `u32` queued bytes or the entry limit, `NoMem` when an allocation
+    /// fails.
+    pub fn append(&mut self, data: &[u8]) -> Result<(), Error> {
         self.appendv(std::iter::once(data), 0)
     }
 
@@ -154,44 +164,48 @@ impl Buffer {
 
     // Expose the contiguous append's single part to the optimizer.
     #[inline(always)]
-    fn appendv<'a>(&mut self, parts: impl Iterator<Item = &'a [u8]> + Clone, offset: u64) -> i32 {
+    fn appendv<'a>(
+        &mut self,
+        parts: impl Iterator<Item = &'a [u8]> + Clone,
+        offset: u64,
+    ) -> Result<(), Error> {
         let mut total = 0usize;
         for part in parts.clone() {
             let Some(sum) = total.checked_add(part.len()) else {
-                return OVERFLOW;
+                return Err(Error::Overflow);
             };
             total = sum;
         }
         if offset > total as u64 {
-            return INVALID;
+            return Err(Error::Invalid);
         }
         let Ok(offset) = usize::try_from(offset) else {
-            return INVALID;
+            return Err(Error::Invalid);
         };
         let Some(remaining) = total.checked_sub(offset) else {
-            return INVALID;
+            return Err(Error::Invalid);
         };
         if remaining == 0 {
-            return OK;
+            return Ok(());
         }
         let Ok(copied) = u32::try_from(remaining) else {
-            return OVERFLOW;
+            return Err(Error::Overflow);
         };
         let Some(new_length) = self.length.checked_add(copied) else {
-            return OVERFLOW;
+            return Err(Error::Overflow);
         };
         let chunk_size = self.chunk_size as usize;
         let chunks = remaining / chunk_size + usize::from(remaining % chunk_size != 0);
         let Some(new_count) = self.entries.len().checked_add(chunks) else {
-            return OVERFLOW;
+            return Err(Error::Overflow);
         };
         if !slice_fits::<Entry>(new_count) || !slice_fits::<u8>(remaining.min(chunk_size)) {
-            return OVERFLOW;
+            return Err(Error::Overflow);
         }
         let repeated = self.entries.capacity() != 0;
         let old_count = self.entries.len();
         if self.entries.try_reserve(chunks).is_err() {
-            return NOMEM;
+            return Err(Error::NoMem);
         }
         let mut parts = parts;
         let mut part = parts.next();
@@ -209,14 +223,14 @@ impl Buffer {
                 Ok(bytes) => bytes,
                 Err(error) => {
                     self.entries.truncate(old_count);
-                    return error;
+                    return Err(error);
                 }
             };
             let mut filled = 0;
             while filled < size {
                 let Some(current) = part else {
                     self.entries.truncate(old_count);
-                    return INVALID;
+                    return Err(Error::Invalid);
                 };
                 let count = (current.len() - skip).min(size - filled);
                 // `bytes` has room for `size`, so this never reallocates.
@@ -237,7 +251,7 @@ impl Buffer {
         if repeated && self.recycled.capacity() == 0 {
             self.recycled.try_reserve(chunks.min(64)).unwrap_or(());
         }
-        OK
+        Ok(())
     }
 }
 
@@ -245,19 +259,21 @@ impl Buffer {
 /// # Safety
 /// `iov` holds `count` descriptors, each over `iov_len` readable bytes (null only when
 /// empty) that the queue doesn't hold. No descriptor reference survives the call.
+/// # Errors
+/// `Invalid` for a negative or too-large offset or a null descriptor with bytes,
+/// `Overflow` and `NoMem` as for [`Buffer::append`].
 #[cfg(unix)]
-#[must_use]
 pub unsafe fn swr_v1_buffer_append_iovec(
     queue: &mut Buffer,
     iov: *const libc::iovec,
     count: usize,
     offset: i64,
-) -> i32 {
+) -> Result<(), Error> {
     if offset < 0 || (count != 0 && iov.is_null()) {
-        return INVALID;
+        return Err(Error::Invalid);
     }
     if !slice_fits::<libc::iovec>(count) {
-        return OVERFLOW;
+        return Err(Error::Overflow);
     }
     let iov = if count == 0 {
         &[]
@@ -267,10 +283,10 @@ pub unsafe fn swr_v1_buffer_append_iovec(
     };
     for part in iov {
         if !slice_fits::<u8>(part.iov_len) {
-            return OVERFLOW;
+            return Err(Error::Overflow);
         }
         if part.iov_len != 0 && part.iov_base.is_null() {
-            return INVALID;
+            return Err(Error::Invalid);
         }
     }
     let parts = iov.iter().map(|part| {
@@ -344,13 +360,13 @@ mod tests {
         fn queue(&self) -> &mut Buffer {
             unsafe { &mut *self.0 }
         }
-        pub(super) fn push(&self, token: *mut c_void) -> i32 {
+        pub(super) fn push(&self, token: *mut c_void) -> Result<(), Error> {
             unsafe { self.queue().push(EntryKind::Sendfile, token, Some(keep)) }
         }
-        pub(super) fn appendv(&self, parts: &[&[u8]], offset: u64) -> i32 {
+        pub(super) fn appendv(&self, parts: &[&[u8]], offset: u64) -> Result<(), Error> {
             self.queue().appendv(parts.iter().copied(), offset)
         }
-        pub(super) fn append(&self, bytes: &[u8]) -> i32 {
+        pub(super) fn append(&self, bytes: &[u8]) -> Result<(), Error> {
             self.queue().append(bytes)
         }
         pub(super) fn stats(&self) -> (u32, usize) {
@@ -401,11 +417,11 @@ mod tests {
                     )
                 };
                 if offset > expected.len() {
-                    assert_eq!(status, INVALID);
+                    assert_eq!(status, Err(Error::Invalid));
                     assert_eq!(owned.stats(), (0, 0));
                     continue;
                 }
-                assert_eq!(status, OK);
+                assert_eq!(status, Ok(()));
                 let mut copied = Vec::new();
                 while owned.stats().1 != 0 {
                     let view = owned.view();
@@ -420,7 +436,7 @@ mod tests {
         let mut succeeded = false;
         for budget in 0..8 {
             let owned = Owned::new(2);
-            assert_eq!(owned.append(b"old"), OK);
+            assert_eq!(owned.append(b"old"), Ok(()));
             let before = owned.stats();
             let front = owned.view();
             FAIL_AFTER.with(|counter| counter.set(Some(budget)));
@@ -428,11 +444,11 @@ mod tests {
                 swr_v1_buffer_append_iovec(owned.queue(), vectors.as_ptr(), vectors.len(), 0)
             };
             FAIL_AFTER.with(|counter| counter.set(None));
-            if status == OK {
+            if status == Ok(()) {
                 succeeded = true;
                 break;
             }
-            assert_eq!(status, NOMEM);
+            assert_eq!(status, Err(Error::NoMem));
             assert_eq!(owned.stats(), before);
             assert_eq!(owned.view().data, front.data);
             assert_eq!(
@@ -446,19 +462,19 @@ mod tests {
             unsafe {
                 swr_v1_buffer_append_iovec(owned.queue(), vectors.as_ptr(), vectors.len(), -1)
             },
-            INVALID
+            Err(Error::Invalid)
         );
         assert_eq!(
             unsafe { swr_v1_buffer_append_iovec(owned.queue(), ptr::null(), 1, 0) },
-            INVALID
+            Err(Error::Invalid)
         );
         assert_eq!(
             unsafe { swr_v1_buffer_append_iovec(owned.queue(), ptr::null(), 0, 0) },
-            OK
+            Ok(())
         );
         assert_eq!(
             unsafe { swr_v1_buffer_append_iovec(owned.queue(), vectors.as_ptr(), usize::MAX, 0) },
-            OVERFLOW
+            Err(Error::Overflow)
         );
         assert_eq!(owned.stats(), (0, 0));
     }
@@ -472,8 +488,8 @@ mod tests {
         for offset in 0..=combined.len() {
             let buffer = Owned::new(4);
             let contiguous = Owned::new(4);
-            assert_eq!(contiguous.append(&combined[offset..]), OK);
-            assert_eq!(buffer.appendv(&iov, offset as u64), OK);
+            assert_eq!(contiguous.append(&combined[offset..]), Ok(()));
+            assert_eq!(buffer.appendv(&iov, offset as u64), Ok(()));
             assert_eq!(buffer.stats(), contiguous.stats());
             let mut actual = Vec::new();
             while buffer.stats().1 != 0 {
@@ -500,13 +516,13 @@ mod tests {
     #[test]
     fn append_keeps_views_writable_and_stable_across_queue_growth() {
         let buffer = Owned::new(3);
-        assert_eq!(buffer.append(b"abc"), OK);
+        assert_eq!(buffer.append(b"abc"), Ok(()));
         let front = buffer.view();
         unsafe {
             front.data.write(b'Z');
         }
         for _ in 0..100 {
-            assert_eq!(buffer.append(b"defghi"), OK);
+            assert_eq!(buffer.append(b"defghi"), Ok(()));
         }
         assert_eq!(buffer.view().data, front.data);
         assert_eq!(unsafe { slice::from_raw_parts(front.data, 3) }, b"Zbc");
@@ -518,9 +534,9 @@ mod tests {
         let buffer = Owned::new(4);
         let mut value = 42u32;
         let token = ptr::from_mut(&mut value).cast();
-        assert_eq!(buffer.append(b"abcdef"), OK);
-        assert_eq!(buffer.push(token), OK);
-        assert_eq!(buffer.append(b"g"), OK);
+        assert_eq!(buffer.append(b"abcdef"), Ok(()));
+        assert_eq!(buffer.push(token), Ok(()));
+        assert_eq!(buffer.append(b"g"), Ok(()));
         let kept = Box::into_raw(unsafe { Box::from_raw(buffer.0) }.release().unwrap_err());
         assert_eq!(kept, buffer.0);
         assert_eq!(buffer.stats(), (7, 4));
@@ -538,16 +554,16 @@ mod tests {
     #[test]
     fn bad_inputs_do_not_change_state_and_outputs_follow_contract() {
         let buffer = Owned::new(4);
-        assert_eq!(buffer.append(b"abc"), OK);
-        assert_eq!(buffer.appendv(&[b"x"], 2), INVALID);
-        assert_eq!(buffer.appendv(&[], 1), INVALID);
-        assert_eq!(buffer.appendv(&[], 0), OK);
-        assert_eq!(buffer.append(&[]), OK);
-        assert_eq!(buffer.push(ptr::null_mut()), INVALID);
+        assert_eq!(buffer.append(b"abc"), Ok(()));
+        assert_eq!(buffer.appendv(&[b"x"], 2), Err(Error::Invalid));
+        assert_eq!(buffer.appendv(&[], 1), Err(Error::Invalid));
+        assert_eq!(buffer.appendv(&[], 0), Ok(()));
+        assert_eq!(buffer.append(&[]), Ok(()));
+        assert_eq!(buffer.push(ptr::null_mut()), Err(Error::Invalid));
         assert_eq!(buffer.stats(), (3, 1));
         buffer.pop();
-        assert_eq!(buffer.queue().front().err(), Some(EMPTY));
-        assert_eq!(buffer.queue().pop().err(), Some(EMPTY));
+        assert_eq!(buffer.queue().front().err(), Some(Error::Empty));
+        assert_eq!(buffer.queue().pop().err(), Some(Error::Empty));
     }
 
     #[test]
@@ -557,7 +573,7 @@ mod tests {
         unsafe {
             (*buffer.0).length = u32::MAX;
         }
-        assert_eq!(buffer.append(b"x"), OVERFLOW);
+        assert_eq!(buffer.append(b"x"), Err(Error::Overflow));
         assert_eq!(buffer.stats(), (u32::MAX, 0));
         unsafe {
             (*buffer.0).length = 0;
@@ -570,10 +586,10 @@ mod tests {
             for fail_after in 0..=2 {
                 let buffer = Owned::new(4096);
                 if populated {
-                    assert_eq!(buffer.append(b"old"), OK);
+                    assert_eq!(buffer.append(b"old"), Ok(()));
                     // Force queue growth as well as a data allocation.
                     while unsafe { (*buffer.0).entries.len() < (*buffer.0).entries.capacity() } {
-                        assert_eq!(buffer.append(b"old"), OK);
+                        assert_eq!(buffer.append(b"old"), Ok(()));
                     }
                 }
                 let before = buffer.stats();
@@ -582,10 +598,10 @@ mod tests {
                 let status = buffer.append(b"new");
                 FAIL_AFTER.set(None);
                 if fail_after < 2 {
-                    assert_eq!(status, NOMEM);
+                    assert_eq!(status, Err(Error::NoMem));
                     assert_eq!(buffer.stats(), before);
                 } else {
-                    assert_eq!(status, OK);
+                    assert_eq!(status, Ok(()));
                     assert_eq!(buffer.stats(), (before.0 + 3, before.1 + 1));
                 }
                 if let Some(front) = front {
@@ -597,12 +613,12 @@ mod tests {
         // A drained queue retains metadata capacity. Only its new bytes should
         // need allocation, so failure of any second allocation must be harmless.
         let reused = Owned::new(4096);
-        assert_eq!(reused.append(b"old"), OK);
+        assert_eq!(reused.append(b"old"), Ok(()));
         reused.pop();
         FAIL_AFTER.set(Some(1));
         let status = reused.append(b"new");
         FAIL_AFTER.set(None);
-        assert_eq!(status, OK);
+        assert_eq!(status, Ok(()));
         assert_eq!(reused.stats(), (3, 1));
         assert_eq!(
             unsafe { slice::from_raw_parts(reused.view().data, 3) },
@@ -619,19 +635,19 @@ mod tests {
         FAIL_AFTER.set(Some(0));
         let status = Buffer::create(4).err();
         FAIL_AFTER.set(None);
-        assert_eq!(status, Some(NOMEM));
+        assert_eq!(status, Some(Error::NoMem));
         let mut failures = 0;
         for nth in 0..32 {
             let buffer = Owned::new(4);
-            assert_eq!(buffer.append(b"abc"), OK);
+            assert_eq!(buffer.append(b"abc"), Ok(()));
             let view = buffer.view();
             FAIL_AFTER.set(Some(nth));
             let status = buffer.append(b"0123456789abcdefghijklmnop");
             FAIL_AFTER.set(None);
-            if status == OK {
+            if status == Ok(()) {
                 break;
             }
-            assert_eq!(status, NOMEM);
+            assert_eq!(status, Err(Error::NoMem));
             assert_eq!(buffer.stats(), (3, 1));
             assert_eq!(buffer.view().data, view.data);
             assert_eq!(unsafe { slice::from_raw_parts(view.data, 3) }, b"abc");
@@ -645,16 +661,16 @@ mod tests {
         // native token between existing data. No provisional entry may escape.
         for nth in 0..=8 {
             let buffer = Owned::new(4);
-            assert_eq!(buffer.append(b"abcdefghijkl"), OK);
+            assert_eq!(buffer.append(b"abcdefghijkl"), Ok(()));
             while unsafe { (*buffer.0).entries.len() < (*buffer.0).entries.capacity() } {
-                assert_eq!(buffer.append(b"fill"), OK);
+                assert_eq!(buffer.append(b"fill"), Ok(()));
             }
             buffer.pop();
             buffer.pop();
             let mut native = 7u32;
             let token = ptr::from_mut(&mut native).cast();
-            assert_eq!(buffer.push(token), OK);
-            assert_eq!(buffer.append(b"old"), OK);
+            assert_eq!(buffer.push(token), Ok(()));
+            assert_eq!(buffer.append(b"old"), Ok(()));
             assert!(!unsafe { &*buffer.0 }.entries.as_slices().1.is_empty());
             // Keep the cold-allocation sweep visiting every payload allocation;
             // warm-cache behavior is exercised separately.
@@ -667,10 +683,10 @@ mod tests {
             FAIL_AFTER.set(Some(nth));
             let status = buffer.append(b"0123456789abcdefghijklmnop");
             FAIL_AFTER.set(None);
-            assert_eq!(status, if nth < 8 { NOMEM } else { OK });
+            assert_eq!(status, if nth < 8 { Err(Error::NoMem) } else { Ok(()) });
             assert_eq!(
                 buffer.stats(),
-                if status == NOMEM {
+                if status == Err(Error::NoMem) {
                     before
                 } else {
                     (before.0 + 26, before.1 + 7)
@@ -697,7 +713,7 @@ mod tests {
         FAIL_AFTER.set(Some(0));
         let status = empty.push(ptr::from_mut(&mut native).cast());
         FAIL_AFTER.set(None);
-        assert_eq!(status, NOMEM);
+        assert_eq!(status, Err(Error::NoMem));
         assert_eq!(empty.stats(), (0, 0));
     }
 }

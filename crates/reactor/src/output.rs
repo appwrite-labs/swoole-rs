@@ -166,7 +166,7 @@ pub fn sendfile_sent(
 /// Completed queue mutation and an optional token for the caller to dispose.
 pub struct OwnedOutputResult {
     pub result: OutputResult,
-    pub status: i32,
+    pub status: Result<(), swoole_rs_buffer::Error>,
     pub detached: swoole_rs_buffer::TypedDetached,
 }
 
@@ -180,13 +180,13 @@ pub fn handle_send_owned(
 ) -> OwnedOutputResult {
     let mut output = OwnedOutputResult {
         result: OutputResult::default(),
-        status: 0,
+        status: Ok(()),
         detached: swoole_rs_buffer::TypedDetached::default(),
     };
     let front = match queue.front() {
         Ok(front) => front,
         Err(status) => {
-            output.status = status;
+            output.status = Err(status);
             return output;
         }
     };
@@ -199,7 +199,7 @@ pub fn handle_send_owned(
             front.offset,
             output.result.offset.wrapping_sub(front.offset),
         );
-        if output.status != 0 {
+        if output.status.is_err() {
             return output;
         }
     }
@@ -208,7 +208,7 @@ pub fn handle_send_owned(
         // Detach transfers custody to the caller without invoking a disposer.
         match queue.pop() {
             Ok(detached) => output.detached = detached,
-            Err(status) => output.status = status,
+            Err(status) => output.status = Err(status),
         }
     }
     output
@@ -334,7 +334,7 @@ mod tests {
         unsafe {
             let socket = crate::SocketRecord::with_fd(-1, 6).into_raw();
             let mut queue = swoole_rs_buffer::Buffer::create(64).unwrap();
-            assert_eq!(queue.append(b"hello"), 0);
+            assert_eq!(queue.append(b"hello"), Ok(()));
             // Raw from the record's pointer, so `Socket::edit` borrowing the record leaves it valid.
             let hooks = hooks(socket.cast(), &raw mut (*socket).fields.kernel_nobufs);
             let handle = crate::Socket::from_ptr(socket).unwrap();
@@ -342,7 +342,7 @@ mod tests {
             let sent = handle_send_owned(handle, &mut queue, &hooks);
             assert_eq!(
                 (sent.status, sent.result.code, sent.result.offset),
-                (0, -1, 2)
+                (Ok(()), -1, 2)
             );
             assert!((*socket).fields.output.send_wait);
             assert_eq!(queue.front().unwrap().offset, 2);
@@ -354,14 +354,14 @@ mod tests {
                     closed.result.code,
                     (*socket).fields.output.close_wait
                 ),
-                (0, -1, true)
+                (Ok(()), -1, true)
             );
             assert_eq!(queue.front().unwrap().offset, 2);
             reset(3, 0, false);
             let completed = handle_send_owned(handle, &mut queue, &hooks);
-            assert_eq!((completed.status, completed.result.pop), (0, true));
+            assert_eq!((completed.status, completed.result.pop), (Ok(()), true));
             assert!(completed.detached.token().is_null());
-            assert_eq!(queue.front().err(), Some(1));
+            assert_eq!(queue.front().err(), Some(swoole_rs_buffer::Error::Empty));
             assert!(queue.release().is_ok());
             crate::SocketRecord::free(socket);
         }
