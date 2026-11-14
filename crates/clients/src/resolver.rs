@@ -6,7 +6,7 @@
 use core::ffi::{CStr, c_int};
 use std::ffi::CString;
 use swoole_rs_corebase::{
-    ResolverCompletion, ResolverRequest, log, ntop, swr_v1_core_resolver_free,
+    ResolveError, ResolverCompletion, ResolverRequest, log, ntop, swr_v1_core_resolver_free,
 };
 
 /// `SW_ERROR_DNSLOOKUP_RESOLVE_FAILED`.
@@ -81,12 +81,16 @@ impl Drop for Request {
     }
 }
 
-/// A status below -1 is a refused allocation, which upstream throws as `bad_alloc`.
-fn checked(status: c_int) -> isize {
-    if status < -1 {
-        std::alloc::handle_alloc_error(std::alloc::Layout::new::<u8>());
+/// The handler's retval: 0, or -1 when the name did not resolve. Anything else is
+/// a refused allocation, which upstream throws as `bad_alloc`.
+fn checked(result: Result<(), ResolveError>) -> isize {
+    match result {
+        Ok(()) => 0,
+        Err(ResolveError::Failed) => -1,
+        Err(ResolveError::Alloc | ResolveError::Unknown) => {
+            std::alloc::handle_alloc_error(std::alloc::Layout::new::<u8>())
+        }
     }
-    status as isize
 }
 
 /// The text address `host` wrote into `owner`.
