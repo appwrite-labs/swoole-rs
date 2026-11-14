@@ -144,7 +144,7 @@ pub(crate) fn make_tmpfile(template: &CStr, path: &mut [u8; TASK_TMP_PATH_SIZE])
     {
         *byte = pattern;
     }
-    swoole_rs_ossupport::create_tmpfile(path)
+    swoole_rs_ossupport::create_tmpfile(path).map_or(-1, std::os::fd::IntoRawFd::into_raw_fd)
 }
 
 /// Writes the payload to the temp file as `File::write_all` does (warning on an

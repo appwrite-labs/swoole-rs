@@ -393,19 +393,17 @@ impl Owner {
             return None;
         }
         let msec = swr_v1_timer_add_delay(msec, persistent);
-        let node = Box::into_raw(Box::new(node));
         let now = self.relative_msec();
-        let (status, view) = self
-            .queue
-            .borrow_mut()
-            .add(now, msec, persistent, node.cast());
+        // The queue boxes the node only once it has room for it, so a refused node
+        // drops here with the closure.
+        let (status, view) = self.queue.borrow_mut().add(now, msec, persistent, || {
+            Box::into_raw(Box::new(node)).cast()
+        });
         if status != Status::Ok {
             warning(
                 c"add",
                 format_args!("Rust timer add failed: status={status:?}"),
             );
-            // SAFETY: the node was never handed to the queue.
-            drop(unsafe { Box::from_raw(node) });
             return None;
         }
         let node = apply(&view);

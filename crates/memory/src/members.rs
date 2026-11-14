@@ -282,6 +282,12 @@ impl Shm {
         Some((base.cast(), unsafe { base.read() }))
     }
 
+    /// The payload's bytes, 0 without a mapping.
+    #[must_use]
+    pub fn payload_len(&self) -> usize {
+        self.extent().map_or(0, |(_, total)| total - 8)
+    }
+
     /// The payload, or null.
     #[must_use]
     pub fn as_ptr(&self) -> *mut c_void {
@@ -522,13 +528,12 @@ pub fn swr_table_create(table: &mut Table) -> bool {
     if size == 0 {
         return false;
     }
-    let arena = sw_shm_malloc(size);
+    let mut arena = Shm::malloc(size);
     if arena.is_null() {
         return false;
     }
-    // SAFETY: a fresh arena of `size` bytes.
-    if unsafe { !table.create(arena.cast()) } {
-        Shm(arena).free();
+    if !table.create(&mut arena) {
+        arena.free();
         return false;
     }
     true

@@ -19,9 +19,9 @@ use swoole_rs_zend::{
     opcode::Handler,
     string,
     sys::{
-        IS_ARRAY, IS_RESOURCE, IS_STRING, IS_VAR, swr_zend_efree, swr_zend_function_find,
-        swr_zend_push_nested_call, swr_zend_try_call_known, swr_zend_zval_release,
-        zend_execute_data, zend_function, zend_throw_error, zval,
+        IS_ARRAY, IS_RESOURCE, IS_STRING, IS_VAR, swr_zend_efree, swr_zend_push_nested_call,
+        swr_zend_try_call_known, swr_zend_zval_release, zend_execute_data, zend_function,
+        zend_throw_error, zval,
     },
     value,
 };
@@ -109,14 +109,10 @@ impl Handler for MethodCall {
 /// `prefix`, then `ZEND_CALL_ARG(frame, 1)` through `ZEND_CALL_NUM_ARGS(frame)`:
 /// plain copies, as upstream's.
 fn arguments(prefix: &[zval], frame: &Call) -> Vec<zval> {
-    let first = frame.zval(1);
-    if first.is_null() {
-        return prefix.to_vec();
-    }
-    // SAFETY: a handler's live frame holds its `num_args()` arguments in a row
-    // from the first; they are copied here, before anything can write them.
-    let passed = unsafe { slice::from_raw_parts(first, frame.num_args() as usize) };
-    [prefix, passed].concat()
+    let passed = (1..=frame.num_args())
+        .filter_map(|n| frame.value(n))
+        .map(Value::copy_value);
+    prefix.iter().copied().chain(passed).collect()
 }
 
 /// `zend_call_known_function(function, ..., retval, count, argv)` under
@@ -178,21 +174,22 @@ unsafe fn call_method(receiver: Receiver, frame: *mut zend_execute_data, value: 
 
 /// Call `alias` in `frame`, the dispatcher's, with `info`'s receiver first.
 fn call_alias(alias: &CStr, info: &mut CallInfo, frame: &Call) -> Result<(), Bailout> {
-    // SAFETY: Zend reads `count_bytes()` bytes.
-    let function = unsafe { swr_zend_function_find(alias.as_ptr(), alias.count_bytes()) };
-    if function.is_null() {
+    // `zend_hash_str_find_ptr(EG(function_table), ...)`: a function table holds
+    // each function as a pointer.
+    let found = frame.php().function_table().find(alias.to_bytes());
+    let Some(function) = found.and_then(Value::pointer) else {
         swoole_rs_zend::throw_error(&crate::typed::message(&[
             b"The function `",
             alias.to_bytes(),
             b"` is undefined",
         ]));
         return Ok(());
-    }
+    };
     // A plain copy, as upstream's.
     let this = info.this;
     let mut argv = arguments(slice::from_ref(&this), frame);
     // SAFETY: the registered function just found, and the frame's return slot.
-    unsafe { call(function, frame.return_value(), &mut argv) }?;
+    unsafe { call(function.cast(), frame.return_value(), &mut argv) }?;
     if u32::from(info.op1_type) == IS_VAR {
         // SAFETY: a C body releasing the receiver (`CallInfo::this`), which
         // may run destructors.

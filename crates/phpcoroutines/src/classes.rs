@@ -3,11 +3,12 @@
 //! handlers and the coroutine-aware autoloader.
 use crate::{context, host, runtime};
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, VecDeque},
     ffi::{CStr, c_int, c_long, c_void},
     hash::{BuildHasherDefault, DefaultHasher},
     ptr,
+    rc::Rc,
     sync::OnceLock,
 };
 use swoole_rs_phpstubs::{coroutine, coroutine_system};
@@ -19,7 +20,6 @@ use swoole_rs_zend::{
         ZEND_ACC_FINAL, ZEND_ACC_PRIVATE, swr_zend_autoload_forget, swr_zend_autoload_handler,
         swr_zend_autoload_try, swr_zend_coroutine_opcodes, swr_zend_coroutine_set_autoload,
         swr_zend_exit_status, zend_class_entry, zend_execute_data, zend_string,
-        zend_throw_exception,
     },
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -207,8 +207,9 @@ fn exit_flags() -> i64 {
 
 /// Throw `Swoole\ExitException` with its flags and status.
 fn throw_exit(message: &CStr, flags: i64, status: &Value) {
-    // SAFETY: a NUL-terminated message and the registered class.
-    let object = unsafe { zend_throw_exception(EXIT.entry(), message.as_ptr(), 0) };
+    EXIT.throw(message, 0);
+    // `zend_throw_exception`'s object: the new exception is the pending one.
+    let object = swoole_rs_zend::host::exception();
     // SAFETY: the new exception, which Zend holds as thrown past these writes.
     let props = unsafe { Props::new(EXIT.entry(), object) };
     props.long(c"flags", flags);
@@ -314,16 +315,17 @@ extern "C" fn end_silence(_: *mut zend_execute_data) -> c_int {
 /// The autoloader Zend had (`original_zend_autoload`).
 static ORIGINAL_AUTOLOAD: OnceLock<swr_zend_autoload_handler> = OnceLock::new();
 
-/// A coroutine waiting for another's autoload of the same class.
+/// A coroutine waiting for another's autoload of the same class, and where
+/// the loader leaves the class for it.
 struct Waiter {
     co: *mut c_void,
-    ce: *mut zend_class_entry,
+    ce: Rc<Cell<*mut zend_class_entry>>,
 }
 
 /// The coroutine autoloading a class, and those waiting for it.
 struct Loading {
     owner: *mut c_void,
-    waiters: VecDeque<*mut Waiter>,
+    waiters: VecDeque<Waiter>,
 }
 
 per_thread! {
@@ -362,24 +364,24 @@ unsafe extern "C" fn autoload(
     // SAFETY: a live string.
     let key = unsafe { swoole_rs_zend::ZStr::from_ptr(lc_name) }
         .map_or_else(Vec::new, |name| name.bytes().to_vec());
-    let mut waiter = Waiter {
-        co: current,
-        ce: ptr::null_mut(),
-    };
     let waiting = AUTOLOADING.with(|a| match a.borrow_mut().get_mut(&key) {
-        Some(loading) if loading.owner == current => Some(false),
+        Some(loading) if loading.owner == current => Some(None),
         Some(loading) => {
-            loading.waiters.push_back(&raw mut waiter);
-            Some(true)
+            let found = Rc::new(Cell::new(ptr::null_mut()));
+            loading.waiters.push_back(Waiter {
+                co: current,
+                ce: Rc::clone(&found),
+            });
+            Some(Some(found))
         }
         None => None,
     });
     match waiting {
-        Some(false) => return ptr::null_mut(),
-        Some(true) => {
+        Some(None) => return ptr::null_mut(),
+        Some(Some(found)) => {
             drop(key);
             host::yield_(current);
-            return waiter.ce;
+            return found.get();
         }
         None => {}
     }
@@ -401,14 +403,9 @@ unsafe extern "C" fn autoload(
         return ptr::null_mut();
     };
     if let Some(loading) = loading {
-        for waiter in loading.waiters {
-            let co = {
-                // SAFETY: a waiter suspended on its own stack until resumed; the
-                // borrow ends before the resume.
-                let waiter = unsafe { &mut *waiter };
-                waiter.ce = ce;
-                waiter.co
-            };
+        for Waiter { co, ce: found } in loading.waiters {
+            found.set(ce);
+            drop(found);
             host::resume(co);
         }
     }

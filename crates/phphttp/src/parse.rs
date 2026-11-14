@@ -7,8 +7,7 @@ use crate::host;
 use crate::state::{Slot, State};
 use std::ffi::{c_char, c_int};
 use std::fs::File;
-use std::io::{BufWriter, Write};
-use std::os::fd::FromRawFd;
+use std::io::{BufWriter, IoSlice, Write};
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use std::{mem::ManuallyDrop, ptr};
 use swoole_rs_corebase::CCast;
@@ -20,8 +19,7 @@ use swoole_rs_httpbindings::{
     swr_v1_httpbindings_form_source, token_list_contains, token_list_fast, trim_quotes,
 };
 use swoole_rs_zend::sys::{
-    swr_zend_http_estrndup, swr_zend_http_max_input_vars, swr_zend_http_treat_data,
-    swr_zend_http_upload, zval,
+    swr_zend_http_max_input_vars, swr_zend_http_treat_data, swr_zend_http_upload, zval,
 };
 use swoole_rs_zend::{Declared, Interned, Minit, Owned, OwnedArray, Value, ZStr, ZString};
 
@@ -337,9 +335,15 @@ fn stringl(bytes: &[u8]) -> Owned {
     Owned::string(ZString::new(bytes))
 }
 
+unsafe extern "C" {
+    /// `estrndup`: it reads the lent bytes (an `IoSlice` is an iovec) and returns
+    /// an emalloc'd NUL-terminated copy.
+    safe fn swr_bytes_estrndup(bytes: IoSlice<'_>) -> *mut c_char;
+}
+
+/// The bytes, copied into request memory.
 pub(crate) fn estrndup(bytes: &[u8]) -> *mut c_char {
-    // SAFETY: the bytes, copied into request memory.
-    unsafe { swr_zend_http_estrndup(bytes.as_ptr().cast(), bytes.len()) }
+    swr_bytes_estrndup(IoSlice::new(bytes))
 }
 
 /// The request's path: `on_url`'s (or the HTTP/2 `:path`'s) copy up to its
@@ -1057,13 +1061,11 @@ fn part_headers_complete(state: &mut State, upload: &mut Option<Upload>) -> c_in
     path.push(0);
     let fd = swoole_rs_ossupport::create_tmpfile(&mut path);
     path.pop();
-    if fd < 0 {
+    let Some(fd) = fd else {
         upload_long(state, b"error", UPLOAD_NO_TMP_DIR);
         return 0;
-    }
-    // SAFETY: the descriptor create_tmpfile just opened, which nothing else owns.
-    let file = unsafe { File::from_raw_fd(fd) };
-    *upload = Some(BufWriter::new(file));
+    };
+    *upload = Some(BufWriter::new(File::from(fd)));
     upload_bytes(state, b"tmp_name", &path);
     add_upload(state, &path);
     0

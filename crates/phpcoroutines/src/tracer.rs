@@ -9,13 +9,12 @@
 //! here with the hooks removed while Rust may allocate.
 use crate::{context, host::now_us, runtime};
 use std::{
-    cell::{Cell, RefCell},
+    cell::RefCell,
     collections::{BTreeMap, HashMap, hash_map::DefaultHasher},
     ffi::{CStr, c_long, c_void},
     hash::BuildHasherDefault,
     io::Write,
     mem::{self, ManuallyDrop},
-    ptr,
     sync::OnceLock,
 };
 use swoole_rs_corebase::CCast;
@@ -23,8 +22,8 @@ use swoole_rs_zend::{
     Call, Function, Owned, OwnedArray, Value, ZString, bailout, handlers,
     observer::{self, Observer},
     sys::{
-        self as z, swr_zend_mm_observe, swr_zend_mm_observer, swr_zend_mm_unobserve,
-        swr_zend_try_write, zend_long,
+        swr_zend_mm_observe, swr_zend_mm_observer, swr_zend_mm_unobserve, swr_zend_try_write,
+        zend_long,
     },
 };
 
@@ -79,8 +78,6 @@ fn blocking_detection() -> bool {
     config().is_some_and(|c| c.blocking_detection)
 }
 
-/// The `internal_function.reserved` slot holding a blocking-detection span.
-const SPAN_SLOT: usize = 4;
 /// `DEBUG_BACKTRACE_IGNORE_ARGS`.
 const BACKTRACE_IGNORE_ARGS: i32 = 2;
 
@@ -130,6 +127,10 @@ per_thread! {
         rounds: 0,
         threshold: 0,
     });
+    /// Each internal function's open blocking-detection span, by its address
+    /// (upstream's `internal_function.reserved[4]`): one per internal call in
+    /// progress, so a short list.
+    static SPANS: RefCell<Vec<(usize, Span)>> = RefCell::new(Vec::new());
     static PROFILE: RefCell<Profile> = RefCell::new(Profile {
         profiling: false,
         stacks: HashMap::with_hasher(BuildHasherDefault::new()),
@@ -532,27 +533,17 @@ struct Span {
 #[derive(Clone, Copy)]
 struct Func<'a> {
     function: Function<'a>,
-    /// `internal_function.reserved[SPAN_SLOT]` of an internal function.
-    span: Option<&'a Cell<*mut c_void>>,
 }
 
 impl<'a> Func<'a> {
     /// `function`, unless it has no name.
     fn of(function: Function<'a>) -> Option<Self> {
-        let func = function.as_ptr();
-        let span = if function.kind() == Function::INTERNAL {
-            let internal = func.cast::<z::zend_internal_function>();
-            let slot = internal
-                .wrapping_byte_add(mem::offset_of!(z::zend_internal_function, reserved))
-                .cast::<Cell<*mut c_void>>()
-                .wrapping_add(SPAN_SLOT);
-            // SAFETY: an internal function's reserved slot, which Zend leaves to
-            // extensions and only this one's tracer uses.
-            Some(unsafe { &*slot })
-        } else {
-            None
-        };
-        function.name().map(|_| Self { function, span })
+        function.name().map(|_| Self { function })
+    }
+
+    /// The key of the function's blocking-detection span.
+    fn key(self) -> usize {
+        self.function.as_ptr().addr()
     }
 
     fn internal(self) -> bool {
@@ -584,31 +575,42 @@ impl<'a> Func<'a> {
 
 /// `blocking_detection_begin`, of an internal function.
 fn blocking_begin(func: Func<'_>) {
-    let Some(slot) = func.span.filter(|_| context::current_task().is_some()) else {
+    if !func.internal() || context::current_task().is_none() {
         return;
-    };
+    }
     let began_at = now_us();
     let switch_count = context::watch_switches(true);
-    let span = Box::into_raw(Box::new(Span {
+    let span = Span {
         began_at,
         switch_count,
-    }));
-    slot.set(span.cast());
+    };
+    let key = func.key();
+    SPANS.with(|spans| {
+        let mut spans = spans.borrow_mut();
+        // A recursive call's span replaces the open one, as the slot's store did.
+        match spans.iter_mut().find(|(at, _)| *at == key) {
+            Some(open) => open.1 = span,
+            None => spans.push((key, span)),
+        }
+    });
 }
 
 /// `blocking_detection_end`: report the internal function's call when it ran
 /// longer than the threshold without switching coroutines.
 fn blocking_end(func: Func<'_>) {
     let switches = context::watch_switches(false);
-    let Some(slot) = func.span else {
-        return;
-    };
-    let span = slot.replace(ptr::null_mut());
-    if span.is_null() {
+    if !func.internal() {
         return;
     }
-    // SAFETY: boxed by blocking_begin, taken out of the slot.
-    let span = unsafe { Box::from_raw(span.cast::<Span>()) };
+    let key = func.key();
+    let span = SPANS.with(|spans| {
+        let mut spans = spans.borrow_mut();
+        let at = spans.iter().rposition(|(open, _)| *open == key)?;
+        Some(spans.swap_remove(at).1)
+    });
+    let Some(span) = span else {
+        return;
+    };
     let duration = now_us() - span.began_at;
     let Some(config) = config() else { return };
     if span.switch_count != switches || duration <= config.blocking_threshold {

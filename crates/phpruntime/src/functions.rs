@@ -12,20 +12,20 @@ use crate::{
 use std::{
     collections::HashMap,
     ffi::CStr,
-    ptr,
+    ptr::{self, NonNull},
     rc::Rc,
     sync::{LazyLock, Mutex, MutexGuard, PoisonError},
 };
 use swoole_rs_corebase::{Switch, built_with};
 use swoole_rs_zend::{
-    Call, E_WARNING, Owned, ZString, bailout,
+    Call, E_WARNING, Function, Owned, ZStr, ZString, bailout,
     host::callable::Callable,
     sys::{
         PHP_VERSION_ID, ZEND_ACC_FAKE_CLOSURE, swr_zend_function_find,
         swr_zend_runtime_call_handler, swr_zend_runtime_copy_arginfo, swr_zend_runtime_disabled,
         swr_zend_runtime_free_arginfo, swr_zend_runtime_instanceof, swr_zend_runtime_parent,
         swr_zend_runtime_set_parent, swr_zend_runtime_unsupported, zend_class_entry,
-        zend_execute_data, zend_fcall_info, zend_function, zend_internal_arg_info, zend_string,
+        zend_execute_data, zend_fcall_info, zend_internal_arg_info, zend_internal_function,
         zif_handler, zval,
     },
 };
@@ -41,12 +41,61 @@ unsafe extern "C" {
     fn zif_swoole_exit(frame: *mut zend_execute_data, value: *mut zval);
 }
 
-/// `ZEND_INTERNAL_FUNCTION`.
-const INTERNAL_FUNCTION: u8 = 1;
+/// An internal function the running request's function table holds. Only
+/// [`Entry::find`] makes one, from that table: Zend removes none during a
+/// request, and RSHUTDOWN ([`finish`]) drops every record holding one.
+#[derive(Clone, Copy)]
+struct Entry(NonNull<zend_internal_function>);
+
+impl Entry {
+    /// `zend::get_function(name)`: the table's function `name`, if it is an
+    /// internal one (one PHP code declared has no handler to swap).
+    fn find(name: &[u8]) -> Option<Self> {
+        // SAFETY: a name and its length, which Zend reads.
+        let found = unsafe { swr_zend_function_find(name.as_ptr().cast(), name.len()) };
+        // SAFETY: null, or a function the table holds for the request.
+        let function = unsafe { Function::from_ptr(found) }?;
+        if function.kind() != Function::INTERNAL {
+            return None;
+        }
+        // An internal function's record is a `zend_internal_function`.
+        NonNull::new(found.cast()).map(Self)
+    }
+
+    /// The function, borrowed for `f`.
+    ///
+    /// # Panics
+    /// Inside another `with` on this thread: two entries may name one function.
+    fn with<R>(self, f: impl FnOnce(&mut zend_internal_function) -> R) -> R {
+        thread_local! {
+            static BORROWED: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+        }
+        struct Lent;
+        impl Drop for Lent {
+            fn drop(&mut self) {
+                BORROWED.set(false);
+            }
+        }
+        assert!(
+            !BORROWED.replace(true),
+            "an internal function borrowed twice"
+        );
+        let _lent = Lent;
+        // SAFETY: a live internal function (`find`), borrowed by no other `with` on
+        // this thread; the borrow ends with `f`, which takes no `Entry`'s `&mut` again.
+        f(unsafe { &mut *self.0.as_ptr() })
+    }
+
+    /// A copy of the function's record, for its handler and arginfo: no borrow.
+    fn read(self) -> zend_internal_function {
+        // SAFETY: a live internal function (`find`), copied whole; nothing is borrowed.
+        unsafe { self.0.as_ptr().read() }
+    }
+}
 
 /// `PhpFunc`: a hooked or disabled function.
 struct Hooked {
-    function: *mut zend_function,
+    function: Entry,
     ori_handler: zif_handler,
     ori_arg_info: *mut zend_internal_arg_info,
     ori_fn_flags: u32,
@@ -90,27 +139,6 @@ fn same(a: zif_handler, b: zif_handler) -> bool {
     a.map(|f| f as *const ()) == b.map(|f| f as *const ())
 }
 
-/// `ZSTR_VAL`/`ZSTR_LEN` of a live string.
-fn bytes<'a>(string: *const zend_string) -> &'a [u8] {
-    // SAFETY: Zend's live, interned function and class names.
-    unsafe { swoole_rs_zend::ZStr::from_ptr(string) }.map_or(&[], swoole_rs_zend::ZStr::bytes)
-}
-
-/// `zend::get_function(name)`: the function table's entry, if any.
-fn function(name: &[u8]) -> *mut zend_function {
-    // SAFETY: a name and its length.
-    unsafe { swr_zend_function_find(name.as_ptr().cast(), name.len()) }
-}
-
-/// The internal function of a function-table entry.
-macro_rules! internal {
-    ($function:expr) => {
-        // SAFETY: an entry of the function table, which outlives the request;
-        // every hooked function is internal.
-        unsafe { &mut (*$function).internal_function }
-    };
-}
-
 /// `hook_func(name, handler, arg_info)`: `None` runs the PHP library's
 /// `swoole_<name>` through the trampoline.
 fn hook(name: &CStr, handler: zif_handler, arg_info: *mut zend_internal_arg_info) {
@@ -125,14 +153,14 @@ fn hook(name: &CStr, handler: zif_handler, arg_info: *mut zend_internal_arg_info
         return;
     };
     if let Some(existing) = hooked.get(key) {
-        let function = internal!(existing.function);
-        function.handler = handler;
-        if !arg_info.is_null() {
-            function.arg_info = arg_info;
-        }
+        existing.function.with(|function| {
+            function.handler = handler;
+            if !arg_info.is_null() {
+                function.arg_info = arg_info;
+            }
+        });
     } else {
-        let function = self::function(key);
-        if function.is_null() {
+        let Some(function) = Entry::find(key) else {
             drop(table);
             let message = message!(
                 "hook_func(): The function named `{}` is not found",
@@ -140,26 +168,28 @@ fn hook(name: &CStr, handler: zif_handler, arg_info: *mut zend_internal_arg_info
             );
             log_warning(message.as_cstr());
             return;
-        }
-        let entry = internal!(function);
-        let (ori_handler, ori_arg_info) = *originals
-            .entry(bytes(entry.function_name).into())
-            .or_insert((entry.handler, entry.arg_info));
-        let mut record = Hooked {
-            function,
-            ori_handler,
-            ori_arg_info,
-            ori_fn_flags: 0,
-            arg_info_copy: ptr::null_mut(),
-            callable: None,
         };
-        entry.handler = handler;
-        if !arg_info.is_null() {
-            // SAFETY: the function's own entry, and arginfo of the same shape.
-            entry.arg_info = unsafe { swr_zend_runtime_copy_arginfo(entry, arg_info) };
-            record.arg_info_copy = entry.arg_info;
-        }
-        hooked.insert(bytes(entry.function_name).into(), record);
+        let record = function.with(|entry| {
+            let (ori_handler, ori_arg_info) = *originals
+                .entry(key.into())
+                .or_insert((entry.handler, entry.arg_info));
+            let mut record = Hooked {
+                function,
+                ori_handler,
+                ori_arg_info,
+                ori_fn_flags: 0,
+                arg_info_copy: ptr::null_mut(),
+                callable: None,
+            };
+            entry.handler = handler;
+            if !arg_info.is_null() {
+                // SAFETY: the function's own entry, and arginfo of the same shape.
+                entry.arg_info = unsafe { swr_zend_runtime_copy_arginfo(entry, arg_info) };
+                record.arg_info_copy = entry.arg_info;
+            }
+            record
+        });
+        hooked.insert(key.into(), record);
     }
     drop(table);
     if library {
@@ -199,9 +229,10 @@ fn unhook(name: &CStr) {
     else {
         return;
     };
-    let function = internal!(record.function);
-    function.handler = record.ori_handler;
-    function.arg_info = record.ori_arg_info;
+    record.function.with(|function| {
+        function.handler = record.ori_handler;
+        function.arg_info = record.ori_arg_info;
+    });
 }
 
 /// `disable_func(name, handler)`.
@@ -211,25 +242,26 @@ fn disable(name: &CStr, handler: zif_handler) {
         return;
     };
     if let Some(record) = hooked.get(name.to_bytes()) {
-        internal!(record.function).handler = handler;
+        record.function.with(|function| function.handler = handler);
         return;
     }
-    let function = self::function(name.to_bytes());
-    if function.is_null() {
+    let Some(function) = Entry::find(name.to_bytes()) else {
         return;
-    }
-    let entry = internal!(function);
-    let record = Hooked {
-        function,
-        ori_handler: entry.handler,
-        ori_arg_info: entry.arg_info,
-        ori_fn_flags: entry.fn_flags,
-        arg_info_copy: ptr::null_mut(),
-        callable: None,
     };
-    entry.handler = handler;
-    entry.fn_flags = ZEND_ACC_FAKE_CLOSURE;
-    hooked.insert(bytes(entry.function_name).into(), record);
+    let record = function.with(|entry| {
+        let record = Hooked {
+            function,
+            ori_handler: entry.handler,
+            ori_arg_info: entry.arg_info,
+            ori_fn_flags: entry.fn_flags,
+            arg_info_copy: ptr::null_mut(),
+            callable: None,
+        };
+        entry.handler = handler;
+        entry.fn_flags = ZEND_ACC_FAKE_CLOSURE;
+        record
+    });
+    hooked.insert(name.to_bytes().into(), record);
 }
 
 /// `enable_func(name)`.
@@ -240,9 +272,10 @@ fn enable(name: &CStr) {
         .as_ref()
         .and_then(|hooked| hooked.get(name.to_bytes()))
     {
-        let function = internal!(record.function);
-        function.handler = record.ori_handler;
-        function.fn_flags = record.ori_fn_flags;
+        record.function.with(|function| {
+            function.handler = record.ori_handler;
+            function.fn_flags = record.ori_fn_flags;
+        });
     }
 }
 
@@ -303,23 +336,26 @@ pub(crate) fn copy_to_thread() {
         return;
     };
     for (key, record) in hooked {
-        if record.function.is_null() {
+        let main = record.function;
+        let main_record = main.read();
+        let (handler, arg_info) = (main_record.handler, main_record.arg_info);
+        if same(handler, record.ori_handler) {
             continue;
         }
-        let main = internal!(record.function);
-        if same(main.handler, record.ori_handler) {
+        let Some(local) = Entry::find(key) else {
             continue;
-        }
-        let function = function(key);
-        if function.is_null() {
-            continue;
-        }
-        let local = internal!(function);
-        local.handler = main.handler;
-        if main.arg_info != record.ori_arg_info && !main.arg_info.is_null() {
+        };
+        // This thread's own copy: never the main thread's entry, read above.
+        let copy = (arg_info != record.ori_arg_info && !arg_info.is_null()).then(|| {
             // SAFETY: the main thread's entry and its installed arginfo.
-            local.arg_info = unsafe { swr_zend_runtime_copy_arginfo(main, main.arg_info) };
-        }
+            unsafe { swr_zend_runtime_copy_arginfo(main.0.as_ptr(), arg_info) }
+        });
+        local.with(|local| {
+            local.handler = handler;
+            if let Some(copy) = copy {
+                local.arg_info = copy;
+            }
+        });
     }
 }
 
@@ -335,13 +371,14 @@ pub(crate) fn finish() {
     for (_, record) in hooked.unwrap_or_default() {
         // `sw_callable_free`: a destructor's bailout stays pending.
         drop(record.callable);
-        let function = internal!(record.function);
-        if !record.arg_info_copy.is_null() {
-            // SAFETY: the copy made for this function, freed once.
-            unsafe { swr_zend_runtime_free_arginfo(function, record.arg_info_copy) };
-        }
-        function.handler = record.ori_handler;
-        function.arg_info = record.ori_arg_info;
+        record.function.with(|function| {
+            if !record.arg_info_copy.is_null() {
+                // SAFETY: the copy made for this function, freed once.
+                unsafe { swr_zend_runtime_free_arginfo(function, record.arg_info_copy) };
+            }
+            function.handler = record.ori_handler;
+            function.arg_info = record.ori_arg_info;
+        });
     }
     for ce in children.into_values() {
         detach_class(ce);
@@ -358,25 +395,14 @@ pub(crate) fn original_handler(name: &[u8]) -> zif_handler {
     if original.is_some() {
         return original;
     }
-    let function = function(name);
-    if function.is_null() {
-        return None;
-    }
-    let function = internal!(function);
-    if function.type_ == INTERNAL_FUNCTION {
-        function.handler
-    } else {
-        None
-    }
+    Entry::find(name)?.with(|function| function.handler)
 }
 
 /// `swoole_user_func_handler`: outside a coroutine the original handler,
 /// inside one the library's `swoole_<name>` with the same arguments.
 pub(crate) fn user_func(call: &Call) -> Result<(), Bailout> {
     let (frame, value) = (call.frame(), call.return_value());
-    // SAFETY: the frame of the running internal function.
-    let function = unsafe { (*frame).func };
-    let name = bytes(internal!(function).function_name);
+    let name = call.function().name().map_or(&[][..], ZStr::bytes);
     if !in_coroutine() {
         let original = table()
             .originals
@@ -423,8 +449,8 @@ fn parent(ce: *mut zend_class_entry) -> *mut zend_class_entry {
 }
 
 /// `inherit_class(child, parent)`: make `parent` the root of `child`'s chain.
-fn inherit_class(child: &CStr, parent_name: &CStr) -> Result<(), Bailout> {
-    let child = lookup_class(child)?;
+fn inherit_class(child_name: &CStr, parent_name: &CStr) -> Result<(), Bailout> {
+    let child = lookup_class(child_name)?;
     let parent_ce = lookup_class(parent_name)?;
     if child.is_null() || parent_ce.is_null() {
         return Ok(());
@@ -439,9 +465,11 @@ fn inherit_class(child: &CStr, parent_name: &CStr) -> Result<(), Bailout> {
     }
     // SAFETY: a registered class, edited on the main thread.
     unsafe { swr_zend_runtime_set_parent(root, parent_ce) };
-    // SAFETY: a registered class.
-    let name = bytes(unsafe { (*child).name });
-    table().children.entry(name.into()).or_insert(child);
+    // Under the name `detach_parent` is given, which names the class as it is declared.
+    table()
+        .children
+        .entry(child_name.to_bytes().into())
+        .or_insert(child);
     Ok(())
 }
 
@@ -651,12 +679,12 @@ fn native_curl(requested: &mut u32, installed: u32) {
             .unwrap_or(c"");
         match change {
             Some(true) => {
-                let replacement = function(native.to_bytes());
-                if replacement.is_null() {
+                let Some(replacement) = Entry::find(native.to_bytes()) else {
                     continue;
-                }
-                let replacement = internal!(replacement);
-                hook(name, replacement.handler, replacement.arg_info);
+                };
+                let replaced = replacement.read();
+                let (handler, arg_info) = (replaced.handler, replaced.arg_info);
+                hook(name, handler, arg_info);
             }
             Some(false) => unhook(name),
             None => {}

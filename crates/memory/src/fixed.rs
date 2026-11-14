@@ -1,6 +1,6 @@
 use std::cell::Cell;
 use std::ffi::c_void;
-use std::mem::offset_of;
+use std::mem::{MaybeUninit, offset_of};
 use std::{mem, ptr};
 
 // Slice invariant: every slice pointer reachable from a pool's `head`, `tail` or a
@@ -156,22 +156,43 @@ impl Layout {
     }
 }
 /// Lays a pool out in `arena`: its zeroed header, then `plan.slices` linked slices.
-/// False, touching nothing, if `arena` is misaligned.
-///
-/// # Safety
-/// `arena` covers `plan.total` exclusive bytes, which stay put while the pool is used.
-pub(crate) unsafe fn construct(arena: *mut Fixed, plan: Layout, shared: bool, owned: bool) -> bool {
-    if !arena.is_aligned() {
-        return false;
+/// The pool's address (with `arena`'s provenance), or `None`, touching nothing, if
+/// `arena` is misaligned or shorter than `plan.total`. The pool's links point into
+/// `arena`, which its owner keeps in place, and reaches only through the pool, while
+/// the pool is used (the slice invariant).
+pub(crate) fn construct(
+    arena: &mut [MaybeUninit<u8>],
+    plan: Layout,
+    shared: bool,
+    owned: bool,
+) -> Option<ptr::NonNull<Fixed>> {
+    let header = mem::size_of::<Fixed>();
+    let stride = mem::size_of::<Slice>() + plan.width as usize;
+    let aligned = arena
+        .as_ptr()
+        .addr()
+        .is_multiple_of(mem::align_of::<Fixed>());
+    if !aligned || arena.len() < plan.total {
+        return None;
     }
-    // `arena` is aligned (checked above) and covers `plan.total` exclusive bytes, the
-    // header and then `plan.usable`. Zero the whole header, padding included, as
-    // upstream does: a repr(C) value write can copy uninitialized Rust padding.
-    // SAFETY: as above.
-    unsafe { ptr::write_bytes(arena.cast::<u8>(), 0, mem::size_of::<Fixed>()) };
-    // SAFETY: as above; the header is now initialized (all-zero is a valid `Fixed`).
+    // The header, then `plan.usable` bytes holding `slices * stride <= usable`
+    // (`Layout::new`). Zero the whole header, padding included, as upstream does (a
+    // repr(C) value write can copy uninitialized Rust padding), and each slice header.
+    arena.get_mut(..header)?.fill(MaybeUninit::new(0));
+    for i in 0..plan.slices as usize {
+        let at = header + i * stride;
+        let node = arena.get_mut(at..at + mem::size_of::<Slice>())?;
+        node.fill(MaybeUninit::new(0));
+    }
+    #[expect(
+        clippy::cast_ptr_alignment,
+        reason = "aligned for a `Fixed` (checked above)"
+    )]
+    let arena = arena.as_mut_ptr().cast::<Fixed>();
+    // SAFETY: aligned (checked above), its first `size_of::<Fixed>()` bytes zeroed (a
+    // valid `Fixed`), and borrowed with `arena` for this call.
     let p = unsafe { &mut *arena };
-    p.memory = arena.cast::<u8>().wrapping_add(mem::size_of::<Fixed>());
+    p.memory = arena.cast::<u8>().wrapping_add(header);
     p.size = plan.usable;
     p.slice_num = plan.slices;
     p.slice_size = plan.width;
@@ -181,20 +202,16 @@ pub(crate) unsafe fn construct(arena: *mut Fixed, plan: Layout, shared: bool, ow
     let nodes = p.nodes();
     p.tail.set(p.memory.cast());
     for i in 0..nodes.count {
-        let node = p.memory.wrapping_add(i * nodes.stride);
-        // `slice_num * stride <= usable` (`Layout::new`), so slice `i` lies inside `memory`.
-        // SAFETY: as above; the pool is exclusive during construction.
-        unsafe { ptr::write_bytes(node, 0, mem::size_of::<Slice>()) };
         #[expect(
             clippy::cast_ptr_alignment,
             reason = "slice headers are only accessed unaligned (see the slice invariant)"
         )]
-        let node = node.cast::<Slice>();
+        let node = p.memory.wrapping_add(i * nodes.stride).cast::<Slice>();
         nodes.set_next(node, p.head.get());
         nodes.set_prev(p.head.get(), node);
         p.head.set(node);
     }
-    true
+    ptr::NonNull::new(arena)
 }
 
 /// A spare slice, or null.

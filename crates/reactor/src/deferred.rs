@@ -128,29 +128,24 @@ pub(crate) fn run_destroy(reactor: Running<'_>) {
     }
 }
 
-/// `Reactor::defer(fn, data)` on the reactor whose fields these are; `dispose(data)`
-/// instead if the reactor is freed first.
+/// `Reactor::defer(fn, data)` on the thread's reactor; `dispose(data)` instead if the
+/// reactor is freed first. False, queuing nothing, without a reactor.
 ///
 /// # Safety
-/// `fields` is a live reactor's.
-pub unsafe fn defer(
-    fields: *mut ReactorFields,
-    call: DeferCall,
-    data: *mut c_void,
-    dispose: Option<DeferDispose>,
-) {
-    let slot = fields
-        .wrapping_byte_add(std::mem::offset_of!(ReactorFields, defer_tasks))
-        .cast::<Option<Box<ReactorDeferred>>>();
+/// `call(data)` is sound when the loop runs it, and `dispose(data)` when the reactor
+/// is freed first.
+pub unsafe fn defer(call: DeferCall, data: *mut c_void, dispose: Option<DeferDispose>) -> bool {
     let task = Task::Native {
         call,
         data,
         dispose,
     };
-    // SAFETY: the live reactor's queue slot.
-    if push(unsafe { &mut *slot }, task) != 0 {
-        std::alloc::handle_alloc_error(std::alloc::Layout::new::<ReactorDeferred>());
-    }
+    crate::event_api::field_mut(|fields| {
+        if push(&mut fields.defer_tasks, task) != 0 {
+            std::alloc::handle_alloc_error(std::alloc::Layout::new::<ReactorDeferred>());
+        }
+    })
+    .is_some()
 }
 
 /// `reactor->add_destroy_callback(fn, data)`.
@@ -213,9 +208,24 @@ pub(crate) fn run_defer(reactor: Running<'_>) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::reactor_state::tests::running;
+
+    /// [`super::defer`] onto `fields`' queue rather than the thread's reactor.
+    pub(crate) unsafe fn defer(
+        fields: *mut ReactorFields,
+        call: DeferCall,
+        data: *mut c_void,
+        dispose: Option<DeferDispose>,
+    ) {
+        let task = Task::Native {
+            call,
+            data,
+            dispose,
+        };
+        assert_eq!(push(unsafe { &mut (*fields).defer_tasks }, task), 0);
+    }
     use std::cell::RefCell;
 
     thread_local! {

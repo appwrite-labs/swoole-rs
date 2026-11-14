@@ -2,10 +2,10 @@
 //! `ReactorEpoll`, `ReactorKqueue` and `ReactorPoll` methods over the Rust reactor
 //! state, the checks, kernel calls and registry update included. Native code only
 //! logs the warnings, under the upstream function each one names.
+use crate::Socket;
 use crate::reactor_state::{Backend, ReactorState};
 use crate::registration;
 use crate::socket_sync::set_errno;
-use crate::{Socket, SocketRecord};
 use std::ffi::{CStr, c_int, c_void};
 
 /// Logs `message` as from `origin`: `code` 0 is `swoole_sys_warning`, with errno as the
@@ -304,25 +304,40 @@ impl Change {
     }
 }
 
-/// `Reactor::add` (op 0), `set` (1) or `del` (any other) of `socket` with `events` on the state's
-/// backend: 0, -1 after logging the failure through `log` (or for a null socket), or -2 when
-/// add cannot allocate.
-///
-/// # Safety
-/// `owner` is a live state with an open backend and `socket` a live record distinct from it,
-/// registered until its removal; `log` neither reads nor changes either.
-pub unsafe fn swr_v1_reactor_change(
-    owner: *mut ReactorState,
-    socket: *mut SocketRecord,
-    op: u32,
+/// One change of a socket's registration. An add or set leaves the socket's address in
+/// the registry and with the kernel until its removal, so only a socket that is never
+/// freed while registered (`'static`) is registered; any live socket may be removed.
+#[derive(Clone, Copy)]
+pub(crate) enum Request<'a> {
+    Add(Socket<'static>),
+    Set(Socket<'static>),
+    Del(Socket<'a>),
+}
+
+impl Request<'_> {
+    /// `op` of `socket`.
+    pub(crate) const fn new(socket: Socket<'static>, op: ChangeOp) -> Self {
+        match op {
+            ChangeOp::Add => Self::Add(socket),
+            ChangeOp::Set => Self::Set(socket),
+            ChangeOp::Del => Self::Del(socket),
+        }
+    }
+}
+
+/// `Reactor::add`, `set` or `del` of the request's socket with `events` on the state's
+/// backend: 0, -1 after logging the failure through `log`, or -2 when add cannot
+/// allocate. `log` reaches no reactor.
+pub(crate) fn apply(
+    state: &mut ReactorState,
+    request: Request<'_>,
     events: c_int,
     log: ChangeLog,
 ) -> c_int {
-    // SAFETY: as the caller promises.
-    let state = unsafe { &mut *owner };
-    // SAFETY: as the caller promises.
-    let Some(socket) = (unsafe { Socket::from_ptr(socket) }) else {
-        return -1;
+    let (socket, op) = match request {
+        Request::Add(socket) => (socket, ChangeOp::Add),
+        Request::Set(socket) => (socket, ChangeOp::Set),
+        Request::Del(socket) => (socket, ChangeOp::Del),
     };
     let change = Change {
         log,
@@ -334,7 +349,7 @@ pub unsafe fn swr_v1_reactor_change(
             silent_remove: record.silent_remove,
         }),
         id: state.fields.id,
-        op: ChangeOp::from_code(op),
+        op,
         events,
     };
     let token = socket.as_ptr().cast::<c_void>();
@@ -361,7 +376,7 @@ pub unsafe fn swr_v1_reactor_change(
 const SW_EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
 const SW_EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
 
-/// What a `Reactor` interest helper asks of [`swr_v1_reactor_change`], as upstream decides
+/// What a `Reactor` interest helper asks of [`apply`], as upstream decides
 /// from the socket's events: the op and its events, or `None` when nothing changes.
 pub(crate) fn interest_change(
     record: Socket<'_>,
@@ -394,7 +409,26 @@ pub(crate) fn interest_change(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SocketRecord;
     use std::cell::RefCell;
+
+    /// [`apply`] of the raw op code (0 add, 1 set, any other del) on the test's state
+    /// and socket, which the test keeps live while registered.
+    unsafe fn swr_v1_reactor_change(
+        owner: *mut ReactorState,
+        socket: *mut SocketRecord,
+        op: u32,
+        events: c_int,
+        log: ChangeLog,
+    ) -> c_int {
+        let socket = unsafe { Socket::from_ptr(socket) }.unwrap();
+        apply(
+            unsafe { &mut *owner },
+            Request::new(socket, ChangeOp::from_code(op)),
+            events,
+            log,
+        )
+    }
 
     const SW_EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
     const SW_EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;

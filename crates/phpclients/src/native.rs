@@ -118,9 +118,9 @@ pub(crate) fn ssl_supports(option: c_int) -> bool {
 }
 
 /// A live coroutine socket (`SocketImpl *`) over crates/hooks' record handle.
-/// Its constructor is the only unsafe point: a socket stays live while the
-/// object or client that owns it is, and a method holds that owner for its
-/// whole call.
+/// It is made only from crates/hooks' handle, whose constructor is the unsafe
+/// point: a socket stays live while the object or client that owns it is, and
+/// a method holds that owner for its whole call.
 #[derive(Clone, Copy)]
 pub struct Co(Handle);
 
@@ -132,13 +132,6 @@ impl From<Handle> for Co {
 }
 
 impl Co {
-    /// # Safety
-    /// `socket` is a live coroutine socket that outlives every use of the handle.
-    pub const unsafe fn new(socket: Socket) -> Self {
-        // SAFETY: per the caller; the native socket is its record.
-        Self(unsafe { Handle::of(socket) })
-    }
-
     #[must_use]
     pub fn as_ptr(self) -> Socket {
         self.0.this()

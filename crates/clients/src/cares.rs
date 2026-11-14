@@ -5,7 +5,7 @@
 use crate::ip::swr_v1_clients_ip_text;
 use std::{
     cell::{Cell, RefCell},
-    ffi::{CStr, c_char, c_void},
+    ffi::{CStr, c_int, c_void},
     ptr,
     sync::{
         Arc,
@@ -16,13 +16,51 @@ use swoole_rs_cares_sys::{self as sdk, swrs_cares_metadata as metadata};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::{EventType, FdType, SW_DNS_SERVER_PORT};
 use swoole_rs_corebase::log;
+use swoole_rs_corebase::sys::Text;
 use swoole_rs_error::ErrorCode;
 use swoole_rs_reactor::{Event, Running, Socket, SocketRecord, event_api};
 
-// c-ares' description of a status: a static NUL-terminated string for every code
-// (`"unknown"` for one it has none for), which reads nothing else.
+/// A channel's socket-state callback: `(query, fd, readable, writable)`.
+type SocketState = extern "C" fn(&Query, c_int, c_int, c_int);
+/// A lookup's callback: `(query, status, timeouts, entry)`, the entry lent for the
+/// call and only on success.
+type HostCallback = extern "C" fn(&Query, c_int, c_int, Option<&libc::hostent>);
+#[expect(
+    improper_ctypes,
+    reason = "c-ares keeps a `Query` only as the opaque userdata it hands back"
+)]
 unsafe extern "C" {
-    safe fn ares_strerror(code: std::ffi::c_int) -> swoole_rs_corebase::sys::Text<'static>;
+    /// c-ares' description of a status: a static NUL-terminated string for every code
+    /// (`"unknown"` for one it has none for), which reads nothing else.
+    safe fn ares_strerror(code: c_int) -> Text<'static>;
+    /// `ares_init_options` through the shim: the SDK's status, and the channel in
+    /// `channel` on success only (c-ares leaves it untouched otherwise).
+    ///
+    /// # Safety
+    /// `data` stays live until the channel is dropped, and no callback drops it.
+    fn swrs_cares_init(
+        channel: &mut Option<sdk::OwnedChannel>,
+        lookups: Text<'_>,
+        timeout: c_int,
+        tries: c_int,
+        callback: Option<SocketState>,
+        data: &Query,
+        mask: c_int,
+    ) -> c_int;
+    /// Sets the channel's one IPv4 server, `host` parsed as `inet_pton` parses it,
+    /// where the SDK's server API allows.
+    safe fn swrs_cares_server(channel: &sdk::Channel, host: Text<'_>, port: u16);
+    /// Starts a lookup of `name`, which c-ares copies; `callback(data, ...)` runs once.
+    ///
+    /// # Safety
+    /// As [`swrs_cares_init`] for `data`.
+    fn ares_gethostbyname(
+        channel: &sdk::Channel,
+        name: Text<'_>,
+        family: c_int,
+        callback: Option<HostCallback>,
+        data: &Query,
+    );
 }
 
 /// The coroutine a query parks: a `swoole::Coroutine`, which starts with its
@@ -58,7 +96,8 @@ const ORIGIN: &std::ffi::CStr = c"coroutine::dns_lookup_impl_with_cares";
 /// A query's state, shared with its c-ares callbacks through the userdata
 /// pointer: each field is changed in place, so no borrow of it spans an effect.
 struct Query {
-    channel: Cell<*mut sdk::Channel>,
+    /// The channel the query runs on, live while a wrapper is registered.
+    channel: Cell<*const sdk::Channel>,
     error: Cell<i32>,
     completed: Cell<bool>,
     coroutine: Cell<*mut c_void>,
@@ -108,8 +147,8 @@ fn process(event: &Event, write: bool) -> i32 {
     // SAFETY: the query's channel stays live while its wrappers are registered.
     let channel = unsafe { query(data) }.channel.get();
     let (read, write) = if write { (-1, fd) } else { (fd, -1) };
-    // SAFETY: SDK callbacks run synchronously on this reactor thread.
-    unsafe { sdk::ares_process_fd(channel, read, write) };
+    // SAFETY: as above: the channel `lookup` owns outlives its registered wrappers.
+    sdk::ares_process_fd(unsafe { &*channel }, read, write);
     0
 }
 /// Reactor destruction: no query still uses the library after its channel was destroyed.
@@ -141,7 +180,7 @@ impl event_api::Deferred for Detached {
     }
     fn dispose(self) {}
 }
-unsafe extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, writable: i32) {
+extern "C" fn socket_state(query: &Query, fd: i32, readable: i32, writable: i32) {
     let events = if readable != 0 {
         EventType::SW_EVENT_READ as i32
     } else {
@@ -151,8 +190,6 @@ unsafe extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, wri
     } else {
         0
     };
-    // SAFETY: c-ares passes the live query's userdata.
-    let query = unsafe { query(data) };
     let registered = query
         .sockets
         .borrow()
@@ -194,6 +231,7 @@ unsafe extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, wri
         // `make_socket(fd, SW_FD_CARES)`: the fresh record, leaked until this function
         // takes it out of the registry and its `Detached` frees it.
         let wrapper = Socket::new(Box::leak(Box::new(SocketRecord::with_fd(fd, FD))));
+        let data = ptr::from_ref(query).cast_mut().cast();
         wrapper.edit(|wrapper| wrapper.object = data);
         query.sockets.borrow_mut().push((fd, wrapper));
         wrapper
@@ -206,14 +244,7 @@ unsafe extern "C" fn socket_state(data: *mut c_void, fd: i32, readable: i32, wri
         _ = event_api::event_add(wrapper, events);
     }
 }
-unsafe extern "C" fn host(
-    data: *mut c_void,
-    status: i32,
-    timeouts: i32,
-    entry: *mut libc::hostent,
-) {
-    // SAFETY: c-ares passes the live query's userdata.
-    let query = unsafe { query(data) };
+extern "C" fn host(query: &Query, status: i32, timeouts: i32, entry: Option<&libc::hostent>) {
     if timeouts > 0 || status != metadata().success {
         let error = if timeouts > 0 {
             ErrorCode::SW_ERROR_DNSLOOKUP_RESOLVE_TIMEOUT as i32
@@ -221,9 +252,7 @@ unsafe extern "C" fn host(
             status
         };
         query.error.set(error);
-    } else {
-        // SAFETY: a successful SDK callback lends its hostent for the call.
-        let entry = unsafe { &*entry };
+    } else if let Some(entry) = entry {
         // The terminated address list, and the family of the storage its slots name.
         let mut addresses = entry.h_addr_list;
         let family = entry.h_addrtype;
@@ -275,9 +304,10 @@ unsafe extern "C" fn host(
 pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
     // The configured server's host, NUL-terminated: empty when none is set.
     let (server_host, port) = crate::dns::server();
-    let has_server = server_host.first().is_some_and(|&byte| byte != 0);
-    let (server, port) = (server_host.as_ptr().cast::<c_char>(), port.c_cast::<u16>());
-    let domain = domain.as_ptr();
+    let server = CStr::from_bytes_until_nul(&server_host)
+        .ok()
+        .filter(|host| !host.is_empty());
+    let port = port.c_cast::<u16>();
     if !event_api::swoole_event_isset_handler(FD, EventType::SW_EVENT_READ as i32) {
         // SAFETY: the handler absence identifies the first query in this reactor lifetime.
         unsafe { sdk::ares_library_init(metadata().library_all) };
@@ -296,29 +326,28 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
         results: RefCell::new(Vec::new()),
     });
     let query: &Query = &owner;
-    let state = ptr::from_ref(query).cast_mut().cast::<c_void>();
-    let mut channel = ptr::null_mut();
+    let mut channel = None;
     let metadata = metadata();
     let mask = metadata.timeout_ms | metadata.tries | metadata.socket_state | metadata.lookups;
-    // SAFETY: the SDK shim adapts its options layout; all callbacks borrow the stable query.
+    // SAFETY: the boxed query outlives the channel, dropped below, and no callback
+    // drops it.
     let status = unsafe {
-        sdk::swrs_cares_init(
-            &raw mut channel,
-            c"fb".as_ptr(),
+        swrs_cares_init(
+            &mut channel,
+            c"fb".into(),
             millis(timeout),
             swoole_rs_corebase::swr_v1_core_dns_tries(),
             Some(socket_state),
-            state,
+            query,
             mask,
         )
     };
-    if status == metadata.success {
+    if let Some(channel) = channel.filter(|_| status == metadata.success) {
         // Publish the initialized channel before issuing any SDK query.
-        query.channel.set(channel);
-        if has_server {
+        query.channel.set(&raw const *channel);
+        if let Some(server) = server {
             if metadata.server_api != 0 {
-                // SAFETY: the wrapper uses the actual SDK node layout for this version.
-                unsafe { sdk::swrs_cares_server(channel, server, port) };
+                swrs_cares_server(&channel, server.into(), port);
                 if metadata.server_api == 1 && u32::from(port) != SW_DNS_SERVER_PORT {
                     log::warning(
                         ORIGIN,
@@ -329,8 +358,8 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
                 log::warning(ORIGIN, format_args!("not support to set dns server"));
             }
         }
-        // SAFETY: c-ares copies the query name; the userdata remains live through destroy.
-        unsafe { sdk::ares_gethostbyname(channel, domain, family, Some(host), state) };
+        // SAFETY: as for `swrs_cares_init`.
+        unsafe { ares_gethostbyname(&channel, domain.into(), family, Some(host), query) };
         let done = query.error.get() != 0 || query.completed.get();
         if !done {
             // `co->yield_ex(timeout)` of the query's coroutine, which is the running
@@ -339,11 +368,11 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
             let code = co::yield_timed(coroutine, timeout);
             _ = co::yield_resumed(code);
             if code == co::RC_CANCELED {
-                // SAFETY: cancel synchronously invokes only callbacks on this live query.
-                unsafe { sdk::ares_cancel(channel) };
+                // Runs only callbacks on this live query, synchronously.
+                sdk::ares_cancel(&channel);
             } else if code == co::RC_TIMEDOUT {
-                // SAFETY: process SDK timeouts before recording the original timeout status.
-                unsafe { sdk::ares_process_fd(channel, -1, -1) };
+                // Process SDK timeouts before recording the original timeout status.
+                sdk::ares_process_fd(&channel, -1, -1);
                 // Record timeout after SDK callbacks, matching original order.
                 query.error.set(metadata.timeout);
             }
@@ -363,8 +392,8 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
         }
         // All deferred completions share this token; none may resume a retired query.
         query.retired.store(true, Ordering::Relaxed);
-        // SAFETY: keep query storage alive until all synchronous destruction callbacks return.
-        unsafe { sdk::ares_destroy(channel) };
+        // `ares_destroy`, while the query lives for its synchronous callbacks.
+        drop(channel);
     } else {
         let reason = ares_strerror(status).get().to_string_lossy();
         log::warning(

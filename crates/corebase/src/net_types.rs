@@ -35,33 +35,50 @@ impl AddressStorage {
         self.v4().sin_family
     }
 
+    /// The storage as its member `T`.
+    const fn member<T: Member>(&self) -> &T {
+        // SAFETY: `T` is one of the union's members (`Member` is sealed to them), which
+        // all start at its start and are plain bytes, so any of them reads whatever was
+        // stored, for as long as the union is borrowed.
+        unsafe { &*std::ptr::from_ref(self).cast::<T>() }
+    }
+
+    /// The storage as its member `T`, to fill.
+    const fn member_mut<T: Member>(&mut self) -> &mut T {
+        // SAFETY: as for `member`, and any bytes written are a value of every member.
+        unsafe { &mut *std::ptr::from_mut(self).cast::<T>() }
+    }
+
     /// The storage as an IPv4 address.
     #[must_use]
     pub const fn v4(&self) -> &libc::sockaddr_in {
-        // SAFETY: every member is plain bytes, so any of them reads whatever was stored.
-        unsafe { &self.inet_v4 }
+        self.member()
     }
 
     /// The storage as an IPv6 address.
     #[must_use]
     pub const fn v6(&self) -> &libc::sockaddr_in6 {
-        // SAFETY: as for `v4`.
-        unsafe { &self.inet_v6 }
+        self.member()
     }
 
     /// The storage as a Unix address.
     #[must_use]
     pub const fn unix(&self) -> &libc::sockaddr_un {
-        // SAFETY: as for `v4`.
-        unsafe { &self.un }
+        self.member()
     }
 
     /// The storage as a Unix address, to fill.
     pub const fn unix_mut(&mut self) -> &mut libc::sockaddr_un {
-        // SAFETY: as for `v4`, and any bytes written are a value of every member.
-        unsafe { &mut self.un }
+        self.member_mut()
     }
 }
+
+/// A member of [`AddressStorage`]: private, so only the union's own member types.
+trait Member {}
+impl Member for libc::sockaddr {}
+impl Member for libc::sockaddr_in {}
+impl Member for libc::sockaddr_in6 {}
+impl Member for libc::sockaddr_un {}
 
 impl SocketAddress {
     /// The storage's size, the most a call reads or writes of it.

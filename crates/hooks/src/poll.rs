@@ -50,6 +50,13 @@ pub struct Wake {
 #[derive(Clone, Copy)]
 pub struct Registered(NonNull<Task<'static>>);
 
+impl Registered {
+    /// The task's address, the object of its reactor sockets.
+    pub(crate) fn as_ptr(self) -> *mut c_void {
+        self.0.as_ptr().cast()
+    }
+}
+
 /// A parked poll's pending timer: it fires once, or [`Wake`] deletes it. Only this
 /// module makes one.
 pub struct Timer(swoole_rs_timer::Held);
@@ -304,17 +311,15 @@ pub use tests::Socket as TestSocket;
 #[cfg(not(test))]
 pub(crate) mod native {
     use super::{Registered, Timer};
-    use crate::wait_event::Watch;
-    use swoole_rs_corebase::constants::FdType;
+    use crate::wait_event::native::{Object, Watch};
     use swoole_rs_coroutine::resume;
     use swoole_rs_reactor::event_api::{Deferred, swoole_event_defer_value};
 
     use swoole_rs_timer::{add_fn_sec_id, del_id};
 
     pub(super) fn add(fd: i32, events: i32, task: Registered) -> Option<Watch> {
-        let task = task.0.as_ptr().cast();
         // SAFETY: a poll task, the object `poll_ready` takes, which outlives the watch.
-        unsafe { Watch::add(fd, FdType::SW_FD_CO_POLL as i32, events, task) }.ok()
+        unsafe { Watch::add(fd, events, Object::Poll(task)) }.ok()
     }
 
     pub(super) fn timer_add(timeout: f64, task: Registered) -> Option<Timer> {

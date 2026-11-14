@@ -36,8 +36,8 @@ unsafe extern "C" {
 
 /// A live class entry, borrowed for `'a`: an object's class, which outlives it,
 /// or a registered internal class, which lives for the process. Zend may change
-/// the entry (its flags, its statics) at any time, so each read takes one field
-/// through the pointer and no reference to the entry is ever made.
+/// the entry (its flags, its statics) whenever PHP runs, so each read borrows
+/// the entry only while it copies a field out ([`ClassEntry::read`]).
 #[derive(Clone, Copy)]
 #[repr(transparent)]
 pub struct ClassEntry<'a>(
@@ -61,12 +61,19 @@ impl<'a> ClassEntry<'a> {
         self.0
     }
 
+    /// `f` of the entry, which it reads only: no PHP code runs, so nothing
+    /// changes the entry, while it is borrowed.
+    #[inline]
+    pub(crate) fn read<R>(self, f: impl FnOnce(&zend_class_entry) -> R) -> R {
+        // SAFETY: a live class entry, per the type; the borrow ends with `f`.
+        f(unsafe { &*self.0 })
+    }
+
     /// `ce->name`: the class's name, which it keeps for as long as it lives.
     #[must_use]
     #[inline]
     pub fn name(self) -> &'a ZStr {
-        // SAFETY: a live class entry, per the type.
-        let name = unsafe { (*self.0).name };
+        let name = self.read(|ce| ce.name);
         // SAFETY: every class has a name, a string the class holds for `'a`;
         // `ZStr` is a transparent string.
         unsafe { &*name.cast::<ZStr>() }
@@ -84,8 +91,7 @@ impl<'a> ClassEntry<'a> {
     #[must_use]
     #[inline]
     pub fn flags(self) -> u32 {
-        // SAFETY: a live class entry, per the type.
-        unsafe { (*self.0).ce_flags }
+        self.read(|ce| ce.ce_flags)
     }
 
     /// `ce->parent`: the class this one extends, once Zend resolved it
@@ -98,15 +104,9 @@ impl<'a> ClassEntry<'a> {
         if self.flags() & ZEND_ACC_RESOLVED_PARENT == 0 {
             return None;
         }
-        // The union of the parent's entry and, until it is resolved, its name:
-        // two pointers, either of which starts it.
-        let slot = self
-            .0
-            .wrapping_byte_add(offset_of!(zend_class_entry, __bindgen_anon_1))
-            .cast::<*mut zend_class_entry>();
-        // SAFETY: a field of a live class entry; the flag says it holds the
-        // parent's entry.
-        let parent = unsafe { slot.read() };
+        // SAFETY: the union of the parent's entry and, until it is resolved,
+        // its name; the flag says it holds the entry.
+        let parent = self.read(|ce| unsafe { ce.__bindgen_anon_1.parent });
         // A class keeps its parent alive.
         (!parent.is_null()).then_some(Self(parent, PhantomData))
     }

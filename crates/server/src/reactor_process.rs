@@ -38,7 +38,7 @@ pub(crate) fn start_reactor_processes(serv: view::Server<'_>) -> c_int {
     let config = serv.config();
     config.single_thread.set(true);
     // Listen on the TCP ports; with SO_REUSEPORT each worker listens itself.
-    if config.have_stream_sock {
+    if config.have_stream_sock.get() {
         for (index, &port) in serv.ports().iter().enumerate() {
             if !is_stream(port) {
                 continue;
@@ -299,7 +299,7 @@ mod tests {
     fn start_listens_then_the_manager_runs_the_workers() {
         let live = LiveServer::new();
         config(&live).mode_ = crate::Mode::Base;
-        config(&live).have_stream_sock = true;
+        config(&live).have_stream_sock.set(true);
         config(&live).worker_num.set(2);
         calls();
         assert_eq!(start_reactor_processes(live.server()), OK);
@@ -329,7 +329,7 @@ mod tests {
         }
         fail(None);
 
-        config(&live).have_stream_sock = false;
+        config(&live).have_stream_sock.set(false);
         config(&live).worker_num.set(1);
         assert_eq!(
             start_reactor_processes(live.server()),

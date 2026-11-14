@@ -6,7 +6,8 @@
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::{
     AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU8, AtomicU16, AtomicU32, AtomicU64,
-    AtomicUsize, Ordering::Relaxed,
+    AtomicUsize,
+    Ordering::{Acquire, Relaxed, Release},
 };
 use swoole_rs_corebase::worker_registry::WorkerRegistry;
 use swoole_rs_memory::members::Shm;
@@ -184,20 +185,22 @@ impl<T> Published<T> {
 pub struct ServerConfig {
     pub reactor_num: Setting<u16>,
     pub worker_num: Setting<u32>,
-    pub dgram_port_num: u8,
+    pub dgram_port_num: Setting<u8>,
     pub dispatch_mode: Setting<u8>,
     /// Set and cleared by whichever thread dispatches, so an atomic.
     pub scheduler_warning: AtomicBool,
     pub max_request: Setting<u32>,
     pub max_request_grace: Setting<u32>,
+    /// Upstream's last UDP, UDP6 and unix datagram listeners, kept null for the
+    /// record's layout: [`crate::view::Server::dgram_socket`] finds them among the ports.
     pub udp_socket_ipv4: *mut c_void,
     pub udp_socket_ipv6: *mut c_void,
     pub dgram_socket: *mut c_void,
     pub max_wait_time: Setting<u32>,
     pub worker_max_concurrency: Setting<u32>,
     pub daemonize: Setting<bool>,
-    pub have_dgram_sock: bool,
-    pub have_stream_sock: bool,
+    pub have_dgram_sock: Setting<bool>,
+    pub have_stream_sock: Setting<bool>,
     pub open_cpu_affinity: Setting<bool>,
     pub disable_notify: Setting<bool>,
     pub discard_timeout_request: Setting<bool>,
@@ -223,7 +226,7 @@ pub struct ServerConfig {
     pub running: AtomicBool,
     /// The CPUs `cpu_affinity_ignore` leaves workers; none for every CPU.
     pub cpu_affinity_available: Published<Vec<c_int>>,
-    pub pipe_command: *mut c_void,
+    pub pipe_command: CommandPipe,
     pub send_timeout: Setting<f64>,
     pub heartbeat_check_interval: Setting<u16>,
     /// `time_t`, reset with `scheduler_warning` by whichever thread dispatches.
@@ -381,7 +384,7 @@ impl Default for ServerConfig {
         Self {
             reactor_num: Setting::new(0),
             worker_num: Setting::new(0),
-            dgram_port_num: 0,
+            dgram_port_num: Setting::new(0),
             dispatch_mode: Setting::new(DispatchMode::FdMod as u8),
             scheduler_warning: AtomicBool::new(false),
             max_request: Setting::new(0),
@@ -392,8 +395,8 @@ impl Default for ServerConfig {
             max_wait_time: Setting::new(3),
             worker_max_concurrency: Setting::new(u32::MAX),
             daemonize: Setting::new(false),
-            have_dgram_sock: false,
-            have_stream_sock: false,
+            have_dgram_sock: Setting::new(false),
+            have_stream_sock: Setting::new(false),
             open_cpu_affinity: Setting::new(false),
             disable_notify: Setting::new(false),
             discard_timeout_request: Setting::new(false),
@@ -416,7 +419,7 @@ impl Default for ServerConfig {
             single_thread: Setting::new(false),
             running: AtomicBool::new(true),
             cpu_affinity_available: Published::default(),
-            pipe_command: core::ptr::null_mut(),
+            pipe_command: CommandPipe(AtomicPtr::new(core::ptr::null_mut())),
             send_timeout: Setting::new(0.0),
             heartbeat_check_interval: Setting::new(0),
             warning_time: AtomicI64::new(0),
@@ -472,12 +475,28 @@ impl ServerConfig {
 
     /// `serv->pipe_command`: the command pipe, once `add_command` has made it.
     pub(crate) fn command_pipe(&self) -> Option<&swoole_rs_tls::socket_pair::SocketPair> {
-        let pipe = self
-            .pipe_command
-            .cast::<swoole_rs_tls::socket_pair::SocketPair>();
-        // SAFETY: null, or the pair that op boxed, which nothing frees while the
-        // configuration lives.
+        let pipe = self.pipe_command.0.load(Acquire);
+        // SAFETY: null, or a pair `CommandPipe::keep` leaked, which nothing frees:
+        // only `keep` writes the private field.
         unsafe { pipe.as_ref() }
+    }
+}
+
+/// `serv->pipe_command`: null, or the command pipe `add_command` opened, which the
+/// server keeps for the rest of the process. Laid out as the pointer.
+#[repr(transparent)]
+pub struct CommandPipe(AtomicPtr<swoole_rs_tls::socket_pair::SocketPair>);
+
+impl CommandPipe {
+    /// `serv->pipe_command = pipe`: the server keeps it, and a pipe it kept before.
+    pub(crate) fn keep(&self, pipe: Box<swoole_rs_tls::socket_pair::SocketPair>) {
+        self.0.store(Box::into_raw(pipe), Release);
+    }
+
+    /// The pipe's address, or null.
+    #[must_use]
+    pub fn as_ptr(&self) -> *mut c_void {
+        self.0.load(Acquire).cast()
     }
 }
 

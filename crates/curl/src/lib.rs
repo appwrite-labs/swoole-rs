@@ -70,6 +70,13 @@ impl Easy {
             ptr::null_mut()
         }
     }
+
+    /// Sets `CURLINFO_PRIVATE`, which [`Easy::handle`] reads back: null, or the
+    /// Swoole handle [`swr_v1_curl_create_handle`] made for this easy handle.
+    fn set_private(self, handle: *mut Handle) {
+        // SAFETY: the live easy handle; CURLOPT_PRIVATE stores a pointer and reads nothing.
+        unsafe { curl_easy_setopt(self.0, CURLOPT_PRIVATE, handle.cast::<c_void>()) };
+    }
 }
 
 /// `struct swr_v1_curl_handle`: the easy handle's multi while it is in one,
@@ -667,8 +674,7 @@ pub extern "C" fn swr_v1_curl_create_handle(cp: Easy) -> *mut Handle {
         multi: ptr::null_mut(),
         easy_multi: ptr::null_mut(),
     }));
-    // SAFETY: the live easy handle, which keeps the pointer for `Easy::handle`.
-    unsafe { curl_easy_setopt(cp.0, CURLOPT_PRIVATE, handle.cast::<c_void>()) };
+    cp.set_private(handle);
     handle
 }
 
@@ -685,8 +691,7 @@ pub unsafe extern "C" fn swr_v1_curl_destroy_handle(cp: Easy) {
     let handle = unsafe { Box::from_raw(handle) };
     // SAFETY: its own exec multi, or null.
     unsafe { swr_v1_curl_multi_free(handle.easy_multi) };
-    // SAFETY: the live easy handle.
-    unsafe { curl_easy_setopt(cp.0, CURLOPT_PRIVATE, ptr::null_mut::<c_void>()) };
+    cp.set_private(ptr::null_mut());
 }
 
 /// `swoole_curl_easy_reset`: `curl_easy_reset`, keeping the handle.
@@ -697,8 +702,8 @@ pub unsafe extern "C" fn swoole_curl_easy_reset(cp: Easy) {
     let handle = cp.handle();
     // SAFETY: per the caller.
     unsafe { curl_easy_reset(cp.0) };
-    // SAFETY: the live easy handle, which keeps the pointer it held.
-    unsafe { curl_easy_setopt(cp.0, CURLOPT_PRIVATE, handle.cast::<c_void>()) };
+    // The easy handle keeps the Swoole handle it held.
+    cp.set_private(handle);
 }
 
 #[cfg(not(test))]

@@ -55,7 +55,7 @@ impl Queue {
         }
     }
     fn add(&self, n: &Node<'_>, now: i64, delay: i64, repeat: bool) -> TimerView {
-        let (status, v) = self.q.borrow_mut().add(now, delay, repeat, n.token());
+        let (status, v) = self.q.borrow_mut().add(now, delay, repeat, || n.token());
         assert_eq!(status, Status::Ok);
         assert!(v.id > 0 && v.token == n.token() && v.deadline == now + delay);
         assert!(!v.removed);
@@ -344,21 +344,21 @@ fn limits() {
     let q = Queue::new();
     let none = TimerView::default();
     assert_eq!(
-        q.q.borrow_mut().add(i64::MAX - 2, 3, false, a.token()),
+        q.q.borrow_mut().add(i64::MAX - 2, 3, false, || a.token()),
         (Status::Overflow, none)
     );
     assert_eq!(
-        q.q.borrow_mut().add(0, 0, false, a.token()).0,
+        q.q.borrow_mut().add(0, 0, false, || a.token()).0,
         Status::Invalid
     );
     assert_eq!(
-        q.q.borrow_mut().add(0, 1, false, ptr::null_mut()).0,
+        q.q.borrow_mut().add(0, 1, false, ptr::null_mut).0,
         Status::Invalid
     );
     let av = q.add(&a, 10, 1, false);
     assert_eq!(av.id, 1);
     assert_eq!(
-        q.q.borrow_mut().add(9, 1, false, a.token()).0,
+        q.q.borrow_mut().add(9, 1, false, || a.token()).0,
         Status::Invalid
     );
     assert_eq!(q.stats().count, 1);
@@ -398,7 +398,7 @@ fn teardown() {
             (Status::Deferred, TimerView::default())
         );
         assert_eq!(
-            q.q.borrow_mut().add(2, 1, false, c.token()).0,
+            q.q.borrow_mut().add(2, 1, false, || c.token()).0,
             Status::Closing
         );
         assert_eq!(q.q.borrow_mut().update(v.id, 3).0, Status::Closing);

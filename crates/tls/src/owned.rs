@@ -144,7 +144,7 @@ impl TlsContext {
         let context = Self::new();
         for &(which, value) in texts {
             // SAFETY: the fresh owner, which nothing else holds yet.
-            _ = unsafe { Lent::new(context.as_ptr()) }.set_text(which, value);
+            _ = unsafe { Lent::new(&context) }.set_text(which, value);
         }
         context
     }
@@ -191,11 +191,9 @@ pub fn reason_text(error: std::os::raw::c_ulong) -> String {
 const TLS_HOST_NAME: usize = 8;
 /// The owner's fields, borrowed.
 /// # Safety
-/// owner is live for `'a` and no field write runs while the borrow is used.
+/// No field write runs while the borrow is used.
 #[must_use]
-pub unsafe fn owner_fields<'a>(owner: *const OwnedTlsContext) -> &'a OwnedTlsFields {
-    // SAFETY: as the caller promises.
-    let owner = unsafe { &*owner };
+pub unsafe fn owner_fields(owner: &OwnedTlsContext) -> &OwnedTlsFields {
     // SAFETY: as the caller promises.
     unsafe { &*owner.fields.get() }
 }
@@ -220,16 +218,17 @@ pub fn owner_host_c_str(owner: &OwnedTlsContext) -> &CStr {
 /// instead of each field access promising it again. It is not `Sync`, so only the
 /// thread holding it writes through it.
 pub struct Lent<'a>(&'a OwnedTlsContext, PhantomData<Cell<()>>);
-impl Lent<'_> {
+impl<'a> Lent<'a> {
     /// # Safety
-    /// `owner` is live while the guard is, and until the guard goes only its holder
-    /// reaches the owner's fields and retained password: no other thread does, and
-    /// what the holder calls meanwhile (OpenSSL, the logger, native code reading its
-    /// view) runs while no borrow the guard lent is in use.
-    pub unsafe fn new(owner: *const OwnedTlsContext) -> Self {
-        // SAFETY: as the caller promises.
-        Self(unsafe { &*owner }, PhantomData)
+    /// Until the guard goes only its holder reaches the owner's fields and retained
+    /// password: no other thread does, and what the holder calls meanwhile (OpenSSL,
+    /// the logger, native code reading its view) runs while no borrow the guard lent
+    /// is in use.
+    pub const unsafe fn new(owner: &'a OwnedTlsContext) -> Self {
+        Self(owner, PhantomData)
     }
+}
+impl Lent<'_> {
     fn fields(&self) -> &OwnedTlsFields {
         // SAFETY: the guard's contract: nothing writes the fields while it lends them.
         unsafe { &*self.0.fields.get() }
@@ -321,13 +320,13 @@ fn create(owner: &mut Lent<'_>) -> bool {
 /// `bool SSLContext::create()`, which initializes OpenSSL first.
 ///
 /// # Safety
-/// `context` is live/exclusive, and its logger does not throw.
+/// `context` is exclusive, and its logger does not throw.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole10SSLContext6createEv")
 )]
 #[must_use]
-pub unsafe extern "C" fn ssl_context_create(context: *const OwnedTlsContext) -> bool {
+pub unsafe extern "C" fn ssl_context_create(context: &OwnedTlsContext) -> bool {
     crate::swoole_ssl_init();
     // SAFETY: as the caller promises.
     create(&mut unsafe { Lent::new(context) })
@@ -341,20 +340,20 @@ pub struct OwnedTlsCopy {
 /// Native references keep their stable destination slots; cache failures are caught
 /// before the affected string is published and rethrown by its native view.
 /// # Safety
-/// Both owners are live, synchronized and distinct (self-assignment is accepted).
-/// Native cache callbacks catch exceptions and do not reenter.
+/// Both owners are synchronized (self-assignment is accepted). Native cache callbacks
+/// catch exceptions and do not reenter.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_tls_owner_assign(
-    destination: *const OwnedTlsContext,
-    source: *const OwnedTlsContext,
+    destination: &OwnedTlsContext,
+    source: &OwnedTlsContext,
 ) -> OwnedTlsCopy {
-    if destination == source {
+    if std::ptr::eq(destination, source) {
         return OwnedTlsCopy {
             status: 0,
             index: 0,
         };
     }
-    // SAFETY: a live owner its caller serializes, distinct from the source.
+    // SAFETY: an owner its caller serializes, distinct from the source.
     let mut destination = unsafe { Lent::new(destination) };
     // SAFETY: as above; the source remains unchanged for the configuration copy.
     let mut source = unsafe { Lent::new(source) };
@@ -395,9 +394,9 @@ pub unsafe extern "C" fn swr_v1_tls_owner_assign(
 /// Configure and create a coroutine socket's context from its authoritative owner.
 /// 0 success, 1 unsupported DTLS, 2 context creation failure.
 /// # Safety
-/// owner is live/exclusive; native TLS initialization has succeeded.
+/// `owner` is exclusive; native TLS initialization has succeeded.
 pub unsafe fn swr_v1_tls_owner_socket_context(
-    owner: *const OwnedTlsContext,
+    owner: &OwnedTlsContext,
     socket: swoole_rs_reactor::Socket<'_>,
     http2: bool,
     dtls_supported: bool,
@@ -435,16 +434,22 @@ pub unsafe fn swr_v1_tls_owner_socket_context(
 /// # Errors
 /// As [`crate::socket_ssl_new`].
 ///
+/// `hostname` is the automatic host name, none when it is empty.
+///
 /// # Safety
-/// All pointers are live/exclusive, hostname is stable, and TLS is initialized.
+/// `owner` is exclusive, and TLS is initialized.
 pub unsafe fn swr_v1_tls_owner_socket_session(
-    owner: *const OwnedTlsContext,
+    owner: Option<&OwnedTlsContext>,
     record: swoole_rs_reactor::Socket<'_>,
-    hostname: *const StringSlot,
+    hostname: Option<&CStr>,
 ) -> Result<(), crate::SslNewError> {
     if !record.read(swoole_rs_reactor::SocketFields::ssl).is_null() {
         return Ok(());
     }
+    // No context to make one over: `SSL_new` of none.
+    let Some(owner) = owner else {
+        return Err(crate::SslNewError::New);
+    };
     // SAFETY: as the caller promises.
     let owner = unsafe { Lent::new(owner) };
     let owner_ref = owner.0;
@@ -460,9 +465,7 @@ pub unsafe fn swr_v1_tls_owner_socket_session(
     let selected = if !explicit.bytes().is_empty() {
         Some(explicit.c_str())
     } else if !disable_tls_host_name {
-        // SAFETY: the enclosing socket lends its live automatic hostname slot.
-        let automatic = unsafe { &*hostname };
-        (!automatic.bytes().is_empty()).then(|| automatic.c_str())
+        hostname
     } else {
         None
     };
@@ -630,7 +633,7 @@ mod tests {
         unsafe {
             let prepared = owner_new(warning);
             let owner = prepared.owner;
-            let lent = Lent::new(owner);
+            let lent = Lent::new(&*owner);
             let text = |index: usize| {
                 let view = swoole_rs_corebase::swr_v1_core_string_view(&*prepared.strings[index]);
                 std::slice::from_raw_parts(view.data.cast::<u8>(), view.length).to_vec()
@@ -709,13 +712,16 @@ mod tests {
                     swoole_rs_reactor::SocketRecord::with_fd(stream.as_raw_fd(), 6).into_raw();
                 let handle = swoole_rs_reactor::Socket::from_ptr(socket).unwrap();
                 assert_eq!(
-                    swr_v1_tls_owner_socket_context(prepared.owner, handle, true, true),
+                    swr_v1_tls_owner_socket_context(&*prepared.owner, handle, true, true),
                     0
                 );
                 assert!((*socket).fields.output.ssl_send);
                 assert!((*prepared.fields).http_v2);
-                let result =
-                    swr_v1_tls_owner_socket_session(prepared.owner, handle, Arc::as_ptr(&hostname));
+                let result = swr_v1_tls_owner_socket_session(
+                    Some(&*prepared.owner),
+                    handle,
+                    (!automatic.is_empty()).then(|| hostname.c_str()),
+                );
                 assert_eq!(result, Ok(()));
                 let ssl = (*socket).fields.ssl().cast::<openssl_sys::SSL>();
                 assert_eq!(
@@ -734,10 +740,7 @@ mod tests {
                         & openssl_sys::SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER,
                     0
                 );
-                assert_eq!(
-                    swr_v1_tls_owner_socket_session(ptr::null(), handle, ptr::null()),
-                    Ok(())
-                );
+                assert_eq!(swr_v1_tls_owner_socket_session(None, handle, None), Ok(()));
                 openssl_sys::SSL_free(ssl);
                 swoole_rs_reactor::SocketRecord::free(socket);
                 swr_v1_tls_owner_free(prepared.owner);
@@ -757,10 +760,10 @@ mod tests {
                 ),
                 0
             );
-            assert!(create(&mut Lent::new(source.owner)));
+            assert!(create(&mut Lent::new(&*source.owner)));
             let context = (*source.fields).context_ptr();
             assert_eq!(
-                swr_v1_tls_owner_assign(destination.owner, source.owner).status,
+                swr_v1_tls_owner_assign(&*destination.owner, &*source.owner).status,
                 0
             );
             assert_eq!((*destination.fields).context_ptr(), context);
@@ -806,7 +809,7 @@ mod tests {
                 ),
                 0
             );
-            assert!(create(&mut Lent::new(owner)));
+            assert!(create(&mut Lent::new(&*owner)));
             let ctx = (*prepared.fields).context_ptr();
             assert_eq!((*prepared.fields).protocols, 126);
             let data = ptr::from_ref(slot).cast_mut().cast();

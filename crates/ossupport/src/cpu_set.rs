@@ -1,4 +1,5 @@
 //! A `cpu_set_t` and the affinity calls over it, as safe functions.
+use crate::CurrentThread;
 use std::ffi::{c_int, c_ulong};
 
 /// The set's words: the kernel's CPU mask is an array of `unsigned long`.
@@ -14,6 +15,27 @@ const _: () = assert!(
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct CpuSet([c_ulong; WORDS]);
+
+/// The size the affinity calls take with a set: its one value is a [`CpuSet`]'s
+/// bytes, so the length they read or write is the set's they are lent.
+#[repr(usize)]
+#[derive(Clone, Copy)]
+enum SetBytes {
+    Set = size_of::<CpuSet>(),
+}
+
+// libc's affinity calls, typed as what they read or write: one whole set. A pid or
+// thread that isn't there is an error the call returns.
+unsafe extern "C" {
+    #[link_name = "sched_getaffinity"]
+    safe fn process_get(pid: libc::pid_t, size: SetBytes, set: &mut CpuSet) -> c_int;
+    #[link_name = "sched_setaffinity"]
+    safe fn process_set(pid: libc::pid_t, size: SetBytes, set: &CpuSet) -> c_int;
+    #[link_name = "pthread_getaffinity_np"]
+    safe fn thread_get(thread: CurrentThread, size: SetBytes, set: &mut CpuSet) -> c_int;
+    #[link_name = "pthread_setaffinity_np"]
+    safe fn thread_set(thread: CurrentThread, size: SetBytes, set: &CpuSet) -> c_int;
+}
 
 impl CpuSet {
     const BYTES: usize = size_of::<Self>();
@@ -43,30 +65,24 @@ impl CpuSet {
 
     /// `sched_getaffinity(pid)` into this set: 0, or -1 with `errno` set.
     pub fn get_process(&mut self, pid: libc::pid_t) -> c_int {
-        // SAFETY: a writable set of the size passed.
-        unsafe { libc::sched_getaffinity(pid, Self::BYTES, self.0.as_mut_ptr().cast()) }
+        process_get(pid, SetBytes::Set, self)
     }
 
     /// `sched_setaffinity(pid)`: 0, or -1 with `errno` set.
     #[must_use]
     pub fn set_process(&self, pid: libc::pid_t) -> c_int {
-        // SAFETY: a valid set of the size passed.
-        unsafe { libc::sched_setaffinity(pid, Self::BYTES, self.0.as_ptr().cast()) }
+        process_set(pid, SetBytes::Set, self)
     }
 
     /// `pthread_getaffinity_np(pthread_self())` into this set: 0 or an error number.
     pub fn get_thread(&mut self) -> c_int {
-        let thread = crate::pthread_self();
-        // SAFETY: a writable set of the size passed, for the calling thread.
-        unsafe { libc::pthread_getaffinity_np(thread, Self::BYTES, self.0.as_mut_ptr().cast()) }
+        thread_get(CurrentThread::get(), SetBytes::Set, self)
     }
 
     /// `pthread_setaffinity_np(pthread_self())`: 0 or an error number.
     #[must_use]
     pub fn set_thread(&self) -> c_int {
-        let thread = crate::pthread_self();
-        // SAFETY: a valid set of the size passed, for the calling thread.
-        unsafe { libc::pthread_setaffinity_np(thread, Self::BYTES, self.0.as_ptr().cast()) }
+        thread_set(CurrentThread::get(), SetBytes::Set, self)
     }
 
     /// The set's CPUs, ascending.

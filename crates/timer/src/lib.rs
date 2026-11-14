@@ -135,16 +135,17 @@ impl Timer {
 /// (docs/timer-abi-v1.md). Each returns a status and, where the operation has one, a
 /// view (the default when it has none).
 impl Timer {
-    /// Adds a node due `delay` after `now`, repeating when `persistent`.
+    /// Adds a node due `delay` after `now`, repeating when `persistent`, whose token
+    /// `token` makes once the queue has room for it: a refused add makes none.
     pub fn add(
         &mut self,
         now: i64,
         delay: i64,
         persistent: bool,
-        token: *mut c_void,
+        token: impl FnOnce() -> *mut c_void,
     ) -> (Status, TimerView) {
         let none = TimerView::default();
-        if now < 0 || delay <= 0 || token.is_null() {
+        if now < 0 || delay <= 0 {
             return (Status::Invalid, none);
         }
         if self.closing {
@@ -164,6 +165,10 @@ impl Timer {
         }
         if self.heap.try_reserve(1).is_err() || self.positions.try_reserve(1).is_err() {
             return (Status::NoMem, none);
+        }
+        let token = token();
+        if token.is_null() {
+            return (Status::Invalid, none);
         }
         let view = TimerView {
             id,
@@ -476,9 +481,9 @@ mod tests {
             self.0.borrow_mut()
         }
         fn add(&self, now: i64, delay: i64, persistent: bool, token: usize) -> TimerView {
-            let (status, view) =
-                self.q()
-                    .add(now, delay, persistent, ptr::without_provenance_mut(token));
+            let (status, view) = self.q().add(now, delay, persistent, || {
+                ptr::without_provenance_mut(token)
+            });
             assert_eq!(status, Status::Ok);
             view
         }
@@ -714,7 +719,7 @@ mod tests {
         assert_eq!(q.add(0, 1, false, 1).id, i64::MAX);
         let before = q.stats();
         assert_eq!(
-            q.q().add(5, 1, false, ptr::dangling_mut()),
+            q.q().add(5, 1, false, ptr::dangling_mut),
             (Status::Overflow, TimerView::default())
         );
         assert_eq!(q.stats(), before);
@@ -780,7 +785,7 @@ mod tests {
             let q = Owned::new();
             let mut queue = q.q();
             FAIL_AFTER.set(Some(nth));
-            let (status, out) = queue.add(10, 5, false, ptr::dangling_mut());
+            let (status, out) = queue.add(10, 5, false, ptr::dangling_mut);
             FAIL_AFTER.set(None);
             if nth < 3 {
                 assert_eq!(status, Status::NoMem);
@@ -804,7 +809,7 @@ mod tests {
         let stats = q.stats();
         let last_id = q.q().last_id;
         FAIL_AFTER.set(Some(0));
-        let added = q.q().add(99, 1, false, ptr::without_provenance_mut(999));
+        let added = q.q().add(99, 1, false, || ptr::without_provenance_mut(999));
         FAIL_AFTER.set(None);
         assert_eq!(added, (Status::NoMem, TimerView::default()));
         assert_eq!(q.stats(), stats);
@@ -953,7 +958,7 @@ mod tests {
         );
         assert_eq!(q.begin(-1), Status::Invalid);
         assert_eq!(
-            q.q().add(i64::MAX, 1, false, ptr::dangling_mut()),
+            q.q().add(i64::MAX, 1, false, ptr::dangling_mut),
             (Status::Overflow, TimerView::default())
         );
         assert_eq!(q.q().update(1, -1), (Status::Invalid, TimerView::default()));

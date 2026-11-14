@@ -107,10 +107,12 @@ fn collide(_: &[u8], _: usize) -> u64 {
     0
 }
 
-/// A table in heap memory (C++ uses shared memory; the logic is the same).
+/// A table whose header is in heap memory (C++ uses shared memory; the logic is the
+/// same) and whose arena is a mapping.
 struct Owned {
     table: *mut Table,
-    arena: Vec<u64>,
+    arena: *mut std::ffi::c_void,
+    arena_len: usize,
 }
 
 impl Owned {
@@ -128,7 +130,8 @@ impl Owned {
         ));
         Owned {
             table,
-            arena: Vec::new(),
+            arena: ptr::null_mut(),
+            arena_len: 0,
         }
     }
 
@@ -145,9 +148,15 @@ impl Owned {
         if size == 0 {
             return false;
         }
-        self.arena = vec![0; size.div_ceil(8)];
-        let arena = self.arena.as_mut_ptr().cast();
-        unsafe { (*self.table).create(arena) }
+        let mut arena = crate::members::Shm::malloc(size);
+        let payload = arena.as_ptr();
+        let created = unsafe { (*self.table).create(&mut arena) };
+        if created {
+            self.arena = payload;
+            self.arena_len = size;
+        }
+        arena.free();
+        created
     }
 }
 
@@ -156,9 +165,12 @@ impl Drop for Owned {
         let created = self.get().ready();
         let arena = unsafe { (*self.table).destroy() };
         assert_eq!(!arena.is_null(), created);
-        assert!(arena.is_null() || arena == self.arena.as_mut_ptr().cast());
+        assert!(arena.is_null() || arena == self.arena.cast());
         // Other processes sharing the header see the table destroyed.
         assert!(!self.get().ready());
+        if !arena.is_null() {
+            unsafe { crate::members::sw_shm_free(arena.cast()) };
+        }
         unsafe { dealloc(self.table.cast(), Alloc::new::<Table>()) };
     }
 }
@@ -251,7 +263,7 @@ fn sizes_match_upstream_accounting() {
         assert_eq!(table.get().memory_size(), total - size * 8 - row * size);
         assert_eq!(table.get().total_slices() as usize, all - size);
         assert_eq!(table.get().available_slices(), table.get().total_slices());
-        assert!(table.arena.len() * 8 >= total);
+        assert!(table.arena_len >= total);
     }
 }
 

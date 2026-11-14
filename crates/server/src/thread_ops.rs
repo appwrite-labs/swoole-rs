@@ -79,7 +79,7 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
     handle.set_handler(FD_PIPE, SW_EVENT_WRITE, entry::on_pipe_write);
     let reactors = config.reactor_num.get();
     // Listen on this thread's UDP ports.
-    if config.have_dgram_sock {
+    if config.have_dgram_sock.get() {
         for (index, port) in tables.ports().iter().enumerate() {
             let dgram = matches!(port.config().r#type, 2 | 4 | 6);
             if !dgram || !owns(i64::from(port.fd()), reactors, id) {
@@ -115,9 +115,9 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
             thread.heartbeat_timer.set(heartbeat_timer(state, handle));
         }
     }
-    if !config.pipe_command.is_null() {
+    if let Some(pipe) = config.command_pipe() {
         // The server's live command pipe.
-        let fd = config.command_pipe()?.worker_end()?.fd();
+        let fd = pipe.worker_end()?.fd();
         bus.init_pipe_socket(fd);
         thread.pipe_command.set(bus.pipe_fd(fd).cast());
         bus.rust()
@@ -408,7 +408,7 @@ pub(crate) fn shutdown(ctx: &ReactorContext<'_>) -> Option<()> {
     let state = serv.state();
     let config = state.config_ref();
     let (reactors, id) = (config.reactor_num.get(), reactor.handle().id());
-    if config.have_dgram_sock {
+    if config.have_dgram_sock.get() {
         for (index, port) in state.tables_ref().ports().iter().enumerate() {
             let dgram = matches!(port.config().r#type, 2 | 4 | 6);
             if !dgram || !owns(i64::from(port.fd()), reactors, id) {

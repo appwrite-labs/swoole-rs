@@ -21,11 +21,10 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_zend::{
     Call, Callable, E_ERROR, E_WARNING, Owned, OwnedArray, Php,
     bailout::{self, Bailout},
-    set_object,
     sys::{
         object_properties_init, swr_zend_coroutine_locate, swr_zend_coroutine_redirect,
         swr_zend_coroutine_stack_usage, zend_class_entry, zend_exception_set_previous,
-        zend_objects_new, zend_throw_exception_object,
+        zend_objects_new, zend_throw_exception_internal,
     },
 };
 
@@ -192,27 +191,25 @@ fn resume(call: &Call) {
     call.set_bool(true);
 }
 
-/// A `Co::join()` in progress: the contexts it still waits for.
+/// A `Co::join()` in progress: the contexts it still waits for, each of which
+/// holds it until it closes or the join gives up.
 pub(crate) struct Join {
-    pending: Vec<Ctx>,
+    pending: RefCell<Vec<Ctx>>,
     co: *mut c_void,
-    canceled: Rc<Cell<bool>>,
+    canceled: Cell<bool>,
 }
 
 impl Join {
     /// A joined coroutine closed: once none are left, resume the joiner from
     /// the event loop (unless it gave up first).
-    pub(crate) fn closed(join: *mut Self, ctx: Ctx) {
-        // SAFETY: a join stays live while it is set on a context.
-        let this = unsafe { &mut *join };
-        this.pending.retain(|&pending| pending != ctx);
-        if !this.pending.is_empty() {
+    pub(crate) fn closed(self: Rc<Self>, ctx: Ctx) {
+        let mut pending = self.pending.borrow_mut();
+        pending.retain(|&pending| pending != ctx);
+        if !pending.is_empty() {
             return;
         }
-        let resume = JoinResume {
-            co: this.co,
-            canceled: Rc::clone(&this.canceled),
-        };
+        drop(pending);
+        let resume = JoinResume { join: self };
         if swoole_rs_reactor::event_api::swoole_event_defer_value(resume).is_err() {
             // Upstream dereferences `sw_reactor()` here unchecked.
             swoole_rs_corebase::fatal("no reactor to defer the resume to");
@@ -222,22 +219,21 @@ impl Join {
     /// Stop waiting for the contexts registered so far.
     fn forget(&self) {
         // A context still waited for is live.
-        for ctx in &self.pending {
-            ctx.set_join(ptr::null_mut());
+        for ctx in self.pending.borrow().iter() {
+            drop(ctx.replace_join(None));
         }
     }
 }
 
 /// The joiner's resume, deferred to the loop once its last joined coroutine closed.
 struct JoinResume {
-    co: *mut c_void,
-    canceled: Rc<Cell<bool>>,
+    join: Rc<Join>,
 }
 
 impl swoole_rs_reactor::event_api::Deferred for JoinResume {
     fn run(self) {
         // The token goes before the resume, which may not return.
-        let (co, canceled) = (self.co, self.canceled.get());
+        let (co, canceled) = (self.join.co, self.join.canceled.get());
         drop(self);
         if !canceled {
             host::resume(co);
@@ -274,7 +270,7 @@ fn join(call: &Call) {
             continue;
         };
         // Another join's, or this one's for a repeated id.
-        if !ctx.join().is_null() || pending.contains(&ctx) {
+        if ctx.joined() || pending.contains(&ctx) {
             host::set_last_error(SW_ERROR_WRONG_OPERATION);
             call.set_bool(false);
             return;
@@ -286,16 +282,13 @@ fn join(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let mut join = Join {
-        pending,
+    let join = Rc::new(Join {
+        pending: RefCell::new(pending),
         co,
-        canceled: Rc::new(Cell::new(false)),
-    };
-    // Registered only once `pending` is complete: `Join::closed` writes
-    // through this pointer, which a later write to `join` would invalidate.
-    let this = &raw mut join;
-    for ctx in &join.pending {
-        ctx.set_join(this);
+        canceled: Cell::new(false),
+    });
+    for ctx in join.pending.borrow().iter() {
+        drop(ctx.replace_join(Some(Rc::clone(&join))));
     }
     // This frame lives on the running coroutine's stack, which no bailout
     // unwinds while it waits.
@@ -339,11 +332,11 @@ pub(crate) fn throw_exception(cid: c_long, throw: bool, ce: *mut zend_class_entr
         // caller when it returns.
         // SAFETY: a new exception, in the running frame.
         unsafe { swr_zend_coroutine_locate(exception) };
-        let mut thrown = swoole_rs_zend::UNDEF;
-        // SAFETY: the zval takes over the new object's reference.
-        unsafe { set_object(&raw mut thrown, exception) };
-        // SAFETY: Zend takes the exception.
-        unsafe { zend_throw_exception_object(&raw mut thrown) };
+        // `zend_throw_exception_object` of a zval holding it, past its
+        // Throwable check (`ce` is a Swoole exception class): Zend takes the
+        // new object's reference.
+        // SAFETY: a new exception, thrown in the running frame.
+        unsafe { zend_throw_exception_internal(exception) };
         return true;
     }
     task.set_exception(exception, ce);

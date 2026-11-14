@@ -1,7 +1,7 @@
 //! The backends' kernel registration (upstream `ReactorEpoll`/`ReactorKqueue`
 //! `add`, `set` and `del`): the event-mask translation and the `epoll_ctl` or
 //! `kevent` calls in upstream's order. Each returns which call failed, with `errno`
-//! as the kernel left it, for `swr_v1_reactor_change`'s warnings.
+//! as the kernel left it, for `change::apply`'s warnings.
 use std::ffi::{c_int, c_void};
 
 const SW_EVENT_DEAULT: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_DEAULT as c_int;
@@ -48,7 +48,7 @@ mod epoll {
 
     /// `epoll_ctl` for `op` of `fd` with `socket` as its token,
     /// which the kernel keeps as a number; the kernel's result. The wait loop reads the
-    /// token back as the socket `swr_v1_reactor_change`'s caller keeps live while it is
+    /// token back as the registered socket, which `change::Request` keeps live while it is
     /// registered.
     pub(crate) fn epoll_ctl(
         epfd: c_int,
@@ -169,7 +169,7 @@ mod kqueue {
 
     /// `ReactorKqueue::add`'s kernel calls: 0, or 1 (read) or 2 (write) for the failed one.
     /// The kernel keeps `socket` as a number: the wait loop reads it back as the socket
-    /// `swr_v1_reactor_change`'s caller keeps live while it is registered.
+    /// `change::Request` keeps live while it is registered.
     pub(crate) fn kqueue_add(kq: c_int, fd: c_int, socket: *mut c_void, events: c_int) -> c_int {
         if reads(events) && !read(kq, fd, libc::EV_ADD, socket) {
             return 1;

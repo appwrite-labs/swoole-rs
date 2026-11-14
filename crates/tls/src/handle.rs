@@ -9,9 +9,9 @@
 //! and `upstream::socket_ssl_close`.
 use crate::context::SslCtx;
 use openssl_sys::{
-    BIO, BIO_METHOD, BIO_free_all, BIO_new, BIO_read, BIO_write, OPENSSL_STACK, SSL, SSL_CIPHER,
-    SSL_CTRL_MODE, SSL_CTRL_SET_TLSEXT_HOSTNAME, SSL_CTX, SSL_peek, SSL_read, SSL_set_bio,
-    SSL_write, TLSEXT_NAMETYPE_host_name, X509, X509_check_host, X509_free, stack_st_X509,
+    BIO, BIO_free_all, BIO_read, BIO_write, OPENSSL_STACK, SSL, SSL_CIPHER, SSL_CTRL_MODE,
+    SSL_CTRL_SET_TLSEXT_HOSTNAME, SSL_CTX, SSL_peek, SSL_read, SSL_set_bio, SSL_write,
+    TLSEXT_NAMETYPE_host_name, X509, X509_check_host, X509_free, stack_st_X509,
 };
 use std::ffi::{CStr, c_char, c_int, c_long, c_ulong, c_void};
 use std::marker::PhantomData;
@@ -32,8 +32,14 @@ unsafe extern "C" {
     safe fn ERR_peek_error() -> c_ulong;
     safe fn ERR_get_error() -> c_ulong;
     safe fn ERR_reason_error_string(error: c_ulong) -> Option<CText<'static>>;
-    fn ERR_error_string_n(error: c_ulong, buffer: *mut c_char, length: usize);
-    safe fn BIO_s_mem() -> *const BIO_METHOD;
+    /// Writes at most `length` bytes, NUL-terminated, into `buffer`: the length is the
+    /// buffer's own, the one value [`ErrorLength`] has.
+    safe fn ERR_error_string_n(error: c_ulong, buffer: &mut [u8; 512], length: ErrorLength);
+    safe fn BIO_s_mem() -> &'static BioMethod;
+    /// A new BIO of `method`, its one reference the caller's; null on failure. The
+    /// table lives for the process: OpenSSL's own, or `dtls.rs`'s, never freed once made,
+    /// whose methods take a BIO without data as none of its session's.
+    pub(crate) safe fn BIO_new(method: &'static BioMethod) -> Option<OwnedBio>;
     /// `fopen`s `filename` with `mode`; null on failure.
     safe fn BIO_new_file(filename: CText<'_>, mode: CText<'_>) -> Option<OwnedBio>;
     /// `BIO_pending` as a function: the bytes queued to read.
@@ -98,6 +104,14 @@ unsafe extern "C" {
         large: c_long,
         integer: c_int,
     ) -> c_long;
+}
+
+/// A `BIO_METHOD` table. It is zero-sized, so a reference to it claims none of the
+/// bytes OpenSSL keeps behind it, which only its setters write, before any BIO is made
+/// of it.
+#[repr(C)]
+pub(crate) struct BioMethod {
+    _opaque: [u8; 0],
 }
 
 /// A `BIO_ADDR`, which this side never makes.
@@ -176,12 +190,17 @@ pub fn reason_string(error: c_ulong) -> Option<&'static CStr> {
     ERR_reason_error_string(error).map(CText::get)
 }
 
+/// `ERR_error_string_n`'s length: that of its 512-byte buffer, as a `size_t`.
+#[repr(usize)]
+enum ErrorLength {
+    Buffer = 512,
+}
+
 /// `ERR_error_string_n` of `error` into a 512-byte buffer, as upstream's logs print it.
 #[must_use]
 pub fn error_string(error: c_ulong) -> String {
     let mut buffer = [0_u8; 512];
-    // SAFETY: at most the buffer's length, NUL-terminated.
-    unsafe { ERR_error_string_n(error, buffer.as_mut_ptr().cast(), buffer.len()) };
+    ERR_error_string_n(error, &mut buffer, ErrorLength::Buffer);
     CStr::from_bytes_until_nul(&buffer)
         .map_or_else(|_| String::new(), |text| text.to_string_lossy().into())
 }
@@ -511,8 +530,7 @@ impl OwnedBio {
     /// A new memory BIO, None when OpenSSL fails.
     #[must_use]
     pub fn memory() -> Option<Self> {
-        // SAFETY: a fresh BIO of OpenSSL's static memory method, null on failure.
-        NonNull::new(unsafe { BIO_new(BIO_s_mem()) }).map(Self)
+        BIO_new(BIO_s_mem())
     }
 
     /// `BIO_new_file(path, "r")`: a BIO reading the file, None when it fails to open.

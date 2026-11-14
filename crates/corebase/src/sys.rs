@@ -103,8 +103,10 @@ mod c {
         -> pid_t;
         pub(crate) safe fn uname(name: &mut libc::utsname) -> c_int;
         pub(crate) safe fn getrlimit(resource: Resource, limit: &mut libc::rlimit) -> c_int;
-        /// Stores the head of a new list, which `freeifaddrs` frees, when it returns 0.
-        pub(crate) safe fn getifaddrs(list: &mut *mut libc::ifaddrs) -> c_int;
+        /// Stores the head of a new list, none for an empty one, when it returns 0.
+        pub(super) safe fn getifaddrs(list: &mut Option<super::InterfaceList>) -> c_int;
+        /// Frees a list `getifaddrs` stored, which the handle's move hands over.
+        pub(super) safe fn freeifaddrs(list: super::InterfaceList);
         pub(crate) safe fn srandom(seed: c_uint);
         #[cfg_attr(
             all(target_os = "macos", target_arch = "x86_64"),
@@ -589,8 +591,22 @@ pub fn interface_ioctl(fd: c_int, request: InterfaceRequest, value: &mut libc::i
     unsafe { libc::ioctl(fd, request, std::ptr::from_mut(value)) }
 }
 
+/// The head of a list `getifaddrs` stored, not yet freed. Only `getifaddrs` makes one
+/// (nothing here constructs it) and only `freeifaddrs` takes it, by value, so each list
+/// is freed at most once.
+#[repr(transparent)]
+struct InterfaceList(NonNull<libc::ifaddrs>);
+
+impl InterfaceList {
+    /// The list's first entry, borrowed while the list is held.
+    fn head(&self) -> &libc::ifaddrs {
+        // SAFETY: an unfreed list's head (the type's invariant), live while it is held.
+        unsafe { self.0.as_ref() }
+    }
+}
+
 /// The host's interface addresses (`getifaddrs(3)`), freed on drop.
-pub struct Interfaces(*mut libc::ifaddrs);
+pub struct Interfaces(Option<InterfaceList>);
 
 /// One entry of an `Interfaces` list.
 #[derive(Clone, Copy)]
@@ -600,15 +616,14 @@ impl Interfaces {
     /// The list, or `None` with errno set.
     #[must_use]
     pub fn new() -> Option<Self> {
-        let mut list = std::ptr::null_mut();
+        let mut list = None;
         (c::getifaddrs(&mut list) == 0).then_some(Self(list))
     }
 
     /// The entries, in the list's order.
     pub fn iter(&self) -> impl Iterator<Item = Interface<'_>> {
-        // SAFETY: the list lives as long as `self`.
-        std::iter::successors(unsafe { self.0.as_ref() }, |entry| {
-            // SAFETY: as above.
+        std::iter::successors(self.0.as_ref().map(InterfaceList::head), |entry| {
+            // SAFETY: null or the list's next entry, which lives as long as `self`.
             unsafe { entry.ifa_next.as_ref() }
         })
         .map(Interface)
@@ -617,8 +632,9 @@ impl Interfaces {
 
 impl Drop for Interfaces {
     fn drop(&mut self) {
-        // SAFETY: the list `getifaddrs` returned, freed once.
-        unsafe { libc::freeifaddrs(self.0) };
+        if let Some(list) = self.0.take() {
+            c::freeifaddrs(list);
+        }
     }
 }
 

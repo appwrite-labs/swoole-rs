@@ -22,10 +22,6 @@ void swr_zend_array_init_size(zval *target, uint32_t size) {
     array_init_size(target, size);
 }
 
-char *swr_zend_http_estrndup(const char *text, size_t length) {
-    return estrndup(text, length);
-}
-
 zend_string *swr_zend_http_intern(const char *text, size_t length) {
     return zend_string_init_interned(text, length, 1);
 }

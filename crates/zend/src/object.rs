@@ -3,10 +3,10 @@
 use crate::{
     ArrayMut, Class, Owned, OwnedArray, Value, ZString, bailout,
     sys::{
-        IS_OBJECT, IS_OBJECT_EX, object_init_ex, object_properties_init, swr_zend_object_alloc,
+        IS_OBJECT, object_init_ex, object_properties_init, swr_zend_object_alloc,
         swr_zend_try_facade_update, zend_class_entry, zend_long, zend_object, zend_object_handlers,
         zend_object_std_dtor, zend_object_std_init, zend_objects_destroy_object,
-        zend_update_property, zend_value, zval,
+        zend_update_property, zval,
     },
 };
 use std::{
@@ -354,9 +354,7 @@ impl Props<'_> {
         if bailout::pending() {
             return;
         }
-        let class = self.class();
-        // SAFETY: the object's class, which outlives it.
-        let internal = unsafe { (*class).type_ } == INTERNAL;
+        let internal = self.class_entry().read(|ce| ce.type_) == INTERNAL;
         if internal && value.kind() != IS_OBJECT {
             let (scope, object, length) = (self.0, self.1, name.count_bytes());
             // SAFETY: a live object, a registered class or null, and a live value
@@ -430,14 +428,6 @@ impl<'a> Props<'a> {
         };
         Some(slot)
     }
-}
-
-/// `ZVAL_OBJ(target, std)`: `target` takes over the reference `std` carries.
-/// # Safety
-/// `target` is a writable zval and `std` a live object.
-pub unsafe fn set_object(target: *mut zval, std: *mut zend_object) {
-    // SAFETY: per the caller: a writable slot, and an object for it to hold.
-    unsafe { crate::value::set(target, zend_value { obj: std }, IS_OBJECT_EX) };
 }
 
 /// `object_init_ex(target, ce)`: a new object of class `ce` in `target`,

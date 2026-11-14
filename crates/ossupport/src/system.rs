@@ -7,7 +7,6 @@
 use libc::{c_char, c_int, c_long};
 use std::ffi::CStr;
 use swoole_rs_corebase::log;
-#[cfg(target_vendor = "apple")]
 use swoole_rs_corebase::sys::Text;
 
 // libc's own declarations, each a call over plain values that reads and writes no
@@ -29,6 +28,11 @@ unsafe extern "C" {
     /// Darwin's: names the calling thread, reading `name` up to its NUL.
     #[cfg(target_vendor = "apple")]
     safe fn pthread_setname_np(name: Text<'_>) -> c_int;
+    /// Elsewhere: names a live thread, reading `name` up to its NUL; a name too long
+    /// is refused with an error number.
+    #[cfg(not(target_vendor = "apple"))]
+    #[link_name = "pthread_setname_np"]
+    safe fn pthread_setname(thread: CurrentThread, name: Text<'_>) -> c_int;
 }
 
 #[must_use]
@@ -234,6 +238,22 @@ pub fn pthread_self() -> libc::pthread_t {
     libc_pthread_self()
 }
 
+/// The calling thread's `pthread_t`, which names a live thread wherever the handle is:
+/// only [`CurrentThread::get`] makes one, on the thread it names, and the handle can't
+/// leave that thread (it is neither `Send` nor `Sync`). So a `pthread_*` call that
+/// takes one meets its "a live thread" precondition, and can be declared `safe`.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct CurrentThread(libc::pthread_t, std::marker::PhantomData<*const ()>);
+
+impl CurrentThread {
+    /// The calling thread.
+    #[must_use]
+    pub fn get() -> Self {
+        Self(libc_pthread_self(), std::marker::PhantomData)
+    }
+}
+
 /// `swoole_thread_set_name(name)` for the calling thread; false after a pthread error,
 /// which becomes the last error (`check_pthread_return_value`).
 #[must_use]
@@ -241,34 +261,8 @@ pub fn thread_set_name(name: &CStr) -> bool {
     #[cfg(target_vendor = "apple")]
     let rc = pthread_setname_np(name.into());
     #[cfg(not(target_vendor = "apple"))]
-    // SAFETY: a NUL-terminated name, read for the call; the calling thread is live.
-    let rc = unsafe { libc::pthread_setname_np(pthread_self(), name.as_ptr()) };
+    let rc = pthread_setname(CurrentThread::get(), name.into());
     pthread_ok(rc)
-}
-
-/// `swoole_thread_get_name(buf, len)` for the calling thread: its NUL-terminated name
-/// in `buf`; false after a pthread error, which becomes the last error.
-pub fn thread_get_name(buf: &mut [u8]) -> bool {
-    #[cfg(target_os = "android")]
-    {
-        // Upstream's Android shim: bionic lacks pthread_getname_np before API 26.
-        let name = format!("thread-{}", pthread_self());
-        let room = buf.len().saturating_sub(1);
-        for (to, &from) in buf
-            .iter_mut()
-            .zip(name.as_bytes().iter().take(room).chain(&[0]))
-        {
-            *to = from;
-        }
-        true
-    }
-    #[cfg(not(target_os = "android"))]
-    {
-        let thread = pthread_self();
-        // SAFETY: `buf` is `buf.len()` writable bytes; the calling thread is live.
-        let rc = unsafe { libc::pthread_getname_np(thread, buf.as_mut_ptr().cast(), buf.len()) };
-        pthread_ok(rc)
-    }
 }
 
 /// `check_pthread_return_value`: a pthread error becomes the last error.
@@ -296,6 +290,33 @@ pub unsafe extern "C" fn swoole_random_bytes(buf: *mut c_char, size: usize) -> u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `swoole_thread_get_name(buf, len)` for the calling thread, which only these tests
+    /// call: its NUL-terminated name in `buf`; false after a pthread error, which becomes
+    /// the last error.
+    fn thread_get_name(buf: &mut [u8]) -> bool {
+        #[cfg(target_os = "android")]
+        {
+            // Upstream's Android shim: bionic lacks pthread_getname_np before API 26.
+            let name = format!("thread-{}", pthread_self());
+            let room = buf.len().saturating_sub(1);
+            for (to, &from) in buf
+                .iter_mut()
+                .zip(name.as_bytes().iter().take(room).chain(&[0]))
+            {
+                *to = from;
+            }
+            true
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            let thread = pthread_self();
+            // SAFETY: `buf` is `buf.len()` writable bytes; the calling thread is live.
+            let rc =
+                unsafe { libc::pthread_getname_np(thread, buf.as_mut_ptr().cast(), buf.len()) };
+            pthread_ok(rc)
+        }
+    }
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no getgrnam")]

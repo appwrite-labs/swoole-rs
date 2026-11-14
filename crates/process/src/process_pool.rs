@@ -413,6 +413,12 @@ impl<'a> PoolRef<'a> {
         self.record().ipc_listener()
     }
 
+    /// The stream connection being served (a native socket), or null.
+    #[must_use]
+    pub fn ipc_connection(self) -> *mut c_void {
+        self.record().ipc_connection()
+    }
+
     /// The worker loop's receive buffer, or null before the loop allocates it.
     #[must_use]
     pub fn ipc_packet(self) -> *mut c_char {

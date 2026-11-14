@@ -122,12 +122,11 @@ pub(super) unsafe fn direct_call(
 
 /// # Safety
 /// Live callable frame/cache; caller accepts the frame's upstream temporary-return convention.
-pub unsafe fn call_anyway(frame: *mut zend_fcall_info, cache: *mut zend_fcall_info_cache) -> c_int {
+pub unsafe fn call_anyway(frame: &mut zend_fcall_info, cache: *mut zend_fcall_info_cache) -> c_int {
     let temporary = Owned::default();
-    // SAFETY: the frame is initialized and exclusively configured before invocation.
-    if unsafe { (*frame).retval }.is_null() {
-        // SAFETY: the temporary remains live through the call and destruction below.
-        unsafe { (*frame).retval = temporary.as_ptr() };
+    if frame.retval.is_null() {
+        // The temporary remains live through the call and destruction below.
+        frame.retval = temporary.as_ptr();
     }
     // SAFETY: Zend executes the configured frame entirely inside the C trap.
     let result = unsafe { bailout::call(frame, cache) };

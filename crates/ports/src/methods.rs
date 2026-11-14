@@ -13,8 +13,8 @@ use swoole_rs_corebase::log;
 use swoole_rs_corebase::net_types::{
     GetPackageLength, GetPackageLengthSize, OnPackage, SocketAddress,
 };
-use swoole_rs_reactor::socket_upstream::make_socket_typed;
-use swoole_rs_reactor::{Event, Running, Socket, SocketFields, SocketRecord};
+use swoole_rs_reactor::socket_upstream::make_typed;
+use swoole_rs_reactor::{Event, Running, SocketFields, SocketRecord};
 #[cfg(not(test))]
 pub(crate) use swoole_rs_tls::upstream::socket_free;
 
@@ -164,12 +164,13 @@ pub(crate) fn create_socket(config: &PortConfig) -> c_int {
     } else {
         FD_STREAM_SERVER
     };
-    let made = make_socket_typed(kind, fd_type, SOCK_NONBLOCK | SOCK_CLOEXEC);
-    // SAFETY: the record just made, null or live, which only this function holds.
-    let Some(socket) = (unsafe { Socket::from_ptr(made) }) else {
+    let made = make_typed(kind, fd_type, SOCK_NONBLOCK | SOCK_CLOEXEC);
+    // The record just made, which only this function holds until the port takes it.
+    let Some(socket) = made.map(SocketRecord::into_socket) else {
         log::set_last_error(errno());
         return -1;
     };
+    let made = socket.as_ptr();
     let fd = socket.fd();
     let kqueue = cfg!(any(
         target_os = "macos",
@@ -582,7 +583,7 @@ mod tests {
         config.ssl = 1;
         assert!(ssl_context_init(at), "a stream port's context");
         let context = config.ssl_context.clone().expect("published");
-        let fields = unsafe { swoole_rs_tls::owner_fields(context.as_ptr()) };
+        let fields = unsafe { swoole_rs_tls::owner_fields(&context) };
         assert_eq!(
             (
                 fields.prefer_server_ciphers,

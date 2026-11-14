@@ -322,8 +322,8 @@ impl Co {
 
     /// `errMsg = message`, a static message.
     pub fn set_static_err_msg(self, message: &'static CStr) {
-        // SAFETY: a NUL-terminated message that lives for the process.
-        unsafe { self.set_err_msg(message.as_ptr()) };
+        // A NUL-terminated message that lives for the process, as `err_msg` asks.
+        self.record().err_msg.set(message.as_ptr());
     }
 
     /// `f` over a copy of `errMsg` (`None` when null), taken before `f` runs, so `f`

@@ -11,7 +11,7 @@ use swoole_rs_corebase::NameResolverContext;
 use swoole_rs_phpstubs::name_resolver;
 use swoole_rs_zend::{
     Call, Custom, CustomClass, Minit, Owned, Value, ZString, bailout, method_table,
-    sys::{IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, swr_zend_zval_release, zend_object},
+    sys::{IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, zend_object},
 };
 
 /// `AF_INET`, `__construct`'s default family.
@@ -312,8 +312,10 @@ fn resolve(
         if count == 0 {
             // No available node: release the cluster and resolve again.
             cluster = None;
-            // SAFETY: the release owns nothing; the cluster's destructor may run PHP.
-            unsafe { bailout::trap_with(|| context.release()) }?;
+            // The context's cluster is an `Owned`, whose drop releases it inside
+            // `zend_try` and defers a destructor's bailout.
+            context.release();
+            bailout::trapped(0)?;
         }
     }
     let cluster = if let Some(cluster) = cluster {
@@ -349,10 +351,10 @@ fn resolve(
         };
         result.extend_from_slice(port.to_string().as_bytes());
     }
-    let mut node = ManuallyDrop::into_inner(node).into_zval();
-    // SAFETY: our reference to the popped node; releasing it may run PHP.
-    unsafe { bailout::trap(swr_zend_zval_release, (&raw mut node).cast()) }?;
-    Ok(Some(result))
+    // Our reference to the popped node, released inside `zend_try`: a destructor's
+    // bailout stays pending, and stops the lookup.
+    drop(ManuallyDrop::into_inner(node));
+    bailout::outcome(Some(result))
 }
 
 swoole_rs_zend::handlers! {

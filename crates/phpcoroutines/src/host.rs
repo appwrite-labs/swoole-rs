@@ -2,7 +2,10 @@
 //! scheduler and records (crates/coroutine), the module host, the runtime
 //! hooks, the event loop and the server.
 use crate::context::Ctx;
-use std::ffi::{CStr, c_int, c_long, c_void};
+use std::{
+    cell::Cell,
+    ffi::{CStr, c_int, c_long, c_void},
+};
 use swoole_rs_corebase::CCast;
 use swoole_rs_coroutine::RC_CANCELED;
 use swoole_rs_zend::{
@@ -263,14 +266,17 @@ fn iouring_stats(stats: &mut Stats) {
     stats.iouring_waiting_task_num = i64::try_from(waiting).unwrap_or(i64::MAX);
 }
 
+per_thread! {
+    /// `swoole_test_kernel_coroutine`'s arguments, from its call to the start of
+    /// the coroutine it creates, which takes them before its first switch.
+    static KERNEL_ARGS: Cell<(c_long, f64)> = Cell::new((0, 0.0));
+}
+
 /// `swoole_test_kernel_coroutine`'s coroutine: sleeps `count` times.
 pub(crate) fn kernel_coroutine(count: c_long, sleep: f64) {
-    /// The coroutine's body, which copies its arguments before its first switch.
-    /// # Safety
-    /// `args` is the creator's `(count, sleep)`, live until this coroutine first yields.
-    unsafe extern "C" fn sleeper(args: *mut c_void) {
-        // SAFETY: per the caller.
-        let (count, sleep) = unsafe { *args.cast::<(c_long, f64)>() };
+    /// The coroutine's body: [`KERNEL_ARGS`]'s `(count, sleep)`.
+    extern "C" fn sleeper(_: *mut c_void) {
+        let (count, sleep) = KERNEL_ARGS.with(Cell::get);
         for _ in 0..count {
             #[expect(
                 clippy::let_underscore_must_use,
@@ -279,9 +285,9 @@ pub(crate) fn kernel_coroutine(count: c_long, sleep: f64) {
             let _ = super::sleep(sleep);
         }
     }
-    let mut args = (count, sleep);
-    // SAFETY: the coroutine runs at once and reads `args` before it yields.
-    unsafe { swoole_rs_coroutine::swr_v1_coroutine_create(sleeper, (&raw mut args).cast()) };
+    KERNEL_ARGS.with(|args| args.set((count, sleep)));
+    // SAFETY: `sleeper` reads no argument; the caller's frame owns nothing to drop.
+    unsafe { swoole_rs_coroutine::swr_v1_coroutine_create(sleeper, std::ptr::null_mut()) };
 }
 
 /// The context of `co`'s origin, none for the main context.
@@ -510,7 +516,7 @@ extern "C" fn defers(_context: *mut c_void) {
         fci.params = argv;
         // SAFETY: a kept callable's resolved cache, over its kept arguments or the
         // context's live return value.
-        if unsafe { swoole_rs_zend::host::call_anyway(&raw mut fci, fcc) } != 0 {
+        if unsafe { swoole_rs_zend::host::call_anyway(&mut fci, fcc) } != 0 {
             fatal_error(swoole_rs_zend::E_WARNING, c"defer callback handler error");
         }
         if !swoole_rs_zend::host::exception().is_null() {

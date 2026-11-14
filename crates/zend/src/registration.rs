@@ -35,8 +35,9 @@ pub unsafe fn function_alias(
 ) -> Result<bool, Bailout> {
     let lower = origin.to_bytes().to_ascii_lowercase();
     // SAFETY: per the caller, a live function table, borrowed for the lookup
-    // only: nothing is registered until the borrow ended.
-    let functions = unsafe { Array::from_ptr(source) };
+    // only: nothing is registered until the borrow ended. `Array` is a
+    // transparent table.
+    let functions = unsafe { source.cast::<Array>().as_ref() };
     let found = functions.and_then(|functions| functions.find(&lower));
     let Some(function) = found.and_then(Value::pointer) else {
         return Ok(false);

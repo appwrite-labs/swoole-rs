@@ -354,7 +354,7 @@ fn proxy(
 /// a client's `SSLContext` (crates/tls).
 pub(crate) fn apply_ssl(context: &tls::TlsContext, settings: &Array) {
     // SAFETY: the context `context` keeps live, which nothing else reaches during the call.
-    let owner = unsafe { tls::Lent::new(context.as_ptr()) };
+    let owner = unsafe { tls::Lent::new(context) };
     let value = |value| owner.set_value(value);
     let options = Options(settings);
     let set_text = |which, text: &[u8]| owner.set_text(which, text);

@@ -12,11 +12,7 @@ use std::{
 use swoole_rs_corebase::sys;
 use swoole_rs_zend::{
     Class, Minit, Owned, Value,
-    sys::{
-        PHP_STREAM_FLAG_NO_CLOSE, ZEND_ACC_PUBLIC, ZEND_ACC_READONLY,
-        swr_zend_register_stream_constant, swr_zend_stream_close, swr_zend_stream_fd,
-        swr_zend_stream_open, swr_zend_stream_to_zval,
-    },
+    sys::{ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, swr_zend_stream_open, swr_zend_stream_to_zval},
 };
 
 static ERROR: Class = Class::new();
@@ -98,58 +94,15 @@ thread_local! {
     static STDIO: Cell<[c_int; 3]> = const { Cell::new([-1; 3]) };
 }
 
-/// `thread_register_stdio_file_handles(true)`: open `php://stdin`, `stdout`
-/// and `stderr` and register them as `STDIN`, `STDOUT` and `STDERR`. During
-/// shutdown other extensions may still use them, so they are never closed with
-/// the request; their descriptors are kept to close afterwards.
-/// # Safety
-/// In a thread's request, inside its `zend_try`.
-pub(crate) unsafe fn stdio_open() {
-    // Opening `php://stdout` and `php://stderr` sets PHP's process-global
-    // `cli_out` and `cli_err`: one thread at a time.
-    static OPENING: Mutex<()> = Mutex::new(());
-    let names = [
-        (c"php://stdin", c"rb", c"STDIN"),
-        (c"php://stdout", c"wb", c"STDOUT"),
-        (c"php://stderr", c"wb", c"STDERR"),
-    ];
-    let opening = OPENING
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    // SAFETY: in a request, with NUL-terminated strings.
-    let streams =
-        names.map(|(path, mode, _)| unsafe { swr_zend_stream_open(path.as_ptr(), mode.as_ptr()) });
-    drop(opening);
-    if streams.iter().any(|stream| stream.is_null()) {
-        for stream in streams.into_iter().filter(|stream| !stream.is_null()) {
-            // SAFETY: a stream opened above.
-            unsafe { swr_zend_stream_close(stream) };
-        }
-        return;
-    }
-    let mut fds = [-1; 3];
-    let mut casted = true;
-    for (stream, fd) in streams.iter().zip(&mut fds) {
-        // SAFETY: a stream opened above.
-        unsafe { (**stream).flags |= PHP_STREAM_FLAG_NO_CLOSE };
-        // SAFETY: as above.
-        casted &= unsafe { swr_zend_stream_fd(*stream, fd) };
-    }
+/// Keep the descriptors of the thread's STDIN, STDOUT and STDERR streams, which
+/// `PHP_STREAM_FLAG_NO_CLOSE` leaves open past request shutdown, for
+/// [`stdio_close`].
+pub(crate) fn keep_stdio(fds: [c_int; 3]) {
     STDIO.set(fds);
-    if !casted {
-        swoole_rs_corebase::log::warning(
-            c"thread_register_stdio_file_handles",
-            format_args!("failed to cast the stdio streams to fd, the file descriptors may leak"),
-        );
-    }
-    for (stream, (_, _, name)) in streams.into_iter().zip(names) {
-        // SAFETY: a stream opened above; Zend takes the constant's value.
-        unsafe { swr_zend_register_stream_constant(name.as_ptr(), stream) };
-    }
 }
 
 /// `thread_unregister_stdio_file_handles`: close the descriptors
-/// [`stdio_open`] kept, after request shutdown.
+/// [`keep_stdio`] kept, after request shutdown.
 pub(crate) fn stdio_close() {
     for fd in STDIO.replace([-1; 3]).into_iter().filter(|fd| *fd >= 0) {
         // A descriptor this thread's streams left open.

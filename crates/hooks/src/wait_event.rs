@@ -6,7 +6,6 @@
 use crate::{event_waiter, wait_revents};
 use core::cell::Cell;
 use core::ffi::c_void;
-use swoole_rs_corebase::constants::FdType;
 
 pub use native::Watch;
 
@@ -166,7 +165,7 @@ pub extern "C" fn system_wait_event(fd: i32, events: i32, timeout: f64) -> i32 {
         add: |fd, events, waiter| {
             // SAFETY: `park`'s own waiter, the object `waiter_ready` takes, which
             // outlives the watch it drops.
-            unsafe { Watch::add(fd, FdType::SW_FD_CO_EVENT as i32, events, waiter.as_ptr()) }
+            unsafe { Watch::add(fd, events, native::Object::Waiter(waiter)) }
         },
         park: native::park,
     };
@@ -184,6 +183,7 @@ pub extern "C" fn system_wait_event(fd: i32, events: i32, timeout: f64) -> i32 {
 /// `swoole_event_add`/`del` and `Coroutine::yield_ex`.
 pub(crate) mod native {
     use core::ffi::{c_int, c_void};
+    use swoole_rs_corebase::constants::FdType;
     use swoole_rs_corebase::log;
     use swoole_rs_reactor::event_api::{event_add, event_del, swoole_event_is_available};
     use swoole_rs_reactor::{Socket, SocketRecord};
@@ -209,30 +209,44 @@ pub(crate) mod native {
     /// `SW_ERROR_WRONG_OPERATION`: there is no event loop to register with.
     const WRONG_OPERATION: c_int = 509;
 
+    /// What a watch's socket carries, with the fd type whose readiness handler
+    /// (`crate::reactor_handlers`) takes that object. Each is a parked wait's own
+    /// registration, live until the wait drops its watches.
+    #[derive(Clone, Copy)]
+    pub(crate) enum Object {
+        /// A hooked poll's task (`SW_FD_CO_POLL`).
+        #[cfg_attr(
+            test,
+            expect(dead_code, reason = "the unit tests' polls use a fake reactor")
+        )]
+        Poll(crate::poll::Registered),
+        /// A `wait_event` waiter (`SW_FD_CO_EVENT`).
+        Waiter(super::Registered),
+    }
+
     /// A reactor socket over an fd its owner borrows (upstream's `make_socket`), on
     /// the thread's reactor with an object the readiness handlers reach. Dropping it
     /// takes it off the reactor and frees the record, leaving the fd open.
     pub struct Watch(Socket<'static>);
 
     impl Watch {
-        /// Registers `fd`, typed `fd_type`, for `events` with `object`.
+        /// Registers `fd` for `events`, with `object` and its fd type.
         ///
         /// # Errors
         /// The last error, when there is no reactor or it refuses the socket.
         ///
         /// # Safety
-        /// `object` is what `fd_type`'s readiness handlers take it for, and stays
-        /// live until the watch is dropped.
-        pub unsafe fn add(
-            fd: i32,
-            fd_type: c_int,
-            events: i32,
-            object: *mut c_void,
-        ) -> Result<Self, i32> {
+        /// `object`'s task or waiter stays live until the watch is dropped: the
+        /// readiness handlers reach it through the record until then.
+        pub(crate) unsafe fn add(fd: i32, events: i32, object: Object) -> Result<Self, i32> {
             if !swoole_event_is_available() {
                 return Err(WRONG_OPERATION);
             }
-            let mut record = SocketRecord::with_fd(fd, fd_type);
+            let (fd_type, object) = match object {
+                Object::Poll(task) => (FdType::SW_FD_CO_POLL, task.as_ptr()),
+                Object::Waiter(waiter) => (FdType::SW_FD_CO_EVENT, waiter.as_ptr()),
+            };
+            let mut record = SocketRecord::with_fd(fd, fd_type as c_int);
             record.object = object;
             // The record is this watch's until `release` frees it.
             let watch = Self(Socket::new(Box::leak(Box::new(record))));

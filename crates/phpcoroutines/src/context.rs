@@ -13,6 +13,7 @@ use std::{
     ffi::{c_int, c_long, c_void},
     mem,
     ptr::{self, NonNull},
+    rc::Rc,
 };
 use swoole_rs_coroutine::State;
 use swoole_rs_timer::Held;
@@ -66,7 +67,7 @@ pub(crate) struct Context {
     /// The defer tasks, each kept by `defer()` until it runs or the context closes.
     defer: Vec<Callable>,
     /// The `Co::join()` waiting for this coroutine to close.
-    join: *mut Join,
+    join: Option<Rc<Join>>,
     pcid: c_long,
     /// `Coroutine\Context`, null until asked for, `INVALID` once destroyed.
     context: *mut zend_object,
@@ -88,7 +89,7 @@ impl Context {
         fiber_init_notified: false,
         enable_scheduler: false,
         defer: Vec::new(),
-        join: ptr::null_mut(),
+        join: None,
         pcid: 0,
         context: ptr::null_mut(),
         time_limited: false,
@@ -137,7 +138,6 @@ fields! {
     fiber, set_fiber: *mut zend_fiber_context;
     fiber_init_notified, set_fiber_init_notified: bool;
     enable_scheduler, set_enable_scheduler: bool;
-    join, set_join: *mut Join;
     pcid, set_pcid: c_long;
     context, set_context: *mut zend_object;
     time_limited, set_time_limited: bool;
@@ -244,6 +244,17 @@ impl Ctx {
                 vm.ori_error_reporting = reporting;
             }
         });
+    }
+
+    /// Whether a `Co::join()` waits for this context to close.
+    pub(crate) fn joined(self) -> bool {
+        self.with(|ctx| ctx.join.is_some())
+    }
+
+    /// The `Co::join()` waiting for this context becomes `join`; the one it
+    /// replaces.
+    pub(crate) fn replace_join(self, join: Option<Rc<Join>>) -> Option<Rc<Join>> {
+        self.with(|ctx| mem::replace(&mut ctx.join, join))
     }
 
     /// The defer tasks, borrowed for `f`, as [`Ctx::with`].
@@ -374,9 +385,8 @@ pub(crate) unsafe extern "C" fn on_close(arg: *mut c_void) {
     let Some(ctx) = (unsafe { Ctx::of(arg) }) else {
         return;
     };
-    let join = ctx.join();
-    if !join.is_null() {
-        Join::closed(join, ctx);
+    if let Some(join) = ctx.replace_join(None) {
+        join.closed(ctx);
     }
     // SAFETY: the closing context, written by `open` and not used after this.
     unsafe { ptr::drop_in_place(ctx.ptr()) };
@@ -640,7 +650,7 @@ mod tests {
     fn a_new_context_has_no_pending_state() {
         let context = Context::EMPTY;
         assert_eq!(context.defer.len(), 0);
-        assert!(context.join.is_null() && context.context.is_null() && !context.time_limited);
+        assert!(context.join.is_none() && context.context.is_null() && !context.time_limited);
         assert_eq!(unsafe { context.return_value.u1.type_info }, IS_UNDEF);
         assert!(!context.vm.in_silence && context.vm.output_ptr.is_null());
     }

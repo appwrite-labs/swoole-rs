@@ -8,13 +8,18 @@ use std::{
     cell::{Cell, RefCell},
     ffi::{CStr, CString, c_int, c_void},
     ptr,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        Mutex, PoisonError,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 use swoole_rs_zend::{
     Call, Minit, Owned, OwnedArray, Value, bailout,
     sys::{
-        swr_zend_bailout_to, swr_zend_thread_enter, swr_zend_thread_leave,
-        swr_zend_thread_main_request, swr_zend_thread_request, swr_zend_thread_set_argv,
+        PHP_STREAM_FLAG_NO_CLOSE, swr_zend_bailout_to, swr_zend_register_stream_constant,
+        swr_zend_stream_close, swr_zend_stream_fd, swr_zend_stream_open, swr_zend_thread_enter,
+        swr_zend_thread_leave, swr_zend_thread_main_request, swr_zend_thread_request,
+        swr_zend_thread_set_argv,
     },
 };
 
@@ -35,6 +40,10 @@ unsafe extern "C" {
     /// `tsrm_api_name()`: a NUL-terminated literal (empty on NTS).
     safe fn swr_zend_tsrm_api_name() -> swoole_rs_corebase::sys::Text<'static>;
 }
+
+/// Opening `php://stdout` and `php://stderr` sets PHP's process-global
+/// `cli_out` and `cli_err`: one thread at a time.
+static OPENING: Mutex<()> = Mutex::new(());
 
 /// PHP threads running, the main thread included.
 static THREADS: AtomicUsize = AtomicUsize::new(1);
@@ -114,6 +123,8 @@ pub unsafe fn run(
 /// Inside the script's `zend_first_try`: `$argv` and `$argc` from the main
 /// request, the thread's arguments, and its stdio constants. A bailout is
 /// raised from here, which owns nothing.
+/// # Safety
+/// `start` is `run`'s `Start`; called in the thread's request, inside its `zend_try`.
 unsafe extern "C" fn prologue(start: *mut c_void) {
     // SAFETY: `run`'s `Start`.
     let start = unsafe { &mut *start.cast::<Start>() };
@@ -132,8 +143,46 @@ unsafe extern "C" fn prologue(start: *mut c_void) {
         drop(argv);
         bailout::finish();
     }
-    // SAFETY: in the thread's request, inside its `zend_try`.
-    unsafe { request::stdio_open() };
+    // `thread_register_stdio_file_handles(true)`: open `php://stdin`, `stdout`
+    // and `stderr` and register them as `STDIN`, `STDOUT` and `STDERR`. During
+    // shutdown other extensions may still use them, so they are never closed
+    // with the request; their descriptors are kept to close afterwards.
+    let names = [
+        (c"php://stdin", c"rb", c"STDIN"),
+        (c"php://stdout", c"wb", c"STDOUT"),
+        (c"php://stderr", c"wb", c"STDERR"),
+    ];
+    let opening = OPENING.lock().unwrap_or_else(PoisonError::into_inner);
+    // SAFETY: in a request, with NUL-terminated strings.
+    let streams =
+        names.map(|(path, mode, _)| unsafe { swr_zend_stream_open(path.as_ptr(), mode.as_ptr()) });
+    drop(opening);
+    if streams.iter().any(|stream| stream.is_null()) {
+        for stream in streams.into_iter().filter(|stream| !stream.is_null()) {
+            // SAFETY: a stream opened above.
+            unsafe { swr_zend_stream_close(stream) };
+        }
+        return;
+    }
+    let mut fds = [-1; 3];
+    let mut casted = true;
+    for (stream, fd) in streams.iter().zip(&mut fds) {
+        // SAFETY: a stream opened above.
+        unsafe { (**stream).flags |= PHP_STREAM_FLAG_NO_CLOSE };
+        // SAFETY: as above.
+        casted &= unsafe { swr_zend_stream_fd(*stream, fd) };
+    }
+    request::keep_stdio(fds);
+    if !casted {
+        swoole_rs_corebase::log::warning(
+            c"thread_register_stdio_file_handles",
+            format_args!("failed to cast the stdio streams to fd, the file descriptors may leak"),
+        );
+    }
+    for (stream, (_, _, name)) in streams.into_iter().zip(names) {
+        // SAFETY: a stream opened above; Zend takes the constant's value.
+        unsafe { swr_zend_register_stream_constant(name.as_ptr(), stream) };
+    }
 }
 
 /// After the script: an `exit()` the thread's reactor has not seen stops it,

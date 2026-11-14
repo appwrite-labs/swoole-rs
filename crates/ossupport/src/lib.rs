@@ -32,9 +32,8 @@ mod system;
 #[cfg(feature = "upstream-symbols")]
 pub use system::swoole_daemon;
 pub use system::{
-    pthread_self, set_isolation, swoole_random_bytes, swr_v1_os_is_root_user,
-    swr_v1_os_set_process_death_signal, swr_v1_os_thread_native_id, thread_get_name,
-    thread_set_name,
+    CurrentThread, pthread_self, set_isolation, swoole_random_bytes, swr_v1_os_is_root_user,
+    swr_v1_os_set_process_death_signal, swr_v1_os_thread_native_id, thread_set_name,
 };
 mod msg_queue;
 pub use msg_queue::QueueRecord;

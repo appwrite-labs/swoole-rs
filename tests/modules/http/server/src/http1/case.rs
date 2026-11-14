@@ -224,7 +224,7 @@ pub(super) fn set_ssl_path(context: *const c_void, index: u32, file: *const c_ch
         other => unreachable!("SSL path {other}"),
     };
     // SAFETY: a live context, which only the case's thread configures.
-    let context = unsafe { swoole_rs_tls::Lent::new(context.cast()) };
+    let context = unsafe { swoole_rs_tls::Lent::new(&*context.cast()) };
     // The owner's setter, which warns itself and ends the process on `bad_alloc`.
     _ = context.set_text(which, path.to_bytes());
 }

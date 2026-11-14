@@ -365,15 +365,12 @@ fn apply_settings(port: view::Port<'_>, serv: view::Server<'_>, vht: &Value) -> 
         port,
     };
     port_settings::apply(&source)?;
-    let (ssl, kind, context) = source.config(|c| {
-        let context = c.ssl_context.as_ref();
-        let context = context.map_or(core::ptr::null(), swoole_rs_tls::TlsContext::as_ptr);
-        (c.ssl, c.r#type, context)
-    });
-    if ssl == 0 {
+    // A reference of this call's own, which keeps the context live throughout.
+    let (ssl, kind, context) = source.config(|c| (c.ssl, c.r#type, c.ssl_context.clone()));
+    let Some(context) = context.filter(|_| ssl != 0) else {
         return Ok(());
-    }
-    port_settings::tls(&source, context, port_settings::is_dgram(kind))
+    };
+    port_settings::tls(&source, &context, port_settings::is_dgram(kind))
 }
 
 swoole_rs_zend::handlers! {

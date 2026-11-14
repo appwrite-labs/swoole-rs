@@ -9,8 +9,19 @@ use std::sync::{Mutex, PoisonError};
 /// A thread's body, run once on it.
 type Body = Box<dyn FnOnce() + Send>;
 
-/// A started thread's handle, until it is joined.
+/// A started thread's handle, until it is joined or detached. Only `start` makes one,
+/// from the thread `pthread_create` started, and `pthread_join` and `pthread_detach`
+/// take it by value, so a joinable thread's handle (live until then) goes to at most
+/// one of them, once.
+#[repr(transparent)]
 struct Handle(libc::pthread_t);
+
+unsafe extern "C" {
+    /// Waits for the handle's thread to end, discarding its result: 0 or an error number.
+    safe fn pthread_join(thread: Handle, result: Option<&mut *mut c_void>) -> c_int;
+    /// Lets the handle's thread run on unjoined: 0 or an error number.
+    safe fn pthread_detach(thread: Handle) -> c_int;
+}
 
 // SAFETY: a pthread handle names a thread, not memory; any thread may join it,
 // and the record's mutex lets only one do so.
@@ -74,11 +85,10 @@ impl Thread {
 
     /// `detach()`: the thread runs on unjoined. False when there is none.
     pub fn detach(&self) -> bool {
-        let Some(Handle(thread)) = self.handle().take() else {
+        let Some(handle) = self.handle().take() else {
             return false;
         };
-        // SAFETY: the handle `start` stored, taken so no one else joins or detaches it.
-        unsafe { libc::pthread_detach(thread) };
+        pthread_detach(handle);
         true
     }
 
@@ -92,11 +102,10 @@ impl Thread {
     /// # Errors
     /// `EINVAL` when there is no thread to join, or `pthread_join`'s error.
     pub fn join(&self) -> Result<(), c_int> {
-        let Some(Handle(thread)) = self.handle().take() else {
+        let Some(handle) = self.handle().take() else {
             return Err(libc::EINVAL);
         };
-        // SAFETY: the handle `start` stored, taken so no one else joins it.
-        match unsafe { libc::pthread_join(thread, ptr::null_mut()) } {
+        match pthread_join(handle, None) {
             0 => Ok(()),
             code => Err(code),
         }

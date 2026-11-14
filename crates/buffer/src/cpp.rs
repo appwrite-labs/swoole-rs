@@ -69,6 +69,11 @@ impl CppBuffer {
     pub fn append(&self, data: &[u8]) {
         check(self.with(|queue| queue.append(data)));
     }
+
+    /// `append(iov, iovcnt, offset)` of slices: the bytes of `parts` past `offset`.
+    pub fn append_from(&self, parts: &[impl std::ops::Deref<Target = [u8]>], offset: u64) {
+        check(self.with(|queue| queue.appendv(parts.iter().map(|part| &**part), offset)));
+    }
 }
 
 /// `~Buffer()`: pops every entry, then releases the queue.

@@ -12,7 +12,7 @@ use openssl_sys::{
     SSL_OP_CIPHER_SERVER_PREFERENCE, SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS, SSL_OP_NO_COMPRESSION,
     SSL_OP_NO_SSLv2, SSL_OP_NO_SSLv3, SSL_OP_NO_TLSv1, SSL_OP_NO_TLSv1_1, SSL_OP_NO_TLSv1_2,
     SSL_OP_NO_TLSv1_3, SSL_SESS_CACHE_SERVER, SSL_TLSEXT_ERR_NOACK, SSL_TLSEXT_ERR_OK,
-    SSL_VERIFY_NONE, SSL_VERIFY_PEER, SSL_get_ex_new_index, SSL_select_next_proto, X509_STORE_CTX,
+    SSL_VERIFY_NONE, SSL_VERIFY_PEER, SSL_select_next_proto, X509_STORE_CTX,
 };
 use std::cell::RefCell;
 use std::ffi::{CStr, c_char, c_int, c_long, c_uchar, c_uint, c_void};
@@ -98,7 +98,24 @@ unsafe extern "C" {
     ) -> c_long;
     /// Library initialization, with default settings when given none.
     safe fn OPENSSL_init_ssl(options: u64, settings: Option<&InitSettings>) -> c_int;
+    /// A new `ex_data` index of `class` (`SSL_get_ex_new_index` is this macro over the SSL
+    /// class), or -1. OpenSSL keeps `argl` and `argp` only to hand them to the callbacks,
+    /// each a safe fn, which any arguments may call.
+    safe fn CRYPTO_get_ex_new_index(
+        class: c_int,
+        argl: c_long,
+        argp: Option<&'static c_void>,
+        new: Option<ExCallback>,
+        dup: Option<ExDup>,
+        free: Option<ExCallback>,
+    ) -> c_int;
 }
+
+/// `CRYPTO_EX_new` and `CRYPTO_EX_free`: `(parent, ptr, ad, idx, argl, argp)`.
+type ExCallback = extern "C" fn(*mut c_void, *mut c_void, *mut c_void, c_int, c_long, *mut c_void);
+/// `CRYPTO_EX_dup`: `(to, from, from_d, idx, argl, argp)`.
+type ExDup =
+    extern "C" fn(*mut c_void, *const c_void, *mut c_void, c_int, c_long, *mut c_void) -> c_int;
 
 /// An `OPENSSL_INIT_SETTINGS`, which this side never makes.
 #[repr(C)]
@@ -819,9 +836,9 @@ static INITIALIZED: AtomicBool = AtomicBool::new(false);
 static CONNECTION_INDEX: AtomicI32 = AtomicI32::new(0);
 static PORT_INDEX: AtomicI32 = AtomicI32::new(0);
 
+/// `SSL_get_ex_new_index(0, NULL, NULL, NULL, NULL)`.
 fn new_ssl_index() -> c_int {
-    // SAFETY: allocates an SSL ex_data index without callbacks.
-    unsafe { SSL_get_ex_new_index(0, ptr::null_mut(), None, None, None) }
+    CRYPTO_get_ex_new_index(openssl_sys::CRYPTO_EX_INDEX_SSL, 0, None, None, None, None)
 }
 
 /// `void swoole_ssl_init()`: once until `swoole_ssl_destroy`. A failure logs at

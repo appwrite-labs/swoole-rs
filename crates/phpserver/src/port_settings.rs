@@ -321,8 +321,8 @@ fn files(s: &impl Source, owner: &tls::Lent<'_>) -> Step {
 }
 
 /// The TLS options of an SSL port, then its SNI contexts and `ssl_init()`.
-pub(crate) fn tls(s: &impl Source, owner: *const OwnedTlsContext, dgram: bool) -> Step {
-    // SAFETY: the port's live context, which nothing else reaches during set().
+pub(crate) fn tls(s: &impl Source, owner: &OwnedTlsContext, dgram: bool) -> Step {
+    // SAFETY: the port's context, which nothing else reaches during set().
     let owner = unsafe { tls::Lent::new(owner) };
     files(s, &owner)?;
     let set = |value| owner.set_value(value);
@@ -478,7 +478,7 @@ impl Source for Zend<'_> {
             };
             // SAFETY: the fresh duplicate, which nothing else reaches until `sni_add`
             // takes it.
-            files(&item, &unsafe { tls::Lent::new(context.as_ptr()) })?;
+            files(&item, &unsafe { tls::Lent::new(&context) })?;
             let added = self.config(|c| sni_add(c, name, context));
             if !added {
                 return Err(self.fatal(E_ERROR, c"ssl_add_sni_cert() failed"));
@@ -1014,7 +1014,8 @@ mod tests {
             .with("ssl_ciphers", text(b"HIGH"))
             .with("ssl_ecdh_curve", text(b"auto"))
             .with("ssl_dhparam", text(b"dh"));
-        assert!(tls(&table, owner, true).is_ok());
+        // SAFETY: the owner made above, freed at the end.
+        assert!(tls(&table, unsafe { &*owner }, true).is_ok());
         let expected = [
             "string:ssl_cert_file",
             "string:ssl_key_file",
@@ -1068,7 +1069,8 @@ mod tests {
         let prepared = tls::owner_new(warning);
         for key in ["ssl_cert_file", "ssl_key_file", "ssl_client_cert_file"] {
             let table = Table::default().with(key, text(b"/nonexistent/x.pem\0tail"));
-            assert!(tls(&table, prepared.owner, false).is_err());
+            // SAFETY: the owner made above, freed at the end.
+            assert!(tls(&table, unsafe { &*prepared.owner }, false).is_err());
             let message = match key {
                 "ssl_cert_file" => "ssl cert file[/nonexistent/x.pem] not found",
                 "ssl_key_file" => "ssl key file[/nonexistent/x.pem] not found",

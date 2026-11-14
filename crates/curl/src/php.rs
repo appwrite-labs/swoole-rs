@@ -4,7 +4,7 @@
 //! `CurlHandle` zval, checked against the coroutine its multi waits in.
 use crate::{Easy, host};
 use swoole_rs_curl_sys::CURL;
-use swoole_rs_zend::{E_WARNING, Value, bailout, sys::zval};
+use swoole_rs_zend::{E_WARNING, Value, bailout};
 
 /// `SW_ERROR_PHP_FATAL_ERROR`.
 const PHP_FATAL_ERROR: i32 = 503;
@@ -13,15 +13,14 @@ const PHP_FATAL_ERROR: i32 = 503;
 /// of the current coroutine; null after the warning of a missing coroutine
 /// handle or the fatal error of a multi another coroutine waits on.
 /// # Safety
-/// `zid` is a live `CurlHandle` zval, in a request.
+/// `zid` is null or a `CurlHandle` zval, in a request.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swoole_curl_get_handle(
-    zid: *mut zval,
+    zid: Option<&Value>,
     exclusive: bool,
     required: bool,
 ) -> *mut *mut CURL {
-    // SAFETY: per the caller, a live zval.
-    let Some(object) = unsafe { Value::from_ptr(zid) }.and_then(Value::object) else {
+    let Some(object) = zid.and_then(Value::object) else {
         return std::ptr::null_mut();
     };
     // SAFETY: a live object.
