@@ -1,19 +1,23 @@
 //! `network::Socket`'s blocking calls as whole operations: `wait_for`'s loop
 //! (prepare, retry classification, the ENOBUFS backoff, poll and timeout) and each
 //! `*_sync` method's progress rule. Native code performs each I/O call, keeping its
-//! counters and TLS, and reads the socket's bitfields, through [`SyncHooks`].
+//! counters and TLS, and reads the socket's bitfields, through [`SyncEffects`].
 use std::os::raw::c_int;
 use std::time::{Duration, Instant};
 use swoole_rs_corebase::CCast;
 
-/// `send`: everything, retrying short writes.
-pub const SYNC_SEND: c_int = 0;
-/// `recv`: once, or everything under `MSG_WAITALL` (cleared for each call).
-pub const SYNC_RECV: c_int = 1;
-/// `read`/`write`/`writev`/`sendto`/`recvfrom`: one call that moves bytes.
-pub const SYNC_ONCE: c_int = 2;
-/// `sendfile`: until `length` bytes are sent; a zero return is an error.
-pub const SYNC_SENDFILE: c_int = 3;
+/// How a blocking call advances through its bytes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SyncMode {
+    /// `send`: everything, retrying short writes.
+    Send,
+    /// `recv`: once, or everything under `MSG_WAITALL` (cleared for each call).
+    Recv,
+    /// `read`/`write`/`writev`/`sendto`/`recvfrom`: one call that moves bytes.
+    Once,
+    /// `sendfile`: until `length` bytes are sent; a zero return is an error.
+    Sendfile,
+}
 
 /// What a blocking call needs from its `Socket` (`crates/tls`'s `upstream.rs`).
 pub trait SyncEffects {
@@ -46,13 +50,13 @@ enum Step {
 use swoole_rs_corebase::sys::errno;
 pub(crate) use swoole_rs_corebase::sys::set_errno;
 
-/// `Socket::wait_for`'s loop around `kind`'s progress rule on the bytes `hooks`
+/// `Socket::wait_for`'s loop around `mode`'s progress rule on the bytes `hooks`
 /// holds, waiting for `event` up to `timeout_ms` (no limit unless positive;
 /// the elapsed time since the start is subtracted on every wait, as upstream does).
 /// Returns the bytes moved, or -1 with the last error and errno set.
 pub fn swr_v1_socket_sync(
     hooks: &mut impl SyncEffects,
-    kind: c_int,
+    mode: SyncMode,
     flags: c_int,
     event: crate::Events,
     mut timeout_ms: c_int,
@@ -60,7 +64,7 @@ pub fn swr_v1_socket_sync(
     let began = Instant::now();
     hooks.prepare();
     let mut bytes: usize = 0;
-    let call_flags = if kind == SYNC_RECV {
+    let call_flags = if mode == SyncMode::Recv {
         flags & !libc::MSG_WAITALL
     } else {
         flags
@@ -78,17 +82,17 @@ pub fn swr_v1_socket_sync(
                     Step::Error
                 }
             }
-            core::cmp::Ordering::Equal if kind == SYNC_SENDFILE => Step::Error,
+            core::cmp::Ordering::Equal if mode == SyncMode::Sendfile => Step::Error,
             core::cmp::Ordering::Equal => Step::Ready,
             core::cmp::Ordering::Greater => {
                 let moved = n.cast_unsigned();
                 bytes += moved;
-                // Only a call that goes on steps past what it moved: `SYNC_ONCE` (and a
+                // Only a call that goes on steps past what it moved: `SyncMode::Once` (and a
                 // `recv` without `MSG_WAITALL`) ends here.
-                let more = match kind {
-                    SYNC_SEND | SYNC_SENDFILE => hooks.advance(moved),
-                    SYNC_RECV if flags & libc::MSG_WAITALL != 0 => hooks.advance(moved),
-                    _ => false,
+                let more = match mode {
+                    SyncMode::Send | SyncMode::Sendfile => hooks.advance(moved),
+                    SyncMode::Recv if flags & libc::MSG_WAITALL != 0 => hooks.advance(moved),
+                    SyncMode::Recv | SyncMode::Once => false,
                 };
                 if more { Step::Continue } else { Step::Ready }
             }
@@ -199,7 +203,7 @@ mod tests {
 
     fn run(
         hooks: &SyncHooks,
-        kind: c_int,
+        mode: SyncMode,
         length: usize,
         flags: c_int,
     ) -> (isize, Vec<(usize, c_int)>) {
@@ -208,7 +212,7 @@ mod tests {
             left: length,
             ..*hooks
         };
-        let result = swr_v1_socket_sync(&mut hooks, kind, flags, crate::Events::from_bits(2), 1000);
+        let result = swr_v1_socket_sync(&mut hooks, mode, flags, crate::Events::from_bits(2), 1000);
         (result, CALLS.with(|calls| calls.borrow().clone()))
     }
 
@@ -223,26 +227,33 @@ mod tests {
         let mut nobufs = false;
         let hooks = hooks(fds[0], &mut nobufs, three);
         assert_eq!(
-            run(&hooks, SYNC_SEND, 7, 0),
+            run(&hooks, SyncMode::Send, 7, 0),
             (7, vec![(7, 0), (4, 0), (1, 0)]),
             "send retries short writes"
         );
-        assert_eq!(run(&hooks, SYNC_SENDFILE, 5, 0), (5, vec![(5, 0), (2, 0)]));
-        assert_eq!(run(&hooks, SYNC_ONCE, 7, 9), (3, vec![(7, 9)]), "one call");
         assert_eq!(
-            run(&hooks, SYNC_RECV, 7, 0),
+            run(&hooks, SyncMode::Sendfile, 5, 0),
+            (5, vec![(5, 0), (2, 0)])
+        );
+        assert_eq!(
+            run(&hooks, SyncMode::Once, 7, 9),
+            (3, vec![(7, 9)]),
+            "one call"
+        );
+        assert_eq!(
+            run(&hooks, SyncMode::Recv, 7, 0),
             (3, vec![(7, 0)]),
             "recv returns what one call read"
         );
         let waitall = libc::MSG_WAITALL | 1;
         assert_eq!(
-            run(&hooks, SYNC_RECV, 7, waitall),
+            run(&hooks, SyncMode::Recv, 7, waitall),
             (7, vec![(7, 1), (4, 1), (1, 1)]),
             "WAITALL loops, cleared per call"
         );
 
         let hooks = SyncHooks { io: fails, ..hooks };
-        assert_eq!(run(&hooks, SYNC_SEND, 7, 0).0, -1);
+        assert_eq!(run(&hooks, SyncMode::Send, 7, 0).0, -1);
         assert_eq!(LAST_ERROR.with(|last| *last.borrow()), libc::ECONNRESET);
         // SAFETY: closes the pair this test opened.
         unsafe {
@@ -272,7 +283,13 @@ mod tests {
             left: 4,
             ..hooks(fds[0], &mut nobufs, again)
         };
-        let result = swr_v1_socket_sync(&mut hooks, SYNC_ONCE, 0, crate::Events::from_bits(1), 20);
+        let result = swr_v1_socket_sync(
+            &mut hooks,
+            SyncMode::Once,
+            0,
+            crate::Events::from_bits(1),
+            20,
+        );
         assert_eq!((result, errno()), (-1, libc::EAGAIN));
         assert_eq!(
             LAST_ERROR.with(|last| *last.borrow()),
@@ -342,8 +359,13 @@ mod tests {
             left: 4,
             ..hooks(idle[0], &mut nobufs, three)
         });
-        let result =
-            swr_v1_socket_sync(&mut hooks, SYNC_ONCE, 0, crate::Events::from_bits(1), 1000);
+        let result = swr_v1_socket_sync(
+            &mut hooks,
+            SyncMode::Once,
+            0,
+            crate::Events::from_bits(1),
+            1000,
+        );
         assert_eq!(result, 4, "the wait polled the swapped descriptor");
         // SAFETY: closes the pairs this test opened.
         unsafe {
