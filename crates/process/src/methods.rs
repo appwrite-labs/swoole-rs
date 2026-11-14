@@ -378,10 +378,10 @@ pub fn send_message(pool: PoolRef<'_>, worker_id: u32, message: &[u8]) -> bool {
 ///
 /// The pool's box is the one `create` made with `SW_CHAN_LOCK`.
 #[must_use]
-pub fn pop_message(pool: PoolRef<'_>, data: &mut [u8]) -> c_int {
+pub fn pop_message(pool: PoolRef<'_>, data: &mut [u8]) -> Option<usize> {
     pool.record()
         .message_box_channel()
-        .map_or(-1, |message_box| message_box.pop(data, true))
+        .and_then(|message_box| message_box.pop(data, true))
 }
 
 /// `Worker::set_max_request(max_request, grace)`: this process's request limit.
@@ -698,7 +698,7 @@ pub(crate) mod tests {
         let mut pool: PoolRecord = unsafe { std::mem::zeroed() };
         let mut out = [0u8; 16];
         let none = pop_message(PoolRef::from(&mut pool), &mut out);
-        assert_eq!(none, -1, "no box");
+        assert_eq!(none, None, "no box");
         let mut memory = vec![0u64; swr_v1_memory_channel_bytes(256, 16).div_ceil(8)];
         let record = memory.as_mut_ptr().cast::<Record>();
         // SAFETY: the buffer is aligned and as long as the record needs; 2 is SW_CHAN_LOCK.
@@ -710,22 +710,14 @@ pub(crate) mod tests {
         pool.message_box = record.cast();
         for message in [&b"first"[..], b"second"] {
             // SAFETY: the record made above.
-            assert_eq!(unsafe { &*record }.push(message), 0, "pushed");
+            assert!(unsafe { &*record }.push(message), "pushed");
         }
         let n = pop_message(PoolRef::from(&mut pool), &mut out);
-        assert_eq!(
-            &out[..usize::try_from(n).unwrap_or(0)],
-            b"first",
-            "oldest first"
-        );
+        assert_eq!(&out[..n.unwrap_or(0)], b"first", "oldest first");
         let n = pop_message(PoolRef::from(&mut pool), &mut out);
-        assert_eq!(
-            &out[..usize::try_from(n).unwrap_or(0)],
-            b"second",
-            "then the next"
-        );
+        assert_eq!(&out[..n.unwrap_or(0)], b"second", "then the next");
         let n = pop_message(PoolRef::from(&mut pool), &mut out);
-        assert_eq!(n, -1, "then empty");
+        assert_eq!(n, None, "then empty");
     }
 
     #[test]
