@@ -170,9 +170,14 @@ impl<'a> ResultSlot<'a> {
 
 /// Copies `data` over the start of `words`, a word at a time; the bytes after it stay.
 fn copy_words(words: &[AtomicU32], data: &[u8]) {
-    for (word, chunk) in words.iter().zip(data.chunks(4)) {
+    let (whole, tail) = data.as_chunks::<4>();
+    let mut words = words.iter();
+    for (word, &bytes) in words.by_ref().zip(whole) {
+        word.store(u32::from_ne_bytes(bytes), Ordering::Relaxed);
+    }
+    if let Some(word) = words.next().filter(|_| !tail.is_empty()) {
         let mut bytes = word.load(Ordering::Relaxed).to_ne_bytes();
-        for (to, from) in bytes.iter_mut().zip(chunk) {
+        for (to, from) in bytes.iter_mut().zip(tail) {
             *to = *from;
         }
         word.store(u32::from_ne_bytes(bytes), Ordering::Relaxed);
