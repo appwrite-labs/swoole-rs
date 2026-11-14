@@ -37,6 +37,33 @@ class PhaseReports(unittest.TestCase):
         self.assertLess(phases.index('reference-identity'),phases.index('base64-consumers-upstream'))
         self.assertNotIn('base64-consumers-hybrid',phases)
 
+    def test_unknown_phases_are_rejected_before_prerequisite_expansion(self):
+        for prerequisites in [[], ['--with-prerequisites']]:
+            for selected in [
+                ['definitely-not-a-phase'],
+                ['http-unit', 'definitely-not-a-phase'],
+                ['definitely-not-a-phase-*'],
+                ['http-u*', 'definitely-not-a-phase-*'],
+            ]:
+                with self.subTest(prerequisites=prerequisites, selected=selected):
+                    command = [sys.executable, 'tools/dev.py', 'candidate', '--module', 'http', '--plan']
+                    for phase in selected:
+                        command += ['--phase', phase]
+                    result = subprocess.run(command + prerequisites, cwd=ROOT, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn('Unknown phases: ' + selected[-1], result.stderr)
+                    self.assertEqual(result.stdout, '')
+
+    def test_matching_glob_keeps_prerequisites(self):
+        command = [sys.executable, 'tools/dev.py', 'integrate', '--module', 'locks',
+                   '--with-prerequisites', '--plan', '--phase']
+        plans = []
+        for phase in ['base64-consumers-upstream', 'base64-consumers-up*']:
+            result = subprocess.run(command + [phase], cwd=ROOT, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            plans.append([row['phase'] for row in json.loads(result.stdout)])
+        self.assertEqual(plans[0], plans[1])
+
     def test_independent_selection_stays_independent(self):
         result=subprocess.run([sys.executable,'tools/dev.py','integrate','--module', 'locks',
             '--phase','string-originals','--plan'],cwd=ROOT,capture_output=True,text=True)
