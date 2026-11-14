@@ -828,7 +828,7 @@ fn pop(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let Ok(length) = usize::try_from(received) else {
+    let Some(length) = received else {
         call.set_bool(false);
         return;
     };

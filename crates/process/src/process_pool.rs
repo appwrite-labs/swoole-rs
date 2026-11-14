@@ -367,10 +367,13 @@ impl<'a> PoolRef<'a> {
     }
 
     /// `queue->pop(node, size)` into a `QueueNode` held in words, and `errno` right
-    /// after it; -1 without a queue.
+    /// after it; -1 when it failed or there is no queue.
     pub(crate) fn queue_pop(self, node: &mut [u64], size: usize) -> (isize, c_int) {
-        let result = self.with_queue(|queue| queue.pop_words(node, size));
-        (result.unwrap_or(-1), swoole_rs_corebase::sys::errno())
+        let result = self
+            .with_queue(|queue| queue.pop_words(node, size))
+            .flatten();
+        let length = result.map_or(-1, CCast::c_cast::<isize>);
+        (length, swoole_rs_corebase::sys::errno())
     }
 
     /// `queue->push(node, length)` of a `QueueNode` held in words; false without a
