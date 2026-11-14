@@ -12,7 +12,7 @@ use crate::{
 };
 use libc::{c_char, c_int};
 use std::{ffi::CStr, rc::Rc};
-use swoole_rs_clients::client::{self as state, ClientEvent, Op, SSL_STATE_WAIT_STREAM};
+use swoole_rs_clients::client::{self as state, ClientEvent, Handle, SSL_STATE_WAIT_STREAM};
 use swoole_rs_clients::valid_port;
 use swoole_rs_corebase::CCast;
 use swoole_rs_phpstubs::client_async;
@@ -242,7 +242,7 @@ fn destruct(call: &Call) {
     let Some(conn) = net::this(call).conn() else {
         return;
     };
-    if !conn.flag(state::Flag::Closed) && bailed(conn.cli.run(Op::Close)).is_none() {
+    if !conn.flag(state::Flag::Closed) && bailed(conn.cli.run(state::close)).is_none() {
         return;
     }
     // A close callback may have freed it already.
@@ -370,12 +370,8 @@ fn connect(call: &Call) {
     net::this(call).set_conn(Some(fresh.clone()));
     hold(object);
 
-    let connect = Op::Connect {
-        host: &native::c_text(host),
-        port: net::int(port),
-        timeout,
-        flags: net::int(flags),
-    };
+    let host_text = native::c_text(host);
+    let connect = |h| state::connect(h, &host_text, net::int(port), timeout, net::int(flags));
     let Some(result) = bailed(fresh.cli.run(connect)) else {
         return call.set_bool(false);
     };
@@ -417,7 +413,7 @@ fn close(call: &Call) {
         warn(ErrorKind::Fatal, "client is not connected to the server");
         return call.set_bool(false);
     };
-    call.set_bool(bailed(conn.cli.run(Op::Close)).is_some_and(|result| result >= 0));
+    call.set_bool(bailed(conn.cli.run(state::close)).is_some_and(|result| result >= 0));
 }
 
 /// `on(string $host, callable $callback): bool`.
@@ -483,19 +479,19 @@ fn replace(object: Obj, slot: Slot, callable: Rc<Callable>) {
 }
 
 /// `sleep()`/`pause()` and `wakeup()`/`resume()`.
-fn pause(call: &Call, op: Op) {
+fn pause(call: &Call, op: fn(Handle) -> bool) {
     let Some(conn) = net::connected(call) else {
         return call.set_bool(false);
     };
-    call.set_bool(bailed(conn.cli.run(op)).is_some_and(|result| result >= 0));
+    call.set_bool(bailed(conn.cli.run(op)) == Some(true));
 }
 
 fn sleep(call: &Call) {
-    pause(call, Op::Sleep);
+    pause(call, state::sleep);
 }
 
 fn wakeup(call: &Call) {
-    pause(call, Op::Wakeup);
+    pause(call, state::wakeup);
 }
 
 /// `enableSSL(?callable $onSslReady = null): bool`.
@@ -517,7 +513,7 @@ fn enable_ssl(call: &Call) {
     if !net::enable_ssl(call, &conn) {
         return call.set_bool(false);
     }
-    if bailed(conn.cli.run(Op::SslWait)).is_none_or(|result| result < 0) {
+    if bailed(conn.cli.run(state::ssl_wait)) != Some(true) {
         return call.set_bool(false);
     }
     let object = Obj::this(call);

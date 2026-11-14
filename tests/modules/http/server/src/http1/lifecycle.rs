@@ -7,7 +7,9 @@ use super::*;
 use crate::TEST_STR;
 use case::TimerNode;
 use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicU16, AtomicU64};
-use swoole_rs_clients::client::{Client, ClientEvent, Handle, Op, listen, swr_v1_clients_new};
+use swoole_rs_clients::client::{
+    self as native, Client, ClientEvent, Handle, listen, swr_v1_clients_new,
+};
 use swoole_rs_process::methods::{ExitStatus, send_pipe_message, swoole_get_worker_type};
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_server::{event_worker, manager, task_worker, worker_methods};
@@ -1682,19 +1684,11 @@ fn clean_client() -> Handle {
     unsafe { Handle::new(CLEAN_CLIENT.load(Ordering::SeqCst)) }
 }
 
-/// `ac.get_client()->op(...)`: its result.
-fn client_run(op: Op<'_>) -> i64 {
-    clean_client().run(op)
-}
-
 /// The client's `on_connect`, `on_close`, `on_error` and `on_receive`.
 fn clean_client_event(event: ClientEvent, _: *const c_char, error: usize) {
     match event {
         ClientEvent::Connect => {
-            client_run(Op::Send {
-                data: TEST_STR.as_bytes(),
-                flags: 0,
-            });
+            _ = native::send(clean_client(), TEST_STR.as_bytes(), 0);
         }
         ClientEvent::Error => eprintln!("WARNING: connect failed, error={error}"),
         ClientEvent::Receive => {
@@ -1717,12 +1711,8 @@ unsafe extern "C" fn clean_connect_timer(_: *mut c_void, _: *mut TimerNode) {
     let client = unsafe { &*CLEAN_CLIENT.load(Ordering::SeqCst) };
     listen(client, events, std::rc::Rc::new(clean_client_event));
     let host = CString::new(TEST_HOST).unwrap();
-    let connected = client_run(Op::Connect {
-        host: &host,
-        port: CLEAN_PORT.load(Ordering::SeqCst).into(),
-        timeout: -1.0,
-        flags: 0,
-    }) >= 0;
+    let port = CLEAN_PORT.load(Ordering::SeqCst).into();
+    let connected = native::connect(clean_client(), &host, port, -1.0, 0) >= 0;
     expect(connected, "ac.connect(TEST_HOST, port->get_port())");
 }
 
@@ -1735,7 +1725,7 @@ unsafe extern "C" fn clean_deferred(serv: *mut c_void) {
     // SAFETY: this process's worker.
     let worker = unsafe { Worker::new(current_worker()) };
     event_worker::native::clean_worker_connections(serv, worker);
-    client_run(Op::Shutdown(SHUT_RDWR));
+    _ = native::shutdown(clean_client(), SHUT_RDWR);
     event_worker::native::stop_async_worker(serv, worker);
 }
 

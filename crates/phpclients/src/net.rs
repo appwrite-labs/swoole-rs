@@ -13,7 +13,7 @@ use std::{
     sync::{Mutex, MutexGuard, PoisonError},
 };
 use swoole_rs_clients::{
-    client::{self as state, Op},
+    client::{self as state, Handle},
     pool::Pool,
     valid_port,
 };
@@ -587,7 +587,7 @@ fn connection(object: Obj, host: &[u8], port: i64) -> Option<Rc<Conn>> {
                     .long(c"reuseCount", i64::from(pooled.reuse_count));
                 conn = Some(pooled);
             } else {
-                bailed(pooled.cli.run(Op::Close))?;
+                bailed(pooled.cli.run(state::close))?;
                 bailed(release(object, Rc::new(*pooled)))?;
             }
         }
@@ -737,12 +737,8 @@ fn connect(call: &Call) {
             return call.set_bool(false);
         }
     }
-    let connect = Op::Connect {
-        host: &native::c_text(host),
-        port: int(port),
-        timeout,
-        flags: int(flags),
-    };
+    let host_text = native::c_text(host);
+    let connect = |h| state::connect(h, &host_text, int(port), timeout, int(flags));
     let Some(result) = bailed(conn.cli.run(connect)) else {
         return call.set_bool(false);
     };
@@ -785,11 +781,7 @@ fn send(call: &Call) {
         return call.set_bool(false);
     };
     set_last_error(0);
-    let send = Op::Send {
-        data,
-        flags: int(flags),
-    };
-    let Some(sent) = bailed(io(conn.cli, send)) else {
+    let Some(sent) = bailed(io(conn.cli, |h| state::send(h, data, int(flags)) as i64)) else {
         return call.set_bool(false);
     };
     if sent < 0 {
@@ -825,18 +817,14 @@ fn sendto(call: &Call) {
     let Some(conn) = conn(call) else {
         return call.set_bool(false);
     };
-    let send = Op::Sendto {
-        host: &native::c_text(host),
-        port: int(port),
-        data,
-    };
-    let Some(result) = bailed(io(conn.cli, send)) else {
+    let host = native::c_text(host);
+    let Some(sent) = bailed(io(conn.cli, |h| state::sendto(h, &host, int(port), data))) else {
         return call.set_bool(false);
     };
-    if result < 0 {
+    if !sent {
         set_err_code(object, last_error());
     }
-    call.set_bool(result >= 0);
+    call.set_bool(sent);
 }
 
 /// `sendfile(string $filename, int $offset = 0, int $length = 0): bool`.
@@ -859,15 +847,12 @@ fn sendfile(call: &Call) {
         return call.set_bool(false);
     }
     set_last_error(0);
-    let send = Op::Sendfile {
-        file: &native::c_text(file),
-        offset,
-        length: length.c_cast::<usize>(),
-    };
-    let Some(result) = bailed(io(conn.cli, send)) else {
+    let file = native::c_text(file);
+    let send = |h| state::sendfile(h, &file, offset, length.c_cast::<usize>());
+    let Some(sent) = bailed(io(conn.cli, send)) else {
         return call.set_bool(false);
     };
-    if result < 0 {
+    if !sent {
         set_last_error(errno());
         let error = last_error();
         let message = format!("sendfile() failed. Error: {} [{error}]", strerror(error));
@@ -880,23 +865,17 @@ fn sendfile(call: &Call) {
 
 /// Run an IO `op`: a sync client raises no callbacks, so only an async one
 /// needs the `zend_try` frame.
-fn io(cli: Cli, op: Op<'_>) -> Result<i64, Bailout> {
+fn io<T: Default>(cli: Cli, op: impl FnOnce(Handle) -> T) -> Result<T, Bailout> {
     if cli.get().flag(state::Flag::Async) {
         cli.run(op)
     } else {
-        Ok(cli.run_plain(op))
+        Ok(op(cli.handle()))
     }
 }
 
 /// `cli->recv(buffer, length, flags)`.
 fn receive(cli: Cli, buffer: &mut [u8], flags: i64) -> Result<i64, Bailout> {
-    io(
-        cli,
-        Op::Recv {
-            buffer,
-            flags: int(flags),
-        },
-    )
+    io(cli, |h| state::recv(h, buffer, int(flags)) as i64)
 }
 
 /// C++'s implicit conversion of a PHP int to an `int` argument.
@@ -1023,7 +1002,10 @@ fn recv_length(
         frame
             .buffer
             .truncate(have + usize::try_from(read).unwrap_or(0));
-        let Some(measured) = bailed(conn.cli.run(Op::PackageLength(&frame.buffer))) else {
+        let Some(measured) = bailed(
+            conn.cli
+                .run(|h| state::package_length(h, &frame.buffer) as i64),
+        ) else {
             call.set_bool(false);
             return None;
         };
@@ -1235,7 +1217,7 @@ fn close(call: &Call) {
         || conn.flag(state::Flag::ShutdownWrite)
         || !conn.alive()
     {
-        let Some(result) = bailed(conn.cli.run(Op::Close)) else {
+        let Some(result) = bailed(conn.cli.run(state::close)) else {
             return call.set_bool(false);
         };
         bailed(release(object, conn));
@@ -1297,7 +1279,7 @@ fn enable_ssl_method(call: &Call) {
     if !enable_ssl(call, &conn) {
         return call.set_bool(false);
     }
-    call.set_bool(bailed(conn.cli.run(Op::SslHandshake)) == Some(0));
+    call.set_bool(bailed(conn.cli.run(state::ssl_handshake)) == Some(true));
 }
 
 /// `getPeerCert(): string|false`.
@@ -1327,8 +1309,8 @@ fn verify_peer_cert(call: &Call) {
     let Ok(allow) = call.arity(0, 1).and_then(|()| call.bool(1, false)) else {
         return call.set_bool(false);
     };
-    let verify = conn.cli.run(Op::SslVerify(allow));
-    call.set_bool(bailed(verify).is_some_and(|result| result >= 0));
+    let verify = conn.cli.run(|h| state::ssl_verify(h, allow));
+    call.set_bool(bailed(verify) == Some(true));
 }
 
 /// `shutdown(int $how): bool`.
@@ -1339,8 +1321,8 @@ fn shutdown(call: &Call) {
     let Ok(how) = call.arity(1, 1).and_then(|()| call.long(1, 0)) else {
         return call.set_bool(false);
     };
-    let shutdown = conn.cli.run(Op::Shutdown(int(how)));
-    call.set_bool(bailed(shutdown).is_some_and(|result| result >= 0));
+    let shutdown = conn.cli.run(|h| state::shutdown(h, int(how)));
+    call.set_bool(bailed(shutdown) == Some(true));
 }
 
 swoole_rs_zend::handlers! {
