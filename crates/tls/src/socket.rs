@@ -639,7 +639,7 @@ mod tests {
             assert_eq!(pem_of(cert, &mut short, true), 10, "bounded by the buffer");
 
             let context = SSL_CTX_new(TLS_method());
-            crate::swr_v1_tls_init();
+            crate::swr_v1_tls_init().unwrap();
             let index = crate::swr_v1_tls_connection_index();
             let mut record = swoole_rs_reactor::SocketRecord::with_fd(3, 0);
             record.tls = SocketTls {
