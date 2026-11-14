@@ -651,6 +651,12 @@ impl PoolRef<'_> {
 pub trait PoolNative: Sync {
     /// One effect on the call's pool and worker.
     fn call(&self, call: &PoolCall, op: Op, arg: u64) -> i64;
+    /// `count` workers from the global memory pool, or null.
+    fn alloc_workers(&self, count: u32) -> *mut WorkerRecord;
+    /// The pool's pipe list, or null.
+    fn new_pipes(&self) -> *mut c_void;
+    /// A new message bus for the pool, or null.
+    fn new_message_bus(&self) -> *mut c_void;
     /// The pool's `callback`; it runs inside the trap.
     fn callback(&self, call: &mut PoolCall, callback: Callback);
     /// `sizeof(EventData)`.
@@ -931,6 +937,14 @@ pub(crate) trait PoolHost {
     fn push_box(&mut self, message: &[u8]) -> bool;
     /// Frees the pool's message box, if it has one, and forgets it.
     fn free_box(&mut self);
+    /// `count` workers for `create`, or null.
+    fn alloc_workers(&mut self, count: u32) -> *mut WorkerRecord;
+    /// The pool's pipe list, or null.
+    fn new_pipes(&mut self) -> *mut c_void;
+    /// A new message bus, or null.
+    fn new_message_bus(&mut self) -> *mut c_void;
+    /// `sw_worker()`: this process's worker.
+    fn current_worker(&mut self) -> *mut WorkerRecord;
 }
 
 pub(crate) struct Native<'a> {
@@ -1008,6 +1022,22 @@ impl PoolHost for Native<'_> {
         // SAFETY: the mapping `new_box` made it in, freed once.
         unsafe { swoole_rs_memory::members::sw_shm_free(channel.cast()) };
     }
+
+    fn alloc_workers(&mut self, count: u32) -> *mut WorkerRecord {
+        self.native.alloc_workers(count)
+    }
+
+    fn new_pipes(&mut self) -> *mut c_void {
+        self.native.new_pipes()
+    }
+
+    fn new_message_bus(&mut self) -> *mut c_void {
+        self.native.new_message_bus()
+    }
+
+    fn current_worker(&mut self) -> *mut WorkerRecord {
+        crate::worker_globals::current_worker()
+    }
 }
 
 /// `Channel::make(size, maxlen, SW_CHAN_LOCK | SW_CHAN_SHM)`: a channel in fresh
@@ -1057,10 +1087,6 @@ fn effect(op: Op, arg: u64) -> Option<i64> {
             0
         }
         Op::IsMaster => i64::from(i64::from(swoole_get_worker_type()) == SW_MASTER.cast_signed()),
-        Op::CurrentWorker => {
-            let worker = crate::worker_globals::current_worker();
-            worker.expose_provenance().cast_signed() as i64
-        }
         Op::SignalDispatch => {
             crate::signal::swoole_signal_dispatch();
             0
@@ -1289,11 +1315,6 @@ setters!(
     main_loop / set_main_loop: Option<MainLoopFn>,
 );
 
-/// A native op's pointer result.
-fn pointer<T>(address: i64) -> *mut T {
-    ptr::with_exposed_provenance_mut(usize::try_from(address).unwrap_or(0))
-}
-
 fn exited(pid: c_int, status: c_int) -> u64 {
     u64::from(pid.cast_unsigned()) | (u64::from(status.cast_unsigned()) << 32)
 }
@@ -1347,7 +1368,7 @@ impl<H: PoolHost> Pool<'_, H> {
             return false;
         }
         // The count goes with the records, so `worker_num` never counts past `workers`.
-        let workers = pointer::<WorkerRecord>(self.op(Op::AllocWorkers, worker_num.into()));
+        let workers = self.h.alloc_workers(worker_num);
         if workers.is_null() {
             self.op(Op::Log(Log::Alloc), 0);
             return false;
@@ -1367,7 +1388,7 @@ impl<H: PoolHost> Pool<'_, H> {
                 self.set_queue(Some(queue));
             }
             IpcMode::UnixSock => {
-                let pipes = pointer(self.op(Op::NewPipes, 0));
+                let pipes = self.h.new_pipes();
                 self.set_pipes(pipes);
                 for index in 0..worker_num {
                     if self.on(self.worker(index), Op::NewPipe, 0) == 0 {
@@ -1416,7 +1437,7 @@ impl<H: PoolHost> Pool<'_, H> {
             self.op(Op::Log(Log::BusExists), 0);
             return false;
         }
-        let bus = pointer::<c_void>(self.op(Op::NewMessageBus, 0));
+        let bus = self.h.new_message_bus();
         if bus.is_null() {
             self.op(Op::Log(Log::Alloc), 1);
             return false;
@@ -1562,7 +1583,7 @@ impl<H: PoolHost> Pool<'_, H> {
         if !self.running() || self.message_box().is_null() {
             return false;
         }
-        let worker = pointer(self.op(Op::CurrentWorker, 0));
+        let worker = self.h.current_worker();
         self.on(worker, Op::WorkerShutdown, 0);
         if self.is_async() {
             self.on(worker, Op::RemovePipe, 0);
@@ -2148,6 +2169,11 @@ mod tests {
         assert_eq!(size_of::<PoolRecord>(), 288);
     }
 
+    /// A scripted op's pointer answer.
+    fn pointer<T>(address: i64) -> *mut T {
+        ptr::with_exposed_provenance_mut(usize::try_from(address).unwrap_or(0))
+    }
+
     /// A scripted native side over a pool record allocated here.
     #[derive(Default)]
     struct Script {
@@ -2207,6 +2233,18 @@ mod tests {
                 // SAFETY: as above.
                 unsafe { record.as_mut() }.message_box = ptr::null_mut();
             }
+        }
+        fn alloc_workers(&mut self, count: u32) -> *mut WorkerRecord {
+            pointer(self.op(ptr::null_mut(), Op::AllocWorkers, count.into()))
+        }
+        fn new_pipes(&mut self) -> *mut c_void {
+            pointer(self.op(ptr::null_mut(), Op::NewPipes, 0))
+        }
+        fn new_message_bus(&mut self) -> *mut c_void {
+            pointer(self.op(ptr::null_mut(), Op::NewMessageBus, 0))
+        }
+        fn current_worker(&mut self) -> *mut WorkerRecord {
+            pointer(self.op(ptr::null_mut(), Op::CurrentWorker, 0))
         }
     }
 
