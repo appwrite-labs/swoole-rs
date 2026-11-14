@@ -17,6 +17,7 @@ php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-phpstubs", "sw
        "dep:swoole-rs-reactor", "swoole-rs-reactor/upstream-symbols", "dep:swoole-rs-process", "swoole-rs-process/upstream-symbols", "dep:swoole-rs-tls", "dep:swoole-rs-phpprocess", "swoole-rs-phpprocess/php"]
 
 [dependencies]
+swoole-rs-error = { path = "../error" }
 swoole-rs-corebase = { path = "../corebase", optional = true }
 swoole-rs-memory = { path = "../memory", optional = true }
 swoole-rs-phpcoroutines = { path = "../phpcoroutines", optional = true }

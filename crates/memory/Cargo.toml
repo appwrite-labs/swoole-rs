@@ -13,6 +13,7 @@ crate-type = ["rlib", "staticlib"]
 upstream-symbols = []
 
 [dependencies]
+swoole-rs-error = { path = "../error" }
 libc = "=0.2.191"
 swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-locks = { path = "../locks" }

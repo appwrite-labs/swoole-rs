@@ -30,7 +30,8 @@ pub(crate) static RESPONSE: CustomClass<Data> = CustomClass::new();
 const OPCODE_TEXT: i64 = 1;
 const CLOSE_NORMAL: i64 = 1000;
 /// `SW_ERROR_WEBSOCKET_PACK_FAILED`.
-const WEBSOCKET_PACK_FAILED: c_int = 8505;
+const WEBSOCKET_PACK_FAILED: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_WEBSOCKET_PACK_FAILED as c_int;
 /// `SW_HTTP_INTERNAL_SERVER_ERROR`.
 const INTERNAL_SERVER_ERROR: c_int = 500;
 

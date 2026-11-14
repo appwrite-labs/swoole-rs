@@ -466,7 +466,7 @@ fn construct(call: &Call) {
 }
 
 /// `SW_ERROR_SSL_BAD_CLIENT` (crates/ffi checks it).
-pub const SSL_BAD_CLIENT: c_int = 1015;
+pub const SSL_BAD_CLIENT: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SSL_BAD_CLIENT as c_int;
 /// `SW_ACCEPT_RETRY_TIME`.
 const ACCEPT_RETRY_TIME: c_int = 1;
 

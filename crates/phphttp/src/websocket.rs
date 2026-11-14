@@ -101,11 +101,14 @@ const CLOSE_REASON_MAX: usize = 125;
 const SEC_KEY_LENGTH: usize = 24;
 
 /// Swoole error codes and log levels (`include/swoole_error.h`, `swoole_log.h`).
-const PROTOCOL_ERROR: c_int = 508;
-const SESSION_NOT_EXIST: c_int = 1005;
-const WEBSOCKET_UNCONNECTED: c_int = 8503;
-const WEBSOCKET_PACK_FAILED: c_int = 8505;
-const WEBSOCKET_INCOMPLETE_PACKET: c_int = 8507;
+const PROTOCOL_ERROR: c_int = swoole_rs_error::ErrorCode::SW_ERROR_PROTOCOL_ERROR as c_int;
+const SESSION_NOT_EXIST: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SESSION_NOT_EXIST as c_int;
+const WEBSOCKET_UNCONNECTED: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_WEBSOCKET_UNCONNECTED as c_int;
+const WEBSOCKET_PACK_FAILED: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_WEBSOCKET_PACK_FAILED as c_int;
+const WEBSOCKET_INCOMPLETE_PACKET: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_WEBSOCKET_INCOMPLETE_PACKET as c_int;
 const LOG_TRACE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as c_int;
 const LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
 

@@ -1099,8 +1099,8 @@ fn log(kind: Log, arg: u64) {
     use swoole_rs_corebase::log::{error_log, sys_warning, warning};
     /// `SW_LOG_WARNING`, `SW_ERROR_OPERATION_NOT_SUPPORT`, `SW_ERROR_WRONG_OPERATION`.
     const WARNING: c_int = 4;
-    const NOT_SUPPORT: c_int = 507;
-    const WRONG_OPERATION: c_int = 509;
+    const NOT_SUPPORT: c_int = swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as c_int;
+    const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
     let pid = arg.c_cast::<c_int>();
     match kind {
         Log::NoSysvmsg => warning(

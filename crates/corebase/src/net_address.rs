@@ -18,11 +18,12 @@ pub const RAW: c_int = 7;
 pub const RAW6: c_int = 8;
 
 /// `SW_ERROR_*` codes `assign` returns.
-pub const NAME_TOO_LONG: c_int = 504;
-pub const DNSLOOKUP_RESOLVE_FAILED: c_int = 711;
-pub const BAD_HOST_ADDR: c_int = 722;
-pub const BAD_PORT: c_int = 723;
-pub const BAD_SOCKET_TYPE: c_int = 724;
+pub const NAME_TOO_LONG: c_int = swoole_rs_error::ErrorCode::SW_ERROR_NAME_TOO_LONG as c_int;
+pub const DNSLOOKUP_RESOLVE_FAILED: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_DNSLOOKUP_RESOLVE_FAILED as c_int;
+pub const BAD_HOST_ADDR: c_int = swoole_rs_error::ErrorCode::SW_ERROR_BAD_HOST_ADDR as c_int;
+pub const BAD_PORT: c_int = swoole_rs_error::ErrorCode::SW_ERROR_BAD_PORT as c_int;
+pub const BAD_SOCKET_TYPE: c_int = swoole_rs_error::ErrorCode::SW_ERROR_BAD_SOCKET_TYPE as c_int;
 
 /// `sockaddr_un::sun_path`'s length.
 const SUN_PATH: usize =

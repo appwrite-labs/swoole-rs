@@ -34,7 +34,8 @@ const FILE_LOCK: c_long = libc::LOCK_EX as c_long;
 /// `SW_FILE_APPEND`: PHP's `FILE_APPEND`.
 const FILE_APPEND: c_long = 1 << 3;
 /// `SW_ERROR_OPERATION_NOT_SUPPORT`.
-const SW_ERROR_OPERATION_NOT_SUPPORT: c_int = 507;
+const SW_ERROR_OPERATION_NOT_SUPPORT: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as c_int;
 
 static SYSTEM: Class = Class::new();
 

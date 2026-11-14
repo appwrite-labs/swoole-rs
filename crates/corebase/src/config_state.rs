@@ -227,7 +227,7 @@ pub fn set_task_tmpdir(dir: &CStr) -> bool {
 
 /// `SW_LOG_WARNING` and `SW_ERROR_NAME_TOO_LONG`.
 const LOG_WARNING: i32 = 4;
-const NAME_TOO_LONG: i32 = 504;
+const NAME_TOO_LONG: i32 = swoole_rs_error::ErrorCode::SW_ERROR_NAME_TOO_LONG as i32;
 
 #[cfg(test)]
 mod tests {

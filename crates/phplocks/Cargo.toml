@@ -15,6 +15,7 @@ php = ["dep:swoole-rs-locks", "dep:swoole-rs-hooks", "dep:swoole-rs-zend", "swoo
 iouring = ["dep:swoole-rs-hooks", "swoole-rs-hooks/iouring", "swoole-rs-hooks/upstream-symbols"]
 
 [dependencies]
+swoole-rs-error = { path = "../error" }
 swoole-rs-locks = { path = "../locks", optional = true }
 swoole-rs-zend = { path = "../zend", optional = true }
 swoole-rs-phpstubs = { path = "../phpstubs", optional = true }

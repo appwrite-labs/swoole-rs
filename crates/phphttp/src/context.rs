@@ -199,7 +199,7 @@ pub(crate) fn send(mut ctx: Ctx, data: &[u8]) -> bool {
 }
 
 /// `SW_ERROR_OUTPUT_SEND_YIELD`.
-const OUTPUT_SEND_YIELD: c_int = 1010;
+const OUTPUT_SEND_YIELD: c_int = swoole_rs_error::ErrorCode::SW_ERROR_OUTPUT_SEND_YIELD as c_int;
 
 /// `Server::send` to `fd`, waiting in a coroutine while the socket's buffer
 /// is full. A bailout while waiting is left for the handler to raise.

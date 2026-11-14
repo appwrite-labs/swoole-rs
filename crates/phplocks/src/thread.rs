@@ -26,7 +26,7 @@ use swoole_rs_zend::{
 };
 
 /// `SW_ERROR_PHP_FATAL_ERROR`.
-const PHP_FATAL_ERROR: c_int = 503;
+const PHP_FATAL_ERROR: c_int = swoole_rs_error::ErrorCode::SW_ERROR_PHP_FATAL_ERROR as c_int;
 
 /// What a Thread\Lock or Thread\Atomic object shares, and a container value
 /// holds, across threads: upstream's `ThreadResource` subclasses.

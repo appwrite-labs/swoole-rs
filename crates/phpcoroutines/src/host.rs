@@ -94,11 +94,14 @@ pub(crate) const CORO_TIME: u32 = 512;
 pub(crate) const THREAD: u32 = 1024;
 
 /// Swoole error codes (`include/swoole_error.h`).
-pub(crate) const SW_ERROR_INVALID_PARAMS: c_int = 505;
-pub(crate) const SW_ERROR_WRONG_OPERATION: c_int = 509;
+pub(crate) const SW_ERROR_INVALID_PARAMS: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as c_int;
+pub(crate) const SW_ERROR_WRONG_OPERATION: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
 pub(crate) const SW_ERROR_CO_NOT_EXISTS: c_int = 10016;
 pub(crate) const SW_ERROR_CO_CANCELED: c_int = 10017;
-const SW_ERROR_PHP_FATAL_ERROR: c_int = 503;
+const SW_ERROR_PHP_FATAL_ERROR: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_PHP_FATAL_ERROR as c_int;
 const SW_ERROR_CO_OUT_OF_COROUTINE: c_int = 10001;
 
 /// Whether `bit` of the host's flags is set.

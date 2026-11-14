@@ -48,8 +48,8 @@ const REPLY_TYPES: [(&std::ffi::CStr, zend_long); 7] = [
 ];
 
 /// `SW_ERROR_PHP_FATAL_ERROR` and `SW_ERROR_PHP_RUNTIME_NOTICE`.
-const PHP_FATAL_ERROR: c_int = 503;
-const PHP_RUNTIME_NOTICE: c_int = 510;
+const PHP_FATAL_ERROR: c_int = swoole_rs_error::ErrorCode::SW_ERROR_PHP_FATAL_ERROR as c_int;
+const PHP_RUNTIME_NOTICE: c_int = swoole_rs_error::ErrorCode::SW_ERROR_PHP_RUNTIME_NOTICE as c_int;
 
 thread_local! {
     /// `redis_handlers`: each command key's callable. A handler that replaces

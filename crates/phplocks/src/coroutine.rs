@@ -11,7 +11,7 @@ use swoole_rs_zend::{
 };
 
 /// `SW_ERROR_WRONG_OPERATION`.
-const WRONG_OPERATION: c_int = 509;
+const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
 static CLASS: CustomClass<Held> = CustomClass::new();
 
 /// The lock's effects, as upstream's `CoroutineLock` reaches them: the current

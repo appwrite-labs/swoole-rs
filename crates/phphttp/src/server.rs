@@ -67,7 +67,7 @@ const BAD_REQUEST: &[u8] = b"HTTP/1.1 400 Bad Request\r\n\r\n";
 /// llhttp's `HPE_OK`.
 const HPE_OK: i32 = 0;
 /// `SW_ERROR_SESSION_NOT_EXIST` and `SW_LOG_TRACE`.
-const SESSION_NOT_EXIST: c_int = 1005;
+const SESSION_NOT_EXIST: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SESSION_NOT_EXIST as c_int;
 const LOG_TRACE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as c_int;
 
 /// `http_server::SW_HTTP_EXT_FLAG_UPLOAD_PREPROCESSED`.

@@ -12,11 +12,14 @@ use swoole_rs_protocols::{
 /// `SW_LOG_NOTICE`.
 const NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
 /// `SW_ERROR_SOCKS5_*`.
-const UNSUPPORT_VERSION: c_int = 7001;
-const UNSUPPORT_METHOD: c_int = 7002;
-const AUTH_FAILED: c_int = 7003;
-const SERVER_ERROR: c_int = 7004;
-const HANDSHAKE_FAILED: c_int = 7005;
+const UNSUPPORT_VERSION: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SOCKS5_UNSUPPORT_VERSION as c_int;
+const UNSUPPORT_METHOD: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SOCKS5_UNSUPPORT_METHOD as c_int;
+const AUTH_FAILED: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SOCKS5_AUTH_FAILED as c_int;
+const SERVER_ERROR: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SOCKS5_SERVER_ERROR as c_int;
+const HANDSHAKE_FAILED: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SOCKS5_HANDSHAKE_FAILED as c_int;
 
 /// `swoole::Socks5Proxy`'s head: `ProxyOwner::prepared_.owner`, which
 /// `swr_v1_core_proxy_new` made and the proxy frees last.

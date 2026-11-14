@@ -5,7 +5,8 @@ use swoole_rs_http::{
     Handshake, HttpProxyRequest, proxy_authorization, proxy_handshake, proxy_pack,
 };
 
-const HANDSHAKE_FAILED: i32 = 7103;
+const HANDSHAKE_FAILED: i32 =
+    swoole_rs_error::ErrorCode::SW_ERROR_HTTP_PROXY_HANDSHAKE_FAILED as i32;
 
 /// `HttpProxy::create`'s assignments on a fresh owner: the host and port, then the
 /// credentials when both are set. Only an allocation can fail, and that aborts as
