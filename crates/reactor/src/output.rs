@@ -535,7 +535,7 @@ mod tests {
     }
     unsafe extern "C" fn prepare(context: *mut c_void) -> bool {
         let request = unsafe { &mut *context.cast::<Request>() };
-        crate::sendfile_range(request.fd, request.begin, request.length, &mut request.end) == 0
+        crate::sendfile_range(request.fd, request.begin, request.length, &mut request.end).is_ok()
     }
     unsafe extern "C" fn buffer(context: *mut c_void) {
         unsafe { (*context.cast::<Request>()).buffer = true };
