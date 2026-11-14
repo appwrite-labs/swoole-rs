@@ -4,7 +4,7 @@
 //! With `upstream-symbols` those C++ or a test crate calls are defined under their
 //! upstream (Itanium) symbols.
 //! `swoole_event_init` and `swoole_event_free` are `reactor_state.rs`'s, with the
-//! `Reactor`'s constructor and destructor; `swoole_event_defer` is callbacks.rs's.
+//! `Reactor`'s constructor and destructor; `swoole_event_defer` is deferred.rs's.
 use crate::handlers::Handler;
 use crate::reactor_upstream::reactor_change;
 use crate::{Events, ReactorFields, SocketRecord};
