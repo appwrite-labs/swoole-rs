@@ -3,9 +3,8 @@ use crate::cookie::{header_line, object_header_line};
 use crate::{
     context::{self, Ctx, Holder},
     host::{
-        self, CO_SOCKET, COOKIE, DETACHED, END, HEADER, HEADER_KEY_SIZE, HTTP_CONTEXT_UNAVAILABLE,
-        HTTP2, SEND_CHUNKED, SERVER_IS_NOT_REGULAR_FILE, SESSION_CLOSED, TRAILER, UPGRADE,
-        WEBSOCKET,
+        self, CO_SOCKET, DETACHED, END, HEADER_KEY_SIZE, HTTP_CONTEXT_UNAVAILABLE, HTTP2, Property,
+        SEND_CHUNKED, SERVER_IS_NOT_REGULAR_FILE, SESSION_CLOSED, UPGRADE, WEBSOCKET,
     },
     send, websocket,
 };
@@ -171,7 +170,7 @@ fn or_false(call: &Call, done: Option<()>) {
     }
 }
 
-fn property(mut ctx: Ctx, which: i32) -> *mut swoole_rs_zend::sys::zval {
+fn property(mut ctx: Ctx, which: Property) -> *mut swoole_rs_zend::sys::zval {
     crate::header::response_property(ctx.state(), which)
 }
 
@@ -179,7 +178,7 @@ fn init_header(call: &Call) {
     or_false(
         call,
         checked(call).map(|ctx| {
-            for which in [HEADER, COOKIE, TRAILER] {
+            for which in [Property::Header, Property::Cookie, Property::Trailer] {
                 property(ctx, which);
             }
             call.set_bool(true);
@@ -372,7 +371,7 @@ fn set_cookie(call: &Call, encode: bool) {
         return call.set_bool(false);
     };
     // SAFETY: the cookie property is a live array; it takes over the string.
-    unsafe { push_string(property(ctx, COOKIE), cookie.into_raw()) };
+    unsafe { push_string(property(ctx, Property::Cookie), cookie.into_raw()) };
     call.set_bool(true);
 }
 
@@ -448,7 +447,7 @@ fn trailer(call: &Call) {
         }
         let key = key.to_ascii_lowercase();
         // SAFETY: the trailer property is a live array.
-        unsafe { set_key(property(ctx, TRAILER), &key, value) };
+        unsafe { set_key(property(ctx, Property::Trailer), &key, value) };
         ctx.state().send_trailer = true;
         call.set_bool(true);
         Some(())
@@ -606,7 +605,7 @@ pub(crate) fn set_header(ctx: Ctx, key: &[u8], value: &Value, format: bool) -> b
     if crate::header::has_crlf(key) {
         return false;
     }
-    let header = property(ctx, HEADER);
+    let header = property(ctx, Property::Header);
     let mut buffer = [0; HEADER_KEY_SIZE];
     // Formatted in a stack copy, as upstream does in its thread buffer.
     let name = match buffer.get_mut(..key.len()) {
