@@ -758,6 +758,7 @@ dependencies = [
  "swoole-rs-http",
  "swoole-rs-http-ffi",
  "swoole-rs-inflate",
+ "swoole-rs-phpcoroutines",
  "swoole-rs-phpruntime",
  "swoole-rs-phpstubs",
  "swoole-rs-phpswoole",

@@ -2,7 +2,8 @@
 //! registration, objects, the functions' bodies and the PHP resolver's lookup
 //! (a `Swoole\NameResolver` object's `lookup()`, then its cluster's `pop()`).
 //! The context and the resolver list are crates/corebase's (`NameResolverContext`,
-//! `swr_v1_core_name_resolver_*`), shared with the coroutine socket's lookup.
+//! `swr_v1_core_name_resolver_*`), shared with the coroutine socket's lookup; a PHP
+//! resolver's entry names its object, whose reference crates/phpcoroutines keeps.
 use crate::native::UNCONSTRUCTED;
 use crate::socket::warn;
 pub use native::swoole_name_resolver_php_remove;
@@ -11,7 +12,7 @@ use swoole_rs_corebase::NameResolverContext;
 use swoole_rs_phpstubs::name_resolver;
 use swoole_rs_zend::{
     Call, Custom, CustomClass, Minit, Owned, Value, ZString, bailout, method_table,
-    sys::{IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, zend_object},
+    sys::{IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC},
 };
 
 /// `AF_INET`, `__construct`'s default family.
@@ -27,6 +28,7 @@ mod native {
     use std::ffi::{c_int, c_void};
     use swoole_rs_corebase::CCast;
     use swoole_rs_corebase::{NameResolverContext, TYPE_PHP};
+    use swoole_rs_phpcoroutines::name_resolvers;
     use swoole_rs_zend::{Owned, Value};
 
     /// `*context = {}` with `with_port`: the old value is overwritten, not destroyed.
@@ -80,19 +82,33 @@ mod native {
         context.is_final = is_final;
     }
 
-    /// `swoole_name_resolver_add({lookup, resolver, TYPE_PHP})`: the list keeps
-    /// `resolver` until a remove unlinks it.
+    /// `swoole_name_resolver_add({lookup, resolver, TYPE_PHP})` for an object: the
+    /// list's entry names the object, whose reference this thread keeps
+    /// (crates/phpcoroutines) until a remove unlinks the entry.
     pub(super) fn swoole_name_resolver_php_add(resolver: Owned) {
+        let Some(object) = resolver.object() else {
+            return;
+        };
+        name_resolvers(|kept| kept.push(resolver));
         swoole_rs_corebase::swr_v1_core_name_resolver_add(
             super::lookup_php,
-            Box::into_raw(Box::new(resolver)).cast(),
+            object.cast(),
             TYPE_PHP,
             true,
         );
     }
 
-    /// Remove the first PHP resolver for `resolver`'s object (any, when `None`) and
-    /// return the reference the list kept, or none if there was none (or
+    /// Where a kept reference to the object `data` names is, if this thread keeps one.
+    pub(super) fn position(kept: &[Owned], data: *mut c_void) -> Option<usize> {
+        kept.iter().position(|resolver| {
+            resolver
+                .object()
+                .is_some_and(|object| object.cast() == data)
+        })
+    }
+
+    /// Remove this thread's first PHP resolver for `resolver`'s object (any, when
+    /// `None`) and return the reference kept for it, or none if there was none (or
     /// `resolver` is no object).
     pub fn swoole_name_resolver_php_remove(resolver: Option<&Value>) -> Option<Owned> {
         let object = match resolver.map(Value::object) {
@@ -100,13 +116,13 @@ mod native {
             Some(Some(object)) => Some(object),
             Some(None) => return None,
         };
-        let same = |kept: *mut c_void, kind| {
-            kind == TYPE_PHP && object.is_none_or(|object| super::object_of(kept) == Some(object))
+        let same = |data: *mut c_void, kind| {
+            kind == TYPE_PHP
+                && object.is_none_or(|object| data == object.cast())
+                && name_resolvers(|kept| position(kept, data).is_some())
         };
-        let kept = swoole_rs_corebase::swr_v1_core_name_resolver_remove(same).cast::<Owned>();
-        // SAFETY: a `TYPE_PHP` resolver's data is the box `swoole_name_resolver_php_add`
-        // made, which the list no longer holds.
-        (!kept.is_null()).then(|| *unsafe { Box::from_raw(kept) })
+        let data = swoole_rs_corebase::swr_v1_core_name_resolver_remove(same);
+        name_resolvers(|kept| position(kept, data).map(|at| kept.remove(at)))
     }
 }
 
@@ -235,13 +251,6 @@ pub fn php_swoole_name_resolver_add(resolver: &Value) -> bool {
     true
 }
 
-/// The object of a PHP resolver's kept zval; `sw_php_spl_object_hash` equality is
-/// the same object.
-fn object_of(kept: *mut c_void) -> Option<*mut zend_object> {
-    // SAFETY: every `TYPE_PHP` resolver's data is the live `Owned` `add` boxed.
-    unsafe { Value::from_ptr(kept.cast()) }.and_then(Value::object)
-}
-
 /// `swoole_name_resolver_remove(Swoole\NameResolver $ns): bool`.
 fn remove(call: &Call) {
     if call.arity(1, 1).and_then(|()| call.object(1)).is_err() {
@@ -266,20 +275,25 @@ fn call_method(
         .map(ManuallyDrop::new)
 }
 
-/// `php_swoole_name_resolver_lookup`: ask the `Swoole\NameResolver` `resolver` (the
-/// kept `Owned`, registered only by [`php_swoole_name_resolver_add`]) for `name`, keeping
-/// a returned cluster in the context and popping a node from it. Writes the result to
-/// `out` and returns whether it is non-empty, then raises a bailout the PHP code caused.
+/// `php_swoole_name_resolver_lookup`: ask the `Swoole\NameResolver` object `data` names
+/// (registered only by [`php_swoole_name_resolver_add`], and skipped unless this thread
+/// keeps it) for `name`, keeping a returned cluster in the context and popping a node
+/// from it. Writes the result to `out` and returns whether it is non-empty, then raises
+/// a bailout the PHP code caused.
 fn lookup_php(
-    resolver: *mut c_void,
+    data: *mut c_void,
     name: &[u8],
     context: &mut NameResolverContext,
     out: &mut Vec<u8>,
 ) -> bool {
-    // SAFETY: the `Owned` `add` registered with this function, which the list holds
-    // until a remove unlinks it.
-    let resolver = unsafe { Value::from_ptr(resolver.cast()) };
-    let result = resolver.map_or(Ok(None), |resolver| resolve(resolver, name, context));
+    // A reference of our own: the resolver's code may remove it.
+    let resolver = swoole_rs_phpcoroutines::name_resolvers(|kept| {
+        Some(kept.get(native::position(kept, data)?)?.copy())
+    });
+    let result =
+        (resolver.as_deref()).map_or(Ok(None), |resolver| resolve(resolver, name, context));
+    // Its release may run a destructor, whose bailout `finish` raises.
+    drop(resolver);
     let answered = match result {
         Ok(Some(text)) => {
             *out = text;
