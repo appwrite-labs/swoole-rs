@@ -455,11 +455,10 @@ fn taskwait(call: &Call) {
         };
         let done = match tasks.task_sync(buf.packed(), &mut dst, timeout) {
             // `serv->get_task_result()`: this worker's slot of `task_results`.
-            Ok(true) => {
-                let result = tasks.result().copy();
-                Packed::from_bytes(&result)
+            Ok(true) => tasks.result().read(|result| {
+                Packed::from_bytes(result)
                     .is_some_and(|result| return_decoded(call, decode(result)))
-            }
+            }),
             Ok(false) => false,
             Err(Bailed) => {
                 Bailout.defer();

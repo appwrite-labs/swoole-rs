@@ -126,22 +126,28 @@ impl<'a> ResultSlot<'a> {
         }
     }
 
-    /// A copy of the slot's `EventData`, for a result a task worker has finished
-    /// writing: its head and the `len` bytes that head counts, for
-    /// [`Packed::from_bytes`].
-    #[must_use]
-    pub fn copy(self) -> Vec<u8> {
+    /// `f` over a copy of the slot's `EventData`, for a result a task worker has
+    /// finished writing: its head and the `len` bytes that head counts, read a word
+    /// at a time, for [`Packed::from_bytes`]. A small result is copied on the stack.
+    pub fn read<R>(self, f: impl FnOnce(&[u8]) -> R) -> R {
         let len = self
             .0
             .get(HEAD_LEN / 4)
             .map_or(0, |len| len.load(Ordering::Relaxed) as usize);
-        let words = (HEAD + len).div_ceil(4).min(self.0.len());
-        let mut bytes = Vec::with_capacity(words * 4);
-        for word in self.0.iter().take(words) {
-            bytes.extend_from_slice(&word.load(Ordering::Relaxed).to_ne_bytes());
+        let size = HEAD.saturating_add(len);
+        let words = size.min(EVENT_SIZE).next_multiple_of(4);
+        let mut small = [0u8; 512];
+        let mut large = Vec::new();
+        let bytes = if words <= small.len() {
+            small.get_mut(..words).unwrap_or_default()
+        } else {
+            large.resize(words, 0);
+            large.as_mut_slice()
+        };
+        for (to, word) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(self.0) {
+            *to = word.load(Ordering::Relaxed).to_ne_bytes();
         }
-        bytes.truncate(HEAD + len);
-        bytes
+        f(bytes.get(..size).unwrap_or(bytes))
     }
 
     /// Zeroes the slot's head. Upstream zeroes the whole slot; its head is what is
