@@ -11,7 +11,6 @@ use std::sync::atomic::{AtomicI32, Ordering};
 
 unsafe extern "C" {
     fn snprintf(buffer: *mut c_char, size: usize, format: *const c_char, ...) -> c_int;
-    fn exit(status: c_int) -> !;
 }
 
 /// `backtrace`'s frame count: the one value, the length of the array it fills.
@@ -26,19 +25,38 @@ enum Frames {
 unsafe extern "C" {
     /// Fills at most `size` entries of `frames`, which `Frames` fixes at its length.
     safe fn backtrace(frames: &mut [*mut c_void; Frames::All as usize], size: Frames) -> c_int;
-    fn backtrace_symbols(frames: *const *mut c_void, size: c_int) -> *mut *mut c_char;
+    /// Symbolizes the first `size` of `frames`, which `Filled` keeps within the array,
+    /// into one new `malloc` block (null on failure) that the caller frees.
+    safe fn backtrace_symbols(
+        frames: &[*mut c_void; Frames::All as usize],
+        size: Filled,
+    ) -> *mut *mut c_char;
+}
+
+/// How many frames `backtrace` filled: from 0 to the array's length. Only
+/// [`Filled::of`] makes one.
+#[cfg(any(all(target_os = "linux", target_env = "gnu"), target_vendor = "apple"))]
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct Filled(c_int);
+
+#[cfg(any(all(target_os = "linux", target_env = "gnu"), target_vendor = "apple"))]
+impl Filled {
+    /// `backtrace`'s result, kept within the array.
+    fn of(count: c_int) -> Self {
+        Self(count.clamp(0, Frames::All as c_int))
+    }
 }
 
 use crate::sys::{Text, close, dup2, errno, set_errno};
 
 /// `int swoole_shell_exec(const char *command, pid_t *pid, bool get_error_stream)`:
 /// run `command` under `/bin/sh -c` with its stdout (and stderr when
-/// `get_error_stream`) on a pipe. Returns the read end, or -1 when `pipe` or
-/// `fork` fails (the latter warns). The child's pid goes in `pid`.
-pub fn swoole_shell_exec(command: &CStr, pid: &mut libc::pid_t, get_error_stream: bool) -> c_int {
-    let Some([read, write]) = crate::sys::pipe() else {
-        return -1;
-    };
+/// `get_error_stream`) on a pipe. Returns the read end and the child's pid, or none
+/// when `pipe` or `fork` fails (the latter warns).
+#[must_use]
+pub fn swoole_shell_exec(command: &CStr, get_error_stream: bool) -> Option<(c_int, libc::pid_t)> {
+    let [read, write] = crate::sys::pipe()?;
     // The child only makes async-signal-safe calls before exec, as upstream's did.
     let child = crate::sys::fork();
     if child == -1 {
@@ -47,7 +65,7 @@ pub fn swoole_shell_exec(command: &CStr, pid: &mut libc::pid_t, get_error_stream
         close(write);
         set_errno(error);
         crate::log::sys_warning(c"swoole_shell_exec", format_args!("fork() failed"));
-        return -1;
+        return None;
     }
     if child == 0 {
         close(read);
@@ -76,12 +94,11 @@ pub fn swoole_shell_exec(command: &CStr, pid: &mut libc::pid_t, get_error_stream
                 end,
             )
         };
-        // SAFETY: exit(3) runs the process's exit handlers, as upstream's child did.
-        unsafe { exit(127) };
+        // exit(3), which runs the process's exit handlers, as upstream's child did.
+        std::process::exit(127);
     }
-    *pid = child;
     close(write);
-    read
+    Some((read, child))
 }
 
 /// `printf` of text that holds no conversion, to C's stdout.
@@ -140,13 +157,12 @@ pub extern "C" fn swoole_print_backtrace() {
     #[cfg(any(all(target_os = "linux", target_env = "gnu"), target_vendor = "apple"))]
     {
         let mut frames = [ptr::null_mut::<c_void>(); 16];
-        let count = backtrace(&mut frames, Frames::All);
-        // SAFETY: the first `count` frames were just filled.
-        let symbols = unsafe { backtrace_symbols(frames.as_ptr(), count) };
+        let filled = Filled::of(backtrace(&mut frames, Frames::All));
+        let symbols = backtrace_symbols(&frames, filled);
         if symbols.is_null() {
             return;
         }
-        let count = usize::try_from(count).unwrap_or(0);
+        let count = usize::try_from(filled.0).unwrap_or(0);
         // SAFETY: backtrace_symbols returns `count` NUL-terminated strings, each a
         // `Text` until the array is freed below.
         let lines = unsafe { std::slice::from_raw_parts(symbols.cast::<Text<'_>>(), count) };
@@ -583,8 +599,9 @@ pub extern "C" fn swoole_exit(status: c_int) -> ! {
         )]
         std::mem::forget(LOCK.lock());
     }
-    // SAFETY: exit(3) never returns.
-    unsafe { exit(status) }
+    // exit(3); std's own guard against a concurrent exit never engages, as the lock
+    // above already queues other threads.
+    std::process::exit(status)
 }
 
 /// Commit libc formatting's bounded result and terminator. Native keeps only
@@ -753,9 +770,8 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri can't spawn a process")]
     fn shell_exec_pipes_the_command_output() {
-        let mut pid = 0;
-        let fd = swoole_shell_exec(c"echo out; echo err >&2", &mut pid, true);
-        assert!(fd >= 0 && pid > 0, "spawned");
+        let (fd, pid) = swoole_shell_exec(c"echo out; echo err >&2", true).expect("spawned");
+        assert!(pid > 0, "spawned");
         let mut output = Vec::new();
         let mut chunk = [0u8; 64];
         loop {

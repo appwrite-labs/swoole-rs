@@ -36,7 +36,7 @@ unsafe fn socket(session: *mut LIBSSH2_SESSION) -> Co {
     // SAFETY: live session data.
     let socket = unsafe { (*data).socket };
     // SAFETY: the session's live coroutine socket.
-    unsafe { Co::of(socket) }
+    unsafe { Co::new(socket.cast()) }
 }
 
 /// `ssh2_wait`: park the coroutine until `event` on the session's socket.

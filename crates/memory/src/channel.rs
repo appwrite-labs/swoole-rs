@@ -101,34 +101,34 @@ fn copy_record(input: &[u8], output: &mut [u8]) {
     }
 }
 
-/// `Channel::in`: appends `input` as one record; -1 when the queue is invalid, full or
-/// the record longer than `maxlen`.
-pub fn swr_v1_memory_channel_in(channel: &mut Channel, input: &[u8]) -> i32 {
+/// `Channel::in`: appends `input` as one record; false when the queue is invalid, full
+/// or the record longer than `maxlen`.
+pub fn swr_v1_memory_channel_in(channel: &mut Channel, input: &[u8]) -> bool {
     let mut c = *channel;
     let Ok(length) = i32::try_from(input.len()) else {
-        return -1;
+        return false;
     };
     let Some(mem) = channel.storage() else {
-        return -1;
+        return false;
     };
     if length > c.maxlen || c.num == i32::MAX {
-        return -1;
+        return false;
     }
     let Some(used) = (c.num.unsigned_abs() as usize)
         .checked_mul(4)
         .and_then(|n| c.bytes.checked_add(n))
     else {
-        return -1;
+        return false;
     };
     if c.head == c.tail && c.tail_tag != c.head_tag || used == c.size {
-        return -1;
+        return false;
     }
     let packet = input.len() + 4;
     if c.tail < c.head && (c.head - c.tail) < signed(packet) {
-        return -1;
+        return false;
     }
     let Some(bytes) = c.bytes.checked_add(input.len()) else {
-        return -1;
+        return false;
     };
     // `tail < size` and `length <= maxlen` (validated), so the header and record fit in
     // `mem`; the room check above keeps them clear of unread records.
@@ -137,7 +137,7 @@ pub fn swr_v1_memory_channel_in(channel: &mut Channel, input: &[u8]) -> i32 {
         .get_mut(start..start + packet)
         .and_then(|item| item.split_first_chunk_mut::<4>())
     else {
-        return -1;
+        return false;
     };
     *header = length.to_ne_bytes();
     copy_record(input, record);
@@ -149,40 +149,39 @@ pub fn swr_v1_memory_channel_in(channel: &mut Channel, input: &[u8]) -> i32 {
     c.num += 1;
     c.bytes = bytes;
     *channel = c;
-    0
+    true
 }
 
 /// `Channel::out`: copies the front record into `output` and, when `consume`, removes
-/// it; its length, or -1 when the queue is invalid or empty or `output` too short.
-pub fn swr_v1_memory_channel_out(channel: &mut Channel, output: &mut [u8], consume: bool) -> i32 {
+/// it; its length, or none when the queue is invalid or empty or `output` too short.
+pub fn swr_v1_memory_channel_out(
+    channel: &mut Channel,
+    output: &mut [u8],
+    consume: bool,
+) -> Option<usize> {
     let mut c = *channel;
     let capacity = i32::try_from(output.len()).unwrap_or(i32::MAX);
-    let Some(mem) = channel.storage() else {
-        return -1;
-    };
+    let mem = channel.storage()?;
     if c.num == 0 {
-        return -1;
+        return None;
     }
     // `head < size` (validated), so the 4-byte header is inside `mem`; `num > 0` means
     // a record header was written there.
     let start = offset(c.head);
-    let Some((header, rest)) = mem
+    let (header, rest) = mem
         .get(start..)
-        .and_then(|item| item.split_first_chunk::<4>())
-    else {
-        return -1;
-    };
+        .and_then(|item| item.split_first_chunk::<4>())?;
     let length = i32::from_ne_bytes(*header);
     if length < 0
         || length > c.maxlen
         || length > capacity
         || length.unsigned_abs() as usize > c.bytes
     {
-        return -1;
+        return None;
     }
     let size = length.unsigned_abs() as usize;
     let (Some(record), Some(output)) = (rest.get(..size), output.get_mut(..size)) else {
-        return -1;
+        return None;
     };
     copy_record(record, output);
     if consume {
@@ -195,7 +194,7 @@ pub fn swr_v1_memory_channel_out(channel: &mut Channel, output: &mut [u8], consu
         c.bytes -= size;
         *channel = c;
     }
-    length
+    Some(size)
 }
 const LOCK: i32 = 2;
 const NOTIFY: i32 = 4;
@@ -351,21 +350,21 @@ impl Record {
         f(unsafe { &mut *self.queue.get() })
     }
 
-    /// `Channel::push(data, length)`: 0, or -1 when it doesn't fit.
-    pub fn push(&self, data: &[u8]) -> i32 {
+    /// `Channel::push(data, length)`: false when it doesn't fit.
+    pub fn push(&self, data: &[u8]) -> bool {
         self.queue(|queue| swr_v1_memory_channel_in(queue, data))
     }
 
     /// `Channel::pop` (`consume`) or `Channel::peek` into `output`: the record's
-    /// length, or -1 when the queue is empty or `output` too short.
-    pub fn pop(&self, output: &mut [u8], consume: bool) -> i32 {
+    /// length, or none when the queue is empty or `output` too short.
+    pub fn pop(&self, output: &mut [u8], consume: bool) -> Option<usize> {
         self.queue(|queue| swr_v1_memory_channel_out(queue, output, consume))
     }
 
     /// `Channel::notify` (`true`: write one 8-byte token) or `Channel::wait` (read one,
-    /// blocking): 0 done, -1 failed with errno intact.
+    /// blocking): whether it was done; errno intact when not.
     #[must_use]
-    pub fn signal(&self, notify: bool) -> i32 {
+    pub fn signal(&self, notify: bool) -> bool {
         let [read, write] = self.notify;
         let mut value = u64::from(notify).to_ne_bytes();
         let length = value.len();
@@ -384,7 +383,7 @@ impl Record {
             } else {
                 done > 0
             };
-            return if complete { 0 } else { -1 };
+            return complete;
         }
     }
 

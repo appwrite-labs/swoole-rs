@@ -45,6 +45,29 @@ impl<'a> Frame<'a> {
         unsafe { (*self.ptr).opline }
     }
 
+    /// `EX(opline)`'s instruction, which the handler was called for: part of
+    /// the function's op array, which Zend leaves unwritten while it runs (the
+    /// JIT, which rewrites handlers, turns itself off under user opcode handlers).
+    #[must_use]
+    #[inline]
+    pub fn instruction(self) -> &'a zend_op {
+        // SAFETY: a frame at a user opcode handler is at a live instruction.
+        unsafe { &*self.opline() }
+    }
+
+    /// `OP_DATA`: the instruction after this one, if the function has one.
+    #[must_use]
+    pub fn next_instruction(self) -> Option<&'a zend_op> {
+        let (first, last) = self.function().instructions()?;
+        let next = self.opline().wrapping_add(1);
+        let index = next.addr().wrapping_sub(first.addr()) / size_of::<zend_op>();
+        if index >= usize::try_from(last).unwrap_or(0) {
+            return None;
+        }
+        // SAFETY: an instruction of the frame's function, as for `instruction`.
+        Some(unsafe { &*next })
+    }
+
     /// `EX(opline) += count`, as a handler that consumed `count` instructions
     /// does. Zend executes `EX(opline)` next, so the move stays inside the
     /// function's instructions: one past them leaves the frame where it is (never

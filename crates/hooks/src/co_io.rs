@@ -281,7 +281,7 @@ mod native {
     }
 
     pub(super) fn reactor(socket: Co, events: u32, add: bool) -> bool {
-        socket.register(add, events.cast_signed()) == 0
+        socket.register(add, events.cast_signed())
     }
 
     pub(super) fn remove(socket: Co, event: u32) {
@@ -567,7 +567,7 @@ pub(crate) mod test_host {
     /// A test socket's destructor callback; its owner is the record.
     pub(crate) unsafe extern "C" fn release(_: *mut c_void, socket: *mut c_void) {
         log("release");
-        hook(&ON_RELEASE, |f| f(unsafe { Co::of(socket) }));
+        hook(&ON_RELEASE, |f| f(unsafe { Co::new(socket.cast()) }));
     }
     fn ssl_shutdown(_: Co) {
         log("ssl-shutdown");

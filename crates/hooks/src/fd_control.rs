@@ -13,8 +13,9 @@ const SEND: c_int = 8;
 /// Every timeout direction.
 pub(crate) const ALL: c_int = DNS | CONNECT | RECEIVE | SEND;
 
-/// Set the timeout on a looked-up socket, or EINVAL for a missing fd/unknown option.
-pub(crate) fn fd_timeout(socket: Option<Co>, which: c_int, timeout: f64, connect: bool) -> c_int {
+/// Set the timeout on a looked-up socket; false with EINVAL for a missing fd or
+/// unknown option.
+pub(crate) fn fd_timeout(socket: Option<Co>, which: c_int, timeout: f64, connect: bool) -> bool {
     let kind = if connect {
         DNS | CONNECT
     } else if which == libc::SO_RCVTIMEO {
@@ -26,21 +27,22 @@ pub(crate) fn fd_timeout(socket: Option<Co>, which: c_int, timeout: f64, connect
     };
     let Some(socket) = socket.filter(|_| kind != 0) else {
         set_errno(libc::EINVAL);
-        return -1;
+        return false;
     };
     socket.set_timeout(timeout, kind);
-    0
+    true
 }
 
-/// The one-fd fake poll after the nfds check: 2 for libc's poll (no socket or no
-/// timeout), else 1 with the requested read and write bits ready.
-pub(crate) fn fd_poll_fake(fd: &mut pollfd, timeout: c_int, socket: Option<Co>) -> c_int {
+/// The one-fd fake poll after the nfds check: whether it faked one ready fd, with the
+/// requested read and write bits; false leaves it to libc's poll (no socket or no
+/// timeout).
+pub(crate) fn fd_poll_fake(fd: &mut pollfd, timeout: c_int, socket: Option<Co>) -> bool {
     let Some(socket) = socket.filter(|_| timeout != 0) else {
-        return 2;
+        return false;
     };
     socket.set_timeout(f64::from(timeout) / 1000.0, ALL);
     fd.revents |= fd.events & (libc::POLLIN | libc::POLLOUT);
-    1
+    true
 }
 
 /// Prepare the native no-socket poll; its cancellation point runs after Rust returns.
@@ -105,16 +107,16 @@ mod tests {
         ] {
             let mut r = Records::new();
             set_errno(123);
-            assert_eq!(fd_timeout(Some(r.co()), option, 0.25, connect), 0);
+            assert!(fd_timeout(Some(r.co()), option, 0.25, connect));
             let t = r.record().timeouts;
             assert_eq!([t.dns, t.connect, t.read, t.write], expected);
             assert_eq!(crate::co_io::errno(), 123);
         }
         let mut r = Records::new();
-        assert_eq!(fd_timeout(Some(r.co()), -1, 1.0, false), -1);
+        assert!(!fd_timeout(Some(r.co()), -1, 1.0, false));
         assert_eq!(crate::co_io::errno(), libc::EINVAL);
         assert_eq!(r.record().timeouts.read, 60.0);
-        assert_eq!(fd_timeout(None, libc::SO_RCVTIMEO, 1.0, false), -1);
+        assert!(!fd_timeout(None, libc::SO_RCVTIMEO, 1.0, false));
         assert_eq!(crate::co_io::errno(), libc::EINVAL);
     }
 
@@ -149,7 +151,7 @@ mod tests {
                 events,
                 revents: libc::POLLERR,
             };
-            assert_eq!(fd_poll_fake(&mut fd, 250, Some(r.co())), 1);
+            assert!(fd_poll_fake(&mut fd, 250, Some(r.co())));
             assert_eq!(
                 fd.revents,
                 libc::POLLERR | (events & (libc::POLLIN | libc::POLLOUT))
@@ -161,7 +163,7 @@ mod tests {
             events: libc::POLLIN,
             revents: libc::POLLERR,
         };
-        assert_eq!(fd_poll_fake(&mut fd, 0, None), 2);
+        assert!(!fd_poll_fake(&mut fd, 0, None));
         assert_eq!(fd.revents, libc::POLLERR);
         let poll = swr_v1_hook_fd_poll(-1, READ.cast_signed());
         assert_eq!(poll.fd, -1);

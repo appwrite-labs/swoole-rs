@@ -270,7 +270,8 @@ fn map_key(call: &Call, key: &swoole_rs_zend::Value) -> Option<Key> {
         IS_NULL => Some(Key::Str(Box::default())),
         IS_DOUBLE => {
             let number = key.as_double()?;
-            // SAFETY: a pure conversion.
+            // SAFETY: a conversion on a PHP thread, which may raise `E_DEPRECATED`
+            // and so run the user's error handler.
             Some(Key::Int(unsafe { swr_zend_dval_to_lval_safe(number) }))
         }
         IS_FALSE => Some(Key::Int(0)),

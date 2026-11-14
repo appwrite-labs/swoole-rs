@@ -242,8 +242,7 @@ extern "C" fn on_pipe_receive(reactor: Running<'_>, event: &mut Event) -> c_int 
     };
     let fd = event.socket().map_or(-1, Socket::fd);
     let mut buf = EventData([0; EVENT_DATA_SIZE]);
-    // SAFETY: a whole `EventData` to read into.
-    let read = unsafe { libc::read(fd, buf.0.as_mut_ptr().cast(), EVENT_DATA_SIZE) };
+    let read = swoole_rs_corebase::sys::read(fd, &mut buf.0);
     let task = usize::try_from(read)
         .ok()
         .filter(|&read| read > 0)
@@ -304,6 +303,10 @@ pub fn finish(
         }
     } else {
         let Some(slot) = super::result_slot(serv, source) else {
+            log::warning(
+                c"Server::finish",
+                format_args!("no result slot for worker {source}"),
+            );
             return false;
         };
         let lock = worker.lock();
@@ -313,9 +316,8 @@ pub fn finish(
             true
         } else if buf.pack(data) {
             reply(&mut buf, flags);
-            // The source worker's lock, held, keeps this process alone writing; a
-            // packed result fills at most the slot.
-            slot.write(buf.bytes());
+            // The source worker's lock, held, keeps this process alone writing its slot.
+            slot.store(buf.bytes());
             true
         } else {
             false
@@ -368,7 +370,7 @@ fn write_waitall(
     data: &[u8],
     reply: impl Fn(&mut TaskBuffer),
 ) {
-    let path = slot.path();
+    let path = slot.result_path();
     let file = swoole_rs_ossupport::file_open(-1, &path, libc::O_APPEND | libc::O_WRONLY, 0);
     if file == -1 {
         return;
@@ -386,7 +388,7 @@ fn write_waitall(
             format_args!("write({path}, {len}) failed"),
         );
     }
-    slot.finish();
+    slot.add_finished();
     swoole_rs_ossupport::file_close(file);
 }
 

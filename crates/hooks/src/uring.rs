@@ -14,7 +14,7 @@ use io_uring::types::{Fd, FsyncFlags, Timespec};
 use io_uring::{IoUring, Probe, opcode, squeue};
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
-use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
+use std::ffi::{CStr, c_int, c_uint, c_void};
 use std::os::fd::AsRawFd;
 use std::ptr;
 use std::rc::Rc;
@@ -483,26 +483,8 @@ fn int(result: isize) -> c_int {
     result.c_cast::<c_int>()
 }
 
-macro_rules! operations {
-    ($(
-        $(#[$doc:meta])*
-        fn $name:ident($($arg:ident: $ty:ty),*) -> $ret:ty, timeout $timeout:expr, $entry:expr, $convert:expr;
-    )*) => {$(
-        $(#[$doc])*
-        ///
-        /// # Safety
-        /// Pointer arguments are valid as for the system call.
-        #[must_use]
-        pub unsafe fn $name(host: &Host, $($arg: $ty),*) -> $ret {
-            let entry = $entry.build();
-            // SAFETY: the caller's contract covers every pointer the entry carries.
-            let result = unsafe { request(host, $timeout, entry) };
-            $convert(result)
-        }
-    )*};
-}
-
-/// [`operations!`] whose entries carry no pointer but their borrowed arguments'.
+/// One request per operation, whose entries carry no pointer but their borrowed
+/// arguments'.
 macro_rules! safe_operations {
     ($(
         $(#[$doc:meta])*
@@ -572,24 +554,21 @@ safe_operations! {
     /// `IORING_OP_POLL_ADD` of `fd`, which carries no pointer.
     fn poll_add(fd: c_int, events: u32, timeout: f64) -> c_int,
         timeout timeout, opcode::PollAdd::new(Fd(fd), events), int;
-}
-
-operations! {
-    fn open_file(pathname: *const c_char, flags: c_int, mode: libc::mode_t) -> c_int,
-        timeout -1.0, opcode::OpenAt::new(Fd(libc::AT_FDCWD), pathname).flags(flags | libc::O_CLOEXEC).mode(mode), int;
-    fn rename(oldpath: *const c_char, newpath: *const c_char) -> c_int,
-        timeout -1.0, opcode::RenameAt::new(Fd(libc::AT_FDCWD), oldpath, Fd(libc::AT_FDCWD), newpath), int;
-    fn mkdir(pathname: *const c_char, mode: libc::mode_t) -> c_int,
-        timeout -1.0, opcode::MkDirAt::new(Fd(libc::AT_FDCWD), pathname).mode(mode), int;
-    fn unlink(pathname: *const c_char) -> c_int,
-        timeout -1.0, opcode::UnlinkAt::new(Fd(libc::AT_FDCWD), pathname), int;
-    fn rmdir(pathname: *const c_char) -> c_int,
-        timeout -1.0, opcode::UnlinkAt::new(Fd(libc::AT_FDCWD), pathname).flags(libc::AT_REMOVEDIR), int;
-    fn fsync(fd: c_int) -> c_int,
+    pub fn open_file(pathname: &CStr, flags: c_int, mode: libc::mode_t) -> c_int,
+        timeout -1.0, opcode::OpenAt::new(Fd(libc::AT_FDCWD), pathname.as_ptr()).flags(flags | libc::O_CLOEXEC).mode(mode), int;
+    pub fn rename(oldpath: &CStr, newpath: &CStr) -> c_int,
+        timeout -1.0, opcode::RenameAt::new(Fd(libc::AT_FDCWD), oldpath.as_ptr(), Fd(libc::AT_FDCWD), newpath.as_ptr()), int;
+    pub fn mkdir(pathname: &CStr, mode: libc::mode_t) -> c_int,
+        timeout -1.0, opcode::MkDirAt::new(Fd(libc::AT_FDCWD), pathname.as_ptr()).mode(mode), int;
+    pub fn unlink(pathname: &CStr) -> c_int,
+        timeout -1.0, opcode::UnlinkAt::new(Fd(libc::AT_FDCWD), pathname.as_ptr()), int;
+    pub fn rmdir(pathname: &CStr) -> c_int,
+        timeout -1.0, opcode::UnlinkAt::new(Fd(libc::AT_FDCWD), pathname.as_ptr()).flags(libc::AT_REMOVEDIR), int;
+    pub fn fsync(fd: c_int) -> c_int,
         timeout -1.0, opcode::Fsync::new(Fd(fd)), int;
-    fn fdatasync(fd: c_int) -> c_int,
+    pub fn fdatasync(fd: c_int) -> c_int,
         timeout -1.0, opcode::Fsync::new(Fd(fd)).flags(FsyncFlags::DATASYNC), int;
-    fn ftruncate(fd: c_int, length: libc::off_t) -> c_int,
+    pub fn ftruncate(fd: c_int, length: libc::off_t) -> c_int,
         timeout -1.0, opcode::Ftruncate::new(Fd(fd), length.cast_unsigned()), int;
 }
 

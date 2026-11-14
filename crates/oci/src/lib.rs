@@ -105,15 +105,27 @@ unsafe extern "C" {
         offset: Sb4,
         mode: Ub4,
     ) -> Sword;
-    fn OCIEnvCreate(
-        env: *mut Handle,
+}
+
+/// What no value has: a [`Null`] is always `None`.
+enum Nothing {}
+
+/// A pointer argument only null can fill.
+type Null = Option<&'static Nothing>;
+
+unsafe extern "C" {
+    /// OCI's own declaration, with the optional context, allocators and user memory
+    /// typed as the nulls they are here: it writes the new environment (or null) to
+    /// `env` and keeps nothing of the caller's.
+    safe fn OCIEnvCreate(
+        env: &mut Handle,
         mode: Ub4,
-        context: *const c_void,
-        malloc: *const c_void,
-        realloc: *const c_void,
-        free: *const c_void,
+        context: Null,
+        malloc: Null,
+        realloc: Null,
+        free: Null,
         extra: usize,
-        user_memory: *mut *mut c_void,
+        user_memory: Null,
     ) -> Sword;
 }
 
@@ -248,27 +260,24 @@ pub extern "C" fn swoole_oci_ping(svc: Live<Svc>, err: Live<Error>, mode: Ub4) -
     offload(|| OCIPing(svc, err, mode))
 }
 
-/// `php_swoole_oracle_rinit`: the shared environment, once per process.
-/// # Safety
-/// Called at RINIT, on the request thread.
+/// `php_swoole_oracle_rinit`: the shared environment, once per process. OCI
+/// fills a local first, so concurrent requests at worst each create one, as
+/// upstream's unlocked check let them.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn php_swoole_oracle_rinit() {
+pub extern "C" fn php_swoole_oracle_rinit() {
     if swoole_pdo_oci_Env.load(Ordering::Relaxed).is_null() {
-        let null = ptr::null();
-        // SAFETY: OCI fills the environment, which RINIT alone writes, on the
-        // request thread; no custom allocators or user memory.
-        unsafe {
-            OCIEnvCreate(
-                swoole_pdo_oci_Env.as_ptr(),
-                SWOOLE_PDO_OCI_INIT_MODE,
-                null,
-                null,
-                null,
-                null,
-                0,
-                ptr::null_mut(),
-            )
-        };
+        let mut env = ptr::null_mut();
+        OCIEnvCreate(
+            &mut env,
+            SWOOLE_PDO_OCI_INIT_MODE,
+            None,
+            None,
+            None,
+            None,
+            0,
+            None,
+        );
+        swoole_pdo_oci_Env.store(env, Ordering::Release);
     }
 }
 

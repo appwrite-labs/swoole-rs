@@ -167,51 +167,66 @@ mod kqueue {
         change(kq, fd, libc::EVFILT_WRITE, flags, 0, socket)
     }
 
-    /// `ReactorKqueue::add`'s kernel calls: 0, or 1 (read) or 2 (write) for the failed one.
-    /// The kernel keeps `socket` as a number: the wait loop reads it back as the socket
-    /// `change::Request` keeps live while it is registered.
-    pub(crate) fn kqueue_add(kq: c_int, fd: c_int, socket: *mut c_void, events: c_int) -> c_int {
-        if reads(events) && !read(kq, fd, libc::EV_ADD, socket) {
-            return 1;
-        }
-        if writes(events) && !write(kq, fd, libc::EV_ADD, socket) {
-            return 2;
-        }
-        0
+    /// The kernel call that failed: its filter, and whether it added or deleted.
+    #[derive(Debug, PartialEq, Eq)]
+    pub(crate) struct Failed {
+        pub(crate) write: bool,
+        pub(crate) add: bool,
     }
 
-    /// `ReactorKqueue::set`'s kernel calls: 0, or the failed one: 1 read add, 2 read
-    /// delete, 3 write add, 4 write delete. The token is [`kqueue_add`]'s.
-    pub(crate) fn kqueue_set(kq: c_int, fd: c_int, socket: *mut c_void, events: c_int) -> c_int {
-        let read_flags = if reads(events) {
-            libc::EV_ADD
-        } else {
-            libc::EV_DELETE
-        };
-        if !read(kq, fd, read_flags, socket) {
-            return if reads(events) { 1 } else { 2 };
+    /// `ReactorKqueue::add`'s kernel calls, stopping at the one that fails.
+    /// The kernel keeps `socket` as a number: the wait loop reads it back as the socket
+    /// `change::Request` keeps live while it is registered.
+    pub(crate) fn kqueue_add(
+        kq: c_int,
+        fd: c_int,
+        socket: *mut c_void,
+        events: c_int,
+    ) -> Result<(), Failed> {
+        if reads(events) && !read(kq, fd, libc::EV_ADD, socket) {
+            return Err(Failed {
+                write: false,
+                add: true,
+            });
         }
-        let write_flags = if writes(events) {
-            libc::EV_ADD
-        } else {
-            libc::EV_DELETE
-        };
-        if !write(kq, fd, write_flags, socket) {
-            return if writes(events) { 3 } else { 4 };
+        if writes(events) && !write(kq, fd, libc::EV_ADD, socket) {
+            return Err(Failed {
+                write: true,
+                add: true,
+            });
         }
-        0
+        Ok(())
+    }
+
+    /// `ReactorKqueue::set`'s kernel calls, stopping at the one that fails. The token
+    /// is [`kqueue_add`]'s.
+    pub(crate) fn kqueue_set(
+        kq: c_int,
+        fd: c_int,
+        socket: *mut c_void,
+        events: c_int,
+    ) -> Result<(), Failed> {
+        let filters: [(bool, Filter); 2] = [(false, read), (true, write)];
+        for (write, filter) in filters {
+            let add = if write { writes(events) } else { reads(events) };
+            let flags = if add { libc::EV_ADD } else { libc::EV_DELETE };
+            if !filter(kq, fd, flags, socket) {
+                return Err(Failed { write, add });
+            }
+        }
+        Ok(())
     }
 
     /// `ReactorKqueue::del`'s kernel calls for the registered `events`. Each failed
     /// filter's errno goes in `errors` (read, write; 0 when it took); a failure other
-    /// than EBADF or ENOENT stops there and returns -1, else 0.
+    /// than EBADF or ENOENT stops there and returns false.
     pub(crate) fn kqueue_del(
         kq: c_int,
         fd: c_int,
         socket: *mut c_void,
         events: c_int,
         errors: &mut [c_int; 2],
-    ) -> c_int {
+    ) -> bool {
         *errors = [0; 2];
         let filters: [(bool, Filter); 2] = [
             (events & SW_EVENT_READ != 0, read),
@@ -222,11 +237,11 @@ mod kqueue {
                 let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
                 *slot = errno;
                 if errno != libc::EBADF && errno != libc::ENOENT {
-                    return -1;
+                    return false;
                 }
             }
         }
-        0
+        true
     }
 
     #[cfg(test)]
@@ -241,19 +256,27 @@ mod kqueue {
                 assert_eq!(libc::pipe(fds.as_mut_ptr()), 0);
                 let kq = libc::kqueue();
                 let token = 7 as *mut c_void;
-                assert_eq!(kqueue_add(kq, fds[0], token, SW_EVENT_READ), 0);
+                assert_eq!(kqueue_add(kq, fds[0], token, SW_EVENT_READ), Ok(()));
                 assert_eq!(
                     kqueue_set(kq, fds[0], token, SW_EVENT_READ | SW_EVENT_WRITE),
-                    0
+                    Ok(())
                 );
-                assert_eq!(kqueue_set(kq, fds[0], token, SW_EVENT_READ), 0);
+                assert_eq!(kqueue_set(kq, fds[0], token, SW_EVENT_READ), Ok(()));
                 // The write filter is gone, so deleting it again reports ENOENT and continues.
                 let both = SW_EVENT_READ | SW_EVENT_WRITE;
-                assert_eq!(kqueue_del(kq, fds[0], token, both, &mut errors), 0);
+                assert!(kqueue_del(kq, fds[0], token, both, &mut errors));
                 assert_eq!(errors, [0, libc::ENOENT]);
                 // A bad descriptor fails the first call.
-                assert_eq!(kqueue_add(kq, -1, token, SW_EVENT_READ), 1);
-                assert_eq!(kqueue_set(kq, -1, token, SW_EVENT_WRITE), 2);
+                let read_add = Failed {
+                    write: false,
+                    add: true,
+                };
+                assert_eq!(kqueue_add(kq, -1, token, SW_EVENT_READ), Err(read_add));
+                let read_delete = Failed {
+                    write: false,
+                    add: false,
+                };
+                assert_eq!(kqueue_set(kq, -1, token, SW_EVENT_WRITE), Err(read_delete));
                 libc::close(kq);
                 libc::close(fds[0]);
                 libc::close(fds[1]);

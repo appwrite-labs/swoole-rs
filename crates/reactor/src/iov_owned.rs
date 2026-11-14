@@ -64,9 +64,14 @@ impl ReactorIov {
     /// The descriptors the cursor has left.
     fn remaining(&mut self) -> &mut [libc::iovec] {
         let state = &self.fields.state;
-        // SAFETY: the iterator names `remain_count` of this cursor's own descriptors,
-        // which only this cursor, borrowed for the span, reaches.
-        unsafe { span(state.iterator, state.remain_count) }
+        match usize::try_from(state.remain_count) {
+            // SAFETY: the iterator names `remain_count` of this cursor's own
+            // descriptors, which only this cursor, borrowed for the span, reaches.
+            Ok(count) if count > 0 => unsafe {
+                std::slice::from_raw_parts_mut(state.iterator, count)
+            },
+            _ => &mut [],
+        }
     }
 
     /// `IOVector::update_iterator(n)`: advance the descriptors and counters together.
@@ -155,19 +160,6 @@ pub unsafe fn swr_v1_socket_iov_owned(
         }
     }
 }
-/// The `count` descriptors at `base`, none when `count` isn't positive.
-///
-/// # Safety
-/// For positive `count`, `base` names `count` initialized iovecs, which nothing
-/// else uses while the span lives.
-pub(crate) unsafe fn span<'a>(base: *mut libc::iovec, count: i32) -> &'a mut [libc::iovec] {
-    match usize::try_from(count) {
-        // SAFETY: as the caller promises.
-        Ok(count) if count > 0 => unsafe { std::slice::from_raw_parts_mut(base, count) },
-        _ => &mut [],
-    }
-}
-
 /// Sum the descriptors' lengths with C `size_t` wrapping semantics.
 #[cfg(test)]
 fn owned_length(descriptors: &[libc::iovec]) -> usize {
@@ -208,6 +200,14 @@ pub(crate) fn owned_progress(
 mod tests {
     use super::*;
     use swoole_rs_corebase::CCast;
+
+    /// The `count` descriptors at `base`, none when `count` isn't positive.
+    unsafe fn span<'a>(base: *mut libc::iovec, count: i32) -> &'a mut [libc::iovec] {
+        match usize::try_from(count) {
+            Ok(count) if count > 0 => unsafe { std::slice::from_raw_parts_mut(base, count) },
+            _ => &mut [],
+        }
+    }
 
     #[test]
     fn owned_cursor_keeps_original_length_and_updates_live_state() {

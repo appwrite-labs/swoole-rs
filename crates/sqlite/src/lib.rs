@@ -23,6 +23,7 @@ use std::{
     cell::Cell,
     ffi::{c_char, c_int, c_void},
 };
+use swoole_rs_corebase::sys::Text;
 
 /// `sqlite3`, only ever passed by pointer here.
 #[repr(C)]
@@ -43,11 +44,13 @@ pub type ExecCallback =
 unsafe extern "C" {
     /// The library's compile-time option: no arguments, no state.
     safe fn sqlite3_threadsafe() -> c_int;
-    fn sqlite3_open_v2(
-        filename: *const c_char,
-        db: *mut *mut Sqlite3,
+    /// Reads the file name and the optional VFS name up to their NULs, and writes
+    /// the new connection (or null) to `db`.
+    safe fn sqlite3_open_v2(
+        filename: Text<'_>,
+        db: &mut *mut Sqlite3,
         flags: c_int,
-        vfs: *const c_char,
+        vfs: Option<Text<'_>>,
     ) -> c_int;
     fn sqlite3_prepare_v2(
         db: *mut Sqlite3,
@@ -104,22 +107,20 @@ fn offload(call: impl FnMut() -> c_int) -> c_int {
 
 /// `swoole_sqlite3_open_v2`: inside a hooked coroutine the connection opens
 /// serialized (`SQLITE_OPEN_FULLMUTEX`), since pool threads share it.
-/// # Safety
-/// As `sqlite3_open_v2`.
+/// `sqlite3_open_v2`'s whole contract is the strings and the slot the types carry.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_sqlite3_open_v2(
-    filename: *const c_char,
-    db: *mut *mut Sqlite3,
+pub extern "C" fn swoole_sqlite3_open_v2(
+    filename: Text<'_>,
+    db: &mut *mut Sqlite3,
     flags: c_int,
-    vfs: *const c_char,
+    vfs: Option<Text<'_>>,
 ) -> c_int {
     let flags = if pool().is_some() {
         flags | SQLITE_OPEN_FULLMUTEX
     } else {
         flags
     };
-    // SAFETY: per the caller.
-    offload(|| unsafe { sqlite3_open_v2(filename, db, flags, vfs) })
+    offload(|| sqlite3_open_v2(filename, db, flags, vfs))
 }
 
 /// `swoole_sqlite3_prepare_v2`.

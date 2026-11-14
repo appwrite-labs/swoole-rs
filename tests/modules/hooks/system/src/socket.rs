@@ -305,7 +305,7 @@ impl Sock {
     /// The crate's handle on this socket.
     fn co(&self) -> Co {
         // SAFETY: the live socket `make` or `accept` made, which outlives the handle's use.
-        unsafe { Co::of(self.ptr) }
+        unsafe { Co::new(self.ptr.cast()) }
     }
 
     fn record(&self) -> &mut Record {

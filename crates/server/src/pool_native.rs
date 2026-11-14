@@ -69,7 +69,7 @@ fn ipc_listener(pool: Pool<'_>) -> Option<Socket<'_>> {
 }
 
 /// The socket a hook works on, or `None`.
-fn call_socket(c: &PoolCall) -> Option<Socket<'_>> {
+fn call_socket<'a>(c: &'a PoolCall<'_>) -> Option<Socket<'a>> {
     // SAFETY: null, or the live native socket the call holds (`PoolCall::socket`).
     unsafe { Socket::from_ptr(c.socket().cast()) }
 }
@@ -137,7 +137,7 @@ fn new_message_bus() -> *mut c_void {
 }
 
 /// `new MessageBus()` numbering its messages from `counter`. Its owner boxes and
-/// leaks it into the `MessageBus *` it keeps, which [`free_bus`] frees.
+/// leaks it into the `MessageBus *` it keeps, or owns it.
 pub(crate) fn new_bus(counter: &'static AtomicU64) -> PoolBus {
     let bus = MessageBus::create(swoole_rs_corebase::constants::SW_BUFFER_SIZE_STD as usize);
     bus.count_ids(counter);
@@ -148,18 +148,10 @@ fn bus_buffer(pool: Pool<'_>, size: u64) -> i64 {
     i64::from(bus_of(pool).is_some_and(|bus| bus.alloc_buffer(size.c_cast::<usize>())))
 }
 
-fn free_message_bus(pool: Pool<'_>) {
-    // SAFETY: `new_message_bus`'s bus, freed once.
-    unsafe { free_bus(pool.message_bus()) };
-}
-
 /// `delete bus`: the record and the Rust bus it owns.
-///
-/// # Safety
-/// `bus` is [`new_bus`]'s, not used again.
-pub(crate) unsafe fn free_bus(bus: *mut c_void) {
-    // SAFETY: as the caller guarantees.
-    drop(unsafe { Box::from_raw(bus.cast::<PoolBus>()) });
+fn free_message_bus(pool: Pool<'_>) {
+    // SAFETY: `new_message_bus`'s box, freed once: the pool forgets it after this op.
+    drop(unsafe { Box::from_raw(pool.message_bus().cast::<PoolBus>()) });
 }
 
 // ---------------------------------------------------------------- pipes and box
@@ -499,7 +491,7 @@ fn master_ops(pool: Pool<'_>, op: Op, arg: u64) -> i64 {
         }
         Op::PopMessage => {
             return POOL_MESSAGE.with_borrow_mut(|message| {
-                if pop_message(pool, &mut message.0) > 0 {
+                if pop_message(pool, &mut message.0).is_some_and(|length| length > 0) {
                     message.0.as_mut_ptr().expose_provenance().c_cast::<i64>()
                 } else {
                     0
@@ -684,13 +676,12 @@ impl PoolNative for Native {
 
     fn task(&self, c: &mut PoolCall) {
         let (pool, worker) = (c.pool(), c.worker());
-        if let Some(worker) = worker {
-            // SAFETY: the task the worker read into the call's buffer, its head and
-            // the `len` bytes after it.
-            let task = unsafe { Packed::from_raw(c.data().cast()) };
-            if let Some(code) = pool.call_on_task(worker, task) {
-                c.set_result(code as isize);
-            }
+        // The task the worker read into the call's buffer: its head and the `len`
+        // bytes after it, which the loop checked fit.
+        if let Some((worker, task)) = worker.zip(Packed::from_bytes(c.bytes()))
+            && let Some(code) = pool.call_on_task(worker, task)
+        {
+            c.set_result(code as isize);
         }
     }
 

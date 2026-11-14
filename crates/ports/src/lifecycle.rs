@@ -190,7 +190,8 @@ pub(crate) fn ssl_create(config: &PortConfig, sock: Option<Socket<'_>>) -> bool 
         context.is_some_and(|context| {
             // SAFETY: nothing writes the port's context while a connection's session is
             // made.
-            unsafe { socket_ssl_create(sock, context, flags) >= 0 }
+            let fields = unsafe { swoole_rs_tls::owner_fields(context) };
+            socket_ssl_create(sock, fields.context.as_deref(), flags) >= 0
         })
     };
     let Some(sock) = sock.filter(|&sock| create(sock)) else {

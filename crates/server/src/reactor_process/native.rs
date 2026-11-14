@@ -23,8 +23,8 @@ pub(crate) fn create_pool(serv: view::Server<'_>) -> c_int {
     let config = serv.config();
     let workers = serv.workers();
     let pool = workers.event_pool.raw();
-    // SAFETY: the server's event pool, reset to zero as `*pool = {}` did.
-    unsafe { pool.write_bytes(0, 1) };
+    // The server's event pool, reset as `*pool = {}` did.
+    workers.event_pool.reset();
     let pool_ref = serv.event_pool_ref();
     let ipc = IpcMode::UnixSock.code().into();
     if swoole_rs_process::methods::create(pool_ref, config.worker_num.get(), 0, ipc) < 0 {

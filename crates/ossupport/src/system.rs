@@ -25,6 +25,13 @@ unsafe extern "C" {
     safe fn setuid(uid: libc::uid_t) -> c_int;
     #[link_name = "pthread_self"]
     safe fn libc_pthread_self() -> libc::pthread_t;
+    /// The calling thread's kernel id.
+    #[cfg(target_os = "freebsd")]
+    safe fn pthread_getthreadid_np() -> c_int;
+    #[cfg(target_os = "openbsd")]
+    safe fn getthrid() -> libc::pid_t;
+    #[cfg(target_os = "netbsd")]
+    safe fn _lwp_self() -> libc::lwpid_t;
     /// Darwin's: names the calling thread, reading `name` up to its NUL.
     #[cfg(target_vendor = "apple")]
     safe fn pthread_setname_np(name: Text<'_>) -> c_int;
@@ -231,18 +238,15 @@ pub extern "C" fn swr_v1_os_thread_native_id() -> c_long {
     }
     #[cfg(target_os = "freebsd")]
     {
-        // SAFETY: no preconditions.
-        c_long::from(unsafe { libc::pthread_getthreadid_np() })
+        c_long::from(pthread_getthreadid_np())
     }
     #[cfg(target_os = "openbsd")]
     {
-        // SAFETY: no preconditions.
-        c_long::from(unsafe { libc::getthrid() })
+        c_long::from(getthrid())
     }
     #[cfg(target_os = "netbsd")]
     {
-        // SAFETY: no preconditions.
-        c_long::from(unsafe { libc::_lwp_self() })
+        c_long::from(_lwp_self())
     }
 }
 
@@ -404,16 +408,18 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri models one CPU")]
     fn os_cpu_affinity() {
         use crate::CpuSet;
+        // The libc calls' 0 or -1, which upstream's assertions compare.
+        let status = |done: bool| if done { 0 } else { -1 };
         let pid = swoole_rs_corebase::sys::getpid();
         let mut affinity = CpuSet::empty();
-        assert_eq!(affinity.get_process(pid), 0);
+        assert_eq!(status(affinity.get_process(pid)), 0);
         let ori_affinity = affinity;
 
         affinity = CpuSet::empty();
         affinity.insert(1);
 
-        assert_eq!(affinity.set_process(pid), 0);
-        assert_eq!(affinity.get_process(pid), 0);
+        assert_eq!(status(affinity.set_process(pid)), 0);
+        assert_eq!(status(affinity.get_process(pid)), 0);
 
         // SW_CPU_NUM, as swoole_init sets it.
         let cpu_n = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) }.max(1);
@@ -421,7 +427,7 @@ mod tests {
             assert_eq!(affinity.contains(i), i == 1, "cpu {i}");
         }
 
-        assert_eq!(ori_affinity.set_process(pid), 0);
+        assert_eq!(status(ori_affinity.set_process(pid)), 0);
     }
 
     /// Upstream's `os.set_isolation`: unknown names and a missing chroot only warn. It runs

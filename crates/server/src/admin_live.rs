@@ -131,7 +131,7 @@ impl Live<'_> {
     }
 
     /// `serv->get_event_worker_pool()` or `get_task_worker_pool()`.
-    fn pool(&self, task: bool) -> &swoole_rs_process::process_pool::PoolRecord {
+    fn pool(&self, task: bool) -> swoole_rs_process::process_pool::PoolRef<'_> {
         let shared = crate::shared::ServerShared::of(self.serv);
         if task {
             shared.task_pool()
@@ -287,8 +287,8 @@ impl Facts for Live<'_> {
     fn manager(&mut self) -> Manager {
         let pool = self.pool(false);
         Manager {
-            reload_count: pool.reload_count,
-            reload_last_time: pool.reload_last_time,
+            reload_count: pool.reload_count(),
+            reload_last_time: pool.reload_last_time(),
         }
     }
 

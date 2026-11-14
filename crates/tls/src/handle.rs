@@ -9,9 +9,9 @@
 //! and `upstream::socket_ssl_close`.
 use crate::context::SslCtx;
 use openssl_sys::{
-    BIO, BIO_free_all, BIO_read, BIO_write, OPENSSL_STACK, SSL, SSL_CIPHER, SSL_CTRL_MODE,
+    BIO, BIO_read, BIO_write, OPENSSL_STACK, SSL, SSL_CIPHER, SSL_CTRL_MODE,
     SSL_CTRL_SET_TLSEXT_HOSTNAME, SSL_CTX, SSL_peek, SSL_read, SSL_set_bio, SSL_write,
-    TLSEXT_NAMETYPE_host_name, X509, X509_check_host, X509_free, stack_st_X509,
+    TLSEXT_NAMETYPE_host_name, X509, X509_check_host, stack_st_X509,
 };
 use std::ffi::{CStr, c_char, c_int, c_long, c_ulong, c_void};
 use std::marker::PhantomData;
@@ -90,7 +90,11 @@ unsafe extern "C" {
     safe fn SSL_set_SSL_CTX(ssl: Ssl<'_>, context: Option<&SslCtx>) -> *mut SSL_CTX;
     /// One listen step, which writes the peer's address when given somewhere to.
     safe fn DTLSv1_listen(ssl: Ssl<'_>, peer: Option<&mut BioAddr>) -> c_int;
-    fn SSL_set_fd(ssl: *mut SSL, fd: c_int) -> c_int;
+    /// Gives the fresh SSL socket BIOs over `fd`, freeing the ones it had, which only
+    /// a borrow of the [`OwnedSsl`] the exclusive `Fresh` was taken from could reach.
+    safe fn SSL_set_fd(ssl: Fresh<'_>, fd: c_int) -> c_int;
+    /// A new SSL of `ctx`, which it references; null on failure, or without a context.
+    pub(crate) safe fn SSL_new(ctx: Option<&SslCtx>) -> Option<OwnedSsl>;
     /// `SSL_get_peer_certificate`, a macro over `SSL_get1_peer_certificate` since
     /// OpenSSL 3 (build.rs): a reference the caller then owns.
     #[cfg_attr(ossl300, link_name = "SSL_get1_peer_certificate")]
@@ -385,17 +389,6 @@ impl<'a> Ssl<'a> {
         SSL_ctrl(self, SslCtrl::Mode, mode, None);
     }
 
-    /// `SSL_set_fd`: false when OpenSSL fails.
-    ///
-    /// # Safety
-    /// No handle to the SSL's current BIOs is used afterwards: it frees them.
-    #[must_use]
-    pub unsafe fn set_fd(self, fd: c_int) -> bool {
-        // SAFETY: a live SSL over the caller's descriptor; the caller promises the
-        // BIOs it replaces have no handle in use.
-        unsafe { SSL_set_fd(self.as_ptr(), fd) != 0 }
-    }
-
     /// `SSL_set_accept_state`.
     pub fn set_accept_state(self) {
         SSL_set_accept_state(self);
@@ -552,8 +545,14 @@ impl OwnedBio {
 
 impl Drop for OwnedBio {
     fn drop(&mut self) {
-        // SAFETY: releases the reference this side owns.
-        unsafe { BIO_free_all(self.0.as_ptr()) };
+        /// The reference a dropped `OwnedBio` held: only this drop makes one, once per
+        /// handle, so `BIO_free_all` releases each reference once.
+        #[repr(transparent)]
+        struct Released(NonNull<BIO>);
+        unsafe extern "C" {
+            safe fn BIO_free_all(bio: Released);
+        }
+        BIO_free_all(Released(self.0));
     }
 }
 
@@ -607,15 +606,6 @@ impl CertRef<'_> {
 pub struct Cert(pub(crate) NonNull<X509>);
 
 impl Cert {
-    /// A reference this side owns from now on.
-    ///
-    /// # Safety
-    /// `cert` is null or a live certificate whose reference nothing else releases.
-    #[must_use]
-    pub unsafe fn from_raw(cert: *mut X509) -> Option<Self> {
-        NonNull::new(cert).map(Self)
-    }
-
     #[must_use]
     pub fn as_ptr(&self) -> *mut X509 {
         self.0.as_ptr()
@@ -630,7 +620,54 @@ impl Cert {
 
 impl Drop for Cert {
     fn drop(&mut self) {
-        // SAFETY: drops the reference this side owns.
-        unsafe { X509_free(self.as_ptr()) };
+        /// The reference a dropped `Cert` held: only this drop makes one, once per
+        /// handle, so `X509_free` releases each reference once.
+        #[repr(transparent)]
+        struct Released(NonNull<X509>);
+        unsafe extern "C" {
+            safe fn X509_free(cert: Released);
+        }
+        X509_free(Released(self.0));
+    }
+}
+
+/// A new SSL whose one reference this side owns, freed when dropped unless a socket
+/// record takes it ([`OwnedSsl::into_raw`]).
+#[repr(transparent)]
+#[derive(Debug)]
+pub(crate) struct OwnedSsl(NonNull<SSL>);
+
+/// An [`OwnedSsl`], lent exclusively for a call that may replace its BIOs.
+#[repr(transparent)]
+struct Fresh<'a>(NonNull<SSL>, PhantomData<&'a mut OwnedSsl>);
+
+impl OwnedSsl {
+    /// The SSL, borrowed while this side owns it.
+    pub(crate) fn get(&self) -> Ssl<'_> {
+        Ssl(self.0, PhantomData)
+    }
+
+    /// `SSL_set_fd`: false when OpenSSL fails. The BIOs it frees are reachable only
+    /// through borrows of `self`, which `&mut` excludes.
+    pub(crate) fn set_fd(&mut self, fd: c_int) -> bool {
+        SSL_set_fd(Fresh(self.0, PhantomData), fd) != 0
+    }
+
+    /// The SSL, whose reference the caller hands on.
+    pub(crate) fn into_raw(self) -> *mut SSL {
+        std::mem::ManuallyDrop::new(self).0.as_ptr()
+    }
+}
+
+impl Drop for OwnedSsl {
+    fn drop(&mut self) {
+        /// The reference a dropped `OwnedSsl` held: only this drop makes one, once per
+        /// handle, so `SSL_free` releases each SSL once.
+        #[repr(transparent)]
+        struct Released(NonNull<SSL>);
+        unsafe extern "C" {
+            safe fn SSL_free(ssl: Released);
+        }
+        SSL_free(Released(self.0));
     }
 }

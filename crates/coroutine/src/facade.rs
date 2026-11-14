@@ -208,12 +208,9 @@ extern "C" fn timed_out(co: Co) {
 
 /// `bool Coroutine::yield_ex(double timeout)` of `co`, the running coroutine
 /// (aborting otherwise): false, with the last error, when it timed out or was
-/// canceled.
-///
-/// # Safety
-/// None of its own (see [`suspend`](crate::suspend)): `unsafe` as C++ declares it.
+/// canceled. As [`suspend`](crate::suspend), it asks nothing of its caller.
 #[unsafe(export_name = "_ZN6swoole9Coroutine8yield_exEd")]
-pub unsafe extern "C-unwind" fn yield_ex(co: *mut c_void, timeout: f64) -> bool {
+pub extern "C-unwind" fn yield_ex(co: *mut c_void, timeout: f64) -> bool {
     yield_resumed(yield_timed(co, timeout))
 }
 

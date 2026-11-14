@@ -2,12 +2,8 @@
 //! code Rust calls. A bailout must never jump over a Rust frame, so Rust traps
 //! it in C, returns normally, and hands a [`Bailout`] back to the C or C++ that
 //! called it, which re-raises it with `zend_bailout()`. See docs/zend.md.
-use crate::{
-    Invalid,
-    sys::{
-        swr_zend_guard_resume, swr_zend_parse_func, swr_zend_try, swr_zend_try_call,
-        zend_fcall_info, zend_fcall_info_cache, zval,
-    },
+use crate::sys::{
+    swr_zend_guard_resume, swr_zend_try, swr_zend_try_call, zend_fcall_info, zend_fcall_info_cache,
 };
 use std::ffi::{c_int, c_void};
 
@@ -216,23 +212,4 @@ pub unsafe fn call(
         return Err(Bailout);
     }
     Ok(result != 0)
-}
-
-/// `Z_PARAM_FUNC` of a passed argument (1-based).
-/// # Errors
-/// Not a callable; Zend has raised its parameter error.
-/// # Safety
-/// `arg` is the live zval of argument `number`; `fci` and `fcc` are writable.
-pub unsafe fn parse_func(
-    arg: *mut zval,
-    number: u32,
-    fci: *mut zend_fcall_info,
-    fcc: *mut zend_fcall_info_cache,
-) -> Result<(), Invalid> {
-    // SAFETY: per the caller.
-    if unsafe { swr_zend_parse_func(arg, number, fci, fcc) } != 0 {
-        Ok(())
-    } else {
-        Err(Invalid)
-    }
 }

@@ -7,7 +7,7 @@ use crate::file::{FileIo, file_open, file_size, tmpfile, write_all};
 use crate::file_record::FileRecord;
 use libc::c_int;
 use std::ffi::CStr;
-use std::os::fd::{FromRawFd, OwnedFd};
+use std::os::fd::OwnedFd;
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{log, sys};
 
@@ -61,14 +61,12 @@ fn size_of_fd(fd: c_int) -> isize {
 /// after the warning.
 pub fn create_tmpfile(template: &mut [u8]) -> Option<OwnedFd> {
     let fd = tmpfile(template);
-    if fd < 0 {
+    if fd.is_none() {
         let name = CStr::from_bytes_until_nul(template).unwrap_or_default();
         let name = name.to_string_lossy();
         log::sys_warning(c"swoole_tmpfile", format_args!("mkstemp('{name}') failed"));
-        return None;
     }
-    // SAFETY: the descriptor `mkstemp` just opened, which nothing else owns.
-    Some(unsafe { OwnedFd::from_raw_fd(fd) })
+    fd
 }
 
 /// `file_get_contents`: true with the file's bytes, NUL-terminated, in `content`
@@ -105,18 +103,18 @@ pub fn file_get_contents(path: &CStr, content: &mut CppString) -> bool {
     }
     let size = size.unsigned_abs();
     content.alloc(size + 1, None);
-    let buf = content.spare().get_mut(..size).unwrap_or_default();
-    let io = record.read_all(buf);
-    warn_io(
-        c"File::read_all",
-        "pread",
-        fd,
-        buf.as_ptr().cast(),
-        size,
-        io,
-    );
-    // SAFETY: the read filled the buffer's first `io.done <= size` bytes.
-    unsafe { content.set_len(io.done) };
+    content.read_zeroed(size, |buf| {
+        let io = record.read_all(buf);
+        warn_io(
+            c"File::read_all",
+            "pread",
+            fd,
+            buf.as_ptr().cast(),
+            size,
+            io,
+        );
+        io.done
+    });
     content.set_null_terminated();
     true
 }

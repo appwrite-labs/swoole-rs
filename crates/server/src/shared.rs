@@ -5,6 +5,7 @@ use core::sync::atomic::{
     AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering::Relaxed,
 };
 use swoole_rs_memory::members::Shm;
+use swoole_rs_process::process_pool::PoolRef;
 #[derive(Default)]
 #[repr(C)]
 pub struct PortCounters {
@@ -20,15 +21,23 @@ pub struct PortCounters {
     pub total_recv_bytes: AtomicU64,
     pub total_send_bytes: AtomicU64,
 }
-/// `connection_nums`' cells, or null when there are none.
-fn cells(nums: &Shm) -> *mut AtomicU32 {
-    nums.as_ptr().cast()
+/// The words of a shared mapping the server made (`connection_nums`' cells, the
+/// `task_results` slots): none without one.
+pub(crate) fn words(nums: &Shm) -> &[AtomicU32] {
+    let base = nums.as_ptr().cast::<AtomicU32>();
+    if base.is_null() {
+        return &[];
+    }
+    // SAFETY: only `Shm`'s constructors fill the field: a zeroed shared mapping whose
+    // `payload_len` bytes follow `base`, 8-aligned, mapped until its owner frees it at
+    // shutdown, and only ever updated atomically.
+    unsafe { core::slice::from_raw_parts(base, nums.payload_len() / size_of::<AtomicU32>()) }
 }
 
 impl PortCounters {
-    /// The per-worker connection counts, or null.
-    pub(crate) fn cells(&self) -> *mut AtomicU32 {
-        cells(&self.connection_nums)
+    /// The per-worker connection counts; none when the server keeps one total.
+    pub(crate) fn cells(&self) -> &[AtomicU32] {
+        words(&self.connection_nums)
     }
 }
 
@@ -43,9 +52,9 @@ impl ServerCounters {
         self.min_fd.load(Relaxed)
     }
 
-    /// The per-worker connection counts, or null.
-    pub(crate) fn cells(&self) -> *mut AtomicU32 {
-        cells(&self.connection_nums)
+    /// The per-worker connection counts; none when the server keeps one total.
+    pub(crate) fn cells(&self) -> &[AtomicU32] {
+        words(&self.connection_nums)
     }
 }
 
@@ -91,7 +100,9 @@ pub struct ServerCounters {
 #[repr(C)]
 pub(crate) struct ServerShared {
     pub(crate) counters: ServerCounters,
-    pub(crate) pools: [swoole_rs_process::process_pool::PoolRecord; 2],
+    /// The task pool, then the event pool: records every process writes in place,
+    /// through [`PoolRef`] handles, a field at a time.
+    pub(crate) pools: [core::cell::UnsafeCell<swoole_rs_process::process_pool::PoolRecord>; 2],
     pub(crate) manager_barrier: swoole_rs_locks::Barrier,
 }
 
@@ -103,12 +114,14 @@ impl ServerShared {
         unsafe { &*gs }
     }
     /// `serv->get_task_worker_pool()`.
-    pub(crate) fn task_pool(&self) -> &swoole_rs_process::process_pool::PoolRecord {
-        &self.pools[0]
+    pub(crate) fn task_pool(&self) -> PoolRef<'_> {
+        let [task, _] = &self.pools;
+        PoolRef::from(task)
     }
     /// `serv->get_event_worker_pool()`.
-    pub(crate) fn event_pool(&self) -> &swoole_rs_process::process_pool::PoolRecord {
-        &self.pools[1]
+    pub(crate) fn event_pool(&self) -> PoolRef<'_> {
+        let [_, event] = &self.pools;
+        PoolRef::from(event)
     }
 }
 

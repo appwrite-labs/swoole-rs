@@ -21,12 +21,12 @@ pub mod minit;
 pub mod pdo;
 
 use pq_sys::{
-    ConnStatusType, Oid, PGconn, PGresult, PQclear, PQconninfoOption, PQfinish, PQsendPrepare,
-    PQsendQueryParams, PQsendQueryPrepared, PostgresPollingStatusType,
+    ConnStatusType, Oid, PGconn, PGresult, PQfinish, PQsendPrepare, PQsendQueryParams,
+    PQsendQueryPrepared, PostgresPollingStatusType,
 };
 use std::{
     cell::RefCell,
-    ffi::{CStr, c_char, c_int, c_void},
+    ffi::{c_char, c_int, c_void},
     ptr::{self, NonNull},
     sync::atomic::{AtomicBool, Ordering},
     time::Instant,
@@ -55,7 +55,36 @@ pub struct Conn(*mut PGconn);
 
 /// The options array `PQconninfo` made, owned until `PQconninfoFree` takes it.
 #[repr(transparent)]
-struct Conninfo(NonNull<PQconninfoOption>);
+struct Conninfo(NonNull<ConnOption<'static>>);
+
+/// `PQconninfoOption`, its strings typed as what libpq makes them: null, or
+/// NUL-terminated and live as long as the array. A null keyword ends the array.
+#[repr(C)]
+struct ConnOption<'a> {
+    keyword: Option<Text<'a>>,
+    envvar: *const c_char,
+    compiled: *const c_char,
+    val: Option<Text<'a>>,
+    label: *const c_char,
+    dispchar: *const c_char,
+    dispsize: c_int,
+}
+const _: () = assert!(
+    size_of::<ConnOption<'static>>() == size_of::<pq_sys::PQconninfoOption>(),
+    "PQconninfoOption's layout"
+);
+
+/// A result libpq returned, owned until `PQclear` takes it or it goes back to the
+/// driver ([`PgResult::into_raw`]).
+#[repr(transparent)]
+struct PgResult(NonNull<PGresult>);
+
+impl PgResult {
+    /// The driver's `PGresult *`, which it clears.
+    fn into_raw(result: Option<Self>) -> *mut PGresult {
+        result.map_or(ptr::null_mut(), |result| result.0.as_ptr())
+    }
+}
 
 // libpq's own declarations, with the connection typed as the handle it is
 // (`Conn` has a `PGconn *`'s layout). The `safe` ones take only a live connection
@@ -73,7 +102,10 @@ unsafe extern "C" {
     safe fn PQsetnonblocking(conn: Conn, on: c_int) -> c_int;
     safe fn PQconnectPoll(conn: Conn) -> PostgresPollingStatusType;
     safe fn PQflush(conn: Conn) -> c_int;
-    safe fn PQgetResult(conn: Conn) -> *mut PGresult;
+    /// The next result, which the caller owns, or none when the request is done.
+    safe fn PQgetResult(conn: Conn) -> Option<PgResult>;
+    /// Free the result: it takes the owner.
+    safe fn PQclear(result: PgResult);
     /// A new options array, or none when libpq can't allocate one.
     safe fn PQconninfo(conn: Conn) -> Option<Conninfo>;
     /// Free the array, which no borrow of its entries outlives: it takes the owner.
@@ -122,25 +154,33 @@ impl Conn {
         let Some(options) = PQconninfo(self) else {
             return Vec::new();
         };
+        let pairs = options.pairs();
+        PQconninfoFree(options);
+        pairs
+    }
+}
+
+impl Conninfo {
+    /// Each option with a value, as keyword and value bytes.
+    fn pairs<'s>(&'s self) -> Vec<(Vec<u8>, Vec<u8>)> {
         let mut pairs = Vec::new();
-        let mut option = options.0.as_ptr();
+        let mut option = self.0.as_ptr().cast::<ConnOption<'s>>();
         loop {
-            // SAFETY: an entry of libpq's array, at or before the null keyword that ends it.
+            // SAFETY: an entry of libpq's array, at or before the null keyword that ends
+            // it, live while the array is borrowed.
             let entry = unsafe { &*option };
-            if entry.keyword.is_null() {
+            let Some(keyword) = entry.keyword else {
                 break;
-            }
-            if !entry.val.is_null() {
-                // SAFETY: NUL-terminated strings libpq owns until PQconninfoFree.
-                let keyword = unsafe { CStr::from_ptr(entry.keyword) };
-                // SAFETY: as above.
-                let value = unsafe { CStr::from_ptr(entry.val) };
-                pairs.push((keyword.to_bytes().to_vec(), value.to_bytes().to_vec()));
+            };
+            if let Some(value) = entry.val {
+                pairs.push((
+                    keyword.get().to_bytes().to_vec(),
+                    value.get().to_bytes().to_vec(),
+                ));
             }
             // The array continues to its terminator, where the loop ends.
             option = option.wrapping_add(1);
         }
-        PQconninfoFree(options);
         pairs
     }
 }
@@ -262,12 +302,6 @@ fn wait_result(conn: Conn) -> bool {
     true
 }
 
-/// `PQclear`.
-fn clear(result: *mut PGresult) {
-    // SAFETY: a result libpq returned and nothing else holds, or null.
-    unsafe { PQclear(result) };
-}
-
 /// `swoole_pgsql_get_result`: wait for the results and keep the last one.
 /// Without the hook one poll precedes `PQgetResult`, which may then block.
 fn get_result(conn: Conn) -> *mut PGresult {
@@ -275,16 +309,18 @@ fn get_result(conn: Conn) -> *mut PGresult {
     if blocking && socket_poll(conn, READ) < 0 {
         return ptr::null_mut();
     }
-    let mut last = ptr::null_mut();
+    let mut last = None;
     while blocking || wait_result(conn) {
-        let result = PQgetResult(conn);
-        if result.is_null() {
-            return last;
+        let Some(result) = PQgetResult(conn) else {
+            return PgResult::into_raw(last);
+        };
+        if let Some(previous) = last.replace(result) {
+            PQclear(previous);
         }
-        clear(last);
-        last = result;
     }
-    clear(last);
+    if let Some(previous) = last {
+        PQclear(previous);
+    }
     ptr::null_mut()
 }
 

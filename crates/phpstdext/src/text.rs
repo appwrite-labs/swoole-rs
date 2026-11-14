@@ -7,7 +7,7 @@ use std::{
 };
 use swoole_rs_zend::{
     Call, UNDEF, ZStr, handlers,
-    sys::{swr_zend_treat_string, swr_zend_try_json_decode_ex, zend_long, zend_string, zval},
+    sys::{swr_zend_treat_string, zend_long, zend_string, zval},
 };
 
 unsafe extern "C" {
@@ -152,12 +152,12 @@ fn json_decode_object(call: &Call) {
 fn json_decode(call: &Call, assoc: bool) {
     let parsed = call.arity(1, 3).and_then(|()| {
         Ok((
-            call.string(1, b"")?,
+            call.zstr(1)?,
             call.long(2, DEFAULT_DEPTH)?,
             call.long(3, 0)?,
         ))
     });
-    let Ok((text, depth, options)) = parsed else {
+    let Ok((Some(text), depth, options)) = parsed else {
         return;
     };
     let options = if assoc {
@@ -165,15 +165,5 @@ fn json_decode(call: &Call, assoc: bool) {
     } else {
         options & !OBJECT_AS_ARRAY
     };
-    // SAFETY: the argument's bytes live for the call; the return slot.
-    let bailed = unsafe {
-        swr_zend_try_json_decode_ex(
-            call.return_value(),
-            text.as_ptr().cast(),
-            text.len(),
-            options,
-            depth,
-        )
-    };
-    swoole_rs_zend::bailout::defer(swoole_rs_zend::bailout::trapped(bailed));
+    swoole_rs_zend::bailout::defer(call.json_decode(text, 0..usize::MAX, options, depth));
 }

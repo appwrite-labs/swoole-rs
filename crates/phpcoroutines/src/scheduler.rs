@@ -27,6 +27,15 @@ per_thread! {
     static OPTIONS: RefCell<Option<ManuallyDrop<OwnedArray>>> = RefCell::new(None);
     /// `exit_condition_fci_cache`: `Co::set()`'s `exit_condition` callable.
     static EXIT_CONDITION: RefCell<Option<Rc<kept::Callable>>> = RefCell::new(None);
+    /// The references crates/corebase's PHP name resolvers hold (crates/phpclients),
+    /// one per entry, until a remove or RSHUTDOWN unlinks it.
+    static NAME_RESOLVERS: RefCell<Vec<Owned>> = RefCell::new(Vec::new());
+}
+
+/// `f` on this thread's kept PHP name resolvers. `f` runs no PHP code, which
+/// could register or remove one.
+pub fn name_resolvers<R>(f: impl FnOnce(&mut Vec<Owned>) -> R) -> R {
+    NAME_RESOLVERS.with(|kept| f(&mut kept.borrow_mut()))
 }
 
 /// One `add()` or `parallel()`: its kept callable and how many coroutines run it.

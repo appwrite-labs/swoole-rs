@@ -92,12 +92,22 @@ impl<'a, S: ReadSlot> Fill<'a, S> {
         unsafe { libc::read(fd, self.at.cast(), self.len) }
     }
 
-    /// [`crate::fd_recvfrom`] into the bytes, and the peer into `address` and its length.
+    /// `Socket::recvfrom`: recvfrom(2) into the bytes, and the peer into `address` and
+    /// its length, retried on `EINTR` up to `SW_SOCKET_RETRY_COUNT` times.
     #[inline]
     pub fn recvfrom(&mut self, fd: c_int, flags: c_int, address: &mut SocketAddress) -> isize {
         let (storage, size) = (&raw mut address.addr, &raw mut address.len);
-        // SAFETY: as in `recv`; the address's own storage and its length.
-        unsafe { crate::fd_recvfrom(fd, self.at.cast(), self.len, flags, storage.cast(), size) }
+        let mut received = 0;
+        for _ in 0..swoole_rs_corebase::constants::SW_SOCKET_RETRY_COUNT {
+            // SAFETY: as in `recv`; the address's own storage and its length.
+            received = unsafe {
+                libc::recvfrom(fd, self.at.cast(), self.len, flags, storage.cast(), size)
+            };
+            if received >= 0 || !crate::socket_rw::interrupted() {
+                break;
+            }
+        }
+        received
     }
 }
 

@@ -6,10 +6,7 @@
 //! `SW_HALFCLOSE_DRAIN`): pause and resume then go through the reactor's read-event
 //! helpers, a resume skips closing connections, and a queued close stops reading.
 use crate::base_factory::{SendData, allocated};
-use crate::callbacks::{
-    CallbackKind::{BufferEmpty, BufferFull},
-    CallbackSlot,
-};
+use crate::callbacks::CallbackKind::{BufferEmpty, BufferFull};
 use crate::reactor_handle::Reactor;
 use crate::reactor_ops::out_buffer;
 use crate::records::Lookup;
@@ -310,12 +307,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
             error(LOG_NOTICE, E::SW_ERROR_SESSION_CLOSED_BY_CLIENT, m);
             return 0;
         }
-        let callback = |index| {
-            state
-                .callbacks
-                .slot(index)
-                .is_some_and(CallbackSlot::is_set)
-        };
+        let callback = |index| state.callbacks.slot(index).is_set();
         let (on_full, on_empty) = (callback(BufferFull), callback(BufferEmpty));
         if queued() >= sock.read(|s| s.output.buffer_size) {
             if send_yield {

@@ -8,6 +8,7 @@ description = "Swoole's coroutine ssh2 hook for its bundled ext/ssh2 (--with-swo
 
 [dependencies]
 libc = "=0.2.191"
+swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-ssh2-sys = { path = "../ssh2-sys" }
 
 [lints]

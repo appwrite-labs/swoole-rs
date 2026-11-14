@@ -195,7 +195,10 @@ mod c {
         /// gave memory back to the system.
         #[cfg(all(target_os = "linux", target_env = "gnu"))]
         pub safe fn malloc_trim(pad: usize) -> c_int;
-        /// This thread's errno slot, live for the thread.
+        /// This thread's errno slot, live for the thread: as a `Cell`, of `c_int`'s
+        /// layout, so Rust writes it with plain stores and holds no reference into
+        /// it, and the reference (`!Send`, as `Cell` is `!Sync`) never leaves the
+        /// thread. errno is per thread on every platform this builds for.
         #[cfg_attr(
             any(target_os = "linux", target_os = "android"),
             link_name = "__errno_location"
@@ -204,7 +207,7 @@ mod c {
             not(any(target_os = "linux", target_os = "android")),
             link_name = "__error"
         )]
-        pub(crate) safe fn errno_location() -> *mut c_int;
+        pub(crate) safe fn errno_location() -> &'static std::cell::Cell<c_int>;
     }
 }
 #[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
@@ -346,8 +349,7 @@ pub fn errno() -> c_int {
 
 /// Sets this thread's errno.
 pub fn set_errno(value: c_int) {
-    // SAFETY: this thread's errno slot, live for the thread.
-    unsafe { c::errno_location().write(value) };
+    c::errno_location().set(value);
 }
 
 /// `strerror(3)`: libc's message for `code`, as std's `strerror_r` reads it.
