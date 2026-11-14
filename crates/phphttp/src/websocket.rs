@@ -32,10 +32,7 @@ use swoole_rs_zend::{
     Array, Call, Class, Declared, Minit, Owned, Value, ZStr, ZString, bailout, handlers,
     method_table,
     string::{self},
-    sys::{
-        IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, zend_long, zval,
-        zval_ptr_dtor,
-    },
+    sys::{IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, zend_long, zval},
 };
 
 static SERVER: Class = Class::new();
@@ -915,14 +912,13 @@ fn message(view: view::Server<'_>, request: &RecvData) -> Result<bool, bailout::
     }
     let frame = construct(zend_long::from(opcode), &data, flags);
     set(&frame, FD, Owned::long(fd));
-    let mut args = [zserv(), frame.into_zval()];
+    // The handler borrows the Frame, whose drop releases it.
+    let mut args = [zserv(), frame.copy_value()];
     if let Err(bailout) = dispatch(server, server_fd, PortCallback::Message, &mut args, fd) {
         // As upstream, whose bailout jumps past the releases.
-        let _kept = data.into_zval();
+        let _kept = (data.into_zval(), frame.into_zval());
         return Err(bailout);
     }
-    // SAFETY: the Frame built above.
-    unsafe { zval_ptr_dtor(&raw mut args[1]) };
     Ok(true)
 }
 

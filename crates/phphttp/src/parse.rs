@@ -349,12 +349,7 @@ pub(crate) fn estrndup(bytes: &[u8]) -> *mut c_char {
 /// The request's path: `on_url`'s (or the HTTP/2 `:path`'s) copy up to its
 /// query, empty before one.
 pub(crate) fn request_path(request: &crate::state::Request) -> &[u8] {
-    if request.path.is_null() {
-        return &[];
-    }
-    // SAFETY: `on_url` and `http2::Ctx::set_path` set the path to `path_len`
-    // request-memory bytes, which the context frees.
-    unsafe { std::slice::from_raw_parts(request.path.cast(), request.path_len as usize) }
+    request.path.as_deref().unwrap_or_default()
 }
 
 /// Bytes copied into request memory (`estrndup`) for `swoole_php_treat_data`,
@@ -465,9 +460,7 @@ fn zdata_span(state: &State) -> (*const u8, usize) {
 
 fn url(state: &mut State, span: &[u8]) -> c_int {
     let (path, query) = request_url(span);
-    state.request.path = estrndup(path);
-    let path_len = path.len().c_cast::<u32>();
-    state.request.path_len = path_len;
+    state.request.path = Some(path.into());
     if query.is_empty() {
         return 0;
     }
@@ -638,16 +631,8 @@ fn on_headers_complete(state: &mut State) -> c_int {
     request.version =
         c_int::from(state.parser.http_major) * 100 + c_int::from(state.parser.http_minor);
     let path = request_path(request);
-    let path_len = path.len();
-    let ext = path
-        .iter()
-        .rposition(|&byte| byte == b'.')
-        .map_or(path_len, |dot| dot + 1);
     // The URI, and path_info, which is decoded.
     let (uri, decoded) = (ZString::new(path), ZString::url_decode(path));
-    request.ext = request.path.cast_const().wrapping_add(ext);
-    let ext_len = (path_len - ext).c_cast::<u32>();
-    request.ext_len = ext_len;
 
     let method = method_name(state);
     let method = Owned::string(ZString::new(method.as_bytes()));
