@@ -87,7 +87,7 @@ struct Host<'a> {
 
 impl TaskHost for Host<'_> {
     fn dispatch(&mut self, task: Packed<'_>, worker_id: &mut c_int, blocking: bool) -> bool {
-        methods::dispatch(self.pool, task, worker_id, blocking) == SW_OK
+        methods::dispatch(self.pool, task, worker_id, blocking)
     }
 
     fn pipe_clean(&mut self) {

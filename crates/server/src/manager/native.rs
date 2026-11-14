@@ -90,7 +90,7 @@ pub(crate) fn start_manager_process(serv: view::Server<'_>) -> c_int {
         return -1;
     }
     let pool = serv.event_pool_ref();
-    if pool.message_box().is_null() && methods::create_message_box(pool, MESSAGE_BOX_SIZE) == -1 {
+    if pool.message_box().is_null() && !methods::create_message_box(pool, MESSAGE_BOX_SIZE) {
         return -1;
     }
     if serv.workers().user_count > 0 {
@@ -123,7 +123,7 @@ fn main(serv: view::Server<'_>) {
     // they are up, not kill it outright and orphan the ones already forked.
     // The children's fork resets their handlers.
     set_signal(libc::SIGTERM, HANDLER_OWN);
-    if config.task_worker_num.get() > 0 && methods::start(serv.task_pool_ref()) == -1 {
+    if config.task_worker_num.get() > 0 && !methods::start(serv.task_pool_ref()) {
         log::sys_error(ORIGIN, format_args!("failed to start task worker"));
         return;
     }

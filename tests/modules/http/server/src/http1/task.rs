@@ -105,7 +105,7 @@ impl TaskHost for TaskPool {
     fn dispatch(&mut self, task: Packed<'_>, worker_id: &mut c_int, blocking: bool) -> bool {
         // SAFETY: the live task pool.
         let pool = unsafe { swoole_rs_process::process_pool::PoolRef::new(self.pool) };
-        pool::dispatch(pool, task, worker_id, blocking) == SW_OK
+        pool::dispatch(pool, task, worker_id, blocking)
     }
 
     fn pipe_clean(&mut self) {
@@ -333,14 +333,15 @@ impl TaskServer for Server {
 
     fn dispatch(self, buf: &mut EventData, dst_worker_id: &mut c_int) -> c_int {
         // SAFETY: the created server's task pool and a packed EventData.
-        unsafe {
+        let sent = unsafe {
             pool::dispatch(
                 swoole_rs_process::process_pool::PoolRef::new(self.task_pool()),
                 swoole_rs_process::task_file::Packed::from_raw(buf.head().cast()),
                 dst_worker_id,
                 false,
             )
-        }
+        };
+        if sent { SW_OK } else { SW_ERR }
     }
 
     fn get_tasking_num(self) -> c_int {

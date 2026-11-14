@@ -841,7 +841,7 @@ fn start(call: &Call) {
         call.this_value()
             .map_or(swoole_rs_zend::UNDEF, Value::copy_value),
     );
-    let started = methods::start(view) >= 0;
+    let started = methods::start(view);
     if started {
         methods::wait(view);
     }
@@ -866,7 +866,7 @@ fn protocol(pool: PoolRef<'_>, message_bus: bool) -> bool {
         methods::set_protocol(pool, Protocol::Stream);
         return true;
     }
-    if pool.message_bus().is_null() && methods::create_message_bus(pool) != 0 {
+    if pool.message_bus().is_null() && !methods::create_message_bus(pool) {
         return false;
     }
     // The pool's message bus, whose allocator its next buffer uses.
