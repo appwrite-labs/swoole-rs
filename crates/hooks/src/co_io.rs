@@ -450,8 +450,11 @@ impl Timer {
     }
 
     fn slot(&self) -> WaitTimer {
-        let [read, write] = self.socket.with_state(|state| state.timers);
-        if self.write { write } else { read }
+        let write = self.write;
+        self.socket.with_state(|state| {
+            let [read, written] = &state.timers;
+            *if write { written } else { read }
+        })
     }
 
     fn set_slot(&self, timer: WaitTimer) {
