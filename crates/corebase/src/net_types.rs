@@ -93,10 +93,11 @@ impl SocketAddress {
         StoredLength(self.len.min(Self::CAPACITY))
     }
 
-    /// `connect(2)` of `fd` to this address.
+    /// `connect(2)` of `fd` to this address: whether it connected, else errno says why
+    /// not.
     #[must_use]
-    pub fn connect(&self, fd: c_int) -> c_int {
-        connect(fd, &self.addr, self.stored())
+    pub fn connect(&self, fd: c_int) -> bool {
+        connect(fd, &self.addr, self.stored()) == 0
     }
 
     /// `bind(2)` of `fd` to this address: whether it bound, else errno says why not.

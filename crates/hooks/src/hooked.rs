@@ -178,16 +178,11 @@ pub unsafe extern "C" fn swoole_coroutine_recv(
 /// Hooked `connect(2)` of `fd` to `address`.
 #[must_use]
 pub fn connect(fd: c_int, address: &SocketAddress) -> c_int {
-    match hooked(fd) {
-        Some((_, socket)) => {
-            if socket.connect_addr(address) {
-                0
-            } else {
-                -1
-            }
-        }
+    let connected = match hooked(fd) {
+        Some((_, socket)) => socket.connect_addr(address),
         None => address.connect(fd),
-    }
+    };
+    if connected { 0 } else { -1 }
 }
 
 /// `accept(2)` on `fd`, the peer's address and its length into `peer`.
