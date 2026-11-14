@@ -127,26 +127,25 @@ fn construct(call: &Call) {
 
 /// `SW_LOCK_CHECK_RETURN`: true on success, else false with `$this->errCode`.
 #[inline]
-pub(crate) fn check(call: &Call, result: i32) {
-    if result != 0 {
-        call.update_property_long(None, c"errCode", result.into());
+pub(crate) fn check(call: &Call, result: Result<(), i32>) {
+    if let Err(code) = result {
+        call.update_property_long(None, c"errCode", code.into());
     }
-    call.set_bool(result == 0);
+    call.set_bool(result.is_ok());
 }
 
 /// [`check`] for a leaf handler: a failure's `errCode` write may leave a bailout,
 /// which this raises (no frame here owns anything that needs a drop).
-pub(crate) fn checked(call: &Call, result: i32) {
-    if result == 0 {
-        call.set_bool(true);
-    } else {
-        refused(call, result);
+pub(crate) fn checked(call: &Call, result: Result<(), i32>) {
+    match result {
+        Ok(()) => call.set_bool(true),
+        Err(code) => refused(call, code),
     }
 }
 
 #[cold]
-fn refused(call: &Call, result: i32) {
-    check(call, result);
+fn refused(call: &Call, code: i32) {
+    check(call, Err(code));
     bailout::finish();
 }
 
