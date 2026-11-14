@@ -117,8 +117,12 @@ pub fn socket_create(fd: c_int) -> (Owned, bool) {
     let out = Owned::default();
     #[cfg(feature = "sockets")]
     {
-        // SAFETY: ext/sockets' class, set at its MINIT, into a slot this owns.
-        let object = unsafe { swoole_rs_zend::init_object(out.as_ptr(), socket_ce) };
+        // SAFETY: ext/sockets' class, set at its MINIT, into a slot this owns;
+        // it only fails for an abstract class or an interface, leaving no object.
+        let _ = unsafe { swoole_rs_zend::sys::object_init_ex(out.as_ptr(), socket_ce) };
+        let Some(object) = out.object() else {
+            return (out, false);
+        };
         // SAFETY: the new `Socket`, whose `php_socket` precedes its object.
         let imported = unsafe { socket_import_file_descriptor(fd, php_socket(object)) };
         (out, imported)

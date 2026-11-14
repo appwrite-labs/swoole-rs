@@ -9,7 +9,7 @@ use swoole_rs_error::ErrorCode as E;
 use swoole_rs_reactor::{Event, Socket};
 
 use crate::reactor_handle::{EVENT_READ, Reactor};
-use crate::records::ConnectionRecord;
+use crate::records::{ConnectionRecord, Lookup};
 use crate::{Connection, Mode, view};
 
 /// `SW_ACCEPT_MAX_COUNT`, `SW_MAX_CONNECTION`, `SW_SESSION_LIST_SIZE`; native asserts each.
@@ -34,8 +34,8 @@ pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) ->
     let Some(listener) = event.socket() else {
         return OK;
     };
-    // SAFETY: a listening socket's object is its port, which outlives its reactor.
-    let Some(port) = (unsafe { view::Port::from_raw(listener.read(|l| l.object)) }) else {
+    // A listening socket's object is its port.
+    let Some(port) = serv.state().listed_port(listener.read(|l| l.object)) else {
         return OK;
     };
     for _ in 0..ACCEPT_MAX_COUNT {
@@ -335,13 +335,7 @@ pub(crate) fn incoming(
     };
     let idle = port.config().max_idle_time.get();
     if idle > 0.0 {
-        // sec2msec's (long) cast.
-        let msec = (idle * 1000.0).c_cast::<c_long>();
-        // SAFETY: `idle_tick` takes the live connection, which deletes the timer
-        // before it goes.
-        let node = unsafe {
-            swoole_rs_timer::swr_v1_timer_add_plain(msec, true, idle_tick, conn.as_ptr().cast())
-        };
+        let node = idle_timer(serv, conn, idle);
         sock.edit(|s| {
             s.timeouts.read = idle;
             s.recv_timer = node;
@@ -362,20 +356,22 @@ pub(crate) fn incoming(
     true
 }
 
-/// `Server::get_timeout_callback`'s timer: the idle check of `conn`, a live
-/// connection of `SwooleG.server` on this thread's reactor, which added the timer.
-///
-/// # Safety
-/// As the timer's contract: `conn` is that connection.
-pub(crate) unsafe extern "C-unwind" fn idle_tick(conn: *mut c_void) {
-    // SAFETY: the connection's server, live for the tick per the caller.
-    let Some(serv) = (unsafe { view::Server::current() }) else {
-        return;
-    };
-    // SAFETY: as the caller guarantees.
-    if let Some(conn) = unsafe { Connection::from_ptr(conn.cast()) } {
-        idle_timeout(serv, Reactor::thread(), conn);
-    }
+/// `swoole_timer_add(sec2msec(idle), true, Server::get_timeout_callback(...))`: the
+/// persistent idle check of `conn`, on this thread's reactor; the node, or null.
+pub(crate) fn idle_timer(serv: view::Server<'_>, conn: Connection<'_>, idle: f64) -> *mut c_void {
+    // sec2msec's (long) cast.
+    let msec = (idle * 1000.0).c_cast::<c_long>();
+    let (raw, fd) = (serv.raw(), c_long::from(conn.fd()));
+    swoole_rs_timer::add_fn(msec, true, move || {
+        // SAFETY: the server whose reactor armed the timer, which outlives the
+        // timers of its connections.
+        let serv = unsafe { view::Server::from_raw(raw) };
+        // A session socket's connection is its fd's slot, which deletes this timer
+        // before it goes.
+        if let Some(conn) = serv.state().connection(fd, Lookup::ByFd) {
+            idle_timeout(serv, Reactor::thread(), conn);
+        }
+    })
 }
 
 /// The idle timer: closes a connection idle in both directions for `max_idle_time`.

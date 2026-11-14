@@ -21,8 +21,8 @@ pub mod minit;
 pub mod pdo;
 
 use pq_sys::{
-    ConnStatusType, Oid, PGconn, PGresult, PQfinish, PQsendPrepare, PQsendQueryParams,
-    PQsendQueryPrepared, PostgresPollingStatusType,
+    ConnStatusType, Oid, PGconn, PGresult, PQsendPrepare, PQsendQueryParams, PQsendQueryPrepared,
+    PostgresPollingStatusType,
 };
 use std::{
     cell::RefCell,
@@ -52,6 +52,20 @@ const CO_TIMEDOUT: c_int = 10018;
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Conn(*mut PGconn);
+
+/// The connection the driver gives up to `PQfinish`: null, or live and used by nothing
+/// after the call. Only [`swoole_pgsql_finish`]'s parameter makes one, where the C
+/// caller's contract stands for the constructor; it is not `Copy`, so it is finished
+/// once.
+#[repr(transparent)]
+pub struct OwnedConn(*mut PGconn);
+
+impl OwnedConn {
+    /// The connection, live until the owner is finished.
+    fn conn(&self) -> Conn {
+        Conn(self.0)
+    }
+}
 
 /// The options array `PQconninfo` made, owned until `PQconninfoFree` takes it.
 #[repr(transparent)]
@@ -110,6 +124,8 @@ unsafe extern "C" {
     safe fn PQconninfo(conn: Conn) -> Option<Conninfo>;
     /// Free the array, which no borrow of its entries outlives: it takes the owner.
     safe fn PQconninfoFree(options: Conninfo);
+    /// Close and free the connection (nothing for a null one): it takes the owner.
+    safe fn PQfinish(conn: OwnedConn);
     /// A new connection, or null: libpq copies what it needs of `conninfo`, which it
     /// only reads, and runs no callback.
     safe fn PQconnectStart(conninfo: Text<'_>) -> *mut PGconn;
@@ -453,10 +469,10 @@ pub extern "C" fn swoole_pgsql_connectdb(conninfo: Text<'_>) -> *mut PGconn {
 
 /// `swoole_pgsql_finish`: forget the connection's interrupted I/O, then `PQfinish`.
 #[unsafe(no_mangle)]
-pub extern "C" fn swoole_pgsql_finish(conn: Conn) {
-    IO_ERRORS.with_borrow_mut(|errors| errors.retain(|(c, _, _)| *c != conn));
-    // SAFETY: the driver's connection, which nothing uses after this.
-    unsafe { PQfinish(conn.0) };
+pub extern "C" fn swoole_pgsql_finish(conn: OwnedConn) {
+    let finished = conn.conn();
+    IO_ERRORS.with_borrow_mut(|errors| errors.retain(|(c, _, _)| *c != finished));
+    PQfinish(conn);
 }
 
 /// `swoole_pgsql_prepare`: `PQsendPrepare`, then its result.

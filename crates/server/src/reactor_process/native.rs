@@ -119,7 +119,9 @@ fn dispatch(serv: view::Server<'_>, reactor: Reactor, bus: Bus<'_>) -> bool {
         Some(ServerEvent::SendFile) => {
             // The bus's `PipeBuffer`: the message's head, then its data.
             let data = bus.buffer().wrapping_add(1).cast();
-            crate::factory::finish(serv, &SendData { info, data });
+            // SAFETY: the `info.len` bytes the bus read behind the head, which it keeps
+            // until it reads again, which this thread alone does, after the call.
+            crate::factory::finish(serv, &unsafe { SendData::from_raw(info, data) });
         }
         Some(ServerEvent::SendData) => {
             let workers = serv.workers();
@@ -132,10 +134,9 @@ fn dispatch(serv: view::Server<'_>, reactor: Reactor, bus: Bus<'_>) -> bool {
                 let mut info = info;
                 info.kind = ServerEvent::RecvData.code();
                 info.len = u32::try_from(packet.length).unwrap_or(u32::MAX);
-                let send = SendData {
-                    info,
-                    data: packet.data,
-                };
+                // SAFETY: the bus's packet, `length` bytes (or null) it keeps until it
+                // pops or reads again, which this thread alone does, after the call.
+                let send = unsafe { SendData::from_raw(info, packet.data) };
                 crate::factory::finish(serv, &send);
             } else {
                 let m = format_args!("invalid worker_id={worker}");

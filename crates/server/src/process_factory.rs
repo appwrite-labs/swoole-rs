@@ -66,7 +66,7 @@ fn current_worker() -> i64 {
 /// event's fd becomes its session.
 pub(crate) fn dispatch(serv: view::Server<'_>, send: &mut SendData) -> bool {
     // The task's fd is the connection's, not its session's: native's `int` of it.
-    let fd = u32::try_from(send.info.fd & 0xffff_ffff)
+    let fd = u32::try_from(send.info().fd & 0xffff_ffff)
         .unwrap_or_default()
         .cast_signed();
     let target = schedule_worker(serv, fd, Some(send));
@@ -77,7 +77,7 @@ pub(crate) fn dispatch(serv: view::Server<'_>, send: &mut SendData) -> bool {
         }
         return false;
     }
-    let (kind, event) = (send.info.kind, send.info.event());
+    let (kind, event) = (send.info().kind, send.info().event());
     if event.is_some_and(ServerEvent::is_stream) {
         let conn = serv.state().connection(fd.into(), Lookup::ByFd);
         let Some(conn) = conn.filter(|conn| conn.is_active()) else {
@@ -91,8 +91,7 @@ pub(crate) fn dispatch(serv: view::Server<'_>, send: &mut SendData) -> bool {
         {
             return false;
         }
-        send.info.fd = conn.session_id();
-        send.info.server_fd = low16(conn.server_fd());
+        send.set_session(conn.session_id(), low16(conn.server_fd()));
     }
     let target = worker_id(target.into());
     if event == Some(ServerEvent::RecvData)
@@ -107,7 +106,7 @@ pub(crate) fn dispatch(serv: view::Server<'_>, send: &mut SendData) -> bool {
 /// thread that owns the connection.
 pub(crate) fn finish(serv: view::Server<'_>, send: &SendData) -> bool {
     let (state, config) = (serv.state(), serv.config());
-    let (session, len, event) = (send.info.fd, send.info.len, send.info.event());
+    let (session, len, event) = (send.info().fd, send.info().len, send.info().event());
     let size = config.output_buffer_size.get();
     if len > size {
         log::error_log(
@@ -156,15 +155,12 @@ pub(crate) fn finish(serv: view::Server<'_>, send: &SendData) -> bool {
         }
         return false;
     }
-    let mut out = SendData {
-        info: send.info,
-        data: send.data,
-    };
-    out.info.reactor_id = i16::from(conn.reactor_id());
-    out.info.server_fd = low16(swoole_get_worker_id().cast_signed());
+    let mut out = *send;
+    let reactor_id = i16::from(conn.reactor_id());
+    out.set_route(reactor_id, low16(swoole_get_worker_id().cast_signed()));
     // `serv->get_reactor_pipe_socket(fd, reactor_id)`.
     let pipes = i64::from(state.tables_ref().reactor_pipe_num);
-    let pipe = i64::from(out.info.reactor_id)
+    let pipe = i64::from(reactor_id)
         + session.checked_rem(pipes).unwrap_or(0) * i64::from(config.reactor_num.get());
     hybrid().process_send(serv, Pipe::Reactor(worker_id(pipe)), &mut out)
 }
@@ -198,15 +194,12 @@ pub(crate) fn end(serv: view::Server<'_>, session: c_long, flags: c_int) -> bool
         };
         let is_worker = worker_type() == Some(WorkerType::Event);
         if !(is_worker && (!hash || worker == current_worker())) {
-            let mut close = SendData {
-                info: DataHead {
-                    kind: ServerEvent::Close.code(),
-                    fd: session,
-                    reactor_id: i16::from(conn.reactor_id()),
-                    ..DataHead::default()
-                },
-                data: core::ptr::null(),
-            };
+            let mut close = SendData::empty(DataHead {
+                kind: ServerEvent::Close.code(),
+                fd: session,
+                reactor_id: i16::from(conn.reactor_id()),
+                ..DataHead::default()
+            });
             return hybrid().process_send(serv, Pipe::Close(worker_id(worker)), &mut close);
         }
     }
@@ -232,14 +225,11 @@ pub(crate) fn end(serv: view::Server<'_>, session: c_long, flags: c_int) -> bool
         _ = crate::base_factory::on_close(|| Some(conn), session, call);
     }
     conn.set_close_errno(0);
-    let close = SendData {
-        info: DataHead {
-            fd: session,
-            kind: ServerEvent::Close.code(),
-            ..DataHead::default()
-        },
-        data: core::ptr::null(),
-    };
+    let close = SendData::empty(DataHead {
+        fd: session,
+        kind: ServerEvent::Close.code(),
+        ..DataHead::default()
+    });
     finish(serv, &close)
 }
 
@@ -249,16 +239,13 @@ mod tests {
     use crate::conn_io::tests::{accepted, session};
     use crate::hybrid::tests::{Call, calls};
 
-    fn send(fd: c_long, kind: ServerEvent, len: u32) -> SendData {
-        SendData {
-            info: DataHead {
-                fd,
-                kind: kind.code(),
-                len,
-                ..DataHead::default()
-            },
-            data: core::ptr::null(),
-        }
+    fn send(fd: c_long, kind: ServerEvent, len: u32) -> SendData<'static> {
+        SendData::empty(DataHead {
+            fd,
+            kind: kind.code(),
+            len,
+            ..DataHead::default()
+        })
     }
 
     #[test]
@@ -270,7 +257,7 @@ mod tests {
         let mut data = send(fd, ServerEvent::RecvData, 4);
         assert!(dispatch(live.server(), &mut data));
         // The fd became the session, and the worker its target.
-        assert_eq!(data.info.fd, 1);
+        assert_eq!(data.info().fd, 1);
         let [Call::Process(Pipe::Worker(_), 1, kind)] = calls()[..] else {
             panic!("one send to a worker");
         };

@@ -3,7 +3,7 @@ use crate::{
     Array, Value,
     bailout::Bailout,
     string,
-    sys::{self as z, HashTable, zend_class_entry, zend_internal_arg_info, zend_internal_function},
+    sys::{self as z, HashTable, zend_class_entry, zend_internal_arg_info},
 };
 use std::{
     ffi::{CStr, c_char, c_int},
@@ -42,11 +42,11 @@ pub unsafe fn function_alias(
     let Some(function) = found.and_then(Value::pointer) else {
         return Ok(false);
     };
-    // SAFETY: the source table owns this live function, which remains live and
-    // unchanged throughout this registration; per the caller it is internal,
-    // the union member that begins, as every member does, with the common header.
-    let internal = unsafe { &*function.cast::<zend_internal_function>() };
-    let (kind, handler, args) = (internal.type_, internal.handler, internal.num_args);
+    // The source table owns this live function, which remains live and
+    // unchanged throughout this registration; per the caller it is internal.
+    let function = crate::Function(function.cast(), std::marker::PhantomData);
+    let (kind, args) = (function.kind(), function.num_args());
+    let handler = function.internal_handler().flatten();
     let mut entries = crate::zeroed::<[z::zend_function_entry; 2]>();
     entries[0].fname = alias.as_ptr();
     entries[0].handler = handler;

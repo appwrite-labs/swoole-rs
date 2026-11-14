@@ -1,5 +1,6 @@
 /* See shim_bytes.h. */
 #include "shim_bytes.h"
+#include "ext/json/php_json.h"
 
 zend_ulong swr_bytes_hash(struct iovec key) {
     return zend_hash_func(key.iov_base, key.iov_len);
@@ -24,4 +25,14 @@ zend_string *swr_bytes_persistent(struct iovec bytes) {
 
 char *swr_bytes_estrndup(struct iovec bytes) {
     return estrndup(bytes.iov_base, bytes.iov_len);
+}
+
+/* The scanner reads one byte past the length and takes only a NUL there as the
+ * end, as upstream's std::string::c_str() guarantees; a reply buffer has none. */
+void swr_bytes_json_decode(struct iovec text, zval *out) {
+    zend_string *copy = zend_string_init(text.iov_base, text.iov_len, 0);
+    if (php_json_decode(out, ZSTR_VAL(copy), text.iov_len, 1, 0) == FAILURE) {
+        ZVAL_FALSE(out);
+    }
+    zend_string_release(copy);
 }

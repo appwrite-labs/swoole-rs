@@ -595,6 +595,14 @@ impl ServerState {
         // SAFETY: null, or one of the server's ports, which live as long as it.
         unsafe { Port::from_raw(port) }
     }
+
+    /// The server's port at `raw`, or `None` when `raw` is none of them: a slot's or a
+    /// socket's `object` names a port only on a listening socket, and anything else
+    /// (a session's protocol state, a pipe) elsewhere.
+    pub(crate) fn listed_port(&self, raw: *mut c_void) -> Option<Port<'_>> {
+        let ports = self.tables_ref().ports();
+        ports.iter().copied().find(|port| port.raw() == raw)
+    }
 }
 
 /// A live `ListenPort`, borrowed for `'a`: its settings' box

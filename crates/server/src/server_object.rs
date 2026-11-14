@@ -54,6 +54,10 @@ pub extern "C" fn swr_v1_server_new(mode: c_int) -> *mut c_void {
         &counters.pipe_packet_msg_id,
     )));
     let fresh = crate::state::boxed(config, tables);
+    fresh
+        .msg_ids
+        .set(&counters.pipe_packet_msg_id)
+        .unwrap_or_default();
     let (config, tables) = (fresh.config(), fresh.tables());
     // The state lives until `swr_v1_server_delete` frees it.
     let state = Box::into_raw(fresh);

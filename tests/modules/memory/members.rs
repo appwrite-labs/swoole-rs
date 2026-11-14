@@ -1,6 +1,7 @@
 use super::*;
 use crate::fixed::tests::{DebugCursor, debug_step};
 use crate::fixed::{self, Fixed, Layout};
+use std::mem;
 use std::ptr::NonNull;
 use swoole_rs_corebase::log::last_error;
 use swoole_rs_corebase::{sw_free, sw_malloc};

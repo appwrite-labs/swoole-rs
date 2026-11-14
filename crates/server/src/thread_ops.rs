@@ -124,14 +124,7 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
             .pipe(fd)?
             .edit(|s| s.output.buffer_size = u32::MAX);
     }
-    let gs = crate::shared::server_counters(state)?;
-    // SAFETY: the shared counter outlives every reactor thread's bus.
-    let counter = unsafe {
-        &*gs.pipe_packet_msg_id
-            .as_ptr()
-            .cast::<core::sync::atomic::AtomicU64>()
-    };
-    bus.rust().count_ids(counter);
+    bus.rust().count_ids(state.msg_ids.get()?);
     bus.set_always_chunked();
     if !bus.alloc_buffer(config.ipc_max_size() as usize) {
         return Some(-1);
@@ -153,12 +146,18 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
 }
 
 /// The destroy callback of a reactor thread's reactor: close its connections.
-unsafe extern "C-unwind" fn close_connections(reactor: *mut c_void) {
-    // SAFETY: the callback's live reactor, on its own thread.
-    let reactor = unsafe { Reactor::of(reactor) };
-    // SAFETY: a reactor thread's reactor, whose `ptr` is its live server.
-    let serv = unsafe { entry::server(reactor) };
-    crate::reactor_thread::close_reactor_connections(serv, reactor);
+struct CloseConnections(Reactor);
+
+impl swoole_rs_reactor::event_api::Deferred for CloseConnections {
+    fn run(self) {
+        // SAFETY: a reactor thread's reactor, which runs its destroy callbacks on its
+        // own thread while it lives, and whose `ptr` is its live server.
+        let serv = unsafe { entry::server(self.0) };
+        crate::reactor_thread::close_reactor_connections(serv, self.0);
+    }
+
+    /// Queued after the destroy pass, it closes nothing, as the native callback did.
+    fn dispose(self) {}
 }
 
 /// What a reactor thread Rust starts runs: `ServerState::start_thread` calls it with
@@ -428,8 +427,7 @@ pub(crate) fn shutdown(ctx: &ReactorContext<'_>) -> Option<()> {
         // SAFETY: the thread's live heartbeat timer.
         unsafe { swoole_rs_timer::swoole_timer_del(timer.cast()) };
     }
-    // SAFETY: the call takes the reactor, which outlives it.
-    unsafe { swoole_rs_reactor::defer_destroy(reactor.handle(), close_connections, reactor.ptr()) };
+    swoole_rs_reactor::defer_destroy_value(reactor.handle(), CloseConnections(reactor));
     if config.mode_ == Mode::Thread {
         stop_async_worker(serv, worker(serv, id)?);
         return Some(());

@@ -21,8 +21,8 @@ use swoole_rs_server::view;
 use swoole_rs_tls::upstream::socket_ssl_create;
 use swoole_rs_tls::{
     DtlsSession, OwnedTlsContext, OwnedTlsFields, Ssl, SslCreateFlag, SslVersion, Text, TlsContext,
-    has_files, swr_v1_tls_dtls_free, swr_v1_tls_dtls_init, swr_v1_tls_dtls_new,
-    swr_v1_tls_owner_view, swr_v1_tls_port_index,
+    has_files, swr_v1_tls_dtls_free, swr_v1_tls_dtls_open, swr_v1_tls_owner_view,
+    swr_v1_tls_port_index,
 };
 use swoole_rs_utilities::sni_wildcard_matches;
 
@@ -270,11 +270,10 @@ pub(crate) fn dtls_create(port: view::Port<'_>, sock: Socket<'_>) -> *mut DtlsSe
     let Ok(fd) = usize::try_from(sock.fd()) else {
         return ptr::null_mut();
     };
-    let session = swr_v1_tls_dtls_new(sock.as_ptr());
-    // SAFETY: the fresh session over the caller's live socket, and the port's live context.
-    if !unsafe { swr_v1_tls_dtls_init(session, &context) } {
-        // SAFETY: the session made above, which nothing else holds.
-        unsafe { swr_v1_tls_dtls_free(session) };
+    // SAFETY: the caller's live socket, kept until the port frees the session, and the
+    // port's live context.
+    let session = unsafe { swr_v1_tls_dtls_open(sock, &context) };
+    if session.is_null() {
         return ptr::null_mut();
     }
     let mut sessions = dtls(config);

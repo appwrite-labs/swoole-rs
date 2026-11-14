@@ -1,7 +1,7 @@
 //! The manager's native side: its fork, the workers it spawns, reaps and kills, the
 //! reap loop's host, its signals and the workers' messages.
 use crate::Mode;
-use core::ffi::{c_int, c_void};
+use core::ffi::c_int;
 use core::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::ServerEvent;
 
@@ -326,11 +326,7 @@ impl Reap for Reaping<'_> {
                 if !serv.state().running() {
                     continue;
                 }
-                if msg.kind() != WORKER_MESSAGE_STOP
-                    && let Some(on_message) = pool.on_worker_message()
-                {
-                    // SAFETY: the message popped from the pool.
-                    unsafe { on_message(pool, msg.0.as_mut_ptr().cast()) };
+                if msg.kind() != WORKER_MESSAGE_STOP && pool.call_on_worker_message(&msg.0) {
                     continue;
                 }
                 let (pid, id) = stop_message(msg.data());
@@ -471,38 +467,45 @@ fn is_sigrtmin(signo: c_int) -> bool {
     }
 }
 
+/// The `N` bytes of `msg`'s head at `offset`.
+fn head_field<const N: usize>(msg: &[u8; EVENT_DATA_SIZE], offset: usize) -> [u8; N] {
+    msg.get(offset..)
+        .and_then(<[u8]>::first_chunk)
+        .copied()
+        .unwrap_or([0; N])
+}
+
 /// `pool->onWorkerMessage`: `Server::read_worker_message` over the pool's server
 /// and the message it popped: a command request from a worker.
-///
-/// # Safety
-/// `msg` is the live `EventData` the pool popped.
-unsafe extern "C-unwind" fn read_worker_message(pool: PoolRef<'_>, msg: *mut c_void) {
-    // SAFETY: the event worker pool's `ptr` is its live server.
+extern "C-unwind" fn read_worker_message(pool: PoolRef<'_>, msg: &[u8; EVENT_DATA_SIZE]) {
+    use core::mem::offset_of;
+    // SAFETY: `init` installs this hook on the event worker pool only, whose `ptr`
+    // is its live server, and the pool calls it with itself.
     let serv = unsafe { view::Server::from_raw(pool.ptr()) };
-    // SAFETY: per the contract, a whole `EventData`.
-    let task = unsafe { &*msg.cast::<EventData>() };
-    // SAFETY: an `EventData` starts with its head, which its alignment allows.
-    let info = unsafe { &*msg.cast::<DataHead>() };
-    if info.event() != Some(ServerEvent::CommandRequest) {
-        let m = format_args!("unknown worker message type[{}]", info.kind);
+    let kind = msg[offset_of!(DataHead, kind)];
+    if ServerEvent::from_code(kind) != Some(ServerEvent::CommandRequest) {
+        let m = format_args!("unknown worker message type[{kind}]");
         log::warning(c"Server::read_worker_message", m);
         return;
     }
+    let command = u16::from_ne_bytes(head_field(msg, offset_of!(DataHead, server_fd)));
     let state = serv.state();
-    let Some(handler) = crate::commands::handler(state, i32::from(info.server_fd)) else {
+    let Some(handler) = crate::commands::handler(state, i32::from(command)) else {
         log::error_log(
             ERROR,
             E::SW_ERROR_SERVER_INVALID_COMMAND as c_int,
             c"Server::read_worker_message",
-            format_args!("Unknown command[command_id={}]", info.server_fd),
+            format_args!("Unknown command[command_id={command}]"),
         );
         return;
     };
-    let data = task.data();
-    let message = data.get(..info.len as usize).unwrap_or(data);
+    let len = u32::from_ne_bytes(head_field(msg, offset_of!(DataHead, len)));
+    let fd = core::ffi::c_long::from_ne_bytes(head_field(msg, offset_of!(DataHead, fd)));
+    let data = msg.get(size_of::<DataHead>()..).unwrap_or_default();
+    let message = data.get(..len as usize).unwrap_or(data);
     if let Some(sock) = crate::commands::reply_socket(state, serv) {
         let bus = (state.message_bus(), sock);
-        crate::commands::answer(&handler, serv, message, bus, info.fd, 0);
+        crate::commands::answer(&handler, serv, message, bus, fd, 0);
     }
 }
 

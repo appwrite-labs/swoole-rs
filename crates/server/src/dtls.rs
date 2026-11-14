@@ -1,7 +1,7 @@
 //! A DTLS port's sessions on the reactor thread: `Server::accept_dtls_connection`
 //! and the datagram, read and close steps over them. crates/tls owns each
 //! session's queue and handshake; crates/ports stores them by fd.
-use core::ffi::{CStr, c_char, c_int};
+use core::ffi::{CStr, c_int};
 use core::ptr;
 use std::ffi::CString;
 use swoole_rs_corebase::ServerEvent;
@@ -18,11 +18,6 @@ use swoole_rs_tls::{
 use crate::port_config;
 use crate::reactor_entry::DgramPacket;
 use crate::records::ConnectionRecord;
-
-// libcrypto's.
-unsafe extern "C" {
-    fn OPENSSL_die(assertion: *const c_char, file: *const c_char, line: c_int) -> !;
-}
 
 /// `SW_FD_SESSION`, `SW_SOCK_NONBLOCK`, `SW_SOCK_CLOEXEC`, `SW_SOCK_UDP` and `SW_SOCK_UDP6`.
 const FD_SESSION: c_int = 0;
@@ -90,8 +85,8 @@ fn accept<'s>(
         set_option(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT, 1);
     }
     if !matches!(kind, SOCK_UDP | SOCK_UDP6) {
-        // SAFETY: OPENSSL_assert(0)'s report, which does not return.
-        unsafe { OPENSSL_die(c"assertion failed: 0".as_ptr(), c"master.cc".as_ptr(), 0) };
+        // `OPENSSL_assert(0)`, which reports and aborts.
+        swoole_rs_corebase::fatal("OpenSSL internal error: assertion failed: 0");
     }
     let origin = c"Server::accept_dtls_connection";
     let mut conn: *mut ConnectionRecord = ptr::null_mut();
@@ -160,10 +155,9 @@ pub(crate) fn on_packet(
     if !dtls_session_listen(session) {
         return crate::conn_io::close_connection(serv, reactor, Some(record));
     }
-    // A session socket's object is its live connection.
-    let conn = record.read(|s| s.object.cast::<ConnectionRecord>());
-    // SAFETY: as above; nothing else borrows it during the call.
-    let Some(conn) = (unsafe { crate::Connection::from_ptr(conn) }) else {
+    // A session socket's connection is its fd's slot.
+    let fd = libc::c_long::from(record.fd());
+    let Some(conn) = serv.state().connection(fd, crate::records::Lookup::ByFd) else {
         return -1;
     };
     let failed = if single_thread {

@@ -464,12 +464,11 @@ pub type TaskFn = extern "C-unwind" fn(PoolRef<'_>, Worker<'_>, Packed<'_>) -> c
 /// # Safety
 /// The pool is the one that holds the callback, and `data` points at `info.len` bytes.
 pub type MessageFn = unsafe extern "C-unwind" fn(PoolRef<'_>, &RecvData);
-/// `onWorkerMessage`.
-///
-/// # Safety
-/// The pool is the one that holds the callback, and the pointer is an `EventData`
-/// the master popped.
-pub type EventFn = unsafe extern "C-unwind" fn(PoolRef<'_>, *mut c_void);
+/// `onWorkerMessage`: the `EventData` the master popped, as its bytes.
+pub type EventFn = extern "C-unwind" fn(
+    PoolRef<'_>,
+    &[u8; swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize],
+);
 /// `onWorkerError`.
 pub type ErrorFn = extern "C-unwind" fn(PoolRef<'_>, Worker<'_>, &crate::methods::ExitStatus);
 /// `onWorkerNotFound`.
@@ -620,6 +619,22 @@ impl PoolRef<'_> {
         if let Some(hook) = self.on_worker_error() {
             hook(self, worker, status);
         }
+    }
+
+    /// `onWorkerMessage(pool, message)`: whether the pool has one.
+    #[expect(
+        clippy::must_use_candidate,
+        reason = "the master's loop reads it; the native op does not"
+    )]
+    pub fn call_on_worker_message(
+        self,
+        message: &[u8; swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize],
+    ) -> bool {
+        let Some(hook) = self.on_worker_message() else {
+            return false;
+        };
+        hook(self, message);
+        true
     }
 
     /// `onWorkerNotFound(pool, status)`; nothing without one.
@@ -855,8 +870,6 @@ pub enum Op {
     PushStop,
     SignalDispatch,
     TimerSelect,
-    PopMessage,
-    OnWorkerMessage,
     OnWorkerNotFound,
     WorkerError,
     OnAfterReload,
@@ -1235,9 +1248,8 @@ getters!(
     pub(crate) on_worker_exit: Option<WorkerFn>,
     pub(crate) on_worker_not_found: Option<NotFoundFn>,
     pub(crate) main_loop: Option<MainLoopFn>,
-    // The `unsafe fn`s, whose caller says the pool holds them.
+    // The `unsafe fn`, whose caller says the pool holds it.
     pub on_message: Option<MessageFn>,
-    pub on_worker_message: Option<EventFn>,
     pub workers: *mut WorkerRecord,
     pub pipes: *mut c_void,
     pub ipc: *mut PoolIpc,
@@ -1255,6 +1267,7 @@ getters!(
     pub reload_last_time: i64,
     pub(crate) on_task: Option<TaskFn>,
     pub(crate) on_worker_error: Option<ErrorFn>,
+    pub(crate) on_worker_message: Option<EventFn>,
 );
 
 setters!(
@@ -1745,22 +1758,13 @@ impl<H: PoolHost> Pool<'_, H> {
         if !self.read_message() {
             return;
         }
-        loop {
-            // The popped EventData, in native's buffer.
-            let message = pointer::<u8>(self.op(Op::PopMessage, 0)).cast_const();
-            if message.is_null() {
-                break;
-            }
+        // An EventData's bytes, which each pop overwrites.
+        let mut event = [0; swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize];
+        while crate::methods::pop_message(self.p, &mut event).is_some_and(|length| length > 0) {
             if !self.running() {
                 continue;
             }
-            // SAFETY: the EventData just popped: its head, then data that holds at
-            // least a WorkerStopMessage's pid.
-            let event =
-                unsafe { std::slice::from_raw_parts(message, EVENT_DATA + size_of::<c_int>()) };
-            let kind = event.get(EVENT_TYPE).copied();
-            if kind != Some(WORKER_MESSAGE_STOP) && self.on_worker_message().is_some() {
-                self.op(Op::OnWorkerMessage, 0);
+            if event[EVENT_TYPE] != WORKER_MESSAGE_STOP && self.p.call_on_worker_message(&event) {
                 continue;
             }
             // The WorkerStopMessage's pid, at the start of its data.

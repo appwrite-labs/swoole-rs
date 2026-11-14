@@ -14,8 +14,7 @@
 use crate::global::{self, Global};
 use crate::table::Table;
 use std::ffi::{c_int, c_void};
-use std::mem;
-use std::ptr::{self, NonNull};
+use std::ptr;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use swoole_rs_corebase::log::{self, set_last_error};
@@ -395,6 +394,7 @@ upstream! {
 pub mod pool {
     use super::GlobalMemory;
     use std::ffi::c_void;
+    use std::mem::MaybeUninit;
     use std::ptr;
     use std::slice;
     use std::sync::atomic::Ordering::SeqCst;
@@ -465,21 +465,37 @@ pub mod pool {
         impl Sealed for std::sync::atomic::AtomicU64 {}
     }
 
+    /// A block of `size` bytes from [`alloc`], for the process's life, or null. The pool
+    /// counts a user that never leaves, so [`delete`] keeps the pages it sits in mapped.
+    fn pinned(size: u32) -> *mut c_void {
+        POOL.users.fetch_add(1, SeqCst);
+        let block = alloc(size);
+        if block.is_null() {
+            POOL.users.fetch_sub(1, SeqCst);
+        }
+        block
+    }
+
     /// `count` zero words from [`alloc`], for the process's life: `Swoole\Atomic`'s
-    /// and `Swoole\Lock`'s. The pool counts a user that never leaves, so [`delete`]
-    /// keeps the pages these words sit in mapped.
+    /// and `Swoole\Lock`'s.
     #[must_use]
     pub fn words<W: Word>(count: usize) -> Option<&'static mut [W]> {
         let size = u32::try_from(count.checked_mul(size_of::<W>())?).ok()?;
-        POOL.users.fetch_add(1, SeqCst);
-        let block = alloc(size).cast::<W>();
+        let block = pinned(size).cast::<W>();
         if block.is_null() {
-            POOL.users.fetch_sub(1, SeqCst);
             return None;
         }
         // SAFETY: `count` zeroed (so valid) words, 8-aligned (enough for each
-        // `Word`), which the pool gives no one else.
+        // `Word`), which the pool gives no one else and keeps for the process's life.
         Some(unsafe { slice::from_raw_parts_mut(block, count) })
+    }
+
+    /// Room for one `T` from [`alloc`], for the process's life, or null: a shared
+    /// table's header, which forked workers reach at the same address. The block is
+    /// 8-aligned, `size_of::<T>()` writable bytes the pool gives no one else.
+    pub(crate) fn header<T>() -> *mut MaybeUninit<T> {
+        const { assert!(align_of::<T>() <= 8, "the pool's blocks are 8-aligned") };
+        u32::try_from(size_of::<T>()).map_or(std::ptr::null_mut(), |size| pinned(size).cast())
     }
 }
 
@@ -503,24 +519,6 @@ fn php_hash(key: &[u8], compared: usize) -> u64 {
     swoole_rs_utilities::swoole_hash(key, 0, std::ffi::c_char::MIN != 0)
 }
 
-/// `Table::make(rows_size, conflict_proportion)`: the header comes from the global
-/// memory pool, so forked workers share it.
-#[must_use]
-pub fn swr_table_make(rows: u32, conflict: f32) -> *mut Table {
-    #[expect(clippy::cast_possible_truncation, reason = "a sub-page header")]
-    let table = pool::alloc(mem::size_of::<Table>() as u32).cast::<Table>();
-    if table.is_null() {
-        return table;
-    }
-    // SAFETY: the pool's fresh block: 8-aligned, `size_of::<Table>()` writable bytes
-    // nothing else references.
-    let slot = unsafe { &mut *table.cast::<mem::MaybeUninit<Table>>() };
-    if !Table::init(slot, rows, conflict, php_hash, table_warning, table_error) {
-        return ptr::null_mut();
-    }
-    table
-}
-
 /// `Table::create()`: lays the table out in a fresh shared arena.
 #[must_use]
 pub fn swr_table_create(table: &mut Table) -> bool {
@@ -539,41 +537,40 @@ pub fn swr_table_create(table: &mut Table) -> bool {
     true
 }
 
-/// A table [`swr_table_make`] made, owned by this process: its header lives as
-/// long as this does, unless [`SharedTable::destroy`] has freed it by then.
+/// A table [`SharedTable::make`] made, owned by this process: its header lives for the
+/// process's life, and its arena until [`SharedTable::destroy`] has freed it.
 /// Dropping it leaves the table to the processes that share it (forked workers
 /// may still use it), as upstream's objects do.
 pub struct SharedTable {
-    table: NonNull<Table>,
+    table: &'static mut Table,
     destroyed: std::cell::Cell<bool>,
 }
 
 impl SharedTable {
-    /// [`swr_table_make`], keys hashed with `hash`.
+    /// `Table::make(rows_size, conflict_proportion)`, keys hashed with `hash`: the
+    /// header comes from the global memory pool, which keeps it for the process's life,
+    /// so forked workers share it.
     #[must_use]
     pub fn make(rows: u32, conflict: f32, hash: crate::table::Hash) -> Option<Self> {
-        let mut made = Self {
-            table: NonNull::new(swr_table_make(rows, conflict))?,
+        // SAFETY: null, or a fresh block for one `Table` nothing else references, kept
+        // for the process's life; any bytes are a `MaybeUninit`.
+        let slot = unsafe { pool::header::<Table>().as_mut() }?;
+        let table = Table::init(slot, rows, conflict, php_hash, table_warning, table_error)?;
+        table.set_hash(hash);
+        Some(Self {
+            table,
             destroyed: std::cell::Cell::new(false),
-        };
-        made.table_mut().set_hash(hash);
-        Some(made)
-    }
-
-    fn table_mut(&mut self) -> &mut Table {
-        // SAFETY: a made table, live until this drops, and `&mut self` excludes every
-        // borrow of it.
-        unsafe { self.table.as_mut() }
+        })
     }
 
     /// `Table::add_column`.
     pub fn add_column(&mut self, name: &[u8], kind: u32, size: usize) -> bool {
-        self.table_mut().add_column(name, kind, size)
+        self.table.add_column(name, kind, size)
     }
 
     /// `Table::create()` ([`swr_table_create`]).
     pub fn create(&mut self) -> bool {
-        swr_table_create(self.table_mut())
+        swr_table_create(self.table)
     }
 
     /// `Table::destroy()`, once this is dropped.
@@ -586,8 +583,7 @@ impl std::ops::Deref for SharedTable {
     type Target = Table;
 
     fn deref(&self) -> &Table {
-        // SAFETY: live until this drops; only `&mut self` mutates it.
-        unsafe { self.table.as_ref() }
+        self.table
     }
 }
 
@@ -596,7 +592,7 @@ impl Drop for SharedTable {
         if self.destroyed.get() {
             // `Table::destroy()`: frees the arena, then the header.
             // SAFETY: a made table, destroyed once: nothing uses it any more.
-            let arena = unsafe { self.table_mut().destroy() };
+            let arena = unsafe { self.table.destroy() };
             Shm(arena.cast()).free();
         }
     }

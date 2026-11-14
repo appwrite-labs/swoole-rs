@@ -2,6 +2,7 @@
 //! Zend calls hand an [`Observer`] the function the observed frame calls.
 use crate::{
     Function, Minit,
+    opcode::Executing,
     sys::{zend_execute_data, zend_observer_fcall_handlers, zend_observer_fcall_register, zval},
 };
 use std::marker::PhantomData;
@@ -23,8 +24,8 @@ impl<'a> Observed<'a> {
     /// The function the frame calls, which Zend keeps for the call; None for
     /// a frame without one.
     fn function(&self) -> Option<Function<'a>> {
-        // SAFETY: a live frame.
-        let function = unsafe { (*self.0).func };
+        // Per Zend's observer contract, a live frame executing on this thread.
+        let function = Executing(self.0, PhantomData).read(|frame| frame.func);
         (!function.is_null()).then_some(Function(function, PhantomData))
     }
 }

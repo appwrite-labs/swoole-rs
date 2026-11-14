@@ -2,15 +2,6 @@
 //! over it, and its buffer.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 use crate::{Mode, ServerState};
-use core::ffi::c_int;
-use swoole_rs_corebase::net_types::SocketAddress;
-
-/// `DgramPacket` up to its address.
-#[repr(C)]
-pub(crate) struct DgramPacket {
-    socket_type: c_int,
-    pub(crate) socket_addr: SocketAddress,
-}
 
 /// `serv->get_worker_message_bus()`: this thread's in thread mode, else the
 /// server's.
@@ -23,7 +14,7 @@ pub(crate) fn worker_message_bus(state: &ServerState) -> crate::objects::Bus<'_>
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub(crate) fn base_pass(serv: crate::view::Server<'_>, send: &crate::base_factory::SendData) {
     let bus = worker_message_bus(serv.state());
-    bus.rust().pass(&send.info, send.data);
+    bus.rust().pass(send.info(), send.data());
     crate::event_worker::native::accept_event(serv, &bus.head());
 }
 
@@ -31,7 +22,7 @@ pub(crate) fn base_pass(serv: crate::view::Server<'_>, send: &crate::base_factor
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub(crate) fn forward(serv: crate::view::Server<'_>, send: &crate::base_factory::SendData) -> bool {
     let state = serv.state();
-    let Some(session) = state.session(send.info.fd) else {
+    let Some(session) = state.session(send.info().fd) else {
         return false;
     };
     let id = session.reactor_bits() & 0xff;
@@ -47,14 +38,14 @@ pub(crate) fn forward(serv: crate::view::Server<'_>, send: &crate::base_factory:
     let Some(socket) = socket else {
         return false;
     };
-    let mut info = send.info;
-    // SAFETY: a live pipe socket and the send it writes.
-    unsafe { bus.rust().send_raw(socket, &mut info, send.data.cast()) }
+    let mut send = *send;
+    // SAFETY: a live pipe socket.
+    unsafe { send.send_raw(bus.rust(), socket) }
 }
 
 /// `Server::create_pipe_buffers()`: the bus's buffer, `ipc_max_size` bytes.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-pub(crate) fn create_pipe_buffers(serv: crate::view::Server<'_>) -> c_int {
+pub(crate) fn create_pipe_buffers(serv: crate::view::Server<'_>) -> core::ffi::c_int {
     let state = serv.state();
     let size = state.config_ref().ipc_max_size();
     if state.message_bus().alloc_buffer(size as usize) {

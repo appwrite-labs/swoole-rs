@@ -93,8 +93,9 @@ impl Call {
     #[must_use]
     #[inline]
     pub fn function(&self) -> crate::Function<'_> {
-        // SAFETY: a live frame, which runs a function.
-        crate::Function(unsafe { (*self.frame).func }, std::marker::PhantomData)
+        // The handler's live frame (`new`), which runs a function.
+        let frame = crate::opcode::Executing(self.frame, std::marker::PhantomData);
+        crate::Function(frame.read(|frame| frame.func), std::marker::PhantomData)
     }
 
     /// `ZEND_NUM_ARGS()`.
@@ -412,10 +413,7 @@ impl Call {
     pub unsafe fn assign(&self, n: u32, value: crate::Owned) {
         // Per the caller, nothing borrows what the slot holds: it reads null
         // while that is released, then takes over the value.
-        let slot = self.arg_value(n).referent();
-        // SAFETY: a passed argument's live slot, for the call.
-        let held = unsafe { &*slot.cast::<Value>() };
-        held.lend(|old| *old = value);
+        self.arg_value(n).referred().lend(|old| *old = value);
     }
 
     /// `Z_PARAM_OBJECT_OF_CLASS`'s report of argument `n` (1-based), which is

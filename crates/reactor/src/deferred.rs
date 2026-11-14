@@ -128,12 +128,12 @@ pub unsafe fn defer(call: DeferCall, data: *mut c_void, dispose: Option<DeferDis
     crate::event_api::field_mut(|fields| push(&mut fields.defer_tasks, task)).is_some()
 }
 
-/// `reactor->add_destroy_callback(fn, data)`.
-///
-/// # Safety
-/// `call(data)` is sound when the reactor is destroyed.
-pub unsafe fn defer_destroy(reactor: crate::Running<'_>, call: DeferCall, data: *mut c_void) {
-    reactor.with(|state| push_destroy(&mut state.fields, call, data));
+/// `reactor->add_destroy_callback(...)` of `value`: [`Deferred::run`] as the reactor
+/// is destroyed, or [`Deferred::dispose`] if it is queued after that pass.
+pub fn defer_destroy_value(reactor: crate::Running<'_>, value: impl Deferred) {
+    // The borrow only queues the boxed value.
+    let task = Task::Value(Box::new(value));
+    reactor.with(|state| push(&mut state.fields.destroy_callbacks, task));
 }
 
 /// `Reactor::add_destroy_callback(fn, nullptr)` of a `call` that is sound with any data.
@@ -144,7 +144,7 @@ pub(crate) fn defer_destroy_any(
     push_destroy(fields, call, ptr::null_mut());
 }
 
-/// Appends `call(data)` to the destroy queue, which runs it as [`defer_destroy`] requires.
+/// Appends `call(data)` to the destroy queue, which runs it as the reactor is destroyed.
 fn push_destroy(fields: &mut ReactorFields, call: DeferCall, data: *mut c_void) {
     let task = Task::Native {
         call,

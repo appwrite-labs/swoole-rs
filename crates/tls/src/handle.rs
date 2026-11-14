@@ -70,7 +70,8 @@ unsafe extern "C" {
     /// OpenSSL keeps `data` as opaque ex data: the indices this side makes register
     /// no callbacks that would read it.
     pub(crate) safe fn SSL_set_ex_data(ssl: Ssl<'_>, index: c_int, data: *mut c_void) -> c_int;
-    safe fn SSL_get_servername(ssl: Ssl<'_>, kind: c_int) -> *const c_char;
+    /// The host name the client sent, null without one: the SSL's own copy.
+    safe fn SSL_get_servername<'a>(ssl: Ssl<'a>, kind: c_int) -> Option<CText<'a>>;
     /// Null before the handshake, else an entry of OpenSSL's static cipher table.
     safe fn SSL_get_current_cipher(ssl: Ssl<'_>) -> Option<CipherRef>;
     /// Null names the `(NONE)` cipher, whose bits are 0.
@@ -444,8 +445,7 @@ impl<'a> Ssl<'a> {
     #[must_use]
     pub fn servername(self) -> Option<Vec<u8>> {
         let name = SSL_get_servername(self, TLSEXT_NAMETYPE_host_name);
-        // SAFETY: a NUL-terminated name the SSL holds, copied before it changes.
-        (!name.is_null()).then(|| unsafe { CStr::from_ptr(name) }.to_bytes().to_vec())
+        name.map(|name| name.get().to_bytes().to_vec())
     }
 
     /// `SSL_set_SSL_CTX`: the SSL switches to `context`, which it then references;

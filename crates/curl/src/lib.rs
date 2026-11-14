@@ -25,7 +25,7 @@ use std::{
     collections::BTreeMap,
     ffi::{c_int, c_long, c_void},
     ptr,
-    rc::Rc,
+    rc::{Rc, Weak},
 };
 use swoole_rs_corebase::log::{self, set_last_error};
 use swoole_rs_curl_sys::{
@@ -92,7 +92,9 @@ pub struct Handle {
 /// owns it, and the selector's copies keep one it removes while curl runs;
 /// the reactor socket carries its address until it is freed.
 struct Socket {
-    multi: *const Multi,
+    /// The multi that made it, gone once that multi is freed: a socket curl
+    /// never removed outlives it in the reactor.
+    multi: Weak<Multi>,
     /// The reactor's `network::Socket`, freed when curl removes it.
     socket: host::ReactorSocket,
     bitmask: Cell<c_int>,
@@ -103,8 +105,12 @@ struct Socket {
 
 /// `struct swr_v1_curl_multi`. Every field is a cell: curl calls back into the
 /// same multi from inside its own calls, and other coroutines do while this
-/// one waits, so no borrow is held across either.
+/// one waits, so no borrow is held across either. C++ holds one reference
+/// ([`swoole_curl_multi_new`]) and a queued wake-up another; the socket and
+/// timer callbacks reach it through [`Multi::this`].
 pub struct Multi {
+    /// This multi, for what reaches it later: its sockets, timer and wake-up.
+    this: Weak<Multi>,
     /// None when libcurl could make no handle: its calls then refuse the null one.
     handle: Option<MultiHandle>,
     /// The id of the pending timer.
@@ -113,7 +119,8 @@ pub struct Multi {
     co: Cell<*mut c_void>,
     running: Cell<c_int>,
     defer_callback: Cell<bool>,
-    /// Freed while a deferred wake-up was queued: the wake-up frees it.
+    /// C++ let go of it while a deferred wake-up was queued: the wake-up
+    /// closes it.
     released: Cell<bool>,
     /// The selector: a timeout to report to curl and sockets with events (a
     /// set, in arrival order).
@@ -169,12 +176,12 @@ fn insert(set: &RefCell<Vec<Rc<Socket>>>, socket: &Rc<Socket>) {
 
 impl Multi {
     /// `Multi::Multi`: a multi handle whose socket and timer callbacks reach
-    /// this multi, which therefore lives in a box until
-    /// [`swr_v1_curl_multi_free`].
-    fn create() -> *mut Self {
+    /// this multi, which therefore stays where it is until [`Multi::close`].
+    fn create() -> Rc<Self> {
         let made = curl_multi_init();
         let handle = made.as_ref().map_or(ptr::null_mut(), MultiHandle::as_ptr);
-        let multi = Box::into_raw(Box::new(Self {
+        let multi = Rc::new_cyclic(|this| Self {
+            this: this.clone(),
             handle: made,
             timer: Cell::new(None),
             co: Cell::new(ptr::null_mut()),
@@ -184,11 +191,13 @@ impl Multi {
             timer_callback: Cell::new(false),
             sockets: RefCell::new(BTreeMap::new()),
             active: RefCell::new(Vec::new()),
-        }));
-        for data in [CURLMOPT_SOCKETDATA, CURLMOPT_TIMERDATA] {
-            // SAFETY: the handle just made (curl refuses a null one), and the box, which
-            // outlives it: `swr_v1_curl_multi_free` cleans the handle up first.
-            unsafe { curl_multi_setopt(handle, data, multi.cast::<c_void>()) };
+        });
+        let data = Rc::as_ptr(&multi).cast_mut().cast::<c_void>();
+        for option in [CURLMOPT_SOCKETDATA, CURLMOPT_TIMERDATA] {
+            // SAFETY: the handle just made (curl refuses a null one), and the multi,
+            // which outlives it: only `Multi::close` cleans the handle up, before the
+            // last reference to the multi goes.
+            unsafe { curl_multi_setopt(handle, option, data) };
         }
         let on_socket: OnSocket = handle_socket;
         let on_timer: OnTimer = handle_timeout;
@@ -267,7 +276,7 @@ impl Multi {
         let known = self.sockets.borrow().get(&sockfd).cloned();
         let socket = known.unwrap_or_else(|| {
             let socket = Rc::new(Socket {
-                multi: self,
+                multi: self.this.clone(),
                 socket: host::ReactorSocket::new(sockfd),
                 bitmask: Cell::new(0),
                 sockfd: Cell::new(0),
@@ -563,36 +572,46 @@ extern "C" fn handle_timeout(_multi: *mut CURLM, timeout_ms: c_long, multi: &Mul
     multi.on_timeout(timeout_ms)
 }
 
-/// `Multi::release`: `delete multi`, or, while a deferred wake-up is
-/// queued, leave that to the wake-up.
-/// # Safety
-/// `multi` came from `swoole_curl_multi_new`; nothing uses it afterwards.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_curl_multi_free(multi: *mut Multi) {
-    if multi.is_null() {
-        return;
-    }
-    {
-        // SAFETY: per the caller.
-        let this = unsafe { &*multi };
-        if this.defer_callback.get() {
-            this.released.set(true);
-            return;
-        }
-        this.del_timer();
-        // SAFETY: its handle, which nothing uses again: the box goes below. The
-        // callbacks it runs still find the multi.
-        unsafe { curl_multi_cleanup(this.raw()) };
+impl Multi {
+    /// `delete multi`'s work, before its last reference goes: the timer, then the
+    /// handle, whose callbacks still find the multi.
+    fn close(&self) {
+        self.del_timer();
+        // SAFETY: its handle, which nothing uses again: the caller drops the last
+        // reference to the multi next.
+        unsafe { curl_multi_cleanup(self.raw()) };
         // As upstream's `delete multi`, the sockets curl didn't remove stay:
         // a reactor socket may still carry one's address.
         #[expect(
             clippy::mem_forget,
             reason = "a reactor socket may still carry one's address"
         )]
-        std::mem::forget(this.sockets.take());
+        std::mem::forget(self.sockets.take());
     }
-    // SAFETY: per the caller.
-    drop(unsafe { Box::from_raw(multi) });
+}
+
+/// `Multi::release`: C++ lets go of `multi`, which closes, or, while a deferred
+/// wake-up is queued, is left to the wake-up, which holds it.
+fn release(multi: Rc<Multi>) {
+    if multi.defer_callback.get() {
+        multi.released.set(true);
+    } else {
+        multi.close();
+    }
+    // The last reference, unless a wake-up holds one.
+    drop(multi);
+}
+
+/// `Multi::release` of the multi `swoole_curl_multi_new` gave C++.
+/// # Safety
+/// `multi` is null or came from `swoole_curl_multi_new`; nothing uses it afterwards.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swr_v1_curl_multi_free(multi: *mut Multi) {
+    if multi.is_null() {
+        return;
+    }
+    // SAFETY: per the caller, the reference `swoole_curl_multi_new` gave up.
+    release(unsafe { Rc::from_raw(multi) });
 }
 
 /// `Multi::get_multi_handle`.
@@ -639,7 +658,7 @@ pub fn swr_v1_curl_multi_exec(multi: &Multi, handle: &mut Handle) -> CURLcode {
 }
 
 /// The multi's deferred wake-up: resume its waiting coroutine. True when
-/// [`swr_v1_curl_multi_free`] released the multi meanwhile: free it now.
+/// [`swr_v1_curl_multi_free`] released the multi meanwhile: close it now.
 fn multi_deferred(this: &Multi) -> bool {
     this.defer_callback.set(false);
     if this.released.get() {
@@ -656,8 +675,9 @@ fn multi_deferred(this: &Multi) -> bool {
 /// A reactor event (`CURL_CSELECT_*` in `bitmask`) on a cURL socket.
 fn socket_event(socket: &Socket, bitmask: c_int) {
     socket.bitmask.set(socket.bitmask.get() | bitmask);
-    // SAFETY: the multi that made the socket outlives it.
-    unsafe { &*socket.multi }.callback(Some(socket));
+    if let Some(multi) = socket.multi.upgrade() {
+        multi.callback(Some(socket));
+    }
 }
 
 /// `swoole::curl::get_handle`.
