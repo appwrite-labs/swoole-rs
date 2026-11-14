@@ -7,7 +7,7 @@ use crate::{
 };
 use std::{
     cell::Cell,
-    ffi::{CStr, c_int},
+    ffi::CStr,
     sync::{OnceLock, atomic::Ordering::Relaxed},
 };
 use swoole_rs_corebase::CCast;
@@ -67,7 +67,7 @@ pub enum ResponseArray {
 pub struct Server {
     /// `swoole_http2_server_onReceive`: an async server's data on an HTTP/2
     /// connection, with the session's connection.
-    pub on_receive: fn(view::Server<'_>, Connection<'_>, &RecvData) -> c_int,
+    pub on_receive: fn(view::Server<'_>, Connection<'_>, &RecvData) -> bool,
     /// The static file handler for the live server: true once it answered,
     /// or the bailout its work left pending.
     pub static_file: fn(view::Server<'_>, Ctx) -> Result<bool, Bailout>,
