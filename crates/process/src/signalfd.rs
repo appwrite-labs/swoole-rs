@@ -2,7 +2,7 @@
 //! blocked mask, the descriptor and the process that created it, registration and
 //! reading one `signalfd_siginfo`. Native code keeps the reactor `Socket` wrapping the
 //! descriptor, its event handler and callbacks, and the warnings.
-use crate::signal::{SIGNALS, Slot, signal_reset};
+use crate::signal::{Handler, SIGNALS, Slot, signal_reset};
 use std::ffi::c_int;
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering::Relaxed};
 use swoole_rs_corebase::sys;
@@ -82,7 +82,8 @@ pub fn signalfd_owned() -> bool {
 /// `swoole_signalfd_set` before the reactor setup: a null `handler` unregisters an
 /// active `signo`; otherwise it is registered. The descriptor, if any, and the
 /// process mask follow. Returns the previous handler.
-pub fn signalfd_set(signo: c_int, handler: usize) -> usize {
+pub fn signalfd_set(signo: c_int, handler: Handler) -> Handler {
+    let handler = handler.0;
     let mut previous = 0;
     let slot = slot(signo);
     if handler == 0 && slot.is_some_and(|slot| slot.activated.load(Relaxed)) {
@@ -106,7 +107,7 @@ pub fn signalfd_set(signo: c_int, handler: usize) -> usize {
         sigprocmask(libc::SIG_SETMASK, &mask);
         signalfd(fd, &mask);
     }
-    previous
+    Handler(previous)
 }
 
 /// Why creating the descriptor failed, with the errno where there is one.
@@ -169,7 +170,7 @@ pub fn signalfd_clear() -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Received {
     /// Call `handler` with `signo`.
-    Handler { signo: u32, handler: usize },
+    Handler { signo: u32, handler: Handler },
     /// The read failed with this errno.
     ReadFailed(i32),
     /// The signal number is out of range.
@@ -195,7 +196,10 @@ pub fn signalfd_receive(fd: c_int) -> Received {
     match (slot.activated.load(Relaxed), slot.handler.load(Relaxed)) {
         (false, _) | (true, SIG_IGN) => Received::Nothing,
         (true, 0) => Received::NoHandler(signo),
-        (true, handler) => Received::Handler { signo, handler },
+        (true, handler) => Received::Handler {
+            signo,
+            handler: Handler(handler),
+        },
     }
 }
 
@@ -211,7 +215,7 @@ mod tests {
         let _state = crate::signal_state_lock();
         let handler = handler as *const () as usize;
         swoole_signalfd_init();
-        assert_eq!(signalfd_set(libc::SIGURG, handler), 0);
+        assert_eq!(signalfd_set(libc::SIGURG, Handler(handler)), Handler::NONE);
         let fd = signalfd_create().unwrap();
         assert!(signalfd_owned());
         assert_eq!(signalfd_create(), Err(CreateError::Exists));
@@ -221,7 +225,7 @@ mod tests {
             signalfd_receive(fd),
             Received::Handler {
                 signo: libc::SIGURG.cast_unsigned(),
-                handler
+                handler: Handler(handler)
             }
         );
         assert!(matches!(signalfd_receive(fd), Received::ReadFailed(_)));

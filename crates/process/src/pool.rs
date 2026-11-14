@@ -939,13 +939,16 @@ pub(crate) fn swr_v1_process_worker_send(
     let length = data.len();
     let mut call = PoolCall::new(pool, ptr::null_mut());
     if queue {
-        let mut message = vec![0u64; (MTYPE + length).div_ceil(8)];
-        if let Some(mtype) = message.first_mut() {
-            *mtype = u64::from(worker_id) + 1;
-        }
-        let base = message.as_mut_ptr().cast::<u8>();
-        // SAFETY: the words hold `MTYPE + length` bytes, so `data` fits after `mtype`.
-        unsafe { ptr::copy_nonoverlapping(data.as_ptr(), base.wrapping_add(MTYPE), length) };
+        // `mtype`, then `data` in native-endian words, zero-padded.
+        let message: Vec<u64> = std::iter::once(u64::from(worker_id) + 1)
+            .chain(data.chunks(MTYPE).map(|chunk| {
+                let mut word = [0; MTYPE];
+                word.iter_mut()
+                    .zip(chunk)
+                    .for_each(|(to, from)| *to = *from);
+                u64::from_ne_bytes(word)
+            }))
+            .collect();
         // The queue's push, which cannot reach PHP.
         return if pool.queue_push(&message, length) {
             length.cast_signed()
