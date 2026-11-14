@@ -499,7 +499,7 @@ fn master_ops(pool: Pool<'_>, op: Op, arg: u64) -> i64 {
         }
         Op::PopMessage => {
             return POOL_MESSAGE.with_borrow_mut(|message| {
-                if pop_message(pool, &mut message.0) > 0 {
+                if pop_message(pool, &mut message.0).is_some_and(|length| length > 0) {
                     message.0.as_mut_ptr().expose_provenance().c_cast::<i64>()
                 } else {
                     0

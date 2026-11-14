@@ -999,7 +999,10 @@ impl PoolHost for Native<'_> {
         self.pool
             .record()
             .message_box_channel()
-            .map_or(SW_ERR, |channel| channel.push(message).into())
+            .map_or(
+                SW_ERR,
+                |channel| if channel.push(message) { SW_OK } else { SW_ERR },
+            )
     }
 
     fn free_box(&mut self) {
