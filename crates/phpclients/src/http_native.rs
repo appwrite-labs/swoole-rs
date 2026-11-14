@@ -125,7 +125,7 @@ impl Co {
 
     /// After the settings: no proxy handshake for plain HTTP proxying.
     pub(crate) fn skip_proxy_handshake(self) {
-        self.with_plain_proxy(|proxy| proxy.update(|fields| fields.dont_handshake = 1));
+        self.with_plain_proxy(|proxy| proxy.update(|fields| fields.dont_handshake = true));
     }
 
     /// Whether requests go through a plain HTTP proxy.

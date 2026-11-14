@@ -324,8 +324,7 @@ impl Connecting for Live<'_> {
     }
 
     fn http_handshake(&self) -> bool {
-        self.http
-            .is_some_and(|http| http.fields().dont_handshake == 0)
+        self.http.is_some_and(|http| !http.fields().dont_handshake)
     }
 
     fn ssl(&self) -> bool {
