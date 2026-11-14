@@ -399,19 +399,28 @@ pub unsafe extern "C" fn swr_v1_tls_owner_assign(
     }
 }
 
+/// Why a coroutine socket got no context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SocketContextError {
+    /// A datagram socket without DTLS support.
+    UnsupportedDtls,
+    /// Context creation failed.
+    Create,
+}
+
 /// Configure and create a coroutine socket's context from its authoritative owner.
-/// 0 success, 1 unsupported DTLS, 2 context creation failure.
-#[must_use]
+/// # Errors
+/// [`SocketContextError`].
 pub fn swr_v1_tls_owner_socket_context(
     mut owner: Lent<'_>,
     socket: swoole_rs_reactor::Socket<'_>,
     http2: bool,
     dtls_supported: bool,
-) -> c_int {
+) -> Result<(), SocketContextError> {
     let kind = socket.read(|record| record.socket_type);
     let dtls = swoole_rs_reactor::type_is(kind, swoole_rs_reactor::CLASS_DGRAM);
     if dtls && !dtls_supported {
-        return 1;
+        return Err(SocketContextError::UnsupportedDtls);
     }
     // Leaf updates, before OpenSSL callbacks may run.
     owner.edit(|fields| {
@@ -427,10 +436,10 @@ pub fn swr_v1_tls_owner_socket_context(
         });
     }
     if !create(&mut owner) {
-        return 2;
+        return Err(SocketContextError::Create);
     }
     socket.edit(|record| record.output.ssl_send = true);
-    0
+    Ok(())
 }
 
 /// Create and configure one coroutine TLS session, including moving write buffers
@@ -716,7 +725,7 @@ mod tests {
                         true,
                         true
                     ),
-                    0
+                    Ok(())
                 );
                 assert!((*socket).fields.output.ssl_send);
                 assert!((*prepared.fields).http_v2);
