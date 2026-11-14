@@ -390,7 +390,7 @@ impl Reap for Reaping<'_> {
 
     /// A child exited: restart it in place (not through a signal: `wait` names it).
     fn reap(&mut self, pid: c_int, status: c_int) -> bool {
-        _ = restart_worker_process(self.serv, &ExitStatus::new(pid, status));
+        restart_worker_process(self.serv, &ExitStatus::new(pid, status));
         true
     }
 
@@ -507,9 +507,8 @@ unsafe extern "C-unwind" fn read_worker_message(pool: PoolRef<'_>, msg: *mut c_v
 }
 
 /// `Server::restart_worker_process(exit_status)`: replace the worker whose process
-/// exited.
-#[must_use]
-pub fn restart_worker_process(serv: view::Server<'_>, status: &ExitStatus) -> c_int {
+/// exited. Upstream's result, -1 or the new pid, has no reader.
+pub fn restart_worker_process(serv: view::Server<'_>, status: &ExitStatus) {
     const ORIGIN: &core::ffi::CStr = c"Server::restart_worker_process";
     let pid = status.pid();
     let worker = worker_methods::get_worker_by_pid(serv, pid);
@@ -520,24 +519,21 @@ pub fn restart_worker_process(serv: view::Server<'_>, status: &ExitStatus) -> c_
             let m = format_args!("Unknown type child process [{pid}] exited");
             log::warning(ORIGIN, m);
         }
-        return -1;
+        return;
     };
     // Drop the stale pid; the respawn registers the new one.
     serv.registry().unregister(pid);
     check_exit_status(serv, Some(worker), status);
     match worker.kind() {
-        kind if kind == WorkerType::Event.code() => spawn_event_worker(serv, worker),
+        kind if kind == WorkerType::Event.code() => _ = spawn_event_worker(serv, worker),
         kind if kind == WorkerType::Task.code() => {
-            methods::spawn(serv.task_pool_ref(), worker.raw())
+            _ = methods::spawn(serv.task_pool_ref(), worker.raw());
         }
-        kind if kind == WorkerType::User.code() => spawn_user_worker(serv, worker),
-        kind => {
-            log::warning(
-                ORIGIN,
-                format_args!("Unknown worker [pid={pid}] type [{kind}]"),
-            );
-            -1
-        }
+        kind if kind == WorkerType::User.code() => _ = spawn_user_worker(serv, worker),
+        kind => log::warning(
+            ORIGIN,
+            format_args!("Unknown worker [pid={pid}] type [{kind}]"),
+        ),
     }
 }
 

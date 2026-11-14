@@ -841,7 +841,7 @@ fn restart_worker_process() {
         Worker::new(worker).set_pid(pid());
         swoole_rs_process::methods::add_worker(&*pool, Worker::new(worker));
     }
-    _ = manager::native::restart_worker_process(serv.view(), &fake_exit);
+    manager::native::restart_worker_process(serv.view(), &fake_exit);
 
     wait_all_child_processes();
 

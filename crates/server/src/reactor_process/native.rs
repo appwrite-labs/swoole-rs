@@ -75,10 +75,10 @@ extern "C-unwind" fn main_loop(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int {
 
 /// `pool->onWorkerNotFound`: restart the event worker that exited. The pool lends
 /// itself and the exit status for the call.
-extern "C-unwind" fn worker_not_found(pool: PoolRef<'_>, status: &ExitStatus) -> c_int {
+extern "C-unwind" fn worker_not_found(pool: PoolRef<'_>, status: &ExitStatus) {
     // SAFETY: a reactor process pool's `ptr` is its live server, as `main_loop`'s.
     let serv = unsafe { view::Server::from_raw(pool.ptr()) };
-    crate::manager::native::restart_worker_process(serv, status)
+    crate::manager::native::restart_worker_process(serv, status);
 }
 
 /// This thread's reactor reads its pipes with [`on_pipe_read`].
