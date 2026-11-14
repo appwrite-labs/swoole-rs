@@ -21,8 +21,8 @@ use swoole_rs_zend::{method_table, sys as z};
 const MIN_MS: i64 = 1;
 const MAX_MS: i64 = i64::MAX;
 /// `SW_ERROR_PHP_FATAL_ERROR` and `SW_ERROR_PHP_RUNTIME_NOTICE`.
-const PHP_FATAL_ERROR: c_int = 503;
-const PHP_RUNTIME_NOTICE: c_int = 510;
+const PHP_FATAL_ERROR: c_int = swoole_rs_error::ErrorCode::SW_ERROR_PHP_FATAL_ERROR as c_int;
+const PHP_RUNTIME_NOTICE: c_int = swoole_rs_error::ErrorCode::SW_ERROR_PHP_RUNTIME_NOTICE as c_int;
 
 static TIMER: Class = Class::new();
 static ITERATOR: Class = Class::new();

@@ -26,12 +26,17 @@ pub(crate) enum Property {
 }
 
 /// Swoole error codes (`include/swoole_error.h`; ext-src asserts them).
-pub(crate) const PHP_FATAL_ERROR: c_int = 503;
-pub(crate) const PHP_RUNTIME_NOTICE: c_int = 510;
-pub(crate) const NO_PAYLOAD: c_int = 550;
-pub(crate) const SESSION_CLOSED: c_int = 1004;
-pub(crate) const HTTP_CONTEXT_UNAVAILABLE: c_int = 7106;
-pub(crate) const SERVER_IS_NOT_REGULAR_FILE: c_int = 9013;
+pub(crate) const PHP_FATAL_ERROR: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_PHP_FATAL_ERROR as c_int;
+pub(crate) const PHP_RUNTIME_NOTICE: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_PHP_RUNTIME_NOTICE as c_int;
+pub(crate) const NO_PAYLOAD: c_int = swoole_rs_error::ErrorCode::SW_ERROR_NO_PAYLOAD as c_int;
+pub(crate) const SESSION_CLOSED: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SESSION_CLOSED as c_int;
+pub(crate) const HTTP_CONTEXT_UNAVAILABLE: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_HTTP_CONTEXT_UNAVAILABLE as c_int;
+pub(crate) const SERVER_IS_NOT_REGULAR_FILE: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SERVER_IS_NOT_REGULAR_FILE as c_int;
 
 /// `SW_HTTP_HEADER_KEY_SIZE`.
 pub(crate) const HEADER_KEY_SIZE: usize = 128;

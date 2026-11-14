@@ -15,7 +15,8 @@ const FORK_EXEC: c_int = 2;
 const FORK_DAEMON: c_int = 4;
 const FORK_PRECHECK: c_int = 8;
 /// `SW_ERROR_OPERATION_NOT_SUPPORT`.
-const OPERATION_NOT_SUPPORT: c_int = 507;
+const OPERATION_NOT_SUPPORT: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as c_int;
 
 /// `swoole::ThreadGlobal`, `SwooleTG`: Rust holds each thread's, and native code
 /// reaches it through `swr_v1_core_thread_global` (swoole.h's `SwooleTG`), whose

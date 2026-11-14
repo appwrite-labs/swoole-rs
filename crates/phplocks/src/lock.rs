@@ -23,7 +23,7 @@ pub(crate) const LOCK_EX: i64 = 2;
 /// and `HAVE_RWLOCK_TIMEDRDLOCK` (2), which Linux has and macOS lacks.
 pub(crate) const CAPABILITIES: u32 = if cfg!(target_os = "linux") { 3 } else { 0 };
 /// `SW_ERROR_WRONG_OPERATION`.
-const WRONG_OPERATION: c_int = 509;
+const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
 static LOCK: CustomClass<Held> = CustomClass::new();
 
 /// `struct LockObject { Lock *lock; zend_object std; }`: unset until `__construct`.

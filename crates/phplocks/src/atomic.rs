@@ -7,7 +7,7 @@ use swoole_rs_phpstubs::atomic;
 use swoole_rs_zend::{Call, Custom, CustomClass, Minit, method_table, sys::ZEND_ACC_PUBLIC};
 
 /// `SW_ERROR_MALLOC_FAIL`.
-const MALLOC_FAIL: i64 = 501;
+const MALLOC_FAIL: i64 = swoole_rs_error::ErrorCode::SW_ERROR_MALLOC_FAIL as i64;
 
 static ATOMIC: CustomClass<Atomic> = CustomClass::new();
 static LONG: CustomClass<Long> = CustomClass::new();

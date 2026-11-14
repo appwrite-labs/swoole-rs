@@ -15,6 +15,7 @@ php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:libc", "dep:swoole-rs-ph
        "dep:swoole-rs-phpclients", "swoole-rs-phpclients/php", "dep:swoole-rs-timer", "swoole-rs-timer/upstream-symbols"]
 
 [dependencies]
+swoole-rs-error = { path = "../error" }
 libc = { version = "=0.2.191", optional = true }
 swoole-rs-zend = { path = "../zend", optional = true }
 swoole-rs-phpstubs = { path = "../phpstubs", optional = true }

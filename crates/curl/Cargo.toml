@@ -12,6 +12,7 @@ description = "Swoole's coroutine cURL multi engine (--enable-swoole-curl)"
 php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php"]
 
 [dependencies]
+swoole-rs-error = { path = "../error" }
 libc = "=0.2.191"
 swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-coroutine = { path = "../coroutine", features = ["upstream-symbols"] }

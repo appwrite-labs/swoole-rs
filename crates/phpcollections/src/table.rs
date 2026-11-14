@@ -29,10 +29,10 @@ const KEY_SIZE: usize = 64;
 const CONFLICT_PROPORTION: f64 = 0.2;
 /// `SW_ERROR_MALLOC_FAIL`, `SW_ERROR_PHP_FATAL_ERROR`, `SW_ERROR_WRONG_OPERATION`,
 /// `SW_ERROR_PHP_RUNTIME_NOTICE`.
-const MALLOC_FAIL: i64 = 501;
-const PHP_FATAL_ERROR: c_int = 503;
-const WRONG_OPERATION: c_int = 509;
-const PHP_RUNTIME_NOTICE: c_int = 510;
+const MALLOC_FAIL: i64 = swoole_rs_error::ErrorCode::SW_ERROR_MALLOC_FAIL as i64;
+const PHP_FATAL_ERROR: c_int = swoole_rs_error::ErrorCode::SW_ERROR_PHP_FATAL_ERROR as c_int;
+const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
+const PHP_RUNTIME_NOTICE: c_int = swoole_rs_error::ErrorCode::SW_ERROR_PHP_RUNTIME_NOTICE as c_int;
 
 static TABLE: CustomClass<Held> = CustomClass::new();
 

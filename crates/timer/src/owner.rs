@@ -19,7 +19,7 @@ use swoole_rs_reactor::{
 
 /// `SW_LOG_WARNING` and `SW_ERROR_INVALID_PARAMS`.
 const LOG_WARNING: c_int = 4;
-const INVALID_PARAMS: c_int = 505;
+const INVALID_PARAMS: c_int = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as c_int;
 /// `swr_v1_timer_backend`'s modes.
 const MANUAL: u32 = 0;
 const REACTOR: u32 = 1;

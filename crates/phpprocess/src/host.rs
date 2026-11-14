@@ -36,7 +36,7 @@ unsafe extern "C" {
 const SOCK_UNIX_STREAM: c_int = 5;
 const SOCK_UNIX_DGRAM: c_int = 6;
 /// `SW_ERROR_WRONG_OPERATION`.
-const WRONG_OPERATION: c_int = 509;
+const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
 
 /// `f` over the process's server (`sw_server()`), or `None` while it has none.
 /// Each `f` here reads the server's config and worker records and returns; none

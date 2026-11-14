@@ -291,7 +291,8 @@ format_exports! {
 
 /// `SW_LOG_ERROR` and `SW_ERROR_SERVER_TOO_MANY_LISTEN_PORT`.
 const LOG_ERROR: c_int = 5;
-const TOO_MANY_LISTEN_PORT: c_int = 9005;
+const TOO_MANY_LISTEN_PORT: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SERVER_TOO_MANY_LISTEN_PORT as c_int;
 
 /// Why `LISTEN_FDS` gives no count, which picks the log line.
 #[derive(Debug, PartialEq, Eq)]

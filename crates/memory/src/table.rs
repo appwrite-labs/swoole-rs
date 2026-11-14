@@ -62,7 +62,7 @@ const MAX_ROWS: u32 = 0x8000_0000;
 const CONFLICT_PROPORTION: f32 = 0.2;
 const FORCE_UNLOCK_MS: u128 = 2000;
 const SPINLOCK_LOOP_N: u32 = 1024;
-const SW_ERROR_MALLOC_FAIL: c_int = 501;
+const SW_ERROR_MALLOC_FAIL: c_int = swoole_rs_error::ErrorCode::SW_ERROR_MALLOC_FAIL as c_int;
 
 /// The host's hash of a key as the caller passed it, whose row compares its
 /// first `compared` bytes: upstream's `hash_func(key, keylen)`, which

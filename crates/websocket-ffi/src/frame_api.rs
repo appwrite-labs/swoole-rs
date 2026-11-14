@@ -20,7 +20,8 @@ use swoole_rs_websocket::{
 /// `SW_LOG_WARNING`.
 const LOG_WARNING: c_int = 4;
 /// `SW_ERROR_WEBSOCKET_INCOMPLETE_PACKET`.
-const INCOMPLETE_PACKET: c_int = 8507;
+const INCOMPLETE_PACKET: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_WEBSOCKET_INCOMPLETE_PACKET as c_int;
 /// `FLAG_FIN`, `FLAG_MASK`, `FLAG_ENCODE_HEADER_ONLY`.
 const FIN: u8 = 1;
 const MASK: u8 = 32;

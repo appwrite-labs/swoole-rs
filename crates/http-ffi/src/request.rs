@@ -64,7 +64,7 @@ fn op(native: HttpNative, op: NativeOp, a: *mut c_void, b: *const u8, n: u64) ->
 /// `SW_LOG_NOTICE`, `SW_LOG_WARNING` and `SW_ERROR_SERVER_INVALID_REQUEST`.
 const NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
 const WARNING: c_int = 4;
-const INVALID_REQUEST: c_int = 9010;
+const INVALID_REQUEST: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SERVER_INVALID_REQUEST as c_int;
 
 fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)

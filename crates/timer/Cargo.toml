@@ -14,6 +14,7 @@ crate-type = ["rlib", "staticlib"]
 upstream-symbols = ["dep:swoole-rs-reactor", "swoole-rs-reactor/upstream-symbols"]
 
 [dependencies]
+swoole-rs-error = { path = "../error" }
 libc = "=0.2.191"
 swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-reactor = { path = "../reactor", optional = true }

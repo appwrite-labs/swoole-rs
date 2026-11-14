@@ -25,7 +25,7 @@ use swoole_rs_zend::{
 const HEAD: u8 = 2;
 /// `SW_LOG_WARNING`, `SW_ERROR_HTTP_CONFLICT_HEADER`.
 const LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
-const CONFLICT_HEADER: c_int = 7105;
+const CONFLICT_HEADER: c_int = swoole_rs_error::ErrorCode::SW_ERROR_HTTP_CONFLICT_HEADER as c_int;
 /// MINIT's codec bits (`parse.rs`): zlib, Brotli and zstd, and any codec built.
 const CODECS: u32 = 7;
 const COMPRESSION: u32 = 8;

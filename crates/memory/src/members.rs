@@ -22,7 +22,7 @@ use swoole_rs_corebase::log::{self, set_last_error};
 const INVALID: i32 = -1;
 const NO_MEMORY: i32 = -2;
 /// `SW_ERROR_MALLOC_FAIL`.
-const MALLOC_FAIL: c_int = 501;
+const MALLOC_FAIL: c_int = swoole_rs_error::ErrorCode::SW_ERROR_MALLOC_FAIL as c_int;
 /// `SW_MIN_PAGE_SIZE`.
 const MIN_PAGE_SIZE: u32 = 4096;
 

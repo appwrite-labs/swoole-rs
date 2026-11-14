@@ -59,8 +59,9 @@ const PARSE_STRING: c_int = 3;
 /// `SW_ERROR_SERVER_INVALID_REQUEST` (asserted in ext-src).
 const LOG_TRACE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as c_int;
 const LOG_NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
-const SESSION_CLOSED: c_int = 1004;
-const SERVER_INVALID_REQUEST: c_int = 9010;
+const SESSION_CLOSED: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SESSION_CLOSED as c_int;
+const SERVER_INVALID_REQUEST: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SERVER_INVALID_REQUEST as c_int;
 /// `SW_STACK_BUFFER_SIZE` (also `sw_tg_buffer()`'s size), `SW_BUFFER_SIZE_STD`,
 /// `SW_HTTP_FORM_KEYLEN`, `SW_HTTP_UPLOAD_TMPDIR_SIZE`, `HT_MIN_SIZE`.
 const STACK_BUFFER_SIZE: usize = 65536;
