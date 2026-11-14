@@ -242,7 +242,7 @@ fn record_locks_signals_and_prints_like_native_channel() {
         let record = memory.as_mut_ptr().cast::<Record>();
         assert_eq!(
             unsafe { swr_v1_memory_channel_init(record, 128, 32, flags) },
-            0
+            Ok(())
         );
         let live = unsafe { &*record };
         assert_eq!(live.queue(|queue| queue.mem), record.wrapping_add(1).cast());
@@ -261,7 +261,7 @@ fn record_locks_signals_and_prints_like_native_channel() {
     assert_eq!(swr_v1_memory_channel_bytes(usize::MAX, 4), 0, "overflow");
     assert_eq!(
         unsafe { swr_v1_memory_channel_init(ptr::null_mut(), 128, 32, 0) },
-        -1
+        Err(ChannelInitError::Invalid)
     );
 }
 
@@ -311,7 +311,7 @@ impl Native {
         let record = memory.as_mut_ptr().cast::<Record>();
         assert_eq!(
             unsafe { swr_v1_memory_channel_init(record, size, maxlen, flags) },
-            0
+            Ok(())
         );
         Native(memory)
     }
