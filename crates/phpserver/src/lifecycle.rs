@@ -22,7 +22,7 @@ use swoole_rs_server::{server_methods, swr_v1_server_add_command, swr_v1_server_
 use swoole_rs_zend::host::callable::Callable as Kept;
 use swoole_rs_zend::{
     ArrayMut, Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Message, Owned, Value, ZString,
-    bailout, message, report, sys::zval,
+    bailout, message, report,
 };
 
 /// What [`fact`] answers of a server.
@@ -585,9 +585,9 @@ impl<'a> Props<'a> {
     /// `object_init_ex(target, class)`: a new object in `target`, under its class;
     /// the handle borrows `target`, so it can't outlive the object. Zend
     /// instantiates every registered data class.
-    pub(crate) fn init(target: &'a mut zval, class: &Class) -> Self {
-        *target = class.create_object().into_zval();
-        Self(Value::of(target).props(Some(class)))
+    pub(crate) fn init(target: &'a mut Owned, class: &Class) -> Self {
+        *target = class.create_object();
+        Self(target.props(Some(class)))
     }
 
     /// The same handle as crates/zend's, whose writes defer a bailout.
@@ -637,10 +637,6 @@ impl<'a> Props<'a> {
         if let Some(props) = self.0 {
             props.merge(name, settings);
         }
-    }
-
-    pub(crate) fn value(self, name: &CStr, value: &mut zval) {
-        self.set(name, Value::of(value));
     }
 
     /// `host`, `port`, `type`, `sock` (with `fd`) and `ssl` from `info`.
@@ -903,12 +899,10 @@ fn command_run(callable: &Weak<Kept>, message: &[u8], reply: &mut Vec<u8>) {
         send(br#"{"data": "failed to call function", "code": -1}"#);
         return;
     };
-    let message = Owned::string(ZString::new(message)).into_zval();
-    let mut args = [crate::dispatch::zserv(), message];
+    let message = [Owned::string(ZString::new(message))];
     let retval = Owned::default();
-    let called = crate::dispatch::invoke(&callable, &mut args, Some(&retval), false);
-    // The message string made above.
-    crate::dispatch::dtor(&mut args[1]);
+    let called = crate::dispatch::invoke(&callable, &message, Some(&retval), false);
+    drop(message);
     let bailed = match called {
         Err(_) => true,
         Ok(false) => {

@@ -24,10 +24,10 @@ use swoole_rs_server::ConnectionRecord;
 use swoole_rs_server::callbacks::{Callback, CallbackKind, Ctx};
 use swoole_rs_zend::host::callable;
 use swoole_rs_zend::{
-    E_WARNING, Owned, OwnedArray, Value, ZString,
+    E_WARNING, Owned, OwnedArray, UNDEF, Value, ZString,
     bailout::{self, Bailout},
     long_zval, message, report,
-    sys::{zval, zval_ptr_dtor},
+    sys::zval,
 };
 
 /// `SW_ERROR_PHP_RUNTIME_NOTICE`.
@@ -69,33 +69,44 @@ enum Called {
     Bailout,
 }
 
-/// An `IS_UNDEF` zval.
-#[inline]
-pub(crate) fn undef() -> zval {
-    swoole_rs_zend::UNDEF
-}
-
 /// `zend::function::call(cb, argc, args, nullptr, coroutine)`, warning
 /// "`<class>->on<event> handler error`" (`php_swoole_error`) when it fails.
 #[inline]
-fn call(cb: &Callable, args: &mut [zval], coroutine: bool, event: &str) -> Called {
-    match invoke(cb, args, None, coroutine) {
+fn call(cb: &Callable, args: &[Owned], coroutine: bool, event: &str) -> Called {
+    with_server(args, |argv| call_argv(cb, argv, coroutine, event))
+}
+
+/// [`call`] over the whole argument array, the server's first.
+#[inline]
+fn call_argv(cb: &Callable, argv: &mut [zval], coroutine: bool, event: &str) -> Called {
+    match invoke_argv(cb, argv, None, coroutine) {
         Ok(true) => Called::Done,
         Err(_) => Called::Bailout,
         Ok(false) => failed(event),
     }
 }
 
-/// `zend::function::call(cb, argc, args, retval, coroutine)`: whether the
-/// callable ran (or its coroutine started), or the bailout it raised, which
-/// the caller re-raises or hands to C++ (it is no longer pending here).
+/// `zend::function::call(cb, argc, args, retval, coroutine)` with the server,
+/// then `args`: whether the callable ran (or its coroutine started), or the
+/// bailout it raised, which the caller re-raises or hands to C++ (it is no
+/// longer pending here).
 pub(crate) fn invoke(
     cb: &Callable,
-    args: &mut [zval],
+    args: &[Owned],
     retval: Option<&Value>,
     coroutine: bool,
 ) -> Result<bool, Bailout> {
-    let called = swoole_rs_phpcoroutines::call_args(cb, args, retval, coroutine);
+    with_server(args, |argv| invoke_argv(cb, argv, retval, coroutine))
+}
+
+/// [`invoke`] over the whole argument array, the server's first.
+fn invoke_argv(
+    cb: &Callable,
+    argv: &mut [zval],
+    retval: Option<&Value>,
+    coroutine: bool,
+) -> Result<bool, Bailout> {
+    let called = swoole_rs_phpcoroutines::call_args(cb, argv, retval, coroutine);
     called.map_err(|bailout| {
         let _relayed = bailout::relay_to_c(Err(bailout));
         Bailout
@@ -119,14 +130,17 @@ fn failed(event: &str) -> Called {
     Called::Failed
 }
 
-/// `\Swoole\Server\Helper::<name>(...args)` when the library is enabled.
+/// `\Swoole\Server\Helper::<name>($server, ...args)` when the library is enabled.
 #[inline]
-fn helper(facts: &Facts, name: &CStr, args: &mut [zval]) -> bool {
+fn helper(facts: &Facts, name: &CStr, args: &[Owned]) -> bool {
     if !facts.enable_library {
         return false;
     }
     let name = [br"\Swoole\Server\Helper::", name.to_bytes()].concat();
-    let args: Vec<&Value> = args.iter_mut().map(Value::of).collect();
+    let mut server = zserv();
+    let args: Vec<&Value> = std::iter::once(Value::of(&mut server))
+        .chain(args.iter().map(|arg| &**arg))
+        .collect();
     swoole_rs_zend::host::named_call(&name, &args).is_err()
 }
 
@@ -187,47 +201,74 @@ pub fn zserv() -> zval {
     crate::instance::server_zval()
 }
 
-pub(crate) fn dtor(value: &mut zval) {
-    // SAFETY: a value this dispatch owns.
-    unsafe { zval_ptr_dtor(value) };
+/// `f` over a callback's argument array: the server's object, then `args`
+/// (at most four), each copied without a reference as upstream passes them;
+/// `args` keep theirs, and their drop releases them.
+fn with_server<R>(args: &[Owned], f: impl FnOnce(&mut [zval]) -> R) -> R {
+    let mut argv = [zserv(), UNDEF, UNDEF, UNDEF, UNDEF];
+    for (slot, arg) in argv.iter_mut().skip(1).zip(args) {
+        *slot = arg.copy_value();
+    }
+    let argc = argv.len().min(args.len() + 1);
+    f(argv.get_mut(..argc).unwrap_or_default())
 }
 
-/// `php_swoole_server_onReceive`'s arguments after `args[0]`, the server.
-/// Returns argc.
+/// A callback's arguments, after a bailout: left unreleased, as upstream's
+/// jump skipped their release, so no destructor runs with it pending.
+fn leak<const N: usize>(args: [Owned; N]) -> bool {
+    #[expect(
+        clippy::mem_forget,
+        reason = "upstream's bailout jumps over its arguments' release"
+    )]
+    std::mem::forget(args);
+    true
+}
+
+/// The first `argc` of `args`, those the callback takes.
+pub(crate) fn used(args: &[Owned], argc: usize) -> &[Owned] {
+    args.get(..argc).unwrap_or_default()
+}
+
+/// `php_swoole_server_onReceive`'s arguments: the one value they own (the
+/// event, or the data), then the array the call takes and its length, which
+/// copies it without a reference. The hot path builds the array directly,
+/// as [`with_server`] would cost it a few dozen instructions per request.
 fn receive_args(
     server: view::Server<'_>,
     request: &RecvData,
     event_object: bool,
-    args: &mut [zval; 4],
-) -> usize {
+) -> (Owned, [zval; 4], usize) {
     let info = request.info();
     let (fd, reactor_id) = (info.fd, i64::from(info.reactor_id));
     if event_object {
-        let props = Props::init(&mut args[1], &DATA[EVENT]);
+        let mut event = Owned::default();
+        let props = Props::init(&mut event, &DATA[EVENT]);
         props.long(c"fd", fd);
         props.long(c"reactor_id", reactor_id);
         props.double(c"dispatch_time", info.time);
         props.set(c"data", &php_swoole_get_recv_data(server, request));
-        2
+        let argv = [zserv(), event.copy_value(), UNDEF, UNDEF];
+        (event, argv, 2)
     } else {
-        args[1] = long_zval(fd);
-        args[2] = long_zval(reactor_id);
-        args[3] = php_swoole_get_recv_data(server, request).into_zval();
-        4
+        let data = php_swoole_get_recv_data(server, request);
+        let argv = [
+            zserv(),
+            long_zval(fd),
+            long_zval(reactor_id),
+            data.copy_value(),
+        ];
+        (data, argv, 4)
     }
 }
 
 /// After the call: the warning and close of a failed call, and the
-/// arguments' release. True on a bailout.
-fn receive_done(server: view::Server<'_>, succeeded: bool, fd: i64, args: &mut [zval]) -> bool {
+/// argument's release. True on a bailout.
+fn receive_done(server: view::Server<'_>, succeeded: bool, fd: i64, owned: Owned) -> bool {
     if !succeeded {
         if failed("onReceive") == Called::Bailout {
-            return true;
+            return leak([owned]);
         }
         server_methods::close(server, fd, false);
-    }
-    if let Some(last) = args.last_mut() {
-        dtor(last);
     }
     false
 }
@@ -242,32 +283,21 @@ fn on_connection(
     time: f64,
 ) -> bool {
     let facts = facts(server);
-    let mut args = [zserv(), undef(), undef()];
+    let mut args = [Owned::default(), Owned::default()];
     let argc = if facts.event_object {
-        let props = Props::init(&mut args[1], &DATA[EVENT]);
+        let props = Props::init(&mut args[0], &DATA[EVENT]);
         props.long(c"fd", fd);
         props.long(c"reactor_id", reactor_id);
         props.double(c"dispatch_time", time);
-        2
+        1
     } else {
-        args[1] = long_zval(fd);
-        args[2] = long_zval(reactor_id);
-        3
+        args[0] = Owned::long(fd);
+        args[1] = Owned::long(reactor_id);
+        2
     };
     let event = if close { "onClose" } else { "onConnect" };
-    if call(
-        cb,
-        args.get_mut(..argc).unwrap_or_default(),
-        facts.enable_coroutine,
-        event,
-    ) == Called::Bailout
-    {
-        return true;
-    }
-    if facts.event_object {
-        dtor(&mut args[1]);
-    }
-    false
+    let called = call(cb, used(&args, argc), facts.enable_coroutine, event);
+    called == Called::Bailout && leak(args)
 }
 
 /// `php_swoole_server_onBufferFull`/`onBufferEmpty`'s call.
@@ -280,16 +310,15 @@ fn on_buffer(server: view::Server<'_>, full: bool, fd: i64, server_fd: c_int) ->
     let Some(cb) = php_swoole_server_get_callback(server, server_fd, kind) else {
         return false;
     };
-    let mut args = [zserv(), long_zval(fd)];
-    call(&cb, &mut args, false, event) == Called::Bailout
+    call(&cb, &[Owned::long(fd)], false, event) == Called::Bailout
 }
 
 /// `php_swoole_server_onPacket`'s call, once the datagram is read.
 fn on_packet(server: view::Server<'_>, packet: &Packet<'_>, server_fd: c_int, time: f64) -> bool {
     let facts = facts(server);
-    let mut args = [zserv(), undef(), undef()];
+    let mut args = [Owned::default(), Owned::default()];
     let argc = if facts.event_object {
-        let props = Props::init(&mut args[1], &DATA[PACKET]);
+        let props = Props::init(&mut args[0], &DATA[PACKET]);
         props.long(c"server_socket", i64::from(server_fd));
         props.double(c"dispatch_time", time);
         if packet.server_port >= 0 {
@@ -302,7 +331,7 @@ fn on_packet(server: view::Server<'_>, packet: &Packet<'_>, server_fd: c_int, ti
             }
         }
         props.bytes(c"data", packet.data);
-        2
+        1
     } else {
         let mut address = OwnedArray::default();
         address.insert_long(b"server_socket", i64::from(server_fd));
@@ -316,39 +345,25 @@ fn on_packet(server: view::Server<'_>, packet: &Packet<'_>, server_fd: c_int, ti
                 address.insert_long(b"port", packet.port);
             }
         }
-        args[1] = Owned::string(ZString::new(packet.data)).into_zval();
-        args[2] = address.into_owned().into_zval();
-        3
+        args[0] = Owned::string(ZString::new(packet.data));
+        args[1] = address.into_owned();
+        2
     };
     let Some(cb) = php_swoole_server_get_callback(server, server_fd, PortCallback::Packet) else {
-        dtor(&mut args[1]);
-        if !facts.event_object {
-            dtor(&mut args[2]);
-        }
         return false;
     };
+    // Built directly, as on onReceive's path.
+    let mut argv = [zserv(), args[0].copy_value(), args[1].copy_value()];
+    let argv = argv.get_mut(..=argc).unwrap_or_default();
     // Upstream names onPipeMessage in onPacket's warning.
-    if call(
-        &cb,
-        args.get_mut(..argc).unwrap_or_default(),
-        facts.enable_coroutine,
-        "onPipeMessage",
-    ) == Called::Bailout
-    {
-        return true;
-    }
-    dtor(&mut args[1]);
-    if !facts.event_object {
-        dtor(&mut args[2]);
-    }
-    false
+    let called = call_argv(&cb, argv, facts.enable_coroutine, "onPipeMessage");
+    called == Called::Bailout && leak(args)
 }
 
-/// `php_swoole_server_onPipeMessage`'s call with the unpacked `data`, which
-/// the caller still owns.
+/// `php_swoole_server_onPipeMessage`'s call with the unpacked `data`.
 fn on_pipe_message(
     server: view::Server<'_>,
-    data: &mut zval,
+    data: Owned,
     source_worker_id: i64,
     time: f64,
 ) -> bool {
@@ -356,33 +371,22 @@ fn on_pipe_message(
         return false;
     };
     let facts = facts(server);
-    let mut args = [zserv(), undef(), undef()];
+    // `data` is the last argument, or the event's property and released with the others.
+    let mut args = [Owned::default(), data];
     let argc = if facts.event_object {
-        let props = Props::init(&mut args[1], &DATA[PIPE_MESSAGE]);
+        let [event, data] = &mut args;
+        let props = Props::init(event, &DATA[PIPE_MESSAGE]);
         props.long(c"worker_id", source_worker_id);
         props.long(c"source_worker_id", source_worker_id);
         props.double(c"dispatch_time", time);
-        props.value(c"data", data);
-        2
+        props.set(c"data", data);
+        1
     } else {
-        args[1] = long_zval(source_worker_id);
-        // Borrowed without a reference, as upstream's `args[2] = zresult.value`.
-        args[2] = *data;
-        3
+        args[0] = Owned::long(source_worker_id);
+        2
     };
-    if call(
-        &cb,
-        args.get_mut(..argc).unwrap_or_default(),
-        facts.coroutine,
-        "onPipeMessage",
-    ) == Called::Bailout
-    {
-        return true;
-    }
-    if facts.event_object {
-        dtor(&mut args[1]);
-    }
-    false
+    let called = call(&cb, used(&args, argc), facts.coroutine, "onPipeMessage");
+    called == Called::Bailout && leak(args)
 }
 
 /// What a lifecycle event does: its warning name, the helper it runs first and
@@ -416,7 +420,7 @@ fn on_lifecycle(server: view::Server<'_>, kind: ServerCallback, worker_id: i64) 
     }
     let cb = crate::lifecycle::callback(kind);
     let facts = facts(server);
-    let mut args = [zserv(), long_zval(worker_id)];
+    let args = [Owned::long(worker_id)];
     {
         // The running server's object, held only for these writes.
         let held = ServerObject::running();
@@ -437,31 +441,19 @@ fn on_lifecycle(server: view::Server<'_>, kind: ServerCallback, worker_id: i64) 
     if kind == ServerCallback::WorkerStart {
         prepare_worker(server);
     }
-    let argc = if matches!(
+    let worker_event = matches!(
         kind,
         ServerCallback::WorkerStart | ServerCallback::WorkerStop | ServerCallback::WorkerExit
-    ) {
-        2
-    } else {
-        1
-    };
-    if helper(
-        &facts,
-        helper_name,
-        args.get_mut(..argc).unwrap_or_default(),
-    ) {
+    );
+    let args = if worker_event { &args[..] } else { &[] };
+    if helper(&facts, helper_name, args) {
         return true;
     }
     let Some(cb) = cb else {
         return false;
     };
     let coroutine = coroutine && facts.coroutine;
-    call(
-        &cb,
-        args.get_mut(..argc).unwrap_or_default(),
-        coroutine,
-        event,
-    ) == Called::Bailout
+    call(&cb, args, coroutine, event) == Called::Bailout
 }
 
 /// `php_swoole_server_onWorkerError`'s body.
@@ -475,43 +467,32 @@ fn on_worker_error(
 ) -> bool {
     let cb = crate::lifecycle::callback(ServerCallback::WorkerError);
     let facts = facts(server);
-    let mut args = [zserv(), undef(), undef(), undef(), undef()];
+    let mut args = [
+        Owned::default(),
+        Owned::default(),
+        Owned::default(),
+        Owned::default(),
+    ];
     let argc = if facts.event_object {
-        let props = Props::init(&mut args[1], &DATA[STATUS_INFO]);
+        let props = Props::init(&mut args[0], &DATA[STATUS_INFO]);
         props.long(c"worker_id", worker_id);
         props.long(c"worker_pid", pid);
         props.long(c"status", status);
         props.long(c"exit_code", code);
         props.long(c"signal", signal);
-        2
+        1
     } else {
-        args[1] = long_zval(worker_id);
-        args[2] = long_zval(pid);
-        args[3] = long_zval(code);
-        args[4] = long_zval(signal);
-        5
+        args[0] = Owned::long(worker_id);
+        args[1] = Owned::long(pid);
+        args[2] = Owned::long(code);
+        args[3] = Owned::long(signal);
+        4
     };
-    if helper(
-        &facts,
-        c"onWorkerError",
-        args.get_mut(..1).unwrap_or_default(),
-    ) {
-        return true;
+    if helper(&facts, c"onWorkerError", &[]) {
+        return leak(args);
     }
-    if let Some(cb) = cb
-        && call(
-            &cb,
-            args.get_mut(..argc).unwrap_or_default(),
-            false,
-            "onWorkerError",
-        ) == Called::Bailout
-    {
-        return true;
-    }
-    if facts.event_object {
-        dtor(&mut args[1]);
-    }
-    false
+    cb.is_some_and(|cb| call(&cb, used(&args, argc), false, "onWorkerError") == Called::Bailout)
+        && leak(args)
 }
 
 // The Server's on* slots. Each fn takes the slot's null `ctx`, then the
@@ -630,20 +611,16 @@ extern "C" fn on_finish(_: Ctx, server: view::Server<'_>, task: Packed<'_>) -> c
 }
 
 extern "C" fn on_pipe_message_slot(_: Ctx, server: view::Server<'_>, message: Packed<'_>) {
-    let (mut data, unpacked, mut bailed) = match crate::task::decode(message) {
-        Ok(Some((data, done))) => (data.into_zval(), done, false),
-        Ok(None) => (undef(), false, false),
-        Err(Bailout) => (undef(), false, true),
+    let bailed = match crate::task::decode(message) {
+        Ok(Some((data, true))) => {
+            let info = message.head();
+            // `Server::get_task_src_worker_id`.
+            let source = i64::from(info.reactor_id);
+            on_pipe_message(server, data, source, info.time)
+        }
+        Ok(_) => false,
+        Err(Bailout) => true,
     };
-    if unpacked {
-        let info = message.head();
-        // `Server::get_task_src_worker_id`.
-        let source = i64::from(info.reactor_id);
-        bailed = on_pipe_message(server, &mut data, source, info.time);
-    }
-    if !bailed {
-        dtor(&mut data);
-    }
     relay(bailed);
 }
 
@@ -656,22 +633,13 @@ pub fn php_swoole_server_on_receive(server: view::Server<'_>, request: &RecvData
         return SW_OK;
     };
     let config = server.config();
-    let mut args = [zserv(), undef(), undef(), undef()];
-    let argc = receive_args(server, request, config.event_object.get(), &mut args);
-    let called = invoke(
-        &cb,
-        args.get_mut(..argc).unwrap_or_default(),
-        None,
-        config.enable_coroutine.get(),
-    );
-    relay(called.map_or(true, |succeeded| {
-        receive_done(
-            server,
-            succeeded,
-            info.fd,
-            args.get_mut(..argc).unwrap_or_default(),
-        )
-    }));
+    let (owned, mut argv, argc) = receive_args(server, request, config.event_object.get());
+    let argv = argv.get_mut(..argc).unwrap_or_default();
+    let called = invoke_argv(&cb, argv, None, config.enable_coroutine.get());
+    relay(match called {
+        Ok(succeeded) => receive_done(server, succeeded, info.fd, owned),
+        Err(Bailout) => leak([owned]),
+    });
     SW_OK
 }
 
@@ -1022,29 +990,29 @@ extern "C" fn on_dispatch(
     else {
         return -1;
     };
-    // Its live object, copied without a reference as upstream.
-    let zserv = zserv();
     let session = match conn {
         Some(conn) => conn.session_id,
         None => send.map_or(0, |send| send.info().fd),
     };
     let kind = send.map_or(ServerEvent::Close.code(), |send| send.info().kind);
     let mut args = [
-        zserv,
-        long_zval(session),
-        long_zval(i64::from(kind)),
-        undef(),
+        Owned::long(session),
+        Owned::long(i64::from(kind)),
+        Owned::default(),
     ];
-    let mut argc = 3;
+    let mut argc = 2;
     if let Some(send) = send.filter(|_| dispatch.max_num_args() > 3) {
         let payload = send.payload();
         let bytes = payload.get(..SW_IPC_BUFFER_SIZE).unwrap_or(payload);
-        args[3] = Owned::string(ZString::new(bytes)).into_zval();
-        argc = 4;
+        args[2] = Owned::string(ZString::new(bytes));
+        argc = 3;
     }
     let retval = Owned::default();
     let mut worker_id = -1;
-    match call_unlimited(dispatch, args.get_mut(..argc).unwrap_or_default(), &retval) {
+    let called = with_server(used(&args, argc), |argv| {
+        call_unlimited(dispatch, argv, &retval)
+    });
+    match called {
         Ok(false) => {
             if failed("onDispatch") == Called::Bailout {
                 Bailout.defer();
@@ -1064,9 +1032,7 @@ extern "C" fn on_dispatch(
     }
     // Released first: `finish` may jump over this frame.
     drop(retval);
-    if argc == 4 {
-        dtor(&mut args[3]);
-    }
+    drop(args);
     drop(owner);
     bailout::finish();
     c_int::try_from(worker_id).unwrap_or(-1)
@@ -1082,17 +1048,16 @@ impl swoole_rs_phpswoole::length::PackageLength for Length {
     }
 
     fn length(callable: &callable::Callable, bytes: &[u8]) -> isize {
-        let mut data = Owned::string(ZString::new(bytes)).into_zval();
+        let data = Owned::string(ZString::new(bytes));
         let retval = Owned::default();
         let mut result = -1;
-        let args = std::slice::from_mut(&mut data);
-        match call_unlimited(callable, args, &retval) {
+        match call_unlimited(callable, &mut [data.copy_value()], &retval) {
             Ok(false) => crate::server::fatal(E_WARNING, c"length function handler error"),
             Ok(true) => result = isize::try_from(retval.long()).unwrap_or(-1),
             Err(_) => Bailout.defer(),
         }
         drop(retval);
-        dtor(&mut data);
+        drop(data);
         result
     }
 }
