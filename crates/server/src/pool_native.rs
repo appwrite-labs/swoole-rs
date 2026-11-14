@@ -45,11 +45,10 @@ use swoole_rs_timer::{
 use swoole_rs_tls::socket_pair::{self, SocketPair, unix_socket};
 use swoole_rs_tls::upstream::{self, read_sync_fill, recv_sync_fill, socket_free};
 
-/// `swoole::ProtocolType`, `SW_FD_PIPE`, `SW_EVENT_READ`, `SW_TIMEOUT_READ`,
+/// `swoole::ProtocolType`, `SW_FD_PIPE`, `SW_EVENT_READ`,
 /// `SW_EVENTLOOP_WAIT_EXIT` and the `Channel` flags.
 const FD_PIPE: c_int = 3;
 const EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
-const TIMEOUT_READ: c_int = 4;
 const EVENTLOOP_WAIT_EXIT: c_int = 1;
 /// `sizeof(EventData)`.
 const EVENT_SIZE: usize = SW_IPC_MAX_SIZE as usize;
@@ -610,7 +609,10 @@ impl PoolNative for Native {
             };
             let next = swoole_timer_get_next_msec();
             let timeout = next.c_cast::<f64>() / 1000.0;
-            pipe.edit(|pipe| pipe.timeouts.set(timeout, TIMEOUT_READ));
+            pipe.edit(|pipe| {
+                pipe.timeouts
+                    .set(timeout, swoole_rs_reactor::TimeoutKind::READ);
+            });
             // SAFETY: the call's buffer.
             let buffer = unsafe { swoole_rs_reactor::Fill::from_raw(c.data(), c.length()) };
             read_sync_fill(pipe, buffer)

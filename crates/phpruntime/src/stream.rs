@@ -8,9 +8,7 @@
 //! An operation that can run PHP code (a warning's error handler, a progress
 //! notifier, `openssl_x509_read`) traps a bailout and reports it through its
 //! `bailout` flag; the C++ entry re-raises it once these frames are gone.
-use crate::socket::{
-    RecvOp, Report, SendOp, Socket, check_reactor, kind, report, timeout, x509_read,
-};
+use crate::socket::{RecvOp, Report, SendOp, Socket, check_reactor, kind, report, x509_read};
 use libc::{c_char, c_int, c_void, sockaddr_storage, socklen_t};
 use std::{
     ffi::{CStr, CString},
@@ -19,7 +17,7 @@ use std::{
     rc::Rc,
 };
 use swoole_rs_corebase::{CCast, sys::Text};
-use swoole_rs_reactor::Caught;
+use swoole_rs_reactor::{Caught, TimeoutKind};
 use swoole_rs_zend::{
     Array, ArrayMut, Call, E_WARNING, Message, Owned, OwnedArray, Value,
     bailout::Bailout,
@@ -548,7 +546,7 @@ fn set_option(
         option::XPORT_API => xport_api(stream, &socket, ptrparam.cast())?,
         option::META_DATA_API => meta_data(stream, &socket, ptrparam.cast()),
         // PHP socket streams share this timeout between reads and writes
-        option::READ_TIMEOUT => socket.set_timeout(seconds(ptrparam.cast()), timeout::RDWR),
+        option::READ_TIMEOUT => socket.set_timeout(seconds(ptrparam.cast()), TimeoutKind::RDWR),
         option::CRYPTO_API => {
             // SAFETY: Zend lends the crypto parameter for the call.
             let param = unsafe { &mut *ptrparam.cast::<php_stream_xport_crypto_param>() };
@@ -752,7 +750,7 @@ fn connect(stream: *mut php_stream, socket: &Socket, param: &mut php_stream_xpor
         }
     }
     if !param.inputs.timeout.is_null() {
-        socket.set_timeout(seconds(param.inputs.timeout), timeout::CONNECT);
+        socket.set_timeout(seconds(param.inputs.timeout), TimeoutKind::CONNECT);
     }
     if !socket.connect(&host, port) {
         param.outputs.error_code = socket.error();
@@ -804,7 +802,7 @@ fn accept(
     param.outputs.client = ptr::null_mut();
     let nodelay = option_true(stream, c"socket", c"tcp_nodelay");
     if !param.inputs.timeout.is_null() {
-        socket.set_timeout(seconds(param.inputs.timeout), timeout::READ);
+        socket.set_timeout(seconds(param.inputs.timeout), TimeoutKind::READ);
     }
     let mut client = socket.accept();
     if let Some(connection) = &client
@@ -1141,7 +1139,7 @@ fn stream_from_socket(
     };
     let seconds = swr_zend_stream_default_timeout();
     if seconds > 0 {
-        socket.set_timeout(seconds.c_cast::<f64>(), timeout::ALL);
+        socket.set_timeout(seconds.c_cast::<f64>(), TimeoutKind::ALL);
     }
     let stream = alloc(socket_ops(), Rc::new(socket), ptr::null())?;
     if !stream.is_null() {

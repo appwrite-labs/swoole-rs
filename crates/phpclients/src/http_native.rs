@@ -65,9 +65,7 @@ pub(crate) fn websocket() -> Option<Box<dyn WebSocket>> {
     WEBSOCKET.get().map(|new| new())
 }
 
-/// `SW_TIMEOUT_CONNECT` and `SW_TIMEOUT_READ`.
-const TIMEOUT_CONNECT: c_int = 1 << 1;
-pub(crate) const TIMEOUT_READ: c_int = 1 << 2;
+use swoole_rs_reactor::TimeoutKind;
 /// `SW_WEBSOCKET_HEADER_LEN`.
 const WEBSOCKET_HEADER_LEN: u8 = 2;
 
@@ -158,7 +156,7 @@ impl Co {
         } else {
             timeout
         };
-        self.set_timeout(timeout, TIMEOUT_CONNECT);
+        self.set_timeout(timeout, TimeoutKind::CONNECT);
         self.use_zend_strings();
         set_close_hook(self.handle(), hook);
     }
@@ -227,7 +225,7 @@ impl Co {
         } else {
             timeout
         };
-        self.timeout(timeout, TIMEOUT_READ)
+        self.timeout(timeout, TimeoutKind::READ)
     }
 
     /// The socket frames WebSocket packets from now on.

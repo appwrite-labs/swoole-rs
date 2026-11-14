@@ -3,29 +3,23 @@
 //! and its caller restores it afterwards.
 use crate::co_io::set_errno;
 use crate::co_socket::Co;
-use crate::shutdown::READ;
 use libc::{c_int, pollfd};
 
-const DNS: c_int = 1;
-const CONNECT: c_int = 2;
-const RECEIVE: c_int = 4;
-const SEND: c_int = 8;
-/// Every timeout direction.
-pub(crate) const ALL: c_int = DNS | CONNECT | RECEIVE | SEND;
+use swoole_rs_reactor::TimeoutKind;
 
 /// Set the timeout on a looked-up socket; false with EINVAL for a missing fd or
 /// unknown option.
 pub(crate) fn fd_timeout(socket: Option<Co>, which: c_int, timeout: f64, connect: bool) -> bool {
     let kind = if connect {
-        DNS | CONNECT
+        Some(TimeoutKind::DNS | TimeoutKind::CONNECT)
     } else if which == libc::SO_RCVTIMEO {
-        RECEIVE
+        Some(TimeoutKind::READ)
     } else if which == libc::SO_SNDTIMEO {
-        SEND
+        Some(TimeoutKind::WRITE)
     } else {
-        0
+        None
     };
-    let Some(socket) = socket.filter(|_| kind != 0) else {
+    let (Some(socket), Some(kind)) = (socket, kind) else {
         set_errno(libc::EINVAL);
         return false;
     };
@@ -40,7 +34,7 @@ pub(crate) fn fd_poll_fake(fd: &mut pollfd, timeout: c_int, socket: Option<Co>) 
     let Some(socket) = socket.filter(|_| timeout != 0) else {
         return false;
     };
-    socket.set_timeout(f64::from(timeout) / 1000.0, ALL);
+    socket.set_timeout(f64::from(timeout) / 1000.0, TimeoutKind::ALL);
     fd.revents |= fd.events & (libc::POLLIN | libc::POLLOUT);
     true
 }
@@ -58,8 +52,8 @@ pub extern "C" fn swr_v1_hook_fd_poll(fd: c_int, event: c_int) -> pollfd {
 /// Saves the timeout of `event`'s direction and sets every direction to `timeout`
 /// before a virtual poll; the caller restores every direction to the saved one.
 pub(crate) fn fd_wait(socket: Co, event: u32, timeout: f64) -> f64 {
-    let saved = socket.timeout(if event == READ { RECEIVE } else { SEND });
-    socket.set_timeout(timeout, ALL);
+    let saved = socket.timeout(crate::transfer::timeout_kind(event));
+    socket.set_timeout(timeout, TimeoutKind::ALL);
     saved
 }
 
@@ -67,6 +61,7 @@ pub(crate) fn fd_wait(socket: Co, event: u32, timeout: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::co_socket::CoSocket;
+    use crate::shutdown::READ;
     use swoole_rs_reactor::SocketRecord;
 
     /// A zeroed record over a fresh network socket. Tests reach the network socket
@@ -129,7 +124,7 @@ mod tests {
             let saved = fd_wait(r.co(), event, 0.25);
             assert_eq!(r.record().timeouts.read, 0.25);
             assert_eq!(r.record().timeouts.write, 0.25);
-            r.co().set_timeout(saved, ALL);
+            r.co().set_timeout(saved, TimeoutKind::ALL);
             let expected = if event == READ { 4.0 } else { 8.0 };
             let t = r.record().timeouts;
             assert_eq!([t.dns, t.connect, t.read, t.write], [expected; 4]);

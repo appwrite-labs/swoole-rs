@@ -24,11 +24,7 @@ use swoole_rs_zend::{
     sys::{E_ERROR, E_WARNING, php_stream, swr_zend_stream_socketd, swr_zend_stream_unbuffer},
 };
 
-/// `SW_TIMEOUT_*`.
-const TIMEOUT_CONNECT: c_int = 1 << 1;
-const TIMEOUT_READ: c_int = 1 << 2;
-const TIMEOUT_WRITE: c_int = 1 << 3;
-const TIMEOUT_ALL: c_int = 0b1111;
+use swoole_rs_reactor::TimeoutKind;
 /// `SW_SOCK_TCP` and `SW_SOCK_TCP6` .. `SW_SOCK_UDP6`.
 const SOCK_TCP: c_int = 1;
 const SOCK_UDP: c_int = 2;
@@ -277,10 +273,10 @@ fn clamp_u8(value: i64) -> u8 {
 fn set(s: &Array, socket: Co) -> Result<bool, Stop> {
     let mut ret = true;
     for (key, kind) in [
-        (b"timeout".as_slice(), TIMEOUT_ALL),
-        (b"connect_timeout", TIMEOUT_CONNECT),
-        (b"read_timeout", TIMEOUT_READ),
-        (b"write_timeout", TIMEOUT_WRITE),
+        (b"timeout".as_slice(), TimeoutKind::ALL),
+        (b"connect_timeout", TimeoutKind::CONNECT),
+        (b"read_timeout", TimeoutKind::READ),
+        (b"write_timeout", TimeoutKind::WRITE),
     ] {
         if let Some(v) = s.get(key) {
             socket.set_timeout(double(v)?, kind);
@@ -527,9 +523,9 @@ fn get_option(call: &Call) {
     }
     if (name == i64::from(libc::SO_RCVTIMEO)) || (name == i64::from(libc::SO_SNDTIMEO)) {
         let kind = if name == i64::from(libc::SO_RCVTIMEO) {
-            TIMEOUT_READ
+            TimeoutKind::READ
         } else {
-            TIMEOUT_WRITE
+            TimeoutKind::WRITE
         };
         let timeout = socket.get_timeout(kind);
         let sec = timeout.c_cast::<i32>();
@@ -665,9 +661,9 @@ fn set_option(call: &Call) {
         let seconds = sec.c_cast::<f64>();
         let timeout = seconds + tv_usec(usec).c_cast::<f64>() / 1000.0 / 1000.0;
         let kind = if read {
-            TIMEOUT_READ
+            TimeoutKind::READ
         } else {
-            TIMEOUT_CONNECT | TIMEOUT_WRITE
+            TimeoutKind::CONNECT | TimeoutKind::WRITE
         };
         socket.set_timeout(timeout, kind);
         return call.set_bool(true);

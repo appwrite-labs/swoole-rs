@@ -6,9 +6,6 @@ use crate::shutdown::{READ, WRITE};
 use core::ffi::{c_int, c_void};
 use swoole_rs_ssh2_sys::{LIBSSH2_SESSION, libssh2_session_abstract};
 
-/// `SW_TIMEOUT_ALL`.
-const TIMEOUT_ALL: c_int = 0xf;
-
 /// `php_ssh2_session_data`: four userspace callbacks, then the `SocketImpl *`.
 #[repr(C)]
 struct SessionData {
@@ -71,5 +68,8 @@ pub unsafe extern "C" fn swr_v1_ssh2_set_socket_timeout(
     timeout_ms: c_int,
 ) {
     // SAFETY: as the caller promises.
-    unsafe { socket(session) }.set_timeout(f64::from(timeout_ms / 1000), TIMEOUT_ALL);
+    unsafe { socket(session) }.set_timeout(
+        f64::from(timeout_ms / 1000),
+        swoole_rs_reactor::TimeoutKind::ALL,
+    );
 }

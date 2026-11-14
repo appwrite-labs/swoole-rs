@@ -511,14 +511,14 @@ impl Co {
 
     /// The socket's timeout of `kind`, or -1 when it has none.
     #[must_use]
-    pub fn timeout(self, kind: c_int) -> f64 {
+    pub fn timeout(self, kind: swoole_rs_reactor::TimeoutKind) -> f64 {
         self.net(|record| record.timeouts.get(kind))
             .flatten()
             .unwrap_or(-1.0)
     }
 
     /// Sets the socket's timeouts selected by `kind`.
-    pub fn set_timeout(self, timeout: f64, kind: c_int) {
+    pub fn set_timeout(self, timeout: f64, kind: swoole_rs_reactor::TimeoutKind) {
         self.net(|record| record.timeouts.set(timeout, kind));
     }
 }
