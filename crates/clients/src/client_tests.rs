@@ -637,7 +637,10 @@ fn public_record_defaults_and_direct_framing_writes_drive_reads() {
         // Read first: the handle borrows the whole record, which would end a reference
         // assert_eq! had already taken to the field.
         let socket = Handle(client).socket_ptr();
-        assert_eq!((*fields).socket, socket);
+        let field = (*fields)
+            .socket
+            .map_or(core::ptr::null_mut(), swoole_rs_reactor::Socket::as_ptr);
+        assert_eq!(field, socket);
         assert!((*fields).object.is_null() && (*fields).buffer.is_null());
         Handle(client).input_init();
         (*fields).open_length_check = true;

@@ -315,6 +315,18 @@ impl SocketRecord {
         }
     }
 
+    /// base.cc's `socket_free_defer`: [`SocketFields::release`], warning when close(2)
+    /// failed, then the record goes.
+    pub fn close_and_free(mut self: Box<Self>) {
+        if !self.release() {
+            let fd = self.fd;
+            swoole_rs_corebase::log::sys_warning(
+                c"socket_free_defer",
+                format_args!("close({fd}) failed"),
+            );
+        }
+    }
+
     /// `make_socket(type, fd_type, domain, type, protocol, flags)`: socket(2) through
     /// `swoole::socket`, then a record of `socket_type` with the nonblocking and
     /// close-on-exec flags `flags` asked for. Null, with errno set, if socket(2) failed.

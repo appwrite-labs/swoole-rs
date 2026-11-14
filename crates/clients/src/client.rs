@@ -302,7 +302,9 @@ pub struct ClientRecord {
     pub protocol: Protocol,
     pub server_addr: SocketAddress,
     pub remote_addr: SocketAddress,
-    pub socket: *mut SocketRecord,
+    /// `socket`: the record the constructor made, live until the client is destroyed
+    /// (an async one's free is deferred past its callbacks). Only the constructor sets it.
+    pub(crate) socket: Option<Socket<'static>>,
     pub object: *mut c_void,
     pub buffer: *mut c_void,
 }
@@ -380,8 +382,7 @@ impl Client {
     /// record, live until the client is destroyed (an async one's free is
     /// deferred past its callbacks).
     pub fn socket(&self) -> Option<Socket<'_>> {
-        // SAFETY: null or the client's live socket record, as above.
-        unsafe { Socket::from_ptr(self.record().socket) }
+        self.record().socket
     }
 
     /// The client's TLS context, which `set()` configures; none while TLS is off.
@@ -456,7 +457,9 @@ impl Handle {
     }
 
     fn socket_ptr(self) -> *mut SocketRecord {
-        self.record().socket
+        self.record()
+            .socket
+            .map_or(core::ptr::null_mut(), Socket::as_ptr)
     }
 
     fn socket(self) -> Socket<'static> {
@@ -832,7 +835,7 @@ pub extern "C" fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut Client
             protocol: Protocol::EMPTY,
             server_addr: swoole_rs_corebase::sys::zeroed(),
             remote_addr: swoole_rs_corebase::sys::zeroed(),
-            socket: core::ptr::null_mut(),
+            socket: None,
             object: core::ptr::null_mut(),
             buffer: core::ptr::null_mut(),
         }),
@@ -853,7 +856,7 @@ pub extern "C" fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut Client
     });
     client.set(Flag::Async, is_async);
     let fields = client.record.get_mut();
-    fields.socket = record.as_ptr();
+    fields.socket = Some(record);
     fields.remote_addr.kind = kind;
     fields.protocol.package_length_type = b'N';
     fields.protocol.package_length_size = 4;
@@ -986,7 +989,7 @@ pub fn package_length(this: Handle, data: &[u8]) -> isize {
     };
     let mut packet = PacketLength::new(data);
     // SAFETY: the live client's protocol and socket, and the packet's bytes.
-    unsafe { get(this.protocol(), record.socket.cast(), &mut packet) }
+    unsafe { get(this.protocol(), this.socket_ptr().cast(), &mut packet) }
 }
 
 /// `Client::close()`: -1 without a socket or when already closed, 0 when `onClose`

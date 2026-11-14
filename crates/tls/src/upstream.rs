@@ -1067,19 +1067,10 @@ pub fn socket_ssl_create(
 /// base.cc's `socket_free_defer`: closes the descriptor and frees the record.
 ///
 /// # Safety
-/// `socket` is a live record nothing uses afterwards.
+/// `socket` is a live record [`SocketRecord`] allocated, which nothing uses afterwards.
 unsafe extern "C-unwind" fn socket_free_defer(socket: *mut c_void) {
-    let socket = socket.cast::<SocketRecord>();
-    // SAFETY: as the caller promises.
-    let Some(record) = (unsafe { Socket::from_ptr(socket) }) else {
-        return;
-    };
-    if !record.edit(SocketFields::release) {
-        let fd = record.fd();
-        log::sys_warning(c"socket_free_defer", format_args!("close({fd}) failed"));
-    }
-    // SAFETY: as above.
-    unsafe { SocketRecord::free(socket) };
+    // SAFETY: as the caller promises: the record's own allocation, used no more.
+    unsafe { Box::from_raw(socket.cast::<SocketRecord>()) }.close_and_free();
 }
 
 /// `void Socket::free()`: deletes the timers and buffers, then, while the thread's
@@ -1088,7 +1079,8 @@ unsafe extern "C-unwind" fn socket_free_defer(socket: *mut c_void) {
 /// link no C++) there are no timers, buffers or loop.
 ///
 /// # Safety
-/// `socket` is a live record nothing uses afterwards.
+/// `socket` is null or a live record [`SocketRecord`] allocated, which nothing uses
+/// afterwards.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7network6Socket4freeEv")
@@ -1119,7 +1111,8 @@ pub unsafe extern "C-unwind" fn socket_free(socket: *mut SocketRecord) {
                 _ = swoole_rs_reactor::event_api::event_del(record);
             }
             // SAFETY: `swoole_event_defer(socket_free_defer, this)`; a reactor freed
-            // before it runs closes the socket all the same.
+            // before it runs closes the socket all the same. The loop may still read the
+            // record through an event of this pass, so it stays a raw pointer until then.
             let deferred = unsafe {
                 swoole_rs_reactor::defer(socket_free_defer, socket.cast(), Some(socket_free_defer))
             };
@@ -1128,8 +1121,10 @@ pub unsafe extern "C-unwind" fn socket_free(socket: *mut SocketRecord) {
             }
         }
     }
-    // SAFETY: as the caller promises.
-    unsafe { socket_free_defer(socket.cast()) };
+    if !socket.is_null() {
+        // SAFETY: as the caller promises.
+        unsafe { socket_free_defer(socket.cast()) };
+    }
 }
 
 /// `Socket::bind(host, port)`: the address resolved without DNS, the last error set
