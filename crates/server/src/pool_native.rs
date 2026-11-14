@@ -338,22 +338,11 @@ fn loop_ops(pool: Pool<'_>, op: Op, arg: u64) -> Option<i64> {
     })
 }
 
-/// An object's address as an op's result, which the pool stores (null fails).
-fn address<T>(object: *mut T) -> i64 {
-    object.expose_provenance().c_cast::<i64>()
-}
-
 /// `pool_call`'s lifecycle effects: the pool's objects.
 fn objects(pool: Pool<'_>, op: Op, arg: u64) -> Option<i64> {
     Some(match op {
         // The message queue is Rust's on every platform (crates/ossupport).
         Op::HaveMsgqueue => 1,
-        Op::AllocWorkers => {
-            // `arg` workers, which the pool counts once they're allocated.
-            let size = arg.c_cast::<usize>() * size_of::<WorkerRecord>();
-            address(mem_pool::alloc(size.c_cast::<u32>()))
-        }
-        Op::NewPipes => address(Box::into_raw(Box::new(Pipes::new()))),
         Op::MainLoop => {
             let main_loop: MainLoopFn = match Protocol::from_code(arg.c_cast::<c_int>()) {
                 Some(Protocol::Task) => run_task,
@@ -370,7 +359,6 @@ fn objects(pool: Pool<'_>, op: Op, arg: u64) -> Option<i64> {
             unsafe { pool.install(&hooks) };
             0
         }
-        Op::NewMessageBus => address(new_message_bus()),
         Op::BusBuffer => bus_buffer(pool, arg),
         Op::FreePipes => {
             free_pipes(pool);
@@ -538,6 +526,20 @@ struct Native;
 static NATIVE: Native = Native;
 
 impl PoolNative for Native {
+    fn alloc_workers(&self, count: u32) -> *mut WorkerRecord {
+        // `count` workers, which the pool counts once they're allocated.
+        let size = count as usize * size_of::<WorkerRecord>();
+        mem_pool::alloc(size.c_cast::<u32>()).cast()
+    }
+
+    fn new_pipes(&self) -> *mut c_void {
+        Box::into_raw(Box::new(Pipes::new())).cast()
+    }
+
+    fn new_message_bus(&self) -> *mut c_void {
+        new_message_bus()
+    }
+
     fn call(&self, c: &PoolCall, op: Op, arg: u64) -> i64 {
         let pool = c.pool();
         objects(pool, op, arg)

@@ -1159,6 +1159,15 @@ mod tests {
         fn call(&self, _: &PoolCall, _: crate::process_pool::Op, _: u64) -> i64 {
             0
         }
+        fn alloc_workers(&self, _: u32) -> *mut crate::worker_record::WorkerRecord {
+            core::ptr::null_mut()
+        }
+        fn new_pipes(&self) -> *mut core::ffi::c_void {
+            core::ptr::null_mut()
+        }
+        fn new_message_bus(&self) -> *mut core::ffi::c_void {
+            core::ptr::null_mut()
+        }
         fn callback(&self, _: &mut PoolCall, _: crate::process_pool::Callback) {}
         fn event_size(&self) -> usize {
             128
