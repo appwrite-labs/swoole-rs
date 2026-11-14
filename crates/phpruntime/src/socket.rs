@@ -383,8 +383,8 @@ pub enum Report {
 /// The error handler bailed out.
 pub fn report(kind: Report, level: i32, message: &CStr) -> Result<(), Bailout> {
     /// `SW_ERROR_PHP_FATAL_ERROR` and `SW_ERROR_PHP_RUNTIME_NOTICE`.
-    const FATAL: i32 = 503;
-    const NOTICE: i32 = 510;
+    const FATAL: i32 = swoole_rs_error::ErrorCode::SW_ERROR_PHP_FATAL_ERROR as i32;
+    const NOTICE: i32 = swoole_rs_error::ErrorCode::SW_ERROR_PHP_RUNTIME_NOTICE as i32;
     match kind {
         Report::Docref => {}
         Report::Fatal => set_last_error(FATAL),

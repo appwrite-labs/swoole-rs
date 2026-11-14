@@ -22,7 +22,7 @@ use swoole_rs_corebase::{log, sys};
 use swoole_rs_reactor::{Socket, SocketRecord};
 
 /// `SW_ERROR_INVALID_PARAMS`.
-const INVALID_PARAMS: c_int = 505;
+const INVALID_PARAMS: c_int = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as c_int;
 
 /// How the hooked fds' sockets (`SocketImpl`: `coroutine::Socket`, or `UringSocket`
 /// with `--enable-uring-socket`) are made and deleted: Rust's own (`co_socket`), or

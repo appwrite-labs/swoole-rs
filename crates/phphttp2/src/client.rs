@@ -51,10 +51,11 @@ const SETTING_MAX_HEADER_LIST_SIZE: u16 = 6;
 /// The `:authority` slot (`HTTP2_CLIENT_HOST_HEADER_INDEX`).
 const AUTHORITY: usize = 3;
 /// `SW_ERROR_*` and `HTTP_ESTATUS_SERVER_RESET`.
-const INVALID_PARAMS: i64 = 505;
-const QUEUE_FULL: c_int = 506;
-const NO_CONNECTION: c_int = 5001;
-const SEND_CONTROL_FRAME_FAILED: i64 = 3005;
+const INVALID_PARAMS: i64 = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as i64;
+const QUEUE_FULL: c_int = swoole_rs_error::ErrorCode::SW_ERROR_QUEUE_FULL as c_int;
+const NO_CONNECTION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_CLIENT_NO_CONNECTION as c_int;
+const SEND_CONTROL_FRAME_FAILED: i64 =
+    swoole_rs_error::ErrorCode::SW_ERROR_HTTP2_SEND_CONTROL_FRAME_FAILED as i64;
 const SERVER_RESET: i64 = -3;
 
 static CLIENT: CustomClass<Data> = CustomClass::new();

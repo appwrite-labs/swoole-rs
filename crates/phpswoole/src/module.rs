@@ -84,7 +84,7 @@ pub enum ReqStatus {
 }
 /// `SW_SOCKET_BUFFER_SIZE` and `SW_ERROR_PHP_FATAL_ERROR`.
 const SOCKET_BUFFER_SIZE: i64 = 8 * 1024 * 1024;
-pub(crate) const PHP_FATAL_ERROR: i32 = 503;
+pub(crate) const PHP_FATAL_ERROR: i32 = swoole_rs_error::ErrorCode::SW_ERROR_PHP_FATAL_ERROR as i32;
 /// `SUCCESS`.
 const SUCCESS: c_int = 0;
 

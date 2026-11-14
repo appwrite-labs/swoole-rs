@@ -30,7 +30,7 @@ impl Custom for BarrierObject {
 }
 
 /// `SW_ERROR_INVALID_PARAMS`.
-const INVALID_PARAMS: i64 = 504;
+const INVALID_PARAMS: i64 = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as i64;
 
 method_table! {
     static METHODS = [

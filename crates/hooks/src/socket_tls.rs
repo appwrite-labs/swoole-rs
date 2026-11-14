@@ -22,8 +22,10 @@ const RDWR: u32 = READ | swoole_rs_corebase::constants::EventType::SW_EVENT_WRIT
 /// `SW_ERROR_SSL_VERIFY_FAILED`, `SW_ERROR_SSL_CREATE_CONTEXT_FAILED` and
 /// `SW_ERROR_SSL_CREATE_SESSION_FAILED`.
 const SSL_VERIFY_FAILED: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SSL_VERIFY_FAILED as c_int;
-const SSL_CREATE_CONTEXT_FAILED: c_int = 1019;
-const SSL_CREATE_SESSION_FAILED: c_int = 1020;
+const SSL_CREATE_CONTEXT_FAILED: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SSL_CREATE_CONTEXT_FAILED as c_int;
+const SSL_CREATE_SESSION_FAILED: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SSL_CREATE_SESSION_FAILED as c_int;
 
 impl Co {
     /// The socket's `SSLContext` owner, or null without one.

@@ -383,8 +383,10 @@ mod kqueue_signal {
 
     /// `SW_LOG_WARNING`, `SW_ERROR_UNREGISTERED_SIGNAL` and `SW_ERROR_EVENT_UNKNOWN_DATA`.
     pub(super) const LOG_WARNING: c_int = 4;
-    const UNREGISTERED_SIGNAL: c_int = 721;
-    pub(super) const EVENT_UNKNOWN_DATA: c_int = 803;
+    const UNREGISTERED_SIGNAL: c_int =
+        swoole_rs_error::ErrorCode::SW_ERROR_UNREGISTERED_SIGNAL as c_int;
+    pub(super) const EVENT_UNKNOWN_DATA: c_int =
+        swoole_rs_error::ErrorCode::SW_ERROR_EVENT_UNKNOWN_DATA as c_int;
 
     /// Upstream's `swoole::Signal`, as the signal loop registered it: its handler, when
     /// neither none nor `SIG_IGN`, is sound to call with its signal number. The fields

@@ -23,8 +23,8 @@ const SW_LOG_DEFAULT_DATE_FORMAT: &CStr = c"%F %T";
 
 /// `SW_LOG_WARNING`, `SW_ERROR_SYSTEM_CALL_FAIL` and `SW_ERROR_INVALID_PARAMS`.
 const LOG_WARNING: c_int = 4;
-const SYSTEM_CALL_FAIL: c_int = 502;
-const INVALID_PARAMS: c_int = 505;
+const SYSTEM_CALL_FAIL: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SYSTEM_CALL_FAIL as c_int;
+const INVALID_PARAMS: c_int = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as c_int;
 const REDIRECT_ORIGIN: &CStr = c"Logger::redirect_stdout_and_stderr";
 
 #[repr(C)]

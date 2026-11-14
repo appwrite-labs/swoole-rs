@@ -19,9 +19,11 @@ use swoole_rs_zend::{
 use swoole_rs_zend::{method_table, sys as z};
 
 /// Swoole error codes (`include/swoole_error.h`).
-pub(crate) const SW_ERROR_PHP_FATAL_ERROR: c_int = 503;
-const SW_ERROR_NO_PAYLOAD: c_int = 550;
-const SW_ERROR_SESSION_NOT_EXIST: c_int = 1005;
+pub(crate) const SW_ERROR_PHP_FATAL_ERROR: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_PHP_FATAL_ERROR as c_int;
+const SW_ERROR_NO_PAYLOAD: c_int = swoole_rs_error::ErrorCode::SW_ERROR_NO_PAYLOAD as c_int;
+const SW_ERROR_SESSION_NOT_EXIST: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SESSION_NOT_EXIST as c_int;
 /// `conn->closed`.
 fn closed(conn: Connection<'_>) -> bool {
     conn.closed().load(Ordering::Relaxed) != 0
