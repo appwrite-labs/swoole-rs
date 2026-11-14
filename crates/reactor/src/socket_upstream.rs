@@ -325,7 +325,12 @@ pub fn swr_v1_reactor_log(origin: &CStr, code: c_int, message: &str) {
     if code == 0 {
         log::sys_warning(origin, format_args!("{message}"));
     } else {
-        log::error_log(log::LOG_WARNING, code, origin, format_args!("{message}"));
+        log::error_log(
+            log::LogLevel::SW_LOG_WARNING as c_int,
+            code,
+            origin,
+            format_args!("{message}"),
+        );
     }
     swoole_rs_corebase::swoole_print_backtrace_on_error();
 }
@@ -343,6 +348,21 @@ pub fn event_reactor() -> Option<(*mut std::ffi::c_void, crate::ReactorPrepared)
 mod tests {
     use super::*;
     use std::ptr;
+
+    #[test]
+    fn reactor_errors_log_at_warning_level() {
+        thread_local! {
+            static SEEN: std::cell::Cell<c_int> = const { std::cell::Cell::new(-1) };
+        }
+        fn record(_: log::LogKind, level: c_int, _: c_int, origin: &CStr, _: &CStr) {
+            if origin == c"Reactor::change" {
+                SEEN.set(level);
+            }
+        }
+        log::swr_v1_core_set_log_host(record);
+        swr_v1_reactor_log(c"Reactor::change", 1015, "failed");
+        assert_eq!(SEEN.get(), 4, "upstream SW_LOG_WARNING");
+    }
 
     #[test]
     fn wait_event_times_out_with_the_poll_error() {
