@@ -3,7 +3,7 @@
 //! `shutdown(2)` call and the half-close flags. Native code keeps `set_err` and
 //! the TLS session.
 use crate::vector::Barrier;
-use core::ffi::c_void;
+use core::ffi::{CStr, c_void};
 use swoole_rs_corebase::constants::EventType;
 
 /// Whether the socket is connected and which directions are shut.
@@ -83,19 +83,21 @@ impl SocketState {
         }
     }
 
-    /// `get_event_str`'s choice: 0 "reading", 1 "writing", 2 "reading or writing". An
-    /// event other than read or write names whichever coroutine is bound.
+    /// `get_event_str(event)`. An event other than read or write names whichever
+    /// coroutine is bound.
     #[must_use]
-    pub fn event_name(&self, event: u32) -> u32 {
+    pub fn event_name(&self, event: u32) -> &'static CStr {
         let (read_bound, write_bound) = (!self.read_co.is_null(), !self.write_co.is_null());
         if event == READ {
-            0
+            c"reading"
         } else if event == WRITE {
-            1
+            c"writing"
         } else if read_bound && write_bound {
-            2
+            c"reading or writing"
+        } else if read_bound {
+            c"reading"
         } else {
-            u32::from(!read_bound)
+            c"writing"
         }
     }
 }
@@ -255,16 +257,16 @@ mod tests {
             (&raw mut writer).cast::<c_void>(),
         );
         assert!(state.bound_co(READ | WRITE).is_null());
-        assert_eq!(state.event_name(READ | WRITE), 1);
+        assert_eq!(state.event_name(READ | WRITE), c"writing");
         state.bind(WRITE, w);
         assert_eq!(state.bound_co(READ | WRITE), w);
         assert!(state.bound_co(READ).is_null());
-        assert_eq!(state.event_name(READ | WRITE), 1);
+        assert_eq!(state.event_name(READ | WRITE), c"writing");
         state.bind(READ, r);
         assert_eq!(state.bound_co(READ | WRITE), r);
         assert_eq!(state.co(WRITE), w);
-        assert_eq!(state.event_name(READ | WRITE), 2);
-        assert_eq!(state.event_name(READ), 0);
+        assert_eq!(state.event_name(READ | WRITE), c"reading or writing");
+        assert_eq!(state.event_name(READ), c"reading");
         state.bind(READ | WRITE, core::ptr::null_mut());
         assert!(state.co(READ).is_null() && state.co(WRITE).is_null());
     }
