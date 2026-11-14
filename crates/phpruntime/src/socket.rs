@@ -4,6 +4,7 @@ use libc::{c_int, c_void, sockaddr_storage, socklen_t};
 use std::{
     borrow::Cow,
     ffi::{CStr, CString},
+    mem::MaybeUninit,
 };
 use swoole_rs_corebase::log::set_last_error;
 use swoole_rs_hooks::co_socket::{Co, swr_v1_hook_co_socket_free};
@@ -191,7 +192,7 @@ impl Socket {
     }
 
     /// One `op` receive into `out`, as [`Self::send`].
-    pub(crate) fn recv(&self, op: RecvOp, out: &mut [u8]) -> isize {
+    pub(crate) fn recv(&self, op: RecvOp, out: &mut [MaybeUninit<u8>]) -> isize {
         let socket = self.co();
         match op {
             RecvOp::Sync => socket
@@ -213,7 +214,7 @@ impl Socket {
     /// and the length of the peer's address.
     pub(crate) fn recvfrom(
         &self,
-        buf: &mut [u8],
+        buf: &mut [MaybeUninit<u8>],
         peer: &mut sockaddr_storage,
     ) -> (isize, socklen_t) {
         self.co().recvfrom_into(buf, peer)
@@ -506,7 +507,7 @@ pub mod co {
 
     /// What a vector operation moves: buffers `readv` fills, or bytes `writev` sends.
     pub enum Vectors<'a, 'b> {
-        Read(&'a mut [std::io::IoSliceMut<'b>]),
+        Read(&'a mut [swoole_rs_hooks::vector::ReadVec<'b>]),
         Write(&'a [std::io::IoSlice<'b>]),
     }
 

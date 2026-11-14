@@ -7,9 +7,9 @@
 use super::{BufferSync, Failure, ReadBuffer, recv_packet};
 use crate::co_io::{HOST, Host, errno, set_errno};
 use crate::co_socket::{Co, CoSocket, TestSocket};
-use core::ffi::c_void;
 use core::fmt::Write;
 use std::cell::RefCell;
+use swoole_rs_corebase::timer_key::Held;
 
 const EIO: isize = libc::EIO as isize;
 
@@ -44,20 +44,14 @@ fn with<T>(run: impl FnOnce(&mut Script) -> T) -> T {
     SCRIPT.with_borrow_mut(run)
 }
 
-fn timer_add(_: Co, _: f64, _: bool) -> *mut c_void {
+fn timer_add(_: Co, _: f64, _: bool) -> Option<Held> {
     with(|s| {
         s.trace.push("timer:start".into());
-        if s.timer_ok {
-            core::ptr::dangling_mut::<u64>().cast()
-        } else {
-            core::ptr::null_mut()
-        }
+        s.timer_ok.then(|| Held::detached(1))
     })
 }
 
-unsafe extern "C-unwind" fn timer_del(_: *mut swoole_rs_timer::TimerNode) -> bool {
-    true
-}
+fn timer_del(_: Held) {}
 
 fn read_buffer(_: Co, view: &mut ReadBuffer, sync: BufferSync) {
     with(|s| {

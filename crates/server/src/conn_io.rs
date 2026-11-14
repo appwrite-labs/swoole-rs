@@ -21,7 +21,7 @@ use swoole_rs_buffer::string::with_thread_buffer;
 use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
 use swoole_rs_corebase::{CCast, DataHead, microtime};
 use swoole_rs_reactor::{Event, Socket, what_event_want};
-use swoole_rs_timer::{swoole_timer_del, swoole_timer_delay};
+use swoole_rs_timer::{del_id, delay_held};
 use swoole_rs_tls::Accept;
 use swoole_rs_tls::swr_v1_tls_owner_view;
 use swoole_rs_tls::upstream as tls;
@@ -266,7 +266,7 @@ fn resume_timer(serv: view::Server<'_>, conn: Connection<'_>, socket: Socket<'st
         resume_data_receiving(serv, socket);
     });
     conn.set_timer(timer);
-    !timer.is_null()
+    timer.is_some()
 }
 
 /// `ReactorThread_resume_data_receiving`, the timer of a paused session socket: back
@@ -288,7 +288,7 @@ fn resume_data_receiving(serv: view::Server<'_>, socket: Socket<'static>) {
     }
     // The firing timer's reactor: this thread's.
     Reactor::thread().interest(socket, swoole_rs_reactor::Interest::AddRead, 0);
-    conn.set_timer(core::ptr::null_mut());
+    conn.set_timer(None);
 }
 
 /// Built with the `halfclose` feature.
@@ -383,16 +383,12 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
         conn.set_high_watermark(false);
         crate::server_methods::notify(serv, conn, ServerEvent::BufferEmpty);
     }
-    let timer = sock.read(|s| s.output.send_timer);
-    if !timer.is_null() {
+    if let Some(timer) = sock.read(|s| s.output.send_timer) {
         if output(sock).1 {
-            // SAFETY: the socket's live send timer.
-            unsafe { swoole_timer_del(timer.cast()) };
-            sock.edit(|s| s.output.send_timer = core::ptr::null_mut());
+            del_id(timer);
+            sock.edit(|s| s.output.send_timer = None);
         } else if let Some(port) = port {
-            let delay = port.max_idle_time.get().c_cast::<c_long>();
-            // SAFETY: the socket's live send timer.
-            unsafe { swoole_timer_delay(timer.cast(), delay) };
+            delay_held(timer, port.max_idle_time.get().c_cast::<c_long>());
         }
     }
     if !conn.peer_closed() && !sock.read(|s| s.removed) && output(sock).1 {
@@ -473,11 +469,9 @@ pub(crate) fn close_connection(
         return ERR;
     };
     let port = serv.port_by_fd(fd).map(view::Port::config);
-    let timer = conn.timer();
-    if !timer.is_null() {
-        // SAFETY: the connection's live timer.
-        unsafe { swoole_timer_del(timer.cast()) };
-        conn.set_timer(core::ptr::null_mut());
+    if let Some(timer) = conn.timer() {
+        del_id(timer);
+        conn.set_timer(None);
     }
     let removed = sock.read(|s| s.removed);
     // A TLS close notify that cannot be sent now goes behind the queued output.
@@ -883,7 +877,7 @@ pub(crate) mod tests {
         conn.recv_queued_bytes().store(9, SeqCst);
         assert_eq!(read(serv, reactor, &mut conn.event(0, 0)), 42);
         assert_eq!(conn.waiting_time(), 1);
-        assert!(!conn.timer().is_null(), "resumes on a timer");
+        assert!(conn.timer().is_some(), "resumes on a timer");
         let events = conn.socket().unwrap().read(|s| s.events);
         assert_eq!(events & SW_EVENT_READ, 0, "paused");
 

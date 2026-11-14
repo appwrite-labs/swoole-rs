@@ -93,7 +93,8 @@ pub struct SocketFields {
     /// `Buffer *in_buffer`: owned as `output.out_buffer` is.
     pub in_buffer: Option<Box<swoole_rs_buffer::cpp::CppBuffer>>,
     pub recv_buffer: *mut c_void,
-    pub recv_timer: *mut c_void,
+    /// `TimerNode *recv_timer`, held by id.
+    pub recv_timer: Option<swoole_rs_corebase::timer_key::Held>,
     pub total_recv_bytes: usize,
     pub total_send_bytes: usize,
     /// Last, so every offset before it is the same on each LP64 target.
@@ -255,7 +256,7 @@ impl SocketRecord {
                 chunk_size: 0,
                 output: SocketOutput {
                     out_buffer: None,
-                    send_timer: ptr::null_mut(),
+                    send_timer: None,
                     buffer_size: 0,
                     close_wait: false,
                     nonblock: false,
@@ -270,7 +271,7 @@ impl SocketRecord {
                 last_sent_time: 0.0,
                 in_buffer: None,
                 recv_buffer: ptr::null_mut(),
-                recv_timer: ptr::null_mut(),
+                recv_timer: None,
                 total_recv_bytes: 0,
                 total_send_bytes: 0,
                 info: sys::zeroed(),

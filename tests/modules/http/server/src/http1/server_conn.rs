@@ -9,7 +9,7 @@
 //! the case fails on it once the server stops, from whichever process it failed in.
 //! `SyncClient` is a blocking `TcpStream`: `send` writes it all, `recv` is one read.
 
-use super::case::{TimerNode, swoole_timer_after, swoole_timer_del};
+use super::case::{TimerNode, swoole_timer_after};
 use super::*;
 use crate::{TEST_LOG_FILE, TEST_STR};
 use std::io::{Read, Write};
@@ -1955,13 +1955,11 @@ unsafe extern "C" fn send_timeout_receive(
             .socket
             .cast::<u8>()
             .add(SOCKET_RECV_TIMER)
-            .cast::<*mut TimerNode>()
+            .cast::<Option<swoole_rs_corebase::timer_key::Held>>()
     };
-    if !recv_timer.is_null() {
-        // SAFETY: the socket's live timer.
-        unsafe { swoole_timer_del(*recv_timer) };
+    if let Some(timer) = recv_timer.take() {
+        swoole_rs_ffi::del_id(timer);
     }
-    *recv_timer = ptr::null_mut();
     // SAFETY: the socket's first member is its fd.
     set_buffer_size(unsafe { *conn.socket.cast::<c_int>() }, 65536);
 

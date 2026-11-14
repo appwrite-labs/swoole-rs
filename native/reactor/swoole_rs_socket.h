@@ -38,7 +38,7 @@ struct swr_v1_socket {
     uint32_t chunk_size;
     /* The write-path group: swr_v1_socket_output, which the reactor's write path works on. */
     swoole::Buffer *out_buffer;
-    swoole::TimerNode *send_timer;
+    uint64_t send_timer; /* the send timer, held by id (crates/corebase timer_key::Held), or 0 */
     uint32_t buffer_size; /* the user-space memory buffer size */
     bool close_wait;
     bool nonblock;
@@ -59,7 +59,7 @@ struct swr_v1_socket {
     double last_sent_time;
     swoole::Buffer *in_buffer;
     swoole::String *recv_buffer;
-    swoole::TimerNode *recv_timer;
+    uint64_t recv_timer; /* the receive timer, as send_timer */
     size_t total_recv_bytes;
     size_t total_send_bytes;
     /* Written by getsockname/accept: the exact actual address. */

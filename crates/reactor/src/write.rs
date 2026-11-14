@@ -4,7 +4,6 @@
 //! objects: making the socket nonblocking, the send, creating the `Buffer`, and
 //! registering write interest. It logs and raises from the returned outcome.
 use crate::{Drain, Socket};
-use std::ffi::c_void;
 use std::io::IoSlice;
 use swoole_rs_buffer::cpp::{CppBuffer, swr_cpp_buffer_count, swr_cpp_buffer_length};
 use swoole_rs_corebase::CCast;
@@ -14,8 +13,8 @@ use swoole_rs_corebase::CCast;
 pub struct SocketOutput {
     /// `Buffer *out_buffer`: the `Buffer` the socket owns, a null pointer without one.
     pub out_buffer: Option<Box<CppBuffer>>,
-    /// `TimerNode *send_timer`.
-    pub send_timer: *mut c_void,
+    /// `TimerNode *send_timer`, held by id.
+    pub send_timer: Option<swoole_rs_corebase::timer_key::Held>,
     pub buffer_size: u32,
     pub close_wait: bool,
     pub nonblock: bool,
@@ -249,7 +248,7 @@ mod tests {
     fn socket() -> SocketOutput {
         SocketOutput {
             out_buffer: None,
-            send_timer: std::ptr::null_mut(),
+            send_timer: None,
             buffer_size: 0,
             close_wait: false,
             nonblock: false,

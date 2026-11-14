@@ -14,7 +14,7 @@ use crate::socket::{
 use libc::{c_char, c_int, c_void, sockaddr_storage, socklen_t};
 use std::{
     ffi::{CStr, CString},
-    mem::{self, size_of},
+    mem::{self, MaybeUninit, size_of},
     ptr,
     rc::Rc,
 };
@@ -373,10 +373,11 @@ fn read(stream: *mut php_stream, buf: *mut c_char, count: usize) -> Result<isize
     };
     let (socket, blocking) = (Rc::clone(&net.socket), net.blocking.get());
     let recv = |op| {
-        let out: &mut [u8] = if count == 0 {
+        let out: &mut [MaybeUninit<u8>] = if count == 0 {
             &mut []
         } else {
-            // SAFETY: Zend lends `count` writable bytes at `buf` for the call.
+            // SAFETY: Zend lends `count` writable bytes at `buf` for the call, which
+            // may not be written yet.
             unsafe { std::slice::from_raw_parts_mut(buf.cast(), count) }
         };
         socket.recv(op, out)
@@ -886,12 +887,13 @@ fn populate_name(param: &mut php_stream_xport_param, peer: &mut sockaddr_storage
 }
 
 /// The receive buffer Zend lends the transport parameter for the call.
-fn buffer(param: &mut php_stream_xport_param) -> &mut [u8] {
+fn buffer(param: &mut php_stream_xport_param) -> &mut [MaybeUninit<u8>] {
     let (buf, length) = (param.inputs.buf, param.inputs.buflen);
     if length == 0 {
         return &mut [];
     }
-    // SAFETY: Zend lends `buflen` writable bytes at `buf` for the call.
+    // SAFETY: Zend lends `buflen` writable bytes at `buf` for the call, which may
+    // not be written yet.
     unsafe { std::slice::from_raw_parts_mut(buf.cast(), length) }
 }
 

@@ -706,7 +706,7 @@ impl Handle {
 
 // The unit tests log timers instead.
 #[cfg(not(test))]
-use swoole_rs_timer::{add_fn_sec_id, del_id};
+use swoole_rs_timer::{add_fn_sec as add_fn_sec_id, del_id};
 #[cfg(test)]
 use tests::{add_fn_sec_id, del_id};
 
@@ -895,8 +895,14 @@ pub enum Op<'a> {
         offset: i64,
         length: usize,
     },
+    /// One receive into `buffer`: the count of its first bytes it wrote, or -1.
     Recv {
         buffer: &'a mut [u8],
+        flags: c_int,
+    },
+    /// [`Op::Recv`] into slots not yet written, such as a string's room.
+    RecvSlots {
+        buffer: &'a mut [core::mem::MaybeUninit<u8>],
         flags: c_int,
     },
     /// `protocol.get_package_length` of these bytes.
@@ -948,6 +954,7 @@ impl Handle {
                 length,
             } => sendfile(self, file, offset, length).into(),
             Op::Recv { buffer, flags } => recv(self, buffer, flags) as i64,
+            Op::RecvSlots { buffer, flags } => recv(self, buffer, flags) as i64,
             Op::PackageLength(data) => package_length(self, data) as i64,
             Op::Shutdown(how) => shutdown(self, how).into(),
             Op::Close => close(self).into(),

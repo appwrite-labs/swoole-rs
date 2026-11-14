@@ -315,7 +315,7 @@ pub(crate) mod native {
     use swoole_rs_coroutine::resume;
     use swoole_rs_reactor::event_api::{Deferred, swoole_event_defer_value};
 
-    use swoole_rs_timer::{add_fn_sec_id, del_id};
+    use swoole_rs_timer::{add_fn_sec, del_id};
 
     pub(super) fn add(fd: i32, events: i32, task: Registered) -> Option<Watch> {
         // SAFETY: a poll task, the object `poll_ready` takes, which outlives the watch.
@@ -323,7 +323,7 @@ pub(crate) mod native {
     }
 
     pub(super) fn timer_add(timeout: f64, task: Registered) -> Option<Timer> {
-        add_fn_sec_id(timeout, false, move || wake(task, super::timeout)).map(Timer)
+        add_fn_sec(timeout, false, move || wake(task, super::timeout)).map(Timer)
     }
 
     /// A parked poll's wake-up, by its timer or its deferred completion: `pick` ends

@@ -25,8 +25,8 @@ use std::hash::{BuildHasherDefault, Hasher};
 use std::{mem, ptr};
 #[cfg(feature = "upstream-symbols")]
 pub use wrapper::{
-    Held, add_fn, add_fn_held, add_fn_id, add_fn_sec, add_fn_sec_id, cancel_held, cancel_issued,
-    del_id, php, swoole_timer_create, swoole_timer_del, swoole_timer_delay, swoole_timer_free,
+    Held, add_fn, add_fn_sec, cancel_held, cancel_issued, del_id, delay_held, php,
+    swoole_timer_create, swoole_timer_del, swoole_timer_delay, swoole_timer_free,
     swoole_timer_get_next_msec, swoole_timer_is_available, swoole_timer_select,
     swr_v1_timer_add_plain, swr_v1_timer_add_plain_sec, thread_timer_count, thread_timer_detached,
     thread_timer_reinit,
@@ -210,7 +210,21 @@ impl Timer {
     /// # Errors
     /// `Invalid`, `Closing`, or `NotFound` for a node not queued or removed.
     pub fn update(&mut self, id: i64, deadline: i64) -> Result<TimerView, Status> {
-        if id <= 0 || deadline < 0 {
+        if deadline < 0 {
+            return Err(Status::Invalid);
+        }
+        self.reschedule(id, |_| Some(deadline))
+    }
+
+    /// Node `id` falls due at `deadline(its deadline)`, or stays put for `None`.
+    /// # Errors
+    /// As [`Self::update`]; `NotFound` for `None` too.
+    pub fn reschedule(
+        &mut self,
+        id: i64,
+        deadline: impl FnOnce(i64) -> Option<i64>,
+    ) -> Result<TimerView, Status> {
+        if id <= 0 {
             return Err(Status::Invalid);
         }
         if self.closing {
@@ -220,7 +234,10 @@ impl Timer {
             .find(id)
             .filter(|(_, view)| !view.removed)
             .ok_or(Status::NotFound)?;
-        view.deadline = deadline;
+        view.deadline = deadline(view.deadline).ok_or(Status::NotFound)?;
+        if view.deadline < 0 {
+            return Err(Status::Invalid);
+        }
         self.heap.update(index, view);
         Ok(view)
     }

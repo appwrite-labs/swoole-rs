@@ -904,12 +904,24 @@ pub(crate) fn int(value: i64) -> c_int {
     value.c_cast::<c_int>()
 }
 
-/// [`receive`] of at most `length` bytes into `buffer`'s room.
+/// [`receive`] of at most `length` bytes into `buffer`'s room, counting what it
+/// wrote there.
 fn receive_into(conn: &Conn, buffer: &mut ZBuf, length: usize, flags: i64) -> Result<i64, Bailout> {
-    let room = native::room(buffer);
+    let room = buffer.spare_capacity_mut();
     let length = room.len().min(length);
-    let read = receive(conn.cli, room.get_mut(..length).unwrap_or_default(), flags)?;
-    Ok(native::filled(buffer, read))
+    let op = Op::RecvSlots {
+        buffer: room.get_mut(..length).unwrap_or_default(),
+        flags: int(flags),
+    };
+    let read = io(conn.cli, op)?;
+    if let Ok(count) = usize::try_from(read) {
+        // `MSG_TRUNC` reports a datagram's whole length, which may exceed the room.
+        let len = buffer.len() + count.min(length);
+        // SAFETY: `Op::RecvSlots` wrote the room's first `count` slots, of the
+        // `length` it was lent.
+        unsafe { buffer.set_len(len) };
+    }
+    Ok(read)
 }
 
 /// `recv()` failed (`error`): warn, errCode and false.

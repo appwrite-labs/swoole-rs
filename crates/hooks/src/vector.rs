@@ -8,7 +8,9 @@ use crate::co_socket::Co;
 use crate::socket_wait::wait_barrier;
 use core::ffi::c_int;
 use core::marker::PhantomData;
+use core::mem::MaybeUninit;
 use std::io::{IoSlice, IoSliceMut};
+use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_reactor::{
     Drain, Fill, ReactorIov, Socket, swr_v1_reactor_iov_view, swr_v1_socket_iov_owned,
 };
@@ -98,8 +100,30 @@ impl<'a> RecvMessage<'a> {
 
 /// What an [`IoVector`] is made over: buffers a read fills, or bytes a write sends.
 pub enum Vectors<'a, 'b> {
-    Read(&'a mut [IoSliceMut<'b>]),
+    Read(&'a mut [ReadVec<'b>]),
     Write(&'a [IoSlice<'b>]),
+}
+
+/// One buffer a vectored read fills, as an `iovec`: slots that may not be written
+/// yet, lent for `'b`.
+#[repr(transparent)]
+pub struct ReadVec<'b> {
+    iov: libc::iovec,
+    lent: PhantomData<&'b mut [MaybeUninit<u8>]>,
+}
+
+impl<'b> ReadVec<'b> {
+    /// The vector over `slots`.
+    #[must_use]
+    pub fn new(slots: &'b mut [impl ReadSlot]) -> Self {
+        Self {
+            iov: libc::iovec {
+                iov_base: slots.as_mut_ptr().cast(),
+                iov_len: slots.len(),
+            },
+            lent: PhantomData,
+        }
+    }
 }
 
 /// A `network::IOVector` over a copy of the caller's iovecs, destroyed on drop, and
@@ -130,7 +154,7 @@ impl<'a> IoVector<'a> {
             Vectors::Read(read) => (read.as_ptr().cast::<libc::iovec>(), read.len(), false),
             Vectors::Write(written) => (written.as_ptr().cast(), written.len(), true),
         };
-        // SAFETY: `IoSlice` and `IoSliceMut` are ABI-compatible with `iovec`, so these
+        // SAFETY: `IoSlice` and `ReadVec` are ABI-compatible with `iovec`, so these
         // are the borrowed slice's `count` iovecs, which are only copied.
         let vectors = unsafe { core::slice::from_raw_parts(at, count) };
         let owner = ReactorIov::new(vectors)?;

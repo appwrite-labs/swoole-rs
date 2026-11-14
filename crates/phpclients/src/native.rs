@@ -381,22 +381,34 @@ impl Co {
     /// `recvfrom` into `buffer`'s room under a read timeout of `timeout`.
     pub(crate) fn recvfrom(self, buffer: &mut ZBuf, timeout: f64) -> ssize_t {
         let _timeout = self.timeout(timeout, TIMEOUT_READ);
-        let received = self.0.recvfrom_peer(room(buffer));
-        filled(buffer, received)
+        self.fill(None, buffer)
     }
 
     /// One receiving [`Transfer`] into `buffer`'s room under `timeout`.
     pub(crate) fn receive(self, op: Transfer, buffer: &mut ZBuf, timeout: f64) -> ssize_t {
         let _timeout = (!matches!(op, Transfer::Peek)).then(|| self.timeout(timeout, TIMEOUT_READ));
-        let out = room(buffer);
+        self.fill(Some(op), buffer)
+    }
+
+    /// One receiving [`Transfer`] (`recvfrom` for none) into `buffer`'s room,
+    /// counting what it wrote there.
+    fn fill(self, op: Option<Transfer>, buffer: &mut ZBuf) -> ssize_t {
+        let out = buffer.spare_capacity_mut();
         let received = match op {
-            Transfer::Peek => self.0.peek(out),
-            Transfer::RecvAll => self.0.recv_all(out),
-            Transfer::RecvLine => self.0.recv_line(out),
-            Transfer::RecvWithBuffer => self.0.recv_with_buffer(out),
-            _ => self.0.recv(out),
+            None => self.0.recvfrom_peer(out),
+            Some(Transfer::Peek) => self.0.peek(out),
+            Some(Transfer::RecvAll) => self.0.recv_all(out),
+            Some(Transfer::RecvLine) => self.0.recv_line(out),
+            Some(Transfer::RecvWithBuffer) => self.0.recv_with_buffer(out),
+            Some(_) => self.0.recv(out),
         };
-        filled(buffer, received)
+        if let Ok(count) = usize::try_from(received) {
+            let len = buffer.capacity().min(buffer.len() + count);
+            // SAFETY: each of these receives returns the count of the room's first
+            // slots it wrote, and the room ends at the capacity.
+            unsafe { buffer.set_len(len) };
+        }
+        received
     }
 
     /// `get_addr()` and `get_port()`.
@@ -654,25 +666,6 @@ pub(crate) fn peer_cert(socket: Net<'_>) -> Option<ZString> {
     let length = swoole_rs_tls::upstream::socket_ssl_peer_certificate_pem(socket, &mut buffer);
     let length = usize::try_from(length).ok()?;
     Some(ZString::new(buffer.get(..length).unwrap_or(&buffer)))
-}
-
-/// The unwritten room of `buffer`.
-pub(crate) fn room(buffer: &mut ZBuf) -> &mut [u8] {
-    let written = buffer.len();
-    let room = buffer.capacity() - written;
-    let at = buffer.as_mut_ptr().wrapping_add(written);
-    // SAFETY: `capacity()` bytes are writable from the start, so `room` from `at`.
-    unsafe { std::slice::from_raw_parts_mut(at, room) }
-}
-
-/// Count the `received` bytes a transfer wrote into `buffer`'s [`room`].
-pub(crate) fn filled<T: Copy + TryInto<usize>>(buffer: &mut ZBuf, received: T) -> T {
-    if let Ok(count) = received.try_into() {
-        let len = buffer.capacity().min(buffer.len() + count);
-        // SAFETY: the transfer wrote `count` bytes of the room it was given.
-        unsafe { buffer.set_len(len) };
-    }
-    received
 }
 
 /// [`address`] of `socket`'s `info`, copied out of the record.

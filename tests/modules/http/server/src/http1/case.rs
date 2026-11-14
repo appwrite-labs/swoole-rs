@@ -95,7 +95,7 @@ pub(super) struct SocketHead {
     flags: [u8; 17],
     chunk_size: u32,
     out_buffer: *mut c_void,
-    send_timer: *mut c_void,
+    send_timer: u64,
     buffer_size: u32,
     output_flags: [u8; 4],
     object: *mut c_void,

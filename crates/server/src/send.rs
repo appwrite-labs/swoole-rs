@@ -322,7 +322,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
     }
     let port = serv.port_by_server_fd(conn.server_fd());
     let idle = port.map_or(0.0, |port| port.config().max_idle_time.get());
-    if idle > 0.0 && sock.read(|s| s.output.send_timer.is_null()) {
+    if idle > 0.0 && sock.read(|s| s.output.send_timer.is_none()) {
         idle_timer(serv, conn, sock, idle);
     }
     if sock.read(|s| s.events) & EVENT_WRITE == 0 {
@@ -386,12 +386,12 @@ fn send_file(sock: Socket<'_>, task: &[u8]) -> c_int {
 /// `swoole_timer_add(sec2msec(port->max_idle_time), true, ...)` for the socket's
 /// sends.
 fn idle_timer(serv: Server<'_>, conn: Connection<'_>, sock: Socket<'_>, idle: f64) {
-    let node = crate::connection::idle_timer(serv, conn, idle);
+    let timer = crate::connection::idle_timer(serv, conn, idle);
     let now = steady_ms();
     sock.edit(|sock| {
         sock.timeouts.write = idle;
         sock.last_sent_time = now;
-        sock.output.send_timer = node;
+        sock.output.send_timer = timer;
     });
 }
 #[cfg(test)]

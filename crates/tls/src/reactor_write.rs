@@ -204,10 +204,8 @@ impl FlushEffects for Flush<'_> {
         result
     }
 
-    fn delete_timer(&self) {
-        let timer = self.socket.read(|record| record.output.send_timer);
-        // SAFETY: `swoole_timer_del(socket->send_timer)`.
-        unsafe { swoole_rs_timer::swoole_timer_del(timer.cast()) };
+    fn delete_timer(&self, timer: swoole_rs_timer::Held) {
+        swoole_rs_timer::del_id(timer);
     }
 
     fn remove_write_event(&self) {

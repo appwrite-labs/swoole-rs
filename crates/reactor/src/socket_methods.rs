@@ -170,7 +170,7 @@ pub fn record_recv<S: ReadSlot>(
     if total > 0
         && socket.edit(|record| {
             record.total_recv_bytes += total.cast_unsigned();
-            !record.recv_timer.is_null()
+            record.recv_timer.is_some()
         })
     {
         let time = now();
@@ -232,7 +232,7 @@ fn counted(
     if sent > 0
         && socket.edit(|record| {
             record.total_send_bytes += sent.cast_unsigned();
-            !record.output.send_timer.is_null()
+            record.output.send_timer.is_some()
         })
     {
         let time = now();
@@ -343,7 +343,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no datagram socketpair")]
     fn send_recv_and_peek_count_bytes_and_stamp_timers() {
         let [mut a, mut b] = pair();
-        let timer = std::ptr::NonNull::<c_void>::dangling().as_ptr();
+        let timer = Some(swoole_rs_corebase::timer_key::Held::detached(1));
         b.output.send_timer = timer;
         a.recv_timer = timer;
         let mut buffer = [0_u8; 8];

@@ -230,9 +230,32 @@ pub use c::{
 
 /// A byte a read may overwrite with any value: `u8`, or one not yet written
 /// (`CppString::spare`). Readers only write their buffer, so they take either.
-pub trait ReadSlot: sealed::Sealed {}
-impl ReadSlot for u8 {}
-impl ReadSlot for MaybeUninit<u8> {}
+pub trait ReadSlot: sealed::Sealed + Sized {
+    /// Copy what fits of `bytes` to the start of `slots`: the count copied.
+    fn copy_in(slots: &mut [Self], bytes: &[u8]) -> usize;
+}
+
+impl ReadSlot for u8 {
+    #[inline]
+    fn copy_in(slots: &mut [Self], bytes: &[u8]) -> usize {
+        let n = slots.len().min(bytes.len());
+        if let (Some(to), Some(from)) = (slots.get_mut(..n), bytes.get(..n)) {
+            to.copy_from_slice(from);
+        }
+        n
+    }
+}
+
+impl ReadSlot for MaybeUninit<u8> {
+    #[inline]
+    fn copy_in(slots: &mut [Self], bytes: &[u8]) -> usize {
+        let n = slots.len().min(bytes.len());
+        if let (Some(to), Some(from)) = (slots.get_mut(..n), bytes.get(..n)) {
+            to.write_copy_of_slice(from);
+        }
+        n
+    }
+}
 
 mod sealed {
     /// Only one-byte types every bit pattern initializes.

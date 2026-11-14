@@ -22,7 +22,7 @@ use crate::vector::{IoVector, RecvMessage, SendMessage, vector_all};
 use core::ffi::{CStr, c_int};
 use swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE;
 use swoole_rs_corebase::log;
-use swoole_rs_corebase::sys::{self, strerror};
+use swoole_rs_corebase::sys::{self, ReadSlot, strerror};
 use swoole_rs_reactor::{
     CLASS_DGRAM, Drain, Event, Fill, Running, Socket, SocketAddress, SocketFields, SocketRecord,
     type_is,
@@ -174,14 +174,15 @@ impl Co {
     }
 
     /// `Socket::recv_with_buffer(buf, n)` into `out`, which is outside the socket's
-    /// read buffer.
-    pub fn recv_with_buffer(self, out: &mut [u8]) -> isize {
+    /// read buffer: the count of `out`'s first slots it wrote, or -1.
+    pub fn recv_with_buffer(self, out: &mut [impl ReadSlot]) -> isize {
         recv_buffered(self, out)
     }
 
     /// `Socket::recv_line(buf, maxlen)` of at most `out.len()` bytes, one buffered
-    /// byte at a time, into `out`, which is outside the socket's read buffer.
-    pub fn recv_line(self, out: &mut [u8]) -> isize {
+    /// byte at a time, into `out`, which is outside the socket's read buffer: the
+    /// count of `out`'s first slots it wrote, or -1.
+    pub fn recv_line(self, out: &mut [impl ReadSlot]) -> isize {
         recv_line(out, |at| recv_buffered(self, at))
     }
 
@@ -406,8 +407,8 @@ impl Co {
         Vec::new()
     }
 
-    /// `Socket::recv(buf, n)`.
-    pub fn recv(self, buf: &mut [impl swoole_rs_corebase::sys::ReadSlot]) -> isize {
+    /// `Socket::recv(buf, n)`: the count of `buf`'s first slots it wrote, or -1.
+    pub fn recv(self, buf: &mut [impl ReadSlot]) -> isize {
         #[cfg(feature = "iouring")]
         if let Some(ops) = crate::uring_socket::of(self) {
             return ring::recv(&ops, buf);
@@ -427,8 +428,8 @@ impl Co {
         self.transfer(0, Buffer::write(buf), call)
     }
 
-    /// `Socket::recv_all(buf, n)`.
-    pub fn recv_all(self, buf: &mut [u8]) -> isize {
+    /// `Socket::recv_all(buf, n)`: the count of `buf`'s first slots it wrote, or -1.
+    pub fn recv_all(self, buf: &mut [impl ReadSlot]) -> isize {
         #[cfg(feature = "iouring")]
         if let Some(ops) = crate::uring_socket::of(self) {
             return ring::recv_all(&ops, buf);
@@ -449,7 +450,7 @@ impl Co {
     }
 
     /// `Socket::read(buf, n)`.
-    pub fn read(self, buf: &mut [impl swoole_rs_corebase::sys::ReadSlot]) -> isize {
+    pub fn read(self, buf: &mut [impl ReadSlot]) -> isize {
         #[cfg(feature = "iouring")]
         if let Some(ops) = crate::uring_socket::of(self) {
             return ring::read(&ops, buf);
@@ -557,7 +558,7 @@ impl Co {
     /// retrying `EINTR` at once: the bytes received and the length of the peer's address.
     pub fn recvfrom_into(
         self,
-        buf: &mut [impl swoole_rs_corebase::sys::ReadSlot],
+        buf: &mut [impl ReadSlot],
         peer: &mut libc::sockaddr_storage,
     ) -> (isize, libc::socklen_t) {
         #[cfg(feature = "iouring")]
@@ -574,8 +575,8 @@ impl Co {
     }
 
     /// `Socket::recvfrom(buf, n)`: into the `network::Socket`'s peer address, retrying
-    /// `EINTR` at once.
-    pub fn recvfrom_peer(self, buf: &mut [u8]) -> isize {
+    /// `EINTR` at once; the count of `buf`'s first slots it wrote, or -1.
+    pub fn recvfrom_peer(self, buf: &mut [impl ReadSlot]) -> isize {
         let receive = |addr, addrlen| {
             #[cfg(feature = "iouring")]
             if let Some(ops) = crate::uring_socket::of(self) {
@@ -613,9 +614,9 @@ impl Co {
         self.transfer(0, Buffer::none(WRITE), call)
     }
 
-    /// `Socket::recv_once(buf, n)`: one `network::Socket` receive, no wait. The
-    /// socket is open.
-    pub fn recv_once(self, buf: &mut [u8]) -> isize {
+    /// `Socket::recv_once(buf, n)`: one `network::Socket` receive, no wait; the count
+    /// of `buf`'s first slots it wrote, or -1. The socket is open.
+    pub fn recv_once(self, buf: &mut [impl ReadSlot]) -> isize {
         let mut io = || {
             self.with_network(|socket| recv(socket, buf, 0))
                 .unwrap_or(-1)
@@ -642,9 +643,9 @@ impl Co {
         io()
     }
 
-    /// `Socket::peek(buf, n)`: one `network::Socket` peek, then `check_return_value`.
-    /// The socket is open.
-    pub fn peek(self, buf: &mut [impl swoole_rs_corebase::sys::ReadSlot]) -> isize {
+    /// `Socket::peek(buf, n)`: one `network::Socket` peek, then `check_return_value`;
+    /// the count of `buf`'s first slots it wrote, or -1. The socket is open.
+    pub fn peek(self, buf: &mut [impl ReadSlot]) -> isize {
         let result = self
             .with_network(|socket| peek(socket, buf, 0))
             .unwrap_or(-1);

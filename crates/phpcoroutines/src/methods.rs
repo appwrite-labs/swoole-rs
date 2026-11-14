@@ -380,8 +380,7 @@ fn set_time_limit(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let Some(timer) = swoole_rs_timer::add_fn_sec_id(timeout, false, move || time_limit(cid))
-    else {
+    let Some(timer) = swoole_rs_timer::add_fn_sec(timeout, false, move || time_limit(cid)) else {
         call.set_bool(false);
         return;
     };

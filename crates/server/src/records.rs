@@ -47,7 +47,7 @@ pub struct ConnectionRecord {
     pub waiting_time: u16,
     pub local_port: u16,
     pub local_addr_index: u16,
-    pub timer: *mut c_void,
+    pub timer: Option<swoole_rs_corebase::timer_key::Held>,
     pub info: SocketAddress,
     pub object: *mut c_void,
     /// The session socket, `None` before the connection has one or after it closes: a
@@ -195,7 +195,7 @@ impl<'a> Connection<'a> {
     field!(waiting_time, set_waiting_time: u16);
     field!(local_port, set_local_port: u16);
     field!(local_addr_index, set_local_addr_index: u16);
-    field!(timer, set_timer: *mut c_void);
+    field!(timer, set_timer: Option<swoole_rs_corebase::timer_key::Held>);
     field!(info, set_info: SocketAddress);
     field!(object, set_object: *mut c_void);
     field!(socket, set_socket: Option<swoole_rs_reactor::Socket<'static>>);
@@ -276,7 +276,7 @@ pub struct ServerTables {
     pub port_gs_list: Shm,
     pub max_connection: u32,
     /// Armed when accepting runs out of fds and cleared by its callback, at runtime.
-    pub enable_accept_timer: core::sync::atomic::AtomicPtr<c_void>,
+    pub enable_accept_timer: swoole_rs_corebase::timer_key::AtomicHeld,
     pub reactor_pipe_num: u16,
     /// How many records `reactor_threads` holds, in the padding native code's view
     /// leaves before it. Private with it: only [`Self::install_reactor_threads`] and
@@ -405,7 +405,7 @@ impl Default for ServerTables {
             session_list: Shm::NULL,
             port_gs_list: Shm::NULL,
             max_connection: 0,
-            enable_accept_timer: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+            enable_accept_timer: swoole_rs_corebase::timer_key::AtomicHeld::new(),
             reactor_pipe_num: 0,
             reactor_thread_num: 0,
             reactor_threads: core::ptr::null_mut(),

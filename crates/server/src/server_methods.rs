@@ -213,9 +213,9 @@ pub fn set_document_root(serv: view::Server<'_>, path: &[u8]) -> bool {
 }
 
 /// Arms the master timer on this thread, the master's: each second it runs
-/// `Server::timer_callback` over `serv`. The timer's node, or null.
+/// `Server::timer_callback` over `serv`. The timer, or none.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-pub(crate) fn master_timer(serv: view::Server<'_>) -> *mut core::ffi::c_void {
+pub(crate) fn master_timer(serv: view::Server<'_>) -> Option<swoole_rs_timer::Held> {
     let serv = serv.raw();
     swoole_rs_timer::add_fn(1000, true, move || {
         // SAFETY: the server that armed its master timer, on its own thread; it

@@ -11,7 +11,7 @@ pub type Cancel = extern "C-unwind" fn(generation: u64, id: c_long);
 /// `ReloadTask` arms over itself. Native code arms the timer; this owns it. A
 /// thread's timer numbers its ids from the start each time it is made, so the id
 /// is kept with the generation of the timer that issued it
-/// (`swoole_rs_timer::Held::parts`): this crate cannot name that type.
+/// (`swoole_rs_timer::Held::generation`), in the layout native code declares.
 #[repr(C)]
 pub struct ArmedTimer {
     generation: u64,

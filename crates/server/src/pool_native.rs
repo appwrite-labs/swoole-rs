@@ -204,10 +204,10 @@ fn max_wait_ms(pool: Pool<'_>) -> c_long {
 /// A one-shot timer of the pool's `max_wait_time` that runs `f`, owned: dropping it
 /// deletes the timer unless it has fired.
 fn armed(pool: Pool<'_>, f: impl Fn() + Copy + 'static) -> Option<ArmedTimer> {
-    let (generation, id) = swoole_rs_timer::add_fn_held(max_wait_ms(pool), false, f)?.parts();
+    let held = swoole_rs_timer::add_fn(max_wait_ms(pool), false, f)?;
     Some(ArmedTimer::new(
-        generation,
-        id,
+        u64::from(held.generation()),
+        held.id(),
         swoole_rs_timer::cancel_issued,
     ))
 }

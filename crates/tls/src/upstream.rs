@@ -855,7 +855,7 @@ impl OutputEffects for Output<'_> {
 
     fn sent(&self) {
         self.0.edit(|record| {
-            if !record.output.send_timer.is_null() {
+            if record.output.send_timer.is_some() {
                 record.last_sent_time = steady_ms();
             }
         });
@@ -1112,11 +1112,8 @@ pub unsafe extern "C-unwind" fn socket_free(socket: *mut SocketRecord) {
                 [record.in_buffer.take(), record.output.out_buffer.take()],
             )
         });
-        for timer in timers {
-            if !timer.is_null() {
-                // SAFETY: the socket's live timer.
-                unsafe { swoole_rs_timer::swoole_timer_del(timer.cast()) };
-            }
+        for timer in timers.into_iter().flatten() {
+            swoole_rs_timer::del_id(timer);
         }
         // `delete in_buffer; delete out_buffer`.
         drop(buffers);

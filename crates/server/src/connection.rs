@@ -1,5 +1,5 @@
 //! Accepting connections and their idle and health checks.
-use core::ffi::{c_int, c_long, c_void};
+use core::ffi::{c_int, c_long};
 use core::sync::atomic::Ordering::{Acquire, Relaxed, Release, SeqCst};
 use swoole_rs_corebase::ServerEvent;
 
@@ -337,10 +337,10 @@ pub(crate) fn incoming(
     };
     let idle = port.config().max_idle_time.get();
     if idle > 0.0 {
-        let node = idle_timer(serv, conn, idle);
+        let timer = idle_timer(serv, conn, idle);
         sock.edit(|s| {
             s.timeouts.read = idle;
-            s.recv_timer = node;
+            s.recv_timer = timer;
         });
     }
     if !sock.read(|s| s.ssl().is_null()) {
@@ -359,8 +359,12 @@ pub(crate) fn incoming(
 }
 
 /// `swoole_timer_add(sec2msec(idle), true, Server::get_timeout_callback(...))`: the
-/// persistent idle check of `conn`, on this thread's reactor; the node, or null.
-pub(crate) fn idle_timer(serv: view::Server<'_>, conn: Connection<'_>, idle: f64) -> *mut c_void {
+/// persistent idle check of `conn`, on this thread's reactor, or none.
+pub(crate) fn idle_timer(
+    serv: view::Server<'_>,
+    conn: Connection<'_>,
+    idle: f64,
+) -> Option<swoole_rs_timer::Held> {
     // sec2msec's (long) cast.
     let msec = (idle * 1000.0).c_cast::<c_long>();
     let (raw, fd) = (serv.raw(), c_long::from(conn.fd()));
@@ -414,8 +418,8 @@ pub(crate) fn disable_accept(serv: view::Server<'_>) {
         enable_accept(unsafe { view::Server::from_raw(raw) });
     });
     let tables = serv.state().tables_ref();
-    tables.enable_accept_timer.store(timer, Relaxed);
-    if timer.is_null() {
+    tables.enable_accept_timer.store(timer);
+    if timer.is_none() {
         return;
     }
     for_stream_ports(serv, Reactor::del);
@@ -425,9 +429,7 @@ pub(crate) fn disable_accept(serv: view::Server<'_>) {
 pub(crate) fn enable_accept(serv: view::Server<'_>) {
     for_stream_ports(serv, |reactor, sock| reactor.add(sock, EVENT_READ));
     let tables = serv.state().tables_ref();
-    tables
-        .enable_accept_timer
-        .store(core::ptr::null_mut(), Relaxed);
+    tables.enable_accept_timer.store(None);
 }
 
 /// `swoole_event_add`/`_del` on each stream port's listening socket.
@@ -507,12 +509,7 @@ mod tests {
         );
         assert_eq!(gs.accept_count.load(Relaxed), 0, "no connection made");
         assert!(
-            !live
-                .state()
-                .tables_ref()
-                .enable_accept_timer
-                .load(Relaxed)
-                .is_null(),
+            live.state().tables_ref().enable_accept_timer.is_some(),
             "accepting waits for the retry timer"
         );
         assert_closed(live, &mut client);
@@ -650,7 +647,7 @@ mod tests {
         let conn = live.state().tables_ref().connection_at(fd).unwrap();
         let sock = conn.socket().unwrap();
         assert!(
-            !sock.read(|s| s.recv_timer).is_null(),
+            sock.read(|s| s.recv_timer).is_some(),
             "the idle timer is armed"
         );
         let now = swoole_rs_reactor::steady_ms();
@@ -679,13 +676,10 @@ mod tests {
         assert_eq!(live.reactor().add(listener, EVENT_READ), OK, "reading");
         disable_accept(live.server());
         let tables = live.state().tables_ref();
-        assert!(!tables.enable_accept_timer.load(Relaxed).is_null(), "armed");
+        assert!(tables.enable_accept_timer.is_some(), "armed");
         assert!(!reading(listener), "no longer reading");
         enable_accept(live.server());
-        assert!(
-            tables.enable_accept_timer.load(Relaxed).is_null(),
-            "cleared"
-        );
+        assert!(!tables.enable_accept_timer.is_some(), "cleared");
         assert!(reading(listener), "reading again");
     }
 
@@ -696,7 +690,7 @@ mod tests {
         let listener = live.port_socket();
         assert_eq!(live.reactor().add(listener, EVENT_READ), OK, "reading");
         let tables = live.state().tables_ref();
-        let armed = || !tables.enable_accept_timer.load(Relaxed).is_null();
+        let armed = || tables.enable_accept_timer.is_some();
         assert!(accept_failed(live.server(), libc::EINTR), "EINTR retries");
         assert!(!accept_failed(live.server(), libc::EAGAIN), "EAGAIN ends");
         assert!(

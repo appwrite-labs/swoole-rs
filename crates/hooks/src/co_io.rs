@@ -4,9 +4,11 @@
 //! the record's `set_err`, `check_return_value` and `is_available`, and the
 //! per-direction timer (`TimerController`).
 use crate::co_socket::Co;
-use crate::shutdown::READ;
+use crate::shutdown::{READ, WaitTimer};
 use core::ffi::{CStr, c_char, c_int, c_long, c_void};
+#[cfg(test)]
 use core::ptr;
+use swoole_rs_corebase::timer_key::Held;
 
 /// `SW_ERROR_CO_SOCKET_CLOSE_WAIT`.
 pub(crate) const CLOSE_WAIT_ERROR: c_int = 10019;
@@ -16,10 +18,10 @@ pub(crate) const CLOSE_WAIT_ERROR: c_int = 10019;
 /// runtime's table is installed when native registers the hooks host; tests set
 /// theirs per thread. Each takes a live record.
 pub struct Host {
-    /// A timer for the read or the `write` wait that calls `timer_fired`, or null.
-    pub timer_add: fn(Co, f64, bool) -> *mut c_void,
-    /// Deletes a pending timer `timer_add` returned.
-    pub timer_del: unsafe extern "C-unwind" fn(*mut swoole_rs_timer::TimerNode) -> bool,
+    /// A timer for the read or the `write` wait that calls `timer_fired`, or none.
+    pub timer_add: fn(Co, f64, bool) -> Option<Held>,
+    /// Deletes a timer `timer_add` returned, unless it has fired.
+    pub timer_del: fn(Held),
     /// Syncs the read String with the view, then refreshes the view.
     pub read_buffer: fn(Co, &mut crate::packet::ReadBuffer, crate::packet::BufferSync),
     /// `Socket::recv/recv_all` (all selects the latter) into the read String's
@@ -133,7 +135,7 @@ mod native {
 
     pub(super) static HOST: Host = Host {
         timer_add,
-        timer_del: swoole_rs_timer::swoole_timer_del,
+        timer_del: swoole_rs_timer::del_id,
         read_buffer,
         recv,
         package_length,
@@ -141,7 +143,7 @@ mod native {
     };
 
     /// The record's wait deletes its timer before the record goes.
-    fn timer_add(socket: Co, timeout: f64, write: bool) -> *mut c_void {
+    fn timer_add(socket: Co, timeout: f64, write: bool) -> Option<swoole_rs_timer::Held> {
         let event = if write { WRITE } else { READ };
         swoole_rs_timer::add_fn_sec(timeout, false, move || {
             super::timer_fired(socket, event);
@@ -428,9 +430,6 @@ pub(crate) fn would_block(socket: Co) -> bool {
     socket.catch_error(errno()) == Some(swoole_rs_reactor::Caught::Wait)
 }
 
-/// A timer slot's value while a negative timeout's wait runs without a timer.
-const SENTINEL: *mut c_void = usize::MAX as *mut c_void;
-
 /// `TimerController`: one wait's timer in the socket's slot for its direction.
 pub struct Timer {
     socket: Co,
@@ -450,46 +449,45 @@ impl Timer {
         }
     }
 
-    fn slot(&self) -> *mut c_void {
+    fn slot(&self) -> WaitTimer {
         let [read, write] = self.socket.with_state(|state| state.timers);
         if self.write { write } else { read }
     }
 
-    fn set_slot(&self, node: *mut c_void) {
+    fn set_slot(&self, timer: WaitTimer) {
         self.socket.with_state(|state| {
             let [read, write] = &mut state.timers;
-            *if self.write { write } else { read } = node;
+            *if self.write { write } else { read } = timer;
         });
     }
 
     /// `start()`: unless the slot holds a timer already, one firing after
-    /// `timeout` (false if none could be added), or the sentinel for a negative
+    /// `timeout` (false if none could be added), or `Unbounded` for a negative
     /// timeout. No timer for a zero timeout.
     pub(crate) fn start(&mut self) -> bool {
-        if self.timeout == 0.0 || !self.slot().is_null() {
+        if self.timeout == 0.0 || self.slot() != WaitTimer::None {
             return true;
         }
         self.enabled = true;
         if self.timeout > 0.0 {
-            let node = (host().timer_add)(self.socket, self.timeout, self.write);
-            self.set_slot(node);
-            return !node.is_null();
+            let timer = (host().timer_add)(self.socket, self.timeout, self.write);
+            self.set_slot(timer.map_or(WaitTimer::None, WaitTimer::Armed));
+            return timer.is_some();
         }
-        self.set_slot(SENTINEL);
+        self.set_slot(WaitTimer::Unbounded);
         true
     }
 
     /// The destructor: delete the timer this one started and clear the slot.
     pub(crate) fn stop(&mut self) {
-        let node = self.slot();
-        if !self.enabled || node.is_null() {
+        let slot = self.slot();
+        if !self.enabled || slot == WaitTimer::None {
             return;
         }
-        if node != SENTINEL {
-            // SAFETY: the timer `start` added, still pending: firing clears the slot.
-            unsafe { (host().timer_del)(node.cast()) };
+        if let WaitTimer::Armed(timer) = slot {
+            (host().timer_del)(timer);
         }
-        self.set_slot(ptr::null_mut());
+        self.set_slot(WaitTimer::None);
     }
 }
 
@@ -501,10 +499,10 @@ pub(crate) fn timer_fired(socket: Co, event: u32) {
     socket.with_state(|state| {
         let [read, write] = &mut state.timers;
         let slot = if event == READ { read } else { write };
-        if slot.is_null() {
+        if *slot == WaitTimer::None {
             swoole_rs_corebase::fatal("a timeout fired with no timer armed");
         }
-        *slot = ptr::null_mut();
+        *slot = WaitTimer::None;
     });
     resume_bound(socket, event);
 }
@@ -626,17 +624,16 @@ pub(crate) mod test_host {
             ON_BOUND.set(Some(hook));
         }
     }
-    fn timer_add(_: Co, timeout: f64, _: bool) -> *mut c_void {
+    fn timer_add(_: Co, timeout: f64, _: bool) -> Option<Held> {
         log(format!("timer:add:{timeout}"));
         if !TIMER_OK.get() {
-            return ptr::null_mut();
+            return None;
         }
         NODES.set(NODES.get() + 1);
-        ptr::dangling_mut::<u32>().cast()
+        Some(Held::detached(1))
     }
-    unsafe extern "C-unwind" fn timer_del(_: *mut swoole_rs_timer::TimerNode) -> bool {
+    fn timer_del(_: Held) {
         log("timer:delete");
-        true
     }
     fn sleep() {
         log("sleep");
@@ -694,13 +691,10 @@ mod tests {
     use swoole_rs_corebase::CCast;
 
     fn slot_state(socket: &TestSocket) -> usize {
-        let node = unsafe { (*socket.state()).timers[0] };
-        if node.is_null() {
-            0
-        } else if node == SENTINEL {
-            2
-        } else {
-            1
+        match unsafe { (*socket.state()).timers[0] } {
+            WaitTimer::None => 0,
+            WaitTimer::Armed(_) => 1,
+            WaitTimer::Unbounded => 2,
         }
     }
 
@@ -716,8 +710,11 @@ mod tests {
             let (timer_ok, enabled, again) =
                 ((k / 9) % 2 == 1, (k / 18) % 2 == 1, (k / 36) % 2 == 1);
             let mut socket = TestSocket::new();
-            let preset =
-                [ptr::null_mut(), ptr::dangling_mut::<u16>().cast(), SENTINEL][start_state];
+            let preset = [
+                WaitTimer::None,
+                WaitTimer::Armed(Held::detached(2)),
+                WaitTimer::Unbounded,
+            ][start_state];
             unsafe { (*socket.state()).timers[0] = preset };
             TIMER_OK.set(timer_ok);
             take();
@@ -754,7 +751,7 @@ mod tests {
             timer.stop();
             assert_eq!(take(), expected, "scenario {}", k + 931);
             assert_eq!(slot_state(&socket), node, "scenario {}", k + 931);
-            unsafe { (*socket.state()).timers[0] = ptr::null_mut() };
+            unsafe { (*socket.state()).timers[0] = WaitTimer::None };
         }
     }
 
@@ -766,11 +763,11 @@ mod tests {
         let mut socket = TestSocket::new();
         let mut ids: [c_long; 2] = [3, 4];
         bind(&socket, 3, &mut ids);
-        let node: *mut c_void = ptr::dangling_mut::<u32>().cast();
+        let node = WaitTimer::Armed(Held::detached(1));
         for (slot, event, cid) in [(1, WRITE, 4), (0, READ, 3)] {
             unsafe { (*socket.state()).timers[slot] = node };
             timer_fired(socket.co(), event);
-            assert!(unsafe { (*socket.state()).timers[slot] }.is_null());
+            assert_eq!(unsafe { (*socket.state()).timers[slot] }, WaitTimer::None);
             assert_eq!(socket.co().err_code(), libc::ETIMEDOUT);
             assert_eq!(
                 take(),
