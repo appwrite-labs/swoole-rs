@@ -420,6 +420,7 @@ dependencies = [
  "cc",
  "itoa",
  "libc",
+ "swoole-rs-error",
  "swoole-rs-framing",
  "swoole-rs-oracle",
 ]
@@ -430,6 +431,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-corebase",
+ "swoole-rs-error",
 ]
 
 [[package]]
@@ -448,6 +450,7 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-coroutine",
  "swoole-rs-curl-sys",
+ "swoole-rs-error",
  "swoole-rs-phpswoole",
  "swoole-rs-reactor",
  "swoole-rs-timer",
@@ -619,6 +622,7 @@ dependencies = [
  "swoole-rs-base64",
  "swoole-rs-buffer",
  "swoole-rs-corebase",
+ "swoole-rs-error",
  "swoole-rs-http",
  "swoole-rs-oracle",
  "swoole-rs-ossupport",
@@ -686,6 +690,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-corebase",
+ "swoole-rs-error",
  "swoole-rs-locks",
  "swoole-rs-utilities",
 ]
@@ -729,6 +734,7 @@ dependencies = [
  "libc",
  "swoole-rs-buffer",
  "swoole-rs-corebase",
+ "swoole-rs-error",
 ]
 
 [[package]]
@@ -776,6 +782,7 @@ name = "swoole-rs-phpcollections"
 version = "0.1.0"
 dependencies = [
  "swoole-rs-corebase",
+ "swoole-rs-error",
  "swoole-rs-memory",
  "swoole-rs-phpcoroutines",
  "swoole-rs-phpstubs",
@@ -790,6 +797,7 @@ dependencies = [
  "libc",
  "swoole-rs-corebase",
  "swoole-rs-coroutine",
+ "swoole-rs-error",
  "swoole-rs-hooks",
  "swoole-rs-phpruntime",
  "swoole-rs-phpstubs",
@@ -805,6 +813,7 @@ name = "swoole-rs-phpevents"
 version = "0.1.0"
 dependencies = [
  "swoole-rs-corebase",
+ "swoole-rs-error",
  "swoole-rs-memory",
  "swoole-rs-phpcoroutines",
  "swoole-rs-phpprocess",
@@ -826,6 +835,7 @@ dependencies = [
  "swoole-rs-clients",
  "swoole-rs-corebase",
  "swoole-rs-deflate",
+ "swoole-rs-error",
  "swoole-rs-hooks",
  "swoole-rs-http",
  "swoole-rs-http2",
@@ -877,6 +887,7 @@ name = "swoole-rs-phplocks"
 version = "0.1.0"
 dependencies = [
  "swoole-rs-corebase",
+ "swoole-rs-error",
  "swoole-rs-hooks",
  "swoole-rs-locks",
  "swoole-rs-memory",
@@ -893,6 +904,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-corebase",
+ "swoole-rs-error",
  "swoole-rs-ossupport",
  "swoole-rs-phpclients",
  "swoole-rs-phpcoroutines",
@@ -912,6 +924,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-corebase",
+ "swoole-rs-error",
  "swoole-rs-phpcoroutines",
  "swoole-rs-phpserver",
  "swoole-rs-phpstubs",
@@ -1030,6 +1043,7 @@ name = "swoole-rs-phptimer"
 version = "0.1.0"
 dependencies = [
  "swoole-rs-corebase",
+ "swoole-rs-error",
  "swoole-rs-phpcoroutines",
  "swoole-rs-phpprocess",
  "swoole-rs-phpstubs",
@@ -1068,6 +1082,7 @@ dependencies = [
  "libc",
  "swoole-rs-buffer",
  "swoole-rs-corebase",
+ "swoole-rs-error",
  "swoole-rs-locks",
  "swoole-rs-memory",
  "swoole-rs-ossupport",
@@ -1085,6 +1100,7 @@ dependencies = [
  "libc",
  "swoole-rs-clients",
  "swoole-rs-corebase",
+ "swoole-rs-error",
  "swoole-rs-oracle",
  "swoole-rs-protocols",
  "swoole-rs-reactor",
@@ -1168,6 +1184,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-corebase",
+ "swoole-rs-error",
  "swoole-rs-reactor",
 ]
 
@@ -1213,6 +1230,7 @@ dependencies = [
  "libc",
  "swoole-rs-buffer",
  "swoole-rs-corebase",
+ "swoole-rs-error",
  "swoole-rs-oracle",
  "swoole-rs-websocket",
 ]
