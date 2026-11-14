@@ -119,7 +119,7 @@ impl ProxyState {
         self.strings
             .borrow_mut()
             .get_mut(index)
-            .is_some_and(|slot| slot.set(value) == 0)
+            .is_some_and(|slot| slot.set(value))
     }
     /// The SOCKS5 packet, none for an HTTP proxy.
     ///

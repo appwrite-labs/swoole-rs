@@ -370,10 +370,9 @@ pub unsafe extern "C" fn swr_v1_tls_owner_assign(
         let value = from.bytes();
         // SAFETY: the destination slot is exclusive (a distinct owner) and the source's
         // bytes stay unchanged while they are copied.
-        let status = unsafe { to.set_shared(value) };
-        if status != 0 {
+        if !unsafe { to.set_shared(value) } {
             return OwnedTlsCopy {
-                status,
+                status: -2,
                 index: u32::try_from(index).unwrap_or(0),
             };
         }
@@ -559,9 +558,8 @@ impl Lent<'_> {
         // SAFETY: a stable slot of the exclusive owner. `value` borrows none of its
         // strings: they are private to this crate, which lends no borrow of them out.
         // The stored value keeps every byte.
-        let status = unsafe { slot.set_shared(value) };
         // An allocation refusal, which std::bad_alloc ends.
-        if status != 0 {
+        if !unsafe { slot.set_shared(value) } {
             swoole_rs_corebase::fatal("out of memory storing a TLS setting");
         }
         if matches!(which, Text::HostName) {

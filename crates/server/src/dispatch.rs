@@ -346,7 +346,7 @@ pub fn add_port<'a>(
     let mut port = PortConfig::new_port(serv.raw());
     port.r#type = socket_type;
     port.port.set(number);
-    if port.host.set(host.to_bytes()) < 0 {
+    if !port.host.set(host.to_bytes()) {
         // `throw std::bad_alloc()`, which nothing catches.
         swoole_rs_corebase::fatal("out of memory storing a port's host");
     }

@@ -63,28 +63,28 @@ impl StringSlot {
     pub fn empty() -> Arc<Self> {
         Arc::new(Self::default())
     }
-    /// Sets the bytes: 0, or -2 when the allocation fails.
-    pub fn set(&mut self, value: &[u8]) -> i32 {
-        Bytes::copy(value).map_or(-2, |bytes| {
+    /// Sets the bytes: false when the allocation fails.
+    pub fn set(&mut self, value: &[u8]) -> bool {
+        Bytes::copy(value).is_some_and(|bytes| {
             *self.bytes.get_mut() = bytes;
-            0
+            true
         })
     }
-    /// [`Self::set`] through a shared slot, as native configuration views do: 0, or
-    /// -2 when the allocation fails, which leaves the slot as it was.
+    /// [`Self::set`] through a shared slot, as native configuration views do: false
+    /// when the allocation fails, which leaves the slot as it was.
     ///
     /// # Safety
     /// Nothing else reads or sets the slot meanwhile, no borrow from
     /// [`Self::bytes`], [`Self::c_str`] or [`Self::view`] outlives the call, and
     /// `value` is not the slot's own bytes.
-    pub unsafe fn set_shared(&self, value: &[u8]) -> i32 {
+    pub unsafe fn set_shared(&self, value: &[u8]) -> bool {
         let Some(replacement) = Bytes::copy(value) else {
-            return -2;
+            return false;
         };
         // SAFETY: the caller holds the slot exclusively; the copy is published only
         // after its allocation succeeded.
         unsafe { *self.bytes.get() = replacement };
-        0
+        true
     }
     /// The bytes, embedded NULs included; a NUL follows them.
     #[must_use]
@@ -158,7 +158,7 @@ pub unsafe extern "C" fn swr_v1_core_string_set(
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_core_string_clone(source: &StringSlot) -> Option<Box<StringSlot>> {
     let mut slot = StringSlot::new();
-    (slot.set(source.bytes()) == 0).then(|| Box::new(slot))
+    slot.set(source.bytes()).then(|| Box::new(slot))
 }
 /// Frees the copy `swr_v1_core_string_clone` made, or nothing for null: native code
 /// hands it back once, after its view ends.
