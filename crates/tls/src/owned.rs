@@ -94,15 +94,19 @@ fn prepared(owner: &OwnedTlsContext) -> OwnedTlsPrepared {
 pub extern "C" fn swr_v1_tls_owner_new() -> OwnedTlsPrepared {
     owner_new(tls_warning)
 }
-/// A new owner that warns through `warn`, holding one reference, and its view.
-#[must_use]
-pub fn owner_new(warn: Warn) -> OwnedTlsPrepared {
-    let owner = Arc::new(OwnedTlsContext {
+/// A new owner that warns through `warn`, with fresh string slots of its own.
+fn fresh(warn: Warn) -> Arc<OwnedTlsContext> {
+    Arc::new(OwnedTlsContext {
         fields: UnsafeCell::new(OwnedTlsFields::default()),
         strings: std::array::from_fn(|_| StringSlot::empty()),
         context_password: Cell::new(None),
         warn,
-    });
+    })
+}
+/// A new owner that warns through `warn`, holding one reference, and its view.
+#[must_use]
+pub fn owner_new(warn: Warn) -> OwnedTlsPrepared {
+    let owner = fresh(warn);
     let view = prepared(&owner);
     OwnedTlsPrepared {
         // The Arc's own pointer, which `swr_v1_tls_owner_free` can turn back into the
@@ -135,18 +139,26 @@ impl TlsContext {
     /// A new owner that warns through [`tls_warning`].
     #[must_use]
     pub fn new() -> Self {
-        let owner = core::ptr::NonNull::new(swr_v1_tls_owner_new().owner.cast_mut());
+        Self::adopt(fresh(tls_warning))
+    }
+    /// The handle holding `owner`'s reference.
+    fn adopt(owner: Arc<OwnedTlsContext>) -> Self {
+        let owner = core::ptr::NonNull::new(Arc::into_raw(owner).cast_mut());
         Self(owner.unwrap_or_else(|| swoole_rs_corebase::fatal("a TLS context can't be allocated")))
     }
     /// A new owner holding `texts`, each set as [`Lent::set_text`] sets it.
     #[must_use]
     pub fn with_texts(texts: &[(Text, &[u8])]) -> Self {
-        let context = Self::new();
-        for &(which, value) in texts {
-            // SAFETY: the fresh owner, which nothing else holds yet.
-            _ = unsafe { Lent::new(&context) }.set_text(which, value);
+        let mut owner = fresh(tls_warning);
+        // The one reference to a fresh owner, whose slots nothing else holds and
+        // which has no context yet: what `Lent::new` asks of its caller.
+        if let Some(owner) = Arc::get_mut(&mut owner) {
+            let owner = Lent(owner, PhantomData);
+            for &(which, value) in texts {
+                _ = owner.set_text(which, value);
+            }
         }
-        context
+        Self::adopt(owner)
     }
     /// The owner, for native code and the raw-owner API; the handle keeps it live.
     #[must_use]
@@ -229,10 +241,6 @@ impl<'a> Lent<'a> {
     }
 }
 impl Lent<'_> {
-    fn fields(&self) -> &OwnedTlsFields {
-        // SAFETY: the guard's contract: nothing writes the fields while it lends them.
-        unsafe { &*self.0.fields.get() }
-    }
     /// Another reference to the retained password.
     fn password(&mut self) -> Option<Arc<StringSlot>> {
         let held = self.0.context_password.take();
@@ -290,7 +298,7 @@ fn create(owner: &mut Lent<'_>) -> bool {
     let state = owner.0;
     // `configuration` copies the fields, so no borrow of them is kept across
     // OpenSSL/log callbacks.
-    let mut config = configuration(state, owner.fields());
+    let mut config = owner.edit(|fields| configuration(state, fields));
     let slot = Arc::as_ptr(&state.strings[PASSPHRASE]);
     let retained_password = if config.passphrase.is_empty() {
         None
@@ -372,7 +380,7 @@ pub unsafe extern "C" fn swr_v1_tls_owner_assign(
     }
     // Copy scalar values after string allocation/cache updates have succeeded; the
     // destination takes its own reference to the source's context.
-    let Some(fields) = source.fields().try_clone() else {
+    let Some(fields) = source.edit(|fields| fields.try_clone()) else {
         return OwnedTlsCopy {
             status: -2,
             index: 0,
@@ -393,16 +401,13 @@ pub unsafe extern "C" fn swr_v1_tls_owner_assign(
 
 /// Configure and create a coroutine socket's context from its authoritative owner.
 /// 0 success, 1 unsupported DTLS, 2 context creation failure.
-/// # Safety
-/// `owner` is exclusive; native TLS initialization has succeeded.
-pub unsafe fn swr_v1_tls_owner_socket_context(
-    owner: &OwnedTlsContext,
+#[must_use]
+pub fn swr_v1_tls_owner_socket_context(
+    mut owner: Lent<'_>,
     socket: swoole_rs_reactor::Socket<'_>,
     http2: bool,
     dtls_supported: bool,
 ) -> c_int {
-    // SAFETY: as the caller promises.
-    let mut owner = unsafe { Lent::new(owner) };
     let kind = socket.read(|record| record.socket_type);
     let dtls = swoole_rs_reactor::type_is(kind, swoole_rs_reactor::CLASS_DGRAM);
     if dtls && !dtls_supported {
@@ -435,11 +440,8 @@ pub unsafe fn swr_v1_tls_owner_socket_context(
 /// As [`crate::socket_ssl_new`].
 ///
 /// `hostname` is the automatic host name, none when it is empty.
-///
-/// # Safety
-/// `owner` is exclusive, and TLS is initialized.
-pub unsafe fn swr_v1_tls_owner_socket_session(
-    owner: Option<&OwnedTlsContext>,
+pub fn swr_v1_tls_owner_socket_session(
+    owner: Option<Lent<'_>>,
     record: swoole_rs_reactor::Socket<'_>,
     hostname: Option<&CStr>,
 ) -> Result<(), crate::SslNewError> {
@@ -450,16 +452,12 @@ pub unsafe fn swr_v1_tls_owner_socket_session(
     let Some(owner) = owner else {
         return Err(crate::SslNewError::New);
     };
-    // SAFETY: as the caller promises.
-    let owner = unsafe { Lent::new(owner) };
     let owner_ref = owner.0;
-    let (context, disable_tls_host_name) = {
-        // The context is borrowed until the SSL is made; nothing writes the fields
-        // meanwhile.
-        let fields = owner.fields();
-        (fields.context.as_deref(), fields.disable_tls_host_name)
-    };
-    crate::socket_ssl_new(record, context, 0)?;
+    // The context is borrowed until the SSL is made.
+    let disable_tls_host_name = owner.edit(|fields| {
+        crate::socket_ssl_new(record, fields.context.as_deref(), 0)
+            .map(|()| fields.disable_tls_host_name)
+    })?;
     let ssl = crate::Ssl::of(record);
     let explicit = &owner_ref.strings[TLS_HOST_NAME];
     let selected = if !explicit.bytes().is_empty() {
@@ -577,11 +575,11 @@ impl Lent<'_> {
     }
 
     /// `f` over the owner's fields, which takes no other borrow of them.
-    fn edit(&self, f: impl FnOnce(&mut OwnedTlsFields)) {
+    fn edit<R>(&self, f: impl FnOnce(&mut OwnedTlsFields) -> R) -> R {
         // SAFETY: the guard's contract, on its one thread: only its holder reaches the
         // fields, and every borrow of them the guard lends ends inside a method of its
         // own, none of which is running `f`.
-        f(unsafe { &mut *self.0.fields.get() });
+        f(unsafe { &mut *self.0.fields.get() })
     }
 }
 
@@ -712,13 +710,18 @@ mod tests {
                     swoole_rs_reactor::SocketRecord::with_fd(stream.as_raw_fd(), 6).into_raw();
                 let handle = swoole_rs_reactor::Socket::from_ptr(socket).unwrap();
                 assert_eq!(
-                    swr_v1_tls_owner_socket_context(&*prepared.owner, handle, true, true),
+                    swr_v1_tls_owner_socket_context(
+                        Lent::new(&*prepared.owner),
+                        handle,
+                        true,
+                        true
+                    ),
                     0
                 );
                 assert!((*socket).fields.output.ssl_send);
                 assert!((*prepared.fields).http_v2);
                 let result = swr_v1_tls_owner_socket_session(
-                    Some(&*prepared.owner),
+                    Some(Lent::new(&*prepared.owner)),
                     handle,
                     (!automatic.is_empty()).then(|| hostname.c_str()),
                 );

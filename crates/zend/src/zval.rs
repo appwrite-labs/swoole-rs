@@ -7,8 +7,8 @@ use crate::{
     bailout,
     sys::{
         _zval_struct__bindgen_ty_1, _zval_struct__bindgen_ty_2, HashPosition, HashTable, IS_ARRAY,
-        IS_DOUBLE, IS_FALSE, IS_INTERNED_STRING_EX, IS_LONG, IS_NULL, IS_OBJECT, IS_PTR,
-        IS_REFERENCE, IS_STR_INTERNED, IS_STRING, IS_STRING_EX, IS_TRUE, IS_UNDEF,
+        IS_DOUBLE, IS_FALSE, IS_INDIRECT, IS_INTERNED_STRING_EX, IS_LONG, IS_NULL, IS_OBJECT,
+        IS_PTR, IS_REFERENCE, IS_STR_INTERNED, IS_STRING, IS_STRING_EX, IS_TRUE, IS_UNDEF,
         add_next_index_stringl, php_format_date, swr_zend_array_add_or_merge,
         swr_zend_http_build_query, swr_zend_separate_array, swr_zend_serialize,
         swr_zend_string_release, swr_zend_try_array_merge, swr_zend_try_get_double,
@@ -175,6 +175,32 @@ impl Value {
         self.payload::<zend_reference>()
             .wrapping_byte_add(std::mem::offset_of!(zend_reference, val))
             .cast()
+    }
+
+    /// `Z_INDIRECT_P`: the slot an indirect zval points to. A pointer, since
+    /// the table holding that slot may move it under any borrow.
+    #[must_use]
+    #[inline]
+    pub fn indirect(&self) -> Option<*mut zval> {
+        // An indirect zval holds `zv`.
+        (self.kind() == IS_INDIRECT).then(|| self.payload::<zval>())
+    }
+
+    /// `ZEND_REF_HAS_TYPE_SOURCES`: a reference that typed properties point at,
+    /// whose assignments Zend must verify against their types.
+    #[must_use]
+    pub fn typed_reference(&self) -> Option<*mut zend_reference> {
+        if self.kind() != IS_REFERENCE {
+            return None;
+        }
+        // A reference zval holds `ref`.
+        let reference = self.payload::<zend_reference>();
+        let sources = reference
+            .wrapping_byte_add(std::mem::offset_of!(zend_reference, sources))
+            .cast::<*const std::ffi::c_void>();
+        // SAFETY: the live reference this zval keeps alive; its source list's
+        // union is pointer-sized, and Zend tests it through its pointer member too.
+        (!unsafe { sources.read() }.is_null()).then_some(reference)
     }
 
     /// `Z_LVAL_P` of an int, with no conversion.

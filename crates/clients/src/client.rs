@@ -1221,8 +1221,11 @@ fn ssl_handshake(this: Handle) -> c_int {
     }
     if this.socket().read(|socket| socket.ssl().is_null()) {
         this.socket().edit(|socket| socket.output.ssl_send = true);
-        // SAFETY: the live socket; nothing writes the context's fields meanwhile.
-        if unsafe { socket_ssl_create(this.socket(), &tls, SSL_CLIENT) } < 0 {
+        // SAFETY: nothing writes the context's fields meanwhile.
+        let context = unsafe { swoole_rs_tls::owner_fields(&tls) }
+            .context
+            .as_deref();
+        if socket_ssl_create(this.socket(), context, SSL_CLIENT) < 0 {
             log::set_last_error(ERROR_SSL_CREATE_SESSION_FAILED);
             return ERR;
         }

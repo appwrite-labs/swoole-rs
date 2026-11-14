@@ -11,7 +11,7 @@ use openssl_sys::{
     SSL_SENT_SHUTDOWN, X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK,
 };
 use std::ffi::CStr;
-use std::os::raw::{c_int, c_long, c_ulong, c_void};
+use std::os::raw::{c_int, c_long, c_ulong};
 use swoole_rs_corebase::constants::ReturnCode;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::sys::ReadSlot;
@@ -378,69 +378,57 @@ impl SslNewError {
     }
 }
 
-/// `Socket::ssl_create`: a new SSL from `context` on `record`'s descriptor, in
-/// connect state for `SW_SSL_CLIENT` or accept state for `SW_SSL_SERVER`, carrying
-/// `socket` as its ex data at `index`, after clearing the want flags. It accepts a
-/// write retried from another buffer: `Socket::ssl_sendfile` reads each try into a
-/// new one, where upstream's stack buffer happens to keep its address. The record
-/// owns the SSL once made, and its state is cleared on success. Without a context
-/// `SSL_new` fails.
+/// `Socket::ssl_create` on `socket`'s record: a new SSL from `context` on its
+/// descriptor, in connect state for `SW_SSL_CLIENT` or accept state for
+/// `SW_SSL_SERVER`, carrying the record as its ex data at the connection's index
+/// (which the info callback reads), after clearing the want flags. It accepts a write
+/// retried from another buffer: `Socket::ssl_sendfile` reads each try into a new one,
+/// where upstream's stack buffer happens to keep its address. The record owns the SSL
+/// once made (null when `SSL_new` fails), and its state is cleared on success.
+/// Without a context `SSL_new` fails.
 ///
 /// # Errors
 /// The step that failed; the caller warns.
-///
-/// # Safety
-/// `socket` is null or the socket record that owns `record`, live while the SSL is:
-/// at the connection's `index` the context's info callback reads it as one.
-pub unsafe fn swr_v1_socket_ssl_new(
-    record: &mut SocketFields,
-    context: Option<&crate::SslCtx>,
-    flags: c_int,
-    index: c_int,
-    socket: *mut c_void,
-) -> Result<(), SslNewError> {
-    want(&mut record.tls, false, false);
-    clear_errors();
-    let made = crate::context::new_ssl(context);
-    // SAFETY: null or the new SSL, which nothing else holds and the record now owns.
-    unsafe { record.set_ssl(made.cast()) };
-    // SAFETY: null or the new SSL, which the record frees only in `ssl_close`.
-    let Some(ssl) = (unsafe { Ssl::new(made) }) else {
-        return Err(SslNewError::New);
-    };
-    ssl.set_mode(SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
-    // SAFETY: the new SSL has no BIOs yet, so none is freed.
-    if !unsafe { ssl.set_fd(record.fd) } {
-        return Err(SslNewError::SetFd(peek_error()));
-    }
-    if flags & CLIENT != 0 {
-        ssl.set_connect_state();
-    } else if flags & SERVER != 0 {
-        ssl.set_accept_state();
-    }
-    if crate::handle::SSL_set_ex_data(ssl, index, socket) == 0 {
-        return Err(SslNewError::ExData);
-    }
-    record.tls.state = 0;
-    Ok(())
-}
-
-/// [`swr_v1_socket_ssl_new`] for `socket`'s record, which the new SSL carries at the
-/// connection's index.
-///
-/// # Errors
-/// As [`swr_v1_socket_ssl_new`].
 pub fn socket_ssl_new(
     socket: swoole_rs_reactor::Socket<'_>,
     context: Option<&crate::SslCtx>,
     flags: c_int,
 ) -> Result<(), SslNewError> {
-    let (this, index) = (socket.as_ptr().cast(), crate::swr_v1_tls_connection_index());
+    socket.edit(|record| want(&mut record.tls, false, false));
+    clear_errors();
+    let Some(mut made) = crate::handle::SSL_new(context) else {
+        // The record's SSL becomes the null `SSL_new` returned, as upstream's.
+        socket.edit(SocketFields::take_ssl);
+        return Err(SslNewError::New);
+    };
+    made.get().set_mode(SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
+    let made_up = if made.set_fd(socket.fd()) {
+        if flags & CLIENT != 0 {
+            made.get().set_connect_state();
+        } else if flags & SERVER != 0 {
+            made.get().set_accept_state();
+        }
+        // The record that will own the SSL, and so outlives it: the one ex data the
+        // info callback reads at the connection's index, which only this sets.
+        let (index, this) = (crate::swr_v1_tls_connection_index(), socket.as_ptr().cast());
+        if crate::handle::SSL_set_ex_data(made.get(), index, this) == 0 {
+            Err(SslNewError::ExData)
+        } else {
+            Ok(())
+        }
+    } else {
+        Err(SslNewError::SetFd(peek_error()))
+    };
+    let made = made.into_raw();
     socket.edit(|record| {
-        // SAFETY: the SSL's ex data is the record that owns it, which a record
-        // outlives; OpenSSL calls nothing back while making the SSL.
-        unsafe { swr_v1_socket_ssl_new(record, context, flags, index, this) }
-    })
+        // SAFETY: the new SSL, which nothing else holds: the record owns it from now
+        // on and frees it only in `ssl_close`.
+        unsafe { record.set_ssl(made.cast()) };
+        if made_up.is_ok() {
+            record.tls.state = 0;
+        }
+    });
+    made_up
 }
 
 #[cfg(test)]
@@ -628,7 +616,7 @@ mod tests {
             // released when `consume`.
             let pem_of = |cert: *mut X509, buffer: &mut [u8], consume: bool| {
                 let written = CertRef::new(cert).map_or(-2, |cert| cert.pem(buffer));
-                drop(consume.then(|| Cert::from_raw(cert)));
+                drop(consume.then(|| std::ptr::NonNull::new(cert).map(Cert)));
                 written
             };
             let empty = X509_new();
@@ -651,21 +639,16 @@ mod tests {
             assert_eq!(pem_of(cert, &mut short, true), 10, "bounded by the buffer");
 
             let context = SSL_CTX_new(TLS_method());
-            let mut socket = 7_u8;
-            let index = SSL_get_ex_new_index(0, std::ptr::null_mut(), None, None, None);
+            crate::swr_v1_tls_init();
+            let index = crate::swr_v1_tls_connection_index();
             let mut record = swoole_rs_reactor::SocketRecord::with_fd(3, 0);
             record.tls = SocketTls {
                 state: STATE_READY,
                 want_read: true,
                 want_write: true,
             };
-            let made = swr_v1_socket_ssl_new(
-                &mut record,
-                context.cast::<crate::SslCtx>().as_ref(),
-                CLIENT,
-                index,
-                (&raw mut socket).cast(),
-            );
+            let socket = swoole_rs_reactor::Socket::from_ptr(&raw mut record).unwrap();
+            let made = socket_ssl_new(socket, context.cast::<crate::SslCtx>().as_ref(), CLIENT);
             assert_eq!(made, Ok(()));
             assert_eq!(
                 record.tls,
@@ -674,16 +657,11 @@ mod tests {
             );
             let made = record.take_ssl().cast::<SSL>();
             assert_eq!(SSL_is_server(made), 0, "connect state");
-            assert_eq!(SSL_get_ex_data(made, index), (&raw mut socket).cast());
+            assert_eq!(SSL_get_ex_data(made, index), (&raw mut record).cast());
             SSL_free(made);
+            let socket = swoole_rs_reactor::Socket::from_ptr(&raw mut record).unwrap();
             assert_eq!(
-                swr_v1_socket_ssl_new(
-                    &mut record,
-                    context.cast::<crate::SslCtx>().as_ref(),
-                    SERVER,
-                    index,
-                    std::ptr::null_mut(),
-                ),
+                socket_ssl_new(socket, context.cast::<crate::SslCtx>().as_ref(), SERVER),
                 Ok(())
             );
             let ssl = record.take_ssl();
@@ -746,7 +724,6 @@ mod shutdown_tests {
             right_size: usize,
         ) -> c_int;
         fn BIO_test_flags(bio: *const BIO, flags: c_int) -> c_int;
-        fn SSL_set_fd(ssl: *mut SSL, fd: c_int) -> c_int;
     }
 
     /// `BIO_CTRL_PENDING`, behind the `BIO_pending` macro.
@@ -894,16 +871,14 @@ mod shutdown_tests {
                     for fd in fds {
                         assert_eq!(libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK), 0);
                     }
-                    SSL_set_fd(client, fds[1]);
+                    // `SSL_set_fd`: a socket BIO that leaves the descriptor open.
+                    let bio = BIO_new_socket(fds[1], 0);
+                    SSL_set_bio(client, bio, bio);
                     // The server end as `Socket::ssl_create` makes it.
                     let mut record = swoole_rs_reactor::SocketRecord::with_fd(fds[0], 0);
-                    let made = swr_v1_socket_ssl_new(
-                        &mut record,
-                        server_ctx.cast::<crate::SslCtx>().as_ref(),
-                        SERVER,
-                        0,
-                        ptr::null_mut(),
-                    );
+                    let socket = swoole_rs_reactor::Socket::from_ptr(&raw mut record).unwrap();
+                    let made =
+                        socket_ssl_new(socket, server_ctx.cast::<crate::SslCtx>().as_ref(), SERVER);
                     assert_eq!(made, Ok(()));
                     record.take_ssl().cast()
                 } else {

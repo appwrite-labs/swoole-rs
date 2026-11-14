@@ -1,10 +1,12 @@
 //! More of the call frame: optional ints, callables, nullable zvals, `$this` as a
 //! zval and string returns (crates/phpprocess).
 use crate::{
-    Call, Invalid, bailout,
-    sys::{swr_zval_stringl, zend_execute_data, zval},
+    Call, Invalid,
+    sys::{
+        swr_zend_parse_func, swr_zend_try_json_decode_ex, swr_zval_stringl, zend_execute_data,
+        zend_fcall_info, zend_fcall_info_cache, zval,
+    },
 };
-use std::mem::MaybeUninit;
 
 impl Call {
     /// `Z_PARAM_LONG_OR_NULL` of argument `n`: `None` when null or not passed.
@@ -23,11 +25,25 @@ impl Call {
     /// It is not; Zend has thrown.
     #[inline]
     pub fn func(&self, n: u32) -> Result<(), Invalid> {
-        let (mut fci, mut fcc) = (MaybeUninit::uninit(), MaybeUninit::uninit());
+        self.callable(n).map(drop)
+    }
+
+    /// `Z_PARAM_FUNC` of passed argument `n` (1-based): the callable it names,
+    /// resolved. The call info borrows the argument's value (no reference of
+    /// its own), as Zend's macro leaves it.
+    /// # Errors
+    /// It is not callable; Zend has raised its parameter error.
+    /// # Panics
+    /// Argument `n` was not passed (the caller's arity check allows it).
+    pub fn callable(&self, n: u32) -> Result<(zend_fcall_info, zend_fcall_info_cache), Invalid> {
+        let (mut fci, mut fcc) = (crate::EMPTY_FCI, crate::EMPTY_FCC);
         let arg = self.arg_value(n).as_ptr();
-        // SAFETY: passed argument `n`; Zend fills the scratch callable, which
-        // nothing reads.
-        unsafe { bailout::parse_func(arg, n, fci.as_mut_ptr(), fcc.as_mut_ptr()) }
+        // SAFETY: passed argument `n`, live for the call, and two writable locals.
+        if unsafe { swr_zend_parse_func(arg, n, &raw mut fci, &raw mut fcc) } != 0 {
+            Ok((fci, fcc))
+        } else {
+            Err(Invalid)
+        }
     }
 
     /// `Z_PARAM_ZVAL_EX(dest, 1, 0)`: argument `n`, `None` when null or not passed.
@@ -44,6 +60,36 @@ impl Call {
         let frame: *mut zend_execute_data = self.frame;
         // SAFETY: a live frame; only the field's address is taken.
         unsafe { &raw mut (*frame).This }
+    }
+
+    /// Swoole's `zend::json_decode` of `text[window]` into the return value,
+    /// inside `zend_try`. The decoder may read the byte after the window, which
+    /// a Zend string always has (its own, or its NUL). A window reaching past
+    /// `text` is cut at its end.
+    /// # Errors
+    /// The decoder bailed out; the caller defers it.
+    pub fn json_decode(
+        &self,
+        text: &crate::ZStr,
+        window: std::ops::Range<usize>,
+        options: crate::sys::zend_long,
+        depth: crate::sys::zend_long,
+    ) -> Result<(), crate::bailout::Bailout> {
+        let bytes = text.bytes();
+        let end = window.end.min(bytes.len());
+        let start = window.start.min(end);
+        // SAFETY: the window's bytes, and the one after them, live in `text`
+        // for the call; the return slot is live and Zend traps any bailout.
+        let bailed = unsafe {
+            swr_zend_try_json_decode_ex(
+                self.return_value(),
+                bytes.as_ptr().wrapping_add(start).cast(),
+                end - start,
+                options,
+                depth,
+            )
+        };
+        crate::bailout::trapped(bailed)
     }
 
     /// `RETVAL_STRINGL`: a copy of `bytes`.

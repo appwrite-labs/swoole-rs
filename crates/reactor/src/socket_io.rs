@@ -3,7 +3,7 @@
 //! the `Socket` fields, the last-error slot and signal dispatch, which they pass in.
 use crate::SocketAddress;
 use std::io::Error;
-use std::os::raw::{c_int, c_void};
+use std::os::raw::c_int;
 use swoole_rs_corebase::CCast;
 
 fn errno() -> c_int {
@@ -85,31 +85,6 @@ pub fn fd_wait(
 pub fn fd_clean(fd: c_int) {
     let mut buffer = [0_u8; 2048];
     while swoole_rs_corebase::sys::recv(fd, &mut buffer, libc::MSG_DONTWAIT) > 0 {}
-}
-
-/// `Socket::recvfrom`: recvfrom(2), retried on `EINTR` up to
-/// `SW_SOCKET_RETRY_COUNT` times.
-///
-/// # Safety
-/// `buffer` denotes `length` writable bytes; `address` and `address_length` are
-/// null or valid for recvfrom(2).
-pub unsafe fn fd_recvfrom(
-    fd: c_int,
-    buffer: *mut c_void,
-    length: usize,
-    flags: c_int,
-    address: *mut libc::sockaddr,
-    address_length: *mut libc::socklen_t,
-) -> isize {
-    let mut received = 0;
-    for _ in 0..swoole_rs_corebase::constants::SW_SOCKET_RETRY_COUNT {
-        // SAFETY: the caller lends the buffer and address storage for this call.
-        received = unsafe { libc::recvfrom(fd, buffer, length, flags, address, address_length) };
-        if received >= 0 || errno() != libc::EINTR {
-            break;
-        }
-    }
-    received
 }
 
 /// `Socket::accept`'s syscall into `address`, whose `len` is the capacity: the
@@ -240,7 +215,8 @@ mod tests {
 
     fn write(fd: c_int, bytes: &[u8]) {
         // SAFETY: `bytes` is readable for its length.
-        let written = unsafe { libc::write(fd, bytes.as_ptr().cast::<c_void>(), bytes.len()) };
+        let written =
+            unsafe { libc::write(fd, bytes.as_ptr().cast::<std::ffi::c_void>(), bytes.len()) };
         assert_eq!(written, bytes.len().cast_signed(), "the whole write");
     }
 
@@ -265,17 +241,11 @@ mod tests {
         let [a, b] = pair();
         write(b, b"hello");
         let mut buffer = [0_u8; 8];
-        // SAFETY: `buffer` is a local; no address is requested.
-        let n = unsafe {
-            fd_recvfrom(
-                a,
-                buffer.as_mut_ptr().cast(),
-                buffer.len(),
-                0,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-            )
+        let mut address = SocketAddress {
+            len: size_of::<libc::sockaddr_storage>().c_cast(),
+            ..SocketAddress::default()
         };
+        let n = crate::Fill::new(&mut buffer).recvfrom(a, 0, &mut address);
         assert_eq!(&buffer[..n.cast_unsigned()], b"hello");
         close(&[a, b]);
     }

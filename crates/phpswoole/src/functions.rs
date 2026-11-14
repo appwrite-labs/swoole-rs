@@ -13,7 +13,7 @@ use swoole_rs_corebase::log::{last_error as swoole_last_error, set_last_error};
 use swoole_rs_framing::mime;
 use swoole_rs_zend::{
     Array, Call, E_WARNING, Invalid, OwnedArray, ZStr, handlers, report,
-    sys::{swr_zend_try_json_decode_ex, zend_array, zval},
+    sys::{zend_array, zval},
 };
 
 unsafe extern "C" {
@@ -344,7 +344,7 @@ fn substr_unserialize(call: &Call) {
 fn substr_json_decode(call: &Call) {
     let parsed = call.arity(2, 6).and_then(|()| {
         Ok((
-            call.string(1, b"")?,
+            call.zstr(1)?,
             call.long(2, 0)?,
             call.long(3, 0)?,
             call.bool_or_null(4)?,
@@ -352,10 +352,10 @@ fn substr_json_decode(call: &Call) {
             call.long(6, 0)?,
         ))
     });
-    let Ok((text, offset, length, assoc, depth, options)) = parsed else {
+    let Ok((Some(text), offset, length, assoc, depth, options)) = parsed else {
         return;
     };
-    let warning = match window(text.len(), offset, length) {
+    let warning = match window(text.bytes().len(), offset, length) {
         Window::At(offset, length) => {
             // For BC, the bool $assoc overrides the options' PHP_JSON_OBJECT_AS_ARRAY.
             let options = match assoc {
@@ -363,17 +363,8 @@ fn substr_json_decode(call: &Call) {
                 Some(false) => options & !JSON_OBJECT_AS_ARRAY,
                 None => options,
             };
-            // SAFETY: PHP's decoder over the argument's live bytes, into the return slot.
-            let bailed = unsafe {
-                swr_zend_try_json_decode_ex(
-                    call.return_value(),
-                    text.as_ptr().wrapping_add(offset).cast(),
-                    length,
-                    options,
-                    depth,
-                )
-            };
-            swoole_rs_zend::bailout::defer(swoole_rs_zend::bailout::trapped(bailed));
+            let decoded = call.json_decode(text, offset..offset + length, options, depth);
+            swoole_rs_zend::bailout::defer(decoded);
             return;
         }
         Window::Empty => c"Non-empty string required",

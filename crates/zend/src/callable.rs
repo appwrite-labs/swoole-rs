@@ -53,15 +53,15 @@ impl Callable {
         // SAFETY: fresh storage; all-zero is an empty callable.
         unsafe { raw.write_bytes(0, 1) };
         let mut this = Parsed(raw);
+        let (fci, fcc) = match call.callable(n) {
+            Ok(parsed) => parsed,
+            Err(invalid) => {
+                this.discard();
+                return Err(invalid);
+            }
+        };
         let callable = this.record();
-        let arg = call.arg_value(n).as_ptr();
-        // SAFETY: passed argument `n`; Zend fills the callable.
-        let parsed =
-            unsafe { bailout::parse_func(arg, n, &raw mut callable.fci, &raw mut callable.fcc) };
-        if let Err(invalid) = parsed {
-            this.discard();
-            return Err(invalid);
-        }
+        (callable.fci, callable.fcc) = (fci, fcc);
         callable.fci.param_count = call.num_args().saturating_sub(n);
         callable.fci.params = if callable.fci.param_count > 0 {
             call.arg(n + 1)

@@ -227,12 +227,57 @@ impl SocketRecord {
     /// not borrowed.
     #[must_use]
     pub fn new() -> Self {
-        // SAFETY: every field is an integer, a float, a raw pointer, an optional box
-        // (none when null), a union of C address structs or the borrow count, all of
-        // which are valid zeroed.
-        let mut socket: Self = unsafe { std::mem::zeroed() };
-        socket.timeouts = SOCKET_DEFAULTS.timeouts();
-        socket
+        Self {
+            fields: SocketFields {
+                fd: 0,
+                fd_type: 0,
+                socket_type: 0,
+                events: 0,
+                enable_tcp_nodelay: false,
+                kernel_nobufs: false,
+                removed: false,
+                silent_remove: false,
+                cloexec: false,
+                direct_send: false,
+                bound: false,
+                listened: false,
+                ssl_renegotiation: false,
+                ssl_handshake_buffer_set: false,
+                ssl_quiet_shutdown: false,
+                ssl_closed: false,
+                dtls: false,
+                tcp_nopush: false,
+                tcp_nodelay: false,
+                skip_recv: false,
+                recv_wait: false,
+                event_hup: false,
+                dont_restart: false,
+                close_notified: false,
+                chunk_size: 0,
+                output: SocketOutput {
+                    out_buffer: None,
+                    send_timer: ptr::null_mut(),
+                    buffer_size: 0,
+                    close_wait: false,
+                    nonblock: false,
+                    ssl_send: false,
+                    send_wait: false,
+                },
+                object: ptr::null_mut(),
+                ssl: ptr::null_mut(),
+                tls: SocketTlsState::default(),
+                timeouts: SOCKET_DEFAULTS.timeouts(),
+                last_received_time: 0.0,
+                last_sent_time: 0.0,
+                in_buffer: None,
+                recv_buffer: ptr::null_mut(),
+                recv_timer: ptr::null_mut(),
+                total_recv_bytes: 0,
+                total_send_bytes: 0,
+                info: sys::zeroed(),
+            },
+            borrows: AtomicU32::new(0),
+        }
     }
 
     /// `make_socket(fd, fd_type)`'s fields.

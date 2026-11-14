@@ -72,8 +72,8 @@ fn read<T: Copy>(buf: *const u8, at: usize) -> T {
 /// One hook's arguments and results. Only this crate makes and fills one, over
 /// objects live for the hook: its pool and worker (null when none), its socket
 /// (null or a live native socket) and `data`, which holds `length` bytes.
-pub struct PoolCall {
-    pub(crate) pool: *mut c_void,
+pub struct PoolCall<'a> {
+    pub(crate) pool: crate::process_pool::PoolRef<'a>,
     pub(crate) worker: *mut c_void,
     pub(crate) socket: *mut c_void,
     pub(crate) data: *mut c_void,
@@ -85,8 +85,8 @@ pub struct PoolCall {
     pub(crate) error: c_int,
 }
 
-impl PoolCall {
-    pub(crate) fn new(pool: *mut c_void, worker: *mut c_void) -> Self {
+impl<'a> PoolCall<'a> {
+    pub(crate) fn new(pool: crate::process_pool::PoolRef<'a>, worker: *mut c_void) -> Self {
         Self {
             pool,
             worker,
@@ -101,9 +101,8 @@ impl PoolCall {
 
     /// The live pool.
     #[must_use]
-    pub fn pool(&self) -> crate::process_pool::PoolRef<'_> {
-        // SAFETY: only this crate makes a call, over the live pool it runs on.
-        unsafe { crate::process_pool::PoolRef::new(self.pool.cast()) }
+    pub fn pool(&self) -> crate::process_pool::PoolRef<'a> {
+        self.pool
     }
 
     /// The live worker, if the call has one.
@@ -248,11 +247,11 @@ struct Worker<'a> {
     /// Borrowed per use: the worker's callbacks reach the same handle, as
     /// `swr_v1_process_pool_ipc_respond` does.
     ipc: *mut PoolIpc,
-    pool: *mut c_void,
+    pool: crate::process_pool::PoolRef<'a>,
     worker: *mut c_void,
 }
 
-impl Worker<'_> {
+impl<'a> Worker<'a> {
     const fn ipc(&mut self) -> &mut PoolIpc {
         // SAFETY: `pool_run` found its live pool's IPC state there, not null: the
         // field is crate-private, written by `create` and cleared by `destroy`, which
@@ -260,7 +259,7 @@ impl Worker<'_> {
         unsafe { &mut *self.ipc }
     }
 
-    fn call(&self) -> PoolCall {
+    fn call(&self) -> PoolCall<'a> {
         PoolCall::new(self.pool, self.worker)
     }
 
@@ -284,7 +283,7 @@ impl Worker<'_> {
         data: *mut u8,
         length: usize,
         flags: c_int,
-    ) -> Result<PoolCall, Bailed> {
+    ) -> Result<PoolCall<'a>, Bailed> {
         let mut call = self.call();
         call.socket = socket;
         call.data = data.cast();
@@ -885,7 +884,7 @@ pub fn pool_run(
     let mut worker = Worker {
         native,
         ipc,
-        pool: pool_loop.pool.raw().cast(),
+        pool: pool_loop.pool,
         worker: pool_loop.worker.raw().cast(),
     };
     let mode = mode(pool_loop.ipc_mode);
@@ -933,7 +932,7 @@ pub(crate) fn swr_v1_process_worker_send(
     flags: c_int,
 ) -> isize {
     let length = data.len();
-    let mut call = PoolCall::new(pool.raw().cast(), ptr::null_mut());
+    let mut call = PoolCall::new(pool, ptr::null_mut());
     if queue {
         let mut message = vec![0u64; (MTYPE + length).div_ceil(8)];
         if let Some(mtype) = message.first_mut() {
@@ -985,7 +984,7 @@ pub(crate) fn pool_dispatch<'a>(
     *target += c_int::from(start_id);
     let index = (*target - c_int::from(start_id)).cast_unsigned() as usize;
     let Some(worker) = workers(index) else {
-        let call = PoolCall::new(pool.raw().cast(), ptr::null_mut());
+        let call = PoolCall::new(pool, ptr::null_mut());
         native.warn(
             &call,
             Warning::Send {
@@ -999,7 +998,7 @@ pub(crate) fn pool_dispatch<'a>(
     let flags = PIPE_MASTER | if blocking { 0 } else { PIPE_NONBLOCK };
     let sent = swr_v1_process_worker_send(native, pool, pipe, queue, id, event, flags);
     if sent < 0 {
-        let call = PoolCall::new(pool.raw().cast(), ptr::null_mut());
+        let call = PoolCall::new(pool, ptr::null_mut());
         native.warn(
             &call,
             Warning::Send {

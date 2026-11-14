@@ -40,7 +40,7 @@ fn event_socket(event: &Event) -> Option<(Co, Socket<'_>)> {
     let source = event.socket()?;
     let object = source.read(|record| record.object);
     // SAFETY: a coroutine socket's network::Socket's object is that socket.
-    Some((unsafe { Co::of(object) }, source))
+    Some((unsafe { Co::new(object.cast()) }, source))
 }
 
 /// `Socket::readable_event_callback` and `writable_event_callback`: Rust picks the
@@ -698,7 +698,7 @@ mod tests {
             unsafe { &mut (*self.0).record }
         }
         fn co(&mut self) -> Co {
-            unsafe { Co::of(self.0.cast()) }
+            unsafe { Co::new(self.0.cast()) }
         }
         fn event(&mut self) -> Event {
             unsafe { Event::new(-1, 0, 6, self.record().socket_ptr().cast()) }

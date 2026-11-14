@@ -1,6 +1,6 @@
 //! Choosing a worker, sends from workers, and listen ports.
 use crate::base_factory::SendData;
-use crate::callbacks::{CallbackKind, CallbackSlot};
+use crate::callbacks::CallbackKind;
 use crate::port_config::{PortConfig, methods};
 use crate::reactor_entry::RecvData;
 use crate::records::Lookup;
@@ -31,7 +31,7 @@ pub fn schedule_worker(serv: Server<'_>, fd: c_int, send: Option<&SendData>) -> 
     let state = serv.state();
     let key = c_long::from(fd);
     let dispatch_func = state.callbacks.slot(CallbackKind::DispatchFunc);
-    if dispatch_func.is_some_and(CallbackSlot::is_set) {
+    if dispatch_func.is_set() {
         // SAFETY: null, or the table's live slot of the fd, read for the call.
         let conn = unsafe { state.connection_ptr(key, Lookup::ByFd).as_ref() };
         let recv = send.map(|send| core::ptr::from_ref(send).cast::<RecvData>());
@@ -288,13 +288,11 @@ pub fn sendfile(
     let (target, _) = field.split_at_mut(copied.len());
     target.copy_from_slice(copied);
     let path = CStr::from_bytes_until_nul(field).unwrap_or_default();
-    let mut st: libc::stat = swoole_rs_corebase::sys::zeroed();
-    // SAFETY: a NUL-terminated path and a writable `stat`.
-    if unsafe { libc::stat(path.as_ptr(), &raw mut st) } < 0 {
+    let Some(st) = swoole_rs_corebase::sys::stat(path) else {
         let m = format_args!("stat({}) failed", path.to_string_lossy());
         sendfile_error(SW_LOG_WARNING, E::SW_ERROR_SYSTEM_CALL_FAIL, m);
         return false;
-    }
+    };
     if st.st_mode & libc::S_IFMT != libc::S_IFREG {
         let path = path.to_string_lossy();
         let m = format_args!("the path[{path}] given is not a regular file");

@@ -28,10 +28,7 @@ mod typed;
 use swoole_rs_zend::{
     Value,
     opcode::{CONTINUE, DISPATCH, Frame, handler},
-    sys::{
-        IS_CONST, IS_CV, IS_INDIRECT, IS_UNUSED, IS_VAR, user_opcode_handler_t, zend_op, znode_op,
-        zval,
-    },
+    sys::{IS_CONST, IS_CV, IS_UNUSED, IS_VAR, user_opcode_handler_t, zend_op, znode_op},
 };
 
 const _: () = assert!(
@@ -107,18 +104,14 @@ struct Op<'a> {
 impl<'a> Op<'a> {
     /// `frame`'s current instruction.
     fn current(frame: Frame<'a>) -> Self {
-        // SAFETY: the frame's current instruction.
-        unsafe { Self::at(frame, frame.opline()) }
+        Self::at(frame, frame.instruction())
     }
 
-    /// # Safety
-    /// `at` is an instruction of `frame`'s function.
-    unsafe fn at(frame: Frame<'a>, at: *const zend_op) -> Self {
-        // SAFETY: per the caller, a live plain C record.
-        let op = unsafe { &*at };
+    /// `op`, an instruction of `frame`'s function.
+    fn at(frame: Frame<'a>, op: &'a zend_op) -> Self {
         Self {
             frame,
-            at,
+            at: op,
             op1: op.op1,
             op2: op.op2,
             result: op.result,
@@ -168,9 +161,9 @@ impl<'a> Op<'a> {
     /// holds its value in, through an indirection and a reference.
     fn op1_container(self) -> Option<&'a Value> {
         let mut slot = self.op1()?;
-        if matches!(u32::from(self.op1_type), IS_VAR | IS_CV) && slot.kind() == IS_INDIRECT {
-            // SAFETY: an indirect zval holds `zv`, at offset 0.
-            let target = unsafe { slot.as_ptr().cast::<*mut zval>().read() };
+        if matches!(u32::from(self.op1_type), IS_VAR | IS_CV)
+            && let Some(target) = slot.indirect()
+        {
             // SAFETY: the live slot it points to.
             slot = unsafe { Value::from_ptr(target) }?;
         }

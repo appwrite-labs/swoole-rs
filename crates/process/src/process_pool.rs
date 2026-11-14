@@ -343,6 +343,14 @@ impl<'a> PoolRef<'a> {
     pub fn raw(self) -> *mut PoolRecord {
         self.raw
     }
+
+    /// Resets the pool to [`PoolRecord::empty`], as C's `*pool = {}`: what it held
+    /// before is forgotten, not freed.
+    pub fn reset(self) {
+        // SAFETY: `new`'s contract: a live pool for `'a`. The write drops nothing, and
+        // an empty pool's fields are valid values for every handle that reads them.
+        unsafe { self.raw.write(PoolRecord::empty()) };
+    }
 }
 
 impl<'a> PoolRef<'a> {
@@ -956,12 +964,11 @@ impl PoolHost for Native<'_> {
             return result;
         }
         // A native effect on the live pool this export runs over.
-        self.native
-            .call(&PoolCall::new(self.pool.raw().cast(), worker), op, arg)
+        self.native.call(&PoolCall::new(self.pool, worker), op, arg)
     }
 
     fn callback(&mut self, callback: Callback, worker: *mut c_void) -> Result<isize, Bailed> {
-        let mut call = PoolCall::new(self.pool.raw().cast(), worker);
+        let mut call = PoolCall::new(self.pool, worker);
         crate::pool::trapped(|| self.native.callback(&mut call, callback))?;
         Ok(call.result)
     }
@@ -983,7 +990,7 @@ impl PoolHost for Native<'_> {
     }
 
     fn close(&self, socket: *mut c_void) {
-        let mut call = PoolCall::new(self.pool.raw().cast(), ptr::null_mut());
+        let mut call = PoolCall::new(self.pool, ptr::null_mut());
         call.socket = socket;
         self.native.close(&call);
     }
@@ -1243,6 +1250,7 @@ getters!(
     pub max_request_grace: u32,
     pub scheduler_warning: bool,
     pub warning_time: i64,
+    pub reload_last_time: i64,
     pub(crate) on_task: Option<TaskFn>,
     pub(crate) on_worker_error: Option<ErrorFn>,
 );

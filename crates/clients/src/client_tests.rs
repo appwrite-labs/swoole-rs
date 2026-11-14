@@ -224,7 +224,11 @@ pub(super) unsafe fn ssl_context_create(owner: &OwnedTlsContext) -> bool {
     // SAFETY: the client's live owner.
     unsafe { swoole_rs_tls::ssl_context_create(owner) }
 }
-pub(super) unsafe fn socket_ssl_create(_: Socket<'_>, _: &OwnedTlsContext, flags: c_int) -> c_int {
+pub(super) fn socket_ssl_create(
+    _: Socket<'_>,
+    _: Option<&swoole_rs_tls::SslCtx>,
+    flags: c_int,
+) -> c_int {
     log(format!("ssl session {flags}"));
     OK
 }

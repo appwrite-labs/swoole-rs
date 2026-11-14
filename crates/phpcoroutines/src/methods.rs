@@ -20,7 +20,7 @@ use std::{
 use swoole_rs_corebase::CCast;
 use swoole_rs_zend::{
     Call, Callable, E_ERROR, E_WARNING, Owned, OwnedArray, Php,
-    bailout::{self, Bailout},
+    bailout::Bailout,
     sys::{
         object_properties_init, swr_zend_coroutine_locate, swr_zend_coroutine_redirect,
         swr_zend_coroutine_stack_usage, zend_class_entry, zend_exception_set_previous,
@@ -58,15 +58,11 @@ swoole_rs_zend::handlers! {
 
 /// `go()`/`Co::create()`: `(callable $func, mixed ...$params)`.
 fn create(call: &Call) {
-    let (mut fci, mut fcc) = (swoole_rs_zend::EMPTY_FCI, swoole_rs_zend::EMPTY_FCC);
-    let parsed = call.arity(1, u32::MAX).and_then(|()| {
-        // SAFETY: argument 1 is passed; the outputs are writable locals.
-        unsafe { bailout::parse_func(call.zval(1), 1, &raw mut fci, &raw mut fcc) }
-    });
-    if parsed.is_err() {
+    let parsed = call.arity(1, u32::MAX).and_then(|()| call.callable(1));
+    let Ok((mut fci, mut fcc)) = parsed else {
         call.set_bool(false);
         return;
-    }
+    };
     let argc = call.num_args() - 1;
     let argv = if argc > 0 {
         call.zval(2)

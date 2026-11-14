@@ -196,30 +196,19 @@ fn assign_op(op: Op, data: Data, own: Typed, key: &Value) -> Result<(), Bailout>
     };
     let target = element.referent();
     // The reference whose typed property sources Zend must verify, if any.
-    let mut typed_reference = ptr::null_mut();
-    if element.kind() == z::IS_REFERENCE {
-        // SAFETY: a reference zval holds `ref`, at offset 0.
-        let reference = unsafe { element.as_ptr().cast::<*mut zend_reference>().read() };
-        // SAFETY: this live reference owns its PHP property-source metadata.
-        let sources = unsafe { (*reference).sources };
-        // SAFETY: Zend tests the source-list union through its pointer member too.
-        if !unsafe { sources.ptr }.is_null() {
-            typed_reference = reference;
-        }
-    }
-    if typed_reference.is_null() {
+    if let Some(typed_reference) = element.typed_reference() {
+        // SAFETY: the native typed-reference operation preserves PHP source
+        // verification and strict types.
+        leaf(unsafe {
+            swr_phpstdext_typed_ref(op.frame.as_ptr(), typed_reference, value.as_ptr(), op.at)
+        })?;
+    } else {
         if !typed::operation(own, op.extended_value == z::ZEND_CONCAT) {
             // A rejected operation follows the original temporary/result cleanup path.
             return data.abandon(op);
         }
         // SAFETY: Zend applies the exact current opcode to the live element and value.
         leaf(unsafe { swr_phpstdext_binary(target, value.as_ptr(), op.at) })?;
-    } else {
-        // SAFETY: the native typed-reference operation preserves PHP source
-        // verification and strict types.
-        leaf(unsafe {
-            swr_phpstdext_typed_ref(op.frame.as_ptr(), typed_reference, value.as_ptr(), op.at)
-        })?;
     }
     // SAFETY: the element's live slot, or its reference's, after the operation.
     let Some(target) = (unsafe { Value::from_ptr(target) }) else {
@@ -243,8 +232,11 @@ unsafe fn dispatch(frame: Frame, operation: bool) -> Result<c_int, Bailout> {
     // An append's key is null (`&EG(uninitialized_zval)`).
     let null = Owned::null();
     let key = op.op2().unwrap_or(&null);
-    // SAFETY: per the caller, an assignment, which its `OP_DATA` instruction follows.
-    let data = unsafe { Op::at(frame, op.at.wrapping_add(1)) };
+    // An assignment, which its `OP_DATA` instruction follows.
+    let Some(data) = frame.next_instruction() else {
+        return Ok(DISPATCH);
+    };
+    let data = Op::at(frame, data);
     // `get_op_data_zval_ptr_r`: None for an unused operand. Only `data` frees it.
     let Some(value) = operand(data)? else {
         return Ok(DISPATCH);

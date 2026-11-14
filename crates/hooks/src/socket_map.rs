@@ -124,11 +124,10 @@ pub fn close(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::ffi::c_void;
 
     /// A handle the map only stores, never dereferenced.
     fn fake(at: usize) -> Co {
-        unsafe { Co::of(at as *const c_void) }
+        unsafe { Co::new(core::ptr::without_provenance_mut(at)) }
     }
 
     fn errno() -> c_int {

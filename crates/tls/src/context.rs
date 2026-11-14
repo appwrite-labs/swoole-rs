@@ -5,14 +5,13 @@
 //! configuration's `warn` callback. Requires OpenSSL 3.
 use crate::handle::{Bio, CText, Ssl};
 use openssl_sys::{
-    EVP_MD, EVP_PKEY, OPENSSL_NPN_NEGOTIATED, SSL, SSL_CTRL_MODE, SSL_CTRL_SET_GROUPS_LIST,
+    EVP_PKEY, OPENSSL_NPN_NEGOTIATED, SSL, SSL_CTRL_MODE, SSL_CTRL_SET_GROUPS_LIST,
     SSL_CTRL_SET_READ_AHEAD, SSL_CTRL_SET_SESS_CACHE_MODE, SSL_CTRL_SET_TLSEXT_SERVERNAME_CB,
-    SSL_CTX, SSL_CTX_free, SSL_CTX_set_alpn_protos, SSL_CTX_set_alpn_select_cb__fixed_rust,
-    SSL_FILETYPE_PEM, SSL_MODE_NO_AUTO_CHAIN, SSL_MODE_RELEASE_BUFFERS,
-    SSL_OP_CIPHER_SERVER_PREFERENCE, SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS, SSL_OP_NO_COMPRESSION,
-    SSL_OP_NO_SSLv2, SSL_OP_NO_SSLv3, SSL_OP_NO_TLSv1, SSL_OP_NO_TLSv1_1, SSL_OP_NO_TLSv1_2,
-    SSL_OP_NO_TLSv1_3, SSL_SESS_CACHE_SERVER, SSL_TLSEXT_ERR_NOACK, SSL_TLSEXT_ERR_OK,
-    SSL_VERIFY_NONE, SSL_VERIFY_PEER, SSL_select_next_proto, X509_STORE_CTX,
+    SSL_CTX, SSL_CTX_set_alpn_select_cb__fixed_rust, SSL_FILETYPE_PEM, SSL_MODE_NO_AUTO_CHAIN,
+    SSL_MODE_RELEASE_BUFFERS, SSL_OP_CIPHER_SERVER_PREFERENCE, SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS,
+    SSL_OP_NO_COMPRESSION, SSL_OP_NO_SSLv2, SSL_OP_NO_SSLv3, SSL_OP_NO_TLSv1, SSL_OP_NO_TLSv1_1,
+    SSL_OP_NO_TLSv1_2, SSL_OP_NO_TLSv1_3, SSL_SESS_CACHE_SERVER, SSL_TLSEXT_ERR_NOACK,
+    SSL_TLSEXT_ERR_OK, SSL_VERIFY_NONE, SSL_VERIFY_PEER, SSL_select_next_proto, X509_STORE_CTX,
 };
 use std::cell::RefCell;
 use std::ffi::{CStr, c_char, c_int, c_long, c_uchar, c_uint, c_void};
@@ -24,7 +23,6 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::StringSlot;
 use swoole_rs_corebase::log;
-use swoole_rs_corebase::sys::ReadSlot;
 
 // libssl/libcrypto's own declarations; openssl-sys binds none of them, or
 // (`SSL_CTX_set0_tmp_dh_pkey`) only over OpenSSL 3 headers, which the fuzz image,
@@ -35,15 +33,6 @@ unsafe extern "C" {
         callback: unsafe extern "C" fn(*const c_char, usize, *mut c_void) -> c_int,
         user: *mut c_void,
     );
-    fn HMAC(
-        md: *const EVP_MD,
-        key: *const c_void,
-        key_len: c_int,
-        data: *const c_uchar,
-        data_len: usize,
-        out: *mut c_uchar,
-        out_len: *mut c_uint,
-    ) -> *mut c_uchar;
     fn SSL_CTX_set_default_passwd_cb(ctx: *mut SSL_CTX, callback: PasswordCallback);
     fn SSL_CTX_set_default_passwd_cb_userdata(ctx: *mut SSL_CTX, data: *mut c_void);
 }
@@ -84,9 +73,20 @@ unsafe extern "C" {
     safe fn SSL_CTX_set_verify_depth(ctx: &SslCtx, depth: c_int);
     safe fn SSL_CTX_set_default_verify_paths(ctx: &SslCtx) -> c_int;
     safe fn SSL_CTX_check_private_key(ctx: &SslCtx) -> c_int;
-    safe fn EVP_sha1() -> *const EVP_MD;
-    /// A new SSL of `ctx`, which it references; null on failure, or without a context.
-    safe fn SSL_new(ctx: Option<&SslCtx>) -> *mut SSL;
+    /// libcrypto's static SHA-1 method, null when it has none.
+    safe fn EVP_sha1() -> Option<&'static EvpMd>;
+    /// HMAC of `md` over the key's and data's lengths' bytes into `out`, whose 255
+    /// bytes exceed `EVP_MAX_MD_SIZE`, and the digest's length into `out_length`: `out`,
+    /// or null on failure. Each length is at most its array's.
+    safe fn HMAC(
+        md: &EvpMd,
+        key: &[u8; 32],
+        key_length: KeyLength,
+        data: &[u8; 18],
+        data_length: DataLength,
+        out: &mut [u8; 255],
+        out_length: &mut c_uint,
+    ) -> *mut c_uchar;
     /// `Ctrl`'s commands: `GroupsList` parses `text`, and the others read only `value`.
     safe fn SSL_CTX_ctrl(ctx: &SslCtx, command: Ctrl, value: c_long, text: CText<'_>) -> c_long;
     /// `ServernameCallback`, the one command, takes a callback of its type, which
@@ -123,16 +123,32 @@ struct InitSettings {
     _opaque: [u8; 0],
 }
 
-/// `SSL_new` of `context`: the new SSL, whose one reference the caller owns, or null
-/// when OpenSSL fails or there is no context.
-pub(crate) fn new_ssl(context: Option<&SslCtx>) -> *mut SSL {
-    SSL_new(context)
-}
-
 /// An `SSL_METHOD`, one of libssl's static tables.
 #[repr(C)]
 struct SslMethod {
     _opaque: [u8; 0],
+}
+
+/// An `EVP_MD`, one of libcrypto's static method tables.
+#[repr(C)]
+struct EvpMd {
+    _opaque: [u8; 0],
+}
+
+/// The DTLS cookie's HMAC key length: the whole 32-byte key.
+#[derive(Clone, Copy)]
+#[repr(i32)]
+enum KeyLength {
+    Secret = 32,
+}
+
+/// The DTLS cookie's HMAC data length: a port and an IPv4 or IPv6 address, at most
+/// the 18-byte array's.
+#[derive(Clone, Copy)]
+#[repr(usize)]
+enum DataLength {
+    V4 = 6,
+    V6 = 18,
 }
 
 /// A `STACK_OF(X509_NAME)` this side owns, as `SSL_load_client_CA_file` returns it,
@@ -242,9 +258,15 @@ impl Clone for SslContext {
 
 impl Drop for SslContext {
     fn drop(&mut self) {
-        // SAFETY: the reference this handle holds, released once; borrows of the
-        // context end with the handle's.
-        unsafe { SSL_CTX_free(self.as_ptr()) };
+        /// The reference a dropped `SslContext` held: only this drop makes one, once per
+        /// handle, after every borrow of the context through it has ended, so
+        /// `SSL_CTX_free` releases each reference once.
+        #[repr(transparent)]
+        struct Released<'a>(&'a SslCtx);
+        unsafe extern "C" {
+            safe fn SSL_CTX_free(ctx: Released<'_>);
+        }
+        SSL_CTX_free(Released(self.0));
     }
 }
 
@@ -631,14 +653,10 @@ impl Method<'_> {
         }
         if config.http || config.http_v2 {
             let protos: &'static Protos = if config.http_v2 { &H2_HTTP1 } else { &HTTP1 };
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "both ALPN lists are a few bytes"
-            )]
-            let length = protos.0.len() as c_uint;
-            // SAFETY: a live context and a static list.
-            if unsafe { SSL_CTX_set_alpn_protos(raw, protos.0.as_ptr(), length) } < 0 {
-                self.ssl_error(&[b"SSL_CTX_set_alpn_protos(", protos.0, b") failed"].concat());
+            if SSL_CTX_set_alpn_protos(ctx, &protos.wire, protos.length) < 0 {
+                self.ssl_error(
+                    &[b"SSL_CTX_set_alpn_protos(", protos.bytes(), b") failed"].concat(),
+                );
                 return false;
             }
             // SAFETY: a live context; the argument is a static.
@@ -671,10 +689,41 @@ fn quoted(prefix: &[u8], value: TlsStr<'_>, suffix: &[u8]) -> Vec<u8> {
     [prefix, &value.text(), suffix].concat()
 }
 
-/// An ALPN wire-format list.
-struct Protos(&'static [u8]);
-static H2_HTTP1: Protos = Protos(b"\x02h2\x08http/1.1");
-static HTTP1: Protos = Protos(b"\x08http/1.1");
+/// An ALPN wire-format list: the first `length` bytes of `wire`.
+struct Protos {
+    wire: [u8; 12],
+    length: AlpnLength,
+}
+static H2_HTTP1: Protos = Protos {
+    wire: *b"\x02h2\x08http/1.1",
+    length: AlpnLength::H2Http1,
+};
+static HTTP1: Protos = Protos {
+    wire: *b"\x08http/1.1\0\0\0",
+    length: AlpnLength::Http1,
+};
+
+impl Protos {
+    /// The list's bytes.
+    fn bytes(&self) -> &[u8] {
+        self.wire.get(..self.length as usize).unwrap_or(&self.wire)
+    }
+}
+
+/// The length of an ALPN list in a 12-byte [`Protos::wire`]: each value is at most the
+/// array's, so OpenSSL reads only its bytes.
+#[derive(Clone, Copy)]
+#[repr(u32)]
+enum AlpnLength {
+    Http1 = 9,
+    H2Http1 = 12,
+}
+
+// libssl's declaration, typed so that the list is the array its length bounds; it
+// copies the list into the live context: 0 on success.
+unsafe extern "C" {
+    safe fn SSL_CTX_set_alpn_protos(ctx: &SslCtx, protos: &[u8; 12], length: AlpnLength) -> c_int;
+}
 
 /// The server's ALPN choice: the first of its protocols the client offers.
 unsafe extern "C" fn select_alpn(
@@ -687,17 +736,13 @@ unsafe extern "C" fn select_alpn(
 ) -> c_int {
     // SAFETY: `arg` is one of the static lists installed by `configure`.
     let protos = unsafe { &*arg.cast::<Protos>() };
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "both ALPN lists are a few bytes"
-    )]
-    let length = protos.0.len() as c_uint;
+    let length = protos.length as c_uint;
     // SAFETY: OpenSSL's output slots and offered list; ours is static.
     let negotiated = unsafe {
         SSL_select_next_proto(
             out.cast(),
             out_length,
-            protos.0.as_ptr(),
+            protos.wire.as_ptr(),
             length,
             offered,
             offered_length,
@@ -760,8 +805,12 @@ fn field<const N: usize>(bytes: &[u8], at: usize) -> [u8; N] {
 
 /// DTLS cookie: HMAC-SHA1 of the peer's port and address, keyed by the SSL's address,
 /// into `cookie` with its length in `cookie_length`.
-fn cookie_of(ssl: Ssl<'_>, cookie: &mut [impl ReadSlot; 255], cookie_length: &mut c_uint) -> c_int {
-    let secret = [(ssl.as_ptr() as c_long).to_ne_bytes(); 32 / size_of::<c_long>()].concat();
+fn cookie_of(ssl: Ssl<'_>, cookie: &mut [u8; 255], cookie_length: &mut c_uint) -> c_int {
+    let mut secret = [0; 32];
+    let address_bytes = (ssl.as_ptr() as c_long).to_ne_bytes();
+    for chunk in secret.as_chunks_mut::<{ size_of::<c_long>() }>().0 {
+        chunk.copy_from_slice(&address_bytes);
+    }
     let mut peer: PeerBytes = [0; size_of::<PeerBytes>()];
     // `BIO_dgram_get_peer` on the SSL's write BIO.
     bio_peer(ssl.write_bio(), BioPeerCtrl::GetPeer, 0, &mut peer);
@@ -769,33 +818,37 @@ fn cookie_of(ssl: Ssl<'_>, cookie: &mut [impl ReadSlot; 255], cookie_length: &mu
         &peer,
         std::mem::offset_of!(libc::sockaddr_storage, ss_family),
     ));
-    let (port, address) = match c_int::from(family) {
+    // The port, then the address.
+    let mut data = [0; 18];
+    let (port, address, length) = match c_int::from(family) {
         libc::AF_INET => (
             field::<2>(&peer, std::mem::offset_of!(libc::sockaddr_in, sin_port)),
             &field::<4>(&peer, std::mem::offset_of!(libc::sockaddr_in, sin_addr))[..],
+            DataLength::V4,
         ),
         libc::AF_INET6 => (
             field::<2>(&peer, std::mem::offset_of!(libc::sockaddr_in6, sin6_port)),
             &field::<16>(&peer, std::mem::offset_of!(libc::sockaddr_in6, sin6_addr))[..],
+            DataLength::V6,
         ),
         // Upstream's OPENSSL_assert(0).
         _ => swoole_rs_corebase::fatal("a peer address that is neither IPv4 nor IPv6"),
     };
-    let data = [&port[..], address].concat();
-    let sha1 = EVP_sha1();
-    // SAFETY: `HMAC` over local buffers into the cookie buffer, whose 255 bytes are
-    // more than EVP_MAX_MD_SIZE, and its length slot.
-    let digest = unsafe {
-        HMAC(
-            sha1,
-            secret.as_ptr().cast(),
-            32,
-            data.as_ptr(),
-            data.len(),
-            cookie.as_mut_ptr().cast(),
-            cookie_length,
-        )
+    for (slot, &byte) in data.iter_mut().zip(port.iter().chain(address)) {
+        *slot = byte;
+    }
+    let Some(sha1) = EVP_sha1() else {
+        return 0;
     };
+    let digest = HMAC(
+        sha1,
+        &secret,
+        KeyLength::Secret,
+        &data,
+        length,
+        cookie,
+        cookie_length,
+    );
     c_int::from(!digest.is_null())
 }
 
@@ -806,9 +859,14 @@ extern "C" fn generate_cookie(
     cookie: &mut CookieBuffer,
     cookie_length: &mut MaybeUninit<c_uint>,
 ) -> c_int {
+    let mut made_cookie = [0; 255];
     let mut length = 0;
-    let made = cookie_of(ssl, cookie, &mut length);
+    let made = cookie_of(ssl, &mut made_cookie, &mut length);
     if made != 0 {
+        let digest = made_cookie.get(..length as usize).unwrap_or_default();
+        for (slot, &byte) in cookie.iter_mut().zip(digest) {
+            slot.write(byte);
+        }
         cookie_length.write(length);
     }
     made

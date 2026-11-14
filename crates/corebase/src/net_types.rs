@@ -85,23 +85,24 @@ impl SocketAddress {
     pub const CAPACITY: libc::socklen_t = crate::sys::socklen::<AddressStorage>();
 
     fn storage(&self) -> (*const libc::sockaddr, libc::socklen_t) {
-        ((&raw const self.addr).cast(), self.len.min(Self::CAPACITY))
+        ((&raw const self.addr).cast(), self.stored().0)
+    }
+
+    /// The length a call reads of the storage: `len`, at most the storage's size.
+    fn stored(&self) -> StoredLength {
+        StoredLength(self.len.min(Self::CAPACITY))
     }
 
     /// `connect(2)` of `fd` to this address.
     #[must_use]
     pub fn connect(&self, fd: c_int) -> c_int {
-        let (storage, length) = self.storage();
-        // SAFETY: the storage holds the `length` readable bytes given.
-        unsafe { libc::connect(fd, storage, length) }
+        connect(fd, &self.addr, self.stored())
     }
 
     /// `bind(2)` of `fd` to this address.
     #[must_use]
     pub fn bind(&self, fd: c_int) -> c_int {
-        let (storage, length) = self.storage();
-        // SAFETY: the storage holds the `length` readable bytes given.
-        unsafe { libc::bind(fd, storage, length) }
+        bind(fd, &self.addr, self.stored())
     }
 
     /// `sendto(2)` of `data` to this address.
@@ -128,17 +129,54 @@ impl SocketAddress {
 
     /// `getsockname(2)` of `fd` into this address and its length.
     pub fn local_name(&mut self, fd: c_int) -> c_int {
-        self.len = Self::CAPACITY;
-        // SAFETY: the storage is writable for the `len` given.
-        unsafe { libc::getsockname(fd, (&raw mut self.addr).cast(), &raw mut self.len) }
+        self.named(fd, getsockname)
     }
 
     /// `getpeername(2)` of `fd` into this address and its length.
     pub fn peer_name(&mut self, fd: c_int) -> c_int {
-        self.len = Self::CAPACITY;
-        // SAFETY: the storage is writable for the `len` given.
-        unsafe { libc::getpeername(fd, (&raw mut self.addr).cast(), &raw mut self.len) }
+        self.named(fd, getpeername)
     }
+
+    /// `name(fd, ...)` into the whole storage, its length going to `len`.
+    fn named(&mut self, fd: c_int, name: NameCall) -> c_int {
+        let mut room = Room::FULL;
+        let result = name(fd, &mut self.addr, &mut room);
+        self.len = room.0;
+        result
+    }
+}
+
+/// A length of an [`AddressStorage`]'s bytes, at most its size: only
+/// [`SocketAddress::stored`] makes one.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct StoredLength(libc::socklen_t);
+
+// libc's. Each reads the first `length` bytes of `address`, which `StoredLength`
+// keeps within it, and its integers, and keeps nothing, so they are declared `safe`.
+unsafe extern "C" {
+    safe fn connect(fd: c_int, address: &AddressStorage, length: StoredLength) -> c_int;
+    safe fn bind(fd: c_int, address: &AddressStorage, length: StoredLength) -> c_int;
+}
+
+/// The room `getsockname`/`getpeername` are given, in and out: the storage's whole size
+/// going in (only [`Room::FULL`] makes one), the address's length coming out. Each value
+/// goes to one call and is then read, never passed again.
+#[repr(transparent)]
+struct Room(libc::socklen_t);
+
+impl Room {
+    const FULL: Self = Self(SocketAddress::CAPACITY);
+}
+
+/// `getsockname` or `getpeername`.
+type NameCall = extern "C" fn(c_int, &mut AddressStorage, &mut Room) -> c_int;
+
+// libc's. Each writes at most the room's incoming size (the whole storage) of
+// `address`, and the address's length into the room, and keeps nothing.
+unsafe extern "C" {
+    safe fn getsockname(fd: c_int, address: &mut AddressStorage, room: &mut Room) -> c_int;
+    safe fn getpeername(fd: c_int, address: &mut AddressStorage, room: &mut Room) -> c_int;
 }
 
 /// `swoole::PacketLength`: the bytes a length function measures, and the header

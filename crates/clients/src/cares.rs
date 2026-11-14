@@ -112,13 +112,6 @@ struct Completion {
     coroutine: *mut c_void,
     resume: unsafe extern "C-unwind" fn(*mut c_void),
 }
-/// The query behind a c-ares userdata or wrapper object.
-/// # Safety
-/// `state` is a live query's userdata: `lookup` keeps it until its channel is destroyed.
-unsafe fn query<'a>(state: *mut c_void) -> &'a Query {
-    // SAFETY: as the caller promises; the query is only shared, never borrowed mutably.
-    unsafe { &*state.cast::<Query>() }
-}
 /// The deferred resume: the reactor runs it after the pass, unless the query
 /// retired first, or drops it if the reactor is freed first.
 impl event_api::Deferred for Completion {
@@ -143,9 +136,11 @@ fn process(event: &Event, write: u8) -> i32 {
     let Some(socket) = event.socket() else {
         return -1;
     };
-    let data = socket.read(|socket| socket.object);
-    // SAFETY: the query's channel stays live while its wrappers are registered.
-    let channel = unsafe { query(data) }.channel.get();
+    let data = socket.read(|socket| socket.object).cast::<Query>();
+    // SAFETY: a registered wrapper's object is its query (`socket_state` sets it), which
+    // `lookup` keeps until the channel is destroyed and the wrappers with it; the query
+    // is only shared, never borrowed mutably.
+    let channel = unsafe { &*data }.channel.get();
     let (read, write) = if write == 0 { (fd, -1) } else { (-1, fd) };
     // SAFETY: as above: the channel `lookup` owns outlives its registered wrappers.
     sdk::ares_process_fd(unsafe { &*channel }, read, write);

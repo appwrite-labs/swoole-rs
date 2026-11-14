@@ -276,16 +276,13 @@ fn init(
         let info = &sock.info;
         let port = swoole_rs_clients::address::swr_v1_clients_address_port(info);
         let v6 = info.kind != SOCK_TCP;
-        // The address field by offset: raw borrows of the union's fields are safe.
-        let addr = if v6 {
-            let at = core::mem::offset_of!(libc::sockaddr_in6, sin6_addr);
-            (&raw const info.addr.inet_v6).cast::<u8>().wrapping_add(at)
-        } else {
-            let at = core::mem::offset_of!(libc::sockaddr_in, sin_addr);
-            (&raw const info.addr.inet_v4).cast::<u8>().wrapping_add(at)
-        };
-        // SAFETY: the address of the family, in the socket's live record.
-        let addr = unsafe { core::slice::from_raw_parts(addr, if v6 { 16 } else { 4 }) };
+        // The family's address bytes, as they are stored.
+        let (inet_v6, inet_v4) = (
+            info.addr.v6().sin6_addr.s6_addr,
+            info.addr.v4().sin_addr.s_addr,
+        );
+        let inet_v4 = inet_v4.to_ne_bytes();
+        let addr: &[u8] = if v6 { &inet_v6 } else { &inet_v4 };
         let index = crate::local_addr::index(state, v6, addr);
         (!sock.ssl().is_null(), port, index)
     });
