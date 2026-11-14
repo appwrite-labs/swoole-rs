@@ -133,7 +133,7 @@ pub fn fd_accept(fd: c_int, address: &mut SocketAddress, nonblock: bool) -> (c_i
         // SAFETY: the borrowed address, `len` bytes of it.
         let accepted = unsafe { libc::accept(fd, storage, length) };
         let cloexec =
-            accepted >= 0 && crate::swr_v1_socket_fd_option(fd, c_int::from(nonblock), 1).ok;
+            accepted >= 0 && crate::swr_v1_socket_fd_option(fd, Some(nonblock), Some(true)).ok;
         (accepted, cloexec)
     }
 }
