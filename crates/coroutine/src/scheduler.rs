@@ -4,7 +4,7 @@
 //! the operations Rust callers run on it by path: the current coroutine, resume,
 //! the cancelable yield and bailout. They need no timer or event loop, so they
 //! build without `upstream-symbols`; facade.rs builds the rest on them.
-use crate::context::{self, Context, Native};
+use crate::context::{self, Native};
 use crate::coroutine::{self as ops, Co, Sched};
 use crate::{Canceler, Coroutine, CoroutineTask, Hooks, Routine, Scheduler};
 use core::cell::UnsafeCell;
@@ -28,8 +28,8 @@ const fn fresh() -> Scheduler {
         on_resume: None,
         on_close: None,
         hooks: Hooks {
-            swap_in,
-            swap_out,
+            swap_in: context::swap_in,
+            swap_out: context::swap_out,
             destroy,
             bailout: None,
             bailout_data: ptr::null_mut(),
@@ -123,31 +123,6 @@ pub fn set_callback(slot: u32, function: crate::SwapCallback) {
 /// `f` over this thread's scheduler.
 pub(crate) fn with_scheduler<R>(f: impl FnOnce(&mut Scheduler) -> R) -> R {
     Sched::this().with(f)
-}
-
-const _: () = assert!(
-    core::mem::offset_of!(Native, ctx) == size_of::<Coroutine>(),
-    "a record's context follows its coroutine"
-);
-
-/// The context of the record `native`.
-pub(crate) fn context(native: *mut c_void) -> *mut Context {
-    native.cast::<Coroutine>().wrapping_add(1).cast()
-}
-
-/// Switches into `co`'s record: whether its coroutine ended.
-fn swap_in(co: Co) -> bool {
-    let native = co.with(|co| co.native);
-    // SAFETY: the scheduler passes a live coroutine that has not ended, which
-    // its `Native` record starts with.
-    unsafe { context::swap_in(context(native)) }
-}
-
-/// Switches out of the running `co`'s record.
-fn swap_out(co: Co) {
-    let native = co.with(|co| co.native);
-    // SAFETY: the scheduler passes the running coroutine, which its record starts with.
-    unsafe { context::swap_out(context(native)) };
 }
 
 /// Frees the ended `co`'s record and its stack (upstream's `delete`).

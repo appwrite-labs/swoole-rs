@@ -4,6 +4,7 @@
 //! `ThreadSanitizer` through its own, in tools/tsan.py's build (`cfg(tsan)`). With
 //! [`THREAD`] in its flags the context is a thread instead (`thread.rs`).
 
+use crate::coroutine::Co;
 use crate::fcontext::{Transfer, jump_fcontext, make_fcontext};
 use crate::stack::Stack;
 use crate::thread::{self, Started, THREAD};
@@ -15,8 +16,8 @@ use std::sync::OnceLock;
 use swoole_rs_corebase::CCast;
 
 /// A coroutine's context record, which follows its state in its [`Native`]
-/// record and never moves once switched in, so the switch may hand out its
-/// address. Both stacks reach it through raw pointers, and neither holds a
+/// record and never moves once switched in, so the switch hands its stack the
+/// coroutine's `Co`. Both stacks reach it through that handle, and neither holds a
 /// mutable borrow across a switch. Dropping it frees its stack, or joins its
 /// thread, so it is dropped only once its coroutine ended (or never ran).
 #[repr(C)]
@@ -165,24 +166,46 @@ fn asan() -> Option<(StartSwitch, FinishSwitch)> {
     })
 }
 
-/// Switches from the caller's stack onto `ctx`'s, returning when it switches
-/// out: whether it ended.
-///
-/// # Safety
-/// `ctx` is a [`Context::new`] that stays put from here on, has not ended, and
-/// is not running.
-pub unsafe fn swap_in(ctx: *mut Context) -> bool {
+const _: () = assert!(
+    core::mem::offset_of!(Native, ctx) == size_of::<Coroutine>(),
+    "a record's context follows its coroutine"
+);
+
+impl Co {
+    /// Its context, which follows it in the [`Native`] record facade.rs boxed for it.
+    fn context(self) -> *mut Context {
+        self.ptr().wrapping_add(1).cast()
+    }
+
+    /// Its context, shared for `f`. Both stacks (or threads) take only shared borrows
+    /// of it while `f` switches away, so `f` may.
+    fn read_context<R>(self, f: impl FnOnce(&Context) -> R) -> R {
+        // SAFETY: only the scheduler's hooks below and the first frame reach this, with
+        // a live coroutine that facade.rs boxed in a `Native`; shared, until `f` returns.
+        f(unsafe { &*self.context() })
+    }
+
+    /// Its context, borrowed for `f`, which does not switch.
+    fn with_context<R>(self, f: impl FnOnce(&mut Context) -> R) -> R {
+        // SAFETY: as `read_context`, on the stack that owns the record between switches;
+        // the borrow ends with `f`.
+        f(unsafe { &mut *self.context() })
+    }
+}
+
+/// The scheduler's `swap_in` hook: switches from the caller's stack onto `co`'s
+/// context, returning when it switches out: whether it ended. The scheduler passes
+/// a live coroutine of its own (boxed in a [`Native`]) that has not ended and is not
+/// running, whose context stays put from here on.
+pub(crate) fn swap_in(co: Co) -> bool {
     let asan = asan();
     let mut fake_stack = ptr::null_mut();
-    let fctx = {
-        // SAFETY: a live context, as the caller promises. Only shared borrows of
-        // it are taken until the switch returns.
-        let ctx = unsafe { &*ctx };
+    let fctx = co.read_context(|ctx| {
         if let Some(thread) = &ctx.thread {
-            // SAFETY: as the caller promises; this thread holds the baton.
+            // SAFETY: as the scheduler passes it; this thread holds the baton.
             let ended = unsafe { thread.swap_in() };
             ctx.end.set(ended);
-            return ended;
+            return Err(ended);
         }
         if let Some((start, _)) = asan {
             // SAFETY: announces the switch onto the context's stack.
@@ -200,34 +223,35 @@ pub unsafe fn swap_in(ctx: *mut Context) -> bool {
             // SAFETY: the context's live fiber, which runs from the jump on.
             unsafe { __tsan_switch_to_fiber(ctx.tsan_fiber, 0) };
         }
-        ctx.fctx
+        Ok(ctx.fctx)
+    });
+    let fctx = match fctx {
+        Ok(fctx) => fctx,
+        Err(ended) => return ended,
     };
-    // SAFETY: `fctx` is the context's suspended state; it resumes with its record.
-    let transfer = unsafe { jump_fcontext(fctx, ctx.cast()) };
-    // SAFETY: the context switched back out, so this stack owns the record again.
-    let ctx = unsafe { &mut *ctx };
-    ctx.fctx = transfer.fctx;
-    if let Some((_, finish)) = asan {
-        // SAFETY: completes the switch back that `swap_out` started.
-        unsafe { finish(fake_stack, ptr::null_mut(), ptr::null_mut()) };
-    }
-    ctx.end.get()
+    // SAFETY: `fctx` is the context's suspended state; it resumes with its coroutine.
+    let transfer = unsafe { jump_fcontext(fctx, co) };
+    // The context switched back out, so this stack owns the record again.
+    co.with_context(|ctx| {
+        ctx.fctx = transfer.fctx;
+        if let Some((_, finish)) = asan {
+            // SAFETY: completes the switch back that `swap_out` started.
+            unsafe { finish(fake_stack, ptr::null_mut(), ptr::null_mut()) };
+        }
+        ctx.end.get()
+    })
 }
 
-/// Switches from `ctx`'s stack back to the one that last switched it in.
-///
-/// # Safety
-/// `ctx` is the running context.
-pub unsafe fn swap_out(ctx: *mut Context) {
+/// The scheduler's `swap_out` hook: switches from `co`'s stack back to the one that
+/// last switched it in. The scheduler passes the running coroutine.
+pub(crate) fn swap_out(co: Co) {
     let asan = asan();
     let mut fake_stack = ptr::null_mut();
-    let swap_fctx = {
-        // SAFETY: the running context's record; only shared borrows of it are
-        // taken until the switch returns.
-        let ctx = unsafe { &*ctx };
+    let swap_fctx = co.read_context(|ctx| {
         if let Some(thread) = &ctx.thread {
-            // SAFETY: the running thread, as the caller promises.
-            return unsafe { thread.swap_out() };
+            // SAFETY: the running thread, as the scheduler passes it.
+            unsafe { thread.swap_out() };
+            return None;
         }
         if let Some((start, _)) = asan {
             // A finished context never resumes, so ASan may free its fake stack now.
@@ -244,12 +268,15 @@ pub unsafe fn swap_out(ctx: *mut Context) {
         unsafe {
             __tsan_switch_to_fiber(ctx.tsan_caller.get(), 0);
         }
-        ctx.swap_fctx
+        Some(ctx.swap_fctx)
+    });
+    let Some(swap_fctx) = swap_fctx else {
+        return;
     };
     // SAFETY: `swap_fctx` is the suspended caller of `swap_in`.
-    let transfer = unsafe { jump_fcontext(swap_fctx, ctx.cast()) };
-    // SAFETY: switched back in, so this stack owns the record again.
-    switched_in(unsafe { &mut *ctx }, transfer.fctx, asan, fake_stack);
+    let transfer = unsafe { jump_fcontext(swap_fctx, co) };
+    // Switched back in, so this stack owns the record again.
+    co.with_context(|ctx| switched_in(ctx, transfer.fctx, asan, fake_stack));
 }
 
 /// Records the stack that switched in and completes the sanitizer's switch.
@@ -268,21 +295,18 @@ fn switched_in(
 }
 
 /// The context's first frame: runs the entry, marks the end and switches out for good.
+/// `swap_in` jumped here with its coroutine, which now runs.
 extern "C" fn first_frame(transfer: Transfer) {
-    let ctx = transfer.data.cast::<Context>();
-    let (entry, data) = {
-        // SAFETY: `swap_in` passed the record, which the running context now
-        // owns; the borrow ends here.
-        let record = unsafe { &mut *ctx };
+    let co = transfer.data;
+    let (entry, data) = co.with_context(|record| {
         switched_in(record, transfer.fctx, asan(), ptr::null_mut());
         (record.entry, record.data)
-    };
+    });
     // SAFETY: the creator's entry over its own data, as `Context::new`'s caller promised.
     unsafe { entry(data) };
-    // SAFETY: as above; a shared borrow, which ends before the switch.
-    unsafe { &*ctx }.end.set(true);
-    // SAFETY: the running context; an ended one is never switched back in.
-    unsafe { swap_out(ctx) };
+    co.read_context(|ctx| ctx.end.set(true));
+    // The running coroutine; an ended one is never switched back in.
+    swap_out(co);
 }
 
 #[cfg(test)]
@@ -301,8 +325,13 @@ mod tests {
     }
 
     struct Log {
-        ctx: core::mem::MaybeUninit<Context>,
+        native: core::mem::MaybeUninit<Native>,
         steps: Vec<&'static str>,
+    }
+
+    /// The coroutine the log's record starts with.
+    unsafe fn co(log: *mut Log) -> Co {
+        unsafe { Co::of((*log).native.as_mut_ptr().cast()) }.unwrap()
     }
 
     unsafe extern "C" fn entry(data: *mut c_void) {
@@ -310,7 +339,7 @@ mod tests {
         // SAFETY: the test's log, which only the running stack touches.
         unsafe {
             (*log).steps.push("entry");
-            swap_out((*log).ctx.as_mut_ptr());
+            swap_out(co(log));
             (*log).steps.push("resumed");
         }
     }
@@ -319,18 +348,21 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri runs no assembly")]
     fn a_context_switches_onto_its_stack_and_back() {
         let mut log = Log {
-            ctx: core::mem::MaybeUninit::uninit(),
+            native: core::mem::MaybeUninit::uninit(),
             steps: Vec::new(),
         };
         let log = &raw mut log;
         // SAFETY: the record stays in `log` until dropped, and each switch is the stack's turn.
         unsafe {
-            let ctx = (*log).ctx.as_mut_ptr();
-            ctx.write(Context::new(64 * 1024, 0, entry, log.cast()).unwrap());
-            assert!(!swap_in(ctx));
+            let ctx = Context::new(64 * 1024, 0, entry, log.cast()).unwrap();
+            (*log).native.write(Native {
+                co: Coroutine::IDLE,
+                ctx,
+            });
+            assert!(!swap_in(co(log)));
             (*log).steps.push("main");
-            assert!(swap_in(ctx));
-            ctx.drop_in_place();
+            assert!(swap_in(co(log)));
+            (*log).native.assume_init_drop();
             assert_eq!((*log).steps, ["entry", "main", "resumed"]);
         }
     }
