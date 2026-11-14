@@ -10,7 +10,7 @@ use std::ffi::c_int;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::{WebSocketStatus, log};
 use swoole_rs_error::ErrorCode;
-use swoole_rs_server::ConnectionRecord;
+use swoole_rs_server::Connection;
 
 /// `SW_LOG_WARNING`.
 const LOG_WARNING: c_int = 4;
@@ -22,25 +22,25 @@ const HTTP2_FRAME_HEADER_SIZE: u8 = 9;
 /// `conn`'s branch: `websocket` past the handshake, else `http2` for an HTTP/2
 /// stream, else upstream's `protocol_status_error` warning and `error`.
 fn route<T>(
-    conn: &ConnectionRecord,
+    conn: Connection<'_>,
     websocket: impl FnOnce() -> T,
     http2: impl FnOnce() -> T,
     error: T,
 ) -> T {
-    if conn.websocket_status >= WebSocketStatus::Handshake {
+    if conn.websocket_status() >= WebSocketStatus::Handshake {
         return websocket();
     }
-    if conn.http2_stream {
+    if conn.http2_stream() {
         return http2();
     }
-    let (host, port) = host_port(&conn.info);
+    let (host, port) = host_port(&conn.info());
     log::error_log(
         LOG_WARNING,
         ErrorCode::SW_ERROR_PROTOCOL_ERROR as c_int,
         c"protocol_status_error",
         format_args!(
             "unexpected protocol status of session#{}<{host}:{port}>",
-            conn.session_id
+            conn.session_id()
         ),
     );
     error
@@ -55,7 +55,7 @@ pub(crate) fn host_port(address: &SocketAddress) -> (String, c_int) {
 }
 
 /// `get_package_length_size`'s result for `conn`.
-fn length_size(conn: &ConnectionRecord) -> u8 {
+fn length_size(conn: Connection<'_>) -> u8 {
     route(
         conn,
         || WEBSOCKET_FRAME_HEADER_SIZE,
@@ -75,7 +75,7 @@ pub mod exports {
     use swoole_rs_corebase::net_types::{PacketLength, Protocol};
     use swoole_rs_corebase::{WebSocketStatus, log};
     use swoole_rs_reactor::{Drain, Socket, SocketRecord};
-    use swoole_rs_server::{ConnectionRecord, view};
+    use swoole_rs_server::{Connection, ConnectionRecord, view};
     use swoole_rs_websocket::{Action, Context, PolicyError, decide_frame, encode_parts};
     use swoole_rs_websocket_ffi::frame_api::decode_frame;
 
@@ -98,13 +98,13 @@ pub mod exports {
     /// The connection a server socket's `object` holds.
     ///
     /// # Safety
-    /// `socket` is a live server connection socket.
-    unsafe fn connection<'a>(socket: *mut SocketRecord) -> &'a mut ConnectionRecord {
+    /// `socket` is a live server connection socket for `'a`.
+    unsafe fn connection<'a>(socket: *mut SocketRecord) -> Connection<'a> {
         // SAFETY: as the caller guarantees.
-        let conn = unsafe { (*socket).fields.object }.cast::<ConnectionRecord>();
-        // SAFETY: a connection socket's object is its live connection, which only
-        // its reactor thread touches.
-        unsafe { &mut *conn }
+        let conn = unsafe { (*socket).fields.object };
+        // SAFETY: a connection socket's object is its live connection slot, shared
+        // through the slot's field-wise handle; `UnsafeCell` has the record's layout.
+        Connection::from(unsafe { &*conn.cast::<core::cell::UnsafeCell<ConnectionRecord>>() })
     }
 
     /// `swoole::RecvData`.
@@ -118,7 +118,7 @@ pub mod exports {
     const CLOSE_REPLY_MAX: usize = 2 + 2 + 125;
 
     /// `websocket::dispatch_frame`'s policy warnings, with the peer's address.
-    fn policy_warning(conn: &ConnectionRecord, error: PolicyError, opcode: u8) {
+    fn policy_warning(conn: Connection<'_>, error: PolicyError, opcode: u8) {
         let what = match error {
             PolicyError::Orphan => "bad frame[opcode=0]".to_owned(),
             PolicyError::TooBig => "websocket frame is too big".to_owned(),
@@ -129,7 +129,7 @@ pub mod exports {
             ),
             PolicyError::None | PolicyError::CloseTooBig => return,
         };
-        let (host, port) = super::host_port(&conn.info);
+        let (host, port) = super::host_port(&conn.info());
         log::warning(
             c"websocket::dispatch_frame",
             format_args!("{what}. remote_addr={host}:{port}"),
@@ -167,13 +167,13 @@ pub mod exports {
         let bytes: &[u8] = bytes;
         // SAFETY: as the caller guarantees.
         let conn = unsafe { connection(socket) };
-        let fragment = conn.websocket_buffer.cast::<CppString>();
+        let fragment = conn.websocket_buffer().cast::<CppString>();
         // SAFETY: null or the connection's live fragment buffer, which only this call
         // reaches until it deletes it.
         let mut buffered = unsafe { fragment.as_mut() };
         let mut context = Context {
             has_fragment: buffered.is_some(),
-            closing: conn.websocket_status == WebSocketStatus::Closing,
+            closing: conn.websocket_status() == WebSocketStatus::Closing,
             ..Context::default()
         };
         if let Some(fragment) = buffered.as_deref() {
@@ -183,7 +183,7 @@ pub mod exports {
             if frame.opcode == 0 {
                 // SAFETY: the port's live server, as the caller guarantees.
                 let serv = unsafe { view::Server::from_raw(serv) };
-                let max = swoole_rs_server::server_methods::package_max_length(serv, conn.fd);
+                let max = swoole_rs_server::server_methods::package_max_length(serv, conn.fd());
                 context.package_max_length = max as usize;
             }
         }
@@ -214,7 +214,7 @@ pub mod exports {
                 let buffer = new_string(payload.unwrap_or_default());
                 // SAFETY: just constructed.
                 unsafe { (*buffer).set_offset(decision.ext_flags.into()) };
-                conn.websocket_buffer = buffer.cast();
+                conn.set_websocket_buffer(buffer.cast());
             }
             Action::Append | Action::Finish => {
                 // The decision appends only to a live fragment.
@@ -233,7 +233,7 @@ pub mod exports {
                     dispatch_task(&dispatch);
                     // SAFETY: `new String`'s, not used again.
                     unsafe { delete_string(fragment) };
-                    conn.websocket_buffer = std::ptr::null_mut();
+                    conn.set_websocket_buffer(std::ptr::null_mut());
                 }
             }
             Action::Control | Action::Dispatch => {
@@ -258,7 +258,7 @@ pub mod exports {
                 return -1;
             }
             Action::ServerClose => {
-                conn.websocket_status = WebSocketStatus::None;
+                conn.set_websocket_status(WebSocketStatus::None);
                 return -1;
             }
             Action::Unknown => {
@@ -354,6 +354,7 @@ pub mod exports {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use swoole_rs_server::ConnectionRecord;
 
     /// Pinned `http.cc`'s branch for a connection: 1 WebSocket, 2 HTTP/2, 0 error.
     fn pinned(websocket_status: WebSocketStatus, http2_stream: bool) -> u32 {
@@ -382,8 +383,9 @@ mod tests {
                 conn.info.kind = 1;
                 let expected = pinned(websocket_status, http2_stream);
                 let mut calls = (0, 0);
+                let conn = Connection::from(&mut conn);
                 let length = route(
-                    &conn,
+                    conn,
                     || {
                         calls.0 += 1;
                         -11
@@ -403,10 +405,10 @@ mod tests {
                     }
                 );
                 assert_eq!(
-                    length_size(&conn),
+                    length_size(conn),
                     [0, WEBSOCKET_FRAME_HEADER_SIZE, HTTP2_FRAME_HEADER_SIZE][expected as usize]
                 );
-                let frame = route(&conn, || -22, || 55, -1);
+                let frame = route(conn, || -22, || 55, -1);
                 assert_eq!(frame, [-1, -22, 55][expected as usize]);
                 cases += 3;
             }

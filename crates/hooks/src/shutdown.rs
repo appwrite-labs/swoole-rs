@@ -28,8 +28,17 @@ pub struct SocketState {
     pub(crate) want: u32,
     /// The barriers installed for the read and the write wait.
     pub(crate) barriers: [Option<Barrier>; 2],
-    /// The native `TimerNode` timing the read and the write wait, or null.
-    pub(crate) timers: [*mut c_void; 2],
+    /// The timers of the read and the write wait.
+    pub(crate) timers: [WaitTimer; 2],
+}
+
+/// A direction's wait timer (`TimerController`'s slot).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WaitTimer {
+    None,
+    /// A negative timeout's wait, which runs without a timer.
+    Unbounded,
+    Armed(swoole_rs_corebase::timer_key::Held),
 }
 
 impl SocketState {
@@ -46,7 +55,7 @@ impl SocketState {
             write_co: core::ptr::null_mut(),
             want: 0,
             barriers: [None; 2],
-            timers: [core::ptr::null_mut(); 2],
+            timers: [WaitTimer::None; 2],
         }
     }
 

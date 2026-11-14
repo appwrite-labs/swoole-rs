@@ -3,7 +3,6 @@
 
 use crate::Mode;
 use core::ffi::c_int;
-use core::mem::MaybeUninit;
 use swoole_rs_locks::SharedMutex;
 use swoole_rs_process::worker_record::Worker;
 use swoole_rs_process::worker_record::WorkerType;
@@ -23,18 +22,15 @@ const SW_LOG_ERROR: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR as c
 /// the task pool's, then a user worker's; null for none.
 #[must_use]
 pub fn get_worker_by_pid(serv: view::Server<'_>, pid: c_int) -> *mut WorkerRecord {
-    let workers = serv.workers();
     let registry = serv.config().worker_registry.as_deref();
-    // SAFETY: the server's live arrays.
-    unsafe { swr_v1_process_server_worker_by_pid(&workers, registry, pid) }
+    swr_v1_process_server_worker_by_pid(&serv.workers(), registry, pid)
 }
 
 /// Startup's `LC_PREPARE_WORKERS`: publish the event pool and number the workers.
 pub(crate) fn workers_start(serv: view::Server<'_>) {
-    let workers = serv.workers();
-    let pending = serv.registry().pending();
-    // SAFETY: the server's live arrays and its pending user workers.
-    unsafe { swr_v1_process_server_workers_start(&workers, serv.raw(), &pending) };
+    let users = (0..).map_while(|index| serv.pending_worker(index));
+    // SAFETY: the server that owns the event pool, and outlives it.
+    unsafe { swr_v1_process_server_workers_start(&serv.workers(), serv.raw(), users) };
 }
 
 /// `Server::add_worker(worker)`: a user worker, added before the server is created.
@@ -85,15 +81,11 @@ pub fn init_event_worker(serv: view::Server<'_>, worker: Worker<'_>) {
 /// `Server::create_worker(worker)`: the worker's process-shared mutex, from the
 /// global memory pool as upstream's `new Mutex(true)` took it, and its pipe's fds.
 pub fn create_worker(serv: view::Server<'_>, worker: Worker<'_>) {
-    let size = u32::try_from(size_of::<SharedMutex>()).unwrap_or(u32::MAX);
-    let lock = swoole_rs_memory::members::pool::alloc(size);
-    // SAFETY: null, or `size` fresh bytes, aligned by the pool, which the global pool
-    // keeps for the program's life; nothing else sees them yet.
-    let lock = unsafe { lock.cast::<MaybeUninit<SharedMutex>>().as_mut() };
-    // Upstream's `Mutex` constructor throws, which ends the process here.
-    let lock =
-        lock.unwrap_or_else(|| swoole_rs_corebase::fatal("no shared memory for a worker lock"));
-    let lock = lock.write(SharedMutex::new());
+    // A zeroed `SharedMutex`, which the pool keeps for the program's life.
+    let Some([lock]) = swoole_rs_memory::members::pool::words::<SharedMutex>(1) else {
+        // Upstream's `Mutex` constructor throws, which ends the process here.
+        swoole_rs_corebase::fatal("no shared memory for a worker lock");
+    };
     if lock.init().is_err() {
         swoole_rs_corebase::fatal("a worker lock can't be initialized");
     }

@@ -60,9 +60,10 @@ impl Callable {
     /// The function the cache resolved, which this callable's value keeps live;
     /// None for none.
     fn function(&self) -> Option<Function<'_>> {
-        // SAFETY: null, or the function the cache resolved, which this
-        // callable's value keeps live while it is borrowed.
-        unsafe { Function::from_ptr(self.cache.function_handler) }
+        let function = self.cache.function_handler;
+        // The function the cache resolved, which this callable's value keeps
+        // live while it is borrowed.
+        (!function.is_null()).then_some(Function(function, std::marker::PhantomData))
     }
 
     /// The resolved cache, for a call: Zend reads it (an unresolved call
@@ -107,9 +108,8 @@ impl Callable {
                 called.unwrap_or(false)
             };
         };
-        // SAFETY: the body owns nothing that needs a drop: it holds borrows,
-        // copies and the result slot.
-        unsafe { bailout::trap_with(body) }?;
+        // The body holds borrows, copies and the result slot.
+        crate::contain_with(body)?;
         Ok(result)
     }
 

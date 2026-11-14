@@ -2,7 +2,7 @@
 //! `Socket::sendfile_sync` or by the output queue entry `sendfile_async` pushes.
 use crate::{OutputEffects, OutputResult};
 use libc::{c_int, off_t};
-use std::ffi::{CStr, c_void};
+use std::ffi::CStr;
 use swoole_rs_corebase::CCast;
 use swoole_rs_ossupport::FileRecord;
 
@@ -38,15 +38,6 @@ impl SocketFileRequest {
         }
         request.file = file;
         Some(request)
-    }
-
-    /// The output queue's disposer for a request it holds as `Box::into_raw`.
-    ///
-    /// # Safety
-    /// `token` is such a request, not yet freed.
-    pub unsafe extern "C" fn dispose(token: *mut c_void) {
-        // SAFETY: as the caller promises.
-        drop(unsafe { Box::from_raw(token.cast::<Self>()) });
     }
 
     /// The file's descriptor, -1 when it failed to open.

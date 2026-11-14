@@ -5,6 +5,7 @@ use crate::context::Ctx;
 use std::{
     cell::Cell,
     ffi::{CStr, c_int, c_long, c_void},
+    ptr::NonNull,
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_coroutine::Resume;
@@ -31,8 +32,42 @@ pub(crate) struct Stats {
     pub(crate) iouring_waiting_task_num: i64,
 }
 
-/// A `swoole::Coroutine`, which starts with its `swoole_rs_coroutine::Coroutine`.
-pub(crate) type Co = *mut c_void;
+/// A live coroutine's `swoole::Coroutine` record, which starts with its Rust state.
+/// Only this module makes one, from the scheduler's own records: the running
+/// coroutine, a registered id, or a live coroutine's origin (live too, since a close
+/// unlinks it first). Holders keep one only while it lives: a context its own
+/// coroutine until `on_close`, a waiter a parked coroutine until it resumes it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct Co(NonNull<swoole_rs_coroutine::context::Native>);
+
+impl Co {
+    /// The record at `native`, a registered coroutine's or null.
+    fn of(native: *mut c_void) -> Option<Self> {
+        NonNull::new(native.cast()).map(Self)
+    }
+
+    /// The record, borrowed for `f`, which neither switches nor writes it.
+    fn read<R>(self, f: impl FnOnce(&swoole_rs_coroutine::context::Native) -> R) -> R {
+        // SAFETY: a live coroutine's record (the handle's invariant); the borrow
+        // ends with `f`.
+        f(unsafe { self.0.as_ref() })
+    }
+
+    /// The record's address, as the coroutine core takes it.
+    pub(crate) fn raw(self) -> *mut c_void {
+        self.0.as_ptr().cast()
+    }
+
+    /// The coroutine that last ran this one, if it still lives.
+    fn origin(self) -> Option<Self> {
+        Self::of(self.read(|native| native.co.origin).cast())
+    }
+
+    /// Its context (`Coroutine::get_task()`), none before `open` sets it.
+    fn task(self) -> Option<Ctx> {
+        self.read(|native| native.co.task).map(Ctx::of_task)
+    }
+}
 
 use swoole_rs_hooks::sleep::system_sleep;
 
@@ -119,45 +154,21 @@ pub(crate) fn error_ex(level: c_int, code: c_int, message: &CStr) {
     }
 }
 
-/// The Rust state `co` starts with.
-fn state(co: Co) -> *mut swoole_rs_coroutine::Coroutine {
-    co.cast()
-}
-
-/// The Rust state of `co`, a live coroutine, borrowed for one read.
-fn live(co: Co) -> &'static swoole_rs_coroutine::Coroutine {
-    // SAFETY: callers pass a live coroutine, which starts with its state.
-    unsafe { &*state(co) }
-}
-
-/// The Rust state `co` points at, a live coroutine's or null, borrowed for one read.
-fn live_or_none(
-    co: *const swoole_rs_coroutine::Coroutine,
-) -> Option<&'static swoole_rs_coroutine::Coroutine> {
-    // SAFETY: callers pass a live coroutine or null.
-    unsafe { co.as_ref() }
-}
-
-/// The facade of `co`'s Rust state, null for none.
-fn native(co: *const swoole_rs_coroutine::Coroutine) -> Co {
-    live_or_none(co).map_or(std::ptr::null_mut(), |co| co.native)
-}
-
 pub(crate) fn count() -> usize {
     swoole_rs_coroutine::coroutine_count()
 }
 
-/// `Coroutine::get_current()`: null outside a coroutine.
-pub(crate) fn current() -> Co {
-    swoole_rs_coroutine::current_native()
+/// `Coroutine::get_current()`: none outside a coroutine.
+pub(crate) fn current() -> Option<Co> {
+    Co::of(swoole_rs_coroutine::current_native())
 }
 
-/// `Coroutine::get_current_safe()`: outside a coroutine it raises a fatal
-/// error and does not return, so the caller's frames must own nothing that
-/// needs a drop.
-pub(crate) fn current_safe() -> Co {
+/// `Coroutine::get_current_safe()`'s check: outside a coroutine it raises a
+/// fatal error, which does not return while Swoole's hook is set, so the
+/// caller's frames must own nothing that needs a drop.
+pub(crate) fn require_coroutine() -> Option<Co> {
     let co = current();
-    if co.is_null() {
+    if co.is_none() {
         // SAFETY: Swoole's fatal error hook; the frames own nothing.
         unsafe {
             swoole_rs_corebase::fatal_error(
@@ -169,53 +180,52 @@ pub(crate) fn current_safe() -> Co {
     co
 }
 
+/// `Coroutine::get_current_safe()`: as [`require_coroutine`], and where no
+/// fatal error hook ends the call, the process aborts (upstream dereferenced
+/// the null coroutine).
+pub(crate) fn current_safe() -> Co {
+    require_coroutine()
+        .unwrap_or_else(|| swoole_rs_corebase::fatal("API must be called in the coroutine"))
+}
+
 /// `System::sleep(seconds)` of the running coroutine: false once canceled, and
 /// outside a coroutine, where upstream's raises a fatal error.
 #[must_use]
 pub fn sleep(seconds: f64) -> bool {
-    !current().is_null() && system_sleep(seconds) == 0
+    in_coroutine() && system_sleep(seconds) == 0
 }
 
 pub(crate) fn current_task() -> Option<Ctx> {
-    task(current())
+    current()?.task()
 }
 
 pub(crate) fn current_cid() -> c_long {
-    let co = current();
-    if co.is_null() { -1 } else { cid(co) }
+    current().map_or(-1, cid)
 }
 
-pub(crate) fn by_cid(cid: c_long) -> Co {
-    swoole_rs_coroutine::coroutine_get(cid)
-}
-
-/// The context of `co`, none for none.
-fn task(co: Co) -> Option<Ctx> {
-    let task = live_or_none(state(co))?.task;
-    // SAFETY: a coroutine's task is null or its context, set by `context::open`
-    // and live until the close callback (`context::on_swap`), which runs as the coroutine ends.
-    unsafe { Ctx::of(task) }
+pub(crate) fn by_cid(cid: c_long) -> Option<Co> {
+    Co::of(swoole_rs_coroutine::coroutine_get(cid))
 }
 
 pub(crate) fn task_by_cid(cid: c_long) -> Option<Ctx> {
-    task(by_cid(cid))
+    by_cid(cid)?.task()
 }
 
 /// The coroutine `cid`, or the running one for 0.
-fn running_or(cid: c_long) -> Co {
+fn running_or(cid: c_long) -> Option<Co> {
     if cid == 0 { current() } else { by_cid(cid) }
 }
 
 /// `Coroutine::get_elapsed`.
 pub(crate) fn elapsed(cid: c_long) -> c_long {
-    let co = running_or(cid);
-    live_or_none(state(co)).map_or(-1, |co| absolute_msec() - co.init_msec)
+    running_or(cid).map_or(-1, |co| {
+        absolute_msec() - co.read(|native| native.co.init_msec)
+    })
 }
 
 /// `Coroutine::get_execute_time`.
 pub(crate) fn execute_time(cid: c_long) -> c_long {
-    let co = running_or(cid);
-    live_or_none(state(co)).map_or(-1, |co| co.execute_usec(now_us()))
+    running_or(cid).map_or(-1, |co| co.read(|native| native.co.execute_usec(now_us())))
 }
 
 /// The live coroutines' ids, newest first, up to `cids.len()`; how many.
@@ -290,39 +300,34 @@ pub(crate) fn kernel_coroutine(count: c_long, sleep: f64) {
     unsafe { swoole_rs_coroutine::swr_v1_coroutine_create(sleeper, std::ptr::null_mut()) };
 }
 
-/// The context of `co`'s origin, none for the main context.
-pub(crate) fn origin_task(co: Co) -> Option<Ctx> {
-    task(native(live(co).origin))
+/// The context of `co`'s origin, none for the main context (or no coroutine).
+pub(crate) fn origin_task(co: Option<Co>) -> Option<Ctx> {
+    co?.origin()?.task()
 }
 
-/// `Coroutine::get_cid()` of a live coroutine.
+/// `Coroutine::get_cid()`.
 pub(crate) fn cid(co: Co) -> c_long {
-    live(co).cid
+    co.read(|native| native.co.cid)
 }
 
 pub(crate) fn origin_cid(co: Co) -> c_long {
-    live_or_none(live(co).origin).map_or(-1, |origin| origin.cid)
+    co.origin().map_or(-1, cid)
 }
 
 pub(crate) fn state_of(co: Co) -> swoole_rs_coroutine::State {
-    live(co).state
+    co.read(|native| native.co.state)
 }
 
 /// `co`'s C stack and its size, null under thread contexts.
 pub(crate) fn stack(co: Co) -> (*mut c_void, usize) {
-    // SAFETY: a live coroutine's record.
-    let (stack, size) = unsafe {
-        (*co.cast::<swoole_rs_coroutine::context::Native>())
-            .ctx
-            .stack()
-    };
+    let (stack, size) = co.read(|native| native.ctx.stack());
     (stack.cast(), size)
 }
 
 /// Switch out of `co`, the running coroutine. What the caller's frames own is
 /// leaked if nothing resumes it (a bailout abandons every suspended coroutine).
 pub(crate) fn yield_(co: Co) {
-    swoole_rs_coroutine::suspend(co);
+    swoole_rs_coroutine::suspend(co.raw());
 }
 
 /// `Coroutine::yield_ex(timeout)`: false when it timed out or was canceled.
@@ -332,7 +337,7 @@ pub(crate) fn yield_ex(co: Co, timeout: f64) -> bool {
 
 /// [`yield_ex`] without its last error: how the yield ended.
 pub(crate) fn wait(co: Co, timeout: f64) -> Resume {
-    swoole_rs_coroutine::yield_timed(co, timeout)
+    swoole_rs_coroutine::yield_timed(co.raw(), timeout)
 }
 
 /// `Coroutine::count()` and `Coroutine::get_peak_num()`.
@@ -344,8 +349,8 @@ pub fn counts() -> (usize, u64) {
 /// Switch to `co`. The caller's frames must own nothing that needs a drop: a
 /// bailout in the coroutine may longjmp across them on the main stack.
 pub(crate) fn resume(co: Co) {
-    // SAFETY: callers pass a live, suspended coroutine.
-    unsafe { swoole_rs_coroutine::resume(co) };
+    // SAFETY: a live coroutine, which callers pass suspended.
+    unsafe { swoole_rs_coroutine::resume(co.raw()) };
 }
 
 /// A coroutine by id, the handle other crates hold. A coroutine's record is
@@ -359,8 +364,7 @@ impl Coroutine {
     /// The running coroutine, `None` outside one.
     #[must_use]
     pub fn current() -> Option<Self> {
-        let co = current();
-        (!co.is_null()).then(|| Self(cid(co)))
+        current().map(|co| Self(cid(co)))
     }
 
     /// `Coroutine::get_cid()`.
@@ -371,8 +375,7 @@ impl Coroutine {
 
     /// Its record, while it lives.
     fn live(self) -> Option<Co> {
-        let co = by_cid(self.0);
-        (!co.is_null()).then_some(co)
+        by_cid(self.0)
     }
 
     /// `co->is_suspending()`, `None` once it ended.
@@ -401,8 +404,7 @@ impl Coroutine {
 /// `co->yield()` of the running coroutine, until it is woken; nothing outside
 /// one. As [`yield_`], what the caller's frames own is leaked if nothing wakes it.
 pub fn suspend() {
-    let co = current();
-    if !co.is_null() {
+    if let Some(co) = current() {
         yield_(co);
     }
 }
@@ -411,8 +413,7 @@ pub fn suspend() {
 /// when it timed out or was canceled, or outside a coroutine.
 #[must_use]
 pub fn suspend_for(timeout: f64) -> bool {
-    let co = current();
-    !co.is_null() && yield_ex(co, timeout)
+    current().is_some_and(|co| yield_ex(co, timeout))
 }
 
 /// One wait that someone else ends: [`Waiter::wait`] suspends the running
@@ -442,17 +443,17 @@ impl Waiter {
 /// Running in a coroutine (`swoole_coroutine_is_in`).
 #[must_use]
 pub fn in_coroutine() -> bool {
-    !current().is_null()
+    current().is_some()
 }
 
 pub(crate) fn cancel(co: Co) -> bool {
-    // SAFETY: a live coroutine.
-    unsafe { swoole_rs_coroutine::cancel(co.cast()) }
+    // SAFETY: a live coroutine (the handle's invariant).
+    unsafe { swoole_rs_coroutine::cancel(co.raw().cast()) }
 }
 
-/// `co->is_canceled()` of a live coroutine.
+/// `co->is_canceled()`.
 pub(crate) fn is_canceled(co: Co) -> bool {
-    live(co).resume_code == Resume::Canceled
+    co.read(|native| native.co.resume_code) == Resume::Canceled
 }
 
 /// `co->is_end()`: a context that ended is closed and freed before anything
@@ -549,9 +550,9 @@ pub(crate) fn check_reactor() {
 /// Activation: the reactor's destroy callback, `Coroutine::activate` and the
 /// switch callbacks.
 pub(crate) fn attach(
-    on_yield: swoole_rs_coroutine::Routine,
-    on_resume: swoole_rs_coroutine::Routine,
-    on_close: swoole_rs_coroutine::Routine,
+    on_yield: extern "C" fn(swoole_rs_coroutine::CoroutineTask),
+    on_resume: extern "C" fn(swoole_rs_coroutine::CoroutineTask),
+    on_close: extern "C" fn(swoole_rs_coroutine::CoroutineTask),
 ) {
     // Upstream dereferences `sw_reactor()` here unchecked.
     if swoole_rs_reactor::event_api::current_prepared().is_none() {

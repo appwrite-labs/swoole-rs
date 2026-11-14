@@ -5,7 +5,7 @@ use crate::{context, host, runtime};
 use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, VecDeque},
-    ffi::{CStr, c_int, c_long, c_void},
+    ffi::{CStr, c_int, c_long},
     hash::{BuildHasherDefault, DefaultHasher},
     ptr,
     rc::Rc,
@@ -208,7 +208,7 @@ pub extern "C" fn php_swoole_coroutine_rshutdown() {
 /// `exit` in a coroutine or a started server: `SWOOLE_EXIT_*` flags, or 0.
 fn exit_flags() -> i64 {
     let mut flags = 0;
-    if !host::current().is_null() {
+    if host::in_coroutine() {
         flags |= EXIT_IN_COROUTINE;
     }
     if host::flag(host::SERVER_STARTED) {
@@ -333,13 +333,13 @@ static ORIGINAL_AUTOLOAD: OnceLock<swr_zend_autoload_handler> = OnceLock::new();
 /// A coroutine waiting for another's autoload of the same class, and where
 /// the loader leaves the class for it.
 struct Waiter {
-    co: *mut c_void,
+    co: host::Co,
     ce: Rc<Cell<*mut zend_class_entry>>,
 }
 
 /// The coroutine autoloading a class, and those waiting for it.
 struct Loading {
-    owner: *mut c_void,
+    owner: host::Co,
     waiters: VecDeque<Waiter>,
 }
 
@@ -366,14 +366,13 @@ unsafe extern "C" fn autoload(
     name: *mut zend_string,
     lc_name: *mut zend_string,
 ) -> *mut zend_class_entry {
-    let current = host::current();
-    if current.is_null() {
+    let Some(current) = host::current() else {
         let Ok(ce) = load(name, lc_name) else {
             runtime::raise();
             return ptr::null_mut();
         };
         return ce;
-    }
+    };
     // SAFETY: Zend marked the class as loading.
     unsafe { swr_zend_autoload_forget(lc_name) };
     // SAFETY: a live string.

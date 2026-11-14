@@ -288,7 +288,7 @@ pub(crate) fn send(ops: &UringSocketOps, op: c_int, buf: &[u8]) -> isize {
 }
 
 /// `recv_all` into `buf`: recv until it is full, it failed, or the peer closed.
-pub(crate) fn recv_all(ops: &UringSocketOps, buf: &mut [u8]) -> isize {
+pub(crate) fn recv_all(ops: &UringSocketOps, buf: &mut [impl ReadSlot]) -> isize {
     all(ops, buf.len(), |at| {
         recv(ops, buf.get_mut(at..).unwrap_or_default())
     })

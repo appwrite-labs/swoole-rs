@@ -26,11 +26,8 @@ pub fn store_listen_socket(serv: view::Server<'_>) {
 }
 
 /// `Server::master_signal_handler(signo)`: the signal over `SwooleG.server`.
-///
-/// # Safety
-/// Runs as a signal handler while `SwooleG.server` is live.
-pub unsafe extern "C-unwind" fn master_signal_handler(signo: c_int) {
-    // SAFETY: as the caller guarantees.
+pub extern "C" fn master_signal_handler(signo: c_int) {
+    // SAFETY: the master's signal runs while its server lives; the view ends with it.
     if let Some(serv) = unsafe { view::Server::current() } {
         crate::control::signal(serv, signo);
     }
@@ -210,9 +207,9 @@ pub fn set_document_root(serv: view::Server<'_>, path: &[u8]) -> bool {
 }
 
 /// Arms the master timer on this thread, the master's: each second it runs
-/// `Server::timer_callback` over `serv`. The timer's node, or null.
+/// `Server::timer_callback` over `serv`. The timer, or none.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-pub(crate) fn master_timer(serv: view::Server<'_>) -> *mut core::ffi::c_void {
+pub(crate) fn master_timer(serv: view::Server<'_>) -> Option<swoole_rs_timer::Held> {
     let serv = serv.raw();
     swoole_rs_timer::add_fn(1000, true, move || {
         // SAFETY: the server that armed its master timer, on its own thread; it
@@ -420,7 +417,8 @@ mod tests {
         pipe.kernel_nobufs = true;
         // SAFETY: as above.
         let mut connections: [ConnectionRecord; 4] = unsafe { core::mem::zeroed() };
-        connections[3].socket = (&raw mut sock).cast();
+        // SAFETY: the record above, which outlives the connections that point to it.
+        connections[3].socket = unsafe { swoole_rs_reactor::Socket::from_ptr(&raw mut sock) };
         connections[3].reactor_id = 1;
         // SAFETY: as above.
         let mut workers: [WorkerRecord; 4] = unsafe { core::mem::zeroed() };

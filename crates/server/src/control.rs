@@ -221,10 +221,8 @@ pub(crate) fn clear_timer(serv: Server<'_>) {
         &serv.state().tables_ref().enable_accept_timer,
     ];
     for timer in timers {
-        let node = timer.swap(core::ptr::null_mut(), Relaxed);
-        if !node.is_null() {
-            // SAFETY: one of this thread's live timer nodes, forgotten above.
-            unsafe { swoole_rs_timer::swoole_timer_del(node.cast()) };
+        if let Some(timer) = timer.take() {
+            swoole_rs_timer::del_id(timer);
         }
     }
 }

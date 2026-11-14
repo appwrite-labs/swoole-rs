@@ -15,15 +15,15 @@ use std::{
     ptr::{self, NonNull},
     rc::Rc,
 };
-use swoole_rs_coroutine::State;
+use swoole_rs_coroutine::{CoroutineTask, State};
 use swoole_rs_timer::Held;
 use swoole_rs_zend::sys::{
     IS_UNDEF, swr_zend_callable, swr_zend_callable_hold, swr_zend_coroutine_fcc_discard,
-    swr_zend_coroutine_main, swr_zend_coroutine_output_reset, swr_zend_coroutine_restore,
-    swr_zend_coroutine_set_frame, swr_zend_coroutine_start, swr_zend_coroutine_switch,
-    swr_zend_coroutine_vm, swr_zend_coroutine_vm_destroy, swr_zend_efree, swr_zend_object_release,
-    zend_class_entry, zend_execute_data, zend_fcall_info, zend_fcall_info_cache,
-    zend_fiber_context, zend_fiber_status, zend_fiber_status_ZEND_FIBER_STATUS_DEAD,
+    swr_zend_coroutine_output_reset, swr_zend_coroutine_restore, swr_zend_coroutine_set_frame,
+    swr_zend_coroutine_start, swr_zend_coroutine_switch, swr_zend_coroutine_vm,
+    swr_zend_coroutine_vm_destroy, swr_zend_efree, swr_zend_object_release, zend_class_entry,
+    zend_execute_data, zend_fcall_info, zend_fcall_info_cache, zend_fiber_context,
+    zend_fiber_status, zend_fiber_status_ZEND_FIBER_STATUS_DEAD,
     zend_fiber_status_ZEND_FIBER_STATUS_INIT, zend_fiber_status_ZEND_FIBER_STATUS_RUNNING,
     zend_fiber_status_ZEND_FIBER_STATUS_SUSPENDED, zend_object, zend_observer_fiber_destroy_notify,
     zend_observer_fiber_init_notify, zend_observer_fiber_switch_notify, zval, zval_ptr_dtor,
@@ -35,6 +35,10 @@ unsafe extern "C" {
     /// moved into `vm`, with a fresh output layer started in their place. It
     /// follows no pointer `vm` holds and runs no PHP code.
     safe fn swr_zend_coroutine_save(vm: &mut swr_zend_coroutine_vm);
+    /// `init_main_context`'s VM half: clears `EG(opline_before_exception)`, saves
+    /// as [`swr_zend_coroutine_save`] does into `vm`, and returns
+    /// `EG(main_fiber_context)`. It follows no pointer `vm` holds and runs no PHP code.
+    safe fn swr_zend_coroutine_main(vm: &mut swr_zend_coroutine_vm) -> *mut zend_fiber_context;
 }
 
 /// Upstream's `INVALID_PTR`: a destroyed context object, or an unusable fiber
@@ -60,7 +64,8 @@ pub(crate) struct Context {
     /// The coroutine's callable, laid out as `zend::Function`.
     call: swr_zend_callable,
     return_value: zval,
-    co: *mut c_void,
+    /// The coroutine, which outlives its context; none for the main context.
+    co: Option<host::Co>,
     fiber: *mut zend_fiber_context,
     fiber_init_notified: bool,
     enable_scheduler: bool,
@@ -84,7 +89,7 @@ impl Context {
         vm: swoole_rs_zend::zeroed(),
         call: swoole_rs_zend::zeroed(),
         return_value: swoole_rs_zend::UNDEF,
-        co: ptr::null_mut(),
+        co: None,
         fiber: ptr::null_mut(),
         fiber_init_notified: false,
         enable_scheduler: false,
@@ -134,7 +139,7 @@ macro_rules! fields {
 }
 
 fields! {
-    co, set_co: *mut c_void;
+    co, set_co: Option<host::Co>;
     fiber, set_fiber: *mut zend_fiber_context;
     fiber_init_notified, set_fiber_init_notified: bool;
     enable_scheduler, set_enable_scheduler: bool;
@@ -147,11 +152,11 @@ fields! {
 }
 
 impl Ctx {
-    /// # Safety
-    /// `ctx` is null or a live context, which stays live while the handle is used.
+    /// A coroutine's task, which is its live context: `open` sets every task, and
+    /// `on_close` frees it as the coroutine closes.
     #[inline]
-    pub(crate) unsafe fn of(ctx: *mut c_void) -> Option<Self> {
-        NonNull::new(ctx.cast()).map(Self)
+    pub(crate) fn of_task(task: CoroutineTask) -> Self {
+        Self(task.as_ptr().cast())
     }
 
     #[inline]
@@ -336,11 +341,8 @@ fn switch(from: Ctx, to: Ctx) {
 }
 
 /// `PHPCoroutine::on_yield`.
-pub(crate) unsafe extern "C" fn on_yield(arg: *mut c_void) {
-    // SAFETY: the core passes the yielding coroutine's task, a live context.
-    let Some(ctx) = (unsafe { Ctx::of(arg) }) else {
-        return;
-    };
+pub(crate) extern "C" fn on_yield(task: CoroutineTask) {
+    let ctx = Ctx::of_task(task);
     let origin = origin(ctx);
     fiber_switch_try_notify(ctx, origin);
     switch(ctx, origin);
@@ -348,11 +350,8 @@ pub(crate) unsafe extern "C" fn on_yield(arg: *mut c_void) {
 }
 
 /// `PHPCoroutine::on_resume`.
-pub(crate) unsafe extern "C" fn on_resume(arg: *mut c_void) {
-    // SAFETY: the core passes the resumed coroutine's task, a live context.
-    let Some(ctx) = (unsafe { Ctx::of(arg) }) else {
-        return;
-    };
+pub(crate) extern "C" fn on_resume(task: CoroutineTask) {
+    let ctx = Ctx::of_task(task);
     let current = current();
     fiber_switch_try_notify(current, ctx);
     switch(current, ctx);
@@ -380,11 +379,8 @@ pub(crate) fn watch_switches(watch: bool) -> usize {
 }
 
 /// `PHPCoroutine::on_close`: run the join hook, then free the context.
-pub(crate) unsafe extern "C" fn on_close(arg: *mut c_void) {
-    // SAFETY: the core passes the closing coroutine's task, a live context.
-    let Some(ctx) = (unsafe { Ctx::of(arg) }) else {
-        return;
-    };
+pub(crate) extern "C" fn on_close(task: CoroutineTask) {
+    let ctx = Ctx::of_task(task);
     if let Some(join) = ctx.replace_join(None) {
         join.closed(ctx);
     }
@@ -400,7 +396,7 @@ pub(crate) unsafe extern "C" fn on_close(arg: *mut c_void) {
 pub(crate) unsafe fn open(args: *mut c_void) -> Option<Ctx> {
     // SAFETY: per the caller.
     let args = unsafe { &*args.cast::<Args>() };
-    let co = host::current();
+    let co = host::current()?;
     let pcid = host::origin_cid(co);
     let ctx = swoole_rs_zend::value::emalloc(size_of::<Context>()).cast::<Context>();
     // Built in place: a `Context::EMPTY` literal is staged on the stack and
@@ -413,12 +409,14 @@ pub(crate) unsafe fn open(args: *mut c_void) -> Option<Ctx> {
         .cast::<Vec<Callable>>();
     // SAFETY: a write, so the zeroed `defer` is never read or dropped.
     unsafe { defer.write(Vec::new()) };
-    // SAFETY: every field now holds a valid value, and the context lives until `on_close`.
-    let this = unsafe { Ctx::of(ctx.cast()) }?;
-    this.set_co(co);
+    // Every field now holds a valid value, and the context lives until `on_close`.
+    let this = Ctx(NonNull::new(ctx)?);
+    this.set_co(Some(co));
     this.set_pcid(pcid);
     this.set_enable_scheduler(true);
-    swoole_rs_coroutine::set_current_task(ctx.cast());
+    // SAFETY: a new PHP context, the kind `on_yield`, `on_resume` and `on_close`
+    // take, which lives until `on_close` frees it.
+    unsafe { swoole_rs_coroutine::set_current_task(this.0.cast()) };
     if host::flag(host::FIBER_MOCK) {
         fiber_init(this);
     }
@@ -527,7 +525,8 @@ pub(crate) fn close(ctx: Ctx) {
     fiber_try_destroy(ctx, origin(ctx));
     // A context-owned __destruct() may have rearmed the time limit.
     if ctx.time_limited()
-        && let Some(timer) = swap_time_limit(ctx, host::cid(ctx.co()), None)
+        && let Some(co) = ctx.co()
+        && let Some(timer) = swap_time_limit(ctx, host::cid(co), None)
     {
         swoole_rs_timer::del_id(timer);
     }
@@ -540,10 +539,10 @@ pub(crate) fn close(ctx: Ctx) {
 /// `init_main_context`, at RINIT.
 pub(crate) fn init_main() {
     let main = main();
-    main.set_co(ptr::null_mut());
+    main.set_co(None);
     main.set_fiber_init_notified(true);
-    // SAFETY: its VM state, at RINIT: no exception is being dispatched.
-    main.set_fiber(unsafe { swr_zend_coroutine_main(main.vm()) });
+    // At RINIT: no exception is being dispatched.
+    main.set_fiber(main.with_vm(|vm| swr_zend_coroutine_main(vm)));
 }
 
 /// `free_main_context`, at RSHUTDOWN.
@@ -592,7 +591,10 @@ fn fiber_status(ctx: Ctx) -> zend_fiber_status {
     if ctx.fiber() == main().fiber() {
         return zend_fiber_status_ZEND_FIBER_STATUS_RUNNING;
     }
-    match host::state_of(ctx.co()) {
+    let Some(co) = ctx.co() else {
+        return zend_fiber_status_ZEND_FIBER_STATUS_RUNNING;
+    };
+    match host::state_of(co) {
         State::Init => zend_fiber_status_ZEND_FIBER_STATUS_INIT,
         State::Waiting => zend_fiber_status_ZEND_FIBER_STATUS_SUSPENDED,
         State::Running => zend_fiber_status_ZEND_FIBER_STATUS_RUNNING,

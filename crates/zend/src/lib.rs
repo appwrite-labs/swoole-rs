@@ -41,7 +41,7 @@ pub use call::{Call, Invalid, kind};
 pub use callable::{Callable, Callback, Holder, Parsed};
 pub use class::{Class, ClassEntry, Declared, lookup_class, unset_property_deny};
 pub use descriptor::{
-    FatalError, contain, fatal_error, last_fatal_error, memory_usage, pause_shutdown,
+    FatalError, contain, contain_with, fatal_error, last_fatal_error, memory_usage, pause_shutdown,
     restore_shutdown, with_unlimited_stack,
 };
 pub use error::{

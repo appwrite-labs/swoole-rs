@@ -36,7 +36,7 @@ typedef struct swr_v1_reactor_deferred swr_v1_reactor_deferred;
 typedef struct swr_v1_buffer swr_v1_buffer;
 typedef struct {
     void *out_buffer;
-    void *send_timer;
+    uint64_t send_timer;
     uint32_t buffer_size;
     bool close_wait;
     bool nonblock;

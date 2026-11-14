@@ -205,6 +205,7 @@ struct Rt {
 }
 
 impl Effects for Rt {
+    type Waiter = *mut c_void;
     fn current(&self) -> *mut c_void {
         rt::me() as *mut c_void
     }
@@ -457,6 +458,7 @@ struct Log {
 }
 
 impl Effects for Log {
+    type Waiter = *mut c_void;
     fn current(&self) -> *mut c_void {
         9 as *mut c_void
     }

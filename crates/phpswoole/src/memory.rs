@@ -15,6 +15,21 @@ static ZEND_STRING_ALLOCATOR: CoreAllocator = CoreAllocator {
     free: Some(free),
 };
 
+/// The same callbacks as the `swoole::Allocator` a socket's buffers take.
+static ZEND_STRING_BUFFERS: swoole_rs_buffer::string::Allocator =
+    swoole_rs_buffer::string::Allocator {
+        malloc,
+        calloc,
+        realloc,
+        free,
+    };
+
+/// The zend string allocator, as a socket's buffers take it.
+#[must_use]
+pub fn zend_string_buffers() -> &'static swoole_rs_buffer::string::Allocator {
+    &ZEND_STRING_BUFFERS
+}
+
 /// The allocator `sw_zend_string_allocator()` returns, for Rust callers.
 #[must_use]
 pub fn zend_string_allocator() -> TrustedAllocator {

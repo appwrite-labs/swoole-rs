@@ -6,11 +6,11 @@ use crate::{
     arginfo::Table,
     sys::{
         _zend_function__bindgen_ty_1, _zval_struct__bindgen_ty_1, IS_UNDEF, zend_class_entry,
-        zend_function, zend_internal_arg_info, zend_internal_function, zend_object,
+        zend_function, zend_function_entry, zend_internal_function, zend_object,
         zend_object_handlers, zend_op, zend_op_array, zval,
     },
 };
-use std::{ffi::CStr, marker::PhantomData, mem::offset_of, ptr};
+use std::{ffi::CStr, marker::PhantomData, mem::offset_of};
 
 /// A live `zend_function`, borrowed for `'a`: one a frame is calling, or a
 /// resolved callable's handler. Zend may change it (its flags, its run-time
@@ -190,15 +190,14 @@ pub(crate) fn deny(entry: &mut zend_class_entry, _: &mut zend_object_handlers) {
     entry.__bindgen_anon_2.create_object = Some(create_object_deny);
 }
 
-/// The arginfo of `method` in a method table (null if absent).
-pub(crate) fn arg_info(methods: Table, method: &CStr) -> *const zend_internal_arg_info {
+/// The row of `method` in a method table, with its arginfo.
+pub(crate) fn arg_info(methods: Table, method: &CStr) -> Option<&'static zend_function_entry> {
     methods
         .rows()
         .iter()
         .take_while(|entry| !entry.fname.is_null())
         // SAFETY: a `Table` row's name is a static C string; only `END`'s is null.
         .find(|entry| unsafe { CStr::from_ptr(entry.fname) } == method)
-        .map_or(ptr::null(), |entry| entry.arg_info)
 }
 
 #[cfg(test)]
@@ -223,13 +222,9 @@ mod tests {
             entry(c"clearAll", handler, &CLEAR_ALL, 0),
             END,
         ]);
-        let table = TABLE.table();
-        assert_eq!(arg_info(table, c"after"), AFTER.as_ptr(), "after's arginfo");
-        assert_eq!(
-            arg_info(table, c"clearAll"),
-            CLEAR_ALL.as_ptr(),
-            "clearAll's"
-        );
-        assert!(arg_info(table, c"list").is_null(), "a missing method");
+        let info = |method| arg_info(TABLE.table(), method).map(|row| row.arg_info);
+        assert_eq!(info(c"after"), Some(AFTER.as_ptr()), "after's arginfo");
+        assert_eq!(info(c"clearAll"), Some(CLEAR_ALL.as_ptr()), "clearAll's");
+        assert!(info(c"list").is_none(), "a missing method");
     }
 }

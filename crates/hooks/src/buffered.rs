@@ -5,17 +5,10 @@ use crate::co_io::{available, host};
 use crate::co_socket::Co;
 use crate::packet::{BufferSync, ReadBuffer};
 use crate::shutdown::READ;
+use swoole_rs_corebase::sys::ReadSlot;
 
 fn to_off(offset: usize) -> libc::off_t {
     libc::off_t::try_from(offset).unwrap_or(libc::off_t::MAX)
-}
-
-/// Copies what fits of `from` to the start of `to`; the bytes copied.
-fn copy(to: &mut [u8], from: &[u8]) -> usize {
-    to.iter_mut()
-        .zip(from)
-        .map(|(to, from)| *to = *from)
-        .count()
 }
 
 /// `recv_with_buffer` after the availability check, over the buffer `data`, which
@@ -23,17 +16,17 @@ fn copy(to: &mut [u8], from: &[u8]) -> usize {
 /// refilling it with one `recv` when it holds too few. `recv` gets the buffer's
 /// length and offset, to publish before it may yield, and the free space to read
 /// into; it returns the bytes read, 0 at EOF or -1 on error.
-fn read_buffered(
+fn read_buffered<S: ReadSlot>(
     data: &mut [u8],
     length: &mut usize,
     offset: &mut usize,
-    out: &mut [u8],
+    out: &mut [S],
     recv: impl FnOnce(usize, usize, &mut [u8]) -> isize,
 ) -> isize {
     let mut filled = (*length).min(data.len());
     let mut at = (*offset).min(filled);
     let held = filled - at;
-    let take = copy(out, data.get(at..filled).unwrap_or_default());
+    let take = S::copy_in(out, data.get(at..filled).unwrap_or_default());
     at += take;
     if out.len() <= held {
         *offset = at;
@@ -56,7 +49,7 @@ fn read_buffered(
         };
     }
     filled = (filled + received.unsigned_abs()).min(data.len());
-    let copied = copy(
+    let copied = S::copy_in(
         out.get_mut(held..).unwrap_or_default(),
         data.get(at..filled).unwrap_or_default(),
     );
@@ -66,27 +59,31 @@ fn read_buffered(
 }
 
 /// `recv_line`: bytes up to and including the first `\n` or `\r`, at most
-/// `out.len()`, one `read` (`recv_with_buffer`) of a byte at a time. -1 on error;
-/// at EOF, what was read.
-pub(crate) fn recv_line(out: &mut [u8], mut read: impl FnMut(&mut [u8]) -> isize) -> isize {
+/// `out.len()`, one `read` (`recv_with_buffer`) of a byte at a time, each copied to
+/// the next of `out`'s slots. -1 on error; at EOF, what was read.
+pub(crate) fn recv_line<S: ReadSlot>(
+    out: &mut [S],
+    mut read: impl FnMut(&mut [u8]) -> isize,
+) -> isize {
     let limit = out.len();
     let mut count = 0;
     let mut last = 0;
-    if let Some(first) = out.first_mut() {
-        *first = 0;
-    }
-    while count < limit && !matches!(out.get(count), Some(b'\n' | b'\r')) {
+    // The byte at `count`: a NUL in the first slot until a read replaces it.
+    let mut byte = [0];
+    S::copy_in(out, &byte);
+    while count < limit && !matches!(byte, [b'\n' | b'\r']) {
         if last > 0 {
             count += 1;
         }
         if count < limit {
-            last = read(out.get_mut(count..=count).unwrap_or_default());
+            last = read(&mut byte);
             if last < 0 {
                 return -1;
             }
             if last == 0 {
                 return count.cast_signed();
             }
+            S::copy_in(out.get_mut(count..).unwrap_or_default(), &byte);
         }
     }
     if count < limit {
@@ -122,7 +119,7 @@ fn buffer(socket: Co) -> Context {
 
 /// `Socket::recv_with_buffer`, including availability and lazy buffer allocation.
 /// `out` cannot overlap the socket's buffer.
-pub fn recv_buffered(socket: Co, out: &mut [u8]) -> isize {
+pub fn recv_buffered(socket: Co, out: &mut [impl ReadSlot]) -> isize {
     if !available(socket, READ) {
         return -1;
     }

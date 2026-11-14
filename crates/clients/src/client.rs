@@ -706,7 +706,7 @@ impl Handle {
 
 // The unit tests log timers instead.
 #[cfg(not(test))]
-use swoole_rs_timer::{add_fn_sec_id, del_id};
+use swoole_rs_timer::{add_fn_sec as add_fn_sec_id, del_id};
 #[cfg(test)]
 use tests::{add_fn_sec_id, del_id};
 
@@ -880,6 +880,12 @@ impl Handle {
     #[must_use]
     pub const unsafe fn new(client: *mut Client) -> Self {
         Self(client)
+    }
+
+    /// The client, borrowed while this handle is: live per [`Handle::new`].
+    #[must_use]
+    pub fn client(&self) -> &Client {
+        self.get()
     }
 
     /// `enable_ssl_encrypt()`: the new TLS context, which the caller configures

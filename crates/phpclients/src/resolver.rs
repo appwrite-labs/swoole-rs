@@ -4,7 +4,6 @@
 //! The context and the resolver list are crates/corebase's (`NameResolverContext`,
 //! `swr_v1_core_name_resolver_*`), shared with the coroutine socket's lookup; a PHP
 //! resolver's entry names its object, whose reference crates/phpcoroutines keeps.
-use crate::native::UNCONSTRUCTED;
 use crate::socket::warn;
 pub use native::swoole_name_resolver_php_remove;
 use std::{cell::UnsafeCell, ffi::c_void, mem::ManuallyDrop};
@@ -147,8 +146,7 @@ impl Custom for Held {
 fn context_of(held: Option<&Held>) -> Option<*mut NameResolverContext> {
     let context = held.map(|held| held.0.get());
     if context.is_none() {
-        // SAFETY: C++'s fatal-error report.
-        unsafe { swoole_rs_corebase::fatal_error(UNCONSTRUCTED.0, UNCONSTRUCTED.1) };
+        crate::native::unconstructed();
     }
     context
 }
@@ -198,10 +196,10 @@ fn lookup(call: &Call) {
     // SAFETY: `context_of`'s live `NameResolver::Context`, which this call borrows alone.
     let context = unsafe { &mut *context };
     let mut result = Vec::new();
+    // The lookup holds only borrows of this frame; a PHP resolver may bail out,
+    // which the trap catches.
     let lookup = || swoole_rs_hooks::resolve::name_resolver_lookup(name, context, &mut result);
-    // SAFETY: the lookup holds only borrows of this frame; a PHP resolver may bail
-    // out, which the trap catches.
-    match unsafe { bailout::trap_with(lookup) } {
+    match swoole_rs_zend::contain_with(lookup) {
         Ok(()) => call.set_zstring(ZString::new(&result)),
         Err(bailout) => bailout.defer(),
     }

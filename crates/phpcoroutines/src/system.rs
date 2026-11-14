@@ -188,7 +188,7 @@ const AF_INET: c_long = libc::AF_INET as c_long;
 
 /// `gethostbyname(string $domain, int $family = AF_INET, float $timeout = -1)`.
 fn gethostbyname(call: &Call) {
-    host::current_safe();
+    host::require_coroutine();
     let parsed = call.arity(1, 3).and_then(|()| {
         Ok((
             call.string(1, b"")?,
@@ -346,7 +346,7 @@ fn main_thread(call: &Call) -> bool {
 
 /// `swoole_coroutine_system_wait`.
 fn wait_for(call: &Call, pid: c_long, timeout: f64) {
-    host::current_safe();
+    host::require_coroutine();
     let mut status = 0;
     let pid = c_long::from(if pid < 0 {
         system_wait(&mut status, timeout)

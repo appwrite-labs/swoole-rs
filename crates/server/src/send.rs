@@ -128,7 +128,9 @@ pub fn send_parts(
 
 /// The session's verified connection and socket when a send can be written to the
 /// socket here and now: no overflow, and a socket that sends directly, without TLS and
-/// with no output buffer yet.
+/// with no output buffer yet. Inlined into each send: out of line it costs the
+/// callgrind `socket` workload about 20 instructions a request (#3908).
+#[inline(always)]
 fn writes_now(
     state: &ServerState,
     session_id: core::ffi::c_long,
@@ -321,7 +323,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
     }
     let port = serv.port_by_server_fd(conn.server_fd());
     let idle = port.map_or(0.0, |port| port.config().max_idle_time.get());
-    if idle > 0.0 && sock.read(|s| s.output.send_timer.is_null()) {
+    if idle > 0.0 && sock.read(|s| s.output.send_timer.is_none()) {
         idle_timer(serv, conn, sock, idle);
     }
     if sock.read(|s| s.events) & EVENT_WRITE == 0 {
@@ -385,12 +387,12 @@ fn send_file(sock: Socket<'_>, task: &[u8]) -> bool {
 /// `swoole_timer_add(sec2msec(port->max_idle_time), true, ...)` for the socket's
 /// sends.
 fn idle_timer(serv: Server<'_>, conn: Connection<'_>, sock: Socket<'_>, idle: f64) {
-    let node = crate::connection::idle_timer(serv, conn, idle);
+    let timer = crate::connection::idle_timer(serv, conn, idle);
     let now = steady_ms();
     sock.edit(|sock| {
         sock.timeouts.write = idle;
         sock.last_sent_time = now;
-        sock.output.send_timer = node;
+        sock.output.send_timer = timer;
     });
 }
 #[cfg(test)]

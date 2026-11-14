@@ -1,69 +1,17 @@
-//! Actual class and function alias construction, lookup and ownership.
+//! Actual class alias construction, lookup and ownership.
 use crate::{
-    Array, Value,
     bailout::Bailout,
+    host::swr_bytes_persistent,
     string,
-    sys::{self as z, HashTable, zend_class_entry, zend_internal_arg_info},
+    sys::{self as z, zend_class_entry},
 };
-use std::{
-    ffi::{CStr, c_char, c_int},
-    ptr,
-};
+use std::{ffi::c_int, io::IoSlice, ptr};
 
 /// Zend's `SUCCESS` `zend_result`.
-const SUCCESS: c_int = 0;
+pub(crate) const SUCCESS: c_int = 0;
 
-fn leaf(code: c_int) -> Result<(), Bailout> {
+pub(crate) fn leaf(code: c_int) -> Result<(), Bailout> {
     if code == 0 { Ok(()) } else { Err(Bailout) }
-}
-
-/// Register `alias` in `target` using the internal function `origin` of
-/// `source`: its real handler and argument count, with `info`. Lookup
-/// lowercases `origin`'s ASCII bytes. Whether Zend registered it: false when
-/// `source` has no such function or the registration failed.
-/// # Errors
-/// Returns a contained PHP registration bailout.
-/// # Safety
-/// Both tables are live function tables for this call, `source`'s `origin` is
-/// an internal function, and `info` is persistent argument metadata for it.
-pub unsafe fn function_alias(
-    source: *mut HashTable,
-    origin: &CStr,
-    target: *mut HashTable,
-    alias: &CStr,
-    info: *const zend_internal_arg_info,
-) -> Result<bool, Bailout> {
-    let lower = origin.to_bytes().to_ascii_lowercase();
-    // SAFETY: per the caller, a live function table, borrowed for the lookup
-    // only: nothing is registered until the borrow ended. `Array` is a
-    // transparent table.
-    let functions = unsafe { source.cast::<Array>().as_ref() };
-    let found = functions.and_then(|functions| functions.find(&lower));
-    let Some(function) = found.and_then(Value::pointer) else {
-        return Ok(false);
-    };
-    // The source table owns this live function, which remains live and
-    // unchanged throughout this registration; per the caller it is internal.
-    let function = crate::Function(function.cast(), std::marker::PhantomData);
-    let (kind, args) = (function.kind(), function.num_args());
-    let handler = function.internal_handler().flatten();
-    let mut entries = crate::zeroed::<[z::zend_function_entry; 2]>();
-    entries[0].fname = alias.as_ptr();
-    entries[0].handler = handler;
-    entries[0].arg_info = info;
-    entries[0].num_args = args;
-    let mut result = -1;
-    // SAFETY: Zend borrows this complete terminated table and the NUL-terminated
-    // name while it copies the registered metadata, inside the contained leaf.
-    leaf(unsafe {
-        z::swr_zend_try_facade_register_functions(
-            entries.as_ptr(),
-            target,
-            c_int::from(kind),
-            &raw mut result,
-        )
-    })?;
-    Ok(result == SUCCESS)
 }
 
 /// Build the lowercase persistent interned class alias and register its real CE:
@@ -73,37 +21,34 @@ pub unsafe fn function_alias(
 /// # Errors
 /// Returns a contained PHP interning or registration bailout.
 /// # Safety
-/// `name` is readable for `length` bytes, and `entry` is a live persistent CE.
+/// MINIT, on its thread, and `entry` is a registered (persistent) class.
 pub unsafe fn class_alias(
-    name: *const c_char,
-    length: usize,
+    name: &[u8],
     entry: *mut zend_class_entry,
     sdk_prefix: bool,
 ) -> Result<bool, Bailout> {
-    // SAFETY: the source is live; PHP allocates the persistent owned name.
-    let alias = unsafe { z::swr_zend_string_persistent(name, length) };
-    // SAFETY: this persistent string is newly allocated and unshared.
-    let bytes = unsafe { std::slice::from_raw_parts_mut(string::val(alias), length) };
-    if sdk_prefix && bytes.first() == Some(&b'\\') {
-        bytes.copy_within(1.., 0);
-        if let Some(last) = bytes.last_mut() {
+    let mut alias = name.to_vec();
+    if sdk_prefix && alias.first() == Some(&b'\\') {
+        alias.copy_within(1.., 0);
+        if let Some(last) = alias.last_mut() {
             *last = 0;
         }
     }
-    bytes.make_ascii_lowercase();
+    alias.make_ascii_lowercase();
+    let alias = swr_bytes_persistent(IoSlice::new(&alias));
     let mut interned = ptr::null_mut();
-    // SAFETY: Zend consumes or interns the persistent string, as its native API
-    // does; the successful result belongs to the process intern pool.
+    // SAFETY: Zend consumes or interns the new persistent string, as its native
+    // API does; the successful result belongs to the process intern pool.
     leaf(unsafe { z::swr_zend_try_facade_intern(alias, &raw mut interned) })?;
     // Interning returns `alias` or the pool's string of the same bytes: either
-    // way `length` of them.
+    // way `name.len()` of them.
     let mut result = -1;
     // SAFETY: the interned binary name and registered CE remain process-lived;
     // Zend copies the alias registration inside the contained leaf.
     leaf(unsafe {
         z::swr_zend_try_facade_class_alias(
             string::val(interned).cast(),
-            length,
+            name.len(),
             entry,
             &raw mut result,
         )

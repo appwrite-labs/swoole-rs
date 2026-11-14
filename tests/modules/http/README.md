@@ -138,7 +138,7 @@ frames and expected values; its HTTP/2 frame is the bytes `http2::init_settings`
 `http2::pack_setting_frame` write, as a constant (crates/http2's tests cover that function).
 
 The HTTP/1 TESTs that start a server are `server/src/http1.rs`, in the same binary and
-phase: `swr_v1_server_new`/`_delete` (crates/server/src/server_object.rs)
+phase: `SharedServer::new` and its drop (crates/server/src/server_object.rs)
 make and delete the `Server`, and the cases set its configuration, callback slots,
 tables, port configuration and static-handler sets through the Rust records
 whose pointers head the `Server` and its `ListenPort`s, whose layouts each new server checks against
@@ -278,7 +278,7 @@ crates/ports' `methods::tests::server_protocols` (tests/modules/ports/README.md)
 | `command_1`, `command_2` | same names | `add_command` and `command` are crates/server's `swr_v1_server_add_command` and `swr_v1_server_command` |
 | `abnormal_pipeline_data` | same name | `send_fn` writes its datagram to worker 0's `pipe_master` (from `view::Server::worker(0)`), retrying while the pipe is full, as `send_sync` does |
 | `base_event_worker_pool_cleanup` | same name | the pool's `map_` (pid to worker) is its `registry` in crates/process |
-| `abort_worker`, `reactor_thread_pipe_writable`, `send_timeout` | same names | `get_session(i)` reads the shared session list; `move_packet()` is `view::Server::move_worker_packet`; `conn->socket->recv_timer` is the socket record's, at the offset swoole_rs_socket.h asserts; `abort_worker`'s c2 waits (up to 10 s) for the third `onWorkerStart`, the replacement's, because the manager retires the dead worker's sessions only after reaping it, so upstream's c2 can reach `onReceive` first (arm64 timing, #2834) |
+| `abort_worker`, `reactor_thread_pipe_writable`, `send_timeout` | same names | `get_session(i)` reads the shared session list; `move_packet()` is `view::Server::move_worker_packet`; `conn->socket->recv_timer` is the socket record's, at the offset swoole_rs_socket.h asserts, a timer held by id that `swoole_timer_del` becomes `del_id` of; `abort_worker`'s c2 waits (up to 10 s) for the third `onWorkerStart`, the replacement's, because the manager retires the dead worker's sessions only after reaping it, so upstream's c2 can reach `onReceive` first (arm64 timing, #2834) |
 | `heartbeat_check_1` .. `heartbeat_check_4`, `close_1` .. `close_8`, `eof_check` | same names | the `AsyncClient` is a blocking client in a thread of the process whose reactor upstream's ran in, with the same callbacks in order (`connected`, `on_connect` or `on_error`, `on_receive` per read, `on_close`); its `flags` are shared counters, since the server's callbacks may run in a worker |
 
 The MODE_THREAD TESTs (`max_request_2`, `heartbeat_check_3`, `close_3`, `close_7`,

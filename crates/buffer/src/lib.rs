@@ -348,7 +348,6 @@ mod tests {
     static ALLOCATOR: FailAllocator = FailAllocator;
 
     pub(super) struct Owned(pub(super) *mut Buffer);
-    unsafe extern "C" fn keep(_: *mut c_void) {}
     impl Owned {
         pub(super) fn new(size: u32) -> Self {
             Self(Box::into_raw(Buffer::create(size).unwrap()))
@@ -360,8 +359,10 @@ mod tests {
         fn queue(&self) -> &mut Buffer {
             unsafe { &mut *self.0 }
         }
-        pub(super) fn push(&self, token: *mut c_void) -> Result<(), Error> {
-            unsafe { self.queue().push(EntryKind::Sendfile, token, Some(keep)) }
+        /// Queues `request` as a sendfile request: its address, and the status.
+        pub(super) fn push(&self, request: Box<u32>) -> (*mut c_void, Result<(), Error>) {
+            let token = ptr::from_ref(&*request).cast_mut().cast();
+            (token, self.queue().push_file(request))
         }
         pub(super) fn appendv(&self, parts: &[&[u8]], offset: u64) -> Result<(), Error> {
             self.queue().appendv(parts.iter().copied(), offset)
@@ -532,10 +533,9 @@ mod tests {
     #[test]
     fn native_tokens_preserve_order_and_block_release() {
         let buffer = Owned::new(4);
-        let mut value = 42u32;
-        let token = ptr::from_mut(&mut value).cast();
         assert_eq!(buffer.append(b"abcdef"), Ok(()));
-        assert_eq!(buffer.push(token), Ok(()));
+        let (token, status) = buffer.push(Box::new(42));
+        assert_eq!(status, Ok(()));
         assert_eq!(buffer.append(b"g"), Ok(()));
         let kept = Box::into_raw(unsafe { Box::from_raw(buffer.0) }.release().unwrap_err());
         assert_eq!(kept, buffer.0);
@@ -559,7 +559,6 @@ mod tests {
         assert_eq!(buffer.appendv(&[], 1), Err(Error::Invalid));
         assert_eq!(buffer.appendv(&[], 0), Ok(()));
         assert_eq!(buffer.append(&[]), Ok(()));
-        assert_eq!(buffer.push(ptr::null_mut()), Err(Error::Invalid));
         assert_eq!(buffer.stats(), (3, 1));
         buffer.pop();
         assert_eq!(buffer.queue().front().err(), Some(Error::Empty));
@@ -667,9 +666,8 @@ mod tests {
             }
             buffer.pop();
             buffer.pop();
-            let mut native = 7u32;
-            let token = ptr::from_mut(&mut native).cast();
-            assert_eq!(buffer.push(token), Ok(()));
+            let (token, status) = buffer.push(Box::new(7));
+            assert_eq!(status, Ok(()));
             assert_eq!(buffer.append(b"old"), Ok(()));
             assert!(!unsafe { &*buffer.0 }.entries.as_slices().1.is_empty());
             // Keep the cold-allocation sweep visiting every payload allocation;
@@ -709,9 +707,9 @@ mod tests {
             assert_eq!(returned, 1);
         }
         let empty = Owned::new(4);
-        let mut native = 7;
+        let request = Box::new(7);
         FAIL_AFTER.set(Some(0));
-        let status = empty.push(ptr::from_mut(&mut native).cast());
+        let (_, status) = empty.push(request);
         FAIL_AFTER.set(None);
         assert_eq!(status, Err(Error::NoMem));
         assert_eq!(empty.stats(), (0, 0));

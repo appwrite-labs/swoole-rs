@@ -4,9 +4,8 @@
 use crate::host::{self, Co};
 use std::{
     cell::{Cell, UnsafeCell},
-    ffi::{c_int, c_void},
+    ffi::c_int,
     mem::{self, ManuallyDrop},
-    ptr,
     rc::Rc,
 };
 pub use swoole_rs_coroutine::chan::Stats;
@@ -65,7 +64,7 @@ impl<T> Channel<T> {
 
 /// A channel's queue. The operations that may wait take the handle, so that
 /// no drop is pending in the caller's frame across a wait.
-pub struct Queue<T>(Rc<UnsafeCell<chan::Channel<T>>>);
+pub struct Queue<T>(Rc<UnsafeCell<chan::Channel<T, Co>>>);
 
 impl<T> Clone for Queue<T> {
     fn clone(&self) -> Self {
@@ -109,10 +108,7 @@ impl<T> Queue<T> {
     /// `Channel::close`: wakes every waiter; false if closed already.
     #[must_use]
     pub fn close(self) -> bool {
-        let mut php = Php {
-            co: ptr::null_mut(),
-            timeout: 0.0,
-        };
+        let mut php = Closing;
         let queue = ManuallyDrop::new(self);
         let closed = chan::close(&queue.0, &mut php);
         drop(ManuallyDrop::into_inner(queue));
@@ -132,22 +128,24 @@ impl<T> Queue<T> {
     }
 }
 
-/// PHP's coroutines for one operation; `co` is null for close.
+/// PHP's coroutines for one push or pop, from the running coroutine.
 struct Php {
     co: Co,
     timeout: f64,
 }
+
+/// PHP's coroutines for a close, which only resumes waiters.
+struct Closing;
 
 impl Php {
     /// The running coroutine, or Swoole's fatal error (deferred) outside one,
     /// where upstream's `Coroutine::get_current_safe()` raises it.
     #[inline]
     fn current(timeout: f64) -> Option<Self> {
-        let co = host::current();
-        if co.is_null() {
+        let Some(co) = host::current() else {
             out_of_coroutine();
             return None;
-        }
+        };
         Some(Self { co, timeout })
     }
 }
@@ -161,7 +159,9 @@ fn out_of_coroutine() {
 }
 
 impl Effects for Php {
-    fn current(&self) -> *mut c_void {
+    type Waiter = Co;
+
+    fn current(&self) -> Co {
         self.co
     }
 
@@ -175,7 +175,23 @@ impl Effects for Php {
         }
     }
 
-    fn resume(&mut self, waiter: *mut c_void) {
+    fn resume(&mut self, waiter: Co) {
+        host::resume(waiter);
+    }
+}
+
+impl Effects for Closing {
+    type Waiter = Co;
+
+    fn current(&self) -> Co {
+        swoole_rs_corebase::fatal("a channel close never waits")
+    }
+
+    fn wait(&mut self) -> u32 {
+        swoole_rs_corebase::fatal("a channel close never waits")
+    }
+
+    fn resume(&mut self, waiter: Co) {
         host::resume(waiter);
     }
 }

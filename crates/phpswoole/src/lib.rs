@@ -44,7 +44,7 @@ pub use functions::{mime_type, zif_swoole_last_error};
 pub use implicit::sw_php_exit;
 pub use info::swr_v1_phpswoole_minfo;
 pub use interfaces::sys_warning;
-pub use memory::{sw_zend_string_allocator, zend_string_allocator};
+pub use memory::{sw_zend_string_allocator, zend_string_allocator, zend_string_buffers};
 pub use module::{
     CALL_USER_SHUTDOWNFUNC_BEGIN, Families, Globals, Hook, Http, HttpMinit, Minit, MinitArgs,
     ProcessSteps, RSHUTDOWN_BEGIN, RSHUTDOWN_END, RuntimeSteps, codecs, display_errors,
@@ -119,9 +119,7 @@ pub fn swoole_fatal_error(
     swoole_rs_zend::bailout::outcome(())?;
     // SAFETY: as upstream raises it; the bailout jumps over this closure only,
     // which holds a number and a borrow.
-    let fatal = || unsafe { swoole_rs_corebase::fatal_error(code, message) };
-    // SAFETY: the body owns nothing that needs a drop, and nor does what it calls.
-    unsafe { swoole_rs_zend::bailout::trap_with(fatal) }
+    swoole_rs_zend::contain_with(|| unsafe { swoole_rs_corebase::fatal_error(code, message) })
 }
 
 /// `PHP_MINIT_FUNCTION(swoole)`: the module globals and ini entries, the
@@ -208,19 +206,16 @@ pub fn in_coroutine() -> bool {
 }
 
 /// `Coroutine::get_current_safe()`: Swoole's fatal error outside a coroutine,
-/// which exits or bails out across the caller's frames.
-pub fn coroutine_check() {
+/// which exits, or ends this PHP thread with the bailout this returns.
+/// # Errors
+/// The fatal error's bailout.
+pub fn coroutine_check() -> Result<(), swoole_rs_zend::bailout::Bailout> {
     /// `SW_ERROR_CO_OUT_OF_COROUTINE`.
     const OUT_OF_COROUTINE: c_int = 10001;
-    if !in_coroutine() {
-        // SAFETY: as upstream raises it here; the callers' frames own nothing.
-        unsafe {
-            swoole_rs_corebase::fatal_error(
-                OUT_OF_COROUTINE,
-                c"API must be called in the coroutine",
-            );
-        }
+    if in_coroutine() {
+        return Ok(());
     }
+    swoole_fatal_error(OUT_OF_COROUTINE, c"API must be called in the coroutine")
 }
 
 /// `sw_module_number()`: the number Zend gave the module at MINIT.

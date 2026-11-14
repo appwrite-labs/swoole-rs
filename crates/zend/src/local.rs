@@ -90,10 +90,20 @@ impl<'a> Php<'a> {
     }
 
     /// `zend::get_function(CG(function_table), name)`: the function this
-    /// thread's compiler knows as `name` (lower case), or null.
+    /// thread's compiler knows as `name` (lower case), which the table keeps
+    /// while this thread runs PHP.
     #[must_use]
-    pub fn compiled_function(self, name: &std::ffi::CStr) -> *mut sys::zend_function {
-        swr_zend_compiled_function_find(name.into())
+    pub fn compiled_function(self, name: &std::ffi::CStr) -> Option<crate::Function<'a>> {
+        let function = swr_zend_compiled_function_find(name.into());
+        (!function.is_null()).then_some(crate::Function(function, PhantomData))
+    }
+
+    /// `zend_hash_str_find_ptr(EG(function_table), name)`: a function the
+    /// request can call, which the table keeps for the request.
+    #[must_use]
+    pub fn function(self, name: &[u8]) -> Option<crate::Function<'a>> {
+        let function = self.function_table().find(name)?.pointer()?;
+        Some(crate::Function(function.cast(), PhantomData))
     }
 
     /// `EG(objects_store).top`: one past the highest object handle in use.

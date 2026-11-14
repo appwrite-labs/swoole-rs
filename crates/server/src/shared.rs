@@ -155,17 +155,10 @@ pub(crate) fn count_send(state: &crate::ServerState, session_id: i64, len: u32) 
 }
 
 /// Initializes a new shared allocation's server counter prefix, and returns it.
-///
-/// # Safety
-/// `storage` is fresh writable storage with `ServerCounters` size/alignment and no
-/// readers, mapped for as long as the returned counters are used.
 #[must_use]
-pub unsafe fn swr_v1_server_shared_init(
-    storage: *mut core::ffi::c_void,
+pub fn swr_v1_server_shared_init(
+    counters: &'static mut core::mem::MaybeUninit<ServerCounters>,
 ) -> &'static ServerCounters {
-    // SAFETY: per the caller, fresh storage of the right size and alignment that
-    // nothing else reads yet, mapped for as long as the counters are used.
-    let counters = unsafe { &mut *storage.cast::<core::mem::MaybeUninit<ServerCounters>>() };
     let value = ServerCounters::default();
     value
         .pipe_packet_msg_id
@@ -188,7 +181,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
     fn a_send_counts_on_the_server_and_its_sessions_port() {
-        use crate::port_config::{swr_v1_port_config_free, swr_v1_port_config_new};
+        use crate::port_config::swr_v1_port_config_new;
         use crate::records::{ConnectionRecord, SessionRecord};
         let mut gs = swoole_rs_memory::members::Shm::calloc(1, size_of::<ServerCounters>());
         let counters = gs.as_ptr().cast::<ServerCounters>();
@@ -242,7 +235,7 @@ mod tests {
         unsafe {
             (*(*state).config()).gs.free();
             free_state(state);
-            swr_v1_port_config_free(config);
+            drop(Box::from_raw(config));
         }
     }
 
@@ -253,7 +246,7 @@ mod tests {
             let gs = swoole_rs_memory::members::Shm::calloc(1, 4096);
             let mapping = gs.as_ptr();
             assert!(!mapping.is_null());
-            let counters = swr_v1_server_shared_init(mapping);
+            let counters = swr_v1_server_shared_init(&mut *mapping.cast());
             assert_eq!(counters.max_concurrency.load(Relaxed), u32::MAX);
             assert_eq!(counters.pipe_packet_msg_id.load(Ordering::Relaxed), 1);
             counters.concurrency.store(7, Ordering::Relaxed);

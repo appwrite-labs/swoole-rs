@@ -1,8 +1,8 @@
 //! The HTTP/1 TESTs that start a server (`get` .. `http_range2`, and `fail`), one Rust
 //! function per TEST with the same inputs and expected values.
 //!
-//! The `Server` is made and deleted by
-//! `swr_v1_server_new`/`swr_v1_server_delete` (crates/server/src/server_object.rs), and
+//! The `Server` is a `SharedServer` (crates/server/src/server_object.rs) held in `SHARES`
+//! until `delete` drops it, and
 //! its configuration, callback slots, tables and static-handler sets are the Rust records
 //! whose pointers head the object (crates/server/src/state.rs), as the
 //! `swr_v1_port_config` is a `ListenPort`. Each new server
@@ -26,7 +26,9 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_server::callbacks::CallbackKind as Slot;
-use swoole_rs_server::{ConnectionRecord, ServerText, StaticCollection, server_methods, view};
+use swoole_rs_server::{
+    ConnectionRecord, ServerText, SharedServer, StaticCollection, server_methods, view,
+};
 
 use crate::client::{Client, USER_AGENT};
 
@@ -528,8 +530,6 @@ unsafe extern "C-unwind" {
     fn swoole_signal_block_all();
     fn swr_v1_core_last_error() -> c_int;
 
-    fn swr_v1_server_new(mode: c_int) -> *mut c_void;
-    fn swr_v1_server_delete(serv: *mut c_void);
     fn swr_v1_server_connection(state: *const c_void, key: c_long, kind: u32) -> *mut Connection;
 }
 
@@ -583,7 +583,7 @@ impl Port {
     /// The crates' view of this port's settings.
     pub(super) fn settings(self) -> &'static mut swoole_rs_server::port_config::PortConfig {
         // SAFETY: a live port, whose settings the cases set from one thread.
-        unsafe { swoole_rs_server::port_config::of(self.0) }
+        unsafe { &mut *self.0.cast::<swoole_rs_server::port_config::PortConfig>() }
     }
 }
 
@@ -618,14 +618,20 @@ impl Server {
             align_of::<PortConfig>(),
             PORT_OFFSETS,
         );
-        // SAFETY: a valid mode.
-        Self(unsafe { swr_v1_server_new(mode) })
+        let share = SharedServer::new(mode);
+        let serv = Self(share.view().raw());
+        SHARES.lock().unwrap().push(share);
+        serv
     }
 
     /// `delete serv`, or the end of a stack `Server`'s scope.
     fn delete(self) {
-        // SAFETY: made by swr_v1_server_new, deleted once.
-        unsafe { swr_v1_server_delete(self.0) };
+        let share = {
+            let mut shares = SHARES.lock().unwrap();
+            let at = shares.iter().position(|share| share.view().raw() == self.0);
+            at.map(|at| shares.swap_remove(at))
+        };
+        drop(share);
     }
 
     fn head(self) -> &'static Head {
@@ -852,6 +858,9 @@ fn read_text(path: &str) -> Option<String> {
 }
 
 /// `test::counter_*`'s counter 0, and whether a server-side expectation failed.
+/// The shares that keep each live `Server` alive until its `delete`.
+static SHARES: Mutex<Vec<SharedServer>> = Mutex::new(Vec::new());
+
 static COUNTER: AtomicI32 = AtomicI32::new(0);
 static FAILED: AtomicBool = AtomicBool::new(false);
 

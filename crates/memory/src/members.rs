@@ -453,16 +453,19 @@ pub mod pool {
         POOL.memory_size()
     }
 
-    /// An atomic that is valid zeroed and needs no more than the pool's alignment.
+    /// An atomic that is valid zeroed and needs no more than the pool's alignment:
+    /// a process-shared mutex's storage is such words, zeroed until `init`.
     pub trait Word: sealed::Sealed {}
     impl Word for AtomicU32 {}
     impl Word for AtomicI64 {}
     impl Word for AtomicU64 {}
+    impl Word for swoole_rs_locks::SharedMutex {}
     mod sealed {
         pub trait Sealed {}
         impl Sealed for std::sync::atomic::AtomicU32 {}
         impl Sealed for std::sync::atomic::AtomicI64 {}
         impl Sealed for std::sync::atomic::AtomicU64 {}
+        impl Sealed for swoole_rs_locks::SharedMutex {}
     }
 
     /// A block of `size` bytes from [`alloc`], for the process's life, or null. The pool

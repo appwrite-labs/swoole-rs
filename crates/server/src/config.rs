@@ -234,9 +234,9 @@ pub struct ServerConfig {
     pub timezone_: libc::c_long,
     /// Armed and deleted by the master (or a base-mode worker) after its threads
     /// start, so an atomic; only that thread uses the node.
-    pub master_timer: AtomicPtr<c_void>,
+    pub master_timer: swoole_rs_corebase::timer_key::AtomicHeld,
     /// Armed by the heartbeat thread (or a single-threaded reactor), as `master_timer`.
-    pub heartbeat_timer: AtomicPtr<c_void>,
+    pub heartbeat_timer: swoole_rs_corebase::timer_key::AtomicHeld,
     pub output_buffer_size: Setting<u32>,
     pub input_buffer_size: Setting<u32>,
     pub max_queued_bytes: Setting<u32>,
@@ -424,8 +424,8 @@ impl Default for ServerConfig {
             heartbeat_check_interval: Setting::new(0),
             warning_time: AtomicI64::new(0),
             timezone_: 0,
-            master_timer: AtomicPtr::new(core::ptr::null_mut()),
-            heartbeat_timer: AtomicPtr::new(core::ptr::null_mut()),
+            master_timer: swoole_rs_corebase::timer_key::AtomicHeld::new(),
+            heartbeat_timer: swoole_rs_corebase::timer_key::AtomicHeld::new(),
             output_buffer_size: Setting::new(u32::MAX),
             input_buffer_size: Setting::new(2 * 1024 * 1024),
             max_queued_bytes: Setting::new(0),
@@ -556,7 +556,7 @@ mod tests {
             assert_eq!((*ports[1]).object_id, 2);
             free_state(state);
             for port in ports {
-                crate::port_config::swr_v1_port_config_free(port);
+                drop(Box::from_raw(port));
             }
         }
     }
