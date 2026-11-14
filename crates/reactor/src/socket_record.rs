@@ -440,7 +440,7 @@ impl SocketFields {
     /// (from getsockname(2), as upstream), then the descriptor closed. False when
     /// close(2) failed, with errno set.
     pub fn release(&mut self) -> bool {
-        if self.is_local() && self.bound && self.get_name() == 0 {
+        if self.is_local() && self.bound && self.get_name() {
             let path = self.info.addr.unix().sun_path;
             // c_char is i8 or u8 by target; its one byte either way.
             let path = path.map(|byte| byte.to_ne_bytes()[0]);

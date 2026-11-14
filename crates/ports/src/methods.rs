@@ -102,7 +102,7 @@ pub(crate) fn listen(config: &PortConfig) -> c_int {
         return -1;
     };
     let backlog = c_int::from(config.backlog.get());
-    if !config.listening.get() && socket.edit(|s| s.listen(backlog)) < 0 {
+    if !config.listening.get() && !socket.edit(|s| s.listen(backlog)) {
         log::sys_warning(
             c"ListenPort::listen",
             format_args!(
@@ -224,7 +224,7 @@ pub(crate) fn create_socket(config: &PortConfig) -> c_int {
             format_args!("setsockopt({fd}, SO_REUSEADDR) failed"),
         );
     }
-    if socket.edit(|s| s.bind(&address)) < 0 || socket.edit(SocketFields::get_name) < 0 {
+    if !socket.edit(|s| s.bind(&address)) || !socket.edit(SocketFields::get_name) {
         return fail();
     }
     let info = socket.read(|s| s.info);

@@ -157,7 +157,7 @@ fn length_check(cli: Cli, on: bool, mqtt: bool) {
 fn bind(cli: Cli, address: &[u8], port: i64) -> bool {
     #[expect(clippy::cast_possible_truncation, reason = "clamped to a port")]
     let port = port as c_int;
-    cli.handle().bind(&crate::native::c_text(address), port) >= 0
+    cli.handle().bind(&crate::native::c_text(address), port)
 }
 
 /// `php_swoole_client_check_setting(cli, settings)`: false on an invalid

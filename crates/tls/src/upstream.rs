@@ -1149,7 +1149,7 @@ pub unsafe extern "C-unwind" fn socket_free(socket: *mut SocketRecord) {
 
 /// `Socket::bind(host, port)`: the address resolved without DNS, the last error set
 /// when it is invalid.
-fn bind_host(socket: Socket<'_>, host: &CStr, port: c_int) -> c_int {
+fn bind_host(socket: Socket<'_>, host: &CStr, port: c_int) -> bool {
     let kind = socket.read(|record| record.socket_type);
     let mut address = SocketAddress::default();
     let text = host.to_bytes();
@@ -1175,7 +1175,7 @@ fn bind_host(socket: Socket<'_>, host: &CStr, port: c_int) -> c_int {
     });
     if error != 0 {
         log::set_last_error(error);
-        return -1;
+        return false;
     }
     socket.edit(|record| record.bind(&address))
 }
@@ -1219,19 +1219,19 @@ pub extern "C-unwind" fn make_server_socket(
     let address = address.get();
     let host = address.to_string_lossy();
     // Bound, listening when a stream, and named; else the warning for what failed.
-    let served = if bind_host(record, address, port) < 0 {
+    let served = if !bind_host(record, address, port) {
         log::sys_warning(
             ORIGIN,
             format_args!("bind({fd}, {host}:{port}, {backlog}) failed"),
         );
         false
-    } else if type_is(kind, CLASS_STREAM) && record.edit(|record| record.listen(backlog)) < 0 {
+    } else if type_is(kind, CLASS_STREAM) && !record.edit(|record| record.listen(backlog)) {
         log::sys_warning(
             ORIGIN,
             format_args!("listen({fd}, {host}:{port}, {backlog}) failed"),
         );
         false
-    } else if record.edit(SocketFields::get_name) < 0 {
+    } else if !record.edit(SocketFields::get_name) {
         log::sys_warning(ORIGIN, format_args!("getsockname({fd}) failed"));
         false
     } else {
