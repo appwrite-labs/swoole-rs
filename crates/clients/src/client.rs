@@ -1261,8 +1261,9 @@ fn ssl_verify(this: Handle, allow_self_signed: bool) -> c_int {
 }
 
 /// `Client_inet_addr`: the first call routes through the proxies and records the
-/// server; every call assigns `server_addr`, or waits for DNS.
-fn inet_addr(this: Handle, host: &CStr, port: c_int) -> c_int {
+/// server; every call assigns `server_addr`, or waits for DNS. False when the
+/// address does not assign and no DNS wait covers it.
+fn inet_addr(this: Handle, host: &CStr, port: c_int) -> bool {
     let (mut host, mut port) = (host, port);
     // The last proxy's host, NUL-terminated, which `host` borrows.
     let mut proxy_host;
@@ -1283,14 +1284,14 @@ fn inet_addr(this: Handle, host: &CStr, port: c_int) -> c_int {
         this.set(Flag::HostPreset, true);
     }
     let resolve = !this.flag(Flag::Async);
-    if !ops::assign(this, host, port, resolve) {
-        if !this.flag(Flag::DnsCompleted) && log::last_error() == ERROR_BAD_HOST_ADDR {
-            this.set(Flag::WaitDns, true);
-        } else {
-            return ERR;
-        }
+    if ops::assign(this, host, port, resolve) {
+        return true;
     }
-    OK
+    let wait = !this.flag(Flag::DnsCompleted) && log::last_error() == ERROR_BAD_HOST_ADDR;
+    if wait {
+        this.set(Flag::WaitDns, true);
+    }
+    wait
 }
 
 /// Dispatches a `GethostbynameRequest` for the server host to the async pool,
@@ -1361,7 +1362,7 @@ fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblo
     if timeout > 0.0 {
         ops::kernel_timeout(this, timeout);
     }
-    if inet_addr(this, host, port) < 0 {
+    if !inet_addr(this, host, port) {
         return ERR;
     }
     if nonblock {
@@ -1445,7 +1446,7 @@ fn tcp_connect_async(this: Handle, host: &CStr, port: c_int, timeout: f64) -> c_
             .c_cast::<u32>();
         this.get().high_watermark.set(mark);
     }
-    if inet_addr(this, host, port) < 0 {
+    if !inet_addr(this, host, port) {
         return ERR;
     }
     if this.flag(Flag::WaitDns) {
@@ -1490,7 +1491,7 @@ fn udp_connect(this: Handle, host: &CStr, port: c_int, timeout: f64, udp_connect
         ops::kernel_timeout(this, timeout);
     }
     this.get().sock_flags.set(udp_connect);
-    if inet_addr(this, host, port) < 0 {
+    if !inet_addr(this, host, port) {
         return ERR;
     }
     if is_async && !this.has(ClientEvent::Receive) {
@@ -1518,7 +1519,7 @@ fn udp_connect(this: Handle, host: &CStr, port: c_int, timeout: f64, udp_connect
     if timeout > 0.0 {
         this.set_timeout(timeout);
     }
-    if this.socket_type() == SOCK_UNIX_DGRAM && bind_unix(this) < 0 {
+    if this.socket_type() == SOCK_UNIX_DGRAM && !bind_unix(this) {
         return ERR;
     }
     let mut udp_connect = udp_connect;
@@ -1552,13 +1553,14 @@ fn udp_connect(this: Handle, host: &CStr, port: c_int, timeout: f64, udp_connect
 }
 
 /// Binds a Unix datagram client to `/tmp/swoole-client.<pid>.<fd>.sock`, its
-/// address kept in the socket's `info` for the unlink on close; warns on failure.
-fn bind_unix(this: Handle) -> c_int {
+/// address kept in the socket's `info` for the unlink on close; false, with a
+/// warning, when the bind fails.
+fn bind_unix(this: Handle) -> bool {
     let socket = this.socket();
     let pid = std::process::id();
     let path = format!("/tmp/swoole-client.{pid}.{}.sock", socket.fd());
     let bound = std::ffi::CString::new(path.as_str()).unwrap_or_default();
-    let ret = socket.edit(|socket| {
+    let bound_ok = socket.edit(|socket| {
         let address = socket.info.addr.unix_mut();
         for (slot, byte) in address.sun_path.iter_mut().zip(path.bytes().chain([0])) {
             *slot = c_char::from_ne_bytes([byte]);
@@ -1573,10 +1575,10 @@ fn bind_unix(this: Handle) -> c_int {
         local.len = swoole_rs_corebase::sys::socklen::<libc::sockaddr_un>();
         local.bind(socket.fd)
     });
-    if ret < 0 {
+    if !bound_ok {
         log::sys_warning(c"Client_udp_connect", format_args!("bind({path}) failed"));
     }
-    ret
+    bound_ok
 }
 
 /// The socket record operations: crates/reactor's, which the unit tests replace
@@ -1648,10 +1650,10 @@ mod ops {
         }
     }
 
-    /// `getsockopt(SOL_SOCKET, SO_ERROR)` into `error`.
-    pub(super) fn socket_error(this: Handle, error: &mut c_int) -> c_int {
+    /// `getsockopt(SOL_SOCKET, SO_ERROR)` into `error`: whether it succeeded.
+    pub(super) fn socket_error(this: Handle, error: &mut c_int) -> bool {
         let fd = this.socket().fd();
-        swoole_rs_corebase::sys::getsockopt_int(fd, libc::SOL_SOCKET, libc::SO_ERROR, error)
+        swoole_rs_corebase::sys::getsockopt_int(fd, libc::SOL_SOCKET, libc::SO_ERROR, error) == 0
     }
 }
 
@@ -1943,9 +1945,9 @@ fn on_write(this: Handle, reactor: Running<'_>, event: &mut Event) -> c_int {
         return OK;
     }
     let mut error = 0;
-    let ret = ops::socket_error(this, &mut error);
+    let read = ops::socket_error(this, &mut error);
     log::set_last_error(error);
-    if ret < 0 {
+    if !read {
         let fd = this.socket().fd();
         log::sys_warning(c"Client_onWrite", format_args!("getsockopt({fd}) failed"));
         return ERR;

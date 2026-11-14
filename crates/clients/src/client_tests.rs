@@ -87,9 +87,9 @@ pub(super) mod ops {
         log(format!("event {op:?} {events}"));
         OK
     }
-    pub(in super::super) fn socket_error(_: Handle, error: &mut c_int) -> c_int {
+    pub(in super::super) fn socket_error(_: Handle, error: &mut c_int) -> bool {
         *error = mock(|m| m.socket_error);
-        OK
+        true
     }
 }
 
