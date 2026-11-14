@@ -649,11 +649,11 @@ impl PoolNative for Native {
     fn pipe_wait(&self, c: &mut PoolCall) {
         io(c, |c| {
             let next = swoole_timer_get_next_msec();
-            c.worker()
+            let ready = c
+                .worker()
                 .and_then(|worker| worker_pipe(worker, false))
-                .map_or(-1, |pipe| {
-                    pipe.wait_event(next.c_cast::<c_int>(), EVENT_READ) as isize
-                })
+                .is_some_and(|pipe| pipe.wait_event(next.c_cast::<c_int>(), EVENT_READ));
+            if ready { 0 } else { -1 }
         });
     }
 

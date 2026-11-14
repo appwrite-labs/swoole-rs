@@ -340,7 +340,7 @@ pub fn finish(
             },
             || {
                 pipe.master_end()
-                    .is_some_and(|socket| socket.wait_event(-1, EVENT_WRITE) == 0)
+                    .is_some_and(|socket| socket.wait_event(-1, EVENT_WRITE))
             },
         )
     };
