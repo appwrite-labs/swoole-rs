@@ -2,7 +2,7 @@
 //! when dropped. A scope borrows its socket and never owns or destroys it; the
 //! socket outlives the scope.
 use crate::co_socket::{Co, Protocol};
-use core::ffi::c_int;
+use swoole_rs_reactor::TimeoutKind;
 
 /// `Socket::ProtocolSwitch`: the socket's EOF and length checks and protocol,
 /// restored when dropped.
@@ -38,14 +38,11 @@ impl Drop for ProtocolScope {
 pub struct TimeoutScope {
     socket: Co,
     timeout: f64,
-    kind: c_int,
+    kind: TimeoutKind,
     original: [f64; 4],
     /// `TimeoutController`'s clock, 0 until [`TimeoutScope::timed_out`] starts it.
     startup: f64,
 }
-
-/// The timeout bits, in `original`'s order.
-const BITS: [c_int; 4] = [1, 2, 4, 8];
 
 impl TimeoutScope {
     #[must_use]
@@ -53,12 +50,12 @@ impl TimeoutScope {
         clippy::float_cmp,
         reason = "the original compares saved timeouts exactly"
     )]
-    pub fn new(socket: Co, timeout: f64, kind: c_int) -> Self {
+    pub fn new(socket: Co, timeout: f64, kind: TimeoutKind) -> Self {
         let mut original = [0.0; 4];
         if timeout != 0.0 {
             socket.net(|network| {
-                for (original, bit) in original.iter_mut().zip(BITS) {
-                    if kind & bit != 0 {
+                for (original, bit) in original.iter_mut().zip(TimeoutKind::EACH) {
+                    if kind.intersects(bit) {
                         let value = network.timeouts.get(bit).unwrap_or_default();
                         *original = value;
                         if timeout != value {
@@ -80,7 +77,7 @@ impl TimeoutScope {
     /// `TimeoutController::has_timedout(kind)` at `now`: the first call starts the
     /// clock; later ones shrink the socket's timeout to what is left, or set
     /// `ETIMEDOUT` once none is.
-    pub fn timed_out(&mut self, kind: c_int, now: f64) -> bool {
+    pub fn timed_out(&mut self, kind: TimeoutKind, now: f64) -> bool {
         crate::co_io::timed_out(self.socket, self.timeout, &mut self.startup, now, kind)
     }
 }
@@ -95,8 +92,8 @@ impl Drop for TimeoutScope {
             return;
         }
         self.socket.net(|network| {
-            for (original, bit) in self.original.into_iter().zip(BITS) {
-                if self.kind & bit != 0 && self.timeout != original {
+            for (original, bit) in self.original.into_iter().zip(TimeoutKind::EACH) {
+                if self.kind.intersects(bit) && self.timeout != original {
                     network.timeouts.set(original, bit);
                 }
             }

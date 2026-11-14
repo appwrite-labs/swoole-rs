@@ -813,8 +813,9 @@ mod tests {
     #[test]
     fn timeouts_are_the_network_sockets() {
         let mut object = Object::new();
-        object.co().set_timeout(2.5, 4);
-        assert_eq!(object.co().timeout(4), 2.5);
+        let read = swoole_rs_reactor::TimeoutKind::READ;
+        object.co().set_timeout(2.5, read);
+        assert_eq!(object.co().timeout(read), 2.5);
     }
 
     #[test]
