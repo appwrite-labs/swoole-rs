@@ -79,10 +79,12 @@ impl SocketFields {
         OK
     }
 
-    /// `Socket::set_fd_option`: [`crate::swr_v1_socket_fd_option`], recording both
-    /// arguments (-1 included, as upstream assigns them) in the flags when it succeeds.
+    /// `Socket::set_fd_option`: [`crate::swr_v1_socket_fd_option`] (-1 leaves a flag
+    /// alone, 0 clears it, anything else sets it), recording both arguments (-1
+    /// included, as upstream assigns them) in the flags when it succeeds.
     pub fn set_fd_option(&mut self, nonblock: c_int, cloexec: c_int) -> crate::SocketOptionResult {
-        let result = crate::swr_v1_socket_fd_option(self.fd, nonblock, cloexec);
+        let flag = |value: c_int| (value >= 0).then_some(value != 0);
+        let result = crate::swr_v1_socket_fd_option(self.fd, flag(nonblock), flag(cloexec));
         if result.ok {
             // Upstream's 1-bit fields keep each int's low bit.
             self.output.nonblock = nonblock & 1 != 0;

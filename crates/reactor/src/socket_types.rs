@@ -142,8 +142,8 @@ pub fn swr_v1_socket_open(domain: c_int, kind: c_int, protocol: c_int, flags: c_
             && (nonblock || cloexec)
             && !crate::swr_v1_socket_fd_option(
                 fd,
-                if nonblock { 1 } else { -1 },
-                if cloexec { 1 } else { -1 },
+                nonblock.then_some(true),
+                cloexec.then_some(true),
             )
             .ok
         {
