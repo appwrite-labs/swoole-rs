@@ -9,9 +9,31 @@ use crate::TaskIpcMode;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::log;
+use swoole_rs_process::task_sync::ResultSlot;
 
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub mod native;
+
+/// `serv->task_results[worker_id]`: the event worker's result slot, which task
+/// workers answer its `taskwait`s in; `None` before the server made the slots,
+/// and for a worker that has none.
+#[must_use]
+pub fn result_slot(serv: crate::view::Server<'_>, worker_id: u16) -> Option<ResultSlot<'_>> {
+    let config = serv.config();
+    if u32::from(worker_id) >= config.worker_num.get() {
+        return None;
+    }
+    let size = usize::try_from(swoole_rs_corebase::constants::SW_IPC_MAX_SIZE).ok()?;
+    let results = config.task_results.as_ptr().cast::<u8>();
+    if results.is_null() {
+        return None;
+    }
+    let slot = std::ptr::NonNull::new(results.wrapping_add(usize::from(worker_id) * size))?;
+    // SAFETY: one of the `worker_num` slots `create_task_workers` allocated in shared
+    // memory, which holds an `EventData` per event worker for as long as the server
+    // lives, and which only task workers write meanwhile.
+    Some(unsafe { ResultSlot::new(slot) })
+}
 
 /// `swoole::TaskFlag` bits.
 const TASK_CALLBACK: u16 = 1 << 3;

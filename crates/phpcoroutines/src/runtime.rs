@@ -410,3 +410,31 @@ pub fn call_handler(
         )
     }
 }
+
+/// [`call_handler`] over the zvals of a callback's arguments, with the return
+/// slot `retval` or none (a coroutine has none).
+/// # Errors
+/// PHP bailed out.
+pub fn call_args(
+    handler: &swoole_rs_zend::host::callable::Callable,
+    args: &mut [zval],
+    retval: Option<&swoole_rs_zend::Value>,
+    coroutine: bool,
+) -> Result<bool, Bailout> {
+    let argc = u32::try_from(args.len()).unwrap_or(u32::MAX);
+    let retval = retval.map_or(ptr::null_mut(), swoole_rs_zend::Value::as_ptr);
+    // SAFETY: the handler's resolved cache, which its owner keeps live through
+    // the call, `argc` arguments and a return slot or null; the leaves are this
+    // crate's and C's.
+    unsafe {
+        swoole_rs_zend::host::function_call(
+            handler.cache_ptr(),
+            argc,
+            args.as_mut_ptr(),
+            retval,
+            coroutine,
+            create_coroutine,
+            swoole_rs_zend::host::NO_THEN,
+        )
+    }
+}

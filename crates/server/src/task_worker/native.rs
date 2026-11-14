@@ -3,8 +3,7 @@
 //! result back to the worker that dispatched it.
 use crate::Mode;
 use core::cell::Cell;
-use core::ffi::{CStr, c_char, c_int};
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::ffi::c_int;
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::{CCast, DataHead, log};
 use swoole_rs_error::ErrorCode as E;
@@ -15,6 +14,7 @@ use swoole_rs_process::methods::{
 };
 use swoole_rs_process::process_pool::{Hooks, PoolRef, SW_IPC_MAX_SIZE};
 use swoole_rs_process::task_file::{Packed, TaskBuffer};
+use swoole_rs_process::task_sync::ResultSlot;
 use swoole_rs_process::worker_record::{
     Worker, WorkerStatus, WorkerType, swr_v1_worker_init, swr_v1_worker_shutdown,
 };
@@ -303,8 +303,9 @@ pub fn finish(
             None => send_pipe_message(worker, buf.bytes(), PIPE_MASTER),
         }
     } else {
-        let slot = serv.config().task_results.as_ptr().cast::<u8>();
-        let slot = slot.wrapping_add(usize::from(source) * EVENT_DATA_SIZE);
+        let Some(slot) = super::result_slot(serv, source) else {
+            return false;
+        };
         let lock = worker.lock();
         _ = lock.map(SharedMutex::lock);
         let stored = if task.ext_flags & TASK_WAITALL != 0 {
@@ -312,10 +313,9 @@ pub fn finish(
             true
         } else if buf.pack(data) {
             reply(&mut buf, flags);
-            let bytes = buf.bytes();
-            // SAFETY: the source worker's `EventData` result slot, which its lock,
-            // held, keeps this process alone writing; a packed result fills at most one.
-            unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), slot, bytes.len()) };
+            // The source worker's lock, held, keeps this process alone writing; a
+            // packed result fills at most the slot.
+            slot.write(buf.bytes());
             true
         } else {
             false
@@ -363,17 +363,13 @@ pub fn finish(
 /// A waitall task's result, appended to the temporary file its result `slot` names,
 /// and the slot's count of results raised. An empty result when it can't be packed.
 fn write_waitall(
-    slot: *mut u8,
+    slot: ResultSlot<'_>,
     buf: &mut TaskBuffer,
     data: &[u8],
     reply: impl Fn(&mut TaskBuffer),
 ) {
-    let path = slot
-        .wrapping_add(size_of::<DataHead>() + 4)
-        .cast::<c_char>();
-    // SAFETY: a waitall slot holds a counter, then its temporary file's path.
-    let path = unsafe { CStr::from_ptr(path) };
-    let file = swoole_rs_ossupport::file_open(-1, path, libc::O_APPEND | libc::O_WRONLY, 0);
+    let path = slot.path();
+    let file = swoole_rs_ossupport::file_open(-1, &path, libc::O_APPEND | libc::O_WRONLY, 0);
     if file == -1 {
         return;
     }
@@ -390,9 +386,7 @@ fn write_waitall(
             format_args!("write({path}, {len}) failed"),
         );
     }
-    let count = slot.wrapping_add(size_of::<DataHead>()).cast();
-    // SAFETY: the slot's leading counter, which every waiting process shares.
-    unsafe { AtomicU32::from_ptr(count) }.fetch_add(1, Ordering::SeqCst);
+    slot.finish();
     swoole_rs_ossupport::file_close(file);
 }
 

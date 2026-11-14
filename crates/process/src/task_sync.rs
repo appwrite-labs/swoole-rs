@@ -6,7 +6,7 @@
 //! [`MultiTask`]. The dispatch and the pipe's waits can reach PHP (a blocking
 //! write or wait dispatches signals), so they run inside the bailout trap
 //! ([`crate::pool`]); a bailout returns [`Bailed`] for the caller to re-raise.
-use std::ffi::{CStr, c_int};
+use std::ffi::{CStr, CString, c_int};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -93,10 +93,20 @@ impl<'a> ResultSlot<'a> {
         Self(unsafe { slot.cast().as_ref() })
     }
 
-    /// The slot's `EventData`, for a result a task worker has finished writing.
+    /// A copy of the slot's `EventData`, for a result a task worker has finished
+    /// writing: its head and the `len` bytes that head counts, for
+    /// [`Packed::from_bytes`].
     #[must_use]
-    pub const fn as_ptr(self) -> *const u8 {
-        self.0.as_ptr().cast()
+    pub fn copy(self) -> Vec<u8> {
+        let word = |word: &AtomicU32| word.load(Ordering::Relaxed).to_ne_bytes();
+        let mut bytes: Vec<u8> = self.0.iter().take(HEAD / 4).flat_map(word).collect();
+        let len = bytes
+            .get(HEAD_LEN..)
+            .and_then(<[u8]>::first_chunk)
+            .map_or(0, |len| u32::from_ne_bytes(*len) as usize);
+        bytes.extend(self.data().iter().take(len.div_ceil(4)).flat_map(word));
+        bytes.truncate(HEAD + len);
+        bytes
     }
 
     /// Zeroes the slot's head. Upstream zeroes the whole slot; its head is what is
@@ -131,13 +141,39 @@ impl<'a> ResultSlot<'a> {
 
     /// Copies `data` over the start of the slot's data; the bytes after it stay.
     fn write_data(self, data: &[u8]) {
-        for (word, chunk) in self.data().iter().zip(data.chunks(4)) {
-            let mut bytes = word.load(Ordering::Relaxed).to_ne_bytes();
-            for (to, from) in bytes.iter_mut().zip(chunk) {
-                *to = *from;
-            }
-            word.store(u32::from_ne_bytes(bytes), Ordering::Relaxed);
+        write_words(self.data(), data);
+    }
+
+    /// Copies a packed result over the start of the slot, under the waiting
+    /// worker's lock; the bytes after it stay.
+    pub fn write(self, result: &[u8]) {
+        write_words(self.0, result);
+    }
+
+    /// One more task finished, for a slot naming a result file.
+    pub fn finish(self) {
+        if let Some(count) = self.data().first() {
+            count.fetch_add(1, Ordering::SeqCst);
         }
+    }
+
+    /// The result file a slot names: the path after its finish count, up to its NUL.
+    #[must_use]
+    pub fn path(self) -> CString {
+        let data = self.data().iter().skip(1);
+        let bytes = data.flat_map(|word| word.load(Ordering::Relaxed).to_ne_bytes());
+        CString::new(bytes.take_while(|&byte| byte != 0).collect::<Vec<u8>>()).unwrap_or_default()
+    }
+}
+
+/// Copies `data` over the start of `words`; the bytes after it stay.
+fn write_words(words: &[AtomicU32], data: &[u8]) {
+    for (word, chunk) in words.iter().zip(data.chunks(4)) {
+        let mut bytes = word.load(Ordering::Relaxed).to_ne_bytes();
+        for (to, from) in bytes.iter_mut().zip(chunk) {
+            *to = *from;
+        }
+        word.store(u32::from_ne_bytes(bytes), Ordering::Relaxed);
     }
 }
 
