@@ -55,7 +55,11 @@ impl Queue {
         }
     }
     fn add(&self, n: &Node<'_>, now: i64, delay: i64, repeat: bool) -> TimerView {
-        let (status, v) = self.q.borrow_mut().add(now, delay, repeat, || n.token());
+        let (status, v) = self
+            .q
+            .borrow_mut()
+            .add(now, delay, repeat, || n.token())
+            .pair();
         assert_eq!(status, Status::Ok);
         assert!(v.id > 0 && v.token == n.token() && v.deadline == now + delay);
         assert!(!v.removed);
@@ -75,7 +79,7 @@ impl Queue {
         n.drops.set(n.drops.get() + 1);
         assert_eq!(n.drops.get(), 1);
         self.trace.borrow_mut().push(format!("drop:{}", n.name));
-        assert_eq!(self.q.borrow().get(v.id).0, Status::NotFound);
+        assert_eq!(self.q.borrow().get(v.id).status(), Status::NotFound);
         let active = self.stats().active_id;
         assert!(active == 0 || active != v.id);
         // Every queue call has returned before the native destructor runs.
@@ -89,13 +93,13 @@ impl Queue {
         self.drop_view(v);
     }
     fn prime(&self, now: i64) {
-        assert_eq!(self.q.borrow_mut().begin(now), Status::Ok);
+        assert_eq!(self.q.borrow_mut().begin(now).status(), Status::Ok);
         assert_eq!(self.q.borrow_mut().select_next().0, Status::Empty);
-        assert_eq!(self.q.borrow_mut().end().0, Status::Ok);
+        assert_eq!(self.q.borrow_mut().end().status(), Status::Ok);
         assert_eq!(self.stats().round, 1);
     }
     fn select(&self, now: i64, callback: impl Fn(TimerView)) {
-        assert_eq!(self.q.borrow_mut().begin(now), Status::Ok);
+        assert_eq!(self.q.borrow_mut().begin(now).status(), Status::Ok);
         loop {
             let (status, v) = self.q.borrow_mut().select_next();
             if status == Status::Empty {
@@ -122,7 +126,7 @@ impl Queue {
                 assert!(status == Status::Ok && self.stats().active_id == 0);
             }
         }
-        assert_eq!(self.q.borrow_mut().end().0, Status::Ok);
+        assert_eq!(self.q.borrow_mut().end().status(), Status::Ok);
     }
     /// `close()`: the export answered `Status::Ok` twice, as `Timer::close` is idempotent.
     fn close(&self) {
@@ -158,10 +162,10 @@ fn invalid_calls() {
     assert_eq!(timer.drain(), (Status::Invalid, TimerView::default()));
     assert_eq!(timer.select_next(), (Status::Invalid, TimerView::default()));
     assert_eq!(timer.complete(1), (Status::Invalid, TimerView::default()));
-    assert_eq!(timer.get(0), (Status::Invalid, TimerView::default()));
-    assert_eq!(timer.begin(0), Status::Ok);
+    assert_eq!(timer.get(0).pair(), (Status::Invalid, TimerView::default()));
+    assert_eq!(timer.begin(0).status(), Status::Ok);
     assert!(!timer.idle(), "release is PENDING");
-    assert_eq!(timer.end(), (Status::Ok, -1));
+    assert_eq!(timer.end().pair(), (Status::Ok, -1));
 }
 
 #[test]
@@ -174,7 +178,7 @@ fn active_cancel() {
         let (status, out) = q.q.borrow_mut().remove(v.id);
         assert!(status == Status::Deferred && out.removed);
         assert_eq!(q.q.borrow_mut().remove(v.id).0, Status::NotFound);
-        let (status, out) = q.q.borrow().get(v.id);
+        let (status, out) = q.q.borrow().get(v.id).pair();
         assert!(status == Status::Ok && out.removed && out.token == a.token());
         assert!(q.stats().count == 1 && a.drops.get() == 0 && n.id == v.id);
     });
@@ -190,7 +194,7 @@ fn active_delay() {
     q.prime(0);
     q.select(2, |v| {
         if v.id == av.id {
-            let (status, out) = q.q.borrow_mut().update(v.id, 20);
+            let (status, out) = q.q.borrow_mut().update(v.id, 20).pair();
             assert!(status == Status::Ok && out.deadline == 20);
             assert_eq!(q.q.borrow_mut().complete(v.id + 100).0, Status::Invalid);
         }
@@ -202,9 +206,9 @@ fn active_delay() {
     let cv = r.add(&c, 0, 5, true);
     r.prime(0);
     r.select(5, |v| {
-        assert_eq!(r.q.borrow_mut().update(v.id, 20).0, Status::Ok);
+        assert_eq!(r.q.borrow_mut().update(v.id, 20).status(), Status::Ok);
     });
-    let (status, out) = r.q.borrow().get(cv.id);
+    let (status, out) = r.q.borrow().get(cv.id).pair();
     assert!(status == Status::Ok && out.deadline == 20 && out.exec_count == 1);
     r.close();
 }
@@ -218,9 +222,9 @@ fn recursive() {
     q.prime(0);
     q.select(1, |_| {
         let before = q.stats();
-        assert_eq!(q.q.borrow_mut().begin(1), Status::Busy);
+        assert_eq!(q.q.borrow_mut().begin(1).status(), Status::Busy);
         assert_eq!(q.q.borrow_mut().select_next().0, Status::Busy);
-        assert_eq!(q.q.borrow_mut().end(), (Status::Busy, -1));
+        assert_eq!(q.q.borrow_mut().end().status(), Status::Busy);
         assert_eq!(q.stats().round, before.round);
     });
     q.golden(&["call:A", "drop:A"]);
@@ -261,13 +265,13 @@ fn missed() {
     let av = q.add(&a, 0, 5, true);
     q.prime(0);
     q.select(23, |_| {});
-    let (status, v) = q.q.borrow().get(av.id);
+    let (status, v) = q.q.borrow().get(av.id).pair();
     assert!(status == Status::Ok && v.deadline == 25 && v.exec_count == 1);
     q.select(24, |_| {});
-    let (status, v) = q.q.borrow().get(av.id);
+    let (status, v) = q.q.borrow().get(av.id).pair();
     assert!(status == Status::Ok && v.exec_count == 1);
     q.select(25, |_| {});
-    let (status, v) = q.q.borrow().get(av.id);
+    let (status, v) = q.q.borrow().get(av.id).pair();
     assert!(status == Status::Ok && v.deadline == 30 && v.exec_count == 2);
     q.close();
     q.golden(&["call:A", "call:A", "drop:A"]);
@@ -301,13 +305,13 @@ fn birth() {
     q.select(2, |v| {
         if v.id == av.id {
             let cv = q.add(&c, 2, 1, false);
-            assert_eq!(q.q.borrow_mut().update(cv.id, 0).0, Status::Ok);
+            assert_eq!(q.q.borrow_mut().update(cv.id, 0).status(), Status::Ok);
         }
     });
     // Newly born C is heap head and blocks already-due B in this round.
     q.golden(&["call:A", "drop:A"]);
     assert_eq!(q.stats().count, 2);
-    assert_eq!(q.q.borrow().get(bv.id).0, Status::Ok);
+    assert_eq!(q.q.borrow().get(bv.id).status(), Status::Ok);
     q.select(3, |_| {});
     q.golden(&["call:A", "drop:A", "call:C", "drop:C", "call:B", "drop:B"]);
 }
@@ -344,28 +348,30 @@ fn limits() {
     let q = Queue::new();
     let none = TimerView::default();
     assert_eq!(
-        q.q.borrow_mut().add(i64::MAX - 2, 3, false, || a.token()),
+        q.q.borrow_mut()
+            .add(i64::MAX - 2, 3, false, || a.token())
+            .pair(),
         (Status::Overflow, none)
     );
     assert_eq!(
-        q.q.borrow_mut().add(0, 0, false, || a.token()).0,
+        q.q.borrow_mut().add(0, 0, false, || a.token()).status(),
         Status::Invalid
     );
     assert_eq!(
-        q.q.borrow_mut().add(0, 1, false, ptr::null_mut).0,
+        q.q.borrow_mut().add(0, 1, false, ptr::null_mut).status(),
         Status::Invalid
     );
     let av = q.add(&a, 10, 1, false);
     assert_eq!(av.id, 1);
     assert_eq!(
-        q.q.borrow_mut().add(9, 1, false, || a.token()).0,
+        q.q.borrow_mut().add(9, 1, false, || a.token()).status(),
         Status::Invalid
     );
     assert_eq!(q.stats().count, 1);
-    assert_eq!(q.q.borrow_mut().begin(9), Status::Invalid);
+    assert_eq!(q.q.borrow_mut().begin(9).status(), Status::Invalid);
     assert!(!q.stats().selecting);
-    assert_eq!(q.q.borrow_mut().update(av.id, -1).0, Status::Invalid);
-    let (status, v) = q.q.borrow().get(av.id);
+    assert_eq!(q.q.borrow_mut().update(av.id, -1).status(), Status::Invalid);
+    let (status, v) = q.q.borrow().get(av.id).pair();
     assert!(status == Status::Ok && v.deadline == 11);
     assert!(!q.q.borrow().idle(), "release is PENDING");
     q.close();
@@ -398,10 +404,10 @@ fn teardown() {
             (Status::Deferred, TimerView::default())
         );
         assert_eq!(
-            q.q.borrow_mut().add(2, 1, false, || c.token()).0,
+            q.q.borrow_mut().add(2, 1, false, || c.token()).status(),
             Status::Closing
         );
-        assert_eq!(q.q.borrow_mut().update(v.id, 3).0, Status::Closing);
+        assert_eq!(q.q.borrow_mut().update(v.id, 3).status(), Status::Closing);
         assert!(q.stats().count == 1 && a.drops.get() == 0 && q.stats().closing);
     });
     q.golden(&["call:A", "drop:B", "drop:A"]);
@@ -431,7 +437,7 @@ fn fork_copy() {
     // SAFETY: waitpid(2) on our child.
     assert_eq!(unsafe { libc::waitpid(child, &raw mut status, 0) }, child);
     assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0);
-    let (found, v) = q.q.borrow().get(av.id);
+    let (found, v) = q.q.borrow().get(av.id).pair();
     assert!(a.drops.get() == 0 && found == Status::Ok && v.token == a.token());
     q.prime(0);
     q.select(1, |_| {});
