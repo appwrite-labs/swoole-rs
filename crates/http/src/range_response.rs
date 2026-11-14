@@ -131,80 +131,6 @@ pub(crate) fn range_format(
     i32::from(libc_overflow)
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct HttpRangeFinish {
-    pub(crate) content_length: usize,
-    pub(crate) last_length: usize,
-    pub(crate) task_count: usize,
-    pub(crate) filesize: usize,
-    pub(crate) end_length: usize,
-    pub(crate) phase: u32,
-    pub(crate) status: i32,
-    pub(crate) if_range: bool,
-    pub(crate) modified: bool,
-}
-
-impl HttpRangeFinish {
-    pub(crate) fn step(&mut self) -> i32 {
-        if self.phase > 6 || (self.last_length != 0 && self.task_count == 0) {
-            return INVALID;
-        }
-        self.next()
-    }
-    fn check_date(&mut self) -> i32 {
-        if self.if_range {
-            self.phase = 3;
-            3
-        } else {
-            self.phase = 6;
-            0
-        }
-    }
-    fn next(&mut self) -> i32 {
-        match self.phase {
-            0 if self.last_length == 0 => {
-                self.content_length = self.filesize;
-                self.phase = 1;
-                1
-            }
-            0 if self.task_count == 1 => {
-                self.content_length = self.last_length;
-                self.status = 206;
-                self.check_date()
-            }
-            0 => {
-                self.phase = 2;
-                2
-            }
-            1 => self.check_date(),
-            2 => {
-                self.content_length = self.content_length.wrapping_add(self.end_length);
-                self.status = 206;
-                self.check_date()
-            }
-            3 if self.modified => {
-                self.phase = 4;
-                4
-            }
-            3 => {
-                self.phase = 6;
-                0
-            }
-            4 => {
-                self.content_length = self.filesize;
-                self.phase = 5;
-                1
-            }
-            5 => {
-                self.status = 200;
-                self.phase = 6;
-                0
-            }
-            _ => 0,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,37 +220,5 @@ mod tests {
         assert_eq!(range_format(&input, &mut storage, &mut written), INVALID);
         assert_eq!(storage, [0xa5; 16]);
         assert_eq!(written, 99);
-        let mut state = HttpRangeFinish {
-            phase: 7,
-            status: 299,
-            ..Default::default()
-        };
-        let before = state;
-        assert_eq!(state.step(), INVALID);
-        assert_eq!(state, before);
-    }
-    #[test]
-    fn finalization_does_not_publish_success_before_native_push() {
-        let mut state = HttpRangeFinish {
-            content_length: 123,
-            last_length: 2,
-            task_count: 2,
-            filesize: 100,
-            status: 299,
-            if_range: true,
-            ..Default::default()
-        };
-        assert_eq!(state.step(), 2);
-        assert_eq!((state.status, state.content_length), (299, 123));
-        state.end_length = 9;
-        assert_eq!(state.step(), 3);
-        assert_eq!((state.status, state.content_length), (206, 132));
-        state.modified = true;
-        assert_eq!(state.step(), 4);
-        assert_eq!((state.status, state.content_length), (206, 132));
-        assert_eq!(state.step(), 1);
-        assert_eq!((state.status, state.content_length), (206, 100));
-        assert_eq!(state.step(), 0);
-        assert_eq!(state.status, 200);
     }
 }
