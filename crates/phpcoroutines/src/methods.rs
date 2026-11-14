@@ -324,11 +324,19 @@ pub(crate) fn throw_exception(cid: c_long, throw: bool, ce: *mut zend_class_entr
     let exception = unsafe { zend_objects_new(ce) };
     // SAFETY: a new object of `ce`.
     unsafe { object_properties_init(exception, ce) };
+    if !is_current {
+        task.set_exception(exception, ce);
+        if !pending.is_null() {
+            // SAFETY: two live exceptions.
+            unsafe { zend_exception_set_previous(exception, pending) };
+        }
+    }
+    // The new exception, located in the coroutine's frame: the running one's
+    // is the live Co::cancel frame, internal, so Zend redirects the user caller
+    // when it returns.
+    // SAFETY: a new exception, and the frame `in_frame` installs or keeps.
+    task.in_frame(|| unsafe { swr_zend_coroutine_locate(exception) });
     if is_current {
-        // The live Co::cancel frame is internal: Zend redirects the user
-        // caller when it returns.
-        // SAFETY: a new exception, in the running frame.
-        unsafe { swr_zend_coroutine_locate(exception) };
         // `zend_throw_exception_object` of a zval holding it, past its
         // Throwable check (`ce` is a Swoole exception class): Zend takes the
         // new object's reference.
@@ -336,13 +344,6 @@ pub(crate) fn throw_exception(cid: c_long, throw: bool, ce: *mut zend_class_entr
         unsafe { zend_throw_exception_internal(exception) };
         return true;
     }
-    task.set_exception(exception, ce);
-    if !pending.is_null() {
-        // SAFETY: two live exceptions.
-        unsafe { zend_exception_set_previous(exception, pending) };
-    }
-    // SAFETY: the new exception, located in the suspended coroutine's frame.
-    task.in_frame(|| unsafe { swr_zend_coroutine_locate(exception) });
     if pending.is_null() {
         // SAFETY: the suspended coroutine's VM state.
         unsafe { swr_zend_coroutine_redirect(task.vm()) };

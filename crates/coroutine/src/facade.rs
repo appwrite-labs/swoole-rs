@@ -7,10 +7,10 @@
 //! use, under their upstream symbols, over scheduler.rs. These need the timer
 //! and the event loop, which only the extension links.
 //! The build's switches are `swoole_rs_corebase::built_with`'s (`build`).
-use crate::context::{Context, Native};
+use crate::context::{Context, Native, Unmade};
 use crate::coroutine::{self, Co, Sched, run};
 use crate::scheduler::{bailed_out, current, with_scheduler, yield_with_cancel};
-use crate::thread::{THREAD, swr_v1_thread_context_clean, swr_v1_thread_context_init};
+use crate::thread::{Entry, THREAD, swr_v1_thread_context_clean, swr_v1_thread_context_init};
 use crate::{Canceler, Coroutine, Resume, Routine, STACK_MARK, STACK_PROTECT, Scheduler};
 use core::ffi::{c_int, c_long, c_void};
 use core::ptr;
@@ -22,6 +22,7 @@ use swoole_rs_corebase::{
     sw_print,
 };
 
+const SW_ERROR_MALLOC_FAIL: c_int = 501;
 const SW_ERROR_CO_HAS_BEEN_BOUND: c_int = 10002;
 const SW_ERROR_CO_CANNOT_CANCEL: c_int = 10015;
 const SW_ERROR_CO_CANCELED: c_int = 10017;
@@ -106,9 +107,15 @@ pub unsafe extern "C-unwind" fn swr_v1_coroutine_create(
     let flags = build() & (THREAD | STACK_PROTECT | STACK_MARK);
     let stack_size = with_scheduler(|s| s.stack_size);
     // SAFETY: `routine` takes `arg`, as the caller promises.
-    let ctx = match unsafe { Context::new(stack_size, flags, routine, arg) } {
+    let entry = unsafe { Entry::new(routine, arg) };
+    let ctx = match Context::new(stack_size, flags, entry) {
         Ok(ctx) => ctx,
-        Err(error) => {
+        Err(Unmade::NoStack) => {
+            // SAFETY: the caller's frames own nothing with a destructor, nor does this one.
+            unsafe { fatal_error(SW_ERROR_MALLOC_FAIL, c"failed to malloc stack memory.") };
+            std::process::exit(254);
+        }
+        Err(Unmade::Thread(error)) => {
             set_last_error(error);
             log::warning(
                 c"Coroutine::create",
@@ -120,19 +127,14 @@ pub unsafe extern "C-unwind" fn swr_v1_coroutine_create(
             return -1;
         }
     };
-    let co = Coroutine::IDLE;
-    let native = Box::into_raw(Box::new(Native { co, ctx })).cast::<c_void>();
+    let co = Co::leak(Box::new(Native {
+        co: Coroutine::IDLE,
+        ctx,
+    }));
     let now = steady_usec();
-    let co = native.cast::<Coroutine>();
-    // SAFETY: the record starts with its coroutine, which registers once and
-    // stays put, live, until `destroy` frees it.
-    let (co, inactive) = with_scheduler(|s| unsafe { s.register(co, native, now / 1000, now) });
-    if inactive {
+    if with_scheduler(|s| s.register(co, co.ptr().cast(), now / 1000, now)) {
         activate();
     }
-    let Some(co) = co else {
-        return -1;
-    };
     run(Sched::this(), co)
 }
 

@@ -4,11 +4,11 @@
 //! `ThreadSanitizer` through its own, in tools/tsan.py's build (`cfg(tsan)`). With
 //! [`THREAD`] in its flags the context is a thread instead (`thread.rs`).
 
+use crate::Coroutine;
 use crate::coroutine::Co;
 use crate::fcontext::{Transfer, jump_fcontext, make_fcontext};
 use crate::stack::Stack;
-use crate::thread::{self, Started, THREAD};
-use crate::{Coroutine, Routine};
+use crate::thread::{self, Entry, Started, THREAD};
 use core::cell::Cell;
 use core::ffi::{c_int, c_void};
 use std::ptr;
@@ -27,8 +27,8 @@ pub struct Context {
     swap_fctx: *mut c_void,
     /// The stack it runs on and its flags: none under [`THREAD`].
     stack: Stack,
-    entry: Routine,
-    data: *mut c_void,
+    /// What the first switch in runs: none under [`THREAD`], or once it started.
+    entry: Option<Entry>,
     /// The stack that last switched in, which `swap_out` returns to (`AddressSanitizer` only).
     asan_bottom: *const c_void,
     asan_size: usize,
@@ -59,27 +59,18 @@ impl Context {
         (self.stack.base(), self.stack.size())
     }
 
-    /// Allocates the stack and makes the context that runs `entry(data)` on it.
-    /// Out of memory is upstream's fatal error, then exit 254. A [`THREAD`]
-    /// context starts its thread instead.
+    /// Allocates the stack and makes the context that runs `entry` on it. A
+    /// [`THREAD`] context starts its thread instead.
     ///
     /// # Errors
-    /// The errno of a [`THREAD`] context whose thread failed to start.
-    ///
-    /// # Safety
-    /// `entry` takes `data`.
-    pub unsafe fn new(
-        stack_size: usize,
-        flags: u32,
-        entry: Routine,
-        data: *mut c_void,
-    ) -> Result<Self, c_int> {
+    /// No stack (out of memory), or the errno of a [`THREAD`] context whose
+    /// thread failed to start.
+    pub fn new(stack_size: usize, flags: u32, entry: Entry) -> Result<Self, Unmade> {
         let mut context = Self {
             fctx: ptr::null_mut(),
             swap_fctx: ptr::null_mut(),
             stack: Stack::none(flags),
-            entry,
-            data,
+            entry: None,
             asan_bottom: ptr::null(),
             asan_size: 0,
             #[cfg(tsan)]
@@ -90,28 +81,28 @@ impl Context {
             thread: None,
         };
         if flags & THREAD != 0 {
-            // SAFETY: as the caller promises.
-            context.thread = Some(unsafe { thread::start(entry, data) }?);
+            context.thread = Some(thread::start(entry).map_err(Unmade::Thread)?);
             return Ok(context);
         }
         let stack_size = stack_size.c_cast::<u32>();
         let size = stack_size as usize;
-        let Some(stack) = Stack::alloc(stack_size, flags) else {
-            // SAFETY: nothing on this frame owns a destructor.
-            unsafe {
-                swoole_rs_corebase::fatal_error(
-                    SW_ERROR_MALLOC_FAIL,
-                    c"failed to malloc stack memory.",
-                );
-            }
-            std::process::exit(254);
-        };
+        let stack = Stack::alloc(stack_size, flags).ok_or(Unmade::NoStack)?;
         let top = stack.base().wrapping_add(size);
         // SAFETY: a fresh `size`-byte stack, which boost builds the context down from.
         context.fctx = unsafe { make_fcontext(top.cast(), size, first_frame) };
         context.stack = stack;
+        context.entry = Some(entry);
         Ok(context)
     }
+}
+
+/// Why [`Context::new`] made no context.
+#[derive(Debug)]
+pub enum Unmade {
+    /// The stack's allocation failed.
+    NoStack,
+    /// The [`THREAD`] context's thread failed to start, with this errno.
+    Thread(c_int),
 }
 
 #[cfg(tsan)]
@@ -123,9 +114,6 @@ impl Drop for Context {
         }
     }
 }
-
-/// `SW_ERROR_MALLOC_FAIL`.
-const SW_ERROR_MALLOC_FAIL: c_int = 501;
 
 type StartSwitch = unsafe extern "C" fn(*mut *mut c_void, *const c_void, usize);
 type FinishSwitch = unsafe extern "C" fn(*mut c_void, *mut *const c_void, *mut usize);
@@ -298,12 +286,13 @@ fn switched_in(
 /// `swap_in` jumped here with its coroutine, which now runs.
 extern "C" fn first_frame(transfer: Transfer) {
     let co = transfer.data;
-    let (entry, data) = co.with_context(|record| {
+    let entry = co.with_context(|record| {
         switched_in(record, transfer.fctx, asan(), ptr::null_mut());
-        (record.entry, record.data)
+        record.entry.take()
     });
-    // SAFETY: the creator's entry over its own data, as `Context::new`'s caller promised.
-    unsafe { entry(data) };
+    if let Some(entry) = entry {
+        entry.run();
+    }
     co.read_context(|ctx| ctx.end.set(true));
     // The running coroutine; an ended one is never switched back in.
     swap_out(co);
@@ -325,13 +314,13 @@ mod tests {
     }
 
     struct Log {
-        native: core::mem::MaybeUninit<Native>,
+        co: Option<Co>,
         steps: Vec<&'static str>,
     }
 
-    /// The coroutine the log's record starts with.
+    /// The coroutine of the log's record.
     unsafe fn co(log: *mut Log) -> Co {
-        unsafe { Co::of((*log).native.as_mut_ptr().cast()) }.unwrap()
+        unsafe { (*log).co }.unwrap()
     }
 
     unsafe extern "C" fn entry(data: *mut c_void) {
@@ -348,21 +337,21 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri runs no assembly")]
     fn a_context_switches_onto_its_stack_and_back() {
         let mut log = Log {
-            native: core::mem::MaybeUninit::uninit(),
+            co: None,
             steps: Vec::new(),
         };
         let log = &raw mut log;
-        // SAFETY: the record stays in `log` until dropped, and each switch is the stack's turn.
+        // SAFETY: the record lives until freed below, and each switch is the stack's turn.
         unsafe {
-            let ctx = Context::new(64 * 1024, 0, entry, log.cast()).unwrap();
-            (*log).native.write(Native {
+            let ctx = Context::new(64 * 1024, 0, Entry::new(entry, log.cast())).unwrap();
+            (*log).co = Some(Co::leak(Box::new(Native {
                 co: Coroutine::IDLE,
                 ctx,
-            });
+            })));
             assert!(!swap_in(co(log)));
             (*log).steps.push("main");
             assert!(swap_in(co(log)));
-            (*log).native.assume_init_drop();
+            drop(Box::from_raw(co(log).ptr().cast::<Native>()));
             assert_eq!((*log).steps, ["entry", "main", "resumed"]);
         }
     }

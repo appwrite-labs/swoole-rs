@@ -78,6 +78,28 @@ fn original_interrupt() -> swr_zend_interrupt_handler {
     interrupt_hook().1
 }
 
+/// One more (`hold`) or one fewer active runtime: the first installs
+/// [`interrupt_function`], keeping the one Zend had, and the last restores it.
+fn hold_interrupt(hold: bool) {
+    let mut hook = interrupt_hook();
+    let (count, original) = &mut *hook;
+    if *count <= usize::from(!hold) {
+        let ours: swr_zend_interrupt_handler = Some(interrupt_function);
+        // SAFETY: Zend's interrupt function becomes ours, or again the one it ran
+        // before, which only this keeps.
+        let previous =
+            unsafe { swr_zend_coroutine_set_interrupt(if hold { ours } else { *original }) };
+        if hold {
+            *original = previous;
+        }
+    }
+    *count = if hold {
+        *count + 1
+    } else {
+        count.saturating_sub(1)
+    };
+}
+
 pub(crate) fn activated() -> bool {
     ACTIVATED.with(Cell::get)
 }
@@ -112,11 +134,11 @@ pub(crate) fn create(
         return Ok(ERR_LIMIT);
     }
     // SAFETY: null or a resolved callable.
-    let handler = unsafe { fcc.as_ref() }.map_or(ptr::null_mut(), |fcc| fcc.function_handler);
-    if handler.is_null() {
+    let Some(fcc) = (unsafe { fcc.as_ref() }).filter(|fcc| !fcc.function_handler.is_null()) else {
         host::fatal_error(E_ERROR, c"invalid function call info cache");
         return Ok(ERR_INVALID);
-    }
+    };
+    let handler = fcc.function_handler;
     // SAFETY: a resolved callable's handler; every zend_function starts with
     // its type, a byte.
     let kind = unsafe { handler.cast::<u8>().read() };
@@ -145,13 +167,7 @@ fn activate(php: Php<'_>) -> Result<(), Bailout> {
         swoole_rs_phpswoole::load_library()?;
     }
     host::check_reactor();
-    let mut hook = interrupt_hook();
-    if hook.0 == 0 {
-        // SAFETY: replaces Zend's interrupt function, restored by the last `deactivate`.
-        hook.1 = unsafe { swr_zend_coroutine_set_interrupt(Some(interrupt_function)) };
-    }
-    hook.0 += 1;
-    drop(hook);
+    hold_interrupt(true);
     if host::flag(host::PREEMPTIVE) || CONFIG.with(|c| c.preemptive.get()) {
         interrupt_start();
     }
@@ -175,13 +191,7 @@ pub(crate) fn deactivate() -> Result<(), Bailout> {
         host::unhook();
     }
     host::detach();
-    let mut hook = interrupt_hook();
-    hook.0 = hook.0.saturating_sub(1);
-    if hook.0 == 0 {
-        // SAFETY: restores Zend's interrupt function.
-        unsafe { swr_zend_coroutine_set_interrupt(hook.1) };
-    }
-    drop(hook);
+    hold_interrupt(false);
     if CONFIG.with(|c| c.deadlock_check.get()) {
         deadlock_check()?;
     }

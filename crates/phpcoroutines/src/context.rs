@@ -49,10 +49,11 @@ pub(crate) const INVALID: usize = usize::MAX;
 pub(crate) const INTERNAL_FUNCTION: u8 = 1;
 pub(crate) const USER_FUNCTION: u8 = 2;
 
-/// `PHPCoroutine::Args`, built by `create` for the new coroutine's entry.
-#[repr(C)]
-pub(crate) struct Args {
-    pub(crate) fcc: *mut zend_fcall_info_cache,
+/// `PHPCoroutine::Args`, built by `create` for the new coroutine's entry, which
+/// reads them before its first switch, while `create`'s frame still lends them.
+pub(crate) struct Args<'a> {
+    /// The resolved callable.
+    pub(crate) fcc: &'a zend_fcall_info_cache,
     pub(crate) argv: *mut zval,
     pub(crate) argc: u32,
     pub(crate) callable: *mut zval,
@@ -69,8 +70,13 @@ pub(crate) struct Context {
     fiber: *mut zend_fiber_context,
     fiber_init_notified: bool,
     enable_scheduler: bool,
-    /// The defer tasks, each kept by `defer()` until it runs or the context closes.
-    defer: Vec<Callable>,
+    /// The defer tasks, each kept by `defer()` until it runs or the context
+    /// closes; none until the first.
+    #[expect(
+        clippy::box_collection,
+        reason = "boxed, all-zero bytes are none: `open` builds the context with one zero fill"
+    )]
+    defer: Option<Box<Vec<Callable>>>,
     /// The `Co::join()` waiting for this coroutine to close.
     join: Option<Rc<Join>>,
     pcid: c_long,
@@ -93,7 +99,7 @@ impl Context {
         fiber: ptr::null_mut(),
         fiber_init_notified: false,
         enable_scheduler: false,
-        defer: Vec::new(),
+        defer: None,
         join: None,
         pcid: 0,
         context: ptr::null_mut(),
@@ -263,7 +269,7 @@ impl Ctx {
     }
 
     /// The defer tasks, borrowed for `f`, as [`Ctx::with`].
-    fn defers<R>(self, f: impl FnOnce(&mut Vec<Callable>) -> R) -> R {
+    fn defers<R>(self, f: impl FnOnce(&mut Option<Box<Vec<Callable>>>) -> R) -> R {
         self.with(|ctx| f(&mut ctx.defer))
     }
 }
@@ -384,9 +390,9 @@ pub(crate) extern "C" fn on_close(task: CoroutineTask) {
     if let Some(join) = ctx.replace_join(None) {
         join.closed(ctx);
     }
-    // SAFETY: the closing context, written by `open` and not used after this.
-    unsafe { ptr::drop_in_place(ctx.ptr()) };
-    // SAFETY: emalloc'd by `open`.
+    // Tasks a bailout left; with the join, all the context holds that needs a drop.
+    drop(ctx.defers(Option::take));
+    // SAFETY: emalloc'd by `open`, and not used after this.
     unsafe { swr_zend_efree(ctx.ptr().cast()) };
 }
 
@@ -395,20 +401,14 @@ pub(crate) extern "C" fn on_close(task: CoroutineTask) {
 /// `args` is the creator's live `Args`, and this runs on the new coroutine.
 pub(crate) unsafe fn open(args: *mut c_void) -> Option<Ctx> {
     // SAFETY: per the caller.
-    let args = unsafe { &*args.cast::<Args>() };
+    let args = unsafe { &*args.cast::<Args<'_>>() };
     let co = host::current()?;
     let pcid = host::origin_cid(co);
     let ctx = swoole_rs_zend::value::emalloc(size_of::<Context>()).cast::<Context>();
     // Built in place: a `Context::EMPTY` literal is staged on the stack and
-    // copied over. All-zero bytes are `Context::EMPTY` except `defer`.
+    // copied over. All-zero bytes are `Context::EMPTY`.
     // SAFETY: fresh storage for one context.
     unsafe { ctx.write_bytes(0, 1) };
-    // Its place in the storage above; nothing reads it.
-    let defer = ctx
-        .wrapping_byte_add(mem::offset_of!(Context, defer))
-        .cast::<Vec<Callable>>();
-    // SAFETY: a write, so the zeroed `defer` is never read or dropped.
-    unsafe { defer.write(Vec::new()) };
     // Every field now holds a valid value, and the context lives until `on_close`.
     let this = Ctx(NonNull::new(ctx)?);
     this.set_co(Some(co));
@@ -424,11 +424,9 @@ pub(crate) unsafe fn open(args: *mut c_void) -> Option<Ctx> {
     // SAFETY: on the new coroutine, into its own context.
     unsafe { swr_zend_coroutine_start(this.vm(), stack, size) };
     record_last_msec(this);
-    // SAFETY: the creator's resolved callable.
-    let fcc = unsafe { *args.fcc };
     let retval = this.return_value();
     this.with(|context| {
-        context.call.fcc = fcc;
+        context.call.fcc = *args.fcc;
         let fci = &mut context.call.fci;
         fci.size = size_of::<zend_fcall_info>();
         fci.object = ptr::null_mut();
@@ -476,7 +474,7 @@ pub(crate) fn enter(ctx: Ctx) -> *mut swr_zend_callable {
 /// its one argument, when it has one; none when no task is left.
 #[inline]
 pub(crate) fn defer_next(ctx: Ctx) -> Option<(Callable, Option<*mut zval>)> {
-    let task = ctx.defers(Vec::pop)?;
+    let task = ctx.defers(|defers| defers.as_mut()?.pop())?;
     let returned = ctx.with(|context| Value::of(&mut context.return_value).kind()) != IS_UNDEF;
     Some((task, returned.then(|| ctx.return_value())))
 }
@@ -495,7 +493,10 @@ pub(crate) fn close(ctx: Ctx) {
     // SAFETY: output state is the coroutine's own.
     unsafe { swr_zend_coroutine_output_reset() };
     // Its defer tasks were kept and are not called.
-    for task in ctx.defers(mem::take) {
+    for task in ctx
+        .defers(Option::take)
+        .map_or_else(Vec::new, |tasks| *tasks)
+    {
         if let Err(bailout) = task.release() {
             bailout.defer();
             bailout::finish();
@@ -552,7 +553,7 @@ pub(crate) fn free_main() {
 
 /// `PHPCoroutine::defer`: keep a task on the running context.
 pub(crate) fn defer(task: Callable) {
-    current().defers(|defers| defers.push(task));
+    current().defers(|defers| defers.get_or_insert_default().push(task));
 }
 
 fn fiber_init(ctx: Ctx) {
@@ -564,14 +565,17 @@ fn fiber_init(ctx: Ctx) {
         let this = unsafe { &mut *fiber };
         this.handle = invalid;
         this.kind = invalid;
-        // SAFETY: upstream's INVALID_PTR in a function slot, never called.
-        this.function =
-            unsafe { mem::transmute::<usize, swoole_rs_zend::sys::zend_fiber_coroutine>(INVALID) };
+        this.function = Some(never_switched);
         this.stack = invalid.cast();
     }
     ctx.set_fiber(fiber);
     // SAFETY: a new fiber context.
     unsafe { zend_observer_fiber_init_notify(fiber) };
+}
+
+/// A mock fiber's function (upstream's `INVALID_PTR`): nothing switches to one.
+extern "C" fn never_switched(_: *mut swoole_rs_zend::sys::zend_fiber_transfer) {
+    swoole_rs_corebase::fatal("a coroutine's mock fiber was switched to");
 }
 
 fn fiber_try_destroy(ctx: Ctx, origin: Ctx) {
@@ -651,7 +655,7 @@ mod tests {
     #[test]
     fn a_new_context_has_no_pending_state() {
         let context = Context::EMPTY;
-        assert_eq!(context.defer.len(), 0);
+        assert!(context.defer.is_none());
         assert!(context.join.is_none() && context.context.is_null() && !context.time_limited);
         assert_eq!(unsafe { context.return_value.u1.type_info }, IS_UNDEF);
         assert!(!context.vm.in_silence && context.vm.output_ptr.is_null());

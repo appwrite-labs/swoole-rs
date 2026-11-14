@@ -92,12 +92,27 @@ pub(crate) struct Started {
 /// `SWR_CTX_THREAD` (`SW_USE_THREAD_CONTEXT`): the context is a thread, not a stack.
 pub const THREAD: u32 = 4;
 
-/// The entry a coroutine thread runs.
-struct Entry(Routine, *mut c_void);
+/// A coroutine's entry over the creator's data, which only [`Entry::new`] makes:
+/// the context it is handed to runs it once, on its own stack or thread.
+pub struct Entry(Routine, *mut c_void);
 
 // SAFETY: only the coroutine's thread uses the creator's entry and data, while
 // it holds the baton, so no two threads touch the data at once.
 unsafe impl Send for Entry {}
+
+impl Entry {
+    /// # Safety
+    /// `routine` takes `data`: calling it once with it is sound.
+    pub const unsafe fn new(routine: Routine, data: *mut c_void) -> Self {
+        Self(routine, data)
+    }
+
+    /// Runs the entry; this takes it, so it runs once.
+    pub(crate) fn run(self) {
+        // SAFETY: the routine and data `new`'s caller paired, called once.
+        unsafe { (self.0)(self.1) };
+    }
+}
 
 /// `thread_context_init`: the calling thread holds the baton, and coroutine
 /// threads share its reactor, timer, buffer stack and async threads.
@@ -118,15 +133,11 @@ pub fn swr_v1_thread_context_clean() {
     ACTIVE.store(false, Ordering::Release);
 }
 
-/// Starts a thread that waits for the baton, then runs `entry(data)`; the
-/// spawn's errno when it fails.
-///
-/// # Safety
-/// `entry` takes `data`.
-pub(crate) unsafe fn start(entry: Routine, data: *mut c_void) -> Result<Box<Started>, c_int> {
+/// Starts a thread that waits for the baton, then runs `entry`; the spawn's
+/// errno when it fails.
+pub(crate) fn start(entry: Entry) -> Result<Box<Started>, c_int> {
     let thread = Arc::new(Thread::default());
     let own = Arc::clone(&thread);
-    let entry = Entry(entry, data);
     let handle = std::thread::Builder::new()
         .stack_size(THREAD_STACK)
         .spawn(move || {
@@ -178,15 +189,14 @@ impl Drop for Started {
 
 /// The thread's body: wait for the baton, run the entry, mark the end and hand
 /// the baton back for good.
-fn run(thread: &Arc<Thread>, Entry(entry, data): Entry) {
+fn run(thread: &Arc<Thread>, entry: Entry) {
     thread.baton.wait();
     // The first swap_in follows activation, which records SHARED.
     if let Some(shared) = *SHARED.lock().unwrap_or_else(PoisonError::into_inner) {
         adopt_shared_thread(shared);
     }
     ME.set(Some(Arc::clone(thread)));
-    // SAFETY: the creator's entry over its own data, as `start`'s caller promised.
-    unsafe { entry(data) };
+    entry.run();
     ME.take();
     thread.end.store(true, Ordering::Release);
     thread.hand_back();
@@ -237,7 +247,7 @@ mod tests {
         assert!(thread_context_active());
         // The thread backend's own entry points, which context.rs's dispatch on THREAD reaches.
         unsafe {
-            (*log).thread = Some(start(entry, log.cast()).unwrap());
+            (*log).thread = Some(start(Entry::new(entry, log.cast())).unwrap());
             let thread: *const Started = (*log).thread.as_deref().unwrap();
             assert!(!(*thread).swap_in());
             (*log).steps.push("main");
