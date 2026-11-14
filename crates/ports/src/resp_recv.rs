@@ -3,10 +3,7 @@
 use core::ffi::c_int;
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{DataHead, log, net_types::Protocol};
-use swoole_rs_protocols_ffi::{
-    Dispatched, ORIGIN, RESP_RECV_CLOSE, RESP_RECV_DONE, RespConnection, RespRequest, SW_ERR,
-    request,
-};
+use swoole_rs_protocols_ffi::{Dispatched, ORIGIN, Received, RespConnection, RespRequest, request};
 use swoole_rs_reactor::{Caught, Socket};
 use swoole_rs_server::ConnectionRecord;
 
@@ -35,24 +32,23 @@ impl Connection<'_> {
 }
 
 impl RespConnection for Connection<'_> {
-    fn recv(&mut self) -> isize {
+    fn recv(&mut self) -> Received {
         let socket = self.socket;
         let buffer = self.string();
         let received = swoole_rs_tls::upstream::recv(socket, buffer.spare(), 0);
-        if received >= 0 {
-            let length = buffer.len() + received.cast_unsigned();
+        if let Ok(received) = usize::try_from(received) {
             // SAFETY: the read initialized the `received` spare bytes after the content.
-            unsafe { buffer.set_len(length) };
-            return received;
+            unsafe { buffer.set_len(buffer.len() + received) };
+            return Received::Bytes(received);
         }
         let error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
         match socket.catch_error(error) {
             Caught::Error => {
                 log::sys_warning(ORIGIN, format_args!("recv from socket#{} failed", self.fd));
-                RESP_RECV_DONE
+                Received::Done
             }
-            Caught::Close => RESP_RECV_CLOSE,
-            Caught::Wait | Caught::Invalid | Caught::ReduceSize => RESP_RECV_DONE,
+            Caught::Close => Received::Closed,
+            Caught::Wait | Caught::Invalid | Caught::ReduceSize => Received::Done,
         }
     }
 
@@ -108,7 +104,7 @@ impl RespConnection for Connection<'_> {
 }
 
 /// `int redis::recv_packet(Protocol *, Connection *, String *)` over the connection's
-/// protocol, record and `socket`.
+/// protocol, record and `socket`: whether the connection stays open.
 ///
 /// # Safety
 /// `buffer` is live; `conn->object` is null or this receive's request.
@@ -117,12 +113,12 @@ pub(crate) unsafe fn recv_packet(
     conn: &mut ConnectionRecord,
     socket: Socket<'_>,
     buffer: *mut CppString,
-) -> c_int {
+) -> bool {
     let mut slot = conn.object.cast::<RespRequest>();
     let request = request(&mut slot);
     conn.object = slot.cast();
     if request.is_null() {
-        return SW_ERR;
+        return false;
     }
     let mut connection = Connection {
         protocol,
@@ -167,10 +163,7 @@ mod tests {
         buffer.alloc(65536, None);
         let buffer_size = buffer.size();
 
-        assert_eq!(
-            unsafe { recv_packet(&protocol, &mut conn, handle, &raw mut buffer) },
-            SW_ERR
-        );
+        assert!(!unsafe { recv_packet(&protocol, &mut conn, handle, &raw mut buffer) });
         assert_eq!(buffer.len(), 1);
         assert_eq!(buffer.size(), buffer_size);
 

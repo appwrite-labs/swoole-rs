@@ -379,7 +379,7 @@ fn parse(n: &mut impl Connection) -> Step {
 
 /// The request line, an HTTP/2 preface, the header block and form setup.
 fn head(n: &mut impl Connection) -> Option<Step> {
-    if n.request().method == 0 && n.request().get_protocol() < 0 {
+    if n.request().method == 0 && !n.request().get_protocol() {
         if !n.request().excepted && (n.buffer().length as u64) < HEADER_MAX_SIZE {
             return Some(Step::Done);
         }
@@ -392,7 +392,7 @@ fn head(n: &mut impl Connection) -> Option<Step> {
     if method == HTTP_PRI {
         return Some(preface(n));
     }
-    if n.request().header_length == 0 && n.request().get_header_length() < 0 {
+    if n.request().header_length == 0 && !n.request().get_header_length() {
         let buffer = n.buffer();
         if buffer.size == buffer.length {
             return Some(bad(n, Log::HeaderTooLarge));
@@ -512,7 +512,7 @@ fn body(n: &mut impl Connection, upload: bool) -> Step {
     let max = n.max_length();
     let request_length;
     if n.request().chunked {
-        if n.request().get_chunked_body_length() < 0 {
+        if !n.request().get_chunked_body_length() {
             if n.request().too_large {
                 return Step::Reply(Reply::TooLarge);
             }

@@ -164,30 +164,32 @@ pub extern "C" fn set_blocking(this: &mut SocketPair, blocking: bool) {
 }
 
 /// `ssize_t SocketPair::read(void *, size_t) const` into `buffer`: from the worker end,
-/// waiting for data when the pair is blocking. The bytes read, or -1.
-pub fn read_into(this: &SocketPair, buffer: &mut [MaybeUninit<u8>]) -> isize {
+/// waiting for data when the pair is blocking. The bytes read, or None.
+pub fn read_into(this: &SocketPair, buffer: &mut [MaybeUninit<u8>]) -> Option<usize> {
     let [_, Some(socket)] = ends(this) else {
-        return -1;
+        return None;
     };
-    if this.blocking {
+    let read = if this.blocking {
         read_sync(socket, buffer)
     } else {
         swoole_rs_corebase::sys::read(socket.fd(), buffer)
-    }
+    };
+    usize::try_from(read).ok()
 }
 
 /// `ssize_t SocketPair::write(const void *, size_t) const` of `data`: to the master
-/// end. The bytes written, or -1.
+/// end. The bytes written, or None.
 #[must_use]
-pub fn write_from(this: &SocketPair, data: &[u8]) -> isize {
+pub fn write_from(this: &SocketPair, data: &[u8]) -> Option<usize> {
     let [Some(socket), _] = ends(this) else {
-        return -1;
+        return None;
     };
-    if this.blocking {
+    let written = if this.blocking {
         write_sync(socket, data)
     } else {
         swoole_rs_corebase::sys::write(socket.fd(), data)
-    }
+    };
+    usize::try_from(written).ok()
 }
 
 /// `void SocketPair::clean() const`: reads and drops whatever the worker end holds.
@@ -254,7 +256,7 @@ mod tests {
     }
 
     /// [`read_into`] over initialised bytes.
-    fn read(pair: &SocketPair, buffer: &mut [u8]) -> isize {
+    fn read(pair: &SocketPair, buffer: &mut [u8]) -> Option<usize> {
         let (at, length) = (buffer.as_mut_ptr().cast(), buffer.len());
         read_into(pair, unsafe { std::slice::from_raw_parts_mut(at, length) })
     }
@@ -264,13 +266,13 @@ mod tests {
         assert!(!pair.master_socket.is_null() && !pair.worker_socket.is_null());
         let sent = *b"wire";
         let mut received = [0_u8; 4];
-        assert_eq!(write_from(unsafe { &*this }, &sent), 4);
-        assert_eq!(read(unsafe { &*this }, &mut received), 4);
+        assert_eq!(write_from(unsafe { &*this }, &sent), Some(4));
+        assert_eq!(read(unsafe { &*this }, &mut received), Some(4));
         assert_eq!(received, sent);
-        assert_eq!(write_from(unsafe { &*this }, &sent), 4);
+        assert_eq!(write_from(unsafe { &*this }, &sent), Some(4));
         set_blocking(unsafe { &mut *this }, false);
         clean(unsafe { &*this });
-        assert!(read(unsafe { &*this }, &mut received) < 0);
+        assert!(read(unsafe { &*this }, &mut received).is_none());
         set_timeout(unsafe { &mut *this }, 2.5);
         assert_eq!(pair.timeout, 2.5);
         assert_eq!(unsafe { (*pair.worker_socket).fields.timeouts.read }, 2.5);

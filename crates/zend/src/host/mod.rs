@@ -9,5 +9,6 @@ mod utilities;
 
 pub use common::{known_free, known_init, sw_zend_known_strings};
 pub use private::{
-    Create, NO_THEN, Then, call_anyway, exception, function_call, named_call, named_call_into,
+    Create, NO_THEN, Then, exception, function_call, named_call, named_call_into,
+    uncaught_exception,
 };

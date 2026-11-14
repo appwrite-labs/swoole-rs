@@ -237,11 +237,14 @@ fn schedule_4() {
         "192.168.1.103",
         29321,
     );
-    let sdata = swoole_rs_server::SendData {
-        // Upstream leaves the head unset and reads none of it.
-        info: Default::default(),
-        data: pkt.cast(),
+    // Upstream leaves the head unset and reads none of it but the packet's address,
+    // which is all the length lends.
+    let info = swoole_rs_corebase::DataHead {
+        len: u32::try_from(size_of::<DgramPacket>()).unwrap(),
+        ..Default::default()
     };
+    // SAFETY: the thread's buffer, which holds the `DgramPacket` and outlives the send.
+    let sdata = unsafe { swoole_rs_server::SendData::from_raw(info, pkt.cast()) };
     counter[schedule_worker(serv, 9999, Some(&sdata))] += 1;
 
     assert_eq!(counter[0], 0);

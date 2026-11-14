@@ -6,7 +6,6 @@
 use crate::{
     CONTINUE, DISPATCH, Frame, Op,
     aliases::{self, Receiver},
-    offset,
 };
 use std::{
     ffi::{CStr, c_int},
@@ -17,11 +16,10 @@ use swoole_rs_zend::{
     Call, Value,
     bailout::{Bailout, trap},
     opcode::Handler,
-    string,
     sys::{
-        IS_ARRAY, IS_RESOURCE, IS_STRING, IS_VAR, swr_zend_efree, swr_zend_push_nested_call,
-        swr_zend_try_call_known, swr_zend_zval_release, zend_execute_data, zend_function,
-        zend_throw_error, zval,
+        IS_ARRAY, IS_CONST, IS_RESOURCE, IS_STRING, IS_VAR, swr_zend_efree,
+        swr_zend_push_nested_call, swr_zend_try_call_known, swr_zend_zval_release,
+        zend_execute_data, zend_function, zval,
     },
     value,
 };
@@ -59,6 +57,15 @@ impl Handler for MethodCall {
         let Some(object) = op.op1() else {
             return DISPATCH;
         };
+        // The method name: op2's literal, `RT_CONSTANT(opline, opline->op2)`,
+        // which lives as long as the script. A name computed at run time is
+        // left to Zend.
+        if u32::from(op.op2_type) != IS_CONST {
+            return DISPATCH;
+        }
+        let Some(name) = op.op2() else {
+            return DISPATCH;
+        };
         let receiver = match object.dereferenced().kind() {
             IS_ARRAY => Receiver::Array,
             IS_STRING => Receiver::String,
@@ -67,13 +74,8 @@ impl Handler for MethodCall {
         };
         // Zend's request allocator, freed by the method call.
         let info = value::emalloc(size_of::<CallInfo>()).cast::<CallInfo>();
-        // The method name: op2's literal, `RT_CONSTANT(opline, opline->op2)` as upstream reads it.
-        let name = op
-            .at
-            .wrapping_byte_offset(offset(op.op2).cast_signed() as isize)
-            .cast::<zval>();
-        // SAFETY: a live literal; zvals are plain copies, as upstream's are.
-        let func = unsafe { name.read() };
+        // A plain copy of the literal, as upstream's.
+        let func = name.copy_value();
         let this = object.copy_value();
         // SAFETY: a fresh allocation of a `CallInfo`.
         unsafe {
@@ -146,17 +148,15 @@ unsafe fn call_method(receiver: Receiver, frame: *mut zend_execute_data, value: 
     let alias = name.and_then(|name| aliases::find(receiver, name.bytes()));
     let outcome = match alias {
         None => {
-            let kind = Value::of(&mut info.this).type_name().as_ptr();
-            let name = name.map_or(ptr::null_mut(), |name| string::val(name.as_ptr()));
-            // SAFETY: printf arguments: two NUL-terminated strings.
-            unsafe {
-                zend_throw_error(
-                    ptr::null_mut(),
-                    c"The method `%s` is undefined on %s".as_ptr(),
-                    name,
-                    kind,
-                );
-            }
+            let kind = Value::of(&mut info.this).type_name().to_bytes();
+            // "(null)" is what Zend's printf shows for a null string.
+            let name = name.map_or(&b"(null)"[..], |name| name.bytes());
+            swoole_rs_zend::throw_error(&crate::typed::message(&[
+                b"The method `",
+                name,
+                b"` is undefined on ",
+                kind,
+            ]));
             Ok(())
         }
         Some(alias) => {

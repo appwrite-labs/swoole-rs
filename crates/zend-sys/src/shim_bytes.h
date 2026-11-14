@@ -28,4 +28,9 @@ zend_string *swr_bytes_persistent(struct iovec bytes);
 /* estrndup: an emalloc'd NUL-terminated copy of the bytes. */
 char *swr_bytes_estrndup(struct iovec bytes);
 
+/* json_decode(text, true) into `out`, in place of what it held, which is not
+ * released (depth 0, as Server::command passes), or false. Objects decode as
+ * arrays, so no PHP code runs. */
+void swr_bytes_json_decode(struct iovec text, zval *out);
+
 #endif

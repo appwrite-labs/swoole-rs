@@ -16,11 +16,25 @@ type Body = Box<dyn FnOnce() + Send>;
 #[repr(transparent)]
 struct Handle(libc::pthread_t);
 
+#[expect(
+    improper_ctypes,
+    reason = "a pointer to a boxed body is one thin pointer, which C passes on as the \
+              `void *` it was given and never reads"
+)]
 unsafe extern "C" {
     /// Waits for the handle's thread to end, discarding its result: 0 or an error number.
     safe fn pthread_join(thread: Handle, result: Option<&mut *mut c_void>) -> c_int;
     /// Lets the handle's thread run on unjoined: 0 or an error number.
     safe fn pthread_detach(thread: Handle) -> c_int;
+    /// Starts a thread running `start(arg)`, with default attributes for none: 0 or an
+    /// error number. A `Box<Body>` parameter is ABI-compatible with the `void *` it is
+    /// passed, which is always `arg`.
+    fn pthread_create(
+        thread: &mut libc::pthread_t,
+        attributes: Option<&libc::pthread_attr_t>,
+        start: extern "C" fn(Box<Body>) -> *mut c_void,
+        arg: *mut Body,
+    ) -> c_int;
 }
 
 // SAFETY: a pthread handle names a thread, not memory; any thread may join it,
@@ -39,9 +53,6 @@ extern "C" fn entry(body: Box<Body>) -> *mut c_void {
     ptr::null_mut()
 }
 
-/// `pthread_create`'s start routine type.
-type Routine = extern "C" fn(*mut c_void) -> *mut c_void;
-
 impl Thread {
     fn handle(&self) -> std::sync::MutexGuard<'_, Option<Handle>> {
         self.handle.lock().unwrap_or_else(PoisonError::into_inner)
@@ -59,15 +70,10 @@ impl Thread {
             crate::fatal("a thread started twice");
         }
         let body: *mut Body = Box::into_raw(Box::new(Box::new(body)));
-        // SAFETY: a `Box<Body>` parameter is ABI-compatible with the `*mut c_void`
-        // `pthread_create` passes, which is always `body`.
-        let entry = unsafe {
-            std::mem::transmute::<extern "C" fn(Box<Body>) -> *mut c_void, Routine>(entry)
-        };
         let mut thread: libc::pthread_t = crate::sys::zeroed();
         let code = crate::with_signals_blocked(|| {
-            // SAFETY: default attributes; `entry` owns `body` once the thread starts.
-            unsafe { libc::pthread_create(&raw mut thread, ptr::null(), entry, body.cast()) }
+            // SAFETY: a live box, which `entry` owns once the thread starts.
+            unsafe { pthread_create(&mut thread, None, entry, body) }
         });
         if code != 0 {
             // SAFETY: no thread started, so the box is still ours.

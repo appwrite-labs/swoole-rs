@@ -61,10 +61,7 @@ pub fn send(serv: Server<'_>, session_id: core::ffi::c_long, data: &[u8]) -> boo
             first => to_connection(serv, &info, data, first),
         }
     } else {
-        let mut send = SendData {
-            info,
-            data: data.as_ptr().cast(),
-        };
+        let mut send = SendData::new(info, data);
         crate::hybrid::hybrid().factory_finish(serv, &mut send)
     };
     if sent {
@@ -166,22 +163,13 @@ fn send_now(state: &ServerState, session_id: core::ffi::c_long, data: &[u8]) -> 
 /// the connection was found upstream returns `false`, which its `int` makes 0, the
 /// same as `SW_OK`: true here too.
 ///
-/// # Safety
-/// `send` lends `info.len` readable bytes at `data` (a `SendfileTask` and its name
-/// for a file), or none.
+/// A file's payload is its `SendfileTask` and name.
 #[expect(
     clippy::must_use_candidate,
     reason = "callers ignore the result where upstream's do"
 )]
-pub unsafe fn send_to_connection(serv: Server<'_>, send: &SendData) -> bool {
-    let len = send.info.len as usize;
-    let data = if len == 0 || send.data.is_null() {
-        &[][..]
-    } else {
-        // SAFETY: as the caller guarantees.
-        unsafe { core::slice::from_raw_parts(send.data.cast::<u8>(), len) }
-    };
-    to_connection(serv, &send.info, data, None)
+pub fn send_to_connection(serv: Server<'_>, send: &SendData) -> bool {
+    to_connection(serv, send.info(), send.payload(), None)
 }
 
 /// [`send_to_connection`] of the event `info` with the bytes `data` it carries.
@@ -334,7 +322,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
     let port = serv.port_by_server_fd(conn.server_fd());
     let idle = port.map_or(0.0, |port| port.config().max_idle_time.get());
     if idle > 0.0 && sock.read(|s| s.output.send_timer.is_null()) {
-        idle_timer(conn, sock, idle);
+        idle_timer(serv, conn, sock, idle);
     }
     if sock.read(|s| s.events) & EVENT_WRITE == 0 {
         reactor.interest(sock, Interest::AddWrite, 0);
@@ -391,17 +379,13 @@ fn send_file(sock: Socket<'_>, task: &[u8]) -> bool {
         return false;
     };
     let (offset, length) = (i64::from_ne_bytes(offset), usize::from_ne_bytes(length));
-    swoole_rs_tls::upstream::socket_sendfile_async(sock, name, offset, length) >= 0
+    swoole_rs_tls::upstream::socket_sendfile_async(sock, name, offset, length)
 }
 
 /// `swoole_timer_add(sec2msec(port->max_idle_time), true, ...)` for the socket's
 /// sends.
-fn idle_timer(conn: Connection<'_>, sock: Socket<'_>, idle: f64) {
-    let msec = (idle * 1000.0).c_cast::<libc::c_long>();
-    let tick = crate::connection::idle_tick;
-    // SAFETY: `tick` takes the live connection, which deletes the timer before it goes.
-    let node =
-        unsafe { swoole_rs_timer::swr_v1_timer_add_plain(msec, true, tick, conn.as_ptr().cast()) };
+fn idle_timer(serv: Server<'_>, conn: Connection<'_>, sock: Socket<'_>, idle: f64) {
+    let node = crate::connection::idle_timer(serv, conn, idle);
     let now = steady_ms();
     sock.edit(|sock| {
         sock.timeouts.write = idle;
@@ -452,9 +436,7 @@ mod tests {
         }
         /// `send_to_connection` of an event of `kind` with `data` to `session`.
         fn send(&self, kind: ServerEvent, session: i64, data: &[u8]) -> c_int {
-            let send = event(kind, session, data);
-            // SAFETY: `data` is live for the call.
-            let sent = unsafe { send_to_connection(self.serv(), &send) };
+            let sent = send_to_connection(self.serv(), &event(kind, session, data));
             if sent { SW_OK } else { SW_ERR }
         }
         /// The reactor records its closes, as the server's would close them.
@@ -492,16 +474,13 @@ mod tests {
         0
     }
 
-    fn event(kind: ServerEvent, session: i64, data: &[u8]) -> SendData {
-        SendData {
-            info: DataHead {
-                fd: session,
-                kind: kind.code(),
-                len: data.len().c_cast::<u32>(),
-                ..DataHead::default()
-            },
-            data: data.as_ptr().cast(),
-        }
+    fn event(kind: ServerEvent, session: i64, data: &[u8]) -> SendData<'_> {
+        let info = DataHead {
+            fd: session,
+            kind: kind.code(),
+            ..DataHead::default()
+        };
+        SendData::new(info, data)
     }
 
     #[test]
@@ -638,7 +617,7 @@ mod tests {
     fn a_send_made_first_is_not_repeated() {
         let mut a = Accepted::new();
         let data = b"0123456789";
-        let info = event(ServerEvent::SendData, 1, data).info;
+        let info = *event(ServerEvent::SendData, 1, data).info();
         assert_eq!(
             send_now(a.live.state(), 1, data),
             Some(10),

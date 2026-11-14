@@ -7,7 +7,7 @@
 //! after a clean FIN, `close_notified` is the terminal read state, and a TLS close notify
 //! still owed is queued behind the output (`native/halfclose/prequeue.md`).
 use crate::Mode;
-use core::ffi::{c_int, c_long, c_void};
+use core::ffi::{c_int, c_long};
 use core::sync::atomic::Ordering::{Relaxed, Release, SeqCst};
 use swoole_rs_corebase::ServerEvent;
 
@@ -29,7 +29,7 @@ use swoole_rs_tls::upstream as tls;
 use crate::base_factory::SendData;
 use crate::callbacks::CallbackKind;
 use crate::hybrid::hybrid;
-use crate::port_config::PortConfig;
+use crate::port_config::{PortConfig, ReadEvent};
 use crate::reactor_handle::Reactor;
 use crate::reactor_ops::{is_dgram, out_buffer, valid};
 use crate::records::{Connection, Lookup};
@@ -52,13 +52,6 @@ const MAX_WAITING_TIME: u16 = 1024;
 pub(crate) fn read(serv: view::Server<'_>, reactor: Reactor, event: &mut Event) -> c_int {
     read_as(BUILT_PREQUEUE, serv, reactor, event)
 }
-
-/// A port's `int (*onRead)(Reactor *, ListenPort *, Event *)`.
-type OnRead = unsafe extern "C-unwind" fn(
-    swoole_rs_reactor::Running<'_>,
-    view::Port<'_>,
-    &mut Event,
-) -> c_int;
 
 /// [`read`], as a build with `prequeue` (the `halfclose` feature) or without.
 fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut Event) -> c_int {
@@ -115,17 +108,13 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
     };
     conn.set_last_recv_time(microtime());
     let last_recv_bytes = sock.read(|s| s.total_recv_bytes);
-    let on_read = port.config().on_read.load(Relaxed);
-    // SAFETY: the port holds null or the `int (*onRead)(Reactor *, ListenPort *, Event *)`
-    // `init_protocol` set.
-    let on_read = unsafe { core::mem::transmute::<*mut c_void, Option<OnRead>>(on_read) };
-    let Some(on_read) = on_read else {
+    let Some(on_read) = port.config().on_read.get() else {
         return ERR;
     };
     // SAFETY: the reactor's event, which no reference is used through during the read.
     let event = unsafe { &mut *raw };
-    // SAFETY: this server's reactor, and a readable event on a connection of `port`.
-    let retval = unsafe { on_read(reactor.handle(), port, event) };
+    // A readable event on the live connection of `fd`, of this server's port `port`.
+    let retval = on_read(reactor.handle(), port, ReadEvent::new(serv, event));
     // Upstream reads the socket after the read too.
     let (total_recv_bytes, notified) = sock.read(|s| (s.total_recv_bytes, s.close_notified));
     let received = total_recv_bytes.wrapping_sub(last_recv_bytes);
@@ -189,16 +178,17 @@ fn verify_ssl(
         Certificate::Dispatched => {
             // The peer's certificate filled this thread's buffer.
             let (len, data) = with_thread_buffer(|buffer| (buffer.len(), buffer.as_ptr()));
-            let mut task = SendData {
-                info: DataHead {
-                    fd: sock.fd().into(),
-                    kind: ServerEvent::Connect.code(),
-                    reactor_id: reactor.handle().id().cast_signed(),
-                    len: u32::try_from(len).unwrap_or(u32::MAX),
-                    ..DataHead::default()
-                },
-                data: data.cast(),
+            let info = DataHead {
+                fd: sock.fd().into(),
+                kind: ServerEvent::Connect.code(),
+                reactor_id: reactor.handle().id().cast_signed(),
+                len: u32::try_from(len).unwrap_or(u32::MAX),
+                ..DataHead::default()
             };
+            // SAFETY: the thread's buffer, which lives as long as the thread and holds
+            // the certificate's `len` bytes; the dispatch reads them before anything on
+            // this thread fills the buffer again.
+            let mut task = unsafe { SendData::from_raw(info, data.cast()) };
             hybrid().factory_dispatch(serv, &mut task);
         }
         Certificate::None => {
@@ -360,18 +350,18 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
         let buffer = out_buffer(s).filter(|b| !swr_cpp_buffer_empty(b))?;
         Some(swr_cpp_buffer_typed_front(buffer).kind)
     }) {
-        let ret = match kind {
+        let sent = match kind {
             EntryKind::Close => return reactor.close(sock),
             EntryKind::Sendfile => tls::socket_handle_sendfile(sock),
             EntryKind::Data => {
-                let ret = tls::socket_handle_send(sock);
-                if ret == OK {
+                let sent = tls::socket_handle_send(sock);
+                if sent {
                     conn.set_send_queued_bytes(output(sock).0);
                 }
-                ret
+                sent
             }
         };
-        if ret < 0 {
+        if !sent {
             let (close_wait, send_wait) = sock.read(|s| (s.output.close_wait, s.output.send_wait));
             if close_wait {
                 let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
@@ -827,13 +817,8 @@ pub(crate) mod tests {
     }
 
     /// The port's `onRead`: receives 5 bytes and returns 42.
-    unsafe extern "C-unwind" fn on_read(
-        _: *mut c_void,
-        _: *mut c_void,
-        event: *mut Event,
-    ) -> c_int {
-        // SAFETY: the reactor's live event.
-        let event = unsafe { &*event };
+    fn on_read(_: swoole_rs_reactor::Running<'_>, _: view::Port<'_>, read: ReadEvent<'_>) -> c_int {
+        let (_, event) = read.into_parts();
         READS.with_borrow_mut(|reads| reads.push(event.fd()));
         let sock = event.socket().unwrap();
         sock.edit(|s| s.total_recv_bytes += 5);
@@ -848,8 +833,7 @@ pub(crate) mod tests {
     /// The live server with sessions 1 and 2 accepted, whose port reads with [`on_read`].
     fn reading() -> (LiveServer, [std::net::TcpStream; 2]) {
         let (live, clients) = accepted();
-        let on_read: unsafe extern "C-unwind" fn(_, _, _) -> _ = on_read;
-        live.port().on_read.store(on_read as *mut c_void, Relaxed);
+        live.port().on_read.set(Some(on_read));
         drop(reads());
         (live, clients)
     }
@@ -875,7 +859,7 @@ pub(crate) mod tests {
     #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn read_fails_on_a_port_without_on_read() {
         let (live, _clients) = reading();
-        live.port().on_read.store(core::ptr::null_mut(), Relaxed);
+        live.port().on_read.set(None);
         let conn = session(&live, 1);
         assert_eq!(
             read(live.server(), live.reactor(), &mut conn.event(0, 0)),

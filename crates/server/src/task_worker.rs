@@ -87,13 +87,13 @@ fn nonblocking_flags(flags: u16, task_flags: u16) -> u16 {
 /// Writes the notification with `write`, again each time `would_block` says the pipe
 /// was full and `writable` waited until it is not: the last write's result.
 fn notify(
-    mut write: impl FnMut() -> isize,
+    mut write: impl FnMut() -> Option<usize>,
     mut would_block: impl FnMut() -> bool,
     mut writable: impl FnMut() -> bool,
-) -> isize {
+) -> Option<usize> {
     loop {
         let written = write();
-        if written < 0 && would_block() && writable() {
+        if written.is_none() && would_block() && writable() {
             continue;
         }
         break written;
@@ -154,19 +154,19 @@ mod tests {
 
     #[test]
     fn finish_notifies_again_once_a_full_pipe_is_writable() {
-        let mut writes = [-1, 8].into_iter();
+        let mut writes = [None, Some(8)].into_iter();
         let mut waits = 0;
         let written = notify(
-            || writes.next().unwrap_or(0),
+            || writes.next().unwrap_or(Some(0)),
             || true,
             || {
                 waits += 1;
                 true
             },
         );
-        assert_eq!((written, waits), (8, 1));
+        assert_eq!((written, waits), (Some(8), 1));
         // A failure that is not a full pipe, or a wait that fails, ends it.
-        assert_eq!(notify(|| -1, || false, || true), -1);
-        assert_eq!(notify(|| -1, || true, || false), -1);
+        assert_eq!(notify(|| None, || false, || true), None);
+        assert_eq!(notify(|| None, || true, || false), None);
     }
 }

@@ -45,20 +45,26 @@ pub fn exception() -> *mut zend_object {
 }
 
 /// `zend_exception_error(EG(exception), E_ERROR)` of a pending exception,
-/// inside the C trap, its bailout deferred: what a callback outside the VM
-/// does about an exception nothing caught. Like [`exception`] it takes
+/// inside the C trap: what a callback outside the VM does about an exception
+/// nothing caught; nothing when none is pending. Like [`exception`] it takes
 /// nothing from its caller: it reads the executor's slot itself.
-pub(super) fn fatal_exception() {
+/// # Errors
+/// The report bailed out, as an `E_ERROR` does.
+pub fn uncaught_exception() -> Result<(), bailout::Bailout> {
     // Observed only after the preceding call returned.
     let exception = exception();
-    if !exception.is_null() {
-        // SAFETY: the exception the executor holds, live until Zend clears
-        // it; the reporter is C and runs inside the C trap, so a bailout
-        // crosses no Rust frame.
-        bailout::defer(unsafe {
-            bailout::trap(sys::swr_zend_facade_exception_error, exception.cast())
-        });
+    if exception.is_null() {
+        return Ok(());
     }
+    // SAFETY: the exception the executor holds, live until Zend clears it;
+    // the reporter is C and runs inside the C trap, so a bailout crosses no
+    // Rust frame.
+    unsafe { bailout::trap(sys::swr_zend_facade_exception_error, exception.cast()) }
+}
+
+/// [`uncaught_exception`], its bailout deferred.
+pub(super) fn fatal_exception() {
+    bailout::defer(uncaught_exception());
 }
 
 /// `sw_callable_warning(message)` inside `zend_try`, the bailout of a user
@@ -117,31 +123,6 @@ pub(super) unsafe fn direct_call(
     };
     // Discard the private return slot after invocation, as upstream does.
     discard(temporary);
-    result
-}
-
-/// # Safety
-/// Live callable frame/cache; caller accepts the frame's upstream temporary-return convention.
-pub unsafe fn call_anyway(frame: &mut zend_fcall_info, cache: *mut zend_fcall_info_cache) -> c_int {
-    let temporary = Owned::default();
-    if frame.retval.is_null() {
-        // The temporary remains live through the call and destruction below.
-        frame.retval = temporary.as_ptr();
-    }
-    // SAFETY: Zend executes the configured frame entirely inside the C trap.
-    let result = unsafe { bailout::call(frame, cache) };
-    let result = match result {
-        Ok(true) => 0,
-        Ok(false) => -1,
-        Err(error) => {
-            error.defer();
-            -1
-        }
-    };
-    // The private temporary owns any returned payload; it is still undefined
-    // when the frame came with a return slot of its own.
-    discard(temporary);
-    bailout::finish();
     result
 }
 

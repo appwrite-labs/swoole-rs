@@ -509,14 +509,30 @@ extern "C" fn defers(_context: *mut c_void) {
         if let Some(returned) = returned {
             (argc, argv) = (1, returned);
         }
-        // The call's own frame: the task keeps its arguments, which its release drops.
+        // The call's own frame: the task keeps its arguments, which its release
+        // drops, and its result goes to a temporary destroyed after the call.
+        let temporary = swoole_rs_zend::Owned::default();
         let mut fci = swoole_rs_zend::EMPTY_FCI;
         fci.size = size_of::<swoole_rs_zend::sys::zend_fcall_info>();
+        fci.retval = temporary.as_ptr();
         fci.param_count = argc;
         fci.params = argv;
         // SAFETY: a kept callable's resolved cache, over its kept arguments or the
-        // context's live return value.
-        if unsafe { swoole_rs_zend::host::call_anyway(&mut fci, fcc) } != 0 {
+        // context's live return value, and a return slot live through the call.
+        let called = unsafe { bailout::call(&raw mut fci, fcc) };
+        let failed = !matches!(called, Ok(true));
+        bailout::defer(called.map(drop));
+        if bailout::pending() {
+            #[expect(
+                clippy::mem_forget,
+                reason = "upstream never ran past a bailout to destroy it"
+            )]
+            std::mem::forget(temporary);
+        } else {
+            drop(temporary);
+        }
+        bailout::finish();
+        if failed {
             fatal_error(swoole_rs_zend::E_WARNING, c"defer callback handler error");
         }
         if !swoole_rs_zend::host::exception().is_null() {

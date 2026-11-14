@@ -109,6 +109,19 @@ pub fn thread_timer_count() -> usize {
     current().map_or(0, Timer::count)
 }
 
+/// Whether this thread has a timer that no reactor drives (`!timer->get_reactor()`).
+#[must_use]
+pub fn thread_timer_detached() -> bool {
+    current().is_some_and(|timer| crate::owner::owner_reactor(timer).is_null())
+}
+
+/// `SwooleTG.timer->reinit(manually_trigger)`, when this thread has a timer.
+pub fn thread_timer_reinit(manually_trigger: bool) {
+    if let Some(timer) = current() {
+        crate::owner::owner_reinit(timer, manually_trigger);
+    }
+}
+
 /// `int64_t swoole_timer_get_next_msec()`: -1 without a timer.
 #[unsafe(export_name = "_Z26swoole_timer_get_next_msecv")]
 pub extern "C" fn swoole_timer_get_next_msec() -> i64 {

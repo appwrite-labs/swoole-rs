@@ -34,7 +34,7 @@ fn reuse_port(config: &crate::ServerConfig) -> bool {
 
 /// `Server::start_reactor_processes()`: the ports, the event worker pool and its
 /// workers, run by this process when there is one, else by the manager.
-pub(crate) fn start_reactor_processes(serv: view::Server<'_>) -> c_int {
+pub(crate) fn start_reactor_processes(serv: view::Server<'_>) -> bool {
     let config = serv.config();
     config.single_thread.set(true);
     // Listen on the TCP ports; with SO_REUSEPORT each worker listens itself.
@@ -45,43 +45,43 @@ pub(crate) fn start_reactor_processes(serv: view::Server<'_>) -> c_int {
             }
             if reuse_port(config) {
                 hybrid().step(serv, Step::ClosePortSocket(index));
-            } else if hybrid().step(serv, Step::Listen(index)) < 0 {
-                return ERR;
+            } else if !hybrid().step(serv, Step::Listen(index)) {
+                return false;
             }
         }
     }
-    if hybrid().step(serv, Step::CreateEventPool) < 0 {
-        return ERR;
+    if !hybrid().step(serv, Step::CreateEventPool) {
+        return false;
     }
     config.init_ipc_max_size();
-    if hybrid().step(serv, Step::CreatePipeBuffers) < 0 {
-        return ERR;
+    if !hybrid().step(serv, Step::CreatePipeBuffers) {
+        return false;
     }
-    let rv = if serv.is_single_worker() {
+    let started = if serv.is_single_worker() {
         let worker = crate::shared::ServerShared::of(serv).event_pool().worker(0);
         let raw = worker.map_or(core::ptr::null_mut(), Worker::raw);
         swoole_rs_process::worker_globals::set_current_worker(raw);
-        worker.map_or(ERR, |worker| main_loop(serv, worker))
+        worker.is_some_and(|worker| main_loop(serv, worker))
     } else {
         hybrid().step(serv, Step::StartManager)
     };
-    if rv == OK {
+    if started {
         hybrid().step(serv, Step::DestroyEventPool);
     }
-    rv
+    started
 }
 
 /// `Server::reactor_process_main_loop`: one base-mode worker, on this thread's
 /// reactor, until it stops.
-pub(crate) fn main_loop(serv: view::Server<'_>, worker: Worker<'_>) -> c_int {
+pub(crate) fn main_loop(serv: view::Server<'_>, worker: Worker<'_>) -> bool {
     use swoole_rs_process::methods as process;
     let id = worker.id();
     process::set_worker_type(WorkerType::Event);
     process::swoole_set_worker_id(id);
     process::swoole_set_worker_pid(std::process::id().cast_signed());
     crate::worker_methods::init_event_worker(serv, worker);
-    if swoole_rs_corebase::thread_reactor().is_null() && hybrid().step(serv, Step::EventInit) < 0 {
-        return ERR;
+    if swoole_rs_corebase::thread_reactor().is_null() && !hybrid().step(serv, Step::EventInit) {
+        return false;
     }
     hybrid().step(serv, Step::TimerReinit);
     hybrid().step(serv, Step::WorkerSignalInit);
@@ -93,12 +93,12 @@ pub(crate) fn main_loop(serv: view::Server<'_>, worker: Worker<'_>) -> c_int {
     let config = serv.config();
     for (index, &port) in serv.ports().iter().enumerate() {
         if reuse_port(config) && is_stream(port) {
-            if hybrid().step(serv, Step::CreatePortSocket(index)) < 0 {
+            if !hybrid().step(serv, Step::CreatePortSocket(index)) {
                 hybrid().step(serv, Step::EventFree);
-                return ERR;
+                return false;
             }
-            if hybrid().step(serv, Step::Listen(index)) < 0 {
-                return ERR;
+            if !hybrid().step(serv, Step::Listen(index)) {
+                return false;
             }
         }
         if let Some(count) = serv.port_worker_connections(port, slot) {
@@ -108,7 +108,7 @@ pub(crate) fn main_loop(serv: view::Server<'_>, worker: Worker<'_>) -> c_int {
             .with_socket(|socket| reactor.add(socket, EVENT_READ))
             .is_none_or(|added| !added)
         {
-            return ERR;
+            return false;
         }
     }
     let running = reactor.handle();
@@ -125,7 +125,7 @@ pub(crate) fn main_loop(serv: view::Server<'_>, worker: Worker<'_>) -> c_int {
     hybrid().step(serv, Step::PipeHandler);
     crate::server_methods::store_listen_socket(serv);
     if !worker.pipe_worker().is_null() && !add_pipes(reactor, worker) {
-        return ERR;
+        return false;
     }
     if config.task_worker_num.get() > 0 && config.task_ipc() == Some(crate::TaskIpcMode::UnixSock) {
         let pool = crate::shared::ServerShared::of(serv).task_pool();
@@ -148,24 +148,24 @@ pub(crate) fn main_loop(serv: view::Server<'_>, worker: Worker<'_>) -> c_int {
             callbacks.call_server(ServerSlot::Start, serv);
         }
     }
-    if hybrid().step(serv, Step::MasterTimer) < 0 {
+    if !hybrid().step(serv, Step::MasterTimer) {
         hybrid().step(serv, Step::EventFree);
-        return ERR;
+        return false;
     }
     hybrid().step(serv, Step::WorkerStart(id));
     // The heartbeat check.
-    if config.heartbeat_check_interval.get() > 0 && hybrid().step(serv, Step::HeartbeatTimer) < 0 {
+    if config.heartbeat_check_interval.get() > 0 && !hybrid().step(serv, Step::HeartbeatTimer) {
         hybrid().step(serv, Step::EventFree);
-        return ERR;
+        return false;
     }
-    let rv = hybrid().step(serv, Step::ReactorWait);
+    let waited = hybrid().step(serv, Step::ReactorWait);
     // Close every connection.
     crate::reactor_thread::each_connection(serv.state(), |conn| {
         crate::server_methods::close(serv, conn.session_id(), true);
     });
     hybrid().step(serv, Step::EventFree);
     hybrid().step(serv, Step::WorkerStop(id));
-    rv
+    waited
 }
 
 /// The worker's pipe ends, nonblocking, read by `reactor`: whether both were added.
@@ -297,7 +297,7 @@ mod tests {
         config(&live).have_stream_sock.set(true);
         config(&live).worker_num.set(2);
         calls();
-        assert_eq!(start_reactor_processes(live.server()), OK);
+        assert!(start_reactor_processes(live.server()));
         assert_eq!(
             calls(),
             steps(&[
@@ -319,16 +319,15 @@ mod tests {
             ),
         ] {
             fail(Some(failing));
-            assert_eq!(start_reactor_processes(live.server()), ERR, "{failing:?}");
+            assert!(!start_reactor_processes(live.server()), "{failing:?}");
             assert_eq!(calls(), steps(ran), "{failing:?}: the pool stays");
         }
         fail(None);
 
         config(&live).have_stream_sock.set(false);
         config(&live).worker_num.set(1);
-        assert_eq!(
-            start_reactor_processes(live.server()),
-            ERR,
+        assert!(
+            !start_reactor_processes(live.server()),
             "a single worker needs its pool's record"
         );
         assert_eq!(
@@ -347,7 +346,7 @@ mod tests {
         // SAFETY: a zeroed worker record, live for the test.
         let worker = unsafe { Worker::new(&raw mut record) };
         calls();
-        assert_eq!(main_loop(live.server(), worker), OK);
+        assert!(main_loop(live.server(), worker));
         assert_eq!(
             calls(),
             steps(&[
@@ -378,13 +377,13 @@ mod tests {
         live.reactor().del(live.port_socket());
 
         fail(Some(MasterTimer));
-        assert_eq!(main_loop(live.server(), worker), ERR);
+        assert!(!main_loop(live.server(), worker));
         assert_eq!(calls()[3..], steps(&[MasterTimer, EventFree]), "no loop");
         live.reactor().del(live.port_socket());
 
         config(&live).heartbeat_check_interval.set(5);
         fail(Some(HeartbeatTimer));
-        assert_eq!(main_loop(live.server(), worker), ERR);
+        assert!(!main_loop(live.server(), worker));
         assert_eq!(
             calls()[3..],
             steps(&[MasterTimer, WorkerStart(0), HeartbeatTimer, EventFree]),

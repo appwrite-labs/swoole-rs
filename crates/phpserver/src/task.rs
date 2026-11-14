@@ -6,7 +6,7 @@
 //! with `SW_TASK_SERIALIZE`), packed, sent and waited for by crates/process's
 //! `Server` methods over this worker's task pool, notify pipe and lock ([`Host`]).
 use crate::callable::Callable;
-use crate::dispatch::{dtor, handler_error, invoke, set_last_error, undef, zserv};
+use crate::dispatch::{handler_error, invoke, set_last_error, used};
 use crate::lifecycle::Props;
 use crate::server::{DATA, TASK, fatal, running};
 use std::{
@@ -35,8 +35,8 @@ use swoole_rs_server::{
 };
 use swoole_rs_tls::socket_pair::{self, SocketPair};
 use swoole_rs_zend::{
-    Array, ArrayMut, Call, E_WARNING, Owned, OwnedArray, Value, ZString, bailout::Bailout,
-    long_zval, message, report,
+    Array, ArrayMut, Call, E_WARNING, Owned, OwnedArray, Value, ZString, bailout::Bailout, message,
+    report,
 };
 
 /// `SW_TASK_*` flags.
@@ -102,8 +102,8 @@ impl TaskHost for Host<'_> {
         }
     }
 
-    fn read_notify(&mut self) -> isize {
-        let Some(pipe) = &self.pipe else { return -1 };
+    fn read_notify(&mut self) -> Option<usize> {
+        let pipe = self.pipe.as_ref()?;
         let mut notify = [std::mem::MaybeUninit::uninit(); size_of::<u64>()];
         socket_pair::read_into(pipe, &mut notify)
     }
@@ -669,48 +669,39 @@ fn unpack(task: Packed<'_>) -> Result<Option<Owned>, Bailout> {
 pub(crate) fn on_task(server: view::Server<'_>, task: Packed<'_>) -> Result<c_int, Bailout> {
     let counters = server.counters();
     counters.tasking_num.fetch_sub(1, Ordering::SeqCst);
-    let zserv = zserv();
     let Some(data) = unpack(task)? else {
         return Ok(SW_ERR);
     };
-    let mut data = data.into_zval();
     let facts = facts(server);
     let info = info(task);
-    let mut args = [zserv, undef(), undef(), undef()];
+    // `data` is the last argument, or the task's property.
+    let mut args = [Owned::default(), Owned::default(), data];
     let argc = if facts.task_object {
-        let props = Props::init(&mut args[1], &TASK);
+        let [event, _, data] = &mut args;
+        let props = Props::init(event, &TASK);
         props.long(c"worker_id", info.worker_id);
         props.long(c"id", info.id);
-        props.value(c"data", &mut data);
+        props.set(c"data", data);
         props.double(c"dispatch_time", info.time);
         props.long(c"flags", info.flags);
-        crate::server::task_bind(Value::of(&mut args[1]), &task.head());
-        2
+        crate::server::task_bind(event, &task.head());
+        1
     } else {
-        args[1] = long_zval(info.id);
-        args[2] = long_zval(info.worker_id);
-        args[3] = data;
-        4
+        args[0] = Owned::long(info.id);
+        args[1] = Owned::long(info.worker_id);
+        3
     };
     let retval = Owned::default();
-    let called = crate::lifecycle::callback(crate::lifecycle::ServerCallback::Task).map_or(
-        Ok(false),
-        |cb| {
-            invoke(
-                &cb,
-                args.get_mut(..argc).unwrap_or_default(),
-                Some(&retval),
-                facts.task_coroutine,
-            )
-        },
-    );
+    let called = crate::lifecycle::callback(crate::lifecycle::ServerCallback::Task)
+        .map_or(Ok(false), |cb| {
+            invoke(&cb, used(&args, argc), Some(&retval), facts.task_coroutine)
+        });
     let outcome = match called {
         Ok(false) => handler_error("onTask"),
         called => called.map(drop),
     };
-    if argc == 2 {
-        dtor(&mut args[1]);
-    }
+    let [event, _, data] = args;
+    drop(event);
     let outcome = outcome.and_then(|()| {
         if !retval.is_null() {
             finish_task(server, &retval, Some(&task.head()))?;
@@ -718,13 +709,12 @@ pub(crate) fn on_task(server: view::Server<'_>, task: Packed<'_>) -> Result<c_in
         Ok(())
     });
     drop(retval);
-    dtor(&mut data);
+    drop(data);
     outcome.map(|()| SW_OK)
 }
 
 /// `php_swoole_server_onFinish`, for a live server and the result it received.
 pub(crate) fn on_finish(server: view::Server<'_>, task: Packed<'_>) -> Result<c_int, Bailout> {
-    let zserv = zserv();
     let info = info(task);
     let id = info.id;
     let Some(data) = unpack(task)? else {
@@ -734,7 +724,6 @@ pub(crate) fn on_finish(server: view::Server<'_>, task: Packed<'_>) -> Result<c_
     if flags & COROUTINE != 0 {
         return resume(server, id, data).map(|()| SW_OK);
     }
-    let mut data = data.into_zval();
     let cb = if flags & CALLBACK != 0 {
         // Its own reference: the callback may replace the pending entry.
         let cb = pending(server, |p| {
@@ -749,29 +738,25 @@ pub(crate) fn on_finish(server: view::Server<'_>, task: Packed<'_>) -> Result<c_
     };
     let Some(cb) = cb else {
         let outcome = event_warning(c"require 'onFinish' callback");
-        dtor(&mut data);
+        drop(data);
         return outcome.map(|()| SW_ERR);
     };
     let facts = facts(server);
-    let mut args = [zserv, undef(), undef()];
+    // `data` is the last argument, or the event's property.
+    let mut args = [Owned::default(), data];
     let argc = if facts.event_object {
-        let props = Props::init(&mut args[1], &DATA[TASK_RESULT]);
+        let [event, data] = &mut args;
+        let props = Props::init(event, &DATA[TASK_RESULT]);
         props.long(c"task_id", id);
         props.long(c"task_worker_id", info.worker_id);
         props.double(c"dispatch_time", info.time);
-        props.value(c"data", &mut data);
-        2
+        props.set(c"data", data);
+        1
     } else {
-        args[1] = long_zval(id);
-        args[2] = data;
-        3
+        args[0] = Owned::long(id);
+        2
     };
-    let outcome = match invoke(
-        &cb,
-        args.get_mut(..argc).unwrap_or_default(),
-        None,
-        facts.enable_coroutine,
-    ) {
+    let outcome = match invoke(&cb, used(&args, argc), None, facts.enable_coroutine) {
         Ok(false) => handler_error("onFinish"),
         called => called.map(drop),
     };
@@ -779,10 +764,7 @@ pub(crate) fn on_finish(server: view::Server<'_>, task: Packed<'_>) -> Result<c_
         // Freed once the table is no longer borrowed.
         drop(pending(server, |p| p.callbacks.remove(&id)).map(ManuallyDrop::into_inner));
     }
-    if facts.event_object {
-        dtor(&mut args[1]);
-    }
-    dtor(&mut data);
+    drop(args);
     outcome.map(|()| SW_OK)
 }
 

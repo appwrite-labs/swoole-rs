@@ -346,7 +346,7 @@ unsafe fn event_del(socket: *mut Socket) -> c_int {
 unsafe fn pair_write(pair: *const SocketPair, data: &[u8]) -> isize {
     // SAFETY: as the caller guarantees; the C++ class is the Rust record.
     let pair = unsafe { &*pair.cast::<swoole_rs_ffi::socket_pair::SocketPair>() };
-    swoole_rs_ffi::socket_pair::write_from(pair, data)
+    swoole_rs_ffi::socket_pair::write_from(pair, data).map_or(-1, usize::cast_signed)
 }
 
 /// `reactor->get_handler(fd_type, event)`, as its address.

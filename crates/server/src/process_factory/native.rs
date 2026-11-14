@@ -62,7 +62,7 @@ pub(crate) fn create(serv: view::Server<'_>) -> *mut c_void {
     tables.connection_list = list;
     tables.reactor_pipe_num = u16::try_from(pipes & 0xffff).unwrap_or_default();
     barriers(serv, true);
-    crate::factory::new(None)
+    crate::factory::new()
 }
 
 /// `Server::destroy_process_factory`.
@@ -90,12 +90,12 @@ pub(crate) fn create_worker_pipes(serv: view::Server<'_>) -> bool {
         }
     }
     serv.config().init_ipc_max_size();
-    crate::master_ops::create_pipe_buffers(serv) >= 0
+    crate::master_ops::create_pipe_buffers(serv)
 }
 
 /// `ProcessFactory::start`: the workers' pipes, then the manager.
 pub(crate) fn start(serv: view::Server<'_>) -> bool {
-    create_worker_pipes(serv) && crate::manager::native::start_manager_process(serv) == 0
+    create_worker_pipes(serv) && crate::manager::native::start_manager_process(serv)
 }
 
 /// `ProcessFactory::shutdown`: SIGTERM the manager and wait for it. False, as
@@ -230,11 +230,8 @@ pub(crate) fn send(serv: view::Server<'_>, to: Pipe, send: &mut SendData) -> boo
             let Some(socket) = bus.pipe_socket(pipe) else {
                 return false;
             };
-            // SAFETY: the live pipe, and the data sent.
-            unsafe {
-                bus.rust()
-                    .send_raw(socket, &mut send.info, send.data.cast())
-            }
+            // SAFETY: the live pipe.
+            unsafe { send.send_raw(bus.rust(), socket) }
         }
         Pipe::Reactor(id) => {
             let Some(worker) = serv.worker_record(id) else {
@@ -244,14 +241,14 @@ pub(crate) fn send(serv: view::Server<'_>, to: Pipe, send: &mut SendData) -> boo
             let Some(pipe) = crate::view::worker_pipe(worker, false) else {
                 return false;
             };
-            // SAFETY: the data sent.
-            unsafe { bus.rust().send_raw(pipe, &mut send.info, send.data.cast()) }
+            // SAFETY: the worker's live pipe.
+            unsafe { send.send_raw(bus.rust(), pipe) }
         }
         Pipe::Close(id) => {
             let Some(target) = serv.worker_record(id) else {
                 return false;
             };
-            let head = swoole_rs_process::process_pool::head_view(&send.info);
+            let head = swoole_rs_process::process_pool::head_view(send.info());
             let sent = swoole_rs_process::methods::send_pipe_message(target, head, PIPE_MASTER);
             sent > 0
         }

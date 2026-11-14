@@ -120,14 +120,17 @@ impl Owned {
         #[expect(clippy::cast_ptr_alignment, reason = "alloc honours Table's layout")]
         let table = unsafe { alloc(Alloc::new::<Table>()) }.cast::<Table>();
         assert!(!table.is_null());
-        assert!(Table::init(
-            unsafe { &mut *table.cast() },
-            rows,
-            conflict,
-            djb,
-            record_warning,
-            record_error
-        ));
+        assert!(
+            Table::init(
+                unsafe { &mut *table.cast() },
+                rows,
+                conflict,
+                djb,
+                record_warning,
+                record_error
+            )
+            .is_some()
+        );
         Owned {
             table,
             arena: ptr::null_mut(),
@@ -527,14 +530,17 @@ fn row(name: &[u8], id: i64, score: f64) -> Entry {
 fn make(rows: u32, conflict: f32) -> *mut Table {
     let table = crate::members::sw_shm_malloc(size_of::<Table>()).cast::<Table>();
     assert!(!table.is_null());
-    assert!(Table::init(
-        unsafe { &mut *table.cast() },
-        rows,
-        conflict,
-        djb,
-        record_warning,
-        record_error
-    ));
+    assert!(
+        Table::init(
+            unsafe { &mut *table.cast() },
+            rows,
+            conflict,
+            djb,
+            record_warning,
+            record_error
+        )
+        .is_some()
+    );
     table
 }
 

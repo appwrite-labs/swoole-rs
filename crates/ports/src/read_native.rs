@@ -18,7 +18,7 @@ use swoole_rs_framing::recv::Mode;
 use swoole_rs_http_ffi::{HttpRequest, HttpString};
 use swoole_rs_reactor::reactor_upstream::trigger_close_event;
 use swoole_rs_reactor::{Caught, Event, Fill, Running, Socket};
-use swoole_rs_server::port_config::PortConfig;
+use swoole_rs_server::port_config::{PortConfig, ReadEvent};
 use swoole_rs_server::static_select::static_select;
 use swoole_rs_server::{ConnectionRecord, ServerConfig, view};
 use swoole_rs_tls::upstream::{recv_fill, send};
@@ -51,33 +51,24 @@ struct Read<'a> {
     frames: bool,
 }
 
-/// `ListenPort::readable_callback_*` of `kind` on the reactor's `event`: the server's
-/// connection read ([`crate::methods`]' callbacks are a port's `onRead` and nothing
-/// else), so the event is a readable one on a live connection of `port`, which only this
-/// reactor thread touches.
-/// # Safety
-/// `reactor` is the reactor of the server `port` belongs to, and `event` is a readable
-/// event on a live connection of that port.
+/// `ListenPort::readable_callback_*` of `kind` on the event `read` lends: a readable
+/// one on a live connection of its server, which only this reactor thread touches.
 // Always inlined, down to the framing loop: each callback's `kind` is a constant, so one
 // frame reads, measures and dispatches where five did (#3335).
 #[inline(always)]
-pub(crate) unsafe fn on_read(
+pub(crate) fn on_read(
     reactor: Running<'_>,
     port: view::Port<'_>,
-    event: &mut Event,
+    read: ReadEvent<'_>,
     kind: Readable,
 ) -> c_int {
+    let (server, event) = read.into_parts();
     let lent = Cell::new(*event);
     let Some(socket) = event.socket() else {
         return -1;
     };
-    // A connection socket's object is its connection.
+    // A connection socket's object is its connection: the event as `read` lent it.
     let conn = socket.read(|s| s.object).cast::<ConnectionRecord>();
-    // The live reactor's `ptr` is its server.
-    let serv = reactor.object();
-    // SAFETY: a port is read only under its server's reactor, whose `ptr` is the live
-    // server; this thread only reads its settings.
-    let server = unsafe { view::Server::from_raw(serv) };
     let port = port.config();
     let mut read = Read {
         buffer: ptr::null_mut(),
@@ -247,9 +238,10 @@ impl Connection for Read<'_> {
                 let (port, socket, buffer) = (self.port, self.socket, self.buffer);
                 let conn = self.conn();
                 // SAFETY: the current buffer; the connection's object is its request.
-                i64::from(unsafe {
+                let open = unsafe {
                     crate::resp_recv::recv_packet(&port.protocol.get(), conn, socket, buffer)
-                })
+                };
+                if open { 0 } else { -1 }
             }
         }
     }

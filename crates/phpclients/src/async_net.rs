@@ -17,7 +17,7 @@ use swoole_rs_clients::valid_port;
 use swoole_rs_corebase::CCast;
 use swoole_rs_phpstubs::client_async;
 use swoole_rs_zend::{
-    Call, Class, E_ERROR, Minit, Owned, ZString,
+    Call, Class, E_ERROR, Minit, ObjectRef, Owned, ZString,
     bailout::{self, Bailout},
     host::callable::Callable,
     sys::{
@@ -131,10 +131,10 @@ fn invoke(callable: &Callable, argv: &mut [zval]) -> Result<bool, Bailout> {
     callable.call(argv, None, true)
 }
 
+/// The handle's live object, lent for the call its caller makes: a borrowed
+/// copy, as upstream's `args[0] = *zobject`.
 fn object_zval(object: Obj) -> zval {
-    // SAFETY: the handle's live object, lent for the call its caller makes: a
-    // borrowed copy, as upstream's `args[0] = *zobject`.
-    unsafe { swoole_rs_zend::object_zval(object.as_ptr()) }
+    object.object().copy_value()
 }
 
 /// `client_execute_callback`: run the slot's callback with the object.
@@ -363,7 +363,7 @@ fn connect(call: &Call) {
     let listener = move |kind, data, length| {
         // SAFETY: `connect()` holds the object (`hold`) until its connection is
         // released, and only then does the client stop raising events.
-        let object = unsafe { Obj::new(zobject) };
+        let object = Obj::new(unsafe { ObjectRef::from_ptr(zobject) });
         bailout::raise(event(object, kind, data, length));
     };
     state::listen(fresh.cli.get(), events, Rc::new(listener));

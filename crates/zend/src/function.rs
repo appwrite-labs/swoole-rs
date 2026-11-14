@@ -5,8 +5,8 @@ use crate::{
     Call, ClassEntry, ZStr,
     sys::{
         _zend_function__bindgen_ty_1, _zval_struct__bindgen_ty_1, IS_UNDEF, zend_class_entry,
-        zend_function, zend_function_entry, zend_internal_arg_info, zend_object,
-        zend_object_handlers, zend_op, zend_op_array, zval,
+        zend_function, zend_function_entry, zend_internal_arg_info, zend_internal_function,
+        zend_object, zend_object_handlers, zend_op, zend_op_array, zval,
     },
 };
 use std::{ffi::CStr, marker::PhantomData, mem::offset_of, ptr};
@@ -93,6 +93,25 @@ impl<'a> Function<'a> {
     #[inline]
     pub fn scope_name(self) -> Option<&'a ZStr> {
         self.scope().map(ClassEntry::name)
+    }
+
+    /// `function->internal_function.handler` of an internal function; None
+    /// for user code, which has none.
+    #[must_use]
+    #[inline]
+    pub fn internal_handler(self) -> Option<crate::sys::zif_handler> {
+        if self.kind() != Self::INTERNAL {
+            return None;
+        }
+        let handler = self
+            .0
+            .cast::<zend_internal_function>()
+            .wrapping_byte_add(offset_of!(zend_internal_function, handler))
+            .cast::<crate::sys::zif_handler>();
+        // SAFETY: a live internal function, per the type and its kind, is a
+        // `zend_internal_function`; no Zend code writes its handler while this
+        // copies it.
+        Some(unsafe { handler.read() })
     }
 
     /// `&function->op_array` of user code (`ZEND_USER_CODE(type)`: a user

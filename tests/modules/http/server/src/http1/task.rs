@@ -118,7 +118,7 @@ impl TaskHost for TaskPool {
         socket_pair::set_timeout(unsafe { &mut *self.pipe }, timeout);
     }
 
-    fn read_notify(&mut self) -> isize {
+    fn read_notify(&mut self) -> Option<usize> {
         // SAFETY: this worker's live notify pipe.
         let pipe = unsafe { &*self.pipe };
         let mut notify = [std::mem::MaybeUninit::new(0u8); size_of::<u64>()];

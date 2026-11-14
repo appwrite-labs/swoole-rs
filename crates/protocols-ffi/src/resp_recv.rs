@@ -1,27 +1,29 @@
 //! `swoole::redis::recv_packet`: reads a connection until a whole RESP command is
 //! buffered, then hands it to `onPackage`. [`recv_packet`] is the loop over a
 //! [`RespConnection`], which the ports crate runs over the server's own records.
-use core::ffi::c_int;
 use swoole_rs_corebase::{log, set_errno, sw_calloc};
 pub use swoole_rs_protocols::RespRequest;
 use swoole_rs_protocols::{RespAction, resp_extend_size, resp_receive_range};
 
-pub(crate) const SW_OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
-pub const SW_ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 pub const ORIGIN: &core::ffi::CStr = c"redis::recv_packet";
 
-/// [`RespConnection::recv`]: the connection closes (`SW_ERR`).
-pub const RESP_RECV_CLOSE: isize = -1;
-/// [`RespConnection::recv`]: the read ends with `SW_OK` (it would block, or a logged error).
-pub const RESP_RECV_DONE: isize = -2;
+/// What [`RespConnection::recv`] read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Received {
+    /// That many bytes, which joined the content; 0 is the peer's close.
+    Bytes(usize),
+    /// The connection closes.
+    Closed,
+    /// The read ends with the connection open: it would block, or logged an error.
+    Done,
+}
 
 /// The socket, receive buffer and request state one `recv_packet` works over. Each
 /// method borrows them only for its own call, since `dispatch` may free them.
 pub trait RespConnection {
     /// `socket->recv` into the buffer's free tail, with upstream's read-error
-    /// handling and warning: the byte count, which joins the content, 0 or
-    /// [`RESP_RECV_CLOSE`] when the connection closes, or [`RESP_RECV_DONE`].
-    fn recv(&mut self) -> isize;
+    /// handling and warning.
+    fn recv(&mut self) -> Received;
     /// The buffer's content, its allocation size, and the request state.
     fn view(&mut self) -> (&[u8], usize, &mut RespRequest);
     /// `buffer->offset = offset`.
@@ -47,14 +49,14 @@ pub enum Dispatched {
 
 /// `redis::recv_packet`'s loop: receives until the request state sees a whole
 /// command or must wait, growing the buffer up to `maximum`. `page` is
-/// `swoole_pagesize()`.
-pub fn recv_packet(c: &mut impl RespConnection, maximum: u32, page: usize) -> c_int {
+/// `swoole_pagesize()`. Whether the connection stays open (upstream's `SW_OK`).
+pub fn recv_packet(c: &mut impl RespConnection, maximum: u32, page: usize) -> bool {
     let maximum = maximum as usize;
     loop {
         match c.recv() {
-            0 | RESP_RECV_CLOSE => return SW_ERR,
-            ..0 => return SW_OK,
-            _ => {}
+            Received::Bytes(0) | Received::Closed => return false,
+            Received::Done => return true,
+            Received::Bytes(_) => {}
         }
         let mut range = false;
         let (length, size, (action, set_offset)) = {
@@ -75,27 +77,27 @@ pub fn recv_packet(c: &mut impl RespConnection, maximum: u32, page: usize) -> c_
                     c.extend(grown);
                 }
             }
-            RespAction::Wait => return SW_OK,
+            RespAction::Wait => return true,
             RespAction::Dispatch => {
                 match c.dispatch() {
-                    Dispatched::Failed => return SW_ERR,
-                    Dispatched::Removed => return SW_OK,
+                    Dispatched::Failed => return false,
+                    Dispatched::Removed => return true,
                     Dispatched::Kept => {}
                 }
                 c.clear();
                 *c.view().2 = RespRequest::default();
-                return SW_OK;
+                return true;
             }
             RespAction::TooBig => {
                 log::warning(
                     ORIGIN,
                     format_args!("Package is too big. package_length={length}"),
                 );
-                return SW_ERR;
+                return false;
             }
             RespAction::Malformed => {
                 log::warning(ORIGIN, format_args!("redis protocol error"));
-                return SW_ERR;
+                return false;
             }
         }
     }
@@ -139,16 +141,16 @@ mod tests {
     }
 
     impl RespConnection for Script {
-        fn recv(&mut self) -> isize {
+        fn recv(&mut self) -> Received {
             let Some(mut chunk) = self.reads.pop_front() else {
-                return RESP_RECV_DONE;
+                return Received::Done;
             };
             let room = self.size - self.content.len();
             if chunk.len() > room {
                 self.reads.push_front(chunk.split_off(room));
             }
             self.content.extend_from_slice(&chunk);
-            isize::try_from(chunk.len()).unwrap()
+            Received::Bytes(chunk.len())
         }
 
         fn view(&mut self) -> (&[u8], usize, &mut RespRequest) {
@@ -174,7 +176,7 @@ mod tests {
         }
     }
 
-    fn run(reads: &[&[u8]], size: usize, maximum: u32) -> (Vec<c_int>, Script) {
+    fn run(reads: &[&[u8]], size: usize, maximum: u32) -> (Vec<bool>, Script) {
         let mut script = Script {
             reads: reads.iter().map(|r| r.to_vec()).collect(),
             content: Vec::new(),
@@ -184,7 +186,7 @@ mod tests {
             packages: Vec::new(),
         };
         let mut results = Vec::new();
-        while !script.reads.is_empty() && results.last() != Some(&SW_ERR) {
+        while !script.reads.is_empty() && results.last() != Some(&false) {
             results.push(recv_packet(&mut script, maximum, 4096));
         }
         (results, script)
@@ -194,7 +196,7 @@ mod tests {
     fn a_command_split_across_reads_dispatches_whole() {
         // A read that ends mid-line reads on in the same call.
         let (results, script) = run(&[b"*2\r\n$3\r\nGE", b"T\r\n$1\r\nk\r\n"], 64, 1024);
-        assert_eq!(results, [SW_OK]);
+        assert_eq!(results, [true]);
         assert_eq!(
             script.packages,
             [b"*2\r\n$3\r\nGET\r\n$1\r\nk\r\n".to_vec()]
@@ -206,11 +208,11 @@ mod tests {
     fn a_full_buffer_grows_and_an_oversized_command_fails() {
         let command = b"*1\r\n$40\r\n0123456789012345678901234567890123456789\r\n";
         let (results, script) = run(&[command], 16, 1024);
-        assert_eq!(results, [SW_OK]);
+        assert_eq!(results, [true]);
         assert_eq!(script.packages, [command.to_vec()]);
         let (results, _) = run(&[command], 16, 32);
-        assert_eq!(results, [SW_ERR]);
+        assert_eq!(results, [false]);
         let (results, _) = run(&[b"?bad\r\n"], 16, 32);
-        assert_eq!(results, [SW_ERR]);
+        assert_eq!(results, [false]);
     }
 }

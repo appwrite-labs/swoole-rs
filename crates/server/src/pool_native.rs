@@ -7,7 +7,7 @@
 //!
 //! Each hook that can reach PHP runs inside the bailout trap crates/process sets
 //! up; the frames here hold nothing to drop, so the `longjmp` may cross them.
-use core::cell::{Cell, RefCell};
+use core::cell::Cell;
 use core::ffi::{CStr, c_int, c_long, c_void};
 use core::ptr;
 use swoole_rs_corebase::CCast;
@@ -24,8 +24,8 @@ use swoole_rs_corebase::log;
 use swoole_rs_memory::members::pool as mem_pool;
 use swoole_rs_process::armed_timer::ArmedTimer;
 use swoole_rs_process::methods::{
-    ExitStatus, is_worker_running, kill_all_workers, pop_message, push_stop, reload_warn,
-    swoole_set_worker_id, swoole_set_worker_pid, worker_report_error,
+    ExitStatus, is_worker_running, kill_all_workers, push_stop, reload_warn, swoole_set_worker_id,
+    swoole_set_worker_pid, worker_report_error,
 };
 use swoole_rs_process::pool::{PoolCall, Warning, raise_bailout};
 use swoole_rs_process::process_pool::{
@@ -490,26 +490,10 @@ fn master_ops(pool: Pool<'_>, op: Op, arg: u64) -> i64 {
         }
         Op::TimerInit => {
             if swoole_timer_is_available() {
-                crate::objects::timer_reinit(true);
+                swoole_rs_timer::thread_timer_reinit(true);
             } else {
                 // This thread has no timer.
                 swoole_timer_create(true);
-            }
-        }
-        Op::PopMessage => {
-            return POOL_MESSAGE.with_borrow_mut(|message| {
-                if pop_message(pool, &mut message.0).is_some_and(|length| length > 0) {
-                    message.0.as_mut_ptr().expose_provenance().c_cast::<i64>()
-                } else {
-                    0
-                }
-            });
-        }
-        Op::OnWorkerMessage => {
-            if let Some(on_worker_message) = pool.on_worker_message() {
-                let message = POOL_MESSAGE.with_borrow_mut(|message| message.0.as_mut_ptr());
-                // SAFETY: the message `Op::PopMessage` just popped.
-                unsafe { on_worker_message(pool, message.cast()) };
             }
         }
         Op::OnWorkerNotFound => {
@@ -530,15 +514,6 @@ fn master_ops(pool: Pool<'_>, op: Op, arg: u64) -> i64 {
         _ => {}
     }
     0
-}
-
-/// An `EventData`'s bytes, aligned as one.
-#[repr(C, align(8))]
-struct Message([u8; EVENT_SIZE]);
-
-thread_local! {
-    /// The worker's stop messages and the others the master pops while it waits.
-    static POOL_MESSAGE: RefCell<Box<Message>> = RefCell::new(Box::new(Message([0; EVENT_SIZE])));
 }
 
 /// Runs `io` and records its result and errno in the call.

@@ -1,6 +1,6 @@
 //! Zvals, arrays and properties for crates/phpprocess: zval construction,
 //! typed property updates.
-use crate::sys::{time_t, zend_fcall_info, zend_fcall_info_cache, zend_object, zval};
+use crate::sys::{time_t, zend_fcall_info, zend_fcall_info_cache, zval};
 use std::{
     ffi::{CStr, c_char},
     io::IoSlice,
@@ -114,24 +114,6 @@ pub fn long_zval(value: i64) -> zval {
         value: crate::sys::zend_value { lval: value },
         u1: crate::sys::_zval_struct__bindgen_ty_1 {
             type_info: crate::sys::IS_LONG,
-        },
-        u2: crate::sys::_zval_struct__bindgen_ty_2 { next: 0 },
-    }
-}
-
-/// `ZVAL_OBJ(&zv, object)` without a reference of its own: a zval naming
-/// `object` for a call's argument array, which borrows the object from an owner
-/// that outlives the call (Zend copies each argument, with a reference, into
-/// the frame it calls). Nothing here reads the object.
-///
-/// # Safety
-/// `object` is live for as long as the zval is used: a call reads it.
-#[must_use]
-pub unsafe fn object_zval(object: *mut zend_object) -> zval {
-    zval {
-        value: crate::sys::zend_value { obj: object },
-        u1: crate::sys::_zval_struct__bindgen_ty_1 {
-            type_info: crate::sys::IS_OBJECT_EX,
         },
         u2: crate::sys::_zval_struct__bindgen_ty_2 { next: 0 },
     }

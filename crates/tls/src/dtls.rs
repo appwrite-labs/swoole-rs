@@ -33,7 +33,7 @@ impl Datagram {
 
 pub struct DtlsSession {
     socket: *mut SocketRecord,
-    /// The socket as a handle, once `swr_v1_tls_dtls_init`'s caller has promised it
+    /// The socket as a handle, once `swr_v1_tls_dtls_open`'s caller has promised it
     /// live for as long as the session.
     live: Cell<Option<Socket<'static>>>,
     listened: Cell<bool>,
@@ -55,16 +55,22 @@ impl DtlsSession {
     }
 }
 
-/// `new dtls::Session(socket, ctx)` before `init`: an empty queue over `socket`.
-#[must_use]
-pub fn swr_v1_tls_dtls_new(socket: *mut SocketRecord) -> *mut DtlsSession {
-    Box::into_raw(Box::new(DtlsSession {
+/// An empty queue over `socket`, whose handle is `live` once its caller has promised it
+/// live for as long as the session.
+fn session(socket: *mut SocketRecord, live: Option<Socket<'static>>) -> DtlsSession {
+    DtlsSession {
         socket,
-        live: Cell::new(None),
+        live: Cell::new(live),
         listened: Cell::new(false),
         peek: Cell::new(false),
         queue: RefCell::new(VecDeque::new()),
-    }))
+    }
+}
+
+/// `new dtls::Session(socket, ctx)` before `init`: an empty queue over `socket`.
+#[must_use]
+pub fn swr_v1_tls_dtls_new(socket: *mut SocketRecord) -> *mut DtlsSession {
+    Box::into_raw(Box::new(session(socket, None)))
 }
 
 /// # Safety
@@ -171,7 +177,7 @@ fn swr_v1_tls_dtls_control(
 }
 
 /// The peer the session's socket names, which `BIO_CTRL_DGRAM_GET_PEER` answers with;
-/// none before `swr_v1_tls_dtls_init`.
+/// none before `swr_v1_tls_dtls_open`.
 fn peer(owner: &DtlsSession) -> Option<swoole_rs_reactor::AddressStorage> {
     let socket = owner.live.get()?;
     Some(socket.read(|record| record.info.addr))
@@ -278,12 +284,12 @@ impl Command {
     }
 }
 
-/// The session `swr_v1_tls_dtls_init` made the BIO for, or `None` for a BIO it has not
+/// The session `swr_v1_tls_dtls_open` made the BIO for, or `None` for a BIO it has not
 /// given one yet (`BIO_new` runs the create hook first).
 fn session_of(bio: &DtlsBio) -> Option<&DtlsSession> {
     let session = BIO_get_data(bio).cast::<DtlsSession>();
     // SAFETY: a BIO of this table has no data until the unsafe `BIO_set_data`, whose one
-    // caller, `swr_v1_tls_dtls_init`, sets the live session, which outlives the SSL
+    // caller, `swr_v1_tls_dtls_open`, sets the live session, which outlives the SSL
     // that owns the BIO and so every borrow of the BIO OpenSSL lends.
     unsafe { session.as_ref() }
 }
@@ -374,42 +380,46 @@ fn methods() -> Option<&'static BioMethod> {
     *made
 }
 
-/// `bool dtls::Session::init()`: the socket's server SSL, over a BIO that writes
-/// to the socket and reads the session's datagram queue.
+/// `new dtls::Session(socket, ctx)` and `bool dtls::Session::init()`: a session over
+/// `socket` whose server SSL reads and writes through a BIO that writes to the socket
+/// and reads the session's datagram queue, for [`swr_v1_tls_dtls_free`]; null when
+/// `init` fails.
 ///
 /// # Safety
-/// `owner` is live, its socket null or a live record that stays one until the session
-/// is freed, and no field of `context` (the session's `SSLContext`) is written meanwhile.
-pub unsafe extern "C" fn swr_v1_tls_dtls_init(
-    owner: *mut DtlsSession,
+/// `socket` stays a live record until the session is freed, and no field of `context`
+/// (the session's `SSLContext`) is written meanwhile.
+#[must_use]
+pub unsafe fn swr_v1_tls_dtls_open(
+    socket: Socket<'_>,
     context: &crate::OwnedTlsContext,
-) -> bool {
-    // SAFETY: as the caller promises.
-    let session = unsafe { &*owner };
+) -> *mut DtlsSession {
+    let fail = std::ptr::null_mut();
     // SAFETY: as the caller promises, for as long as the session.
-    let Some(socket) = (unsafe { Socket::from_ptr(session.socket) }) else {
-        return false;
+    let Some(live) = (unsafe { Socket::from_ptr(socket.as_ptr()) }) else {
+        return fail;
     };
-    session.live.set(Some(socket));
-    if !socket.read(swoole_rs_reactor::SocketFields::ssl).is_null() {
-        return false;
+    // Freed on each return below until the BIO is given it.
+    let session = Box::new(session(live.as_ptr(), Some(live)));
+    if !live.read(swoole_rs_reactor::SocketFields::ssl).is_null() {
+        return fail;
     }
     let server = crate::SslCreateFlag::SW_SSL_SERVER as c_int;
     // SAFETY: as the caller promises.
     let context = unsafe { crate::owner_fields(context) }.context.as_deref();
-    if crate::upstream::socket_ssl_create(socket, context, server) < 0 {
+    if !crate::upstream::socket_ssl_create(live, context, server) {
         log::set_last_error(SSL_CREATE_SESSION_FAILED);
-        return false;
+        return fail;
     }
     let size = swoole_rs_reactor::SOCKET_DEFAULTS.buffer_size();
-    swoole_rs_reactor::swr_v1_socket_buffer_size(socket.fd(), true, true, size);
-    socket.edit(|record| record.dtls = true);
-    let Some(ssl) = crate::Ssl::of(socket) else {
-        return false;
+    swoole_rs_reactor::swr_v1_socket_buffer_size(live.fd(), true, true, size);
+    live.edit(|record| record.dtls = true);
+    let Some(ssl) = crate::Ssl::of(live) else {
+        return fail;
     };
     let Some(bio) = methods().and_then(|table| crate::handle::BIO_new(table)) else {
-        return false;
+        return fail;
     };
+    let owner = Box::into_raw(session);
     // SAFETY: the session outlives its SSL, which takes the BIO below.
     unsafe { BIO_set_data(bio.bio(), owner.cast()) };
     // SAFETY: the fresh BIO, whose data is now the session its methods read.
@@ -417,19 +427,19 @@ pub unsafe extern "C" fn swr_v1_tls_dtls_init(
     // SAFETY: the SSL ssl_create just made takes the BIO for both directions and frees
     // the descriptor BIOs `SSL_set_fd` gave it, which no handle borrows.
     _ = unsafe { ssl.set_bio(bio, None) };
-    true
+    owner
 }
 
 /// `bool dtls::Session::listen()`: once, `DTLSv1_listen` on the socket's SSL; a pending
 /// listen counts as success and a failure logs why. The socket is the handle
-/// `swr_v1_tls_dtls_init` took, whose caller promised it live for as long as the
+/// `swr_v1_tls_dtls_open` took, whose caller promised it live for as long as the
 /// session, so a session lent here needs no further promise.
 #[must_use]
 pub fn dtls_session_listen(owner: &DtlsSession) -> bool {
     if owner.listened() {
         return false;
     }
-    // The socket `swr_v1_tls_dtls_init` took; a session it never set up has no SSL.
+    // The socket `swr_v1_tls_dtls_open` took; a session it never set up has no SSL.
     let Some(socket) = owner.live.get() else {
         return false;
     };

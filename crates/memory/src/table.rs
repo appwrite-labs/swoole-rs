@@ -394,7 +394,7 @@ fn clamp(key: &[u8]) -> &[u8] {
 
 impl Table {
     /// `Table::make`: an empty, uncreated table in `this`, whose locks are made in
-    /// place.
+    /// place; none when a lock can't be made.
     pub fn init(
         this: &mut MaybeUninit<Table>,
         rows: u32,
@@ -402,7 +402,7 @@ impl Table {
         hash: Hash,
         warning: Warning,
         error: Error,
-    ) -> bool {
+    ) -> Option<&mut Table> {
         let size = if rows >= MAX_ROWS {
             MAX_ROWS
         } else {
@@ -440,11 +440,11 @@ impl Table {
         };
         let table = this.write(table);
         if table.mutex.init().is_err() {
-            return false;
+            return None;
         }
         if table.iterator_mutex.init().is_err() {
             table.mutex.destroy();
-            return false;
+            return None;
         }
         let header = ptr::from_mut(table).addr();
         table.columns = private(|tables| {
@@ -458,7 +458,7 @@ impl Table {
                 .last_mut()
                 .map_or(ptr::null_mut(), |own| ptr::from_mut(&mut *own.columns))
         });
-        true
+        Some(table)
     }
 
     fn column_set(&self) -> &Columns {
