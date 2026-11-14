@@ -47,21 +47,28 @@ fn with_server<R>(f: impl FnOnce(view::Server<'_>) -> R) -> Option<R> {
     unsafe { view::Server::current() }.map(f)
 }
 
-/// Who may construct a Process: 0, or 1 in a started server's master, 2 once
-/// async-io threads exist.
-pub(crate) fn construct_guard() -> c_int {
+/// Why this process may not construct a Process.
+pub(crate) enum ConstructRefusal {
+    /// A started server's master.
+    Master,
+    /// Async-io threads exist.
+    AsyncThreads,
+}
+
+/// Whether this process may construct a Process.
+pub(crate) fn construct_guard() -> Result<(), ConstructRefusal> {
     #[expect(
         clippy::redundant_closure_for_method_calls,
         reason = "the method's path fixes the view's lifetime; with_server's `f` takes any"
     )]
     let started = with_server(|serv| serv.is_started()).unwrap_or(false);
     if started && methods::worker_type() == Some(WorkerType::Master) {
-        return 1;
+        return Err(ConstructRefusal::Master);
     }
     if thread_async_threads().is_null() {
-        0
+        Ok(())
     } else {
-        2
+        Err(ConstructRefusal::AsyncThreads)
     }
 }
 
