@@ -45,7 +45,7 @@ impl SocketFields {
 
     /// `Socket::bind(address)`: bind(2), marking the socket bound.
     pub fn bind(&mut self, address: &SocketAddress) -> bool {
-        if address.bind(self.fd) != 0 {
+        if !address.bind(self.fd) {
             return false;
         }
         self.bound = true;

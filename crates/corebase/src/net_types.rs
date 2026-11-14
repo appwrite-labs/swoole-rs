@@ -99,10 +99,10 @@ impl SocketAddress {
         connect(fd, &self.addr, self.stored())
     }
 
-    /// `bind(2)` of `fd` to this address.
+    /// `bind(2)` of `fd` to this address: whether it bound, else errno says why not.
     #[must_use]
-    pub fn bind(&self, fd: c_int) -> c_int {
-        bind(fd, &self.addr, self.stored())
+    pub fn bind(&self, fd: c_int) -> bool {
+        bind(fd, &self.addr, self.stored()) == 0
     }
 
     /// `sendto(2)` of `data` to this address.
