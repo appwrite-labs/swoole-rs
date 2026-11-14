@@ -313,7 +313,7 @@ extern "C" fn on_free(ptr: *mut c_void) {
 }
 
 /// `ZEND_WRITE`, trapping a bailout from an output handler.
-fn write(text: &[u8]) -> Result<(), bailout::Bailout> {
+pub(crate) fn write(text: &[u8]) -> Result<(), bailout::Bailout> {
     // SAFETY: live bytes; the shim traps a bailout.
     let bailed = unsafe { swr_zend_try_write(text.as_ptr().cast(), text.len()) };
     if bailed != 0 {
