@@ -307,7 +307,7 @@ pub(crate) fn import(config: &mut PortConfig, fd: c_int) -> bool {
         log::sys_warning(origin, message);
         return false;
     };
-    if socket.get_name() < 0 {
+    if !socket.get_name() {
         log::sys_warning(origin, format_args!("getsockname({fd}) failed"));
         return false;
     }

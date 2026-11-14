@@ -1008,10 +1008,10 @@ impl Handle {
 
     /// `Client::get_peer_name`: datagram peers are value snapshots of the last
     /// received address; streams ask the kernel through the socket's operation.
-    pub fn peer_name(self, address: &mut SocketAddress) -> c_int {
+    pub fn peer_name(self, address: &mut SocketAddress) -> bool {
         if is_dgram(self.socket_type()) {
             *address = self.record().remote_addr;
-            OK
+            true
         } else {
             self.socket().read(|socket| socket.get_peer_name(address))
         }
@@ -1020,7 +1020,7 @@ impl Handle {
     /// `Client::bind(host, port)`: `SO_REUSEADDR` (a failure is logged), then
     /// bind(2) to the host's literal address.
     #[must_use]
-    pub fn bind(self, host: &CStr, port: c_int) -> c_int {
+    pub fn bind(self, host: &CStr, port: c_int) -> bool {
         let fd = self.socket().fd();
         let enable: c_int = 1;
         if swoole_rs_corebase::sys::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, &enable)
@@ -1032,13 +1032,13 @@ impl Handle {
             );
         }
         let Some(address) = address_of(self.socket_type(), host, port, false) else {
-            return ERR;
+            return false;
         };
-        if self.socket().edit(|socket| socket.bind(&address)) < 0 {
+        if !self.socket().edit(|socket| socket.bind(&address)) {
             log::set_last_error(errno());
-            return ERR;
+            return false;
         }
-        OK
+        true
     }
 }
 

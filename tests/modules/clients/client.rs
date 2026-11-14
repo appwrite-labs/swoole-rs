@@ -388,7 +388,11 @@ impl<'a> Client<'a> {
     }
 
     fn bind(&self, host: &str, port: c_int) -> c_int {
-        self.handle().bind(&cstring(host), port)
+        if self.handle().bind(&cstring(host), port) {
+            SW_OK
+        } else {
+            SW_ERR
+        }
     }
 
     fn sendto(&self, host: &str, port: c_int, data: &[u8]) -> c_int {
@@ -403,7 +407,11 @@ impl<'a> Client<'a> {
     /// `get_peer_name(&addr)`, then the address's `get_addr()` and `get_port()`.
     fn get_peer_name(&self) -> (c_int, String, c_int) {
         let mut address = SocketAddress::default();
-        let result = self.handle().peer_name(&mut address);
+        let result = if self.handle().peer_name(&mut address) {
+            SW_OK
+        } else {
+            SW_ERR
+        };
         let address = (&raw const address).cast();
         // SAFETY: the address Rust filled.
         let host = unsafe { CStr::from_ptr(swr_v1_clients_address_host(address)) };

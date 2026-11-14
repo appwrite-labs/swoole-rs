@@ -360,6 +360,11 @@ mod members {
     use crate::{SocketAddress, SocketFields, SocketRecord};
     use std::ffi::c_int;
 
+    /// A Rust success as upstream's `SW_OK`/`SW_ERR`.
+    fn status(ok: bool) -> c_int {
+        if ok { super::OK } else { super::ERR }
+    }
+
     /// Each member as `extern "C" fn(this, args...)`: C++ passes `this` and reference
     /// arguments as non-null pointers to live objects, which Rust takes as references.
     macro_rules! members {
@@ -370,16 +375,16 @@ mod members {
     }
 
     members! {
-        "_ZN6swoole7network6Socket8get_nameEv" fn get_name(this) -> c_int { this.get_name() }
+        "_ZN6swoole7network6Socket8get_nameEv" fn get_name(this) -> c_int { status(this.get_name()) }
         "_ZN6swoole7network6Socket13get_peer_nameEPNS0_7AddressE"
-        fn get_peer_name(this, address: &mut SocketAddress) -> c_int { this.get_peer_name(address) }
+        fn get_peer_name(this, address: &mut SocketAddress) -> c_int { status(this.get_peer_name(address)) }
         "_ZN6swoole7network6Socket4bindERKNS0_7AddressE"
-        fn bind(this, address: &SocketAddress) -> c_int { this.bind(address) }
-        "_ZN6swoole7network6Socket6listenEi" fn listen(this, backlog: c_int) -> c_int { this.listen(backlog) }
+        fn bind(this, address: &SocketAddress) -> c_int { status(this.bind(address)) }
+        "_ZN6swoole7network6Socket6listenEi" fn listen(this, backlog: c_int) -> c_int { status(this.listen(backlog)) }
         "_ZN6swoole7network6Socket6acceptEv" fn accept(this) -> *mut SocketRecord { this.accept() }
         "_ZNK6swoole7network6Socket3dupEv" fn dup(this) -> *mut SocketRecord { this.dup() }
         "_ZN6swoole7network6Socket14set_tcp_nopushEi"
-        fn set_tcp_nopush(this, nopush: c_int) -> c_int { this.set_tcp_nopush(nopush) }
+        fn set_tcp_nopush(this, nopush: c_int) -> c_int { status(this.set_tcp_nopush(nopush)) }
         "_ZN6swoole7network6Socket15set_tcp_nodelayEi"
         fn set_tcp_nodelay(this, nodelay: c_int) -> bool { this.set_tcp_nodelay(nodelay) }
         "_ZN6swoole7network6Socket11set_timeoutEdi"

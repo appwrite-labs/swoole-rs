@@ -162,7 +162,7 @@ unsafe fn dispatch(protocol: &Protocol, socket: Socket<'_>, data: *const u8, len
 fn proto_error(socket: Socket<'_>, code: ErrorCode, origin: &CStr, message: &str) {
     let address = socket.read(|socket| {
         let mut address = socket.info;
-        if socket.get_peer_name(&mut address) < 0 {
+        if !socket.get_peer_name(&mut address) {
             address = socket.info;
         }
         address

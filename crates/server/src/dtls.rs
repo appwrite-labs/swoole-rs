@@ -54,7 +54,7 @@ fn bind(sock: Socket<'_>, kind: c_int, host: &CStr, port: c_int) -> bool {
         log::set_last_error(error);
         return false;
     }
-    sock.edit(|sock| sock.bind(&address)) >= 0
+    sock.edit(|sock| sock.bind(&address))
 }
 
 /// `Server::accept_dtls_connection(port, sa)`: a socket bound to the port and
