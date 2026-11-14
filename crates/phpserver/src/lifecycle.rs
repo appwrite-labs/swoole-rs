@@ -170,7 +170,7 @@ fn start_server(serv: view::Server<'_>) -> Result<c_int, bailout::Bailout> {
 
 /// `addProcess`'s worker: -3 bailed out, -2 a thread that is not a user
 /// worker, -1 `add_worker` failed, else the id.
-fn add_worker(serv: view::Server<'_>, process: &Value, user_data: *mut zval) -> i64 {
+fn add_worker(serv: view::Server<'_>, process: &Value) -> i64 {
     if fact(serv, Fact::WorkerThread) {
         if crate::server::worker_type() != Some(crate::server::WorkerType::User) {
             return -2;
@@ -196,15 +196,10 @@ fn add_worker(serv: view::Server<'_>, process: &Value, user_data: *mut zval) -> 
         // Process object keeps for the server's life.
         let worker = unsafe { Worker::new(worker.raw()) };
         let id = swoole_rs_server::worker_methods::add_worker(serv, worker);
-        added = if id >= 0 {
-            worker.set_user_data(user_data.cast());
-            id.into()
-        } else {
-            -1
-        };
+        added = if id >= 0 { id.into() } else { -1 };
     };
     // SAFETY: a bailout (an unconstructed process) jumps past `add`, which
-    // holds a view, a pointer and a borrow: nothing to drop.
+    // holds a view and borrows: nothing to drop.
     let trapped = unsafe { bailout::trap_with(add) };
     trapped.map_or(-3, |()| added)
 }
@@ -226,10 +221,11 @@ pub(crate) struct Property {
     send_waiters: SendWaiters,
     /// The next waiter's token.
     send_token: u64,
-    /// `addProcess`'s processes, copies holding a reference; boxed, as each
-    /// worker's user data points at its copy.
-    #[expect(clippy::vec_box, reason = "a worker's user data points at its copy")]
-    user_processes: Vec<Box<Owned>>,
+    /// `addProcess`'s processes, copies holding a reference. User worker `id`
+    /// runs the one at `id - worker_num - task_worker_num`: the server numbers
+    /// the workers it adds in order and refuses every add once it is created,
+    /// so a failed add's copy comes after all of theirs.
+    user_processes: Vec<Owned>,
 }
 
 impl Default for Property {
@@ -454,10 +450,9 @@ impl<'a> ServerObject<'a> {
         self.property(|p| p.ports.iter().map(|port| port.copy()).collect())
     }
 
-    /// The user process at `index`, or null.
-    pub(crate) fn user_process(self, index: usize) -> *mut zval {
-        self.property(|p| p.user_processes.get(index).map(|process| process.as_ptr()))
-            .unwrap_or(ptr::null_mut())
+    /// The user process at `index`, with a reference of its own.
+    pub(crate) fn user_process(self, index: usize) -> Option<Owned> {
+        self.property(|p| p.user_processes.get(index).map(|process| process.copy()))
     }
 }
 
@@ -836,11 +831,9 @@ fn add_process(call: &Call) {
     };
     put(serv, Install::UserWorkerStart);
     // A copy holding its own reference, as upstream.
-    let copy = Box::new(process.copy());
-    let zcopy = copy.as_ptr();
-    // The box keeps the copy where the worker's user data points.
+    let copy = process.copy();
     ServerObject::this(call).property(|p| p.user_processes.push(copy));
-    match add_worker(serv, process, zcopy) {
+    match add_worker(serv, process) {
         -3 => bailout::defer(Err(bailout::Bailout)),
         -2 => {
             set_last_error(SW_ERROR_SERVER_UNRELATED_THREAD);

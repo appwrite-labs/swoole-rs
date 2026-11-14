@@ -889,23 +889,18 @@ extern "C" fn on_buffer_empty(_: Ctx, server: view::Server<'_>, info: &DataHead)
 extern "C" fn on_user_worker_start(_: Ctx, server: view::Server<'_>, worker: Worker<'_>) {
     let id = i64::from(worker.id());
     let config = server.config();
-    let process = if config.mode_ == Mode::Thread {
-        let index =
-            id - i64::from(config.worker_num.get()) - i64::from(config.task_worker_num.get());
-        let index = usize::try_from(index).unwrap_or(usize::MAX);
-        let process = ServerObject::with_running(|object| object.user_process(index));
-        let process = process.unwrap_or(ptr::null_mut());
+    let index = id - i64::from(config.worker_num.get()) - i64::from(config.task_worker_num.get());
+    let index = usize::try_from(index).unwrap_or(usize::MAX);
+    // Not dropped: the process may exit through a bailout, which skips drops.
+    let process = ServerObject::with_running(|object| object.user_process(index))
+        .flatten()
+        .map(ManuallyDrop::new);
+    if config.mode_ == Mode::Thread {
         // A user worker: just the message bus allocator.
         prepare_worker(server);
-        process
-    } else {
-        // The worker `addProcess` made holds its process object.
-        worker.user_data().cast::<zval>()
-    };
-    // SAFETY: the process object, which the worker or the Server object holds.
-    let process = unsafe { Value::from_ptr(process) };
-    let props =
-        process.and_then(|process| process.props(Some(swoole_rs_phpprocess::process_class())));
+    }
+    let props = (process.as_deref())
+        .and_then(|process| process.props(Some(swoole_rs_phpprocess::process_class())));
     if let Some(props) = props {
         props.long(c"id", id);
     }
@@ -926,7 +921,9 @@ extern "C" fn on_user_worker_start(_: Ctx, server: view::Server<'_>, worker: Wor
     if let Some(process) = process {
         // This frame owns nothing that needs a drop, as the process exits through a
         // bailout.
-        swoole_rs_phpprocess::start_worker(worker, process);
+        swoole_rs_phpprocess::start_worker(worker, &process);
+        // It returned without starting: the Server object's copy outlives ours.
+        drop(ManuallyDrop::into_inner(process));
     }
 }
 
