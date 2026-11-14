@@ -128,7 +128,9 @@ pub fn send_parts(
 
 /// The session's verified connection and socket when a send can be written to the
 /// socket here and now: no overflow, and a socket that sends directly, without TLS and
-/// with no output buffer yet.
+/// with no output buffer yet. Inlined into each send: out of line it costs the
+/// callgrind `socket` workload about 20 instructions a request (#3908).
+#[inline(always)]
 fn writes_now(
     state: &ServerState,
     session_id: core::ffi::c_long,

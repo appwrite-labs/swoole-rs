@@ -248,8 +248,9 @@ impl Connection for Read<'_> {
 
     /// `Server::dispatch_task` or `http_server::dispatch_request` (503 while the server
     /// is at `max_concurrency`, else `Server::dispatch_task`) of `length` bytes from the
-    /// buffer's start.
-    #[inline]
+    /// buffer's start. Inlined into each request's read: out of line it costs the
+    /// callgrind `socket` workload about 40 instructions a request (#3908).
+    #[inline(always)]
     fn dispatch(&mut self, dispatch: Dispatch, length: u64) -> i64 {
         let data = RecvData {
             info: DataHead {
