@@ -123,9 +123,9 @@ pub(crate) fn worker_base() -> u32 {
     .unwrap_or(1)
 }
 
-/// `php_swoole_reactor_init()`.
-pub(crate) fn reactor_init() -> c_int {
-    php_swoole_reactor_init()
+/// `php_swoole_reactor_init()`: whether the reactor is ready.
+pub(crate) fn reactor_init() -> bool {
+    php_swoole_reactor_init() >= 0
 }
 
 /// `php_swoole_event_wait()`.
@@ -143,9 +143,9 @@ pub(crate) fn dup_socket(fd: c_int, stream: bool) -> Option<Owned> {
     swoole_rs_phpclients::dup(fd, kind)
 }
 
-/// `php_swoole_convert_to_fd(value)`.
-pub(crate) fn convert_to_fd(value: &Value) -> c_int {
-    php_swoole_convert_to_fd(Some(value))
+/// `php_swoole_convert_to_fd(value)`: the fd, or `None` for a value that names none.
+pub(crate) fn convert_to_fd(value: &Value) -> Option<c_int> {
+    Some(php_swoole_convert_to_fd(Some(value))).filter(|&fd| fd >= 0)
 }
 
 /// The value, or `None` with the bailout deferred: the caller stops on
