@@ -67,12 +67,21 @@ const LOG_TRACE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as c_in
 const UPLOAD_PREPROCESSED: u16 = 1;
 
 /// Where `onReceive` sends the data.
-const CLOSED: c_int = 0;
-const TCP: c_int = 1;
-const WEBSOCKET: c_int = 2;
-const HTTP2: c_int = 3;
-const REQUEST: c_int = 4;
-const DONE: c_int = 5;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Route {
+    /// The session or its port is gone.
+    Closed,
+    /// The server's plain `onReceive`.
+    Tcp,
+    /// The WebSocket `onMessage`.
+    WebSocket,
+    /// The HTTP/2 server.
+    Http2,
+    /// A parsed request, for its handler.
+    Request,
+    /// Handled here.
+    Done,
+}
 
 /// The connection and its port, as `onReceive` routes by.
 struct Receive {
@@ -185,10 +194,10 @@ fn cached(
 pub fn http_server_on_receive(server: view::Server<'_>, request: &RecvData) -> c_int {
     let info = request.info();
     match receive(server, request) {
-        CLOSED => -1,
-        TCP => php_swoole_server_on_receive(server, request),
-        WEBSOCKET => websocket::on_message(server, request),
-        HTTP2 => {
+        Route::Closed => -1,
+        Route::Tcp => php_swoole_server_on_receive(server, request),
+        Route::WebSocket => websocket::on_message(server, request),
+        Route::Http2 => {
             // `receive` verified the session.
             let (Some(conn), Some(http2)) = (server.verified(info.fd), crate::http2::server())
             else {
@@ -196,11 +205,11 @@ pub fn http_server_on_receive(server: view::Server<'_>, request: &RecvData) -> c
             };
             (http2.on_receive)(server, conn, request)
         }
-        _ => 0,
+        Route::Request | Route::Done => 0,
     }
 }
 
-fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
+fn receive(server: view::Server<'_>, request: &RecvData) -> Route {
     let info = request.info();
     let (session, server_fd) = (info.fd, c_int::from(info.server_fd));
     let Some(conn) = server.verified(session) else {
@@ -210,11 +219,11 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
             c"php_swoole_http_server_onReceive",
             format!("session[{session}] is closed"),
         );
-        return CLOSED;
+        return Route::Closed;
     };
     // A live connection's listening port.
     let Some(port) = server.port_by_server_fd(server_fd) else {
-        return CLOSED;
+        return Route::Closed;
     };
     let config = port.config();
     let isset = |kind| php_swoole_server_isset_callback(server, Some(port), kind);
@@ -234,7 +243,7 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
         coroutine: false,
     };
     let route = route(&facts);
-    if route != REQUEST {
+    if route != Route::Request {
         return route;
     }
     facts.remote_port = i64::from(swr_v1_clients_address_port(&conn.info()));
@@ -254,7 +263,7 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
     state.request.zdata = php_swoole_get_recv_data(server, request);
     crate::parse::init_request_parser(ctx);
     let result = handle(server, ctx, session, server_fd, &facts).and_then(|route| {
-        if route != REQUEST {
+        if route != Route::Request {
             return context::release_objects(ctx);
         }
         // False leaves it queued, with its objects.
@@ -264,7 +273,7 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> c_int {
         call(ctx, facts.coroutine)
     });
     bailout::raise(result);
-    DONE
+    Route::Done
 }
 
 /// `swoole_http_server_can_cache_session_addr`: a keep-alive session's
@@ -379,15 +388,15 @@ impl swoole_rs_reactor::event_api::Deferred for Turn {
 }
 
 /// Where `onReceive` sends data before any parsing.
-fn route(facts: &Receive) -> c_int {
+fn route(facts: &Receive) -> Route {
     if !facts.http && !facts.websocket {
-        TCP
+        Route::Tcp
     } else if facts.websocket_status >= WebSocketStatus::Handshake {
-        WEBSOCKET
+        Route::WebSocket
     } else if facts.http2 {
-        HTTP2
+        Route::Http2
     } else {
-        REQUEST
+        Route::Request
     }
 }
 
@@ -404,7 +413,7 @@ fn handle(
     session: i64,
     server_fd: c_int,
     facts: &Receive,
-) -> Result<c_int, bailout::Bailout> {
+) -> Result<Route, bailout::Bailout> {
     // The request data `receive` moved into the context, a string; this
     // frame's reference keeps it while the parser fills the context.
     let zdata = ctx.state().request.zdata.copy();
@@ -424,7 +433,7 @@ fn handle(
                 parser.reason()
             ));
         }
-        return Ok(DONE);
+        return Ok(Route::Done);
     }
     let state = ctx.state();
     let cache = facts.cache.filter(|_| state.keepalive);
@@ -462,7 +471,7 @@ fn handle(
         } else {
             websocket::request(ctx);
         }
-        return Ok(DONE);
+        return Ok(Route::Done);
     };
     let state = ctx.state();
     state.callback = Some(callback);
@@ -470,7 +479,7 @@ fn handle(
         websocket::upgrading(server, session);
         state.upgrade = true;
     }
-    Ok(REQUEST)
+    Ok(Route::Request)
 }
 
 /// An HTTP/2 request's connection and server state.
@@ -727,27 +736,27 @@ mod tests {
     fn data_goes_where_upstream_sends_it() {
         assert_eq!(
             route(&facts(false, false, WebSocketStatus::Handshake, true)),
-            TCP
+            Route::Tcp
         );
         assert_eq!(
             route(&facts(true, false, WebSocketStatus::Handshake, true)),
-            WEBSOCKET
+            Route::WebSocket
         );
         assert_eq!(
             route(&facts(false, true, WebSocketStatus::Active, false)),
-            WEBSOCKET
+            Route::WebSocket
         );
         assert_eq!(
             route(&facts(true, false, WebSocketStatus::Connection, true)),
-            HTTP2
+            Route::Http2
         );
         assert_eq!(
             route(&facts(true, true, WebSocketStatus::Connection, false)),
-            REQUEST
+            Route::Request
         );
         assert_eq!(
             route(&facts(true, false, WebSocketStatus::None, false)),
-            REQUEST
+            Route::Request
         );
     }
 }
