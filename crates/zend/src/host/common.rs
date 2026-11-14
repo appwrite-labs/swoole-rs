@@ -13,7 +13,7 @@ use std::{
 unsafe extern "C" {
     /// `zend_string_init(bytes, len, 1)`: it reads the lent bytes (an `IoSlice` is
     /// an iovec) and returns a new persistent string; out of memory, Zend exits.
-    safe fn swr_bytes_persistent(bytes: IoSlice<'_>) -> *mut zend_string;
+    pub(crate) safe fn swr_bytes_persistent(bytes: IoSlice<'_>) -> *mut zend_string;
 }
 
 /// Zend's interned known strings, in `SW_ZEND_STR_*` order: null until
