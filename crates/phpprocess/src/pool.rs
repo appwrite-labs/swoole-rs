@@ -78,7 +78,7 @@ impl Pool {
             record: UnsafeCell::new(PoolRecord::empty()),
             created: Cell::new(false),
         });
-        if methods::create(pool.handle(), worker_num, key, ipc) < 0 {
+        if !methods::create(pool.handle(), worker_num, key, ipc) {
             return None;
         }
         pool.created.set(true);

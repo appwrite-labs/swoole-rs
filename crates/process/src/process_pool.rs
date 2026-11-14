@@ -1360,29 +1360,29 @@ impl<H: PoolHost> Pool<'_, H> {
     }
 
     /// `ProcessPool::create`.
-    fn create(&mut self, worker_num: u32, key: c_int, mode: u8) -> i64 {
+    fn create(&mut self, worker_num: u32, key: c_int, mode: u8) -> bool {
         let mode = IpcMode::from_code(mode.into());
         if mode == IpcMode::MsgQueue && self.op(Op::HaveMsgqueue, 0) == 0 {
             self.op(Op::Log(Log::NoSysvmsg), 0);
-            return SW_ERR;
+            return false;
         }
         // The count goes with the records, so `worker_num` never counts past `workers`.
         let workers = pointer::<WorkerRecord>(self.op(Op::AllocWorkers, worker_num.into()));
         if workers.is_null() {
             self.op(Op::Log(Log::Alloc), 0);
-            return SW_ERR;
+            return false;
         }
         self.set_workers(workers);
         self.set_worker_num(worker_num);
         if self.create_message_box(SW_MESSAGE_BOX_SIZE) < 0 {
-            return SW_ERR;
+            return false;
         }
         match mode {
             IpcMode::MsgQueue => {
                 self.set_use_msgqueue(true);
                 self.set_msgqueue_key(key);
                 let Some(queue) = swoole_rs_ossupport::QueueRecord::open(key) else {
-                    return SW_ERR;
+                    return false;
                 };
                 self.set_queue(Some(queue));
             }
@@ -1397,7 +1397,7 @@ impl<H: PoolHost> Pool<'_, H> {
                             self.worker_at(made).clear_pipes();
                         }
                         self.set_pipes(ptr::null_mut());
-                        return SW_ERR;
+                        return false;
                     }
                 }
             }
@@ -1413,7 +1413,7 @@ impl<H: PoolHost> Pool<'_, H> {
         for index in 0..worker_num {
             self.worker_at(index).join(self.p);
         }
-        SW_OK
+        true
     }
 
     /// `ProcessPool::create_message_box`.
@@ -2055,7 +2055,7 @@ pub fn swr_v1_process_pool_create(
     worker_num: u32,
     key: c_int,
     mode: u8,
-) -> i64 {
+) -> bool {
     with(native, pool, |p| p.create(worker_num, key, mode))
 }
 
@@ -2401,7 +2401,7 @@ mod tests {
         let mut script = Script::default();
         script.answers.insert(Op::HaveMsgqueue, 0);
         let mut pool = fixture.pool(script);
-        assert_eq!(pool.create(2, 0, IpcMode::MsgQueue.code()), SW_ERR);
+        assert!(!pool.create(2, 0, IpcMode::MsgQueue.code()));
         assert_eq!(ops(&pool), [Op::HaveMsgqueue, Op::Log(Log::NoSysvmsg)]);
     }
 
@@ -2409,7 +2409,7 @@ mod tests {
     fn create_makes_a_pipe_per_worker_and_sets_the_defaults() {
         let mut fixture = Fixture::new(3);
         let mut pool = fixture.pool(Script::default());
-        assert_eq!(pool.create(3, 0, IpcMode::UnixSock.code()), SW_OK);
+        assert!(pool.create(3, 0, IpcMode::UnixSock.code()));
         assert_eq!(
             ops(&pool),
             [
@@ -2437,7 +2437,7 @@ mod tests {
         let mut script = Script::default();
         script.answers.insert(Op::NewPipe, 0);
         let mut pool = fixture.pool(script);
-        assert_eq!(pool.create(3, 0, IpcMode::UnixSock.code()), SW_ERR);
+        assert!(!pool.create(3, 0, IpcMode::UnixSock.code()));
         assert_eq!(
             pool.h
                 .log
@@ -2452,7 +2452,7 @@ mod tests {
     fn an_unknown_ipc_mode_is_none() {
         let mut fixture = Fixture::new(1);
         let mut pool = fixture.pool(Script::default());
-        assert_eq!(pool.create(1, 0, 9), SW_OK);
+        assert!(pool.create(1, 0, 9));
         assert_eq!(pool.ipc_mode(), IpcMode::None);
         pool.destroy();
     }

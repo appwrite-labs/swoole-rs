@@ -159,15 +159,9 @@ pub fn spawn(pool: PoolRef<'_>, worker: *mut WorkerRecord) -> c_int {
 
 /// `ProcessPool::create(worker_num, msgqueue_key, ipc_mode)`.
 #[must_use]
-pub fn create(pool: PoolRef<'_>, worker_num: u32, key: c_int, mode: c_int) -> c_int {
+pub fn create(pool: PoolRef<'_>, worker_num: u32, key: c_int, mode: c_int) -> bool {
     let mode = u8::try_from(mode.cast_unsigned() & 0xff).unwrap_or_default();
-    c_int::narrow(swr_v1_process_pool_create(
-        native(),
-        pool,
-        worker_num,
-        key,
-        mode,
-    ))
+    swr_v1_process_pool_create(native(), pool, worker_num, key, mode)
 }
 
 /// `ProcessPool::push_message(type, data, length)`.
