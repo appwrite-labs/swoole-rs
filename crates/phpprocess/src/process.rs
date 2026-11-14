@@ -274,17 +274,17 @@ fn configure(process: &Process, enable_coroutine: bool, pipe_type: c_int) {
 }
 
 /// `php_swoole_process_start`: in the child, run the callback, then bail out
-/// as `exit` would. -1 when the callback or the event loop cannot start; a
-/// bailout pending on the way is raised here, as the closing one is.
+/// as `exit` would. It returns only when the callback or the event loop cannot
+/// start; a bailout pending on the way is raised here, as the closing one is.
 /// `worker` is the Process object `this`'s.
-pub fn start_worker(worker: Worker<'_>, this: &Value) -> c_int {
-    start_child(worker, this)
+pub fn start_worker(worker: Worker<'_>, this: &Value) {
+    start_child(worker, this);
 }
 
 /// [`start_worker`] on `$this`.
-fn start_child(worker: Worker<'_>, this: &Value) -> c_int {
+fn start_child(worker: Worker<'_>, this: &Value) {
     if this.object().is_none() {
-        return -1;
+        return;
     }
     // The declared private property.
     let callable = match this.read_property(Some(&PROCESS), c"callback") {
@@ -296,7 +296,7 @@ fn start_child(worker: Worker<'_>, this: &Value) -> c_int {
     };
     let Some(callable) = callable else {
         swoole_rs_zend::bailout::finish();
-        return -1;
+        return;
     };
     worker::child_enter(worker);
     let worker = view(worker);
@@ -320,10 +320,10 @@ fn start_child(worker: Worker<'_>, this: &Value) -> c_int {
     let coroutine = this
         .custom::<Process>()
         .is_some_and(|process| process.enable_coroutine.get());
-    if swoole_rs_zend::bailout::pending() || (coroutine && host::reactor_init() < 0) {
+    if swoole_rs_zend::bailout::pending() || (coroutine && !host::reactor_init()) {
         drop(callable);
         swoole_rs_zend::bailout::finish();
-        return -1;
+        return;
     }
     // `$this` is the callable's one argument.
     let called = callable.call(&[this], coroutine);
@@ -682,10 +682,11 @@ fn start(call: &Call) {
             call.set_long(i64::from(pid));
         }
         std::cmp::Ordering::Equal => {
-            let started = call
-                .this_value()
-                .is_some_and(|this| start_child(worker, this) >= 0);
-            call.set_bool(started);
+            // The child returns here only when it could not start.
+            if let Some(this) = call.this_value() {
+                start_child(worker, this);
+            }
+            call.set_bool(false);
         }
     }
 }
@@ -706,8 +707,7 @@ fn read(call: &Call) {
     }
     let size = size.c_cast::<usize>();
     let mut buffer = ZBuf::with_capacity(size);
-    let read = worker::pipe_read(worker, &mut buffer, blocking(process));
-    let Ok(length) = usize::try_from(read) else {
+    let Some(length) = worker::pipe_read(worker, &mut buffer, blocking(process)) else {
         call.set_bool(false);
         return;
     };
@@ -746,13 +746,12 @@ fn write(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let written = worker::pipe_write(worker, data, blocking(process));
-    if written < 0 {
+    let Some(written) = worker::pipe_write(worker, data, blocking(process)) else {
         sys(E_WARNING, &message!("write() failed"));
         call.set_bool(false);
         return;
-    }
-    call.set_long(written as i64);
+    };
+    call.set_long(written.c_cast::<i64>());
 }
 
 fn export_socket(call: &Call) {
@@ -901,8 +900,7 @@ fn daemon(call: &Call) {
         for ((_, value), fd) in pipes.entries().zip(0..=2) {
             if value.kind() != IS_NULL {
                 // C++ resolves a stream, socket or int to its fd.
-                let from = host::convert_to_fd(value);
-                if from >= 0 {
+                if let Some(from) = host::convert_to_fd(value) {
                     worker::dup(from, fd);
                 }
             }
@@ -962,7 +960,7 @@ fn close(call: &Call) {
         call.set_bool(false);
         return;
     }
-    if worker::pipe_close(worker, which) < 0 {
+    if !worker::pipe_close(worker, which) {
         sys(E_WARNING, &message!("close() failed"));
         call.set_bool(false);
         return;

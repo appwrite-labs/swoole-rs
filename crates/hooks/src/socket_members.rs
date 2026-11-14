@@ -161,7 +161,7 @@ impl Co {
     /// `Socket::getsockname()`, into the open socket's `network::Socket`.
     #[must_use]
     pub fn getsockname(self) -> bool {
-        self.net(|record| record.get_name() == 0) == Some(true)
+        self.net(SocketFields::get_name) == Some(true)
     }
 
     /// `Socket::getpeername(sa)`.
@@ -292,7 +292,7 @@ impl Co {
         }
         let backlog = if backlog <= 0 { BACKLOG } else { backlog };
         self.set_backlog(backlog);
-        if self.net(|record| record.listen(backlog)).unwrap_or(-1) < 0 {
+        if !self.net(|record| record.listen(backlog)).unwrap_or(false) {
             set_err(self, errno());
             return false;
         }
@@ -339,8 +339,7 @@ impl Co {
         }
         let mut address = SocketAddress::default();
         let bound = assign(&mut address, kind, host, port)
-            && self.net(|record| record.bind(&address) >= 0 && record.get_name() >= 0)
-                == Some(true);
+            && self.net(|record| record.bind(&address) && record.get_name()) == Some(true);
         if !bound {
             // The last error carries it too, as the Socket calls that set_err(int) do, so the
             // hooked socket_create_listen() leaves it for socket_last_error().
@@ -398,8 +397,7 @@ impl Co {
     pub fn peer_cert(self) -> Vec<u8> {
         let mut pem = vec![0_u8; SW_STACK_BUFFER_SIZE as usize];
         let read = |socket: Socket<'_>| socket_ssl_peer_certificate_pem(socket, &mut pem);
-        let length = self.with_network(read).unwrap_or(-1);
-        if let Ok(length) = usize::try_from(length) {
+        if let Some(length) = self.with_network(read).flatten() {
             pem.truncate(length);
             return pem;
         }

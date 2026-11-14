@@ -1166,7 +1166,7 @@ fn getsockname(call: &Call) {
     let Some(socket) = conn.cli.net() else {
         return call.set_bool(false);
     };
-    if socket.edit(SocketFields::get_name) < 0 {
+    if !socket.edit(SocketFields::get_name) {
         let error = errno();
         warn_sys("getsockname() failed", error);
         set_err_code(Obj::this(call), error);
@@ -1190,7 +1190,7 @@ fn getpeername(call: &Call) {
         return call.set_bool(false);
     };
     let mut address = SocketAddress::default();
-    if conn.cli.handle().peer_name(&mut address) < 0 {
+    if !conn.cli.handle().peer_name(&mut address) {
         let error = errno();
         warn_sys("getpeername() failed", error);
         set_err_code(Obj::this(call), error);

@@ -11,13 +11,14 @@ use std::ffi::{c_int, c_void};
 use std::ptr;
 use swoole_rs_corebase::CCast;
 
+use crate::pool::Bailed;
 use crate::pool::{raise_bailout, swr_v1_process_pool_ipc_respond, swr_v1_process_worker_send};
 #[cfg(any(feature = "upstream-symbols", test))]
 use crate::pool::{swr_v1_process_pool_ipc_address, swr_v1_process_pool_ipc_set_listener};
 use crate::process_pool::{
-    PoolNative, PoolRecord, PoolRef, RAISE, Run, run_op, swr_v1_process_pool_create,
+    PoolNative, PoolRecord, PoolRef, swr_v1_process_pool_create,
     swr_v1_process_pool_dispatch_event, swr_v1_process_pool_push, swr_v1_process_pool_push_event,
-    swr_v1_worker_symbol,
+    swr_v1_worker_symbol, with,
 };
 use crate::reload_task::KillWarning;
 use crate::worker_globals::{
@@ -42,90 +43,44 @@ fn native() -> &'static dyn PoolNative {
     swoole_rs_corebase::fatal("no native process pool without upstream-symbols")
 }
 
-/// A method's C++ return type, from the `i64` an export returns.
-pub(crate) trait Narrow {
-    fn narrow(value: i64) -> Self;
-}
-
-impl Narrow for () {
-    fn narrow(_: i64) {}
-}
-
-impl Narrow for bool {
-    fn narrow(value: i64) -> bool {
-        value != 0
-    }
-}
-
-impl Narrow for u32 {
-    fn narrow(value: i64) -> u32 {
-        value.c_cast::<u32>()
-    }
-}
-
-impl Narrow for *mut core::ffi::c_void {
-    fn narrow(value: i64) -> Self {
-        core::ptr::with_exposed_provenance_mut(usize::try_from(value).unwrap_or(0))
-    }
-}
-
-impl Narrow for isize {
-    fn narrow(value: i64) -> isize {
-        value.c_cast::<isize>()
-    }
-}
-
-impl Narrow for c_int {
-    fn narrow(value: i64) -> c_int {
-        value.c_cast::<c_int>()
-    }
-}
-
-/// One `ProcessPool` method on `worker`, one of the pool's, or none; a callback's
-/// bailout is raised once the export's frames are gone. This frame holds nothing,
-/// so the `longjmp` may cross it.
-fn run_on<R: Narrow>(pool: PoolRef<'_>, worker: Option<Worker<'_>>, run: Run) -> R {
-    let result = run_op(native(), pool, worker, run);
-    if result == RAISE {
+/// A method's result; a callback's bailout is raised once the method's frames are
+/// gone. This frame holds nothing, so the `longjmp` may cross it.
+fn raised<T: Default>(result: Result<T, Bailed>) -> T {
+    result.unwrap_or_else(|Bailed| {
         raise_bailout();
-    }
-    R::narrow(result)
-}
-
-/// [`run_on`] the pool itself.
-fn run<R: Narrow>(pool: PoolRef<'_>, run: Run) -> R {
-    run_on(pool, None, run)
+        T::default()
+    })
 }
 
 /// Each `ProcessPool` method that runs on the pool alone: its name, parameters,
-/// return type, and the [`Run`].
-macro_rules! run_methods {
-    ($(fn $name:ident($($p:ident: $t:ty),*) -> $r:ty = $run:expr;)*) => {$(
+/// return type, and the call, [`raised`] for one whose callbacks may bail out.
+macro_rules! pool_methods {
+    ($(fn $name:ident($($p:ident: $t:ty),*) -> $r:ty = $($raised:ident)? |$pool:ident| $call:expr;)*) => {$(
         #[doc = concat!("`ProcessPool::", stringify!($name), "`.")]
         pub fn $name(pool: PoolRef<'_>, $($p: $t),*) -> $r {
-            run(pool, $run)
+            $($raised)?(with(native(), pool, |$pool| $call))
         }
     )*};
 }
 
-run_methods! {
-    fn create_message_box(size: usize) -> c_int = Run::CreateMessageBox(size as u64);
-    fn create_message_bus() -> c_int = Run::CreateMessageBus;
-    fn set_protocol(protocol: Protocol) -> () = Run::SetProtocol(protocol);
-    fn start_check() -> c_int = Run::StartCheck;
-    fn start() -> c_int = Run::Start;
-    fn drop_reload_task() -> () = Run::DropReloadTask;
-    fn reload() -> bool = Run::Reload;
-    fn reopen_logger() -> () = Run::ReopenLogger;
-    fn kill_all_workers(signo: c_int) -> () = Run::KillAll(signo);
-    fn shutdown() -> bool = Run::Shutdown;
-    fn set_max_request(max: u32, grace: u32) -> () = Run::SetMaxRequest { max, grace };
-    fn set_type(kind: c_int) -> () = Run::SetType(kind.c_cast::<u8>());
-    fn set_start_id(id: c_int) -> () = Run::SetStartId(id.c_cast::<u16>());
-    fn detach() -> bool = Run::Detach;
-    fn wait() -> c_int = Run::Wait;
-    fn destroy() -> () = Run::Destroy;
-    fn free_message_box() -> () = Run::FreeMessageBox;
+pool_methods! {
+    fn create_message_box(size: usize) -> bool = |p| p.create_message_box(size as u64);
+    fn create_message_bus() -> bool = |p| p.create_message_bus();
+    fn set_protocol(protocol: Protocol) -> () = |p| p.set_protocol(protocol);
+    fn start_check() -> bool = |p| p.start_check();
+    fn start() -> bool = raised |p| p.start();
+    fn drop_reload_task() -> () = |p| p.drop_reload_task();
+    fn reload() -> bool = raised |p| p.reload();
+    fn reopen_logger() -> () = |p| p.reopen_logger();
+    fn kill_all_workers(signo: c_int) -> () = |p| p.kill_all_workers(signo);
+    fn shutdown() -> bool = |p| p.shutdown();
+    fn set_max_request(max: u32, grace: u32) -> () = |p| p.set_max_requests(max, grace);
+    fn set_type(kind: c_int) -> () = |p| p.set_type(kind.c_cast::<u8>());
+    fn set_start_id(id: c_int) -> () = |p| p.number_from(id.c_cast::<u16>());
+    fn detach() -> bool = |p| p.detach();
+    fn wait() -> c_int = raised |p| p.wait().map(CCast::c_cast::<c_int>);
+    fn destroy() -> () = |p| p.destroy();
+    fn free_message_box() -> () = |p| p.free_message_box();
 }
 
 /// `ProcessPool::push_message(event)`: the `EventData` with `head` (its `len` set to
@@ -139,15 +94,15 @@ pub fn push_event(pool: PoolRef<'_>, head: &swoole_rs_corebase::DataHead, data: 
 /// `ProcessPool::stop(worker)`; nothing when `worker` is none of the pool's.
 pub fn stop(pool: PoolRef<'_>, worker: *mut WorkerRecord) {
     if let Some(worker) = pool.worker_of(worker) {
-        run_on::<()>(pool, Some(worker), Run::Stop);
+        with(native(), pool, |p| p.stop(worker.raw()));
     }
 }
 
 /// `ProcessPool::signal(signo, worker)`, in `worker` or (null, or none of the
 /// pool's) the master.
 pub fn signal(pool: PoolRef<'_>, signo: c_int, worker: *mut WorkerRecord) {
-    let worker = pool.worker_of(worker);
-    run_on::<()>(pool, worker, Run::Signal(signo));
+    let worker = pool.worker_of(worker).map_or(ptr::null_mut(), Worker::raw);
+    raised(with(native(), pool, |p| p.signal(signo, worker)));
 }
 
 /// `ProcessPool::spawn(worker)`; -1 when `worker` is none of the pool's.
@@ -155,20 +110,14 @@ pub fn spawn(pool: PoolRef<'_>, worker: *mut WorkerRecord) -> c_int {
     let Some(worker) = pool.worker_of(worker) else {
         return -1;
     };
-    run_on(pool, Some(worker), Run::Spawn)
+    raised(with(native(), pool, |p| p.spawn(worker.raw()))).c_cast::<c_int>()
 }
 
 /// `ProcessPool::create(worker_num, msgqueue_key, ipc_mode)`.
 #[must_use]
-pub fn create(pool: PoolRef<'_>, worker_num: u32, key: c_int, mode: c_int) -> c_int {
+pub fn create(pool: PoolRef<'_>, worker_num: u32, key: c_int, mode: c_int) -> bool {
     let mode = u8::try_from(mode.cast_unsigned() & 0xff).unwrap_or_default();
-    c_int::narrow(swr_v1_process_pool_create(
-        native(),
-        pool,
-        worker_num,
-        key,
-        mode,
-    ))
+    swr_v1_process_pool_create(native(), pool, worker_num, key, mode)
 }
 
 /// `ProcessPool::push_message(type, data, length)`.
@@ -194,14 +143,8 @@ pub fn dispatch(
     task: Packed<'_>,
     worker_id: &mut c_int,
     blocking: bool,
-) -> c_int {
-    c_int::narrow(swr_v1_process_pool_dispatch_event(
-        native(),
-        pool,
-        task.bytes(),
-        worker_id,
-        blocking,
-    ))
+) -> bool {
+    swr_v1_process_pool_dispatch_event(native(), pool, task.bytes(), worker_id, blocking)
 }
 
 /// `ProcessPool::add_worker(worker)`: keeps an existing entry for the pid; nothing

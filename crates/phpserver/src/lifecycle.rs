@@ -16,13 +16,13 @@ use std::{
     sync::atomic::Ordering,
 };
 use swoole_rs_corebase::CCast;
-use swoole_rs_phpcoroutines::Coroutine;
+use swoole_rs_phpcoroutines::{Coroutine, Waiter};
 use swoole_rs_process::worker_record::Worker;
 use swoole_rs_server::{server_methods, swr_v1_server_add_command, swr_v1_server_command, view};
 use swoole_rs_zend::host::callable::Callable as Kept;
 use swoole_rs_zend::{
     ArrayMut, Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Message, Owned, Value, ZString,
-    bailout, message, report, sys::zval,
+    bailout, message, report,
 };
 
 /// What [`fact`] answers of a server.
@@ -160,8 +160,8 @@ fn kind(object: ServerObject<'_>) -> Kind {
 
 /// `serv->start()` inside `zend_try`: the server runs PHP's callbacks, and one
 /// may bail out.
-fn start_server(serv: view::Server<'_>) -> Result<c_int, bailout::Bailout> {
-    let mut started = 0;
+fn start_server(serv: view::Server<'_>) -> Result<bool, bailout::Bailout> {
+    let mut started = false;
     swoole_rs_zend::contain_with(|| started = server_methods::start(serv))?;
     Ok(started)
 }
@@ -576,9 +576,9 @@ impl<'a> Props<'a> {
     /// `object_init_ex(target, class)`: a new object in `target`, under its class;
     /// the handle borrows `target`, so it can't outlive the object. Zend
     /// instantiates every registered data class.
-    pub(crate) fn init(target: &'a mut zval, class: &Class) -> Self {
-        *target = class.create_object().into_zval();
-        Self(Value::of(target).props(Some(class)))
+    pub(crate) fn init(target: &'a mut Owned, class: &Class) -> Self {
+        *target = class.create_object();
+        Self(target.props(Some(class)))
     }
 
     /// The same handle as crates/zend's, whose writes defer a bailout.
@@ -628,10 +628,6 @@ impl<'a> Props<'a> {
         if let Some(props) = self.0 {
             props.merge(name, settings);
         }
-    }
-
-    pub(crate) fn value(self, name: &CStr, value: &mut zval) {
-        self.set(name, Value::of(value));
     }
 
     /// `host`, `port`, `type`, `sock` (with `fd`) and `ssl` from `info`.
@@ -894,12 +890,10 @@ fn command_run(callable: &Weak<Kept>, message: &[u8], reply: &mut Vec<u8>) {
         send(br#"{"data": "failed to call function", "code": -1}"#);
         return;
     };
-    let message = Owned::string(ZString::new(message)).into_zval();
-    let mut args = [crate::dispatch::zserv(), message];
+    let message = [Owned::string(ZString::new(message))];
     let retval = Owned::default();
-    let called = crate::dispatch::invoke(&callable, &mut args, Some(&*retval), false);
-    // The message string made above.
-    crate::dispatch::dtor(&mut args[1]);
+    let called = crate::dispatch::invoke(&callable, &message, Some(&retval), false);
+    drop(message);
     let bailed = match called {
         Err(_) => true,
         Ok(false) => {
@@ -932,21 +926,18 @@ fn command_run(callable: &Weak<Kept>, message: &[u8], reply: &mut Vec<u8>) {
 /// past the request (a master-handled command's stays until shutdown).
 struct Wait {
     reply: RefCell<Option<Vec<u8>>>,
-    coroutine: Coroutine,
+    waiter: Waiter,
     replied: Cell<bool>,
 }
 
 /// The command's reply (`Server::Command::Callback`): into `reply`, then the
-/// waiting coroutine resumes, if it has yielded yet.
+/// waiting coroutine resumes, if it has yielded yet. This frame owns nothing
+/// that needs a drop.
 fn command_done(wait: Rc<Wait>) -> impl Fn(&[u8]) {
     move |message| {
         wait.reply.replace(Some(message.to_vec()));
-        if wait.coroutine.is_suspending() == Some(true) {
-            // SAFETY: it parked in `command`; this frame owns nothing that needs a drop.
-            unsafe { wait.coroutine.wake(false) };
-        } else {
-            wait.replied.set(true);
-        }
+        wait.replied.set(true);
+        wait.waiter.wake();
     }
 }
 
@@ -971,12 +962,12 @@ fn command(call: &Call) {
     if let Err(bailout) = swoole_rs_phpruntime::coroutine_check() {
         return bailout.defer();
     }
-    let Some(coroutine) = Coroutine::current() else {
+    if Coroutine::current().is_none() {
         return;
-    };
+    }
     let wait = Rc::new(Wait {
         reply: RefCell::default(),
-        coroutine,
+        waiter: Waiter::default(),
         replied: Cell::new(false),
     });
     let data = encoded.bytes();
@@ -1000,7 +991,7 @@ fn command(call: &Call) {
     }
     if !wait.replied.get() {
         // `command_done` resumes it.
-        swoole_rs_phpcoroutines::suspend();
+        wait.waiter.wait();
     }
     let Some(reply) = wait.reply.take() else {
         return;
@@ -1102,7 +1093,7 @@ fn has_key(setting: &ArrayMut, key: &CStr) -> bool {
 /// `ServerObject::on_before_start`.
 #[expect(clippy::too_many_lines, reason = "upstream's checks, in its order")]
 fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), Stop> {
-    if server_methods::create(serv) < 0 {
+    if !server_methods::create(serv) {
         // The calling thread's `sw_error`.
         let reason = last_error_message();
         let mut text = Message::new();
@@ -1321,7 +1312,7 @@ fn start(call: &Call) {
     }
     match start_server(serv) {
         Err(bailout) => return bailout.defer(),
-        Ok(..0) => {
+        Ok(false) => {
             let reason = server_methods::get_startup_error_message();
             let mut text = Message::new();
             text.push(b"failed to start server. Error: ");

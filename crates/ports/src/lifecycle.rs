@@ -190,7 +190,7 @@ pub(crate) fn ssl_create(config: &PortConfig, sock: Option<Socket<'_>>) -> bool 
             // SAFETY: nothing writes the port's context while a connection's session is
             // made.
             let fields = unsafe { swoole_rs_tls::owner_fields(context) };
-            socket_ssl_create(sock, fields.context.as_deref(), flags) >= 0
+            socket_ssl_create(sock, fields.context.as_deref(), flags)
         })
     };
     let Some(sock) = sock.filter(|&sock| create(sock)) else {
@@ -305,7 +305,7 @@ pub(crate) fn import(config: &mut PortConfig, fd: c_int) -> bool {
         log::sys_warning(origin, message);
         return false;
     };
-    if socket.get_name() < 0 {
+    if !socket.get_name() {
         log::sys_warning(origin, format_args!("getsockname({fd}) failed"));
         return false;
     }

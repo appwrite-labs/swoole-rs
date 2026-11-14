@@ -87,9 +87,9 @@ pub(super) mod ops {
         log(format!("event {op:?} {events}"));
         OK
     }
-    pub(in super::super) fn socket_error(_: Handle, error: &mut c_int) -> c_int {
+    pub(in super::super) fn socket_error(_: Handle, error: &mut c_int) -> bool {
         *error = mock(|m| m.socket_error);
-        OK
+        true
     }
 }
 
@@ -144,13 +144,13 @@ pub(super) mod net {
         io("recvfrom_sync", buffer.len())
     }
 }
-pub(super) fn sendfile_sync(_: Socket<'_>, _: &CStr, _: i64, _: usize) -> c_int {
+pub(super) fn sendfile_sync(_: Socket<'_>, _: &CStr, _: i64, _: usize) -> bool {
     log("sendfile false");
-    OK
+    true
 }
-pub(super) fn socket_sendfile_async(_: Socket<'_>, _: &CStr, _: i64, _: usize) -> c_int {
+pub(super) fn socket_sendfile_async(_: Socket<'_>, _: &CStr, _: i64, _: usize) -> bool {
     log("sendfile true");
-    OK
+    true
 }
 /// crates/reactor's, which reads the thread's reactor.
 pub(super) fn event_write(_: swoole_rs_reactor::Socket<'static>, data: &[u8]) -> isize {
@@ -228,9 +228,9 @@ pub(super) fn socket_ssl_create(
     _: Socket<'_>,
     _: Option<&swoole_rs_tls::SslCtx>,
     flags: c_int,
-) -> c_int {
+) -> bool {
     log(format!("ssl session {flags}"));
-    OK
+    true
 }
 pub(super) fn socket_ssl_connect(_: Socket<'_>) -> bool {
     log("ssl connect");
@@ -382,15 +382,15 @@ fn close_returns_zero_when_on_close_released_the_client() {
 fn shutdown_records_each_direction_once() {
     let client = client(1, false, false);
     let shutdown = |how| shutdown(Handle(client), how);
-    assert_eq!(shutdown(99), ERR);
+    assert!(!shutdown(99));
     assert_eq!(log::last_error(), libc::EINVAL);
     // The fd is -1, so the system call fails.
-    assert_eq!(shutdown(libc::SHUT_RD), ERR);
+    assert!(!shutdown(libc::SHUT_RD));
     assert!(!flag(client, Flag::ShutdownRead));
     Handle(client).set(Flag::ShutdownWrite, true);
-    assert_eq!(shutdown(libc::SHUT_WR), ERR);
+    assert!(!shutdown(libc::SHUT_WR));
     Handle(client).set(Flag::Closed, true);
-    assert_eq!(shutdown(libc::SHUT_RDWR), ERR);
+    assert!(!shutdown(libc::SHUT_RDWR));
     free(client);
 }
 
@@ -659,7 +659,7 @@ fn datagram_peer_is_a_snapshot() {
         (*fields).remote_addr.kind = 4;
     }
     let mut result = SocketAddress::default();
-    assert_eq!(Handle(client).peer_name(&mut result), OK);
+    assert!(Handle(client).peer_name(&mut result));
     unsafe { (*fields).remote_addr.len = 29 };
     assert_eq!(result.len, 17);
     assert_eq!(result.kind, 4);
@@ -732,7 +732,7 @@ fn tls_handshake_names_the_host_and_verifies_the_peer() {
         (*tls.fields).allow_self_signed = true;
     }
     mock(|m| m.ssl_connect_ready = true);
-    assert_eq!(ssl_handshake(Handle(client)), OK);
+    assert!(ssl_handshake(Handle(client)));
     assert_eq!(
         taken(),
         [

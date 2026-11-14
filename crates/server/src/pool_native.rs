@@ -448,8 +448,9 @@ fn worker_ops(pool: Pool<'_>, worker: Record<'_>, op: Op, arg: u64) -> Option<i6
             0
         }
         Op::AddPipe => {
-            let add = |pipe| Reactor::thread().add(pipe, EVENT_READ);
-            i64::from(worker_pipe(worker, false).map_or(-1, add))
+            let added = worker_pipe(worker, false)
+                .is_some_and(|pipe| Reactor::thread().add(pipe, EVENT_READ));
+            if added { 0 } else { -1 }
         }
         Op::PushStop => {
             if push_stop(pool, worker.pid(), worker.id().c_cast::<u16>()) {
@@ -624,11 +625,11 @@ impl PoolNative for Native {
     fn pipe_wait(&self, c: &mut PoolCall) {
         io(c, |c| {
             let next = swoole_timer_get_next_msec();
-            c.worker()
+            let ready = c
+                .worker()
                 .and_then(|worker| worker_pipe(worker, false))
-                .map_or(-1, |pipe| {
-                    pipe.wait_event(next.c_cast::<c_int>(), EVENT_READ) as isize
-                })
+                .is_some_and(|pipe| pipe.wait_event(next.c_cast::<c_int>(), EVENT_READ));
+            if ready { 0 } else { -1 }
         });
     }
 

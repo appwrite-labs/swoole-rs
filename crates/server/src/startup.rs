@@ -24,41 +24,39 @@ const MAX_WORKER_NCPU: u32 = 1000;
 const TIMER_MIN_SEC: f64 = 0.001;
 const BUFFER_MIN_SIZE: u32 = 65536;
 
-/// `SW_LOG_WARNING`, `SW_LOG_ERROR`, and the direct methods' `SW_OK` and `SW_ERR`.
+/// `SW_LOG_WARNING` and `SW_LOG_ERROR`.
 const SW_LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
 const SW_LOG_ERROR: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR as c_int;
-const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
-const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 
 /// `Server::start`: checks, the daemon, the factory and the mode's workers, then
 /// the master's loop until shutdown, and `destroy`.
-pub(crate) fn start(serv: view::Server<'_>) -> c_int {
+pub(crate) fn start(serv: view::Server<'_>) -> bool {
     let state = serv.state();
     let config = state.config_ref();
     log::set_last_error(0);
     swoole_rs_error::swoole_clear_last_error_msg();
-    if start_check(serv) < 0 {
-        return ERR;
+    if !start_check(serv) {
+        return false;
     }
     serv.call_hook(view::ServerHook::BeforeStart);
     let Some(gs) = crate::shared::server_counters(state) else {
-        return ERR;
+        return false;
     };
     // Cannot start two servers at the same time; use process->exec.
     if gs.start.compare_exchange(0, 1, SeqCst, SeqCst).is_err() {
         let code = ErrorCode::SW_ERROR_SERVER_ONLY_START_ONE as c_int;
         let m = format_args!("can only start one server");
         log::error_log(SW_LOG_ERROR, code, c"Server::start", m);
-        return ERR;
+        return false;
     }
-    if config.daemonize.get() && hybrid().step(serv, Step::Daemon) < 0 {
-        return ERR;
+    if config.daemonize.get() && !hybrid().step(serv, Step::Daemon) {
+        return false;
     }
     gs.start_time.store(swoole_rs_corebase::time_now(), Relaxed);
     crate::worker_methods::workers_start(serv);
     state.set_running(true);
-    if hybrid().step(serv, Step::FactoryStart) < 0 {
-        return ERR;
+    if !hybrid().step(serv, Step::FactoryStart) {
+        return false;
     }
     hybrid().step(serv, Step::InitProtocols);
     state.write_pid();
@@ -68,19 +66,17 @@ pub(crate) fn start(serv: view::Server<'_>) -> c_int {
         Mode::Thread => {
             // Before the worker threads start, which read it in onWorkerStart.
             set_master_pid(gs);
-            hybrid()
-                .thread_mode(serv, ThreadOp::StartWorkers)
-                .c_cast::<c_int>()
+            hybrid().thread_mode(serv, ThreadOp::StartWorkers) >= 0
         }
     };
-    if started < 0 {
-        return ERR;
+    if !started {
+        return false;
     }
     if !config.factory_.is_null() {
         destroy(serv);
     }
     state.unlink_pid();
-    OK
+    true
 }
 
 fn set_master_pid(gs: &crate::shared::ServerCounters) {
@@ -92,26 +88,26 @@ fn set_master_pid(gs: &crate::shared::ServerCounters) {
 /// thread and process counts, the factory and the task workers. It runs in the master
 /// before any other thread or process exists, so the configuration and tables it
 /// writes have no other reader.
-pub(crate) fn create(serv: view::Server<'_>) -> c_int {
+pub(crate) fn create(serv: view::Server<'_>) -> bool {
     create_on(serv, u32::from(swoole_rs_corebase::swr_v1_core_cpu_num()))
 }
 
 /// [`create`] on `cpu` cores.
-fn create_on(serv: view::Server<'_>, cpu: u32) -> c_int {
+fn create_on(serv: view::Server<'_>, cpu: u32) -> bool {
     let state = serv.state();
     // SAFETY: as above; each write through it is that statement's only access.
     let tables = || unsafe { &mut *state.tables() };
     // SAFETY: as `tables`, for the configuration.
     let config = || unsafe { &mut *state.config() };
     if !crate::local_addr::init(state) {
-        return ERR;
+        return false;
     }
     let sessions = Shm::calloc(SW_SESSION_LIST_SIZE as usize, size_of::<SessionRecord>());
     if sessions.is_null() {
         let size = size_of::<SessionRecord>();
         let m = format_args!("sw_shm_calloc(1048576, {size}) for session_list failed");
         log::sys_warning(c"Server::create", m);
-        return ERR;
+        return false;
     }
     tables().session_list = sessions;
     let count = state.tables_ref().ports().len();
@@ -122,7 +118,7 @@ fn create_on(serv: view::Server<'_>, cpu: u32) -> c_int {
         let size = size_of::<PortCounters>();
         let m = format_args!("sw_shm_calloc({count}, {size}) for port_connection_num_array failed");
         log::sys_warning(c"Server::create", m);
-        return ERR;
+        return false;
     }
     for (index, port) in state.tables_ref().ports().iter().enumerate() {
         port.set_gs(list.wrapping_add(index).cast());
@@ -138,7 +134,7 @@ fn create_on(serv: view::Server<'_>, cpu: u32) -> c_int {
         let size = size_of::<WorkerRecord>();
         let m = format_args!("sw_shm_calloc({worker_num}, {size}) for workers failed");
         log::sys_warning(c"Server::create", m);
-        return ERR;
+        return false;
     }
     config().workers = workers;
     let factory = match state.config_ref().mode_ {
@@ -151,19 +147,19 @@ fn create_on(serv: view::Server<'_>, cpu: u32) -> c_int {
     };
     config().factory_ = factory;
     if factory.is_null() {
-        return ERR;
+        return false;
     }
     if state.config_ref().task_worker_num.get() > 0 {
         let Some(results) = create_task_workers(serv) else {
-            return ERR;
+            return false;
         };
         config().task_results = results;
         if !hybrid().task_workers(serv) {
-            return ERR;
+            return false;
         }
     }
     serv.call_hook(view::ServerHook::AfterCreate);
-    OK
+    true
 }
 
 /// The static handler's default locations and HTTP compression, from the settings.
@@ -280,7 +276,7 @@ fn create_task_workers(serv: view::Server<'_>) -> Option<Shm> {
 /// `Server::start_check`: settings the mode cannot honour, required callbacks, and
 /// heartbeat and package-length defaults. It runs in the master before any other
 /// thread or process exists.
-pub(crate) fn start_check(serv: view::Server<'_>) -> c_int {
+pub(crate) fn start_check(serv: view::Server<'_>) -> bool {
     let state = serv.state();
     let config = state.config_ref();
     let callbacks = &state.callbacks;
@@ -311,7 +307,7 @@ pub(crate) fn start_check(serv: view::Server<'_>) -> c_int {
     }
     if config.task_worker_num.get() > 0 && !has(CallbackKind::Task) {
         invalid_callback(format_args!("require 'onTask' callback"));
-        return ERR;
+        return false;
     }
     let send_timeout = config.send_timeout.get();
     if send_timeout > 0.0 && send_timeout < TIMER_MIN_SEC {
@@ -329,10 +325,10 @@ pub(crate) fn start_check(serv: view::Server<'_>) -> c_int {
     }
     for &port in ports {
         if !check_port(config, port, has) {
-            return ERR;
+            return false;
         }
     }
-    OK
+    true
 }
 
 fn invalid_callback(message: core::fmt::Arguments<'_>) {
@@ -374,7 +370,7 @@ fn check_port(
 
 /// `Server::start_master_thread`: the master's reactor, signals and timer, then the
 /// event loop.
-pub(crate) fn start_master_thread(serv: view::Server<'_>, reactor: Reactor) -> c_int {
+pub(crate) fn start_master_thread(serv: view::Server<'_>, reactor: Reactor) -> bool {
     /// `THREAD_MASTER`, `SW_FD_STREAM_SERVER` and `SW_EVENT_READ`.
     const THREAD_MASTER: u8 = 1;
     const FD_STREAM_SERVER: c_int = 1;
@@ -405,9 +401,9 @@ pub(crate) fn start_master_thread(serv: view::Server<'_>, reactor: Reactor) -> c
             reactor.change(master, swoole_rs_reactor::ChangeOp::Add, EVENT_READ);
         }
     }
-    if hybrid().step(serv, Step::MasterTimer) < 0 {
+    if !hybrid().step(serv, Step::MasterTimer) {
         hybrid().step(serv, Step::EventFree);
-        return ERR;
+        return false;
     }
     if !single && mode != Mode::Thread {
         hybrid().step(serv, Step::ReactorBarrier);
@@ -597,7 +593,7 @@ mod tests {
             live.counters().master_pid.store(0, Relaxed);
             live.state().set_running(false);
             calls();
-            assert_eq!(start(live.server()), OK, "mode {mode:?}");
+            assert!(start(live.server()), "mode {mode:?}");
             assert_eq!(
                 calls(),
                 [steps(&[FactoryStart, InitProtocols]), run].concat(),
@@ -618,11 +614,11 @@ mod tests {
     fn start_failures_return_before_later_steps() {
         let live = LiveServer::new();
         calls();
-        assert_eq!(start(live.server()), ERR, "TCP needs onReceive");
+        assert!(!start(live.server()), "TCP needs onReceive");
         assert_eq!(live.counters().start.load(Relaxed), 0, "not claimed");
         on(&live, CallbackKind::Receive);
         live.counters().start.store(1, SeqCst);
-        assert_eq!(start(live.server()), ERR, "only one server");
+        assert!(!start(live.server()), "only one server");
         assert_eq!(calls(), [], "nothing started");
 
         config(&live).daemonize.set(true);
@@ -636,7 +632,7 @@ mod tests {
         ] {
             live.counters().start.store(0, SeqCst);
             fail(Some(failing));
-            assert_eq!(start(live.server()), ERR, "{failing:?}");
+            assert!(!start(live.server()), "{failing:?}");
             assert_eq!(calls(), steps(ran), "{failing:?}");
         }
         fail(None);
@@ -715,7 +711,7 @@ mod tests {
         let state = live.state();
         config(&live).worker_num.set(2);
         calls();
-        assert_eq!(create_on(live.server(), 4), OK, "process mode");
+        assert!(create_on(live.server(), 4), "process mode");
         assert_eq!(calls(), [Call::ProcessFactory]);
         assert_eq!(config(&live).reactor_num.get(), 1, "the reactor stays");
         let free = |live: &LiveServer| {
@@ -737,7 +733,7 @@ mod tests {
         free(&live);
 
         set_mode(&live, Mode::Base);
-        assert_eq!(create_on(live.server(), 4), OK, "base mode");
+        assert!(create_on(live.server(), 4), "base mode");
         assert_eq!(calls(), [Call::FactoryNew]);
         assert_eq!(config(&live).reactor_num.get(), 2, "a reactor per worker");
         let tables = unsafe { &mut *state.tables() };
@@ -804,7 +800,7 @@ mod tests {
             config(&live).disable_notify.set(false);
         };
         arm(1);
-        assert_eq!(start_check(live.server()), OK, "round robin");
+        assert!(start_check(live.server()), "round robin");
         assert!(
             UNSAFE.iter().all(|&id| !is_on(&live, id)),
             "unsafe callbacks cleared"
@@ -814,7 +810,7 @@ mod tests {
         assert!(!config(&live).send_yield.get(), "round robin cannot yield");
 
         arm(2);
-        assert_eq!(start_check(live.server()), OK, "fd hash");
+        assert!(start_check(live.server()), "fd hash");
         assert!(
             UNSAFE.iter().all(|&id| is_on(&live, id)),
             "hash mode keeps all"
@@ -824,16 +820,16 @@ mod tests {
 
         arm(1);
         config(&live).enable_unsafe_event.set(true);
-        assert_eq!(start_check(live.server()), OK, "unsafe events");
+        assert!(start_check(live.server()), "unsafe events");
         assert!(UNSAFE.iter().all(|&id| is_on(&live, id)), "kept on request");
 
         set_mode(&live, Mode::Base);
         config(&live).max_queued_bytes.set(1024);
         config(&live).task_worker_num.set(1);
-        assert_eq!(start_check(live.server()), ERR, "task workers need onTask");
+        assert!(!start_check(live.server()), "task workers need onTask");
         assert_eq!(config(&live).max_queued_bytes.get(), 0, "base mode");
         on(&live, CallbackKind::Task);
-        assert_eq!(start_check(live.server()), OK, "onTask set");
+        assert!(start_check(live.server()), "onTask set");
     }
 
     #[test]
@@ -841,12 +837,12 @@ mod tests {
     fn start_check_ports() {
         let live = LiveServer::new();
         let port = live.port();
-        assert_eq!(start_check(live.server()), ERR, "TCP needs onReceive");
+        assert!(!start_check(live.server()), "TCP needs onReceive");
         on(&live, CallbackKind::Receive);
         config(&live).heartbeat_check_interval.set(60);
         config(&live).send_timeout.set(0.0001);
         state_port(&live).set_package_max_length(1024);
-        assert_eq!(start_check(live.server()), OK, "valid");
+        assert!(start_check(live.server()), "valid");
         assert_eq!(port.heartbeat_idle_time.get(), 120, "the default idle time");
         assert_eq!(
             config(&live).heartbeat_check_interval.get(),
@@ -865,7 +861,7 @@ mod tests {
         );
 
         port.heartbeat_idle_time.set(7);
-        assert_eq!(start_check(live.server()), OK, "valid");
+        assert!(start_check(live.server()), "valid");
         assert_eq!(
             config(&live).heartbeat_check_interval.get(),
             3,
@@ -874,9 +870,9 @@ mod tests {
 
         // A UDP port.
         unsafe { (*(&raw const *port).cast_mut()).r#type = 2 };
-        assert_eq!(start_check(live.server()), ERR, "UDP needs onPacket");
+        assert!(!start_check(live.server()), "UDP needs onPacket");
         on(&live, CallbackKind::Packet);
-        assert_eq!(start_check(live.server()), OK, "onPacket set");
+        assert!(start_check(live.server()), "onPacket set");
     }
 
     fn state_port(live: &LiveServer) -> view::Port<'_> {
@@ -928,7 +924,7 @@ mod tests {
         assert_eq!(
             master(Mode::Process),
             (
-                OK,
+                true,
                 steps(&[
                     TimerReinit,
                     MasterTimer,
@@ -948,14 +944,14 @@ mod tests {
         assert_eq!(
             master(Mode::Base),
             (
-                OK,
+                true,
                 steps(&[TimerReinit, MasterTimer, ReactorBarrier, EventWait])
             ),
             "no manager"
         );
         assert_eq!(
             master(Mode::Thread),
-            (OK, steps(&[TimerReinit, MasterTimer, EventWait])),
+            (true, steps(&[TimerReinit, MasterTimer, EventWait])),
             "no barriers"
         );
         assert_eq!(
@@ -968,7 +964,7 @@ mod tests {
         fail(Some(MasterTimer));
         assert_eq!(
             master(Mode::Base),
-            (ERR, steps(&[TimerReinit, MasterTimer, EventFree])),
+            (false, steps(&[TimerReinit, MasterTimer, EventFree])),
             "the event loop freed"
         );
         fail(None);
@@ -982,7 +978,7 @@ mod tests {
             let live = LiveServer::new();
             set_mode(&live, mode);
             config(&live).worker_num.set(2);
-            assert_eq!(create_on(live.server(), 4), OK, "mode {mode:?}");
+            assert!(create_on(live.server(), 4), "mode {mode:?}");
             live.counters().start.store(1, SeqCst);
             calls();
             destroy(live.server());
@@ -1028,7 +1024,7 @@ mod tests {
     fn an_abandoned_base_server_frees_its_tables_and_factory_only() {
         let live = LiveServer::new();
         set_mode(&live, Mode::Base);
-        assert_eq!(create_on(live.server(), 4), OK);
+        assert!(create_on(live.server(), 4));
         calls();
         release_abandoned_base(live.server());
         assert_eq!(calls(), steps(&[DeleteFactory]), "no shutdown steps");

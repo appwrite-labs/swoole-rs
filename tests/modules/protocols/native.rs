@@ -14,10 +14,10 @@ use std::collections::VecDeque;
 use swoole_rs_corebase::{set_errno, sys::errno};
 use swoole_rs_oracle::{protocols as pinned, resp_stream};
 use swoole_rs_protocols::{
-    Malformed, RespKind, RespPhpState, RespRequest, mqtt_frame_length, resp_format,
+    ConnectRefusal, Malformed, RespKind, RespPhpState, RespRequest, mqtt_frame_length, resp_format,
     resp_handler_key, resp_php_next, resp_spans, socks_auth, socks_connect,
 };
-use swoole_rs_protocols_ffi::{Dispatched, RESP_RECV_DONE, RespConnection, SW_ERR, recv_packet};
+use swoole_rs_protocols_ffi::{Dispatched, Received, RespConnection, recv_packet};
 
 /// The oracle shim's socket, String and connection: each recv hands out at most the
 /// next chunk, then would block. Its log is the shim's trace.
@@ -31,17 +31,17 @@ struct Model {
 }
 
 impl RespConnection for Model {
-    fn recv(&mut self) -> isize {
+    fn recv(&mut self) -> Received {
         let Some(chunk) = self.chunks.front_mut() else {
             set_errno(libc::EAGAIN);
-            return RESP_RECV_DONE;
+            return Received::Done;
         };
         let count = chunk.len().min(self.size - self.content.len());
         self.content.extend(chunk.drain(..count));
         if chunk.is_empty() {
             self.chunks.pop_front();
         }
-        isize::try_from(count).unwrap_or(isize::MAX)
+        Received::Bytes(count)
     }
 
     fn view(&mut self) -> (&[u8], usize, &mut RespRequest) {
@@ -90,7 +90,12 @@ fn rust_trace(command: &[u8], split: usize, buffer_size: usize, maximum: u32) ->
     for _ in 0..4096 {
         let drained = model.chunks.is_empty();
         set_errno(libc::EDOM);
-        let result = recv_packet(&mut model, maximum, 4096);
+        // Logged as the shim logs `SW_OK` and `SW_ERR`.
+        let result = if recv_packet(&mut model, maximum, 4096) {
+            0
+        } else {
+            -1
+        };
         let error = errno();
         let (length, offset, r) = (model.content.len(), model.offset, model.request);
         let call = format!(
@@ -103,7 +108,7 @@ fn rust_trace(command: &[u8], split: usize, buffer_size: usize, maximum: u32) ->
             r.offset
         );
         model.log.extend_from_slice(call.as_bytes());
-        if result == SW_ERR {
+        if result != 0 {
             break;
         }
         if drained {
@@ -526,9 +531,12 @@ fn bounded_failures_leave_output() {
     let untouched = [0xa5u8; 16];
     let mut output = untouched;
     assert_eq!(mqtt_frame_length(&[]), 0);
-    assert_eq!(socks_auth(&[], &[], &mut output[..2]), -1);
+    assert_eq!(socks_auth(&[], &[], &mut output[..2]), None);
     assert_eq!(output, untouched);
-    assert_eq!(socks_connect(1, &untouched[..3], 80, &mut output), -1);
+    assert_eq!(
+        socks_connect(1, &untouched[..3], 80, &mut output),
+        Err(ConnectRefusal::Invalid)
+    );
     assert_eq!(output, untouched);
     assert_eq!(resp_format(8, &[], i64::MIN, Some(&mut output[..1])), 0);
     assert_eq!(output, untouched);

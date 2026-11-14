@@ -39,25 +39,28 @@ pub extern "C" fn socket_wait_event(
     timeout_ms: c_int,
     events: c_int,
 ) -> c_int {
-    wait_event(socket.fd, socket.dont_restart, timeout_ms, events)
+    if wait_event(socket.fd, socket.dont_restart, timeout_ms, events) {
+        OK
+    } else {
+        ERR
+    }
 }
 
-/// [`socket_wait_event`] over a socket's `fd` and `dont_restart`.
-pub(crate) fn wait_event(fd: c_int, dont_restart: bool, timeout_ms: c_int, events: c_int) -> c_int {
+/// [`socket_wait_event`] over a socket's `fd` and `dont_restart`: whether an event
+/// came, else the last error and errno say why not.
+pub(crate) fn wait_event(fd: c_int, dont_restart: bool, timeout_ms: c_int, events: c_int) -> bool {
     let result = crate::fd_wait(
         fd,
         crate::swr_v1_reactor_poll_events_to(events),
         timeout_ms,
         dont_restart,
     );
-    match result {
-        Ok(()) => OK,
-        Err(error) => {
+    result
+        .inspect_err(|error| {
             log::set_last_error(error.last_error());
             set_errno(error.errno());
-            ERR
-        }
-    }
+        })
+        .is_ok()
 }
 
 /// What `Socket::connect_async` returns: `SW_READY`, `SW_WAIT` (in progress) or
@@ -106,7 +109,7 @@ pub extern "C" fn connect_sync(socket: crate::Socket<'_>, address: &SocketAddres
     } else {
         timeout.c_cast::<c_int>()
     };
-    if socket.wait_event(timeout_ms, EVENT_WRITE) < 0 {
+    if !socket.wait_event(timeout_ms, EVENT_WRITE) {
         log::set_last_error(libc::ETIMEDOUT);
         return ERR;
     }
@@ -360,6 +363,11 @@ mod members {
     use crate::{SocketAddress, SocketFields, SocketRecord};
     use std::ffi::c_int;
 
+    /// A Rust success as upstream's `SW_OK`/`SW_ERR`.
+    fn status(ok: bool) -> c_int {
+        if ok { super::OK } else { super::ERR }
+    }
+
     /// Each member as `extern "C" fn(this, args...)`: C++ passes `this` and reference
     /// arguments as non-null pointers to live objects, which Rust takes as references.
     macro_rules! members {
@@ -370,16 +378,16 @@ mod members {
     }
 
     members! {
-        "_ZN6swoole7network6Socket8get_nameEv" fn get_name(this) -> c_int { this.get_name() }
+        "_ZN6swoole7network6Socket8get_nameEv" fn get_name(this) -> c_int { status(this.get_name()) }
         "_ZN6swoole7network6Socket13get_peer_nameEPNS0_7AddressE"
-        fn get_peer_name(this, address: &mut SocketAddress) -> c_int { this.get_peer_name(address) }
+        fn get_peer_name(this, address: &mut SocketAddress) -> c_int { status(this.get_peer_name(address)) }
         "_ZN6swoole7network6Socket4bindERKNS0_7AddressE"
-        fn bind(this, address: &SocketAddress) -> c_int { this.bind(address) }
-        "_ZN6swoole7network6Socket6listenEi" fn listen(this, backlog: c_int) -> c_int { this.listen(backlog) }
+        fn bind(this, address: &SocketAddress) -> c_int { status(this.bind(address)) }
+        "_ZN6swoole7network6Socket6listenEi" fn listen(this, backlog: c_int) -> c_int { status(this.listen(backlog)) }
         "_ZN6swoole7network6Socket6acceptEv" fn accept(this) -> *mut SocketRecord { this.accept() }
         "_ZNK6swoole7network6Socket3dupEv" fn dup(this) -> *mut SocketRecord { this.dup() }
         "_ZN6swoole7network6Socket14set_tcp_nopushEi"
-        fn set_tcp_nopush(this, nopush: c_int) -> c_int { this.set_tcp_nopush(nopush) }
+        fn set_tcp_nopush(this, nopush: c_int) -> c_int { status(this.set_tcp_nopush(nopush)) }
         "_ZN6swoole7network6Socket15set_tcp_nodelayEi"
         fn set_tcp_nodelay(this, nodelay: c_int) -> bool { this.set_tcp_nodelay(nodelay) }
         "_ZN6swoole7network6Socket11set_timeoutEdi"

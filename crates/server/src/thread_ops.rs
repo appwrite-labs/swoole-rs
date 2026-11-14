@@ -96,7 +96,7 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
             port.config()
                 .thread_id
                 .set(crate::reactor_ops::pthread_self());
-            if handle.change(socket, swoole_rs_reactor::ChangeOp::Add, SW_EVENT_READ) < 0 {
+            if !handle.change(socket, swoole_rs_reactor::ChangeOp::Add, SW_EVENT_READ) {
                 return Some(-1);
             }
         }
@@ -134,7 +134,7 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
             return Some(-1);
         };
         let sock = pipe_socket(&bus, worker_pipe(worker, true));
-        if sock.is_none_or(|sock| handle.add(sock, SW_EVENT_READ) < 0) {
+        if sock.is_none_or(|sock| !handle.add(sock, SW_EVENT_READ)) {
             return Some(-1);
         }
         // Only synchronous sends go to the notify pipe: thread-safe, no separate memory.
@@ -184,20 +184,20 @@ fn heartbeat_main(server: view::Server<'_>, _: u64) {
 
 /// `Server::start_reactor_threads`, in the master: listen, start the reactor
 /// threads (or set up the single one) and the heartbeat, then run the master thread.
-pub(crate) fn start_reactor_threads(serv: view::Server<'_>) -> c_int {
+pub(crate) fn start_reactor_threads(serv: view::Server<'_>) -> bool {
     let state = serv.state();
     let config = state.config_ref();
     if swoole_rs_reactor::swoole_event_init(0) < 0 {
-        return -1;
+        return false;
     }
     let reactor = Reactor::thread();
     for (index, port) in state.tables_ref().ports().iter().enumerate() {
         if matches!(port.config().r#type, 2 | 4 | 6) {
             continue;
         }
-        if (crate::port_config::methods().listen)(port.config()) < 0 {
+        if !(crate::port_config::methods().listen)(port.config()) {
             swoole_rs_reactor::swoole_event_free();
-            return -1;
+            return false;
         }
         if let Some(socket) = serv.port_socket_at(index) {
             reactor.change(socket, swoole_rs_reactor::ChangeOp::Add, SW_EVENT_READ);
@@ -346,7 +346,7 @@ fn pipe_read(ctx: &mut ReactorContext<'_>, event: &Event) -> Option<c_int> {
         match head.event() {
             Some(ServerEvent::Incoming) => {
                 if let Some(conn) = state.connection(session, Lookup::Verified)
-                    && methods::connection_incoming(serv, reactor, conn) < 0
+                    && !methods::connection_incoming(serv, reactor, conn)
                     && let Some(sock) = conn.socket()
                 {
                     reactor.close(sock);

@@ -163,8 +163,7 @@ pub fn socket_ssl_peer_chain_pem(socket: Socket<'_>) -> Vec<Vec<u8>> {
     };
     let mut pem = vec![0_u8; swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE as usize];
     ssl.each_peer_cert(|cert| {
-        let written = read_x509(cert, &mut pem);
-        if let Some(bytes) = usize::try_from(written).ok().filter(|&n| n > 0) {
+        if let Some(bytes) = read_x509(cert, &mut pem).filter(|&n| n > 0) {
             chain.extend(pem.get(..bytes).map(<[u8]>::to_vec));
         }
     });
@@ -640,31 +639,28 @@ pub fn socket_ssl_check_host(socket: Socket<'_>, name: &CStr) -> bool {
 }
 
 /// `int Socket::ssl_get_peer_certificate(char *buf, size_t n) const`: the peer
-/// certificate's PEM into `buffer`: its length, or `SW_ERR`.
-pub fn socket_ssl_peer_certificate_pem(socket: Socket<'_>, buffer: &mut [impl ReadSlot]) -> c_int {
-    ssl_get_peer_certificate(socket).map_or(-1, |cert| read_x509(cert.get(), buffer))
+/// certificate's PEM into `buffer`: its length, or `None` (upstream's `SW_ERR`).
+pub fn socket_ssl_peer_certificate_pem(
+    socket: Socket<'_>,
+    buffer: &mut [impl ReadSlot],
+) -> Option<usize> {
+    ssl_get_peer_certificate(socket).and_then(|cert| read_x509(cert.get(), buffer))
 }
 
 /// `_ssl_read_x509_file` without consuming: the certificate as PEM into `buffer`,
-/// warning and returning -1 on failure.
-fn read_x509(cert: CertRef<'_>, buffer: &mut [impl ReadSlot]) -> c_int {
-    warn_x509(cert.pem(buffer))
-}
-
-/// `_ssl_read_x509_file`'s warnings for [`CertRef::pem`]'s result.
-fn warn_x509(written: c_int) -> c_int {
-    match written {
-        -1 => log::warning(
-            c"network::_ssl_read_x509_file",
-            format_args!("BIO_new() failed"),
-        ),
-        -2 => log::warning(
-            c"network::_ssl_read_x509_file",
-            format_args!("PEM_write_bio_X509() failed"),
-        ),
-        _ => return written,
-    }
-    -1
+/// warning as upstream does when a step before the read fails.
+fn read_x509(cert: CertRef<'_>, buffer: &mut [impl ReadSlot]) -> Option<usize> {
+    let step = match cert.pem(buffer) {
+        Ok(written) => return Some(written),
+        Err(crate::PemError::Read) => return None,
+        Err(crate::PemError::Bio) => "BIO_new",
+        Err(crate::PemError::Write) => "PEM_write_bio_X509",
+    };
+    log::warning(
+        c"network::_ssl_read_x509_file",
+        format_args!("{step}() failed"),
+    );
+    None
 }
 
 /// `bool Socket::ssl_get_peer_certificate(String *buf) const`: the peer certificate's
@@ -674,8 +670,7 @@ pub fn socket_ssl_peer_certificate_string(socket: Socket<'_>, buffer: &mut CppSt
     let (at, size) = (buffer.as_mut_ptr(), buffer.size());
     // SAFETY: the String's allocation of `size` bytes, borrowed with it.
     let mut bytes = unsafe { Fill::from_raw(at.cast(), size) };
-    let n = socket_ssl_peer_certificate_pem(socket, bytes.slots());
-    let Ok(n) = usize::try_from(n) else {
+    let Some(n) = socket_ssl_peer_certificate_pem(socket, bytes.slots()) else {
         return false;
     };
     // SAFETY: the PEM is the allocation's first `n` bytes, written just above.
@@ -785,19 +780,23 @@ pub extern "C" fn socket_sendfile_sync(
     offset: libc::off_t,
     length: usize,
 ) -> c_int {
-    sendfile_sync(socket, filename.get(), offset, length)
+    if sendfile_sync(socket, filename.get(), offset, length) {
+        0
+    } else {
+        -1
+    }
 }
 
-/// [`socket_sendfile_sync`] of the file `filename` names.
+/// [`socket_sendfile_sync`] of the file `filename` names: whether it was all sent.
 #[must_use]
 pub fn sendfile_sync(
     socket: Socket<'_>,
     filename: &CStr,
     offset: libc::off_t,
     length: usize,
-) -> c_int {
+) -> bool {
     let Some(mut request) = file_request(filename, offset, length) else {
-        return -1;
+        return false;
     };
     let total = request.length();
     let corked = total > CORK_MIN_SIZE && socket.edit(|record| socket_cork(record));
@@ -806,7 +805,7 @@ pub fn sendfile_sync(
     if corked {
         socket.edit(|record| socket_uncork(record));
     }
-    if rv < 0 { -1 } else { 0 }
+    rv >= 0
 }
 
 /// A failed Rust queue status. Native `Buffer` raises it as a C++ exception that
@@ -866,9 +865,10 @@ impl OutputEffects for Output<'_> {
     }
 }
 
-/// `int Socket::handle_send()`: sends the queue's front, aborting without one.
+/// `int Socket::handle_send()`: sends the queue's front, aborting without one;
+/// false when the send failed.
 #[must_use]
-pub fn socket_handle_send(record: Socket<'_>) -> c_int {
+pub fn socket_handle_send(record: Socket<'_>) -> bool {
     let hooks = Output(record);
     let output = with_queue(record, |queue| {
         handle_send_owned(
@@ -888,7 +888,7 @@ pub fn socket_handle_send(record: Socket<'_>) -> c_int {
         );
     }
     output.detached.dispose();
-    output.result.code
+    output.result.code >= 0
 }
 
 /// `--fix-halfclose` (M15, the `halfclose` feature): `ssl_shutdown` writes the
@@ -897,9 +897,9 @@ pub fn socket_handle_send(record: Socket<'_>) -> c_int {
 const HALFCLOSE_REPAIRS: bool = cfg!(feature = "halfclose");
 
 /// `int Socket::handle_sendfile()`: sends a chunk of the queue's front file, aborting
-/// when the front is not one.
+/// when the front is not one; false when the send failed.
 #[must_use]
-pub fn socket_handle_sendfile(socket: Socket<'_>) -> c_int {
+pub fn socket_handle_sendfile(socket: Socket<'_>) -> bool {
     let hooks = Output(socket);
     // The effects send the request's file and never reach the queue itself.
     let (code, detached) = with_queue(socket, |queue| {
@@ -941,7 +941,7 @@ pub fn socket_handle_sendfile(socket: Socket<'_>) -> c_int {
     if let Some(detached) = detached {
         detached.dispose();
     }
-    code
+    code >= 0
 }
 
 /// `int Socket::sendfile_async(const char *filename, off_t offset, size_t length)`:
@@ -952,9 +952,9 @@ pub fn socket_sendfile_async(
     filename: &CStr,
     offset: libc::off_t,
     length: usize,
-) -> c_int {
+) -> bool {
     let Some(request) = file_request(filename, offset, length) else {
-        return -1;
+        return false;
     };
     if socket.read(|record| record.output.out_buffer.is_none()) {
         let buffer = swoole_rs_buffer::cpp::new_buffer(65536);
@@ -967,7 +967,7 @@ pub fn socket_sendfile_async(
         })
     });
     buffer_check(status);
-    0
+    true
 }
 
 /// `ssize_t Socket::send_async(const void *data, size_t length)`: through the event
@@ -1051,21 +1051,17 @@ pub unsafe fn socket_ssl_close(socket: Socket<'_>) {
     unsafe { openssl_sys::SSL_free(ssl.cast()) };
 }
 
-/// `int Socket::ssl_create(SSLContext *ssl_context, int flags)`: `SW_OK` or `SW_ERR`,
-/// without setting the last error.
+/// `int Socket::ssl_create(SSLContext *ssl_context, int flags)`: whether it made the
+/// session, without setting the last error.
 #[must_use]
 pub fn socket_ssl_create(
     socket: Socket<'_>,
     context: Option<&crate::SslCtx>,
     flags: c_int,
-) -> c_int {
-    match crate::socket_ssl_new(socket, context, flags) {
-        Ok(()) => 0,
-        Err(error) => {
-            error.warn();
-            -1
-        }
-    }
+) -> bool {
+    crate::socket_ssl_new(socket, context, flags)
+        .inspect_err(|error| error.warn())
+        .is_ok()
 }
 
 /// base.cc's `socket_free_defer`: closes the descriptor and frees the record.
@@ -1138,7 +1134,7 @@ pub unsafe extern "C-unwind" fn socket_free(socket: *mut SocketRecord) {
 
 /// `Socket::bind(host, port)`: the address resolved without DNS, the last error set
 /// when it is invalid.
-fn bind_host(socket: Socket<'_>, host: &CStr, port: c_int) -> c_int {
+fn bind_host(socket: Socket<'_>, host: &CStr, port: c_int) -> bool {
     let kind = socket.read(|record| record.socket_type);
     let mut address = SocketAddress::default();
     let text = host.to_bytes();
@@ -1164,7 +1160,7 @@ fn bind_host(socket: Socket<'_>, host: &CStr, port: c_int) -> c_int {
     });
     if error != 0 {
         log::set_last_error(error);
-        return -1;
+        return false;
     }
     socket.edit(|record| record.bind(&address))
 }
@@ -1208,19 +1204,19 @@ pub extern "C-unwind" fn make_server_socket(
     let address = address.get();
     let host = address.to_string_lossy();
     // Bound, listening when a stream, and named; else the warning for what failed.
-    let served = if bind_host(record, address, port) < 0 {
+    let served = if !bind_host(record, address, port) {
         log::sys_warning(
             ORIGIN,
             format_args!("bind({fd}, {host}:{port}, {backlog}) failed"),
         );
         false
-    } else if type_is(kind, CLASS_STREAM) && record.edit(|record| record.listen(backlog)) < 0 {
+    } else if type_is(kind, CLASS_STREAM) && !record.edit(|record| record.listen(backlog)) {
         log::sys_warning(
             ORIGIN,
             format_args!("listen({fd}, {host}:{port}, {backlog}) failed"),
         );
         false
-    } else if record.edit(SocketFields::get_name) < 0 {
+    } else if !record.edit(SocketFields::get_name) {
         log::sys_warning(ORIGIN, format_args!("getsockname({fd}) failed"));
         false
     } else {
@@ -1271,7 +1267,7 @@ mod tests {
             unsafe { Socket::from_ptr(socket.cast_mut()) }.unwrap(),
             &mut [0_u8; 64],
         );
-        assert_eq!(n, -1);
+        assert_eq!(n, None);
         let mut string = CppString::EMPTY;
         string.alloc(64, None);
         string.append(b"content");
@@ -1302,7 +1298,7 @@ mod tests {
                 (*owner.fields).context.as_deref(),
                 2,
             );
-            assert_eq!(created, 0);
+            assert!(created);
             assert!(!socket.ssl().is_null());
             assert_eq!(
                 (socket.tls.state, socket.tls.want_read),
@@ -1328,14 +1324,11 @@ mod tests {
         unsafe {
             let owner = crate::swr_v1_tls_owner_new();
             (*owner.fields).context = Some(crate::SslContext::tls());
-            assert_eq!(
-                socket_ssl_create(
-                    Socket::from_ptr(&raw mut socket).unwrap(),
-                    (*owner.fields).context.as_deref(),
-                    2
-                ),
-                0
-            );
+            assert!(socket_ssl_create(
+                Socket::from_ptr(&raw mut socket).unwrap(),
+                (*owner.fields).context.as_deref(),
+                2
+            ));
             let session = socket_ssl_session(handle).unwrap();
             assert_eq!(
                 session.version,
@@ -1442,10 +1435,10 @@ mod tests {
             "a file that won't open is refused"
         );
         let handle = unsafe { Socket::from_ptr(socket) }.unwrap();
-        assert_eq!(socket_handle_sendfile(handle), 0);
+        assert!(socket_handle_sendfile(handle));
         assert_eq!(read_all(&right, 5), b"bcdef");
         assert_eq!(unsafe { (*queue).append(b"tail") }, Ok(()));
-        assert_eq!(socket_handle_send(handle), 0);
+        assert!(socket_handle_send(handle));
         assert_eq!(read_all(&right, 4), b"tail");
         assert_eq!(unsafe { (*queue).stats() }, (0, 0), "both chunks popped");
         // The queue is released with its `Buffer`, which ends the test if it can't be.

@@ -585,19 +585,29 @@ impl CertRef<'_> {
     }
 
     /// `_ssl_read_x509_file`: the certificate as PEM into at most `buffer`'s length.
-    /// Returns the bytes written, or -1 when `BIO_new` failed and -2 when
-    /// `PEM_write_bio_X509` failed.
-    #[must_use]
-    pub fn pem(self, buffer: &mut [impl ReadSlot]) -> c_int {
-        let Some(bio) = OwnedBio::memory() else {
-            return -1;
-        };
+    ///
+    /// # Errors
+    /// The [`PemError`] step that failed.
+    pub fn pem(self, buffer: &mut [impl ReadSlot]) -> Result<usize, PemError> {
+        let bio = OwnedBio::memory().ok_or(PemError::Bio)?;
         if PEM_write_bio_X509(bio.bio(), self) == 0 {
-            return -2;
+            return Err(PemError::Write);
         }
         let count = bio.bio().pending().min(buffer.len());
-        bio.bio().read(buffer.get_mut(..count).unwrap_or_default())
+        let read = bio.bio().read(buffer.get_mut(..count).unwrap_or_default());
+        usize::try_from(read).map_err(|_| PemError::Read)
     }
+}
+
+/// The step of [`CertRef::pem`] that failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PemError {
+    /// `BIO_new`.
+    Bio,
+    /// `PEM_write_bio_X509`.
+    Write,
+    /// `BIO_read`.
+    Read,
 }
 
 /// A live certificate reference this side owns, released when dropped.

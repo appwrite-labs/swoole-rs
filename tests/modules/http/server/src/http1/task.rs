@@ -105,7 +105,7 @@ impl TaskHost for TaskPool {
     fn dispatch(&mut self, task: Packed<'_>, worker_id: &mut c_int, blocking: bool) -> bool {
         // SAFETY: the live task pool.
         let pool = unsafe { swoole_rs_process::process_pool::PoolRef::new(self.pool) };
-        pool::dispatch(pool, task, worker_id, blocking) == SW_OK
+        pool::dispatch(pool, task, worker_id, blocking)
     }
 
     fn pipe_clean(&mut self) {
@@ -118,7 +118,7 @@ impl TaskHost for TaskPool {
         socket_pair::set_timeout(unsafe { &mut *self.pipe }, timeout);
     }
 
-    fn read_notify(&mut self) -> isize {
+    fn read_notify(&mut self) -> Option<usize> {
         // SAFETY: this worker's live notify pipe.
         let pipe = unsafe { &*self.pipe };
         let mut notify = [std::mem::MaybeUninit::new(0u8); size_of::<u64>()];
@@ -333,14 +333,15 @@ impl TaskServer for Server {
 
     fn dispatch(self, buf: &mut EventData, dst_worker_id: &mut c_int) -> c_int {
         // SAFETY: the created server's task pool and a packed EventData.
-        unsafe {
+        let sent = unsafe {
             pool::dispatch(
                 swoole_rs_process::process_pool::PoolRef::new(self.task_pool()),
                 swoole_rs_process::task_file::Packed::from_raw(buf.head().cast()),
                 dst_worker_id,
                 false,
             )
-        }
+        };
+        if sent { SW_OK } else { SW_ERR }
     }
 
     fn get_tasking_num(self) -> c_int {
@@ -893,13 +894,9 @@ impl MultiTask for Multi<'_> {
         u16::try_from(self.tasks.len()).unwrap()
     }
 
-    fn pack(&mut self, index: u16, event: &mut TaskBuffer) -> Result<i64, Bailed> {
+    fn pack(&mut self, index: u16, event: &mut TaskBuffer) -> Result<Option<i64>, Bailed> {
         let task = &self.tasks[usize::from(index)];
-        if event.pack(task) {
-            Ok(event.head().fd)
-        } else {
-            Ok(-1)
-        }
+        Ok(event.pack(task).then(|| event.head().fd))
     }
 
     fn unpack(&mut self, index: u16, result: Packed<'_>) -> Result<(), Bailed> {

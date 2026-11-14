@@ -7,20 +7,21 @@ use swoole_rs_buffer::EntryKind;
 use swoole_rs_buffer::cpp::{swr_cpp_buffer_count, swr_cpp_buffer_typed_front};
 
 const SW_OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
-const SW_ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 
 /// The flush's effects (`crates/tls`'s `reactor_write.rs`).
 pub trait FlushEffects {
-    fn handle_send(&self) -> c_int;
-    fn handle_sendfile(&self) -> c_int;
+    /// Sends the front data entry: false when the send could not proceed.
+    fn handle_send(&self) -> bool;
+    /// Sends the front sendfile entry: false when the send could not proceed.
+    fn handle_sendfile(&self) -> bool;
     /// `reactor->close(reactor, socket)` and `reactor->trigger_close_event(event)`.
     fn close(&self) -> c_int;
     fn trigger_close(&self) -> c_int;
     /// `swoole_timer_del(socket->send_timer)` of the socket's `timer`.
     fn delete_timer(&self, timer: swoole_rs_corebase::timer_key::Held);
     fn remove_write_event(&self);
-    /// drain only: `socket->wait_event(write timeout, SW_EVENT_WRITE)`.
-    fn wait_writable(&self) -> c_int;
+    /// drain only: `socket->wait_event(write timeout, SW_EVENT_WRITE)`, whether it came.
+    fn wait_writable(&self) -> bool;
 }
 
 /// `Reactor::_writable_callback`: send queued entries until the queue empties or a send
@@ -40,12 +41,12 @@ pub fn swr_v1_reactor_flush(socket: Socket<'_>, ops: &impl FlushEffects) -> c_in
         let Some(kind) = kind else {
             break timer;
         };
-        let result = match kind {
+        let sent = match kind {
             EntryKind::Close => return ops.close(),
             EntryKind::Sendfile => ops.handle_sendfile(),
             EntryKind::Data => ops.handle_send(),
         };
-        if result < 0 {
+        if !sent {
             let (close_wait, send_wait) =
                 socket.read(|record| (record.output.close_wait, record.output.send_wait));
             if close_wait {
@@ -75,7 +76,7 @@ pub fn swr_v1_reactor_flush(socket: Socket<'_>, ops: &impl FlushEffects) -> c_in
 /// the wait fails, or the socket starts closing or leaves the reactor.
 pub fn swr_v1_reactor_drain(socket: Socket<'_>, ops: &impl FlushEffects) {
     while !socket.read(|record| record.output.empty()) {
-        if ops.wait_writable() == SW_ERR {
+        if !ops.wait_writable() {
             break;
         }
         swr_v1_reactor_flush(socket, ops);
@@ -134,7 +135,7 @@ mod tests {
     }
     struct Ops;
     impl FlushEffects for Ops {
-        fn handle_send(&self) -> c_int {
+        fn handle_send(&self) -> bool {
             record("send");
             let (result, close_wait, record) =
                 NATIVE.with_borrow_mut(|n| (n.sends.remove(0), n.close_wait_on_fail, n.record));
@@ -144,11 +145,11 @@ mod tests {
                 let socket = unsafe { Socket::from_ptr(record as *mut SocketRecord) }.unwrap();
                 socket.edit(|record| record.output.close_wait = true);
             }
-            result
+            result >= 0
         }
-        fn handle_sendfile(&self) -> c_int {
+        fn handle_sendfile(&self) -> bool {
             record("sendfile");
-            -1
+            false
         }
         fn close(&self) -> c_int {
             record("close");
@@ -164,7 +165,7 @@ mod tests {
         fn remove_write_event(&self) {
             record("remove_write_event");
         }
-        fn wait_writable(&self) -> c_int {
+        fn wait_writable(&self) -> bool {
             unreachable!("a flush never waits")
         }
     }
@@ -284,15 +285,15 @@ mod tests {
         }
         struct Ops;
         impl FlushEffects for Ops {
-            fn handle_send(&self) -> c_int {
+            fn handle_send(&self) -> bool {
                 effect("data");
                 pop();
-                SW_OK
+                true
             }
-            fn handle_sendfile(&self) -> c_int {
+            fn handle_sendfile(&self) -> bool {
                 effect("sendfile");
                 pop();
-                SW_OK
+                true
             }
             fn close(&self) -> c_int {
                 effect("close");
@@ -314,9 +315,9 @@ mod tests {
             fn remove_write_event(&self) {
                 effect("remove-write");
             }
-            fn wait_writable(&self) -> c_int {
+            fn wait_writable(&self) -> bool {
                 effect("wait");
-                SW_OK
+                true
             }
         }
 

@@ -180,11 +180,11 @@ pub unsafe extern "C-unwind" fn reactor_writev(
 }
 
 impl FlushEffects for Flush<'_> {
-    fn handle_send(&self) -> c_int {
+    fn handle_send(&self) -> bool {
         socket_handle_send(self.socket)
     }
 
-    fn handle_sendfile(&self) -> c_int {
+    fn handle_sendfile(&self) -> bool {
         socket_handle_sendfile(self.socket)
     }
 
@@ -220,7 +220,7 @@ impl FlushEffects for Flush<'_> {
         };
     }
 
-    fn wait_writable(&self) -> c_int {
+    fn wait_writable(&self) -> bool {
         let timeout = SOCKET_DEFAULTS.write.get();
         let timeout = (timeout * 1000.0).c_cast::<c_int>();
         self.socket.wait_event(timeout, SW_EVENT_WRITE)

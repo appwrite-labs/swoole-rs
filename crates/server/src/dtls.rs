@@ -49,7 +49,7 @@ fn bind(sock: Socket<'_>, kind: c_int, host: &CStr, port: c_int) -> bool {
         log::set_last_error(error);
         return false;
     }
-    sock.edit(|sock| sock.bind(&address)) >= 0
+    sock.edit(|sock| sock.bind(&address))
 }
 
 /// `Server::accept_dtls_connection(port, sa)`: a socket bound to the port and
@@ -159,7 +159,7 @@ pub(crate) fn on_packet(
         return -1;
     };
     let failed = if single_thread {
-        crate::server_methods::connection_incoming(serv, reactor, conn) < 0
+        !crate::server_methods::connection_incoming(serv, reactor, conn)
     } else {
         let (session_id, reactor_id) = (conn.session_id(), conn.reactor_id());
         let ev = DataHead {

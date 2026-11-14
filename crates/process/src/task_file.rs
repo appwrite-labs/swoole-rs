@@ -133,9 +133,12 @@ pub struct TaskPack {
 }
 
 /// `make_tmpfile`: `template` cut to `SW_TASK_TMP_PATH_SIZE - 1` bytes into `path`
-/// and created there by `swoole_tmpfile`, which warns on failure. Returns the fd,
-/// or negative.
-pub(crate) fn make_tmpfile(template: &CStr, path: &mut [u8; TASK_TMP_PATH_SIZE]) -> c_int {
+/// and created there by `swoole_tmpfile`, which warns on failure: the open file, or
+/// `None`.
+pub(crate) fn make_tmpfile(
+    template: &CStr,
+    path: &mut [u8; TASK_TMP_PATH_SIZE],
+) -> Option<std::os::fd::OwnedFd> {
     *path = [0; TASK_TMP_PATH_SIZE];
     for (byte, &pattern) in path
         .iter_mut()
@@ -144,7 +147,7 @@ pub(crate) fn make_tmpfile(template: &CStr, path: &mut [u8; TASK_TMP_PATH_SIZE])
     {
         *byte = pattern;
     }
-    swoole_rs_ossupport::create_tmpfile(path).map_or(-1, std::os::fd::IntoRawFd::into_raw_fd)
+    swoole_rs_ossupport::create_tmpfile(path)
 }
 
 /// Writes the payload to the temp file as `File::write_all` does (warning on an
@@ -178,13 +181,11 @@ fn pack_payload(dest: &mut [MaybeUninit<u8>], data: &[u8], template: &CStr) -> T
         length: data.len(),
         tmpfile: [0; TASK_TMP_PATH_SIZE],
     };
-    let fd = make_tmpfile(template, &mut pkg.tmpfile);
-    if fd < 0 {
+    let Some(file) = make_tmpfile(template, &mut pkg.tmpfile) else {
         return TaskPack::default();
-    }
-    let wrote = spill(fd, data);
-    // `fd` is open and owned here.
-    swoole_rs_corebase::sys::close(fd);
+    };
+    let wrote = spill(file.as_raw_fd(), data);
+    drop(file);
     if !wrote {
         return TaskPack::default();
     }
@@ -473,7 +474,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no mkostemp")]
     fn make_tmpfile_in_a_missing_directory() {
         let mut path = [0; super::TASK_TMP_PATH_SIZE];
-        assert!(super::make_tmpfile(c"/tmp/not-exists-dir/test.XXXXXX", &mut path) < 0);
+        assert!(super::make_tmpfile(c"/tmp/not-exists-dir/test.XXXXXX", &mut path).is_none());
     }
 
     #[test]

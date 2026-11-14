@@ -4,7 +4,6 @@
 use crate::Mode;
 use core::cell::Cell;
 use core::ffi::c_int;
-use core::sync::atomic::AtomicU32;
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::{CCast, DataHead, log};
 use swoole_rs_error::ErrorCode as E;
@@ -298,12 +297,13 @@ pub fn finish(
             return false;
         }
         reply(&mut buf, super::nonblocking_flags(flags, task.ext_flags));
-        match stream_connection(worker) {
+        let sent = match stream_connection(worker) {
             Some(socket) => send_stream(socket, data),
             None => send_pipe_message(worker, buf.bytes(), PIPE_MASTER),
-        }
+        };
+        usize::try_from(sent).ok()
     } else {
-        let Some(slot) = result_slot(serv, source) else {
+        let Some(slot) = super::result_slot(serv, source) else {
             log::warning(
                 c"Server::finish",
                 format_args!("no result slot for worker {source}"),
@@ -341,11 +341,11 @@ pub fn finish(
             },
             || {
                 pipe.master_end()
-                    .is_some_and(|socket| socket.wait_event(-1, EVENT_WRITE) == 0)
+                    .is_some_and(|socket| socket.wait_event(-1, EVENT_WRITE))
             },
         )
     };
-    if sent < 0 {
+    if sent.is_none() {
         let error = errno();
         let timed_out =
             error == libc::EAGAIN || error == libc::ETIMEDOUT || log::last_error() == POLL_TIMEOUT;
@@ -391,14 +391,6 @@ fn write_waitall(
     }
     slot.add_finished();
     swoole_rs_ossupport::file_close(file);
-}
-
-/// Event worker `source`'s `task_results` slot, or `None` past the last.
-fn result_slot(serv: view::Server<'_>, source: u16) -> Option<ResultSlot<'_>> {
-    const WORDS: usize = EVENT_DATA_SIZE / size_of::<AtomicU32>();
-    let start = usize::from(source) * WORDS;
-    let words = crate::shared::words(&serv.config().task_results).get(start..start + WORDS)?;
-    words.try_into().ok().map(ResultSlot::of)
 }
 
 /// The stream pool's connection for the task `worker` runs: none in an event

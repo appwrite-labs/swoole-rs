@@ -424,7 +424,7 @@ mod tests {
         stop_master_thread(serv);
         assert!(live.reactor().handle().wait_exit(), "draining");
         assert!(
-            live.reactor().del(live.port_socket()) < 0,
+            !live.reactor().del(live.port_socket()),
             "the stream port left the reactor"
         );
         assert_eq!(calls(), [Call::Thread0Shutdown], "single thread");
