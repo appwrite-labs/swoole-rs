@@ -3,7 +3,7 @@
 use super::{BOUNDARY_SIZE, HttpStaticContext, StaticEffects};
 use crate::range_response::HttpRangeFormat;
 use crate::static_meta::{static_boundary, static_multipart};
-use crate::{HttpRangeFinish, HttpRangeState, HttpSpan, INVALID, OVERFLOW};
+use crate::{HttpRangeState, HttpSpan, INVALID, OVERFLOW};
 
 #[derive(Default, Clone, Copy)]
 enum Stage {
@@ -13,15 +13,19 @@ enum Stage {
     Header,
     CommitHeader,
     Finish,
+    AfterFull,
     End,
+    CommitEnd,
     Date,
+    CheckedDate(bool),
+    Cleared,
+    AfterReplace,
     Done,
 }
 #[derive(Default)]
 pub(super) struct HttpContextRange {
     stage: Stage,
     cursor: HttpRangeState,
-    finish: HttpRangeFinish,
     part: HttpSpan,
     last_length: usize,
     written: usize,
@@ -38,6 +42,13 @@ enum Effect {
     Boundary,
     /// The If-Range date.
     Date,
+}
+/// One finalization step over the owned context, before applying its task effect.
+#[derive(Debug, PartialEq, Eq)]
+enum FinishAction {
+    Yield(Effect),
+    FullTask,
+    ClearTasks,
 }
 /// What the last effect observed: the part's MIME type or the If-Range date.
 #[derive(Default)]
@@ -121,23 +132,68 @@ impl HttpStaticContext {
             self.facts.content_length = 0;
             self.range.stage = Stage::Parsing;
         } else {
-            self.finishing();
+            self.range.stage = Stage::Finish;
         }
         Ok(())
     }
-    fn finishing(&mut self) {
-        self.range.finish = HttpRangeFinish {
-            content_length: self.facts.content_length,
-            last_length: self.range.last_length,
-            task_count: self.tasks.count(),
-            filesize: self.facts.filesize,
-            status: self.facts.status,
-            if_range: self.range.if_range,
-            ..HttpRangeFinish::default()
-        };
-        self.range.stage = Stage::Finish;
+    fn check_range_date(&mut self) -> FinishAction {
+        if self.range.if_range {
+            self.range.stage = Stage::Date;
+            FinishAction::Yield(Effect::Date)
+        } else {
+            self.range.stage = Stage::Done;
+            FinishAction::Yield(Effect::Done)
+        }
+    }
+    /// Publish accounting before a task effect, and success only after its push.
+    fn finish_step(&mut self) -> Result<FinishAction, i32> {
+        Ok(match self.range.stage {
+            Stage::Finish if self.range.last_length != 0 && self.tasks.count() == 0 => {
+                return Err(INVALID);
+            }
+            Stage::Finish if self.range.last_length == 0 => {
+                self.facts.content_length = self.facts.filesize;
+                self.range.stage = Stage::AfterFull;
+                FinishAction::FullTask
+            }
+            Stage::Finish if self.tasks.count() == 1 => {
+                self.facts.content_length = self.range.last_length;
+                self.facts.status = 206;
+                self.check_range_date()
+            }
+            Stage::Finish => {
+                self.range.stage = Stage::End;
+                FinishAction::Yield(Effect::Boundary)
+            }
+            Stage::AfterFull => self.check_range_date(),
+            Stage::CommitEnd => {
+                self.facts.content_length = self.facts.content_length.wrapping_add(self.end.len());
+                self.facts.status = 206;
+                self.check_range_date()
+            }
+            Stage::CheckedDate(true) => {
+                self.range.stage = Stage::Cleared;
+                FinishAction::ClearTasks
+            }
+            Stage::Cleared => {
+                self.facts.content_length = self.facts.filesize;
+                self.range.stage = Stage::AfterReplace;
+                FinishAction::FullTask
+            }
+            Stage::AfterReplace => {
+                self.facts.status = 200;
+                self.range.stage = Stage::Done;
+                FinishAction::Yield(Effect::Done)
+            }
+            Stage::CheckedDate(false) | Stage::Done => {
+                self.range.stage = Stage::Done;
+                FinishAction::Yield(Effect::Done)
+            }
+            _ => return Err(INVALID),
+        })
     }
     fn full_task(&mut self) -> Result<(), i32> {
+        self.range.last_length = self.facts.filesize;
         self.tasks.prepare_full(0, self.range.last_length);
         match self.tasks.push() {
             error if error < 0 => Err(error),
@@ -164,9 +220,8 @@ impl HttpStaticContext {
                         return Ok(Effect::Done);
                     }
                     match result {
-                        0 => self.finishing(),
+                        0 => self.range.stage = Stage::Finish,
                         2 => {
-                            self.range.last_length = self.facts.filesize;
                             self.facts.content_length = self.facts.filesize;
                             let result = self.full_task();
                             self.range.stage = Stage::Done;
@@ -192,36 +247,16 @@ impl HttpStaticContext {
                     }
                     self.range.stage = Stage::Parsing;
                 }
-                Stage::Finish => {
-                    let action = self.range.finish.step();
-                    self.facts.content_length = self.range.finish.content_length;
-                    self.facts.status = self.range.finish.status;
-                    match action {
-                        0 => {
+                _ => match self.finish_step()? {
+                    FinishAction::FullTask => {
+                        if let Err(error) = self.full_task() {
                             self.range.stage = Stage::Done;
-                            return Ok(Effect::Done);
+                            return Err(error);
                         }
-                        1 => {
-                            self.range.last_length = self.range.finish.filesize;
-                            if let Err(error) = self.full_task() {
-                                self.range.stage = Stage::Done;
-                                return Err(error);
-                            }
-                        }
-                        2 => {
-                            self.range.stage = Stage::End;
-                            return Ok(Effect::Boundary);
-                        }
-                        3 => {
-                            self.range.stage = Stage::Date;
-                            return Ok(Effect::Date);
-                        }
-                        4 => self.tasks.clear(),
-                        _ => return Err(INVALID),
                     }
-                }
-                Stage::Done => return Ok(Effect::Done),
-                _ => return Err(INVALID),
+                    FinishAction::ClearTasks => self.tasks.clear(),
+                    FinishAction::Yield(effect) => return Ok(effect),
+                },
             }
         }
     }
@@ -256,13 +291,11 @@ impl HttpStaticContext {
                 if result < 0 {
                     return Err(result);
                 }
-                self.range.finish.end_length = self.end.len();
-                self.range.stage = Stage::Finish;
+                self.range.stage = Stage::CommitEnd;
                 Ok(false)
             }
             Stage::Date => {
-                self.range.finish.modified = observed.modified;
-                self.range.stage = Stage::Finish;
+                self.range.stage = Stage::CheckedDate(observed.modified);
                 Ok(false)
             }
             _ => Err(INVALID),
@@ -315,6 +348,40 @@ mod tests {
     }
     fn complete(owner: &mut HttpStaticContext, text: &[u8], modified: bool) {
         owner.parse_range(Some(text), Some(b""), &Fixed { modified });
+    }
+    #[test]
+    fn finalization_does_not_publish_success_before_task_push() {
+        let mut owner = owner();
+        owner.facts.content_length = 123;
+        owner.facts.filesize = 100;
+        owner.facts.status = 299;
+        owner.range.stage = Stage::Finish;
+        owner.range.last_length = 2;
+        owner.range.if_range = true;
+        owner.boundary = b"b".to_vec();
+        owner.tasks.prepare_full(0, 2);
+        assert_eq!(owner.tasks.push(), 0);
+        assert_eq!(owner.tasks.push(), 0);
+        assert_eq!(
+            owner.finish_step(),
+            Ok(FinishAction::Yield(Effect::Boundary))
+        );
+        assert_eq!((owner.facts.status, owner.facts.content_length), (299, 123));
+        assert_eq!(owner.range_resume(&observed(false)), Ok(false));
+        assert_eq!(owner.end.len(), 9);
+        assert_eq!(owner.finish_step(), Ok(FinishAction::Yield(Effect::Date)));
+        assert_eq!((owner.facts.status, owner.facts.content_length), (206, 132));
+        assert_eq!(owner.range_resume(&observed(true)), Ok(false));
+        assert_eq!(owner.finish_step(), Ok(FinishAction::ClearTasks));
+        assert_eq!((owner.facts.status, owner.facts.content_length), (206, 132));
+        owner.tasks.clear();
+        assert_eq!(owner.finish_step(), Ok(FinishAction::FullTask));
+        assert_eq!((owner.facts.status, owner.facts.content_length), (206, 100));
+        assert_eq!(owner.full_task(), Ok(()));
+        assert_eq!(owner.finish_step(), Ok(FinishAction::Yield(Effect::Done)));
+        assert_eq!(owner.facts.status, 200);
+        assert_eq!(owner.tasks.count(), 1);
+        assert_eq!(owner.tasks()[0].length, 100);
     }
     #[test]
     fn ordinary_empty_file_has_one_initialized_zero_length_task() {
@@ -373,7 +440,18 @@ mod tests {
     fn wrong_stage_and_changed_span_metadata_do_not_consume_effects() {
         let mut owner = owner();
         let text = b"bytes=0-0";
+        owner.facts.status = 299;
+        let before = owner.observe();
+        assert_eq!(owner.finish_step(), Err(INVALID));
+        assert_eq!(owner.observe(), before);
+        assert!(matches!(owner.range.stage, Stage::Idle));
         assert_eq!(owner.range_resume(&observed(false)), Err(INVALID));
+        owner.range.stage = Stage::Finish;
+        owner.range.last_length = 1;
+        assert_eq!(owner.finish_step(), Err(INVALID));
+        assert_eq!(owner.observe(), before);
+        assert!(matches!(owner.range.stage, Stage::Finish));
+        assert_eq!(owner.range.last_length, 1);
         assert_eq!(owner.range_begin(text.len(), false), Ok(()));
         assert_eq!(owner.range_step(&text[..text.len() - 1]), Err(INVALID));
         assert_eq!(owner.tasks.count(), 0);

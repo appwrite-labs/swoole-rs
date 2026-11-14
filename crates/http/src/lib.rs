@@ -35,7 +35,6 @@ pub use proxy::{
 };
 mod range;
 mod range_response;
-use range_response::HttpRangeFinish;
 mod rewrite;
 pub use rewrite::RewriteRules;
 mod static_context;
