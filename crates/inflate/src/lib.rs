@@ -30,9 +30,9 @@ pub struct Inflate {
     out: Vec<u8>,
 }
 
-/// Inflate all of `input` into `out`. Returns 0 on success, else the zlib
-/// error status (negative). Mirrors the pinned `Z_SYNC_FLUSH` loop.
-fn run(stream: &mut Stream, mut input: &[u8], out: &mut Vec<u8>) -> c_int {
+/// Inflate all of `input` into `out`, or the zlib error status. Mirrors the
+/// pinned `Z_SYNC_FLUSH` loop.
+fn run(stream: &mut Stream, mut input: &[u8], out: &mut Vec<u8>) -> Result<(), c_int> {
     out.clear();
     loop {
         if out.len() == out.capacity() {
@@ -40,10 +40,10 @@ fn run(stream: &mut Stream, mut input: &[u8], out: &mut Vec<u8>) -> c_int {
         }
         let step = stream.run_into(&mut input, out, Z_SYNC_FLUSH);
         if step.status == Z_STREAM_END || (step.status == Z_OK && input.is_empty()) {
-            return 0;
+            return Ok(());
         }
         if step.status != Z_OK {
-            return step.status;
+            return Err(step.status);
         }
     }
 }
@@ -90,16 +90,14 @@ impl Inflate {
         };
         let status = run(stream, input, &mut self.out);
         self.first_chunk = false;
-        if status == 0 {
-            return true;
-        }
         // Upstream retries a first-chunk data error as raw deflate (no zlib header).
-        if status == Z_DATA_ERROR && first {
+        if status == Err(Z_DATA_ERROR) && first {
             self.stream = None;
             self.stream = Stream::inflate(ENCODING_RAW).ok();
-            return (self.stream.as_mut()).is_some_and(|raw| run(raw, input, &mut self.out) == 0);
+            return (self.stream.as_mut())
+                .is_some_and(|raw| run(raw, input, &mut self.out).is_ok());
         }
-        false
+        status.is_ok()
     }
 }
 
