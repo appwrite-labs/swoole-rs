@@ -4,6 +4,7 @@
 use std::{
     cell::{OnceCell, UnsafeCell},
     ffi::c_int,
+    mem::ManuallyDrop,
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_process::{
@@ -199,23 +200,24 @@ pub(crate) fn pipe_close(worker: Worker<'_>, which: i64) -> c_int {
     if pair.is_null() {
         return -1;
     }
-    let ret = match which {
+    match which {
         CLOSE_READ => swoole_rs_corebase::sys::shutdown(fd, libc::SHUT_RD),
         CLOSE_WRITE => swoole_rs_corebase::sys::shutdown(fd, libc::SHUT_WR),
-        _ => c_int::from(socket_pair::close(
-            // SAFETY: the worker's live pair.
-            unsafe { &mut *pair },
-            which.c_cast::<c_int>(),
-        )),
-    };
-    if ret >= 0 && which == 0 {
-        // The record forgets the pair's ends before they go.
-        worker.clear_pipes();
-        // SAFETY: the worker's pair, boxed as [`open_pipe`] and crates/server's pools
-        // make them, deleted once; upstream deletes it even when shared.
-        delete_pair(unsafe { Box::from_raw(pair) });
+        _ => {
+            // SAFETY: the worker's live pair, boxed as [`open_pipe`] and crates/server's
+            // pools make them; the record keeps it unless it is deleted below, and
+            // nothing else touches it meanwhile.
+            let mut owned = ManuallyDrop::new(unsafe { Box::from_raw(pair) });
+            let ret = c_int::from(socket_pair::close(&mut owned, which.c_cast::<c_int>()));
+            if ret >= 0 && which == 0 {
+                // The record forgets the pair's ends before they go; upstream deletes
+                // the pair even when shared.
+                worker.clear_pipes();
+                delete_pair(ManuallyDrop::into_inner(owned));
+            }
+            ret
+        }
     }
-    ret
 }
 
 /// The pipe's timeouts and kernel timeouts; false without a pipe.

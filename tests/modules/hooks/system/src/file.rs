@@ -5,6 +5,7 @@
 //! each TEST, including the ones with no subject left.
 
 use std::ffi::{CStr, c_int};
+use std::os::fd::IntoRawFd;
 
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::log;
@@ -134,7 +135,10 @@ fn tmp_file() {
     let mut buf = [0_u8; 128];
     let template = b"/tmp/not-exists-dir/test.XXXXXX";
     buf[..template.len()].copy_from_slice(template);
-    assert_eq!(create_tmpfile(&mut buf), -1);
+    assert_eq!(
+        create_tmpfile(&mut buf).map_or(-1, IntoRawFd::into_raw_fd),
+        -1
+    );
     assert_eq!(last_error(), ENOENT);
 }
 

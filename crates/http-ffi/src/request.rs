@@ -11,7 +11,6 @@ use core::ptr;
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{BufWriter, Write};
-use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use swoole_rs_buffer::string::{CppString, delete_string, new_sized_string};
 use swoole_rs_corebase::{log, set_errno};
@@ -73,6 +72,16 @@ fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
+unsafe extern "C" {
+    /// Reads `text` up to its NUL and points `end` into it; any base is defined (an
+    /// unsupported one sets `EINVAL`).
+    safe fn strtoull(
+        text: swoole_rs_corebase::sys::Text<'_>,
+        end: &mut *mut core::ffi::c_char,
+        base: c_int,
+    ) -> core::ffi::c_ulonglong;
+}
+
 /// The errno libc's `strtoull` leaves when no digits convert; libcs differ.
 fn no_digits_errno() -> c_int {
     static VALUE: std::sync::OnceLock<c_int> = std::sync::OnceLock::new();
@@ -80,8 +89,7 @@ fn no_digits_errno() -> c_int {
         let saved = errno();
         set_errno(0);
         let mut end = ptr::null_mut();
-        // SAFETY: a NUL-terminated literal and a writable end pointer.
-        unsafe { libc::strtoull(c"x".as_ptr(), &raw mut end, 10) };
+        strtoull(c"x".into(), &mut end, 10);
         let value = errno();
         set_errno(saved);
         value
@@ -653,14 +661,11 @@ impl Parts for HttpRequest {
         form.upload_size = 0;
         // `swoole_tmpfile` fills in the template's `XXXXXX`.
         let Some(native) = native else {
-            let fd = create_tmpfile(&mut form.upload);
-            if fd < 0 {
+            let Some(fd) = create_tmpfile(&mut form.upload) else {
                 self.excepted = true;
                 return 0;
-            }
-            // SAFETY: the descriptor `swoole_tmpfile` just opened, which nothing else owns.
-            let file = File::from(unsafe { OwnedFd::from_raw_fd(fd) });
-            form.fp = Some(Upload::File(BufWriter::new(file)));
+            };
+            form.fp = Some(Upload::File(BufWriter::new(File::from(fd))));
             return 0;
         };
         let name = form.upload.as_mut_ptr();

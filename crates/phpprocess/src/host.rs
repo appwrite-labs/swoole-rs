@@ -223,11 +223,11 @@ impl Slot {
         if stored.is_null() {
             return None;
         }
-        // SAFETY: the `Rc` `replace` stored, still the slot's: one more reference to it.
-        unsafe { Rc::increment_strong_count(stored) };
-        // SAFETY: the reference just added, so the callable outlives a handler that
-        // replaces it.
-        let callable = unsafe { Rc::from_raw(stored) };
+        // SAFETY: the `Rc` `replace` stored, still the slot's, borrowed without
+        // taking it (the slot keeps its reference).
+        let stored = std::mem::ManuallyDrop::new(unsafe { Rc::from_raw(stored) });
+        // A reference of its own, so the callable outlives a handler that replaces it.
+        let callable = Rc::clone(&*stored);
         Some(call(&callable, args, coroutine))
     }
 }

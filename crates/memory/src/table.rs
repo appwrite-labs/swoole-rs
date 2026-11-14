@@ -15,6 +15,7 @@
 //! (`kill(pid, 0)` fails with `ESRCH`) and from an owner that holds a lock for
 //! more than two seconds.
 use crate::fixed::{self, Fixed, Layout, Slice};
+use crate::members::Shm;
 use std::cell::UnsafeCell;
 use std::ffi::c_int;
 use std::mem::{MaybeUninit, size_of};
@@ -569,39 +570,38 @@ impl Table {
         }
     }
 
-    /// `Table::create`, in an arena of `arena_size()` bytes.
-    /// # Safety
-    /// `arena` is 8-aligned, writable, `arena_size()` bytes and as shared as
-    /// the table should be; the table owns it until `destroy`.
-    pub unsafe fn create(&mut self, arena: *mut u8) -> bool {
+    /// `Table::create`, in `arena`, a mapping of at least `arena_size()` bytes as
+    /// shared as the table should be, which the table takes (leaving `arena` null)
+    /// until `destroy` hands it back. False, leaving `arena` to the caller, otherwise.
+    pub fn create(&mut self, arena: &mut Shm) -> bool {
         let Some(plan) = self.plan().filter(|plan| plan.slices >= 2) else {
             return false;
         };
-        if self.created || arena.is_null() || !arena.addr().is_multiple_of(8) {
+        // The mapping's payload, which the table alone reaches from here on: written
+        // below once it is known 8-aligned and `plan.physical` bytes.
+        let memory = arena.as_ptr().cast::<u8>();
+        let fits = arena.payload_len() >= plan.physical;
+        if self.created || memory.is_null() || !memory.addr().is_multiple_of(8) || !fits {
             return false;
         }
         #[expect(
             clippy::cast_ptr_alignment,
             reason = "the arena is 8-aligned (checked above)"
         )]
-        let rows = arena.cast::<*mut Row>();
-        let first = arena.wrapping_add(self.size * size_of::<*mut Row>());
+        let rows = memory.cast::<*mut Row>();
+        let first = memory.wrapping_add(self.size * size_of::<*mut Row>());
         for i in 0..self.size {
             #[expect(
                 clippy::cast_ptr_alignment,
                 reason = "8-aligned: the stride is a multiple of 8"
             )]
             let row = first.wrapping_add(i * plan.stride).cast::<Row>();
-            // SAFETY: per the caller; bucket `i` lies in the arena.
+            // SAFETY: bucket `i`'s pointer lies in the arena (see above).
             unsafe { rows.wrapping_add(i).write(row) };
             // SAFETY: as above; the row isn't shared yet.
             unsafe { row.write(Row::empty()) };
         }
-        #[expect(
-            clippy::cast_ptr_alignment,
-            reason = "8-aligned: it follows whole rows"
-        )]
-        let pool = first.wrapping_add(self.size * plan.stride).cast::<Fixed>();
+        let pool = first.wrapping_add(self.size * plan.stride);
         let pool_bytes = plan.physical - self.size * (plan.stride + size_of::<*mut Row>());
         let Ok(width) = u32::try_from(plan.stride) else {
             return false;
@@ -609,10 +609,12 @@ impl Table {
         let Some(layout) = Layout::new(0, width, pool_bytes, false) else {
             return false;
         };
-        // SAFETY: the arena's last `pool_bytes`, per the caller.
-        if unsafe { !fixed::construct(pool, layout, true, false) } {
+        // SAFETY: the arena's last `pool_bytes` (see above), which nothing else reaches
+        // yet; afterwards only the pool does.
+        let pool = unsafe { slice::from_raw_parts_mut(pool.cast::<MaybeUninit<u8>>(), pool_bytes) };
+        let Some(pool) = fixed::construct(pool, layout, true, false) else {
             return false;
-        }
+        };
         let header = ptr::from_mut(self).addr();
         let cursor = Box::new(Cursor {
             absolute: 0,
@@ -629,9 +631,9 @@ impl Table {
         };
         self.cursor = cursor;
         self.rows = rows;
-        self.pool = pool;
+        self.pool = pool.as_ptr();
         self.memory_size = plan.logical - self.size * (plan.row_size + size_of::<*mut Row>());
-        self.memory = arena;
+        self.memory = std::mem::take(arena).into_raw().cast();
         self.created = true;
         true
     }

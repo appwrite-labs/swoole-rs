@@ -191,27 +191,25 @@ fn resume(call: &Call) {
     call.set_bool(true);
 }
 
-/// A `Co::join()` in progress: the contexts it still waits for.
+/// A `Co::join()` in progress: the contexts it still waits for, each of which
+/// holds it until it closes or the join gives up.
 pub(crate) struct Join {
-    pending: Vec<Ctx>,
+    pending: RefCell<Vec<Ctx>>,
     co: *mut c_void,
-    canceled: Rc<Cell<bool>>,
+    canceled: Cell<bool>,
 }
 
 impl Join {
     /// A joined coroutine closed: once none are left, resume the joiner from
     /// the event loop (unless it gave up first).
-    pub(crate) fn closed(join: *mut Self, ctx: Ctx) {
-        // SAFETY: a join stays live while it is set on a context.
-        let this = unsafe { &mut *join };
-        this.pending.retain(|&pending| pending != ctx);
-        if !this.pending.is_empty() {
+    pub(crate) fn closed(self: Rc<Self>, ctx: Ctx) {
+        let mut pending = self.pending.borrow_mut();
+        pending.retain(|&pending| pending != ctx);
+        if !pending.is_empty() {
             return;
         }
-        let resume = JoinResume {
-            co: this.co,
-            canceled: Rc::clone(&this.canceled),
-        };
+        drop(pending);
+        let resume = JoinResume { join: self };
         if swoole_rs_reactor::event_api::swoole_event_defer_value(resume).is_err() {
             // Upstream dereferences `sw_reactor()` here unchecked.
             swoole_rs_corebase::fatal("no reactor to defer the resume to");
@@ -221,22 +219,21 @@ impl Join {
     /// Stop waiting for the contexts registered so far.
     fn forget(&self) {
         // A context still waited for is live.
-        for ctx in &self.pending {
-            ctx.set_join(ptr::null_mut());
+        for ctx in self.pending.borrow().iter() {
+            drop(ctx.replace_join(None));
         }
     }
 }
 
 /// The joiner's resume, deferred to the loop once its last joined coroutine closed.
 struct JoinResume {
-    co: *mut c_void,
-    canceled: Rc<Cell<bool>>,
+    join: Rc<Join>,
 }
 
 impl swoole_rs_reactor::event_api::Deferred for JoinResume {
     fn run(self) {
         // The token goes before the resume, which may not return.
-        let (co, canceled) = (self.co, self.canceled.get());
+        let (co, canceled) = (self.join.co, self.join.canceled.get());
         drop(self);
         if !canceled {
             host::resume(co);
@@ -273,7 +270,7 @@ fn join(call: &Call) {
             continue;
         };
         // Another join's, or this one's for a repeated id.
-        if !ctx.join().is_null() || pending.contains(&ctx) {
+        if ctx.joined() || pending.contains(&ctx) {
             host::set_last_error(SW_ERROR_WRONG_OPERATION);
             call.set_bool(false);
             return;
@@ -285,16 +282,13 @@ fn join(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let mut join = Join {
-        pending,
+    let join = Rc::new(Join {
+        pending: RefCell::new(pending),
         co,
-        canceled: Rc::new(Cell::new(false)),
-    };
-    // Registered only once `pending` is complete: `Join::closed` writes
-    // through this pointer, which a later write to `join` would invalidate.
-    let this = &raw mut join;
-    for ctx in &join.pending {
-        ctx.set_join(this);
+        canceled: Cell::new(false),
+    });
+    for ctx in join.pending.borrow().iter() {
+        drop(ctx.replace_join(Some(Rc::clone(&join))));
     }
     // This frame lives on the running coroutine's stack, which no bailout
     // unwinds while it waits.

@@ -8,9 +8,35 @@
         clippy::multiple_unsafe_ops_per_block
     )
 )]
-use std::ffi::CStr;
+use std::ffi::{CStr, c_char};
+use std::marker::PhantomData;
+use std::ptr::NonNull;
 
 pub use libc::tm as Tm;
+
+/// A C string's address, live and NUL-terminated for `'a`: what libc's calendar
+/// calls take for a `const char *`.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct Text<'a>(NonNull<c_char>, PhantomData<&'a CStr>);
+
+impl<'a> From<&'a CStr> for Text<'a> {
+    fn from(text: &'a CStr) -> Self {
+        Self(NonNull::from(text).cast(), PhantomData)
+    }
+}
+
+// libc's calendar calls that read only C strings and a `tm` they are lent, and
+// write only the `tm` (and, for `strptime`, return a pointer into `date`). None
+// retains an argument, and none reads `tm_zone`. `time_t` is 64 bits wherever the
+// extension builds, as `i64` was already passed for it.
+unsafe extern "C" {
+    #[link_name = "strptime"]
+    safe fn libc_strptime(date: Text<'_>, format: Text<'_>, tm: &mut Tm) -> *mut c_char;
+    #[link_name = "mktime"]
+    safe fn libc_mktime(tm: &mut Tm) -> i64;
+    safe fn gmtime_r(time: &i64, tm: &mut Tm) -> *mut Tm;
+}
 
 /// An all-zero `tm`, as a native `tm{}`.
 #[must_use]
@@ -31,22 +57,18 @@ pub fn zeroed() -> Tm {
 }
 /// `strptime(date, format, tm)`: whether `date` parsed.
 pub fn strptime(date: &CStr, format: &CStr, tm: &mut Tm) -> bool {
-    // SAFETY: two C strings and an exclusive tm, none retained.
-    !unsafe { libc::strptime(date.as_ptr(), format.as_ptr(), tm) }.is_null()
+    !libc_strptime(date.into(), format.into(), tm).is_null()
 }
 /// `mktime(tm)`, normalizing `tm`.
 pub fn mktime(tm: &mut Tm) -> i64 {
-    // SAFETY: an exclusive, initialized tm.
-    unsafe { libc::mktime(tm) }
+    libc_mktime(tm)
 }
-/// `gmtime(&time)`, copied out of libc's static calendar before another call can
-/// change it; None when `time` has no calendar date.
+/// `gmtime(&time)`'s calendar, through `gmtime_r` so no other call shares it; None
+/// when `time` has no calendar date.
 #[must_use]
 pub fn gmtime(time: i64) -> Option<Tm> {
-    // SAFETY: a live time_t; the result is null or libc's static tm.
-    let result = unsafe { libc::gmtime(&raw const time) };
-    // SAFETY: null, or the static tm, read before any other calendar call.
-    unsafe { result.as_ref() }.copied()
+    let mut tm = zeroed();
+    (!gmtime_r(&time, &mut tm).is_null()).then_some(tm)
 }
 /// `time(NULL)`: now.
 #[must_use]

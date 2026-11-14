@@ -52,9 +52,15 @@ pub(crate) fn debug_step(
 /// A pool over a fresh `0xa5`-filled buffer of `plan.total` bytes plus one word.
 fn pool_in(plan: Layout, shared: bool, owned: bool) -> (Vec<u64>, *mut Fixed) {
     let mut memory = vec![0xa5a5_a5a5_a5a5_a5a5u64; plan.total.div_ceil(8) + 1];
-    let pool = memory.as_mut_ptr().cast::<Fixed>();
-    assert!(unsafe { construct(pool, plan, shared, owned) });
-    (memory, pool)
+    let arena = unsafe {
+        std::slice::from_raw_parts_mut(
+            memory.as_mut_ptr().cast::<MaybeUninit<u8>>(),
+            memory.len() * 8,
+        )
+    };
+    let pool = construct(arena, plan, shared, owned);
+    assert!(pool.is_some());
+    (memory, pool.unwrap().as_ptr())
 }
 
 fn borrowed(width: u32, slices: usize) -> Layout {
@@ -183,8 +189,13 @@ fn fixed_construction_rejects_a_misaligned_arena_before_writing() {
     let plan = Layout::new(2, 8, 0, true).unwrap();
     let mut memory = [0xa5a5_a5a5_a5a5_a5a5u64; 32];
     let before = memory;
-    let arena = memory.as_mut_ptr().cast::<u8>().wrapping_add(1).cast();
-    assert!(!unsafe { construct(arena, plan, true, true) });
+    let arena = memory
+        .as_mut_ptr()
+        .cast::<u8>()
+        .wrapping_add(1)
+        .cast::<MaybeUninit<u8>>();
+    let arena = unsafe { std::slice::from_raw_parts_mut(arena, plan.total) };
+    assert!(construct(arena, plan, true, true).is_none());
     assert_eq!(memory, before);
 }
 

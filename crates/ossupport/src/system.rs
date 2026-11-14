@@ -7,7 +7,6 @@
 use libc::{c_char, c_int, c_long};
 use std::ffi::CStr;
 use swoole_rs_corebase::log;
-#[cfg(target_vendor = "apple")]
 use swoole_rs_corebase::sys::Text;
 
 // libc's own declarations, each a call over plain values that reads and writes no
@@ -29,6 +28,11 @@ unsafe extern "C" {
     /// Darwin's: names the calling thread, reading `name` up to its NUL.
     #[cfg(target_vendor = "apple")]
     safe fn pthread_setname_np(name: Text<'_>) -> c_int;
+    /// Elsewhere: names a live thread, reading `name` up to its NUL; a name too long
+    /// is refused with an error number.
+    #[cfg(not(target_vendor = "apple"))]
+    #[link_name = "pthread_setname_np"]
+    safe fn pthread_setname(thread: CurrentThread, name: Text<'_>) -> c_int;
 }
 
 #[must_use]
@@ -257,8 +261,7 @@ pub fn thread_set_name(name: &CStr) -> bool {
     #[cfg(target_vendor = "apple")]
     let rc = pthread_setname_np(name.into());
     #[cfg(not(target_vendor = "apple"))]
-    // SAFETY: a NUL-terminated name, read for the call; the calling thread is live.
-    let rc = unsafe { libc::pthread_setname_np(pthread_self(), name.as_ptr()) };
+    let rc = pthread_setname(CurrentThread::get(), name.into());
     pthread_ok(rc)
 }
 

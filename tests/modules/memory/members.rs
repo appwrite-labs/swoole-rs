@@ -42,10 +42,12 @@ impl FixedPool {
     /// As above.
     fn new(slices: u32, width: u32, shared: bool) -> Result<Self, i32> {
         let plan = Layout::new(slices, width, 0, true).ok_or(INVALID)?;
-        let memory = NonNull::new(arena(shared, plan.total).cast::<Fixed>()).ok_or(NO_MEMORY)?;
+        let memory = NonNull::new(arena(shared, plan.total).cast::<mem::MaybeUninit<u8>>())
+            .ok_or(NO_MEMORY)?;
         // SAFETY: a fresh, malloc-aligned arena of `plan.total` bytes.
-        unsafe { fixed::construct(memory.as_ptr(), plan, shared, true) };
-        Ok(Self(memory))
+        let memory = unsafe { std::slice::from_raw_parts_mut(memory.as_ptr(), plan.total) };
+        let pool = fixed::construct(memory, plan, shared, true).ok_or(INVALID)?;
+        Ok(Self(pool))
     }
 
     fn header(&self) -> &Fixed {

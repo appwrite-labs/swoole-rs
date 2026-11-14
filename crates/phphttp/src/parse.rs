@@ -8,7 +8,6 @@ use crate::state::{Slot, State};
 use std::ffi::{CStr, c_char, c_int};
 use std::fs::File;
 use std::io::{BufWriter, IoSlice, Write};
-use std::os::fd::FromRawFd;
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use std::{mem::ManuallyDrop, ptr};
 use swoole_rs_corebase::CCast;
@@ -1074,13 +1073,11 @@ fn part_headers_complete(state: &mut State, upload: &mut Option<Upload>) -> c_in
     path.push(0);
     let fd = swoole_rs_ossupport::create_tmpfile(&mut path);
     path.pop();
-    if fd < 0 {
+    let Some(fd) = fd else {
         upload_long(state, b"error", UPLOAD_NO_TMP_DIR);
         return 0;
-    }
-    // SAFETY: the descriptor create_tmpfile just opened, which nothing else owns.
-    let file = unsafe { File::from_raw_fd(fd) };
-    *upload = Some(BufWriter::new(file));
+    };
+    *upload = Some(BufWriter::new(File::from(fd)));
     upload_bytes(state, b"tmp_name", &path);
     add_upload(state, &path);
     0

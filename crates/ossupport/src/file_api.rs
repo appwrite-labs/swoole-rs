@@ -7,6 +7,7 @@ use crate::file::{FileIo, file_open, file_size, tmpfile, write_all};
 use crate::file_record::FileRecord;
 use libc::c_int;
 use std::ffi::CStr;
+use std::os::fd::{FromRawFd, OwnedFd};
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{log, sys};
 
@@ -56,17 +57,18 @@ fn size_of_fd(fd: c_int) -> isize {
 }
 
 /// `swoole_tmpfile`: creates the file named by the `XXXXXX` template in `template`
-/// (NUL-terminated within it), writing the name in place; the descriptor, or -1
+/// (NUL-terminated within it), writing the name in place; the descriptor, or `None`
 /// after the warning.
-pub fn create_tmpfile(template: &mut [u8]) -> c_int {
+pub fn create_tmpfile(template: &mut [u8]) -> Option<OwnedFd> {
     let fd = tmpfile(template);
     if fd < 0 {
         let name = CStr::from_bytes_until_nul(template).unwrap_or_default();
         let name = name.to_string_lossy();
         log::sys_warning(c"swoole_tmpfile", format_args!("mkstemp('{name}') failed"));
-        return -1;
+        return None;
     }
-    fd
+    // SAFETY: the descriptor `mkstemp` just opened, which nothing else owns.
+    Some(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
 /// `file_get_contents`: true with the file's bytes, NUL-terminated, in `content`
