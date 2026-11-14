@@ -115,16 +115,6 @@ pub(crate) fn check_reactor() -> Result<(), Bailout> {
     swoole_rs_zend::contain(swoole_rs_phpruntime::check_reactor)
 }
 
-/// Whether the build has an optional SSL option: the host name (0) or grease
-/// (1, `BoringSSL`'s).
-pub(crate) fn ssl_supports(option: c_int) -> bool {
-    match option {
-        0 => built_with(Switch::TlsHostName),
-        1 => built_with(Switch::BoringSsl),
-        _ => false,
-    }
-}
-
 /// A live coroutine socket (`SocketImpl *`) over crates/hooks' record handle.
 /// It is made only from crates/hooks' handle, whose constructor is the unsafe
 /// point: a socket stays live while the object or client that owns it is, and
@@ -447,24 +437,30 @@ impl Co {
         self.0.ssl_handshake()
     }
 
-    /// `open_length_check` (0), `open_eof_check` (1) or `http2` (2) = `value`.
-    pub(crate) fn set_flag(self, flag: c_int, value: bool) {
-        match flag {
-            0 => self.0.set_open_length_check(value),
-            1 => self.0.set_open_eof_check(value),
-            _ => self.0.set_http2(value),
-        }
+    /// `open_length_check = value`.
+    pub(crate) fn set_length_check(self, value: bool) {
+        self.0.set_open_length_check(value);
     }
 
-    /// `mqtt::set_protocol` (0) or `Protocol::default_length_func` (1).
-    pub(crate) fn protocol_preset(self, kind: c_int) {
+    /// `open_eof_check = value`.
+    pub(crate) fn set_eof_check(self, value: bool) {
+        self.0.set_open_eof_check(value);
+    }
+
+    /// `http2 = value`.
+    pub(crate) fn set_http2(self, value: bool) {
+        self.0.set_http2(value);
+    }
+
+    /// `mqtt::set_protocol`.
+    pub(crate) fn mqtt_protocol(self) {
+        self.0.edit_protocol(|protocol| mqtt_set_protocol(protocol));
+    }
+
+    /// `Protocol::default_length_func`.
+    pub(crate) fn length_protocol(self) {
         self.0.edit_protocol(|protocol| {
-            if kind == 0 {
-                mqtt_set_protocol(protocol);
-            } else {
-                protocol.get_package_length =
-                    Some(swoole_rs_ports::framing_recv::default_length_func);
-            }
+            protocol.get_package_length = Some(swoole_rs_ports::framing_recv::default_length_func);
         });
     }
 

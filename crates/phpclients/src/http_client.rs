@@ -527,7 +527,7 @@ impl Client {
             }
         }
         if let Some(socket) = self.co() {
-            crate::socket_options::apply(socket, array, crate::socket_options::ALL);
+            crate::socket_options::apply(socket, array, swoole_rs_phpswoole::SocketSettings::All);
             if !swoole_rs_zend::bailout::pending() {
                 socket.skip_proxy_handshake();
             }

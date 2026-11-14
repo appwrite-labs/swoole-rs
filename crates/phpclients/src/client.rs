@@ -285,7 +285,7 @@ fn socket_for_connect(call: &Call, port: i64) -> Option<Co> {
     }
     let socket = create_socket(call, data, kind)?;
     if let Some(settings) = setting(call) {
-        crate::socket_options::apply(socket, settings, crate::socket_options::ALL);
+        crate::socket_options::apply(socket, settings, swoole_rs_phpswoole::SocketSettings::All);
     }
     Some(socket)
 }
@@ -335,7 +335,7 @@ fn set(call: &Call) {
     call.set_bool(crate::socket_options::apply(
         socket,
         array,
-        crate::socket_options::ALL,
+        swoole_rs_phpswoole::SocketSettings::All,
     ));
 }
 
@@ -615,7 +615,7 @@ fn enable_ssl(call: &Call) {
     }
     let settings = setting(call).filter(|settings| settings.count() > 0);
     if let Some(settings) = settings {
-        crate::socket_options::apply(socket, settings, crate::socket_options::SSL);
+        crate::socket_options::apply(socket, settings, swoole_rs_phpswoole::SocketSettings::Ssl);
     }
     if !socket.ssl_handshake() {
         report_socket(call, socket);

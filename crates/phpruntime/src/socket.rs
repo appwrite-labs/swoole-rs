@@ -337,10 +337,10 @@ impl Socket {
         let mut applied = false;
         let apply = || {
             if let Some(families) = swoole_rs_phpswoole::families() {
-                // crates/phpclients ignores settings that are no array; 2 applies
-                // the SSL ones.
+                // crates/phpclients ignores settings that are no array.
+                let ssl = swoole_rs_phpswoole::SocketSettings::Ssl;
                 // SAFETY: inside the trap below.
-                applied = unsafe { (families.socket_settings)(socket, settings, 2) };
+                applied = unsafe { (families.socket_settings)(socket, settings, ssl) };
             }
         };
         // SAFETY: the body holds copies and the result slot; the settings' warnings
