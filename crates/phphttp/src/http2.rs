@@ -88,8 +88,8 @@ pub struct Server {
     /// outlives the session.
     pub session_new: fn(i64, Ctx, u32, Handler),
     /// One whole frame, at the start of the bytes, for the session of an fd;
-    /// `SW_ERR` on failure.
-    pub session_receive: fn(i64, &[u8]) -> c_int,
+    /// false on failure.
+    pub session_receive: fn(i64, &[u8]) -> bool,
     /// The session of an fd goes.
     pub session_free: fn(i64),
 }

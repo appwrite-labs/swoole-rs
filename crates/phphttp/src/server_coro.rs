@@ -254,7 +254,6 @@ const NOT_FOUND: c_int = 404;
 const HTTP2_INTERNAL_ERROR: u32 = 2;
 const ENTITY_TOO_LARGE: c_int = 413;
 const HPE_OK: i32 = 0;
-const SW_ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 const HPE_PAUSED_H2_UPGRADE: i32 = 23;
 /// `SW_BUFFER_SIZE_BIG`.
 const BUFFER_SIZE_BIG: usize = 65536;
@@ -1084,7 +1083,7 @@ fn http2(conn: &mut Connection, mut context: Ctx) -> Result<(), bailout::Bailout
         loop {
             // The frame stays in the read buffer.
             let retval = recv_packet(conn.socket, 0.0);
-            if retval <= 0 || (server.session_receive)(fd, conn.buffer().view()) == SW_ERR {
+            if retval <= 0 || !(server.session_receive)(fd, conn.buffer().view()) {
                 break;
             }
             if bailout::pending() {
