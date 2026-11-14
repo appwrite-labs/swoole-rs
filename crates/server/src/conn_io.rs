@@ -75,7 +75,7 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
         // Once a close is queued, a read only drives a TLS shutdown that wants one.
         if conn.close_queued() {
             return if want_read {
-                write(serv, reactor, event)
+                status(write(serv, reactor, event))
             } else {
                 OK
             };
@@ -297,6 +297,11 @@ const BUILT_PREQUEUE: bool = cfg!(feature = "halfclose");
 /// `SW_OK` and `SW_ERR` as the reactor's handlers return them.
 const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
 const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
+
+/// A handler's success as the reactor's `SW_OK`/`SW_ERR`.
+pub(crate) const fn status(ok: bool) -> c_int {
+    if ok { OK } else { ERR }
+}
 /// `SW_EVENT_READ`, `SW_EVENT_WRITE` and `SW_SSL_STATE_READY`.
 const SW_EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
 const SW_EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
@@ -318,7 +323,7 @@ fn output(sock: Socket<'_>) -> (u32, bool) {
 
 /// `ReactorThread_onWrite`: notify a pending close, or flush the output buffer, then
 /// report the drained buffer and stop watching for writes once it is empty.
-pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event) -> c_int {
+pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event) -> bool {
     let state = serv.state();
     let config = state.config_ref();
     let fd = event.fd();
@@ -336,7 +341,7 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
         .filter(|conn| conn.is_active())
         .and_then(|conn| Some((conn, conn.socket()?)))
     else {
-        return ERR;
+        return false;
     };
     if conn.close_notify() {
         if handshaking(sock) {
@@ -344,7 +349,7 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
         }
         crate::server_methods::notify(serv, conn, ServerEvent::Close);
         conn.set_close_notify(false);
-        return OK;
+        return true;
     } else if config.disable_notify.get() && conn.close_force() {
         return close_connection(serv, reactor, Some(sock));
     }
@@ -353,7 +358,7 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
         Some(swr_cpp_buffer_typed_front(buffer).kind)
     }) {
         let sent = match kind {
-            EntryKind::Close => return reactor.close(sock),
+            EntryKind::Close => return reactor.close(sock) >= 0,
             EntryKind::Sendfile => tls::socket_handle_sendfile(sock),
             EntryKind::Data => {
                 let sent = tls::socket_handle_send(sock);
@@ -368,7 +373,7 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
             if close_wait {
                 let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
                 conn.set_close_errno(errno.c_cast::<u16>());
-                return reactor.trigger_close(event);
+                return reactor.trigger_close(event) >= 0;
             } else if send_wait {
                 break;
             }
@@ -399,29 +404,29 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
             reactor.change(sock, swoole_rs_reactor::ChangeOp::Set, SW_EVENT_READ);
         }
     }
-    OK
+    true
 }
 
 /// `ReactorThread_onClose`: the peer closed. Close now when nobody is told or a
 /// close is already queued, else mark the connection and notify the worker once.
-pub(crate) fn peer_close(serv: view::Server<'_>, reactor: Reactor, event: &Event) -> c_int {
+pub(crate) fn peer_close(serv: view::Server<'_>, reactor: Reactor, event: &Event) -> bool {
     let state = serv.state();
     let fd = event.fd();
     let conn = state.connection(c_long::from(fd), Lookup::ByFd);
     let (Some(conn), Some(sock)) = (conn.filter(|conn| conn.is_active()), event.socket()) else {
-        return ERR;
+        return false;
     };
     if state.config_ref().disable_notify.get() {
         return close_connection(serv, reactor, Some(sock));
     }
     if !reactor.change(sock, swoole_rs_reactor::ChangeOp::Del, 0) {
-        return ERR;
+        return false;
     }
     if conn.close_queued() {
         return close_connection(serv, reactor, Some(sock));
     }
     if sock.read(|s| s.close_notified) {
-        return OK;
+        return true;
     }
     let mut head = DataHead {
         reactor_id: i16::try_from(reactor.handle().id()).unwrap_or_default(),
@@ -432,7 +437,7 @@ pub(crate) fn peer_close(serv: view::Server<'_>, reactor: Reactor, event: &Event
     // The connection is no longer available.
     conn.set_peer_closed(fin_ends(BUILT_PREQUEUE, state, conn));
     sock.edit(|s| s.close_notified = true);
-    c_int::from(crate::hybrid::hybrid().factory_notify(serv, &mut head))
+    crate::hybrid::hybrid().factory_notify(serv, &mut head)
 }
 
 /// Whether the peer's FIN ends the connection. A synchronous process worker with
@@ -458,15 +463,15 @@ pub(crate) fn close_connection(
     serv: view::Server<'_>,
     reactor: Reactor,
     sock: Option<Socket<'_>>,
-) -> c_int {
+) -> bool {
     let state = serv.state();
     let Some(sock) = sock else {
-        return ERR;
+        return false;
     };
     let fd = sock.fd();
     // A session socket's connection is its fd's slot.
     let Some(conn) = state.connection(c_long::from(fd), Lookup::ByFd) else {
-        return ERR;
+        return false;
     };
     let port = serv.port_by_fd(fd).map(view::Port::config);
     if let Some(timer) = conn.timer() {
@@ -486,7 +491,7 @@ pub(crate) fn close_connection(
             swoole_rs_reactor::ChangeOp::Set
         };
         if reactor.change(sock, op, events) {
-            return OK;
+            return true;
         }
     }
     let websocket = conn.websocket_buffer();
@@ -496,7 +501,7 @@ pub(crate) fn close_connection(
         conn.set_websocket_buffer(core::ptr::null_mut());
     }
     if !removed && !reactor.change(sock, swoole_rs_reactor::ChangeOp::Del, 0) {
-        return ERR;
+        return false;
     }
     count_close(state, port, reactor);
     let (ssl, dtls, recv_buffer) = sock.read(|s| (!s.ssl().is_null(), s.dtls, s.recv_buffer));
@@ -534,7 +539,8 @@ pub(crate) fn close_connection(
     // acquires it (OP_CONN_RESET) before reusing the slot.
     conn.closed().store(1, Release);
     // SAFETY: the closing socket, which nothing uses afterwards.
-    unsafe { swoole_rs_tls::reactor_write::reactor_close(reactor.ptr(), sock.as_ptr()) }
+    unsafe { swoole_rs_tls::reactor_write::reactor_close(reactor.ptr(), sock.as_ptr()) };
+    true
 }
 
 /// Whether a clean close of a ready TLS stream owes a close notify that its
@@ -661,13 +667,13 @@ pub(crate) mod tests {
             live.port_counters().connection_num.load(SeqCst),
         );
         let session_id = two.session_id();
-        assert_eq!(close_connection(serv, reactor, two.socket()), OK);
+        assert!(close_connection(serv, reactor, two.socket()));
         assert!(closed(two));
         assert_eq!(gs.max_fd(), one.fd(), "down to the open session");
         let session = live.state().session(session_id).unwrap();
         assert_eq!(session.fd(), 0, "the session is clear");
         gs.max_fd.store(one.fd() + 1, Relaxed);
-        assert_eq!(close_connection(serv, reactor, one.socket()), OK);
+        assert!(close_connection(serv, reactor, one.socket()));
         assert!(closed(one));
         assert_eq!(gs.max_fd(), one.fd() + 1, "not the max fd");
         assert_eq!(gs.close_count.load(SeqCst), 2);
@@ -677,7 +683,7 @@ pub(crate) mod tests {
             live.port_counters().connection_num.load(SeqCst),
             port_before - 2
         );
-        assert_eq!(close_connection(serv, reactor, None), ERR);
+        assert!(!close_connection(serv, reactor, None));
         assert_eq!(calls(), [], "nobody is told");
     }
 
@@ -689,7 +695,7 @@ pub(crate) mod tests {
         let conn = session(&live, 1);
         let fd = conn.fd();
         let event = conn.event(0, 0);
-        assert_eq!(peer_close(serv, reactor, &event), 1);
+        assert!(peer_close(serv, reactor, &event));
         let close = Call::Notify(c_long::from(fd), 0, ServerEvent::Close.code(), 0);
         assert_eq!(calls(), [close]);
         assert!(conn.peer_closed(), "upstream: the connection is gone");
@@ -698,10 +704,10 @@ pub(crate) mod tests {
 
         let conn = session(&live, 2);
         conn.set_close_queued(true);
-        assert_eq!(peer_close(serv, reactor, &conn.event(0, 0)), OK);
+        assert!(peer_close(serv, reactor, &conn.event(0, 0)));
         assert_eq!(calls(), [], "a queued close closes now");
         assert!(closed(conn));
-        assert_eq!(peer_close(serv, reactor, &conn.event(0, 0)), ERR, "gone");
+        assert!(!peer_close(serv, reactor, &conn.event(0, 0)), "gone");
     }
 
     #[test]
@@ -711,7 +717,7 @@ pub(crate) mod tests {
         configure(&live, |c| c.disable_notify.set(true));
         let conn = session(&live, 1);
         let event = conn.event(0, 0);
-        assert_eq!(peer_close(live.server(), live.reactor(), &event), OK);
+        assert!(peer_close(live.server(), live.reactor(), &event));
         assert!(closed(conn));
         assert_eq!(calls(), []);
     }
@@ -769,7 +775,7 @@ pub(crate) mod tests {
             swoole_rs_reactor::ChangeOp::Set,
             SW_EVENT_READ | SW_EVENT_WRITE,
         );
-        assert_eq!(write(serv, reactor, &mut conn.event(0, 0)), OK);
+        assert!(write(serv, reactor, &mut conn.event(0, 0)));
         let mut got = [0; 6];
         client.read_exact(&mut got).unwrap();
         assert_eq!(&got, b"queued");
@@ -779,7 +785,7 @@ pub(crate) mod tests {
         assert_eq!(events & SW_EVENT_WRITE, 0, "reads only");
         assert_eq!(calls(), []);
         conn.active().store(0, Relaxed);
-        assert_eq!(write(serv, reactor, &mut conn.event(0, 0)), ERR, "gone");
+        assert!(!write(serv, reactor, &mut conn.event(0, 0)), "gone");
     }
 
     #[test]
@@ -790,7 +796,7 @@ pub(crate) mod tests {
         let conn = session(&live, 1);
         conn.set_close_notify(true);
         queue(conn, b"kept");
-        assert_eq!(write(serv, reactor, &mut conn.event(0, 0)), OK);
+        assert!(write(serv, reactor, &mut conn.event(0, 0)));
         let close = Call::Notify(
             c_long::from(conn.fd()),
             0,
@@ -804,7 +810,7 @@ pub(crate) mod tests {
         configure(&live, |c| c.disable_notify.set(true));
         let conn = session(&live, 2);
         conn.set_close_force(true);
-        assert_eq!(write(serv, reactor, &mut conn.event(0, 0)), OK);
+        assert!(write(serv, reactor, &mut conn.event(0, 0)));
         assert!(closed(conn), "a forced close nobody is told of");
     }
 
