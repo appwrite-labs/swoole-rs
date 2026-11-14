@@ -1,0 +1,172 @@
+name: Debug PHP
+# Every pinned PHPT on upstream and the Cargo-built swoole.so, both built against a debug
+# PHP (--enable-debug). A debug PHP reports each leaked Zend allocation at request end and
+# aborts on a failed ZEND_ASSERT, the refcount and zval bugs a release PHP hides; either
+# makes the test's output differ, so the runner fails it. gate.py then fails what passes on
+# upstream and not on cargo, with the merge tier's re-runs, and lists every leak or
+# assertion report, upstream's own among them (recorded, not gated). File each cargo-only
+# report as a kind:bug. The debug PHP has the database extensions built in, the engines have
+# the merge tier's service hooks (.github/actions/phpt-build), and the shards and re-runs get its
+# services and external network (.github/actions/phpt-env). Nightly, and on a PR that changes this run.
+on:
+  schedule:
+    - cron: '41 2 * * *'
+  workflow_dispatch:
+  pull_request:
+    paths: [.github/workflows/debug.yml]
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/install
+        with:
+          packages: libgmp-dev firebird-dev libaio1t64
+      - uses: ./.github/actions/instantclient
+      # Main's release build: the dependencies; zend-sys and the crates above it rebuild
+      # against this PHP (PHP_CONFIG). Build trees must start clean.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release
+          save-if: false
+      - name: Clear cached builds
+        run: rm -rf target/ext target/upstream target/upstream-builds target/thirdparty
+      # Restored only: the pinned reference is rebuilt against the debug PHP below, never saved.
+      - uses: actions/cache/restore@v6
+        with:
+          path: target/upstream
+          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
+      # Saved here, restored by the shards and the gate. Keyed on this file too: it holds the options.
+      - uses: actions/cache@v6
+        with:
+          path: target/php-debug
+          key: php-debug-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh', '.github/workflows/debug.yml') }}-${{ github.workspace }}
+      # The extensions the distribution's packages add for the merge tier, which don't load here.
+      - name: Build debug PHP
+        run: >
+          .devcontainer/php.sh target/php-debug --enable-debug --with-mysqli --with-pdo-mysql --with-pgsql
+          --with-pdo-pgsql --with-sqlite3 --with-pdo-sqlite --enable-bcmath --with-gmp
+      - name: Fetch crates
+        run: cargo fetch --locked
+      # The control is the pinned reference itself, unpatched. The hooks as phpt-build has them.
+      - name: Build upstream and cargo engines
+        run: |
+          php=$PWD/target/php-debug/bin
+          hooks=(--php-sockets --configure=--enable-swoole-pgsql --configure=--enable-mysqlnd "--configure=--with-swoole-odbc=unixODBC,/usr" --configure=--with-swoole-firebird
+            --configure=--enable-swoole-sqlite "--configure=--with-swoole-oracle=instantclient,/usr/local/instantclient" --configure=--enable-swoole-curl --configure=--with-swoole-ssh2)
+          python3 tools/build_upstream.py --php-config "$php/php-config" --phpize "$php/phpize" "${hooks[@]}" | tee upstream.log
+          python3 tools/build_ext.py --php-config "$php/php-config" "${hooks[@]}"
+          mkdir -p target/phpt
+          cp -L "$(sed -n 's/^\(Built\|Cached\) upstream: //p' upstream.log)" target/phpt/upstream.so
+          cp target/ext/swoole.so target/phpt/cargo.so
+          "$php/php" -v | grep DEBUG
+          for engine in upstream cargo; do "$php/php" -n -d "extension=$PWD/target/phpt/$engine.so" --ri swoole | grep -E '^Version '; done
+      # phpt-env downloads it under this name.
+      - uses: actions/upload-artifact@v7
+        with:
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
+          name: phpt-engines
+          path: target/phpt/
+
+  phpt:
+    name: PHPT ${{ matrix.engine }} ${{ matrix.index }}/6
+    needs: build
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        index: [1, 2, 3, 4, 5, 6]
+        engine: [upstream, cargo]
+    steps:
+      - uses: actions/checkout@v7
+      - name: List services
+        id: services
+        run: echo "names=$(python3 corpus/upstream/services.py)" >> "$GITHUB_OUTPUT"
+      # The services, the tests and their support files, and the engines from the build job.
+      - uses: ./.github/actions/phpt-env
+        with:
+          php: ''
+          services: ${{ steps.services.outputs.names }}
+      - uses: actions/cache/restore@v6
+        with:
+          path: target/php-debug
+          key: php-debug-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh', '.github/workflows/debug.yml') }}-${{ github.workspace }}
+          fail-on-cache-miss: true
+      - name: Plan shard
+        run: python3 corpus/upstream/inventory.py --shard ${{ matrix.index }}/6 --output target/phpt/manifest.json
+      # Exit 1 means some tests failed, which the gate judges; anything else fails the shard.
+      - name: Run PHPTs
+        run: >
+          python3 corpus/upstream/run.py --manifest target/phpt/manifest.json --timeout 30 --external-network
+          --php "$PWD/target/php-debug/bin/php" --engine ${{ matrix.engine }}=target/phpt/${{ matrix.engine }}.so
+          --output target/phpt/${{ matrix.engine }}-${{ matrix.index }}.json || [ $? -eq 1 ]
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
+          name: debug-phpt-${{ matrix.engine }}-${{ matrix.index }}
+          path: target/phpt/${{ matrix.engine }}-${{ matrix.index }}.json
+
+  gate:
+    needs: [build, phpt]
+    if: always() && needs.build.result == 'success'
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: debug-phpt-*
+          merge-multiple: true
+          path: shards
+      # The merge tier's re-runs, unless more than 20 are flagged: a broad breakage.
+      - name: Flag regressions
+        id: flagged
+        run: |
+          python3 corpus/upstream/gate.py shards/*.json --print-regressions > flagged.txt
+          count=$(grep -c . flagged.txt || true)
+          echo "rerun=$([ "$count" -gt 0 ] && [ "$count" -le 20 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - name: List rerun services
+        if: steps.flagged.outputs.rerun == 'true'
+        id: services
+        run: echo "names=$(cut -d/ -f2 flagged.txt | sort -u | xargs python3 corpus/upstream/services.py)" >> "$GITHUB_OUTPUT"
+      - if: steps.flagged.outputs.rerun == 'true'
+        uses: ./.github/actions/phpt-env
+        with:
+          php: ''
+          services: ${{ steps.services.outputs.names }}
+      - if: steps.flagged.outputs.rerun == 'true'
+        uses: actions/cache/restore@v6
+        with:
+          path: target/php-debug
+          key: php-debug-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh', '.github/workflows/debug.yml') }}-${{ github.workspace }}
+          fail-on-cache-miss: true
+      - name: Rerun regressions
+        if: steps.flagged.outputs.rerun == 'true'
+        run: |
+          python3 corpus/upstream/inventory.py --output target/phpt/all.json
+          corpus/upstream/recheck.sh shards target/phpt recheck --manifest target/phpt/all.json \
+            --timeout 30 --external-network --php "$PWD/target/php-debug/bin/php"
+      - name: Gate against upstream
+        run: |
+          set -- shards/*.json
+          if [ -d recheck ]; then set -- "$@" --recheck recheck/*.json; fi
+          python3 corpus/upstream/gate.py "$@" --output phpt-debug.json | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
+          name: phpt-debug
+          path: |
+            phpt-debug.json
+            flagged.txt
+            recheck/
+      - name: Check every shard reported
+        if: needs.phpt.result != 'success'
+        run: echo "A PHPT shard crashed; its tests are missing from the gate" && exit 1

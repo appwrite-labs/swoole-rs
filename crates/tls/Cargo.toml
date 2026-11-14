@@ -1,0 +1,30 @@
+[package]
+name = "swoole-rs-tls"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+# Define Socket's TLS methods under their C++ symbols; only the reactor overlay, whose
+# patches delete the C++ definitions, turns it on (crates/ffi's reactor feature).
+upstream-symbols = ["swoole-rs-reactor/upstream-symbols"]
+# `--fix-halfclose` (M15, native/halfclose/tls.md): the close_notify and interrupted-sendfile repairs.
+halfclose = []
+
+[dependencies]
+swoole-rs-corebase = { path = "../corebase" }
+swoole-rs-reactor = { path = "../reactor" }
+swoole-rs-ossupport = { path = "../ossupport" }
+swoole-rs-buffer = { path = "../buffer" }
+swoole-rs-timer = { path = "../timer", features = ["upstream-symbols"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "=0.2.191"
+openssl-sys = "=0.9.117"
+
+[lib]
+name = "swoole_rs_tls"
+crate-type = ["rlib"]
+
+[lints]
+workspace = true

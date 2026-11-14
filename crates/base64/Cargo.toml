@@ -1,0 +1,17 @@
+[package]
+name = "swoole-rs-base64"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[lib]
+name = "swoole_rs_base64"
+crate-type = ["rlib"]
+
+[dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std"] }
+swoole-rs-oracle = { path = "../oracle" }
+
+[lints]
+workspace = true

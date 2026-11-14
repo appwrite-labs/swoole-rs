@@ -1,0 +1,22 @@
+[package]
+name = "swoole-rs-ossupport"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+[lib]
+name = "swoole_rs_ossupport"
+crate-type = ["rlib"]
+
+[features]
+# Define src/os/file.cc's and base.cc's Rust functions under their C++ symbols. Only crates/ffi, whose builds
+# apply the ossupport patch that deletes the C++ definitions, turns it on.
+upstream-symbols = []
+
+[dependencies]
+libc = "=0.2.191"
+swoole-rs-buffer = { path = "../buffer" }
+swoole-rs-corebase = { path = "../corebase" }
+
+[lints]
+workspace = true

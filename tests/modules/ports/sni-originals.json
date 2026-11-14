@@ -1,0 +1,68 @@
+{
+  "repository": "https://github.com/swoole/swoole-src",
+  "commit": "76c657d88be39b7af6bf85e46bcbac0da7387760",
+  "tests": [
+    {
+      "path": "tests/swoole_http_server/sni/server.phpt",
+      "sha256": "068b63f3ea14890e6d257ac8a087d10ca5c7dbf467fda693452031f6d60be0f3",
+      "module": "ports-sni",
+      "requires": [
+        "http",
+        "processes",
+        "upstream_test_bootstrap"
+      ]
+    },
+    {
+      "path": "tests/swoole_http_server/sni/sni_only.phpt",
+      "sha256": "5d5ac01e5f8d0439b33b521df986cd04775049427936cc25fecd6f099fcc822b",
+      "module": "ports-sni",
+      "requires": [
+        "http",
+        "processes",
+        "upstream_test_bootstrap"
+      ]
+    }
+  ],
+  "support_files": [
+    {
+      "path": "tests/include/ssl_certs/server.crt",
+      "sha256": "cb2809c74166767557de3cf43e89042a2342040dd92e173b8db406abd6f9788c"
+    },
+    {
+      "path": "tests/include/ssl_certs/server.key",
+      "sha256": "abdaa59b78721c6236e32d41a96935efedf8901d80667ec96fc487c8c80bc875"
+    },
+    {
+      "path": "tests/include/ssl_certs/sni_server_cs_cert.pem",
+      "sha256": "ca6925e1db2d9a218fef3bd4f72c19482a9de14fcb4d1f25669a6ddf42838511"
+    },
+    {
+      "path": "tests/include/ssl_certs/sni_server_cs_key.pem",
+      "sha256": "dfde005fcc93d0d337ffc695bdccf50879ac22d01b7e7189c397383a062518f8"
+    },
+    {
+      "path": "tests/include/ssl_certs/sni_server_uk_cert.pem",
+      "sha256": "acd7c9fd1b99d32ccc0f953c9c53b20409ce8edc3fa2df5840286d04e6a070d0"
+    },
+    {
+      "path": "tests/include/ssl_certs/sni_server_uk_key.pem",
+      "sha256": "126d7dda48647a6e1b968381d3107d1a6c3670d4726cf2afb63780a9465d8caa"
+    },
+    {
+      "path": "tests/include/ssl_certs/sni_server_us_cert.pem",
+      "sha256": "8c7626dae09bebe478121598bdbf9b79636ccf4f64afaf96364e5729f86af9d9"
+    },
+    {
+      "path": "tests/include/ssl_certs/sni_server_us_key.pem",
+      "sha256": "4755c3ca8c8bb5c5ebee191e424761d8e5f45818bece0ab787de500932f03e95"
+    }
+  ],
+  "inventory": {
+    "cases": 2,
+    "support_blobs": 8,
+    "group": "swoole_http_server/sni",
+    "tree": "e11d9f36149bc9286eaff6c5b7c6a530f6c57fbe",
+    "selection": "Every original PHPT; no exclusions or assertion changes",
+    "support": "Pinned certificates used by these originals; prepare also verifies the pinned tests/include tree."
+  }
+}

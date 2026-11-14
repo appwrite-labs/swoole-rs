@@ -1,0 +1,17 @@
+z0
+Tr+aiger:a/1.1
+
+
+PUT *jj? HTTP/1.1
+
+PUT *#jj? HTTP/1.1
+
+PUT *jjj*? HTTP/1.1
+
+PUT *jPR(I,? HTTP/1.1
+
+PUT *#j?? HTTP/1.1
+
+PUT *jj?  HTTP/1.1
+
+PUT *#j i l*j

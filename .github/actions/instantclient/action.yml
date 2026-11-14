@@ -1,0 +1,25 @@
+name: Oracle Instant Client
+description: >-
+  Instant Client 19 (basiclite and SDK) in /usr/local/instantclient, as upstream's
+  scripts/library.sh installs it, for --with-swoole-oracle and loading what it builds.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        base=https://download.oracle.com/otn_software/linux/instantclient/1930000
+        cd "$RUNNER_TEMP"
+        for part in basiclite sdk; do
+          curl -fsSL --retry 5 --retry-all-errors -o "$part.zip" "$base/instantclient-$part-linux.x64-19.30.0.0.0dbru.zip"
+          unzip -qo "$part.zip"
+        done
+        rm instantclient_*/sdk/include/ldap.h
+        sudo rm -rf /usr/local/instantclient
+        sudo mv instantclient_* /usr/local/instantclient
+        # A non-interactive bash doesn't glob a redirection target, so name the directory.
+        echo DISABLE_INTERRUPT=on | sudo tee /usr/local/instantclient/network/admin/sqlnet.ora
+        # Oracle 19 needs libaio.so.1; Ubuntu 24.04's libaio1t64 names it libaio.so.1t64.
+        dir="/usr/lib/$(gcc -print-multiarch)"
+        [ -e "$dir/libaio.so.1" ] || sudo ln -s libaio.so.1t64 "$dir/libaio.so.1"
+        echo /usr/local/instantclient | sudo tee /etc/ld.so.conf.d/oracle-instantclient.conf
+        sudo ldconfig

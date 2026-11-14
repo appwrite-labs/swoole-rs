@@ -1,0 +1,22 @@
+[package]
+name = "swoole-rs-phpstdext"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+description = "Swoole's experimental stdext: typed arrays and methods on arrays, strings and streams"
+
+[features]
+# Actual native SW_STDEXT profile; direct private Zend VM/library effects exist only there.
+active = ["dep:cc"]
+# Needs PHP headers (swoole-rs-zend-sys); without it the crate is empty.
+php = ["dep:swoole-rs-zend", "swoole-rs-zend/php"]
+
+[dependencies]
+swoole-rs-zend = { path = "../zend", optional = true }
+
+[build-dependencies]
+cc = { version = "=1.10.0", optional = true }
+
+[lints]
+workspace = true

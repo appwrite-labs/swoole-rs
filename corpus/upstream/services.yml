@@ -1,0 +1,67 @@
+# The services upstream's PHPTs expect, as in its scripts/docker-compose.yml, published on
+# localhost under the host names its tests/include/config.php uses on CI (httpbin at
+# http://httpbin:80; .github/actions/phpt-env maps them). services.py picks a run's.
+services:
+  httpbin:
+    image: kennethreitz/httpbin
+    ports: ['80:80']
+  pgsql:
+    image: postgres:14
+    environment:
+      POSTGRES_USER: root
+      POSTGRES_PASSWORD: root
+      POSTGRES_DB: test
+    ports: ['5432:5432']
+    healthcheck: {test: pg_isready, interval: 2s, retries: 30}
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: test
+    ports: ['3306:3306']
+    healthcheck: {test: mysqladmin ping -proot, interval: 2s, retries: 60}
+  redis:
+    image: redis:7.4
+    ports: ['6379:6379']
+    healthcheck: {test: redis-cli ping, interval: 2s, retries: 30}
+  # Go's HTTP/2 demo, whose /serverpush pushes four assets (TEST_HTTP2_SERVERPUSH_URL).
+  golang-h2demo:
+    image: phpswoole/golang-h2demo
+    ports: ['4430:4430']
+  # HTTP_PROXY_HOST:HTTP_PROXY_PORT and SOCKS5_PROXY_HOST:SOCKS5_PROXY_PORT; the SOCKS5
+  # image now refuses to start without credentials unless REQUIRE_AUTH is off.
+  tinyproxy:
+    image: kalaksi/tinyproxy
+    ports: ['8888:8888']
+  socks5:
+    image: serjs/go-socks5-proxy
+    environment:
+      REQUIRE_AUTH: 'false'
+    ports: ['1080:1080']
+  # FTP_HOST:FTP_PORT as admin/admin; curl reaches the passive ports on localhost.
+  ftp:
+    image: teezily/ftpd
+    environment:
+      FTP_USER: admin
+      FTP_PASSWORD: admin
+      PASV_MIN_PORT: 65000
+      PASV_MAX_PORT: 65009
+    ports: ['21:21', '65000-65009:65000-65009']
+  # Creates /var/lib/firebird/data/test.fdb, the database FIREBIRD_DSN names.
+  firebirdsql:
+    image: firebirdsql/firebird
+    environment:
+      FIREBIRD_ROOT_PASSWORD: root
+      FIREBIRD_USER: test
+      FIREBIRD_PASSWORD: test
+      FIREBIRD_DATABASE: test.fdb
+      FIREBIRD_DATABASE_DEFAULT_CHARSET: UTF8
+    ports: ['3050:3050']
+  # Serves freepdb1, the service ORACLE_TNS names; the image's own healthcheck.sh
+  # reports healthy once the database opens (a minute or two).
+  oracle:
+    image: gvenzl/oracle-free:slim
+    environment:
+      ORACLE_PASSWORD: oracle
+    ports: ['1521:1521']
+    healthcheck: {test: healthcheck.sh, interval: 5s, retries: 60}

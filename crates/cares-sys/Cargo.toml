@@ -1,0 +1,21 @@
+[package]
+name = "swoole-rs-cares-sys"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+description = "System c-ares declarations and SDK layout adaptation"
+links = "cares"
+
+[features]
+libcares = ["dep:cc", "dep:pkg-config"]
+
+[dependencies]
+libc = "=0.2.191"
+
+[build-dependencies]
+cc = { version = "=1.10.0", optional = true }
+pkg-config = { version = "=0.3.34", optional = true }
+
+[lints]
+workspace = true

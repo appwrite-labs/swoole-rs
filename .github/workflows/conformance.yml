@@ -1,0 +1,43 @@
+name: WebSocket RFC conformance
+# All 517 cases of the Autobahn suite (tests/modules/websocket/autobahn.py) on upstream and
+# the extension Cargo builds alone: a case may not do worse on cargo than on upstream.
+# Nightly; the merge tier runs the default profile, and so does a PR that changes the driver.
+on:
+  schedule:
+    - cron: '23 4 * * *'
+  workflow_dispatch:
+  pull_request:
+    paths: [tests/modules/websocket/autobahn.*, .github/workflows/conformance.yml]
+defaults:
+  run:
+    shell: bash
+jobs:
+  autobahn:
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/install
+      - id: upstream
+        uses: actions/cache/restore@v6
+        with:
+          path: target/upstream
+          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
+      - name: Build upstream
+        if: steps.upstream.outputs.cache-hit != 'true'
+        run: python3 tools/build_upstream.py
+      - name: Fetch crates
+        run: cargo fetch --locked
+      - name: Build cargo engine
+        run: python3 tools/build_ext.py
+      - name: Run Autobahn
+        run: >
+          python3 tests/modules/websocket/autobahn.py ${{ github.event_name != 'pull_request' && '--full --timeout 4200' || '' }}
+          --engine upstream=target/upstream/src/modules/swoole.so --engine cargo=target/ext/swoole.so
+          --output target/reports/autobahn.json
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
+          name: rfc-conformance-results
+          path: target/reports/

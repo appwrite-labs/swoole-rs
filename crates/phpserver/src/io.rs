@@ -1,0 +1,426 @@
+//! `Swoole\Server`'s `on`, `getCallback`, `listen`, the send family,
+//! `sendMessage` and `finish` (also `Swoole\Server\Task::finish`), over the
+//! Server's records (crates/server's view) and its Rust methods.
+use crate::lifecycle::Props;
+use crate::server::{fatal, no_payload, running, server};
+use std::ffi::{CStr, CString, c_int, c_void};
+use swoole_rs_clients::address::assign;
+use swoole_rs_corebase::{DataHead, net_types::SocketAddress};
+use swoole_rs_server::{callbacks::CB_PIPE_MESSAGE, port_config::PortConfig, server_methods, view};
+use swoole_rs_zend::{
+    Call, E_ERROR, E_WARNING, Owned, Value, bailout, message,
+    sys::{IS_TRUE, zend_read_property, zval},
+};
+
+/// `!serv->is_worker_thread() && serv->is_started()`: too late to configure.
+pub(crate) fn closed(serv: view::Server<'_>) -> bool {
+    let worker_thread = serv.is_worker_thread();
+    !worker_thread && serv.is_started()
+}
+
+/// `server_event_map`: lower-case event name, callback type and property.
+const EVENTS: [(&str, c_int, &CStr); 14] = [
+    ("start", 0, c"onStart"),
+    ("beforeshutdown", 1, c"onBeforeShutdown"),
+    ("shutdown", 2, c"onShutdown"),
+    ("workerstart", 3, c"onWorkerStart"),
+    ("workerstop", 4, c"onWorkerStop"),
+    ("beforereload", 5, c"onBeforeReload"),
+    ("afterreload", 6, c"onAfterReload"),
+    ("task", 7, c"onTask"),
+    ("finish", 8, c"onFinish"),
+    ("workerexit", 9, c"onWorkerExit"),
+    ("workererror", 10, c"onWorkerError"),
+    ("managerstart", 11, c"onManagerStart"),
+    ("managerstop", 12, c"onManagerStop"),
+    ("pipemessage", 13, c"onPipeMessage"),
+];
+
+/// The event `name` (`zend_string_tolower`, then an exact match) names.
+fn event(name: &[u8]) -> Option<(c_int, &'static CStr)> {
+    EVENTS
+        .iter()
+        .find(|(key, ..)| name.eq_ignore_ascii_case(key.as_bytes()))
+        .map(|&(_, kind, property)| (kind, property))
+}
+
+/// `zend::String(name)`, looked up as an event. A conversion that leaves a bailout
+/// pending finds none; upstream's ended the call there, so callers check for it.
+fn lookup(name: &Value) -> Option<(c_int, &'static CStr)> {
+    event(name.string().bytes())
+}
+
+/// Re-raise a bailout C++ trapped, from the handler, which owns nothing.
+/// `method(args)` of the primary port (`Swoole\Server\Port`'s own), on the
+/// port object, as `sw_zend_call_method_with_*_params` calls it; a bailout is
+/// raised from the handler, which owns nothing.
+fn port_call(call: &Call, method: &[u8], retval: *mut zval, args: &[*mut zval]) {
+    let object = crate::lifecycle::ServerObject::this(call).port_at(0);
+    // SAFETY: a live Port object, its class, the result slot and the arguments.
+    let called = unsafe { bailout::call_method(object, crate::PORT.entry(), method, retval, args) };
+    bailout::raise(called);
+}
+
+fn on(call: &Call) {
+    let serv = server(call);
+    if closed(serv) {
+        fatal(
+            E_WARNING,
+            c"server is running, unable to register event callback function",
+        );
+        return call.set_bool(false);
+    }
+    if call.arity(2, 2).is_err() {
+        return call.set_bool(false);
+    }
+    let (name, cb) = (call.zval(1), call.zval(2));
+    let Some((kind, property)) = call.value(1).and_then(lookup) else {
+        if bailout::pending() {
+            return;
+        }
+        let retval = Owned::default();
+        port_call(call, b"on", retval.as_ptr(), &[name, cb]);
+        // RETURN_BOOL(Z_BVAL_P(&retval))
+        return call.set_bool(retval.kind() == IS_TRUE);
+    };
+    let object = crate::lifecycle::ServerObject::this(call);
+    let set = call.value(2).is_some_and(|cb| {
+        Props::server(object).set(property, cb);
+        object.set_callback(kind, cb)
+    });
+    call.set_bool(set);
+}
+
+fn get_callback(call: &Call) {
+    if call.arity(1, 1).is_err() {
+        return call.set_bool(false);
+    }
+    let name = call.zval(1);
+    if let Some((_, property)) = call.value(1).and_then(lookup) {
+        let mut rv = std::mem::MaybeUninit::<zval>::uninit();
+        // `$this`'s own class is the scope (subclasses).
+        let scope = crate::lifecycle::ServerObject::this(call).class();
+        // SAFETY: `$this`, its class and a scratch zval.
+        let value = unsafe {
+            zend_read_property(
+                scope,
+                call.this(),
+                property.as_ptr(),
+                property.count_bytes(),
+                true,
+                rv.as_mut_ptr(),
+            )
+        };
+        // SAFETY: Zend returned a live zval, which the object keeps for the call.
+        if let Some(value) = unsafe { Value::from_ptr(value) }.filter(|value| !value.is_null()) {
+            // `RETURN_ZVAL(property, 1, 0)`.
+            return call.set_owned(value.copy());
+        }
+    }
+    if bailout::pending() {
+        return;
+    }
+    port_call(call, b"getcallback", call.return_value(), &[name]);
+}
+
+fn listen(call: &Call) {
+    let serv = server(call);
+    if closed(serv) {
+        fatal(E_WARNING, c"server is running, cannot add listener");
+        return call.set_bool(false);
+    }
+    let parsed = call
+        .arity(3, 3)
+        .and_then(|()| Ok((call.string(1, b"")?, call.long(2, 0)?, call.long(3, 0)?)));
+    let Ok((address, port, kind)) = parsed else {
+        return call.set_bool(false);
+    };
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "(SocketType) type and (int) port, as upstream"
+    )]
+    let (kind, port) = (kind as c_int, port as c_int);
+    let ls = if serv.is_worker_thread() {
+        // `serv->get_port(type, host, port)`, compared as C strings.
+        let host = address.split(|&byte| byte == 0).next().unwrap_or_default();
+        let listening = |config: &PortConfig| {
+            config.port == port && config.r#type == kind && config.host_bytes() == host
+        };
+        serv.find_port(listening)
+    } else {
+        // The host as C reads it: up to its first NUL.
+        let host = address.split(|&byte| byte == 0).next().unwrap_or_default();
+        let host = CString::new(host).unwrap_or_default();
+        server_methods::add_port(serv, kind, &host, port)
+    };
+    let Some(ls) = ls else {
+        return call.set_bool(false);
+    };
+    // SAFETY: `$this` is bound to `serv`, and `ls` is one of its ports.
+    let zport =
+        unsafe { crate::lifecycle::add_port(crate::lifecycle::ServerObject::this(call), ls) };
+    // `RETVAL_ZVAL(port_object, 1, 0)`.
+    call.set_owned(zport);
+}
+
+/// `network::Socket::sendto(host, port, data, length)` on `socket`: the bytes
+/// sent, or -1.
+/// # Safety
+/// `socket` is null or a live socket.
+unsafe fn socket_sendto(socket: *mut c_void, host: &CStr, port: i64, data: &[u8]) -> isize {
+    if socket.is_null() {
+        return -1;
+    }
+    // SAFETY: per the caller.
+    let (fd, kind) = unsafe { view::socket_fd(socket) };
+    let mut address = SocketAddress::default();
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Socket::sendto's (int) port, as upstream"
+    )]
+    let port = port as c_int;
+    let error = assign(
+        &mut address.addr,
+        &mut address.len,
+        kind,
+        host.to_bytes_with_nul(),
+        port,
+        true,
+    );
+    if error != 0 {
+        swoole_rs_corebase::log::set_last_error(error);
+        return -1;
+    }
+    address.sendto(fd, data, 0)
+}
+
+fn send(call: &Call) {
+    let Some(serv) = running(call) else { return };
+    let parsed = call
+        .arity(2, 3)
+        .and_then(|()| Ok((call.zstr(2)?, call.long(3, -1)?)));
+    let (Ok((Some(data), server_socket)), Some(zfd)) = (parsed, call.value(1)) else {
+        return call.set_bool(false);
+    };
+    if zfd.is_null() {
+        fatal(E_WARNING, c"fd can not be null");
+        return call.set_bool(false);
+    }
+    let payload = data.bytes();
+    if payload.is_empty() {
+        no_payload();
+        return call.set_bool(false);
+    }
+    if let Some(path) = zfd.str() {
+        let config = serv.config();
+        if path.bytes().first() == Some(&b'/') && config.have_dgram_sock {
+            let socket = if server_socket == -1 {
+                config.dgram_socket
+            } else {
+                serv.server_socket(server_socket)
+            };
+            // SAFETY: null or a live socket, and the path's bytes.
+            let sent = unsafe { socket_sendto(socket, path.c_str(), 0, payload) } > 0;
+            return call.set_bool(sent);
+        }
+    }
+    let fd = zfd.long();
+    if fd <= 0 {
+        fatal(E_WARNING, message!("invalid fd[{fd}]").as_cstr());
+        return call.set_bool(false);
+    }
+    call.set_bool(crate::instance::send(serv, fd, payload));
+}
+
+fn sendto(call: &Call) {
+    let Some(serv) = running(call) else { return };
+    let parsed = call.arity(3, 4).and_then(|()| {
+        Ok((
+            call.zstr(1)?,
+            call.long(2, 0)?,
+            call.string(3, b"")?,
+            call.long(4, -1)?,
+        ))
+    });
+    let Ok((address, port, data, server_socket)) = parsed else {
+        return call.set_bool(false);
+    };
+    let (host, address) = address.map_or((c"", &[][..]), |a| (a.c_str(), a.bytes()));
+    if data.is_empty() {
+        no_payload();
+        return call.set_bool(false);
+    }
+    let (kind, missing) = if address.first() == Some(&b'/') {
+        (
+            3,
+            c"UnixDgram listener has to be added before executing sendto",
+        )
+    } else if address.contains(&b':') {
+        (2, c"UDP6 listener has to be added before executing sendto")
+    } else {
+        (1, c"UDP listener has to be added before executing sendto")
+    };
+    let config = serv.config();
+    let socket = match kind {
+        1 => config.udp_socket_ipv4,
+        2 => config.udp_socket_ipv6,
+        _ => config.dgram_socket,
+    };
+    if socket.is_null() {
+        fatal(E_WARNING, missing);
+        return call.set_bool(false);
+    }
+    let socket = if server_socket < 0 {
+        socket
+    } else {
+        serv.server_socket(server_socket)
+    };
+    // SAFETY: null or a live socket, the address and the payload.
+    call.set_bool(unsafe { socket_sendto(socket, host, port, data) } >= 0);
+}
+
+fn sendfile(call: &Call) {
+    let Some(serv) = running(call) else { return };
+    let parsed = call.arity(2, 4).and_then(|()| {
+        Ok((
+            call.long(1, 0)?,
+            call.string(2, b"")?,
+            call.long(3, 0)?,
+            call.long(4, 0)?,
+        ))
+    });
+    let Ok((fd, filename, offset, length)) = parsed else {
+        return call.set_bool(false);
+    };
+    if crate::server::worker_type() == crate::server::MASTER {
+        // `%s`: the name up to its first NUL.
+        let shown = filename.split(|&b| b == 0).next().unwrap_or_default();
+        let text = message!(
+            "can't sendfile[{}] to the connections in master process",
+            String::from_utf8_lossy(shown)
+        );
+        fatal(E_WARNING, text.as_cstr());
+        return call.set_bool(false);
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "Server::sendfile's size_t size, as upstream's conversion"
+    )]
+    let size = length as usize;
+    call.set_bool(server_methods::sendfile(serv, fd, filename, offset, size));
+}
+
+fn send_message(call: &Call) {
+    let Some(serv) = running(call) else { return };
+    if !serv.has_callback(CB_PIPE_MESSAGE) {
+        fatal(E_WARNING, c"onPipeMessage is null, can't use sendMessage");
+        return call.set_bool(false);
+    }
+    let Ok(worker_id) = call.arity(2, 2).and_then(|()| call.long(2, -1)) else {
+        return call.set_bool(false);
+    };
+    if crate::server::in_worker() && worker_id == crate::server::worker_id() {
+        fatal(E_WARNING, c"can't send messages to self");
+        return call.set_bool(false);
+    }
+    let config = serv.config();
+    let core_worker_num = i64::from(config.worker_num) + i64::from(config.task_worker_num);
+    if worker_id < 0 || worker_id >= core_worker_num {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "(int) worker_id, as upstream"
+        )]
+        let shown = worker_id as i32;
+        fatal(
+            E_WARNING,
+            message!("worker_id[{shown}] is invalid").as_cstr(),
+        );
+        return call.set_bool(false);
+    }
+    let mut buf = crate::task::EventData::new();
+    if call
+        .value(1)
+        .is_none_or(|data| crate::task::pack(data, &mut buf) < 0)
+    {
+        return call.set_bool(false);
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "checked against the core worker count above"
+    )]
+    let worker_id = worker_id as u32;
+    // SAFETY: a live server and the packed message, an `EventData`.
+    call.set_bool(unsafe {
+        server_methods::send_pipe_message(serv.raw(), worker_id, buf.ptr().cast())
+    });
+}
+
+fn finish(call: &Call) {
+    let Some(serv) = running(call) else { return };
+    if serv.config().task_enable_coroutine {
+        // An `E_ERROR`: its bailout waits for the handler's last step.
+        fatal(
+            E_ERROR,
+            c"please use Swoole\\Server\\Task->finish instead when task_enable_coroutine is enable",
+        );
+        return;
+    }
+    if call.arity(1, 1).is_err() {
+        return call.set_bool(false);
+    }
+    finished(call, serv, None);
+}
+
+fn task_finish(call: &Call) {
+    // `$this` is a Task; an `E_ERROR` when it has no server.
+    // SAFETY: `$this`'s server is the live server here.
+    let serv = unsafe { view::Server::from_raw(crate::server::task_server(call)) };
+    if !serv.is_started() {
+        fatal(E_WARNING, c"server is not running");
+        return call.set_bool(false);
+    }
+    if call.arity(1, 1).is_err() {
+        return call.set_bool(false);
+    }
+    finished(call, serv, Some(&crate::server::task_info(call)));
+}
+
+/// `php_swoole_server_task_finish` of the data argument into the return slot.
+fn finished(call: &Call, serv: view::Server<'_>, req: Option<&DataHead>) {
+    let Some(data) = call.value(1) else {
+        return call.set_bool(false);
+    };
+    match crate::task::finish_task(serv, data, req) {
+        Ok(done) => call.set_bool(done),
+        Err(bailout) => bailout.defer(),
+    }
+}
+
+swoole_rs_zend::handlers! {
+    zim_swoole_server_on => on;
+    zim_swoole_server_getCallback => get_callback;
+    zim_swoole_server_listen => listen;
+    zim_swoole_server_send => send;
+    zim_swoole_server_sendto => sendto;
+    zim_swoole_server_sendfile => sendfile;
+    zim_swoole_server_sendMessage => send_message;
+    zim_swoole_server_finish => finish;
+    zim_swoole_server_task_finish => task_finish;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn events_match_their_properties_case_insensitively() {
+        for (key, kind, property) in EVENTS {
+            assert_eq!(event(key.to_uppercase().as_bytes()), Some((kind, property)));
+            assert!(property.to_bytes()[2..].eq_ignore_ascii_case(key.as_bytes()));
+        }
+        assert_eq!(event(b"receive"), None);
+        assert_eq!(event(b"start\0"), None);
+    }
+}

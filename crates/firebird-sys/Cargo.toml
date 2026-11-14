@@ -1,0 +1,10 @@
+[package]
+name = "swoole-rs-firebird-sys"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+description = "Declarations of the Firebird client calls pdo_firebird makes (ibase.h, Firebird 3+)"
+
+[lints]
+workspace = true

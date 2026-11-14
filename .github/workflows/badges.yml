@@ -1,0 +1,136 @@
+name: Badges
+# README progress badges: shields.io endpoint JSON (tools/badges.py) on the `badges`
+# branch. The static ones update on every push to main; the PHPT and speed ones when a
+# merge-tier run on main completes, from that run's gate and callgrind job; coverage from
+# the newest nightly coverage.yml run on main.
+on:
+  push:
+    branches: [main]
+  workflow_run:
+    workflows: [Merge, Coverage]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: read
+  issues: write
+concurrency:
+  group: badges
+defaults:
+  run:
+    shell: bash
+jobs:
+  badges:
+    # Latest-wins cancels most merge-tier runs, and a cancelled one has nothing new to show.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion != 'cancelled'
+    runs-on: gcrunner=${{ github.run_id }}/runner=small
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+      # From the newest completed merge-tier runs on main, newest first:
+      # - gate/: the newest with a gate result (a gate missing a shard uploads no phpt.json)
+      #   from every build variant too: a variant job that died before its gate would take its
+      #   tests out of the count, which reads as a regression (#3223).
+      # - cg/ and cg-previous/: the two newest whose callgrind job uploaded a result (it uploads
+      #   one when the limits fail too, which is when the badge matters most), for the badge
+      #   and the ratchet.
+      # Latest-wins cancels most runs, so they are skipped before the limit, or 20 of them hide
+      # every finished run. One call lists a run's artifacts, and only what it has is downloaded
+      # (#3257). A refused API call fails the step instead of leaving a badge stale silently.
+      # Not on a push: a push changes none of these results, and they cost about 30 calls of
+      # the hourly API limit every job shares. The checkout's badges are still rewritten.
+      - name: Find merge-tier runs
+        id: runs
+        if: github.event_name != 'push'
+        run: |
+          gates=(phpt phpt-zts phpt-stdext phpt-iouring phpt-cares phpt-threadcontext phpt-alpine phpt-root)
+          listed=$(gh run list --workflow merge.yml --branch main --status completed --limit 100 --json databaseId,headSha,conclusion -q '.[] | select(.conclusion != "cancelled") | "\(.databaseId):\(.headSha):\(.conclusion)"')
+          # The merge badge: the newest finished run's result (GitHub's own badge counts the
+          # cancelled runs latest-wins leaves, so it mostly reads failing).
+          newest=$(head -n1 <<< "$listed")
+          [ -z "$newest" ] || echo "merge=${newest#*:}" >> "$GITHUB_OUTPUT"
+          runs=$(cut -d: -f1,2 <<< "$listed")
+          for pair in $runs; do
+            run=${pair%%:*} sha=${pair#*:}
+            names=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts?per_page=100" -q '.artifacts[] | select(.expired | not) | .name')
+            if [ ! -d gate ] && grep -qx phpt <<< "$names"; then
+              wanted=()
+              missing=
+              for name in "${gates[@]}"; do
+                wanted+=(-n "$name")
+                grep -qx "$name" <<< "$names" || missing+=" $name"
+              done
+              if [ -n "$missing" ]; then
+                echo "::warning::run $run has no$missing gate"
+              else
+                gh run download "$run" "${wanted[@]}" -D gate
+                if [ -f gate/phpt/phpt.json ]; then echo "gate=$sha" >> "$GITHUB_OUTPUT"; else rm -rf gate; fi
+              fi
+            fi
+            if [ ! -d cg-previous ] && grep -q '^callgrind-' <<< "$names"; then
+              dir=cg
+              [ -d cg ] && dir=cg-previous
+              # Each shard's callgrind-N artifact holds its own callgrind.json; merge the workloads.
+              gh run download "$run" -p 'callgrind-*' -D "$dir"
+              jq -s '.[0] + {instructions_per_request: (map(.instructions_per_request) | add)}' "$dir"/callgrind-*/callgrind.json > "$dir/callgrind.json" 2>/dev/null || :
+              if [ ! -s "$dir/callgrind.json" ]; then
+                rm -rf "$dir"
+              elif [ "$dir" = cg ]; then
+                echo "callgrind=$sha" >> "$GITHUB_OUTPUT"
+              fi
+            fi
+            if [ -d gate ] && [ -d cg-previous ]; then break; fi
+          done
+      # When both runs beat a record once rounded up, file one ready ticket for an executor
+      # (GITHUB_TOKEN may not open pull requests here, and one it opened would start no PR tier).
+      - name: File callgrind ratchet
+        if: hashFiles('cg-previous/callgrind.json') != ''
+        run: |
+          # main's limits now, not the job's checkout: a ratchet PR that merged meanwhile
+          # closed its issue, and the old limits would file it again (#3016).
+          git fetch --depth=1 origin main && git checkout FETCH_HEAD -- benchmarks/callgrind_limits
+          lowered=$(python3 benchmarks/callgrind.py --limits benchmarks/callgrind_limits --ratchet cg/callgrind.json cg-previous/callgrind.json)
+          [ -n "$lowered" ] || exit 0
+          title='callgrind: lower the limits the last two merge runs beat'
+          body="The last two merge-tier callgrind results both beat these records, rounded up to two decimals (benchmarks/callgrind.py --ratchet). Lower each in its file under benchmarks/callgrind_limits/ in a one-line PR (#1910).
+
+          $(git diff -U0 benchmarks/callgrind_limits | sed 's/^/    /')"
+          git checkout benchmarks/callgrind_limits
+          open=$(gh issue list --state open --search "\"$title\" in:title" --json number -q '.[0].number')
+          if [ -n "$open" ]; then
+            gh issue edit "$open" --body "$body"
+          else
+            url=$(gh issue create --title "$title" --body "$body" --label status:ready --label p2 --label kind:ci --assignee loks0n)
+            id=$(gh api "repos/$GITHUB_REPOSITORY/issues/${url##*/}" -q .id)
+            gh api -X POST "repos/$GITHUB_REPOSITORY/issues/1894/sub_issues" -F sub_issue_id="$id"
+          fi
+      # The newest completed Coverage run on main whose report job uploaded a summary.
+      - name: Find coverage run
+        if: github.event_name != 'push'
+        run: |
+          for run in $(gh run list --workflow coverage.yml --branch main --status completed --limit 5 --json databaseId -q '.[].databaseId'); do
+            gh run download "$run" -n coverage -D coverage 2>/dev/null && [ -f coverage/summary.json ] && break
+            rm -rf coverage
+          done
+      - name: Check out badges branch
+        run: git clone -q --depth 1 --branch badges "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY" out || git init -q -b badges out
+      - name: Write badges
+        run: >
+          python3 tools/badges.py --output out
+          ${{ steps.runs.outputs.merge && format('--merge {0}', steps.runs.outputs.merge) || '' }}
+          ${{ steps.runs.outputs.gate && format('--phpt gate/*/phpt*.json gate/*/gate.json --commit {0}', steps.runs.outputs.gate) || '' }}
+          ${{ steps.runs.outputs.callgrind && format('--callgrind cg/callgrind.json --callgrind-commit {0}', steps.runs.outputs.callgrind) || '' }}
+          ${{ hashFiles('coverage/summary.json') != '' && '--coverage coverage' || '' }}
+      - name: Push badges
+        working-directory: out
+        run: |
+          git add -A
+          git diff --cached --quiet && exit 0
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -qm "badges for ${GITHUB_SHA::7}"
+          git push -q "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY" HEAD:badges

@@ -1,0 +1,5 @@
+{
+  "name": "swoole-rs",
+  "build": { "dockerfile": "Dockerfile" },
+  "postCreateCommand": "git config core.hooksPath .githooks && python3 tools/build_upstream.py"
+}

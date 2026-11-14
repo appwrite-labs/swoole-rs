@@ -1,0 +1,32 @@
+[package]
+name = "swoole-rs-process"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+# cfg(zts): see that script.
+build = "../phpcoroutines/build.rs"
+[lib]
+name = "swoole_rs_process"
+crate-type = ["rlib"]
+
+[features]
+# Define the upstream C++ symbols of the methods `crates/process/src/methods.rs` holds;
+# only the hybrid, which deletes their C++ definitions, enables it.
+upstream-symbols = []
+# Upstream's SW_THREAD build without a thread-safe PHP (the http/server case binary, whose
+# MODE_THREAD servers run each worker as a thread): `SwooleWG` is thread-local.
+thread = []
+
+[lints]
+workspace = true
+
+[dependencies]
+swoole-rs-buffer = { path = "../buffer" }
+swoole-rs-corebase = { path = "../corebase" }
+swoole-rs-memory = { path = "../memory" }
+swoole-rs-ossupport = { path = "../ossupport" }
+swoole-rs-error = { path = "../error" }
+swoole-rs-locks = { path = "../locks" }
+swoole-rs-utilities = { path = "../utilities" }
+libc = "=0.2.191"

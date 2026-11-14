@@ -1,0 +1,19 @@
+[package]
+name = "swoole-rs-zend"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+# cfg(zts): see that script.
+build = "../phpcoroutines/build.rs"
+description = "Thin safe Zend layer: call frames, objects, classes and errors"
+
+[features]
+# See swoole-rs-zend-sys: without it the crate is empty.
+php = ["dep:swoole-rs-zend-sys", "swoole-rs-zend-sys/php"]
+
+[dependencies]
+swoole-rs-zend-sys = { path = "../zend-sys", optional = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,26 @@
+[package]
+name = "swoole-rs-timer"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "swoole_rs_timer"
+crate-type = ["rlib", "staticlib"]
+
+[features]
+# Define src/wrapper/timer.cc's swoole_timer_* API under its C++ symbols. Only crates/ffi,
+# whose builds apply the timer patch that deletes that file, turns it on.
+upstream-symbols = ["dep:swoole-rs-corebase", "dep:swoole-rs-reactor", "swoole-rs-reactor/upstream-symbols"]
+
+[dependencies]
+libc = "=0.2.191"
+swoole-rs-corebase = { path = "../corebase", optional = true }
+swoole-rs-reactor = { path = "../reactor", optional = true }
+
+[dev-dependencies]
+# The owner tests link the reactor's `swoole_signal_set`, which `Owner::init` declares.
+swoole-rs-reactor = { path = "../reactor", features = ["upstream-symbols"] }
+
+[lints]
+workspace = true

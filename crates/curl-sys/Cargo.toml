@@ -1,0 +1,10 @@
+[package]
+name = "swoole-rs-curl-sys"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+description = "Declarations of the libcurl calls Swoole's coroutine cURL makes, linking the system libcurl"
+
+[lints]
+workspace = true

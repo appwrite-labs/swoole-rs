@@ -1,0 +1,32 @@
+[package]
+name = "swoole-rs-clients"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "swoole_rs_clients"
+crate-type = ["rlib"]
+
+[features]
+cares = ["dep:swoole-rs-cares-sys", "swoole-rs-cares-sys/libcares"]
+
+[dependencies]
+swoole-rs-cares-sys = { path = "../cares-sys", optional = true }
+swoole-rs-error = { path = "../error" }
+swoole-rs-corebase = { path = "../corebase" }
+swoole-rs-base64 = { path = "../base64" }
+swoole-rs-websocket = { path = "../websocket" }
+swoole-rs-reactor = { path = "../reactor" }
+swoole-rs-buffer = { path = "../buffer" }
+swoole-rs-http-ffi = { path = "../http-ffi" }
+swoole-rs-coroutine = { path = "../coroutine" }
+swoole-rs-tls = { path = "../tls" }
+swoole-rs-timer = { path = "../timer", features = ["upstream-symbols"] }
+libc = "=0.2.191"
+
+[dev-dependencies]
+swoole-rs-oracle = { path = "../oracle" }
+
+[lints]
+workspace = true

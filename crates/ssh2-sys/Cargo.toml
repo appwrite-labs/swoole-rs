@@ -1,0 +1,13 @@
+[package]
+name = "swoole-rs-ssh2-sys"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+description = "Declarations of the libssh2 calls Swoole's coroutine ssh2 hook makes"
+
+[dependencies]
+libc = "=0.2.191"
+
+[lints]
+workspace = true

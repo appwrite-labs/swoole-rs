@@ -1,0 +1,81 @@
+name: Miri
+# The crates' unit tests, interpreted by Miri for undefined behaviour in their unsafe
+# code. Tests Miri can't run in reasonable time, or that call native code, carry
+# #[cfg_attr(miri, ignore = "...")]. Nightly, and on PRs that change a listed crate.
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/miri.yml
+      - crates/base64/**
+      - crates/buffer/**
+      - crates/bus/**
+      - crates/clients/**
+      - crates/corebase/**
+      - crates/coroutine/**
+      - crates/crc32/**
+      - crates/error-ffi/**
+      - crates/error/**
+      - crates/framing/**
+      - crates/hooks/**
+      - crates/http2/**
+      - crates/httpbindings/**
+      - crates/locks/**
+      - crates/memory/**
+      - crates/ossupport/**
+      - crates/process/**
+      - crates/reactor/**
+      - crates/server/**
+      - crates/timer/**
+      - crates/utilities/**
+      - crates/websocket-ffi/**
+      - tests/modules/buffer/recycling.rs
+      - tests/modules/coroutine/channel.rs
+      - tests/modules/memory/**
+concurrency:
+  group: miri-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  miri:
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
+    timeout-minutes: 40
+    env:
+      TOOLCHAIN: nightly-2026-10-24
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/rustup
+      - name: Install Miri toolchain
+        run: rustup toolchain install $TOOLCHAIN --profile minimal --component miri,rust-src
+      - name: Set up Miri
+        run: cargo +$TOOLCHAIN miri setup
+      - name: Miri leaf crates
+        run: >
+          cargo +$TOOLCHAIN miri test --locked --lib
+          -p swoole-rs-base64 -p swoole-rs-crc32 -p swoole-rs-error -p swoole-rs-error-ffi -p swoole-rs-framing
+          -p swoole-rs-http2 -p swoole-rs-httpbindings
+      # The runtime crates' tests open files and read the clock (isolation off), and
+      # assert on whole reads and writes that Miri would otherwise shorten at random.
+      - name: Miri core crates
+        run: >
+          cargo +$TOOLCHAIN miri test --locked --lib
+          -p swoole-rs-buffer -p swoole-rs-bus -p swoole-rs-corebase -p swoole-rs-coroutine
+          -p swoole-rs-locks -p swoole-rs-memory -p swoole-rs-ossupport -p swoole-rs-process
+          -p swoole-rs-reactor -p swoole-rs-timer -p swoole-rs-utilities -p swoole-rs-websocket-ffi
+        env:
+          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations
+      # One crate per run, as verified: hooks and server turn on upstream-symbols in
+      # coroutine, reactor and timer, which the core step mustn't share. The clients
+      # tests' fake ops never free a closed socket (tests read it after close), so
+      # its leaks are ignored. The timer's Owner and its tests exist only with
+      # upstream-symbols (#3379).
+      - name: Miri clients, hooks, server and the timer's owner
+        run: |
+          MIRIFLAGS="$MIRIFLAGS -Zmiri-ignore-leaks" cargo +$TOOLCHAIN miri test --locked --lib -p swoole-rs-clients
+          cargo +$TOOLCHAIN miri test --locked --lib -p swoole-rs-timer --features upstream-symbols
+          cargo +$TOOLCHAIN miri test --locked --lib -p swoole-rs-hooks
+          cargo +$TOOLCHAIN miri test --locked --lib -p swoole-rs-server
+        env:
+          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations

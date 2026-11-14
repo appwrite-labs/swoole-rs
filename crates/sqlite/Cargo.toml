@@ -1,0 +1,19 @@
+[package]
+name = "swoole-rs-sqlite"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+description = "Swoole's coroutine SQLite calls for its bundled pdo_sqlite (--enable-swoole-sqlite)"
+
+[features]
+# MINIT's PDO registration, which needs PHP headers (swoole-rs-zend).
+php = ["dep:swoole-rs-zend", "swoole-rs-zend/php"]
+
+[dependencies]
+swoole-rs-corebase = { path = "../corebase" }
+swoole-rs-hooks = { path = "../hooks" }
+swoole-rs-zend = { path = "../zend", optional = true }
+
+[lints]
+workspace = true

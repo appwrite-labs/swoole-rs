@@ -1,0 +1,103 @@
+{
+  "repository": "https://github.com/swoole/swoole-src",
+  "tag": "v6.2.5",
+  "commit": "76c657d88be39b7af6bf85e46bcbac0da7387760",
+  "tests": [
+    {
+      "path": "tests/swoole_http_server_coro/buffer_clear.phpt",
+      "sha256": "9078b28b313fe39cb66dd8a0c550211bfd1fa0e65acaed469d953f875afe05df",
+      "module": "buffer",
+      "requires": [
+        "upstream_test_bootstrap",
+        "coroutines",
+        "http",
+        "websocket",
+        "coroutine_http_client",
+        "event_loop",
+        "processes",
+        "php_sockets"
+      ]
+    },
+    {
+      "path": "tests/swoole_socket_coro/recv_with_buffer.phpt",
+      "sha256": "0092c2d15d5346d97533045a453617f11466f86d57f80c59906b160220ef3364",
+      "module": "buffer",
+      "requires": [
+        "upstream_test_bootstrap",
+        "coroutines",
+        "tcp",
+        "php_sockets"
+      ]
+    },
+    {
+      "path": "tests/swoole_client_async/buffer_full.phpt",
+      "sha256": "4d968e6634be0fbd1e62db6148d25c12d8188f1cc6708e95bf2cb9d1e983260d",
+      "module": "buffer",
+      "requires": [
+        "upstream_test_bootstrap",
+        "php_sockets",
+        "tcp",
+        "event_loop",
+        "processes"
+      ]
+    },
+    {
+      "path": "tests/swoole_client_async/sendfile.phpt",
+      "sha256": "a6320fa138f1b8de4464d921be01038082a6e979d1f40c19eb71566dc3221001",
+      "module": "buffer",
+      "requires": [
+        "upstream_test_bootstrap",
+        "php_sockets",
+        "tcp",
+        "length_framing",
+        "event_loop",
+        "processes"
+      ]
+    },
+    {
+      "path": "tests/swoole_client_coro/sendfile.phpt",
+      "sha256": "8d8fdd34da9fd3637a25b602f2d02431e5e931c34fd5565a9d20316adbcd13ef",
+      "module": "buffer",
+      "requires": [
+        "upstream_test_bootstrap",
+        "php_sockets",
+        "tcp",
+        "length_framing",
+        "coroutines",
+        "coroutine_tcp_client",
+        "processes"
+      ]
+    },
+    {
+      "path": "tests/swoole_client_sync/sendfile.phpt",
+      "sha256": "2725d319ffabef79f2a025f7be848a606634d00089f6dd71a8c99bf5f2f2bcad",
+      "module": "buffer",
+      "requires": [
+        "upstream_test_bootstrap",
+        "php_sockets",
+        "tcp",
+        "length_framing",
+        "sync_tcp_client",
+        "processes"
+      ]
+    },
+    {
+      "path": "tests/swoole_server/sendfile_02.phpt",
+      "sha256": "6e20fe7a23365fd52bd2d1bd5d8da04091735c1e6d342c12d6bdd9d04b2ce347",
+      "module": "buffer",
+      "requires": [
+        "upstream_test_bootstrap",
+        "php_sockets",
+        "tcp",
+        "sync_tcp_client",
+        "processes"
+      ]
+    }
+  ],
+  "support_files": [
+    {
+      "path": "examples/test.jpg",
+      "sha256": "898fab0e6f1af2a539f18e716295f767d5d72778abcd0766839cf6227fbb5793"
+    }
+  ]
+}

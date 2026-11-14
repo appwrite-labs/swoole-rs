@@ -1,0 +1,28 @@
+# Upstream's core-tests/src/server/http_server.cpp TESTs that start a server, as Rust, linked with
+# the crates (swoole-rs-ffi) and the C and C++ tests/modules/hooks/system.py builds, which builds
+# and runs it (Linux); `cargo test` leaves it out.
+[package]
+name = "swoole-rs-http-server-tests"
+version = "0.0.0"
+edition = "2024"
+publish = false
+build = "../../hooks/system/build.rs"
+
+[[bin]]
+name = "swoole-rs-http-server-tests"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+swoole-rs-buffer = { path = "../../../../crates/buffer" }
+swoole-rs-clients = { path = "../../../../crates/clients" }
+swoole-rs-corebase = { path = "../../../../crates/corebase" }
+swoole-rs-ffi = { path = "../../../../crates/ffi" }
+swoole-rs-locks = { path = "../../../../crates/locks" }
+swoole-rs-ports = { path = "../../../../crates/ports" }
+# `thread`: core-tests run the server TESTs in upstream's SW_THREAD build, whose MODE_THREAD
+# workers are threads with their own `SwooleWG`.
+swoole-rs-process = { path = "../../../../crates/process", features = ["thread"] }
+swoole-rs-server = { path = "../../../../crates/server" }
+swoole-rs-tls = { path = "../../../../crates/tls" }
+swoole-rs-utilities = { path = "../../../../crates/utilities" }

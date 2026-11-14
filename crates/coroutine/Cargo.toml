@@ -1,0 +1,21 @@
+[package]
+name = "swoole-rs-coroutine"
+version = "0.1.0"
+edition = "2024"
+publish = false
+# cfg(zts): see that script.
+build = "../phpcoroutines/build.rs"
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[features]
+# The upstream symbols of base.cc (facade.rs); only the extension's archive links them.
+upstream-symbols = []
+
+[lints]
+workspace = true
+
+[dependencies]
+libc = "=0.2.191"
+swoole-rs-corebase = { path = "../corebase" }

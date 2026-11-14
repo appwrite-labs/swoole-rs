@@ -1,0 +1,523 @@
+name: Merge
+on:
+  push:
+    branches: [main]
+  # Weekly, and on a dispatch, upstream's PHPT shards run even when nothing they depend on
+  # changed, so drift that no commit explains still gets caught (phpt-build's baseline).
+  schedule:
+    - cron: '17 5 * * 0'
+  workflow_dispatch:
+  # main's merge queue: each group of queued PRs is tested on top of main before it lands,
+  # and the `required` job below decides whether it does.
+  merge_group:
+# Latest wins: one run at a time; GitHub keeps only the newest push pending, so the
+# next run always covers main's head. Never cancel-in-progress, or no run finishes.
+# A scheduled or dispatched run has a group of its own: pending in the pushes' group, the
+# next push would replace it and the weekly upstream run would rarely happen. So does a
+# merge-queue run: the queue tests its groups side by side.
+concurrency:
+  group: merge-${{ github.event_name == 'push' && github.ref || github.run_id }}
+# Explicit bash runs steps with -eo pipefail; the default (`bash -e`) lets a pipe
+# like `gate.py | tee` report success when gate.py fails.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # dev.py's phases are CPU-bound (about 77 CPU-minutes), so they run as three slices on
+  # three runners: phases that compile with every core slow each other down, so two slices
+  # balanced by weight left one near 20 minutes (#318). Each slice runs the builds (the Cargo
+  # extension and the upstream reference); the rest is split by tools/phase_weights.json (dev.py --shard).
+  full-gates:
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v7
+        # Gates compare against accepted patch states at older commits (git show <sha>:...).
+        with:
+          fetch-depth: 0
+      - id: install
+        uses: ./.github/actions/install
+      # Saved from main under a key the PR tier's ext and gates jobs restore. A merge-queue
+      # run's cache would be scoped to its own branch, which nothing reads again.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # rust-cache restores all of target/, with git checkouts that lack a usable .git.
+      # Those trees come from their own caches or a fresh clone instead.
+      - name: Clear cached builds
+        run: rm -rf target/upstream target/upstream-builds target/thirdparty
+      # Caches are saved as soon as they are built, so a failing gate later does not discard
+      # them; PR branches can only restore caches saved on main.
+      - id: upstream
+        uses: actions/cache/restore@v6
+        with:
+          path: target/upstream
+          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
+      - name: Build upstream
+        if: steps.upstream.outputs.cache-hit != 'true'
+        run: python3 tools/build_upstream.py
+      - if: steps.upstream.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: target/upstream
+          key: ${{ steps.upstream.outputs.cache-primary-key }}
+      # dev.py's reference-build is the --php-sockets profile: cached whole, it prints
+      # `Cached upstream` instead of compiling. build_upstream.py rebuilds it when PHP changes.
+      - id: sockets
+        uses: actions/cache/restore@v6
+        with:
+          path: target/upstream-builds/php-sockets
+          key: upstream-php-sockets-${{ runner.os }}-${{ steps.install.outputs.php }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
+      - name: Build upstream with sockets
+        if: steps.sockets.outputs.cache-hit != 'true'
+        run: python3 tools/build_upstream.py --php-sockets
+      - if: steps.sockets.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: target/upstream-builds/php-sockets
+          key: ${{ steps.sockets.outputs.cache-primary-key }}
+      - name: Fetch crates
+        run: cargo fetch --locked
+      - name: Prepare hyperf
+        run: python3 corpus/thirdparty/hyperf.py --prepare
+      - name: Record buffer baseline
+        run: python3 tests/modules/buffer/baseline.py --sanitize
+      # Unit, native, ABI, model and PHP gates, every application and original PHPT, upstream as control.
+      - name: Run gates
+        run: python3 tools/dev.py integrate --all-modules --php-extension pdo --php-extension pdo_sqlite --php-extension curl --php-extension sockets --php-extension tokenizer --php-extension ffi --external-network --php-sockets --shard ${{ matrix.shard }}/3
+      - name: Summarize phases
+        if: always()
+        run: python3 tools/merge_summary.py >> "$GITHUB_STEP_SUMMARY"
+      # Small on purpose: tools/ci.py downloads it to list failed, new and fixed phases.
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
+          name: phases-${{ matrix.shard }}
+          path: target/reports/dev/*/loop.json
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
+          name: validation-reports-${{ matrix.shard }}
+          # Logs and JSON only: the exported swoole.so and Rust archives were ~140 MB of
+          # each shard's ~158 MB and are rebuilt from the commit.
+          path: |
+            target/reports/
+            !target/reports/**/*.so
+            !target/reports/**/*.a
+            !target/reports/**/*.o
+            target/upstream/build.log
+
+  # Every pinned PHPT on upstream and the Cargo build (crates/ext): any test that passes on
+  # upstream must pass on cargo (corpus/upstream/gate.py). While nothing upstream's results
+  # depend on (the pin, the runner, the environment, the PHP release) has changed since the
+  # last run whose upstream shards passed, its reports stand in and those shards don't run
+  # (tools/ci.py phpt-baseline). upstream.so is still built: phpt-root, library and autobahn run it.
+  phpt-build:
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      php: ${{ steps.build.outputs.php }}
+      baseline: ${{ steps.baseline.outputs.run }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: build
+        uses: ./.github/actions/phpt-build
+        with:
+          engines: upstream cargo
+      # The newest baseline main's PHPT gate saved (phpt.yml): its key never matches, its prefix
+      # does. ci.py reads the run and commit from it and makes no API call; without one it asks the API.
+      - if: github.event_name == 'push' || github.event_name == 'merge_group'
+        uses: actions/cache/restore@v6
+        with:
+          path: baseline-cache
+          key: phpt-baseline-${{ github.run_id }}
+          restore-keys: phpt-baseline-
+      - name: Find PHPT baseline
+        id: baseline
+        if: github.event_name == 'push' || github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          read -r run _ <<< "$(python3 tools/ci.py phpt-baseline --saved baseline-cache --php "$(php -r 'echo PHP_VERSION;')" || true)"
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
+  # Instruction counts against benchmarks/callgrind_limits (callgrind.yml).
+  callgrind:
+    uses: ./.github/workflows/callgrind.yml
+
+  # swoole_stdext needs the experimental --stdext build, which changes PHP itself
+  # (typed arrays, methods on scalars), so it gets its own engines and its own gate.
+  phpt-stdext:
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/install
+      - uses: actions/cache/restore@v6
+        with:
+          path: target/upstream
+          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
+      - name: Build upstream
+        if: hashFiles('target/upstream/src/run-tests.php') == ''
+        run: python3 tools/build_upstream.py
+      - name: Fetch crates
+        run: cargo fetch --locked
+      - name: Build stdext engines
+        run: |
+          python3 tools/build_upstream.py --stdext | tee upstream.log
+          python3 tools/build_ext.py --stdext
+          mkdir -p target/phpt
+          cp -L "$(sed -n 's/^\(Built\|Cached\) upstream: //p' upstream.log)" target/phpt/upstream.so
+          cp target/ext/swoole.so target/phpt/cargo.so
+      - name: List extensions
+        id: extensions
+        run: echo "args=$(sed -n 's/^extension=\(.*\)/--php-extension \1/p' /etc/php/*/cli/conf.d/*.ini | sed 's/\.so$//' | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+      # Re-run flagged tests as phpt-gate does: method.phpt's rand assertion fails ~10% (#368).
+      - name: Run and gate stdext PHPTs
+        run: >
+          corpus/upstream/families.sh target/phpt/stdext target/phpt/upstream.so target/phpt/cargo.so
+          --module swoole_stdext ${{ steps.extensions.outputs.args }}
+      # phphelpers' runtime fixtures call stdext helpers, so they run here, not in full-gates.
+      # They run after a failed gate, but not when setup failed before the reference was built:
+      # that would report its phases as failures.
+      - name: Run phphelpers stdext gates
+        if: ${{ !cancelled() && hashFiles('target/upstream/src/run-tests.php') != '' }}
+        run: >
+          python3 tools/dev.py integrate --module phphelpers --stdext
+          --php-extension pdo --php-extension pdo_sqlite --php-extension curl --php-extension sockets --php-extension tokenizer --php-extension ffi
+          --phase cargo-build --phase stdext-reference-build --phase phphelpers-runtime
+      # tools/ci.py reads phases* artifacts for new and fixed phases.
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
+          name: phases-stdext
+          # Keep structured per-engine outcomes and logs; never SDK mirrors,
+          # compiled helpers, exported engines, archives or build caches.
+          path: |
+            target/reports/dev/*/*.json
+            target/reports/dev/*/*.log
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
+          name: phpt-stdext
+          path: target/phpt/stdext/gate.json
+
+  # The io_uring, c-ares, thread-safe PHP and thread-context build variants and their PHPTs.
+  variant:
+    name: ${{ matrix.variant }}
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [iouring, cares, zts, threadcontext]
+    uses: ./.github/workflows/variant.yml
+    with:
+      variant: ${{ matrix.variant }}
+      callgrind: true
+
+  # HTTP/2 conformance: h2spec on upstream and the Cargo build.
+  h2spec:
+    uses: ./.github/workflows/h2spec.yml
+
+  # The opt-in --fix-halfclose repair (M15) is its own build variant, so its gates run
+  # here; full-gates builds without it.
+  halfclose:
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/install
+      - uses: actions/cache/restore@v6
+        with:
+          path: target/upstream
+          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
+      - name: Build upstream
+        if: hashFiles('target/upstream/src/run-tests.php') == ''
+        run: python3 tools/build_upstream.py
+      - name: Fetch crates
+        run: cargo fetch --locked
+      - name: Run half-close gates
+        run: python3 tools/dev.py integrate --fix-halfclose --php-extension sockets --phase 'halfclose-*' --with-prerequisites
+      # tools/ci.py reads phases* artifacts for new and fixed phases.
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
+          name: phases-halfclose
+          path: target/reports/dev/*/loop.json
+
+  phpt:
+    needs: phpt-build
+    uses: ./.github/workflows/phpt.yml
+    permissions:
+      contents: read
+      actions: read
+    with:
+      php: ${{ needs.phpt-build.outputs.php }}
+      engines: ${{ needs.phpt-build.outputs.baseline && '["cargo"]' || '["upstream", "cargo"]' }}
+      baseline: ${{ needs.phpt-build.outputs.baseline }}
+
+  # The PHPTs that skip unless run as root (SO_BINDTODEVICE, raw ICMP, a server dropping to
+  # www-data, a chroot), as root on every engine, with their own re-runs and gate (#1998).
+  # sudo drops GITHUB_ACTIONS, so getaddrinfo_timeout's skip_if_in_ci() doesn't skip it either:
+  # its chroot and unreachable resolver need nothing the runner lacks (it passes as root).
+  phpt-root:
+    needs: phpt-build
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/install
+        with:
+          # The engines link unixODBC, libfbclient and the Instant Client.
+          packages: php-mysql php-pgsql unixodbc libfbclient2 libaio1t64
+          php: ${{ needs.phpt-build.outputs.php }}
+      - uses: ./.github/actions/instantclient
+      - uses: actions/cache/restore@v6
+        with:
+          path: target/upstream
+          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
+          # Only the pinned tests are read here, and those don't change with the build script.
+          restore-keys: upstream-${{ runner.os }}-
+          fail-on-cache-miss: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: phpt-engines
+          path: target/phpt
+      - name: Run and gate PHPTs as root
+        run: |
+          python3 corpus/upstream/inventory.py --output target/phpt/all.json
+          extensions=$(sed -n 's/^extension=\(.*\)/--php-extension \1/p' /etc/php/*/cli/conf.d/*.ini | sed 's/\.so$//' | tr '\n' ' ')
+          # shellcheck disable=SC2086 # one argument per word
+          set -- --manifest target/phpt/all.json --timeout 30 --external-network $extensions \
+            --case tests/swoole_coroutine_system/getaddrinfo_timeout.phpt \
+            --case tests/swoole_runtime/sockets/basic/socket_set_option_bindtodevice.phpt \
+            --case tests/swoole_server/single_thread/user_setting.phpt \
+            --case tests/swoole_socket_coro/icmp.phpt \
+            --case tests/swoole_socket_coro/setopt/bindtodevice.phpt
+          for engine in upstream cargo; do
+            sudo python3 corpus/upstream/run.py "$@" --engine $engine=target/phpt/$engine.so \
+              --output target/phpt/root/$engine.json || [ $? -eq 1 ]
+          done
+          sudo corpus/upstream/recheck.sh target/phpt/root target/phpt target/phpt/recheck "$@"
+          # run.py writes its reports 0600, so hand root's output back to the runner.
+          sudo chown -R "$(id -u):$(id -g)" target/phpt
+          set -- target/phpt/root/*.json
+          if ls target/phpt/recheck/*.json >/dev/null 2>&1; then set -- "$@" --recheck target/phpt/recheck/*.json; fi
+          python3 corpus/upstream/gate.py "$@" --output phpt-root.json | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
+          name: phpt-root
+          path: |
+            phpt-root.json
+            target/phpt/root/
+            target/phpt/recheck/
+
+  # swoole/library's own PHPUnit suite against the library each engine embeds, with the
+  # services of the library's docker-compose.yml published on localhost, as its
+  # build-swoole workflow runs it (corpus/library/run.py).
+  library:
+    needs: phpt-build
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/install
+        with:
+          # The engines link unixODBC, libfbclient and the Instant Client.
+          packages: php-mysql php-pgsql php-redis php-mongodb unixodbc libfbclient2 libaio1t64
+          php: ${{ needs.phpt-build.outputs.php }}
+      - uses: ./.github/actions/instantclient
+      - uses: actions/cache/restore@v6
+        with:
+          path: target/upstream
+          key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
+          # Only the pinned tests are read here, and those don't change with the build script.
+          restore-keys: upstream-${{ runner.os }}-
+          fail-on-cache-miss: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: phpt-engines
+          path: target/phpt
+      # The runner image enables Xdebug, which aborts coroutine-deep stacks as infinite
+      # loops; the library's own CI runs without it.
+      - name: Disable xdebug
+        run: sudo phpdismod -v ALL -s ALL xdebug
+      - name: Prepare swoole/library
+        run: python3 corpus/library/run.py --prepare
+      - name: Start library services
+        working-directory: target/library/src
+        run: |
+          echo '127.0.0.1 consul local.httpbin.org mongodb mysql nacos oracle pgsql php-fpm redis' | sudo tee -a /etc/hosts
+          compose="docker compose -f docker-compose.yml -f docker-compose.host.yml"
+          $compose up -d consul httpbin mongodb mysql nacos oracle pgsql php-fpm redis
+          # Every engine meets the same services: wait until the slow ones answer.
+          for _ in $(seq 120); do
+            $compose logs oracle | grep -q 'DATABASE IS READY TO USE' \
+              && $compose exec -T mysql mysqladmin ping -uusername -ppassword --silent \
+              && curl -sf -o /dev/null http://127.0.0.1:8848/nacos/ && exit 0
+            sleep 5
+          done
+          $compose ps && exit 1
+      - name: Run swoole/library suite
+        run: >
+          python3 corpus/library/run.py --engine upstream=target/phpt/upstream.so
+          --engine cargo=target/phpt/cargo.so
+          | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
+          name: library
+          path: target/reports/library/
+
+  # The Autobahn WebSocket suite's default profile on upstream and the Cargo build
+  # (tests/modules/websocket/autobahn.py): a case may not do worse on cargo than on
+  # upstream. conformance.yml runs all 517 cases nightly.
+  autobahn:
+    needs: phpt-build
+    runs-on: gcrunner=${{ github.run_id }}/runner=standard
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/install
+        with:
+          # The engines link unixODBC, libfbclient and the Instant Client.
+          packages: php-mysql php-pgsql unixodbc libfbclient2 libaio1t64
+          php: ${{ needs.phpt-build.outputs.php }}
+      - uses: ./.github/actions/instantclient
+      - uses: actions/download-artifact@v8
+        with:
+          name: phpt-engines
+          path: target/phpt
+      # php -n loads nothing; load every extension the distribution enables, in its order.
+      - name: List extensions
+        id: extensions
+        run: echo "args=$(sed -n 's/^extension=\(.*\)/--php-extension \1/p' /etc/php/*/cli/conf.d/*.ini | sed 's/\.so$//' | tr '\n' ' ')" >> "$GITHUB_OUTPUT"
+      - name: Run Autobahn
+        run: >
+          python3 tests/modules/websocket/autobahn.py --timeout 1200 ${{ steps.extensions.outputs.args }}
+          --engine upstream=target/phpt/upstream.so --engine cargo=target/phpt/cargo.so
+          --output target/reports/autobahn.json
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
+          name: autobahn
+          path: target/reports/
+
+  # musl and PHP 8.5, as on php:8.5-alpine in Appwrite's base image: build the
+  # reference and the Cargo build, then run the corpus and original PHPTs
+  # against both. Project 11 needs --fix-halfclose and is covered by the PR tier.
+  alpine:
+    runs-on: gcrunner=${{ github.run_id }}/runner=build
+    timeout-minutes: 30
+    container: php:8.5-alpine
+    # The image has no bash, so this job can't use the workflow's bash default.
+    defaults:
+      run:
+        shell: sh
+    env:
+      PHP_EXTENSIONS: --php-extension sockets --php-extension pcntl --php-extension ftp
+      # musl build scripts link statically and cannot dlopen libclang (zend-sys's bindgen).
+      RUSTFLAGS: -C target-feature=-crt-static
+    steps:
+      - name: Install git
+        run: apk add --no-cache git && git config --global --add safe.directory '*'
+      - uses: actions/checkout@v7
+      - name: Install toolchain
+        run: .devcontainer/install-alpine.sh && echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Build upstream
+        run: python3 tools/build_upstream.py --php-sockets
+      - name: Fetch crates
+        run: cargo fetch --locked
+      - name: Build cargo engine
+        run: python3 tools/build_ext.py --php-sockets
+      - name: Prepare hyperf
+        run: python3 corpus/thirdparty/hyperf.py --prepare
+      - name: Run corpus apps
+        run: >
+          python3 corpus/run.py $PHP_EXTENSIONS --require-all
+          $(for p in 01-hello 02-router 03-notes 04-job-service 05-coroutines 06-websocket 07-tcp-framing 08-timers 09-shared-table 10-task-workers 12-hyperf-skeleton; do echo --project $p; done)
+          --engine upstream=target/upstream-builds/php-sockets/src/modules/swoole.so
+          --engine cargo=target/ext/swoole.so
+          --output target/reports/alpine-corpus.json
+      # gate.py fails only what passes on upstream and not on cargo (no re-runs: no bash).
+      - name: Run and gate PHPTs
+        if: always()
+        run: |
+          python3 corpus/upstream/run.py $PHP_EXTENSIONS \
+            --engine upstream=target/upstream-builds/php-sockets/src/modules/swoole.so \
+            --engine cargo=target/ext/swoole.so \
+            --output target/reports/alpine-phpt.json || [ $? -eq 1 ]
+          python3 corpus/upstream/gate.py target/reports/alpine-phpt.json --output target/reports/alpine-gate.json >> "$GITHUB_STEP_SUMMARY"
+      # What the Ubuntu shards' PHP 8.3 can't show (#1993, #2000): the swoole_ftp PHPTs' PHP 8.4+
+      # getaddrinfo wording, stdext's mb_* methods and the PHPTs that skip below PHP 8.4, on
+      # stdext builds of both engines, with phpt-stdext's re-runs. tools/badges.py counts its
+      # phpt-alpine.json.
+      - name: Run and gate stdext PHPTs
+        if: always()
+        shell: bash
+        run: |
+          python3 tools/build_upstream.py --php-sockets --stdext --configure=--enable-swoole-curl
+          python3 tools/build_ext.py --php-sockets --stdext --configure=--enable-swoole-curl
+          mkdir -p target/php85/engines target/php85/results
+          cp target/upstream-builds/php-sockets-stdext/src/modules/swoole.so target/php85/engines/upstream.so
+          cp target/ext/swoole.so target/php85/engines/cargo.so
+          python3 corpus/upstream/inventory.py --output target/php85/manifest.json
+          set -- --manifest target/php85/manifest.json --timeout 30 $PHP_EXTENSIONS
+          php84=$(for t in swoole_coroutine/exit_84 swoole_coroutine/exit_exception_backtrace_84 swoole_curl/native_handle_destructor \
+            swoole_curl/reset_private swoole_curl/reset_private_destructor swoole_runtime/unsafe/http_get_last_response_headers; do
+            echo --case tests/$t.phpt; done)
+          for engine in upstream cargo; do
+            python3 corpus/upstream/run.py "$@" --module swoole_ftp --module swoole_stdext --engine $engine=target/php85/engines/$engine.so \
+              --output target/php85/results/$engine.json || [ $? -eq 1 ]
+            # shellcheck disable=SC2086 # one --case per word
+            python3 corpus/upstream/run.py "$@" $php84 --engine $engine=target/php85/engines/$engine.so \
+              --output target/php85/results/$engine-php84.json || [ $? -eq 1 ]
+          done
+          corpus/upstream/recheck.sh target/php85/results target/php85/engines target/php85/recheck "$@"
+          set -- target/php85/results/*.json
+          if ls target/php85/recheck/*.json >/dev/null 2>&1; then set -- "$@" --recheck target/php85/recheck/*.json; fi
+          python3 corpus/upstream/gate.py "$@" --output target/reports/phpt-alpine.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
+          name: alpine-reports
+          path: target/reports/
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
+          name: phpt-alpine
+          path: target/reports/phpt-alpine.json
+
+  # The check main's ruleset requires, here in the merge queue as in the PR tier: every job
+  # passed or was skipped. A queue run tests a group on top of main before it lands, so main
+  # fails only what passes one run and fails the next.
+  required:
+    if: ${{ !cancelled() && (github.event_name == 'merge_group' || github.ref == 'refs/heads/main') }}
+    needs: [full-gates, phpt-build, callgrind, phpt-stdext, variant, h2spec, halfclose, phpt, phpt-root, library, autobahn, alpine]
+    # GitHub-hosted: one line of jq shouldn't wait 40 to 55 s for a VM at the end of every group.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check required jobs
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: jq -e 'map_values(.result) | debug | all(. == "success" or . == "skipped")' <<< "$NEEDS"

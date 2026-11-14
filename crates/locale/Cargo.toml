@@ -1,0 +1,16 @@
+[package]
+name = "swoole-rs-locale"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[lib]
+name = "swoole_rs_locale"
+crate-type = ["rlib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+libc = "=0.2.191"

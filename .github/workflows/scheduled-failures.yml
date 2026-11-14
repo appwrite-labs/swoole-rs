@@ -1,0 +1,37 @@
+name: Scheduled failures
+# A scheduled run that fails opens one issue per workflow, or comments on the open one,
+# so it shows in `ci.py next` like any other failure (#2826). The merge tier is left out:
+# its new failures have their own issues (AGENTS.md, Red main).
+on:
+  workflow_run:
+    workflows: [API fuzz nightly, Sanitizers, Appwrite e2e, Coverage, ClusterFuzzLite batch, Bench, Debug PHP,
+                WebSocket RFC conformance, Miri, PHP versions, Soak, ThreadSanitizer]
+    types: [completed]
+permissions:
+  actions: read
+  issues: write
+jobs:
+  report:
+    if: github.event.workflow_run.event == 'schedule' && github.event.workflow_run.conclusion == 'failure'
+    runs-on: gcrunner=${{ github.run_id }}/runner=small
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      WORKFLOW: ${{ github.event.workflow_run.name }}
+      RUN_ID: ${{ github.event.workflow_run.id }}
+      RUN_URL: ${{ github.event.workflow_run.html_url }}
+      SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - name: Report failure
+        run: |
+          title="Scheduled $WORKFLOW run fails"
+          jobs=$(gh run view "$RUN_ID" --json jobs -q '.jobs[] | select(.conclusion == "failure") | "- [\(.name)](\(.url))"')
+          body=$(printf 'The scheduled run %s failed at %s.\n\nFailed jobs:\n%s\n' "$RUN_URL" "$SHA" "$jobs")
+          issue=$(gh issue list --state open --search "\"$title\" in:title" --json number,title \
+            -q ".[] | select(.title == \"$title\") | .number" | head -n1)
+          if [ -n "$issue" ]; then
+            gh issue comment "$issue" --body "$body"
+          else
+            gh issue create --title "$title" --label kind:bug --label p1 --label status:ready --body "$body"
+          fi

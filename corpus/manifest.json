@@ -1,0 +1,128 @@
+[
+  {
+    "id": "01-hello",
+    "entry": "server.php",
+    "requires": [
+      "http"
+    ],
+    "test": "hello",
+    "description": "Single callback, plaintext HTTP and keep-alive"
+  },
+  {
+    "id": "02-router",
+    "entry": "server.php",
+    "requires": [
+      "http"
+    ],
+    "test": "router",
+    "description": "Routing, nested query strings, headers, binary request bodies"
+  },
+  {
+    "id": "03-notes",
+    "entry": "server.php",
+    "requires": [
+      "http"
+    ],
+    "test": "notes",
+    "description": "Authenticated stateful REST API with create, list, read, delete and validation"
+  },
+  {
+    "id": "04-job-service",
+    "entry": "server.php",
+    "requires": [
+      "http",
+      "sqlite"
+    ],
+    "test": "jobs",
+    "description": "Multiple PHP files, auth, SQLite persistence, job transitions and metrics"
+  },
+  {
+    "id": "05-coroutines",
+    "entry": "main.php",
+    "requires": [
+      "coroutines"
+    ],
+    "test": "coroutines",
+    "description": "Fan-out/fan-in with coroutines, bounded channels, sleep and pop timeout",
+    "mode": "cli"
+  },
+  {
+    "id": "06-websocket",
+    "entry": "server.php",
+    "requires": [
+      "websocket"
+    ],
+    "test": "websocket",
+    "description": "Two-client WebSocket broadcast service and disconnect lifecycle"
+  },
+  {
+    "id": "07-tcp-framing",
+    "entry": "server.php",
+    "requires": [
+      "tcp",
+      "length_framing"
+    ],
+    "test": "tcp_framing",
+    "description": "Length-prefixed binary TCP service: split packets, coalesced frames, parallel clients"
+  },
+  {
+    "id": "08-timers",
+    "entry": "main.php",
+    "requires": [
+      "timers",
+      "event_loop"
+    ],
+    "test": "timers",
+    "description": "Repeating and nested one-shot timers, existence checks and cancellation",
+    "mode": "cli"
+  },
+  {
+    "id": "09-shared-table",
+    "entry": "main.php",
+    "requires": [
+      "table",
+      "processes"
+    ],
+    "test": "shared_table",
+    "description": "Forked process updates shared typed rows, atomic increment and deletion",
+    "mode": "cli"
+  },
+  {
+    "id": "10-task-workers",
+    "entry": "server.php",
+    "requires": [
+      "http",
+      "task_workers"
+    ],
+    "test": "task_workers",
+    "description": "HTTP service validates jobs and dispatches synchronous computation to a separate task worker"
+  },
+  {
+    "id": "11-buffer-lifecycle",
+    "entry": "../../tests/modules/buffer/lifecycle.py",
+    "requires": [
+      "http",
+      "tcp",
+      "timers",
+      "processes"
+    ],
+    "mode": "driver",
+    "description": "Slow readers, queued stream/sendfile cancellation, half-close, connection churn and pending-write shutdown",
+    "timeout_seconds": 120
+  },
+  {
+    "id": "12-hyperf-skeleton",
+    "entry": "../thirdparty/hyperf.py",
+    "requires": [
+      "http",
+      "coroutines",
+      "sqlite",
+      "processes",
+      "upstream_test_bootstrap",
+      "coroutine_http_client"
+    ],
+    "mode": "driver",
+    "description": "Pinned unchanged Hyperf application: routing/parsing/startup/shutdown plus external container coroutine-I/O and disk-persistence probes",
+    "timeout_seconds": 180
+  }
+]

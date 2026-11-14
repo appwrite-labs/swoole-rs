@@ -1,0 +1,253 @@
+[package]
+name = "swoole-rs-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+swoole-rs-base64 = { path = "../crates/base64" }
+swoole-rs-clients = { path = "../crates/clients" }
+swoole-rs-deflate = { path = "../crates/deflate" }
+swoole-rs-framing = { path = "../crates/framing" }
+swoole-rs-http = { path = "../crates/http" }
+swoole-rs-http-ffi = { path = "../crates/http-ffi" }
+swoole-rs-http2 = { path = "../crates/http2" }
+swoole-rs-inflate = { path = "../crates/inflate" }
+libc = "=0.2.191"
+swoole-rs-oracle = { path = "../crates/oracle" }
+swoole-rs-protocols = { path = "../crates/protocols" }
+swoole-rs-protocols-ffi = { path = "../crates/protocols-ffi" }
+swoole-rs-utilities = { path = "../crates/utilities" }
+swoole-rs-websocket = { path = "../crates/websocket" }
+
+[[bin]]
+name = "base64_decode"
+path = "fuzz_targets/base64_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "base64_encode"
+path = "fuzz_targets/base64_encode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ws_decode"
+path = "fuzz_targets/ws_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ws_frame_length"
+path = "fuzz_targets/ws_frame_length.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ws_mask"
+path = "fuzz_targets/ws_mask.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_cookies"
+path = "fuzz_targets/http_cookies.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_url_decode"
+path = "fuzz_targets/http_url_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_url_encode"
+path = "fuzz_targets/http_url_encode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "framing_length"
+path = "fuzz_targets/framing_length.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "framing_stream"
+path = "fuzz_targets/framing_stream.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "socks5"
+path = "fuzz_targets/socks5.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "resp_stream"
+path = "fuzz_targets/resp_stream.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "framing_unpack"
+path = "fuzz_targets/framing_unpack.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_frame"
+path = "fuzz_targets/http_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_header"
+path = "fuzz_targets/http_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mqtt_length"
+path = "fuzz_targets/mqtt_length.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "resp_parse"
+path = "fuzz_targets/resp_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "clients_url"
+path = "fuzz_targets/clients_url.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "clients_cookie"
+path = "fuzz_targets/clients_cookie.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "clients_domain_decode"
+path = "fuzz_targets/clients_domain_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_header_info"
+path = "fuzz_targets/http_header_info.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_range"
+path = "fuzz_targets/http_range.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http2_frame"
+path = "fuzz_targets/http2_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "clients_dns_reply"
+path = "fuzz_targets/clients_dns_reply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_multipart"
+path = "fuzz_targets/http_multipart.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_chunked"
+path = "fuzz_targets/http_chunked.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "resp_server"
+path = "fuzz_targets/resp_server.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sni_wildcard"
+path = "fuzz_targets/sni_wildcard.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http2_hpack"
+path = "fuzz_targets/http2_hpack.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_rewrite"
+path = "fuzz_targets/http_rewrite.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ws_inflate"
+path = "fuzz_targets/ws_inflate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_inflate"
+path = "fuzz_targets/http_inflate.rs"
+test = false
+doc = false
+bench = false
+
+# Built only by `cargo +nightly fuzz`, outside the pinned stable workspace.
+[workspace]

@@ -1,0 +1,30 @@
+[package]
+name = "swoole-rs-utilities"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[lib]
+name = "swoole_rs_utilities"
+crate-type = ["rlib", "staticlib"]
+
+[features]
+# Define base.cc's log-level functions under their C++ symbols. Only crates/ffi, whose
+# builds apply the corebase patch that deletes the C++ definitions, turns it on.
+upstream-symbols = []
+
+[dependencies]
+libc = "=0.2.191"
+memchr = "2.8.3"
+swoole-rs-corebase = { path = "../corebase" }
+swoole-rs-crc32 = { path = "../crc32" }
+swoole-rs-error = { path = "../error" }
+swoole-rs-error-ffi = { path = "../error-ffi" }
+swoole-rs-locks = { path = "../locks" }
+
+[dev-dependencies]
+swoole-rs-oracle = { path = "../oracle" }
+
+[lints]
+workspace = true

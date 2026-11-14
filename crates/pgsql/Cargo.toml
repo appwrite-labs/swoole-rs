@@ -1,0 +1,24 @@
+[package]
+name = "swoole-rs-pgsql"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+description = "Swoole's coroutine libpq calls for its bundled pdo_pgsql (--enable-swoole-pgsql)"
+
+[features]
+# MINIT's PDO registration, which needs PHP headers (swoole-rs-zend).
+php = ["dep:swoole-rs-zend", "swoole-rs-zend/php"]
+
+[dependencies]
+libc = "=0.2.191"
+# The system libpq, as upstream links it.
+pq-sys = "=0.7.8"
+swoole-rs-corebase = { path = "../corebase" }
+swoole-rs-coroutine = { path = "../coroutine" }
+swoole-rs-error-ffi = { path = "../error-ffi" }
+swoole-rs-hooks = { path = "../hooks" }
+swoole-rs-zend = { path = "../zend", optional = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,41 @@
+[package]
+name = "swoole-rs-hooks"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[features]
+# Define the upstream C++ symbols of the coroutine::Socket members `src/socket_members.rs`
+# holds; only the hybrid, which deletes their C++ definitions, enables it.
+upstream-symbols = []
+# The io_uring engine (upstream's --enable-iouring), over the io-uring crate.
+iouring = ["dep:io-uring", "dep:openssl-sys"]
+# The bundled ext/ssh2's session socket (--with-swoole-ssh2).
+ssh2 = ["dep:swoole-rs-ssh2-sys"]
+
+[dependencies]
+io-uring = { version = "=0.7.16", optional = true }
+libc = "=0.2.191"
+swoole-rs-buffer = { path = "../buffer" }
+swoole-rs-clients = { path = "../clients" }
+swoole-rs-corebase = { path = "../corebase" }
+swoole-rs-coroutine = { path = "../coroutine", features = ["upstream-symbols"] }
+swoole-rs-error = { path = "../error" }
+swoole-rs-error-ffi = { path = "../error-ffi" }
+swoole-rs-http-ffi = { path = "../http-ffi" }
+swoole-rs-ossupport = { path = "../ossupport" }
+swoole-rs-protocols-ffi = { path = "../protocols-ffi" }
+swoole-rs-reactor = { path = "../reactor", features = ["upstream-symbols"] }
+swoole-rs-tls = { path = "../tls" }
+swoole-rs-timer = { path = "../timer", features = ["upstream-symbols"] }
+openssl-sys = { version = "=0.9.117", optional = true }
+swoole-rs-ssh2-sys = { path = "../ssh2-sys", optional = true }
+
+[dev-dependencies]
+swoole-rs-oracle = { path = "../oracle" }
+
+[lints]
+workspace = true
