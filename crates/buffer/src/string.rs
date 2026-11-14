@@ -14,16 +14,36 @@ use std::mem::{MaybeUninit, offset_of};
 use std::ptr;
 use swoole_rs_corebase::CCast;
 
-/// `swoole::Allocator`.
+/// `swoole::Allocator`. Its fields are private, so `CppString`'s safe methods
+/// can trust them as `new` states.
 #[repr(C)]
 pub struct Allocator {
-    pub malloc: unsafe extern "C" fn(usize) -> *mut c_void,
-    pub calloc: unsafe extern "C" fn(usize, usize) -> *mut c_void,
-    pub realloc: unsafe extern "C" fn(*mut c_void, usize) -> *mut c_void,
-    pub free: unsafe extern "C" fn(*mut c_void),
+    malloc: unsafe extern "C" fn(usize) -> *mut c_void,
+    calloc: unsafe extern "C" fn(usize, usize) -> *mut c_void,
+    realloc: unsafe extern "C" fn(*mut c_void, usize) -> *mut c_void,
+    free: unsafe extern "C" fn(*mut c_void),
 }
 
 impl Allocator {
+    /// # Safety
+    /// The four behave as libc's do on one heap: `malloc` and `calloc` take any
+    /// size and return a fresh allocation or null, `realloc` and `free` take
+    /// what this allocator returned.
+    #[must_use]
+    pub const unsafe fn new(
+        malloc: unsafe extern "C" fn(usize) -> *mut c_void,
+        calloc: unsafe extern "C" fn(usize, usize) -> *mut c_void,
+        realloc: unsafe extern "C" fn(*mut c_void, usize) -> *mut c_void,
+        free: unsafe extern "C" fn(*mut c_void),
+    ) -> Self {
+        Self {
+            malloc,
+            calloc,
+            realloc,
+            free,
+        }
+    }
+
     /// `malloc(size)`: `size` bytes of this allocator's, or null.
     #[inline]
     fn allocate(&self, size: usize) -> *mut c_void {
