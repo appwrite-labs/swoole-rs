@@ -224,12 +224,12 @@ pub(crate) fn functions() -> *const zend_function_entry {
     let rows = |table: &'static [zend_function_entry]| {
         table.split_last().map_or(&[][..], |(_, rows)| rows)
     };
-    let mut table = rows(&HEAD.0).to_vec();
+    let mut table = rows(HEAD.rows()).to_vec();
     #[cfg(feature = "stdext")]
-    table.extend_from_slice(rows(&STDEXT_FUNCTIONS.0));
+    table.extend_from_slice(rows(STDEXT_FUNCTIONS.rows()));
     #[cfg(feature = "ssh2")]
-    table.extend_from_slice(rows(&SSH2_FUNCTIONS.0));
-    table.extend_from_slice(&TAIL.0);
+    table.extend_from_slice(rows(SSH2_FUNCTIONS.rows()));
+    table.extend_from_slice(TAIL.rows());
     Box::leak(table.into_boxed_slice()).as_ptr()
 }
 

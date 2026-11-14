@@ -193,11 +193,13 @@ pub(crate) fn send(serv: Server<'_>, c: &CommandSend<'_>) -> bool {
         buf.set_fd(c.request_id);
         buf.set_server_fd(c.command_id.c_cast::<u16>());
         let task = buf.packed();
-        let mut dst = c_int::from(process_id);
         let (gs, pool) = (serv.counters(), serv.task_pool_ref());
         let dispatch = || {
             Ok(swoole_rs_process::methods::dispatch(
-                pool, task, &mut dst, false,
+                pool,
+                task,
+                Some(process_id.into()),
+                false,
             ))
         };
         return swoole_rs_process::task_sync::count_task(&gs.tasking_num, &gs.task_count, dispatch)

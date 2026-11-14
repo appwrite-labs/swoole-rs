@@ -86,7 +86,7 @@ method_table! {
 
 /// `php_swoole_thread_minit`'s class registration, then `Swoole\Thread\Error`.
 pub(crate) fn register(minit: &Minit) -> &'static Class {
-    minit.register_object::<PhpThread>(c"Swoole\\Thread", &METHODS.0, ZEND_ACC_FINAL);
+    minit.register_object::<PhpThread>(c"Swoole\\Thread", METHODS.rows(), ZEND_ACC_FINAL);
     minit.property_long(&THREAD, c"id", 0, ZEND_ACC_PUBLIC | ZEND_ACC_READONLY);
     // After Swoole\Thread, as upstream's order has it.
     crate::request::error_minit(minit);

@@ -81,7 +81,7 @@ pub fn redis_minit(minit: &Minit) -> Result<(), bailout::Bailout> {
     minit.register_child(
         &SERVER,
         c"Swoole\\Redis\\Server",
-        &METHODS.0,
+        METHODS.rows(),
         parent,
         |entry, _| {
             entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;

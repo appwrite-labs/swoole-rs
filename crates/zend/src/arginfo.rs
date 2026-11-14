@@ -21,15 +21,42 @@ pub struct ArgInfo<const N: usize>(pub [zend_internal_arg_info; N]);
 // SAFETY: immutable static data; its pointers are to static strings.
 unsafe impl<const N: usize> Sync for ArgInfo<N> {}
 
-/// A `PHP_FE_END`-terminated `zend_function_entry[N]`.
+/// A `PHP_FE_END`-terminated `zend_function_entry[N]`, built only from
+/// [`Entry`] rows, so each name before the end is a static C string.
 #[repr(transparent)]
-pub struct Methods<const N: usize>(pub [zend_function_entry; N]);
+pub struct Methods<const N: usize>([zend_function_entry; N]);
 
 // SAFETY: immutable static data; its pointers are to static strings, arginfo and
 // handlers.
 unsafe impl<const N: usize> Sync for Methods<N> {}
 
 impl<const N: usize> Methods<N> {
+    /// The table of `rows`.
+    /// # Panics
+    /// The last row isn't [`END`] (at compile time, for a static).
+    #[must_use]
+    pub const fn new(rows: [Entry; N]) -> Self {
+        let mut table = [END.0; N];
+        let (mut from, mut to): (&[Entry], &mut [zend_function_entry]) = (&rows, &mut table);
+        while let (Some((row, rest)), Some((slot, slots))) =
+            (from.split_first(), to.split_first_mut())
+        {
+            *slot = row.0;
+            (from, to) = (rest, slots);
+        }
+        assert!(
+            matches!(table.last(), Some(end) if end.fname.is_null()),
+            "a method table ends with PHP_FE_END"
+        );
+        Self(table)
+    }
+
+    /// The rows, `PHP_FE_END` last.
+    #[must_use]
+    pub const fn rows(&self) -> &[zend_function_entry] {
+        &self.0
+    }
+
     /// The table, as `INIT_CLASS_ENTRY` and `zend_register_functions` take it.
     #[must_use]
     pub const fn as_ptr(&'static self) -> *const zend_function_entry {
@@ -49,6 +76,10 @@ impl<const N: usize> Methods<N> {
     }
 }
 
+/// A row of [`Methods`]: an [`entry`], or [`END`].
+#[derive(Clone, Copy)]
+pub struct Entry(zend_function_entry);
+
 /// A Zend handler (`zif_handler`).
 pub type Handler = unsafe extern "C" fn(*mut zend_execute_data, *mut zval);
 
@@ -59,10 +90,10 @@ pub const fn entry<const N: usize>(
     handler: Handler,
     arginfo: &'static ArgInfo<N>,
     flags: u32,
-) -> zend_function_entry {
+) -> Entry {
     let mut entry = definition(name, arginfo, flags);
     entry.handler = Some(handler);
-    entry
+    Entry(entry)
 }
 
 /// A function's immutable metadata before its native handler is lent at module load.
@@ -87,7 +118,7 @@ pub const fn definition<const N: usize>(
 }
 
 /// `PHP_FE_END`.
-pub const END: zend_function_entry = crate::zeroed();
+pub const END: Entry = Entry(crate::zeroed());
 
 /// `_ZEND_ARG_INFO_FLAGS(send, variadic, 0)`.
 const fn flags(send: u32, variadic: bool) -> u32 {
@@ -303,7 +334,7 @@ macro_rules! method_table {
         ];
     ) => {
         $vis static $table: $crate::arginfo::Methods<{ [$($(#[$row])* $name),*].len() + 1 }> =
-            $crate::arginfo::Methods([
+            $crate::arginfo::Methods::new([
                 $($(#[$row])* $crate::arginfo::entry($name, $handler, $arginfo, $flags),)*
                 $crate::arginfo::END,
             ]);

@@ -18,9 +18,12 @@ pub(crate) const UPGRADE: u32 = 1 << 6;
 pub(crate) const WEBSOCKET: u32 = 1 << 7;
 
 /// The response's array properties (`header::response_property`).
-pub(crate) const HEADER: c_int = 0;
-pub(crate) const COOKIE: c_int = 1;
-pub(crate) const TRAILER: c_int = 2;
+#[derive(Clone, Copy)]
+pub(crate) enum Property {
+    Header,
+    Cookie,
+    Trailer,
+}
 
 /// Swoole error codes (`include/swoole_error.h`; ext-src asserts them).
 pub(crate) const PHP_FATAL_ERROR: c_int = 503;
