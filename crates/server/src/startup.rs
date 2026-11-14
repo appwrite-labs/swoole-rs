@@ -345,7 +345,7 @@ fn check_port(
     }
     let dgram = matches!(settings.r#type, 2 | 4 | 6);
     let stream = matches!(settings.r#type, 1 | 3 | 5);
-    let ssl = settings.ssl != 0;
+    let ssl = settings.ssl;
     if ((dgram && ssl) || stream) && !has(CallbackKind::Receive) {
         invalid_callback(format_args!("require 'onReceive' callback"));
         return false;

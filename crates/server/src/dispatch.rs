@@ -352,7 +352,7 @@ pub fn add_port<'a>(
     }
     if socket_type & SOCK_SSL != 0 {
         port.r#type = socket_type & !SOCK_SSL;
-        port.ssl = 1;
+        port.ssl = true;
         (methods().ssl_context_init)(&mut port);
     }
     if !(methods().create_socket)(&port) {
@@ -721,7 +721,7 @@ mod tests {
         let config = port.config();
         assert_eq!(
             (config.r#type, config.ssl, config.port.get()),
-            (SOCK_UDP, 1, 9501)
+            (SOCK_UDP, true, 9501)
         );
         assert_eq!(serv.ports().len(), before + 1, "kept");
         assert_eq!(serv.ports()[before].raw(), port.raw());

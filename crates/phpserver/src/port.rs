@@ -367,7 +367,7 @@ fn apply_settings(port: view::Port<'_>, serv: view::Server<'_>, vht: &Value) -> 
     port_settings::apply(&source)?;
     // A reference of this call's own, which keeps the context live throughout.
     let (ssl, kind, context) = source.config(|c| (c.ssl, c.r#type, c.ssl_context.clone()));
-    let Some(context) = context.filter(|_| ssl != 0) else {
+    let Some(context) = context.filter(|_| ssl) else {
         return Ok(());
     };
     port_settings::tls(&source, &context, port_settings::is_dgram(kind))
