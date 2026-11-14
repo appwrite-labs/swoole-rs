@@ -136,21 +136,25 @@ impl LiveServer {
         self.listener
     }
 
-    /// A client connected to the port, once the listener can accept it.
+    /// A client connected to the port, once the listener can accept it. Readiness
+    /// shows only that some connection is pending, so the listener must have none
+    /// before: accept each client before connecting the next.
     pub(crate) fn connect(&self) -> std::net::TcpStream {
+        assert!(!self.acceptable(0), "a connection is already pending");
         let client = std::net::TcpStream::connect(self.address).unwrap();
+        assert!(self.acceptable(5000), "acceptable");
+        client
+    }
+
+    /// Whether the listener has a connection to accept within `timeout` milliseconds.
+    fn acceptable(&self, timeout: c_int) -> bool {
         let mut ready = libc::pollfd {
             fd: self.listener_fd,
             events: libc::POLLIN,
             revents: 0,
         };
         // SAFETY: one live pollfd.
-        assert_eq!(
-            unsafe { libc::poll(&raw mut ready, 1, 5000) },
-            1,
-            "acceptable"
-        );
-        client
+        unsafe { libc::poll(&raw mut ready, 1, timeout) == 1 }
     }
 
     /// The listening socket's handle.
