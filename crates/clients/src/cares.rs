@@ -69,9 +69,7 @@ mod co {
     use std::ffi::c_void;
     use swoole_rs_coroutine::{Coroutine, State};
 
-    pub(super) use swoole_rs_coroutine::{
-        RC_CANCELED, RC_TIMEDOUT, resume, yield_resumed, yield_timed,
-    };
+    pub(super) use swoole_rs_coroutine::{Resume, resume, yield_resumed, yield_timed};
 
     /// `Coroutine::get_current_safe()`.
     pub(super) fn current() -> *mut c_void {
@@ -362,10 +360,10 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
             // the coroutine holds as it runs again.
             let code = co::yield_timed(coroutine, timeout);
             _ = co::yield_resumed(code);
-            if code == co::RC_CANCELED {
+            if code == co::Resume::Canceled {
                 // Runs only callbacks on this live query, synchronously.
                 sdk::ares_cancel(&channel);
-            } else if code == co::RC_TIMEDOUT {
+            } else if code == co::Resume::TimedOut {
                 // Process SDK timeouts before recording the original timeout status.
                 sdk::ares_process_fd(&channel, -1, -1);
                 // Record timeout after SDK callbacks, matching original order.

@@ -192,10 +192,10 @@ pub fn current_cid() -> c_long {
     Co::current(Sched::this()).map_or(-1, |co| co.with(|co| co.cid))
 }
 
-/// The running coroutine's resume code (`RC_OK`, `RC_TIMEDOUT` or `RC_CANCELED`),
+/// How the running coroutine's last yield ended,
 /// which its last yield returned with; `None` outside a coroutine.
 #[must_use]
-pub fn current_resume_code() -> Option<i32> {
+pub fn current_resume_code() -> Option<crate::Resume> {
     Co::current(Sched::this()).map(|co| co.with(|co| co.resume_code))
 }
 
