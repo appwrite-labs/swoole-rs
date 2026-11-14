@@ -6,8 +6,9 @@
 use swoole_rs_zend::arginfo as a;
 use swoole_rs_zend::sys as z;
 
-pub static arginfo_class_Swoole_NameResolver_Context___construct: a::ArgInfo<3> = a::ArgInfo([
-    a::begin(0, 0),
-    a::arg_type(c"family", 0, false, z::IS_LONG, false, Some(c"AF_INET")),
-    a::arg_type(c"withPort", 0, false, z::_IS_BOOL, false, Some(c"false")),
-]);
+pub static arginfo_class_Swoole_NameResolver_Context___construct: a::ArgInfo<3> =
+    a::ArgInfo::new([
+        a::begin(0, 0),
+        a::arg_type(c"family", 0, false, z::IS_LONG, false, Some(c"AF_INET")),
+        a::arg_type(c"withPort", 0, false, z::_IS_BOOL, false, Some(c"false")),
+    ]);

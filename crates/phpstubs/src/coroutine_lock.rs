@@ -6,13 +6,13 @@
 use swoole_rs_zend::arginfo as a;
 use swoole_rs_zend::sys as z;
 
-pub static arginfo_class_Swoole_Coroutine_Lock___construct: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_Lock___construct: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin(0, 0),
     a::arg_type(c"shared", 0, false, z::_IS_BOOL, false, Some(c"false")),
 ]);
-pub static arginfo_class_Swoole_Coroutine_Lock_lock: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_Lock_lock: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(0, 0, z::_IS_BOOL, false),
     a::arg_type(c"operation", 0, false, z::IS_LONG, false, Some(c"LOCK_EX")),
 ]);
 pub static arginfo_class_Swoole_Coroutine_Lock_unlock: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::_IS_BOOL, false)]);
+    a::ArgInfo::new([a::begin_type(0, 0, z::_IS_BOOL, false)]);

@@ -6,71 +6,71 @@
 use swoole_rs_zend::arginfo as a;
 use swoole_rs_zend::sys as z;
 
-pub static arginfo_ftp_connect: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_ftp_connect: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_class_mask(1, 0, c"FTP\\Connection", z::MAY_BE_FALSE),
     a::arg_type(c"hostname", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"port", 0, false, z::IS_LONG, false, Some(c"21")),
     a::arg_type(c"timeout", 0, false, z::IS_LONG, false, Some(c"90")),
 ]);
-pub static arginfo_ftp_ssl_connect: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_ftp_ssl_connect: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_class_mask(1, 0, c"FTP\\Connection", z::MAY_BE_FALSE),
     a::arg_type(c"hostname", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"port", 0, false, z::IS_LONG, false, Some(c"21")),
     a::arg_type(c"timeout", 0, false, z::IS_LONG, false, Some(c"90")),
 ]);
-pub static arginfo_ftp_login: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_ftp_login: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_type(3, 0, z::_IS_BOOL, false),
     a::arg_class(c"ftp", 0, false, c"FTP\\Connection", false, None),
     a::arg_type(c"username", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"password", 0, false, z::IS_STRING, false, None),
 ]);
-pub static arginfo_ftp_pwd: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_ftp_pwd: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_mask(1, 0, z::MAY_BE_STRING | z::MAY_BE_FALSE),
     a::arg_class(c"ftp", 0, false, c"FTP\\Connection", false, None),
 ]);
-pub static arginfo_ftp_cdup: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_ftp_cdup: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_class(c"ftp", 0, false, c"FTP\\Connection", false, None),
 ]);
-pub static arginfo_ftp_chdir: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_ftp_chdir: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(2, 0, z::_IS_BOOL, false),
     a::arg_class(c"ftp", 0, false, c"FTP\\Connection", false, None),
     a::arg_type(c"directory", 0, false, z::IS_STRING, false, None),
 ]);
-pub static arginfo_ftp_exec: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_ftp_exec: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(2, 0, z::_IS_BOOL, false),
     a::arg_class(c"ftp", 0, false, c"FTP\\Connection", false, None),
     a::arg_type(c"command", 0, false, z::IS_STRING, false, None),
 ]);
-pub static arginfo_ftp_raw: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_ftp_raw: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(2, 0, z::IS_ARRAY, true),
     a::arg_class(c"ftp", 0, false, c"FTP\\Connection", false, None),
     a::arg_type(c"command", 0, false, z::IS_STRING, false, None),
 ]);
-pub static arginfo_ftp_mkdir: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_ftp_mkdir: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_mask(2, 0, z::MAY_BE_STRING | z::MAY_BE_FALSE),
     a::arg_class(c"ftp", 0, false, c"FTP\\Connection", false, None),
     a::arg_type(c"directory", 0, false, z::IS_STRING, false, None),
 ]);
 pub use self::arginfo_ftp_chdir as arginfo_ftp_rmdir;
-pub static arginfo_ftp_chmod: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_ftp_chmod: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_mask(3, 0, z::MAY_BE_LONG | z::MAY_BE_FALSE),
     a::arg_class(c"ftp", 0, false, c"FTP\\Connection", false, None),
     a::arg_type(c"permissions", 0, false, z::IS_LONG, false, None),
     a::arg_type(c"filename", 0, false, z::IS_STRING, false, None),
 ]);
-pub static arginfo_ftp_alloc: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_ftp_alloc: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_type(2, 0, z::_IS_BOOL, false),
     a::arg_class(c"ftp", 0, false, c"FTP\\Connection", false, None),
     a::arg_type(c"size", 0, false, z::IS_LONG, false, None),
     a::arg(c"response", 1, false, Some(c"null")),
 ]);
-pub static arginfo_ftp_nlist: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_ftp_nlist: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_mask(2, 0, z::MAY_BE_ARRAY | z::MAY_BE_FALSE),
     a::arg_class(c"ftp", 0, false, c"FTP\\Connection", false, None),
     a::arg_type(c"directory", 0, false, z::IS_STRING, false, None),
 ]);
-pub static arginfo_ftp_rawlist: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_ftp_rawlist: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_mask(2, 0, z::MAY_BE_ARRAY | z::MAY_BE_FALSE),
     a::arg_class(c"ftp", 0, false, c"FTP\\Connection", false, None),
     a::arg_type(c"directory", 0, false, z::IS_STRING, false, None),
@@ -78,7 +78,7 @@ pub static arginfo_ftp_rawlist: a::ArgInfo<4> = a::ArgInfo([
 ]);
 pub use self::arginfo_ftp_nlist as arginfo_ftp_mlsd;
 pub use self::arginfo_ftp_pwd as arginfo_ftp_systype;
-pub static arginfo_ftp_fget: a::ArgInfo<6> = a::ArgInfo([
+pub static arginfo_ftp_fget: a::ArgInfo<6> = a::ArgInfo::new([
     a::begin_type(3, 0, z::_IS_BOOL, false),
     a::arg_class(c"ftp", 0, false, c"FTP\\Connection", false, None),
     a::arg(c"stream", 0, false, None),
@@ -86,7 +86,7 @@ pub static arginfo_ftp_fget: a::ArgInfo<6> = a::ArgInfo([
     a::arg_type(c"mode", 0, false, z::IS_LONG, false, Some(c"FTP_BINARY")),
     a::arg_type(c"offset", 0, false, z::IS_LONG, false, Some(c"0")),
 ]);
-pub static arginfo_ftp_nb_fget: a::ArgInfo<6> = a::ArgInfo([
+pub static arginfo_ftp_nb_fget: a::ArgInfo<6> = a::ArgInfo::new([
     a::begin_type(3, 0, z::IS_LONG, false),
     a::arg_class(c"ftp", 0, false, c"FTP\\Connection", false, None),
     a::arg(c"stream", 0, false, None),
@@ -94,12 +94,12 @@ pub static arginfo_ftp_nb_fget: a::ArgInfo<6> = a::ArgInfo([
     a::arg_type(c"mode", 0, false, z::IS_LONG, false, Some(c"FTP_BINARY")),
     a::arg_type(c"offset", 0, false, z::IS_LONG, false, Some(c"0")),
 ]);
-pub static arginfo_ftp_pasv: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_ftp_pasv: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(2, 0, z::_IS_BOOL, false),
     a::arg_class(c"ftp", 0, false, c"FTP\\Connection", false, None),
     a::arg_type(c"enable", 0, false, z::_IS_BOOL, false, None),
 ]);
-pub static arginfo_ftp_get: a::ArgInfo<6> = a::ArgInfo([
+pub static arginfo_ftp_get: a::ArgInfo<6> = a::ArgInfo::new([
     a::begin_type(3, 0, z::_IS_BOOL, false),
     a::arg_class(c"ftp", 0, false, c"FTP\\Connection", false, None),
     a::arg_type(c"local_filename", 0, false, z::IS_STRING, false, None),
@@ -107,7 +107,7 @@ pub static arginfo_ftp_get: a::ArgInfo<6> = a::ArgInfo([
     a::arg_type(c"mode", 0, false, z::IS_LONG, false, Some(c"FTP_BINARY")),
     a::arg_type(c"offset", 0, false, z::IS_LONG, false, Some(c"0")),
 ]);
-pub static arginfo_ftp_nb_get: a::ArgInfo<6> = a::ArgInfo([
+pub static arginfo_ftp_nb_get: a::ArgInfo<6> = a::ArgInfo::new([
     a::begin_mask(3, 0, z::MAY_BE_LONG | z::MAY_BE_FALSE),
     a::arg_class(c"ftp", 0, false, c"FTP\\Connection", false, None),
     a::arg_type(c"local_filename", 0, false, z::IS_STRING, false, None),
@@ -115,11 +115,11 @@ pub static arginfo_ftp_nb_get: a::ArgInfo<6> = a::ArgInfo([
     a::arg_type(c"mode", 0, false, z::IS_LONG, false, Some(c"FTP_BINARY")),
     a::arg_type(c"offset", 0, false, z::IS_LONG, false, Some(c"0")),
 ]);
-pub static arginfo_ftp_nb_continue: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_ftp_nb_continue: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::IS_LONG, false),
     a::arg_class(c"ftp", 0, false, c"FTP\\Connection", false, None),
 ]);
-pub static arginfo_ftp_fput: a::ArgInfo<6> = a::ArgInfo([
+pub static arginfo_ftp_fput: a::ArgInfo<6> = a::ArgInfo::new([
     a::begin_type(3, 0, z::_IS_BOOL, false),
     a::arg_class(c"ftp", 0, false, c"FTP\\Connection", false, None),
     a::arg_type(c"remote_filename", 0, false, z::IS_STRING, false, None),
@@ -127,7 +127,7 @@ pub static arginfo_ftp_fput: a::ArgInfo<6> = a::ArgInfo([
     a::arg_type(c"mode", 0, false, z::IS_LONG, false, Some(c"FTP_BINARY")),
     a::arg_type(c"offset", 0, false, z::IS_LONG, false, Some(c"0")),
 ]);
-pub static arginfo_ftp_nb_fput: a::ArgInfo<6> = a::ArgInfo([
+pub static arginfo_ftp_nb_fput: a::ArgInfo<6> = a::ArgInfo::new([
     a::begin_type(3, 0, z::IS_LONG, false),
     a::arg_class(c"ftp", 0, false, c"FTP\\Connection", false, None),
     a::arg_type(c"remote_filename", 0, false, z::IS_STRING, false, None),
@@ -135,7 +135,7 @@ pub static arginfo_ftp_nb_fput: a::ArgInfo<6> = a::ArgInfo([
     a::arg_type(c"mode", 0, false, z::IS_LONG, false, Some(c"FTP_BINARY")),
     a::arg_type(c"offset", 0, false, z::IS_LONG, false, Some(c"0")),
 ]);
-pub static arginfo_ftp_put: a::ArgInfo<6> = a::ArgInfo([
+pub static arginfo_ftp_put: a::ArgInfo<6> = a::ArgInfo::new([
     a::begin_type(3, 0, z::_IS_BOOL, false),
     a::arg_class(c"ftp", 0, false, c"FTP\\Connection", false, None),
     a::arg_type(c"remote_filename", 0, false, z::IS_STRING, false, None),
@@ -143,14 +143,14 @@ pub static arginfo_ftp_put: a::ArgInfo<6> = a::ArgInfo([
     a::arg_type(c"mode", 0, false, z::IS_LONG, false, Some(c"FTP_BINARY")),
     a::arg_type(c"offset", 0, false, z::IS_LONG, false, Some(c"0")),
 ]);
-pub static arginfo_ftp_append: a::ArgInfo<5> = a::ArgInfo([
+pub static arginfo_ftp_append: a::ArgInfo<5> = a::ArgInfo::new([
     a::begin_type(3, 0, z::_IS_BOOL, false),
     a::arg_class(c"ftp", 0, false, c"FTP\\Connection", false, None),
     a::arg_type(c"remote_filename", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"local_filename", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"mode", 0, false, z::IS_LONG, false, Some(c"FTP_BINARY")),
 ]);
-pub static arginfo_ftp_nb_put: a::ArgInfo<6> = a::ArgInfo([
+pub static arginfo_ftp_nb_put: a::ArgInfo<6> = a::ArgInfo::new([
     a::begin_mask(3, 0, z::MAY_BE_LONG | z::MAY_BE_FALSE),
     a::arg_class(c"ftp", 0, false, c"FTP\\Connection", false, None),
     a::arg_type(c"remote_filename", 0, false, z::IS_STRING, false, None),
@@ -158,19 +158,19 @@ pub static arginfo_ftp_nb_put: a::ArgInfo<6> = a::ArgInfo([
     a::arg_type(c"mode", 0, false, z::IS_LONG, false, Some(c"FTP_BINARY")),
     a::arg_type(c"offset", 0, false, z::IS_LONG, false, Some(c"0")),
 ]);
-pub static arginfo_ftp_size: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_ftp_size: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(2, 0, z::IS_LONG, false),
     a::arg_class(c"ftp", 0, false, c"FTP\\Connection", false, None),
     a::arg_type(c"filename", 0, false, z::IS_STRING, false, None),
 ]);
 pub use self::arginfo_ftp_size as arginfo_ftp_mdtm;
-pub static arginfo_ftp_rename: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_ftp_rename: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_type(3, 0, z::_IS_BOOL, false),
     a::arg_class(c"ftp", 0, false, c"FTP\\Connection", false, None),
     a::arg_type(c"from", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"to", 0, false, z::IS_STRING, false, None),
 ]);
-pub static arginfo_ftp_delete: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_ftp_delete: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(2, 0, z::_IS_BOOL, false),
     a::arg_class(c"ftp", 0, false, c"FTP\\Connection", false, None),
     a::arg_type(c"filename", 0, false, z::IS_STRING, false, None),
@@ -178,13 +178,13 @@ pub static arginfo_ftp_delete: a::ArgInfo<3> = a::ArgInfo([
 pub use self::arginfo_ftp_cdup as arginfo_ftp_close;
 pub use self::arginfo_ftp_cdup as arginfo_ftp_quit;
 pub use self::arginfo_ftp_exec as arginfo_ftp_site;
-pub static arginfo_ftp_set_option: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_ftp_set_option: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_type(3, 0, z::_IS_BOOL, false),
     a::arg_class(c"ftp", 0, false, c"FTP\\Connection", false, None),
     a::arg_type(c"option", 0, false, z::IS_LONG, false, None),
     a::arg(c"value", 0, false, None),
 ]);
-pub static arginfo_ftp_get_option: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_ftp_get_option: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_mask(2, 0, z::MAY_BE_LONG | z::MAY_BE_BOOL),
     a::arg_class(c"ftp", 0, false, c"FTP\\Connection", false, None),
     a::arg_type(c"option", 0, false, z::IS_LONG, false, None),

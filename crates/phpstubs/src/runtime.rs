@@ -6,7 +6,7 @@
 use swoole_rs_zend::arginfo as a;
 use swoole_rs_zend::sys as z;
 
-pub static arginfo_class_Swoole_Runtime_enableCoroutine: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Runtime_enableCoroutine: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(0, 0, z::_IS_BOOL, false),
     a::arg_type(
         c"flags",
@@ -18,8 +18,8 @@ pub static arginfo_class_Swoole_Runtime_enableCoroutine: a::ArgInfo<2> = a::ArgI
     ),
 ]);
 pub static arginfo_class_Swoole_Runtime_getHookFlags: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::IS_LONG, false)]);
-pub static arginfo_class_Swoole_Runtime_setHookFlags: a::ArgInfo<2> = a::ArgInfo([
+    a::ArgInfo::new([a::begin_type(0, 0, z::IS_LONG, false)]);
+pub static arginfo_class_Swoole_Runtime_setHookFlags: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"flags", 0, false, z::IS_LONG, false, None),
 ]);

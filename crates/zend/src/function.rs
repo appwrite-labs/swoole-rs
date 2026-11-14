@@ -211,9 +211,9 @@ mod tests {
 
     unsafe extern "C" fn handler(_: *mut zend_execute_data, _: *mut zval) {}
 
-    static TICK: ArgInfo<1> = ArgInfo([begin(0, 0)]);
-    static AFTER: ArgInfo<1> = ArgInfo([begin(0, 0)]);
-    static CLEAR_ALL: ArgInfo<1> = ArgInfo([begin(0, 0)]);
+    static TICK: ArgInfo<1> = ArgInfo::new([begin(0, 0)]);
+    static AFTER: ArgInfo<1> = ArgInfo::new([begin(0, 0)]);
+    static CLEAR_ALL: ArgInfo<1> = ArgInfo::new([begin(0, 0)]);
 
     #[test]
     fn aliases_take_their_methods_arginfo() {
@@ -224,14 +224,10 @@ mod tests {
             END,
         ]);
         let table = TABLE.table();
-        assert_eq!(
-            arg_info(table, c"after"),
-            AFTER.0.as_ptr(),
-            "after's arginfo"
-        );
+        assert_eq!(arg_info(table, c"after"), AFTER.as_ptr(), "after's arginfo");
         assert_eq!(
             arg_info(table, c"clearAll"),
-            CLEAR_ALL.0.as_ptr(),
+            CLEAR_ALL.as_ptr(),
             "clearAll's"
         );
         assert!(arg_info(table, c"list").is_null(), "a missing method");

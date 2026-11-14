@@ -6,7 +6,7 @@
 use swoole_rs_zend::arginfo as a;
 use swoole_rs_zend::sys as z;
 
-pub static arginfo_class_Swoole_Table___construct: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Table___construct: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin(1, 0),
     a::arg_type(c"table_size", 0, false, z::IS_LONG, false, None),
     a::arg_type(
@@ -18,20 +18,20 @@ pub static arginfo_class_Swoole_Table___construct: a::ArgInfo<3> = a::ArgInfo([
         Some(c"0.2"),
     ),
 ]);
-pub static arginfo_class_Swoole_Table_column: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_class_Swoole_Table_column: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_type(2, 0, z::_IS_BOOL, false),
     a::arg_type(c"name", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"type", 0, false, z::IS_LONG, false, None),
     a::arg_type(c"size", 0, false, z::IS_LONG, false, Some(c"0")),
 ]);
 pub static arginfo_class_Swoole_Table_create: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::_IS_BOOL, false)]);
-pub static arginfo_class_Swoole_Table_set: a::ArgInfo<3> = a::ArgInfo([
+    a::ArgInfo::new([a::begin_type(0, 0, z::_IS_BOOL, false)]);
+pub static arginfo_class_Swoole_Table_set: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(2, 0, z::_IS_BOOL, false),
     a::arg_type(c"key", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"value", 0, false, z::IS_ARRAY, false, None),
 ]);
-pub static arginfo_class_Swoole_Table_get: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Table_get: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_mask(
         1,
         0,
@@ -40,12 +40,12 @@ pub static arginfo_class_Swoole_Table_get: a::ArgInfo<3> = a::ArgInfo([
     a::arg_type(c"key", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"field", 0, false, z::IS_STRING, true, Some(c"null")),
 ]);
-pub static arginfo_class_Swoole_Table_del: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Table_del: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"key", 0, false, z::IS_STRING, false, None),
 ]);
 pub use self::arginfo_class_Swoole_Table_del as arginfo_class_Swoole_Table_exists;
-pub static arginfo_class_Swoole_Table_incr: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_class_Swoole_Table_incr: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_mask(2, 0, z::MAY_BE_DOUBLE | z::MAY_BE_LONG),
     a::arg_type(c"key", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"column", 0, false, z::IS_STRING, false, None),
@@ -59,16 +59,16 @@ pub static arginfo_class_Swoole_Table_incr: a::ArgInfo<4> = a::ArgInfo([
 ]);
 pub use self::arginfo_class_Swoole_Table_incr as arginfo_class_Swoole_Table_decr;
 pub static arginfo_class_Swoole_Table_count: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::IS_LONG, false)]);
+    a::ArgInfo::new([a::begin_type(0, 0, z::IS_LONG, false)]);
 pub use self::arginfo_class_Swoole_Table_count as arginfo_class_Swoole_Table_getSize;
 pub use self::arginfo_class_Swoole_Table_count as arginfo_class_Swoole_Table_getMemorySize;
 pub use self::arginfo_class_Swoole_Table_create as arginfo_class_Swoole_Table_destroy;
 pub static arginfo_class_Swoole_Table_stats: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_mask(0, 0, z::MAY_BE_FALSE | z::MAY_BE_ARRAY)]);
+    a::ArgInfo::new([a::begin_mask(0, 0, z::MAY_BE_FALSE | z::MAY_BE_ARRAY)]);
 pub static arginfo_class_Swoole_Table_rewind: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::IS_VOID, false)]);
+    a::ArgInfo::new([a::begin_type(0, 0, z::IS_VOID, false)]);
 pub use self::arginfo_class_Swoole_Table_rewind as arginfo_class_Swoole_Table_next;
 pub static arginfo_class_Swoole_Table_current: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::IS_MIXED, false)]);
+    a::ArgInfo::new([a::begin_type(0, 0, z::IS_MIXED, false)]);
 pub use self::arginfo_class_Swoole_Table_create as arginfo_class_Swoole_Table_valid;
 pub use self::arginfo_class_Swoole_Table_current as arginfo_class_Swoole_Table_key;

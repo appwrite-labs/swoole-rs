@@ -248,17 +248,17 @@ pub(crate) fn register_aliases(
         (
             c"swoole_coroutine_create",
             c"go",
-            s::arginfo_swoole_coroutine_create.0.as_ptr(),
+            s::arginfo_swoole_coroutine_create.as_ptr(),
         ),
         (
             c"swoole_coroutine_defer",
             c"defer",
-            s::arginfo_swoole_coroutine_defer.0.as_ptr(),
+            s::arginfo_swoole_coroutine_defer.as_ptr(),
         ),
         (
             c"swoole_typed_array",
             c"typed_array",
-            stdext::arginfo_swoole_typed_array.0.as_ptr(),
+            stdext::arginfo_swoole_typed_array.as_ptr(),
         ),
     ];
     let count = if flags & STDEXT == 0 { 2 } else { 3 };

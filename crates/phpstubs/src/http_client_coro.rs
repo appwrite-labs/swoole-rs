@@ -6,46 +6,50 @@
 use swoole_rs_zend::arginfo as a;
 use swoole_rs_zend::sys as z;
 
-pub static arginfo_class_Swoole_Coroutine_Http_Client___construct: a::ArgInfo<4> = a::ArgInfo([
-    a::begin(1, 0),
-    a::arg_type(c"host", 0, false, z::IS_STRING, false, None),
-    a::arg_type(c"port", 0, false, z::IS_LONG, false, Some(c"0")),
-    a::arg_type(c"ssl", 0, false, z::_IS_BOOL, false, Some(c"false")),
-]);
+pub static arginfo_class_Swoole_Coroutine_Http_Client___construct: a::ArgInfo<4> =
+    a::ArgInfo::new([
+        a::begin(1, 0),
+        a::arg_type(c"host", 0, false, z::IS_STRING, false, None),
+        a::arg_type(c"port", 0, false, z::IS_LONG, false, Some(c"0")),
+        a::arg_type(c"ssl", 0, false, z::_IS_BOOL, false, Some(c"false")),
+    ]);
 pub static arginfo_class_Swoole_Coroutine_Http_Client___destruct: a::ArgInfo<1> =
-    a::ArgInfo([a::begin(0, 0)]);
-pub static arginfo_class_Swoole_Coroutine_Http_Client_set: a::ArgInfo<2> = a::ArgInfo([
+    a::ArgInfo::new([a::begin(0, 0)]);
+pub static arginfo_class_Swoole_Coroutine_Http_Client_set: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"settings", 0, false, z::IS_ARRAY, false, None),
 ]);
 pub static arginfo_class_Swoole_Coroutine_Http_Client_getDefer: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::_IS_BOOL, false)]);
-pub static arginfo_class_Swoole_Coroutine_Http_Client_setDefer: a::ArgInfo<2> = a::ArgInfo([
+    a::ArgInfo::new([a::begin_type(0, 0, z::_IS_BOOL, false)]);
+pub static arginfo_class_Swoole_Coroutine_Http_Client_setDefer: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(0, 0, z::_IS_BOOL, false),
     a::arg_type(c"defer", 0, false, z::_IS_BOOL, false, Some(c"true")),
 ]);
-pub static arginfo_class_Swoole_Coroutine_Http_Client_setMethod: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_Http_Client_setMethod: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"method", 0, false, z::IS_STRING, false, None),
 ]);
-pub static arginfo_class_Swoole_Coroutine_Http_Client_setHeaders: a::ArgInfo<2> = a::ArgInfo([
-    a::begin_type(1, 0, z::_IS_BOOL, false),
-    a::arg_type(c"headers", 0, false, z::IS_ARRAY, false, None),
-]);
-pub static arginfo_class_Swoole_Coroutine_Http_Client_setBasicAuth: a::ArgInfo<3> = a::ArgInfo([
-    a::begin_type(2, 0, z::IS_VOID, false),
-    a::arg_type(c"username", 0, false, z::IS_STRING, false, None),
-    a::arg_type(c"password", 0, false, z::IS_STRING, false, None),
-]);
-pub static arginfo_class_Swoole_Coroutine_Http_Client_setCookies: a::ArgInfo<2> = a::ArgInfo([
-    a::begin_type(1, 0, z::_IS_BOOL, false),
-    a::arg_type(c"cookies", 0, false, z::IS_ARRAY, false, None),
-]);
-pub static arginfo_class_Swoole_Coroutine_Http_Client_setData: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_Http_Client_setHeaders: a::ArgInfo<2> =
+    a::ArgInfo::new([
+        a::begin_type(1, 0, z::_IS_BOOL, false),
+        a::arg_type(c"headers", 0, false, z::IS_ARRAY, false, None),
+    ]);
+pub static arginfo_class_Swoole_Coroutine_Http_Client_setBasicAuth: a::ArgInfo<3> =
+    a::ArgInfo::new([
+        a::begin_type(2, 0, z::IS_VOID, false),
+        a::arg_type(c"username", 0, false, z::IS_STRING, false, None),
+        a::arg_type(c"password", 0, false, z::IS_STRING, false, None),
+    ]);
+pub static arginfo_class_Swoole_Coroutine_Http_Client_setCookies: a::ArgInfo<2> =
+    a::ArgInfo::new([
+        a::begin_type(1, 0, z::_IS_BOOL, false),
+        a::arg_type(c"cookies", 0, false, z::IS_ARRAY, false, None),
+    ]);
+pub static arginfo_class_Swoole_Coroutine_Http_Client_setData: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_mask(c"data", 0, false, z::MAY_BE_ARRAY | z::MAY_BE_STRING, None),
 ]);
-pub static arginfo_class_Swoole_Coroutine_Http_Client_addFile: a::ArgInfo<7> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_Http_Client_addFile: a::ArgInfo<7> = a::ArgInfo::new([
     a::begin_type(2, 0, z::_IS_BOOL, false),
     a::arg_type(c"path", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"name", 0, false, z::IS_STRING, false, None),
@@ -54,47 +58,47 @@ pub static arginfo_class_Swoole_Coroutine_Http_Client_addFile: a::ArgInfo<7> = a
     a::arg_type(c"offset", 0, false, z::IS_LONG, false, Some(c"0")),
     a::arg_type(c"length", 0, false, z::IS_LONG, false, Some(c"0")),
 ]);
-pub static arginfo_class_Swoole_Coroutine_Http_Client_addData: a::ArgInfo<5> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_Http_Client_addData: a::ArgInfo<5> = a::ArgInfo::new([
     a::begin_type(2, 0, z::_IS_BOOL, false),
     a::arg_type(c"path", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"name", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"type", 0, false, z::IS_STRING, true, Some(c"null")),
     a::arg_type(c"filename", 0, false, z::IS_STRING, true, Some(c"null")),
 ]);
-pub static arginfo_class_Swoole_Coroutine_Http_Client_execute: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_Http_Client_execute: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"path", 0, false, z::IS_STRING, false, None),
 ]);
 pub static arginfo_class_Swoole_Coroutine_Http_Client_getsockname: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_mask(0, 0, z::MAY_BE_ARRAY | z::MAY_BE_FALSE)]);
+    a::ArgInfo::new([a::begin_mask(0, 0, z::MAY_BE_ARRAY | z::MAY_BE_FALSE)]);
 pub use self::arginfo_class_Swoole_Coroutine_Http_Client_execute as arginfo_class_Swoole_Coroutine_Http_Client_get;
 pub use self::arginfo_class_Swoole_Coroutine_Http_Client_getsockname as arginfo_class_Swoole_Coroutine_Http_Client_getpeername;
-pub static arginfo_class_Swoole_Coroutine_Http_Client_post: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_Http_Client_post: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(2, 0, z::_IS_BOOL, false),
     a::arg_type(c"path", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"data", 0, false, z::IS_MIXED, false, None),
 ]);
-pub static arginfo_class_Swoole_Coroutine_Http_Client_download: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_Http_Client_download: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_type(2, 0, z::_IS_BOOL, false),
     a::arg_type(c"path", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"file", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"offset", 0, false, z::IS_LONG, false, Some(c"0")),
 ]);
 pub static arginfo_class_Swoole_Coroutine_Http_Client_getBody: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_mask(0, 0, z::MAY_BE_FALSE | z::MAY_BE_STRING)]);
+    a::ArgInfo::new([a::begin_mask(0, 0, z::MAY_BE_FALSE | z::MAY_BE_STRING)]);
 pub static arginfo_class_Swoole_Coroutine_Http_Client_getHeaders: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_mask(
+    a::ArgInfo::new([a::begin_mask(
         0,
         0,
         z::MAY_BE_NULL | z::MAY_BE_ARRAY | z::MAY_BE_FALSE,
     )]);
 pub use self::arginfo_class_Swoole_Coroutine_Http_Client_getHeaders as arginfo_class_Swoole_Coroutine_Http_Client_getCookies;
 pub static arginfo_class_Swoole_Coroutine_Http_Client_getStatusCode: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_mask(0, 0, z::MAY_BE_FALSE | z::MAY_BE_LONG)]);
+    a::ArgInfo::new([a::begin_mask(0, 0, z::MAY_BE_FALSE | z::MAY_BE_LONG)]);
 pub use self::arginfo_class_Swoole_Coroutine_Http_Client_execute as arginfo_class_Swoole_Coroutine_Http_Client_upgrade;
 pub use self::arginfo_class_Swoole_Coroutine_Http_Client_getBody as arginfo_class_Swoole_Coroutine_Http_Client_getHeaderOut;
 pub use self::arginfo_class_Swoole_Coroutine_Http_Client_getBody as arginfo_class_Swoole_Coroutine_Http_Client_getPeerCert;
-pub static arginfo_class_Swoole_Coroutine_Http_Client_push: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_Http_Client_push: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"data", 0, false, z::IS_MIXED, false, None),
     a::arg_type(
@@ -114,7 +118,7 @@ pub static arginfo_class_Swoole_Coroutine_Http_Client_push: a::ArgInfo<4> = a::A
         Some(c"SWOOLE_WEBSOCKET_FLAG_FIN"),
     ),
 ]);
-pub static arginfo_class_Swoole_Coroutine_Http_Client_recv: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_Http_Client_recv: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_class_mask(
         0,
         0,
@@ -124,19 +128,20 @@ pub static arginfo_class_Swoole_Coroutine_Http_Client_recv: a::ArgInfo<2> = a::A
     a::arg_type(c"timeout", 0, false, z::IS_DOUBLE, false, Some(c"0")),
 ]);
 pub use self::arginfo_class_Swoole_Coroutine_Http_Client_getDefer as arginfo_class_Swoole_Coroutine_Http_Client_close;
-pub static arginfo_class_Swoole_Coroutine_Http_Client_ping: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_Http_Client_ping: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(0, 0, z::_IS_BOOL, false),
     a::arg_type(c"data", 0, false, z::IS_STRING, false, Some(c"\"\"")),
 ]);
-pub static arginfo_class_Swoole_Coroutine_Http_Client_disconnect: a::ArgInfo<3> = a::ArgInfo([
-    a::begin_type(0, 0, z::_IS_BOOL, false),
-    a::arg_type(
-        c"code",
-        0,
-        false,
-        z::IS_LONG,
-        false,
-        Some(c"SWOOLE_WEBSOCKET_CLOSE_NORMAL"),
-    ),
-    a::arg_type(c"reason", 0, false, z::IS_STRING, false, Some(c"\"\"")),
-]);
+pub static arginfo_class_Swoole_Coroutine_Http_Client_disconnect: a::ArgInfo<3> =
+    a::ArgInfo::new([
+        a::begin_type(0, 0, z::_IS_BOOL, false),
+        a::arg_type(
+            c"code",
+            0,
+            false,
+            z::IS_LONG,
+            false,
+            Some(c"SWOOLE_WEBSOCKET_CLOSE_NORMAL"),
+        ),
+        a::arg_type(c"reason", 0, false, z::IS_STRING, false, Some(c"\"\"")),
+    ]);

@@ -430,7 +430,7 @@ def rust_module(stub, path):
             body += f'pub use self::{equal["arginfo"]} as {function["arginfo"]};\n'
             continue
         slots = [rust_return(function)] + [rust_parameter(*parameter) for parameter in function['parameters']]
-        body += (f'pub static {function["arginfo"]}: a::ArgInfo<{len(slots)}> = a::ArgInfo([\n'
+        body += (f'pub static {function["arginfo"]}: a::ArgInfo<{len(slots)}> = a::ArgInfo::new([\n'
                  + ''.join(f'    {slot},\n' for slot in slots) + ']);\n')
     if 'z::' in body:
         code += 'use swoole_rs_zend::sys as z;\n'

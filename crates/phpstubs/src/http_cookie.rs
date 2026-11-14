@@ -6,53 +6,53 @@
 use swoole_rs_zend::arginfo as a;
 use swoole_rs_zend::sys as z;
 
-pub static arginfo_class_Swoole_Http_Cookie___construct: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Http_Cookie___construct: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin(0, 0),
     a::arg_type(c"encode", 0, false, z::_IS_BOOL, false, Some(c"true")),
 ]);
-pub static arginfo_class_Swoole_Http_Cookie_withName: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Http_Cookie_withName: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_class(1, 0, c"Swoole\\Http\\Cookie", false),
     a::arg_type(c"name", 0, false, z::IS_STRING, false, None),
 ]);
-pub static arginfo_class_Swoole_Http_Cookie_withValue: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Http_Cookie_withValue: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_class(0, 0, c"Swoole\\Http\\Cookie", false),
     a::arg_type(c"value", 0, false, z::IS_STRING, false, Some(c"''")),
 ]);
-pub static arginfo_class_Swoole_Http_Cookie_withExpires: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Http_Cookie_withExpires: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_class(0, 0, c"Swoole\\Http\\Cookie", false),
     a::arg_type(c"expires", 0, false, z::IS_LONG, false, Some(c"0")),
 ]);
-pub static arginfo_class_Swoole_Http_Cookie_withPath: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Http_Cookie_withPath: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_class(0, 0, c"Swoole\\Http\\Cookie", false),
     a::arg_type(c"path", 0, false, z::IS_STRING, false, Some(c"'/'")),
 ]);
-pub static arginfo_class_Swoole_Http_Cookie_withDomain: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Http_Cookie_withDomain: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_class(0, 0, c"Swoole\\Http\\Cookie", false),
     a::arg_type(c"domain", 0, false, z::IS_STRING, false, Some(c"''")),
 ]);
-pub static arginfo_class_Swoole_Http_Cookie_withSecure: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Http_Cookie_withSecure: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_class(0, 0, c"Swoole\\Http\\Cookie", false),
     a::arg_type(c"secure", 0, false, z::_IS_BOOL, false, Some(c"false")),
 ]);
-pub static arginfo_class_Swoole_Http_Cookie_withHttpOnly: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Http_Cookie_withHttpOnly: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_class(0, 0, c"Swoole\\Http\\Cookie", false),
     a::arg_type(c"httpOnly", 0, false, z::_IS_BOOL, false, Some(c"false")),
 ]);
-pub static arginfo_class_Swoole_Http_Cookie_withSameSite: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Http_Cookie_withSameSite: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_class(0, 0, c"Swoole\\Http\\Cookie", false),
     a::arg_type(c"sameSite", 0, false, z::IS_STRING, false, Some(c"''")),
 ]);
-pub static arginfo_class_Swoole_Http_Cookie_withPriority: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Http_Cookie_withPriority: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_class(0, 0, c"Swoole\\Http\\Cookie", false),
     a::arg_type(c"priority", 0, false, z::IS_STRING, false, Some(c"''")),
 ]);
-pub static arginfo_class_Swoole_Http_Cookie_withPartitioned: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Http_Cookie_withPartitioned: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_class(0, 0, c"Swoole\\Http\\Cookie", false),
     a::arg_type(c"partitioned", 0, false, z::_IS_BOOL, false, Some(c"false")),
 ]);
 pub static arginfo_class_Swoole_Http_Cookie_toArray: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::IS_ARRAY, false)]);
+    a::ArgInfo::new([a::begin_type(0, 0, z::IS_ARRAY, false)]);
 pub static arginfo_class_Swoole_Http_Cookie_toString: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_mask(0, 0, z::MAY_BE_STRING | z::MAY_BE_FALSE)]);
+    a::ArgInfo::new([a::begin_mask(0, 0, z::MAY_BE_STRING | z::MAY_BE_FALSE)]);
 pub static arginfo_class_Swoole_Http_Cookie_reset: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::IS_VOID, false)]);
+    a::ArgInfo::new([a::begin_type(0, 0, z::IS_VOID, false)]);
