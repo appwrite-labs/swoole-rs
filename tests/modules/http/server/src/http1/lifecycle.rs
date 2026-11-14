@@ -1445,7 +1445,11 @@ unsafe extern "C" fn base_receive(_: *mut c_void, serv: *mut c_void, req: *mut R
         data: ptr::null(),
     };
     // SAFETY: a `SendData` with no data.
-    let sent = unsafe { server_methods::send_to_connection(serv.view(), &sd) };
+    let sent = if unsafe { server_methods::send_to_connection(serv.view(), &sd) } {
+        SW_OK
+    } else {
+        SW_ERR
+    };
     expect(sent == SW_ERR, "send_to_connection(&sd) == SW_ERR");
     expect(
         last_error() == SW_ERROR_SESSION_NOT_EXIST,

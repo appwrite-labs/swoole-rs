@@ -17,7 +17,6 @@ const ACCEPT_MAX_COUNT: u32 = 64;
 const MAX_CONNECTION: u32 = 100_000;
 const SESSION_LIST_SIZE: u32 = 1024 * 1024;
 const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
-const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 /// `SW_SOCK_TCP`, `SW_SOCK_TCP6`.
 const SOCK_TCP: c_int = 1;
 const SOCK_TCP6: c_int = 3;
@@ -77,7 +76,7 @@ pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) ->
         };
         sock.edit(|s| s.chunk_size = SW_SEND_BUFFER_SIZE);
         let started = if serv.config().single_thread.get() {
-            incoming(serv, reactor, port, conn) >= 0
+            incoming(serv, reactor, port, conn)
         } else {
             to_reactor_thread(serv, conn) >= 0
         };
@@ -324,15 +323,15 @@ pub(crate) fn abort(
 }
 
 /// `Server::connection_incoming(reactor, conn)`, over `port`, the one `conn` arrived
-/// on: the idle timer, reading, and `onConnect`.
+/// on: the idle timer, reading, and `onConnect`; false when one failed.
 pub(crate) fn incoming(
     serv: view::Server<'_>,
     reactor: Reactor,
     port: view::Port<'_>,
     conn: Connection<'_>,
-) -> c_int {
+) -> bool {
     let Some(sock) = conn.socket() else {
-        return ERR;
+        return false;
     };
     let idle = port.config().max_idle_time.get();
     if idle > 0.0 {
@@ -352,15 +351,15 @@ pub(crate) fn incoming(
         return reactor.add(sock, EVENT_READ);
     }
     // Delayed receive waits for the resume command.
-    if !serv.config().enable_delay_receive.get() && reactor.add(sock, EVENT_READ) < 0 {
-        return ERR;
+    if !serv.config().enable_delay_receive.get() && !reactor.add(sock, EVENT_READ) {
+        return false;
     }
     if serv.has_callback(crate::callbacks::CallbackKind::Connect)
         && !crate::server_methods::notify(serv, conn, ServerEvent::Connect)
     {
-        return ERR;
+        return false;
     }
-    OK
+    true
 }
 
 /// `Server::get_timeout_callback`'s timer: the idle check of `conn`, a live
@@ -434,7 +433,7 @@ pub(crate) fn enable_accept(serv: view::Server<'_>) {
 }
 
 /// `swoole_event_add`/`_del` on each stream port's listening socket.
-fn for_stream_ports(serv: view::Server<'_>, change: impl Fn(Reactor, Socket<'_>) -> c_int) {
+fn for_stream_ports(serv: view::Server<'_>, change: impl Fn(Reactor, Socket<'_>) -> bool) {
     let reactor = Reactor::thread();
     for port in serv.ports() {
         if !crate::reactor_ops::is_dgram(port.config().r#type) {
@@ -679,7 +678,7 @@ mod tests {
     fn accept_retry_reenables_stream_ports() {
         let live = LiveServer::new();
         let listener = live.port_socket();
-        assert_eq!(live.reactor().add(listener, EVENT_READ), OK, "reading");
+        assert!(live.reactor().add(listener, EVENT_READ), "reading");
         disable_accept(live.server());
         let tables = live.state().tables_ref();
         assert!(!tables.enable_accept_timer.load(Relaxed).is_null(), "armed");
@@ -697,7 +696,7 @@ mod tests {
     fn eintr_retries_and_running_out_of_descriptors_disables_accept() {
         let live = LiveServer::new();
         let listener = live.port_socket();
-        assert_eq!(live.reactor().add(listener, EVENT_READ), OK, "reading");
+        assert!(live.reactor().add(listener, EVENT_READ), "reading");
         let tables = live.state().tables_ref();
         let armed = || !tables.enable_accept_timer.load(Relaxed).is_null();
         assert!(accept_failed(live.server(), libc::EINTR), "EINTR retries");

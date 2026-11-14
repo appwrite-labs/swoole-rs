@@ -125,10 +125,9 @@ pub(crate) fn connection_incoming(
     serv: view::Server<'_>,
     reactor: crate::reactor_handle::Reactor,
     conn: crate::Connection<'_>,
-) -> c_int {
-    serv.port_by_server_fd(conn.server_fd()).map_or(-1, |port| {
-        crate::connection::incoming(serv, reactor, port, conn)
-    })
+) -> bool {
+    serv.port_by_server_fd(conn.server_fd())
+        .is_some_and(|port| crate::connection::incoming(serv, reactor, port, conn))
 }
 
 /// `Server::accept_connection(reactor, event)`: the master reactor's read handler

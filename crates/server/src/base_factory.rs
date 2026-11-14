@@ -408,7 +408,7 @@ pub(crate) fn end(serv: view::Server<'_>, id: c_long, flags: c_int) -> bool {
     socket.read(|s| out_buffer(s).map(|b| swr_cpp_buffer_typed_close(b)));
     // Only the half-close drain stops reading (`SW_HALFCLOSE_DRAIN`); upstream reads on.
     !cfg!(feature = "halfclose")
-        || reactor.interest(socket, swoole_rs_reactor::Interest::RemoveRead, 0) == 0
+        || reactor.interest(socket, swoole_rs_reactor::Interest::RemoveRead, 0)
 }
 
 /// `BaseFactory::finish`: send here, or forward data and files to the session's worker.
@@ -417,7 +417,7 @@ pub(crate) fn finish(serv: view::Server<'_>, send: &SendData) -> bool {
     let here = session(serv.state(), send.info.fd).is_none_or(|(owner, _)| owner == worker);
     if here {
         // SAFETY: the send's data is its `info.len` bytes, live for the call.
-        return unsafe { crate::send::send_to_connection(serv, send) } == 0;
+        return unsafe { crate::send::send_to_connection(serv, send) };
     }
     if matches!(
         send.info.event(),

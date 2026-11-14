@@ -184,8 +184,7 @@ pub fn feedback(serv: Server<'_>, conn: crate::Connection<'_>, event: ServerEven
     if serv.config().mode_ == Mode::Process {
         return crate::hybrid::hybrid().to_reactor_thread(serv, &info) > 0;
     }
-    let sent = crate::send::send_event_to_connection(serv, &info, &[]);
-    i64::from(sent) == crate::SW_OK
+    crate::send::send_event_to_connection(serv, &info, &[])
 }
 
 /// `Server::sendwait(session_id, data, length)`: a blocking send of all of `data` to
