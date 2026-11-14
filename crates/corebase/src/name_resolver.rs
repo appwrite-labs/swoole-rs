@@ -44,6 +44,8 @@ struct Resolver {
     resolve: Resolve,
     private_data: usize,
     kind: c_int,
+    /// Its place in the list: ids rise along it, and are never reused.
+    id: i64,
 }
 
 impl Resolver {
@@ -52,9 +54,20 @@ impl Resolver {
     }
 }
 
-static RESOLVERS: Mutex<Vec<Resolver>> = Mutex::new(Vec::new());
+/// The resolvers, and the ids the next prepended and appended ones take.
+struct List {
+    entries: Vec<Resolver>,
+    front: i64,
+    back: i64,
+}
 
-fn resolvers() -> MutexGuard<'static, Vec<Resolver>> {
+static RESOLVERS: Mutex<List> = Mutex::new(List {
+    entries: Vec::new(),
+    front: 0,
+    back: 1,
+});
+
+fn resolvers() -> MutexGuard<'static, List> {
     RESOLVERS.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -65,16 +78,20 @@ pub fn swr_v1_core_name_resolver_add(
     kind: c_int,
     append: bool,
 ) {
+    let mut list = resolvers();
+    let id = if append { list.back } else { list.front };
     let resolver = Resolver {
         resolve,
         private_data: private_data.expose_provenance(),
         kind,
+        id,
     };
-    let mut list = resolvers();
     if append {
-        list.push(resolver);
+        list.back += 1;
+        list.entries.push(resolver);
     } else {
-        list.insert(0, resolver);
+        list.front -= 1;
+        list.entries.insert(0, resolver);
     }
 }
 
@@ -84,33 +101,41 @@ pub fn swr_v1_core_name_resolver_remove(
     mut same: impl FnMut(*mut c_void, c_int) -> bool,
 ) -> *mut c_void {
     let mut list = resolvers();
-    let found = (list.iter()).position(|r| same(r.private_data(), r.kind));
-    let removed = found.map(|index| list.remove(index));
+    let found = (list.entries.iter()).position(|r| same(r.private_data(), r.kind));
+    let removed = found.map(|index| list.entries.remove(index));
     drop(list);
     removed.map_or(core::ptr::null_mut(), Resolver::private_data)
 }
 
 /// `SwooleG = {}`'s effect on the list.
 pub(crate) fn swr_v1_core_name_resolver_clear() {
-    resolvers().clear();
+    resolvers().entries.clear();
 }
 
 /// Asks each resolver in turn; true once one answers (into `out`) or marks the context
 /// final. False leaves the lookup to the system resolver.
 ///
-/// It asks the resolvers listed when it starts, in their order, as upstream walks its
-/// list: a resolver's code may add or remove one, and a removed one answers nothing
-/// (the PHP resolver keeps no reference for it). The lock is released before each call.
-/// A resolver may longjmp out (a PHP bailout), which leaks the snapshot.
+/// A resolver's code may add or remove resolvers, so each step asks the first one
+/// after the last asked, as upstream's list iterator does: one appended meanwhile is
+/// asked, one prepended or removed is not. A resolver may longjmp out (a PHP
+/// bailout), so this frame holds nothing to drop across a call, and the lock is
+/// released before it.
 pub fn swr_v1_core_name_resolver_resolve(
     name: &[u8],
     context: &mut NameResolverContext,
     out: &mut Vec<u8>,
 ) -> bool {
-    let listed = resolvers().clone();
-    listed.into_iter().any(|resolver| {
-        (resolver.resolve)(resolver.private_data(), name, context, out) || context.is_final
-    })
+    let mut last = i64::MIN;
+    loop {
+        let next = resolvers().entries.iter().find(|r| r.id > last).copied();
+        let Some(resolver) = next else {
+            return false;
+        };
+        last = resolver.id;
+        if (resolver.resolve)(resolver.private_data(), name, context, out) || context.is_final {
+            return true;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -143,6 +168,11 @@ mod tests {
         false
     }
 
+    fn join(_: *mut c_void, _: &[u8], _: &mut NameResolverContext, _: &mut Vec<u8>) -> bool {
+        swr_v1_core_name_resolver_add(answer, c"127.0.0.3".as_ptr().cast_mut().cast(), 5, true);
+        false
+    }
+
     fn lookup(name: &str) -> (bool, Vec<u8>) {
         let mut context = NameResolverContext::default();
         let mut out = Vec::new();
@@ -172,5 +202,10 @@ mod tests {
         assert!(!swr_v1_core_name_resolver_remove(of_kind).is_null());
         assert_eq!(lookup("name1"), (false, Vec::new()));
         assert!(swr_v1_core_name_resolver_remove(of_kind).is_null());
+        // One appended mid-lookup is asked in the same lookup.
+        swr_v1_core_name_resolver_add(join, c"join".as_ptr().cast_mut().cast(), 4, true);
+        assert_eq!(lookup("name1"), (true, b"127.0.0.3".to_vec()));
+        assert!(!swr_v1_core_name_resolver_remove(|_, kind| kind == 4).is_null());
+        assert!(!swr_v1_core_name_resolver_remove(|_, kind| kind == 5).is_null());
     }
 }
