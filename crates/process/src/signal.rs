@@ -189,18 +189,19 @@ fn sigaction(signo: c_int, action: &libc::sigaction) -> Option<libc::sigaction> 
 /// removes a registered signal and puts back the action it replaced.
 pub fn signal_set(
     signo: c_int,
-    handler: usize,
+    handler: Handler,
     safety: bool,
     callback: Dispatch,
     has_reactor: HasReactor,
-) -> usize {
+) -> Handler {
+    let handler = handler.0;
     CALLBACK.store(callback as *mut (), Relaxed);
     HAS_REACTOR.store(has_reactor as *mut (), Relaxed);
     if let Some(slot) = slot(signo) {
         if handler == 0 && slot.activated.load(Relaxed) {
             slot.reset();
             restore_origin(signo);
-            return 0;
+            return Handler::NONE;
         }
         let first = !slot.activated.load(Relaxed);
         slot.handler.store(handler, Relaxed);
@@ -211,10 +212,10 @@ pub fn signal_set(
         if first {
             save_origin(signo, previous);
         }
-        return previous.map_or(0, |previous| previous.sa_sigaction);
+        return Handler(previous.map_or(0, |previous| previous.sa_sigaction));
     }
     let async_handler: extern "C" fn(c_int) = if safety { deferred } else { immediate };
-    set_action(signo, address(async_handler), false, true)
+    Handler(set_action(signo, address(async_handler), false, true))
 }
 
 /// `signal_handler_safety`: marks the signal for the next dispatch.
@@ -442,7 +443,7 @@ mod tests {
     fn registers_dispatches_and_clears() {
         let _state = crate::signal_state_lock();
         let handler = record as *const () as usize;
-        signal_set(libc::SIGUSR1, handler, false, record, no_reactor);
+        signal_set(libc::SIGUSR1, Handler(handler), false, record, no_reactor);
         assert!(swoole_signal_isset(libc::SIGUSR1));
         assert_eq!(
             signal_lookup(libc::SIGUSR1),
@@ -452,7 +453,7 @@ mod tests {
         unsafe { libc::raise(libc::SIGUSR1) };
         assert_eq!(SEEN.swap(0, Relaxed), libc::SIGUSR1);
 
-        signal_set(libc::SIGUSR2, handler, true, record, with_reactor);
+        signal_set(libc::SIGUSR2, Handler(handler), true, record, with_reactor);
         // SAFETY: SIGUSR2 has the deferred handler installed above.
         unsafe { libc::raise(libc::SIGUSR2) };
         assert_eq!(SEEN.load(Relaxed), 0);
@@ -461,9 +462,12 @@ mod tests {
 
         // Removing a handler puts back the action from before its registration.
         set_action(libc::SIGUSR2, 0, false, false);
-        signal_set(libc::SIGUSR2, handler, true, record, with_reactor);
-        signal_set(libc::SIGUSR2, handler, false, record, with_reactor);
-        assert_eq!(signal_set(libc::SIGUSR2, 0, false, record, with_reactor), 0);
+        signal_set(libc::SIGUSR2, Handler(handler), true, record, with_reactor);
+        signal_set(libc::SIGUSR2, Handler(handler), false, record, with_reactor);
+        assert_eq!(
+            signal_set(libc::SIGUSR2, Handler::NONE, false, record, with_reactor),
+            Handler::NONE
+        );
         assert!(!swoole_signal_isset(libc::SIGUSR2));
         assert_eq!(set_action(libc::SIGUSR2, usize::MAX, false, false), SIG_IGN);
 

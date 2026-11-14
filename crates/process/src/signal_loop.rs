@@ -77,10 +77,6 @@ fn errno() -> i32 {
 /// `swoole_signal_set` over the configured backend: the previous handler.
 #[must_use]
 pub fn set(signo: i32, handler: Handler, safety: bool, ops: &Ops) -> Handler {
-    Handler(set_raw(signo, handler.0, safety, ops))
-}
-
-fn set_raw(signo: i32, handler: usize, safety: bool, ops: &Ops) -> usize {
     let caps = (ops.capabilities)();
     let available = (ops.available)();
     #[cfg(target_os = "linux")]

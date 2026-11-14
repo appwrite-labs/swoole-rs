@@ -82,7 +82,8 @@ pub fn signalfd_owned() -> bool {
 /// `swoole_signalfd_set` before the reactor setup: a null `handler` unregisters an
 /// active `signo`; otherwise it is registered. The descriptor, if any, and the
 /// process mask follow. Returns the previous handler.
-pub fn signalfd_set(signo: c_int, handler: usize) -> usize {
+pub fn signalfd_set(signo: c_int, handler: Handler) -> Handler {
+    let handler = handler.0;
     let mut previous = 0;
     let slot = slot(signo);
     if handler == 0 && slot.is_some_and(|slot| slot.activated.load(Relaxed)) {
@@ -106,7 +107,7 @@ pub fn signalfd_set(signo: c_int, handler: usize) -> usize {
         sigprocmask(libc::SIG_SETMASK, &mask);
         signalfd(fd, &mask);
     }
-    previous
+    Handler(previous)
 }
 
 /// Why creating the descriptor failed, with the errno where there is one.
@@ -214,7 +215,7 @@ mod tests {
         let _state = crate::signal_state_lock();
         let handler = handler as *const () as usize;
         swoole_signalfd_init();
-        assert_eq!(signalfd_set(libc::SIGURG, handler), 0);
+        assert_eq!(signalfd_set(libc::SIGURG, Handler(handler)), Handler::NONE);
         let fd = signalfd_create().unwrap();
         assert!(signalfd_owned());
         assert_eq!(signalfd_create(), Err(CreateError::Exists));
