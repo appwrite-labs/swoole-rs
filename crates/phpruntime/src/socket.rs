@@ -8,7 +8,7 @@ use std::{
 };
 use swoole_rs_corebase::log::set_last_error;
 use swoole_rs_hooks::co_socket::{Co, swr_v1_hook_co_socket_free};
-use swoole_rs_reactor::SocketFields;
+use swoole_rs_reactor::{SocketFields, TimeoutKind};
 use swoole_rs_tls::upstream::{recv_sync, send_sync, socket_ssl_close};
 use swoole_rs_zend::{
     E_ERROR, Owned, Value, ZString,
@@ -50,14 +50,6 @@ pub(crate) mod kind {
     pub(crate) const TCP6: i32 = 3;
     pub(crate) const UNIX_STREAM: i32 = 5;
     pub(crate) const UNIX_DGRAM: i32 = 6;
-}
-
-/// `SW_TIMEOUT_*`.
-pub(crate) mod timeout {
-    pub(crate) const CONNECT: i32 = 1 << 1;
-    pub(crate) const READ: i32 = 1 << 2;
-    pub(crate) const RDWR: i32 = READ | (1 << 3);
-    pub(crate) const ALL: i32 = 0xf;
 }
 
 /// The sending operations: `send_sync`, `send_all`, `send` (once) and `send`.
@@ -245,7 +237,7 @@ impl Socket {
         self.co().set_zero_copy(true);
     }
 
-    pub(crate) fn set_timeout(&self, seconds: f64, kind: i32) {
+    pub(crate) fn set_timeout(&self, seconds: f64, kind: TimeoutKind) {
         self.co().set_timeout(seconds, kind);
     }
 
@@ -440,6 +432,7 @@ pub mod co {
     pub use swoole_rs_hooks::packet::recv_packet;
     use swoole_rs_hooks::vector::IoVector;
     use swoole_rs_hooks::{TimeoutScope, co_socket::swr_v1_hook_co_socket_free};
+    use swoole_rs_reactor::TimeoutKind;
     use swoole_rs_zend::bailout::{self, Bailout};
 
     /// `new SocketImpl(...)`: by `domain`, `kind` and `protocol` with `family`,
@@ -490,14 +483,14 @@ pub mod co {
 
     impl Timeout {
         #[must_use]
-        pub fn set(socket: Co, timeout: f64, kind: c_int) -> Self {
+        pub fn set(socket: Co, timeout: f64, kind: TimeoutKind) -> Self {
             Self(TimeoutScope::new(socket, timeout, kind))
         }
 
         /// `TimeoutController::has_timedout(kind)`: the first call starts the
         /// clock; later ones shrink the socket's timeout to what is left, or
         /// set `ETIMEDOUT` once none is.
-        pub fn timed_out(&mut self, kind: c_int) -> bool {
+        pub fn timed_out(&mut self, kind: TimeoutKind) -> bool {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0.0, |now| now.as_secs_f64());

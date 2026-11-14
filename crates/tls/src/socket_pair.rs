@@ -12,11 +12,12 @@ use std::ptr;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
-use swoole_rs_reactor::{SOCKET_DEFAULTS, Socket, SocketRecord, swr_v1_socket_buffer_size};
+use swoole_rs_reactor::{
+    SOCKET_DEFAULTS, Socket, SocketRecord, TimeoutKind, swr_v1_socket_buffer_size,
+};
 
-/// `SW_FD_PIPE`, `SW_TIMEOUT_ALL` and `SW_OK`.
+/// `SW_FD_PIPE` and `SW_OK`.
 const FD_PIPE: c_int = 3;
-const TIMEOUT_ALL: c_int = 15;
 /// `SW_PIPE_CLOSE_MASTER` and `SW_PIPE_CLOSE_WORKER`.
 const CLOSE_MASTER: c_int = 1;
 const CLOSE_WORKER: c_int = 2;
@@ -161,7 +162,7 @@ pub extern "C" fn unix_socket_set_buffer_size(this: &SocketPair, size: usize) ->
 pub fn set_timeout(this: &mut SocketPair, timeout: f64) {
     this.timeout = timeout;
     for socket in ends(this).into_iter().flatten() {
-        socket.edit(|record| record.timeouts.set(timeout, TIMEOUT_ALL));
+        socket.edit(|record| record.timeouts.set(timeout, TimeoutKind::ALL));
     }
 }
 

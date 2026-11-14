@@ -22,7 +22,7 @@ use swoole_rs_buffer::string::with_thread_buffer;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::{
     FdType, ResultCode, SW_BUFFER_SIZE_UDP, SW_CLIENT_BUFFER_SIZE, SW_SEND_BUFFER_SIZE,
-    SW_SOCKET_RETRY_COUNT, SW_SSL_BUFFER_SIZE, SocketFlag, SocketType, TimeoutType,
+    SW_SOCKET_RETRY_COUNT, SW_SSL_BUFFER_SIZE, SocketFlag, SocketType,
 };
 use swoole_rs_corebase::net_types::{PacketLength, Protocol, SocketAddress};
 use swoole_rs_corebase::sys::ReadSlot;
@@ -140,7 +140,6 @@ const SSL_BUFFER_SIZE: u32 = SW_SSL_BUFFER_SIZE;
 const BUFFER_SIZE_UDP: usize = SW_BUFFER_SIZE_UDP as usize;
 const CLIENT_BUFFER_SIZE: usize = SW_CLIENT_BUFFER_SIZE as usize;
 const SOCKET_RETRY_COUNT: usize = SW_SOCKET_RETRY_COUNT as usize;
-const TIMEOUT_ALL: c_int = TimeoutType::SW_TIMEOUT_ALL as c_int;
 /// crates/tls's `SW_SSL_STATE_READY`, `SW_SSL_STATE_WAIT_STREAM`, `SW_SSL_CLIENT`
 /// and `SW_SSL_DTLS`.
 pub const SSL_STATE_READY: u32 = SslState::SW_SSL_STATE_READY as u32;
@@ -684,8 +683,11 @@ impl Handle {
     }
 
     fn set_timeout(self, timeout: f64) {
-        self.socket()
-            .edit(|socket| socket.timeouts.set(timeout, TIMEOUT_ALL));
+        self.socket().edit(|socket| {
+            socket
+                .timeouts
+                .set(timeout, swoole_rs_reactor::TimeoutKind::ALL);
+        });
     }
 
     fn timer_clear(self) {

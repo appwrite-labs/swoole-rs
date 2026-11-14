@@ -247,7 +247,7 @@ pub(crate) fn poll(socket: Co, event: u32, timeout: f64) -> bool {
         return false;
     }
     let timeout = if timeout == 0.0 {
-        socket.timeout(if event == READ { 4 } else { 8 })
+        socket.timeout(crate::transfer::timeout_kind(event))
     } else {
         timeout
     };

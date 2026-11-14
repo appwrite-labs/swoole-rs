@@ -7,7 +7,7 @@
 //! upstream routes it.
 use crate::co_io::set_errno;
 use crate::co_socket::Co;
-use crate::fd_control::{ALL, fd_poll_fake, fd_timeout, fd_wait, swr_v1_hook_fd_poll};
+use crate::fd_control::{fd_poll_fake, fd_timeout, fd_wait, swr_v1_hook_fd_poll};
 use crate::poll::swr_v1_hook_poll;
 use crate::socket_map;
 use crate::stdio::{Host, coroutine, on_pool, swr_v1_hook_close_fd};
@@ -349,7 +349,7 @@ pub extern "C" fn swoole_coroutine_socket_wait_event(
     let saved = fd_wait(socket, event.cast_unsigned(), timeout);
     let ready = socket.poll(event.cast_unsigned(), 0.0);
     // The socket is still live: the map holds it.
-    socket.set_timeout(saved, ALL);
+    socket.set_timeout(saved, swoole_rs_reactor::TimeoutKind::ALL);
     if ready { 0 } else { -1 }
 }
 

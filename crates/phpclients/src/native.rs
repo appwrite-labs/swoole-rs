@@ -34,11 +34,7 @@ const LOG_WARNING: c_int = 4;
 /// A `SocketImpl *`.
 pub(crate) type Socket = *mut libc::c_void;
 
-/// `SW_TIMEOUT_*`.
-const TIMEOUT_CONNECT: c_int = 1 << 1;
-const TIMEOUT_READ: c_int = 1 << 2;
-const TIMEOUT_WRITE: c_int = 1 << 3;
-pub(crate) const TIMEOUT_RDWR: c_int = TIMEOUT_READ | TIMEOUT_WRITE;
+use swoole_rs_reactor::TimeoutKind;
 /// `SW_SOCK_UDP6`.
 const SOCK_UDP6: c_int = 4;
 /// `SW_ERROR_WRONG_OPERATION`.
@@ -266,14 +262,14 @@ impl Co {
 
     /// `connect(host, port)` under a connect timeout of `timeout`.
     pub(crate) fn connect(self, host: &[u8], port: i64, timeout: f64) -> bool {
-        let _timeout = self.timeout(timeout, TIMEOUT_CONNECT);
+        let _timeout = self.timeout(timeout, TimeoutKind::CONNECT);
         self.0.connect_host(host, port.c_cast::<c_int>())
     }
 
     /// `set_timeout(timeout, SW_TIMEOUT_CONNECT)`, then `connect(host, port)` of
     /// the host up to its first NUL, as upstream reads it.
     pub(crate) fn connect_host(self, host: &[u8], port: i64, timeout: f64) -> bool {
-        self.set_timeout(timeout, TIMEOUT_CONNECT);
+        self.set_timeout(timeout, TimeoutKind::CONNECT);
         let host = host.split(|byte| *byte == 0).next().unwrap_or_default();
         self.0.connect_host(host, port.c_cast::<c_int>())
     }
@@ -292,13 +288,13 @@ impl Co {
     }
 
     /// A timeout of `kind` for the guard's life (`TimeoutSetter`).
-    pub(crate) fn timeout(self, timeout: f64, kind: c_int) -> co::Timeout {
+    pub(crate) fn timeout(self, timeout: f64, kind: TimeoutKind) -> co::Timeout {
         co::Timeout::set(self.0, timeout, kind)
     }
 
     /// One send [`Transfer`] of `data` under `timeout`.
     pub(crate) fn send(self, op: Transfer, data: &[u8], timeout: f64) -> ssize_t {
-        let _timeout = self.timeout(timeout, TIMEOUT_WRITE);
+        let _timeout = self.timeout(timeout, TimeoutKind::WRITE);
         if matches!(op, Transfer::SendAll) {
             self.0.send_all(data)
         } else {
@@ -350,9 +346,9 @@ impl Co {
         timeout: f64,
     ) -> (ssize_t, c_int, size_t) {
         let kind = if matches!(vectors, co::Vectors::Read(_)) {
-            TIMEOUT_READ
+            TimeoutKind::READ
         } else {
-            TIMEOUT_WRITE
+            TimeoutKind::WRITE
         };
         let _timeout = self.timeout(timeout, kind);
         co::vector(self.0, vectors, all)
@@ -370,13 +366,14 @@ impl Co {
 
     /// `recvfrom` into `buffer`'s room under a read timeout of `timeout`.
     pub(crate) fn recvfrom(self, buffer: &mut ZBuf, timeout: f64) -> ssize_t {
-        let _timeout = self.timeout(timeout, TIMEOUT_READ);
+        let _timeout = self.timeout(timeout, TimeoutKind::READ);
         self.fill(None, buffer)
     }
 
     /// One receiving [`Transfer`] into `buffer`'s room under `timeout`.
     pub(crate) fn receive(self, op: Transfer, buffer: &mut ZBuf, timeout: f64) -> ssize_t {
-        let _timeout = (!matches!(op, Transfer::Peek)).then(|| self.timeout(timeout, TIMEOUT_READ));
+        let _timeout =
+            (!matches!(op, Transfer::Peek)).then(|| self.timeout(timeout, TimeoutKind::READ));
         self.fill(Some(op), buffer)
     }
 
@@ -469,11 +466,11 @@ impl Co {
         self.0.set_int_option(level, name, value)
     }
 
-    pub(crate) fn set_timeout(self, timeout: f64, kind: c_int) {
+    pub(crate) fn set_timeout(self, timeout: f64, kind: TimeoutKind) {
         self.0.set_timeout(timeout, kind);
     }
 
-    pub(crate) fn get_timeout(self, kind: c_int) -> f64 {
+    pub(crate) fn get_timeout(self, kind: TimeoutKind) -> f64 {
         self.0.timeout(kind)
     }
 

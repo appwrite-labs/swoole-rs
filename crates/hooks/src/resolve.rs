@@ -16,9 +16,6 @@ use swoole_rs_corebase::{
     swr_v1_core_name_resolver_resolve,
 };
 
-/// `SW_TIMEOUT_ALL`.
-const TIMEOUT_ALL: c_int = 15;
-
 /// `co->yield()` of the current coroutine (fatal outside one).
 pub(crate) fn park() {
     swoole_rs_coroutine::suspend(current().cast());
@@ -169,7 +166,10 @@ impl DnsUdp {
             0,
         ));
         if timeout > 0.0 {
-            socket.0.socket().set_timeout(timeout, TIMEOUT_ALL);
+            socket
+                .0
+                .socket()
+                .set_timeout(timeout, swoole_rs_reactor::TimeoutKind::ALL);
         }
         socket
     }
