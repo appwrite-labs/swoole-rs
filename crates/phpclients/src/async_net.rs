@@ -413,7 +413,7 @@ fn close(call: &Call) {
         warn(ErrorKind::Fatal, "client is not connected to the server");
         return call.set_bool(false);
     };
-    call.set_bool(bailed(conn.cli.run(state::close)).is_some_and(|result| result >= 0));
+    call.set_bool(bailed(conn.cli.run(state::close)) == Some(true));
 }
 
 /// `on(string $host, callable $callback): bool`.

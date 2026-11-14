@@ -364,7 +364,11 @@ impl<'a> Client<'a> {
     }
 
     fn close(&self) -> c_int {
-        native::close(self.handle())
+        if native::close(self.handle()) {
+            SW_OK
+        } else {
+            SW_ERR
+        }
     }
 
     pub(super) fn shutdown(&self, how: c_int) -> c_int {
