@@ -167,8 +167,6 @@ unsafe extern "C-unwind" {
     fn buffer_length(buffer: *const c_void) -> u32;
     #[link_name = "_Z15swoole_ssl_initv"]
     fn swoole_ssl_init();
-    #[link_name = "_Z16swoole_event_addPN6swoole7network6SocketEi"]
-    fn swoole_event_add(socket: *mut Record, events: c_int) -> c_int;
     #[link_name = "_Z24swoole_event_set_handleriiPFiPN6swoole7ReactorEPNS_5EventEE"]
     fn swoole_event_set_handler(fd_type: c_int, event: c_int, handler: Handler);
     #[link_name = "_ZN6swoole7network6Socket8get_nameEv"]
@@ -908,7 +906,8 @@ fn send_async_2() {
     // SAFETY: the live loop; the handler reads the socket once.
     unsafe {
         swoole_event_set_handler(SW_FD_STREAM_CLIENT, SW_EVENT_READ, send_async_2_read);
-        swoole_event_add(sock.0, SW_EVENT_READ | SW_EVENT_ONCE);
+        let socket = swoole_rs_ffi::Socket::from_ptr(sock.0.cast()).unwrap();
+        let _ = swoole_rs_ffi::event_api::event_add(socket, SW_EVENT_READ | SW_EVENT_ONCE);
         swoole_event_wait();
     }
 

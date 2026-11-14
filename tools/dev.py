@@ -310,7 +310,7 @@ def plan(args, reports):
         script('reactor-base-rust', 'tests/modules/hooks/system.py', '--source', ROOT / 'target/upstream/src',
                '--archive', archive,
                '--build-root', ROOT / 'target/native-originals/reactor-base', '--jobs', args.jobs,
-               '--package', ROOT / 'tests/modules/reactor/base', '--fixture', ROOT / 'tests/modules/reactor/base/fixture.cc',
+               '--package', ROOT / 'tests/modules/reactor/base',
                *report('reactor-base-rust'))
     if 'http' in modules and sys.platform.startswith('linux'):
         # core-tests/src/server/http_server.cpp's, protocol/base.cpp's and redis.cpp's and server/mqtt.cpp's server

@@ -8,7 +8,9 @@
 )]
 use core::ffi::{c_int, c_void};
 
-use swoole_rs_reactor::reactor_upstream::{reactor_change, reactor_interest, reactor_set_handler};
+use swoole_rs_reactor::reactor_upstream::{
+    change as reactor_change, reactor_interest, reactor_set_handler,
+};
 use swoole_rs_reactor::{ChangeOp, Handler, Interest, ReactorPrepared, Running, Socket};
 
 /// `SW_EVENT_READ`.
@@ -44,8 +46,9 @@ impl Reactor {
     }
     /// `Reactor::change`'s `op` of `sock` with `events`: whether it applied.
     pub(crate) fn change(self, sock: Socket<'_>, op: ChangeOp, events: c_int) -> bool {
-        // SAFETY: a live reactor and socket.
-        unsafe { reactor_change(self.0, sock.as_ptr(), op.code(), events) == 0 }
+        // SAFETY: a live socket, which stays live while it is registered.
+        let sock = unsafe { Socket::from_ptr(sock.as_ptr()) };
+        sock.is_some_and(|sock| reactor_change(self.handle(), sock, op, events) == 0)
     }
     /// `Reactor::interest`'s `kind` of `sock`: whether it applied.
     pub(crate) fn interest(self, sock: Socket<'_>, kind: Interest, events: c_int) -> bool {

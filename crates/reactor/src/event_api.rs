@@ -6,7 +6,6 @@
 //! `swoole_event_init` and `swoole_event_free` are `reactor_state.rs`'s, with the
 //! `Reactor`'s constructor and destructor; `swoole_event_defer` is callbacks.rs's.
 use crate::handlers::Handler;
-use crate::reactor_upstream::reactor_change;
 use crate::{ReactorFields, SocketRecord};
 use std::cell::Cell;
 use std::ffi::{c_int, c_void};
@@ -75,19 +74,6 @@ pub fn swoole_event_is_running() -> bool {
     field(|fields| fields.running).unwrap_or(false)
 }
 
-/// `int swoole_event_add(Socket *socket, int events)`.
-///
-/// # Safety
-/// As `Reactor::add`, with a live `SwooleTG.reactor`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z16swoole_event_addPN6swoole7network6SocketEi")
-)]
-pub unsafe extern "C" fn swoole_event_add(socket: *mut SocketRecord, events: c_int) -> c_int {
-    // SAFETY: as the caller promises.
-    unsafe { reactor_change(current(), socket, 0, events) }
-}
-
 /// [`crate::reactor_upstream::change`] of `socket` on the thread's reactor; -1 without one.
 fn change(socket: crate::Socket<'static>, op: crate::ChangeOp, events: c_int) -> c_int {
     running().map_or(-1, |reactor| {
@@ -95,8 +81,8 @@ fn change(socket: crate::Socket<'static>, op: crate::ChangeOp, events: c_int) ->
     })
 }
 
-/// [`swoole_event_add`] of a socket that is never freed while registered; -1 without
-/// a reactor.
+/// `int swoole_event_add(Socket *socket, int events)` of a socket that is never freed
+/// while registered; -1 without a reactor.
 #[must_use]
 pub fn event_add(socket: crate::Socket<'static>, events: c_int) -> c_int {
     change(socket, crate::ChangeOp::Add, events)
@@ -148,10 +134,6 @@ pub fn add_or_update(socket: crate::Socket<'static>, event: c_int) -> c_int {
 ///
 /// # Safety
 /// As `Reactor::write`, with a live `SwooleTG.reactor`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z18swoole_event_writePN6swoole7network6SocketEPKvm")
-)]
 pub unsafe extern "C-unwind" fn swoole_event_write(
     socket: *mut SocketRecord,
     data: *const c_void,
@@ -184,10 +166,6 @@ pub fn event_write(socket: crate::Socket<'static>, data: &[u8]) -> isize {
 ///
 /// # Safety
 /// As `Reactor::writev`, with a live `SwooleTG.reactor`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z19swoole_event_writevPN6swoole7network6SocketEPK5iovecm")
-)]
 pub unsafe extern "C-unwind" fn swoole_event_writev(
     socket: *mut SocketRecord,
     iov: *const libc::iovec,

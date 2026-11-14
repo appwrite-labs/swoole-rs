@@ -25,34 +25,8 @@ fn changed(result: c_int) -> c_int {
     result
 }
 
-/// `int Reactor::change(Socket *socket, uint32_t op, int events) const`: -1 for a null
-/// socket.
-///
-/// # Safety
-/// `reactor` is a live `Reactor` on this thread, which no Rust reference borrows, and
-/// `socket` null or a live record distinct from it that stays live while it is
-/// registered.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole7Reactor6changeEPNS_7network6SocketEji")
-)]
-pub unsafe extern "C" fn reactor_change(
-    reactor: *const c_void,
-    socket: *mut SocketRecord,
-    op: u32,
-    events: c_int,
-) -> c_int {
-    // SAFETY: as the caller promises: live while it is registered, which is all a
-    // registered socket's `'static` claims.
-    let Some(socket) = (unsafe { crate::Socket::from_ptr(socket) }) else {
-        return -1;
-    };
-    // SAFETY: as the caller promises.
-    let reactor = unsafe { crate::Running::new(reactor.cast_mut()) };
-    change(reactor, socket, crate::ChangeOp::from_code(op), events)
-}
-
-/// `Reactor::add` or `set` of a socket that is never freed while registered.
+/// `int Reactor::change(Socket *socket, uint32_t op, int events) const`: `Reactor::add`
+/// or `set` of a socket that is never freed while registered.
 /// A registered record's address stays in the registry and with the kernel until its
 /// removal, which a `'static` record outlives: it is live until an unsafe free, whose
 /// caller answers for every user left, the reactor among them, or its `del`.
@@ -93,7 +67,9 @@ pub fn reactor_del(reactor: crate::Running<'_>, socket: crate::Socket<'_>) -> c_
 /// `int Reactor::interest(Socket *socket, uint32_t kind, int event) const`.
 ///
 /// # Safety
-/// As [`reactor_change`].
+/// `reactor` is a live `Reactor` on this thread, which no Rust reference borrows, and
+/// `socket` null or a live record distinct from it that stays live while it is
+/// registered.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZNK6swoole7Reactor8interestEPNS_7network6SocketEji")
@@ -113,7 +89,8 @@ pub unsafe extern "C" fn reactor_interest(
         return 0;
     };
     // SAFETY: as the caller promises.
-    unsafe { reactor_change(reactor, socket, op.code(), events) }
+    let reactor = unsafe { crate::Running::new(reactor.cast_mut()) };
+    change(reactor, record, op, events)
 }
 
 /// `void Reactor::set_handler(int fd_type, int event, ReactorHandler handler)`:

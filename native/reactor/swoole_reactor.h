@@ -17,21 +17,6 @@ class Reactor : public swr_v1_reactor_head {
     ~Reactor() = delete;
     swr_v1_reactor_state *handle() const { return state_.owner; }
 
-    // ReactorEpoll/ReactorKqueue/ReactorPoll add, set and del are Rust's (swr_v1_reactor_change).
-    int change(network::Socket *socket, uint32_t op, int events) const;
-
-    int add(network::Socket *socket, int events) const {
-        return change(socket, 0, events);
-    }
-
-    int set(network::Socket *socket, int events) const {
-        return change(socket, 1, events);
-    }
-
-    int del(network::Socket *socket) const {
-        return change(socket, 2, 0);
-    }
-
     // wait and the end callbacks are Rust's (crates/reactor's callbacks.rs), keyed by
     // upstream's PRIORITY_* values (Rust's copies) and holding plain functions.
     int wait();
@@ -43,7 +28,6 @@ class Reactor : public swr_v1_reactor_head {
     }
     void set_handler(int fd_type, int event, ReactorHandler handler);
     bool isset_handler(int fd_type, int event) const;
-    void drain_write_buffer(network::Socket *socket);
 
     bool ready() const {
         return ready_;
@@ -69,12 +53,8 @@ class Reactor : public swr_v1_reactor_head {
 }  // namespace swoole
 
 SW_API int swoole_event_init(int flags);
-SW_API int swoole_event_add(swoole::network::Socket *socket, int events);
 SW_API void swoole_event_defer(void (*fn)(void *), void *private_data);
-SW_API ssize_t swoole_event_write(swoole::network::Socket *socket, const void *data, size_t len);
-SW_API ssize_t swoole_event_writev(swoole::network::Socket *socket, const iovec *iov, size_t iovcnt);
 SW_API swoole::network::Socket *swoole_event_get_socket(int fd);
 SW_API int swoole_event_wait();
-SW_API int swoole_event_free();
 SW_API void swoole_event_set_handler(int fd_type, int event, swoole::ReactorHandler handler);
 SW_API bool swoole_event_is_available();

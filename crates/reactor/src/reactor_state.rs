@@ -355,8 +355,8 @@ unsafe extern "C" {
 /// ready, upstream's write, writev, close and default write handler, the create hook
 /// and then the built-in end callbacks and exit conditions. The write functions are
 /// crates/tls's, so only the hybrid (`upstream-symbols`) sets them.
-#[unsafe(no_mangle)]
-pub extern "C-unwind" fn swr_v1_reactor_new(max_event: c_int, kind: c_int) -> *mut c_void {
+#[must_use]
+pub fn swr_v1_reactor_new(max_event: c_int, kind: c_int) -> *mut c_void {
     let mut owner = ReactorState::open(kind, max_event);
     if !owner.fields.ready {
         return ReactorState::into_raw(owner).cast();
@@ -384,8 +384,7 @@ pub extern "C-unwind" fn swr_v1_reactor_new(max_event: c_int, kind: c_int) -> *m
 ///
 /// # Safety
 /// `reactor` is from [`swr_v1_reactor_new`] and nothing uses it afterwards.
-#[unsafe(no_mangle)]
-pub unsafe extern "C-unwind" fn swr_v1_reactor_delete(reactor: *mut c_void) {
+pub unsafe fn swr_v1_reactor_delete(reactor: *mut c_void) {
     let state = reactor.cast::<ReactorState>();
     // SAFETY: as the caller promises: the live reactor, on its thread, which no
     // reference holds. Each borrow below ends before a callback, hook or disposer runs.
@@ -446,12 +445,11 @@ pub extern "C-unwind" fn swoole_event_init(flags: c_int) -> c_int {
 /// `int swoole_event_free()`: deletes the thread's `Reactor`, then clears it; `SW_ERR`
 /// without one.
 #[cfg(feature = "upstream-symbols")]
-#[unsafe(export_name = "_Z17swoole_event_freev")]
 #[expect(
     clippy::must_use_candidate,
     reason = "callers, `swoole_event_wait` among them, ignore it as upstream's do"
 )]
-pub extern "C-unwind" fn swoole_event_free() -> c_int {
+pub fn swoole_event_free() -> c_int {
     let reactor = swoole_rs_corebase::thread_reactor();
     if reactor.is_null() {
         return -1;
