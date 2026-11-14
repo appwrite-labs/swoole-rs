@@ -215,7 +215,9 @@ extern "C-unwind" fn loop_async(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int 
     in_worker_bus(state, config, worker_pipe(worker, false), |pipe| {
         set_nonblock(pipe);
         let reactor = Reactor::thread();
-        reactor.handle().set_object(pool.raw().cast());
+        // SAFETY: this task worker's reactor, which the loop's `swoole_event_wait` frees
+        // while the server lives.
+        unsafe { reactor.hold_server(serv) };
         reactor.add(pipe, EVENT_READ);
         reactor.set_handler(FD_PIPE, EVENT_READ, on_pipe_receive);
     });
@@ -233,9 +235,9 @@ extern "C-unwind" fn loop_async(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int 
 
 /// `TaskWorker_onPipeReceive`: a task from a worker, in the coroutine loop.
 extern "C" fn on_pipe_receive(reactor: Running<'_>, event: &mut Event) -> c_int {
-    // SAFETY: `loop_async` set this reactor's `ptr` to the live task pool.
-    let pool = unsafe { PoolRef::new(reactor.object().cast()) };
-    let serv = server_of(pool);
+    let Some(serv) = Reactor::running(reactor).server() else {
+        return ERR;
+    };
     let id = u16::try_from(swoole_get_worker_id()).unwrap_or(u16::MAX);
     let Some(worker) = serv.worker_record(id) else {
         return ERR;

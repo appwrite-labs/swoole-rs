@@ -56,10 +56,9 @@ fn worker(serv: view::Server<'_>, id: impl TryInto<u16>) -> Option<Worker<'_>> {
 fn heartbeat_timer(state: &ServerState, reactor: Reactor) -> Option<swoole_rs_timer::Held> {
     let msec = c_long::from(state.config_ref().heartbeat_check_interval.get()) * 1000;
     swoole_rs_timer::add_fn(msec, true, move || {
-        // SAFETY: a server reactor whose `ptr` is its live server, which outlives its
-        // timers.
-        let serv = unsafe { entry::server(reactor) };
-        crate::reactor_thread::heartbeat_check(serv, reactor);
+        if let Some(serv) = reactor.server() {
+            crate::reactor_thread::heartbeat_check(serv, reactor);
+        }
     })
 }
 
@@ -68,8 +67,10 @@ fn heartbeat_timer(state: &ServerState, reactor: Reactor) -> Option<swoole_rs_ti
 fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Option<c_int> {
     let (server, handle) = (ctx.serv, ctx.reactor?);
     let (config, tables) = (state.config_ref(), state.tables_ref());
+    // SAFETY: the thread's own reactor, which only this thread runs, and the server joins
+    // its reactor and worker threads before it goes.
+    unsafe { handle.hold_server(server) };
     let reactor = handle.handle();
-    reactor.set_object(server.raw());
     reactor.set_id(id);
     reactor.set_wait_exit(false);
     reactor.set_max_socket(tables.max_connection);
@@ -149,10 +150,11 @@ struct CloseConnections(Reactor);
 
 impl swoole_rs_reactor::event_api::Deferred for CloseConnections {
     fn run(self) {
-        // SAFETY: a reactor thread's reactor, which runs its destroy callbacks on its
-        // own thread while it lives, and whose `ptr` is its live server.
-        let serv = unsafe { entry::server(self.0) };
-        crate::reactor_thread::close_reactor_connections(serv, self.0);
+        // A reactor thread's reactor, which runs its destroy callbacks on its own
+        // thread while it lives.
+        if let Some(serv) = self.0.server() {
+            crate::reactor_thread::close_reactor_connections(serv, self.0);
+        }
     }
 
     /// Queued after the destroy pass, it closes nothing, as the native callback did.
@@ -312,7 +314,7 @@ fn send_close_force(serv: view::Server<'_>, conn: Connection<'_>, session: c_lon
 /// `ReactorThread_onPipeRead`: a worker's message.
 extern "C" fn on_pipe_read(reactor: Running<'_>, event: &mut Event) -> c_int {
     let reactor = Reactor::running(reactor);
-    // SAFETY: the handler is registered only on server reactors.
+    // SAFETY: the handler is registered only on reactors that hold a server.
     let serv = unsafe { entry::server(reactor) };
     let mut ctx = ReactorContext::new(serv, Some(reactor));
     // `serv->get_thread(reactor->id)`, unchecked as upstream's: every worker message

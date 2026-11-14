@@ -62,7 +62,7 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> b
             );
         }
         Step::MasterTimer => {
-            let timer = crate::server_methods::master_timer(serv);
+            let timer = crate::server_methods::master_timer();
             state.config_ref().master_timer.store(timer);
             return timer.is_some();
         }
@@ -145,9 +145,10 @@ extern "C" fn accept_command_result(
     reactor: swoole_rs_reactor::Running<'_>,
     event: &mut swoole_rs_reactor::Event,
 ) -> c_int {
-    let serv = reactor.object();
-    // SAFETY: the master reactor's live server.
-    let state = unsafe { crate::view::Server::from_raw(serv) }.state();
+    let Some(serv) = crate::reactor_handle::Reactor::running(reactor).server() else {
+        return 0;
+    };
+    let state = serv.state();
     let bus = state.message_bus();
     let Some(sock) = event.socket() else {
         return 0;

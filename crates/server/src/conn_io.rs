@@ -137,7 +137,7 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
         conn.set_waiting_time(1);
         // The active connection's socket: the event's.
         if let Some(own) = conn.socket()
-            && resume_timer(serv, conn, own)
+            && resume_timer(conn, own)
         {
             reactor.interest(sock, swoole_rs_reactor::Interest::RemoveRead, 0);
         }
@@ -256,14 +256,13 @@ fn client_cert_file(port: &PortConfig) -> bool {
 /// Arms `conn`'s resume timer for its paused `socket`, after its waiting time.
 ///
 /// The connection's own socket, which deletes this timer before it goes.
-fn resume_timer(serv: view::Server<'_>, conn: Connection<'_>, socket: Socket<'static>) -> bool {
+fn resume_timer(conn: Connection<'_>, socket: Socket<'static>) -> bool {
     let msec = c_long::from(conn.waiting_time());
-    let raw = serv.raw();
     let timer = swoole_rs_timer::add_fn(msec, false, move || {
-        // SAFETY: the server whose reactor armed the timer, which outlives the
-        // timers of its sockets.
-        let serv = unsafe { view::Server::from_raw(raw) };
-        resume_data_receiving(serv, socket);
+        // The server of the reactor that armed the timer: this thread's.
+        if let Some(serv) = Reactor::current().and_then(Reactor::server) {
+            resume_data_receiving(serv, socket);
+        }
     });
     conn.set_timer(timer);
     timer.is_some()
@@ -282,7 +281,7 @@ fn resume_data_receiving(serv: view::Server<'_>, socket: Socket<'static>) {
         if waiting != MAX_WAITING_TIME {
             conn.set_waiting_time(waiting.saturating_mul(2));
         }
-        if resume_timer(serv, conn, socket) {
+        if resume_timer(conn, socket) {
             return;
         }
     }
@@ -562,7 +561,7 @@ fn queue_close(conn: Connection<'_>, sock: Socket<'_>) {
         let buffer = Some(new_buffer(SW_SEND_BUFFER_SIZE));
         sock.edit(|s| s.output.out_buffer = buffer);
     }
-    sock.read(|s| out_buffer(s).map(|b| swr_cpp_buffer_typed_close(b)));
+    sock.read(|s| out_buffer(s).map(swr_cpp_buffer_typed_close));
     conn.set_close_queued(true);
 }
 

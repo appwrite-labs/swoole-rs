@@ -417,7 +417,9 @@ pub fn stop_async_worker(serv: view::Server<'_>, worker: Worker<'_>) {
 /// `Worker_reactor_try_to_exit`: the loop's end callback while the worker exits.
 extern "C-unwind" fn try_to_exit() {
     let reactor = Reactor::thread();
-    try_exit(server_of(reactor), reactor);
+    if let Some(serv) = reactor.server() {
+        try_exit(serv, reactor);
+    }
 }
 
 /// Once the reactor can exit, stop it; meanwhile call `onWorkerExit` once, then wait
@@ -458,21 +460,10 @@ fn try_exit(serv: view::Server<'_>, reactor: Reactor) {
     }
 }
 
-/// The server of this thread's `reactor`, whose `ptr` is the server (or, in a task
-/// worker, its pool, whose `ptr` is).
-fn server_of(reactor: Reactor) -> view::Server<'static> {
-    let mut serv = reactor.handle().object();
-    if worker_type() == Some(WorkerType::Task) {
-        // SAFETY: a task worker's reactor holds its live pool.
-        serv = unsafe { swoole_rs_process::process_pool::PoolRef::new(serv.cast()) }.ptr();
-    }
-    // SAFETY: the worker's live server, per the above.
-    unsafe { view::Server::from_raw(serv) }
-}
-
 /// `Worker_onPipeReceive`: a message from a reactor thread or the master (process mode).
 extern "C" fn on_pipe_receive(reactor: Running<'_>, event: &mut Event) -> c_int {
-    let serv = server_of(Reactor::running(reactor));
+    // SAFETY: registered only on a worker's reactor, which holds its server.
+    let serv = unsafe { crate::reactor_entry::server(Reactor::running(reactor)) };
     let bus = bus(serv);
     if event.socket().is_some_and(|socket| bus.read(socket) > 0) {
         // SAFETY: the head of the whole event the bus just read, which only this
@@ -621,7 +612,9 @@ pub(crate) fn start_event_worker(serv: view::Server<'_>, worker: Worker<'_>) -> 
     let reactor = Reactor::thread();
     if let Some(pipe) = worker_pipe(worker, false) {
         set_nonblock(pipe);
-        reactor.handle().set_object(serv.raw());
+        // SAFETY: this worker's reactor, freed after its loop below, before the worker
+        // stops and while the server lives.
+        unsafe { reactor.hold_server(serv) };
         reactor.add(pipe, EVENT_READ);
         reactor.set_handler(FD_PIPE, EVENT_READ, on_pipe_receive);
     }

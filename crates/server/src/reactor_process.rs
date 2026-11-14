@@ -115,7 +115,9 @@ pub(crate) fn main_loop(serv: view::Server<'_>, worker: Worker<'_>) -> bool {
     }
     let running = reactor.handle();
     running.set_id(u16::try_from(id).unwrap_or(u16::MAX));
-    running.set_object(serv.raw());
+    // SAFETY: this process's reactor, which `EventFree` frees after the loop below while
+    // the server lives; a failed start returns to the pool, which ends the process.
+    unsafe { reactor.hold_server(serv) };
     running.set_max_socket(serv.state().tables_ref().max_connection);
     running.set_close(Some(crate::reactor_entry::close_connection));
     reactor.set_handler(
@@ -187,9 +189,7 @@ fn add_pipes(reactor: Reactor, worker: Worker<'_>) -> bool {
 /// `run` over the server of `reactor`, a reactor process's reactor: the one
 /// [`main_loop`] runs, whose handlers and heartbeat timer are this module's.
 pub(crate) fn with_server(reactor: Reactor, run: impl FnOnce(view::Server<'_>) -> c_int) -> c_int {
-    // SAFETY: `main_loop` set the reactor's `ptr` to its live server before it added
-    // the handlers and timer that call this, and the server outlives its loop.
-    run(unsafe { crate::reactor_entry::server(reactor) })
+    reactor.server().map_or(-1, run)
 }
 
 /// `ReactorProcess_onClose`: the reactor's default error handler.

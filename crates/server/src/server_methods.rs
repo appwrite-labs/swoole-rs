@@ -131,13 +131,11 @@ pub(crate) extern "C" fn accept_connection(
     reactor: swoole_rs_reactor::Running<'_>,
     event: &mut swoole_rs_reactor::Event,
 ) -> c_int {
-    // SAFETY: the server the reactor carries, live while it runs.
-    let serv = unsafe { view::Server::from_raw(reactor.object()) };
-    crate::connection::accept(
-        serv,
-        crate::reactor_handle::Reactor::running(reactor),
-        event,
-    )
+    let reactor = crate::reactor_handle::Reactor::running(reactor);
+    let Some(serv) = reactor.server() else {
+        return -1;
+    };
+    crate::connection::accept(serv, reactor, event)
 }
 
 /// `Server::get_startup_error_message()`.
@@ -207,15 +205,14 @@ pub fn set_document_root(serv: view::Server<'_>, path: &[u8]) -> bool {
 }
 
 /// Arms the master timer on this thread, the master's: each second it runs
-/// `Server::timer_callback` over `serv`. The timer, or none.
+/// `Server::timer_callback` over the server its reactor holds. The timer, or none.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-pub(crate) fn master_timer(serv: view::Server<'_>) -> Option<swoole_rs_timer::Held> {
-    let serv = serv.raw();
-    swoole_rs_timer::add_fn(1000, true, move || {
-        // SAFETY: the server that armed its master timer, on its own thread; it
-        // outlives its timers, which `clear_timer` deletes before it goes.
-        let serv = unsafe { view::Server::from_raw(serv) };
-        crate::control::master_timer(serv);
+pub(crate) fn master_timer() -> Option<swoole_rs_timer::Held> {
+    use crate::reactor_handle::Reactor;
+    swoole_rs_timer::add_fn(1000, true, || {
+        if let Some(serv) = Reactor::current().and_then(Reactor::server) {
+            crate::control::master_timer(serv);
+        }
     })
 }
 
