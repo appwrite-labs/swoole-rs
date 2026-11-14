@@ -238,9 +238,10 @@ impl Connection for Read<'_> {
                 let (port, socket, buffer) = (self.port, self.socket, self.buffer);
                 let conn = self.conn();
                 // SAFETY: the current buffer; the connection's object is its request.
-                i64::from(unsafe {
+                let open = unsafe {
                     crate::resp_recv::recv_packet(&port.protocol.get(), conn, socket, buffer)
-                })
+                };
+                if open { 0 } else { -1 }
             }
         }
     }
