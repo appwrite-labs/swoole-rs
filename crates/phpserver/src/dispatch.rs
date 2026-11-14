@@ -11,25 +11,24 @@ use std::{
     any::Any,
     ffi::{CStr, c_int},
     mem::ManuallyDrop,
-    ptr,
     sync::{Arc, OnceLock, atomic::Ordering::Relaxed},
 };
 use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
 use swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
 use swoole_rs_corebase::{DataHead, log, net_types::SocketAddress};
 use swoole_rs_corebase::{ServerEvent, WebSocketStatus};
-use swoole_rs_phpcoroutines::create_coroutine;
+use swoole_rs_phpcoroutines::call_handler_lent;
 use swoole_rs_process::methods::ExitStatus;
 use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::Worker;
 use swoole_rs_server::ConnectionRecord;
 use swoole_rs_server::callbacks::{Callback, CallbackKind, Ctx};
-use swoole_rs_zend::host::{callable, function_call};
+use swoole_rs_zend::host::callable;
 use swoole_rs_zend::{
     E_WARNING, Owned, OwnedArray, Value, ZString,
     bailout::{self, Bailout},
     long_zval, message, report,
-    sys::{zend_fcall_info_cache, zval, zval_ptr_dtor},
+    sys::{zval, zval_ptr_dtor},
 };
 
 /// `SW_ERROR_PHP_RUNTIME_NOTICE`.
@@ -81,7 +80,7 @@ pub(crate) fn undef() -> zval {
 /// "`<class>->on<event> handler error`" (`php_swoole_error`) when it fails.
 #[inline]
 fn call(cb: &Callable, args: &mut [zval], coroutine: bool, event: &str) -> Called {
-    match invoke(cb, args, ptr::null_mut(), coroutine) {
+    match invoke(cb, args, None, coroutine) {
         Ok(true) => Called::Done,
         Err(_) => Called::Bailout,
         Ok(false) => failed(event),
@@ -94,25 +93,11 @@ fn call(cb: &Callable, args: &mut [zval], coroutine: bool, event: &str) -> Calle
 pub(crate) fn invoke(
     cb: &Callable,
     args: &mut [zval],
-    retval: *mut zval,
+    retval: Option<&Value>,
     coroutine: bool,
 ) -> Result<bool, Bailout> {
-    #[expect(clippy::cast_possible_truncation, reason = "at most five arguments")]
-    let argc = args.len() as u32;
-    // SAFETY: the resolved cache of a callable the caller holds through the
-    // call, `argc` initialised arguments and the return slot or null; the
-    // coroutine leaf and the reporter run inside C traps.
-    let called = unsafe {
-        function_call(
-            cb.cache_ptr(),
-            argc,
-            args.as_mut_ptr(),
-            retval,
-            coroutine,
-            create_coroutine,
-            swoole_rs_zend::host::NO_THEN,
-        )
-    };
+    // The coroutine leaf and the reporter run inside C traps.
+    let called = call_handler_lent(cb, args, retval, coroutine);
     called.map_err(|bailout| {
         let _relayed = bailout::relay_to_c(Err(bailout));
         Bailout
@@ -678,7 +663,7 @@ pub fn php_swoole_server_on_receive(server: view::Server<'_>, request: &RecvData
     let called = invoke(
         &cb,
         args.get_mut(..argc).unwrap_or_default(),
-        ptr::null_mut(),
+        None,
         config.enable_coroutine.get(),
     );
     relay(called.map_or(true, |succeeded| {
@@ -1012,26 +997,11 @@ pub(crate) fn release_dispatch_func(owner: Option<Arc<Box<dyn Any>>>) -> Result<
 /// `sw_zend_call_function_ex(nullptr, cache, args, retval)` under
 /// `HOOK_PHP_CALL_STACK`: the reactor thread's stack is not the VM's.
 fn call_unlimited(
-    cache: *mut zend_fcall_info_cache,
+    callable: &callable::Callable,
     args: &mut [zval],
-    retval: *mut zval,
+    retval: &Value,
 ) -> Result<bool, Bailout> {
-    #[expect(clippy::cast_possible_truncation, reason = "at most four arguments")]
-    let argc = args.len() as u32;
-    swoole_rs_zend::with_unlimited_stack(|| {
-        // SAFETY: a resolved cache, initialised arguments and a return slot.
-        unsafe {
-            function_call(
-                cache,
-                argc,
-                args.as_mut_ptr(),
-                retval,
-                false,
-                create_coroutine,
-                swoole_rs_zend::host::NO_THEN,
-            )
-        }
-    })
+    swoole_rs_zend::with_unlimited_stack(|| call_handler_lent(callable, args, Some(retval), false))
 }
 
 /// `php_swoole_server_dispatch_func`: `dispatch_func($server, $fd, $type[, $data])`'s
@@ -1052,7 +1022,6 @@ extern "C" fn on_dispatch(
     else {
         return -1;
     };
-    let cache = dispatch.cache_ptr();
     // Its live object, copied without a reference as upstream.
     let zserv = zserv();
     let session = match conn {
@@ -1075,11 +1044,7 @@ extern "C" fn on_dispatch(
     }
     let retval = Owned::default();
     let mut worker_id = -1;
-    match call_unlimited(
-        cache,
-        args.get_mut(..argc).unwrap_or_default(),
-        retval.as_ptr(),
-    ) {
+    match call_unlimited(dispatch, args.get_mut(..argc).unwrap_or_default(), &retval) {
         Ok(false) => {
             if failed("onDispatch") == Called::Bailout {
                 Bailout.defer();
@@ -1121,7 +1086,7 @@ impl swoole_rs_phpswoole::length::PackageLength for Length {
         let retval = Owned::default();
         let mut result = -1;
         let args = std::slice::from_mut(&mut data);
-        match call_unlimited(callable.cache_ptr(), args, retval.as_ptr()) {
+        match call_unlimited(callable, args, &retval) {
             Ok(false) => crate::server::fatal(E_WARNING, c"length function handler error"),
             Ok(true) => result = isize::try_from(retval.long()).unwrap_or(-1),
             Err(_) => Bailout.defer(),

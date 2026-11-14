@@ -160,10 +160,9 @@ pub(crate) fn on_packet(
     if !dtls_session_listen(session) {
         return crate::conn_io::close_connection(serv, reactor, Some(record));
     }
-    // A session socket's object is its live connection.
-    let conn = record.read(|s| s.object.cast::<ConnectionRecord>());
-    // SAFETY: as above; nothing else borrows it during the call.
-    let Some(conn) = (unsafe { crate::Connection::from_ptr(conn) }) else {
+    // A session socket's connection is its fd's slot.
+    let fd = libc::c_long::from(record.fd());
+    let Some(conn) = serv.state().connection(fd, crate::records::Lookup::ByFd) else {
         return -1;
     };
     let failed = if single_thread {

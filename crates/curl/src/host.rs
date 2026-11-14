@@ -7,7 +7,7 @@
 use crate::{EXEC_NEEDS_COROUTINE, Easy, Multi};
 use std::ffi::{CStr, c_int, c_long, c_void};
 use std::io::Write;
-use std::ptr;
+use std::{ptr, rc::Rc};
 use swoole_rs_coroutine::{Coroutine, RC_CANCELED};
 use swoole_rs_curl_sys::{CURL_CSELECT_ERR, CURL_CSELECT_IN, CURL_CSELECT_OUT, CURLcode};
 use swoole_rs_reactor::{Socket, SocketRecord, event_api};
@@ -153,21 +153,27 @@ pub(crate) fn yield_(co: *mut c_void, timeout: f64) -> bool {
 /// `co->resume()` of a live, suspended coroutine.
 pub(crate) use swoole_rs_coroutine::resume;
 
-/// A multi's queued wake-up. `defer` marks the multi before it queues one, and
-/// `swr_v1_curl_multi_free` leaves a marked multi to its wake-up.
-struct Wake(*const Multi);
+/// A multi's queued wake-up, which holds the multi. `defer` marks the multi before it
+/// queues one, and `swr_v1_curl_multi_free` leaves a marked multi to its wake-up.
+struct Wake(Rc<Multi>);
 
 impl event_api::Deferred for Wake {
     fn run(self) {
-        // SAFETY: the multi `defer` marked, which is kept until this runs.
-        if crate::multi_deferred(unsafe { &*self.0 }) {
-            // SAFETY: released while the wake-up was queued; nothing else uses it.
-            unsafe { crate::swr_v1_curl_multi_free(self.0.cast_mut()) };
+        if crate::multi_deferred(&self.0) {
+            // Released while the wake-up was queued: this is its last reference.
+            self.0.close();
         }
     }
 
-    /// A reactor freed first runs no wake-up, as `swoole_event_defer`'s queue.
-    fn dispose(self) {}
+    /// A reactor freed first runs no wake-up, as `swoole_event_defer`'s queue,
+    /// which leaks the multi.
+    fn dispose(self) {
+        #[expect(
+            clippy::mem_forget,
+            reason = "upstream's queue leaks the multi a wake-up it never runs holds"
+        )]
+        std::mem::forget(self.0);
+    }
 }
 
 /// `swoole_event_defer` of the multi's wake-up, unless one is queued; nothing without
@@ -176,13 +182,16 @@ pub(crate) fn defer(multi: &Multi) {
     if multi.defer_callback.replace(true) {
         return;
     }
-    _ = event_api::swoole_event_defer_value(Wake(multi));
+    if let Some(multi) = multi.this.upgrade() {
+        _ = event_api::swoole_event_defer_value(Wake(multi));
+    }
 }
 
-/// `swoole_curl_multi_new`: a multi for `curl_multi_init`.
+/// `swoole_curl_multi_new`: a multi for `curl_multi_init`, whose reference C++
+/// holds until `swr_v1_curl_multi_free`.
 #[unsafe(no_mangle)]
 pub extern "C" fn swoole_curl_multi_new() -> *mut Multi {
-    Multi::create()
+    Rc::into_raw(Multi::create()).cast_mut()
 }
 
 /// `swoole_curl_check_bound_co`: the current coroutine, or null after the
@@ -231,7 +240,7 @@ pub unsafe extern "C" fn swoole_curl_easy_perform(cp: Easy) -> CURLcode {
     // SAFETY: per the caller, the easy handle's live Swoole handle.
     let handle = unsafe { &mut *cp.handle() };
     if handle.easy_multi.is_null() {
-        handle.easy_multi = Multi::create();
+        handle.easy_multi = swoole_curl_multi_new();
     }
     // SAFETY: the handle's own multi, which lives as long as the handle.
     let multi = unsafe { &*handle.easy_multi };

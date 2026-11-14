@@ -8,7 +8,7 @@ use crate::{
     native::Co,
     socket_options::{Stop, checked, errno, fd, long, string, text},
 };
-use libc::{c_char, c_int, c_uint, in_addr, in6_addr, sockaddr_in, sockaddr_in6, socklen_t};
+use libc::{c_int, c_uint, in_addr, in6_addr, sockaddr_in, sockaddr_in6, socklen_t};
 use std::{
     ffi::CStr,
     mem::size_of,
@@ -17,7 +17,7 @@ use std::{
     str::FromStr,
 };
 use swoole_rs_corebase::net_types::AddressStorage;
-use swoole_rs_corebase::sys::{InterfaceRequest, interface_ioctl, setsockopt, zeroed};
+use swoole_rs_corebase::sys::{InterfaceRequest, Text, interface_ioctl, setsockopt, zeroed};
 use swoole_rs_zend::{
     Array, Call, E_WARNING, Value, bailout, report,
     sys::{IS_LONG, swr_zend_convert_to_array},
@@ -48,9 +48,55 @@ const MEMBERSHIP: &[(c_int, bool)] = &[
     (libc::IP_DROP_MEMBERSHIP, false),
 ];
 
+/// `getaddrinfo`'s hints: an `addrinfo` whose pointers are null, as POSIX requires
+/// of every hint but the family, socket type, protocol and flags. Only
+/// [`Hints::v6`] makes one.
+#[repr(transparent)]
+struct Hints(libc::addrinfo);
+
+impl Hints {
+    /// `AF_INET6`, with `AI_V4MAPPED | AI_ADDRCONFIG`.
+    fn v6() -> Self {
+        let mut hints: libc::addrinfo = zeroed();
+        hints.ai_family = libc::AF_INET6;
+        hints.ai_flags = libc::AI_V4MAPPED | libc::AI_ADDRCONFIG;
+        Self(hints)
+    }
+}
+
+/// The head of a list `getaddrinfo` stored, not yet freed. Only `getaddrinfo`
+/// makes one (nothing here constructs it) and only `freeaddrinfo` takes it, by
+/// value, so each list is freed at most once.
+#[repr(transparent)]
+struct AddressList(ptr::NonNull<libc::addrinfo>);
+
+impl AddressList {
+    /// The list's first entry.
+    fn first(&self) -> &libc::addrinfo {
+        // SAFETY: a list getaddrinfo stored, freed only by `freeaddrinfo`, which
+        // takes the handle this borrows.
+        unsafe { self.0.as_ref() }
+    }
+}
+
 unsafe extern "C" {
     /// PHP's `php_network_gethostbyname`.
-    fn php_network_gethostbyname(name: *const c_char) -> *mut libc::hostent;
+    fn php_network_gethostbyname(name: *const libc::c_char) -> *mut libc::hostent;
+}
+
+// libc's. Each reads its `Text`s and hints, writes only the one object a reference
+// names and reads or writes no other caller memory, so they are declared `safe`.
+unsafe extern "C" {
+    /// Resolves `host` with no service under `hints`, storing a new list (none
+    /// for an empty one) when it returns 0.
+    safe fn getaddrinfo(
+        host: Text<'_>,
+        service: Option<Text<'_>>,
+        hints: &Hints,
+        list: &mut Option<AddressList>,
+    ) -> c_int;
+    /// Frees a list `getaddrinfo` stored, which the handle's move hands over.
+    safe fn freeaddrinfo(list: AddressList);
 }
 
 /// The socket a helper works on.
@@ -236,24 +282,18 @@ fn inet6(s: Sock, host: &[u8]) -> Result<Option<sockaddr_in6>, Stop> {
 
 /// `getaddrinfo(host, AF_INET6, AI_V4MAPPED | AI_ADDRCONFIG)`'s first address.
 fn resolve6(s: Sock, host: &CStr) -> Result<Option<in6_addr>, Stop> {
-    let mut hints: libc::addrinfo = zeroed();
-    hints.ai_family = libc::AF_INET6;
-    hints.ai_flags = libc::AI_V4MAPPED | libc::AI_ADDRCONFIG;
-    let mut info = ptr::null_mut();
-    // SAFETY: NUL-terminated text, live hints and a writable list.
-    unsafe { libc::getaddrinfo(host.as_ptr(), ptr::null(), &raw const hints, &raw mut info) };
-    if info.is_null() {
+    let mut list = None;
+    let found = getaddrinfo(host.into(), None, &Hints::v6(), &mut list) == 0;
+    let Some(list) = list.filter(|_| found) else {
         socket_error(s.socket, "Host lookup failed", host_error())?;
         return Ok(None);
-    }
-    // SAFETY: the list getaddrinfo returned.
-    let first = unsafe { &*info };
+    };
+    let first = list.first();
     let address = (first.ai_family == libc::PF_INET6
         && first.ai_addrlen == socklen::<sockaddr_in6>())
     // SAFETY: an AF_INET6 entry's address is a sockaddr_in6.
     .then(|| unsafe { first.ai_addr.cast::<sockaddr_in6>().read_unaligned() }.sin6_addr);
-    // SAFETY: the list, no longer read.
-    unsafe { libc::freeaddrinfo(info) };
+    freeaddrinfo(list);
     if address.is_none() {
         warn(b"Host lookup failed: Non AF_INET6 domain returned on AF_INET6 socket")?;
     }
@@ -458,8 +498,8 @@ fn interface_name(_fd: c_int, index: c_uint, request: &mut libc::ifreq) -> bool 
     unsafe extern "C" {
         safe fn if_indextoname(
             index: c_uint,
-            name: &mut [c_char; libc::IF_NAMESIZE],
-        ) -> *mut c_char;
+            name: &mut [libc::c_char; libc::IF_NAMESIZE],
+        ) -> *mut libc::c_char;
     }
     !if_indextoname(index, &mut request.ifr_name).is_null()
 }
@@ -734,13 +774,17 @@ mod tests {
 
     #[cfg(not(target_vendor = "apple"))]
     unsafe extern "C" {
-        fn inet_pton(family: c_int, text: *const c_char, address: *mut std::ffi::c_void) -> c_int;
+        fn inet_pton(
+            family: c_int,
+            text: *const libc::c_char,
+            address: *mut std::ffi::c_void,
+        ) -> c_int;
         fn inet_ntop(
             family: c_int,
             address: *const std::ffi::c_void,
-            text: *mut c_char,
+            text: *mut libc::c_char,
             size: socklen_t,
-        ) -> *const c_char;
+        ) -> *const libc::c_char;
     }
 
     #[cfg(not(target_vendor = "apple"))]
@@ -803,7 +847,7 @@ mod tests {
         for address in addresses {
             let address: Ipv6Addr = address.parse().unwrap();
             let octets = address.octets();
-            let mut shown: [c_char; 46] = [0; 46];
+            let mut shown: [libc::c_char; 46] = [0; 46];
             let length = socklen_t::try_from(shown.len()).unwrap();
             let text = unsafe {
                 inet_ntop(

@@ -85,11 +85,14 @@ pub(crate) mod host {
         false
     }
     pub(crate) unsafe fn resume(_co: *mut c_void) {}
+    /// Holds a reference for the wake-up, as the real one does; the test's
+    /// `free` plays the wake-up's release of it.
     pub(crate) fn defer(multi: &Multi) {
         if multi.defer_callback.replace(true) {
             return;
         }
         log("defer".into());
+        unsafe { std::rc::Rc::increment_strong_count(multi) };
     }
 }
 
@@ -109,7 +112,7 @@ fn close(cp: *mut CURL) {
 }
 
 fn new_multi() -> &'static Multi {
-    unsafe { &*Multi::create() }
+    unsafe { &*Rc::into_raw(Multi::create()) }
 }
 
 fn free(multi: &Multi) {

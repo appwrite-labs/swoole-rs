@@ -335,7 +335,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
     let port = serv.port_by_server_fd(conn.server_fd());
     let idle = port.map_or(0.0, |port| port.config().max_idle_time.get());
     if idle > 0.0 && sock.read(|s| s.output.send_timer.is_null()) {
-        idle_timer(conn, sock, idle);
+        idle_timer(serv, conn, sock, idle);
     }
     if sock.read(|s| s.events) & EVENT_WRITE == 0 {
         reactor.interest(sock, Interest::AddWrite, 0);
@@ -397,12 +397,8 @@ fn send_file(sock: Socket<'_>, task: &[u8]) -> c_int {
 
 /// `swoole_timer_add(sec2msec(port->max_idle_time), true, ...)` for the socket's
 /// sends.
-fn idle_timer(conn: Connection<'_>, sock: Socket<'_>, idle: f64) {
-    let msec = (idle * 1000.0).c_cast::<libc::c_long>();
-    let tick = crate::connection::idle_tick;
-    // SAFETY: `tick` takes the live connection, which deletes the timer before it goes.
-    let node =
-        unsafe { swoole_rs_timer::swr_v1_timer_add_plain(msec, true, tick, conn.as_ptr().cast()) };
+fn idle_timer(serv: Server<'_>, conn: Connection<'_>, sock: Socket<'_>, idle: f64) {
+    let node = crate::connection::idle_timer(serv, conn, idle);
     let now = steady_ms();
     sock.edit(|sock| {
         sock.timeouts.write = idle;

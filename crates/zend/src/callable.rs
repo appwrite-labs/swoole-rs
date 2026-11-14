@@ -18,7 +18,7 @@ unsafe extern "C" {
     /// `sw_zend_fci_cache_persist`: one more reference to the object and the
     /// closure of the function `parse` resolved. The handle is spent: `keep`
     /// makes the [`Callable`] of the same record.
-    fn swr_zend_callable_hold(parsed: Parsed);
+    safe fn swr_zend_callable_hold(parsed: Parsed);
     /// `efree` of the record of a callable that holds nothing.
     #[link_name = "swr_zend_efree"]
     safe fn discard(parsed: Parsed);
@@ -34,7 +34,8 @@ unsafe extern "C" {
 #[repr(transparent)]
 pub struct Callable(*mut swr_zend_callable);
 
-/// A callable [`Callable::parse`] read from a call, whose arguments, object and
+/// A callable [`Callable::parse`] read from a call, made only once Zend
+/// resolved it (its cache names a function), whose arguments, object and
 /// closure are still the frame's: [`Parsed::keep`] makes it a [`Callable`], or
 /// [`Parsed::discard`] frees it. Releasing it as a `Callable` would release
 /// references it never took.
@@ -48,20 +49,14 @@ impl Callable {
     /// # Errors
     /// Argument `n` is not callable; Zend has raised its parameter error.
     pub fn parse(call: &Call, n: u32) -> Result<Parsed, Invalid> {
+        let (fci, fcc) = call.callable(n)?;
         // Zend's allocator, for one callable (`ecalloc`).
         let raw = emalloc(size_of::<swr_zend_callable>()).cast::<swr_zend_callable>();
-        // SAFETY: fresh storage; all-zero is an empty callable.
-        unsafe { raw.write_bytes(0, 1) };
+        // SAFETY: fresh storage, which `emalloc` never returns null for and
+        // aligns for the record: written whole before anything reads it.
+        unsafe { raw.write(swr_zend_callable { fci, fcc }) };
         let mut this = Parsed(raw);
-        let (fci, fcc) = match call.callable(n) {
-            Ok(parsed) => parsed,
-            Err(invalid) => {
-                this.discard();
-                return Err(invalid);
-            }
-        };
         let callable = this.record();
-        (callable.fci, callable.fcc) = (fci, fcc);
         callable.fci.param_count = call.num_args().saturating_sub(n);
         callable.fci.params = if callable.fci.param_count > 0 {
             call.arg(n + 1)
@@ -124,8 +119,8 @@ impl Callable {
 impl Parsed {
     /// The callable's record, which only this owner reaches until it is kept.
     fn record(&mut self) -> &mut swr_zend_callable {
-        // SAFETY: `parse`'s live allocation, zeroed (an empty callable) before
-        // this is made; the exclusive borrow is the only way to it.
+        // SAFETY: `parse`'s live allocation, written before this is made; the
+        // exclusive borrow is the only way to it.
         unsafe { &mut *self.0 }
     }
 
@@ -171,8 +166,7 @@ impl Parsed {
             callable.fci.param_count = total;
         }
         let record = self.0;
-        // SAFETY: a parsed callable.
-        unsafe { swr_zend_callable_hold(self) };
+        swr_zend_callable_hold(self);
         Callable(record)
     }
 

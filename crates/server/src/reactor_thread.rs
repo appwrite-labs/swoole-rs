@@ -52,9 +52,12 @@ fn receive_packets(
     let Some(conn) = state.connection(fd.into(), Lookup::ByFd) else {
         return SW_ERR;
     };
-    let (kind, port) = (conn.socket_type(), conn.object());
+    let kind = conn.socket_type();
     // SAFETY: the datagram server's connection, whose object is its live port.
-    let dtls = unsafe { crate::port_config::of(port) }.is_dtls();
+    let Some(port) = (unsafe { view::Port::from_raw(conn.object()) }) else {
+        return SW_ERR;
+    };
+    let dtls = port.config().is_dtls();
     let head = size_of::<DgramPacket>();
     let mut task = SendData {
         info: DataHead {
@@ -90,10 +93,6 @@ fn receive_packets(
             return SW_ERR;
         };
         if dtls {
-            // SAFETY: as above, the connection's live port.
-            let Some(port) = (unsafe { view::Port::from_raw(port) }) else {
-                return SW_ERR;
-            };
             let datagram = data.cast::<u8>();
             // SAFETY: the `length` bytes just received into the buffer's room after the
             // packet head, which nothing writes during the call.

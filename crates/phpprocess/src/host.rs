@@ -10,13 +10,13 @@ use std::{
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{swr_v1_core_signal_listener_num, thread_async_threads};
-use swoole_rs_phpcoroutines::create_coroutine;
+use swoole_rs_phpcoroutines::call_handler_lent;
 use swoole_rs_phpswoole::{Switch, built_with};
 use swoole_rs_process::worker_record::WorkerType;
 use swoole_rs_process::{methods, worker_record::Worker};
 use swoole_rs_reactor::event_api::{Deferred, swoole_event_defer_value};
 use swoole_rs_server::view;
-use swoole_rs_zend::host::{callable, function_call};
+use swoole_rs_zend::host::callable;
 use swoole_rs_zend::{
     Owned, Value,
     bailout::{self, Bailout},
@@ -175,21 +175,8 @@ fn call(callable: &callable::Callable, args: &[&Value], coroutine: bool) -> bool
         // Copied bitwise; the copy is never released.
         *slot = arg.copy_value();
     }
-    let argc = u32::try_from(args.len().min(argv.len())).unwrap_or(0);
-    let cache = callable.cache_ptr();
-    // SAFETY: a live cache and `argc` zvals; the leaves are phpcoroutines' and C's.
-    let called = unsafe {
-        function_call(
-            cache,
-            argc,
-            argv.as_mut_ptr(),
-            ptr::null_mut(),
-            coroutine,
-            create_coroutine,
-            swoole_rs_zend::host::NO_THEN,
-        )
-    };
-    deferred(called).unwrap_or(false)
+    let (argv, _) = argv.split_at_mut(args.len().min(2));
+    deferred(call_handler_lent(callable, argv, None, coroutine)).unwrap_or(false)
 }
 
 /// A callable a static keeps (a signal's): null, or the `Rc` of a [`Callable`]

@@ -63,10 +63,13 @@ pub enum Warning {
 
 const _: () = assert!(MTYPE == 8, "QueueNode::mtype is the u64 heading the buffer");
 
-/// The `T` at `at` bytes into `buf`.
-fn read<T: Copy>(buf: *const u8, at: usize) -> T {
-    // SAFETY: every caller reads a DataHead field inside its buffer.
-    unsafe { buf.wrapping_add(at).cast::<T>().read_unaligned() }
+/// The `N` bytes at `at` into the `EventData` after `out`'s mtype; zeros past its end.
+fn head_bytes<const N: usize>(out: &[u64], at: usize) -> [u8; N] {
+    core::array::from_fn(|i| {
+        let byte = MTYPE + at + i;
+        let word = out.get(byte / 8).map_or([0; 8], |word| word.to_ne_bytes());
+        word.get(byte % 8).copied().unwrap_or(0)
+    })
 }
 
 /// One hook's arguments and results. Only this crate makes and fills one, over
@@ -444,9 +447,10 @@ impl<'a> Worker<'a> {
                 }
             };
             if n >= 0 {
-                let length = read::<u32>(buf, HEAD_LEN);
+                let length = u32::from_ne_bytes(head_bytes(&out, HEAD_LEN));
                 let size = HEAD as u64 + u64::from(length);
-                let tmpfile = read::<u16>(buf, HEAD_EXT_FLAGS) & TASK_TMPFILE != 0;
+                let tmpfile =
+                    u16::from_ne_bytes(head_bytes(&out, HEAD_EXT_FLAGS)) & TASK_TMPFILE != 0;
                 let alone = self.connection().is_none();
                 if n.c_cast::<u64>() != size || (tmpfile && length != PACKET_TASK) {
                     // No task runs; a connection is still answered.
@@ -466,7 +470,8 @@ impl<'a> Worker<'a> {
                     trapped(|| {
                         self.native.task(&mut call);
                         if call.result < 0 {
-                            self.warn(Warning::TaskFailed(read::<i64>(buf, 0)), 0);
+                            let fd = i64::from_ne_bytes(head_bytes(&out, 0));
+                            self.warn(Warning::TaskFailed(fd), 0);
                         }
                         if alone {
                             self.native.end();

@@ -906,7 +906,7 @@ fn command_run(callable: &Weak<Kept>, message: &[u8], reply: &mut Vec<u8>) {
     let message = Owned::string(ZString::new(message)).into_zval();
     let mut args = [crate::dispatch::zserv(), message];
     let retval = Owned::default();
-    let called = crate::dispatch::invoke(&callable, &mut args, retval.as_ptr(), false);
+    let called = crate::dispatch::invoke(&callable, &mut args, Some(&*retval), false);
     // The message string made above.
     crate::dispatch::dtor(&mut args[1]);
     let bailed = match called {

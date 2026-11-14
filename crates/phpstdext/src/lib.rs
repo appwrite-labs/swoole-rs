@@ -167,8 +167,8 @@ impl<'a> Op<'a> {
             // SAFETY: the live slot it points to.
             slot = unsafe { Value::from_ptr(target) }?;
         }
-        // SAFETY: the variable's own slot, or its reference's, which the
-        // opcode handler works on in place, as Zend's does.
-        unsafe { Value::from_ptr(slot.referent()) }
+        // The variable's own slot, or its reference's, which the opcode
+        // handler works on in place, as Zend's does.
+        Some(slot.referred())
     }
 }

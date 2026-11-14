@@ -3,10 +3,9 @@
 use crate::{
     ArrayMut, Class, Owned, OwnedArray, Value, ZString, bailout,
     sys::{
-        IS_OBJECT, object_init_ex, object_properties_init, swr_zend_object_alloc,
-        swr_zend_try_facade_update, zend_class_entry, zend_long, zend_object, zend_object_handlers,
-        zend_object_std_dtor, zend_object_std_init, zend_objects_destroy_object,
-        zend_update_property, zval,
+        IS_OBJECT, object_properties_init, swr_zend_object_alloc, swr_zend_try_facade_update,
+        zend_class_entry, zend_long, zend_object, zend_object_handlers, zend_object_std_dtor,
+        zend_object_std_init, zend_objects_destroy_object, zend_update_property,
     },
 };
 use std::{
@@ -33,6 +32,53 @@ unsafe extern "C" {
         handlers: *const zend_object_handlers,
         found: &Owned,
     ) -> bool;
+}
+
+/// A live object, borrowed for `'a`: one a zval or frame holds, or one Zend
+/// passes a handler. Zend changes it (its refcount, its properties) whenever PHP
+/// runs, so each read borrows it only while it copies a field out
+/// ([`ObjectRef::read`]).
+#[derive(Clone, Copy)]
+pub struct ObjectRef<'a>(
+    pub(crate) *mut zend_object,
+    pub(crate) PhantomData<&'a zend_object>,
+);
+
+impl<'a> ObjectRef<'a> {
+    #[must_use]
+    #[inline]
+    pub fn as_ptr(self) -> *mut zend_object {
+        self.0
+    }
+
+    /// `f` of the object, which it reads only: no PHP code runs, so nothing
+    /// changes the object, while it is borrowed.
+    #[inline]
+    pub(crate) fn read<R>(self, f: impl FnOnce(&zend_object) -> R) -> R {
+        // SAFETY: a live object, per the type; the borrow ends with `f`.
+        f(unsafe { &*self.0 })
+    }
+
+    /// `obj->handle`: its slot in the executor's object store.
+    #[must_use]
+    #[inline]
+    pub fn handle(self) -> u32 {
+        self.read(|object| object.handle)
+    }
+
+    /// `obj->handlers`.
+    #[must_use]
+    #[inline]
+    pub fn handlers(self) -> *const zend_object_handlers {
+        self.read(|object| object.handlers)
+    }
+
+    /// `obj->ce`: the object's class, which outlives it.
+    #[must_use]
+    #[inline]
+    pub fn class_entry(self) -> crate::ClassEntry<'a> {
+        crate::ClassEntry(self.read(|object| object.ce), PhantomData)
+    }
 }
 
 /// `data` followed by the object Zend sees; `std` must stay last, since Zend
@@ -145,15 +191,20 @@ impl<T> std::ops::Deref for CustomClass<T> {
 /// # Safety
 /// `std` is a live object that outlives `'a`.
 pub unsafe fn custom<'a, T: Custom>(std: *mut zend_object) -> Option<&'a T> {
-    // SAFETY: per the caller.
-    if unsafe { (*std).handlers } != T::class().handlers() {
+    // Per the caller, a live object.
+    custom_in(ObjectRef(std, PhantomData))
+}
+
+/// [`custom`] of a borrowed object.
+pub(crate) fn custom_in<T: Custom>(object: ObjectRef<'_>) -> Option<&T> {
+    if object.handlers() != T::class().handlers() {
         return None;
     }
     // SAFETY: only `create::<T>` and `new_object::<T>` give an object the
     // handlers `register_object::<T>` made, after writing its data; only
     // `free::<T>` drops it, when no reference to the object (so none to its
     // data) remains. Handlers are null only before registration.
-    Some(unsafe { &*Object::<T>::data_ptr(std) })
+    Some(unsafe { &*Object::<T>::data_ptr(object.as_ptr()) })
 }
 
 /// One of `T`'s objects by its handle, for a holder the object must not keep
@@ -170,8 +221,7 @@ impl<T: Custom> Weak<T> {
     #[must_use]
     pub fn of(value: &Value) -> Option<Self> {
         value.custom::<T>()?;
-        // SAFETY: the zval holds the live object.
-        Some(Self(unsafe { (*value.object()?).handle }, PhantomData))
+        Some(Self(value.object_ref()?.handle(), PhantomData))
     }
 
     /// The object, with a reference of its own.
@@ -228,9 +278,9 @@ unsafe extern "C" fn destruct<T: Custom>(std: *mut zend_object) {
     // SAFETY: per Zend; a bailout from `__destruct` crosses only this frame,
     // which owns nothing yet.
     unsafe { zend_objects_destroy_object(std) };
-    // SAFETY: a live object. Zend holds one reference across this handler, so
-    // a count of one means nothing else names the object.
-    let last = unsafe { (*std).gc.refcount } == 1;
+    // Per Zend, a live object. Zend holds one reference across this handler,
+    // so a count of one means nothing else names the object.
+    let last = ObjectRef(std, PhantomData).read(|object| object.gc.refcount) == 1;
     bailout::finish_after(|| {
         // SAFETY: a live object of `T`'s class, which outlives this call.
         if let Some(data) = unsafe { custom::<T>(std) } {
@@ -288,8 +338,7 @@ impl Props<'_> {
     /// `Z_OBJCE_P`: the object's own class.
     #[inline]
     pub(crate) fn class(self) -> *mut zend_class_entry {
-        // SAFETY: a live object, per `new`.
-        unsafe { (*self.1).ce }
+        self.class_entry().as_ptr()
     }
 
     /// `zend_update_property` inside `zend_try`: the property takes a copy of
@@ -371,11 +420,26 @@ impl Props<'_> {
 }
 
 impl<'a> Props<'a> {
+    /// Property writes on `object` under `scope` (`None` for none): a
+    /// registered class or null, as [`Props::new`] takes.
+    #[must_use]
+    #[inline]
+    pub fn of(scope: Option<&crate::Class>, object: ObjectRef<'a>) -> Self {
+        let scope = scope.map_or(std::ptr::null_mut(), crate::Class::entry);
+        Self(scope, object.as_ptr(), PhantomData)
+    }
+
+    /// The object, live for `'a` ([`Props::new`]).
+    #[inline]
+    fn object(self) -> ObjectRef<'a> {
+        ObjectRef(self.1, PhantomData)
+    }
+
     /// `Z_OBJCE_P` as a handle: the object's own class, which outlives it.
     #[must_use]
     #[inline]
     pub fn class_entry(self) -> crate::ClassEntry<'a> {
-        crate::ClassEntry(self.class(), PhantomData)
+        self.object().class_entry()
     }
 
     /// `sw_zend_read_property_ex`: the slot of the instance property the
@@ -423,17 +487,6 @@ impl<'a> Props<'a> {
         };
         Some(slot)
     }
-}
-
-/// `object_init_ex(target, ce)`: a new object of class `ce` in `target`,
-/// which holds its reference; the object.
-/// # Safety
-/// `target` is a writable zval and `ce` a registered, instantiable class.
-pub unsafe fn init_object(target: *mut zval, ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: per the caller; it only fails for abstract classes and interfaces.
-    let _ = unsafe { object_init_ex(target, ce) };
-    // SAFETY: `target` now holds the new object, as `obj`, which leads the zval.
-    unsafe { target.cast::<*mut zend_object>().read() }
 }
 
 #[cfg(test)]

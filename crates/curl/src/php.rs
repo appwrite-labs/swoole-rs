@@ -20,11 +20,11 @@ pub unsafe extern "C" fn swoole_curl_get_handle(
     exclusive: bool,
     required: bool,
 ) -> *mut *mut CURL {
-    let Some(object) = zid.and_then(Value::object) else {
+    let Some(object) = zid.and_then(Value::object_ref) else {
         return std::ptr::null_mut();
     };
-    // SAFETY: a live object.
-    let handlers = unsafe { (*object).handlers };
+    let handlers = object.handlers();
+    let object = object.as_ptr();
     // SAFETY: its live handlers; `offset` is where `std` sits in `php_curl`.
     let offset = unsafe { (*handlers).offset };
     #[expect(

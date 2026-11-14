@@ -614,8 +614,7 @@ pub fn owner_queue(timer: &Owner) -> *mut Queue {
 }
 
 /// `Timer::get_reactor()`.
-#[must_use]
-pub fn owner_reactor(timer: &Owner) -> *mut c_void {
+pub(crate) fn owner_reactor(timer: &Owner) -> *mut c_void {
     timer.reactor.get()
 }
 

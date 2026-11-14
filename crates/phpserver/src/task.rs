@@ -701,7 +701,7 @@ pub(crate) fn on_task(server: view::Server<'_>, task: Packed<'_>) -> Result<c_in
             invoke(
                 &cb,
                 args.get_mut(..argc).unwrap_or_default(),
-                retval.as_ptr(),
+                Some(&retval),
                 facts.task_coroutine,
             )
         },
@@ -771,7 +771,7 @@ pub(crate) fn on_finish(server: view::Server<'_>, task: Packed<'_>) -> Result<c_
     let outcome = match invoke(
         &cb,
         args.get_mut(..argc).unwrap_or_default(),
-        ptr::null_mut(),
+        None,
         facts.enable_coroutine,
     ) {
         Ok(false) => handler_error("onFinish"),

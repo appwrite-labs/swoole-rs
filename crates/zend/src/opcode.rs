@@ -11,6 +11,25 @@ pub const CONTINUE: c_int = 0;
 /// `ZEND_USER_OPCODE_DISPATCH`: Zend runs the instruction itself.
 pub const DISPATCH: c_int = 2;
 
+/// A frame executing on this thread, live for `'a`: one Zend passes an
+/// internal function's handler, a user opcode handler or an observer. Zend changes it (its instruction, its
+/// variables) as it executes, so each read borrows its header only while it
+/// copies a field out ([`Executing::read`]).
+#[derive(Clone, Copy)]
+pub(crate) struct Executing<'a>(
+    pub(crate) *mut zend_execute_data,
+    pub(crate) PhantomData<&'a zend_execute_data>,
+);
+
+impl Executing<'_> {
+    /// `f` of the frame's header, which it reads only: no Zend code runs, so
+    /// nothing changes the frame, while it is borrowed.
+    pub(crate) fn read<R>(self, f: impl FnOnce(&zend_execute_data) -> R) -> R {
+        // SAFETY: a live frame, per the type; the borrow ends with `f`.
+        f(unsafe { &*self.0 })
+    }
+}
+
 /// A live frame at the instruction of the user opcode handler Zend passed it
 /// to, for `'a`: it is running a function's instruction, so it has a function. Only [`handler`] makes one.
 #[derive(Clone, Copy)]
@@ -25,6 +44,11 @@ impl<'a> Frame<'a> {
         self.ptr
     }
 
+    /// The frame, executing for `'a`.
+    fn executing(self) -> Executing<'a> {
+        Executing(self.ptr, PhantomData)
+    }
+
     /// The handler runs on the thread executing this frame.
     #[must_use]
     pub fn php(self) -> Php<'a> {
@@ -34,15 +58,13 @@ impl<'a> Frame<'a> {
     /// `EX(func)`: the function the frame runs, which Zend keeps for the call.
     #[must_use]
     pub fn function(self) -> Function<'a> {
-        // SAFETY: a live frame.
-        Function(unsafe { (*self.ptr).func }, PhantomData)
+        Function(self.executing().read(|frame| frame.func), PhantomData)
     }
 
     /// `EX(opline)`.
     #[must_use]
     pub fn opline(self) -> *const zend_op {
-        // SAFETY: a live frame.
-        unsafe { (*self.ptr).opline }
+        self.executing().read(|frame| frame.opline)
     }
 
     /// `EX(opline)`'s instruction, which the handler was called for: part of

@@ -37,6 +37,13 @@ pub struct ServerState {
     threads: std::sync::Mutex<Vec<(u64, std::thread::JoinHandle<()>)>>,
     /// The interface addresses `Server::create` first read (`local_addr`); none before.
     pub(crate) local_addrs: std::sync::OnceLock<crate::local_addr::LocalAddrs>,
+    /// `gs->pipe_packet_msg_id`, which numbers every bus's messages: the shared
+    /// counter `swr_v1_server_shared_init` returned, mapped as long as the buses use it.
+    #[cfg_attr(
+        not(all(feature = "upstream-symbols", not(test))),
+        expect(dead_code, reason = "only the hybrid's threads number their buses")
+    )]
+    pub(crate) msg_ids: std::sync::OnceLock<&'static core::sync::atomic::AtomicU64>,
     /// `Server::task_notify_pipes`: a blocking `Pipe` per event worker, which
     /// `task_sync` waits on; `swr_v1_server_delete` closes them, as `~Server` did.
     #[expect(
@@ -99,6 +106,7 @@ impl ServerState {
             locked: (std::sync::Mutex::new((false, 0)), std::sync::Condvar::new()),
             threads: std::sync::Mutex::new(Vec::new()),
             local_addrs: std::sync::OnceLock::new(),
+            msg_ids: std::sync::OnceLock::new(),
             task_pipes: std::sync::Mutex::new(Vec::new()),
             worker_pipes: std::sync::Mutex::new(Vec::new()),
             stopping: AtomicBool::new(false),

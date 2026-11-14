@@ -56,7 +56,7 @@ pub use helpers::{
 pub use local::{EnvLock, Php};
 pub use minit::{Minit, Mshutdown, Parent};
 pub use object::{
-    Custom, CustomClass, Object, Props, Weak, custom as custom_of, init_object, new_object,
+    Custom, CustomClass, Object, ObjectRef, Props, Weak, custom as custom_of, new_object,
 };
 pub use swoole_rs_zend_sys as sys;
 pub use sys::add_next_index_long;

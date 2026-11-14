@@ -272,10 +272,11 @@ fn body(serv: view::Server<'_>, id: u32, kind: WorkerType) {
 
 /// The task and user workers' own message bus.
 fn new_bus(serv: view::Server<'_>) -> PoolBus {
-    let counter = core::ptr::from_ref(&serv.counters().pipe_packet_msg_id);
-    // SAFETY: the server's shared counters, mapped until `swr_v1_server_delete`,
-    // after this thread has freed its bus.
-    pool_native::new_bus(unsafe { &*counter })
+    let counter = serv.state().msg_ids.get().copied();
+    pool_native::new_bus(
+        counter
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("a server without its shared counters")),
+    )
 }
 
 /// Readies the thread's new bus, used by this thread alone, at the address it keeps.

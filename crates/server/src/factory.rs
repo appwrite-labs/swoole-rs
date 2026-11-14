@@ -46,8 +46,8 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> c
         }
         Step::StartProcess => return crate::thread_ops::start_reactor_threads(serv),
         Step::TimerReinit => {
-            if crate::objects::timer_detached() {
-                crate::objects::timer_reinit(false);
+            if swoole_rs_timer::thread_timer_detached() {
+                swoole_rs_timer::thread_timer_reinit(false);
             }
         }
         Step::Ignore(signo) => _ = signal_upstream::set(signo, Handler::NONE, false),

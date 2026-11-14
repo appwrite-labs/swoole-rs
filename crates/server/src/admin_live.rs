@@ -15,7 +15,6 @@ use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_process::worker_record::WorkerRecord;
 use swoole_rs_reactor::{ReactorPrepared, Registry, Socket as Handle, SocketFields, SocketRecord};
-use swoole_rs_tls::socket_pair::SocketPair;
 
 /// `zend_memory_usage(true)`, from the PHP binding.
 static PHP_MEMORY: OnceLock<extern "C" fn() -> usize> = OnceLock::new();
@@ -167,17 +166,11 @@ impl Facts for Live<'_> {
         let worker = worker.unwrap_or_else(|| {
             swoole_rs_corebase::fatal("an admin command index past the pool's workers")
         });
-        // SAFETY: the worker's live `UnixSocket`.
-        let pipe = unsafe { &*worker.pipe_object().cast::<SocketPair>() };
-        let end = if master {
-            pipe.master_end()
-        } else {
-            pipe.worker_end()
-        };
-        end.unwrap_or_else(|| {
-            swoole_rs_corebase::fatal("an admin command on a worker without a pipe")
-        })
-        .read(socket)
+        crate::view::worker_pipe(worker, master)
+            .unwrap_or_else(|| {
+                swoole_rs_corebase::fatal("an admin command on a worker without a pipe")
+            })
+            .read(socket)
     }
 
     fn has_reactor(&mut self) -> bool {
