@@ -112,7 +112,7 @@ pub fn php_swoole_coroutine_minit(minit: &Minit) -> Result<(), Bailout> {
         Ok(())
     };
     let methods = if host::flag(host::CORO_TIME) {
-        &COROUTINE_METHODS.0
+        COROUTINE_METHODS.rows()
     } else {
         COROUTINE_METHODS.without(&[c"getExecuteTime"])
     };
@@ -150,7 +150,7 @@ pub fn php_swoole_coroutine_minit(minit: &Minit) -> Result<(), Bailout> {
     minit.register_child(
         &EXIT,
         c"Swoole\\ExitException",
-        &EXIT_EXCEPTION_METHODS.0,
+        EXIT_EXCEPTION_METHODS.rows(),
         exception,
         |_, _| {},
     );

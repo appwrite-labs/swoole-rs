@@ -10,21 +10,22 @@ fn wait_once() -> Result<(), Bailout> {
     Ok(())
 }
 
-pub(super) fn init() -> Result<i32, Bailout> {
+/// Whether the event loop is ready.
+pub(super) fn init() -> Result<bool, Bailout> {
     if !native::cli() {
         native::fatal(E_ERROR, c"async-io must be used in PHP CLI mode")?;
-        return Ok(-1);
+        return Ok(false);
     }
     if let Some(refusal) = native::server_refusal() {
         native::fatal(E_ERROR, refusal)?;
-        return Ok(-1);
+        return Ok(false);
     }
     if !has_reactor() && !native::create() {
         native::fatal(E_ERROR, c"Unable to create event-loop reactor")?;
-        return Ok(-1);
+        return Ok(false);
     }
     swoole_rs_phpcoroutines::install_exit_condition();
-    Ok(0)
+    Ok(true)
 }
 
 pub(super) fn check(php: swoole_rs_zend::Php<'_>) -> Result<(), Bailout> {
@@ -33,14 +34,12 @@ pub(super) fn check(php: swoole_rs_zend::Php<'_>) -> Result<(), Bailout> {
     Ok(())
 }
 
-pub(super) fn ensure() -> Result<i32, Bailout> {
-    if native::shutdown_begun() {
-        return Ok(-1);
+/// The event loop, made unless shutdown began.
+pub(super) fn ensure() -> Result<(), Bailout> {
+    if !native::shutdown_begun() && !has_reactor() {
+        init()?;
     }
-    if has_reactor() {
-        return Ok(0);
-    }
-    Ok(if init()? == 0 { 1 } else { -1 })
+    Ok(())
 }
 
 pub(super) fn wait() -> Result<(), Bailout> {

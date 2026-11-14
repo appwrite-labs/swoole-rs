@@ -8,7 +8,7 @@ use crate::{EXEC_NEEDS_COROUTINE, Easy, Multi};
 use std::ffi::{CStr, c_int, c_long, c_void};
 use std::io::Write;
 use std::{ptr, rc::Rc};
-use swoole_rs_coroutine::{Coroutine, RC_CANCELED};
+use swoole_rs_coroutine::{Coroutine, Resume};
 use swoole_rs_curl_sys::{CURL_CSELECT_ERR, CURL_CSELECT_IN, CURL_CSELECT_OUT, CURLcode};
 use swoole_rs_reactor::{Socket, SocketRecord, event_api};
 
@@ -147,7 +147,7 @@ pub(crate) fn current() -> *mut c_void {
 pub(crate) fn yield_(co: *mut c_void, timeout: f64) -> bool {
     let code = swoole_rs_coroutine::yield_timed(co, timeout);
     // `yield_ex`: the last error of a timeout or a cancel.
-    !swoole_rs_coroutine::yield_resumed(code) && code == RC_CANCELED
+    !swoole_rs_coroutine::yield_resumed(code) && code == Resume::Canceled
 }
 
 /// `co->resume()` of a live, suspended coroutine.

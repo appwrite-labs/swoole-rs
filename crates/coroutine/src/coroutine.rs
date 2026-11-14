@@ -22,9 +22,18 @@ pub enum State {
     End = 3,
 }
 
-pub const RC_OK: i32 = 0;
-pub const RC_TIMEDOUT: i32 = -1;
-pub const RC_CANCELED: i32 = -2;
+/// `Coroutine::resume_code_`: how its last yield ended. C++ reads it inline as an
+/// `int32_t`; Rust does every write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(i32)]
+pub enum Resume {
+    /// `RC_OK`: resumed.
+    Ok = 0,
+    /// `RC_TIMEDOUT`.
+    TimedOut = -1,
+    /// `RC_CANCELED`.
+    Canceled = -2,
+}
 
 const STACK_MIN: usize = 64 * 1024;
 const STACK_MAX: usize = 16 * 1024 * 1024;
@@ -60,7 +69,7 @@ pub struct Coroutine {
     pub native: *mut c_void,
     pub cid: c_long,
     pub state: State,
-    pub resume_code: i32,
+    pub resume_code: Resume,
     pub task: Option<CoroutineTask>,
     /// The waiting yield's [`Canceler`], null when it can't be canceled.
     pub cancel_fn: *mut c_void,
@@ -81,7 +90,7 @@ impl Coroutine {
         native: ptr::null_mut(),
         cid: 0,
         state: State::Init,
-        resume_code: RC_OK,
+        resume_code: Resume::Ok,
         task: None,
         cancel_fn: ptr::null_mut(),
         origin: ptr::null_mut(),
@@ -103,12 +112,12 @@ impl Coroutine {
     /// Canceled, before its canceler runs.
     pub fn mark_canceled(&mut self) {
         self.cancel_fn = ptr::null_mut();
-        self.resume_code = RC_CANCELED;
+        self.resume_code = Resume::Canceled;
     }
 
     /// A timed wait expired, before its resume.
     pub fn mark_timed_out(&mut self) {
-        self.resume_code = RC_TIMEDOUT;
+        self.resume_code = Resume::TimedOut;
     }
 }
 
@@ -448,7 +457,7 @@ pub(crate) fn yield_(s: Sched, co: Co) {
     let (hooks, [on_yield, _, _]) = effects(s);
     co.with(|co| {
         co.state = State::Waiting;
-        co.resume_code = RC_OK;
+        co.resume_code = Resume::Ok;
     });
     notify(on_yield, co);
     let origin = co.origin();
@@ -855,10 +864,10 @@ pub(crate) mod tests {
             (*co).mark_canceled();
             assert_eq!(
                 ((*co).resume_code, (*co).cancel_fn),
-                (RC_CANCELED, ptr::null_mut())
+                (Resume::Canceled, ptr::null_mut())
             );
             (*co).mark_timed_out();
-            assert_eq!((*co).resume_code, RC_TIMEDOUT);
+            assert_eq!((*co).resume_code, Resume::TimedOut);
         }
     }
 

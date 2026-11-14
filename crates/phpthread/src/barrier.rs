@@ -41,7 +41,11 @@ method_table! {
 
 /// `php_swoole_thread_barrier_minit`.
 pub fn barrier_minit(minit: &Minit) {
-    minit.register_object::<BarrierObject>(c"Swoole\\Thread\\Barrier", &METHODS.0, ZEND_ACC_FINAL);
+    minit.register_object::<BarrierObject>(
+        c"Swoole\\Thread\\Barrier",
+        METHODS.rows(),
+        ZEND_ACC_FINAL,
+    );
 }
 
 /// A Barrier stored in a container, by reference; `None` for other objects.

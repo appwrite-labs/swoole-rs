@@ -1,7 +1,7 @@
 //! The HTTP/1 response header and trailer, and body compression, as
 //! `swoole::http::Context::build_header`, `build_trailer` and `compress` did
 //! them. Each send leases reusable storage until its IO completes.
-use crate::host;
+use crate::host::{self, Property};
 use crate::parse::CAPABILITIES;
 use crate::state::{Slot, State};
 use std::borrow::Cow;
@@ -64,17 +64,14 @@ pub(crate) fn minit(class: &Class) {
 }
 
 /// `swoole_http_init_and_read_property`: the response's `header`, `cookie`
-/// or `trailer` array (`host::HEADER`, `COOKIE`, `TRAILER`), made on first use.
-pub(crate) fn response_property(state: &mut State, which: c_int) -> *mut zval {
+/// or `trailer` array, made on first use.
+pub(crate) fn response_property(state: &mut State, which: Property) -> *mut zval {
     let response = &mut state.response;
-    let slot = match which {
-        host::HEADER => &mut response.zheader,
-        host::COOKIE => &mut response.zcookie,
-        _ => &mut response.ztrailer,
-    };
-    let index = usize::try_from(which).unwrap_or(2).min(2);
-    let Some(property) = PROPERTIES.get(index) else {
-        return ptr::null_mut();
+    let [header, cookie, trailer] = &PROPERTIES;
+    let (slot, property) = match which {
+        Property::Header => (&mut response.zheader, header),
+        Property::Cookie => (&mut response.zcookie, cookie),
+        Property::Trailer => (&mut response.ztrailer, trailer),
     };
     slot.init_array(&response.zobject, property, 8)
 }

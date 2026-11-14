@@ -1592,7 +1592,7 @@ method_table! {
 pub fn http_client_minit(minit: &Minit) -> Result<(), Bailout> {
     let shortname = swoole_rs_phpswoole::globals().use_shortname.get();
     FEATURES.store(swoole_rs_phpswoole::codecs(), Ordering::Relaxed);
-    minit.register_object::<Data>(c"Swoole\\Coroutine\\Http\\Client", &METHODS.0, 0);
+    minit.register_object::<Data>(c"Swoole\\Coroutine\\Http\\Client", METHODS.rows(), 0);
     if shortname {
         minit.alias(&CLIENT, c"Co\\Http\\Client")?;
     }

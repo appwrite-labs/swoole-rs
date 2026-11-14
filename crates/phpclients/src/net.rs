@@ -338,7 +338,7 @@ pub fn client() -> &'static Class {
 /// A registration bailed out.
 pub fn php_swoole_client_minit(minit: &Minit) -> Result<(), Bailout> {
     let methods = if built_with(Switch::Sockets) {
-        &METHODS.0
+        METHODS.rows()
     } else {
         METHODS.without(&[c"getSocket"])
     };

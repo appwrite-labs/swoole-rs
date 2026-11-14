@@ -349,7 +349,7 @@ unsafe fn pool_dispatch_sync(
         pm::dispatch(
             swoole_rs_process::process_pool::PoolRef::new(pool.cast()),
             swoole_rs_process::task_file::Packed::from_raw(data.cast()),
-            &mut *worker_id,
+            u32::try_from(*worker_id).ok(),
             true,
         )
     };

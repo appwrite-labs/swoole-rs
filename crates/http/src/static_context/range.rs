@@ -28,6 +28,17 @@ pub(super) struct HttpContextRange {
     length: usize,
     if_range: u32,
 }
+/// The effect a range step waits on, or that the invocation is done.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Effect {
+    Done,
+    /// A part's header: the boundary and the part's MIME type.
+    Header,
+    /// The final boundary.
+    Boundary,
+    /// The If-Range date.
+    Date,
+}
 /// What the last effect observed: the part's MIME type, the boundary, the date.
 #[derive(Default)]
 struct Observation<'a> {
@@ -45,12 +56,15 @@ impl HttpStaticContext {
         effects: &impl StaticEffects,
     ) {
         let range = range.unwrap_or_default();
-        if self.range_begin(range.len(), u32::from(if_range.is_some())) < 0 {
+        if self
+            .range_begin(range.len(), u32::from(if_range.is_some()))
+            .is_err()
+        {
             return;
         }
         loop {
             let observed = match self.range_step(range) {
-                1 => {
+                Ok(Effect::Header) => {
                     // The pinned compiler's argument order: the boundary, then the MIME type.
                     let boundary_ready = self.ensure_boundary(effects);
                     let mime = effects.mime(self.filename());
@@ -59,16 +73,16 @@ impl HttpStaticContext {
                         boundary_ready,
                         modified: 0,
                     };
-                    if self.range_resume(&observed) == 1 {
+                    if self.range_resume(&observed) == Ok(true) {
                         effects.overflow();
                     }
                     continue;
                 }
-                2 => Observation {
+                Ok(Effect::Boundary) => Observation {
                     boundary_ready: self.ensure_boundary(effects),
                     ..Observation::default()
                 },
-                3 => Observation {
+                Ok(Effect::Date) => Observation {
                     modified: u32::from(
                         effects.modified_range(if_range.unwrap_or_default(), self.facts.mtime),
                     ),
@@ -76,7 +90,7 @@ impl HttpStaticContext {
                 },
                 _ => return,
             };
-            self.range_resume(&observed);
+            _ = self.range_resume(&observed);
         }
     }
     /// Upstream's `ensure_boundary`: the boundary, made from random characters
@@ -100,9 +114,9 @@ impl HttpStaticContext {
         self.content.clone()
     }
     /// Begin one invocation; previous committed tasks persist, scratch resets.
-    fn range_begin(&mut self, length: usize, if_range: u32) -> i32 {
+    fn range_begin(&mut self, length: usize, if_range: u32) -> Result<(), i32> {
         if length > isize::MAX as usize {
-            return OVERFLOW;
+            return Err(OVERFLOW);
         }
         self.range = HttpContextRange {
             length,
@@ -116,7 +130,7 @@ impl HttpStaticContext {
         } else {
             self.finishing();
         }
-        0
+        Ok(())
     }
     fn finishing(&mut self) {
         self.range.finish = HttpRangeFinish {
@@ -130,17 +144,19 @@ impl HttpStaticContext {
         };
         self.range.stage = Stage::Finish;
     }
-    fn full_task(&mut self) -> i32 {
+    fn full_task(&mut self) -> Result<(), i32> {
         self.tasks.prepare_full(0, self.range.last_length);
-        self.tasks.push()
+        match self.tasks.push() {
+            error if error < 0 => Err(error),
+            _ => Ok(()),
+        }
     }
-    /// Resume the parsing, accounting and commit work until an effect is needed:
-    /// done0, header MIME/RNG1, final-boundary RNG2, If-Range date3. Negative
-    /// results stop the invocation. Header accounting and push wait for the call
+    /// Resume the parsing, accounting and commit work until an effect is needed. An
+    /// error stops the invocation. Header accounting and push wait for the call
     /// after the caller has applied the returned errno effect.
-    fn range_step(&mut self, input: &[u8]) -> i32 {
+    fn range_step(&mut self, input: &[u8]) -> Result<Effect, i32> {
         if input.len() != self.range.length {
-            return INVALID;
+            return Err(INVALID);
         }
         loop {
             match self.range.stage {
@@ -152,7 +168,7 @@ impl HttpStaticContext {
                     if result < 0 {
                         self.facts.status = 416;
                         self.range.stage = Stage::Done;
-                        return 0;
+                        return Ok(Effect::Done);
                     }
                     match result {
                         0 => self.finishing(),
@@ -161,12 +177,12 @@ impl HttpStaticContext {
                             self.facts.content_length = self.facts.filesize;
                             let result = self.full_task();
                             self.range.stage = Stage::Done;
-                            return result;
+                            return result.map(|()| Effect::Done);
                         }
                         _ => {
                             self.range.last_length = self.range.part.length;
                             self.range.stage = Stage::Header;
-                            return 1;
+                            return Ok(Effect::Header);
                         }
                     }
                 }
@@ -179,7 +195,7 @@ impl HttpStaticContext {
                     let result = self.tasks.push();
                     if result < 0 {
                         self.range.stage = Stage::Done;
-                        return result;
+                        return Err(result);
                     }
                     self.range.stage = Stage::Parsing;
                 }
@@ -190,40 +206,39 @@ impl HttpStaticContext {
                     match action {
                         0 => {
                             self.range.stage = Stage::Done;
-                            return 0;
+                            return Ok(Effect::Done);
                         }
                         1 => {
                             self.range.last_length = self.range.finish.filesize;
-                            let result = self.full_task();
-                            if result < 0 {
+                            if let Err(error) = self.full_task() {
                                 self.range.stage = Stage::Done;
-                                return result;
+                                return Err(error);
                             }
                         }
                         2 => {
                             self.range.stage = Stage::End;
-                            return 2;
+                            return Ok(Effect::Boundary);
                         }
                         3 => {
                             self.range.stage = Stage::Date;
-                            return 3;
+                            return Ok(Effect::Date);
                         }
                         4 => self.tasks.clear(),
-                        _ => return INVALID,
+                        _ => return Err(INVALID),
                     }
                 }
-                Stage::Done => return 0,
-                _ => return INVALID,
+                Stage::Done => return Ok(Effect::Done),
+                _ => return Err(INVALID),
             }
         }
     }
-    /// Admit a completed effect. A header returns 1 only for the EOVERFLOW signal,
-    /// which the caller applies before the next step.
-    fn range_resume(&mut self, observed: &Observation<'_>) -> i32 {
+    /// Admit a completed effect: true only for a header's EOVERFLOW signal, which
+    /// the caller applies before the next step.
+    fn range_resume(&mut self, observed: &Observation<'_>) -> Result<bool, i32> {
         match self.range.stage {
             Stage::Header => {
                 if observed.boundary_ready == 0 {
-                    return INVALID;
+                    return Err(INVALID);
                 }
                 let format = HttpRangeFormat {
                     boundary: &self.boundary,
@@ -240,29 +255,30 @@ impl HttpStaticContext {
                     &format,
                     &mut self.range.written,
                 );
-                if result >= 0 {
-                    self.range.stage = Stage::CommitHeader;
+                if result < 0 {
+                    return Err(result);
                 }
-                result
+                self.range.stage = Stage::CommitHeader;
+                Ok(result == 1)
             }
             Stage::End => {
                 if observed.boundary_ready == 0 {
-                    return INVALID;
+                    return Err(INVALID);
                 }
                 let result = self.format_end();
                 if result < 0 {
-                    return result;
+                    return Err(result);
                 }
                 self.range.finish.end_length = self.end.len();
                 self.range.stage = Stage::Finish;
-                0
+                Ok(false)
             }
             Stage::Date => {
                 self.range.finish.modified = observed.modified;
                 self.range.stage = Stage::Finish;
-                0
+                Ok(false)
             }
-            _ => INVALID,
+            _ => Err(INVALID),
         }
     }
 }
@@ -328,19 +344,19 @@ mod tests {
     fn header_accounting_waits_for_native_errno_boundary_then_commits() {
         let mut owner = owner();
         let text = b"bytes=1-3,5-6";
-        assert_eq!(owner.range_begin(text.len(), 0), 0);
-        assert_eq!(owner.range_step(text), 1);
-        assert_eq!(owner.range_resume(&observed(0)), 0);
+        assert_eq!(owner.range_begin(text.len(), 0), Ok(()));
+        assert_eq!(owner.range_step(text), Ok(Effect::Header));
+        assert_eq!(owner.range_resume(&observed(0)), Ok(false));
         assert_eq!(owner.facts.content_length, 0);
         assert_eq!(owner.tasks.count(), 0);
         // The caller applies any errno effect before this next call can commit.
-        assert_eq!(owner.range_step(text), 1);
+        assert_eq!(owner.range_step(text), Ok(Effect::Header));
         assert_eq!(owner.tasks.count(), 1);
         assert!(owner.facts.content_length > 3);
-        assert_eq!(owner.range_resume(&observed(0)), 0);
-        assert_eq!(owner.range_step(text), 2);
-        assert_eq!(owner.range_resume(&observed(0)), 0);
-        assert_eq!(owner.range_step(text), 0);
+        assert_eq!(owner.range_resume(&observed(0)), Ok(false));
+        assert_eq!(owner.range_step(text), Ok(Effect::Boundary));
+        assert_eq!(owner.range_resume(&observed(0)), Ok(false));
+        assert_eq!(owner.range_step(text), Ok(Effect::Done));
         assert_eq!(owner.facts.status, 206);
         let tasks: [HttpStaticTask; 2] = owner.tasks().try_into().unwrap();
         assert_eq!(
@@ -371,11 +387,11 @@ mod tests {
     fn wrong_stage_and_changed_span_metadata_do_not_consume_effects() {
         let mut owner = owner();
         let text = b"bytes=0-0";
-        assert_eq!(owner.range_resume(&observed(0)), INVALID);
-        assert_eq!(owner.range_begin(text.len(), 0), 0);
-        assert_eq!(owner.range_step(&text[..text.len() - 1]), INVALID);
+        assert_eq!(owner.range_resume(&observed(0)), Err(INVALID));
+        assert_eq!(owner.range_begin(text.len(), 0), Ok(()));
+        assert_eq!(owner.range_step(&text[..text.len() - 1]), Err(INVALID));
         assert_eq!(owner.tasks.count(), 0);
-        assert_eq!(owner.range_step(text), 1);
+        assert_eq!(owner.range_step(text), Ok(Effect::Header));
     }
     #[test]
     fn content_type_is_multipart_over_the_lazy_boundary_for_several_ranges() {

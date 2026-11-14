@@ -37,8 +37,8 @@ const ERROR_TASK_DISPATCH_FAIL: c_int = 2002;
 /// What a task call borrows of the server.
 pub trait TaskHost {
     /// `get_task_worker_pool()->dispatch_sync` (`blocking`) or `dispatch` of the
-    /// packed `task` to `worker_id`: true when sent.
-    fn dispatch(&mut self, task: Packed<'_>, worker_id: &mut c_int, blocking: bool) -> bool;
+    /// packed `task` to `worker`, else one the pool schedules: true when sent.
+    fn dispatch(&mut self, task: Packed<'_>, worker: Option<u32>, blocking: bool) -> bool;
     /// This worker's notify pipe: `clean()`.
     fn pipe_clean(&mut self);
     /// This worker's notify pipe: `set_timeout(timeout)`.
@@ -236,12 +236,12 @@ impl<'a, H: TaskHost> Tasks<'a, H> {
     pub fn task(
         &mut self,
         task: Packed<'_>,
-        worker_id: &mut c_int,
+        worker: Option<u32>,
         blocking: bool,
     ) -> Result<bool, Bailed> {
         let host = &mut self.host;
         count_task(self.tasking, self.count, || {
-            trapped(|| host.dispatch(task, worker_id, blocking))
+            trapped(|| host.dispatch(task, worker, blocking))
         })
     }
 
@@ -280,7 +280,7 @@ impl<'a, H: TaskHost> Waiting<'a, H> {
     pub fn task_sync(
         &mut self,
         task: Packed<'_>,
-        worker_id: &mut c_int,
+        worker: Option<u32>,
         timeout: f64,
     ) -> Result<bool, Bailed> {
         let (tasks, result) = (&mut self.tasks, self.result);
@@ -293,7 +293,7 @@ impl<'a, H: TaskHost> Waiting<'a, H> {
             tasks.host.set_timeout(timeout);
             let host = &mut tasks.host;
             let sent = count_task(tasks.tasking, tasks.count, || {
-                Ok(host.dispatch(task, worker_id, true))
+                Ok(host.dispatch(task, worker, true))
             });
             if !matches!(sent, Ok(true)) {
                 return false;
@@ -371,8 +371,7 @@ impl<'a, H: TaskHost> Waiting<'a, H> {
             let task_id = if let Some(id) = multi.pack(index, &mut event)? {
                 event.add_flags(TASK_WAITALL);
                 tasks.tasking.fetch_add(1, Ordering::SeqCst);
-                let mut worker_id: c_int = -1;
-                let dispatched = tasks.task(event.packed(), &mut worker_id, true)?;
+                let dispatched = tasks.task(event.packed(), None, true)?;
                 if dispatched {
                     tasks.tasking.fetch_sub(1, Ordering::SeqCst);
                 } else {
@@ -488,7 +487,7 @@ mod tests {
     }
 
     impl TaskHost for Script {
-        fn dispatch(&mut self, _: Packed<'_>, _: &mut c_int, _: bool) -> bool {
+        fn dispatch(&mut self, _: Packed<'_>, _: Option<u32>, _: bool) -> bool {
             self.dispatched.remove(0)
         }
         fn pipe_clean(&mut self) {}
@@ -566,9 +565,8 @@ mod tests {
         };
         let mut tasks = tasks(script, &counters);
         let task = TaskBuffer::default();
-        let mut worker_id = -1;
         for expected in [true, false] {
-            let sent = tasks.task(task.packed(), &mut worker_id, false);
+            let sent = tasks.task(task.packed(), None, false);
             assert_eq!(sent.ok(), Some(expected));
         }
         assert_eq!((counters.0.into_inner(), counters.1.into_inner()), (1, 1));
@@ -586,9 +584,8 @@ mod tests {
         let mut tasks = waiting(script, &counters, &mut result);
         let mut task = TaskBuffer::default();
         task.set_fd(7);
-        let mut worker_id = -1;
         // Another task's result arrives first; this one never does.
-        let done = tasks.task_sync(task.packed(), &mut worker_id, 1.0);
+        let done = tasks.task_sync(task.packed(), None, 1.0);
         assert_eq!(done.ok(), Some(false));
         assert_eq!(tasks.tasks.host.notify, []);
     }

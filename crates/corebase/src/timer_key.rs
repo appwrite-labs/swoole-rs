@@ -21,9 +21,11 @@ impl Held {
     /// Timer `id` of the timer of `generation`, if the id is positive and fits in 48 bits.
     #[must_use]
     pub fn new(generation: u16, id: c_long) -> Option<Self> {
-        let id = u64::try_from(id)
-            .ok()
-            .filter(|id| (1..=ID_MASK).contains(id))?;
+        // One compare: 0 and negatives wrap past the mask.
+        let id = id.cast_unsigned();
+        if id.wrapping_sub(1) >= ID_MASK {
+            return None;
+        }
         NonZeroU64::new((u64::from(generation) << ID_BITS) | id).map(Self)
     }
 

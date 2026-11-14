@@ -3,6 +3,7 @@
 //! Also [`Function`], a borrowed `zend_function`.
 use crate::{
     Call, ClassEntry, ZStr,
+    arginfo::Methods,
     sys::{
         _zend_function__bindgen_ty_1, _zval_struct__bindgen_ty_1, IS_UNDEF, zend_class_entry,
         zend_function, zend_function_entry, zend_internal_function, zend_object,
@@ -190,33 +191,43 @@ pub(crate) fn deny(entry: &mut zend_class_entry, _: &mut zend_object_handlers) {
 }
 
 /// The row of `method` in a method table, with its arginfo.
-pub(crate) fn arg_info<'a>(
-    methods: &'a [zend_function_entry],
+pub(crate) fn arg_info<'a, const N: usize>(
+    methods: &'a Methods<N>,
     method: &CStr,
 ) -> Option<&'a zend_function_entry> {
     methods
+        .rows()
         .iter()
         .take_while(|entry| !entry.fname.is_null())
-        // SAFETY: entry names are NUL-terminated literals.
+        // SAFETY: a `Methods` row's name is a static C string; only `END`'s is null.
         .find(|entry| unsafe { CStr::from_ptr(entry.fname) } == method)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        arginfo::{ArgInfo, END, begin, entry},
+        sys::zend_execute_data,
+    };
+
+    unsafe extern "C" fn handler(_: *mut zend_execute_data, _: *mut zval) {}
+
+    static TICK: ArgInfo<1> = ArgInfo([begin(0, 0)]);
+    static AFTER: ArgInfo<1> = ArgInfo([begin(0, 0)]);
+    static CLEAR_ALL: ArgInfo<1> = ArgInfo([begin(0, 0)]);
 
     #[test]
     fn aliases_take_their_methods_arginfo() {
-        let names = [c"tick", c"after", c"clearAll"];
-        // SAFETY: all-zero entries are valid, and the last one ends the table.
-        let mut table: [zend_function_entry; 4] = unsafe { std::mem::zeroed() };
-        for (index, name) in names.iter().enumerate() {
-            table[index].fname = name.as_ptr();
-            table[index].arg_info = std::ptr::without_provenance(16 * (index + 1));
-        }
-        let addr = |method| arg_info(&table, method).map(|row| row.arg_info.addr());
-        assert_eq!(addr(c"after"), Some(32), "after's arginfo");
-        assert_eq!(addr(c"clearAll"), Some(48), "clearAll's");
-        assert!(addr(c"list").is_none(), "a missing method");
+        let table = Methods::new([
+            entry(c"tick", handler, &TICK, 0),
+            entry(c"after", handler, &AFTER, 0),
+            entry(c"clearAll", handler, &CLEAR_ALL, 0),
+            END,
+        ]);
+        let info = |method| arg_info(&table, method).map(|row| row.arg_info);
+        assert_eq!(info(c"after"), Some(AFTER.0.as_ptr()), "after's arginfo");
+        assert_eq!(info(c"clearAll"), Some(CLEAR_ALL.0.as_ptr()), "clearAll's");
+        assert!(info(c"list").is_none(), "a missing method");
     }
 }

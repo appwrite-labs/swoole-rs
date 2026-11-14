@@ -137,14 +137,10 @@ pub fn push_stop(pool: PoolRef<'_>, pid: c_int, worker_id: u16) -> bool {
 }
 
 /// `ProcessPool::dispatch(data, dst_worker_id)`, or `dispatch_sync` when
-/// `blocking`, of `task`.
-pub fn dispatch(
-    pool: PoolRef<'_>,
-    task: Packed<'_>,
-    worker_id: &mut c_int,
-    blocking: bool,
-) -> bool {
-    swr_v1_process_pool_dispatch_event(native(), pool, task.bytes(), worker_id, blocking)
+/// `blocking`, of `task` to `worker`, else one the pool schedules.
+#[must_use]
+pub fn dispatch(pool: PoolRef<'_>, task: Packed<'_>, worker: Option<u32>, blocking: bool) -> bool {
+    swr_v1_process_pool_dispatch_event(native(), pool, task.bytes(), worker, blocking)
 }
 
 /// `ProcessPool::add_worker(worker)`: keeps an existing entry for the pid; nothing

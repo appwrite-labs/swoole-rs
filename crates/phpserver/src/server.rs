@@ -437,19 +437,19 @@ pub fn php_swoole_server_minit(minit: &Minit) {
     let (thread, sockets) = (built_with(Switch::Thread), built_with(Switch::Sockets));
     THREAD.store(thread, Ordering::Relaxed);
     let methods = if sockets {
-        &SERVER_METHODS.0
+        SERVER_METHODS.rows()
     } else {
         SERVER_METHODS.without(&[c"getSocket"])
     };
     minit.register_object::<crate::lifecycle::ServerData>(c"Swoole\\Server", methods, 0);
-    minit.register_object::<TaskData>(c"Swoole\\Server\\Task", &TASK_METHODS.0, ZEND_ACC_FINAL);
+    minit.register_object::<TaskData>(c"Swoole\\Server\\Task", TASK_METHODS.rows(), ZEND_ACC_FINAL);
     declare(minit, &TASK, TASK_PROPERTIES);
     for (class, (name, properties)) in DATA.iter().zip(DATA_CLASSES) {
         // `SW_INIT_CLASS_ENTRY_DATA_OBJECT` has no methods.
         minit.register(class, name, &[], |_, _| {});
         declare(minit, class, properties);
     }
-    minit.register_object::<Iterator>(c"Swoole\\Connection\\Iterator", &ITERATOR_METHODS.0, 0);
+    minit.register_object::<Iterator>(c"Swoole\\Connection\\Iterator", ITERATOR_METHODS.rows(), 0);
     minit.implements(&ITERATOR, minit.iterator());
     minit.implements(&ITERATOR, minit.array_access());
     minit.implements(&ITERATOR, minit.countable());

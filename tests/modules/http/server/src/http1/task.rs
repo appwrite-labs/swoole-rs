@@ -102,10 +102,10 @@ struct TaskPool {
 }
 
 impl TaskHost for TaskPool {
-    fn dispatch(&mut self, task: Packed<'_>, worker_id: &mut c_int, blocking: bool) -> bool {
+    fn dispatch(&mut self, task: Packed<'_>, worker: Option<u32>, blocking: bool) -> bool {
         // SAFETY: the live task pool.
         let pool = unsafe { swoole_rs_process::process_pool::PoolRef::new(self.pool) };
-        pool::dispatch(pool, task, worker_id, blocking)
+        pool::dispatch(pool, task, worker, blocking)
     }
 
     fn pipe_clean(&mut self) {
@@ -321,7 +321,7 @@ impl TaskServer for Server {
 
     fn task(self, buf: &mut EventData, dst_worker_id: &mut c_int) -> bool {
         tasks(self)
-            .task(packed(buf), dst_worker_id, false)
+            .task(packed(buf), u32::try_from(*dst_worker_id).ok(), false)
             .unwrap_or(false)
     }
 
@@ -337,7 +337,7 @@ impl TaskServer for Server {
             pool::dispatch(
                 swoole_rs_process::process_pool::PoolRef::new(self.task_pool()),
                 swoole_rs_process::task_file::Packed::from_raw(buf.head().cast()),
-                dst_worker_id,
+                u32::try_from(*dst_worker_id).ok(),
                 false,
             )
         };
@@ -1008,11 +1008,11 @@ unsafe extern "C" fn task_sync_on_worker_start(
 ) {
     let serv = Server(serv);
     if worker_id(worker) == 1 {
-        let mut dst_worker_id = -1;
+        let dst_worker_id = -1;
         let mut buf = EventData::packed(PACKET);
         check(
             waiting(serv)
-                .task_sync(packed(&mut buf), &mut dst_worker_id, 0.5)
+                .task_sync(packed(&mut buf), u32::try_from(dst_worker_id).ok(), 0.5)
                 .unwrap_or(false),
             "serv->task_sync(&buf, &_dst_worker_id, 0.5)",
         );

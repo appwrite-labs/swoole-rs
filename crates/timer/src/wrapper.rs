@@ -96,10 +96,11 @@ fn add(ms: c_long, persistent: bool, node: TimerNode) -> Option<(*mut TimerNode,
 
 /// This thread's timer, created on first use.
 fn created<'a>() -> Option<&'a Timer> {
-    if timer().is_null() {
+    // One thread-local read when the timer exists, the usual case.
+    current().or_else(|| {
         swoole_timer_create(false);
-    }
-    current()
+        current()
+    })
 }
 
 /// The node [`add`] added, or null.

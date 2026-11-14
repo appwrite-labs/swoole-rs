@@ -3,7 +3,7 @@
 //! `enable_ssl_encrypt` makes it, and an accepted socket shares its server's.
 use crate::co_io::{Timer, available, default_err, set_err};
 use crate::co_socket::Co;
-use crate::connect::{HandshakeMode, Handshaking, ssl_handshake};
+use crate::connect::{HandshakeMode, Handshaking, Step, ssl_handshake};
 use crate::socket_wait::wait_for;
 use core::ffi::{CStr, c_int};
 use swoole_rs_corebase::log;
@@ -11,8 +11,8 @@ use swoole_rs_tls::upstream::{
     socket_ssl_accept, socket_ssl_check_host, socket_ssl_connect, socket_ssl_verify,
 };
 use swoole_rs_tls::{
-    Lent, OwnedTlsContext, OwnedTlsFields, SocketContextError, SslNewError, TlsContext,
-    owner_fields, owner_host_name, swoole_ssl_init, swr_v1_tls_owner_socket_context,
+    Accept, Lent, OwnedTlsContext, OwnedTlsFields, SocketContextError, SslNewError, SslState,
+    TlsContext, owner_fields, owner_host_name, swoole_ssl_init, swr_v1_tls_owner_socket_context,
     swr_v1_tls_owner_socket_session,
 };
 
@@ -263,7 +263,7 @@ impl Handshaking for Handshake {
     }
 
     /// A `UringSocket`'s step goes through the ring.
-    fn step(&mut self) -> c_int {
+    fn step(&mut self) -> Step {
         let socket = self.socket;
         #[cfg(feature = "iouring")]
         if self.uring() {
@@ -278,13 +278,15 @@ impl Handshaking for Handshake {
             }
         });
         match step {
-            None => return -1,
-            Some(Ok(accepted)) => return accepted as c_int,
-            Some(Err(false)) => return -1,
-            Some(Err(true)) => {}
+            None | Some(Ok(Accept::Error) | Err(false)) => Step::Failed,
+            Some(Ok(Accept::Ready)) => Step::Ready,
+            Some(Ok(Accept::Wait)) => Step::Wait,
+            Some(Err(true)) => match socket.net(|record| record.tls.state) {
+                Some(state) if state == SslState::SW_SSL_STATE_READY as u32 => Step::Ready,
+                Some(state) if state == SslState::SW_SSL_STATE_WAIT_STREAM as u32 => Step::Wait,
+                _ => Step::Again,
+            },
         }
-        let state = socket.net(|record| record.tls.state).unwrap_or_default();
-        c_int::try_from(state).unwrap_or(c_int::MAX)
     }
 
     fn wait(&mut self, fresh: bool) -> bool {

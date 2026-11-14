@@ -2,6 +2,7 @@
 //! derived from it, the file's facts, the directory listing and the range tasks. The
 //! filesystem, MIME, random and calendar effects are the caller's [`StaticEffects`].
 use crate::range_response::{HttpRangeFormat, range_format};
+use crate::static_path::Action;
 use crate::{HttpDirectory, HttpStaticPath, HttpStaticTask, HttpTasks, INVALID, OVERFLOW};
 mod filesystem;
 pub use filesystem::StaticEffects;
@@ -132,7 +133,7 @@ impl HttpStaticContext {
     pub fn tasks(&self) -> &[HttpStaticTask] {
         self.tasks.items()
     }
-    fn path_step(&mut self, root: &[u8], facts: u32) -> i32 {
+    fn path_step(&mut self, root: &[u8], facts: u32) -> Result<Action, i32> {
         let url = self.rewritten.as_ref().unwrap_or(&self.original);
         let result = crate::static_path::path_step(
             url,
@@ -142,15 +143,9 @@ impl HttpStaticContext {
             &mut self.path,
             facts,
         );
-        if result == 3 {
-            let Some(url) = url.get(..self.path.url_length) else {
-                return INVALID;
-            };
-            let value = match copied(url) {
-                Ok(value) => value,
-                Err(error) => return error,
-            };
-            self.directory_path = value;
+        if result == Ok(Action::Directory) {
+            let url = url.get(..self.path.url_length).ok_or(INVALID)?;
+            self.directory_path = copied(url)?;
         }
         result
     }
@@ -361,10 +356,10 @@ mod tests {
     fn path_owner_preserves_index_backing_and_separate_base_length() {
         let mut owner = make();
         let root = b"/root";
-        assert_eq!(owner.path_step(root, 0), 2);
-        assert_eq!(owner.path_step(root, 0), 3);
+        assert_eq!(owner.path_step(root, 0), Ok(Action::Locations));
+        assert_eq!(owner.path_step(root, 0), Ok(Action::Directory));
         assert_eq!(owner.text(Directory), b"/files");
-        assert_eq!(owner.path_step(root, 0), 4);
+        assert_eq!(owner.path_step(root, 0), Ok(Action::Lstat));
         assert_eq!(owner.publish(Index, b"index.html"), 0);
         let base = owner.path.filename_length;
         let index_path = |owner: &mut HttpStaticContext| {

@@ -55,18 +55,33 @@ pub fn location_match(
     }
     Ok(found)
 }
-fn selected(state: &mut HttpStaticPath, facts: u32) -> i32 {
+/// What the path policy asks for next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Action {
+    /// Selection ended: whether the file is served.
+    Done(bool),
+    /// Visit the configured locations.
+    Locations,
+    /// Assign `dir_path`.
+    Directory,
+    Lstat,
+    Realpath,
+    /// Look up the filename's MIME type.
+    Mime,
+    /// `catch_error`.
+    Catch,
+}
+fn selected(state: &mut HttpStaticPath, facts: u32) -> Action {
     if facts & DIRECTORY != 0 && facts & (INDEX | AUTOINDEX) != 0 {
         state.phase = 8;
-        1
+        Action::Done(true)
     } else {
         state.phase = 7;
-        6
+        Action::Mime
     }
 }
-/// Resume selection into the filename buffer `output`: 0=false, 1=true, 2=visit
-/// locations, 3=assign `dir_path`, 4=lstat, 5=realpath, 6=MIME lookup, 7=`catch_error`.
-/// Facts: locations1, statOK2, canonicalOK4, link8, dir16, file32, index64, auto128, MIME256.
+/// Resume selection into the filename buffer `output`: the next [`Action`], or
+/// `INVALID`/`OVERFLOW`. Facts: locations1, statOK2, canonicalOK4, link8, dir16, file32, index64, auto128, MIME256.
 /// The caller keeps the URL, root and state between steps, and NUL-terminates a
 /// canonical path it writes into `output` before resuming a realpath step.
 pub(crate) fn path_step(
@@ -76,13 +91,13 @@ pub(crate) fn path_step(
     capacity: usize,
     state: &mut HttpStaticPath,
     facts: u32,
-) -> i32 {
+) -> Result<Action, i32> {
     match state.phase {
         0 => {
             // Old root copy precedes location rejection. Reject only its old
             // out-of-allocation case; exact-capacity copies remain observable.
             let Some(head) = span(output, capacity, 0, root.len()) else {
-                return OVERFLOW;
+                return Err(OVERFLOW);
             };
             state.url_length = url
                 .iter()
@@ -91,36 +106,36 @@ pub(crate) fn path_step(
                 .unwrap_or(url.len());
             head.copy_from_slice(root);
             state.phase = 1;
-            return 2;
+            return Ok(Action::Locations);
         }
         1 => {
             if facts & LOCATIONS != 0 && state.last == 0 {
                 state.phase = 8;
-                return 0;
+                return Ok(Action::Done(false));
             }
             let Some(url) = url.get(..state.url_length) else {
-                return INVALID;
+                return Err(INVALID);
             };
             let Some(length) = root.len().checked_add(url.len()).filter(|&n| n < capacity) else {
                 state.phase = 8;
-                return 7;
+                return Ok(Action::Catch);
             };
             let Some((nul, path)) =
                 span(output, capacity, root.len(), length + 1).and_then(<[u8]>::split_last_mut)
             else {
-                return INVALID;
+                return Err(INVALID);
             };
             path.copy_from_slice(url);
             *nul = 0;
             state.phase = 2;
-            return 3;
+            return Ok(Action::Directory);
         }
         2 => {
             if state.url_length > url.len() {
-                return INVALID;
+                return Err(INVALID);
             }
             if state.url_length > url.len() {
-                return INVALID;
+                return Err(INVALID);
             }
             let Some(path) = root
                 .len()
@@ -128,7 +143,7 @@ pub(crate) fn path_step(
                 .filter(|&n| n < capacity)
                 .and_then(|length| output.get_mut(..length))
             else {
-                return INVALID;
+                return Err(INVALID);
             };
             let length = crate::url_decode(path);
             if let Some(nul) = output.get_mut(length) {
@@ -136,29 +151,29 @@ pub(crate) fn path_step(
             }
             state.filename_length = length;
             state.phase = 3;
-            return 4;
+            return Ok(Action::Lstat);
         }
         3..=7 => {}
-        _ => return INVALID,
+        _ => return Err(INVALID),
     }
     if state.filename_length >= capacity {
-        return INVALID;
+        return Err(INVALID);
     }
     let filename = output.get(..state.filename_length).unwrap_or_default();
     match state.phase {
         3 => {
             if facts & STAT_OK == 0 {
                 state.phase = 8;
-                return 7;
+                return Ok(Action::Catch);
             }
             if filename.windows(2).any(|v| v == b"..") {
                 state.phase = 4;
-                5
+                Ok(Action::Realpath)
             } else if facts & LINK != 0 {
                 state.phase = 5;
-                5
+                Ok(Action::Realpath)
             } else {
-                selected(state, facts)
+                Ok(selected(state, facts))
             }
         }
         4 => {
@@ -167,33 +182,35 @@ pub(crate) fn path_step(
                 || !prefix(filename, root, false)
             {
                 state.phase = 8;
-                7
+                Ok(Action::Catch)
             } else {
-                selected(state, facts)
+                Ok(selected(state, facts))
             }
         }
         5 => {
             if facts & CANONICAL_OK == 0 {
                 state.phase = 8;
-                7
+                Ok(Action::Catch)
             } else {
                 state.phase = 6;
-                4
+                Ok(Action::Lstat)
             }
         }
         6 => {
             if facts & STAT_OK == 0 {
                 state.phase = 8;
-                7
+                Ok(Action::Catch)
             } else {
-                selected(state, facts)
+                Ok(selected(state, facts))
             }
         }
         7 => {
             state.phase = 8;
-            i32::from((facts & MIME != 0 || state.last != 0) && facts & FILE != 0)
+            Ok(Action::Done(
+                (facts & MIME != 0 || state.last != 0) && facts & FILE != 0,
+            ))
         }
-        _ => INVALID,
+        _ => Err(INVALID),
     }
 }
 
@@ -280,23 +297,32 @@ mod tests {
         };
         let url = b"/a%2eb#before?query";
         let root = b"/r";
-        assert_eq!(path_step(url, root, &mut out, 64, &mut state, LOCATIONS), 2);
+        assert_eq!(
+            path_step(url, root, &mut out, 64, &mut state, LOCATIONS),
+            Ok(Action::Locations)
+        );
         assert_eq!(&out[..3], &[b'/', b'r', 0xa5]);
         assert_eq!(state.filename_length, 12);
         assert_eq!(location_match(url, b"/A", &mut state), Ok(true));
-        assert_eq!(path_step(url, root, &mut out, 64, &mut state, LOCATIONS), 3);
+        assert_eq!(
+            path_step(url, root, &mut out, 64, &mut state, LOCATIONS),
+            Ok(Action::Directory)
+        );
         assert_eq!(&out[..17], b"/r/a%2eb#before\0\xa5");
         assert_eq!(state.filename_length, 12);
-        assert_eq!(path_step(url, root, &mut out, 64, &mut state, LOCATIONS), 4);
+        assert_eq!(
+            path_step(url, root, &mut out, 64, &mut state, LOCATIONS),
+            Ok(Action::Lstat)
+        );
         assert_eq!(state.filename_length, 13);
         assert_eq!(&out[..14], b"/r/a.b#before\0");
         assert_eq!(
             path_step(url, root, &mut out, 64, &mut state, STAT_OK | FILE),
-            6
+            Ok(Action::Mime)
         );
         assert_eq!(
             path_step(url, root, &mut out, 64, &mut state, STAT_OK | FILE),
-            1
+            Ok(Action::Done(true))
         );
     }
     #[test]
@@ -307,12 +333,18 @@ mod tests {
         let mut state = HttpStaticPath::default();
         assert_eq!(
             path_step(b"/", b"oversized", &mut out, 4, &mut state, 0),
-            OVERFLOW
+            Err(OVERFLOW)
         );
         assert_eq!(out, [0xa5; 4]);
         assert_eq!(state.phase, 0);
-        assert_eq!(path_step(b"x", b"1234", &mut out, 4, &mut state, 0), 2);
+        assert_eq!(
+            path_step(b"x", b"1234", &mut out, 4, &mut state, 0),
+            Ok(Action::Locations)
+        );
         assert_eq!(out, *b"1234");
-        assert_eq!(path_step(b"x", b"1234", &mut out, 4, &mut state, 0), 7);
+        assert_eq!(
+            path_step(b"x", b"1234", &mut out, 4, &mut state, 0),
+            Ok(Action::Catch)
+        );
     }
 }

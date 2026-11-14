@@ -84,8 +84,8 @@ struct Host<'a> {
 }
 
 impl TaskHost for Host<'_> {
-    fn dispatch(&mut self, task: Packed<'_>, worker_id: &mut c_int, blocking: bool) -> bool {
-        methods::dispatch(self.pool, task, worker_id, blocking)
+    fn dispatch(&mut self, task: Packed<'_>, worker: Option<u32>, blocking: bool) -> bool {
+        methods::dispatch(self.pool, task, worker, blocking)
     }
 
     fn pipe_clean(&mut self) {
@@ -342,8 +342,8 @@ fn flag(buf: &mut TaskBuffer, flags: u32) {
     buf.add_flags(flags);
 }
 
-/// `serv->task(buf, dst_worker_id)`.
-fn dispatch(server: view::Server<'_>, buf: &mut TaskBuffer, dst: &mut c_int) -> bool {
+/// `serv->task(buf, dst_worker_id)`: to `dst`, else a worker the pool schedules.
+fn dispatch(server: view::Server<'_>, buf: &mut TaskBuffer, dst: Option<u32>) -> bool {
     task_state(server)
         .task(buf.packed(), dst, false)
         .unwrap_or_else(|Bailed| {
@@ -353,6 +353,11 @@ fn dispatch(server: view::Server<'_>, buf: &mut TaskBuffer, dst: &mut c_int) -> 
 }
 
 /// `php_swoole_server_task_check_param`.
+/// A `dst_worker_id`: negative (-1, any) leaves the pool to schedule one.
+fn target(dst_worker_id: i64) -> Option<u32> {
+    u32::try_from(dst_worker_id.c_cast::<c_int>()).ok()
+}
+
 fn check(facts: &Facts, dst_worker_id: i64) -> bool {
     if facts.task_worker_num == 0 {
         fatal(
@@ -418,8 +423,7 @@ fn task(call: &Call) {
         drop(old.map(ManuallyDrop::into_inner));
     }
     flag(&mut buf, NONBLOCK);
-    let mut dst = dst.c_cast::<c_int>();
-    if dispatch(serv, &mut buf, &mut dst) {
+    if dispatch(serv, &mut buf, target(dst)) {
         call.set_long(id);
     } else {
         call.set_bool(false);
@@ -444,12 +448,12 @@ fn taskwait(call: &Call) {
     let Some(id) = pack(data, &mut buf) else {
         return call.set_bool(false);
     };
-    let mut dst = dst.c_cast::<c_int>();
+    let dst = target(dst);
     let Some(co) = Coroutine::current() else {
         let Some(mut tasks) = wait_state(serv) else {
             return call.set_bool(false);
         };
-        let done = match tasks.task_sync(buf.packed(), &mut dst, timeout) {
+        let done = match tasks.task_sync(buf.packed(), dst, timeout) {
             // `serv->get_task_result()`: this worker's slot of `task_results`.
             Ok(true) => tasks.result().read(|result| {
                 Packed::from_bytes(result)
@@ -473,7 +477,7 @@ fn taskwait(call: &Call) {
         list: RefCell::default(),
         count: Cell::new(1),
     });
-    if !dispatch(serv, &mut buf, &mut dst) {
+    if !dispatch(serv, &mut buf, dst) {
         return call.set_bool(false);
     }
     pending(serv, |p| p.coroutines.insert(id, Rc::downgrade(&task_co)));
@@ -572,8 +576,7 @@ fn task_co(call: &Call, fill_false: bool) {
         // The task's id once it is dispatched.
         let id = if let Some(id) = pack(ztask, &mut buf) {
             flag(&mut buf, NONBLOCK | COROUTINE);
-            let mut dst: c_int = -1;
-            dispatch(serv, &mut buf, &mut dst).then_some(id)
+            dispatch(serv, &mut buf, None).then_some(id)
         } else {
             fatal(E_WARNING, c"failed to pack task");
             None

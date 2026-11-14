@@ -49,7 +49,16 @@ struct String {
 };
 // Upstream get_package_length ignores its protocol and socket parameters.
 #pragma GCC diagnostic ignored "-Wunused-parameter"
+// The pinned codec reads and writes words at byte offsets, which UBSan's alignment check
+// reports wherever the sanitizer run builds it (the native gate it replaced built it
+// with -fno-sanitize=alignment).
+#ifdef __clang__
+#pragma clang attribute push(__attribute__((no_sanitize("alignment"))), apply_to = function)
+#endif
 #include "websocket.inc"
+#ifdef __clang__
+#pragma clang attribute pop
+#endif
 
 namespace WebSocket = oracle_ws;
 #include "websocket_bits.inc"
@@ -74,9 +83,9 @@ static uint8_t message_policy(uint8_t opcode, uint8_t settings) {
         ;
     return drop ? (opcode == OPCODE_PING ? 2 : 1) : 0;
 }
-// `buffer`'s bytes into `out` when they fit; its length.
+// `buffer`'s bytes into `out` when they fit; its length. An empty buffer has no `str`.
 static size_t copy_out(const String &buffer, char *out, size_t capacity) {
-    if (buffer.length <= capacity) std::memcpy(out, buffer.str, buffer.length);
+    if (buffer.length && buffer.length <= capacity) std::memcpy(out, buffer.str, buffer.length);
     return buffer.length;
 }
 }  // namespace oracle_ws

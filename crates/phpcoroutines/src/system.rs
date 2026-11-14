@@ -60,7 +60,7 @@ method_table! {
 /// # Errors
 /// A registration bailed out.
 pub fn php_swoole_coroutine_system_minit(minit: &Minit) -> Result<(), Bailout> {
-    minit.register_static(&SYSTEM, c"Swoole\\Coroutine\\System", &METHODS.0);
+    minit.register_static(&SYSTEM, c"Swoole\\Coroutine\\System", METHODS.rows());
     if host::flag(host::SHORTNAME) {
         minit.alias(&SYSTEM, c"Co\\System")?;
     }
