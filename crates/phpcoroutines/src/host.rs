@@ -72,10 +72,8 @@ impl Co {
 use swoole_rs_hooks::sleep::system_sleep;
 
 // Declared, since crates/phpevents (its `php_swoole_reactor_init` and
-// `swr_v1_phpevents_wait`) depends on this crate, and PHP's `php_write`.
+// `swr_v1_phpevents_wait`) depends on this crate.
 unsafe extern "C" {
-    // crates/phpevents, crates/phpclients and PHP.
-    fn php_write(buf: *const c_void, size: usize) -> usize;
     safe fn php_swoole_reactor_init() -> i32;
     safe fn swr_v1_phpevents_wait();
 }
@@ -658,8 +656,7 @@ pub(crate) fn exit_original(execute_data: *mut zend_execute_data, return_value: 
 /// `exit()` without the original handler: print `message`, then exit.
 pub(crate) fn exit_fallback(message: Option<&[u8]>, status: c_long) {
     if let Some(message) = message {
-        // SAFETY: a live buffer.
-        unsafe { php_write(message.as_ptr().cast(), message.len()) };
+        bailout::raise(crate::tracer::write(message));
     }
     // Swoole's exit, which does not return here.
     swoole_rs_phpswoole::sw_php_exit(status.c_cast::<c_int>());

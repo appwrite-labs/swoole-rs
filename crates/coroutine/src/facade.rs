@@ -120,19 +120,14 @@ pub unsafe extern "C-unwind" fn swr_v1_coroutine_create(
             return -1;
         }
     };
-    let co = Coroutine::IDLE;
-    let native = Box::into_raw(Box::new(Native { co, ctx })).cast::<c_void>();
+    let co = Co::leak(Box::new(Native {
+        co: Coroutine::IDLE,
+        ctx,
+    }));
     let now = steady_usec();
-    let co = native.cast::<Coroutine>();
-    // SAFETY: the record starts with its coroutine, which registers once and
-    // stays put, live, until `destroy` frees it.
-    let (co, inactive) = with_scheduler(|s| unsafe { s.register(co, native, now / 1000, now) });
-    if inactive {
+    if with_scheduler(|s| s.register(co, co.ptr().cast(), now / 1000, now)) {
         activate();
     }
-    let Some(co) = co else {
-        return -1;
-    };
     run(Sched::this(), co)
 }
 
