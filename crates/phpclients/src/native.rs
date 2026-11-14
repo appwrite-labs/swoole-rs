@@ -151,18 +151,16 @@ impl Co {
         self.0
     }
 
-    /// The `network::Socket` (`get_socket()`), while the socket is open.
-    pub(crate) fn net<'a>(self) -> Option<Net<'a>> {
-        // SAFETY: null or an open socket's live record, read fresh on every use.
-        unsafe { Net::from_ptr(self.0.socket()) }
+    /// `f` over the `network::Socket` (`get_socket()`), while the socket is open:
+    /// None before it opens. The handle lives only for the call.
+    pub(crate) fn with_net<T>(self, f: impl FnOnce(Net<'_>) -> T) -> Option<T> {
+        self.0.with_network(f)
     }
 
     /// The socket's buffers are zend strings from now on.
     pub fn use_zend_strings(self) {
-        let allocator = swoole_rs_phpswoole::sw_zend_string_allocator();
-        // SAFETY: the static zend string allocator, a `swoole::Allocator`.
-        let allocator = unsafe { &*allocator.cast::<swoole_rs_buffer::string::Allocator>() };
-        self.0.set_buffer_allocator(Some(allocator));
+        self.0
+            .set_buffer_allocator(Some(swoole_rs_phpswoole::zend_string_buffers()));
     }
 
     /// `socket_coro_init`'s socket half: zero copy and the zend string
@@ -187,9 +185,7 @@ impl Co {
     /// `move_fd()`: the socket forgets its fd, which stays open.
     pub(crate) fn move_fd(self) {
         self.0.set_sock_fd(-1);
-        if let Some(net) = self.net() {
-            net.edit(|record| record.fd = -1);
-        }
+        self.with_net(|net| net.edit(|record| record.fd = -1));
     }
 
     /// `close()` inside `zend_try`.
@@ -405,8 +401,8 @@ impl Co {
 
     /// `get_addr()` and `get_port()`.
     pub(crate) fn address(self) -> (CString, c_int) {
-        self.net()
-            .map_or_else(|| (CString::default(), 0), net_address)
+        self.with_net(net_address)
+            .unwrap_or_else(|| (CString::default(), 0))
     }
 
     pub(crate) fn sendto(self, address: &[u8], port: i64, data: &[u8]) -> ssize_t {
@@ -510,13 +506,13 @@ impl Co {
 
     /// `get_ssl() != nullptr`.
     pub(crate) fn has_ssl(self) -> bool {
-        self.net()
-            .is_some_and(|net| net.read(|record| !record.ssl().is_null()))
+        self.with_net(|net| net.read(|record| !record.ssl().is_null()))
+            .unwrap_or(false)
     }
 
     /// The peer certificate; the socket has TLS.
     pub(crate) fn peer_cert(self) -> Option<ZString> {
-        self.net().and_then(peer_cert)
+        self.with_net(peer_cert).flatten()
     }
 
     pub(crate) fn verify_peer(self, allow_self_signed: bool) -> bool {
@@ -549,25 +545,23 @@ pub(crate) fn length_callable(socket: Co, value: &Value) {
 }
 
 /// A live `network::Client` (crates/clients' state), from [`create`] until
-/// [`destroy`].
+/// [`destroy`]: crates/clients' handle, made once by `create`.
 #[derive(Clone, Copy)]
-pub(crate) struct Cli(pub(crate) *mut Client);
+pub(crate) struct Cli(client::Handle);
 
 impl Cli {
-    pub(crate) fn get<'a>(self) -> &'a Client {
-        // SAFETY: a live client, as the type promises.
-        unsafe { &*self.0 }
+    pub(crate) fn get(&self) -> &Client {
+        self.0.client()
     }
 
     /// `cli->socket`, while the client has one.
-    pub(crate) fn net<'a>(self) -> Option<Net<'a>> {
+    pub(crate) fn net(&self) -> Option<Net<'_>> {
         self.get().socket()
     }
 
     /// crates/clients' handle on the client.
     pub(crate) fn handle(self) -> client::Handle {
-        // SAFETY: a live client, as the type promises.
-        unsafe { client::Handle::new(self.0) }
+        self.0
     }
 
     /// Run `op` inside `zend_try`.
@@ -599,7 +593,9 @@ pub(crate) fn create(kind: c_int, is_async: bool) -> Result<Cli, c_int> {
     if cli.is_null() {
         Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0))
     } else {
-        Ok(Cli(cli))
+        // SAFETY: a new client from `swr_v1_clients_new`, which stays live until
+        // `destroy` frees it as its last operation.
+        Ok(Cli(unsafe { client::Handle::new(cli) }))
     }
 }
 

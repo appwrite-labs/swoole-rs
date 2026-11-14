@@ -923,6 +923,12 @@ impl Handle {
         Self(client)
     }
 
+    /// The client, borrowed while this handle is: live per [`Handle::new`].
+    #[must_use]
+    pub fn client(&self) -> &Client {
+        self.get()
+    }
+
     /// Run `op`, which may raise the client's callbacks (and so free it): the
     /// C++ method's result.
     #[must_use]

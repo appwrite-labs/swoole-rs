@@ -1,31 +1,25 @@
 //! A protocol's `package_length_func`: the PHP callable its `private_data_1`
-//! names, a reference `Rc::into_raw` gave the slot, or a [`Named`] owner beside
-//! it keeps.
+//! names: an `Rc`'s value, whose reference a [`Named`] owner beside the slot
+//! keeps.
 use std::{ffi::c_void, mem::ManuallyDrop, rc::Rc};
 use swoole_rs_corebase::net_types::{PacketLength, Protocol};
 use swoole_rs_zend::{bailout, host::callable::Callable};
 
-/// A callable a protocol's `private_data_1` names: the reference `Rc::into_raw`
-/// gave, which the owner gives back when it drops. The protocol only names it.
-pub struct Named(*const Callable);
+/// A callable a protocol's `private_data_1` names: the owner holds the
+/// reference, which goes when it drops. The protocol only names it.
+pub struct Named(Rc<Callable>);
 
 impl Named {
     #[must_use]
     pub fn new(callable: Rc<Callable>) -> Self {
-        Self(Rc::into_raw(callable))
+        Self(callable)
     }
 
-    /// The pointer `private_data_1` keeps.
+    /// The pointer `private_data_1` keeps: `Rc::as_ptr`, the pointer
+    /// `Rc::into_raw` would give for the reference this holds.
     #[must_use]
     pub fn as_ptr(&self) -> *mut c_void {
-        self.0.cast_mut().cast()
-    }
-}
-
-impl Drop for Named {
-    fn drop(&mut self) {
-        // SAFETY: the reference `new` took from `Rc::into_raw`, given back once.
-        drop(unsafe { Rc::from_raw(self.0) });
+        Rc::as_ptr(&self.0).cast_mut().cast()
     }
 }
 
@@ -46,9 +40,8 @@ pub trait PackageLength {
 /// `php_swoole_length_func`: `L`'s length for the packet so far. A bailout is
 /// re-raised as the last step.
 /// # Safety
-/// C++ calls it with a live protocol whose `private_data_1` is a reference
-/// `Rc::into_raw` gave that the slot or its [`Named`] owner keeps, and a live
-/// packet.
+/// C++ calls it with a live protocol whose `private_data_1` is the value of an
+/// `Rc` whose reference its [`Named`] owner keeps, and a live packet.
 pub unsafe extern "C" fn length<L: PackageLength>(
     protocol: *const Protocol,
     _socket: *mut c_void,
@@ -56,7 +49,8 @@ pub unsafe extern "C" fn length<L: PackageLength>(
 ) -> isize {
     // SAFETY: per the caller.
     let raw = unsafe { (*protocol).private_data_1 };
-    // SAFETY: an `Rc::into_raw` reference its holder keeps, borrowed.
+    // SAFETY: `Named::as_ptr`, which is `Rc::into_raw`'s pointer, of a
+    // reference the owner keeps; borrowed, never dropped here.
     let slot = ManuallyDrop::new(unsafe { Rc::from_raw(raw.cast_const().cast::<Callable>()) });
     let held = L::owns().then(|| Rc::clone(&slot));
     let length = L::length(&slot, packet.bytes());

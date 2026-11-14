@@ -1010,8 +1010,8 @@ impl Client {
                 return false;
             }
             if socket
-                .net()
-                .is_some_and(|net| net.read(|record| record.output.close_wait))
+                .with_net(|net| net.read(|record| record.output.close_wait))
+                .unwrap_or(false)
             {
                 break;
             }
@@ -1240,9 +1240,7 @@ impl Client {
             return false;
         };
         if self.in_callback.get() {
-            if let Some(net) = socket.net() {
-                net.edit(|record| record.output.close_wait = true);
-            }
+            socket.with_net(|net| net.edit(|record| record.output.close_wait = true));
             return true;
         }
         self.props().bool(c"connected", false);
