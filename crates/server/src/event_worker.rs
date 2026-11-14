@@ -22,6 +22,13 @@ pub(crate) enum SignalHandler {
     Own,
 }
 /// `SIGRTMIN`, which only Linux names.
+#[cfg_attr(
+    target_os = "linux",
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "None where the platform has no SIGRTMIN"
+    )
+)]
 pub(crate) fn sigrtmin() -> Option<c_int> {
     #[cfg(target_os = "linux")]
     return Some(libc::SIGRTMIN());
