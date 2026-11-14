@@ -520,8 +520,8 @@ pub(crate) fn tls_session(socket: Co, create: impl FnOnce() -> bool) -> bool {
     true
 }
 
-/// One `UringSocket` handshake step through the ring: 1 done, 0 again, -1 failed
-/// (as without a session from [`tls_session`]).
+/// One `UringSocket` handshake step through the ring, failed without a session
+/// from [`tls_session`].
 pub(crate) fn tls_step(socket: Co) -> crate::connect::Step {
     use crate::connect::Step;
     let Some(ops) = of(socket) else {
