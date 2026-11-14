@@ -25,8 +25,11 @@ const MAX_LISTEN_PORT: usize = 60000;
 const SYSTEMD_FDS_START: c_int = 3;
 
 /// `Server::schedule_worker(fd, data)`: the user's dispatch function, else the dispatch
-/// mode. `send` is the data the worker takes, if any.
-pub fn schedule_worker(serv: Server<'_>, fd: c_int, send: Option<&SendData>) -> c_int {
+/// mode. `send` is the data the worker takes, if any. The worker's id.
+/// # Errors
+/// The dispatch function's negative result: `DISPATCH_RESULT_DISCARD_PACKET`,
+/// `_CLOSE_CONNECTION`, or an invalid id.
+pub fn schedule_worker(serv: Server<'_>, fd: c_int, send: Option<&SendData>) -> Result<u32, c_int> {
     let state = serv.state();
     let key = c_long::from(fd);
     let dispatch_func = state.callbacks.slot(CallbackKind::DispatchFunc);
@@ -36,7 +39,7 @@ pub fn schedule_worker(serv: Server<'_>, fd: c_int, send: Option<&SendData>) -> 
         let recv = send.map(SendData::as_recv);
         let id = state.callbacks.dispatch(serv, conn, recv);
         if id != USERFUNC_FALLBACK {
-            return id;
+            return u32::try_from(id).map_err(|_| id);
         }
     }
     let config = serv.config();
@@ -53,22 +56,21 @@ pub fn schedule_worker(serv: Server<'_>, fd: c_int, send: Option<&SendData>) -> 
         },
         Some(DispatchMode::CoConnLb) => {
             let Some(conn) = conn() else {
-                return (fd_key % workers).cast_signed();
+                return Ok(fd_key % workers);
             };
-            let worker = conn.worker_id();
-            if worker >= 0 {
-                return worker;
+            if let Ok(worker) = u32::try_from(conn.worker_id()) {
+                return Ok(worker);
             }
             let lowest = lowest(serv, Load::Coroutines);
-            conn.set_worker_id(lowest);
-            return lowest;
+            conn.set_worker_id(lowest.cast_signed());
+            return Ok(lowest);
         }
-        Some(DispatchMode::CoReqLb) => return lowest(serv, Load::Coroutines),
-        Some(DispatchMode::ConcurrentLb) => return lowest(serv, Load::Concurrency),
+        Some(DispatchMode::CoReqLb) => return Ok(lowest(serv, Load::Coroutines)),
+        Some(DispatchMode::ConcurrentLb) => return Ok(lowest(serv, Load::Concurrency)),
         // Deliver to an idle worker.
-        _ => return idle_worker(serv),
+        _ => return Ok(idle_worker(serv)),
     };
-    (key % workers).cast_signed()
+    Ok(key % workers)
 }
 
 /// `get_ip_key`-style hash of the sender: its IPv4 address, else `swoole_hash_php` of
@@ -101,7 +103,7 @@ enum Load {
 
 /// `get_lowest_load_worker_id` and `get_lowest_concurrent_worker_id`: the first event
 /// worker with the fewest.
-fn lowest(serv: Server<'_>, load: Load) -> c_int {
+fn lowest(serv: Server<'_>, load: Load) -> u32 {
     let workers = serv.config().worker_num.get();
     let of = |id: u32| {
         let worker = u16::try_from(id).ok().and_then(|id| serv.worker_record(id));
@@ -110,25 +112,22 @@ fn lowest(serv: Server<'_>, load: Load) -> c_int {
             Load::Concurrency => worker.concurrency_count() as usize,
         })
     };
-    (0..workers.max(1))
-        .min_by_key(|&id| of(id))
-        .unwrap_or(0)
-        .cast_signed()
+    (0..workers.max(1)).min_by_key(|&id| of(id)).unwrap_or(0)
 }
 
 /// `get_idle_worker_id`: up to `worker_num + 1` round-robin tries for an idle worker,
 /// else the last one tried, with the scheduler warning raised.
-fn idle_worker(serv: Server<'_>) -> c_int {
+fn idle_worker(serv: Server<'_>) -> u32 {
     let workers = serv.config().worker_num.get().max(1);
     let mut key = 0;
     for _ in 0..=workers {
         key = serv.state().next_round() % workers;
         if is_idle(serv, key) {
-            return key.cast_signed();
+            return key;
         }
     }
     serv.config().scheduler_warning.store(true, Relaxed);
-    key.cast_signed()
+    key
 }
 
 fn is_idle(serv: Server<'_>, id: u32) -> bool {
@@ -472,7 +471,7 @@ mod tests {
         }
 
         fn schedule(&self, fd: c_int) -> c_int {
-            schedule_worker(self.serv(), fd, None)
+            schedule_worker(self.serv(), fd, None).map_or_else(|code| code, u32::cast_signed)
         }
 
         fn set(&self, ids: &[u16], status: WorkerStatus) {
@@ -601,7 +600,7 @@ mod tests {
         assert_eq!(ip_key(w.live.state(), -1, Some(&send)), 0x0a00_0001);
         assert_eq!(
             schedule_worker(w.serv(), -1, Some(&send)),
-            1,
+            Ok(1),
             "10.0.0.1 mod 4"
         );
     }
