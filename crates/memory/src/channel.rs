@@ -276,7 +276,7 @@ pub unsafe fn swr_v1_memory_channel_init(
         };
         record.notify = notify;
     }
-    if flags & LOCK != 0 && record.lock.init() != 0 {
+    if flags & LOCK != 0 && record.lock.init().is_err() {
         record.close_pipe();
         return 2;
     }

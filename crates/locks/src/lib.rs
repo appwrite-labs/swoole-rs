@@ -155,23 +155,28 @@ unsafe extern "C" {
 }
 
 // Failed lock initialization owns an initialized attribute, but not a live lock.
-fn init_result(result: c_int, destroy_attr: impl FnOnce()) -> c_int {
-    if result != 0 {
-        // The failed init's errno, which destroying the attribute must not replace.
-        let saved = sys::errno();
-        destroy_attr();
-        sys::set_errno(saved);
+fn init_result(result: c_int, destroy_attr: impl FnOnce()) -> Result<(), c_int> {
+    if result == 0 {
+        return Ok(());
     }
-    result
+    // The failed init's errno, which destroying the attribute must not replace.
+    let saved = sys::errno();
+    destroy_attr();
+    sys::set_errno(saved);
+    Err(result)
 }
-/// Makes `lock` a mutex from `attr`, which it initializes: 0, or the first error,
+/// Makes `lock` a mutex from `attr`, which it initializes, or the first error,
 /// which leaves neither made.
-fn init_mutex(lock: &mut Words<MUTEX_LOCK>, attr: &mut Words<MUTEX_ATTR>, shared: i32) -> c_int {
+fn init_mutex(
+    lock: &mut Words<MUTEX_LOCK>,
+    attr: &mut Words<MUTEX_ATTR>,
+    shared: bool,
+) -> Result<(), c_int> {
     let result = pthread_mutexattr_init(attr);
     if result != 0 {
-        return result;
+        return Err(result);
     }
-    let attributes = if shared != 0 {
+    let attributes = if shared {
         pthread_mutexattr_setpshared(attr, PTHREAD_PROCESS_SHARED)
     } else {
         0
@@ -186,12 +191,16 @@ fn init_mutex(lock: &mut Words<MUTEX_LOCK>, attr: &mut Words<MUTEX_ATTR>, shared
     })
 }
 /// [`init_mutex`] for a rwlock.
-fn init_rwlock(lock: &mut Words<RW_LOCK>, attr: &mut Words<RW_ATTR>, shared: i32) -> c_int {
+fn init_rwlock(
+    lock: &mut Words<RW_LOCK>,
+    attr: &mut Words<RW_ATTR>,
+    shared: bool,
+) -> Result<(), c_int> {
     let result = pthread_rwlockattr_init(attr);
     if result != 0 {
-        return result;
+        return Err(result);
     }
-    let attributes = if shared != 0 {
+    let attributes = if shared {
         pthread_rwlockattr_setpshared(attr, PTHREAD_PROCESS_SHARED)
     } else {
         0
@@ -411,7 +420,8 @@ impl Lock {
             Kind::Mutex => {
                 let mut mutex = Box::new(SharedMutex::new());
                 // Not `then_some`: dropping a `Lock` destroys it, and a failed init made none.
-                (init_mutex(&mut mutex.lock, &mut mutex.attr, 0) == 0)
+                init_mutex(&mut mutex.lock, &mut mutex.attr, false)
+                    .is_ok()
                     .then(|| Self(Held::Mutex(mutex)))
             }
             Kind::RwLock => {
@@ -419,7 +429,8 @@ impl Lock {
                     lock: [const { AtomicU64::new(0) }; RW_LOCK],
                     attr: [const { AtomicU64::new(0) }; RW_ATTR],
                 });
-                (init_rwlock(&mut rwlock.lock, &mut rwlock.attr, 0) == 0)
+                init_rwlock(&mut rwlock.lock, &mut rwlock.attr, false)
+                    .is_ok()
                     .then(|| Self(Held::RwLock(rwlock)))
             }
             #[cfg(target_os = "linux")]
@@ -439,13 +450,15 @@ impl Lock {
             Kind::Mutex => {
                 let (lock, attr) = storage.split_first_chunk_mut()?;
                 let lock: &'static mut Words<_> = lock;
-                (init_mutex(lock, attr.first_chunk_mut()?, 1) == 0)
+                init_mutex(lock, attr.first_chunk_mut()?, true)
+                    .is_ok()
                     .then_some(Self(Held::SharedMutex(lock)))
             }
             Kind::RwLock => {
                 let (lock, attr) = storage.split_first_chunk_mut()?;
                 let lock: &'static mut Words<_> = lock;
-                (init_rwlock(lock, attr.first_chunk_mut()?, 1) == 0)
+                init_rwlock(lock, attr.first_chunk_mut()?, true)
+                    .is_ok()
                     .then_some(Self(Held::SharedRwLock(lock)))
             }
             #[cfg(target_os = "linux")]
@@ -530,23 +543,26 @@ impl SharedMutex {
         }
     }
 
-    /// Makes the storage a process-shared mutex: 0 or an errno. Processes that share
-    /// it don't use it until this returns.
-    #[must_use]
-    pub fn init(&mut self) -> i32 {
-        init_mutex(&mut self.lock, &mut self.attr, 1)
+    /// Makes the storage a process-shared mutex. Processes that share it don't use
+    /// it until this returns.
+    /// # Errors
+    /// The first errno, which leaves no mutex made.
+    pub fn init(&mut self) -> Result<(), c_int> {
+        init_mutex(&mut self.lock, &mut self.attr, true)
     }
 
-    /// `Mutex::lock()`, blocking: 0 or an errno.
-    #[must_use]
-    pub fn lock(&self) -> i32 {
-        pthread_mutex_lock(MutexRef(&self.lock))
+    /// `Mutex::lock()`, blocking.
+    /// # Errors
+    /// pthread's errno.
+    pub fn lock(&self) -> Result<(), c_int> {
+        pthread_result(pthread_mutex_lock(MutexRef(&self.lock)))
     }
 
-    /// `Mutex::unlock()`: 0 or an errno.
-    #[must_use]
-    pub fn unlock(&self) -> i32 {
-        pthread_mutex_unlock(MutexRef(&self.lock))
+    /// `Mutex::unlock()`.
+    /// # Errors
+    /// pthread's errno.
+    pub fn unlock(&self) -> Result<(), c_int> {
+        pthread_result(pthread_mutex_unlock(MutexRef(&self.lock)))
     }
 
     /// Destroys the mutex `init` made. pthread refuses to destroy a held one, and
@@ -555,6 +571,11 @@ impl SharedMutex {
         pthread_mutexattr_destroy(&self.attr);
         pthread_mutex_destroy(MutexRef(&self.lock));
     }
+}
+
+/// A pthread call's result: 0, or the errno it returns.
+fn pthread_result(result: c_int) -> Result<(), c_int> {
+    if result == 0 { Ok(()) } else { Err(result) }
 }
 
 impl Default for SharedMutex {
@@ -835,12 +856,12 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no pthread_mutexattr_setpshared")]
     fn shared_mutex_locks_once_made_and_refuses_after_destroy() {
         let mut mutex = SharedMutex::new();
-        assert_eq!(mutex.init(), 0);
-        assert_eq!(mutex.lock(), 0);
-        assert_eq!(mutex.unlock(), 0);
+        assert_eq!(mutex.init(), Ok(()));
+        assert_eq!(mutex.lock(), Ok(()));
+        assert_eq!(mutex.unlock(), Ok(()));
         mutex.destroy();
         #[cfg(target_os = "macos")]
-        assert_eq!(mutex.lock(), EINVAL, "a destroyed mutex");
+        assert_eq!(mutex.lock(), Err(EINVAL), "a destroyed mutex");
     }
 
     #[test]
