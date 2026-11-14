@@ -96,7 +96,7 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
             port.config()
                 .thread_id
                 .set(crate::reactor_ops::pthread_self());
-            if handle.change(socket, swoole_rs_reactor::ChangeOp::Add, SW_EVENT_READ) < 0 {
+            if !handle.change(socket, swoole_rs_reactor::ChangeOp::Add, SW_EVENT_READ) {
                 return Some(-1);
             }
         }
@@ -141,7 +141,7 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
             return Some(-1);
         };
         let sock = pipe_socket(&bus, worker_pipe(worker, true));
-        if sock.is_none_or(|sock| handle.add(sock, SW_EVENT_READ) < 0) {
+        if sock.is_none_or(|sock| !handle.add(sock, SW_EVENT_READ)) {
             return Some(-1);
         }
         // Only synchronous sends go to the notify pipe: thread-safe, no separate memory.
@@ -349,7 +349,7 @@ fn pipe_read(ctx: &mut ReactorContext<'_>, event: &Event) -> Option<c_int> {
         match head.event() {
             Some(ServerEvent::Incoming) => {
                 if let Some(conn) = state.connection(session, Lookup::Verified)
-                    && methods::connection_incoming(serv, reactor, conn) < 0
+                    && !methods::connection_incoming(serv, reactor, conn)
                     && let Some(sock) = conn.socket()
                 {
                     reactor.close(sock);

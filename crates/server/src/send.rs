@@ -27,8 +27,6 @@ use swoole_rs_reactor::{ChangeOp, Drain, Interest, Socket, record_send, record_w
 const EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
 const EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
 /// `SW_OK` and `SW_ERR`.
-const SW_OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
-const SW_ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 /// `SW_LOG_TRACE`, `SW_LOG_NOTICE` and `SW_LOG_WARNING`.
 const LOG_TRACE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as c_int;
 const LOG_NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
@@ -60,7 +58,7 @@ pub fn send(serv: Server<'_>, session_id: core::ffi::c_long, data: &[u8]) -> boo
     let sent = if here {
         match send_now(state, session_id, data) {
             Some(sent) if usize::try_from(sent) == Ok(data.len()) => true,
-            first => to_connection(serv, &info, data, first) == SW_OK,
+            first => to_connection(serv, &info, data, first),
         }
     } else {
         let mut send = SendData {
@@ -122,7 +120,7 @@ pub fn send_parts(
                     len: left.len().c_cast::<u32>(),
                     ..DataHead::default()
                 };
-                to_connection(serv, &info, left, Some(0)) == SW_OK
+                to_connection(serv, &info, left, Some(0))
             })
     };
     if done {
@@ -164,8 +162,9 @@ fn send_now(state: &ServerState, session_id: core::ffi::c_long, data: &[u8]) -> 
     Some(i64::try_from(sent).unwrap_or(-1))
 }
 
-/// `Server::send_to_connection(send)`: `SW_OK` or `SW_ERR`, and 0 (upstream's
-/// `false`) where a send fails after the connection was found.
+/// `Server::send_to_connection(send)`: false for `SW_ERR`. Where a send fails after
+/// the connection was found upstream returns `false`, which its `int` makes 0, the
+/// same as `SW_OK`: true here too.
 ///
 /// # Safety
 /// `send` lends `info.len` readable bytes at `data` (a `SendfileTask` and its name
@@ -174,7 +173,7 @@ fn send_now(state: &ServerState, session_id: core::ffi::c_long, data: &[u8]) -> 
     clippy::must_use_candidate,
     reason = "callers ignore the result where upstream's do"
 )]
-pub unsafe fn send_to_connection(serv: Server<'_>, send: &SendData) -> c_int {
+pub unsafe fn send_to_connection(serv: Server<'_>, send: &SendData) -> bool {
     let len = send.info.len as usize;
     let data = if len == 0 || send.data.is_null() {
         &[][..]
@@ -190,13 +189,13 @@ pub unsafe fn send_to_connection(serv: Server<'_>, send: &SendData) -> c_int {
     clippy::must_use_candidate,
     reason = "callers ignore the result where upstream's do"
 )]
-pub fn send_event_to_connection(serv: Server<'_>, info: &DataHead, data: &[u8]) -> c_int {
+pub fn send_event_to_connection(serv: Server<'_>, info: &DataHead, data: &[u8]) -> bool {
     to_connection(serv, info, data, None)
 }
 
 /// [`send_to_connection`] of the event `info` with its `data`, where `first` is what
 /// [`send_now`] already sent, short of all of it.
-fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i64>) -> c_int {
+fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i64>) -> bool {
     let state = serv.state();
     let (kind, session) = (info.event(), info.fd);
     let close = kind == Some(ServerEvent::Close);
@@ -217,7 +216,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
             let m = format_args!("send event[{kind}] failed, session#{session} does not exist");
             error(LOG_TRACE, code, m);
         }
-        return SW_ERR;
+        return false;
     };
     let reactor = Reactor::thread();
     let config = serv.config();
@@ -236,18 +235,18 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
             let m = format_args!("socket#{} output buffer overflow", conn.fd());
             error(LOG_WARNING, E::SW_ERROR_OUTPUT_BUFFER_OVERFLOW, m);
         }
-        return SW_ERR;
+        return false;
     }
     if close && (conn.close_reset() || conn.close_force() || conn.peer_closed()) {
         reactor.close(sock);
-        return SW_OK;
+        return true;
     }
     let halfclose = cfg!(feature = "halfclose");
     let (removed, notified, events) = sock.read(|s| (s.removed, s.close_notified, s.events));
     let (reading, writing) = (events & EVENT_READ != 0, events & EVENT_WRITE != 0);
     if kind == Some(ServerEvent::PauseRecv) {
         if removed || !reading {
-            return SW_OK;
+            return true;
         }
         return if halfclose {
             reactor.interest(sock, Interest::RemoveRead, 0)
@@ -265,7 +264,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
             !removed || reading
         };
         if skip {
-            return SW_OK;
+            return true;
         }
         return if halfclose {
             reactor.interest(sock, Interest::AddRead, 0)
@@ -280,10 +279,10 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
     if out_empty {
         if close {
             reactor.close(sock);
-            return SW_OK;
+            return true;
         }
         if !file && sock.read(|s| s.direct_send) && direct_send(conn, sock, &mut data, first) {
-            return SW_OK;
+            return true;
         }
         if sock.read(|s| s.output.out_buffer.is_none()) {
             let buffer = Some(new_buffer(SW_SEND_BUFFER_SIZE));
@@ -298,14 +297,14 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
             reactor.interest(sock, Interest::RemoveRead, 0);
         }
     } else if file {
-        if send_file(sock, data) < 0 {
-            return 0;
+        if !send_file(sock, data) {
+            return true;
         }
     } else {
         if conn.peer_closed() {
             let m = format_args!("socket#{} is closed by client", conn.fd());
             error(LOG_NOTICE, E::SW_ERROR_SESSION_CLOSED_BY_CLIENT, m);
-            return 0;
+            return true;
         }
         let callback = |index| state.callbacks.slot(index).is_set();
         let (on_full, on_empty) = (callback(BufferFull), callback(BufferEmpty));
@@ -340,7 +339,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
     if sock.read(|s| s.events) & EVENT_WRITE == 0 {
         reactor.interest(sock, Interest::AddWrite, 0);
     }
-    SW_OK
+    true
 }
 
 /// Writes the bytes straight to the socket: true when all of them went, else the rest
@@ -381,18 +380,18 @@ fn advance(data: &mut &[u8], sent: i64) {
 /// `SendfileTask`'s head: its `off_t offset` and `size_t length`; the name follows.
 const TASK_HEAD: usize = 16;
 
-/// `sock->sendfile_async(task->filename, task->offset, task->length)`, or -1 for a
-/// task without its head or name.
-fn send_file(sock: Socket<'_>, task: &[u8]) -> c_int {
+/// `sock->sendfile_async(task->filename, task->offset, task->length)`: false when it
+/// failed or the task lacks its head or name.
+fn send_file(sock: Socket<'_>, task: &[u8]) -> bool {
     let word = |at: usize| <[u8; 8]>::try_from(task.get(at..at + 8)?).ok();
     let (Some(offset), Some(length)) = (word(0), word(8)) else {
-        return -1;
+        return false;
     };
     let Some(Ok(name)) = task.get(TASK_HEAD..).map(CStr::from_bytes_until_nul) else {
-        return -1;
+        return false;
     };
     let (offset, length) = (i64::from_ne_bytes(offset), usize::from_ne_bytes(length));
-    swoole_rs_tls::upstream::socket_sendfile_async(sock, name, offset, length)
+    swoole_rs_tls::upstream::socket_sendfile_async(sock, name, offset, length) >= 0
 }
 
 /// `swoole_timer_add(sec2msec(port->max_idle_time), true, ...)` for the socket's
@@ -415,6 +414,9 @@ mod tests {
     use super::*;
     use crate::fixture::LiveServer;
     use crate::hybrid::tests::{Call, calls};
+
+    const SW_OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
+    const SW_ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
     use core::ffi::c_void;
     use std::io::Read;
 
@@ -452,7 +454,8 @@ mod tests {
         fn send(&self, kind: ServerEvent, session: i64, data: &[u8]) -> c_int {
             let send = event(kind, session, data);
             // SAFETY: `data` is live for the call.
-            unsafe { send_to_connection(self.serv(), &send) }
+            let sent = unsafe { send_to_connection(self.serv(), &send) };
+            if sent { SW_OK } else { SW_ERR }
         }
         /// The reactor records its closes, as the server's would close them.
         fn closes(&self) {
@@ -643,10 +646,10 @@ mod tests {
         );
         assert_eq!(a.read(10), data);
         // As if only four had gone.
-        assert_eq!(to_connection(a.serv(), &info, data, Some(4)), SW_OK);
+        assert!(to_connection(a.serv(), &info, data, Some(4)));
         assert_eq!(a.queued(), 6, "the rest is buffered");
         let a = Accepted::new();
-        assert_eq!(to_connection(a.serv(), &info, data, Some(-1)), SW_OK);
+        assert!(to_connection(a.serv(), &info, data, Some(-1)));
         assert_eq!(a.queued(), 10, "would block: all of it is buffered");
         assert!(a.client.set_nonblocking(true).is_ok());
         assert!((&a.client).read(&mut [0; 1]).is_err(), "nothing sent");

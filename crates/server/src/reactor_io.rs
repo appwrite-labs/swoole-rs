@@ -42,7 +42,7 @@ pub(crate) fn pipe_write(serv: view::Server<'_>, reactor: Reactor, event: &Event
         }
         pop(sock);
     }
-    if reactor.interest(sock, swoole_rs_reactor::Interest::RemoveWrite, 0) < 0 {
+    if !reactor.interest(sock, swoole_rs_reactor::Interest::RemoveWrite, 0) {
         let m = format_args!("reactor->set({}) failed", event.fd());
         log::sys_warning(c"ReactorThread_onPipeWrite", m);
     }

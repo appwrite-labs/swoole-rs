@@ -42,22 +42,22 @@ impl Reactor {
         // reference to its state outlives the call it is passed to.
         unsafe { Running::new(self.0) }
     }
-    /// `Reactor::change`'s `op` of `sock` with `events`.
-    pub(crate) fn change(self, sock: Socket<'_>, op: ChangeOp, events: c_int) -> c_int {
+    /// `Reactor::change`'s `op` of `sock` with `events`: whether it applied.
+    pub(crate) fn change(self, sock: Socket<'_>, op: ChangeOp, events: c_int) -> bool {
         // SAFETY: a live reactor and socket.
-        unsafe { reactor_change(self.0, sock.as_ptr(), op.code(), events) }
+        unsafe { reactor_change(self.0, sock.as_ptr(), op.code(), events) == 0 }
     }
-    /// `Reactor::interest`'s `kind` of `sock`.
-    pub(crate) fn interest(self, sock: Socket<'_>, kind: Interest, events: c_int) -> c_int {
+    /// `Reactor::interest`'s `kind` of `sock`: whether it applied.
+    pub(crate) fn interest(self, sock: Socket<'_>, kind: Interest, events: c_int) -> bool {
         // SAFETY: a live reactor and socket.
-        unsafe { reactor_interest(self.0, sock.as_ptr(), kind.code(), events) }
+        unsafe { reactor_interest(self.0, sock.as_ptr(), kind.code(), events) == 0 }
     }
-    /// `reactor->add(sock, events)`.
-    pub(crate) fn add(self, sock: Socket<'_>, events: c_int) -> c_int {
+    /// `reactor->add(sock, events)`: whether it applied.
+    pub(crate) fn add(self, sock: Socket<'_>, events: c_int) -> bool {
         self.change(sock, ChangeOp::Add, events)
     }
-    /// `reactor->del(sock)`.
-    pub(crate) fn del(self, sock: Socket<'_>) -> c_int {
+    /// `reactor->del(sock)`: whether it applied.
+    pub(crate) fn del(self, sock: Socket<'_>) -> bool {
         self.change(sock, ChangeOp::Del, 0)
     }
     /// `reactor->remove_read_event(sock)`.

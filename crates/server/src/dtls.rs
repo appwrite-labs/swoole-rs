@@ -167,7 +167,7 @@ pub(crate) fn on_packet(
         return -1;
     };
     let failed = if single_thread {
-        crate::server_methods::connection_incoming(serv, reactor, conn) < 0
+        !crate::server_methods::connection_incoming(serv, reactor, conn)
     } else {
         let (session_id, reactor_id) = (conn.session_id(), conn.reactor_id());
         let ev = DataHead {
