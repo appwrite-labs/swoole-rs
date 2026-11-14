@@ -615,12 +615,17 @@ mod tests {
             // `_ssl_read_x509_file` before its warnings: the PEM, then the reference
             // released when `consume`.
             let pem_of = |cert: *mut X509, buffer: &mut [u8], consume: bool| {
-                let written = CertRef::new(cert).map_or(-2, |cert| cert.pem(buffer));
+                let written =
+                    CertRef::new(cert).map_or(Err(crate::PemError::Write), |cert| cert.pem(buffer));
                 drop(consume.then(|| std::ptr::NonNull::new(cert).map(Cert)));
                 written
             };
             let empty = X509_new();
-            assert_eq!(pem_of(empty, &mut pem, true), -2, "nothing to encode");
+            assert_eq!(
+                pem_of(empty, &mut pem, true),
+                Err(crate::PemError::Write),
+                "nothing to encode"
+            );
             ERR_clear_error();
             // A self-signed Ed25519 certificate.
             let keygen = EVP_PKEY_CTX_new_id(EVP_PKEY_ED25519, std::ptr::null_mut());
@@ -633,10 +638,14 @@ mod tests {
             assert!(X509_sign(cert, key, std::ptr::null()) > 0);
             EVP_PKEY_free(key);
             let written = pem_of(cert, &mut pem, false);
-            assert!(written > 0);
+            assert!(written.is_ok_and(|n| n > 0));
             assert!(pem.starts_with(b"-----BEGIN CERTIFICATE-----"));
             let mut short = [0_u8; 10];
-            assert_eq!(pem_of(cert, &mut short, true), 10, "bounded by the buffer");
+            assert_eq!(
+                pem_of(cert, &mut short, true),
+                Ok(10),
+                "bounded by the buffer"
+            );
 
             let context = SSL_CTX_new(TLS_method());
             crate::swr_v1_tls_init().unwrap();

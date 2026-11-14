@@ -396,8 +396,7 @@ impl Co {
     pub fn peer_cert(self) -> Vec<u8> {
         let mut pem = vec![0_u8; SW_STACK_BUFFER_SIZE as usize];
         let read = |socket: Socket<'_>| socket_ssl_peer_certificate_pem(socket, &mut pem);
-        let length = self.with_network(read).unwrap_or(-1);
-        if let Ok(length) = usize::try_from(length) {
+        if let Some(length) = self.with_network(read).flatten() {
             pem.truncate(length);
             return pem;
         }
