@@ -53,15 +53,12 @@ impl Callable {
         // SAFETY: fresh storage; all-zero is an empty callable.
         unsafe { raw.write_bytes(0, 1) };
         let mut this = Parsed(raw);
-        let (fci, fcc) = match call.callable(n) {
-            Ok(parsed) => parsed,
-            Err(invalid) => {
-                this.discard();
-                return Err(invalid);
-            }
-        };
         let callable = this.record();
-        (callable.fci, callable.fcc) = (fci, fcc);
+        if let Err(invalid) = call.callable(n, &mut callable.fci, &mut callable.fcc) {
+            this.discard();
+            return Err(invalid);
+        }
+        let callable = this.record();
         callable.fci.param_count = call.num_args().saturating_sub(n);
         callable.fci.params = if callable.fci.param_count > 0 {
             call.arg(n + 1)
