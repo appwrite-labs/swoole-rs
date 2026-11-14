@@ -220,7 +220,7 @@ method_table! {
 /// clone and unset denied, custom object).
 pub fn php_swoole_http_cookie_minit(args: &MinitArgs) {
     let minit = args.minit;
-    minit.register_object::<Held>(c"Swoole\\Http\\Cookie", &METHODS.0, 0);
+    minit.register_object::<Held>(c"Swoole\\Http\\Cookie", METHODS.rows(), 0);
 }
 
 /// `php_swoole_http_get_cooke_safety`: a constructed cookie's object, or

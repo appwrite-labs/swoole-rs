@@ -102,7 +102,7 @@ method_table! {
 /// # Errors
 /// A registration bailed out.
 pub fn coroutine_lock_minit(minit: &Minit) -> Result<(), Bailout> {
-    minit.register_object::<Held>(c"Swoole\\Coroutine\\Lock", &METHODS.0, 0);
+    minit.register_object::<Held>(c"Swoole\\Coroutine\\Lock", METHODS.rows(), 0);
     minit.property_long(&CLASS, c"errCode", 0, ZEND_ACC_PUBLIC);
     Ok(())
 }

@@ -2,6 +2,7 @@
 //! constants, classes and their function aliases.
 use crate::{
     Class, ClassEntry, Owned, Value,
+    arginfo::Methods,
     bailout::Bailout,
     class::Layout,
     function::{arg_info, deny},
@@ -199,15 +200,14 @@ impl Minit {
     /// # Errors
     /// Stops at a contained allocation or registration bailout.
     /// # Panics
-    /// `class` is not registered, or `methods` is not `PHP_FE_END`-terminated.
-    pub fn function_aliases(
+    /// `class` is not registered.
+    pub fn function_aliases<const N: usize>(
         &self,
         class: &Class,
-        methods: &'static [zend_function_entry],
+        methods: &Methods<N>,
         aliases: &[(&CStr, &CStr)],
     ) -> Result<(), Bailout> {
         let entry = registered(class);
-        terminated(methods);
         // The class's own table, projected without a Rust reference to the entry.
         let source = entry
             .wrapping_byte_add(offset_of!(zend_class_entry, function_table))

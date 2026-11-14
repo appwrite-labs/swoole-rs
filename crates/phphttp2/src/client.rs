@@ -1178,7 +1178,7 @@ fn body_bytes(data: &Value) -> Option<ZString> {
 
 /// A table of no methods, as `register_object` takes one.
 static NO_METHODS: swoole_rs_zend::arginfo::Methods<1> =
-    swoole_rs_zend::arginfo::Methods([swoole_rs_zend::arginfo::END]);
+    swoole_rs_zend::arginfo::Methods::new([swoole_rs_zend::arginfo::END]);
 
 /// `SW_REGISTER_LONG_CONSTANT`s of the frame types and error codes.
 const CONSTANTS: [(&CStr, i64); 24] = [
@@ -1238,7 +1238,7 @@ pub fn client_minit(args: &swoole_rs_phpswoole::MinitArgs) {
 }
 
 fn register(minit: &Minit, shortname: bool) -> Result<(), swoole_rs_zend::bailout::Bailout> {
-    minit.register_object::<Data>(c"Swoole\\Coroutine\\Http2\\Client", &METHODS.0, 0);
+    minit.register_object::<Data>(c"Swoole\\Coroutine\\Http2\\Client", METHODS.rows(), 0);
     if shortname {
         minit.alias(&CLIENT, c"Co\\Http2\\Client")?;
     }
@@ -1253,8 +1253,8 @@ fn register(minit: &Minit, shortname: bool) -> Result<(), swoole_rs_zend::bailou
     if shortname {
         minit.alias(&EXCEPTION, c"Co\\Http2\\Client\\Exception")?;
     }
-    minit.register_object::<Plain<0>>(REQUEST_NAME, &NO_METHODS.0, 0);
-    minit.register_object::<Plain<1>>(c"Swoole\\Http2\\Response", &NO_METHODS.0, 0);
+    minit.register_object::<Plain<0>>(REQUEST_NAME, NO_METHODS.rows(), 0);
+    minit.register_object::<Plain<1>>(c"Swoole\\Http2\\Response", NO_METHODS.rows(), 0);
     let public = ZEND_ACC_PUBLIC;
     minit.property_long(&CLIENT, c"errCode", 0, public);
     minit.property_string(&CLIENT, c"errMsg", c"", public);

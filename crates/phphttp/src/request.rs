@@ -68,7 +68,7 @@ method_table! {
 /// MINIT: register the class as `php_swoole_http_request_minit` did.
 pub fn request_minit(args: &MinitArgs) {
     let minit = args.minit;
-    minit.register_object::<Data>(c"Swoole\\Http\\Request", &METHODS.0, 0);
+    minit.register_object::<Data>(c"Swoole\\Http\\Request", METHODS.rows(), 0);
     for name in [c"fd", c"streamId"] {
         minit.property_long(&REQUEST, name, 0, ZEND_ACC_PUBLIC);
     }

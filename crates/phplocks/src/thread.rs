@@ -184,15 +184,19 @@ method_table! {
 pub fn thread_locks_minit(minit: &Minit) -> Result<(), Bailout> {
     minit.register_object::<ThreadAtomic>(
         c"Swoole\\Thread\\Atomic",
-        &ATOMIC_METHODS.0,
+        ATOMIC_METHODS.rows(),
         ZEND_ACC_FINAL,
     );
     minit.register_object::<ThreadLong>(
         c"Swoole\\Thread\\Atomic\\Long",
-        &LONG_METHODS.0,
+        LONG_METHODS.rows(),
         ZEND_ACC_FINAL,
     );
-    minit.register_object::<ThreadLock>(c"Swoole\\Thread\\Lock", &LOCK_METHODS.0, ZEND_ACC_FINAL);
+    minit.register_object::<ThreadLock>(
+        c"Swoole\\Thread\\Lock",
+        LOCK_METHODS.rows(),
+        ZEND_ACC_FINAL,
+    );
     for &kind in Kind::ALL {
         minit.class_constant_long(&LOCK, names(kind).0, kind.code());
     }

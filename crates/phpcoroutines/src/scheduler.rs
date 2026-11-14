@@ -88,7 +88,11 @@ method_table! {
 /// # Errors
 /// A registration bailed out.
 pub fn php_swoole_coroutine_scheduler_minit(minit: &Minit) -> Result<(), Bailout> {
-    minit.register_object::<Scheduler>(c"Swoole\\Coroutine\\Scheduler", &METHODS.0, ZEND_ACC_FINAL);
+    minit.register_object::<Scheduler>(
+        c"Swoole\\Coroutine\\Scheduler",
+        METHODS.rows(),
+        ZEND_ACC_FINAL,
+    );
     if host::flag(host::SHORTNAME) {
         minit.alias(&SCHEDULER, c"Co\\Scheduler")?;
     }
