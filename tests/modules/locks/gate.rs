@@ -79,10 +79,13 @@ impl RustLock {
         Self(lock)
     }
     fn lock(&self, operation: i32, timeout: i32) -> i32 {
-        self.0.lock(operation, timeout, CAPABILITIES)
+        self.0
+            .lock(operation, timeout, CAPABILITIES)
+            .err()
+            .unwrap_or(0)
     }
     fn unlock(&self) -> i32 {
-        self.0.unlock()
+        self.0.unlock().err().unwrap_or(0)
     }
 }
 

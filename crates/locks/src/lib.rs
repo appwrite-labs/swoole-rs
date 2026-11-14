@@ -487,24 +487,31 @@ impl Lock {
 
     /// `Lock::lock(operation, timeout)`: `LOCK_SH`/`LOCK_NB` from `operation`,
     /// `timeout` in milliseconds (none when not positive), the timed waits
-    /// `capabilities` names (bit 0 mutex, bit 1 rwlock); 0 or an errno.
-    #[must_use]
-    pub fn lock(&self, operation: i32, timeout: i32, capabilities: u32) -> i32 {
+    /// `capabilities` names (bit 0 mutex, bit 1 rwlock).
+    /// # Errors
+    /// The errno of a lock not taken.
+    pub fn lock(&self, operation: i32, timeout: i32, capabilities: u32) -> Result<(), i32> {
         let lock = self.live();
         // A blocking mutex lock, the common case, is small enough to inline.
-        if let Live::Mutex(mutex) = lock
+        let code = if let Live::Mutex(mutex) = lock
             && operation & LOCK_NB == 0
             && timeout <= 0
         {
-            return pthread_mutex_lock(mutex);
-        }
-        lock.lock(operation, timeout, capabilities)
+            pthread_mutex_lock(mutex)
+        } else {
+            lock.lock(operation, timeout, capabilities)
+        };
+        if code == 0 { Ok(()) } else { Err(code) }
     }
 
-    /// `Lock::unlock()`: 0 or an errno.
-    #[must_use]
-    pub fn unlock(&self) -> i32 {
-        self.live().unlock()
+    /// `Lock::unlock()`.
+    /// # Errors
+    /// The errno of a lock not released.
+    pub fn unlock(&self) -> Result<(), i32> {
+        match self.live().unlock() {
+            0 => Ok(()),
+            code => Err(code),
+        }
     }
 }
 
@@ -867,8 +874,8 @@ mod tests {
     #[test]
     fn safe_locks_lock_and_refuse_what_they_cannot_hold() {
         let lock = super::Lock::private(MUTEX).expect("a mutex");
-        assert_eq!(lock.lock(LOCK_EX, -1, CAPABILITIES), 0);
-        assert_eq!(lock.unlock(), 0);
+        assert_eq!(lock.lock(LOCK_EX, -1, CAPABILITIES), Ok(()));
+        assert_eq!(lock.unlock(), Ok(()));
         assert_eq!(super::Kind::from_code(42), None, "no such kind");
         // Taken back after the refusal, which keeps no reference, so Miri sees no leak.
         let short = Box::into_raw(Box::new([AtomicU64::new(0)]));
@@ -902,10 +909,13 @@ mod tests {
             Self(lock.expect("a lock"))
         }
         fn lock(&self, operation: i32, timeout: i32) -> i32 {
-            self.0.lock(operation, timeout, CAPABILITIES)
+            self.0
+                .lock(operation, timeout, CAPABILITIES)
+                .err()
+                .unwrap_or(0)
         }
         fn unlock(&self) -> i32 {
-            self.0.unlock()
+            self.0.unlock().err().unwrap_or(0)
         }
     }
     fn page(shared: bool) -> *mut c_void {

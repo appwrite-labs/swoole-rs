@@ -341,8 +341,8 @@ mod tests {
         let Resource::Lock(lock) = &*resource else {
             unreachable!("made as a lock");
         };
-        assert_eq!(lock.lock(2, -1, 0), 0, "locks");
-        assert_eq!(lock.unlock(), 0, "unlocks");
+        assert_eq!(lock.lock(2, -1, 0), Ok(()), "locks");
+        assert_eq!(lock.unlock(), Ok(()), "unlocks");
         let shared = Arc::clone(&resource);
         drop(resource);
         assert!(matches!(*shared, Resource::Lock(_)), "alive while shared");

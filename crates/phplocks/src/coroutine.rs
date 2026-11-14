@@ -122,9 +122,6 @@ fn construct(call: &Call) {
     held.0.get_or_init(|| CoroutineLock::new(shared, &HOST));
     call.set_bool(true);
 }
-fn check(call: &Call, result: Result<(), i32>) {
-    super::lock::check(call, result.err().unwrap_or(0));
-}
 fn lock(call: &Call) {
     let Ok(operation) = call
         .arity(0, 1)
@@ -138,13 +135,13 @@ fn lock(call: &Call) {
     };
     // LOCK_NB is 4 on both supported platforms; checking the zend_long avoids truncation.
     let blocking = operation & 4 == 0;
-    check(call, owner.acquire(blocking));
+    super::lock::check(call, owner.acquire(blocking));
 }
 fn unlock(call: &Call) {
     let Some(owner) = constructed(call) else {
         return;
     };
-    check(call, owner.unlock());
+    super::lock::check(call, owner.unlock());
 }
 swoole_rs_zend::handlers! {
     zim_swoole_coroutine_lock___construct => construct;
