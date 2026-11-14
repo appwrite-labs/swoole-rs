@@ -145,7 +145,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_minit(kind: c_int, module_number: c_in
     minit.register_child(
         &EXCEPTION,
         c"Swoole\\Exception",
-        &[],
+        swoole_rs_zend::arginfo::Table::NONE,
         minit.exception(),
         |_, _| {},
     );
@@ -153,7 +153,13 @@ pub unsafe extern "C" fn swr_v1_phpswoole_minit(kind: c_int, module_number: c_in
     let handlers = unsafe { *EXCEPTION.handlers() };
     // SAFETY: MINIT, before any family copies it.
     unsafe { swoole_exception_handlers = handlers };
-    minit.register_child(&ERROR, c"Swoole\\Error", &[], minit.error(), |_, _| {});
+    minit.register_child(
+        &ERROR,
+        c"Swoole\\Error",
+        swoole_rs_zend::arginfo::Table::NONE,
+        minit.error(),
+        |_, _| {},
+    );
     // MINIT, before any family reads them.
     swoole_exception_ce.store(EXCEPTION.entry(), Ordering::Relaxed);
     swoole_error_ce.store(ERROR.entry(), Ordering::Relaxed);

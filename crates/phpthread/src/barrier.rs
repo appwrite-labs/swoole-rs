@@ -43,7 +43,7 @@ method_table! {
 pub fn barrier_minit(minit: &Minit) {
     minit.register_object::<BarrierObject>(
         c"Swoole\\Thread\\Barrier",
-        METHODS.rows(),
+        METHODS.table(),
         ZEND_ACC_FINAL,
     );
 }

@@ -51,28 +51,60 @@ impl<const N: usize> Methods<N> {
         Self(table)
     }
 
-    /// The rows, `PHP_FE_END` last.
+    /// The table, for registration.
     #[must_use]
-    pub const fn rows(&self) -> &[zend_function_entry] {
-        &self.0
-    }
-
-    /// The table, as `INIT_CLASS_ENTRY` and `zend_register_functions` take it.
-    #[must_use]
-    pub const fn as_ptr(&'static self) -> *const zend_function_entry {
-        self.0.as_ptr()
+    pub const fn table(&'static self) -> Table {
+        Table(&self.0)
     }
 
     /// The table without the rows named in `skip`, leaked for the process: for
     /// an upstream `#ifdef` only C++ can test, decided once at MINIT.
     #[must_use]
-    pub fn without(&'static self, skip: &[&CStr]) -> &'static [zend_function_entry] {
+    pub fn without(&'static self, skip: &[&CStr]) -> Table {
         let keep = |row: &&zend_function_entry| {
             // SAFETY: a row's name is a static C string; only `END`'s is null.
             row.fname.is_null() || !skip.contains(&unsafe { CStr::from_ptr(row.fname) })
         };
         let rows: Vec<zend_function_entry> = self.0.iter().filter(keep).copied().collect();
-        Box::leak(rows.into_boxed_slice())
+        Table(Box::leak(rows.into_boxed_slice()))
+    }
+}
+
+/// A method table as Zend registers it: a [`Methods`]' rows (or some of them,
+/// or several joined), `PHP_FE_END` last, or none.
+#[derive(Clone, Copy)]
+pub struct Table(&'static [zend_function_entry]);
+
+impl Table {
+    /// No methods.
+    pub const NONE: Self = Self(&[]);
+
+    /// Each table's rows in turn, then one `PHP_FE_END`, leaked for the process.
+    #[must_use]
+    pub fn join(tables: &[Self]) -> Self {
+        let mut rows: Vec<zend_function_entry> = tables
+            .iter()
+            .flat_map(|table| table.0.split_last().map_or(&[][..], |(_, rows)| rows))
+            .copied()
+            .collect();
+        rows.push(END.0);
+        Self(Box::leak(rows.into_boxed_slice()))
+    }
+
+    /// The table, as `INIT_CLASS_ENTRY` and `zend_register_functions` take it:
+    /// null for none.
+    #[must_use]
+    pub const fn as_ptr(self) -> *const zend_function_entry {
+        if self.0.is_empty() {
+            ptr::null()
+        } else {
+            self.0.as_ptr()
+        }
+    }
+
+    /// The rows, `PHP_FE_END` last, or none.
+    pub(crate) const fn rows(self) -> &'static [zend_function_entry] {
+        self.0
     }
 }
 

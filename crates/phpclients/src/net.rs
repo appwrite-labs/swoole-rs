@@ -338,7 +338,7 @@ pub fn client() -> &'static Class {
 /// A registration bailed out.
 pub fn php_swoole_client_minit(minit: &Minit) -> Result<(), Bailout> {
     let methods = if built_with(Switch::Sockets) {
-        METHODS.rows()
+        METHODS.table()
     } else {
         METHODS.without(&[c"getSocket"])
     };
@@ -346,7 +346,7 @@ pub fn php_swoole_client_minit(minit: &Minit) -> Result<(), Bailout> {
     minit.register_child(
         &EXCEPTION,
         c"Swoole\\Client\\Exception",
-        &[],
+        swoole_rs_zend::arginfo::Table::NONE,
         minit.parent(swoole_rs_phpswoole::exception()),
         |_, _| {},
     );

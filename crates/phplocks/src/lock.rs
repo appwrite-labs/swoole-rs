@@ -78,7 +78,7 @@ pub(crate) const fn names(kind: Kind) -> (&'static CStr, &'static CStr) {
 /// # Errors
 /// A registration bailed out.
 pub fn lock_minit(minit: &Minit) -> Result<(), Bailout> {
-    minit.register_object::<Held>(c"Swoole\\Lock", METHODS.rows(), 0);
+    minit.register_object::<Held>(c"Swoole\\Lock", METHODS.table(), 0);
     for &kind in Kind::ALL {
         minit.class_constant_long(&LOCK, names(kind).0, kind.code());
     }

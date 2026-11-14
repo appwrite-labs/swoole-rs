@@ -99,7 +99,7 @@ pub fn php_swoole_client_async_minit(minit: &Minit) -> Result<(), Bailout> {
     minit.register_child(
         &ASYNC,
         c"Swoole\\Async\\Client",
-        METHODS.rows(),
+        METHODS.table(),
         minit.parent(&net::CLIENT),
         configure,
     );

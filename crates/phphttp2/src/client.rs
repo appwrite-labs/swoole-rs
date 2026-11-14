@@ -1238,7 +1238,7 @@ pub fn client_minit(args: &swoole_rs_phpswoole::MinitArgs) {
 }
 
 fn register(minit: &Minit, shortname: bool) -> Result<(), swoole_rs_zend::bailout::Bailout> {
-    minit.register_object::<Data>(c"Swoole\\Coroutine\\Http2\\Client", METHODS.rows(), 0);
+    minit.register_object::<Data>(c"Swoole\\Coroutine\\Http2\\Client", METHODS.table(), 0);
     if shortname {
         minit.alias(&CLIENT, c"Co\\Http2\\Client")?;
     }
@@ -1246,15 +1246,15 @@ fn register(minit: &Minit, shortname: bool) -> Result<(), swoole_rs_zend::bailou
     minit.register_child(
         &EXCEPTION,
         c"Swoole\\Coroutine\\Http2\\Client\\Exception",
-        &[],
+        swoole_rs_zend::arginfo::Table::NONE,
         exception,
         |_, _| {},
     );
     if shortname {
         minit.alias(&EXCEPTION, c"Co\\Http2\\Client\\Exception")?;
     }
-    minit.register_object::<Plain<0>>(REQUEST_NAME, NO_METHODS.rows(), 0);
-    minit.register_object::<Plain<1>>(c"Swoole\\Http2\\Response", NO_METHODS.rows(), 0);
+    minit.register_object::<Plain<0>>(REQUEST_NAME, NO_METHODS.table(), 0);
+    minit.register_object::<Plain<1>>(c"Swoole\\Http2\\Response", NO_METHODS.table(), 0);
     let public = ZEND_ACC_PUBLIC;
     minit.property_long(&CLIENT, c"errCode", 0, public);
     minit.property_string(&CLIENT, c"errMsg", c"", public);

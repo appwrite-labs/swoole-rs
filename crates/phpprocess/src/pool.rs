@@ -258,7 +258,7 @@ pub fn php_swoole_process_pool_minit(minit: &Minit) {
     // SAFETY: `zend_try` over a C body, in which the pool's Rust worker loops call
     // PHP and which they leave before re-raising, and Zend's bailout.
     unsafe { swoole_rs_process::pool::set_bailout(swoole_rs_zend::sys::swr_zend_try, raise) };
-    minit.register_object::<PoolObject>(c"Swoole\\Process\\Pool", METHODS.rows(), 0);
+    minit.register_object::<PoolObject>(c"Swoole\\Process\\Pool", METHODS.table(), 0);
     for name in [c"master_pid", c"workerPid", c"workerId"] {
         minit.property_long(&POOL, name, -1, ZEND_ACC_PUBLIC);
     }

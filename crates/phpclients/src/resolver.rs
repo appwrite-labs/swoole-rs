@@ -163,7 +163,7 @@ method_table! {
 /// # Errors
 /// A registration bailed out.
 pub fn php_swoole_name_resolver_minit(minit: &Minit) -> Result<(), bailout::Bailout> {
-    minit.register_object::<Held>(c"Swoole\\NameResolver\\Context", METHODS.rows(), 0);
+    minit.register_object::<Held>(c"Swoole\\NameResolver\\Context", METHODS.table(), 0);
     Ok(())
 }
 
