@@ -405,7 +405,9 @@ fn worker_ops(pool: Pool<'_>, worker: Record<'_>, op: Op, arg: u64) -> Option<i6
             swoole_rs_process::methods::set_worker_type(WorkerType::Event);
             swoole_set_worker_id(worker.id());
             swoole_set_worker_pid(worker.pid());
-            swoole_rs_process::worker_globals::set_current_worker(worker.raw());
+            // SAFETY: the pool's worker this process now runs, which the pool keeps
+            // until the worker loop ends.
+            unsafe { swoole_rs_process::worker_globals::set_current_worker(worker.raw()) };
             0
         }
         Op::WorkerShutdown => {

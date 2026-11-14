@@ -60,7 +60,9 @@ pub(crate) fn start_reactor_processes(serv: view::Server<'_>) -> bool {
     let started = if serv.is_single_worker() {
         let worker = crate::shared::ServerShared::of(serv).event_pool().worker(0);
         let raw = worker.map_or(core::ptr::null_mut(), Worker::raw);
-        swoole_rs_process::worker_globals::set_current_worker(raw);
+        // SAFETY: null, or the server's event worker 0, which this process runs
+        // until the server frees its workers after the loop.
+        unsafe { swoole_rs_process::worker_globals::set_current_worker(raw) };
         worker.is_some_and(|worker| main_loop(serv, worker))
     } else {
         hybrid().step(serv, Step::StartManager)

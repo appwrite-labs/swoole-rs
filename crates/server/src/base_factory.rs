@@ -339,12 +339,8 @@ fn receive_now(serv: view::Server<'_>, task: &SendData) -> bool {
     if !dgram && task.info.event() != Some(ServerEvent::RecvData) {
         return false;
     }
-    let (worker, max_request) = with_globals(|g| {
-        (
-            g.worker.load(Ordering::Relaxed),
-            g.max_request.load(Ordering::Relaxed),
-        )
-    });
+    let (worker, max_request) =
+        with_globals(|g| (g.worker(), g.max_request.load(Ordering::Relaxed)));
     if worker.is_null() || max_request != 0 {
         return false;
     }
@@ -644,7 +640,8 @@ mod tests {
         conn.recv_queued_bytes().store(5, Ordering::Relaxed);
         // SAFETY: a worker record is plain data; zero is a fresh one.
         let mut worker: WorkerRecord = unsafe { core::mem::zeroed() };
-        set_current_worker(&raw mut worker);
+        // SAFETY: a local record, current until the slot is cleared below.
+        unsafe { set_current_worker(&raw mut worker) };
         let mut task = send(c_long::from(conn.fd()), ServerEvent::RecvData, 5);
         task.info.time = 1.5;
         assert!(dispatch(serv, &mut task, true));
@@ -680,7 +677,8 @@ mod tests {
         with_globals(|g| g.max_request.store(0, Ordering::Relaxed));
         let mut again = send(c_long::from(conn.fd()), ServerEvent::RecvData, 5);
         assert!(dispatch(serv, &mut again, false));
-        set_current_worker(core::ptr::null_mut());
+        // SAFETY: null.
+        unsafe { set_current_worker(core::ptr::null_mut()) };
         assert_eq!(heard(), []);
         assert_eq!(
             calls(),
