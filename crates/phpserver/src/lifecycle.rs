@@ -16,7 +16,7 @@ use std::{
     sync::atomic::Ordering,
 };
 use swoole_rs_corebase::CCast;
-use swoole_rs_phpcoroutines::Coroutine;
+use swoole_rs_phpcoroutines::{Coroutine, Waiter};
 use swoole_rs_process::worker_record::Worker;
 use swoole_rs_server::{server_methods, swr_v1_server_add_command, swr_v1_server_command, view};
 use swoole_rs_zend::host::callable::Callable as Kept;
@@ -906,7 +906,7 @@ fn command_run(callable: &Weak<Kept>, message: &[u8], reply: &mut Vec<u8>) {
     let message = Owned::string(ZString::new(message)).into_zval();
     let mut args = [crate::dispatch::zserv(), message];
     let retval = Owned::default();
-    let called = crate::dispatch::invoke(&callable, &mut args, retval.as_ptr(), false);
+    let called = crate::dispatch::invoke(&callable, &mut args, Some(&retval), false);
     // The message string made above.
     crate::dispatch::dtor(&mut args[1]);
     let bailed = match called {
@@ -941,21 +941,18 @@ fn command_run(callable: &Weak<Kept>, message: &[u8], reply: &mut Vec<u8>) {
 /// past the request (a master-handled command's stays until shutdown).
 struct Wait {
     reply: RefCell<Option<Vec<u8>>>,
-    coroutine: Coroutine,
+    waiter: Waiter,
     replied: Cell<bool>,
 }
 
 /// The command's reply (`Server::Command::Callback`): into `reply`, then the
-/// waiting coroutine resumes, if it has yielded yet.
+/// waiting coroutine resumes, if it has yielded yet. This frame owns nothing
+/// that needs a drop.
 fn command_done(wait: Rc<Wait>) -> impl Fn(&[u8]) {
     move |message| {
         wait.reply.replace(Some(message.to_vec()));
-        if wait.coroutine.is_suspending() == Some(true) {
-            // SAFETY: it parked in `command`; this frame owns nothing that needs a drop.
-            unsafe { wait.coroutine.wake(false) };
-        } else {
-            wait.replied.set(true);
-        }
+        wait.replied.set(true);
+        wait.waiter.wake();
     }
 }
 
@@ -980,12 +977,12 @@ fn command(call: &Call) {
     if let Err(bailout) = swoole_rs_phpruntime::coroutine_check() {
         return bailout.defer();
     }
-    let Some(coroutine) = Coroutine::current() else {
+    if Coroutine::current().is_none() {
         return;
-    };
+    }
     let wait = Rc::new(Wait {
         reply: RefCell::default(),
-        coroutine,
+        waiter: Waiter::default(),
         replied: Cell::new(false),
     });
     let data = encoded.bytes();
@@ -1009,7 +1006,7 @@ fn command(call: &Call) {
     }
     if !wait.replied.get() {
         // `command_done` resumes it.
-        swoole_rs_phpcoroutines::suspend();
+        wait.waiter.wait();
     }
     let Some(reply) = wait.reply.take() else {
         return;

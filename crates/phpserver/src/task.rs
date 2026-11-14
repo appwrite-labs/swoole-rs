@@ -14,7 +14,6 @@ use std::{
     collections::HashMap,
     ffi::{CStr, c_int},
     mem::ManuallyDrop,
-    ptr,
     rc::{Rc, Weak},
     sync::atomic::Ordering,
 };
@@ -26,11 +25,14 @@ use swoole_rs_phpcoroutines::Coroutine;
 use swoole_rs_phpswoole::unserialize_from;
 use swoole_rs_process::{
     methods::{self, swoole_get_worker_id},
-    process_pool::{PoolRef, SW_IPC_MAX_SIZE},
+    process_pool::PoolRef,
     task_file::{Packed, TaskBuffer},
-    task_sync::{Bailed, MultiTask, ResultSlot, TaskHost, Tasks, Waiting},
+    task_sync::{Bailed, MultiTask, TaskHost, Tasks, Waiting},
 };
-use swoole_rs_server::{task_worker::native::finish, view};
+use swoole_rs_server::{
+    task_worker::{native::finish, result_slot},
+    view,
+};
 use swoole_rs_tls::socket_pair::{self, SocketPair};
 use swoole_rs_zend::{
     Array, ArrayMut, Call, E_WARNING, Owned, OwnedArray, Value, ZString, bailout::Bailout,
@@ -137,12 +139,8 @@ fn wait_state(serv: view::Server<'_>) -> Option<Waiting<'_, Host<'_>>> {
     tasks.host.lock = serv
         .worker_record(id)
         .and_then(swoole_rs_process::worker_record::Worker::lock);
-    let results = ptr::NonNull::new(serv.config().task_results.as_ptr().cast::<u8>())?;
-    let size = usize::try_from(SW_IPC_MAX_SIZE).unwrap_or_default();
-    let slot = ptr::NonNull::new(results.as_ptr().wrapping_add(usize::from(id) * size))?;
-    // SAFETY: this worker's slot of the server's `task_results`, shared memory that
-    // holds an `EventData` per worker for as long as the server lives.
-    Some(tasks.waiting(unsafe { ResultSlot::new(slot) }))
+    let slot = result_slot(serv, id)?;
+    Some(tasks.waiting(slot))
 }
 
 /// `taskWaitMulti`'s `Server::MultiTask`: the array of tasks, and the array of
@@ -270,9 +268,17 @@ fn encode(data: &Value, buf: &mut TaskBuffer) -> Result<i64, Bailout> {
 /// `None` when its temporary file can't be read. A value a bailout interrupted
 /// is leaked.
 pub(crate) fn decode(task: Packed<'_>) -> Result<Option<(Owned, bool)>, Bailout> {
-    let buffer = swoole_rs_corebase::thread_buffer().cast::<CppString>();
-    // SAFETY: this thread's live buffer.
-    let Some((data, flags)) = task.unpack(unsafe { &mut *buffer }) else {
+    // Upstream reads a temporary file into `sw_tg_buffer()`; this reads it into its
+    // own buffer, which unserialize's PHP code can't reach.
+    let mut buffer = CppString::EMPTY;
+    let decoded = decode_into(task, &mut buffer);
+    buffer.dispose();
+    decoded
+}
+
+/// [`decode`] with `buffer` for a temporary file's bytes.
+fn decode_into(task: Packed<'_>, buffer: &mut CppString) -> Result<Option<(Owned, bool)>, Bailout> {
+    let Some((data, flags)) = task.unpack(buffer) else {
         return Ok(None);
     };
     if u32::from(flags) & SERIALIZE == 0 {
@@ -449,12 +455,10 @@ fn taskwait(call: &Call) {
         };
         let done = match tasks.task_sync(buf.packed(), &mut dst, timeout) {
             // `serv->get_task_result()`: this worker's slot of `task_results`.
-            Ok(true) => {
-                // SAFETY: the result the task worker packed into the slot before
-                // it notified this worker.
-                let result = unsafe { Packed::from_raw(tasks.result().as_ptr().cast()) };
-                return_decoded(call, decode(result))
-            }
+            Ok(true) => tasks.result().read(|result| {
+                Packed::from_bytes(result)
+                    .is_some_and(|result| return_decoded(call, decode(result)))
+            }),
             Ok(false) => false,
             Err(Bailed) => {
                 Bailout.defer();
@@ -701,7 +705,7 @@ pub(crate) fn on_task(server: view::Server<'_>, task: Packed<'_>) -> Result<c_in
             invoke(
                 &cb,
                 args.get_mut(..argc).unwrap_or_default(),
-                retval.as_ptr(),
+                Some(&retval),
                 facts.task_coroutine,
             )
         },
@@ -771,7 +775,7 @@ pub(crate) fn on_finish(server: view::Server<'_>, task: Packed<'_>) -> Result<c_
     let outcome = match invoke(
         &cb,
         args.get_mut(..argc).unwrap_or_default(),
-        ptr::null_mut(),
+        None,
         facts.enable_coroutine,
     ) {
         Ok(false) => handler_error("onFinish"),
