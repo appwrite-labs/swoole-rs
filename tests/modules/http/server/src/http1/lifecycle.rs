@@ -1441,7 +1441,11 @@ unsafe extern "C" fn base_receive(_: *mut c_void, serv: *mut c_void, req: *mut R
         kind: SW_SERVER_EVENT_CLOSE,
         ..Default::default()
     });
-    let sent = server_methods::send_to_connection(serv.view(), &sd);
+    let sent = if server_methods::send_to_connection(serv.view(), &sd) {
+        SW_OK
+    } else {
+        SW_ERR
+    };
     expect(sent == SW_ERR, "send_to_connection(&sd) == SW_ERR");
     expect(
         last_error() == SW_ERROR_SESSION_NOT_EXIST,

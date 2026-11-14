@@ -4,7 +4,9 @@ use std::ffi::{CStr, c_char, c_int, c_void};
 use swoole_rs_clients::address::{
     address_string, assign_with, swr_v1_clients_address_loopback, swr_v1_clients_address_verify,
 };
-use swoole_rs_clients::dns::{DnsExchange, INVALID_DOMAIN, hosts_lookup, set_hosts_path};
+use swoole_rs_clients::dns::{
+    DnsExchange, INVALID_DOMAIN, RecvError, hosts_lookup, received, set_hosts_path,
+};
 use swoole_rs_clients::ip::swr_v1_clients_ip_text;
 use swoole_rs_clients::{
     URL_INVALID, URL_PORT_RANGE, cookie as split_cookie, domain_decode, domain_encode, valid_port,
@@ -802,7 +804,7 @@ impl DnsExchange for Exchange {
 
     /// The patched caller's `recv`: a failed receive reports `-ECANCELED` when the
     /// socket's errCode is ECANCELED.
-    fn recv(&mut self, data: &mut [u8]) -> isize {
+    fn recv(&mut self, data: &mut [u8]) -> Result<usize, RecvError> {
         self.lookup.effects.push(b"receive".to_vec());
         // SAFETY: the query holds its bytes and `data` its length.
         let n = unsafe {
@@ -816,11 +818,7 @@ impl DnsExchange for Exchange {
                 data.len(),
             )
         };
-        if n <= 0 && self.canceled {
-            -isize::try_from(libc::ECANCELED).unwrap_or(0)
-        } else {
-            n
-        }
+        received(n, self.canceled)
     }
 
     fn push(&mut self, text: &[u8]) {

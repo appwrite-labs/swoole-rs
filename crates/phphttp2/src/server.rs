@@ -843,11 +843,11 @@ fn on_receive(view: view::Server<'_>, conn: Connection<'_>, request: &RecvData) 
     let zdata = swoole_rs_phpserver::php_swoole_get_recv_data(view, request);
     let data = zdata.bytes().unwrap_or_default();
     // The session stays alive until its frame is handled.
-    let result = session.map_or(SW_ERR, |session| parse(&session, data));
+    let parsed = session.is_some_and(|session| parse(&session, data));
     // Released before a deferred bailout can jump past it.
     drop(zdata);
     bailout::finish();
-    result
+    if parsed { SW_OK } else { SW_ERR }
 }
 
 /// `php_swoole_http2_server_onClose`: the connection's session goes.
@@ -858,8 +858,8 @@ pub fn server_on_close(session_id: i64) {
 /// `swoole_http2_server_parse` for the coroutine server's connection loop: one
 /// frame from the peer of connection `fd`, which `frame` starts with; a bailout
 /// stays pending for the caller's `finish`.
-fn session_receive(fd: i64, frame: &[u8]) -> c_int {
-    SessionState::find(fd).map_or(SW_ERR, |session| parse(&session, frame))
+fn session_receive(fd: i64, frame: &[u8]) -> bool {
+    SessionState::find(fd).is_some_and(|session| parse(&session, frame))
 }
 
 /// The entry points crates/phphttp's HTTP/1 code calls.
@@ -877,12 +877,12 @@ pub(crate) static HOOKS: swoole_rs_phphttp::http2::Server = swoole_rs_phphttp::h
     session_free: crate::session::session_free,
 };
 
-/// One frame, which `frame` starts with. `SW_ERR` for one shorter than its
-/// header says.
-fn parse(session: &Session, frame: &[u8]) -> c_int {
+/// One frame, which `frame` starts with: false for one shorter than its header
+/// says, or one the session refuses.
+fn parse(session: &Session, frame: &[u8]) -> bool {
     let last_stream_id = session.last_stream_id.get();
     let Some(facts) = sw_rs_http2_decode_frame(frame, last_stream_id, false) else {
-        return SW_ERR;
+        return false;
     };
     let stream_id = facts.stream_id;
     let new_stream = facts.publish_last_id;
@@ -892,7 +892,7 @@ fn parse(session: &Session, frame: &[u8]) -> c_int {
     // A header block continues only in CONTINUATION frames of its own stream.
     let pending = session.header_stream_id.get();
     if pending != 0 && (facts.action != FrameAction::Continuation || stream_id != pending) {
-        return SW_ERR;
+        return false;
     }
     if session.shutting_down.get() {
         log(
@@ -901,12 +901,12 @@ fn parse(session: &Session, frame: &[u8]) -> c_int {
             c"swoole_http2_server_parse",
             &format!("ignore http2 stream#{stream_id} after sending goaway"),
         );
-        return SW_ERR;
+        return false;
     }
     // The payload follows the header in the frame.
     let body = frame.get(FRAME_HEADER..).unwrap_or_default();
     let Some(payload) = body.get(..facts.length as usize) else {
-        return SW_ERR;
+        return false;
     };
     let flags = facts.flags & 0xff;
     match facts.action {
@@ -915,7 +915,7 @@ fn parse(session: &Session, frame: &[u8]) -> c_int {
         FrameAction::Continuation => {
             let stream = session.stream(stream_id, false);
             let Some(stream) = stream.filter(|_| pending == stream_id) else {
-                return SW_ERR;
+                return false;
             };
             return header_block(session, &stream, flags & FLAG_END_HEADERS, payload);
         }
@@ -924,7 +924,7 @@ fn parse(session: &Session, frame: &[u8]) -> c_int {
             // RFC 9113 6.7: the ACK echoes the PING's eight payload bytes; any
             // other length is a FRAME_SIZE_ERROR.
             let Ok(echo) = <[u8; PING_PAYLOAD]>::try_from(payload) else {
-                return SW_ERR;
+                return false;
             };
             let mut ack = [0; FRAME_HEADER + PING_PAYLOAD];
             ack[..FRAME_HEADER].copy_from_slice(&frame_header(
@@ -940,7 +940,7 @@ fn parse(session: &Session, frame: &[u8]) -> c_int {
             // RFC 9113 6.9: the increment's four bytes; any other length is a
             // FRAME_SIZE_ERROR.
             let Ok(increment) = <[u8; 4]>::try_from(payload) else {
-                return SW_ERR;
+                return false;
             };
             let value = u32::from_be_bytes(increment);
             if stream_id == 0 {
@@ -959,7 +959,7 @@ fn parse(session: &Session, frame: &[u8]) -> c_int {
         FrameAction::Reset => session.remove(stream_id),
         _ => {}
     }
-    SW_OK
+    true
 }
 
 /// A HEADERS frame: a new stream's request headers, or its trailers, which
@@ -970,26 +970,26 @@ fn headers(
     flags: u32,
     payload: &[u8],
     new_stream: bool,
-) -> c_int {
+) -> bool {
     let stream = match session.stream(stream_id, false) {
         Some(stream) => stream,
         // A completed stream is never recreated from a late trailer block.
         None if new_stream => match session.stream(stream_id, true) {
             Some(stream) => stream,
-            None => return SW_ERR,
+            None => return false,
         },
-        None => return SW_ERR,
+        None => return false,
     };
     session.header_end_stream.set(flags & FLAG_END_STREAM != 0);
     let mut block = payload;
     if flags & FLAG_PADDED != 0 {
         // The pad length, the block, then that much padding.
         let Some((&pad, rest)) = payload.split_first() else {
-            return SW_ERR;
+            return false;
         };
         let kept = rest.len().checked_sub(usize::from(pad));
         let Some(kept) = kept.and_then(|kept| rest.get(..kept)) else {
-            return SW_ERR;
+            return false;
         };
         block = kept;
     }
@@ -999,27 +999,27 @@ fn headers(
 /// One HEADERS or CONTINUATION frame's part of a header block. At the block's
 /// end the request is configured from its headers and, with `END_STREAM`,
 /// dispatched.
-fn header_block(session: &Session, stream: &Stream, flags: u32, payload: &[u8]) -> c_int {
+fn header_block(session: &Session, stream: &Stream, flags: u32, payload: &[u8]) -> bool {
     if stream.request_received.get() {
-        return SW_ERR;
+        return false;
     }
     let discard = stream.headers_received.get();
-    if parse_header(session, stream, flags, payload, discard) < 0 {
-        return SW_ERR;
+    if !parse_header(session, stream, flags, payload, discard) {
+        return false;
     }
     if flags & FLAG_END_HEADERS == 0 {
         session.header_stream_id.set(stream.id);
-        return SW_OK;
+        return true;
     }
     session.header_stream_id.set(0);
     if !discard && !headers_complete(stream) {
-        return SW_ERR;
+        return false;
     }
     stream.headers_received.set(true);
     if session.header_end_stream.get() {
         return complete(session, stream);
     }
-    SW_OK
+    true
 }
 
 /// `std::strtol` consumed the whole Content-Length and it is within the body limit.
@@ -1061,9 +1061,9 @@ fn headers_complete(stream: &Stream) -> bool {
 
 /// `http2_server_complete_request`: parse the buffered body and dispatch the
 /// request, once.
-fn complete(session: &Session, stream: &Stream) -> c_int {
+fn complete(session: &Session, stream: &Stream) -> bool {
     if stream.request_received.replace(true) {
-        return SW_ERR;
+        return false;
     }
     let ctx = stream.ctx;
     if ctx.has_body() {
@@ -1073,11 +1073,11 @@ fn complete(session: &Session, stream: &Stream) -> c_int {
             // SAFETY: a live context with a multipart parser.
             && !ctx.multipart()
         {
-            return SW_ERR;
+            return false;
         }
     }
     session.handle(stream);
-    SW_OK
+    true
 }
 
 /// The request header `key` as a string, if it has one.
@@ -1095,10 +1095,10 @@ fn credit(current: u32, amount: u32) -> u32 {
 }
 
 /// A SETTINGS frame: apply each, then acknowledge.
-fn settings(session: &Session, payload: &[u8]) -> c_int {
+fn settings(session: &Session, payload: &[u8]) -> bool {
     // RFC 9113 6.5: six bytes a setting; any other length is a FRAME_SIZE_ERROR.
     let (entries, &[]) = payload.as_chunks::<6>() else {
-        return SW_ERR;
+        return false;
     };
     for entry in entries {
         let (id, value) = swoole_rs_http2::sw_rs_http2_unpack_setting(entry);
@@ -1131,12 +1131,12 @@ fn settings(session: &Session, payload: &[u8]) -> c_int {
         session.default_ctx,
         &frame_header(FrameType::Settings, 0, FLAG_ACK, 0),
     );
-    SW_OK
+    true
 }
 
 /// A DATA frame: buffer the body, keep the windows open and dispatch the
 /// request at the end of the stream.
-fn data(session: &Session, stream_id: u32, flags: u32, payload: &[u8]) -> c_int {
+fn data(session: &Session, stream_id: u32, flags: u32, payload: &[u8]) -> bool {
     let Some(stream) = session.stream(stream_id, false) else {
         log(
             LOG_WARNING,
@@ -1144,10 +1144,10 @@ fn data(session: &Session, stream_id: u32, flags: u32, payload: &[u8]) -> c_int 
             c"swoole_http2_server_parse",
             &format!("http2 stream#{stream_id} not found"),
         );
-        return SW_ERR;
+        return false;
     };
     if !stream.headers_received.get() || stream.request_received.get() {
-        return SW_ERR;
+        return false;
     }
     let ctx = stream.ctx;
     let length = payload.len();
@@ -1157,7 +1157,7 @@ fn data(session: &Session, stream_id: u32, flags: u32, payload: &[u8]) -> c_int 
         if sw_rs_http2_data_rejected(buffered, length, session.max_body_size, ended) {
             reset(ctx, stream_id, 0);
             session.remove(stream_id);
-            return SW_OK;
+            return true;
         }
         ctx.data_append(payload);
         flow(session, &stream, ctx, stream_id, length);
@@ -1165,7 +1165,7 @@ fn data(session: &Session, stream_id: u32, flags: u32, payload: &[u8]) -> c_int 
     if flags & FLAG_END_STREAM != 0 {
         return complete(session, &stream);
     }
-    SW_OK
+    true
 }
 
 /// Flow control: debit both receive windows, and reopen each once a quarter
@@ -1195,11 +1195,11 @@ fn parse_header(
     flags: u32,
     mut input: &[u8],
     discard: bool,
-) -> c_int {
+) -> bool {
     if flags & FLAG_PRIORITY != 0 {
         // The stream dependency and weight are ignored.
         let Some(block) = input.get(5..) else {
-            return SW_ERR;
+            return false;
         };
         input = block;
     }
@@ -1212,7 +1212,7 @@ fn parse_header(
                 let code = Error::CODE;
                 let text = format!("inflate failed, Error: {error}[{code}]");
                 warn(c"http2_server_parse_header", &text);
-                return SW_ERR;
+                return false;
             }
         };
         input = input.get(step.read..).unwrap_or_default();
@@ -1232,7 +1232,7 @@ fn parse_header(
             break;
         }
     }
-    SW_OK
+    true
 }
 
 /// `add_assoc_stringl_ex` on the request's `$server` or `$header`.

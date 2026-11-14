@@ -703,11 +703,19 @@ impl Server {
     }
 
     fn create(self) -> c_int {
-        server_methods::create(self.view())
+        if server_methods::create(self.view()) {
+            SW_OK
+        } else {
+            SW_ERR
+        }
     }
 
     fn start(self) -> c_int {
-        server_methods::start(self.view())
+        if server_methods::start(self.view()) {
+            SW_OK
+        } else {
+            SW_ERR
+        }
     }
 
     fn send(self, session: c_long, data: &[u8]) -> bool {

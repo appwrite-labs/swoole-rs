@@ -448,8 +448,9 @@ fn worker_ops(pool: Pool<'_>, worker: Record<'_>, op: Op, arg: u64) -> Option<i6
             0
         }
         Op::AddPipe => {
-            let add = |pipe| Reactor::thread().add(pipe, EVENT_READ);
-            i64::from(worker_pipe(worker, false).map_or(-1, add))
+            let added = worker_pipe(worker, false)
+                .is_some_and(|pipe| Reactor::thread().add(pipe, EVENT_READ));
+            if added { 0 } else { -1 }
         }
         Op::PushStop => {
             if push_stop(pool, worker.pid(), worker.id().c_cast::<u16>()) {

@@ -106,7 +106,7 @@ pub(crate) fn main_loop(serv: view::Server<'_>, worker: Worker<'_>) -> c_int {
         }
         if port
             .with_socket(|socket| reactor.add(socket, EVENT_READ))
-            .is_none_or(|added| added < 0)
+            .is_none_or(|added| !added)
         {
             return ERR;
         }
@@ -124,7 +124,7 @@ pub(crate) fn main_loop(serv: view::Server<'_>, worker: Worker<'_>) -> c_int {
     reactor.set_error_handler(on_close);
     hybrid().step(serv, Step::PipeHandler);
     crate::server_methods::store_listen_socket(serv);
-    if !worker.pipe_worker().is_null() && add_pipes(reactor, worker) < 0 {
+    if !worker.pipe_worker().is_null() && !add_pipes(reactor, worker) {
         return ERR;
     }
     if config.task_worker_num.get() > 0 && config.task_ipc() == Some(crate::TaskIpcMode::UnixSock) {
@@ -168,21 +168,18 @@ pub(crate) fn main_loop(serv: view::Server<'_>, worker: Worker<'_>) -> c_int {
     rv
 }
 
-/// The worker's pipe ends, nonblocking, read by `reactor`.
-fn add_pipes(reactor: Reactor, worker: Worker<'_>) -> c_int {
+/// The worker's pipe ends, nonblocking, read by `reactor`: whether both were added.
+fn add_pipes(reactor: Reactor, worker: Worker<'_>) -> bool {
     let pipes = (
         view::worker_pipe(worker, false),
         view::worker_pipe(worker, true),
     );
     let (Some(pipe_worker), Some(pipe_master)) = pipes else {
-        return ERR;
+        return false;
     };
     view::set_nonblock(pipe_worker);
     view::set_nonblock(pipe_master);
-    if reactor.add(pipe_worker, EVENT_READ) < 0 {
-        return ERR;
-    }
-    reactor.add(pipe_master, EVENT_READ)
+    reactor.add(pipe_worker, EVENT_READ) && reactor.add(pipe_master, EVENT_READ)
 }
 
 /// `run` over the server of `reactor`, a reactor process's reactor: the one
@@ -211,7 +208,7 @@ pub(crate) fn close(serv: view::Server<'_>, reactor: Reactor, event: &Event) -> 
     if socket.read(|s| s.removed) {
         return crate::conn_io::close_connection(serv, reactor, Some(socket));
     }
-    if reactor.del(socket) != 0 {
+    if !reactor.del(socket) {
         return ERR;
     }
     if conn.close_queued() {
@@ -424,7 +421,7 @@ mod tests {
         let (live, _clients) = accepted();
         let (serv, reactor) = (live.server(), live.reactor());
         let conn = session(&live, 1);
-        assert_eq!(reactor.del(conn.socket().unwrap()), OK);
+        assert!(reactor.del(conn.socket().unwrap()));
         assert_eq!(close(serv, reactor, &conn.event(0, 0)), OK);
         assert_eq!(calls(), [], "nobody is told");
         assert!(closed(conn));

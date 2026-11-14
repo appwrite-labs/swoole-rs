@@ -9,7 +9,7 @@ use crate::offload::{AsyncEvent, AsyncOps, Handler, swr_v1_hook_async};
 use crate::wait_event::native::current;
 use core::ffi::{CStr, c_int};
 use std::ffi::CString;
-use swoole_rs_clients::dns::DnsSocket;
+use swoole_rs_clients::dns::{DnsSocket, RecvError, received};
 use swoole_rs_clients::resolver::{self, Request};
 use swoole_rs_corebase::{
     NameResolverContext, log, swoole_rand_any, swr_v1_core_dns_lookup_random,
@@ -180,13 +180,10 @@ impl DnsSocket for DnsUdp {
         self.0.socket().sendto(host.to_bytes(), port, data) != 0
     }
 
-    fn recv(&mut self, buffer: &mut [u8]) -> isize {
+    fn recv(&mut self, buffer: &mut [u8]) -> Result<usize, RecvError> {
         let socket = self.0.socket();
         let n = socket.recv(buffer);
-        if n <= 0 && socket.err_code() == libc::ECANCELED {
-            return -isize::try_from(libc::ECANCELED).unwrap_or(isize::MAX);
-        }
-        n
+        received(n, socket.err_code() == libc::ECANCELED)
     }
 }
 

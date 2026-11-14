@@ -94,12 +94,16 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> c
             let Some(port) = state.tables_ref().ports().get(index) else {
                 return -1;
             };
-            let methods = crate::port_config::methods();
-            match step {
-                Step::Listen(_) => return (methods.listen)(port.config()),
-                Step::CreatePortSocket(_) => return (methods.create_socket)(port.config()),
-                _ => (methods.close_socket)(port.config()),
-            }
+            let (methods, config) = (crate::port_config::methods(), port.config());
+            let failed = match step {
+                Step::Listen(_) => !(methods.listen)(config),
+                Step::CreatePortSocket(_) => !(methods.create_socket)(config),
+                _ => {
+                    (methods.close_socket)(config);
+                    false
+                }
+            };
+            return if failed { -1 } else { 0 };
         }
         Step::CreateEventPool => return crate::reactor_process::native::create_pool(serv),
         Step::DestroyEventPool => swoole_rs_process::methods::destroy(serv.event_pool_ref()),

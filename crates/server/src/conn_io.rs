@@ -199,7 +199,7 @@ fn verify_ssl(
         }
     }
     if state.config_ref().enable_delay_receive.get()
-        && reactor.change(sock, swoole_rs_reactor::ChangeOp::Del, 0) < 0
+        && !reactor.change(sock, swoole_rs_reactor::ChangeOp::Del, 0)
     {
         return Handshake::Error;
     }
@@ -416,7 +416,7 @@ pub(crate) fn peer_close(serv: view::Server<'_>, reactor: Reactor, event: &Event
     if state.config_ref().disable_notify.get() {
         return close_connection(serv, reactor, Some(sock));
     }
-    if reactor.change(sock, swoole_rs_reactor::ChangeOp::Del, 0) != 0 {
+    if !reactor.change(sock, swoole_rs_reactor::ChangeOp::Del, 0) {
         return ERR;
     }
     if conn.close_queued() {
@@ -489,7 +489,7 @@ pub(crate) fn close_connection(
         } else {
             swoole_rs_reactor::ChangeOp::Set
         };
-        if reactor.change(sock, op, events) == OK {
+        if reactor.change(sock, op, events) {
             return OK;
         }
     }
@@ -499,7 +499,7 @@ pub(crate) fn close_connection(
         unsafe { delete_string(websocket.cast()) };
         conn.set_websocket_buffer(core::ptr::null_mut());
     }
-    if !removed && reactor.change(sock, swoole_rs_reactor::ChangeOp::Del, 0) < 0 {
+    if !removed && !reactor.change(sock, swoole_rs_reactor::ChangeOp::Del, 0) {
         return ERR;
     }
     count_close(state, port, reactor);
@@ -630,10 +630,9 @@ pub(crate) mod tests {
         let conn = live.state().connection(id, Lookup::Verified).unwrap();
         let sock = conn.socket().unwrap();
         if sock.read(|s| s.removed) {
-            assert_eq!(
+            assert!(
                 live.reactor()
-                    .change(sock, swoole_rs_reactor::ChangeOp::Add, SW_EVENT_READ),
-                OK
+                    .change(sock, swoole_rs_reactor::ChangeOp::Add, SW_EVENT_READ)
             );
         }
         conn

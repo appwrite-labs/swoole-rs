@@ -87,8 +87,10 @@ pub struct PortMethods {
     /// `import(fd)`, of an inherited descriptor, on a port being made.
     pub import: fn(&mut PortConfig, fd: c_int) -> bool,
     pub close: fn(Port<'_>),
-    pub listen: fn(&PortConfig) -> c_int,
-    pub create_socket: fn(&PortConfig) -> c_int,
+    /// `ListenPort::listen()`: false when it failed.
+    pub listen: fn(&PortConfig) -> bool,
+    /// `ListenPort::create_socket()`: false when it failed.
+    pub create_socket: fn(&PortConfig) -> bool,
     pub close_socket: fn(&PortConfig),
     pub get_protocols: fn(&PortConfig) -> &'static CStr,
     pub init_protocol: fn(&PortConfig),

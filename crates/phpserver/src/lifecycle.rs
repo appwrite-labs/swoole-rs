@@ -161,8 +161,8 @@ fn kind(object: ServerObject<'_>) -> Kind {
 /// `serv->start()` inside `zend_try`: the server runs PHP's callbacks, and one
 /// may bail out. The trap's `setjmp` sits in C just below `body`, whose frame
 /// owns nothing, so a bailout skips no destructor.
-fn start_server(serv: view::Server<'_>) -> Result<c_int, bailout::Bailout> {
-    let mut started = 0;
+fn start_server(serv: view::Server<'_>) -> Result<bool, bailout::Bailout> {
+    let mut started = false;
     // SAFETY: as above; the closure holds a view and a borrow, nothing to drop.
     unsafe { bailout::trap_with(|| started = server_methods::start(serv)) }?;
     Ok(started)
@@ -1108,7 +1108,7 @@ fn has_key(setting: &ArrayMut, key: &CStr) -> bool {
 /// `ServerObject::on_before_start`.
 #[expect(clippy::too_many_lines, reason = "upstream's checks, in its order")]
 fn before_start(object: ServerObject<'_>, serv: view::Server<'_>) -> Result<(), Stop> {
-    if server_methods::create(serv) < 0 {
+    if !server_methods::create(serv) {
         // The calling thread's `sw_error`.
         let reason = last_error_message();
         let mut text = Message::new();
@@ -1327,7 +1327,7 @@ fn start(call: &Call) {
     }
     match start_server(serv) {
         Err(bailout) => return bailout.defer(),
-        Ok(..0) => {
+        Ok(false) => {
             let reason = server_methods::get_startup_error_message();
             let mut text = Message::new();
             text.push(b"failed to start server. Error: ");

@@ -96,10 +96,11 @@ fn listen_options(config: &PortConfig) -> Vec<(c_int, c_int, &'static str, c_int
 }
 
 /// `ListenPort::listen()`: listens unless already listening, then sets the
-/// socket options and the default high watermark. A failed option only warns.
-pub(crate) fn listen(config: &PortConfig) -> c_int {
+/// socket options and the default high watermark. A failed option only warns;
+/// false when there is no socket or listen(2) failed.
+pub(crate) fn listen(config: &PortConfig) -> bool {
     let Some(socket) = config.listening_socket() else {
-        return -1;
+        return false;
     };
     let backlog = c_int::from(config.backlog.get());
     if !config.listening.get() && !socket.edit(|s| s.listen(backlog)) {
@@ -112,7 +113,7 @@ pub(crate) fn listen(config: &PortConfig) -> c_int {
                 config.backlog.get()
             ),
         );
-        return -1;
+        return false;
     }
     config.listening.set(true);
     let fd = socket.fd();
@@ -128,7 +129,7 @@ pub(crate) fn listen(config: &PortConfig) -> c_int {
         let watermark = (f64::from(config.socket_buffer_size.get()) * 0.8).c_cast::<u32>();
         config.buffer_high_watermark.set(watermark);
     }
-    0
+    true
 }
 
 /// The host as `host.c_str()` prints it.
@@ -144,8 +145,9 @@ fn set_option(fd: c_int, level: c_int, option: c_int) -> c_int {
 /// `ListenPort::create_socket()`: keeps the port's socket unless the server
 /// reuses ports (Linux), else makes one, sets its options, binds it to the
 /// port's host and port, and takes the bound port. On failure it sets the last
-/// error to errno and frees the new socket, which the port still points at.
-pub(crate) fn create_socket(config: &PortConfig) -> c_int {
+/// error to errno and frees the new socket, which the port still points at,
+/// and returns false.
+pub(crate) fn create_socket(config: &PortConfig) -> bool {
     let serv = config.protocol.get().private_data_2;
     // SAFETY: the port's live server, when it has one.
     let reuse_port = cfg!(target_os = "linux")
@@ -154,7 +156,7 @@ pub(crate) fn create_socket(config: &PortConfig) -> c_int {
         && unsafe { view::Server::from_raw(serv) }.config().enable_reuse_port.get();
     if !config.socket_ptr().is_null() {
         if !reuse_port {
-            return 0;
+            return true;
         }
         close_socket(config);
     }
@@ -168,7 +170,7 @@ pub(crate) fn create_socket(config: &PortConfig) -> c_int {
     // The record just made, which only this function holds until the port takes it.
     let Some(socket) = made.map(SocketRecord::into_socket) else {
         log::set_last_error(errno());
-        return -1;
+        return false;
     };
     let made = socket.as_ptr();
     let fd = socket.fd();
@@ -186,7 +188,7 @@ pub(crate) fn create_socket(config: &PortConfig) -> c_int {
         log::set_last_error(errno());
         // SAFETY: the record just made, freed once, on this failure path.
         unsafe { socket_free(made) };
-        -1
+        false
     };
     if reuse_port && set_option(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT) < 0 {
         return fail();
@@ -232,7 +234,7 @@ pub(crate) fn create_socket(config: &PortConfig) -> c_int {
     // Only a bound record: each failure above frees its own, which the port's
     // delete would otherwise free again.
     config.socket.store(made.cast(), Relaxed);
-    0
+    true
 }
 
 fn errno() -> c_int {
@@ -504,10 +506,18 @@ mod tests {
     }
     // The `ListenPort` methods over a port's address, as the tests name one.
     fn listen(at: *mut c_void) -> c_int {
-        super::listen(port_at(at).config())
+        if super::listen(port_at(at).config()) {
+            0
+        } else {
+            -1
+        }
     }
     fn create_socket(at: *mut c_void) -> c_int {
-        super::create_socket(port_at(at).config())
+        if super::create_socket(port_at(at).config()) {
+            0
+        } else {
+            -1
+        }
     }
     fn close_socket(at: *mut c_void) {
         super::close_socket(port_at(at).config());
