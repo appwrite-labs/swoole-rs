@@ -7,7 +7,7 @@ use swoole_rs_protocols::{
     RespRequest, resp_spans, socks_auth, socks_config, socks_connect, socks_negotiate,
     SocksConfig, SocksSend, socks_strerror, socks_transition,
 };
-use swoole_rs_protocols_ffi::{RESP_RECV_DONE, RespConnection, SW_ERR, recv_packet};
+use swoole_rs_protocols_ffi::{Dispatched, RESP_RECV_DONE, RespConnection, SW_ERR, recv_packet};
 
 /// `redis::parse` over [`resp_spans`]: each string after its u32 length (an integer
 /// span in decimal; nothing for a malformed wire), and whether a number overflowed a
@@ -71,11 +71,11 @@ impl RespConnection for Stream {
         self.size = size;
     }
 
-    fn dispatch(&mut self) -> c_int {
+    fn dispatch(&mut self) -> Dispatched {
         self.log
             .extend_from_slice(format!("P{}:", self.content.len()).as_bytes());
         self.log.extend_from_slice(&self.content);
-        0
+        Dispatched::Kept
     }
 
     fn clear(&mut self) {

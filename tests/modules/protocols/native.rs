@@ -17,7 +17,7 @@ use swoole_rs_protocols::{
     Malformed, RespKind, RespPhpState, RespRequest, mqtt_frame_length, resp_format,
     resp_handler_key, resp_php_next, resp_spans, socks_auth, socks_connect,
 };
-use swoole_rs_protocols_ffi::{RESP_RECV_DONE, RespConnection, SW_ERR, recv_packet};
+use swoole_rs_protocols_ffi::{Dispatched, RESP_RECV_DONE, RespConnection, SW_ERR, recv_packet};
 
 /// The oracle shim's socket, String and connection: each recv hands out at most the
 /// next chunk, then would block. Its log is the shim's trace.
@@ -56,13 +56,13 @@ impl RespConnection for Model {
         self.size = size;
     }
 
-    fn dispatch(&mut self) -> c_int {
+    fn dispatch(&mut self) -> Dispatched {
         let error = errno();
         self.log
             .extend_from_slice(format!("P{}:", self.content.len()).as_bytes());
         self.log.extend_from_slice(&self.content);
         self.log.extend_from_slice(format!("E{error}").as_bytes());
-        0
+        Dispatched::Kept
     }
 
     fn clear(&mut self) {
