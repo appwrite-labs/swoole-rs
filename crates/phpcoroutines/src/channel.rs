@@ -10,7 +10,7 @@ use std::{
 };
 pub use swoole_rs_coroutine::chan::Stats;
 use swoole_rs_coroutine::{
-    RC_CANCELED, RC_TIMEDOUT,
+    Resume,
     chan::{self, CANCELED, Effects, TIMEDOUT},
 };
 use swoole_rs_zend::bailout;
@@ -169,9 +169,9 @@ impl Effects for Php {
     /// it; the queue removes it here before anything else runs.
     fn wait(&mut self) -> u32 {
         match host::wait(self.co, self.timeout) {
-            RC_CANCELED => CANCELED,
-            RC_TIMEDOUT => TIMEDOUT,
-            _ => 0,
+            Resume::Canceled => CANCELED,
+            Resume::TimedOut => TIMEDOUT,
+            Resume::Ok => 0,
         }
     }
 

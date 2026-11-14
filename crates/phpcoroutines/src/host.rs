@@ -8,7 +8,7 @@ use std::{
     ptr::NonNull,
 };
 use swoole_rs_corebase::CCast;
-use swoole_rs_coroutine::RC_CANCELED;
+use swoole_rs_coroutine::Resume;
 use swoole_rs_zend::{
     E_ERROR, bailout,
     sys::{swr_zend_callable, zend_execute_data, zval},
@@ -335,9 +335,8 @@ pub(crate) fn yield_ex(co: Co, timeout: f64) -> bool {
     swoole_rs_coroutine::yield_resumed(wait(co, timeout))
 }
 
-/// [`yield_ex`] without its last error: the resume code (`RC_TIMEDOUT`,
-/// `RC_CANCELED` or another when resumed).
-pub(crate) fn wait(co: Co, timeout: f64) -> i32 {
+/// [`yield_ex`] without its last error: how the yield ended.
+pub(crate) fn wait(co: Co, timeout: f64) -> Resume {
     swoole_rs_coroutine::yield_timed(co.raw(), timeout)
 }
 
@@ -454,7 +453,7 @@ pub(crate) fn cancel(co: Co) -> bool {
 
 /// `co->is_canceled()`.
 pub(crate) fn is_canceled(co: Co) -> bool {
-    co.read(|native| native.co.resume_code) == RC_CANCELED
+    co.read(|native| native.co.resume_code) == Resume::Canceled
 }
 
 /// `co->is_end()`: a context that ended is closed and freed before anything
@@ -660,8 +659,9 @@ pub(crate) fn exit_fallback(message: Option<&[u8]>, status: c_long) {
     swoole_rs_phpswoole::sw_php_exit(status.c_cast::<c_int>());
 }
 
-pub(crate) fn reactor_init() -> i32 {
-    php_swoole_reactor_init()
+/// `php_swoole_reactor_init()`: whether the event loop is ready.
+pub(crate) fn reactor_init() -> bool {
+    php_swoole_reactor_init() >= 0
 }
 
 pub(crate) fn event_wait() {

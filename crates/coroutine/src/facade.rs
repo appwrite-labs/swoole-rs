@@ -11,9 +11,7 @@ use crate::context::{Context, Native};
 use crate::coroutine::{self, Co, Sched, run};
 use crate::scheduler::{bailed_out, current, with_scheduler, yield_with_cancel};
 use crate::thread::{THREAD, swr_v1_thread_context_clean, swr_v1_thread_context_init};
-use crate::{
-    Canceler, Coroutine, RC_CANCELED, RC_TIMEDOUT, Routine, STACK_MARK, STACK_PROTECT, Scheduler,
-};
+use crate::{Canceler, Coroutine, Resume, Routine, STACK_MARK, STACK_PROTECT, Scheduler};
 use core::ffi::{c_int, c_long, c_void};
 use core::ptr;
 use std::ffi::{CStr, CString};
@@ -217,20 +215,19 @@ pub extern "C-unwind" fn yield_ex(co: *mut c_void, timeout: f64) -> bool {
 /// `yield_ex`'s result for a [`yield_timed`]'s code: false, with the last error,
 /// when it timed out or was canceled.
 #[must_use]
-pub fn yield_resumed(code: i32) -> bool {
+pub fn yield_resumed(code: Resume) -> bool {
     match code {
-        RC_TIMEDOUT => set_last_error(SW_ERROR_CO_TIMEDOUT),
-        RC_CANCELED => set_last_error(SW_ERROR_CO_CANCELED),
-        _ => return true,
+        Resume::TimedOut => set_last_error(SW_ERROR_CO_TIMEDOUT),
+        Resume::Canceled => set_last_error(SW_ERROR_CO_CANCELED),
+        Resume::Ok => return true,
     }
     false
 }
 
-/// `yield_ex` without its last error: the resume code, `RC_TIMEDOUT` or
-/// `RC_CANCELED` when it timed out or was canceled. `co` is the running coroutine
+/// `yield_ex` without its last error: how the yield ended. `co` is the running coroutine
 /// (this aborts otherwise); as [`suspend`](crate::suspend), it asks nothing more.
 #[must_use]
-pub fn yield_timed(co: *mut c_void, timeout: f64) -> i32 {
+pub fn yield_timed(co: *mut c_void, timeout: f64) -> Resume {
     let running = Co::running(Sched::this(), co.cast());
     let timer = if timeout > 0.0 {
         // SAFETY: the timer fires only while `co` waits below, or is deleted first,
@@ -247,7 +244,7 @@ pub fn yield_timed(co: *mut c_void, timeout: f64) -> i32 {
     yield_with_cancel(co, resume_canceled);
     // `co` runs again.
     let code = running.with(|co| co.resume_code);
-    if code != RC_TIMEDOUT && !timer.is_null() {
+    if code != Resume::TimedOut && !timer.is_null() {
         // SAFETY: the pending timer added above.
         unsafe { swoole_timer_del(timer) };
     }
