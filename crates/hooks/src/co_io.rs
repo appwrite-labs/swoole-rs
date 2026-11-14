@@ -361,11 +361,7 @@ pub(crate) fn check_bound(socket: Co, event: u32) {
 /// `get_event_str(event)`.
 #[must_use]
 pub fn event_str(socket: Co, event: u32) -> &'static CStr {
-    match socket.with_state(|state| state.event_name(event)) {
-        0 => c"reading",
-        1 => c"writing",
-        _ => c"reading or writing",
-    }
+    socket.with_state(|state| state.event_name(event))
 }
 
 impl Co {
@@ -855,9 +851,7 @@ mod tests {
             let state = unsafe { &*socket.state() };
             let co = state.bound_co(event);
             assert_eq!(if co.is_null() { 0 } else { (NATIVE.cid)(co) }, cid);
-            let got =
-                ["reading", "writing", "reading or writing"][state.event_name(event) as usize];
-            assert_eq!(got, name, "scenario {k}");
+            assert_eq!(state.event_name(event).to_str(), Ok(name), "scenario {k}");
             take();
             check_bound(socket.co(), event);
             assert_eq!(take(), effects, "scenario {k}");
