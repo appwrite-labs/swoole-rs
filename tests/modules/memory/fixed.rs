@@ -36,7 +36,7 @@ pub(crate) fn debug_step(
         next: node.next,
         data: slice.cast::<u8>().wrapping_add(mem::size_of::<Slice>()),
         line: cursor.line,
-        lock: node.lock,
+        lock: u8::from(node.lock),
         self_link: node.next == slice,
     };
     // Preserve the original post-print `line++ > max_lines` bound: max0 emits2.
@@ -219,7 +219,7 @@ fn diagnostic_cursor_matches_live_odd_links_and_original_postprint_limit() {
                             record.line,
                             record.lock
                         ),
-                        (next, actual.prev, actual.next, line, actual.lock)
+                        (next, actual.prev, actual.next, line, u8::from(actual.lock))
                     );
                     assert_eq!(record.data, next.cast::<u8>().add(mem::size_of::<Slice>()));
                     assert!(!record.self_link);

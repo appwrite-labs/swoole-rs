@@ -7,12 +7,13 @@ use std::{mem, ptr};
 // slice's links is one of `slice_num` slices, each `size_of::<Slice>() + slice_size`
 // bytes, laid out inside `memory` by `construct`. Strides may be odd, so slice headers
 // are only read and written unaligned, through [`Slices`], which also refuses any
-// address that is not a slice's.
+// address that is not a slice's. Only construction (zero) and `set_lock` write
+// the boolean allocation flag.
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Slice {
-    lock: u8,
+    lock: bool,
     next: *mut Slice,
     prev: *mut Slice,
 }
@@ -88,7 +89,7 @@ impl Slices {
         self.set(node, offset_of!(Slice, prev), prev);
     }
 
-    fn set_lock(&self, node: *mut Slice, lock: u8) {
+    fn set_lock(&self, node: *mut Slice, lock: bool) {
         self.set(node, offset_of!(Slice, lock), lock);
     }
 }
@@ -220,7 +221,7 @@ pub(crate) fn alloc(pool: &Fixed) -> *mut c_void {
     let Some(node) = nodes.at(pool.head.get()) else {
         return ptr::null_mut();
     };
-    let Some(value) = nodes.get(node).filter(|value| value.lock == 0) else {
+    let Some(value) = nodes.get(node).filter(|value| !value.lock) else {
         return ptr::null_mut();
     };
     // At least two nodes always remain in the combined idle/busy list.
@@ -229,7 +230,7 @@ pub(crate) fn alloc(pool: &Fixed) -> *mut c_void {
     pool.head.set(value.next);
     nodes.set_prev(value.next, ptr::null_mut());
     nodes.set_next(tail, node);
-    nodes.set_lock(node, 1);
+    nodes.set_lock(node, true);
     nodes.set_next(node, ptr::null_mut());
     nodes.set_prev(node, tail);
     pool.tail.set(node);
@@ -256,10 +257,10 @@ pub(crate) fn free(pool: &Fixed, data: *mut c_void) -> bool {
     let Some(value) = nodes.get(node) else {
         return false;
     };
-    if value.lock != 1 || pool.slice_use.get() == 0 {
+    if !value.lock || pool.slice_use.get() == 0 {
         return false;
     }
-    nodes.set_lock(node, 0);
+    nodes.set_lock(node, false);
     pool.slice_use.set(pool.slice_use.get() - 1);
     let head = pool.head.get();
     if node != head {
