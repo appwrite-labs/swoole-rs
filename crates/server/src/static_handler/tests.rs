@@ -14,7 +14,9 @@ use core::ffi::{CStr, c_char, c_long, c_void};
 use core::ptr;
 use std::ffi::CString;
 use swoole_rs_corebase::sys::set_errno;
-use swoole_rs_http::{BOUNDARY_SIZE, Calendar, HttpStaticObservation, StaticEffects, Tm};
+use swoole_rs_http::{
+    BOUNDARY_SIZE, Calendar, HttpStaticObservation, StaticEffects, StaticFileKind, Tm,
+};
 use swoole_rs_oracle::http_static_context as oracle;
 
 #[test]
@@ -118,11 +120,6 @@ fn os_errno() -> i32 {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
-/// The path kinds (`crates/http/src/static_path.rs`).
-const LINK: u32 = 8;
-const DIRECTORY: u32 = 16;
-const FILE: u32 = 32;
-
 /// The candidate's effects: the script, traced as the oracle traces its own.
 struct Scripted;
 
@@ -133,11 +130,11 @@ impl StaticEffects for Scripted {
             filesize: script.file_size,
             mtime: script.file_time,
             kind: if script.link == path {
-                LINK
+                StaticFileKind::Symlink
             } else if script.directory == path {
-                DIRECTORY
+                StaticFileKind::Directory
             } else {
-                FILE
+                StaticFileKind::File
             },
             ..HttpStaticObservation::default()
         }))

@@ -331,7 +331,7 @@ mod tests {
         owner.observed(&HttpStaticObservation {
             filesize: 10,
             mtime: 1_700_000_000,
-            kind: 32,
+            kind: crate::StaticFileKind::File,
             ..HttpStaticObservation::default()
         });
         assert_eq!(

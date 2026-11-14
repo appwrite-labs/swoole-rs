@@ -2,7 +2,7 @@
 //! derived from it, the file's facts, the directory listing and the range tasks. The
 //! filesystem, MIME, random and calendar effects are the caller's [`StaticEffects`].
 use crate::range_response::{HttpRangeFormat, range_format};
-use crate::static_path::Action;
+use crate::static_path::{self, Action};
 use crate::{HttpDirectory, HttpStaticPath, HttpStaticTask, HttpTasks, INVALID, OVERFLOW};
 mod filesystem;
 pub use filesystem::StaticEffects;
@@ -33,6 +33,17 @@ use StaticText::{Boundary, Content, Directory, End, Filename, Index, Original, U
 /// `SW_HTTP_SERVER_BOUNDARY_TOTAL_SIZE`: the boundary and its NUL.
 pub const BOUNDARY_SIZE: usize = 39;
 
+/// The mutually exclusive file kinds returned by `lstat`, as path-policy bits.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum StaticFileKind {
+    #[default]
+    Other = 0,
+    Symlink = static_path::LINK,
+    Directory = static_path::DIRECTORY,
+    File = static_path::FILE,
+}
+
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct HttpStaticObservation {
     pub filesize: usize,
@@ -41,7 +52,7 @@ pub struct HttpStaticObservation {
     pub directory_count: usize,
     pub task_count: usize,
     pub status: i32,
-    pub kind: u32,
+    pub kind: StaticFileKind,
     pub file_ready: bool,
 }
 pub struct HttpStaticContext {
