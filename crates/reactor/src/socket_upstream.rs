@@ -8,12 +8,11 @@ use crate::socket_sync::set_errno;
 use crate::{SocketAddress, SocketFields, SocketRecord};
 use std::ffi::{CStr, c_int};
 use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::constants::{EventType, ResultCode};
+use swoole_rs_corebase::constants::ResultCode;
 use swoole_rs_corebase::log;
 
 const OK: c_int = ResultCode::SW_OK as c_int;
 const ERR: c_int = ResultCode::SW_ERR as c_int;
-const EVENT_WRITE: c_int = EventType::SW_EVENT_WRITE as c_int;
 
 fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
@@ -39,7 +38,12 @@ pub extern "C" fn socket_wait_event(
     timeout_ms: c_int,
     events: c_int,
 ) -> c_int {
-    if wait_event(socket.fd, socket.dont_restart, timeout_ms, events) {
+    if wait_event(
+        socket.fd,
+        socket.dont_restart,
+        timeout_ms,
+        crate::Events::from_bits(events),
+    ) {
         OK
     } else {
         ERR
@@ -48,7 +52,12 @@ pub extern "C" fn socket_wait_event(
 
 /// [`socket_wait_event`] over a socket's `fd` and `dont_restart`: whether an event
 /// came, else the last error and errno say why not.
-pub(crate) fn wait_event(fd: c_int, dont_restart: bool, timeout_ms: c_int, events: c_int) -> bool {
+pub(crate) fn wait_event(
+    fd: c_int,
+    dont_restart: bool,
+    timeout_ms: c_int,
+    events: crate::Events,
+) -> bool {
     let result = crate::fd_wait(
         fd,
         crate::swr_v1_reactor_poll_events_to(events),
@@ -109,7 +118,7 @@ pub extern "C" fn connect_sync(socket: crate::Socket<'_>, address: &SocketAddres
     } else {
         timeout.c_cast::<c_int>()
     };
-    if !socket.wait_event(timeout_ms, EVENT_WRITE) {
+    if !socket.wait_event(timeout_ms, crate::Events::WRITE) {
         log::set_last_error(libc::ETIMEDOUT);
         return ERR;
     }

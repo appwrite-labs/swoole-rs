@@ -17,7 +17,7 @@ use std::io::IoSlice;
 use std::mem::MaybeUninit;
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::constants::{EventType, SocketFlag};
+use swoole_rs_corebase::constants::SocketFlag;
 use swoole_rs_corebase::net_address::{BAD_HOST_ADDR, assign, platform_parses};
 use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_corebase::{log, set_errno};
@@ -51,8 +51,6 @@ const FD_STREAM_SERVER: c_int = 1;
 const SOCK_CLOEXEC: c_int = SocketFlag::SW_SOCK_CLOEXEC as c_int;
 const VERIFY_FAILED: c_int = ErrorCode::SW_ERROR_SSL_VERIFY_FAILED as c_int;
 const BAD_PROTOCOL: c_int = ErrorCode::SW_ERROR_SSL_BAD_PROTOCOL as c_int;
-const EVENT_READ: c_int = EventType::SW_EVENT_READ as c_int;
-const EVENT_WRITE: c_int = EventType::SW_EVENT_WRITE as c_int;
 
 fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
@@ -514,7 +512,7 @@ impl<S: ReadSlot> SyncEffects for Call<'_, S> {
         });
     }
 
-    fn events(&self, event: c_int) -> i16 {
+    fn events(&self, event: swoole_rs_reactor::Events) -> i16 {
         swr_v1_reactor_poll_events_to(self.socket.read(|record| what_event_want(record, event)))
     }
 
@@ -580,7 +578,11 @@ fn sync<S: ReadSlot>(
         io,
         dont_restart,
     };
-    let event = if write { EVENT_WRITE } else { EVENT_READ };
+    let event = if write {
+        swoole_rs_reactor::Events::WRITE
+    } else {
+        swoole_rs_reactor::Events::READ
+    };
     let timeout_ms = (timeout * 1000.0).c_cast::<c_long>().c_cast::<c_int>();
     swr_v1_socket_sync(&mut call, kind, flags, event, timeout_ms)
 }

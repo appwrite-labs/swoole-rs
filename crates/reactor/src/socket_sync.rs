@@ -24,7 +24,7 @@ pub trait SyncEffects {
     /// `set_nonblock` when blocking and `ssl_clear_error` when TLS.
     fn prepare(&self);
     /// `what_event_want(event)` as poll bits.
-    fn events(&self, event: c_int) -> i16;
+    fn events(&self, event: crate::Events) -> i16;
     /// One I/O call on the bytes the call has left.
     fn io(&mut self, flags: c_int) -> isize;
     /// Steps past the `moved` bytes the last call moved: whether any are left.
@@ -54,7 +54,7 @@ pub fn swr_v1_socket_sync(
     hooks: &mut impl SyncEffects,
     kind: c_int,
     flags: c_int,
-    event: c_int,
+    event: crate::Events,
     mut timeout_ms: c_int,
 ) -> isize {
     let began = Instant::now();
@@ -145,7 +145,7 @@ mod tests {
             false
         }
         fn prepare(&self) {}
-        fn events(&self, _: c_int) -> i16 {
+        fn events(&self, _: crate::Events) -> i16 {
             (self.events)()
         }
         fn io(&mut self, flags: c_int) -> isize {
@@ -208,7 +208,7 @@ mod tests {
             left: length,
             ..*hooks
         };
-        let result = swr_v1_socket_sync(&mut hooks, kind, flags, 2, 1000);
+        let result = swr_v1_socket_sync(&mut hooks, kind, flags, crate::Events::from_bits(2), 1000);
         (result, CALLS.with(|calls| calls.borrow().clone()))
     }
 
@@ -272,7 +272,7 @@ mod tests {
             left: 4,
             ..hooks(fds[0], &mut nobufs, again)
         };
-        let result = swr_v1_socket_sync(&mut hooks, SYNC_ONCE, 0, 1, 20);
+        let result = swr_v1_socket_sync(&mut hooks, SYNC_ONCE, 0, crate::Events::from_bits(1), 20);
         assert_eq!((result, errno()), (-1, libc::EAGAIN));
         assert_eq!(
             LAST_ERROR.with(|last| *last.borrow()),
@@ -301,7 +301,7 @@ mod tests {
                 self.0.dont_restart()
             }
             fn prepare(&self) {}
-            fn events(&self, _: c_int) -> i16 {
+            fn events(&self, _: crate::Events) -> i16 {
                 libc::POLLIN
             }
             fn io(&mut self, _: c_int) -> isize {
@@ -342,7 +342,8 @@ mod tests {
             left: 4,
             ..hooks(idle[0], &mut nobufs, three)
         });
-        let result = swr_v1_socket_sync(&mut hooks, SYNC_ONCE, 0, 1, 1000);
+        let result =
+            swr_v1_socket_sync(&mut hooks, SYNC_ONCE, 0, crate::Events::from_bits(1), 1000);
         assert_eq!(result, 4, "the wait polled the swapped descriptor");
         // SAFETY: closes the pairs this test opened.
         unsafe {

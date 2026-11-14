@@ -7,14 +7,10 @@
 //! `Reactor`'s constructor and destructor; `swoole_event_defer` is callbacks.rs's.
 use crate::handlers::Handler;
 use crate::reactor_upstream::reactor_change;
-use crate::{ReactorFields, SocketRecord};
+use crate::{Events, ReactorFields, SocketRecord};
 use std::cell::Cell;
 use std::ffi::{c_int, c_void};
 use std::rc::Rc;
-
-/// `SW_EVENT_READ` and `SW_EVENT_WRITE`.
-const EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
-const EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
 
 /// `SwooleTG.reactor`.
 fn current() -> *mut c_void {
@@ -35,10 +31,10 @@ pub(crate) fn field<T>(read: impl FnOnce(&ReactorFields) -> T) -> Option<T> {
 }
 
 /// The `interest` kind [`add_or_update`] adds for `event`, if it names one.
-fn direction(event: c_int) -> Option<crate::Interest> {
+fn direction(event: Events) -> Option<crate::Interest> {
     match event {
-        EVENT_READ => Some(crate::Interest::AddRead),
-        EVENT_WRITE => Some(crate::Interest::AddWrite),
+        Events::READ => Some(crate::Interest::AddRead),
+        Events::WRITE => Some(crate::Interest::AddWrite),
         _ => None,
     }
 }
@@ -90,14 +86,14 @@ pub unsafe extern "C" fn swoole_event_add(socket: *mut SocketRecord, events: c_i
 
 /// [`crate::reactor_upstream::change`] of `socket` on the thread's reactor; false
 /// without one.
-fn change(socket: crate::Socket<'static>, op: crate::ChangeOp, events: c_int) -> bool {
+fn change(socket: crate::Socket<'static>, op: crate::ChangeOp, events: Events) -> bool {
     running().is_some_and(|reactor| crate::reactor_upstream::change(reactor, socket, op, events))
 }
 
 /// [`swoole_event_add`] of a socket that is never freed while registered: whether it
 /// worked, false without a reactor.
 #[must_use]
-pub fn event_add(socket: crate::Socket<'static>, events: c_int) -> bool {
+pub fn event_add(socket: crate::Socket<'static>, events: Events) -> bool {
     change(socket, crate::ChangeOp::Add, events)
 }
 
@@ -105,7 +101,7 @@ pub fn event_add(socket: crate::Socket<'static>, events: c_int) -> bool {
 /// while registered (kqueue's set registers its address again): whether it worked,
 /// false without a reactor.
 #[must_use]
-pub fn event_set(socket: crate::Socket<'static>, events: c_int) -> bool {
+pub fn event_set(socket: crate::Socket<'static>, events: Events) -> bool {
     change(socket, crate::ChangeOp::Set, events)
 }
 
@@ -113,7 +109,11 @@ pub fn event_set(socket: crate::Socket<'static>, events: c_int) -> bool {
 /// is never freed while registered: whether the change worked, true when nothing
 /// changes, false without a reactor.
 #[must_use]
-pub fn event_interest(socket: crate::Socket<'static>, kind: crate::Interest, event: c_int) -> bool {
+pub fn event_interest(
+    socket: crate::Socket<'static>,
+    kind: crate::Interest,
+    event: Events,
+) -> bool {
     running().is_some_and(|reactor| crate::reactor_upstream::interest(reactor, socket, kind, event))
 }
 
@@ -129,11 +129,11 @@ pub fn event_del(socket: crate::Socket<'_>) -> bool {
 /// worked, false without a reactor or for an event that is neither `SW_EVENT_READ` nor
 /// `SW_EVENT_WRITE`, where upstream asserts.
 #[must_use]
-pub fn add_or_update(socket: crate::Socket<'static>, event: c_int) -> bool {
+pub fn add_or_update(socket: crate::Socket<'static>, event: Events) -> bool {
     let (Some(reactor), Some(kind)) = (running(), direction(event)) else {
         return false;
     };
-    crate::reactor_upstream::interest(reactor, socket, kind, 0)
+    crate::reactor_upstream::interest(reactor, socket, kind, Events::NONE)
 }
 
 /// `ssize_t swoole_event_write(Socket *socket, const void *data, size_t len)`.
@@ -497,7 +497,7 @@ mod tests {
                 1024 => Some(crate::Interest::AddWrite),
                 _ => None,
             };
-            assert_eq!(direction(event), expected, "{event}");
+            assert_eq!(direction(Events::from_bits(event)), expected, "{event}");
         }
     }
 

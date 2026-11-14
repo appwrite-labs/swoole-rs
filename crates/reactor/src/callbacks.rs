@@ -521,7 +521,7 @@ mod tests {
                 owner,
                 &raw mut socket,
                 crate::ChangeOp::Add,
-                512
+                crate::Events::from_bits(512)
             ));
             assert!(!if_exit(running(owner)));
             execute_end(running(owner), false);

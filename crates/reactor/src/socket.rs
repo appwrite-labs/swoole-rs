@@ -273,7 +273,7 @@ impl<'a> Socket<'a> {
     /// `Socket::wait_event`: whether an event came. It waits outside any borrow, since the
     /// wait runs signal handlers that may reach other sockets.
     #[must_use]
-    pub fn wait_event(self, timeout_ms: c_int, events: c_int) -> bool {
+    pub fn wait_event(self, timeout_ms: c_int, events: crate::Events) -> bool {
         let (fd, dont_restart) = self.read(|record| (record.fd, record.dont_restart));
         crate::socket_upstream::wait_event(fd, dont_restart, timeout_ms, events)
     }

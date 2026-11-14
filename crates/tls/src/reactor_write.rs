@@ -25,7 +25,6 @@ const SW_ERROR_OUTPUT_BUFFER_OVERFLOW: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_OUTPUT_BUFFER_OVERFLOW as c_int;
 const SW_ERROR_PACKAGE_LENGTH_TOO_LARGE: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_PACKAGE_LENGTH_TOO_LARGE as c_int;
-const SW_EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
 
 /// One write: the reactor, the socket, never freed while registered, and the payload.
 struct Write<'a> {
@@ -65,9 +64,18 @@ impl WriteEffects for Write<'_> {
     }
 
     fn watch_writable(&self) {
-        if self.socket.read(|record| record.events) & SW_EVENT_WRITE == 0 {
+        if !self
+            .socket
+            .read(|record| record.events)
+            .intersects(swoole_rs_reactor::Events::WRITE)
+        {
             // `reactor->add_write_event(socket)`, which logs a failure.
-            _ = interest(self.reactor, self.socket, Interest::AddWrite, 0);
+            _ = interest(
+                self.reactor,
+                self.socket,
+                Interest::AddWrite,
+                swoole_rs_reactor::Events::NONE,
+            );
         }
     }
 }
@@ -226,7 +234,8 @@ impl FlushEffects for Flush<'_> {
     fn wait_writable(&self) -> bool {
         let timeout = SOCKET_DEFAULTS.write.get();
         let timeout = (timeout * 1000.0).c_cast::<c_int>();
-        self.socket.wait_event(timeout, SW_EVENT_WRITE)
+        self.socket
+            .wait_event(timeout, swoole_rs_reactor::Events::WRITE)
     }
 }
 

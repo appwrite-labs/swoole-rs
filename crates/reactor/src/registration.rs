@@ -2,45 +2,30 @@
 //! `add`, `set` and `del`): the event-mask translation and the `epoll_ctl` or
 //! `kevent` calls in upstream's order. Each returns which call failed, with `errno`
 //! as the kernel left it, for `change::apply`'s warnings.
+use crate::Events;
 use std::ffi::{c_int, c_void};
-
-const SW_EVENT_DEAULT: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_DEAULT as c_int;
-const SW_EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
-const SW_EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
-
-/// `Reactor::isset_read_event`.
-fn reads(events: c_int) -> bool {
-    events < SW_EVENT_DEAULT || events & SW_EVENT_READ != 0
-}
-
-fn writes(events: c_int) -> bool {
-    events & SW_EVENT_WRITE != 0
-}
 
 #[cfg(target_os = "linux")]
 mod epoll {
-    use super::{c_int, c_void, reads, writes};
-
-    const SW_EVENT_ERROR: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_ERROR as c_int;
-    const SW_EVENT_ONCE: c_int = 1 << 12;
+    use super::{Events, c_int, c_void};
 
     /// `ReactorEpoll::get_events`.
     #[expect(
         clippy::cast_sign_loss,
         reason = "the EPOLL* flags are non-negative bit masks"
     )]
-    fn interest(events: c_int) -> u32 {
+    fn interest(events: Events) -> u32 {
         let mut interest = 0;
-        if reads(events) {
+        if events.reads() {
             interest |= libc::EPOLLIN;
         }
-        if writes(events) {
+        if events.writes() {
             interest |= libc::EPOLLOUT;
         }
-        if events & SW_EVENT_ONCE != 0 {
+        if events.intersects(Events::ONCE) {
             interest |= libc::EPOLLONESHOT;
         }
-        if events & SW_EVENT_ERROR != 0 {
+        if events.intersects(Events::ERROR) {
             interest |= libc::EPOLLRDHUP | libc::EPOLLHUP | libc::EPOLLERR;
         }
         interest as u32
@@ -55,7 +40,7 @@ mod epoll {
         op: crate::ChangeOp,
         fd: c_int,
         socket: *mut c_void,
-        events: c_int,
+        events: Events,
     ) -> c_int {
         let op = match op {
             crate::ChangeOp::Add => libc::EPOLL_CTL_ADD,
@@ -72,12 +57,15 @@ mod epoll {
 
     #[cfg(test)]
     mod tests {
-        use super::super::{SW_EVENT_READ, SW_EVENT_WRITE};
         use super::*;
+
+        const SW_EVENT_READ: Events = Events::READ;
+        const SW_EVENT_WRITE: Events = Events::WRITE;
+        const SW_EVENT_ONCE: Events = Events::ONCE;
 
         #[test]
         fn translates_and_registers() {
-            assert_eq!(interest(0), libc::EPOLLIN as u32);
+            assert_eq!(interest(Events::NONE), libc::EPOLLIN as u32);
             assert_eq!(
                 interest(SW_EVENT_WRITE | SW_EVENT_ONCE),
                 (libc::EPOLLOUT | libc::EPOLLONESHOT) as u32
@@ -95,8 +83,14 @@ mod epoll {
                     epoll_ctl(epfd, crate::ChangeOp::Set, fds[0], token, SW_EVENT_WRITE),
                     0
                 );
-                assert_eq!(epoll_ctl(epfd, crate::ChangeOp::Del, fds[0], token, 0), 0);
-                assert_eq!(epoll_ctl(epfd, crate::ChangeOp::Del, fds[0], token, 0), -1);
+                assert_eq!(
+                    epoll_ctl(epfd, crate::ChangeOp::Del, fds[0], token, Events::NONE),
+                    0
+                );
+                assert_eq!(
+                    epoll_ctl(epfd, crate::ChangeOp::Del, fds[0], token, Events::NONE),
+                    -1
+                );
                 libc::close(epfd);
                 libc::close(fds[0]);
                 libc::close(fds[1]);
@@ -125,7 +119,7 @@ pub(crate) use kqueue::*;
     target_os = "dragonfly"
 ))]
 mod kqueue {
-    use super::{SW_EVENT_READ, SW_EVENT_WRITE, c_int, c_void, reads, writes};
+    use super::{Events, c_int, c_void};
     use swoole_rs_corebase::CCast;
 
     /// `NOTE_EOF` where the platform defines it (upstream's `#ifdef NOTE_EOF`): only
@@ -181,15 +175,15 @@ mod kqueue {
         kq: c_int,
         fd: c_int,
         socket: *mut c_void,
-        events: c_int,
+        events: Events,
     ) -> Result<(), Failed> {
-        if reads(events) && !read(kq, fd, libc::EV_ADD, socket) {
+        if events.reads() && !read(kq, fd, libc::EV_ADD, socket) {
             return Err(Failed {
                 write: false,
                 add: true,
             });
         }
-        if writes(events) && !write(kq, fd, libc::EV_ADD, socket) {
+        if events.writes() && !write(kq, fd, libc::EV_ADD, socket) {
             return Err(Failed {
                 write: true,
                 add: true,
@@ -204,11 +198,15 @@ mod kqueue {
         kq: c_int,
         fd: c_int,
         socket: *mut c_void,
-        events: c_int,
+        events: Events,
     ) -> Result<(), Failed> {
         let filters: [(bool, Filter); 2] = [(false, read), (true, write)];
         for (write, filter) in filters {
-            let add = if write { writes(events) } else { reads(events) };
+            let add = if write {
+                events.writes()
+            } else {
+                events.reads()
+            };
             let flags = if add { libc::EV_ADD } else { libc::EV_DELETE };
             if !filter(kq, fd, flags, socket) {
                 return Err(Failed { write, add });
@@ -224,13 +222,13 @@ mod kqueue {
         kq: c_int,
         fd: c_int,
         socket: *mut c_void,
-        events: c_int,
+        events: Events,
         errors: &mut [c_int; 2],
     ) -> bool {
         *errors = [0; 2];
         let filters: [(bool, Filter); 2] = [
-            (events & SW_EVENT_READ != 0, read),
-            (events & SW_EVENT_WRITE != 0, write),
+            (events.intersects(Events::READ), read),
+            (events.intersects(Events::WRITE), write),
         ];
         for (slot, (registered, filter)) in errors.iter_mut().zip(filters) {
             if registered && !filter(kq, fd, libc::EV_DELETE, socket) {
@@ -247,6 +245,9 @@ mod kqueue {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        const SW_EVENT_READ: Events = Events::READ;
+        const SW_EVENT_WRITE: Events = Events::WRITE;
 
         #[test]
         fn registers_in_upstream_order() {

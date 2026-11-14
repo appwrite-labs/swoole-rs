@@ -14,9 +14,8 @@ use swoole_rs_corebase::log;
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_reactor::{SOCKET_DEFAULTS, Socket, SocketRecord, swr_v1_socket_buffer_size};
 
-/// `SW_FD_PIPE`, `SW_EVENT_READ`, `SW_TIMEOUT_ALL` and `SW_OK`.
+/// `SW_FD_PIPE`, `SW_TIMEOUT_ALL` and `SW_OK`.
 const FD_PIPE: c_int = 3;
-const EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
 const TIMEOUT_ALL: c_int = 15;
 /// `SW_PIPE_CLOSE_MASTER` and `SW_PIPE_CLOSE_WORKER`.
 const CLOSE_MASTER: c_int = 1;
@@ -214,7 +213,7 @@ pub fn clean(this: &SocketPair) {
         return;
     };
     let mut buffer = [0_u8; 1024];
-    while socket.wait_event(0, EVENT_READ) {
+    while socket.wait_event(0, swoole_rs_reactor::Events::READ) {
         if swoole_rs_corebase::sys::read(socket.fd(), &mut buffer) <= 0 {
             break;
         }
