@@ -3,10 +3,11 @@
 //! Also [`Function`], a borrowed `zend_function`.
 use crate::{
     Call, ClassEntry, ZStr,
+    arginfo::Methods,
     sys::{
         _zend_function__bindgen_ty_1, _zval_struct__bindgen_ty_1, IS_UNDEF, zend_class_entry,
-        zend_function, zend_function_entry, zend_internal_arg_info, zend_internal_function,
-        zend_object, zend_object_handlers, zend_op, zend_op_array, zval,
+        zend_function, zend_internal_arg_info, zend_internal_function, zend_object,
+        zend_object_handlers, zend_op, zend_op_array, zval,
     },
 };
 use std::{ffi::CStr, marker::PhantomData, mem::offset_of, ptr};
@@ -190,14 +191,15 @@ pub(crate) fn deny(entry: &mut zend_class_entry, _: &mut zend_object_handlers) {
 }
 
 /// The arginfo of `method` in a method table (null if absent).
-pub(crate) fn arg_info(
-    methods: &[zend_function_entry],
+pub(crate) fn arg_info<const N: usize>(
+    methods: &Methods<N>,
     method: &CStr,
 ) -> *const zend_internal_arg_info {
     methods
+        .rows()
         .iter()
         .take_while(|entry| !entry.fname.is_null())
-        // SAFETY: entry names are NUL-terminated literals.
+        // SAFETY: a `Methods` row's name is a static C string; only `END`'s is null.
         .find(|entry| unsafe { CStr::from_ptr(entry.fname) } == method)
         .map_or(ptr::null(), |entry| entry.arg_info)
 }
@@ -205,18 +207,35 @@ pub(crate) fn arg_info(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        arginfo::{ArgInfo, END, begin, entry},
+        sys::zend_execute_data,
+    };
+
+    unsafe extern "C" fn handler(_: *mut zend_execute_data, _: *mut zval) {}
+
+    static TICK: ArgInfo<1> = ArgInfo([begin(0, 0)]);
+    static AFTER: ArgInfo<1> = ArgInfo([begin(0, 0)]);
+    static CLEAR_ALL: ArgInfo<1> = ArgInfo([begin(0, 0)]);
 
     #[test]
     fn aliases_take_their_methods_arginfo() {
-        let names = [c"tick", c"after", c"clearAll"];
-        // SAFETY: all-zero entries are valid, and the last one ends the table.
-        let mut table: [zend_function_entry; 4] = unsafe { std::mem::zeroed() };
-        for (index, name) in names.iter().enumerate() {
-            table[index].fname = name.as_ptr();
-            table[index].arg_info = ptr::without_provenance(16 * (index + 1));
-        }
-        assert_eq!(arg_info(&table, c"after").addr(), 32, "after's arginfo");
-        assert_eq!(arg_info(&table, c"clearAll").addr(), 48, "clearAll's");
+        let table = Methods::new([
+            entry(c"tick", handler, &TICK, 0),
+            entry(c"after", handler, &AFTER, 0),
+            entry(c"clearAll", handler, &CLEAR_ALL, 0),
+            END,
+        ]);
+        assert_eq!(
+            arg_info(&table, c"after"),
+            AFTER.0.as_ptr(),
+            "after's arginfo"
+        );
+        assert_eq!(
+            arg_info(&table, c"clearAll"),
+            CLEAR_ALL.0.as_ptr(),
+            "clearAll's"
+        );
         assert!(arg_info(&table, c"list").is_null(), "a missing method");
     }
 }
