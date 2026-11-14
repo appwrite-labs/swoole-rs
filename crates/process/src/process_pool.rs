@@ -227,11 +227,17 @@ impl PoolRecord {
     /// The pool's worker at `raw`, or `None` when `raw` is none of its records.
     #[must_use]
     pub fn own(&self, raw: *const WorkerRecord) -> Option<Worker<'_>> {
+        self.worker(self.index_of(raw)?)
+    }
+
+    /// The index of the pool's worker at `raw`, or `None` when `raw` is none of its
+    /// records.
+    #[must_use]
+    pub fn index_of(&self, raw: *const WorkerRecord) -> Option<usize> {
         let offset = raw.addr().checked_sub(self.workers.addr())?;
-        if offset % size_of::<WorkerRecord>() != 0 {
-            return None;
-        }
-        self.worker(offset / size_of::<WorkerRecord>())
+        let index = offset / size_of::<WorkerRecord>();
+        let own = !self.workers.is_null() && index < self.worker_num as usize;
+        (own && offset % size_of::<WorkerRecord>() == 0).then_some(index)
     }
 
     /// Sets `workers`.
@@ -325,6 +331,13 @@ impl<'a> PoolRef<'a> {
     pub fn worker_of(self, raw: *const WorkerRecord) -> Option<Worker<'a>> {
         // The pool's records live as long as it does (`set_workers`).
         self.record().own(raw)
+    }
+
+    /// The index of `worker` among the pool's workers, or `None` when it is none of
+    /// them: [`PoolRef::worker`] gives it back.
+    #[must_use]
+    pub fn index_of(self, worker: Worker<'_>) -> Option<usize> {
+        self.record().index_of(worker.raw())
     }
 
     /// The pool at `raw`.
@@ -2069,6 +2082,16 @@ pub fn swr_v1_process_pool_dispatch_event(
     blocking: bool,
 ) -> bool {
     with(native, pool, |p| p.dispatch(event, worker, blocking))
+}
+
+/// `Op::ReloadTimer`'s end: the reload in progress owns `timer`, which goes with it
+/// ([`ReloadTask::set_timer`]); without a reload, `timer` is dropped.
+pub fn set_reload_timer(native: &dyn PoolNative, pool: PoolRef<'_>, timer: Option<ArmedTimer>) {
+    with(native, pool, |p| {
+        if let Some(task) = p.active_reload() {
+            task.set_timer(timer);
+        }
+    });
 }
 
 /// `swoole_get_worker_symbol`: the log's mark for a worker type (`swWorkerType`).

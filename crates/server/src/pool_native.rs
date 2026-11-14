@@ -216,13 +216,15 @@ thread_local! {
     /// The pool whose worker runs the loop `Op::EventInit` made on this thread, for
     /// that loop's handlers.
     static LOOP_POOL: Cell<Option<Pool<'static>>> = const { Cell::new(None) };
-    /// The worker `Op::ExitCallback` names.
-    static EXITING: Cell<Option<Record<'static>>> = const { Cell::new(None) };
+    /// The index of the worker `Op::ExitCallback` names, among its pool's.
+    static EXITING: Cell<Option<usize>> = const { Cell::new(None) };
 }
 
 /// `onWorkerExit`, then stop the loop once it may exit.
 extern "C-unwind" fn worker_exit() {
-    if let (Some(pool), Some(worker)) = (LOOP_POOL.get(), EXITING.get()) {
+    if let Some(pool) = LOOP_POOL.get()
+        && let Some(worker) = EXITING.get().and_then(|index| pool.worker(index))
+    {
         pool.call_on_worker_exit(worker);
     }
     // The loop running this end callback.
@@ -420,9 +422,8 @@ fn worker_ops(pool: Pool<'_>, worker: Record<'_>, op: Op, arg: u64) -> Option<i6
             0
         }
         Op::ExitCallback => {
-            // SAFETY: the worker of the loop this thread runs, which outlives the
-            // loop's end callback, the one reader.
-            EXITING.set(Some(unsafe { Record::new(worker.raw()) }));
+            // The worker of the loop this thread runs, as one of its pool's.
+            EXITING.set(pool.index_of(worker));
             swoole_rs_reactor::swr_v1_event_set_end_callback(
                 swoole_rs_reactor::Priority::TryExit,
                 worker_exit,
@@ -473,8 +474,7 @@ fn master_ops(pool: Pool<'_>, op: Op, arg: u64) -> i64 {
                 let task = unsafe { &mut *task };
                 task.kill_all(libc::SIGKILL, reload_warn);
             });
-            // SAFETY: the pool's live reload task.
-            unsafe { &mut *task }.set_timer(timer);
+            swoole_rs_process::process_pool::set_reload_timer(&NATIVE, pool, timer);
         }
         Op::TimerInit => {
             if swoole_timer_is_available() {
