@@ -44,14 +44,14 @@ impl SocketPair {
     }
 
     fn write(&self, data: &[u8]) -> isize {
-        swoole_rs_tls::socket_pair::write_from(self.pair(), data)
+        swoole_rs_tls::socket_pair::write_from(self.pair(), data).map_or(-1, usize::cast_signed)
     }
 
     fn read(&self, buf: &mut [u8]) -> isize {
         let (at, length) = (buf.as_mut_ptr().cast(), buf.len());
         // SAFETY: `buf`'s own bytes, as ones a read may leave unwritten.
         let buf = unsafe { std::slice::from_raw_parts_mut(at, length) };
-        swoole_rs_tls::socket_pair::read_into(self.pair(), buf)
+        swoole_rs_tls::socket_pair::read_into(self.pair(), buf).map_or(-1, usize::cast_signed)
     }
 }
 

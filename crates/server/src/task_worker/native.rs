@@ -297,10 +297,11 @@ pub fn finish(
             return false;
         }
         reply(&mut buf, super::nonblocking_flags(flags, task.ext_flags));
-        match stream_connection(worker) {
+        let sent = match stream_connection(worker) {
             Some(socket) => send_stream(socket, data),
             None => send_pipe_message(worker, buf.bytes(), PIPE_MASTER),
-        }
+        };
+        usize::try_from(sent).ok()
     } else {
         let Some(slot) = super::result_slot(serv, source) else {
             log::warning(
@@ -344,7 +345,7 @@ pub fn finish(
             },
         )
     };
-    if sent < 0 {
+    if sent.is_none() {
         let error = errno();
         let timed_out =
             error == libc::EAGAIN || error == libc::ETIMEDOUT || log::last_error() == POLL_TIMEOUT;
