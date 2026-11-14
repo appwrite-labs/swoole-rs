@@ -183,8 +183,22 @@ pub fn with_unlimited_stack<R>(f: impl FnOnce() -> R) -> R {
 /// `body` bailed out.
 pub fn contain<T: Copy>(body: fn() -> T) -> Result<T, Bailout> {
     let mut out = None;
-    // SAFETY: the closure holds a function pointer and a borrow of `out`, a
-    // `Copy` value: nothing to drop. `body`'s frames are its caller's (above).
-    unsafe { bailout::trap_with(|| out = Some(body())) }?;
+    contain_with(|| out = Some(body()))?;
     out.ok_or(Bailout)
+}
+
+/// [`contain`] of a closure that needs no drop: it captures borrows and plain
+/// values, and hands its result back through one.
+/// # Errors
+/// `body` bailed out.
+pub fn contain_with<F: FnOnce()>(body: F) -> Result<(), Bailout> {
+    const {
+        assert!(
+            !std::mem::needs_drop::<F>(),
+            "a bailout skips the drop of what the trap holds"
+        );
+    };
+    // SAFETY: `body` needs no drop (asserted above), and its frames are its
+    // caller's (above).
+    unsafe { bailout::trap_with(body) }
 }

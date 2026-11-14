@@ -159,12 +159,10 @@ fn kind(object: ServerObject<'_>) -> Kind {
 }
 
 /// `serv->start()` inside `zend_try`: the server runs PHP's callbacks, and one
-/// may bail out. The trap's `setjmp` sits in C just below `body`, whose frame
-/// owns nothing, so a bailout skips no destructor.
+/// may bail out.
 fn start_server(serv: view::Server<'_>) -> Result<c_int, bailout::Bailout> {
     let mut started = 0;
-    // SAFETY: as above; the closure holds a view and a borrow, nothing to drop.
-    unsafe { bailout::trap_with(|| started = server_methods::start(serv)) }?;
+    swoole_rs_zend::contain_with(|| started = server_methods::start(serv))?;
     Ok(started)
 }
 
@@ -186,22 +184,15 @@ fn add_worker(serv: view::Server<'_>, process: &Value) -> i64 {
             - i64::from(config.worker_num.get())
             - i64::from(config.task_worker_num.get());
     }
-    let mut added = -3;
-    let add = || {
-        // None once the error an unconstructed process raised returns.
-        let Some(worker) = checked_worker(process) else {
-            return;
-        };
-        // SAFETY: the process's live worker, which the server's copy of the
-        // Process object keeps for the server's life.
-        let worker = unsafe { Worker::new(worker.raw()) };
-        let id = swoole_rs_server::worker_methods::add_worker(serv, worker);
-        added = if id >= 0 { id.into() } else { -1 };
+    // None once an unconstructed process raised its error, which is deferred.
+    let Some(worker) = checked_worker(process) else {
+        return -3;
     };
-    // SAFETY: a bailout (an unconstructed process) jumps past `add`, which
-    // holds a view and borrows: nothing to drop.
-    let trapped = unsafe { bailout::trap_with(add) };
-    trapped.map_or(-3, |()| added)
+    // SAFETY: the process's live worker, which the server's copy of the
+    // Process object keeps for the server's life.
+    let worker = unsafe { Worker::new(worker.raw()) };
+    let id = swoole_rs_server::worker_methods::add_worker(serv, worker);
+    if id >= 0 { id.into() } else { -1 }
 }
 
 /// `send_yield`'s coroutines waiting on one session, each with its token.

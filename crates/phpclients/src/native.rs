@@ -58,6 +58,15 @@ pub(crate) fn swoole_rs_php_error(level: c_int, fatal: bool, message: &CStr) {
 /// `swoole_fatal_error`'s arguments for a method called before the constructor.
 pub(crate) const UNCONSTRUCTED: (c_int, &CStr) = (WRONG_OPERATION, c"must call constructor first");
 
+/// Swoole's fatal error for an unconstructed object, whose bailout the
+/// handler raises last.
+pub(crate) fn unconstructed() {
+    bailout::defer(swoole_rs_phpswoole::swoole_fatal_error(
+        UNCONSTRUCTED.0,
+        UNCONSTRUCTED.1,
+    ));
+}
+
 /// `new SocketImpl(...)`: by family (`domain`, `kind`, `protocol`) or by
 /// `swSocketType` (`kind`), over `fd` unless it is negative.
 /// # Errors
@@ -565,10 +574,9 @@ impl Cli {
     /// # Errors
     /// PHP code it ran bailed out.
     pub(crate) fn run(self, op: Op<'_>) -> Result<i64, Bailout> {
+        // crates/clients' operations own nothing a bailout would skip dropping.
         let (handle, mut result) = (self.handle(), 0);
-        // SAFETY: crates/clients' operations own nothing a bailout would skip
-        // dropping, and the closure holds only `op`'s borrows and scalars.
-        unsafe { bailout::trap_with(|| result = handle.run(op)) }?;
+        swoole_rs_zend::contain_with(|| result = handle.run(op))?;
         Ok(result)
     }
 
@@ -607,8 +615,8 @@ pub(crate) fn destroy(cli: Cli) -> Result<(), Bailout> {
         // SAFETY: `destroy` is the client's last operation.
         unsafe { handle.free() };
     };
-    // SAFETY: as in `Cli::run`.
-    unsafe { bailout::trap_with(free) }
+    // As in `Cli::run`.
+    swoole_rs_zend::contain_with(free)
 }
 
 /// Drop a `package_length_func` owner, out of its socket or client.

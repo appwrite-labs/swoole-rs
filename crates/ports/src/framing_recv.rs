@@ -124,16 +124,20 @@ fn paused(socket: &SocketFields) -> bool {
     if !socket.removed || socket.fd_type != SW_FD_SESSION as c_int || socket.object.is_null() {
         return false;
     }
-    // SAFETY: a session socket's object is its live connection.
-    let conn = unsafe { &*socket.object.cast::<ConnectionRecord>() };
+    let conn = socket
+        .object
+        .cast::<core::cell::UnsafeCell<ConnectionRecord>>();
+    // SAFETY: a session socket's object is its live connection slot, shared through
+    // the slot's field-wise handle; `UnsafeCell` has the record's layout.
+    let conn = swoole_rs_server::Connection::from(unsafe { &*conn });
     conn.is_active()
-        && conn.closed.load(Ordering::Relaxed) == 0
-        && !(conn.closing
-            || conn.close_actively
-            || conn.close_queued
-            || conn.close_reset
-            || conn.close_force
-            || conn.peer_closed)
+        && conn.closed().load(Ordering::Relaxed) == 0
+        && !(conn.closing()
+            || conn.close_actively()
+            || conn.close_queued()
+            || conn.close_reset()
+            || conn.close_force()
+            || conn.peer_closed())
 }
 
 /// `onPackage` over `length` bytes at `data`, or `SW_ERR` without one.

@@ -7,7 +7,7 @@
 use crate::{
     http_native::{self as native, PushError, TIMEOUT_READ, WebSocket},
     http_request::{self as request, Compress},
-    native::{Co, UNCONSTRUCTED, swoole_rs_php_error},
+    native::{Co, swoole_rs_php_error},
     socket::Sock,
 };
 use libc::c_int;
@@ -1639,14 +1639,14 @@ pub fn http_client_minit(minit: &Minit) -> Result<(), Bailout> {
     Ok(())
 }
 
-/// `http_client_coro_get_client`: the constructed client; a fatal error if not.
-fn client(call: &Call) -> &Client {
+/// `http_client_coro_get_client`: the constructed client; else Swoole's fatal
+/// error, and the method returns.
+fn client(call: &Call) -> Option<&Client> {
     let client = call.custom::<Data>().and_then(|data| data.client.get());
-    client.unwrap_or_else(|| {
-        // SAFETY: a fatal error; it does not return.
-        unsafe { swoole_rs_corebase::fatal_error(UNCONSTRUCTED.0, UNCONSTRUCTED.1) };
-        unreachable!("a fatal error does not return")
-    })
+    if client.is_none() {
+        crate::native::unconstructed();
+    }
+    client
 }
 
 /// `__construct(string $host, int $port = 0, bool $ssl = false)`.
@@ -1681,7 +1681,9 @@ fn destruct(_call: &Call) {}
 
 /// `set(array $settings): bool`.
 fn set(call: &Call) {
-    let client = client(call);
+    let Some(client) = client(call) else {
+        return;
+    };
     let Ok(array) = call.arity(1, 1).and_then(|()| call.array_ref(1)) else {
         return call.set_bool(false);
     };
@@ -1694,12 +1696,16 @@ fn set(call: &Call) {
 }
 
 fn get_defer(call: &Call) {
-    call.set_bool(client(call).defer.get());
+    if let Some(client) = client(call) {
+        call.set_bool(client.defer.get());
+    }
 }
 
 /// `setDefer(bool $defer = true): bool`.
 fn set_defer(call: &Call) {
-    let client = client(call);
+    let Some(client) = client(call) else {
+        return;
+    };
     let Ok(defer) = call.arity(0, 1).and_then(|()| call.bool(1, true)) else {
         return call.set_bool(false);
     };
@@ -1742,7 +1748,9 @@ fn set_cookies(call: &Call) {
 
 /// `setBasicAuth(string $username, string $password): void`.
 fn set_basic_auth(call: &Call) {
-    let client = client(call);
+    let Some(client) = client(call) else {
+        return;
+    };
     let parsed = call
         .arity(2, 2)
         .and_then(|()| Ok((call.string(1, b"")?, call.string(2, b"")?)));
@@ -1924,7 +1932,9 @@ fn settle(bailed: bool) {
 }
 
 fn execute(call: &Call) {
-    let client = client(call);
+    let Some(client) = client(call) else {
+        return;
+    };
     let Some(path) = path_arg(call) else {
         return;
     };
@@ -1933,7 +1943,9 @@ fn execute(call: &Call) {
 }
 
 fn get(call: &Call) {
-    let client = client(call);
+    let Some(client) = client(call) else {
+        return;
+    };
     let Some(path) = path_arg(call) else {
         return;
     };
@@ -1944,7 +1956,9 @@ fn get(call: &Call) {
 
 /// `post(string $path, mixed $data): bool`.
 fn post(call: &Call) {
-    let client = client(call);
+    let Some(client) = client(call) else {
+        return;
+    };
     let Ok(path) = call.arity(2, 2).and_then(|()| call.string(1, b"")) else {
         call.set_bool(false);
         return;
@@ -1959,7 +1973,9 @@ fn post(call: &Call) {
 
 /// `download(string $path, string $file, int $offset = 0): bool`.
 fn download(call: &Call) {
-    let client = client(call);
+    let Some(client) = client(call) else {
+        return;
+    };
     let parsed = call
         .arity(2, 3)
         .and_then(|()| Ok((call.string(1, b"")?, call.long(3, 0)?)));
@@ -1976,7 +1992,9 @@ fn download(call: &Call) {
 }
 
 fn upgrade(call: &Call) {
-    let client = client(call);
+    let Some(client) = client(call) else {
+        return;
+    };
     let Some(path) = path_arg(call) else {
         return;
     };
@@ -1991,7 +2009,9 @@ fn recv(call: &Call) {
 
 /// [`recv`]: whether `write_func` bailed out.
 fn receive(call: &Call) -> bool {
-    let client = client(call);
+    let Some(client) = client(call) else {
+        return false;
+    };
     if !client.is_available() {
         call.set_bool(false);
         return false;
@@ -2014,7 +2034,9 @@ fn receive(call: &Call) -> bool {
 
 /// `push(mixed $data, int $opcode = TEXT, int $flags = FIN): bool`.
 fn push(call: &Call) {
-    let client = client(call);
+    let Some(client) = client(call) else {
+        return;
+    };
     if !client.is_available() {
         return call.set_bool(false);
     }
@@ -2036,7 +2058,9 @@ fn push(call: &Call) {
 
 /// `close(): bool`.
 fn close(call: &Call) {
-    let client = client(call);
+    let Some(client) = client(call) else {
+        return;
+    };
     let Some(_hold) = client.hold() else {
         // A failed request already closed its socket; keep its error.
         if client.get_long(c"errCode") == 0 {
@@ -2066,7 +2090,9 @@ fn get_status_code(call: &Call) {
 
 /// `getHeaderOut(): string|false`: the request head last written.
 fn get_header_out(call: &Call) {
-    let client = client(call);
+    let Some(client) = client(call) else {
+        return;
+    };
     // The buffer the socket's close left, which the conn keeps until the next close.
     let written = client.conn.written.borrow();
     let respond = |data: &[u8]| match request::header_end(data) {
@@ -2082,7 +2108,9 @@ fn get_header_out(call: &Call) {
 
 /// `getsockname(): array|false`.
 fn getsockname(call: &Call) {
-    let client = client(call);
+    let Some(client) = client(call) else {
+        return;
+    };
     if !client.is_available() {
         return call.set_bool(false);
     }
@@ -2106,7 +2134,9 @@ fn set_endpoint(call: &Call, address: &CStr, port: c_int) {
 
 /// `getpeername(): array|false`.
 fn getpeername(call: &Call) {
-    let client = client(call);
+    let Some(client) = client(call) else {
+        return;
+    };
     if !client.is_available() {
         return call.set_bool(false);
     }
@@ -2122,7 +2152,9 @@ fn getpeername(call: &Call) {
 
 /// `getPeerCert(): string|false`.
 fn get_peer_cert(call: &Call) {
-    let client = client(call);
+    let Some(client) = client(call) else {
+        return;
+    };
     if !client.is_available() {
         return call.set_bool(false);
     }
@@ -2144,7 +2176,9 @@ fn payload(data: Option<&ZStr>) -> Owned {
 
 /// `ping(string $data = ''): bool`.
 fn ping(call: &Call) {
-    let client = client(call);
+    let Some(client) = client(call) else {
+        return;
+    };
     if !client.is_available() || !client.websocket.get() {
         return call.set_bool(false);
     }
@@ -2158,7 +2192,9 @@ fn ping(call: &Call) {
 /// `disconnect(int $code = 1000, string $reason = ''): bool`: push a close
 /// frame, then close regardless.
 fn disconnect(call: &Call) {
-    let client = client(call);
+    let Some(client) = client(call) else {
+        return;
+    };
     if !client.is_available() || !client.websocket.get() {
         return call.set_bool(false);
     }

@@ -489,13 +489,7 @@ enum Io<'a, S: ReadSlot = MaybeUninit<u8>> {
     Sendfile(&'a mut SocketFileRequest, usize),
 }
 
-/// writev(2) of `vectors`.
-#[must_use]
-pub fn writev(fd: c_int, vectors: &[IoSlice<'_>]) -> isize {
-    let count = vectors.len().c_cast::<c_int>();
-    // SAFETY: an `IoSlice` is ABI-compatible with an iovec, of readable bytes.
-    unsafe { libc::writev(fd, vectors.as_ptr().cast(), count) }
-}
+pub use swoole_rs_corebase::sys::writev;
 
 impl<S: ReadSlot> SyncEffects for Call<'_, S> {
     /// Read on each wait, as upstream's `wait_event` reads `this->fd`: a signal

@@ -42,8 +42,9 @@ pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) ->
     for _ in 0..ACCEPT_MAX_COUNT {
         let accepted = listener.edit(swoole_rs_reactor::SocketFields::accept);
         // SAFETY: null, or the socket `accept` just made, which nothing else holds
-        // until a connection takes it or `abort` frees it.
-        let Some(sock) = (unsafe { Socket::from_ptr(accepted) }) else {
+        // until a connection takes it or `abort` frees it: a heap record live until
+        // that free, whose caller answers for the handles left.
+        let Some(sock) = (unsafe { Socket::<'static>::from_ptr(accepted) }) else {
             if accept_failed(serv, errno()) {
                 continue;
             }
@@ -123,7 +124,7 @@ fn to_reactor_thread(serv: view::Server<'_>, conn: Connection<'_>) -> isize {
 pub fn add<'a>(
     serv: view::Server<'a>,
     port: view::Port<'_>,
-    sock: Socket<'_>,
+    sock: Socket<'static>,
     server_fd: c_int,
 ) -> Option<Connection<'a>> {
     let state = serv.state();
@@ -265,7 +266,7 @@ fn init(
     serv: view::Server<'_>,
     conn: Connection<'_>,
     ls: &crate::port_config::PortConfig,
-    sock: Socket<'_>,
+    sock: Socket<'static>,
     server_fd: c_int,
     reactor_id: u8,
 ) {
@@ -296,7 +297,7 @@ fn init(
     conn.closed().store(0, Relaxed);
     conn.set_worker_id(-1);
     conn.set_socket_type(ls.r#type);
-    conn.set_socket(sock.as_ptr().cast());
+    conn.set_socket(Some(sock));
     conn.set_ssl(ssl);
     conn.info().kind = conn.socket_type();
     conn.set_local_port(u16::try_from(local_port).unwrap_or_default());

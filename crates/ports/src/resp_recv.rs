@@ -8,7 +8,6 @@ use swoole_rs_protocols_ffi::{
     request,
 };
 use swoole_rs_reactor::{Caught, Socket};
-use swoole_rs_server::ConnectionRecord;
 
 /// `swoole::RecvData`.
 #[repr(C)]
@@ -114,13 +113,13 @@ impl RespConnection for Connection<'_> {
 /// `buffer` is live; `conn->object` is null or this receive's request.
 pub(crate) unsafe fn recv_packet(
     protocol: &Protocol,
-    conn: &mut ConnectionRecord,
+    conn: swoole_rs_server::Connection<'_>,
     socket: Socket<'_>,
     buffer: *mut CppString,
 ) -> c_int {
-    let mut slot = conn.object.cast::<RespRequest>();
+    let mut slot = conn.object().cast::<RespRequest>();
     let request = request(&mut slot);
-    conn.object = slot.cast();
+    conn.set_object(slot.cast());
     if request.is_null() {
         return SW_ERR;
     }
@@ -129,7 +128,7 @@ pub(crate) unsafe fn recv_packet(
         socket,
         buffer,
         request,
-        fd: conn.fd,
+        fd: conn.fd(),
     };
     let page = swoole_rs_corebase::swr_v1_core_pagesize() as usize;
     swoole_rs_protocols_ffi::recv_packet(&mut connection, protocol.package_max_length, page)
@@ -139,6 +138,7 @@ pub(crate) unsafe fn recv_packet(
 mod tests {
     use super::*;
     use swoole_rs_reactor::SocketRecord;
+    use swoole_rs_server::ConnectionRecord;
 
     /// `core-tests/src/protocol/redis.cpp`, `TEST(redis, recv_packet_with_partially_filled_buffer)`.
     #[test]
@@ -159,8 +159,8 @@ mod tests {
         socket.socket_type = 5; // SW_SOCK_UNIX_STREAM
         let mut conn: ConnectionRecord = unsafe { core::mem::zeroed() };
         conn.fd = pairs[1];
-        conn.socket = (&raw mut socket).cast();
         let handle = unsafe { Socket::from_ptr(&raw mut socket) }.unwrap();
+        conn.socket = Some(handle);
         let mut protocol = Protocol::EMPTY;
         protocol.package_max_length = 65536 * 2;
         let mut buffer = CppString::EMPTY;
@@ -168,7 +168,7 @@ mod tests {
         let buffer_size = buffer.size();
 
         assert_eq!(
-            unsafe { recv_packet(&protocol, &mut conn, handle, &raw mut buffer) },
+            unsafe { recv_packet(&protocol, (&mut conn).into(), handle, &raw mut buffer) },
             SW_ERR
         );
         assert_eq!(buffer.len(), 1);

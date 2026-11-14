@@ -293,9 +293,7 @@ pub(crate) fn strerror(code: c_int) -> Cow<'static, CStr> {
 fn constructed(call: &Call) -> Option<Co> {
     let socket = Sock::this(call).and_then(Sock::co);
     if socket.is_none() {
-        let (code, message) = native::UNCONSTRUCTED;
-        // SAFETY: a fatal error; the handler owns nothing it skips.
-        unsafe { swoole_rs_corebase::fatal_error(code, message) };
+        native::unconstructed();
         call.set_bool(false);
     }
     socket

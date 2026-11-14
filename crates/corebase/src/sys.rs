@@ -61,12 +61,17 @@ mod c {
 
     // POSIX's prototypes, the same on every Unix this builds for. Each reads
     // its integers, reads a `Text` up to its NUL, or reads or writes the one object
-    // its reference names. `calloc` and `strndup` return null or a fresh
+    // its reference names. `malloc`, `calloc` and `strndup` return null or a fresh
     // allocation; `strtoul` stores a pointer into its text, or leaves `end` alone. A
     // `sigset_t` is plain bits the set calls read or write whole, and a signal number
     // outside the set is an error they return. `fork` takes nothing and touches no
     // memory of the caller's; it stays inside the crate, whose callers each say
     // what their child goes on to do.
+    #[expect(
+        suspicious_runtime_symbol_definitions,
+        reason = "`close` and `malloc` keep their C signatures; they are declared safe because \
+                  each takes plain values and touches no caller memory"
+    )]
     unsafe extern "C" {
         pub(crate) safe fn socket(domain: c_int, kind: c_int, protocol: c_int) -> c_int;
         pub(crate) safe fn listen(fd: c_int, backlog: c_int) -> c_int;
@@ -81,6 +86,7 @@ mod c {
         pub(crate) safe fn fork() -> pid_t;
         pub(crate) safe fn dup(fd: c_int) -> c_int;
         pub(crate) safe fn dup2(from: c_int, to: c_int) -> c_int;
+        pub(crate) safe fn close(fd: c_int) -> c_int;
         pub(crate) safe fn flock(fd: c_int, operation: c_int) -> c_int;
         pub(crate) safe fn sleep(seconds: c_uint) -> c_uint;
         pub(crate) safe fn usleep(microseconds: useconds_t) -> c_int;
@@ -89,6 +95,7 @@ mod c {
         pub(crate) safe fn chdir(path: Text<'_>) -> c_int;
         pub(crate) safe fn chroot(path: Text<'_>) -> c_int;
         pub(crate) safe fn mkdir(path: Text<'_>, mode: mode_t) -> c_int;
+        pub(crate) safe fn malloc(size: usize) -> *mut c_void;
         pub(crate) safe fn calloc(count: usize, size: usize) -> *mut c_void;
         /// At most `length` bytes of `text`, in a `malloc` allocation.
         pub(crate) safe fn strndup(text: Text<'_>, length: usize) -> *mut c_char;
@@ -214,7 +221,7 @@ mod c {
 pub use c::kqueue;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 pub use c::malloc_trim;
-pub(crate) use c::{calloc, fork, getrlimit, srandom, uname};
+pub(crate) use c::{calloc, fork, getrlimit, malloc, srandom, uname};
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub use c::{epoll_create, epoll_ctl, signalfd};
 pub use c::{
@@ -390,8 +397,16 @@ pub fn pwrite(fd: c_int, buf: &[u8], offset: off_t) -> isize {
 
 /// `close(2)`.
 pub fn close(fd: c_int) -> c_int {
-    // SAFETY: close(2) has no memory preconditions.
-    unsafe { libc::close(fd) }
+    c::close(fd)
+}
+
+/// `writev(2)` of `vectors`.
+#[must_use]
+#[inline]
+pub fn writev(fd: c_int, vectors: &[std::io::IoSlice<'_>]) -> isize {
+    let count = c_int::try_from(vectors.len()).unwrap_or(c_int::MAX);
+    // SAFETY: an `IoSlice` is ABI-compatible with an iovec, of readable bytes.
+    unsafe { libc::writev(fd, vectors.as_ptr().cast(), count) }
 }
 
 /// `listen(2)`.

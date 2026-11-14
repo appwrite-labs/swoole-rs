@@ -72,10 +72,13 @@ pub(crate) fn construct_guard() -> Result<(), ConstructRefusal> {
     }
 }
 
-/// `swoole_fatal_error(SW_ERROR_WRONG_OPERATION, "must call constructor first")`.
+/// `swoole_fatal_error(SW_ERROR_WRONG_OPERATION, "must call constructor first")`,
+/// whose bailout the handler raises last.
 pub(crate) fn unconstructed() {
-    // SAFETY: the frames it may jump over own nothing.
-    unsafe { swoole_rs_corebase::fatal_error(WRONG_OPERATION, c"must call constructor first") };
+    swoole_rs_zend::bailout::defer(swoole_rs_phpswoole::swoole_fatal_error(
+        WRONG_OPERATION,
+        c"must call constructor first",
+    ));
 }
 
 thread_local! {

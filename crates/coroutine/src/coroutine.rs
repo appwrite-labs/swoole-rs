@@ -34,7 +34,24 @@ const STACK_ALIGNMENT: usize = 4 * 1024;
 /// swap callback, a timer's callback or the bailout callback.
 pub type Routine = unsafe extern "C" fn(*mut c_void);
 
-pub type SwapCallback = Option<Routine>;
+/// A coroutine's task, which only [`set_current_task`](crate::set_current_task) sets:
+/// the one kind of object every swap callback takes (in the extension,
+/// crates/phpcoroutines' PHP context), live until the close callback of its
+/// coroutine has run. Safe code can copy one it was handed, but not make one or
+/// make one any coroutine's.
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CoroutineTask(pub(crate) NonNull<c_void>);
+
+impl CoroutineTask {
+    #[must_use]
+    pub const fn as_ptr(self) -> NonNull<c_void> {
+        self.0
+    }
+}
+
+/// A swap callback, over the task of the coroutine that yields, resumes or closes.
+pub type SwapCallback = Option<extern "C" fn(CoroutineTask)>;
 
 /// One coroutine. `native` is the `swoole::Coroutine` record that starts with it.
 #[repr(C)]
@@ -44,7 +61,7 @@ pub struct Coroutine {
     pub cid: c_long,
     pub state: State,
     pub resume_code: i32,
-    pub task: *mut c_void,
+    pub task: Option<CoroutineTask>,
     /// The waiting yield's [`Canceler`], null when it can't be canceled.
     pub cancel_fn: *mut c_void,
     /// The coroutine that last ran this one; cleared when it closes first.
@@ -65,7 +82,7 @@ impl Coroutine {
         cid: 0,
         state: State::Init,
         resume_code: RC_OK,
-        task: ptr::null_mut(),
+        task: None,
         cancel_fn: ptr::null_mut(),
         origin: ptr::null_mut(),
         first_child: ptr::null_mut(),
@@ -381,10 +398,9 @@ fn charge(hooks: &Hooks, yielding: Option<Co>, resuming: Option<Co>) {
 fn notify(callback: SwapCallback, co: Co) {
     let task = co.with(|co| co.task);
     if let Some(callback) = callback
-        && !task.is_null()
+        && let Some(task) = task
     {
-        // SAFETY: C++ registered the callback for tasks like this one.
-        unsafe { callback(task) };
+        callback(task);
     }
 }
 
@@ -576,14 +592,17 @@ pub(crate) mod tests {
     extern "C" fn clock() -> c_long {
         100
     }
-    unsafe extern "C" fn on_resume(task: *mut c_void) {
-        event(format!("on_resume {}", task as usize));
+    extern "C" fn on_resume(task: CoroutineTask) {
+        event(format!("on_resume {}", task.as_ptr().as_ptr() as usize));
     }
-    unsafe extern "C" fn on_yield(task: *mut c_void) {
-        event(format!("on_yield {}", task as usize));
+    extern "C" fn on_yield(task: CoroutineTask) {
+        event(format!("on_yield {}", task.as_ptr().as_ptr() as usize));
     }
-    unsafe extern "C" fn on_close(task: *mut c_void) {
-        event(format!("on_close {}", task as usize));
+    extern "C" fn on_close(task: CoroutineTask) {
+        event(format!("on_close {}", task.as_ptr().as_ptr() as usize));
+    }
+    fn task(at: usize) -> Option<CoroutineTask> {
+        NonNull::new(at as *mut c_void).map(CoroutineTask)
     }
 
     pub(crate) fn scheduler() -> Scheduler {
@@ -751,8 +770,8 @@ pub(crate) mod tests {
         unsafe {
             (*sp).register(a, 10 as *mut c_void, 0, 0);
             (*sp).register(b, 20 as *mut c_void, 0, 0);
-            (*a).task = 3 as *mut c_void;
-            (*b).task = 2 as *mut c_void;
+            (*a).task = task(3);
+            (*b).task = task(2);
             // a runs and (in its body) runs b, which yields back to a.
             assert_eq!(swr_v1_coroutine_run(sp, a), 1);
             assert_eq!((*sp).current, a);

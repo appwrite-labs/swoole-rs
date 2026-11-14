@@ -11,7 +11,6 @@ use swoole_rs_corebase::net_types::Protocol;
 use swoole_rs_reactor::Socket;
 use swoole_rs_tls::{DtlsSession, SslVersion, TlsContext, swr_v1_tls_owner_view};
 
-use crate::records::ConnectionRecord;
 use crate::view::Port;
 
 /// A readable event on a live connection of `server`, which the server's connection
@@ -93,7 +92,7 @@ pub struct PortMethods {
     pub get_protocols: fn(&PortConfig) -> &'static CStr,
     pub init_protocol: fn(&PortConfig),
     /// `destroy_http_request(conn)`, of a live connection.
-    pub destroy_http_request: fn(conn: *mut ConnectionRecord),
+    pub destroy_http_request: fn(conn: crate::Connection<'_>),
     /// Releases the port's context and its TLS state, as `ListenPort`'s destructor.
     pub tls_free: fn(&mut PortConfig),
     /// `create_dtls_session(sock)` on a DTLS port; null if it fails to initialize.
@@ -146,7 +145,8 @@ pub struct PortConfig {
     pub port: Setting<c_int>,
     /// The listening socket's record (`network::Socket *`), or null: stored by
     /// `create_socket()` and `import()`, nulled by `close_socket()` and `close()`.
-    pub socket: AtomicPtr<c_void>,
+    /// Private: only [`Self::set_listening_socket`] stores a record here.
+    pub(crate) socket: AtomicPtr<c_void>,
     pub thread_id: Shared<libc::pthread_t>,
     pub heartbeat_idle_time: Setting<u16>,
     pub open_eof_check: Setting<bool>,
@@ -287,16 +287,29 @@ impl PortConfig {
         // SAFETY: null, or the port's slot in `port_gs_list`, mapped for the server's life.
         unsafe { self.gs.get().cast::<crate::shared::PortCounters>().as_ref() }
     }
-    /// The port's listening socket, or `None` before it has one or after it closes
-    /// (`OP_PORT_CLOSE_SOCKET`), which ends every handle to it: one is used within the
-    /// op that took it.
     /// The listening socket's record as native code holds it, or null.
     #[must_use]
     pub fn socket_ptr(&self) -> *mut c_void {
         self.socket.load(Relaxed)
     }
+
+    /// Make `socket` the port's listening socket, which the port frees as it closes.
+    pub fn set_listening_socket(&self, socket: Socket<'static>) {
+        self.socket.store(socket.as_ptr().cast(), Relaxed);
+    }
+
+    /// The listening socket's record, or null, taken from the port so nothing finds it
+    /// once the caller frees it.
     #[must_use]
-    pub fn listening_socket(&self) -> Option<Socket<'_>> {
+    pub fn take_socket_ptr(&self) -> *mut swoole_rs_reactor::SocketRecord {
+        self.socket.swap(core::ptr::null_mut(), Relaxed).cast()
+    }
+
+    /// The port's listening socket, or `None` before it has one or after it closes
+    /// (`OP_PORT_CLOSE_SOCKET`): a record live until that unsafe free, whose caller
+    /// answers for the handles left.
+    #[must_use]
+    pub fn listening_socket(&self) -> Option<Socket<'static>> {
         // SAFETY: null, or the live listening socket the port owns: closing it frees it
         // and nulls the field in one step.
         unsafe { Socket::from_ptr(self.socket_ptr().cast()) }
@@ -371,7 +384,7 @@ impl PortConfig {
         std::mem::forget(self.length_owner.replace(None));
         // SAFETY: the record of a port `destroy` never closed (a server never started),
         // which nothing else holds. Its descriptor stays open to the exit, as upstream's.
-        unsafe { swoole_rs_reactor::SocketRecord::free(self.socket_ptr().cast()) };
+        unsafe { swoole_rs_reactor::SocketRecord::free(self.take_socket_ptr()) };
     }
 }
 

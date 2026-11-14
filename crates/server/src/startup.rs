@@ -429,16 +429,17 @@ pub(crate) fn start_master_thread(serv: view::Server<'_>, reactor: Reactor) -> c
 pub(crate) fn store_listen_socket(serv: view::Server<'_>) {
     let state = serv.state();
     let tables = state.tables_ref();
-    for (index, &listen) in tables.ports().iter().enumerate() {
-        let Some(socket) = serv.port_socket_at(index) else {
+    for &listen in tables.ports() {
+        let (ls, port) = (listen.raw(), listen.config());
+        let Some(socket) = port.listening_socket() else {
             continue;
         };
-        let (ls, port, fd) = (listen.raw(), listen.config(), socket.fd());
+        let fd = socket.fd();
         let Some(conn) = tables.connection_at(fd) else {
             continue;
         };
         conn.set_fd(fd);
-        conn.set_socket(port.socket_ptr().cast());
+        conn.set_socket(Some(socket));
         conn.set_socket_type(port.r#type);
         conn.set_object(ls);
         let mut info = conn.info();

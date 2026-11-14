@@ -191,10 +191,7 @@ pub(crate) fn by_cid(cid: c_long) -> Co {
 
 /// The context of `co`, none for none.
 fn task(co: Co) -> Option<Ctx> {
-    let task = live_or_none(state(co))?.task;
-    // SAFETY: a coroutine's task is null or its context, set by `context::open`
-    // and live until the close callback (`context::on_swap`), which runs as the coroutine ends.
-    unsafe { Ctx::of(task) }
+    live_or_none(state(co))?.task.map(Ctx::of_task)
 }
 
 pub(crate) fn task_by_cid(cid: c_long) -> Option<Ctx> {
@@ -550,9 +547,9 @@ pub(crate) fn check_reactor() {
 /// Activation: the reactor's destroy callback, `Coroutine::activate` and the
 /// switch callbacks.
 pub(crate) fn attach(
-    on_yield: swoole_rs_coroutine::Routine,
-    on_resume: swoole_rs_coroutine::Routine,
-    on_close: swoole_rs_coroutine::Routine,
+    on_yield: extern "C" fn(swoole_rs_coroutine::CoroutineTask),
+    on_resume: extern "C" fn(swoole_rs_coroutine::CoroutineTask),
+    on_close: extern "C" fn(swoole_rs_coroutine::CoroutineTask),
 ) {
     // Upstream dereferences `sw_reactor()` here unchecked.
     if swoole_rs_reactor::event_api::current_prepared().is_none() {

@@ -6,7 +6,7 @@ use core::ffi::{CStr, c_int, c_void};
 use core::ptr;
 use core::sync::atomic::Ordering;
 
-use std::cell::Cell;
+use std::cell::{Cell, UnsafeCell};
 use swoole_rs_buffer::string::{CppString, delete_string, new_sized_string};
 use swoole_rs_corebase::constants::{
     EventDataFlag::SW_EVENT_DATA_POP_PTR, SW_BUFFER_SIZE_BIG, SW_HTTP_100_CONTINUE_PACKET,
@@ -20,7 +20,7 @@ use swoole_rs_reactor::reactor_upstream::trigger_close_event;
 use swoole_rs_reactor::{Caught, Event, Fill, Running, Socket};
 use swoole_rs_server::port_config::{PortConfig, ReadEvent};
 use swoole_rs_server::static_select::static_select;
-use swoole_rs_server::{ConnectionRecord, ServerConfig, view};
+use swoole_rs_server::{Connection as Slot, ConnectionRecord, ServerConfig, view};
 use swoole_rs_tls::upstream::{recv_fill, send};
 
 use crate::framing_recv::{self, Callbacks, Packages};
@@ -41,7 +41,7 @@ struct Read<'a> {
     /// The reactor's event, which the close handler may change; the caller sees it after.
     event: Cell<Event>,
     socket: Socket<'a>,
-    conn: *mut ConnectionRecord,
+    conn: Slot<'a>,
     server: view::Server<'a>,
     /// The port, whose settings nothing writes while it serves.
     port: &'a PortConfig,
@@ -68,7 +68,12 @@ pub(crate) fn on_read(
         return -1;
     };
     // A connection socket's object is its connection: the event as `read` lent it.
-    let conn = socket.read(|s| s.object).cast::<ConnectionRecord>();
+    let conn = socket
+        .read(|s| s.object)
+        .cast::<UnsafeCell<ConnectionRecord>>();
+    // SAFETY: the event's live connection slot, shared through the slot's field-wise
+    // handle; `UnsafeCell` has the record's layout.
+    let conn = Slot::from(unsafe { &*conn });
     let port = port.config();
     let mut read = Read {
         buffer: ptr::null_mut(),
@@ -83,7 +88,7 @@ pub(crate) fn on_read(
         frames: false,
     };
     if kind == Readable::Http {
-        read.frames = read.conn().websocket_status >= WebSocketStatus::Handshake
+        read.frames = read.conn.websocket_status() >= WebSocketStatus::Handshake
             && port.open_websocket_protocol.get();
     }
     let result = readable(kind, &mut read);
@@ -96,13 +101,6 @@ fn errno() -> c_int {
 }
 
 impl Read<'_> {
-    /// The live connection, borrowed until the next call on `self`.
-    fn conn(&mut self) -> &mut ConnectionRecord {
-        // SAFETY: the event's live connection, which only this reactor thread touches;
-        // the borrow of `self` ends it before any native call through `self.conn`.
-        unsafe { &mut *self.conn }
-    }
-
     /// The current buffer, borrowed until the next call on `self`.
     fn string(&mut self) -> &mut CppString {
         // SAFETY: the current buffer is live once a receive buffer or request made it
@@ -187,7 +185,7 @@ impl Connection for Read<'_> {
     }
 
     fn close_errno(&mut self) {
-        self.conn().close_errno = u16::try_from(errno()).unwrap_or(u16::MAX);
+        (self.conn).set_close_errno(u16::try_from(errno()).unwrap_or(u16::MAX));
     }
 
     fn close(&mut self) {
@@ -235,8 +233,7 @@ impl Connection for Read<'_> {
             Framing::Length => self.framed::<Callbacks>(Mode::Length),
             Framing::Eof => self.framed::<Callbacks>(Mode::Eof),
             Framing::Redis => {
-                let (port, socket, buffer) = (self.port, self.socket, self.buffer);
-                let conn = self.conn();
+                let (port, socket, buffer, conn) = (self.port, self.socket, self.buffer, self.conn);
                 // SAFETY: the current buffer; the connection's object is its request.
                 i64::from(unsafe {
                     crate::resp_recv::recv_packet(&port.protocol.get(), conn, socket, buffer)
@@ -290,7 +287,7 @@ impl Connection for Read<'_> {
         self.request = if self.removed() {
             ptr::null_mut()
         } else {
-            self.conn().object.cast()
+            self.conn.object().cast()
         };
         i64::from(result)
     }
@@ -303,22 +300,21 @@ impl Connection for Read<'_> {
     /// close the slot is left alone.
     #[inline]
     fn active(&mut self) -> bool {
-        !self.removed() && self.conn().is_active()
+        !self.removed() && self.conn.is_active()
     }
 
     fn upgrade(&mut self) -> Upgrade {
-        let c = self.conn();
+        let c = self.conn;
         Upgrade {
-            websocket: c.websocket_status >= WebSocketStatus::Handshake,
-            upgraded: c.http_upgrade,
-            http2_stream: c.http2_stream,
+            websocket: c.websocket_status() >= WebSocketStatus::Handshake,
+            upgraded: c.http_upgrade(),
+            http2_stream: c.http2_stream(),
         }
     }
 
     fn activate_websocket(&mut self) {
-        let conn = self.conn();
-        conn.websocket_status = WebSocketStatus::Active;
-        conn.http_upgrade = true;
+        self.conn.set_websocket_status(WebSocketStatus::Active);
+        self.conn.set_http_upgrade(true);
     }
 
     fn http2_enabled(&mut self) -> bool {
@@ -326,7 +322,7 @@ impl Connection for Read<'_> {
     }
 
     fn start_http2(&mut self) {
-        self.conn().http2_stream = true;
+        self.conn.set_http2_stream(true);
         // `http2::send_setting_frame`: the server's default settings.
         let settings = swoole_rs_http2::sw_rs_http2_default_settings();
         let mut frame = [0u8; SETTING_FRAME_SIZE];
@@ -353,8 +349,8 @@ impl Connection for Read<'_> {
     }
 
     fn serve_static(&mut self) -> bool {
-        let conn = self.conn();
-        let (request, session) = (conn.object.cast::<HttpRequest>(), conn.session_id);
+        let conn = self.conn;
+        let (request, session) = (conn.object().cast::<HttpRequest>(), conn.session_id());
         // SAFETY: the connection's live request; the handler's last send may close
         // the connection and free it, and nothing here reads it afterwards.
         unsafe { static_select(self.server, request, session, self.socket) }
@@ -384,10 +380,10 @@ impl Connection for Read<'_> {
 
     #[inline]
     fn init_request(&mut self) {
-        if self.conn().object.is_null() {
-            self.conn().object = Box::into_raw(swoole_rs_http_ffi::request_new()).cast();
+        if self.conn.object().is_null() {
+            (self.conn).set_object(Box::into_raw(swoole_rs_http_ffi::request_new()).cast());
         }
-        self.request = self.conn().object.cast();
+        self.request = self.conn.object().cast();
         if self.request().buffer.is_null() {
             let buffer = self.recv_buffer();
             self.request().buffer = buffer.cast();
@@ -426,7 +422,7 @@ impl Connection for Read<'_> {
     }
 
     fn client(&mut self) -> (i64, String, i64) {
-        let session = self.conn().session_id;
+        let session = self.conn.session_id();
         (
             session,
             String::from_utf8_lossy(self.port.host_bytes()).into_owned(),

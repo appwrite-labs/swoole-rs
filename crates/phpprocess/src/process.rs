@@ -976,7 +976,10 @@ fn set(call: &Call) {
         return;
     };
     let process = this(call);
-    checked(process);
+    // Nothing runs past the fatal error.
+    if checked(process).is_none() {
+        return;
+    }
     if let Some(process) = process
         && let Some(value) = options.find(b"enable_coroutine")
         && value.kind() != IS_NULL

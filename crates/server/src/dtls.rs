@@ -10,7 +10,7 @@ use swoole_rs_corebase::constants::{SW_BUFFER_SIZE_UDP, SW_SSL_BUFFER_SIZE};
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_reactor::Socket;
-use swoole_rs_reactor::socket_upstream::make_socket_typed;
+use swoole_rs_reactor::socket_upstream::make_typed;
 use swoole_rs_tls::{
     DtlsSession, dtls_session_listen, dtls_session_receive, swr_v1_tls_dtls_append,
 };
@@ -70,9 +70,7 @@ fn accept<'s>(
         (config.r#type, config.port.get(), host)
     };
     let server_fd = listen.fd();
-    let sock = make_socket_typed(kind, FD_SESSION, SOCK_CLOEXEC | SOCK_NONBLOCK);
-    // SAFETY: null, or the socket just made, which only this thread uses.
-    let socket = unsafe { Socket::from_ptr(sock) }?;
+    let socket = make_typed(kind, FD_SESSION, SOCK_CLOEXEC | SOCK_NONBLOCK)?.into_socket();
     let fd = socket.fd();
     set_option(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, 1);
     if cfg!(any(
@@ -122,7 +120,7 @@ fn accept<'s>(
         unsafe { ptr::write_bytes(conn, 0, 1) };
     }
     // SAFETY: the socket just made, which nothing uses afterwards.
-    unsafe { swoole_rs_tls::upstream::socket_free(sock) };
+    unsafe { swoole_rs_tls::upstream::socket_free(socket.as_ptr()) };
     None
 }
 

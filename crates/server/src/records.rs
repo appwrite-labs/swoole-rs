@@ -50,7 +50,9 @@ pub struct ConnectionRecord {
     pub timer: *mut c_void,
     pub info: SocketAddress,
     pub object: *mut c_void,
-    pub socket: *mut c_void,
+    /// The session socket, `None` before the connection has one or after it closes: a
+    /// record live until the unsafe free that ends the connection.
+    pub socket: Option<swoole_rs_reactor::Socket<'static>>,
     pub connect_time: f64,
     pub last_recv_time: f64,
     pub last_send_time: f64,
@@ -58,8 +60,11 @@ pub struct ConnectionRecord {
     pub uid: u32,
     pub websocket_status: WebSocketStatus,
     pub websocket_buffer: *mut c_void,
-    pub ssl_client_cert: *mut c_void,
-    pub ssl_client_cert_pid: c_int,
+    /// Null, or the `CppString` box the worker `ssl_client_cert_pid` stored with
+    /// [`Connection::store_client_cert`]. Private with the pid, so nothing else names a
+    /// certificate here.
+    pub(crate) ssl_client_cert: *mut c_void,
+    pub(crate) ssl_client_cert_pid: c_int,
     pub lock: AtomicU32,
     pub closed: AtomicU32,
     pub server_fd: c_int,
@@ -131,20 +136,23 @@ impl<T> Slot<'_, T> {
 /// A getter and a setter for a plain field, or a getter for an atomic one, that read
 /// and write through the slot's pointer and never form a reference to the record.
 macro_rules! field {
-    ($get:ident = $field:ident, $set:ident: $ty:ty) => {
+    (@[$($vis:tt)*] $get:ident = $field:ident, $set:ident: $ty:ty) => {
         #[must_use]
-        pub fn $get(self) -> $ty {
+        $($vis)* fn $get(self) -> $ty {
             // SAFETY: a live slot for the handle's life; only the field is read.
             unsafe { (*self.cell.get()).$field }
         }
 
-        pub fn $set(self, value: $ty) {
+        $($vis)* fn $set(self, value: $ty) {
             // SAFETY: a live slot whose server orders this write; only the field is written.
             unsafe { (*self.cell.get()).$field = value };
         }
     };
+    (private $field:ident, $set:ident: $ty:ty) => {
+        field!(@[] $field = $field, $set: $ty);
+    };
     ($field:ident, $set:ident: $ty:ty) => {
-        field!($field = $field, $set: $ty);
+        field!(@[pub] $field = $field, $set: $ty);
     };
     (atomic $field:ident: $ty:ty) => {
         #[must_use]
@@ -190,7 +198,7 @@ impl<'a> Connection<'a> {
     field!(timer, set_timer: *mut c_void);
     field!(info, set_info: SocketAddress);
     field!(object, set_object: *mut c_void);
-    field!(socket_ptr = socket, set_socket: *mut c_void);
+    field!(socket, set_socket: Option<swoole_rs_reactor::Socket<'static>>);
     field!(connect_time, set_connect_time: f64);
     field!(last_recv_time, set_last_recv_time: f64);
     field!(last_send_time, set_last_send_time: f64);
@@ -198,8 +206,33 @@ impl<'a> Connection<'a> {
     field!(uid, set_uid: u32);
     field!(websocket_status, set_websocket_status: WebSocketStatus);
     field!(websocket_buffer, set_websocket_buffer: *mut c_void);
-    field!(ssl_client_cert, set_ssl_client_cert: *mut c_void);
-    field!(ssl_client_cert_pid, set_ssl_client_cert_pid: c_int);
+    field!(private ssl_client_cert, set_ssl_client_cert: *mut c_void);
+    field!(private ssl_client_cert_pid, set_ssl_client_cert_pid: c_int);
+
+    /// `OP_STORE_CLIENT_CERT`: `cert` is the connection's client certificate, which
+    /// only this worker reads and frees.
+    pub fn store_client_cert(self, cert: swoole_rs_buffer::string::CppString) {
+        self.set_ssl_client_cert(Box::into_raw(Box::new(cert)).cast());
+        self.set_ssl_client_cert_pid(swoole_rs_process::methods::swoole_get_worker_pid());
+    }
+
+    /// `OP_FREE_CLIENT_CERT`: the certificate this worker stored, taken from the
+    /// connection, or `None` when this worker stored none.
+    #[must_use]
+    pub fn take_client_cert(self) -> Option<Box<swoole_rs_buffer::string::CppString>> {
+        let cert = self
+            .ssl_client_cert()
+            .cast::<swoole_rs_buffer::string::CppString>();
+        if cert.is_null()
+            || self.ssl_client_cert_pid() != swoole_rs_process::methods::swoole_get_worker_pid()
+        {
+            return None;
+        }
+        self.set_ssl_client_cert(core::ptr::null_mut());
+        // SAFETY: the box `store_client_cert` made in this worker, which the
+        // connection named until just now.
+        Some(unsafe { Box::from_raw(cert) })
+    }
     field!(server_fd, set_server_fd: c_int);
     field!(atomic active: AtomicU8);
     field!(atomic recv_queued_bytes: AtomicU32);
@@ -212,19 +245,10 @@ impl<'a> Connection<'a> {
         self.active().load(Relaxed) != 0
     }
 
-    /// The connection's session socket, or `None` before it has one or after it closes,
-    /// as [`ConnectionRecord::socket`] says.
-    #[must_use]
-    pub fn socket(self) -> Option<swoole_rs_reactor::Socket<'a>> {
-        // SAFETY: null, or the connection's live socket, as above.
-        unsafe { swoole_rs_reactor::Socket::from_ptr(self.socket_ptr().cast()) }
-    }
-
     /// A reactor event over the connection's socket, as the reactor would deliver it.
     #[must_use]
     pub fn event(self, reactor_id: i16, fd_type: c_int) -> swoole_rs_reactor::Event {
-        // SAFETY: null, or the connection's live socket, as `socket` says.
-        unsafe { swoole_rs_reactor::Event::new(self.fd(), reactor_id, fd_type, self.socket_ptr()) }
+        swoole_rs_reactor::Event::of(self.fd(), reactor_id, fd_type, self.socket())
     }
 
     /// `f` over the client certificate this worker stored for the connection

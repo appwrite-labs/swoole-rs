@@ -1,20 +1,25 @@
 //! MINIT's registrations, safe behind the token Zend's MINIT hands a family:
 //! constants, classes and their function aliases.
 use crate::{
-    Class, ClassEntry, Owned, Value,
+    Array, Class, ClassEntry, Function, Owned, Value,
+    arginfo::ArgInfo,
     bailout::Bailout,
     class::Layout,
     function::{arg_info, deny},
     helpers::CText,
+    registration::{SUCCESS, leaf},
     sys::{
-        HashTable, IS_STRING, ZEND_ACC_NOT_SERIALIZABLE, swr_zend_http_intern, zend_class_entry,
-        zend_class_implements, zend_function, zend_function_entry, zend_long, zend_object_handlers,
+        HashTable, IS_STRING, ZEND_ACC_NOT_SERIALIZABLE, swr_zend_http_intern,
+        swr_zend_try_facade_register_functions, zend_class_entry, zend_class_implements,
+        zend_function, zend_function_entry, zend_internal_arg_info, zend_long,
+        zend_object_handlers,
     },
 };
 use std::{
     ffi::{CStr, c_int, c_void},
     marker::PhantomData,
     mem::offset_of,
+    ptr,
 };
 
 // MINIT's registrations (shim_minit.h), each over NUL-terminated names, a
@@ -211,23 +216,85 @@ impl Minit {
         // The class's own table, projected without a Rust reference to the entry.
         let source = entry
             .wrapping_byte_add(offset_of!(zend_class_entry, function_table))
-            .cast::<HashTable>();
-        let target = self.compiler_functions();
+            .cast::<Array>();
+        // SAFETY: MINIT; a registered class, which lives for the process, has its
+        // table of internal methods. `Array` is a transparent table Zend may change.
+        let source = unsafe { &*source };
         for (method, alias) in aliases {
-            // SAFETY: MINIT; a registered class, which lives for the process, has
-            // its table of internal methods, the compiler's is live, and the
-            // arginfo comes from the method's row of the static table.
-            unsafe {
-                crate::registration::function_alias(
-                    source,
-                    method,
-                    target,
-                    alias,
-                    arg_info(methods, method),
-                )
-            }?;
+            let info = arg_info(methods, method).map_or(Info::NONE, Info::row);
+            // Lookup lowercases the method's ASCII bytes.
+            let lower = method.to_bytes().to_ascii_lowercase();
+            let found = source.find(&lower).and_then(Value::pointer);
+            // The class's table owns this live function, which remains live
+            // and unchanged throughout the registration.
+            let function = found.map(|function| Function(function.cast(), PhantomData));
+            self.alias_from(function, alias, info)?;
         }
         Ok(())
+    }
+
+    /// `SW_FUNCTION_ALIAS(CG(function_table), origin, CG(function_table), alias)`
+    /// with `info`, `origin`'s arginfo: whether Zend registered it, false when the
+    /// compiler knows no internal `origin` (lower case) whose parameters `info`
+    /// covers.
+    /// # Errors
+    /// A contained registration bailout.
+    pub fn function_alias<const N: usize>(
+        &self,
+        origin: &CStr,
+        alias: &CStr,
+        info: &'static ArgInfo<N>,
+    ) -> Result<bool, Bailout> {
+        let found = swr_zend_compiled_function_find(origin.into());
+        // The compiler's table owns this live function, which remains live and
+        // unchanged throughout the registration.
+        let function = (!found.is_null()).then_some(Function(found, PhantomData));
+        let info = Info {
+            start: info.0.as_ptr(),
+            rows: N,
+        };
+        self.alias_from(function, alias, info)
+    }
+
+    /// Register `alias` in the compiler's table using the internal `function`:
+    /// its real handler and argument count, with `info`. Whether Zend
+    /// registered it: false without an internal function, when `info` misses
+    /// one of its parameters, or when the registration failed.
+    fn alias_from(
+        &self,
+        function: Option<Function<'_>>,
+        alias: &CStr,
+        info: Info,
+    ) -> Result<bool, Bailout> {
+        let Some(function) = function else {
+            return Ok(false);
+        };
+        let (kind, args) = (function.kind(), function.num_args());
+        let Some(handler) = function.internal_handler() else {
+            return Ok(false);
+        };
+        // Zend reads the return row and the `args` rows after it.
+        if !info.start.is_null() && info.rows <= args as usize {
+            return Ok(false);
+        }
+        let mut entries = crate::zeroed::<[zend_function_entry; 2]>();
+        entries[0].fname = alias.as_ptr();
+        entries[0].handler = handler;
+        entries[0].arg_info = info.start;
+        entries[0].num_args = args;
+        let mut result = -1;
+        // SAFETY: Zend borrows this complete terminated table, its NUL-terminated
+        // name and `info`'s static rows while it copies the registered metadata,
+        // inside the contained leaf, into the compiler's live table (MINIT).
+        leaf(unsafe {
+            swr_zend_try_facade_register_functions(
+                entries.as_ptr(),
+                self.compiler_functions(),
+                c_int::from(kind),
+                &raw mut result,
+            )
+        })?;
+        Ok(result == SUCCESS)
     }
 
     /// Register `name` with `methods` (none when empty), then let `configure`
@@ -499,6 +566,29 @@ fn plain(class: &Class) -> &Class {
         "a CustomClass registers through register_object"
     );
     class
+}
+
+/// An alias's arginfo: `rows` rows of a static table from `start`, its
+/// return row first; none when `start` is null. Made only from static tables.
+#[derive(Clone, Copy)]
+struct Info {
+    start: *const zend_internal_arg_info,
+    rows: usize,
+}
+
+impl Info {
+    const NONE: Self = Self {
+        start: ptr::null(),
+        rows: 0,
+    };
+
+    /// A static method table's row: its return row, then `num_args` more.
+    fn row(entry: &'static zend_function_entry) -> Self {
+        Self {
+            start: entry.arg_info,
+            rows: entry.num_args as usize + 1,
+        }
+    }
 }
 
 /// `class`'s entry, checking it is registered.

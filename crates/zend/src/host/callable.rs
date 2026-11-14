@@ -107,9 +107,8 @@ impl Callable {
                 called.unwrap_or(false)
             };
         };
-        // SAFETY: the body owns nothing that needs a drop: it holds borrows,
-        // copies and the result slot.
-        unsafe { bailout::trap_with(body) }?;
+        // The body holds borrows, copies and the result slot.
+        crate::contain_with(body)?;
         Ok(result)
     }
 

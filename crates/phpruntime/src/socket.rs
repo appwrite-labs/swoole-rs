@@ -410,7 +410,7 @@ pub fn strerror(code: i32) -> Cow<'static, CStr> {
 /// # Errors
 /// The fatal error bailed out.
 pub fn coroutine_check() -> Result<(), Bailout> {
-    swoole_rs_zend::contain(swoole_rs_phpswoole::coroutine_check)
+    swoole_rs_phpswoole::coroutine_check()
 }
 
 /// `php_swoole_convert_to_fd(value)`: an fd, or negative after a warning.

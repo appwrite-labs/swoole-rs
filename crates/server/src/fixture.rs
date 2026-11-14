@@ -5,7 +5,7 @@ use core::ffi::c_int;
 use std::net::{SocketAddr, TcpListener};
 use std::os::fd::IntoRawFd;
 
-use swoole_rs_reactor::SocketRecord;
+use swoole_rs_reactor::{Socket, SocketRecord};
 
 use crate::port_config::PortConfig;
 use crate::records::tests::naming_at;
@@ -81,9 +81,9 @@ impl LiveServer {
         // SAFETY: the port just boxed, which only this fixture holds.
         let settings = unsafe { &mut *port };
         settings.r#type = SOCK_TCP;
-        settings
-            .socket
-            .store(listener.cast(), core::sync::atomic::Ordering::Relaxed);
+        // SAFETY: the record just boxed, which the port frees with the state.
+        let socket = unsafe { Socket::from_ptr(listener) }.unwrap();
+        settings.set_listening_socket(socket);
         settings.gs.set((&raw mut *port_counters).cast());
         // SAFETY: the port boxed above, listed until the fixture frees it with the state;
         // no other thread reads the list.
@@ -91,7 +91,7 @@ impl LiveServer {
         // The listening fd's slot holds its port, as `Server::store_listen_socket` leaves it.
         let slot = state.tables_ref().connection_at(fd).unwrap();
         slot.set_fd(fd);
-        slot.set_socket(listener.cast());
+        slot.set_socket(Some(socket));
         slot.set_socket_type(SOCK_TCP);
         slot.set_object(port.cast());
 

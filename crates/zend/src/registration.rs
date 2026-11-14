@@ -1,69 +1,19 @@
-//! Actual class and function alias construction, lookup and ownership.
+//! Actual class alias construction, lookup and ownership.
 use crate::{
-    Array, Value,
     bailout::Bailout,
     string,
-    sys::{self as z, HashTable, zend_class_entry, zend_internal_arg_info},
+    sys::{self as z, zend_class_entry},
 };
 use std::{
-    ffi::{CStr, c_char, c_int},
+    ffi::{c_char, c_int},
     ptr,
 };
 
 /// Zend's `SUCCESS` `zend_result`.
-const SUCCESS: c_int = 0;
+pub(crate) const SUCCESS: c_int = 0;
 
-fn leaf(code: c_int) -> Result<(), Bailout> {
+pub(crate) fn leaf(code: c_int) -> Result<(), Bailout> {
     if code == 0 { Ok(()) } else { Err(Bailout) }
-}
-
-/// Register `alias` in `target` using the internal function `origin` of
-/// `source`: its real handler and argument count, with `info`. Lookup
-/// lowercases `origin`'s ASCII bytes. Whether Zend registered it: false when
-/// `source` has no such function or the registration failed.
-/// # Errors
-/// Returns a contained PHP registration bailout.
-/// # Safety
-/// Both tables are live function tables for this call, `source`'s `origin` is
-/// an internal function, and `info` is persistent argument metadata for it.
-pub unsafe fn function_alias(
-    source: *mut HashTable,
-    origin: &CStr,
-    target: *mut HashTable,
-    alias: &CStr,
-    info: *const zend_internal_arg_info,
-) -> Result<bool, Bailout> {
-    let lower = origin.to_bytes().to_ascii_lowercase();
-    // SAFETY: per the caller, a live function table, borrowed for the lookup
-    // only: nothing is registered until the borrow ended. `Array` is a
-    // transparent table.
-    let functions = unsafe { source.cast::<Array>().as_ref() };
-    let found = functions.and_then(|functions| functions.find(&lower));
-    let Some(function) = found.and_then(Value::pointer) else {
-        return Ok(false);
-    };
-    // The source table owns this live function, which remains live and
-    // unchanged throughout this registration; per the caller it is internal.
-    let function = crate::Function(function.cast(), std::marker::PhantomData);
-    let (kind, args) = (function.kind(), function.num_args());
-    let handler = function.internal_handler().flatten();
-    let mut entries = crate::zeroed::<[z::zend_function_entry; 2]>();
-    entries[0].fname = alias.as_ptr();
-    entries[0].handler = handler;
-    entries[0].arg_info = info;
-    entries[0].num_args = args;
-    let mut result = -1;
-    // SAFETY: Zend borrows this complete terminated table and the NUL-terminated
-    // name while it copies the registered metadata, inside the contained leaf.
-    leaf(unsafe {
-        z::swr_zend_try_facade_register_functions(
-            entries.as_ptr(),
-            target,
-            c_int::from(kind),
-            &raw mut result,
-        )
-    })?;
-    Ok(result == SUCCESS)
 }
 
 /// Build the lowercase persistent interned class alias and register its real CE:
