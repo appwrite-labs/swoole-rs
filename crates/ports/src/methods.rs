@@ -262,28 +262,30 @@ pub(crate) fn close_socket(config: &PortConfig) {
     drop(socket);
 }
 
-/// The `SWR_PORTS_*` protocol flags a port's settings turn on; `SWR_PORTS_DGRAM`
-/// too for a datagram port.
-fn protocol_flags(config: &PortConfig) -> u32 {
-    let datagram = matches!(config.r#type, 2 | 4 | 6);
-    [
-        (datagram, 1),
-        (config.open_eof_check.get(), 4),
-        (config.open_length_check.get(), 8),
-        (config.open_http_protocol.get(), 16),
-        (config.open_http2_protocol.get(), 32),
-        (config.open_websocket_protocol.get(), 64),
-        (config.open_mqtt_protocol.get(), 128),
-        (config.open_redis_protocol.get(), 256),
-    ]
-    .into_iter()
-    .filter(|&(on, _)| on)
-    .fold(0, |flags, (_, flag)| flags | flag)
-}
-
-/// `ListenPort::get_protocols()`.
+/// `ListenPort::get_protocols()`: a datagram port, else the first protocol its
+/// settings turn on, in upstream's order.
 pub(crate) fn get_protocols(config: &PortConfig) -> &'static CStr {
-    crate::protocol_name(protocol_flags(config))
+    if matches!(config.r#type, 2 | 4 | 6) {
+        c"dgram"
+    } else if config.open_eof_check.get() {
+        c"eof"
+    } else if config.open_length_check.get() {
+        c"length"
+    } else if config.open_http_protocol.get() {
+        let http2 = config.open_http2_protocol.get();
+        match (http2, config.open_websocket_protocol.get()) {
+            (true, true) => c"http|http2|websocket",
+            (true, false) => c"http|http2",
+            (false, true) => c"http|websocket",
+            (false, false) => c"http",
+        }
+    } else if config.open_mqtt_protocol.get() {
+        c"mqtt"
+    } else if config.open_redis_protocol.get() {
+        c"redis"
+    } else {
+        c"raw"
+    }
 }
 
 /// `ListenPort::clear_protocol()`.

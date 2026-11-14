@@ -269,16 +269,16 @@ impl Handshaking for Handshake {
         let server = socket.ssl_is_server();
         let step = socket.with_network(|network| {
             if server {
-                socket_ssl_accept(network)
+                Ok(socket_ssl_accept(network))
             } else {
-                socket_ssl_connect(network)
+                Err(socket_ssl_connect(network))
             }
         });
         match step {
             None => return -1,
-            Some(accepted) if server => return accepted,
-            Some(connected) if connected < 0 => return -1,
-            Some(_) => {}
+            Some(Ok(accepted)) => return accepted as c_int,
+            Some(Err(false)) => return -1,
+            Some(Err(true)) => {}
         }
         let state = socket.net(|record| record.tls.state).unwrap_or_default();
         c_int::try_from(state).unwrap_or(c_int::MAX)

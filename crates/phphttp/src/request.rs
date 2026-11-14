@@ -36,13 +36,13 @@ impl Drop for Data {
     fn drop(&mut self) {
         let Some(mut ctx) = self.0.get() else { return };
         let state = ctx.state();
-        if !state.request.ztmpfiles.ptr.is_null() {
+        if state.request.ztmpfiles.get().is_some() {
             let std = Object::std(std::ptr::from_mut(self).cast::<Object<Self>>());
             // SAFETY: the request object, its properties still live, and the
             // declared `tmpfiles` slot's offset.
             unsafe { z::swr_zend_http_uploads_release(std, parse::tmpfiles_offset()) };
         }
-        state.request.zobject.ptr = std::ptr::null_mut();
+        state.request.zobject.clear();
         // SAFETY: the context the object held.
         unsafe { context::free(ctx) };
     }
@@ -137,7 +137,7 @@ fn create_request(call: &Call) {
     let _made = context::new_object(slot, context::Kind::Request, held);
     // SAFETY: the object just made. The return slot takes the reference; the
     // context borrows it, as upstream's does.
-    unsafe { call.set_value(slot.value) };
+    unsafe { call.set_value(slot.copy_value()) };
     state.parse_cookie = true;
     state.parse_body = true;
     state.parse_files = true;

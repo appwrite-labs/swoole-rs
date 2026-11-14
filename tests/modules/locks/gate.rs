@@ -450,9 +450,9 @@ fn coroutine_policy() {
     fn shared() -> Option<&'static AtomicU32> {
         Some(&WORD)
     }
-    fn sleep(_: f64) -> i32 {
+    fn sleep(_: f64) -> bool {
         SLEEPS.set(SLEEPS.get() + 1);
-        -1
+        false
     }
     fn warning() {}
     static HOST: CoroutineHost = CoroutineHost {

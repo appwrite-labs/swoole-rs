@@ -138,42 +138,6 @@ impl ProxyState {
     pub fn packet(&self) -> Option<RefMut<'_, [u8; 512]>> {
         self.packet.as_deref().map(RefCell::borrow_mut)
     }
-    /// Native copy-assignment order, including its guarded allocation boundaries;
-    /// both have the same kind.
-    pub fn assign(&self, source: &Self) -> ProxyCopyResult {
-        if ptr::eq(self, source) {
-            return COPIED;
-        }
-        let fields = source.fields();
-        let socks = source.packet.is_some();
-        for index in 0..4 {
-            if (socks && index == 1) || (!socks && index == 0) {
-                // The trailing members are assigned after the strings.
-                self.update(|current| {
-                    *current = ProxyFields {
-                        target_port: current.target_port,
-                        socket_type: current.socket_type,
-                        ..fields
-                    };
-                });
-            }
-            let status = self.set_string(index, &source.string(index));
-            if status != 0 {
-                return ProxyCopyResult {
-                    status,
-                    index: u32::try_from(index).unwrap_or(0),
-                };
-            }
-        }
-        self.update(|current| current.target_port = fields.target_port);
-        if socks {
-            self.update(|current| current.socket_type = fields.socket_type);
-            if let (Some(mut to), Some(from)) = (self.packet(), source.packet()) {
-                *to = *from;
-            }
-        }
-        COPIED
-    }
     /// Configures a fresh proxy after its protocol's credential check: the host,
     /// then the port (and for SOCKS5 the tunnel and socket type), then the
     /// credentials when `authenticated`.
@@ -209,47 +173,10 @@ impl ProxyState {
         COPIED
     }
 }
-/// [`ProxyState::assign`] for native code.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_core_proxy_assign(
-    destination: &ProxyState,
-    source: &ProxyState,
-) -> ProxyCopyResult {
-    destination.assign(source)
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn proxy_copies_keep_scalar_packet_and_string_values_independent() {
-        for socks in [false, true] {
-            let source = ProxyState::new(socks);
-            let destination = ProxyState::new(socks);
-            let texts: [&[u8]; 3] = [b"proxy", b"user", b"pass"];
-            let kind = if socks { 1 } else { -1 };
-            assert_eq!(source.configure(texts, 1234, true, kind).status, 0);
-            source.update(|fields| fields.target_port = 4321);
-            assert_eq!(source.set_string(3, b"target"), 0);
-            if let Some(mut packet) = source.packet() {
-                packet.fill(0x5a);
-            }
-            assert_eq!(destination.assign(&source).status, 0);
-            assert_eq!(destination.fields().port, 1234);
-            assert_eq!(destination.fields().target_port, 4321);
-            for index in 0..4 {
-                assert_eq!(*source.string(index), *destination.string(index));
-            }
-            assert_eq!(source.set_string(0, b"changed"), 0);
-            assert_eq!(&*destination.string(0), b"proxy");
-            if socks {
-                assert_eq!(*destination.packet().unwrap(), [0x5a; 512]);
-                source.packet().unwrap()[0] = 0;
-                assert_eq!(destination.packet().unwrap()[0], 0x5a);
-            }
-        }
-    }
-
     #[test]
     fn native_views_see_rust_writes() {
         let prepared = swr_v1_core_proxy_new(true);

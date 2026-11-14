@@ -20,15 +20,12 @@ use swoole_rs_framing::recv::{
     RECV_DONE,
 };
 use swoole_rs_framing::{DefaultLength, UnpackError, default_length, unpack};
-use swoole_rs_reactor::{Socket, SocketFields, swr_v1_socket_reset_on_close};
+use swoole_rs_reactor::{Caught, Socket, SocketFields, swr_v1_socket_reset_on_close};
 use swoole_rs_server::ConnectionRecord;
 
 /// `SW_LOG_WARNING` and `SW_LOG_ERROR`.
 const LOG_WARNING: c_int = 4;
 const LOG_ERROR: c_int = 5;
-/// `catch_read_error`'s `SW_CLOSE` and `SW_ERROR`.
-const CLOSE: c_int = swoole_rs_corebase::constants::ReturnCode::SW_CLOSE as c_int;
-const ERROR: c_int = swoole_rs_corebase::constants::ReturnCode::SW_ERROR as c_int;
 const SW_ERR: isize = swoole_rs_corebase::constants::ResultCode::SW_ERR as isize;
 
 /// `swoole::RecvData`.
@@ -272,7 +269,7 @@ fn rare(r: &Recv<'_>, b: &mut CppString, p: &Protocol, s: Socket<'_>, op: Op, ar
         Op::Recv => {
             let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
             match s.catch_error(errno) {
-                ERROR => {
+                Caught::Error => {
                     if length_mode {
                         log::sys_warning_errno(
                             errno,
@@ -288,8 +285,8 @@ fn rare(r: &Recv<'_>, b: &mut CppString, p: &Protocol, s: Socket<'_>, op: Op, ar
                     }
                     RECV_DONE
                 }
-                CLOSE => RECV_CLOSE,
-                _ => RECV_DONE,
+                Caught::Close => RECV_CLOSE,
+                Caught::Wait | Caught::Invalid | Caught::ReduceSize => RECV_DONE,
             }
         }
         Op::Extend => {
@@ -401,7 +398,7 @@ pub(crate) unsafe fn receive<K: Packages>(
     }
     let status = recv(mode, head, &mut flags, &mut r);
     r.apply_wait(flags);
-    status
+    status as c_int
 }
 
 /// `int Protocol::recv_with_length_protocol(Socket *, String *) const` when `LENGTH`, else

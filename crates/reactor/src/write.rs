@@ -4,13 +4,10 @@
 //! objects: making the socket nonblocking, the send, creating the `Buffer`, and
 //! registering write interest. It logs and raises from the returned outcome.
 use crate::{Drain, Socket};
-use std::ffi::{c_int, c_void};
+use std::ffi::c_void;
 use std::io::IoSlice;
 use swoole_rs_buffer::cpp::{CppBuffer, swr_cpp_buffer_count, swr_cpp_buffer_length};
 use swoole_rs_corebase::CCast;
-
-/// `SwReturnCode::SW_WAIT`.
-const SW_WAIT: c_int = swoole_rs_corebase::constants::ReturnCode::SW_WAIT as c_int;
 
 /// `network::Socket`'s write-path fields, in the order and types it embeds them.
 #[repr(C)]
@@ -132,7 +129,7 @@ pub fn swr_v1_reactor_write(
                     break;
                 }
                 let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-                if socket.catch_error(errno) == SW_WAIT {
+                if socket.catch_error(errno) == crate::Caught::Wait {
                     break;
                 }
                 if errno != libc::EINTR {
@@ -165,6 +162,7 @@ mod tests {
     use super::*;
     use crate::SocketRecord;
     use std::cell::RefCell;
+    use std::ffi::c_int;
     use swoole_rs_buffer::cpp::new_buffer;
 
     #[derive(Default)]

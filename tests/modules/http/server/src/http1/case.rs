@@ -65,7 +65,7 @@ struct TlsView {
 #[repr(C)]
 pub(super) struct TimerNode {
     id: c_long,
-    kind: c_int,
+    php: bool,
     exec_msec: i64,
     interval: i64,
     exec_count: u64,

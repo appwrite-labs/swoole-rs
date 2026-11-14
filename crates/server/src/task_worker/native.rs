@@ -33,10 +33,9 @@ const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 /// `swoole::TaskFlag` bits.
 const TASK_NONBLOCK: u16 = 1 << 2;
 const TASK_WAITALL: u16 = 1 << 4;
-/// `SW_PIPE_MASTER`, `SW_FD_PIPE`, `SW_WAIT` and `SW_EVENT_WRITE`.
+/// `SW_PIPE_MASTER`, `SW_FD_PIPE` and `SW_EVENT_WRITE`.
 const PIPE_MASTER: c_int = 1;
 const FD_PIPE: c_int = 3;
-const SW_WAIT: c_int = swoole_rs_corebase::constants::ReturnCode::SW_WAIT as c_int;
 const EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
 /// `SW_LOG_WARNING`, `SW_LOG_ERROR`, `SW_ERROR_SOCKET_POLL_TIMEOUT` and
 /// `SW_ERROR_SERVER_SEND_TO_WOKER_TIMEOUT`.
@@ -333,8 +332,9 @@ pub fn finish(
             || swoole_rs_tls::socket_pair::write_from(pipe, &flag),
             || {
                 let error = errno();
-                pipe.master_end()
-                    .is_some_and(|socket| socket.catch_error(error) == SW_WAIT)
+                pipe.master_end().is_some_and(|socket| {
+                    socket.catch_error(error) == swoole_rs_reactor::Caught::Wait
+                })
             },
             || {
                 pipe.master_end()

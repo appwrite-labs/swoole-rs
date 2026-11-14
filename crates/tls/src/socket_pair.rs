@@ -144,11 +144,7 @@ pub extern "C" fn unix_socket_set_buffer_size(this: &SocketPair, size: usize) ->
 }
 
 /// `void SocketPair::set_timeout(double)`: the pair's, then each end's every timeout.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole10SocketPair11set_timeoutEd")
-)]
-pub extern "C" fn set_timeout(this: &mut SocketPair, timeout: f64) {
+pub fn set_timeout(this: &mut SocketPair, timeout: f64) {
     this.timeout = timeout;
     for socket in ends(this).into_iter().flatten() {
         socket.edit(|record| record.timeouts.set(timeout, TIMEOUT_ALL));
@@ -196,11 +192,7 @@ pub fn write_from(this: &SocketPair, data: &[u8]) -> isize {
 }
 
 /// `void SocketPair::clean() const`: reads and drops whatever the worker end holds.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole10SocketPair5cleanEv")
-)]
-pub extern "C" fn clean(this: &SocketPair) {
+pub fn clean(this: &SocketPair) {
     let [_, Some(socket)] = ends(this) else {
         return;
     };

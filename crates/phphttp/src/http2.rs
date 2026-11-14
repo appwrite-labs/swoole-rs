@@ -218,7 +218,7 @@ impl Ctx {
     fn value(mut self, which: Value) -> *mut zval {
         let state = self.state();
         let property = match which {
-            Value::Response => return state.response.zobject.ptr,
+            Value::Response => return state.response.zobject.as_ptr(),
             Value::Server => parse::Property::Server,
             Value::Header => parse::Property::Header,
             Value::Get => parse::Property::Get,

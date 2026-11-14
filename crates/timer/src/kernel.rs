@@ -56,7 +56,7 @@ impl Queue {
     }
     fn add(&self, n: &Node<'_>, now: i64, delay: i64, repeat: bool) -> TimerView {
         let (status, v) = self.q.borrow_mut().add(now, delay, repeat, || n.token());
-        assert_eq!(status, OK);
+        assert_eq!(status, Status::Ok);
         assert!(v.id > 0 && v.token == n.token() && v.deadline == now + delay);
         assert!(!v.removed);
         assert!(v.interval == if repeat { delay } else { 0 } && v.exec_count == 0);
@@ -75,7 +75,7 @@ impl Queue {
         n.drops.set(n.drops.get() + 1);
         assert_eq!(n.drops.get(), 1);
         self.trace.borrow_mut().push(format!("drop:{}", n.name));
-        assert_eq!(self.q.borrow().get(v.id).0, NOT_FOUND);
+        assert_eq!(self.q.borrow().get(v.id).0, Status::NotFound);
         let active = self.stats().active_id;
         assert!(active == 0 || active != v.id);
         // Every queue call has returned before the native destructor runs.
@@ -85,55 +85,55 @@ impl Queue {
     }
     fn remove(&self, id: i64) {
         let (status, v) = self.q.borrow_mut().remove(id);
-        assert_eq!(status, RELEASE);
+        assert_eq!(status, Status::Release);
         self.drop_view(v);
     }
     fn prime(&self, now: i64) {
-        assert_eq!(self.q.borrow_mut().begin(now), OK);
-        assert_eq!(self.q.borrow_mut().select_next().0, EMPTY);
-        assert_eq!(self.q.borrow_mut().end().0, OK);
+        assert_eq!(self.q.borrow_mut().begin(now), Status::Ok);
+        assert_eq!(self.q.borrow_mut().select_next().0, Status::Empty);
+        assert_eq!(self.q.borrow_mut().end().0, Status::Ok);
         assert_eq!(self.stats().round, 1);
     }
     fn select(&self, now: i64, callback: impl Fn(TimerView)) {
-        assert_eq!(self.q.borrow_mut().begin(now), OK);
+        assert_eq!(self.q.borrow_mut().begin(now), Status::Ok);
         loop {
             let (status, v) = self.q.borrow_mut().select_next();
-            if status == EMPTY {
+            if status == Status::Empty {
                 break;
             }
-            if status == CLOSING {
+            if status == Status::Closing {
                 assert!(self.stats().closing && v.id == 0 && v.token.is_null());
                 break;
             }
-            assert!(status == OK && self.stats().active_id == v.id);
+            assert!(status == Status::Ok && self.stats().active_id == v.id);
             self.trace
                 .borrow_mut()
                 .push(format!("call:{}", node(v.token).name));
             callback(v); // A native callback; no borrow of the queue is held.
             let (status, v) = self.q.borrow_mut().complete(v.id);
-            if status == RELEASE_OVERFLOW {
+            if status == Status::ReleaseOverflow {
                 self.trace
                     .borrow_mut()
                     .push(format!("overflow:{}", node(v.token).name));
             }
-            if status == RELEASE || status == RELEASE_OVERFLOW {
+            if status == Status::Release || status == Status::ReleaseOverflow {
                 self.drop_view(v);
             } else {
-                assert!(status == OK && self.stats().active_id == 0);
+                assert!(status == Status::Ok && self.stats().active_id == 0);
             }
         }
-        assert_eq!(self.q.borrow_mut().end().0, OK);
+        assert_eq!(self.q.borrow_mut().end().0, Status::Ok);
     }
-    /// `close()`: the export answered `OK` twice, as `Timer::close` is idempotent.
+    /// `close()`: the export answered `Status::Ok` twice, as `Timer::close` is idempotent.
     fn close(&self) {
         self.q.borrow_mut().close();
         self.q.borrow_mut().close();
         let mut last = self.q.borrow_mut().drain();
-        while last.0 == RELEASE {
+        while last.0 == Status::Release {
             self.drop_view(last.1);
             last = self.q.borrow_mut().drain();
         }
-        assert!(last.0 == EMPTY || last.0 == DEFERRED);
+        assert!(last.0 == Status::Empty || last.0 == Status::Deferred);
         assert!(last.1.id == 0 && last.1.token.is_null());
     }
     fn golden(&self, expected: &[&str]) {
@@ -155,13 +155,13 @@ impl Drop for Queue {
 fn invalid_calls() {
     let q = Queue::new();
     let mut timer = q.q.borrow_mut();
-    assert_eq!(timer.drain(), (INVALID, TimerView::default()));
-    assert_eq!(timer.select_next(), (INVALID, TimerView::default()));
-    assert_eq!(timer.complete(1), (INVALID, TimerView::default()));
-    assert_eq!(timer.get(0), (INVALID, TimerView::default()));
-    assert_eq!(timer.begin(0), OK);
+    assert_eq!(timer.drain(), (Status::Invalid, TimerView::default()));
+    assert_eq!(timer.select_next(), (Status::Invalid, TimerView::default()));
+    assert_eq!(timer.complete(1), (Status::Invalid, TimerView::default()));
+    assert_eq!(timer.get(0), (Status::Invalid, TimerView::default()));
+    assert_eq!(timer.begin(0), Status::Ok);
     assert!(!timer.idle(), "release is PENDING");
-    assert_eq!(timer.end(), (OK, -1));
+    assert_eq!(timer.end(), (Status::Ok, -1));
 }
 
 #[test]
@@ -172,10 +172,10 @@ fn active_cancel() {
     q.prime(0);
     q.select(1, |v| {
         let (status, out) = q.q.borrow_mut().remove(v.id);
-        assert!(status == DEFERRED && out.removed);
-        assert_eq!(q.q.borrow_mut().remove(v.id).0, NOT_FOUND);
+        assert!(status == Status::Deferred && out.removed);
+        assert_eq!(q.q.borrow_mut().remove(v.id).0, Status::NotFound);
         let (status, out) = q.q.borrow().get(v.id);
-        assert!(status == OK && out.removed && out.token == a.token());
+        assert!(status == Status::Ok && out.removed && out.token == a.token());
         assert!(q.stats().count == 1 && a.drops.get() == 0 && n.id == v.id);
     });
     q.golden(&["call:A", "drop:A"]);
@@ -191,8 +191,8 @@ fn active_delay() {
     q.select(2, |v| {
         if v.id == av.id {
             let (status, out) = q.q.borrow_mut().update(v.id, 20);
-            assert!(status == OK && out.deadline == 20);
-            assert_eq!(q.q.borrow_mut().complete(v.id + 100).0, INVALID);
+            assert!(status == Status::Ok && out.deadline == 20);
+            assert_eq!(q.q.borrow_mut().complete(v.id + 100).0, Status::Invalid);
         }
     });
     q.golden(&["call:A", "drop:A", "call:B", "drop:B"]);
@@ -201,9 +201,11 @@ fn active_delay() {
     let r = Queue::new();
     let cv = r.add(&c, 0, 5, true);
     r.prime(0);
-    r.select(5, |v| assert_eq!(r.q.borrow_mut().update(v.id, 20).0, OK));
+    r.select(5, |v| {
+        assert_eq!(r.q.borrow_mut().update(v.id, 20).0, Status::Ok);
+    });
     let (status, out) = r.q.borrow().get(cv.id);
-    assert!(status == OK && out.deadline == 20 && out.exec_count == 1);
+    assert!(status == Status::Ok && out.deadline == 20 && out.exec_count == 1);
     r.close();
 }
 
@@ -216,9 +218,9 @@ fn recursive() {
     q.prime(0);
     q.select(1, |_| {
         let before = q.stats();
-        assert_eq!(q.q.borrow_mut().begin(1), BUSY);
-        assert_eq!(q.q.borrow_mut().select_next().0, BUSY);
-        assert_eq!(q.q.borrow_mut().end(), (BUSY, -1));
+        assert_eq!(q.q.borrow_mut().begin(1), Status::Busy);
+        assert_eq!(q.q.borrow_mut().select_next().0, Status::Busy);
+        assert_eq!(q.q.borrow_mut().end(), (Status::Busy, -1));
         assert_eq!(q.stats().round, before.round);
     });
     q.golden(&["call:A", "drop:A"]);
@@ -260,13 +262,13 @@ fn missed() {
     q.prime(0);
     q.select(23, |_| {});
     let (status, v) = q.q.borrow().get(av.id);
-    assert!(status == OK && v.deadline == 25 && v.exec_count == 1);
+    assert!(status == Status::Ok && v.deadline == 25 && v.exec_count == 1);
     q.select(24, |_| {});
     let (status, v) = q.q.borrow().get(av.id);
-    assert!(status == OK && v.exec_count == 1);
+    assert!(status == Status::Ok && v.exec_count == 1);
     q.select(25, |_| {});
     let (status, v) = q.q.borrow().get(av.id);
-    assert!(status == OK && v.deadline == 30 && v.exec_count == 2);
+    assert!(status == Status::Ok && v.deadline == 30 && v.exec_count == 2);
     q.close();
     q.golden(&["call:A", "call:A", "drop:A"]);
 }
@@ -299,13 +301,13 @@ fn birth() {
     q.select(2, |v| {
         if v.id == av.id {
             let cv = q.add(&c, 2, 1, false);
-            assert_eq!(q.q.borrow_mut().update(cv.id, 0).0, OK);
+            assert_eq!(q.q.borrow_mut().update(cv.id, 0).0, Status::Ok);
         }
     });
     // Newly born C is heap head and blocks already-due B in this round.
     q.golden(&["call:A", "drop:A"]);
     assert_eq!(q.stats().count, 2);
-    assert_eq!(q.q.borrow().get(bv.id).0, OK);
+    assert_eq!(q.q.borrow().get(bv.id).0, Status::Ok);
     q.select(3, |_| {});
     q.golden(&["call:A", "drop:A", "call:C", "drop:C", "call:B", "drop:B"]);
 }
@@ -321,10 +323,10 @@ fn snapshot() {
     a.on_destroy(|q| {
         q.add(&c, 0, 1, false);
     });
-    assert_eq!(q.q.borrow().ids(&mut []), (CAPACITY, 2));
+    assert_eq!(q.q.borrow().ids(&mut []), (Status::Capacity, 2));
     let mut guard = [-77_i64, -88];
-    assert!(q.q.borrow().ids(&mut guard[..1]) == (CAPACITY, 2) && guard == [-77, -88]);
-    assert_eq!(q.q.borrow().ids(&mut guard), (OK, 2));
+    assert!(q.q.borrow().ids(&mut guard[..1]) == (Status::Capacity, 2) && guard == [-77, -88]);
+    assert_eq!(q.q.borrow().ids(&mut guard), (Status::Ok, 2));
     guard.sort_unstable();
     assert!(guard[0] == av.id && guard[1] == bv.id);
     q.remove(guard[0]);
@@ -343,19 +345,28 @@ fn limits() {
     let none = TimerView::default();
     assert_eq!(
         q.q.borrow_mut().add(i64::MAX - 2, 3, false, || a.token()),
-        (OVERFLOW, none)
+        (Status::Overflow, none)
     );
-    assert_eq!(q.q.borrow_mut().add(0, 0, false, || a.token()).0, INVALID);
-    assert_eq!(q.q.borrow_mut().add(0, 1, false, ptr::null_mut).0, INVALID);
+    assert_eq!(
+        q.q.borrow_mut().add(0, 0, false, || a.token()).0,
+        Status::Invalid
+    );
+    assert_eq!(
+        q.q.borrow_mut().add(0, 1, false, ptr::null_mut).0,
+        Status::Invalid
+    );
     let av = q.add(&a, 10, 1, false);
     assert_eq!(av.id, 1);
-    assert_eq!(q.q.borrow_mut().add(9, 1, false, || a.token()).0, INVALID);
+    assert_eq!(
+        q.q.borrow_mut().add(9, 1, false, || a.token()).0,
+        Status::Invalid
+    );
     assert_eq!(q.stats().count, 1);
-    assert_eq!(q.q.borrow_mut().begin(9), INVALID);
+    assert_eq!(q.q.borrow_mut().begin(9), Status::Invalid);
     assert!(!q.stats().selecting);
-    assert_eq!(q.q.borrow_mut().update(av.id, -1).0, INVALID);
+    assert_eq!(q.q.borrow_mut().update(av.id, -1).0, Status::Invalid);
     let (status, v) = q.q.borrow().get(av.id);
-    assert!(status == OK && v.deadline == 11);
+    assert!(status == Status::Ok && v.deadline == 11);
     assert!(!q.q.borrow().idle(), "release is PENDING");
     q.close();
     q.golden(&["drop:A"]);
@@ -382,9 +393,15 @@ fn teardown() {
     q.prime(0);
     q.select(2, |v| {
         q.close();
-        assert_eq!(q.q.borrow_mut().drain(), (DEFERRED, TimerView::default()));
-        assert_eq!(q.q.borrow_mut().add(2, 1, false, || c.token()).0, CLOSING);
-        assert_eq!(q.q.borrow_mut().update(v.id, 3).0, CLOSING);
+        assert_eq!(
+            q.q.borrow_mut().drain(),
+            (Status::Deferred, TimerView::default())
+        );
+        assert_eq!(
+            q.q.borrow_mut().add(2, 1, false, || c.token()).0,
+            Status::Closing
+        );
+        assert_eq!(q.q.borrow_mut().update(v.id, 3).0, Status::Closing);
         assert!(q.stats().count == 1 && a.drops.get() == 0 && q.stats().closing);
     });
     q.golden(&["call:A", "drop:B", "drop:A"]);
@@ -415,7 +432,7 @@ fn fork_copy() {
     assert_eq!(unsafe { libc::waitpid(child, &raw mut status, 0) }, child);
     assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0);
     let (found, v) = q.q.borrow().get(av.id);
-    assert!(a.drops.get() == 0 && found == OK && v.token == a.token());
+    assert!(a.drops.get() == 0 && found == Status::Ok && v.token == a.token());
     q.prime(0);
     q.select(1, |_| {});
     q.golden(&["call:A", "drop:A"]);

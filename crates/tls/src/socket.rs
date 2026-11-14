@@ -12,7 +12,7 @@ use openssl_sys::{
 };
 use std::ffi::CStr;
 use std::os::raw::{c_int, c_long, c_ulong, c_void};
-use swoole_rs_corebase::constants::{ResultCode, ReturnCode};
+use swoole_rs_corebase::constants::ReturnCode;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_error::ErrorCode;
@@ -25,11 +25,6 @@ const CLIENT: c_int = 2;
 const BAD_CLIENT: c_int = ErrorCode::SW_ERROR_SSL_BAD_CLIENT as c_int;
 const RESET: c_int = ErrorCode::SW_ERROR_SSL_RESET as c_int;
 const HANDSHAKE_FAILED: c_int = ErrorCode::SW_ERROR_SSL_HANDSHAKE_FAILED as c_int;
-const WAIT: c_int = ReturnCode::SW_WAIT as c_int;
-const ERROR: c_int = ReturnCode::SW_ERROR as c_int;
-const READY: c_int = ReturnCode::SW_READY as c_int;
-const OK: c_int = ResultCode::SW_OK as c_int;
-const ERR: c_int = ResultCode::SW_ERR as c_int;
 const STATE_READY: u32 = SslState::SW_SSL_STATE_READY as u32;
 const STATE_WAIT_STREAM: u32 = SslState::SW_SSL_STATE_WAIT_STREAM as u32;
 
@@ -124,18 +119,29 @@ pub enum HandshakeLog {
     Failed(c_int),
 }
 
+/// What a `Socket::ssl_accept` step returns: `swReturnCode`'s `SW_READY`, `SW_WAIT`
+/// and `SW_ERROR`, at their numbers.
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Accept {
+    Ready = ReturnCode::SW_READY as i32,
+    Wait = ReturnCode::SW_WAIT as i32,
+    Error = ReturnCode::SW_ERROR as i32,
+}
+
 /// A handshake step for `Socket::ssl_accept`/`ssl_connect`, which also sets the
 /// socket's want flags and, once it changes, `ssl_state`. The caller sets the last
-/// error when `last_error` is nonzero, then logs. `code` is what the method returns.
+/// error when `last_error` is nonzero, then logs. `code` is what the method returns:
+/// an [`Accept`], or for `ssl_connect` whether it is `SW_OK`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SslHandshakeResult {
-    pub code: c_int,
+pub struct SslHandshakeResult<C> {
+    pub code: C,
     pub last_error: c_int,
     pub log: HandshakeLog,
 }
 
-impl SslHandshakeResult {
-    const fn returning(code: c_int) -> Self {
+impl<C> SslHandshakeResult<C> {
+    const fn returning(code: C) -> Self {
         Self {
             code,
             last_error: 0,
@@ -146,33 +152,37 @@ impl SslHandshakeResult {
 
 /// `Socket::ssl_accept`: one `SSL_accept` step. A DTLS socket waits to read on a
 /// syscall error that left errno 0.
-pub fn swr_v1_socket_ssl_accept(tls: &mut SocketTls, ssl: Ssl, dtls: bool) -> SslHandshakeResult {
+pub fn swr_v1_socket_ssl_accept(
+    tls: &mut SocketTls,
+    ssl: Ssl,
+    dtls: bool,
+) -> SslHandshakeResult<Accept> {
     want(tls, false, false);
     clear_errors();
     let n = ssl.accept();
     if n == 1 {
         tls.state = STATE_READY;
-        return SslHandshakeResult::returning(READY);
+        return SslHandshakeResult::returning(Accept::Ready);
     }
     if n == 0 {
-        return SslHandshakeResult::returning(ERROR);
+        return SslHandshakeResult::returning(Accept::Error);
     }
     let error = ssl.error(n);
-    let mut result = SslHandshakeResult::returning(ERROR);
+    let mut result = SslHandshakeResult::returning(Accept::Error);
     match error {
         SSL_ERROR_WANT_READ => {
             want(tls, true, false);
-            result.code = WAIT;
+            result.code = Accept::Wait;
         }
         SSL_ERROR_WANT_WRITE => {
             want(tls, false, true);
-            result.code = WAIT;
+            result.code = Accept::Wait;
         }
         SSL_ERROR_SSL => result.log = HandshakeLog::BadClient,
         SSL_ERROR_SYSCALL => {
             if dtls && errno() == 0 {
                 want(tls, true, false);
-                result.code = WAIT;
+                result.code = Accept::Wait;
             }
         }
         _ => result.log = HandshakeLog::Failed(error),
@@ -181,16 +191,16 @@ pub fn swr_v1_socket_ssl_accept(tls: &mut SocketTls, ssl: Ssl, dtls: bool) -> Ss
 }
 
 /// `Socket::ssl_connect`: one `SSL_connect` step.
-pub fn swr_v1_socket_ssl_connect(tls: &mut SocketTls, ssl: Ssl) -> SslHandshakeResult {
+pub fn swr_v1_socket_ssl_connect(tls: &mut SocketTls, ssl: Ssl) -> SslHandshakeResult<bool> {
     want(tls, false, false);
     clear_errors();
     let n = ssl.connect();
     if n == 1 {
         tls.state = STATE_READY;
-        return SslHandshakeResult::returning(OK);
+        return SslHandshakeResult::returning(true);
     }
     let error = ssl.error(n);
-    let mut result = SslHandshakeResult::returning(ERR);
+    let mut result = SslHandshakeResult::returning(false);
     match error {
         SSL_ERROR_WANT_READ | SSL_ERROR_WANT_WRITE => {
             want(
@@ -199,7 +209,7 @@ pub fn swr_v1_socket_ssl_connect(tls: &mut SocketTls, ssl: Ssl) -> SslHandshakeR
                 error == SSL_ERROR_WANT_WRITE,
             );
             tls.state = STATE_WAIT_STREAM;
-            result.code = OK;
+            result.code = true;
             return result;
         }
         SSL_ERROR_ZERO_RETURN => {
@@ -500,7 +510,7 @@ mod tests {
             let mut tls = SocketTls::default();
             assert_eq!(
                 swr_v1_socket_ssl_connect(&mut tls, handle(ssl)),
-                SslHandshakeResult::returning(OK),
+                SslHandshakeResult::returning(true),
                 "the client hello is out"
             );
             assert_eq!(
@@ -523,7 +533,7 @@ mod tests {
             let failed = swr_v1_socket_ssl_connect(&mut tls, handle(ssl));
             assert_eq!(
                 (failed.code, failed.last_error, failed.log),
-                (ERR, HANDSHAKE_FAILED, HandshakeLog::Failed(SSL_ERROR_SSL))
+                (false, HANDSHAKE_FAILED, HandshakeLog::Failed(SSL_ERROR_SSL))
             );
             assert_eq!(
                 (tls.state, tls.want_read),
@@ -539,7 +549,7 @@ mod tests {
             let mut tls = SocketTls::default();
             assert_eq!(
                 swr_v1_socket_ssl_accept(&mut tls, handle(server), false),
-                SslHandshakeResult::returning(WAIT),
+                SslHandshakeResult::returning(Accept::Wait),
                 "no client hello yet"
             );
             assert_eq!((tls.state, tls.want_read, tls.want_write), (0, true, false));

@@ -106,13 +106,13 @@ fn multipart_exports_refuse_nulls_and_unterminated_scratch() {
         )),
         1
     );
-    assert_eq!(swoole_rs_http::multipart_filename(&mut []), INVALID);
+    assert_eq!(swoole_rs_http::multipart_filename(&mut []), Err(INVALID));
     let mut missing_nul = *b"filename";
     assert_eq!(
         swoole_rs_http::multipart_filename(&mut missing_nul),
-        INVALID
+        Err(INVALID)
     );
     let mut scratch = *b"name=x; filename=y\0";
-    assert_eq!(swoole_rs_http::multipart_filename(&mut scratch), 1);
-    assert_eq!(swoole_rs_http::multipart_result(2, 2, 0), 2);
+    assert_eq!(swoole_rs_http::multipart_filename(&mut scratch), Ok(true));
+    assert_eq!(swoole_rs_http::multipart_result(2, 2, 0), Ok(()));
 }

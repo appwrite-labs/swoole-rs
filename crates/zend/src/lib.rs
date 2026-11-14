@@ -39,7 +39,7 @@ mod zval;
 pub use access::{key_ptr, set_key};
 pub use call::{Call, Invalid, kind};
 pub use callable::{Callable, Callback, Holder, Parsed};
-pub use class::{Class, ClassEntry, lookup_class, unset_property_deny};
+pub use class::{Class, ClassEntry, Declared, lookup_class, unset_property_deny};
 pub use descriptor::{
     FatalError, contain, fatal_error, last_fatal_error, memory_usage, pause_shutdown,
     restore_shutdown, with_unlimited_stack,
@@ -62,8 +62,8 @@ pub use swoole_rs_zend_sys as sys;
 pub use sys::add_next_index_long;
 pub use value::push_str as push_string;
 pub use zval::{
-    Array, ArrayMut, Entries, HeldArray, Interned, Key, Owned, OwnedArray, Separated, UNDEF, Value,
-    ZStr, ZString,
+    Array, ArrayMut, Entries, HeldArray, Interned, Kept, Key, Owned, OwnedArray, Separated, UNDEF,
+    Value, ZStr, ZString,
 };
 
 /// Export Zend handlers under Zend's own names (`zim_<class>_<method>` for

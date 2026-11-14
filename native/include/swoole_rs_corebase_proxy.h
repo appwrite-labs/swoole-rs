@@ -15,14 +15,8 @@ typedef struct {
   const swr_v1_core_string *strings[4];
   uint8_t *buffer;
 } swr_v1_core_proxy_prepared;
-typedef struct {
-  int32_t status;
-  uint32_t index;
-} swr_v1_core_proxy_copy_result;
 swr_v1_core_proxy_prepared swr_v1_core_proxy_new(bool socks);
 void swr_v1_core_proxy_free(swr_v1_core_proxy *);
-swr_v1_core_proxy_copy_result
-swr_v1_core_proxy_assign(const swr_v1_core_proxy *, const swr_v1_core_proxy *);
 #ifdef __cplusplus
 }
 #endif

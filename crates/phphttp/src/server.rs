@@ -113,11 +113,6 @@ php_local! {
     static QUEUED: RefCell<VecDeque<Ctx>> = RefCell::new(VecDeque::new());
 }
 
-/// An `IS_UNDEF` zval.
-pub(crate) fn new_zval() -> zval {
-    swoole_rs_zend::UNDEF
-}
-
 fn address(server: view::Server<'_>, conn: Connection<'_>, local: bool) -> ZString {
     if local {
         let text = swoole_rs_server::local_addr::get_local_addr(server, conn);
@@ -348,7 +343,10 @@ fn call(mut ctx: Ctx, coroutine: bool) -> Result<(), bailout::Bailout> {
     let state = ctx.state();
     // Its own reference: the handler may replace the server's.
     let callback = state.callback.clone();
-    let mut args = [state.request.zobject.value, state.response.zobject.value];
+    let mut args = [
+        state.request.zobject.copy_value(),
+        state.response.zobject.copy_value(),
+    ];
     let mut release = context::Release::new(ctx);
     let called = callback.map_or(Ok(false), |callback| {
         call_handler(&callback, &mut args, coroutine, release.then())
@@ -570,7 +568,10 @@ pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
     }
     let state = ctx.state();
     let callback = state.callback.clone();
-    let mut args = [state.request.zobject.value, state.response.zobject.value];
+    let mut args = [
+        state.request.zobject.copy_value(),
+        state.response.zobject.copy_value(),
+    ];
     let mut release = context::Release::new(ctx);
     let called = callback.map_or(Ok(false), |callback| {
         call_handler(&callback, &mut args, facts.coroutine, release.then())

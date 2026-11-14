@@ -5,7 +5,7 @@
 //! coroutine socket, files and callables are reached through
 //! `crate::http_native`, as is WebSocket framing, which stays C++.
 use crate::{
-    http_native::{self as native, TIMEOUT_READ, WebSocket},
+    http_native::{self as native, PushError, TIMEOUT_READ, WebSocket},
     http_request::{self as request, Compress},
     native::{Co, UNCONSTRUCTED, swoole_rs_php_error},
     socket::Sock,
@@ -358,20 +358,16 @@ impl Client {
         unsafe { swr_zend_property_not_null(self.object, name, length) }
     }
 
-    /// `callable($client, $data)` inside `zend_try`: 0, 1 if the call failed,
-    /// 2 if it bailed out.
-    fn call_write(&self, callable: &Callable, data: &[u8]) -> c_int {
+    /// `callable($client, $data)` inside `zend_try`: whether the call succeeded, or
+    /// its bailout.
+    fn call_write(&self, callable: &Callable, data: &[u8]) -> Result<bool, Bailout> {
         // The string argument's reference, released when it drops.
         let data = Owned::string(ZString::new(data));
         // SAFETY: the object outlives its client, so the call; it is borrowed
         // for the call as upstream's `ZVAL_OBJ`.
         let this = unsafe { object_zval(self.object) };
         let mut args = [this, data.copy_value()];
-        match callable.call(&mut args, None, false) {
-            Ok(true) => 0,
-            Ok(false) => 1,
-            Err(bailout::Bailout) => 2,
-        }
+        callable.call(&mut args, None, false)
     }
 
     /// `zval_get_long` of a declared property of the client object.
@@ -1089,11 +1085,11 @@ impl Client {
             return false;
         };
         let upgrade = text(response, b"upgrade");
-        if upgrade.is_none_or(|value| request::token_list_contains(value, b"websocket") == 0) {
+        if upgrade.is_none_or(|value| !request::token_list_contains(value, b"websocket")) {
             return false;
         }
         let connection = text(response, b"connection");
-        if connection.is_none_or(|value| request::token_list_contains(value, b"Upgrade") == 0) {
+        if connection.is_none_or(|value| !request::token_list_contains(value, b"Upgrade")) {
             return false;
         }
         let Some(accept) =
@@ -1187,7 +1183,7 @@ impl Client {
             return false;
         };
         let flags = c_int::from(flags.to_le_bytes()[0]);
-        let result = self.ws.as_ref().map_or(1, |ws| {
+        let result = self.ws.as_ref().map_or(Err(PushError::Pack), |ws| {
             ws.push(
                 socket,
                 data,
@@ -1198,9 +1194,9 @@ impl Client {
             )
         });
         match result {
-            0 => true,
-            1 if bailout::pending() => false,
-            1 => {
+            Ok(()) => true,
+            Err(PushError::Pack) if bailout::pending() => false,
+            Err(PushError::Pack) => {
                 swoole_rs_corebase::log::set_last_error(PACK_FAILED);
                 let last = swoole_rs_corebase::log::last_error();
                 self.props().long(c"errCode", i64::from(last));
@@ -1208,7 +1204,7 @@ impl Client {
                     .bytes(c"errMsg", b"websocket frame pack failed");
                 false
             }
-            _ => {
+            Err(PushError::Send) => {
                 socket_error_properties(self.props(), socket);
                 self.set_status(ErrorStatus::ServerReset);
                 self.close(true);
@@ -1426,7 +1422,7 @@ fn on_header_value(hooks: &Hooks, data: &[u8]) -> c_int {
     client.add_header(name, data);
     let status = hooks.parser.status_code;
     if status == SWITCHING_PROTOCOLS && name == b"upgrade" {
-        if request::token_list_contains(data, b"websocket") != 0 {
+        if request::token_list_contains(data, b"websocket") {
             client.websocket.set(true);
         }
     } else if features() & 1 != 0
@@ -1492,10 +1488,10 @@ fn on_body(client: &Client, data: &[u8]) -> c_int {
             None => client.body.borrow_mut().clear(),
         }
         client.in_callback.set(false);
-        if result == 2 {
+        if result.is_err() {
             client.bailout.set(true);
         }
-        return if result == 0 { 0 } else { -1 };
+        return if matches!(result, Ok(true)) { 0 } else { -1 };
     }
     if decompress {
         if !client.decompress(data) {
@@ -1510,20 +1506,16 @@ fn on_body(client: &Client, data: &[u8]) -> c_int {
     }
     // Out of the client while the file calls yield to other coroutines.
     let mut body = client.body.take();
-    let result = if body.is_empty() {
-        0
-    } else {
-        write_download(client, &body)
-    };
-    if result == 0 {
+    let written = body.is_empty() || write_download(client, &body);
+    if written {
         body.clear();
     }
     drop(client.body.replace(body));
-    result
+    if written { 0 } else { -1 }
 }
 
-/// Append a body chunk to the download, opening its file first.
-fn write_download(client: &Client, body: &[u8]) -> c_int {
+/// Append a body chunk to the download, opening its file first: whether it was written.
+fn write_download(client: &Client, body: &[u8]) -> bool {
     if client.download_file.get().is_none() {
         let name = client.download_name.borrow();
         let path = c_bytes(name.as_ref().map_or(&[][..], ZString::bytes));
@@ -1533,14 +1525,10 @@ fn write_download(client: &Client, body: &[u8]) -> c_int {
             .download_file
             .set(native::swoole_http_client_coro_file_open(&path, offset));
     }
-    let Some(fd) = client.download_file.get() else {
-        return -1;
-    };
-    if native::swoole_http_client_coro_file_write(fd, body) {
-        0
-    } else {
-        -1
-    }
+    client
+        .download_file
+        .get()
+        .is_some_and(|fd| native::swoole_http_client_coro_file_write(fd, body))
 }
 
 fn on_message_complete(hooks: &mut Hooks) -> c_int {

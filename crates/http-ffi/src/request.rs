@@ -16,7 +16,8 @@ use swoole_rs_buffer::string::{CppString, delete_string, new_sized_string};
 use swoole_rs_corebase::{log, set_errno};
 use swoole_rs_http::multipart_parser::{MPPE_PAUSED, MultipartParser, Parts};
 use swoole_rs_http::{
-    ChunkState, HttpChunked, HttpChunks, HttpFrame, HttpHeaderInfo, HttpSpan, case_equal,
+    ChunkState, HttpChunked, HttpChunks, HttpFrame, HttpHeaderInfo, HttpSpan, MultipartError,
+    case_equal,
 };
 use swoole_rs_ossupport::create_tmpfile;
 
@@ -277,7 +278,7 @@ impl HttpRequest {
         };
     }
 
-    fn frame(&mut self, operation: u32) -> i32 {
+    fn frame(&mut self, parse: fn(&mut HttpFrame, &[u8]) -> bool) -> i32 {
         let (buffer, input) = self.input();
         let mut frame = HttpFrame {
             offset: usize::try_from(buffer.offset).unwrap_or(usize::MAX),
@@ -291,7 +292,7 @@ impl HttpRequest {
             header_length: self.header_length,
             known_length: self.known_length.into(),
         };
-        let status = frame.parse(input, operation);
+        let found = parse(&mut frame, input);
         buffer.offset = i64::try_from(frame.offset).unwrap_or(i64::MAX);
         self.content_length = frame.content_length;
         // The native fields are bytes and bits: keep their truncation.
@@ -303,17 +304,17 @@ impl HttpRequest {
         self.request_line_length = frame.line_length;
         self.header_length = frame.header_length;
         self.known_length = frame.known_length & 1 != 0;
-        if status == 0 { SW_OK } else { SW_ERR }
+        if found { SW_OK } else { SW_ERR }
     }
 
     /// The method, URL and version from the request line, or an HTTP/2 preface.
     pub fn get_protocol(&mut self) -> i32 {
-        self.frame(0)
+        self.frame(HttpFrame::request_line)
     }
 
     /// Finds the `\r\n\r\n` ending the header block.
     pub fn get_header_length(&mut self) -> i32 {
-        self.frame(1)
+        self.frame(HttpFrame::header_end)
     }
 
     /// `Content-Length`, `Connection`, `Transfer-Encoding` and a multipart `Content-Type`.
@@ -405,16 +406,8 @@ impl HttpRequest {
     #[must_use]
     pub fn get_header(&self, name: &[u8]) -> Option<HttpSpan> {
         let (_, input) = self.input();
-        let mut value = HttpSpan::default();
         let start = self.url_offset as usize + self.url_length as usize + 10;
-        let found = swoole_rs_http::header_value(
-            input,
-            start,
-            self.header_length as usize,
-            name,
-            &mut value,
-        );
-        (found == 1).then_some(value)
+        swoole_rs_http::header_value(input, start, self.header_length as usize, name)
     }
 
     /// Leaves the errno `strtoull` would: bit 1 of `errors` `ERANGE`, bit 2 its
@@ -570,7 +563,7 @@ impl HttpRequest {
             form.parser = Some(parser);
         }
         match swoole_rs_http::multipart_result(processed, length, r.excepted.into()) {
-            outcome if outcome < 0 => {
+            Err(MultipartError::Parser) => {
                 // Upstream formats it into 256 bytes, its NUL included.
                 let reason = reason.get(..255).unwrap_or(&reason);
                 log::error_log(
@@ -584,12 +577,12 @@ impl HttpRequest {
                 );
                 false
             }
-            2 => {
+            Ok(()) => {
                 // `buffer->clear()`.
                 (buffer.length, buffer.offset) = (0, 0);
                 true
             }
-            outcome => {
+            Err(MultipartError::Short { excepted }) => {
                 log::error_log(
                     NOTICE,
                     INVALID_REQUEST,
@@ -599,7 +592,7 @@ impl HttpRequest {
                         processed.cast_unsigned()
                     ),
                 );
-                outcome != 0
+                excepted
             }
         }
     }
@@ -651,7 +644,7 @@ impl Parts for HttpRequest {
         // `parse_cookie` over a NUL-terminated copy, stopping at the first `filename`.
         let mut value = data.to_vec();
         value.push(0);
-        if swoole_rs_http::multipart_filename(&mut value) != 1 {
+        if swoole_rs_http::multipart_filename(&mut value) != Ok(true) {
             return 0;
         }
         let native = self.native;

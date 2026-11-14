@@ -10,7 +10,7 @@
 //! A hook that can reach PHP (a callback, a signal handler run while a socket
 //! waits, the Zend allocator under the message bus) runs inside the trap the
 //! extension installs with [`set_bailout`]. When PHP bails out
-//! (`exit()`, a fatal error), the loop returns [`BAILED`] at once and its native
+//! (`exit()`, a fatal error), the loop returns [`Bailed`] at once and its native
 //! caller raises the bailout again with [`raise_bailout`], so the
 //! `longjmp` never crosses a Rust frame.
 use crate::process_pool::{IpcMode, Protocol};
@@ -25,10 +25,6 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::sys::set_errno;
 
 use crate::process_pool::PoolNative;
-
-/// A loop's result: it ended, or PHP bailed out inside a hook.
-pub const DONE: c_int = 0;
-pub const BAILED: c_int = 1;
 
 /// `SW_MSGMAX`: the most a queue receive asks for under the stream protocol.
 const MSGMAX: usize = 65536;
@@ -871,14 +867,20 @@ pub struct PoolLoop<'a> {
 }
 
 /// `ProcessPool::run_with_task_protocol`/`_stream_protocol`/`_message_protocol`,
-/// between `at_worker_enter` and
-/// `at_worker_exit`: [`DONE`] (at once for a pool `create` never made, which has no
-/// IPC state), or [`BAILED`] to raise at once.
-#[must_use]
-pub fn pool_run(native: &dyn PoolNative, pool_loop: &PoolLoop<'_>, protocol: Protocol) -> c_int {
+/// between `at_worker_enter` and `at_worker_exit`. A pool `create` never made has
+/// no IPC state and is done at once.
+///
+/// # Errors
+///
+/// [`Bailed`] when PHP bailed out inside a hook; the caller raises it at once.
+pub fn pool_run(
+    native: &dyn PoolNative,
+    pool_loop: &PoolLoop<'_>,
+    protocol: Protocol,
+) -> Result<(), Bailed> {
     let ipc = pool_loop.pool.record().ipc;
     if ipc.is_null() {
-        return DONE;
+        return Ok(());
     }
     let mut worker = Worker {
         native,
@@ -887,7 +889,7 @@ pub fn pool_run(native: &dyn PoolNative, pool_loop: &PoolLoop<'_>, protocol: Pro
         worker: pool_loop.worker.raw().cast(),
     };
     let mode = mode(pool_loop.ipc_mode);
-    let result = match protocol {
+    match protocol {
         Protocol::Task => worker.run_task(
             mode,
             pool_loop.event_size,
@@ -896,8 +898,7 @@ pub fn pool_run(native: &dyn PoolNative, pool_loop: &PoolLoop<'_>, protocol: Pro
         ),
         Protocol::Stream => worker.run_stream(mode, pool_loop.max_packet_size),
         Protocol::Message => worker.run_message(),
-    };
-    if result.is_ok() { DONE } else { BAILED }
+    }
 }
 
 /// `ProcessPool::schedule`'s round robin over `count` (> 0) workers: the first
@@ -1259,7 +1260,7 @@ mod tests {
             max_packet_size: 64,
             event_size: 128,
         };
-        assert_eq!(pool_run(&Scripted, &pool_loop, protocol), DONE);
+        assert!(pool_run(&Scripted, &pool_loop, protocol).is_ok());
         // SAFETY: as above.
         pool_ipc_free(*unsafe { Box::from_raw(ipc) }, |_| {});
         with(std::mem::take)

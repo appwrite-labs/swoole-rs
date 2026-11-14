@@ -9,7 +9,7 @@
 //! notifier, `openssl_x509_read`) traps a bailout and reports it through its
 //! `bailout` flag; the C++ entry re-raises it once these frames are gone.
 use crate::socket::{
-    RecvOp, Report, SW_WAIT, SendOp, Socket, check_reactor, kind, report, timeout, x509_read,
+    RecvOp, Report, SendOp, Socket, check_reactor, kind, report, timeout, x509_read,
 };
 use libc::{c_char, c_int, c_void, sockaddr_storage, socklen_t};
 use std::{
@@ -19,6 +19,7 @@ use std::{
     rc::Rc,
 };
 use swoole_rs_corebase::{CCast, sys::Text};
+use swoole_rs_reactor::Caught;
 use swoole_rs_zend::{
     Array, ArrayMut, Call, E_WARNING, Message, Owned, OwnedArray, Value,
     bailout::Bailout,
@@ -346,7 +347,7 @@ fn write(stream: *mut php_stream, buf: *const c_char, count: usize) -> Result<is
         written = -1;
         let code = socket.error();
         if code != libc::ETIMEDOUT {
-            if socket.catch_error(code) == SW_WAIT {
+            if socket.catch_error(code) == Some(Caught::Wait) {
                 written = 0;
             } else {
                 let reason = socket.message().unwrap_or_default();
@@ -394,7 +395,7 @@ fn read(stream: *mut php_stream, buf: *mut c_char, count: usize) -> Result<isize
         progress(stream, read)?;
     }
     if read < 0 && socket.error() != libc::ETIMEDOUT {
-        if socket.catch_error(socket.error()) == SW_WAIT {
+        if socket.catch_error(socket.error()) == Some(Caught::Wait) {
             read = 0;
         } else {
             set_eof(stream);

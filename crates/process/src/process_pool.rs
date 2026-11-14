@@ -924,7 +924,7 @@ pub(crate) trait PoolHost {
     /// Run `callback` inside the trap: its result, or [`Bailed`].
     fn callback(&mut self, callback: Callback, worker: *mut c_void) -> Result<isize, Bailed>;
     /// Run the protocol's worker loop: `DONE` or `BAILED`.
-    fn run_loop(&mut self, pool_loop: &PoolLoop<'_>, protocol: Protocol) -> c_int;
+    fn run_loop(&mut self, pool_loop: &PoolLoop<'_>, protocol: Protocol) -> Result<(), Bailed>;
     /// The native side, which tests leave out.
     fn native(&self) -> Option<&dyn PoolNative>;
     fn warn(&self) -> Warn;
@@ -966,7 +966,7 @@ impl PoolHost for Native<'_> {
         Ok(call.result)
     }
 
-    fn run_loop(&mut self, pool_loop: &PoolLoop<'_>, protocol: Protocol) -> c_int {
+    fn run_loop(&mut self, pool_loop: &PoolLoop<'_>, protocol: Protocol) -> Result<(), Bailed> {
         pool_run(self.native, pool_loop, protocol)
     }
 
@@ -1709,7 +1709,7 @@ impl<H: PoolHost> Pool<'_, H> {
             event_size: self.h.event_size(),
         };
         self.at_worker_enter(worker);
-        if self.h.run_loop(&pool_loop, protocol) == crate::pool::BAILED {
+        if self.h.run_loop(&pool_loop, protocol).is_err() {
             return RAISE;
         }
         self.op(Op::TimerFree, 0);
@@ -2256,8 +2256,8 @@ mod tests {
                 Ok(0)
             }
         }
-        fn run_loop(&mut self, _: &PoolLoop<'_>, _: Protocol) -> c_int {
-            crate::pool::DONE
+        fn run_loop(&mut self, _: &PoolLoop<'_>, _: Protocol) -> Result<(), Bailed> {
+            Ok(())
         }
         fn native(&self) -> Option<&dyn PoolNative> {
             None

@@ -722,6 +722,7 @@ fn exception(call: &Call, message: &CStr, code: i64) {
 }
 
 use crate::server::set_last_error;
+use crate::thread::Admission;
 
 pub(crate) fn class(object: ServerObject<'_>) -> String {
     let name = object.value().class_name().unwrap_or_default();
@@ -757,16 +758,10 @@ fn construct(call: &Call) {
         call.throw_error(text.as_cstr());
         return call.set_bool(false);
     };
-    let mut existing = None;
-    match crate::thread::admit(&mut existing) {
-        0 => {}
-        1 => {
-            if let Some(server) = existing {
-                bind(call, &server);
-            }
-            return;
-        }
-        2 => {
+    match crate::thread::admit() {
+        Admission::New => {}
+        Admission::Worker(server) => return bind(call, &server),
+        Admission::NotMainThread => {
             set_last_error(SW_ERROR_OPERATION_NOT_SUPPORT);
             exception(
                 call,
@@ -775,7 +770,7 @@ fn construct(call: &Call) {
             );
             return call.set_bool(false);
         }
-        _ => {
+        Admission::Running => {
             set_last_error(SW_ERROR_OPERATION_NOT_SUPPORT);
             let text = message!("server is running. unable to create {}", class(object));
             exception(call, text.as_cstr(), -3);

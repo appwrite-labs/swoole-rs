@@ -4,7 +4,7 @@
 use crate::lifecycle::{Props, ServerObject};
 use std::{
     cell::Cell,
-    ffi::{c_int, c_void},
+    ffi::c_void,
     sync::{Arc, Mutex, PoisonError, atomic::Ordering},
 };
 use swoole_rs_corebase::Thread;
@@ -50,23 +50,37 @@ fn thread_mode(serv: view::Server<'_>) -> bool {
     crate::server::THREAD.load(Ordering::Relaxed) && serv.config().mode_ == Mode::Thread
 }
 
-/// `__construct`'s check: 0 no server yet, 1 this worker thread's server
-/// (in `existing`), 2 not the main thread, 3 a server already exists.
-pub(crate) fn admit(existing: &mut Option<SharedServer>) -> c_int {
+/// What `__construct` may do.
+pub(crate) enum Admission {
+    /// Create the server: there is none yet.
+    New,
+    /// Bind this worker thread's server.
+    Worker(SharedServer),
+    /// Refuse: not the main thread.
+    NotMainThread,
+    /// Refuse: a server already exists.
+    Running,
+}
+
+/// `__construct`'s check.
+pub(crate) fn admit() -> Admission {
     let current = SharedServer::current();
     if !crate::server::THREAD.load(Ordering::Relaxed) {
-        return if current.is_none() { 0 } else { 3 };
+        return if current.is_none() {
+            Admission::New
+        } else {
+            Admission::Running
+        };
     }
     if let Some(server) = current
         && server.view().is_worker_thread()
     {
-        *existing = Some(server);
-        return 1;
+        return Admission::Worker(server);
     }
     if swoole_rs_zend::is_main_thread() {
-        0
+        Admission::New
     } else {
-        2
+        Admission::NotMainThread
     }
 }
 
