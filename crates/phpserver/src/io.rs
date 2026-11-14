@@ -312,7 +312,7 @@ fn send_message(call: &Call) {
     let mut buf = swoole_rs_process::task_file::TaskBuffer::default();
     if call
         .value(1)
-        .is_none_or(|data| crate::task::pack(data, &mut buf) < 0)
+        .is_none_or(|data| crate::task::pack(data, &mut buf).is_none())
     {
         return call.set_bool(false);
     }

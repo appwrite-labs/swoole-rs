@@ -52,11 +52,11 @@ pub trait TaskHost {
 /// `Server::MultiTask`: tasks packed, and their results unpacked, by index.
 pub trait MultiTask {
     fn count(&self) -> u16;
-    /// Packs task `index` into `event`: its id, negative when it failed.
+    /// Packs task `index` into `event`: its id, or `None` when it failed.
     ///
     /// # Errors
     /// PHP bailed out (a user `__serialize`).
-    fn pack(&mut self, index: u16, event: &mut TaskBuffer) -> Result<i64, Bailed>;
+    fn pack(&mut self, index: u16, event: &mut TaskBuffer) -> Result<Option<i64>, Bailed>;
     /// Task `index`'s result, a packed `EventData`.
     ///
     /// # Errors
@@ -367,23 +367,23 @@ impl<'a, H: TaskHost> Waiting<'a, H> {
         let mut indexes = Vec::with_capacity(usize::from(count));
         let mut event = TaskBuffer::default();
         for index in 0..count {
-            let mut task_id = multi.pack(index, &mut event)?;
-            let mut failed = task_id < 0;
-            if failed {
-                log::warning(c"task_sync", format_args!("task pack failed"));
-            } else {
+            // The task's id once it is dispatched.
+            let task_id = if let Some(id) = multi.pack(index, &mut event)? {
                 event.add_flags(TASK_WAITALL);
                 tasks.tasking.fetch_add(1, Ordering::SeqCst);
                 let mut worker_id: c_int = -1;
-                if tasks.task(event.packed(), &mut worker_id, true)? {
+                let dispatched = tasks.task(event.packed(), &mut worker_id, true)?;
+                if dispatched {
                     tasks.tasking.fetch_sub(1, Ordering::SeqCst);
                 } else {
                     log::warning(c"task_sync", format_args!("failed to dispatch task"));
-                    task_id = -1;
-                    failed = true;
                 }
-            }
-            if failed {
+                dispatched.then_some(id)
+            } else {
+                log::warning(c"task_sync", format_args!("task pack failed"));
+                None
+            };
+            if task_id.is_none() {
                 multi.fail(index);
                 pending -= 1;
             }
@@ -429,7 +429,7 @@ impl<'a, H: TaskHost> Waiting<'a, H> {
 /// `indexes` (sorted by id).
 fn unpack_all(
     multi: &mut impl MultiTask,
-    indexes: &[(i64, u16)],
+    indexes: &[(Option<i64>, u16)],
     content: &CppString,
 ) -> Result<(), Bailed> {
     let bytes = content.view();
@@ -443,7 +443,7 @@ fn unpack_all(
                 .copied()
                 .unwrap_or_default(),
         );
-        if let Ok(found) = indexes.binary_search_by_key(&task_id, |&(id, _)| id)
+        if let Ok(found) = indexes.binary_search_by_key(&Some(task_id), |&(id, _)| id)
             && let Some(&(_, index)) = indexes.get(found)
             && let Some(record) = Packed::from_bytes(record)
         {
@@ -515,10 +515,11 @@ mod tests {
         fn count(&self) -> u16 {
             u16::try_from(self.packs.len()).unwrap()
         }
-        fn pack(&mut self, index: u16, event: &mut TaskBuffer) -> Result<i64, Bailed> {
+        fn pack(&mut self, index: u16, event: &mut TaskBuffer) -> Result<Option<i64>, Bailed> {
             let id = self.packs[usize::from(index)];
             event.set_fd(id);
-            Ok(id)
+            // The script's -1 is a failed pack.
+            Ok((id >= 0).then_some(id))
         }
         fn unpack(&mut self, index: u16, result: Packed<'_>) -> Result<(), Bailed> {
             let id = result.head().fd;
