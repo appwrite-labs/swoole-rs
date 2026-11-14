@@ -94,12 +94,12 @@ impl event_api::Deferred for Completion {
 }
 /// The `SW_FD_CARES` read and write handlers: the wrapper's object is its query.
 extern "C" fn readable(_: Running<'_>, event: &mut Event) -> i32 {
-    process(event, 0)
+    process(event, false)
 }
 extern "C" fn writable(_: Running<'_>, event: &mut Event) -> i32 {
-    process(event, 1)
+    process(event, true)
 }
-fn process(event: &Event, write: u8) -> i32 {
+fn process(event: &Event, write: bool) -> i32 {
     let fd = event.fd();
     let Some(socket) = event.socket() else {
         return -1;
@@ -107,7 +107,7 @@ fn process(event: &Event, write: u8) -> i32 {
     let data = socket.read(|socket| socket.object);
     // SAFETY: the query's channel stays live while its wrappers are registered.
     let channel = unsafe { query(data) }.channel.get();
-    let (read, write) = if write == 0 { (fd, -1) } else { (-1, fd) };
+    let (read, write) = if write { (-1, fd) } else { (fd, -1) };
     // SAFETY: SDK callbacks run synchronously on this reactor thread.
     unsafe { sdk::ares_process_fd(channel, read, write) };
     0
