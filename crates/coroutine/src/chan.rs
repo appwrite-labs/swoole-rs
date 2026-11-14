@@ -20,10 +20,18 @@ pub enum Role {
     Consumer,
 }
 
+/// Numeric errors reported by [`Channel::error`] and [`Stats`].
 pub const ERROR_OK: i32 = 0;
 pub const ERROR_TIMEOUT: i32 = -1;
 pub const ERROR_CLOSED: i32 = -2;
 pub const ERROR_CANCELED: i32 = -3;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Error {
+    Timeout = ERROR_TIMEOUT as isize,
+    Closed = ERROR_CLOSED as isize,
+    Canceled = ERROR_CANCELED as isize,
+}
+
 /// [`Effects::wait`]'s result bits.
 pub const CANCELED: u32 = 1;
 pub const TIMEDOUT: u32 = 2;
@@ -32,7 +40,7 @@ pub const TIMEDOUT: u32 = 2;
 pub struct Channel<T, W = *mut c_void> {
     capacity: usize,
     closed: bool,
-    error: i32,
+    error: Option<Error>,
     data: VecDeque<T>,
     producers: VecDeque<W>,
     consumers: VecDeque<W>,
@@ -59,7 +67,7 @@ impl<T, W: Copy + PartialEq> Channel<T, W> {
         Self {
             capacity,
             closed: false,
-            error: ERROR_OK,
+            error: None,
             data: [].into(),
             producers: [].into(),
             consumers: [].into(),
@@ -100,7 +108,7 @@ impl<T, W: Copy + PartialEq> Channel<T, W> {
 
     #[must_use]
     pub fn error(&self) -> i32 {
-        self.error
+        self.error.map_or(ERROR_OK, |error| error as i32)
     }
 
     #[must_use]
@@ -134,7 +142,7 @@ pub struct Stats {
 /// The channel's [`Stats`].
 pub fn stats<T, W: Copy + PartialEq>(ch: &UnsafeCell<Channel<T, W>>) -> Stats {
     with(ch, |c| Stats {
-        error: c.error,
+        error: c.error(),
         length: c.length(),
         producers: c.producer_num(),
         consumers: c.consumer_num(),
@@ -147,30 +155,32 @@ pub fn take<T, W: Copy + PartialEq>(ch: &UnsafeCell<Channel<T, W>>) -> Option<T>
     with(ch, Channel::pop_data)
 }
 
-/// Queues the current coroutine as a `role` waiter and suspends it. Returns the
-/// error to report, or `ERROR_OK` to proceed.
-fn wait<T, F: Effects>(ch: &UnsafeCell<Channel<T, F::Waiter>>, fx: &mut F, role: Role) -> i32 {
+/// Queues and suspends the current coroutine, then publishes any error before
+/// proceeding. Cancellation wins over timeout, and both win over a closed channel.
+fn wait<T, F: Effects>(
+    ch: &UnsafeCell<Channel<T, F::Waiter>>,
+    fx: &mut F,
+    role: Role,
+) -> Result<(), Error> {
     let co = fx.current();
     with(ch, |c| c.queue(role).push_back(co));
     let flags = fx.wait();
     if flags != 0 {
         with(ch, |c| c.remove(role, co));
     }
-    if flags & CANCELED != 0 {
-        ERROR_CANCELED
-    } else if flags & TIMEDOUT != 0 {
-        ERROR_TIMEOUT
-    } else {
-        ERROR_OK
-    }
-}
-
-/// Sets the error unless it is `ERROR_OK`; whether it was.
-fn ok<T, W>(ch: &UnsafeCell<Channel<T, W>>, status: i32) -> bool {
-    if status != ERROR_OK {
-        with(ch, |c| c.error = status);
-    }
-    status == ERROR_OK
+    with(ch, |c| {
+        let error = if flags & CANCELED != 0 {
+            Error::Canceled
+        } else if flags & TIMEDOUT != 0 {
+            Error::Timeout
+        } else if c.closed && (role == Role::Producer || c.data.is_empty()) {
+            Error::Closed
+        } else {
+            return Ok(());
+        };
+        c.error = Some(error);
+        Err(error)
+    })
 }
 
 /// `Channel::pop`: the oldest item, or None with the error set. After the
@@ -183,22 +193,11 @@ pub fn pop<T, F: Effects>(ch: &UnsafeCell<Channel<T, F::Waiter>>, fx: &mut F) ->
         )
     });
     if closed {
-        ok(ch, ERROR_CLOSED);
+        with(ch, |c| c.error = Some(Error::Closed));
         return None;
     }
-    if wait_first {
-        let status = wait(ch, fx, Role::Consumer);
-        let closed = with(ch, |c| c.closed && c.data.is_empty());
-        if !ok(
-            ch,
-            if status == ERROR_OK && closed {
-                ERROR_CLOSED
-            } else {
-                status
-            },
-        ) {
-            return None;
-        }
+    if wait_first && wait(ch, fx, Role::Consumer).is_err() {
+        return None;
     }
     let (data, producer) = with(ch, |c| (c.pop_data(), c.producers.pop_front()));
     if let Some(co) = producer {
@@ -218,22 +217,11 @@ pub fn push<T, F: Effects>(
 ) -> Result<(), T> {
     let (closed, wait_first) = with(ch, |c| (c.closed, c.is_full() || !c.producers.is_empty()));
     if closed {
-        ok(ch, ERROR_CLOSED);
+        with(ch, |c| c.error = Some(Error::Closed));
         return Err(data);
     }
-    if wait_first {
-        let status = wait(ch, fx, Role::Producer);
-        let closed = with(ch, |c| c.closed);
-        if !ok(
-            ch,
-            if status == ERROR_OK && closed {
-                ERROR_CLOSED
-            } else {
-                status
-            },
-        ) {
-            return Err(data);
-        }
+    if wait_first && wait(ch, fx, Role::Producer).is_err() {
+        return Err(data);
     }
     let consumer = with(ch, |c| {
         c.data.push_back(data);

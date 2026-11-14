@@ -483,6 +483,14 @@ fn cancel_wins_over_timeout() {
     assert_eq!(pop(&ch, &mut fx), None);
     assert_eq!(ch.get_mut().error(), ERROR_TIMEOUT);
     assert_eq!(ch.get_mut().consumer_num(), 0);
+    let value = 17 as *mut c_void;
+    assert_eq!(push(&ch, &mut fx, value), Ok(()));
+    assert_eq!(pop(&ch, &mut fx), Some(value));
+    assert_eq!(
+        stats(&ch).error,
+        ERROR_TIMEOUT,
+        "success keeps the last error"
+    );
 }
 
 #[test]
