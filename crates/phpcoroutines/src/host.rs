@@ -166,14 +166,11 @@ pub(crate) fn current_safe() -> Co {
     co
 }
 
-/// `System::sleep(seconds)` of the running coroutine: 0, or -1 once canceled,
-/// and -1 outside a coroutine, where upstream's raises a fatal error.
+/// `System::sleep(seconds)` of the running coroutine: false once canceled, and
+/// outside a coroutine, where upstream's raises a fatal error.
 #[must_use]
-pub fn sleep(seconds: f64) -> c_int {
-    if current().is_null() {
-        return -1;
-    }
-    system_sleep(seconds)
+pub fn sleep(seconds: f64) -> bool {
+    !current().is_null() && system_sleep(seconds) == 0
 }
 
 pub(crate) fn current_task() -> Option<Ctx> {
