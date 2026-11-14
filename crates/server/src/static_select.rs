@@ -286,10 +286,9 @@ impl Exchange for Wire<'_> {
         self.request().method == HTTP_HEAD
     }
     fn cork(&self) {
-        let socket = self.socket.as_ptr();
-        // SAFETY: the connection's live socket, which no handle reads or edits during
-        // the cork: the read path that serves the request holds none across this call.
-        swoole_rs_reactor::socket_upstream::socket_cork(unsafe { &mut (*socket).fields });
+        // An `extern "C"` fn is no closure.
+        let cork = |fields: &mut _| swoole_rs_reactor::socket_upstream::socket_cork(fields);
+        self.socket.edit(cork);
     }
     fn send(&self, kind: ServerEvent, data: &[u8]) {
         let info = swoole_rs_corebase::DataHead {

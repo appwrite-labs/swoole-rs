@@ -27,6 +27,7 @@ const BUFFER_MIN_SIZE: u32 = 65536;
 /// `SW_LOG_WARNING`, `SW_LOG_ERROR`, and the direct methods' `SW_OK` and `SW_ERR`.
 const SW_LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
 const SW_LOG_ERROR: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR as c_int;
+const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
 const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 
 /// `Server::start`: checks, the daemon, the factory and the mode's workers, then
@@ -50,13 +51,13 @@ pub(crate) fn start(serv: view::Server<'_>) -> bool {
         log::error_log(SW_LOG_ERROR, code, c"Server::start", m);
         return false;
     }
-    if config.daemonize.get() && hybrid().step(serv, Step::Daemon) < 0 {
+    if config.daemonize.get() && !hybrid().step(serv, Step::Daemon) {
         return false;
     }
     gs.start_time.store(swoole_rs_corebase::time_now(), Relaxed);
     crate::worker_methods::workers_start(serv);
     state.set_running(true);
-    if hybrid().step(serv, Step::FactoryStart) < 0 {
+    if !hybrid().step(serv, Step::FactoryStart) {
         return false;
     }
     hybrid().step(serv, Step::InitProtocols);
@@ -67,12 +68,10 @@ pub(crate) fn start(serv: view::Server<'_>) -> bool {
         Mode::Thread => {
             // Before the worker threads start, which read it in onWorkerStart.
             set_master_pid(gs);
-            hybrid()
-                .thread_mode(serv, ThreadOp::StartWorkers)
-                .c_cast::<c_int>()
+            hybrid().thread_mode(serv, ThreadOp::StartWorkers) >= 0
         }
     };
-    if started < 0 {
+    if !started {
         return false;
     }
     if !config.factory_.is_null() {
@@ -404,7 +403,7 @@ pub(crate) fn start_master_thread(serv: view::Server<'_>, reactor: Reactor) -> c
             reactor.change(master, swoole_rs_reactor::ChangeOp::Add, EVENT_READ);
         }
     }
-    if hybrid().step(serv, Step::MasterTimer) < 0 {
+    if !hybrid().step(serv, Step::MasterTimer) {
         hybrid().step(serv, Step::EventFree);
         return ERR;
     }
@@ -420,7 +419,11 @@ pub(crate) fn start_master_thread(serv: view::Server<'_>, reactor: Reactor) -> c
         set_master_pid(gs);
     }
     state.callbacks.call_server(ServerSlot::Start, serv);
-    hybrid().step(serv, Step::EventWait)
+    if hybrid().step(serv, Step::EventWait) {
+        OK
+    } else {
+        ERR
+    }
 }
 
 /// `Server::store_listen_socket`: each listen socket in the connection list, its
@@ -567,8 +570,6 @@ pub(crate) fn release_abandoned_base(serv: view::Server<'_>) {
 mod tests {
     use super::*;
     use crate::fixture::LiveServer;
-
-    const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
     use crate::hybrid::tests::{Call, calls, fail};
     use Step::*;
 

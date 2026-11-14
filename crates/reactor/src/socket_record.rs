@@ -11,7 +11,6 @@ use std::mem::{offset_of, size_of};
 use std::ops::{Deref, DerefMut};
 use std::ptr;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::{
     SW_SOCKET_BUFFER_SIZE, SW_SOCKET_DEFAULT_CONNECT_TIMEOUT, SW_SOCKET_DEFAULT_DNS_TIMEOUT,
     SW_SOCKET_DEFAULT_READ_TIMEOUT, SW_SOCKET_DEFAULT_WRITE_TIMEOUT,
@@ -488,9 +487,6 @@ impl SocketFields {
         let mut socket = SocketRecord::new();
         socket.removed = true;
         socket.socket_type = self.socket_type;
-        // Upstream passes sizeof(Address), not sizeof(Address::addr).
-        let capacity = (size_of::<SocketAddress>()).c_cast::<libc::socklen_t>();
-        socket.info.len = capacity;
         let listener_cloexec;
         (socket.fd, listener_cloexec) =
             crate::fd_accept(self.fd, &mut socket.info, self.output.nonblock);

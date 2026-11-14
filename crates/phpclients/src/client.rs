@@ -14,7 +14,7 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_phpstubs::client_coro;
 use swoole_rs_reactor::SocketFields;
 use swoole_rs_zend::{
-    Array, Call, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Value, ZString,
+    Array, Call, Custom, CustomClass, Minit, ObjectRef, Owned, OwnedArray, Props, Value, ZString,
     bailout::Bailout,
     string::ZBuf,
     sys::{ZEND_ACC_PUBLIC, zend_string},
@@ -232,7 +232,12 @@ fn create_socket(call: &Call, data: &Data, kind: i64) -> Option<Co> {
     let client = ptr::from_ref(data);
     // SAFETY: `$this` holds the client, which outlives the hook on its socket:
     // its drop replaces the hook before it closes the socket.
-    let hooked = unsafe { Props::new(CLIENT.entry(), call.this()) };
+    let Some(object) = (unsafe { ObjectRef::from_ptr(call.this()) }) else {
+        // Never: `props` found `$this` above.
+        return None;
+    };
+    // `socket_closed` writes under the object's own class.
+    let hooked = Props::of(None, object);
     swoole_rs_hooks::socket_extra::set_close_hook(
         socket.handle(),
         // SAFETY: as above; the client's data is only ever shared.

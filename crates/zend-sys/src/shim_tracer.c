@@ -128,16 +128,6 @@ int swr_zend_try_json_encode(zval *value, zend_string **out) {
     return bailed;
 }
 
-/* The scanner reads one byte past `length` and takes only a NUL there as the
- * end, as upstream's std::string::c_str() guarantees; a reply buffer has none. */
-void swr_zend_json_decode(const char *text, size_t length, zval *out) {
-    zend_string *copy = zend_string_init(text, length, 0);
-    if (php_json_decode(out, ZSTR_VAL(copy), length, 1, 0) == FAILURE) {
-        ZVAL_FALSE(out);
-    }
-    zend_string_release(copy);
-}
-
 extern PHP_JSON_API zend_class_entry *php_json_exception_ce;
 
 static void json_decode_ex(zval *out, const char *text, size_t length, zend_long options, zend_long depth) {

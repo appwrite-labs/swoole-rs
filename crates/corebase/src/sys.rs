@@ -67,6 +67,11 @@ mod c {
     // outside the set is an error they return. `fork` takes nothing and touches no
     // memory of the caller's; it stays inside the crate, whose callers each say
     // what their child goes on to do.
+    #[expect(
+        suspicious_runtime_symbol_definitions,
+        reason = "`close` keeps its C signature; it is declared safe because it takes a plain \
+                  value and touches no caller memory"
+    )]
     unsafe extern "C" {
         pub(crate) safe fn socket(domain: c_int, kind: c_int, protocol: c_int) -> c_int;
         pub(crate) safe fn listen(fd: c_int, backlog: c_int) -> c_int;
@@ -81,6 +86,7 @@ mod c {
         pub(crate) safe fn fork() -> pid_t;
         pub(crate) safe fn dup(fd: c_int) -> c_int;
         pub(crate) safe fn dup2(from: c_int, to: c_int) -> c_int;
+        pub(crate) safe fn close(fd: c_int) -> c_int;
         pub(crate) safe fn flock(fd: c_int, operation: c_int) -> c_int;
         pub(crate) safe fn sleep(seconds: c_uint) -> c_uint;
         pub(crate) safe fn usleep(microseconds: useconds_t) -> c_int;
@@ -390,8 +396,16 @@ pub fn pwrite(fd: c_int, buf: &[u8], offset: off_t) -> isize {
 
 /// `close(2)`.
 pub fn close(fd: c_int) -> c_int {
-    // SAFETY: close(2) has no memory preconditions.
-    unsafe { libc::close(fd) }
+    c::close(fd)
+}
+
+/// `writev(2)` of `vectors`.
+#[must_use]
+#[inline]
+pub fn writev(fd: c_int, vectors: &[std::io::IoSlice<'_>]) -> isize {
+    let count = c_int::try_from(vectors.len()).unwrap_or(c_int::MAX);
+    // SAFETY: an `IoSlice` is ABI-compatible with an iovec, of readable bytes.
+    unsafe { libc::writev(fd, vectors.as_ptr().cast(), count) }
 }
 
 /// `listen(2)`.
@@ -547,9 +561,45 @@ pub fn print(bytes: &[u8]) {
 #[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
 #[must_use]
 pub fn kevent_change(kq: c_int, change: &libc::kevent) -> c_int {
-    let (none, no_wait) = (std::ptr::null_mut(), std::ptr::null());
-    // SAFETY: one live change record, and no output records.
-    unsafe { libc::kevent(kq, change, 1, none, 0, no_wait) }
+    kevent::kevent(
+        kq,
+        change,
+        kevent::Count::One,
+        None,
+        kevent::Count::Zero,
+        None,
+    )
+}
+
+/// `kevent(2)` declared for one change and no events out.
+#[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
+mod kevent {
+    use libc::c_int;
+
+    /// A count of `kevent` records: each value is the length of the one record, or
+    /// of none, that its parameter is given.
+    #[repr(i32)]
+    pub(super) enum Count {
+        Zero = 0,
+        One = 1,
+    }
+
+    /// No value: a null-only event list.
+    pub(super) enum Nothing {}
+
+    // libc's. It reads the `changes` count of records at `change`, which is one, and
+    // writes at most the `count` given for `events`, which is none; a null timeout
+    // returns at once. It keeps nothing, so it is declared `safe`.
+    unsafe extern "C" {
+        pub(super) safe fn kevent(
+            kq: c_int,
+            change: &libc::kevent,
+            changes: Count,
+            events: Option<&'static mut Nothing>,
+            count: Count,
+            timeout: Option<&libc::timespec>,
+        ) -> c_int;
+    }
 }
 
 /// `if_nametoindex(3)`: the interface's index, 0 with errno set when there is none.

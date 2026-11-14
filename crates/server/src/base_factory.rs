@@ -16,6 +16,7 @@ use crate::reactor_ops::out_buffer;
 use crate::records::Lookup;
 use crate::view;
 use core::ffi::{c_char, c_int, c_long, c_void};
+use core::marker::PhantomData;
 use core::sync::atomic::Ordering;
 use swoole_rs_buffer::cpp::{swr_cpp_buffer_empty, swr_cpp_buffer_typed_close};
 use swoole_rs_corebase::DataHead;
@@ -26,11 +27,136 @@ use swoole_rs_process::methods::swoole_get_worker_id;
 use swoole_rs_process::worker_globals::with_globals;
 use swoole_rs_process::worker_record::{Worker, WorkerStatus};
 
-/// `swoole::SendData`.
+/// `swoole::SendData`: an event's head and the payload it lends for `'a`.
+///
+/// The fields are private to this module so that the pair keeps one invariant, which
+/// the safe readers ([`SendData::payload`], [`crate::send::send_to_connection`]) rely
+/// on: `data` is null, or points at `info.len` bytes that are readable, and not written,
+/// for `'a`. Only the constructors set `data` and `info.len`; the setters change the
+/// rest of the head, and only the bus's writes ([`SendData::send_raw`]) lower `len`.
 #[repr(C)]
-pub struct SendData {
-    pub info: DataHead,
-    pub data: *const c_char,
+#[derive(Clone, Copy)]
+pub struct SendData<'a> {
+    info: DataHead,
+    data: *const c_char,
+    lent: PhantomData<&'a [u8]>,
+}
+
+impl<'a> SendData<'a> {
+    /// An event with no payload.
+    #[must_use]
+    pub const fn empty(info: DataHead) -> Self {
+        Self {
+            info,
+            data: core::ptr::null(),
+            lent: PhantomData,
+        }
+    }
+
+    /// `info` and the bytes of `data`, whose length becomes `info.len` (at most
+    /// `u32::MAX` of them).
+    #[must_use]
+    pub fn new(mut info: DataHead, data: &'a [u8]) -> Self {
+        info.len = u32::try_from(data.len()).unwrap_or(u32::MAX);
+        Self {
+            info,
+            data: data.as_ptr().cast(),
+            lent: PhantomData,
+        }
+    }
+
+    /// `info` and the payload at `data`.
+    ///
+    /// # Safety
+    /// `data` is null, or points at `info.len` bytes that are readable, and not
+    /// written, for `'a`.
+    #[must_use]
+    pub const unsafe fn from_raw(info: DataHead, data: *const c_char) -> Self {
+        Self {
+            info,
+            data,
+            lent: PhantomData,
+        }
+    }
+
+    /// The event's head.
+    #[must_use]
+    pub fn info(&self) -> &DataHead {
+        &self.info
+    }
+
+    /// Where the payload starts, or null without one.
+    #[must_use]
+    pub fn data(&self) -> *const c_char {
+        self.data
+    }
+
+    /// The payload's `info.len` bytes; none for a null `data`.
+    #[must_use]
+    pub fn payload(&self) -> &'a [u8] {
+        let len = self.info.len as usize;
+        if len == 0 || self.data.is_null() {
+            return &[];
+        }
+        // SAFETY: the fields' invariant: `info.len` bytes at `data`, readable and
+        // unwritten for `'a`.
+        unsafe { core::slice::from_raw_parts(self.data.cast(), len) }
+    }
+
+    /// The event as the `RecvData` a callback reads: the same head and payload.
+    pub(crate) fn as_recv(&self) -> &RecvData {
+        // SAFETY: `RecvData` is `repr(C)` with the same two leading fields; its
+        // payload invariant is this one, for a borrow no longer than `'a`.
+        unsafe { &*core::ptr::from_ref(self).cast::<RecvData>() }
+    }
+
+    /// The head's fd.
+    pub(crate) fn set_fd(&mut self, fd: c_long) {
+        self.info.fd = fd;
+    }
+
+    /// The head's payload length.
+    ///
+    /// # Safety
+    /// `data` points at `len` bytes that are readable, and not written, for `'a`.
+    pub(crate) unsafe fn set_len(&mut self, len: u32) {
+        self.info.len = len;
+    }
+
+    /// The head's session, and the listening fd it arrived on.
+    pub(crate) fn set_session(&mut self, fd: c_long, server_fd: u16) {
+        self.info.fd = fd;
+        self.info.server_fd = server_fd;
+    }
+
+    /// The head's reactor and server fd, as a reply's route names them.
+    pub(crate) fn set_route(&mut self, reactor_id: i16, server_fd: u16) {
+        self.info.reactor_id = reactor_id;
+        self.info.server_fd = server_fd;
+    }
+
+    /// The head's flags.
+    pub(crate) fn set_flags(&mut self, flags: u8) {
+        self.info.flags = flags;
+    }
+
+    /// [`swoole_rs_bus::Bus::send_raw`] of the head and payload to `socket`.
+    ///
+    /// # Safety
+    /// `socket` outlives any registration the write makes, as `send_raw` requires.
+    #[cfg_attr(
+        not(all(feature = "upstream-symbols", not(test))),
+        expect(dead_code, reason = "only the hybrid's factories write to a pipe")
+    )]
+    pub(crate) unsafe fn send_raw(
+        &mut self,
+        bus: &swoole_rs_bus::Bus,
+        socket: swoole_rs_reactor::Socket<'_>,
+    ) -> bool {
+        // SAFETY: `data` covers `info.len` bytes or is null (the fields' invariant;
+        // the write only ever lowers `len`), and `socket` is as the caller promises.
+        unsafe { bus.send_raw(socket, &mut self.info, self.data.cast()) }
+    }
 }
 
 /// `SW_EVENT_DATA_PTR`: `MessageBus::pass`'s flags for a payload it points at.
@@ -332,20 +458,17 @@ pub(crate) fn end(serv: view::Server<'_>, id: c_long, flags: c_int) -> bool {
         return false;
     };
     if owner != worker {
-        let send = SendData {
-            info: DataHead {
-                fd: id,
-                kind: ServerEvent::CloseForward.code(),
-                // `int16_t` from `swoole_get_worker_id()`.
-                reactor_id: i16::from_ne_bytes(
-                    u16::try_from(worker & 0xffff)
-                        .unwrap_or_default()
-                        .to_ne_bytes(),
-                ),
-                ..DataHead::default()
-            },
-            data: core::ptr::null(),
-        };
+        let send = SendData::empty(DataHead {
+            fd: id,
+            kind: ServerEvent::CloseForward.code(),
+            // `int16_t` from `swoole_get_worker_id()`.
+            reactor_id: i16::from_ne_bytes(
+                u16::try_from(worker & 0xffff)
+                    .unwrap_or_default()
+                    .to_ne_bytes(),
+            ),
+            ..DataHead::default()
+        });
         return forward(serv, &send);
     }
     // The handle reads and writes one field at a time through the table's own
@@ -416,8 +539,7 @@ pub(crate) fn finish(serv: view::Server<'_>, send: &SendData) -> bool {
     let worker = swoole_get_worker_id();
     let here = session(serv.state(), send.info.fd).is_none_or(|(owner, _)| owner == worker);
     if here {
-        // SAFETY: the send's data is its `info.len` bytes, live for the call.
-        return unsafe { crate::send::send_to_connection(serv, send) };
+        return crate::send::send_to_connection(serv, send);
     }
     if matches!(
         send.info.event(),
@@ -464,16 +586,13 @@ mod tests {
         HEARD.with_borrow_mut(|h| h.push((4, i.fd, i.reactor_id, i.flags, i.len)));
     }
 
-    fn send(fd: c_long, kind: ServerEvent, len: u32) -> SendData {
-        SendData {
-            info: DataHead {
-                fd,
-                kind: kind.code(),
-                len,
-                ..DataHead::default()
-            },
-            data: core::ptr::null(),
-        }
+    fn send(fd: c_long, kind: ServerEvent, len: u32) -> SendData<'static> {
+        SendData::empty(DataHead {
+            fd,
+            kind: kind.code(),
+            len,
+            ..DataHead::default()
+        })
     }
 
     #[test]
@@ -543,7 +662,7 @@ mod tests {
         assert!(dispatch(serv, &mut packet, true));
         // The worker hears that the payload is the reader's whole buffer.
         let mut whole = send(c_long::from(conn.fd()), ServerEvent::RecvData, 5);
-        whole.info.flags = POP_PTR;
+        whole.set_flags(POP_PTR);
         assert!(dispatch(serv, &mut whole, true));
         assert_eq!(
             heard(),
@@ -652,8 +771,7 @@ mod tests {
         let (live, [mut client, _]) = accepted();
         let serv = live.server();
         session(&live, 1);
-        let mut data = send(1, ServerEvent::SendData, 3);
-        data.data = c"abc".as_ptr();
+        let data = SendData::new(send(1, ServerEvent::SendData, 3).info, b"abc");
         assert!(finish(serv, &data), "sent here");
         let mut got = [0; 3];
         client.read_exact(&mut got).unwrap();

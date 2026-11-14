@@ -80,9 +80,25 @@ unsafe extern "C" {
     /// `array_init(target)`: `target` holds a new, empty array in place of
     /// what it held, which is not released. No PHP code runs.
     safe fn swr_zend_array_init(target: &Owned);
+    /// `zend_read_property(scope, object, name, length, silent, rv)` inside
+    /// `zend_try` (nonzero for a bailout): `found` then holds the property's
+    /// slot, `rv` holding a computed value, or the executor's null.
+    fn swr_zend_try_facade_read(
+        scope: *mut zend_class_entry,
+        object: *mut zend_object,
+        name: *const c_char,
+        length: usize,
+        silent: bool,
+        rv: *mut zval,
+        found: &mut Option<&Value>,
+    ) -> std::ffi::c_int;
     /// `php_url_encode`: it reads the lent bytes (an `IoSlice` is an iovec) and
     /// returns a new string; no PHP code runs.
     safe fn swr_bytes_url_encode(bytes: IoSlice<'_>) -> *mut zend_string;
+    /// `json_decode(text, true)` of the lent bytes (an `IoSlice` is an iovec)
+    /// into `out`, in place of what it held, which is not released; false when
+    /// they are not JSON. Objects decode as arrays, so no PHP code runs.
+    safe fn swr_bytes_json_decode(text: IoSlice<'_>, out: &Owned);
 }
 
 /// A borrowed zval. Zend may change what it points to (refcounts, a
@@ -157,9 +173,19 @@ impl Value {
         if self.kind() != IS_REFERENCE {
             return Cow::Borrowed(self);
         }
-        // SAFETY: the reference, which this zval keeps alive, holds the value;
-        // it is copied before any PHP code can assign it.
-        Cow::Owned(unsafe { &*self.referent().cast::<Self>() }.copy())
+        // Copied before any PHP code can assign the reference.
+        Cow::Owned(self.referred().copy())
+    }
+
+    /// `ZVAL_DEREF`, borrowed: the slot of what a reference refers to, which
+    /// the reference this zval holds keeps alive while it is borrowed; else
+    /// this value. PHP code that assigns the reference rewrites the slot.
+    #[must_use]
+    #[inline]
+    pub fn referred(&self) -> &Self {
+        // SAFETY: this zval, or the slot of the live reference it holds;
+        // `Value` is a transparent zval.
+        unsafe { &*self.referent().cast::<Self>() }
     }
 
     /// `ZVAL_DEREF`'s slot: the zval a reference refers to, else this one. A
@@ -238,22 +264,27 @@ impl Value {
         (self.kind() == IS_OBJECT).then(|| self.payload())
     }
 
+    /// [`Value::object`], borrowed: the zval holds the object while borrowed.
+    #[must_use]
+    #[inline]
+    pub fn object_ref(&self) -> Option<crate::ObjectRef<'_>> {
+        Some(crate::ObjectRef(self.object()?, std::marker::PhantomData))
+    }
+
     /// `Z_OBJ_P` of an object with `class`'s handlers: one that `class`'s
     /// create handler made, or a subclass's that inherited it.
     #[must_use]
     #[inline]
     pub fn object_of(&self, class: &crate::Class) -> Option<*mut zend_object> {
-        let object = self.object()?;
-        // SAFETY: the zval holds the live object.
-        (unsafe { (*object).handlers } == class.handlers()).then_some(object)
+        let object = self.object_ref()?;
+        (object.handlers() == class.handlers()).then_some(object.as_ptr())
     }
 
     /// The [`Custom`](crate::Custom) data of a `T` object.
     #[must_use]
     #[inline]
     pub fn custom<T: crate::Custom>(&self) -> Option<&T> {
-        // SAFETY: the zval holds the object while borrowed.
-        unsafe { crate::object::custom(self.object()?) }
+        self.object_ref()?.custom()
     }
 
     /// `Z_PTR_P` of a pointer (`IS_PTR`), as function and class tables hold.
@@ -283,10 +314,7 @@ impl Value {
     #[must_use]
     #[inline]
     pub fn props(&self, scope: Option<&crate::Class>) -> Option<crate::Props<'_>> {
-        let object = self.object()?;
-        let scope = scope.map_or(ptr::null_mut(), crate::Class::entry);
-        // SAFETY: the zval holds the object while borrowed; a registered class or null.
-        Some(unsafe { crate::Props::new(scope, object) })
+        Some(crate::Props::of(scope, self.object_ref()?))
     }
 
     /// `sw_zend_read_property_ex` of an object: the slot of the instance
@@ -346,26 +374,26 @@ impl Value {
         };
         let scope = scope.map_or(ptr::null_mut(), crate::ClassEntry::as_ptr);
         let rv = Owned::default();
-        let mut found = ptr::null_mut();
+        let mut found = None;
         // SAFETY: the zval holds the object while borrowed; a class or null; Zend
-        // reads `name`, and writes `rv` (undefined, this frame's) or nothing.
+        // reads `name`, and writes `rv` (undefined, this frame's) or nothing. What
+        // it finds is `rv`, a property slot of the object, which the borrow keeps
+        // alive, or the executor's null, which lives as long as it does.
         bailout::trapped(unsafe {
-            crate::sys::swr_zend_try_facade_read(
+            swr_zend_try_facade_read(
                 scope,
                 object,
                 name.as_ptr().cast(),
                 name.len(),
                 silent,
                 rv.as_ptr(),
-                &raw mut found,
+                &mut found,
             )
         })?;
-        if found == rv.as_ptr() {
-            return Ok(Some(rv));
-        }
-        // SAFETY: null, or a property slot of the object, which the borrow keeps
-        // alive, or the executor's null, which lives as long as it does.
-        Ok(unsafe { Self::from_ptr(found) }.map(Self::copy))
+        Ok(match found {
+            Some(slot) if slot.as_ptr() == rv.as_ptr() => Some(rv),
+            found => found.map(Self::copy),
+        })
     }
 
     /// `zend_call_method(object, scope, NULL, method, &result, args)` on the
@@ -769,9 +797,9 @@ impl Array {
     pub fn for_each<'a, F: FnMut(Key<'a>, &'a Value)>(&'a self, mut each: F) {
         let mut entries = self.entries();
         while let Some((key, value)) = entries.next_keyed() {
-            // SAFETY: the element, or what the reference it holds refers to,
-            // which the element keeps alive while the table is borrowed.
-            each(key, unsafe { &*value.referent().cast::<Value>() });
+            // The element, or what the reference it holds refers to, which the
+            // element keeps alive while the table is borrowed.
+            each(key, value.referred());
             if bailout::thread_exit_pending() {
                 break;
             }
@@ -1162,10 +1190,7 @@ impl Owned {
     #[must_use]
     pub fn json_decode(text: &[u8]) -> Self {
         let decoded = Self::default();
-        // SAFETY: the text's bytes, only read, and an undefined slot this owns.
-        unsafe {
-            crate::sys::swr_zend_json_decode(text.as_ptr().cast(), text.len(), decoded.as_ptr());
-        };
+        swr_bytes_json_decode(IoSlice::new(text), &decoded);
         decoded
     }
 

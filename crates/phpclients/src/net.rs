@@ -24,8 +24,8 @@ use swoole_rs_phpstubs::client;
 use swoole_rs_phpswoole::{Switch, built_with, display_errors};
 use swoole_rs_reactor::{Socket as Net, SocketFields};
 use swoole_rs_zend::{
-    Array, Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Owned, OwnedArray, Props,
-    Value, ZStr, ZString,
+    Array, Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, ObjectRef, Owned,
+    OwnedArray, Props, Value, ZStr, ZString,
     bailout::{self, Bailout},
     host::callable::Callable,
     string::ZBuf,
@@ -224,33 +224,36 @@ impl Data {
 /// A `Swoole\Client` (or `Swoole\Async\Client`, which inherits its data)
 /// object, live for `'a`, and its data.
 #[derive(Clone, Copy)]
-pub(crate) struct Obj<'a>(*mut zend_object, &'a Data);
+pub(crate) struct Obj<'a>(ObjectRef<'a>, &'a Data);
 
 impl<'a> Obj<'a> {
-    /// # Safety
-    /// `object` is a live client or async client object for `'a`.
-    pub(crate) unsafe fn new(object: *mut zend_object) -> Self {
-        // SAFETY: per the caller.
-        let data = unsafe { swoole_rs_zend::custom_of::<Data>(object) };
-        Self(
-            object,
-            data.unwrap_or_else(|| swoole_rs_corebase::fatal("a client object without its data")),
-        )
+    /// `object` and its data, or Swoole's fatal error for an object without.
+    #[track_caller]
+    fn of(object: Option<ObjectRef<'a>>, what: &str) -> Self {
+        let data = object.and_then(ObjectRef::custom::<Data>);
+        match (object, data) {
+            (Some(object), Some(data)) => Self(object, data),
+            _ => swoole_rs_corebase::fatal(what),
+        }
+    }
+
+    /// `object` and its data: Swoole's fatal error for an object without.
+    pub(crate) fn new(object: Option<ObjectRef<'a>>) -> Self {
+        Self::of(object, "a client object without its data")
     }
 
     /// `$this` of a client method: client methods are non-static, so `$this`
     /// is a client object (or an async one), live for the call.
     pub(crate) fn this(call: &'a Call) -> Self {
-        let data = call.custom::<Data>();
-        Self(
-            call.this(),
-            data.unwrap_or_else(|| {
-                swoole_rs_corebase::fatal("a client method's $this without its data")
-            }),
-        )
+        let object = call.this_value().and_then(Value::object_ref);
+        Self::of(object, "a client method's $this without its data")
     }
 
     pub(crate) fn as_ptr(self) -> *mut zend_object {
+        self.0.as_ptr()
+    }
+
+    pub(crate) fn object(self) -> ObjectRef<'a> {
         self.0
     }
 
@@ -260,8 +263,7 @@ impl<'a> Obj<'a> {
 
     /// Property writes, under the object's own class.
     pub(crate) fn props(self) -> Props<'a> {
-        // SAFETY: a live client object; the client class declares every name written.
-        unsafe { Props::new(CLIENT.entry(), self.0) }.own()
+        Props::of(None, self.0).own()
     }
 
     /// `ZSTR_VAL(Z_OBJCE_P(object)->name)`.

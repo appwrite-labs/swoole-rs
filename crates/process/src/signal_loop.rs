@@ -13,7 +13,7 @@ pub struct Ops {
     pub has_reactor: fn() -> bool,
     /// The available reactor's kqueue.
     pub native_handle: fn() -> i32,
-    pub callback: signal::Callback,
+    pub callback: signal::Dispatch,
     /// The signalfd socket's reactor effects (Linux).
     pub descriptor: Option<&'static DescriptorOps>,
     /// Run a handler `set` registered.

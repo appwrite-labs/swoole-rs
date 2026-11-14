@@ -96,7 +96,7 @@ mod request {
         (r.chunk_length, r.chunk_offset, r.chunk_scan_offset) =
             (s.chunk_length, s.chunk_offset, s.chunk_scan_offset);
         r.buffer = &raw mut buffer;
-        let result = match operation {
+        let done = match operation {
             0 => r.get_protocol(),
             1 => r.get_header_length(),
             _ => r.get_chunked_body_length(),
@@ -119,7 +119,8 @@ mod request {
             chunk_offset: r.chunk_offset,
             chunk_scan_offset: r.chunk_scan_offset,
         };
-        result
+        // `SW_OK` or `SW_ERR`, as the oracle returns.
+        if done { 0 } else { -1 }
     }
 
     pub unsafe extern "C" fn header_info(

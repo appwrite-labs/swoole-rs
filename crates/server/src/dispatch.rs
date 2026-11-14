@@ -2,7 +2,6 @@
 use crate::base_factory::SendData;
 use crate::callbacks::CallbackKind;
 use crate::port_config::{PortConfig, methods};
-use crate::reactor_entry::RecvData;
 use crate::records::Lookup;
 use crate::view::{Port, Server};
 use crate::{DispatchMode, Mode};
@@ -34,10 +33,7 @@ pub fn schedule_worker(serv: Server<'_>, fd: c_int, send: Option<&SendData>) -> 
     if dispatch_func.is_set() {
         // SAFETY: null, or the table's live slot of the fd, read for the call.
         let conn = unsafe { state.connection_ptr(key, Lookup::ByFd).as_ref() };
-        let recv = send.map(|send| core::ptr::from_ref(send).cast::<RecvData>());
-        // SAFETY: a `SendData` is laid out as the `RecvData` the callback reads: its head
-        // and data pointer.
-        let recv = recv.map(|recv| unsafe { &*recv });
+        let recv = send.map(SendData::as_recv);
         let id = state.callbacks.dispatch(serv, conn, recv);
         if id != USERFUNC_FALLBACK {
             return id;
@@ -81,15 +77,10 @@ fn ip_key(state: &crate::ServerState, fd: c_long, send: Option<&SendData>) -> u3
     let addr = if let Some(conn) = state.connection(fd, Lookup::ByFd) {
         conn.info()
     } else {
-        // No connection: the data is a datagram.
-        let Some(send) = send else { return 0 };
-        #[expect(
-            clippy::cast_ptr_alignment,
-            reason = "the payload is a message bus buffer, aligned for its `DgramPacket`"
-        )]
-        let packet = send.data.cast::<crate::master_ops::DgramPacket>();
-        // SAFETY: the datagram's payload starts with its `DgramPacket`.
-        unsafe { (*packet).socket_addr }
+        // No connection: the data is a datagram, whose head names its sender.
+        let sender = send.and_then(|send| send.as_recv().datagram_sender());
+        let Some(sender) = sender else { return 0 };
+        sender
     };
     if swoole_rs_reactor::type_is(addr.kind, swoole_rs_reactor::CLASS_INET4) {
         u32::from_be(addr.addr.v4().sin_addr.s_addr)
@@ -303,15 +294,14 @@ pub fn sendfile(
         sendfile_error(SW_LOG_WARNING, E::SW_ERROR_SYSTEM_CALL_FAIL, m);
         return false;
     }
-    let mut send = SendData {
-        info: swoole_rs_corebase::DataHead {
-            fd: session_id,
-            kind: ServerEvent::SendFile.code(),
-            len: SENDFILE_TASK_SIZE.c_cast::<u32>() + l_file + 1,
-            ..Default::default()
-        },
-        data: buffer.0.as_ptr().cast(),
+    let info = swoole_rs_corebase::DataHead {
+        fd: session_id,
+        kind: ServerEvent::SendFile.code(),
+        ..Default::default()
     };
+    // The task, the name and its NUL: within the buffer, as `max` keeps the name.
+    let len = SENDFILE_TASK_SIZE + l_file as usize + 1;
+    let mut send = SendData::new(info, buffer.0.get(..len).unwrap_or(&buffer.0));
     crate::hybrid::hybrid().factory_finish(serv, &mut send)
 }
 
@@ -568,7 +558,7 @@ mod tests {
         _: crate::callbacks::Ctx,
         _: Server<'_>,
         _: Option<&crate::records::ConnectionRecord>,
-        _: Option<&RecvData>,
+        _: Option<&crate::reactor_entry::RecvData>,
     ) -> c_int {
         6
     }
@@ -577,7 +567,7 @@ mod tests {
         _: crate::callbacks::Ctx,
         _: Server<'_>,
         _: Option<&crate::records::ConnectionRecord>,
-        _: Option<&RecvData>,
+        _: Option<&crate::reactor_entry::RecvData>,
     ) -> c_int {
         USERFUNC_FALLBACK
     }
@@ -598,13 +588,16 @@ mod tests {
     fn a_datagram_hashes_its_sender() {
         let w = Workers::new(4, DispatchMode::IpMod);
         // SAFETY: a plain record, for which zero is valid.
-        let mut packet: crate::master_ops::DgramPacket = unsafe { core::mem::zeroed() };
+        let mut packet: crate::reactor_entry::DgramPacket = unsafe { core::mem::zeroed() };
         packet.socket_addr.kind = 2;
         packet.socket_addr.addr.inet_v4.sin_addr.s_addr = 0x0a00_0001_u32.to_be();
-        let send = SendData {
-            info: swoole_rs_corebase::DataHead::default(),
-            data: (&raw const packet).cast(),
+        // The event's length covers the packet's head, which names its sender.
+        let info = swoole_rs_corebase::DataHead {
+            len: u32::try_from(size_of_val(&packet)).unwrap(),
+            ..Default::default()
         };
+        // SAFETY: `info.len` bytes of the packet, which outlives the send.
+        let send = unsafe { SendData::from_raw(info, (&raw const packet).cast()) };
         assert_eq!(ip_key(w.live.state(), -1, Some(&send)), 0x0a00_0001);
         assert_eq!(
             schedule_worker(w.serv(), -1, Some(&send)),

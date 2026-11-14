@@ -21,9 +21,6 @@ use swoole_rs_http::{
 };
 use swoole_rs_ossupport::create_tmpfile;
 
-const SW_OK: i32 = swoole_rs_corebase::constants::ResultCode::SW_OK as i32;
-const SW_ERR: i32 = swoole_rs_corebase::constants::ResultCode::SW_ERR as i32;
-
 /// `swoole::String`'s head.
 #[repr(C)]
 pub struct HttpString {
@@ -278,7 +275,7 @@ impl HttpRequest {
         };
     }
 
-    fn frame(&mut self, parse: fn(&mut HttpFrame, &[u8]) -> bool) -> i32 {
+    fn frame(&mut self, parse: fn(&mut HttpFrame, &[u8]) -> bool) -> bool {
         let (buffer, input) = self.input();
         let mut frame = HttpFrame {
             offset: usize::try_from(buffer.offset).unwrap_or(usize::MAX),
@@ -304,16 +301,16 @@ impl HttpRequest {
         self.request_line_length = frame.line_length;
         self.header_length = frame.header_length;
         self.known_length = frame.known_length & 1 != 0;
-        if found { SW_OK } else { SW_ERR }
+        found
     }
 
     /// The method, URL and version from the request line, or an HTTP/2 preface.
-    pub fn get_protocol(&mut self) -> i32 {
+    pub fn get_protocol(&mut self) -> bool {
         self.frame(HttpFrame::request_line)
     }
 
     /// Finds the `\r\n\r\n` ending the header block.
-    pub fn get_header_length(&mut self) -> i32 {
+    pub fn get_header_length(&mut self) -> bool {
         self.frame(HttpFrame::header_end)
     }
 
@@ -366,10 +363,10 @@ impl HttpRequest {
         }
     }
 
-    /// Scans the chunked body from where the last call stopped: `SW_OK` once its
-    /// trailer section ended, with `content_length` up to there; `SW_ERR` to wait for
+    /// Scans the chunked body from where the last call stopped: true once its
+    /// trailer section ended, with `content_length` up to there; false to wait for
     /// more, or with `excepted` (bad framing) or `too_large` (past `max_length`) set.
-    pub fn get_chunked_body_length(&mut self) -> i32 {
+    pub fn get_chunked_body_length(&mut self) -> bool {
         let (_, input) = self.input();
         let mut chunks = HttpChunks {
             state: self.chunk_state,
@@ -386,13 +383,13 @@ impl HttpRequest {
             HttpChunked::Complete(length) => {
                 self.known_length = true;
                 self.content_length = length;
-                return SW_OK;
+                return true;
             }
             HttpChunked::Partial => {}
             HttpChunked::Malformed => self.excepted = true,
             HttpChunked::TooLarge => self.too_large = true,
         }
-        SW_ERR
+        false
     }
 
     /// An `Expect: 100-continue` header.
@@ -772,6 +769,14 @@ pub fn request_free(request: Option<Box<HttpRequest>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SW_OK: i32 = swoole_rs_corebase::constants::ResultCode::SW_OK as i32;
+    const SW_ERR: i32 = swoole_rs_corebase::constants::ResultCode::SW_ERR as i32;
+
+    /// The ported tests' `SW_OK` or `SW_ERR` for a parse step's result.
+    fn code(done: bool) -> i32 {
+        if done { SW_OK } else { SW_ERR }
+    }
     use std::cell::RefCell;
 
     /// A `swoole::String` stand-in: the head and the bytes it points at.
@@ -908,8 +913,8 @@ mod tests {
     fn parsed(text: &[u8]) -> (Box<Input>, HttpRequest) {
         let mut i = input(text);
         let mut r = request(&mut i);
-        assert_eq!(r.get_protocol(), SW_OK, "request line");
-        assert_eq!(r.get_header_length(), SW_OK, "header block");
+        assert_eq!(code(r.get_protocol()), SW_OK, "request line");
+        assert_eq!(code(r.get_header_length()), SW_OK, "header block");
         r.parse_header_info();
         (i, r)
     }
@@ -939,7 +944,7 @@ mod tests {
         let protocol = |text: &[u8]| {
             let mut i = input(text);
             let mut r = request(&mut i);
-            let status = r.get_protocol();
+            let status = code(r.get_protocol());
             let url = url(&r, &i);
             (status, r, url, i.buffer.offset)
         };
@@ -1032,9 +1037,13 @@ mod tests {
             let mut i_ = input(&[name, b" / HTTP/1.1\r\nHost: example.com\r\n\r\n"].concat());
             let mut r = request(&mut i_);
             if i == pri {
-                assert_eq!((r.get_protocol(), r.excepted), (SW_ERR, true), "PRI");
+                assert_eq!((code(r.get_protocol()), r.excepted), (SW_ERR, true), "PRI");
             } else {
-                assert_eq!((r.get_protocol(), c_int::from(r.method)), (SW_OK, i), "{i}");
+                assert_eq!(
+                    (code(r.get_protocol()), c_int::from(r.method)),
+                    (SW_OK, i),
+                    "{i}"
+                );
             }
         }
     }
@@ -1108,7 +1117,7 @@ mod tests {
         let head = b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n";
         let (i, mut r) = parsed(&[&head[..], body].concat());
         r.max_length = max;
-        (r.get_chunked_body_length(), r, i)
+        (code(r.get_chunked_body_length()), r, i)
     }
 
     #[test]
@@ -1183,7 +1192,7 @@ mod tests {
         let length = i.buffer.length;
         i.bytes[length..length + rest.len()].copy_from_slice(rest);
         i.buffer.length += rest.len();
-        assert_eq!(r.get_chunked_body_length(), SW_OK, "complete");
+        assert_eq!(code(r.get_chunked_body_length()), SW_OK, "complete");
         assert_eq!(r.content_length, 13, "the whole body");
     }
 
@@ -1306,7 +1315,10 @@ mod tests {
         let receive = swoole_rs_buffer::string::new_string(head);
         let mut r = HttpRequest::new(None);
         r.buffer = receive.cast();
-        assert_eq!((r.get_protocol(), r.get_header_length()), (SW_OK, SW_OK));
+        assert_eq!(
+            (code(r.get_protocol()), code(r.get_header_length())),
+            (SW_OK, SW_OK)
+        );
         r.parse_header_info();
         r.max_length = 1 << 20;
         let dir = std::env::temp_dir();

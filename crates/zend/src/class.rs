@@ -257,7 +257,7 @@ impl Class {
         let object = crate::Owned::default();
         // SAFETY: a slot this owns and a registered class; Zend refuses one it
         // cannot instantiate, leaving no object.
-        unsafe { crate::init_object(object.as_ptr(), entry) };
+        let _ = unsafe { crate::sys::object_init_ex(object.as_ptr(), entry) };
         object
     }
 
@@ -329,8 +329,8 @@ pub unsafe extern "C" fn unset_property_deny(
     member: *mut zend_string,
     cache_slot: *mut *mut c_void,
 ) {
-    // SAFETY: a live object, per Zend.
-    let own = unsafe { crate::Props::new(ptr::null_mut(), object) }.class_entry();
+    // Per Zend, a live object.
+    let own = crate::ObjectRef(object, PhantomData).class_entry();
     // The class the object's own inherits its declared properties from.
     let mut root = own;
     while let Some(parent) = root.parent() {

@@ -75,8 +75,11 @@ static PENDING: AtomicBool = AtomicBool::new(false);
 static CALLBACK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 static HAS_REACTOR: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
-/// `swoole_signal_callback`: runs the registered handler, or warns.
+/// A registered signal handler, `SignalHandler`: native code's, sound to call with
+/// the signal it was registered for.
 pub type Callback = unsafe extern "C" fn(c_int);
+/// `swoole_signal_callback`: runs the registered handler, or warns.
+pub type Dispatch = extern "C" fn(c_int);
 /// Whether this thread has a reactor (`sw_reactor()`).
 pub type HasReactor = fn() -> bool;
 
@@ -150,7 +153,7 @@ pub fn signal_set(
     signo: c_int,
     handler: usize,
     safety: bool,
-    callback: Callback,
+    callback: Dispatch,
     has_reactor: HasReactor,
 ) -> usize {
     CALLBACK.store(callback as *mut (), Relaxed);
@@ -184,11 +187,11 @@ extern "C" fn deferred(signo: c_int) {
     PENDING.store(true, Relaxed);
 }
 
-/// The `Callback` `signal_set` stored last; none before the first.
-fn callback() -> Option<Callback> {
-    // SAFETY: the slot holds null or a `Callback` `signal_set` stored, and a null
+/// The `Dispatch` `signal_set` stored last; none before the first.
+fn callback() -> Option<Dispatch> {
+    // SAFETY: the slot holds null or a `Dispatch` `signal_set` stored, and a null
     // `Option` of a function pointer is `None`.
-    unsafe { std::mem::transmute::<*mut (), Option<Callback>>(CALLBACK.load(Relaxed)) }
+    unsafe { std::mem::transmute::<*mut (), Option<Dispatch>>(CALLBACK.load(Relaxed)) }
 }
 
 /// A handler's address, as `sigaction`'s `sa_sigaction` holds it.
@@ -211,8 +214,7 @@ extern "C" fn immediate(signo: c_int) {
         return;
     }
     if let Some(callback) = callback() {
-        // SAFETY: the native callback takes any signal number.
-        unsafe { callback(signo) };
+        callback(signo);
     }
     RUNNING.store(false, Relaxed);
 }
@@ -226,16 +228,15 @@ pub extern "C" fn swoole_signal_dispatch() {
         return;
     }
     // Only the deferred handler marks a signal, and `signal_set` stores its
-    // `Callback` before installing that handler.
+    // `Dispatch` before installing that handler.
     let Some(callback) = callback() else {
         return;
     };
     for (signo, triggered) in (0..).zip(&TRIGGERED) {
         if triggered.load(Relaxed) {
-            // SAFETY: the native callback takes any signal number, and upstream calls
-            // dispatch from a safe context, never a signal frame; the callback may
-            // run PHP, and no value with a destructor is live across it.
-            unsafe { callback(signo) };
+            // Upstream calls dispatch from a safe context, never a signal frame; the
+            // callback may run PHP, and no value with a destructor is live across it.
+            callback(signo);
             triggered.store(false, Relaxed);
         }
     }
@@ -389,7 +390,7 @@ mod tests {
     use std::sync::atomic::AtomicI32;
 
     static SEEN: AtomicI32 = AtomicI32::new(0);
-    unsafe extern "C" fn record(signo: c_int) {
+    extern "C" fn record(signo: c_int) {
         SEEN.store(signo, Relaxed);
     }
     fn no_reactor() -> bool {

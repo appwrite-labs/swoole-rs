@@ -128,20 +128,10 @@ impl<'a> Php<'a> {
     /// or one PHP code defines, which has no handler.
     #[must_use]
     pub fn internal_handler(self, name: &[u8]) -> Option<sys::zif_handler> {
-        // Zend allocates a function as its kind's record, and an internal
-        // function's is the smallest: the head of any of them can be borrowed as one.
-        const {
-            assert!(
-                size_of::<sys::zend_internal_function>() <= size_of::<sys::zend_op_array>(),
-                "an internal function is the smallest kind"
-            );
-        };
         let function = self.function_table().find(name)?.pointer()?;
-        // SAFETY: the executor's function table holds pointers to live functions
-        // only, and no PHP runs, so nothing writes this one, during the borrow.
-        let internal = unsafe { &*function.cast::<sys::zend_internal_function>() };
-        // Every kind starts with its type; only an internal function has the rest.
-        (internal.type_ == crate::Function::INTERNAL).then_some(internal.handler)
+        // The executor's function table holds pointers to live functions only,
+        // which it keeps while this reads one.
+        crate::Function(function.cast(), PhantomData).internal_handler()
     }
 
     /// `tsrm_env_lock()`, held until the guard drops (`tsrm_env_unlock()`):
