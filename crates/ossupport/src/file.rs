@@ -152,13 +152,11 @@ pub fn file_size(fd: c_int) -> FileSize {
     }
 }
 
-/// A sendfile result and the warning native logs: 0 none; for the copy fallback
-/// 1 `pread() failed` and 2 `write() failed`; for kqueue `sendfile` 1 `sendfile failed`.
-#[repr(C)]
+/// A platform sendfile result and whether the caller should log `sendfile failed`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Sendfile {
     pub result: isize,
-    pub warn: u32,
+    pub warn: bool,
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -184,7 +182,10 @@ pub fn swr_v1_os_sendfile(
     size: usize,
 ) -> Sendfile {
     let result = sendfile(out_fd, in_fd, offset, size);
-    Sendfile { result, warn: 0 }
+    Sendfile {
+        result,
+        warn: false,
+    }
 }
 
 #[cfg(target_vendor = "apple")]
@@ -258,19 +259,19 @@ pub fn swr_v1_os_sendfile(
             -1 => {
                 return Sendfile {
                     result: -1,
-                    warn: 0,
+                    warn: false,
                 };
             }
             0 => {
                 return Sendfile {
                     result: isize::try_from(length).unwrap_or(-1),
-                    warn: 0,
+                    warn: false,
                 };
             }
             _ => {
                 return Sendfile {
                     result: -1,
-                    warn: 1,
+                    warn: true,
                 };
             }
         }
@@ -386,8 +387,8 @@ mod tests {
         let mut offset: off_t = 3;
         let sent = swr_v1_os_sendfile(sink.as_raw_fd(), source.as_raw_fd(), Some(&mut offset), 4);
         assert_eq!(
-            (sent, offset),
-            (Sendfile { result: 4, warn: 0 }, 7),
+            (sent.result, u32::from(sent.warn), offset),
+            (4, 0, 7),
             "four bytes sent"
         );
         let mut buf = [0_u8; 4];
