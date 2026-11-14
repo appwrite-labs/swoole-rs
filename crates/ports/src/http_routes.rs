@@ -277,17 +277,17 @@ pub mod exports {
     impl Packages for Frames {
         const HEAD: Option<u32> = Some(WEBSOCKET_FRAME_HEADER_SIZE as u32);
         #[inline(always)]
-        fn length(_: &Recv, _: &Protocol, bytes: &[u8]) -> i64 {
+        fn length(_: &Recv, bytes: &[u8]) -> i64 {
             swoole_rs_websocket::frame_length(bytes).0
         }
         #[inline(always)]
-        fn dispatch(r: &Recv, b: &CppString, start: usize) -> c_int {
+        fn dispatch(r: &Recv, data: *const u8, offset: i64) -> c_int {
             let frame = RecvData {
                 info: DataHead {
-                    len: u32::try_from(b.offset()).unwrap_or(u32::MAX),
+                    len: u32::try_from(offset).unwrap_or(u32::MAX),
                     ..DataHead::default()
                 },
-                data: b.as_ptr().wrapping_add(start),
+                data,
             };
             // SAFETY: the port's protocol, a connection socket and its whole frame.
             unsafe { websocket_dispatch_frame(r.protocol, r.socket, &frame) }
