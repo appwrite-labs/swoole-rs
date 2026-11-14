@@ -273,7 +273,7 @@ pub mod thread_affinity {
             call.set_bool(false);
             return;
         };
-        if set.set_thread() != 0 {
+        if set.set_thread().is_err() {
             warn(&message!("pthread_setaffinity_np() failed"));
             call.set_bool(false);
             return;
@@ -283,7 +283,7 @@ pub mod thread_affinity {
 
     pub(super) fn get(call: &Call) {
         let mut set = CpuSet::empty();
-        if set.get_thread() < 0 {
+        if set.get_thread().is_err() {
             warn(&message!("pthread_getaffinity_np() failed"));
             call.set_bool(false);
             return;
