@@ -1062,7 +1062,7 @@ mod tests {
             assert_eq!(i64::from(u8_of(v)), v.clamp(0, 255));
         }
         // SAFETY: the owner made above.
-        unsafe { tls::swr_v1_tls_owner_free(owner) };
+        unsafe { drop(std::sync::Arc::from_raw(owner)) };
     }
 
     #[test]
@@ -1081,6 +1081,6 @@ mod tests {
             assert!(trace.ends_with(&format!("fatal1:{message}")), "{trace}");
         }
         // SAFETY: the owner made above.
-        unsafe { tls::swr_v1_tls_owner_free(prepared.owner) };
+        unsafe { drop(std::sync::Arc::from_raw(prepared.owner)) };
     }
 }

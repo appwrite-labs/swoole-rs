@@ -72,16 +72,15 @@ pub(crate) fn tls_free(config: &mut PortConfig) {
 /// `ListenPort::dup_ssl_context()`: a new context with the port's settings.
 #[must_use]
 pub fn context_dup(config: &PortConfig) -> TlsContext {
-    let copy = TlsContext::new();
     // Without a context of the port's, the fresh one's defaults.
     let Some(source) = config.ssl_context.as_ref() else {
-        return copy;
+        return TlsContext::new();
     };
-    // SAFETY: the copy is fresh; no native view caches either's strings.
-    if unsafe { swoole_rs_tls::swr_v1_tls_owner_assign(&copy, source) }.status != 0 {
-        swoole_rs_corebase::fatal("copying a port's TLS context failed");
-    }
-    copy
+    // SAFETY: the port's context, used on its one thread, which only this copy reads
+    // meanwhile.
+    let mut source = unsafe { swoole_rs_tls::Lent::new(source) };
+    TlsContext::copy_of(&mut source)
+        .unwrap_or_else(|| swoole_rs_corebase::fatal("copying a port's TLS context failed"))
 }
 
 /// `ListenPort::ssl_context_create(context, allow_empty_cert)`: both files or
@@ -110,8 +109,8 @@ pub(crate) fn context_create(
             fields.http_v2 = true;
         }
     });
-    // SAFETY: the live owner.
-    if !unsafe { swoole_rs_tls::ssl_context_create(context) } {
+    // SAFETY: the port's live context, which only this port configures, on its thread.
+    if !swoole_rs_tls::ssl_context_create(&mut unsafe { swoole_rs_tls::Lent::new(context) }) {
         log::warning(
             c"ListenPort::ssl_context_create",
             format_args!("failed to create ssl content"),

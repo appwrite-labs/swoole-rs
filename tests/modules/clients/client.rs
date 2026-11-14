@@ -98,13 +98,6 @@ struct ProxyFields {
     socket_type: i32,
 }
 
-/// `OwnedTlsCopy` (crates/tls/src/owned.rs).
-#[repr(C)]
-struct TlsCopy {
-    status: i32,
-    index: u32,
-}
-
 // OpenSSL's stack accessors, which `sk_X509_num` and `sk_X509_value` expand to.
 #[link(name = "crypto")]
 unsafe extern "C" {
@@ -116,8 +109,6 @@ unsafe extern "C" {
     fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut c_void;
     fn swr_v1_clients_address_host(address: *const c_void) -> *const c_char;
     fn swr_v1_clients_address_port(address: *const c_void) -> c_int;
-    fn swr_v1_tls_owner_assign(destination: *const c_void, source: *const c_void) -> TlsCopy;
-    fn swr_v1_tls_owner_free(owner: *const c_void);
 
     #[link_name = "_ZNK6swoole7network6Socket12has_timedoutEv"]
     fn socket_has_timedout(socket: *const c_void) -> bool;
@@ -433,11 +424,15 @@ impl<'a> Client<'a> {
                 ),
                 0
             );
-            assert_eq!(
-                swr_v1_tls_owner_assign(self.ssl_context(), prepared.owner).status,
-                0
+            let owner = |context: *const c_void| swoole_rs_tls::Lent::new(&*context.cast());
+            let copied = swoole_rs_tls::owner_assign(
+                &mut owner(self.ssl_context()),
+                &mut owner(prepared.owner),
             );
-            swr_v1_tls_owner_free(prepared.owner);
+            assert_eq!(copied.status, 0);
+            drop(std::sync::Arc::<swoole_rs_tls::OwnedTlsContext>::from_raw(
+                prepared.owner.cast(),
+            ));
         }
     }
 

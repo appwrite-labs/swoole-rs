@@ -1,7 +1,7 @@
 //! Upstream's `core-tests/src/protocol/ssl.cpp`, one function per TEST with the same
-//! inputs and expected values, over crates/tls: `swoole_ssl_*` and `SSLContext::create`
-//! under their upstream symbols, and [`SslContext`] making the `swr_v1_tls_owner_*` and
-//! `swr_v1_core_string_set` calls native/tls/swoole_ssl.h's `SSLContext` makes.
+//! inputs and expected values, over crates/tls: `swoole_ssl_*` under their upstream
+//! symbols, `SSLContext::create` as crates/tls's `ssl_context_create` by path, and [`SslContext`]
+//! holding an owner from `swr_v1_tls_owner_new` and setting it with `swr_v1_core_string_set`.
 
 use std::ffi::{CStr, c_char, c_int, c_ulong, c_void};
 
@@ -24,9 +24,6 @@ unsafe extern "C" {
     fn swoole_ssl_destroy();
     #[link_name = "_Z20swoole_ssl_get_errorv"]
     fn swoole_ssl_get_error() -> *const c_char;
-    #[link_name = "_ZN6swoole10SSLContext6createEv"]
-    fn ssl_context_create(context: *const c_void) -> bool;
-    fn swr_v1_tls_owner_free(owner: *const c_void);
 }
 
 unsafe extern "C-unwind" {
@@ -60,8 +57,9 @@ impl SslContext {
     }
 
     fn create(&self) -> bool {
-        // SAFETY: a live, bound context.
-        unsafe { ssl_context_create(self.0.owner) }
+        // SAFETY: the live owner this context made, which only this test configures.
+        let mut owner = unsafe { swoole_rs_tls::Lent::new(&*self.0.owner.cast()) };
+        swoole_rs_tls::ssl_context_create(&mut owner)
     }
 
     fn ready(&self) -> bool {
@@ -80,8 +78,10 @@ impl SslContext {
 
 impl Drop for SslContext {
     fn drop(&mut self) {
-        // SAFETY: the owner this context made, released once.
-        unsafe { swr_v1_tls_owner_free(self.0.owner) };
+        // SAFETY: the owner's one reference this context made, released once.
+        drop(unsafe {
+            std::sync::Arc::<swoole_rs_tls::OwnedTlsContext>::from_raw(self.0.owner.cast())
+        });
     }
 }
 

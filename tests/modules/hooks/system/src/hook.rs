@@ -6,6 +6,7 @@
 //! crates/hooks' `hooked::connect`, `accept`, `poll_fake`, `sendmsg` and `recvmsg`: they take
 //! the address as crates/corebase's `SocketAddress` (`Address::assign` is crates/clients'
 //! `address::assign`), the pollfds as a slice and the message as its borrowed buffers.
+//! `swoole_coroutine_send` and `_recv` are `hooked`'s, over byte slices.
 //! `swoole_coroutine_getaddrinfo` and `_gethostbyname` are `stdio`'s, over `&CStr` names.
 
 use super::socket::SW_SOCK_TCP;
@@ -162,8 +163,6 @@ unsafe extern "C" {
     fn swoole_coroutine_socket_create(fd: c_int) -> c_int;
     fn swoole_coroutine_socket_unwrap(fd: c_int) -> c_int;
     fn swoole_coroutine_socket_exists(fd: c_int) -> u8;
-    fn swoole_coroutine_send(fd: c_int, buf: *const c_void, len: usize, flags: c_int) -> isize;
-    fn swoole_coroutine_recv(fd: c_int, buf: *mut c_void, len: usize, flags: c_int) -> isize;
     fn swoole_coroutine_poll(fds: *mut PollFd, n: u64, timeout: c_int) -> c_int;
     fn swoole_coroutine_socket_set_timeout(fd: c_int, which: c_int, timeout: f64) -> c_int;
     fn swoole_coroutine_socket_set_connect_timeout(fd: c_int, timeout: f64) -> c_int;
@@ -523,8 +522,7 @@ fn test_hook_socket() {
 
     let req: &[u8] =
         b"GET / HTTP/1.1\r\nHost: www.baidu.com\r\nConnection: close\r\nKeepAlive: off\r\n\r\n";
-    // SAFETY: `req` is readable for its length.
-    let sent = unsafe { swoole_coroutine_send(sock, req.as_ptr().cast(), req.len(), 0) };
+    let sent = hooked::swoole_coroutine_send(sock, req, 0);
     assert_eq!(sent, isize::try_from(req.len()).unwrap());
 
     // swoole::String resp(1024)
@@ -532,8 +530,7 @@ fn test_hook_socket() {
     let mut length = 0;
     loop {
         let spare = &mut resp[length..];
-        // SAFETY: `spare` is writable for its length.
-        let n = unsafe { swoole_coroutine_recv(sock, spare.as_mut_ptr().cast(), spare.len(), 0) };
+        let n = hooked::swoole_coroutine_recv(sock, spare, 0);
         if n <= 0 {
             break;
         }
@@ -1229,8 +1226,7 @@ fn accept() {
                 assert_eq!(hooked::connect(client_sock, &actual_server_addr), 0);
 
                 let test_message = b"test_data";
-                let sent_bytes =
-                    swoole_coroutine_send(client_sock, test_message.as_ptr().cast(), 9, 0);
+                let sent_bytes = hooked::swoole_coroutine_send(client_sock, test_message, 0);
                 assert_eq!(sent_bytes, 9);
 
                 swoole_coroutine_close(client_sock);
@@ -1241,8 +1237,8 @@ fn accept() {
             assert!(client_sock > 0);
 
             let mut buffer = [0u8; 256];
-            let received_bytes =
-                swoole_coroutine_recv(client_sock, buffer.as_mut_ptr().cast(), buffer.len() - 1, 0);
+            let len = buffer.len() - 1;
+            let received_bytes = hooked::swoole_coroutine_recv(client_sock, &mut buffer[..len], 0);
             assert!(received_bytes > 0);
             assert_eq!(CStr::from_bytes_until_nul(&buffer).unwrap(), c"test_data");
 

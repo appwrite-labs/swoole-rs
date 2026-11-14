@@ -1159,7 +1159,7 @@ pub fn ssl_handshake(this: Handle) -> bool {
         missing
     });
     // SAFETY: the client's context, which only this client configures, and only here.
-    if missing && !unsafe { ssl_context_create(&tls) } {
+    if missing && !ssl_context_create(&mut unsafe { swoole_rs_tls::Lent::new(&tls) }) {
         return false;
     }
     if this.socket().read(|socket| socket.ssl().is_null()) {

@@ -1305,7 +1305,7 @@ mod tests {
             assert_eq!(data, (&raw mut socket).cast());
             socket_ssl_close(Socket::from_ptr(&raw mut socket).unwrap());
             assert!(socket.ssl().is_null());
-            crate::swr_v1_tls_owner_free(owner.owner);
+            drop(std::sync::Arc::from_raw(owner.owner));
             libc::close(fds[0]);
             libc::close(fds[1]);
         }
@@ -1339,7 +1339,7 @@ mod tests {
             );
             socket_ssl_close(handle);
             assert_eq!(socket_ssl_session(handle), None);
-            crate::swr_v1_tls_owner_free(owner.owner);
+            drop(std::sync::Arc::from_raw(owner.owner));
             libc::close(socket.fd);
             libc::close(peer.fd);
         }
