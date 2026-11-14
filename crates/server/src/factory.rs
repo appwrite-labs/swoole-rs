@@ -42,7 +42,7 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> b
                 (crate::port_config::methods().init_protocol)(port.config());
             }
         }
-        Step::StartProcess => return crate::thread_ops::start_reactor_threads(serv) >= 0,
+        Step::StartProcess => return crate::thread_ops::start_reactor_threads(serv),
         Step::TimerReinit => {
             if swoole_rs_timer::thread_timer_detached() {
                 swoole_rs_timer::thread_timer_reinit(false);
@@ -103,10 +103,10 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> b
                 }
             };
         }
-        Step::CreateEventPool => return crate::reactor_process::native::create_pool(serv) >= 0,
+        Step::CreateEventPool => return crate::reactor_process::native::create_pool(serv),
         Step::DestroyEventPool => swoole_rs_process::methods::destroy(serv.event_pool_ref()),
-        Step::CreatePipeBuffers => return crate::master_ops::create_pipe_buffers(serv) >= 0,
-        Step::StartManager => return crate::manager::native::start_manager_process(serv) >= 0,
+        Step::CreatePipeBuffers => return crate::master_ops::create_pipe_buffers(serv),
+        Step::StartManager => return crate::manager::native::start_manager_process(serv),
         Step::EventInit => return swoole_rs_reactor::swoole_event_init(0) >= 0,
         Step::WorkerSignalInit => crate::event_worker::native::worker_signal_init(serv),
         Step::PipeHandler => crate::reactor_process::native::set_pipe_handler(),

@@ -184,11 +184,11 @@ fn heartbeat_main(server: view::Server<'_>, _: u64) {
 
 /// `Server::start_reactor_threads`, in the master: listen, start the reactor
 /// threads (or set up the single one) and the heartbeat, then run the master thread.
-pub(crate) fn start_reactor_threads(serv: view::Server<'_>) -> c_int {
+pub(crate) fn start_reactor_threads(serv: view::Server<'_>) -> bool {
     let state = serv.state();
     let config = state.config_ref();
     if swoole_rs_reactor::swoole_event_init(0) < 0 {
-        return -1;
+        return false;
     }
     let reactor = Reactor::thread();
     for (index, port) in state.tables_ref().ports().iter().enumerate() {
@@ -197,7 +197,7 @@ pub(crate) fn start_reactor_threads(serv: view::Server<'_>) -> c_int {
         }
         if !(crate::port_config::methods().listen)(port.config()) {
             swoole_rs_reactor::swoole_event_free();
-            return -1;
+            return false;
         }
         if let Some(socket) = serv.port_socket_at(index) {
             reactor.change(socket, swoole_rs_reactor::ChangeOp::Add, SW_EVENT_READ);

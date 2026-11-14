@@ -45,12 +45,8 @@ pub(crate) fn forward(serv: crate::view::Server<'_>, send: &crate::base_factory:
 
 /// `Server::create_pipe_buffers()`: the bus's buffer, `ipc_max_size` bytes.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-pub(crate) fn create_pipe_buffers(serv: crate::view::Server<'_>) -> core::ffi::c_int {
+pub(crate) fn create_pipe_buffers(serv: crate::view::Server<'_>) -> bool {
     let state = serv.state();
     let size = state.config_ref().ipc_max_size();
-    if state.message_bus().alloc_buffer(size as usize) {
-        0
-    } else {
-        -1
-    }
+    state.message_bus().alloc_buffer(size as usize)
 }

@@ -24,11 +24,9 @@ const MAX_WORKER_NCPU: u32 = 1000;
 const TIMER_MIN_SEC: f64 = 0.001;
 const BUFFER_MIN_SIZE: u32 = 65536;
 
-/// `SW_LOG_WARNING`, `SW_LOG_ERROR`, and the direct methods' `SW_OK` and `SW_ERR`.
+/// `SW_LOG_WARNING` and `SW_LOG_ERROR`.
 const SW_LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
 const SW_LOG_ERROR: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR as c_int;
-const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
-const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 
 /// `Server::start`: checks, the daemon, the factory and the mode's workers, then
 /// the master's loop until shutdown, and `destroy`.
@@ -372,7 +370,7 @@ fn check_port(
 
 /// `Server::start_master_thread`: the master's reactor, signals and timer, then the
 /// event loop.
-pub(crate) fn start_master_thread(serv: view::Server<'_>, reactor: Reactor) -> c_int {
+pub(crate) fn start_master_thread(serv: view::Server<'_>, reactor: Reactor) -> bool {
     /// `THREAD_MASTER`, `SW_FD_STREAM_SERVER` and `SW_EVENT_READ`.
     const THREAD_MASTER: u8 = 1;
     const FD_STREAM_SERVER: c_int = 1;
@@ -405,7 +403,7 @@ pub(crate) fn start_master_thread(serv: view::Server<'_>, reactor: Reactor) -> c
     }
     if !hybrid().step(serv, Step::MasterTimer) {
         hybrid().step(serv, Step::EventFree);
-        return ERR;
+        return false;
     }
     if !single && mode != Mode::Thread {
         hybrid().step(serv, Step::ReactorBarrier);
@@ -419,11 +417,7 @@ pub(crate) fn start_master_thread(serv: view::Server<'_>, reactor: Reactor) -> c
         set_master_pid(gs);
     }
     state.callbacks.call_server(ServerSlot::Start, serv);
-    if hybrid().step(serv, Step::EventWait) {
-        OK
-    } else {
-        ERR
-    }
+    hybrid().step(serv, Step::EventWait)
 }
 
 /// `Server::store_listen_socket`: each listen socket in the connection list, its
@@ -929,7 +923,7 @@ mod tests {
         assert_eq!(
             master(Mode::Process),
             (
-                OK,
+                true,
                 steps(&[
                     TimerReinit,
                     MasterTimer,
@@ -949,14 +943,14 @@ mod tests {
         assert_eq!(
             master(Mode::Base),
             (
-                OK,
+                true,
                 steps(&[TimerReinit, MasterTimer, ReactorBarrier, EventWait])
             ),
             "no manager"
         );
         assert_eq!(
             master(Mode::Thread),
-            (OK, steps(&[TimerReinit, MasterTimer, EventWait])),
+            (true, steps(&[TimerReinit, MasterTimer, EventWait])),
             "no barriers"
         );
         assert_eq!(
@@ -969,7 +963,7 @@ mod tests {
         fail(Some(MasterTimer));
         assert_eq!(
             master(Mode::Base),
-            (ERR, steps(&[TimerReinit, MasterTimer, EventFree])),
+            (false, steps(&[TimerReinit, MasterTimer, EventFree])),
             "the event loop freed"
         );
         fail(None);
