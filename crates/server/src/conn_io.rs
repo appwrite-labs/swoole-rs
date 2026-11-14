@@ -27,7 +27,7 @@ use swoole_rs_tls::swr_v1_tls_owner_view;
 use swoole_rs_tls::upstream as tls;
 
 use crate::base_factory::SendData;
-use crate::callbacks::{CallbackKind, CallbackSlot};
+use crate::callbacks::CallbackKind;
 use crate::hybrid::hybrid;
 use crate::port_config::PortConfig;
 use crate::reactor_handle::Reactor;
@@ -203,7 +203,7 @@ fn verify_ssl(
         }
         Certificate::None => {
             let on_connect = state.callbacks.slot(CallbackKind::Connect);
-            if on_connect.is_some_and(CallbackSlot::is_set) {
+            if on_connect.is_set() {
                 crate::server_methods::notify(serv, conn, ServerEvent::Connect);
             }
         }
@@ -385,10 +385,7 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
     if conn.overflow() && output(sock).0 < sock.read(|s| s.output.buffer_size) {
         conn.set_overflow(false);
     }
-    let buffer_empty = state
-        .callbacks
-        .slot(CallbackKind::BufferEmpty)
-        .is_some_and(crate::callbacks::CallbackSlot::is_set);
+    let buffer_empty = state.callbacks.slot(CallbackKind::BufferEmpty).is_set();
     let low_watermark = port.map_or(0, |port| port.buffer_low_watermark.get());
     if buffer_empty && conn.high_watermark() && output(sock).0 <= low_watermark {
         conn.set_high_watermark(false);
@@ -455,10 +452,7 @@ pub(crate) fn peer_close(serv: view::Server<'_>, reactor: Reactor, event: &Event
 /// modes, TLS and fatal closes are terminal (always, without `prequeue`).
 fn fin_ends(prequeue: bool, state: &crate::ServerState, conn: Connection<'_>) -> bool {
     let config = state.config_ref();
-    let dispatch_func = state
-        .callbacks
-        .slot(CallbackKind::DispatchFunc)
-        .is_some_and(crate::callbacks::CallbackSlot::is_set);
+    let dispatch_func = state.callbacks.slot(CallbackKind::DispatchFunc).is_set();
     !prequeue
         || config.mode_ != Mode::Process
         || !config.hash_dispatch()
@@ -595,8 +589,9 @@ fn count_close(state: &crate::ServerState, port: Option<&PortConfig>, reactor: R
     if state.config_ref().mode_ == Mode::Base {
         let id = usize::from(reactor.handle().id());
         for cells in [gs.cells(), port.cells()] {
-            // SAFETY: base mode's per-reactor counts, one per reactor.
-            unsafe { &*cells.wrapping_add(id) }.fetch_sub(1, SeqCst);
+            if let Some(cell) = cells.get(id) {
+                cell.fetch_sub(1, SeqCst);
+            }
         }
     } else {
         gs.connection_num.fetch_sub(1, SeqCst);

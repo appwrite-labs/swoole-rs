@@ -232,15 +232,6 @@ impl Co {
         Self(raw)
     }
 
-    /// The record the native `Socket` at `this` is.
-    ///
-    /// # Safety
-    /// As [`Co::new`].
-    #[must_use]
-    pub const unsafe fn of(this: *const c_void) -> Self {
-        Self(this.cast_mut().cast())
-    }
-
     #[must_use]
     pub const fn raw(self) -> *mut CoSocket {
         self.0

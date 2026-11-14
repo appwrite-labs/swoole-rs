@@ -115,8 +115,8 @@ fn create() {
         workers: 65_536,
         ..Config::default()
     };
-    with_config(config, || unsafe {
-        let fd = uring::open_file(&HOST, TEST_TMP_FILE.as_ptr(), libc::O_CREAT, 0o666);
+    with_config(config, || {
+        let fd = uring::open_file(&HOST, TEST_TMP_FILE, libc::O_CREAT, 0o666);
         assert!(fd >= 0, "open");
         assert_ne!(uring::close_fd(&HOST, fd), -1, "close");
     });
@@ -125,26 +125,26 @@ fn create() {
 #[test]
 fn open_and_close() {
     let _serial = serial();
-    with_engine(|| unsafe {
+    with_engine(|| {
         let test_file = c"/tmp/file_1";
-        let fd = uring::open_file(&HOST, test_file.as_ptr(), libc::O_CREAT, 0o666);
+        let fd = uring::open_file(&HOST, test_file, libc::O_CREAT, 0o666);
         assert!(fd > 0, "open");
 
         assert_eq!(uring::close_fd(&HOST, fd), 0, "close");
 
-        assert_eq!(uring::unlink(&HOST, test_file.as_ptr()), 0, "unlink");
+        assert_eq!(uring::unlink(&HOST, test_file), 0, "unlink");
     });
 }
 
 #[test]
 fn mkdir_and_rmdir() {
     let _serial = serial();
-    with_engine(|| unsafe {
+    with_engine(|| {
         let directory = c"/tmp/aaaa";
 
-        assert_eq!(uring::mkdir(&HOST, directory.as_ptr(), 0o755), 0, "mkdir");
+        assert_eq!(uring::mkdir(&HOST, directory, 0o755), 0, "mkdir");
 
-        assert_eq!(uring::rmdir(&HOST, directory.as_ptr()), 0, "rmdir");
+        assert_eq!(uring::rmdir(&HOST, directory), 0, "rmdir");
     });
 }
 
@@ -153,12 +153,7 @@ fn write_and_read() {
     let _serial = serial();
     with_engine(|| unsafe {
         let test_file = c"/tmp/file_2";
-        let fd = uring::open_file(
-            &HOST,
-            test_file.as_ptr(),
-            libc::O_CREAT | libc::O_RDWR,
-            0o666,
-        );
+        let fd = uring::open_file(&HOST, test_file, libc::O_CREAT | libc::O_RDWR, 0o666);
         assert!(fd > 0, "open");
 
         let data = b"aaaaaaaaaaaaaaaaaaaaaaa";
@@ -177,25 +172,25 @@ fn write_and_read() {
 
         assert_eq!(uring::close_fd(&HOST, fd), 0, "close");
 
-        assert_eq!(uring::unlink(&HOST, test_file.as_ptr()), 0, "unlink");
+        assert_eq!(uring::unlink(&HOST, test_file), 0, "unlink");
     });
 }
 
 #[test]
 fn rename() {
     let _serial = serial();
-    with_engine(|| unsafe {
+    with_engine(|| {
         let oldpath = c"/tmp/file_2";
         let newpath = c"/tmp/file_3";
-        let fd = uring::open_file(&HOST, oldpath.as_ptr(), libc::O_CREAT | libc::O_RDWR, 0o666);
+        let fd = uring::open_file(&HOST, oldpath, libc::O_CREAT | libc::O_RDWR, 0o666);
         assert!(fd > 0, "open");
 
         assert_eq!(uring::close_fd(&HOST, fd), 0, "close");
 
-        let result = uring::rename(&HOST, oldpath.as_ptr(), newpath.as_ptr());
+        let result = uring::rename(&HOST, oldpath, newpath);
         assert_eq!(result, 0, "rename");
 
-        assert_eq!(uring::unlink(&HOST, newpath.as_ptr()), 0, "unlink");
+        assert_eq!(uring::unlink(&HOST, newpath), 0, "unlink");
     });
 }
 
@@ -204,12 +199,7 @@ fn fstat_and_stat() {
     let _serial = serial();
     with_engine(|| unsafe {
         let mut statbuf: libc::stat = mem::zeroed();
-        let fd = uring::open_file(
-            &HOST,
-            TEST_TMP_FILE.as_ptr(),
-            libc::O_CREAT | libc::O_RDWR,
-            0o666,
-        );
+        let fd = uring::open_file(&HOST, TEST_TMP_FILE, libc::O_CREAT | libc::O_RDWR, 0o666);
         assert!(fd > 0, "open");
 
         let written = uring::write(&HOST, fd, TEST_STR.as_bytes(), -1.0);
@@ -230,14 +220,9 @@ fn fstat_and_stat() {
 #[test]
 fn fsync_and_fdatasync() {
     let _serial = serial();
-    with_engine(|| unsafe {
+    with_engine(|| {
         let test_file = c"/tmp/file_2";
-        let fd = uring::open_file(
-            &HOST,
-            test_file.as_ptr(),
-            libc::O_CREAT | libc::O_RDWR,
-            0o666,
-        );
+        let fd = uring::open_file(&HOST, test_file, libc::O_CREAT | libc::O_RDWR, 0o666);
         assert!(fd > 0, "open");
 
         let data = b"aaaaaaaaaaaaaaaaaaaaaaa";
@@ -254,21 +239,16 @@ fn fsync_and_fdatasync() {
 
         assert_eq!(uring::close_fd(&HOST, fd), 0, "close");
 
-        assert_eq!(uring::unlink(&HOST, test_file.as_ptr()), 0, "unlink");
+        assert_eq!(uring::unlink(&HOST, test_file), 0, "unlink");
     });
 }
 
 #[test]
 fn ftruncate() {
     let _serial = serial();
-    with_engine(|| unsafe {
+    with_engine(|| {
         let test_file = c"/tmp/file_3";
-        let fd = uring::open_file(
-            &HOST,
-            test_file.as_ptr(),
-            libc::O_CREAT | libc::O_RDWR,
-            0o666,
-        );
+        let fd = uring::open_file(&HOST, test_file, libc::O_CREAT | libc::O_RDWR, 0o666);
         assert!(fd > 0, "open");
 
         let data = b"aaaaaaaaaaaaaaaaaaaaaaa";

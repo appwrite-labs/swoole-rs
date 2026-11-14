@@ -11,7 +11,6 @@ use std::sync::atomic::{AtomicI32, Ordering};
 
 unsafe extern "C" {
     fn snprintf(buffer: *mut c_char, size: usize, format: *const c_char, ...) -> c_int;
-    fn exit(status: c_int) -> !;
 }
 
 /// `backtrace`'s frame count: the one value, the length of the array it fills.
@@ -26,7 +25,27 @@ enum Frames {
 unsafe extern "C" {
     /// Fills at most `size` entries of `frames`, which `Frames` fixes at its length.
     safe fn backtrace(frames: &mut [*mut c_void; Frames::All as usize], size: Frames) -> c_int;
-    fn backtrace_symbols(frames: *const *mut c_void, size: c_int) -> *mut *mut c_char;
+    /// Symbolizes the first `size` of `frames`, which `Filled` keeps within the array,
+    /// into one new `malloc` block (null on failure) that the caller frees.
+    safe fn backtrace_symbols(
+        frames: &[*mut c_void; Frames::All as usize],
+        size: Filled,
+    ) -> *mut *mut c_char;
+}
+
+/// How many frames `backtrace` filled: from 0 to the array's length. Only
+/// [`Filled::of`] makes one.
+#[cfg(any(all(target_os = "linux", target_env = "gnu"), target_vendor = "apple"))]
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct Filled(c_int);
+
+#[cfg(any(all(target_os = "linux", target_env = "gnu"), target_vendor = "apple"))]
+impl Filled {
+    /// `backtrace`'s result, kept within the array.
+    fn of(count: c_int) -> Self {
+        Self(count.clamp(0, Frames::All as c_int))
+    }
 }
 
 use crate::sys::{Text, close, dup2, errno, set_errno};
@@ -75,8 +94,8 @@ pub fn swoole_shell_exec(command: &CStr, get_error_stream: bool) -> Option<(c_in
                 end,
             )
         };
-        // SAFETY: exit(3) runs the process's exit handlers, as upstream's child did.
-        unsafe { exit(127) };
+        // exit(3), which runs the process's exit handlers, as upstream's child did.
+        std::process::exit(127);
     }
     close(write);
     Some((read, child))
@@ -138,13 +157,12 @@ pub extern "C" fn swoole_print_backtrace() {
     #[cfg(any(all(target_os = "linux", target_env = "gnu"), target_vendor = "apple"))]
     {
         let mut frames = [ptr::null_mut::<c_void>(); 16];
-        let count = backtrace(&mut frames, Frames::All);
-        // SAFETY: the first `count` frames were just filled.
-        let symbols = unsafe { backtrace_symbols(frames.as_ptr(), count) };
+        let filled = Filled::of(backtrace(&mut frames, Frames::All));
+        let symbols = backtrace_symbols(&frames, filled);
         if symbols.is_null() {
             return;
         }
-        let count = usize::try_from(count).unwrap_or(0);
+        let count = usize::try_from(filled.0).unwrap_or(0);
         // SAFETY: backtrace_symbols returns `count` NUL-terminated strings, each a
         // `Text` until the array is freed below.
         let lines = unsafe { std::slice::from_raw_parts(symbols.cast::<Text<'_>>(), count) };
@@ -581,8 +599,9 @@ pub extern "C" fn swoole_exit(status: c_int) -> ! {
         )]
         std::mem::forget(LOCK.lock());
     }
-    // SAFETY: exit(3) never returns.
-    unsafe { exit(status) }
+    // exit(3); std's own guard against a concurrent exit never engages, as the lock
+    // above already queues other threads.
+    std::process::exit(status)
 }
 
 /// Commit libc formatting's bounded result and terminator. Native keeps only

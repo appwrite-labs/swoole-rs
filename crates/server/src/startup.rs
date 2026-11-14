@@ -1,5 +1,5 @@
 //! Creating, checking, starting and destroying a server.
-use crate::callbacks::{CallbackKind, CallbackSlot, ServerSlot};
+use crate::callbacks::{CallbackKind, ServerSlot};
 use crate::hybrid::{Step, hybrid};
 use crate::reactor_handle::Reactor;
 use crate::records::SessionRecord;
@@ -284,7 +284,7 @@ pub(crate) fn start_check(serv: view::Server<'_>) -> c_int {
     let state = serv.state();
     let config = state.config_ref();
     let callbacks = &state.callbacks;
-    let has = |id| callbacks.slot(id).is_some_and(CallbackSlot::is_set);
+    let has = |id| callbacks.slot(id).is_set();
     if config.mode_ == Mode::Process {
         let (mode, hashed) = (config.dispatch_mode.get(), config.hash_dispatch());
         if !hashed && !config.enable_unsafe_event.get() {
@@ -294,7 +294,7 @@ pub(crate) fn start_check(serv: view::Server<'_>) -> c_int {
                 (CallbackKind::BufferFull, "onBufferFull"),
                 (CallbackKind::BufferEmpty, "onBufferEmpty"),
             ] {
-                if let Some(slot) = callbacks.slot(id).filter(|slot| slot.is_set()) {
+                if let Some(slot) = Some(callbacks.slot(id)).filter(|slot| slot.is_set()) {
                     let m =
                         format_args!("cannot set '{event}' event when using dispatch_mode={mode}");
                     invalid_callback(m);
@@ -651,11 +651,11 @@ mod tests {
     }
 
     fn on(live: &LiveServer, id: CallbackKind) {
-        crate::callbacks::tests::on(live.state().callbacks.slot(id).unwrap());
+        crate::callbacks::tests::on(live.state().callbacks.slot(id));
     }
 
     fn is_on(live: &LiveServer, id: CallbackKind) -> bool {
-        live.state().callbacks.slot(id).unwrap().is_set()
+        live.state().callbacks.slot(id).is_set()
     }
 
     fn set_mode(live: &LiveServer, mode: Mode) {

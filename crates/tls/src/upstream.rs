@@ -1062,16 +1062,12 @@ pub unsafe fn socket_ssl_close(socket: Socket<'_>) {
 
 /// `int Socket::ssl_create(SSLContext *ssl_context, int flags)`: `SW_OK` or `SW_ERR`,
 /// without setting the last error.
-///
-/// # Safety
-/// No field of `context` (an `SSLContext`'s Rust owner) is written meanwhile.
-pub unsafe fn socket_ssl_create(
+#[must_use]
+pub fn socket_ssl_create(
     socket: Socket<'_>,
-    context: &crate::OwnedTlsContext,
+    context: Option<&crate::SslCtx>,
     flags: c_int,
 ) -> c_int {
-    // SAFETY: as the caller promises.
-    let context = unsafe { crate::owner_fields(context) }.context.as_deref();
     match crate::socket_ssl_new(socket, context, flags) {
         Ok(()) => 0,
         Err(error) => {
@@ -1313,8 +1309,11 @@ mod tests {
             let mut socket = SocketRecord::with_fd(fds[0], 0);
             socket.tls.state = 2;
             socket.tls.want_read = true;
-            let created =
-                socket_ssl_create(Socket::from_ptr(&raw mut socket).unwrap(), &*owner.owner, 2);
+            let created = socket_ssl_create(
+                Socket::from_ptr(&raw mut socket).unwrap(),
+                (*owner.fields).context.as_deref(),
+                2,
+            );
             assert_eq!(created, 0);
             assert!(!socket.ssl().is_null());
             assert_eq!(
@@ -1342,7 +1341,11 @@ mod tests {
             let owner = crate::swr_v1_tls_owner_new();
             (*owner.fields).context = Some(crate::SslContext::tls());
             assert_eq!(
-                socket_ssl_create(Socket::from_ptr(&raw mut socket).unwrap(), &*owner.owner, 2),
+                socket_ssl_create(
+                    Socket::from_ptr(&raw mut socket).unwrap(),
+                    (*owner.fields).context.as_deref(),
+                    2
+                ),
                 0
             );
             let session = socket_ssl_session(handle).unwrap();

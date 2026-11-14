@@ -74,10 +74,11 @@ fn receive_packets(
         let address = &mut pkt.socket_addr;
         address.kind = kind;
         address.len = libc::socklen_t::try_from(size_of::<AddressStorage>()).unwrap_or(0);
-        let (storage, len) = ((&raw mut address.addr).cast(), &raw mut address.len);
         let data = buffer.wrapping_byte_add(head);
-        // SAFETY: the buffer's room after the packet head, and the address's storage.
-        let n = unsafe { swoole_rs_reactor::fd_recvfrom(fd, data, size - head, 0, storage, len) };
+        // SAFETY: the buffer's room after the packet head, which nothing else reaches
+        // during the call.
+        let n = unsafe { swoole_rs_reactor::Fill::from_raw(data, size - head) }
+            .recvfrom(fd, 0, address);
         let Ok(length @ 1..) = u32::try_from(n) else {
             if std::io::Error::last_os_error().raw_os_error() == Some(libc::EAGAIN) {
                 return SW_OK;

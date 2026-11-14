@@ -11,8 +11,8 @@ use swoole_rs_tls::upstream::{
     socket_ssl_accept, socket_ssl_check_host, socket_ssl_connect, socket_ssl_verify,
 };
 use swoole_rs_tls::{
-    OwnedTlsContext, OwnedTlsFields, SocketContextError, SslNewError, TlsContext, owner_fields,
-    owner_host_name, swoole_ssl_init, swr_v1_tls_owner_socket_context,
+    Lent, OwnedTlsContext, OwnedTlsFields, SocketContextError, SslNewError, TlsContext,
+    owner_fields, owner_host_name, swoole_ssl_init, swr_v1_tls_owner_socket_context,
     swr_v1_tls_owner_socket_session,
 };
 
@@ -90,9 +90,8 @@ impl Co {
         let (owner, http2) = (self.tls_context(), self.http2());
         let made = owner.and_then(|owner| {
             self.with_network(|socket| {
-                // SAFETY: the socket's owner, which only it configures, and only here; TLS
-                // is initialised.
-                unsafe { swr_v1_tls_owner_socket_context(&owner, socket, http2, true) }
+                // SAFETY: the socket's owner, which only it configures, and only here.
+                swr_v1_tls_owner_socket_context(unsafe { Lent::new(&owner) }, socket, http2, true)
             })
         });
         match made.unwrap_or(Err(SocketContextError::Create)) {
@@ -123,8 +122,12 @@ impl Co {
             return false;
         };
         let result = self.with_network(|socket| {
-            // SAFETY: the owner, which only the socket configures; TLS is initialised.
-            unsafe { swr_v1_tls_owner_socket_session(owner, socket, hostname.as_deref()) }
+            swr_v1_tls_owner_socket_session(
+                // SAFETY: the owner, which only the socket configures.
+                owner.map(|owner| unsafe { Lent::new(owner) }),
+                socket,
+                hostname.as_deref(),
+            )
         });
         match result.unwrap_or(Err(SslNewError::New)) {
             Ok(()) => return true,

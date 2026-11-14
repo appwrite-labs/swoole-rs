@@ -17,6 +17,7 @@ use swoole_rs_process::worker_record::{Worker, WorkerStatus, WorkerType};
 use super::{ThreadManager, ThreadOp, Wake, worker_thread_start};
 use crate::callbacks::ServerSlot;
 use crate::objects::{Bus, Reactor};
+use crate::reactor_ops::PoolBus;
 use crate::records::ConnectionRecord;
 use crate::worker_methods::{create_event_workers, create_user_workers};
 use crate::{factory, pool_native, server_methods, view};
@@ -224,9 +225,13 @@ fn body(serv: view::Server<'_>, id: u32, kind: WorkerType) {
     swoole_set_worker_type(kind as c_int);
     swoole_set_worker_id(id);
     swoole_set_worker_pid(pid);
-    let message_bus = matches!(kind, WorkerType::Task | WorkerType::User);
-    if message_bus {
-        create_message_bus(serv);
+    // The thread's own bus, which outlives its use as the thread's below.
+    let bus = matches!(kind, WorkerType::Task | WorkerType::User).then(|| Box::new(new_bus(serv)));
+    if let Some(bus) = &bus {
+        init_bus(serv, bus);
+        swoole_rs_corebase::set_thread_message_bus(
+            core::ptr::from_ref::<PoolBus>(bus).cast_mut().cast(),
+        );
     }
     let worker = (kind != WorkerType::Manager).then(|| {
         let worker = serv.worker_record(slot);
@@ -247,12 +252,10 @@ fn body(serv: view::Server<'_>, id: u32, kind: WorkerType) {
     let thread = manager(serv).thread(id as usize);
     // SAFETY: `thread_main` over the `Main` it is lent, which outlives the call.
     unsafe { worker_thread_start(thread, thread_main, (&raw mut main).cast()) };
-    if message_bus {
-        let bus = swoole_rs_corebase::thread_message_bus();
-        // SAFETY: the bus `create_message_bus` made for this thread, freed once.
-        unsafe { pool_native::free_bus(bus) };
+    if bus.is_some() {
         swoole_rs_corebase::set_thread_message_bus(core::ptr::null_mut());
     }
+    drop(bus);
     if worker.is_some() {
         manager(serv).push(Wake::Exited(slot));
     } else {
@@ -268,19 +271,21 @@ fn body(serv: view::Server<'_>, id: u32, kind: WorkerType) {
 }
 
 /// The task and user workers' own message bus.
-fn create_message_bus(serv: view::Server<'_>) {
+fn new_bus(serv: view::Server<'_>) -> PoolBus {
     let counter = core::ptr::from_ref(&serv.counters().pipe_packet_msg_id);
     // SAFETY: the server's shared counters, mapped until `swr_v1_server_delete`,
     // after this thread has freed its bus.
-    let bus = Box::new(pool_native::new_bus(unsafe { &*counter }));
-    // The new bus, used by this thread alone.
-    let handle = Bus::over(&bus);
+    pool_native::new_bus(unsafe { &*counter })
+}
+
+/// Readies the thread's new bus, used by this thread alone, at the address it keeps.
+fn init_bus(serv: view::Server<'_>, bus: &PoolBus) {
+    let handle = Bus::over(bus);
     handle.set_always_chunked();
     if !handle.alloc_buffer(serv.config().ipc_max_size() as usize) {
         std::alloc::handle_alloc_error(std::alloc::Layout::new::<u8>());
     }
     server_methods::init_pipe_sockets(serv, handle);
-    swoole_rs_corebase::set_thread_message_bus(Box::into_raw(bus).cast());
 }
 
 /// What a thread runs inside `worker_thread_start`: its server, slot and worker.

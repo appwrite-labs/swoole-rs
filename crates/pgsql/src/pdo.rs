@@ -8,6 +8,7 @@ use crate::{
 };
 use pq_sys::{ConnStatusType, PostgresPollingStatusType};
 use std::ffi::{c_char, c_int, c_void};
+use std::marker::PhantomData;
 use swoole_rs_zend::sys::swr_zend_pdo_forget_persistent;
 
 impl Conn {
@@ -30,20 +31,22 @@ const FAILURE: c_int = -1;
 
 /// A live pgsql `pdo_dbh_t` the driver handed over: its driver data is a
 /// `pdo_pgsql_db_handle`, whose first field is the connection.
+/// Only an export parameter makes one, live for the call (`'a`).
 #[repr(transparent)]
 #[derive(Clone, Copy)]
-pub struct Dbh(*mut c_void);
+pub struct Dbh<'a>(*mut c_void, PhantomData<&'a ()>);
 
 // crates/zend-sys' shim (shim_pdo.c), with the handle typed as what it is
-// (`Dbh` has a `void *`'s layout): it only reads the live handle's `driver_data`.
+// (`Dbh` has a `void *`'s layout): it only reads the live handle's `driver_data`,
+// a `pdo_pgsql_db_handle` the handle factory set, whose first field is the
+// connection and which lives as long as the handle.
 unsafe extern "C" {
-    safe fn swr_zend_pdo_driver_data(dbh: Dbh) -> *const Conn;
+    safe fn swr_zend_pdo_driver_data<'a>(dbh: Dbh<'a>) -> &'a Conn;
 }
 
-impl Dbh {
+impl Dbh<'_> {
     fn server(self) -> Conn {
-        // SAFETY: a live pgsql handle's `pdo_pgsql_db_handle`, which `server` starts.
-        unsafe { *swr_zend_pdo_driver_data(self) }
+        *swr_zend_pdo_driver_data(self)
     }
 }
 
@@ -53,7 +56,10 @@ impl Dbh {
 /// persistent pool lets go of the handle; PDO's own owners keep it until
 /// their destructors `PQfinish` it.
 #[unsafe(no_mangle)]
-pub extern "C" fn php_swoole_pgsql_handle_io_error(dbh: Dbh, message: &mut *const c_char) -> bool {
+pub extern "C" fn php_swoole_pgsql_handle_io_error(
+    dbh: Dbh<'_>,
+    message: &mut *const c_char,
+) -> bool {
     let conn = dbh.server();
     let Some((code, first)) = take_io_error(conn) else {
         return false;
@@ -74,7 +80,7 @@ pub extern "C" fn php_swoole_pgsql_handle_io_error(dbh: Dbh, message: &mut *cons
 /// `php_swoole_pgsql_check_liveness`: an interrupted connection is dead; a
 /// broken one resets, by polling with the hook on.
 #[unsafe(no_mangle)]
-pub extern "C" fn php_swoole_pgsql_check_liveness(dbh: Dbh) -> c_int {
+pub extern "C" fn php_swoole_pgsql_check_liveness(dbh: Dbh<'_>) -> c_int {
     let conn = dbh.server();
     if has_io_error(conn) {
         return FAILURE;

@@ -22,7 +22,7 @@ pub(crate) extern "C" fn info(ssl: Ssl<'_>, where_: c_int, _result: c_int) {
     }
     let socket = ssl.ex_data(crate::swr_v1_tls_connection_index());
     // SAFETY: the SSL's connection ex data is null or its live socket record, as
-    // `swr_v1_socket_ssl_new`'s caller promised when it registered it, before any
+    // `socket_ssl_new` registered it (the record that owns the SSL), before any
     // handshake callback; its owning event loop dispatches this.
     let Some(socket) = (unsafe { Socket::from_ptr(socket.cast()) }) else {
         return;

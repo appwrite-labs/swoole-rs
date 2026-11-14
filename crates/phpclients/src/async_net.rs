@@ -165,8 +165,7 @@ fn execute_and_release(object: Obj, slot: Slot) -> Result<(), Bailout> {
 /// `zval_addref_p`: the client holds its object from `connect()` until its
 /// connection is released.
 fn hold(object: Obj) {
-    // SAFETY: a live object's refcount, which only this thread touches.
-    unsafe { (*object.as_ptr()).gc.refcount += 1 };
+    swoole_rs_zend::Value::of(&mut object_zval(object)).add_ref();
 }
 
 /// `zval_delref_p`: drop [`hold`]'s reference without destroying the object,

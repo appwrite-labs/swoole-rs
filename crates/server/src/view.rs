@@ -5,7 +5,6 @@
 //! callbacks }`, and a `ListenPort *` is the box of the port's settings.
 //! `ServerGS` is `shared::ServerShared`.
 use crate::Mode;
-use crate::callbacks::CallbackSlot;
 use crate::port_config::PortConfig;
 use crate::records::Lookup;
 use crate::{Connection, ServerConfig, ServerCounters, ServerState};
@@ -139,10 +138,7 @@ impl<'a> Server<'a> {
     /// `serv->onX != nullptr` of callback `slot`.
     #[must_use]
     pub fn has_callback(self, slot: crate::callbacks::CallbackKind) -> bool {
-        self.state()
-            .callbacks
-            .slot(slot)
-            .is_some_and(CallbackSlot::is_set)
+        self.state().callbacks.slot(slot).is_set()
     }
 
     /// The server's configuration.
@@ -162,12 +158,6 @@ impl<'a> Server<'a> {
     pub unsafe fn config_mut(self) -> &'a mut ServerConfig {
         // SAFETY: per the caller; the allocation lives as long as the server.
         unsafe { &mut *self.fields().config }
-    }
-
-    /// `&serv->message_bus`, the server's own `MessageBus`.
-    #[must_use]
-    pub fn message_bus(self) -> *mut c_void {
-        self.state().tables_ref().message_bus
     }
 
     /// `serv->get_worker_message_bus()->move_packet()`: the bus no longer frees
@@ -263,10 +253,7 @@ impl<'a> Server<'a> {
     /// The shared counters (`serv->gs`).
     #[must_use]
     pub fn counters(self) -> &'a ServerCounters {
-        let gs = self.config().gs.as_ptr().cast::<ServerCounters>();
-        // SAFETY: `swr_v1_server_new` maps `ServerGS`, which starts with the
-        // counters, for the server's life.
-        unsafe { &*gs }
+        &crate::shared::ServerShared::of(self).counters
     }
 
     /// `Server::is_started()`.
@@ -315,8 +302,8 @@ impl<'a> Server<'a> {
 
     /// The sum of a record's per-worker connection `cells`, or its one shared
     /// `total` when it has none.
-    fn connections(self, total: &AtomicU32, cells: *mut AtomicU32) -> usize {
-        if cells.is_null() {
+    fn connections(self, total: &AtomicU32, cells: &'a [AtomicU32]) -> usize {
+        if cells.is_empty() {
             return total.load(Ordering::Relaxed) as usize;
         }
         (0..self.config().worker_num.get() as usize)
@@ -327,12 +314,10 @@ impl<'a> Server<'a> {
 
     /// Event worker `id`'s cell of one of the server's records' per-worker connection
     /// `cells`; `None` without cells, or past the last event worker.
-    fn cell(self, cells: *mut AtomicU32, id: usize) -> Option<&'a AtomicU32> {
-        if cells.is_null() || id >= self.config().worker_num.get() as usize {
-            return None;
-        }
-        // SAFETY: the server's records hold one cell per event worker, mapped for its life.
-        Some(unsafe { &*cells.wrapping_add(id) })
+    fn cell(self, cells: &'a [AtomicU32], id: usize) -> Option<&'a AtomicU32> {
+        cells
+            .get(id)
+            .filter(|_| id < self.config().worker_num.get() as usize)
     }
 
     /// Event worker `id`'s count of the server's connections (base mode's
@@ -408,28 +393,19 @@ impl<'a> Server<'a> {
     /// `serv->get_task_worker_pool()`.
     #[must_use]
     pub fn task_pool(self) -> *mut PoolRecord {
-        let gs = self.config().gs.as_ptr().cast::<u8>();
-        gs.wrapping_add(core::mem::offset_of!(crate::shared::ServerShared, pools))
-            .cast()
+        self.task_pool_ref().raw()
     }
 
     /// The server's task pool, to run pool operations on.
     #[must_use]
     pub fn task_pool_ref(self) -> PoolRef<'a> {
-        self.pool_ref(false)
+        crate::shared::ServerShared::of(self).task_pool()
     }
 
     /// The server's event pool, right after its task pool.
     #[must_use]
     pub fn event_pool_ref(self) -> PoolRef<'a> {
-        self.pool_ref(true)
-    }
-
-    /// The server's task pool, or the event pool that follows it.
-    fn pool_ref(self, event: bool) -> PoolRef<'a> {
-        let pool = self.task_pool().wrapping_add(usize::from(event));
-        // SAFETY: both pools live in the server's shared record for its life.
-        unsafe { PoolRef::new(pool) }
+        crate::shared::ServerShared::of(self).event_pool()
     }
 
     /// The server's worker registry, which its configuration owns for the server's life.
@@ -810,9 +786,9 @@ mod tests {
     /// A port counts its connections in the per-worker cells when it has them, one
     /// per event worker, and in its one shared count otherwise.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
     fn port_counts_use_the_shared_worker_cells_when_present() {
         use crate::PortCounters;
-        use core::sync::atomic::AtomicU32;
         let state = crate::swr_v1_server_state_new();
         let head = [state.cast::<c_void>(), unsafe { (*state).config() }.cast()];
         let serv = unsafe { Server::from_raw(head.as_ptr().cast_mut().cast()) };
@@ -822,14 +798,16 @@ mod tests {
         port.gs.set((&raw mut counters).cast());
         unsafe { serv.config_mut() }.worker_num.set(2);
         assert_eq!(serv.port_connections(&port), 99);
-        let mut cells = [AtomicU32::new(3), AtomicU32::new(5)];
-        counters.connection_nums = crate::records::tests::naming(&mut cells);
+        counters.connection_nums = swoole_rs_memory::members::Shm::calloc(2, 4);
+        counters.cells()[0].store(3, Ordering::Relaxed);
+        counters.cells()[1].store(5, Ordering::Relaxed);
         port.gs.set((&raw mut counters).cast());
         assert_eq!(serv.port_connections(&port), 8);
         unsafe { serv.config_mut() }.worker_num.set(0);
         assert_eq!(serv.port_connections(&port), 0);
         port.gs.set(core::ptr::null_mut());
         assert_eq!(serv.port_connections(&port), 0, "no counters yet");
+        counters.connection_nums.free();
         unsafe { crate::state::free_state(state) };
     }
 }

@@ -47,14 +47,14 @@ impl<T> Object<T> {
     /// Where `std` sits: the handlers' `offset`.
     pub const OFFSET: usize = offset_of!(Self, std);
 
-    /// The body of a `create_object` handler: allocate, zero `data`, initialise
-    /// the standard object and its properties, and install `class`'s handlers.
+    /// The body of a `create_object` handler: allocate, initialise the
+    /// standard object and its properties, install `class`'s handlers, and
+    /// write `data` before the object is shared.
     /// # Safety
-    /// `ce` is `class`'s entry or a subclass of it, `class` is registered, and
-    /// all-zero bytes are a valid `T` or the caller writes `data` before the
-    /// object is shared.
+    /// `ce` is `class`'s entry or a subclass of it, and `class` is registered
+    /// with handlers laid out for `T`.
     #[must_use]
-    pub unsafe fn create(class: &Class, ce: *mut zend_class_entry) -> *mut zend_object {
+    pub unsafe fn create(class: &Class, ce: *mut zend_class_entry, data: T) -> *mut zend_object {
         // SAFETY: Zend's allocator; it zeroes everything before `std`.
         let this = unsafe { swr_zend_object_alloc(size_of::<Self>(), ce) }.cast::<Self>();
         let std = Self::std(this);
@@ -64,6 +64,8 @@ impl<T> Object<T> {
         unsafe { object_properties_init(std, ce) };
         // SAFETY: `std` is initialised and not yet shared.
         unsafe { (*std).handlers = class.handlers() };
+        // SAFETY: the object's data, allocated above and unused.
+        unsafe { Self::data_ptr(std).write(data) };
         std
     }
 
@@ -189,11 +191,8 @@ pub fn new_object<T: Custom>(data: T) -> Owned {
     const { assert!(align_of::<T>() <= 8, "emalloc aligns to 8 bytes") };
     let class = T::class();
     assert!(!class.entry().is_null(), "a registered class");
-    // SAFETY: the registered class's own entry, laid out for `T`; `data` is
-    // written before the object is shared.
-    let std = unsafe { Object::<T>::create(class, class.entry()) };
-    // SAFETY: the object's data, allocated and unused.
-    unsafe { Object::<T>::data_ptr(std).write(data) };
+    // SAFETY: the registered class's own entry, laid out for `T`.
+    let std = unsafe { Object::<T>::create(class, class.entry(), data) };
     // SAFETY: the new object, whose one reference this takes.
     unsafe { Owned::object(std) }
 }
@@ -204,12 +203,8 @@ pub fn new_object<T: Custom>(data: T) -> Owned {
 /// Zend calls it with `T`'s class or a subclass of it, which inherits it.
 unsafe extern "C" fn create<T: Custom>(ce: *mut zend_class_entry) -> *mut zend_object {
     const { assert!(align_of::<T>() <= 8, "emalloc aligns to 8 bytes") };
-    // SAFETY: per Zend; `register_object` gave `T`'s class `T`'s handlers, and
-    // the data is written below, before the object is shared.
-    let std = unsafe { Object::<T>::create(T::class(), ce) };
-    // SAFETY: the object's data, allocated and unused.
-    unsafe { Object::<T>::data_ptr(std).write(T::new()) };
-    std
+    // SAFETY: per Zend; `register_object` gave `T`'s class `T`'s handlers.
+    unsafe { Object::<T>::create(T::class(), ce, T::new()) }
 }
 
 /// `T`'s `free_obj` handler: drop the data, then free the standard object.

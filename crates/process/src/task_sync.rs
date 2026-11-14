@@ -93,6 +93,39 @@ impl<'a> ResultSlot<'a> {
         Self(unsafe { slot.cast().as_ref() })
     }
 
+    /// The slot made of `words`, the slot's whole `EventData`.
+    #[must_use]
+    pub const fn of(words: &'a [AtomicU32; EVENT_SIZE / 4]) -> Self {
+        Self(words)
+    }
+
+    /// Copies `bytes`, a packed result, over the start of the slot; the bytes after
+    /// it stay.
+    pub fn store(self, bytes: &[u8]) {
+        copy_words(self.0, bytes);
+    }
+
+    /// The temporary file a waitall slot names after its finish count, up to its
+    /// terminator; empty without one.
+    #[must_use]
+    pub fn result_path(self) -> std::ffi::CString {
+        let bytes = self
+            .data()
+            .iter()
+            .skip(1)
+            .flat_map(|word| word.load(Ordering::Relaxed).to_ne_bytes())
+            .take_while(|&byte| byte != 0)
+            .collect::<Vec<u8>>();
+        std::ffi::CString::new(bytes).unwrap_or_default()
+    }
+
+    /// One more task finished, of those a waitall slot counts.
+    pub fn add_finished(self) {
+        if let Some(count) = self.data().first() {
+            count.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
     /// The slot's `EventData`, for a result a task worker has finished writing.
     #[must_use]
     pub const fn as_ptr(self) -> *const u8 {
@@ -131,13 +164,24 @@ impl<'a> ResultSlot<'a> {
 
     /// Copies `data` over the start of the slot's data; the bytes after it stay.
     fn write_data(self, data: &[u8]) {
-        for (word, chunk) in self.data().iter().zip(data.chunks(4)) {
-            let mut bytes = word.load(Ordering::Relaxed).to_ne_bytes();
-            for (to, from) in bytes.iter_mut().zip(chunk) {
-                *to = *from;
-            }
-            word.store(u32::from_ne_bytes(bytes), Ordering::Relaxed);
+        copy_words(self.data(), data);
+    }
+}
+
+/// Copies `data` over the start of `words`, a word at a time; the bytes after it stay.
+fn copy_words(words: &[AtomicU32], data: &[u8]) {
+    let (whole, tail) = data.as_chunks::<4>();
+    let mut words = words.iter();
+    // `whole` leads the zip, so its end takes no word from `words`.
+    for (&bytes, word) in whole.iter().zip(words.by_ref()) {
+        word.store(u32::from_ne_bytes(bytes), Ordering::Relaxed);
+    }
+    if let Some(word) = words.next().filter(|_| !tail.is_empty()) {
+        let mut bytes = word.load(Ordering::Relaxed).to_ne_bytes();
+        for (to, from) in bytes.iter_mut().zip(tail) {
+            *to = *from;
         }
+        word.store(u32::from_ne_bytes(bytes), Ordering::Relaxed);
     }
 }
 
@@ -403,6 +447,19 @@ fn now() -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copy_words_keeps_the_tail_in_place() {
+        let words: Vec<AtomicU32> = (0..20).map(|_| AtomicU32::new(u32::MAX)).collect();
+        let data: Vec<u8> = (0..59).collect();
+        copy_words(&words, &data);
+        let read: Vec<u8> = words
+            .iter()
+            .flat_map(|word| word.load(Ordering::Relaxed).to_ne_bytes())
+            .collect();
+        assert_eq!(read[..59], data[..]);
+        assert!(read[59..].iter().all(|&byte| byte == 0xff));
+    }
 
     /// A scripted server: dispatch results, notifications.
     #[derive(Default)]

@@ -50,10 +50,9 @@ pub extern "C" fn swr_v1_server_new(mode: c_int) -> *mut c_void {
     let counters = unsafe { crate::swr_v1_server_shared_init(gs) };
     config.mode_ = Mode::from_code(mode.into())
         .unwrap_or_else(|| swoole_rs_corebase::fatal("an unknown server mode"));
-    tables.message_bus = Box::into_raw(Box::new(crate::pool_native::new_bus(
+    tables.message_bus = Some(Box::new(crate::pool_native::new_bus(
         &counters.pipe_packet_msg_id,
-    )))
-    .cast();
+    )));
     let fresh = crate::state::boxed(config, tables);
     let (config, tables) = (fresh.config(), fresh.tables());
     // The state lives until `swr_v1_server_delete` frees it.
@@ -94,12 +93,12 @@ pub unsafe extern "C-unwind" fn swr_v1_server_delete(serv: *mut c_void) {
     state.close_pipes();
     // SAFETY: the state's configuration, which nothing else uses now.
     let config = unsafe { &mut *object.config };
-    // SAFETY: `swr_v1_server_new`'s bus, freed once.
-    unsafe { crate::pool_native::free_bus(state.tables_ref().message_bus) };
-    // After the bus, which numbers its messages from a counter in here.
-    config.gs.free();
-    // SAFETY: `swr_v1_server_new`'s boxed state, not used again.
+    let mut gs = core::mem::take(&mut config.gs);
+    // SAFETY: `swr_v1_server_new`'s boxed state, not used again. Its tables own the
+    // message bus.
     drop(unsafe { Box::from_raw(object.state) });
+    // After the bus, which numbers its messages from a counter in here.
+    gs.free();
     if swoole_rs_corebase::swr_v1_core_server() == object_ptr {
         swoole_rs_corebase::swr_v1_core_set_server(ptr::null_mut());
     }

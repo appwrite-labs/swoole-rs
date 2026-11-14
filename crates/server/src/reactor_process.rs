@@ -7,7 +7,7 @@ use swoole_rs_corebase::ServerEvent;
 use swoole_rs_process::worker_record::{Worker, WorkerType};
 use swoole_rs_reactor::{Event, Running};
 
-use crate::callbacks::{CallbackKind, CallbackSlot, ServerSlot};
+use crate::callbacks::{CallbackKind, ServerSlot};
 use crate::hybrid::{Step, hybrid};
 use crate::reactor_handle::{EVENT_READ, Reactor};
 use crate::view;
@@ -142,9 +142,7 @@ pub(crate) fn main_loop(serv: view::Server<'_>, worker: Worker<'_>) -> c_int {
             .master_pid
             .store(std::process::id().cast_signed(), Relaxed);
         let callbacks = &serv.state().callbacks;
-        let on_start = callbacks
-            .slot(CallbackKind::Start)
-            .is_some_and(CallbackSlot::is_set);
+        let on_start = callbacks.slot(CallbackKind::Start).is_set();
         if on_start && !counters.onstart_called.load(Relaxed) {
             counters.onstart_called.store(true, Relaxed);
             callbacks.call_server(ServerSlot::Start, serv);

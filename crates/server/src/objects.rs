@@ -55,9 +55,10 @@ pub(crate) fn timer_reinit(manually_trigger: bool) {
 impl crate::ServerState {
     /// The server's own `MessageBus` record.
     pub(crate) fn message_bus_record(&self) -> &PoolBus {
-        // SAFETY: `swr_v1_server_new`'s boxed record, which lives as long as the
-        // server; it frees it in `swr_v1_server_delete`, with the state.
-        unsafe { &*self.tables_ref().message_bus.cast::<PoolBus>() }
+        self.tables_ref()
+            .message_bus
+            .as_deref()
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("a server without its message bus"))
     }
 
     /// The server's own `MessageBus`.

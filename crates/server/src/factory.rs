@@ -329,9 +329,8 @@ impl crate::hybrid::Hybrid for Linked {
         use swoole_rs_process::process_pool::IpcMode;
         use swoole_rs_process::worker_record::WorkerType;
         let config = serv.state().config_ref();
-        let task_pool = serv.task_pool();
-        // SAFETY: the server's task pool, reset to `{}` (no member has an initializer).
-        unsafe { task_pool.write_bytes(0, 1) };
+        // The server's task pool, reset to `{}` (no member has an initializer).
+        serv.task_pool_ref().reset();
         let key = if matches!(ipc, IpcMode::MsgQueue) {
             swoole_rs_corebase::CCast::c_cast::<c_int>(config.message_queue_key.get())
         } else {
