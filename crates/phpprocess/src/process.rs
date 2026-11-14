@@ -364,9 +364,13 @@ fn construct(call: &Call) {
         return refuse(format!("{name} can only be used in PHP CLI mode"));
     }
     match host::construct_guard() {
-        1 => return refuse(format!("{name} can't be used in master process")),
-        2 => return refuse(format!("unable to create {name} with async-io threads")),
-        _ => {}
+        Err(host::ConstructRefusal::Master) => {
+            return refuse(format!("{name} can't be used in master process"));
+        }
+        Err(host::ConstructRefusal::AsyncThreads) => {
+            return refuse(format!("unable to create {name} with async-io threads"));
+        }
+        Ok(()) => {}
     }
     drop(name);
     // Upstream makes the worker before parsing, so a failed parse leaves it set.
