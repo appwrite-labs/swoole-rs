@@ -122,8 +122,9 @@ macro_rules! call {
 }
 
 /// `SW_ERROR_BAD_HOST_ADDR` and `SW_ERROR_SSL_EMPTY_PEER_CERTIFICATE`.
-const BAD_HOST_ADDR: c_int = 722;
-const SSL_EMPTY_PEER_CERTIFICATE: c_int = 1013;
+const BAD_HOST_ADDR: c_int = swoole_rs_error::ErrorCode::SW_ERROR_BAD_HOST_ADDR as c_int;
+const SSL_EMPTY_PEER_CERTIFICATE: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SSL_EMPTY_PEER_CERTIFICATE as c_int;
 
 /// `Address::assign(type, std::string(host), port, false)` into `address`; false
 /// with the last error set.
@@ -498,7 +499,8 @@ impl Co {
     #[must_use]
     pub fn sendfile(self, filename: &CStr, offset: libc::off_t, length: usize) -> bool {
         /// `SW_ERROR_SYSTEM_CALL_FAIL`.
-        const SYSTEM_CALL_FAIL: c_int = 502;
+        const SYSTEM_CALL_FAIL: c_int =
+            swoole_rs_error::ErrorCode::SW_ERROR_SYSTEM_CALL_FAIL as c_int;
         if !available(self, WRITE) {
             return false;
         }

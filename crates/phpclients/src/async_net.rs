@@ -67,7 +67,8 @@ impl Slot {
 }
 
 /// `SW_ERROR_DNSLOOKUP_RESOLVE_FAILED`.
-const DNS_RESOLVE_FAILED: c_int = 711;
+const DNS_RESOLVE_FAILED: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_DNSLOOKUP_RESOLVE_FAILED as c_int;
 
 fn configure(entry: &mut zend_class_entry, handlers: &mut zend_object_handlers) {
     entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;

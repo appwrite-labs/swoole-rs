@@ -170,9 +170,9 @@ const CLOSE_ACTIVELY: c_int = 1 << 2;
 /// `swLog_level`'s `SW_LOG_TRACE`, `SW_LOG_NOTICE`; the `SW_ERROR_SESSION_*` codes.
 const LOG_TRACE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as c_int;
 const LOG_NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
-const SESSION_CLOSING: c_int = 1003;
-const SESSION_CLOSED: c_int = 1004;
-const SESSION_NOT_EXIST: c_int = 1005;
+const SESSION_CLOSING: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SESSION_CLOSING as c_int;
+const SESSION_CLOSED: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SESSION_CLOSED as c_int;
+const SESSION_NOT_EXIST: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SESSION_NOT_EXIST as c_int;
 
 /// `DataHead::server_fd` is `uint16_t`; native's assignment keeps the low bits.
 pub(crate) fn low16(value: c_int) -> u16 {

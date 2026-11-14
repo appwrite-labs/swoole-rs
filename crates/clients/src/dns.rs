@@ -29,7 +29,8 @@ const A: u16 = 0x01;
 const AAAA: u16 = 0x1c;
 
 /// `SW_ERROR_DNSLOOKUP_RESOLVE_FAILED` and `SW_ERROR_CO_CANCELED`.
-const RESOLVE_FAILED: c_int = 711;
+const RESOLVE_FAILED: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_DNSLOOKUP_RESOLVE_FAILED as c_int;
 const CANCELED: c_int = 10017;
 /// The domain does not encode: native warns `invalid domain[...]`.
 pub const INVALID_DOMAIN: c_int = -1;

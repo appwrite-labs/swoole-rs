@@ -203,7 +203,7 @@ pub(crate) mod native {
     }
 
     /// `SW_ERROR_WRONG_OPERATION`: there is no event loop to register with.
-    const WRONG_OPERATION: c_int = 509;
+    const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
 
     /// What a watch's socket carries, with the fd type whose readiness handler
     /// (`crate::reactor_handlers`) takes that object. Each is a parked wait's own

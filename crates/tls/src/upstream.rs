@@ -42,8 +42,8 @@ unsafe extern "C" {
 /// `SW_LOG_NOTICE`, `SW_LOG_WARNING`, `SW_ERROR_FILE_EMPTY` and `SW_ERROR_INVALID_PARAMS`.
 const LOG_NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
 const LOG_WARNING: c_int = 4;
-const FILE_EMPTY: c_int = 702;
-const INVALID_PARAMS: c_int = 505;
+const FILE_EMPTY: c_int = swoole_rs_error::ErrorCode::SW_ERROR_FILE_EMPTY as c_int;
+const INVALID_PARAMS: c_int = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as c_int;
 /// `SW_SOCKET_CORK_MIN_SIZE`.
 const CORK_MIN_SIZE: usize = 65536;
 /// `SW_FD_STREAM_SERVER`.

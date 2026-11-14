@@ -102,10 +102,13 @@ pub(crate) enum ServerCallback {
 const CALLBACKS: usize = ServerCallback::PipeMessage as usize + 1;
 pub(crate) use swoole_rs_ports::PortCallback;
 /// Error codes.
-const SW_ERROR_INVALID_PARAMS: c_int = 505;
-const SW_ERROR_PHP_RUNTIME_NOTICE: c_int = 510;
-const SW_ERROR_OPERATION_NOT_SUPPORT: c_int = 507;
-const SW_ERROR_SERVER_UNRELATED_THREAD: c_int = 9016;
+const SW_ERROR_INVALID_PARAMS: c_int = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as c_int;
+const SW_ERROR_PHP_RUNTIME_NOTICE: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_PHP_RUNTIME_NOTICE as c_int;
+const SW_ERROR_OPERATION_NOT_SUPPORT: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as c_int;
+const SW_ERROR_SERVER_UNRELATED_THREAD: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SERVER_UNRELATED_THREAD as c_int;
 /// What kind of Server an object is, its most derived class.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -1343,7 +1346,8 @@ fn start(call: &Call) {
 }
 
 /// `SW_ERROR_OUTPUT_SEND_YIELD`.
-pub(crate) const SW_ERROR_OUTPUT_SEND_YIELD: c_int = 1010;
+pub(crate) const SW_ERROR_OUTPUT_SEND_YIELD: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_OUTPUT_SEND_YIELD as c_int;
 
 /// `php_swoole_server_send_yield`: wait in the session's queue until its
 /// output buffer drains, then send; repeat while the send asks to yield again.

@@ -24,7 +24,7 @@ use swoole_rs_zend::{method_table, sys as z};
 /// `SW_PHP_CLIENT_BUFFER_SIZE`.
 const BUFFER_SIZE: i64 = 65535;
 /// `SW_ERROR_CLIENT_NO_CONNECTION`.
-const NO_CONNECTION: c_int = 5001;
+const NO_CONNECTION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_CLIENT_NO_CONNECTION as c_int;
 
 /// `struct ClientCoroObject { SocketImpl *socket; zval zsocket; ... }`: the
 /// `Coroutine\Socket` object, from connect until its close, whose core socket

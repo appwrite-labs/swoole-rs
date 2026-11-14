@@ -19,9 +19,12 @@ use swoole_rs_reactor::{
     WriteEffects, WriteError, WritePayload,
 };
 
-const SW_ERROR_OPERATION_NOT_SUPPORT: c_int = 507;
-const SW_ERROR_OUTPUT_BUFFER_OVERFLOW: c_int = 1009;
-const SW_ERROR_PACKAGE_LENGTH_TOO_LARGE: c_int = 1201;
+const SW_ERROR_OPERATION_NOT_SUPPORT: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as c_int;
+const SW_ERROR_OUTPUT_BUFFER_OVERFLOW: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_OUTPUT_BUFFER_OVERFLOW as c_int;
+const SW_ERROR_PACKAGE_LENGTH_TOO_LARGE: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_PACKAGE_LENGTH_TOO_LARGE as c_int;
 const SW_EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
 
 /// One write: the reactor, the socket, never freed while registered, and the payload.

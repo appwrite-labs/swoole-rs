@@ -31,8 +31,9 @@ use crate::methods::{FD_DGRAM_SERVER, FD_STREAM_SERVER, socket_free};
 /// `SW_ERROR_SSL_CREATE_SESSION_FAILED`.
 const LOG_WARNING: c_int = 4;
 const LOG_ERROR: c_int = 5;
-const WRONG_OPERATION: c_int = 509;
-const SSL_CREATE_SESSION_FAILED: c_int = 1020;
+const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
+const SSL_CREATE_SESSION_FAILED: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SSL_CREATE_SESSION_FAILED as c_int;
 /// `SSL_TLSEXT_ERR_OK` and `SSL_TLSEXT_ERR_NOACK`.
 const TLSEXT_OK: c_int = 0;
 const TLSEXT_NOACK: c_int = 3;

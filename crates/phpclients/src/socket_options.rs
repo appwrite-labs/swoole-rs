@@ -37,7 +37,8 @@ const SOCK_UDP6: c_int = 4;
 /// `SW_DATA_EOF_MAXLEN`.
 const EOF_MAXLEN: usize = 8;
 /// `SW_ERROR_OPERATION_NOT_SUPPORT`.
-const OPERATION_NOT_SUPPORT: i64 = 507;
+const OPERATION_NOT_SUPPORT: i64 =
+    swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as i64;
 
 /// `open_fastcgi_protocol`'s length: the record's content and padding lengths
 /// plus its 8-byte header, or -1 past 65535.

@@ -13,11 +13,15 @@ use std::ffi::{CStr, c_int, c_void};
 /// `swoole_print_backtrace_on_error()`.
 pub type ChangeLog = fn(origin: &CStr, code: c_int, message: &str);
 
-const SW_ERROR_EVENT_REMOVE_FAILED: c_int = 800;
-const SW_ERROR_EVENT_ADD_FAILED: c_int = 801;
+const SW_ERROR_EVENT_REMOVE_FAILED: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_EVENT_REMOVE_FAILED as c_int;
+const SW_ERROR_EVENT_ADD_FAILED: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_EVENT_ADD_FAILED as c_int;
 #[cfg(not(target_os = "linux"))]
-const SW_ERROR_EVENT_UPDATE_FAILED: c_int = 802;
-const SW_ERROR_SOCKET_NOT_EXISTS: c_int = 6003;
+const SW_ERROR_EVENT_UPDATE_FAILED: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_EVENT_UPDATE_FAILED as c_int;
+const SW_ERROR_SOCKET_NOT_EXISTS: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SOCKET_NOT_EXISTS as c_int;
 
 /// `Reactor::change`'s operations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

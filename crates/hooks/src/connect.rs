@@ -21,13 +21,17 @@ use swoole_rs_reactor::{CLASS_INET4, CLASS_INET6, type_is};
 use swoole_rs_tls::upstream::socket_free;
 
 /// Swoole error codes this sequence sets.
-const WRONG_OPERATION: c_int = 509;
-const BAD_HOST_ADDR: c_int = 722;
-const SSL_BAD_CLIENT: c_int = 1015;
-const SSL_HANDSHAKE_FAILED: c_int = 1018;
-const SOCKS5_HANDSHAKE_FAILED: c_int = 7005;
-const HTTP_PROXY_HANDSHAKE_FAILED: c_int = 7103;
-const HTTP_PROXY_BAD_RESPONSE: c_int = 7104;
+const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
+const BAD_HOST_ADDR: c_int = swoole_rs_error::ErrorCode::SW_ERROR_BAD_HOST_ADDR as c_int;
+const SSL_BAD_CLIENT: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SSL_BAD_CLIENT as c_int;
+const SSL_HANDSHAKE_FAILED: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SSL_HANDSHAKE_FAILED as c_int;
+const SOCKS5_HANDSHAKE_FAILED: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SOCKS5_HANDSHAKE_FAILED as c_int;
+const HTTP_PROXY_HANDSHAKE_FAILED: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_HTTP_PROXY_HANDSHAKE_FAILED as c_int;
+const HTTP_PROXY_BAD_RESPONSE: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_HTTP_PROXY_BAD_RESPONSE as c_int;
 /// `SW_SOCK_TCP` and `SW_SOCK_TCP6`.
 const SOCK_TCP: c_int = 1;
 const SOCK_TCP6: c_int = 3;
