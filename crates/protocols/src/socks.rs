@@ -52,52 +52,53 @@ pub fn socks_transition(
     }
 }
 
-/// The username/password request in `output`: its size, or -1 when `output` is
+/// The username/password request in `output`: its size, or `None` when `output` is
 /// too short or either credential is over 255 bytes.
 #[must_use]
-pub fn socks_auth(user: &[u8], password: &[u8], output: &mut [u8]) -> i64 {
-    let Some(size) = user
-        .len()
-        .checked_add(password.len())
-        .and_then(|n| n.checked_add(3))
-    else {
-        return -1;
-    };
-    let Some(output) = output.get_mut(..size) else {
-        return -1;
-    };
+pub fn socks_auth(user: &[u8], password: &[u8], output: &mut [u8]) -> Option<usize> {
+    let size = user.len().checked_add(password.len())?.checked_add(3)?;
+    let output = output.get_mut(..size)?;
     // Upstream's Socks5Proxy::create refuses credentials over 250 bytes; a longer one
     // would wrap its one-byte length, so refuse it here too.
-    let (Ok(user_byte), Ok(password_byte)) =
-        (u8::try_from(user.len()), u8::try_from(password.len()))
-    else {
-        return -1;
-    };
+    let user_byte = u8::try_from(user.len()).ok()?;
+    let password_byte = u8::try_from(password.len()).ok()?;
     crate::concat(output, &[&[1, user_byte], user, &[password_byte], password]);
-    i64::try_from(size).unwrap_or(-1)
+    Some(size)
+}
+
+/// Why [`socks_connect`] refused to encode a request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectRefusal {
+    /// A domain over 255 bytes (upstream b58d6342e).
+    DomainTooLong,
+    /// Another address type or length, or an output too short.
+    Invalid,
 }
 
 /// Encode CONNECT with a borrowed domain (type 3), or already validated native
 /// IPv4/IPv6 bytes (types 1/4). Native address validation preserves errno/errors.
-/// Returns -2 for a domain over 255 bytes (upstream b58d6342e), before any write;
-/// -1 for another type or length, or an `output` too short.
-#[must_use]
-pub fn socks_connect(address_type: u8, address: &[u8], port: u16, output: &mut [u8]) -> i64 {
+/// Returns the request's size.
+/// # Errors
+/// The [`ConnectRefusal`], before any write.
+pub fn socks_connect(
+    address_type: u8,
+    address: &[u8],
+    port: u16,
+    output: &mut [u8],
+) -> Result<usize, ConnectRefusal> {
     let length = address.len();
     if !matches!((address_type, length), (1, 4) | (4, 16) | (3, _)) {
-        return -1;
+        return Err(ConnectRefusal::Invalid);
     }
     let domain_length = u8::try_from(length);
     if address_type == 3 && domain_length.is_err() {
-        return -2;
+        return Err(ConnectRefusal::DomainTooLong);
     }
     let offset = if address_type == 3 { 5usize } else { 4usize };
-    let Some(size) = length.checked_add(offset + 2) else {
-        return -1;
-    };
-    let Some(output) = output.get_mut(..size) else {
-        return -1;
-    };
+    let size = length
+        .checked_add(offset + 2)
+        .ok_or(ConnectRefusal::Invalid)?;
+    let output = output.get_mut(..size).ok_or(ConnectRefusal::Invalid)?;
     let domain_length = [domain_length.unwrap_or(0)];
     let domain_length: &[u8] = if address_type == 3 {
         &domain_length
@@ -113,7 +114,7 @@ pub fn socks_connect(address_type: u8, address: &[u8], port: u16, output: &mut [
             &port.to_be_bytes(),
         ],
     );
-    i64::try_from(size).unwrap_or(-1)
+    Ok(size)
 }
 
 /// The three-byte method negotiation in `output`: the method it offers, or `None`
@@ -193,11 +194,14 @@ mod tests {
         assert_eq!(socks_strerror(i32::MIN).to_bytes(), b"Unknown error");
         let mut output = [0xa5; 512];
         let destination = [b'x'; 256];
-        assert_eq!(socks_connect(3, &destination, 0, &mut output), -2);
+        assert_eq!(
+            socks_connect(3, &destination, 0, &mut output),
+            Err(ConnectRefusal::DomainTooLong)
+        );
         assert_eq!(output, [0xa5; 512]);
         assert_eq!(
             socks_connect(3, &destination[..255], u16::MAX, &mut output),
-            262
+            Ok(262)
         );
         assert_eq!(&output[..5], &[5, 1, 0, 3, 255]);
         assert_eq!(&output[260..262], &[255, 255]);
