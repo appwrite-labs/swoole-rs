@@ -91,9 +91,9 @@ pub(crate) fn on_read(
         read.frames = read.conn.websocket_status() >= WebSocketStatus::Handshake
             && port.open_websocket_protocol.get();
     }
-    let result = readable(kind, &mut read);
+    let ok = readable(kind, &mut read);
     *event = read.event.get();
-    result
+    if ok { 0 } else { -1 }
 }
 
 fn errno() -> c_int {
@@ -248,7 +248,7 @@ impl Connection for Read<'_> {
     /// buffer's start. Inlined into each request's read: out of line it costs the
     /// callgrind `socket` workload about 40 instructions a request (#3908).
     #[inline(always)]
-    fn dispatch(&mut self, dispatch: Dispatch, length: u64) -> i64 {
+    fn dispatch(&mut self, dispatch: Dispatch, length: u64) -> bool {
         let data = RecvData {
             info: DataHead {
                 len: u32::try_from(length).unwrap_or(u32::MAX),
@@ -274,15 +274,15 @@ impl Connection for Read<'_> {
             counters.concurrency.load(Ordering::Relaxed)
                 >= counters.max_concurrency.load(Ordering::Relaxed)
         };
-        let result = if busy {
+        let dispatched = if busy {
             self.send(Reply::Unavailable);
-            -1
+            false
         } else {
             // SAFETY: the port's protocol, the live socket and its data.
-            unsafe { dispatch_task(proto, self.socket.as_ptr().cast(), rdata) }
+            unsafe { dispatch_task(proto, self.socket.as_ptr().cast(), rdata) >= 0 }
         };
         if dispatch == Dispatch::Task {
-            return i64::from(result);
+            return dispatched;
         }
         // The connection, which dispatch may have given a new request, unless the
         // request callback closed it ([`Connection::active`]).
@@ -291,7 +291,7 @@ impl Connection for Read<'_> {
         } else {
             self.conn.object().cast()
         };
-        i64::from(result)
+        dispatched
     }
 
     /// The socket first: a request callback that runs inline (base and thread mode) may
