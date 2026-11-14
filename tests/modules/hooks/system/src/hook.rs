@@ -6,6 +6,7 @@
 //! crates/hooks' `hooked::connect`, `accept`, `poll_fake`, `sendmsg` and `recvmsg`: they take
 //! the address as crates/corebase's `SocketAddress` (`Address::assign` is crates/clients'
 //! `address::assign`), the pollfds as a slice and the message as its borrowed buffers.
+//! `swoole_coroutine_getaddrinfo` and `_gethostbyname` are `stdio`'s, over `&CStr` names.
 
 use super::socket::SW_SOCK_TCP;
 use super::{
@@ -22,6 +23,7 @@ use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_hooks::hooked::{
     self, swoole_coroutine_get_socket_object, swoole_coroutine_get_socket_object_ex,
 };
+use swoole_rs_hooks::stdio::{swoole_coroutine_getaddrinfo, swoole_coroutine_gethostbyname};
 
 // glibc's values (the core-tests build is Linux).
 const O_RDWR: c_int = 2;
@@ -166,13 +168,6 @@ unsafe extern "C" {
     fn swoole_coroutine_socket_set_timeout(fd: c_int, which: c_int, timeout: f64) -> c_int;
     fn swoole_coroutine_socket_set_connect_timeout(fd: c_int, timeout: f64) -> c_int;
     fn swoole_coroutine_socket_wait_event(fd: c_int, event: c_int, timeout: f64) -> c_int;
-    fn swoole_coroutine_getaddrinfo(
-        name: *const c_char,
-        service: *const c_char,
-        req: *const AddrInfo,
-        pai: *mut *mut AddrInfo,
-    ) -> c_int;
-    fn swoole_coroutine_gethostbyname(name: *const c_char) -> *mut c_void;
 }
 
 unsafe extern "C" {
@@ -384,12 +379,10 @@ fn file() {
 
 fn gethostbyname() {
     run(|| {
-        // SAFETY: a NUL-terminated name.
-        let result1 = unsafe { swoole_coroutine_gethostbyname(HOST_1.as_ptr()) };
+        let result1 = swoole_coroutine_gethostbyname(HOST_1);
         assert!(!result1.is_null());
 
-        // SAFETY: as above.
-        let result2 = unsafe { swoole_coroutine_gethostbyname(HOST_2.as_ptr()) };
+        let result2 = swoole_coroutine_gethostbyname(HOST_2);
         assert!(result2.is_null());
         // SAFETY: this thread's h_errno.
         assert_eq!(unsafe { *__h_errno_location() }, HOST_NOT_FOUND);
@@ -410,10 +403,10 @@ fn getaddrinfo() {
         };
 
         let mut result: *mut AddrInfo = std::ptr::null_mut();
-        // SAFETY: NUL-terminated names, readable hints, a writable result.
-        let result1 = unsafe {
-            swoole_coroutine_getaddrinfo(HOST_1.as_ptr(), c"http".as_ptr(), &hints, &mut result)
-        };
+        // SAFETY: the hints and the result slot as glibc's `addrinfo`, which `AddrInfo` is.
+        let (hints, slot) =
+            unsafe { (&*(&raw const hints).cast(), &mut *(&raw mut result).cast()) };
+        let result1 = swoole_coroutine_getaddrinfo(Some(HOST_1), Some(c"http"), Some(hints), slot);
         assert_eq!(result1, 0);
 
         let mut curr = result;
@@ -429,10 +422,9 @@ fn getaddrinfo() {
         unsafe { freeaddrinfo(result) };
 
         result = std::ptr::null_mut();
-        // SAFETY: as above, with no service.
-        let result2 = unsafe {
-            swoole_coroutine_getaddrinfo(HOST_2.as_ptr(), std::ptr::null(), &hints, &mut result)
-        };
+        // SAFETY: as above.
+        let slot = unsafe { &mut *(&raw mut result).cast() };
+        let result2 = swoole_coroutine_getaddrinfo(Some(HOST_2), None, Some(hints), slot);
         assert_eq!(result2, EAI_NONAME);
         assert!(result.is_null());
         // SAFETY: freeaddrinfo(NULL), as upstream.
