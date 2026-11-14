@@ -4,7 +4,8 @@ use core::ffi::c_int;
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{DataHead, log, net_types::Protocol};
 use swoole_rs_protocols_ffi::{
-    ORIGIN, RESP_RECV_CLOSE, RESP_RECV_DONE, RespConnection, RespRequest, SW_ERR, request,
+    Dispatched, ORIGIN, RESP_RECV_CLOSE, RESP_RECV_DONE, RespConnection, RespRequest, SW_ERR,
+    request,
 };
 use swoole_rs_reactor::{Caught, Socket};
 use swoole_rs_server::ConnectionRecord;
@@ -71,7 +72,7 @@ impl RespConnection for Connection<'_> {
         self.string().extend(size);
     }
 
-    fn dispatch(&mut self) -> c_int {
+    fn dispatch(&mut self) -> Dispatched {
         let buffer = self.string();
         let data = RecvData {
             info: DataHead {
@@ -81,7 +82,7 @@ impl RespConnection for Connection<'_> {
             data: buffer.as_mut_ptr(),
         };
         let Some(on_package) = self.protocol.on_package else {
-            return -1;
+            return Dispatched::Failed;
         };
         // SAFETY: upstream's call, over the live protocol, socket and packet.
         if unsafe {
@@ -92,9 +93,13 @@ impl RespConnection for Connection<'_> {
             )
         } < 0
         {
-            return -1;
+            return Dispatched::Failed;
         }
-        c_int::from(self.socket.read(|s| s.removed))
+        if self.socket.read(|s| s.removed) {
+            Dispatched::Removed
+        } else {
+            Dispatched::Kept
+        }
     }
 
     fn clear(&mut self) {
