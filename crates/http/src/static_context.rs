@@ -287,7 +287,7 @@ impl HttpStaticContext {
             length: 0,
             filesize: 0,
             part: 1,
-            separator: 0,
+            separator: false,
         };
         let mut length = 0;
         let status = range_format(&range, &mut [], &mut length);

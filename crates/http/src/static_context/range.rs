@@ -272,7 +272,7 @@ impl HttpStaticContext {
                     length,
                     filesize: self.facts.filesize,
                     part: 0,
-                    separator: u32::from(self.tasks.count() != 0),
+                    separator: self.tasks.count() != 0,
                 };
                 let result = self.tasks.prepare_range(
                     i64::try_from(offset).unwrap_or(i64::MAX),
