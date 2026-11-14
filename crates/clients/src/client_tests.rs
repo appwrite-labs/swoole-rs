@@ -382,15 +382,15 @@ fn close_returns_zero_when_on_close_released_the_client() {
 fn shutdown_records_each_direction_once() {
     let client = client(1, false, false);
     let shutdown = |how| shutdown(Handle(client), how);
-    assert_eq!(shutdown(99), ERR);
+    assert!(!shutdown(99));
     assert_eq!(log::last_error(), libc::EINVAL);
     // The fd is -1, so the system call fails.
-    assert_eq!(shutdown(libc::SHUT_RD), ERR);
+    assert!(!shutdown(libc::SHUT_RD));
     assert!(!flag(client, Flag::ShutdownRead));
     Handle(client).set(Flag::ShutdownWrite, true);
-    assert_eq!(shutdown(libc::SHUT_WR), ERR);
+    assert!(!shutdown(libc::SHUT_WR));
     Handle(client).set(Flag::Closed, true);
-    assert_eq!(shutdown(libc::SHUT_RDWR), ERR);
+    assert!(!shutdown(libc::SHUT_RDWR));
     free(client);
 }
 
@@ -732,7 +732,7 @@ fn tls_handshake_names_the_host_and_verifies_the_peer() {
         (*tls.fields).allow_self_signed = true;
     }
     mock(|m| m.ssl_connect_ready = true);
-    assert_eq!(ssl_handshake(Handle(client)), OK);
+    assert!(ssl_handshake(Handle(client)));
     assert_eq!(
         taken(),
         [
