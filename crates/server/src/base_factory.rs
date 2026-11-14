@@ -525,7 +525,7 @@ pub(crate) fn end(serv: view::Server<'_>, id: c_long, flags: c_int) -> bool {
     let empty = socket.read(|s| out_buffer(s).is_none_or(|b| swr_cpp_buffer_empty(b)));
     let reactor = Reactor::thread();
     if empty || now {
-        return crate::conn_io::close_connection(serv, reactor, Some(socket)) == 0;
+        return crate::conn_io::close_connection(serv, reactor, Some(socket));
     }
     c.set_close_queued(true);
     socket.read(|s| out_buffer(s).map(|b| swr_cpp_buffer_typed_close(b)));

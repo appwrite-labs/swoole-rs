@@ -15,8 +15,6 @@ use crate::view;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub(crate) mod native;
 
-const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
-const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
 /// `SW_FD_SESSION`, `SW_FD_STREAM_SERVER` and `SW_SSL_STATE_READY`.
 const FD_SESSION: c_int = 0;
 const FD_STREAM_SERVER: c_int = 1;
@@ -193,34 +191,32 @@ pub(crate) fn with_server(reactor: Reactor, run: impl FnOnce(view::Server<'_>) -
 /// `ReactorProcess_onClose`: the reactor's default error handler.
 extern "C" fn on_close(reactor: Running<'_>, event: &mut Event) -> c_int {
     let reactor = Reactor::running(reactor);
-    with_server(reactor, |serv| close(serv, reactor, event))
+    with_server(reactor, |serv| {
+        crate::conn_io::status(close(serv, reactor, event))
+    })
 }
 
 /// The peer closed (or errored) the connection of `event`: closed now when it already
 /// left the reactor or its close is queued, else the worker hears of it.
-pub(crate) fn close(serv: view::Server<'_>, reactor: Reactor, event: &Event) -> c_int {
+pub(crate) fn close(serv: view::Server<'_>, reactor: Reactor, event: &Event) -> bool {
     let Some(conn) = serv.at(event.fd()).filter(|conn| conn.is_active()) else {
-        return ERR;
+        return false;
     };
     let Some(socket) = event.socket() else {
-        return ERR;
+        return false;
     };
     if socket.read(|s| s.removed) {
         return crate::conn_io::close_connection(serv, reactor, Some(socket));
     }
     if !reactor.del(socket) {
-        return ERR;
+        return false;
     }
     if conn.close_queued() {
         return crate::conn_io::close_connection(serv, reactor, Some(socket));
     }
     // The client closed the connection: it is no longer usable.
     conn.set_peer_closed(true);
-    if crate::server_methods::notify(serv, conn, ServerEvent::Close) {
-        OK
-    } else {
-        ERR
-    }
+    crate::server_methods::notify(serv, conn, ServerEvent::Close)
 }
 
 /// `ReactorProcess_onTimeout`: close the connections idle past the heartbeat, or
@@ -399,7 +395,7 @@ mod tests {
         let (serv, reactor) = (live.server(), live.reactor());
         let conn = session(&live, 1);
         let fd = conn.fd();
-        assert_eq!(close(serv, reactor, &conn.event(0, 0)), OK);
+        assert!(close(serv, reactor, &conn.event(0, 0)));
         let listener = u16::try_from(live.listener_fd).unwrap();
         let notify = Call::Notify(c_long::from(fd), 0, 4, listener);
         assert_eq!(calls(), [notify], "the worker hears");
@@ -408,10 +404,10 @@ mod tests {
 
         let conn = session(&live, 2);
         conn.set_close_queued(true);
-        assert_eq!(close(serv, reactor, &conn.event(0, 0)), OK);
+        assert!(close(serv, reactor, &conn.event(0, 0)));
         assert_eq!(calls(), [], "a queued close closes now");
         assert!(closed(conn));
-        assert_eq!(close(serv, reactor, &conn.event(0, 0)), ERR, "gone");
+        assert!(!close(serv, reactor, &conn.event(0, 0)), "gone");
     }
 
     #[test]
@@ -421,7 +417,7 @@ mod tests {
         let (serv, reactor) = (live.server(), live.reactor());
         let conn = session(&live, 1);
         assert!(reactor.del(conn.socket().unwrap()));
-        assert_eq!(close(serv, reactor, &conn.event(0, 0)), OK);
+        assert!(close(serv, reactor, &conn.event(0, 0)));
         assert_eq!(calls(), [], "nobody is told");
         assert!(closed(conn));
     }

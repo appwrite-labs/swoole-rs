@@ -151,7 +151,11 @@ pub(crate) fn on_packet(
     let session = unsafe { &*session };
     appended(swr_v1_tls_dtls_append(session, data));
     if !dtls_session_listen(session) {
-        return crate::conn_io::close_connection(serv, reactor, Some(record));
+        return crate::conn_io::status(crate::conn_io::close_connection(
+            serv,
+            reactor,
+            Some(record),
+        ));
     }
     // A session socket's connection is its fd's slot.
     let fd = libc::c_long::from(record.fd());

@@ -132,21 +132,21 @@ pub(crate) fn each_connection(state: &ServerState, mut each: impl FnMut(Connecti
 
 /// `ReactorThread::close_connection`: close `session` now when nobody is told,
 /// else notify the worker through the close event.
-pub(crate) fn close(serv: view::Server<'_>, reactor: Reactor, session: c_long) -> c_int {
+pub(crate) fn close(serv: view::Server<'_>, reactor: Reactor, session: c_long) {
     let Some(conn) = serv.state().connection(session, Lookup::Verified) else {
         let m = format_args!("force close connection failed, session#{session} does not exist");
         let code = ErrorCode::SW_ERROR_SESSION_NOT_EXIST as c_int;
         log::error_log(SW_LOG_TRACE, code, c"ReactorThread::close_connection", m);
-        return 0;
+        return;
     };
     // A TLS connection that never finished its handshake has nobody to notify.
     let handshaking = conn.ssl() && !conn.ssl_ready();
     if serv.state().config_ref().disable_notify.get() || conn.close_force() || handshaking {
-        return crate::conn_io::close_connection(serv, reactor, conn.socket());
+        crate::conn_io::close_connection(serv, reactor, conn.socket());
+        return;
     }
     conn.set_close_force(true);
     reactor.trigger_close(&mut conn.event(0, 0));
-    0
 }
 
 /// `Server::heartbeat_check`: close `reactor`'s connections idle past their port's
@@ -361,9 +361,9 @@ mod tests {
         let (live, _client) = accepted();
         let (serv, reactor) = (live.server(), live.reactor());
         let fd = session(&live).fd();
-        assert_eq!(close(serv, reactor, 9), 0, "a missing session");
+        close(serv, reactor, 9);
         assert_eq!(handled(), []);
-        assert_eq!(close(serv, reactor, 1), 0);
+        close(serv, reactor, 1);
         assert_eq!(handled(), [("told", fd)], "the worker is told");
         assert!(session(&live).close_force());
         let conn = session(&live);
@@ -372,7 +372,7 @@ mod tests {
             swoole_rs_reactor::ChangeOp::Add,
             SW_EVENT_READ,
         );
-        assert_eq!(close(serv, reactor, 1), 0);
+        close(serv, reactor, 1);
         assert_eq!(handled(), [], "a forced close closes now");
         assert!(!conn.is_active() && conn.socket().is_none());
     }
