@@ -98,30 +98,19 @@ pub(crate) fn swr_v1_core_name_resolver_clear() {
 /// Asks each resolver in turn; true once one answers (into `out`) or marks the context
 /// final. False leaves the lookup to the system resolver.
 ///
-/// A resolver may longjmp out (a PHP bailout), so this frame holds nothing to drop
-/// across a call: each resolver is copied out under a lock released before the call.
+/// It asks the resolvers listed when it starts, in their order, as upstream walks its
+/// list: a resolver's code may add or remove one, and a removed one answers nothing
+/// (the PHP resolver keeps no reference for it). The lock is released before each call.
+/// A resolver may longjmp out (a PHP bailout), which leaks the snapshot.
 pub fn swr_v1_core_name_resolver_resolve(
     name: &[u8],
     context: &mut NameResolverContext,
     out: &mut Vec<u8>,
 ) -> bool {
-    let mut index = 0;
-    loop {
-        let next = resolvers().get(index).copied();
-        let Some(resolver) = next else {
-            return false;
-        };
-        if (resolver.resolve)(resolver.private_data(), name, context, out) || context.is_final {
-            return true;
-        }
-        // The resolver's code may have unlinked it: then the next one moved into its
-        // place. An earlier unlink moves it back a place, so the next one is here too.
-        let same =
-            |r: &Resolver| (r.private_data, r.kind) == (resolver.private_data, resolver.kind);
-        if resolvers().get(index).is_some_and(same) {
-            index += 1;
-        }
-    }
+    let listed = resolvers().clone();
+    listed.into_iter().any(|resolver| {
+        (resolver.resolve)(resolver.private_data(), name, context, out) || context.is_final
+    })
 }
 
 #[cfg(test)]
@@ -145,7 +134,11 @@ mod tests {
         name == b"name1"
     }
 
+    /// How many times [`leave`] was asked.
+    static LEFT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
     fn leave(_: *mut c_void, _: &[u8], _: &mut NameResolverContext, _: &mut Vec<u8>) -> bool {
+        LEFT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         swr_v1_core_name_resolver_remove(|_, kind| kind == 3);
         false
     }
@@ -167,6 +160,13 @@ mod tests {
         // One that unlinks itself mid-lookup: the next is still asked.
         swr_v1_core_name_resolver_add(leave, core::ptr::null_mut(), 3, false);
         assert_eq!(lookup("name1"), (true, b"127.0.0.2".to_vec()));
+        assert!(swr_v1_core_name_resolver_remove(|_, kind| kind == 3).is_null());
+        // Two identical entries, the first unlinking one of them: both are still asked.
+        LEFT.store(0, core::sync::atomic::Ordering::Relaxed);
+        swr_v1_core_name_resolver_add(leave, core::ptr::null_mut(), 3, false);
+        swr_v1_core_name_resolver_add(leave, core::ptr::null_mut(), 3, false);
+        assert_eq!(lookup("name1"), (true, b"127.0.0.2".to_vec()));
+        assert_eq!(LEFT.load(core::sync::atomic::Ordering::Relaxed), 2);
         assert!(swr_v1_core_name_resolver_remove(|_, kind| kind == 3).is_null());
         let of_kind = |_, kind| kind == 2;
         assert!(!swr_v1_core_name_resolver_remove(of_kind).is_null());
