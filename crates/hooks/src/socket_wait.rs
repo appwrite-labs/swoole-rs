@@ -9,13 +9,16 @@ use crate::co_socket::Co;
 use crate::shutdown::{READ, WRITE};
 use crate::vector::Barrier;
 use core::ffi::c_void;
+use swoole_rs_reactor::Events;
 
-/// `status` bits; the socket's `events` arrive in the `READ` and `WRITE` bits.
-const CLOSE_WAIT: u32 = 1;
-const NOBUFS: u32 = 1 << 1;
-const WANT_READ: u32 = 1 << 2;
-const WANT_WRITE: u32 = 1 << 3;
-const REMOVED: u32 = 1 << 4;
+/// The state read before a wait, after consuming the open socket's backoff flag.
+struct WaitState {
+    events: Events,
+    nobufs: bool,
+    want_read: bool,
+    want_write: bool,
+    removed: bool,
+}
 
 fn slot(event: u32) -> usize {
     usize::from(event == WRITE)
@@ -27,29 +30,22 @@ struct Wait(Co);
 impl Wait {
     /// `close_wait`, else `has_kernel_nobufs()` (which clears it); the TLS
     /// session's wants, `removed` and `events`.
-    fn status(&self) -> u32 {
+    fn snapshot(&self) -> Option<WaitState> {
         self.0
             .net(|record| {
                 if record.output.close_wait {
-                    return CLOSE_WAIT;
+                    return None;
                 }
                 let tls = !record.ssl().is_null();
-                let mut status = record.events.bits().cast_unsigned() & (READ | WRITE);
-                if core::mem::take(&mut record.kernel_nobufs) {
-                    status |= NOBUFS;
-                }
-                if tls && record.tls.want_read {
-                    status |= WANT_READ;
-                }
-                if tls && record.tls.want_write {
-                    status |= WANT_WRITE;
-                }
-                if record.removed {
-                    status |= REMOVED;
-                }
-                status
+                Some(WaitState {
+                    events: record.events & (Events::READ | Events::WRITE),
+                    nobufs: core::mem::take(&mut record.kernel_nobufs),
+                    want_read: tls && record.tls.want_read,
+                    want_write: tls && record.tls.want_write,
+                    removed: record.removed,
+                })
             })
-            .unwrap_or(CLOSE_WAIT)
+            .flatten()
     }
 
     fn bind(&self, event: u32, co: *mut c_void) {
@@ -73,26 +69,26 @@ impl Wait {
     }
 
     /// `add_event`: add `event` to the reactor unless it is there already.
-    fn add(&self, status: u32, event: u32) -> bool {
-        let removed = status & REMOVED != 0;
-        let events = if removed {
+    fn add(&self, state: &WaitState, event: u32) -> bool {
+        let event = Events::from_bits(event.cast_signed());
+        let events = if state.removed {
             event
         } else {
-            status & (READ | WRITE) | event
+            state.events | event
         };
-        let added = status & event != 0 || (NATIVE.reactor)(self.0, events, removed);
+        let added = state.events.intersects(event)
+            || (NATIVE.reactor)(self.0, events.bits().cast_unsigned(), state.removed);
         set_err(self.0, if added { 0 } else { crate::co_io::errno() });
         added
     }
 
     fn wait(&self, co: *mut c_void, event: u32, buffer: Option<WriteSlot<'_>>) -> bool {
-        let status = self.status();
-        if status & CLOSE_WAIT != 0 {
+        let Some(state) = self.snapshot() else {
             set_err(self.0, CLOSE_WAIT_ERROR);
             return false;
-        }
+        };
         let event = if event == READ { READ } else { WRITE };
-        if status & NOBUFS != 0 {
+        if state.nobufs {
             self.bind(event, co);
             (NATIVE.sleep)();
             self.bind(event, core::ptr::null_mut());
@@ -100,16 +96,16 @@ impl Wait {
         }
         set_err(self.0, 0);
         let mut added = event;
-        if event == READ && status & WANT_WRITE != 0 || event == WRITE && status & WANT_READ != 0 {
-            if status & WANT_WRITE != 0 && self.add(status, WRITE) {
+        if event == READ && state.want_write || event == WRITE && state.want_read {
+            if state.want_write && self.add(&state, WRITE) {
                 self.set_want(WRITE);
-            } else if status & WANT_READ != 0 && self.add(status, READ) {
+            } else if state.want_read && self.add(&state, READ) {
                 self.set_want(READ);
             } else {
                 return false;
             }
             added = self.want();
-        } else if !self.add(status, event) {
+        } else if !self.add(&state, event) {
             return false;
         }
         if event == WRITE
@@ -281,6 +277,13 @@ mod tests {
     use super::*;
     use crate::co_io::test_host::{ON_SUSPEND, REACTOR_OK, install, log, take};
     use crate::co_socket::TestSocket;
+
+    /// `status` bits; the socket's `events` arrive in the `READ` and `WRITE` bits.
+    const CLOSE_WAIT: u32 = 1;
+    const NOBUFS: u32 = 1 << 1;
+    const WANT_READ: u32 = 1 << 2;
+    const WANT_WRITE: u32 = 1 << 3;
+    const REMOVED: u32 = 1 << 4;
 
     fn socket(status: u32) -> TestSocket {
         install();
