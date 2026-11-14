@@ -6,39 +6,43 @@ use core::ffi::c_int;
 use swoole_rs_reactor::Caught;
 
 const CHUNK: usize = swoole_rs_corebase::constants::SW_SENDFILE_CHUNK_SIZE as usize;
-/// Outcomes besides 0 (all sent).
-pub(crate) const ZERO: c_int = 1;
-pub(crate) const FAILED: c_int = 2;
-const WAIT_FAILED: c_int = 3;
+/// Why [`send_range`] stopped short.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SendFailure {
+    /// A send returned zero.
+    Zero,
+    /// A send failed other than with `EAGAIN`, errno left set.
+    Failed,
+    /// The wait failed.
+    Wait,
+}
 
 /// Sends `[*offset, end)` with `send` (`network::Socket::sendfile` of a length
 /// from the offset, which it advances; errno set when it fails) and `wait` (the
-/// timer's start and the write wait). Returns 0 once it all went, 1 when a send
-/// returned zero, 2 when one failed other than with `EAGAIN` (errno left set) and
-/// 3 when the wait failed.
+/// timer's start and the write wait), until it all went.
 pub(crate) fn send_range(
     offset: &mut libc::off_t,
     end: usize,
     mut send: impl FnMut(&mut libc::off_t, usize) -> isize,
     mut wait: impl FnMut() -> bool,
-) -> c_int {
+) -> Result<(), SendFailure> {
     loop {
         let at = usize::try_from(*offset).unwrap_or(usize::MAX);
         if at >= end {
-            return 0;
+            return Ok(());
         }
         let sent = send(offset, (end - at).min(CHUNK));
         if sent > 0 {
             continue;
         }
         if sent == 0 {
-            return ZERO;
+            return Err(SendFailure::Zero);
         }
         if std::io::Error::last_os_error().raw_os_error() != Some(libc::EAGAIN) {
-            return FAILED;
+            return Err(SendFailure::Failed);
         }
         if !wait() {
-            return WAIT_FAILED;
+            return Err(SendFailure::Wait);
         }
     }
 }
@@ -129,7 +133,7 @@ mod tests {
         wait_ok: bool,
         start: libc::off_t,
         end: usize,
-    ) -> (c_int, libc::off_t, Vec<String>) {
+    ) -> (Result<(), SendFailure>, libc::off_t, Vec<String>) {
         SENDS.with(|s| *s.borrow_mut() = sends.to_vec());
         LOG.with(|log| log.borrow_mut().clear());
         WAIT.with(|wait| *wait.borrow_mut() = wait_ok);
@@ -143,15 +147,15 @@ mod tests {
         let eagain = -isize::try_from(libc::EAGAIN).unwrap();
         // 100,000 bytes from 10: a full chunk, a would-block wait, then the rest.
         let (outcome, offset, log) = run(&[65_536, eagain, 34_454], true, 10, 100_000);
-        assert_eq!((outcome, offset), (0, 100_000));
+        assert_eq!((outcome, offset), (Ok(()), 100_000));
         assert_eq!(log, ["send 65536", "send 34454", "wait", "send 34454"]);
-        assert_eq!(run(&[], true, 5, 5).0, 0, "nothing to send");
-        assert_eq!(run(&[0], true, 0, 10).0, ZERO);
+        assert_eq!(run(&[], true, 5, 5).0, Ok(()), "nothing to send");
+        assert_eq!(run(&[0], true, 0, 10).0, Err(SendFailure::Zero));
         assert_eq!(
             run(&[-isize::try_from(libc::EPIPE).unwrap()], true, 0, 10).0,
-            FAILED
+            Err(SendFailure::Failed)
         );
-        assert_eq!(run(&[eagain], false, 0, 10).0, WAIT_FAILED);
+        assert_eq!(run(&[eagain], false, 0, 10).0, Err(SendFailure::Wait));
     }
 
     /// `tls_sendfile` over `file`, with each send's result scripted (`None`
