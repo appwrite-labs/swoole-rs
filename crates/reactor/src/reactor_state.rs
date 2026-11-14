@@ -727,7 +727,7 @@ pub(crate) mod tests {
                             ptr::from_mut(&mut socket).cast(),
                             512
                         ),
-                        0
+                        Ok(())
                     );
                 }
                 assert_eq!(libc::write(fds[1], b"a".as_ptr().cast(), 1), 1);

@@ -194,9 +194,9 @@ impl Change {
         let fd = socket.fd;
         match self.op {
             ChangeOp::Add => {
-                let failed = registration::kqueue_add(kq, fd, token, self.events);
-                if failed != 0 {
-                    let filter = if failed == 1 { "read" } else { "write" };
+                let result = registration::kqueue_add(kq, fd, token, self.events);
+                if let Err(failed) = &result {
+                    let filter = if failed.write { "write" } else { "read" };
                     self.warn(
                         c"ReactorKqueue::add",
                         SW_ERROR_EVENT_ADD_FAILED,
@@ -207,12 +207,12 @@ impl Change {
                         ),
                     );
                 }
-                failed == 0
+                result.is_ok()
             }
             ChangeOp::Set => {
-                let failed = registration::kqueue_set(kq, fd, token, self.events);
-                if failed != 0 {
-                    let added = failed == 1 || failed == 3;
+                let result = registration::kqueue_set(kq, fd, token, self.events);
+                if let Err(failed) = &result {
+                    let added = failed.add;
                     self.warn(
                         c"ReactorKqueue::set",
                         if added {
@@ -224,11 +224,11 @@ impl Change {
                         &format!(
                             "kqueue->{}({fd}, SW_EVENT_{}) failed",
                             if added { "set" } else { "del" },
-                            if failed <= 2 { "READ" } else { "WRITE" }
+                            if failed.write { "WRITE" } else { "READ" }
                         ),
                     );
                 }
-                failed == 0
+                result.is_ok()
             }
             ChangeOp::Del => {
                 if socket.removed {
@@ -245,7 +245,7 @@ impl Change {
                 for error in errors.into_iter().filter(|error| *error != 0) {
                     self.removal_failed(error);
                 }
-                result >= 0
+                result
             }
         }
     }

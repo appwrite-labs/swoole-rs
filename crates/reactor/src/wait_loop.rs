@@ -658,7 +658,7 @@ mod tests {
             if kind == 2 {
                 assert_eq!(
                     crate::registration::kqueue_add(descriptor, fds[0], token, events),
-                    0
+                    Ok(())
                 );
             }
             assert_eq!(libc::write(fds[1], b"a".as_ptr().cast(), 1), 1);
