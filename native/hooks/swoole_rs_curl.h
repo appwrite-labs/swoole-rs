@@ -27,7 +27,7 @@ struct swr_v1_curl_multi;
 struct swr_v1_curl_handle {
     CURL *cp;
     struct swr_v1_curl_multi *multi;
-    struct swr_v1_curl_multi *easy_multi;
+    void *easy_multi; /* Rust-owned (an Rc), opaque to C */
 };
 void swr_v1_curl_multi_free(struct swr_v1_curl_multi *multi);
 void *swr_v1_curl_multi_handle(const struct swr_v1_curl_multi *multi);

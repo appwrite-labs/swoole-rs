@@ -85,8 +85,15 @@ impl Easy {
 pub struct Handle {
     cp: *mut CURL,
     multi: *mut Multi,
-    easy_multi: *mut Multi,
+    /// The handle's reference to its exec multi, which [`swr_v1_curl_destroy_handle`]
+    /// releases. C++ never reads it: to C it is an opaque pointer of the same size.
+    easy_multi: Option<Rc<Multi>>,
 }
+
+const _: () = assert!(
+    size_of::<Option<Rc<Multi>>>() == size_of::<*mut Multi>(),
+    "C's `struct swr_v1_curl_multi *easy_multi`"
+);
 
 /// `swoole::curl::Socket`: one socket curl asked to watch. The multi's map
 /// owns it, and the selector's copies keep one it removes while curl runs;
@@ -692,7 +699,7 @@ pub extern "C" fn swr_v1_curl_create_handle(cp: Easy) -> *mut Handle {
     let handle = Box::into_raw(Box::new(Handle {
         cp: cp.0,
         multi: ptr::null_mut(),
-        easy_multi: ptr::null_mut(),
+        easy_multi: None,
     }));
     cp.set_private(handle);
     handle
@@ -708,9 +715,10 @@ pub unsafe extern "C" fn swr_v1_curl_destroy_handle(cp: Easy) {
         return;
     }
     // SAFETY: the handle create_handle made, which only this frees.
-    let handle = unsafe { Box::from_raw(handle) };
-    // SAFETY: its own exec multi, or null.
-    unsafe { swr_v1_curl_multi_free(handle.easy_multi) };
+    let mut handle = unsafe { Box::from_raw(handle) };
+    if let Some(multi) = handle.easy_multi.take() {
+        release(multi);
+    }
     cp.set_private(ptr::null_mut());
 }
 
