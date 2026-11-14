@@ -891,6 +891,14 @@ mod tests {
         assert_eq!(conn.object().addr(), port, "the slot holds its port");
         let listed = conn.port().map(|port| port.raw().addr());
         assert_eq!(listed, Some(port), "as its listening port");
+        let mut unrelated = 0_u64;
+        conn.set_object((&raw mut unrelated).cast());
+        let found = live
+            .state()
+            .port_by_server_fd(fd)
+            .map(|port| port.raw().addr());
+        assert_eq!(found, Some(port), "whatever the public object holds");
+        conn.set_object(core::ptr::from_ref(live.port()).cast_mut().cast());
         assert_eq!(conn.socket_type(), 1, "TCP");
         assert_eq!(conn.info().kind, 1, "its address");
         assert_eq!(

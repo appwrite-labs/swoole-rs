@@ -247,7 +247,7 @@ impl<'a> Connection<'a> {
     field!(@[] port_ptr = port, set_port_ptr: *mut c_void);
 
     /// Records this slot as `port`'s listening socket (`Server::store_listen_socket`).
-    pub(crate) fn listen(self, port: crate::view::Port<'_>) {
+    pub(crate) fn listen(self, port: crate::view::Port<'a>) {
         self.set_port_ptr(port.raw());
     }
 
