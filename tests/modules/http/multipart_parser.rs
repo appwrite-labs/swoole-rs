@@ -9,7 +9,7 @@
     reason = "test helpers outside #[test] fns; a panic fails the case"
 )]
 use std::hash::{BuildHasher, RandomState};
-use swoole_rs_http::multipart_parser::{MultipartError, MultipartParser, Parts};
+use swoole_rs_http::multipart_parser::{Flow, MultipartError, MultipartParser, Parts};
 
 /// `MppResult`, filled by `_settings`' callbacks.
 #[derive(Default)]
@@ -22,29 +22,29 @@ struct MppResult {
 }
 
 impl Parts for MppResult {
-    fn on_header_field(&mut self, data: &[u8]) -> i32 {
+    fn on_header_field(&mut self, data: &[u8]) -> Flow {
         self.header_field = data.to_vec();
-        0
+        Flow::Go
     }
 
-    fn on_header_value(&mut self, data: &[u8]) -> i32 {
+    fn on_header_value(&mut self, data: &[u8]) -> Flow {
         self.header_value = data.to_vec();
-        0
+        Flow::Go
     }
 
-    fn on_part_data(&mut self, data: &[u8]) -> i32 {
+    fn on_part_data(&mut self, data: &[u8]) -> Flow {
         self.data.extend_from_slice(data);
-        0
+        Flow::Go
     }
 
-    fn on_headers_complete(&mut self) -> i32 {
+    fn on_headers_complete(&mut self) -> Flow {
         self.header_complete = true;
-        0
+        Flow::Go
     }
 
-    fn on_body_end(&mut self, _: &[u8]) -> i32 {
+    fn on_body_end(&mut self, _: &[u8]) -> Flow {
         self.body_end = true;
-        0
+        Flow::Go
     }
 }
 

@@ -14,7 +14,7 @@ use std::io::{BufWriter, Write};
 use std::os::unix::ffi::OsStrExt;
 use swoole_rs_buffer::string::{CppString, delete_string, new_sized_string};
 use swoole_rs_corebase::{log, set_errno};
-use swoole_rs_http::multipart_parser::{MPPE_PAUSED, MultipartParser, Parts};
+use swoole_rs_http::multipart_parser::{Flow, MultipartParser, Parts};
 use swoole_rs_http::{
     ChunkState, HttpChunked, HttpChunks, HttpFrame, HttpHeaderInfo, HttpSpan, MultipartError,
     case_equal,
@@ -146,8 +146,6 @@ impl Upload {
     }
 }
 
-/// The multipart parser's `MPPE_ERROR` callback result.
-const MPPE_ERROR: c_int = -1;
 /// `SW_HTTP_UPLOAD_FILE`.
 const UPLOAD_FILE: &[u8] = b"Swoole-Upload-File";
 /// `SW_BUFFER_SIZE_BIG`.
@@ -604,18 +602,18 @@ fn form_of(request: &mut HttpRequest) -> &mut HttpForm {
 
 /// The multipart parser's callbacks, which rewrite the body into the saved buffer.
 impl Parts for HttpRequest {
-    fn on_header_field(&mut self, data: &[u8]) -> c_int {
+    fn on_header_field(&mut self, data: &[u8]) -> Flow {
         let max_length = self.max_length as usize;
         let form = form_of(self);
         if form.header_name.len().saturating_add(data.len()) > max_length {
             (self.excepted, self.too_large) = (true, true);
-            return MPPE_PAUSED;
+            return Flow::Pause;
         }
         form.header_name.extend_from_slice(data);
-        0
+        Flow::Go
     }
 
-    fn on_header_value(&mut self, data: &[u8]) -> c_int {
+    fn on_header_value(&mut self, data: &[u8]) -> Flow {
         let form = form_of(self);
         // The value callback means the name is complete.
         let name = core::mem::take(&mut form.header_name);
@@ -629,20 +627,20 @@ impl Parts for HttpRequest {
                     "Bad Request: the reserved header 'Swoole-Upload-File' may not be sent by clients"
                 ),
             );
-            return MPPE_ERROR;
+            return Flow::Fail;
         }
         self.save(&name);
         self.save(b": ");
         self.save(data);
         self.save(b"\r\n");
         if !case_equal(&name, b"content-disposition") {
-            return 0;
+            return Flow::Go;
         }
         // `parse_cookie` over a NUL-terminated copy, stopping at the first `filename`.
         let mut value = data.to_vec();
         value.push(0);
         if swoole_rs_http::multipart_filename(&mut value) != Ok(true) {
-            return 0;
+            return Flow::Go;
         }
         let native = self.native;
         let form = form_of(self);
@@ -653,41 +651,41 @@ impl Parts for HttpRequest {
         let Some(native) = native else {
             let Some(fd) = create_tmpfile(&mut form.upload) else {
                 self.excepted = true;
-                return 0;
+                return Flow::Go;
             };
             form.fp = Some(Upload::File(BufWriter::new(File::from(fd))));
-            return 0;
+            return Flow::Go;
         };
         let name = form.upload.as_mut_ptr();
         let fd = op(native, NativeOp::Tmpfile, name.cast(), ptr::null(), 0);
         // `swoole_tmpfile`'s `int`, sign-extended.
         if fd.cast_signed() < 0 {
             self.excepted = true;
-            return 0;
+            return Flow::Go;
         }
         let fp = op(native, NativeOp::Fdopen, ptr::null_mut(), ptr::null(), fd) as *mut c_void;
         if !fp.is_null() {
             form.fp = Some(Upload::Host(native, fp));
         }
-        0
+        Flow::Go
     }
 
-    fn on_part_data(&mut self, data: &[u8]) -> c_int {
+    fn on_part_data(&mut self, data: &[u8]) -> Flow {
         let max_length = u64::from(self.max_length);
         let length = data.len();
         let form = form_of(self);
         let Some(fp) = form.fp.as_mut() else {
             if (form.saved_length() as u64).wrapping_add(length as u64) > max_length {
                 (self.excepted, self.unavailable) = (true, true);
-                return MPPE_PAUSED;
+                return Flow::Pause;
             }
             self.save(data);
-            return 0;
+            return Flow::Go;
         };
         form.upload_size = form.upload_size.wrapping_add(length);
         if form.upload_size > form.upload_max {
             (self.excepted, self.too_large) = (true, true);
-            return MPPE_PAUSED;
+            return Flow::Pause;
         }
         if !fp.write(data) {
             if let Some(fp) = form.fp.take() {
@@ -698,12 +696,12 @@ impl Parts for HttpRequest {
                 c"http_server::multipart_on_data",
                 format_args!("failed to write upload file"),
             );
-            return MPPE_PAUSED;
+            return Flow::Pause;
         }
-        0
+        Flow::Go
     }
 
-    fn on_headers_complete(&mut self) -> c_int {
+    fn on_headers_complete(&mut self) -> Flow {
         let form = form_of(self);
         form.header_name.clear();
         if form.fp.is_some() {
@@ -715,10 +713,10 @@ impl Parts for HttpRequest {
         }
         self.multipart_header_parsed = true;
         self.save(b"\r\n");
-        0
+        Flow::Go
     }
 
-    fn on_part_data_end(&mut self) -> c_int {
+    fn on_part_data_end(&mut self) -> Flow {
         self.multipart_header_parsed = false;
         let form = form_of(self);
         if let Some(fp) = form.fp.take() {
@@ -726,23 +724,23 @@ impl Parts for HttpRequest {
             fp.close(true);
         }
         self.save(b"\r\n");
-        0
+        Flow::Go
     }
 
-    fn on_part_data_begin(&mut self, boundary: &[u8]) -> c_int {
+    fn on_part_data_begin(&mut self, boundary: &[u8]) -> Flow {
         form_of(self).header_name.clear();
         self.save(boundary);
         self.save(b"\r\n");
-        0
+        Flow::Go
     }
 
-    fn on_body_end(&mut self, boundary: &[u8]) -> c_int {
+    fn on_body_end(&mut self, boundary: &[u8]) -> Flow {
         self.save(boundary);
         self.save(b"--");
         let length = form_of(self).saved_length();
         self.content_length = (length as u64).wrapping_sub(u64::from(self.header_length));
         self.tried_to_dispatch = true;
-        0
+        Flow::Go
     }
 }
 
@@ -1357,7 +1355,7 @@ mod tests {
             (form.saved, form.upload_max) = (&raw mut saved, 3);
         }
         r.max_length = 12;
-        assert_eq!(r.on_part_data(b"abc"), 1, "rejected");
+        assert_eq!(r.on_part_data(b"abc"), Flow::Pause, "rejected");
         assert!(
             r.excepted && r.unavailable && !r.too_large,
             "a field past max_length"
@@ -1366,7 +1364,7 @@ mod tests {
         if let Some(form) = r.form.as_deref_mut() {
             form.fp = Some(Upload::Host(native, ptr::without_provenance_mut(0x1000)));
         }
-        assert_eq!(r.on_part_data(b"abcd"), 1, "rejected");
+        assert_eq!(r.on_part_data(b"abcd"), Flow::Pause, "rejected");
         assert!(
             r.excepted && r.too_large,
             "an upload past upload_max_filesize"
