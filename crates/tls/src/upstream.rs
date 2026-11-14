@@ -393,6 +393,19 @@ pub fn recv(socket: Socket<'_>, buffer: &mut [impl ReadSlot], flags: c_int) -> i
     record_recv(socket, Fill::new(buffer), flags, ssl_recv_fill, steady_ms)
 }
 
+/// One [`recv`] into `buffer`'s room past its content, which then counts what it
+/// wrote: what `recv` returned.
+#[inline]
+pub fn recv_append(socket: Socket<'_>, buffer: &mut CppString) -> isize {
+    let received = recv(socket, buffer.spare(), 0);
+    if let Ok(count) = usize::try_from(received) {
+        // SAFETY: without flags (no `MSG_TRUNC`), `recv` returns how many of the
+        // room's first slots it wrote, at most the room, which ends at `size()`.
+        unsafe { buffer.set_len(buffer.len() + count) };
+    }
+    received
+}
+
 /// [`send_drain`] of `data`.
 #[must_use]
 pub fn send(socket: Socket<'_>, data: &[u8], flags: c_int) -> isize {

@@ -125,6 +125,16 @@ pub(super) mod net {
     pub(in super::super) fn recv(_: Socket<'_>, buffer: &mut [impl ReadSlot], _: c_int) -> isize {
         io("recv", buffer.len())
     }
+    pub(in super::super) fn recv_append(
+        _: Socket<'_>,
+        buffer: &mut swoole_rs_buffer::string::CppString,
+    ) -> isize {
+        let n = io("recv", buffer.spare().len());
+        if let Ok(count) = usize::try_from(n) {
+            unsafe { buffer.set_len(buffer.len() + count) };
+        }
+        n
+    }
     pub(in super::super) fn recv_sync(
         _: Socket<'_>,
         buffer: &mut [impl ReadSlot],

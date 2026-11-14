@@ -1747,8 +1747,7 @@ fn on_read(this: Handle) -> c_int {
     let http = this.proxy_state(Proxy::Http);
     if http.is_some_and(|state| state != HTTP_PROXY_READY) {
         let accepted = this.edit_input(|input, socket| {
-            let n = net::recv(socket, input.spare(), 0);
-            n > 0 && http_handshake(input, input.len() + n.cast_unsigned())
+            net::recv_append(socket, input) > 0 && swoole_rs_http_ffi::proxy_accept(input.view())
         });
         if !accepted {
             log::set_last_error(ERROR_HTTP_PROXY_HANDSHAKE_ERROR);
@@ -1763,14 +1762,7 @@ fn on_read(this: Handle) -> c_int {
     }
     let socks5 = this.proxy_state(Proxy::Socks5);
     if socks5.is_some_and(|state| state != SOCKS5_READY) {
-        let n = this.edit_input(|input, socket| {
-            let n = net::recv(socket, input.spare(), 0);
-            if n > 0 {
-                // SAFETY: the read filled `n` bytes of the free tail, which bounds them.
-                unsafe { input.set_len(input.len() + n.cast_unsigned()) };
-            }
-            n
-        });
+        let n = this.edit_input(|input, socket| net::recv_append(socket, input));
         if n <= 0 {
             log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
             return connect_failed(this);

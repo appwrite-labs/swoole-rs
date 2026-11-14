@@ -29,10 +29,8 @@ impl RespConnection for Connection<'_> {
     fn recv(&mut self) -> Received {
         let socket = self.socket;
         let buffer = self.string();
-        let received = swoole_rs_tls::upstream::recv(socket, buffer.spare(), 0);
+        let received = swoole_rs_tls::upstream::recv_append(socket, buffer);
         if let Ok(received) = usize::try_from(received) {
-            // SAFETY: the read initialized the `received` spare bytes after the content.
-            unsafe { buffer.set_len(buffer.len() + received) };
             return Received::Bytes(received);
         }
         let error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
