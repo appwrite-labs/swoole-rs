@@ -630,15 +630,12 @@ mod tests {
         let mut socket = crate::SocketRecord::with_fd(fds[0], 5);
         let token: *mut c_void = (&raw mut socket).cast();
         unsafe {
-            assert_eq!(
-                crate::reactor_state::tests::record(
-                    state.owner,
-                    &raw mut socket,
-                    crate::ChangeOp::Add,
-                    events
-                ),
-                0
-            );
+            assert!(crate::reactor_state::tests::record(
+                state.owner,
+                &raw mut socket,
+                crate::ChangeOp::Add,
+                events
+            ));
             assert!((*state.handlers).set(5, 512, Some(read)));
             let descriptor = (*state.owner).backend_fd;
             #[cfg(target_os = "linux")]
