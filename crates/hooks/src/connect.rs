@@ -49,12 +49,6 @@ pub enum Proxy {
 }
 /// `set_err(-1)` is the argument-less `set_err()`: the last error, else errno.
 const LAST_ERROR: c_int = -1;
-/// `SW_SSL_STATE_READY`, `SW_SSL_STATE_WAIT_STREAM`; `swReturnCode`'s `SW_WAIT`
-/// and `SW_READY`.
-const SSL_STATE_READY: c_int = swoole_rs_tls::SslState::SW_SSL_STATE_READY as c_int;
-const SSL_STATE_WAIT_STREAM: c_int = swoole_rs_tls::SslState::SW_SSL_STATE_WAIT_STREAM as c_int;
-const WAIT: c_int = swoole_rs_corebase::constants::ReturnCode::SW_WAIT as c_int;
-const READY: c_int = swoole_rs_corebase::constants::ReturnCode::SW_READY as c_int;
 /// `SW_EVENT_RDWR`.
 const RDWR: u32 = swoole_rs_corebase::constants::EventType::SW_EVENT_RDWR as u32;
 /// `SW_SOCKS5_STATE_HANDSHAKE` and `SW_SOCKS5_STATE_READY`, crates/clients's (a test
@@ -606,6 +600,18 @@ pub enum HandshakeMode {
     SelfDriven,
 }
 
+/// What one handshake step left to do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// The handshake is done.
+    Ready,
+    /// It needs the peer's next bytes.
+    Wait,
+    /// It can step again now.
+    Again,
+    Failed,
+}
+
 /// The socket's effects for `ssl_handshake`.
 pub trait Handshaking {
     fn mode(&self) -> HandshakeMode;
@@ -620,10 +626,7 @@ pub trait Handshaking {
     /// `ssl_context_create()`, and `ssl_create` of the socket's context.
     fn context_create(&mut self) -> bool;
     fn create(&mut self) -> bool;
-    /// One step: the client's `ssl_connect()` (-1 when it failed, else the SSL
-    /// state), the server's `ssl_accept()` return code, or for a self-driven one
-    /// 1 done, 0 again, -1 failed.
-    fn step(&mut self) -> c_int;
+    fn step(&mut self) -> Step;
     /// Waits to read under the read timeout: a timer of its own when `fresh`,
     /// else one timer for the whole handshake.
     fn wait(&mut self, fresh: bool) -> bool;
@@ -631,40 +634,25 @@ pub trait Handshaking {
     fn verify(&mut self) -> bool;
 }
 
+/// Steps until done. A client waits under a timer per wait and sets the last
+/// error when a step fails; a server waits under one timer and sets
+/// `SSL_BAD_CLIENT` whenever it fails.
 fn steps(ops: &mut impl Handshaking) -> bool {
-    match ops.mode() {
-        HandshakeMode::Client => loop {
-            match ops.step() {
-                code if code < 0 => {
-                    ops.set_err(LAST_ERROR);
-                    return false;
+    let mode = ops.mode();
+    loop {
+        match ops.step() {
+            Step::Ready => return true,
+            Step::Again => {}
+            Step::Wait if ops.wait(mode == HandshakeMode::Client) => {}
+            step => {
+                match (mode, step) {
+                    (HandshakeMode::Client, Step::Failed) => ops.set_err(LAST_ERROR),
+                    (HandshakeMode::Server, _) => ops.set_err(SSL_BAD_CLIENT),
+                    _ => {}
                 }
-                SSL_STATE_WAIT_STREAM => {
-                    if !ops.wait(true) {
-                        return false;
-                    }
-                }
-                SSL_STATE_READY => return true,
-                _ => {}
+                return false;
             }
-        },
-        HandshakeMode::Server => {
-            let mut code = ops.step();
-            while code == WAIT && ops.wait(false) {
-                code = ops.step();
-            }
-            if code != READY {
-                ops.set_err(SSL_BAD_CLIENT);
-            }
-            code == READY
         }
-        HandshakeMode::SelfDriven => loop {
-            match ops.step() {
-                1 => return true,
-                0 => {}
-                _ => return false,
-            }
-        },
     }
 }
 
@@ -1054,8 +1042,16 @@ mod tests {
         fn create(&mut self) -> bool {
             take("create", 1) != 0
         }
-        fn step(&mut self) -> c_int {
-            c_int::try_from(take("tls_step", 1)).unwrap_or(-9)
+        /// Scripted as the client's SSL state, the server's `swReturnCode` or the
+        /// self-driven step's 1 done, 0 again, -1 failed.
+        fn step(&mut self) -> Step {
+            match (self.mode, take("tls_step", 1)) {
+                (HandshakeMode::Client | HandshakeMode::SelfDriven, 1)
+                | (HandshakeMode::Server, 5) => Step::Ready,
+                (HandshakeMode::Client | HandshakeMode::Server, 2) => Step::Wait,
+                (HandshakeMode::Client, 0..) | (HandshakeMode::SelfDriven, 0) => Step::Again,
+                _ => Step::Failed,
+            }
         }
         fn wait(&mut self, fresh: bool) -> bool {
             take(if fresh { "wait_fresh" } else { "wait" }, 1) != 0
