@@ -1,7 +1,7 @@
 //! The static handler's effects, and `try_serve` and `get_dir_files` over them.
 use super::serve::Event;
 use super::{BOUNDARY_SIZE, HttpStaticContext, HttpStaticObservation, INVALID};
-use crate::static_path::{DIRECTORY, FILE, LINK};
+use crate::static_path::{Action, DIRECTORY, FILE, LINK};
 use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
@@ -105,9 +105,8 @@ impl HttpStaticContext {
         let mut action = self.serve_step(root, &begin);
         loop {
             action = match action {
-                0 => return false,
-                1 => return true,
-                2 => {
+                Ok(Action::Done(served)) => return served,
+                Ok(Action::Locations) => {
                     for location in locations {
                         if self.location(location.as_ref()).is_err() {
                             break;
@@ -115,21 +114,21 @@ impl HttpStaticContext {
                     }
                     self.serve_step(root, &Event::Locations)
                 }
-                4 => {
+                Ok(Action::Lstat) => {
                     let result = self.stat(effects);
                     if result < 0 {
                         return false;
                     }
                     self.serve_step(root, &Event::Stat(result == 1))
                 }
-                5 => {
+                Ok(Action::Realpath) => {
                     let Some(path) = self.effect_path() else {
                         return false;
                     };
                     let canonical = effects.canonical(path);
                     self.serve_step(root, &Event::Canonical(canonical.as_deref()))
                 }
-                6 => {
+                Ok(Action::Mime) => {
                     let filename = self.filename();
                     let exists = effects.mime_exists(filename);
                     self.serve_step(root, &Event::Mime(exists))
