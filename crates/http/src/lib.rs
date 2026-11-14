@@ -30,7 +30,8 @@ pub mod llhttp;
 pub mod multipart_parser;
 mod proxy;
 pub use proxy::{
-    HttpProxyRequest, proxy_authorization, proxy_credentials, proxy_handshake, proxy_pack,
+    Handshake, HttpProxyRequest, proxy_authorization, proxy_credentials, proxy_handshake,
+    proxy_pack,
 };
 mod range;
 mod range_response;
