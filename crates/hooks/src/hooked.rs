@@ -370,8 +370,14 @@ pub unsafe extern "C" fn swoole_coroutine_read(
     buf: *mut c_void,
     count: size_t,
 ) -> ssize_t {
-    // SAFETY: the caller's buffer.
-    read(fd, unsafe { slots_mut(buf, count) })
+    let buf: &mut [MaybeUninit<u8>] = if count == 0 {
+        &mut []
+    } else {
+        // SAFETY: the caller's `count` writable bytes, which a read only writes, so
+        // they may be uninitialized.
+        unsafe { core::slice::from_raw_parts_mut(buf.cast(), count) }
+    };
+    read(fd, buf)
 }
 
 /// The hooked `read(2)` into `buf`: a coroutine socket reads; any other fd reads on
@@ -403,8 +409,13 @@ pub unsafe extern "C" fn swoole_coroutine_write(
     buf: *const c_void,
     count: size_t,
 ) -> ssize_t {
-    // SAFETY: the caller's buffer.
-    write(fd, unsafe { bytes(buf, count) })
+    let buf: &[u8] = if count == 0 {
+        &[]
+    } else {
+        // SAFETY: the caller's `count` readable bytes.
+        unsafe { core::slice::from_raw_parts(buf.cast(), count) }
+    };
+    write(fd, buf)
 }
 
 /// The hooked `write(2)` of `buf`, as [`read`].
@@ -423,31 +434,6 @@ pub fn write(fd: c_int, buf: &[u8]) -> ssize_t {
         let mut socket = blocking(fd, true);
         swoole_rs_tls::upstream::write_sync(Socket::new(&mut socket), buf)
     })
-}
-
-/// The caller's `len` bytes at `buf`.
-///
-/// # Safety
-/// `buf` holds `len` readable bytes, or `len` is 0.
-pub(crate) unsafe fn bytes<'a>(buf: *const c_void, len: usize) -> &'a [u8] {
-    if len == 0 {
-        return &[];
-    }
-    // SAFETY: as the caller promises.
-    unsafe { core::slice::from_raw_parts(buf.cast(), len) }
-}
-
-/// The caller's `len` writable slots at `buf`, which may be uninitialized: a read
-/// only writes them.
-///
-/// # Safety
-/// `buf` holds `len` writable bytes, or `len` is 0.
-pub(crate) unsafe fn slots_mut<'a>(buf: *mut c_void, len: usize) -> &'a mut [MaybeUninit<u8>] {
-    if len == 0 {
-        return &mut [];
-    }
-    // SAFETY: as the caller promises.
-    unsafe { core::slice::from_raw_parts_mut(buf.cast(), len) }
 }
 
 /// The pool's `network::Socket` over `fd`: nonblocking, waiting without limit.
