@@ -640,7 +640,7 @@ impl CoSocket {
 
 /// `Socket::set_nonblock`: the `fd_option` warnings, shifted for the result.
 fn set_nonblock(network: Socket<'_>) -> u32 {
-    let result = swoole_rs_reactor::swr_v1_socket_fd_option(network.fd(), 1, -1);
+    let result = swoole_rs_reactor::swr_v1_socket_fd_option(network.fd(), Some(true), None);
     if result.ok {
         network.edit(|record| {
             record.output.nonblock = true;

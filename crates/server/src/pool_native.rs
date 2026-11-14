@@ -506,7 +506,7 @@ fn master_ops(pool: Pool<'_>, op: Op, arg: u64) -> i64 {
             }
         }
         Op::OnWorkerNotFound => {
-            let _ = pool.call_on_worker_not_found(&exit_status(arg));
+            pool.call_on_worker_not_found(&exit_status(arg));
         }
         Op::OnAfterReload => {
             pool.call_on_after_reload();

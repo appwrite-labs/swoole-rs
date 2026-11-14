@@ -439,10 +439,10 @@ impl Table {
             pool: ptr::null_mut(),
         };
         let table = this.write(table);
-        if table.mutex.init() != 0 {
+        if table.mutex.init().is_err() {
             return false;
         }
-        if table.iterator_mutex.init() != 0 {
+        if table.iterator_mutex.init().is_err() {
             table.mutex.destroy();
             return false;
         }

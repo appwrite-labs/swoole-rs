@@ -471,7 +471,7 @@ fn sync_nonblocking_connect_reports_ready_and_wait() {
 fn sync_connect_through_socks5_routes_and_handshakes() {
     let client = client(1, false, false);
     set_proxy(client, false);
-    assert_eq!(Handle(client).proxy_state(Proxy::Socks5), SOCKS5_WAIT);
+    assert_eq!(Handle(client).proxy_state(Proxy::Socks5), Some(SOCKS5_WAIT));
     assert_eq!(connect(client, c"example.test", 3.0, 0), OK);
     assert_eq!(
         taken(),
@@ -485,7 +485,10 @@ fn sync_connect_through_socks5_routes_and_handshakes() {
         ]
     );
     assert!(flag(client, Flag::Active));
-    assert_eq!(Handle(client).proxy_state(Proxy::Socks5), SOCKS5_READY);
+    assert_eq!(
+        Handle(client).proxy_state(Proxy::Socks5),
+        Some(SOCKS5_READY)
+    );
     let proxy = Handle(client).proxy(Proxy::Socks5).unwrap();
     assert_eq!(&*proxy.string(3), b"example.test");
     assert_eq!(proxy.fields().target_port, 80);
@@ -524,7 +527,10 @@ fn writable_after_connect_starts_the_socks5_handshake() {
     let result = writable(client);
     assert_eq!(result, 3);
     assert_eq!(taken(), ["event Set 512", "write 3"]);
-    assert_eq!(Handle(client).proxy_state(Proxy::Socks5), SOCKS5_HANDSHAKE);
+    assert_eq!(
+        Handle(client).proxy_state(Proxy::Socks5),
+        Some(SOCKS5_HANDSHAKE)
+    );
     assert!(flag(client, Flag::Active));
     free(client);
 }
@@ -565,7 +571,10 @@ fn connect_timeout_with_a_pending_proxy_fails_without_on_close() {
     let client = client(1, true, true);
     Handle(client).set(Flag::Active, true);
     set_proxy(client, true);
-    assert_eq!(Handle(client).proxy_state(Proxy::Http), HTTP_PROXY_WAIT);
+    assert_eq!(
+        Handle(client).proxy_state(Proxy::Http),
+        Some(HTTP_PROXY_WAIT)
+    );
     on_timeout(Handle(client));
     assert_eq!(log::last_error(), libc::ETIMEDOUT);
     assert_eq!(

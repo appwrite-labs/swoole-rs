@@ -230,9 +230,21 @@ pub fn swr_v1_memory_channel_bytes(size: usize, maxlen: usize) -> usize {
         .unwrap_or(0)
 }
 
+/// Why [`swr_v1_memory_channel_init`] made no channel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChannelInitError {
+    /// A null record or a size the record can't hold.
+    Invalid,
+    /// `pipe()` failed, with errno intact.
+    Pipe,
+    /// The mutex failed.
+    Mutex,
+}
+
 /// Initialize a fresh record and create its mutex (`SW_CHAN_LOCK`) and pipe
-/// (`SW_CHAN_NOTIFY`): 0 ready, -1 invalid configuration, 1 `pipe()` failed with
-/// errno intact, 2 the mutex failed. Nothing is left to release on failure.
+/// (`SW_CHAN_NOTIFY`). Nothing is left to release on failure.
+/// # Errors
+/// Which step failed.
 /// # Safety
 /// `record` is exclusively lent, aligned, and `swr_v1_memory_channel_bytes(size, maxlen)`
 /// bytes long.
@@ -241,12 +253,12 @@ pub unsafe fn swr_v1_memory_channel_init(
     size: usize,
     maxlen: usize,
     flags: i32,
-) -> i32 {
+) -> Result<(), ChannelInitError> {
     let Ok(length) = i32::try_from(maxlen) else {
-        return -1;
+        return Err(ChannelInitError::Invalid);
     };
     if record.is_null() || swr_v1_memory_channel_bytes(size, maxlen) == 0 {
-        return -1;
+        return Err(ChannelInitError::Invalid);
     }
     let queue = Channel {
         head: 0,
@@ -272,15 +284,15 @@ pub unsafe fn swr_v1_memory_channel_init(
     let record = unsafe { &mut *record.cast::<std::mem::MaybeUninit<Record>>() }.write(fresh);
     if flags & NOTIFY != 0 {
         let Some(notify) = sys::pipe() else {
-            return 1;
+            return Err(ChannelInitError::Pipe);
         };
         record.notify = notify;
     }
-    if flags & LOCK != 0 && record.lock.init() != 0 {
+    if flags & LOCK != 0 && record.lock.init().is_err() {
         record.close_pipe();
-        return 2;
+        return Err(ChannelInitError::Mutex);
     }
-    0
+    Ok(())
 }
 
 /// `Channel::destroy` before native frees the memory: the mutex and the pipe.

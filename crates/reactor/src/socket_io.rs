@@ -108,7 +108,7 @@ pub fn fd_accept(fd: c_int, address: &mut SocketAddress, nonblock: bool) -> (c_i
         // SAFETY: the borrowed address, `len` bytes of it.
         let accepted = unsafe { libc::accept(fd, storage, length) };
         let cloexec =
-            accepted >= 0 && crate::swr_v1_socket_fd_option(fd, c_int::from(nonblock), 1).ok;
+            accepted >= 0 && crate::swr_v1_socket_fd_option(fd, Some(nonblock), Some(true)).ok;
         (accepted, cloexec)
     }
 }
@@ -152,21 +152,33 @@ pub fn socket_error(fd: c_int) -> Result<c_int, c_int> {
     if read < 0 { Err(errno()) } else { Ok(pending) }
 }
 
+/// Why `check_sendfile_parameters` refuses a range.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RangeError {
+    /// The file did not open (errno set).
+    Open,
+    /// fstat(2) failed (errno set).
+    Stat,
+    /// The file is empty.
+    Empty,
+    /// The range is outside the file.
+    Outside,
+}
+
 /// `check_sendfile_parameters`: fstat(2) the open `file_fd` and resolve the range
 /// `[begin, *end)` to send, where a zero `length` means to the end of the file.
-/// Returns 0 with `*end` set, 1 when fstat failed (errno set), 2 for an empty
-/// file and 3 (`*end` set) for a range outside it.
+/// `*end` is set for a range, inside the file or not.
+/// # Errors
+/// [`RangeError::Stat`], [`RangeError::Empty`] or [`RangeError::Outside`].
 pub fn sendfile_range(
     file_fd: c_int,
     begin: libc::off_t,
     length: libc::size_t,
     end: &mut libc::off_t,
-) -> c_int {
-    let Some(status) = swoole_rs_corebase::sys::fstat(file_fd) else {
-        return 1;
-    };
+) -> Result<(), RangeError> {
+    let status = swoole_rs_corebase::sys::fstat(file_fd).ok_or(RangeError::Stat)?;
     if status.st_size == 0 {
-        return 2;
+        return Err(RangeError::Empty);
     }
     let stop = if length == 0 {
         status.st_size
@@ -175,9 +187,9 @@ pub fn sendfile_range(
     };
     *end = stop;
     if begin < 0 || stop > status.st_size {
-        3
+        Err(RangeError::Outside)
     } else {
-        0
+        Ok(())
     }
 }
 
@@ -302,12 +314,24 @@ mod tests {
             (sendfile_range(fd, begin, length, &mut end), end)
         };
         let fd = file.as_raw_fd();
-        assert_eq!(range(fd, 0, 0), (0, 10), "whole file");
-        assert_eq!(range(fd, 4, 6), (0, 10), "tail");
-        assert_eq!(range(fd, 4, 7), (3, 11), "past the end");
-        assert_eq!(range(fd, -1, 1), (3, 0), "negative offset");
-        assert_eq!(range(empty.as_raw_fd(), 0, 0), (2, -1), "empty");
-        assert_eq!(range(-1, 0, 0), (1, -1), "fstat failed");
+        assert_eq!(range(fd, 0, 0), (Ok(()), 10), "whole file");
+        assert_eq!(range(fd, 4, 6), (Ok(()), 10), "tail");
+        assert_eq!(
+            range(fd, 4, 7),
+            (Err(RangeError::Outside), 11),
+            "past the end"
+        );
+        assert_eq!(
+            range(fd, -1, 1),
+            (Err(RangeError::Outside), 0),
+            "negative offset"
+        );
+        assert_eq!(
+            range(empty.as_raw_fd(), 0, 0),
+            (Err(RangeError::Empty), -1),
+            "empty"
+        );
+        assert_eq!(range(-1, 0, 0), (Err(RangeError::Stat), -1), "fstat failed");
         drop((file, empty));
         std::fs::remove_file(&path).unwrap();
         std::fs::remove_file(path.with_extension("empty")).unwrap();

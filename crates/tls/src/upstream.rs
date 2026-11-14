@@ -26,8 +26,8 @@ use swoole_rs_reactor::socket_upstream::{
     make_typed, socket_cork, socket_set_fd_option, socket_uncork,
 };
 use swoole_rs_reactor::{
-    CLASS_STREAM, CLASS_TCP, Drain, Fill, OutputEffects, SYNC_ONCE, SYNC_RECV, SYNC_SEND,
-    SYNC_SENDFILE, Socket, SocketAddress, SocketFields, SocketFileRequest, SocketRecord,
+    CLASS_STREAM, CLASS_TCP, Drain, Fill, OutputEffects, RangeError, SYNC_ONCE, SYNC_RECV,
+    SYNC_SEND, SYNC_SENDFILE, Socket, SocketAddress, SocketFields, SocketFileRequest, SocketRecord,
     SslSendfileWarning, SyncEffects, handle_send_owned, record_peek, record_recv, record_send,
     sendfile_chunk, ssl_sendfile as ssl_sendfile_fd, steady_ms, swr_v1_reactor_poll_events_to,
     swr_v1_socket_sync, type_is, what_event_want,
@@ -745,24 +745,23 @@ fn file_request(
     let request = SocketFileRequest::open(filename, offset);
     assert!(request.is_some(), "out of memory for a sendfile request");
     let mut request = request?;
-    let status = request.check(length);
-    if status == 0 {
+    let Err(error) = request.check(length) else {
         return Some(request);
-    }
+    };
     let name = filename.to_string_lossy();
-    match status {
-        1 => log::sys_warning(CHECK_ORIGIN, format_args!("open('{name}') failed")),
-        2 => {
+    match error {
+        RangeError::Open => log::sys_warning(CHECK_ORIGIN, format_args!("open('{name}') failed")),
+        RangeError::Stat => {
             log::sys_warning(c"File::stat", format_args!("fstat() failed"));
             log::sys_warning(CHECK_ORIGIN, format_args!("fstat('{name}') failed"));
         }
-        3 => log::error_log(
+        RangeError::Empty => log::error_log(
             LOG_WARNING,
             FILE_EMPTY,
             CHECK_ORIGIN,
             format_args!("cannot send empty file '{name}'"),
         ),
-        _ => {
+        RangeError::Outside => {
             let begin = request.fields().begin;
             log::error_log(
                 LOG_WARNING,

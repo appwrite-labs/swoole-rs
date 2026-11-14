@@ -126,12 +126,12 @@ impl event_api::Deferred for Completion {
 }
 /// The `SW_FD_CARES` read and write handlers: the wrapper's object is its query.
 extern "C" fn readable(_: Running<'_>, event: &mut Event) -> i32 {
-    process(event, 0)
+    process(event, false)
 }
 extern "C" fn writable(_: Running<'_>, event: &mut Event) -> i32 {
-    process(event, 1)
+    process(event, true)
 }
-fn process(event: &Event, write: u8) -> i32 {
+fn process(event: &Event, write: bool) -> i32 {
     let fd = event.fd();
     let Some(socket) = event.socket() else {
         return -1;
@@ -141,7 +141,7 @@ fn process(event: &Event, write: u8) -> i32 {
     // `lookup` keeps until the channel is destroyed and the wrappers with it; the query
     // is only shared, never borrowed mutably.
     let channel = unsafe { &*data }.channel.get();
-    let (read, write) = if write == 0 { (fd, -1) } else { (-1, fd) };
+    let (read, write) = if write { (-1, fd) } else { (fd, -1) };
     // SAFETY: as above: the channel `lookup` owns outlives its registered wrappers.
     sdk::ares_process_fd(unsafe { &*channel }, read, write);
     0

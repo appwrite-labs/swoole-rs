@@ -593,9 +593,9 @@ fn option_table<'a>(call: &Call, value: &'a Value, name: &str) -> Option<&'a Arr
     table
 }
 
-/// The two longs a `setOption` array holds under `keys`: `Err(false)` after
-/// the missing-key warning, `Err(true)` when the call must stop (a bailout).
-fn option_pair(table: &Array, keys: [&CStr; 2]) -> Result<[i64; 2], bool> {
+/// The two longs a `setOption` array holds under `keys`; `None` after the
+/// missing-key warning.
+fn option_pair(table: &Array, keys: [&CStr; 2]) -> Result<Option<[i64; 2]>, Stop> {
     let mut found = [None, None];
     for (slot, key) in found.iter_mut().zip(keys) {
         *slot = table.find(key.to_bytes()).map(Value::copy);
@@ -604,14 +604,14 @@ fn option_pair(table: &Array, keys: [&CStr; 2]) -> Result<[i64; 2], bool> {
             let message = CString::new(message).unwrap_or_default();
             #[expect(clippy::cast_possible_wrap, reason = "E_WARNING is 2")]
             bailout::defer(report(E_WARNING as i32, &message));
-            return Err(bailout::pending());
+            return checked().map(|()| None);
         }
     }
     let mut values = [0; 2];
     for (value, item) in values.iter_mut().zip(found.into_iter().flatten()) {
-        *value = long(&item).map_err(|Stop| true)?;
+        *value = long(&item)?;
     }
-    Ok(values)
+    Ok(Some(values))
 }
 
 /// `setOption(int $level, int $opt_name, mixed $opt_value): bool`.
@@ -644,9 +644,9 @@ fn set_option(call: &Call) {
             return;
         };
         let [on, wait] = match option_pair(table, [c"l_onoff", c"l_linger"]) {
-            Ok(pair) => pair,
-            Err(true) => return,
-            Err(false) => return call.set_bool(false),
+            Ok(Some(pair)) => pair,
+            Ok(None) => return call.set_bool(false),
+            Err(Stop) => return,
         };
         for (value, key) in [(on, "l_onoff"), (wait, "l_linger")] {
             if !(0..=i64::from(u16::MAX)).contains(&value) {
@@ -669,9 +669,9 @@ fn set_option(call: &Call) {
             return;
         };
         let [sec, usec] = match option_pair(table, [c"sec", c"usec"]) {
-            Ok(pair) => pair,
-            Err(true) => return,
-            Err(false) => return call.set_bool(false),
+            Ok(Some(pair)) => pair,
+            Ok(None) => return call.set_bool(false),
+            Err(Stop) => return,
         };
         // `struct timeval`'s fields, as upstream assigns them.
         let seconds = sec.c_cast::<f64>();

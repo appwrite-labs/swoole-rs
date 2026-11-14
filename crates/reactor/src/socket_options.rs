@@ -64,31 +64,23 @@ pub struct SocketOptionResult {
     pub warnings: u32,
 }
 
-/// `_fcntl_set_option`: -1 leaves a flag alone, 0 clears it, anything else sets it.
+/// `_fcntl_set_option`: `None` leaves a flag alone, `Some` sets or clears it.
 #[must_use]
-pub fn swr_v1_socket_fd_option(fd: c_int, nonblock: c_int, cloexec: c_int) -> SocketOptionResult {
+pub fn swr_v1_socket_fd_option(
+    fd: c_int,
+    nonblock: Option<bool>,
+    cloexec: Option<bool>,
+) -> SocketOptionResult {
     let mut warnings = 0;
-    if nonblock >= 0 {
-        let (ok, warned) = update(
-            fd,
-            libc::F_GETFL,
-            libc::F_SETFL,
-            libc::O_NONBLOCK,
-            nonblock != 0,
-        );
+    if let Some(nonblock) = nonblock {
+        let (ok, warned) = update(fd, libc::F_GETFL, libc::F_SETFL, libc::O_NONBLOCK, nonblock);
         warnings |= warned;
         if !ok {
             return SocketOptionResult { ok, warnings };
         }
     }
-    if cloexec >= 0 {
-        let (ok, warned) = update(
-            fd,
-            libc::F_GETFD,
-            libc::F_SETFD,
-            libc::FD_CLOEXEC,
-            cloexec != 0,
-        );
+    if let Some(cloexec) = cloexec {
+        let (ok, warned) = update(fd, libc::F_GETFD, libc::F_SETFD, libc::FD_CLOEXEC, cloexec);
         warnings |= warned << 2;
         if !ok {
             return SocketOptionResult { ok, warnings };
@@ -97,16 +89,18 @@ pub fn swr_v1_socket_fd_option(fd: c_int, nonblock: c_int, cloexec: c_int) -> So
     SocketOptionResult { ok: true, warnings }
 }
 
-/// `set_tcp_nopush`: `TCP_CORK` where the platform has it, else -1.
+/// `set_tcp_nopush`: `TCP_CORK`, whether it took; false where the platform has none.
 #[must_use]
-pub fn swr_v1_socket_tcp_nopush(fd: c_int, nopush: c_int) -> c_int {
+pub fn swr_v1_socket_tcp_nopush(fd: c_int, nopush: c_int) -> bool {
     #[cfg(target_os = "linux")]
-    if swr_v1_socket_set_int(fd, libc::IPPROTO_TCP, libc::TCP_CORK, nopush) {
-        return 0;
+    {
+        swr_v1_socket_set_int(fd, libc::IPPROTO_TCP, libc::TCP_CORK, nopush)
     }
     #[cfg(not(target_os = "linux"))]
-    let _ = (fd, nopush);
-    -1
+    {
+        let _ = (fd, nopush);
+        false
+    }
 }
 
 /// `set_tcp_nodelay`'s setsockopt.
@@ -130,7 +124,7 @@ pub fn swr_v1_socket_cork(fd: c_int, state: &mut CorkState) -> SocketOptionResul
         return SocketOptionResult::default();
     }
     if HAS_CORK {
-        if swr_v1_socket_tcp_nopush(fd, 1) < 0 {
+        if !swr_v1_socket_tcp_nopush(fd, 1) {
             return SocketOptionResult {
                 ok: false,
                 warnings: 1,
@@ -160,7 +154,7 @@ pub fn swr_v1_socket_uncork(
         return SocketOptionResult::default();
     }
     if HAS_CORK {
-        if swr_v1_socket_tcp_nopush(fd, 0) < 0 {
+        if !swr_v1_socket_tcp_nopush(fd, 0) {
             return SocketOptionResult {
                 ok: false,
                 warnings: 1,
@@ -235,7 +229,7 @@ mod tests {
     fn fd_options_set_and_clear_each_flag() {
         let fd = tcp();
         assert_eq!(
-            swr_v1_socket_fd_option(fd, 1, 1),
+            swr_v1_socket_fd_option(fd, Some(true), Some(true)),
             SocketOptionResult {
                 ok: true,
                 warnings: 0
@@ -251,7 +245,7 @@ mod tests {
             0,
             "close-on-exec"
         );
-        assert!(swr_v1_socket_fd_option(fd, 0, -1).ok);
+        assert!(swr_v1_socket_fd_option(fd, Some(false), None).ok);
         assert_eq!(
             flags(fd, libc::F_GETFL) & libc::O_NONBLOCK,
             0,
@@ -264,7 +258,7 @@ mod tests {
         );
         close(fd);
         // -1, not the closed fd: a parallel test may reuse that number.
-        let closed = swr_v1_socket_fd_option(-1, 1, 1);
+        let closed = swr_v1_socket_fd_option(-1, Some(true), Some(true));
         assert_eq!(
             closed,
             SocketOptionResult {

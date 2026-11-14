@@ -28,11 +28,21 @@ pub trait RespConnection {
     fn set_offset(&mut self, offset: i64);
     /// `buffer->extend(size)`.
     fn extend(&mut self, size: usize);
-    /// `protocol->onPackage` of the whole content: negative when it fails, 1 when
-    /// the socket was removed meanwhile, else 0.
-    fn dispatch(&mut self) -> c_int;
+    /// `protocol->onPackage` of the whole content.
+    fn dispatch(&mut self) -> Dispatched;
     /// `buffer->clear()`, after a dispatch.
     fn clear(&mut self);
+}
+
+/// What [`RespConnection::dispatch`] left.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dispatched {
+    /// The socket is still the connection's.
+    Kept,
+    /// The socket was removed meanwhile.
+    Removed,
+    /// `onPackage` failed, or there is none.
+    Failed,
 }
 
 /// `redis::recv_packet`'s loop: receives until the request state sees a whole
@@ -68,9 +78,9 @@ pub fn recv_packet(c: &mut impl RespConnection, maximum: u32, page: usize) -> c_
             RespAction::Wait => return SW_OK,
             RespAction::Dispatch => {
                 match c.dispatch() {
-                    ..0 => return SW_ERR,
-                    0 => {}
-                    _ => return SW_OK,
+                    Dispatched::Failed => return SW_ERR,
+                    Dispatched::Removed => return SW_OK,
+                    Dispatched::Kept => {}
                 }
                 c.clear();
                 zero(c.view().2);
@@ -160,9 +170,9 @@ mod tests {
             self.size = size;
         }
 
-        fn dispatch(&mut self) -> c_int {
+        fn dispatch(&mut self) -> Dispatched {
             self.packages.push(self.content.clone());
-            0
+            Dispatched::Kept
         }
 
         fn clear(&mut self) {

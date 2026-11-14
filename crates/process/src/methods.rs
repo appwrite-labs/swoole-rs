@@ -704,7 +704,7 @@ pub(crate) mod tests {
         // SAFETY: the buffer is aligned and as long as the record needs; 2 is SW_CHAN_LOCK.
         assert_eq!(
             unsafe { swr_v1_memory_channel_init(record, 256, 16, 2) },
-            0,
+            Ok(()),
             "a box"
         );
         pool.message_box = record.cast();

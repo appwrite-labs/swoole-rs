@@ -18,6 +18,7 @@ use std::ptr;
 use std::sync::atomic::AtomicU32;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::DataHead;
+use swoole_rs_memory::ChannelInitError;
 
 use crate::armed_timer::ArmedTimer;
 use crate::os::{getpid, kill};
@@ -375,10 +376,13 @@ impl<'a> PoolRef<'a> {
     }
 
     /// `queue->pop(node, size)` into a `QueueNode` held in words, and `errno` right
-    /// after it; -1 without a queue.
+    /// after it; -1 when it failed or there is no queue.
     pub(crate) fn queue_pop(self, node: &mut [u64], size: usize) -> (isize, c_int) {
-        let result = self.with_queue(|queue| queue.pop_words(node, size));
-        (result.unwrap_or(-1), swoole_rs_corebase::sys::errno())
+        let result = self
+            .with_queue(|queue| queue.pop_words(node, size))
+            .flatten();
+        let length = result.map_or(-1, CCast::c_cast::<isize>);
+        (length, swoole_rs_corebase::sys::errno())
     }
 
     /// `queue->push(node, length)` of a `QueueNode` held in words; false without a
@@ -468,8 +472,8 @@ pub type MessageFn = unsafe extern "C-unwind" fn(PoolRef<'_>, &RecvData);
 pub type EventFn = unsafe extern "C-unwind" fn(PoolRef<'_>, *mut c_void);
 /// `onWorkerError`.
 pub type ErrorFn = extern "C-unwind" fn(PoolRef<'_>, Worker<'_>, &crate::methods::ExitStatus);
-/// `onWorkerNotFound`: 1 when the pid was handled.
-pub type NotFoundFn = extern "C-unwind" fn(PoolRef<'_>, &crate::methods::ExitStatus) -> c_int;
+/// `onWorkerNotFound`.
+pub type NotFoundFn = extern "C-unwind" fn(PoolRef<'_>, &crate::methods::ExitStatus);
 
 /// What a pool's owner installs ([`PoolRef::install`]): the object its hooks read
 /// as the pool's `ptr`, and the hooks. `None` leaves what the pool has.
@@ -618,13 +622,11 @@ impl PoolRef<'_> {
         }
     }
 
-    /// `onWorkerNotFound(pool, status)`: its result, or `None` without one.
-    #[expect(
-        clippy::must_use_candidate,
-        reason = "callers ignore the result where upstream's do"
-    )]
-    pub fn call_on_worker_not_found(self, status: &crate::methods::ExitStatus) -> Option<c_int> {
-        Some(self.on_worker_not_found()?(self, status))
+    /// `onWorkerNotFound(pool, status)`; nothing without one.
+    pub fn call_on_worker_not_found(self, status: &crate::methods::ExitStatus) {
+        if let Some(hook) = self.on_worker_not_found() {
+            hook(self, status);
+        }
     }
 }
 
@@ -1044,16 +1046,16 @@ fn new_message_box(size: usize, maxlen: usize) -> *mut c_void {
     let record = memory.as_ptr().cast();
     // SAFETY: fresh shared memory of the size the record needs.
     match unsafe { swoole_rs_memory::swr_v1_memory_channel_init(record, size, maxlen, FLAGS) } {
-        0 => return memory.into_raw(),
-        1 => {
+        Ok(()) => return memory.into_raw(),
+        Err(ChannelInitError::Pipe) => {
             log::sys_warning(c"Channel::make", format_args!("pipe() failed"));
             log::warning(c"Channel::make", format_args!("notify_fd init failed"));
         }
-        2 => log::warning(
+        Err(ChannelInitError::Mutex) => log::warning(
             c"Channel::make",
             format_args!("pthread_mutex_init() failed"),
         ),
-        _ => {}
+        Err(ChannelInitError::Invalid) => {}
     }
     memory.free();
     ptr::null_mut()

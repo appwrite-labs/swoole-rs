@@ -579,6 +579,7 @@ mod tests {
         let live = LiveServer::new();
         live.server().config().single_thread.set(true);
         let _first = live.connect();
+        assert_eq!(accept_on(&live), OK, "EAGAIN ends the batch");
         let _second = live.connect();
         assert_eq!(accept_on(&live), OK, "EAGAIN ends the batch");
         let gs = live.counters();

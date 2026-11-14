@@ -132,8 +132,8 @@ fn accept<'s>(
 }
 
 /// `session->append(...)`, which throws `std::bad_alloc` when the queue can't grow.
-fn appended(status: c_int) {
-    if status != 0 {
+fn appended(queued: bool) {
+    if !queued {
         std::alloc::handle_alloc_error(core::alloc::Layout::new::<DgramPacket>());
     }
 }

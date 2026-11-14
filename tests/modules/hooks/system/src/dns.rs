@@ -67,7 +67,7 @@ fn set_dns_server(server: &str) {
 
 /// `swoole_load_resolv_conf()`: `SwooleG.dns_resolvconf_path` is `SW_DNS_RESOLV_CONF`.
 fn load_resolv_conf_() -> bool {
-    dns::load_resolv_conf(dns::RESOLV_CONF) > 0
+    dns::load_resolv_conf(dns::RESOLV_CONF)
 }
 
 /// `swoole_get_dns_server()`: the configured server, read from resolv.conf while none is.
@@ -97,7 +97,8 @@ fn gethostbyname(name: &CStr, family: c_int) -> (c_int, String) {
     assert!(!req.owner.is_null());
     // SAFETY: the record just made, live until it is freed below.
     let record = unsafe { &*req.owner };
-    let status = record.host();
+    // `network::gethostbyname`'s `SW_OK` or `SW_ERR`.
+    let status = if record.host().is_ok() { 0 } else { -1 };
     let addr = record.address();
     // SAFETY: frees the record once.
     unsafe { swr_v1_core_resolver_free(req.owner) };
@@ -119,7 +120,12 @@ fn getaddrinfo(hostname: &CStr, family: c_int) -> Getaddrinfo {
     assert!(!req.owner.is_null());
     // SAFETY: the record just made, live until it is freed below.
     let record = unsafe { &*req.owner };
-    let status = record.lookup(|_| true);
+    // `network::getaddrinfo`'s `SW_OK` or `SW_ERR`.
+    let status = if record.lookup(|_| true).is_ok() {
+        0
+    } else {
+        -1
+    };
     let ip_list = record
         .addresses()
         .into_iter()

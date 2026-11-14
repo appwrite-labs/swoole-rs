@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use libc::{AF_INET, AF_INET6, SOCK_STREAM, addrinfo, sockaddr_in6, sockaddr_storage};
 use swoole_rs_corebase::{
-    PreparedResolver, ResolverCompletion, ResolverRequest, swr_v1_core_resolver_free,
+    PreparedResolver, ResolveError, ResolverCompletion, ResolverRequest, swr_v1_core_resolver_free,
 };
 
 /// What the faked `getaddrinfo` answers on this thread.
@@ -152,7 +152,7 @@ fn diagnostic_refusal_cleans_up_and_publishes_nothing() {
     let record = request.record();
     // The guard's `resize(1)` and `memset(0x5a)`: one address of 0x5a bytes.
     FAKE.set(Some(Fake::Filled));
-    assert_eq!(record.lookup(|_| unreachable!("a known family")), 0);
+    assert_eq!(record.lookup(|_| unreachable!("a known family")), Ok(()));
     let before = record.results();
     assert_eq!(before.len(), 1);
     assert!(bytes(&before).iter().all(|&byte| byte == 0x5a));
@@ -165,7 +165,7 @@ fn diagnostic_refusal_cleans_up_and_publishes_nothing() {
         calls += 1;
         false
     });
-    assert_eq!(refused, -3);
+    assert_eq!(refused, Err(ResolveError::Unknown));
     assert!(FREED.get() && calls == 1);
     assert!(record.fields().error == 55 && record.fields().count == 77);
     let after = record.results();
@@ -177,7 +177,7 @@ fn diagnostic_refusal_cleans_up_and_publishes_nothing() {
         calls += 1;
         true
     });
-    assert_eq!(accepted, 0);
+    assert_eq!(accepted, Ok(()));
     assert!(FREED.get() && calls == 2);
     assert!(record.fields().error == 0 && record.fields().count == 1);
     let after = record.results();
@@ -191,10 +191,10 @@ fn diagnostic_refusal_cleans_up_and_publishes_nothing() {
 #[test]
 fn numeric_host_owner_and_independent_records() {
     let host = Request::new(AF_INET, 0, b"127.0.0.1");
-    assert_eq!(host.record().host(), 0);
+    assert_eq!(host.record().host(), Ok(()));
     assert_eq!(host.record().address(), b"127.0.0.1");
     let other = Request::new(AF_INET6, 0, b"::1");
-    assert_eq!(other.record().host(), 0);
+    assert_eq!(other.record().host(), Ok(()));
     assert_eq!(other.record().address(), b"::1");
     assert_eq!(host.record().name(), b"127.0.0.1");
     assert_eq!(host.record().address(), b"127.0.0.1");
@@ -209,7 +209,7 @@ fn an_ipv6_result_reads_back_as_its_text() {
     let request = Request::new(AF_INET6, SOCK_STREAM, b"::1");
     let record = request.record();
     FAKE.set(Some(Fake::Filled));
-    assert_eq!(record.lookup(|_| unreachable!("a known family")), 0);
+    assert_eq!(record.lookup(|_| unreachable!("a known family")), Ok(()));
     FAKE.set(None);
     assert_eq!(
         record.addresses(),
@@ -225,7 +225,7 @@ fn hints_vectors_and_failure_publication() {
     let record = request.record();
     assert_eq!(record.fields().count, 0);
     assert_eq!(record.fields().error, 0);
-    assert_eq!(record.lookup(|_| true), 0);
+    assert_eq!(record.lookup(|_| true), Ok(()));
     assert!(record.fields().count > 0);
     let count = usize::try_from(record.fields().count).unwrap();
     assert_eq!(record.results().len(), count);
@@ -233,7 +233,7 @@ fn hints_vectors_and_failure_publication() {
     let saved = record.results();
     assert_eq!(record.addresses()[0], b"127.0.0.1");
     request.set(|fields| fields.family = -123);
-    assert_eq!(record.lookup(|_| true), -1);
+    assert_eq!(record.lookup(|_| true), Err(ResolveError::Failed));
     assert_ne!(record.fields().error, 0);
     assert_eq!(record.fields().count, saved_count);
     assert_eq!(record.results().len(), saved.len());

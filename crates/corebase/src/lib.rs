@@ -292,36 +292,45 @@ format_exports! {
 const LOG_ERROR: c_int = 5;
 const TOO_MANY_LISTEN_PORT: c_int = 9005;
 
-/// `LISTEN_FDS`'s verdict: the count to return, or which log line (`true`: too big).
-fn systemd_listen_fds(count: Option<c_int>) -> Result<c_int, bool> {
+/// Why `LISTEN_FDS` gives no count, which picks the log line.
+#[derive(Debug, PartialEq, Eq)]
+enum ListenFdsError {
+    /// Missing or not a number.
+    Invalid,
+    /// It reaches `SW_MAX_LISTEN_PORT`.
+    TooBig,
+}
+
+/// `LISTEN_FDS`'s verdict: the count to return, or why there is none.
+fn systemd_listen_fds(count: Option<c_int>) -> Result<c_int, ListenFdsError> {
     match count {
-        None => Err(false),
+        None => Err(ListenFdsError::Invalid),
         Some(count) if u32::try_from(count).is_ok_and(|n| n >= constants::SW_MAX_LISTEN_PORT) => {
-            Err(true)
+            Err(ListenFdsError::TooBig)
         }
         Some(count) => Ok(count),
     }
 }
 
-/// `swoole_get_systemd_listen_fds()`: `LISTEN_FDS`, or -1 when it is missing
-/// or reaches `SW_MAX_LISTEN_PORT`.
+/// `swoole_get_systemd_listen_fds()`: `LISTEN_FDS`; `None` (logged) when it is
+/// missing or reaches `SW_MAX_LISTEN_PORT`.
 #[must_use]
-pub fn get_systemd_listen_fds() -> c_int {
+pub fn get_systemd_listen_fds() -> Option<c_int> {
     let origin = c"swoole_get_systemd_listen_fds";
     match systemd_listen_fds(get_env(c"LISTEN_FDS")) {
-        Ok(count) => count,
-        Err(false) => {
+        Ok(count) => Some(count),
+        Err(ListenFdsError::Invalid) => {
             log::warning(origin, format_args!("invalid LISTEN_FDS"));
-            -1
+            None
         }
-        Err(true) => {
+        Err(ListenFdsError::TooBig) => {
             log::error_log(
                 LOG_ERROR,
                 TOO_MANY_LISTEN_PORT,
                 origin,
                 format_args!("LISTEN_FDS is too big"),
             );
-            -1
+            None
         }
     }
 }
@@ -601,10 +610,10 @@ mod tests {
 
     #[test]
     fn systemd_listener_policy_preserves_missing_limit_and_signed_values() {
-        assert_eq!(systemd_listen_fds(None), Err(false));
+        assert_eq!(systemd_listen_fds(None), Err(ListenFdsError::Invalid));
         assert_eq!(systemd_listen_fds(Some(59999)), Ok(59999));
-        assert_eq!(systemd_listen_fds(Some(60000)), Err(true));
-        assert_eq!(systemd_listen_fds(Some(60001)), Err(true));
+        assert_eq!(systemd_listen_fds(Some(60000)), Err(ListenFdsError::TooBig));
+        assert_eq!(systemd_listen_fds(Some(60001)), Err(ListenFdsError::TooBig));
         assert_eq!(systemd_listen_fds(Some(-1)), Ok(-1));
     }
 

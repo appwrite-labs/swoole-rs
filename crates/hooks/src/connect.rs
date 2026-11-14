@@ -689,12 +689,8 @@ mod tests {
 
     #[test]
     fn socks5_states_are_the_clients() {
-        assert_eq!(
-            c_int::from(SOCKS5_HANDSHAKE),
-            client::SOCKS5_HANDSHAKE,
-            "handshake"
-        );
-        assert_eq!(c_int::from(SOCKS5_READY), client::SOCKS5_READY, "ready");
+        assert_eq!(SOCKS5_HANDSHAKE, client::SOCKS5_HANDSHAKE, "handshake");
+        assert_eq!(SOCKS5_READY, client::SOCKS5_READY, "ready");
     }
 
     thread_local! {

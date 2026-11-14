@@ -415,7 +415,7 @@ pub fn add_systemd_socket(serv: Server<'_>) -> c_int {
 fn import_sockets(
     serv: Server<'_>,
     listen_pid: Option<c_int>,
-    count: impl FnOnce() -> c_int,
+    count: impl FnOnce() -> Option<c_int>,
     start: impl FnOnce() -> Option<c_int>,
 ) -> c_int {
     let origin = c"Server::add_systemd_socket";
@@ -424,10 +424,9 @@ fn import_sockets(
         swoole_rs_corebase::log::warning(origin, format_args!("invalid LISTEN_PID"));
         return 0;
     }
-    let count = count();
-    if count <= 0 {
+    let Some(count) = count().filter(|&count| count > 0) else {
         return 0;
-    }
+    };
     let start = match start() {
         None => SYSTEMD_FDS_START,
         Some(start) if start < 0 => {
@@ -760,18 +759,18 @@ mod tests {
             "no LISTEN_PID"
         );
         assert_eq!(
-            import_sockets(serv, Some(1), || -1, || unreachable!()),
+            import_sockets(serv, Some(1), || None, || unreachable!()),
             0,
             "no LISTEN_FDS"
         );
         assert_eq!(
-            import_sockets(serv, Some(1), || 3, || Some(-1)),
+            import_sockets(serv, Some(1), || Some(3), || Some(-1)),
             0,
             "bad start"
         );
         assert_eq!(serv.ports().len(), before);
         assert_eq!(
-            import_sockets(serv, Some(1), || 3, || None),
+            import_sockets(serv, Some(1), || Some(3), || None),
             2,
             "from fd 3; 5 refused"
         );

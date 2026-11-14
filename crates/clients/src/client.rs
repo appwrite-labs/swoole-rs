@@ -151,11 +151,11 @@ pub const SSL_STATE_WAIT_STREAM: u32 = SslState::SW_SSL_STATE_WAIT_STREAM as u32
 pub const SSL_CLIENT: c_int = SslCreateFlag::SW_SSL_CLIENT as c_int;
 pub const SSL_DTLS: u32 = SslVersion::SW_SSL_DTLS as u32;
 /// The proxy states of `native/protocols/swoole_proxy.h`, which a test reads.
-pub const SOCKS5_WAIT: c_int = 0;
-pub const SOCKS5_HANDSHAKE: c_int = 1;
-pub const SOCKS5_READY: c_int = 4;
-pub const HTTP_PROXY_WAIT: c_int = 0;
-pub const HTTP_PROXY_READY: c_int = 2;
+pub const SOCKS5_WAIT: u8 = 0;
+pub const SOCKS5_HANDSHAKE: u8 = 1;
+pub const SOCKS5_READY: u8 = 4;
+pub const HTTP_PROXY_WAIT: u8 = 0;
+pub const HTTP_PROXY_READY: u8 = 2;
 const ERROR_OPERATION_NOT_SUPPORT: c_int = ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as c_int;
 const ERROR_DNSLOOKUP_RESOLVE_FAILED: c_int = ErrorCode::SW_ERROR_DNSLOOKUP_RESOLVE_FAILED as c_int;
 const ERROR_BAD_HOST_ADDR: c_int = ErrorCode::SW_ERROR_BAD_HOST_ADDR as c_int;
@@ -564,15 +564,14 @@ impl Handle {
         unsafe { (*slot).as_deref() }
     }
 
-    /// The proxy's state, or -1 when there is none.
-    fn proxy_state(self, which: Proxy) -> c_int {
-        self.proxy(which)
-            .map_or(-1, |proxy| c_int::from(proxy.fields().state))
+    /// The proxy's state; `None` when there is no proxy.
+    fn proxy_state(self, which: Proxy) -> Option<u8> {
+        self.proxy(which).map(|proxy| proxy.fields().state)
     }
 
-    fn set_proxy_state(self, which: Proxy, state: c_int) {
+    fn set_proxy_state(self, which: Proxy, state: u8) {
         if let Some(proxy) = self.proxy(which) {
-            proxy.update(|fields| fields.state = u8::try_from(state).unwrap_or_default());
+            proxy.update(|fields| fields.state = state);
         }
     }
 
@@ -1382,7 +1381,7 @@ fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblo
     this.set(Flag::Active, true);
     // Only a proxy handshake reads the thread's shared buffer, which a thread
     // that never set up SwooleTG doesn't have.
-    if this.proxy_state(Proxy::Socks5) >= 0 {
+    if this.proxy_state(Proxy::Socks5).is_some() {
         if this.socks5_send(this.socks5_negotiate()) < 0 {
             return ERR;
         }
@@ -1396,7 +1395,7 @@ fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblo
                 if n <= 0 || !this.socks5_handshake(spare.as_ptr().cast(), n.cast_unsigned()) {
                     return false;
                 }
-                if this.proxy_state(Proxy::Socks5) == SOCKS5_READY {
+                if this.proxy_state(Proxy::Socks5) == Some(SOCKS5_READY) {
                     return true;
                 }
             }
@@ -1404,7 +1403,7 @@ fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblo
         if !ready {
             return ERR;
         }
-    } else if this.proxy_state(Proxy::Http) >= 0
+    } else if this.proxy_state(Proxy::Http).is_some()
         && !with_thread_buffer(|shared| {
             if send(this, this.http_pack(shared), 0) < 0 {
                 return false;
@@ -1791,7 +1790,7 @@ fn on_read(this: Handle) -> c_int {
     let Tail { str: buf, size } = this.input_tail();
     let do_ssl_handshake = this.flag(Flag::OpenSsl);
     let http = this.proxy_state(Proxy::Http);
-    if http >= 0 && http != HTTP_PROXY_READY {
+    if http.is_some_and(|state| state != HTTP_PROXY_READY) {
         let accepted = this.edit_input(|input, socket| {
             let n = net::recv(socket, input.spare(), 0);
             n > 0 && http_handshake(input, input.len() + n.cast_unsigned())
@@ -1808,7 +1807,7 @@ fn on_read(this: Handle) -> c_int {
         }
     }
     let socks5 = this.proxy_state(Proxy::Socks5);
-    if socks5 >= 0 && socks5 != SOCKS5_READY {
+    if socks5.is_some_and(|state| state != SOCKS5_READY) {
         let n = this.edit_input(|input, socket| {
             let n = net::recv(socket, input.spare(), 0);
             if n > 0 {
@@ -1826,7 +1825,7 @@ fn on_read(this: Handle) -> c_int {
             log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
             return connect_failed(this);
         }
-        if this.proxy_state(Proxy::Socks5) != SOCKS5_READY {
+        if this.proxy_state(Proxy::Socks5) != Some(SOCKS5_READY) {
             return OK;
         }
         this.input_clear();
@@ -1956,12 +1955,12 @@ fn on_write(this: Handle, reactor: Running<'_>, event: &mut Event) -> c_int {
     }
     this.event(EventOp::Set, EVENT_READ);
     this.set(Flag::Active, true);
-    if this.proxy_state(Proxy::Socks5) == SOCKS5_WAIT {
+    if this.proxy_state(Proxy::Socks5) == Some(SOCKS5_WAIT) {
         let length = this.socks5_negotiate();
         this.set_proxy_state(Proxy::Socks5, SOCKS5_HANDSHAKE);
         return this.socks5_send(length).c_cast::<c_int>();
     }
-    if this.proxy_state(Proxy::Http) == HTTP_PROXY_WAIT {
+    if this.proxy_state(Proxy::Http) == Some(HTTP_PROXY_WAIT) {
         // A copy: the async send may raise `onBufferFull`, whose callback may
         // reuse the shared buffer the request was packed into.
         let request = with_thread_buffer(|shared| this.http_pack(shared).to_vec());
@@ -2006,7 +2005,9 @@ fn on_timeout(this: Handle) {
     }
     let socks5 = this.proxy_state(Proxy::Socks5);
     let http = this.proxy_state(Proxy::Http);
-    if socks5 >= 0 && socks5 != SOCKS5_READY || http >= 0 && http != HTTP_PROXY_READY {
+    if socks5.is_some_and(|state| state != SOCKS5_READY)
+        || http.is_some_and(|state| state != HTTP_PROXY_READY)
+    {
         this.set(Flag::Active, false);
     }
     close(this);

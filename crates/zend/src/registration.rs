@@ -10,13 +10,17 @@ use std::{
     ptr,
 };
 
+/// Zend's `SUCCESS` `zend_result`.
+const SUCCESS: c_int = 0;
+
 fn leaf(code: c_int) -> Result<(), Bailout> {
     if code == 0 { Ok(()) } else { Err(Bailout) }
 }
 
 /// Register `alias` in `target` using the internal function `origin` of
 /// `source`: its real handler and argument count, with `info`. Lookup
-/// lowercases `origin`'s ASCII bytes; -1 when `source` has no such function.
+/// lowercases `origin`'s ASCII bytes. Whether Zend registered it: false when
+/// `source` has no such function or the registration failed.
 /// # Errors
 /// Returns a contained PHP registration bailout.
 /// # Safety
@@ -28,7 +32,7 @@ pub unsafe fn function_alias(
     target: *mut HashTable,
     alias: &CStr,
     info: *const zend_internal_arg_info,
-) -> Result<c_int, Bailout> {
+) -> Result<bool, Bailout> {
     let lower = origin.to_bytes().to_ascii_lowercase();
     // SAFETY: per the caller, a live function table, borrowed for the lookup
     // only: nothing is registered until the borrow ended. `Array` is a
@@ -36,7 +40,7 @@ pub unsafe fn function_alias(
     let functions = unsafe { source.cast::<Array>().as_ref() };
     let found = functions.and_then(|functions| functions.find(&lower));
     let Some(function) = found.and_then(Value::pointer) else {
-        return Ok(-1);
+        return Ok(false);
     };
     // SAFETY: the source table owns this live function, which remains live and
     // unchanged throughout this registration; per the caller it is internal,
@@ -59,10 +63,11 @@ pub unsafe fn function_alias(
             &raw mut result,
         )
     })?;
-    Ok(result)
+    Ok(result == SUCCESS)
 }
 
-/// Build the lowercase persistent interned class alias and register its real CE.
+/// Build the lowercase persistent interned class alias and register its real CE:
+/// whether Zend registered it.
 /// `sdk_prefix` retains the native SDK's handling of a leading backslash,
 /// including its original string length; ordinary Rust aliases pass false.
 /// # Errors
@@ -74,7 +79,7 @@ pub unsafe fn class_alias(
     length: usize,
     entry: *mut zend_class_entry,
     sdk_prefix: bool,
-) -> Result<c_int, Bailout> {
+) -> Result<bool, Bailout> {
     // SAFETY: the source is live; PHP allocates the persistent owned name.
     let alias = unsafe { z::swr_zend_string_persistent(name, length) };
     // SAFETY: this persistent string is newly allocated and unshared.
@@ -103,5 +108,5 @@ pub unsafe fn class_alias(
             &raw mut result,
         )
     })?;
-    Ok(result)
+    Ok(result == SUCCESS)
 }

@@ -10,9 +10,6 @@ links = "cares"
 [features]
 libcares = ["dep:cc", "dep:pkg-config"]
 
-[dependencies]
-libc = "=0.2.191"
-
 [build-dependencies]
 cc = { version = "=1.10.0", optional = true }
 pkg-config = { version = "=0.3.34", optional = true }

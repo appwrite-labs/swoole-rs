@@ -18,6 +18,17 @@ pub struct ResolverFields {
     pub error: c_int,
     pub count: c_int,
 }
+/// Why a [`ResolverRequest`] lookup failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResolveError {
+    /// The name did not resolve (libc's error is in the fields).
+    Failed,
+    /// An allocation was refused.
+    Alloc,
+    /// The unknown-family hook refused the lookup.
+    Unknown,
+}
+
 /// Its owner writes `fields` and the strings through `PreparedResolver`'s views,
 /// never while a method runs.
 pub struct ResolverRequest {
@@ -151,9 +162,11 @@ impl ResolverRequest {
     /// `async::handler_getaddrinfo`'s body: resolves the hints and replaces the
     /// complete result set. A libc error publishes only `error`, keeping the
     /// previous count and addresses. On success count and error publish before
-    /// allocation, as native vector assignment does. -1 is a libc error, -2 an
-    /// allocation refusal, -3 `unknown` returning false.
-    pub fn lookup(&self, unknown: impl FnMut(c_int) -> bool) -> c_int {
+    /// allocation, as native vector assignment does.
+    /// # Errors
+    /// [`ResolveError::Failed`] for a libc error, [`ResolveError::Alloc`] for an
+    /// allocation refusal, [`ResolveError::Unknown`] when `unknown` returned false.
+    pub fn lookup(&self, unknown: impl FnMut(c_int) -> bool) -> Result<(), ResolveError> {
         let hints = self.fields();
         let [name, service, _] = &self.strings;
         let name = c_string(copy(name));
@@ -168,33 +181,39 @@ impl ResolverRequest {
             unknown,
         );
         if result.error == DIAGNOSTIC_FAILED {
-            return -3;
+            return Err(ResolveError::Unknown);
         }
         self.update(|fields| fields.error = result.error);
         if result.error != 0 {
-            return -1;
+            return Err(ResolveError::Failed);
         }
         self.update(|fields| fields.count = result.count);
         let count = usize::try_from(result.count).unwrap_or(0);
         let Some(found) = copied(found.get(..count).unwrap_or_default()) else {
-            return -2;
+            return Err(ResolveError::Alloc);
         };
         self.results.replace(found);
-        0
+        Ok(())
     }
 
     /// `async::handler_gethostbyname`'s body: the name's first address, as text,
-    /// into the address slot. -1 if it does not resolve, -2 on allocation refusal.
-    pub fn host(&self) -> c_int {
+    /// into the address slot.
+    /// # Errors
+    /// [`ResolveError::Failed`] when it does not resolve, [`ResolveError::Alloc`] on
+    /// an allocation refusal.
+    pub fn host(&self) -> Result<(), ResolveError> {
         let family = self.fields().family;
         let text = gethostbyname(family, &c_string(self.name()))
             .and_then(|binary| ntop(family, binary.first_chunk()?));
         let Some(text) = text else {
-            return -1;
+            return Err(ResolveError::Failed);
         };
         let text = terminated(&text);
         // SAFETY: a slot that nothing reads while this sets it (see `copy`).
-        unsafe { self.strings[2].set_shared(&text) }
+        match unsafe { self.strings[2].set_shared(&text) } {
+            0 => Ok(()),
+            _ => Err(ResolveError::Alloc),
+        }
     }
 
     /// Address `index` as text, or none past the end; `valid` false if it does not
