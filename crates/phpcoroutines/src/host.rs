@@ -659,8 +659,9 @@ pub(crate) fn exit_fallback(message: Option<&[u8]>, status: c_long) {
     swoole_rs_phpswoole::sw_php_exit(status.c_cast::<c_int>());
 }
 
-pub(crate) fn reactor_init() -> i32 {
-    php_swoole_reactor_init()
+/// `php_swoole_reactor_init()`: whether the event loop is ready.
+pub(crate) fn reactor_init() -> bool {
+    php_swoole_reactor_init() >= 0
 }
 
 pub(crate) fn event_wait() {

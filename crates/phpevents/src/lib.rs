@@ -567,10 +567,10 @@ fn invoke(callable: &Callable, arg: Option<&Owned>) -> Result<bool, Bailout> {
 
 /// A reactor handler's result: a bailout is raised from its frame, which owns
 /// nothing by then, after the Rust work completed.
-fn handled(result: Result<c_int, Bailout>) -> c_int {
+fn handled(result: Result<bool, Bailout>) -> bool {
     result.unwrap_or_else(|error| {
         bailout::raise(Err(error));
-        -1
+        false
     })
 }
 
@@ -582,19 +582,19 @@ struct Writable;
 struct Error;
 
 impl PhpFdHandler for Readable {
-    fn handle(php: Php<'_>, fd: c_int) -> c_int {
+    fn handle(php: Php<'_>, fd: c_int) -> bool {
         handled(ready(php, fd, false))
     }
 }
 
 impl PhpFdHandler for Writable {
-    fn handle(php: Php<'_>, fd: c_int) -> c_int {
+    fn handle(php: Php<'_>, fd: c_int) -> bool {
         handled(ready(php, fd, true))
     }
 }
 
 impl PhpFdHandler for Error {
-    fn handle(php: Php<'_>, fd: c_int) -> c_int {
+    fn handle(php: Php<'_>, fd: c_int) -> bool {
         handled(error_event(php, fd))
     }
 }
@@ -633,7 +633,7 @@ fn registration<T>(
 
 /// The read (`write` false) or write handler of a user fd: run its callback;
 /// on failure warn, detach and delete the fd.
-fn ready(php: Php, fd: i32, write: bool) -> Result<c_int, Bailout> {
+fn ready(php: Php, fd: i32, write: bool) -> Result<bool, Bailout> {
     let found = SOCKETS.with_borrow(php, |sockets| {
         let registered = sockets.get(fd)?;
         let object = registered.object.as_ref()?;
@@ -645,12 +645,12 @@ fn ready(php: Php, fd: i32, write: bool) -> Result<c_int, Bailout> {
         Some((registered.id, callable.clone()?, object.zsocket.copy()))
     });
     let Some((id, callable, zsocket)) = found else {
-        return Ok(0);
+        return Ok(true);
     };
     let called = invoke(&callable, Some(&zsocket));
     drop(callable);
     if called? {
-        return Ok(0);
+        return Ok(true);
     }
     let reported = self::fd(Some(&zsocket));
     drop(zsocket);
@@ -670,18 +670,18 @@ fn ready(php: Php, fd: i32, write: bool) -> Result<c_int, Bailout> {
     if bailout::relay_to_c(Ok(())) {
         Err(Bailout)
     } else {
-        Ok(-1)
+        Ok(false)
     }
 }
 
 /// The error handler: dispatch to the read or write handler unless the socket
 /// reported an error; then warn, free the fd's object and delete it.
-fn error_event(php: Php, fd: i32) -> Result<c_int, Bailout> {
+fn error_event(php: Php, fd: i32) -> Result<bool, Bailout> {
     let found = SOCKETS.with_borrow(php, |sockets| {
         sockets.get(fd).map(|r| (r.id, r.socket.events()))
     });
     let Some((id, events)) = found else {
-        return Ok(0);
+        return Ok(true);
     };
     if events & EventType::SW_EVENT_ERROR as i32 == 0 {
         return ready(php, fd, events & EventType::SW_EVENT_READ as i32 == 0);
@@ -702,7 +702,7 @@ fn error_event(php: Php, fd: i32) -> Result<c_int, Bailout> {
     drop(registration(php, fd, id, |r| r.object.take()));
     bailout::outcome(())?;
     registration(php, fd, id, |r| r.socket.del());
-    Ok(0)
+    Ok(true)
 }
 
 swoole_rs_zend::handlers! {
@@ -738,13 +738,13 @@ fn dispatch(call: &Call) {
     }
 }
 
-/// `php_swoole_reactor_init()`: 0, or -1 after an error. Raises a bailout, so
-/// only an export C calls may call it last.
+/// `php_swoole_reactor_init()`: whether the event loop is ready. Raises a
+/// bailout, so only an export C calls may call it last.
 #[must_use]
-pub fn reactor_init() -> i32 {
+pub fn reactor_init() -> bool {
     let result = loop_driver::init().unwrap_or_else(|error| {
         error.defer();
-        -1
+        false
     });
     bailout::finish();
     result
