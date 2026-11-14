@@ -122,7 +122,7 @@ fn run_task(serv: view::Server<'_>, worker: Worker<'_>, task: Packed<'_>) -> c_i
             }
             return OK;
         }
-        Some(ServerEvent::CommandRequest) => command(serv, worker, task),
+        Some(ServerEvent::CommandRequest) => crate::conn_io::status(command(serv, worker, task)),
         _ => {
             let ret = callbacks.task(TaskSlot::Task, serv, task);
             // Only server tasks count as requests, not pipe messages or commands.
@@ -135,8 +135,8 @@ fn run_task(serv: view::Server<'_>, worker: Worker<'_>, task: Packed<'_>) -> c_i
 }
 
 /// `TaskWorker_call_command_handler`: the command `task` names, answered over the
-/// command reply socket.
-fn command(serv: view::Server<'_>, worker: Worker<'_>, task: Packed<'_>) -> c_int {
+/// command reply socket; false when no reply could be sent.
+fn command(serv: view::Server<'_>, worker: Worker<'_>, task: Packed<'_>) -> bool {
     let head = task.head();
     let state = serv.state();
     let Some(handler) = crate::commands::handler(state, i32::from(head.server_fd)) else {
@@ -146,25 +146,21 @@ fn command(serv: view::Server<'_>, worker: Worker<'_>, task: Packed<'_>) -> c_in
             c"TaskWorker_call_command_handler",
             format_args!("Unknown command[{}]", head.server_fd),
         );
-        return OK;
+        return true;
     };
     // A copy: the handler may use the thread buffer the message unpacks into.
     let message = swoole_rs_buffer::string::with_thread_buffer(|buffer| {
         task.unpack(buffer).map(|(data, _)| data.to_vec())
     });
     let Some(message) = message else {
-        return OK;
+        return true;
     };
     let Some(sock) = crate::commands::reply_socket(state, serv) else {
-        return ERR;
+        return false;
     };
     let id = u16::try_from(worker.id()).unwrap_or(u16::MAX);
     let reply = (state.message_bus(), sock);
-    if crate::commands::answer(&handler, serv, &message, reply, head.fd, id) {
-        OK
-    } else {
-        ERR
-    }
+    crate::commands::answer(&handler, serv, &message, reply, head.fd, id)
 }
 
 /// `TaskWorker_onStart`.

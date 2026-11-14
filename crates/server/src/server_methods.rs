@@ -137,7 +137,8 @@ pub(crate) extern "C" fn accept_connection(
         serv,
         crate::reactor_handle::Reactor::running(reactor),
         event,
-    )
+    );
+    swoole_rs_corebase::constants::ResultCode::SW_OK as c_int
 }
 
 /// `Server::get_startup_error_message()`.
