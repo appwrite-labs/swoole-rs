@@ -87,11 +87,10 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
             }
             let socket = server.port_socket_at(index)?;
             let fd = socket.fd();
-            // The connection table's slot for the listening fd.
-            let serv_sock = state.connection(c_long::from(fd), Lookup::ByFd)?;
+            // The connection table's slot for the listening fd, holding its port.
+            let serv_sock = tables.hold_port(index, fd)?;
             serv_sock.set_fd(fd);
             serv_sock.set_socket_type(port.config().r#type);
-            serv_sock.set_object(port.raw());
             // The reactor thread that reads the datagram port.
             port.config()
                 .thread_id

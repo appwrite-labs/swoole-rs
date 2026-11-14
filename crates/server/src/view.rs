@@ -592,16 +592,12 @@ impl ServerState {
     /// `server_fd`.
     pub(crate) fn port_by_server_fd(&self, server_fd: c_int) -> Option<Port<'_>> {
         // A listening socket's record holds its port.
-        let port = self
-            .connection(c_long::from(server_fd), Lookup::ByFd)?
-            .object();
-        // SAFETY: null, or one of the server's ports, which live as long as it.
-        unsafe { Port::from_raw(port) }
+        self.connection(c_long::from(server_fd), Lookup::ByFd)?
+            .port()
     }
 
-    /// The server's port at `raw`, or `None` when `raw` is none of them: a slot's or a
-    /// socket's `object` names a port only on a listening socket, and anything else
-    /// (a session's protocol state, a pipe) elsewhere.
+    /// The server's port at `raw`, or `None` when `raw` is none of them: a listening
+    /// socket's `object`, which, unlike its slot's, is a public field.
     pub(crate) fn listed_port(&self, raw: *mut c_void) -> Option<Port<'_>> {
         let ports = self.tables_ref().ports();
         ports.iter().copied().find(|port| port.raw() == raw)

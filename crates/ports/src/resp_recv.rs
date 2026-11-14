@@ -3,7 +3,7 @@
 use core::ffi::c_int;
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{DataHead, log, net_types::Protocol};
-use swoole_rs_protocols_ffi::{Dispatched, ORIGIN, Received, RespConnection, RespRequest, request};
+use swoole_rs_protocols_ffi::{Dispatched, ORIGIN, Received, RespConnection, RespRequest};
 use swoole_rs_reactor::{Caught, Socket};
 
 /// `swoole::RecvData`.
@@ -106,19 +106,19 @@ impl RespConnection for Connection<'_> {
 /// protocol, record and `socket`: whether the connection stays open.
 ///
 /// # Safety
-/// `buffer` is live; `conn->object` is null or this receive's request.
+/// `buffer` is live, and `conn` is a session of this reactor's redis port, whose
+/// request state, if any, this reactor made.
 pub(crate) unsafe fn recv_packet(
     protocol: &Protocol,
     conn: swoole_rs_server::Connection<'_>,
     socket: Socket<'_>,
     buffer: *mut CppString,
 ) -> bool {
-    let mut slot = conn.object().cast::<RespRequest>();
-    let request = request(&mut slot);
-    conn.set_object(slot.cast());
-    if request.is_null() {
-        return false;
-    }
+    // Zeroed, which every field of a RespRequest takes (`RespState::TotalLine`).
+    let request = match conn.resp_request() {
+        Some(request) => request,
+        None => conn.set_resp_request(Box::default()),
+    };
     let mut connection = Connection {
         protocol,
         socket,
@@ -167,7 +167,8 @@ mod tests {
         assert_eq!(buffer.len(), 1);
         assert_eq!(buffer.size(), buffer_size);
 
-        unsafe { libc::free(conn.object) };
+        let request = swoole_rs_server::Connection::from(&mut conn).take_resp_request();
+        drop(unsafe { Box::from_raw(request.unwrap()) });
         buffer.dispose();
         unsafe { libc::close(pairs[1]) };
     }

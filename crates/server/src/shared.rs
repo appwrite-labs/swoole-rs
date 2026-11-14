@@ -197,7 +197,6 @@ mod tests {
         // SAFETY: a connection record is plain data; zero is a closed one.
         let mut connections: Vec<ConnectionRecord> =
             (0..3).map(|_| unsafe { core::mem::zeroed() }).collect();
-        connections[1].object = config.cast();
         connections[2].server_fd = 1;
         let mut sessions: Vec<SessionRecord> = (0..3)
             .map(|id| SessionRecord {
@@ -217,6 +216,7 @@ mod tests {
             tables.max_connection = 3;
             // The server's port, which the test still frees.
             let _ = (*state).push_port(Box::from_raw(config));
+            (*state).tables_ref().hold_port(0, 1).unwrap();
             count_send(&*state, 1, 4);
             count_send(&*state, 0, 3);
         }

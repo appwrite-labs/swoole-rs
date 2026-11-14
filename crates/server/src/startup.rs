@@ -421,19 +421,18 @@ pub(crate) fn start_master_thread(serv: view::Server<'_>, reactor: Reactor) -> b
 pub(crate) fn store_listen_socket(serv: view::Server<'_>) {
     let state = serv.state();
     let tables = state.tables_ref();
-    for &listen in tables.ports() {
+    for (index, &listen) in tables.ports().iter().enumerate() {
         let (ls, port) = (listen.raw(), listen.config());
         let Some(socket) = port.listening_socket() else {
             continue;
         };
         let fd = socket.fd();
-        let Some(conn) = tables.connection_at(fd) else {
+        let Some(conn) = tables.hold_port(index, fd) else {
             continue;
         };
         conn.set_fd(fd);
         conn.set_socket(Some(socket));
         conn.set_socket_type(port.r#type);
-        conn.set_object(ls);
         let mut info = conn.info();
         info.kind = port.r#type;
         let host = port.host.bytes_with_nul();
@@ -882,12 +881,13 @@ mod tests {
         let fd = live.listener_fd;
         let conn = live.state().tables_ref().connection_at(fd).unwrap();
         conn.set_fd(0);
-        conn.set_object(core::ptr::null_mut());
+        conn.clear_object();
         conn.set_socket_type(0);
         store_listen_socket(live.server());
         let port = (&raw const *live.port()).addr();
         assert_eq!(conn.fd(), fd, "the slot's fd");
-        assert_eq!(conn.object().addr(), port, "the slot holds its port");
+        let held = conn.port().map_or(0, |held| held.raw().addr());
+        assert_eq!(held, port, "the slot holds its port");
         assert_eq!(conn.socket_type(), 1, "TCP");
         assert_eq!(conn.info().kind, 1, "its address");
         assert_eq!(

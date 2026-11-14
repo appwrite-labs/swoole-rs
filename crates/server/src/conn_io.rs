@@ -515,12 +515,15 @@ pub(crate) fn close_connection(
         sock.edit(|s| s.recv_buffer = core::ptr::null_mut());
     }
     if let Some(port) = port {
-        if port.open_http_protocol.get() && !conn.object().is_null() {
+        if port.open_http_protocol.get() && conn.http_request().is_some() {
             (crate::port_config::methods().destroy_http_request)(conn);
         }
-        if port.open_redis_protocol.get() && !conn.object().is_null() {
-            // SAFETY: the redis request the connection owns, not used again.
-            unsafe { swoole_rs_corebase::sw_free(conn.object()) };
+        if port.open_redis_protocol.get()
+            && let Some(request) = conn.take_resp_request()
+        {
+            // SAFETY: the box the session's reactor, this one, gave the connection; the
+            // slot no longer names it.
+            drop(unsafe { Box::from_raw(request) });
         }
     }
     if let Some(session) = state.session(conn.session_id()) {
@@ -529,7 +532,7 @@ pub(crate) fn close_connection(
     lower_max_fd(state, fd);
     conn.active().store(0, Relaxed);
     conn.set_socket(None);
-    conn.set_object(core::ptr::null_mut());
+    conn.clear_object();
     // The slot's last write before close(fd): an accept that gets the fd back
     // acquires it (OP_CONN_RESET) before reusing the slot.
     conn.closed().store(1, Release);

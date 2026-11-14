@@ -49,7 +49,10 @@ pub struct ConnectionRecord {
     pub local_addr_index: u16,
     pub timer: Option<swoole_rs_corebase::timer_key::Held>,
     pub info: SocketAddress,
-    pub object: *mut c_void,
+    /// Null, a listening slot's port ([`ServerTables::hold_port`]) as its plain
+    /// address, or anything else (a session's protocol state, a pipe) [`encode`]d
+    /// negative. Private: only this module's typed setters write it.
+    object: *mut c_void,
     /// The session socket, `None` before the connection has one or after it closes: a
     /// record live until the unsafe free that ends the connection.
     pub socket: Option<swoole_rs_reactor::Socket<'static>>,
@@ -76,6 +79,25 @@ impl ConnectionRecord {
     pub fn is_active(&self) -> bool {
         self.active.load(Relaxed) != 0
     }
+}
+
+/// `offsetof(Connection, object)`, for `layout`.
+pub(crate) const OBJECT_OFFSET: usize = core::mem::offset_of!(ConnectionRecord, object);
+
+/// The top address bit: set on every slot object but a port.
+const NOT_PORT: usize = 1 << (usize::BITS - 1);
+
+/// A 2-aligned `object` that isn't a port, as `(address >> 1) | NOT_PORT`: negative,
+/// so [`Connection::port`] reads it as none with the sign test that replaces its null
+/// test, and [`decode`] gives back every bit of the address.
+fn encode<T>(object: *mut T) -> *mut c_void {
+    const { assert!(align_of::<T>() >= 2, "the encoding drops the lowest bit") };
+    object.cast::<c_void>().map_addr(|a| (a >> 1) | NOT_PORT)
+}
+
+/// The address [`encode`] stored, or `None` for null or a port.
+fn decode<T>(object: *mut c_void) -> Option<*mut T> {
+    (object.addr().cast_signed() < 0).then(|| object.map_addr(|a| a << 1).cast())
 }
 
 /// A slot of a shared table, borrowed for `'a` and read and written one field at a
@@ -119,7 +141,7 @@ impl<T> Slot<'_, T> {
     ///
     /// # Safety
     /// `raw` is null or a slot live for the handle's life, whose writes the server's own
-    /// synchronization orders.
+    /// synchronization orders, and a port it holds ([`Connection::port`]) is too.
     #[must_use]
     pub unsafe fn from_ptr(raw: *mut T) -> Option<Self> {
         // SAFETY: as the caller guarantees; `UnsafeCell` has `T`'s layout.
@@ -197,7 +219,7 @@ impl<'a> Connection<'a> {
     field!(local_addr_index, set_local_addr_index: u16);
     field!(timer, set_timer: Option<swoole_rs_corebase::timer_key::Held>);
     field!(info, set_info: SocketAddress);
-    field!(object, set_object: *mut c_void);
+    field!(private object, set_object: *mut c_void);
     field!(socket, set_socket: Option<swoole_rs_reactor::Socket<'static>>);
     field!(connect_time, set_connect_time: f64);
     field!(last_recv_time, set_last_recv_time: f64);
@@ -234,6 +256,107 @@ impl<'a> Connection<'a> {
         Some(unsafe { Box::from_raw(cert) })
     }
     field!(server_fd, set_server_fd: c_int);
+
+    /// `(ListenPort *) conn->object`: the port a listening slot holds
+    /// ([`ServerTables::hold_port`]), or `None` on any other slot.
+    #[must_use]
+    #[inline]
+    pub fn port(self) -> Option<crate::view::Port<'a>> {
+        let raw = self.object();
+        if raw.addr().cast_signed() <= 0 {
+            return None;
+        }
+        // SAFETY: a positive object is a port: everything else is null or `encode`d
+        // negative, and only `hold_port` stores one, from the port list of the server
+        // whose table holds the slot. The server frees its ports only with that table, so
+        // the port lives as long as the slot's borrow (or, for a `from_ptr` handle, as its
+        // caller guarantees).
+        unsafe { crate::view::Port::from_raw(raw) }
+    }
+
+    /// The HTTP request a session holds, or `None`: an HTTP port's session holds
+    /// nothing else.
+    #[must_use]
+    #[inline]
+    pub fn http_request(self) -> Option<*mut swoole_rs_http_ffi::HttpRequest> {
+        decode(self.object())
+    }
+
+    /// The session holds `request`, whose address comes back; the slot keeps it until
+    /// [`Self::take_http_request`].
+    #[inline]
+    #[must_use]
+    pub fn set_http_request(
+        self,
+        request: Box<swoole_rs_http_ffi::HttpRequest>,
+    ) -> *mut swoole_rs_http_ffi::HttpRequest {
+        let request = Box::into_raw(request);
+        self.set_object(encode(request));
+        request
+    }
+
+    /// The HTTP request the session held, which the slot no longer names: the box
+    /// [`Self::set_http_request`] took, in the process that stored it.
+    #[must_use]
+    #[inline]
+    pub fn take_http_request(self) -> Option<*mut swoole_rs_http_ffi::HttpRequest> {
+        let request = self.http_request();
+        self.clear_object();
+        request
+    }
+
+    /// The redis request state a session holds, or `None`: a redis port's session
+    /// holds nothing else.
+    #[must_use]
+    pub fn resp_request(self) -> Option<*mut swoole_rs_protocols::RespRequest> {
+        decode(self.object())
+    }
+
+    /// The session holds `request`, whose address comes back; the slot keeps it until
+    /// [`Self::take_resp_request`].
+    #[must_use]
+    pub fn set_resp_request(
+        self,
+        request: Box<swoole_rs_protocols::RespRequest>,
+    ) -> *mut swoole_rs_protocols::RespRequest {
+        let request = Box::into_raw(request);
+        self.set_object(encode(request));
+        request
+    }
+
+    /// The redis request state the session held, which the slot no longer names: the
+    /// box [`Self::set_resp_request`] took, in the process that stored it.
+    #[must_use]
+    pub fn take_resp_request(self) -> Option<*mut swoole_rs_protocols::RespRequest> {
+        let request = self.resp_request();
+        self.clear_object();
+        request
+    }
+
+    /// `Server::store_pipe_fd`: a pipe end's slot names its pipe, which nothing reads
+    /// back as a port. An address with the top bit set, which no user-space pointer
+    /// has, is not kept.
+    pub(crate) fn set_pipe(self, pipe: *mut c_void) {
+        let kept = pipe.addr().cast_signed() >= 0;
+        self.set_object(if kept {
+            pipe.map_addr(|a| a | NOT_PORT)
+        } else {
+            core::ptr::null_mut()
+        });
+    }
+
+    /// The pipe [`Self::set_pipe`] stored, for tests.
+    #[cfg(test)]
+    pub(crate) fn pipe(self) -> Option<*mut c_void> {
+        let raw = self.object();
+        (raw.addr().cast_signed() < 0).then(|| raw.map_addr(|a| a & !NOT_PORT))
+    }
+
+    /// `conn->object = nullptr`.
+    pub fn clear_object(self) {
+        self.set_object(core::ptr::null_mut());
+    }
+
     field!(atomic active: AtomicU8);
     field!(atomic recv_queued_bytes: AtomicU32);
     field!(atomic lock: AtomicU32);
@@ -333,6 +456,19 @@ impl ServerTables {
         // modulo keeps `index` within, and frees it only by nulling `session_list`;
         // `UnsafeCell` has the record's layout.
         Some(unsafe { &*base.wrapping_add(index) })
+    }
+
+    /// `connection_list[fd].object = ports[index]`: the listening slot of `fd` holds
+    /// the table's own port `index`, the one kind of slot object [`Connection::port`]
+    /// reads. The slot, or `None` when either is out of range.
+    pub(crate) fn hold_port(&self, index: usize, fd: c_int) -> Option<Connection<'_>> {
+        let port = self.ports().get(index)?.raw();
+        if port.addr().cast_signed() < 0 {
+            swoole_rs_corebase::fatal("a port above the user address range");
+        }
+        let slot = self.connection_at(fd)?;
+        slot.set_object(port);
+        Some(slot)
     }
 
     /// The listen ports.

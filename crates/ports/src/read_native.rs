@@ -288,7 +288,7 @@ impl Connection for Read<'_> {
         self.request = if self.removed() {
             ptr::null_mut()
         } else {
-            self.conn.object().cast()
+            self.conn.http_request().unwrap_or(ptr::null_mut())
         };
         i64::from(result)
     }
@@ -351,7 +351,8 @@ impl Connection for Read<'_> {
 
     fn serve_static(&mut self) -> bool {
         let conn = self.conn;
-        let (request, session) = (conn.object().cast::<HttpRequest>(), conn.session_id());
+        let request = conn.http_request().unwrap_or(ptr::null_mut());
+        let session = conn.session_id();
         // SAFETY: the connection's live request; the handler's last send may close
         // the connection and free it, and nothing here reads it afterwards.
         unsafe { static_select(self.server, request, session, self.socket) }
@@ -381,10 +382,10 @@ impl Connection for Read<'_> {
 
     #[inline]
     fn init_request(&mut self) {
-        if self.conn.object().is_null() {
-            (self.conn).set_object(Box::into_raw(swoole_rs_http_ffi::request_new()).cast());
-        }
-        self.request = self.conn.object().cast();
+        self.request = match self.conn.http_request() {
+            Some(request) => request,
+            None => (self.conn).set_http_request(swoole_rs_http_ffi::request_new()),
+        };
         if self.request().buffer.is_null() {
             let buffer = self.recv_buffer();
             self.request().buffer = buffer.cast();

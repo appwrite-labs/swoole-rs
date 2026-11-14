@@ -3,7 +3,6 @@
 //! in [`crate::read_native`].
 
 use std::ffi::{CStr, c_char, c_int};
-use std::ptr;
 use swoole_rs_corebase::CCast;
 
 use swoole_rs_clients::address::{assign, swr_v1_clients_address_port, type_name};
@@ -456,11 +455,10 @@ pub fn set_stream_protocol(config: &mut PortConfig) {
 
 /// `ListenPort::destroy_http_request(conn)`: frees the connection's request, if any.
 pub(crate) fn destroy_http_request(conn: swoole_rs_server::Connection<'_>) {
-    let request = conn.object();
-    conn.set_object(ptr::null_mut());
-    let request = ptr::NonNull::new(request.cast::<swoole_rs_http_ffi::HttpRequest>());
-    // SAFETY: its `object` is null or `request_new`'s box; nothing holds it after.
-    request_free(request.map(|request| unsafe { Box::from_raw(request.as_ptr()) }));
+    let request = conn.take_http_request();
+    // SAFETY: the box the session's reactor, this one, gave the connection; the slot
+    // no longer names it.
+    request_free(request.map(|request| unsafe { Box::from_raw(request) }));
 }
 
 #[cfg(not(test))]
@@ -801,7 +799,7 @@ mod tests {
             let server = Box::leak(Box::<swoole_rs_server::ServerConfig>::default());
             server.enable_reuse_port.set(true);
             let head: &mut [*mut c_void; 2] =
-                Box::leak(Box::new([ptr::null_mut(), (&raw mut *server).cast()]));
+                Box::leak(Box::new([std::ptr::null_mut(), (&raw mut *server).cast()]));
             unsafe { (*config).protocol.get_mut().private_data_2 = head.as_mut_ptr().cast() };
         }
         unsafe {
@@ -1183,11 +1181,16 @@ mod tests {
         let mut conn: ConnectionRecord = unsafe { std::mem::zeroed() };
         // `request_new`'s boxed request.
         let request = swoole_rs_http_ffi::HttpRequest::new(None);
-        conn.object = Box::into_raw(Box::new(request)).cast();
-        destroy_http_request((&mut conn).into());
-        assert!(conn.object.is_null(), "the request is freed and cleared");
-        destroy_http_request((&mut conn).into());
-        assert!(conn.object.is_null(), "no request: nothing to do");
+        let slot = swoole_rs_server::Connection::from(&mut conn);
+        let held = slot.set_http_request(Box::new(request));
+        assert_eq!(slot.http_request(), Some(held));
+        destroy_http_request(slot);
+        assert!(
+            slot.http_request().is_none(),
+            "the request is freed and cleared"
+        );
+        destroy_http_request(slot);
+        assert!(slot.http_request().is_none(), "no request: nothing to do");
     }
 
     /// Upstream's `server_port.import`. Linux, as core-tests: macOS answers

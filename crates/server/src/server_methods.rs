@@ -165,7 +165,7 @@ pub(crate) fn store_pipe_fd(
     for master in [true, false] {
         let fd = view::worker_pipe(worker, master).map_or(-1, |end| end.fd());
         if let Some(conn) = serv.state().tables_ref().connection_at(fd) {
-            conn.set_object(pipe);
+            conn.set_pipe(pipe);
         }
         if fd > gs.max_fd() {
             gs.max_fd.store(fd, core::sync::atomic::Ordering::Relaxed);
@@ -505,7 +505,7 @@ mod tests {
         let tables = live.state().tables_ref();
         for fd in [5, 9] {
             assert_eq!(
-                tables.connection_at(fd).map(crate::Connection::object),
+                tables.connection_at(fd).and_then(crate::Connection::pipe),
                 Some(pipe)
             );
         }
