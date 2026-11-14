@@ -170,7 +170,7 @@ pub struct PortConfig {
     pub websocket_frames: Setting<u8>,
     /// `websocket_subprotocol`, the handshake's `Sec-WebSocket-Protocol`.
     pub websocket_protocol: Published<Vec<u8>>,
-    /// `ListenPort::host`, which native code reads and writes through a `RustStringView`.
+    /// `ListenPort::host`.
     pub host: Box<StringSlot>,
     /// `ListenPort::protocol`, which native code reads and writes by reference.
     pub protocol: Shared<Protocol>,

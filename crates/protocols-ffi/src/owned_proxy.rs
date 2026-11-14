@@ -1,7 +1,7 @@
-//! `swoole::Socks5Proxy`'s methods under their upstream symbols, over the Rust proxy
-//! owner and its packet buffer; the header keeps `create`'s C++ allocation and
-//! `handshake`'s `std::function` send.
-use std::ffi::{c_char, c_int};
+//! `swoole::Socks5Proxy`'s methods over the Rust proxy owner and its packet buffer.
+//! `admit`, `pack_negotiate_request` and `handshake_step` keep their upstream symbols
+//! for crates/clients, which links them by name.
+use std::ffi::{CStr, c_int};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{ProxyState, log, net_types::AddressStorage};
 use swoole_rs_protocols::{
@@ -18,8 +18,7 @@ const AUTH_FAILED: c_int = 7003;
 const SERVER_ERROR: c_int = 7004;
 const HANDSHAKE_FAILED: c_int = 7005;
 
-/// `swoole::Socks5Proxy`'s head: `ProxyOwner::prepared_.owner`, which
-/// `swr_v1_core_proxy_new` made and the proxy frees last.
+/// A `swoole::Socks5Proxy`: a borrow of its Rust proxy state.
 #[repr(C)]
 pub struct Socks5Proxy<'a> {
     owner: &'a ProxyState,
@@ -138,16 +137,14 @@ pub extern "C" fn pack_negotiate_request(proxy: &Socks5Proxy<'_>) -> isize {
 }
 
 /// `ssize_t Socks5Proxy::pack_auth_request()`.
-#[unsafe(export_name = "_ZN6swoole11Socks5Proxy17pack_auth_requestEv")]
 #[must_use]
-pub extern "C" fn pack_auth_request(proxy: &Socks5Proxy<'_>) -> isize {
+pub fn pack_auth_request(proxy: &Socks5Proxy<'_>) -> isize {
     ssize(packet(proxy, Request::Auth).size)
 }
 
 /// `ssize_t Socks5Proxy::pack_connect_request()`, with upstream's notices.
-#[unsafe(export_name = "_ZN6swoole11Socks5Proxy20pack_connect_requestEv")]
 #[must_use]
-pub extern "C" fn pack_connect_request(proxy: &Socks5Proxy<'_>) -> isize {
+pub fn pack_connect_request(proxy: &Socks5Proxy<'_>) -> isize {
     let result = packet(proxy, Request::Connect);
     if result.last_error != 0 {
         log::set_last_error(result.last_error);
@@ -236,10 +233,9 @@ pub fn socks5_step(proxy: &Socks5Proxy<'_>, reply: &[u8]) -> isize {
 }
 
 /// `const char *Socks5Proxy::strerror(int)`.
-#[unsafe(export_name = "_ZN6swoole11Socks5Proxy8strerrorEi")]
 #[must_use]
-pub extern "C" fn strerror(code: c_int) -> *const c_char {
-    socks_strerror(code).as_ptr()
+pub fn strerror(code: c_int) -> &'static CStr {
+    socks_strerror(code)
 }
 
 /// `int Socks5Proxy::admit(size_t, size_t)`: `create`'s credential check, with
@@ -267,14 +263,12 @@ pub extern "C" fn admit(user_length: usize, password_length: usize) -> c_int {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::CStr;
 
     // core-tests/src/protocol/base.cpp's protocol.socks5_strerror.
     #[test]
     fn socks5_strerror() {
         for i in 0..16 {
-            // SAFETY: strerror returns a static NUL-terminated string.
-            let error = unsafe { CStr::from_ptr(strerror(i)) };
+            let error = strerror(i);
             if i > 0x08 {
                 assert_eq!(error, c"Unknown error");
             } else {
@@ -349,9 +343,6 @@ mod tests {
         // Connected: ready, nothing to send.
         assert_eq!(unsafe { handshake_step(p, [5u8, 0].as_ptr(), 2) }, 0);
         assert_eq!(owner.fields().state, 4);
-        assert_eq!(
-            unsafe { CStr::from_ptr(strerror(5)) },
-            c"Connection refused by destination host"
-        );
+        assert_eq!(strerror(5), c"Connection refused by destination host");
     }
 }

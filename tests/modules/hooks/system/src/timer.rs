@@ -1,6 +1,6 @@
 //! Upstream's `core-tests/src/os/timer.cpp`, one function per TEST with the same inputs
 //! and expected values, over the Rust timer (crates/timer) under its upstream symbols.
-//! `SwooleTG.timer` goes through ../fixture.cc.
+//! `SwooleTG.timer` is crates/corebase's `thread_timer`.
 
 use std::cell::Cell;
 use std::ffi::{c_int, c_long, c_void};
@@ -37,7 +37,6 @@ unsafe extern "C" {
     fn swoole_timer_after(ms: c_long, callback: Callback, data: *mut c_void) -> c_long;
     #[link_name = "_Z17swoole_timer_ticklPFvPN6swoole5TimerEPNS_9TimerNodeEEPv"]
     fn swoole_timer_tick(ms: c_long, callback: Callback, data: *mut c_void) -> c_long;
-    fn swr_case_timer_exchange(timer: *mut c_void) -> *mut c_void;
     #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
     pub(super) fn swoole_timer_del(tnode: *mut TimerNode) -> bool;
     #[link_name = "_Z18swoole_timer_delayPN6swoole9TimerNodeEl"]
@@ -125,6 +124,13 @@ unsafe fn set_destructor<'a>(tnode: *mut TimerNode, f: impl FnMut() + 'a) {
 }
 
 /// `swoole::time<std::chrono::milliseconds>()`: the system clock.
+/// Sets `SwooleTG.timer` to `timer` and returns the one it held.
+fn timer_exchange(timer: *mut c_void) -> *mut c_void {
+    let previous = swoole_rs_corebase::thread_timer();
+    swoole_rs_corebase::set_thread_timer(timer);
+    previous
+}
+
 fn now_ms() -> u64 {
     u64::try_from(
         SystemTime::now()
@@ -272,7 +278,7 @@ fn delay() {
 fn error() {
     // SAFETY: SwooleTG.timer is unset for the calls below and restored after.
     unsafe {
-        let tmp = swr_case_timer_exchange(std::ptr::null_mut());
+        let tmp = timer_exchange(std::ptr::null_mut());
 
         swoole_timer_free();
         swoole_timer_select(); // no effect
@@ -288,7 +294,7 @@ fn error() {
 
         swoole_timer_delay(std::ptr::null_mut(), 100);
         assert!(!swoole_timer_del(std::ptr::null_mut()));
-        swr_case_timer_exchange(tmp);
+        timer_exchange(tmp);
 
         swoole_timer_free();
     }
@@ -302,10 +308,9 @@ fn reinit() {
 
     event_init();
 
-    // SAFETY: `after` created this thread's timer, which the exchange puts back.
-    let timer = unsafe { swr_case_timer_exchange(std::ptr::null_mut()) };
-    // SAFETY: as above.
-    unsafe { swr_case_timer_exchange(timer) };
+    // `after` created this thread's timer, which the exchange puts back.
+    let timer = timer_exchange(std::ptr::null_mut());
+    timer_exchange(timer);
     // SAFETY: this thread's live timer.
     swoole_rs_timer::owner_reinit(unsafe { &*timer.cast() }, false);
 

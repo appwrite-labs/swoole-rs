@@ -518,13 +518,13 @@ pub(crate) fn end(serv: view::Server<'_>, id: c_long, flags: c_int) -> bool {
         return false;
     };
     let now = c.close_reset() || c.peer_closed() || c.close_force();
-    let empty = socket.read(|s| out_buffer(s).is_none_or(|b| swr_cpp_buffer_empty(b)));
+    let empty = socket.read(|s| out_buffer(s).is_none_or(swr_cpp_buffer_empty));
     let reactor = Reactor::thread();
     if empty || now {
         return crate::conn_io::close_connection(serv, reactor, Some(socket)) == 0;
     }
     c.set_close_queued(true);
-    socket.read(|s| out_buffer(s).map(|b| swr_cpp_buffer_typed_close(b)));
+    socket.read(|s| out_buffer(s).map(swr_cpp_buffer_typed_close));
     // Only the half-close drain stops reading (`SW_HALFCLOSE_DRAIN`); upstream reads on.
     !cfg!(feature = "halfclose")
         || reactor.interest(socket, swoole_rs_reactor::Interest::RemoveRead, 0)

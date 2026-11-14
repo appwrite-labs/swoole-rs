@@ -96,7 +96,7 @@ pub fn swr_v1_reactor_write(
         let held = output
             .buffer()
             .filter(|&buffer| swr_cpp_buffer_count(buffer) != 0)
-            .map(|buffer| swr_cpp_buffer_length(buffer));
+            .map(swr_cpp_buffer_length);
         (output.buffer_size, output.nonblock, output.ssl_send, held)
     });
     if buffer_size == 0 {
@@ -227,10 +227,7 @@ mod tests {
         });
         let payload = WritePayload::Bytes(Drain::new(data));
         let result = swr_v1_reactor_write(socket, 64, payload, &Ops);
-        let held = record
-            .output
-            .buffer()
-            .map_or(0, |buffer| swr_cpp_buffer_length(buffer));
+        let held = record.output.buffer().map_or(0, swr_cpp_buffer_length);
         if !had_buffer {
             record.output.out_buffer = None;
         }

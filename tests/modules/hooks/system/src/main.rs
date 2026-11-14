@@ -9,8 +9,8 @@
 //! crates: the Rust `System` operations under their upstream
 //! symbols, and `swr_v1_system_*` and `swr_v1_hook_socket_poll` where upstream's
 //! signature carries C++ library types. The binary also runs coroutine/base.cpp
-//! and file.cpp (tests/modules/coroutine/base.rs), and the repo-owned C++ witnesses
-//! in ../fixture.cc.
+//! and file.cpp (tests/modules/coroutine/base.rs); ../fixture.cc gives the C++ record
+//! layouts process_pool.rs checks its mirrors against.
 //!
 //! `main --list` prints the cases; `main NAME` runs one, in this process, as
 //! core-tests' main does (`swoole_init`, the case, `swoole_clean`). It exits 0 when

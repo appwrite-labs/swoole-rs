@@ -10,8 +10,7 @@
 //! exports and upstream symbols.
 //! `Coroutine::create`, `coroutine::run` and `Coroutine::bailout` take a function and
 //! its data here (`swr_v1_coroutine_create`, `swoole_coroutine_create`,
-//! `swr_v1_coroutine_bail`); `swoole_event_defer` has C++ linkage and is in
-//! system/fixture.cc.
+//! `swr_v1_coroutine_bail`).
 
 use super::hook::{
     ST_SIZE, Stat, swoole_coroutine_fstat, swoole_coroutine_fsync, swoole_coroutine_ftruncate,
@@ -93,8 +92,6 @@ unsafe extern "C-unwind" {
     #[link_name = "_Z11swoole_forki"]
     fn swoole_fork(flags: c_int) -> c_int;
 
-    // system/fixture.cc.
-    fn swr_case_event_defer(fn_: Callback, data: *mut c_void);
 }
 
 unsafe extern "C" {
@@ -231,6 +228,12 @@ impl View {
         // SAFETY: a live coroutine.
         unsafe { coroutine_cancel(self.0.cast()) }
     }
+}
+
+/// [`call`] as a deferred call (`Reactor::defer` takes the unwinding ABI).
+unsafe extern "C-unwind" fn deferred_call(data: *mut c_void) {
+    // SAFETY: the deferrer's closure, live until the loop runs this.
+    unsafe { call(data) }
 }
 
 /// Calls the `&dyn Fn()` at `data`.
@@ -614,7 +617,7 @@ fn bailout_() {
         co_run(|| {
             // SAFETY: the loop runs the deferred call before `co_run` returns, while
             // `deferred` is live.
-            unsafe { swr_case_event_defer(Some(call), data) };
+            assert!(unsafe { swoole_rs_ffi::defer(deferred_call, data, None) });
             exit.set(true);
         });
 

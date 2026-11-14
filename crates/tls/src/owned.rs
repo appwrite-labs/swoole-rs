@@ -679,24 +679,10 @@ mod tests {
                 ("", false, "", None),
             ] {
                 let prepared = owner_new(warning);
-                assert_eq!(
-                    swoole_rs_corebase::swr_v1_core_string_set(
-                        prepared.strings[8],
-                        explicit.as_ptr().cast(),
-                        explicit.len()
-                    ),
-                    0
-                );
+                assert_eq!((*prepared.strings[8]).set_shared(explicit.as_bytes()), 0);
                 (*prepared.fields).disable_tls_host_name = disabled;
                 let hostname = StringSlot::empty();
-                assert_eq!(
-                    swoole_rs_corebase::swr_v1_core_string_set(
-                        Arc::as_ptr(&hostname),
-                        automatic.as_ptr().cast(),
-                        automatic.len()
-                    ),
-                    0
-                );
+                assert_eq!(hostname.set_shared(automatic.as_bytes()), 0);
                 let socket =
                     swoole_rs_reactor::SocketRecord::with_fd(stream.as_raw_fd(), 6).into_raw();
                 let handle = swoole_rs_reactor::Socket::from_ptr(socket).unwrap();
@@ -746,14 +732,7 @@ mod tests {
         unsafe {
             let source = owner_new(warning);
             let destination = owner_new(warning);
-            assert_eq!(
-                swoole_rs_corebase::swr_v1_core_string_set(
-                    source.strings[PASSPHRASE],
-                    c"source".as_ptr(),
-                    6
-                ),
-                0
-            );
+            assert_eq!((*source.strings[PASSPHRASE]).set_shared(b"source"), 0);
             assert!(create(&mut Lent::new(&*source.owner)));
             let context = (*source.fields).context_ptr();
             assert_eq!(
@@ -765,14 +744,7 @@ mod tests {
                 0
             );
             assert_eq!((*destination.fields).context_ptr(), context);
-            assert_eq!(
-                swoole_rs_corebase::swr_v1_core_string_set(
-                    destination.strings[PASSPHRASE],
-                    c"copy".as_ptr(),
-                    4
-                ),
-                0
-            );
+            assert_eq!((*destination.strings[PASSPHRASE]).set_shared(b"copy"), 0);
             assert_eq!(
                 std::ffi::CStr::from_ptr(
                     swoole_rs_corebase::swr_v1_core_string_view(&*source.strings[PASSPHRASE]).data
@@ -799,28 +771,14 @@ mod tests {
             let prepared = owner_new(warning);
             let owner = prepared.owner;
             let slot = &*prepared.strings[PASSPHRASE];
-            assert_eq!(
-                swoole_rs_corebase::swr_v1_core_string_set(
-                    prepared.strings[PASSPHRASE],
-                    c"initial".as_ptr(),
-                    7
-                ),
-                0
-            );
+            assert_eq!((*prepared.strings[PASSPHRASE]).set_shared(b"initial"), 0);
             assert!(create(&mut Lent::new(&*owner)));
             let ctx = (*prepared.fields).context_ptr();
             assert_eq!((*prepared.fields).protocols, 126);
             let data = ptr::from_ref(slot).cast_mut().cast();
             assert!(password_binding_matches(ctx, data, slot_password));
             for value in [b"swoole".as_slice(), b"a\0b", b"", b"1234567"] {
-                assert_eq!(
-                    swoole_rs_corebase::swr_v1_core_string_set(
-                        prepared.strings[PASSPHRASE],
-                        value.as_ptr().cast(),
-                        value.len()
-                    ),
-                    0
-                );
+                assert_eq!((*prepared.strings[PASSPHRASE]).set_shared(value), 0);
                 for capacity in [-8, -1, 0, 1, 2, 3, 4, 7, 8, 15, 16] {
                     let mut bytes = [0x55u8; 16];
                     let mut expected = bytes;
@@ -846,14 +804,7 @@ mod tests {
             Arc::increment_strong_count(owner);
             let retained = owner;
             drop(Arc::from_raw(owner));
-            assert_eq!(
-                swoole_rs_corebase::swr_v1_core_string_set(
-                    prepared.strings[PASSPHRASE],
-                    c"retained".as_ptr(),
-                    8
-                ),
-                0
-            );
+            assert_eq!((*prepared.strings[PASSPHRASE]).set_shared(b"retained"), 0);
             let mut bytes = [0u8; 16];
             assert_eq!(slot_password(bytes.as_mut_ptr().cast(), 16, 0, slot), 8);
             assert_eq!(&bytes[..9], b"retained\0");

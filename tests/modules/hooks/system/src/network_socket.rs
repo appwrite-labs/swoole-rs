@@ -163,8 +163,6 @@ unsafe extern "C-unwind" {
     fn socket_check_liveness(socket: *mut Record) -> bool;
     #[link_name = "_ZN6swoole7network6Socket20ssl_get_error_reasonEPi"]
     fn socket_ssl_get_error_reason(reason: *mut c_int) -> *const c_char;
-    #[link_name = "_ZNK6swoole6Buffer6lengthEv"]
-    fn buffer_length(buffer: *const c_void) -> u32;
     #[link_name = "_Z15swoole_ssl_initv"]
     fn swoole_ssl_init();
     #[link_name = "_Z24swoole_event_set_handleriiPFiPN6swoole7ReactorEPNS_5EventEE"]
@@ -544,7 +542,7 @@ impl Socket {
             0
         } else {
             // SAFETY: a live output buffer.
-            unsafe { buffer_length(buffer) }
+            swoole_rs_buffer::cpp::swr_cpp_buffer_length(unsafe { &*buffer.cast() })
         }
     }
 

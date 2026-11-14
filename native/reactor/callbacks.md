@@ -34,8 +34,8 @@ have no C++ caller, so the class no longer has them: Rust reads them as
 
 `defer_tasks` and `destroy_callbacks` are fields of the Rust reactor state:
 FIFO queues of C `(call, data, dispose)` entries (`crates/reactor/src/deferred.rs`),
-created on first push. `swoole_event_defer` takes a plain `void (*)(void *)` and its
-data (`Reactor::defer` has no C++ caller left, so the class no longer has it).
+created on first push. Only Rust pushes to them (`deferred::defer` and
+`swoole_event_defer_value`); no C or C++ caller is left.
 
 - The `PRIORITY_DEFER_TASK` end callback detaches `defer_tasks`, runs it and
   frees it, so a task that defers again lands on the next end pass. A non-null

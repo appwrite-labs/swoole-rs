@@ -1,27 +1,22 @@
 # Buffer ABI v1
 
-Types: `native/include/swoole_rs_buffer.h` and
-`native/buffer/swoole_rs_buffer_typed.h`. Feature value 2 (graduated: always on).
+Types: `native/include/swoole_rs_buffer.h`. Feature value 2 (graduated: always on).
 
 Rust owns one queue and its data allocations. Entries are Rust data, sendfile
-tokens or CLOSE markers; the front cursor (offset and generation) is Rust's too. The C++ `Buffer`
-(`native/buffer/swoole_buffer.h`) holds only the Rust handle, and its methods are
-Rust under their upstream symbols (`crates/buffer/src/cpp.rs`). Callers read the
-first entry with `typed_front()`, commit sends with `typed_consume()`, queue a
-close with `typed_close()` and drop the entry with `pop()`. Only Rust calls the
-queue's own operations (`swoole_rs_buffer::Buffer`'s methods); C++ goes through
-`Buffer`'s members, so the headers carry only the handle and front types.
+tokens or CLOSE markers; the front cursor (offset and generation) is Rust's too. The socket
+record's `Buffer` (declared in `native/buffer/swoole_buffer.h`) holds only the Rust
+handle, and its methods are Rust (`crates/buffer/src/cpp.rs`), which only Rust calls.
+Callers read the first entry with `typed_front()`, commit sends with
+`typed_consume()`, queue a close with `typed_close()` and drop the entry with `pop()`.
 
 ## Ownership and accounting
 
 - `Buffer::create` returns a unique queue, or `NOMEM`. Chunk size 0 means
   `INT32_MAX`. `Buffer::release` drops it, or hands it back while a token is queued.
-- Append copies borrowed slices (and `Buffer`'s iovec member's descriptors) into
-  stable Rust allocations. A null iovec base is allowed for zero length.
-- Vector offset is an unsigned byte offset into the concatenated descriptors.
-  Empty descriptors are allowed. Offset equal to the total succeeds and inserts
-  nothing; beyond the total is `INVALID`. The facade rejects negative `off_t`.
-  Overflowing sums are `OVERFLOW`; lengths above `isize::MAX` are rejected.
+- Append copies borrowed slices into stable Rust allocations.
+- Vector offset is an unsigned byte offset into the concatenated slices.
+  Empty slices are allowed. Offset equal to the total succeeds and inserts
+  nothing; beyond the total is `INVALID`. Overflowing sums are `OVERFLOW`.
 - Queue length counts copied Rust bytes, including already-sent bytes until the
   chunk is popped. Pop subtracts the entry's copied length. Total length cannot
   exceed `UINT32_MAX`. Tokens count zero bytes.

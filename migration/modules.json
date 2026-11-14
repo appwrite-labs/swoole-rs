@@ -416,7 +416,6 @@
         "crates/protocols-ffi/",
         "crates/bus/",
         "crates/phpredis/",
-        "native/protocols/",
         "tests/modules/protocols/"
       ],
       "phpt_families": [
@@ -435,7 +434,7 @@
         "ext-src/swoole_redis_server.cc",
         "ext-src/stubs/php_swoole_redis_server_arginfo.h"
       ],
-      "abi_contract": "native/protocols/swoole_rs_protocols.h"
+      "abi_contract": "crates/protocols-ffi/src/lib.rs"
     },
     {
       "id": "M14",

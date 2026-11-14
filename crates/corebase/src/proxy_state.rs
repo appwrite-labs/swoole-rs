@@ -2,7 +2,6 @@
 //! references to these stable slots.
 use crate::StringSlot;
 use std::cell::{Cell, Ref, RefCell, RefMut};
-use std::ptr;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -28,44 +27,12 @@ const _: () = {
     );
 };
 /// An HTTP or SOCKS5 proxy's values: its scalars, four strings (0 host, 1 username,
-/// 2 password, 3 target host) and, for SOCKS5, its packet. Native views reach the
-/// parts through [`PreparedProxy`]; Rust borrows them through the methods.
+/// 2 password, 3 target host) and, for SOCKS5, its packet, which Rust borrows through
+/// the methods.
 pub struct ProxyState {
     fields: Cell<ProxyFields>,
     strings: RefCell<[StringSlot; 4]>,
     packet: Option<Box<RefCell<[u8; 512]>>>,
-}
-#[repr(C)]
-pub struct PreparedProxy {
-    pub owner: *mut ProxyState,
-    pub fields: *mut ProxyFields,
-    pub strings: [*const StringSlot; 4],
-    pub buffer: *mut u8,
-}
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_core_proxy_new(socks: bool) -> PreparedProxy {
-    let state = Box::leak(ProxyState::new(socks));
-    PreparedProxy {
-        buffer: state
-            .packet
-            .as_ref()
-            .map_or(ptr::null_mut(), |packet| RefCell::as_ptr(packet).cast()),
-        fields: state.fields.as_ptr(),
-        strings: std::array::from_fn(|index| {
-            RefCell::as_ptr(&state.strings)
-                .cast::<StringSlot>()
-                .wrapping_add(index)
-                .cast_const()
-        }),
-        // Last, and with no call: a `&mut` reborrow would end the views.
-        owner: &raw mut *state,
-    }
-}
-/// Frees the proxy `swr_v1_core_proxy_new` leaked, or nothing for null: native code
-/// hands its `owner` back once, after its field, string and packet views end.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_core_proxy_free(owner: Option<Box<ProxyState>>) {
-    drop(owner);
 }
 #[repr(C)]
 pub struct ProxyCopyResult {
@@ -178,16 +145,13 @@ impl ProxyState {
 mod tests {
     use super::*;
     #[test]
-    fn native_views_see_rust_writes() {
-        let prepared = swr_v1_core_proxy_new(true);
-        let owner = unsafe { &*prepared.owner };
-        let configured = owner.configure([b"host", b"", b""], 80, false, 1);
-        assert_eq!(configured.status, 0);
-        assert_eq!(unsafe { (*prepared.fields).port }, 80);
-        let host = unsafe { crate::swr_v1_core_string_view(&*prepared.strings[0]) };
-        assert_eq!(unsafe { std::ffi::CStr::from_ptr(host.data) }, c"host");
+    fn configure_sets_the_scalars_and_strings() {
+        let owner = ProxyState::new(true);
+        assert_eq!(owner.configure([b"host", b"", b""], 80, false, 1).status, 0);
+        assert_eq!(owner.fields().port, 80);
+        assert_eq!(&*owner.string(0), b"host");
+        assert_eq!(&*owner.string_with_nul(0), b"host\0");
         owner.packet().unwrap()[7] = 9;
-        assert_eq!(unsafe { *prepared.buffer.add(7) }, 9);
-        swr_v1_core_proxy_free(Some(unsafe { Box::from_raw(prepared.owner) }));
+        assert_eq!(owner.packet().unwrap()[7], 9);
     }
 }

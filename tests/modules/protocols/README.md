@@ -52,14 +52,21 @@ SET/MAP is excluded because the original throws then dereferences invalid memory
 ```sh
 cargo test -p swoole-rs-protocols -p swoole-rs-protocols-ffi -p swoole-rs-bus
 cargo clippy -p swoole-rs-protocols -p swoole-rs-protocols-ffi -p swoole-rs-bus --all-targets -- -D warnings
-python3 tests/modules/protocols/native.py --source /pinned/reference \
-  --archive /actual/prefix/lib/libswoole_rs_ffi.a --sanitize
 ```
 
-`native.py` compiles unchanged pinned function bodies (`adapter.inc`, `native.cc`)
-with a modeled Address and compares their MQTT and SOCKS traces with the build's
-Rust: the upstream-symbol exports and the hybrid `Socks5Proxy` header over them. C++
-ASan/UBSan does not instrument Rust.
+`native.rs` (the `native` test of `swoole-rs-protocols-ffi`) compares the Rust with
+the pinned bodies `crates/oracle` compiles unchanged. The C++ gate it replaces
+(`native.py`, `native.cc`, `adapter.inc`) compiled the same pinned MQTT and SOCKS5
+bodies beside the hybrid `Socks5Proxy` header; that header is gone, and its parts are
+one Rust test each, with the same inputs and expected values:
+
+| `native.cc` part | Rust test | Pinned side |
+| --- | --- | --- |
+| MQTT remaining lengths at the varint boundaries, each prefix (30), and every two-byte head before a continued third (65,536) | `mqtt_lengths` | the pinned `mqtt::get_package_length` |
+| `handshake` over six states, three methods, every reply version, five reply codes and three send outcomes (69,120) | `socks5_handshakes` | `crates/oracle`'s `socks5::handshake` |
+| The three `pack_*_request` at target host and credential lengths around the 250- and 255-byte limits, and proxy and target hosts around 480 bytes over a filled packet (22) | `socks5_packs` | `socks5::pack` |
+| `Socks5Proxy::strerror` from -32 to 288 and both extremes (323) | `socks5_strerror_codes` | `socks5::strerror` |
+| `create` over seven user and password lengths around 250 bytes (with an embedded NUL), three proxy host lengths and three socket types (441) | `socks5_create` | `socks5::create` |
 
 The gate's RESP parts had Rust subjects that nothing but the gate called. They are
 `native.rs` (the `native` test of `swoole-rs-protocols-ffi`), one Rust test per part,

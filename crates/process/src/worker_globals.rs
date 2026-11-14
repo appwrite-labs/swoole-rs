@@ -71,14 +71,9 @@ pub fn with_globals<R>(f: impl FnOnce(&WorkerGlobalRecord) -> R) -> R {
     f(&GLOBAL)
 }
 
-/// The original native field view for this thread.
-/// The process-pool case fixture (tests/modules/hooks/system) reads it as `SwooleWG`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "swr_v1_worker_globals")
-)]
+/// This thread's record, as a pointer.
 #[must_use]
-pub extern "C" fn thread_globals() -> *mut WorkerGlobalRecord {
+pub fn thread_globals() -> *mut WorkerGlobalRecord {
     with_globals(|globals| core::ptr::from_ref(globals).cast_mut())
 }
 

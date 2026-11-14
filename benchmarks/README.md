@@ -209,11 +209,9 @@ in `/proc/<pid>/smaps` of each engine's idle server.
 
 ## Module microbenchmarks
 
-`dev.py candidate --benchmark` runs the timer, buffer and WebSocket
-microbenchmarks of the modules it selects. For native buffer comparisons, retain both pop-only and `--peek-front` reports
-from `tests/modules/buffer/benchmark.py`. The latter reads one byte per DATA
-front before pop, exercising repeated cached-front calls and verifying a checksum
-outside timing. They are different workloads, not a before/after speedup ratio.
+`dev.py candidate --benchmark` runs the timer and WebSocket microbenchmarks of
+the modules it selects. The buffer queue has no C++ caller left to compare through;
+its storage is in the Rust storage microbenchmarks below.
 
 ## Rust storage microbenchmarks
 

@@ -147,6 +147,15 @@ struct CppString {
     allocator: *const c_void,
 }
 
+/// `RustStringView::operator=`: copies `value` into a TLS owner's string slot.
+///
+/// # Safety
+/// `slot` is a live owner's slot that nothing else reads or sets meanwhile.
+pub(super) unsafe fn string_set(slot: *const c_void, value: &[u8]) -> c_int {
+    // SAFETY: the caller's slot, held exclusively for the call.
+    unsafe { (*slot.cast::<swoole_rs_corebase::StringSlot>()).set_shared(value) }
+}
+
 /// `OwnedTlsPrepared` (crates/tls/src/owned.rs).
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -194,11 +203,6 @@ unsafe extern "C" {
     ) -> bool;
 
     pub(super) safe fn swr_v1_tls_owner_new() -> TlsPrepared;
-    pub(super) fn swr_v1_core_string_set(
-        slot: *const c_void,
-        bytes: *const c_char,
-        length: usize,
-    ) -> c_int;
 
     #[link_name = "_ZN6swoole6String3popEm"]
     fn string_pop(this: *mut CppString, init_size: usize) -> *mut u8;
@@ -569,10 +573,7 @@ impl Tls {
     fn set_string(&self, index: usize, value: &str) {
         let slot = self.0.strings[index];
         // SAFETY: the owner's live slot and `value`'s bytes.
-        assert_eq!(
-            unsafe { swr_v1_core_string_set(slot, value.as_ptr().cast(), value.len()) },
-            0
-        );
+        assert_eq!(unsafe { string_set(slot, value.as_bytes()) }, 0);
     }
 
     /// `SSLContext::set_cert_file` or `set_key_file`: false, warned, when the file

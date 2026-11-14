@@ -542,7 +542,6 @@ unsafe extern "C" {
 }
 
 unsafe extern "C-unwind" {
-    fn swr_v1_core_string_set(slot: *const c_void, bytes: *const c_char, length: usize) -> c_int;
     #[link_name = "_ZN6swoole9microtimeEv"]
     fn microtime() -> f64;
 }

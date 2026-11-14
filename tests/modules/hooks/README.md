@@ -251,12 +251,12 @@ and `ssl.rs`, one function per TEST (`timer.<name>`, `ssl.<name>`), run by
 `hooks-system-rust`; the `timer-native-originals` and `tls-native-originals` lanes,
 the last two that compiled core-tests files on their own, are gone. The timer cases
 call crates/timer under its upstream symbols, with each lambda's captures as the
-node's data; the fixture reads `SwooleTG.timer`. Upstream's shared-memory
+node's data; `SwooleTG.timer` is crates/corebase's `thread_timer`. Upstream's shared-memory
 counters become `Cell`s (the callbacks run in the case's process), and its
 `uint64_t` elapsed-time subtractions wrap as they do in C++. The ssl cases call
 `swoole_ssl_*` and `SSLContext::create` under their upstream symbols and build the
-context through the `swr_v1_tls_owner_*` and `swr_v1_core_string_set` calls
-native/tls/swoole_ssl.h makes; `ERR_put_error` is network_socket.rs's.
+context through `swr_v1_tls_owner_new` and its string slots' `set_shared`;
+`ERR_put_error` is network_socket.rs's.
 
 | Upstream TEST | Rust case |
 | --- | --- |

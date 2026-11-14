@@ -1005,7 +1005,7 @@ unsafe fn defer_task() {
 
         let count: *mut c_int = Box::into_raw(Box::new(0));
         // `reactor->defer(fn, count)` on the thread's reactor, which `reactor` is.
-        swoole_rs_ffi::swoole_event_defer(increment, count.cast());
+        assert!(swoole_rs_ffi::defer(increment, count.cast(), None));
         let _ = event_api::swoole_event_wait();
         assert_eq!(*count, 1);
         drop(Box::from_raw(count));

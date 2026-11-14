@@ -1,12 +1,12 @@
 //! Upstream's `core-tests/src/protocol/ssl.cpp`, one function per TEST with the same
 //! inputs and expected values, over crates/tls: `swoole_ssl_*` under their upstream
 //! symbols, `SSLContext::create` as crates/tls's `ssl_context_create` by path, and [`SslContext`]
-//! holding an owner from `swr_v1_tls_owner_new` and setting it with `swr_v1_core_string_set`.
+//! holding an owner from `swr_v1_tls_owner_new` and setting it with `string_set`.
 
 use std::ffi::{CStr, c_char, c_int, c_ulong, c_void};
 
 use super::network_socket::err_put_error;
-use super::socket::{TlsPrepared, get_ssl_dir, swr_v1_core_string_set, swr_v1_tls_owner_new};
+use super::socket::{TlsPrepared, get_ssl_dir, string_set, swr_v1_tls_owner_new};
 
 // OpenSSL's codes (the SSL_F_* function codes are 0 in OpenSSL 3).
 const ERR_LIB_SSL: c_int = 20;
@@ -50,9 +50,7 @@ impl SslContext {
     /// `RustStringView::operator=(const std::string &)`.
     fn set(&self, slot: usize, value: &str) {
         // SAFETY: the owner's live slot; `value` is readable for its length.
-        let status = unsafe {
-            swr_v1_core_string_set(self.0.strings[slot], value.as_ptr().cast(), value.len())
-        };
+        let status = unsafe { string_set(self.0.strings[slot], value.as_bytes()) };
         assert!(status >= 0);
     }
 

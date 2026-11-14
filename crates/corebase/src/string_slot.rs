@@ -120,112 +120,39 @@ impl StringSlot {
         }
     }
 }
-/// [`StringSlot::view`], for native code.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_core_string_view(slot: &StringSlot) -> CoreStringView {
+/// [`StringSlot::view`].
+#[must_use]
+pub fn swr_v1_core_string_view(slot: &StringSlot) -> CoreStringView {
     slot.view()
-}
-/// [`StringSlot::set_shared`], for native code. Embedded NULs remain part of the
-/// value, with a separate trailing terminator.
-/// # Safety
-/// slot is live/exclusive, bytes readable for length.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_core_string_set(
-    slot: *const StringSlot,
-    bytes: *const c_char,
-    length: usize,
-) -> i32 {
-    let value = if length == 0 {
-        &[][..]
-    } else {
-        // SAFETY: the caller lends `length` readable bytes, copied before mutation.
-        unsafe { std::slice::from_raw_parts(bytes.cast::<u8>(), length) }
-    };
-    let Some(replacement) = Bytes::copy(value) else {
-        return -2;
-    };
-    // The slot is its cell alone (`repr(transparent)`).
-    let current = UnsafeCell::raw_get(slot.cast::<UnsafeCell<Bytes>>());
-    // SAFETY: the slot is live and externally synchronized. Publish only after the
-    // allocation succeeded; `bytes` may be the slot's own, which `set_shared` would
-    // hold borrowed across the write.
-    unsafe { *current = replacement };
-    0
-}
-/// Independent value-copy for native `auto snapshot = context.field`; null when
-/// the bytes' allocation fails. Native code hands the box back once, to
-/// `swr_v1_core_string_free`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_core_string_clone(source: &StringSlot) -> Option<Box<StringSlot>> {
-    let mut slot = StringSlot::new();
-    (slot.set(source.bytes()) == 0).then(|| Box::new(slot))
-}
-/// Frees the copy `swr_v1_core_string_clone` made, or nothing for null: native code
-/// hands it back once, after its view ends.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_core_string_free(slot: Option<Box<StringSlot>>) {
-    drop(slot);
 }
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn copies_are_values() {
-        unsafe {
-            let slot = StringSlot::empty();
-            let pointer = Arc::as_ptr(&slot);
-            assert_eq!(swr_v1_core_string_set(pointer, c"initial".as_ptr(), 7), 0);
-            let copied = swr_v1_core_string_clone(&slot).unwrap();
-            assert_eq!(swr_v1_core_string_set(pointer, c"changed".as_ptr(), 7), 0);
-            assert_eq!(
-                std::ffi::CStr::from_ptr(swr_v1_core_string_view(&copied).data).to_bytes(),
-                b"initial"
-            );
-            let embedded = b"a\0b";
-            assert_eq!(
-                swr_v1_core_string_set(pointer, embedded.as_ptr().cast(), embedded.len()),
-                0
-            );
-            let view = swr_v1_core_string_view(&slot);
-            assert_eq!(view.length, 3);
-            assert_eq!(
-                std::slice::from_raw_parts(view.data.cast::<u8>(), 4),
-                b"a\0b\0"
-            );
-            swr_v1_core_string_free(Some(copied));
-        }
+    fn views_keep_embedded_nuls_and_terminate() {
+        let mut slot = StringSlot::new();
+        assert_eq!(slot.set(b"a\0b"), 0);
+        let view = swr_v1_core_string_view(&slot);
+        assert_eq!(view.length, 3);
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(view.data.cast::<u8>(), 4) },
+            b"a\0b\0"
+        );
     }
     #[test]
-    fn inline_heap_transitions_and_overlapping_assignments_preserve_bytes() {
-        unsafe {
-            let slot = StringSlot::empty();
-            let pointer = Arc::as_ptr(&slot);
-            for length in [0, 23, 24, 4096, 3, 0] {
-                let expected = vec![b'x'; length];
-                assert_eq!(
-                    swr_v1_core_string_set(pointer, expected.as_ptr().cast(), length),
-                    0
-                );
-                let view = swr_v1_core_string_view(&slot);
-                assert_eq!(view.length, length);
-                assert_eq!(
-                    std::slice::from_raw_parts(view.data.cast::<u8>(), length),
-                    expected
-                );
-                assert_eq!(*view.data.add(length), 0);
-                if length > 2 {
-                    assert_eq!(
-                        swr_v1_core_string_set(pointer, view.data.add(1), length - 2),
-                        0
-                    );
-                    let view = swr_v1_core_string_view(&slot);
-                    assert_eq!(view.length, length - 2);
-                    assert_eq!(
-                        std::slice::from_raw_parts(view.data.cast::<u8>(), view.length),
-                        &expected[1..length - 1]
-                    );
-                    assert_eq!(*view.data.add(view.length), 0);
-                }
+    fn inline_heap_transitions_preserve_bytes() {
+        let mut slot = StringSlot::new();
+        for length in [0, 23, 24, 4096, 3, 0] {
+            let expected = vec![b'x'; length];
+            assert_eq!(slot.set(&expected), 0);
+            let view = swr_v1_core_string_view(&slot);
+            assert_eq!(view.length, length);
+            assert_eq!(slot.bytes_with_nul(), [&expected[..], &[0]].concat());
+            if length > 2 {
+                let inner = expected[1..length - 1].to_vec();
+                assert_eq!(slot.set(&inner), 0);
+                assert_eq!(swr_v1_core_string_view(&slot).length, length - 2);
+                assert_eq!(slot.bytes_with_nul(), [&inner[..], &[0]].concat());
             }
         }
     }

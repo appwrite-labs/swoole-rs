@@ -65,6 +65,8 @@ pub struct ReactorState {
     pub(crate) backend_fd: c_int,
     pub(crate) backend_limit: c_int,
     pub(crate) callbacks: crate::callbacks::Callbacks,
+    /// The key `fields.ptr` is held under ([`crate::Running::hold`]), or none.
+    pub(crate) object_key: Option<&'static crate::ReactorObjectKey>,
     /// The `defer_tasks` queues the defer end callback detached and is running, innermost
     /// last: one a task bailed out of stays here for the drop to free.
     #[expect(
@@ -226,6 +228,7 @@ impl ReactorState {
             backend_fd: -1,
             backend_limit: 0,
             callbacks: crate::callbacks::Callbacks::default(),
+            object_key: None,
             running_defer: Vec::new(),
         });
         if !owner.open_backend(opened, count) {

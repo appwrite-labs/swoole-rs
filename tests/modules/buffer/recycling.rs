@@ -1,5 +1,5 @@
 use super::tests::*;
-use super::*;
+use std::slice;
 
 #[test]
 fn warm_cache_preserves_live_fronts_and_reuses_blocks_without_allocating() {

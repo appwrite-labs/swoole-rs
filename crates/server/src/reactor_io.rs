@@ -54,7 +54,7 @@ fn int(ret: i64) -> c_int {
 }
 
 fn pop(sock: Socket<'_>) {
-    sock.read(|s| out_buffer(s).map(|b| swr_cpp_buffer_pop(b)));
+    sock.read(|s| out_buffer(s).map(swr_cpp_buffer_pop));
 }
 
 /// `N` bytes of `message` at `at`, zero past its end.
@@ -180,7 +180,7 @@ mod tests {
         }
         fn queued(&self) -> usize {
             self.sock
-                .read(|s| out_buffer(s).map_or(0, |b| swr_cpp_buffer_count(b)))
+                .read(|s| out_buffer(s).map_or(0, swr_cpp_buffer_count))
         }
         /// The worker's messages so far.
         fn received(&self) -> Vec<Vec<u8>> {

@@ -29,7 +29,7 @@ struct kevent;
 
 typedef struct swr_v1_reactor_deferred swr_v1_reactor_deferred;
 /* Reactor::defer_tasks and destroy_callbacks: FIFO (call, data) queues Rust creates on
- * first push (swoole_event_defer). */
+ * first push. */
 
 /* network::Socket's write-path fields, embedded in Socket in this order and with these
  * types (Socket static_asserts it). */

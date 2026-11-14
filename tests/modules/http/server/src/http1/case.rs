@@ -12,7 +12,7 @@ use super::{
     Address, COMPRESSION_TYPES, Connection, DataHead, LOCATIONS, MODE_BASE, MODE_PROCESS, Port,
     Protocol, RecvData, SW_LOG_WARNING, SW_SOCK_TCP, Server, Slot, TEST_HOST, TEXT_CHROOT,
     TEXT_GROUP, TEXT_USER, ignore_event, ignore_server, last_error, microtime,
-    swoole_set_log_level, swr_v1_core_string_set,
+    swoole_set_log_level,
 };
 use crate::{CppString, Event, Hook, Receive};
 use swoole_rs_ports::{lifecycle, methods};
@@ -727,7 +727,7 @@ pub(crate) unsafe fn swr_case_ssl_client_ca(serv: *mut c_void, cafile: *const c_
     let status = unsafe {
         let path = CStr::from_ptr(cafile);
         let slot = swr_v1_tls_owner_view(context).strings[CAFILE as usize];
-        swr_v1_core_string_set(slot, path.as_ptr(), path.count_bytes())
+        (*slot.cast::<swoole_rs_corebase::StringSlot>()).set_shared(path.to_bytes())
     };
     assert_eq!(status, 0, "bad_alloc");
 }

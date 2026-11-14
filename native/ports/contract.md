@@ -48,7 +48,7 @@ tests/modules/http/server/src/http1/case.rs. Options are those the platform defi
 `TCP_DEFER_ACCEPT`, `TCP_KEEPIDLE`/`TCP_KEEPINTVL`/`TCP_KEEPCNT` and
 `TCP_USER_TIMEOUT` on Linux, `TCP_FASTOPEN` and `SO_KEEPALIVE` on both supported
 hosts (`SO_ACCEPTFILTER` is BSD-only). `host` is a Rust string slot in the
-settings, which C++ reads through a `RustStringView`.
+settings.
 `create_socket` reads the server's `enable_reuse_port` (Linux) and `is_dtls()`
 (kqueue hosts). On failure the port keeps pointing at the freed socket, as
 upstream's does. Known: on macOS, querying `SO_ACCEPTCONN` returns `ENOPROTOOPT`

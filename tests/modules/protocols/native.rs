@@ -11,12 +11,14 @@
 use core::ffi::{c_char, c_int, c_long};
 use std::collections::VecDeque;
 
-use swoole_rs_corebase::{set_errno, sys::errno};
-use swoole_rs_oracle::{protocols as pinned, resp_stream};
+use core::ffi::CStr;
+use swoole_rs_corebase::{ProxyState, net_types::PacketLength, set_errno, sys::errno};
+use swoole_rs_oracle::{protocols as pinned, resp_stream, socks5};
 use swoole_rs_protocols::{
     ConnectRefusal, Malformed, RespKind, RespPhpState, RespRequest, mqtt_frame_length, resp_format,
     resp_handler_key, resp_php_next, resp_spans, socks_auth, socks_connect,
 };
+use swoole_rs_protocols_ffi as ffi;
 use swoole_rs_protocols_ffi::{Dispatched, Received, RespConnection, recv_packet};
 
 /// The oracle shim's socket, String and connection: each recv hands out at most the
@@ -689,4 +691,362 @@ fn parse_integer_reply() {
     assert_eq!((count, range), (Some(1), false));
     assert_eq!(spans[0].kind, RespKind::Integer);
     assert_eq!(spans[0].integer.to_string(), "3");
+}
+
+/// The candidate's `mqtt::get_package_length` over `packet`, and the header length it
+/// leaves of 99.
+fn mqtt_candidate(packet: &[u8]) -> (isize, u32) {
+    let mut pl = PacketLength::new(packet);
+    pl.header_len = 99;
+    let length = ffi::get_package_length(std::ptr::null(), std::ptr::null_mut(), &mut pl);
+    (length, pl.header_len)
+}
+
+/// The pinned `mqtt::get_package_length` over `packet`.
+fn mqtt_reference(packet: &[u8]) -> i64 {
+    let size = u32::try_from(packet.len()).unwrap_or(u32::MAX);
+    // SAFETY: `packet` holds `size` bytes.
+    unsafe { pinned::mqtt_length(packet.as_ptr().cast(), size) }
+}
+
+/// `native.cc`'s MQTT part: each prefix of nine remaining lengths' encodings, and every
+/// second and third byte under an empty first, against the pinned `get_package_length`.
+#[test]
+fn mqtt_lengths() {
+    let mut mqtt = 0;
+    let mut check = |packet: &[u8]| {
+        let (length, header_len) = mqtt_candidate(packet);
+        assert_eq!(mqtt_reference(packet), i64::try_from(length).unwrap());
+        assert_eq!(header_len, 99);
+        mqtt += 1;
+    };
+    for value in [
+        0u32,
+        1,
+        127,
+        128,
+        16383,
+        16384,
+        2_097_151,
+        2_097_152,
+        268_435_455,
+    ] {
+        let mut packet = vec![0x30u8];
+        let mut remaining = value;
+        loop {
+            let mut byte = u8::try_from(remaining % 128).unwrap();
+            remaining /= 128;
+            if remaining != 0 {
+                byte |= 128;
+            }
+            packet.push(byte);
+            if remaining == 0 {
+                break;
+            }
+        }
+        for size in 1..=packet.len() {
+            check(&packet[..size]);
+        }
+    }
+    for first in 0..=255u8 {
+        for second in 0..=255u8 {
+            check(&[0, first, second, 128, 128]);
+        }
+    }
+    assert_eq!(mqtt, 30 + 65_536);
+}
+
+/// `value` as a pinned proxy's string field: its bytes and length.
+fn field(value: &[u8]) -> ([u8; 512], usize) {
+    let mut bytes = [0; 512];
+    for (to, from) in bytes.iter_mut().zip(value) {
+        *to = *from;
+    }
+    (bytes, value.len())
+}
+
+/// A pinned proxy's fields and a candidate's, set alike.
+struct Pair {
+    reference: socks5::Proxy,
+    candidate: Box<ProxyState>,
+}
+
+impl Pair {
+    fn new() -> Self {
+        Self {
+            reference: socks5::Proxy::default(),
+            candidate: ProxyState::new(true),
+        }
+    }
+
+    /// Sets string `index` (0 host, 1 username, 2 password, 3 target host) on both:
+    /// the candidate's status.
+    fn set_string(&mut self, index: usize, value: &[u8]) -> i32 {
+        let r = &mut self.reference;
+        match index {
+            0 => (r.host, r.host_length) = field(value),
+            1 => (r.username, r.username_length) = field(value),
+            2 => (r.password, r.password_length) = field(value),
+            _ => (r.target_host, r.target_host_length) = field(value),
+        }
+        self.candidate.set_string(index, value)
+    }
+
+    /// Sets the dns tunnel and target port on both.
+    fn tunnel(&mut self, dns_tunnel: u8, target_port: i32) {
+        (self.reference.dns_tunnel, self.reference.target_port) = (dns_tunnel, target_port);
+        self.candidate.update(|fields| {
+            (fields.dns_tunnel, fields.target_port) = (dns_tunnel, target_port);
+        });
+    }
+
+    /// The pinned and the candidate's `pack_*_request()` (0 negotiate, 1 auth, 2 connect).
+    fn pack(&mut self, request: i32) -> (isize, isize) {
+        // SAFETY: a live record.
+        let before = unsafe { socks5::pack(&raw mut self.reference, request) };
+        let proxy = ffi::Socks5Proxy::new(&self.candidate);
+        let after = match request {
+            0 => ffi::pack_negotiate_request(&proxy),
+            1 => ffi::pack_auth_request(&proxy),
+            _ => ffi::pack_connect_request(&proxy),
+        };
+        (before, after)
+    }
+
+    /// Whether both packets' first `length` bytes match.
+    fn bufs_match(&self, length: usize) -> bool {
+        self.candidate
+            .packet()
+            .is_some_and(|packet| self.reference.buf.get(..length) == packet.get(..length))
+    }
+}
+
+/// The candidate header's `handshake`: the step, then its packet through a send that
+/// keeps what it is given in `wire` and returns its length when `sent` is 1, else `sent`.
+fn candidate_handshake(owner: &ProxyState, reply: &[u8], sent: isize, wire: &mut Vec<u8>) -> bool {
+    let n = ffi::socks5_step(&ffi::Socks5Proxy::new(owner), reply);
+    n == 0
+        || n > 0 && {
+            *wire = owner
+                .packet()
+                .and_then(|packet| packet.get(..n.cast_unsigned()).map(<[u8]>::to_vec))
+                .unwrap_or_default();
+            (if sent == 1 { n } else { sent }) == n
+        }
+}
+
+/// `native.cc`'s handshakes: every state, method, reply version and code and send
+/// outcome, against the pinned `handshake`.
+#[test]
+fn socks5_handshakes() {
+    let mut socks = 0;
+    for state in [0u8, 1, 2, 3, 4, 255] {
+        for method in [0u8, 2, 255] {
+            for version in 0..=255u8 {
+                for reply in [0u8, 1, 2, 8, 255] {
+                    for sent in [-1isize, 0, 1] {
+                        let mut pair = Pair::new();
+                        (pair.reference.state, pair.reference.method) = (state, method);
+                        pair.candidate
+                            .update(|fields| (fields.state, fields.method) = (state, method));
+                        pair.tunnel(1, 65535);
+                        assert_eq!(pair.set_string(0, b"proxy"), 0);
+                        assert_eq!(pair.set_string(3, b"destination.local"), 0);
+                        assert_eq!(pair.set_string(1, b"user"), 0);
+                        assert_eq!(pair.set_string(2, b"pass"), 0);
+                        let response = [version, reply];
+                        let mut expected_wire = [0u8; 512];
+                        let mut expected_length = 0;
+                        // SAFETY: a live record, the reply and a 512-byte wire.
+                        let before = unsafe {
+                            socks5::handshake(
+                                &raw mut pair.reference,
+                                response.as_ptr(),
+                                2,
+                                sent,
+                                expected_wire.as_mut_ptr(),
+                                &raw mut expected_length,
+                            )
+                        };
+                        let mut actual_wire = Vec::new();
+                        let after =
+                            candidate_handshake(&pair.candidate, &response, sent, &mut actual_wire);
+                        assert!(
+                            before == after
+                                && pair.reference.state == pair.candidate.fields().state
+                                && expected_wire[..expected_length] == actual_wire[..]
+                        );
+                        socks += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(socks, 6 * 3 * 256 * 5 * 3);
+}
+
+/// `native.cc`'s request packing at target host lengths around the 255-byte domain and
+/// 250-byte credential limits, and at proxy and target host lengths around 480 bytes
+/// over a filled packet: the failures' prefix and untouched tail included.
+#[test]
+fn socks5_packs() {
+    let mut socks = 0;
+    for length in [0usize, 1, 250, 255, 256, 480, 505] {
+        let mut pair = Pair::new();
+        pair.tunnel(1, -1);
+        assert_eq!(pair.set_string(3, &vec![b'd'; length]), 0);
+        let (before, after) = pair.pack(2);
+        assert!(before == after && pair.bufs_match(usize::try_from(before).unwrap_or(512)));
+        socks += 1;
+        if length <= 250 {
+            assert_eq!(pair.set_string(1, &vec![b'u'; length]), 0);
+            assert_eq!(pair.set_string(2, &vec![b'p'; length]), 0);
+            let (before, after) = pair.pack(1);
+            assert!(before == after && pair.bufs_match(before.cast_unsigned()));
+            socks += 1;
+            let (before, after) = pair.pack(0);
+            assert!(
+                before == after
+                    && pair.reference.method == pair.candidate.fields().method
+                    && pair.bufs_match(before.cast_unsigned())
+            );
+            socks += 1;
+        }
+    }
+    for proxy_length in [0usize, 480, 481] {
+        for target_length in [0usize, 480, 505] {
+            let mut pair = Pair::new();
+            pair.tunnel(1, -1);
+            assert_eq!(pair.set_string(0, &vec![b'p'; proxy_length]), 0);
+            assert_eq!(pair.set_string(3, &vec![b'd'; target_length]), 0);
+            pair.reference.buf = [0xa5; 512];
+            *pair.candidate.packet().unwrap() = [0xa5; 512];
+            let (before, after) = pair.pack(2);
+            assert_eq!(before, after);
+            // Failure prefix and untouched tail.
+            assert!(pair.bufs_match(512));
+            socks += 1;
+        }
+    }
+    assert_eq!(socks, 7 + 2 * 3 + 9);
+}
+
+/// `native.cc`'s `strerror` codes, against the pinned table.
+#[test]
+fn socks5_strerror_codes() {
+    let mut socks = 0;
+    for code in (-32..=288).chain([i32::MIN, i32::MAX]) {
+        // SAFETY: the pinned strerror returns a static NUL-terminated string.
+        let expected = unsafe { CStr::from_ptr(socks5::strerror(code)) };
+        assert_eq!(expected, ffi::strerror(code));
+        socks += 1;
+    }
+    assert_eq!(socks, 321 + 2);
+}
+
+/// The candidate header's `Socks5Proxy::create`: the proxy, or its first string's
+/// failed status.
+fn candidate_create(
+    socket_type: i32,
+    host: &[u8],
+    port: i32,
+    user: &[u8],
+    password: &[u8],
+) -> Result<Option<Box<ProxyState>>, i32> {
+    let config = ffi::admit(user.len(), password.len());
+    if config == 0 {
+        return Ok(None);
+    }
+    let proxy = ProxyState::new(true);
+    let mut status = proxy.set_string(0, host);
+    proxy.update(|fields| {
+        fields.port = port;
+        fields.dns_tunnel = 1;
+        fields.socket_type = socket_type;
+    });
+    if config == 2 {
+        status |= proxy.set_string(1, user) | proxy.set_string(2, password);
+    }
+    if status == 0 {
+        Ok(Some(proxy))
+    } else {
+        Err(status)
+    }
+}
+
+/// `native.cc`'s `create` over credential lengths around the 250-byte limit (with an
+/// embedded NUL), proxy host lengths around 480 bytes and three socket types: every
+/// field, then the negotiate and auth requests, against the pinned `create`.
+#[test]
+fn socks5_create() {
+    let mut socks = 0;
+    let lengths = [0usize, 1, 249, 250, 251, 255, 256];
+    for user_length in lengths {
+        for password_length in lengths {
+            for host_length in [0usize, 480, 481] {
+                for socket_type in [-1, 1, 2] {
+                    let mut user = vec![b'u'; user_length];
+                    let mut password = vec![b'p'; password_length];
+                    let host = vec![b'h'; host_length];
+                    if user_length > 1 {
+                        user[1] = 0;
+                    }
+                    if password_length > 1 {
+                        password[1] = 0;
+                    }
+                    let mut reference = socks5::Proxy::default();
+                    // SAFETY: the byte strings and a live record.
+                    let created = unsafe {
+                        socks5::create(
+                            socket_type,
+                            host.as_ptr(),
+                            host.len(),
+                            -1,
+                            user.as_ptr(),
+                            user.len(),
+                            password.as_ptr(),
+                            password.len(),
+                            &raw mut reference,
+                        )
+                    };
+                    let candidate =
+                        candidate_create(socket_type, &host, -1, &user, &password).unwrap();
+                    assert_eq!(created, candidate.is_some());
+                    if let Some(candidate) = candidate {
+                        let fields = candidate.fields();
+                        let r = &reference;
+                        assert!(
+                            r.host[..r.host_length] == *candidate.string(0)
+                                && r.port == fields.port
+                                && r.socket_type == fields.socket_type
+                        );
+                        assert!(
+                            r.dns_tunnel == fields.dns_tunnel
+                                && r.username[..r.username_length] == *candidate.string(1)
+                                && r.password[..r.password_length] == *candidate.string(2)
+                        );
+                        assert!(
+                            r.state == fields.state
+                                && r.version == fields.version
+                                && r.method == fields.method
+                        );
+                        let mut pair = Pair {
+                            reference,
+                            candidate,
+                        };
+                        let (x, y) = pair.pack(0);
+                        assert!(
+                            x == y
+                                && pair.reference.method == pair.candidate.fields().method
+                                && pair.bufs_match(x.cast_unsigned())
+                        );
+                        let (x, y) = pair.pack(1);
+                        assert!(x == y && pair.bufs_match(x.cast_unsigned()));
+                    }
+                    socks += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(socks, 7 * 7 * 3 * 3);
 }

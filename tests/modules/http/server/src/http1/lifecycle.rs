@@ -52,8 +52,6 @@ unsafe extern "C" {
     fn write(fd: c_int, buf: *const c_void, count: usize) -> isize;
     #[link_name = "_Z17swoole_random_intv"]
     fn swoole_random_int() -> u64;
-    #[link_name = "_Z18swoole_event_deferPFvPvES_"]
-    fn swoole_event_defer(call: unsafe extern "C" fn(*mut c_void), data: *mut c_void);
 }
 
 unsafe extern "C-unwind" {
@@ -1720,7 +1718,18 @@ unsafe extern "C" fn clean_on_start(_: *mut c_void, serv: *mut c_void) {
     timer_after(100, clean_connect_timer, Server(serv));
 }
 
-unsafe extern "C" fn clean_deferred(serv: *mut c_void) {
+/// The running server, deferred to the end of the reactor's pass.
+struct CleanDeferred(*mut c_void);
+
+impl swoole_rs_ffi::event_api::Deferred for CleanDeferred {
+    fn run(self) {
+        clean_deferred(self.0);
+    }
+
+    fn dispose(self) {}
+}
+
+fn clean_deferred(serv: *mut c_void) {
     let serv = Server(serv).view();
     // SAFETY: this process's worker.
     let worker = unsafe { Worker::new(current_worker()) };
@@ -1730,8 +1739,7 @@ unsafe extern "C" fn clean_deferred(serv: *mut c_void) {
 }
 
 unsafe extern "C" fn clean_on_connect(_: *mut c_void, serv: *mut c_void, _: *mut DataHead) {
-    // SAFETY: a deferred call over the running server.
-    unsafe { swoole_event_defer(clean_deferred, serv) };
+    _ = swoole_rs_ffi::event_api::swoole_event_defer_value(CleanDeferred(serv));
 }
 
 unsafe extern "C" fn clean_worker_start(_: *mut c_void, serv: *mut c_void, _: *mut WorkerRecord) {

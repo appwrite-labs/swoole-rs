@@ -53,7 +53,6 @@ class Reactor : public swr_v1_reactor_head {
 }  // namespace swoole
 
 SW_API int swoole_event_init(int flags);
-SW_API void swoole_event_defer(void (*fn)(void *), void *private_data);
 SW_API swoole::network::Socket *swoole_event_get_socket(int fd);
 SW_API int swoole_event_wait();
 SW_API void swoole_event_set_handler(int fd_type, int event, swoole::ReactorHandler handler);

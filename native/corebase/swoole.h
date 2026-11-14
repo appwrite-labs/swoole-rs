@@ -196,7 +196,6 @@ struct EventData {
 
 #include "swoole_rs_corebase.h"
 #include "swoole_rs_corebase_state.h"
-#include "swoole_rs_corebase_string_view.h"
 
 namespace swoole {
 // A SwooleG member whose value Rust holds (crates/corebase/src/global.rs): reads

@@ -9,7 +9,7 @@
 use crate::Running;
 use crate::event_api::running;
 use crate::reactor_state::ReactorState;
-use std::ffi::{c_int, c_void};
+use std::ffi::c_int;
 
 /// An end callback a caller sets (`Reactor::set_end_callback`).
 pub type EndFn = extern "C-unwind" fn();
@@ -262,19 +262,6 @@ pub fn swr_v1_event_remove_exit_condition(id: ExitCondition) {
     }
 }
 
-/// `void swoole_event_defer(void (*)(void *), void *)`: `sw_reactor()->defer`.
-///
-/// # Safety
-/// `call` accepts `data` when the loop runs it.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z18swoole_event_deferPFvPvES_")
-)]
-pub unsafe extern "C" fn swoole_event_defer(call: crate::DeferCall, data: *mut c_void) {
-    // SAFETY: the loop runs `call(data)` as its caller set; nothing without a reactor.
-    _ = unsafe { crate::deferred::defer(call, data, None) };
-}
-
 /// `bool Reactor::if_exit()`.
 #[cfg_attr(
     feature = "upstream-symbols",
@@ -318,6 +305,7 @@ mod tests {
     use super::*;
     use crate::reactor_state::tests::running;
     use std::cell::{Cell, RefCell};
+    use std::ffi::c_void;
 
     thread_local! {
         static TRACE: RefCell<Vec<i32>> = const { RefCell::new(Vec::new()) };

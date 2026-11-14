@@ -723,11 +723,8 @@ fn tls_handshake_names_the_host_and_verifies_the_peer() {
     let name = c"example.test";
     // SAFETY: the double's live slot and fields.
     unsafe {
-        let slot = tls.strings[TLS_HOST_NAME].cast();
-        assert_eq!(
-            swoole_rs_corebase::swr_v1_core_string_set(slot, name.as_ptr(), name.count_bytes()),
-            0
-        );
+        let slot = tls.strings[TLS_HOST_NAME].cast::<swoole_rs_corebase::StringSlot>();
+        assert_eq!((*slot).set_shared(name.to_bytes()), 0);
         (*tls.fields).verify_peer = true;
         (*tls.fields).allow_self_signed = true;
     }
@@ -748,15 +745,17 @@ fn tls_handshake_names_the_host_and_verifies_the_peer() {
 }
 
 #[test]
-fn proxy_states_are_the_native_ones() {
-    let header = include_str!("../../../native/protocols/swoole_proxy.h");
-    for (name, value) in [
-        ("SW_SOCKS5_STATE_WAIT", SOCKS5_WAIT),
-        ("SW_SOCKS5_STATE_HANDSHAKE", SOCKS5_HANDSHAKE),
-        ("SW_SOCKS5_STATE_READY", SOCKS5_READY),
-        ("SW_HTTP_PROXY_STATE_WAIT", HTTP_PROXY_WAIT),
-        ("SW_HTTP_PROXY_STATE_READY", HTTP_PROXY_READY),
-    ] {
-        assert!(header.contains(&format!("{name} = {value},")), "{name}");
-    }
+fn proxy_states_are_upstreams() {
+    // Upstream's include/swoole_proxy.h counts its enums from 0.
+    assert_eq!(
+        [
+            SOCKS5_WAIT,
+            SOCKS5_HANDSHAKE,
+            SOCKS5_READY,
+            HTTP_PROXY_WAIT,
+            HTTP_PROXY_READY
+        ],
+        [0, 1, 4, 0, 2],
+        "SW_SOCKS5_STATE_{{WAIT,HANDSHAKE,READY}}, SW_HTTP_PROXY_STATE_{{WAIT,READY}}"
+    );
 }

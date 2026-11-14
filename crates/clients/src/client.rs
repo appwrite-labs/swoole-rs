@@ -151,7 +151,7 @@ pub const SSL_STATE_READY: u32 = SslState::SW_SSL_STATE_READY as u32;
 pub const SSL_STATE_WAIT_STREAM: u32 = SslState::SW_SSL_STATE_WAIT_STREAM as u32;
 pub const SSL_CLIENT: c_int = SslCreateFlag::SW_SSL_CLIENT as c_int;
 pub const SSL_DTLS: u32 = SslVersion::SW_SSL_DTLS as u32;
-/// The proxy states of `native/protocols/swoole_proxy.h`, which a test reads.
+/// The proxy states of upstream's `include/swoole_proxy.h`.
 pub const SOCKS5_WAIT: u8 = 0;
 pub const SOCKS5_HANDSHAKE: u8 = 1;
 pub const SOCKS5_READY: u8 = 4;

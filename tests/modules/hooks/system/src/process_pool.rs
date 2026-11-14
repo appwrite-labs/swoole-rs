@@ -3,7 +3,7 @@
 //! upstream symbols. `ProcessPool pool{}` and `Worker worker{}` are zeroed mirrors of the
 //! records Rust owns, checked against the fixture's sizes; the callbacks are `extern "C"`
 //! functions, as upstream's are captureless lambdas, so a failed assertion inside one aborts
-//! the process it runs in. The fixture gives `SwooleWG` and `sw_timer()->remove`;
+//! the process it runs in. `SwooleWG` is crates/process's `worker_globals`;
 //! `swoole_set_isolation` is crates/ossupport's `set_isolation`. core-tests' shared counters are `sw_mem_pool()` memory
 //! (crates/memory's `members::pool::alloc`), so workers' increments reach the master, as
 //! upstream's do.
@@ -239,8 +239,6 @@ struct Worker {
 
 unsafe extern "C" {
     static swr_case_process_layout: [usize; 6];
-    fn swr_case_worker_max_request() -> u32;
-    fn swr_case_current_worker() -> *mut Worker;
     #[link_name = "_Z18swoole_timer_clearl"]
     fn swoole_timer_clear(timer_id: c_long) -> bool;
 
@@ -1184,7 +1182,7 @@ fn counter_incr_and_put_log() {
 extern "C" fn async_mb_stop_worker(_: c_int) {
     counter_incr_and_put_log();
     // SAFETY: the worker's pool and its current worker.
-    unsafe { pool_stop(current_pool(), swr_case_current_worker()) };
+    unsafe { pool_stop(current_pool(), current_worker()) };
 }
 
 extern "C" fn async_mb_on_worker_start(pool: *mut Pool, worker: *mut Worker) {
@@ -1836,8 +1834,11 @@ fn worker() {
     assert!(worker.start_time > 0);
     pm::worker_set_max_request(1000, 200);
 
-    // SAFETY: SwooleWG.
-    let max_request = unsafe { swr_case_worker_max_request() };
+    let max_request = swoole_rs_process::worker_globals::with_globals(|globals| {
+        globals
+            .max_request
+            .load(std::sync::atomic::Ordering::Relaxed)
+    });
     assert!(max_request > 1000);
     assert!(max_request <= 1200);
 
@@ -1885,7 +1886,7 @@ fn add_worker() {
 
 extern "C" fn shutdown_current_worker(_: c_int) {
     // SAFETY: this worker process's record.
-    unsafe { worker_shutdown(swr_case_current_worker()) };
+    unsafe { worker_shutdown(current_worker()) };
 }
 
 extern "C" fn child_exit_on_worker_start(_: *mut Pool, worker: *mut Worker) {
@@ -1985,6 +1986,11 @@ fn reload_from_child_exit_callback() {
         swoole_timer_free();
         swoole_signal_clear();
     }
+}
+
+/// `SwooleWG.worker`, as the mirror.
+fn current_worker() -> *mut Worker {
+    swoole_rs_process::worker_globals::current_worker().cast()
 }
 
 /// The mirrors' layout, checked against the fixture before any case runs.
