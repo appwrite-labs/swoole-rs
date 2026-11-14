@@ -17,7 +17,7 @@ use swoole_rs_reactor::wait_upstream::swoole_waitpid;
 
 use super::{Manager, Reload, stop_message, worker_ids};
 use crate::callbacks::ServerSlot;
-use crate::event_worker::{HANDLER_NONE, HANDLER_OWN, SIGNAL_RTMIN};
+use crate::event_worker::{SIGNAL_RTMIN, SignalHandler};
 use crate::process_factory::native::{
     check_exit_status, kill_task_workers, spawn_event_worker, spawn_user_worker,
 };
@@ -69,7 +69,7 @@ fn is_manager(serv: view::Server<'_>) -> bool {
 }
 
 /// Installs the manager's `handler` (one of the event worker's) for `signo`.
-fn set_signal(signo: c_int, handler: u64) {
+fn set_signal(signo: c_int, handler: SignalHandler) {
     crate::event_worker::native::swr_workers_signal_set(signo, handler, signal_handler);
 }
 
@@ -122,7 +122,7 @@ fn main(serv: view::Server<'_>) {
     // A SIGTERM while the workers are still forking must stop the manager once
     // they are up, not kill it outright and orphan the ones already forked.
     // The children's fork resets their handlers.
-    set_signal(libc::SIGTERM, HANDLER_OWN);
+    set_signal(libc::SIGTERM, SignalHandler::Own);
     if config.task_worker_num.get() > 0 && !methods::start(serv.task_pool_ref()) {
         log::sys_error(ORIGIN, format_args!("failed to start task worker"));
         return;
@@ -164,7 +164,7 @@ fn wait(serv: view::Server<'_>) {
     let manager = Manager::default();
     init(serv, &manager);
     swoole_rs_reactor::swoole_event_free();
-    set_signal(libc::SIGHUP, HANDLER_NONE);
+    set_signal(libc::SIGHUP, SignalHandler::None);
     for signo in [
         libc::SIGCHLD,
         libc::SIGTERM,
@@ -175,7 +175,7 @@ fn wait(serv: view::Server<'_>) {
         libc::SIGWINCH,
         SIGNAL_RTMIN,
     ] {
-        set_signal(signo, HANDLER_OWN);
+        set_signal(signo, SignalHandler::Own);
     }
     if config.mode_ == Mode::Process {
         swoole_rs_ossupport::swr_v1_os_set_process_death_signal(libc::SIGTERM);
@@ -198,7 +198,7 @@ fn wait(serv: view::Server<'_>) {
     if swoole_rs_timer::swoole_timer_is_available() {
         swoole_rs_timer::swoole_timer_free();
         // The timer overrode SIGALRM's handler: the manager needs it back.
-        set_signal(libc::SIGALRM, HANDLER_OWN);
+        set_signal(libc::SIGALRM, SignalHandler::Own);
     }
     // Wait for the children.
     let max_wait_time = config.max_wait_time.get();

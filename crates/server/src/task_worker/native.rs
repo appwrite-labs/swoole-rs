@@ -195,7 +195,7 @@ fn signal_init(serv: view::Server<'_>) {
     if serv.config().mode_ == Mode::Thread {
         return;
     }
-    let none = crate::event_worker::HANDLER_NONE;
+    let none = crate::event_worker::SignalHandler::None;
     for (signo, handler) in crate::event_worker::signals(none) {
         swr_workers_signal_set(signo, handler, worker_signal_handler);
     }

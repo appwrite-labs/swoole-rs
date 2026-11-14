@@ -22,7 +22,7 @@ use swoole_rs_process::worker_record::{
 };
 use swoole_rs_reactor::{Event, Running, Socket};
 
-use super::{HANDLER_IGNORE, Wait};
+use super::{SignalHandler, Wait};
 use crate::callbacks::{CallbackKind, EventSlot, ReceiveSlot, ServerSlot, TaskSlot, WorkerSlot};
 use crate::objects::{Bus, EVENT_READ, Reactor, set_nonblock, worker_pipe};
 use crate::records::Lookup;
@@ -483,14 +483,18 @@ pub fn worker_signal_init(serv: view::Server<'_>) {
     if serv.config().mode_ == Mode::Thread {
         return;
     }
-    for (signo, handler) in super::signals(HANDLER_IGNORE) {
+    for (signo, handler) in super::signals(SignalHandler::Ignore) {
         swr_workers_signal_set(signo, handler, worker_signal_handler);
     }
 }
 
 /// Installs `handler` (one of [`super::signals`]'s) for `signo`, `own` for the worker's
 /// own; SIGRTMIN only where Linux names it.
-pub(crate) fn swr_workers_signal_set(signo: c_int, handler: u64, own: extern "C" fn(c_int)) {
+pub(crate) fn swr_workers_signal_set(
+    signo: c_int,
+    handler: SignalHandler,
+    own: extern "C" fn(c_int),
+) {
     use swoole_rs_reactor::signal_upstream::{self, Handler};
     #[cfg(target_os = "linux")]
     let signo = if signo == super::SIGNAL_RTMIN {
@@ -503,9 +507,9 @@ pub(crate) fn swr_workers_signal_set(signo: c_int, handler: u64, own: extern "C"
         return;
     }
     let handler = match handler {
-        super::HANDLER_NONE => Handler::NONE,
-        HANDLER_IGNORE => Handler::IGNORE,
-        _ => Handler::new(own),
+        SignalHandler::None => Handler::NONE,
+        SignalHandler::Ignore => Handler::IGNORE,
+        SignalHandler::Own => Handler::new(own),
     };
     _ = signal_upstream::set(signo, handler, false);
 }
