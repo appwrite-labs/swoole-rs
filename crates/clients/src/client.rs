@@ -871,52 +871,6 @@ pub extern "C" fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut Client
     client
 }
 
-/// A method's `SW_OK` or `SW_ERR`, as [`Handle::run`] returns it.
-fn code(ok: bool) -> i64 {
-    if ok { OK.into() } else { ERR.into() }
-}
-
-/// One `network::Client` method for [`Handle::run`], over the caller's bytes.
-#[derive(Debug)]
-pub enum Op<'a> {
-    Connect {
-        host: &'a CStr,
-        port: c_int,
-        timeout: f64,
-        flags: c_int,
-    },
-    Send {
-        data: &'a [u8],
-        flags: c_int,
-    },
-    /// One datagram to `host`, resolved unless the client is async.
-    Sendto {
-        host: &'a CStr,
-        port: c_int,
-        data: &'a [u8],
-    },
-    Sendfile {
-        file: &'a CStr,
-        offset: i64,
-        length: usize,
-    },
-    Recv {
-        buffer: &'a mut [u8],
-        flags: c_int,
-    },
-    /// `protocol.get_package_length` of these bytes.
-    PackageLength(&'a [u8]),
-    Shutdown(c_int),
-    Close,
-    Sleep,
-    Wakeup,
-    SslHandshake,
-    /// `ssl_verify(allow_self_signed)`.
-    SslVerify(bool),
-    /// `swoole_event_set(socket, SW_EVENT_WRITE)`, to finish a handshake.
-    SslWait,
-}
-
 impl Handle {
     /// A handle on `client`.
     ///
@@ -926,36 +880,6 @@ impl Handle {
     #[must_use]
     pub const unsafe fn new(client: *mut Client) -> Self {
         Self(client)
-    }
-
-    /// Run `op`, which may raise the client's callbacks (and so free it): the
-    /// C++ method's result.
-    #[must_use]
-    pub fn run(self, op: Op<'_>) -> i64 {
-        match op {
-            Op::Connect {
-                host,
-                port,
-                timeout,
-                flags,
-            } => connect(self, host, port, timeout, flags).into(),
-            Op::Send { data, flags } => send(self, data, flags) as i64,
-            Op::Sendto { host, port, data } => code(sendto(self, host, port, data)),
-            Op::Sendfile {
-                file,
-                offset,
-                length,
-            } => code(sendfile(self, file, offset, length)),
-            Op::Recv { buffer, flags } => recv(self, buffer, flags) as i64,
-            Op::PackageLength(data) => package_length(self, data) as i64,
-            Op::Shutdown(how) => code(shutdown(self, how)),
-            Op::Close => close(self).into(),
-            Op::Sleep => sleep(self).into(),
-            Op::Wakeup => wakeup(self).into(),
-            Op::SslHandshake => code(ssl_handshake(self)),
-            Op::SslVerify(allow_self_signed) => code(ssl_verify(self, allow_self_signed)),
-            Op::SslWait => self.event(EventOp::Set, EVENT_WRITE).into(),
-        }
     }
 
     /// `enable_ssl_encrypt()`: the new TLS context, which the caller configures
@@ -1048,7 +972,8 @@ impl Handle {
 }
 
 /// The client protocol's length of the packet in `data`.
-fn package_length(this: Handle, data: &[u8]) -> isize {
+#[must_use]
+pub fn package_length(this: Handle, data: &[u8]) -> isize {
     let record = this.record();
     let Some(get) = record.protocol.get_package_length else {
         return -1;
@@ -1060,7 +985,11 @@ fn package_length(this: Handle, data: &[u8]) -> isize {
 
 /// `Client::close()`: -1 without a socket or when already closed, 0 when `onClose`
 /// released the client, else `close(2)`'s result.
-fn close(this: Handle) -> c_int {
+#[expect(
+    clippy::must_use_candidate,
+    reason = "most callers close for the effect"
+)]
+pub fn close(this: Handle) -> c_int {
     if this.socket_ptr().is_null() || this.flag(Flag::Closed) {
         return ERR;
     }
@@ -1105,7 +1034,8 @@ fn close(this: Handle) -> c_int {
 }
 
 /// `Client::shutdown(how)`. Upstream's `SHUT_RDWR` records only a read shutdown.
-fn shutdown(this: Handle, how: c_int) -> bool {
+#[must_use]
+pub fn shutdown(this: Handle, how: c_int) -> bool {
     if this.socket_ptr().is_null() || this.flag(Flag::Closed) {
         return false;
     }
@@ -1130,22 +1060,33 @@ fn shutdown(this: Handle, how: c_int) -> bool {
     }
 }
 
-/// `Client::sleep()`: stop reading (keeping write interest).
-fn sleep(this: Handle) -> c_int {
-    if this.socket().read(|socket| socket.events) & EVENT_WRITE != 0 {
+/// `Client::sleep()`: stop reading (keeping write interest). Whether it worked.
+#[must_use]
+pub fn sleep(this: Handle) -> bool {
+    let code = if this.socket().read(|socket| socket.events) & EVENT_WRITE != 0 {
         this.event(EventOp::Set, EVENT_WRITE)
     } else {
         this.event(EventOp::Del, 0)
-    }
+    };
+    code >= 0
 }
 
-/// `Client::wakeup()`: read again.
-fn wakeup(this: Handle) -> c_int {
-    if this.socket().read(|socket| socket.events) & EVENT_WRITE != 0 {
+/// `Client::wakeup()`: read again. Whether it worked.
+#[must_use]
+pub fn wakeup(this: Handle) -> bool {
+    let code = if this.socket().read(|socket| socket.events) & EVENT_WRITE != 0 {
         this.event(EventOp::Set, EVENT_READ | EVENT_WRITE)
     } else {
         this.event(EventOp::Add, EVENT_READ)
-    }
+    };
+    code >= 0
+}
+
+/// `swoole_event_set(socket, SW_EVENT_WRITE)`, to finish a handshake: whether it
+/// worked.
+#[must_use]
+pub fn ssl_wait(this: Handle) -> bool {
+    this.event(EventOp::Set, EVENT_WRITE) >= 0
 }
 
 /// `Client::enable_ssl_encrypt()`: a TLS context, TLS on, and DTLS for a datagram
@@ -1205,7 +1146,8 @@ fn enable_dtls(this: Handle) {
 }
 
 /// `Client::ssl_handshake()`.
-fn ssl_handshake(this: Handle) -> bool {
+#[must_use]
+pub fn ssl_handshake(this: Handle) -> bool {
     if this.tls_state() == SSL_STATE_READY {
         return false;
     }
@@ -1257,7 +1199,8 @@ fn ssl_handshake(this: Handle) -> bool {
 
 /// `Client::ssl_verify(allow_self_signed)`: the peer's certificate, and its host
 /// when the context names one.
-fn ssl_verify(this: Handle, allow_self_signed: bool) -> bool {
+#[must_use]
+pub fn ssl_verify(this: Handle, allow_self_signed: bool) -> bool {
     if !socket_ssl_verify(this.socket(), allow_self_signed) {
         return false;
     }
@@ -1354,7 +1297,8 @@ extern "C" fn resolve_completed(event: &AsyncEvent) {
 }
 
 /// `Client::connect(host, port, timeout, flags)`: `host` is NUL-terminated.
-fn connect(this: Handle, host: &CStr, port: c_int, timeout: f64, flags: c_int) -> c_int {
+#[must_use]
+pub fn connect(this: Handle, host: &CStr, port: c_int, timeout: f64, flags: c_int) -> c_int {
     if !this.flag(Flag::Stream) {
         udp_connect(this, host, port, timeout, flags)
     } else if this.flag(Flag::Async) {
@@ -1689,7 +1633,8 @@ fn address_of(kind: c_int, host: &CStr, port: c_int, resolve: bool) -> Option<So
 
 /// `Client::sendto(host, port, data, length)`: one datagram to the host, resolved
 /// unless the client is async.
-fn sendto(this: Handle, host: &CStr, port: c_int, data: &[u8]) -> bool {
+#[must_use]
+pub fn sendto(this: Handle, host: &CStr, port: c_int, data: &[u8]) -> bool {
     if !is_dgram(this.socket_type()) {
         log::set_last_error(ERROR_OPERATION_NOT_SUPPORT);
         log::warning(
@@ -1710,7 +1655,8 @@ fn sendto(this: Handle, host: &CStr, port: c_int, data: &[u8]) -> bool {
 }
 
 /// `Client::send(data, length, flags)`.
-fn send(this: Handle, data: &[u8], flags: c_int) -> isize {
+#[must_use]
+pub fn send(this: Handle, data: &[u8], flags: c_int) -> isize {
     if this.flag(Flag::Dtls) || this.flag(Flag::Stream) && !this.flag(Flag::Async) {
         net::send_sync(this.socket(), data, flags)
     } else if this.flag(Flag::Stream) {
@@ -1747,7 +1693,8 @@ fn send_async(this: Handle, data: &[u8]) -> isize {
 }
 
 /// `Client::sendfile(file, offset, length)`.
-fn sendfile(this: Handle, file: &CStr, offset: i64, length: usize) -> bool {
+#[must_use]
+pub fn sendfile(this: Handle, file: &CStr, offset: i64, length: usize) -> bool {
     if !this.flag(Flag::Stream) {
         return false;
     }
@@ -1769,7 +1716,8 @@ fn sendfile(this: Handle, file: &CStr, offset: i64, length: usize) -> bool {
 }
 
 /// `Client::recv(data, length, flags)`.
-fn recv(this: Handle, buffer: &mut [impl ReadSlot], flags: c_int) -> isize {
+#[must_use]
+pub fn recv(this: Handle, buffer: &mut [impl ReadSlot], flags: c_int) -> isize {
     if this.flag(Flag::Stream) || this.flag(Flag::Dtls) {
         let n = net::recv_sync(this.socket(), buffer, flags);
         // A poll timeout reads as recv(2)'s EAGAIN, as it did before poll.

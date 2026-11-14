@@ -351,7 +351,7 @@ fn a_call_measures_with_the_protocol_and_frees_the_client() {
     Handle(client)
         .get()
         .edit_record(|record| record.protocol.get_package_length = Some(twice));
-    assert_eq!(Handle(client).run(Op::PackageLength(b"abc")), 6);
+    assert_eq!(package_length(Handle(client), b"abc"), 6);
     free(client);
     assert_eq!(taken(), ["event Del 0", "free"]);
 }
@@ -511,7 +511,7 @@ fn async_send_raises_buffer_full_at_the_high_watermark() {
     assert_eq!(send(Handle(client), b"data", 0), 4);
     assert_eq!(taken(), ["write 4", "call BufferFull 0"]);
     // Already high: no second call.
-    send(Handle(client), b"data", 0);
+    _ = send(Handle(client), b"data", 0);
     assert_eq!(taken(), ["write 4"]);
     log::set_last_error(ERROR_OUTPUT_BUFFER_OVERFLOW);
     assert_eq!(send(Handle(client), b"data", 0), -1);

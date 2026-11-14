@@ -16,7 +16,7 @@ use super::case::{
 use super::*;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
-use swoole_rs_clients::client::{Flag, Handle, Op};
+use swoole_rs_clients::client::{self as native, Flag, Handle};
 
 const PACKET: &[u8] = b"hello world\n";
 const TEST_HOST6: &str = "::1";
@@ -181,21 +181,12 @@ impl SyncClient {
         unsafe { Handle::new(self.state.cast()) }
     }
 
-    fn run(&self, op: Op<'_>) -> i64 {
-        self.handle().run(op)
-    }
-
     fn connect(&mut self, host: &str, port: c_int) -> bool {
         if self.connected || !self.created {
             return false;
         }
         let host = CString::new(host).unwrap();
-        let connected = self.run(Op::Connect {
-            host: &host,
-            port,
-            timeout: -1.0,
-            flags: self.dgram.into(),
-        });
+        let connected = native::connect(self.handle(), &host, port, -1.0, self.dgram.into());
         if connected < 0 {
             return false;
         }
@@ -207,7 +198,7 @@ impl SyncClient {
         if self.handle().enable_ssl().is_none() {
             return false;
         }
-        !self.connected || self.run(Op::SslHandshake) == i64::from(SW_OK)
+        !self.connected || native::ssl_handshake(self.handle())
     }
 
     /// `get_client()->set_ssl_cert_file(file)` (`CERT_FILE`) or `set_ssl_key_file`.
@@ -222,14 +213,11 @@ impl SyncClient {
     }
 
     fn send(&self, data: &[u8]) -> i64 {
-        self.run(Op::Send { data, flags: 0 })
+        native::send(self.handle(), data, 0) as i64
     }
 
     fn recv(&self, buf: &mut [u8]) -> i64 {
-        self.run(Op::Recv {
-            buffer: buf,
-            flags: 0,
-        })
+        native::recv(self.handle(), buf, 0) as i64
     }
 
     fn close(&mut self) -> bool {
@@ -238,7 +226,7 @@ impl SyncClient {
         if !self.created || client.flag(Flag::Closed) {
             return false;
         }
-        let _ = self.run(Op::Close);
+        let _ = native::close(self.handle());
         self.created = false;
         true
     }
