@@ -489,40 +489,19 @@ pub fn worker_signal_init(serv: view::Server<'_>) {
 }
 
 /// Installs `handler` (one of [`super::signals`]'s) for `signo`, `own` for the worker's
-/// own; SIGRTMIN only where Linux names it.
+/// own.
 pub(crate) fn swr_workers_signal_set(
     signo: c_int,
     handler: SignalHandler,
     own: extern "C" fn(c_int),
 ) {
     use swoole_rs_reactor::signal_upstream::{self, Handler};
-    #[cfg(target_os = "linux")]
-    let signo = if signo == super::SIGNAL_RTMIN {
-        libc::SIGRTMIN()
-    } else {
-        signo
-    };
-    #[cfg(not(target_os = "linux"))]
-    if signo == super::SIGNAL_RTMIN {
-        return;
-    }
     let handler = match handler {
         SignalHandler::None => Handler::NONE,
         SignalHandler::Ignore => Handler::IGNORE,
         SignalHandler::Own => Handler::new(own),
     };
     _ = signal_upstream::set(signo, handler, false);
-}
-
-/// Whether `signo` is SIGRTMIN, which only Linux has.
-fn is_sigrtmin(signo: c_int) -> bool {
-    #[cfg(target_os = "linux")]
-    return signo == libc::SIGRTMIN();
-    #[cfg(not(target_os = "linux"))]
-    {
-        _ = signo;
-        false
-    }
 }
 
 /// `Server::worker_signal_handler(signo)`, over `SwooleG.server`.
@@ -543,7 +522,7 @@ pub(crate) extern "C" fn worker_signal_handler(signo: c_int) {
             } else {
                 swr_v1_worker_shutdown(worker);
             }
-        } else if (signo == libc::SIGWINCH || is_sigrtmin(signo))
+        } else if (signo == libc::SIGWINCH || super::sigrtmin() == Some(signo))
             && let Some(logger) = swoole_rs_utilities::process_logger()
         {
             logger.reopen();

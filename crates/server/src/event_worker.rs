@@ -21,12 +21,19 @@ pub(crate) enum SignalHandler {
     /// The worker's own.
     Own,
 }
-/// The stand-in for SIGRTMIN, which only Linux names.
-pub(crate) const SIGNAL_RTMIN: c_int = -1;
+/// `SIGRTMIN`, which only Linux names.
+pub(crate) fn sigrtmin() -> Option<c_int> {
+    #[cfg(target_os = "linux")]
+    return Some(libc::SIGRTMIN());
+    #[cfg(not(target_os = "linux"))]
+    None
+}
 
 /// `Server::worker_signal_init`'s signals in upstream's order, each with its handler;
-/// `sigpipe` is SIGPIPE's (event workers ignore it, task workers leave it).
-pub(crate) fn signals(sigpipe: SignalHandler) -> [(c_int, SignalHandler); 7] {
+/// `sigpipe` is SIGPIPE's (event workers ignore it, task workers leave it). SIGRTMIN
+/// comes last, where there is one.
+pub(crate) fn signals(sigpipe: SignalHandler) -> impl Iterator<Item = (c_int, SignalHandler)> {
+    let rtmin = sigrtmin().map(|signo| (signo, SignalHandler::Own));
     [
         (libc::SIGHUP, SignalHandler::None),
         (libc::SIGPIPE, sigpipe),
@@ -34,8 +41,9 @@ pub(crate) fn signals(sigpipe: SignalHandler) -> [(c_int, SignalHandler); 7] {
         (libc::SIGUSR2, SignalHandler::None),
         (libc::SIGTERM, SignalHandler::Own),
         (libc::SIGWINCH, SignalHandler::Own),
-        (SIGNAL_RTMIN, SignalHandler::Own),
     ]
+    .into_iter()
+    .chain(rtmin)
 }
 
 /// Whether received data is discarded: `closed` is `None` without a connection, else
@@ -99,21 +107,22 @@ mod tests {
 
     #[test]
     fn signals_install_in_upstream_order() {
+        let rtmin = sigrtmin().map(|signo| (signo, SignalHandler::Own));
+        let expected = [
+            (libc::SIGHUP, SignalHandler::None),
+            (libc::SIGPIPE, SignalHandler::Ignore),
+            (libc::SIGUSR1, SignalHandler::None),
+            (libc::SIGUSR2, SignalHandler::None),
+            (libc::SIGTERM, SignalHandler::Own),
+            (libc::SIGWINCH, SignalHandler::Own),
+        ];
         assert_eq!(
-            signals(SignalHandler::Ignore),
-            [
-                (libc::SIGHUP, SignalHandler::None),
-                (libc::SIGPIPE, SignalHandler::Ignore),
-                (libc::SIGUSR1, SignalHandler::None),
-                (libc::SIGUSR2, SignalHandler::None),
-                (libc::SIGTERM, SignalHandler::Own),
-                (libc::SIGWINCH, SignalHandler::Own),
-                (SIGNAL_RTMIN, SignalHandler::Own),
-            ]
+            signals(SignalHandler::Ignore).collect::<Vec<_>>(),
+            expected.into_iter().chain(rtmin).collect::<Vec<_>>()
         );
         assert_eq!(
-            signals(SignalHandler::None)[1],
-            (libc::SIGPIPE, SignalHandler::None)
+            signals(SignalHandler::None).nth(1),
+            Some((libc::SIGPIPE, SignalHandler::None))
         );
     }
 

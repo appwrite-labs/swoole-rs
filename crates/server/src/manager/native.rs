@@ -17,7 +17,7 @@ use swoole_rs_reactor::wait_upstream::swoole_waitpid;
 
 use super::{Manager, Reload, stop_message, worker_ids};
 use crate::callbacks::ServerSlot;
-use crate::event_worker::{SIGNAL_RTMIN, SignalHandler};
+use crate::event_worker::{SignalHandler, sigrtmin};
 use crate::process_factory::native::{
     check_exit_status, kill_task_workers, spawn_event_worker, spawn_user_worker,
 };
@@ -173,8 +173,10 @@ fn wait(serv: view::Server<'_>) {
         libc::SIGIO,
         libc::SIGALRM,
         libc::SIGWINCH,
-        SIGNAL_RTMIN,
-    ] {
+    ]
+    .into_iter()
+    .chain(sigrtmin())
+    {
         set_signal(signo, SignalHandler::Own);
     }
     if config.mode_ == Mode::Process {
@@ -440,7 +442,7 @@ extern "C" fn signal_handler(signo: c_int) {
                 kill(pid, libc::SIGKILL);
             }
         }
-        _ if signo == libc::SIGWINCH || is_sigrtmin(signo) => {
+        _ if signo == libc::SIGWINCH || sigrtmin() == Some(signo) => {
             // Manager::reopen_logger
             if let Some(logger) = swoole_rs_utilities::process_logger() {
                 logger.reopen();
@@ -453,17 +455,6 @@ extern "C" fn signal_handler(signo: c_int) {
             }
         }
         _ => {}
-    }
-}
-
-/// Whether `signo` is SIGRTMIN, which only Linux has.
-fn is_sigrtmin(signo: c_int) -> bool {
-    #[cfg(target_os = "linux")]
-    return signo == libc::SIGRTMIN();
-    #[cfg(not(target_os = "linux"))]
-    {
-        _ = signo;
-        false
     }
 }
 
