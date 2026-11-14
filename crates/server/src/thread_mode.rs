@@ -17,19 +17,6 @@ use swoole_rs_corebase::Thread;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub mod native;
 
-/// Thread mode's `Server` methods, which the hybrid runs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ThreadOp {
-    /// `Server::create_thread_factory`.
-    CreateFactory,
-    /// `Server::destroy_thread_factory`.
-    DestroyFactory,
-    /// `Server::start_worker_threads`.
-    StartWorkers,
-    /// `Server::stop_worker_threads`.
-    StopWorkers,
-}
-
 /// What the manager thread waits for.
 enum Wake {
     /// The worker thread in this slot exited.

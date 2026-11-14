@@ -14,7 +14,7 @@ use swoole_rs_process::methods::{
 };
 use swoole_rs_process::worker_record::{Worker, WorkerStatus, WorkerType};
 
-use super::{ThreadManager, ThreadOp, Wake, worker_thread_start};
+use super::{ThreadManager, Wake, worker_thread_start};
 use crate::callbacks::ServerSlot;
 use crate::objects::{Bus, Reactor};
 use crate::reactor_ops::PoolBus;
@@ -28,30 +28,6 @@ const THREAD_WORKER: u8 = 4;
 /// `SW_LOG_WARNING`, `SW_LOG_ERROR`.
 const WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
 const ERROR: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR as c_int;
-
-/// Runs thread-mode `operation` over `serv`.
-pub(crate) fn run(serv: view::Server<'_>, operation: ThreadOp) -> i64 {
-    match operation {
-        ThreadOp::CreateFactory => {
-            i64::try_from(create_factory(serv).expose_provenance()).unwrap_or(0)
-        }
-        ThreadOp::DestroyFactory => {
-            destroy_factory(serv);
-            0
-        }
-        ThreadOp::StartWorkers => {
-            if start_worker_threads(serv) {
-                0
-            } else {
-                -1
-            }
-        }
-        ThreadOp::StopWorkers => {
-            stop_worker_threads(serv);
-            0
-        }
-    }
-}
 
 /// The server's thread factory's manager; thread mode's server has one.
 fn manager(serv: view::Server<'_>) -> std::sync::Arc<ThreadManager> {
@@ -82,7 +58,7 @@ fn all_core_worker_num(serv: view::Server<'_>) -> u16 {
 
 /// `Server::create_thread_factory`: one reactor per worker over a private
 /// connection list and one pipe each; null without thread support or memory.
-fn create_factory(serv: view::Server<'_>) -> *mut c_void {
+pub(crate) fn create_factory(serv: view::Server<'_>) -> *mut c_void {
     const ORIGIN: &core::ffi::CStr = c"Server::create_thread_factory";
     let (state, config) = (serv.state(), serv.config());
     if !crate::THREAD_SUPPORTED.load(Ordering::Relaxed) {
@@ -117,7 +93,7 @@ fn create_factory(serv: view::Server<'_>) -> *mut c_void {
 }
 
 /// `Server::destroy_thread_factory`: the connections and the reactor threads.
-fn destroy_factory(serv: view::Server<'_>) {
+pub(crate) fn destroy_factory(serv: view::Server<'_>) {
     // SAFETY: as `create_factory`'s: the worker threads are joined, and nothing reads
     // the tables while this lives.
     let tables = unsafe { &mut *serv.state().tables() };
@@ -144,7 +120,7 @@ pub(crate) fn factory_start(serv: view::Server<'_>) -> bool {
 
 /// `Server::start_worker_threads`: the task, event and user worker threads, the
 /// manager thread, then the master thread's listeners and loop.
-fn start_worker_threads(serv: view::Server<'_>) -> bool {
+pub(crate) fn start_worker_threads(serv: view::Server<'_>) -> bool {
     let config = serv.config();
     let (workers, tasks) = (config.worker_num.get(), config.task_worker_num.get());
     for id in 0..tasks {
@@ -185,7 +161,7 @@ fn start_worker_threads(serv: view::Server<'_>) -> bool {
 }
 
 /// `Server::stop_worker_threads`: the manager thread, then each worker.
-fn stop_worker_threads(serv: view::Server<'_>) {
+pub(crate) fn stop_worker_threads(serv: view::Server<'_>) {
     // `ThreadFactory::terminate_manager_thread()`.
     let manager = &manager(serv);
     manager.push(Wake::Exit);
