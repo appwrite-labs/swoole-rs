@@ -124,28 +124,42 @@ pub fn proxy_pack(request: &HttpProxyRequest<'_>) -> Result<Vec<u8>, i32> {
     written.map_err(|_| OVERFLOW)?;
     Ok(out)
 }
-/// Pinned handshake: 1 accepted, -2 rejected status (native sets last-error),
-/// 0 other/incomplete response; minimum length and cursor skips are intentional.
+/// A proxy's response to CONNECT.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Handshake {
+    /// Status 200 with more than four bytes after it.
+    Accepted,
+    /// Another status (native sets last-error).
+    Rejected,
+    /// Not HTTP/1.x, or incomplete.
+    Incomplete,
+}
+
+/// Pinned handshake; minimum length and cursor skips are intentional.
 #[must_use]
-pub fn proxy_handshake(input: &[u8]) -> i32 {
+pub fn proxy_handshake(input: &[u8]) -> Handshake {
     if input.len() < b"HTTP/1.1 200 Connection established\r\n".len() {
-        return 0;
+        return Handshake::Incomplete;
     }
     if !crate::case_prefix(input, b"HTTP/1.1") && !crate::case_prefix(input, b"HTTP/1.0") {
-        return 0;
+        return Handshake::Incomplete;
     }
     // The original loop skips index 8 after recognizing HTTP/1.x.
     let Some(cursor) = tail(input, 9)
         .iter()
         .position(|b| !matches!(b, b' ' | b'\t' | b'\r' | b'\n' | 0x0b | 0x0c))
     else {
-        return 0;
+        return Handshake::Incomplete;
     };
     let cursor = cursor + 9;
     if !tail(input, cursor).starts_with(b"200") {
-        return -2;
+        return Handshake::Rejected;
     }
-    i32::from(input.len() - cursor > 4)
+    if input.len() - cursor > 4 {
+        Handshake::Accepted
+    } else {
+        Handshake::Incomplete
+    }
 }
 
 #[cfg(test)]
@@ -203,20 +217,32 @@ mod tests {
     #[test]
     fn handshake_cursor_and_error_policy() {
         let check = proxy_handshake;
-        assert_eq!(check(b""), 0);
-        assert_eq!(check(b"HTTP/1.1 200 Connection established\r\n"), 1);
-        assert_eq!(check(b"http/1.0X200 Connection established\r\n"), 1);
-        assert_eq!(check(b"HTTP/1.1 407 Proxy authorization needed\r\n"), -2);
-        assert_eq!(check(b"HTTP/1.1 200"), 0);
-        assert_eq!(check(b"NOT HTTP 200 Connection established\r\n"), 0);
+        assert_eq!(check(b""), Handshake::Incomplete);
+        assert_eq!(
+            check(b"HTTP/1.1 200 Connection established\r\n"),
+            Handshake::Accepted
+        );
+        assert_eq!(
+            check(b"http/1.0X200 Connection established\r\n"),
+            Handshake::Accepted
+        );
+        assert_eq!(
+            check(b"HTTP/1.1 407 Proxy authorization needed\r\n"),
+            Handshake::Rejected
+        );
+        assert_eq!(check(b"HTTP/1.1 200"), Handshake::Incomplete);
+        assert_eq!(
+            check(b"NOT HTTP 200 Connection established\r\n"),
+            Handshake::Incomplete
+        );
         let mut input = b"HTTP/1.1 ".to_vec();
         input.resize(36, b' ');
-        assert_eq!(check(&input), 0);
+        assert_eq!(check(&input), Handshake::Incomplete);
         input.extend_from_slice(b"200");
-        assert_eq!(check(&input), 0);
+        assert_eq!(check(&input), Handshake::Incomplete);
         input.push(b'!');
-        assert_eq!(check(&input), 0);
+        assert_eq!(check(&input), Handshake::Incomplete);
         input.push(b'!');
-        assert_eq!(check(&input), 1);
+        assert_eq!(check(&input), Handshake::Accepted);
     }
 }
