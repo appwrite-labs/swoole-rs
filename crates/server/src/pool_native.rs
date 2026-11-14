@@ -23,13 +23,14 @@ use swoole_rs_corebase::constants::SW_IPC_MAX_SIZE;
 use swoole_rs_corebase::log;
 use swoole_rs_memory::members::pool as mem_pool;
 use swoole_rs_process::armed_timer::ArmedTimer;
+use swoole_rs_process::methods::raised;
 use swoole_rs_process::methods::{
     ExitStatus, is_worker_running, kill_all_workers, push_stop, reload_warn, swoole_set_worker_id,
     swoole_set_worker_pid, worker_report_error,
 };
-use swoole_rs_process::pool::{PoolCall, Warning, raise_bailout};
+use swoole_rs_process::pool::{PoolCall, Warning};
 use swoole_rs_process::process_pool::{
-    Callback, Hooks, MainLoopFn, Op, PoolNative, PoolRef, Protocol, RAISE, RecvData, pool_run_main,
+    Callback, Hooks, MainLoopFn, Op, PoolNative, PoolRef, Protocol, RecvData, pool_run_main,
 };
 use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_init, swr_v1_worker_shutdown};
@@ -268,20 +269,12 @@ extern "C" fn recv_message(_: Running<'_>, event: &mut Event) -> c_int {
     0
 }
 
-/// A worker loop's result; a callback's bailout is raised once the export's frames
-/// are gone.
-fn main_result(result: i64) -> c_int {
-    if result == RAISE {
-        raise_bailout();
-    }
-    result.c_cast::<c_int>()
-}
-
 /// `ProcessPool::run_with_*_protocol` and `run_async`: the worker loop.
 macro_rules! main_loops {
     ($($name:ident = $protocol:expr;)*) => {$(
         extern "C-unwind" fn $name(pool: PoolRef<'_>, worker: Record<'_>) -> c_int {
-            main_result(pool_run_main(&NATIVE, pool, worker, $protocol))
+            // A callback's bailout is raised once the export's frames are gone.
+            raised(pool_run_main(&NATIVE, pool, worker, $protocol)).c_cast::<c_int>()
         }
     )*};
 }
