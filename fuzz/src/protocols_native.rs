@@ -7,7 +7,7 @@ use swoole_rs_protocols::{
     RespRequest, resp_spans, socks_auth, socks_config, socks_connect, socks_negotiate,
     SocksConfig, SocksSend, socks_strerror, socks_transition,
 };
-use swoole_rs_protocols_ffi::{Dispatched, RESP_RECV_DONE, RespConnection, SW_ERR, recv_packet};
+use swoole_rs_protocols_ffi::{Dispatched, Received, RespConnection, recv_packet};
 
 /// `redis::parse` over [`resp_spans`]: each string after its u32 length (an integer
 /// span in decimal; nothing for a malformed wire), and whether a number overflowed a
@@ -47,16 +47,16 @@ struct Stream {
 }
 
 impl RespConnection for Stream {
-    fn recv(&mut self) -> isize {
+    fn recv(&mut self) -> Received {
         let Some(chunk) = self.chunks.first_mut() else {
-            return if self.close_at_end { 0 } else { RESP_RECV_DONE };
+            return if self.close_at_end { Received::Closed } else { Received::Done };
         };
         let count = chunk.len().min(self.size - self.content.len());
         self.content.extend(chunk.drain(..count));
         if chunk.is_empty() {
             self.chunks.remove(0);
         }
-        count as isize
+        Received::Bytes(count)
     }
 
     fn view(&mut self) -> (&[u8], usize, &mut RespRequest) {
@@ -114,9 +114,10 @@ pub fn resp_stream(
     }
     for _ in 0..4096 {
         let drained = stream.chunks.is_empty();
-        let result = recv_packet(&mut stream, maximum, 4096);
+        // Logged as the shim logs `SW_OK` and `SW_ERR`.
+        let result = if recv_packet(&mut stream, maximum, 4096) { 0 } else { -1 };
         stream.log.extend_from_slice(format!("R{result}").as_bytes());
-        if result == SW_ERR {
+        if result != 0 {
             break;
         }
         let r = stream.request;
