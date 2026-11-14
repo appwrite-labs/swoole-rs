@@ -102,8 +102,8 @@ impl TaskHost for Host<'_> {
         }
     }
 
-    fn read_notify(&mut self) -> isize {
-        let Some(pipe) = &self.pipe else { return -1 };
+    fn read_notify(&mut self) -> Option<usize> {
+        let pipe = self.pipe.as_ref()?;
         let mut notify = [std::mem::MaybeUninit::uninit(); size_of::<u64>()];
         socket_pair::read_into(pipe, &mut notify)
     }

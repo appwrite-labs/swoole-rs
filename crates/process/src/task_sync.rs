@@ -43,8 +43,8 @@ pub trait TaskHost {
     fn pipe_clean(&mut self);
     /// This worker's notify pipe: `set_timeout(timeout)`.
     fn set_timeout(&mut self, timeout: f64);
-    /// This worker's notify pipe: `read` of one notification.
-    fn read_notify(&mut self) -> isize;
+    /// This worker's notify pipe: `read` of one notification, the bytes read or None.
+    fn read_notify(&mut self) -> Option<usize>;
     /// This worker's lock: `lock()` (`on`) or `unlock()`.
     fn lock(&mut self, on: bool);
 }
@@ -253,7 +253,7 @@ impl<'a, H: TaskHost> Tasks<'a, H> {
         trapped(|| self.host.set_timeout(timeout))
     }
 
-    fn read_notify(&mut self) -> Result<isize, Bailed> {
+    fn read_notify(&mut self) -> Result<Option<usize>, Bailed> {
         trapped(|| self.host.read_notify())
     }
 
@@ -298,7 +298,7 @@ impl<'a, H: TaskHost> Waiting<'a, H> {
             if !matches!(sent, Ok(true)) {
                 return false;
             }
-            while tasks.host.read_notify() > 0 {
+            while tasks.host.read_notify().is_some_and(|n| n > 0) {
                 if result.task_id() == task_id {
                     return true;
                 }
@@ -397,7 +397,9 @@ impl<'a, H: TaskHost> Waiting<'a, H> {
         }
         let started = now();
         while i64::from(result.finish_count()) < pending {
-            if tasks.read_notify()? <= 0 || (timeout > 0.0 && now() - started > timeout) {
+            if tasks.read_notify()?.is_none_or(|n| n == 0)
+                || (timeout > 0.0 && now() - started > timeout)
+            {
                 break;
             }
         }
@@ -481,7 +483,7 @@ mod tests {
     #[derive(Default)]
     struct Script {
         dispatched: Vec<bool>,
-        notify: Vec<isize>,
+        notify: Vec<usize>,
         locks: Vec<bool>,
     }
 
@@ -491,12 +493,8 @@ mod tests {
         }
         fn pipe_clean(&mut self) {}
         fn set_timeout(&mut self, _: f64) {}
-        fn read_notify(&mut self) -> isize {
-            if self.notify.is_empty() {
-                -1
-            } else {
-                self.notify.remove(0)
-            }
+        fn read_notify(&mut self) -> Option<usize> {
+            (!self.notify.is_empty()).then(|| self.notify.remove(0))
         }
         fn lock(&mut self, on: bool) {
             self.locks.push(on);
