@@ -165,7 +165,7 @@ fn start_worker_threads(serv: view::Server<'_>) -> c_int {
         if matches!(port.config().r#type, 2 | 4 | 6) {
             continue;
         }
-        if (crate::port_config::methods().listen)(port.config()) < 0 {
+        if !(crate::port_config::methods().listen)(port.config()) {
             swoole_rs_reactor::swoole_event_free();
             return -1;
         }
