@@ -5,23 +5,22 @@
 //!
 //! `PortConfig::ssl_context` holds one reference to the port's own context's
 //! owner, and its TLS state (`PortConfig::tls`) what upstream's `ListenPort` kept
-//! in C++ containers: the SNI contexts (`sni_contexts`) and the DTLS sessions
-//! (`dtls_sessions`), each with a reference to its context.
+//! in C++ containers: the SNI contexts (`sni_contexts`), each with a reference to its
+//! context. A DTLS session lives in its connection's SSL (crates/tls).
 use core::ffi::{CStr, c_int, c_void};
 use core::ptr;
-use std::sync::{MutexGuard, PoisonError, RwLockReadGuard};
+use std::sync::{PoisonError, RwLockReadGuard};
 
 use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
 use swoole_rs_corebase::constants::{SW_SSL_CIPHER_LIST, SW_SSL_ECDH_CURVE};
 use swoole_rs_corebase::{log, sys};
 use swoole_rs_reactor::{Socket, SocketRecord, swr_v1_socket_type};
-use swoole_rs_server::port_config::{DtlsSessions, PortConfig, TlsState};
+use swoole_rs_server::port_config::{PortConfig, TlsState};
 use swoole_rs_server::view;
 use swoole_rs_tls::upstream::socket_ssl_create;
 use swoole_rs_tls::{
-    DtlsSession, OwnedTlsContext, OwnedTlsFields, Ssl, SslCreateFlag, SslVersion, Text, TlsContext,
-    has_files, swr_v1_tls_dtls_free, swr_v1_tls_dtls_open, swr_v1_tls_owner_view,
-    swr_v1_tls_port_index,
+    OwnedTlsContext, OwnedTlsFields, Ssl, SslCreateFlag, SslVersion, Text, TlsContext, has_files,
+    swr_v1_tls_owner_view, swr_v1_tls_port_index,
 };
 use swoole_rs_utilities::sni_wildcard_matches;
 
@@ -46,20 +45,11 @@ fn sni(config: &PortConfig) -> RwLockReadGuard<'_, Vec<(Vec<u8>, TlsContext)>> {
         .unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The port's DTLS sessions.
-fn dtls(config: &PortConfig) -> MutexGuard<'_, DtlsSessions> {
-    config
-        .tls
-        .dtls
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-}
-
 /// `edit`'s result over the fields of the live `context`.
 fn edit<R>(context: &OwnedTlsContext, edit: impl FnOnce(&mut OwnedTlsFields) -> R) -> R {
-    // SAFETY: the owner's fields live as long as the reference; a port's contexts
-    // are used on its one thread, and every `edit` closure here ends without
-    // reaching another.
+    // SAFETY: the owner's fields live as long as the reference; a port's contexts are
+    // configured on its one thread before it serves, and every `edit` closure here
+    // ends without reaching another or taking a borrow through `fields()`.
     edit(unsafe { &mut *swr_v1_tls_owner_view(context).fields })
 }
 
@@ -148,11 +138,9 @@ pub fn ssl_init(config: &PortConfig) -> bool {
     }
     if has_sni {
         // The SSL_CTX `context_create` just made.
-        edit(&context, |fields| {
-            if let Some(ctx) = fields.context.as_deref() {
-                ctx.set_servername_callback(sni_callback);
-            }
-        });
+        if let Some(ctx) = context.fields().context.as_deref() {
+            ctx.set_servername_callback(sni_callback);
+        }
     }
     true
 }
@@ -175,7 +163,6 @@ pub(crate) fn ssl_context_init(config: &mut PortConfig) -> bool {
     if matches!(config.r#type, 2 | 4 | 6) {
         let protocols = SslVersion::SW_SSL_DTLS as u32;
         edit(&context, |fields| fields.protocols = protocols);
-        dtls(config).clear();
     }
     true
 }
@@ -186,10 +173,7 @@ pub(crate) fn ssl_create(config: &PortConfig, sock: Option<Socket<'_>>) -> bool 
     let flags = SslCreateFlag::SW_SSL_SERVER as c_int;
     let create = |sock| {
         context.is_some_and(|context| {
-            // SAFETY: nothing writes the port's context while a connection's session is
-            // made.
-            let fields = unsafe { swoole_rs_tls::owner_fields(context) };
-            socket_ssl_create(sock, fields.context.as_deref(), flags)
+            socket_ssl_create(sock, context.fields().context.as_deref(), flags)
         })
     };
     let Some(sock) = sock.filter(|&sock| create(sock)) else {
@@ -232,58 +216,8 @@ extern "C" fn sni_callback(ssl: Ssl<'_>, _al: *mut c_int, _arg: *mut c_void) -> 
         return TLSEXT_NOACK;
     };
     // That context's live SSL_CTX; switching to it calls nothing back.
-    edit(context, |fields| ssl.set_context(fields.context.as_deref()));
+    ssl.set_context(context.fields().context.as_deref());
     TLSEXT_OK
-}
-
-/// The port's DTLS session on `fd`; null if none.
-pub(crate) fn dtls_session(config: &PortConfig, fd: c_int) -> *mut DtlsSession {
-    let sessions = dtls(config);
-    let entry = usize::try_from(fd).ok().and_then(|fd| sessions.get(fd));
-    entry
-        .and_then(Option::as_ref)
-        .map_or(ptr::null_mut(), |entry| entry.0)
-}
-
-/// `delete` of the DTLS session on `fd`, removed from the port; nothing if none.
-/// Nothing uses the session afterwards.
-pub(crate) fn dtls_free(config: &PortConfig, fd: c_int) {
-    // Out of the table first, its lock released.
-    let removed = usize::try_from(fd)
-        .ok()
-        .and_then(|fd| dtls(config).get_mut(fd).and_then(Option::take));
-    if let Some((session, _context)) = removed {
-        // SAFETY: the session the port owned, released once before its context.
-        unsafe { swr_v1_tls_dtls_free(session) };
-    }
-}
-
-/// `ListenPort::create_dtls_session(sock)`: a session over the port's context,
-/// stored under the socket's fd; null when it fails to initialize.
-pub(crate) fn dtls_create(port: view::Port<'_>, sock: Socket<'_>) -> *mut DtlsSession {
-    let config = port.config();
-    let Some(context) = config.ssl_context.clone() else {
-        return ptr::null_mut();
-    };
-    let Ok(fd) = usize::try_from(sock.fd()) else {
-        return ptr::null_mut();
-    };
-    // SAFETY: the caller's live socket, kept until the port frees the session, and the
-    // port's live context.
-    let session = unsafe { swr_v1_tls_dtls_open(sock, &context) };
-    if session.is_null() {
-        return ptr::null_mut();
-    }
-    let mut sessions = dtls(config);
-    if sessions.len() <= fd {
-        sessions.resize_with(fd + 1, || None);
-    }
-    // As the C++ map's assignment, the fd's earlier entry goes.
-    if let Some(slot) = sessions.get_mut(fd) {
-        *slot = Some((session, context));
-    }
-    drop(sessions);
-    session
 }
 
 /// `getsockopt(fd, SOL_SOCKET, option)`: the value, or `None` (errno set).
@@ -339,7 +273,7 @@ pub(crate) fn import(config: &mut PortConfig, fd: c_int) -> bool {
     true
 }
 
-/// `ListenPort::close()`: drops the TLS context and DTLS map, frees the socket
+/// `ListenPort::close()`: drops the TLS context, frees the socket
 /// and unlinks a Unix socket's path.
 pub(crate) fn close(port: view::Port<'_>) {
     if port.config().ssl != 0 {
@@ -347,7 +281,6 @@ pub(crate) fn close(port: view::Port<'_>) {
         // reads their settings (`PortMethods::close`), and no borrow of them is
         // held here: only the context is replaced.
         unsafe { port.config_mut() }.ssl_context = None;
-        dtls(port.config()).clear();
     }
     let config = port.config();
     // Taken first, so nothing finds the record once it is freed.
@@ -380,13 +313,9 @@ mod tests {
             .write()
             .unwrap()
             .push((b"a".to_vec(), swoole_rs_tls::TlsContext::new()));
-        super::dtls(config).resize_with(4, || None);
-        super::dtls(config)[3] = Some((core::ptr::null_mut(), swoole_rs_tls::TlsContext::new()));
         assert_eq!(super::sni(config).len(), 1);
-        assert_eq!(super::dtls(config).iter().flatten().count(), 1);
         super::tls_free(config);
         assert_eq!(super::sni(config).len(), 0);
-        assert_eq!(super::dtls(config).iter().flatten().count(), 0);
         drop(unsafe { Box::from_raw(config) });
     }
 

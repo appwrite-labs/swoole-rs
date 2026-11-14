@@ -355,11 +355,11 @@ impl crate::hybrid::Hybrid for Linked {
 
     fn dtls_read(
         &self,
-        port: &crate::port_config::PortConfig,
+        _port: &crate::port_config::PortConfig,
         sock: swoole_rs_reactor::Socket<'_>,
-        fd: c_int,
+        _fd: c_int,
     ) -> bool {
-        crate::dtls::on_read(port, sock, fd)
+        crate::dtls::on_read(sock)
     }
 
     fn pipe_to_worker(

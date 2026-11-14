@@ -27,7 +27,7 @@ in `SW_DEBUG` builds and is not reproduced.
 
 ## DTLS (`crates/tls/src/dtls.rs`)
 
-- `swr_v1_tls_dtls_new` makes a session: its socket, `listened` and `peek_mode`, and a datagram queue. crates/ports stores it by fd with a reference to the port's `SSLContext`, released with it; crates/server accepts, feeds and closes it.
+- `dtls_open` makes a session over a socket: its descriptor and peer, `listened` and `peek_mode`, a datagram queue and a reference to the port's `SSLContext`. The session's BIO owns it, so it goes when the socket's SSL is freed, and `DtlsSession::of` finds it through the socket; crates/server accepts, feeds and closes it.
 - `dtls_append` copies a payload; `dtls_session_receive` reads the socket's next datagram into a new `dtls::Buffer`. Reads preserve datagram boundaries, short-read consumption, zero-length packets, retry and peek behavior.
 - Rust builds the one BIO method table (write, read, ctrl, create, destroy) and points each session's BIO at its Rust queue. Control reads the actual queue and flags; peer bytes copy the canonical socket address union.
 

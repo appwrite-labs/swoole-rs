@@ -23,7 +23,6 @@ use swoole_rs_corebase::{CCast, DataHead, microtime};
 use swoole_rs_reactor::{Event, Socket, what_event_want};
 use swoole_rs_timer::{del_id, delay_held};
 use swoole_rs_tls::Accept;
-use swoole_rs_tls::swr_v1_tls_owner_view;
 use swoole_rs_tls::upstream as tls;
 
 use crate::base_factory::SendData;
@@ -244,13 +243,9 @@ fn certificate(
 
 /// Whether the TLS port has a client certificate file.
 fn client_cert_file(port: &PortConfig) -> bool {
-    let Some(context) = port.ssl_context.as_deref() else {
-        return false;
-    };
-    // `client_cert_file`'s slot.
-    let slot = swr_v1_tls_owner_view(context).strings[7];
-    // SAFETY: a stable slot of the port's live owner.
-    !unsafe { &*slot }.bytes().is_empty()
+    port.ssl_context
+        .as_deref()
+        .is_some_and(swoole_rs_tls::OwnedTlsContext::has_client_cert_file)
 }
 
 /// Arms `conn`'s resume timer for its paused `socket`, after its waiting time.
@@ -503,15 +498,12 @@ pub(crate) fn close_connection(
         return false;
     }
     count_close(state, port, reactor);
-    let (ssl, dtls, recv_buffer) = sock.read(|s| (!s.ssl().is_null(), s.dtls, s.recv_buffer));
+    let (ssl, recv_buffer) = sock.read(|s| (!s.ssl().is_null(), s.recv_buffer));
     if ssl {
         sock.edit(|s| s.ssl_quiet_shutdown = conn.peer_closed());
         // SAFETY: handles to a session live only for the operation that took them,
         // and native code closes it between operations.
         unsafe { tls::socket_ssl_close(sock) };
-    }
-    if let Some(port) = port.filter(|_| dtls) {
-        (crate::port_config::methods().dtls_free)(port, fd);
     }
     if !recv_buffer.is_null() {
         // SAFETY: the socket's `new String`, not used again.

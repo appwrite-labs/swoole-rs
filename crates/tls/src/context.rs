@@ -7,11 +7,11 @@ use crate::handle::{Bio, CText, Ssl};
 use openssl_sys::{
     EVP_PKEY, OPENSSL_NPN_NEGOTIATED, SSL, SSL_CTRL_MODE, SSL_CTRL_SET_GROUPS_LIST,
     SSL_CTRL_SET_READ_AHEAD, SSL_CTRL_SET_SESS_CACHE_MODE, SSL_CTRL_SET_TLSEXT_SERVERNAME_CB,
-    SSL_CTX, SSL_CTX_set_alpn_select_cb__fixed_rust, SSL_FILETYPE_PEM, SSL_MODE_NO_AUTO_CHAIN,
-    SSL_MODE_RELEASE_BUFFERS, SSL_OP_CIPHER_SERVER_PREFERENCE, SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS,
-    SSL_OP_NO_COMPRESSION, SSL_OP_NO_SSLv2, SSL_OP_NO_SSLv3, SSL_OP_NO_TLSv1, SSL_OP_NO_TLSv1_1,
-    SSL_OP_NO_TLSv1_2, SSL_OP_NO_TLSv1_3, SSL_SESS_CACHE_SERVER, SSL_TLSEXT_ERR_NOACK,
-    SSL_TLSEXT_ERR_OK, SSL_VERIFY_NONE, SSL_VERIFY_PEER, SSL_select_next_proto, X509_STORE_CTX,
+    SSL_CTX, SSL_FILETYPE_PEM, SSL_MODE_NO_AUTO_CHAIN, SSL_MODE_RELEASE_BUFFERS,
+    SSL_OP_CIPHER_SERVER_PREFERENCE, SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS, SSL_OP_NO_COMPRESSION,
+    SSL_OP_NO_SSLv2, SSL_OP_NO_SSLv3, SSL_OP_NO_TLSv1, SSL_OP_NO_TLSv1_1, SSL_OP_NO_TLSv1_2,
+    SSL_OP_NO_TLSv1_3, SSL_SESS_CACHE_SERVER, SSL_TLSEXT_ERR_NOACK, SSL_TLSEXT_ERR_OK,
+    SSL_VERIFY_NONE, SSL_VERIFY_PEER, SSL_select_next_proto, X509_STORE_CTX,
 };
 use std::cell::RefCell;
 use std::ffi::{CStr, c_char, c_int, c_long, c_uchar, c_uint, c_void};
@@ -659,14 +659,7 @@ impl Method<'_> {
                 );
                 return false;
             }
-            // SAFETY: a live context; the argument is a static.
-            unsafe {
-                SSL_CTX_set_alpn_select_cb__fixed_rust(
-                    raw,
-                    Some(select_alpn),
-                    ptr::from_ref(protos).cast_mut().cast(),
-                );
-            }
+            SSL_CTX_set_alpn_select_cb(ctx, Some(select_alpn), protos);
             SSL_CTX_set_session_id_context(ctx, &SESSION_ID_CONTEXT, 4);
             ctx.ctrl(Ctrl::SessionCacheMode, SSL_SESS_CACHE_SERVER);
         }
@@ -690,6 +683,7 @@ fn quoted(prefix: &[u8], value: TlsStr<'_>, suffix: &[u8]) -> Vec<u8> {
 }
 
 /// An ALPN wire-format list: the first `length` bytes of `wire`.
+#[repr(C)]
 struct Protos {
     wire: [u8; 12],
     length: AlpnLength,
@@ -719,23 +713,39 @@ enum AlpnLength {
     H2Http1 = 12,
 }
 
-// libssl's declaration, typed so that the list is the array its length bounds; it
-// copies the list into the live context: 0 on success.
+/// OpenSSL's ALPN selector: the SSL, the output slots, the list the client offered
+/// and its length, and the selector's argument.
+type AlpnSelect = unsafe extern "C" fn(
+    *mut SSL,
+    *mut *const c_uchar,
+    *mut c_uchar,
+    *const c_uchar,
+    c_uint,
+    &Protos,
+) -> c_int;
+
+// libssl's declarations, typed so that the list is the array its length bounds; the
+// first copies the list into the live context: 0 on success. The second stores the
+// selector and its static argument, which OpenSSL hands it with the slots and the
+// offered list it lends.
 unsafe extern "C" {
     safe fn SSL_CTX_set_alpn_protos(ctx: &SslCtx, protos: &[u8; 12], length: AlpnLength) -> c_int;
+    safe fn SSL_CTX_set_alpn_select_cb(
+        ctx: &SslCtx,
+        callback: Option<AlpnSelect>,
+        arg: &'static Protos,
+    );
 }
 
-/// The server's ALPN choice: the first of its protocols the client offers.
+/// The server's ALPN choice: the first of `protos` the client offers.
 unsafe extern "C" fn select_alpn(
     _ssl: *mut SSL,
     out: *mut *const c_uchar,
     out_length: *mut c_uchar,
     offered: *const c_uchar,
     offered_length: c_uint,
-    arg: *mut c_void,
+    protos: &Protos,
 ) -> c_int {
-    // SAFETY: `arg` is one of the static lists installed by `configure`.
-    let protos = unsafe { &*arg.cast::<Protos>() };
     let length = protos.length as c_uint;
     // SAFETY: OpenSSL's output slots and offered list; ours is static.
     let negotiated = unsafe {
@@ -1278,7 +1288,7 @@ mod tests {
         let offered = b"\x08http/1.1\x02h2";
         let mut out = ptr::null();
         let mut length = 0;
-        let arg = ptr::from_ref(&H2_HTTP1).cast_mut().cast();
+        let arg = &H2_HTTP1;
         let chosen = unsafe {
             select_alpn(
                 ptr::null_mut(),
@@ -1294,7 +1304,7 @@ mod tests {
             unsafe { std::slice::from_raw_parts(out, length.into()) },
             b"h2"
         );
-        let arg = ptr::from_ref(&HTTP1).cast_mut().cast();
+        let arg = &HTTP1;
         let chosen = unsafe {
             select_alpn(
                 ptr::null_mut(),

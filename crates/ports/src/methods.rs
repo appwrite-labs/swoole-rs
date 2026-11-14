@@ -596,7 +596,7 @@ mod tests {
         config.ssl = 1;
         assert!(ssl_context_init(at), "a stream port's context");
         let context = config.ssl_context.clone().expect("published");
-        let fields = unsafe { swoole_rs_tls::owner_fields(&context) };
+        let fields = context.fields();
         assert_eq!(
             (
                 fields.prefer_server_ciphers,

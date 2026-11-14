@@ -115,7 +115,8 @@ pub fn owner_new(warn: Warn) -> OwnedTlsPrepared {
         ..view
     }
 }
-/// `owner`'s scalar fields and string slots, valid while a reference is held.
+/// `owner`'s scalar fields and string slots, valid while a reference is held. A write
+/// through them holds the owner as a [`Lent`] does.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_tls_owner_view(owner: &OwnedTlsContext) -> OwnedTlsPrepared {
     prepared(owner)
@@ -199,15 +200,25 @@ pub fn reason_text(error: std::os::raw::c_ulong) -> String {
         |reason| reason.to_string_lossy().into_owned(),
     )
 }
-/// `tls_host_name`'s slot.
+/// `tls_host_name`'s and `client_cert_file`'s slots.
 const TLS_HOST_NAME: usize = 8;
-/// The owner's fields, borrowed.
-/// # Safety
-/// No field write runs while the borrow is used.
-#[must_use]
-pub unsafe fn owner_fields(owner: &OwnedTlsContext) -> &OwnedTlsFields {
-    // SAFETY: as the caller promises.
-    unsafe { &*owner.fields.get() }
+const CLIENT_CERT_FILE: usize = 7;
+impl OwnedTlsContext {
+    /// The owner's fields, borrowed. Whoever writes them holds the owner exclusively
+    /// ([`Lent::new`]'s contract, and that of the raw view's fields pointer), so no
+    /// write overlaps a borrow safe code holds, as with [`owner_host_name`].
+    #[must_use]
+    pub fn fields(&self) -> &OwnedTlsFields {
+        // SAFETY: writes go only through a `Lent` or the raw view, whose holders
+        // promise that no borrow taken here is live while they write.
+        unsafe { &*self.fields.get() }
+    }
+
+    /// Whether `client_cert_file` is set.
+    #[must_use]
+    pub fn has_client_cert_file(&self) -> bool {
+        !self.strings[CLIENT_CERT_FILE].bytes().is_empty()
+    }
 }
 /// `tls_host_name`'s NUL-terminated bytes, read while the name stays unchanged.
 #[must_use]
@@ -232,8 +243,10 @@ pub fn owner_host_c_str(owner: &OwnedTlsContext) -> &CStr {
 pub struct Lent<'a>(&'a OwnedTlsContext, PhantomData<Cell<()>>);
 impl<'a> Lent<'a> {
     /// # Safety
-    /// Until the guard goes only its holder reaches the owner's fields and retained
-    /// password: no other thread does, and what the holder calls meanwhile (OpenSSL,
+    /// Until the guard goes only its holder reaches the owner's fields, strings and
+    /// retained password: no other thread does, no borrow of them taken through the
+    /// owner's safe readers ([`OwnedTlsContext::fields`], [`owner_host_name`] and the
+    /// like) is live or taken meanwhile, and what the holder calls meanwhile (OpenSSL,
     /// the logger, native code reading its view) runs while no borrow the guard lent
     /// is in use.
     pub const unsafe fn new(owner: &'a OwnedTlsContext) -> Self {
@@ -432,7 +445,7 @@ pub fn swr_v1_tls_owner_socket_context(
 ///
 /// `hostname` is the automatic host name, none when it is empty.
 pub fn swr_v1_tls_owner_socket_session(
-    owner: Option<Lent<'_>>,
+    owner: Option<&OwnedTlsContext>,
     record: swoole_rs_reactor::Socket<'_>,
     hostname: Option<&CStr>,
 ) -> Result<(), crate::SslNewError> {
@@ -443,14 +456,11 @@ pub fn swr_v1_tls_owner_socket_session(
     let Some(owner) = owner else {
         return Err(crate::SslNewError::New);
     };
-    let owner_ref = owner.0;
-    // The context is borrowed until the SSL is made.
-    let disable_tls_host_name = owner.edit(|fields| {
-        crate::socket_ssl_new(record, fields.context.as_deref(), 0)
-            .map(|()| fields.disable_tls_host_name)
-    })?;
+    let fields = owner.fields();
+    crate::socket_ssl_new(record, fields.context.as_deref(), 0)?;
+    let disable_tls_host_name = fields.disable_tls_host_name;
     let ssl = crate::Ssl::of(record);
-    let explicit = &owner_ref.strings[TLS_HOST_NAME];
+    let explicit = &owner.strings[TLS_HOST_NAME];
     let selected = if !explicit.bytes().is_empty() {
         Some(explicit.c_str())
     } else if !disable_tls_host_name {
@@ -698,7 +708,7 @@ mod tests {
                 assert!((*socket).fields.output.ssl_send);
                 assert!((*prepared.fields).http_v2);
                 let result = swr_v1_tls_owner_socket_session(
-                    Some(Lent::new(&*prepared.owner)),
+                    Some(&*prepared.owner),
                     handle,
                     (!automatic.is_empty()).then(|| hostname.c_str()),
                 );

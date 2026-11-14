@@ -692,9 +692,6 @@ mod tests {
                 init_protocol: |_| unreachable!(),
                 destroy_http_request: |_| unreachable!(),
                 tls_free: |_| {},
-                dtls_create: |_, _| unreachable!(),
-                dtls_session: |_, _| unreachable!(),
-                dtls_free: |_, _| unreachable!(),
             });
         }
     }

@@ -48,9 +48,6 @@ const METHODS: PortMethods = PortMethods {
     init_protocol: methods::init_protocol,
     destroy_http_request: methods::destroy_http_request,
     tls_free: lifecycle::tls_free,
-    dtls_create: lifecycle::dtls_create,
-    dtls_session: lifecycle::dtls_session,
-    dtls_free: lifecycle::dtls_free,
 };
 
 /// A port's callbacks (`php_swoole_server_port_callback_type`), in [`EVENTS`] order.
