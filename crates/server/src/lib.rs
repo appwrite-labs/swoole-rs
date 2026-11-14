@@ -101,7 +101,4 @@ pub use server_object::{SharedServer, swr_v1_server_new};
 #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
 pub use tcp_info::tcp_fields;
 
-pub(crate) const SW_OK: i64 = swoole_rs_corebase::constants::ResultCode::SW_OK as i64;
-pub(crate) const SW_ERR: i64 = swoole_rs_corebase::constants::ResultCode::SW_ERR as i64;
-
 pub use reactor_ops::{pool_bus_move_packet, pool_bus_set_allocator};

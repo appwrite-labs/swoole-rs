@@ -23,16 +23,13 @@ const FD_DGRAM_SERVER: c_int = 2;
 const SW_EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
 const SW_EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
 
-/// `SW_OK` and `SW_ERR`.
-const SW_OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
-const SW_ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
-
 /// The heartbeat thread's `ServerState::start_thread` key; reactor threads use their ids.
 pub(crate) const HEARTBEAT: u64 = u64::MAX;
 
 /// `ReactorThread_onPacketReceived`: dispatch the datagrams on the event's socket, a
-/// UDP port's, until it would block. Each is read into this thread's buffer.
-pub(crate) fn packet_received(serv: view::Server<'_>, reactor: Reactor, event: &Event) -> c_int {
+/// UDP port's, until it would block. Each is read into this thread's buffer; false when
+/// one fails.
+pub(crate) fn packet_received(serv: view::Server<'_>, reactor: Reactor, event: &Event) -> bool {
     let (buffer, size) =
         swoole_rs_buffer::string::with_thread_buffer(|b| (b.as_mut_ptr().cast(), b.size()));
     receive_packets(serv, reactor, event.fd(), buffer, size)
@@ -46,15 +43,15 @@ fn receive_packets(
     fd: c_int,
     buffer: *mut c_void,
     size: usize,
-) -> c_int {
+) -> bool {
     let state = serv.state();
     // The event's fd is a listening socket's, whose slot holds its port.
     let Some(conn) = state.connection(fd.into(), Lookup::ByFd) else {
-        return SW_ERR;
+        return false;
     };
     let kind = conn.socket_type();
     let Some(port) = state.listed_port(conn.object()) else {
-        return SW_ERR;
+        return false;
     };
     let dtls = port.config().is_dtls();
     let head = size_of::<DgramPacket>();
@@ -82,13 +79,13 @@ fn receive_packets(
             .recvfrom(fd, 0, address);
         let Ok(length @ 1..) = u32::try_from(n) else {
             if std::io::Error::last_os_error().raw_os_error() == Some(libc::EAGAIN) {
-                return SW_OK;
+                return true;
             }
             log::sys_warning(
                 c"ReactorThread_onPacketReceived",
                 format_args!("recvfrom({fd}) failed"),
             );
-            return SW_ERR;
+            return false;
         };
         if dtls {
             let datagram = data.cast::<u8>();
@@ -109,7 +106,7 @@ fn receive_packets(
             hybrid().factory_dispatch(serv, &mut task)
         };
         if !dispatched {
-            return SW_ERR;
+            return false;
         }
     }
 }
@@ -267,11 +264,7 @@ mod tests {
         let received = |count: usize| {
             let mut heard = Vec::new();
             for _ in 0..1000 {
-                assert_eq!(
-                    receive_packets(serv, reactor, fd, at, size),
-                    SW_OK,
-                    "drained"
-                );
+                assert!(receive_packets(serv, reactor, fd, at, size), "drained");
                 heard.extend(calls());
                 if heard.len() >= count {
                     break;
@@ -314,7 +307,7 @@ mod tests {
         );
 
         let no_port = receive_packets(serv, reactor, -1, at, size);
-        assert_eq!(no_port, SW_ERR, "no port");
+        assert!(!no_port, "no port");
         assert_eq!(calls(), []);
     }
 
