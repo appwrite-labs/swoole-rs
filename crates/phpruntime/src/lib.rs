@@ -225,7 +225,7 @@ mod registration {
 /// `SWOOLE_HOOK_*` constants, native curl, `proc_open`'s resource and the
 /// `async.file` wrapper.
 pub fn php_swoole_runtime_minit(minit: &Minit) {
-    minit.register_static(&RUNTIME, c"Swoole\\Runtime", METHODS.rows());
+    minit.register_static(&RUNTIME, c"Swoole\\Runtime", METHODS.table());
     let features = features();
     let all = flags::all(features & flags::NATIVE_CURL != 0);
     for (name, value) in CONSTANTS.into_iter().chain([(c"SWOOLE_HOOK_ALL", all)]) {

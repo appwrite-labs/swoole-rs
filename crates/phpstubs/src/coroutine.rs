@@ -6,28 +6,28 @@
 use swoole_rs_zend::arginfo as a;
 use swoole_rs_zend::sys as z;
 
-pub static arginfo_class_Swoole_Coroutine_create: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_create: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_mask(1, 0, z::MAY_BE_LONG | z::MAY_BE_FALSE),
     a::arg_type(c"func", 0, false, z::IS_CALLABLE, false, None),
     a::arg_type(c"param", 0, true, z::IS_MIXED, false, None),
 ]);
-pub static arginfo_class_Swoole_Coroutine_defer: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_defer: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::IS_VOID, false),
     a::arg_type(c"callback", 0, false, z::IS_CALLABLE, false, None),
 ]);
-pub static arginfo_class_Swoole_Coroutine_set: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_set: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::IS_VOID, false),
     a::arg_type(c"options", 0, false, z::IS_ARRAY, false, None),
 ]);
 pub static arginfo_class_Swoole_Coroutine_getOptions: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::IS_ARRAY, true)]);
-pub static arginfo_class_Swoole_Coroutine_exists: a::ArgInfo<2> = a::ArgInfo([
+    a::ArgInfo::new([a::begin_type(0, 0, z::IS_ARRAY, true)]);
+pub static arginfo_class_Swoole_Coroutine_exists: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"cid", 0, false, z::IS_LONG, false, None),
 ]);
 pub static arginfo_class_Swoole_Coroutine_yield: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::_IS_BOOL, false)]);
-pub static arginfo_class_Swoole_Coroutine_cancel: a::ArgInfo<3> = a::ArgInfo([
+    a::ArgInfo::new([a::begin_type(0, 0, z::_IS_BOOL, false)]);
+pub static arginfo_class_Swoole_Coroutine_cancel: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"cid", 0, false, z::IS_LONG, false, None),
     a::arg_type(
@@ -39,7 +39,7 @@ pub static arginfo_class_Swoole_Coroutine_cancel: a::ArgInfo<3> = a::ArgInfo([
         Some(c"false"),
     ),
 ]);
-pub static arginfo_class_Swoole_Coroutine_join: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_join: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"cid_array", 0, false, z::IS_ARRAY, false, None),
     a::arg_type(c"timeout", 0, false, z::IS_DOUBLE, false, Some(c"-1")),
@@ -48,19 +48,19 @@ pub use self::arginfo_class_Swoole_Coroutine_exists as arginfo_class_Swoole_Coro
 pub use self::arginfo_class_Swoole_Coroutine_yield as arginfo_class_Swoole_Coroutine_isCanceled;
 pub use self::arginfo_class_Swoole_Coroutine_yield as arginfo_class_Swoole_Coroutine_suspend;
 pub static arginfo_class_Swoole_Coroutine_stats: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::IS_ARRAY, false)]);
+    a::ArgInfo::new([a::begin_type(0, 0, z::IS_ARRAY, false)]);
 pub static arginfo_class_Swoole_Coroutine_getCid: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::IS_LONG, false)]);
+    a::ArgInfo::new([a::begin_type(0, 0, z::IS_LONG, false)]);
 pub use self::arginfo_class_Swoole_Coroutine_getCid as arginfo_class_Swoole_Coroutine_getuid;
-pub static arginfo_class_Swoole_Coroutine_getPcid: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_getPcid: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_mask(0, 0, z::MAY_BE_FALSE | z::MAY_BE_LONG),
     a::arg_type(c"cid", 0, false, z::IS_LONG, false, Some(c"0")),
 ]);
-pub static arginfo_class_Swoole_Coroutine_getContext: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_getContext: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_class(0, 0, c"Swoole\\Coroutine\\Context", true),
     a::arg_type(c"cid", 0, false, z::IS_LONG, false, Some(c"0")),
 ]);
-pub static arginfo_class_Swoole_Coroutine_getBackTrace: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_getBackTrace: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_mask(0, 0, z::MAY_BE_ARRAY | z::MAY_BE_FALSE),
     a::arg_type(c"cid", 0, false, z::IS_LONG, false, Some(c"0")),
     a::arg_type(
@@ -73,27 +73,27 @@ pub static arginfo_class_Swoole_Coroutine_getBackTrace: a::ArgInfo<4> = a::ArgIn
     ),
     a::arg_type(c"limit", 0, false, z::IS_LONG, false, Some(c"0")),
 ]);
-pub static arginfo_class_Swoole_Coroutine_printBackTrace: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_printBackTrace: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_type(0, 0, z::IS_VOID, false),
     a::arg_type(c"cid", 0, false, z::IS_LONG, false, Some(c"0")),
     a::arg_type(c"options", 0, false, z::IS_LONG, false, Some(c"0")),
     a::arg_type(c"limit", 0, false, z::IS_LONG, false, Some(c"0")),
 ]);
-pub static arginfo_class_Swoole_Coroutine_getElapsed: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_getElapsed: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(0, 0, z::IS_LONG, false),
     a::arg_type(c"cid", 0, false, z::IS_LONG, false, Some(c"0")),
 ]);
 pub use self::arginfo_class_Swoole_Coroutine_getPcid as arginfo_class_Swoole_Coroutine_getStackUsage;
 pub static arginfo_class_Swoole_Coroutine_list: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_class(0, 0, c"Swoole\\Coroutine\\Iterator", false)]);
+    a::ArgInfo::new([a::begin_class(0, 0, c"Swoole\\Coroutine\\Iterator", false)]);
 pub use self::arginfo_class_Swoole_Coroutine_getCid as arginfo_class_Swoole_Coroutine_getExecuteTime;
 pub use self::arginfo_class_Swoole_Coroutine_list as arginfo_class_Swoole_Coroutine_listCoroutines;
 pub use self::arginfo_class_Swoole_Coroutine_yield as arginfo_class_Swoole_Coroutine_enableScheduler;
 pub use self::arginfo_class_Swoole_Coroutine_yield as arginfo_class_Swoole_Coroutine_disableScheduler;
-pub static arginfo_class_Swoole_Coroutine_setTimeLimit: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_setTimeLimit: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"timeout", 0, false, z::IS_DOUBLE, false, None),
 ]);
 pub use self::arginfo_class_Swoole_Coroutine_getCid as arginfo_class_Swoole_ExitException_getFlags;
 pub static arginfo_class_Swoole_ExitException_getStatus: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::IS_MIXED, false)]);
+    a::ArgInfo::new([a::begin_type(0, 0, z::IS_MIXED, false)]);

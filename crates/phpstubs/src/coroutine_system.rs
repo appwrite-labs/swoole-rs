@@ -6,19 +6,19 @@
 use swoole_rs_zend::arginfo as a;
 use swoole_rs_zend::sys as z;
 
-pub static arginfo_class_Swoole_Coroutine_System_gethostbyname: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_System_gethostbyname: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_mask(1, 0, z::MAY_BE_FALSE | z::MAY_BE_STRING),
     a::arg_type(c"domain_name", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"type", 0, false, z::IS_LONG, false, Some(c"AF_INET")),
     a::arg_type(c"timeout", 0, false, z::IS_DOUBLE, false, Some(c"-1")),
 ]);
-pub static arginfo_class_Swoole_Coroutine_System_dnsLookup: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_System_dnsLookup: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_mask(1, 0, z::MAY_BE_STRING | z::MAY_BE_FALSE),
     a::arg_type(c"domain_name", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"timeout", 0, false, z::IS_DOUBLE, false, Some(c"60")),
     a::arg_type(c"type", 0, false, z::IS_LONG, false, Some(c"AF_INET")),
 ]);
-pub static arginfo_class_Swoole_Coroutine_System_exec: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_System_exec: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_mask(1, 0, z::MAY_BE_ARRAY | z::MAY_BE_FALSE),
     a::arg_type(c"command", 0, false, z::IS_STRING, false, None),
     a::arg_type(
@@ -30,11 +30,11 @@ pub static arginfo_class_Swoole_Coroutine_System_exec: a::ArgInfo<3> = a::ArgInf
         Some(c"false"),
     ),
 ]);
-pub static arginfo_class_Swoole_Coroutine_System_sleep: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_System_sleep: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"seconds", 0, false, z::IS_DOUBLE, false, None),
 ]);
-pub static arginfo_class_Swoole_Coroutine_System_getaddrinfo: a::ArgInfo<7> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_System_getaddrinfo: a::ArgInfo<7> = a::ArgInfo::new([
     a::begin_mask(1, 0, z::MAY_BE_ARRAY | z::MAY_BE_BOOL),
     a::arg_type(c"domain", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"family", 0, false, z::IS_LONG, false, Some(c"AF_INET")),
@@ -57,36 +57,36 @@ pub static arginfo_class_Swoole_Coroutine_System_getaddrinfo: a::ArgInfo<7> = a:
     a::arg_type(c"service", 0, false, z::IS_STRING, true, Some(c"null")),
     a::arg_type(c"timeout", 0, false, z::IS_DOUBLE, false, Some(c"-1")),
 ]);
-pub static arginfo_class_Swoole_Coroutine_System_statvfs: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_System_statvfs: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::IS_ARRAY, false),
     a::arg_type(c"path", 0, false, z::IS_STRING, false, None),
 ]);
-pub static arginfo_class_Swoole_Coroutine_System_readFile: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_System_readFile: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_mask(1, 0, z::MAY_BE_FALSE | z::MAY_BE_STRING),
     a::arg_type(c"filename", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"flag", 0, false, z::IS_LONG, false, Some(c"0")),
 ]);
-pub static arginfo_class_Swoole_Coroutine_System_writeFile: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_System_writeFile: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_mask(2, 0, z::MAY_BE_FALSE | z::MAY_BE_LONG),
     a::arg_type(c"filename", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"fileContent", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"flags", 0, false, z::IS_LONG, false, Some(c"0")),
 ]);
-pub static arginfo_class_Swoole_Coroutine_System_wait: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_System_wait: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_mask(0, 0, z::MAY_BE_ARRAY | z::MAY_BE_FALSE),
     a::arg_type(c"timeout", 0, false, z::IS_DOUBLE, false, Some(c"-1")),
 ]);
-pub static arginfo_class_Swoole_Coroutine_System_waitPid: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_System_waitPid: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_mask(1, 0, z::MAY_BE_ARRAY | z::MAY_BE_FALSE),
     a::arg_type(c"pid", 0, false, z::IS_LONG, false, None),
     a::arg_type(c"timeout", 0, false, z::IS_DOUBLE, false, Some(c"-1")),
 ]);
-pub static arginfo_class_Swoole_Coroutine_System_waitSignal: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_System_waitSignal: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_mask(1, 0, z::MAY_BE_LONG | z::MAY_BE_FALSE),
     a::arg_mask(c"signals", 0, false, z::MAY_BE_LONG | z::MAY_BE_ARRAY, None),
     a::arg_type(c"timeout", 0, false, z::IS_DOUBLE, false, Some(c"-1")),
 ]);
-pub static arginfo_class_Swoole_Coroutine_System_waitEvent: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_System_waitEvent: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_mask(1, 0, z::MAY_BE_LONG | z::MAY_BE_FALSE),
     a::arg_type(c"socket", 0, false, z::IS_MIXED, false, None),
     a::arg_type(

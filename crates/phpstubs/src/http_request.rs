@@ -7,18 +7,18 @@ use swoole_rs_zend::arginfo as a;
 use swoole_rs_zend::sys as z;
 
 pub static arginfo_class_Swoole_Http_Request___destruct: a::ArgInfo<1> =
-    a::ArgInfo([a::begin(0, 0)]);
+    a::ArgInfo::new([a::begin(0, 0)]);
 pub static arginfo_class_Swoole_Http_Request_getData: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_mask(0, 0, z::MAY_BE_STRING | z::MAY_BE_FALSE)]);
-pub static arginfo_class_Swoole_Http_Request_create: a::ArgInfo<2> = a::ArgInfo([
+    a::ArgInfo::new([a::begin_mask(0, 0, z::MAY_BE_STRING | z::MAY_BE_FALSE)]);
+pub static arginfo_class_Swoole_Http_Request_create: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_class(0, 0, c"Swoole\\Http\\Request", false),
     a::arg_type(c"options", 0, false, z::IS_ARRAY, false, Some(c"[]")),
 ]);
-pub static arginfo_class_Swoole_Http_Request_parse: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Http_Request_parse: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_mask(1, 0, z::MAY_BE_LONG | z::MAY_BE_FALSE),
     a::arg_type(c"data", 0, false, z::IS_STRING, false, None),
 ]);
 pub static arginfo_class_Swoole_Http_Request_isCompleted: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::_IS_BOOL, false)]);
+    a::ArgInfo::new([a::begin_type(0, 0, z::_IS_BOOL, false)]);
 pub use self::arginfo_class_Swoole_Http_Request_getData as arginfo_class_Swoole_Http_Request_getMethod;
 pub use self::arginfo_class_Swoole_Http_Request_getData as arginfo_class_Swoole_Http_Request_getContent;

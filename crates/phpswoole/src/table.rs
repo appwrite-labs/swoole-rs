@@ -5,6 +5,7 @@ use crate::{
 };
 use swoole_rs_phpstubs::{ex, stdext, swoole as s, tracer};
 use swoole_rs_zend::{
+    arginfo::Table,
     method_table,
     sys::{self as z, zend_function_entry},
 };
@@ -221,16 +222,15 @@ method_table! {
 /// The complete table, in upstream's order: the optional families the build
 /// has sit between the head and the tracer's functions.
 pub(crate) fn functions() -> *const zend_function_entry {
-    let rows = |table: &'static [zend_function_entry]| {
-        table.split_last().map_or(&[][..], |(_, rows)| rows)
-    };
-    let mut table = rows(HEAD.rows()).to_vec();
-    #[cfg(feature = "stdext")]
-    table.extend_from_slice(rows(STDEXT_FUNCTIONS.rows()));
-    #[cfg(feature = "ssh2")]
-    table.extend_from_slice(rows(SSH2_FUNCTIONS.rows()));
-    table.extend_from_slice(TAIL.rows());
-    Box::leak(table.into_boxed_slice()).as_ptr()
+    Table::join(&[
+        HEAD.table(),
+        #[cfg(feature = "stdext")]
+        STDEXT_FUNCTIONS.table(),
+        #[cfg(feature = "ssh2")]
+        SSH2_FUNCTIONS.table(),
+        TAIL.table(),
+    ])
+    .as_ptr()
 }
 
 /// MINIT's `go`, `defer` and (with stdext) `typed_array`, when short names are on.

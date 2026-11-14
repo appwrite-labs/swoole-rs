@@ -6,7 +6,7 @@
 use swoole_rs_zend::arginfo as a;
 use swoole_rs_zend::sys as z;
 
-pub static arginfo_swoole_event_add: a::ArgInfo<5> = a::ArgInfo([
+pub static arginfo_swoole_event_add: a::ArgInfo<5> = a::ArgInfo::new([
     a::begin_mask(1, 0, z::MAY_BE_FALSE | z::MAY_BE_LONG),
     a::arg_type(c"fd", 0, false, z::IS_MIXED, false, None),
     a::arg_type(
@@ -34,7 +34,7 @@ pub static arginfo_swoole_event_add: a::ArgInfo<5> = a::ArgInfo([
         Some(c"SWOOLE_EVENT_READ"),
     ),
 ]);
-pub static arginfo_swoole_event_set: a::ArgInfo<5> = a::ArgInfo([
+pub static arginfo_swoole_event_set: a::ArgInfo<5> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"fd", 0, false, z::IS_MIXED, false, None),
     a::arg_type(
@@ -55,31 +55,31 @@ pub static arginfo_swoole_event_set: a::ArgInfo<5> = a::ArgInfo([
     ),
     a::arg_type(c"events", 0, false, z::IS_LONG, false, Some(c"0")),
 ]);
-pub static arginfo_swoole_event_del: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_swoole_event_del: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"fd", 0, false, z::IS_MIXED, false, None),
 ]);
-pub static arginfo_swoole_event_write: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_swoole_event_write: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(2, 0, z::_IS_BOOL, false),
     a::arg_type(c"fd", 0, false, z::IS_MIXED, false, None),
     a::arg_type(c"data", 0, false, z::IS_STRING, false, None),
 ]);
 pub static arginfo_swoole_event_wait: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::IS_VOID, false)]);
+    a::ArgInfo::new([a::begin_type(0, 0, z::IS_VOID, false)]);
 pub use self::arginfo_swoole_event_wait as arginfo_swoole_event_rshutdown;
 pub use self::arginfo_swoole_event_wait as arginfo_swoole_event_exit;
-pub static arginfo_swoole_event_defer: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_swoole_event_defer: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"callback", 0, false, z::IS_CALLABLE, false, None),
 ]);
-pub static arginfo_swoole_event_cycle: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_swoole_event_cycle: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"callback", 0, false, z::IS_CALLABLE, true, None),
     a::arg_type(c"before", 0, false, z::_IS_BOOL, false, Some(c"false")),
 ]);
 pub static arginfo_swoole_event_dispatch: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::_IS_BOOL, false)]);
-pub static arginfo_swoole_event_isset: a::ArgInfo<3> = a::ArgInfo([
+    a::ArgInfo::new([a::begin_type(0, 0, z::_IS_BOOL, false)]);
+pub static arginfo_swoole_event_isset: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"fd", 0, false, z::IS_MIXED, false, None),
     a::arg_type(

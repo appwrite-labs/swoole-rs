@@ -7,17 +7,17 @@ use swoole_rs_zend::arginfo as a;
 use swoole_rs_zend::sys as z;
 
 pub static arginfo_class_Swoole_Thread_Queue___construct: a::ArgInfo<1> =
-    a::ArgInfo([a::begin(0, 0)]);
-pub static arginfo_class_Swoole_Thread_Queue_push: a::ArgInfo<3> = a::ArgInfo([
+    a::ArgInfo::new([a::begin(0, 0)]);
+pub static arginfo_class_Swoole_Thread_Queue_push: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(1, 0, z::IS_VOID, false),
     a::arg_type(c"value", 0, false, z::IS_MIXED, false, None),
     a::arg_type(c"notify_which", 0, false, z::IS_LONG, false, Some(c"0")),
 ]);
-pub static arginfo_class_Swoole_Thread_Queue_pop: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Thread_Queue_pop: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(0, 0, z::IS_MIXED, false),
     a::arg_type(c"wait", 0, false, z::IS_DOUBLE, false, Some(c"0")),
 ]);
 pub static arginfo_class_Swoole_Thread_Queue_count: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::IS_LONG, false)]);
+    a::ArgInfo::new([a::begin_type(0, 0, z::IS_LONG, false)]);
 pub static arginfo_class_Swoole_Thread_Queue_clean: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::IS_VOID, false)]);
+    a::ArgInfo::new([a::begin_type(0, 0, z::IS_VOID, false)]);

@@ -6,7 +6,7 @@
 use swoole_rs_zend::arginfo as a;
 use swoole_rs_zend::sys as z;
 
-pub static arginfo_class_Swoole_WebSocket_Server_push: a::ArgInfo<5> = a::ArgInfo([
+pub static arginfo_class_Swoole_WebSocket_Server_push: a::ArgInfo<5> = a::ArgInfo::new([
     a::begin_type(2, 0, z::_IS_BOOL, false),
     a::arg_type(c"fd", 0, false, z::IS_LONG, false, None),
     a::arg_class_mask(
@@ -34,11 +34,11 @@ pub static arginfo_class_Swoole_WebSocket_Server_push: a::ArgInfo<5> = a::ArgInf
         Some(c"SWOOLE_WEBSOCKET_FLAG_FIN"),
     ),
 ]);
-pub static arginfo_class_Swoole_WebSocket_Server_isEstablished: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_WebSocket_Server_isEstablished: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"fd", 0, false, z::IS_LONG, false, None),
 ]);
-pub static arginfo_class_Swoole_WebSocket_Server_pack: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_class_Swoole_WebSocket_Server_pack: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_type(1, 0, z::IS_STRING, false),
     a::arg_class_mask(
         c"data",
@@ -65,11 +65,11 @@ pub static arginfo_class_Swoole_WebSocket_Server_pack: a::ArgInfo<4> = a::ArgInf
         Some(c"SWOOLE_WEBSOCKET_FLAG_FIN"),
     ),
 ]);
-pub static arginfo_class_Swoole_WebSocket_Server_unpack: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_WebSocket_Server_unpack: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_class(1, 0, c"Swoole\\WebSocket\\Frame", false),
     a::arg_type(c"data", 0, false, z::IS_STRING, false, None),
 ]);
-pub static arginfo_class_Swoole_WebSocket_Server_disconnect: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_class_Swoole_WebSocket_Server_disconnect: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"fd", 0, false, z::IS_LONG, false, None),
     a::arg_type(
@@ -82,12 +82,12 @@ pub static arginfo_class_Swoole_WebSocket_Server_disconnect: a::ArgInfo<4> = a::
     ),
     a::arg_type(c"reason", 0, false, z::IS_STRING, false, Some(c"\"\"")),
 ]);
-pub static arginfo_class_Swoole_WebSocket_Server_ping: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_WebSocket_Server_ping: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"fd", 0, false, z::IS_LONG, false, None),
     a::arg_type(c"data", 0, false, z::IS_STRING, false, Some(c"\"\"")),
 ]);
 pub static arginfo_class_Swoole_WebSocket_Frame___toString: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::IS_STRING, false)]);
+    a::ArgInfo::new([a::begin_type(0, 0, z::IS_STRING, false)]);
 pub use self::arginfo_class_Swoole_WebSocket_Server_pack as arginfo_class_Swoole_WebSocket_Frame_pack;
 pub use self::arginfo_class_Swoole_WebSocket_Server_unpack as arginfo_class_Swoole_WebSocket_Frame_unpack;

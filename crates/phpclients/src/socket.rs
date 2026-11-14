@@ -212,7 +212,7 @@ pub fn socket() -> &'static Class {
 /// A registration bailed out.
 pub fn socket_minit(minit: &Minit) -> Result<(), Bailout> {
     let shortname = swoole_rs_phpswoole::globals().use_shortname.get();
-    minit.register_object::<Data>(c"Swoole\\Coroutine\\Socket", METHODS.rows(), 0);
+    minit.register_object::<Data>(c"Swoole\\Coroutine\\Socket", METHODS.table(), 0);
     if shortname {
         minit.alias(&SOCKET, c"Co\\Socket")?;
     }
@@ -230,7 +230,7 @@ pub fn socket_minit(minit: &Minit) -> Result<(), Bailout> {
     minit.register_child(
         &EXCEPTION,
         c"Swoole\\Coroutine\\Socket\\Exception",
-        &[],
+        swoole_rs_zend::arginfo::Table::NONE,
         minit.parent(swoole_rs_phpswoole::exception()),
         |_, _| {},
     );

@@ -6,59 +6,59 @@
 use swoole_rs_zend::arginfo as a;
 use swoole_rs_zend::sys as z;
 
-pub static arginfo_class_Swoole_Coroutine_Client___construct: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_Client___construct: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin(1, 0),
     a::arg_type(c"type", 0, false, z::IS_LONG, false, None),
 ]);
 pub static arginfo_class_Swoole_Coroutine_Client___destruct: a::ArgInfo<1> =
-    a::ArgInfo([a::begin(0, 0)]);
-pub static arginfo_class_Swoole_Coroutine_Client_set: a::ArgInfo<2> = a::ArgInfo([
+    a::ArgInfo::new([a::begin(0, 0)]);
+pub static arginfo_class_Swoole_Coroutine_Client_set: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"settings", 0, false, z::IS_ARRAY, false, None),
 ]);
-pub static arginfo_class_Swoole_Coroutine_Client_connect: a::ArgInfo<5> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_Client_connect: a::ArgInfo<5> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"host", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"port", 0, false, z::IS_LONG, false, Some(c"0")),
     a::arg_type(c"timeout", 0, false, z::IS_DOUBLE, false, Some(c"0")),
     a::arg_type(c"sock_flag", 0, false, z::IS_LONG, false, Some(c"0")),
 ]);
-pub static arginfo_class_Swoole_Coroutine_Client_recv: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_Client_recv: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_mask(0, 0, z::MAY_BE_STRING | z::MAY_BE_FALSE),
     a::arg_type(c"timeout", 0, false, z::IS_DOUBLE, false, Some(c"0")),
 ]);
-pub static arginfo_class_Swoole_Coroutine_Client_peek: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_Client_peek: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_mask(0, 0, z::MAY_BE_STRING | z::MAY_BE_FALSE),
     a::arg_type(c"length", 0, false, z::IS_LONG, false, Some(c"65535")),
 ]);
-pub static arginfo_class_Swoole_Coroutine_Client_send: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_Client_send: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_mask(1, 0, z::MAY_BE_LONG | z::MAY_BE_FALSE),
     a::arg_type(c"data", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"timeout", 0, false, z::IS_DOUBLE, false, Some(c"0")),
 ]);
-pub static arginfo_class_Swoole_Coroutine_Client_sendfile: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_Client_sendfile: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_type(c"filename", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"offset", 0, false, z::IS_LONG, false, Some(c"0")),
     a::arg_type(c"length", 0, false, z::IS_LONG, false, Some(c"0")),
 ]);
-pub static arginfo_class_Swoole_Coroutine_Client_sendto: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_Client_sendto: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_type(3, 0, z::_IS_BOOL, false),
     a::arg_type(c"address", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"port", 0, false, z::IS_LONG, false, None),
     a::arg_type(c"data", 0, false, z::IS_STRING, false, None),
 ]);
-pub static arginfo_class_Swoole_Coroutine_Client_recvfrom: a::ArgInfo<4> = a::ArgInfo([
+pub static arginfo_class_Swoole_Coroutine_Client_recvfrom: a::ArgInfo<4> = a::ArgInfo::new([
     a::begin_mask(2, 0, z::MAY_BE_FALSE | z::MAY_BE_STRING),
     a::arg_type(c"length", 0, false, z::IS_LONG, false, None),
     a::arg_type(c"address", 1, false, z::IS_MIXED, false, None),
     a::arg_type(c"port", 1, false, z::IS_MIXED, false, Some(c"0")),
 ]);
 pub static arginfo_class_Swoole_Coroutine_Client_enableSSL: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::_IS_BOOL, false)]);
+    a::ArgInfo::new([a::begin_type(0, 0, z::_IS_BOOL, false)]);
 pub static arginfo_class_Swoole_Coroutine_Client_getPeerCert: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_mask(0, 0, z::MAY_BE_FALSE | z::MAY_BE_STRING)]);
-pub static arginfo_class_Swoole_Coroutine_Client_verifyPeerCert: a::ArgInfo<2> = a::ArgInfo([
+    a::ArgInfo::new([a::begin_mask(0, 0, z::MAY_BE_FALSE | z::MAY_BE_STRING)]);
+pub static arginfo_class_Swoole_Coroutine_Client_verifyPeerCert: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(0, 0, z::_IS_BOOL, false),
     a::arg_type(
         c"allow_self_signed",
@@ -70,7 +70,7 @@ pub static arginfo_class_Swoole_Coroutine_Client_verifyPeerCert: a::ArgInfo<2> =
     ),
 ]);
 pub static arginfo_class_Swoole_Coroutine_Client_exportSocket: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_class_mask(
+    a::ArgInfo::new([a::begin_class_mask(
         0,
         0,
         c"Swoole\\Coroutine\\Socket",
@@ -78,6 +78,6 @@ pub static arginfo_class_Swoole_Coroutine_Client_exportSocket: a::ArgInfo<1> =
     )]);
 pub use self::arginfo_class_Swoole_Coroutine_Client_enableSSL as arginfo_class_Swoole_Coroutine_Client_isConnected;
 pub static arginfo_class_Swoole_Coroutine_Client_getsockname: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_mask(0, 0, z::MAY_BE_ARRAY | z::MAY_BE_FALSE)]);
+    a::ArgInfo::new([a::begin_mask(0, 0, z::MAY_BE_ARRAY | z::MAY_BE_FALSE)]);
 pub use self::arginfo_class_Swoole_Coroutine_Client_enableSSL as arginfo_class_Swoole_Coroutine_Client_close;
 pub use self::arginfo_class_Swoole_Coroutine_Client_getsockname as arginfo_class_Swoole_Coroutine_Client_getpeername;

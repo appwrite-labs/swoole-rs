@@ -6,20 +6,50 @@
 //! family declares its table with [`method_table!`].
 use crate::sys::{
     _IS_BOOL, _ZEND_IS_VARIADIC_BIT, _ZEND_SEND_MODE_SHIFT, _ZEND_TYPE_ITERABLE_BIT,
-    _ZEND_TYPE_LITERAL_NAME_BIT, _ZEND_TYPE_NULLABLE_BIT, IS_ITERABLE, IS_MIXED, MAY_BE_ANY,
-    MAY_BE_BOOL, zend_execute_data, zend_function_entry, zend_internal_arg_info, zend_type, zval,
+    _ZEND_TYPE_KIND_MASK, _ZEND_TYPE_LITERAL_NAME_BIT, _ZEND_TYPE_NULLABLE_BIT, IS_ITERABLE,
+    IS_MIXED, MAY_BE_ANY, MAY_BE_BOOL, zend_execute_data, zend_function_entry,
+    zend_internal_arg_info, zend_type, zval,
 };
 use std::{
     ffi::{CStr, c_char, c_void},
     ptr,
 };
 
-/// A stub's `zend_internal_arg_info[N]`: the return slot, then each parameter.
+/// A stub's `zend_internal_arg_info[N]`: the return slot, then each parameter,
+/// built only from [`Slot`]s, so each pointer in it is null or a static C string
+/// its type bits agree with.
 #[repr(transparent)]
-pub struct ArgInfo<const N: usize>(pub [zend_internal_arg_info; N]);
+pub struct ArgInfo<const N: usize>([zend_internal_arg_info; N]);
 
 // SAFETY: immutable static data; its pointers are to static strings.
 unsafe impl<const N: usize> Sync for ArgInfo<N> {}
+
+impl<const N: usize> ArgInfo<N> {
+    /// The arginfo of `slots`: the return slot ([`begin`] and its forms), then
+    /// each parameter's ([`arg`] and its forms).
+    #[must_use]
+    pub const fn new(slots: [Slot; N]) -> Self {
+        let mut info = [begin(0, 0).0; N];
+        let (mut from, mut to): (&[Slot], &mut [zend_internal_arg_info]) = (&slots, &mut info);
+        while let (Some((slot, rest)), Some((target, targets))) =
+            (from.split_first(), to.split_first_mut())
+        {
+            *target = slot.0;
+            (from, to) = (rest, targets);
+        }
+        Self(info)
+    }
+
+    /// The arginfo, as `zend_function_entry.arg_info` takes it.
+    #[must_use]
+    pub const fn as_ptr(&'static self) -> *const zend_internal_arg_info {
+        self.0.as_ptr()
+    }
+}
+
+/// One `zend_internal_arg_info`, from [`begin`], [`arg`] or their forms.
+#[derive(Clone, Copy)]
+pub struct Slot(zend_internal_arg_info);
 
 /// A `PHP_FE_END`-terminated `zend_function_entry[N]`, built only from
 /// [`Entry`] rows, so each name before the end is a static C string.
@@ -51,28 +81,60 @@ impl<const N: usize> Methods<N> {
         Self(table)
     }
 
-    /// The rows, `PHP_FE_END` last.
+    /// The table, for registration.
     #[must_use]
-    pub const fn rows(&self) -> &[zend_function_entry] {
-        &self.0
-    }
-
-    /// The table, as `INIT_CLASS_ENTRY` and `zend_register_functions` take it.
-    #[must_use]
-    pub const fn as_ptr(&'static self) -> *const zend_function_entry {
-        self.0.as_ptr()
+    pub const fn table(&'static self) -> Table {
+        Table(&self.0)
     }
 
     /// The table without the rows named in `skip`, leaked for the process: for
     /// an upstream `#ifdef` only C++ can test, decided once at MINIT.
     #[must_use]
-    pub fn without(&'static self, skip: &[&CStr]) -> &'static [zend_function_entry] {
+    pub fn without(&'static self, skip: &[&CStr]) -> Table {
         let keep = |row: &&zend_function_entry| {
             // SAFETY: a row's name is a static C string; only `END`'s is null.
             row.fname.is_null() || !skip.contains(&unsafe { CStr::from_ptr(row.fname) })
         };
         let rows: Vec<zend_function_entry> = self.0.iter().filter(keep).copied().collect();
-        Box::leak(rows.into_boxed_slice())
+        Table(Box::leak(rows.into_boxed_slice()))
+    }
+}
+
+/// A method table as Zend registers it: a [`Methods`]' rows (or some of them,
+/// or several joined), `PHP_FE_END` last, or none.
+#[derive(Clone, Copy)]
+pub struct Table(&'static [zend_function_entry]);
+
+impl Table {
+    /// No methods.
+    pub const NONE: Self = Self(&[]);
+
+    /// Each table's rows in turn, then one `PHP_FE_END`, leaked for the process.
+    #[must_use]
+    pub fn join(tables: &[Self]) -> Self {
+        let mut rows: Vec<zend_function_entry> = tables
+            .iter()
+            .flat_map(|table| table.0.split_last().map_or(&[][..], |(_, rows)| rows))
+            .copied()
+            .collect();
+        rows.push(END.0);
+        Self(Box::leak(rows.into_boxed_slice()))
+    }
+
+    /// The table, as `INIT_CLASS_ENTRY` and `zend_register_functions` take it:
+    /// null for none.
+    #[must_use]
+    pub const fn as_ptr(self) -> *const zend_function_entry {
+        if self.0.is_empty() {
+            ptr::null()
+        } else {
+            self.0.as_ptr()
+        }
+    }
+
+    /// The rows, `PHP_FE_END` last, or none.
+    pub(crate) const fn rows(self) -> &'static [zend_function_entry] {
+        self.0
     }
 }
 
@@ -136,13 +198,20 @@ const fn code_mask(code: u32, nullable: bool) -> u32 {
     mask | if nullable { _ZEND_TYPE_NULLABLE_BIT } else { 0 }
 }
 
+/// A slot named `name`, of type `mask` (any pointer-kind bits dropped) and, with
+/// `class`, that literal class name too.
 const fn slot(
     name: *const c_char,
-    ptr: *const c_char,
+    class: Option<&'static CStr>,
     mask: u32,
     default: Option<&'static CStr>,
-) -> zend_internal_arg_info {
-    zend_internal_arg_info {
+) -> Slot {
+    let mask = mask & !_ZEND_TYPE_KIND_MASK;
+    let (ptr, mask) = match class {
+        Some(class) => (class.as_ptr(), mask | _ZEND_TYPE_LITERAL_NAME_BIT),
+        None => (ptr::null(), mask),
+    };
+    Slot(zend_internal_arg_info {
         name,
         type_: zend_type {
             ptr: ptr.cast::<c_void>().cast_mut(),
@@ -152,7 +221,7 @@ const fn slot(
             Some(value) => value.as_ptr(),
             None => ptr::null(),
         },
-    }
+    })
 }
 
 /// The return slot's name field holds the required argument count.
@@ -160,27 +229,18 @@ const fn required(count: usize) -> *const c_char {
     ptr::without_provenance(count)
 }
 
-const fn literal(class: &'static CStr) -> *const c_char {
-    class.as_ptr()
-}
-
 /// `ZEND_BEGIN_ARG_INFO_EX`.
 #[must_use]
-pub const fn begin(count: usize, by_ref: u32) -> zend_internal_arg_info {
-    slot(required(count), ptr::null(), flags(by_ref, false), None)
+pub const fn begin(count: usize, by_ref: u32) -> Slot {
+    slot(required(count), None, flags(by_ref, false), None)
 }
 
 /// `ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX`.
 #[must_use]
-pub const fn begin_type(
-    count: usize,
-    by_ref: u32,
-    code: u32,
-    nullable: bool,
-) -> zend_internal_arg_info {
+pub const fn begin_type(count: usize, by_ref: u32, code: u32, nullable: bool) -> Slot {
     slot(
         required(count),
-        ptr::null(),
+        None,
         code_mask(code, nullable) | flags(by_ref, false),
         None,
     )
@@ -188,44 +248,29 @@ pub const fn begin_type(
 
 /// `ZEND_BEGIN_ARG_WITH_RETURN_TYPE_MASK_EX`.
 #[must_use]
-pub const fn begin_mask(count: usize, by_ref: u32, mask: u32) -> zend_internal_arg_info {
-    slot(
-        required(count),
-        ptr::null(),
-        mask | flags(by_ref, false),
-        None,
-    )
+pub const fn begin_mask(count: usize, by_ref: u32, mask: u32) -> Slot {
+    slot(required(count), None, mask | flags(by_ref, false), None)
 }
 
 /// `ZEND_BEGIN_ARG_WITH_RETURN_OBJ_INFO_EX`.
 #[must_use]
-pub const fn begin_class(
-    count: usize,
-    by_ref: u32,
-    class: &'static CStr,
-    nullable: bool,
-) -> zend_internal_arg_info {
+pub const fn begin_class(count: usize, by_ref: u32, class: &'static CStr, nullable: bool) -> Slot {
     let null = if nullable { _ZEND_TYPE_NULLABLE_BIT } else { 0 };
     slot(
         required(count),
-        literal(class),
-        _ZEND_TYPE_LITERAL_NAME_BIT | null | flags(by_ref, false),
+        Some(class),
+        null | flags(by_ref, false),
         None,
     )
 }
 
 /// `ZEND_BEGIN_ARG_WITH_RETURN_OBJ_TYPE_MASK_EX`.
 #[must_use]
-pub const fn begin_class_mask(
-    count: usize,
-    by_ref: u32,
-    class: &'static CStr,
-    mask: u32,
-) -> zend_internal_arg_info {
+pub const fn begin_class_mask(count: usize, by_ref: u32, class: &'static CStr, mask: u32) -> Slot {
     slot(
         required(count),
-        literal(class),
-        _ZEND_TYPE_LITERAL_NAME_BIT | mask | flags(by_ref, false),
+        Some(class),
+        mask | flags(by_ref, false),
         None,
     )
 }
@@ -237,8 +282,8 @@ pub const fn arg(
     send: u32,
     variadic: bool,
     default: Option<&'static CStr>,
-) -> zend_internal_arg_info {
-    slot(name.as_ptr(), ptr::null(), flags(send, variadic), default)
+) -> Slot {
+    slot(name.as_ptr(), None, flags(send, variadic), default)
 }
 
 /// `ZEND_ARG_TYPE_INFO` and its variadic and default-value forms.
@@ -250,10 +295,10 @@ pub const fn arg_type(
     code: u32,
     nullable: bool,
     default: Option<&'static CStr>,
-) -> zend_internal_arg_info {
+) -> Slot {
     slot(
         name.as_ptr(),
-        ptr::null(),
+        None,
         code_mask(code, nullable) | flags(send, variadic),
         default,
     )
@@ -267,13 +312,8 @@ pub const fn arg_mask(
     variadic: bool,
     mask: u32,
     default: Option<&'static CStr>,
-) -> zend_internal_arg_info {
-    slot(
-        name.as_ptr(),
-        ptr::null(),
-        mask | flags(send, variadic),
-        default,
-    )
+) -> Slot {
+    slot(name.as_ptr(), None, mask | flags(send, variadic), default)
 }
 
 /// `ZEND_ARG_OBJ_INFO` and its variadic and default-value forms.
@@ -285,12 +325,12 @@ pub const fn arg_class(
     class: &'static CStr,
     nullable: bool,
     default: Option<&'static CStr>,
-) -> zend_internal_arg_info {
+) -> Slot {
     let null = if nullable { _ZEND_TYPE_NULLABLE_BIT } else { 0 };
     slot(
         name.as_ptr(),
-        literal(class),
-        _ZEND_TYPE_LITERAL_NAME_BIT | null | flags(send, variadic),
+        Some(class),
+        null | flags(send, variadic),
         default,
     )
 }
@@ -304,11 +344,11 @@ pub const fn arg_class_mask(
     class: &'static CStr,
     mask: u32,
     default: Option<&'static CStr>,
-) -> zend_internal_arg_info {
+) -> Slot {
     slot(
         name.as_ptr(),
-        literal(class),
-        _ZEND_TYPE_LITERAL_NAME_BIT | mask | flags(send, variadic),
+        Some(class),
+        mask | flags(send, variadic),
         default,
     )
 }
@@ -349,9 +389,9 @@ mod tests {
     #[test]
     fn return_slot_holds_the_required_count() {
         let slot = begin_type(2, 0, IS_VOID, false);
-        assert_eq!(slot.name as usize, 2, "required count");
-        assert_eq!(slot.type_.type_mask, 1 << IS_VOID, "ZEND_TYPE_INIT_CODE");
-        assert!(slot.default_value.is_null(), "no default");
+        assert_eq!(slot.0.name as usize, 2, "required count");
+        assert_eq!(slot.0.type_.type_mask, 1 << IS_VOID, "ZEND_TYPE_INIT_CODE");
+        assert!(slot.0.default_value.is_null(), "no default");
     }
 
     #[test]
@@ -370,12 +410,12 @@ mod tests {
     fn classes_are_literal_names() {
         let slot = arg_class_mask(c"ctx", 1, false, c"Foo\\Bar", MAY_BE_FALSE, Some(c"null"));
         assert_eq!(
-            slot.type_.type_mask,
+            slot.0.type_.type_mask,
             _ZEND_TYPE_LITERAL_NAME_BIT | MAY_BE_FALSE | (1 << _ZEND_SEND_MODE_SHIFT),
             "by reference, class or false"
         );
         // SAFETY: the static literal passed above.
-        let class = unsafe { CStr::from_ptr(slot.type_.ptr.cast()) };
+        let class = unsafe { CStr::from_ptr(slot.0.type_.ptr.cast()) };
         assert_eq!(class, c"Foo\\Bar", "class name");
     }
 
@@ -383,7 +423,7 @@ mod tests {
     fn variadic_sets_its_bit() {
         let slot = arg(c"args", 0, true, None);
         assert_eq!(
-            slot.type_.type_mask, _ZEND_IS_VARIADIC_BIT,
+            slot.0.type_.type_mask, _ZEND_IS_VARIADIC_BIT,
             "variadic, untyped"
         );
     }

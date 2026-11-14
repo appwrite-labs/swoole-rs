@@ -2,7 +2,7 @@
 //! constants, classes and their function aliases.
 use crate::{
     Array, Class, ClassEntry, Function, Owned, Value,
-    arginfo::{ArgInfo, Methods},
+    arginfo::{ArgInfo, Table},
     bailout::Bailout,
     class::Layout,
     function::{arg_info, deny},
@@ -179,16 +179,9 @@ impl Minit {
 
     /// [`Class::register_static`] of `name` with `methods`.
     /// # Panics
-    /// `class` is a [`CustomClass`](crate::CustomClass)'s, or `methods` is not
-    /// `PHP_FE_END`-terminated.
-    pub fn register_static(
-        &self,
-        class: &Class,
-        name: &CStr,
-        methods: &'static [zend_function_entry],
-    ) {
+    /// `class` is a [`CustomClass`](crate::CustomClass)'s.
+    pub fn register_static(&self, class: &Class, name: &CStr, methods: Table) {
         plain(class);
-        terminated(methods);
         self.register_plain(class, name, methods, None, deny);
     }
 
@@ -205,10 +198,10 @@ impl Minit {
     /// Stops at a contained allocation or registration bailout.
     /// # Panics
     /// `class` is not registered.
-    pub fn function_aliases<const N: usize>(
+    pub fn function_aliases(
         &self,
         class: &Class,
-        methods: &'static Methods<N>,
+        methods: Table,
         aliases: &[(&CStr, &CStr)],
     ) -> Result<(), Bailout> {
         let entry = registered(class);
@@ -249,7 +242,7 @@ impl Minit {
         // unchanged throughout the registration.
         let function = (!found.is_null()).then_some(Function(found, PhantomData));
         let info = Info {
-            start: info.0.as_ptr(),
+            start: info.as_ptr(),
             rows: N,
         };
         self.alias_from(function, alias, info)
@@ -296,17 +289,16 @@ impl Minit {
         Ok(result == SUCCESS)
     }
 
-    /// Register `name` with `methods` (none when empty), then let `configure`
+    /// Register `name` with `methods` (or [`Table::NONE`]), then let `configure`
     /// adjust the entry and a copy of the standard handlers (Swoole's
     /// `SW_INIT_CLASS_ENTRY` followed by its `SW_SET_CLASS_*` macros).
     /// # Panics
-    /// `class` is a [`CustomClass`](crate::CustomClass)'s, or `methods` is
-    /// neither empty nor `PHP_FE_END`-terminated.
+    /// `class` is a [`CustomClass`](crate::CustomClass)'s.
     pub fn register(
         &self,
         class: &Class,
         name: &CStr,
-        methods: &'static [zend_function_entry],
+        methods: Table,
         configure: impl FnOnce(&mut zend_class_entry, &mut zend_object_handlers),
     ) {
         self.register_plain(class, name, methods, None, configure);
@@ -319,7 +311,7 @@ impl Minit {
         &self,
         class: &Class,
         name: &CStr,
-        methods: &'static [zend_function_entry],
+        methods: Table,
         parent: Parent,
         configure: impl FnOnce(&mut zend_class_entry, &mut zend_object_handlers),
     ) {
@@ -327,12 +319,12 @@ impl Minit {
     }
 
     /// [`Class::register_child`] of a class that is no
-    /// [`CustomClass`](crate::CustomClass)'s, with `methods` (none when empty).
+    /// [`CustomClass`](crate::CustomClass)'s, with `methods`.
     fn register_plain(
         &self,
         class: &Class,
         name: &CStr,
-        methods: &'static [zend_function_entry],
+        methods: Table,
         parent: Option<Parent>,
         configure: impl FnOnce(&mut zend_class_entry, &mut zend_object_handlers),
     ) {
@@ -355,15 +347,9 @@ impl Minit {
     /// and, as Swoole's custom objects are, not cloneable, with `unset` denied, its objects embedding a `T`
     /// ([`Custom`](crate::Custom)).
     /// # Panics
-    /// The class is already registered, or `methods` is not `PHP_FE_END`-terminated.
-    pub fn register_object<T: crate::Custom>(
-        &self,
-        name: &CStr,
-        methods: &'static [zend_function_entry],
-        flags: u32,
-    ) {
+    /// The class is already registered.
+    pub fn register_object<T: crate::Custom>(&self, name: &CStr, methods: Table, flags: u32) {
         let class = T::class();
-        terminated(methods);
         assert!(class.entry().is_null(), "a class registers once");
         let configure = |entry: &mut zend_class_entry, _: &mut _| {
             entry.ce_flags |= flags;
@@ -594,15 +580,6 @@ fn registered(class: &Class) -> *mut zend_class_entry {
 /// process.
 fn declared(class: &Class) -> ClassEntry<'static> {
     ClassEntry(registered(class), PhantomData)
-}
-
-/// `methods` as a table pointer, checking its `PHP_FE_END`.
-fn terminated(methods: &'static [zend_function_entry]) -> *const zend_function_entry {
-    assert!(
-        methods.last().is_some_and(|end| end.fname.is_null()),
-        "a method table ends with PHP_FE_END"
-    );
-    methods.as_ptr()
 }
 
 #[cfg(test)]

@@ -48,9 +48,15 @@ pub fn server_class() -> &'static Class {
 pub fn server_minit(args: &MinitArgs) {
     let minit = args.minit;
     let parent = minit.parent(swoole_rs_phpserver::server_class_ref());
-    minit.register_child(&SERVER, c"Swoole\\Http\\Server", &[], parent, |entry, _| {
-        entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
-    });
+    minit.register_child(
+        &SERVER,
+        c"Swoole\\Http\\Server",
+        swoole_rs_zend::arginfo::Table::NONE,
+        parent,
+        |entry, _| {
+            entry.ce_flags |= ZEND_ACC_NOT_SERIALIZABLE;
+        },
+    );
 }
 
 /// `SW_HTTP_SERVICE_UNAVAILABLE_PACKET`.

@@ -90,7 +90,7 @@ method_table! {
 pub fn php_swoole_coroutine_scheduler_minit(minit: &Minit) -> Result<(), Bailout> {
     minit.register_object::<Scheduler>(
         c"Swoole\\Coroutine\\Scheduler",
-        METHODS.rows(),
+        METHODS.table(),
         ZEND_ACC_FINAL,
     );
     if host::flag(host::SHORTNAME) {

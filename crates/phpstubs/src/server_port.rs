@@ -7,20 +7,20 @@ use swoole_rs_zend::arginfo as a;
 use swoole_rs_zend::sys as z;
 
 pub static arginfo_class_Swoole_Server_Port___construct: a::ArgInfo<1> =
-    a::ArgInfo([a::begin(0, 0)]);
+    a::ArgInfo::new([a::begin(0, 0)]);
 pub use self::arginfo_class_Swoole_Server_Port___construct as arginfo_class_Swoole_Server_Port___destruct;
-pub static arginfo_class_Swoole_Server_Port_set: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Server_Port_set: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::IS_VOID, false),
     a::arg_type(c"settings", 0, false, z::IS_ARRAY, false, None),
 ]);
-pub static arginfo_class_Swoole_Server_Port_on: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_class_Swoole_Server_Port_on: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(2, 0, z::_IS_BOOL, false),
     a::arg_type(c"event_name", 0, false, z::IS_STRING, false, None),
     a::arg_type(c"callback", 0, false, z::IS_CALLABLE, false, None),
 ]);
-pub static arginfo_class_Swoole_Server_Port_getCallback: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_class_Swoole_Server_Port_getCallback: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_class(1, 0, c"Closure", true),
     a::arg_type(c"event_name", 0, false, z::IS_STRING, false, None),
 ]);
 pub static arginfo_class_Swoole_Server_Port_getSocket: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_class_mask(0, 0, c"Socket", z::MAY_BE_FALSE)]);
+    a::ArgInfo::new([a::begin_class_mask(0, 0, c"Socket", z::MAY_BE_FALSE)]);

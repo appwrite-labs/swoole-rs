@@ -353,7 +353,7 @@ fn register(minit: &Minit, short_name: bool, compression: bool) -> Result<(), ba
     // object is freed.
     minit.register_object::<Data>(
         c"Swoole\\Coroutine\\Http\\Server",
-        METHODS.rows(),
+        METHODS.table(),
         ZEND_ACC_FINAL,
     );
     if short_name {

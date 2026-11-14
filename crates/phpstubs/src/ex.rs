@@ -7,14 +7,14 @@ use swoole_rs_zend::arginfo as a;
 use swoole_rs_zend::sys as z;
 
 pub static arginfo_swoole_get_objects: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_mask(0, 0, z::MAY_BE_FALSE | z::MAY_BE_ARRAY)]);
+    a::ArgInfo::new([a::begin_mask(0, 0, z::MAY_BE_FALSE | z::MAY_BE_ARRAY)]);
 pub static arginfo_swoole_get_vm_status: a::ArgInfo<1> =
-    a::ArgInfo([a::begin_type(0, 0, z::IS_ARRAY, false)]);
-pub static arginfo_swoole_get_object_by_handle: a::ArgInfo<2> = a::ArgInfo([
+    a::ArgInfo::new([a::begin_type(0, 0, z::IS_ARRAY, false)]);
+pub static arginfo_swoole_get_object_by_handle: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_mask(1, 0, z::MAY_BE_FALSE | z::MAY_BE_OBJECT),
     a::arg_type(c"handle", 0, false, z::IS_LONG, false, None),
 ]);
-pub static arginfo_swoole_name_resolver_lookup: a::ArgInfo<3> = a::ArgInfo([
+pub static arginfo_swoole_name_resolver_lookup: a::ArgInfo<3> = a::ArgInfo::new([
     a::begin_type(2, 0, z::IS_STRING, false),
     a::arg_type(c"name", 0, false, z::IS_STRING, false, None),
     a::arg_class(
@@ -26,7 +26,7 @@ pub static arginfo_swoole_name_resolver_lookup: a::ArgInfo<3> = a::ArgInfo([
         None,
     ),
 ]);
-pub static arginfo_swoole_name_resolver_add: a::ArgInfo<2> = a::ArgInfo([
+pub static arginfo_swoole_name_resolver_add: a::ArgInfo<2> = a::ArgInfo::new([
     a::begin_type(1, 0, z::_IS_BOOL, false),
     a::arg_class(c"ns", 0, false, c"Swoole\\NameResolver", false, None),
 ]);
