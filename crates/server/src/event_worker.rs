@@ -11,24 +11,30 @@ use core::ffi::c_int;
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub mod native;
 
-/// `signal_init`'s handlers: none, `SIG_IGN` or the worker's own.
-pub(crate) const HANDLER_NONE: u64 = 0;
-pub(crate) const HANDLER_IGNORE: u64 = 1;
-pub(crate) const HANDLER_OWN: u64 = 2;
+/// `signal_init`'s handlers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SignalHandler {
+    /// No handler.
+    None,
+    /// `SIG_IGN`.
+    Ignore,
+    /// The worker's own.
+    Own,
+}
 /// The stand-in for SIGRTMIN, which only Linux names.
 pub(crate) const SIGNAL_RTMIN: c_int = -1;
 
 /// `Server::worker_signal_init`'s signals in upstream's order, each with its handler;
 /// `sigpipe` is SIGPIPE's (event workers ignore it, task workers leave it).
-pub(crate) fn signals(sigpipe: u64) -> [(c_int, u64); 7] {
+pub(crate) fn signals(sigpipe: SignalHandler) -> [(c_int, SignalHandler); 7] {
     [
-        (libc::SIGHUP, HANDLER_NONE),
+        (libc::SIGHUP, SignalHandler::None),
         (libc::SIGPIPE, sigpipe),
-        (libc::SIGUSR1, HANDLER_NONE),
-        (libc::SIGUSR2, HANDLER_NONE),
-        (libc::SIGTERM, HANDLER_OWN),
-        (libc::SIGWINCH, HANDLER_OWN),
-        (SIGNAL_RTMIN, HANDLER_OWN),
+        (libc::SIGUSR1, SignalHandler::None),
+        (libc::SIGUSR2, SignalHandler::None),
+        (libc::SIGTERM, SignalHandler::Own),
+        (libc::SIGWINCH, SignalHandler::Own),
+        (SIGNAL_RTMIN, SignalHandler::Own),
     ]
 }
 
@@ -94,18 +100,21 @@ mod tests {
     #[test]
     fn signals_install_in_upstream_order() {
         assert_eq!(
-            signals(HANDLER_IGNORE),
+            signals(SignalHandler::Ignore),
             [
-                (libc::SIGHUP, HANDLER_NONE),
-                (libc::SIGPIPE, HANDLER_IGNORE),
-                (libc::SIGUSR1, HANDLER_NONE),
-                (libc::SIGUSR2, HANDLER_NONE),
-                (libc::SIGTERM, HANDLER_OWN),
-                (libc::SIGWINCH, HANDLER_OWN),
-                (SIGNAL_RTMIN, HANDLER_OWN),
+                (libc::SIGHUP, SignalHandler::None),
+                (libc::SIGPIPE, SignalHandler::Ignore),
+                (libc::SIGUSR1, SignalHandler::None),
+                (libc::SIGUSR2, SignalHandler::None),
+                (libc::SIGTERM, SignalHandler::Own),
+                (libc::SIGWINCH, SignalHandler::Own),
+                (SIGNAL_RTMIN, SignalHandler::Own),
             ]
         );
-        assert_eq!(signals(HANDLER_NONE)[1], (libc::SIGPIPE, HANDLER_NONE));
+        assert_eq!(
+            signals(SignalHandler::None)[1],
+            (libc::SIGPIPE, SignalHandler::None)
+        );
     }
 
     #[test]
