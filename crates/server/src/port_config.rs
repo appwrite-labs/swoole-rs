@@ -2,7 +2,6 @@
 use crate::config::{Published, Setting, Shared};
 use core::ffi::{CStr, c_int, c_void};
 use core::sync::atomic::AtomicPtr;
-use core::sync::atomic::Ordering::Relaxed;
 use std::sync::{OnceLock, RwLock};
 
 use swoole_rs_clients::protocol::Protocol;
@@ -45,28 +44,25 @@ pub type Reader = fn(swoole_rs_reactor::Running<'_>, Port<'_>, ReadEvent<'_>) ->
 
 /// `ListenPort::onRead`'s slot: null, or a [`Reader`].
 #[repr(transparent)]
-pub struct ReaderSlot(AtomicPtr<c_void>);
+pub struct ReaderSlot(Shared<Option<Reader>>);
 
 impl ReaderSlot {
     /// The slot holds `reader`.
     pub fn set(&self, reader: Option<Reader>) {
-        let raw = reader.map_or(core::ptr::null_mut(), |reader| reader as *mut c_void);
-        self.0.store(raw, Relaxed);
+        self.0.set(reader);
     }
 
     /// The reader the slot holds.
     #[must_use]
     pub fn get(&self) -> Option<Reader> {
-        let raw = self.0.load(Relaxed);
-        // SAFETY: the slot is private and `set` stores only null or a `Reader`, a fn
-        // pointer, which `Option` lays out with null as `None`.
-        unsafe { core::mem::transmute::<*mut c_void, Option<Reader>>(raw) }
+        self.0.get()
     }
 
     /// The reader's address, null for none.
     #[must_use]
     pub fn address(&self) -> *mut c_void {
-        self.0.load(Relaxed)
+        self.get()
+            .map_or(core::ptr::null_mut(), |reader| reader as *mut c_void)
     }
 }
 
@@ -141,7 +137,7 @@ pub struct PortConfig {
     /// The listening socket's record (`network::Socket *`), or null: stored by
     /// `create_socket()` and `import()`, nulled by `close_socket()` and `close()`.
     /// Private: only [`Self::set_listening_socket`] stores a record here.
-    pub(crate) socket: AtomicPtr<c_void>,
+    pub(crate) socket: Shared<Option<Socket<'static>>>,
     pub thread_id: Shared<libc::pthread_t>,
     pub heartbeat_idle_time: Setting<u16>,
     pub open_eof_check: Setting<bool>,
@@ -267,19 +263,21 @@ impl PortConfig {
     /// The listening socket's record as native code holds it, or null.
     #[must_use]
     pub fn socket_ptr(&self) -> *mut c_void {
-        self.socket.load(Relaxed)
+        self.socket
+            .get()
+            .map_or(core::ptr::null_mut(), |socket| socket.as_ptr().cast())
     }
 
     /// Make `socket` the port's listening socket, which the port frees as it closes.
     pub fn set_listening_socket(&self, socket: Socket<'static>) {
-        self.socket.store(socket.as_ptr().cast(), Relaxed);
+        self.socket.set(Some(socket));
     }
 
     /// The listening socket's record, or null, taken from the port so nothing finds it
     /// once the caller frees it.
     #[must_use]
     pub fn take_socket_ptr(&self) -> *mut swoole_rs_reactor::SocketRecord {
-        self.socket.swap(core::ptr::null_mut(), Relaxed).cast()
+        (self.socket.replace(None)).map_or(core::ptr::null_mut(), Socket::as_ptr)
     }
 
     /// The port's listening socket, or `None` before it has one or after it closes
@@ -287,9 +285,7 @@ impl PortConfig {
     /// answers for the handles left.
     #[must_use]
     pub fn listening_socket(&self) -> Option<Socket<'static>> {
-        // SAFETY: null, or the live listening socket the port owns: closing it frees it
-        // and nulls the field in one step.
-        unsafe { Socket::from_ptr(self.socket_ptr().cast()) }
+        self.socket.get()
     }
     /// A new port's settings.
     pub(crate) fn boxed(buffer_size: c_int) -> Box<Self> {
@@ -310,7 +306,7 @@ impl PortConfig {
             r#type: 1,
             ssl: false,
             port: Setting::new(0),
-            socket: AtomicPtr::new(core::ptr::null_mut()),
+            socket: Shared::new(None),
             // Zero is the original native empty sentinel.
             thread_id: Shared::new(swoole_rs_corebase::sys::zeroed()),
             heartbeat_idle_time: Setting::new(0),
@@ -332,7 +328,7 @@ impl PortConfig {
             websocket_protocol: Published::default(),
             host: Box::default(),
             protocol: Shared::new(default_protocol()),
-            on_read: ReaderSlot(AtomicPtr::new(core::ptr::null_mut())),
+            on_read: ReaderSlot(Shared::new(None)),
             ssl_context: Published::default(),
             tls: Box::default(),
             length_owner: Shared::new(None),

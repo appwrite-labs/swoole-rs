@@ -94,11 +94,11 @@ impl<T: Plain> Setting<T> {
 /// synchronization ([`crate::view::Port::from_raw`]) keeps writers apart from
 /// readers, as for every other setting. It is laid out as the value it holds.
 #[repr(transparent)]
-pub struct Shared<T>(core::cell::UnsafeCell<T>);
+pub struct Shared<T>(core::cell::Cell<T>);
 
 impl<T> Shared<T> {
     pub const fn new(value: T) -> Self {
-        Self(core::cell::UnsafeCell::new(value))
+        Self(core::cell::Cell::new(value))
     }
 
     #[inline]
@@ -106,15 +106,13 @@ impl<T> Shared<T> {
     where
         T: Copy,
     {
-        // SAFETY: no reference into the cell escapes a call, so none is live.
-        unsafe { *self.0.get() }
+        self.0.get()
     }
 
     /// The value before `value`, which the caller drops once the cell holds `value`.
     #[must_use]
     pub fn replace(&self, value: T) -> T {
-        // SAFETY: no reference into the cell escapes a call, so none is live.
-        core::mem::replace(unsafe { &mut *self.0.get() }, value)
+        self.0.replace(value)
     }
 
     pub fn set(&self, value: T) {
@@ -138,7 +136,7 @@ impl<T> Shared<T> {
 
     /// The value's address, which native code reads and writes by reference.
     pub const fn as_ptr(&self) -> *mut T {
-        self.0.get()
+        self.0.as_ptr()
     }
 }
 
