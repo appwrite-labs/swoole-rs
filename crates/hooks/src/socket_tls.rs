@@ -1,20 +1,20 @@
 //! The `coroutine::Socket` TLS members: `ssl_context_create`, `ssl_create`,
-//! `ssl_verify` and `ssl_handshake`. The socket's `SSLContext` owner is the one its extra record holds:
-//! `enable_ssl_encrypt` makes it, and an accepted socket shares its server's.
+//! `ssl_verify` and `ssl_handshake`. The extra record retains the configuration
+//! builder and runtime snapshot; an accepted socket shares its server's snapshot.
 use crate::co_io::{Timer, available, default_err, set_err};
 use crate::co_socket::Co;
 use crate::connect::{HandshakeMode, Handshaking, Step, ssl_handshake};
 use crate::socket_wait::wait_for;
 use core::ffi::{CStr, c_int};
+use std::sync::Arc;
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::Events;
 use swoole_rs_tls::upstream::{
     socket_ssl_accept, socket_ssl_check_host, socket_ssl_connect, socket_ssl_verify,
 };
 use swoole_rs_tls::{
-    Accept, OwnedTlsContext, OwnedTlsFields, SocketContextError, SslNewError, SslState, TlsContext,
-    owner_host_name, swoole_ssl_init, swr_v1_tls_owner_socket_context,
-    swr_v1_tls_owner_socket_session,
+    Accept, OwnedTlsContext, SocketContextError, SslNewError, SslState, TlsContext, TlsSettings,
+    freeze_socket_context, socket_session,
 };
 
 /// `SW_ERROR_SSL_VERIFY_FAILED`, `SW_ERROR_SSL_CREATE_CONTEXT_FAILED` and
@@ -41,18 +41,22 @@ impl Co {
         self.with_extra(|extra| extra.tls.clone()).flatten()
     }
 
-    /// `read` over the `SSLContext` owner's fields, or none without one.
-    pub(crate) fn tls_fields<R>(self, read: impl FnOnce(&OwnedTlsFields) -> R) -> Option<R> {
-        let owner = self.tls_context()?;
-        Some(read(&owner.fields()))
+    /// The immutable configuration used by this socket and its accepted children.
+    pub(crate) fn tls_settings(self) -> Option<Arc<TlsSettings>> {
+        self.with_extra(|extra| extra.tls_settings.clone())
+            .flatten()
     }
 
-    /// The `SSLContext` owner's `tls_host_name`, empty without one.
+    /// The session's explicit name, or the builder's name before a handshake
+    /// (used while negotiating a proxy).
     pub(crate) fn tls_host_name(self) -> Vec<u8> {
-        let Some(owner) = self.tls_context() else {
-            return Vec::new();
-        };
-        owner_host_name(&owner)
+        self.tls_settings().map_or_else(
+            || {
+                self.tls_context()
+                    .map_or_else(Vec::new, |owner| swoole_rs_tls::owner_host_name(&owner))
+            },
+            |settings| settings.host_name().to_bytes().to_vec(),
+        )
     }
 
     /// `Socket::enable_ssl_encrypt()`: a fresh `SSLContext` owner; false when the
@@ -76,8 +80,12 @@ impl Co {
             return;
         };
         // The client's metadata takes a reference.
-        self.with_extra(|extra| extra.tls = Some(shared.clone()));
-        if !self.create_session(Some(&shared)) {
+        let settings = server.tls_settings();
+        self.with_extra(|extra| {
+            extra.tls = Some(shared);
+            extra.tls_settings.clone_from(&settings);
+        });
+        if !self.create_session(settings.as_deref()) {
             // Nothing else holds the new socket yet.
             self.close();
         }
@@ -85,15 +93,16 @@ impl Co {
 
     /// `Socket::ssl_context_create()`: the socket's context, configured for it.
     pub(crate) fn ssl_context_create(self) -> bool {
-        swoole_ssl_init();
         let (owner, http2) = (self.tls_context(), self.http2());
         let made = owner.and_then(|owner| {
             self.with_network(|socket| {
-                swr_v1_tls_owner_socket_context(owner.borrow_configuration(), socket, http2, true)
+                freeze_socket_context(&mut owner.borrow_configuration(), socket, http2, true)
             })
         });
         match made.unwrap_or(Err(SocketContextError::Create)) {
-            Ok(()) => true,
+            Ok(settings) => self
+                .with_extra(|extra| extra.tls_settings = Some(Arc::new(settings)))
+                .is_some(),
             Err(SocketContextError::UnsupportedDtls) => {
                 log::warning(
                     c"Socket::ssl_context_create",
@@ -109,7 +118,7 @@ impl Co {
     }
 
     /// `Socket::ssl_create(context)`: the socket's TLS session over `owner`.
-    fn create_session(self, owner: Option<&OwnedTlsContext>) -> bool {
+    fn create_session(self, owner: Option<&TlsSettings>) -> bool {
         // The automatic host name, as C reads it, none when the slot is empty.
         let hostname = self.with_extra(|extra| {
             let slot = &extra.strings[2];
@@ -119,9 +128,7 @@ impl Co {
             set_err(self, SSL_CREATE_SESSION_FAILED);
             return false;
         };
-        let result = self.with_network(|socket| {
-            swr_v1_tls_owner_socket_session(owner, socket, hostname.as_deref())
-        });
+        let result = self.with_network(|socket| socket_session(owner, socket, hostname.as_deref()));
         match result.unwrap_or(Err(SslNewError::New)) {
             Ok(()) => return true,
             Err(error) => error.warn(),
@@ -162,15 +169,10 @@ impl Co {
     /// this socket, then the socket is handshaked. In a coroutine.
     #[must_use]
     pub fn ssl_handshake(self) -> bool {
-        let (context_ready, verify_peer) = self
-            .tls_fields(|fields| (fields.context.is_some(), fields.verify_peer))
-            .unwrap_or_default();
         let mut state = Handshake {
             socket: self,
             timer: Timer::new(self, Events::READ, self.read_timeout()),
             handshaked: self.ssl_handshaked(),
-            context_ready,
-            verify_peer,
         };
         let done = ssl_handshake(&mut state);
         state.timer.stop();
@@ -187,8 +189,6 @@ struct Handshake {
     socket: Co,
     timer: Timer,
     handshaked: bool,
-    context_ready: bool,
-    verify_peer: bool,
 }
 
 impl Handshake {
@@ -201,7 +201,7 @@ impl Handshake {
     /// The socket's session over its own context.
     fn create_session(&self) -> bool {
         self.socket
-            .create_session(self.socket.tls_context().as_deref())
+            .create_session(self.socket.tls_settings().as_deref())
     }
 }
 
@@ -223,11 +223,13 @@ impl Handshaking for Handshake {
     }
 
     fn context_ready(&self) -> bool {
-        self.context_ready
+        self.socket.tls_settings().is_some()
     }
 
     fn verify_peer(&self) -> bool {
-        self.verify_peer
+        self.socket
+            .tls_settings()
+            .is_some_and(|settings| settings.verify_peer())
     }
 
     fn available(&mut self) -> bool {
@@ -296,9 +298,11 @@ impl Handshaking for Handshake {
 
     fn verify(&mut self) -> bool {
         // Verified only with a context.
-        let allow_self_signed = self.socket.tls_fields(|fields| fields.allow_self_signed);
-        self.socket
-            .ssl_verify(allow_self_signed.unwrap_or_default())
+        let allow_self_signed = self
+            .socket
+            .tls_settings()
+            .is_some_and(|settings| settings.allow_self_signed());
+        self.socket.ssl_verify(allow_self_signed)
     }
 }
 
@@ -316,5 +320,46 @@ mod tests {
         assert!(!made.is_null());
         assert!(!server.co().enable_ssl());
         assert_eq!(server.co().tls_owner(), made);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no OPENSSL_init_ssl")]
+    fn accepted_socket_keeps_snapshot_across_listener_rebuild_and_drop() {
+        use std::{os::fd::AsRawFd, sync::Arc};
+        use swoole_rs_tls::Text;
+
+        let (_peer, stream) = std::os::unix::net::UnixStream::pair().unwrap();
+        let (mut server, mut client) = (TestSocket::new(), TestSocket::new());
+        assert!(server.co().enable_ssl());
+        let builder = server.co().tls_context().unwrap();
+        assert!(
+            builder
+                .borrow_configuration()
+                .set_text(Text::HostName, b"first.test")
+        );
+        assert!(server.co().ssl_context_create());
+        let first = server.co().tls_settings().unwrap();
+        client
+            .co()
+            .with_network(|socket| socket.edit(|fields| fields.fd = stream.as_raw_fd()));
+        client.co().share_tls(server.co());
+        assert!(Arc::ptr_eq(&first, &client.co().tls_settings().unwrap()));
+        assert!(client.co().net(|fields| !fields.ssl().is_null()).unwrap());
+
+        assert!(
+            builder
+                .borrow_configuration()
+                .set_text(Text::HostName, b"second.test")
+        );
+        assert!(server.co().ssl_context_create());
+        let second = server.co().tls_settings().unwrap();
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert_eq!(second.host_name(), c"second.test");
+        drop(server);
+        drop(builder);
+        assert_eq!(client.co().tls_host_name(), b"first.test");
+        client
+            .co()
+            .with_network(|socket| unsafe { swoole_rs_tls::upstream::socket_ssl_close(socket) });
     }
 }

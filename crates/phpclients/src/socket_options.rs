@@ -382,18 +382,18 @@ fn set_ssl(s: &Array, socket: Co) -> Result<bool, Stop> {
     let Some(context) = socket.handle().tls_context() else {
         return Ok(true);
     };
-    let owner = context.borrow_configuration();
-    let set = |value| owner.set_value(value);
-    let set_text = |which, text: &[u8]| owner.set_text(which, text);
-    let text = |which, v: &Value| -> Result<bool, Stop> { Ok(set_text(which, &string(v)?)) };
+    let mut owner = context.borrow_configuration();
+    let text = |owner: &mut tls::Lent<'_>, which, v: &Value| -> Result<bool, Stop> {
+        Ok(owner.set_text(which, &string(v)?))
+    };
     if let Some(v) = s.get(b"ssl_protocols") {
-        set(tls::Value::Protocols(long(v)?));
+        owner.set_value(tls::Value::Protocols(long(v)?));
     }
     if let Some(v) = s
         .get(b"ssl_compress")
         .or_else(|| s.get(b"ssl_disable_compression"))
     {
-        set(tls::Value::DisableCompress(!v.truthy()));
+        owner.set_value(tls::Value::DisableCompress(!v.truthy()));
     }
     for (key, which, what) in [
         (b"ssl_cert_file".as_slice(), Text::CertFile, "cert"),
@@ -401,7 +401,7 @@ fn set_ssl(s: &Array, socket: Co) -> Result<bool, Stop> {
     ] {
         if let Some(v) = s.get(key) {
             let file = string(v)?;
-            if !set_text(which, &file) {
+            if !owner.set_text(which, &file) {
                 let message = [
                     format!("ssl {what} file[").as_bytes(),
                     &self::text(&file).into_bytes(),
@@ -419,38 +419,38 @@ fn set_ssl(s: &Array, socket: Co) -> Result<bool, Stop> {
         _ => {}
     }
     if let Some(v) = s.get(b"ssl_passphrase") {
-        text(Text::Passphrase, v)?;
+        text(&mut owner, Text::Passphrase, v)?;
     }
     if built_with(Switch::TlsHostName)
         && let Some(v) = s.get(b"ssl_host_name")
     {
-        text(Text::HostName, v)?;
+        text(&mut owner, Text::HostName, v)?;
     }
     if let Some(v) = s.get(b"ssl_verify_peer") {
-        set(tls::Value::VerifyPeer(v.truthy()));
+        owner.set_value(tls::Value::VerifyPeer(v.truthy()));
     }
     if let Some(v) = s.get(b"ssl_allow_self_signed") {
-        set(tls::Value::AllowSelfSigned(v.truthy()));
+        owner.set_value(tls::Value::AllowSelfSigned(v.truthy()));
     }
     if let Some(v) = s.get(b"ssl_cafile") {
-        text(Text::Cafile, v)?;
+        text(&mut owner, Text::Cafile, v)?;
     }
     if let Some(v) = s.get(b"ssl_capath") {
-        text(Text::Capath, v)?;
+        text(&mut owner, Text::Capath, v)?;
     }
     if let Some(v) = s.get(b"ssl_verify_depth") {
-        set(tls::Value::VerifyDepth(clamp_u8(long(v)?)));
+        owner.set_value(tls::Value::VerifyDepth(clamp_u8(long(v)?)));
     }
     if let Some(v) = s.get(b"ssl_ciphers") {
-        text(Text::Ciphers, v)?;
+        text(&mut owner, Text::Ciphers, v)?;
     }
     if let Some(v) = s.get(b"ssl_ecdh_curve") {
-        text(Text::EcdhCurve, v)?;
+        text(&mut owner, Text::EcdhCurve, v)?;
     }
     if built_with(Switch::BoringSsl)
         && let Some(v) = s.get(b"ssl_grease")
     {
-        set(tls::Value::Grease(clamp_u8(long(v)?)));
+        owner.set_value(tls::Value::Grease(clamp_u8(long(v)?)));
     }
     Ok(true)
 }
