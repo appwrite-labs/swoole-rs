@@ -126,13 +126,13 @@ fn main(serv: view::Server<'_>) {
     // After the task pool starts, which sets the process type to SW_MASTER.
     methods::set_worker_type(WorkerType::Manager);
     for id in worker_ids(true, config.worker_num.get(), 0) {
-        if spawn(serv, spawn_event_worker, worker_at(serv, id)) < 0 {
+        if spawn(serv, spawn_event_worker, worker_at(serv, id)).is_none() {
             log::sys_error(ORIGIN, format_args!("failed to fork event worker"));
             return;
         }
     }
     for at in 0..serv.user_worker_num() {
-        if spawn(serv, spawn_user_worker, serv.pending_worker(at)) < 0 {
+        if spawn(serv, spawn_user_worker, serv.pending_worker(at)).is_none() {
             log::sys_error(ORIGIN, format_args!("failed to fork user worker"));
             return;
         }
@@ -145,13 +145,13 @@ fn worker_at(serv: view::Server<'_>, id: u32) -> Option<Worker<'_>> {
     serv.worker_record(u16::try_from(id).unwrap_or(u16::MAX))
 }
 
-/// `Factory::spawn_*_worker(worker)`: the child's pid, or -1 without a worker.
+/// `Factory::spawn_*_worker(worker)`: the child's pid, none without a worker or a fork.
 fn spawn<'a>(
     serv: view::Server<'a>,
-    spawn: fn(view::Server<'_>, Worker<'_>) -> c_int,
+    spawn: fn(view::Server<'_>, Worker<'_>) -> Option<c_int>,
     worker: Option<Worker<'a>>,
-) -> c_int {
-    worker.map_or(-1, |worker| spawn(serv, worker))
+) -> Option<c_int> {
+    worker.and_then(|worker| spawn(serv, worker))
 }
 
 /// `Manager::wait`: the manager's life after forking.
