@@ -15,7 +15,7 @@ fn mode(serv: Server<'_>) -> Mode {
 
 fn warn(code: E, origin: &CStr, message: core::fmt::Arguments<'_>) {
     /// `SW_LOG_WARNING`.
-    const LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
+    use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
     log::error_log(LOG_WARNING, code as c_int, origin, message);
 }
 

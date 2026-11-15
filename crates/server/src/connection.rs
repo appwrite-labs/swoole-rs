@@ -12,6 +12,7 @@ use swoole_rs_reactor::{Event, Socket};
 use crate::reactor_handle::Reactor;
 use crate::records::{ConnectionRecord, Lookup};
 use crate::{Connection, Mode, view};
+use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 
 /// `SW_ACCEPT_MAX_COUNT`, `SW_MAX_CONNECTION`, `SW_SESSION_LIST_SIZE`; native asserts each.
 const ACCEPT_MAX_COUNT: u32 = 64;
@@ -20,8 +21,6 @@ const SESSION_LIST_SIZE: u32 = 1024 * 1024;
 /// `SW_SOCK_TCP`, `SW_SOCK_TCP6`.
 const SOCK_TCP: c_int = 1;
 const SOCK_TCP6: c_int = 3;
-/// `SW_LOG_WARNING`.
-const LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
 
 fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)

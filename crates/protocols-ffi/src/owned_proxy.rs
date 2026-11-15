@@ -3,14 +3,13 @@
 //! `handshake`'s `std::function` send.
 use std::ffi::{c_char, c_int};
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as NOTICE;
 use swoole_rs_corebase::{ProxyState, log, net_types::AddressStorage};
 use swoole_rs_protocols::{
     ConnectRefusal, SocksConfig, SocksError, SocksSend, socks_auth, socks_config, socks_connect,
     socks_negotiate, socks_strerror, socks_transition,
 };
 
-/// `SW_LOG_NOTICE`.
-const NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
 /// `SW_ERROR_SOCKS5_*`.
 const UNSUPPORT_VERSION: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_SOCKS5_UNSUPPORT_VERSION as c_int;

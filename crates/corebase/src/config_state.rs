@@ -138,6 +138,7 @@ pub(crate) fn init() {
 }
 
 use crate::constants::{SW_SESSION_LIST_SIZE, SW_TASK_TMP_DIR};
+use crate::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 
 /// Why a task directory was refused.
 #[derive(Debug, PartialEq)]
@@ -226,7 +227,6 @@ pub fn set_task_tmpdir(dir: &CStr) -> bool {
 }
 
 /// `SW_LOG_WARNING` and `SW_ERROR_NAME_TOO_LONG`.
-const LOG_WARNING: i32 = 4;
 const NAME_TOO_LONG: i32 = swoole_rs_error::ErrorCode::SW_ERROR_NAME_TOO_LONG as i32;
 
 #[cfg(test)]

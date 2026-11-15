@@ -682,7 +682,7 @@ impl PoolNative for Native {
                 log::sys_warning(origin, format_args!("[Worker#{id}] read({fd}) failed"));
             }
             Warning::BadPacket { received, length } => log::error_log(
-                4, // SW_LOG_WARNING
+                swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING,
                 swoole_rs_error::ErrorCode::SW_ERROR_PROTOCOL_ERROR as c_int,
                 origin,
                 format_args!(

@@ -137,8 +137,8 @@ pub fn error(origin: &CStr, message: fmt::Arguments<'_>) {
 }
 
 /// `swoole_error_log(level, code, ...)` from `origin`.
-pub fn error_log(level: c_int, code: c_int, origin: &CStr, message: fmt::Arguments<'_>) {
-    emit(LogKind::Error, level, code, origin, message);
+pub fn error_log(level: LogLevel, code: c_int, origin: &CStr, message: fmt::Arguments<'_>) {
+    emit(LogKind::Error, level as c_int, code, origin, message);
 }
 
 /// Ends the process on a broken invariant. `unwrap`, `expect` and `panic` are
@@ -222,7 +222,12 @@ mod tests {
             c"Socket::connect_sync",
             format_args!("bind({}) failed\0tail", 3),
         );
-        error_log(4, 1015, c"Socket::ssl_verify", format_args!("x"));
+        error_log(
+            LogLevel::SW_LOG_WARNING,
+            1015,
+            c"Socket::ssl_verify",
+            format_args!("x"),
+        );
         let seen = SEEN.lock().unwrap();
         assert_eq!(
             seen[..],

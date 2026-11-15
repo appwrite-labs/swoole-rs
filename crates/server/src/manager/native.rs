@@ -22,14 +22,13 @@ use crate::process_factory::native::{
     check_exit_status, kill_task_workers, spawn_event_worker, spawn_user_worker,
 };
 use crate::{view, worker_methods};
+use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR as ERROR, SW_LOG_WARNING as WARNING};
 
 /// `SWR_WORKER_EVENT`, `SWR_WORKER_USER`: the registry's categories.
 const REGISTRY_EVENT: c_int = 1;
 const REGISTRY_USER: c_int = 2;
 /// `SW_MESSAGE_BOX_SIZE`; `SW_LOG_WARNING`, `SW_LOG_ERROR`.
 const MESSAGE_BOX_SIZE: usize = 65536;
-const WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
-const ERROR: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR as c_int;
 /// `swoole::WorkerMessageType::SW_WORKER_MESSAGE_STOP`.
 const WORKER_MESSAGE_STOP: u8 = 1;
 /// `sizeof(EventData)`.

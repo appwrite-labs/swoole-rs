@@ -21,6 +21,7 @@ use core::sync::atomic::Ordering;
 use swoole_rs_buffer::cpp::{swr_cpp_buffer_empty, swr_cpp_buffer_typed_close};
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::ServerEvent;
+use swoole_rs_corebase::log::LogLevel::{SW_LOG_NOTICE as LOG_NOTICE, SW_LOG_TRACE as LOG_TRACE};
 use swoole_rs_corebase::{CCast, log};
 use swoole_rs_memory::members::Shm;
 use swoole_rs_process::methods::swoole_get_worker_id;
@@ -168,8 +169,6 @@ pub(crate) const POP_PTR: u8 = 1 << 6;
 const CLOSE_RESET: c_int = 1 << 1;
 const CLOSE_ACTIVELY: c_int = 1 << 2;
 /// `swLog_level`'s `SW_LOG_TRACE`, `SW_LOG_NOTICE`; the `SW_ERROR_SESSION_*` codes.
-const LOG_TRACE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as c_int;
-const LOG_NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
 const SESSION_CLOSING: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SESSION_CLOSING as c_int;
 const SESSION_CLOSED: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SESSION_CLOSED as c_int;
 const SESSION_NOT_EXIST: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SESSION_NOT_EXIST as c_int;
