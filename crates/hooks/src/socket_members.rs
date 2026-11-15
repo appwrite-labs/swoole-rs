@@ -19,13 +19,12 @@ use crate::transfer::{ALL, Buffer, CHECKED, RETRY_INTERRUPTED, timeout_kind, tra
 use crate::uring_socket as ring;
 use crate::vector::{IoVector, RecvMessage, SendMessage, vector_all};
 use core::ffi::{CStr, c_int};
-use swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE;
+use swoole_rs_corebase::constants::{SW_STACK_BUFFER_SIZE, SocketType};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::sys::{self, ReadSlot, strerror};
 use swoole_rs_reactor::Events;
 use swoole_rs_reactor::{
-    CLASS_DGRAM, Drain, Event, Fill, Running, Socket, SocketAddress, SocketFields, SocketRecord,
-    type_is,
+    Drain, Event, Fill, Running, Socket, SocketAddress, SocketFields, SocketRecord,
 };
 use swoole_rs_tls::upstream::{
     peek, recv, recv_fill, send, send_drain, sendfile as socket_sendfile_fd,
@@ -363,7 +362,7 @@ impl Co {
         let (socket_type, timeout) = self
             .net(|network| (network.socket_type, network.timeouts.dns))
             .unwrap_or_default();
-        if !type_is(socket_type, CLASS_DGRAM) {
+        if !SocketType::from_raw(socket_type).is_some_and(SocketType::is_dgram) {
             set_err(self, libc::EPROTONOSUPPORT);
             return -1;
         }

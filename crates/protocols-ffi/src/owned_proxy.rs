@@ -105,13 +105,11 @@ fn packet(proxy: &Socks5Proxy<'_>, request: Request) -> Packet {
                     result.last_error = error;
                     return result;
                 }
-                if swoole_rs_reactor::type_is(fields.socket_type, swoole_rs_reactor::CLASS_INET4) {
+                let kind = swoole_rs_corebase::constants::SocketType::from_raw(fields.socket_type);
+                if kind.is_some_and(swoole_rs_corebase::constants::SocketType::is_inet4) {
                     inet4 = address.v4().sin_addr.s_addr.to_ne_bytes();
                     (1, &inet4)
-                } else if swoole_rs_reactor::type_is(
-                    fields.socket_type,
-                    swoole_rs_reactor::CLASS_INET6,
-                ) {
+                } else if kind.is_some_and(swoole_rs_corebase::constants::SocketType::is_inet6) {
                     inet6 = address.v6().sin6_addr.s6_addr;
                     (4, &inet6)
                 } else {

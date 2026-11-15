@@ -5,12 +5,12 @@
 //! the code assigns.
 use crate::SocketOutput;
 use crate::socket_timeouts::SocketTimeouts;
-use crate::socket_types::{CLASS_INET4, CLASS_INET6, CLASS_LOCAL, CLASS_TCP, type_is};
 use std::ffi::{c_int, c_void};
 use std::mem::{offset_of, size_of};
 use std::ops::{Deref, DerefMut};
 use std::ptr;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use swoole_rs_corebase::constants::SocketType;
 use swoole_rs_corebase::constants::{
     SW_SOCKET_BUFFER_SIZE, SW_SOCKET_DEFAULT_CONNECT_TIMEOUT, SW_SOCKET_DEFAULT_DNS_TIMEOUT,
     SW_SOCKET_DEFAULT_READ_TIMEOUT, SW_SOCKET_DEFAULT_WRITE_TIMEOUT,
@@ -403,22 +403,29 @@ impl SocketFields {
         std::mem::replace(&mut self.ssl, ptr::null_mut())
     }
 
+    /// The socket's type, `None` for a code no `SW_SOCK_*` names.
+    #[must_use]
+    pub fn kind(&self) -> Option<SocketType> {
+        SocketType::from_raw(self.socket_type)
+    }
+
     /// `Socket::is_tcp`: a TCP stream over IPv4 or IPv6.
     #[must_use]
     pub fn is_tcp(&self) -> bool {
-        type_is(self.socket_type, CLASS_TCP)
+        self.kind().is_some_and(SocketType::is_tcp)
     }
 
     /// `Socket::is_inet4() || is_inet6()`: stream, datagram or raw.
     #[must_use]
     pub fn is_inet(&self) -> bool {
-        type_is(self.socket_type, CLASS_INET4 | CLASS_INET6)
+        self.kind()
+            .is_some_and(|kind| kind.is_inet4() || kind.is_inet6())
     }
 
     /// `Socket::is_local`: a Unix stream or datagram socket.
     #[must_use]
     pub fn is_local(&self) -> bool {
-        type_is(self.socket_type, CLASS_LOCAL)
+        self.kind().is_some_and(SocketType::is_local)
     }
 
     /// `Socket::catch_error` (`catch_read_error`, `catch_write_error`).

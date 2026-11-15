@@ -416,8 +416,8 @@ pub fn swr_v1_tls_owner_socket_context(
     http2: bool,
     dtls_supported: bool,
 ) -> Result<(), SocketContextError> {
-    let kind = socket.read(|record| record.socket_type);
-    let dtls = swoole_rs_reactor::type_is(kind, swoole_rs_reactor::CLASS_DGRAM);
+    let kind = socket.read(swoole_rs_reactor::SocketFields::kind);
+    let dtls = kind.is_some_and(swoole_rs_corebase::constants::SocketType::is_dgram);
     if dtls && !dtls_supported {
         return Err(SocketContextError::UnsupportedDtls);
     }

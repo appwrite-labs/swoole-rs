@@ -19,7 +19,6 @@ use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::{NameResolverContext, ProxyState, log};
 use swoole_rs_http_ffi::{proxy_accept, proxy_connect};
 use swoole_rs_protocols_ffi::{Socks5Proxy, pack_negotiate_request};
-use swoole_rs_reactor::{CLASS_INET4, CLASS_INET6, type_is};
 use swoole_rs_tls::upstream::socket_free;
 
 /// Swoole error codes this sequence sets.
@@ -305,9 +304,9 @@ impl Connecting for Live<'_> {
     }
 
     fn family(&self) -> c_int {
-        match self.socket.net(|socket| socket.socket_type) {
-            Some(kind) if type_is(kind, CLASS_INET6) => libc::AF_INET6,
-            Some(kind) if type_is(kind, CLASS_INET4) => libc::AF_INET,
+        match self.socket.net(|socket| socket.kind()).flatten() {
+            Some(kind) if kind.is_inet6() => libc::AF_INET6,
+            Some(kind) if kind.is_inet4() => libc::AF_INET,
             _ => 0,
         }
     }
