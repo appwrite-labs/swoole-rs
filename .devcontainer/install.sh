@@ -1,10 +1,13 @@
 #!/bin/sh
 # System packages for building and testing swoole-rs and the upstream oracle. The devcontainer image and
 # CI both run this, so local and CI environments cannot drift. Extra packages a job
-# needs go as arguments. APT_CACHE (set by .github/actions/install) keeps the
+# needs go as arguments; --runtime loads prebuilt PHPT engines without compiling them.
+# APT_CACHE (set by .github/actions/install) keeps the
 # package files and indexes between CI runs, so most runs never touch the mirror.
 set -e
 [ "$(id -u)" = 0 ] || exec sudo env APT_CACHE="${APT_CACHE:-}" "$0" "$@"
+build=true
+if [ "${1:-}" = --runtime ]; then build=false; shift; fi
 export DEBIAN_FRONTEND=noninteractive
 # The CI mirror sometimes throttles one connection for minutes; give up on a
 # stalled download quickly and retry instead of waiting out apt's long default.
@@ -15,10 +18,18 @@ if [ -n "$APT_CACHE" ]; then
     printf 'Dir::Cache::Archives "%s/archives";\nDir::State::Lists "%s/lists";\n' "$APT_CACHE" "$APT_CACHE" > /etc/apt/apt.conf.d/50apt-cache
 fi
 install() {
+    if $build; then
+        set -- php-dev libclang-dev python3-pytest libpcre2-dev libssl-dev libc-ares-dev zlib1g-dev \
+            pkg-config cmake g++ make autoconf libgtest-dev libnghttp2-dev libpq-dev libcurl4-openssl-dev \
+            libssh2-1-dev libbrotli-dev libzstd-dev unixodbc-dev libsqlite3-dev libffi-dev "$@"
+    else
+        # Shards load prebuilt engines. Keep their shared libraries and PHP extensions;
+        # gcc supplies Instant Client setup's multiarch path, but no engine is compiled here.
+        set -- php-cli gcc libstdc++6 libpcre2-8-0 libssl3t64 libc-ares2 zlib1g libnghttp2-14 \
+            libpq5 libcurl4t64 libssh2-1t64 libbrotli1 libzstd1 libodbc2 libsqlite3-0 libffi8 "$@"
+    fi
     apt-get $APT install -yq --no-install-recommends \
-        php-dev libclang-dev php-sqlite3 php-curl php-xml php-mbstring python3 python3-pytest composer \
-        libpcre2-dev libssl-dev libc-ares-dev zlib1g-dev pkg-config cmake g++ make autoconf git \
-        ca-certificates curl libgtest-dev libnghttp2-dev libpq-dev libcurl4-openssl-dev libssh2-1-dev libbrotli-dev libzstd-dev unixodbc-dev libsqlite3-dev libffi-dev locales procps strace "$@"
+        php-sqlite3 php-curl php-xml php-mbstring python3 composer git ca-certificates curl locales procps strace "$@"
 }
 # Cached indexes (refreshed weekly by the cache key) are enough when every package
 # is cached too; if one isn't and the mirror has moved on, refresh and retry once.
@@ -34,7 +45,7 @@ fi
 # liburing for upstream's --enable-iouring build. Upstream needs >= 2.8
 # and Ubuntu 24.04 ships 2.5, so build the release upstream's own CI installs
 # (scripts/install-liburing.sh) into /usr/local, where pkg-config and ld find it.
-if ! pkg-config --atleast-version=2.8 liburing 2>/dev/null; then
+if $build && ! pkg-config --atleast-version=2.8 liburing 2>/dev/null; then
     liburing=$(mktemp -d)
     curl -fsSL --retry 5 -o "$liburing/src.tar.gz" https://github.com/axboe/liburing/archive/refs/tags/liburing-2.13.tar.gz
     echo "618e34dbea408fc9e33d7c4babd746036dbdedf7fce2496b1178ced0f9b5b357  $liburing/src.tar.gz" | sha256sum -c -

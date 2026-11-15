@@ -1,6 +1,9 @@
 name: Install system packages
 description: .devcontainer/install.sh with apt's package files and indexes cached between runs.
 inputs:
+  runtime:
+    description: Install the libraries and tools needed to run prebuilt PHPT engines and their tests
+    default: 'false'
   packages:
     description: Extra apt packages this job needs, space separated
     default: ''
@@ -16,7 +19,8 @@ outputs:
 runs:
   using: composite
   steps:
-    - uses: ./.github/actions/rustup
+    - if: inputs.runtime != 'true'
+      uses: ./.github/actions/rustup
     - id: week
       shell: bash
       run: |
@@ -31,7 +35,7 @@ runs:
       uses: actions/cache/restore@v6
       with:
         path: .apt-cache
-        key: apt-${{ runner.os }}-${{ steps.week.outputs.sources }}-${{ steps.week.outputs.week }}-${{ hashFiles('.devcontainer/install.sh') }}-${{ inputs.packages }}
+        key: apt-${{ runner.os }}-${{ steps.week.outputs.sources }}-${{ steps.week.outputs.week }}-${{ hashFiles('.devcontainer/install.sh') }}-${{ inputs.runtime }}-${{ inputs.packages }}
         restore-keys: |
           apt-${{ runner.os }}-${{ steps.week.outputs.sources }}-${{ steps.week.outputs.week }}-${{ hashFiles('.devcontainer/install.sh') }}-
           apt-${{ runner.os }}-${{ steps.week.outputs.sources }}-${{ steps.week.outputs.week }}-
@@ -45,7 +49,7 @@ runs:
     - shell: bash
       run: |
         [ ! -f /etc/apt/apt-mirrors.txt ] || sudo sed -i /azure/d /etc/apt/apt-mirrors.txt
-        apt_install() { APT_CACHE="$PWD/.apt-cache" .devcontainer/install.sh ${{ inputs.packages }}; }
+        apt_install() { APT_CACHE="$PWD/.apt-cache" .devcontainer/install.sh ${{ inputs.runtime == 'true' && '--runtime' || '' }} ${{ inputs.packages }}; }
         apt_install || {
           echo "::warning::apt failed on the runner's mirror; retrying against archive.ubuntu.com"
           [ ! -f /etc/apt/apt-mirrors.txt ] || echo http://archive.ubuntu.com/ubuntu/ | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
