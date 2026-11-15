@@ -21,10 +21,7 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_zend::{
     Call, Function, Owned, OwnedArray, Value, ZString, bailout, handlers,
     observer::{self, Observer},
-    sys::{
-        swr_zend_mm_observe, swr_zend_mm_observer, swr_zend_mm_unobserve, swr_zend_try_write,
-        zend_long,
-    },
+    sys::{swr_zend_mm_observer, swr_zend_try_write, zend_long},
 };
 
 // Reads of this PHP thread's executor, which take nothing from their caller and
@@ -219,16 +216,34 @@ static OBSERVER: swr_zend_mm_observer = swr_zend_mm_observer {
     free: Some(on_free),
 };
 
-/// `hook_emalloc`.
-fn hook() {
-    // SAFETY: a static observer; the request heap is live.
-    unsafe { swr_zend_mm_observe(&raw const OBSERVER) };
+per_thread! {
+    /// Whether the PHP thread's heap runs [`OBSERVER`]: observing twice would
+    /// make the handlers it keeps its own, and unobserving unobserved would turn
+    /// off handlers another extension set.
+    static HOOKED: Cell<bool> = Cell::new(false);
 }
 
-/// `unhook_emalloc`.
+/// `hook_emalloc`, unless hooked.
+fn hook() {
+    unsafe extern "C" {
+        /// The heap, which outlives every request, runs its handlers, then the
+        /// observer's: only while unobserved, which `HOOKED` tracks.
+        safe fn swr_zend_mm_observe(observer: &'static swr_zend_mm_observer);
+    }
+    if !HOOKED.with(|hooked| hooked.replace(true)) {
+        swr_zend_mm_observe(&OBSERVER);
+    }
+}
+
+/// `unhook_emalloc`, after [`hook`].
 fn unhook() {
-    // SAFETY: the request heap is live.
-    unsafe { swr_zend_mm_unobserve() };
+    unsafe extern "C" {
+        /// The handlers the heap ran before [`hook`]: only while observed.
+        safe fn swr_zend_mm_unobserve();
+    }
+    if HOOKED.with(|hooked| hooked.replace(false)) {
+        swr_zend_mm_unobserve();
+    }
 }
 
 /// `save_backtrace` of `at`, when `Leaks::count` asked for it: the backtrace

@@ -23,9 +23,9 @@ uint8_t swr_bytes_numeric(struct iovec text, zend_long *lval, double *dval);
 /* php_url_encode: a new string, as urlencode() encodes the bytes. */
 zend_string *swr_bytes_url_encode(struct iovec bytes);
 
-/* zend_string_init(bytes, len, 1): a new persistent string of the bytes; out of
- * memory, Zend prints and exits (zend_out_of_memory). */
-zend_string *swr_bytes_persistent(struct iovec bytes);
+/* php_url_decode of a new string's copy of the bytes: them as urldecode() decodes
+ * them. */
+zend_string *swr_bytes_url_decode(struct iovec bytes);
 
 /* estrndup: an emalloc'd NUL-terminated copy of the bytes. */
 char *swr_bytes_estrndup(struct iovec bytes);
@@ -34,5 +34,11 @@ char *swr_bytes_estrndup(struct iovec bytes);
  * released (depth 0, as Server::command passes), or false. Objects decode as
  * arrays, so no PHP code runs. */
 void swr_bytes_json_decode(struct iovec text, zval *out);
+
+/* php_json_decode_ex(out, text, len, options, depth) inside zend_try (nonzero for a
+ * bailout), over the bytes but their last, which the decoder may read: Swoole's
+ * zend::json_decode of a window of a string, with the byte after it lent too. `out`
+ * then holds the result, in place of what it held, which is not released. */
+int swr_bytes_json_decode_ex(zval *out, struct iovec text, zend_long options, zend_long depth);
 
 #endif

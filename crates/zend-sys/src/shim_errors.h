@@ -10,12 +10,11 @@
 int swr_zend_try_error(int level, const char *message);
 int swr_zend_try_zend_error(int level, const char *message);
 
-/* A C or C++ reporter (Swoole's php_swoole_*error macros live in C++). */
-int swr_zend_try_report(void (*report)(const char *message), const char *message);
-
-/* Swoole's sw_callable_warning, php_swoole_fatal_error(E_WARNING, "%s", message): a
- * reporter for the calls above and swoole_rs_zend::host::function_call, which run it in a trap. */
+/* Swoole's sw_callable_warning, php_swoole_fatal_error(E_WARNING, "%s", message), for
+ * swoole_rs_zend::host::function_call, which runs it in the trap below. */
 void swr_zend_callable_warning(const char *message);
+/* swr_zend_callable_warning inside zend_try (nonzero for a bailout). */
+int swr_zend_try_callable_warning(const char *message);
 
 /* zend_parse_arg_*_slow: coercions raise deprecations (null to a scalar,
  * float to int), which run the user error handler. *parsed is the result. */

@@ -20,7 +20,6 @@ use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::{NameResolverContext, ProxyState, log};
 use swoole_rs_http_ffi::{proxy_accept, proxy_connect};
 use swoole_rs_protocols_ffi::{Socks5Proxy, pack_negotiate_request};
-use swoole_rs_tls::upstream::socket_free;
 
 /// Swoole error codes this sequence sets.
 const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
@@ -378,12 +377,11 @@ impl Connecting for Live<'_> {
     }
 
     fn reinit(&mut self, kind: SocketType) -> bool {
-        let Some(old) = reinit(self.socket, kind.raw()) else {
+        // The old network::Socket goes as the statement ends.
+        let Some(_old) = reinit(self.socket, kind.raw()) else {
             log::set_last_error(errno());
             return false;
         };
-        // SAFETY: the network::Socket the record no longer holds.
-        unsafe { socket_free(old) };
         true
     }
 

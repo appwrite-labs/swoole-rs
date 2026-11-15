@@ -1,7 +1,7 @@
 //! MINIT's registrations, safe behind the token Zend's MINIT hands a family:
 //! constants, classes and their function aliases.
 use crate::{
-    Array, Class, ClassEntry, Function, Owned, Value,
+    Class, ClassEntry, Function, Owned, Value,
     arginfo::{ArgInfo, Table},
     bailout::Bailout,
     class::Layout,
@@ -9,16 +9,15 @@ use crate::{
     helpers::CText,
     registration::{SUCCESS, leaf},
     sys::{
-        HashTable, IS_STRING, ZEND_ACC_NOT_SERIALIZABLE, swr_zend_http_intern,
-        swr_zend_try_facade_register_functions, zend_class_entry, zend_class_implements,
-        zend_function, zend_function_entry, zend_internal_arg_info, zend_long,
-        zend_object_handlers,
+        HashTable, IS_STRING, ZEND_ACC_NOT_SERIALIZABLE, swr_zend_try_facade_register_functions,
+        zend_class_entry, zend_function, zend_function_entry, zend_internal_arg_info, zend_long,
+        zend_object_handlers, zend_string,
     },
 };
 use std::{
-    ffi::{CStr, c_int, c_void},
+    ffi::{CStr, CString, c_int, c_void},
+    io::IoSlice,
     marker::PhantomData,
-    mem::offset_of,
     ptr,
 };
 
@@ -75,6 +74,18 @@ unsafe extern "C" {
         context: extern "C" fn() -> *mut c_void,
         resume: extern "C" fn(),
     );
+    /// The class's method `lcname` (lower case), or null: one lookup in its
+    /// function table.
+    safe fn swr_zend_minit_method_find(
+        class: ClassEntry<'static>,
+        lcname: CText<'_>,
+    ) -> *mut zend_function;
+    /// `zend_class_implements(class, 1, interface)`; nothing for a null one.
+    safe fn swr_zend_minit_implements(class: ClassEntry<'static>, interface: Parent);
+    /// The lent bytes (an `IoSlice` is an iovec) interned as a new persistent
+    /// string, inside `zend_try` (nonzero for a bailout): `out` then holds the
+    /// interned string, which lives for the process when interned at MINIT.
+    safe fn swr_lent_intern(bytes: IoSlice<'_>, out: &mut *mut zend_string) -> c_int;
 }
 
 unsafe extern "C" {
@@ -120,8 +131,11 @@ impl Mshutdown {
     }
 }
 
-/// A registered class another may extend.
+/// A registered class another may extend or implement, which lives for the
+/// process: one this module registered, or Zend's or SPL's (null only before
+/// their MINIT registers them, which runs first).
 #[derive(Clone, Copy)]
+#[repr(transparent)]
 pub struct Parent(*mut zend_class_entry);
 
 impl Parent {
@@ -164,11 +178,25 @@ impl Minit {
     }
 
     /// `zend_string_init_interned(text, len, 1)` into `slot`: MINIT's strings
-    /// are interned permanently.
+    /// are interned permanently. A bailout is deferred.
     pub fn intern(&self, slot: &crate::Interned, text: &[u8]) {
-        // SAFETY: MINIT; Zend copies the bytes.
-        let string = unsafe { swr_zend_http_intern(text.as_ptr().cast(), text.len()) };
-        slot.0.store(string, std::sync::atomic::Ordering::Relaxed);
+        match self.interned(text) {
+            Ok(string) => slot.0.store(string, std::sync::atomic::Ordering::Relaxed),
+            Err(bailout) => bailout.defer(),
+        }
+    }
+
+    /// `text` interned for the process, as [`Minit::intern`] interns it.
+    /// # Errors
+    /// A contained interning bailout.
+    #[expect(
+        clippy::unused_self,
+        reason = "the token is what proves this runs at MINIT"
+    )]
+    pub(crate) fn interned(&self, text: &[u8]) -> Result<*mut zend_string, Bailout> {
+        let mut string = ptr::null_mut();
+        leaf(swr_lent_intern(IoSlice::new(text), &mut string))?;
+        Ok(string)
     }
 
     /// The module number Zend gave this module.
@@ -205,21 +233,14 @@ impl Minit {
         aliases: &[(&CStr, &CStr)],
     ) -> Result<(), Bailout> {
         let entry = registered(class);
-        // The class's own table, projected without a Rust reference to the entry.
-        let source = entry
-            .wrapping_byte_add(offset_of!(zend_class_entry, function_table))
-            .cast::<Array>();
-        // SAFETY: MINIT; a registered class, which lives for the process, has its
-        // table of internal methods. `Array` is a transparent table Zend may change.
-        let source = unsafe { &*source };
         for (method, alias) in aliases {
             let info = arg_info(methods, method).map_or(Info::NONE, Info::row);
             // Lookup lowercases the method's ASCII bytes.
-            let lower = method.to_bytes().to_ascii_lowercase();
-            let found = source.find(&lower).and_then(Value::pointer);
+            let lower = CString::new(method.to_bytes().to_ascii_lowercase()).unwrap_or_default();
+            let found = swr_zend_minit_method_find(entry, lower.as_c_str().into());
             // The class's table owns this live function, which remains live
             // and unchanged throughout the registration.
-            let function = found.map(|function| Function(function.cast(), PhantomData));
+            let function = (!found.is_null()).then_some(Function(found, PhantomData));
             self.alias_from(function, alias, info)?;
         }
         Ok(())
@@ -337,7 +358,7 @@ impl Minit {
     /// # Panics
     /// `class` is not registered.
     pub fn alias(&self, class: &Class, name: &CStr) -> Result<(), Bailout> {
-        // SAFETY: MINIT (the token) and a registered class.
+        // SAFETY: MINIT (the token).
         unsafe { crate::registration::class_alias(name.to_bytes(), registered(class), false) }
             .map(|_| ())
     }
@@ -373,7 +394,7 @@ impl Minit {
     /// `class` is not registered, has the constant already, or the name is
     /// `class`: Zend's fatal errors.
     pub fn class_constant_long(&self, class: &Class, name: &CStr, value: zend_long) {
-        let declared = swr_zend_minit_class_constant_long(declared(class), name.into(), value);
+        let declared = swr_zend_minit_class_constant_long(registered(class), name.into(), value);
         assert!(declared, "class constant {name:?} declared twice");
     }
 
@@ -382,7 +403,7 @@ impl Minit {
     /// `class` is not registered.
     pub fn class_constant_string(&self, class: &Class, name: &CStr, value: &CStr) {
         let declared =
-            swr_zend_minit_class_constant_string(declared(class), name.into(), value.into());
+            swr_zend_minit_class_constant_string(registered(class), name.into(), value.into());
         assert!(declared, "class constant {name:?} declared twice");
     }
 
@@ -392,7 +413,7 @@ impl Minit {
     /// # Panics
     /// `class` is not registered.
     pub fn sensitive_parameter(&self, class: &Class, method: &CStr, offset: u32) {
-        swr_zend_minit_sensitive_parameter(declared(class), method.into(), offset);
+        swr_zend_minit_sensitive_parameter(registered(class), method.into(), offset);
     }
 
     /// `zend::get_function(CG(function_table), name)`: the function the
@@ -455,14 +476,14 @@ impl Minit {
     )]
     fn property(&self, class: &Class, name: &CStr, value: &Owned, access: u32) {
         assert!(value.kind() < IS_STRING, "a scalar default");
-        swr_zend_minit_property(declared(class), name.into(), value, flags(access));
+        swr_zend_minit_property(registered(class), name.into(), value, flags(access));
     }
 
     /// `zend_declare_property_string` with `access` flags.
     /// # Panics
     /// `class` is not registered.
     pub fn property_string(&self, class: &Class, name: &CStr, value: &CStr, access: u32) {
-        swr_zend_minit_property_string(declared(class), name.into(), value.into(), flags(access));
+        swr_zend_minit_property_string(registered(class), name.into(), value.into(), flags(access));
     }
 
     /// A registered class, to extend.
@@ -470,7 +491,7 @@ impl Minit {
     /// `class` is not registered.
     #[must_use]
     pub fn parent(&self, class: &Class) -> Parent {
-        Parent(registered(class))
+        Parent(registered(class).as_ptr())
     }
 
     /// Zend's `Exception`.
@@ -519,8 +540,7 @@ impl Minit {
     /// # Panics
     /// `class` is not registered.
     pub fn implements(&self, class: &Class, interface: Parent) {
-        // SAFETY: MINIT, a registered class and a registered interface.
-        unsafe { zend_class_implements(registered(class), 1, interface.0) };
+        swr_zend_minit_implements(registered(class), interface);
     }
 
     /// SPL's `ArrayIterator`.
@@ -569,17 +589,12 @@ impl Info {
     }
 }
 
-/// `class`'s entry, checking it is registered.
-fn registered(class: &Class) -> *mut zend_class_entry {
-    let entry = class.entry();
-    assert!(!entry.is_null(), "a registered class");
-    entry
-}
-
 /// `class`, checking it is registered: an internal class, which lives for the
 /// process.
-fn declared(class: &Class) -> ClassEntry<'static> {
-    ClassEntry(registered(class), PhantomData)
+fn registered(class: &Class) -> ClassEntry<'static> {
+    let entry = class.handle();
+    assert!(entry.is_some(), "a registered class");
+    entry.unwrap_or_else(|| unreachable!("asserted registered"))
 }
 
 #[cfg(test)]

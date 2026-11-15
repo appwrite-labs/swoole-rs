@@ -18,9 +18,7 @@ use swoole_rs_httpbindings::{
     RequestHeader, body_prefix, compression, request_header, request_key, request_url,
     swr_v1_httpbindings_form_source, token_list_contains, token_list_fast, trim_quotes,
 };
-use swoole_rs_zend::sys::{
-    swr_zend_http_max_input_vars, swr_zend_http_treat_data, swr_zend_http_upload, zval,
-};
+use swoole_rs_zend::sys::{swr_zend_http_treat_data, swr_zend_http_upload, zval};
 use swoole_rs_zend::{Declared, Interned, Minit, Owned, OwnedArray, Value, ZStr, ZString};
 
 /// A request's multipart parser and the upload it is writing.
@@ -386,10 +384,10 @@ fn treat_data(arg: c_int, Copied(text): Copied, array: *mut zval) {
     }
 }
 
-/// `PG(max_input_vars)`.
-fn max_input_vars() -> i64 {
-    // SAFETY: reads an INI value, on the request's thread.
-    unsafe { swr_zend_http_max_input_vars() }
+unsafe extern "C" {
+    /// `PG(max_input_vars)`: one INI value of this thread's PHP is read.
+    #[link_name = "swr_zend_http_max_input_vars"]
+    safe fn max_input_vars() -> i64;
 }
 
 /// `$request->tmpfiles[] = path`, and the upload `is_uploaded_file` knows.

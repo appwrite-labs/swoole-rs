@@ -96,7 +96,7 @@ mod c {
         pub(crate) safe fn chroot(path: Text<'_>) -> c_int;
         pub(crate) safe fn mkdir(path: Text<'_>, mode: mode_t) -> c_int;
         pub safe fn malloc(size: usize) -> *mut c_void;
-        pub(crate) safe fn calloc(count: usize, size: usize) -> *mut c_void;
+        pub safe fn calloc(count: usize, size: usize) -> *mut c_void;
         /// At most `length` bytes of `text`, in a `malloc` allocation.
         pub(crate) safe fn strndup(text: Text<'_>, length: usize) -> *mut c_char;
         pub(crate) safe fn strncasecmp(left: Text<'_>, right: Text<'_>, count: usize) -> c_int;
@@ -147,6 +147,9 @@ mod c {
         #[cfg_attr(target_os = "netbsd", link_name = "__clock_gettime50")]
         pub(crate) safe fn clock_gettime(clock: libc::clockid_t, now: &mut libc::timespec)
         -> c_int;
+        /// `gettid(2)`: the calling thread's kernel id (glibc 2.30, musl 1.2.2, bionic).
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        pub(crate) safe fn gettid() -> pid_t;
         /// The id of the calling thread, for a null `thread`.
         #[cfg(target_vendor = "apple")]
         pub(crate) safe fn pthread_threadid_np(thread: libc::pthread_t, id: &mut u64) -> c_int;
@@ -228,12 +231,12 @@ mod c {
 }
 #[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
 pub use c::kqueue;
-pub use c::malloc;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 pub use c::malloc_trim;
-pub(crate) use c::{calloc, fork, getrlimit, srandom, uname};
+pub use c::{calloc, malloc};
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub use c::{epoll_create, epoll_ctl, signalfd};
+pub(crate) use c::{fork, getrlimit, srandom, uname};
 pub use c::{
     pthread_sigmask, sigaddset, sigdelset, sigemptyset, sigfillset, sigismember, sigprocmask,
 };
@@ -993,8 +996,7 @@ pub fn getpid() -> pid_t {
 #[must_use]
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub fn gettid() -> libc::c_long {
-    // SAFETY: SYS_gettid takes no arguments.
-    unsafe { libc::syscall(libc::SYS_gettid) }
+    libc::c_long::from(c::gettid())
 }
 
 /// The kernel's id for the calling thread.

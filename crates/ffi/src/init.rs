@@ -13,7 +13,7 @@ use swoole_rs_memory::members::pool;
 
 // src/fatal.c.
 unsafe extern "C" {
-    safe fn swr_v1_ffi_fatal_error(code: c_int, format: *const c_char, ...);
+    fn swr_v1_ffi_fatal_error(code: c_int, format: *const c_char, ...);
     safe fn swr_v1_ffi_stdout() -> *mut c_void;
 }
 
@@ -55,7 +55,7 @@ extern "C-unwind" fn swoole_init() {
 fn init() {
     swoole_rs_error::swoole_clear_last_error_msg();
     swoole_rs_corebase::swr_v1_core_set_stdout(swr_v1_ffi_stdout());
-    swoole_rs_corebase::swr_v1_core_set_fatal_error(swr_v1_ffi_fatal_error as *mut c_void);
+    swoole_rs_corebase::set_fatal_error(Some(swr_v1_ffi_fatal_error));
     swoole_rs_process::methods::logger_op(LoggerOp::New);
     if built_with(Switch::Debug) {
         swoole_rs_utilities::swoole_set_log_level(0);

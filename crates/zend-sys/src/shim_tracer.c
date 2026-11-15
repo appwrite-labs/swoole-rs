@@ -3,6 +3,7 @@
  * number_format before 8.3), bailout (ZEND_WRITE) and allocator (smart_str). */
 #include "shim.h"
 #include "shim_tracer.h"
+#include "shim_bytes.h"
 #include "ext/standard/php_math.h"
 #include "ext/json/php_json.h"
 #include "zend_exceptions.h"
@@ -156,10 +157,10 @@ static void json_decode_ex(zval *out, const char *text, size_t length, zend_long
     php_json_decode_ex(out, (char *) text, length, options, depth);
 }
 
-int swr_zend_try_json_decode_ex(zval *out, const char *text, size_t length, zend_long options, zend_long depth) {
+int swr_bytes_json_decode_ex(zval *out, struct iovec text, zend_long options, zend_long depth) {
     volatile int bailed = 0;
     SWR_ZEND_TRY {
-        json_decode_ex(out, text, length, options, depth);
+        json_decode_ex(out, text.iov_base, text.iov_len - 1, options, depth);
     }
     SWR_ZEND_CATCH {
         bailed = 1;

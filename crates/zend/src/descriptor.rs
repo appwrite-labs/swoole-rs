@@ -3,7 +3,7 @@
 use crate::{
     Array, Class, Value, ZStr,
     bailout::{self, Bailout},
-    sys::{IS_RESOURCE, php_stream_context, swr_zend_stream_select_fd, zend_long},
+    sys::{IS_RESOURCE, php_stream_context, zend_long},
 };
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::{marker::PhantomData, ptr, ptr::NonNull};
@@ -14,13 +14,18 @@ unsafe extern "C" {
     /// type and the two stream type numbers PHP registers at startup.
     safe fn swr_zend_stream_from_zval(value: &Value) -> *mut crate::sys::php_stream;
     /// `zend_read_property_ex` of an object zval under its own class, inside
-    /// `zend_try` (nonzero for a bailout): `found` is null (`None`) or the
-    /// initialized zval the read lends, which lives until PHP code runs.
-    fn swr_zend_event_property(
+    /// `zend_try` (nonzero for a bailout): `found` set and `out` written when
+    /// the property holds an int; nothing for any other value.
+    safe fn swr_zend_event_property_long(
         object: &Value,
         name: &ZStr,
-        found: &mut Option<&Value>,
-    ) -> std::ffi::c_int;
+        out: &mut zend_long,
+        found: &mut bool,
+    ) -> c_int;
+    /// `php_stream_cast(.., PHP_STREAM_AS_FD_FOR_SELECT ..)` of the stream a
+    /// resource zval names, inside `zend_try`: 0 with `fd` written, 1 for no
+    /// stream or descriptor, 2 when a wrapper bailed out.
+    safe fn swr_zend_stream_select_fd(value: &Value, fd: &mut c_int) -> c_int;
     /// Whether the executor's last error was fatal; if so its message, its
     /// file and its line are written, the strings as PHP keeps them until the
     /// next error. It reads the executor's globals only.
@@ -102,13 +107,8 @@ impl Value {
         if self.kind() != IS_RESOURCE {
             return Ok(None);
         }
-        let stream = swr_zend_stream_from_zval(self);
-        if stream.is_null() {
-            return Ok(None);
-        }
         let mut fd = -1;
-        // SAFETY: the live stream; the shim contains a wrapper's bailout.
-        match unsafe { swr_zend_stream_select_fd(stream, &raw mut fd) } {
+        match swr_zend_stream_select_fd(self, &mut fd) {
             2 => Err(Bailout),
             0 if fd >= 0 => Ok(Some(fd)),
             _ => Ok(None),
@@ -120,16 +120,11 @@ impl Value {
     /// # Errors
     /// A magic `__get` bailed out.
     pub fn property_long(&self, name: &ZStr) -> Result<Option<zend_long>, Bailout> {
-        if self.object().is_none() {
-            return Ok(None);
-        }
-        let mut found = None;
-        // SAFETY: a live object and name; the shim contains a magic-method
-        // bailout, and what it lends is read before any PHP runs.
-        if unsafe { swr_zend_event_property(self, name, &mut found) } != 0 {
+        let (mut long, mut found) = (0, false);
+        if swr_zend_event_property_long(self, name, &mut long, &mut found) != 0 {
             return Err(Bailout);
         }
-        Ok(found.and_then(Self::as_long))
+        Ok(found.then_some(long))
     }
 
     /// An ext/sockets `Socket`'s descriptor and whether it was closed, if this

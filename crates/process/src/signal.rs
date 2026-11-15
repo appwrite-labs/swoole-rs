@@ -4,8 +4,8 @@
 //! The signalfd and kqueue paths (`signalfd.rs`, `signal_kqueue.rs`) share the
 //! table, `SIGNALS`.
 use std::ffi::{CStr, c_int};
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU16, AtomicUsize, Ordering::Relaxed};
-use std::sync::{Mutex, PoisonError};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering::Relaxed};
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 /// `SW_SIGNO_MAX`.
 const SIGNO_MAX: usize = 128;
@@ -71,9 +71,10 @@ pub(crate) fn restore_origin(signo: c_int) {
 static TRIGGERED: [AtomicBool; SIGNO_MAX] = [const { AtomicBool::new(false) }; SIGNO_MAX];
 /// `SwooleG.signal_dispatch`: some signal is waiting for `swr_v1_signal_dispatch`.
 static PENDING: AtomicBool = AtomicBool::new(false);
-/// `swoole_signal_callback` and `sw_reactor() != nullptr`, for the simple handler.
-static CALLBACK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
-static HAS_REACTOR: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+/// `swoole_signal_callback` and `sw_reactor() != nullptr`, for the simple handler:
+/// the pair the first `signal_set` gave. Reading it takes no lock, so a signal
+/// frame may.
+static HOOKS: OnceLock<(Dispatch, HasReactor)> = OnceLock::new();
 
 /// A signal's handler as the table holds it: none, `SIG_IGN`, or a function to call
 /// with the signal's number.
@@ -186,7 +187,8 @@ fn sigaction(signo: c_int, action: &libc::sigaction) -> Option<libc::sigaction> 
 /// `swoole_signal_set(signo, handler, safety)` without signalfd or kqueue: registers
 /// `handler` and installs the safe (deferred) or simple (immediate unless a reactor
 /// runs) async handler, with every signal masked while it runs. A null `handler`
-/// removes a registered signal and puts back the action it replaced.
+/// removes a registered signal and puts back the action it replaced. `callback` and
+/// `has_reactor` are the process's for good once given: later ones are ignored.
 pub fn signal_set(
     signo: c_int,
     handler: Handler,
@@ -195,8 +197,7 @@ pub fn signal_set(
     has_reactor: HasReactor,
 ) -> Handler {
     let handler = handler.0;
-    CALLBACK.store(callback as *mut (), Relaxed);
-    HAS_REACTOR.store(has_reactor as *mut (), Relaxed);
+    HOOKS.get_or_init(|| (callback, has_reactor));
     if let Some(slot) = slot(signo) {
         if handler == 0 && slot.activated.load(Relaxed) {
             slot.reset();
@@ -226,11 +227,9 @@ extern "C" fn deferred(signo: c_int) {
     PENDING.store(true, Relaxed);
 }
 
-/// The `Dispatch` `signal_set` stored last; none before the first.
+/// The `Dispatch` the first `signal_set` stored; none before it.
 fn callback() -> Option<Dispatch> {
-    // SAFETY: the slot holds null or a `Dispatch` `signal_set` stored, and a null
-    // `Option` of a function pointer is `None`.
-    unsafe { std::mem::transmute::<*mut (), Option<Dispatch>>(CALLBACK.load(Relaxed)) }
+    HOOKS.get().map(|&(callback, _)| callback)
 }
 
 /// A handler's address, as `sigaction`'s `sa_sigaction` holds it.
@@ -242,10 +241,7 @@ fn address(handler: extern "C" fn(c_int)) -> usize {
 /// the signal frame, dropping a signal that arrives while one is running.
 extern "C" fn immediate(signo: c_int) {
     static RUNNING: AtomicBool = AtomicBool::new(false);
-    // SAFETY: the slot holds null or the `HasReactor` `signal_set` stored.
-    let has_reactor =
-        unsafe { std::mem::transmute::<*mut (), Option<HasReactor>>(HAS_REACTOR.load(Relaxed)) };
-    if has_reactor.is_some_and(|has_reactor| has_reactor()) {
+    if HOOKS.get().is_some_and(|&(_, has_reactor)| has_reactor()) {
         deferred(signo);
         return;
     }

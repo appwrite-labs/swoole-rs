@@ -9,8 +9,6 @@
 uint32_t swr_zend_http_property_offset(zend_class_entry *ce, const char *name);
 /* array_init_size on `target`, which is not released first. */
 void swr_zend_array_init_size(zval *target, uint32_t size);
-/* zend_string_init_interned, persistent: for keys interned at MINIT. */
-zend_string *swr_zend_http_intern(const char *text, size_t length);
 /* PG(max_input_vars). */
 zend_long swr_zend_http_max_input_vars(void);
 /* Append `file` to the request's `tmpfiles` and register it in

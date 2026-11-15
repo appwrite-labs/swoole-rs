@@ -19,8 +19,10 @@ zend_string *swr_bytes_url_encode(struct iovec bytes) {
     return php_url_encode(bytes.iov_base, bytes.iov_len);
 }
 
-zend_string *swr_bytes_persistent(struct iovec bytes) {
-    return zend_string_init(bytes.iov_base, bytes.iov_len, 1);
+zend_string *swr_bytes_url_decode(struct iovec bytes) {
+    zend_string *string = zend_string_init(bytes.iov_base, bytes.iov_len, 0);
+    ZSTR_LEN(string) = php_url_decode(ZSTR_VAL(string), ZSTR_LEN(string));
+    return string;
 }
 
 char *swr_bytes_estrndup(struct iovec bytes) {

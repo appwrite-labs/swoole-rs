@@ -5,12 +5,18 @@ use crate::{
     Call, ClassEntry, ZStr,
     arginfo::Table,
     sys::{
-        _zend_function__bindgen_ty_1, _zval_struct__bindgen_ty_1, IS_UNDEF, zend_class_entry,
-        zend_function, zend_function_entry, zend_internal_function, zend_object,
-        zend_object_handlers, zend_op, zend_op_array, zval,
+        _zend_function__bindgen_ty_1, zend_class_entry, zend_function, zend_function_entry,
+        zend_internal_function, zend_object, zend_object_handlers, zend_op, zend_op_array,
     },
 };
 use std::{ffi::CStr, marker::PhantomData, mem::offset_of};
+
+unsafe extern "C" {
+    /// `sw_zend_create_object_deny`'s body: a bare new object of the live class
+    /// (its declared properties undefined), then the "can not be created"
+    /// `Error`, inside `zend_try` (`bailed` set for a bailout).
+    safe fn swr_zend_object_deny(class: ClassEntry<'_>, bailed: &mut bool) -> *mut zend_object;
+}
 
 /// A live `zend_function`, borrowed for `'a`: one a frame is calling, or a
 /// resolved callable's handler. Zend may change it (its flags, its run-time
@@ -84,9 +90,8 @@ impl<'a> Function<'a> {
     #[must_use]
     #[inline]
     pub fn scope(self) -> Option<ClassEntry<'a>> {
-        let scope = self.common().scope;
         // A function's class outlives it.
-        (!scope.is_null()).then_some(ClassEntry(scope, PhantomData))
+        ClassEntry::live(self.common().scope)
     }
 
     /// `function->common.scope->name`: a method's class's name.
@@ -159,25 +164,13 @@ impl Call {
 /// # Safety
 /// Installed as `create_object`, so Zend passes a registered class.
 pub unsafe extern "C" fn create_object_deny(ce: *mut zend_class_entry) -> *mut zend_object {
-    // SAFETY: a registered class; creating an object never bails out.
-    let object = unsafe { crate::sys::zend_objects_new(ce) };
     // Per Zend, a registered class, which lives for the process.
-    let class = ClassEntry(ce, PhantomData);
-    let count = usize::try_from(class.read(|ce| ce.default_properties_count)).unwrap_or(0);
-    // `zend_objects_new` allocated the class's property slots from here.
-    let slots = object
-        .wrapping_byte_add(offset_of!(zend_object, properties_table))
-        .cast::<zval>();
-    for index in 0..count {
-        // SAFETY: as above; `ZVAL_UNDEF`.
-        unsafe {
-            (*slots.wrapping_add(index)).u1 = _zval_struct__bindgen_ty_1 {
-                type_info: IS_UNDEF,
-            };
-        }
-    }
-    // SAFETY: Zend's error construction is trapped before this callback returns.
-    if unsafe { crate::sys::swr_zend_try_facade_creation_error(ce) } != 0 {
+    let Some(class) = ClassEntry::live(ce) else {
+        return std::ptr::null_mut();
+    };
+    let mut bailed = false;
+    let object = swr_zend_object_deny(class, &mut bailed);
+    if bailed {
         crate::bailout::Bailout.defer();
     }
     crate::bailout::finish();
@@ -192,12 +185,7 @@ pub(crate) fn deny(entry: &mut zend_class_entry, _: &mut zend_object_handlers) {
 
 /// The row of `method` in a method table, with its arginfo.
 pub(crate) fn arg_info(methods: Table, method: &CStr) -> Option<&'static zend_function_entry> {
-    methods
-        .rows()
-        .iter()
-        .take_while(|entry| !entry.fname.is_null())
-        // SAFETY: a `Table` row's name is a static C string; only `END`'s is null.
-        .find(|entry| unsafe { CStr::from_ptr(entry.fname) } == method)
+    methods.find(method)
 }
 
 #[cfg(test)]
@@ -205,7 +193,7 @@ mod tests {
     use super::*;
     use crate::{
         arginfo::{ArgInfo, END, Methods, begin, entry},
-        sys::zend_execute_data,
+        sys::{zend_execute_data, zval},
     };
 
     unsafe extern "C" fn handler(_: *mut zend_execute_data, _: *mut zval) {}

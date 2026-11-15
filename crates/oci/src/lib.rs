@@ -54,15 +54,19 @@ impl<K> Clone for Live<K> {
 
 impl<K> Copy for Live<K> {}
 
-/// The kinds: `OCISvcCtx`, `OCIError`, `OCISession` and `OCIServer`.
+/// The kinds: `OCISvcCtx`, `OCIError`, `OCISession`, `OCIServer` and `OCIStmt`. A
+/// statement's defines, the buffers and the driver's callbacks over them, stay live
+/// with it.
 pub enum Svc {}
 pub enum Error {}
 pub enum Session {}
 pub enum Server {}
+pub enum Stmt {}
 
 // OCI's own declarations of the calls that take only handles and plain values,
 // with each handle typed as the kind it is. They drive that connection alone,
-// run no callback of PHP's, and report through the error handle.
+// run no callback of PHP's (a fetch runs only the driver's define callback, which
+// points OCI at the column's own buffer), and report through the error handle.
 unsafe extern "C" {
     safe fn OCISessionBegin(
         svc: Live<Svc>,
@@ -75,6 +79,21 @@ unsafe extern "C" {
     safe fn OCITransCommit(svc: Live<Svc>, err: Live<Error>, flags: Ub4) -> Sword;
     safe fn OCITransRollback(svc: Live<Svc>, err: Live<Error>, flags: Ub4) -> Sword;
     safe fn OCIPing(svc: Live<Svc>, err: Live<Error>, mode: Ub4) -> Sword;
+    safe fn OCIStmtFetch(
+        stmt: Live<Stmt>,
+        err: Live<Error>,
+        rows: Ub4,
+        orientation: Ub2,
+        mode: Ub4,
+    ) -> Sword;
+    safe fn OCIStmtFetch2(
+        stmt: Live<Stmt>,
+        err: Live<Error>,
+        rows: Ub4,
+        orientation: Ub2,
+        offset: Sb4,
+        mode: Ub4,
+    ) -> Sword;
 }
 
 unsafe extern "C" {
@@ -94,15 +113,6 @@ unsafe extern "C" {
         rowoff: Ub4,
         snap_in: *const c_void,
         snap_out: Handle,
-        mode: Ub4,
-    ) -> Sword;
-    fn OCIStmtFetch(stmt: Handle, err: Handle, rows: Ub4, orientation: Ub2, mode: Ub4) -> Sword;
-    fn OCIStmtFetch2(
-        stmt: Handle,
-        err: Handle,
-        rows: Ub4,
-        orientation: Ub2,
-        offset: Sb4,
         mode: Ub4,
     ) -> Sword;
 }
@@ -211,35 +221,30 @@ pub unsafe extern "C" fn swoole_oci_stmt_execute(
     offload(|| unsafe { OCIStmtExecute(svc, stmt, err, iters, rowoff, snap_in, snap_out, mode) })
 }
 
-/// `swoole_oci_stmt_fetch`.
-/// # Safety
-/// As `OCIStmtFetch`.
+/// `swoole_oci_stmt_fetch`: `OCIStmtFetch`, whose whole contract the handles' type carries.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_oci_stmt_fetch(
-    stmt: Handle,
-    err: Handle,
+pub extern "C" fn swoole_oci_stmt_fetch(
+    stmt: Live<Stmt>,
+    err: Live<Error>,
     rows: Ub4,
     orientation: Ub2,
     mode: Ub4,
 ) -> Sword {
-    // SAFETY: per the caller.
-    offload(|| unsafe { OCIStmtFetch(stmt, err, rows, orientation, mode) })
+    offload(|| OCIStmtFetch(stmt, err, rows, orientation, mode))
 }
 
-/// `swoole_oci_stmt_fetch2`.
-/// # Safety
-/// As `OCIStmtFetch2`.
+/// `swoole_oci_stmt_fetch2`: `OCIStmtFetch2`, whose whole contract the handles' type
+/// carries.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_oci_stmt_fetch2(
-    stmt: Handle,
-    err: Handle,
+pub extern "C" fn swoole_oci_stmt_fetch2(
+    stmt: Live<Stmt>,
+    err: Live<Error>,
     rows: Ub4,
     orientation: Ub2,
     offset: Sb4,
     mode: Ub4,
 ) -> Sword {
-    // SAFETY: per the caller.
-    offload(|| unsafe { OCIStmtFetch2(stmt, err, rows, orientation, offset, mode) })
+    offload(|| OCIStmtFetch2(stmt, err, rows, orientation, offset, mode))
 }
 
 /// `swoole_oci_trans_commit`: `OCITransCommit`, whose whole contract the handles' type carries.

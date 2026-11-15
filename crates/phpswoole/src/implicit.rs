@@ -45,8 +45,12 @@ fn implicit_fn(call: &Call) {
     let arg = call.value(2);
     let is = |candidate: &[u8]| name.eq_ignore_ascii_case(candidate);
     if is(b"fatal_error") {
-        // SAFETY: the hook MINIT stored never returns; nothing here needs a drop.
-        unsafe { swoole_rs_corebase::fatal_error(SW_ERROR_FOR_TEST as c_int, c"test") };
+        // The hook MINIT stored never returns: it exits, or ends this thread with
+        // the bailout, which goes on from this frame.
+        if let Err(bailout) = crate::swoole_fatal_error(SW_ERROR_FOR_TEST as c_int, c"test") {
+            bailout.defer();
+            return;
+        }
         // SAFETY: a literal format with no conversions.
         unsafe { php_printf(c"never be executed here\n".as_ptr()) };
     } else if is(b"bailout") {

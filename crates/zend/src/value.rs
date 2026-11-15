@@ -1,7 +1,5 @@
 //! Raw zval reads and stores, and the empty string and array.
-use crate::sys::{
-    _zval_struct__bindgen_ty_1, HashTable, zend_empty_array, zend_string, zend_value, zval,
-};
+use crate::sys::{HashTable, zend_empty_array, zend_string, zval};
 
 unsafe extern "C" {
     /// Zend's interned empty string: set at startup, before any extension code
@@ -25,19 +23,6 @@ const _: () = assert!(
     std::mem::offset_of!(zval, value) == 0,
     "the value union leads the zval"
 );
-
-/// The two stores of Zend's `ZVAL_*` setters: the value and its type info,
-/// leaving `u2` (a bucket's chain, a frame's argument count) untouched.
-/// # Safety
-/// `target` is writable and holds nothing that needs releasing; `value` is
-/// what `type_info` says it is, carrying any reference that type counts.
-#[inline]
-pub unsafe fn set(target: *mut zval, value: zend_value, type_info: u32) {
-    // SAFETY: per the caller.
-    unsafe { (*target).value = value };
-    // SAFETY: as above.
-    unsafe { (*target).u1 = _zval_struct__bindgen_ty_1 { type_info } };
-}
 
 /// `ZSTR_EMPTY_ALLOC()`: the interned empty string, which needs no reference
 /// (a zval holds it as `IS_INTERNED_STRING_EX`).

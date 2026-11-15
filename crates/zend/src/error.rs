@@ -1,12 +1,12 @@
 //! Throwing from a handler; the handler then returns and Zend unwinds.
 use crate::{
-    Call, Class,
+    Call, Class, ClassEntry,
     bailout::{self, Bailout},
     helpers::CText,
     sys::{zend_long, zend_throw_error, zend_type_error},
 };
 use std::{
-    ffi::{CStr, CString},
+    ffi::{CStr, CString, c_int},
     ptr,
 };
 
@@ -15,6 +15,20 @@ unsafe extern "C" {
     /// `IS_RESOURCE`): one of Zend's static names, or null (`None`) for any
     /// other code. It reads nothing else.
     safe fn swr_zend_type_name(kind: u32) -> Option<CText<'static>>;
+    /// `zend_throw_exception(class, message, code)` inside `zend_try`
+    /// (nonzero for a bailout): an exception of a live class (Zend's own
+    /// `Exception` for none, or for a class that is no `Throwable`). Zend copies
+    /// the message.
+    safe fn swr_zend_try_facade_throw(
+        class: Option<ClassEntry<'_>>,
+        message: CText<'_>,
+        code: zend_long,
+    ) -> c_int;
+    /// `php_error_docref(NULL, level, "%s", message)` inside `zend_try`
+    /// (nonzero for a bailout): the error handler it runs is PHP code.
+    safe fn swr_zend_try_error(level: c_int, message: CText<'_>) -> c_int;
+    /// `zend_error(level, "%s", message)`, as [`swr_zend_try_error`].
+    safe fn swr_zend_try_zend_error(level: c_int, message: CText<'_>) -> c_int;
 }
 
 /// `zend_throw_error(NULL, "%s", message)`: an `Error`. Like [`Class::throw`], from a
@@ -40,12 +54,8 @@ pub fn throw_trapped(
     message: &CStr,
     code: zend_long,
 ) -> Result<(), Bailout> {
-    let entry = class.map_or(ptr::null_mut(), Class::entry);
-    // SAFETY: a registered exception class or null; Zend copies the message,
-    // and the shim traps a bailout.
-    bailout::trapped(unsafe {
-        crate::sys::swr_zend_try_facade_throw(entry, message.as_ptr(), code)
-    })
+    let class = class.and_then(Class::class_entry);
+    bailout::trapped(swr_zend_try_facade_throw(class, message.into(), code))
 }
 
 /// `zend_get_type_by_const(kind)`: Zend's name of a value's type (`IS_NULL` to
@@ -160,8 +170,7 @@ pub fn report(level: i32, message: &CStr) -> Result<(), Bailout> {
     if bailout::pending() {
         return Err(Bailout);
     }
-    // SAFETY: on a PHP thread; the shim formats "%s" with the NUL-terminated message.
-    bailout::trapped(unsafe { crate::sys::swr_zend_try_error(level, message.as_ptr()) })
+    bailout::trapped(swr_zend_try_error(level, message.into()))
 }
 
 /// `zend_error(level, "%s", message)` (no function prefix), as [`report`].
@@ -171,6 +180,5 @@ pub fn zend_error(level: i32, message: &CStr) -> Result<(), Bailout> {
     if bailout::pending() {
         return Err(Bailout);
     }
-    // SAFETY: on a PHP thread, inside `zend_try`; "%s" takes the NUL-terminated message.
-    bailout::trapped(unsafe { crate::sys::swr_zend_try_zend_error(level, message.as_ptr()) })
+    bailout::trapped(swr_zend_try_zend_error(level, message.into()))
 }

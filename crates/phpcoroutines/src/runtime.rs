@@ -21,8 +21,8 @@ use swoole_rs_zend::{
     bailout::{self, Bailout},
     message,
     sys::{
-        swr_zend_coroutine_set_interrupt, swr_zend_interrupt_handler, zend_atomic_bool,
-        zend_execute_data, zend_fcall_info_cache, zval,
+        swr_zend_interrupt_handler, zend_atomic_bool, zend_execute_data, zend_fcall_info_cache,
+        zval,
     },
 };
 
@@ -81,14 +81,20 @@ fn original_interrupt() -> swr_zend_interrupt_handler {
 /// One more (`hold`) or one fewer active runtime: the first installs
 /// [`interrupt_function`], keeping the one Zend had, and the last restores it.
 fn hold_interrupt(hold: bool) {
+    unsafe extern "C" {
+        /// `zend_interrupt_function = handler`, returning the one before: only
+        /// [`interrupt_function`] or the handler Zend ran before it are passed.
+        safe fn swr_zend_coroutine_set_interrupt(
+            handler: swr_zend_interrupt_handler,
+        ) -> swr_zend_interrupt_handler;
+    }
     let mut hook = interrupt_hook();
     let (count, original) = &mut *hook;
     if *count <= usize::from(!hold) {
         let ours: swr_zend_interrupt_handler = Some(interrupt_function);
-        // SAFETY: Zend's interrupt function becomes ours, or again the one it ran
-        // before, which only this keeps.
-        let previous =
-            unsafe { swr_zend_coroutine_set_interrupt(if hold { ours } else { *original }) };
+        // Zend's interrupt function becomes ours, or again the one it ran before,
+        // which only this keeps.
+        let previous = swr_zend_coroutine_set_interrupt(if hold { ours } else { *original });
         if hold {
             *original = previous;
         }

@@ -668,8 +668,12 @@ fn fill(call: &Call, parsed: &Parsed, init: Option<&Value>) -> Result<(), Failur
     };
     typed.mark();
     let mut made = Owned::default();
-    // SAFETY: `ZVAL_ARR(made, array)`: `made` takes the new table's reference.
-    unsafe { value::set(made.as_ptr(), zend_value { arr: array }, IS_ARRAY_EX) };
+    let mut zval = UNDEF;
+    zval.value = zend_value { arr: array };
+    zval.u1.type_info = IS_ARRAY_EX;
+    // SAFETY: `ZVAL_ARR(made, array)`: `made`, undefined, takes the new
+    // table's reference.
+    unsafe { made.as_ptr().write(zval) };
     if let Some(init) = init
         && let Some(target) = made.array_mut()
     {

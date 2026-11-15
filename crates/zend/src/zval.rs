@@ -9,11 +9,11 @@ use crate::{
         _zval_struct__bindgen_ty_1, _zval_struct__bindgen_ty_2, HashPosition, HashTable, IS_ARRAY,
         IS_DOUBLE, IS_FALSE, IS_INDIRECT, IS_INTERNED_STRING_EX, IS_LONG, IS_NULL, IS_OBJECT,
         IS_PTR, IS_REFERENCE, IS_STR_INTERNED, IS_STRING, IS_STRING_EX, IS_TRUE, IS_UNDEF,
-        add_next_index_stringl, php_format_date, swr_zend_array_add_or_merge,
-        swr_zend_string_release, swr_zend_try_hash_update, swr_zend_try_ptr_dtor,
-        swr_zend_try_symtable_update, swr_zend_url_decode, zend_class_entry, zend_hash_add_new,
-        zend_hash_index_add, zend_hash_next_index_insert, zend_long, zend_object, zend_reference,
-        zend_string, zend_ulong, zend_value, zval, zval_ptr_dtor,
+        add_next_index_stringl, swr_zend_array_add_or_merge, swr_zend_string_release,
+        swr_zend_try_hash_update, swr_zend_try_ptr_dtor, swr_zend_try_symtable_update,
+        zend_class_entry, zend_hash_add_new, zend_hash_index_add, zend_hash_next_index_insert,
+        zend_long, zend_object, zend_reference, zend_string, zend_ulong, zend_value, zval,
+        zval_ptr_dtor,
     },
 };
 use std::{
@@ -76,21 +76,44 @@ unsafe extern "C" {
     /// `array_init(target)`: `target` holds a new, empty array in place of
     /// what it held, which is not released. No PHP code runs.
     safe fn swr_zend_array_init(target: &Owned);
-    /// `zend_read_property(scope, object, name, length, silent, rv)` inside
-    /// `zend_try` (nonzero for a bailout): `found` then holds the property's
-    /// slot, `rv` holding a computed value, or the executor's null.
-    fn swr_zend_try_facade_read(
-        scope: *mut zend_class_entry,
-        object: *mut zend_object,
-        name: *const c_char,
-        length: usize,
+    /// `zend_read_property(scope, object, name, silent, rv)` of a live object
+    /// under a class or none, inside `zend_try` (nonzero for a bailout): `rv`
+    /// then holds what it read (the property, with a reference of its own, or
+    /// a computed value), in place of what it held, which is not released.
+    /// Zend reads the lent name (an `IoSlice` is an iovec).
+    safe fn swr_lent_read_property(
+        scope: Option<crate::ClassEntry<'_>>,
+        object: crate::ObjectRef<'_>,
+        name: IoSlice<'_>,
         silent: bool,
-        rv: *mut zval,
-        found: &mut Option<&Value>,
+        rv: &Owned,
     ) -> std::ffi::c_int;
+    /// `zend_call_method(object, scope, NULL, name, result, arg1, arg2)`
+    /// inside `zend_try` (nonzero for a bailout), with the arguments given,
+    /// which Zend copies into the call; nothing is called when the object is no
+    /// `scope`. `result` then holds what it returned, in place of what it held,
+    /// which is not released.
+    safe fn swr_lent_call_method(
+        object: crate::ObjectRef<'_>,
+        scope: Option<crate::ClassEntry<'_>>,
+        name: IoSlice<'_>,
+        result: &Owned,
+        arg1: Option<&Value>,
+        arg2: Option<&Value>,
+    ) -> std::ffi::c_int;
+    /// `php_format_date(format, timestamp, local)` of the lent format: a new
+    /// string; no PHP code runs.
+    safe fn swr_lent_format_date(
+        format: IoSlice<'_>,
+        timestamp: zend_long,
+        local: bool,
+    ) -> *mut zend_string;
     /// `php_url_encode`: it reads the lent bytes (an `IoSlice` is an iovec) and
     /// returns a new string; no PHP code runs.
     safe fn swr_bytes_url_encode(bytes: IoSlice<'_>) -> *mut zend_string;
+    /// `php_url_decode` of a new string's copy of the lent bytes: them as
+    /// `urldecode()` decodes them.
+    safe fn swr_bytes_url_decode(bytes: IoSlice<'_>) -> *mut zend_string;
     /// `json_decode(text, true)` of the lent bytes (an `IoSlice` is an iovec)
     /// into `out`, in place of what it held, which is not released; false when
     /// they are not JSON. Objects decode as arrays, so no PHP code runs.
@@ -444,31 +467,18 @@ impl Value {
         name: &[u8],
         silent: bool,
     ) -> Result<Option<Owned>, bailout::Bailout> {
-        let Some(object) = self.object() else {
+        let Some(object) = self.object_ref() else {
             return Ok(None);
         };
-        let scope = scope.map_or(ptr::null_mut(), crate::ClassEntry::as_ptr);
         let rv = Owned::default();
-        let mut found = None;
-        // SAFETY: the zval holds the object while borrowed; a class or null; Zend
-        // reads `name`, and writes `rv` (undefined, this frame's) or nothing. What
-        // it finds is `rv`, a property slot of the object, which the borrow keeps
-        // alive, or the executor's null, which lives as long as it does.
-        bailout::trapped(unsafe {
-            swr_zend_try_facade_read(
-                scope,
-                object,
-                name.as_ptr().cast(),
-                name.len(),
-                silent,
-                rv.as_ptr(),
-                &mut found,
-            )
-        })?;
-        Ok(match found {
-            Some(slot) if slot.as_ptr() == rv.as_ptr() => Some(rv),
-            found => found.map(Self::copy),
-        })
+        bailout::trapped(swr_lent_read_property(
+            scope,
+            object,
+            IoSlice::new(name),
+            silent,
+            &rv,
+        ))?;
+        Ok(Some(rv))
     }
 
     /// `zend_call_method(object, scope, NULL, method, &result, args)` on the
@@ -496,7 +506,7 @@ impl Value {
             "zend_call_method takes at most two arguments"
         );
         let result = Owned::default();
-        let Some(object) = self.object() else {
+        let Some(object) = self.object_ref() else {
             return Ok(result);
         };
         if scope.is_some_and(|scope| !self.instance_of(scope)) {
@@ -506,25 +516,12 @@ impl Value {
             // Nothing is called, as upstream never ran past a bailout.
             return Err(bailout::Bailout);
         }
-        let scope = scope.map_or(ptr::null_mut(), crate::Class::entry);
-        let arg = |n: usize| args.get(n).map_or(ptr::null_mut(), |arg| arg.as_ptr());
-        #[expect(clippy::cast_possible_truncation, reason = "at most two arguments")]
-        let argc = args.len() as u32;
-        // SAFETY: the zval holds the object while borrowed, `scope` is null or
-        // a class it is an instance of, the result a slot this owns, and the
-        // arguments live values; Zend runs in the C shim's frame.
-        let called = bailout::trapped(unsafe {
-            crate::sys::swr_zend_try_call_method(
-                object,
-                scope,
-                method.as_ptr().cast(),
-                method.len(),
-                result.as_ptr(),
-                argc,
-                arg(0),
-                arg(1),
-            )
-        });
+        let scope = scope.and_then(crate::Class::class_entry);
+        let name = IoSlice::new(method);
+        let (arg1, arg2) = (args.first().copied(), args.get(1).copied());
+        let called = bailout::trapped(swr_lent_call_method(
+            object, scope, name, &result, arg1, arg2,
+        ));
         match called {
             Ok(()) => Ok(result),
             Err(bailout) => {
@@ -1079,7 +1076,8 @@ impl ZStr {
 }
 
 /// A `zend_string` reference this holds (`zend::String`), released on drop.
-pub struct ZString(*mut zend_string);
+/// Built in this crate only, from a live string's reference it gives up.
+pub struct ZString(pub(crate) *mut zend_string);
 
 impl std::ops::Deref for ZString {
     type Target = ZStr;
@@ -1121,14 +1119,7 @@ impl ZString {
     /// `php_url_decode` of a copy of `bytes`: them as `urldecode()` decodes them.
     #[must_use]
     pub fn url_decode(bytes: &[u8]) -> Self {
-        let mut buffer = crate::string::ZBuf::with_capacity(bytes.len());
-        buffer.extend_from_slice(bytes);
-        // SAFETY: the buffer's `bytes.len()` written bytes, decoded in place; the
-        // NUL the decoder ends them with fits the string's own.
-        let length = unsafe { swr_zend_url_decode(buffer.as_mut_ptr().cast(), bytes.len()) };
-        // Decoding only shortens.
-        buffer.truncate(length);
-        buffer.into_zstring()
+        Self(swr_bytes_url_decode(IoSlice::new(bytes)))
     }
 
     /// `zend_double_to_str`: `value` as PHP prints a float.
@@ -1147,17 +1138,11 @@ impl ZString {
     /// formats it.
     #[must_use]
     pub fn format_date(format: &CStr, timestamp: zend_long, local: bool) -> Self {
-        // SAFETY: Zend reads the format and returns a new string.
-        Self(unsafe { php_format_date(format.as_ptr(), format.count_bytes(), timestamp, local) })
-    }
-
-    /// Take over a reference the caller owns.
-    /// # Safety
-    /// `string` is a live string carrying a reference the caller gives up.
-    #[must_use]
-    #[inline]
-    pub unsafe fn from_raw(string: *mut zend_string) -> Self {
-        Self(string)
+        Self(swr_lent_format_date(
+            IoSlice::new(format.to_bytes()),
+            timestamp,
+            local,
+        ))
     }
 
     /// Give up the reference to whoever takes the pointer.

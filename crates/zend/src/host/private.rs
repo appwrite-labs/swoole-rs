@@ -11,6 +11,13 @@ use std::{
 unsafe extern "C" {
     /// `EG(exception)`: one pointer of the executor's is read; null for none.
     safe fn swr_zend_facade_exception() -> *mut zend_object;
+    /// `zend_exception_error(EG(exception), E_ERROR)` inside `zend_try`, as
+    /// `swr_zend_try` returns: nothing without an exception.
+    safe fn swr_zend_try_uncaught_exception() -> c_int;
+    /// `sw_callable_warning(message)` inside `zend_try` (nonzero for a
+    /// bailout): it records the error and raises the warning, whose user
+    /// handler runs PHP code.
+    safe fn swr_zend_try_callable_warning(message: crate::helpers::CText<'_>) -> c_int;
 }
 
 fn bailed(code: c_int) -> bool {
@@ -52,14 +59,7 @@ pub fn exception() -> *mut zend_object {
 /// The report bailed out, as an `E_ERROR` does.
 pub fn uncaught_exception() -> Result<(), bailout::Bailout> {
     // Observed only after the preceding call returned.
-    let exception = exception();
-    if exception.is_null() {
-        return Ok(());
-    }
-    // SAFETY: the exception the executor holds, live until Zend clears it;
-    // the reporter is C and runs inside the C trap, so a bailout crosses no
-    // Rust frame.
-    unsafe { bailout::trap(sys::swr_zend_facade_exception_error, exception.cast()) }
+    bailout::trapped(swr_zend_try_uncaught_exception())
 }
 
 /// [`uncaught_exception`], its bailout deferred.
@@ -73,12 +73,7 @@ pub(super) fn callable_warning(message: &CStr) {
     let reported = if bailout::pending() {
         Err(bailout::Bailout)
     } else {
-        // SAFETY: Swoole's C warning leaf, which records the error and raises
-        // the warning with the NUL-terminated message; the shim's setjmp sits
-        // between this frame and it.
-        bailout::trapped(unsafe {
-            sys::swr_zend_try_report(Some(sys::swr_zend_callable_warning), message.as_ptr())
-        })
+        bailout::trapped(swr_zend_try_callable_warning(message.into()))
     };
     bailout::defer(reported);
 }

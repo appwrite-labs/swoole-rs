@@ -495,9 +495,13 @@ fn sync_connect_through_socks5_routes_and_handshakes() {
         Handle(client).proxy_state(Proxy::Socks5),
         Some(SOCKS5_READY)
     );
-    let proxy = Handle(client).proxy(Proxy::Socks5).unwrap();
-    assert_eq!(&*proxy.string(3), b"example.test");
-    assert_eq!(proxy.fields().target_port, 80);
+    let (target, target_port) = Handle(client)
+        .with_proxy(Proxy::Socks5, |proxy| {
+            (proxy.string(3).to_vec(), proxy.fields().target_port)
+        })
+        .unwrap();
+    assert_eq!(target, b"example.test");
+    assert_eq!(target_port, 80);
     assert_eq!(
         Handle(client).get().server_host.borrow().to_bytes(),
         b"proxy.test"
@@ -696,16 +700,10 @@ fn framed_packages_reach_on_receive_until_the_socket_waits_to_close() {
         data: c"data".as_ptr().cast(),
     };
     package.info.len = 4;
-    assert_eq!(
-        unsafe { on_package(core::ptr::null(), socket, &package) },
-        OK
-    );
+    assert_eq!(on_package(core::ptr::null(), socket, &package), OK);
     assert_eq!(taken(), ["call Receive 4"]);
     sock().output.close_wait = true;
-    assert_eq!(
-        unsafe { on_package(core::ptr::null(), socket, &package) },
-        ERR
-    );
+    assert_eq!(on_package(core::ptr::null(), socket, &package), ERR);
     free(client);
 }
 

@@ -40,19 +40,16 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::HookType;
 
 use std::{
-    ffi::{CStr, c_void},
+    ffi::{CStr, c_int, c_void},
     sync::atomic::{AtomicU32, Ordering},
 };
-use swoole_rs_corebase::{Switch, built_with};
+use swoole_rs_corebase::{Switch, built_with, sys::Text};
 use swoole_rs_phpstubs::runtime;
 use swoole_rs_zend::{
     Call, Class, E_WARNING, Message, Minit,
     bailout::{self, Bailout},
     message,
-    sys::{
-        swr_zend_runtime_find_class, swr_zend_stream_factory, zend_class_entry,
-        zend_register_class_alias_ex, zif_handler,
-    },
+    sys::{swr_zend_stream_factory, zif_handler},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -409,6 +406,15 @@ fn wrappers(host: &mut impl Host, requested: u32, installed: u32) {
 
 /// `hook_mongodb`: alias `MongoDB\Client` to the library's class.
 fn mongodb(requested: u32, installed: u32) -> Result<(), Bailout> {
+    unsafe extern "C" {
+        /// The alias `name` (its length the name's) of a class Zend's table holds.
+        safe fn zend_register_class_alias_ex(
+            name: Text<'_>,
+            length: usize,
+            ce: functions::ClassRef,
+            persistent: bool,
+        ) -> c_int;
+    }
     const ALIAS: &CStr = c"MongoDB\\Client";
     if transition(requested, installed, flags::MONGODB) != Some(true) || class(ALIAS).is_some() {
         return Ok(());
@@ -416,8 +422,7 @@ fn mongodb(requested: u32, installed: u32) -> Result<(), Bailout> {
     let Some(ce) = class(c"Swoole\\MongoDB\\Client") else {
         return Ok(());
     };
-    // SAFETY: a registered class and a NUL-terminated name.
-    if unsafe { zend_register_class_alias_ex(ALIAS.as_ptr(), ALIAS.count_bytes(), ce, true) } != 0 {
+    if zend_register_class_alias_ex(ALIAS.into(), ALIAS.count_bytes(), ce, true) != 0 {
         let text = swoole_rs_zend::message!(
             "Cannot declare class {}, because the name is already in use",
             ALIAS.to_string_lossy()
@@ -428,10 +433,15 @@ fn mongodb(requested: u32, installed: u32) -> Result<(), Bailout> {
 }
 
 /// A class already declared (no autoloading).
-fn class(name: &CStr) -> Option<*mut zend_class_entry> {
-    // SAFETY: a NUL-terminated name and its length.
-    let ce = unsafe { swr_zend_runtime_find_class(name.as_ptr(), name.count_bytes()) };
-    (!ce.is_null()).then_some(ce)
+fn class(name: &CStr) -> Option<functions::ClassRef> {
+    unsafe extern "C" {
+        /// The class `name` (its length the name's) names, or none.
+        safe fn swr_zend_runtime_find_class(
+            name: Text<'_>,
+            length: usize,
+        ) -> Option<functions::ClassRef>;
+    }
+    swr_zend_runtime_find_class(name.into(), name.count_bytes())
 }
 
 /// `zend_throw_exception(swoole_exception_ce, message, code)`.

@@ -151,7 +151,7 @@ swoole::Logger *sw_logger();
 
 #define swoole_sys_warning(str, ...) SWR_UTILS_LOG_RUN(6, 0, 0, swoole_set_last_error(errno), swr_facts = swoole_rs_utilities::log_level_facts(0, swoole_get_log_level()), 0, 0, (sw_snprintf(sw_error, SW_ERROR_MSG_SIZE, "%s(): " str ", Error: %s[%d]", __SW_FUNC__, ##__VA_ARGS__, swoole_strerror(errno), errno)), swr_level)
 
-#define swoole_fatal_error(code, str, ...) ((void (*)(int, const char *, ...)) swr_v1_core_fatal_error())(code, str, ##__VA_ARGS__)
+#define swoole_fatal_error(code, str, ...) swr_v1_core_fatal_error()(code, str, ##__VA_ARGS__)
 
 #define swoole_error_log(level, error, str, ...) SWR_UTILS_LOG_RUN(7, 0, 0, swoole_set_last_error(error), if (swoole_rs_utilities::LogNumericLevel<decltype((level))>::value) { swr_facts = swoole_rs_utilities::log_complete_condition(swoole_rs_utilities::log_numeric_admit(swoole_rs_utilities::log_level_facts((level), swoole_get_log_level())) && swoole_rs_utilities::log_ignored_result(swoole_is_ignored_error(error))); } else { swr_facts = swoole_rs_utilities::log_complete_condition((level >= swoole_get_log_level() && !swoole_is_ignored_error(error)) ? true : false); }, 0, swoole_is_ignored_error(error), (sw_snprintf(sw_error, SW_ERROR_MSG_SIZE, "%s() (ERRNO %d): " str, __SW_FUNC__, error, ##__VA_ARGS__)), level)
 

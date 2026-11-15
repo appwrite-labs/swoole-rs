@@ -17,7 +17,7 @@ const CHUNK: usize = 1 << 16;
 ///
 /// Outside a coroutine it raises upstream's fatal error, which does not return.
 pub fn exec(command: &CStr, errors: bool, status: &mut c_int) -> Option<Vec<u8>> {
-    crate::wait_event::native::current();
+    _ = crate::wait_event::native::current();
     let Some((fd, pid)) = swoole_rs_corebase::swoole_shell_exec(command, errors) else {
         swoole_rs_corebase::log::sys_warning(
             c"exec",
@@ -26,7 +26,8 @@ pub fn exec(command: &CStr, errors: bool, status: &mut c_int) -> Option<Vec<u8>>
         return None;
     };
     // `SocketImpl socket(fd, SW_SOCK_UNIX_STREAM)`, which takes the pipe.
-    let socket = crate::co_socket::make(fd, 0, SocketType::SW_SOCK_UNIX_STREAM as c_int, 0, false);
+    let owned = crate::co_socket::owned(fd, 0, SocketType::SW_SOCK_UNIX_STREAM as c_int, 0);
+    let socket = owned.co();
     let mut output = Vec::new();
     let mut chunk = vec![0; CHUNK];
     loop {
@@ -37,7 +38,6 @@ pub fn exec(command: &CStr, errors: bool, status: &mut c_int) -> Option<Vec<u8>>
         output.extend_from_slice(chunk.get(..filled).unwrap_or_default());
     }
     socket.close();
-    // SAFETY: the socket `make` made, which nothing uses afterwards.
-    unsafe { crate::co_socket::swr_v1_hook_co_socket_free(socket.this()) };
+    drop(owned);
     (system_waitpid_safe(pid, Some(status), 0) == pid).then_some(output)
 }

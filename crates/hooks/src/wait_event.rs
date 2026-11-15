@@ -178,30 +178,15 @@ pub fn wait_event(fd: i32, events: Events, timeout: f64) -> Option<Events> {
 /// The event waiter's reactor socket and coroutine: upstream's `make_socket`,
 /// `swoole_event_add`/`del` and `Coroutine::yield_ex`.
 pub(crate) mod native {
-    use core::ffi::{c_int, c_void};
+    use core::ffi::c_int;
     use swoole_rs_corebase::constants::FdType;
     use swoole_rs_corebase::log;
     use swoole_rs_reactor::event_api::swoole_event_is_available;
     use swoole_rs_reactor::{Events, SocketRecord};
     use swoole_rs_tls::event_socket::EventSocket;
 
-    /// `SW_ERROR_CO_OUT_OF_COROUTINE`.
-    const OUT_OF_COROUTINE: c_int = 10001;
-
     /// `Coroutine::get_current_safe()`.
-    pub(crate) extern "C" fn current() -> *mut c_void {
-        let co = swoole_rs_coroutine::current().cast::<c_void>();
-        if co.is_null() {
-            // SAFETY: Swoole's fatal error hook; this frame owns nothing.
-            unsafe {
-                swoole_rs_corebase::fatal_error(
-                    OUT_OF_COROUTINE,
-                    c"API must be called in the coroutine",
-                );
-            }
-        }
-        co
-    }
+    pub(crate) use swoole_rs_coroutine::current_safe as current;
 
     /// `SW_ERROR_WRONG_OPERATION`: there is no event loop to register with.
     const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;

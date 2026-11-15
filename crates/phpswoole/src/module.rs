@@ -13,18 +13,15 @@ use std::{
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::sys::Text;
-use swoole_rs_corebase::{
-    log::set_last_error, swr_v1_core_set_fatal_error, swr_v1_core_set_print_backtrace,
-};
+use swoole_rs_corebase::{log::set_last_error, set_fatal_error, swr_v1_core_set_print_backtrace};
 use swoole_rs_zend::{
     Call, Class, E_WARNING,
     bailout::{self, Bailout},
     contain_with, report,
     sys::{
-        HashTable, swr_zend_after_fork, swr_zend_execute_ex_reset, swr_zend_execute_ex_restore,
-        swr_zend_fatal_error, swr_zend_leak_check, swr_zend_module_globals,
-        swr_zend_print_stack_trace, swr_zend_register_shutdown_function,
-        swr_zend_runtime_call_handler, swr_zend_try_hook, zend_class_entry,
+        HashTable, swr_zend_after_fork, swr_zend_fatal_error, swr_zend_leak_check,
+        swr_zend_module_globals, swr_zend_print_stack_trace, swr_zend_runtime_call_handler,
+        swr_zend_try_hook, zend_class_entry,
     },
 };
 
@@ -340,11 +337,12 @@ pub(crate) enum Step {
             feature = "pgsql",
             feature = "oci",
             feature = "sqlite",
-            feature = "firebird"
+            feature = "firebird",
+            feature = "ssh2"
         )),
         expect(
             dead_code,
-            reason = "only the bundled PDO drivers have MSHUTDOWN steps that take the token"
+            reason = "only the bundled PDO drivers and ssh2 have MSHUTDOWN steps that take the token"
         )
     )]
     Shutdown(fn(&swoole_rs_zend::Mshutdown)),
@@ -425,7 +423,7 @@ pub(crate) fn startup(minit: &swoole_rs_zend::Minit) {
         M(families.name_resolver_minit),
     ]);
     steps.extend(optional::minit());
-    steps.extend([T(tracer_minit), H(php_hooks), H(ready)]);
+    steps.extend([T(tracer_minit), H(php_hooks), T(ready)]);
     bailout::defer(run(steps, Phase::Minit(minit)));
 }
 
@@ -480,7 +478,7 @@ pub fn codecs() -> u32 {
 /// MINIT's end: Swoole's fatal errors become `Swoole\Error`s and its
 /// backtraces PHP's (`SwooleG.fatal_error` and `SwooleG.print_backtrace`).
 extern "C" fn php_hooks() {
-    swr_v1_core_set_fatal_error(swr_zend_fatal_error as *const () as *mut c_void);
+    set_fatal_error(Some(swr_zend_fatal_error));
     swr_v1_core_set_print_backtrace(swr_zend_print_stack_trace as *const () as *mut c_void);
 }
 
@@ -523,11 +521,11 @@ extern "C" fn core_startup() {
 
 /// MINIT's end: the ini's socket buffer size, macOS's `pcre.jit` and the known
 /// strings.
-extern "C" fn ready() {
+fn ready(minit: &swoole_rs_zend::Minit) {
     let size = globals().socket_buffer_size.get();
     swoole_rs_reactor::SOCKET_DEFAULTS.set_buffer_size(size.c_cast::<u32>());
     swr_phpswoole_pcre_jit_off();
-    swoole_rs_zend::host::known_init();
+    swoole_rs_zend::host::known_init(minit);
 }
 
 /// `php_swoole_load_library()`, the bundled PHP library (host.c), inside `zend_try`.
@@ -605,6 +603,16 @@ pub unsafe extern "C" fn swr_v1_phpswoole_mshutdown(_kind: c_int, _module_number
 /// # Safety
 /// Zend's RINIT.
 pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, _module_number: c_int) -> c_int {
+    /// The `zend_execute_ex` hook the reset below replaced, which only it makes.
+    #[repr(transparent)]
+    struct Replaced(*mut c_void);
+    unsafe extern "C" {
+        /// `zend_execute_ex = execute_ex`, returning the hook it replaced: in
+        /// RINIT, which this function's contract is, before any PHP code runs.
+        safe fn swr_zend_execute_ex_reset() -> Replaced;
+        /// `zend_execute_ex = hook`, the one the reset replaced.
+        safe fn swr_zend_execute_ex_restore(hook: Replaced);
+    }
     let globals = globals();
     if !globals.cli.get() {
         return SUCCESS;
@@ -617,14 +625,12 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, _module_number: c_
     if globals.enable_library.get() && swr_zend_compiling_preload() == 0 {
         // xdebug hooks zend_execute_ex, under which the library does not load
         // correctly (swoole/swoole-src#5182): load it under execute_ex.
-        // SAFETY: RINIT, before any PHP code runs.
-        let hook = unsafe { swr_zend_execute_ex_reset() };
+        let hook = swr_zend_execute_ex_reset();
         if let Err(bailed) = load_library() {
             bailout::raise(Err(bailed));
             return SUCCESS;
         }
-        // SAFETY: the hook replaced above.
-        unsafe { swr_zend_execute_ex_restore(hook) };
+        swr_zend_execute_ex_restore(hook);
     }
     swr_zend_signals_uncheck();
     let Some(families) = families() else {
@@ -689,8 +695,11 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, _module_number
 /// `php_swoole_register_shutdown_function(function)`, during a request, with
 /// the name of a registered global function.
 pub fn php_swoole_register_shutdown_function(function: &CStr) {
-    // SAFETY: Zend copies the name into the request's shutdown functions.
-    unsafe { swr_zend_register_shutdown_function(function.as_ptr()) };
+    unsafe extern "C" {
+        /// Zend copies the name into the request's shutdown functions.
+        safe fn swr_zend_register_shutdown_function(name: Text<'_>);
+    }
+    swr_zend_register_shutdown_function(function.into());
 }
 
 swoole_rs_zend::handlers! {

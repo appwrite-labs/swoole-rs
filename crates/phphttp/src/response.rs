@@ -9,7 +9,7 @@ use crate::{
     send, websocket,
 };
 use std::{
-    ffi::{CString, c_int, c_void},
+    ffi::{CString, c_int},
     sync::atomic::Ordering::Relaxed,
 };
 use swoole_rs_corebase::{CCast, HookType, swoole_call_hook, swoole_isset_hook};
@@ -214,17 +214,14 @@ fn write(call: &Call) {
 
 /// `http_response_after`: the server's and the hooks' after-response step.
 fn after(ctx: Ctx) -> Result<(), Bailout> {
-    unsafe extern "C" fn hooks(ctx: *mut c_void) {
-        // SAFETY: the hooks take the context, as upstream passed it. The
-        // frame owns nothing a bailout out of a hook would skip.
-        unsafe { swoole_call_hook(HookType::AFTER_RESPONSE, ctx) };
-    }
     context::after_response(ctx);
     if !swoole_isset_hook(HookType::AFTER_RESPONSE) {
         return Ok(());
     }
-    // SAFETY: a live context; the trap's setjmp sits in C, below `hooks`.
-    unsafe { swoole_rs_zend::bailout::trap(hooks, ctx.raw()) }
+    swoole_rs_zend::contain_with(|| {
+        // SAFETY: the hooks take the live context, as upstream passed it.
+        unsafe { swoole_call_hook(HookType::AFTER_RESPONSE, ctx.raw()) };
+    })
 }
 
 fn end(call: &Call) {

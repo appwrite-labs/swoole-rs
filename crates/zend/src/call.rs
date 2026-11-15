@@ -83,7 +83,7 @@ impl Call {
 
     /// The return slot, live for the handler (`new`).
     #[inline]
-    fn ret(&self) -> &Value {
+    pub(crate) fn ret(&self) -> &Value {
         // SAFETY: Zend's live return slot, which nothing else frees or
         // overwrites while the handler runs; `Value` is a transparent zval.
         unsafe { &*self.value.cast::<Value>() }

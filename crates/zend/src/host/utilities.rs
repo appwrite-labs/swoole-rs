@@ -14,6 +14,10 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_class_alias(
 ) -> c_int {
     // SAFETY: per the caller, `length` live bytes.
     let name = unsafe { std::slice::from_raw_parts(name.cast::<u8>(), length) };
+    // A registered class lives for the process.
+    let Some(entry) = crate::ClassEntry::live(entry) else {
+        return -1;
+    };
     // SAFETY: MINIT, which the SDK's class registration runs in, and its
     // registered CE.
     let result = unsafe { crate::registration::class_alias(name, entry, true) };

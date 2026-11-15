@@ -18,7 +18,8 @@ unsafe extern "C" {
     /// retaining what it returns: nonzero for a bailout, else `result` holds the
     /// retained entry, or none after the warning of a pattern that failed.
     safe fn swr_phpstdext_pcre_cache(regex: &ZStr, result: &mut Option<Pattern>) -> u8;
-    fn swr_phpstdext_pcre_release(entry: NonNull<c_void>);
+    /// `php_pcre_pce_decref` of the reference the pattern held, which it gives up.
+    safe fn swr_phpstdext_pcre_release(entry: Pattern);
     fn swr_phpstdext_pcre_match(
         entry: NonNull<c_void>,
         subject: *mut zend_string,
@@ -32,16 +33,11 @@ unsafe extern "C" {
 }
 
 /// A retained PHP PCRE cache entry, which only `swr_phpstdext_pcre_cache`
-/// makes. Release is native refcount/memory work and cannot run PHP code, so a
-/// contained matching bailout still drops this owner.
+/// makes, holding one reference until `swr_phpstdext_pcre_release` takes it: it is
+/// neither `Copy` nor `Clone`, so the reference goes once. Release is native
+/// refcount/memory work and cannot run PHP code.
 #[repr(transparent)]
 struct Pattern(NonNull<c_void>);
-impl Drop for Pattern {
-    fn drop(&mut self) {
-        // SAFETY: this owner retains exactly one live compiled-pattern reference.
-        unsafe { swr_phpstdext_pcre_release(self.0) };
-    }
-}
 
 /// Upstream's `php_do_pcre_match` once its arguments parsed.
 fn match_pattern(
@@ -62,7 +58,7 @@ fn match_pattern(
     let mut count = UNDEF;
     // SAFETY: PHP borrows the retained pattern, subject and writable result slots
     // inside a native trap, below the Pattern owner and all caller frames.
-    swoole_rs_zend::bailout::trapped(i32::from(unsafe {
+    let bailed = unsafe {
         swr_phpstdext_pcre_match(
             compiled.0,
             subject.as_ptr(),
@@ -73,7 +69,10 @@ fn match_pattern(
             flags,
             offset,
         )
-    }))
+    };
+    // The trap returned, bailout or not: the reference goes either way.
+    swr_phpstdext_pcre_release(compiled);
+    swoole_rs_zend::bailout::trapped(i32::from(bailed))
 }
 
 /// `PHP_JSON_OBJECT_AS_ARRAY`.

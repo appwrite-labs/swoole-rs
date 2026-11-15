@@ -73,16 +73,7 @@ mod co {
     pub(super) use swoole_rs_coroutine::{Resume, resume, yield_resumed, yield_timed};
 
     /// `Coroutine::get_current_safe()`.
-    pub(super) fn current() -> *mut c_void {
-        let co = swoole_rs_coroutine::current().cast::<c_void>();
-        if co.is_null() {
-            // SAFETY: Swoole's fatal error hook; this frame owns nothing.
-            unsafe {
-                swoole_rs_corebase::fatal_error(10001, c"API must be called in the coroutine");
-            }
-        }
-        co
-    }
+    pub(super) use swoole_rs_coroutine::current_safe as current;
 
     pub(super) fn suspending(co: *mut c_void) -> bool {
         let co = co.cast::<Coroutine>();

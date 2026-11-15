@@ -28,4 +28,8 @@ bool swr_zend_minit_sensitive_parameter(zend_class_entry *ce, const char *lcname
 /* cfg_get_string(name): the php.ini entry's string, which the configuration
  * keeps for the process; null when it is unset or no string (an array entry). */
 const char *swr_zend_minit_ini_string(const char *name);
+/* `ce`'s method `lcname` (lower case), or null. */
+zend_function *swr_zend_minit_method_find(zend_class_entry *ce, const char *lcname);
+/* zend_class_implements(ce, 1, interface); nothing for a null interface. */
+void swr_zend_minit_implements(zend_class_entry *ce, zend_class_entry *interface);
 #endif
