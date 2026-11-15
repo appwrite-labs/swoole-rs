@@ -329,13 +329,13 @@ impl Item {
 
     /// `ArrayItem::compare`, for `zend_hash_sort`. Unsupported pairs throw
     /// upstream's `Error` and sort after.
-    pub(crate) fn compare(&self, other: &Self) -> i32 {
+    pub(crate) fn compare(&self, other: &Self) -> Ordering {
         let (a, b) = (self, other);
         // Upstream's `TYPE_PAIR`, whose collisions between its own types and
         // Zend's this keeps.
         let pair = |x: Kind, y: Kind| ((x as u32) << 4) | y as u32;
         match pair(a.kind, b.kind) {
-            p if p == pair(Kind::Long, Kind::Long) => sign(a.lval().cmp(&b.lval())),
+            p if p == pair(Kind::Long, Kind::Long) => a.lval().cmp(&b.lval()),
             p if p == pair(Kind::Double, Kind::Long) => {
                 normalize(a.dval() - b.lval().c_cast::<f64>())
             }
@@ -346,7 +346,7 @@ impl Item {
             {
                 #[expect(clippy::float_cmp, reason = "upstream compares with ==")]
                 if a.dval() == b.dval() {
-                    0
+                    Ordering::Equal
                 } else {
                     normalize(a.dval() - b.dval())
                 }
@@ -360,41 +360,49 @@ impl Item {
             ]
             .contains(&p) =>
             {
-                0
+                Ordering::Equal
             }
-            p if p == pair(Kind::Null, Kind::True) => -1,
-            p if p == pair(Kind::True, Kind::Null) => 1,
+            p if p == pair(Kind::Null, Kind::True) => Ordering::Less,
+            p if p == pair(Kind::True, Kind::Null) => Ordering::Greater,
             p if p == pair(Kind::String, Kind::String) => smart_strcmp(a.text(), b.text()),
             p if p == pair(Kind::Null, Kind::String) => {
                 if b.text().is_empty() {
-                    0
+                    Ordering::Equal
                 } else {
-                    -1
+                    Ordering::Less
                 }
             }
-            p if p == pair(Kind::String, Kind::Null) => i32::from(!a.text().is_empty()),
+            p if p == pair(Kind::String, Kind::Null) => {
+                if a.text().is_empty() {
+                    Ordering::Equal
+                } else {
+                    Ordering::Greater
+                }
+            }
             p if p == pair(Kind::Long, Kind::String) => long_to_string(a.lval(), b.text()),
-            p if p == pair(Kind::String, Kind::Long) => -long_to_string(b.lval(), a.text()),
+            p if p == pair(Kind::String, Kind::Long) => {
+                long_to_string(b.lval(), a.text()).reverse()
+            }
             p if p == pair(Kind::Double, Kind::String) => {
                 if a.dval().is_nan() {
-                    1
+                    Ordering::Greater
                 } else {
                     double_to_string(a.dval(), b.text())
                 }
             }
             p if p == pair(Kind::String, Kind::Double) => {
                 if b.dval().is_nan() {
-                    1
+                    Ordering::Greater
                 } else {
-                    -double_to_string(b.dval(), a.text())
+                    double_to_string(b.dval(), a.text()).reverse()
                 }
             }
-            p if p == pair(Kind::Object, Kind::Null) => 1,
-            p if p == pair(Kind::Null, Kind::Object) => -1,
+            p if p == pair(Kind::Object, Kind::Null) => Ordering::Greater,
+            p if p == pair(Kind::Null, Kind::Object) => Ordering::Less,
             _ => {
                 // A sort Zend runs inside a handler.
                 swoole_rs_zend::throw_error(c"Unsupported operand types");
-                1
+                Ordering::Greater
             }
         }
     }
@@ -406,48 +414,30 @@ fn socket_error(message: &std::ffi::CStr) {
     swoole_rs_phpswoole::exception().throw(message, i64::from(errno));
 }
 
-fn sign(ordering: Ordering) -> i32 {
-    match ordering {
-        Ordering::Less => -1,
-        Ordering::Equal => 0,
-        Ordering::Greater => 1,
-    }
-}
-
-/// `ZEND_NORMALIZE_BOOL` of a double (0 for NaN).
-fn normalize(value: f64) -> i32 {
-    if value > 0.0 {
-        1
-    } else if value < 0.0 {
-        -1
-    } else {
-        0
-    }
+/// `ZEND_NORMALIZE_BOOL` of a double (equal for NaN).
+fn normalize(value: f64) -> Ordering {
+    value.partial_cmp(&0.0).unwrap_or(Ordering::Equal)
 }
 
 /// `zendi_smart_strcmp`.
-fn smart_strcmp(a: &[u8], b: &[u8]) -> i32 {
+fn smart_strcmp(a: &[u8], b: &[u8]) -> Ordering {
     ZString::new(a).smart_cmp(&ZString::new(b))
 }
 
-/// `zend_binary_strcmp`, normalized: the bytes in order, a prefix first.
-fn binary_strcmp(a: &[u8], b: &[u8]) -> i32 {
-    sign(a.cmp(b))
-}
-
 /// Upstream's `compare_long_to_string`.
-fn long_to_string(lval: i64, text: &[u8]) -> i32 {
+fn long_to_string(lval: i64, text: &[u8]) -> Ordering {
     match numeric(text) {
-        (kind, number, _) if kind == IS_LONG.c_cast::<u8>() => sign(lval.cmp(&number)),
+        (kind, number, _) if kind == IS_LONG.c_cast::<u8>() => lval.cmp(&number),
         (kind, _, number) if kind == IS_DOUBLE.c_cast::<u8>() => {
             normalize(lval.c_cast::<f64>() - number)
         }
-        _ => binary_strcmp(lval.to_string().as_bytes(), text),
+        // `zend_binary_strcmp`: the bytes in order, a prefix first.
+        _ => lval.to_string().as_bytes().cmp(text),
     }
 }
 
 /// Upstream's `compare_double_to_string`.
-fn double_to_string(dval: f64, text: &[u8]) -> i32 {
+fn double_to_string(dval: f64, text: &[u8]) -> Ordering {
     match numeric(text) {
         (kind, number, _) if kind == IS_LONG.c_cast::<u8>() => {
             normalize(dval - number.c_cast::<f64>())
@@ -455,14 +445,14 @@ fn double_to_string(dval: f64, text: &[u8]) -> i32 {
         #[expect(clippy::float_cmp, reason = "upstream compares with ==")]
         (kind, _, number) if kind == IS_DOUBLE.c_cast::<u8>() => {
             if dval == number {
-                0
+                Ordering::Equal
             } else {
                 normalize(dval - number)
             }
         }
         _ => {
             let string = ZString::from_double(dval);
-            binary_strcmp(string.bytes(), text)
+            string.bytes().cmp(text)
         }
     }
 }
