@@ -4,7 +4,7 @@ use crate::fixed::{self, Fixed, Layout};
 use std::mem;
 use std::ptr::NonNull;
 use swoole_rs_corebase::log::last_error;
-use swoole_rs_corebase::{sw_free, sw_malloc};
+use swoole_rs_corebase::sw_malloc;
 
 // `swoole::FixedPool`, as upstream's fixed_pool TESTs use it: nothing else constructs a
 // pool over an arena of its own (the table lays its collision pool out in its own).
@@ -26,8 +26,8 @@ unsafe fn release(shared: bool, memory: *mut c_void) {
     if shared {
         Shm(Cell::new(memory)).free();
     } else {
-        // SAFETY: as the caller promises.
-        unsafe { sw_free(memory) };
+        // SAFETY: as the caller promises: `sw_free(memory)`, libc's allocator.
+        unsafe { libc::free(memory) };
     }
 }
 

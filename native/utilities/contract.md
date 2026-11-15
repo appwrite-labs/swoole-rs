@@ -1,7 +1,7 @@
 # Utilities ABI
 
 Feature bit 512 (`utilities`). Patches `include/swoole.h`; this directory's
-`swoole_log.h`, `swoole_hash.h` and `swoole_version.h` replace
+`swoole_log.h` and `swoole_version.h` replace
 upstream's and keep what C++ and the utilities gates use; nothing built includes upstream's
 `swoole_util.h`. Declarations are in
 [swoole_rs_utilities.h](swoole_rs_utilities.h). Tests:
@@ -26,7 +26,8 @@ upstream's and keep what C++ and the utilities gates use; nothing built includes
 
 ## Hashing and logging helpers
 
-- `swoole_hash_php`/`_jenkins`/`_austin` (`crates/utilities/src/misc.rs`): 64-bit
+- `swoole_hash_php`/`_jenkins`/`_austin` (`crates/utilities/src/misc.rs`, Rust functions
+  over a byte slice; no C++ calls them, so they have no upstream symbol): 64-bit
   wrapping DJBX33A, Jenkins (original u32/u32/u64 mix and truncated block counter),
   Austin (64-bit state, signed-int promotions), promoting the host `char`. Austin has
   undefined negative left shifts on high bytes upstream; only ASCII Austin input is
