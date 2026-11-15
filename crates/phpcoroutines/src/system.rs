@@ -18,13 +18,19 @@ use swoole_rs_zend::{method_table, sys as z};
 
 use swoole_rs_hooks::resolve::{system_getaddrinfo, system_gethostbyname};
 use swoole_rs_hooks::sleep::system_sleep;
-use swoole_rs_hooks::stdio::swoole_coroutine_statvfs;
+
 // `swoole_async_dns_lookup_coro()`, which crates/phpswoole defines.
 pub(crate) use swoole_rs_phpswoole::zif_swoole_async_dns_lookup_coro;
 
 unsafe extern "C" {
     // crates/phpevents': declared, since crates/phpevents depends on this crate.
     safe fn php_swoole_convert_to_fd(value: Option<&Value>) -> c_int;
+    /// crates/hooks' hooked `statvfs`: inside a coroutine it runs on the thread
+    /// pool. It reads a NUL-terminated path and writes the struct, and keeps neither.
+    safe fn swoole_coroutine_statvfs(
+        path: swoole_rs_corebase::sys::Text<'_>,
+        buf: &mut libc::statvfs,
+    ) -> c_int;
 }
 
 /// `SW_FILE_LOCK`, the `FILE_LOCK` constant.
@@ -289,9 +295,11 @@ fn statvfs(call: &Call) {
         value_error(call, c"Path cannot be empty");
         return;
     }
+    // Zend rejects a path with a NUL in it.
+    let path = CString::new(path).unwrap_or_default();
     let mut stat: libc::statvfs = swoole_rs_corebase::sys::zeroed();
-    // SAFETY: a NUL-terminated path and a writable struct; on failure it stays zeroed.
-    unsafe { swoole_coroutine_statvfs(path.as_ptr().cast(), &raw mut stat) };
+    // On failure it stays zeroed.
+    swoole_coroutine_statvfs(path.as_c_str().into(), &mut stat);
     call.set_array();
     let fields = [
         (c"bsize", field(stat.f_bsize)),
