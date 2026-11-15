@@ -26,7 +26,7 @@ fn mock<T>(f: impl FnOnce(&mut Mock) -> T) -> T {
     MOCK.with(|m| f(&mut m.borrow_mut()))
 }
 
-fn log(entry: impl Into<String>) {
+pub(super) fn log(entry: impl Into<String>) {
     mock(|m| m.log.push(entry.into()));
 }
 
@@ -230,16 +230,8 @@ pub(super) extern "C" fn async_dispatch(event: &AsyncEvent) -> *mut c_void {
     core::ptr::without_provenance_mut(8)
 }
 // crates/tls's TLS operations, over its own context.
-pub(super) fn ssl_context_create(owner: &mut swoole_rs_tls::Lent<'_>) -> bool {
-    log("ssl create");
-    swoole_rs_tls::ssl_context_create(owner)
-}
-pub(super) fn socket_ssl_create(
-    _: Socket<'_>,
-    _: Option<&swoole_rs_tls::SslCtx>,
-    flags: c_int,
-) -> bool {
-    log(format!("ssl session {flags}"));
+pub(super) fn tls_session(_: Socket<'_>, _: &TlsSettings) -> bool {
+    log(format!("ssl session {SSL_CLIENT}"));
     true
 }
 pub(super) fn socket_ssl_connect(_: Socket<'_>) -> bool {
@@ -761,4 +753,45 @@ fn proxy_states_are_upstreams() {
         [0, 1, 4, 0, 2],
         "SW_SOCKS5_STATE_{{WAIT,HANDSHAKE,READY}}, SW_HTTP_PROXY_STATE_{{WAIT,READY}}"
     );
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "Miri has no OPENSSL_init_ssl")]
+fn pending_handshake_keeps_its_hostname_and_verification_snapshot() {
+    let client = client(1, false, false);
+    let handle = Handle(client);
+    assert!(enable_ssl(handle).is_some());
+    let owner = handle.get().tls_context().unwrap().clone();
+    {
+        let loan = owner.borrow_configuration();
+        assert!(loan.set_text(swoole_rs_tls::Text::HostName, b"first.test"));
+        loan.set_value(swoole_rs_tls::Value::VerifyPeer(true));
+        loan.set_value(swoole_rs_tls::Value::AllowSelfSigned(true));
+    }
+    assert!(ssl_handshake(handle));
+    assert!(
+        owner.fields().context.is_none(),
+        "runtime context belongs to the snapshot"
+    );
+    _ = taken();
+    {
+        let loan = owner.borrow_configuration();
+        assert!(loan.set_text(swoole_rs_tls::Text::HostName, b"later.test"));
+        loan.set_value(swoole_rs_tls::Value::VerifyPeer(false));
+        loan.set_value(swoole_rs_tls::Value::AllowSelfSigned(false));
+    }
+    mock(|m| m.ssl_connect_ready = true);
+    assert!(ssl_handshake(handle));
+    assert_eq!(handle.tls_host_name(), c"first.test".to_owned());
+    assert_eq!(
+        taken(),
+        [
+            "ssl session 2",
+            "ssl ctrl 55",
+            "ssl connect",
+            "ssl verify true",
+            "ssl host"
+        ]
+    );
+    free(client);
 }

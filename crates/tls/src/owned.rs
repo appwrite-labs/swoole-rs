@@ -63,7 +63,7 @@ pub struct OwnedTlsContext {
     warn: Warn,
 }
 
-/// A port's completed configuration. Its context and strings have no mutable
+/// A completed TLS configuration. Its context and strings have no mutable
 /// builder aliases; readers can create sessions without borrowing a builder.
 pub struct TlsSettings {
     fields: OwnedTlsFields,
@@ -115,6 +115,20 @@ impl TlsSettings {
             self.fields.context.as_deref(),
             crate::SslCreateFlag::SW_SSL_SERVER as c_int,
         )
+    }
+    /// Creates an independent client session on `socket`.
+    #[must_use]
+    pub fn create_client_session(&self, socket: swoole_rs_reactor::Socket<'_>) -> bool {
+        crate::upstream::socket_ssl_create(
+            socket,
+            self.fields.context.as_deref(),
+            crate::SslCreateFlag::SW_SSL_CLIENT as c_int,
+        )
+    }
+    /// The explicit SNI/verification name, empty when configuration names none.
+    #[must_use]
+    pub fn host_name(&self) -> &CStr {
+        self.strings[TLS_HOST_NAME].c_str()
     }
     /// Selects this context for a server session during its SNI handshake.
     pub fn select(&self, ssl: crate::Ssl<'_>) {
@@ -473,15 +487,15 @@ pub enum SocketContextError {
     Create,
 }
 
-/// Configure and create a coroutine socket's context from its authoritative owner.
+/// Configure and freeze a coroutine socket's independent runtime context.
 /// # Errors
 /// [`SocketContextError`].
-pub fn swr_v1_tls_owner_socket_context(
-    mut owner: Lent<'_>,
+pub fn freeze_socket_context(
+    owner: &Lent<'_>,
     socket: swoole_rs_reactor::Socket<'_>,
     http2: bool,
     dtls_supported: bool,
-) -> Result<(), SocketContextError> {
+) -> Result<TlsSettings, SocketContextError> {
     let kind = socket.read(swoole_rs_reactor::SocketFields::kind);
     let dtls = kind.is_some_and(swoole_rs_corebase::constants::SocketType::is_dgram);
     if dtls && !dtls_supported {
@@ -500,11 +514,9 @@ pub fn swr_v1_tls_owner_socket_context(
             record.chunk_size = swoole_rs_corebase::constants::SW_SSL_BUFFER_SIZE;
         });
     }
-    if !create(&mut owner) {
-        return Err(SocketContextError::Create);
-    }
+    let settings = owner.freeze(None).ok_or(SocketContextError::Create)?;
     socket.edit(|record| record.output.ssl_send = true);
-    Ok(())
+    Ok(settings)
 }
 
 /// Create and configure one coroutine TLS session, including moving write buffers
@@ -514,8 +526,8 @@ pub fn swr_v1_tls_owner_socket_context(
 /// As [`crate::socket_ssl_new`].
 ///
 /// `hostname` is the automatic host name, none when it is empty.
-pub fn swr_v1_tls_owner_socket_session(
-    owner: Option<&OwnedTlsContext>,
+pub fn socket_session(
+    owner: Option<&TlsSettings>,
     record: swoole_rs_reactor::Socket<'_>,
     hostname: Option<&CStr>,
 ) -> Result<(), crate::SslNewError> {
@@ -526,7 +538,7 @@ pub fn swr_v1_tls_owner_socket_session(
     let Some(owner) = owner else {
         return Err(crate::SslNewError::New);
     };
-    let fields = owner.fields();
+    let fields = &owner.fields;
     crate::socket_ssl_new(record, fields.context.as_deref(), 0)?;
     let disable_tls_host_name = fields.disable_tls_host_name;
     let ssl = crate::Ssl::of(record);
@@ -820,19 +832,22 @@ mod tests {
                 let socket =
                     swoole_rs_reactor::SocketRecord::with_fd(stream.as_raw_fd(), 6).into_raw();
                 let handle = swoole_rs_reactor::Socket::from_ptr(socket).unwrap();
-                assert_eq!(
-                    swr_v1_tls_owner_socket_context(
-                        (&*prepared.owner).borrow_configuration(),
-                        handle,
-                        true,
-                        true
-                    ),
-                    Ok(())
-                );
+                let settings = freeze_socket_context(
+                    &(&*prepared.owner).borrow_configuration(),
+                    handle,
+                    true,
+                    true,
+                )
+                .unwrap();
                 assert!((*socket).fields.output.ssl_send);
                 assert!((*prepared.fields).http_v2);
-                let result = swr_v1_tls_owner_socket_session(
-                    Some(&*prepared.owner),
+                // Session creation must use the snapshot even after the builder changes
+                // and its last reference is released.
+                assert!((*prepared.strings[8]).set_shared(b"changed.test"));
+                (*prepared.fields).disable_tls_host_name = !disabled;
+                drop(Rc::from_raw(prepared.owner));
+                let result = socket_session(
+                    Some(&settings),
                     handle,
                     (!automatic.is_empty()).then(|| hostname.c_str()),
                 );
@@ -854,10 +869,9 @@ mod tests {
                         & openssl_sys::SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER,
                     0
                 );
-                assert_eq!(swr_v1_tls_owner_socket_session(None, handle, None), Ok(()));
+                assert_eq!(socket_session(None, handle, None), Ok(()));
                 openssl_sys::SSL_free(ssl);
                 swoole_rs_reactor::SocketRecord::free(socket);
-                drop(Rc::from_raw(prepared.owner));
             }
         }
     }

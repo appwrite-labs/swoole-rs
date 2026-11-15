@@ -19,9 +19,11 @@ ex_data indexes and `swoole_ssl_get_error`'s text.
 `TlsContext` holds a thread-local `Rc` builder. Configuration takes a checked
 exclusive loan; field reads and edits also reject overlapping borrows. Hostname
 readers receive owned copies. Ports publish independent immutable `TlsSettings`
-for concurrent TCP, SNI and DTLS handshakes. Client and coroutine socket contexts
-still create their sessions through the builder. The raw owner exports remain for
-the original-test adapters. OpenSSL's password callback reads the slot its context
+for concurrent TCP, SNI and DTLS handshakes. Clients and coroutine sockets freeze
+configuration before creating a session; accepted sockets retain their listener's
+snapshot. Handshake retries and verification read the snapshot, so later builder
+edits cannot change an active session. Rebuilding a context creates a fresh snapshot.
+The raw owner exports remain for the original-test adapters. OpenSSL's password callback reads the slot its context
 retains; `owner_assign` copies configuration and retains that password.
 Warnings keep upstream's text and the method name
 upstream's `__SW_FUNC__` printed. Upstream's renegotiation `swoole_debug` exists only

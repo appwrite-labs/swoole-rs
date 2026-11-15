@@ -2,9 +2,9 @@
 //! connect and TLS host strings, the proxies, the TLS context and the destructor
 //! callback.
 use crate::co_socket::Co;
-use std::{any::Any, ffi::c_void, rc::Rc};
+use std::{any::Any, ffi::c_void, rc::Rc, sync::Arc};
 use swoole_rs_corebase::{ProxyState, StringSlot};
-use swoole_rs_tls::TlsContext;
+use swoole_rs_tls::{TlsContext, TlsSettings};
 
 /// A destructor callback, which gets the native socket.
 pub type CloseHook = Box<dyn FnOnce(*mut c_void)>;
@@ -17,6 +17,8 @@ pub struct SocketExtra {
     /// accepted socket shares with its server. Dropped after the `network::Socket`
     /// and its session (`swr_v1_hook_co_socket_release`).
     pub(crate) tls: Option<TlsContext>,
+    /// The immutable configuration used by this socket's session.
+    pub(crate) tls_settings: Option<Arc<TlsSettings>>,
     pub(crate) strings: [StringSlot; 3],
     /// `set_dtor`'s callback.
     close_hook: Option<CloseHook>,
@@ -40,6 +42,7 @@ impl SocketExtra {
         Box::new(Self {
             strings: std::array::from_fn(|_| StringSlot::default()),
             tls: None,
+            tls_settings: None,
             close_hook: None,
             length_owner: None,
             proxies: [None, None],
