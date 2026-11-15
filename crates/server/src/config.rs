@@ -6,8 +6,7 @@
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::{
     AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU8, AtomicU16, AtomicU32, AtomicU64,
-    AtomicUsize,
-    Ordering::{Acquire, Relaxed, Release},
+    AtomicUsize, Ordering::Relaxed,
 };
 use swoole_rs_corebase::worker_registry::WorkerRegistry;
 use swoole_rs_memory::members::Shm;
@@ -417,7 +416,7 @@ impl Default for ServerConfig {
             single_thread: Setting::new(false),
             running: AtomicBool::new(true),
             cpu_affinity_available: Published::default(),
-            pipe_command: CommandPipe(AtomicPtr::new(core::ptr::null_mut())),
+            pipe_command: CommandPipe(std::sync::OnceLock::new()),
             send_timeout: Setting::new(0.0),
             heartbeat_check_interval: Setting::new(0),
             warning_time: AtomicI64::new(0),
@@ -473,28 +472,33 @@ impl ServerConfig {
 
     /// `serv->pipe_command`: the command pipe, once `add_command` has made it.
     pub(crate) fn command_pipe(&self) -> Option<&swoole_rs_tls::socket_pair::SocketPair> {
-        let pipe = self.pipe_command.0.load(Acquire);
-        // SAFETY: null, or a pair `CommandPipe::keep` leaked, which nothing frees:
-        // only `keep` writes the private field.
-        unsafe { pipe.as_ref() }
+        self.pipe_command.0.get().map(|pipe| &**pipe)
     }
 }
 
-/// `serv->pipe_command`: null, or the command pipe `add_command` opened, which the
-/// server keeps for the rest of the process. Laid out as the pointer.
-#[repr(transparent)]
-pub struct CommandPipe(AtomicPtr<swoole_rs_tls::socket_pair::SocketPair>);
+/// `serv->pipe_command`: the command pipe `add_command` opened, if it has, which the
+/// server keeps as long as its configuration.
+pub struct CommandPipe(
+    std::sync::OnceLock<crate::state::Heap<swoole_rs_tls::socket_pair::SocketPair>>,
+);
 
 impl CommandPipe {
-    /// `serv->pipe_command = pipe`: the server keeps it, and a pipe it kept before.
-    pub(crate) fn keep(&self, pipe: Box<swoole_rs_tls::socket_pair::SocketPair>) {
-        self.0.store(Box::into_raw(pipe), Release);
+    /// `serv->pipe_command = pipe`: the server keeps it, unless it kept one already,
+    /// whose place it doesn't take: then it closes.
+    pub(crate) fn keep(&self, mut pipe: Box<swoole_rs_tls::socket_pair::SocketPair>) {
+        if self.0.get().is_some() {
+            swoole_rs_tls::socket_pair::drop(&mut pipe);
+            return;
+        }
+        let _kept = self.0.set(crate::state::Heap::from(pipe));
     }
 
     /// The pipe's address, or null.
     #[must_use]
     pub fn as_ptr(&self) -> *mut c_void {
-        self.0.load(Acquire).cast()
+        self.0
+            .get()
+            .map_or(core::ptr::null_mut(), |pipe| pipe.as_ptr().cast())
     }
 }
 

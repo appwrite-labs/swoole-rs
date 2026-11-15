@@ -39,6 +39,8 @@ pub(crate) struct ServerObject {
     head: Fields,
     tables: *mut crate::ServerTables,
     callbacks: *mut c_void,
+    /// The state `head` names, freed with the object.
+    state: crate::state::Heap<ServerState>,
 }
 
 #[cfg_attr(
@@ -49,20 +51,16 @@ impl ServerObject {
     /// The object over `state`, which it owns from now on.
     pub(crate) fn new(state: Box<ServerState>) -> Self {
         let (config, tables) = (state.config(), state.tables());
-        let state = Box::into_raw(state);
+        let state = crate::state::Heap::from(state);
         Self {
-            head: Fields { state, config },
+            head: Fields {
+                state: state.as_ptr(),
+                config,
+            },
             tables,
-            callbacks: ServerState::callbacks_ptr(state),
+            callbacks: ServerState::callbacks_ptr(state.as_ptr()),
+            state,
         }
-    }
-}
-
-impl Drop for ServerObject {
-    fn drop(&mut self) {
-        // SAFETY: the state `new` boxed, which only this object owns. Its tables own
-        // the message bus, and its configuration the shared record, freed after the bus.
-        drop(unsafe { Box::from_raw(self.head.state.cast_mut()) });
     }
 }
 

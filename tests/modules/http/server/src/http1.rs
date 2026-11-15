@@ -121,7 +121,7 @@ struct ServerConfig {
     single_thread: bool,
     running: bool,
     cpu_affinity_available: Native,
-    pipe_command: Native,
+    pipe_command: [Native; 2],
     send_timeout: f64,
     heartbeat_check_interval: u16,
     warning_time: i64,

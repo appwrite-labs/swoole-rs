@@ -452,10 +452,10 @@ mod tests {
     fn close_command_pipe(live: &LiveServer) -> usize {
         let pipe = live.server().config().pipe_command.as_ptr();
         if !pipe.is_null() {
-            // SAFETY: the pair `add_command` boxed, which nothing uses after the test.
-            let mut pair =
-                unsafe { Box::from_raw(pipe.cast::<swoole_rs_tls::socket_pair::SocketPair>()) };
-            swoole_rs_tls::socket_pair::drop(&mut pair);
+            // SAFETY: the pair `add_command` kept, which nothing uses after the test;
+            // the configuration frees it.
+            let pair = unsafe { &mut *pipe.cast::<swoole_rs_tls::socket_pair::SocketPair>() };
+            swoole_rs_tls::socket_pair::drop(pair);
         }
         pipe.addr()
     }
