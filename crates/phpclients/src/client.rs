@@ -5,12 +5,13 @@
 //! (`crate::native`).
 use crate::{
     native::{Co, Transfer},
-    net::{SOCK_SSL, SOCK_TCP, SOCK_TCP6, SOCK_UNIX_STREAM, check_type, socket_type},
+    net::{SOCK_SSL, check_type, socket_type, type_code},
     socket::{Sock, strerror, warn},
 };
 use libc::c_int;
 use std::{borrow::Cow, cell::Cell, ffi::CStr, ptr};
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::constants::SocketType;
 use swoole_rs_phpstubs::client_coro;
 use swoole_rs_reactor::SocketFields;
 use swoole_rs_zend::{
@@ -113,7 +114,12 @@ pub fn client_coro_minit(minit: &Minit) -> Result<(), Bailout> {
     minit.property_string(&CLIENT, c"errMsg", c"", ZEND_ACC_PUBLIC);
     minit.property_long(&CLIENT, c"fd", -1, ZEND_ACC_PUBLIC);
     minit.property_null(&CLIENT, c"socket", ZEND_ACC_PUBLIC);
-    minit.property_long(&CLIENT, c"type", SOCK_TCP, ZEND_ACC_PUBLIC);
+    minit.property_long(
+        &CLIENT,
+        c"type",
+        SocketType::SW_SOCK_TCP.raw().into(),
+        ZEND_ACC_PUBLIC,
+    );
     minit.property_null(&CLIENT, c"setting", ZEND_ACC_PUBLIC);
     minit.property_bool(&CLIENT, c"connected", false, ZEND_ACC_PUBLIC);
     for (name, value) in [
@@ -210,9 +216,7 @@ fn socket_closed(data: &Data, props: Props) {
 /// with errCode/errMsg set.
 fn create_socket(call: &Call, data: &Data, kind: i64) -> Option<Co> {
     let this = props(call)?;
-    #[expect(clippy::cast_possible_truncation, reason = "a socket type")]
-    let socket_kind = socket_type(kind) as i32;
-    let created = match crate::socket::owner::create_kind(socket_kind) {
+    let created = match crate::socket::owner::create_kind(type_code(kind)) {
         Ok(Some(created)) => created,
         Ok(None) => {
             let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
@@ -278,7 +282,7 @@ fn socket_for_connect(call: &Call, port: i64) -> Option<Co> {
         return None;
     }
     let kind = type_property(call);
-    let tcp = matches!(socket_type(kind), SOCK_TCP | SOCK_TCP6);
+    let tcp = socket_type(kind).is_some_and(SocketType::is_tcp);
     if tcp && !verify_port(port) {
         warn(true, "The port is invalid");
         return None;
@@ -470,8 +474,7 @@ fn sendfile(call: &Call) {
     let Some((socket, _hold)) = connected(call) else {
         return;
     };
-    let kind = i64::from(socket.kind());
-    if !matches!(kind, SOCK_TCP | SOCK_TCP6 | SOCK_UNIX_STREAM) {
+    if !SocketType::from_raw(socket.kind()).is_some_and(SocketType::is_stream) {
         if let Some(props) = props(call) {
             props.long(c"errCode", libc::EINVAL.into());
             props.bytes(c"errMsg", b"dgram socket cannot use sendfile");
@@ -604,8 +607,7 @@ fn enable_ssl(call: &Call) {
     let Some((socket, _hold)) = connected(call) else {
         return;
     };
-    let kind = i64::from(socket.kind());
-    if !matches!(kind, SOCK_TCP | SOCK_TCP6) {
+    if !SocketType::from_raw(socket.kind()).is_some_and(SocketType::is_tcp) {
         report_code(call, libc::ESOCKTNOSUPPORT);
         return call.set_bool(false);
     }
@@ -682,13 +684,11 @@ mod tests {
 
     #[test]
     fn client_types_drop_their_flags() {
-        assert_eq!(socket_type(SOCK_TCP | (1 << 9)), SOCK_TCP, "SSL is a flag");
-        assert_eq!(
-            socket_type(SOCK_TCP6 | (1 << 12)),
-            SOCK_TCP6,
-            "KEEP is a flag"
-        );
-        assert_eq!(socket_type(7), 7, "unknown types stay unknown");
+        const SOCK_TCP: i64 = 1;
+        const SOCK_TCP6: i64 = 3;
+        assert_eq!(type_code(SOCK_TCP | (1 << 9)), 1, "SSL is a flag");
+        assert_eq!(type_code(SOCK_TCP6 | (1 << 12)), 3, "KEEP is a flag");
+        assert_eq!(type_code(7), 7, "unknown types stay unknown");
     }
 
     #[test]

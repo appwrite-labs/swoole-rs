@@ -5,9 +5,9 @@
 use crate::{
     native::{self, ErrorKind},
     net::{
-        self, CONNECT_TIMEOUT, Conn, INVALID_PARAMS, Obj, SOCK_TCP, SOCK_TCP6, bailed, check_type,
-        destructing, errno, last_error, report, set_err_code, set_last_error, socket_type,
-        strerror, type_property, warn, warn_sys,
+        self, CONNECT_TIMEOUT, Conn, INVALID_PARAMS, Obj, bailed, check_type, destructing, errno,
+        last_error, report, set_err_code, set_last_error, socket_type, strerror, type_code,
+        type_property, warn, warn_sys,
     },
 };
 use libc::{c_char, c_int};
@@ -15,6 +15,7 @@ use std::{ffi::CStr, rc::Rc};
 use swoole_rs_clients::client::{self as state, ClientEvent, Handle, SSL_STATE_WAIT_STREAM};
 use swoole_rs_clients::valid_port;
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::constants::SocketType;
 use swoole_rs_phpstubs::client_async;
 use swoole_rs_zend::{
     Call, Class, E_ERROR, Minit, ObjectRef, Owned, ZString,
@@ -256,13 +257,12 @@ fn destruct(call: &Call) {
 fn connection(object: Obj, port: i64) -> Option<Rc<Conn>> {
     let kind = type_property(object, true)?;
     let int_port = port.c_cast::<i32>();
-    if matches!(socket_type(kind), SOCK_TCP | SOCK_TCP6) && !valid_port(int_port, true) {
+    if socket_type(kind).is_some_and(SocketType::is_tcp) && !valid_port(int_port, true) {
         warn(ErrorKind::Fatal, "The port is invalid");
         set_last_error(INVALID_PARAMS);
         return None;
     }
-    #[expect(clippy::cast_possible_truncation, reason = "a socket type")]
-    let cli = match native::create(socket_type(kind) as c_int, true) {
+    let cli = match native::create(type_code(kind), true) {
         Ok(cli) => cli,
         Err(error) => {
             warn_sys("failed to create client", error);
