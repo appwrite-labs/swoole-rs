@@ -168,13 +168,11 @@ pub(crate) fn current() -> Option<Co> {
 pub(crate) fn require_coroutine() -> Option<Co> {
     let co = current();
     if co.is_none() {
-        // SAFETY: Swoole's fatal error hook; the frames own nothing.
-        unsafe {
-            swoole_rs_corebase::fatal_error(
-                SW_ERROR_CO_OUT_OF_COROUTINE,
-                c"API must be called in the coroutine",
-            );
-        }
+        // The hook's bailout, trapped then raised from here: the frames own nothing.
+        bailout::raise(swoole_rs_phpswoole::swoole_fatal_error(
+            SW_ERROR_CO_OUT_OF_COROUTINE,
+            c"API must be called in the coroutine",
+        ));
     }
     co
 }
