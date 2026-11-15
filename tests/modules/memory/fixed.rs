@@ -52,15 +52,13 @@ pub(crate) fn debug_step(
 /// A pool over a fresh `0xa5`-filled buffer of `plan.total` bytes plus one word.
 fn pool_in(plan: Layout, shared: bool, owned: bool) -> (Vec<u64>, *mut Fixed) {
     let mut memory = vec![0xa5a5_a5a5_a5a5_a5a5u64; plan.total.div_ceil(8) + 1];
-    let arena = unsafe {
-        std::slice::from_raw_parts_mut(
-            memory.as_mut_ptr().cast::<MaybeUninit<u8>>(),
-            memory.len() * 8,
-        )
-    };
+    // The whole buffer's pointer: the tests read past the header the pool borrows.
+    let base = memory.as_mut_ptr();
+    let arena =
+        unsafe { std::slice::from_raw_parts_mut(base.cast::<MaybeUninit<u8>>(), memory.len() * 8) };
     let pool = construct(arena, plan, shared, owned);
-    assert!(pool.is_some());
-    (memory, ptr::from_ref(pool.unwrap()).cast_mut())
+    assert!(pool.is_some_and(|pool| ptr::eq(pool, base.cast::<Fixed>())));
+    (memory, base.cast())
 }
 
 fn borrowed(width: u32, slices: usize) -> Layout {
