@@ -541,7 +541,10 @@ impl ServerCallbacks {
     }
 }
 
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg_attr(
+    any(test, not(feature = "upstream-symbols")),
+    expect(dead_code, reason = "only `SharedServer` makes a server object")
+)]
 impl crate::ServerState {
     /// The first of the slots of the state at `state`, which `Server`'s callbacks
     /// pointer heads: an address within the state, read through no reference.

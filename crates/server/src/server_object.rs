@@ -3,32 +3,20 @@
 //! A `Server *` is a [`ServerObject`]; a `ListenPort *` is the box of the port's
 //! settings. The Rust ports of core-tests' server cases
 //! (tests/modules/http/server/src/http1.rs) make and delete theirs here too.
-use core::ffi::{c_int, c_void};
+use core::ffi::c_int;
 use core::ptr;
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
+use crate::Mode;
 use crate::port_config::PortConfig;
 use crate::shared::ServerShared;
-use crate::{Mode, ServerConfig, ServerState, ServerTables, view};
+use crate::view::{self, ServerObject};
 use swoole_rs_corebase::log;
-use swoole_rs_locks::Barrier;
-
-/// A `Server`: the head C++ and `view` read, then the reactor threads' barrier.
-#[repr(C)]
-struct ServerObject {
-    state: *mut ServerState,
-    config: *mut ServerConfig,
-    tables: *mut ServerTables,
-    callbacks: *mut c_void,
-    reactor_thread_barrier: Barrier,
-}
 
 /// `new Server(mode)`: the state and its defaults, the shared record, and the
-/// message bus, which numbers its messages from the record's counter. This is
-/// `SwooleG.server` from now on. Aborts when the record can't be mapped, as
-/// C++'s uncaught `std::bad_alloc` did.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_server_new(mode: c_int) -> *mut c_void {
+/// message bus, which numbers its messages from the record's counter. Aborts
+/// when the record can't be mapped, as C++'s uncaught `std::bad_alloc` did.
+fn swr_v1_server_new(mode: c_int) -> ServerObject {
     let (mut config, mut tables) = crate::state::fresh_records();
     config.init_defaults(
         u32::from(swoole_rs_corebase::swr_v1_core_cpu_num()),
@@ -58,25 +46,23 @@ pub extern "C" fn swr_v1_server_new(mode: c_int) -> *mut c_void {
         .msg_ids
         .set(&counters.pipe_packet_msg_id)
         .unwrap_or_default();
-    let (config, tables) = (fresh.config(), fresh.tables());
-    // The state lives until the last share's drop frees it.
-    let state = Box::into_raw(fresh);
-    let object = Box::new(ServerObject {
-        state,
-        config,
-        tables,
-        callbacks: ServerState::callbacks_ptr(state),
-        // SAFETY: all-zero is an unset barrier, as C++'s `Barrier reactor_thread_barrier = {}`.
-        reactor_thread_barrier: unsafe { core::mem::zeroed() },
-    });
-    let serv = Box::into_raw(object).cast::<c_void>();
-    swoole_rs_corebase::swr_v1_core_set_server(serv);
-    serv
+    ServerObject::new(fresh)
 }
 
 /// A server [`SharedServer::new`] made, which deletes it with its last share.
-struct Owner(*mut c_void);
+struct Owner(Box<ServerObject>);
 
+impl Owner {
+    /// The server, for as long as the owner is borrowed.
+    fn view(&self) -> view::Server<'_> {
+        view::Server::of_object(&self.0)
+    }
+}
+
+#[expect(
+    clippy::non_send_fields_in_send_ty,
+    reason = "the object's record pointers are what the SAFETY comment below covers"
+)]
 // SAFETY: a `Server *` names records that synchronize themselves (atomics and
 // shared memory), as the reactor and worker threads that read it rely on.
 unsafe impl Send for Owner {}
@@ -85,13 +71,11 @@ unsafe impl Sync for Owner {}
 
 /// `delete serv` of the server no share names any more: destroys it if it still
 /// runs in its master, deletes its ports, closes its pipes, then frees the CPU list,
-/// the shared record, the message bus, the state and the object. It stops being
-/// `SwooleG.server`.
+/// the shared record, the message bus, the state and the object (which owns the
+/// state). It stops being `SwooleG.server`.
 impl Drop for Owner {
     fn drop(&mut self) {
-        // SAFETY: `swr_v1_server_new`'s server, which only this owner names and so is
-        // live until this drop frees it.
-        let serv = unsafe { view::Server::from_raw(self.0) };
+        let serv = self.view();
         crate::server_methods::destroy_running(serv);
         crate::reactor_handle::release_server(serv);
         for port in serv.ports() {
@@ -99,14 +83,7 @@ impl Drop for Owner {
             PortConfig::delete(unsafe { Box::from_raw(port.raw().cast::<PortConfig>()) });
         }
         let object_ptr = serv.raw();
-        // The server's state, which its object owns until the last step below.
-        let state = serv.state();
-        // SAFETY: the object `swr_v1_server_new` boxed, freed once.
-        let object = unsafe { Box::from_raw(object_ptr.cast::<ServerObject>()) };
-        state.close_pipes();
-        // SAFETY: `swr_v1_server_new`'s boxed state, not used again. Its tables own the
-        // message bus, and its configuration the shared record, freed after the bus.
-        drop(unsafe { Box::from_raw(object.state) });
+        serv.state().close_pipes();
         if swoole_rs_corebase::swr_v1_core_server() == object_ptr {
             swoole_rs_corebase::swr_v1_core_set_server(ptr::null_mut());
         }
@@ -128,7 +105,9 @@ impl SharedServer {
     /// `new Server(mode)` ([`swr_v1_server_new`]), deleted when its last share drops.
     #[must_use]
     pub fn new(mode: c_int) -> Self {
-        let owner = Arc::new(Owner(swr_v1_server_new(mode)));
+        let owner = Arc::new(Owner(Box::new(swr_v1_server_new(mode))));
+        // `SwooleG.server` from now on.
+        swoole_rs_corebase::swr_v1_core_set_server(owner.view().raw());
         *LATEST.lock().unwrap_or_else(PoisonError::into_inner) = Arc::downgrade(&owner);
         Self(owner)
     }
@@ -139,23 +118,22 @@ impl SharedServer {
     pub fn current() -> Option<Self> {
         let latest = LATEST.lock().unwrap_or_else(PoisonError::into_inner);
         let owner = latest.upgrade()?;
-        (owner.0 == swoole_rs_corebase::swr_v1_core_server()).then_some(Self(owner))
+        (owner.view().raw() == swoole_rs_corebase::swr_v1_core_server()).then_some(Self(owner))
     }
 
     /// The server, for as long as this share is borrowed.
     #[must_use]
     pub fn view(&self) -> view::Server<'_> {
-        // SAFETY: the owner's live server, deleted only once every share is gone.
-        unsafe { view::Server::from_raw(self.0.0) }
+        self.0.view()
     }
 }
 
 /// The reactor threads' barrier, or the manager's, which is shared.
-pub(crate) fn barrier(serv: view::Server<'_>, manager: bool) -> &Barrier {
+pub(crate) fn barrier(serv: view::Server<'_>, manager: bool) -> &swoole_rs_locks::Barrier {
     if manager {
         &ServerShared::of(serv).manager_barrier
     } else {
-        // SAFETY: a live server is `swr_v1_server_new`'s object.
+        // SAFETY: a live server is a `ServerObject`.
         unsafe { &(*serv.raw().cast::<ServerObject>()).reactor_thread_barrier }
     }
 }

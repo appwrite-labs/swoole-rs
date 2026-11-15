@@ -27,6 +27,48 @@ pub(crate) struct Fields {
     config: *mut ServerConfig,
 }
 
+/// A `Server *`: the head C++ and [`Server`] read, then the reactor threads' barrier.
+/// It owns the state it names, which it frees when it drops, so a borrowed object
+/// is a live server ([`Server::of_object`]).
+#[repr(C)]
+#[cfg_attr(
+    any(test, not(feature = "upstream-symbols")),
+    expect(dead_code, reason = "only `SharedServer` makes a server object")
+)]
+pub(crate) struct ServerObject {
+    head: Fields,
+    tables: *mut crate::ServerTables,
+    callbacks: *mut c_void,
+    pub(crate) reactor_thread_barrier: swoole_rs_locks::Barrier,
+}
+
+#[cfg_attr(
+    any(test, not(feature = "upstream-symbols")),
+    expect(dead_code, reason = "only `SharedServer` makes a server object")
+)]
+impl ServerObject {
+    /// The object over `state`, which it owns from now on.
+    pub(crate) fn new(state: Box<ServerState>) -> Self {
+        let (config, tables) = (state.config(), state.tables());
+        let state = Box::into_raw(state);
+        Self {
+            head: Fields { state, config },
+            tables,
+            callbacks: ServerState::callbacks_ptr(state),
+            // SAFETY: all-zero is an unset barrier, as C++'s `Barrier reactor_thread_barrier = {}`.
+            reactor_thread_barrier: unsafe { core::mem::zeroed() },
+        }
+    }
+}
+
+impl Drop for ServerObject {
+    fn drop(&mut self) {
+        // SAFETY: the state `new` boxed, which only this object owns. Its tables own
+        // the message bus, and its configuration the shared record, freed after the bus.
+        drop(unsafe { Box::from_raw(self.head.state.cast_mut()) });
+    }
+}
+
 #[cfg(test)]
 impl Fields {
     /// A head over `state`, as a server's own: a test's server.
@@ -87,6 +129,18 @@ impl<'a> Server<'a> {
     pub unsafe fn from_raw(serv: *mut c_void) -> Self {
         Self {
             raw: serv,
+            live: PhantomData,
+        }
+    }
+
+    /// The server `object` is, live as long as the borrow.
+    #[cfg_attr(
+        any(test, not(feature = "upstream-symbols")),
+        expect(dead_code, reason = "only `SharedServer` makes a server object")
+    )]
+    pub(crate) fn of_object(object: &'a ServerObject) -> Self {
+        Self {
+            raw: core::ptr::from_ref(object).cast_mut().cast(),
             live: PhantomData,
         }
     }
