@@ -7,7 +7,9 @@ use libc::c_int;
 use std::ffi::CStr;
 use std::fs::File;
 use std::io::{ErrorKind, Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::fd::AsRawFd;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::FileExt;
 use swoole_rs_corebase::log;
 
@@ -27,11 +29,17 @@ fn offset(done: usize) -> u64 {
     u64::try_from(done).unwrap_or(u64::MAX)
 }
 
-/// The open file: `flags` as `open(2)` takes them, created 0644.
+/// The open file: `flags` as `open(2)` takes them, created 0644 (and close-on-exec,
+/// as std opens every file). A failure leaves its errno.
 fn open(file: &CStr, flags: c_int) -> Option<File> {
-    let fd = swoole_rs_corebase::sys::open(file, flags, 0o644);
-    // SAFETY: a new fd, owned by the `File` from here.
-    (fd != -1).then(|| unsafe { File::from_raw_fd(fd) })
+    let access = flags & libc::O_ACCMODE;
+    std::fs::OpenOptions::new()
+        .read(access != libc::O_WRONLY)
+        .write(access != libc::O_RDONLY)
+        .custom_flags(flags)
+        .mode(0o644)
+        .open(std::ffi::OsStr::from_bytes(file.to_bytes()))
+        .ok()
 }
 
 fn flock(file: &File, operation: c_int) -> bool {
