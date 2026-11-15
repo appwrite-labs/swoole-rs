@@ -12,6 +12,7 @@ use swoole_rs_corebase::constants::SocketType;
 use swoole_rs_corebase::net_address::{BAD_HOST_ADDR, DNSLOOKUP_RESOLVE_FAILED, platform_parses};
 use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
 use swoole_rs_corebase::ntop;
+use swoole_rs_corebase::sys::Text;
 use swoole_rs_tls::CText;
 
 // libc's own declaration. `inet_pton` reads the NUL-terminated source and
@@ -151,12 +152,9 @@ pub fn verify_ip(family: c_int, host: &CStr) -> bool {
 }
 
 /// `Address::verify_ip`, writing the same scratch as `addr_str` does.
-/// # Safety
-/// `host` is a live NUL-terminated string.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_clients_address_verify(family: c_int, host: *const c_char) -> bool {
-    // SAFETY: the caller's NUL-terminated host.
-    let host = unsafe { CStr::from_ptr(host) };
+pub extern "C" fn swr_v1_clients_address_verify(family: c_int, host: Text<'_>) -> bool {
+    let host = host.get();
     ADDRESS_SCRATCH.with(|scratch| {
         // The scratch's leading bytes, which hold the largest IP address, parsed
         // into in a copy and stored back.
@@ -385,10 +383,7 @@ mod tests {
             (libc::AF_INET6, c"fe80::1", true),
             (libc::AF_UNIX, c"10.1.2.3", false),
         ] {
-            assert_eq!(
-                unsafe { swr_v1_clients_address_verify(family, host.as_ptr()) },
-                valid
-            );
+            assert_eq!(swr_v1_clients_address_verify(family, host.into()), valid);
         }
     }
 
