@@ -454,6 +454,15 @@ fn master_ops(pool: Pool<'_>, op: Op, arg: u64) -> i64 {
 }
 
 /// Runs `io` and records its result and errno in the call.
+/// The socket `c` works on: none, or the live native socket the call lends its
+/// hook, as every `PoolCall` crates/process makes holds.
+#[inline]
+fn lent_socket<'c>(c: &'c PoolCall<'_>) -> Option<Socket<'c>> {
+    // SAFETY: a call's socket is null or a live native socket lent for the hook,
+    // so for this borrow of the call.
+    unsafe { Socket::from_ptr(c.socket().cast()) }
+}
+
 fn io(c: &mut PoolCall, io: impl FnOnce(&PoolCall) -> isize) {
     let result = io(c);
     c.set_result(result);
@@ -538,10 +547,8 @@ impl PoolNative for Native {
     }
 
     fn recv(&self, c: &mut PoolCall) {
-        // SAFETY: null, or the live socket lent by this native call.
-        let socket = unsafe { Socket::from_ptr(c.socket().cast()) };
         io(c, |c| {
-            let (data, length, flags) = (c.data(), c.length(), c.flags());
+            let (socket, data, length, flags) = (lent_socket(c), c.data(), c.length(), c.flags());
             // SAFETY: the call's buffer.
             let buffer = unsafe { swoole_rs_reactor::Fill::from_raw(data, length) };
             socket.map_or(-1, |socket| recv_sync_fill(socket, buffer, flags))
@@ -549,10 +556,8 @@ impl PoolNative for Native {
     }
 
     fn send(&self, c: &mut PoolCall) {
-        // SAFETY: null, or the live socket lent by this native call.
-        let socket = unsafe { Socket::from_ptr(c.socket().cast()) };
         io(c, |c| {
-            socket.map_or(-1, |socket| upstream::send_sync(socket, c.bytes(), 0))
+            lent_socket(c).map_or(-1, |socket| upstream::send_sync(socket, c.bytes(), 0))
         });
     }
 
