@@ -703,7 +703,8 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn create_makes_the_mode_factory_and_its_tables() {
-        let live = LiveServer::new();
+        let mut live = LiveServer::new();
+        live.forget_tables(true);
         let state = live.state();
         config(&live).worker_num.set(2);
         calls();
@@ -972,7 +973,8 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn destroy_joins_the_reactors_before_the_factory_stops() {
         for mode in [Mode::Base, Mode::Process] {
-            let live = LiveServer::new();
+            let mut live = LiveServer::new();
+            live.forget_tables(mode == Mode::Base);
             set_mode(&live, mode);
             config(&live).worker_num.set(2);
             assert!(create_on(live.server(), 4), "mode {mode:?}");
@@ -1019,7 +1021,8 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn an_abandoned_base_server_frees_its_tables_and_factory_only() {
-        let live = LiveServer::new();
+        let mut live = LiveServer::new();
+        live.forget_tables(true);
         set_mode(&live, Mode::Base);
         assert!(create_on(live.server(), 4));
         calls();

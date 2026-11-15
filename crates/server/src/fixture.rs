@@ -110,6 +110,19 @@ impl LiveServer {
         self.server.serv()
     }
 
+    /// The state forgets the fixture's session table, and its connection table too
+    /// when `connections`, for a test whose `Server::create` (and base factory) maps the
+    /// server's own: their replacement would unmap the fixture's vectors as though a
+    /// mapping's header preceded them.
+    pub(crate) fn forget_tables(&mut self, connections: bool) {
+        // A `Shm` unmaps only when told to: overwriting one forgets it.
+        let tables = self.server.tables_mut();
+        tables.session_list = swoole_rs_memory::members::Shm::empty();
+        if connections {
+            tables.connection_list = swoole_rs_memory::members::Shm::empty();
+        }
+    }
+
     pub(crate) fn state(&self) -> &ServerState {
         self.server.state()
     }
