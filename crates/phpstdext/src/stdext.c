@@ -50,13 +50,15 @@ uint8_t swr_phpstdext_typed_ref(zend_execute_data *execute_data, zend_reference 
 
 uint8_t swr_phpstdext_pcre_cache(zend_string *regex, void **result) {
     volatile uint8_t bailed = 0;
-    zend_try { *result = pcre_get_compiled_regex_cache(regex); }
+    zend_try {
+        pcre_cache_entry *entry = pcre_get_compiled_regex_cache(regex);
+        if (entry) {
+            php_pcre_pce_incref(entry);
+        }
+        *result = entry;
+    }
     zend_catch { bailed = 1; } zend_end_try();
     return bailed;
-}
-
-void swr_phpstdext_pcre_retain(void *entry) {
-    php_pcre_pce_incref(entry);
 }
 
 void swr_phpstdext_pcre_release(void *entry) {
