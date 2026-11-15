@@ -9,7 +9,7 @@
 use core::ffi::{c_int, c_void};
 
 use swoole_rs_reactor::reactor_upstream::{
-    change as reactor_change, reactor_interest, set_handler,
+    change as reactor_change, interest as reactor_interest, set_handler,
 };
 use swoole_rs_reactor::{ChangeOp, Events, Handler, Interest, Running, Socket};
 
@@ -80,14 +80,12 @@ impl Reactor {
     }
     /// `Reactor::change`'s `op` of `sock` with `events`: whether it applied.
     pub(crate) fn change(self, sock: Socket<'_>, op: ChangeOp, events: Events) -> bool {
-        // SAFETY: a live socket, which stays live while it is registered.
-        let sock = unsafe { Socket::from_ptr(sock.as_ptr()) };
-        sock.is_some_and(|sock| reactor_change(self.handle(), sock, op, events))
+        registered(sock).is_some_and(|sock| reactor_change(self.handle(), sock, op, events))
     }
     /// `Reactor::interest(sock, kind, 0)`: whether it applied.
     pub(crate) fn interest(self, sock: Socket<'_>, kind: Interest) -> bool {
-        // SAFETY: a live reactor and socket.
-        unsafe { reactor_interest(self.0, sock.as_ptr(), kind.code(), 0) == 0 }
+        registered(sock)
+            .is_some_and(|sock| reactor_interest(self.handle(), sock, kind, Events::NONE))
     }
     /// `reactor->add(sock, events)`: whether it applied.
     pub(crate) fn add(self, sock: Socket<'_>, events: Events) -> bool {
@@ -119,4 +117,12 @@ impl Reactor {
     pub(crate) fn set_error_handler(self, handler: Handler) {
         swoole_rs_reactor::reactor_upstream::set_default_error_handler(self.handle(), handler);
     }
+}
+
+/// `sock` as the reactor holds it while registered: the server registers only its own
+/// sockets (sessions, listeners and pipes), each freed only after its removal (an unsafe
+/// free whose caller answers for the reactor), so it stays live while registered.
+fn registered(sock: Socket<'_>) -> Option<Socket<'static>> {
+    // SAFETY: a live socket, which stays live while it is registered.
+    unsafe { Socket::from_ptr(sock.as_ptr()) }
 }
