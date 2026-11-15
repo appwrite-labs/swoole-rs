@@ -144,7 +144,7 @@ impl Co {
     /// The socket's buffers are zend strings from now on.
     pub fn use_zend_strings(self) {
         self.0
-            .set_buffer_allocator(Some(swoole_rs_phpswoole::zend_string_buffers()));
+            .set_buffer_allocator(Some(swoole_rs_phpswoole::zend_string_allocator()));
     }
 
     /// `socket_coro_init`'s socket half: zero copy and the zend string

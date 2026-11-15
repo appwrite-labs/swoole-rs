@@ -294,7 +294,7 @@ fn destroy(call: &Call) {
 /// clears a column its array leaves out or sets to null. None, with nothing
 /// written, once the conversion bailed out: upstream's longjmp skipped the
 /// write and every later column.
-fn store(row: &Locked, column: &Column, value: Option<&Value>, initialize: bool) -> Option<()> {
+fn store(row: &mut Locked, column: &Column, value: Option<&Value>, initialize: bool) -> Option<()> {
     let Some(value) = value.filter(|value| !(initialize && value.is_null())) else {
         row.clear(column);
         return Some(());
@@ -327,7 +327,7 @@ fn set(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let Some(row) = table.lock_set(key).filter(Locked::found) else {
+    let Some(mut row) = table.lock_set(key).filter(Locked::found) else {
         set_failed(key);
         call.set_bool(false);
         return;
@@ -335,11 +335,11 @@ fn set(call: &Call) {
     let stored = if row.is_new() {
         table
             .columns()
-            .try_for_each(|column| store(&row, column, array.find(column.name()), true))
+            .try_for_each(|column| store(&mut row, column, array.find(column.name()), true))
     } else {
         array.entries().try_for_each(|(name, value)| {
             match name.and_then(|name| table.column(name)) {
-                Some(column) => store(&row, column, Some(value), false),
+                Some(column) => store(&mut row, column, Some(value), false),
                 None => Some(()),
             }
         })
@@ -359,7 +359,7 @@ fn update(call: &Call, subtract: bool) {
         return;
     };
     let by = call.value(3);
-    let Some(row) = table.lock_set(key).filter(Locked::found) else {
+    let Some(mut row) = table.lock_set(key).filter(Locked::found) else {
         fatal(E_WARNING, c"unable to allocate memory");
         call.set_bool(false);
         return;

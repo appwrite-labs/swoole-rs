@@ -525,7 +525,8 @@ impl Drop for ServerData {
         } else if owns_shared() {
             // Never started, or a base-mode start returned: upstream keeps it to the
             // exit, so MSHUTDOWN deletes it. Any other is kept as upstream keeps it.
-            let orphan = !fact(server, Fact::ThreadMode) && server.config().factory_.is_null();
+            let orphan =
+                !fact(server, Fact::ThreadMode) && server.config().factory_.get().is_null();
             kept().push((share, orphan));
         }
         // A worker thread's share in the master's server just goes.

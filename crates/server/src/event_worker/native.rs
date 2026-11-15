@@ -623,7 +623,7 @@ pub(crate) fn start_event_worker(serv: view::Server<'_>, worker: Worker<'_>) -> 
 pub(crate) fn send_to_reactor_thread(serv: view::Server<'_>, head: &DataHead) -> isize {
     let (tables, config) = (serv.state().tables_ref(), serv.config());
     // `serv->get_reactor_pipe_socket(session_id, info->reactor_id)`.
-    let pipes = c_long::from(tables.reactor_pipe_num);
+    let pipes = c_long::from(tables.reactor_pipe_num.get());
     let id = c_long::from(head.reactor_id)
         + head.fd.checked_rem(pipes).unwrap_or(0) * c_long::from(config.reactor_num.get());
     let pipe = serv

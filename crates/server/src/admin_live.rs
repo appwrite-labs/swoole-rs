@@ -324,7 +324,7 @@ impl Facts for Live<'_> {
             ("workers", workers * size(size_of::<WorkerRecord>())),
             (
                 "connection_list",
-                u64::from(self.tables.max_connection) * size(size_of::<ConnectionRecord>()),
+                u64::from(self.tables.max_connection()) * size(size_of::<ConnectionRecord>()),
             ),
             (
                 "session_list",

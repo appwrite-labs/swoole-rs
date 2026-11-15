@@ -19,6 +19,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use swoole_rs_corebase::log::{self, set_last_error};
+use swoole_rs_corebase::sys;
 
 const INVALID: i32 = -1;
 const NO_MEMORY: i32 = -2;
@@ -349,19 +350,8 @@ fn map(size: usize, sharing: c_int) -> *mut c_void {
     else {
         return ptr::null_mut();
     };
-    let flags = sharing | libc::MAP_ANONYMOUS;
-    // SAFETY: a fresh anonymous mapping.
-    let memory = unsafe {
-        libc::mmap(
-            ptr::null_mut(),
-            total,
-            libc::PROT_READ | libc::PROT_WRITE,
-            flags,
-            -1,
-            0,
-        )
-    };
-    if memory == libc::MAP_FAILED {
+    let memory = sys::map_anonymous(total, sharing == libc::MAP_SHARED, false);
+    if memory.is_null() {
         log::sys_warning(c"SharedMemory::alloc", format_args!("mmap({total}) failed"));
         return ptr::null_mut();
     }

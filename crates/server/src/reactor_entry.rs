@@ -21,26 +21,24 @@ impl SendData<'_> {
     /// and the datagram that follows it; `None` if the payload is too short.
     #[must_use]
     pub fn datagram(&self) -> Option<(c_int, SocketAddress, &[u8])> {
-        let payload = self.payload();
-        let head = payload.get(..size_of::<DgramPacket>())?;
-        // SAFETY: `size_of::<DgramPacket>()` bytes, read unaligned; every field is
-        // plain data.
-        let head = unsafe { head.as_ptr().cast::<DgramPacket>().read_unaligned() };
+        let head = self.datagram_head()?;
         let start = size_of::<DgramPacket>();
-        let data = payload.get(start..start + head.length as usize)?;
+        let data = self.payload().get(start..start + head.length as usize)?;
         Some((head.socket_type, head.socket_addr, data))
     }
 
     /// The sender an `onPacket` payload's `DgramPacket` head names; `None` if the
-    /// payload ends before the address does.
+    /// payload ends before the head does.
     pub(crate) fn datagram_sender(&self) -> Option<SocketAddress> {
-        let start = core::mem::offset_of!(DgramPacket, socket_addr);
-        let address = self
-            .payload()
-            .get(start..start + size_of::<SocketAddress>())?;
-        // SAFETY: `size_of::<SocketAddress>()` bytes, read unaligned; every field is
+        Some(self.datagram_head()?.socket_addr)
+    }
+
+    /// An `onPacket` payload's `DgramPacket` head; `None` if the payload is shorter.
+    fn datagram_head(&self) -> Option<DgramPacket> {
+        let head = self.payload().get(..size_of::<DgramPacket>())?;
+        // SAFETY: `size_of::<DgramPacket>()` bytes, read unaligned; every field is
         // plain data.
-        Some(unsafe { address.as_ptr().cast::<SocketAddress>().read_unaligned() })
+        Some(unsafe { head.as_ptr().cast::<DgramPacket>().read_unaligned() })
     }
 }
 

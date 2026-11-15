@@ -32,8 +32,7 @@ pub fn schedule_worker(serv: Server<'_>, fd: c_int, send: Option<&SendData>) -> 
     let key = c_long::from(fd);
     let dispatch_func = state.callbacks.slot(CallbackKind::DispatchFunc);
     if dispatch_func.is_set() {
-        // SAFETY: null, or the table's live slot of the fd, read for the call.
-        let conn = unsafe { state.connection_ptr(key, Lookup::ByFd).as_ref() };
+        let conn = state.connection(key, Lookup::ByFd);
         let id = state.callbacks.dispatch(serv, conn, send);
         if id != USERFUNC_FALLBACK {
             return u32::try_from(id).map_err(|_| id);
@@ -321,7 +320,7 @@ pub fn add_port<'a>(
         log_error(SW_LOG_ERROR, code, c"Server::add_port", m);
         None
     };
-    if !serv.state().config_ref().factory_.is_null() {
+    if !serv.state().config_ref().factory_.get().is_null() {
         let m = format_args!("must add port before server is created");
         return fail(E::SW_ERROR_WRONG_OPERATION, m);
     }
@@ -556,7 +555,7 @@ mod tests {
     extern "C" fn to_six(
         _: crate::callbacks::Ctx,
         _: Server<'_>,
-        _: Option<&crate::records::ConnectionRecord>,
+        _: Option<crate::Connection<'_>>,
         _: Option<&crate::reactor_entry::RecvData>,
     ) -> c_int {
         6
@@ -565,7 +564,7 @@ mod tests {
     extern "C" fn fall_back(
         _: crate::callbacks::Ctx,
         _: Server<'_>,
-        _: Option<&crate::records::ConnectionRecord>,
+        _: Option<crate::Connection<'_>>,
         _: Option<&crate::reactor_entry::RecvData>,
     ) -> c_int {
         USERFUNC_FALLBACK
@@ -729,9 +728,9 @@ mod tests {
 
         // SAFETY: the fixture's config, which nothing else borrows here.
         let config = unsafe { serv.config_mut() };
-        config.factory_ = core::ptr::NonNull::dangling().as_ptr();
+        config.factory_.set(core::ptr::NonNull::dangling().as_ptr());
         assert!(add_port(serv, 1, c"::", 9503).is_none(), "created");
-        config.factory_ = core::ptr::null_mut();
+        config.factory_.set(core::ptr::null_mut());
     }
 
     #[test]

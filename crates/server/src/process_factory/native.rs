@@ -46,12 +46,10 @@ fn barriers(serv: view::Server<'_>, init: bool) {
 pub(crate) fn create(serv: view::Server<'_>) -> *mut c_void {
     let (state, config) = (serv.state(), serv.config());
     let threads = new_reactor_threads(state, config.reactor_num.get());
-    let max = state.tables_ref().max_connection;
+    let max = state.tables_ref().max_connection();
     let list = Shm::calloc(max as usize, size_of::<ConnectionRecord>());
     let pipes = config.worker_num.get() / u32::from(config.reactor_num.get());
-    // SAFETY: the server's tables, which only setup and teardown write, while the
-    // master is the server's only thread; nothing reads them while this lives.
-    let tables = unsafe { &mut *state.tables() };
+    let tables = state.tables_ref();
     tables.install_reactor_threads(threads);
     if list.is_null() {
         let size = size_of::<ConnectionRecord>();
@@ -59,8 +57,8 @@ pub(crate) fn create(serv: view::Server<'_>) -> *mut c_void {
         log::sys_warning(c"Server::create_process_factory", m);
         return core::ptr::null_mut();
     }
-    tables.connection_list = list;
-    tables.reactor_pipe_num = u16::try_from(pipes & 0xffff).unwrap_or_default();
+    tables.connection_list.replace(list);
+    (tables.reactor_pipe_num).set(u16::try_from(pipes & 0xffff).unwrap_or_default());
     barriers(serv, true);
     crate::factory::new()
 }

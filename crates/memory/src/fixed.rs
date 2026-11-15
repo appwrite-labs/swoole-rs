@@ -157,7 +157,7 @@ impl Layout {
     }
 }
 /// Lays a pool out in `arena`: its zeroed header, then `plan.slices` linked slices.
-/// The pool's address (with `arena`'s provenance), or `None`, touching nothing, if
+/// The pool, borrowed with `arena` (and with its provenance), or `None`, touching nothing, if
 /// `arena` is misaligned or shorter than `plan.total`. The pool's links point into
 /// `arena`, which its owner keeps in place, and reaches only through the pool, while
 /// the pool is used (the slice invariant).
@@ -166,7 +166,7 @@ pub(crate) fn construct(
     plan: Layout,
     shared: bool,
     owned: bool,
-) -> Option<ptr::NonNull<Fixed>> {
+) -> Option<&Fixed> {
     let header = mem::size_of::<Fixed>();
     let stride = mem::size_of::<Slice>() + plan.width as usize;
     let aligned = arena
@@ -191,7 +191,7 @@ pub(crate) fn construct(
     )]
     let arena = arena.as_mut_ptr().cast::<Fixed>();
     // SAFETY: aligned (checked above), its first `size_of::<Fixed>()` bytes zeroed (a
-    // valid `Fixed`), and borrowed with `arena` for this call.
+    // valid `Fixed`), and borrowed with `arena`, which the pool alone reaches meanwhile.
     let p = unsafe { &mut *arena };
     p.memory = arena.cast::<u8>().wrapping_add(header);
     p.size = plan.usable;
@@ -212,7 +212,7 @@ pub(crate) fn construct(
         nodes.set_prev(p.head.get(), node);
         p.head.set(node);
     }
-    ptr::NonNull::new(arena)
+    Some(p)
 }
 
 /// A spare slice, or null.

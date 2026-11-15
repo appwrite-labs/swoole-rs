@@ -44,7 +44,7 @@ pub use functions::{mime_type, zif_swoole_last_error};
 pub use implicit::sw_php_exit;
 pub use info::swr_v1_phpswoole_minfo;
 pub use interfaces::sys_warning;
-pub use memory::{sw_zend_string_allocator, zend_string_allocator, zend_string_buffers};
+pub use memory::{sw_zend_string_allocator, zend_string_allocator};
 pub use module::{
     Families, Globals, Hook, Http, HttpMinit, Minit, MinitArgs, ProcessSteps, ReqStatus,
     RuntimeSteps, SocketSettings, codecs, display_errors, enable_library, families, globals,

@@ -71,6 +71,21 @@ pub struct BusPacket {
     pub data: *mut c_char,
 }
 
+/// No packet.
+const EMPTY: BusPacket = BusPacket {
+    length: 0,
+    data: ptr::null_mut(),
+};
+
+/// A set buffer's first [`BUFFER_MIN`] bytes: the current message's head, then the
+/// packet [`Bus::pass`] points the message at.
+#[repr(C)]
+struct Front {
+    head: Cell<BusHead>,
+    packet: Cell<BusPacket>,
+}
+const _: () = assert!(size_of::<Front>() == BUFFER_MIN, "a header and a PacketPtr");
+
 /// One read's progress across the allocations it asks for.
 struct BusRead {
     /// Buffered reads: the datagram's length, kept across an allocation.
@@ -187,15 +202,6 @@ fn writev_sync(socket: Socket<'_>, vectors: &[std::io::IoSlice<'_>]) -> isize {
     swoole_rs_corebase::sys::writev(socket.fd(), vectors)
 }
 
-/// `allocator`'s `malloc(size)`: a new block of `size` bytes, or null when it has
-/// none to give (or no `malloc`).
-fn malloc(allocator: TrustedAllocator, size: usize) -> *mut std::ffi::c_void {
-    allocator.get().malloc.map_or(ptr::null_mut(), |malloc| {
-        // SAFETY: a trusted allocator's `malloc`, which takes any size.
-        unsafe { malloc(size) }
-    })
-}
-
 fn aligned(size: usize) -> usize {
     size.wrapping_add(ALIGNMENT - 1) & !(ALIGNMENT - 1)
 }
@@ -222,13 +228,19 @@ impl Bus {
         }
     }
 
-    /// The set buffer's header, shared with the reads and writes that go through the
+    /// The set buffer's front, shared with the reads and writes that go through the
     /// buffer's pointer; `None` while no buffer is set.
+    fn front(&self) -> Option<&Front> {
+        // SAFETY: null, or the buffer `alloc_buffer` made: an allocator's block (so
+        // aligned) of at least `BUFFER_MIN` bytes, which start with the `Front` it
+        // wrote. Reads write only bytes into it, and any bytes are a `Front`. It lives
+        // until `free_buffer`, which no caller of this reaches while it holds the front.
+        unsafe { self.buffer.get().cast::<Front>().as_ref() }
+    }
+
+    /// The set buffer's header; `None` while no buffer is set.
     fn head_cell(&self) -> Option<&Cell<BusHead>> {
-        // SAFETY: null, or the buffer `alloc_buffer` made, which starts with the
-        // header it wrote and lives until `free_buffer`, which no caller of this
-        // reaches while it holds the header.
-        unsafe { self.buffer.get().cast::<Cell<BusHead>>().as_ref() }
+        self.front().map(|front| &front.head)
     }
 
     /// The current message's head; an empty one while no buffer is set.
@@ -293,19 +305,16 @@ impl Bus {
     pub fn packet(&self) -> BusPacket {
         let head = self.head();
         if head.flags & PTR != 0 {
-            // SAFETY: `pass` stored a `BusPacket` at the start of the data.
-            unsafe { self.data().cast::<BusPacket>().read_unaligned() }
+            // `pass` stored it.
+            self.front().map_or(EMPTY, |front| front.packet.get())
         } else if head.flags & OBJ_PTR != 0 {
-            self.packets.borrow().get(&head.msg_id).map_or(
-                BusPacket {
-                    length: 0,
-                    data: ptr::null_mut(),
-                },
-                |p| BusPacket {
+            self.packets
+                .borrow()
+                .get(&head.msg_id)
+                .map_or(EMPTY, |p| BusPacket {
                     length: p.length,
                     data: p.data.cast(),
-                },
-            )
+                })
         } else {
             BusPacket {
                 length: head.len as usize,
@@ -317,7 +326,7 @@ impl Bus {
     /// `MessageBus::pass`: the buffer points at `data` instead of holding it; nothing
     /// while no buffer is set.
     pub fn pass(&self, info: &BusHead, data: *const c_char) {
-        let Some(current) = self.head_cell() else {
+        let Some(current) = self.front() else {
             return;
         };
         let mut head = *info;
@@ -328,10 +337,9 @@ impl Bus {
                 length: info.len as usize,
                 data: data.cast_mut(),
             };
-            // SAFETY: the buffer holds at least a header and a pointer pair.
-            unsafe { self.data().cast::<BusPacket>().write_unaligned(packet) };
+            current.packet.set(packet);
         }
-        current.set(head);
+        current.head.set(head);
     }
 
     /// `MessageBus::move_packet`: the current packet's block, now the caller's.
@@ -361,7 +369,7 @@ impl Bus {
         let allocator = if fresh { default } else { state.allocator };
         let calls = allocator.get();
         let data = match (fresh, calls.realloc) {
-            (true, _) => malloc(allocator, state.size),
+            (true, _) => allocator.allocate(state.size),
             // SAFETY: the packet's block, which this allocator made (`Packet`), so
             // its `realloc` takes it back; the packet names the new block below.
             (false, Some(realloc)) => unsafe { realloc(state.data.cast(), state.size) },
@@ -701,12 +709,16 @@ impl Bus {
     /// passes below need one set. A buffer already set is forgotten, not freed.
     pub fn alloc_buffer(&self, size: usize, allocator: TrustedAllocator) -> bool {
         self.buffer_size.set(size);
-        let buffer = malloc(allocator, size.max(BUFFER_MIN)).cast::<BusHead>();
+        let buffer = allocator.allocate(size.max(BUFFER_MIN)).cast::<BusHead>();
         self.buffer.set(buffer);
         self.buffer_owner.set(Some(allocator));
         if !buffer.is_null() {
-            // SAFETY: the fresh block, at least a header long and aligned for one.
-            unsafe { buffer.write(BusHead::default()) };
+            let front = Front {
+                head: Cell::new(BusHead::default()),
+                packet: Cell::new(EMPTY),
+            };
+            // SAFETY: the fresh block, at least a `Front` long and aligned for one.
+            unsafe { buffer.cast::<Front>().write(front) };
         }
         !buffer.is_null()
     }
@@ -801,26 +813,15 @@ impl Bus {
         self.next_id.set(Some(counter));
     }
 
-    /// `MessageBus::write` of `{head, data}`, `head.len` set to the data's length:
-    /// numbers the message, then writes it through the event loop while one is
-    /// available, else synchronously. False if the pipe failed.
-    ///
-    /// # Safety
-    /// `socket` outlives any registration the write makes: what the event loop
-    /// cannot send at once it queues, and watches `socket` until it drains.
-    #[inline]
-    pub unsafe fn send(&self, socket: Socket<'_>, head: &mut BusHead, data: &[u8]) -> bool {
-        head.len = u32::try_from(data.len()).unwrap_or(u32::MAX);
-        // SAFETY: the `head.len` bytes of `data`; `socket` as the caller promises.
-        unsafe { self.send_raw(socket, head, data.as_ptr()) }
-    }
-
-    /// [`Bus::send`] of a message its caller holds as a `SendData`: a head and the
-    /// pointer its `len` counts from.
+    /// `MessageBus::write` of a message its caller holds as a `SendData`: a head and
+    /// the pointer its `len` counts from. Numbers the message, then writes it through
+    /// the event loop while one is available, else synchronously. False if the pipe
+    /// failed.
     ///
     /// # Safety
     /// `data` covers `head.len` bytes or is null, and `socket` outlives any
-    /// registration the write makes (see [`Bus::send`]).
+    /// registration the write makes: what the event loop cannot send at once it
+    /// queues, and watches `socket` until it drains.
     pub unsafe fn send_raw(&self, socket: Socket<'_>, head: &mut BusHead, data: *const u8) -> bool {
         use swoole_rs_reactor::event_api;
         // `write` passes iovecs over `head` and the caller's bytes.
@@ -919,7 +920,8 @@ mod tests {
                 fd: 7,
                 ..BusHead::default()
             };
-            assert!(unsafe { pipe.bus.send(Socket::new(&mut socket), &mut head, payload) });
+            let socket = Socket::new(&mut socket);
+            assert!(unsafe { pipe.bus.send_raw(socket, &mut head, payload.as_ptr()) });
             assert_eq!(head.msg_id, expected);
             assert_eq!(pipe.read(false).as_deref(), Some(payload));
         }

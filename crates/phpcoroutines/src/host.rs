@@ -168,13 +168,11 @@ pub(crate) fn current() -> Option<Co> {
 pub(crate) fn require_coroutine() -> Option<Co> {
     let co = current();
     if co.is_none() {
-        // SAFETY: Swoole's fatal error hook; the frames own nothing.
-        unsafe {
-            swoole_rs_corebase::fatal_error(
-                SW_ERROR_CO_OUT_OF_COROUTINE,
-                c"API must be called in the coroutine",
-            );
-        }
+        // The hook's bailout, trapped then raised from here: the frames own nothing.
+        bailout::raise(swoole_rs_phpswoole::swoole_fatal_error(
+            SW_ERROR_CO_OUT_OF_COROUTINE,
+            c"API must be called in the coroutine",
+        ));
     }
     co
 }
@@ -295,8 +293,16 @@ pub(crate) fn kernel_coroutine(count: c_long, sleep: f64) {
         }
     }
     KERNEL_ARGS.with(|args| args.set((count, sleep)));
-    // SAFETY: `sleeper` reads no argument; the caller's frame owns nothing to drop.
-    unsafe { swoole_rs_coroutine::swr_v1_coroutine_create(sleeper, std::ptr::null_mut()) };
+    spawn(sleeper);
+}
+
+/// `Coroutine::create(entry, nullptr)`: a coroutine running `entry`, which
+/// reads no argument (its own per-thread slot hands it what it needs), until it
+/// first yields or ends; its id. As for [`resume`], the caller's frames own
+/// nothing that needs a drop.
+fn spawn(entry: extern "C" fn(*mut c_void)) -> c_long {
+    // SAFETY: a safe entry takes any argument, null too.
+    unsafe { swoole_rs_coroutine::swr_v1_coroutine_create(entry, std::ptr::null_mut()) }
 }
 
 /// The context of `co`'s origin, none for the main context (or no coroutine).
@@ -437,11 +443,11 @@ impl Waiter {
     /// main-stack frames; abandoned coroutine stacks remain allocated.
     pub fn wake(&self) -> Result<(), bailout::Bailout> {
         swoole_rs_zend::contain_with(|| {
-            if let Some(coroutine) = self.0.get() {
-                // SAFETY: published only while suspended in `wait`, which
-                // clears it as soon as anything resumes it. The trap encloses
-                // only this closure and the drop-free resume frames.
-                unsafe { coroutine.wake(false) };
+            // Published only while suspended in `wait`, which clears it as soon
+            // as anything resumes it. The trap encloses only this closure and
+            // the drop-free resume frames.
+            if let Some(co) = self.0.get().and_then(Coroutine::live) {
+                resume(co);
             }
         })
     }

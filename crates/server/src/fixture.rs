@@ -55,7 +55,10 @@ impl LiveServer {
         let mut tables = ServerTables::default();
         tables.session_list = naming_at(sessions.as_mut_ptr());
         tables.connection_list = naming_at(connections.as_mut_ptr());
-        tables.max_connection = u32::try_from(CONNECTIONS).unwrap_or(u32::MAX);
+        // SAFETY: the table just named holds `CONNECTIONS` records.
+        unsafe {
+            tables.set_max_connection_unchecked(u32::try_from(CONNECTIONS).unwrap_or(u32::MAX));
+        };
         let state = Box::new(ServerState::with_tables(tables));
         // SAFETY: the shared record is plain data, for which zero is the state
         // `swr_v1_server_new`'s calloc leaves it in.
@@ -187,6 +190,10 @@ impl Drop for LiveServer {
         }
         // SAFETY: the port this fixture boxed; the state that lists it drops with it.
         drop(unsafe { Box::from_raw(self.port) });
+        // SAFETY: the state's own configuration, which nothing else reads now. Its `gs`
+        // names the fixture's own record, which the state's drop must not unmap.
+        let config = unsafe { &mut *self.state.config() };
+        config.gs = swoole_rs_memory::members::Shm::empty();
     }
 }
 

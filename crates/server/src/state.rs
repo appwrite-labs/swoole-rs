@@ -323,13 +323,12 @@ impl ServerState {
         port.object_id = u16::try_from(count).unwrap_or(u16::MAX);
         let port = Box::into_raw(port).cast::<core::ffi::c_void>();
         ports.push(AtomicPtr::new(port));
-        // SAFETY: the state's table view; no reader runs during the push, per the caller.
-        let tables = unsafe { &mut *self.tables() };
-        // `AtomicPtr` has the layout of the pointer it holds.
-        tables.ports = crate::records::PortList {
+        // `AtomicPtr` has the layout of the pointer it holds. No reader runs during the
+        // push, per the caller.
+        self.tables_ref().ports.set(crate::records::PortList {
             items: ports.as_ptr().cast(),
             count,
-        };
+        });
         drop(ports);
         // The port just published, the list's last.
         let kept = self.tables_ref().ports().last().copied();
@@ -454,7 +453,10 @@ impl Drop for ServerState {
         drop(unsafe { Box::from_raw(*self.tables.get_mut()) });
         // SAFETY: this state owns its unique configuration box; native reference
         // views have ended before the base owner frees the state.
-        drop(unsafe { Box::from_raw(*self.config.get_mut()) });
+        let mut config = unsafe { Box::from_raw(*self.config.get_mut()) };
+        // The shared record, after the tables' message bus, which numbers its messages
+        // from a counter in it.
+        config.gs.free();
     }
 }
 

@@ -199,7 +199,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// The server's factory, and its mode.
 fn of(state: &ServerState) -> (*mut c_void, Mode) {
     let config = state.config_ref();
-    (config.factory_, config.mode_)
+    (config.factory_.get(), config.mode_)
 }
 
 /// `factory_->start()`.

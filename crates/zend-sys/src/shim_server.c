@@ -42,6 +42,9 @@ bool swr_zend_unserialize(zval *out, const char *data, size_t length, size_t *of
 
 int swr_zend_try_array_merge(zval *dest, zval *src) {
     volatile int bailed = 0;
+    if (Z_TYPE_P(dest) != IS_ARRAY || Z_TYPE_P(src) != IS_ARRAY) {
+        return 0;
+    }
     SWR_ZEND_TRY {
         SEPARATE_ARRAY(dest);
         php_array_merge(Z_ARRVAL_P(dest), Z_ARRVAL_P(src));

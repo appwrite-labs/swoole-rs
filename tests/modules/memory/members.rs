@@ -45,10 +45,15 @@ impl FixedPool {
         let plan = Layout::new(slices, width, 0, true).ok_or(INVALID)?;
         let memory = NonNull::new(arena(shared, plan.total).cast::<mem::MaybeUninit<u8>>())
             .ok_or(NO_MEMORY)?;
+        // The arena's own pointer, which `drop` frees: the header's borrow can't.
+        let base = memory.cast::<Fixed>();
         // SAFETY: a fresh, malloc-aligned arena of `plan.total` bytes.
         let memory = unsafe { std::slice::from_raw_parts_mut(memory.as_ptr(), plan.total) };
         let pool = fixed::construct(memory, plan, shared, true).ok_or(INVALID)?;
-        Ok(Self(pool))
+        if !core::ptr::eq(pool, base.as_ptr()) {
+            return Err(INVALID);
+        }
+        Ok(Self(base))
     }
 
     fn header(&self) -> &Fixed {

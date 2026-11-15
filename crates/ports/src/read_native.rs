@@ -14,7 +14,7 @@ use swoole_rs_corebase::constants::{
     SW_HTTP_SERVICE_UNAVAILABLE_PACKET,
 };
 use swoole_rs_corebase::net_types::RecvData;
-use swoole_rs_corebase::{DataHead, WebSocketStatus, log};
+use swoole_rs_corebase::{DataHead, TrustedAllocator, WebSocketStatus, log};
 use swoole_rs_framing::recv::Mode;
 use swoole_rs_http_ffi::{HttpRequest, HttpString};
 use swoole_rs_reactor::reactor_upstream::trigger_close_event;
@@ -136,13 +136,14 @@ impl Read<'_> {
         if !held.is_null() {
             return held.cast();
         }
-        let allocator = self
-            .config()
-            .recv_buffer_allocator
-            .load(Ordering::Relaxed)
-            .cast::<swoole_rs_buffer::string::Allocator>();
-        // SAFETY: the server's allocator, null or live.
-        let made = new_sized_string(SW_BUFFER_SIZE_BIG as usize, unsafe { allocator.as_ref() });
+        let allocator = self.config().recv_buffer_allocator.load(Ordering::Relaxed);
+        // SAFETY: the server's allocator, null or a `swoole::Allocator` that lives for
+        // the process and keeps the allocator contract (Zend strings'); a
+        // `TrustedAllocator` is such a pointer, so the option is the nullable one.
+        let allocator = unsafe {
+            std::mem::transmute::<*mut core::ffi::c_void, Option<TrustedAllocator>>(allocator)
+        };
+        let made = new_sized_string(SW_BUFFER_SIZE_BIG as usize, allocator);
         self.socket.edit(|s| s.recv_buffer = made.cast());
         made
     }
@@ -163,12 +164,12 @@ impl Read<'_> {
 impl Connection for Read<'_> {
     #[inline]
     fn recv(&mut self, whole: bool) -> i64 {
-        let b = self.string();
-        let (at, size) = (if whole { 0 } else { b.len() }, b.size());
-        let start = b.as_mut_ptr().wrapping_add(at);
-        // SAFETY: the `size - at` writable bytes at `start`, in the connection's buffer.
-        let free = unsafe { Fill::from_raw(start.cast(), size - at) };
-        recv_fill(self.socket, free, 0) as i64
+        if whole {
+            // The receive replaces the content, which the caller sets afresh.
+            self.buffer().length = 0;
+        }
+        let socket = self.socket;
+        recv_fill(socket, Fill::new(self.string().spare()), 0) as i64
     }
 
     fn catch_error(&mut self) -> Caught {

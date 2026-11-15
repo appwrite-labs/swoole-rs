@@ -12,7 +12,8 @@ zend_string *swr_zend_serialize(zval *value, bool *bailed);
 bool swr_zend_unserialize(zval *out, const char *data, size_t length, size_t *offset, bool *bailed);
 
 /* SEPARATE_ARRAY(dest); php_array_merge(Z_ARRVAL_P(dest), Z_ARRVAL_P(src)) inside
- * zend_try (a replaced value's destructor runs PHP): 1 if it bailed out. */
+ * zend_try (a replaced value's destructor runs PHP): 1 if it bailed out. Nothing
+ * unless both hold arrays. */
 int swr_zend_try_array_merge(zval *dest, zval *src);
 
 /* HOOK_PHP_CALL_STACK (php_swoole_call_stack.h): clear EG(stack_limit) and

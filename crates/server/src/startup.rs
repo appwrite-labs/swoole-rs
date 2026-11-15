@@ -3,10 +3,9 @@ use crate::callbacks::{CallbackKind, ServerSlot};
 use crate::hybrid::{Step, hybrid};
 use crate::reactor_handle::Reactor;
 use crate::records::SessionRecord;
-use crate::shared::{PortCounters, ServerCounters};
+use crate::shared::PortCounters;
 use crate::{Mode, TaskIpcMode, view};
 use core::ffi::c_int;
-use core::mem::offset_of;
 use core::sync::atomic::Ordering::{Relaxed, SeqCst};
 use swoole_rs_clients::address::assign;
 use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
@@ -79,7 +78,7 @@ pub(crate) fn start(serv: view::Server<'_>) -> bool {
     if !started {
         return false;
     }
-    if !config.factory_.is_null() {
+    if !config.factory_.get().is_null() {
         destroy(serv);
     }
     state.unlink_pid();
@@ -102,10 +101,7 @@ pub(crate) fn create(serv: view::Server<'_>) -> bool {
 /// [`create`] on `cpu` cores.
 fn create_on(serv: view::Server<'_>, cpu: u32) -> bool {
     let state = serv.state();
-    // SAFETY: as above; each write through it is that statement's only access.
-    let tables = || unsafe { &mut *state.tables() };
-    // SAFETY: as `tables`, for the configuration.
-    let config = || unsafe { &mut *state.config() };
+    let (tables, config) = (state.tables_ref(), state.config_ref());
     if !crate::local_addr::init(state) {
         return false;
     }
@@ -116,11 +112,11 @@ fn create_on(serv: view::Server<'_>, cpu: u32) -> bool {
         log::sys_warning(c"Server::create", m);
         return false;
     }
-    tables().session_list = sessions;
+    tables.session_list.replace(sessions);
     let count = state.tables_ref().ports().len();
     let port_gs = Shm::calloc(count, size_of::<PortCounters>());
     let list = port_gs.as_ptr().cast::<PortCounters>();
-    tables().port_gs_list = port_gs;
+    tables.port_gs_list.replace(port_gs);
     if list.is_null() {
         let size = size_of::<PortCounters>();
         let m = format_args!("sw_shm_calloc({count}, {size}) for port_connection_num_array failed");
@@ -132,7 +128,7 @@ fn create_on(serv: view::Server<'_>, cpu: u32) -> bool {
     }
     http_defaults(state);
     if let Some(max) = max_connection(state, swoole_rs_corebase::max_sockets()) {
-        tables().max_connection = max;
+        tables.set_max_connection(max);
     }
     bound_workers(state.config_ref(), cpu);
     let worker_num = state.config_ref().worker_num.get();
@@ -143,13 +139,13 @@ fn create_on(serv: view::Server<'_>, cpu: u32) -> bool {
         log::sys_warning(c"Server::create", m);
         return false;
     }
-    config().workers = workers;
+    config.workers.replace(workers);
     let factory = match state.config_ref().mode_ {
         Mode::Base => crate::base_factory::create(serv),
         Mode::Process => hybrid().process_factory(serv),
         Mode::Thread => hybrid().create_thread_factory(serv),
     };
-    config().factory_ = factory;
+    config.factory_.set(factory);
     if factory.is_null() {
         return false;
     }
@@ -157,7 +153,7 @@ fn create_on(serv: view::Server<'_>, cpu: u32) -> bool {
         let Some(results) = create_task_workers(serv) else {
             return false;
         };
-        config().task_results = results;
+        config.task_results.replace(results);
         if !hybrid().task_workers(serv) {
             return false;
         }
@@ -191,7 +187,7 @@ fn max_connection(state: &crate::ServerState, max_sockets: u32) -> Option<u32> {
     if let Some(last) = tables.ports().last() {
         minimum = minimum.wrapping_add(last.fd().cast_unsigned());
     }
-    if tables.max_connection >= minimum {
+    if tables.max_connection() >= minimum {
         return None;
     }
     let real = minimum.wrapping_add(1).max(max_sockets);
@@ -488,9 +484,7 @@ pub(crate) fn destroy(serv: view::Server<'_>) {
     }
     hybrid().step(serv, Step::ReleasePipeBuffers);
     hybrid().step(serv, Step::ClosePorts);
-    // SAFETY: as above; each write through it is that statement's only access.
-    let config = || unsafe { &mut *state.config() };
-    config().user_workers.free();
+    unmap(&config.user_workers);
     hybrid().step(serv, Step::ClearSignals);
     if let Some(gs) = gs {
         gs.start.store(0, SeqCst);
@@ -502,34 +496,31 @@ pub(crate) fn destroy(serv: view::Server<'_>) {
         Mode::Process => _ = hybrid().step(serv, Step::DestroyProcessFactory),
         Mode::Thread => hybrid().destroy_thread_factory(serv),
     }
-    if config().task_worker_num.get() > 0 {
-        config().task_results.free();
+    if config.task_worker_num.get() > 0 {
+        unmap(&config.task_results);
         hybrid().step(serv, Step::DestroyTaskPool);
     }
     free_server(serv);
 }
 
-/// `Server::destroy_base_factory()`: the connection list and the connection counts.
+/// `SharedMemory::free` of a table or configuration mapping, through `&`: the
+/// field is a cell, which only the master writes, once no other thread or process
+/// uses the server.
+fn unmap(shm: &Shm) {
+    shm.replace(Shm::empty());
+}
+
+/// `Server::destroy_base_factory()`: the connection list and the connection counts,
+/// the server's and each port's, which no other process shares once the workers
+/// are reaped.
 fn destroy_base_factory(state: &crate::ServerState) {
-    // SAFETY: as `destroy`; the write is the statement's only access to the tables.
-    unsafe { &mut *state.tables() }.connection_list.free();
-    // SAFETY: `slot` is the `connection_nums` of the server's counters, or of a port's
-    // in `port_gs_list`, which no other process shares once the workers are reaped.
-    let free = |slot: *mut Shm| unsafe { (*slot).free() };
-    let gs = state.config_ref().gs.as_ptr();
-    if !gs.is_null() {
-        free(
-            gs.wrapping_byte_add(offset_of!(ServerCounters, connection_nums))
-                .cast(),
-        );
+    unmap(&state.tables_ref().connection_list);
+    if let Some(gs) = crate::shared::server_counters(state) {
+        unmap(&gs.connection_nums);
     }
     for port in state.tables_ref().ports() {
-        let gs = port.config().gs.get();
-        if !gs.is_null() {
-            free(
-                gs.wrapping_byte_add(offset_of!(PortCounters, connection_nums))
-                    .cast(),
-            );
+        if let Some(gs) = port.config().counters() {
+            unmap(&gs.connection_nums);
         }
     }
 }
@@ -537,17 +528,13 @@ fn destroy_base_factory(state: &crate::ServerState) {
 /// The session list, port counters, workers and factory, then `SwooleG.server`.
 fn free_server(serv: view::Server<'_>) {
     let state = serv.state();
-    // SAFETY: as `destroy`; the reference is this statement's only access.
-    let tables = unsafe { &mut *state.tables() };
-    tables.session_list.free();
-    tables.port_gs_list.free();
-    // SAFETY: as `tables`, for the configuration; no reference outlives its statement,
-    // so the factory's deletion, which reads the configuration, aliases none.
-    let config = || unsafe { &mut *state.config() };
-    config().workers.free();
-    if !state.config_ref().factory_.is_null() {
+    let (tables, config) = (state.tables_ref(), state.config_ref());
+    unmap(&tables.session_list);
+    unmap(&tables.port_gs_list);
+    unmap(&config.workers);
+    if !config.factory_.get().is_null() {
         hybrid().step(serv, Step::DeleteFactory);
-        config().factory_ = core::ptr::null_mut();
+        config.factory_.set(core::ptr::null_mut());
     }
     swoole_rs_corebase::swr_v1_core_set_server(core::ptr::null_mut());
 }
@@ -695,7 +682,7 @@ mod tests {
         // (2 + 1) * 2 + 32 + the listener's fd
         let minimum = 38 + live.listener_fd.cast_unsigned();
         let max = |value| {
-            unsafe { &mut *state.tables() }.max_connection = value;
+            unsafe { state.tables_ref().set_max_connection_unchecked(value) };
             max_connection(state, 0)
         };
         assert_eq!(max(10), Some(minimum + 1), "past the minimum");
@@ -728,8 +715,8 @@ mod tests {
                 tables.port_gs_list.as_ptr().addr(),
                 "port counters"
             );
-            assert_eq!(config(live).factory_.addr(), 0x70, "the factory");
-            config(live).factory_ = core::ptr::null_mut();
+            assert_eq!(config(live).factory_.get().addr(), 0x70, "the factory");
+            config(live).factory_.set(core::ptr::null_mut());
             config(live).workers.free();
             tables.session_list.free();
             tables.port_gs_list.free();
@@ -1015,7 +1002,7 @@ mod tests {
             assert!(tables.session_list.is_null(), "sessions freed");
             assert!(tables.port_gs_list.is_null(), "port counters freed");
             assert!(config(&live).workers.is_null(), "workers freed");
-            assert!(config(&live).factory_.is_null(), "factory deleted");
+            assert!(config(&live).factory_.get().is_null(), "factory deleted");
             assert_eq!(
                 tables.connection_list.is_null(),
                 mode == Mode::Base,
@@ -1037,6 +1024,6 @@ mod tests {
         let tables = live.state().tables_ref();
         assert!(tables.connection_list.is_null(), "connections freed");
         assert!(tables.session_list.is_null(), "sessions freed");
-        assert!(config(&live).factory_.is_null(), "factory deleted");
+        assert!(config(&live).factory_.get().is_null(), "factory deleted");
     }
 }

@@ -1,5 +1,5 @@
 //! Server connections, sessions and lookup tables owned and operated by Rust.
-use core::cell::UnsafeCell;
+use core::cell::{Cell, UnsafeCell};
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::{AtomicU8, AtomicU32, Ordering::Relaxed};
 use swoole_rs_corebase::WebSocketStatus;
@@ -104,6 +104,7 @@ fn decode<T>(object: *mut c_void) -> Option<*mut T> {
 /// time through the table's own pointer, so two handles to one slot never make two
 /// live `&mut` (#3554). The server's own synchronization orders the writes, as it
 /// orders native code's.
+#[repr(transparent)]
 pub struct Slot<'a, T> {
     cell: &'a UnsafeCell<T>,
 }
@@ -390,6 +391,9 @@ impl<'a> Connection<'a> {
 }
 
 /// Server-private shared table loans and bounds. The arena owns the underlying shared mappings.
+///
+/// Setup and teardown write the tables through `&`: every field they write is a cell
+/// (a [`Shm`] is one), written while the master is the server's only thread.
 #[repr(C)]
 pub struct ServerTables {
     /// `ConnectionRecord`s, `max_connection` of them.
@@ -397,18 +401,21 @@ pub struct ServerTables {
     /// `SessionRecord`s, `SW_SESSION_LIST_SIZE` of them.
     pub session_list: Shm,
     pub port_gs_list: Shm,
-    pub max_connection: u32,
+    /// How many records `connection_list` maps. Private: [`Self::set_max_connection`]
+    /// changes it only while the list is unmapped, so [`Self::connections`] never
+    /// reaches past the mapping.
+    max_connection: Cell<u32>,
     /// Armed when accepting runs out of fds and cleared by its callback, at runtime.
     pub enable_accept_timer: swoole_rs_corebase::timer_key::AtomicHeld,
-    pub reactor_pipe_num: u16,
+    pub reactor_pipe_num: Cell<u16>,
     /// How many records `reactor_threads` holds, in the padding native code's view
     /// leaves before it. Private with it: only [`Self::install_reactor_threads`] and
     /// [`Self::take_reactor_threads`] write the pair.
-    reactor_thread_num: u16,
+    reactor_thread_num: Cell<u16>,
     /// `ReactorThread[]`: null, or the array `install_reactor_threads` leaked.
-    reactor_threads: *mut c_void,
+    reactor_threads: Cell<*mut c_void>,
     /// `Server::ports`.
-    pub ports: PortList,
+    pub(crate) ports: Cell<PortList>,
     /// `&Server::message_bus`, whose `MessageBus` starts with its Rust bus: the
     /// one `swr_v1_server_new` made, which the tables own.
     pub(crate) message_bus: Option<Box<crate::reactor_ops::PoolBus>>,
@@ -416,12 +423,29 @@ pub struct ServerTables {
 
 /// The `ListenPort`s in listen order: a loan of `ServerState`'s list.
 #[repr(C)]
-pub struct PortList {
-    pub items: *const *mut c_void,
-    pub count: u32,
+#[derive(Clone, Copy)]
+pub(crate) struct PortList {
+    pub(crate) items: *const *mut c_void,
+    pub(crate) count: u32,
 }
 
 impl ServerTables {
+    /// `max_connection`: how many connection slots the server has, or will have.
+    #[must_use]
+    pub fn max_connection(&self) -> u32 {
+        self.max_connection.get()
+    }
+
+    /// `max_connection = value`, while the connection list is unmapped: whether it
+    /// changed.
+    pub(crate) fn set_max_connection(&self, value: u32) -> bool {
+        let unmapped = self.connection_list.is_null();
+        if unmapped {
+            self.max_connection.set(value);
+        }
+        unmapped
+    }
+
     /// The connection slots, exactly `max_connection` of them, or none before
     /// they're mapped. Index it with `get`, so every fd lookup is bounded by the
     /// table's own length.
@@ -434,7 +458,7 @@ impl ServerTables {
         // and frees it only by nulling `connection_list`; `UnsafeCell` has the
         // record's layout and lets slots be written under the server's own
         // synchronization.
-        unsafe { core::slice::from_raw_parts(base.cast(), self.max_connection as usize) }
+        unsafe { core::slice::from_raw_parts(base.cast(), self.max_connection() as usize) }
     }
 
     /// The slot of `fd`, or `None` when `fd` is outside the table.
@@ -473,7 +497,7 @@ impl ServerTables {
 
     /// The listen ports.
     pub(crate) fn ports(&self) -> &[crate::view::Port<'_>] {
-        let PortList { items, count } = self.ports;
+        let PortList { items, count } = self.ports.get();
         if items.is_null() {
             return &[];
         }
@@ -486,6 +510,8 @@ impl ServerTables {
 /// `offsetof(Server, reactor_threads)` in native code's view, for `layout`.
 pub(crate) const REACTOR_THREADS_OFFSET: usize =
     core::mem::offset_of!(ServerTables, reactor_threads);
+/// `offsetof(Server, max_connection)` in native code's view, for `layout`.
+pub(crate) const MAX_CONNECTION_OFFSET: usize = core::mem::offset_of!(ServerTables, max_connection);
 
 #[cfg_attr(
     not(all(feature = "upstream-symbols", not(test))),
@@ -495,19 +521,19 @@ impl ServerTables {
     /// `reactor_threads = threads`: the tables keep the array until
     /// [`Self::take_reactor_threads`]. One already kept is leaked, so a record read
     /// from it stays valid.
-    pub(crate) fn install_reactor_threads(&mut self, threads: Box<[ThreadRecord]>) {
+    pub(crate) fn install_reactor_threads(&self, threads: Box<[ThreadRecord]>) {
         let Ok(count) = u16::try_from(threads.len()) else {
             swoole_rs_corebase::fatal("more reactor threads than a reactor id counts");
         };
-        self.reactor_threads = Box::into_raw(threads).cast();
-        self.reactor_thread_num = count;
+        self.reactor_threads.set(Box::into_raw(threads).cast());
+        self.reactor_thread_num.set(count);
     }
 
     /// `delete[] reactor_threads`'s array, to drop: the tables forget it. Exclusive
     /// access means no record lent by [`Self::reactor_thread`] is still borrowed.
     pub(crate) fn take_reactor_threads(&mut self) -> Option<Box<[ThreadRecord]>> {
-        let threads = core::mem::replace(&mut self.reactor_threads, core::ptr::null_mut());
-        let count = usize::from(core::mem::take(&mut self.reactor_thread_num));
+        let threads = self.reactor_threads.replace(core::ptr::null_mut());
+        let count = usize::from(self.reactor_thread_num.take());
         if threads.is_null() {
             return None;
         }
@@ -520,17 +546,24 @@ impl ServerTables {
     /// `serv->get_thread(id)`: reactor thread `id`'s record, or `None` past the last
     /// or before a factory made them.
     pub(crate) fn reactor_thread(&self, id: usize) -> Option<&ThreadRecord> {
-        if id >= usize::from(self.reactor_thread_num) {
+        if id >= usize::from(self.reactor_thread_num.get()) {
             return None;
         }
         // SAFETY: within the live array of `reactor_thread_num` records
-        // `install_reactor_threads` leaked, which is freed only through `&mut self`.
-        Some(unsafe { &*self.reactor_threads.cast::<ThreadRecord>().wrapping_add(id) })
+        // `install_reactor_threads` leaked, which is freed only through `&mut self`
+        // (an install leaks the array it replaces).
+        Some(unsafe {
+            &*self
+                .reactor_threads
+                .get()
+                .cast::<ThreadRecord>()
+                .wrapping_add(id)
+        })
     }
 
     /// `serv->reactor_threads`, for the dispatch path's unchecked index.
     pub(crate) fn reactor_threads_ptr(&self) -> *mut c_void {
-        self.reactor_threads
+        self.reactor_threads.get()
     }
 }
 
@@ -540,15 +573,15 @@ impl Default for ServerTables {
             connection_list: Shm::empty(),
             session_list: Shm::empty(),
             port_gs_list: Shm::empty(),
-            max_connection: 0,
+            max_connection: Cell::new(0),
             enable_accept_timer: swoole_rs_corebase::timer_key::AtomicHeld::new(),
-            reactor_pipe_num: 0,
-            reactor_thread_num: 0,
-            reactor_threads: core::ptr::null_mut(),
-            ports: PortList {
+            reactor_pipe_num: Cell::new(0),
+            reactor_thread_num: Cell::new(0),
+            reactor_threads: Cell::new(core::ptr::null_mut()),
+            ports: Cell::new(PortList {
                 items: core::ptr::null(),
                 count: 0,
-            },
+            }),
             message_bus: None,
         }
     }
@@ -675,6 +708,16 @@ pub(crate) mod tests {
     use super::*;
     use crate::state::{free_state, swr_v1_server_state_new};
 
+    impl ServerTables {
+        /// `max_connection = value` over a test's own tables, mapped or not.
+        ///
+        /// # Safety
+        /// A mapped `connection_list` holds at least `value` records.
+        pub(crate) unsafe fn set_max_connection_unchecked(&self, value: u32) {
+            self.max_connection.set(value);
+        }
+    }
+
     /// A table field naming a test's own records, so several states can share them as
     /// processes share a mapping. Nothing frees it: the test owns `items`.
     pub(crate) fn naming<T>(items: &mut [T]) -> Shm {
@@ -745,7 +788,7 @@ pub(crate) mod tests {
             let tables = &mut *(*state).tables();
             tables.session_list = naming_at(session_at);
             tables.connection_list = naming_at(connection_at);
-            tables.max_connection = 3;
+            tables.set_max_connection_unchecked(3);
             assert_eq!(swr_v1_server_session(&*state, 1), session_at.add(1));
             let expected = connection_at.add(2);
             assert_eq!(swr_v1_server_connection(&*state, 1, 2), expected);

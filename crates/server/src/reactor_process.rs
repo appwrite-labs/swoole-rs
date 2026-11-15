@@ -117,7 +117,7 @@ pub(crate) fn main_loop(serv: view::Server<'_>, worker: Worker<'_>) -> bool {
     // SAFETY: this process's reactor, which `EventFree` frees after the loop below while
     // the server lives; a failed start returns to the pool, which ends the process.
     unsafe { reactor.hold_server(serv) };
-    running.set_max_socket(serv.state().tables_ref().max_connection);
+    running.set_max_socket(serv.state().tables_ref().max_connection());
     running.set_close(Some(crate::reactor_entry::close_connection));
     reactor.set_handler(
         FD_STREAM_SERVER,

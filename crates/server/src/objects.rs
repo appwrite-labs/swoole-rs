@@ -161,9 +161,11 @@ impl<'a> Bus<'a> {
     /// `MessageBus::write(sock, {head, data})`, `head.len` set to the data's length:
     /// whether the whole message went.
     pub(crate) fn write(self, sock: Socket<'_>, head: &mut DataHead, data: &[u8]) -> bool {
-        // SAFETY: every caller passes a worker pipe (a command's reply socket is
-        // one), which the server keeps until it shuts down, after its event loop.
-        unsafe { self.rust().send(sock, head, data) }
+        head.len = u32::try_from(data.len()).unwrap_or(u32::MAX);
+        // SAFETY: `data` covers `head.len` bytes (at most its length). Every caller
+        // passes a worker pipe (a command's reply socket is one), which the server
+        // keeps until it shuts down, after its event loop.
+        unsafe { self.rust().send_raw(sock, head, data.as_ptr()) }
     }
     /// `MessageBus::set_always_chunked_transfer()`.
     pub(crate) fn set_always_chunked(self) {

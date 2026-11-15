@@ -72,7 +72,7 @@ pub(crate) fn create_factory(serv: view::Server<'_>) -> *mut c_void {
         .reactor_num
         .set(config.worker_num.get().c_cast::<u16>());
     // Private, as `sw_calloc`'s memory was.
-    let max = state.tables_ref().max_connection as usize;
+    let max = state.tables_ref().max_connection() as usize;
     let list = Shm::calloc_private(max, size_of::<ConnectionRecord>());
     if list.is_null() {
         let size = (max * size_of::<ConnectionRecord>()).c_cast::<c_int>();
@@ -81,12 +81,10 @@ pub(crate) fn create_factory(serv: view::Server<'_>) -> *mut c_void {
     }
     let threads =
         crate::process_factory::native::new_reactor_threads(state, config.reactor_num.get());
-    // SAFETY: the server's tables, which only setup and teardown write, while the
-    // master is the server's only thread; nothing reads them while this lives.
-    let tables = unsafe { &mut *state.tables() };
-    tables.connection_list = list;
+    let tables = state.tables_ref();
+    tables.connection_list.replace(list);
     tables.install_reactor_threads(threads);
-    tables.reactor_pipe_num = 1;
+    tables.reactor_pipe_num.set(1);
     factory::new_thread(state, all_worker_num(serv) as usize + 1)
 }
 

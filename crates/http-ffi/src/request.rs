@@ -404,6 +404,24 @@ impl HttpRequest {
         swoole_rs_http::header_value(input, start, self.header_length as usize, name)
     }
 
+    /// The request's URL, as the buffer's bytes.
+    #[must_use]
+    pub fn url_bytes(&self) -> &[u8] {
+        let (_, input) = self.input();
+        let start = self.url_offset as usize;
+        input
+            .get(start..start + self.url_length as usize)
+            .unwrap_or_default()
+    }
+
+    /// The value of header `name`, as the buffer's bytes.
+    #[must_use]
+    pub fn header_bytes(&self, name: &[u8]) -> Option<&[u8]> {
+        let span = self.get_header(name)?;
+        let (_, input) = self.input();
+        input.get(span.offset..span.offset.checked_add(span.length)?)
+    }
+
     /// Leaves the errno `strtoull` would: bit 1 of `errors` `ERANGE`, bit 2 its
     /// no-digits value.
     fn number_errors(&self, errors: u64) {

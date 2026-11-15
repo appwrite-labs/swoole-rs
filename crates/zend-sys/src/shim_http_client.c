@@ -76,7 +76,9 @@ zend_string *swr_zend_http_build_query(zval *data) {
 }
 
 void swr_zend_separate_array(zval *array) {
-    SEPARATE_ARRAY(array);
+    if (Z_TYPE_P(array) == IS_ARRAY) {
+        SEPARATE_ARRAY(array);
+    }
 }
 
 bool swr_zend_instanceof(const zend_class_entry *ce, const zend_class_entry *parent) {

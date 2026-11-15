@@ -167,7 +167,7 @@ pub(crate) fn finish(serv: view::Server<'_>, send: &SendData) -> bool {
     let reactor_id = i16::from(conn.reactor_id());
     out.set_route(reactor_id, low16(swoole_get_worker_id().cast_signed()));
     // `serv->get_reactor_pipe_socket(fd, reactor_id)`.
-    let pipes = i64::from(state.tables_ref().reactor_pipe_num);
+    let pipes = i64::from(state.tables_ref().reactor_pipe_num.get());
     let pipe = i64::from(reactor_id)
         + session.checked_rem(pipes).unwrap_or(0) * i64::from(config.reactor_num.get());
     hybrid().process_send(serv, Pipe::Reactor(worker_id(pipe)), &mut out)

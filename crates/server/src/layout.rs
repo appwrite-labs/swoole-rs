@@ -78,7 +78,7 @@ const RECORD_1_OFFSETS: &[usize] = &[
     offset_of!(crate::records::ServerTables, connection_list),
     offset_of!(crate::records::ServerTables, session_list),
     offset_of!(crate::records::ServerTables, port_gs_list),
-    offset_of!(crate::records::ServerTables, max_connection),
+    crate::records::MAX_CONNECTION_OFFSET,
     offset_of!(crate::records::ServerTables, enable_accept_timer),
     offset_of!(crate::records::ServerTables, reactor_pipe_num),
     crate::records::REACTOR_THREADS_OFFSET,
