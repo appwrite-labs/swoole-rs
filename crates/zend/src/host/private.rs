@@ -9,6 +9,16 @@ use std::{
 };
 
 unsafe extern "C" {
+    /// `call_user_function(EG(function_table), NULL, name, retval, args)`
+    /// inside `zend_try` (nonzero for a bailout): the lent arguments, which
+    /// Zend copies, and `result` written; `retval` holds the call's result in
+    /// place of what it held, which is not released.
+    safe fn swr_zend_try_facade_user_call(
+        name: &crate::Value,
+        args: crate::zval::Zvals<'_>,
+        retval: &Owned,
+        result: &mut c_int,
+    ) -> c_int;
     /// `EG(exception)`: one pointer of the executor's is read; null for none.
     safe fn swr_zend_facade_exception() -> *mut zend_object;
     /// `zend_exception_error(EG(exception), E_ERROR)` inside `zend_try`, as
@@ -49,6 +59,21 @@ fn discard(value: Owned) {
 #[must_use]
 pub fn exception() -> *mut zend_object {
     swr_zend_facade_exception()
+}
+
+/// `EG(exception)` with a reference of its own: the exception pending on this
+/// thread, or None for none.
+#[must_use]
+pub fn exception_owned() -> Option<Owned> {
+    let object = exception();
+    if object.is_null() {
+        return None;
+    }
+    // The executor's pending exception, which it holds while this copies it:
+    // nothing runs in between.
+    let mut value = crate::ObjectRef(object, std::marker::PhantomData).copy_value();
+    // `ZVAL_COPY` takes the reference.
+    Some(crate::Value::of(&mut value).copy())
 }
 
 /// `zend_exception_error(EG(exception), E_ERROR)` of a pending exception,
@@ -207,22 +232,13 @@ pub fn named_call_into(name: &[u8], args: &[Owned], retval: &Owned) {
     }
     // ZVAL_STRINGL: the complete binary function name, in a request string.
     let function = Owned::string(crate::ZString::new(name));
-    // Never more than the slice holds.
-    let argc = u32::try_from(args.len()).unwrap_or(0);
-    let argv = args.as_ptr().cast_mut().cast::<zval>();
     let mut result = -1;
-    // SAFETY: a live name, `argc` live arguments (`Owned` is a transparent
-    // zval) and a writable result; Zend's macro invocation is one leaf effect
-    // inside the C trap.
-    bailed(unsafe {
-        sys::swr_zend_try_facade_user_call(
-            function.as_ptr(),
-            argc,
-            argv,
-            retval.as_ptr(),
-            &raw mut result,
-        )
-    });
+    bailed(swr_zend_try_facade_user_call(
+        &function,
+        crate::zval::Zvals::owned(args),
+        retval,
+        &mut result,
+    ));
     if bailout::pending() {
         // Upstream never ran past a bailout to release the name.
         #[expect(

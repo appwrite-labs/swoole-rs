@@ -18,10 +18,10 @@ zend_function *swr_zend_compiled_function_find(const char *name) {
     return zend_hash_str_find_ptr(CG(function_table), name, strlen(name));
 }
 
-int swr_zend_try_call_known(zend_function *fn, zval *retval, uint32_t argc, zval *argv) {
+int swr_zend_try_call_known(zend_function *fn, zval *retval, swr_zvals args) {
     volatile int bailed = 0;
     SWR_ZEND_TRY {
-        zend_call_known_function(fn, NULL, NULL, retval, argc, argv, NULL);
+        zend_call_known_function(fn, NULL, NULL, retval, args.argc, args.argv, NULL);
     }
     SWR_ZEND_CATCH {
         bailed = 1;

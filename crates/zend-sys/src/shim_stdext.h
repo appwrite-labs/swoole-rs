@@ -2,6 +2,7 @@
 #ifndef SWOOLE_RS_ZEND_SHIM_STDEXT_H
 #define SWOOLE_RS_ZEND_SHIM_STDEXT_H
 #include "php.h"
+#include "shim_values.h"
 
 /* zend_hash_str_find_ptr(EG(function_table), name) and, of the NUL-terminated
  * `name`, of CG(function_table): null for no such function. */
@@ -10,7 +11,7 @@ zend_function *swr_zend_compiled_function_find(const char *name);
 
 /* zend_call_known_function(fn, NULL, NULL, retval, argc, argv, NULL) inside
  * zend_try: 1 if it bailed out. */
-int swr_zend_try_call_known(zend_function *fn, zval *retval, uint32_t argc, zval *argv);
+int swr_zend_try_call_known(zend_function *fn, zval *retval, swr_zvals args);
 
 /* zend_lookup_class(name) inside zend_try (autoloaders run PHP): 1 if it
  * bailed out, else *ce is the class or NULL. */

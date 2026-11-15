@@ -13,7 +13,7 @@ use std::{
 };
 use swoole_rs_phpstubs::{coroutine, coroutine_system};
 use swoole_rs_zend::{
-    Call, Class, Minit, ObjectRef, Owned, Props, Value, ZStr,
+    Call, Class, Minit, Owned, Value, ZStr,
     bailout::Bailout,
     opcode::{DISPATCH, Frame, Handler, handler},
     sys::{
@@ -248,12 +248,12 @@ fn exit_flags() -> i64 {
 fn throw_exit(message: &CStr, flags: i64, status: &Value) {
     EXIT.throw(message, 0);
     // `zend_throw_exception`'s object: the new exception is the pending one.
-    let object = swoole_rs_zend::host::exception();
-    // SAFETY: the new exception, which Zend holds as thrown past these writes.
-    let Some(object) = (unsafe { ObjectRef::from_ptr(object) }) else {
+    let Some(object) = swoole_rs_zend::host::exception_owned() else {
         return;
     };
-    let props = Props::of(Some(&EXIT), object);
+    let Some(props) = object.props(Some(&EXIT)) else {
+        return;
+    };
     props.long(c"flags", flags);
     props.value(c"status", status);
 }
