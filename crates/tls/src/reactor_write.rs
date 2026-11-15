@@ -220,15 +220,10 @@ impl FlushEffects for Flush<'_> {
     }
 
     fn remove_write_event(&self) {
-        // SAFETY: `reactor->remove_write_event(socket)` on the flush's live reactor.
-        unsafe {
-            reactor_interest(
-                self.reactor.as_ptr(),
-                self.socket.as_ptr(),
-                Interest::RemoveWrite.code(),
-                0,
-            )
-        };
+        // SAFETY: the flushed record, which C++ keeps live while it is registered.
+        let socket = unsafe { Socket::from_ptr(self.socket.as_ptr()) };
+        // `reactor->remove_write_event(socket)` on the flush's live reactor.
+        _ = reactor_interest(self.reactor, socket, Interest::RemoveWrite.code(), 0);
     }
 
     fn wait_writable(&self) -> bool {
