@@ -121,7 +121,7 @@ struct ServerConfig {
     single_thread: bool,
     running: bool,
     cpu_affinity_available: Native,
-    pipe_command: Native,
+    pipe_command: [Native; 2],
     send_timeout: f64,
     heartbeat_check_interval: u16,
     warning_time: i64,
@@ -230,13 +230,6 @@ const CONFIG_OFFSETS: &[usize] = &[
     offset_of!(ServerConfig, mode_),
 ];
 
-/// Server::ports, as crates/server lays it out.
-#[repr(C)]
-struct Ports {
-    items: *const *mut c_void,
-    count: u32,
-}
-
 /// Server's tables, as crates/server lays them out.
 #[repr(C)]
 struct ServerTables {
@@ -247,7 +240,6 @@ struct ServerTables {
     enable_accept_timer: Native,
     reactor_pipe_num: u16,
     reactor_threads: Native,
-    ports: Ports,
     message_bus: Native,
 }
 
@@ -259,7 +251,6 @@ const TABLES_OFFSETS: &[usize] = &[
     offset_of!(ServerTables, enable_accept_timer),
     offset_of!(ServerTables, reactor_pipe_num),
     offset_of!(ServerTables, reactor_threads),
-    offset_of!(ServerTables, ports),
     offset_of!(ServerTables, message_bus),
 ];
 
@@ -694,11 +685,7 @@ impl Server {
 
     /// `ports.front()`.
     fn get_primary_port(self) -> Port {
-        // SAFETY: the state's tables live as long as the server.
-        let ports = unsafe { &(*self.head().tables).ports };
-        assert!(ports.count > 0);
-        // SAFETY: `count` listening ports.
-        Port(unsafe { *ports.items })
+        Port(self.view().port_at(0).unwrap().raw())
     }
 
     /// `gs->master_pid`: `ServerGS` begins with the counters, `master_pid` first.

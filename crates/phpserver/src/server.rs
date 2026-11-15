@@ -156,7 +156,7 @@ impl Iterator {
 
 /// `server`'s port at `port`, an address kept only to name it; none for null.
 pub(crate) fn port_of(server: view::Server<'_>, port: *mut c_void) -> Option<view::Port<'_>> {
-    server.ports().iter().copied().find(|own| own.raw() == port)
+    server.ports().iter().find(|own| own.raw() == port)
 }
 
 impl Custom for Iterator {

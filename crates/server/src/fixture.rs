@@ -27,7 +27,6 @@ pub(crate) struct LiveServer {
     server: TestServer,
     shared: Box<ServerShared>,
     port_counters: Box<PortCounters>,
-    port: *mut PortConfig,
     listener: *mut SocketRecord,
     /// This thread's reactor, which the fixture made.
     reactor: *mut core::ffi::c_void,
@@ -72,25 +71,21 @@ impl LiveServer {
         listening.set_nonblocking(true).unwrap();
         let address = listening.local_addr().unwrap();
         let fd = listening.into_raw_fd();
-        let port = Box::into_raw(PortConfig::boxed(c_int::MAX));
+        let mut settings = PortConfig::boxed(c_int::MAX);
         let mut record = SocketRecord::with_fd(fd, FD_STREAM_SERVER);
         record.socket_type = SOCK_TCP;
         record.output.nonblock = true;
-        record.object = port.cast();
+        record.object = (&raw mut *settings).cast();
         let listener = record.into_raw();
-        // SAFETY: the port just boxed, which only this fixture holds.
-        let settings = unsafe { &mut *port };
         settings.r#type = SOCK_TCP;
         // SAFETY: the record just boxed, which the port frees with the state.
         let socket = unsafe { Socket::from_ptr(listener) }.unwrap();
         settings.set_listening_socket(socket);
         settings.gs.set((&raw mut *port_counters).cast());
         let state = server.state();
-        // SAFETY: the port boxed above, listed until the fixture frees it with the state;
-        // no other thread reads the list.
-        let _ = unsafe { state.push_port(Box::from_raw(port)) };
+        let _ = state.ports.push(settings);
         // The listening fd's slot holds its port, as `Server::store_listen_socket` leaves it.
-        let slot = state.tables_ref().hold_port(0, fd).unwrap();
+        let slot = state.hold_port(0, fd).unwrap();
         slot.set_fd(fd);
         slot.set_socket(Some(socket));
         slot.set_socket_type(SOCK_TCP);
@@ -102,7 +97,6 @@ impl LiveServer {
             server,
             shared,
             port_counters,
-            port,
             listener,
             reactor,
             listener_fd: fd,
@@ -114,6 +108,19 @@ impl LiveServer {
 
     pub(crate) fn server(&self) -> view::Server<'_> {
         self.server.serv()
+    }
+
+    /// The state forgets the fixture's session table, and its connection table too
+    /// when `connections`, for a test whose `Server::create` (and base factory) maps the
+    /// server's own: their replacement would unmap the fixture's vectors as though a
+    /// mapping's header preceded them.
+    pub(crate) fn forget_tables(&mut self, connections: bool) {
+        // A `Shm` unmaps only when told to: overwriting one forgets it.
+        let tables = self.server.tables_mut();
+        tables.session_list = swoole_rs_memory::members::Shm::empty();
+        if connections {
+            tables.connection_list = swoole_rs_memory::members::Shm::empty();
+        }
     }
 
     pub(crate) fn state(&self) -> &ServerState {
@@ -167,8 +174,7 @@ impl LiveServer {
 
     /// The port's settings.
     pub(crate) fn port(&self) -> &PortConfig {
-        // SAFETY: the port this fixture boxed and owns for the borrow.
-        unsafe { &*self.port }
+        self.state().ports.get(0).unwrap().config()
     }
 
     /// This thread's reactor, which the fixture made.
@@ -185,13 +191,8 @@ impl Drop for LiveServer {
         let reactor = unsafe { swoole_rs_reactor::Running::new(self.reactor) };
         // SAFETY: the reactor `new` made, which nothing uses afterwards.
         unsafe { swoole_rs_reactor::swr_v1_reactor_delete(reactor) };
-        // SAFETY: the listener this fixture opened and boxed, used by nothing after it.
-        unsafe {
-            libc::close(self.listener_fd);
-            SocketRecord::free(self.listener);
-        }
-        // SAFETY: the port this fixture boxed; the state that lists it drops with it.
-        drop(unsafe { Box::from_raw(self.port) });
+        // SAFETY: the listener this fixture opened; its record goes with its port.
+        unsafe { libc::close(self.listener_fd) };
         // The configuration's `gs` names the fixture's own record, which the state's drop
         // must not unmap.
         self.config_mut().gs = swoole_rs_memory::members::Shm::empty();

@@ -63,13 +63,19 @@ pub(crate) fn create(serv: view::Server<'_>) -> *mut c_void {
     crate::factory::new()
 }
 
-/// `Server::destroy_process_factory`.
-pub(crate) fn destroy(serv: view::Server<'_>) {
-    // SAFETY: as `create`'s: the workers and reactor threads are gone, and nothing
-    // reads the tables while this lives.
+/// Either factory's destroy of what its create mapped: the connection list and the
+/// reactor threads.
+pub(crate) fn free_tables(serv: view::Server<'_>) {
+    // SAFETY: a factory's destroy runs once its workers and reactor threads are gone,
+    // and nothing reads the tables while this lives.
     let tables = unsafe { &mut *serv.state().tables() };
     tables.connection_list.free();
     drop(tables.take_reactor_threads());
+}
+
+/// `Server::destroy_process_factory`.
+pub(crate) fn destroy(serv: view::Server<'_>) {
+    free_tables(serv);
     barriers(serv, false);
     let pool = crate::shared::ServerShared::of(serv).event_pool();
     if !pool.message_box().is_null() {

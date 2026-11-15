@@ -356,7 +356,10 @@ impl PortConfig {
     /// `delete port` of a port still in its box: its TLS state, its settings, and
     /// the record of a socket `destroy` never closed.
     pub(crate) fn delete(mut self: Box<Self>) {
-        (methods().tls_free)(&mut self);
+        // Without methods, nothing made the port's TLS state.
+        if let Some(methods) = METHODS.get() {
+            (methods.tls_free)(&mut self);
+        }
         // Upstream's `~ListenPort` leaves the length callable to the port's deref
         // (`php_swoole_server_port_deref`): one a port kept past it stays to the exit.
         #[expect(

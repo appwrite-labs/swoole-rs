@@ -220,13 +220,13 @@ pub fn add<'a>(
         sock.edit(|s| s.direct_send = true);
     }
 
-    state.lock();
+    state.locked.lock();
     if fd > gs.max_fd() {
         gs.max_fd.store(fd, Relaxed);
     } else if fd < gs.min_fd() {
         gs.min_fd.store(fd, Relaxed);
     }
-    state.unlock();
+    state.locked.unlock();
 
     gs.accept_count.fetch_add(1, Relaxed);
     let port_gs = ls.counters();

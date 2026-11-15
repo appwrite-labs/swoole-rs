@@ -90,11 +90,7 @@ pub(crate) fn create_factory(serv: view::Server<'_>) -> *mut c_void {
 
 /// `Server::destroy_thread_factory`: the connections and the reactor threads.
 pub(crate) fn destroy_factory(serv: view::Server<'_>) {
-    // SAFETY: as `create_factory`'s: the worker threads are joined, and nothing reads
-    // the tables while this lives.
-    let tables = unsafe { &mut *serv.state().tables() };
-    tables.connection_list.free();
-    drop(tables.take_reactor_threads());
+    crate::process_factory::native::free_tables(serv);
 }
 
 /// `ThreadFactory::start`: the pipes and the event, task and user workers' records.

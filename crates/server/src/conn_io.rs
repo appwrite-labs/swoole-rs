@@ -587,7 +587,7 @@ fn lower_max_fd(state: &crate::ServerState, fd: c_int) {
     let Some(gs) = crate::shared::server_counters(state) else {
         return;
     };
-    state.lock();
+    state.locked.lock();
     if fd == gs.max_fd() {
         let mut find = fd - 1;
         while !valid(state.connection(c_long::from(find), Lookup::ByFd)) && find > gs.min_fd() {
@@ -595,7 +595,7 @@ fn lower_max_fd(state: &crate::ServerState, fd: c_int) {
         }
         gs.max_fd.store(find, Relaxed);
     }
-    state.unlock();
+    state.locked.unlock();
 }
 
 #[cfg(test)]

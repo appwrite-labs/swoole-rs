@@ -39,6 +39,8 @@ pub(crate) struct ServerObject {
     head: Fields,
     tables: *mut crate::ServerTables,
     callbacks: *mut c_void,
+    /// The state `head` names, freed with the object.
+    state: crate::state::Heap<ServerState>,
 }
 
 #[cfg_attr(
@@ -49,20 +51,16 @@ impl ServerObject {
     /// The object over `state`, which it owns from now on.
     pub(crate) fn new(state: Box<ServerState>) -> Self {
         let (config, tables) = (state.config(), state.tables());
-        let state = Box::into_raw(state);
+        let state = crate::state::Heap::from(state);
         Self {
-            head: Fields { state, config },
+            head: Fields {
+                state: state.as_ptr(),
+                config,
+            },
             tables,
-            callbacks: ServerState::callbacks_ptr(state),
+            callbacks: ServerState::callbacks_ptr(state.as_ptr()),
+            state,
         }
-    }
-}
-
-impl Drop for ServerObject {
-    fn drop(&mut self) {
-        // SAFETY: the state `new` boxed, which only this object owns. Its tables own
-        // the message bus, and its configuration the shared record, freed after the bus.
-        drop(unsafe { Box::from_raw(self.head.state.cast_mut()) });
     }
 }
 
@@ -175,8 +173,8 @@ impl<'a> Server<'a> {
 
     /// `serv->ports`, in listen order.
     #[must_use]
-    pub fn ports(self) -> &'a [Port<'a>] {
-        self.state().tables_ref().ports()
+    pub fn ports(self) -> &'a crate::state::Ports {
+        &self.state().ports
     }
 
     /// `serv->onX = f`: the slot `callback` names now calls its fn, a Rust
@@ -242,7 +240,7 @@ impl<'a> Server<'a> {
     /// `insert(value)` into a static handler collection.
     pub fn insert_static_string(self, collection: crate::StaticCollection, value: &[u8]) {
         crate::static_config::config(
-            self.state(),
+            &self.state().static_config,
             collection,
             crate::static_config::Op::Insert(value),
         );
@@ -250,7 +248,7 @@ impl<'a> Server<'a> {
 
     /// `url_rewrite_rules`: add one rule.
     pub fn add_rewrite_rule(self, pattern: &[u8], replacement: &[u8]) {
-        crate::static_config::add_rewrite_rule(self.state(), pattern, replacement);
+        crate::static_config::add_rewrite_rule(&self.state().static_config, pattern, replacement);
     }
 
     /// `f` over a static handler collection: whether it is set, and its values.
@@ -259,12 +257,12 @@ impl<'a> Server<'a> {
         collection: crate::StaticCollection,
         f: impl FnOnce(bool, &[Arc<[u8]>]) -> R,
     ) -> R {
-        crate::static_config::strings(self.state(), collection, f)
+        crate::static_config::strings(&self.state().static_config, collection, f)
     }
 
     /// `apply_rewrite_rules` on a static context: true when a rule applied.
     pub fn static_rewrite(self, context: &mut swoole_rs_http::HttpStaticContext) -> bool {
-        crate::static_config::apply_rewrite_rules(self.state(), context)
+        crate::static_config::apply_rewrite_rules(&self.state().static_config, context)
     }
 
     /// `document_root`.
@@ -283,8 +281,14 @@ impl<'a> Server<'a> {
     #[must_use]
     pub fn compression_type(self, kind: Option<&[u8]>) -> bool {
         use crate::static_config::{Op, config};
-        let state = self.state();
-        let op = |operation| config(state, crate::StaticCollection::CompressionTypes, operation);
+        let configs = &self.state().static_config;
+        let op = |operation| {
+            config(
+                configs,
+                crate::StaticCollection::CompressionTypes,
+                operation,
+            )
+        };
         let types = op(Op::Enabled) != 0;
         match kind {
             Some(kind) if types => op(Op::Find(kind)) != op(Op::Count),
@@ -554,11 +558,7 @@ impl<'a> Server<'a> {
 
     /// The last of `serv->ports` whose settings `wanted` accepts.
     fn find_last_port(self, wanted: impl Fn(&PortConfig) -> bool) -> Option<Port<'a>> {
-        self.ports()
-            .iter()
-            .rev()
-            .copied()
-            .find(|port| wanted(port.config()))
+        self.ports().iter().rev().find(|port| wanted(port.config()))
     }
 
     /// `Server::get_port_by_fd(fd)`: the `ListenPort` a connection arrived on.
@@ -611,7 +611,7 @@ impl<'a> Server<'a> {
     /// (index 0 is `Server::get_primary_port()`).
     #[must_use]
     pub fn port_at(self, index: usize) -> Option<Port<'a>> {
-        self.ports().get(index).copied()
+        self.ports().get(index)
     }
 
     /// `Server::get_port(port)`: the first port listening on `port` (any at 0).
@@ -622,10 +622,7 @@ impl<'a> Server<'a> {
 
     /// The first of `serv->ports` whose settings `wanted` accepts.
     pub fn find_port(self, wanted: impl Fn(&PortConfig) -> bool) -> Option<Port<'a>> {
-        self.ports()
-            .iter()
-            .copied()
-            .find(|port| wanted(port.config()))
+        self.ports().iter().find(|port| wanted(port.config()))
     }
 }
 
@@ -641,47 +638,33 @@ impl ServerState {
     /// The server's port at `raw`, or `None` when `raw` is none of them: a listening
     /// socket's `object`, which, unlike its slot's, is a public field.
     pub(crate) fn listed_port(&self, raw: *mut c_void) -> Option<Port<'_>> {
-        let ports = self.tables_ref().ports();
-        ports.iter().copied().find(|port| port.raw() == raw)
+        self.ports.iter().find(|port| port.raw() == raw)
     }
 }
 
-/// A live `ListenPort`, borrowed for `'a`: its settings' box
-/// (`server_object::port_new`). [`Port::from_raw`] is the one unsafe step; the
-/// reads it then allows are safe, as [`Server`]'s are.
+/// A live `ListenPort`, borrowed for `'a`: one of the server's [`crate::Ports`], whose
+/// settings it reads. Laid out as the `ListenPort *` it names.
 #[derive(Clone, Copy)]
 #[repr(transparent)]
-pub struct Port<'a> {
-    raw: core::ptr::NonNull<c_void>,
-    live: PhantomData<&'a PortConfig>,
+pub struct Port<'a>(&'a PortConfig);
+
+impl<'a> From<&'a PortConfig> for Port<'a> {
+    fn from(config: &'a PortConfig) -> Self {
+        Self(config)
+    }
 }
 
 impl<'a> Port<'a> {
-    /// The port at `port`, or `None` for null.
-    ///
-    /// # Safety
-    /// `port` is null or a live `ListenPort` for `'a`, and the port's own
-    /// synchronization keeps writers of its settings apart
-    /// from the references the safe readers return.
-    #[must_use]
-    pub unsafe fn from_raw(port: *mut c_void) -> Option<Self> {
-        core::ptr::NonNull::new(port).map(|raw| Self {
-            raw,
-            live: PhantomData,
-        })
-    }
-
     /// The `ListenPort *` itself, for the native-shaped calls that still take it.
     #[must_use]
     pub fn raw(self) -> *mut c_void {
-        self.raw.as_ptr()
+        core::ptr::from_ref(self.0).cast_mut().cast()
     }
 
     /// The port's settings.
     #[must_use]
     pub fn config(self) -> &'a PortConfig {
-        // SAFETY: a live port is its settings, with writers kept apart (`from_raw`).
-        unsafe { &*self.raw.as_ptr().cast::<PortConfig>() }
+        self.0
     }
 
     /// `port->gs = gs`: the port's slot in `port_gs_list`.

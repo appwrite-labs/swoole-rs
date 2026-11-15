@@ -92,7 +92,7 @@ pub static THREAD_SUPPORTED: core::sync::atomic::AtomicBool =
 
 #[cfg(test)]
 pub(crate) use state::TestServer;
-pub use state::{ServerState, ServerText};
+pub use state::{Ports, PortsIter, ServerState, ServerText};
 
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub use admin::admin_register;
