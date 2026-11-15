@@ -12,7 +12,7 @@ use std::{
 use swoole_rs_corebase::sys;
 use swoole_rs_zend::{
     Class, Minit, Owned, Value,
-    sys::{ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, swr_zend_stream_open, swr_zend_stream_to_zval},
+    sys::{ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, swr_zend_stream_open},
 };
 
 static ERROR: Class = Class::new();
@@ -60,15 +60,23 @@ pub(crate) fn stream_cast(value: &Value) -> c_int {
 /// `php_swoole_thread_stream_create`: `php://fd/<fd>` (which duplicates the
 /// descriptor again), or a Thread\Error. In a request.
 pub(crate) fn stream_create(fd: c_int) -> Owned {
+    /// A stream just opened, whose resource no zval holds yet: only the open
+    /// below makes one, and handing it to a zval takes it.
+    #[repr(transparent)]
+    struct Opened(std::ptr::NonNull<swoole_rs_zend::sys::php_stream>);
+    unsafe extern "C" {
+        /// The stream's resource into `value`, in place of what it held, which
+        /// is not released: the zval takes the stream's one reference.
+        safe fn swr_zend_stream_to_zval(stream: Opened, value: &Owned);
+    }
     let path = CString::new(format!("php://fd/{fd}")).unwrap_or_default();
     // SAFETY: in a request, with NUL-terminated strings.
     let stream = unsafe { swr_zend_stream_open(path.as_ptr(), c"".as_ptr()) };
-    if stream.is_null() {
+    let Some(stream) = std::ptr::NonNull::new(stream).map(Opened) else {
         return error(errno());
-    }
+    };
     let out = Owned::default();
-    // SAFETY: a stream just opened, whose resource a slot this owns takes.
-    unsafe { swr_zend_stream_to_zval(stream, out.as_ptr()) };
+    swr_zend_stream_to_zval(stream, &out);
     out
 }
 

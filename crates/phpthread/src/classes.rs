@@ -17,8 +17,7 @@ use swoole_rs_zend::{
     Call, Custom, CustomClass, Invalid, Minit, Owned, Value as ZValue, bailout, new_object,
     sys::{
         IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL, IS_RESOURCE, IS_STRING, IS_TRUE, ZEND_ACC_FINAL,
-        ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, swr_zend_dval_to_lval_safe, zend_long, zend_ulong,
-        zend_use_resource_as_offset,
+        ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, zend_long, zend_ulong,
     },
 };
 
@@ -256,6 +255,14 @@ fn construct_array<T: Shared<Target = Array>>(call: &Call, list: bool) {
 /// `handle_array_key` and `ZEND_ARRAY_CALL_METHOD`'s dispatch: the key, or
 /// `None` after Zend's errors.
 fn map_key(call: &Call, key: &swoole_rs_zend::Value) -> Option<Key> {
+    // Zend's conversions of an odd key, which may warn and so run the user's error
+    // handler: declared here, where the method's `call` proves this thread runs PHP.
+    unsafe extern "C" {
+        /// `zend_dval_to_lval_safe`, which may raise `E_DEPRECATED`.
+        safe fn swr_zend_dval_to_lval_safe(value: f64) -> zend_long;
+        /// Zend's warning for a resource used as an offset; it reads the live zval.
+        safe fn zend_use_resource_as_offset(dim: &swoole_rs_zend::Value);
+    }
     match key.kind() {
         IS_STRING => {
             let text = key.str()?;
@@ -270,15 +277,12 @@ fn map_key(call: &Call, key: &swoole_rs_zend::Value) -> Option<Key> {
         IS_NULL => Some(Key::Str(Box::default())),
         IS_DOUBLE => {
             let number = key.as_double()?;
-            // SAFETY: a conversion on a PHP thread, which may raise `E_DEPRECATED`
-            // and so run the user's error handler.
-            Some(Key::Int(unsafe { swr_zend_dval_to_lval_safe(number) }))
+            Some(Key::Int(swr_zend_dval_to_lval_safe(number)))
         }
         IS_FALSE => Some(Key::Int(0)),
         IS_TRUE => Some(Key::Int(1)),
         IS_RESOURCE => {
-            // SAFETY: a resource zval; Zend's warning.
-            unsafe { zend_use_resource_as_offset(key.as_ptr()) };
+            zend_use_resource_as_offset(key);
             Some(Key::Int(swr_zend_resource_handle(key)))
         }
         _ => {
