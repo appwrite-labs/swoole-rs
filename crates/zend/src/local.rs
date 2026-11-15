@@ -14,7 +14,8 @@ use std::{ffi::c_int, marker::PhantomData};
 // What a [`Php`] reads of its thread's executor: each takes no argument, reads
 // one value and runs no PHP code. Private, so only a lease's methods call them.
 unsafe extern "C" {
-    safe fn swr_zend_facade_function_table() -> *mut sys::HashTable;
+    /// `EG(function_table)`, which lives while this thread runs PHP.
+    safe fn swr_zend_facade_function_table<'a>() -> &'a crate::Array;
     safe fn swr_zend_stream_vm_active() -> bool;
     safe fn swr_zend_stream_default_timeout() -> sys::zend_long;
     safe fn swr_zend_http_max_input_vars() -> sys::zend_long;
@@ -53,9 +54,9 @@ impl<'a> Php<'a> {
     /// `EG(function_table)`: the functions the running request can call.
     #[must_use]
     pub fn function_table(self) -> &'a crate::Array {
-        // SAFETY: this thread runs PHP, whose executor has its function table,
-        // which nothing frees while PHP runs.
-        unsafe { &*swr_zend_facade_function_table().cast() }
+        // This thread runs PHP, whose executor has its function table, which
+        // nothing frees while PHP runs.
+        swr_zend_facade_function_table()
     }
 
     /// `EG(active)`: whether the executor is running, so a coroutine can wait.

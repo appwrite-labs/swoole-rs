@@ -1,11 +1,19 @@
 //! Actual class alias construction, lookup and ownership.
-use crate::{
-    bailout::Bailout,
-    host::swr_bytes_persistent,
-    string,
-    sys::{self as z, zend_class_entry},
-};
-use std::{ffi::c_int, io::IoSlice, ptr};
+use crate::{ClassEntry, bailout::Bailout};
+use std::{ffi::c_int, io::IoSlice};
+
+unsafe extern "C" {
+    /// The lent bytes (an `IoSlice` is an iovec) interned as a new persistent
+    /// string, then `zend_register_class_alias_ex` of it for the live class,
+    /// inside `zend_try` (nonzero for a bailout); `registered` says whether
+    /// Zend registered it. Private: only [`class_alias`] calls it, at MINIT,
+    /// where interning is permanent.
+    safe fn swr_lent_class_alias(
+        alias: IoSlice<'_>,
+        class: ClassEntry<'static>,
+        registered: &mut bool,
+    ) -> c_int;
+}
 
 /// Zend's `SUCCESS` `zend_result`.
 pub(crate) const SUCCESS: c_int = 0;
@@ -21,10 +29,10 @@ pub(crate) fn leaf(code: c_int) -> Result<(), Bailout> {
 /// # Errors
 /// Returns a contained PHP interning or registration bailout.
 /// # Safety
-/// MINIT, on its thread, and `entry` is a registered (persistent) class.
+/// MINIT, on its thread.
 pub unsafe fn class_alias(
     name: &[u8],
-    entry: *mut zend_class_entry,
+    entry: ClassEntry<'static>,
     sdk_prefix: bool,
 ) -> Result<bool, Bailout> {
     let mut alias = name.to_vec();
@@ -35,23 +43,11 @@ pub unsafe fn class_alias(
         }
     }
     alias.make_ascii_lowercase();
-    let alias = swr_bytes_persistent(IoSlice::new(&alias));
-    let mut interned = ptr::null_mut();
-    // SAFETY: Zend consumes or interns the new persistent string, as its native
-    // API does; the successful result belongs to the process intern pool.
-    leaf(unsafe { z::swr_zend_try_facade_intern(alias, &raw mut interned) })?;
-    // Interning returns `alias` or the pool's string of the same bytes: either
-    // way `name.len()` of them.
-    let mut result = -1;
-    // SAFETY: the interned binary name and registered CE remain process-lived;
-    // Zend copies the alias registration inside the contained leaf.
-    leaf(unsafe {
-        z::swr_zend_try_facade_class_alias(
-            string::val(interned).cast(),
-            name.len(),
-            entry,
-            &raw mut result,
-        )
-    })?;
-    Ok(result == SUCCESS)
+    let mut registered = false;
+    leaf(swr_lent_class_alias(
+        IoSlice::new(&alias),
+        entry,
+        &mut registered,
+    ))?;
+    Ok(registered)
 }

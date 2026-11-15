@@ -68,3 +68,13 @@ const char *swr_zend_minit_ini_string(const char *name) {
     zval *value = cfg_get_entry(name, strlen(name));
     return value && Z_TYPE_P(value) == IS_STRING ? Z_STRVAL_P(value) : NULL;
 }
+
+void swr_zend_minit_implements(zend_class_entry *ce, zend_class_entry *interface) {
+    if (interface) {
+        zend_class_implements(ce, 1, interface);
+    }
+}
+
+zend_function *swr_zend_minit_method_find(zend_class_entry *ce, const char *lcname) {
+    return zend_hash_str_find_ptr(&ce->function_table, lcname, strlen(lcname));
+}

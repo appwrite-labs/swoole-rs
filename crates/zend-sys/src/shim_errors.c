@@ -30,8 +30,8 @@ void swr_zend_callable_warning(const char *message) {
     php_error_docref(NULL, E_WARNING, "%s", message);
 }
 
-int swr_zend_try_report(void (*report)(const char *message), const char *message) {
-    SWR_TRAP(report(message));
+int swr_zend_try_callable_warning(const char *message) {
+    SWR_TRAP(swr_zend_callable_warning(message));
 }
 
 #define SWR_TRY_PARSE(name, type, slow)                                                    \

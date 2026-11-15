@@ -29,8 +29,9 @@ int swr_zend_smart_strcmp(zend_string *a, zend_string *b);
 /* Swoole\Thread's streams. php_stream_open_wrapper_ex(path, mode, 0, NULL, NULL). */
 php_stream *swr_zend_stream_open(const char *path, const char *mode);
 /* php_stream_cast(stream, PHP_STREAM_AS_FD_FOR_SELECT | PHP_STREAM_CAST_INTERNAL, &fd, 1)
- * inside zend_try: 0 on success, 1 on failure, 2 if a warning's handler bailed out. */
-int swr_zend_stream_select_fd(php_stream *stream, int *fd);
+ * of the stream `value` names (php_stream_from_zval_no_verify) inside zend_try: 0 on
+ * success, 1 on failure or for no stream, 2 if a warning's handler bailed out. */
+int swr_zend_stream_select_fd(zval *value, int *fd);
 /* php_stream_cast(stream, PHP_STREAM_AS_FD, &fd, 0) == SUCCESS. */
 bool swr_zend_stream_fd(php_stream *stream, int *fd);
 /* Register `stream` as the case-sensitive constant `name` (STDIN and friends). */

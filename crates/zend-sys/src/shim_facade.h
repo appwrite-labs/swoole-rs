@@ -5,7 +5,8 @@
 /* User code invoked by object bool casts and callable resolution stays in C. */
 int swr_zend_try_facade_truth(zval *, bool *);
 int swr_zend_try_facade_callable(zval *, zend_fcall_info_cache *, bool *);
-int swr_zend_try_facade_name(zval *, zend_string **);
+/* zend_get_callable_name_ex(value) into `name` (not released first), inside zend_try. */
+int swr_zend_try_facade_name(zval *, zval *name);
 /* zval_refcount_p of a zval that holds a counted value (a string, array, object,
  * resource or reference); 0 for any other. */
 uint32_t swr_zval_facade_refcount(const zval *);

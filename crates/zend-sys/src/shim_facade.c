@@ -14,9 +14,9 @@ int swr_zend_try_facade_callable(zval *value, zend_fcall_info_cache *cache, bool
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
 }
-int swr_zend_try_facade_name(zval *value, zend_string **result) {
+int swr_zend_try_facade_name(zval *value, zval *name) {
     volatile int bailed = 0;
-    SWR_ZEND_TRY { *result = zend_get_callable_name_ex(value, NULL); }
+    SWR_ZEND_TRY { ZVAL_STR(name, zend_get_callable_name_ex(value, NULL)); }
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
 }

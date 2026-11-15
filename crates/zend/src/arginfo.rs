@@ -91,10 +91,7 @@ impl<const N: usize> Methods<N> {
     /// an upstream `#ifdef` only C++ can test, decided once at MINIT.
     #[must_use]
     pub fn without(&'static self, skip: &[&CStr]) -> Table {
-        let keep = |row: &&zend_function_entry| {
-            // SAFETY: a row's name is a static C string; only `END`'s is null.
-            row.fname.is_null() || !skip.contains(&unsafe { CStr::from_ptr(row.fname) })
-        };
+        let keep = |row: &&zend_function_entry| name(row).is_none_or(|name| !skip.contains(&name));
         let rows: Vec<zend_function_entry> = self.0.iter().filter(keep).copied().collect();
         Table(Box::leak(rows.into_boxed_slice()))
     }
@@ -132,10 +129,18 @@ impl Table {
         }
     }
 
-    /// The rows, `PHP_FE_END` last, or none.
-    pub(crate) const fn rows(self) -> &'static [zend_function_entry] {
-        self.0
+    /// The row named `method`, with its arginfo.
+    pub(crate) fn find(self, method: &CStr) -> Option<&'static zend_function_entry> {
+        self.0.iter().find(|row| name(row) == Some(method))
     }
+}
+
+/// A row's name: None for `END`. Rows are built here only, from [`entry`] and
+/// [`definition`]'s static C strings or `END`'s null, and a [`Methods`] or a
+/// [`Table`] holds no other.
+fn name(row: &zend_function_entry) -> Option<&'static CStr> {
+    // SAFETY: null, or a static C string, per the above.
+    (!row.fname.is_null()).then(|| unsafe { CStr::from_ptr(row.fname) })
 }
 
 /// A row of [`Methods`]: an [`entry`], or [`END`].

@@ -2,21 +2,12 @@
  * globals (EG(function_table), EG(exception), CG(function_table)). */
 #include "shim.h"
 #include "shim_private.h"
-int swr_zend_try_facade_read(zend_class_entry *scope, zend_object *object, const char *name, size_t length,
-                             bool silent, zval *rv, zval **result) {
-    volatile int bailed = 0;
-    SWR_ZEND_TRY { *result = zend_read_property(scope, object, name, length, silent, rv); }
-    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
-    return bailed;
-}
-int swr_zend_try_facade_update(zend_class_entry *scope, zend_object *object, const char *name, size_t length, zval *value) {
-    volatile int bailed = 0;
-    SWR_ZEND_TRY { zend_update_property(scope, object, name, length, value); }
-    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
-    return bailed;
-}
 zend_object *swr_zend_facade_exception(void) { return EG(exception); }
 void swr_zend_facade_exception_error(void *exception) { zend_exception_error(exception, E_ERROR); }
+int swr_zend_try_uncaught_exception(void) {
+    zend_object *exception = EG(exception);
+    return exception ? swr_zend_try(swr_zend_facade_exception_error, exception) : SWR_ZEND_RETURN;
+}
 int swr_zend_try_facade_user_call(zval *name, uint32_t argc, zval *argv, zval *retval, int *result) {
     volatile int bailed = 0;
     SWR_ZEND_TRY { *result = call_user_function(EG(function_table), NULL, name, retval, argc, argv); }
@@ -41,19 +32,18 @@ int swr_zend_try_facade_coroutine(long (*create)(zend_fcall_info_cache *, uint32
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed || raised;
 }
-int swr_zend_try_facade_intern(zend_string *string, zend_string **result) {
-    volatile int bailed = 0;
-    SWR_ZEND_TRY { *result = zend_new_interned_string(string); }
-    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
-    return bailed;
-}
 HashTable *swr_zend_facade_function_table(void) { return EG(function_table); }
 
-int swr_zend_try_facade_creation_error(zend_class_entry *ce) {
-    volatile int bailed = 0;
+zend_object *swr_zend_object_deny(zend_class_entry *ce, bool *bailed) {
+    zend_object *object = zend_objects_new(ce);
+    for (int i = 0; i < ce->default_properties_count; i++) {
+        ZVAL_UNDEF(OBJ_PROP_NUM(object, i));
+    }
+    volatile bool trapped = false;
     SWR_ZEND_TRY { zend_throw_error(NULL, "The object of %s can not be created for security reasons", ZSTR_VAL(ce->name)); }
-    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
-    return bailed;
+    SWR_ZEND_CATCH { trapped = true; } SWR_ZEND_END_TRY();
+    *bailed = trapped;
+    return object;
 }
 
 int swr_zend_try_facade_callable_frame(zval *value, zend_object *object, zend_execute_data *frame,
@@ -67,12 +57,6 @@ int swr_zend_try_facade_callable_frame(zval *value, zend_object *object, zend_ex
 int swr_zend_try_facade_register_functions(const zend_function_entry *entries, HashTable *table, int type, int *result) {
     volatile int bailed = 0;
     SWR_ZEND_TRY { *result = zend_register_functions(NULL, entries, table, type); }
-    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
-    return bailed;
-}
-int swr_zend_try_facade_class_alias(const char *name, size_t length, zend_class_entry *entry, int *result) {
-    volatile int bailed = 0;
-    SWR_ZEND_TRY { *result = zend_register_class_alias_ex(name, length, entry, true); }
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
 }

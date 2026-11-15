@@ -425,7 +425,7 @@ pub(crate) fn startup(minit: &swoole_rs_zend::Minit) {
         M(families.name_resolver_minit),
     ]);
     steps.extend(optional::minit());
-    steps.extend([T(tracer_minit), H(php_hooks), H(ready)]);
+    steps.extend([T(tracer_minit), H(php_hooks), T(ready)]);
     bailout::defer(run(steps, Phase::Minit(minit)));
 }
 
@@ -523,11 +523,11 @@ extern "C" fn core_startup() {
 
 /// MINIT's end: the ini's socket buffer size, macOS's `pcre.jit` and the known
 /// strings.
-extern "C" fn ready() {
+fn ready(minit: &swoole_rs_zend::Minit) {
     let size = globals().socket_buffer_size.get();
     swoole_rs_reactor::SOCKET_DEFAULTS.set_buffer_size(size.c_cast::<u32>());
     swr_phpswoole_pcre_jit_off();
-    swoole_rs_zend::host::known_init();
+    swoole_rs_zend::host::known_init(minit);
 }
 
 /// `php_swoole_load_library()`, the bundled PHP library (host.c), inside `zend_try`.

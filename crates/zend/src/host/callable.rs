@@ -4,10 +4,27 @@ use crate::{
     sys::{self, zend_fcall_info_cache, zval},
 };
 use std::{
-    ffi::{CStr, CString},
+    ffi::{CStr, CString, c_int},
     ptr,
     rc::Rc,
 };
+
+// `sw_callable_create`'s steps over a candidate value, each inside `zend_try`
+// (nonzero for a bailout): user code (`__toString`, `__invoke` lookups, an
+// autoloader) may run.
+unsafe extern "C" {
+    /// `zend_is_true(value)` into `truth`.
+    safe fn swr_zend_try_facade_truth(value: &Value, truth: &mut bool) -> c_int;
+    /// `zend_is_callable_at_frame(value, ...)` into `valid`, resolving `cache`.
+    safe fn swr_zend_try_facade_callable(
+        value: &Value,
+        cache: &mut zend_fcall_info_cache,
+        valid: &mut bool,
+    ) -> c_int;
+    /// `zend_get_callable_name_ex(value)` into `name`, in place of what it
+    /// held, which is not released.
+    safe fn swr_zend_try_facade_name(value: &Value, name: &Owned) -> c_int;
+}
 
 /// A stable owner of the callback value, resolved cache and diagnostic string.
 /// Dropping it releases the value first (a destructor's bailout is deferred),
@@ -187,23 +204,22 @@ fn create(value: &Value) -> Result<Box<Callable>, bailout::Bailout> {
         name: None,
     });
     let mut truth = false;
-    // SAFETY: a live candidate; the C shim traps any user-code bailout.
-    if deferred(unsafe { sys::swr_zend_try_facade_truth(value.as_ptr(), &raw mut truth) }) {
+    if deferred(swr_zend_try_facade_truth(value, &mut truth)) {
         drop(state);
         return Err(bailout::Bailout);
     }
     if truth {
         let mut valid = false;
-        // SAFETY: the cache is writable and the candidate is live.
-        let failed = deferred(unsafe {
-            sys::swr_zend_try_facade_callable(value.as_ptr(), &raw mut state.cache, &raw mut valid)
-        });
+        let failed = deferred(swr_zend_try_facade_callable(
+            value,
+            &mut state.cache,
+            &mut valid,
+        ));
         if !failed {
-            let mut name = std::ptr::null_mut();
-            // SAFETY: get the diagnostic name even for an invalid callable, as upstream does.
-            deferred(unsafe { sys::swr_zend_try_facade_name(value.as_ptr(), &raw mut name) });
-            // SAFETY: null (the shim bailed out), or the owned Zend string it produced.
-            state.name = (!name.is_null()).then(|| unsafe { ZString::from_raw(name) });
+            // The diagnostic name, even for an invalid callable, as upstream gets it.
+            let name = Owned::default();
+            deferred(swr_zend_try_facade_name(value, &name));
+            state.name = name.str().map(ZStr::to_owned);
         }
         if !bailout::pending() {
             if valid {

@@ -2,6 +2,11 @@
  * (zval_ptr_dtor, efree, OBJ_RELEASE), private (ZEND_CLOSURE_OBJECT reaches into
  * zend_closures.c's struct), and swr_zend_zval_release is a body for zend_try. */
 #include "callable.h"
+#include "shim.h"
+
+swr_zend_callable *swr_zend_callable_new(void) {
+    return ecalloc(1, sizeof(swr_zend_callable));
+}
 
 void swr_zend_callable_hold(swr_zend_callable *callable) {
     if (callable->fcc.object) {
@@ -49,6 +54,12 @@ void swr_zend_callable_release(void *arg) {
     if (callable->fcc.function_handler->op_array.fn_flags & ZEND_ACC_CLOSURE) {
         OBJ_RELEASE(ZEND_CLOSURE_OBJECT(callable->fcc.function_handler));
     }
+}
+
+int swr_zend_callable_free(swr_zend_callable *callable) {
+    int bailed = swr_zend_callable_release_quiet(callable) ? 0 : swr_zend_try(swr_zend_callable_release, callable);
+    efree(callable);
+    return bailed;
 }
 
 void swr_zend_zval_release(void *value) {

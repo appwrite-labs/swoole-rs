@@ -10,6 +10,8 @@ typedef struct {
     zend_fcall_info fci;
     zend_fcall_info_cache fcc;
 } swr_zend_callable;
+/* ecalloc of one callable: an empty one. */
+swr_zend_callable *swr_zend_callable_new(void);
 /* sw_zend_fci_cache_persist: hold the bound object and closure. */
 void swr_zend_callable_hold(swr_zend_callable *callable);
 /* sw_zend_fci_params_discard, then sw_zend_fci_cache_discard; may run PHP
@@ -20,6 +22,9 @@ void swr_zend_callable_release(void *callable);
  * collectable, so releasing it only drops a reference. 1 if released, 0 if
  * nothing was touched (use the trapped release). */
 int swr_zend_callable_release_quiet(swr_zend_callable *callable);
+/* The quiet release, else swr_zend_callable_release inside zend_try (as swr_zend_try
+ * returns), then efree of the callable. */
+int swr_zend_callable_free(swr_zend_callable *callable);
 /* zval_ptr_dtor of a zval, as a body for swr_zend_try (it may run destructors). */
 void swr_zend_zval_release(void *value);
 

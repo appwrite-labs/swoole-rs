@@ -176,15 +176,15 @@ impl ZBuf {
         unsafe { (*string).len = len };
         // SAFETY: an allocation of at least `len` bytes has room for the NUL.
         unsafe { *val(string).wrapping_add(len) = 0 };
-        // SAFETY: the string's only reference, which this gives up.
-        unsafe { crate::ZString::from_raw(string) }
+        // The string's only reference, which this gives up.
+        crate::ZString(string)
     }
 }
 
 impl Drop for ZBuf {
+    /// Released as the string it is so far, through its only reference.
     #[inline]
     fn drop(&mut self) {
-        // SAFETY: an unshared string nothing else references.
-        unsafe { free(self.string) };
+        drop(crate::ZString(self.string));
     }
 }

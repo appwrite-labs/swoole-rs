@@ -30,10 +30,17 @@ void swr_zend_event_restore_shutdown(uint8_t previous) {
 #endif
 }
 
-int swr_zend_event_property(zval *object, zend_string *name, zval **result) {
+int swr_zend_event_property_long(zval *object, zend_string *name, zend_long *out, bool *found) {
+    if (Z_TYPE_P(object) != IS_OBJECT) {
+        return 0;
+    }
     volatile int bailed = 0;
     SWR_ZEND_TRY {
-        *result = zend_read_property_ex(Z_OBJCE_P(object), Z_OBJ_P(object), name, 0, NULL);
+        zval *value = zend_read_property_ex(Z_OBJCE_P(object), Z_OBJ_P(object), name, 0, NULL);
+        if (value && Z_TYPE_P(value) == IS_LONG) {
+            *out = Z_LVAL_P(value);
+            *found = true;
+        }
     } SWR_ZEND_CATCH {
         bailed = 1;
     } SWR_ZEND_END_TRY();

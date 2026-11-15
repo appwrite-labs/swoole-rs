@@ -3,16 +3,14 @@ use crate::{
     Minit, Parent, Value, ZStr,
     arginfo::Table,
     sys::{
-        HashTable, ZEND_ACC_RESOLVED_PARENT, swr_zend_register_class, zend_class_entry,
-        zend_hash_find, zend_long, zend_object, zend_object_handlers, zend_string,
-        zend_throw_error, zend_throw_exception, zval,
+        ZEND_ACC_RESOLVED_PARENT, swr_zend_register_class, zend_class_entry, zend_long,
+        zend_object, zend_object_handlers, zend_string, zend_throw_exception, zval,
     },
 };
 use std::{
-    ffi::{CStr, c_char, c_int, c_void},
+    ffi::{CStr, CString, c_int, c_void},
     marker::PhantomData,
-    mem::offset_of,
-    ptr,
+    ptr::{self, NonNull},
     sync::atomic::{AtomicPtr, AtomicU32, Ordering},
 };
 
@@ -23,6 +21,9 @@ unsafe extern "C" {
     /// `instanceof_function`: it reads the two live classes' inheritance
     /// tables, and runs no PHP code.
     safe fn swr_zend_instanceof(class: ClassEntry<'_>, parent: ClassEntry<'_>) -> bool;
+    /// Whether the live class's `properties_info` names `member`: it reads the
+    /// table, which no PHP code changes.
+    safe fn swr_zend_class_declares(class: ClassEntry<'_>, member: &ZStr) -> bool;
     /// `zend_property_info::offset` of the property the live class declares as
     /// `name`, or 0 for none or a typed or static one: it reads the class's
     /// property table, which no PHP code changes, and `name`.
@@ -45,7 +46,7 @@ unsafe extern "C" {
 #[derive(Clone, Copy)]
 #[repr(transparent)]
 pub struct ClassEntry<'a>(
-    pub(crate) *mut zend_class_entry,
+    pub(crate) NonNull<zend_class_entry>,
     pub(crate) PhantomData<&'a zend_class_entry>,
 );
 
@@ -56,13 +57,20 @@ impl<'a> ClassEntry<'a> {
     #[must_use]
     #[inline]
     pub unsafe fn from_ptr(entry: *mut zend_class_entry) -> Option<Self> {
-        (!entry.is_null()).then_some(Self(entry, PhantomData))
+        Self::live(entry)
+    }
+
+    /// A class entry Zend holds for `'a`, or None for null: the parent a
+    /// class keeps, a function's scope, a registered class.
+    #[inline]
+    pub(crate) fn live(entry: *mut zend_class_entry) -> Option<Self> {
+        NonNull::new(entry).map(|entry| Self(entry, PhantomData))
     }
 
     #[must_use]
     #[inline]
     pub fn as_ptr(self) -> *mut zend_class_entry {
-        self.0
+        self.0.as_ptr()
     }
 
     /// `f` of the entry, which it reads only: no PHP code runs, so nothing
@@ -70,7 +78,7 @@ impl<'a> ClassEntry<'a> {
     #[inline]
     pub(crate) fn read<R>(self, f: impl FnOnce(&zend_class_entry) -> R) -> R {
         // SAFETY: a live class entry, per the type; the borrow ends with `f`.
-        f(unsafe { &*self.0 })
+        f(unsafe { self.0.as_ref() })
     }
 
     /// `ce->name`: the class's name, which it keeps for as long as it lives.
@@ -112,7 +120,7 @@ impl<'a> ClassEntry<'a> {
         // its name; the flag says it holds the entry.
         let parent = self.read(|ce| unsafe { ce.__bindgen_anon_1.parent });
         // A class keeps its parent alive.
-        (!parent.is_null()).then_some(Self(parent, PhantomData))
+        Self::live(parent)
     }
 }
 
@@ -217,7 +225,7 @@ impl Class {
     pub fn handle(&self) -> Option<ClassEntry<'static>> {
         let entry = self.entry();
         // A registered internal class lives for the process.
-        (!entry.is_null()).then_some(ClassEntry(entry, PhantomData))
+        ClassEntry::live(entry)
     }
 
     /// `ZSTR_VAL(ce->name)`: the name the class registered under (up to a
@@ -271,8 +279,7 @@ impl Class {
     #[must_use]
     #[inline]
     pub fn class_entry(&self) -> Option<ClassEntry<'static>> {
-        let entry = self.entry();
-        (!entry.is_null()).then_some(ClassEntry(entry, PhantomData))
+        ClassEntry::live(self.entry())
     }
 
     /// The handlers this class's objects use (null before MINIT).
@@ -300,12 +307,10 @@ impl crate::Value {
     /// # Errors
     /// An autoloader bailed out.
     pub fn instance_of_named(&self, name: &ZStr) -> Result<Option<bool>, crate::bailout::Bailout> {
-        let class = lookup_class(name)?;
-        if class.is_null() {
-            return Ok(None);
-        }
         // The class just looked up, read before any PHP code runs.
-        let class = ClassEntry(class, PhantomData);
+        let Some(class) = ClassEntry::live(lookup_class(name)?) else {
+            return Ok(None);
+        };
         Ok(Some(
             self.class_entry().is_some_and(|own| own.instance_of(class)),
         ))
@@ -328,35 +333,27 @@ pub unsafe extern "C" fn unset_property_deny(
     while let Some(parent) = root.parent() {
         root = parent;
     }
-    let declared = root
-        .as_ptr()
-        .wrapping_byte_add(offset_of!(zend_class_entry, properties_info))
-        .cast::<HashTable>();
-    // SAFETY: a live class's property table and the member name.
-    if !unsafe { zend_hash_find(declared, member) }.is_null() {
-        // SAFETY: a printf format whose two `%s` take the NUL-terminated member
-        // and class names.
-        unsafe {
-            zend_throw_error(
-                ptr::null_mut(),
-                c"Property %s of class %s cannot be unset".as_ptr(),
-                text(member),
-                text(own.name().as_ptr()),
-            );
-        }
+    // SAFETY: Zend's live member name, per the contract.
+    let Some(name) = (unsafe { ZStr::from_ptr(member) }) else {
+        return;
+    };
+    if swr_zend_class_declares(root, name) {
+        // Each name up to its NUL, as upstream's `%s` prints it.
+        let message = [
+            &b"Property "[..],
+            name.c_str().to_bytes(),
+            b" of class ",
+            own.name().c_str().to_bytes(),
+            b" cannot be unset",
+        ]
+        .concat();
+        crate::throw_error(&CString::new(message).unwrap_or_default());
         return;
     }
     if let Some(unset) = std_object_handlers.unset_property {
         // SAFETY: forwarding Zend's own arguments.
         unsafe { unset(object, member, cache_slot) };
     }
-}
-
-/// `ZSTR_VAL`: a `zend_string`'s NUL-terminated bytes.
-fn text(string: *const zend_string) -> *const c_char {
-    string
-        .wrapping_byte_add(offset_of!(zend_string, val))
-        .cast()
 }
 
 /// An untyped instance property a registered class declares, as the offset of
@@ -406,12 +403,12 @@ impl Declared {
     pub fn get<'a>(&self, object: &'a Value) -> Option<&'a Value> {
         let std = object.object()?;
         let own = object.class_entry()?;
-        let class = self.class.load(Ordering::Acquire);
         let offset = self.offset();
-        if offset == 0
-            || class.is_null()
-            || own.as_ptr() != class && !own.instance_of(ClassEntry(class, PhantomData))
-        {
+        if offset == 0 {
+            return None;
+        }
+        let class = ClassEntry::live(self.class.load(Ordering::Acquire))?;
+        if own.as_ptr() != class.as_ptr() && !own.instance_of(class) {
             return None;
         }
         let slot = std.wrapping_byte_add(offset as usize).cast::<zval>();
