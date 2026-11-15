@@ -9,8 +9,6 @@ use swoole_rs_zend::{E_ERROR, E_WARNING, Message, Value, bailout::Bailout, conta
 /// `SW_ERROR_PHP_FATAL_ERROR` and `SW_ERROR_PHP_RUNTIME_NOTICE`.
 const PHP_FATAL_ERROR: c_int = swoole_rs_error::ErrorCode::SW_ERROR_PHP_FATAL_ERROR as c_int;
 const PHP_RUNTIME_NOTICE: c_int = swoole_rs_error::ErrorCode::SW_ERROR_PHP_RUNTIME_NOTICE as c_int;
-/// `SW_MANAGER`.
-const MANAGER: c_int = 3;
 
 pub(crate) fn has_reactor() -> bool {
     !swoole_rs_corebase::thread_reactor().is_null()
@@ -33,7 +31,9 @@ pub(crate) fn server_refusal() -> Option<&'static CStr> {
         return None;
     }
     Some(
-        if swoole_rs_process::methods::swoole_get_worker_type() == MANAGER {
+        if swoole_rs_process::methods::worker_type()
+            == Some(swoole_rs_process::worker_record::WorkerType::Manager)
+        {
             c"Unable to use async-io in manager process"
         } else {
             c"Unable to use async-io in task processes, please set `task_enable_coroutine` to true"
