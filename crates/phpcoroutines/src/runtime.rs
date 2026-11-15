@@ -21,8 +21,8 @@ use swoole_rs_zend::{
     bailout::{self, Bailout},
     message,
     sys::{
-        swr_zend_coroutine_set_interrupt, swr_zend_interrupt_handler, swr_zend_vm_interrupt_raise,
-        zend_atomic_bool, zend_execute_data, zend_fcall_info_cache, zval,
+        swr_zend_coroutine_set_interrupt, swr_zend_interrupt_handler, zend_atomic_bool,
+        zend_execute_data, zend_fcall_info_cache, zval,
     },
 };
 
@@ -285,28 +285,24 @@ unsafe extern "C" {
     safe fn swr_zend_vm_interrupt() -> *mut zend_atomic_bool;
 }
 
-/// A pointer the interrupt thread may hold: `EG(vm_interrupt)` of this
-/// thread's executor, which outlives the interrupt thread.
-struct Flag(*mut zend_atomic_bool);
-// SAFETY: Zend's atomic flag, written with an atomic store.
-unsafe impl Send for Flag {}
-
 fn interrupt_start() {
     if interrupt_running() {
         return;
     }
     let running = Arc::new(AtomicBool::new(true));
-    let flag = Flag(swr_zend_vm_interrupt());
+    // SAFETY: `EG(vm_interrupt)`, a `zend_atomic_bool` (an atomic bool, as
+    // `AtomicBool` is) of this thread's executor, which outlives the interrupt
+    // thread `interrupt_stop` joins; Zend and the thread only touch it atomically.
+    let flag: &'static AtomicBool = unsafe { AtomicBool::from_ptr(swr_zend_vm_interrupt().cast()) };
     let shared = Arc::clone(&running);
     // The thread inherits a fully blocked mask (upstream's `interrupt_thread_start`).
     let spawned = swoole_rs_corebase::with_signals_blocked(|| {
         thread::Builder::new().spawn(move || {
-            let flag = flag;
             swoole_rs_corebase::signal_block_all();
             let half = Duration::from_millis(MAX_EXEC_MSEC.unsigned_abs() / 2);
             while shared.load(Ordering::Acquire) {
-                // SAFETY: the executor's flag, live until `interrupt_stop` joins.
-                unsafe { swr_zend_vm_interrupt_raise(flag.0) };
+                // `zend_atomic_bool_store(flag, 1)`.
+                flag.store(true, Ordering::SeqCst);
                 thread::sleep(half);
             }
         })

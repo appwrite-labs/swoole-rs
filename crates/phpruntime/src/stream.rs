@@ -297,18 +297,14 @@ impl Fresh {
 /// `php_stream_alloc(ops, abstract, persistent_id, "r+")` of `socket` with these
 /// operations; none (the socket freed) if it fails.
 fn alloc(socket: Rc<Socket>, persistent_id: *const c_char) -> Result<Option<Fresh>, Bailout> {
-    let net = Box::into_raw(Box::new(NetStream {
-        socket,
-        blocking: std::cell::Cell::new(true),
-    }));
     let mut stream: Option<Fresh> = None;
-    // SAFETY: PHP receives this stable owned abstract pointer before resource registration.
-    // On bailout it remains available to PHP's partial-resource/request cleanup, as before.
-    // The table has `php_stream_ops`'s layout, and the out slot a nullable pointer's.
+    // SAFETY: the table has `php_stream_ops`'s layout, and the out slot a nullable
+    // pointer's. The stream starts without an abstract, which no operation runs
+    // to read before it is set below.
     if unsafe {
         swoole_rs_zend::sys::swr_zend_try_stream_alloc(
             (&raw const swoole_runtime_socket_ops).cast(),
-            net.cast(),
+            ptr::null_mut(),
             persistent_id,
             (&raw mut stream).cast(),
         )
@@ -316,9 +312,15 @@ fn alloc(socket: Rc<Socket>, persistent_id: *const c_char) -> Result<Option<Fres
     {
         return Err(Bailout);
     }
-    if stream.is_none() {
-        // SAFETY: not handed over.
-        drop(unsafe { Box::from_raw(net) });
+    if let Some(fresh) = &stream {
+        // The stream owns its NetStream from here until its close takes it back.
+        let net = Box::into_raw(Box::new(NetStream {
+            socket,
+            blocking: std::cell::Cell::new(true),
+        }));
+        fresh
+            .stream()
+            .fields(|stream| stream.abstract_ = net.cast());
     }
     Ok(stream)
 }
