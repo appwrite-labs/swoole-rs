@@ -487,6 +487,11 @@ extern "C" fn logger_identity() -> swoole_rs_utilities::LoggerIdentity {
 static LOGGER: std::sync::atomic::AtomicPtr<swoole_rs_utilities::Logger> =
     std::sync::atomic::AtomicPtr::new(ptr::null_mut());
 
+/// The logger [`LOGGER`] points at, which this owns from `new` until `delete`.
+#[cfg(feature = "upstream-symbols")]
+static OWNER: std::sync::Mutex<Option<std::sync::Arc<swoole_rs_utilities::Logger>>> =
+    std::sync::Mutex::new(None);
+
 /// The process logger's `new Logger()` on `SwooleG.stdout`, `->reopen()`, `->close()`
 /// and `delete`, which `swoole_init` registers for corebase's lifecycles.
 #[cfg(feature = "upstream-symbols")]
@@ -494,22 +499,26 @@ pub fn logger_op(op: swoole_rs_corebase::native::LoggerOp) {
     use std::sync::atomic::Ordering::Relaxed;
     use swoole_rs_corebase::native::LoggerOp;
     use swoole_rs_utilities::{Logger, process_logger};
+    let owner = || {
+        OWNER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    };
     match op {
         LoggerOp::New => {
             let stdout = swoole_rs_corebase::swr_v1_core_stdout().cast();
-            let logger = Logger::new(stdout, swr_logger_host);
-            LOGGER.store(Box::into_raw(Box::new(logger)), Relaxed);
+            let logger = std::sync::Arc::new(Logger::new(stdout, swr_logger_host));
+            LOGGER.store(std::sync::Arc::as_ptr(&logger).cast_mut(), Relaxed);
+            // A logger `new` replaces is leaked, as upstream's pointer overwrite does.
+            _ = owner().replace(logger).map(std::sync::Arc::into_raw);
             swoole_rs_corebase::swr_v1_core_set_logger(LOGGER.as_ptr().cast());
         }
         LoggerOp::Reopen => process_logger().into_iter().for_each(Logger::reopen),
         LoggerOp::Close => process_logger().into_iter().for_each(Logger::close),
         LoggerOp::Delete => {
             swoole_rs_corebase::swr_v1_core_set_logger(ptr::null_mut());
-            let logger = LOGGER.swap(ptr::null_mut(), Relaxed);
-            if !logger.is_null() {
-                // SAFETY: the logger `LoggerOp::New` made, taken once.
-                drop(unsafe { Box::from_raw(logger) });
-            }
+            LOGGER.store(ptr::null_mut(), Relaxed);
+            drop(owner().take());
         }
     }
 }
