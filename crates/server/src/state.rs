@@ -34,6 +34,7 @@ pub struct ServerState {
     /// and how many threads wait for it.
     locked: (std::sync::Mutex<(bool, u32)>, std::sync::Condvar),
     /// The reactor threads and the heartbeat thread, by `start_thread`'s `arg`.
+    #[cfg(any(test, feature = "upstream-symbols"))]
     threads: std::sync::Mutex<Vec<(u64, std::thread::JoinHandle<()>)>>,
     /// The interface addresses `Server::create` first read (`local_addr`); none before.
     pub(crate) local_addrs: std::sync::OnceLock<crate::local_addr::LocalAddrs>,
@@ -71,6 +72,7 @@ pub struct ServerState {
 }
 
 /// A native thread entry: `void (*)(void *serv, uint64_t arg)`.
+#[cfg(any(test, feature = "upstream-symbols"))]
 pub(crate) type ThreadEntry = fn(crate::view::Server<'_>, u64);
 
 /// The server's text members, `ServerState::texts`' slots.
@@ -111,6 +113,7 @@ impl ServerState {
             upload_tmp_dir: std::sync::Mutex::new(None),
             texts: Default::default(),
             locked: (std::sync::Mutex::new((false, 0)), std::sync::Condvar::new()),
+            #[cfg(any(test, feature = "upstream-symbols"))]
             threads: std::sync::Mutex::new(Vec::new()),
             local_addrs: std::sync::OnceLock::new(),
             msg_ids: std::sync::OnceLock::new(),
@@ -275,6 +278,7 @@ impl ServerState {
     /// Starts a thread of `serv`, whose state this is, running `entry(serv, arg)`;
     /// `take_thread(arg)` hands it back. A thread that can't start aborts, as
     /// `std::thread`'s uncaught `system_error` does.
+    #[cfg(any(test, feature = "upstream-symbols"))]
     pub(crate) fn start_thread(serv: crate::view::Server<'_>, entry: ThreadEntry, arg: u64) {
         let raw = serv.raw().expose_provenance();
         let thread = std::thread::Builder::new().spawn(move || {
@@ -296,6 +300,7 @@ impl ServerState {
     }
 
     /// The running thread `start_thread` started with `arg`, if any.
+    #[cfg(any(test, feature = "upstream-symbols"))]
     pub(crate) fn take_thread(&self, arg: u64) -> Option<std::thread::JoinHandle<()>> {
         let mut threads = self
             .threads
@@ -422,6 +427,7 @@ fn c_path(text: &[u8]) -> CString {
 
 /// A new server's records, before a state owns them: the defaults and an empty
 /// worker registry.
+#[cfg(any(test, feature = "upstream-symbols"))]
 pub(crate) fn fresh_records() -> (crate::config::ServerConfig, crate::records::ServerTables) {
     let config = crate::config::ServerConfig {
         worker_registry: Some(Box::default()),
@@ -431,6 +437,7 @@ pub(crate) fn fresh_records() -> (crate::config::ServerConfig, crate::records::S
 }
 
 /// The state of a server with these records.
+#[cfg(any(test, feature = "upstream-symbols"))]
 pub(crate) fn boxed(
     config: crate::config::ServerConfig,
     tables: crate::records::ServerTables,

@@ -4,11 +4,11 @@
 //! the unit tests' recorder, or, in a build that links none of it, the defaults below.
 use core::ffi::{c_int, c_long};
 use swoole_rs_corebase::DataHead;
+use swoole_rs_process::command::CommandRoute;
 use swoole_rs_process::task_file::TaskBuffer;
 
 use swoole_rs_reactor::Socket;
 
-use crate::commands::CommandSend;
 use crate::port_config::PortConfig;
 use crate::view::Server;
 
@@ -27,20 +27,26 @@ pub(crate) enum Step {
     /// `swoole_timer_reinit()` when the timer is detached.
     TimerReinit,
     /// `swoole_signal_set(signo, nullptr)`.
+    #[cfg(any(test, feature = "upstream-symbols"))]
     Ignore(c_int),
     /// `swoole_signal_set(signo, master_signal_handler)`.
+    #[cfg(any(test, feature = "upstream-symbols"))]
     Handle(c_int),
     /// The master reactor's `SW_FD_PIPE` reads are command results.
+    #[cfg(any(test, feature = "upstream-symbols"))]
     CommandHandler,
     /// The master's timer: fails when it can't be added.
     MasterTimer,
     /// `swoole_event_free()`.
     EventFree,
     /// `swoole_event_wait()`.
+    #[cfg(any(test, feature = "upstream-symbols"))]
     EventWait,
     /// `reactor_thread_barrier.wait()`.
+    #[cfg(any(test, feature = "upstream-symbols"))]
     ReactorBarrier,
     /// `gs->manager_barrier.wait()`.
+    #[cfg(any(test, feature = "upstream-symbols"))]
     ManagerBarrier,
     /// `join_reactor_thread()`.
     JoinReactorThreads,
@@ -155,7 +161,14 @@ pub(crate) trait Hybrid: Sync {
     }
 
     /// `Server::command`'s request to another process: whether it went.
-    fn command_send(&self, _serv: Server<'_>, _request: &CommandSend<'_>) -> bool {
+    fn command_send(
+        &self,
+        _serv: Server<'_>,
+        _route: CommandRoute,
+        _command_id: i32,
+        _request_id: i64,
+        _message: &[u8],
+    ) -> bool {
         missing()
     }
 
@@ -501,14 +514,20 @@ pub(crate) mod tests {
             ))
         }
 
-        fn command_send(&self, _: Server<'_>, c: &CommandSend<'_>) -> bool {
-            let (target, process, command) = (c.target, c.process_id, c.command_id);
+        fn command_send(
+            &self,
+            _: Server<'_>,
+            route: CommandRoute,
+            command_id: i32,
+            request_id: i64,
+            message: &[u8],
+        ) -> bool {
             hear(Call::CommandSend(
-                target,
-                process,
-                command,
-                c.request_id,
-                c.message.len(),
+                route.target,
+                route.process_id,
+                command_id,
+                request_id,
+                message.len(),
             ))
         }
     }

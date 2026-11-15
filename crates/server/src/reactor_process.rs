@@ -17,8 +17,10 @@ use crate::view;
 pub(crate) mod native;
 
 /// `SW_FD_SESSION`, `SW_FD_STREAM_SERVER` and `SW_SSL_STATE_READY`.
+#[cfg(any(test, feature = "upstream-symbols"))]
 const FD_SESSION: c_int = 0;
 const FD_STREAM_SERVER: c_int = 1;
+#[cfg(any(test, feature = "upstream-symbols"))]
 use swoole_rs_tls::SslState::SW_SSL_STATE_READY as SSL_READY;
 
 /// `Socket::is_stream(type)`.
@@ -224,6 +226,7 @@ pub(crate) fn close(serv: view::Server<'_>, reactor: Reactor, event: &Event) -> 
 
 /// `ReactorProcess_onTimeout`: close the connections idle past the heartbeat, or
 /// tell their worker.
+#[cfg(any(test, feature = "upstream-symbols"))]
 pub(crate) fn heartbeat(serv: view::Server<'_>, reactor: Reactor) {
     let now = swoole_rs_corebase::microtime();
     crate::reactor_thread::each_connection(serv.state(), |conn| {
