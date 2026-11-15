@@ -445,15 +445,6 @@ impl ServerTables {
         unmapped
     }
 
-    /// `max_connection = value` over a test's own tables, mapped or not.
-    ///
-    /// # Safety
-    /// A mapped `connection_list` holds at least `value` records.
-    #[cfg(test)]
-    pub(crate) unsafe fn set_max_connection_unchecked(&self, value: u32) {
-        self.max_connection.set(value);
-    }
-
     /// The connection slots, exactly `max_connection` of them, or none before
     /// they're mapped. Index it with `get`, so every fd lookup is bounded by the
     /// table's own length.
@@ -715,6 +706,16 @@ pub extern "C" fn swr_v1_server_connection(
 pub(crate) mod tests {
     use super::*;
     use crate::state::{free_state, swr_v1_server_state_new};
+
+    impl ServerTables {
+        /// `max_connection = value` over a test's own tables, mapped or not.
+        ///
+        /// # Safety
+        /// A mapped `connection_list` holds at least `value` records.
+        pub(crate) unsafe fn set_max_connection_unchecked(&self, value: u32) {
+            self.max_connection.set(value);
+        }
+    }
 
     /// A table field naming a test's own records, so several states can share them as
     /// processes share a mapping. Nothing frees it: the test owns `items`.

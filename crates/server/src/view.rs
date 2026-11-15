@@ -151,18 +151,6 @@ impl<'a> Server<'a> {
         unsafe { &*self.fields().config }
     }
 
-    /// The server's configuration, to write.
-    ///
-    /// # Safety
-    /// No other reference to the configuration is live meanwhile, and no other
-    /// thread reads the fields written (the server's own synchronization).
-    #[must_use]
-    #[cfg(test)]
-    pub unsafe fn config_mut(self) -> &'a mut ServerConfig {
-        // SAFETY: per the caller; the allocation lives as long as the server.
-        unsafe { &mut *self.fields().config }
-    }
-
     /// `serv->get_worker_message_bus()->move_packet()`: the bus no longer frees
     /// the packet it holds; its new owner, given its block (null for none), does.
     #[cfg(all(feature = "upstream-symbols", not(test)))]
@@ -737,6 +725,19 @@ pub fn recv_buffer(conn: Connection<'_>) -> *mut c_void {
 mod tests {
     use super::*;
     use core::ffi::c_void;
+
+    impl<'a> Server<'a> {
+        /// The server's configuration, to write.
+        ///
+        /// # Safety
+        /// No other reference to the configuration is live meanwhile, and no other
+        /// thread reads the fields written (the server's own synchronization).
+        #[must_use]
+        pub(crate) unsafe fn config_mut(self) -> &'a mut ServerConfig {
+            // SAFETY: per the caller; the allocation lives as long as the server.
+            unsafe { &mut *self.fields().config }
+        }
+    }
 
     /// Only a single base-mode worker's own, undestroyed server has an event pool
     /// MSHUTDOWN may destroy: not another process's, a destroyed one, a process-mode
