@@ -22,7 +22,7 @@ use swoole_rs_phpswoole::{SocketSettings as Settings, Switch, built_with};
 use swoole_rs_tls::{self as tls, Text};
 use swoole_rs_zend::{
     Array, Call, OwnedArray, Value, bailout, report,
-    sys::{E_ERROR, E_WARNING, php_stream, swr_zend_stream_socketd, swr_zend_stream_unbuffer},
+    sys::{E_ERROR, E_WARNING, php_stream, swr_zend_stream_unbuffer},
 };
 
 use swoole_rs_reactor::TimeoutKind;
@@ -744,16 +744,26 @@ fn socketpair(call: &Call) {
     call.set_owned(sockets.into_owned());
 }
 
+unsafe extern "C" {
+    /// `php_stream_from_zval` then `php_stream_cast(.., PHP_STREAM_AS_SOCKETD, ..)`
+    /// of any value inside `zend_try`: 0 with the stream and its descriptor
+    /// written, 2 for a bailout, else 1 (a null stream when it was none, which
+    /// Zend reported).
+    safe fn swr_zend_stream_socketd(
+        zstream: &Value,
+        stream: &mut *mut php_stream,
+        fd: &mut c_int,
+    ) -> c_int;
+}
+
 /// `static import($stream): Socket|false`.
 fn import(call: &Call) {
     let Ok(stream_value) = call.arity(1, 1).and_then(|()| call.resource(1)) else {
         return;
     };
-    let stream_zval = stream_value.as_ptr();
     let mut stream: *mut php_stream = ptr::null_mut();
     let mut fd: c_int = -1;
-    // SAFETY: a resource argument and writable locals.
-    match unsafe { swr_zend_stream_socketd(stream_zval, &raw mut stream, &raw mut fd) } {
+    match swr_zend_stream_socketd(stream_value, &mut stream, &mut fd) {
         0 => {}
         2 => return bailout::defer(Err(bailout::Bailout)),
         // Not a stream: Zend has thrown, and nothing is returned.
