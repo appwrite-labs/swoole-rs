@@ -10,7 +10,7 @@ use crate::dispatch::{handler_error, invoke, set_last_error, used};
 use crate::lifecycle::Props;
 use crate::server::{DATA, TASK, fatal, running};
 use std::{
-    cell::{Cell, RefCell},
+    cell::{Cell, OnceCell},
     collections::HashMap,
     ffi::{CStr, c_int},
     mem::ManuallyDrop,
@@ -180,10 +180,23 @@ impl MultiTask for Multi<'_> {
 /// the call's return value. The waiting call owns it; the pending table refers to it.
 struct TaskCo {
     co: Coroutine,
-    result: RefCell<Owned>,
-    /// Set once every task is sent, as upstream.
-    list: RefCell<Vec<Option<i64>>>,
+    /// Taken out and put back with nothing in between that yields or runs PHP
+    /// code.
+    result: Cell<Owned>,
+    /// Set once every task is sent, as upstream; unset is `taskwait`'s empty list.
+    list: OnceCell<Vec<Option<i64>>>,
     count: Cell<u32>,
+}
+
+impl TaskCo {
+    /// `f` over the result, taken out and put back: `f` only adds to it at
+    /// indexes that hold nothing yet, which releases nothing.
+    fn with_result<R>(&self, f: impl FnOnce(&mut Owned) -> R) -> R {
+        let mut result = self.result.take();
+        let out = f(&mut result);
+        self.result.set(result);
+        out
+    }
 }
 
 /// One server's pending tasks.
@@ -197,8 +210,13 @@ struct Pending {
 
 thread_local! {
     /// Per Server (by address), as upstream's `ServerProperty` is per object.
-    static PENDING: RefCell<HashMap<usize, Pending>> = RefCell::new(HashMap::new());
+    /// Boxed, so a take moves a pointer and leaves `None`; taken out and put
+    /// back around each access, which runs no PHP code.
+    static PENDING: Cell<Option<Box<Servers>>> = const { Cell::new(None) };
 }
+
+/// Each server's pending tasks, by its address.
+type Servers = HashMap<usize, Pending>;
 
 fn pending<R>(server: view::Server<'_>, f: impl FnOnce(&mut Pending) -> R) -> R {
     pending_at(server.raw() as usize, f)
@@ -206,7 +224,15 @@ fn pending<R>(server: view::Server<'_>, f: impl FnOnce(&mut Pending) -> R) -> R 
 
 /// The pending table of the server at `key` (its address).
 fn pending_at<R>(key: usize, f: impl FnOnce(&mut Pending) -> R) -> R {
-    PENDING.with_borrow_mut(|all| f(all.entry(key).or_default()))
+    PENDING.with(|cell| {
+        let mut all = cell.take().unwrap_or_default();
+        let result = f(all.entry(key).or_default());
+        // `set` would call the drop glue for the `None` it replaces, on every access.
+        if let Some(nested) = cell.replace(Some(all)) {
+            drop(nested);
+        }
+        result
+    })
 }
 
 fn facts(server: view::Server<'_>) -> Facts {
@@ -475,8 +501,8 @@ fn taskwait(call: &Call) {
     flag(&mut buf, NONBLOCK | COROUTINE);
     let task_co = Rc::new(TaskCo {
         co,
-        result: RefCell::default(),
-        list: RefCell::default(),
+        result: Cell::default(),
+        list: OnceCell::new(),
         count: Cell::new(1),
     });
     if !dispatch(serv, &mut buf, dst) {
@@ -567,8 +593,8 @@ fn task_co(call: &Call, fill_false: bool) {
     };
     let task_co = Rc::new(TaskCo {
         co,
-        result: RefCell::new(OwnedArray::default().into_owned()),
-        list: RefCell::default(),
+        result: Cell::new(OwnedArray::default().into_owned()),
+        list: OnceCell::new(),
         count: Cell::new(0),
     });
     let mut list = Vec::with_capacity(n_task as usize);
@@ -586,9 +612,11 @@ fn task_co(call: &Call, fill_false: bool) {
         if let Some(id) = id {
             pending(serv, |p| p.coroutines.insert(id, Rc::downgrade(&task_co)));
         } else {
-            if let Some(array) = task_co.result.borrow_mut().array_mut() {
-                array.update_index(index, Owned::bool(false));
-            }
+            task_co.with_result(|result| {
+                if let Some(array) = result.array_mut() {
+                    array.update_index(index, Owned::bool(false));
+                }
+            });
             n_task -= 1;
         }
         list.push(id);
@@ -597,22 +625,25 @@ fn task_co(call: &Call, fill_false: bool) {
         set_last_error(SW_ERROR_TASK_DISPATCH_FAIL);
         return call.set_bool(false);
     }
-    task_co.list.replace(list);
+    let list = task_co.list.get_or_init(|| list);
     task_co.count.set(n_task);
     // onFinish resumes it.
-    if !swoole_rs_phpcoroutines::suspend_for(timeout)
-        && let Some(array) = task_co.result.borrow_mut().array_mut()
-    {
-        for j in 0..n_task as usize {
-            if array.array().and_then(|a| a.index(j as u64)).is_none() {
-                if fill_false {
-                    array.update_index(j as u64, Owned::bool(false));
-                }
-                if let Some(&Some(id)) = task_co.list.borrow().get(j) {
-                    pending(serv, |p| p.coroutines.remove(&id));
+    if !swoole_rs_phpcoroutines::suspend_for(timeout) {
+        task_co.with_result(|result| {
+            let Some(array) = result.array_mut() else {
+                return;
+            };
+            for j in 0..n_task as usize {
+                if array.array().and_then(|a| a.index(j as u64)).is_none() {
+                    if fill_false {
+                        array.update_index(j as u64, Owned::bool(false));
+                    }
+                    if let Some(&Some(id)) = list.get(j) {
+                        pending(serv, |p| p.coroutines.remove(&id));
+                    }
                 }
             }
-        }
+        });
     }
     call.set_owned(task_co.result.take());
 }
@@ -783,10 +814,8 @@ fn resume(server: view::Server<'_>, id: i64, data: Owned) -> Result<(), Bailout>
         );
         return Ok(());
     };
-    let (index, single) = {
-        let list = task_co.list.borrow();
-        (list.iter().position(|&t| t == Some(id)), list.is_empty())
-    };
+    let list = task_co.list.get().map_or(&[][..], Vec::as_slice);
+    let (index, single) = (list.iter().position(|&t| t == Some(id)), list.is_empty());
     if single {
         // ZVAL_COPY_VALUE: the result takes the value.
         drop(task_co.result.replace(data));
@@ -795,11 +824,17 @@ fn resume(server: view::Server<'_>, id: i64, data: Owned) -> Result<(), Bailout>
             let text = message!("task[{id}] is invalid");
             return event_warning(text.as_cstr());
         };
-        if let Some(array) = task_co.result.borrow_mut().array_mut() {
-            array.update_index(index as u64, data);
-        }
+        // Each id arrives once (its pending entry goes below), so its index
+        // is empty; a result that has no array keeps `data` for the caller.
+        let (arrived, unplaced) = task_co.with_result(|result| match result.array_mut() {
+            Some(array) => {
+                array.update_index(index as u64, data);
+                (array.array().map_or(0, Array::count), None)
+            }
+            None => (0, Some(data)),
+        });
+        drop(unplaced);
         pending(server, |p| p.coroutines.remove(&id));
-        let arrived = task_co.result.borrow().array().map_or(0, Array::count);
         if arrived != task_co.count.get() {
             return Ok(());
         }
