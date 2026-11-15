@@ -1,7 +1,7 @@
 # TLS/DTLS boundary
 
 Feature bit 262144 (`tls`). `crates/tls` defines `swoole_ssl_init`/`destroy`/`get_error`
-and `SSLContext::create` under their upstream symbols, and `dtls::Session` is a Rust
+under their upstream symbols, and `dtls::Session` is a Rust
 record. No C or C++ reads `SSLContext`; [swoole_ssl.h](swoole_ssl.h) keeps the OpenSSL
 switches and TLS constants C++ still reads.
 Tests: `crates/tls` unit tests, upstream's `protocol/ssl.cpp` TESTs ported to Rust
@@ -16,12 +16,14 @@ DH parameters, ECDH curves, ALPN and session id. It owns the password, ALPN,
 verify, DTLS cookie and info callbacks, OpenSSL initialization, the two SSL
 ex_data indexes and `swoole_ssl_get_error`'s text.
 
-`SSLContext` is the Rust owner itself, reference counted: `swr_v1_tls_owner_new`
-makes one and its first reference, `_clone` adds one and `_free` drops one, so a
-port, its SNI contexts and DTLS sessions, a client and a coroutine socket hold
-references rather than `std::shared_ptr`s. OpenSSL's password callback reads the passphrase
-slot the context retains. A copy (`ListenPort::dup_ssl_context`) is
-`swr_v1_tls_owner_assign`. Warnings keep upstream's text and the method name
+`TlsContext` holds a thread-local `Rc` builder. Configuration takes a checked
+exclusive loan; field reads and edits also reject overlapping borrows. Hostname
+readers receive owned copies. Ports publish independent immutable `TlsSettings`
+for concurrent TCP, SNI and DTLS handshakes. Client and coroutine socket contexts
+still create their sessions through the builder. The raw owner exports remain for
+the original-test adapters. OpenSSL's password callback reads the slot its context
+retains; `owner_assign` copies configuration and retains that password.
+Warnings keep upstream's text and the method name
 upstream's `__SW_FUNC__` printed. Upstream's renegotiation `swoole_debug` exists only
 in `SW_DEBUG` builds and is not reproduced.
 

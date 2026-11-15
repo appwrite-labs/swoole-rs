@@ -236,7 +236,7 @@ impl PortConfig {
         read: impl FnOnce(&TlsContext, &swoole_rs_tls::OwnedTlsFields) -> R,
     ) -> Option<R> {
         let context = self.ssl_context.get()?;
-        Some(read(&context, context.fields()))
+        Some(read(&context, &context.fields()))
     }
 }
 
