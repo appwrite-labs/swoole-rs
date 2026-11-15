@@ -26,8 +26,7 @@ use swoole_rs_zend::sys::{
     zend_fcall_info, zend_fcall_info_cache, zend_fiber_context, zend_fiber_status,
     zend_fiber_status_ZEND_FIBER_STATUS_DEAD, zend_fiber_status_ZEND_FIBER_STATUS_INIT,
     zend_fiber_status_ZEND_FIBER_STATUS_RUNNING, zend_fiber_status_ZEND_FIBER_STATUS_SUSPENDED,
-    zend_object, zend_observer_fiber_destroy_notify, zend_observer_fiber_init_notify,
-    zend_observer_fiber_switch_notify, zend_op, zval,
+    zend_object, zend_observer_fiber_destroy_notify, zend_op, zval,
 };
 use swoole_rs_zend::{Callable, Owned, bailout};
 
@@ -38,8 +37,28 @@ unsafe extern "C" {
     safe fn swr_zend_coroutine_save(vm: &mut swr_zend_coroutine_vm);
     /// `init_main_context`'s VM half: clears `EG(opline_before_exception)`, saves
     /// as [`swr_zend_coroutine_save`] does into `vm`, and returns
-    /// `EG(main_fiber_context)`. It follows no pointer `vm` holds and runs no PHP code.
-    safe fn swr_zend_coroutine_main(vm: &mut swr_zend_coroutine_vm) -> *mut zend_fiber_context;
+    /// `EG(main_fiber_context)`, which lives for the request. It follows no
+    /// pointer `vm` holds and runs no PHP code.
+    safe fn swr_zend_coroutine_main(vm: &mut swr_zend_coroutine_vm) -> Option<Fiber>;
+    /// The fiber observers' notice of a new fiber.
+    safe fn zend_observer_fiber_init_notify(fiber: Fiber);
+    /// The fiber observers' notice of a switch from one live fiber to another.
+    safe fn zend_observer_fiber_switch_notify(from: Fiber, to: Fiber);
+}
+
+/// A live fiber context: the main context's `EG(main_fiber_context)`, or a
+/// coroutine's mock one from [`fiber_init`] until [`fiber_try_destroy`] frees
+/// it. Only those make one.
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Fiber(NonNull<zend_fiber_context>);
+
+impl Fiber {
+    /// Set its status, as Zend's fiber observers read it.
+    fn set_status(self, status: zend_fiber_status) {
+        // SAFETY: a live fiber (the handle's invariant); a field write.
+        unsafe { (*self.0.as_ptr()).status = status };
+    }
 }
 
 /// Upstream's `INVALID_PTR`: an unusable fiber field.
@@ -83,7 +102,7 @@ pub(crate) struct Context {
     opcodes: Option<*mut zend_op>,
     /// The coroutine, which outlives its context; none for the main context.
     co: Option<host::Co>,
-    fiber: *mut zend_fiber_context,
+    fiber: Option<Fiber>,
     fiber_init_notified: bool,
     enable_scheduler: bool,
     /// The defer tasks, each kept by `defer()` until it runs or the context
@@ -109,7 +128,7 @@ impl Context {
         return_value: None,
         opcodes: None,
         co: None,
-        fiber: ptr::null_mut(),
+        fiber: None,
         fiber_init_notified: false,
         enable_scheduler: false,
         defer: Vec::new(),
@@ -159,7 +178,7 @@ macro_rules! fields {
 
 fields! {
     co, set_co: Option<host::Co>;
-    fiber, set_fiber: *mut zend_fiber_context;
+    fiber, set_fiber: Option<Fiber>;
     fiber_init_notified, set_fiber_init_notified: bool;
     enable_scheduler, set_enable_scheduler: bool;
     time_limited, set_time_limited: bool;
@@ -497,7 +516,7 @@ pub(crate) fn enter(ctx: Ctx) -> *mut swr_zend_callable {
     host::coro_hook(false, ctx.ptr().cast());
     let (handler, opcodes) =
         ctx.with(|context| (context.call.fcc.function_handler, context.opcodes));
-    if !ctx.fiber().is_null()
+    if ctx.fiber().is_some()
         && let Some(opcodes) = opcodes
     {
         let mut frame: zend_execute_data = swoole_rs_zend::zeroed();
@@ -612,9 +631,12 @@ fn fiber_init(ctx: Ctx) {
         this.function = Some(never_switched);
         this.stack = invalid.cast();
     }
-    ctx.set_fiber(fiber);
-    // SAFETY: a new fiber context.
-    unsafe { zend_observer_fiber_init_notify(fiber) };
+    // A new fiber context, which lives until `fiber_try_destroy`.
+    let Some(fiber) = NonNull::new(fiber).map(Fiber) else {
+        return;
+    };
+    ctx.set_fiber(Some(fiber));
+    zend_observer_fiber_init_notify(fiber);
 }
 
 /// A mock fiber's function (upstream's `INVALID_PTR`): nothing switches to one.
@@ -623,13 +645,14 @@ extern "C" fn never_switched(_: *mut swoole_rs_zend::sys::zend_fiber_transfer) {
 }
 
 fn fiber_try_destroy(ctx: Ctx, origin: Ctx) {
-    let fiber = ctx.fiber();
-    if fiber.is_null() {
+    let Some(fiber) = ctx.fiber() else {
         return;
-    }
-    set_status(fiber, zend_fiber_status_ZEND_FIBER_STATUS_DEAD);
+    };
+    fiber.set_status(zend_fiber_status_ZEND_FIBER_STATUS_DEAD);
     fiber_switch_try_notify(ctx, origin);
-    // SAFETY: as above.
+    ctx.set_fiber(None);
+    let fiber = fiber.0.as_ptr();
+    // SAFETY: the coroutine's live mock fiber, which no one uses after this.
     unsafe { zend_observer_fiber_destroy_notify(fiber) };
     // SAFETY: emalloc'd by `fiber_init`.
     unsafe { swr_zend_efree(fiber.cast()) };
@@ -650,31 +673,25 @@ fn fiber_status(ctx: Ctx) -> zend_fiber_status {
     }
 }
 
-/// Set a live fiber's status.
-fn set_status(fiber: *mut zend_fiber_context, status: zend_fiber_status) {
-    // SAFETY: a live context's fiber; a field write.
-    unsafe { (*fiber).status = status };
-}
-
-fn fiber_switch_notify(from: Ctx, to: Ctx) {
-    let (from_fiber, to_fiber, notified) = (from.fiber(), to.fiber(), to.fiber_init_notified());
-    set_status(from_fiber, fiber_status(from));
-    set_status(to_fiber, fiber_status(to));
+fn fiber_switch_notify(from: (Ctx, Fiber), to: (Ctx, Fiber)) {
+    let ((from, from_fiber), (to, to_fiber)) = (from, to);
+    let notified = to.fiber_init_notified();
+    from_fiber.set_status(fiber_status(from));
+    to_fiber.set_status(fiber_status(to));
     if !notified {
-        set_status(to_fiber, zend_fiber_status_ZEND_FIBER_STATUS_INIT);
+        to_fiber.set_status(zend_fiber_status_ZEND_FIBER_STATUS_INIT);
     }
-    // SAFETY: two live fibers.
-    unsafe { zend_observer_fiber_switch_notify(from_fiber, to_fiber) };
+    zend_observer_fiber_switch_notify(from_fiber, to_fiber);
     if !notified {
-        set_status(to_fiber, fiber_status(to));
+        to_fiber.set_status(fiber_status(to));
         to.set_fiber_init_notified(true);
     }
 }
 
 #[inline]
 fn fiber_switch_try_notify(from: Ctx, to: Ctx) {
-    if !from.fiber().is_null() && !to.fiber().is_null() {
-        fiber_switch_notify(from, to);
+    if let (Some(from_fiber), Some(to_fiber)) = (from.fiber(), to.fiber()) {
+        fiber_switch_notify((from, from_fiber), (to, to_fiber));
     }
 }
 

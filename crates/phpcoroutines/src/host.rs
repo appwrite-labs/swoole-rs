@@ -445,11 +445,11 @@ impl Waiter {
     /// main-stack frames; abandoned coroutine stacks remain allocated.
     pub fn wake(&self) -> Result<(), bailout::Bailout> {
         swoole_rs_zend::contain_with(|| {
-            if let Some(coroutine) = self.0.get() {
-                // SAFETY: published only while suspended in `wait`, which
-                // clears it as soon as anything resumes it. The trap encloses
-                // only this closure and the drop-free resume frames.
-                unsafe { coroutine.wake(false) };
+            // Published only while suspended in `wait`, which clears it as soon
+            // as anything resumes it. The trap encloses only this closure and
+            // the drop-free resume frames.
+            if let Some(co) = self.0.get().and_then(Coroutine::live) {
+                resume(co);
             }
         })
     }
