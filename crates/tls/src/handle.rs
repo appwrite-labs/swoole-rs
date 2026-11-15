@@ -576,14 +576,6 @@ impl Drop for OwnedBio {
 pub struct CertRef<'a>(NonNull<X509>, PhantomData<&'a X509>);
 
 impl CertRef<'_> {
-    /// # Safety
-    /// `cert` is null or a live certificate, not freed while the handle is used.
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) unsafe fn new(cert: *mut X509) -> Option<Self> {
-        NonNull::new(cert).map(|cert| Self(cert, PhantomData))
-    }
-
     #[must_use]
     pub fn as_ptr(self) -> *mut X509 {
         self.0.as_ptr()
