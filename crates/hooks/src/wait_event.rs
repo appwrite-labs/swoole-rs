@@ -162,11 +162,7 @@ pub extern "C" fn system_wait_event(fd: i32, events: i32, timeout: f64) -> i32 {
 pub fn wait_event(fd: i32, events: Events, timeout: f64) -> Option<Events> {
     let ops = EventWaitOps {
         current: native::current,
-        add: |fd, events, waiter| {
-            // SAFETY: `park`'s own waiter, the object `waiter_ready` takes, which
-            // outlives the watch it drops.
-            unsafe { Watch::add(fd, events, native::Object::Waiter(waiter)) }
-        },
+        add: |fd, events, waiter| Watch::add(fd, events, native::Object::Waiter(waiter)),
         park: native::park,
     };
     let waited = swr_v1_hook_wait_event(fd, events, timeout, &ops);
@@ -231,15 +227,13 @@ pub(crate) mod native {
     pub struct Watch(Option<EventSocket>);
 
     impl Watch {
-        /// Registers `fd` for `events`, with `object` and its fd type.
+        /// Registers `fd` for `events`, with `object` and its fd type. The readiness
+        /// handlers reach `object`'s task or waiter through the record until the watch
+        /// drops, which its `Registered` keeps live until then.
         ///
         /// # Errors
         /// The last error, when there is no reactor or it refuses the socket.
-        ///
-        /// # Safety
-        /// `object`'s task or waiter stays live until the watch is dropped: the
-        /// readiness handlers reach it through the record until then.
-        pub(crate) unsafe fn add(fd: i32, events: Events, object: Object) -> Result<Self, i32> {
+        pub(crate) fn add(fd: i32, events: Events, object: Object) -> Result<Self, i32> {
             if !swoole_event_is_available() {
                 return Err(WRONG_OPERATION);
             }

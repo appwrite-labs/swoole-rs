@@ -31,6 +31,12 @@ impl EventSocket {
         Self(record.into_socket())
     }
 
+    /// The record, which the caller owns from here.
+    #[must_use]
+    pub fn into_raw(self) -> *mut SocketRecord {
+        self.0.as_ptr()
+    }
+
     /// The record, for as long as this is borrowed.
     #[must_use]
     pub const fn socket(&self) -> Socket<'_> {
