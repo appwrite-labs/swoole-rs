@@ -13,7 +13,7 @@ use swoole_rs_memory::members::pool;
 
 // src/fatal.c.
 unsafe extern "C" {
-    safe fn swr_v1_ffi_fatal_error(code: c_int, format: *const c_char, ...);
+    fn swr_v1_ffi_fatal_error(code: c_int, format: *const c_char, ...);
     safe fn swr_v1_ffi_stdout() -> *mut c_void;
 }
 
