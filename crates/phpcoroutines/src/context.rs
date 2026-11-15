@@ -455,9 +455,11 @@ pub(crate) extern "C" fn on_close(task: CoroutineTask) {
         join.closed(ctx);
     }
     // Tasks a bailout left are dropped with it.
-    // SAFETY: `open` leaked this box as the coroutine's task, which ends here;
-    // no handle to it is used after this.
-    drop(unsafe { Box::from_raw(ctx.ptr()) });
+    // SAFETY: `open` initialized this context; its task ends here and no handle
+    // uses it again. Drop its owned fields before releasing the request allocation.
+    unsafe { ptr::drop_in_place(ctx.ptr()) };
+    // SAFETY: `open` allocated this storage with Zend's request allocator.
+    unsafe { swr_zend_efree(ctx.ptr().cast()) };
 }
 
 /// `PHPCoroutine::create`'s `Coroutine::create(main_func, args)`: the new
@@ -475,7 +477,12 @@ pub(crate) fn create(args: Args) -> c_long {
 pub(crate) fn open() -> Option<Ctx> {
     let args = ARGS.with(|slot| slot.borrow_mut().take())?;
     let co = host::current()?;
-    let mut context = Box::new(Context::EMPTY);
+    const { assert!(align_of::<Context>() <= 8, "Zend's allocator alignment") };
+    let storage =
+        swoole_rs_zend::value::emalloc(size_of::<Context>()).cast::<mem::MaybeUninit<Context>>();
+    // SAFETY: Zend returns non-null, aligned, writable request storage. It stays
+    // live until `on_close` drops the context and returns the allocation to Zend.
+    let context = unsafe { &mut *storage }.write(Context::EMPTY);
     context.co = Some(co);
     context.pcid = host::origin_cid(co);
     context.enable_scheduler = true;
@@ -493,8 +500,8 @@ pub(crate) fn open() -> Option<Ctx> {
         fci.function_name = callable.copy_value();
     }
     context.callable = args.callable;
-    // The context lives until `on_close`, which takes the box back.
-    let this = Ctx(NonNull::from(Box::leak(context)));
+    // The context lives until `on_close`, which drops it and frees its storage.
+    let this = Ctx(NonNull::from(context));
     // SAFETY: a new PHP context, the kind `on_yield`, `on_resume` and `on_close`
     // take, which lives until `on_close` frees it.
     unsafe { swoole_rs_coroutine::set_current_task(this.0.cast()) };
