@@ -68,6 +68,12 @@ pub struct ServerState {
     )]
     pub(crate) thread_manager:
         std::sync::Mutex<Option<std::sync::Arc<crate::thread_mode::ThreadManager>>>,
+    /// `Server::reactor_thread_barrier`.
+    #[cfg_attr(
+        not(all(feature = "upstream-symbols", not(test))),
+        expect(dead_code, reason = "only the hybrid's reactor threads wait on it")
+    )]
+    pub(crate) reactor_thread_barrier: swoole_rs_locks::Barrier,
 }
 
 /// A native thread entry: `void (*)(void *serv, uint64_t arg)`.
@@ -118,6 +124,7 @@ impl ServerState {
             worker_pipes: std::sync::Mutex::new(Vec::new()),
             stopping: AtomicBool::new(false),
             thread_manager: std::sync::Mutex::new(None),
+            reactor_thread_barrier: swoole_rs_locks::Barrier::new(),
         }
     }
 

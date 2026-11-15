@@ -27,7 +27,7 @@ pub(crate) struct Fields {
     config: *mut ServerConfig,
 }
 
-/// A `Server *`: the head C++ and [`Server`] read, then the reactor threads' barrier.
+/// A `Server *`: the head C++ and [`Server`] read.
 /// It owns the state it names, which it frees when it drops, so a borrowed object
 /// is a live server ([`Server::of_object`]).
 #[repr(C)]
@@ -39,7 +39,6 @@ pub(crate) struct ServerObject {
     head: Fields,
     tables: *mut crate::ServerTables,
     callbacks: *mut c_void,
-    pub(crate) reactor_thread_barrier: swoole_rs_locks::Barrier,
 }
 
 #[cfg_attr(
@@ -55,8 +54,6 @@ impl ServerObject {
             head: Fields { state, config },
             tables,
             callbacks: ServerState::callbacks_ptr(state),
-            // SAFETY: all-zero is an unset barrier, as C++'s `Barrier reactor_thread_barrier = {}`.
-            reactor_thread_barrier: unsafe { core::mem::zeroed() },
         }
     }
 }
