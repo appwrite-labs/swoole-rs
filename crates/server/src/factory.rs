@@ -326,7 +326,7 @@ impl crate::hybrid::Hybrid for Linked {
         );
         pool::set_max_request(pool_ref, max, grace);
         pool::set_start_id(pool_ref, config.worker_num.get().cast_signed());
-        pool::set_type(pool_ref, WorkerType::Task.code().into());
+        pool::set_type(pool_ref, WorkerType::Task);
         socket.is_none_or(|file| pool::listen_unix(pool_ref, file, 2048))
     }
 

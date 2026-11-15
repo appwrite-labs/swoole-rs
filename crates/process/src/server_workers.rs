@@ -99,7 +99,7 @@ impl<'a> ServerWorkers<'a> {
             if let Some(worker) = pool.worker(index) {
                 worker.join(pool);
                 worker.set_id(id);
-                worker.set_kind(crate::worker_record::WorkerType::Event.code());
+                worker.set_kind(crate::worker_record::WorkerType::Event);
             }
         }
     }
@@ -133,7 +133,7 @@ pub unsafe fn swr_v1_process_server_workers_start<'w>(
         };
         worker.join(pool);
         worker.set_id(index);
-        worker.set_kind(crate::worker_record::WorkerType::Event.code());
+        worker.set_kind(crate::worker_record::WorkerType::Event);
     }
     let first_user = view.event_count.wrapping_add(view.task_count);
     for (index, worker) in users.into_iter().enumerate().take(view.user_count) {
@@ -354,7 +354,10 @@ mod tests {
                 unsafe { Worker::new(event).id() },
                 u32::try_from(id).unwrap()
             );
-            assert_eq!(unsafe { Worker::new(event).kind() }, 2);
+            assert_eq!(
+                unsafe { Worker::new(event).kind() },
+                Some(crate::worker_record::WorkerType::Event)
+            );
         }
     }
 }

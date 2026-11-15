@@ -50,7 +50,7 @@ pub fn add_worker(serv: view::Server<'_>, worker: Worker<'static>) -> c_int {
     // `user_worker_list.size() - 1`, as a `WorkerId`.
     let id = u32::try_from(index & u32::MAX as usize).unwrap_or_default();
     worker.set_id(id);
-    worker.set_kind(WorkerType::User.code());
+    worker.set_kind(WorkerType::User);
     worker.id().cast_signed()
 }
 
@@ -139,7 +139,7 @@ pub fn create_user_workers(serv: view::Server<'_>) -> bool {
         // SAFETY: its slot in the fresh shared array of `count` records.
         unsafe { copies.wrapping_add(index).write(worker.get()) };
         create_worker(serv, worker);
-        worker.set_kind(WorkerType::User.code());
+        worker.set_kind(WorkerType::User);
     }
     serv.config().user_workers.replace(workers);
     true

@@ -196,7 +196,7 @@ pub struct Handlers {
 
 /// `Reactor::isset_*_event`'s order: the table an `events` mask names, if any.
 fn table(events: Events) -> Option<Table> {
-    if events.bits() < Events::DEFAULT.bits() || events.intersects(Events::READ) {
+    if events.reads() {
         Some(Table::Read)
     } else if events.intersects(Events::WRITE) {
         Some(Table::Write)

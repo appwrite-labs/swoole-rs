@@ -79,12 +79,7 @@ pub fn swr_v1_hook_init_reactor(mut set: impl FnMut(c_int, Events, Handler)) {
 #[unsafe(export_name = "_ZN6swoole9coroutine6System12init_reactorEPNS_7ReactorE")]
 pub extern "C" fn system_init_reactor(reactor: Running<'_>) {
     let mut set = |fd_type, events: Events, handler| {
-        swoole_rs_reactor::reactor_upstream::reactor_set_handler(
-            reactor,
-            fd_type,
-            events.bits(),
-            Some(handler),
-        );
+        swoole_rs_reactor::reactor_upstream::set_handler(reactor, fd_type, events, Some(handler));
     };
     swr_v1_hook_init_reactor(&mut set);
     set(
