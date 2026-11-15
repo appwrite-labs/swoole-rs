@@ -20,7 +20,7 @@ use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_zend::{
     Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Owned, Value, ZString, bailout,
     handlers, message,
-    sys::{_zend_bailout, IS_NULL, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, zend_string},
+    sys::{IS_NULL, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, zend_string},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -341,10 +341,9 @@ fn start_child(worker: Worker<'_>, this: &Value) {
         host::event_wait();
     }
     drop(callable);
-    swoole_rs_zend::bailout::finish();
-    // SAFETY: equivalent to exit: Zend unwinds to its bailout point; this frame
-    // owns nothing that needs a drop.
-    unsafe { _zend_bailout(c"crates/phpprocess/src/process.rs".as_ptr(), line!()) }
+    // Equivalent to exit: Zend unwinds to its bailout point; this frame owns
+    // nothing that needs a drop.
+    swoole_rs_zend::bailout::raise(Err(swoole_rs_zend::bailout::Bailout));
 }
 
 fn construct(call: &Call) {

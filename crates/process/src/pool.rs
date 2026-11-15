@@ -194,7 +194,8 @@ struct Stream {
 
 /// `swr_zend_try`'s signature: `body` is never null.
 type Trap = unsafe extern "C" fn(body: Option<Step>, arg: *mut c_void) -> c_int;
-type Raise = unsafe extern "C" fn();
+/// Zend's bailout: it leaves its caller's frame.
+type Raise = fn();
 
 /// The extension's trap and raise, which [`set_bailout`] installs.
 static BAILOUT: OnceLock<(Trap, Raise)> = OnceLock::new();
@@ -686,8 +687,7 @@ pub unsafe fn set_bailout(trap: Trap, raise: Raise) {
 /// `longjmp` crosses only this frame.
 pub fn raise_bailout() {
     if let Some(&(_, raise)) = BAILOUT.get() {
-        // SAFETY: Zend's bailout, from a frame that owns nothing.
-        unsafe { raise() };
+        raise();
     }
 }
 

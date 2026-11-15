@@ -241,11 +241,8 @@ method_table! {
 }
 
 /// `zend_bailout()`, from a frame that owns nothing.
-unsafe extern "C" fn raise() {
-    // SAFETY: Zend's bailout.
-    unsafe {
-        swoole_rs_zend::sys::_zend_bailout(c"crates/phpprocess/src/pool.rs".as_ptr(), line!())
-    };
+fn raise() {
+    swoole_rs_zend::bailout::raise(Err(swoole_rs_zend::bailout::Bailout));
 }
 
 /// `php_swoole_process_pool_minit`: register `Swoole\Process\Pool`.
