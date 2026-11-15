@@ -6,7 +6,7 @@
 use crate::{Arguments, request, thread};
 use std::{
     cell::{Cell, RefCell},
-    ffi::{CStr, CString, c_char, c_int, c_void},
+    ffi::{CStr, CString, c_int, c_void},
     marker::PhantomData,
     ptr::{self, NonNull},
     sync::{
@@ -14,13 +14,10 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
+use swoole_rs_corebase::sys::Text;
 use swoole_rs_zend::{
     Call, Minit, Owned, OwnedArray, Value, bailout,
-    sys::{
-        PHP_STREAM_FLAG_NO_CLOSE, php_stream, swr_zend_bailout_to, swr_zend_thread_enter,
-        swr_zend_thread_leave, swr_zend_thread_main_request, swr_zend_thread_request,
-        swr_zend_thread_set_argv,
-    },
+    sys::{PHP_STREAM_FLAG_NO_CLOSE, php_stream, swr_zend_bailout_to, swr_zend_thread_set_argv},
 };
 
 /// A `php://stdin`, `stdout` or `stderr` stream a thread's prologue opened,
@@ -49,7 +46,11 @@ impl Stdio {
 unsafe extern "C" {
     /// `php_stream_open_wrapper_ex(path, mode, 0, NULL, NULL)`, or none.
     #[link_name = "swr_zend_stream_open"]
-    fn stdio_open(path: *const c_char, mode: *const c_char) -> Option<Stdio>;
+    #[expect(
+        clashing_extern_declarations,
+        reason = "the same shim, ABI-identical; stream_create declares it safe in its own scope"
+    )]
+    fn stdio_open(path: Text<'_>, mode: Text<'_>) -> Option<Stdio>;
     /// `php_stream_close`.
     #[link_name = "swr_zend_stream_close"]
     safe fn stdio_close(stream: Stdio);
@@ -112,9 +113,9 @@ pub fn sw_active_thread_count() -> usize {
 /// thread-mode Server's workers: `file` as the primary script with `argv` as
 /// its arguments. `entered` and `left` (with the exit status) report its life
 /// to the owner. Nothing allocates before `entered`: a new thread's first
-/// malloc can map an arena. `_fresh` proves the thread new, PHP not yet entered.
+/// malloc can map an arena. `fresh` proves the thread new, PHP not yet entered.
 pub fn run(
-    _fresh: swoole_rs_corebase::Fresh,
+    fresh: swoole_rs_corebase::Fresh,
     file: &[u8],
     argv: Option<Arguments>,
     entered: impl FnOnce(),
@@ -125,46 +126,101 @@ pub fn run(
     // A C string, as Zend opens it.
     let text = file.split(|byte| *byte == 0).next().unwrap_or_default();
     let file = CString::new(text).unwrap_or_default();
-    // SAFETY: a new thread, before anything of PHP's runs on it (`_fresh`).
-    unsafe { swr_zend_thread_enter() };
+    let thread = Entered::enter(fresh);
     let (path, argc, argv_serialized) = request::main_request();
-    let path = path.as_ref().map_or(ptr::null(), |path| path.as_ptr());
     swoole_rs_corebase::swoole_thread_init(false);
     let mut start = Start {
         argv_serialized,
         argc,
         argv,
     };
-    // SAFETY: the shim keeps its jump buffer in C; `start` and the
-    // thread-local slot outlive the call.
-    let status = unsafe {
-        swr_zend_thread_request(
-            file.as_ptr(),
-            path,
-            argc,
-            Some(prologue),
-            Some(epilogue),
-            (&raw mut start).cast(),
-            BAILOUT.with(Cell::as_ptr),
-        )
-    };
+    let status = thread.request(&file, path.as_deref(), &mut start);
     request::stdio_close();
     drop(file);
     left(status);
-    // SAFETY: the request is over.
-    unsafe { swr_zend_thread_leave() };
+    thread.leave();
     swoole_rs_corebase::swoole_thread_clean(false);
     THREADS.fetch_sub(1, Ordering::SeqCst);
+}
+
+/// This thread inside TSRM (`swr_zend_thread_enter`) until [`Entered::leave`]: only
+/// [`Entered::enter`] makes one, from the proof that PHP never ran on the thread.
+/// Neither `Clone` nor `Send`.
+struct Entered(PhantomData<*mut ()>);
+
+impl Entered {
+    /// TSRM's state for this new thread. Each shim below is declared inside the
+    /// method whose arguments prove its precondition, so nothing else calls it.
+    fn enter(_fresh: swoole_rs_corebase::Fresh) -> Self {
+        unsafe extern "C" {
+            /// `ts_resource(0)` and the thread's PHP globals, on a new thread
+            /// (`_fresh`, which this takes).
+            safe fn swr_zend_thread_enter();
+        }
+        swr_zend_thread_enter();
+        Self(PhantomData)
+    }
+
+    /// The thread's request: `file` as the primary script, with the main
+    /// request's script path `path` and `start.argc`, which Zend keeps only
+    /// while the request runs, inside this call. The script's `zend_first_try`
+    /// runs [`prologue`] first and [`epilogue`] after, over `start`; its jump
+    /// buffer is the thread's [`BAILOUT`] while the script runs. The exit status.
+    #[expect(
+        clippy::unused_self,
+        reason = "the receiver proves the thread entered TSRM"
+    )]
+    fn request(&self, file: &CStr, path: Option<&CStr>, start: &mut Start) -> c_int {
+        type Step = extern "C" fn(&mut Start);
+        #[expect(
+            improper_ctypes,
+            reason = "C passes the `Start` pointer on to the steps it was given and never reads it"
+        )]
+        unsafe extern "C" {
+            /// A request on a thread inside TSRM (`&self`), between requests: it
+            /// keeps none of its arguments past its return.
+            safe fn swr_zend_thread_request(
+                file: Text<'_>,
+                path_translated: Option<Text<'_>>,
+                argc: c_int,
+                prologue: Step,
+                epilogue: Step,
+                context: &mut Start,
+                bailout: &Cell<*mut c_void>,
+            ) -> c_int;
+        }
+        let argc = start.argc;
+        BAILOUT.with(|bailout| {
+            swr_zend_thread_request(
+                file.into(),
+                path.map(Text::from),
+                argc,
+                prologue,
+                epilogue,
+                start,
+                bailout,
+            )
+        })
+    }
+
+    /// `ts_free_thread()`, once the thread's request is over.
+    #[expect(
+        clippy::unused_self,
+        reason = "the receiver proves the thread entered TSRM"
+    )]
+    fn leave(self) {
+        unsafe extern "C" {
+            /// Frees the TSRM state of a thread that entered (`self`, which this takes).
+            safe fn swr_zend_thread_leave();
+        }
+        swr_zend_thread_leave();
+    }
 }
 
 /// Inside the script's `zend_first_try`: `$argv` and `$argc` from the main
 /// request, the thread's arguments, and its stdio constants. A bailout is
 /// raised from here, which owns nothing.
-/// # Safety
-/// `start` is `run`'s `Start`; called in the thread's request, inside its `zend_try`.
-unsafe extern "C" fn prologue(start: *mut c_void) {
-    // SAFETY: `run`'s `Start`.
-    let start = unsafe { &mut *start.cast::<Start>() };
+extern "C" fn prologue(start: &mut Start) {
     if let Some(data) = start.argv_serialized.take() {
         // A bailout is deferred.
         let global_argv = crate::host::unserialize(&data);
@@ -192,7 +248,7 @@ unsafe extern "C" fn prologue(start: *mut c_void) {
     let opening = OPENING.lock().unwrap_or_else(PoisonError::into_inner);
     // SAFETY: the thread's request, before its script runs, with NUL-terminated
     // strings: each opens one of PHP's own stdio streams, a `Stdio`.
-    let streams = names.map(|(path, mode, _)| unsafe { stdio_open(path.as_ptr(), mode.as_ptr()) });
+    let streams = names.map(|(path, mode, _)| unsafe { stdio_open(path.into(), mode.into()) });
     drop(opening);
     let [Some(stdin), Some(stdout), Some(stderr)] = streams else {
         streams
@@ -221,7 +277,7 @@ unsafe extern "C" fn prologue(start: *mut c_void) {
 
 /// After the script: an `exit()` the thread's reactor has not seen stops it,
 /// then the thread-exit mark is cleared. It never reads its argument.
-extern "C" fn epilogue(_start: *mut c_void) {
+extern "C" fn epilogue(_start: &mut Start) {
     if swr_zend_guard_pending() != 0 {
         swoole_rs_reactor::event_api::swoole_event_bail_out();
     }
@@ -313,15 +369,18 @@ pub fn main_script() -> Option<CString> {
 /// # Safety
 /// RINIT.
 pub unsafe extern "C" fn thread_rinit() {
+    unsafe extern "C" {
+        /// In RINIT, which this function's contract is: SAPI's script path and
+        /// `argc`, and `$argv`, each live for the request, or none.
+        safe fn swr_zend_thread_main_request<'r>(
+            path: &mut Option<Text<'r>>,
+            argc: &mut c_int,
+        ) -> Option<&'r Value>;
+    }
     if main_thread() {
-        let (mut path, mut argc) = (ptr::null(), 0);
-        // SAFETY: the main thread's request.
-        let argv = unsafe { swr_zend_thread_main_request(&raw mut path, &raw mut argc) };
-        // SAFETY: SAPI's NUL-terminated script path, live for the request.
-        let path = (!path.is_null()).then(|| unsafe { CStr::from_ptr(path) });
-        // SAFETY: null or `$argv`, live for the request.
-        let argv = unsafe { Value::from_ptr(argv) };
-        request::keep(path, argv, argc);
+        let (mut path, mut argc) = (None, 0);
+        let argv = swr_zend_thread_main_request(&mut path, &mut argc);
+        request::keep(path.map(Text::get), argv, argc);
         bailout::finish();
     }
 }

@@ -23,8 +23,7 @@ use swoole_rs_zend::{
     sys::{
         PHP_VERSION_ID, ZEND_ACC_FAKE_CLOSURE, swr_zend_function_find,
         swr_zend_runtime_call_handler, swr_zend_runtime_copy_arginfo, swr_zend_runtime_disabled,
-        swr_zend_runtime_free_arginfo, swr_zend_runtime_instanceof, swr_zend_runtime_parent,
-        swr_zend_runtime_set_parent, swr_zend_runtime_unsupported, zend_class_entry,
+        swr_zend_runtime_free_arginfo, swr_zend_runtime_unsupported, zend_class_entry,
         zend_execute_data, zend_fcall_info, zend_internal_arg_info, zend_internal_function,
         zif_handler, zval,
     },
@@ -114,7 +113,7 @@ struct Table {
     /// and arginfo before its first hook this request.
     originals: HashMap<Box<[u8]>, (zif_handler, *mut zend_internal_arg_info)>,
     /// `child_class_entries`: classes given a parent, by name.
-    children: HashMap<Box<[u8]>, *mut zend_class_entry>,
+    children: HashMap<Box<[u8]>, ClassRef>,
 }
 
 #[expect(
@@ -438,33 +437,44 @@ pub(crate) fn user_func(call: &Call) -> Result<(), Bailout> {
     unsafe { bailout::call(&raw mut fci, fcc) }.map(|_| ())
 }
 
-/// `zend_lookup_class`, which may run an autoloader.
-fn lookup_class(name: &CStr) -> Result<*mut zend_class_entry, Bailout> {
-    swoole_rs_zend::lookup_class(&ZString::new(name.to_bytes()))
+/// A class Zend's class table held when [`ClassRef::lookup`] or
+/// [`crate::class`] found it: Zend frees
+/// none during a request, and RSHUTDOWN ([`finish`]) drops every one kept.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
+pub(crate) struct ClassRef(NonNull<zend_class_entry>);
+
+unsafe extern "C" {
+    /// `ce->parent`, or null.
+    safe fn swr_zend_runtime_parent(ce: ClassRef) -> Option<ClassRef>;
+    /// `ce->parent = parent`, on the main thread, which the hooks edit on.
+    safe fn swr_zend_runtime_set_parent(ce: ClassRef, parent: Option<ClassRef>);
+    /// `instanceof_function(child, parent)`.
+    safe fn swr_zend_runtime_instanceof(child: ClassRef, parent: ClassRef) -> bool;
 }
 
-fn parent(ce: *mut zend_class_entry) -> *mut zend_class_entry {
-    // SAFETY: a registered class.
-    unsafe { swr_zend_runtime_parent(ce) }
+impl ClassRef {
+    /// `zend_lookup_class`, which may run an autoloader.
+    fn lookup(name: &CStr) -> Result<Option<Self>, Bailout> {
+        swoole_rs_zend::lookup_class(&ZString::new(name.to_bytes()))
+            .map(|ce| NonNull::new(ce).map(Self))
+    }
 }
 
 /// `inherit_class(child, parent)`: make `parent` the root of `child`'s chain.
 fn inherit_class(child_name: &CStr, parent_name: &CStr) -> Result<(), Bailout> {
-    let child = lookup_class(child_name)?;
-    let parent_ce = lookup_class(parent_name)?;
-    if child.is_null() || parent_ce.is_null() {
+    let child = ClassRef::lookup(child_name)?;
+    let (Some(child), Some(parent_ce)) = (child, ClassRef::lookup(parent_name)?) else {
         return Ok(());
-    }
-    // SAFETY: registered classes.
-    if unsafe { swr_zend_runtime_instanceof(child, parent_ce) } {
+    };
+    if swr_zend_runtime_instanceof(child, parent_ce) {
         return Ok(());
     }
     let mut root = child;
-    while !parent(root).is_null() {
-        root = parent(root);
+    while let Some(parent) = swr_zend_runtime_parent(root) {
+        root = parent;
     }
-    // SAFETY: a registered class, edited on the main thread.
-    unsafe { swr_zend_runtime_set_parent(root, parent_ce) };
+    swr_zend_runtime_set_parent(root, Some(parent_ce));
     // Under the name `detach_parent` is given, which names the class as it is declared.
     table()
         .children
@@ -482,15 +492,16 @@ fn detach_parent(child: &CStr) {
 }
 
 /// `start_detach_parent_class`: cut the root grafted on last.
-fn detach_class(ce: *mut zend_class_entry) {
+fn detach_class(ce: ClassRef) {
     let mut below = ce;
-    let mut above = parent(ce);
-    while !parent(above).is_null() {
-        below = parent(below);
-        above = parent(above);
+    let Some(mut above) = swr_zend_runtime_parent(ce) else {
+        return;
+    };
+    while let Some(next) = swr_zend_runtime_parent(above) {
+        below = swr_zend_runtime_parent(below).unwrap_or(below);
+        above = next;
     }
-    // SAFETY: a registered class, edited on the main thread.
-    unsafe { swr_zend_runtime_set_parent(below, ptr::null_mut()) };
+    swr_zend_runtime_set_parent(below, None);
 }
 
 /// The library's PHP replacements of ext-sockets.

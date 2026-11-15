@@ -171,9 +171,6 @@ impl<'a> PoolCall<'a> {
     }
 }
 
-/// What the bailout trap runs: a body over the argument the trap got with it.
-pub type Step = unsafe extern "C" fn(call: *mut c_void);
-
 /// The pool's IPC state. Native creates one per pool and frees it in `destroy`.
 #[derive(Default)]
 pub struct PoolIpc {
@@ -192,13 +189,16 @@ struct Stream {
     response: Option<Vec<u8>>,
 }
 
-/// `swr_zend_try`'s signature: `body` is never null.
-type Trap = unsafe extern "C" fn(body: Option<Step>, arg: *mut c_void) -> c_int;
-/// Zend's bailout: it leaves its caller's frame.
-type Raise = fn();
+/// The extension's bailout trap and raise, which [`set_bailout`] installs.
+pub trait Bailouts: Sync {
+    /// Runs `body` inside `zend_try`: whether it bailed out.
+    fn contain(&self, body: &mut dyn FnMut()) -> bool;
+    /// Zend's bailout: it leaves its caller's frame.
+    fn raise(&self);
+}
 
-/// The extension's trap and raise, which [`set_bailout`] installs.
-static BAILOUT: OnceLock<(Trap, Raise)> = OnceLock::new();
+/// The trap and raise [`set_bailout`] installed.
+static BAILOUT: OnceLock<&'static dyn Bailouts> = OnceLock::new();
 
 /// The hook bailed out.
 pub struct Bailed;
@@ -216,33 +216,16 @@ pub(crate) fn run(native: &dyn PoolNative, hook: Hook, call: &mut PoolCall) -> R
     trapped(|| hook(native, call))
 }
 
-/// A body [`trapped`] runs, and what it returned.
-struct Body<F, R> {
-    body: Option<F>,
-    result: Option<R>,
-}
-
-unsafe extern "C" fn step<F: FnOnce() -> R, R>(call: *mut c_void) {
-    // SAFETY: `trapped` passes its body, which owns nothing a bailout skips.
-    let body = unsafe { &mut *call.cast::<Body<F, R>>() };
-    body.result = body.body.take().map(|body| body());
-}
-
 /// Runs `body` inside the bailout trap, when one is installed.
 pub(crate) fn trapped<R, F: FnOnce() -> R>(body: F) -> Result<R, Bailed> {
-    let Some(&(trap, _)) = BAILOUT.get() else {
+    let Some(bailouts) = BAILOUT.get() else {
         return Ok(body());
     };
-    let mut body = Body {
-        body: Some(body),
-        result: None,
-    };
-    // SAFETY: the trap runs `step` over `body` inside `zend_try`; no Rust frame is
-    // between its `setjmp` and `step`, whose body owns nothing a bailout skips.
-    if unsafe { trap(Some(step::<F, R>), (&raw mut body).cast()) } != 0 {
+    let (mut body, mut result) = (Some(body), None);
+    if bailouts.contain(&mut || result = body.take().map(|body| body())) {
         return Err(Bailed);
     }
-    body.result.ok_or(Bailed)
+    result.ok_or(Bailed)
 }
 
 /// One worker's loop over its pool.
@@ -673,21 +656,16 @@ impl PoolIpc {
     }
 }
 
-/// Install the extension's bailout trap (`swr_zend_try`) and its raise
-/// (`zend_bailout`).
-///
-/// # Safety
-/// `trap` runs its body inside `zend_try` and returns 1 when it bailed out;
-/// `raise` calls `zend_bailout()`. The first pair installed stays.
-pub unsafe fn set_bailout(trap: Trap, raise: Raise) {
-    _ = BAILOUT.set((trap, raise));
+/// Install the extension's bailout trap and raise: the first installed stays.
+pub fn set_bailout(bailouts: &'static dyn Bailouts) {
+    _ = BAILOUT.set(bailouts);
 }
 
 /// Raise the bailout a loop returned [`BAILED`] for. Holds nothing: the
 /// `longjmp` crosses only this frame.
 pub fn raise_bailout() {
-    if let Some(&(_, raise)) = BAILOUT.get() {
-        raise();
+    if let Some(bailouts) = BAILOUT.get() {
+        bailouts.raise();
     }
 }
 

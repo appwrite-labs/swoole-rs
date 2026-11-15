@@ -8,10 +8,7 @@ use std::{
 use swoole_rs_zend::{
     Minit,
     bailout::{self, Bailout},
-    sys::{
-        OnUpdateBool, OnUpdateLong, swr_zend_try_module_ini, zend_ini_boolean_displayer_cb,
-        zend_ini_entry_def,
-    },
+    sys::{OnUpdateBool, OnUpdateLong, zend_ini_boolean_displayer_cb, zend_ini_entry_def},
 };
 
 #[expect(
@@ -114,6 +111,16 @@ const ENTRIES: [zend_ini_entry_def; 11] = [
 /// Register the module's real INI entries, including native Zend update handlers,
 /// after making the module globals they write (`swoole_globals`, or its id under ZTS).
 pub(crate) fn register(minit: &Minit, kind: c_int) {
+    unsafe extern "C" {
+        /// `zend_register_ini_entries_ex` in a `zend_try`, 1 when it bailed out:
+        /// in MINIT, with this module's terminated definitions, which Zend copies,
+        /// and the process-lifetime globals their handlers write.
+        safe fn swr_zend_try_module_ini(
+            entries: &[zend_ini_entry_def; 11],
+            number: c_int,
+            kind: c_int,
+        ) -> c_int;
+    }
     let globals = crate::module::globals_init();
     // Zend copies each definition into an entry of its own, so these needn't outlive
     // the call (a leaked copy was a LeakSanitizer report in every process, #3650).
@@ -122,10 +129,9 @@ pub(crate) fn register(minit: &Minit, kind: c_int) {
     for entry in &mut entries[..10] {
         entry.mh_arg2 = globals;
     }
-    // SAFETY: MINIT, as the token says; the terminated definitions, which Zend
-    // copies, and the process-lifetime globals their handlers write; the native
-    // leaf traps Zend allocation/update-handler bailouts below this frame.
-    let bailed = unsafe { swr_zend_try_module_ini(entries.as_ptr(), minit.module(), kind) };
+    // MINIT, as the token says; the native leaf traps Zend allocation and
+    // update-handler bailouts below this frame.
+    let bailed = swr_zend_try_module_ini(&entries, minit.module(), kind);
     bailout::defer(if bailed == 0 { Ok(()) } else { Err(Bailout) });
     bailout::finish();
 }
