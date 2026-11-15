@@ -1,33 +1,33 @@
 # Unsafe code by crate
 
-`unsafe` blocks, fns and impls in non-test code of each crate under `crates/`, counted by `tools/budget.py` on `a799525`. ✅ marks a crate whose `lib.rs` has `#![forbid(unsafe_code)]`. The PR tier fails a pull request that raises a crate's count or drops its `forbid`.
+`unsafe` blocks, fns and impls in non-test code of each crate under `crates/`, counted by `tools/budget.py` on `44ae790`. ✅ marks a crate whose `lib.rs` has `#![forbid(unsafe_code)]`. The PR tier fails a pull request that raises a crate's count or drops its `forbid`.
 
 | crate | unsafe | forbids |
 | --- | ---: | :---: |
-| `zend` | 231 |  |
-| `server` | 207 |  |
-| `hooks` | 150 |  |
-| `tls` | 95 |  |
-| `phpcoroutines` | 89 |  |
-| `corebase` | 83 |  |
-| `reactor` | 81 |  |
-| `phpruntime` | 73 |  |
-| `coroutine` | 71 |  |
-| `ports` | 71 |  |
-| `process` | 69 |  |
-| `phpswoole` | 65 |  |
+| `zend` | 223 |  |
+| `server` | 191 |  |
+| `hooks` | 129 |  |
+| `phpcoroutines` | 83 |  |
+| `tls` | 80 |  |
+| `corebase` | 77 |  |
+| `reactor` | 75 |  |
+| `process` | 70 |  |
+| `ports` | 66 |  |
+| `phpruntime` | 65 |  |
+| `phpswoole` | 64 |  |
+| `coroutine` | 59 |  |
 | `phpstdext` | 58 |  |
 | `phphttp` | 54 |  |
 | `phpclients` | 48 |  |
 | `memory` | 46 |  |
-| `clients` | 39 |  |
-| `curl` | 37 |  |
-| `buffer` | 28 |  |
+| `clients` | 38 |  |
+| `curl` | 35 |  |
+| `buffer` | 24 |  |
 | `phpthread` | 21 |  |
 | `odbc` | 20 |  |
 | `timer` | 20 |  |
+| `phpprocess` | 19 |  |
 | `bus` | 18 |  |
-| `phpprocess` | 18 |  |
 | `ssh2` | 18 |  |
 | `utilities` | 14 |  |
 | `oracle` | 12 |  |
@@ -72,4 +72,4 @@
 | `websocket` | 0 | ✅ |
 | `zend-sys` | 0 |  |
 
-Total 1,828. Goal: the hardened runtime ([#1893](https://github.com/appwrite-labs/swoole-rs/issues/1893), [#1902](https://github.com/appwrite-labs/swoole-rs/issues/1902)).
+Total 1,719. Goal: the hardened runtime ([#1893](https://github.com/appwrite-labs/swoole-rs/issues/1893), [#1902](https://github.com/appwrite-labs/swoole-rs/issues/1902)).
