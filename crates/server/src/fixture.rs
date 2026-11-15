@@ -87,13 +87,14 @@ impl LiveServer {
         settings.gs.set((&raw mut *port_counters).cast());
         // SAFETY: the port boxed above, listed until the fixture frees it with the state;
         // no other thread reads the list.
-        let _ = unsafe { state.push_port(Box::from_raw(port)) };
+        let listed = unsafe { state.push_port(Box::from_raw(port)) };
         // The listening fd's slot holds its port, as `Server::store_listen_socket` leaves it.
         let slot = state.tables_ref().connection_at(fd).unwrap();
         slot.set_fd(fd);
         slot.set_socket(Some(socket));
         slot.set_socket_type(SOCK_TCP);
         slot.set_object(port.cast());
+        slot.listen(listed);
 
         let head = Box::new(Fields::of(&state));
         // The thread's reactor, without `swoole_event_init`'s coroutine and client handlers.

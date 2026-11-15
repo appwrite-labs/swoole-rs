@@ -594,12 +594,7 @@ impl ServerState {
     /// `Server::get_port_by_server_fd(server_fd)`: the `ListenPort` listening on
     /// `server_fd`.
     pub(crate) fn port_by_server_fd(&self, server_fd: c_int) -> Option<Port<'_>> {
-        // A listening socket's record holds its port.
-        let port = self
-            .connection(c_long::from(server_fd), Lookup::ByFd)?
-            .object();
-        // SAFETY: null, or one of the server's ports, which live as long as it.
-        unsafe { Port::from_raw(port) }
+        self.tables_ref().connection_at(server_fd)?.port()
     }
 
     /// The server's port at `raw`, or `None` when `raw` is none of them: a slot's or a

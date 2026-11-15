@@ -244,6 +244,7 @@ mod tests {
         slot.set_fd(fd);
         slot.set_socket_type(2); // SW_SOCK_UDP
         slot.set_object(core::ptr::from_ref(live.port()).cast_mut().cast());
+        slot.listen(live.server().port_at(0).unwrap());
         let client = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         client.connect(server.local_addr().unwrap()).unwrap();
         (server, client)
