@@ -127,9 +127,9 @@ fn run_worker(object: ServerObject<'_>) -> Result<(), Bailout> {
     // SAFETY: the body `start_thread` lends, live until it clears the slot once the
     // thread's script, which runs this, is over.
     let main = unsafe { *main.cast::<&dyn Fn()>() };
-    // SAFETY: the ThreadFactory's body runs the worker's loop, whose frames own
-    // nothing a bailout skips.
-    unsafe { bailout::trap_with(main) }
+    // The ThreadFactory's body runs the worker's loop, whose frames own nothing a
+    // bailout skips.
+    swoole_rs_zend::contain_with(main)
 }
 
 /// `start()` in thread mode, before the server starts: the bootstrap script,
