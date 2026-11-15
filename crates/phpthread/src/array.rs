@@ -37,7 +37,7 @@ unsafe extern "C" {
 
 /// `zend_sort`'s comparison: `ArrayItem::compare` of the two entries' items.
 extern "C" fn compare(a: &Entry, b: &Entry) -> c_int {
-    a.1.compare(&b.1)
+    a.1.compare(&b.1) as c_int
 }
 
 /// `zend_sort`'s swap of two entries (the same one is left as it is).
