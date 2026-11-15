@@ -712,10 +712,11 @@ use swoole_rs_timer::{add_fn_sec as add_fn_sec_id, del_id};
 use tests::{add_fn_sec_id, del_id};
 
 /// `Client_onPackage`: a framed package for `onReceive`; the receive loop stops
-/// once the callback left the socket waiting to close.
-/// # Safety
-/// `socket` is a client's socket, whose free is deferred past the call.
-unsafe extern "C-unwind" fn on_package(
+/// once the callback left the socket waiting to close. Only a client's protocol
+/// holds it, and [`OnPackage`](crate::protocol::OnPackage)'s contract has a caller pass that protocol's socket,
+/// a client's, whose free is deferred past the call: as for the reactor handlers
+/// below, the socket's kind is what makes its object a client.
+extern "C-unwind" fn on_package(
     _: *const Protocol,
     socket: Socket<'_>,
     package: &RecvData,
@@ -781,14 +782,6 @@ pub fn listen(client: &Client, events: u32, listener: Listener) {
 }
 
 use swoole_rs_corebase::sys::errno;
-
-/// `HttpProxy::handshake` of `buffer`, its length set to `length`: a recv just
-/// filled it to there (its free tail bounds the read).
-fn http_handshake(buffer: &mut CppString, length: usize) -> bool {
-    // SAFETY: as above.
-    unsafe { buffer.set_len(length) };
-    swoole_rs_http_ffi::proxy_accept(buffer.view())
-}
 
 use swoole_rs_corebase::set_errno;
 
@@ -1377,9 +1370,14 @@ fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblo
             if send(this, this.http_pack(shared), 0) < 0 {
                 return false;
             }
+            // `HttpProxy::handshake` of one recv into the cleared buffer.
             shared.clear();
-            let n = recv(this, shared.spare(), 0);
-            n > 0 && http_handshake(shared, n.cast_unsigned())
+            let mut n = 0;
+            shared.read_zeroed(shared.size(), |bytes| {
+                n = recv(this, bytes, 0);
+                usize::try_from(n).unwrap_or(0)
+            });
+            n > 0 && swoole_rs_http_ffi::proxy_accept(shared.view())
         })
     {
         return false;

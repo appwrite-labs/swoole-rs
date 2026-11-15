@@ -696,16 +696,10 @@ fn framed_packages_reach_on_receive_until_the_socket_waits_to_close() {
         data: c"data".as_ptr().cast(),
     };
     package.info.len = 4;
-    assert_eq!(
-        unsafe { on_package(core::ptr::null(), socket, &package) },
-        OK
-    );
+    assert_eq!(on_package(core::ptr::null(), socket, &package), OK);
     assert_eq!(taken(), ["call Receive 4"]);
     sock().output.close_wait = true;
-    assert_eq!(
-        unsafe { on_package(core::ptr::null(), socket, &package) },
-        ERR
-    );
+    assert_eq!(on_package(core::ptr::null(), socket, &package), ERR);
     free(client);
 }
 
