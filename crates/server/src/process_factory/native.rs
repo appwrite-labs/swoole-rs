@@ -7,8 +7,8 @@ use core::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::log;
 use swoole_rs_memory::members::Shm;
 use swoole_rs_process::methods::{
-    ExitStatus, kill_all_workers, swoole_set_worker_id, swoole_set_worker_pid,
-    swoole_set_worker_type, worker_report_error,
+    ExitStatus, kill_all_workers, set_worker_type, swoole_set_worker_id, swoole_set_worker_pid,
+    worker_report_error,
 };
 use swoole_rs_process::worker_record::{Worker, WorkerType};
 use swoole_rs_reactor::wait_upstream::swoole_waitpid;
@@ -141,25 +141,26 @@ fn enter_child(worker: Worker<'_>, kind: WorkerType) {
     worker.set_pid(std::process::id().cast_signed());
     swoole_set_worker_id(worker.id());
     swoole_set_worker_pid(worker.pid());
-    swoole_set_worker_type(kind as c_int);
+    set_worker_type(kind);
     // SAFETY: the server's worker this child now runs, kept until the server frees
     // its workers after the loop.
     unsafe { swoole_rs_process::worker_globals::set_current_worker(worker.raw()) };
 }
 
-/// `Factory::spawn_event_worker`: fork; the child runs the worker and exits.
-pub(crate) fn spawn_event_worker(serv: view::Server<'_>, worker: Worker<'_>) -> c_int {
+/// `Factory::spawn_event_worker`: fork; the child runs the worker and exits. The
+/// child's pid, none when the fork failed.
+pub(crate) fn spawn_event_worker(serv: view::Server<'_>, worker: Worker<'_>) -> Option<c_int> {
     let pid = swoole_rs_corebase::swoole_fork(0);
     if pid < 0 {
         let m = format_args!("failed to fork event worker");
         log::sys_warning(c"Factory::spawn_event_worker", m);
-        return -1;
+        return None;
     }
     if pid > 0 {
         worker.set_pid(pid);
         serv.registry()
             .register(pid, worker.raw().cast(), REGISTRY_EVENT);
-        return pid;
+        return Some(pid);
     }
     enter_child(worker, WorkerType::Event);
     if serv.config().mode_ == Mode::Base {
@@ -171,8 +172,9 @@ pub(crate) fn spawn_event_worker(serv: view::Server<'_>, worker: Worker<'_>) -> 
     std::process::exit(0)
 }
 
-/// `Factory::spawn_user_worker`: fork; the child runs the user's process and exits.
-pub(crate) fn spawn_user_worker(serv: view::Server<'_>, worker: Worker<'_>) -> c_int {
+/// `Factory::spawn_user_worker`: fork; the child runs the user's process and exits. The
+/// child's pid, none when the fork failed.
+pub(crate) fn spawn_user_worker(serv: view::Server<'_>, worker: Worker<'_>) -> Option<c_int> {
     let pid = swoole_rs_corebase::swoole_fork(0);
     // Both processes forget the worker's previous pid.
     if worker.pid() != 0 {
@@ -181,7 +183,7 @@ pub(crate) fn spawn_user_worker(serv: view::Server<'_>, worker: Worker<'_>) -> c
     if pid < 0 {
         let m = format_args!("failed to spawn the user worker");
         log::sys_warning(c"Factory::spawn_user_worker", m);
-        return -1;
+        return None;
     }
     if pid == 0 {
         enter_child(worker, WorkerType::User);
@@ -195,7 +197,7 @@ pub(crate) fn spawn_user_worker(serv: view::Server<'_>, worker: Worker<'_>) -> c
     }
     serv.registry()
         .register(pid, worker.raw().cast(), REGISTRY_USER);
-    pid
+    Some(pid)
 }
 
 /// `Factory::check_worker_exit_status`: a worker that exited with an error is reported

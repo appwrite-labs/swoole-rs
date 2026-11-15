@@ -14,7 +14,7 @@ use swoole_rs_corebase::net_types::PacketLength;
 
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 use swoole_rs_websocket::{
-    DecodedFrame, INVALID_CONTROL, control_invalid, decode_in_place, encode_close_into,
+    DecodedFrame, INVALID_CONTROL, Opcode, control_invalid, decode_in_place, encode_close_into,
     encode_parts, encoded_size, frame_length,
 };
 
@@ -25,8 +25,6 @@ const INCOMPLETE_PACKET: c_int =
 const FIN: u8 = 1;
 const MASK: u8 = 32;
 const HEADER_ONLY: u8 = 64;
-/// `OPCODE_CLOSE`.
-const OPCODE_CLOSE: u8 = 8;
 /// `SW_WEBSOCKET_CLOSE_CODE_LEN`, `SW_WEBSOCKET_CLOSE_REASON_MAX_LEN`.
 const CLOSE_CODE_LEN: usize = 2;
 const CLOSE_REASON_MAX_LEN: usize = 125;
@@ -216,8 +214,8 @@ pub fn pack_close_frame(buffer: &mut CppString, code: c_int, reason: &[u8], flag
         );
         return false;
     }
-    if control_invalid(OPCODE_CLOSE, FIN, CLOSE_CODE_LEN + length) {
-        control_warning(origin, OPCODE_CLOSE, 1, CLOSE_CODE_LEN + length);
+    if control_invalid(Opcode::Close.code(), FIN, CLOSE_CODE_LEN + length) {
+        control_warning(origin, Opcode::Close.code(), 1, CLOSE_CODE_LEN + length);
         return false;
     }
     let size = encoded_size(length + CLOSE_CODE_LEN, flags | FIN);
@@ -364,7 +362,7 @@ mod tests {
         const RSV1: u8 = 4;
         let mut buffer = string();
         let mut frame: Frame = unsafe { std::mem::zeroed() };
-        for opcode in [OPCODE_CLOSE, 9, 10] {
+        for opcode in [Opcode::Close.code(), 9, 10] {
             buffer.clear();
             assert!(encode(&mut buffer, b"", opcode, FIN | RSV1));
             assert!(!decode(&mut frame, &mut buffer.view().to_vec()), "{opcode}");

@@ -3,19 +3,10 @@
 //! the host parsed as an IP literal (with the numeric grammar native `inet_pton`
 //! accepts) or handed to the caller's fallback. crates/clients exports it to native
 //! code with the resolver; crates/tls binds with it.
+use crate::constants::SocketType;
 use crate::net_types::AddressStorage;
 use std::ffi::c_int;
 use std::net::{Ipv4Addr, Ipv6Addr};
-
-/// `SocketType` values from `swoole.h`.
-pub const TCP: c_int = 1;
-pub const UDP: c_int = 2;
-pub const TCP6: c_int = 3;
-pub const UDP6: c_int = 4;
-pub const UNIX_STREAM: c_int = 5;
-pub const UNIX_DGRAM: c_int = 6;
-pub const RAW: c_int = 7;
-pub const RAW6: c_int = 8;
 
 /// `SW_ERROR_*` codes `assign` returns.
 pub const NAME_TOO_LONG: c_int = swoole_rs_error::ErrorCode::SW_ERROR_NAME_TOO_LONG as c_int;
@@ -140,8 +131,8 @@ pub fn assign(
     let size = |of: usize| libc::socklen_t::try_from(of).unwrap_or(0);
     let text = c_str(host);
     let resolved = |family| literal(family, text).map_or_else(|| fallback(family), Ok);
-    match kind {
-        TCP | UDP | RAW => {
+    match SocketType::from_raw(kind) {
+        Some(kind) if kind.is_inet4() => {
             address.inet_v4.sin_family = libc::sa_family_t::try_from(libc::AF_INET).unwrap_or(0);
             address.inet_v4.sin_port = port;
             *length = size(size_of::<libc::sockaddr_in>());
@@ -152,7 +143,7 @@ pub fn assign(
             address.inet_v4.sin_addr.s_addr = u32::from_ne_bytes([a, b, c, d]);
             0
         }
-        TCP6 | UDP6 | RAW6 => {
+        Some(kind) if kind.is_inet6() => {
             address.inet_v6.sin6_family = libc::sa_family_t::try_from(libc::AF_INET6).unwrap_or(0);
             address.inet_v6.sin6_port = port;
             *length = size(size_of::<libc::sockaddr_in6>());
@@ -162,7 +153,7 @@ pub fn assign(
             }
             0
         }
-        UNIX_STREAM | UNIX_DGRAM => {
+        Some(kind) if kind.is_local() => {
             if host.len() >= SUN_PATH - 1 {
                 return NAME_TOO_LONG;
             }

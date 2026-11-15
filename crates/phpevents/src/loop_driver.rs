@@ -3,7 +3,7 @@ use crate::native::{self, has_reactor};
 use swoole_rs_zend::{E_ERROR, bailout::Bailout, sys as z};
 
 fn wait_once() -> Result<(), Bailout> {
-    if native::wait()? < 0 {
+    if !native::wait()? {
         let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
         native::system_error(code, E_ERROR, c"reactor wait failed")?;
     }

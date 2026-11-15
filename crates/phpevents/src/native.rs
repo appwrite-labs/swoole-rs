@@ -62,7 +62,7 @@ pub(crate) fn if_exit() -> Result<bool, Bailout> {
 }
 
 /// `sw_reactor()->wait()`, under a trap: callbacks may run PHP.
-pub(crate) fn wait() -> Result<c_int, Bailout> {
+pub(crate) fn wait() -> Result<bool, Bailout> {
     contain(event_api::swoole_event_run)
 }
 

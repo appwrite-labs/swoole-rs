@@ -462,7 +462,7 @@ fn rust_url(url: &[u8], accept: bool) -> (c_int, c_int, Vec<u8>, c_int, c_int) {
         Err(outcome) => unreachable!("outcome {outcome}"),
         Ok((kind, host, port)) => (
             c_int::from(accept),
-            kind,
+            kind.raw(),
             url.get(host).unwrap_or_default().to_vec(),
             port,
             0,

@@ -98,7 +98,7 @@ impl Address {
             unsafe { swr_v1_core_set_last_error(SW_ERROR_BAD_HOST_ADDR) };
             return false;
         };
-        self.assign(kind, &url[host], port, true)
+        self.assign(kind.raw(), &url[host], port, true)
     }
 
     pub(super) fn get_port(&self) -> c_int {
