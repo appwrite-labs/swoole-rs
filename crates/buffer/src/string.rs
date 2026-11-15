@@ -456,27 +456,32 @@ impl CppString {
     }
 
     pub fn print(&self, value: bool) {
+        let head = format!(
+            "String[length={},size={},offset={}]=",
+            self.length, self.size, self.offset
+        );
+        swoole_rs_corebase::sys::print(head.as_bytes());
         if value {
-            let head = format!(
-                "String[length={},size={},offset={}]=",
-                self.length, self.size, self.offset
-            );
             // `%.*s` of the content: `print` stops at a NUL, as upstream's does.
-            swoole_rs_corebase::sys::print(head.as_bytes());
             swoole_rs_corebase::sys::print(self.view());
             swoole_rs_corebase::sys::print(b"\n");
         } else {
-            // SAFETY: the arguments match the format.
-            unsafe {
-                libc::printf(
-                    c"String[length=%zu,size=%zu,offset=%jd]=%p\n".as_ptr(),
-                    self.length,
-                    self.size,
-                    self.offset,
-                    self.str,
-                )
-            };
+            swoole_rs_corebase::sys::print(format!("{}\n", pointer(self.str)).as_bytes());
         }
+    }
+}
+
+/// `%p` of `at`: `0x` and lowercase hex, and for null what this libc prints.
+fn pointer(at: *const u8) -> String {
+    if !at.is_null() {
+        return format!("{at:p}");
+    }
+    if cfg!(all(target_os = "linux", target_env = "gnu")) {
+        "(nil)".to_owned()
+    } else if cfg!(target_env = "musl") {
+        "0".to_owned()
+    } else {
+        "0x0".to_owned()
     }
 }
 
