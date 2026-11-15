@@ -17,12 +17,12 @@ use std::{
     time::Duration,
 };
 use swoole_rs_zend::{
-    E_ERROR, E_WARNING, Php,
+    E_ERROR, E_WARNING, Function, Php, Value,
     bailout::{self, Bailout},
     message,
     sys::{
-        swr_zend_coroutine_set_interrupt, swr_zend_interrupt_handler, swr_zend_vm_interrupt_raise,
-        zend_atomic_bool, zend_execute_data, zend_fcall_info_cache, zval,
+        swr_zend_coroutine_set_interrupt, swr_zend_interrupt_handler, zend_atomic_bool,
+        zend_execute_data, zend_fcall_info_cache, zval,
     },
 };
 
@@ -138,25 +138,28 @@ pub(crate) fn create(
         host::fatal_error(E_ERROR, c"invalid function call info cache");
         return Ok(ERR_INVALID);
     };
-    let handler = fcc.function_handler;
-    // SAFETY: a resolved callable's handler; every zend_function starts with
-    // its type, a byte.
-    let kind = unsafe { handler.cast::<u8>().read() };
-    if kind != context::USER_FUNCTION && kind != context::INTERNAL_FUNCTION {
+    // SAFETY: a resolved callable's handler, which it keeps live.
+    let Some(function) = (unsafe { Function::from_ptr(fcc.function_handler) }) else {
+        return Ok(ERR_INVALID);
+    };
+    let kind = function.kind();
+    if kind != Function::USER && kind != Function::INTERNAL {
         host::fatal_error(E_ERROR, message!("invalid function type {kind}").as_cstr());
         return Ok(ERR_INVALID);
     }
     if !activated() {
         activate(php)?;
     }
-    let mut args = Args {
-        fcc,
+    let args = Args {
+        fcc: *fcc,
+        opcodes: function.opcodes().filter(|_| kind == Function::USER),
         argv,
         argc,
-        callable,
+        // SAFETY: null, or the caller's live callable zval; the copy takes a reference.
+        callable: unsafe { Value::from_ptr(callable) }.map(Value::copy),
     };
     context::save_current();
-    let cid = host::create((&raw mut args).cast());
+    let cid = context::create(args);
     bailout::trapped(0)?;
     Ok(cid)
 }
@@ -252,8 +255,8 @@ unsafe extern "C" fn interrupt_function(execute_data: *mut zend_execute_data) {
             // SAFETY: Zend's previous interrupt function, over the frame Zend passed.
             unsafe { original(execute_data) };
         };
-        // SAFETY: the closure owns nothing; a bailout in it is re-raised below.
-        if unsafe { bailout::trap_with(body) }.is_err() {
+        // The closure owns nothing; a bailout in it is re-raised below.
+        if swoole_rs_zend::contain_with(body).is_err() {
             raise();
         }
     }
@@ -285,28 +288,24 @@ unsafe extern "C" {
     safe fn swr_zend_vm_interrupt() -> *mut zend_atomic_bool;
 }
 
-/// A pointer the interrupt thread may hold: `EG(vm_interrupt)` of this
-/// thread's executor, which outlives the interrupt thread.
-struct Flag(*mut zend_atomic_bool);
-// SAFETY: Zend's atomic flag, written with an atomic store.
-unsafe impl Send for Flag {}
-
 fn interrupt_start() {
     if interrupt_running() {
         return;
     }
     let running = Arc::new(AtomicBool::new(true));
-    let flag = Flag(swr_zend_vm_interrupt());
+    // SAFETY: `EG(vm_interrupt)`, a `zend_atomic_bool` (an atomic bool, as
+    // `AtomicBool` is) of this thread's executor, which outlives the interrupt
+    // thread `interrupt_stop` joins; Zend and the thread only touch it atomically.
+    let flag: &'static AtomicBool = unsafe { AtomicBool::from_ptr(swr_zend_vm_interrupt().cast()) };
     let shared = Arc::clone(&running);
     // The thread inherits a fully blocked mask (upstream's `interrupt_thread_start`).
     let spawned = swoole_rs_corebase::with_signals_blocked(|| {
         thread::Builder::new().spawn(move || {
-            let flag = flag;
             swoole_rs_corebase::signal_block_all();
             let half = Duration::from_millis(MAX_EXEC_MSEC.unsigned_abs() / 2);
             while shared.load(Ordering::Acquire) {
-                // SAFETY: the executor's flag, live until `interrupt_stop` joins.
-                unsafe { swr_zend_vm_interrupt_raise(flag.0) };
+                // `zend_atomic_bool_store(flag, 1)`.
+                flag.store(true, Ordering::SeqCst);
                 thread::sleep(half);
             }
         })

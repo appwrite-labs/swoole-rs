@@ -18,11 +18,21 @@ use swoole_rs_zend::{
     opcode::{DISPATCH, Frame, Handler, handler},
     sys::{
         ZEND_ACC_FINAL, ZEND_ACC_PRIVATE, swr_zend_autoload_forget, swr_zend_autoload_handler,
-        swr_zend_autoload_try, swr_zend_coroutine_opcodes, swr_zend_coroutine_set_autoload,
-        swr_zend_exit_status, zend_class_entry, zend_execute_data, zend_string,
+        swr_zend_autoload_try, swr_zend_coroutine_opcodes, swr_zend_exit_status, zend_class_entry,
+        zend_execute_data,
     },
 };
 use swoole_rs_zend::{method_table, sys as z};
+
+/// `zend_autoload`'s type: Zend passes the class's name and its lowercase
+/// form, both live strings, for the call.
+type Autoload = extern "C" fn(name: &ZStr, lc_name: &ZStr) -> *mut zend_class_entry;
+
+unsafe extern "C" {
+    /// `zend_autoload = handler`; returns the previous one.
+    #[link_name = "swr_zend_coroutine_set_autoload"]
+    fn set_autoload(handler: Option<Autoload>) -> swr_zend_autoload_handler;
+}
 
 static COROUTINE: Class = Class::new();
 static ITERATOR: Class = Class::new();
@@ -186,7 +196,7 @@ pub fn php_swoole_coroutine_minit(minit: &Minit) -> Result<(), Bailout> {
         };
     }
     // SAFETY: MINIT; restored never, as upstream.
-    let original = unsafe { swr_zend_coroutine_set_autoload(Some(autoload)) };
+    let original = unsafe { set_autoload(Some(autoload)) };
     ORIGINAL_AUTOLOAD.get_or_init(|| original);
 
     Ok(())
@@ -350,11 +360,13 @@ per_thread! {
 }
 
 /// Run Zend's autoloader, trapping its bailouts.
-fn load(name: *mut zend_string, lc_name: *mut zend_string) -> Result<*mut zend_class_entry, ()> {
+fn load(name: &ZStr, lc_name: &ZStr) -> Result<*mut zend_class_entry, ()> {
     let handler = ORIGINAL_AUTOLOAD.get().copied().flatten();
     let mut result = ptr::null_mut();
-    // SAFETY: Zend's autoloader, trapped in C.
-    if unsafe { swr_zend_autoload_try(handler, name, lc_name, &raw mut result) } != 0 {
+    // SAFETY: Zend's autoloader of two live names, trapped in C.
+    if unsafe { swr_zend_autoload_try(handler, name.as_ptr(), lc_name.as_ptr(), &raw mut result) }
+        != 0
+    {
         return Err(());
     }
     Ok(result)
@@ -362,10 +374,7 @@ fn load(name: *mut zend_string, lc_name: *mut zend_string) -> Result<*mut zend_c
 
 /// `swoole_coroutine_autoload`: one coroutine loads a class while others
 /// asking for it wait, instead of each running the autoloader.
-unsafe extern "C" fn autoload(
-    name: *mut zend_string,
-    lc_name: *mut zend_string,
-) -> *mut zend_class_entry {
+extern "C" fn autoload(name: &ZStr, lc_name: &ZStr) -> *mut zend_class_entry {
     let Some(current) = host::current() else {
         let Ok(ce) = load(name, lc_name) else {
             runtime::raise();
@@ -374,10 +383,8 @@ unsafe extern "C" fn autoload(
         return ce;
     };
     // SAFETY: Zend marked the class as loading.
-    unsafe { swr_zend_autoload_forget(lc_name) };
-    // SAFETY: a live string.
-    let key = unsafe { swoole_rs_zend::ZStr::from_ptr(lc_name) }
-        .map_or_else(Vec::new, |name| name.bytes().to_vec());
+    unsafe { swr_zend_autoload_forget(lc_name.as_ptr()) };
+    let key = lc_name.bytes().to_vec();
     let waiting = AUTOLOADING.with(|a| match a.borrow_mut().get_mut(&key) {
         Some(loading) if loading.owner == current => Some(None),
         Some(loading) => {
