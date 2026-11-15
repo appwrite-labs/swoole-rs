@@ -242,8 +242,6 @@ impl Headers {
     /// HPACK-encode the set into the frame after its nine header bytes, which
     /// `seal` fills in, with the session's encoder, made on first use.
     fn deflate(mut self, session: &Session) -> Self {
-        let mut deflater = session.deflater.borrow_mut();
-        let encoder = deflater.get_or_insert_with(|| Encoder::new(session.remote[0].get()));
         let Buffers {
             bytes,
             slots,
@@ -251,14 +249,16 @@ impl Headers {
         } = &mut self.buffers;
         frame.resize(FRAME_HEADER, 0);
         let field = |start: usize, length: usize| bytes.get(start..start + length);
-        encoder.encode(
-            slots.iter().map(|&(start, name, value)| {
-                let value = field(start + name, value).unwrap_or_default();
-                (field(start, name).unwrap_or_default(), value)
-            }),
-            frame,
-        );
-        drop(deflater);
+        session.with_deflater(|deflater| {
+            let encoder = deflater.get_or_insert_with(|| Encoder::new(session.remote[0].get()));
+            encoder.encode(
+                slots.iter().map(|&(start, name, value)| {
+                    let value = field(start + name, value).unwrap_or_default();
+                    (field(start, name).unwrap_or_default(), value)
+                }),
+                frame,
+            );
+        });
         self
     }
 
@@ -509,7 +509,7 @@ fn send_header_then(
 ) -> bool {
     let Some(mut headers) = build_header(ctx, session, body) else {
         // Upstream closes once the session has an encoder.
-        if session.deflater.borrow().is_some() {
+        if session.with_deflater(|deflater| deflater.is_some()) {
             set(ctx, Field::End, 1);
             close(ctx);
         }
@@ -1105,29 +1105,29 @@ fn settings(session: &Session, payload: &[u8]) -> bool {
     };
     for entry in entries {
         let (id, value) = swoole_rs_http2::sw_rs_http2_unpack_setting(entry);
-        let mut deflater = session.deflater.borrow_mut();
-        let old = if id == SETTING_HEADER_TABLE_SIZE {
-            session.remote[0].get()
-        } else {
-            0
-        };
-        let change = id == SETTING_HEADER_TABLE_SIZE && value != old && deflater.is_some();
-        let plan = sw_rs_http2_setting_plan(u32::from(id), value, old, change, true);
-        if plan.set_value
-            && let Ok(field) = usize::try_from(plan.field)
-            && let Some(setting) = session.remote.get(field)
-        {
-            setting.set(value);
-        }
-        if plan.set_window {
-            session.remote_window_size.set(value);
-        }
-        if plan.change_deflater
-            && let Some(encoder) = deflater.as_mut()
-        {
-            encoder.set_table_size(value);
-        }
-        drop(deflater);
+        session.with_deflater(|deflater| {
+            let old = if id == SETTING_HEADER_TABLE_SIZE {
+                session.remote[0].get()
+            } else {
+                0
+            };
+            let change = id == SETTING_HEADER_TABLE_SIZE && value != old && deflater.is_some();
+            let plan = sw_rs_http2_setting_plan(u32::from(id), value, old, change, true);
+            if plan.set_value
+                && let Ok(field) = usize::try_from(plan.field)
+                && let Some(setting) = session.remote.get(field)
+            {
+                setting.set(value);
+            }
+            if plan.set_window {
+                session.remote_window_size.set(value);
+            }
+            if plan.change_deflater
+                && let Some(encoder) = deflater.as_mut()
+            {
+                encoder.set_table_size(value);
+            }
+        });
     }
     // The client assumes the server has not applied its settings until it acknowledges them.
     send(
