@@ -17,10 +17,7 @@ use std::{
 use swoole_rs_corebase::sys::Text;
 use swoole_rs_zend::{
     Call, Minit, Owned, OwnedArray, Value, bailout,
-    sys::{
-        PHP_STREAM_FLAG_NO_CLOSE, php_stream, swr_zend_bailout_to, swr_zend_thread_main_request,
-        swr_zend_thread_set_argv,
-    },
+    sys::{PHP_STREAM_FLAG_NO_CLOSE, php_stream, swr_zend_bailout_to, swr_zend_thread_set_argv},
 };
 
 /// A `php://stdin`, `stdout` or `stderr` stream a thread's prologue opened,
@@ -368,15 +365,18 @@ pub fn main_script() -> Option<CString> {
 /// # Safety
 /// RINIT.
 pub unsafe extern "C" fn thread_rinit() {
+    unsafe extern "C" {
+        /// In RINIT, which this function's contract is: SAPI's script path and
+        /// `argc`, and `$argv`, each live for the request, or none.
+        safe fn swr_zend_thread_main_request<'r>(
+            path: &mut Option<Text<'r>>,
+            argc: &mut c_int,
+        ) -> Option<&'r Value>;
+    }
     if main_thread() {
-        let (mut path, mut argc) = (ptr::null(), 0);
-        // SAFETY: the main thread's request.
-        let argv = unsafe { swr_zend_thread_main_request(&raw mut path, &raw mut argc) };
-        // SAFETY: SAPI's NUL-terminated script path, live for the request.
-        let path = (!path.is_null()).then(|| unsafe { CStr::from_ptr(path) });
-        // SAFETY: null or `$argv`, live for the request.
-        let argv = unsafe { Value::from_ptr(argv) };
-        request::keep(path, argv, argc);
+        let (mut path, mut argc) = (None, 0);
+        let argv = swr_zend_thread_main_request(&mut path, &mut argc);
+        request::keep(path.map(Text::get), argv, argc);
         bailout::finish();
     }
 }
