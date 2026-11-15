@@ -66,9 +66,6 @@ struct HeapEvent(*mut AsyncEvent);
 impl HeapEvent {
     /// A copy of `event` with its own reference to the request.
     fn copy(event: &AsyncEvent) -> Self {
-        if let Some(record) = event.record() {
-            swoole_rs_corebase::swr_v1_core_resolver_retain(record);
-        }
         Self(Box::into_raw(Box::new(event.clone())))
     }
 
@@ -105,10 +102,9 @@ impl HeapEvent {
 
 impl Drop for HeapEvent {
     fn drop(&mut self) {
-        // SAFETY: the copy this owns, which nothing reaches any more.
-        let event = unsafe { Box::from_raw(self.0) };
-        // SAFETY: the copy's own reference.
-        unsafe { swoole_rs_corebase::swr_v1_core_resolver_free(event.data) };
+        // SAFETY: the copy this owns, which nothing reaches any more; dropping it
+        // drops its reference to the request.
+        core::mem::drop(unsafe { Box::from_raw(self.0) });
     }
 }
 
