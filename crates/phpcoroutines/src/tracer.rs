@@ -9,7 +9,7 @@
 //! here with the hooks removed while Rust may allocate.
 use crate::{context, host::now_us, runtime};
 use std::{
-    cell::RefCell,
+    cell::Cell,
     collections::{BTreeMap, HashMap, hash_map::DefaultHasher},
     ffi::{CStr, c_long, c_void},
     hash::BuildHasherDefault,
@@ -91,6 +91,7 @@ struct Point {
 }
 
 /// Leak detection's state (upstream's `TracerG.points`, `counters`, `backtraces`).
+#[derive(Default)]
 struct Leaks {
     points: HashMap<usize, Point, Hasher>,
     /// Live allocations per site.
@@ -110,6 +111,7 @@ struct Prof {
 }
 
 /// The profiler's state.
+#[derive(Default)]
 struct Profile {
     profiling: bool,
     /// Each coroutine's open calls.
@@ -119,8 +121,10 @@ struct Profile {
     events: Option<OwnedArray>,
 }
 
+// Each is taken out and put back (`put_back`) around code that neither yields
+// nor runs PHP, so nothing is borrowed across a call.
 per_thread! {
-    static LEAKS: RefCell<Leaks> = RefCell::new(Leaks {
+    static LEAKS: Cell<Leaks> = Cell::new(Leaks {
         points: HashMap::with_hasher(BuildHasherDefault::new()),
         counters: HashMap::with_hasher(BuildHasherDefault::new()),
         backtraces: HashMap::with_hasher(BuildHasherDefault::new()),
@@ -130,13 +134,30 @@ per_thread! {
     /// Each internal function's open blocking-detection span, by its address
     /// (upstream's `internal_function.reserved[4]`): one per internal call in
     /// progress, so a short list.
-    static SPANS: RefCell<Vec<(usize, Span)>> = RefCell::new(Vec::new());
-    static PROFILE: RefCell<Profile> = RefCell::new(Profile {
+    static SPANS: Cell<Vec<(usize, Span)>> = Cell::new(Vec::new());
+    static PROFILE: Cell<Profile> = Cell::new(Profile {
         profiling: false,
         stacks: HashMap::with_hasher(BuildHasherDefault::new()),
         root_path: Vec::new(),
         events: None,
     });
+}
+
+/// `f` of the value taken out of `cell`, which is put back after: a nested
+/// use meanwhile sees the default.
+fn put_back<T: Default, R>(cell: &Cell<T>, f: impl FnOnce(&mut T) -> R) -> R {
+    let mut value = cell.take();
+    let result = f(&mut value);
+    cell.set(value);
+    result
+}
+
+fn with_leaks<R>(f: impl FnOnce(&mut Leaks) -> R) -> R {
+    LEAKS.with(|leaks| put_back(leaks, f))
+}
+
+fn with_profile<R>(f: impl FnOnce(&mut Profile) -> R) -> R {
+    PROFILE.with(|profile| put_back(profile, f))
 }
 
 /// `swoole_thread_get_native_id()`.
@@ -210,15 +231,16 @@ fn unhook() {
     unsafe { swr_zend_mm_unobserve() };
 }
 
-impl Leaks {
-    /// `save_backtrace` of `at`, when `count` asked for it.
-    fn save_backtrace(&mut self, at: Option<Vec<u8>>) {
-        if let Some(at) = at {
-            let trace = backtrace(BACKTRACE_IGNORE_ARGS, 0);
-            self.backtraces.insert(at, ManuallyDrop::new(trace));
-        }
+/// `save_backtrace` of `at`, when `Leaks::count` asked for it: the backtrace
+/// is fetched with the state put back.
+fn save_backtrace(at: Option<Vec<u8>>) {
+    if let Some(at) = at {
+        let trace = ManuallyDrop::new(backtrace(BACKTRACE_IGNORE_ARGS, 0));
+        with_leaks(|leaks| leaks.backtraces.insert(at, trace));
     }
+}
 
+impl Leaks {
     /// One more live allocation at `at`. A site nearing the threshold without
     /// a kept backtrace is returned, for `save_backtrace`.
     fn count(&mut self, at: &[u8], new_site: bool) -> Option<Vec<u8>> {
@@ -285,31 +307,22 @@ impl Leaks {
 
 extern "C" fn on_alloc(ptr: *mut c_void, size: usize) {
     if let Some(at) = file_and_line() {
-        LEAKS.with(|leaks| {
-            let mut leaks = leaks.borrow_mut();
-            let site = leaks.add(ptr as usize, size, at);
-            leaks.save_backtrace(site);
-        });
+        save_backtrace(with_leaks(|leaks| leaks.add(ptr as usize, size, at)));
     }
 }
 
 extern "C" fn on_realloc(ptr: *mut c_void, new_ptr: *mut c_void, size: usize) {
     if let Some(at) = file_and_line() {
-        LEAKS.with(|leaks| {
-            let mut leaks = leaks.borrow_mut();
-            let site = leaks.moved(ptr as usize, new_ptr as usize, size, at);
-            leaks.save_backtrace(site);
-        });
+        save_backtrace(with_leaks(|leaks| {
+            leaks.moved(ptr as usize, new_ptr as usize, size, at)
+        }));
     }
 }
 
 extern "C" fn on_free(ptr: *mut c_void) {
-    LEAKS.with(|leaks| {
-        // Busy only while this module's own bookkeeping frees: not a user block.
-        if let Ok(mut leaks) = leaks.try_borrow_mut() {
-            leaks.freed(ptr as usize);
-        }
-    });
+    // Taken out only while this module's own bookkeeping frees, which then
+    // finds the empty default: not a user block.
+    with_leaks(|leaks| leaks.freed(ptr as usize));
 }
 
 /// `ZEND_WRITE`, trapping a bailout from an output handler.
@@ -326,10 +339,9 @@ pub(crate) fn write(text: &[u8]) -> Result<(), bailout::Bailout> {
 /// Print the sites with at least `threshold` live allocations, with their
 /// backtraces, and forget them.
 fn report(threshold: zend_long) -> Result<(), bailout::Bailout> {
-    let rounds = LEAKS.with(|leaks| leaks.borrow().rounds);
-    let leaked: Vec<(Vec<u8>, usize, usize)> = LEAKS.with(|leaks| {
+    let rounds = with_leaks(|leaks| leaks.rounds);
+    let leaked: Vec<(Vec<u8>, usize, usize)> = with_leaks(|leaks| {
         leaks
-            .borrow()
             .stats()
             .into_iter()
             .filter(|(_, (_, count))| *count as u64 >= threshold.cast_unsigned())
@@ -345,9 +357,10 @@ fn report(threshold: zend_long) -> Result<(), bailout::Bailout> {
         line.extend_from_slice(&at);
         line.push(b'\n');
         write(&line)?;
-        let trace = LEAKS.with(|leaks| {
+        // `zend_trace_to_string` of a backtrace without arguments runs no PHP
+        // code, and the allocator is unhooked.
+        let trace = with_leaks(|leaks| {
             leaks
-                .borrow()
                 .backtraces
                 .get(&at)
                 .and_then(|trace| trace_to_string(trace))
@@ -355,7 +368,7 @@ fn report(threshold: zend_long) -> Result<(), bailout::Bailout> {
         if let Some(trace) = trace {
             write(trace.bytes())?;
         }
-        LEAKS.with(|leaks| leaks.borrow_mut().points.retain(|_, point| point.at != at));
+        with_leaks(|leaks| leaks.points.retain(|_, point| point.at != at));
         write(b"\n")?;
     }
     Ok(())
@@ -374,8 +387,7 @@ fn leak_detect(call: &Call) {
         bailout.defer();
         return;
     }
-    LEAKS.with(|leaks| {
-        let mut leaks = leaks.borrow_mut();
+    with_leaks(|leaks| {
         leaks.threshold = threshold;
         leaks.rounds += 1;
     });
@@ -385,7 +397,7 @@ fn leak_detect(call: &Call) {
 // --- profiling --------------------------------------------------------------
 
 fn profiling() -> bool {
-    PROFILE.with(|profile| profile.borrow().profiling)
+    with_profile(|profile| profile.profiling)
 }
 
 /// `profiling_begin`: open a call of a user function.
@@ -393,9 +405,9 @@ fn profiling_begin(func: Func<'_>) {
     let name = func.name();
     let began_at = now_us();
     let cid = coroutine_id();
-    PROFILE.with(|profile| {
-        let mut profile = profile.borrow_mut();
-        let file_pos = file_and_line().map_or_else(Vec::new, |at| {
+    let at = file_and_line();
+    with_profile(|profile| {
+        let file_pos = at.map_or_else(Vec::new, |at| {
             at.strip_prefix(profile.root_path.as_slice())
                 .map_or(at.clone(), <[u8]>::to_vec)
         });
@@ -415,40 +427,41 @@ fn until_nul(all: &[u8]) -> &[u8] {
 /// `profiling_end`: close the coroutine's innermost call as a trace event.
 fn profiling_end() {
     let cid = coroutine_id();
-    PROFILE.with(|profile| {
-        let mut profile = profile.borrow_mut();
-        let Some(prof) = profile.stacks.get_mut(&cid).and_then(Vec::pop) else {
-            return;
-        };
-        let ended_at = now_us();
-        let mut name = prof.name;
-        if !prof.file_pos.is_empty() {
-            name.extend_from_slice(b" (");
-            name.extend_from_slice(&prof.file_pos);
-            name.push(b')');
-        }
-        let mut event = OwnedArray::default();
-        event.insert_bytes(b"name", Some(&name));
-        event.insert_bytes(b"ph", Some(b"X".as_slice()));
-        event.insert_bytes(b"cat", Some(b"FEE".as_slice()));
-        event.insert_double(b"ts", prof.began_at.c_cast::<f64>());
-        event.insert_double(b"dur", (ended_at - prof.began_at).c_cast::<f64>());
-        event.insert_long(b"pid", native_thread_id());
-        event.insert_long(b"tid", cid);
+    let Some(prof) = with_profile(|profile| profile.stacks.get_mut(&cid).and_then(Vec::pop)) else {
+        return;
+    };
+    let ended_at = now_us();
+    let mut name = prof.name;
+    if !prof.file_pos.is_empty() {
+        name.extend_from_slice(b" (");
+        name.extend_from_slice(&prof.file_pos);
+        name.push(b')');
+    }
+    let mut event = OwnedArray::default();
+    event.insert_bytes(b"name", Some(&name));
+    event.insert_bytes(b"ph", Some(b"X".as_slice()));
+    event.insert_bytes(b"cat", Some(b"FEE".as_slice()));
+    event.insert_double(b"ts", prof.began_at.c_cast::<f64>());
+    event.insert_double(b"dur", (ended_at - prof.began_at).c_cast::<f64>());
+    event.insert_long(b"pid", native_thread_id());
+    event.insert_long(b"tid", cid);
+    let event = event.into_owned();
+    with_profile(|profile| {
         if let Some(events) = profile.events.as_mut() {
-            events.push(event.into_owned());
+            events.push(event);
         }
     });
 }
 
 /// `profiling_clear`.
 fn profiling_clear() {
-    PROFILE.with(|profile| {
-        let mut profile = profile.borrow_mut();
-        profile.events = None;
+    // The events are released with the state put back.
+    let events = with_profile(|profile| {
         profile.stacks.clear();
         profile.profiling = false;
+        profile.events.take()
     });
+    drop(events);
 }
 
 fn prof_begin(call: &Call) {
@@ -456,11 +469,12 @@ fn prof_begin(call: &Call) {
         call.set_bool(false);
         return;
     }
-    PROFILE.with(|profile| {
-        let mut profile = profile.borrow_mut();
-        profile.events = Some(OwnedArray::default());
+    let events = Some(OwnedArray::default());
+    let old = with_profile(|profile| {
         profile.profiling = true;
+        mem::replace(&mut profile.events, events)
     });
+    drop(old);
     let Ok(options) = call.arity(0, 1).and_then(|()| call.array_opt(1)) else {
         call.set_bool(false);
         return;
@@ -478,24 +492,26 @@ fn prof_begin(call: &Call) {
         if path.last() != Some(&b'/') {
             path.push(b'/');
         }
-        PROFILE.with(|profile| profile.borrow_mut().root_path = path);
+        with_profile(|profile| profile.root_path = path);
     }
     call.set_bool(true);
 }
 
 /// The profile as viztracer's JSON, or `None` when it cannot be encoded.
 fn trace_json() -> Option<ZString> {
-    PROFILE.with(|profile| {
-        let profile = profile.borrow();
-        let mut json = OwnedArray::default();
+    let mut json = OwnedArray::default();
+    with_profile(|profile| {
+        // A new reference to the events: the encoding below runs with the
+        // state put back.
         json.insert_value(b"traceEvents", profile.events.as_ref()?);
-        let mut metadata = OwnedArray::default();
-        metadata.insert_bytes(b"version", Some(b"0.17.1".as_slice()));
-        metadata.insert_bool(b"overflow", false);
-        json.insert_value(b"viztracer_metadata", &metadata);
-        // An array of strings and numbers: no user code runs, so nothing bails out.
-        json.json_encode().unwrap_or_default()
-    })
+        Some(())
+    })?;
+    let mut metadata = OwnedArray::default();
+    metadata.insert_bytes(b"version", Some(b"0.17.1".as_slice()));
+    metadata.insert_bool(b"overflow", false);
+    json.insert_value(b"viztracer_metadata", &metadata);
+    // An array of strings and numbers: no user code runs, so nothing bails out.
+    json.json_encode().unwrap_or_default()
 }
 
 fn prof_end(call: &Call) {
@@ -586,12 +602,13 @@ fn blocking_begin(func: Func<'_>) {
     };
     let key = func.key();
     SPANS.with(|spans| {
-        let mut spans = spans.borrow_mut();
-        // A recursive call's span replaces the open one, as the slot's store did.
-        match spans.iter_mut().find(|(at, _)| *at == key) {
-            Some(open) => open.1 = span,
-            None => spans.push((key, span)),
-        }
+        put_back(spans, |spans| {
+            // A recursive call's span replaces the open one, as the slot's store did.
+            match spans.iter_mut().find(|(at, _)| *at == key) {
+                Some(open) => open.1 = span,
+                None => spans.push((key, span)),
+            }
+        });
     });
 }
 
@@ -604,9 +621,10 @@ fn blocking_end(func: Func<'_>) {
     }
     let key = func.key();
     let span = SPANS.with(|spans| {
-        let mut spans = spans.borrow_mut();
-        let at = spans.iter().rposition(|(open, _)| *open == key)?;
-        Some(spans.swap_remove(at).1)
+        put_back(spans, |spans| {
+            let at = spans.iter().rposition(|(open, _)| *open == key)?;
+            Some(spans.swap_remove(at).1)
+        })
     });
     let Some(span) = span else {
         return;
@@ -703,7 +721,7 @@ pub extern "C" fn tracer_rshutdown() {
     if leak_detection() {
         unhook();
     }
-    let traces = LEAKS.with(|leaks| mem::take(&mut leaks.borrow_mut().backtraces));
+    let traces = with_leaks(|leaks| mem::take(&mut leaks.backtraces));
     for trace in traces.into_values() {
         drop(ManuallyDrop::into_inner(trace));
     }
