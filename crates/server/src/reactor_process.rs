@@ -279,20 +279,16 @@ mod tests {
         steps.iter().map(|&step| Call::Step(step)).collect()
     }
 
-    /// The live server's configuration, which the test alone reads and writes.
-    #[expect(
-        clippy::mut_from_ref,
-        reason = "each use is the test's only reference to the configuration"
-    )]
-    fn config(live: &LiveServer) -> &mut crate::ServerConfig {
-        unsafe { &mut *live.state().config() }
+    /// The live server's configuration.
+    fn config(live: &LiveServer) -> &crate::ServerConfig {
+        live.server().config()
     }
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn start_listens_then_the_manager_runs_the_workers() {
-        let live = LiveServer::new();
-        config(&live).mode_ = crate::Mode::Base;
+        let mut live = LiveServer::new();
+        live.config_mut().mode_ = crate::Mode::Base;
         config(&live).have_stream_sock.set(true);
         config(&live).worker_num.set(2);
         calls();

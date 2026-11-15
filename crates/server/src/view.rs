@@ -778,20 +778,6 @@ pub fn recv_buffer(conn: Connection<'_>) -> *mut c_void {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::ffi::c_void;
-
-    impl<'a> Server<'a> {
-        /// The server's configuration, to write.
-        ///
-        /// # Safety
-        /// No other reference to the configuration is live meanwhile, and no other
-        /// thread reads the fields written (the server's own synchronization).
-        #[must_use]
-        pub(crate) unsafe fn config_mut(self) -> &'a mut ServerConfig {
-            // SAFETY: per the caller; the allocation lives as long as the server.
-            unsafe { &mut *self.fields().config }
-        }
-    }
 
     /// Only a single base-mode worker's own, undestroyed server has an event pool
     /// MSHUTDOWN may destroy: not another process's, a destroyed one, a process-mode
@@ -800,29 +786,30 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
     fn only_a_single_base_worker_that_ran_here_and_was_not_destroyed_counts() {
-        let state = crate::swr_v1_server_state_new();
-        let head = [state.cast::<c_void>(), unsafe { (*state).config() }.cast()];
-        let serv = unsafe { Server::from_raw(head.as_ptr().cast_mut().cast()) };
-        let config = unsafe { serv.config_mut() };
+        let mut server = crate::TestServer::new();
+        let config = server.config_mut();
         config.gs =
             swoole_rs_memory::members::Shm::calloc(1, size_of::<crate::shared::ServerShared>());
         config.mode_ = Mode::Base;
         config.worker_num.set(1);
         let mut factory = 0u8;
         config.factory_.set((&raw mut factory).cast());
+        let serv = server.serv();
+        let config = serv.config();
         let own = std::process::id().cast_signed();
         serv.counters().master_pid.store(own, Ordering::Relaxed);
         assert!(serv.ran_its_single_worker_here());
         serv.counters().master_pid.store(own + 1, Ordering::Relaxed);
         assert!(!serv.ran_its_single_worker_here(), "another process's");
         serv.counters().master_pid.store(own, Ordering::Relaxed);
-        let config = unsafe { serv.config_mut() };
         config.factory_.set(core::ptr::null_mut());
         assert!(!serv.ran_its_single_worker_here(), "destroyed");
         config.factory_.set((&raw mut factory).cast());
-        config.mode_ = Mode::Process;
-        assert!(!serv.ran_its_single_worker_here(), "process mode");
-        config.mode_ = Mode::Base;
+        server.config_mut().mode_ = Mode::Process;
+        assert!(!server.serv().ran_its_single_worker_here(), "process mode");
+        server.config_mut().mode_ = Mode::Base;
+        let serv = server.serv();
+        let config = serv.config();
         config.worker_num.set(2);
         assert!(
             !serv.ran_its_single_worker_here(),
@@ -833,8 +820,7 @@ mod tests {
         assert!(!serv.ran_its_single_worker_here(), "a task worker");
         config.task_worker_num.set(0);
         config.factory_.set(core::ptr::null_mut());
-        config.gs.free();
-        unsafe { crate::state::free_state(state) };
+        server.config_mut().gs.free();
     }
 
     /// A port counts its connections in the per-worker cells when it has them, one
@@ -843,25 +829,23 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
     fn port_counts_use_the_shared_worker_cells_when_present() {
         use crate::PortCounters;
-        let state = crate::swr_v1_server_state_new();
-        let head = [state.cast::<c_void>(), unsafe { (*state).config() }.cast()];
-        let serv = unsafe { Server::from_raw(head.as_ptr().cast_mut().cast()) };
+        let server = crate::TestServer::new();
+        let serv = server.serv();
         let mut counters = PortCounters::default();
         counters.connection_num.store(99, Ordering::Relaxed);
         let port = PortConfig::boxed(0);
         port.gs.set((&raw mut counters).cast());
-        unsafe { serv.config_mut() }.worker_num.set(2);
+        serv.config().worker_num.set(2);
         assert_eq!(serv.port_connections(&port), 99);
         counters.connection_nums = swoole_rs_memory::members::Shm::calloc(2, 4);
         counters.cells()[0].store(3, Ordering::Relaxed);
         counters.cells()[1].store(5, Ordering::Relaxed);
         port.gs.set((&raw mut counters).cast());
         assert_eq!(serv.port_connections(&port), 8);
-        unsafe { serv.config_mut() }.worker_num.set(0);
+        serv.config().worker_num.set(0);
         assert_eq!(serv.port_connections(&port), 0);
         port.gs.set(core::ptr::null_mut());
         assert_eq!(serv.port_connections(&port), 0, "no counters yet");
         counters.connection_nums.free();
-        unsafe { crate::state::free_state(state) };
     }
 }

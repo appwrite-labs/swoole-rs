@@ -438,9 +438,8 @@ mod tests {
 
     /// The live server in `mode`, with four event workers.
     fn live(mode: Mode) -> LiveServer {
-        let live = LiveServer::new();
-        // SAFETY: the fixture's configuration, which nothing else reads during the write.
-        let config = unsafe { &mut *live.state().config() };
+        let mut live = LiveServer::new();
+        let config = live.config_mut();
         config.mode_ = mode;
         config.worker_num.set(4);
         live
