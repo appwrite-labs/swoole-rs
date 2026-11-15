@@ -87,26 +87,21 @@ pub fn fd_clean(fd: c_int) {
     while swoole_rs_corebase::sys::recv(fd, &mut buffer, libc::MSG_DONTWAIT) > 0 {}
 }
 
-/// `Socket::accept`'s syscall into `address`, its `len` first set to upstream's
-/// capacity, `sizeof(Address)` (past the storage, so all of it is lent): the accepted fd (close-on-exec, nonblocking if `nonblock`) or -1, and whether the
-/// listening socket became close-on-exec. Without accept4 (macOS) it accepts, then
-/// makes upstream's `set_fd_option(nonblock, 1)` call, which applies to the
-/// listening socket, not the new one.
+/// `Socket::accept`'s syscall into `address` (its whole storage lent, which holds
+/// any address the kernel returns): the accepted fd (close-on-exec, nonblocking if
+/// `nonblock`) or -1, and whether the listening socket became close-on-exec. Without
+/// accept4 (macOS) it accepts, then makes upstream's `set_fd_option(nonblock, 1)`
+/// call, which applies to the listening socket, not the new one.
 #[must_use]
 pub fn fd_accept(fd: c_int, address: &mut SocketAddress, nonblock: bool) -> (c_int, bool) {
-    address.len = size_of::<SocketAddress>().c_cast::<libc::socklen_t>();
-    let length = &raw mut address.len;
-    let storage = std::ptr::from_mut(address).cast::<libc::sockaddr>();
     #[cfg(target_os = "linux")]
     {
         let flags = libc::SOCK_CLOEXEC | if nonblock { libc::SOCK_NONBLOCK } else { 0 };
-        // SAFETY: the borrowed address, `len` bytes of it.
-        (unsafe { libc::accept4(fd, storage, length, flags) }, false)
+        (address.accept4(fd, flags), false)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        // SAFETY: the borrowed address, `len` bytes of it.
-        let accepted = unsafe { libc::accept(fd, storage, length) };
+        let accepted = address.accept(fd);
         let cloexec =
             accepted >= 0 && crate::swr_v1_socket_fd_option(fd, Some(nonblock), Some(true)).ok;
         (accepted, cloexec)

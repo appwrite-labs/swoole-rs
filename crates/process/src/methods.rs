@@ -628,26 +628,20 @@ pub(crate) mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no pthread_mutexattr_setpshared")]
     fn pop_message_takes_the_oldest_message_from_the_box() {
-        use swoole_rs_memory::channel::{
-            Record, swr_v1_memory_channel_bytes, swr_v1_memory_channel_init,
-        };
         // SAFETY: a zeroed record is a pool before `create`.
         let mut pool: PoolRecord = unsafe { std::mem::zeroed() };
         let mut out = [0u8; 16];
         let none = pop_message(PoolRef::from(&mut pool), &mut out);
         assert_eq!(none, None, "no box");
-        let mut memory = vec![0u64; swr_v1_memory_channel_bytes(256, 16).div_ceil(8)];
-        let record = memory.as_mut_ptr().cast::<Record>();
-        // SAFETY: the buffer is aligned and as long as the record needs; 2 is SW_CHAN_LOCK.
-        assert_eq!(
-            unsafe { swr_v1_memory_channel_init(record, 256, 16, 2) },
-            Ok(()),
-            "a box"
-        );
-        pool.message_box = record.cast();
+        // 2 is SW_CHAN_LOCK.
+        let channel = swoole_rs_memory::SharedChannel::make(256, 16, 2);
+        pool.message_box = channel.expect("a box");
         for message in [&b"first"[..], b"second"] {
-            // SAFETY: the record made above.
-            assert!(unsafe { &*record }.push(message), "pushed");
+            let pushed = pool
+                .message_box
+                .get()
+                .is_some_and(|box_| box_.push(message));
+            assert!(pushed, "pushed");
         }
         let n = pop_message(PoolRef::from(&mut pool), &mut out);
         assert_eq!(&out[..n.unwrap_or(0)], b"first", "oldest first");
@@ -655,6 +649,7 @@ pub(crate) mod tests {
         assert_eq!(&out[..n.unwrap_or(0)], b"second", "then the next");
         let n = pop_message(PoolRef::from(&mut pool), &mut out);
         assert_eq!(n, None, "then empty");
+        pool.message_box.free();
     }
 
     #[test]

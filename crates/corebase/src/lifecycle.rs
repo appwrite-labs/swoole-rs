@@ -9,6 +9,7 @@ use crate::native;
 use std::cell::Cell;
 use std::ffi::{c_int, c_void};
 use std::ptr;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 /// `SW_FORK_EXEC`, `SW_FORK_DAEMON` and `SW_FORK_PRECHECK`.
 const FORK_EXEC: c_int = 2;
@@ -337,11 +338,7 @@ pub fn lend_thread_buffer<R>(f: impl FnOnce() -> R) -> R {
 /// The `SwooleTG` members a thread-context coroutine's thread shares with the
 /// thread that activated coroutines: the buffer stack, reactor, timer and async
 /// threads.
-#[derive(Clone, Copy)]
-pub struct SharedThread([*mut c_void; 4]);
-
-// SAFETY: plain pointers, handed to threads that run one at a time.
-unsafe impl Send for SharedThread {}
+pub struct SharedThread([AtomicPtr<c_void>; 4]);
 
 /// This thread's [`SharedThread`].
 #[must_use]
@@ -353,12 +350,16 @@ pub fn shared_thread() -> SharedThread {
             thread.timer.get(),
             thread.async_threads.get(),
         ]
+        .map(AtomicPtr::new)
     }))
 }
 
 /// Adopts `shared` in this new thread.
-pub fn adopt_shared_thread(shared: SharedThread) {
-    let [buffer_stack, reactor, timer, async_threads] = shared.0;
+pub fn adopt_shared_thread(shared: &SharedThread) {
+    let [buffer_stack, reactor, timer, async_threads] = shared
+        .0
+        .each_ref()
+        .map(|member| member.load(Ordering::Relaxed));
     with(|thread| {
         thread.buffer_stack.set(buffer_stack);
         thread.reactor.set(reactor);

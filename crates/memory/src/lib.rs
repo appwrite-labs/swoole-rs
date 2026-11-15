@@ -35,9 +35,8 @@ mod global;
 mod allocation_tests;
 
 pub use channel::{
-    ChannelInitError, swr_v1_memory_channel_bytes, swr_v1_memory_channel_close,
-    swr_v1_memory_channel_full, swr_v1_memory_channel_in, swr_v1_memory_channel_init,
-    swr_v1_memory_channel_out,
+    ChannelInitError, SharedChannel, swr_v1_memory_channel_bytes, swr_v1_memory_channel_full,
+    swr_v1_memory_channel_in, swr_v1_memory_channel_out,
 };
 
 pub mod members;
