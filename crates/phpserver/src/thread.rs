@@ -5,12 +5,13 @@ use crate::lifecycle::{Props, ServerObject};
 use std::{
     cell::Cell,
     ffi::c_void,
+    ptr,
     sync::{Arc, Mutex, PoisonError, atomic::Ordering},
 };
 use swoole_rs_corebase::Thread;
 use swoole_rs_phpthread::Arguments;
 use swoole_rs_server::Mode;
-use swoole_rs_server::thread_mode::{WorkerMain, set_worker_thread_start};
+use swoole_rs_server::thread_mode::set_worker_thread_start;
 use swoole_rs_server::{SharedServer, view};
 use swoole_rs_zend::{
     Key, Owned, OwnedArray, Value,
@@ -41,8 +42,10 @@ fn set_start(start: Option<Start>) {
 }
 
 thread_local! {
-    /// Upstream's `worker_thread_fn`: this worker thread's body.
-    static MAIN: Cell<Option<(WorkerMain, *mut c_void)>> = const { Cell::new(None) };
+    /// Upstream's `worker_thread_fn`: this worker thread's body, which
+    /// [`start_thread`] lends while the thread's script runs: the address of its
+    /// `&dyn Fn()`, null otherwise.
+    static MAIN: Cell<*const c_void> = const { Cell::new(ptr::null()) };
 }
 
 /// Thread mode, in a build with `SW_THREAD`.
@@ -117,11 +120,16 @@ fn run_worker(object: ServerObject<'_>) -> Result<(), Bailout> {
     if bailout::pending() {
         return Err(Bailout);
     }
-    match MAIN.get() {
-        // SAFETY: the body the ThreadFactory handed this thread, which is C++.
-        Some((run, context)) => unsafe { bailout::trap(run, context) },
-        None => Ok(()),
+    let main = MAIN.get();
+    if main.is_null() {
+        return Ok(());
     }
+    // SAFETY: the body `start_thread` lends, live until it clears the slot once the
+    // thread's script, which runs this, is over.
+    let main = unsafe { *main.cast::<&dyn Fn()>() };
+    // SAFETY: the ThreadFactory's body runs the worker's loop, whose frames own
+    // nothing a bailout skips.
+    unsafe { bailout::trap_with(main) }
 }
 
 /// `start()` in thread mode, before the server starts: the bootstrap script,
@@ -170,22 +178,21 @@ fn init_arguments(object: ServerObject<'_>) -> Result<Option<Arguments>, Bailout
 }
 
 /// The thread starter: this `ThreadFactory` thread becomes a PHP thread running
-/// the bootstrap script, whose `start()` runs `run(context)`.
-fn start_thread(thread: &Thread, run: WorkerMain, context: *mut c_void) {
-    MAIN.set(Some((run, context)));
+/// the bootstrap script, whose `start()` runs `run`.
+fn start_thread(fresh: swoole_rs_corebase::Fresh, thread: &Thread, run: &dyn Fn()) {
     // `prepare` set it before the server started threads; `release` clears it
     // once `start()` returned, after every thread ended.
     let start = START.lock().unwrap_or_else(PoisonError::into_inner).clone();
     let Some(start) = start else { return };
-    // SAFETY: the factory's new OS thread, before anything of PHP's.
-    unsafe {
-        swoole_rs_phpthread::run(
-            &start.bootstrap,
-            start.argv.clone(),
-            || thread.enter(),
-            |status| thread.exit(status),
-        );
-    }
+    MAIN.set(ptr::from_ref(&run).cast());
+    swoole_rs_phpthread::run(
+        fresh,
+        &start.bootstrap,
+        start.argv.clone(),
+        || thread.enter(),
+        |status| thread.exit(status),
+    );
+    MAIN.set(ptr::null());
 }
 
 /// After `start()`: the bootstrap script and arguments go.

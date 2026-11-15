@@ -38,8 +38,7 @@ pub(crate) fn create_pool(serv: view::Server<'_>) -> bool {
         on_worker_not_found: Some(worker_not_found),
         ..Hooks::default()
     };
-    // SAFETY: both hooks read the pool's server through `pool_server`, which checks it.
-    unsafe { pool_ref.install(&hooks) };
+    pool_ref.install(&hooks);
     pool_ref.set_max_wait_time(config.max_wait_time.get());
     pool_ref.set_use_msgqueue(false);
     // `create` set the pool's `worker_num` to the server's, so the pool's records

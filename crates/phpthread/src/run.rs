@@ -112,10 +112,9 @@ pub fn sw_active_thread_count() -> usize {
 /// thread-mode Server's workers: `file` as the primary script with `argv` as
 /// its arguments. `entered` and `left` (with the exit status) report its life
 /// to the owner. Nothing allocates before `entered`: a new thread's first
-/// malloc can map an arena.
-/// # Safety
-/// A new OS thread, on which nothing of PHP's has run.
-pub unsafe fn run(
+/// malloc can map an arena. `_fresh` proves the thread new, PHP not yet entered.
+pub fn run(
+    _fresh: swoole_rs_corebase::Fresh,
     file: &[u8],
     argv: Option<Arguments>,
     entered: impl FnOnce(),
@@ -126,7 +125,7 @@ pub unsafe fn run(
     // A C string, as Zend opens it.
     let text = file.split(|byte| *byte == 0).next().unwrap_or_default();
     let file = CString::new(text).unwrap_or_default();
-    // SAFETY: a new thread, before anything of PHP's runs on it.
+    // SAFETY: a new thread, before anything of PHP's runs on it (`_fresh`).
     unsafe { swr_zend_thread_enter() };
     let (path, argc, argv_serialized) = request::main_request();
     let path = path.as_ref().map_or(ptr::null(), |path| path.as_ptr());

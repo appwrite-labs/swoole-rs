@@ -343,9 +343,7 @@ pub fn stop_async_worker(serv: view::Server<'_>, worker: Worker<'_>) {
         return;
     }
     // Separated from the event worker pool.
-    // SAFETY: this process's event worker, which the server keeps until it frees its
-    // workers after the loop.
-    unsafe { worker_global_detach(worker) };
+    worker_global_detach(worker);
     unread_in_bus(serv, reactor, worker_pipe(worker, false));
     let event_worker = worker_type() == Some(WorkerType::Event);
     match config.mode_ {

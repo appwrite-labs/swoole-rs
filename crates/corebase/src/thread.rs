@@ -7,7 +7,13 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Mutex, PoisonError};
 
 /// A thread's body, run once on it.
-type Body = Box<dyn FnOnce() + Send>;
+type Body = Box<dyn FnOnce(Fresh) + Send>;
+
+/// Proof that the running thread is one [`Thread::start`] made, which nothing has
+/// yet entered PHP on: `start` hands one to the body, and entering PHP on a thread
+/// (crates/phpthread's `run`) takes it. Neither `Clone` nor `Send`, so a thread
+/// enters PHP once at most, and only the thread it was made for.
+pub struct Fresh(core::marker::PhantomData<*mut ()>);
 
 /// A started thread's handle, until it is joined or detached. Only `start` makes one,
 /// from the thread `pthread_create` started, and `pthread_join` and `pthread_detach`
@@ -49,7 +55,7 @@ pub struct Thread {
 
 /// The thread's start routine: `start` hands it the boxed body, which it owns.
 extern "C" fn entry(body: Box<Body>) -> *mut c_void {
-    body();
+    body(Fresh(core::marker::PhantomData));
     ptr::null_mut()
 }
 
@@ -59,12 +65,12 @@ impl Thread {
     }
 
     /// `start(fn)`: runs `body` on a new pthread with default attributes, which
-    /// inherits a fully blocked signal mask. A thread already started and not yet
+    /// inherits a fully blocked signal mask, handing it the thread's [`Fresh`]. A thread already started and not yet
     /// joined was `std::terminate()`; so it is here.
     ///
     /// # Errors
     /// `pthread_create`'s error; nothing started.
-    pub fn start(&self, body: impl FnOnce() + Send + 'static) -> Result<(), c_int> {
+    pub fn start(&self, body: impl FnOnce(Fresh) + Send + 'static) -> Result<(), c_int> {
         let mut handle = self.handle();
         if handle.is_some() {
             crate::fatal("a thread started twice");
@@ -148,7 +154,7 @@ mod tests {
         let release = Arc::new(AtomicBool::new(false));
         let (body_thread, body_release) = (Arc::clone(&thread), Arc::clone(&release));
         thread
-            .start(move || {
+            .start(move |_| {
                 body_thread.enter();
                 while !body_release.load(Ordering::Acquire) {
                     std::thread::yield_now();
@@ -182,7 +188,7 @@ mod tests {
                 let slot = Arc::clone(&inherited);
                 let thread = Thread::default();
                 thread
-                    .start(move || *slot.lock().unwrap() = Some(current()))
+                    .start(move |_| *slot.lock().unwrap() = Some(current()))
                     .unwrap();
                 assert_eq!(thread.join(), Ok(()));
                 let inherited = inherited.lock().unwrap().unwrap();

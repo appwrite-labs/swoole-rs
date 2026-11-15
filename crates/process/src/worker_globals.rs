@@ -154,16 +154,13 @@ pub fn worker_global_max_requests(
     swr_v1_worker_global_set(5, i64::from(limit));
 }
 
-/// Retains the exiting worker's local record without relying on C++ copying the
-/// reserved private field bytes. Shared/native resource pointers remain loans.
-///
-/// # Safety
-/// As [`set_current_worker`] for `worker`'s record, which outlives the handle.
-pub unsafe fn worker_global_detach(worker: crate::worker_record::Worker<'_>) {
+/// Retains a local copy of the exiting worker, this thread's current one, without
+/// relying on C++ copying the reserved private field bytes. Shared/native resource
+/// pointers remain loans. Upstream also sets `SwooleWG.worker = worker`, which the
+/// slot already holds: every caller stops the worker whose loop set it current.
+pub fn worker_global_detach(worker: crate::worker_record::Worker<'_>) {
     let copy = Box::into_raw(Box::new(worker.get()));
     with_globals(|globals| globals.worker_copy.store(copy, Relaxed));
-    // SAFETY: as the caller promises.
-    unsafe { set_current_worker(worker.raw()) };
 }
 
 /// Stops the current worker and releases its local detached copy.
@@ -234,6 +231,7 @@ mod tests {
             assert!(!Worker::new(&raw const worker).exceeded_max_request());
             Worker::new(&raw mut worker).add_request_count();
             assert!(Worker::new(&raw const worker).exceeded_max_request());
+            set_current_worker(&raw mut worker);
             worker_global_detach(Worker::new(&raw mut worker));
             let copy = (*thread_globals()).worker_copy.load(Relaxed);
             assert_ne!(copy, &raw mut worker);
@@ -256,7 +254,8 @@ mod tests {
     fn a_worker_stopped_during_with_current_stays_readable() {
         let mut worker: WorkerRecord = unsafe { std::mem::zeroed() };
         unsafe { Worker::new(&raw mut worker).set_id(7) };
-        unsafe { worker_global_detach(Worker::new(&raw mut worker)) };
+        unsafe { set_current_worker(&raw mut worker) };
+        worker_global_detach(unsafe { Worker::new(&raw mut worker) });
         let id = with_current(|current| {
             // Frees the detached copy and clears the slot, not the lent record.
             worker_global_stopped();
