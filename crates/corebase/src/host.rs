@@ -9,10 +9,6 @@ use std::ffi::{CStr, c_char, c_int, c_long, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicI32, Ordering};
 
-unsafe extern "C" {
-    fn snprintf(buffer: *mut c_char, size: usize, format: *const c_char, ...) -> c_int;
-}
-
 /// `backtrace`'s frame count: the one value, the length of the array it fills.
 #[cfg(any(all(target_os = "linux", target_env = "gnu"), target_vendor = "apple"))]
 #[repr(i32)]
@@ -379,36 +375,44 @@ impl DataHead {
 /// `DataHead::dump`: the fields in upstream's format, with `sw_snprintf`'s
 /// result: at most `buffer.len() - 1` bytes written, always NUL-terminated.
 pub fn datahead_dump(h: &DataHead, buffer: &mut [u8]) -> usize {
-    let size = buffer.len();
-    // SAFETY: the format's conversions match the promoted arguments one for one, and
-    // `buffer` is writable for `size` bytes.
-    let written = unsafe {
-        snprintf(
-            buffer.as_mut_ptr().cast(),
-            size,
-            c"DataHead[%p]\n{\n    long fd = %ld;\n    uint64_t msg_id = %llu;\n    uint32_t len = %d;\n    int16_t reactor_id = %d;\n    uint8_t type = %d;\n    uint8_t flags = %d;\n    uint16_t server_fd = %d;\n    uint16_t ext_flags = %d;\n    double time = %f;\n}\n".as_ptr(),
-            ptr::from_ref(h),
-            h.fd,
-            h.msg_id,
-            h.len,
-            c_int::from(h.reactor_id),
-            c_int::from(h.kind),
-            c_int::from(h.flags),
-            c_int::from(h.server_fd),
-            c_int::from(h.ext_flags),
-            h.time,
-        )
+    let text = format!(
+        "DataHead[{:p}]\n{{\n    long fd = {};\n    uint64_t msg_id = {};\n    uint32_t len = {};\n    int16_t reactor_id = {};\n    uint8_t type = {};\n    uint8_t flags = {};\n    uint16_t server_fd = {};\n    uint16_t ext_flags = {};\n    double time = {};\n}}\n",
+        ptr::from_ref(h),
+        h.fd,
+        h.msg_id,
+        // `%d` of the `uint32_t`, as upstream passes it.
+        h.len.cast_signed(),
+        h.reactor_id,
+        h.kind,
+        h.flags,
+        h.server_fd,
+        h.ext_flags,
+        fixed(h.time),
+    );
+    let Some(room) = buffer.len().checked_sub(1) else {
+        return text.len();
     };
-    if size == 0 {
-        return usize::try_from(written).unwrap_or(usize::MAX);
-    }
-    let Ok(written) = usize::try_from(written) else {
-        if let Some(first) = buffer.first_mut() {
-            *first = 0;
+    let written = text.len().min(room);
+    if let Some((to, rest)) = buffer.split_at_mut_checked(written) {
+        to.copy_from_slice(text.as_bytes().get(..written).unwrap_or_default());
+        if let Some(end) = rest.first_mut() {
+            *end = 0;
         }
-        return 0;
-    };
-    written.min(size - 1)
+    }
+    written
+}
+
+/// `%f` of `value`: six decimals, or C's `inf` and `nan` (signed as the libc signs
+/// them: BSD-derived ones print a negative NaN unsigned).
+fn fixed(value: f64) -> String {
+    if value.is_nan() {
+        let signed = value.is_sign_negative() && !cfg!(target_vendor = "apple");
+        return if signed { "-nan" } else { "nan" }.to_owned();
+    }
+    if value.is_infinite() {
+        return if value < 0.0 { "-inf" } else { "inf" }.to_owned();
+    }
+    format!("{value:.6}")
 }
 
 thread_local! {
@@ -750,7 +754,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no snprintf")]
     fn datahead_dump_formats_and_truncates_like_sw_snprintf() {
         let head = DataHead {
             fd: -7,
@@ -784,7 +787,6 @@ mod tests {
     /// Upstream `TEST(base, datahead_dump)`, its inputs and its assertion as written:
     /// `std::string::find` returns `npos` (greater than 1) when the text is absent.
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no snprintf")]
     fn base_datahead_dump() {
         let head = DataHead {
             fd: 123,
