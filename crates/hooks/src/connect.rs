@@ -14,6 +14,7 @@ use core::ffi::{c_char, c_int};
 use core::ptr::{from_ref, null, null_mut};
 use swoole_rs_reactor::Events;
 
+use swoole_rs_corebase::constants::SocketType;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::{NameResolverContext, ProxyState, log};
 use swoole_rs_http_ffi::{proxy_accept, proxy_connect};
@@ -33,9 +34,6 @@ const HTTP_PROXY_HANDSHAKE_FAILED: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_HTTP_PROXY_HANDSHAKE_FAILED as c_int;
 const HTTP_PROXY_BAD_RESPONSE: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_HTTP_PROXY_BAD_RESPONSE as c_int;
-/// `SW_SOCK_TCP` and `SW_SOCK_TCP6`.
-const SOCK_TCP: c_int = 1;
-const SOCK_TCP6: c_int = 3;
 /// What [`Connecting::set_host`] stores.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Host {
@@ -90,7 +88,7 @@ pub trait Connecting {
     /// The connect target's host.
     fn connect_host(&self) -> Vec<u8>;
     /// `reinit_sock(type)`.
-    fn reinit(&mut self, kind: c_int) -> bool;
+    fn reinit(&mut self, kind: SocketType) -> bool;
     /// `Address::assign` of the connect target, without resolving.
     fn assign(&mut self) -> bool;
     /// Resolves the connect target's name into it; false when it found none.
@@ -213,9 +211,9 @@ fn connect_host(ops: &mut impl Connecting, host: &[u8], port: c_int) -> bool {
         let target = ops.connect_host();
         let family = ops.family();
         let switch = if family == libc::AF_INET6 && is_ip(libc::AF_INET, &target) {
-            Some(SOCK_TCP)
+            Some(SocketType::SW_SOCK_TCP)
         } else if family == libc::AF_INET && is_ip(libc::AF_INET6, &target) {
-            Some(SOCK_TCP6)
+            Some(SocketType::SW_SOCK_TCP6)
         } else {
             None
         };
@@ -379,8 +377,8 @@ impl Connecting for Live<'_> {
         self.string(CONNECT_HOST)
     }
 
-    fn reinit(&mut self, kind: c_int) -> bool {
-        let Some(old) = reinit(self.socket, kind) else {
+    fn reinit(&mut self, kind: SocketType) -> bool {
+        let Some(old) = reinit(self.socket, kind.raw()) else {
             log::set_last_error(errno());
             return false;
         };
@@ -767,9 +765,9 @@ mod tests {
         fn connect_host(&self) -> Vec<u8> {
             HOST.with(|host| host.borrow().clone())
         }
-        fn reinit(&mut self, kind: c_int) -> bool {
+        fn reinit(&mut self, kind: SocketType) -> bool {
             take(
-                if kind == SOCK_TCP6 {
+                if kind == SocketType::SW_SOCK_TCP6 {
                     "reinit6"
                 } else {
                     "reinit4"

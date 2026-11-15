@@ -19,7 +19,7 @@ use swoole_rs_buffer::cpp::{
 };
 use swoole_rs_buffer::string::delete_string;
 use swoole_rs_buffer::string::with_thread_buffer;
-use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
+use swoole_rs_corebase::constants::{SW_SEND_BUFFER_SIZE, SocketType};
 use swoole_rs_corebase::{CCast, DataHead, microtime};
 use swoole_rs_reactor::{Event, Socket, what_event_want};
 use swoole_rs_timer::{del_id, delay_held};
@@ -32,7 +32,7 @@ use crate::callbacks::CallbackKind;
 use crate::hybrid::hybrid;
 use crate::port_config::{PortConfig, ReadEvent};
 use crate::reactor_handle::Reactor;
-use crate::reactor_ops::{is_dgram, out_buffer, valid};
+use crate::reactor_ops::{out_buffer, valid};
 use crate::records::{Connection, Lookup};
 use crate::view;
 
@@ -89,7 +89,7 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
     };
     let port = serv.port_by_fd(fd);
     if let Some(config) = port.map(view::Port::config)
-        && sock.read(|s| is_dgram(s.socket_type))
+        && sock.read(|s| SocketType::from_raw(s.socket_type).is_some_and(SocketType::is_dgram))
         && hybrid().dtls_read(config, sock, fd)
     {
         crate::connection::abort(serv, reactor, port, sock);

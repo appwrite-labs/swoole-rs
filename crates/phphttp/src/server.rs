@@ -107,9 +107,6 @@ struct Receive {
     coroutine: bool,
 }
 
-/// `SW_SOCK_TCP6`.
-const SOCK_TCP6: c_int = 3;
-
 // The connection's addresses and its peer's port and loopback check.
 use swoole_rs_clients::address::{
     swr_v1_clients_address_loopback, swr_v1_clients_address_port, with_host,
@@ -255,7 +252,12 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> Route {
     }
     facts.remote_port = i64::from(swr_v1_clients_address_port(&conn.info()));
     if swr_v1_clients_address_loopback(&conn.info()) {
-        facts.loopback = if conn.info().kind == SOCK_TCP6 { 6 } else { 4 };
+        facts.loopback =
+            if conn.info().kind == swoole_rs_corebase::constants::SocketType::SW_SOCK_TCP6.raw() {
+                6
+            } else {
+                4
+            };
     }
     facts.cache = can_cache_session_addr(server)
         .then(|| usize::try_from(conn.fd()).ok())
@@ -512,7 +514,11 @@ fn http2_connection(
     let conn = server.by_session(fd)?;
     let remote_port = i64::from(swr_v1_clients_address_port(&conn.info()));
     let loopback = if swr_v1_clients_address_loopback(&conn.info()) {
-        if conn.info().kind == SOCK_TCP6 { 6 } else { 4 }
+        if conn.info().kind == swoole_rs_corebase::constants::SocketType::SW_SOCK_TCP6.raw() {
+            6
+        } else {
+            4
+        }
     } else {
         0
     };

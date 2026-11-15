@@ -96,6 +96,66 @@ pub enum SocketType {
     SW_SOCK_RAW6 = 8,
 }
 
+impl SocketType {
+    /// The type `raw` (an `SW_SOCK_*` without flags) names, if any.
+    #[must_use]
+    pub const fn from_raw(raw: core::ffi::c_int) -> Option<Self> {
+        Some(match raw {
+            1 => Self::SW_SOCK_TCP,
+            2 => Self::SW_SOCK_UDP,
+            3 => Self::SW_SOCK_TCP6,
+            4 => Self::SW_SOCK_UDP6,
+            5 => Self::SW_SOCK_UNIX_STREAM,
+            6 => Self::SW_SOCK_UNIX_DGRAM,
+            7 => Self::SW_SOCK_RAW,
+            8 => Self::SW_SOCK_RAW6,
+            _ => return None,
+        })
+    }
+
+    /// The `int` native code stores.
+    #[must_use]
+    pub const fn raw(self) -> core::ffi::c_int {
+        self as core::ffi::c_int
+    }
+
+    /// `Socket::is_stream(type)`: TCP, TCP6 or a Unix stream.
+    #[must_use]
+    pub const fn is_stream(self) -> bool {
+        matches!(
+            self,
+            Self::SW_SOCK_TCP | Self::SW_SOCK_TCP6 | Self::SW_SOCK_UNIX_STREAM
+        )
+    }
+
+    /// `Socket::is_dgram(type)`: UDP, UDP6 or a Unix datagram.
+    #[must_use]
+    pub const fn is_dgram(self) -> bool {
+        matches!(
+            self,
+            Self::SW_SOCK_UDP | Self::SW_SOCK_UDP6 | Self::SW_SOCK_UNIX_DGRAM
+        )
+    }
+
+    /// TCP over IPv4 or IPv6.
+    #[must_use]
+    pub const fn is_tcp(self) -> bool {
+        matches!(self, Self::SW_SOCK_TCP | Self::SW_SOCK_TCP6)
+    }
+
+    /// UDP over IPv4 or IPv6.
+    #[must_use]
+    pub const fn is_udp(self) -> bool {
+        matches!(self, Self::SW_SOCK_UDP | Self::SW_SOCK_UDP6)
+    }
+
+    /// A Unix stream or datagram socket.
+    #[must_use]
+    pub const fn is_local(self) -> bool {
+        matches!(self, Self::SW_SOCK_UNIX_STREAM | Self::SW_SOCK_UNIX_DGRAM)
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(
@@ -343,3 +403,39 @@ pub const SW_IPC_MAX_SIZE: u32 = 2048;
 pub const SW_IPC_MAX_SIZE: u32 = 8192;
 /// `SW_IPC_MAX_SIZE - sizeof(DataHead)`: an `EventData`'s payload.
 pub const SW_IPC_BUFFER_SIZE: usize = SW_IPC_MAX_SIZE as usize - 40;
+
+#[cfg(test)]
+mod tests {
+    use super::SocketType;
+
+    #[test]
+    fn socket_types_round_trip_and_classify() {
+        for raw in 1..=8 {
+            assert_eq!(SocketType::from_raw(raw).map(SocketType::raw), Some(raw));
+        }
+        assert_eq!(SocketType::from_raw(0), None);
+        assert_eq!(SocketType::from_raw(2 | 512), None, "flags are not a type");
+        let classes = |kind: SocketType| {
+            [
+                kind.is_stream(),
+                kind.is_dgram(),
+                kind.is_tcp(),
+                kind.is_udp(),
+                kind.is_local(),
+            ]
+        };
+        assert_eq!(
+            classes(SocketType::SW_SOCK_TCP6),
+            [true, false, true, false, false]
+        );
+        assert_eq!(
+            classes(SocketType::SW_SOCK_UDP),
+            [false, true, false, true, false]
+        );
+        assert_eq!(
+            classes(SocketType::SW_SOCK_UNIX_DGRAM),
+            [false, true, false, false, true]
+        );
+        assert_eq!(classes(SocketType::SW_SOCK_RAW), [false; 5]);
+    }
+}

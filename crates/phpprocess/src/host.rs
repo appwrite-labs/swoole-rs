@@ -32,9 +32,6 @@ unsafe extern "C" {
     safe fn php_swoole_convert_to_fd(value: Option<&Value>) -> c_int;
 }
 
-/// `SW_SOCK_UNIX_STREAM` and `SW_SOCK_UNIX_DGRAM`.
-const SOCK_UNIX_STREAM: c_int = 5;
-const SOCK_UNIX_DGRAM: c_int = 6;
 /// `SW_ERROR_WRONG_OPERATION`.
 const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
 
@@ -139,11 +136,11 @@ pub(crate) fn event_wait() {
 /// `php_swoole_dup_socket(fd, SW_SOCK_UNIX_STREAM or _DGRAM)`.
 pub(crate) fn dup_socket(fd: c_int, stream: bool) -> Option<Owned> {
     let kind = if stream {
-        SOCK_UNIX_STREAM
+        swoole_rs_corebase::constants::SocketType::SW_SOCK_UNIX_STREAM
     } else {
-        SOCK_UNIX_DGRAM
+        swoole_rs_corebase::constants::SocketType::SW_SOCK_UNIX_DGRAM
     };
-    swoole_rs_phpclients::dup(fd, kind)
+    swoole_rs_phpclients::dup(fd, kind.raw())
 }
 
 /// `php_swoole_convert_to_fd(value)`: the fd, or `None` for a value that names none.

@@ -6,6 +6,7 @@
 use core::ffi::{c_int, c_long, c_void};
 
 use swoole_rs_corebase::DataHead;
+use swoole_rs_corebase::constants::SocketType;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_reactor::{Event, Running, SocketRecord};
 
@@ -83,9 +84,7 @@ impl DgramPacket {
     /// The session a datagram is dispatched under: an IPv4 sender's address, else
     /// the CRC32 of its host text.
     pub(crate) fn sender(&self) -> c_long {
-        /// `SW_SOCK_UDP`.
-        const SOCK_UDP: c_int = 2;
-        if self.socket_type == SOCK_UDP {
+        if self.socket_type == SocketType::SW_SOCK_UDP.raw() {
             let ip = self.socket_addr.addr.v4().sin_addr.s_addr;
             return c_long::from(ip.cast_signed());
         }
