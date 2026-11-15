@@ -53,6 +53,10 @@ mod linked;
     not(test),
     deny(clippy::undocumented_unsafe_blocks)
 )]
+use std::cell::RefCell;
+thread_local! { static STATE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) }; }
+struct Owner { queue: std::cell::RefCell<Vec<u8>> }
+fn owner() -> Owner { Owner { queue: RefCell::default() } }
 '''
 
 
@@ -81,6 +85,8 @@ class Budget(unittest.TestCase):
                 'fakes': {'one': 2},
                 # narrow's two; spanned's attribute belongs to a test module.
                 'casts': {'one': 2},
+                # STATE and queue; the import and the constructors name no type.
+                'cells': {'one': 2},
             })
 
     def test_a_crate_that_forbids_unsafe_code_counts_zero_unforbidden(self):
