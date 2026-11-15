@@ -496,7 +496,8 @@ pub fn logger_op(op: swoole_rs_corebase::native::LoggerOp) {
     use swoole_rs_utilities::{Logger, process_logger};
     match op {
         LoggerOp::New => {
-            let logger = Logger::new(swr_logger_host);
+            let stdout = swoole_rs_corebase::swr_v1_core_stdout().cast();
+            let logger = Logger::new(stdout, swr_logger_host);
             LOGGER.store(Box::into_raw(Box::new(logger)), Relaxed);
             swoole_rs_corebase::swr_v1_core_set_logger(LOGGER.as_ptr().cast());
         }

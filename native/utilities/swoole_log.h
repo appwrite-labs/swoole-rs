@@ -40,7 +40,7 @@ namespace swoole {
 // The state and operations are Rust's (crates/utilities/src/logger.rs).
 class Logger {
   private:
-    SwrLogger *logger = swr_v1_logger_new(swr_logger_host);
+    SwrLogger *logger = swr_v1_logger_new(stdout, swr_logger_host);
 
   public:
     Logger() = default;
@@ -54,6 +54,9 @@ class Logger {
     }
     void reopen() {
         swr_v1_logger_reopen(logger);
+    }
+    void set_stream(FILE *stream) {
+        swr_v1_logger_set_stream(logger, stream);
     }
     /**
      * Only the `put` and `reopen` functions are thread-safe,
