@@ -94,21 +94,23 @@ pub const THREAD: u32 = 4;
 
 /// A coroutine's entry over the creator's data, which only [`Entry::new`] makes:
 /// the context it is handed to runs it once, on its own stack or thread.
-/// The data travels as its exposed address, so an entry may move to the coroutine's
-/// thread: only that thread uses it, while it holds the baton.
-pub struct Entry(Routine, usize);
+pub struct Entry(Routine, *mut c_void);
+
+// SAFETY: only the coroutine's thread uses the creator's entry and data, while
+// it holds the baton, so no two threads touch the data at once.
+unsafe impl Send for Entry {}
 
 impl Entry {
     /// # Safety
     /// `routine` takes `data`: calling it once with it is sound.
-    pub unsafe fn new(routine: Routine, data: *mut c_void) -> Self {
-        Self(routine, data.expose_provenance())
+    pub const unsafe fn new(routine: Routine, data: *mut c_void) -> Self {
+        Self(routine, data)
     }
 
     /// Runs the entry; this takes it, so it runs once.
     pub(crate) fn run(self) {
         // SAFETY: the routine and data `new`'s caller paired, called once.
-        unsafe { (self.0)(core::ptr::with_exposed_provenance_mut(self.1)) };
+        unsafe { (self.0)(self.1) };
     }
 }
 
