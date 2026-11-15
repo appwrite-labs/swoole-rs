@@ -23,8 +23,8 @@ pub mod minit;
 use std::sync::atomic::{AtomicBool, Ordering};
 use swoole_rs_odbc_sys::{
     RETCODE, SQLCHAR, SQLConnect, SQLDescribeCol, SQLDriverConnect, SQLEndTran, SQLExecDirect,
-    SQLExecute, SQLGetData, SQLHANDLE, SQLHDBC, SQLHSTMT, SQLHWND, SQLINTEGER, SQLLEN, SQLPOINTER,
-    SQLPrepare, SQLPutData, SQLRETURN, SQLSMALLINT, SQLULEN, SQLUSMALLINT,
+    SQLGetData, SQLHANDLE, SQLHDBC, SQLHSTMT, SQLHWND, SQLINTEGER, SQLLEN, SQLPOINTER, SQLPrepare,
+    SQLPutData, SQLRETURN, SQLSMALLINT, SQLULEN, SQLUSMALLINT,
 };
 
 /// A connection handle the driver handed over: live, as ODBC's own calls
@@ -36,11 +36,23 @@ use swoole_rs_odbc_sys::{
 #[derive(Clone, Copy)]
 pub struct Connection(SQLHDBC);
 
-// ODBC's own declaration of `SQLDisconnect`, typed as the handle it takes. It
-// reads no bound buffer and runs no callback.
+/// A prepared statement handle the driver handed over: live, with the parameter
+/// buffers it bound live, as ODBC's own calls require, for as long as the value is
+/// used. [`swoole_odbc_SQLExecute`] takes one in place of the `SQLHSTMT` it has the
+/// layout of. Nothing here makes one, and, as [`Connection`], it reaches the pool only
+/// through [`offload`].
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Statement(SQLHSTMT);
+
+// ODBC's own declarations of `SQLDisconnect` and `SQLExecute`, typed as the handle
+// each takes: the first reads no bound buffer, the second only the ones the statement
+// bound, which its type keeps live; neither runs a callback.
 unsafe extern "C" {
     #[link_name = "SQLDisconnect"]
     safe fn disconnect(connection: Connection) -> SQLRETURN;
+    #[link_name = "SQLExecute"]
+    safe fn execute(statement: Statement) -> SQLRETURN;
 }
 
 /// `SQL_ERROR`.
@@ -148,13 +160,11 @@ pub unsafe extern "C" fn swoole_odbc_SQLPrepare(
     offload(|| unsafe { SQLPrepare(statement, text, length) })
 }
 
-/// `swoole_odbc_SQLExecute`.
-/// # Safety
-/// As `SQLExecute`.
+/// `swoole_odbc_SQLExecute`: `SQLExecute`'s whole contract is the live statement the
+/// type carries.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_odbc_SQLExecute(statement: SQLHSTMT) -> SQLRETURN {
-    // SAFETY: per the caller.
-    offload(|| unsafe { SQLExecute(statement) })
+pub extern "C" fn swoole_odbc_SQLExecute(statement: Statement) -> SQLRETURN {
+    offload(|| execute(statement))
 }
 
 /// `swoole_odbc_SQLPutData`.
