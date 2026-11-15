@@ -11,6 +11,7 @@ use core::marker::PhantomData;
 use core::mem::MaybeUninit;
 use std::io::{IoSlice, IoSliceMut};
 use swoole_rs_corebase::sys::ReadSlot;
+use swoole_rs_reactor::Events;
 use swoole_rs_reactor::{
     Drain, Fill, ReactorIov, Socket, swr_v1_reactor_iov_view, swr_v1_socket_iov_owned,
 };
@@ -301,7 +302,7 @@ impl<V, T: FnMut(&mut V) -> isize, R: FnMut(&V) -> usize> Transfer<'_, V, T, R> 
 /// `network::Socket` call over `vector` and `remaining` its remaining count.
 pub(crate) fn vector_all<V>(
     socket: Co,
-    event: u32,
+    event: Events,
     vector: &mut V,
     transfer: impl FnMut(&mut V) -> isize,
     remaining: impl FnMut(&V) -> usize,
@@ -355,7 +356,6 @@ mod tests {
     use crate::co_io::test_host::{ON_SUSPEND, TIMER_OK, install, log, take};
     use crate::co_socket::Co;
     use crate::co_socket::TestSocket;
-    use crate::shutdown::{READ, WRITE};
     use crate::socket_wait::ready;
     use std::cell::RefCell;
     use std::collections::VecDeque;
@@ -421,7 +421,7 @@ mod tests {
     /// timer can't be added, 3 the wait wakes with an error. Returns the result,
     /// the socket's error, the effects in order and the vector's remaining count.
     fn run(
-        event: u32,
+        event: Events,
         layout: &[usize],
         results: &[isize],
         failure: u32,
@@ -476,7 +476,7 @@ mod tests {
 
     /// Upstream's `readv_all`/`writev_all`, transcribed.
     fn upstream(
-        event: u32,
+        event: Events,
         layout: &[usize],
         results: &[isize],
         failure: u32,
@@ -551,7 +551,7 @@ mod tests {
             &[2, 2, 4],
         ];
         let layouts: [&[usize]; 4] = [&[8], &[2, 3, 3], &[0, 3, 0, 5], &[]];
-        for event in [READ, WRITE] {
+        for event in [Events::READ, Events::WRITE] {
             for results in modes {
                 for failure in 0..4 {
                     for layout in layouts {
@@ -568,14 +568,14 @@ mod tests {
 
     #[test]
     fn a_complete_first_transfer_returns_without_waiting() {
-        let (result, error, effects, left) = run(READ, &[8], &[8], 0);
+        let (result, error, effects, left) = run(Events::READ, &[8], &[8], 0);
         assert_eq!((result, error, left), (8, 9, 0));
         assert_eq!(effects, ["io", "vectors:0"]);
     }
 
     #[test]
     fn partial_transfers_wait_and_accumulate() {
-        let (result, error, effects, left) = run(WRITE, &[2, 3, 3], &[2, EAGAIN, 3, 3], 0);
+        let (result, error, effects, left) = run(Events::WRITE, &[2, 3, 3], &[2, EAGAIN, 3, 3], 0);
         assert_eq!((result, error, left), (8, 0, 0));
         assert_eq!(
             effects,

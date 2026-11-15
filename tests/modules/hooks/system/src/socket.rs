@@ -22,7 +22,7 @@ use std::ptr;
 use swoole_rs_hooks::co_socket::{self, Co};
 use swoole_rs_hooks::vector::{IoVector, RecvMessage, SendMessage, Vectors};
 use swoole_rs_hooks::{TimeoutScope, co_io, packet};
-use swoole_rs_reactor::TimeoutKind;
+use swoole_rs_reactor::{Events, TimeoutKind};
 
 // glibc's values (the core-tests build is Linux).
 pub(super) const ECONNREFUSED: c_int = 111;
@@ -411,7 +411,7 @@ impl Sock {
     }
 
     fn cancel(&self, event: c_int) -> bool {
-        self.co().cancel(event.cast_unsigned())
+        self.co().cancel(Events::from_bits(event))
     }
 
     fn is_closed(&self) -> bool {
@@ -1963,7 +1963,7 @@ fn cancel() {
 
 fn get_event_str() {
     let sock = Sock::new(SW_SOCK_TCP);
-    let event_str = |event: c_int| co_io::event_str(sock.co(), event.cast_unsigned());
+    let event_str = |event: c_int| co_io::event_str(sock.co(), Events::from_bits(event));
     assert_eq!(event_str(SW_EVENT_READ), c"reading");
     assert_eq!(event_str(SW_EVENT_WRITE), c"writing");
 }

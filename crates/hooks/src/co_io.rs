@@ -4,11 +4,12 @@
 //! the record's `set_err`, `check_return_value` and `is_available`, and the
 //! per-direction timer (`TimerController`).
 use crate::co_socket::Co;
-use crate::shutdown::{READ, WaitTimer};
+use crate::shutdown::WaitTimer;
 use core::ffi::{CStr, c_char, c_int, c_long, c_void};
 #[cfg(test)]
 use core::ptr;
 use swoole_rs_corebase::timer_key::Held;
+use swoole_rs_reactor::Events;
 
 /// `SW_ERROR_CO_SOCKET_CLOSE_WAIT`.
 pub(crate) const CLOSE_WAIT_ERROR: c_int = 10019;
@@ -84,9 +85,9 @@ pub(crate) struct Ops {
     pub sleep: fn(),
     /// `swoole_event_add(events)` when `add`, else `swoole_event_set(events)`;
     /// false, with errno set, on failure.
-    pub reactor: fn(Co, u32, bool) -> bool,
+    pub reactor: fn(Co, Events, bool) -> bool,
     /// `remove_read_event`/`remove_write_event`.
-    pub remove: fn(Co, u32),
+    pub remove: fn(Co, Events),
     /// Resumes a parked coroutine.
     pub resume: unsafe extern "C-unwind" fn(*mut c_void),
     /// `socket->ssl_shutdown()`.
@@ -94,7 +95,7 @@ pub(crate) struct Ops {
     /// `socket->check_liveness()`, errno set when it fails.
     pub liveness: fn(Co) -> bool,
     /// Yields `co` until resumed, with `cancel(event)` as its cancel function.
-    pub suspend: fn(Co, *mut c_void, u32),
+    pub suspend: fn(Co, *mut c_void, Events),
     /// Moves a write's bytes to the write buffer unless they are there already or
     /// the socket is zero-copy.
     pub buffer: fn(Co, &mut crate::socket_wait::WriteSlot<'_>),
@@ -127,11 +128,11 @@ mod native {
     use super::Host;
     use crate::co_socket::Co;
     use crate::packet::ReadBuffer;
-    use crate::shutdown::{READ, WRITE};
     use core::ffi::{CStr, c_int, c_long, c_void};
     use swoole_rs_buffer::string::CppString;
     use swoole_rs_corebase::net_types::PacketLength;
     use swoole_rs_coroutine::print_socket_bound_error;
+    use swoole_rs_reactor::Events;
 
     pub(super) static HOST: Host = Host {
         timer_add,
@@ -144,15 +145,19 @@ mod native {
 
     /// The record's wait deletes its timer before the record goes.
     fn timer_add(socket: Co, timeout: f64, write: bool) -> Option<swoole_rs_timer::Held> {
-        let event = if write { WRITE } else { READ };
+        let event = if write { Events::WRITE } else { Events::READ };
         swoole_rs_timer::add_fn_sec(timeout, false, move || {
             super::timer_fired(socket, event);
         })
     }
 
     /// `co->yield(&cancel_fn)`, `cancel_fn` being `socket->cancel(event)`.
-    pub(super) fn suspend(socket: Co, co: *mut c_void, event: u32) {
-        let event = if event == READ { READ } else { WRITE };
+    pub(super) fn suspend(socket: Co, co: *mut c_void, event: Events) {
+        let event = if event == Events::READ {
+            Events::READ
+        } else {
+            Events::WRITE
+        };
         swoole_rs_coroutine::yield_with_cancel(co, move |_| socket.cancel(event));
     }
 
@@ -282,17 +287,14 @@ mod native {
         _ = crate::sleep::system_sleep(0.01);
     }
 
-    pub(super) fn reactor(socket: Co, events: u32, add: bool) -> bool {
-        socket.register(
-            add,
-            swoole_rs_reactor::Events::from_bits(events.cast_signed()),
-        )
+    pub(super) fn reactor(socket: Co, events: Events, add: bool) -> bool {
+        socket.register(add, events)
     }
 
-    pub(super) fn remove(socket: Co, event: u32) {
+    pub(super) fn remove(socket: Co, event: Events) {
         use swoole_rs_reactor::Interest;
         // `Reactor::interest`'s `remove_read_event` or `remove_write_event`.
-        let kind = if event == crate::shutdown::READ {
+        let kind = if event == Events::READ {
             Interest::RemoveRead
         } else {
             Interest::RemoveWrite
@@ -339,8 +341,8 @@ pub(crate) fn check(socket: Co, result: isize) {
 
 /// `is_available(event)`: no other coroutine holds `event` (`SW_EVENT_NULL`
 /// skips that check), the socket is open and not waiting to close.
-pub(crate) fn available(socket: Co, event: u32) -> bool {
-    if event != 0 {
+pub(crate) fn available(socket: Co, event: Events) -> bool {
+    if !event.is_empty() {
         // The report may close the socket, so it is read again after.
         check_bound(socket, event);
     }
@@ -356,7 +358,7 @@ pub(crate) fn available(socket: Co, event: u32) -> bool {
 }
 
 /// `check_bound_co(event)`: report a coroutine with a nonzero id holding `event`.
-pub(crate) fn check_bound(socket: Co, event: u32) {
+pub(crate) fn check_bound(socket: Co, event: Events) {
     let cid = socket.bound_cid(event);
     if cid != 0 {
         (NATIVE.bound_error)(socket.sock_fd(), event_str(socket, event), cid);
@@ -365,7 +367,7 @@ pub(crate) fn check_bound(socket: Co, event: u32) {
 
 /// `get_event_str(event)`.
 #[must_use]
-pub fn event_str(socket: Co, event: u32) -> &'static CStr {
+pub fn event_str(socket: Co, event: Events) -> &'static CStr {
     socket.with_state(|state| state.event_name(event))
 }
 
@@ -383,19 +385,19 @@ impl Co {
 
     /// `get_bound_cid(event)`: the id of the coroutine holding `event`, or 0.
     #[must_use]
-    pub fn bound_cid(self, event: u32) -> c_long {
+    pub fn bound_cid(self, event: Events) -> c_long {
         let co = self.with_state(|state| state.bound_co(event));
         if co.is_null() { 0 } else { (NATIVE.cid)(co) }
     }
 
     /// `check_bound_co(event)`: a fatal error if another coroutine holds `event`.
-    pub fn check_bound(self, event: u32) {
+    pub fn check_bound(self, event: Events) {
         check_bound(self, event);
     }
 
     /// `has_bound(event)`.
     #[must_use]
-    pub fn has_bound(self, event: u32) -> bool {
+    pub fn has_bound(self, event: Events) -> bool {
         !self.with_state(|state| state.bound_co(event)).is_null()
     }
 
@@ -449,12 +451,12 @@ pub struct Timer {
 
 impl Timer {
     /// A timer for `event`'s direction (`SW_EVENT_READ`, else writing).
-    pub(crate) fn new(socket: Co, event: u32, timeout: f64) -> Self {
+    pub(crate) fn new(socket: Co, event: Events, timeout: f64) -> Self {
         Self {
             socket,
             timeout,
             enabled: false,
-            write: event != READ,
+            write: event != Events::READ,
         }
     }
 
@@ -506,11 +508,11 @@ impl Timer {
 /// `Socket::timer_callback`: the timer for `event`'s direction fired. Its slot
 /// clears, the socket's error becomes `ETIMEDOUT` and the coroutine waiting in that
 /// direction resumes; an empty slot aborts, as upstream's unknown node does.
-pub(crate) fn timer_fired(socket: Co, event: u32) {
+pub(crate) fn timer_fired(socket: Co, event: Events) {
     set_err(socket, libc::ETIMEDOUT);
     socket.with_state(|state| {
         let [read, write] = &mut state.timers;
-        let slot = if event == READ { read } else { write };
+        let slot = if event == Events::READ { read } else { write };
         if *slot == WaitTimer::None {
             swoole_rs_corebase::fatal("a timeout fired with no timer armed");
         }
@@ -522,7 +524,7 @@ pub(crate) fn timer_fired(socket: Co, event: u32) {
 /// Resumes the coroutine bound to `socket` for `event`, if one is: a direction's
 /// coroutine is bound only while it is parked in its wait on the socket, which
 /// unbinds it as soon as it runs again.
-pub(crate) fn resume_bound(socket: Co, event: u32) {
+pub(crate) fn resume_bound(socket: Co, event: Events) {
     let co = socket.with_state(|state| state.co(event));
     // SAFETY: null, which resumes nothing, or the coroutine bound for `event`, parked
     // in its wait on this socket.
@@ -535,7 +537,7 @@ pub(crate) mod test_host {
     use super::*;
     use std::cell::{Cell, RefCell};
 
-    type Suspend = Box<dyn FnMut(Co, u32)>;
+    type Suspend = Box<dyn FnMut(Co, Events)>;
     type OnResume = Box<dyn FnMut(c_long)>;
     type OnRelease = Box<dyn FnMut(Co)>;
 
@@ -650,11 +652,11 @@ pub(crate) mod test_host {
     fn sleep() {
         log("sleep");
     }
-    fn reactor(_: Co, events: u32, add: bool) -> bool {
+    fn reactor(_: Co, events: Events, add: bool) -> bool {
         log(format!("{}:{events}", if add { "add" } else { "set" }));
         REACTOR_OK.get()
     }
-    fn suspend(socket: Co, _: *mut c_void, event: u32) {
+    fn suspend(socket: Co, _: *mut c_void, event: Events) {
         log(format!("yield:{event}"));
         let hook = ON_SUSPEND.take();
         if let Some(mut hook) = hook {
@@ -665,7 +667,7 @@ pub(crate) mod test_host {
     fn buffer(_: Co, slot: &mut crate::socket_wait::WriteSlot<'_>) {
         log(format!("buffer:{}", slot.length()));
     }
-    fn remove(_: Co, event: u32) {
+    fn remove(_: Co, event: Events) {
         log(format!("remove:{event}"));
     }
 
@@ -699,7 +701,6 @@ mod tests {
     use super::test_host::{ON_BOUND, TIMER_OK, install, take};
     use super::*;
     use crate::co_socket::TestSocket;
-    use crate::shutdown::WRITE;
     use swoole_rs_corebase::CCast;
 
     fn slot_state(socket: &TestSocket) -> usize {
@@ -754,7 +755,7 @@ mod tests {
                 }
                 node = 0;
             }
-            let mut timer = Timer::new(socket.co(), READ, timeout);
+            let mut timer = Timer::new(socket.co(), Events::READ, timeout);
             timer.enabled = enabled;
             assert_eq!(timer.start(), first, "scenario {}", k + 931);
             if let Some(second) = second {
@@ -776,7 +777,7 @@ mod tests {
         let mut ids: [c_long; 2] = [3, 4];
         bind(&socket, 3, &mut ids);
         let node = WaitTimer::Armed(Held::detached(1));
-        for (slot, event, cid) in [(1, WRITE, 4), (0, READ, 3)] {
+        for (slot, event, cid) in [(1, Events::WRITE, 4), (0, Events::READ, 3)] {
             unsafe { (*socket.state()).timers[slot] = node };
             timer_fired(socket.co(), event);
             assert_eq!(unsafe { (*socket.state()).timers[slot] }, WaitTimer::None);
@@ -791,7 +792,14 @@ mod tests {
         }
     }
 
-    const MASKS: [u32; 6] = [0, READ, WRITE, READ | WRITE, 1 << 11, u32::MAX];
+    const MASKS: [Events; 6] = [
+        Events::NONE,
+        Events::READ,
+        Events::WRITE,
+        Events::RDWR,
+        Events::from_bits(1 << 11),
+        Events::from_bits(-1),
+    ];
 
     /// Binds a reader with id `reader` and a writer with id `writer` per `bound`'s bits.
     fn bind(socket: &TestSocket, bound: usize, ids: &mut [c_long; 2]) {
@@ -804,8 +812,8 @@ mod tests {
             }
         };
         let state = unsafe { &mut *socket.state() };
-        state.bind(READ, co(bound & 1 != 0, reader));
-        state.bind(WRITE, co(bound & 2 != 0, writer));
+        state.bind(Events::READ, co(bound & 1 != 0, reader));
+        state.bind(Events::WRITE, co(bound & 2 != 0, writer));
     }
 
     /// Upstream's `get_event_str`, `get_bound_cid` and `check_bound_co`.
@@ -813,12 +821,12 @@ mod tests {
         fd: c_int,
         bound: usize,
         [reader, writer]: [c_long; 2],
-        event: u32,
+        event: Events,
     ) -> (c_long, &'static str, Vec<String>) {
         let (read, write) = (bound & 1 != 0, bound & 2 != 0);
-        let name = if event == READ {
+        let name = if event == Events::READ {
             "reading"
-        } else if event == WRITE {
+        } else if event == Events::WRITE {
             "writing"
         } else if read && write {
             "reading or writing"
@@ -827,9 +835,9 @@ mod tests {
         } else {
             "writing"
         };
-        let co = if event & READ != 0 && read {
+        let co = if event.intersects(Events::READ) && read {
             Some(reader)
-        } else if event & WRITE != 0 && write {
+        } else if event.intersects(Events::WRITE) && write {
             Some(writer)
         } else {
             None
@@ -890,7 +898,7 @@ mod tests {
             take();
             let mut expected = Vec::new();
             let mut closed = state == 1;
-            if event != 0 {
+            if !event.is_empty() {
                 let (_, _, effects) = upstream_bound(socket.0.sock_fd.get(), bound, [5, 7], event);
                 closed |= closes && effects.len() == 2;
                 expected = effects;

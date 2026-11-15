@@ -535,11 +535,6 @@ pub mod co {
         }
     }
 
-    /// `SW_EVENT_READ`.
-    pub const READ: u32 = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as u32;
-    /// `SW_EVENT_WRITE`.
-    pub const WRITE: u32 = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as u32;
-
     /// A `SocketImpl *`.
     pub type Socket = *mut c_void;
 }

@@ -16,14 +16,14 @@ use swoole_rs_corebase::{
     swr_v1_core_set_aio_default_socket, thread_async_threads,
 };
 use swoole_rs_ossupport::{Pool, PoolHooks, pool_complete};
+use swoole_rs_reactor::Events;
 use swoole_rs_reactor::event_api::{event_del, on_destroy, swoole_event_add, swr_v1_event_current};
 use swoole_rs_reactor::{Event, Running, Socket};
 use swoole_rs_tls::socket_pair::{SocketPair, close, drop, unix_socket};
 use swoole_rs_tls::upstream::write_sync;
 
-/// `SW_FD_AIO` and `SW_EVENT_READ`.
+/// `SW_FD_AIO`.
 const FD_AIO: c_int = 5;
-const EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
 /// `SW_ERROR_SYSTEM_CALL_FAIL`, `SW_ERROR_WRONG_OPERATION`, `SW_ERROR_AIO_BAD_REQUEST`
 /// and `SW_ERROR_AIO_CANCELED`.
 const SYSTEM_CALL_FAIL: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SYSTEM_CALL_FAIL as c_int;
@@ -220,7 +220,7 @@ fn create() -> *mut AsyncThreads {
         end.edit(|end| end.fd_type = FD_AIO);
     }
     // SAFETY: a live socket on the thread's reactor.
-    unsafe { swoole_event_add(read.as_ptr(), EVENT_READ) };
+    unsafe { swoole_event_add(read.as_ptr(), Events::READ.bits()) };
     on_destroy(destroyed);
     swoole_rs_reactor::swr_v1_event_set_exit_condition(
         swoole_rs_reactor::ExitCondition::AioTask,

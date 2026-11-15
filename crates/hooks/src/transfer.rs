@@ -5,11 +5,11 @@
 //! waits. Native code passes only the `network::Socket` (or syscall) call.
 use crate::co_io::{Timer, available, check, errno, set_err, would_block};
 use crate::co_socket::Co;
-use crate::shutdown::{READ, WRITE};
 use crate::socket_wait::{WriteSlot, wait, wait_barrier};
 use core::marker::PhantomData;
 use swoole_rs_corebase::net_types::AddressStorage;
 use swoole_rs_corebase::sys::ReadSlot;
+use swoole_rs_reactor::Events;
 use swoole_rs_reactor::Socket;
 
 /// The transfer of `length` bytes at `buffer`; sets errno when it fails. A native
@@ -23,7 +23,7 @@ pub struct Buffer<'a> {
     /// readable for a write.
     at: *mut u8,
     length: usize,
-    event: u32,
+    event: Events,
     borrow: PhantomData<&'a mut [u8]>,
 }
 
@@ -31,28 +31,28 @@ impl<'a> Buffer<'a> {
     /// The caller's one-byte slots, any value valid, which a read fills.
     pub fn read(buf: &'a mut [impl ReadSlot]) -> Self {
         let (at, length) = (buf.as_mut_ptr().cast(), buf.len());
-        Self::new(at, length, READ)
+        Self::new(at, length, Events::READ)
     }
 
     /// The caller's bytes, which a write only reads (its wait may move them to the
     /// write buffer, a copy).
     #[must_use]
     pub fn write(buf: &'a [u8]) -> Self {
-        Self::new(buf.as_ptr().cast_mut(), buf.len(), WRITE)
+        Self::new(buf.as_ptr().cast_mut(), buf.len(), Events::WRITE)
     }
 
     /// No buffer, in `event`'s direction.
     #[must_use]
-    pub const fn none(event: u32) -> Self {
+    pub const fn none(event: Events) -> Self {
         Self::new(core::ptr::null_mut(), 0, event)
     }
 
     /// The buffer's start, length and direction; its borrow outlives the transfer.
-    const fn into_parts(self) -> (*mut u8, usize, u32) {
+    const fn into_parts(self) -> (*mut u8, usize, Events) {
         (self.at, self.length, self.event)
     }
 
-    const fn new(at: *mut u8, length: usize, event: u32) -> Self {
+    const fn new(at: *mut u8, length: usize, event: Events) -> Self {
         Self {
             at,
             length,
@@ -87,7 +87,7 @@ impl Op<'_> {
 /// `recv_all`/`send_all`: `length` bytes, or fewer at EOF, error or timeout.
 /// Returns the bytes transferred, -1 when none were, or the first call's result
 /// when it finished at once or failed outright.
-fn all(mut op: Op<'_>, timer: &mut Timer, event: u32, buffer: *mut u8, length: usize) -> isize {
+fn all(mut op: Op<'_>, timer: &mut Timer, event: Events, buffer: *mut u8, length: usize) -> isize {
     let first = op.call(buffer, length);
     if first == 0 || first > 0 && first.unsigned_abs() == length {
         return first;
@@ -126,13 +126,13 @@ fn all(mut op: Op<'_>, timer: &mut Timer, event: u32, buffer: *mut u8, length: u
 fn one(
     mut op: Op<'_>,
     timer: &mut Timer,
-    event: u32,
+    event: Events,
     flags: u32,
     buffer: *mut u8,
     length: usize,
 ) -> isize {
     let mut buffer = buffer;
-    let moves = event == WRITE && !buffer.is_null();
+    let moves = event == Events::WRITE && !buffer.is_null();
     let mut result = op.call(buffer, length);
     while result < 0 {
         if flags & RETRY_INTERRUPTED != 0 && errno() == libc::EINTR {
@@ -163,7 +163,11 @@ pub(crate) fn transfer(socket: Co, flags: u32, buffer: Buffer<'_>, call: Call<'_
     if flags & CHECKED == 0 && !available(socket, event) {
         return -1;
     }
-    let event = if event == READ { READ } else { WRITE };
+    let event = if event == Events::READ {
+        Events::READ
+    } else {
+        Events::WRITE
+    };
     let mut timer = Timer::new(socket, event, socket.timeout(timeout_kind(event)));
     let op = Op { socket, call };
     let result = if flags & ALL != 0 {
@@ -182,7 +186,7 @@ pub(crate) fn recvfrom_peer(
     socket: Co,
     call: impl FnOnce(*mut libc::sockaddr, *mut libc::socklen_t) -> isize,
 ) -> isize {
-    if !available(socket, READ) {
+    if !available(socket, Events::READ) {
         return -1;
     }
     socket
@@ -218,8 +222,8 @@ fn recvfrom_into(
 }
 
 /// `SW_TIMEOUT_READ` for a read, else `SW_TIMEOUT_WRITE`.
-pub(crate) fn timeout_kind(event: u32) -> swoole_rs_reactor::TimeoutKind {
-    if event == READ {
+pub(crate) fn timeout_kind(event: Events) -> swoole_rs_reactor::TimeoutKind {
+    if event == Events::READ {
         swoole_rs_reactor::TimeoutKind::READ
     } else {
         swoole_rs_reactor::TimeoutKind::WRITE
@@ -267,7 +271,7 @@ mod tests {
     /// How a scenario fails besides its results: 1 the socket is closed, 2 the
     /// timer can't be added, 3 the wait wakes with an error.
     fn run(
-        event: u32,
+        event: Events,
         flags: u32,
         buffered: bool,
         results: &[isize],
@@ -311,7 +315,7 @@ mod tests {
     /// `writev`, `recvmsg`, `sendmsg`, `recvfrom`, `sendto`), transcribed: the
     /// result, the error it leaves and the native effects in order.
     fn upstream_one(
-        event: u32,
+        event: Events,
         eintr: bool,
         buffered: bool,
         results: &[isize],
@@ -344,7 +348,7 @@ mod tests {
                 timer = true;
             }
             effects.push(format!("add:{event}"));
-            if event == WRITE && buffered {
+            if event == Events::WRITE && buffered {
                 effects.push("buffer:8".into());
             }
             effects.push(format!("yield:{event}"));
@@ -387,7 +391,12 @@ mod tests {
             &[EINTR, EAGAIN, 3],
             &[EINTR, EAGAIN, EAGAIN, 8],
         ];
-        for (event, buffered) in [(READ, true), (WRITE, true), (READ, false), (WRITE, false)] {
+        for (event, buffered) in [
+            (Events::READ, true),
+            (Events::WRITE, true),
+            (Events::READ, false),
+            (Events::WRITE, false),
+        ] {
             for eintr in [false, true] {
                 for results in modes {
                     for failure in 0..4 {
@@ -404,7 +413,7 @@ mod tests {
     }
 
     /// Upstream's `recv_all`/`send_all`, transcribed.
-    fn upstream_all(event: u32, results: &[isize], failure: u32) -> (isize, i32, Vec<String>) {
+    fn upstream_all(event: Events, results: &[isize], failure: u32) -> (isize, i32, Vec<String>) {
         let mut effects = Vec::new();
         if failure == 1 {
             return (-1, libc::EBADF, effects);
@@ -472,7 +481,7 @@ mod tests {
             &[2, 0],
             &[EAGAIN, 0],
         ];
-        for event in [READ, WRITE] {
+        for event in [Events::READ, Events::WRITE] {
             for results in cases {
                 for failure in 0..4 {
                     assert_eq!(
@@ -492,7 +501,7 @@ mod tests {
         let mut socket = TestSocket::new();
         unsafe { socket.0.record() }.timeouts.read = 0.0;
         RESULTS.set([EAGAIN].into_iter().collect());
-        let buffer = Buffer::new(core::ptr::null_mut(), 8, READ);
+        let buffer = Buffer::new(core::ptr::null_mut(), 8, Events::READ);
         let result = transfer(socket.co(), CHECKED, buffer, &mut call);
         assert_eq!(result, -1);
         // A zero timeout starts no timer.

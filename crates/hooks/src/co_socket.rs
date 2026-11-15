@@ -1018,6 +1018,7 @@ pub(crate) use test_support::{TestSocket, init};
 mod tests {
     use super::*;
     use core::mem::MaybeUninit;
+    use swoole_rs_reactor::Events;
 
     fn record() -> Box<CoSocket> {
         let mut storage = Box::new(MaybeUninit::<CoSocket>::uninit());
@@ -1320,7 +1321,9 @@ mod tests {
     fn nested_state_borrow_panics() {
         let mut socket = TestSocket::new();
         let co = socket.co();
-        co.with_state(|outer| co.with_state(|inner| inner.want = outer.want + 1));
+        co.with_state(|outer| {
+            co.with_state(|inner| inner.want = Events::from_bits(outer.want.bits() + 1));
+        });
     }
 
     #[test]
@@ -1353,8 +1356,8 @@ mod tests {
                 co.with_buffer(true, |write| read.size() + write.size())
             });
             co.with_extra(|extra| extra.proxies.each_ref().map(Option::is_some));
-            state.want = 1;
+            state.want = Events::from_bits(1);
         });
-        assert_eq!(co.with_state(|state| state.want), 1);
+        assert_eq!(co.with_state(|state| state.want), Events::from_bits(1));
     }
 }

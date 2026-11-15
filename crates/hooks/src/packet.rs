@@ -1,6 +1,7 @@
 //! Coroutine packet framing directly over the socket's record and installed host.
-/// `SW_BUFFER_SIZE_BIG`: the most one EOF-protocol `recv` asks for.
 use swoole_rs_corebase::CCast;
+use swoole_rs_reactor::Events;
+/// `SW_BUFFER_SIZE_BIG`: the most one EOF-protocol `recv` asks for.
 const BIG: usize = 65536;
 
 /// A view of the native read String, refreshed after every resize.
@@ -213,16 +214,15 @@ fn find(buffer: &ReadBuffer, needle: &[u8]) -> Option<usize> {
 #[must_use]
 pub fn recv_packet(socket: crate::co_socket::Co, timeout: f64) -> isize {
     use crate::co_io::{Timer, available};
-    use crate::shutdown::READ;
-    if !available(socket, READ) {
+    if !available(socket, Events::READ) {
         return -1;
     }
     let timeout = if timeout == 0.0 {
-        socket.timeout(crate::transfer::timeout_kind(READ))
+        socket.timeout(crate::transfer::timeout_kind(Events::READ))
     } else {
         timeout
     };
-    let mut timer = Timer::new(socket, READ, timeout);
+    let mut timer = Timer::new(socket, Events::READ, timeout);
     if !timer.start() {
         return 0;
     }
