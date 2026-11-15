@@ -147,6 +147,27 @@ pub fn current() -> *mut Coroutine {
     with_scheduler(|s| s.current)
 }
 
+/// `SW_ERROR_CO_OUT_OF_COROUTINE`.
+const OUT_OF_COROUTINE: core::ffi::c_int = 10001;
+
+/// `Coroutine::get_current_safe()`: the running coroutine; outside one, Swoole's fatal
+/// error, which exits the process or bails out over the callers' frames as upstream's
+/// does.
+#[must_use]
+pub extern "C" fn current_safe() -> *mut c_void {
+    let co = current().cast::<c_void>();
+    if co.is_null() {
+        // SAFETY: Swoole's fatal error hook; this frame owns nothing.
+        unsafe {
+            swoole_rs_corebase::fatal_error(
+                OUT_OF_COROUTINE,
+                c"API must be called in the coroutine",
+            );
+        }
+    }
+    co
+}
+
 /// `Coroutine::get_current()`: the running coroutine's record, null outside one.
 #[must_use]
 pub fn current_native() -> *mut c_void {
