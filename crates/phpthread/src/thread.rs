@@ -130,7 +130,7 @@ fn construct(call: &Call) {
     // The OS thread's body, as `std::thread` would run upstream's lambda: straight
     // into the thread's body, which marks the thread alive before anything allocates
     // (a new thread's first malloc can map an arena, and `yield.phpt` gives it 10 µs).
-    let started = thread.thread.start(move || {
+    let started = thread.thread.start(move |fresh| {
         let enter = || {
             state.exit_status.store(0, Ordering::Release);
             state.living.store(true, Ordering::Release);
@@ -139,8 +139,7 @@ fn construct(call: &Call) {
             state.exit_status.store(status, Ordering::Release);
             state.living.store(false, Ordering::Release);
         };
-        // SAFETY: the new OS thread, before anything of PHP's.
-        unsafe { run::run(&file, argv, enter, exit) };
+        run::run(fresh, &file, argv, enter, exit);
     });
     if let Err(errno) = started {
         // `std::system_error::what()`: the OS message.

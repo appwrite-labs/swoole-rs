@@ -171,21 +171,24 @@ fn init_arguments(object: ServerObject<'_>) -> Result<Option<Arguments>, Bailout
 
 /// The thread starter: this `ThreadFactory` thread becomes a PHP thread running
 /// the bootstrap script, whose `start()` runs `run(context)`.
-fn start_thread(thread: &Thread, run: WorkerMain, context: *mut c_void) {
+fn start_thread(
+    fresh: swoole_rs_corebase::Fresh,
+    thread: &Thread,
+    run: WorkerMain,
+    context: *mut c_void,
+) {
     MAIN.set(Some((run, context)));
     // `prepare` set it before the server started threads; `release` clears it
     // once `start()` returned, after every thread ended.
     let start = START.lock().unwrap_or_else(PoisonError::into_inner).clone();
     let Some(start) = start else { return };
-    // SAFETY: the factory's new OS thread, before anything of PHP's.
-    unsafe {
-        swoole_rs_phpthread::run(
-            &start.bootstrap,
-            start.argv.clone(),
-            || thread.enter(),
-            |status| thread.exit(status),
-        );
-    }
+    swoole_rs_phpthread::run(
+        fresh,
+        &start.bootstrap,
+        start.argv.clone(),
+        || thread.enter(),
+        |status| thread.exit(status),
+    );
 }
 
 /// After `start()`: the bootstrap script and arguments go.

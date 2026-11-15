@@ -149,8 +149,9 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// A worker thread's body (`Server::worker_thread_start`'s `fn`).
 pub type WorkerMain = unsafe extern "C" fn(*mut c_void);
 
-/// What runs a thread-mode worker thread's body on its `swoole::Thread`.
-pub type WorkerThreadStart = fn(&Thread, WorkerMain, *mut c_void);
+/// What runs a thread-mode worker thread's body on its `swoole::Thread`, which
+/// that thread's [`swoole_rs_corebase::Fresh`] lets enter PHP.
+pub type WorkerThreadStart = fn(swoole_rs_corebase::Fresh, &Thread, WorkerMain, *mut c_void);
 
 static WORKER_THREAD_START: Mutex<Option<WorkerThreadStart>> = Mutex::new(None);
 
@@ -185,6 +186,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no sigfillset")]
     fn a_thread_body_runs_directly_or_inside_the_servers_hook() {
         static RAN: AtomicBool = AtomicBool::new(false);
         unsafe extern "C" fn run(context: *mut c_void) {
@@ -193,22 +195,35 @@ mod tests {
             assert!(WORKER_THREAD_START.try_lock().is_ok());
             RAN.store(true, Ordering::Release);
         }
-        fn hook(thread: &Thread, run: WorkerMain, context: *mut c_void) {
+        fn hook(
+            _: swoole_rs_corebase::Fresh,
+            thread: &Thread,
+            run: WorkerMain,
+            context: *mut c_void,
+        ) {
             assert!(!thread.joinable());
             // SAFETY (test): the body above takes any context.
             unsafe { run(context.wrapping_byte_add(0x10)) };
         }
-        let thread = Thread::default();
-        // A thread's start, as `native`'s `body` runs its main.
-        let start = |context| match worker_thread_start() {
-            Some(start) => start(&thread, run, context),
-            // SAFETY (test): as above.
-            None => unsafe { run(context) },
+        // A thread's start, as `native`'s `body` runs its main, on a thread of its own.
+        let start = |context: usize| {
+            let runner = Thread::default();
+            let body = move |fresh| {
+                let thread = Thread::default();
+                let context = core::ptr::without_provenance_mut(context);
+                match worker_thread_start() {
+                    Some(start) => start(fresh, &thread, run, context),
+                    // SAFETY (test): as above.
+                    None => unsafe { run(context) },
+                }
+            };
+            runner.start(body).unwrap();
+            assert_eq!(runner.join(), Ok(()));
         };
-        start(core::ptr::without_provenance_mut(0x10));
+        start(0x10);
         assert!(RAN.swap(false, Ordering::AcqRel));
         set_worker_thread_start(Some(hook));
-        start(core::ptr::null_mut());
+        start(0);
         set_worker_thread_start(None);
         assert!(RAN.load(Ordering::Acquire));
     }
@@ -251,7 +266,7 @@ mod tests {
         let flag = Arc::clone(&seen);
         manager
             .thread(1)
-            .start(move || flag.store(true, Ordering::Release))
+            .start(move |_| flag.store(true, Ordering::Release))
             .unwrap();
         manager.join_all();
         assert!(seen.load(Ordering::Acquire));
