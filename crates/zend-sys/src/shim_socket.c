@@ -20,8 +20,12 @@ int swr_zend_stream_socketd(zval *zstream, php_stream **stream, int *fd) {
     return result;
 }
 
-void swr_zend_stream_unbuffer(php_stream *stream) {
-    php_stream_set_option(stream, PHP_STREAM_OPTION_READ_BUFFER, PHP_STREAM_BUFFER_NONE, NULL);
+void swr_zend_stream_unbuffer(zval *zstream) {
+    php_stream *stream;
+    php_stream_from_zval_no_verify(stream, zstream);
+    if (stream) {
+        php_stream_set_option(stream, PHP_STREAM_OPTION_READ_BUFFER, PHP_STREAM_BUFFER_NONE, NULL);
+    }
 }
 
 HashTable *swr_zend_object_properties(zval *object) {

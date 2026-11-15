@@ -22,7 +22,7 @@ use swoole_rs_phpswoole::{SocketSettings as Settings, Switch, built_with};
 use swoole_rs_tls::{self as tls, Text};
 use swoole_rs_zend::{
     Array, Call, OwnedArray, Value, bailout, report,
-    sys::{E_ERROR, E_WARNING, php_stream, swr_zend_stream_unbuffer},
+    sys::{E_ERROR, E_WARNING, php_stream},
 };
 
 use swoole_rs_reactor::TimeoutKind;
@@ -754,6 +754,9 @@ unsafe extern "C" {
         stream: &mut *mut php_stream,
         fd: &mut c_int,
     ) -> c_int;
+    /// The stream `zstream` holds, if any, set unbuffered for reads; nothing
+    /// for any other value. Raises no error and runs no PHP code.
+    safe fn swr_zend_stream_unbuffer(zstream: &Value);
 }
 
 /// `static import($stream): Socket|false`.
@@ -793,8 +796,7 @@ fn import(call: &Call) {
             Ok(None) => return call.set_bool(false),
             Err(error) => return error.defer(),
         };
-    // SAFETY: the stream the object now holds.
-    unsafe { swr_zend_stream_unbuffer(stream) };
+    swr_zend_stream_unbuffer(stream_value);
     call.set_owned(object);
 }
 
