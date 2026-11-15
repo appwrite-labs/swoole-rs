@@ -115,6 +115,10 @@ fn main(serv: view::Server<'_>) {
     // they are up, not kill it outright and orphan the ones already forked.
     // The children's fork resets their handlers.
     set_signal(libc::SIGTERM, SignalHandler::Own);
+    #[cfg(target_os = "linux")]
+    if config.mode_ == Mode::Process && swoole_rs_corebase::swr_v1_core_enable_signalfd() {
+        crate::control::ShutdownMask::unblock_manager();
+    }
     if config.task_worker_num.get() > 0 && !methods::start(serv.task_pool_ref()) {
         log::sys_error(ORIGIN, format_args!("failed to start task worker"));
         return;
