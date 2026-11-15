@@ -17,9 +17,10 @@ use swoole_rs_zend::{
     bailout::{Bailout, trap},
     opcode::Handler,
     sys::{
-        IS_ARRAY, IS_CONST, IS_RESOURCE, IS_STRING, IS_VAR, swr_zend_zval_release,
+        IS_ARRAY, IS_CONST, IS_RESOURCE, IS_STRING, IS_VAR, swr_zend_efree, swr_zend_zval_release,
         zend_execute_data, zend_function, zval,
     },
+    value,
 };
 
 unsafe extern "C" {
@@ -35,7 +36,7 @@ unsafe extern "C" {
 }
 
 /// Upstream's `CallInfo`: what the handler hands the method call's frame in
-/// `run_time_cache`, boxed; the method call takes the box back. `this` is the receiver's live zval, which the method call
+/// `run_time_cache`. `this` is the receiver's live zval, which the method call
 /// releases once when it was a `VAR` operand.
 #[repr(C)]
 struct CallInfo {
@@ -82,13 +83,19 @@ impl Handler for MethodCall {
             IS_RESOURCE => Receiver::Stream,
             _ => return DISPATCH,
         };
-        // Plain copies of the literal and the receiver, as upstream's; the method
-        // call takes the box back.
-        let info = Box::into_raw(Box::new(CallInfo {
-            func: name.copy_value(),
-            this: object.copy_value(),
-            op1_type: op.op1_type,
-        }));
+        // Zend's request allocator, freed by the method call.
+        let info = value::emalloc(size_of::<CallInfo>()).cast::<CallInfo>();
+        // A plain copy of the literal, as upstream's.
+        let func = name.copy_value();
+        let this = object.copy_value();
+        // SAFETY: a fresh allocation of a `CallInfo`.
+        unsafe {
+            info.write(CallInfo {
+                func,
+                this,
+                op1_type: op.op1_type,
+            });
+        }
         let method = match receiver {
             Receiver::Array => &METHODS[0],
             Receiver::String => &METHODS[1],
@@ -126,9 +133,9 @@ fn arguments(prefix: &[zval], frame: &Call) -> Vec<zval> {
 unsafe fn call_method(receiver: Receiver, frame: *mut zend_execute_data, value: *mut zval) {
     // SAFETY: the handler stored its `CallInfo` here.
     let allocation = unsafe { (*frame).run_time_cache }.cast::<CallInfo>();
-    // SAFETY: the handler's box, which only this frame's `run_time_cache` points to;
-    // the field is cleared below, before anything could read it again.
-    let mut info = unsafe { Box::from_raw(allocation) };
+    // SAFETY: the handler's initialized allocation, which only this frame's
+    // `run_time_cache` points to until it is freed below.
+    let info = unsafe { &mut *allocation };
     // op2 of INIT_METHOD_CALL is the method name, a string literal.
     let name = Value::of(&mut info.func).str();
     let alias = name.and_then(|name| aliases::find(receiver, name.bytes()));
@@ -148,10 +155,11 @@ unsafe fn call_method(receiver: Receiver, frame: *mut zend_execute_data, value: 
         Some(alias) => {
             // SAFETY: per the caller, the dispatcher's own frame and return slot.
             let frame = unsafe { Call::new(frame, value) };
-            call_alias(alias, &mut info, &frame)
+            call_alias(alias, info, &frame)
         }
     };
-    drop(info);
+    // SAFETY: the handler's allocation; nothing else holds it.
+    unsafe { swr_zend_efree(allocation.cast()) };
     // SAFETY: a live frame.
     unsafe { (*frame).run_time_cache = ptr::null_mut() };
     swoole_rs_zend::bailout::raise(outcome);

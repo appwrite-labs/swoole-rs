@@ -9,7 +9,7 @@ use crate::{
     send, websocket,
 };
 use std::{
-    ffi::{CString, c_int, c_void},
+    ffi::{CString, c_int},
     sync::atomic::Ordering::Relaxed,
 };
 use swoole_rs_corebase::{CCast, HookType, swoole_call_hook, swoole_isset_hook};

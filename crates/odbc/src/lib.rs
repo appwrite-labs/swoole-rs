@@ -22,9 +22,9 @@ pub mod minit;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use swoole_rs_odbc_sys::{
-    RETCODE, SQLCHAR, SQLConnect, SQLDescribeCol, SQLDriverConnect, SQLExecDirect, SQLGetData,
-    SQLHDBC, SQLHSTMT, SQLHWND, SQLINTEGER, SQLLEN, SQLPOINTER, SQLPrepare, SQLPutData, SQLRETURN,
-    SQLSMALLINT, SQLULEN, SQLUSMALLINT,
+    RETCODE, SQLCHAR, SQLConnect, SQLDescribeCol, SQLDriverConnect, SQLEndTran, SQLExecDirect,
+    SQLGetData, SQLHANDLE, SQLHDBC, SQLHSTMT, SQLHWND, SQLINTEGER, SQLLEN, SQLPOINTER, SQLPrepare,
+    SQLPutData, SQLRETURN, SQLSMALLINT, SQLULEN, SQLUSMALLINT,
 };
 
 /// A connection handle the driver handed over: live, as ODBC's own calls
@@ -45,33 +45,18 @@ pub struct Connection(SQLHDBC);
 #[derive(Clone, Copy)]
 pub struct Statement(SQLHSTMT);
 
-/// `SQL_HANDLE_DBC`, the one handle kind [`swoole_odbc_SQLEndTran`] passes on: no other
-/// value of the type exists, so `SQLEndTran` always reads its handle as a connection.
-#[repr(transparent)]
-#[derive(Clone, Copy)]
-struct ConnectionKind(SQLSMALLINT);
-
-const SQL_HANDLE_DBC: ConnectionKind = ConnectionKind(2);
-
-// ODBC's own declarations of `SQLDisconnect`, `SQLExecute` and `SQLEndTran`, typed as
-// the handle each takes: the first and last read no bound buffer, the second only the
-// ones the statement bound, which its type keeps live; none runs a callback.
+// ODBC's own declarations of `SQLDisconnect` and `SQLExecute`, typed as the handle
+// each takes: the first reads no bound buffer, the second only the ones the statement
+// bound, which its type keeps live; neither runs a callback.
 unsafe extern "C" {
     #[link_name = "SQLDisconnect"]
     safe fn disconnect(connection: Connection) -> SQLRETURN;
     #[link_name = "SQLExecute"]
     safe fn execute(statement: Statement) -> SQLRETURN;
-    #[link_name = "SQLEndTran"]
-    safe fn end_transaction(
-        kind: ConnectionKind,
-        connection: Connection,
-        completion: SQLSMALLINT,
-    ) -> SQLRETURN;
 }
 
-/// `SQL_ERROR` and `SQL_INVALID_HANDLE`.
+/// `SQL_ERROR`.
 const SQL_ERROR: SQLRETURN = -1;
-const SQL_INVALID_HANDLE: SQLRETURN = -2;
 
 static BLOCKING: AtomicBool = AtomicBool::new(true);
 
@@ -255,20 +240,17 @@ pub unsafe extern "C" fn swoole_odbc_SQLDescribeCol(
     })
 }
 
-/// `swoole_odbc_SQLEndTran` of a connection, the only kind `pdo_odbc` ends a
-/// transaction on: `SQLEndTran`'s whole contract is then the live connection the type
-/// carries. Any other kind is refused with `SQL_INVALID_HANDLE`, as a driver manager
-/// refuses a handle that isn't of the kind named.
+/// `swoole_odbc_SQLEndTran`.
+/// # Safety
+/// As `SQLEndTran`.
 #[unsafe(no_mangle)]
-pub extern "C" fn swoole_odbc_SQLEndTran(
+pub unsafe extern "C" fn swoole_odbc_SQLEndTran(
     handle_type: SQLSMALLINT,
-    connection: Connection,
+    handle: SQLHANDLE,
     completion: SQLSMALLINT,
 ) -> SQLRETURN {
-    if handle_type != SQL_HANDLE_DBC.0 {
-        return SQL_INVALID_HANDLE;
-    }
-    offload(|| end_transaction(SQL_HANDLE_DBC, connection, completion))
+    // SAFETY: per the caller.
+    offload(|| unsafe { SQLEndTran(handle_type, handle, completion) })
 }
 
 /// `swoole_odbc_SQLDisconnect`: `SQLDisconnect`'s whole contract is the live
