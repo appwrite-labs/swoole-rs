@@ -141,6 +141,38 @@ fn ring_entries(configured: u32) -> u32 {
     (1_u64 << shift).c_cast::<u32>()
 }
 
+/// `siginfo_t`'s `_sigchld` member: the child, its user and its status (then its
+/// times, which nothing reads). Its `long`s align it as the kernel's union is.
+#[repr(C)]
+#[derive(Default)]
+struct Child {
+    pid: libc::pid_t,
+    uid: libc::uid_t,
+    status: c_int,
+    times: [std::ffi::c_long; 2],
+}
+
+/// The `siginfo_t` `IORING_OP_WAITID` fills, read as a waited child's: the code, then
+/// the union as [`Child`], padded to the kernel's size, all plain integers.
+#[repr(C)]
+#[derive(Default)]
+struct ChildInfo {
+    head: [c_int; 3],
+    child: Child,
+    tail: [std::ffi::c_long; CHILD_INFO_TAIL],
+}
+
+/// Where the union starts: after the three `int`s, at the union's alignment.
+const CHILD_AT: usize = (3 * size_of::<c_int>()).next_multiple_of(align_of::<Child>());
+const CHILD_INFO_TAIL: usize =
+    (size_of::<libc::siginfo_t>() - CHILD_AT - size_of::<Child>()) / size_of::<std::ffi::c_long>();
+const _: () = assert!(
+    size_of::<ChildInfo>() == size_of::<libc::siginfo_t>()
+        && align_of::<ChildInfo>() >= align_of::<libc::siginfo_t>()
+        && std::mem::offset_of!(ChildInfo, child) == CHILD_AT,
+    "siginfo_t's layout moved"
+);
+
 /// `siginfo_t` of a waited child as `waitpid`'s status word.
 fn wait_status(code: c_int, status: c_int) -> c_int {
     match code {
@@ -532,8 +564,8 @@ safe_operations! {
     fn statx_into(dfd: c_int, path: &CStr, flags: c_int, buf: &mut libc::statx) -> isize,
         timeout -1.0, opcode::Statx::new(Fd(dfd), path.as_ptr(), ptr::from_mut(buf).cast()).flags(flags).mask(libc::STATX_BASIC_STATS | libc::STATX_BTIME), std::convert::identity;
     /// `IORING_OP_WAITID` into `info`.
-    fn waitid(idtype: libc::idtype_t, id: libc::id_t, options: c_int, info: &mut libc::siginfo_t, timeout: f64) -> c_int,
-        timeout timeout, opcode::WaitId::new(idtype, id, options).infop(info), int;
+    fn waitid(idtype: libc::idtype_t, id: libc::id_t, options: c_int, info: &mut ChildInfo, timeout: f64) -> c_int,
+        timeout timeout, opcode::WaitId::new(idtype, id, options).infop(ptr::from_mut(info).cast()), int;
     /// `IORING_OP_ACCEPT` on `fd`: the peer's address into `address`'s storage, at most
     /// `address.len` bytes of it (and no more than it holds), and its length into `address.len`.
     pub fn accept(fd: c_int, address: &mut SocketAddress, flags: c_int, timeout: f64) -> c_int,
@@ -754,7 +786,7 @@ pub fn waitpid(
     if options & libc::WNOHANG != 0 {
         return os::waitpid(pid, stat_loc, options);
     }
-    let mut info: libc::siginfo_t = swoole_rs_corebase::sys::zeroed();
+    let mut info = ChildInfo::default();
     let (idtype, id) = if pid > 0 {
         (libc::P_PID, pid.cast_unsigned())
     } else {
@@ -765,13 +797,12 @@ pub fn waitpid(
     if rc == -1 {
         return rc;
     }
-    // SAFETY: the kernel filled `info` for a waited child.
-    let status = wait_status(info.si_code, unsafe { info.si_status() });
+    // The kernel filled `info` for a waited child.
+    let [_, _, code] = info.head;
     if let Some(stat_loc) = stat_loc {
-        *stat_loc = status;
+        *stat_loc = wait_status(code, info.child.status);
     }
-    // SAFETY: as above.
-    unsafe { info.si_pid() }
+    info.child.pid
 }
 
 /// poll(2) of one descriptor; `timeout` 0 polls without the ring.
