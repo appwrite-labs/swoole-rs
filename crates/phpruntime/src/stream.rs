@@ -25,8 +25,8 @@ use swoole_rs_zend::{
     message, string,
     sys::{
         PHP_STREAM_FLAG_AVOID_BLOCKING, php_stream, php_stream_ops, php_stream_statbuf,
-        php_stream_xport_crypto_param, php_stream_xport_param, sockaddr, swr_zend_stream_progress,
-        swr_zend_stream_set_option, timeval, zend_long, zend_string,
+        php_stream_xport_crypto_param, php_stream_xport_param, sockaddr, timeval, zend_long,
+        zend_string,
     },
     value::empty_string,
 };
@@ -63,6 +63,21 @@ unsafe extern "C" {
     /// `client->ctx = server->ctx`, with a reference of its own when there is
     /// one. What `client` named before is not released.
     safe fn swr_zend_stream_share_context(client: &mut php_stream, server: &php_stream);
+    /// `php_stream_notify_progress_increment` of the stream's context, which has
+    /// none or a notifier, inside `zend_try`: the notifier runs PHP code. 1 if it
+    /// bailed out.
+    safe fn swr_zend_stream_progress(stream: Stream<'_>, bytes: usize) -> c_int;
+    /// The context's option `name` for `wrapper` becomes a copy of `value`, with a
+    /// reference of its own; the option it replaces is released.
+    safe fn php_stream_context_set_option(
+        context: StreamContext<'_>,
+        wrapper: Text<'_>,
+        name: Text<'_>,
+        value: &Value,
+    );
+    /// `php_stream_close` of a stream no zval holds yet, inside `zend_try`: its
+    /// close operation may run PHP code. 1 if it bailed out.
+    safe fn swr_zend_try_stream_close(stream: Fresh) -> c_int;
     fn php_network_populate_name_from_sockaddr(
         sa: *mut sockaddr,
         sl: socklen_t,
@@ -310,9 +325,7 @@ fn alloc(socket: Rc<Socket>, persistent_id: *const c_char) -> Result<Option<Fres
 
 /// `php_stream_notify_progress_increment` of `bytes`.
 fn progress(stream: Stream<'_>, bytes: isize) -> Result<(), Bailout> {
-    let stream = stream.as_ptr();
-    // SAFETY: a live stream; the notifier runs inside the shim's zend_try.
-    if unsafe { swr_zend_stream_progress(stream, bytes.unsigned_abs()) } != 0 {
+    if swr_zend_stream_progress(stream, bytes.unsigned_abs()) != 0 {
         return Err(Bailout);
     }
     Ok(())
@@ -1053,11 +1066,11 @@ fn capture_peer_certs(stream: Stream<'_>, socket: &Socket) -> Result<bool, Bailo
     Ok(true)
 }
 
-/// Set the stream's `ssl` context option `name` to `value`.
+/// Set the `ssl` option `name` of the stream's context, if it has one, to `value`.
 fn set_context_option(stream: Stream<'_>, name: &CStr, value: &Value) {
-    let stream = stream.as_ptr();
-    // SAFETY: a live stream; the context takes its own reference.
-    unsafe { swr_zend_stream_set_option(stream, c"ssl".as_ptr(), name.as_ptr(), value.as_ptr()) };
+    if let Some(context) = stream.context() {
+        php_stream_context_set_option(context, c"ssl".into(), name.into(), value);
+    }
 }
 
 /// The `ssl` context options and the names Swoole's socket takes them under.
@@ -1162,16 +1175,14 @@ pub(crate) extern "C" fn transport_factory_body(
             let Some(stream) = alloc(Rc::clone(&socket), persistent)? else {
                 return Ok(ptr::null_mut());
             };
-            let stream = stream.into_ptr();
             if !ssl_set_options(&socket, context)? {
                 drop(socket);
-                // SAFETY: the stream is ours; its close callback runs below the C trap.
-                if unsafe { swoole_rs_zend::sys::swr_zend_try_stream_close(stream) } != 0 {
+                if swr_zend_try_stream_close(stream) != 0 {
                     return Err(Bailout);
                 }
                 return Ok(ptr::null_mut());
             }
-            return Ok(stream);
+            return Ok(stream.into_ptr());
         }
         let factory = crate::transport::original(protocol);
         if factory.is_null() {
