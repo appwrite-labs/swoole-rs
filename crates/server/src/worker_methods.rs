@@ -15,8 +15,7 @@ use swoole_rs_process::server_workers::{
 use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_init};
 
 use crate::view;
-
-const SW_LOG_ERROR: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR as c_int;
+use swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR;
 
 /// `Server::get_worker_by_pid(worker_pid)`: the first event worker with the pid, then
 /// the task pool's, then a user worker's; null for none.

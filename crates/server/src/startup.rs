@@ -10,6 +10,7 @@ use core::mem::offset_of;
 use core::sync::atomic::Ordering::{Relaxed, SeqCst};
 use swoole_rs_clients::address::assign;
 use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
+use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR, SW_LOG_WARNING};
 use swoole_rs_corebase::{CCast, log};
 use swoole_rs_error::ErrorCode;
 use swoole_rs_memory::members::Shm;
@@ -23,10 +24,6 @@ const MAX_THREAD_NCPU: u32 = 4;
 const MAX_WORKER_NCPU: u32 = 1000;
 const TIMER_MIN_SEC: f64 = 0.001;
 const BUFFER_MIN_SIZE: u32 = 65536;
-
-/// `SW_LOG_WARNING` and `SW_LOG_ERROR`.
-const SW_LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
-const SW_LOG_ERROR: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR as c_int;
 
 /// `Server::start`: checks, the daemon, the factory and the mode's workers, then
 /// the master's loop until shutdown, and `destroy`.
@@ -434,6 +431,7 @@ pub(crate) fn store_listen_socket(serv: view::Server<'_>) {
         conn.set_socket(Some(socket));
         conn.set_socket_type(port.r#type);
         conn.set_object(ls);
+        conn.listen(listen);
         let mut info = conn.info();
         info.kind = port.r#type;
         let host = port.host.bytes_with_nul();
@@ -888,6 +886,16 @@ mod tests {
         let port = (&raw const *live.port()).addr();
         assert_eq!(conn.fd(), fd, "the slot's fd");
         assert_eq!(conn.object().addr(), port, "the slot holds its port");
+        let listed = conn.port().map(|port| port.raw().addr());
+        assert_eq!(listed, Some(port), "as its listening port");
+        let mut unrelated = 0_u64;
+        conn.set_object((&raw mut unrelated).cast());
+        let found = live
+            .state()
+            .port_by_server_fd(fd)
+            .map(|port| port.raw().addr());
+        assert_eq!(found, Some(port), "whatever the public object holds");
+        conn.set_object(core::ptr::from_ref(live.port()).cast_mut().cast());
         assert_eq!(conn.socket_type(), 1, "TCP");
         assert_eq!(conn.info().kind, 1, "its address");
         assert_eq!(

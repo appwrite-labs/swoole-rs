@@ -9,6 +9,7 @@ use core::ffi::{CStr, c_int};
 use std::collections::BTreeMap;
 use std::sync::{Arc, MutexGuard, PoisonError};
 use swoole_rs_corebase::log;
+use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR, SW_LOG_NOTICE};
 use swoole_rs_error::ErrorCode as E;
 use swoole_rs_process::command::{CommandInput, ProcessTypes, Rejected, Rejection, Target, route};
 #[cfg(all(feature = "upstream-symbols", not(test)))]
@@ -17,8 +18,6 @@ use {
     swoole_rs_reactor::Socket,
 };
 
-const SW_LOG_NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
-const SW_LOG_ERROR: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR as c_int;
 const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
 
 /// `Server::Command::Handler`: answers `message` to the server by appending its
@@ -219,7 +218,12 @@ pub(crate) fn send(serv: Server<'_>, c: &CommandSend<'_>) -> bool {
     serv.state().message_bus().write(pipe, &mut info, c.message)
 }
 
-fn error(level: c_int, code: E, origin: &CStr, message: core::fmt::Arguments<'_>) {
+fn error(
+    level: swoole_rs_corebase::log::LogLevel,
+    code: E,
+    origin: &CStr,
+    message: core::fmt::Arguments<'_>,
+) {
     log::error_log(level, code as c_int, origin, message);
 }
 

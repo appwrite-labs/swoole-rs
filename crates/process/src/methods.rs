@@ -235,10 +235,9 @@ pub fn listen_socket(
 #[cfg(any(feature = "upstream-symbols", test))]
 fn listen(pool: &PoolRecord, host: &CStr, port: c_int, make: impl FnOnce() -> *mut c_void) -> bool {
     if pool.ipc_mode != crate::process_pool::IpcMode::Socket {
-        // SW_LOG_WARNING, SW_ERROR_OPERATION_NOT_SUPPORT.
         swoole_rs_corebase::log::error_log(
-            4,
-            507,
+            swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING,
+            swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as c_int,
             c"ProcessPool::listen",
             format_args!("not support, ipc_mode must be SW_IPC_SOCKET"),
         );

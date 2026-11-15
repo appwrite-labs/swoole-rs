@@ -15,10 +15,10 @@ use crate::reactor_entry::DgramPacket;
 use crate::reactor_handle::Reactor;
 use crate::records::{Connection, Lookup};
 use crate::{Mode, ServerState, view};
+use swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE;
 
 /// `SW_LOG_TRACE`, `SW_FD_SESSION`, `SW_FD_DGRAM_SERVER`, `SW_EVENT_READ` and
 /// `SW_EVENT_WRITE`.
-const SW_LOG_TRACE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as c_int;
 const FD_SESSION: c_int = 0;
 const FD_DGRAM_SERVER: c_int = 2;
 
@@ -244,6 +244,7 @@ mod tests {
         slot.set_fd(fd);
         slot.set_socket_type(2); // SW_SOCK_UDP
         slot.set_object(core::ptr::from_ref(live.port()).cast_mut().cast());
+        slot.listen(live.server().port_at(0).unwrap());
         let client = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         client.connect(server.local_addr().unwrap()).unwrap();
         (server, client)

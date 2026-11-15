@@ -22,12 +22,10 @@ use crate::reactor_ops::PoolBus;
 use crate::records::ConnectionRecord;
 use crate::worker_methods::{create_event_workers, create_user_workers};
 use crate::{factory, pool_native, server_methods, view};
+use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR as ERROR, SW_LOG_WARNING as WARNING};
 
 /// `SW_EVENT_READ` and `Server::THREAD_WORKER`.
 const THREAD_WORKER: u8 = 4;
-/// `SW_LOG_WARNING`, `SW_LOG_ERROR`.
-const WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
-const ERROR: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR as c_int;
 
 /// The server's thread factory's manager; thread mode's server has one.
 fn manager(serv: view::Server<'_>) -> std::sync::Arc<ThreadManager> {

@@ -380,7 +380,7 @@ mod kqueue_signal {
     use super::{c_int, log};
 
     /// `SW_LOG_WARNING`, `SW_ERROR_UNREGISTERED_SIGNAL` and `SW_ERROR_EVENT_UNKNOWN_DATA`.
-    pub(super) const LOG_WARNING: c_int = 4;
+    pub(super) use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
     const UNREGISTERED_SIGNAL: c_int =
         swoole_rs_error::ErrorCode::SW_ERROR_UNREGISTERED_SIGNAL as c_int;
     pub(super) const EVENT_UNKNOWN_DATA: c_int =

@@ -49,11 +49,11 @@ const NO_PAYLOAD: c_int = swoole_rs_error::ErrorCode::SW_ERROR_NO_PAYLOAD as c_i
 const STREAM_NOT_FOUND: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_HTTP2_STREAM_NOT_FOUND as c_int;
 const STREAM_IGNORE: c_int = swoole_rs_error::ErrorCode::SW_ERROR_HTTP2_STREAM_IGNORE as c_int;
-const LOG_WARNING: c_int = 4;
 
 use swoole_rs_phphttp::decimal;
 use swoole_rs_phphttp::http2::Field;
 
+use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 pub(crate) use swoole_rs_phphttp::http2::{Ctx, ResponseArray, Value};
 
 pub(crate) fn get(ctx: Ctx, field: Field) -> u32 {
@@ -73,7 +73,12 @@ fn close(ctx: Ctx) {
 }
 
 /// `swoole_warning` (`error` 0) or `swoole_error_log(level, error)` as `func`.
-pub(crate) fn log(level: c_int, error: c_int, func: &CStr, message: &str) {
+pub(crate) fn log(
+    level: swoole_rs_corebase::log::LogLevel,
+    error: c_int,
+    func: &CStr,
+    message: &str,
+) {
     if error > 0 {
         swoole_rs_corebase::log::error_log(level, error, func, format_args!("{message}"));
     } else {

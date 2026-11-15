@@ -85,6 +85,7 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
             serv_sock.set_fd(fd);
             serv_sock.set_socket_type(port.config().r#type);
             serv_sock.set_object(port.raw());
+            serv_sock.listen(*port);
             // The reactor thread that reads the datagram port.
             port.config()
                 .thread_id

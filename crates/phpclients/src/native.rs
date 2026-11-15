@@ -28,12 +28,10 @@ use swoole_rs_zend::{
     string::{self, ZBuf},
 };
 
-/// `SW_LOG_WARNING`.
-const LOG_WARNING: c_int = 4;
-
 /// A `SocketImpl *`.
 pub(crate) type Socket = *mut libc::c_void;
 
+use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 use swoole_rs_reactor::{Events, TimeoutKind};
 /// `SW_SOCK_UDP6`.
 const SOCK_UDP6: c_int = 4;
