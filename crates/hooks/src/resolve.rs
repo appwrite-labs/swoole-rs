@@ -114,9 +114,9 @@ pub fn name_resolver_lookup(name: &[u8], ctx: &mut NameResolverContext, out: &mu
         return;
     }
     *out = if swoole_rs_coroutine::current().is_null() {
-        resolver::gethostbyname(ctx.kind, name)
+        resolver::gethostbyname(ctx.options.get().0, name)
     } else {
-        system_gethostbyname(name, ctx.kind, ctx.timeout)
+        system_gethostbyname(name, ctx.options.get().0, ctx.timeout)
     };
 }
 
@@ -129,10 +129,10 @@ pub(crate) fn socket_lookup(
     name: &[u8],
     out: &mut Vec<u8>,
 ) -> bool {
-    ctx.kind = kind;
+    ctx.options.set_kind(kind);
     ctx.timeout = timeout;
     name_resolver_lookup(name, ctx, out);
-    ctx.with_port
+    ctx.options.get().1
 }
 
 /// `System::getaddrinfo` for crates/phpcoroutines: the addresses, or none with
