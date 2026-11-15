@@ -25,10 +25,9 @@ name: callgrind
 # atomic is benchmarks/primitives; process-mode is SWOOLE_PROCESS with two workers (#2654).
 # http2-concurrent, websocket-64k, websocket-fragmented, upload and static are
 # benchmarks/traffic (#2652).
-# Three shards of ten workloads, each about 6 minutes, so the job stays off a queue group's
-# longest chain (the PHPTs, about 10) and a regression is dropped before it lands. The fourth
-# is benchmarks/hooks (pgsql, sqlite, curl, dns; #2653) on a pair built with those hooks, which
-# would shift every other workload's ratio.
+# Balance the first three shards by measured duration. The fourth runs benchmarks/hooks
+# (pgsql, sqlite, curl, dns; #2653) on a pair built with those hooks, which would shift every
+# other workload's ratio.
 on:
   workflow_call:
 defaults:
@@ -45,9 +44,9 @@ jobs:
           - shard: 1
             workloads: --workload plaintext --workload echo-1k --workload json --workload service-health --workload websocket --workload timer --workload app --workload http2 --workload table --workload channel
           - shard: 2
-            workloads: --workload task --workload mysql --workload http-client --workload client --workload socket --workload gzip --workload websocket-deflate --workload tcp-length --workload tcp-eof --workload udp
+            workloads: --workload task --workload mysql --workload http-client --workload gzip --workload websocket-deflate --workload tcp-length --workload tcp-eof --workload udp
           - shard: 3
-            workloads: --workload connect --workload https --workload wss --workload atomic --workload process-mode --workload http2-concurrent --workload websocket-64k --workload websocket-fragmented --workload upload --workload static
+            workloads: --workload connect --workload https --workload wss --workload atomic --workload process-mode --workload http2-concurrent --workload websocket-64k --workload websocket-fragmented --workload upload --workload static --workload client --workload socket
           - shard: 4
             workloads: --workload pgsql --workload sqlite --workload curl --workload dns
             configure: --configure=--enable-swoole-pgsql --configure=--enable-swoole-sqlite --configure=--enable-swoole-curl --configure=--enable-cares
