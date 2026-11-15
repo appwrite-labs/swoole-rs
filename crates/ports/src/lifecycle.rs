@@ -200,7 +200,7 @@ extern "C" fn sni_callback(ssl: Ssl<'_>, _al: *mut c_int, _arg: *mut c_void) -> 
     // only a port's own contexts hold this callback, and `ssl_create` names the port
     // on each SSL it makes from one. Handshakes on every reactor thread read it at
     // once, through `&` only.
-    let Some(port) = (unsafe { view::Port::from_raw(port) }) else {
+    let Some(port) = unsafe { port.cast::<PortConfig>().as_ref() }.map(view::Port::from) else {
         return TLSEXT_NOACK;
     };
     let sni = sni(port.config());

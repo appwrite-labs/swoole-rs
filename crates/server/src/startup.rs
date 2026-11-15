@@ -117,7 +117,7 @@ fn create_on(serv: view::Server<'_>, cpu: u32) -> bool {
         return false;
     }
     tables.session_list.replace(sessions);
-    let count = state.tables_ref().ports().len();
+    let count = state.ports.len();
     let port_gs = Shm::calloc(count, size_of::<PortCounters>());
     let list = port_gs.as_ptr().cast::<PortCounters>();
     tables.port_gs_list.replace(port_gs);
@@ -127,7 +127,7 @@ fn create_on(serv: view::Server<'_>, cpu: u32) -> bool {
         log::sys_warning(c"Server::create", m);
         return false;
     }
-    for (index, port) in state.tables_ref().ports().iter().enumerate() {
+    for (index, port) in state.ports.iter().enumerate() {
         port.set_gs(list.wrapping_add(index).cast());
     }
     http_defaults(state);
@@ -170,7 +170,8 @@ fn create_on(serv: view::Server<'_>, cpu: u32) -> bool {
 fn http_defaults(state: &crate::ServerState) {
     use crate::StaticCollection::{CompressionTypes, Locations};
     use crate::static_config::Op;
-    let strings = |collection, op| crate::static_config::config(state, collection, op);
+    let strings =
+        |collection, op| crate::static_config::config(&state.static_config, collection, op);
     let config = state.config_ref();
     if config.enable_static_handler.get() && strings(Locations, Op::Enabled) == 0 {
         strings(Locations, Op::Reset);
@@ -188,7 +189,7 @@ fn max_connection(state: &crate::ServerState, max_sockets: u32) -> Option<u32> {
     let tables = state.tables_ref();
     let (workers, tasks) = (config.worker_num.get(), config.task_worker_num.get());
     let mut minimum = workers.wrapping_add(tasks).wrapping_mul(2).wrapping_add(32);
-    if let Some(last) = tables.ports().last() {
+    if let Some(last) = state.ports.last() {
         minimum = minimum.wrapping_add(last.fd().cast_unsigned());
     }
     if tables.max_connection() >= minimum {
@@ -317,7 +318,7 @@ pub(crate) fn start_check(serv: view::Server<'_>) -> bool {
     if send_timeout > 0.0 && send_timeout < TIMER_MIN_SEC {
         config.send_timeout.set(TIMER_MIN_SEC);
     }
-    let ports = state.tables_ref().ports();
+    let ports = &state.ports;
     let interval = config.heartbeat_check_interval.get();
     if interval > 0 {
         for port in ports {
@@ -327,7 +328,7 @@ pub(crate) fn start_check(serv: view::Server<'_>) -> bool {
             }
         }
     }
-    for &port in ports {
+    for port in ports {
         if !check_port(config, port, has) {
             return false;
         }
@@ -430,14 +431,13 @@ pub(crate) fn start_master_thread(serv: view::Server<'_>, reactor: Reactor) -> b
 /// slot holding the port, and the fd bounds from the last.
 pub(crate) fn store_listen_socket(serv: view::Server<'_>) {
     let state = serv.state();
-    let tables = state.tables_ref();
-    for (index, &listen) in tables.ports().iter().enumerate() {
+    for (index, listen) in state.ports.iter().enumerate() {
         let (ls, port) = (listen.raw(), listen.config());
         let Some(socket) = port.listening_socket() else {
             continue;
         };
         let fd = socket.fd();
-        let Some(conn) = tables.hold_port(index, fd) else {
+        let Some(conn) = state.hold_port(index, fd) else {
             continue;
         };
         conn.set_fd(fd);
@@ -523,7 +523,7 @@ fn destroy_base_factory(state: &crate::ServerState) {
     if let Some(gs) = crate::shared::server_counters(state) {
         unmap(&gs.connection_nums);
     }
-    for port in state.tables_ref().ports() {
+    for port in &state.ports {
         if let Some(gs) = port.config().counters() {
             unmap(&gs.connection_nums);
         }
@@ -714,7 +714,7 @@ mod tests {
             let tables = unsafe { &mut *state.tables() };
             assert!(!tables.session_list.is_null(), "sessions");
             assert!(!config(live).workers.is_null(), "workers");
-            let port = state.tables_ref().ports()[0].config();
+            let port = state.ports.get(0).unwrap().config();
             assert_eq!(
                 port.gs.get().addr(),
                 tables.port_gs_list.as_ptr().addr(),
@@ -743,7 +743,7 @@ mod tests {
             .as_ptr()
             .cast::<crate::shared::ServerCounters>();
         unsafe { (*gs).connection_nums.free() };
-        let port = state.tables_ref().ports()[0].config();
+        let port = state.ports.get(0).unwrap().config();
         let port_gs = port.gs.get().cast::<PortCounters>();
         unsafe { (*port_gs).connection_nums.free() };
         free(&live);
@@ -872,7 +872,7 @@ mod tests {
     }
 
     fn state_port(live: &LiveServer) -> view::Port<'_> {
-        live.state().tables_ref().ports()[0]
+        live.state().ports.get(0).unwrap()
     }
 
     #[test]

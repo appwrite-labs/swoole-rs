@@ -540,21 +540,11 @@ mod tests {
     fn pushed_ports_are_numbered_in_order() {
         let server = TestServer::new();
         let state = server.state();
-        let ports: Vec<_> = [1, 2]
-            .into_iter()
-            .map(|_| crate::port_config::swr_v1_port_config_new(0))
-            .collect();
-        unsafe {
-            assert!(state.tables_ref().ports().is_empty());
-            for &port in &ports {
-                let _ = state.push_port(Box::from_raw(port));
-            }
-            assert_eq!(state.tables_ref().ports().len(), 2);
-            assert_eq!((*ports[1]).object_id, 2);
-            drop(server);
-            for port in ports {
-                drop(Box::from_raw(port));
-            }
+        assert!(state.ports.is_empty());
+        for _ in 0..2 {
+            let _ = state.ports.push(crate::port_config::PortConfig::boxed(0));
         }
+        assert_eq!(state.ports.len(), 2);
+        assert_eq!(state.ports.get(1).unwrap().config().object_id, 2);
     }
 }
