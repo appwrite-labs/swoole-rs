@@ -30,7 +30,7 @@ use swoole_rs_corebase::{ProxyState, ResolverRequest, log};
 use swoole_rs_error::ErrorCode;
 #[cfg(not(test))]
 use swoole_rs_reactor::event_api::event_write;
-use swoole_rs_reactor::reactor_upstream::reactor_set_handler;
+use swoole_rs_reactor::reactor_upstream::set_handler;
 use swoole_rs_reactor::socket_upstream::Connect;
 use swoole_rs_reactor::{
     Caught, SOCKET_DEFAULTS, Socket, SocketRecord, fd_clean, swr_v1_socket_buffer_size,
@@ -774,14 +774,14 @@ extern "C" fn on_failure(reactor: Running<'_>, event: &mut Event) -> c_int {
 /// `Client::init_reactor`: the client sockets' handlers.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_clients_init_reactor(reactor: Running<'_>) {
-    let handlers: [(c_int, c_int, swoole_rs_reactor::Handler); 4] = [
-        (FD_STREAM_CLIENT, Events::READ.bits(), on_stream_read),
-        (FD_DGRAM_CLIENT, Events::READ.bits(), on_dgram_read),
-        (FD_STREAM_CLIENT, Events::WRITE.bits(), on_writable),
-        (FD_STREAM_CLIENT, Events::ERROR.bits(), on_failure),
+    let handlers: [(c_int, Events, swoole_rs_reactor::Handler); 4] = [
+        (FD_STREAM_CLIENT, Events::READ, on_stream_read),
+        (FD_DGRAM_CLIENT, Events::READ, on_dgram_read),
+        (FD_STREAM_CLIENT, Events::WRITE, on_writable),
+        (FD_STREAM_CLIENT, Events::ERROR, on_failure),
     ];
     for (fd_type, event, handler) in handlers {
-        reactor_set_handler(reactor, fd_type, event, Some(handler));
+        set_handler(reactor, fd_type, event, Some(handler));
     }
 }
 

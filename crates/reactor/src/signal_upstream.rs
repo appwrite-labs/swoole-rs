@@ -17,11 +17,9 @@ pub use swoole_rs_process::signal::Handler;
 use swoole_rs_process::signal::signal_name;
 use swoole_rs_process::signal_loop::{self, Ops, Report};
 
-/// `SW_FD_SIGNAL`, `SW_EVENT_READ`, `SW_LOG_WARNING` and `SW_ERROR_UNREGISTERED_SIGNAL`.
+/// `SW_FD_SIGNAL` and `SW_ERROR_UNREGISTERED_SIGNAL`.
 #[cfg(target_os = "linux")]
 const FD_SIGNAL: c_int = 9;
-#[cfg(target_os = "linux")]
-const EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
 const UNREGISTERED_SIGNAL: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_UNREGISTERED_SIGNAL as c_int;
 
@@ -124,9 +122,9 @@ fn report(report: Report) {
 
 #[cfg(target_os = "linux")]
 mod descriptor {
-    use super::{EVENT_READ, FD_SIGNAL, OPS, c_int, c_void, socket_free};
+    use super::{FD_SIGNAL, OPS, c_int, c_void, socket_free};
     use crate::event_api::{
-        FdHandler, event_add, event_del, swoole_event_isset_handler, swoole_event_set_fd_handler,
+        FdHandler, event_add, event_del, isset_handler, swoole_event_set_fd_handler,
     };
     use crate::socket_upstream::make_socket_fd;
     use crate::{Socket, SocketRecord};
@@ -176,7 +174,7 @@ mod descriptor {
     }
 
     pub(super) fn installed() -> bool {
-        swoole_event_isset_handler(FD_SIGNAL, EVENT_READ)
+        isset_handler(FD_SIGNAL, crate::Events::READ)
     }
 
     /// The signalfd's read handler.
@@ -199,7 +197,7 @@ mod descriptor {
 
     /// The read handler, the exit condition and the destroy callback.
     pub(super) fn install() {
-        swoole_event_set_fd_handler::<Read>(FD_SIGNAL, EVENT_READ);
+        swoole_event_set_fd_handler::<Read>(FD_SIGNAL, crate::Events::READ);
         crate::swr_v1_event_set_exit_condition(crate::ExitCondition::Signalfd, exit_condition);
         crate::event_api::on_destroy(destroyed);
     }

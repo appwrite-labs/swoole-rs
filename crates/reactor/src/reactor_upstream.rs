@@ -133,6 +133,16 @@ pub extern "C" fn reactor_set_handler(
     event: c_int,
     handler: Option<Handler>,
 ) {
+    set_handler(reactor, fd_type, crate::Events::from_bits(event), handler);
+}
+
+/// [`reactor_set_handler`] for typed `event`.
+pub fn set_handler(
+    reactor: crate::Running<'_>,
+    fd_type: c_int,
+    event: crate::Events,
+    handler: Option<Handler>,
+) {
     let set = reactor.handlers().set(fd_type, event, handler);
     debug_assert!(set, "Reactor::set_handler: no table for event {event}");
 }
@@ -144,7 +154,7 @@ pub extern "C" fn reactor_set_handler(
 pub fn reactor_get_handler(
     reactor: crate::Running<'_>,
     fd_type: c_int,
-    event: c_int,
+    event: crate::Events,
 ) -> Option<Handler> {
     reactor.handlers().of_event(fd_type, event)
 }
@@ -166,5 +176,11 @@ pub extern "C" fn reactor_isset_handler(
     fd_type: c_int,
     event: c_int,
 ) -> bool {
+    isset_handler(reactor, fd_type, crate::Events::from_bits(event))
+}
+
+/// [`reactor_isset_handler`] for typed `event`.
+#[must_use]
+pub fn isset_handler(reactor: crate::Running<'_>, fd_type: c_int, event: crate::Events) -> bool {
     reactor.handlers().isset(fd_type, event)
 }

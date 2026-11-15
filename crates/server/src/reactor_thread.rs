@@ -392,9 +392,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn init_reactor_sets_the_session_handlers() {
-        use swoole_rs_reactor::reactor_upstream::reactor_isset_handler;
-        let isset =
-            |running, fd_type, event: Events| reactor_isset_handler(running, fd_type, event.bits());
+        use swoole_rs_reactor::reactor_upstream::isset_handler as isset;
         let live = crate::fixture::LiveServer::new();
         let running = live.reactor().handle();
         assert!(!isset(running, FD_SESSION, Events::READ));

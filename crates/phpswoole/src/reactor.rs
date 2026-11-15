@@ -1,5 +1,6 @@
 //! Reactor fd handlers that run PHP, under the [`Php`] lease of their call.
 use std::{ffi::c_int, marker::PhantomData};
+use swoole_rs_reactor::Events;
 use swoole_rs_reactor::event_api::{self, FdHandler};
 use swoole_rs_zend::Php;
 
@@ -23,6 +24,6 @@ impl<H: PhpFdHandler> FdHandler for OnPhp<H> {
 
 /// `swoole_event_set_handler(fd_type, event, H)` on the reactor of the thread `_php`
 /// shows runs PHP.
-pub fn set_fd_handler<H: PhpFdHandler>(_php: Php<'_>, fd_type: c_int, event: c_int) {
+pub fn set_fd_handler<H: PhpFdHandler>(_php: Php<'_>, fd_type: c_int, event: Events) {
     event_api::swoole_event_set_fd_handler::<OnPhp<H>>(fd_type, event);
 }
