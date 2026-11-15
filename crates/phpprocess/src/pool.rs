@@ -7,7 +7,7 @@ use crate::{
     signal::clean,
 };
 use std::{
-    cell::{Cell, OnceCell, RefCell, UnsafeCell},
+    cell::{Cell, OnceCell, UnsafeCell},
     ffi::{CString, c_int, c_void},
     ptr,
     rc::Rc,
@@ -138,16 +138,23 @@ fn message_data(pool: PoolRef<'_>, message: &RecvData<'_>) -> Owned {
 
 /// One event's callable. Dispatch clones it out before calling PHP, so the
 /// callback can replace it (`on()`) without freeing the callable that runs.
+/// Only a clone or a check runs while it is taken out.
 #[derive(Default)]
-struct Handler(RefCell<Option<Rc<Callable>>>);
+struct Handler(Cell<Option<Rc<Callable>>>);
 
 impl Handler {
     fn get(&self) -> Option<Rc<Callable>> {
-        self.0.borrow().clone()
+        let callable = self.0.take();
+        let copy = callable.clone();
+        self.0.set(callable);
+        copy
     }
 
     fn is_set(&self) -> bool {
-        self.0.borrow().is_some()
+        let callable = self.0.take();
+        let set = callable.is_some();
+        self.0.set(callable);
+        set
     }
 
     /// Store `callable`, handing back the one it replaces for the caller to drop.
