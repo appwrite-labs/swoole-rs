@@ -335,7 +335,6 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-error",
  "swoole-rs-protocols",
- "swoole-rs-reactor",
 ]
 
 [[package]]
