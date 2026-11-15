@@ -164,12 +164,12 @@ impl Read<'_> {
 impl Connection for Read<'_> {
     #[inline]
     fn recv(&mut self, whole: bool) -> i64 {
-        let b = self.string();
-        let (at, size) = (if whole { 0 } else { b.len() }, b.size());
-        let start = b.as_mut_ptr().wrapping_add(at);
-        // SAFETY: the `size - at` writable bytes at `start`, in the connection's buffer.
-        let free = unsafe { Fill::from_raw(start.cast(), size - at) };
-        recv_fill(self.socket, free, 0) as i64
+        if whole {
+            // The receive replaces the content, which the caller sets afresh.
+            self.buffer().length = 0;
+        }
+        let socket = self.socket;
+        recv_fill(socket, Fill::new(self.string().spare()), 0) as i64
     }
 
     fn catch_error(&mut self) -> Caught {

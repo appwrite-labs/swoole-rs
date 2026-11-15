@@ -94,11 +94,11 @@ impl<T: Plain> Setting<T> {
 /// synchronization ([`crate::view::Port::from_raw`]) keeps writers apart from
 /// readers, as for every other setting. It is laid out as the value it holds.
 #[repr(transparent)]
-pub struct Shared<T>(core::cell::UnsafeCell<T>);
+pub struct Shared<T>(core::cell::Cell<T>);
 
 impl<T> Shared<T> {
     pub const fn new(value: T) -> Self {
-        Self(core::cell::UnsafeCell::new(value))
+        Self(core::cell::Cell::new(value))
     }
 
     #[inline]
@@ -106,15 +106,13 @@ impl<T> Shared<T> {
     where
         T: Copy,
     {
-        // SAFETY: no reference into the cell escapes a call, so none is live.
-        unsafe { *self.0.get() }
+        self.0.get()
     }
 
     /// The value before `value`, which the caller drops once the cell holds `value`.
     #[must_use]
     pub fn replace(&self, value: T) -> T {
-        // SAFETY: no reference into the cell escapes a call, so none is live.
-        core::mem::replace(unsafe { &mut *self.0.get() }, value)
+        self.0.replace(value)
     }
 
     pub fn set(&self, value: T) {
@@ -138,7 +136,7 @@ impl<T> Shared<T> {
 
     /// The value's address, which native code reads and writes by reference.
     pub const fn as_ptr(&self) -> *mut T {
-        self.0.get()
+        self.0.as_ptr()
     }
 }
 
@@ -247,7 +245,7 @@ pub struct ServerConfig {
     /// The `dispatch_func` callable's owner, which phpserver sets and downcasts.
     pub private_data_3: Published<Box<dyn core::any::Any>>,
     pub private_data_4: *mut c_void,
-    pub factory_: *mut c_void,
+    pub factory_: Shared<*mut c_void>,
     pub manager_: Shared<*mut c_void>,
     pub task_worker_num: Setting<u32>,
     pub task_ipc_mode: Setting<u8>,
@@ -438,7 +436,7 @@ impl Default for ServerConfig {
             private_data_2: core::ptr::null_mut(),
             private_data_3: Published::default(),
             private_data_4: core::ptr::null_mut(),
-            factory_: core::ptr::null_mut(),
+            factory_: Shared::new(core::ptr::null_mut()),
             manager_: Shared::new(core::ptr::null_mut()),
             task_worker_num: Setting::new(0),
             task_ipc_mode: Setting::new(TaskIpcMode::UnixSock as u8),

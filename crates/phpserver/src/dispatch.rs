@@ -20,7 +20,7 @@ use swoole_rs_corebase::{ServerEvent, WebSocketStatus};
 use swoole_rs_process::methods::ExitStatus;
 use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::Worker;
-use swoole_rs_server::ConnectionRecord;
+use swoole_rs_server::Connection;
 use swoole_rs_server::callbacks::{Callback, CallbackKind, Ctx};
 use swoole_rs_zend::host::callable;
 use swoole_rs_zend::{
@@ -984,7 +984,7 @@ fn call_unlimited(
 extern "C" fn on_dispatch(
     _: Ctx,
     server: view::Server<'_>,
-    conn: Option<&ConnectionRecord>,
+    conn: Option<Connection<'_>>,
     send: Option<&RecvData>,
 ) -> c_int {
     let config = server.config();
@@ -998,7 +998,7 @@ extern "C" fn on_dispatch(
         return -1;
     };
     let session = match conn {
-        Some(conn) => conn.session_id,
+        Some(conn) => conn.session_id(),
         None => send.map_or(0, |send| send.info().fd),
     };
     let kind = send.map_or(ServerEvent::Close.code(), |send| send.info().kind);

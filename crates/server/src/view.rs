@@ -27,6 +27,48 @@ pub(crate) struct Fields {
     config: *mut ServerConfig,
 }
 
+/// A `Server *`: the head C++ and [`Server`] read, then the reactor threads' barrier.
+/// It owns the state it names, which it frees when it drops, so a borrowed object
+/// is a live server ([`Server::of_object`]).
+#[repr(C)]
+#[cfg_attr(
+    any(test, not(feature = "upstream-symbols")),
+    expect(dead_code, reason = "only `SharedServer` makes a server object")
+)]
+pub(crate) struct ServerObject {
+    head: Fields,
+    tables: *mut crate::ServerTables,
+    callbacks: *mut c_void,
+    pub(crate) reactor_thread_barrier: swoole_rs_locks::Barrier,
+}
+
+#[cfg_attr(
+    any(test, not(feature = "upstream-symbols")),
+    expect(dead_code, reason = "only `SharedServer` makes a server object")
+)]
+impl ServerObject {
+    /// The object over `state`, which it owns from now on.
+    pub(crate) fn new(state: Box<ServerState>) -> Self {
+        let (config, tables) = (state.config(), state.tables());
+        let state = Box::into_raw(state);
+        Self {
+            head: Fields { state, config },
+            tables,
+            callbacks: ServerState::callbacks_ptr(state),
+            // SAFETY: all-zero is an unset barrier, as C++'s `Barrier reactor_thread_barrier = {}`.
+            reactor_thread_barrier: unsafe { core::mem::zeroed() },
+        }
+    }
+}
+
+impl Drop for ServerObject {
+    fn drop(&mut self) {
+        // SAFETY: the state `new` boxed, which only this object owns. Its tables own
+        // the message bus, and its configuration the shared record, freed after the bus.
+        drop(unsafe { Box::from_raw(self.head.state.cast_mut()) });
+    }
+}
+
 #[cfg(test)]
 impl Fields {
     /// A head over `state`, as a server's own: a test's server.
@@ -91,6 +133,18 @@ impl<'a> Server<'a> {
         }
     }
 
+    /// The server `object` is, live as long as the borrow.
+    #[cfg_attr(
+        any(test, not(feature = "upstream-symbols")),
+        expect(dead_code, reason = "only `SharedServer` makes a server object")
+    )]
+    pub(crate) fn of_object(object: &'a ServerObject) -> Self {
+        Self {
+            raw: core::ptr::from_ref(object).cast_mut().cast(),
+            live: PhantomData,
+        }
+    }
+
     /// `sw_server()`: the process's server (`SwooleG.server`), or `None` while it has
     /// none.
     ///
@@ -149,18 +203,6 @@ impl<'a> Server<'a> {
         // SAFETY: the config allocation lives as long as the server, and writers
         // hold no reference across a read.
         unsafe { &*self.fields().config }
-    }
-
-    /// The server's configuration, to write.
-    ///
-    /// # Safety
-    /// No other reference to the configuration is live meanwhile, and no other
-    /// thread reads the fields written (the server's own synchronization).
-    #[must_use]
-    #[cfg(test)]
-    pub unsafe fn config_mut(self) -> &'a mut ServerConfig {
-        // SAFETY: per the caller; the allocation lives as long as the server.
-        unsafe { &mut *self.fields().config }
     }
 
     /// `serv->get_worker_message_bus()->move_packet()`: the bus no longer frees
@@ -285,7 +327,7 @@ impl<'a> Server<'a> {
             && self.is_single_worker()
             && self.counters().master_pid.load(Ordering::Relaxed)
                 == std::process::id().cast_signed()
-            && !config.factory_.is_null()
+            && !config.factory_.get().is_null()
     }
 
     /// `Server::is_worker_thread()`: thread mode, on a worker thread.
@@ -390,7 +432,7 @@ impl<'a> Server<'a> {
     /// `Server::get_max_connection()`.
     #[must_use]
     pub fn max_connection(self) -> u32 {
-        self.state().tables_ref().max_connection
+        self.state().tables_ref().max_connection()
     }
 
     /// `serv->get_task_worker_pool()`.
@@ -738,6 +780,19 @@ mod tests {
     use super::*;
     use core::ffi::c_void;
 
+    impl<'a> Server<'a> {
+        /// The server's configuration, to write.
+        ///
+        /// # Safety
+        /// No other reference to the configuration is live meanwhile, and no other
+        /// thread reads the fields written (the server's own synchronization).
+        #[must_use]
+        pub(crate) unsafe fn config_mut(self) -> &'a mut ServerConfig {
+            // SAFETY: per the caller; the allocation lives as long as the server.
+            unsafe { &mut *self.fields().config }
+        }
+    }
+
     /// Only a single base-mode worker's own, undestroyed server has an event pool
     /// MSHUTDOWN may destroy: not another process's, a destroyed one, a process-mode
     /// one, or one with a manager or a task worker. Unit tests link no
@@ -754,7 +809,7 @@ mod tests {
         config.mode_ = Mode::Base;
         config.worker_num.set(1);
         let mut factory = 0u8;
-        config.factory_ = (&raw mut factory).cast();
+        config.factory_.set((&raw mut factory).cast());
         let own = std::process::id().cast_signed();
         serv.counters().master_pid.store(own, Ordering::Relaxed);
         assert!(serv.ran_its_single_worker_here());
@@ -762,9 +817,9 @@ mod tests {
         assert!(!serv.ran_its_single_worker_here(), "another process's");
         serv.counters().master_pid.store(own, Ordering::Relaxed);
         let config = unsafe { serv.config_mut() };
-        config.factory_ = core::ptr::null_mut();
+        config.factory_.set(core::ptr::null_mut());
         assert!(!serv.ran_its_single_worker_here(), "destroyed");
-        config.factory_ = (&raw mut factory).cast();
+        config.factory_.set((&raw mut factory).cast());
         config.mode_ = Mode::Process;
         assert!(!serv.ran_its_single_worker_here(), "process mode");
         config.mode_ = Mode::Base;
@@ -777,7 +832,7 @@ mod tests {
         config.task_worker_num.set(1);
         assert!(!serv.ran_its_single_worker_here(), "a task worker");
         config.task_worker_num.set(0);
-        config.factory_ = core::ptr::null_mut();
+        config.factory_.set(core::ptr::null_mut());
         config.gs.free();
         unsafe { crate::state::free_state(state) };
     }

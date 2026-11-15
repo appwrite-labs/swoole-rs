@@ -327,7 +327,7 @@ impl Handlers {
 
 /// The write (`kind` 1) or error (`kind` 2) default handler.
 pub fn swr_v1_reactor_handlers_set_default(
-    handlers: &mut Handlers,
+    handlers: &Handlers,
     kind: u32,
     handler: Option<Handler>,
 ) {
@@ -375,11 +375,11 @@ mod tests {
 
             // Write and error fall back to the defaults; error dispatch then to read.
             assert_eq!(call((*h).get(Table::Write, 5)), 0);
-            swr_v1_reactor_handlers_set_default(&mut *h, 1, Some(two));
+            swr_v1_reactor_handlers_set_default(&*h, 1, Some(two));
             assert_eq!(call((*h).get(Table::Write, 5)), 2);
             assert_eq!(call((*h).get(Table::Error, 5)), 0);
             assert_eq!(call((*h).dispatch(Table::Error, 5)), 1);
-            swr_v1_reactor_handlers_set_default(&mut *h, 2, Some(three));
+            swr_v1_reactor_handlers_set_default(&*h, 2, Some(three));
             assert_eq!(call((*h).dispatch(Table::Error, 5)), 3);
             assert_eq!(call((*h).fallback(1)), 3);
             assert!((*h).fallback(2).is_none());
