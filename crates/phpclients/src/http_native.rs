@@ -6,12 +6,17 @@ use crate::{native::Co, socket::Sock};
 use libc::c_int;
 use std::{ffi::CStr, mem::MaybeUninit, sync::OnceLock};
 use swoole_rs_buffer::string::CppString;
-use swoole_rs_corebase::{ProxyState, log};
+use swoole_rs_corebase::{ProxyState, log, sys::Text};
 use swoole_rs_hooks::hooked::{swoole_coroutine_close, write};
 use swoole_rs_hooks::socket_extra::{CloseHook, set_close_hook};
-use swoole_rs_hooks::stdio::{
-    swoole_coroutine_ftruncate, swoole_coroutine_lseek, swoole_coroutine_open,
-};
+// crates/hooks' coroutine file calls, by symbol: each reads its path up to the NUL
+// or works on a descriptor, as `open`, `ftruncate` and `lseek` do, so they are
+// declared `safe`.
+unsafe extern "C" {
+    safe fn swoole_coroutine_open(path: Text<'_>, flags: c_int, mode: libc::mode_t) -> c_int;
+    safe fn swoole_coroutine_ftruncate(fd: c_int, length: libc::off_t) -> c_int;
+    safe fn swoole_coroutine_lseek(fd: c_int, offset: libc::off_t, whence: c_int) -> libc::off_t;
+}
 use swoole_rs_phpruntime::co;
 use swoole_rs_zend::{Array, Owned, Value};
 
@@ -246,8 +251,7 @@ impl Co {
 /// or `None` after upstream's warning.
 pub(crate) fn swoole_http_client_coro_file_open(name: &CStr, offset: i64) -> Option<c_int> {
     let path = name.to_string_lossy();
-    // SAFETY: a NUL-terminated path.
-    let fd = unsafe { swoole_coroutine_open(name.as_ptr(), libc::O_CREAT | libc::O_WRONLY, 0o664) };
+    let fd = swoole_coroutine_open(name.into(), libc::O_CREAT | libc::O_WRONLY, 0o664);
     let origin = c"http_parser_on_body";
     let failed = if fd == -1 {
         log::sys_warning(
@@ -255,12 +259,11 @@ pub(crate) fn swoole_http_client_coro_file_open(name: &CStr, offset: i64) -> Opt
             format_args!("open({path}, O_CREAT | O_WRONLY) failed"),
         );
         return None;
-    // SAFETY: the open descriptor.
-    } else if offset == 0 && unsafe { swoole_coroutine_ftruncate(fd, 0) } != 0 {
+    } else if offset == 0 && swoole_coroutine_ftruncate(fd, 0) != 0 {
         log::sys_warning(origin, format_args!("ftruncate({path}) failed"));
         true
-    // SAFETY: as above; upstream fails only on a zero result.
-    } else if offset != 0 && unsafe { swoole_coroutine_lseek(fd, offset, libc::SEEK_SET) } == 0 {
+    // Upstream fails only on a zero result.
+    } else if offset != 0 && swoole_coroutine_lseek(fd, offset, libc::SEEK_SET) == 0 {
         log::sys_warning(origin, format_args!("fseek({path}, {offset}) failed"));
         true
     } else {
