@@ -56,31 +56,6 @@ pub mod vector;
 pub mod wait_event;
 pub mod wait_signal;
 
-#[derive(Debug, PartialEq, Eq)]
-pub struct EventPlan {
-    pub revents: u32,
-    pub wake: bool,
-}
-
-/// Native `EventWaiter` queues at most one deferred wake before publishing bits.
-#[must_use]
-pub fn event_waiter(received: u32, event: u32) -> EventPlan {
-    EventPlan {
-        revents: received | event,
-        wake: received == 0,
-    }
-}
-
-/// `System::wait_event` strips error readiness and adds only requested IO bits.
-#[must_use]
-pub fn wait_revents(requested: u32, received: u32, read_write: u32, error: u32) -> u32 {
-    if received & error != 0 {
-        (received ^ error) | (requested & read_write)
-    } else {
-        received
-    }
-}
-
 /// Preserve the pinned two divisions rather than changing timeout rounding.
 #[must_use]
 pub fn timeval(seconds: f64, micros: f64) -> f64 {

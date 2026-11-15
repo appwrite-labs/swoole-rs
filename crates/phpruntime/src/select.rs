@@ -4,6 +4,7 @@
 use crate::socket::{Report, convert_to_fd, coroutine_check, poll, report};
 use std::{collections::HashMap, ptr};
 use swoole_rs_corebase::CCast;
+use swoole_rs_reactor::Events;
 use swoole_rs_zend::{
     ArrayMut, Call, E_WARNING, Owned, Value, ZStr, ZString,
     bailout::Bailout,
@@ -18,11 +19,8 @@ unsafe extern "C" {
     safe fn swr_zend_stream_zval_buffered(value: &Value) -> bool;
 }
 
-/// `SW_EVENT_READ`, `SW_EVENT_WRITE`, `SW_EVENT_ERROR`, one per array.
-const READ: i32 = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as i32;
-const WRITE: i32 = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as i32;
-const ERROR: i32 = swoole_rs_corebase::constants::EventType::SW_EVENT_ERROR as i32;
-const EVENTS: [i32; 3] = [READ, WRITE, ERROR];
+/// The event of each array: read, write, except.
+const EVENTS: [Events; 3] = [Events::READ, Events::WRITE, Events::ERROR];
 
 /// `zend::KeyValue`: where a stream sat in its array, and a reference to it.
 struct Entry {
@@ -70,8 +68,8 @@ impl Arrays {
 /// goes on, and the copy keeps the table it walks alive.
 fn to_fd_set(
     array: &Owned,
-    event: i32,
-    rows: &mut Vec<(i32, i32)>,
+    event: Events,
+    rows: &mut Vec<(i32, Events)>,
     found: &mut HashMap<i32, Entry>,
 ) -> Result<(), Bailout> {
     let Some(array) = array.array() else {
@@ -206,14 +204,14 @@ fn select(call: &Call) -> Result<(), Bailout> {
     };
     let mut ready = 0;
     for (fd, revents) in polled {
-        if revents <= 0 {
+        if revents.is_empty() {
             continue;
         }
         let Some(entry) = found.get(&fd) else {
             continue;
         };
         for (which, event) in EVENTS.into_iter().enumerate() {
-            if revents & event != 0
+            if revents.intersects(event)
                 && let Some(array) = arrays.get(which)
             {
                 entry.add_to(array);
@@ -227,10 +225,10 @@ fn select(call: &Call) -> Result<(), Bailout> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ERROR, READ, WRITE};
+    use super::{EVENTS, Events};
 
     #[test]
     fn events_are_swooles() {
-        assert_eq!((READ, WRITE, ERROR), (512, 1024, 2048));
+        assert_eq!(EVENTS.map(Events::bits), [512, 1024, 2048]);
     }
 }

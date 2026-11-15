@@ -3,18 +3,19 @@
 //! each fd is registered with the reactor, the coroutine parks, and the first
 //! readiness or the timer wakes it once. [`NATIVE`] registers with the reactor, arms
 //! the timer and parks; tests pass their own [`PollOps`].
-use crate::wait_event::{ERROR, READ, WRITE, from_poll, to_poll};
+use crate::wait_event::{from_poll, to_poll};
 use std::cell::Cell;
 use std::ffi::c_void;
 use std::ptr::NonNull;
+use swoole_rs_reactor::Events;
 
 /// One polled fd in Swoole event bits (upstream's `PollSocket`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PollFd {
     pub fd: i32,
-    pub events: i32,
-    pub revents: i32,
+    pub events: Events,
+    pub revents: Events,
 }
 
 /// The reactor, timer and coroutine operations a coroutine poll needs; `S` is a
@@ -24,7 +25,7 @@ pub struct PollFd {
 pub struct PollOps<S> {
     /// Registers `fd` for `events` with the task as its object; none if the reactor
     /// refused it.
-    add: fn(i32, i32, Registered) -> Option<S>,
+    add: fn(i32, Events, Registered) -> Option<S>,
     /// A one-shot timer of `timeout` seconds calling [`timeout`] on the task; none if
     /// it could not be added.
     timer_add: fn(f64, Registered) -> Option<Timer>,
@@ -97,17 +98,17 @@ impl Task<'_> {
 
 /// Coalesces `event` into `received`: error readiness becomes the requested
 /// read/write bits unless the error bit itself was requested.
-fn coalesce(requested: i32, received: i32, event: i32) -> i32 {
+fn coalesce(requested: Events, received: Events, event: Events) -> Events {
     received
-        | if event == ERROR && requested & ERROR == 0 {
-            requested & (READ | WRITE)
+        | if event == Events::ERROR && !requested.intersects(Events::ERROR) {
+            requested & Events::RDWR
         } else {
             event
         }
 }
 
 /// The reactor saw `event` on `fd` of a registered poll.
-pub fn ready(task: &Task<'_>, fd: i32, event: i32) {
+pub fn ready(task: &Task<'_>, fd: i32, event: Events) {
     if let Some(entry) = task.fds.iter().find(|entry| entry.get().fd == fd) {
         let mut row = entry.get();
         row.revents = coalesce(row.events, row.revents, event);
@@ -241,7 +242,7 @@ fn unordered_map_order(keys: impl IntoIterator<Item = i32>) -> Vec<i32> {
 /// order: each polled fd and its revents, or none on a timeout or when no fd could
 /// be added. Outside a coroutine a nonzero `timeout` is upstream's fatal error.
 #[must_use]
-pub fn socket_poll_rows(rows: &[(i32, i32)], timeout: f64) -> Option<Vec<(i32, i32)>> {
+pub fn socket_poll_rows(rows: &[(i32, Events)], timeout: f64) -> Option<Vec<(i32, Events)>> {
     let mut fds: Vec<PollFd> = unordered_map_order(rows.iter().map(|row| row.0))
         .into_iter()
         .map(|fd| PollFd {
@@ -249,8 +250,8 @@ pub fn socket_poll_rows(rows: &[(i32, i32)], timeout: f64) -> Option<Vec<(i32, i
             events: rows
                 .iter()
                 .filter(|row| row.0 == fd)
-                .fold(0, |all, row| all | row.1),
-            revents: 0,
+                .fold(Events::NONE, |all, row| all | row.1),
+            revents: Events::NONE,
         })
         .collect();
     let polled = socket_poll(&mut fds, timeout, &NATIVE);
@@ -268,7 +269,7 @@ pub fn swr_v1_hook_poll<S>(fds: &mut [libc::pollfd], timeout: i32, ops: &PollOps
             rows.push(PollFd {
                 fd: polled.fd,
                 events: from_poll(polled.events),
-                revents: 0,
+                revents: Events::NONE,
             });
         }
     }
@@ -283,7 +284,7 @@ pub fn swr_v1_hook_poll<S>(fds: &mut [libc::pollfd], timeout: i32, ops: &PollOps
         if let Some(fd) = fds.get_mut(i) {
             fd.revents = to_poll(revents);
         }
-        ready += i32::from(revents > 0);
+        ready += i32::from(!revents.is_empty());
     }
     ready
 }
@@ -310,14 +311,14 @@ pub use tests::Socket as TestSocket;
 
 #[cfg(not(test))]
 pub(crate) mod native {
-    use super::{Registered, Timer};
+    use super::{Events, Registered, Timer};
     use crate::wait_event::native::{Object, Watch};
     use swoole_rs_coroutine::resume;
     use swoole_rs_reactor::event_api::{Deferred, swoole_event_defer_value};
 
     use swoole_rs_timer::{add_fn_sec, del_id};
 
-    pub(super) fn add(fd: i32, events: i32, task: Registered) -> Option<Watch> {
+    pub(super) fn add(fd: i32, events: Events, task: Registered) -> Option<Watch> {
         // SAFETY: a poll task, the object `poll_ready` takes, which outlives the watch.
         unsafe { Watch::add(fd, events, Object::Poll(task)) }.ok()
     }
@@ -366,7 +367,7 @@ mod tests {
         static LOG: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
         /// Fds the fake reactor refuses, and what fires while parked.
         static REFUSE: Cell<i32> = const { Cell::new(-1) };
-        static FIRE: Cell<Option<(i32, i32)>> = const { Cell::new(None) };
+        static FIRE: Cell<Option<(i32, Events)>> = const { Cell::new(None) };
         static DEFERRED: Cell<Option<Registered>> = const { Cell::new(None) };
         static TASK: Cell<Option<Registered>> = const { Cell::new(None) };
     }
@@ -385,7 +386,7 @@ mod tests {
         }
     }
 
-    fn add(fd: i32, events: i32, task: Registered) -> Option<Socket> {
+    fn add(fd: i32, events: Events, task: Registered) -> Option<Socket> {
         log(format!("add {fd} {events}"));
         if fd == REFUSE.get() {
             return None;
@@ -465,26 +466,27 @@ mod tests {
 
     #[test]
     fn readiness_wakes_once_and_cleans_up() {
-        FIRE.set(Some((5, ERROR)));
+        FIRE.set(Some((5, Events::ERROR)));
         REFUSE.set(6);
         let mut fds = [
             PollFd {
                 fd: 5,
-                events: READ,
-                revents: 0,
+                events: Events::READ,
+                revents: Events::NONE,
             },
             PollFd {
                 fd: 6,
-                events: WRITE,
-                revents: 0,
+                events: Events::WRITE,
+                revents: Events::NONE,
             },
         ];
         assert!(socket_poll(&mut fds, 1.5, &OPS));
         assert_eq!(
-            fds[0].revents, READ,
+            fds[0].revents,
+            Events::READ,
             "error readiness becomes the requested read"
         );
-        assert_eq!(fds[1].revents, 0);
+        assert_eq!(fds[1].revents, Events::NONE);
         assert_eq!(
             take(),
             [
@@ -506,8 +508,8 @@ mod tests {
         REFUSE.set(-1);
         let mut fds = [PollFd {
             fd: 3,
-            events: READ | ERROR,
-            revents: 0,
+            events: Events::READ | Events::ERROR,
+            revents: Events::NONE,
         }];
         assert!(!socket_poll(&mut fds, -1.0, &OPS));
         assert_eq!(take(), ["add 3 2560", "park", "remove 3", "resume"]);
@@ -518,8 +520,8 @@ mod tests {
         REFUSE.set(4);
         let mut fds = [PollFd {
             fd: 4,
-            events: READ,
-            revents: 0,
+            events: Events::READ,
+            revents: Events::NONE,
         }];
         assert!(!socket_poll(&mut fds, 1.0, &OPS));
         assert_eq!(take(), ["add 4 512"]);
@@ -532,17 +534,20 @@ mod tests {
         let mut fds = [
             PollFd {
                 fd: pair[0],
-                events: READ,
-                revents: 0,
+                events: Events::READ,
+                revents: Events::NONE,
             },
             PollFd {
                 fd: pair[1],
-                events: WRITE,
-                revents: 0,
+                events: Events::WRITE,
+                revents: Events::NONE,
             },
         ];
         assert!(socket_poll(&mut fds, 0.0, &OPS));
-        assert_eq!((fds[0].revents, fds[1].revents), (0, WRITE));
+        assert_eq!(
+            (fds[0].revents, fds[1].revents),
+            (Events::NONE, Events::WRITE)
+        );
         assert_eq!(take(), Vec::<String>::new());
         unsafe {
             libc::close(pair[0]);
@@ -552,7 +557,7 @@ mod tests {
 
     #[test]
     fn hooked_poll_counts_a_repeated_fd_once() {
-        FIRE.set(Some((9, WRITE)));
+        FIRE.set(Some((9, Events::WRITE)));
         REFUSE.set(-1);
         let entry = |fd, events| libc::pollfd {
             fd,
@@ -629,6 +634,9 @@ mod tests {
 
     #[test]
     fn ported_trigger_matrix() {
+        const READ: i32 = Events::READ.bits();
+        const WRITE: i32 = Events::WRITE.bits();
+        const ERROR: i32 = Events::ERROR.bits();
         let requested = [0, READ, WRITE, READ | WRITE, ERROR, ERROR | READ];
         let received = [0, READ, WRITE, ERROR];
         let events = [READ, WRITE, ERROR];
@@ -659,8 +667,8 @@ mod tests {
             }
             let row = Cell::new(PollFd {
                 fd: 77,
-                events: requested[k % 6],
-                revents: received[(k / 6) % 4],
+                events: Events::from_bits(requested[k % 6]),
+                revents: Events::from_bits(received[(k / 6) % 4]),
             });
             let sockets: Vec<Cell<Option<Socket>>> = Vec::new();
             let task = Task {
@@ -673,7 +681,7 @@ mod tests {
                 wake: &OPS.wake,
             };
             for event in [events[(k / 24) % 3], READ] {
-                ready(&task, 77, event);
+                ready(&task, 77, Events::from_bits(event));
                 log(format!(
                     "{} {} {}",
                     row.get().revents,
