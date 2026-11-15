@@ -562,7 +562,7 @@ impl Co {
     }
 
     /// `f` over the socket's HTTP proxy owner; None without one. `f` must not
-    /// reach the socket's metadata again (a nested loan panics).
+    /// reach the socket's metadata again (a nested one sees none).
     pub fn with_http_proxy<T>(self, f: impl FnOnce(&ProxyState) -> T) -> Option<T> {
         self.with_extra(|extra| extra.proxies[1].as_deref().map(f))
             .flatten()
