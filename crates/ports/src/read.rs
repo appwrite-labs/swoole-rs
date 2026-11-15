@@ -5,6 +5,7 @@
 //! request's own operations are `swoole_rs_http`'s.
 use core::ffi::c_int;
 use swoole_rs_corebase::log;
+use swoole_rs_corebase::log::LogLevel::{SW_LOG_TRACE as TRACE, SW_LOG_WARNING as WARNING};
 use swoole_rs_error::ErrorCode;
 use swoole_rs_http_ffi::{HttpRequest as Request, HttpString as Buffer};
 use swoole_rs_reactor::Caught;
@@ -302,10 +303,6 @@ fn bad(n: &mut impl Connection, which: Log) -> Step {
     log(n, which);
     Step::Reply(Reply::BadRequest)
 }
-
-/// `SW_LOG_TRACE` and `SW_LOG_WARNING`.
-const TRACE: c_int = 1;
-const WARNING: c_int = 4;
 
 /// One of `readable_callback_http`'s `swoole_error_log`s, naming the client.
 fn log(n: &mut impl Connection, which: Log) {
@@ -1068,7 +1065,7 @@ pub(crate) mod tests {
         assert_eq!(
             logged(),
             [(
-                TRACE,
+                TRACE as c_int,
                 7102,
                 "Bad Request: invalid Transfer-Encoding from session#7 on 127.0.0.1:9501"
                     .to_owned()
@@ -1100,7 +1097,7 @@ pub(crate) mod tests {
         assert_eq!(
             logged(),
             [(
-                WARNING,
+                WARNING as c_int,
                 7102,
                 "Request Entity Too Large: the chunked request length (1024) has reached the \
                  package_max_length(1024) from session#7 on 127.0.0.1:9501"
@@ -1119,7 +1116,7 @@ pub(crate) mod tests {
         assert_eq!(
             logged(),
             [(
-                WARNING,
+                WARNING as c_int,
                 7102,
                 "Request Entity Too Large: header-length (41) + content-length (2000) is \
                  greater than the package_max_length(1024) from session#7 on 127.0.0.1:9501"
@@ -1135,7 +1132,7 @@ pub(crate) mod tests {
         assert_eq!(
             logged(),
             [(
-                TRACE,
+                TRACE as c_int,
                 7102,
                 "Bad Request: unknown protocol from session#7 on 127.0.0.1:9501".to_owned()
             )],

@@ -9,6 +9,7 @@ use core::ffi::{CStr, c_char, c_int, c_long};
 use core::sync::atomic::Ordering::{Relaxed, SeqCst};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::ServerEvent;
+use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR, SW_LOG_TRACE, SW_LOG_WARNING};
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_utilities::misc::swoole_hash_php;
 
@@ -199,22 +200,16 @@ pub fn sendwait(serv: Server<'_>, session_id: c_long, data: &[u8]) -> bool {
     usize::try_from(sent) == Ok(data.len())
 }
 
-/// `SW_LOG_TRACE`.
-const SW_LOG_TRACE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as c_int;
-
 const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
 /// `sizeof(SendfileTask)`: its `off_t offset` and `size_t length`, then the name.
 const SENDFILE_TASK_SIZE: usize = 16;
-/// `SW_LOG_WARNING` and `SW_LOG_ERROR`.
-const SW_LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
-const SW_LOG_ERROR: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR as c_int;
 
 /// `Server::sendfile`'s buffer, aligned for the `SendfileTask` it starts with.
 #[repr(C, align(8))]
 struct SendfileBuffer([u8; IPC_BUFFER_SIZE]);
 
 fn log_error(
-    level: c_int,
+    level: swoole_rs_corebase::log::LogLevel,
     code: swoole_rs_error::ErrorCode,
     origin: &CStr,
     m: core::fmt::Arguments<'_>,
@@ -222,7 +217,11 @@ fn log_error(
     swoole_rs_corebase::log::error_log(level, code as c_int, origin, m);
 }
 
-fn sendfile_error(level: c_int, code: swoole_rs_error::ErrorCode, m: core::fmt::Arguments<'_>) {
+fn sendfile_error(
+    level: swoole_rs_corebase::log::LogLevel,
+    code: swoole_rs_error::ErrorCode,
+    m: core::fmt::Arguments<'_>,
+) {
     log_error(level, code, c"Server::sendfile", m);
 }
 

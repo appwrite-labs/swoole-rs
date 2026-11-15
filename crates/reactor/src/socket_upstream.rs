@@ -326,7 +326,7 @@ pub fn swr_v1_reactor_log(origin: &CStr, code: c_int, message: &str) {
         log::sys_warning(origin, format_args!("{message}"));
     } else {
         log::error_log(
-            log::LogLevel::SW_LOG_WARNING as c_int,
+            log::LogLevel::SW_LOG_WARNING,
             code,
             origin,
             format_args!("{message}"),

@@ -19,6 +19,9 @@ use crate::dispatch::schedule_worker;
 use crate::hybrid::hybrid;
 use crate::records::Lookup;
 use crate::view;
+use swoole_rs_corebase::log::LogLevel::{
+    SW_LOG_NOTICE as NOTICE, SW_LOG_TRACE as TRACE, SW_LOG_WARNING as WARNING,
+};
 
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub(crate) mod native;
@@ -40,10 +43,6 @@ const DISPATCH_CLOSE_CONNECTION: c_int = -2;
 /// `Server::CLOSE_RESET`, `Server::CLOSE_ACTIVELY`.
 const CLOSE_RESET: c_int = 1 << 1;
 const CLOSE_ACTIVELY: c_int = 1 << 2;
-/// `SW_LOG_*`.
-const TRACE: c_int = 1;
-const NOTICE: c_int = 3;
-const WARNING: c_int = 4;
 /// `SW_ERROR_*`.
 const SESSION_CLOSING: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SESSION_CLOSING as c_int;
 const SESSION_CLOSED: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SESSION_CLOSED as c_int;

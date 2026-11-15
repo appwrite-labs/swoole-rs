@@ -761,7 +761,7 @@ impl Bus {
                 ),
             ),
             BUS_ABNORMAL => log::error_log(
-                /* SW_LOG_WARNING */ 4,
+                swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING,
                 /* SW_ERROR_SERVER_WORKER_ABNORMAL_PIPE_DATA */ 9102,
                 origin,
                 format_args!(

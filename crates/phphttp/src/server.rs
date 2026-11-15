@@ -68,7 +68,6 @@ const BAD_REQUEST: &[u8] = b"HTTP/1.1 400 Bad Request\r\n\r\n";
 const HPE_OK: i32 = 0;
 /// `SW_ERROR_SESSION_NOT_EXIST` and `SW_LOG_TRACE`.
 const SESSION_NOT_EXIST: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SESSION_NOT_EXIST as c_int;
-const LOG_TRACE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as c_int;
 
 /// `http_server::SW_HTTP_EXT_FLAG_UPLOAD_PREPROCESSED`.
 const UPLOAD_PREPROCESSED: u16 = 1;
@@ -304,6 +303,7 @@ fn enable_coroutine(server: view::Server<'_>) -> bool {
     }
 }
 
+use swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as LOG_TRACE;
 pub(crate) use swoole_rs_zend::host::{NO_THEN, Then, callable::Callable};
 
 /// `zend::function::call(callable, args.len(), args, nullptr, coroutine)`:

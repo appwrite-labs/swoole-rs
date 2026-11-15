@@ -11,6 +11,7 @@ use core::sync::atomic::Ordering;
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_clients::client::Framing;
 use swoole_rs_corebase::constants::FdType::SW_FD_SESSION;
+use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR as LOG_ERROR, SW_LOG_WARNING as LOG_WARNING};
 use swoole_rs_corebase::net_types::{PacketLength, Protocol};
 use swoole_rs_corebase::{DataHead, log, swr_v1_core_pagesize};
 use swoole_rs_error::ErrorCode;
@@ -23,9 +24,6 @@ use swoole_rs_framing::{DefaultLength, UnpackError, default_length, unpack};
 use swoole_rs_reactor::{Caught, Socket, SocketFields, swr_v1_socket_reset_on_close};
 use swoole_rs_server::ConnectionRecord;
 
-/// `SW_LOG_WARNING` and `SW_LOG_ERROR`.
-const LOG_WARNING: c_int = 4;
-const LOG_ERROR: c_int = 5;
 const SW_ERR: isize = swoole_rs_corebase::constants::ResultCode::SW_ERR as isize;
 
 /// `swoole::RecvData`.

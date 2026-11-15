@@ -290,7 +290,6 @@ format_exports! {
 }
 
 /// `SW_LOG_ERROR` and `SW_ERROR_SERVER_TOO_MANY_LISTEN_PORT`.
-const LOG_ERROR: c_int = 5;
 const TOO_MANY_LISTEN_PORT: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_SERVER_TOO_MANY_LISTEN_PORT as c_int;
 
@@ -708,4 +707,5 @@ mod resolver_request;
 pub use resolver_request::*;
 
 mod name_resolver;
+use crate::log::LogLevel::SW_LOG_ERROR as LOG_ERROR;
 pub use name_resolver::*;

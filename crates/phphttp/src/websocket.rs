@@ -17,6 +17,7 @@ use std::{
     sync::Arc,
     sync::atomic::{AtomicBool, Ordering::Relaxed},
 };
+use swoole_rs_corebase::log::LogLevel::{SW_LOG_TRACE as LOG_TRACE, SW_LOG_WARNING as LOG_WARNING};
 use swoole_rs_corebase::{CCast, WebSocketStatus};
 use swoole_rs_phpruntime::co;
 use swoole_rs_phpserver::PortCallback;
@@ -109,8 +110,6 @@ const WEBSOCKET_PACK_FAILED: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_WEBSOCKET_PACK_FAILED as c_int;
 const WEBSOCKET_INCOMPLETE_PACKET: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_WEBSOCKET_INCOMPLETE_PACKET as c_int;
-const LOG_TRACE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as c_int;
-const LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
 
 /// `Swoole\WebSocket\Server`, once MINIT registered it; crates/phpserver
 /// tells a WebSocket server by it.
@@ -387,7 +386,12 @@ fn not_null(frame: &Value, name: &CStr) -> Option<Owned> {
 
 /// `"%s(): message"` from `swoole_warning` in `func`.
 fn warning(func: &CStr, message: &str) {
-    host::log(0, 0, func, message);
+    host::log(
+        swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING,
+        0,
+        func,
+        message,
+    );
 }
 
 /// `FrameObject::pack`: the frame on the wire as a new string, or `None`.

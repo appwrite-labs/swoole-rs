@@ -1147,9 +1147,9 @@ fn effect(op: Op, arg: u64) -> Option<i64> {
 
 /// `LOG_*`'s warning, under the `ProcessPool` method upstream logged it from.
 fn log(kind: Log, arg: u64) {
-    use swoole_rs_corebase::log::{error_log, sys_warning, warning};
     /// `SW_LOG_WARNING`, `SW_ERROR_OPERATION_NOT_SUPPORT`, `SW_ERROR_WRONG_OPERATION`.
-    const WARNING: c_int = 4;
+    use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as WARNING;
+    use swoole_rs_corebase::log::{error_log, sys_warning, warning};
     const NOT_SUPPORT: c_int = swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as c_int;
     const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
     let pid = arg.c_cast::<c_int>();

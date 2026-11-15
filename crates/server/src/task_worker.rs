@@ -9,6 +9,7 @@ use crate::TaskIpcMode;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::log;
+use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING;
 use swoole_rs_process::task_sync::ResultSlot;
 
 #[cfg(all(feature = "upstream-symbols", not(test)))]
@@ -30,7 +31,6 @@ const TASK_CALLBACK: u16 = 1 << 3;
 const TASK_COROUTINE: u16 = 1 << 5;
 const TASK_NOREPLY: u16 = 1 << 7;
 /// `SW_LOG_WARNING`, `SW_ERROR_WRONG_OPERATION`.
-const SW_LOG_WARNING: i32 = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as i32;
 const WRONG_OPERATION: i32 = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as i32;
 
 /// Whether task workers over IPC `mode` may run coroutines: a coroutine task worker

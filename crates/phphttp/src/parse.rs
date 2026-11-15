@@ -52,13 +52,12 @@ use llhttp::{
     F_CHUNKED as CHUNKED, F_TRAILING as TRAILING, HPE_INVALID_HEADER_TOKEN as INVALID_HEADER_TOKEN,
     HPE_PAUSED as PAUSED, HPE_PAUSED_UPGRADE as PAUSED_UPGRADE, HPE_USER as USER,
 };
+use swoole_rs_corebase::log::LogLevel::{SW_LOG_NOTICE as LOG_NOTICE, SW_LOG_TRACE as LOG_TRACE};
 /// `PARSE_COOKIE` and `PARSE_STRING` (`main/php_variables.h`).
 const PARSE_COOKIE: c_int = 2;
 const PARSE_STRING: c_int = 3;
 /// `SW_LOG_TRACE`, `SW_LOG_NOTICE`, `SW_ERROR_SESSION_CLOSED` and
 /// `SW_ERROR_SERVER_INVALID_REQUEST` (asserted in ext-src).
-const LOG_TRACE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as c_int;
-const LOG_NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
 const SESSION_CLOSED: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SESSION_CLOSED as c_int;
 const SERVER_INVALID_REQUEST: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_SERVER_INVALID_REQUEST as c_int;
@@ -784,7 +783,12 @@ pub(crate) fn multipart_start(state: &mut State, content_type: &[u8]) -> bool {
         .and_then(|span| content_type.get(span.offset..span.offset + span.length));
     let Some(boundary) = boundary else {
         let message = format!("boundary of multipart/form-data not found, fd:{}", state.fd);
-        host::log(0, 0, c"Context::get_multipart_boundary", message);
+        host::log(
+            swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING,
+            0,
+            c"Context::get_multipart_boundary",
+            message,
+        );
         /* make it same with protocol error */
         state.parser.error = INVALID_HEADER_TOKEN;
         return false;
@@ -897,7 +901,12 @@ fn part_header_value(state: &mut State, value_: &[u8]) -> bool {
             let mut message = b"Unsupported Content-Disposition [".to_vec();
             message.extend_from_slice(value_);
             message.push(b']');
-            host::log(0, 0, func, message);
+            host::log(
+                swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING,
+                0,
+                func,
+                message,
+            );
             return true;
         };
         // Released on every return, which upstream's early ones leak.
@@ -912,7 +921,12 @@ fn part_header_value(state: &mut State, value_: &[u8]) -> bool {
             let mut message = b"form_name[".to_vec();
             message.extend_from_slice(form_name);
             message.extend_from_slice(b"] is too large");
-            host::log(0, 0, func, message);
+            host::log(
+                swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING,
+                0,
+                func,
+                message,
+            );
             return false;
         }
         let form_name = trimmed(form_name, form_name_len);
@@ -923,7 +937,12 @@ fn part_header_value(state: &mut State, value_: &[u8]) -> bool {
                 let mut message = b"filename[".to_vec();
                 message.extend_from_slice(filename);
                 message.extend_from_slice(b"] is too large");
-                host::log(0, 0, func, message);
+                host::log(
+                    swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING,
+                    0,
+                    func,
+                    message,
+                );
                 return false;
             }
             state.parse.input_name = Some(c_copy(&form_name));
@@ -1033,7 +1052,7 @@ fn part_data(state: &mut State, upload: &mut Option<Upload>, data: &[u8]) {
         upload_long(state, b"error", UPLOAD_CANT_WRITE);
         *upload = None;
         host::log(
-            0,
+            swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING,
             -error.raw_os_error().unwrap_or(0),
             c"multipart_body_on_data",
             "write upload file failed",

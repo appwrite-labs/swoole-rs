@@ -268,7 +268,7 @@ impl Logger {
                 let suffix = format!(" (os error {code})");
                 let reason = reason.strip_suffix(&suffix).unwrap_or(&reason);
                 log::error_log(
-                    LOG_WARNING,
+                    log::LogLevel::SW_LOG_WARNING,
                     SYSTEM_CALL_FAIL,
                     c"Logger::open",
                     format_args!(
@@ -281,7 +281,7 @@ impl Logger {
             Effect::DateFormatTooLong(length) => {
                 log::set_last_error(INVALID_PARAMS);
                 log::error_log(
-                    LOG_WARNING,
+                    log::LogLevel::SW_LOG_WARNING,
                     INVALID_PARAMS,
                     c"Logger::set_date_format",
                     format_args!("The date format string[length={length}] is too long"),
