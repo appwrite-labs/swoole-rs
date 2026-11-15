@@ -496,26 +496,18 @@ impl Sock {
         self.co().set_proxy(http, host, port, user, pwd);
     }
 
-    /// The socket's `SSLContext` owner slot, its extra record's first field
-    /// (crates/hooks/src/socket_extra.rs).
-    fn tls_slot(&self) -> *mut *const c_void {
-        self.record().extra.cast()
-    }
-
-    fn tls_owner(&self) -> *const c_void {
-        // SAFETY: the socket's live extra record's TLS slot.
-        unsafe { *self.tls_slot() }
-    }
-
     /// `enable_ssl_encrypt()`: a fresh `SSLContext` unless the socket has one.
     fn enable_ssl_encrypt(&self) -> bool {
-        if !self.tls_owner().is_null() {
+        if !self.co().enable_ssl() {
             return false;
         }
-        let prepared = swr_v1_tls_owner_new();
-        // SAFETY: a fresh owner, whose one reference the socket's extra record takes.
-        unsafe { *self.tls_slot() = prepared.owner };
-        self.tls.set(Some(prepared));
+        let owner = self.co().tls_context().expect("enable_ssl made one");
+        let view = swoole_rs_tls::swr_v1_tls_owner_view(&owner);
+        self.tls.set(Some(TlsPrepared {
+            owner: view.owner.cast(),
+            fields: view.fields.cast(),
+            strings: view.strings.map(<*const _>::cast),
+        }));
         true
     }
 

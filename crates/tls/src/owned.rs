@@ -171,21 +171,15 @@ pub fn owner_new(warn: Warn) -> OwnedTlsPrepared {
 pub extern "C" fn swr_v1_tls_owner_view(owner: &OwnedTlsContext) -> OwnedTlsPrepared {
     prepared(owner)
 }
-/// One counted reference to an owner, held as native code holds an `SSLContext *`:
-/// the Rc's own pointer, so a nullable field of it is that pointer. Cloning takes
-/// another reference and dropping releases this one.
-#[repr(transparent)]
-pub struct TlsContext(core::ptr::NonNull<OwnedTlsContext>);
+/// One counted reference to an owner. Cloning takes another reference and dropping
+/// releases this one.
+#[derive(Clone)]
+pub struct TlsContext(Rc<OwnedTlsContext>);
 impl TlsContext {
     /// A new owner that warns through [`tls_warning`].
     #[must_use]
     pub fn new() -> Self {
-        Self::adopt(fresh(tls_warning))
-    }
-    /// The handle holding `owner`'s reference.
-    fn adopt(owner: Rc<OwnedTlsContext>) -> Self {
-        let owner = core::ptr::NonNull::new(Rc::into_raw(owner).cast_mut());
-        Self(owner.unwrap_or_else(|| swoole_rs_corebase::fatal("a TLS context can't be allocated")))
+        Self(fresh(tls_warning))
     }
     /// A new owner holding `texts`, each set as [`Lent::set_text`] sets it.
     #[must_use]
@@ -197,7 +191,7 @@ impl TlsContext {
                 _ = owner.set_text(which, value);
             }
         }
-        Self::adopt(owner)
+        Self(owner)
     }
     /// A new owner holding a copy of `source`'s configuration, as
     /// [`owner_assign`] copies it, or none when a string can't be copied.
@@ -205,12 +199,12 @@ impl TlsContext {
     pub fn copy_of(source: &mut Lent<'_>) -> Option<Self> {
         let owner = fresh(tls_warning);
         let status = owner_assign(&mut owner.borrow_configuration(), source).status;
-        (status == 0).then(|| Self::adopt(owner))
+        (status == 0).then(|| Self(owner))
     }
     /// The owner, for native code and the raw-owner API; the handle keeps it live.
     #[must_use]
     pub fn as_ptr(&self) -> *const OwnedTlsContext {
-        self.0.as_ptr()
+        Rc::as_ptr(&self.0)
     }
 }
 impl Default for TlsContext {
@@ -221,21 +215,7 @@ impl Default for TlsContext {
 impl core::ops::Deref for TlsContext {
     type Target = OwnedTlsContext;
     fn deref(&self) -> &OwnedTlsContext {
-        // SAFETY: the reference this handle holds keeps the owner live while it is borrowed.
-        unsafe { self.0.as_ref() }
-    }
-}
-impl Clone for TlsContext {
-    fn clone(&self) -> Self {
-        // SAFETY: the Rc's own pointer, live through the reference this handle holds.
-        unsafe { Rc::increment_strong_count(self.0.as_ptr()) };
-        Self(self.0)
-    }
-}
-impl Drop for TlsContext {
-    fn drop(&mut self) {
-        // SAFETY: this handle's one reference to the Rc, released once on its owning thread.
-        unsafe { drop(Rc::from_raw(self.0.as_ptr())) };
+        &self.0
     }
 }
 /// OpenSSL's reason text for `error`, or `(null)` as printf shows a missing one.
@@ -431,12 +411,9 @@ pub fn owner_assign(destination: &mut Lent<'_>, source: &mut Lent<'_>) -> OwnedT
             index: 0,
         };
     }
-    let slots = source.owner.strings.iter().zip(&destination.owner.strings);
-    for (index, (from, to)) in slots.enumerate() {
-        let value = from.bytes();
-        // SAFETY: the destination slot is exclusive (a distinct owner) and the source's
-        // bytes stay unchanged while they are copied.
-        if !unsafe { to.set_shared(value) } {
+    for (index, from) in source.owner.strings.iter().enumerate() {
+        // The source's bytes, a distinct owner's, stay unchanged while they are copied.
+        if !destination.store(index, from.bytes()) {
             return OwnedTlsCopy {
                 status: -2,
                 index: u32::try_from(index).unwrap_or(0),
@@ -596,33 +573,30 @@ impl Lent<'_> {
     /// that can't be read.
     #[must_use]
     pub fn set_text(&self, which: Text, value: &[u8]) -> bool {
-        let state = self.owner;
         // The slot, and for a file its setter's log origin and name.
         let (slot, file) = match which {
-            Text::CertFile => (&state.strings[4], Some((c"set_cert_file", "cert"))),
-            Text::KeyFile => (&state.strings[5], Some((c"set_key_file", "key"))),
+            Text::CertFile => (4, Some((c"set_cert_file", "cert"))),
+            Text::KeyFile => (5, Some((c"set_key_file", "key"))),
             Text::ClientCertFile => (
-                &state.strings[7],
+                CLIENT_CERT_FILE,
                 Some((c"set_client_cert_file", "client cert")),
             ),
-            Text::Passphrase => (&state.strings[PASSPHRASE], None),
-            Text::HostName => (&state.strings[TLS_HOST_NAME], None),
-            Text::Cafile => (&state.strings[9], None),
-            Text::Capath => (&state.strings[10], None),
-            Text::Ciphers => (&state.strings[0], None),
-            Text::EcdhCurve => (&state.strings[1], None),
-            Text::DhParam => (&state.strings[3], None),
+            Text::Passphrase => (PASSPHRASE, None),
+            Text::HostName => (TLS_HOST_NAME, None),
+            Text::Cafile => (9, None),
+            Text::Capath => (10, None),
+            Text::Ciphers => (0, None),
+            Text::EcdhCurve => (1, None),
+            Text::DhParam => (3, None),
         };
         if let Some((origin, what)) = file
             && !readable(value, origin, what)
         {
             return false;
         }
-        // SAFETY: this loan holds the builder's checked exclusive configuration
-        // borrow on its owning thread. No safe API lends its string slots out.
-        // The stored value keeps every byte.
-        // An allocation refusal, which std::bad_alloc ends.
-        if !unsafe { slot.set_shared(value) } {
+        // The stored value keeps every byte. An allocation refusal, which
+        // std::bad_alloc ends.
+        if !self.store(slot, value) {
             swoole_rs_corebase::fatal("out of memory storing a TLS setting");
         }
         if matches!(which, Text::HostName) {
@@ -642,6 +616,16 @@ impl Lent<'_> {
             Value::Grease(value) => fields.grease = value,
             Value::PreferServerCiphers(value) => fields.prefer_server_ciphers = value,
         });
+    }
+
+    /// Stores `value` in the owner's string slot `index`: false, leaving the slot as it
+    /// was, when the allocation fails.
+    fn store(&self, index: usize, value: &[u8]) -> bool {
+        // SAFETY: this loan holds the builder's checked exclusive configuration borrow
+        // on its owning thread, and no safe API lends the owner's string slots out, so
+        // nothing else reads or sets the slot and `value` is not its bytes.
+        let store = |slot: &Arc<StringSlot>| unsafe { slot.set_shared(value) };
+        self.owner.strings.get(index).is_some_and(store)
     }
 
     /// Edits fields during configuration. Reentrant field access is rejected.
