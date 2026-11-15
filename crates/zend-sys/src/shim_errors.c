@@ -77,8 +77,12 @@ int swr_zend_try_hash_update(HashTable *table, zend_string *key, zend_ulong inde
     SWR_TRAP(zend_hash_index_update(table, index, value));
 }
 
-int swr_zend_try_hash_clean(HashTable *table) {
-    SWR_TRAP(zend_hash_clean(table));
+int swr_zend_try_hash_clean(zval *array) {
+    if (Z_TYPE_P(array) != IS_ARRAY) {
+        return 0;
+    }
+    SEPARATE_ARRAY(array);
+    SWR_TRAP(zend_hash_clean(Z_ARRVAL_P(array)));
 }
 
 int swr_zend_try_symtable_update(zval *array, const char *key, size_t length, zval *value) {

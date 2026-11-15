@@ -32,9 +32,10 @@ int swr_zend_try_get_double(zval *value, double *out);
 int swr_zend_try_get_string(zval *value, zend_string **out);
 /* zval_ptr_dtor, and zend_hash_update, zend_hash_clean and add_assoc_zval_ex
  * (which release the old values): the last reference to an object runs
- * __destruct, and a possible root can start the cycle collector. */
+ * __destruct, and a possible root can start the cycle collector. The clean
+ * separates the array a zval holds first, and leaves any other value alone. */
 int swr_zend_try_ptr_dtor(zval *value);
 int swr_zend_try_hash_update(HashTable *table, zend_string *key, zend_ulong index, zval *value);
-int swr_zend_try_hash_clean(HashTable *table);
+int swr_zend_try_hash_clean(zval *array);
 int swr_zend_try_symtable_update(zval *array, const char *key, size_t length, zval *value);
 #endif
