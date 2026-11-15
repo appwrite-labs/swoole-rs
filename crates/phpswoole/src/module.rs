@@ -242,9 +242,15 @@ pub struct Families {
     /// `php_swoole_name_resolver_minit`.
     pub name_resolver_minit: Minit,
     /// The settings `which` names applied to a coroutine socket, for
-    /// crates/phpruntime. Raises a bailout it caught.
-    pub socket_settings:
-        unsafe fn(swoole_rs_hooks::co_socket::Co, &swoole_rs_zend::Value, SocketSettings) -> bool,
+    /// crates/phpruntime: whether they all applied.
+    /// # Errors
+    /// A setting's warning bailed out; the bailout stays pending for the caller.
+    pub socket_settings: fn(
+        swoole_rs_hooks::co_socket::Co,
+        &swoole_rs_zend::Value,
+        SocketSettings,
+    ) -> Result<bool, Bailout>,
+
     /// `php_swoole_name_resolver_add(resolver)` and
     /// `swoole_name_resolver_php_remove(resolver)`, for crates/phpcoroutines.
     pub name_resolver_add: fn(&swoole_rs_zend::Value) -> bool,

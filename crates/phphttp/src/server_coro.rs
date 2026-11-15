@@ -532,9 +532,7 @@ fn run_start(call: &Call) -> Result<Option<bool>, bailout::Bailout> {
     let Some(settings) = props.edit_array(c"settings", |settings| settings.copy()) else {
         return Ok(None);
     };
-    // SAFETY: a bailout here skips this frame's copies of the settings and the
-    // callable, which are the request heap's.
-    if !unsafe { socket_settings(socket, &settings, SocketSettings::Protocol) } {
+    if !socket_settings(socket, &settings, SocketSettings::Protocol)? {
         props.long(c"errCode", EINVAL);
         let message = swoole_rs_phpruntime::strerror(libc::EINVAL);
         props.bytes(c"errMsg", message.to_bytes());

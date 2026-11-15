@@ -139,21 +139,19 @@ pub fn socket_set(socket: swoole_rs_hooks::co_socket::Co, settings: &Array) -> b
     applied
 }
 
-/// [`apply`] for callers that raise no bailout of their own (crates/phpruntime,
-/// through crates/phpswoole's families): it raises one. Settings that are no
-/// array apply nothing.
-/// # Safety
-/// It raises a pending bailout: the caller is inside a trap, or the frames the
-/// jump skips own only values of the request's heap, which Zend reclaims.
-pub unsafe fn socket_settings(
+/// [`apply`] for crates/phpruntime (through crates/phpswoole's families) and the
+/// coroutine HTTP server. Settings that are no array apply nothing.
+/// # Errors
+/// A setting's warning bailed out: the bailout stays pending, for the caller's
+/// handler to raise.
+pub fn socket_settings(
     socket: swoole_rs_hooks::co_socket::Co,
     settings: &Value,
     which: Settings,
-) -> bool {
+) -> Result<bool, bailout::Bailout> {
     let settings = settings.array();
     let applied = settings.is_some_and(|settings| apply(socket.into(), settings, which));
-    bailout::finish();
-    applied
+    bailout::outcome(applied)
 }
 
 /// `php_swoole_socket_set_protocol`.

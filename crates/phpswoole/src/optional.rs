@@ -96,7 +96,7 @@ pub fn socket_cast(value: &Value) -> c_int {
 /// `Z_SOCKET_P`: ext/sockets' `php_socket` (`int bsd_socket, type, error,
 /// blocking; zval zstream; zend_object std`) ends with the object.
 #[cfg(feature = "sockets")]
-fn php_socket(object: *mut swoole_rs_zend::sys::zend_object) -> *mut c_void {
+fn php_socket(object: *mut swoole_rs_zend::sys::zend_object) -> *mut std::ffi::c_void {
     const STD: usize = 4 * size_of::<c_int>() + size_of::<swoole_rs_zend::sys::zval>();
     object.cast::<u8>().wrapping_sub(STD).cast()
 }
