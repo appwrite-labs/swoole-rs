@@ -75,9 +75,47 @@ static PENDING: AtomicBool = AtomicBool::new(false);
 static CALLBACK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 static HAS_REACTOR: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
-/// A registered signal handler, `SignalHandler`: native code's, sound to call with
-/// the signal it was registered for.
-pub type Callback = unsafe extern "C" fn(c_int);
+/// A signal's handler as the table holds it: none, `SIG_IGN`, or a function to call
+/// with the signal's number.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct Handler(pub(crate) usize);
+
+impl Handler {
+    pub const NONE: Self = Self(SIG_DFL);
+    pub const IGNORE: Self = Self(SIG_IGN);
+
+    #[must_use]
+    pub fn new(handler: extern "C" fn(c_int)) -> Self {
+        Self(address(handler))
+    }
+
+    /// # Safety
+    /// `handler` is 0, `SIG_IGN`, or a `SignalHandler` that is sound to call with
+    /// any signal number and that nothing unloads.
+    #[must_use]
+    pub const unsafe fn from_raw(handler: usize) -> Self {
+        Self(handler)
+    }
+
+    #[must_use]
+    pub const fn raw(self) -> usize {
+        self.0
+    }
+
+    /// Runs the handler with `signo`; nothing for [`Self::NONE`] or [`Self::IGNORE`].
+    pub fn call(self, signo: c_int) {
+        if self == Self::NONE || self == Self::IGNORE {
+            return;
+        }
+        let pointer = std::ptr::with_exposed_provenance::<()>(self.0);
+        // SAFETY: any other handler came from `new` or as `from_raw` requires: a
+        // `SignalHandler` sound to call with any signal number.
+        let handler = unsafe { std::mem::transmute::<*const (), extern "C" fn(c_int)>(pointer) };
+        handler(signo);
+    }
+}
+
 /// `swoole_signal_callback`: runs the registered handler, or warns.
 pub type Dispatch = extern "C" fn(c_int);
 /// Whether this thread has a reactor (`sw_reactor()`).
@@ -151,18 +189,19 @@ fn sigaction(signo: c_int, action: &libc::sigaction) -> Option<libc::sigaction> 
 /// removes a registered signal and puts back the action it replaced.
 pub fn signal_set(
     signo: c_int,
-    handler: usize,
+    handler: Handler,
     safety: bool,
     callback: Dispatch,
     has_reactor: HasReactor,
-) -> usize {
+) -> Handler {
+    let handler = handler.0;
     CALLBACK.store(callback as *mut (), Relaxed);
     HAS_REACTOR.store(has_reactor as *mut (), Relaxed);
     if let Some(slot) = slot(signo) {
         if handler == 0 && slot.activated.load(Relaxed) {
             slot.reset();
             restore_origin(signo);
-            return 0;
+            return Handler::NONE;
         }
         let first = !slot.activated.load(Relaxed);
         slot.handler.store(handler, Relaxed);
@@ -173,10 +212,10 @@ pub fn signal_set(
         if first {
             save_origin(signo, previous);
         }
-        return previous.map_or(0, |previous| previous.sa_sigaction);
+        return Handler(previous.map_or(0, |previous| previous.sa_sigaction));
     }
     let async_handler: extern "C" fn(c_int) = if safety { deferred } else { immediate };
-    set_action(signo, address(async_handler), false, true)
+    Handler(set_action(signo, address(async_handler), false, true))
 }
 
 /// `signal_handler_safety`: marks the signal for the next dispatch.
@@ -247,7 +286,7 @@ pub extern "C" fn swoole_signal_dispatch() {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lookup {
     /// Call the registered handler.
-    Handler(usize),
+    Handler(Handler),
     /// The number is out of range.
     OutOfRange,
     /// Nothing is registered (`SIG_DFL`).
@@ -260,12 +299,11 @@ impl Lookup {
     /// `swoole_signal_get_handler`: the registered handler, `SIG_DFL` or `SIG_IGN`,
     /// and 0 out of range.
     #[must_use]
-    pub fn handler(self) -> usize {
+    pub fn handler(self) -> Handler {
         match self {
             Self::Handler(handler) => handler,
-            Self::OutOfRange => 0,
-            Self::Default => SIG_DFL,
-            Self::Ignored => SIG_IGN,
+            Self::OutOfRange | Self::Default => Handler::NONE,
+            Self::Ignored => Handler::IGNORE,
         }
     }
 }
@@ -279,7 +317,7 @@ pub fn signal_lookup(signo: c_int) -> Lookup {
     match slot.handler.load(Relaxed) {
         SIG_DFL => Lookup::Default,
         SIG_IGN => Lookup::Ignored,
-        handler => Lookup::Handler(handler),
+        handler => Lookup::Handler(Handler(handler)),
     }
 }
 
@@ -405,14 +443,17 @@ mod tests {
     fn registers_dispatches_and_clears() {
         let _state = crate::signal_state_lock();
         let handler = record as *const () as usize;
-        signal_set(libc::SIGUSR1, handler, false, record, no_reactor);
+        signal_set(libc::SIGUSR1, Handler(handler), false, record, no_reactor);
         assert!(swoole_signal_isset(libc::SIGUSR1));
-        assert_eq!(signal_lookup(libc::SIGUSR1), Lookup::Handler(handler));
+        assert_eq!(
+            signal_lookup(libc::SIGUSR1),
+            Lookup::Handler(Handler(handler))
+        );
         // SAFETY: SIGUSR1 has the immediate handler installed above.
         unsafe { libc::raise(libc::SIGUSR1) };
         assert_eq!(SEEN.swap(0, Relaxed), libc::SIGUSR1);
 
-        signal_set(libc::SIGUSR2, handler, true, record, with_reactor);
+        signal_set(libc::SIGUSR2, Handler(handler), true, record, with_reactor);
         // SAFETY: SIGUSR2 has the deferred handler installed above.
         unsafe { libc::raise(libc::SIGUSR2) };
         assert_eq!(SEEN.load(Relaxed), 0);
@@ -421,9 +462,12 @@ mod tests {
 
         // Removing a handler puts back the action from before its registration.
         set_action(libc::SIGUSR2, 0, false, false);
-        signal_set(libc::SIGUSR2, handler, true, record, with_reactor);
-        signal_set(libc::SIGUSR2, handler, false, record, with_reactor);
-        assert_eq!(signal_set(libc::SIGUSR2, 0, false, record, with_reactor), 0);
+        signal_set(libc::SIGUSR2, Handler(handler), true, record, with_reactor);
+        signal_set(libc::SIGUSR2, Handler(handler), false, record, with_reactor);
+        assert_eq!(
+            signal_set(libc::SIGUSR2, Handler::NONE, false, record, with_reactor),
+            Handler::NONE
+        );
         assert!(!swoole_signal_isset(libc::SIGUSR2));
         assert_eq!(set_action(libc::SIGUSR2, usize::MAX, false, false), SIG_IGN);
 
