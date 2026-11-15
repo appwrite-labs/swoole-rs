@@ -1,10 +1,15 @@
 //! The global functions of `php_swoole.cc`, each as upstream parses and answers.
 use crate::{constants::VERSION, log_put, module::ReqStatus};
 use std::{
-    ffi::{CStr, c_char, c_int},
+    borrow::Cow,
+    ffi::{CStr, CString, c_char, c_int},
     ptr,
 };
-use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::{
+    CCast,
+    sys::{self, Text},
+};
+
 use swoole_rs_corebase::log::{last_error as swoole_last_error, set_last_error};
 use swoole_rs_framing::mime;
 use swoole_rs_zend::{
@@ -60,9 +65,9 @@ const JSON_OBJECT_AS_ARRAY: i64 = 1;
 
 unsafe extern "C" {
     /// `<netdb.h>`; not in the libc crate. Any code names a static message.
-    safe fn hstrerror(error: c_int) -> *const c_char;
+    safe fn hstrerror(error: c_int) -> Text<'static>;
     /// `<netdb.h>`, likewise.
-    safe fn gai_strerror(error: c_int) -> *const c_char;
+    safe fn gai_strerror(error: c_int) -> Text<'static>;
 }
 
 /// `ZEND_PARSE_PARAMETERS_END_EX(RETURN_FALSE)`.
@@ -97,11 +102,6 @@ fn errno(call: &Call) {
     ));
 }
 
-extern "C" fn system_error(code: i32) -> *const c_char {
-    // SAFETY: libc's message table.
-    unsafe { libc::strerror(code) }
-}
-
 fn strerror(call: &Call) {
     let parsed = call
         .arity(1, 2)
@@ -110,17 +110,16 @@ fn strerror(call: &Call) {
         return;
     };
     let message = if kind == STRERROR_GAI {
-        gai_strerror(int(code))
+        Cow::Borrowed(gai_strerror(int(code)).get())
     } else if kind == STRERROR_DNS {
-        hstrerror(int(code))
+        Cow::Borrowed(hstrerror(int(code)).get())
     } else if kind == STRERROR_SWOOLE || (code > ERROR_BEGIN && code < ERROR_END) {
         // Swoole's `swoole_strerror`, with the system fallback C++ passes.
-        swoole_rs_error::strerror_with(int(code), Some(system_error))
+        swoole_rs_error::strerror_text(int(code), sys::strerror)
     } else {
-        system_error(int(code))
+        Cow::Owned(CString::new(sys::strerror(int(code))).unwrap_or_default())
     };
-    // SAFETY: each table returns a NUL-terminated message.
-    call.set_bytes(unsafe { CStr::from_ptr(message) }.to_bytes());
+    call.set_bytes(message.to_bytes());
 }
 
 /// Bob Jenkins' one-at-a-time hash over C `char`s (sign-extended where `char`
