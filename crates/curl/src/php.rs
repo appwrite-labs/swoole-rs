@@ -41,9 +41,8 @@ pub unsafe extern "C" fn swoole_curl_get_handle(
         return ch;
     }
     // SAFETY: `ch` is the live `php_curl`, which starts with its live easy handle.
-    let cp = unsafe { *ch.cast::<Easy>() };
-    // SAFETY: null or the easy handle's live Swoole handle.
-    let Some(handle) = (unsafe { cp.handle().as_ref() }) else {
+    let cp = unsafe { *ch.cast::<Easy<'_>>() };
+    let Some(handle) = cp.handle() else {
         if required {
             swoole_rs_corebase::log::set_last_error(PHP_FATAL_ERROR);
             bailout::raise(swoole_rs_zend::report(
@@ -55,7 +54,7 @@ pub unsafe extern "C" fn swoole_curl_get_handle(
         return ch;
     };
     // SAFETY: null or the handle's live multi.
-    let Some(multi) = (unsafe { handle.multi.as_ref() }) else {
+    let Some(multi) = (unsafe { handle.multi.get().as_ref() }) else {
         return ch;
     };
     // SAFETY: this frame owns nothing that needs a drop.
