@@ -60,7 +60,7 @@ fn pool_in(plan: Layout, shared: bool, owned: bool) -> (Vec<u64>, *mut Fixed) {
     };
     let pool = construct(arena, plan, shared, owned);
     assert!(pool.is_some());
-    (memory, pool.unwrap().as_ptr())
+    (memory, ptr::from_ref(pool.unwrap()).cast_mut())
 }
 
 fn borrowed(width: u32, slices: usize) -> Layout {

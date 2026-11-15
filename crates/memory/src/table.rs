@@ -341,7 +341,7 @@ pub struct Table {
     memory: *mut u8,
     first: *mut Row,
     stride: usize,
-    pool: *mut Fixed,
+    pool: Option<&'static Fixed>,
 }
 
 /// The arena of a table about to be created.
@@ -436,7 +436,7 @@ impl Table {
             memory: ptr::null_mut(),
             first: ptr::null_mut(),
             stride: 0,
-            pool: ptr::null_mut(),
+            pool: None,
         };
         let table = this.write(table);
         if table.mutex.init().is_err() {
@@ -585,8 +585,10 @@ impl Table {
             return false;
         }
         // SAFETY: the mapping's payload, `plan.physical` bytes (checked above), which
-        // the table alone reaches from here on.
-        let bytes = unsafe { slice::from_raw_parts_mut(memory.cast(), plan.physical) };
+        // the table alone reaches from here on, until `destroy` hands it back (after
+        // which this process uses the table no more).
+        let bytes: &'static mut [MaybeUninit<u8>] =
+            unsafe { slice::from_raw_parts_mut(memory.cast(), plan.physical) };
         // Upstream's bucket pointers come first; a bucket's row is found by its index.
         let rows = bytes.get_mut(self.size * size_of::<*mut Row>()..);
         let Some((rows, pool)) =
@@ -631,7 +633,7 @@ impl Table {
         self.cursor = cursor;
         self.first = first;
         self.stride = plan.stride;
-        self.pool = pool.as_ptr();
+        self.pool = Some(pool);
         self.memory_size = plan.logical - self.size * (plan.row_size + size_of::<*mut Row>());
         self.memory = std::mem::take(arena).into_raw().cast();
         self.created = true;
@@ -699,8 +701,7 @@ impl Table {
     }
 
     fn pool(&self) -> Option<&Fixed> {
-        // SAFETY: a created table's pool (see the invariant), or null.
-        unsafe { self.pool.as_ref() }
+        self.pool
     }
 
     /// Spare collision rows (0 before `create`).
