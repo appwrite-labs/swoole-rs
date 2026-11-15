@@ -26,8 +26,8 @@ use swoole_rs_phpstubs::websocket as stubs;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_server::{server_methods, view};
 use swoole_rs_websocket::{
-    DecodedFrame, Delivery, INVALID_CONTROL, control_invalid, encode_close_into, encode_into,
-    encoded_size, header, message_policy, pack_policy,
+    DecodedFrame, Delivery, INVALID_CONTROL, Opcode, control_invalid, encode_close_into,
+    encode_into, encoded_size, header, message_policy, pack_policy,
 };
 use swoole_rs_zend::{
     Array, Call, Class, Declared, Minit, Owned, Value, ZStr, ZString, bailout, handlers,
@@ -61,13 +61,6 @@ fn set(frame: &Value, which: usize, value: Owned) {
 /// `SW_HAVE_ZLIB`.
 pub(crate) static ZLIB: AtomicBool = AtomicBool::new(false);
 
-/// `swoole::websocket::Opcode`.
-const OPCODE_CONTINUATION: u8 = 0;
-const OPCODE_TEXT: u8 = 1;
-const OPCODE_BINARY: u8 = 2;
-const OPCODE_CLOSE: u8 = 8;
-pub(crate) const OPCODE_PING: u8 = 9;
-const OPCODE_PONG: u8 = 10;
 /// `swoole::websocket::Flag`.
 pub(crate) const FLAG_FIN: u8 = 1;
 const FLAG_COMPRESS: u8 = 2;
@@ -226,7 +219,7 @@ pub fn websocket_minit(args: &MinitArgs) {
     minit.implements(&FRAME, minit.stringable());
     for (name, value) in [
         (c"fd", 0),
-        (c"opcode", i64::from(OPCODE_TEXT)),
+        (c"opcode", i64::from(Opcode::Text.code())),
         (c"flags", i64::from(FLAG_FIN)),
     ] {
         if name == c"opcode" {
@@ -248,7 +241,7 @@ pub fn websocket_minit(args: &MinitArgs) {
         |_, _| {},
     );
     for (name, value) in [
-        (c"opcode", i64::from(OPCODE_CLOSE)),
+        (c"opcode", i64::from(Opcode::Close.code())),
         (c"code", CLOSE_NORMAL),
     ] {
         minit.property_long(&CLOSE_FRAME, name, value, ZEND_ACC_PUBLIC);
@@ -261,12 +254,12 @@ pub fn websocket_minit(args: &MinitArgs) {
 /// upstream's order.
 fn constants(minit: &Minit) {
     let opcodes = [
-        (c"CONTINUATION", OPCODE_CONTINUATION),
-        (c"TEXT", OPCODE_TEXT),
-        (c"BINARY", OPCODE_BINARY),
-        (c"CLOSE", OPCODE_CLOSE),
-        (c"PING", OPCODE_PING),
-        (c"PONG", OPCODE_PONG),
+        (c"CONTINUATION", Opcode::Continuation.code()),
+        (c"TEXT", Opcode::Text.code()),
+        (c"BINARY", Opcode::Binary.code()),
+        (c"CLOSE", Opcode::Close.code()),
+        (c"PING", Opcode::Ping.code()),
+        (c"PONG", Opcode::Pong.code()),
     ];
     let flags = [
         (c"FIN", FLAG_FIN),
@@ -343,7 +336,7 @@ impl<'a> FrameObject<'a> {
         let long = |name: &CStr| frame.property(name).map_or(0, Value::long);
         let opcode = byte(long(c"opcode"));
         let mut code = 0;
-        let data = if opcode == OPCODE_CLOSE {
+        let data = if opcode == Opcode::Close.code() {
             code = not_null(frame, c"code").map_or(CLOSE_NORMAL, |code| code.long());
             not_null(frame, c"reason")
         } else {
@@ -401,7 +394,7 @@ fn pack(frame: &FrameObject) -> Option<Frame> {
 
 /// `frame` around its packed `payload`, in one piece.
 fn whole(frame: &FrameObject, payload: &[u8], flags: u8) -> Option<Frame> {
-    if frame.opcode == OPCODE_CLOSE {
+    if frame.opcode == Opcode::Close.code() {
         close_frame(i32::from(frame.code), payload, flags)
     } else {
         encode(payload, frame.opcode, flags)
@@ -412,7 +405,7 @@ fn whole(frame: &FrameObject, payload: &[u8], flags: u8) -> Option<Frame> {
 /// the flags ask and zlib can, and the flags that leaves. `None` for a frame that
 /// cannot be packed.
 fn packed<T>(frame: &FrameObject, emit: impl FnOnce(&[u8], u8) -> Option<T>) -> Option<T> {
-    if frame.opcode > OPCODE_PONG {
+    if frame.opcode > Opcode::Pong.code() {
         host::fatal("the maximum value of opcode is 10");
         return None;
     }
@@ -539,7 +532,7 @@ fn close_frame(code: i32, reason: &[u8], flags: u8) -> Option<Frame> {
         warning(func, "the max length of close reason is 125");
         return None;
     }
-    if control_invalid(OPCODE_CLOSE, FLAG_FIN, reason.len() + 2) {
+    if control_invalid(Opcode::Close.code(), FLAG_FIN, reason.len() + 2) {
         warning(
             func,
             &format!(
@@ -589,7 +582,7 @@ fn uncompress(data: &[u8]) -> Option<Owned> {
 /// `websocket::construct_frame`: a new `Frame`, or a `CloseFrame` with the
 /// close payload's code and reason.
 fn construct(opcode: zend_long, payload: &Value, mut flags: u8) -> Owned {
-    let close = opcode == zend_long::from(OPCODE_CLOSE);
+    let close = opcode == zend_long::from(Opcode::Close.code());
     let class = if close { &CLOSE_FRAME } else { &FRAME };
     let frame = class.create_object();
     if frame.object().is_none() {
@@ -637,7 +630,7 @@ fn pack_method(call: &Call) {
     let parsed = call.arity(1, 3).and_then(|()| {
         Ok((
             call.value(1),
-            call.long(2, i64::from(OPCODE_TEXT))?,
+            call.long(2, i64::from(Opcode::Text.code()))?,
             call.long(3, i64::from(FLAG_FIN))?,
         ))
     });
@@ -769,7 +762,7 @@ fn push(call: &Call) {
         call.arity(2, 4).ok()?;
         let fd = call.long(1, 0).ok()?;
         let data = call.value(2);
-        let opcode = call.long(3, i64::from(OPCODE_TEXT)).ok()?;
+        let opcode = call.long(3, i64::from(Opcode::Text.code())).ok()?;
         let flags = call
             .zval_or_null(4)
             .map_or(i64::from(FLAG_FIN), Value::long);
@@ -786,7 +779,7 @@ fn push(call: &Call) {
         let sent = packed(&frame, |payload, flags| {
             // A large data frame's payload is sent from where it is, behind its header.
             if payload.len() > INLINE
-                && frame.opcode < OPCODE_CLOSE
+                && frame.opcode < Opcode::Close.code()
                 && flags & FLAG_ENCODE_HEADER_ONLY == 0
             {
                 let (head, length) = header(payload.len() as u64, frame.opcode, flags);
@@ -829,7 +822,12 @@ fn ping(call: &Call) {
         call.arity(1, 2).ok()?;
         let fd = call.long(1, 0).ok()?;
         let data = string_or_empty(call.zstr(2).ok()?);
-        let frame = FrameObject::new(Some(&data), i64::from(OPCODE_PING), i64::from(FLAG_FIN), 0);
+        let frame = FrameObject::new(
+            Some(&data),
+            i64::from(Opcode::Ping.code()),
+            i64::from(FLAG_FIN),
+            0,
+        );
         let Some(packed) = pack(&frame) else {
             host::set_last_error(WEBSOCKET_PACK_FAILED);
             return None;
@@ -904,7 +902,11 @@ fn message(view: view::Server<'_>, request: &RecvData) -> Result<bool, bailout::
     let delivery = message_policy(opcode, settings);
     if delivery != Delivery::Deliver {
         if delivery == Delivery::Pong
-            && let Some(pong) = encode(data.bytes().unwrap_or_default(), OPCODE_PONG, FLAG_FIN)
+            && let Some(pong) = encode(
+                data.bytes().unwrap_or_default(),
+                Opcode::Pong.code(),
+                FLAG_FIN,
+            )
         {
             server_methods::send(server, fd, pong.bytes());
         }
@@ -1078,7 +1080,7 @@ pub(crate) fn response_disconnect(context: Ctx, code: i64, reason: Option<&ZStr>
     let data = string_or_empty(reason);
     let frame = FrameObject::new(
         Some(&data),
-        i64::from(OPCODE_CLOSE),
+        i64::from(Opcode::Close.code()),
         i64::from(FLAG_FIN),
         code,
     );
@@ -1340,24 +1342,24 @@ pub(crate) fn recv(settings: u32, slot: &mut Assembly, socket: co::Co, timeout: 
             .and_then(|rest| rest.get(..frame.payload_length))
             .unwrap_or_default();
         let opcode = frame.opcode;
-        let respond = match opcode {
-            OPCODE_PING if settings & OPEN_PING_FRAME == 0 => {
-                reply(settings, socket, OPCODE_PONG, payload);
+        let respond = match Opcode::from_code(opcode) {
+            Some(Opcode::Ping) if settings & OPEN_PING_FRAME == 0 => {
+                reply(settings, socket, Opcode::Pong.code(), payload);
                 continue;
             }
-            OPCODE_PONG if settings & OPEN_PONG_FRAME == 0 => continue,
-            OPCODE_CLOSE if settings & OPEN_CLOSE_FRAME == 0 => {
-                reply(settings, socket, OPCODE_CLOSE, payload);
+            Some(Opcode::Pong) if settings & OPEN_PONG_FRAME == 0 => continue,
+            Some(Opcode::Close) if settings & OPEN_CLOSE_FRAME == 0 => {
+                reply(settings, socket, Opcode::Close.code(), payload);
                 continue;
             }
-            OPCODE_PING | OPCODE_PONG | OPCODE_CLOSE => true,
-            _ => false,
+            Some(opcode) => opcode.is_control(),
+            None => false,
         };
         if respond {
             let payload = Owned::string(ZString::new(payload));
             return deliver(socket, opcode, &payload, FLAG_FIN);
         }
-        if opcode == OPCODE_CONTINUATION {
+        if opcode == Opcode::Continuation.code() {
             let Some(message) = slot.as_mut() else {
                 warning(
                     func,

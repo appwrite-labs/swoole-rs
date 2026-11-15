@@ -24,6 +24,7 @@ use swoole_rs_http::llhttp::{self, Callbacks, Parser};
 use swoole_rs_inflate::{Inflate, brotli, zstd};
 use swoole_rs_phpstubs::http_client_coro;
 use swoole_rs_reactor::Events;
+use swoole_rs_websocket_ffi::Opcode;
 use swoole_rs_zend::{
     Array, ArrayMut, Call, Class, Custom, CustomClass, Minit, ObjectRef, Owned, OwnedArray, Props,
     Value, ZStr, ZString,
@@ -93,10 +94,7 @@ const WEBSOCKET_KEY: usize = 16;
 /// `SW_WEBSOCKET_EXTENSION_DEFLATE`.
 const DEFLATE_EXTENSION: &CStr =
     c"permessage-deflate; client_no_context_takeover; server_no_context_takeover";
-/// WebSocket opcodes, flags and close code.
-const OPCODE_TEXT: i64 = 1;
-const OPCODE_CLOSE: i64 = 8;
-const OPCODE_PING: i64 = 9;
+/// WebSocket flags and close code.
 const FLAG_FIN: i64 = 1;
 const FLAGS_ALL: i64 = 63;
 const CLOSE_NORMAL: i64 = 1000;
@@ -2037,7 +2035,9 @@ fn push(call: &Call) {
     if !client.is_available() {
         return call.set_bool(false);
     }
-    let parsed = call.arity(1, 3).and_then(|()| call.long(2, OPCODE_TEXT));
+    let parsed = call
+        .arity(1, 3)
+        .and_then(|()| call.long(2, i64::from(Opcode::Text.code())));
     let Ok(opcode) = parsed else {
         return call.set_bool(false);
     };
@@ -2182,7 +2182,12 @@ fn ping(call: &Call) {
     let Ok(data) = call.arity(0, 1).and_then(|()| call.zstr(1)) else {
         return call.set_bool(false);
     };
-    let result = client.push(&payload(data), OPCODE_PING, FLAG_FIN, CLOSE_NORMAL);
+    let result = client.push(
+        &payload(data),
+        i64::from(Opcode::Ping.code()),
+        FLAG_FIN,
+        CLOSE_NORMAL,
+    );
     call.set_bool(result);
 }
 
@@ -2201,7 +2206,12 @@ fn disconnect(call: &Call) {
     let Ok((code, reason)) = parsed else {
         return call.set_bool(false);
     };
-    let result = client.push(&payload(reason), OPCODE_CLOSE, FLAG_FIN, code);
+    let result = client.push(
+        &payload(reason),
+        i64::from(Opcode::Close.code()),
+        FLAG_FIN,
+        code,
+    );
     call.set_bool(result);
     client.close(true);
 }

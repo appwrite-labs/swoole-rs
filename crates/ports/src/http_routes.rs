@@ -124,7 +124,11 @@ pub mod exports {
             PolicyError::Overlap => "merging incomplete frame, bad request".to_owned(),
             PolicyError::ControlTooBig => format!(
                 "{} frame application data is too big",
-                if opcode == 9 { "ping" } else { "pong" }
+                if opcode == swoole_rs_websocket::Opcode::Ping.code() {
+                    "ping"
+                } else {
+                    "pong"
+                }
             ),
             PolicyError::None | PolicyError::CloseTooBig => return,
         };
@@ -179,7 +183,7 @@ pub mod exports {
             context.fragment_length = fragment.len();
             let flags = fragment.offset().c_cast::<u16>();
             context.fragment_flags = flags;
-            if frame.opcode == 0 {
+            if frame.opcode == swoole_rs_websocket::Opcode::Continuation.code() {
                 // SAFETY: the port's live server, as the caller guarantees.
                 let serv = unsafe { view::Server::from_raw(serv) };
                 let max = swoole_rs_server::server_methods::package_max_length(serv, conn.fd());
