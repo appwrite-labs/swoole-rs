@@ -207,6 +207,8 @@ def plan(args, reports):
         script('locks-state', 'tests/modules/locks/state.py', *php_for('curl'), *engines, *report('locks-state'))
     if integrate and 'phpcoroutines' in modules:
         script('phpcoroutines-tracer', 'tests/modules/phpcoroutines/tracer.py', *php, *engines, *report('phpcoroutines-tracer'))
+        pytest('phpcoroutines-bailout', 'tests/modules/phpcoroutines/test_bailout.py', *php_for('curl'),
+               '--engine', f'upstream={reference}', '--engine', f'cargo={cargo}')
     pytest('buffer-typed', 'tests/modules/buffer/test_typed.py', '--archive', archive, '--sanitize')
     if 'coroutine' in modules:
         # tokens.py runs inside coroutine-channel-state, with and without sanitizers.

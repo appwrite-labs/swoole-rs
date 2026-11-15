@@ -20,6 +20,30 @@ hooks and the event loop directly. Rust callers start coroutines with
 bailout stops the loop and bails out through `swr_v1_coroutine_bail`. The server, reactor and io_uring
 reads, deferred tasks, timers and the build's switches are Rust (`host.rs`).
 
+A bailout abandons suspended coroutine stacks permanently. Only an entry that
+returns reaches the core's destruction hook; dropping the live registry does not
+free its non-owning handles. Thread contexts likewise stay parked: deactivation
+clears shared runtime state, and only a completed context is joined. Yielding is
+safe because those frames and their values remain allocated.
+
+The main stack can be reused after a bailout. Raw `coroutine::resume`, `cancel`
+and `phpcoroutines::Coroutine::wake` therefore require their callers to keep no
+pending drops between the call and its bailout trap. PHP handlers release their
+owners before resuming; deferred join callbacks release their `Rc` before the
+switch, and the reactor unboxes deferred values before calling them.
+`Waiter::wake` and `channel::Queue::close` instead contain the resumed coroutine's
+bailout and return `Result`: their callers may own values. HTTP/2 stops frame
+processing and defers the error until the receiving frame releases its stream
+and response owners. Channel close returns its error to the PHP handler's
+outer bailout boundary. These traps enclose only the resume/close operations,
+whose main-stack frames have no pending drops; they do not unwind or reclaim
+abandoned coroutine stacks.
+
+The `phpcoroutines-bailout` gate compares channel-close resumption on the main
+stack and inside a coroutine with the pinned engine, both on normal return and
+on a fatal error in the resumed waiter. It requires shutdown to run and rejects
+execution past a fatal close. The HTTP/2 frame gate covers its wake consumers.
+
 `Swoole\Coroutine\Scheduler`, the coroutine options and the reactor's user exit
 condition are Rust (`scheduler.rs`), under upstream's
 `php_swoole_coroutine_scheduler_minit`, `_rshutdown` and
