@@ -26,6 +26,6 @@ zend_string *swr_zend_http_build_query(zval *data);
 /* instanceof_function(ce, parent). */
 bool swr_zend_instanceof(const zend_class_entry *ce, const zend_class_entry *parent);
 
-/* SEPARATE_ARRAY. */
+/* SEPARATE_ARRAY of a zval holding an array; anything else is left alone. */
 void swr_zend_separate_array(zval *array);
 #endif

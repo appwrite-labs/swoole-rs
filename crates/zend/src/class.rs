@@ -9,7 +9,7 @@ use crate::{
     },
 };
 use std::{
-    ffi::{CStr, c_char, c_void},
+    ffi::{CStr, c_char, c_int, c_void},
     marker::PhantomData,
     mem::offset_of,
     ptr,
@@ -33,6 +33,9 @@ unsafe extern "C" {
     /// `array_init_size(target, size)`: `target` holds a new, empty array in
     /// place of what it held, which is not released. No PHP code runs.
     safe fn swr_zend_array_init_size(target: &Value, size: u32);
+    /// `zend_lookup_class(name)` inside `zend_try` (nonzero for a bailout): it
+    /// reads the name, may run an autoloader, and writes the class or null.
+    safe fn swr_zend_try_lookup_class(name: &ZStr, class: &mut *mut zend_class_entry) -> c_int;
 }
 
 /// A live class entry, borrowed for `'a`: an object's class, which outlives it,
@@ -308,10 +311,7 @@ impl Class {
 /// An autoloader bailed out.
 pub fn lookup_class(name: &ZStr) -> Result<*mut zend_class_entry, crate::bailout::Bailout> {
     let mut class = ptr::null_mut();
-    // SAFETY: a live name and a writable local; the shim traps a bailout.
-    crate::bailout::trapped(unsafe {
-        crate::sys::swr_zend_try_lookup_class(name.as_ptr(), &raw mut class)
-    })?;
+    crate::bailout::trapped(swr_zend_try_lookup_class(name, &mut class))?;
     Ok(class)
 }
 
@@ -451,9 +451,8 @@ impl Declared {
     #[inline]
     pub fn init(&self, object: &Value, value: crate::Owned) {
         if let Some(slot) = self.get(object) {
-            // SAFETY: the slot just found, which takes any value; `value`
-            // gives its reference up to it.
-            unsafe { slot.as_ptr().write(value.into_zval()) };
+            // The slot takes any value, and holds nothing to release.
+            slot.put(value);
         }
     }
 

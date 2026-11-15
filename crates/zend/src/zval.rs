@@ -10,11 +10,11 @@ use crate::{
         IS_DOUBLE, IS_FALSE, IS_INDIRECT, IS_INTERNED_STRING_EX, IS_LONG, IS_NULL, IS_OBJECT,
         IS_PTR, IS_REFERENCE, IS_STR_INTERNED, IS_STRING, IS_STRING_EX, IS_TRUE, IS_UNDEF,
         add_next_index_stringl, php_format_date, swr_zend_array_add_or_merge,
-        swr_zend_separate_array, swr_zend_string_release, swr_zend_try_array_merge,
-        swr_zend_try_hash_clean, swr_zend_try_hash_update, swr_zend_try_ptr_dtor,
-        swr_zend_try_symtable_update, swr_zend_url_decode, zend_class_entry, zend_hash_add_new,
-        zend_hash_index_add, zend_hash_next_index_insert, zend_long, zend_object, zend_reference,
-        zend_string, zend_ulong, zend_value, zval, zval_ptr_dtor,
+        swr_zend_string_release, swr_zend_try_array_merge, swr_zend_try_hash_clean,
+        swr_zend_try_hash_update, swr_zend_try_ptr_dtor, swr_zend_try_symtable_update,
+        swr_zend_url_decode, zend_class_entry, zend_hash_add_new, zend_hash_index_add,
+        zend_hash_next_index_insert, zend_long, zend_object, zend_reference, zend_string,
+        zend_ulong, zend_value, zval, zval_ptr_dtor,
     },
 };
 use std::{
@@ -118,6 +118,11 @@ unsafe extern "C" {
     /// `zend_trace_to_string(trace, false)`: it reads the table and returns a
     /// new string.
     safe fn zend_trace_to_string(trace: &Array, include_main: bool) -> *mut zend_string;
+    /// `SEPARATE_ARRAY` of a zval holding an array (the shim leaves anything
+    /// else alone): a shared or immutable array is duplicated, and the zval's
+    /// reference moves to the copy. The exclusive borrow means nothing holds a
+    /// borrow of the table it may give up.
+    safe fn swr_zend_separate_array(array: &mut ArrayMut);
 }
 
 /// A borrowed zval. Zend may change it and what it points to (refcounts, a
@@ -1411,9 +1416,7 @@ impl ArrayMut {
         // `GC_REFCOUNT(arr) > 1` is the only case SEPARATE_ARRAY acts on (an
         // immutable array counts 2), so an unshared one skips the call.
         if header(self.0.array()?).refcount.get() > 1 {
-            // SAFETY: an array zval borrowed mutably; a shared or immutable
-            // array is duplicated, and the zval's reference moves to the copy.
-            unsafe { swr_zend_separate_array(self.0.as_ptr()) };
+            swr_zend_separate_array(self);
         }
         Some(Separated(self))
     }
