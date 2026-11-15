@@ -82,7 +82,9 @@ fn ip_key(state: &crate::ServerState, fd: c_long, send: Option<&SendData>) -> u3
         let Some(sender) = sender else { return 0 };
         sender
     };
-    if swoole_rs_reactor::type_is(addr.kind, swoole_rs_reactor::CLASS_INET4) {
+    if swoole_rs_corebase::constants::SocketType::from_raw(addr.kind)
+        .is_some_and(swoole_rs_corebase::constants::SocketType::is_inet4)
+    {
         u32::from_be(addr.addr.v4().sin_addr.s_addr)
     } else {
         let v6 = (&raw const addr.addr).cast::<c_char>();

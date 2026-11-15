@@ -154,6 +154,24 @@ impl SocketType {
     pub const fn is_local(self) -> bool {
         matches!(self, Self::SW_SOCK_UNIX_STREAM | Self::SW_SOCK_UNIX_DGRAM)
     }
+
+    /// `Socket::is_inet4(type)`: TCP, UDP or raw over IPv4.
+    #[must_use]
+    pub const fn is_inet4(self) -> bool {
+        matches!(
+            self,
+            Self::SW_SOCK_TCP | Self::SW_SOCK_UDP | Self::SW_SOCK_RAW
+        )
+    }
+
+    /// `Socket::is_inet6(type)`: TCP, UDP or raw over IPv6.
+    #[must_use]
+    pub const fn is_inet6(self) -> bool {
+        matches!(
+            self,
+            Self::SW_SOCK_TCP6 | Self::SW_SOCK_UDP6 | Self::SW_SOCK_RAW6
+        )
+    }
 }
 
 #[repr(C)]
@@ -437,5 +455,28 @@ mod tests {
             [false, true, false, false, true]
         );
         assert_eq!(classes(SocketType::SW_SOCK_RAW), [false; 5]);
+    }
+
+    #[test]
+    fn classes_match_upstream_predicates() {
+        use SocketType::*;
+        let stream = [SW_SOCK_TCP, SW_SOCK_TCP6, SW_SOCK_UNIX_STREAM];
+        let dgram = [SW_SOCK_UDP, SW_SOCK_UDP6, SW_SOCK_UNIX_DGRAM];
+        let inet4 = [SW_SOCK_TCP, SW_SOCK_UDP, SW_SOCK_RAW];
+        let inet6 = [SW_SOCK_TCP6, SW_SOCK_UDP6, SW_SOCK_RAW6];
+        for socket_type in (-1..20).filter_map(SocketType::from_raw) {
+            assert_eq!(socket_type.is_stream(), stream.contains(&socket_type));
+            assert_eq!(socket_type.is_dgram(), dgram.contains(&socket_type));
+            assert_eq!(socket_type.is_inet4(), inet4.contains(&socket_type));
+            assert_eq!(socket_type.is_inet6(), inet6.contains(&socket_type));
+            assert_eq!(
+                socket_type.is_tcp(),
+                [SW_SOCK_TCP, SW_SOCK_TCP6].contains(&socket_type)
+            );
+            assert_eq!(
+                socket_type.is_local(),
+                [SW_SOCK_UNIX_STREAM, SW_SOCK_UNIX_DGRAM].contains(&socket_type)
+            );
+        }
     }
 }

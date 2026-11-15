@@ -26,11 +26,10 @@ use swoole_rs_reactor::socket_upstream::{
     make_typed, socket_cork, socket_set_fd_option, socket_uncork,
 };
 use swoole_rs_reactor::{
-    CLASS_STREAM, CLASS_TCP, Drain, Events, Fill, OutputEffects, RangeError, Socket, SocketAddress,
-    SocketFields, SocketFileRequest, SocketRecord, SslSendfileWarning, SyncEffects, SyncMode,
-    handle_send_owned, record_peek, record_recv, record_send, sendfile_chunk,
-    ssl_sendfile as ssl_sendfile_fd, steady_ms, swr_v1_reactor_poll_events_to, swr_v1_socket_sync,
-    type_is, what_event_want,
+    Drain, Events, Fill, OutputEffects, RangeError, Socket, SocketAddress, SocketFields,
+    SocketFileRequest, SocketRecord, SslSendfileWarning, SyncEffects, SyncMode, handle_send_owned,
+    record_peek, record_recv, record_send, sendfile_chunk, ssl_sendfile as ssl_sendfile_fd,
+    steady_ms, swr_v1_reactor_poll_events_to, swr_v1_socket_sync, what_event_want,
 };
 
 // libcrypto's own declaration: it reads only the code, and answers one of its
@@ -1193,7 +1192,8 @@ pub extern "C-unwind" fn make_server_socket(
     let fd = record.fd();
     // Only TCP sockets need to rebind addresses held by TIME_WAIT. Enabling reuse for
     // datagram sockets can allow duplicate binds.
-    if type_is(kind, CLASS_TCP) {
+    let kind = swoole_rs_corebase::constants::SocketType::from_raw(kind);
+    if kind.is_some_and(swoole_rs_corebase::constants::SocketType::is_tcp) {
         let enable: c_int = 1;
         let set =
             swoole_rs_corebase::sys::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, &enable);
@@ -1213,7 +1213,9 @@ pub extern "C-unwind" fn make_server_socket(
             format_args!("bind({fd}, {host}:{port}, {backlog}) failed"),
         );
         false
-    } else if type_is(kind, CLASS_STREAM) && !record.edit(|record| record.listen(backlog)) {
+    } else if kind.is_some_and(swoole_rs_corebase::constants::SocketType::is_stream)
+        && !record.edit(|record| record.listen(backlog))
+    {
         log::sys_warning(
             ORIGIN,
             format_args!("listen({fd}, {host}:{port}, {backlog}) failed"),

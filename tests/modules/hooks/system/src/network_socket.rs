@@ -9,6 +9,7 @@ use std::mem::{MaybeUninit, offset_of};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
+use swoole_rs_corebase::constants::SocketType;
 
 use super::address::Address;
 use super::client::Client;
@@ -200,7 +201,6 @@ unsafe extern "C-unwind" {
         domain: *mut c_int,
         sock_type: *mut c_int,
     ) -> bool;
-    static swr_v1_socket_type_classes: [u8; 16];
 }
 
 #[link(name = "crypto")]
@@ -263,22 +263,16 @@ fn ssl_get_error_reason(reason: Option<&mut c_int>) -> *const c_char {
     unsafe { socket_ssl_get_error_reason(reason.map_or(std::ptr::null_mut(), std::ptr::from_mut)) }
 }
 
-fn type_is(kind: c_int, classes: u8) -> bool {
-    // SAFETY: a static table.
-    usize::try_from(kind)
-        .is_ok_and(|kind| kind < 16 && unsafe { swr_v1_socket_type_classes[kind] } & classes != 0)
-}
-
 fn is_dgram(kind: c_int) -> bool {
-    type_is(kind, 1 << 1)
+    SocketType::from_raw(kind).is_some_and(SocketType::is_dgram)
 }
 
 fn is_stream(kind: c_int) -> bool {
-    type_is(kind, 1)
+    SocketType::from_raw(kind).is_some_and(SocketType::is_stream)
 }
 
 fn is_inet6(kind: c_int) -> bool {
-    type_is(kind, 1 << 3)
+    SocketType::from_raw(kind).is_some_and(SocketType::is_inet6)
 }
 
 fn convert_to_type(domain: c_int, kind: c_int) -> c_int {
