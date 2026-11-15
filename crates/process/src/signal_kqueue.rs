@@ -4,18 +4,19 @@
 use std::ffi::c_int;
 use std::sync::atomic::Ordering::Relaxed;
 
-use crate::signal::SIGNALS;
+use crate::signal::{Handler, SIGNALS};
 
 /// `swoole_signal_kqueue_set`: `handler` (0 to clear) for `signo` on the kqueue
 /// `kq`; returns the previous handler. `*failed` is set when adding the event
 /// failed, for native to warn with `errno`. `kq` is the reactor's kqueue; any
 /// other descriptor fails the change or registers the signal where nothing reads it.
-pub fn signal_kqueue_set(kq: c_int, signo: c_int, handler: usize, failed: &mut bool) -> usize {
+pub fn signal_kqueue_set(kq: c_int, signo: c_int, handler: Handler, failed: &mut bool) -> Handler {
+    let handler = handler.0;
     let Some(slot) = usize::try_from(signo)
         .ok()
         .and_then(|index| SIGNALS.get(index))
     else {
-        return 0;
+        return Handler::NONE;
     };
     let mut origin = 0;
     let mut event: libc::kevent = swoole_rs_corebase::sys::zeroed();
@@ -47,7 +48,7 @@ pub fn signal_kqueue_set(kq: c_int, signo: c_int, handler: usize, failed: &mut b
     }
     let n = swoole_rs_corebase::sys::kevent_change(kq, &event);
     *failed = n < 0 && handler != 0;
-    origin
+    Handler(origin)
 }
 
 /// `swoole_signal_kqueue_clear`: when the event loop is `available`, removes every
@@ -58,7 +59,8 @@ pub fn signal_kqueue_clear(kq: c_int, available: bool) {
             slot.activated.store(false, Relaxed);
             slot.handler.store(0, Relaxed);
             let mut failed = false;
-            signal_kqueue_set(kq, c_int::from(slot.signo.load(Relaxed)), 0, &mut failed);
+            let signo = c_int::from(slot.signo.load(Relaxed));
+            signal_kqueue_set(kq, signo, Handler::NONE, &mut failed);
         }
     }
     crate::signal::signal_reset();
@@ -75,8 +77,8 @@ mod tests {
         let kq = unsafe { libc::kqueue() };
         assert!(kq >= 0);
         let mut failed = true;
-        let origin = signal_kqueue_set(kq, libc::SIGUSR2, 0x1234, &mut failed);
-        assert_eq!((origin, failed), (0, false));
+        let origin = signal_kqueue_set(kq, libc::SIGUSR2, Handler(0x1234), &mut failed);
+        assert_eq!((origin, failed), (Handler::NONE, false));
         let slot = &SIGNALS[libc::SIGUSR2 as usize];
         assert_eq!(slot.handler.load(Relaxed), 0x1234);
         assert!(slot.activated.load(Relaxed));

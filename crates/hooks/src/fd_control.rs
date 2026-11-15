@@ -4,6 +4,7 @@
 use crate::co_io::set_errno;
 use crate::co_socket::Co;
 use libc::{c_int, pollfd};
+use swoole_rs_reactor::Events;
 
 use swoole_rs_reactor::TimeoutKind;
 
@@ -53,7 +54,7 @@ pub extern "C" fn swr_v1_hook_fd_poll(fd: c_int, event: c_int) -> pollfd {
 
 /// Saves the timeout of `event`'s direction and sets every direction to `timeout`
 /// before a virtual poll; the caller restores every direction to the saved one.
-pub(crate) fn fd_wait(socket: Co, event: u32, timeout: f64) -> f64 {
+pub(crate) fn fd_wait(socket: Co, event: Events, timeout: f64) -> f64 {
     let saved = socket.timeout(crate::transfer::timeout_kind(event));
     socket.set_timeout(timeout, TimeoutKind::ALL);
     saved
@@ -63,7 +64,6 @@ pub(crate) fn fd_wait(socket: Co, event: u32, timeout: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::co_socket::CoSocket;
-    use crate::shutdown::READ;
     use swoole_rs_reactor::SocketRecord;
 
     /// A zeroed record over a fresh network socket. Tests reach the network socket
@@ -119,7 +119,7 @@ mod tests {
 
     #[test]
     fn virtual_poll_continuations_save_direction_and_restore_all_without_callback() {
-        for event in [READ, crate::shutdown::WRITE, 0] {
+        for event in [Events::READ, Events::WRITE, Events::NONE] {
             let mut r = Records::new();
             r.record().timeouts.read = 4.0;
             r.record().timeouts.write = 8.0;
@@ -127,7 +127,7 @@ mod tests {
             assert_eq!(r.record().timeouts.read, 0.25);
             assert_eq!(r.record().timeouts.write, 0.25);
             r.co().set_timeout(saved, TimeoutKind::ALL);
-            let expected = if event == READ { 4.0 } else { 8.0 };
+            let expected = if event == Events::READ { 4.0 } else { 8.0 };
             let t = r.record().timeouts;
             assert_eq!([t.dns, t.connect, t.read, t.write], [expected; 4]);
         }
@@ -162,7 +162,7 @@ mod tests {
         };
         assert!(!fd_poll_fake(&mut fd, 0, None));
         assert_eq!(fd.revents, libc::POLLERR);
-        let poll = swr_v1_hook_fd_poll(-1, READ.cast_signed());
+        let poll = swr_v1_hook_fd_poll(-1, Events::READ.bits());
         assert_eq!(poll.fd, -1);
         assert_eq!(poll.events, libc::POLLIN);
         assert_eq!(poll.revents, 0);

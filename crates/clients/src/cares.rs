@@ -14,7 +14,7 @@ use std::{
 };
 use swoole_rs_cares_sys::{self as sdk, swrs_cares_metadata as metadata};
 use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::constants::{EventType, FdType, SW_DNS_SERVER_PORT};
+use swoole_rs_corebase::constants::{FdType, SW_DNS_SERVER_PORT};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::sys::Text;
 use swoole_rs_error::ErrorCode;
@@ -152,11 +152,9 @@ extern "C-unwind" fn cleanup(_: *mut c_void) {
 }
 /// The first query of a reactor's lifetime: its handlers and library cleanup.
 fn install() {
-    let read = EventType::SW_EVENT_READ as i32;
-    let write = EventType::SW_EVENT_WRITE as i32;
     let readable: swoole_rs_reactor::Handler = readable;
-    for (event, handler) in [(read, readable), (write, writable)] {
-        event_api::swoole_event_set_handler(FD, event, Some(handler));
+    for (event, handler) in [(Events::READ, readable), (Events::WRITE, writable)] {
+        event_api::set_handler(FD, event, Some(handler));
     }
     // `cleanup` runs once, when the reactor goes.
     event_api::on_destroy(cleanup);
@@ -301,7 +299,7 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
         .ok()
         .filter(|host| !host.is_empty());
     let port = port.c_cast::<u16>();
-    if !event_api::swoole_event_isset_handler(FD, EventType::SW_EVENT_READ as i32) {
+    if !event_api::isset_handler(FD, Events::READ) {
         // SAFETY: the handler absence identifies the first query in this reactor lifetime.
         unsafe { sdk::ares_library_init(metadata().library_all) };
         install();

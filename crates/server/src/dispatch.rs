@@ -9,17 +9,15 @@ use core::ffi::{CStr, c_char, c_int, c_long};
 use core::sync::atomic::Ordering::{Relaxed, SeqCst};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::ServerEvent;
+use swoole_rs_corebase::constants::SocketType;
+use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR, SW_LOG_TRACE, SW_LOG_WARNING};
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_utilities::misc::swoole_hash_php;
 
 /// `DISPATCH_RESULT_USERFUNC_FALLBACK`.
 const USERFUNC_FALLBACK: c_int = -3;
 
-/// `SocketType`, `SW_SOCK_SSL`, `SW_MAX_LISTEN_PORT`, `SW_SYSTEMD_FDS_START`.
-const SOCK_UDP: c_int = 2;
-const SOCK_UDP6: c_int = 4;
-const SOCK_UNIX_STREAM: c_int = 5;
-const SOCK_UNIX_DGRAM: c_int = 6;
+/// `SW_SOCK_SSL`, `SW_MAX_LISTEN_PORT`, `SW_SYSTEMD_FDS_START`.
 const SOCK_SSL: c_int = 1 << 9;
 const MAX_LISTEN_PORT: usize = 60000;
 const SYSTEMD_FDS_START: c_int = 3;
@@ -198,22 +196,16 @@ pub fn sendwait(serv: Server<'_>, session_id: c_long, data: &[u8]) -> bool {
     usize::try_from(sent) == Ok(data.len())
 }
 
-/// `SW_LOG_TRACE`.
-const SW_LOG_TRACE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as c_int;
-
 const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
 /// `sizeof(SendfileTask)`: its `off_t offset` and `size_t length`, then the name.
 const SENDFILE_TASK_SIZE: usize = 16;
-/// `SW_LOG_WARNING` and `SW_LOG_ERROR`.
-const SW_LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
-const SW_LOG_ERROR: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR as c_int;
 
 /// `Server::sendfile`'s buffer, aligned for the `SendfileTask` it starts with.
 #[repr(C, align(8))]
 struct SendfileBuffer([u8; IPC_BUFFER_SIZE]);
 
 fn log_error(
-    level: c_int,
+    level: swoole_rs_corebase::log::LogLevel,
     code: swoole_rs_error::ErrorCode,
     origin: &CStr,
     m: core::fmt::Arguments<'_>,
@@ -221,7 +213,11 @@ fn log_error(
     swoole_rs_corebase::log::error_log(level, code as c_int, origin, m);
 }
 
-fn sendfile_error(level: c_int, code: swoole_rs_error::ErrorCode, m: core::fmt::Arguments<'_>) {
+fn sendfile_error(
+    level: swoole_rs_corebase::log::LogLevel,
+    code: swoole_rs_error::ErrorCode,
+    m: core::fmt::Arguments<'_>,
+) {
     log_error(level, code, c"Server::sendfile", m);
 }
 
@@ -331,7 +327,7 @@ pub fn add_port<'a>(
         let m = format_args!("up to 60000 listening ports are allowed");
         return fail(E::SW_ERROR_SERVER_TOO_MANY_LISTEN_PORT, m);
     }
-    let local = matches!(socket_type, SOCK_UNIX_STREAM | SOCK_UNIX_DGRAM);
+    let local = SocketType::from_raw(socket_type).is_some_and(SocketType::is_local);
     if !local && !(0..=65535).contains(&number) {
         let m = format_args!("invalid port [{number}]");
         return fail(E::SW_ERROR_SERVER_INVALID_LISTEN_PORT, m);
@@ -369,7 +365,7 @@ pub fn add_port<'a>(
 /// ([`Server::dgram_socket`] finds them).
 fn keep_port(serv: Server<'_>, port: Box<PortConfig>) -> Port<'_> {
     let config = serv.config();
-    if matches!(port.r#type, SOCK_UDP | SOCK_UDP6 | SOCK_UNIX_DGRAM) {
+    if SocketType::from_raw(port.r#type).is_some_and(SocketType::is_dgram) {
         let fd = port
             .listening_socket()
             .map_or(-1, swoole_rs_reactor::Socket::fd);
@@ -445,6 +441,9 @@ mod tests {
 
     use crate::fixture::LiveServer;
     use swoole_rs_process::worker_record::{WorkerRecord, WorkerStatus};
+
+    const SOCK_UDP: c_int = SocketType::SW_SOCK_UDP.raw();
+    const SOCK_UNIX_STREAM: c_int = SocketType::SW_SOCK_UNIX_STREAM.raw();
 
     /// The live server with `n` event workers in `dispatch` mode: their records, and
     /// the server.

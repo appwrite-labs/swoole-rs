@@ -75,7 +75,7 @@ pool_methods! {
     fn kill_all_workers(signo: c_int) -> () = |p| p.kill_all_workers(signo);
     fn shutdown() -> bool = |p| p.shutdown();
     fn set_max_request(max: u32, grace: u32) -> () = |p| p.set_max_requests(max, grace);
-    fn set_type(kind: c_int) -> () = |p| p.set_type(kind.c_cast::<u8>());
+    fn set_type(kind: WorkerType) -> () = |p| p.set_type(kind);
     fn set_start_id(id: c_int) -> () = |p| p.number_from(id.c_cast::<u16>());
     fn detach() -> bool = |p| p.detach();
     fn wait() -> c_int = raised |p| p.wait().map(CCast::c_cast::<c_int>);
@@ -235,10 +235,9 @@ pub fn listen_socket(
 #[cfg(any(feature = "upstream-symbols", test))]
 fn listen(pool: &PoolRecord, host: &CStr, port: c_int, make: impl FnOnce() -> *mut c_void) -> bool {
     if pool.ipc_mode != crate::process_pool::IpcMode::Socket {
-        // SW_LOG_WARNING, SW_ERROR_OPERATION_NOT_SUPPORT.
         swoole_rs_corebase::log::error_log(
-            4,
-            507,
+            swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING,
+            swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as c_int,
             c"ProcessPool::listen",
             format_args!("not support, ipc_mode must be SW_IPC_SOCKET"),
         );

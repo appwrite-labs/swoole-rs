@@ -19,7 +19,7 @@ const SESSIONS: usize = 1 << 20;
 /// Connection slots: fds below this are accepted.
 pub(crate) const CONNECTIONS: usize = 4096;
 /// `SW_SOCK_TCP` and `SW_FD_STREAM_SERVER`.
-const SOCK_TCP: c_int = 1;
+const SOCK_TCP: c_int = swoole_rs_corebase::constants::SocketType::SW_SOCK_TCP.raw();
 const FD_STREAM_SERVER: c_int = 1;
 
 /// A process-mode server with one reactor thread, its tables, shared counters and

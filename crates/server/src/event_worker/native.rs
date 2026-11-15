@@ -27,12 +27,12 @@ use crate::callbacks::{CallbackKind, EventSlot, ReceiveSlot, ServerSlot, TaskSlo
 use crate::objects::{Bus, Reactor, set_nonblock, worker_pipe};
 use crate::records::Lookup;
 use crate::view;
+use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as WARNING;
 
 /// `SW_FD_PIPE`, `SW_PIPE_MASTER`.
 const FD_PIPE: c_int = 3;
 const PIPE_MASTER: c_int = 1;
 /// `SW_LOG_WARNING` and the `SW_ERROR_*` the worker logs.
-const WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
 const INVALID_PARAMS: c_int = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as c_int;
 const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
 const SESSION_DISCARD_TIMEOUT_DATA: c_int =
@@ -284,7 +284,7 @@ pub(crate) fn call_worker_error_callback(
     status: &ExitStatus,
 ) {
     serv.state().callbacks.worker_error(serv, worker, status);
-    if worker.kind() == WorkerType::Event.code() {
+    if worker.kind() == Some(WorkerType::Event) {
         crate::worker_methods::abort_worker(serv, worker);
     }
 }
@@ -329,7 +329,7 @@ pub fn kill_worker(serv: view::Server<'_>, worker_id: c_int) -> bool {
 pub fn stop_async_worker(serv: view::Server<'_>, worker: Worker<'_>) {
     let config = serv.config();
     swr_v1_worker_shutdown(worker);
-    if worker.kind() == WorkerType::Event.code() {
+    if worker.kind() == Some(WorkerType::Event) {
         crate::worker_methods::reset_worker_counter(serv, worker);
     }
     let reactor = Reactor::thread();

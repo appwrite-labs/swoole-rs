@@ -11,7 +11,7 @@
 //! native caller raises the bailout again once the Rust frames are gone.
 
 use crate::task_file::Packed;
-use crate::worker_record::Worker;
+use crate::worker_record::{Worker, WorkerType};
 use std::ffi::{c_char, c_int, c_void};
 use std::ptr;
 use std::sync::atomic::AtomicU32;
@@ -874,9 +874,6 @@ impl Protocol {
 /// `Op::MainLoop`'s `run_async`, after the protocols' own codes.
 const MAIN_ASYNC: u64 = 4;
 
-/// `swWorkerType`.
-const SW_MASTER: u64 = 1;
-
 /// `swoole_config.h`; native asserts each.
 pub const SW_MESSAGE_BOX_SIZE: u64 = 65536;
 pub const SW_INPUT_BUFFER_SIZE: u32 = 2 * 1024 * 1024;
@@ -1174,14 +1171,14 @@ fn new_message_box(size: usize, maxlen: usize) -> *mut c_void {
 /// effects too, since crates/reactor and crates/timer depend on this crate).
 #[cfg(feature = "upstream-symbols")]
 fn effect(op: Op, arg: u64) -> Option<i64> {
-    use crate::methods::{swoole_get_worker_type, swoole_set_worker_type};
+    use crate::methods::{swoole_set_worker_type, worker_type};
     let int = arg.c_cast::<c_int>();
     Some(match op {
         Op::WorkerType => {
             swoole_set_worker_type(int);
             0
         }
-        Op::IsMaster => i64::from(i64::from(swoole_get_worker_type()) == SW_MASTER.cast_signed()),
+        Op::IsMaster => i64::from(worker_type() == Some(WorkerType::Master)),
         Op::SignalDispatch => {
             crate::signal::swoole_signal_dispatch();
             0
@@ -1194,9 +1191,9 @@ fn effect(op: Op, arg: u64) -> Option<i64> {
 
 /// `LOG_*`'s warning, under the `ProcessPool` method upstream logged it from.
 fn log(kind: Log, arg: u64) {
-    use swoole_rs_corebase::log::{error_log, sys_warning, warning};
     /// `SW_LOG_WARNING`, `SW_ERROR_OPERATION_NOT_SUPPORT`, `SW_ERROR_WRONG_OPERATION`.
-    const WARNING: c_int = 4;
+    use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as WARNING;
+    use swoole_rs_corebase::log::{error_log, sys_warning, warning};
     const NOT_SUPPORT: c_int = swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as c_int;
     const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
     let pid = arg.c_cast::<c_int>();
@@ -1579,7 +1576,7 @@ impl<H: PoolHost> Pool<'_, H> {
         self.set_running(true);
         self.set_started(true);
         self.set_master_pid(getpid());
-        self.op(Op::WorkerType, SW_MASTER);
+        self.op(Op::WorkerType, WorkerType::Master.code().into());
         if self.is_async() {
             self.op(Op::MainLoop, MAIN_ASYNC);
         }
@@ -1588,7 +1585,7 @@ impl<H: PoolHost> Pool<'_, H> {
             let id = u32::from(self.start_id()) + index;
             worker.join(self.p);
             worker.set_id(id);
-            worker.set_kind(self.kind());
+            worker.set_kind_code(self.kind());
             self.on(worker.raw(), Op::UnlimitPipes, 0);
         }
         true
@@ -2152,13 +2149,13 @@ pub fn swr_v1_process_pool_dispatch_event(
 /// `swoole_get_worker_symbol`: the log's mark for a worker type (`swWorkerType`).
 #[must_use]
 pub extern "C" fn swr_v1_worker_symbol(kind: c_int) -> std::ffi::c_char {
-    let symbol = match kind {
-        1 => b'#',
-        3 => b'$',
-        2 => b'*',
-        4 => b'^',
-        5 => b'@',
-        _ => b'%',
+    let symbol = match WorkerType::from_code(kind.into()) {
+        Some(WorkerType::Master) => b'#',
+        Some(WorkerType::Manager) => b'$',
+        Some(WorkerType::Event) => b'*',
+        Some(WorkerType::Task) => b'^',
+        Some(WorkerType::User) => b'@',
+        None => b'%',
     };
     std::ffi::c_char::from_ne_bytes([symbol])
 }
@@ -2183,8 +2180,8 @@ pub fn pool_run_main(
 
 impl<H: PoolHost> Pool<'_, H> {
     /// `ProcessPool::set_type(type)`: the pool's and each worker's.
-    pub(crate) fn set_type(&mut self, kind: u8) {
-        self.set_kind(kind);
+    pub(crate) fn set_type(&mut self, kind: WorkerType) {
+        self.set_kind(kind.code());
         for index in 0..self.worker_num() {
             self.worker_at(index).set_kind(kind);
         }
@@ -2513,7 +2510,7 @@ mod tests {
         // SAFETY: the fixture's records.
         unsafe {
             assert_eq!(Worker::new(pool.worker(1)).id(), 6);
-            assert_eq!(Worker::new(pool.worker(1)).kind(), 4);
+            assert_eq!(Worker::new(pool.worker(1)).kind(), Some(WorkerType::Task));
         }
     }
 

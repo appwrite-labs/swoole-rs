@@ -13,19 +13,17 @@ use std::ffi::c_int;
 #[cfg(target_os = "linux")]
 use std::ffi::c_void;
 use swoole_rs_corebase::log;
+pub use swoole_rs_process::signal::Handler;
 use swoole_rs_process::signal::signal_name;
 use swoole_rs_process::signal_loop::{self, Ops, Report};
 
-/// `SW_FD_SIGNAL`, `SW_EVENT_READ`, `SW_LOG_WARNING` and `SW_ERROR_UNREGISTERED_SIGNAL`.
+/// `SW_FD_SIGNAL` and `SW_ERROR_UNREGISTERED_SIGNAL`.
 #[cfg(target_os = "linux")]
 const FD_SIGNAL: c_int = 9;
-#[cfg(target_os = "linux")]
-const EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
-const LOG_WARNING: c_int = 4;
 const UNREGISTERED_SIGNAL: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_UNREGISTERED_SIGNAL as c_int;
 
-use swoole_rs_process::signal::Callback as SignalHandler;
+use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 
 // crates/tls's `Socket::free`, the same archive; declared, since crates/tls
 // depends on this crate.
@@ -61,15 +59,6 @@ fn has_reactor() -> bool {
 
 fn native_handle() -> i32 {
     crate::event_api::field(|fields| fields.native_handle).unwrap_or(-1)
-}
-
-/// # Safety
-/// `handler` is a `SignalHandler` the loop registered.
-unsafe fn invoke(handler: usize, signo: i32) {
-    // SAFETY: the loop only stores `SignalHandler`s, and passes back a registered one.
-    let handler: SignalHandler = unsafe { std::mem::transmute(handler) };
-    // SAFETY: as above.
-    unsafe { handler(signo) };
 }
 
 fn report(report: Report) {
@@ -133,9 +122,9 @@ fn report(report: Report) {
 
 #[cfg(target_os = "linux")]
 mod descriptor {
-    use super::{EVENT_READ, FD_SIGNAL, OPS, c_int, c_void, socket_free};
+    use super::{FD_SIGNAL, OPS, c_int, c_void, socket_free};
     use crate::event_api::{
-        FdHandler, event_add, event_del, swoole_event_isset_handler, swoole_event_set_fd_handler,
+        FdHandler, event_add, event_del, isset_handler, swoole_event_set_fd_handler,
     };
     use crate::socket_upstream::make_socket_fd;
     use crate::{Socket, SocketRecord};
@@ -185,7 +174,7 @@ mod descriptor {
     }
 
     pub(super) fn installed() -> bool {
-        swoole_event_isset_handler(FD_SIGNAL, EVENT_READ)
+        isset_handler(FD_SIGNAL, crate::Events::READ)
     }
 
     /// The signalfd's read handler.
@@ -208,7 +197,7 @@ mod descriptor {
 
     /// The read handler, the exit condition and the destroy callback.
     pub(super) fn install() {
-        swoole_event_set_fd_handler::<Read>(FD_SIGNAL, EVENT_READ);
+        swoole_event_set_fd_handler::<Read>(FD_SIGNAL, crate::Events::READ);
         crate::swr_v1_event_set_exit_condition(crate::ExitCondition::Signalfd, exit_condition);
         crate::event_api::on_destroy(destroyed);
     }
@@ -239,49 +228,19 @@ static OPS: Ops = Ops {
     descriptor: Some(&descriptor::OPS_DESCRIPTOR),
     #[cfg(not(target_os = "linux"))]
     descriptor: None,
-    invoke,
     report,
 };
-
-/// A signal's handler as the signal loop holds it: none, `SIG_IGN`, or a function
-/// to call with the signal's number.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(transparent)]
-pub struct Handler(usize);
-
-impl Handler {
-    pub const NONE: Self = Self(0);
-    pub const IGNORE: Self = Self(libc::SIG_IGN);
-
-    #[must_use]
-    pub fn new(handler: extern "C" fn(c_int)) -> Self {
-        Self((handler as *const ()).expose_provenance())
-    }
-
-    /// # Safety
-    /// `handler` is 0, `SIG_IGN`, or a `SignalHandler` that is sound to call with
-    /// any signal number and that nothing unloads.
-    #[must_use]
-    pub const unsafe fn from_raw(handler: usize) -> Self {
-        Self(handler)
-    }
-
-    #[must_use]
-    pub const fn raw(self) -> usize {
-        self.0
-    }
-}
 
 /// `swoole_signal_set(signo, handler, safety)`: the handler it replaced.
 #[must_use]
 pub fn set(signo: c_int, handler: Handler, safety: bool) -> Handler {
-    Handler(signal_loop::set(signo, handler.0, safety, &OPS))
+    signal_loop::set(signo, handler, safety, &OPS)
 }
 
 /// `swoole_signal_get_handler(signo)`.
 #[must_use]
 pub fn get(signo: c_int) -> Handler {
-    Handler(signal_loop::get(signo, &OPS))
+    signal_loop::get(signo, &OPS)
 }
 
 /// `swoole_signal_clear()`.
@@ -297,7 +256,7 @@ pub fn clear() {
 #[unsafe(export_name = "_Z17swoole_signal_setiPFviEb")]
 pub unsafe extern "C" fn swoole_signal_set(signo: c_int, handler: usize, safety: bool) -> usize {
     // SAFETY: as the caller promises.
-    set(signo, unsafe { Handler::from_raw(handler) }, safety).0
+    set(signo, unsafe { Handler::from_raw(handler) }, safety).raw()
 }
 
 /// `void swoole_signal_callback(int signo)`: runs the handler registered for `signo`,
@@ -311,7 +270,7 @@ pub extern "C" fn swoole_signal_callback(signo: c_int) {
 #[must_use]
 #[unsafe(export_name = "_Z25swoole_signal_get_handleri")]
 pub extern "C" fn swoole_signal_get_handler(signo: c_int) -> usize {
-    get(signo).0
+    get(signo).raw()
 }
 
 /// `uint32_t swoole_signal_get_listener_num()`.

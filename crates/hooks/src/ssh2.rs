@@ -2,8 +2,8 @@
 //! `php_swoole_ssh2.h`): the coroutine wait crates/ssh2 retries libssh2 calls
 //! over, the bound-coroutine check before each call, and the session timeout.
 use crate::co_socket::Co;
-use crate::shutdown::{READ, WRITE};
 use core::ffi::{c_int, c_void};
+use swoole_rs_reactor::Events;
 use swoole_rs_ssh2_sys::{LIBSSH2_SESSION, libssh2_session_abstract};
 
 /// `php_ssh2_session_data`: four userspace callbacks, then the `SocketImpl *`.
@@ -53,7 +53,9 @@ static OPS: Ops = Ops { wait };
 /// `ssh2_wait`: park the coroutine until `event` on the session's socket. crates/ssh2
 /// calls it in a coroutine.
 extern "C" fn wait(session: Session, event: c_int) -> bool {
-    session.socket().poll(event.cast_unsigned(), 0.0)
+    session
+        .socket()
+        .poll(swoole_rs_reactor::Events::from_bits(event), 0.0)
 }
 
 /// `ssh2_bound`: the wait, once no other coroutine is bound to the session's socket.
@@ -64,8 +66,8 @@ extern "C" fn wait(session: Session, event: c_int) -> bool {
 pub unsafe extern "C" fn swr_v1_ssh2_bound(session: *mut LIBSSH2_SESSION) -> *const Ops {
     // SAFETY: as the caller promises.
     let socket = unsafe { Session::new(session) }.socket();
-    socket.check_bound(READ);
-    socket.check_bound(WRITE);
+    socket.check_bound(Events::READ);
+    socket.check_bound(Events::WRITE);
     &raw const OPS
 }
 

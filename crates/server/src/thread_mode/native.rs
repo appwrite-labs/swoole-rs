@@ -10,7 +10,7 @@ use swoole_rs_corebase::{CCast, log};
 use swoole_rs_error::ErrorCode as E;
 use swoole_rs_memory::members::Shm;
 use swoole_rs_process::methods::{
-    ExitStatus, start_check, swoole_set_worker_id, swoole_set_worker_pid, swoole_set_worker_type,
+    ExitStatus, set_worker_type, start_check, swoole_set_worker_id, swoole_set_worker_pid,
     worker_type,
 };
 use swoole_rs_process::worker_record::{Worker, WorkerStatus, WorkerType};
@@ -22,12 +22,10 @@ use crate::reactor_ops::PoolBus;
 use crate::records::ConnectionRecord;
 use crate::worker_methods::{create_event_workers, create_user_workers};
 use crate::{factory, pool_native, server_methods, view};
+use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR as ERROR, SW_LOG_WARNING as WARNING};
 
 /// `SW_EVENT_READ` and `Server::THREAD_WORKER`.
 const THREAD_WORKER: u8 = 4;
-/// `SW_LOG_WARNING`, `SW_LOG_ERROR`.
-const WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
-const ERROR: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR as c_int;
 
 /// The server's thread factory's manager; thread mode's server has one.
 fn manager(serv: view::Server<'_>) -> std::sync::Arc<ThreadManager> {
@@ -194,7 +192,7 @@ fn body(serv: view::Server<'_>, id: u32, kind: WorkerType) {
     swoole_rs_corebase::swoole_thread_init(false);
     swoole_rs_corebase::set_thread(THREAD_WORKER, slot);
     let pid = swoole_rs_ossupport::swr_v1_os_thread_native_id().c_cast::<i32>();
-    swoole_set_worker_type(kind as c_int);
+    set_worker_type(kind);
     swoole_set_worker_id(id);
     swoole_set_worker_pid(pid);
     // The thread's own bus, which outlives its use as the thread's below.
@@ -209,7 +207,7 @@ fn body(serv: view::Server<'_>, id: u32, kind: WorkerType) {
         let worker = serv.worker_record(slot);
         let worker =
             worker.unwrap_or_else(|| swoole_rs_corebase::fatal("no worker for this thread"));
-        worker.set_kind(kind.code());
+        worker.set_kind(kind);
         worker.set_pid(pid);
         if kind == WorkerType::Task {
             worker.set_status(WorkerStatus::Idle);
@@ -301,8 +299,8 @@ fn run_main(main: &Main<'_>) {
     // record meanwhile.
     let pool = serv.task_pool_ref();
     match worker.kind() {
-        kind if kind == WorkerType::Event.code() => crate::thread_ops::main_loop(serv, *slot),
-        kind if kind == WorkerType::Task.code() => {
+        Some(WorkerType::Event) => crate::thread_ops::main_loop(serv, *slot),
+        Some(WorkerType::Task) => {
             pool.call_on_worker_start(worker);
             _ = pool.call_main_loop(worker);
             pool.call_on_worker_stop(worker);
@@ -350,10 +348,8 @@ fn restart(serv: view::Server<'_>, manager: &ThreadManager, slot: u16) {
     if serv.state().stopping.load(Ordering::Acquire) {
         return;
     }
-    let kind = [WorkerType::Event, WorkerType::Task, WorkerType::User]
-        .into_iter()
-        .find(|kind| kind.code() == worker.kind());
-    let Some(kind) = kind else {
+    let Some(kind @ (WorkerType::Event | WorkerType::Task | WorkerType::User)) = worker.kind()
+    else {
         swoole_rs_corebase::fatal("an exited thread of an unknown worker type");
     };
     spawn(serv, id, kind);

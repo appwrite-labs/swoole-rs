@@ -203,9 +203,9 @@ impl ServerState {
 
     /// `Server::set_document_root(path)`: the path's real path, if it exists.
     pub(crate) fn set_document_root(&self, path: &[u8]) -> bool {
-        /// `SW_LOG_WARNING`.
-        const LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
         use std::os::unix::ffi::OsStrExt;
+        /// `SW_LOG_WARNING`.
+        use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
         let origin = c"Server::set_document_root";
         if path.len() > usize::try_from(libc::PATH_MAX).unwrap_or(usize::MAX) {
             let code = swoole_rs_error::ErrorCode::SW_ERROR_NAME_TOO_LONG as c_int;

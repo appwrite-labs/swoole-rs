@@ -28,6 +28,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use swoole_rs_ffi as _;
 use swoole_rs_hooks::file_io::read_file;
 use swoole_rs_hooks::poll::PollFd;
+use swoole_rs_reactor::Events;
 
 mod address;
 // Upstream's core-tests/src/network/client.cpp: a clients test, built here to share this
@@ -664,8 +665,8 @@ fn swoole_stream_select() {
     let p = UnixSocket::new(true, SOCK_STREAM);
     let mut fds = [PollFd {
         fd: p.get_socket(false),
-        events: SW_EVENT_READ,
-        revents: 0,
+        events: Events::from_bits(SW_EVENT_READ),
+        revents: Events::NONE,
     }];
 
     run(|| {
@@ -703,8 +704,8 @@ fn timeout_is_zero() {
     let p = UnixSocket::new(true, SOCK_STREAM);
     let mut fds = [PollFd {
         fd: p.get_socket(false),
-        events: SW_EVENT_READ,
-        revents: 0,
+        events: Events::from_bits(SW_EVENT_READ),
+        revents: Events::NONE,
     }];
     let p = &p;
 

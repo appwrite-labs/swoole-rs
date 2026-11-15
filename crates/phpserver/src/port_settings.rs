@@ -6,7 +6,8 @@ use crate::settings::{Settings, Step, Stop, checked};
 use std::ffi::{CStr, c_char, c_int, c_void};
 use swoole_rs_clients::protocol::{GetPackageLength, Protocol};
 use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::{constants::SW_IPC_BUFFER_SIZE, swoole_type_size};
+use swoole_rs_corebase::constants::{SW_IPC_BUFFER_SIZE, SocketType};
+use swoole_rs_corebase::swoole_type_size;
 use swoole_rs_ports::lifecycle::{context_dup, sni_add};
 use swoole_rs_server::port_config::{LengthOwner, PortConfig};
 use swoole_rs_server::view;
@@ -84,7 +85,7 @@ fn protocols(v: i64, dgram: bool) -> i64 {
 
 /// `Socket::is_dgram(type)`: UDP, UDP6 or a Unix datagram socket.
 pub(crate) fn is_dgram(kind: c_int) -> bool {
-    matches!(kind, 2 | 4 | 6)
+    SocketType::from_raw(kind).is_some_and(SocketType::is_dgram)
 }
 
 /// `package_eof`: the length is published as a `uint8_t` before it is checked.

@@ -4,7 +4,7 @@
 //! the TLS session.
 use crate::vector::Barrier;
 use core::ffi::{CStr, c_void};
-use swoole_rs_corebase::constants::EventType;
+use swoole_rs_reactor::Events;
 
 /// Whether the socket is connected and which directions are shut.
 #[repr(C)]
@@ -15,17 +15,14 @@ pub struct SocketFlags {
     pub write: bool,
 }
 
-pub(crate) const READ: u32 = EventType::SW_EVENT_READ as u32;
-pub(crate) const WRITE: u32 = EventType::SW_EVENT_WRITE as u32;
-
 /// One coroutine socket's state; native code holds it only as a pointer.
 pub struct SocketState {
     pub(crate) flags: SocketFlags,
     /// The native `Coroutine` waiting to read and to write, or null.
     read_co: *mut c_void,
     write_co: *mut c_void,
-    /// `want_event`: the direction a TLS wait added instead of its own, or 0.
-    pub(crate) want: u32,
+    /// `want_event`: the direction a TLS wait added instead of its own, or none.
+    pub(crate) want: Events,
     /// The barriers installed for the read and the write wait.
     pub(crate) barriers: [Option<Barrier>; 2],
     /// The timers of the read and the write wait.
@@ -53,7 +50,7 @@ impl SocketState {
             },
             read_co: core::ptr::null_mut(),
             write_co: core::ptr::null_mut(),
-            want: 0,
+            want: Events::NONE,
             barriers: [None; 2],
             timers: [WaitTimer::None; 2],
         }
@@ -61,8 +58,8 @@ impl SocketState {
 
     /// The coroutine bound to `event` (`SW_EVENT_READ` or `SW_EVENT_WRITE`), or null.
     #[must_use]
-    pub fn co(&self, event: u32) -> *mut c_void {
-        if event == READ {
+    pub fn co(&self, event: Events) -> *mut c_void {
+        if event == Events::READ {
             self.read_co
         } else {
             self.write_co
@@ -74,11 +71,11 @@ impl SocketState {
     /// to suspend in, which unbinds it before it returns: so a bound coroutine is live
     /// and suspended, as [`Co::cancel`](crate::co_socket::Co::cancel) and the reactor
     /// callbacks that resume it, and the bound-coroutine checks that read its id, rely on.
-    pub(crate) fn bind(&mut self, event: u32, co: *mut c_void) {
-        if event & READ != 0 {
+    pub(crate) fn bind(&mut self, event: Events, co: *mut c_void) {
+        if event.intersects(Events::READ) {
             self.read_co = co;
         }
-        if event & WRITE != 0 {
+        if event.intersects(Events::WRITE) {
             self.write_co = co;
         }
     }
@@ -86,10 +83,10 @@ impl SocketState {
     /// `get_bound_co(event)`: the reader if `event` includes reading and one is bound,
     /// otherwise the writer if it includes writing, otherwise null.
     #[must_use]
-    pub fn bound_co(&self, event: u32) -> *mut c_void {
-        if event & READ != 0 && !self.read_co.is_null() {
+    pub fn bound_co(&self, event: Events) -> *mut c_void {
+        if event.intersects(Events::READ) && !self.read_co.is_null() {
             self.read_co
-        } else if event & WRITE != 0 && !self.write_co.is_null() {
+        } else if event.intersects(Events::WRITE) && !self.write_co.is_null() {
             self.write_co
         } else {
             core::ptr::null_mut()
@@ -99,11 +96,11 @@ impl SocketState {
     /// `get_event_str(event)`. An event other than read or write names whichever
     /// coroutine is bound.
     #[must_use]
-    pub fn event_name(&self, event: u32) -> &'static CStr {
+    pub fn event_name(&self, event: Events) -> &'static CStr {
         let (read_bound, write_bound) = (!self.read_co.is_null(), !self.write_co.is_null());
-        if event == READ {
+        if event == Events::READ {
             c"reading"
-        } else if event == WRITE {
+        } else if event == Events::WRITE {
             c"writing"
         } else if read_bound && write_bound {
             c"reading or writing"
@@ -269,18 +266,21 @@ mod tests {
             (&raw mut reader).cast::<c_void>(),
             (&raw mut writer).cast::<c_void>(),
         );
-        assert!(state.bound_co(READ | WRITE).is_null());
-        assert_eq!(state.event_name(READ | WRITE), c"writing");
-        state.bind(WRITE, w);
-        assert_eq!(state.bound_co(READ | WRITE), w);
-        assert!(state.bound_co(READ).is_null());
-        assert_eq!(state.event_name(READ | WRITE), c"writing");
-        state.bind(READ, r);
-        assert_eq!(state.bound_co(READ | WRITE), r);
-        assert_eq!(state.co(WRITE), w);
-        assert_eq!(state.event_name(READ | WRITE), c"reading or writing");
-        assert_eq!(state.event_name(READ), c"reading");
-        state.bind(READ | WRITE, core::ptr::null_mut());
-        assert!(state.co(READ).is_null() && state.co(WRITE).is_null());
+        assert!(state.bound_co(Events::READ | Events::WRITE).is_null());
+        assert_eq!(state.event_name(Events::READ | Events::WRITE), c"writing");
+        state.bind(Events::WRITE, w);
+        assert_eq!(state.bound_co(Events::READ | Events::WRITE), w);
+        assert!(state.bound_co(Events::READ).is_null());
+        assert_eq!(state.event_name(Events::READ | Events::WRITE), c"writing");
+        state.bind(Events::READ, r);
+        assert_eq!(state.bound_co(Events::READ | Events::WRITE), r);
+        assert_eq!(state.co(Events::WRITE), w);
+        assert_eq!(
+            state.event_name(Events::READ | Events::WRITE),
+            c"reading or writing"
+        );
+        assert_eq!(state.event_name(Events::READ), c"reading");
+        state.bind(Events::READ | Events::WRITE, core::ptr::null_mut());
+        assert!(state.co(Events::READ).is_null() && state.co(Events::WRITE).is_null());
     }
 }

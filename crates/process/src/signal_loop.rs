@@ -2,7 +2,7 @@
 // Compatibility derived from Swoole v6.2.4 src/os/signal.cc (Swoole contributors).
 //! Signal backend routing and signalfd reactor-wrapper custody. The existing
 //! backends own handlers/masks/descriptors; SDK leaves lend reactor/socket effects.
-use crate::signal;
+use crate::signal::{self, Handler};
 use swoole_rs_corebase as corebase;
 
 /// The event loop's side of the signal backends (crates/reactor).
@@ -16,8 +16,6 @@ pub struct Ops {
     pub callback: signal::Dispatch,
     /// The signalfd socket's reactor effects (Linux).
     pub descriptor: Option<&'static DescriptorOps>,
-    /// Run a handler `set` registered.
-    pub invoke: unsafe fn(usize, i32),
     pub report: fn(Report),
 }
 
@@ -78,7 +76,7 @@ fn errno() -> i32 {
 
 /// `swoole_signal_set` over the configured backend: the previous handler.
 #[must_use]
-pub fn set(signo: i32, handler: usize, safety: bool, ops: &Ops) -> usize {
+pub fn set(signo: i32, handler: Handler, safety: bool, ops: &Ops) -> Handler {
     let caps = (ops.capabilities)();
     let available = (ops.available)();
     #[cfg(target_os = "linux")]
@@ -111,7 +109,7 @@ pub fn set(signo: i32, handler: usize, safety: bool, ops: &Ops) -> usize {
 }
 /// `swoole_signal_get_handler`.
 #[must_use]
-pub fn get(signo: i32, ops: &Ops) -> usize {
+pub fn get(signo: i32, ops: &Ops) -> Handler {
     let lookup = signal::signal_lookup(signo);
     if lookup == signal::Lookup::OutOfRange {
         (ops.report)(Report::HandlerOutOfRange(signo));
@@ -123,8 +121,7 @@ pub fn callback(signo: i32, ops: &Ops) {
     match signal::signal_lookup(signo) {
         signal::Lookup::OutOfRange => (ops.report)(Report::CallbackOutOfRange(signo)),
         signal::Lookup::Default => (ops.report)(Report::CallbackUnregistered(signo)),
-        // SAFETY: a handler `set` registered.
-        signal::Lookup::Handler(handler) => unsafe { (ops.invoke)(handler, signo) },
+        signal::Lookup::Handler(handler) => handler.call(signo),
         signal::Lookup::Ignored => {}
     }
 }
@@ -217,10 +214,7 @@ pub fn read(fd: i32, ops: &Ops) -> i32 {
         Received::ReadFailed(error) => (ops.report)(Report::ReadFailed(error)),
         Received::OutOfRange(signo) => (ops.report)(Report::UnknownSignal(signo.cast_signed())),
         Received::NoHandler(signo) => (ops.report)(Report::ReadUnregistered(signo.cast_signed())),
-        // SAFETY: a handler `set` registered.
-        Received::Handler { signo, handler } => unsafe {
-            (ops.invoke)(handler, signo.cast_signed());
-        },
+        Received::Handler { signo, handler } => handler.call(signo.cast_signed()),
         Received::Nothing => {}
     }
     0

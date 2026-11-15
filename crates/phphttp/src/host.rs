@@ -85,7 +85,12 @@ pub(crate) fn report(code: c_int, always: bool, message: impl Into<Vec<u8>>) {
 /// Swoole's log line as `func` would print it: `swoole_error_log(level, error)`
 /// when `error > 0`, `swoole_warning` when 0, `swoole_sys_warning` for `-errno`.
 /// The message ends at its first NUL, as `%s`/`%.*s` do.
-pub(crate) fn log(level: c_int, error: c_int, func: &std::ffi::CStr, message: impl Into<Vec<u8>>) {
+pub(crate) fn log(
+    level: swoole_rs_corebase::log::LogLevel,
+    error: c_int,
+    func: &std::ffi::CStr,
+    message: impl Into<Vec<u8>>,
+) {
     let message = message.into();
     let message = String::from_utf8_lossy(&message);
     match error.cmp(&0) {

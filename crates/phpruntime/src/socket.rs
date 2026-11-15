@@ -8,7 +8,7 @@ use std::{
 };
 use swoole_rs_corebase::log::set_last_error;
 use swoole_rs_hooks::co_socket::{Co, swr_v1_hook_co_socket_free};
-use swoole_rs_reactor::{SocketFields, TimeoutKind};
+use swoole_rs_reactor::{Events, SocketFields, TimeoutKind};
 use swoole_rs_tls::upstream::{recv_sync, send_sync, socket_ssl_close};
 use swoole_rs_zend::{
     E_ERROR, Owned, Value, ZString,
@@ -420,7 +420,7 @@ pub fn convert_to_fd(value: &Value) -> Result<i32, Bailout> {
 /// `System::socket_poll` of `(fd, events)` rows merged by fd, in the order
 /// `stream_select` added them: `None` on a timeout or failure, else each polled
 /// fd and its revents in the poll set's order.
-pub(crate) fn poll(rows: &[(i32, i32)], timeout: f64) -> Option<Vec<(i32, i32)>> {
+pub(crate) fn poll(rows: &[(i32, Events)], timeout: f64) -> Option<Vec<(i32, Events)>> {
     swoole_rs_hooks::poll::socket_poll_rows(rows, timeout)
 }
 
@@ -534,11 +534,6 @@ pub mod co {
             swoole_rs_corebase::fatal("out of memory storing a socket error");
         }
     }
-
-    /// `SW_EVENT_READ`.
-    pub const READ: u32 = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as u32;
-    /// `SW_EVENT_WRITE`.
-    pub const WRITE: u32 = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as u32;
 
     /// A `SocketImpl *`.
     pub type Socket = *mut c_void;

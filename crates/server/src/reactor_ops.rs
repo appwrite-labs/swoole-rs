@@ -60,11 +60,6 @@ pub(crate) fn out_buffer(socket: &SocketFields) -> Option<&CppBuffer> {
     socket.output.buffer()
 }
 
-/// `Socket::is_dgram(type)`.
-pub(crate) fn is_dgram(kind: c_int) -> bool {
-    matches!(kind, 2 | 4 | 6)
-}
-
 /// `Server::is_valid_connection`.
 pub(crate) fn valid(conn: Option<Connection<'_>>) -> bool {
     let Some(conn) = conn.filter(|conn| conn.is_active()) else {

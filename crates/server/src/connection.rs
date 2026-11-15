@@ -4,7 +4,7 @@ use core::sync::atomic::Ordering::{Acquire, Relaxed, Release, SeqCst};
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_reactor::Events;
 
-use swoole_rs_corebase::constants::{SW_ACCEPT_RETRY_TIME, SW_SEND_BUFFER_SIZE};
+use swoole_rs_corebase::constants::{SW_ACCEPT_RETRY_TIME, SW_SEND_BUFFER_SIZE, SocketType};
 use swoole_rs_corebase::{CCast, log};
 use swoole_rs_error::ErrorCode as E;
 use swoole_rs_reactor::{Event, Socket};
@@ -12,16 +12,12 @@ use swoole_rs_reactor::{Event, Socket};
 use crate::reactor_handle::Reactor;
 use crate::records::{ConnectionRecord, Lookup};
 use crate::{Connection, Mode, view};
+use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 
 /// `SW_ACCEPT_MAX_COUNT`, `SW_MAX_CONNECTION`, `SW_SESSION_LIST_SIZE`; native asserts each.
 const ACCEPT_MAX_COUNT: u32 = 64;
 const MAX_CONNECTION: u32 = 100_000;
 const SESSION_LIST_SIZE: u32 = 1024 * 1024;
-/// `SW_SOCK_TCP`, `SW_SOCK_TCP6`.
-const SOCK_TCP: c_int = 1;
-const SOCK_TCP6: c_int = 3;
-/// `SW_LOG_WARNING`.
-const LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
 
 fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
@@ -188,7 +184,7 @@ pub fn add<'a>(
     });
 
     let listener = ls.listening_socket();
-    let tcp = listener.is_some_and(|l| matches!(l.read(|l| l.socket_type), SOCK_TCP | SOCK_TCP6));
+    let tcp = listener.is_some_and(|l| l.read(swoole_rs_reactor::SocketFields::is_tcp));
     if ls.open_tcp_nodelay.get() && tcp {
         if !sock.edit(|s| s.set_tcp_nodelay(1)) {
             log::sys_warning(
@@ -274,7 +270,7 @@ fn init(
         sock.get_name();
         let info = &sock.info;
         let port = swoole_rs_clients::address::swr_v1_clients_address_port(info);
-        let v6 = info.kind != SOCK_TCP;
+        let v6 = info.kind != SocketType::SW_SOCK_TCP.raw();
         // The family's address bytes, as they are stored.
         let (inet_v6, inet_v4) = (
             info.addr.v6().sin6_addr.s6_addr,
@@ -433,7 +429,7 @@ pub(crate) fn enable_accept(serv: view::Server<'_>) {
 fn for_stream_ports(serv: view::Server<'_>, change: impl Fn(Reactor, Socket<'_>) -> bool) {
     let reactor = Reactor::thread();
     for port in serv.ports() {
-        if !crate::reactor_ops::is_dgram(port.config().r#type) {
+        if !SocketType::from_raw(port.config().r#type).is_some_and(SocketType::is_dgram) {
             port.with_socket(|sock| change(reactor, sock));
         }
     }

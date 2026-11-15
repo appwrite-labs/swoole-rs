@@ -15,10 +15,10 @@ use crate::reactor_entry::DgramPacket;
 use crate::reactor_handle::Reactor;
 use crate::records::{Connection, Lookup};
 use crate::{Mode, ServerState, view};
+use swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE;
 
 /// `SW_LOG_TRACE`, `SW_FD_SESSION`, `SW_FD_DGRAM_SERVER`, `SW_EVENT_READ` and
 /// `SW_EVENT_WRITE`.
-const SW_LOG_TRACE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as c_int;
 const FD_SESSION: c_int = 0;
 const FD_DGRAM_SERVER: c_int = 2;
 
@@ -390,9 +390,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn init_reactor_sets_the_session_handlers() {
-        use swoole_rs_reactor::reactor_upstream::reactor_isset_handler;
-        let isset =
-            |running, fd_type, event: Events| reactor_isset_handler(running, fd_type, event.bits());
+        use swoole_rs_reactor::reactor_upstream::isset_handler as isset;
         let live = crate::fixture::LiveServer::new();
         let running = live.reactor().handle();
         assert!(!isset(running, FD_SESSION, Events::READ));

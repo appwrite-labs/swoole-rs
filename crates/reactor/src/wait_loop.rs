@@ -380,7 +380,7 @@ mod kqueue_signal {
     use super::{c_int, log};
 
     /// `SW_LOG_WARNING`, `SW_ERROR_UNREGISTERED_SIGNAL` and `SW_ERROR_EVENT_UNKNOWN_DATA`.
-    pub(super) const LOG_WARNING: c_int = 4;
+    pub(super) use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
     const UNREGISTERED_SIGNAL: c_int =
         swoole_rs_error::ErrorCode::SW_ERROR_UNREGISTERED_SIGNAL as c_int;
     pub(super) const EVENT_UNKNOWN_DATA: c_int =
@@ -392,7 +392,7 @@ mod kqueue_signal {
     #[repr(C)]
     #[derive(Clone, Copy)]
     pub(super) struct Signal {
-        handler: Option<swoole_rs_process::signal::Callback>,
+        handler: swoole_rs_process::signal::Handler,
         signo: u16,
         activated: bool,
     }
@@ -405,7 +405,7 @@ mod kqueue_signal {
         }
         let signo = c_int::from(signal.signo);
         match signal.handler {
-            None => {
+            swoole_rs_process::signal::Handler::NONE => {
                 let name = swoole_rs_process::signal::signal_name(signo);
                 let name = name.as_cstr();
                 log::error_log(
@@ -418,11 +418,7 @@ mod kqueue_signal {
                     ),
                 );
             }
-            Some(handler) if (handler as *const ()).addr() != libc::SIG_IGN => {
-                // SAFETY: the signal's registered handler (the type's invariant).
-                unsafe { handler(signo) };
-            }
-            Some(_) => {}
+            handler => handler.call(signo),
         }
     }
 }
@@ -653,7 +649,7 @@ mod tests {
                 crate::ChangeOp::Add,
                 events
             ));
-            assert!((*state.handlers).set(5, 512, Some(read)));
+            assert!((*state.handlers).set(5, crate::Events::READ, Some(read)));
             let descriptor = (*state.owner).backend_fd;
             #[cfg(target_os = "linux")]
             if kind == 1 {

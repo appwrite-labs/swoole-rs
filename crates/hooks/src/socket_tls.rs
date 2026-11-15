@@ -7,6 +7,7 @@ use crate::connect::{HandshakeMode, Handshaking, Step, ssl_handshake};
 use crate::socket_wait::wait_for;
 use core::ffi::{CStr, c_int};
 use swoole_rs_corebase::log;
+use swoole_rs_reactor::Events;
 use swoole_rs_tls::upstream::{
     socket_ssl_accept, socket_ssl_check_host, socket_ssl_connect, socket_ssl_verify,
 };
@@ -16,9 +17,6 @@ use swoole_rs_tls::{
     swr_v1_tls_owner_socket_session,
 };
 
-/// `SW_EVENT_READ` and `SW_EVENT_RDWR`.
-const READ: u32 = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as u32;
-const RDWR: u32 = READ | swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as u32;
 /// `SW_ERROR_SSL_VERIFY_FAILED`, `SW_ERROR_SSL_CREATE_CONTEXT_FAILED` and
 /// `SW_ERROR_SSL_CREATE_SESSION_FAILED`.
 const SSL_VERIFY_FAILED: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SSL_VERIFY_FAILED as c_int;
@@ -170,7 +168,7 @@ impl Co {
             .unwrap_or_default();
         let mut state = Handshake {
             socket: self,
-            timer: Timer::new(self, READ, self.read_timeout()),
+            timer: Timer::new(self, Events::READ, self.read_timeout()),
             handshaked: self.ssl_handshaked(),
             context_ready,
             verify_peer,
@@ -234,7 +232,7 @@ impl Handshaking for Handshake {
     }
 
     fn available(&mut self) -> bool {
-        available(self.socket, RDWR)
+        available(self.socket, Events::RDWR)
     }
 
     fn set_err(&mut self, error: c_int) {
@@ -287,11 +285,11 @@ impl Handshaking for Handshake {
 
     fn wait(&mut self, fresh: bool) -> bool {
         let socket = self.socket;
-        let waited = |timer: &mut Timer| timer.start() && wait_for(socket, READ);
+        let waited = |timer: &mut Timer| timer.start() && wait_for(socket, Events::READ);
         if !fresh {
             return waited(&mut self.timer);
         }
-        let mut timer = Timer::new(socket, READ, socket.read_timeout());
+        let mut timer = Timer::new(socket, Events::READ, socket.read_timeout());
         let ready = waited(&mut timer);
         timer.stop();
         ready

@@ -13,8 +13,7 @@ use swoole_rs_process::server_workers::swr_v1_process_server_worker_by_pid;
 use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_init};
 
 use crate::view;
-
-const SW_LOG_ERROR: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR as c_int;
+use swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR;
 
 /// `Server::get_worker_by_pid(worker_pid)`: the first event worker with the pid, then
 /// the task pool's, then a user worker's; null for none.
@@ -42,7 +41,7 @@ pub fn add_worker(serv: view::Server<'_>, worker: Worker<'static>) -> c_int {
     // `user_worker_list.size() - 1`, as a `WorkerId`.
     let id = u32::try_from(index & u32::MAX as usize).unwrap_or_default();
     worker.set_id(id);
-    worker.set_kind(WorkerType::User.code());
+    worker.set_kind(WorkerType::User);
     worker.id().cast_signed()
 }
 
@@ -131,7 +130,7 @@ pub fn create_user_workers(serv: view::Server<'_>) -> bool {
         // SAFETY: its slot in the fresh shared array of `count` records.
         unsafe { copies.wrapping_add(index).write(worker.get()) };
         create_worker(serv, worker);
-        worker.set_kind(WorkerType::User.code());
+        worker.set_kind(WorkerType::User);
     }
     serv.config().user_workers.replace(workers);
     true

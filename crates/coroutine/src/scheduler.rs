@@ -204,6 +204,9 @@ pub fn counters() -> Counters {
 ///
 /// # Safety
 /// `co` is a live, suspended coroutine.
+/// If its bailout callback can longjmp, every main-stack frame between this
+/// call and the callback's trap must own nothing that needs dropping. Abandoned
+/// coroutine stacks stay allocated, but the main stack can be reused.
 pub unsafe extern "C-unwind" fn resume(co: *mut c_void) {
     // SAFETY: as the caller promises.
     if let Some(co) = unsafe { Co::of(co.cast()) } {

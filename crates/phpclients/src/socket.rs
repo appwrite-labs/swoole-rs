@@ -17,6 +17,7 @@ use std::{
 use swoole_rs_phpruntime::co;
 use swoole_rs_phpstubs::socket_coro;
 use swoole_rs_phpswoole::{Switch, built_with};
+use swoole_rs_reactor::Events;
 use swoole_rs_zend::{
     Array, Call, Class, Custom, CustomClass, Invalid, Minit, Owned, OwnedArray, Props, Value,
     ZString,
@@ -33,9 +34,6 @@ const BACKLOG: i64 = 512;
 #[path = "socket_owner.rs"]
 pub(crate) mod owner;
 
-/// `SW_EVENT_READ` and `SW_EVENT_WRITE`.
-const EVENT_READ: i64 = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as i64;
-const EVENT_WRITE: i64 = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as i64;
 /// `IOV_MAX` on Linux and Apple.
 const IOV_MAX: u32 = 1024;
 
@@ -868,15 +866,16 @@ fn getpeername(call: &Call) {
 /// `cancel(int $event = SW_EVENT_READ): bool`; the socket is checked first.
 fn cancel(call: &Call) {
     let Some(socket) = open(call) else { return };
-    let Ok(event) = call.arity(0, 1).and_then(|()| call.long(1, EVENT_READ)) else {
+    let read = i64::from(Events::READ.bits());
+    let Ok(event) = call.arity(0, 1).and_then(|()| call.long(1, read)) else {
         return call.set_bool(false);
     };
-    let event = if event == EVENT_READ {
-        EVENT_READ
+    let event = if event == read {
+        Events::READ
     } else {
-        EVENT_WRITE
+        Events::WRITE
     };
-    call.set_bool(socket.cancel(c_int::try_from(event).unwrap_or(0)));
+    call.set_bool(socket.cancel(event));
 }
 
 /// `setProtocol(array $settings): bool`; the socket is checked first.

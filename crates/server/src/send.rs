@@ -19,19 +19,15 @@ use swoole_rs_buffer::cpp::{
 };
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
+use swoole_rs_corebase::log::LogLevel::{
+    SW_LOG_NOTICE as LOG_NOTICE, SW_LOG_TRACE as LOG_TRACE, SW_LOG_WARNING as LOG_WARNING,
+};
 use swoole_rs_corebase::{CCast, DataHead, log, microtime};
 use swoole_rs_error::ErrorCode as E;
 use swoole_rs_reactor::Events;
 use swoole_rs_reactor::{ChangeOp, Drain, Interest, Socket, record_send, record_write, steady_ms};
 
-/// `SW_EVENT_READ`, `SW_EVENT_WRITE`.
-/// `SW_OK` and `SW_ERR`.
-/// `SW_LOG_TRACE`, `SW_LOG_NOTICE` and `SW_LOG_WARNING`.
-const LOG_TRACE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as c_int;
-const LOG_NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
-const LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
-
-fn error(level: c_int, code: E, message: core::fmt::Arguments<'_>) {
+fn error(level: swoole_rs_corebase::log::LogLevel, code: E, message: core::fmt::Arguments<'_>) {
     log::error_log(level, code as c_int, c"Server::send_to_connection", message);
 }
 

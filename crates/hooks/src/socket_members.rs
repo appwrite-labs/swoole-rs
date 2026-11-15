@@ -13,7 +13,6 @@ use crate::co_io::{
 use crate::co_socket::{Co, peer_name};
 use crate::sendfile::{SendFailure, send_range};
 use crate::setup::{Setup, swr_v1_hook_accept};
-use crate::shutdown::READ;
 use crate::socket_wait::{error_event, ready, wait_for};
 use crate::transfer::{ALL, Buffer, CHECKED, RETRY_INTERRUPTED, timeout_kind, transfer};
 #[cfg(feature = "iouring")]
@@ -23,6 +22,7 @@ use core::ffi::{CStr, c_int};
 use swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::sys::{self, ReadSlot, strerror};
+use swoole_rs_reactor::Events;
 use swoole_rs_reactor::{
     CLASS_DGRAM, Drain, Event, Fill, Running, Socket, SocketAddress, SocketFields, SocketRecord,
     type_is,
@@ -31,9 +31,6 @@ use swoole_rs_tls::upstream::{
     peek, recv, recv_fill, send, send_drain, sendfile as socket_sendfile_fd,
     socket_ssl_peer_certificate_pem,
 };
-
-/// `SW_EVENT_WRITE`.
-const WRITE: u32 = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as u32;
 
 /// The coroutine socket a reactor event came from, and its `network::Socket`.
 fn event_socket(event: &Event) -> Option<(Co, Socket<'_>)> {
@@ -45,7 +42,7 @@ fn event_socket(event: &Event) -> Option<(Co, Socket<'_>)> {
 
 /// `Socket::readable_event_callback` and `writable_event_callback`: Rust picks the
 /// coroutine to wake, a TLS wait's other direction, or none while a barrier waits.
-fn on_ready(event: &Event, kind: u32) -> c_int {
+fn on_ready(event: &Event, kind: Events) -> c_int {
     let Some((socket, source)) = event_socket(event) else {
         return 0;
     };
@@ -60,12 +57,12 @@ fn on_ready(event: &Event, kind: u32) -> c_int {
 /// `Socket::readable_event_callback(reactor, event)`, registered for
 /// `SW_FD_CO_SOCKET` by `swr_v1_hook_init_reactor`.
 pub extern "C" fn readable_event_callback(_: Running<'_>, event: &mut Event) -> c_int {
-    on_ready(event, READ)
+    on_ready(event, Events::READ)
 }
 
 /// `Socket::writable_event_callback(reactor, event)`.
 pub extern "C" fn writable_event_callback(_: Running<'_>, event: &mut Event) -> c_int {
-    on_ready(event, WRITE)
+    on_ready(event, Events::WRITE)
 }
 
 /// `Socket::error_event_callback(reactor, event)`: wakes the writer, then the
@@ -94,9 +91,9 @@ impl Setup for Accepting {
         }
     }
 
-    fn wait(&mut self, event: c_int) -> bool {
-        let mut timer = Timer::new(self.socket, READ, self.timeout);
-        let ready = timer.start() && wait_for(self.socket, event.cast_unsigned());
+    fn wait(&mut self, event: Events) -> bool {
+        let mut timer = Timer::new(self.socket, Events::READ, self.timeout);
+        let ready = timer.start() && wait_for(self.socket, event);
         timer.stop();
         ready
     }
@@ -230,7 +227,7 @@ impl Co {
     /// In a coroutine.
     #[must_use]
     pub fn accept(self, timeout: f64) -> Option<Self> {
-        if !available(self, READ) {
+        if !available(self, Events::READ) {
             return None;
         }
         let needs_context = self.tls_fields(|tls| tls.context.is_none()) == Some(true);
@@ -286,7 +283,7 @@ impl Co {
         /// `SW_BACKLOG`.
         const BACKLOG: c_int = 512;
         // `SW_EVENT_NULL` skips the bound check.
-        if !available(self, 0) {
+        if !available(self, Events::NONE) {
             return false;
         }
         let backlog = if backlog <= 0 { BACKLOG } else { backlog };
@@ -316,7 +313,7 @@ impl Co {
     /// set.
     #[must_use]
     pub fn bind(self, host: &[u8], port: c_int) -> bool {
-        if !available(self, 0) {
+        if !available(self, Events::NONE) {
             return false;
         }
         log::set_last_error(0);
@@ -357,7 +354,7 @@ impl Co {
     /// error set. In a coroutine.
     #[must_use]
     pub fn sendto(self, host: &[u8], port: c_int, buf: &[u8]) -> isize {
-        if !available(self, WRITE) {
+        if !available(self, Events::WRITE) {
             return -1;
         }
         let (kind, domain) = (self.kind(), self.sock_domain());
@@ -475,7 +472,11 @@ impl Co {
         if let Some(n) = ring::with(self, |ops| ring::swr_v1_hook_uring_vector(ops, vector, all)) {
             return n;
         }
-        let event = if vector.write() { WRITE } else { READ };
+        let event = if vector.write() {
+            Events::WRITE
+        } else {
+            Events::READ
+        };
         if all {
             let call =
                 |vector: &mut IoVector<'_>| self.with_network(|s| vector.transfer(s)).unwrap_or(-1);
@@ -499,7 +500,7 @@ impl Co {
         /// `SW_ERROR_SYSTEM_CALL_FAIL`.
         const SYSTEM_CALL_FAIL: c_int =
             swoole_rs_error::ErrorCode::SW_ERROR_SYSTEM_CALL_FAIL as c_int;
-        if !available(self, WRITE) {
+        if !available(self, Events::WRITE) {
             return false;
         }
         let file = OpenFile(sys::open(filename, libc::O_RDONLY, 0));
@@ -523,13 +524,17 @@ impl Co {
         if let Some(n) = ring::with(self, |ops| ring::sendfile(ops, file.0, offset, end)) {
             return n;
         }
-        let mut timer = Timer::new(self, WRITE, self.timeout(timeout_kind(WRITE)));
+        let mut timer = Timer::new(
+            self,
+            Events::WRITE,
+            self.timeout(timeout_kind(Events::WRITE)),
+        );
         let mut offset = offset;
         let send = |offset: &mut libc::off_t, length| {
             self.with_network(|socket| socket_sendfile_fd(socket, file.0, offset, length))
                 .unwrap_or(-1)
         };
-        let ready = || timer.start() && wait_for(self, WRITE);
+        let ready = || timer.start() && wait_for(self, Events::WRITE);
         let outcome = send_range(&mut offset, end, send, ready);
         let error = errno();
         timer.stop();
@@ -597,7 +602,7 @@ impl Co {
         }
         let fd = self.sock_fd();
         let call = |_: Socket<'_>, _: *mut u8, _: usize| msg.recv(fd, flags);
-        self.transfer(0, Buffer::none(READ), call)
+        self.transfer(0, Buffer::none(Events::READ), call)
     }
 
     /// `Socket::sendmsg(msg, flags)`.
@@ -609,7 +614,7 @@ impl Co {
         }
         let fd = self.sock_fd();
         let call = |_: Socket<'_>, _: *mut u8, _: usize| msg.send(fd, flags);
-        self.transfer(0, Buffer::none(WRITE), call)
+        self.transfer(0, Buffer::none(Events::WRITE), call)
     }
 
     /// `Socket::recv_once(buf, n)`: one `network::Socket` receive, no wait; the count
@@ -653,7 +658,7 @@ impl Co {
 
     /// `Socket::poll(event, timeout)`.
     #[must_use]
-    pub fn poll(self, event: u32, timeout: f64) -> bool {
+    pub fn poll(self, event: Events, timeout: f64) -> bool {
         #[cfg(feature = "iouring")]
         if let Some(n) = ring::with(self, |ops| ring::poll(ops, event, timeout)) {
             return n;
@@ -702,7 +707,7 @@ mod tests {
         fn event(&mut self) -> Event {
             unsafe { Event::new(-1, 0, 6, self.record().socket_ptr().cast()) }
         }
-        fn bind(&mut self, event: u32, co: *mut c_long) {
+        fn bind(&mut self, event: Events, co: *mut c_long) {
             self.co().with_state(|state| state.bind(event, co.cast()));
         }
     }
@@ -738,7 +743,7 @@ mod tests {
         let mut object = Object::new();
         object.record().err_code.set(libc::EAGAIN);
         let mut co: c_long = 3;
-        object.bind(READ, &raw mut co);
+        object.bind(Events::READ, &raw mut co);
         let mut event = object.event();
         assert_eq!(
             readable_event_callback(unsafe { Running::new(core::ptr::null_mut()) }, &mut event),
@@ -759,8 +764,8 @@ mod tests {
         install();
         let mut object = Object::new();
         let (mut reader, mut writer): (c_long, c_long) = (1, 2);
-        object.bind(READ, &raw mut reader);
-        object.bind(WRITE, &raw mut writer);
+        object.bind(Events::READ, &raw mut reader);
+        object.bind(Events::WRITE, &raw mut writer);
         object.record().socket_mut().removed = false;
         let mut event = object.event();
         error_event_callback(unsafe { Running::new(core::ptr::null_mut()) }, &mut event);

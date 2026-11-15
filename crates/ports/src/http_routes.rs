@@ -6,13 +6,12 @@
 use std::ffi::{c_int, c_void};
 
 use swoole_rs_clients::protocol::Protocol;
+use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 use swoole_rs_corebase::net_types::{PacketLength, SocketAddress};
 use swoole_rs_corebase::{WebSocketStatus, log};
 use swoole_rs_error::ErrorCode;
 use swoole_rs_server::Connection;
 
-/// `SW_LOG_WARNING`.
-const LOG_WARNING: c_int = 4;
 /// `SW_WEBSOCKET_FRAME_HEADER_SIZE`: header, mask and a 64-bit length.
 const WEBSOCKET_FRAME_HEADER_SIZE: u8 = 2 + 4 + 8;
 /// `SW_HTTP2_FRAME_HEADER_SIZE`.

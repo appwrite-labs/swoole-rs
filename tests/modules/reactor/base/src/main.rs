@@ -279,7 +279,7 @@ fn random_data() -> Vec<u8> {
 
 /// `reactor->get_handler(fd_type, event)`, as its address.
 fn get_handler(reactor: Running<'_>, fd_type: c_int, event: c_int) -> usize {
-    reactor_upstream::reactor_get_handler(reactor, fd_type, event)
+    reactor_upstream::reactor_get_handler(reactor, fd_type, swoole_rs_ffi::Events::from_bits(event))
         .map_or(0, |handler| handler as usize)
 }
 

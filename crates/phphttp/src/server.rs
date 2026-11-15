@@ -68,7 +68,6 @@ const BAD_REQUEST: &[u8] = b"HTTP/1.1 400 Bad Request\r\n\r\n";
 const HPE_OK: i32 = 0;
 /// `SW_ERROR_SESSION_NOT_EXIST` and `SW_LOG_TRACE`.
 const SESSION_NOT_EXIST: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SESSION_NOT_EXIST as c_int;
-const LOG_TRACE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as c_int;
 
 /// `http_server::SW_HTTP_EXT_FLAG_UPLOAD_PREPROCESSED`.
 const UPLOAD_PREPROCESSED: u16 = 1;
@@ -107,9 +106,6 @@ struct Receive {
     /// The server's `enable_coroutine`: handlers run in a new coroutine.
     coroutine: bool,
 }
-
-/// `SW_SOCK_TCP6`.
-const SOCK_TCP6: c_int = 3;
 
 // The connection's addresses and its peer's port and loopback check.
 use swoole_rs_clients::address::{
@@ -256,7 +252,12 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> Route {
     }
     facts.remote_port = i64::from(swr_v1_clients_address_port(&conn.info()));
     if swr_v1_clients_address_loopback(&conn.info()) {
-        facts.loopback = if conn.info().kind == SOCK_TCP6 { 6 } else { 4 };
+        facts.loopback =
+            if conn.info().kind == swoole_rs_corebase::constants::SocketType::SW_SOCK_TCP6.raw() {
+                6
+            } else {
+                4
+            };
     }
     facts.cache = can_cache_session_addr(server)
         .then(|| usize::try_from(conn.fd()).ok())
@@ -304,6 +305,7 @@ fn enable_coroutine(server: view::Server<'_>) -> bool {
     }
 }
 
+use swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as LOG_TRACE;
 pub(crate) use swoole_rs_zend::host::{NO_THEN, Then, callable::Callable};
 
 /// `zend::function::call(callable, args.len(), args, nullptr, coroutine)`:
@@ -512,7 +514,11 @@ fn http2_connection(
     let conn = server.by_session(fd)?;
     let remote_port = i64::from(swr_v1_clients_address_port(&conn.info()));
     let loopback = if swr_v1_clients_address_loopback(&conn.info()) {
-        if conn.info().kind == SOCK_TCP6 { 6 } else { 4 }
+        if conn.info().kind == swoole_rs_corebase::constants::SocketType::SW_SOCK_TCP6.raw() {
+            6
+        } else {
+            4
+        }
     } else {
         0
     };

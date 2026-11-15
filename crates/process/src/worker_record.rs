@@ -164,10 +164,10 @@ impl WorkerRecord {
         self.id
     }
 
-    /// The worker's kind (C++ `type`).
+    /// The worker's kind (C++ `type`), `None` while unset.
     #[must_use]
-    pub fn kind(&self) -> u8 {
-        self.kind
+    pub fn kind(&self) -> Option<WorkerType> {
+        WorkerType::from_code(self.kind.into())
     }
 
     /// The worker's process (or thread) id.
@@ -325,7 +325,7 @@ impl<'a> Worker<'a> {
             redirect_stdin: self.redirect_stdin(),
             redirect_stderr: self.redirect_stderr(),
             status: AtomicU8::new(self.status_slot().load(Ordering::Relaxed)),
-            kind: self.kind(),
+            kind: self.kind_code(),
             msgqueue_mode: self.msgqueue_mode(),
             child_process: self.child_process(),
             concurrency: AtomicU32::new(self.concurrency().load(Ordering::Relaxed)),
@@ -383,7 +383,7 @@ impl<'a> Worker<'a> {
         self.set_redirect_stderr(redirect_stderr);
         self.status_slot()
             .store(status.into_inner(), Ordering::Relaxed);
-        self.set_kind(kind);
+        self.set_kind_code(kind);
         self.set_msgqueue_mode(msgqueue_mode);
         self.set_child_process(child_process);
         self.concurrency()
@@ -402,9 +402,20 @@ impl<'a> Worker<'a> {
     }
 
     field!(
-        /// The worker's kind (C++ `type`: `SW_EVENT_WORKER`/`SW_TASK_WORKER`/…).
-        kind, pub set_kind, kind: u8
+        /// The worker's kind's code (C++ `type`), 0 while unset.
+        kind_code, pub(crate) set_kind_code, kind: u8
     );
+
+    /// The worker's kind (C++ `type`), `None` while unset.
+    #[must_use]
+    pub fn kind(self) -> Option<WorkerType> {
+        WorkerType::from_code(self.kind_code().into())
+    }
+
+    /// Sets the worker's kind.
+    pub fn set_kind(self, kind: WorkerType) {
+        self.set_kind_code(kind.code());
+    }
     field!(
         /// The worker's id (its slot in the worker pool, `WorkerId`).
         id, pub set_id, id: u32
@@ -904,11 +915,17 @@ mod tests {
     fn type_accessors_round_trip() {
         let mut record: WorkerRecord = unsafe { std::mem::zeroed() };
         unsafe {
-            Worker::new(&raw mut record).set_kind(3);
-            assert_eq!(Worker::new(&raw const record).kind(), 3);
+            Worker::new(&raw mut record).set_kind(WorkerType::Manager);
+            assert_eq!(
+                Worker::new(&raw const record).kind(),
+                Some(WorkerType::Manager)
+            );
             // independent of status
             Worker::new(&raw mut record).set_status(WorkerStatus::Busy);
-            assert_eq!(Worker::new(&raw const record).kind(), 3);
+            assert_eq!(
+                Worker::new(&raw const record).kind(),
+                Some(WorkerType::Manager)
+            );
         }
     }
 
@@ -919,7 +936,7 @@ mod tests {
             Worker::new(&raw mut record).set_pid(4242);
             assert_eq!(Worker::new(&raw const record).pid(), 4242);
             // independent of the one-byte fields that follow it
-            Worker::new(&raw mut record).set_kind(2);
+            Worker::new(&raw mut record).set_kind(WorkerType::Event);
             Worker::new(&raw mut record).set_status(WorkerStatus::Busy);
             assert_eq!(Worker::new(&raw const record).pid(), 4242);
         }

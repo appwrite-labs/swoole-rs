@@ -996,8 +996,8 @@ impl ZStr {
     /// both are numeric strings.
     #[must_use]
     #[inline]
-    pub fn smart_cmp(&self, other: &Self) -> std::ffi::c_int {
-        swr_zend_smart_strcmp(self, other)
+    pub fn smart_cmp(&self, other: &Self) -> core::cmp::Ordering {
+        swr_zend_smart_strcmp(self, other).cmp(&0)
     }
 
     /// `zend_ini_parse_quantity`: an ini quantity ("64M").

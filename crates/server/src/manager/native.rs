@@ -22,14 +22,13 @@ use crate::process_factory::native::{
     check_exit_status, kill_task_workers, spawn_event_worker, spawn_user_worker,
 };
 use crate::{view, worker_methods};
+use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR as ERROR, SW_LOG_WARNING as WARNING};
 
 /// `SWR_WORKER_EVENT`, `SWR_WORKER_USER`: the registry's categories.
 const REGISTRY_EVENT: c_int = 1;
 const REGISTRY_USER: c_int = 2;
 /// `SW_MESSAGE_BOX_SIZE`; `SW_LOG_WARNING`, `SW_LOG_ERROR`.
 const MESSAGE_BOX_SIZE: usize = 65536;
-const WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
-const ERROR: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR as c_int;
 /// `swoole::WorkerMessageType::SW_WORKER_MESSAGE_STOP`.
 const WORKER_MESSAGE_STOP: u8 = 1;
 /// `sizeof(EventData)`.
@@ -504,14 +503,12 @@ pub fn restart_worker_process(serv: view::Server<'_>, status: &ExitStatus) {
     serv.registry().unregister(pid);
     check_exit_status(serv, Some(worker), status);
     match worker.kind() {
-        kind if kind == WorkerType::Event.code() => _ = spawn_event_worker(serv, worker),
-        kind if kind == WorkerType::Task.code() => {
-            _ = methods::spawn(serv.task_pool_ref(), worker.raw());
-        }
-        kind if kind == WorkerType::User.code() => _ = spawn_user_worker(serv, worker),
-        kind => log::warning(
+        Some(WorkerType::Event) => _ = spawn_event_worker(serv, worker),
+        Some(WorkerType::Task) => _ = methods::spawn(serv.task_pool_ref(), worker.raw()),
+        Some(WorkerType::User) => _ = spawn_user_worker(serv, worker),
+        _ => log::warning(
             ORIGIN,
-            format_args!("Unknown worker [pid={pid}] type [{kind}]"),
+            format_args!("Unknown worker [pid={pid}] type [{}]", worker.kind_code()),
         ),
     }
 }

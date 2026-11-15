@@ -3,16 +3,11 @@
 //! the reactor as an `EventWaiter`, whose reactor socket and coroutine `EventWaitOps`
 //! drive (the reactor's [`Watch`] and the coroutine's under `System::wait_event`, fakes
 //! in tests).
-use crate::{event_waiter, wait_revents};
 use core::cell::Cell;
 use core::ffi::c_void;
+use swoole_rs_reactor::Events;
 
 pub use native::Watch;
-
-/// `SW_EVENT_READ`, `SW_EVENT_WRITE` and `SW_EVENT_ERROR`.
-pub(crate) const READ: i32 = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as i32;
-pub(crate) const WRITE: i32 = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as i32;
-pub(crate) const ERROR: i32 = swoole_rs_corebase::constants::EventType::SW_EVENT_ERROR as i32;
 
 /// The reactor's and the coroutine's side of an `EventWaiter`; `S` is its reactor
 /// socket, which dropping takes off the reactor and releases, not its fd.
@@ -21,7 +16,7 @@ pub struct EventWaitOps<S> {
     pub(crate) current: extern "C" fn() -> *mut c_void,
     /// `make_socket(fd, SW_FD_CO_EVENT)` carrying `waiter`, added to the reactor for
     /// `events`; the last error if the reactor refuses it.
-    pub(crate) add: fn(fd: i32, events: i32, waiter: Registered) -> Result<S, i32>,
+    pub(crate) add: fn(fd: i32, events: Events, waiter: Registered) -> Result<S, i32>,
     /// `co->yield_ex(timeout)`: the last error if it timed out or was cancelled.
     pub(crate) park: fn(timeout: f64) -> Result<(), i32>,
 }
@@ -30,7 +25,7 @@ pub struct EventWaitOps<S> {
 /// events fired so far.
 pub(crate) struct Waiter {
     co: *mut c_void,
-    revents: Cell<u32>,
+    revents: Cell<Events>,
 }
 
 /// A waiter's coroutine, which stays parked until this resumes it: `park` takes
@@ -65,20 +60,21 @@ impl Registered {
 }
 
 /// The reactor fired `event` on a waiter's socket: the coroutine to resume
-/// (deferred) on the first event.
-pub(crate) fn event_ready(waiter: &Waiter, event: i32) -> Option<Parked> {
-    let plan = event_waiter(waiter.revents.get(), event.cast_unsigned());
-    waiter.revents.set(plan.revents);
-    plan.wake.then_some(Parked(waiter.co))
+/// (deferred) on the first event. Native `EventWaiter` queues at most one deferred
+/// wake before publishing the bits.
+pub(crate) fn event_ready(waiter: &Waiter, event: Events) -> Option<Parked> {
+    let received = waiter.revents.get();
+    waiter.revents.set(received | event);
+    received.is_empty().then_some(Parked(waiter.co))
 }
 
 /// Park the current coroutine until `events` fire on `fd` or `timeout` passes: the
 /// fired events, or the error.
-fn park<S>(fd: i32, events: i32, timeout: f64, ops: &EventWaitOps<S>) -> Result<u32, i32> {
+fn park<S>(fd: i32, events: Events, timeout: f64, ops: &EventWaitOps<S>) -> Result<Events, i32> {
     let co = (ops.current)();
     let waiter = Waiter {
         co,
-        revents: Cell::new(0),
+        revents: Cell::new(Events::NONE),
     };
     // `waiter` outlives the socket, dropped (off the reactor) below.
     let socket = (ops.add)(
@@ -88,7 +84,7 @@ fn park<S>(fd: i32, events: i32, timeout: f64, ops: &EventWaitOps<S>) -> Result<
     )?;
     let park = ops.park;
     let parked = park(timeout);
-    if parked.is_err() && waiter.revents.get() != 0 {
+    if parked.is_err() && !waiter.revents.get().is_empty() {
         // An event fired in the loop pass that timed out or cancelled the
         // wait, and its deferred resume is still queued: take it here, or it
         // resumes this coroutine wherever it next waits, or after it ends.
@@ -119,30 +115,30 @@ const fn failed(last_error: i32, error: i32) -> WaitEvent {
 }
 
 /// `translate_events_to_poll`.
-pub(crate) fn to_poll(events: i32) -> i16 {
+pub(crate) fn to_poll(events: Events) -> i16 {
     let mut poll = 0;
-    if events & READ != 0 {
+    if events.intersects(Events::READ) {
         poll |= libc::POLLIN;
     }
-    if events & WRITE != 0 {
+    if events.intersects(Events::WRITE) {
         poll |= libc::POLLOUT;
     }
     poll
 }
 
 /// `translate_events_from_poll`: error and hang-up count only without IN/OUT.
-pub(crate) fn from_poll(revents: i16) -> i32 {
-    let mut events = 0;
+pub(crate) fn from_poll(revents: i16) -> Events {
+    let mut events = Events::NONE;
     if revents & libc::POLLIN != 0 {
-        events |= READ;
+        events |= Events::READ;
     }
     if revents & libc::POLLOUT != 0 {
-        events |= WRITE;
+        events |= Events::WRITE;
     }
     if revents & (libc::POLLERR | libc::POLLHUP) != 0
         && revents & (libc::POLLIN | libc::POLLOUT) == 0
     {
-        events |= ERROR;
+        events |= Events::ERROR;
     }
     events
 }
@@ -165,7 +161,7 @@ pub extern "C" fn system_wait_event(fd: i32, events: i32, timeout: f64) -> i32 {
         },
         park: native::park,
     };
-    let waited = swr_v1_hook_wait_event(fd, events, timeout, &ops);
+    let waited = swr_v1_hook_wait_event(fd, Events::from_bits(events), timeout, &ops);
     if waited.last_error != 0 {
         swoole_rs_corebase::log::set_last_error(waited.last_error);
     }
@@ -182,7 +178,7 @@ pub(crate) mod native {
     use swoole_rs_corebase::constants::FdType;
     use swoole_rs_corebase::log;
     use swoole_rs_reactor::event_api::{event_add, event_del, swoole_event_is_available};
-    use swoole_rs_reactor::{Socket, SocketRecord};
+    use swoole_rs_reactor::{Events, Socket, SocketRecord};
 
     /// `SW_ERROR_CO_OUT_OF_COROUTINE`.
     const OUT_OF_COROUTINE: c_int = 10001;
@@ -234,7 +230,7 @@ pub(crate) mod native {
         /// # Safety
         /// `object`'s task or waiter stays live until the watch is dropped: the
         /// readiness handlers reach it through the record until then.
-        pub(crate) unsafe fn add(fd: i32, events: i32, object: Object) -> Result<Self, i32> {
+        pub(crate) unsafe fn add(fd: i32, events: Events, object: Object) -> Result<Self, i32> {
             if !swoole_event_is_available() {
                 return Err(WRONG_OPERATION);
             }
@@ -247,7 +243,7 @@ pub(crate) mod native {
             // The record is this watch's until `release` frees it.
             let watch = Self(Socket::new(Box::leak(Box::new(record))));
             // A fresh record this watch owns until `release`, off the reactor by then.
-            if !event_add(watch.0, swoole_rs_reactor::Events::from_bits(events)) {
+            if !event_add(watch.0, events) {
                 let error = log::last_error();
                 watch.release();
                 return Err(error);
@@ -286,12 +282,12 @@ pub(crate) mod native {
 #[must_use]
 pub fn swr_v1_hook_wait_event<S>(
     fd: i32,
-    events: i32,
+    events: Events,
     timeout: f64,
     ops: &EventWaitOps<S>,
 ) -> WaitEvent {
-    let events = events & (READ | WRITE);
-    if events == 0 {
+    let events = events & Events::RDWR;
+    if events.is_empty() {
         return failed(libc::EINVAL, 0);
     }
     if timeout == 0.0 {
@@ -306,7 +302,7 @@ pub fn swr_v1_hook_wait_event<S>(
                 return failed(libc::EBADF, 0);
             }
             return WaitEvent {
-                result: from_poll(pfd.revents),
+                result: from_poll(pfd.revents).bits(),
                 ..WaitEvent::default()
             };
         }
@@ -321,15 +317,14 @@ pub fn swr_v1_hook_wait_event<S>(
         Ok(fired) => fired,
         Err(error) => return failed(0, error),
     };
-    let read_write = (READ | WRITE).cast_unsigned();
-    let result = wait_revents(
-        events.cast_unsigned(),
-        fired,
-        read_write,
-        ERROR.cast_unsigned(),
-    );
+    // Error readiness becomes the requested read/write bits.
+    let result = if fired.intersects(Events::ERROR) {
+        fired.without(Events::ERROR) | events
+    } else {
+        fired
+    };
     WaitEvent {
-        result: result.cast_signed(),
+        result: result.bits(),
         ..WaitEvent::default()
     }
 }
@@ -369,7 +364,7 @@ mod tests {
     fn waiter<'a>() -> &'a Waiter {
         unsafe { &*WAITER.get().cast::<Waiter>() }
     }
-    fn add(fd: i32, _: i32, waiter: Registered) -> Result<Socket, i32> {
+    fn add(fd: i32, _: Events, waiter: Registered) -> Result<Socket, i32> {
         if fd == 9 {
             return Err(libc::EBADF);
         }
@@ -379,8 +374,11 @@ mod tests {
     }
     /// The reactor fires an error then a read before the deferred resume runs.
     fn fires_error(_: f64) -> Result<(), i32> {
-        assert_eq!(event_ready(waiter(), ERROR).map(|co| co.0), Some(CO));
-        assert!(event_ready(waiter(), READ).is_none());
+        assert_eq!(
+            event_ready(waiter(), Events::ERROR).map(|co| co.0),
+            Some(CO)
+        );
+        assert!(event_ready(waiter(), Events::READ).is_none());
         Ok(())
     }
     fn times_out(_: f64) -> Result<(), i32> {
@@ -400,21 +398,21 @@ mod tests {
             assert_eq!(timeout, 0.0);
             return Ok(());
         }
-        assert_eq!(event_ready(waiter(), READ).map(|co| co.0), Some(CO));
+        assert_eq!(event_ready(waiter(), Events::READ).map(|co| co.0), Some(CO));
         Err(libc::ETIMEDOUT)
     }
 
     #[test]
     fn a_timeout_after_an_event_takes_its_queued_resume() {
         assert_eq!(
-            wait(7, READ, 1.0, fires_then_times_out),
+            wait(7, Events::READ, 1.0, fires_then_times_out),
             failed(0, libc::ETIMEDOUT)
         );
         assert_eq!(PARKS.get(), 2);
         assert_eq!(ADDED.get(), 0);
     }
 
-    fn wait(fd: i32, events: i32, timeout: f64, park: fn(f64) -> Result<(), i32>) -> WaitEvent {
+    fn wait(fd: i32, events: Events, timeout: f64, park: fn(f64) -> Result<(), i32>) -> WaitEvent {
         let ops = EventWaitOps { current, add, park };
         swr_v1_hook_wait_event(fd, events, timeout, &ops)
     }
@@ -425,54 +423,81 @@ mod tests {
         let mut fds = [0; 2];
         assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
         let [reader, writer] = fds;
-        let ok = |result| WaitEvent {
-            result,
+        let ok = |result: Events| WaitEvent {
+            result: result.bits(),
             ..WaitEvent::default()
         };
 
-        assert_eq!(wait(reader, ERROR, 0.0, unused), failed(libc::EINVAL, 0));
-        assert_eq!(wait(reader, READ, 0.0, unused), failed(libc::ETIMEDOUT, 0));
-        assert_eq!(wait(writer, WRITE | ERROR, 0.0, unused), ok(WRITE));
+        assert_eq!(
+            wait(reader, Events::ERROR, 0.0, unused),
+            failed(libc::EINVAL, 0)
+        );
+        assert_eq!(
+            wait(reader, Events::READ, 0.0, unused),
+            failed(libc::ETIMEDOUT, 0)
+        );
+        assert_eq!(
+            wait(writer, Events::WRITE | Events::ERROR, 0.0, unused),
+            ok(Events::WRITE)
+        );
         assert_eq!(unsafe { libc::write(writer, b"x".as_ptr().cast(), 1) }, 1);
-        assert_eq!(wait(reader, READ | WRITE, 0.0, unused), ok(READ));
+        assert_eq!(
+            wait(reader, Events::READ | Events::WRITE, 0.0, unused),
+            ok(Events::READ)
+        );
         unsafe { libc::close(writer) };
         assert_eq!(
             unsafe { libc::read(reader, [0u8; 1].as_mut_ptr().cast(), 1) },
             1
         );
-        assert!(wait(reader, READ, 0.0, unused).result & (READ | ERROR) != 0);
+        let result = Events::from_bits(wait(reader, Events::READ, 0.0, unused).result);
+        assert!(result.intersects(Events::READ | Events::ERROR));
         unsafe { libc::close(reader) };
         // Never open, so poll reports POLLNVAL (a just-closed fd may be reused).
-        assert_eq!(wait(100_000, READ, 0.0, unused), failed(libc::EBADF, 0));
+        assert_eq!(
+            wait(100_000, Events::READ, 0.0, unused),
+            failed(libc::EBADF, 0)
+        );
 
-        assert_eq!(wait(7, READ, 1.0, fires_error), ok(READ));
-        assert_eq!(wait(7, READ, -1.0, times_out), failed(0, libc::ETIMEDOUT));
-        assert_eq!(wait(9, READ, 1.0, unused), failed(0, libc::EBADF));
+        assert_eq!(wait(7, Events::READ, 1.0, fires_error), ok(Events::READ));
+        assert_eq!(
+            wait(7, Events::READ, -1.0, times_out),
+            failed(0, libc::ETIMEDOUT)
+        );
+        assert_eq!(wait(9, Events::READ, 1.0, unused), failed(0, libc::EBADF));
         assert_eq!(ADDED.get(), 0);
     }
 
     /// The former hooks-ordered gate's `EventWaiter` scenarios (1023..1059): a waiter holding
-    /// `held` fires `event` then `WRITE`. Upstream's callback deferred a resume only
+    /// `held` fires `event` then `Events::WRITE`. Upstream's callback deferred a resume only
     /// while nothing had fired yet, and published the bits after choosing.
     #[test]
     fn ported_event_waiter_matrix() {
-        let masks = [0, READ, WRITE, ERROR, READ | WRITE, READ | ERROR];
+        let masks = [
+            Events::NONE,
+            Events::READ,
+            Events::WRITE,
+            Events::ERROR,
+            Events::READ | Events::WRITE,
+            Events::READ | Events::ERROR,
+        ];
         for held in masks {
             for event in masks {
                 let waiter = Waiter {
                     co: CO,
-                    revents: Cell::new(held.cast_unsigned()),
+                    revents: Cell::new(held),
                 };
                 let mut wakes = 0;
-                for fired in [event, WRITE] {
+                for fired in [event, Events::WRITE] {
                     if let Some(co) = event_ready(&waiter, fired) {
                         assert_eq!(co.0, CO);
                         wakes += 1;
                     }
                 }
-                let expected = usize::from(held == 0) + usize::from(held | event == 0);
+                let expected =
+                    usize::from(held.is_empty()) + usize::from((held | event).is_empty());
                 assert_eq!(wakes, expected, "held {held} event {event}");
-                assert_eq!(waiter.revents.get(), (held | event | WRITE).cast_unsigned());
+                assert_eq!(waiter.revents.get(), held | event | Events::WRITE);
             }
         }
     }

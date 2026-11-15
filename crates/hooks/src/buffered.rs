@@ -4,9 +4,9 @@
 use crate::co_io::{available, host};
 use crate::co_socket::Co;
 use crate::packet::{BufferSync, ReadBuffer};
-use crate::shutdown::READ;
 use core::mem::MaybeUninit;
 use swoole_rs_corebase::sys::ReadSlot;
+use swoole_rs_reactor::Events;
 
 fn to_off(offset: usize) -> libc::off_t {
     libc::off_t::try_from(offset).unwrap_or(libc::off_t::MAX)
@@ -152,7 +152,7 @@ fn buffer(socket: Co) -> Context {
 /// `Socket::recv_with_buffer`, including availability and lazy buffer allocation.
 /// `out` cannot overlap the socket's buffer.
 pub fn recv_buffered(socket: Co, out: &mut [impl ReadSlot]) -> isize {
-    if !available(socket, READ) {
+    if !available(socket, Events::READ) {
         return -1;
     }
     let mut ctx = buffer(socket);

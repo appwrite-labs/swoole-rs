@@ -181,6 +181,8 @@ pub extern "C-unwind" fn deactivate() {
 ///
 /// # Safety
 /// `co` is a live coroutine.
+/// Its canceler may resume it: as for [`crate::resume`], a bailout must not
+/// skip pending drops on the main stack.
 #[unsafe(export_name = "_ZN6swoole9Coroutine6cancelEv")]
 pub unsafe extern "C-unwind" fn cancel(co: *mut Coroutine) -> bool {
     // SAFETY: as the caller promises.

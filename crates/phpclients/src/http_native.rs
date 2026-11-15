@@ -64,7 +64,7 @@ pub(crate) fn websocket() -> Option<Box<dyn WebSocket>> {
     WEBSOCKET.get().map(|new| new())
 }
 
-use swoole_rs_reactor::TimeoutKind;
+use swoole_rs_reactor::{Events, TimeoutKind};
 /// `SW_WEBSOCKET_HEADER_LEN`.
 const WEBSOCKET_HEADER_LEN: u8 = 2;
 
@@ -165,9 +165,8 @@ impl Co {
     }
 
     /// `check_bound_co(event)`: a fatal error if another coroutine holds it.
-    #[expect(clippy::cast_sign_loss, reason = "an event bit")]
-    pub(crate) fn check_bound(self, event: c_int) {
-        self.handle().check_bound(event as u32);
+    pub(crate) fn check_bound(self, event: Events) {
+        self.handle().check_bound(event);
     }
 
     /// The write buffer becomes `data`, then `send_all` of it: whether all went.

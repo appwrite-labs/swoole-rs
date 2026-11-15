@@ -13,6 +13,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::os::unix::ffi::OsStrExt;
 use swoole_rs_buffer::string::{CppString, delete_string, new_sized_string};
+use swoole_rs_corebase::log::LogLevel::{SW_LOG_NOTICE as NOTICE, SW_LOG_WARNING as WARNING};
 use swoole_rs_corebase::{log, set_errno};
 use swoole_rs_http::multipart_parser::{Flow, MultipartParser, Parts};
 use swoole_rs_http::{
@@ -62,8 +63,6 @@ fn op(native: HttpNative, op: NativeOp, a: *mut c_void, b: *const u8, n: u64) ->
 }
 
 /// `SW_LOG_NOTICE`, `SW_LOG_WARNING` and `SW_ERROR_SERVER_INVALID_REQUEST`.
-const NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
-const WARNING: c_int = 4;
 const INVALID_REQUEST: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SERVER_INVALID_REQUEST as c_int;
 
 fn errno() -> c_int {

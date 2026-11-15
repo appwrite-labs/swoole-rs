@@ -28,6 +28,7 @@ use crate::event_worker::native::{
 };
 use crate::objects::{Reactor, in_worker_bus, set_nonblock, worker_pipe};
 use crate::view;
+use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR, SW_LOG_WARNING};
 
 const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
 const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
@@ -39,8 +40,6 @@ const PIPE_MASTER: c_int = 1;
 const FD_PIPE: c_int = 3;
 /// `SW_LOG_WARNING`, `SW_LOG_ERROR`, `SW_ERROR_SOCKET_POLL_TIMEOUT` and
 /// `SW_ERROR_SERVER_SEND_TO_WOKER_TIMEOUT`.
-const SW_LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
-const SW_LOG_ERROR: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR as c_int;
 const POLL_TIMEOUT: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SOCKET_POLL_TIMEOUT as c_int;
 const SEND_TO_WORKER_TIMEOUT: c_int = 9014;
 /// `sizeof(EventData)`.

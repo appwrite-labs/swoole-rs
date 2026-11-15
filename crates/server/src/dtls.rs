@@ -6,7 +6,7 @@ use core::ptr;
 use std::ffi::CString;
 use swoole_rs_corebase::ServerEvent;
 
-use swoole_rs_corebase::constants::{SW_BUFFER_SIZE_UDP, SW_SSL_BUFFER_SIZE};
+use swoole_rs_corebase::constants::{SW_BUFFER_SIZE_UDP, SW_SSL_BUFFER_SIZE, SocketType};
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_reactor::Socket;
@@ -18,12 +18,10 @@ use swoole_rs_tls::{
 use crate::reactor_entry::DgramPacket;
 use crate::records::ConnectionRecord;
 
-/// `SW_FD_SESSION`, `SW_SOCK_NONBLOCK`, `SW_SOCK_CLOEXEC`, `SW_SOCK_UDP` and `SW_SOCK_UDP6`.
+/// `SW_FD_SESSION`, `SW_SOCK_NONBLOCK` and `SW_SOCK_CLOEXEC`.
 const FD_SESSION: c_int = 0;
 const SOCK_NONBLOCK: c_int = swoole_rs_corebase::constants::SocketFlag::SW_SOCK_NONBLOCK as c_int;
 const SOCK_CLOEXEC: c_int = swoole_rs_corebase::constants::SocketFlag::SW_SOCK_CLOEXEC as c_int;
-const SOCK_UDP: c_int = 2;
-const SOCK_UDP6: c_int = 4;
 
 /// `setsockopt(fd, level, option, value)` for an int option.
 fn set_option(fd: c_int, level: c_int, option: c_int, value: c_int) {
@@ -81,7 +79,7 @@ fn accept<'s>(
     )) {
         set_option(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT, 1);
     }
-    if !matches!(kind, SOCK_UDP | SOCK_UDP6) {
+    if !SocketType::from_raw(kind).is_some_and(SocketType::is_udp) {
         // `OPENSSL_assert(0)`, which reports and aborts.
         swoole_rs_corebase::fatal("OpenSSL internal error: assertion failed: 0");
     }
@@ -92,7 +90,7 @@ fn accept<'s>(
             log::sys_warning(origin, format_args!("bind() failed"));
             break 'setup;
         }
-        if kind == SOCK_UDP6 {
+        if kind == SocketType::SW_SOCK_UDP6.raw() {
             set_option(fd, libc::IPPROTO_IPV6, libc::IPV6_V6ONLY, 0);
         }
         if !sa.connect(fd) {

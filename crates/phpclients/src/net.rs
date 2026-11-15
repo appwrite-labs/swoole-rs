@@ -19,6 +19,7 @@ use swoole_rs_clients::{
     valid_port,
 };
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::constants::SocketType;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_phpruntime::Report;
 use swoole_rs_phpstubs::client;
@@ -39,11 +40,6 @@ const FLAG_ASYNC: i64 = 1 << 10;
 const FLAG_SYNC: i64 = 1 << 11;
 const FLAG_KEEP: i64 = 1 << 12;
 pub(crate) const SOCK_SSL: i64 = 1 << 9;
-/// `SW_SOCK_*`.
-pub(crate) const SOCK_TCP: i64 = 1;
-pub(crate) const SOCK_TCP6: i64 = 3;
-pub(crate) const SOCK_UNIX_STREAM: i64 = 5;
-pub(crate) const SOCK_UNIX_DGRAM: i64 = 6;
 /// `SW_PHP_CLIENT_BUFFER_SIZE`, `SW_BUFFER_SIZE_STD` and `SW_BUFFER_SIZE_BIG`.
 const PHP_BUFFER_SIZE: i64 = 65535;
 const BUFFER_SIZE_STD: usize = 8192;
@@ -142,14 +138,13 @@ impl Conn {
         self.cli.net().map_or(-1, Net::fd)
     }
 
-    fn socket_type(&self) -> i64 {
-        self.cli
-            .net()
-            .map_or(-1, |net| i64::from(net.read(|record| record.socket_type)))
+    fn socket_type(&self) -> Option<SocketType> {
+        let net = self.cli.net()?;
+        SocketType::from_raw(net.read(|record| record.socket_type))
     }
 
     pub(crate) fn is_stream(&self) -> bool {
-        matches!(self.socket_type(), SOCK_TCP | SOCK_TCP6 | SOCK_UNIX_STREAM)
+        self.socket_type().is_some_and(SocketType::is_stream)
     }
 
     pub(crate) fn has_ssl(&self) -> bool {
@@ -389,9 +384,14 @@ pub(crate) fn conn(call: &Call) -> Option<Rc<Conn>> {
     this(call).conn()
 }
 
-/// `php_swoole_client_get_type`: the socket type without the client flags.
-pub(crate) fn socket_type(kind: i64) -> i64 {
-    kind & !(FLAG_SYNC | FLAG_ASYNC | FLAG_KEEP | SOCK_SSL)
+/// `php_swoole_client_get_type`: the socket type's code without the client flags.
+pub(crate) fn type_code(kind: i64) -> c_int {
+    (kind & !(FLAG_SYNC | FLAG_ASYNC | FLAG_KEEP | SOCK_SSL)).c_cast()
+}
+
+/// The socket type [`type_code`] names, if any.
+pub(crate) fn socket_type(kind: i64) -> Option<SocketType> {
+    SocketType::from_raw(type_code(kind))
 }
 
 /// `php_swoole_error` and friends (`kind`) at `level`, deferring a bailout.
@@ -528,7 +528,7 @@ pub(crate) fn connected(call: &Call) -> Option<Rc<Conn>> {
 /// `__construct`'s type check: the socket type, or a `TypeError` like upstream's,
 /// which names the active function: `class`'s `__construct`, which declares it.
 pub(crate) fn check_type(kind: i64, class: &str) -> bool {
-    if (SOCK_TCP..=SOCK_UNIX_DGRAM).contains(&socket_type(kind)) {
+    if socket_type(kind).is_some_and(|kind| kind.is_stream() || kind.is_dgram()) {
         return true;
     }
     let message = format!(
@@ -563,7 +563,7 @@ pub(crate) fn settings(object: Obj<'_>) -> Option<&Array> {
 fn connection(object: Obj, host: &[u8], port: i64) -> Option<Rc<Conn>> {
     let kind = type_property(object, false)?;
     let int_port = port.c_cast::<i32>();
-    if matches!(socket_type(kind), SOCK_TCP | SOCK_TCP6) && !valid_port(int_port, false) {
+    if socket_type(kind).is_some_and(SocketType::is_tcp) && !valid_port(int_port, false) {
         warn(ErrorKind::Fatal, "The port is invalid");
         set_last_error(INVALID_PARAMS);
         return None;
@@ -597,8 +597,7 @@ fn connection(object: Obj, host: &[u8], port: i64) -> Option<Rc<Conn>> {
     let mut connection = if let Some(conn) = conn {
         *conn
     } else {
-        #[expect(clippy::cast_possible_truncation, reason = "a socket type")]
-        let cli = match native::create(socket_type(kind) as c_int, false) {
+        let cli = match native::create(type_code(kind), false) {
             Ok(cli) => cli,
             Err(error) => {
                 warn_sys("Client_create() failed", error);
@@ -1252,7 +1251,7 @@ fn close(call: &Call) {
 /// `php_swoole_client_enable_ssl_encryption`: a TLS context, then the client's
 /// `ssl_*` settings written into it before any handshake.
 pub(crate) fn enable_ssl(call: &Call, conn: &Conn) -> bool {
-    if !matches!(conn.socket_type(), SOCK_TCP | SOCK_TCP6) {
+    if !conn.socket_type().is_some_and(SocketType::is_tcp) {
         warn(ErrorKind::Fatal, "cannot use enableSSL");
         return false;
     }
@@ -1370,14 +1369,16 @@ mod tests {
 
     #[test]
     fn socket_type_drops_the_client_flags() {
+        const SOCK_TCP: i64 = 1;
+        const SOCK_UNIX_DGRAM: i64 = 6;
         assert_eq!(
             socket_type(SOCK_TCP | FLAG_KEEP | SOCK_SSL),
-            SOCK_TCP,
+            Some(SocketType::SW_SOCK_TCP),
             "keep and ssl"
         );
         assert_eq!(
             socket_type(SOCK_UNIX_DGRAM | FLAG_SYNC | FLAG_ASYNC),
-            SOCK_UNIX_DGRAM,
+            Some(SocketType::SW_SOCK_UNIX_DGRAM),
             "sync and async"
         );
     }

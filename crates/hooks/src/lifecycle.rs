@@ -7,10 +7,10 @@
 //! [`NATIVE`](crate::co_io::NATIVE)'s.
 use crate::co_io::{CLOSE_WAIT_ERROR, NATIVE, Timer, available, errno, set_err};
 use crate::co_socket::Co;
-use crate::shutdown::{READ, WRITE};
 use crate::socket_wait::wait_for;
 use core::ffi::c_int;
 use swoole_rs_corebase::net_types::SocketAddress;
+use swoole_rs_reactor::Events;
 
 /// The syscalls: `shutdown(2)`, `connect(2)` to an address and
 /// `getsockopt(SO_ERROR)` into the int it is given. Tests script them.
@@ -44,12 +44,12 @@ impl Co {
         clippy::must_use_candidate,
         reason = "callers cancelling both directions ignore it, as upstream's do"
     )]
-    pub fn cancel(self, event: u32) -> bool {
+    pub fn cancel(self, event: Events) -> bool {
         let bound = self.with_state(|state| !state.bound_co(event).is_null());
         if !bound {
             return false;
         }
-        if event != READ && event != WRITE {
+        if event != Events::READ && event != Events::WRITE {
             set_err(self, libc::EINVAL);
             return false;
         }
@@ -125,12 +125,12 @@ fn close(socket: Co, sys: Sys) -> bool {
         shutdown(socket, libc::SHUT_RDWR, sys);
     }
     if !socket
-        .with_state(|state| state.bound_co(READ | WRITE))
+        .with_state(|state| state.bound_co(Events::READ | Events::WRITE))
         .is_null()
     {
         socket.net(|record| record.output.close_wait = true);
-        socket.cancel(WRITE);
-        socket.cancel(READ);
+        socket.cancel(Events::WRITE);
+        socket.cancel(Events::READ);
         set_err(socket, CLOSE_WAIT_ERROR);
         return false;
     }
@@ -145,8 +145,8 @@ fn close(socket: Co, sys: Sys) -> bool {
 /// socket is open.
 fn settle(socket: Co, sys: Sys) -> bool {
     let timeout = socket.net(|record| record.timeouts.connect).unwrap_or(0.0);
-    let mut timer = Timer::new(socket, WRITE, timeout);
-    let woke = timer.start() && wait_for(socket, WRITE);
+    let mut timer = Timer::new(socket, Events::WRITE, timeout);
+    let woke = timer.start() && wait_for(socket, Events::WRITE);
     let connected = if woke {
         let mut error = socket.err_code();
         let result = (sys.option)(socket.sock_fd(), &mut error);
@@ -175,7 +175,7 @@ fn connect(socket: Co, peer: &SocketAddress, sys: Sys) -> bool {
     }) {
         return connected;
     }
-    if !available(socket, READ | WRITE) {
+    if !available(socket, Events::READ | Events::WRITE) {
         return false;
     }
     let fd = socket.sock_fd();
@@ -260,11 +260,11 @@ mod tests {
         false
     }
 
-    fn upstream_cancel(s: Co, event: u32) -> bool {
+    fn upstream_cancel(s: Co, event: Events) -> bool {
         if s.with_state(|state| state.bound_co(event).is_null()) {
             return false;
         }
-        if event == READ || event == WRITE {
+        if event == Events::READ || event == Events::WRITE {
             set_err(s, libc::ECANCELED);
             (NATIVE.resume)(s, event);
             true
@@ -282,21 +282,21 @@ mod tests {
         if s.with_state(|state| state.flags.connected) {
             upstream_shutdown(s, libc::SHUT_RDWR, sys);
         }
-        if s.with_state(|state| state.bound_co(READ | WRITE).is_null()) {
+        if s.with_state(|state| state.bound_co(Events::READ | Events::WRITE).is_null()) {
             s.set_sock_fd(-1);
             crate::socket_extra::run_close_hook(s);
             true
         } else {
             unsafe { (*s.socket()).fields.output.close_wait = true };
-            upstream_cancel(s, WRITE);
-            upstream_cancel(s, READ);
+            upstream_cancel(s, Events::WRITE);
+            upstream_cancel(s, Events::READ);
             set_err(s, CLOSE_WAIT_ERROR);
             false
         }
     }
 
     fn upstream_connect(s: Co, sys: Sys) -> bool {
-        if !available(s, READ | WRITE) {
+        if !available(s, Events::READ | Events::WRITE) {
             return false;
         }
         let peer = SocketAddress {
@@ -315,8 +315,8 @@ mod tests {
                 return false;
             }
             let timeout = unsafe { (*s.socket()).fields.timeouts.connect };
-            let mut timer = Timer::new(s, WRITE, timeout);
-            if !timer.start() || !wait_for(s, WRITE) {
+            let mut timer = Timer::new(s, Events::WRITE, timeout);
+            if !timer.start() || !wait_for(s, Events::WRITE) {
                 if s.is_closed() {
                     set_err(s, libc::ECONNABORTED);
                 }
@@ -403,7 +403,7 @@ mod tests {
         state: (c_int, SocketFlags, c_int, bool, c_long, c_long, c_int),
     }
 
-    fn id(state: *mut SocketState, event: u32) -> c_long {
+    fn id(state: *mut SocketState, event: Events) -> c_long {
         let co = unsafe { (*state).co(event) };
         if co.is_null() {
             0
@@ -441,13 +441,13 @@ mod tests {
                 flags,
                 socket.0.err_code.get(),
                 unsafe { socket.0.record() }.output.close_wait,
-                id(state, READ),
-                id(state, WRITE),
+                id(state, Events::READ),
+                id(state, Events::WRITE),
                 errno(),
             ),
         };
         socket.0.sock_fd.set(100);
-        unsafe { (*state).bind(READ | WRITE, core::ptr::null_mut()) };
+        unsafe { (*state).bind(Events::READ | Events::WRITE, core::ptr::null_mut()) };
         outcome
     }
 
@@ -481,8 +481,8 @@ mod tests {
     fn bind(socket: &TestSocket, bindings: usize, cos: &[*mut c_long; 3]) {
         let pick = |on: bool, co: *mut c_long| if on { co.cast() } else { core::ptr::null_mut() };
         let state = unsafe { &mut *socket.state() };
-        state.bind(READ, pick(bindings & 1 != 0, cos[0]));
-        state.bind(WRITE, pick(bindings & 2 != 0, cos[1]));
+        state.bind(Events::READ, pick(bindings & 1 != 0, cos[0]));
+        state.bind(Events::WRITE, pick(bindings & 2 != 0, cos[1]));
     }
 
     /// Scenarios 0..512: each `how`, connection and half-close state, open or
@@ -523,15 +523,15 @@ mod tests {
         }
     }
 
-    const EVENTS: [u32; 8] = [
-        0,
-        READ,
-        WRITE,
-        READ | WRITE,
-        READ | (1 << 11),
-        WRITE | (1 << 11),
-        1 << 31,
-        u32::MAX,
+    const EVENTS: [Events; 8] = [
+        Events::NONE,
+        Events::READ,
+        Events::WRITE,
+        Events::RDWR,
+        Events::from_bits(Events::READ.bits() | (1 << 11)),
+        Events::from_bits(Events::WRITE.bits() | (1 << 11)),
+        Events::from_bits(i32::MIN),
+        Events::from_bits(-1),
     ];
 
     /// Scenarios 512..576: cancel for each event and binding, with the resumed
@@ -547,7 +547,11 @@ mod tests {
                 let state = s.state();
                 ON_RESUME.set(Some(Box::new(move |cid| {
                     if unbinds {
-                        let event = if cid == 5 { READ } else { WRITE };
+                        let event = if cid == 5 {
+                            Events::READ
+                        } else {
+                            Events::WRITE
+                        };
                         unsafe { (*state).bind(event, core::ptr::null_mut()) };
                     }
                 })));
@@ -584,11 +588,11 @@ mod tests {
                 let (state, other) = (s.state(), cos[2]);
                 ON_RESUME.set(Some(Box::new(move |cid| unsafe {
                     match (cid, mode) {
-                        (5 | 11, 1 | 2) => (*state).bind(READ, core::ptr::null_mut()),
-                        (7, 1) => (*state).bind(WRITE, core::ptr::null_mut()),
+                        (5 | 11, 1 | 2) => (*state).bind(Events::READ, core::ptr::null_mut()),
+                        (7, 1) => (*state).bind(Events::WRITE, core::ptr::null_mut()),
                         (7, 2) => {
-                            (*state).bind(WRITE, core::ptr::null_mut());
-                            (*state).bind(READ, other.cast::<c_void>());
+                            (*state).bind(Events::WRITE, core::ptr::null_mut());
+                            (*state).bind(Events::READ, other.cast::<c_void>());
                         }
                         _ => {}
                     }
@@ -602,7 +606,8 @@ mod tests {
                         })));
                     }
                     let result = close(s, FAKE);
-                    let bound = !s.with_state(|state| state.bound_co(READ | WRITE).is_null());
+                    let bound = !s
+                        .with_state(|state| state.bound_co(Events::READ | Events::WRITE).is_null());
                     if mode != 0 && !bound && !s.is_closed() {
                         log(format!("close-again:{}", close(s, FAKE)));
                     }

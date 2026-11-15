@@ -10,6 +10,7 @@ use core::mem::offset_of;
 use core::sync::atomic::Ordering::{Relaxed, SeqCst};
 use swoole_rs_clients::address::assign;
 use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
+use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR, SW_LOG_WARNING};
 use swoole_rs_corebase::{CCast, log};
 use swoole_rs_error::ErrorCode;
 use swoole_rs_memory::members::Shm;
@@ -23,10 +24,6 @@ const MAX_THREAD_NCPU: u32 = 4;
 const MAX_WORKER_NCPU: u32 = 1000;
 const TIMER_MIN_SEC: f64 = 0.001;
 const BUFFER_MIN_SIZE: u32 = 65536;
-
-/// `SW_LOG_WARNING` and `SW_LOG_ERROR`.
-const SW_LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
-const SW_LOG_ERROR: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR as c_int;
 
 /// `Server::start`: checks, the daemon, the factory and the mode's workers, then
 /// the master's loop until shutdown, and `destroy`.

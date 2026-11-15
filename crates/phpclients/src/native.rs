@@ -28,13 +28,11 @@ use swoole_rs_zend::{
     string::{self, ZBuf},
 };
 
-/// `SW_LOG_WARNING`.
-const LOG_WARNING: c_int = 4;
-
 /// A `SocketImpl *`.
 pub(crate) type Socket = *mut libc::c_void;
 
-use swoole_rs_reactor::TimeoutKind;
+use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
+use swoole_rs_reactor::{Events, TimeoutKind};
 /// `SW_SOCK_UDP6`.
 const SOCK_UDP6: c_int = 4;
 /// `SW_ERROR_WRONG_OPERATION`.
@@ -278,13 +276,9 @@ impl Co {
         self.0.check_liveness()
     }
 
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "an event bit set"
-    )]
+    #[expect(clippy::cast_possible_truncation, reason = "an event bit set")]
     pub(crate) fn bound_cid(self, event: i64) -> i64 {
-        self.0.bound_cid(event as u32)
+        self.0.bound_cid(Events::from_bits(event as c_int))
     }
 
     /// A timeout of `kind` for the guard's life (`TimeoutSetter`).
@@ -425,9 +419,8 @@ impl Co {
         Some(address(&sa))
     }
 
-    #[expect(clippy::cast_sign_loss, reason = "an event bit set")]
-    pub(crate) fn cancel(self, event: c_int) -> bool {
-        self.0.cancel(event as u32)
+    pub(crate) fn cancel(self, event: Events) -> bool {
+        self.0.cancel(event)
     }
 
     pub(crate) fn ssl_handshake(self) -> bool {

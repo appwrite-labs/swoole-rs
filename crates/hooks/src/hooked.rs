@@ -318,8 +318,9 @@ pub extern "C" fn swoole_coroutine_socket_wait_event(
         );
         return if ready == 1 { 0 } else { -1 };
     };
-    let saved = fd_wait(socket, event.cast_unsigned(), timeout);
-    let ready = socket.poll(event.cast_unsigned(), 0.0);
+    let event = swoole_rs_reactor::Events::from_bits(event);
+    let saved = fd_wait(socket, event, timeout);
+    let ready = socket.poll(event, 0.0);
     // The socket is still live: the map holds it.
     socket.set_timeout(saved, swoole_rs_reactor::TimeoutKind::ALL);
     if ready { 0 } else { -1 }

@@ -35,9 +35,7 @@ use swoole_rs_process::process_pool::{
 };
 use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_init, swr_v1_worker_shutdown};
-use swoole_rs_reactor::event_api::{
-    swoole_event_is_available, swoole_event_set_handler, swoole_event_write,
-};
+use swoole_rs_reactor::event_api::{set_handler, swoole_event_is_available, swoole_event_write};
 use swoole_rs_reactor::{Event, Running, Socket};
 use swoole_rs_timer::{
     swoole_timer_create, swoole_timer_free, swoole_timer_get_next_msec, swoole_timer_is_available,
@@ -278,7 +276,7 @@ fn loop_ops(pool: Pool<'_>, op: Op, arg: u64) -> Option<i64> {
         }
         Op::PipeHandler => {
             let handler = if arg == 0 { recv_packet } else { recv_message };
-            swoole_event_set_handler(FD_PIPE, Events::READ.bits(), Some(handler));
+            set_handler(FD_PIPE, Events::READ, Some(handler));
             0
         }
         Op::TimerSelect => {
@@ -685,7 +683,7 @@ impl PoolNative for Native {
                 log::sys_warning(origin, format_args!("[Worker#{id}] read({fd}) failed"));
             }
             Warning::BadPacket { received, length } => log::error_log(
-                4, // SW_LOG_WARNING
+                swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING,
                 swoole_rs_error::ErrorCode::SW_ERROR_PROTOCOL_ERROR as c_int,
                 origin,
                 format_args!(

@@ -8,6 +8,7 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log::last_error;
 use swoole_rs_hooks::exec::exec as exec_into;
 use swoole_rs_phpstubs::coroutine_system;
+use swoole_rs_reactor::Events;
 use swoole_rs_reactor::wait_upstream::{system_wait, system_waitpid};
 use swoole_rs_zend::{
     Call, Class, E_WARNING, Minit, Owned, OwnedArray, Value, ZString, bailout::Bailout,
@@ -27,8 +28,6 @@ unsafe extern "C" {
     safe fn php_swoole_convert_to_fd(value: Option<&Value>) -> c_int;
 }
 
-/// `SW_EVENT_READ`.
-const EVENT_READ: c_long = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_long;
 /// `SW_FILE_LOCK`, the `FILE_LOCK` constant.
 const FILE_LOCK: c_long = libc::LOCK_EX as c_long;
 /// `SW_FILE_APPEND`: PHP's `FILE_APPEND`.
@@ -435,9 +434,12 @@ fn wait_signal(call: &Call) {
 
 /// `waitEvent(mixed $socket, int $events = SWOOLE_EVENT_READ, float $timeout = -1)`.
 fn wait_event(call: &Call) {
-    let parsed = call
-        .arity(1, 3)
-        .and_then(|()| Ok((call.long(2, EVENT_READ)?, call.double(3, -1.0)?)));
+    let parsed = call.arity(1, 3).and_then(|()| {
+        Ok((
+            call.long(2, c_long::from(Events::READ.bits()))?,
+            call.double(3, -1.0)?,
+        ))
+    });
     let Ok((events, timeout)) = parsed else {
         call.set_bool(false);
         return;

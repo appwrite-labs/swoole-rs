@@ -40,8 +40,6 @@ unsafe extern "C" {
 }
 
 /// `SW_LOG_NOTICE`, `SW_LOG_WARNING`, `SW_ERROR_FILE_EMPTY` and `SW_ERROR_INVALID_PARAMS`.
-const LOG_NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
-const LOG_WARNING: c_int = 4;
 const FILE_EMPTY: c_int = swoole_rs_error::ErrorCode::SW_ERROR_FILE_EMPTY as c_int;
 const INVALID_PARAMS: c_int = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as c_int;
 /// `SW_SOCKET_CORK_MIN_SIZE`.
@@ -499,6 +497,9 @@ enum Io<'a, S: ReadSlot = MaybeUninit<u8>> {
     Sendfile(&'a mut SocketFileRequest, usize),
 }
 
+use swoole_rs_corebase::log::LogLevel::{
+    SW_LOG_NOTICE as LOG_NOTICE, SW_LOG_WARNING as LOG_WARNING,
+};
 pub use swoole_rs_corebase::sys::writev;
 
 impl<S: ReadSlot> SyncEffects for Call<'_, S> {
