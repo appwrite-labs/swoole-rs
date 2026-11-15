@@ -1,17 +1,15 @@
 //! The server's local interface addresses, numbered from 1 in `getifaddrs` order
 //! across both families. A connection stores the number of its local address
 //! (`Connection::local_addr_index`) and `Server::get_local_addr` reads its text.
-use core::ffi::{c_char, c_int};
+use core::ffi::c_char;
 use std::ffi::{CStr, CString};
 
+use swoole_rs_corebase::constants::SocketType;
 use swoole_rs_corebase::log;
 
 use crate::port_config::PortConfig;
 use crate::records::Connection;
 use crate::{ServerState, view};
-
-const SW_SOCK_TCP: c_int = 1;
-const SW_SOCK_TCP6: c_int = 3;
 
 struct Entry {
     index: u16,
@@ -123,9 +121,9 @@ fn text(state: &ServerState, v6: bool, index: u16) -> &CStr {
 /// its port's host; empty without one.
 #[must_use]
 pub fn get_local_addr<'a>(serv: view::Server<'a>, conn: Connection<'_>) -> &'a CStr {
-    let kind = conn.socket_type();
-    if kind == SW_SOCK_TCP || kind == SW_SOCK_TCP6 {
-        return text(serv.state(), kind == SW_SOCK_TCP6, conn.local_addr_index());
+    if let Some(kind) = SocketType::from_raw(conn.socket_type()).filter(|kind| kind.is_tcp()) {
+        let v6 = kind == SocketType::SW_SOCK_TCP6;
+        return text(serv.state(), v6, conn.local_addr_index());
     }
     serv.port_of_server_fd(conn.server_fd())
         .map_or(c"", PortConfig::host_c_str)

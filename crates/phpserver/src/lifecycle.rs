@@ -76,8 +76,6 @@ const HTTP: Protocols = Protocols {
     redis: false,
 };
 
-/// `SW_SOCK_TCP`.
-const SOCK_TCP: i64 = 1;
 /// `Server::Command::REACTOR_THREAD`.
 const COMMAND_REACTOR_THREAD: i64 = 1 << 2;
 /// The server's own callbacks (`php_swoole_server_callback_type`), in slot order.
@@ -741,7 +739,10 @@ fn construct(call: &Call) {
             call.string(1, b"")?,
             call.long(2, 0)?,
             call.long(3, Mode::Base as i64)?,
-            call.long(4, SOCK_TCP)?,
+            call.long(
+                4,
+                i64::from(swoole_rs_corebase::constants::SocketType::SW_SOCK_TCP.raw()),
+            )?,
         ))
     });
     let Ok((address, port, mode, kind)) = parsed else {

@@ -805,11 +805,11 @@ fn http_handshake(buffer: &mut CppString, length: usize) -> bool {
 use swoole_rs_corebase::set_errno;
 
 fn is_stream(kind: c_int) -> bool {
-    matches!(kind, 1 | 3 | 5)
+    SocketType::from_raw(kind).is_some_and(SocketType::is_stream)
 }
 
 fn is_dgram(kind: c_int) -> bool {
-    matches!(kind, 2 | 4 | 6)
+    SocketType::from_raw(kind).is_some_and(SocketType::is_dgram)
 }
 
 /// `new Client(type, async)`: the socket and the state, or null with errno set

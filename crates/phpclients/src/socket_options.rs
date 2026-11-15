@@ -25,11 +25,6 @@ use swoole_rs_zend::{
 };
 
 use swoole_rs_reactor::TimeoutKind;
-/// `SW_SOCK_TCP` and `SW_SOCK_TCP6` .. `SW_SOCK_UDP6`.
-const SOCK_TCP: c_int = 1;
-const SOCK_UDP: c_int = 2;
-const SOCK_TCP6: c_int = 3;
-const SOCK_UDP6: c_int = 4;
 /// `SW_DATA_EOF_MAXLEN`.
 const EOF_MAXLEN: usize = 8;
 /// `SW_ERROR_OPERATION_NOT_SUPPORT`.
@@ -308,7 +303,7 @@ fn set(s: &Array, socket: Co) -> Result<bool, Stop> {
     let kind = socket.kind();
     if let Some(v) = s.get(b"open_tcp_nodelay")
         // Upstream's test: every type but TCP6.
-        && (kind == SOCK_TCP || kind != SOCK_TCP6)
+        && (kind == swoole_rs_corebase::constants::SocketType::SW_SOCK_TCP.raw() || kind != swoole_rs_corebase::constants::SocketType::SW_SOCK_TCP6.raw())
     {
         let on = v.truthy();
         let nodelay = c_int::from(on);
@@ -321,7 +316,8 @@ fn set(s: &Array, socket: Co) -> Result<bool, Stop> {
     if !set_protocol(s, socket)? {
         ret = false;
     }
-    let inet = matches!(kind, SOCK_TCP | SOCK_UDP | SOCK_TCP6 | SOCK_UDP6);
+    let inet = swoole_rs_corebase::constants::SocketType::from_raw(kind)
+        .is_some_and(|kind| kind.is_tcp() || kind.is_udp());
     if let Some(host) = s.get(b"socks5_host") {
         if !inet {
             throw_unsupported(c"Only tcp socket supports socks5 proxy settings");

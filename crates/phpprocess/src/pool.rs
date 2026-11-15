@@ -34,9 +34,6 @@ use swoole_rs_zend::{
 };
 use swoole_rs_zend::{method_table, sys as z};
 
-/// `SW_SOCK_TCP` and `SW_SOCK_UNIX_STREAM`.
-const SOCK_TCP: c_int = 1;
-const SOCK_UNIX_STREAM: c_int = 5;
 /// `SW_EVENT_DATA_OBJ_PTR`.
 const EVENT_DATA_OBJ_PTR: u8 = 1 << 5;
 
@@ -700,7 +697,12 @@ fn listen(call: &Call) {
     let host = address.get(if unix { 5 } else { 0 }..).unwrap_or_default();
     let host =
         CString::new(host.split(|&byte| byte == 0).next().unwrap_or_default()).unwrap_or_default();
-    let kind = if unix { SOCK_UNIX_STREAM } else { SOCK_TCP };
+    let kind = if unix {
+        swoole_rs_corebase::constants::SocketType::SW_SOCK_UNIX_STREAM
+    } else {
+        swoole_rs_corebase::constants::SocketType::SW_SOCK_TCP
+    }
+    .raw();
     let listened = methods::listen_socket(
         view,
         kind,
