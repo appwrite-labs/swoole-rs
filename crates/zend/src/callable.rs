@@ -3,7 +3,10 @@
 use crate::{
     Call, Invalid,
     bailout::{self, Bailout},
-    sys::{IS_LONG, swr_zend_callable, zend_fcall_info_cache, zend_value, zval},
+    sys::{
+        IS_LONG, swr_zend_callable, swr_zend_callable_release, swr_zend_callable_release_quiet,
+        zend_fcall_info_cache, zend_value, zval,
+    },
     value::emalloc,
 };
 use std::{ffi::c_void, mem::MaybeUninit, ptr};
@@ -19,12 +22,9 @@ unsafe extern "C" {
     /// `efree` of the record of a callable that holds nothing.
     #[link_name = "swr_zend_efree"]
     safe fn discard(parsed: Parsed);
-    /// Release the arguments, object and closure a kept callable holds (a
-    /// destructor runs PHP code, inside `zend_try`), then `efree` its record:
-    /// nonzero for a bailout, as `swr_zend_try` returns.
-    safe fn swr_zend_callable_free(callable: Callable) -> std::ffi::c_int;
-    /// `ecalloc` of one record: an empty callable, never null.
-    safe fn swr_zend_callable_new() -> *mut swr_zend_callable;
+    /// `efree` of the record of a callable whose references were released.
+    #[link_name = "swr_zend_efree"]
+    safe fn free_released(callable: Callable);
 }
 
 /// An emalloc'd `swr_zend_callable`, laid out as Swoole's `zend::Function`, so
@@ -49,7 +49,11 @@ impl Callable {
     /// # Errors
     /// Argument `n` is not callable; Zend has raised its parameter error.
     pub fn parse(call: &Call, n: u32) -> Result<Parsed, Invalid> {
-        let mut this = Parsed(swr_zend_callable_new());
+        // Zend's allocator, for one callable (`ecalloc`).
+        let raw = emalloc(size_of::<swr_zend_callable>()).cast::<swr_zend_callable>();
+        // SAFETY: fresh storage; all-zero is an empty callable.
+        unsafe { raw.write_bytes(0, 1) };
+        let mut this = Parsed(raw);
         let callable = this.record();
         if let Err(invalid) = call.callable(n, &mut callable.fci, &mut callable.fcc) {
             this.discard();
@@ -102,7 +106,16 @@ impl Callable {
     /// # Errors
     /// A destructor bailed out; the callable is freed anyway.
     pub fn release(self) -> Result<(), Bailout> {
-        bailout::trapped(swr_zend_callable_free(self))
+        // SAFETY: a kept callable; the quiet release runs no PHP code.
+        let released = if unsafe { swr_zend_callable_release_quiet(self.0) } != 0 {
+            Ok(())
+        } else {
+            // SAFETY: the release body is C; the callable was kept.
+            unsafe { bailout::trap(swr_zend_callable_release, self.0.cast()) }
+        };
+        // Emalloc'd by `parse`, and released above.
+        free_released(self);
+        released
     }
 }
 

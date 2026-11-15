@@ -31,7 +31,9 @@ void swr_v1_core_set_enable_coroutine(bool value);
 long swr_v1_core_trace_flags(void);
 uint32_t swr_v1_core_pagesize(void);
 void swr_v1_core_set_pagesize(uint32_t value);
-void *swr_v1_core_fatal_error(void);
+/* SwooleG.fatal_error: null until a host sets it. */
+typedef void (*SwrFatalError)(int code, const char *format, ...);
+SwrFatalError swr_v1_core_fatal_error(void);
 #ifdef __cplusplus
 }
 namespace swoole {
