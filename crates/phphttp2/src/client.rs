@@ -24,8 +24,8 @@ use swoole_rs_http2::{
     sw_rs_http2_window_plan, sw_rs_http2_write_allowed,
 };
 use swoole_rs_inflate::Inflate;
-use swoole_rs_phpruntime::co::WRITE;
 use swoole_rs_phpstubs::http2_client_coro;
+use swoole_rs_reactor::Events;
 use swoole_rs_zend::{
     ArrayMut, Call, Class, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Value, Weak,
     ZString, sys::ZEND_ACC_PUBLIC,
@@ -489,7 +489,7 @@ impl Client {
         let Some(socket) = self.socket() else {
             return false;
         };
-        let bound = socket.has_bound(WRITE);
+        let bound = socket.has_bound(Events::WRITE);
         let (queued, limit) = if bound {
             (
                 self.queue.borrow().len(),

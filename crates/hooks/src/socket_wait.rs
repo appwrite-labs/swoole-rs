@@ -6,7 +6,6 @@
 //! write buffer ([`Host`](crate::co_io::Host)).
 use crate::co_io::{CLOSE_WAIT_ERROR, NATIVE, Timer, available, set_err};
 use crate::co_socket::Co;
-use crate::shutdown::{READ, WRITE};
 use crate::vector::Barrier;
 use core::ffi::c_void;
 use swoole_rs_reactor::Events;
@@ -20,8 +19,8 @@ struct WaitState {
     removed: bool,
 }
 
-fn slot(event: u32) -> usize {
-    usize::from(event == WRITE)
+fn slot(event: Events) -> usize {
+    usize::from(event == Events::WRITE)
 }
 
 /// One wait on a live record. Nothing here holds a borrow of it across a native call.
@@ -48,19 +47,19 @@ impl Wait {
             .flatten()
     }
 
-    fn bind(&self, event: u32, co: *mut c_void) {
+    fn bind(&self, event: Events, co: *mut c_void) {
         self.0.with_state(|state| state.bind(event, co));
     }
 
-    fn want(&self) -> u32 {
+    fn want(&self) -> Events {
         self.0.with_state(|state| state.want)
     }
 
-    fn set_want(&self, event: u32) {
+    fn set_want(&self, event: Events) {
         self.0.with_state(|state| state.want = event);
     }
 
-    fn set_barrier(&self, event: u32, barrier: Option<Barrier>) {
+    fn set_barrier(&self, event: Events, barrier: Option<Barrier>) {
         self.0.with_state(|state| {
             if let Some(slot) = state.barriers.get_mut(slot(event)) {
                 *slot = barrier;
@@ -69,25 +68,28 @@ impl Wait {
     }
 
     /// `add_event`: add `event` to the reactor unless it is there already.
-    fn add(&self, state: &WaitState, event: u32) -> bool {
-        let event = Events::from_bits(event.cast_signed());
+    fn add(&self, state: &WaitState, event: Events) -> bool {
         let events = if state.removed {
             event
         } else {
             state.events | event
         };
-        let added = state.events.intersects(event)
-            || (NATIVE.reactor)(self.0, events.bits().cast_unsigned(), state.removed);
+        let added =
+            state.events.intersects(event) || (NATIVE.reactor)(self.0, events, state.removed);
         set_err(self.0, if added { 0 } else { crate::co_io::errno() });
         added
     }
 
-    fn wait(&self, co: *mut c_void, event: u32, buffer: Option<WriteSlot<'_>>) -> bool {
+    fn wait(&self, co: *mut c_void, event: Events, buffer: Option<WriteSlot<'_>>) -> bool {
         let Some(state) = self.snapshot() else {
             set_err(self.0, CLOSE_WAIT_ERROR);
             return false;
         };
-        let event = if event == READ { READ } else { WRITE };
+        let event = if event == Events::READ {
+            Events::READ
+        } else {
+            Events::WRITE
+        };
         if state.nobufs {
             self.bind(event, co);
             (NATIVE.sleep)();
@@ -96,11 +98,11 @@ impl Wait {
         }
         set_err(self.0, 0);
         let mut added = event;
-        if event == READ && state.want_write || event == WRITE && state.want_read {
-            if state.want_write && self.add(&state, WRITE) {
-                self.set_want(WRITE);
-            } else if state.want_read && self.add(&state, READ) {
-                self.set_want(READ);
+        if event == Events::READ && state.want_write || event == Events::WRITE && state.want_read {
+            if state.want_write && self.add(&state, Events::WRITE) {
+                self.set_want(Events::WRITE);
+            } else if state.want_read && self.add(&state, Events::READ) {
+                self.set_want(Events::READ);
             } else {
                 return false;
             }
@@ -108,7 +110,7 @@ impl Wait {
         } else if !self.add(&state, event) {
             return false;
         }
-        if event == WRITE
+        if event == Events::WRITE
             && let Some(mut slot) = buffer
         {
             (NATIVE.buffer)(self.0, &mut slot);
@@ -120,12 +122,12 @@ impl Wait {
         // Both coroutines may wait for the same event under TLS.
         let bound = !self
             .0
-            .with_state(|state| state.bound_co(READ | WRITE))
+            .with_state(|state| state.bound_co(Events::READ | Events::WRITE))
             .is_null();
-        if self.want() == 0 || !bound {
+        if self.want().is_empty() || !bound {
             (NATIVE.remove)(self.0, added);
         }
-        self.set_want(0);
+        self.set_want(Events::NONE);
         !self.0.is_closed() && self.0.err_code() == 0
     }
 }
@@ -165,13 +167,13 @@ impl<'a> WriteSlot<'a> {
 /// `Socket::wait_event(event)` for the current coroutine. `buffer` is a write's
 /// buffer slot, which may move to the socket's write buffer. True when woken with
 /// the socket open and no error.
-pub(crate) fn wait(socket: Co, event: u32, buffer: Option<WriteSlot<'_>>) -> bool {
+pub(crate) fn wait(socket: Co, event: Events, buffer: Option<WriteSlot<'_>>) -> bool {
     let co = (NATIVE.current)();
     !co.is_null() && Wait(socket).wait(co, event, buffer)
 }
 
 /// Clears the barrier [`wait_barrier`] installed, also when the wait unwinds.
-struct Installed(Wait, u32);
+struct Installed(Wait, Events);
 
 impl Drop for Installed {
     fn drop(&mut self) {
@@ -181,7 +183,7 @@ impl Drop for Installed {
 
 /// [`wait_for`] with `barrier` retrying the transfer while it is installed: the
 /// ready callback calls it, and holds the coroutine while it returns true.
-pub(crate) fn wait_barrier(socket: Co, event: u32, barrier: &mut dyn FnMut() -> bool) -> bool {
+pub(crate) fn wait_barrier(socket: Co, event: Events, barrier: &mut dyn FnMut() -> bool) -> bool {
     let co = (NATIVE.current)();
     if co.is_null() {
         return false;
@@ -201,7 +203,7 @@ pub(crate) fn wait_barrier(socket: Co, event: u32, barrier: &mut dyn FnMut() -> 
 }
 
 /// [`wait`] with no barrier and no buffer.
-pub(crate) fn wait_for(socket: Co, event: u32) -> bool {
+pub(crate) fn wait_for(socket: Co, event: Events) -> bool {
     let co = (NATIVE.current)();
     !co.is_null() && Wait(socket).wait(co, event, None)
 }
@@ -209,8 +211,12 @@ pub(crate) fn wait_for(socket: Co, event: u32) -> bool {
 /// The readable (`event` read) or writable callback: the coroutine to resume, or
 /// null. Under a TLS wait the other direction's coroutine wakes; otherwise an
 /// installed barrier that keeps waiting holds the coroutine unless the peer hung up.
-pub(crate) fn ready(socket: Co, event: u32, hup: bool) -> *mut c_void {
-    let other = if event == READ { WRITE } else { READ };
+pub(crate) fn ready(socket: Co, event: Events, hup: bool) -> *mut c_void {
+    let other = if event == Events::READ {
+        Events::WRITE
+    } else {
+        Events::READ
+    };
     let (want, woken, barrier) = socket.with_state(|state| {
         let woken = if state.want == event {
             state.co(other)
@@ -223,7 +229,7 @@ pub(crate) fn ready(socket: Co, event: u32, hup: bool) -> *mut c_void {
             state.barriers.get(slot(event)).copied().flatten(),
         )
     });
-    if want != 0 {
+    if !want.is_empty() {
         return woken;
     }
     if let Some(barrier) = barrier {
@@ -238,7 +244,7 @@ pub(crate) fn ready(socket: Co, event: u32, hup: bool) -> *mut c_void {
 
 /// `Socket::poll(event, timeout)`: wait for `event` under `timeout`, or the
 /// direction's own timeout when it is zero.
-pub(crate) fn poll(socket: Co, event: u32, timeout: f64) -> bool {
+pub(crate) fn poll(socket: Co, event: Events, timeout: f64) -> bool {
     if !available(socket, event) {
         return false;
     }
@@ -259,9 +265,9 @@ pub(crate) fn poll(socket: Co, event: u32, timeout: f64) -> bool {
 ///
 /// A resumed coroutine may free the record but not `event_socket`.
 pub(crate) fn error_event(socket: Co, event_socket: swoole_rs_reactor::Socket<'_>) {
-    for event in [WRITE, READ] {
+    for event in [Events::WRITE, Events::READ] {
         let (object, removed) = event_socket.read(|record| (record.object, record.removed));
-        if event == READ && (object != socket.this() || removed) {
+        if event == Events::READ && (object != socket.this() || removed) {
             return;
         }
         // The record is live: it still owns `event_socket`.
@@ -297,8 +303,7 @@ mod tests {
         record.tls.want_read = status & WANT_READ != 0;
         record.tls.want_write = status & WANT_WRITE != 0;
         record.removed = status & REMOVED != 0;
-        record.events =
-            swoole_rs_reactor::Events::from_bits((status & (READ | WRITE)).cast_signed());
+        record.events = Events::from_bits(status.cast_signed()) & Events::RDWR;
         socket
     }
 
@@ -313,7 +318,7 @@ mod tests {
 
     fn wait_on(
         socket: &mut TestSocket,
-        event: u32,
+        event: Events,
         barrier: Option<&mut dyn FnMut() -> bool>,
     ) -> bool {
         if let Some(barrier) = barrier {
@@ -337,9 +342,9 @@ mod tests {
 
     #[test]
     fn a_plain_wait_adds_binds_yields_and_removes() {
-        let mut s = socket(READ);
+        let mut s = socket(Events::READ.bits().cast_unsigned());
         wake_on_ready();
-        assert!(wait_on(&mut s, WRITE, None));
+        assert!(wait_on(&mut s, Events::WRITE, None));
         assert_eq!(
             effects(),
             [
@@ -352,7 +357,7 @@ mod tests {
         );
         let mut s = socket(REMOVED);
         wake_on_ready();
-        assert!(wait_on(&mut s, READ, None));
+        assert!(wait_on(&mut s, Events::READ, None));
         assert_eq!(
             effects(),
             ["add:512", "yield:512", "woken:true", "remove:512"]
@@ -362,18 +367,18 @@ mod tests {
     #[test]
     fn close_wait_nobufs_and_reactor_failures_stop_early() {
         let mut s = socket(CLOSE_WAIT | NOBUFS);
-        assert!(!wait_on(&mut s, READ, None));
+        assert!(!wait_on(&mut s, Events::READ, None));
         assert_eq!(s.0.err_code.get(), CLOSE_WAIT_ERROR);
         assert_eq!(effects(), Vec::<String>::new());
         // close_wait leaves the no-buffers flag for the next wait.
         assert!(unsafe { s.0.record() }.kernel_nobufs);
         let mut s = socket(NOBUFS);
-        assert!(wait_on(&mut s, WRITE, None));
+        assert!(wait_on(&mut s, Events::WRITE, None));
         assert_eq!(effects(), ["sleep"]);
         assert!(!unsafe { s.0.record() }.kernel_nobufs);
         let mut s = socket(0);
         REACTOR_OK.set(false);
-        assert!(!wait_on(&mut s, READ, None));
+        assert!(!wait_on(&mut s, Events::READ, None));
         assert_eq!(effects(), ["set:512"]);
     }
 
@@ -381,20 +386,20 @@ mod tests {
     fn tls_waits_for_the_direction_it_wants() {
         let mut s = socket(WANT_WRITE);
         wake_on_ready();
-        assert!(wait_on(&mut s, READ, None));
+        assert!(wait_on(&mut s, Events::READ, None));
         // The writable callback wakes the reader; no one else is bound, so remove.
         assert_eq!(
             effects(),
             ["set:1024", "yield:512", "woken:false", "remove:1024"]
         );
-        assert_eq!(unsafe { (*s.state()).want }, 0);
+        assert_eq!(unsafe { (*s.state()).want }, Events::NONE);
     }
 
     #[test]
     fn wants_count_only_with_a_tls_session() {
         let mut s = socket(WANT_WRITE);
         unsafe { s.0.record() }.take_ssl();
-        assert!(wait_on(&mut s, READ, None));
+        assert!(wait_on(&mut s, Events::READ, None));
         assert_eq!(effects(), ["set:512", "yield:512", "remove:512"]);
     }
 
@@ -405,7 +410,7 @@ mod tests {
             let woken = ready(socket, event, false);
             log(format!("woken:{}", !woken.is_null()));
         })));
-        assert!(wait_on(&mut s, READ, Some(&mut || true)));
+        assert!(wait_on(&mut s, Events::READ, Some(&mut || true)));
         assert_eq!(
             effects(),
             ["set:512", "yield:512", "woken:false", "remove:512"]
@@ -417,7 +422,7 @@ mod tests {
     fn a_wake_with_an_error_or_close_fails() {
         let mut s = socket(0);
         ON_SUSPEND.set(Some(Box::new(|socket: Co, _| socket.set_sock_fd(-1))));
-        assert!(!wait_on(&mut s, READ, None));
+        assert!(!wait_on(&mut s, Events::READ, None));
         s.0.sock_fd.set(100);
     }
 
@@ -428,10 +433,18 @@ mod tests {
         let mut s = socket(0);
         unsafe { s.0.record() }.timeouts.read = 3.0;
         unsafe { s.0.record() }.timeouts.write = 4.0;
-        for (event, timeout, expected) in [(READ, 0.0, 3.0), (WRITE, 0.0, 4.0), (READ, 0.5, 0.5)] {
+        for (event, timeout, expected) in [
+            (Events::READ, 0.0, 3.0),
+            (Events::WRITE, 0.0, 4.0),
+            (Events::READ, 0.5, 0.5),
+        ] {
             take();
             assert!(poll(s.co(), event, timeout));
-            let add = if event == READ { "set:512" } else { "set:1024" };
+            let add = if event == Events::READ {
+                "set:512"
+            } else {
+                "set:1024"
+            };
             let mut want = vec![format!("timer:add:{expected}"), add.into()];
             want.extend([
                 format!("yield:{event}"),
@@ -442,10 +455,10 @@ mod tests {
         }
         // A failed timer skips the wait; a socket held by another coroutine is unavailable.
         crate::co_io::test_host::TIMER_OK.set(false);
-        assert!(!poll(s.co(), READ, 1.0));
+        assert!(!poll(s.co(), Events::READ, 1.0));
         assert_eq!(effects(), ["timer:add:1"]);
         s.0.sock_fd.set(-1);
-        assert!(!poll(s.co(), READ, 1.0));
+        assert!(!poll(s.co(), Events::READ, 1.0));
         assert_eq!(effects(), Vec::<String>::new());
         s.0.sock_fd.set(100);
     }
@@ -472,8 +485,8 @@ mod tests {
             };
             record.removed = removed;
             let event_socket = s.0.socket_ptr();
-            unsafe { &mut *s.state() }.bind(READ, (&raw mut reader).cast());
-            unsafe { &mut *s.state() }.bind(WRITE, (&raw mut writer).cast());
+            unsafe { &mut *s.state() }.bind(Events::READ, (&raw mut reader).cast());
+            unsafe { &mut *s.state() }.bind(Events::WRITE, (&raw mut writer).cast());
             ON_RESUME.set(Some(Box::new(move |cid| {
                 if close_in_writer && cid == 8 {
                     unsafe { (*event_socket).fields.object = core::ptr::null_mut() };
@@ -490,8 +503,8 @@ mod tests {
             }
             assert_eq!(effects(), want);
             assert_eq!(s.0.err_code.get(), 0);
-            unsafe { &mut *s.state() }.bind(READ, core::ptr::null_mut());
-            unsafe { &mut *s.state() }.bind(WRITE, core::ptr::null_mut());
+            unsafe { &mut *s.state() }.bind(Events::READ, core::ptr::null_mut());
+            unsafe { &mut *s.state() }.bind(Events::WRITE, core::ptr::null_mut());
         }
     }
 }

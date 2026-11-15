@@ -27,6 +27,7 @@ use swoole_rs_phpruntime::co;
 use swoole_rs_phpstubs::http_server_coro;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_phpswoole::SocketSettings;
+use swoole_rs_reactor::Events;
 use swoole_rs_zend::{
     Array, Call, Custom, CustomClass, Key as ArrayKey, Minit, Owned, OwnedArray, Props, Value,
     ZString, bailout, handlers, method_table, string,
@@ -289,8 +290,6 @@ fn address(socket: Co) -> (ZString, c_int) {
     address.unwrap_or_else(|| (ZString::new(b""), 0))
 }
 
-/// `SW_EVENT_READ`.
-const EVENT_READ: u32 = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as u32;
 /// `SW_HTTP2_FRAME_HEADER_SIZE`.
 const HTTP2_FRAME_HEADER_SIZE: u8 = 9;
 
@@ -776,7 +775,7 @@ fn shutdown(call: &Call) {
         return;
     };
     server.running.set(false);
-    server.socket.cancel(EVENT_READ);
+    server.socket.cancel(Events::READ);
     // Connections waiting for their next request stop waiting.
     let clients = server.clients();
     let mut waiting: Vec<(z::zend_ulong, Co)> = Vec::new();
@@ -795,7 +794,7 @@ fn shutdown(call: &Call) {
     }
     for (index, socket) in waiting {
         // The array's connection objects keep their sockets live.
-        socket.cancel(EVENT_READ);
+        socket.cancel(Events::READ);
         // SAFETY: the live array and one of its keys.
         unsafe { z::zend_hash_index_del(clients, index) };
     }

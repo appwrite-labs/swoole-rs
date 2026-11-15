@@ -2,16 +2,14 @@
 //! passes the timer with its coroutine wait, `set_err` and the `network::Socket`
 //! call as a [`Setup`].
 use core::ffi::c_int;
-
-/// `SW_EVENT_READ`.
-const EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
+use swoole_rs_reactor::Events;
 
 /// Connection setup's native effects.
 pub trait Setup {
     /// `set_err(error)`; `-1` is `set_err()` (the last error, else errno).
     fn fail(&mut self, error: c_int);
     /// Starts the operation's timer and waits for `event`; false on timeout or close.
-    fn wait(&mut self, event: c_int) -> bool;
+    fn wait(&mut self, event: Events) -> bool;
     /// The `network::Socket` call `accept` (0 with a connection kept, else -1 with
     /// errno).
     fn call(&mut self, argument: c_int) -> c_int;
@@ -26,7 +24,7 @@ fn errno() -> c_int {
 pub(crate) fn swr_v1_hook_accept(ops: &mut impl Setup) -> bool {
     let mut accepted = ops.call(0) == 0;
     if !accepted && errno() == libc::EAGAIN {
-        if !ops.wait(EVENT_READ) {
+        if !ops.wait(Events::READ) {
             return false;
         }
         accepted = ops.call(0) == 0;
@@ -76,7 +74,7 @@ mod tests {
         fn fail(&mut self, error: c_int) {
             log(format!("fail {error}"));
         }
-        fn wait(&mut self, event: c_int) -> bool {
+        fn wait(&mut self, event: Events) -> bool {
             log(format!("wait {event}"));
             FAKE.with(|fake| fake.borrow().wait)
         }
