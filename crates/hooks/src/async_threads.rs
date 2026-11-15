@@ -6,6 +6,7 @@
 //! back and runs its callback. Each pool copy of an event holds a reference to its
 //! request record. The ossupport patch deletes `src/os/async_thread.cc`.
 use crate::offload::AsyncEvent;
+use std::cell::Cell;
 use std::ffi::{c_int, c_void};
 use std::ptr;
 use std::sync::atomic::Ordering::Relaxed;
@@ -38,17 +39,20 @@ pub struct AsyncThreads {
     pool: Option<&'static Pool>,
 }
 
-/// `SwooleTG.async_threads`.
-fn current() -> *mut AsyncThreads {
-    thread_async_threads().cast()
+thread_local! {
+    /// The thread's handle; `SwooleTG.async_threads` holds its address while it is here.
+    static THREADS: Cell<Option<Box<AsyncThreads>>> = const { Cell::new(None) };
 }
 
-/// `f` over the thread's handle, or none without one. Only this module calls it, never
-/// from inside another `f`, and no `f` runs a callback that could free the handle.
+/// `f` over the thread's handle, taken out for the call and put back after it; none
+/// without one. Only this module calls it, never from inside another `f`.
 fn with_current<R>(f: impl FnOnce(&mut AsyncThreads) -> R) -> Option<R> {
-    // SAFETY: null or this thread's live handle, which only this thread touches and
-    // no other borrow reaches while `f` runs.
-    unsafe { current().as_mut() }.map(f)
+    THREADS.with(|slot| {
+        let mut threads = slot.take()?;
+        let result = f(&mut threads);
+        slot.set(Some(threads));
+        Some(result)
+    })
 }
 
 /// A heap copy of `event` holding its own reference to the request.
@@ -166,13 +170,10 @@ static HOOKS: PoolHooks = PoolHooks {
 
 /// The reactor's destroy callback: unregisters the pipe and frees the handle.
 extern "C-unwind" fn destroyed(_data: *mut c_void) {
-    let threads = current();
-    if threads.is_null() {
+    let Some(mut threads) = THREADS.take() else {
         return;
-    }
+    };
     set_thread_async_threads(ptr::null_mut());
-    // SAFETY: `create` boxed it; nothing refers to it any more.
-    let mut threads = unsafe { Box::from_raw(threads) };
     // Its read end, registered on the closing reactor.
     if let Some(read) = threads.pipe.worker_end() {
         _ = event_del(read);
@@ -237,9 +238,10 @@ fn create() -> *mut AsyncThreads {
         swr_v1_core_aio_max_idle_time(),
     ));
     swr_v1_core_set_aio_default_socket(write.as_ptr().cast());
-    let threads = Box::into_raw(threads);
-    set_thread_async_threads(threads.cast());
-    threads
+    let address = ptr::from_mut(&mut *threads);
+    set_thread_async_threads(address.cast());
+    THREADS.set(Some(threads));
+    address
 }
 
 /// The thread's pool, created first when it has none: null, with the last error
@@ -247,7 +249,7 @@ fn create() -> *mut AsyncThreads {
 #[unsafe(no_mangle)]
 #[must_use]
 pub extern "C" fn swr_v1_async_threads_ensure() -> *mut AsyncThreads {
-    let threads = current();
+    let threads = thread_async_threads().cast::<AsyncThreads>();
     if threads.is_null() { create() } else { threads }
 }
 
