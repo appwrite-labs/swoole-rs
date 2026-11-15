@@ -183,8 +183,11 @@ pub struct PortConfig {
 /// adds to them, so each is behind a lock.
 #[derive(Default)]
 pub struct TlsState {
+    /// Fully configured settings for reactor threads; replacing them never edits
+    /// the configuration an existing reader holds.
+    pub settings: Published<swoole_rs_tls::TlsSettings>,
     /// `sni_contexts`, in insertion order: the name and its context.
-    pub sni: RwLock<Vec<(Vec<u8>, TlsContext)>>,
+    pub sni: RwLock<Vec<(Vec<u8>, std::sync::Arc<swoole_rs_tls::TlsSettings>)>>,
 }
 
 /// A `package_length_func`'s owner, whose callable the port's protocol names.
@@ -206,6 +209,9 @@ impl PortConfig {
     /// `ListenPort::is_dtls()`: the port's context speaks DTLS.
     #[must_use]
     pub fn is_dtls(&self) -> bool {
+        if let Some(settings) = self.tls.settings.get() {
+            return settings.protocols() & SslVersion::SW_SSL_DTLS as u32 != 0;
+        }
         self.with_ssl_fields(|_, fields| fields.protocols & SslVersion::SW_SSL_DTLS as u32 != 0)
             .unwrap_or(false)
     }
@@ -213,6 +219,9 @@ impl PortConfig {
     /// `verify_peer` with no client certificate file, cafile or capath.
     #[must_use]
     pub fn ssl_verify_without_ca(&self) -> bool {
+        if let Some(settings) = self.tls.settings.get() {
+            return settings.verify_peer() && settings.names_no_ca();
+        }
         self.with_ssl_fields(|context, fields| fields.verify_peer && context.names_no_ca())
             .unwrap_or(false)
     }
@@ -223,7 +232,7 @@ impl PortConfig {
         read: impl FnOnce(&TlsContext, &swoole_rs_tls::OwnedTlsFields) -> R,
     ) -> Option<R> {
         let context = self.ssl_context.get()?;
-        Some(read(&context, context.fields()))
+        Some(read(&context, &context.fields()))
     }
 }
 

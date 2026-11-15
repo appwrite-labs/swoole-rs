@@ -52,7 +52,7 @@ fn receive_packets(
     let Some(port) = conn.port() else {
         return false;
     };
-    let dtls = port.config().is_dtls();
+    let dtls = port.config().ssl && port.config().is_dtls();
     let head = size_of::<DgramPacket>();
     let info = DataHead {
         server_fd: crate::base_factory::low16(fd),

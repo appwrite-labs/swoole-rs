@@ -56,7 +56,8 @@ impl SslContext {
 
     fn create(&self) -> bool {
         // SAFETY: the live owner this context made, which only this test configures.
-        let mut owner = unsafe { swoole_rs_tls::Lent::new(&*self.0.owner.cast()) };
+        let owner = unsafe { &*self.0.owner.cast::<swoole_rs_tls::OwnedTlsContext>() };
+        let mut owner = owner.borrow_configuration();
         swoole_rs_tls::ssl_context_create(&mut owner)
     }
 
@@ -78,7 +79,7 @@ impl Drop for SslContext {
     fn drop(&mut self) {
         // SAFETY: the owner's one reference this context made, released once.
         drop(unsafe {
-            std::sync::Arc::<swoole_rs_tls::OwnedTlsContext>::from_raw(self.0.owner.cast())
+            std::rc::Rc::<swoole_rs_tls::OwnedTlsContext>::from_raw(self.0.owner.cast())
         });
     }
 }

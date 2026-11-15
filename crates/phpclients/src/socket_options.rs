@@ -382,8 +382,7 @@ fn set_ssl(s: &Array, socket: Co) -> Result<bool, Stop> {
     let Some(context) = socket.handle().tls_context() else {
         return Ok(true);
     };
-    // SAFETY: the context `context` keeps live, which nothing else reaches during the call.
-    let owner = unsafe { tls::Lent::new(&context) };
+    let owner = context.borrow_configuration();
     let set = |value| owner.set_value(value);
     let set_text = |which, text: &[u8]| owner.set_text(which, text);
     let text = |which, v: &Value| -> Result<bool, Stop> { Ok(set_text(which, &string(v)?)) };

@@ -168,7 +168,8 @@ fn verify_ssl(
     conn.set_ssl_ready(true);
     let config = port.map(view::Port::config);
     let (verify_peer, allow_self_signed) = config
-        .and_then(|config| config.with_ssl_fields(|_, f| (f.verify_peer, f.allow_self_signed)))
+        .and_then(|config| config.tls.settings.get())
+        .map(|settings| (settings.verify_peer(), settings.allow_self_signed()))
         .unwrap_or_default();
     let peer =
         || with_thread_buffer(|buffer| tls::socket_ssl_peer_certificate_string(sock, buffer));
@@ -240,9 +241,10 @@ fn certificate(
 
 /// Whether the TLS port has a client certificate file.
 fn client_cert_file(port: &PortConfig) -> bool {
-    port.ssl_context
+    port.tls
+        .settings
         .get()
-        .is_some_and(|context| context.has_client_cert_file())
+        .is_some_and(|settings| settings.has_client_cert())
 }
 
 /// Arms `conn`'s resume timer for its paused `socket`, after its waiting time.

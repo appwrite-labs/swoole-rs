@@ -1232,14 +1232,14 @@ mod tests {
 
         assert!(ssl_context_init(at));
         let context = config.ssl_context.get().unwrap();
-        assert!(!context_create(config, &context, false));
+        assert!(context_create(config, &context, false, None).is_none());
         assert_eq!(log::last_error(), 509, "SW_ERROR_WRONG_OPERATION");
         let cert_file = swoole_rs_tls::swr_v1_tls_owner_view(&context).strings[4];
         let set = |text: &str| unsafe { (*cert_file).set_shared(text.as_bytes()) };
         assert!(set("server.crt"), "cert_file = \"server.crt\"");
-        assert!(!context_create(config, &context, true));
+        assert!(context_create(config, &context, true, None).is_none());
         assert!(set(""), "cert_file.clear()");
-        assert!(context_create(config, &context, true));
+        assert!(context_create(config, &context, true, None).is_some());
 
         close(at);
         unsafe { port_config::swr_v1_port_config_free(port) };

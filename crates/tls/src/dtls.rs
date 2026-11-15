@@ -41,12 +41,16 @@ pub struct DtlsSession {
     peek: Cell<bool>,
     queue: RefCell<VecDeque<Datagram>>,
     /// The port's context, which upstream's session holds a reference to.
-    _context: Option<crate::TlsContext>,
+    _context: Option<std::sync::Arc<crate::TlsSettings>>,
 }
 
 impl DtlsSession {
     /// An empty queue for the socket on `fd` connected to `peer`.
-    fn new(fd: c_int, peer: AddressStorage, context: Option<crate::TlsContext>) -> Self {
+    fn new(
+        fd: c_int,
+        peer: AddressStorage,
+        context: Option<std::sync::Arc<crate::TlsSettings>>,
+    ) -> Self {
         Self {
             fd,
             peer,
@@ -397,13 +401,11 @@ fn methods() -> Option<&'static BioMethod> {
 /// writes to the socket and reads the session's datagram queue; false when `init`
 /// fails. The session goes with the SSL.
 #[must_use]
-pub fn dtls_open(socket: Socket<'_>, context: &crate::TlsContext) -> bool {
+pub fn dtls_open(socket: Socket<'_>, context: &std::sync::Arc<crate::TlsSettings>) -> bool {
     if !socket.read(swoole_rs_reactor::SocketFields::ssl).is_null() {
         return false;
     }
-    let server = crate::SslCreateFlag::SW_SSL_SERVER as c_int;
-    let ssl_context = context.fields().context.as_deref();
-    if !crate::upstream::socket_ssl_create(socket, ssl_context, server) {
+    if !context.create_session(socket) {
         log::set_last_error(SSL_CREATE_SESSION_FAILED);
         return false;
     }
@@ -600,12 +602,11 @@ mod tests {
         use std::os::fd::AsRawFd;
         crate::swr_v1_tls_init().unwrap();
         let context = crate::TlsContext::new();
-        // SAFETY: the test's own owner, which nothing else reaches.
-        let mut lent = unsafe { crate::Lent::new(&context) };
+        let lent = context.borrow_configuration();
         lent.set_value(crate::Value::Protocols(
             crate::SslVersion::SW_SSL_DTLS as i64,
         ));
-        assert!(crate::ssl_context_create(&mut lent));
+        let context = std::sync::Arc::new(lent.freeze(None).unwrap());
         let (_peer, stream) = std::os::unix::net::UnixDatagram::pair().unwrap();
         let raw = swoole_rs_reactor::SocketRecord::with_fd(stream.as_raw_fd(), 6).into_raw();
         let socket = unsafe { Socket::from_ptr(raw) }.unwrap();

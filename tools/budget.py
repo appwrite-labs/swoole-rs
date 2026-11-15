@@ -17,6 +17,10 @@
            closure, a trait) so tests run the shipped body (#3556)
   casts    cast lints a `#[expect]` names: convert with `c_cast::<T>()` (corebase) where
            upstream's C converts, or keep the value in the type it is used as (#3564)
+  cells    `RefCell` types (fields, statics, thread-locals): a borrow held across a yield
+           or a PHP callback is re-entered, and the process aborts. Make the state a
+           plain field of the handle that owns it, borrowed `&mut`, or a `Cell` taken and
+           put back (#3565). A `RefCell::new` whose type is inferred isn't counted
   unforbidden  1 unless the crate's lib.rs has `#![forbid(unsafe_code)]`, so a crate
                the compiler verifies safe stays that way
 
@@ -57,6 +61,7 @@ KINDS = {
                         r"\s*->\s*(?:Option<)?&(?:'\w+\s+)?mut\b"),
     'fakes': re.compile(r'\bcfg!?\([^\n]*\bnot\(\s*test\s*\)'),
     'casts': re.compile(r'\bclippy::cast_(?:possible_truncation|sign_loss|possible_wrap|precision_loss)\b'),
+    'cells': re.compile(r'\bRefCell\s*<'),
 }
 # What `forbid(unsafe_code)` rejects and KINDS['unsafe'] doesn't count.
 UNCOUNTED = re.compile(r'\bunsafe\s+extern\b|#\[unsafe\(')

@@ -3,9 +3,6 @@ use super::*;
 use std::cell::RefCell;
 use swoole_rs_reactor::{Socket, SocketFields};
 
-/// `SSLContext::TLS_HOST_NAME`'s string slot.
-const TLS_HOST_NAME: usize = 8;
-
 #[derive(Default)]
 struct Mock {
     log: Vec<String>,
@@ -726,14 +723,13 @@ fn tls_handshake_names_the_host_and_verifies_the_peer() {
     let client = client(1, false, false);
     assert!(enable_ssl(Handle(client)).is_some());
     assert!(enable_ssl(Handle(client)).is_none());
-    let tls = Handle(client).tls();
+    let tls = Handle(client).get().tls.get().unwrap().clone();
     let name = c"example.test";
-    // SAFETY: the double's live slot and fields.
-    unsafe {
-        let slot = tls.strings[TLS_HOST_NAME].cast::<swoole_rs_corebase::StringSlot>();
-        assert!((*slot).set_shared(name.to_bytes()));
-        (*tls.fields).verify_peer = true;
-        (*tls.fields).allow_self_signed = true;
+    {
+        let owner = tls.borrow_configuration();
+        assert!(owner.set_text(swoole_rs_tls::Text::HostName, name.to_bytes()));
+        owner.set_value(swoole_rs_tls::Value::VerifyPeer(true));
+        owner.set_value(swoole_rs_tls::Value::AllowSelfSigned(true));
     }
     mock(|m| m.ssl_connect_ready = true);
     assert!(ssl_handshake(Handle(client)));

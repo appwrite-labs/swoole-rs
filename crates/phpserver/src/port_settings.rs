@@ -323,8 +323,7 @@ fn files(s: &impl Source, owner: &tls::Lent<'_>) -> Step {
 
 /// The TLS options of an SSL port, then its SNI contexts and `ssl_init()`.
 pub(crate) fn tls(s: &impl Source, owner: &OwnedTlsContext, dgram: bool) -> Step {
-    // SAFETY: the port's context, which nothing else reaches during set().
-    let owner = unsafe { tls::Lent::new(owner) };
+    let owner = owner.borrow_configuration();
     files(s, &owner)?;
     let set = |value| owner.set_value(value);
     let text = |which, value: &[u8]| owner.set_text(which, value);
@@ -365,6 +364,7 @@ pub(crate) fn tls(s: &impl Source, owner: &OwnedTlsContext, dgram: bool) -> Step
             text(which, &value);
         }
     }
+    drop(owner);
     s.sni()?;
     if !s.ssl_init() {
         return Err(s.fatal(E_ERROR, c"ssl_init() failed"));
@@ -477,9 +477,7 @@ impl Source for Zend<'_> {
                 },
                 port: self.port,
             };
-            // SAFETY: the fresh duplicate, which nothing else reaches until `sni_add`
-            // takes it.
-            files(&item, &unsafe { tls::Lent::new(&context) })?;
+            files(&item, &context.borrow_configuration())?;
             let added = self.config(|c| sni_add(c, name, context));
             if !added {
                 return Err(self.fatal(E_ERROR, c"ssl_add_sni_cert() failed"));
@@ -1063,7 +1061,7 @@ mod tests {
             assert_eq!(i64::from(u8_of(v)), v.clamp(0, 255));
         }
         // SAFETY: the owner made above.
-        unsafe { drop(std::sync::Arc::from_raw(owner)) };
+        unsafe { drop(std::rc::Rc::from_raw(owner)) };
     }
 
     #[test]
@@ -1082,6 +1080,6 @@ mod tests {
             assert!(trace.ends_with(&format!("fatal1:{message}")), "{trace}");
         }
         // SAFETY: the owner made above.
-        unsafe { drop(std::sync::Arc::from_raw(prepared.owner)) };
+        unsafe { drop(std::rc::Rc::from_raw(prepared.owner)) };
     }
 }

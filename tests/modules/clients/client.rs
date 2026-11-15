@@ -420,13 +420,15 @@ impl<'a> Client<'a> {
                 string_set(prepared.strings[TLS_HOST_NAME], name.as_bytes()),
                 0
             );
-            let owner = |context: *const c_void| swoole_rs_tls::Lent::new(&*context.cast());
+            let owner = |context: *const c_void| {
+                (&*context.cast::<swoole_rs_tls::OwnedTlsContext>()).borrow_configuration()
+            };
             let copied = swoole_rs_tls::owner_assign(
                 &mut owner(self.ssl_context()),
                 &mut owner(prepared.owner),
             );
             assert_eq!(copied.status, 0);
-            drop(std::sync::Arc::<swoole_rs_tls::OwnedTlsContext>::from_raw(
+            drop(std::rc::Rc::<swoole_rs_tls::OwnedTlsContext>::from_raw(
                 prepared.owner.cast(),
             ));
         }
