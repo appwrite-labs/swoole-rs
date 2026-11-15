@@ -252,8 +252,8 @@ unsafe extern "C" fn interrupt_function(execute_data: *mut zend_execute_data) {
             // SAFETY: Zend's previous interrupt function, over the frame Zend passed.
             unsafe { original(execute_data) };
         };
-        // SAFETY: the closure owns nothing; a bailout in it is re-raised below.
-        if unsafe { bailout::trap_with(body) }.is_err() {
+        // The closure owns nothing; a bailout in it is re-raised below.
+        if swoole_rs_zend::contain_with(body).is_err() {
             raise();
         }
     }

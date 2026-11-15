@@ -39,8 +39,8 @@ fn make_trapped(
         *made = Some(socket);
         swoole_rs_hooks::co_socket::warn_created(socket, result);
     };
-    // SAFETY: the body holds copies, a `Copy` handle and the caller's slot.
-    unsafe { bailout::trap_with(make) }
+    // The body holds copies, a `Copy` handle and the caller's slot.
+    swoole_rs_zend::contain_with(make)
 }
 
 /// `SW_SOCK_*`.
@@ -335,9 +335,9 @@ impl Socket {
                 applied = unsafe { (families.socket_settings)(socket, settings, ssl) };
             }
         };
-        // SAFETY: the body holds copies and the result slot; the settings' warnings
-        // can run a PHP error handler.
-        unsafe { bailout::trap_with(apply) }?;
+        // The body holds copies and the result slot; the settings' warnings can
+        // run a PHP error handler.
+        swoole_rs_zend::contain_with(apply)?;
         Ok(applied)
     }
 }
@@ -354,8 +354,8 @@ pub(crate) fn x509_read(pem: &[u8]) -> Result<Owned, Bailout> {
         swoole_rs_zend::host::named_call_into(b"openssl_x509_read", arguments, &certificate);
         bailout::finish();
     };
-    // SAFETY: the body borrows `string` and `certificate`, which live outside it.
-    unsafe { bailout::trap_with(read) }?;
+    // The body borrows `string` and `certificate`, which live outside it.
+    swoole_rs_zend::contain_with(read)?;
     Ok(certificate)
 }
 
@@ -412,8 +412,8 @@ pub fn coroutine_check() -> Result<(), Bailout> {
 pub fn convert_to_fd(value: &Value) -> Result<i32, Bailout> {
     let mut fd = -1;
     let convert = || fd = php_swoole_convert_to_fd(Some(value));
-    // SAFETY: the body holds a copy and the result slot.
-    unsafe { bailout::trap_with(convert) }?;
+    // The body holds a copy and the result slot.
+    swoole_rs_zend::contain_with(convert)?;
     Ok(fd)
 }
 
@@ -433,7 +433,7 @@ pub mod co {
     use swoole_rs_hooks::vector::IoVector;
     use swoole_rs_hooks::{TimeoutScope, co_socket::swr_v1_hook_co_socket_free};
     use swoole_rs_reactor::TimeoutKind;
-    use swoole_rs_zend::bailout::{self, Bailout};
+    use swoole_rs_zend::bailout::Bailout;
 
     /// `new SocketImpl(...)`: by `domain`, `kind` and `protocol` with `family`,
     /// else by the `swSocketType` `kind`; over `fd` unless it is negative. The
@@ -472,9 +472,9 @@ pub mod co {
     /// A close hook bailed out.
     pub fn close_trapped(socket: Co) -> Result<bool, Bailout> {
         let mut closed = false;
-        // SAFETY: the body holds a `Copy` handle and the result slot; the close may
-        // resume coroutines that run PHP.
-        unsafe { bailout::trap_with(|| closed = socket.close()) }?;
+        // The body holds a `Copy` handle and the result slot; the close may resume
+        // coroutines that run PHP.
+        swoole_rs_zend::contain_with(|| closed = socket.close())?;
         Ok(closed)
     }
 
