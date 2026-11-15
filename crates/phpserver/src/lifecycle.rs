@@ -226,12 +226,18 @@ fn with_queue<R>(waiters: &Waiters, f: impl FnOnce(&mut Queue) -> R) -> R {
 /// `send_coroutine_map`: `send_yield`'s waiting coroutines by session.
 type SendWaiters = HashMap<i64, Waiters>;
 
-/// What upstream's `ServerProperty` held.
+/// The server-level callbacks' slots, each taken out and put back on its own.
+type Callbacks = [Cell<Option<Callable>>; CALLBACKS];
+
+/// Every slot empty.
+const fn no_callbacks() -> Callbacks {
+    [const { Cell::new(None) }; CALLBACKS]
+}
+
+/// What upstream's `ServerProperty` held, but for the callbacks.
 pub(crate) struct Property {
     /// The Port objects, each held by a reference of its own.
     ports: Vec<Owned>,
-    /// Server-level callbacks by type.
-    callbacks: [Option<Callable>; CALLBACKS],
     /// `addCommand`'s callables.
     commands: Vec<Callable>,
     send_waiters: SendWaiters,
@@ -253,7 +259,6 @@ impl Default for Property {
             send_waiters: SendWaiters::default(),
             send_token: 0,
             ports: const { Vec::new() },
-            callbacks: [const { None }; CALLBACKS],
             commands: const { Vec::new() },
             user_processes: const { Vec::new() },
         }
@@ -302,8 +307,11 @@ extern "C" fn php_memory() -> usize {
 pub(crate) struct ServerData {
     serv: OnceCell<SharedServer>,
     /// Boxed, so a take moves a pointer and leaves `None`, not a default
-    /// `Property`: every event's callback lookup takes it.
+    /// `Property`.
     property: Cell<Option<Box<Property>>>,
+    /// Server-level callbacks by type, out of the property so that every
+    /// event's lookup moves one slot.
+    callbacks: Callbacks,
     init_arguments: Cell<Owned>,
     /// What `instance::set_server_object` marked the object with when it became
     /// its thread's running one; 0 for an object that never was.
@@ -320,6 +328,7 @@ impl Custom for ServerData {
         Self {
             serv: OnceCell::new(),
             property: Cell::new(Some(Box::default())),
+            callbacks: no_callbacks(),
             init_arguments: Cell::new(Owned::null()),
             mark: Cell::new(0),
         }
@@ -433,30 +442,36 @@ impl<'a> ServerObject<'a> {
 
     /// `get_callback(kind)`: the callable, a reference the call holds, or none.
     fn callback(self, kind: ServerCallback) -> Option<Callable> {
-        self.property(|p| p.callbacks.get(kind as usize).and_then(Option::clone))
+        let slot = self.data.callbacks.get(kind as usize)?;
+        let callable = slot.take();
+        let copy = callable.clone();
+        slot.set(callable);
+        copy
     }
 
     /// `on()`'s server-level callback: replace callback `kind` with `callable`;
     /// false if it is not callable, or once the old one's destructor bails out.
     pub(crate) fn set_callback(self, kind: ServerCallback, callable: &Value) -> bool {
-        let kind = kind as usize;
-        // Each callable drops out of the property: its destructor may call on() again.
-        let Some(old) = self.property(|p| p.callbacks.get_mut(kind).map(Option::take)) else {
+        let Some(slot) = self.data.callbacks.get(kind as usize) else {
             return false;
         };
-        drop(old);
+        // Each callable drops out of its slot: its destructor may call on() again.
+        drop(slot.take());
         if bailout::pending() {
             return false;
         }
         let Some(callable) = crate::callable::create(callable) else {
             return false;
         };
-        // A nested on() (from the old callable's destructor) stored its callable,
-        // and the property, after this one's write: keep that pair, drop ours.
-        drop(self.property(|p| match p.callbacks.get_mut(kind) {
-            Some(slot) if slot.is_none() => slot.replace(callable),
-            _ => Some(callable),
-        }));
+        // A nested on() (from the old callable's destructor) stored its callable
+        // after this one's write: keep theirs, drop ours once it is back.
+        match slot.take() {
+            None => slot.set(Some(callable)),
+            nested => {
+                slot.set(nested);
+                drop(callable);
+            }
+        }
         true
     }
 
@@ -500,7 +515,10 @@ impl ServerData {
         // Never out here: `f` reaches nothing that takes it again.
         let mut property = self.property.take().unwrap_or_default();
         let result = f(&mut property);
-        self.property.set(Some(property));
+        // `set` would call the drop glue for the `None` it replaces, on every access.
+        if let Some(nested) = self.property.replace(Some(property)) {
+            drop(nested);
+        }
         result
     }
 
@@ -518,7 +536,7 @@ impl ServerData {
             let dispatch = server.config().private_data_3.replace(None);
             bailout::defer(crate::dispatch::release_dispatch_func(dispatch));
         }
-        let callbacks = self.property(|p| std::mem::take(&mut p.callbacks));
+        let callbacks = self.callbacks.each_ref().map(Cell::take);
         drop(callbacks);
         // `sw_zval_free`: each copy's reference goes.
         let processes = self.property(|p| std::mem::take(&mut p.user_processes));
@@ -1476,11 +1494,13 @@ mod tests {
         // Not dropped: its drop would link `Owned`'s Zend destructor, which the test
         // binary has no PHP to resolve; an empty property owns nothing to free.
         let property = std::mem::ManuallyDrop::new(Property::default());
-        assert!(property.callbacks.iter().all(Option::is_none));
         assert!(property.ports.is_empty() && property.user_processes.is_empty());
-        assert_eq!(
-            property.callbacks.len(),
-            ServerCallback::PipeMessage as usize + 1
+        let callbacks = std::mem::ManuallyDrop::new(no_callbacks());
+        assert!(
+            callbacks
+                .iter()
+                .all(|slot| std::mem::ManuallyDrop::new(slot.take()).is_none())
         );
+        assert_eq!(callbacks.len(), ServerCallback::PipeMessage as usize + 1);
     }
 }
