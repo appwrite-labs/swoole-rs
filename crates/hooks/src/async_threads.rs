@@ -55,60 +55,80 @@ fn with_current<R>(f: impl FnOnce(&mut AsyncThreads) -> R) -> Option<R> {
     })
 }
 
-/// A heap copy of `event` holding its own reference to the request.
-fn copy(event: &AsyncEvent) -> *mut AsyncEvent {
-    if let Some(record) = event.record() {
-        swoole_rs_corebase::swr_v1_core_resolver_retain(record);
+/// A heap copy of an event, holding its own reference to the request, which only
+/// [`HeapEvent::copy`] makes, and whose `pipe_socket` is the live write end of the
+/// pipe the event goes back on: the dispatching thread's, or the default one. Whoever
+/// holds this owns the copy. `dispatch` hands its address to the pool and to its
+/// caller, which only sets `canceled` (atomically) until the worker sends it back, so
+/// the copy is reached through its address, never a `Box`, until it is freed.
+struct HeapEvent(*mut AsyncEvent);
+
+impl HeapEvent {
+    /// A copy of `event` with its own reference to the request.
+    fn copy(event: &AsyncEvent) -> Self {
+        if let Some(record) = event.record() {
+            swoole_rs_corebase::swr_v1_core_resolver_retain(record);
+        }
+        Self(Box::into_raw(Box::new(event.clone())))
     }
-    Box::into_raw(Box::new(event.clone()))
-}
 
-/// Releases the request reference of a copy from `copy`, whose box the caller drops.
-fn free(event: &AsyncEvent) {
-    // SAFETY: the copy's own reference.
-    unsafe { swoole_rs_corebase::swr_v1_core_resolver_free(event.data) };
-}
+    /// The copy whose address the pool or the pipe hands back as `token`: the worker,
+    /// or the reactor thread it came back to, owns it from here.
+    fn of_token(token: usize) -> Self {
+        Self(ptr::with_exposed_provenance_mut(token))
+    }
 
-/// Hands `event` to the reactor thread that owns its pipe, `socket`, or frees it if
-/// the write fails.
-///
-/// # Safety
-/// `event` is a heap event nothing else uses, and `socket` its live pipe socket.
-unsafe fn send_event(event: *mut AsyncEvent, socket: *mut c_void) {
-    let token = event.expose_provenance().to_ne_bytes();
-    // SAFETY: as the caller promises, the event's live pipe socket.
-    let socket = unsafe { Socket::from_ptr(socket.cast()) };
-    let sent = socket.map_or(-1, |socket| write_sync(socket, &token));
-    if sent <= 0 {
+    /// The copy's address, for the pool or the pipe to hand to its next owner.
+    fn into_raw(self) -> *mut AsyncEvent {
+        core::mem::ManuallyDrop::new(self).0
+    }
+
+    /// Hands the copy to the reactor thread that owns its pipe, or frees it if the
+    /// write fails.
+    fn send(self) {
+        // SAFETY: the live copy, whose `pipe_socket` nothing writes once dispatched.
+        let pipe = unsafe { (*self.0).pipe_socket };
+        // SAFETY: the type's invariant: the live write end of the event's pipe.
+        let socket = unsafe { Socket::from_ptr(pipe.cast()) };
+        let token = self.0.expose_provenance().to_ne_bytes();
+        if socket.map_or(-1, |socket| write_sync(socket, &token)) > 0 {
+            // The reactor thread owns it now.
+            _ = self.into_raw();
+            return;
+        }
         log::sys_warning(
             c"ThreadPool::main_func",
             format_args!("sendto swoole_aio_pipe_write failed"),
         );
-        // SAFETY: the event never reached the reactor.
-        free(&*unsafe { Box::from_raw(event) });
+    }
+}
+
+impl Drop for HeapEvent {
+    fn drop(&mut self) {
+        // SAFETY: the copy this owns, which nothing reaches any more.
+        let event = unsafe { Box::from_raw(self.0) };
+        // SAFETY: the copy's own reference.
+        unsafe { swoole_rs_corebase::swr_v1_core_resolver_free(event.data) };
     }
 }
 
 /// The pool's worker: runs the event's handler over a copy unless it has none or
 /// was canceled, then sends the event back with the copy's result.
 extern "C" fn execute(token: usize) {
-    let event = ptr::with_exposed_provenance_mut::<AsyncEvent>(token);
+    let event = HeapEvent::of_token(token);
     // SAFETY: the pool passes a dispatched event; until it is sent back the reactor
     // thread only sets `canceled`, atomically, and reads nothing the worker writes.
-    let mut job = unsafe { &*event }.clone();
-    // The event's pipe, which nothing writes once it is dispatched.
-    let pipe = job.pipe_socket;
+    let mut job = unsafe { &*event.0 }.clone();
     match job.handler {
         None => (job.error, job.retval) = (AIO_BAD_REQUEST, -1),
         Some(_) if job.canceled.load(Relaxed) != 0 => (job.error, job.retval) = (AIO_CANCELED, -1),
         Some(handler) => handler(&mut job),
     }
     // SAFETY: as above.
-    unsafe { (*event).error = job.error };
+    unsafe { (*event.0).error = job.error };
     // SAFETY: as above.
-    unsafe { (*event).retval = job.retval };
-    // SAFETY: the worker owns the event until it sends it, on its own pipe.
-    unsafe { send_event(event, pipe) };
+    unsafe { (*event.0).retval = job.retval };
+    event.send();
 }
 
 /// A retirement notice, back on the reactor thread: joins the idle worker.
@@ -137,9 +157,7 @@ extern "C" fn retire(key: usize) {
         Some(release_callback),
         pipe,
     );
-    let event = copy(&notice);
-    // SAFETY: a fresh heap event on the default pipe.
-    unsafe { send_event(event, pipe) };
+    HeapEvent::copy(&notice).send();
 }
 
 extern "C" fn thread_init() {
@@ -269,8 +287,8 @@ pub extern "C" fn dispatch(request: &AsyncEvent) -> *mut AsyncEvent {
         fields.task_id = threads.pool.map_or(0, Pool::task_id);
         fields.timestamp = microtime();
         fields.pipe_socket = threads.pipe.raw_ends().0.cast();
-        let event = copy(&fields);
         // The event stays live until a worker sends it back.
+        let event = HeapEvent::copy(&fields).into_raw();
         if let Some(pool) = threads.pool {
             pool.dispatch(event.expose_provenance());
         }
@@ -282,9 +300,9 @@ pub extern "C" fn dispatch(request: &AsyncEvent) -> *mut AsyncEvent {
 
 /// A completed event on its reactor thread: runs its callback unless canceled.
 fn complete(token: usize) {
-    let event = ptr::with_exposed_provenance_mut::<AsyncEvent>(token);
+    let event = HeapEvent::of_token(token);
     // SAFETY: the worker sent the event back and no longer touches it.
-    let event_ref = unsafe { &*event };
+    let event_ref = unsafe { &*event.0 };
     if event_ref.canceled.load(Relaxed) == 0
         && let Some(callback) = event_ref.callback
     {
@@ -292,8 +310,6 @@ fn complete(token: usize) {
     }
     // The callback may not free the handle that owns its pipe.
     with_current(|threads| threads.task_num = threads.task_num.wrapping_sub(1));
-    // SAFETY: done with; nothing else holds it.
-    free(&*unsafe { Box::from_raw(event) });
 }
 
 /// Upstream's `AsyncThreads::callback`, the pipe's reactor handler: completes every event
