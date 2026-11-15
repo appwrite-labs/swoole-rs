@@ -10,6 +10,7 @@
 #include "ext/standard/basic_functions.h"
 #include "main/php_output.h"
 #include "SAPI.h"
+#include <stdio.h>
 #include "zend_closures.h"
 
 #define SWR_COROUTINE_PAGE_SIZE 8192
@@ -359,4 +360,11 @@ void swr_zend_coroutine_redirect(swr_zend_coroutine_vm *vm) {
         vm->opline_before_exception = frame->opline;
         frame->opline = EG(exception_op);
     }
+}
+
+void swr_zend_coroutine_deadlock_report(unsigned long count) {
+    printf("\n ===================================================================\n"
+           "  [FATAL ERROR]: all coroutines (count: %lu) are asleep - deadlock! \n"
+           " ===================================================================\n",
+           count);
 }

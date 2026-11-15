@@ -129,4 +129,7 @@ void swr_zend_coroutine_locate(zend_object *exception);
 /* Make the suspended frame in `vm` throw on resume, as
  * zend_throw_exception_internal() does for a user frame. */
 void swr_zend_coroutine_redirect(swr_zend_coroutine_vm *vm);
+/* PHPCoroutine::deadlock_check's report of `count` sleeping coroutines,
+ * through stdio's printf as upstream's. */
+void swr_zend_coroutine_deadlock_report(unsigned long count);
 #endif
