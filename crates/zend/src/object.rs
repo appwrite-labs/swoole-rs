@@ -4,9 +4,9 @@ use crate::class::Scope;
 use crate::{
     ArrayMut, Class, Owned, OwnedArray, Value, ZString, bailout,
     sys::{
-        IS_OBJECT, object_properties_init, swr_zend_object_alloc, zend_class_entry, zend_long,
-        zend_object, zend_object_handlers, zend_object_std_dtor, zend_object_std_init,
-        zend_objects_destroy_object, zend_update_property,
+        IS_OBJECT, swr_zend_object_create, zend_class_entry, zend_long, zend_object,
+        zend_object_handlers, zend_object_std_dtor, zend_objects_destroy_object,
+        zend_update_property,
     },
 };
 use std::{
@@ -153,15 +153,12 @@ impl<T> Object<T> {
     /// with handlers laid out for `T`.
     #[must_use]
     pub unsafe fn create(class: &Class, ce: *mut zend_class_entry, data: T) -> *mut zend_object {
-        // SAFETY: Zend's allocator; it zeroes everything before `std`.
-        let this = unsafe { swr_zend_object_alloc(size_of::<Self>(), ce) }.cast::<Self>();
-        let std = Self::std(this);
-        // SAFETY: `std` is freshly allocated storage for an object of class `ce`.
-        unsafe { zend_object_std_init(std, ce) };
-        // SAFETY: as above; the property slots follow `std`.
-        unsafe { object_properties_init(std, ce) };
-        // SAFETY: `std` is initialised and not yet shared.
-        unsafe { (*std).handlers = class.handlers() };
+        // SAFETY: Zend's allocator, which zeroes everything before `std`, then
+        // the standard object of class `ce` (per the caller) and its property
+        // slots, initialised `OFFSET` bytes in, with the class's handlers.
+        let std = unsafe {
+            swr_zend_object_create(size_of::<Self>(), Self::OFFSET, ce, class.handlers())
+        };
         // SAFETY: the object's data, allocated above and unused.
         unsafe { Self::data_ptr(std).write(data) };
         std

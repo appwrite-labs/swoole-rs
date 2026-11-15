@@ -127,12 +127,20 @@ impl ZBuf {
     #[must_use]
     #[inline]
     pub fn spare_capacity_mut(&mut self) -> &mut [std::mem::MaybeUninit<u8>] {
-        let (len, room) = (self.len, self.capacity - self.len);
+        self.tail()
+            .split_last_mut()
+            .map_or(&mut [], |(_, room)| room)
+    }
+
+    /// The room past the written bytes and the byte for the NUL after the
+    /// capacity, which `alloc` makes room for.
+    fn tail(&mut self) -> &mut [std::mem::MaybeUninit<u8>] {
+        let (len, room) = (self.len, self.capacity - self.len + 1);
         let at = self.as_mut_ptr().wrapping_add(len).cast();
-        // SAFETY: the string's own allocation holds `capacity` bytes from its
-        // first, `len <= capacity` of them written (`set_len`'s contract), so
-        // `room` bytes follow `at`; the exclusive borrow is the only way to
-        // them, and unwritten bytes are valid `MaybeUninit`s.
+        // SAFETY: the string's own allocation holds `capacity` bytes and a NUL
+        // from its first, `len <= capacity` of them written (`set_len`'s
+        // contract), so `room` bytes follow `at`; the exclusive borrow is the
+        // only way to them, and unwritten bytes are valid `MaybeUninit`s.
         unsafe { std::slice::from_raw_parts_mut(at, room) }
     }
 
@@ -152,10 +160,14 @@ impl ZBuf {
 
     /// Append as much of `bytes` as there is room for.
     pub fn extend_from_slice(&mut self, bytes: &[u8]) {
-        let count = bytes.len().min(self.capacity - self.len);
-        let at = self.as_mut_ptr().wrapping_add(self.len);
-        // SAFETY: `count` bytes of room past the written ones.
-        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), at, count) };
+        let room = self.spare_capacity_mut();
+        let count = bytes.len().min(room.len());
+        if let (Some((room, _)), Some((bytes, _))) = (
+            room.split_at_mut_checked(count),
+            bytes.split_at_checked(count),
+        ) {
+            room.write_copy_of_slice(bytes);
+        }
         self.len += count;
     }
 
@@ -168,14 +180,16 @@ impl ZBuf {
 
     /// End the string after the written bytes and hand over its reference.
     #[must_use]
-    pub fn into_zstring(self) -> crate::ZString {
+    pub fn into_zstring(mut self) -> crate::ZString {
+        // `ZSTR_VAL(string)[len] = '\0'`: the tail has the NUL's room at least.
+        if let Some(nul) = self.tail().first_mut() {
+            nul.write(0);
+        }
         let this = std::mem::ManuallyDrop::new(self);
         let (string, len) = (this.string, this.len);
-        // `ZSTR_LEN(string) = len; ZSTR_VAL(string)[len] = '\0'`.
+        // `ZSTR_LEN(string) = len`.
         // SAFETY: a live, unshared string.
         unsafe { (*string).len = len };
-        // SAFETY: an allocation of at least `len` bytes has room for the NUL.
-        unsafe { *val(string).wrapping_add(len) = 0 };
         // SAFETY: the string's only reference, which this gives up.
         unsafe { crate::ZString::from_raw(string) }
     }
