@@ -188,11 +188,9 @@ impl SessionState {
 
     /// `remove_stream`: the stream is released once nothing holds it, and a
     /// response waiting on its window resumes to find it gone.
-    pub(crate) fn remove(&self, id: u32) {
+    pub(crate) fn remove(&self, id: u32) -> bool {
         let removed = self.streams.borrow_mut().remove(&id);
-        if let Some(stream) = removed {
-            stream.wake();
-        }
+        removed.is_none_or(|stream| stream.wake())
     }
 
     pub(crate) fn idle(&self) -> bool {
@@ -212,8 +210,13 @@ impl StreamState {
         self.waiting.wait();
     }
 
-    pub(crate) fn wake(&self) {
-        self.waiting.wake();
+    pub(crate) fn wake(&self) -> bool {
+        // The receiving frame owns its stream and response data. Catch the
+        // resumed coroutine's bailout here, before it crosses those owners.
+        let resumed = self.waiting.wake();
+        let ok = resumed.is_ok();
+        bailout::defer(resumed);
+        ok
     }
 }
 
@@ -253,7 +256,9 @@ pub(crate) fn session_free(fd: i64) {
     loop {
         let next = session.streams.borrow().keys().next().copied();
         let Some(id) = next else { break };
-        session.remove(id);
+        if !session.remove(id) {
+            return;
+        }
     }
     let removed = SESSIONS.with_borrow_mut(|sessions| sessions.remove(&fd));
     drop(removed);

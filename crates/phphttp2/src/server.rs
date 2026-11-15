@@ -743,8 +743,8 @@ pub(crate) fn respond(ctx: Ctx, data: &[u8]) -> bool {
                     if session.stream(stream.id, false).is_some() {
                         close(ctx);
                     }
-                } else {
-                    session.remove(stream.id);
+                } else if !session.remove(stream.id) {
+                    return false;
                 }
                 facts.shutting_down = session.shutting_down.get();
                 facts.streams_empty = facts.shutting_down && session.idle();
@@ -820,8 +820,7 @@ pub(crate) fn finish_file(ctx: Ctx, trailer: bool, error: bool) -> bool {
                 return false;
             }
             FileCompletion::Remove => {
-                session.remove(stream_id);
-                return true;
+                return session.remove(stream_id);
             }
         }
     }
@@ -955,12 +954,12 @@ fn parse(session: &Session, frame: &[u8]) -> bool {
                 stream
                     .remote_window_size
                     .set(credit(stream.remote_window_size.get(), value));
-                if !session.is_coro() {
-                    stream.wake();
+                if !session.is_coro() && !stream.wake() {
+                    return false;
                 }
             }
         }
-        FrameAction::Reset => session.remove(stream_id),
+        FrameAction::Reset => return session.remove(stream_id),
         _ => {}
     }
     true
@@ -1160,8 +1159,7 @@ fn data(session: &Session, stream_id: u32, flags: u32, payload: &[u8]) -> bool {
         let ended = get(ctx, Field::End) != 0;
         if sw_rs_http2_data_rejected(buffered, length, session.max_body_size, ended) {
             reset(ctx, stream_id, 0);
-            session.remove(stream_id);
-            return true;
+            return session.remove(stream_id);
         }
         ctx.data_append(payload);
         flow(session, &stream, ctx, stream_id, length);

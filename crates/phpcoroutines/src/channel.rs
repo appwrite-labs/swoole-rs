@@ -5,7 +5,7 @@ use crate::host::{self, Co};
 use std::{
     cell::{Cell, UnsafeCell},
     ffi::c_int,
-    mem::{self, ManuallyDrop},
+    mem,
     rc::Rc,
 };
 pub use swoole_rs_coroutine::chan::Stats;
@@ -62,8 +62,7 @@ impl<T> Channel<T> {
     }
 }
 
-/// A channel's queue. The operations that may wait take the handle, so that
-/// no drop is pending in the caller's frame across a wait.
+/// A channel's queue. Each operation keeps it alive while its coroutine waits.
 pub struct Queue<T>(Rc<UnsafeCell<chan::Channel<T, Co>>>);
 
 impl<T> Clone for Queue<T> {
@@ -83,12 +82,8 @@ impl<T> Queue<T> {
             let error = self.stats().error;
             return Err((value, error));
         };
-        // No drop is pending across the effects: a coroutine that never
-        // resumes keeps the queue, as upstream's frames keep their channel.
-        let queue = ManuallyDrop::new(self);
-        let pushed = chan::push(&queue.0, &mut php, value);
-        let queue = ManuallyDrop::into_inner(queue);
-        pushed.map_err(|value| (value, queue.stats().error))
+        // A coroutine that never resumes retains this frame and its queue.
+        chan::push(&self.0, &mut php, value).map_err(|value| (value, self.stats().error))
     }
 
     /// `Channel::pop`: the oldest value.
@@ -99,20 +94,19 @@ impl<T> Queue<T> {
         let Some(mut php) = Php::current(timeout) else {
             return Err(self.stats().error);
         };
-        let queue = ManuallyDrop::new(self);
-        let value = chan::pop(&queue.0, &mut php);
-        let queue = ManuallyDrop::into_inner(queue);
-        value.ok_or_else(|| queue.stats().error)
+        chan::pop(&self.0, &mut php).ok_or_else(|| self.stats().error)
     }
 
     /// `Channel::close`: wakes every waiter; false if closed already.
-    #[must_use]
-    pub fn close(self) -> bool {
+    ///
+    /// # Errors
+    /// A resumed waiter bailed out. The trap protects the caller and this
+    /// queue's owner; the close loop holds only copyable waiter handles.
+    pub fn close(self) -> Result<bool, bailout::Bailout> {
         let mut php = Closing;
-        let queue = ManuallyDrop::new(self);
-        let closed = chan::close(&queue.0, &mut php);
-        drop(ManuallyDrop::into_inner(queue));
-        closed
+        let mut closed = false;
+        swoole_rs_zend::contain_with(|| closed = chan::close(&self.0, &mut php))?;
+        Ok(closed)
     }
 
     /// The queue's [`Stats`]: its last error, items and waiters.

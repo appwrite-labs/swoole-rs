@@ -192,7 +192,10 @@ fn long(size: usize) -> i64 {
 /// `close(): bool`, which wakes every waiter.
 fn close(call: &Call) {
     if let Some(queue) = channel(call) {
-        call.set_bool(queue.close());
+        match queue.close() {
+            Ok(closed) => call.set_bool(closed),
+            Err(error) => error.defer(),
+        }
     }
 }
 

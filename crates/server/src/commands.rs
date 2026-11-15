@@ -7,6 +7,7 @@ use crate::view::Server;
 use crate::{Mode, ServerState};
 use core::ffi::{CStr, c_int};
 use std::collections::BTreeMap;
+use std::mem::ManuallyDrop;
 use std::sync::{Arc, MutexGuard, PoisonError};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR, SW_LOG_NOTICE};
@@ -96,7 +97,9 @@ pub(crate) fn command_result(state: &ServerState, request_id: i64, message: &[u8
             m,
         );
     };
+    let callback = ManuallyDrop::new(callback);
     callback(message);
+    drop(ManuallyDrop::into_inner(callback));
 }
 
 #[cfg(all(feature = "upstream-symbols", not(test)))]

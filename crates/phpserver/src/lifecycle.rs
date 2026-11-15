@@ -951,7 +951,7 @@ fn command_done(wait: Rc<Wait>) -> impl Fn(&[u8]) {
     move |message| {
         wait.reply.replace(Some(message.to_vec()));
         wait.replied.set(true);
-        wait.waiter.wake();
+        bailout::raise(wait.waiter.wake());
     }
 }
 

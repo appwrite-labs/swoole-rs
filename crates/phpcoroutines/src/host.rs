@@ -389,7 +389,9 @@ impl Coroutine {
     /// own nothing that needs a drop.
     /// # Safety
     /// While it lives, it waits in a suspension of the caller's, which
-    /// nothing else wakes.
+    /// nothing else wakes. Every main-stack frame up to the bailout trap
+    /// must own nothing that needs dropping; abandoned coroutine stacks remain
+    /// allocated.
     pub unsafe fn wake(self, cancel: bool) {
         let Some(co) = self.live() else { return };
         if cancel {
@@ -428,14 +430,20 @@ impl Waiter {
         self.0.set(None);
     }
 
-    /// Resume the coroutine in [`Waiter::wait`]; nothing when none waits. As
-    /// [`resume`], the caller's frames must own nothing that needs a drop.
-    pub fn wake(&self) {
-        if let Some(coroutine) = self.0.get() {
-            // SAFETY: published only while it is suspended in `wait`, which
-            // clears it as soon as anything resumes it.
-            unsafe { coroutine.wake(false) };
-        }
+    /// Resume the coroutine in [`Waiter::wait`]; nothing when none waits.
+    ///
+    /// # Errors
+    /// The resumed coroutine bailed out. The trap protects the caller's
+    /// main-stack frames; abandoned coroutine stacks remain allocated.
+    pub fn wake(&self) -> Result<(), bailout::Bailout> {
+        swoole_rs_zend::contain_with(|| {
+            if let Some(coroutine) = self.0.get() {
+                // SAFETY: published only while suspended in `wait`, which
+                // clears it as soon as anything resumes it. The trap encloses
+                // only this closure and the drop-free resume frames.
+                unsafe { coroutine.wake(false) };
+            }
+        })
     }
 }
 
