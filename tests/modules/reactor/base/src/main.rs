@@ -160,7 +160,7 @@ fn reactor_new(max_event: c_int, kind: c_int) -> Running<'static> {
 /// `delete reactor`.
 unsafe fn reactor_delete(reactor: Running<'_>) {
     // SAFETY: as the caller guarantees: a reactor from `reactor_new`, used no more.
-    unsafe { swoole_rs_ffi::swr_v1_reactor_delete(reactor.as_ptr()) }
+    unsafe { swoole_rs_ffi::swr_v1_reactor_delete(reactor) }
 }
 
 /// The reactor's public fields.

@@ -181,8 +181,10 @@ impl LiveServer {
 impl Drop for LiveServer {
     fn drop(&mut self) {
         swoole_rs_corebase::set_thread_reactor(core::ptr::null_mut());
+        // SAFETY: the reactor `new` made, live on this thread.
+        let reactor = unsafe { swoole_rs_reactor::Running::new(self.reactor) };
         // SAFETY: the reactor `new` made, which nothing uses afterwards.
-        unsafe { swoole_rs_reactor::swr_v1_reactor_delete(self.reactor) };
+        unsafe { swoole_rs_reactor::swr_v1_reactor_delete(reactor) };
         // SAFETY: the listener this fixture opened and boxed, used by nothing after it.
         unsafe {
             libc::close(self.listener_fd);
