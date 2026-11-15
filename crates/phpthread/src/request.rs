@@ -7,12 +7,13 @@ use crate::host;
 use std::{
     cell::Cell,
     ffi::{CStr, CString, c_int},
+    ptr::NonNull,
     sync::Mutex,
 };
-use swoole_rs_corebase::sys;
+use swoole_rs_corebase::sys::{self, Text};
 use swoole_rs_zend::{
     Class, Minit, Owned, Value,
-    sys::{ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, swr_zend_stream_open},
+    sys::{ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, php_stream},
 };
 
 static ERROR: Class = Class::new();
@@ -63,16 +64,17 @@ pub(crate) fn stream_create(fd: c_int) -> Owned {
     /// A stream just opened, whose resource no zval holds yet: only the open
     /// below makes one, and handing it to a zval takes it.
     #[repr(transparent)]
-    struct Opened(std::ptr::NonNull<swoole_rs_zend::sys::php_stream>);
+    struct Opened(NonNull<php_stream>);
     unsafe extern "C" {
+        /// `php_stream_open_wrapper_ex(path, mode, 0, NULL, NULL)` in the
+        /// request, or none.
+        safe fn swr_zend_stream_open(path: Text<'_>, mode: Text<'_>) -> Option<Opened>;
         /// The stream's resource into `value`, in place of what it held, which
         /// is not released: the zval takes the stream's one reference.
         safe fn swr_zend_stream_to_zval(stream: Opened, value: &Owned);
     }
     let path = CString::new(format!("php://fd/{fd}")).unwrap_or_default();
-    // SAFETY: in a request, with NUL-terminated strings.
-    let stream = unsafe { swr_zend_stream_open(path.as_ptr(), c"".as_ptr()) };
-    let Some(stream) = std::ptr::NonNull::new(stream).map(Opened) else {
+    let Some(stream) = swr_zend_stream_open(path.as_c_str().into(), c"".into()) else {
         return error(errno());
     };
     let out = Owned::default();

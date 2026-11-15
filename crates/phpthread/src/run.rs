@@ -6,7 +6,7 @@
 use crate::{Arguments, request, thread};
 use std::{
     cell::{Cell, RefCell},
-    ffi::{CStr, CString, c_char, c_int, c_void},
+    ffi::{CStr, CString, c_int, c_void},
     marker::PhantomData,
     ptr::{self, NonNull},
     sync::{
@@ -46,7 +46,11 @@ impl Stdio {
 unsafe extern "C" {
     /// `php_stream_open_wrapper_ex(path, mode, 0, NULL, NULL)`, or none.
     #[link_name = "swr_zend_stream_open"]
-    fn stdio_open(path: *const c_char, mode: *const c_char) -> Option<Stdio>;
+    #[expect(
+        clashing_extern_declarations,
+        reason = "the same shim, ABI-identical; stream_create declares it safe in its own scope"
+    )]
+    fn stdio_open(path: Text<'_>, mode: Text<'_>) -> Option<Stdio>;
     /// `php_stream_close`.
     #[link_name = "swr_zend_stream_close"]
     safe fn stdio_close(stream: Stdio);
@@ -244,7 +248,7 @@ extern "C" fn prologue(start: &mut Start) {
     let opening = OPENING.lock().unwrap_or_else(PoisonError::into_inner);
     // SAFETY: the thread's request, before its script runs, with NUL-terminated
     // strings: each opens one of PHP's own stdio streams, a `Stdio`.
-    let streams = names.map(|(path, mode, _)| unsafe { stdio_open(path.as_ptr(), mode.as_ptr()) });
+    let streams = names.map(|(path, mode, _)| unsafe { stdio_open(path.into(), mode.into()) });
     drop(opening);
     let [Some(stdin), Some(stdout), Some(stderr)] = streams else {
         streams
