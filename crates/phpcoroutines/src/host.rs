@@ -168,11 +168,13 @@ pub(crate) fn current() -> Option<Co> {
 pub(crate) fn require_coroutine() -> Option<Co> {
     let co = current();
     if co.is_none() {
-        // The hook's bailout, trapped then raised from here: the frames own nothing.
-        bailout::raise(swoole_rs_phpswoole::swoole_fatal_error(
-            SW_ERROR_CO_OUT_OF_COROUTINE,
-            c"API must be called in the coroutine",
-        ));
+        // SAFETY: Swoole's fatal error hook; the frames own nothing.
+        unsafe {
+            swoole_rs_corebase::fatal_error(
+                SW_ERROR_CO_OUT_OF_COROUTINE,
+                c"API must be called in the coroutine",
+            );
+        }
     }
     co
 }
@@ -293,16 +295,8 @@ pub(crate) fn kernel_coroutine(count: c_long, sleep: f64) {
         }
     }
     KERNEL_ARGS.with(|args| args.set((count, sleep)));
-    spawn(sleeper);
-}
-
-/// `Coroutine::create(entry, nullptr)`: a coroutine running `entry`, which
-/// reads no argument (its own per-thread slot hands it what it needs), until it
-/// first yields or ends; its id. As for [`resume`], the caller's frames own
-/// nothing that needs a drop.
-fn spawn(entry: extern "C" fn(*mut c_void)) -> c_long {
-    // SAFETY: a safe entry takes any argument, null too.
-    unsafe { swoole_rs_coroutine::swr_v1_coroutine_create(entry, std::ptr::null_mut()) }
+    // SAFETY: `sleeper` reads no argument; the caller's frame owns nothing to drop.
+    unsafe { swoole_rs_coroutine::swr_v1_coroutine_create(sleeper, std::ptr::null_mut()) };
 }
 
 /// The context of `co`'s origin, none for the main context (or no coroutine).
@@ -443,11 +437,11 @@ impl Waiter {
     /// main-stack frames; abandoned coroutine stacks remain allocated.
     pub fn wake(&self) -> Result<(), bailout::Bailout> {
         swoole_rs_zend::contain_with(|| {
-            // Published only while suspended in `wait`, which clears it as soon
-            // as anything resumes it. The trap encloses only this closure and
-            // the drop-free resume frames.
-            if let Some(co) = self.0.get().and_then(Coroutine::live) {
-                resume(co);
+            if let Some(coroutine) = self.0.get() {
+                // SAFETY: published only while suspended in `wait`, which
+                // clears it as soon as anything resumes it. The trap encloses
+                // only this closure and the drop-free resume frames.
+                unsafe { coroutine.wake(false) };
             }
         })
     }
@@ -475,17 +469,18 @@ pub(crate) fn is_end(co: Co) -> bool {
     state_of(co) == swoole_rs_coroutine::State::End
 }
 
-/// `Coroutine::create(main_func, nullptr)`: [`crate::context::create`] hands
-/// the coroutine its arguments.
-pub(crate) fn create() -> c_long {
-    spawn(main)
+/// `PHPCoroutine::create`'s `Coroutine::create(main_func, args)`.
+pub(crate) fn create(args: *mut c_void) -> c_long {
+    // SAFETY: the coroutine's entry, with the creator's live arguments.
+    unsafe { swoole_rs_coroutine::swr_v1_coroutine_create(main, args) }
 }
 
 /// `main_func`: the coroutine's function and defer tasks run inside
 /// `zend_first_try`; a coroutine that ended in an exception or a bailout
 /// bails the whole process out. Its frame owns nothing to drop.
-extern "C" fn main(_: *mut c_void) {
-    let Some(ctx) = crate::context::open() else {
+unsafe extern "C" fn main(args: *mut c_void) {
+    // SAFETY: on the new coroutine, with its creator's arguments.
+    let Some(ctx) = (unsafe { crate::context::open(args) }) else {
         return;
     };
     let context = ctx.ptr().cast();

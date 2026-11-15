@@ -3,7 +3,7 @@
 //! in another coroutine may longjmp across them on the main stack.
 use crate::{
     classes,
-    context::{self, Ctx},
+    context::{self, Ctx, INVALID},
     host::{
         self, SW_ERROR_CO_CANCELED, SW_ERROR_CO_NOT_EXISTS, SW_ERROR_INVALID_PARAMS,
         SW_ERROR_WRONG_OPERATION,
@@ -13,12 +13,13 @@ use crate::{
 use std::{
     cell::{Cell, RefCell},
     ffi::c_long,
+    mem::ManuallyDrop,
     ptr,
     rc::Rc,
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_zend::{
-    Call, Callable, E_ERROR, E_WARNING, OwnedArray, Php,
+    Call, Callable, E_ERROR, E_WARNING, Owned, OwnedArray, Php,
     bailout::Bailout,
     sys::{
         object_properties_init, swr_zend_coroutine_locate, swr_zend_coroutine_redirect,
@@ -475,26 +476,31 @@ fn get_context(call: &Call) {
         call.set_null();
         return;
     };
-    let Ok(object) = ctx.object() else {
+    let object = ctx.context();
+    if object.addr() == INVALID {
         // A context destroyed with its coroutine (swoole-src#2991).
         host::fatal_error(E_WARNING, c"The context of coroutine has been destroyed");
         call.set_null();
         return;
-    };
-    let object = if let Some(object) = object {
-        object
-    } else {
+    }
+    let object = if object.is_null() {
         let created = classes::CONTEXT.create_object();
-        if created.object().is_none() {
+        let Some(object) = created.object() else {
             call.set_null();
             return;
-        }
-        // The context takes the object's first reference, the return value another.
-        let copy = created.copy();
-        ctx.set_object(created);
-        copy
+        };
+        // The context takes the object's first reference.
+        let _kept = created.into_zval();
+        ctx.set_context(object);
+        object
+    } else {
+        object
     };
-    call.set_owned(object);
+    // SAFETY: a live object. The reference is the context's, which keeps it:
+    // `held` only lends it to the copy and is never dropped.
+    let held = ManuallyDrop::new(unsafe { Owned::object(object) });
+    // The return value takes a new reference.
+    call.set_owned(held.copy());
 }
 
 /// `Co::getElapsed(int $cid = 0)`.
