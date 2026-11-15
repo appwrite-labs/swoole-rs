@@ -77,8 +77,7 @@ struct Engine {
 fn hex2dec(text: &CStr) -> (c_ulong, usize) {
     // The driver's `size_t parsed = 123`.
     let mut parsed = 123;
-    // SAFETY: the corpus keeps to bytes `toupper` takes in this target's `char` mode.
-    let value = unsafe { swoole_hex2dec(text.into(), &mut parsed) };
+    let value = swoole_hex2dec(text.into(), &mut parsed);
     (value, parsed)
 }
 

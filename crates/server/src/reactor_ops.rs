@@ -84,8 +84,8 @@ pub(crate) struct ThreadRecord {
 
 /// `SwooleG.std_allocator`.
 pub(crate) static STD_ALLOCATOR: CoreAllocator = CoreAllocator {
-    malloc: Some(libc::malloc),
-    calloc: Some(libc::calloc),
+    malloc: Some(swoole_rs_corebase::sys::malloc),
+    calloc: Some(swoole_rs_corebase::sys::calloc),
     realloc: Some(libc::realloc),
     free: Some(libc::free),
 };

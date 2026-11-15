@@ -135,9 +135,19 @@ unsafe extern "C" {
 fn asan() -> Option<(StartSwitch, FinishSwitch)> {
     #[repr(C)]
     struct Fibers(StartSwitch, FinishSwitch);
-    fn symbol(name: &std::ffi::CStr) -> *mut c_void {
-        // SAFETY: dlsym with a NUL-terminated name has no other preconditions.
-        unsafe { libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr()) }
+    /// `RTLD_DEFAULT`, the only handle this passes.
+    #[repr(transparent)]
+    struct Loaded(*mut c_void);
+    /// A NUL-terminated name that outlives the call.
+    #[repr(transparent)]
+    struct Name(*const core::ffi::c_char);
+    unsafe extern "C" {
+        /// Reads `name` up to its NUL and returns an address, or null; `RTLD_DEFAULT`
+        /// is a handle dlsym always takes.
+        safe fn dlsym(handle: Loaded, name: Name) -> *mut c_void;
+    }
+    fn symbol(name: &'static std::ffi::CStr) -> *mut c_void {
+        dlsym(Loaded(libc::RTLD_DEFAULT), Name(name.as_ptr()))
     }
     static FIBERS: OnceLock<Option<(StartSwitch, FinishSwitch)>> = OnceLock::new();
     *FIBERS.get_or_init(|| {

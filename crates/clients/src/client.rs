@@ -242,7 +242,7 @@ struct AsyncEvent {
     task_id: usize,
     canceled: u8,
     error: c_int,
-    data: *mut ResolverRequest,
+    data: Option<std::sync::Arc<ResolverRequest>>,
     retval: isize,
     pipe_socket: *mut c_void,
     timestamp: f64,
@@ -254,9 +254,7 @@ struct AsyncEvent {
 impl AsyncEvent {
     /// The event's request; none on an event built without one.
     fn request(&self) -> Option<&ResolverRequest> {
-        // SAFETY: only this module builds an event, whose request is null or a
-        // record the event (and each copy the pool makes of it) keeps live.
-        unsafe { self.data.as_ref() }
+        self.data.as_deref()
     }
 }
 
@@ -1276,7 +1274,7 @@ fn dns_lookup(this: Handle) -> bool {
         task_id: 0,
         canceled: 0,
         error: 0,
-        data: request.as_ptr(),
+        data: Some(request.shared()),
         retval: 0,
         pipe_socket: core::ptr::null_mut(),
         timestamp: 0.0,

@@ -5,7 +5,7 @@
 //! the lock is released, so a diagnostic can log through this logger again. The log
 //! macros a Rust log runs (`swr_v1_utils_log`) are here too.
 use crate::{log_level, log_line, log_micros, log_rotation};
-use libc::{FILE, c_char, c_int};
+use libc::{c_char, c_int};
 use std::ffi::{CStr, CString};
 use std::sync::atomic::{AtomicI32, Ordering::Relaxed};
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -62,7 +62,7 @@ enum Effect {
 
 struct State {
     /// The descriptor `open` made, which takes each line in one `write(2)`
-    /// under the lock; lines go to `stream` while there is none.
+    /// under the lock; lines go to Swoole's stdout stream while there is none.
     file_fd: Option<c_int>,
     redirected: bool,
     backtrace: bool,
@@ -70,16 +70,10 @@ struct State {
     rotation: c_int,
     stdout_fd: c_int,
     stderr_fd: c_int,
-    /// `stdout`, or the stream `set_stream` gave.
-    stream: *mut FILE,
-    stdout: *mut FILE,
     date_format: CString,
     file: CString,
     real_file: CString,
 }
-
-// SAFETY: the streams are only used under the logger's lock.
-unsafe impl Send for State {}
 
 pub struct Logger {
     host: LoggerHost,
@@ -135,7 +129,6 @@ impl State {
     fn close(&mut self) {
         if let Some(fd) = self.file_fd.take() {
             sys::close(fd);
-            self.stream = self.stdout;
             self.file = CString::default();
         }
     }
@@ -248,10 +241,8 @@ impl State {
         if let Some(fd) = self.file_fd {
             write_all(fd, line);
         } else {
-            // SAFETY: `line` is readable for its length; the stream is the caller's live one.
-            unsafe { libc::fwrite(line.as_ptr().cast(), line.len(), 1, self.stream) };
-            // SAFETY: as above.
-            unsafe { libc::fflush(self.stream) };
+            swoole_rs_corebase::sw_print(line);
+            swoole_rs_corebase::sw_flush();
         }
         if self.backtrace {
             effects.push(Effect::Backtrace);
@@ -318,9 +309,9 @@ impl Logger {
         self.with(|state, effects| state.open(file, effects))
     }
 
-    /// `new Logger()` writing to `stdout_stream`.
+    /// `new Logger()`.
     #[must_use]
-    pub fn new(stdout_stream: *mut FILE, host: LoggerHost) -> Self {
+    pub fn new(host: LoggerHost) -> Self {
         Self {
             host,
             level: AtomicI32::new(SW_LOG_INFO),
@@ -332,8 +323,6 @@ impl Logger {
                 rotation: 0,
                 stdout_fd: -1,
                 stderr_fd: -1,
-                stream: stdout_stream,
-                stdout: stdout_stream,
                 date_format: SW_LOG_DEFAULT_DATE_FORMAT.into(),
                 file: CString::default(),
                 real_file: CString::default(),
@@ -365,10 +354,10 @@ impl Logger {
     }
 }
 
-/// `new Logger()` writing to `stdout`.
+/// `new Logger()`.
 #[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_logger_new(stdout_stream: *mut FILE, host: LoggerHost) -> *mut Logger {
-    Box::into_raw(Box::new(Logger::new(stdout_stream, host)))
+pub extern "C" fn swr_v1_logger_new(host: LoggerHost) -> *mut Logger {
+    Box::into_raw(Box::new(Logger::new(host)))
 }
 
 /// `delete logger`: native code hands back, once, the box `swr_v1_logger_new` made.
@@ -393,16 +382,6 @@ pub extern "C" fn swr_v1_logger_reopen(logger: &Logger) {
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_logger_close(logger: &Logger) {
     logger.close();
-}
-
-/// `Logger::set_stream`.
-/// # Safety
-/// `stream` is a stream the caller keeps open.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_logger_set_stream(logger: &Logger, stream: *mut FILE) {
-    let mut state = logger.lock();
-    state.close();
-    state.stream = stream;
 }
 
 /// [`Logger::put`].
@@ -683,7 +662,7 @@ pub(crate) mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no fdopen")]
     fn put_writes_the_upstream_line_to_the_log_file_at_or_above_the_level() {
-        let logger = swr_v1_logger_new(std::ptr::null_mut(), HOST_FAKE);
+        let logger = swr_v1_logger_new(HOST_FAKE);
         let (name, file_path) = path("put");
         unsafe {
             assert!(swr_v1_logger_open(&*logger, (&*name).into()), "opened");
@@ -722,7 +701,7 @@ pub(crate) mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no strerror")]
     fn failures_are_logged_after_the_state_changes() {
-        let logger = swr_v1_logger_new(std::ptr::null_mut(), HOST_FAKE);
+        let logger = swr_v1_logger_new(HOST_FAKE);
         host();
         unsafe {
             assert!(
@@ -798,7 +777,7 @@ pub(crate) mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no localtime")]
     fn rotation_names_the_real_file_by_date_and_reset_restores_defaults() {
-        let logger = swr_v1_logger_new(std::ptr::null_mut(), HOST_FAKE);
+        let logger = swr_v1_logger_new(HOST_FAKE);
         let (name, _) = path("rotate");
         unsafe {
             swr_v1_logger_set(&*logger, LoggerSetting::Rotation, 2);
@@ -836,7 +815,7 @@ pub(crate) mod tests {
         struct Shared(*mut Logger);
         // SAFETY: the logger is thread-safe for put and reopen.
         unsafe impl Sync for Shared {}
-        let logger = Shared(swr_v1_logger_new(std::ptr::null_mut(), HOST_FAKE));
+        let logger = Shared(swr_v1_logger_new(HOST_FAKE));
         let (name, file_path) = path("threads");
         unsafe { assert!(swr_v1_logger_open(&*logger.0, (&*name).into()), "opened") };
         std::thread::scope(|scope| {

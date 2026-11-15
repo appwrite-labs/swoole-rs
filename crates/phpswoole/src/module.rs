@@ -13,9 +13,7 @@ use std::{
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::sys::Text;
-use swoole_rs_corebase::{
-    log::set_last_error, swr_v1_core_set_fatal_error, swr_v1_core_set_print_backtrace,
-};
+use swoole_rs_corebase::{log::set_last_error, set_fatal_error, swr_v1_core_set_print_backtrace};
 use swoole_rs_zend::{
     Call, Class, E_WARNING,
     bailout::{self, Bailout},
@@ -480,7 +478,7 @@ pub fn codecs() -> u32 {
 /// MINIT's end: Swoole's fatal errors become `Swoole\Error`s and its
 /// backtraces PHP's (`SwooleG.fatal_error` and `SwooleG.print_backtrace`).
 extern "C" fn php_hooks() {
-    swr_v1_core_set_fatal_error(swr_zend_fatal_error as *const () as *mut c_void);
+    set_fatal_error(Some(swr_zend_fatal_error));
     swr_v1_core_set_print_backtrace(swr_zend_print_stack_trace as *const () as *mut c_void);
 }
 

@@ -67,7 +67,7 @@ fn run(
     request_error: bool,
 ) -> Option<c_int> {
     let mut event = AsyncEvent::empty();
-    event.data = request.as_ptr();
+    event.data = Some(request.shared());
     event.retval = retval;
     swr_v1_hook_async(&mut event, handler, timeout, &COROUTINE_ASYNC);
     request.failed(event.retval, event.error, request_error)

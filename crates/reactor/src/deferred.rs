@@ -113,23 +113,6 @@ pub(crate) fn run_destroy(reactor: Running<'_>) {
     }
 }
 
-/// `void swoole_event_defer(void (*)(void *), void *)`: `sw_reactor()->defer`;
-/// nothing without a reactor.
-///
-/// # Safety
-/// `call` accepts `data` when the loop runs it.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z18swoole_event_deferPFvPvES_")
-)]
-pub unsafe extern "C" fn swoole_event_defer(call: DeferCall, data: *mut c_void) {
-    queue(Task::Native {
-        call,
-        data,
-        dispose: None,
-    });
-}
-
 /// `Reactor::defer(fn, data)` on the thread's reactor; `dispose(data)` instead if the
 /// reactor is freed first. False, queuing nothing, without a reactor.
 ///

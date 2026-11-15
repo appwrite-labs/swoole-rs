@@ -11,16 +11,18 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct CoreAllocator {
-    pub malloc: Option<unsafe extern "C" fn(usize) -> *mut c_void>,
-    pub calloc: Option<unsafe extern "C" fn(usize, usize) -> *mut c_void>,
+    /// Takes any size: null or a fresh block.
+    pub malloc: Option<extern "C" fn(usize) -> *mut c_void>,
+    /// Takes any count and size: null or a fresh zeroed block.
+    pub calloc: Option<extern "C" fn(usize, usize) -> *mut c_void>,
     pub realloc: Option<unsafe extern "C" fn(*mut c_void, usize) -> *mut c_void>,
     pub free: Option<unsafe extern "C" fn(*mut c_void)>,
 }
 
 /// libc's allocator, `SwooleG.std_allocator`'s value.
 static LIBC: CoreAllocator = CoreAllocator {
-    malloc: Some(libc::malloc),
-    calloc: Some(libc::calloc),
+    malloc: Some(crate::sys::malloc),
+    calloc: Some(crate::sys::calloc),
     realloc: Some(libc::realloc),
     free: Some(libc::free),
 };
@@ -41,10 +43,9 @@ impl TrustedAllocator {
     /// none to give (or no `malloc`).
     #[must_use]
     pub fn allocate(self, size: usize) -> *mut c_void {
-        self.0.malloc.map_or(std::ptr::null_mut(), |malloc| {
-            // SAFETY: a trusted allocator's `malloc`, which takes any size.
-            unsafe { malloc(size) }
-        })
+        self.0
+            .malloc
+            .map_or(std::ptr::null_mut(), |malloc| malloc(size))
     }
 
     /// # Safety
@@ -281,7 +282,7 @@ mod tests {
                 .cast::<CoreAllocator>()
                 .read()
         };
-        let allocation = unsafe { (allocator.malloc.unwrap())(19) };
+        let allocation = (allocator.malloc.unwrap())(19);
         assert!(!allocation.is_null());
         unsafe { (allocator.free.unwrap())(allocation) };
         assert!(max_sockets() >= 1);

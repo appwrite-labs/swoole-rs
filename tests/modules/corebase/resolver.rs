@@ -9,9 +9,8 @@ use std::ffi::{CStr, c_char, c_int, c_void};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use libc::{AF_INET, AF_INET6, SOCK_STREAM, addrinfo, sockaddr_in6, sockaddr_storage};
-use swoole_rs_corebase::{
-    PreparedResolver, ResolveError, ResolverCompletion, ResolverRequest, swr_v1_core_resolver_free,
-};
+use std::sync::Arc;
+use swoole_rs_corebase::{ResolveError, ResolverCompletion, ResolverRequest};
 
 /// What the faked `getaddrinfo` answers on this thread.
 #[derive(Clone, Copy)]
@@ -105,32 +104,28 @@ unsafe extern "C" fn freeaddrinfo(list: *mut addrinfo) {
     FREED.set(true);
 }
 
+/// The record `create` made; allocation refusal ends the test.
+fn created(record: Option<Arc<ResolverRequest>>) -> Arc<ResolverRequest> {
+    record.unwrap_or_else(|| std::alloc::handle_alloc_error(std::alloc::Layout::new::<u8>()))
+}
+
 /// A record and the one reference `create` gave its owner, dropped with this.
-struct Request(PreparedResolver);
+struct Request(Arc<ResolverRequest>);
 
 impl Request {
     fn new(family: c_int, socktype: c_int, name: &[u8]) -> Self {
-        let prepared = ResolverRequest::create(family, socktype, 0, name, b"");
-        assert!(!prepared.owner.is_null(), "the record's allocation");
-        Self(prepared)
+        Self(created(ResolverRequest::create(
+            family, socktype, 0, name, b"",
+        )))
     }
 
     fn record(&self) -> &ResolverRequest {
-        // SAFETY: live until this drops.
-        unsafe { &*self.0.owner }
+        &self.0
     }
 
     /// `request.fields-><field> = value`, as the native views wrote the hints and results.
     fn set(&self, change: impl FnOnce(&mut swoole_rs_corebase::ResolverFields)) {
-        // SAFETY: the record's fields, which nothing else reads meanwhile.
-        change(unsafe { &mut *self.0.fields });
-    }
-}
-
-impl Drop for Request {
-    fn drop(&mut self) {
-        // SAFETY: this request's own reference.
-        unsafe { swr_v1_core_resolver_free(self.0.owner) };
+        self.0.update(change);
     }
 }
 

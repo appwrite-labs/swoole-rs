@@ -477,15 +477,6 @@ pub extern "C" fn sw_malloc(size: usize) -> *mut c_void {
     crate::sys::malloc(size)
 }
 
-/// `void sw_free(void *)`.
-/// # Safety
-/// `pointer` is null or a live allocation from this allocator.
-#[cfg_attr(feature = "upstream-symbols", unsafe(export_name = "_Z7sw_freePv"))]
-pub unsafe extern "C" fn sw_free(pointer: *mut c_void) {
-    // SAFETY: the caller passes null or a live allocation.
-    unsafe { libc::free(pointer) }
-}
-
 /// `void *sw_calloc(size_t, size_t)`.
 #[must_use]
 #[cfg_attr(feature = "upstream-symbols", unsafe(export_name = "_Z9sw_callocmm"))]

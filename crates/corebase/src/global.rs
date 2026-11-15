@@ -100,8 +100,6 @@ record! {
     server: AtomicPtr<c_void>, *mut c_void = ptr::null_mut(), swr_v1_core_server, swr_v1_core_set_server;
     aio_default_socket: AtomicPtr<c_void>, *mut c_void = ptr::null_mut(),
         swr_v1_core_aio_default_socket, swr_v1_core_set_aio_default_socket;
-    fatal_error: AtomicPtr<c_void>, *mut c_void = ptr::null_mut(),
-        #[unsafe(no_mangle)] swr_v1_core_fatal_error, swr_v1_core_set_fatal_error;
     print_backtrace: AtomicPtr<c_void>, *mut c_void = ptr::null_mut(),
         swr_v1_core_print_backtrace, swr_v1_core_set_print_backtrace;
 }
@@ -112,14 +110,32 @@ record! {
 /// # Safety
 /// Native code may longjmp across the caller, so the frames it skips own nothing.
 pub unsafe fn fatal_error(code: c_int, message: &std::ffi::CStr) {
-    type FatalError = unsafe extern "C" fn(code: c_int, format: *const c_char, ...);
-    let hook = swr_v1_core_fatal_error();
-    // SAFETY: native code stores null or its `fatal_error` there.
-    let hook = unsafe { std::mem::transmute::<*mut c_void, Option<FatalError>>(hook) };
-    if let Some(fatal) = hook {
+    if let Some(fatal) = swr_v1_core_fatal_error() {
         // SAFETY: "%s" takes the NUL-terminated message.
         unsafe { fatal(code, c"%s".as_ptr(), message.as_ptr()) };
     }
+}
+
+/// `SwooleG.fatal_error`: `printf`-style, it exits the process or bails out.
+pub type FatalError = unsafe extern "C" fn(code: c_int, format: *const c_char, ...);
+
+static FATAL_ERROR: Mutex<Option<FatalError>> = Mutex::new(None);
+
+fn fatal_hook() -> std::sync::MutexGuard<'static, Option<FatalError>> {
+    FATAL_ERROR
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// `SwooleG.fatal_error`, which native `swoole_fatal_error` calls.
+#[unsafe(no_mangle)]
+pub extern "C" fn swr_v1_core_fatal_error() -> Option<FatalError> {
+    *fatal_hook()
+}
+
+/// `SwooleG.fatal_error = hook`.
+pub fn set_fatal_error(hook: Option<FatalError>) {
+    *fatal_hook() = hook;
 }
 
 /// The two `double` fields travel as their bit patterns, so the record needs
@@ -163,6 +179,7 @@ pub fn bug_report_append(text: &[u8]) {
 /// Zero every field, as upstream's `SwooleG = {}` does.
 pub fn swr_v1_core_reset() {
     reset_record();
+    set_fatal_error(None);
     bug_report().clear();
 }
 
@@ -314,6 +331,15 @@ pub fn sw_print(bytes: &[u8]) {
     if !out.is_null() {
         // SAFETY: Swoole's open stdout stream; fwrite reads `bytes.len()` bytes of `bytes`.
         unsafe { libc::fwrite(bytes.as_ptr().cast(), 1, bytes.len(), out.cast()) };
+    }
+}
+
+/// `fflush` of Swoole's stdout stream, when one is set.
+pub fn sw_flush() {
+    let out = swr_v1_core_stdout();
+    if !out.is_null() {
+        // SAFETY: Swoole's open stdout stream.
+        unsafe { libc::fflush(out.cast()) };
     }
 }
 

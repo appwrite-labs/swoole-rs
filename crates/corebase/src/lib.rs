@@ -59,11 +59,11 @@ pub mod worker_registry;
 pub use global::*;
 pub use hook::{HookType, swoole_add_hook, swoole_call_hook, swoole_isset_hook};
 pub use host::{
-    DataHead, ServerEvent, WebSocketStatus, datahead_dump, microtime, sw_calloc, sw_free,
-    sw_malloc, swoole_dump_ascii, swoole_dump_bin, swoole_dump_hex, swoole_exit,
-    swoole_print_backtrace, swoole_print_backtrace_on_error, swoole_rand, swoole_rand_any,
-    swoole_random_int, swoole_redirect_stdout, swoole_redirect_stdout_file, swoole_shell_exec,
-    swoole_system_random, swr_v1_core_format_result,
+    DataHead, ServerEvent, WebSocketStatus, datahead_dump, microtime, sw_calloc, sw_malloc,
+    swoole_dump_ascii, swoole_dump_bin, swoole_dump_hex, swoole_exit, swoole_print_backtrace,
+    swoole_print_backtrace_on_error, swoole_rand, swoole_rand_any, swoole_random_int,
+    swoole_redirect_stdout, swoole_redirect_stdout_file, swoole_shell_exec, swoole_system_random,
+    swr_v1_core_format_result,
 };
 pub use lifecycle::{
     SharedThread, adopt_shared_thread, lend_thread_buffer, shared_thread, thread_buffer,
@@ -82,8 +82,14 @@ pub use thread::*;
 use std::cmp::Ordering;
 use std::ffi::{CStr, c_char, c_int, c_long, c_ulong};
 
+/// A byte as C's ctype functions take one: an `unsigned char` promoted to `int`, so
+/// always in the `0..=255` they define.
+#[repr(transparent)]
+struct CtypeByte(c_int);
+
 unsafe extern "C" {
-    fn toupper(value: c_int) -> c_int;
+    /// Reads only its argument, which `CtypeByte` keeps in ctype's range.
+    safe fn toupper(value: CtypeByte) -> c_int;
 }
 
 /// `SWOOLE_VERSION`, `SWOOLE_VERSION_ID` and `SWOOLE_API_VERSION_ID` of the pin;
@@ -378,14 +384,14 @@ pub fn radix(mut value: c_ulong, radix: u32, output: &mut [u8]) -> usize {
 }
 
 /// `ulong_t swoole_hex2dec(const char *, size_t *)` in the target's plain-char mode:
-/// native prefix, locale, signed-char and `size_t` wrap semantics.
-/// # Safety
-/// Bytes passed to toupper must satisfy the original host's ctype precondition.
+/// native prefix, locale, signed-char and `size_t` wrap semantics. A byte above 127
+/// goes to `toupper` as an `unsigned char`, where a signed `char` made upstream's call
+/// undefined.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_Z14swoole_hex2decPKcPm")
 )]
-pub unsafe extern "C" fn swoole_hex2dec(input: sys::Text<'_>, parsed: &mut usize) -> c_ulong {
+pub extern "C" fn swoole_hex2dec(input: sys::Text<'_>, parsed: &mut usize) -> c_ulong {
     // The compiler's plain `char` signedness, as the C++ facade saw it.
     let native_char_signed = c_char::MIN != 0;
     let mut value = 0_usize;
@@ -403,14 +409,7 @@ pub unsafe extern "C" fn swoole_hex2dec(input: sys::Text<'_>, parsed: &mut usize
         let digit = if byte.is_ascii_digit() {
             (byte - b'0') as usize
         } else {
-            // C passes the char as the host's (un)signed char would promote it.
-            let input = if native_char_signed {
-                c_int::from(byte.cast_signed())
-            } else {
-                c_int::from(byte)
-            };
-            // SAFETY: the caller guarantees the host ctype precondition for these bytes.
-            let upper = unsafe { toupper(input) };
+            let upper = toupper(CtypeByte(c_int::from(byte)));
             let low = upper.to_le_bytes()[0];
             let byte = if native_char_signed {
                 c_int::from(low.cast_signed())
@@ -654,12 +653,10 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no strncasecmp")]
     fn native_hex_accepts_non_hex_letters_and_counts_prefix() {
         let mut parsed = 0;
-        unsafe {
-            assert_eq!(swoole_hex2dec(c"FFtail".into(), &mut parsed), 16_833_333);
-            assert_eq!(parsed, 6);
-            assert_eq!(swoole_hex2dec(c"0x".into(), &mut parsed), 0);
-            assert_eq!(parsed, 2);
-        }
+        assert_eq!(swoole_hex2dec(c"FFtail".into(), &mut parsed), 16_833_333);
+        assert_eq!(parsed, 6);
+        assert_eq!(swoole_hex2dec(c"0x".into(), &mut parsed), 0);
+        assert_eq!(parsed, 2);
     }
 
     #[test]
