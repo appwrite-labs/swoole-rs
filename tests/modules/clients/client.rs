@@ -426,7 +426,7 @@ impl<'a> Client<'a> {
                 &mut owner(prepared.owner),
             );
             assert_eq!(copied.status, 0);
-            drop(std::sync::Arc::<swoole_rs_tls::OwnedTlsContext>::from_raw(
+            drop(std::rc::Rc::<swoole_rs_tls::OwnedTlsContext>::from_raw(
                 prepared.owner.cast(),
             ));
         }

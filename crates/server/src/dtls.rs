@@ -108,7 +108,7 @@ fn accept<'s>(
             break 'setup;
         }
         // `ListenPort::create_dtls_session(sock)`, over the port's context.
-        let context = listen.config().ssl_context.get();
+        let context = listen.config().tls.settings.get();
         if context.is_some_and(|context| dtls_open(socket, &context)) {
             return Some(socket);
         }

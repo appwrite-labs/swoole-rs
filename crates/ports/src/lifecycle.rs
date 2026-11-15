@@ -3,13 +3,12 @@
 //! Rust owners, the socket record and OpenSSL. Logs name the upstream function
 //! that wrote them.
 //!
-//! `PortConfig::ssl_context` holds one reference to the port's own context's
-//! owner, and its TLS state (`PortConfig::tls`) what upstream's `ListenPort` kept
-//! in C++ containers: the SNI contexts (`sni_contexts`), each with a reference to its
-//! context. A DTLS session lives in its connection's SSL (crates/tls).
+//! `PortConfig::ssl_context` holds the configuration builder. Its TLS state
+//! publishes immutable settings for handshakes and SNI selection. A DTLS session
+//! retains its frozen settings through the connection's SSL (crates/tls).
 use core::ffi::{CStr, c_int, c_void};
 use core::ptr;
-use std::sync::{PoisonError, RwLockReadGuard};
+use std::sync::{Arc, PoisonError, RwLockReadGuard};
 
 use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
 use swoole_rs_corebase::constants::{SW_SSL_CIPHER_LIST, SW_SSL_ECDH_CURVE};
@@ -17,9 +16,8 @@ use swoole_rs_corebase::{log, sys};
 use swoole_rs_reactor::{Socket, SocketRecord, swr_v1_socket_type};
 use swoole_rs_server::port_config::{PortConfig, TlsState};
 use swoole_rs_server::view;
-use swoole_rs_tls::upstream::socket_ssl_create;
 use swoole_rs_tls::{
-    OwnedTlsContext, OwnedTlsFields, Ssl, SslCreateFlag, SslVersion, Text, TlsContext, has_files,
+    OwnedTlsContext, OwnedTlsFields, Ssl, SslVersion, Text, TlsContext, TlsSettings, has_files,
     swr_v1_tls_owner_view, swr_v1_tls_port_index,
 };
 use swoole_rs_utilities::sni_wildcard_matches;
@@ -37,7 +35,7 @@ const TLSEXT_OK: c_int = 0;
 const TLSEXT_NOACK: c_int = 3;
 
 /// The port's SNI contexts, read.
-fn sni(config: &PortConfig) -> RwLockReadGuard<'_, Vec<(Vec<u8>, TlsContext)>> {
+fn sni(config: &PortConfig) -> RwLockReadGuard<'_, Vec<(Vec<u8>, Arc<TlsSettings>)>> {
     config
         .tls
         .sni
@@ -80,7 +78,8 @@ pub(crate) fn context_create(
     config: &PortConfig,
     context: &OwnedTlsContext,
     allow_empty_cert: bool,
-) -> bool {
+    callback: Option<swoole_rs_tls::ServernameCallback>,
+) -> Option<TlsSettings> {
     let (cert, key) = has_files(context);
     if cert != key || (!cert && !allow_empty_cert) {
         log::error_log(
@@ -89,7 +88,7 @@ pub(crate) fn context_create(
             c"ListenPort::ssl_context_create",
             format_args!("require `ssl_cert_file` and `ssl_key_file` options"),
         );
-        return false;
+        return None;
     }
     edit(context, |fields| {
         if config.open_http_protocol.get() {
@@ -99,30 +98,36 @@ pub(crate) fn context_create(
             fields.http_v2 = true;
         }
     });
-    // SAFETY: the port's live context, which only this port configures, on its thread.
-    if !swoole_rs_tls::ssl_context_create(&mut unsafe { swoole_rs_tls::Lent::new(context) }) {
+    // SAFETY: configuration runs on the port's owner thread; the resulting
+    // snapshot owns independent fields, strings and OpenSSL configuration.
+    let owner = unsafe { swoole_rs_tls::Lent::new(context) };
+    let settings = owner.freeze(callback);
+    if settings.is_none() {
         log::warning(
             c"ListenPort::ssl_context_create",
             format_args!("failed to create ssl content"),
         );
-        return false;
     }
-    true
+    settings
 }
 
 /// `ListenPort::ssl_add_sni_cert(name, ctx)`: creates the context (both files
 /// required) and stores it under `name` unless the name is taken.
 pub fn sni_add(config: &PortConfig, name: &[u8], context: TlsContext) -> bool {
-    let added = context_create(config, &context, false);
+    let Some(settings) = context_create(config, &context, false, None) else {
+        return false;
+    };
+    // The immutable settings own everything the handshake needs.
+    drop(context);
     let mut sni = config
         .tls
         .sni
         .write()
         .unwrap_or_else(PoisonError::into_inner);
-    if added && !sni.iter().any(|(stored, _)| stored == name) {
-        sni.push((name.to_vec(), context));
+    if !sni.iter().any(|(stored, _)| stored == name) {
+        sni.push((name.to_vec(), Arc::new(settings)));
     }
-    added
+    true
 }
 
 /// `ListenPort::ssl_init()`: the port's context (no files allowed when SNI
@@ -133,15 +138,12 @@ pub fn ssl_init(config: &PortConfig) -> bool {
         return false;
     };
     let has_sni = !sni(config).is_empty();
-    if !context_create(config, &context, has_sni) {
+    let callback: swoole_rs_tls::ServernameCallback = sni_callback;
+    let callback = has_sni.then_some(callback);
+    let Some(settings) = context_create(config, &context, has_sni, callback) else {
         return false;
-    }
-    if has_sni {
-        // The SSL_CTX `context_create` just made.
-        if let Some(ctx) = context.fields().context.as_deref() {
-            ctx.set_servername_callback(sni_callback);
-        }
-    }
+    };
+    config.tls.settings.set(settings);
     true
 }
 
@@ -169,12 +171,11 @@ pub(crate) fn ssl_context_init(config: &mut PortConfig) -> bool {
 
 /// `ListenPort::ssl_create(sock)`: the socket's server-side `SSL`, which names the port.
 pub(crate) fn ssl_create(config: &PortConfig, sock: Option<Socket<'_>>) -> bool {
-    let context = config.ssl_context.get();
-    let flags = SslCreateFlag::SW_SSL_SERVER as c_int;
+    let context = config.tls.settings.get();
     let create = |sock| {
-        context.as_ref().is_some_and(|context| {
-            socket_ssl_create(sock, context.fields().context.as_deref(), flags)
-        })
+        context
+            .as_ref()
+            .is_some_and(|context| context.create_session(sock))
     };
     let Some(sock) = sock.filter(|&sock| create(sock)) else {
         log::set_last_error(SSL_CREATE_SESSION_FAILED);
@@ -216,7 +217,7 @@ extern "C" fn sni_callback(ssl: Ssl<'_>, _al: *mut c_int, _arg: *mut c_void) -> 
         return TLSEXT_NOACK;
     };
     // That context's live SSL_CTX; switching to it calls nothing back.
-    ssl.set_context(context.fields().context.as_deref());
+    context.select(ssl);
     TLSEXT_OK
 }
 
@@ -278,6 +279,7 @@ pub(crate) fn import(config: &mut PortConfig, fd: c_int) -> bool {
 pub(crate) fn close(config: &PortConfig) {
     if config.ssl {
         drop(config.ssl_context.replace(None));
+        drop(config.tls.settings.replace(None));
     }
     // Taken first, so nothing finds the record once it is freed.
     let socket = config.take_socket_ptr();
@@ -300,6 +302,11 @@ mod tests {
 
     #[test]
     fn the_tls_state_lives_in_the_port_until_freed() {
+        let builder = swoole_rs_tls::TlsContext::new();
+        let settings = unsafe { swoole_rs_tls::Lent::new(&builder) }
+            .freeze(None)
+            .unwrap();
+        let settings = std::sync::Arc::new(settings);
         let config = swoole_rs_server::port_config::swr_v1_port_config_new(0);
         let config = unsafe { &mut *config };
         assert_eq!(super::sni(config).len(), 0);
@@ -308,7 +315,7 @@ mod tests {
             .sni
             .write()
             .unwrap()
-            .push((b"a".to_vec(), swoole_rs_tls::TlsContext::new()));
+            .push((b"a".to_vec(), settings));
         assert_eq!(super::sni(config).len(), 1);
         super::tls_free(config);
         assert_eq!(super::sni(config).len(), 0);
