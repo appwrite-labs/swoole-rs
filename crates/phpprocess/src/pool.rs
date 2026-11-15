@@ -240,17 +240,25 @@ method_table! {
     ];
 }
 
-/// `zend_bailout()`, from a frame that owns nothing.
-fn raise() {
-    swoole_rs_zend::bailout::raise(Err(swoole_rs_zend::bailout::Bailout));
+/// Zend's trap and bailout, for the pool's Rust worker loops, which call PHP
+/// inside the trap and leave it before re-raising.
+struct Bailouts;
+
+impl swoole_rs_process::pool::Bailouts for Bailouts {
+    fn contain(&self, body: &mut dyn FnMut()) -> bool {
+        swoole_rs_zend::contain_with(body).is_err()
+    }
+
+    /// `zend_bailout()`, from a frame that owns nothing.
+    fn raise(&self) {
+        swoole_rs_zend::bailout::raise(Err(swoole_rs_zend::bailout::Bailout));
+    }
 }
 
 /// `php_swoole_process_pool_minit`: register `Swoole\Process\Pool`.
 /// Runs after the Process MINIT.
 pub fn php_swoole_process_pool_minit(minit: &Minit) {
-    // SAFETY: `zend_try` over a C body, in which the pool's Rust worker loops call
-    // PHP and which they leave before re-raising, and Zend's bailout.
-    unsafe { swoole_rs_process::pool::set_bailout(swoole_rs_zend::sys::swr_zend_try, raise) };
+    swoole_rs_process::pool::set_bailout(&Bailouts);
     minit.register_object::<PoolObject>(c"Swoole\\Process\\Pool", METHODS.table(), 0);
     for name in [c"master_pid", c"workerPid", c"workerId"] {
         minit.property_long(&POOL, name, -1, ZEND_ACC_PUBLIC);
