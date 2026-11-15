@@ -77,17 +77,18 @@ unsafe extern "C" {
     /// `array_init(target)`: `target` holds a new, empty array in place of
     /// what it held, which is not released. No PHP code runs.
     safe fn swr_zend_array_init(target: &Owned);
-    /// `zend_read_property(scope, object, name, length, silent, rv)` inside
-    /// `zend_try` (nonzero for a bailout): `found` then holds the property's
-    /// slot, `rv` holding a computed value, or the executor's null.
-    fn swr_zend_try_facade_read(
-        scope: *mut zend_class_entry,
-        object: *mut zend_object,
-        name: *const c_char,
-        length: usize,
+    /// `zend_read_property(scope, object, name, silent, rv)` inside `zend_try`
+    /// (nonzero for a bailout), under the lent bytes of `name`: `found` then
+    /// holds the property's slot, `rv` holding a computed value (in place of
+    /// what it held, which is not released), or the executor's null. It runs
+    /// PHP code (`__get`, a property hook, an error handler).
+    safe fn swr_zend_try_facade_read<'a>(
+        scope: crate::class::Scope<'_>,
+        object: crate::ObjectRef<'a>,
+        name: IoSlice<'_>,
         silent: bool,
-        rv: *mut zval,
-        found: &mut Option<&Value>,
+        rv: &'a Owned,
+        found: &mut Option<&'a Value>,
     ) -> std::ffi::c_int;
     /// `php_url_encode`: it reads the lent bytes (an `IoSlice` is an iovec) and
     /// returns a new string; no PHP code runs.
@@ -432,31 +433,25 @@ impl Value {
         name: &[u8],
         silent: bool,
     ) -> Result<Option<Owned>, bailout::Bailout> {
-        let Some(object) = self.object() else {
+        let Some(object) = self.object_ref() else {
             return Ok(None);
         };
-        let scope = scope.map_or(ptr::null_mut(), crate::ClassEntry::as_ptr);
         let rv = Owned::default();
         let mut found = None;
-        // SAFETY: the zval holds the object while borrowed; a class or null; Zend
-        // reads `name`, and writes `rv` (undefined, this frame's) or nothing. What
-        // it finds is `rv`, a property slot of the object, which the borrow keeps
-        // alive, or the executor's null, which lives as long as it does.
-        bailout::trapped(unsafe {
-            swr_zend_try_facade_read(
-                scope,
-                object,
-                name.as_ptr().cast(),
-                name.len(),
-                silent,
-                rv.as_ptr(),
-                &mut found,
-            )
-        })?;
-        Ok(match found {
-            Some(slot) if slot.as_ptr() == rv.as_ptr() => Some(rv),
-            found => found.map(Self::copy),
-        })
+        let bailed = swr_zend_try_facade_read(
+            crate::class::Scope::of(scope),
+            object,
+            IoSlice::new(name),
+            silent,
+            &rv,
+            &mut found,
+        );
+        bailout::trapped(bailed)?;
+        if found.is_some_and(|slot| slot.as_ptr() == rv.as_ptr()) {
+            // `rv` holds the computed value, with the reference it gives up.
+            return Ok(Some(rv));
+        }
+        Ok(found.map(Self::copy))
     }
 
     /// `zend_call_method(object, scope, NULL, method, &result, args)` on the

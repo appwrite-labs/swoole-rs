@@ -3,9 +3,11 @@
 #include "php.h"
 #include "zend_closures.h"
 #include "zend_exceptions.h"
-/* Individual Zend property effects, each containing possible PHP magic-method bailouts. */
-int swr_zend_try_facade_read(zend_class_entry *, zend_object *, const char *, size_t, bool, zval *, zval **);
-int swr_zend_try_facade_update(zend_class_entry *, zend_object *, const char *, size_t, zval *);
+#include <sys/uio.h>
+/* Individual Zend property effects, each containing possible PHP magic-method bailouts.
+ * The property name is a byte range Rust lends as a `struct iovec` (std's `IoSlice`). */
+int swr_zend_try_facade_read(zend_class_entry *, zend_object *, struct iovec, bool, zval *, zval **);
+int swr_zend_try_facade_update(zend_class_entry *, zend_object *, struct iovec, zval *);
 zend_object *swr_zend_facade_exception(void);
 void swr_zend_facade_exception_error(void *);
 int swr_zend_try_facade_user_call(zval *, uint32_t, zval *, zval *, int *);
