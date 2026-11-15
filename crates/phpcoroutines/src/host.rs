@@ -469,18 +469,18 @@ pub(crate) fn is_end(co: Co) -> bool {
     state_of(co) == swoole_rs_coroutine::State::End
 }
 
-/// `PHPCoroutine::create`'s `Coroutine::create(main_func, args)`.
-pub(crate) fn create(args: *mut c_void) -> c_long {
-    // SAFETY: the coroutine's entry, with the creator's live arguments.
-    unsafe { swoole_rs_coroutine::swr_v1_coroutine_create(main, args) }
+/// `Coroutine::create(main_func, nullptr)`: [`crate::context::create`] hands
+/// the coroutine its arguments.
+pub(crate) fn create() -> c_long {
+    // SAFETY: `main` reads no argument; the caller's frame owns nothing to drop.
+    unsafe { swoole_rs_coroutine::swr_v1_coroutine_create(main, std::ptr::null_mut()) }
 }
 
 /// `main_func`: the coroutine's function and defer tasks run inside
 /// `zend_first_try`; a coroutine that ended in an exception or a bailout
 /// bails the whole process out. Its frame owns nothing to drop.
-unsafe extern "C" fn main(args: *mut c_void) {
-    // SAFETY: on the new coroutine, with its creator's arguments.
-    let Some(ctx) = (unsafe { crate::context::open(args) }) else {
+extern "C" fn main(_: *mut c_void) {
+    let Some(ctx) = crate::context::open() else {
         return;
     };
     let context = ctx.ptr().cast();
