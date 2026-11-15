@@ -206,6 +206,8 @@ struct Pool {
     ptr: *mut c_void,
     /// `kill_timer`, an `Option<ArmedTimer>`: its timer generation, id and delete function.
     kill_timer: [usize; 3],
+    /// `ptr_key`, the key `ptr` is held under.
+    ptr_key: *const c_void,
 }
 
 /// `swoole::Worker`'s fields (crates/process's WorkerRecord).
