@@ -554,22 +554,24 @@ impl Handle {
         )
     }
 
-    fn proxy(self, which: Proxy) -> Option<&'static ProxyState> {
-        let slot = self.get().proxy_slot(which).as_ptr();
-        // SAFETY: the live client's slot, whose proxy the client owns until it is
-        // replaced or freed; borrowed only between effects, as the state is.
-        unsafe { (*slot).as_deref() }
+    /// `f` over the proxy, taken out of its slot for the call and put back after it
+    /// (it stays where it is on the heap); `None` without one. `f` runs no effect that
+    /// reaches the client's proxies.
+    fn with_proxy<R>(self, which: Proxy, f: impl FnOnce(&ProxyState) -> R) -> Option<R> {
+        let slot = self.get().proxy_slot(which);
+        let proxy = slot.take()?;
+        let result = f(&proxy);
+        slot.set(Some(proxy));
+        Some(result)
     }
 
     /// The proxy's state; `None` when there is no proxy.
     fn proxy_state(self, which: Proxy) -> Option<u8> {
-        self.proxy(which).map(|proxy| proxy.fields().state)
+        self.with_proxy(which, |proxy| proxy.fields().state)
     }
 
     fn set_proxy_state(self, which: Proxy, state: u8) {
-        if let Some(proxy) = self.proxy(which) {
-            proxy.update(|fields| fields.state = state);
-        }
+        self.with_proxy(which, |proxy| proxy.update(|fields| fields.state = state));
     }
 
     /// `socket->get_out_buffer_length()`.
@@ -641,17 +643,19 @@ impl Handle {
     /// The SOCKS5 negotiation request's length in [`Self::socks5_packet`].
     fn socks5_negotiate(self) -> usize {
         // The SOCKS5 proxy, whose buffer the request is packed into.
-        let proxy = self.proxy(Proxy::Socks5);
-        proxy.map_or(0, |proxy| socks5_pack_negotiate(&proxy).cast_unsigned())
+        self.with_proxy(Proxy::Socks5, |proxy| {
+            socks5_pack_negotiate(&proxy).cast_unsigned()
+        })
+        .unwrap_or(0)
     }
 
     /// Send the first `length` bytes of the SOCKS5 proxy's packet buffer, copied
     /// first: the send may raise a callback that reaches the proxy again.
     fn socks5_send(self, length: usize) -> isize {
         let packet = self
-            .proxy(Proxy::Socks5)
-            .and_then(ProxyState::packet)
-            .map_or([0; 512], |packet| *packet);
+            .with_proxy(Proxy::Socks5, |proxy| proxy.packet().map(|packet| *packet))
+            .flatten()
+            .unwrap_or([0; 512]);
         send(self, packet.get(..length).unwrap_or_default(), 0)
     }
 
@@ -667,21 +671,21 @@ impl Handle {
     /// The HTTP proxy's CONNECT request, packed into `shared`.
     /// The host is the TLS host name when set, else the proxy's target.
     fn http_pack(self, shared: &mut CppString) -> &[u8] {
-        let Some(proxy) = self.proxy(Proxy::Http) else {
-            return &[];
-        };
         let tls = self.get().tls.get().is_some();
-        let target = proxy.string(3);
         let name = tls.then(|| self.tls_host_name());
-        let host = if let Some(name) = name.as_ref().filter(|name| !name.is_empty()) {
-            name.to_bytes()
-        } else {
-            &target
-        };
-        // The whole allocation, zeroed so every byte lent is initialized.
-        let output = shared.zeroed(shared.size()).unwrap_or_default();
-        let length = swoole_rs_http_ffi::proxy_connect(proxy, host, output);
-        output.get(..length).unwrap_or_default()
+        let packed = self.with_proxy(Proxy::Http, |proxy| {
+            let target = proxy.string(3);
+            let host = if let Some(name) = name.as_ref().filter(|name| !name.is_empty()) {
+                name.to_bytes()
+            } else {
+                &target
+            };
+            // The whole allocation, zeroed so every byte lent is initialized.
+            shared.read_zeroed(shared.size(), |output| {
+                swoole_rs_http_ffi::proxy_connect(proxy, host, output)
+            });
+        });
+        if packed.is_some() { shared.view() } else { &[] }
     }
 
     fn set_timeout(self, timeout: f64) {
@@ -893,8 +897,8 @@ impl Handle {
     #[must_use]
     pub fn proxy_fields(self, http: bool) -> *mut swoole_rs_corebase::ProxyFields {
         let which = if http { Proxy::Http } else { Proxy::Socks5 };
-        self.proxy(which)
-            .map_or(core::ptr::null_mut(), ProxyState::fields_ptr)
+        self.with_proxy(which, ProxyState::fields_ptr)
+            .unwrap_or(core::ptr::null_mut())
     }
 
     /// The client's TLS context, which `set()` configures; None while TLS is off.
@@ -1232,15 +1236,16 @@ fn inet_addr(this: Handle, host: &CStr, port: c_int) -> bool {
     let mut proxy_host;
     if !this.flag(Flag::HostPreset) {
         for which in [Proxy::Socks5, Proxy::Http] {
-            let Some(proxy) = this.proxy(which) else {
+            let Some(next) = this.with_proxy(which, |proxy| {
+                proxy.set_string(3, host.to_bytes());
+                proxy.update(|fields| fields.target_port = port);
+                (proxy.string(0).to_vec(), proxy.fields().port)
+            }) else {
                 continue;
             };
-            proxy.set_string(3, host.to_bytes());
-            proxy.update(|fields| fields.target_port = port);
-            proxy_host = proxy.string(0).to_vec();
+            (proxy_host, port) = next;
             proxy_host.push(0);
-            let proxy_host = CStr::from_bytes_until_nul(&proxy_host).unwrap_or_default();
-            (host, port) = (proxy_host, proxy.fields().port);
+            host = CStr::from_bytes_until_nul(&proxy_host).unwrap_or_default();
         }
         host.clone_into(&mut this.get().server_host.borrow_mut());
         this.get().server_port.set(port);
