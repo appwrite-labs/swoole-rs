@@ -21,8 +21,8 @@ pub struct AsyncEvent {
     /// The dispatching thread may set it while a pool thread reads it.
     pub canceled: AtomicU8,
     pub error: c_int,
-    /// The request's resolver record, if any: each copy holds its own reference.
-    pub(crate) data: Option<std::sync::Arc<swoole_rs_corebase::ResolverRequest>>,
+    /// The request's resolver record: one reference per heap copy, or null.
+    pub(crate) data: *mut swoole_rs_corebase::ResolverRequest,
     pub retval: isize,
     pub pipe_socket: *mut c_void,
     pub timestamp: f64,
@@ -54,7 +54,7 @@ impl AsyncEvent {
             task_id: 0,
             canceled: AtomicU8::new(0),
             error: 0,
-            data: None,
+            data: core::ptr::null_mut(),
             retval: 0,
             pipe_socket,
             timestamp: 0.0,
@@ -71,24 +71,18 @@ impl AsyncEvent {
     }
 
     /// The request's resolver record, when the event has one.
-    pub(crate) fn record(&self) -> Option<&swoole_rs_corebase::ResolverRequest> {
-        self.data.as_deref()
+    pub(crate) const fn record(&self) -> Option<&swoole_rs_corebase::ResolverRequest> {
+        // SAFETY: `data` is null or a record that outlives the event: the request's
+        // owner waits for its event, and a heap copy holds a reference of its own.
+        unsafe { self.data.as_ref() }
     }
 }
 
 impl Clone for AsyncEvent {
     fn clone(&self) -> Self {
         Self {
-            task_id: self.task_id,
             canceled: AtomicU8::new(self.canceled.load(Relaxed)),
-            error: self.error,
-            data: self.data.clone(),
-            retval: self.retval,
-            pipe_socket: self.pipe_socket,
-            timestamp: self.timestamp,
-            object: self.object,
-            handler: self.handler,
-            callback: self.callback,
+            ..*self
         }
     }
 }

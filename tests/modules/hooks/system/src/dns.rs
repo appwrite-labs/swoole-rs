@@ -13,7 +13,7 @@ use std::fs;
 use swoole_rs_clients::dns;
 use swoole_rs_corebase::{
     NameResolverContext as Context, ResolverRequest, swr_v1_core_name_resolver_add,
-    swr_v1_core_name_resolver_remove,
+    swr_v1_core_name_resolver_remove, swr_v1_core_resolver_free,
 };
 
 use super::{
@@ -90,18 +90,18 @@ fn name_resolver_lookup(host_name: &str, ctx: &mut Context) -> String {
     String::from_utf8(out).unwrap()
 }
 
-/// The record `create` made; allocation refusal ends the test.
-fn created(record: Option<std::sync::Arc<ResolverRequest>>) -> std::sync::Arc<ResolverRequest> {
-    record.unwrap_or_else(|| std::alloc::handle_alloc_error(std::alloc::Layout::new::<u8>()))
-}
-
 /// `GethostbynameRequest req(name, family); network::gethostbyname(&req)`: the status
 /// and `req.addr`.
 fn gethostbyname(name: &CStr, family: c_int) -> (c_int, String) {
-    let record = created(ResolverRequest::create(family, 0, 0, name.to_bytes(), b""));
+    let req = ResolverRequest::create(family, 0, 0, name.to_bytes(), b"");
+    assert!(!req.owner.is_null());
+    // SAFETY: the record just made, live until it is freed below.
+    let record = unsafe { &*req.owner };
     // `network::gethostbyname`'s `SW_OK` or `SW_ERR`.
     let status = if record.host().is_ok() { 0 } else { -1 };
     let addr = record.address();
+    // SAFETY: frees the record once.
+    unsafe { swr_v1_core_resolver_free(req.owner) };
     (status, String::from_utf8(addr).unwrap())
 }
 
@@ -116,13 +116,10 @@ struct Getaddrinfo {
 /// req.parse_result(ip_list)`. `network::getaddrinfo`'s warning for an unknown family is a
 /// log line; the lookup goes on.
 fn getaddrinfo(hostname: &CStr, family: c_int) -> Getaddrinfo {
-    let record = created(ResolverRequest::create(
-        family,
-        SOCK_STREAM,
-        0,
-        hostname.to_bytes(),
-        b"",
-    ));
+    let req = ResolverRequest::create(family, SOCK_STREAM, 0, hostname.to_bytes(), b"");
+    assert!(!req.owner.is_null());
+    // SAFETY: the record just made, live until it is freed below.
+    let record = unsafe { &*req.owner };
     // `network::getaddrinfo`'s `SW_OK` or `SW_ERR`.
     let status = if record.lookup(|_| true).is_ok() {
         0
@@ -135,6 +132,8 @@ fn getaddrinfo(hostname: &CStr, family: c_int) -> Getaddrinfo {
         .map(|address| String::from_utf8(address).unwrap())
         .collect();
     let (count, error) = (record.fields().count, record.fields().error);
+    // SAFETY: frees the record once.
+    unsafe { swr_v1_core_resolver_free(req.owner) };
     Getaddrinfo {
         status,
         count,

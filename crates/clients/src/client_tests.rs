@@ -220,9 +220,13 @@ pub(super) fn del_id(_: swoole_rs_timer::Held) {
 }
 /// crates/hooks' `async::dispatch`: logs the request; nothing completes it.
 pub(super) extern "C" fn async_dispatch(event: &AsyncEvent) -> *mut c_void {
-    let request = event.request().expect("a complete event over a request");
-    let (name, family) = (request.name(), request.fields().family);
-    log(format!("dns {} {family}", String::from_utf8_lossy(&name)));
+    // SAFETY: a complete event over a live request.
+    let view = swoole_rs_corebase::swr_v1_core_resolver_view(unsafe { &*event.data });
+    // SAFETY: the request's name, live with it.
+    let name = unsafe { &*view.name }.bytes();
+    // SAFETY: the request's fields, live with it.
+    let family = unsafe { (*view.fields).family };
+    log(format!("dns {} {family}", String::from_utf8_lossy(name)));
     core::ptr::without_provenance_mut(8)
 }
 // crates/tls's TLS operations, over its own context.
