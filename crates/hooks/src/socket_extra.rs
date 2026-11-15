@@ -20,8 +20,9 @@ pub struct SocketExtra {
     /// The owner of the callable `protocol.private_data_1` names, when the
     /// socket has a `package_length_func`.
     length_owner: Option<Rc<dyn Any>>,
-    /// `socks5_proxy` and `http_proxy`: each the socket's own, or none.
-    pub(crate) proxies: [Option<Box<ProxyState>>; 2],
+    /// `socks5_proxy` and `http_proxy`: each the socket's own, or none. A connect
+    /// holds its own references, so a proxy replaced meanwhile lives until it ends.
+    pub(crate) proxies: [Option<Rc<ProxyState>>; 2],
     /// The ring's host when the socket is a `UringSocket`, else none.
     #[cfg(feature = "iouring")]
     pub(crate) uring: Option<&'static crate::uring::Host>,

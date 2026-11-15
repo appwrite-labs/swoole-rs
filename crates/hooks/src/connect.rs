@@ -11,7 +11,8 @@ use crate::packet::recv_packet;
 use crate::socket_members::assign;
 use crate::socket_scope::ProtocolScope;
 use core::ffi::{c_char, c_int};
-use core::ptr::{from_ref, null, null_mut};
+use core::ptr::null_mut;
+use std::rc::Rc;
 use swoole_rs_reactor::Events;
 
 use swoole_rs_corebase::constants::SocketType;
@@ -523,17 +524,13 @@ impl Co {
         let context = self.resolve_context().cast::<NameResolverContext>();
         // SAFETY: null or the context its owner set, which outlives the socket's connect.
         let resolve = unsafe { context.as_mut() }.unwrap_or(&mut fallback);
-        let proxy = |owner: &Option<Box<ProxyState>>| owner.as_deref().map_or(null(), from_ref);
-        let proxies = self.with_extra(|extra| extra.proxies.each_ref().map(proxy));
-        let proxies = proxies.unwrap_or_default();
-        // SAFETY: each null or the socket's own proxy, which stays put while the socket
-        // connects: no `set_proxy` runs meanwhile.
-        let [socks5, http] = proxies.map(|owner| unsafe { owner.as_ref() });
+        let proxies = self.with_extra(|extra| extra.proxies.clone());
+        let [socks5, http] = proxies.unwrap_or_default();
         let mut live = Live {
             socket: self,
             resolve,
-            socks5,
-            http,
+            socks5: socks5.as_deref(),
+            http: http.as_deref(),
             address: SocketAddress::default(),
             resolved: false,
         };
@@ -542,10 +539,12 @@ impl Co {
 
     /// `set_http_proxy` (`http`) or `set_socks5_proxy`: a new proxy, which replaces
     /// the socket's. A SOCKS5 proxy whose credentials are too long (logged) clears it.
-    /// No connect of the socket is running.
+    /// A connect already running keeps the proxy it started with.
     pub fn set_proxy(self, http: bool, host: &[u8], port: c_int, user: &[u8], password: &[u8]) {
         let proxy = if http {
-            Some(swoole_rs_http_ffi::http_proxy(host, port, user, password))
+            Some(Rc::from(swoole_rs_http_ffi::http_proxy(
+                host, port, user, password,
+            )))
         } else {
             match swoole_rs_protocols_ffi::admit(user.len(), password.len()) {
                 0 => None,
@@ -553,7 +552,7 @@ impl Co {
                     let owner = ProxyState::new(true);
                     // An allocation failure leaves the strings it didn't reach empty.
                     _ = owner.configure([host, user, password], port, config == 2, self.kind());
-                    Some(owner)
+                    Some(Rc::from(owner))
                 }
             }
         };
