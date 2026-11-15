@@ -17,7 +17,7 @@ use swoole_rs_corebase::{
     swr_v1_core_set_aio_default_socket, thread_async_threads,
 };
 use swoole_rs_ossupport::{Pool, PoolHooks, pool_complete};
-use swoole_rs_reactor::event_api::{event_add, event_del, on_destroy, swr_v1_event_current};
+use swoole_rs_reactor::event_api::{event_del, on_destroy, swr_v1_event_current};
 use swoole_rs_reactor::{Event, Running, Socket};
 use swoole_rs_tls::socket_pair::{SocketPair, close, drop, unix_socket};
 use swoole_rs_tls::upstream::write_sync;
@@ -219,10 +219,10 @@ fn create() -> *mut AsyncThreads {
     for end in [read, write] {
         end.edit(|end| end.fd_type = FD_AIO);
     }
-    // SAFETY: the pipe's live read end, which stays registered only until `destroyed`
-    // frees the pipe with the reactor.
-    if let Some(read) = unsafe { swoole_rs_reactor::Socket::from_ptr(read.as_ptr()) } {
-        _ = event_add(read, swoole_rs_reactor::Events::READ);
+    // The pipe owns its read end, which stays registered until `destroyed` frees the
+    // pipe with the reactor.
+    if let Some(read) = threads.pipe.worker_event() {
+        _ = read.add(swoole_rs_reactor::Events::READ);
     }
     on_destroy(destroyed);
     swoole_rs_reactor::swr_v1_event_set_exit_condition(
