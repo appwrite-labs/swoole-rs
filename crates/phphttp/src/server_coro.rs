@@ -11,7 +11,7 @@ use crate::{
     websocket,
 };
 use std::{
-    cell::{Cell, OnceCell, RefCell},
+    cell::{Cell, OnceCell},
     ffi::{CString, c_int},
     ptr,
     rc::Rc,
@@ -53,7 +53,8 @@ impl Custom for Data {
 }
 
 /// Upstream's `swoole::coroutine::HttpServer`. Its connections' coroutines
-/// share it, so every field that changes is a cell.
+/// share it, so every field that changes is a cell; one that isn't `Copy` is
+/// taken out and put back around code that neither yields nor runs PHP.
 struct HttpServer {
     /// The listening coroutine socket.
     socket: Co,
@@ -63,9 +64,9 @@ struct HttpServer {
     /// `handlers`, by pattern, in the order they were first set. Upstream's
     /// `std::unordered_map` leaves the order among overlapping prefixes to
     /// the standard library's hashing; registration order is ours.
-    handlers: RefCell<Vec<(Vec<u8>, Rc<Callable>)>>,
+    handlers: Cell<Vec<(Vec<u8>, Rc<Callable>)>>,
     /// `default_handler`: the `/` handler.
-    default_handler: RefCell<Option<Rc<Callable>>>,
+    default_handler: Cell<Option<Rc<Callable>>>,
     running: Cell<bool>,
     /// The connections, by the coroutine serving each.
     clients: Owned,
@@ -76,11 +77,11 @@ struct HttpServer {
     compression_level: Cell<i8>,
     compression_min_length: Cell<u32>,
     /// `http_compression_types`, once set.
-    compression_types: RefCell<Option<CompressionTypes>>,
+    compression_types: Cell<Option<CompressionTypes>>,
     /// `WebSocketSettings` (`websocket::` bits): `start` always applies them,
     /// so the contexts see a server's.
     websocket_settings: Cell<u8>,
-    upload_tmp_dir: RefCell<Rc<CString>>,
+    upload_tmp_dir: Cell<Rc<CString>>,
 }
 
 /// `SW_Z_BEST_SPEED` and `SW_COMPRESSION_MIN_LENGTH_DEFAULT`.
@@ -93,8 +94,8 @@ impl HttpServer {
             socket,
             // The listening socket, which the server frees in its drop.
             listener: swoole_rs_phpclients::Co::from(socket),
-            handlers: RefCell::new(Vec::new()),
-            default_handler: RefCell::new(None),
+            handlers: Cell::default(),
+            default_handler: Cell::default(),
             running: Cell::new(true),
             clients: OwnedArray::default().into_owned(),
             parse_cookie: Cell::new(true),
@@ -103,10 +104,10 @@ impl HttpServer {
             compression: Cell::new(true),
             compression_level: Cell::new(Z_BEST_SPEED),
             compression_min_length: Cell::new(COMPRESSION_MIN_LENGTH_DEFAULT),
-            compression_types: RefCell::new(None),
+            compression_types: Cell::default(),
             #[expect(clippy::cast_possible_truncation, reason = "the bit fits")]
             websocket_settings: Cell::new(websocket::IN_SERVER as u8),
-            upload_tmp_dir: RefCell::new(Rc::new(c"/tmp".to_owned())),
+            upload_tmp_dir: Cell::new(Rc::new(c"/tmp".to_owned())),
         }
     }
 
@@ -151,15 +152,15 @@ impl HttpServer {
     fn set_handler(&self, pattern: &[u8], handle: Rc<Callable>) -> Result<(), bailout::Bailout> {
         let old_default =
             (pattern == b"/").then(|| self.default_handler.replace(Some(handle.clone())));
-        let mut handlers = self.handlers.borrow_mut();
+        let mut handlers = self.handlers.take();
         let mut old = None;
         if let Some(entry) = handlers.iter_mut().find(|(known, _)| known == pattern) {
             old = Some(std::mem::replace(&mut entry.1, handle));
         } else {
             handlers.push((pattern.to_vec(), handle));
         }
-        drop(handlers);
-        // The handler this one replaces, released once no borrow is live.
+        self.handlers.set(handlers);
+        // The handler this one replaces, released once the handlers are back.
         drop((old_default, old));
         bailout::outcome(())
     }
@@ -167,16 +168,17 @@ impl HttpServer {
     /// `get_handler`: the callable for the request's path, if any.
     fn handler(&self, mut context: Ctx) -> Option<Rc<Callable>> {
         let path = crate::parse::request_path(&context.state().request);
-        let default = self.default_handler.borrow().clone();
+        let default = self.default_handler.take();
+        self.default_handler.set(default.clone());
         let is_default =
             |handle: &Rc<Callable>| default.as_ref().is_some_and(|d| Rc::ptr_eq(d, handle));
-        let found = self
-            .handlers
-            .borrow()
+        let handlers = self.handlers.take();
+        let found = handlers
             .iter()
             .filter(|(_, handle)| !is_default(handle))
             .find(|(pattern, _)| swoole_rs_httpbindings::handler_matches(path, pattern))
             .map(|(_, handle)| handle.clone());
+        self.handlers.set(handlers);
         found.or(default)
     }
 
@@ -202,10 +204,12 @@ impl HttpServer {
         }
         context::bind(context.state(), zconn);
         let state = context.state();
-        state
-            .compression_types
-            .clone_from(&self.compression_types.borrow());
-        state.upload_tmp_dir = Some(self.upload_tmp_dir.borrow().clone());
+        let types = self.compression_types.take();
+        state.compression_types.clone_from(&types);
+        self.compression_types.set(types);
+        let directory = self.upload_tmp_dir.take();
+        state.upload_tmp_dir = Some(Rc::clone(&directory));
+        self.upload_tmp_dir.set(directory);
         state.websocket_settings = self.websocket_settings.get();
         state.parse_body = self.parse_post.get();
         state.parse_cookie = self.parse_cookie.get();
@@ -235,18 +239,21 @@ impl Drop for HttpServer {
 /// (reset by `None`, then one type per call) or `upload_tmp_dir`.
 fn text_setting(server: &HttpServer, kind: Setting, text: Option<&[u8]>) {
     if kind != Setting::Types {
-        *server.upload_tmp_dir.borrow_mut() = context::directory(text.unwrap_or_default());
+        server
+            .upload_tmp_dir
+            .set(context::directory(text.unwrap_or_default()));
         return;
     }
-    let mut types = server.compression_types.borrow_mut();
+    let mut types = server.compression_types.take();
     match text {
-        None => *types = Some(Rc::default()),
+        None => types = Some(Rc::default()),
         Some(kind) => {
             if let Some(types) = types.as_mut() {
                 Rc::make_mut(types).insert(kind.into());
             }
         }
     }
+    server.compression_types.set(types);
 }
 
 /// HTTP statuses the loop answers with, and llhttp's codes it checks.

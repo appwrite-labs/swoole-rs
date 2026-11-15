@@ -602,7 +602,7 @@ mod tests {
         use std::os::fd::AsRawFd;
         crate::swr_v1_tls_init().unwrap();
         let context = crate::TlsContext::new();
-        let lent = context.borrow_configuration();
+        let mut lent = context.borrow_configuration();
         lent.set_value(crate::Value::Protocols(
             crate::SslVersion::SW_SSL_DTLS as i64,
         ));

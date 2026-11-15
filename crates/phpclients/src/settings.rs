@@ -352,27 +352,25 @@ fn proxy(
 /// `php_swoole_client_check_ssl_setting(cli, settings)`, written into `context`,
 /// a client's `SSLContext` (crates/tls).
 pub(crate) fn apply_ssl(context: &tls::TlsContext, settings: &Array) {
-    let owner = context.borrow_configuration();
-    let value = |value| owner.set_value(value);
+    let mut owner = context.borrow_configuration();
     let options = Options(settings);
-    let set_text = |which, text: &[u8]| owner.set_text(which, text);
-    let text = |key: &str, which| {
+    let text = |owner: &mut tls::Lent<'_>, key: &str, which| {
         if let Some(text) = options.string(key) {
-            set_text(which, text.bytes());
+            _ = owner.set_text(which, text.bytes());
         }
     };
     if let Some(protocols) = options.long("ssl_protocols") {
-        value(Value::Protocols(protocols));
+        owner.set_value(Value::Protocols(protocols));
     }
     if let Some(compress) = options.truthy("ssl_compress") {
-        value(Value::DisableCompress(!compress));
+        owner.set_value(Value::DisableCompress(!compress));
     }
     for (key, which, name) in [
         ("ssl_cert_file", Text::CertFile, "cert"),
         ("ssl_key_file", Text::KeyFile, "key"),
     ] {
         if let Some(path) = options.string(key)
-            && !set_text(which, path.bytes())
+            && !owner.set_text(which, path.bytes())
         {
             let path = c_text(path.bytes());
             report(
@@ -383,21 +381,21 @@ pub(crate) fn apply_ssl(context: &tls::TlsContext, settings: &Array) {
             return;
         }
     }
-    text("ssl_passphrase", Text::Passphrase);
-    text("ssl_host_name", Text::HostName);
+    text(&mut owner, "ssl_passphrase", Text::Passphrase);
+    text(&mut owner, "ssl_host_name", Text::HostName);
     if let Some(on) = options.truthy("ssl_verify_peer") {
-        value(Value::VerifyPeer(on));
+        owner.set_value(Value::VerifyPeer(on));
     }
     if let Some(on) = options.truthy("ssl_allow_self_signed") {
-        value(Value::AllowSelfSigned(on));
+        owner.set_value(Value::AllowSelfSigned(on));
     }
-    text("ssl_cafile", Text::Cafile);
-    text("ssl_capath", Text::Capath);
+    text(&mut owner, "ssl_cafile", Text::Cafile);
+    text(&mut owner, "ssl_capath", Text::Capath);
     if let Some(depth) = options.long("ssl_verify_depth") {
         let depth = clamp(depth, 0, u8::MAX.into());
-        value(Value::VerifyDepth(u8::try_from(depth).unwrap_or(u8::MAX)));
+        owner.set_value(Value::VerifyDepth(u8::try_from(depth).unwrap_or(u8::MAX)));
     }
-    text("ssl_ciphers", Text::Ciphers);
+    text(&mut owner, "ssl_ciphers", Text::Ciphers);
     match tls::has_files(context) {
         (true, false) => report(ErrorKind::Fatal, E_ERROR, "ssl require key file"),
         (false, true) => report(ErrorKind::Fatal, E_ERROR, "ssl require cert file"),

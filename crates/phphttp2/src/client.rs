@@ -5,7 +5,7 @@ use crate::session::IdMap;
 use libc::c_int;
 use request::{Field, Held, Request};
 use std::{
-    cell::{Cell, OnceCell, RefCell},
+    cell::{Cell, OnceCell},
     collections::VecDeque,
     ffi::CStr,
     rc::Rc,
@@ -119,7 +119,8 @@ struct Conn {
     /// The client object, which a conn must not keep alive.
     object: Weak<Data>,
     socket: Cell<Option<Co>>,
-    zsocket: RefCell<Owned>,
+    /// Taken out only to copy a reference, so the close hook always finds it.
+    zsocket: Cell<Owned>,
     closed: Cell<bool>,
 }
 
@@ -210,11 +211,11 @@ enum Frame {
 
 /// The object's client. Coroutines share it: a method that yields (on socket
 /// IO) or runs PHP code lets another coroutine call methods on the same object,
-/// so it is only borrowed shared, its state is in cells, and no `RefCell`
-/// borrow is held across a yield or a call into PHP.
+/// so it is only borrowed shared, and its state is in cells that are taken out
+/// and put back with nothing in between that yields or runs PHP.
 struct Client {
     conn: Rc<Conn>,
-    host: RefCell<Vec<u8>>,
+    host: Cell<Vec<u8>>,
     port: i64,
     ssl: bool,
     stream_id: Cell<u32>,
@@ -223,12 +224,12 @@ struct Client {
     remote: Cell<Http2Settings>,
     remote_window: Cell<u32>,
     local_window: Cell<u32>,
-    streams: RefCell<Streams>,
+    streams: Cell<Streams>,
     /// The request header arena, taken out while a request is built.
     headers: Cell<Headers>,
-    queue: RefCell<VecDeque<Vec<u8>>>,
+    queue: Cell<Queue>,
     /// The connection's HPACK codecs, while connected.
-    hpack: RefCell<Option<(Decoder, Encoder)>>,
+    hpack: Cell<Option<(Decoder, Encoder)>>,
 }
 
 fn strerror(code: c_int) -> String {
@@ -303,6 +304,9 @@ impl Headers {
 
 type Streams<T = Stream> = IdMap<u32, T>;
 
+/// The frames queued behind a coroutine that is writing already.
+type Queue = VecDeque<Vec<u8>>;
+
 /// The socket's close hook (`socket_dtor`), over the conn `connect` gave it.
 fn socket_closed(conn: &Conn) {
     conn.socket.set(None);
@@ -321,13 +325,13 @@ impl Client {
         let conn = Rc::new(Conn {
             object,
             socket: Cell::new(None),
-            zsocket: RefCell::default(),
+            zsocket: Cell::default(),
             closed: Cell::new(false),
         });
         let local = sw_rs_http2_default_settings();
         Self {
             conn,
-            host: RefCell::new(host.to_vec()),
+            host: Cell::new(host.to_vec()),
             port,
             ssl,
             stream_id: Cell::new(0),
@@ -336,10 +340,10 @@ impl Client {
             remote: Cell::default(),
             remote_window: Cell::new(0),
             local_window: Cell::new(local.init_window_size),
-            streams: RefCell::default(),
+            streams: Cell::default(),
             headers: Cell::default(),
-            queue: RefCell::default(),
-            hpack: RefCell::new(None),
+            queue: Cell::default(),
+            hpack: Cell::new(None),
         }
     }
 
@@ -350,7 +354,44 @@ impl Client {
 
     /// `SW_CLIENT_PRESERVE_SOCKET`: a reference to the socket object for the call.
     fn hold_socket(&self) -> Owned {
-        self.conn.zsocket.borrow().copy()
+        let zsocket = self.conn.zsocket.take();
+        let held = zsocket.copy();
+        self.conn.zsocket.set(zsocket);
+        held
+    }
+
+    /// `f` over the host, taken out and put back.
+    fn with_host<R>(&self, f: impl FnOnce(&mut Vec<u8>) -> R) -> R {
+        let mut host = self.host.take();
+        let result = f(&mut host);
+        self.host.set(host);
+        result
+    }
+
+    /// `f` over the streams, taken out and put back: nothing in `f` yields or
+    /// runs PHP code.
+    fn with_streams<R>(&self, f: impl FnOnce(&mut Streams) -> R) -> R {
+        let mut streams = self.streams.take();
+        let result = f(&mut streams);
+        self.streams.set(streams);
+        result
+    }
+
+    /// `f` over the send queue, taken out and put back.
+    fn with_queue<R>(&self, f: impl FnOnce(&mut Queue) -> R) -> R {
+        let mut queue = self.queue.take();
+        let result = f(&mut queue);
+        self.queue.set(queue);
+        result
+    }
+
+    /// `f` over the HPACK codecs, taken out and put back: nothing in `f` yields
+    /// or runs PHP code.
+    fn with_hpack<R>(&self, f: impl FnOnce(&mut Option<(Decoder, Encoder)>) -> R) -> R {
+        let mut hpack = self.hpack.take();
+        let result = f(&mut hpack);
+        self.hpack.set(hpack);
+        result
     }
 
     /// `socket_dtor`'s release of what hung off the closed socket.
@@ -394,12 +435,12 @@ impl Client {
             return false;
         }
         // `php_swoole_create_socket(convert_to_type(host))`.
-        let kind = swoole_rs_reactor::host_type(&self.host.borrow());
-        {
-            let mut host = self.host.borrow_mut();
+        let kind = self.with_host(|host| {
+            let kind = swoole_rs_reactor::host_type(host);
             let erase = kind.erase.min(host.len());
             host.drain(..erase);
-        }
+            kind
+        });
         // The conn takes the new object's reference.
         let Some(zsocket) = swoole_rs_phpclients::create_socket(kind.socket_type) else {
             if !swoole_rs_zend::bailout::pending() {
@@ -416,7 +457,7 @@ impl Client {
         else {
             return false;
         };
-        *self.conn.zsocket.borrow_mut() = zsocket;
+        self.conn.zsocket.set(zsocket);
         self.conn.socket.set(Some(socket));
         let conn = Rc::clone(&self.conn);
         set_close_hook(socket, Box::new(move |_| socket_closed(&conn)));
@@ -439,7 +480,7 @@ impl Client {
         {
             apply(socket, setting);
         }
-        let host = self.host.borrow().clone();
+        let host = self.with_host(|host| host.clone());
         if !socket.connect_host(&host, c_int::try_from(self.port).unwrap_or(-1)) {
             return self.connect_failed(socket);
         }
@@ -455,8 +496,9 @@ impl Client {
             self.close();
             return false;
         }
+        let zsocket = self.hold_socket();
         self.conn.props(|props| {
-            props.own().value(c"socket", &self.conn.zsocket.borrow());
+            props.own().value(c"socket", &zsocket);
             props.bool(c"connected", true);
         });
         true
@@ -492,7 +534,7 @@ impl Client {
         let bound = socket.has_bound(Events::WRITE);
         let (queued, limit) = if bound {
             (
-                self.queue.borrow().len(),
+                self.with_queue(|queue| queue.len()),
                 self.remote.get().max_concurrent_streams,
             )
         } else {
@@ -507,7 +549,7 @@ impl Client {
                 return false;
             }
             QueueAction::Append => {
-                self.queue.borrow_mut().push_back(data.to_vec());
+                self.with_queue(|queue| queue.push_back(data.to_vec()));
                 return true;
             }
         }
@@ -515,16 +557,16 @@ impl Client {
             self.io_error(socket);
             return false;
         }
-        // Each frame is copied out: sending yields, and the queue's borrow ends first.
+        // Each frame is copied out: sending yields, and the queue is put back first.
         loop {
-            let next = self.queue.borrow().front().cloned();
+            let next = self.with_queue(|queue| queue.front().cloned());
             let Some(frame) = next else { break };
             if !Self::send_all(socket, &frame) {
                 self.io_error(socket);
                 EXCEPTION.throw(c"failed to send control frame", SEND_CONTROL_FRAME_FAILED);
                 return false;
             }
-            self.queue.borrow_mut().pop_front();
+            self.with_queue(Queue::pop_front);
         }
         true
     }
@@ -618,13 +660,14 @@ impl Client {
             }
         }
         if !host {
-            let authority = if self.port == if self.ssl { 443 } else { 80 } {
-                self.host.borrow().clone()
-            } else {
-                let host = self.host.borrow();
-                let host = host.split(|&b| b == 0).next().unwrap_or_default();
-                [host, format!(":{}", self.port).as_bytes()].concat()
-            };
+            let authority = self.with_host(|host| {
+                if self.port == if self.ssl { 443 } else { 80 } {
+                    host.clone()
+                } else {
+                    let host = host.split(|&b| b == 0).next().unwrap_or_default();
+                    [host, format!(":{}", self.port).as_bytes()].concat()
+                }
+            });
             set.set(AUTHORITY, b":authority", &authority);
         }
         for (key, value) in entries(cookies.as_ref()) {
@@ -636,9 +679,11 @@ impl Client {
             set.add(b"cookie", &[key, b"=", encoded.bytes()]);
         }
         let mut frame = vec![0_u8; FRAME_HEADER];
-        if let Some((_, encoder)) = self.hpack.borrow_mut().as_mut() {
-            encoder.encode(set.list(), &mut frame);
-        }
+        self.with_hpack(|hpack| {
+            if let Some((_, encoder)) = hpack.as_mut() {
+                encoder.encode(set.list(), &mut frame);
+            }
+        });
         self.headers.set(set);
         frame
     }
@@ -710,13 +755,13 @@ impl Client {
             remote_window: self.remote.get().init_window_size,
             local_window: self.local.init_window_size,
         };
-        let replaced = self.streams.borrow_mut().insert(id, stream);
+        let replaced = self.with_streams(|streams| streams.insert(id, stream));
         drop(replaced);
     }
 
     /// `write_data`: more of a pipeline request's body.
     fn write_data(&self, id: u32, data: Option<&Value>, end: bool) -> bool {
-        let flags = self.streams.borrow().get(&id).map(|stream| stream.flags);
+        let flags = self.with_streams(|streams| streams.get(&id).map(|stream| stream.flags));
         if !sw_rs_http2_write_allowed(flags.is_some(), flags.unwrap_or(0)) {
             let message = format!("unable to found active pipeline stream#{id}");
             self.update_error(libc::EINVAL, message.as_bytes());
@@ -729,9 +774,11 @@ impl Client {
         if !self.send_data(id, body.bytes(), flag) {
             return false;
         }
-        if let Some(stream) = self.streams.borrow_mut().get_mut(&id) {
-            stream.flags = sw_rs_http2_stream_update(stream.flags, end, false);
-        }
+        self.with_streams(|streams| {
+            if let Some(stream) = streams.get_mut(&id) {
+                stream.flags = sw_rs_http2_stream_update(stream.flags, end, false);
+            }
+        });
         true
     }
 
@@ -772,7 +819,7 @@ impl Client {
         if facts.publish_last_id {
             self.last_stream_id.set(id);
         }
-        let known = || self.streams.borrow().contains_key(&id);
+        let known = || self.with_streams(|streams| streams.contains_key(&id));
         let read = match facts.action {
             FrameAction::Settings => {
                 for setting in payload.chunks(6) {
@@ -791,9 +838,13 @@ impl Client {
                 if id == 0 {
                     let plan = window(self.remote_window.get(), credit as usize, 0, true);
                     self.remote_window.set(plan.value);
-                } else if let Some(stream) = self.streams.borrow_mut().get_mut(&id) {
-                    stream.remote_window =
-                        window(stream.remote_window, credit as usize, 0, true).value;
+                } else {
+                    self.with_streams(|streams| {
+                        if let Some(stream) = streams.get_mut(&id) {
+                            stream.remote_window =
+                                window(stream.remote_window, credit as usize, 0, true).value;
+                        }
+                    });
                 }
                 Payload::Unread
             }
@@ -867,13 +918,13 @@ impl Client {
                 return Frame::Fail;
             }
             FrameAction::Reset => {
-                let reset = self.streams.borrow_mut().remove(&id);
+                let reset = self.with_streams(|streams| streams.remove(&id));
                 drop(reset);
                 return Frame::Continue;
             }
             _ => {}
         }
-        if !self.streams.borrow().contains_key(&id) {
+        if !self.with_streams(|streams| streams.contains_key(&id)) {
             // Upstream's "%d" of the unsigned stream id.
             let id = id.c_cast::<i32>();
             swoole_rs_corebase::log::notice(format_args!(
@@ -893,14 +944,11 @@ impl Client {
             }
             _ => {}
         }
-        let ready = {
-            let mut streams = self.streams.borrow_mut();
-            let Some(stream) = streams.get_mut(&id) else {
-                return Frame::Continue;
-            };
+        let ready = self.with_streams(|streams| {
+            let stream = streams.get_mut(&id)?;
             let plan = sw_rs_http2_response(facts.action, facts.flags, stream.flags, pipeline_read);
             if !plan.ready {
-                return Frame::Continue;
+                return None;
             }
             // Only this client has seen the response so far: no user code runs
             // on these writes.
@@ -917,14 +965,17 @@ impl Client {
             stream.buffer.clear();
             // The return value takes the stream's response; a pipeline stream
             // goes on with a fresh one.
-            if plan.end {
+            Some(if plan.end {
                 streams.remove(&id).map(|stream| stream.response.zval)
             } else {
                 if let Some(response) = stream.response.props() {
                     response.bool(c"pipeline", true);
                 }
                 Some(std::mem::replace(&mut stream.response, Response::new(id)).zval)
-            }
+            })
+        });
+        let Some(ready) = ready else {
+            return Frame::Continue;
         };
         if let Some(response) = ready {
             call.set_owned(response);
@@ -955,10 +1006,12 @@ impl Client {
         if plan.set_window {
             self.remote_window.set(number);
         }
-        if plan.change_deflater
-            && let Some((_, encoder)) = self.hpack.borrow_mut().as_mut()
-        {
-            encoder.set_table_size(number);
+        if plan.change_deflater {
+            self.with_hpack(|hpack| {
+                if let Some((_, encoder)) = hpack.as_mut() {
+                    encoder.set_table_size(number);
+                }
+            });
         }
     }
 
@@ -966,7 +1019,17 @@ impl Client {
     /// A DATA frame's payload onto its stream's body, and the stream's window
     /// after it.
     fn buffer_data(&self, id: u32, flags: u32, payload: &[u8]) -> Buffered {
-        let mut streams = self.streams.borrow_mut();
+        self.with_streams(|streams| self.buffer_stream(streams, id, flags, payload))
+    }
+
+    /// `buffer_data` over the streams taken out.
+    fn buffer_stream(
+        &self,
+        streams: &mut Streams,
+        id: u32,
+        flags: u32,
+        payload: &[u8],
+    ) -> Buffered {
         let Some(stream) = streams.get_mut(&id) else {
             return Buffered::Nothing;
         };
@@ -1019,9 +1082,11 @@ impl Client {
             if !self.send_window_update(id, stream_window.increment) {
                 return Err(Frame::Fail);
             }
-            if let Some(stream) = self.streams.borrow_mut().get_mut(&id) {
-                stream.local_window = initial;
-            }
+            self.with_streams(|streams| {
+                if let Some(stream) = streams.get_mut(&id) {
+                    stream.local_window = initial;
+                }
+            });
         }
         Ok(())
     }
@@ -1032,12 +1097,9 @@ impl Client {
         if flags & FLAG_PRIORITY != 0 {
             input = input.get(5..).unwrap_or_default();
         }
-        // The response, held apart from the streams' borrow.
-        let response = self
-            .streams
-            .borrow()
-            .get(&id)
-            .map(|stream| stream.response.zval.copy());
+        // The response, held apart from the streams.
+        let response =
+            self.with_streams(|streams| streams.get(&id).map(|stream| stream.response.zval.copy()));
         let props = response.as_ref()?.props(Some(&RESPONSE))?;
         // The three arrays the block fills, out of their properties meanwhile.
         props
@@ -1058,16 +1120,30 @@ impl Client {
     fn decode_headers(
         &self,
         id: u32,
-        mut input: &[u8],
+        input: &[u8],
         headers: &mut ArrayMut,
         cookies: &mut ArrayMut,
         set_cookie_headers: &mut ArrayMut,
     ) -> Option<Error> {
         // Nothing in the loop yields or runs user code: the response is this
         // client's alone until a receive returns it.
-        let mut hpack = self.hpack.borrow_mut();
-        let (decoder, _) = hpack.as_mut()?;
-        let failed = loop {
+        self.with_hpack(|hpack| {
+            let (decoder, _) = hpack.as_mut()?;
+            self.decode_block(decoder, id, input, headers, cookies, set_cookie_headers)
+        })
+    }
+
+    /// `decode_headers` with the HPACK decoder taken out.
+    fn decode_block(
+        &self,
+        decoder: &mut Decoder,
+        id: u32,
+        mut input: &[u8],
+        headers: &mut ArrayMut,
+        cookies: &mut ArrayMut,
+        set_cookie_headers: &mut ArrayMut,
+    ) -> Option<Error> {
+        loop {
             let step = match decoder.decode(input, true) {
                 Ok(step) => step,
                 Err(error) => break Some(error),
@@ -1077,17 +1153,22 @@ impl Client {
             if let Some((name, text)) = step.header {
                 let kind = header_kind(HeaderRole::Response, name);
                 if name.first() == Some(&b':') {
-                    if kind == HeaderKind::Status
-                        && let Some(stream) = self.streams.borrow().get(&id)
-                        && let Some(props) = stream.response.props()
-                    {
-                        props.own().long(c"statusCode", atol(text));
+                    if kind == HeaderKind::Status {
+                        self.with_streams(|streams| {
+                            if let Some(stream) = streams.get(&id)
+                                && let Some(props) = stream.response.props()
+                            {
+                                props.own().long(c"statusCode", atol(text));
+                            }
+                        });
                     }
                 } else {
                     if kind == HeaderKind::ContentEncoding && media_kind(text) == Media::Gzip {
-                        if let Some(stream) = self.streams.borrow_mut().get_mut(&id) {
-                            stream.gzip = Some(Inflate::gzip_only());
-                        }
+                        self.with_streams(|streams| {
+                            if let Some(stream) = streams.get_mut(&id) {
+                                stream.gzip = Some(Inflate::gzip_only());
+                            }
+                        });
                     } else if kind == HeaderKind::SetCookie {
                         swoole_rs_phpclients::parse_set_cookies(text, cookies, set_cookie_headers);
                     }
@@ -1102,9 +1183,7 @@ impl Client {
                 decoder.end_headers();
                 break None;
             }
-        };
-        drop(hpack);
-        failed
+        }
     }
 }
 
@@ -1544,7 +1623,8 @@ fn is_stream_exist(call: &Call) {
     if id == 0 {
         return call.set_bool(true);
     }
-    let exists = u32::try_from(id).is_ok_and(|id| client.streams.borrow().contains_key(&id));
+    let exists =
+        u32::try_from(id).is_ok_and(|id| client.with_streams(|streams| streams.contains_key(&id)));
     call.set_bool(exists);
 }
 
@@ -1568,7 +1648,7 @@ fn stats(call: &Call) {
     let Ok(key) = call.arity(0, 1).and_then(|()| call.string(1, b"")) else {
         return call.set_bool(false);
     };
-    let active = i64::try_from(client.streams.borrow().len()).unwrap_or(i64::MAX);
+    let active = i64::try_from(client.with_streams(|streams| streams.len())).unwrap_or(i64::MAX);
     let (stream_id, last_stream_id) = (client.stream_id.get(), client.last_stream_id.get());
     let remote = client.remote.get();
     if !key.is_empty() {

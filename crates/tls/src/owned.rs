@@ -1,11 +1,10 @@
-//! Shared SSL context/configuration ownership: `swoole::SSLContext` is this owner,
-//! reference counted (`swr_v1_tls_owner_new`, then [`TlsContext`]). OpenSSL
-//! operations read the authoritative Rust owner.
+//! Thread-local TLS configuration builders and immutable runtime snapshots.
+//! [`TlsContext`] retains a builder; sessions use independent [`TlsSettings`].
 use crate::context::{PasswordBinding, copy_password, create_context};
 use crate::{TlsConfig, Warn};
 use openssl_sys::SSL_CTX;
 use std::{
-    cell::{Cell, Ref, RefCell, RefMut},
+    cell::Cell,
     ffi::{CStr, c_char, c_int},
     rc::Rc,
     sync::Arc,
@@ -54,8 +53,7 @@ impl OwnedTlsFields {
     }
 }
 pub struct OwnedTlsContext {
-    fields: RefCell<OwnedTlsFields>,
-    configuration: RefCell<()>,
+    fields: Cell<Option<Box<OwnedTlsFields>>>,
     strings: [Arc<StringSlot>; STRING_COUNT],
     /// The passphrase slot the context's password callback reads, kept while it may.
     /// Only a [`Lent`] reaches it.
@@ -63,7 +61,7 @@ pub struct OwnedTlsContext {
     warn: Warn,
 }
 
-/// A port's completed configuration. Its context and strings have no mutable
+/// A completed TLS configuration. Its context and strings have no mutable
 /// builder aliases; readers can create sessions without borrowing a builder.
 pub struct TlsSettings {
     fields: OwnedTlsFields,
@@ -116,6 +114,20 @@ impl TlsSettings {
             crate::SslCreateFlag::SW_SSL_SERVER as c_int,
         )
     }
+    /// Creates an independent client session on `socket`.
+    #[must_use]
+    pub fn create_client_session(&self, socket: swoole_rs_reactor::Socket<'_>) -> bool {
+        crate::upstream::socket_ssl_create(
+            socket,
+            self.fields.context.as_deref(),
+            crate::SslCreateFlag::SW_SSL_CLIENT as c_int,
+        )
+    }
+    /// The explicit SNI/verification name, empty when configuration names none.
+    #[must_use]
+    pub fn host_name(&self) -> &CStr {
+        self.strings[TLS_HOST_NAME].c_str()
+    }
     /// Selects this context for a server session during its SNI handshake.
     pub fn select(&self, ssl: crate::Ssl<'_>) {
         ssl.set_context(self.fields.context.as_deref());
@@ -132,9 +144,10 @@ pub fn tls_warning(function: &CStr, message: &str) {
     swoole_rs_corebase::log::warning(function, format_args!("{message}"));
 }
 fn prepared(owner: &OwnedTlsContext) -> OwnedTlsPrepared {
+    let mut loan = owner.borrow_configuration();
     OwnedTlsPrepared {
         owner,
-        fields: owner.fields.as_ptr(),
+        fields: loan.edit(std::ptr::from_mut),
         strings: owner.strings.each_ref().map(Arc::as_ptr),
     }
 }
@@ -146,8 +159,7 @@ pub extern "C" fn swr_v1_tls_owner_new() -> OwnedTlsPrepared {
 /// A new owner that warns through `warn`, with fresh string slots of its own.
 fn fresh(warn: Warn) -> Rc<OwnedTlsContext> {
     Rc::new(OwnedTlsContext {
-        fields: RefCell::new(OwnedTlsFields::default()),
-        configuration: RefCell::new(()),
+        fields: Cell::new(Some(Box::default())),
         strings: std::array::from_fn(|_| StringSlot::empty()),
         context_password: Cell::new(None),
         warn,
@@ -186,7 +198,7 @@ impl TlsContext {
     pub fn with_texts(texts: &[(Text, &[u8])]) -> Self {
         let owner = fresh(tls_warning);
         {
-            let owner = owner.borrow_configuration();
+            let mut owner = owner.borrow_configuration();
             for &(which, value) in texts {
                 _ = owner.set_text(which, value);
             }
@@ -230,19 +242,34 @@ pub fn reason_text(error: std::os::raw::c_ulong) -> String {
 const TLS_HOST_NAME: usize = 8;
 const CLIENT_CERT_FILE: usize = 7;
 impl OwnedTlsContext {
-    /// Borrows the builder for configuration, rejecting a second active loan.
+    /// Lends ownership of the configuration until the returned loan is dropped.
+    /// # Panics
+    /// The builder already has an active configuration loan.
     #[must_use]
+    #[expect(
+        clippy::panic,
+        reason = "reject overlapping configuration loans before exposing mutable state"
+    )]
     pub fn borrow_configuration(&self) -> Lent<'_> {
+        let Some(fields) = self.fields.take() else {
+            panic!("TLS configuration is already lent");
+        };
         Lent {
             owner: self,
-            _configuration: self.configuration.borrow_mut(),
+            fields: Some(fields),
         }
     }
 
-    /// Reads scalar settings without permitting an overlapping field mutation.
+    /// An owned copy of the settings, independent of subsequent edits.
+    /// # Panics
+    /// The builder already has an active configuration loan.
     #[must_use]
-    pub fn fields(&self) -> Ref<'_, OwnedTlsFields> {
-        self.fields.borrow()
+    pub fn fields(&self) -> OwnedTlsFields {
+        self.borrow_configuration()
+            .fields
+            .as_ref()
+            .and_then(|fields| fields.try_clone())
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("cannot retain TLS configuration"))
     }
 
     /// Whether `client_cert_file` is set.
@@ -264,19 +291,23 @@ pub fn owner_host_c_str(owner: &OwnedTlsContext) -> std::ffi::CString {
 /// An exclusive configuration loan on the builder's owning thread.
 pub struct Lent<'a> {
     owner: &'a OwnedTlsContext,
-    _configuration: RefMut<'a, ()>,
+    fields: Option<Box<OwnedTlsFields>>,
+}
+impl Drop for Lent<'_> {
+    fn drop(&mut self) {
+        self.owner.fields.set(self.fields.take());
+    }
 }
 impl Lent<'_> {
-    /// Builds an independent, immutable port configuration. Reconfiguration of
+    /// Builds an independent, immutable runtime configuration. Reconfiguration of
     /// this builder cannot change the context or password a reader already holds.
     #[must_use]
     pub fn freeze(&self, callback: Option<crate::ServernameCallback>) -> Option<TlsSettings> {
-        let mut owner = OwnedTlsContext {
-            fields: RefCell::new(self.edit(|fields| OwnedTlsFields {
+        let owner = OwnedTlsContext {
+            fields: Cell::new(Some(Box::new(OwnedTlsFields {
                 context: None,
-                ..*fields
-            })),
-            configuration: RefCell::new(()),
+                ..*self.fields.as_deref()?
+            }))),
             strings: self.owner.strings.each_ref().map(|from| {
                 let mut slot = StringSlot::new();
                 if !slot.set(from.bytes()) {
@@ -291,16 +322,12 @@ impl Lent<'_> {
         if !create(&mut owner.borrow_configuration()) {
             return None;
         }
+        let fields = owner.fields.into_inner()?;
         if let Some(callback) = callback {
-            owner
-                .fields
-                .get_mut()
-                .context
-                .as_deref()?
-                .set_servername_callback(callback);
+            fields.context.as_deref()?.set_servername_callback(callback);
         }
         Some(TlsSettings {
-            fields: owner.fields.into_inner(),
+            fields: *fields,
             strings: owner.strings,
         })
     }
@@ -450,15 +477,15 @@ pub enum SocketContextError {
     Create,
 }
 
-/// Configure and create a coroutine socket's context from its authoritative owner.
+/// Configure and freeze a coroutine socket's independent runtime context.
 /// # Errors
 /// [`SocketContextError`].
-pub fn swr_v1_tls_owner_socket_context(
-    mut owner: Lent<'_>,
+pub fn freeze_socket_context(
+    owner: &mut Lent<'_>,
     socket: swoole_rs_reactor::Socket<'_>,
     http2: bool,
     dtls_supported: bool,
-) -> Result<(), SocketContextError> {
+) -> Result<TlsSettings, SocketContextError> {
     let kind = socket.read(swoole_rs_reactor::SocketFields::kind);
     let dtls = kind.is_some_and(swoole_rs_corebase::constants::SocketType::is_dgram);
     if dtls && !dtls_supported {
@@ -477,11 +504,9 @@ pub fn swr_v1_tls_owner_socket_context(
             record.chunk_size = swoole_rs_corebase::constants::SW_SSL_BUFFER_SIZE;
         });
     }
-    if !create(&mut owner) {
-        return Err(SocketContextError::Create);
-    }
+    let settings = owner.freeze(None).ok_or(SocketContextError::Create)?;
     socket.edit(|record| record.output.ssl_send = true);
-    Ok(())
+    Ok(settings)
 }
 
 /// Create and configure one coroutine TLS session, including moving write buffers
@@ -491,8 +516,8 @@ pub fn swr_v1_tls_owner_socket_context(
 /// As [`crate::socket_ssl_new`].
 ///
 /// `hostname` is the automatic host name, none when it is empty.
-pub fn swr_v1_tls_owner_socket_session(
-    owner: Option<&OwnedTlsContext>,
+pub fn socket_session(
+    owner: Option<&TlsSettings>,
     record: swoole_rs_reactor::Socket<'_>,
     hostname: Option<&CStr>,
 ) -> Result<(), crate::SslNewError> {
@@ -503,7 +528,7 @@ pub fn swr_v1_tls_owner_socket_session(
     let Some(owner) = owner else {
         return Err(crate::SslNewError::New);
     };
-    let fields = owner.fields();
+    let fields = &owner.fields;
     crate::socket_ssl_new(record, fields.context.as_deref(), 0)?;
     let disable_tls_host_name = fields.disable_tls_host_name;
     let ssl = crate::Ssl::of(record);
@@ -572,7 +597,7 @@ impl Lent<'_> {
     /// Write the text setting into the owner: false for a certificate or key file
     /// that can't be read.
     #[must_use]
-    pub fn set_text(&self, which: Text, value: &[u8]) -> bool {
+    pub fn set_text(&mut self, which: Text, value: &[u8]) -> bool {
         // The slot, and for a file its setter's log origin and name.
         let (slot, file) = match which {
             Text::CertFile => (4, Some((c"set_cert_file", "cert"))),
@@ -606,7 +631,7 @@ impl Lent<'_> {
     }
 
     /// Write the scalar setting into the owner.
-    pub fn set_value(&self, value: Value) {
+    pub fn set_value(&mut self, value: Value) {
         self.edit(|fields| match value {
             Value::Protocols(value) => fields.protocols = value.c_cast::<u32>(),
             Value::DisableCompress(value) => fields.disable_compress = value,
@@ -628,9 +653,12 @@ impl Lent<'_> {
         self.owner.strings.get(index).is_some_and(store)
     }
 
-    /// Edits fields during configuration. Reentrant field access is rejected.
-    pub fn edit<R>(&self, f: impl FnOnce(&mut OwnedTlsFields) -> R) -> R {
-        f(&mut self.owner.fields.borrow_mut())
+    /// Edits the configuration owned by this loan.
+    pub fn edit<R>(&mut self, f: impl FnOnce(&mut OwnedTlsFields) -> R) -> R {
+        f(self
+            .fields
+            .as_deref_mut()
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("TLS loan was returned")))
     }
 }
 
@@ -664,23 +692,23 @@ mod tests {
         use std::panic::{AssertUnwindSafe, catch_unwind};
         let builder = TlsContext::new();
         let alias = builder.clone();
-        let loan = builder.borrow_configuration();
+        let mut loan = builder.borrow_configuration();
         assert!(catch_unwind(AssertUnwindSafe(|| alias.borrow_configuration())).is_err());
         assert!(loan.set_text(Text::HostName, b"first.test"));
         let name = owner_host_c_str(&builder);
         assert!(loan.set_text(Text::HostName, b"second.test"));
         assert_eq!(name, c"first.test");
-        let fields = builder.fields();
-        assert!(
-            catch_unwind(AssertUnwindSafe(|| loan.set_value(Value::VerifyPeer(true)))).is_err()
-        );
-        assert!(!fields.verify_peer);
-        drop(fields);
+        assert!(catch_unwind(AssertUnwindSafe(|| builder.fields())).is_err());
         drop(loan);
+        let fields = builder.fields();
         alias
             .borrow_configuration()
             .set_value(Value::VerifyPeer(true));
         assert!(builder.fields().verify_peer);
+        assert!(
+            !fields.verify_peer,
+            "an owned read remains independent of later edits"
+        );
         assert_eq!(owner_host_name(&builder), b"second.test");
     }
 
@@ -689,7 +717,7 @@ mod tests {
         fn shared<T: Send + Sync>() {}
         shared::<TlsSettings>();
         let builder = TlsContext::new();
-        let owner = builder.borrow_configuration();
+        let mut owner = builder.borrow_configuration();
         assert!(owner.set_text(Text::Passphrase, b"first password"));
         owner.set_value(Value::AllowSelfSigned(true));
         let first = Arc::new(owner.freeze(None).unwrap());
@@ -739,7 +767,7 @@ mod tests {
         unsafe {
             let prepared = owner_new(warning);
             let owner = prepared.owner;
-            let lent = (&*owner).borrow_configuration();
+            let mut lent = (&*owner).borrow_configuration();
             let text = |index: usize| {
                 let view = swoole_rs_corebase::swr_v1_core_string_view(&*prepared.strings[index]);
                 std::slice::from_raw_parts(view.data.cast::<u8>(), view.length).to_vec()
@@ -804,19 +832,22 @@ mod tests {
                 let socket =
                     swoole_rs_reactor::SocketRecord::with_fd(stream.as_raw_fd(), 6).into_raw();
                 let handle = swoole_rs_reactor::Socket::from_ptr(socket).unwrap();
-                assert_eq!(
-                    swr_v1_tls_owner_socket_context(
-                        (&*prepared.owner).borrow_configuration(),
-                        handle,
-                        true,
-                        true
-                    ),
-                    Ok(())
-                );
+                let settings = freeze_socket_context(
+                    &mut (&*prepared.owner).borrow_configuration(),
+                    handle,
+                    true,
+                    true,
+                )
+                .unwrap();
                 assert!((*socket).fields.output.ssl_send);
                 assert!((*prepared.fields).http_v2);
-                let result = swr_v1_tls_owner_socket_session(
-                    Some(&*prepared.owner),
+                // Session creation must use the snapshot even after the builder changes
+                // and its last reference is released.
+                assert!((*prepared.strings[8]).set_shared(b"changed.test"));
+                (*prepared.fields).disable_tls_host_name = !disabled;
+                drop(Rc::from_raw(prepared.owner));
+                let result = socket_session(
+                    Some(&settings),
                     handle,
                     (!automatic.is_empty()).then(|| hostname.c_str()),
                 );
@@ -838,10 +869,9 @@ mod tests {
                         & openssl_sys::SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER,
                     0
                 );
-                assert_eq!(swr_v1_tls_owner_socket_session(None, handle, None), Ok(()));
+                assert_eq!(socket_session(None, handle, None), Ok(()));
                 openssl_sys::SSL_free(ssl);
                 swoole_rs_reactor::SocketRecord::free(socket);
-                drop(Rc::from_raw(prepared.owner));
             }
         }
     }

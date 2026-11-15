@@ -16,7 +16,7 @@ use core::ffi::{c_char, c_int, c_void};
 use core::ptr::NonNull;
 use std::ffi::{CStr, CString};
 use std::rc::Rc;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use swoole_rs_buffer::string::CppString;
 #[cfg(not(test))]
 use swoole_rs_buffer::string::with_thread_buffer;
@@ -39,22 +39,18 @@ use swoole_rs_reactor::{
 };
 use swoole_rs_reactor::{Event, Events, Running};
 #[cfg(not(test))]
-use swoole_rs_tls::ssl_context_create;
-#[cfg(not(test))]
 use swoole_rs_tls::upstream::{
     self as net, sendfile_sync, socket_free, socket_sendfile_async, socket_ssl_check_host,
-    socket_ssl_close, socket_ssl_connect, socket_ssl_create, socket_ssl_set_host_name,
-    socket_ssl_verify,
+    socket_ssl_close, socket_ssl_connect, socket_ssl_set_host_name, socket_ssl_verify,
 };
 use swoole_rs_tls::{
-    OwnedTlsContext, OwnedTlsFields, SslCreateFlag, SslState, SslVersion, TlsContext,
+    OwnedTlsContext, OwnedTlsFields, SslCreateFlag, SslState, SslVersion, TlsContext, TlsSettings,
 };
 #[cfg(test)]
 use tests::{
     async_dispatch, event_write, net, ops, sendfile_sync, socket_free, socket_sendfile_async,
-    socket_ssl_check_host, socket_ssl_close, socket_ssl_connect, socket_ssl_create,
-    socket_ssl_set_host_name, socket_ssl_verify, ssl_context_create, with_thread_buffer,
-    writable_callback,
+    socket_ssl_check_host, socket_ssl_close, socket_ssl_connect, socket_ssl_set_host_name,
+    socket_ssl_verify, tls_session, with_thread_buffer, writable_callback,
 };
 
 /// The flags [`Client::flag`] reads.
@@ -336,6 +332,8 @@ pub struct Client {
     events: Cell<u32>,
     /// The `SSLContext`, none while TLS is off.
     tls: OnceCell<TlsContext>,
+    /// The immutable configuration kept from the first handshake through close.
+    tls_settings: OnceCell<Arc<TlsSettings>>,
     /// The proxies, which the client owns: each a nullable pointer, as C++'s
     /// `Socks5Proxy` reads the slot.
     socks5: Cell<Option<Box<ProxyState>>>,
@@ -547,6 +545,9 @@ impl Handle {
 
     /// The context's SNI host name, NUL-terminated and empty when unset.
     fn tls_host_name(self) -> CString {
+        if let Some(settings) = self.get().tls_settings.get() {
+            return settings.host_name().to_owned();
+        }
         let tls = self.get().tls.get();
         swoole_rs_tls::owner_host_c_str(
             tls.unwrap_or_else(|| swoole_rs_corebase::fatal("a TLS client has no TLS context")),
@@ -846,6 +847,7 @@ pub fn create(kind: c_int, is_async: bool) -> Option<Handle> {
         listener: Cell::new(None),
         events: Cell::new(0),
         tls: OnceCell::new(),
+        tls_settings: OnceCell::new(),
         socks5: Cell::new(None),
         http_proxy: Cell::new(None),
         length_owner: Cell::new(None),
@@ -1157,35 +1159,42 @@ fn enable_dtls(this: Handle) {
     this.set(Flag::Dtls, true);
 }
 
+fn tls_freeze(owner: &TlsContext) -> Option<TlsSettings> {
+    #[cfg(test)]
+    tests::log("ssl create");
+    owner.borrow_configuration().freeze(None)
+}
+
+#[cfg(not(test))]
+fn tls_session(socket: Socket<'_>, settings: &TlsSettings) -> bool {
+    settings.create_client_session(socket)
+}
+
 /// `Client::ssl_handshake()`.
 #[must_use]
 pub fn ssl_handshake(this: Handle) -> bool {
     if this.tls_state() == SSL_STATE_READY {
         return false;
     }
-    // A reference of this call's own, which keeps the context live throughout.
-    let tls = this.get().tls.get().cloned();
-    let tls = tls.unwrap_or_else(|| swoole_rs_corebase::fatal("a TLS client has no TLS context"));
-    let missing = this.edit_tls(|fields, record| {
-        let missing = fields.context.is_none();
-        if missing {
-            fields.http_v2 = record.http2;
-        }
-        missing
-    });
-    if missing && !ssl_context_create(&mut tls.borrow_configuration()) {
-        return false;
-    }
+    let settings =
+        if let Some(settings) = this.get().tls_settings.get() {
+            Arc::clone(settings)
+        } else {
+            let tls =
+                this.get().tls.get().cloned().unwrap_or_else(|| {
+                    swoole_rs_corebase::fatal("a TLS client has no TLS context")
+                });
+            this.edit_tls(|fields, record| fields.http_v2 = record.http2);
+            let Some(settings) = tls_freeze(&tls) else {
+                return false;
+            };
+            let settings = Arc::new(settings);
+            _ = this.get().tls_settings.set(Arc::clone(&settings));
+            settings
+        };
     if this.socket().read(|socket| socket.ssl().is_null()) {
         this.socket().edit(|socket| socket.output.ssl_send = true);
-        // A reference of this call's own to the `SSL_CTX`, held while the session is made.
-        let context = this.edit_tls(|fields, _| {
-            fields
-                .context
-                .as_ref()
-                .and_then(swoole_rs_tls::SslContext::try_clone)
-        });
-        if !socket_ssl_create(this.socket(), context.as_deref(), SSL_CLIENT) {
+        if !tls_session(this.socket(), &settings) {
             log::set_last_error(ERROR_SSL_CREATE_SESSION_FAILED);
             return false;
         }
@@ -1198,12 +1207,11 @@ pub fn ssl_handshake(this: Handle) -> bool {
     if !socket_ssl_connect(this.socket()) {
         return false;
     }
-    if this.tls_state() == SSL_STATE_READY {
-        let (verify, self_signed) =
-            this.edit_tls(|fields, _| (fields.verify_peer, fields.allow_self_signed));
-        if verify && !ssl_verify(this, self_signed) {
-            return false;
-        }
+    if this.tls_state() == SSL_STATE_READY
+        && settings.verify_peer()
+        && !ssl_verify(this, settings.allow_self_signed())
+    {
+        return false;
     }
     true
 }

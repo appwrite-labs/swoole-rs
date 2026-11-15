@@ -13,7 +13,7 @@ use crate::{
 use libc::c_int;
 use std::{
     borrow::Cow,
-    cell::{Cell, OnceCell, RefCell, RefMut},
+    cell::{Cell, OnceCell},
     ffi::{CStr, CString},
     ptr,
     rc::Rc,
@@ -134,9 +134,9 @@ impl Custom for Data {
 struct Conn {
     object: *mut zend_object,
     socket: Cell<Option<Co>>,
-    zsocket: RefCell<Owned>,
+    zsocket: Cell<Owned>,
     /// The write buffer the closed socket left (`tmp_write_buffer`).
-    written: RefCell<native::Written>,
+    written: Cell<native::Written>,
 }
 
 /// Upstream's `swoole::coroutine::http::Client`. Every method takes `&self`:
@@ -162,26 +162,27 @@ struct Client {
     accept_websocket_compression: Cell<bool>,
     ws: Option<Box<dyn WebSocket>>,
     /// Cloned out before each call, so `set()` from the callback can replace it.
-    write_func: RefCell<Option<Rc<Callable>>>,
-    basic_auth: RefCell<Vec<u8>>,
+    write_func: Cell<Option<Rc<Callable>>>,
+    basic_auth: Cell<Vec<u8>>,
     head: Cell<bool>,
-    /// The socket writes it through a pointer while it connects.
-    resolve: RefCell<swoole_rs_corebase::NameResolverContext>,
+    /// The socket writes it through a pointer while it connects, so it stays
+    /// in place; only `exec` replaces it, never during a connect.
+    resolve: Cell<swoole_rs_corebase::NameResolverContext>,
     /// The last response's status, which `exec` and `upgrade` read.
     status: Cell<u16>,
     wait_response: Cell<bool>,
-    body: RefCell<Vec<u8>>,
+    body: Cell<Vec<u8>>,
     compress: Cell<Compress>,
     compression_error: Cell<bool>,
-    decoder: RefCell<Option<Decoder>>,
+    decoder: Cell<Option<Decoder>>,
     connection_close: Cell<bool>,
     completed: Cell<bool>,
     event_stream: Cell<bool>,
     in_callback: Cell<bool>,
-    /// The response parser; whoever borrows it owns the socket's receive.
-    parser: RefCell<Parser>,
+    /// The response parser; whoever takes it out owns the socket's receive.
+    parser: Cell<Option<Parser>>,
     has_upload_files: Cell<bool>,
-    download_name: RefCell<Option<ZString>>,
+    download_name: Cell<Option<ZString>>,
     download_offset: Cell<i64>,
     /// The open download's descriptor.
     download_file: Cell<Option<c_int>>,
@@ -386,8 +387,8 @@ impl Client {
         let conn = Rc::new(Conn {
             object,
             socket: Cell::new(None),
-            zsocket: RefCell::default(),
-            written: RefCell::default(),
+            zsocket: Cell::default(),
+            written: Cell::default(),
         });
         let mut host = host.to_vec();
         Self {
@@ -409,23 +410,23 @@ impl Client {
             websocket: Cell::new(false),
             accept_websocket_compression: Cell::new(false),
             ws: native::websocket(),
-            write_func: RefCell::default(),
-            basic_auth: RefCell::default(),
+            write_func: Cell::default(),
+            basic_auth: Cell::default(),
             head: Cell::new(false),
-            resolve: RefCell::default(),
+            resolve: Cell::default(),
             status: Cell::new(0),
             wait_response: Cell::new(false),
-            body: RefCell::default(),
+            body: Cell::default(),
             compress: Cell::new(Compress::None),
             compression_error: Cell::new(false),
-            decoder: RefCell::default(),
+            decoder: Cell::default(),
             connection_close: Cell::new(false),
             completed: Cell::new(false),
             event_stream: Cell::new(false),
             in_callback: Cell::new(false),
-            parser: RefCell::new(Parser::new(llhttp::Kind::Response)),
+            parser: Cell::new(Some(Parser::new(llhttp::Kind::Response))),
             has_upload_files: Cell::new(false),
-            download_name: RefCell::default(),
+            download_name: Cell::default(),
             download_offset: Cell::new(0),
             download_file: Cell::new(None),
             bailout: Cell::new(false),
@@ -440,8 +441,10 @@ impl Client {
     /// A reference to the socket object for the rest of a call
     /// (`SW_CLIENT_PRESERVE_SOCKET`), so a close inside it cannot free the socket.
     fn hold(&self) -> Option<Owned> {
-        let zsocket = self.conn.zsocket.borrow();
-        zsocket.object().map(|_| zsocket.copy())
+        let zsocket = self.conn.zsocket.take();
+        let held = zsocket.object().map(|_| zsocket.copy());
+        self.conn.zsocket.set(zsocket);
+        held
     }
 
     fn set_error(&self, code: c_int, message: &CStr, status: i64) {
@@ -542,19 +545,18 @@ impl Client {
         let written = swoole_rs_base64::encode(&input, &mut encoded);
         let encoded = encoded.get(..written).unwrap_or(&encoded);
         self.basic_auth
-            .replace([b"Basic ".as_slice(), encoded].concat());
+            .set([b"Basic ".as_slice(), encoded].concat());
     }
 
     fn connect(&self) -> bool {
         if self.co().is_some() {
             return true;
         }
-        {
-            let mut body = self.body.borrow_mut();
+        self.with_body(|body| {
             if body.capacity() == 0 {
                 body.reserve(BODY_SIZE);
             }
-        }
+        });
         let zsocket = match native::swoole_http_client_coro_create_socket(self.socket_type) {
             Ok(zsocket) => zsocket,
             Err(error) => {
@@ -580,8 +582,8 @@ impl Client {
         self.websocket.set(false);
         self.accept_websocket_compression.set(false);
         let conn = Rc::clone(&self.conn);
-        // SAFETY: the client's resolve context outlives its socket, and no
-        // borrow of it is held while the socket writes it.
+        // SAFETY: the client's resolve context outlives its socket, and is never
+        // borrowed: a cell, replaced only by `exec` before it connects.
         unsafe {
             socket
                 .handle()
@@ -643,7 +645,7 @@ impl Client {
         };
         socket.check_bound(Events::WRITE);
         swoole_rs_corebase::log::set_last_error(0);
-        self.body.borrow_mut().clear();
+        self.with_body(Vec::clear);
 
         let method = self.not_null(c"requestMethod");
         let headers = self.property(c"requestHeaders").array();
@@ -660,7 +662,7 @@ impl Client {
             .and_then(|headers| headers.find(b"Host").or_else(|| headers.find(b"host")))
             .map(Value::string);
         if let Some(download) = download {
-            self.download_name.replace(Some(download.string()));
+            self.download_name.set(Some(download.string()));
             self.download_offset.set(self.get_long(c"downloadOffset"));
         }
 
@@ -729,11 +731,11 @@ impl Client {
         if let Some(auth) = socket.proxy_authorization() {
             request::header(&mut out, b"Proxy-Authorization", &auth);
         }
-        let auth = self.basic_auth.borrow();
+        let auth = self.basic_auth.take();
         if !auth.is_empty() {
             request::header(&mut out, b"Authorization", &auth);
         }
-        drop(auth);
+        self.basic_auth.set(auth);
         if !has_connection {
             let value: &[u8] = if self.keep_alive.get() {
                 b"keep-alive"
@@ -891,42 +893,45 @@ impl Client {
 
     /// `exec`: send, and unless deferred receive, retrying 502 and 503.
     fn exec(&self, path: &[u8]) -> bool {
-        let Some(mut parser) = self.receiver() else {
-            return false;
-        };
-        crate::resolver::swoole_name_resolver_context_reset(
-            &mut self.resolve.borrow_mut(),
-            self.use_default_port,
-        );
-        let mut attempt = 0;
-        while attempt < u32::from(self.max_retries.get()) + 1 {
-            if !self.send_request(path) {
-                return false;
-            }
-            if self.defer.get() {
+        self.receiving(|parser| {
+            let mut resolve = self.resolve.take();
+            crate::resolver::swoole_name_resolver_context_reset(
+                &mut resolve,
+                self.use_default_port,
+            );
+            self.resolve.set(resolve);
+            let mut attempt = 0;
+            while attempt < u32::from(self.max_retries.get()) + 1 {
+                if !self.send_request(path) {
+                    return false;
+                }
+                if self.defer.get() {
+                    return true;
+                }
+                if !self.recv_response(parser, 0.0) || self.bailout.get() {
+                    return false;
+                }
+                let status = self.status.get();
+                if self.max_retries.get() > 0 && matches!(status, BAD_GATEWAY | SERVICE_UNAVAILABLE)
+                {
+                    self.close(true);
+                    attempt += 1;
+                    continue;
+                }
                 return true;
             }
-            if !self.recv_response(&mut parser, 0.0) || self.bailout.get() {
-                return false;
-            }
-            let status = self.status.get();
-            if self.max_retries.get() > 0 && matches!(status, BAD_GATEWAY | SERVICE_UNAVAILABLE) {
-                self.close(true);
-                attempt += 1;
-                continue;
-            }
-            return true;
-        }
-        false
+            false
+        })
+        .unwrap_or(false)
     }
 
-    /// The response parser, held for a whole request or `recv()`, HTTP or
-    /// WebSocket. While another holds it, a coroutine reading or writing the
-    /// socket raises the bound-socket error; otherwise (`write_func`, which runs
-    /// inside the parse) the caller gets none and fails.
-    fn receiver(&self) -> Option<RefMut<'_, Parser>> {
-        let parser = self.parser.try_borrow_mut().ok();
-        if parser.is_none() {
+    /// `receive` with the response parser, taken out for a whole request or
+    /// `recv()`, HTTP or WebSocket, and put back after. While another has it, a
+    /// coroutine reading or writing the socket raises the bound-socket error;
+    /// otherwise (`write_func`, which runs inside the parse) the caller gets
+    /// none and fails.
+    fn receiving<R>(&self, receive: impl FnOnce(&mut Parser) -> R) -> Option<R> {
+        let Some(mut parser) = self.parser.take() else {
             if let Some(socket) = self.co() {
                 socket.check_bound(Events::RDWR);
             }
@@ -935,8 +940,19 @@ impl Client {
                 CO_HAS_BEEN_BOUND,
                 &strerror(CO_HAS_BEEN_BOUND),
             );
-        }
-        parser
+            return None;
+        };
+        let received = receive(&mut parser);
+        self.parser.set(Some(parser));
+        Some(received)
+    }
+
+    /// `f` with the body, out of the client for the call and back after it.
+    fn with_body<R>(&self, f: impl FnOnce(&mut Vec<u8>) -> R) -> R {
+        let mut body = self.body.take();
+        let result = f(&mut body);
+        self.body.set(body);
+        result
     }
 
     fn recv_response(&self, parser: &mut Parser, timeout: f64) -> bool {
@@ -1261,7 +1277,15 @@ impl Client {
         if input.is_empty() {
             return false;
         }
-        let mut decoder = self.decoder.borrow_mut();
+        // Out of the client for the decode, and back after it.
+        let mut decoder = self.decoder.take();
+        let decoded = self.decode(&mut decoder, input);
+        self.decoder.set(decoder);
+        decoded
+    }
+
+    /// [`decompress`](Self::decompress) with the decoder, made here if none is.
+    fn decode(&self, decoder: &mut Option<Decoder>, input: &[u8]) -> bool {
         if decoder.is_none() {
             let compress = self.compress.get();
             let made = match compress {
@@ -1293,7 +1317,7 @@ impl Client {
         };
         match output {
             Ok(output) => {
-                self.body.borrow_mut().extend_from_slice(output);
+                self.with_body(|body| body.extend_from_slice(output));
                 true
             }
             Err(message) => {
@@ -1459,7 +1483,8 @@ fn on_body(client: &Client, data: &[u8]) -> c_int {
     let decompress = client.body_decompression.get()
         && !client.compression_error.get()
         && client.compress.get() != Compress::None;
-    let write_func = client.write_func.borrow().clone();
+    let write_func = client.write_func.take();
+    client.write_func.set(write_func.clone());
     if let Some(callable) = write_func {
         // The decoded chunk leaves the client for the call, which can reenter it.
         let decoded = if !decompress {
@@ -1467,7 +1492,7 @@ fn on_body(client: &Client, data: &[u8]) -> c_int {
         } else if client.decompress(data) {
             let decoded = client.body.take();
             if decoded.is_empty() {
-                client.body.replace(decoded);
+                client.body.set(decoded);
                 return 0;
             }
             Some(decoded)
@@ -1484,7 +1509,7 @@ fn on_body(client: &Client, data: &[u8]) -> c_int {
                 decoded.clear();
                 drop(client.body.replace(decoded));
             }
-            None => client.body.borrow_mut().clear(),
+            None => client.with_body(Vec::clear),
         }
         client.in_callback.set(false);
         if result.is_err() {
@@ -1495,30 +1520,34 @@ fn on_body(client: &Client, data: &[u8]) -> c_int {
     if decompress {
         if !client.decompress(data) {
             client.compression_error.set(true);
-            client.body.borrow_mut().extend_from_slice(data);
+            client.with_body(|body| body.extend_from_slice(data));
         }
     } else {
-        client.body.borrow_mut().extend_from_slice(data);
+        client.with_body(|body| body.extend_from_slice(data));
     }
-    if client.download_name.borrow().is_none() {
+    let name = client.download_name.take();
+    let downloading = name.is_some();
+    client.download_name.set(name);
+    if !downloading {
         return 0;
     }
     // Out of the client while the file calls yield to other coroutines.
-    let mut body = client.body.take();
-    let written = body.is_empty() || write_download(client, &body);
-    if written {
-        body.clear();
-    }
-    drop(client.body.replace(body));
+    let written = client.with_body(|body| {
+        let written = body.is_empty() || write_download(client, body);
+        if written {
+            body.clear();
+        }
+        written
+    });
     if written { 0 } else { -1 }
 }
 
 /// Append a body chunk to the download, opening its file first: whether it was written.
 fn write_download(client: &Client, body: &[u8]) -> bool {
     if client.download_file.get().is_none() {
-        let name = client.download_name.borrow();
+        let name = client.download_name.take();
         let path = c_bytes(name.as_ref().map_or(&[][..], ZString::bytes));
-        drop(name);
+        client.download_name.set(name);
         let offset = client.download_offset.get();
         client
             .download_file
@@ -1542,9 +1571,7 @@ fn on_message_complete(hooks: &mut Hooks) -> c_int {
         .long(c"statusCode", i64::from(hooks.parser.status_code));
     if client.download_file.get().is_none() {
         // Out of the client while the write can run PHP code.
-        let body = client.body.take();
-        client.props().bytes(c"body", &body);
-        drop(client.body.replace(body));
+        client.with_body(|body| client.props().bytes(c"body", body));
     } else {
         drop(client.download_name.take());
     }
@@ -2020,15 +2047,18 @@ fn receive(call: &Call) -> bool {
         return false;
     };
     let _hold = client.hold();
-    let Some(mut parser) = client.receiver() else {
-        return finish(client, call, false);
-    };
-    if client.websocket.get() {
-        client.recv_websocket_frame(call, timeout);
-        return false;
+    let received = client.receiving(|parser| {
+        if client.websocket.get() {
+            client.recv_websocket_frame(call, timeout);
+            return None;
+        }
+        Some(client.recv_response(parser, timeout))
+    });
+    match received {
+        Some(None) => false,
+        Some(Some(result)) => finish(client, call, result),
+        None => finish(client, call, false),
     }
-    let result = client.recv_response(&mut parser, timeout);
-    finish(client, call, result)
 }
 
 /// `push(mixed $data, int $opcode = TEXT, int $flags = FIN): bool`.
@@ -2095,7 +2125,7 @@ fn get_header_out(call: &Call) {
         return;
     };
     // The buffer the socket's close left, which the conn keeps until the next close.
-    let written = client.conn.written.borrow();
+    let written = client.conn.written.take();
     let respond = |data: &[u8]| match request::header_end(data) {
         Some(end) if end > 0 => call.set_bytes(data.get(..end).unwrap_or(data)),
         _ => call.set_bool(false),
@@ -2105,6 +2135,7 @@ fn get_header_out(call: &Call) {
         (None, Some(buffer)) => respond(buffer.view()),
         (None, None) => call.set_bool(false),
     }
+    client.conn.written.set(written);
 }
 
 /// `getsockname(): array|false`.
