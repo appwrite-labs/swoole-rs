@@ -1013,8 +1013,10 @@ impl ZStr {
     #[must_use]
     #[inline]
     pub fn bytes(&self) -> &[u8] {
-        let bytes = self.bytes_with_nul();
-        bytes.split_last().map_or(bytes, |(_, bytes)| bytes)
+        let length = self.head().len.get();
+        // SAFETY: a live string holds `len` bytes at `val`, which it keeps while
+        // borrowed.
+        unsafe { std::slice::from_raw_parts(crate::string::val(self.as_ptr()), length) }
     }
 
     /// The bytes and the NUL Zend keeps after them; a NUL among the bytes stays.
