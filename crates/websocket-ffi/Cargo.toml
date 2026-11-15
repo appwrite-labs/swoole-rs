@@ -17,6 +17,7 @@ workspace = true
 upstream-symbols = []
 
 [dependencies]
+swoole-rs-error = { path = "../error" }
 libc = "=0.2.191"
 swoole-rs-buffer = { path = "../buffer" }
 swoole-rs-corebase = { path = "../corebase" }

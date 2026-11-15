@@ -33,7 +33,7 @@ impl HttpStaticContext {
                 has_index,
                 autoindex,
             } => {
-                self.path.phase = 0;
+                self.path.phase = path::StaticPhase::Root;
                 self.path.url_length = 0;
                 self.serve.facts = if has_locations { path::LOCATIONS } else { 0 }
                     | if has_index { path::INDEX } else { 0 }
@@ -43,7 +43,7 @@ impl HttpStaticContext {
             Event::Stat(observed) if self.serve.pending == Some(Action::Lstat) => {
                 self.serve.facts &= !(path::STAT_OK | path::LINK | path::DIRECTORY | path::FILE);
                 if observed {
-                    self.serve.facts |= path::STAT_OK | self.facts.kind;
+                    self.serve.facts |= path::STAT_OK | self.facts.kind as u32;
                 }
             }
             Event::Canonical(value) if self.serve.pending == Some(Action::Realpath) => {
@@ -85,9 +85,9 @@ impl HttpStaticContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::HttpStaticObservation;
+    use crate::{HttpStaticObservation, StaticFileKind};
     const ROOT: &[u8] = b"/root";
-    fn stat(owner: &mut HttpStaticContext, kind: u32) {
+    fn stat(owner: &mut HttpStaticContext, kind: StaticFileKind) {
         owner.observed(&HttpStaticObservation {
             filesize: 17,
             kind,
@@ -108,13 +108,13 @@ mod tests {
             assert_eq!(owner.serve_step(ROOT, &begin(true)), Ok(Action::Locations));
             assert_eq!(owner.location(b"/"), Ok(true));
             assert_eq!(owner.serve_step(ROOT, &Event::Locations), Ok(Action::Lstat));
-            stat(&mut owner, path::FILE);
+            stat(&mut owner, StaticFileKind::File);
             assert_eq!(owner.serve_step(ROOT, &Event::Stat(true)), Ok(Action::Mime));
             assert_eq!(
                 owner.serve_step(ROOT, &Event::Mime(true)),
                 Ok(Action::Done(true))
             );
-            assert_eq!(owner.path.last, 1);
+            assert_eq!(u32::from(owner.path.last), 1);
         }
     }
     #[test]
@@ -122,7 +122,7 @@ mod tests {
         let mut owner = HttpStaticContext::new(b"/alias.txt", 4096).unwrap();
         assert_eq!(owner.serve_step(ROOT, &begin(false)), Ok(Action::Locations));
         assert_eq!(owner.serve_step(ROOT, &Event::Locations), Ok(Action::Lstat));
-        stat(&mut owner, path::LINK);
+        stat(&mut owner, StaticFileKind::Symlink);
         assert_eq!(
             owner.serve_step(ROOT, &Event::Stat(true)),
             Ok(Action::Realpath)
@@ -132,7 +132,7 @@ mod tests {
             Ok(Action::Lstat)
         );
         assert_eq!(&owner.filename[..15], b"/root/file.txt\0");
-        stat(&mut owner, path::FILE);
+        stat(&mut owner, StaticFileKind::File);
         assert_eq!(owner.serve_step(ROOT, &Event::Stat(true)), Ok(Action::Mime));
         assert_eq!(
             owner.serve_step(ROOT, &Event::Mime(true)),

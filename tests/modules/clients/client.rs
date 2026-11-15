@@ -105,13 +105,6 @@ struct TlsCopy {
     index: u32,
 }
 
-// OpenSSL's stack accessors, which `sk_X509_num` and `sk_X509_value` expand to.
-#[link(name = "crypto")]
-unsafe extern "C" {
-    fn OPENSSL_sk_num(stack: *const c_void) -> c_int;
-    fn OPENSSL_sk_value(stack: *const c_void, index: c_int) -> *mut c_void;
-}
-
 unsafe extern "C" {
     fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut c_void;
     fn swr_v1_clients_address_host(address: *const c_void) -> *const c_char;
@@ -121,8 +114,6 @@ unsafe extern "C" {
 
     #[link_name = "_ZNK6swoole7network6Socket12has_timedoutEv"]
     fn socket_has_timedout(socket: *const c_void) -> bool;
-    #[link_name = "_ZNK6swoole7network6Socket23ssl_get_peer_cert_chainEv"]
-    fn socket_ssl_get_peer_cert_chain(socket: *const c_void) -> *mut c_void;
     #[link_name = "_Z17swoole_event_initi"]
     fn swoole_event_init(flags: c_int) -> c_int;
     #[link_name = "_Z17swoole_event_waitv"]
@@ -1442,24 +1433,17 @@ fn ssl_vector(sock: *mut c_void, iov: &[IoVec], write: bool) -> isize {
 
 /// `Socket::ssl_get_peer_cert_chain(limit)`, inline C++ upstream: the PEM of each of
 /// the first `limit` certificates that reads.
-fn peer_cert_chain(sock: *const c_void, limit: c_int) -> Vec<Vec<u8>> {
-    // SAFETY: a live socket.
-    let chain = unsafe { socket_ssl_get_peer_cert_chain(sock) };
-    if chain.is_null() {
-        return Vec::new();
-    }
-    // SAFETY: a live STACK_OF(X509).
-    let n = unsafe { OPENSSL_sk_num(chain) }.min(limit);
+fn peer_cert_chain(sock: swoole_rs_reactor::Socket<'_>, limit: usize) -> Vec<Vec<u8>> {
+    let mut chain = Vec::new();
     let mut buffer = vec![0_u8; SW_BUFFER_SIZE_BIG];
-    (0..n)
-        .filter_map(|i| {
-            // SAFETY: `i` is within the stack, whose certificates the SSL keeps alive.
-            let cert = unsafe { swoole_rs_tls::CertRef::new(OPENSSL_sk_value(chain, i).cast()) };
+    if let Some(ssl) = swoole_rs_tls::Ssl::of(sock) {
+        ssl.each_peer_cert(|cert| {
             // `_ssl_read_x509_file`, which fails without a certificate.
-            let rv = cert.and_then(|cert| cert.pem(&mut buffer).ok());
-            rv.filter(|&n| n > 0).map(|n| buffer[..n].to_vec())
-        })
-        .collect()
+            let rv = cert.pem(&mut buffer).ok();
+            chain.push(rv.filter(|&n| n > 0).map(|n| buffer[..n].to_vec()));
+        });
+    }
+    chain.into_iter().take(limit).flatten().collect()
 }
 
 fn ssl() {
@@ -1480,7 +1464,7 @@ fn ssl() {
     assert!(swoole_rs_tls::upstream::socket_ssl_peer_certificate_string(
         handle, string
     ));
-    let ls = peer_cert_chain(sock, 10);
+    let ls = peer_cert_chain(handle, 10);
     assert!(!ls.is_empty());
     assert_eq!(client.ssl_verify(false), SW_OK);
 

@@ -18,7 +18,7 @@ fn take() -> Vec<String> {
 
 /// The fake host the multi calls instead of `host.rs`'s.
 pub(crate) mod host {
-    use super::{LOOP, Multi, log};
+    use super::{Events, LOOP, Multi, log};
     use std::ffi::{c_int, c_long, c_void};
     use std::{cell::Cell, ptr};
 
@@ -36,20 +36,20 @@ pub(crate) mod host {
             reason = "the fake reports events without an object"
         )]
         pub(crate) fn set_object(self, _object: *mut c_void) {}
-        pub(crate) fn events(self) -> c_int {
-            unsafe { (*self.0)[0] }
+        pub(crate) fn events(self) -> Events {
+            Events::from_bits(unsafe { (*self.0)[0] })
         }
         pub(crate) fn removed(self) -> bool {
             unsafe { (*self.0)[1] != 0 }
         }
-        pub(crate) fn add(self, events: c_int) -> bool {
+        pub(crate) fn add(self, events: Events) -> bool {
             log(format!("add {events}"));
-            unsafe { *self.0 = [events, 0] };
+            unsafe { *self.0 = [events.bits(), 0] };
             true
         }
-        pub(crate) fn set(self, events: c_int) -> bool {
+        pub(crate) fn set(self, events: Events) -> bool {
             log(format!("set {events}"));
-            unsafe { (*self.0)[0] = events };
+            unsafe { (*self.0)[0] = events.bits() };
             true
         }
         pub(crate) fn del(self) -> bool {
@@ -125,12 +125,16 @@ fn raw(multi: &Multi) -> *mut Multi {
 
 #[test]
 fn poll_actions_map_to_reactor_events() {
-    assert_eq!(events(CURL_POLL_IN), READ, "in");
-    assert_eq!(events(CURL_POLL_OUT), WRITE, "out");
-    assert_eq!(events(CURL_POLL_INOUT), READ | WRITE, "inout");
-    assert_eq!(events(CURL_POLL_REMOVE), 0, "remove");
+    assert_eq!(events(CURL_POLL_IN), Events::READ, "in");
+    assert_eq!(events(CURL_POLL_OUT), Events::WRITE, "out");
     assert_eq!(
-        poll_events(READ | WRITE),
+        events(CURL_POLL_INOUT),
+        Events::READ | Events::WRITE,
+        "inout"
+    );
+    assert_eq!(events(CURL_POLL_REMOVE), Events::NONE, "remove");
+    assert_eq!(
+        poll_events(Events::READ | Events::WRITE),
         libc::POLLIN | libc::POLLOUT,
         "poll"
     );

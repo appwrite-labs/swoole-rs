@@ -7,8 +7,9 @@ documentation = false
 autogen_warning = "/* Generated from crates/corebase by cbindgen (tools/headers.sh); do not edit. */"
 [export]
 item_types = ["constants", "enums"]
-include = ["ResultCode", "ReturnCode", "FdType", "SocketFlag", "SocketType", "TimeoutType", "EventType", "ForkType", "TraverseOperation", "EventDataFlag", "TaskFlag", "DNSLookupFlag", "PipeType", "EventInitFlag", "SW_IPC_MAX_SIZE", "SW_IPC_BUFFER_SIZE"]
+include = ["SslState", "ResultCode", "ReturnCode", "FdType", "SocketFlag", "SocketType", "TimeoutType", "EventType", "ForkType", "TraverseOperation", "EventDataFlag", "TaskFlag", "DNSLookupFlag", "PipeType", "EventInitFlag", "SW_IPC_MAX_SIZE", "SW_IPC_BUFFER_SIZE"]
 [export.rename]
+"SslState" = "swSSLState"
 "ResultCode" = "swResultCode"
 "ReturnCode" = "swReturnCode"
 "FdType" = "swFdType"

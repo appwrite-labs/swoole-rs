@@ -7,6 +7,7 @@ package links it whole beside the crates (swoole-rs-ffi), built with the SDK arc
 and profile, so there is one copy of the Rust code. Runs each case in its own process group.
 --exclude NAME=REASON reports a case `excluded` with its reason; it never counts as passed."""
 import argparse
+import hashlib
 import io
 import json
 import os
@@ -51,6 +52,34 @@ def stage(source, destination):
         offset = end + 2 + size
 
 
+def run_cases(binary, tree, excluded, timeout, output, report, logs):
+    # A rebuild must not change the program halfway through a suite or erase a failure.
+    snapshot = logs / 'case-binary'
+    shutil.copy2(binary, snapshot)
+    report['binary'] = {'source': str(binary), 'artifact': str(snapshot),
+                        'sha256': hashlib.sha256(snapshot.read_bytes()).hexdigest()}
+    binary = str(snapshot)
+    write_report(output, report)
+    inventory = subprocess.check_output([binary, '--list'], text=True).split()
+    if not inventory or len(set(inventory)) != len(inventory) or set(excluded) - set(inventory):
+        raise ValueError('Empty or duplicate inventory, or an exclusion names no case')
+    for name in inventory:
+        status = 'excluded'
+        if name not in excluded:
+            try:
+                result = run_isolated([binary, name], timeout=timeout, cwd=tree)
+            except subprocess.TimeoutExpired as error:
+                result = subprocess.CompletedProcess(name, 124, '', f'Timed out: {error}')
+            (logs / (name + '.log')).write_text(f'{result.stdout}{result.stderr}\nexit {result.returncode}\n')
+            status = 'failed' if result.returncode else 'passed'
+        report['results'].append({'name': name, 'status': status})
+        write_report(output, report)
+    report['passed'] = all(row['status'] in ('passed', 'excluded') for row in report['results'])
+    if report['passed']:
+        snapshot.unlink()
+        report['binary'].pop('artifact')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, required=True, help='Pinned upstream checkout')
@@ -71,6 +100,7 @@ def main():
     logs = args.output.resolve().with_name(args.output.stem + '-artifacts')
     logs.mkdir(parents=True, exist_ok=True)
     try:
+        (logs / 'case-binary').unlink(missing_ok=True)
         tree = args.build_root.resolve() / 'tree'
         with tempfile.TemporaryDirectory(prefix='swr-hooks-system-') as temporary:
             staged = Path(temporary)
@@ -112,22 +142,9 @@ def main():
                 raise RuntimeError(f'{step} failed: {logs / (step + ".log")}\n{tail}')
         binary, = {message['executable'] for line in result.stdout.splitlines() if line.startswith('{')
                    for message in [json.loads(line)] if message.get('executable')}
-        inventory = subprocess.check_output([binary, '--list'], text=True).split()
-        if not inventory or len(set(inventory)) != len(inventory) or set(excluded) - set(inventory):
-            raise ValueError('Empty or duplicate inventory, or an exclusion names no case')
-        for name in inventory:
-            status = 'excluded'
-            if name not in excluded:
-                try:
-                    result = run_isolated([binary, name], timeout=args.timeout, cwd=tree)
-                except subprocess.TimeoutExpired as error:
-                    result = subprocess.CompletedProcess(name, 124, '', f'Timed out: {error}')
-                (logs / (name + '.log')).write_text(f'{result.stdout}{result.stderr}\nexit {result.returncode}\n')
-                status = 'failed' if result.returncode else 'passed'
-            report['results'].append({'name': name, 'status': status})
-            write_report(args.output, report)
-        report['passed'] = all(row['status'] in ('passed', 'excluded') for row in report['results'])
+        run_cases(binary, tree, excluded, args.timeout, args.output, report, logs)
     except Exception as error:
+        report['passed'] = False
         report['error'] = str(error)
     write_report(args.output, report)
     failed = [row['name'] for row in report['results'] if row['status'] not in ('passed', 'excluded')]

@@ -8,7 +8,7 @@ use std::ptr;
 #[derive(Clone, Copy, Default)]
 pub struct ProxyFields {
     pub state: u8,
-    pub dont_handshake: u8,
+    pub dont_handshake: bool,
     pub version: u8,
     pub method: u8,
     pub dns_tunnel: u8,

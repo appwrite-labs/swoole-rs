@@ -153,8 +153,8 @@ fn registered(php: Php, fd: i32) -> bool {
 }
 
 /// `int` events, as the reactor takes them.
-fn events_of(events: i64) -> c_int {
-    events.c_cast::<c_int>()
+fn events_of(events: i64) -> swoole_rs_reactor::Events {
+    swoole_rs_reactor::Events::from_bits(events.c_cast::<c_int>())
 }
 
 /// The callable argument `value`, deferring a bailout.
@@ -547,9 +547,9 @@ fn isset(call: &Call) {
         return;
     }
     let set = SOCKETS.with_borrow(php, |sockets| {
-        sockets
-            .get(fd)
-            .is_some_and(|r| !r.socket.removed() && i64::from(r.socket.events()) & events != 0)
+        sockets.get(fd).is_some_and(|r| {
+            !r.socket.removed() && i64::from(r.socket.events().bits()) & events != 0
+        })
     });
     call.set_bool(set);
 }
@@ -685,8 +685,8 @@ fn error_event(php: Php, fd: i32) -> Result<bool, Bailout> {
     let Some((id, events)) = found else {
         return Ok(true);
     };
-    if events & EventType::SW_EVENT_ERROR as i32 == 0 {
-        return ready(php, fd, events & EventType::SW_EVENT_READ as i32 == 0);
+    if !events.intersects(swoole_rs_reactor::Events::ERROR) {
+        return ready(php, fd, !events.intersects(swoole_rs_reactor::Events::READ));
     }
     match swoole_rs_reactor::socket_error(fd) {
         Ok(0) => {}

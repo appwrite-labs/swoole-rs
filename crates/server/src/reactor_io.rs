@@ -12,10 +12,7 @@ use crate::reactor_handle::Reactor;
 use crate::reactor_ops::out_buffer;
 use crate::records::Lookup;
 use crate::{ServerState, view};
-
-/// `SW_LOG_NOTICE` and `SW_LOG_WARNING`.
-const SW_LOG_NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
-const SW_LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
+use swoole_rs_corebase::log::LogLevel::{SW_LOG_NOTICE, SW_LOG_WARNING};
 
 /// `ReactorThread_onPipeWrite`: flush the queued messages to a worker, dropping
 /// those for connections the server already closed; false when the pipe failed.
@@ -36,7 +33,7 @@ pub(crate) fn pipe_write(serv: view::Server<'_>, reactor: Reactor, event: &Event
         }
         pop(sock);
     }
-    if !reactor.interest(sock, swoole_rs_reactor::Interest::RemoveWrite, 0) {
+    if !reactor.interest(sock, swoole_rs_reactor::Interest::RemoveWrite) {
         let m = format_args!("reactor->set({}) failed", event.fd());
         log::sys_warning(c"ReactorThread_onPipeWrite", m);
     }

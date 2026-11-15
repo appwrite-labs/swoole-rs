@@ -22,14 +22,13 @@ use crate::process_factory::native::{
     check_exit_status, kill_task_workers, spawn_event_worker, spawn_user_worker,
 };
 use crate::{view, worker_methods};
+use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR as ERROR, SW_LOG_WARNING as WARNING};
 
 /// `SWR_WORKER_EVENT`, `SWR_WORKER_USER`: the registry's categories.
 const REGISTRY_EVENT: c_int = 1;
 const REGISTRY_USER: c_int = 2;
 /// `SW_MESSAGE_BOX_SIZE`; `SW_LOG_WARNING`, `SW_LOG_ERROR`.
 const MESSAGE_BOX_SIZE: usize = 65536;
-const WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
-const ERROR: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR as c_int;
 /// `swoole::WorkerMessageType::SW_WORKER_MESSAGE_STOP`.
 const WORKER_MESSAGE_STOP: u8 = 1;
 /// `sizeof(EventData)`.
@@ -93,15 +92,8 @@ pub(crate) fn start_manager_process(serv: view::Server<'_>) -> bool {
     if pool.message_box().is_null() && !methods::create_message_box(pool, MESSAGE_BOX_SIZE) {
         return false;
     }
-    if serv.workers().user_count() > 0 {
-        let workers = worker_methods::create_user_workers(serv);
-        let created = !workers.is_null();
-        // SAFETY: in the master before it forks or starts a thread; `config` isn't
-        // read after the write.
-        unsafe { serv.config_mut() }.user_workers = workers;
-        if !created {
-            return false;
-        }
+    if serv.workers().user_count() > 0 && !worker_methods::create_user_workers(serv) {
+        return false;
     }
     if serv.config().mode_ == Mode::Base {
         main(serv);
@@ -265,10 +257,8 @@ impl Reaping<'_> {
             let Some(worker) = worker_at(self.serv, id) else {
                 continue;
             };
-            if let Some(task) = self.active_reload() {
-                // A copy of the record, whose pid and id the task snapshots.
-                task.add_workers(&[worker.get()]);
-            }
+            // A copy of the record, whose pid and id the task snapshots.
+            self.with_reload(|task| task.add_workers(&[worker.get()]));
         }
     }
 
@@ -305,11 +295,8 @@ impl Reap for Reaping<'_> {
         self.serv.event_pool_ref().reload_init()
     }
 
-    fn active_reload(&mut self) -> Option<&mut ReloadTask> {
-        let task = self.serv.event_pool_ref().reload_task();
-        // SAFETY: the event pool's reload, live until `drop_reload_task`, which only
-        // the manager's loop touches, one step at a time.
-        unsafe { task.cast::<ReloadTask>().as_mut() }
+    fn with_reload<R>(&mut self, f: impl FnOnce(&mut ReloadTask) -> R) -> Option<R> {
+        self.serv.event_pool_ref().with_reload_task(f)
     }
 
     fn wait(&mut self, nonblock: bool) -> Waited {
@@ -369,9 +356,7 @@ impl Reap for Reaping<'_> {
                 if !config.reload_async.get() {
                     return ReloadStart::KillOne;
                 }
-                if let Some(task) = self.active_reload() {
-                    task.kill_all(libc::SIGTERM, methods::reload_warn);
-                }
+                self.with_reload(|task| task.kill_all(libc::SIGTERM, methods::reload_warn));
                 ReloadStart::Signalled
             }
             Reload::NoTaskWorkers => {

@@ -3,17 +3,14 @@
 use crate::registry::Registry;
 use std::ffi::{c_int, c_void};
 
-const SW_EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
-const SW_EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
-
 /// `translate_events_to_poll`: the poll bits for swoole `events`.
 #[must_use]
-pub fn swr_v1_reactor_poll_events_to(events: c_int) -> i16 {
+pub fn swr_v1_reactor_poll_events_to(events: crate::Events) -> i16 {
     let mut poll_events = 0;
-    if events & SW_EVENT_READ != 0 {
+    if events.intersects(crate::Events::READ) {
         poll_events |= libc::POLLIN;
     }
-    if events & SW_EVENT_WRITE != 0 {
+    if events.intersects(crate::Events::WRITE) {
         poll_events |= libc::POLLOUT;
     }
     poll_events
@@ -74,11 +71,13 @@ impl PollSnapshot {
 mod tests {
     use super::*;
 
+    const SW_EVENT_READ: crate::Events = crate::Events::READ;
+    const SW_EVENT_WRITE: crate::Events = crate::Events::WRITE;
+
     #[test]
     fn translates_events_like_upstream() {
-        const SW_EVENT_ERROR: c_int =
-            swoole_rs_corebase::constants::EventType::SW_EVENT_ERROR as c_int;
-        assert_eq!(swr_v1_reactor_poll_events_to(0), 0);
+        const SW_EVENT_ERROR: crate::Events = crate::Events::ERROR;
+        assert_eq!(swr_v1_reactor_poll_events_to(crate::Events::NONE), 0);
         assert_eq!(swr_v1_reactor_poll_events_to(SW_EVENT_READ), libc::POLLIN);
         assert_eq!(
             swr_v1_reactor_poll_events_to(SW_EVENT_READ | SW_EVENT_WRITE | SW_EVENT_ERROR),

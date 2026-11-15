@@ -311,7 +311,7 @@ pub struct Parser {
     pub method: u8,
     pub http_major: u8,
     pub http_minor: u8,
-    pub upgrade: u8,
+    pub upgrade: bool,
     pub finish: Finish,
     pub flags: u16,
     pub status_code: u16,
@@ -414,9 +414,9 @@ impl Parser {
     /// `llhttp__before_headers_complete`.
     fn before_headers_complete(&mut self) {
         self.upgrade = if self.flags & F_UPGRADE != 0 && self.flags & F_CONNECTION_UPGRADE != 0 {
-            u8::from(self.kind == Kind::Request || self.status_code == 101)
+            self.kind == Kind::Request || self.status_code == 101
         } else {
-            u8::from(self.method == CONNECT)
+            self.method == CONNECT
         };
     }
 
@@ -424,8 +424,7 @@ impl Parser {
     fn after_headers_complete(&self) -> u8 {
         let has_body = self.flags & F_CHUNKED != 0 || self.content_length > 0;
         let response = self.kind == Kind::Response;
-        if (self.upgrade != 0
-            && (self.method == CONNECT || self.flags & F_SKIPBODY != 0 || !has_body))
+        if (self.upgrade && (self.method == CONNECT || self.flags & F_SKIPBODY != 0 || !has_body))
             || (response && self.status_code == 101)
         {
             return 1;
@@ -1000,7 +999,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
             1 => self.parser().flags |= F_SKIPBODY,
             2 => {
                 let parser = self.parser();
-                parser.upgrade = 1;
+                parser.upgrade = true;
                 parser.flags |= F_SKIPBODY;
             }
             HPE_PAUSED => {
@@ -1727,7 +1726,7 @@ impl<C: Callbacks + ?Sized> Run<'_, C> {
             S::FieldComplete => self.field_complete(),
             S::AfterHeadersComplete => self.after_headers_complete(),
             S::MessageComplete => self.message_complete(),
-            S::UpgradeCheck => Ok(if self.parser().upgrade == 1 {
+            S::UpgradeCheck => Ok(if self.parser().upgrade {
                 S::PauseUpgrade
             } else {
                 S::AfterMessageComplete

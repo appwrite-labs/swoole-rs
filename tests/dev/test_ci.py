@@ -290,13 +290,18 @@ class Ci(unittest.TestCase):
                  pull(3, '2026-11-02T00:00:00Z', 'MERGEABLE', [suite('COMPLETED', required=['SUCCESS']),
                                                                suite('COMPLETED', 'Sanitizers')]),
                  pull(4, '2026-10-01T00:00:00Z', 'CONFLICTING', [], auto=False),
+                 # 8 passed but was never put on auto-merge; 9 is the same held back as a draft.
+                 pull(8, '2026-10-03T00:00:00Z', 'MERGEABLE', [suite('COMPLETED', required=['SUCCESS'])], auto=False),
+                 dict(pull(9, '2026-10-04T00:00:00Z', 'MERGEABLE', [suite('COMPLETED', required=['SUCCESS'])], auto=False),
+                      isDraft=True),
                  pull(5, '2026-10-02T00:00:00Z', 'MERGEABLE', [suite('IN_PROGRESS', required=[None])]),
                  # 6's PR-tier run finished without creating `required` (GitHub abandoned its jobs); 7's is still starting.
                  pull(6, '2026-11-04T00:00:00Z', 'MERGEABLE', [suite('COMPLETED'), suite('QUEUED', None)]),
                  pull(7, '2026-11-05T00:00:00Z', 'UNKNOWN', [suite('QUEUED')])]
         code, result, _ = self.ci('stuck', runs={}, flags=('--json',), queue=queue)
         self.assertEqual((code, [(row['number'], row['blocking']) for row in result]),
-                         (0, [(2, ['required']), (1, ['conflicts']), (6, ['no required check'])]))
+                         (0, [(8, ['passed, not on auto-merge']), (2, ['required']), (1, ['conflicts']),
+                              (6, ['no required check'])]))
         # The PRs in one GraphQL query, and main's merge-tier runs for a stalled one.
         self.assertEqual([call.split(' -F')[0].split(' --')[0] for call in self.gh_calls if call.startswith(('api', 'run'))],
                          ['api -i graphql', 'run list', 'run list', 'run list'])

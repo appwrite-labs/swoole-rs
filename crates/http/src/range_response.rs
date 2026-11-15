@@ -9,7 +9,7 @@ pub(crate) struct HttpRangeFormat<'a> {
     pub(crate) length: usize,
     pub(crate) filesize: usize,
     pub(crate) part: u32,
-    pub(crate) separator: u32,
+    pub(crate) separator: bool,
 }
 
 /// The prefix of a rendering that fits `output`, and the whole rendering's length.
@@ -43,7 +43,7 @@ fn render(
         out.append(boundary)?;
         return out.append(b"--\r\n");
     }
-    if input.separator != 0 {
+    if input.separator {
         out.append(b"\r\n")?;
     }
     out.append(b"--")?;
@@ -68,7 +68,7 @@ fn rendered_length(input: &HttpRangeFormat<'_>, boundary: &[u8], mime: &[u8]) ->
     } else {
         let digits = |value: usize| value.checked_ilog10().map_or(1, |n| n as usize + 1);
         b"--\r\nContent-Type: \r\nContent-Range: bytes -/\r\n\r\n".len()
-            + usize::from(input.separator != 0) * 2
+            + usize::from(input.separator) * 2
             + digits(input.offset)
             + digits(input.offset.wrapping_add(input.length).wrapping_sub(1))
             + digits(input.filesize)
@@ -131,81 +131,6 @@ pub(crate) fn range_format(
     i32::from(libc_overflow)
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct HttpRangeFinish {
-    pub(crate) content_length: usize,
-    pub(crate) last_length: usize,
-    pub(crate) task_count: usize,
-    pub(crate) filesize: usize,
-    pub(crate) end_length: usize,
-    pub(crate) phase: u32,
-    pub(crate) status: i32,
-    pub(crate) if_range: u32,
-    pub(crate) modified: u32,
-}
-
-impl HttpRangeFinish {
-    pub(crate) fn step(&mut self) -> i32 {
-        if self.phase > 6 || (self.last_length != 0 && self.task_count == 0) {
-            return INVALID;
-        }
-        self.next()
-    }
-    fn check_date(&mut self) -> i32 {
-        if self.if_range != 0 {
-            self.phase = 3;
-            3
-        } else {
-            self.phase = 6;
-            0
-        }
-    }
-    fn next(&mut self) -> i32 {
-        match self.phase {
-            0 if self.last_length == 0 => {
-                self.content_length = self.filesize;
-                self.phase = 1;
-                1
-            }
-            0 if self.task_count == 1 => {
-                self.content_length = self.last_length;
-                self.status = 206;
-                self.check_date()
-            }
-            0 => {
-                self.phase = 2;
-                2
-            }
-            1 => self.check_date(),
-            2 => {
-                self.content_length = self.content_length.wrapping_add(self.end_length);
-                self.status = 206;
-                self.check_date()
-            }
-            3 if self.modified != 0 => {
-                self.phase = 4;
-                4
-            }
-            3 => {
-                self.phase = 6;
-                0
-            }
-            4 => {
-                self.content_length = self.filesize;
-                self.phase = 5;
-                1
-            }
-            5 => {
-                self.status = 200;
-                self.phase = 6;
-                0
-            }
-            _ => 0,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,7 +143,7 @@ mod tests {
             length: 5,
             filesize: 10,
             part: 0,
-            separator: 1,
+            separator: true,
         };
         let mut output = [0xa5; 128];
         let mut n = 0;
@@ -237,7 +162,7 @@ mod tests {
             for length in [0usize, 1, 17] {
                 for filesize in [0usize, 10, usize::MAX] {
                     for part in [0, 1] {
-                        for separator in [0, 1] {
+                        for separator in [false, true] {
                             let input = HttpRangeFormat {
                                 boundary: b"boundary",
                                 mime: b"text/plain",
@@ -252,7 +177,7 @@ mod tests {
                             } else {
                                 format!(
                                     "{}--boundary\r\nContent-Type: text/plain\r\nContent-Range: bytes {}-{}/{}\r\n\r\n",
-                                    if separator == 0 { "" } else { "\r\n" },
+                                    if separator { "\r\n" } else { "" },
                                     offset,
                                     offset.wrapping_add(length).wrapping_sub(1),
                                     filesize
@@ -288,44 +213,12 @@ mod tests {
             length: 1,
             filesize: 1,
             part: 2,
-            separator: 0,
+            separator: false,
         };
         let mut storage = [0xa5; 16];
         let mut written = 99;
         assert_eq!(range_format(&input, &mut storage, &mut written), INVALID);
         assert_eq!(storage, [0xa5; 16]);
         assert_eq!(written, 99);
-        let mut state = HttpRangeFinish {
-            phase: 7,
-            status: 299,
-            ..Default::default()
-        };
-        let before = state;
-        assert_eq!(state.step(), INVALID);
-        assert_eq!(state, before);
-    }
-    #[test]
-    fn finalization_does_not_publish_success_before_native_push() {
-        let mut state = HttpRangeFinish {
-            content_length: 123,
-            last_length: 2,
-            task_count: 2,
-            filesize: 100,
-            status: 299,
-            if_range: 1,
-            ..Default::default()
-        };
-        assert_eq!(state.step(), 2);
-        assert_eq!((state.status, state.content_length), (299, 123));
-        state.end_length = 9;
-        assert_eq!(state.step(), 3);
-        assert_eq!((state.status, state.content_length), (206, 132));
-        state.modified = 1;
-        assert_eq!(state.step(), 4);
-        assert_eq!((state.status, state.content_length), (206, 132));
-        assert_eq!(state.step(), 1);
-        assert_eq!((state.status, state.content_length), (206, 100));
-        assert_eq!(state.step(), 0);
-        assert_eq!(state.status, 200);
     }
 }

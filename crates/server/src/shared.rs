@@ -210,13 +210,14 @@ mod tests {
         let state = swr_v1_server_state_new();
         // SAFETY: a fresh state, its configuration and tables, all owned by this test.
         unsafe {
-            (*(*state).config()).gs = core::mem::replace(&mut gs, Shm::NULL);
+            (*(*state).config()).gs = core::mem::replace(&mut gs, Shm::empty());
             let tables = &mut *(*state).tables();
             tables.connection_list = crate::records::tests::naming(&mut connections);
             tables.session_list = crate::records::tests::naming(&mut sessions);
             tables.max_connection = 3;
             // The server's port, which the test still frees.
-            let _ = (*state).push_port(Box::from_raw(config));
+            let port = (*state).push_port(Box::from_raw(config));
+            (*state).tables_ref().connection_at(1).unwrap().listen(port);
             count_send(&*state, 1, 4);
             count_send(&*state, 0, 3);
         }

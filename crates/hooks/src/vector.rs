@@ -22,14 +22,15 @@ fn message_header(iov: *mut libc::iovec, count: usize) -> libc::msghdr {
     fn fit<T: TryFrom<usize> + Default>(count: usize) -> T {
         T::try_from(count).unwrap_or_default()
     }
-    // SAFETY: a msghdr is integers, raw pointers and (musl) padding: zero is a value of each.
-    let mut header: libc::msghdr = unsafe { core::mem::zeroed() };
+    let mut header: libc::msghdr = swoole_rs_corebase::sys::zeroed();
     header.msg_iov = iov;
     header.msg_iovlen = fit(count);
     header
 }
 
 /// A `sendmsg(2)` message: the buffers it borrows, with no address and no control data.
+/// Transparent over its header, which [`sendmsg`] takes.
+#[repr(transparent)]
 pub struct SendMessage<'a> {
     header: libc::msghdr,
     lent: PhantomData<&'a [u8]>,
@@ -55,13 +56,13 @@ impl<'a> SendMessage<'a> {
 
     /// `sendmsg(2)` of the message on `fd`.
     pub(crate) fn send(&self, fd: c_int, flags: c_int) -> isize {
-        // SAFETY: the header's vectors and their readable bytes are borrowed for `'a`.
-        unsafe { libc::sendmsg(fd, &raw const self.header, flags) }
+        sendmsg(fd, self, flags)
     }
 }
 
 /// A `recvmsg(2)` message: the buffers it borrows to fill, with no address and no
-/// control data.
+/// control data. Transparent over its header, which [`recvmsg`] takes.
+#[repr(transparent)]
 pub struct RecvMessage<'a> {
     header: libc::msghdr,
     lent: PhantomData<&'a mut [u8]>,
@@ -93,9 +94,17 @@ impl<'a> RecvMessage<'a> {
 
     /// `recvmsg(2)` into the message on `fd`.
     pub(crate) fn recv(&mut self, fd: c_int, flags: c_int) -> isize {
-        // SAFETY: the header's vectors and their writable bytes are borrowed for `'a`.
-        unsafe { libc::recvmsg(fd, &raw mut self.header, flags) }
+        recvmsg(fd, self, flags)
     }
+}
+
+// libc's, over a message only `new` makes: its header's vectors, and their bytes, are
+// borrowed for the message's lifetime, and it names no address and no control data.
+// They read the vectors (`recvmsg` fills their bytes and the header's lengths and
+// flags) and keep nothing, so they are declared `safe`.
+unsafe extern "C" {
+    safe fn sendmsg(fd: c_int, message: &SendMessage<'_>, flags: c_int) -> isize;
+    safe fn recvmsg(fd: c_int, message: &mut RecvMessage<'_>, flags: c_int) -> isize;
 }
 
 /// What an [`IoVector`] is made over: buffers a read fills, or bytes a write sends.

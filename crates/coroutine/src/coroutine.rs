@@ -183,39 +183,31 @@ pub const ON_CLOSE: u32 = 2;
 
 impl Scheduler {
     /// Takes the next id, seeds `co` (which `native` embeds) and makes it live.
-    /// Returns its handle (none for a null `co`) and whether the scheduler needs
-    /// activating.
-    ///
-    /// # Safety
-    /// `co` is writable, not borrowed, and stays put until it is released.
+    /// Returns whether the scheduler needs activating.
     #[cfg(any(test, feature = "upstream-symbols"))]
-    pub(crate) unsafe fn register(
+    pub(crate) fn register(
         &mut self,
-        co: *mut Coroutine,
+        co: Co,
         native: *mut c_void,
         init_msec: c_long,
         now: c_long,
-    ) -> (Option<Co>, bool) {
+    ) -> bool {
         self.last_cid = self.last_cid.wrapping_add(1);
-        // SAFETY: the caller lends `co` exclusively; it may be uninitialised.
-        unsafe {
-            co.write(Coroutine {
+        co.with(|co| {
+            *co = Coroutine {
                 native,
                 cid: self.last_cid,
                 init_msec,
                 switch_usec: now,
                 ..Coroutine::IDLE
-            });
-        }
-        let co = Co::link(co);
-        if let Some(co) = co {
-            self.insert(self.last_cid, co);
-        }
+            };
+        });
+        self.insert(self.last_cid, co);
         let count = self.count() as u64;
         if count > self.peak_num {
             self.peak_num = count;
         }
-        (co, !self.activated)
+        !self.activated
     }
 
     /// `slot` is [`ON_YIELD`], [`ON_RESUME`] or [`ON_CLOSE`].
@@ -258,6 +250,17 @@ impl Co {
     /// `co` is null or a live coroutine, which stays live while the handle is used.
     pub(crate) unsafe fn of(co: *mut Coroutine) -> Option<Self> {
         NonNull::new(co).map(Self)
+    }
+
+    /// The coroutine a new record starts with. The record is leaked, so it stays
+    /// live until the scheduler's `destroy` frees it.
+    #[cfg(feature = "upstream-symbols")]
+    #[cfg_attr(
+        test,
+        expect(dead_code, reason = "facade.rs, its only caller, builds outside tests")
+    )]
+    pub(crate) fn leak(native: Box<crate::context::Native>) -> Self {
+        Self(NonNull::from(Box::leak(native)).cast())
     }
 
     /// A link field's coroutine, live by the handle's invariant.
@@ -659,25 +662,27 @@ pub(crate) mod tests {
     fn register_counts_ids_and_peak() {
         let mut s = scheduler();
         let (mut a, mut b, mut c) = (blank(), blank(), blank());
+        let (a, b, c) = (&raw mut a, &raw mut b, &raw mut c);
+        let co = |co| unsafe { Co::of(co) }.unwrap();
         // SAFETY: the coroutines live on this frame past their removal.
         unsafe {
-            assert!(s.register(&raw mut a, ptr::null_mut(), 5, 9).1);
-            assert_eq!(a.cid, 1);
+            assert!(s.register(co(a), ptr::null_mut(), 5, 9));
+            assert_eq!((*a).cid, 1);
             s.activated = true;
-            assert!(!s.register(&raw mut b, ptr::null_mut(), 5, 9).1);
+            assert!(!s.register(co(b), ptr::null_mut(), 5, 9));
             assert_eq!(s.peak_num, 2);
             assert_eq!(
-                (b.cid, b.state, b.init_msec, b.switch_usec),
+                ((*b).cid, (*b).state, (*b).init_msec, (*b).switch_usec),
                 (2, State::Init, 5, 9)
             );
             s.remove(1);
             s.remove(2);
-            assert!(!s.register(&raw mut c, ptr::null_mut(), 0, 0).1);
-            assert_eq!((c.cid, s.peak_num, s.count()), (3, 2, 1));
+            assert!(!s.register(co(c), ptr::null_mut(), 0, 0));
+            assert_eq!(((*c).cid, s.peak_num, s.count()), (3, 2, 1));
             s.remove(3);
             s.last_cid = c_long::MAX;
-            s.register(&raw mut c, ptr::null_mut(), 0, 0);
-            assert_eq!(c.cid, c_long::MIN);
+            s.register(co(c), ptr::null_mut(), 0, 0);
+            assert_eq!((*c).cid, c_long::MIN);
         }
         s.remove(c_long::MIN);
         s.set_active(false);
@@ -707,8 +712,8 @@ pub(crate) mod tests {
         let co = |co| unsafe { Co::of(co) }.unwrap();
         // SAFETY: the three coroutines live on this frame for the whole test.
         unsafe {
-            for co in [a, b, c] {
-                sp.with(|s| s.register(co, ptr::null_mut(), 0, 0));
+            for child in [a, b, c] {
+                sp.with(|s| s.register(co(child), ptr::null_mut(), 0, 0));
             }
             enter(sp, co(a));
             enter(sp, co(b));
@@ -777,8 +782,8 @@ pub(crate) mod tests {
         // SAFETY: the scheduler and coroutines live on this frame; the hooks
         // only record events.
         unsafe {
-            (*sp).register(a, 10 as *mut c_void, 0, 0);
-            (*sp).register(b, 20 as *mut c_void, 0, 0);
+            (*sp).register(Co::of(a).unwrap(), 10 as *mut c_void, 0, 0);
+            (*sp).register(Co::of(b).unwrap(), 20 as *mut c_void, 0, 0);
             (*a).task = task(3);
             (*b).task = task(2);
             // a runs and (in its body) runs b, which yields back to a.
@@ -825,8 +830,8 @@ pub(crate) mod tests {
         let (a, b) = (&raw mut a, &raw mut b);
         // SAFETY: as above.
         unsafe {
-            (*sp).register(a, 10 as *mut c_void, 0, 0);
-            (*sp).register(b, 20 as *mut c_void, 0, 40);
+            (*sp).register(Co::of(a).unwrap(), 10 as *mut c_void, 0, 0);
+            (*sp).register(Co::of(b).unwrap(), 20 as *mut c_void, 0, 40);
             swr_v1_coroutine_run(sp, a);
             swr_v1_coroutine_run(sp, b);
             // b bails out: a, its outermost origin, yields to main.

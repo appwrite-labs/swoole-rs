@@ -54,6 +54,17 @@ impl Running<'_> {
         }
     }
 
+    /// The handle of a reactor just made from `owner`, on this thread: live until
+    /// `swr_v1_reactor_delete`, whose caller promises nothing uses it afterwards, and
+    /// borrowed by no reference.
+    #[cfg(unix)]
+    pub(crate) fn leak(owner: Box<crate::ReactorState>) -> Running<'static> {
+        Running {
+            raw: crate::ReactorState::into_raw(owner).cast(),
+            live: PhantomData,
+        }
+    }
+
     #[must_use]
     pub fn as_ptr(self) -> *mut c_void {
         self.raw

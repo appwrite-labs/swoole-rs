@@ -9,13 +9,12 @@ use libc::c_int;
 use std::ffi::CStr;
 use std::os::fd::OwnedFd;
 use swoole_rs_buffer::string::CppString;
+use swoole_rs_corebase::log::LogLevel::{SW_LOG_TRACE as LOG_TRACE, SW_LOG_WARNING as LOG_WARNING};
 use swoole_rs_corebase::{log, sys};
 
 /// `SW_LOG_TRACE`, `SW_LOG_WARNING`, `SW_ERROR_FILE_TOO_LARGE` and `SW_ERROR_FILE_EMPTY`.
-const LOG_TRACE: c_int = 1;
-const LOG_WARNING: c_int = 4;
-const FILE_TOO_LARGE: c_int = 701;
-const FILE_EMPTY: c_int = 702;
+const FILE_TOO_LARGE: c_int = swoole_rs_error::ErrorCode::SW_ERROR_FILE_TOO_LARGE as c_int;
+const FILE_EMPTY: c_int = swoole_rs_error::ErrorCode::SW_ERROR_FILE_EMPTY as c_int;
 
 /// `File::read_all`/`write_all`'s warning on an IO error.
 fn warn_io(origin: &CStr, call: &str, fd: c_int, data: *const u8, total: usize, io: FileIo) {

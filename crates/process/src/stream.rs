@@ -9,15 +9,15 @@ use std::io::{self, Read, Write};
 use std::net::SocketAddrV4;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
 use swoole_rs_corebase::{log, sys};
 
 /// `SW_INPUT_BUFFER_SIZE`: the client's default `package_max_length`.
 const MAX_LENGTH: u32 = 2 * 1024 * 1024;
-/// `SW_LOG_WARNING`.
-const LOG_WARNING: c_int = 4;
 /// `SW_ERROR_SERVER_CONNECT_FAIL`.
-const SERVER_CONNECT_FAIL: c_int = 9011;
+const SERVER_CONNECT_FAIL: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SERVER_CONNECT_FAIL as c_int;
 
 /// Where a stream connects: a Unix stream socket's path, or a TCP address.
 pub enum Peer<'a> {

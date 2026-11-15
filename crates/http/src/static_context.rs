@@ -2,7 +2,7 @@
 //! derived from it, the file's facts, the directory listing and the range tasks. The
 //! filesystem, MIME, random and calendar effects are the caller's [`StaticEffects`].
 use crate::range_response::{HttpRangeFormat, range_format};
-use crate::static_path::Action;
+use crate::static_path::{self, Action};
 use crate::{HttpDirectory, HttpStaticPath, HttpStaticTask, HttpTasks, INVALID, OVERFLOW};
 mod filesystem;
 pub use filesystem::StaticEffects;
@@ -33,6 +33,17 @@ use StaticText::{Boundary, Content, Directory, End, Filename, Index, Original, U
 /// `SW_HTTP_SERVER_BOUNDARY_TOTAL_SIZE`: the boundary and its NUL.
 pub const BOUNDARY_SIZE: usize = 39;
 
+/// The mutually exclusive file kinds returned by `lstat`, as path-policy bits.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum StaticFileKind {
+    #[default]
+    Other = 0,
+    Symlink = static_path::LINK,
+    Directory = static_path::DIRECTORY,
+    File = static_path::FILE,
+}
+
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct HttpStaticObservation {
     pub filesize: usize,
@@ -41,9 +52,8 @@ pub struct HttpStaticObservation {
     pub directory_count: usize,
     pub task_count: usize,
     pub status: i32,
-    pub kind: u32,
-    pub file_ready: u32,
-    pub last: u32,
+    pub kind: StaticFileKind,
+    pub file_ready: bool,
 }
 pub struct HttpStaticContext {
     original: Vec<u8>,
@@ -122,7 +132,6 @@ impl HttpStaticContext {
     #[must_use]
     pub fn observe(&self) -> HttpStaticObservation {
         HttpStaticObservation {
-            last: self.path.last,
             directory_count: self.directory.len(),
             task_count: self.tasks.count(),
             ..self.facts
@@ -257,7 +266,7 @@ impl HttpStaticContext {
         self.facts.filesize = input.filesize;
         self.facts.mtime = input.mtime;
         self.facts.kind = input.kind;
-        self.facts.file_ready = 1;
+        self.facts.file_ready = true;
     }
     /// The multipart content type over the boundary.
     fn format_content(&mut self) -> i32 {
@@ -278,7 +287,7 @@ impl HttpStaticContext {
             length: 0,
             filesize: 0,
             part: 1,
-            separator: 0,
+            separator: false,
         };
         let mut length = 0;
         let status = range_format(&range, &mut [], &mut length);
@@ -384,7 +393,7 @@ mod tests {
         let mut owner = make();
         let facts = owner.observe();
         assert_eq!(facts.status, 200);
-        assert_eq!(facts.file_ready, 0);
+        assert_eq!(u32::from(facts.file_ready), 0);
         for name in [b"z".as_slice(), b"a", b"z"] {
             assert_eq!(owner.directory.scan_append(name), Ok(()));
         }

@@ -113,45 +113,43 @@ const EVENTS: [(&[u8], &[u8]); 12] = [
 /// event catalog; no Zend pointer or mutable class/property registry enters Rust.
 pub struct PortsProperty {
     pub name: &'static [u8],
-    pub value: i64,
-    pub kind: u32,
-    pub private: u32,
+    pub value: PropertyDefault,
+    pub private: bool,
 }
-#[must_use]
-pub fn swr_v1_ports_class_property(index: usize) -> PortsProperty {
+
+#[derive(Clone, Copy)]
+pub enum PropertyDefault {
+    Null,
+    Long(i64),
+    Bool(bool),
+}
+
+pub fn class_properties() -> impl Iterator<Item = PortsProperty> {
+    use PropertyDefault::{Bool, Long, Null};
     // Declaration order differs from callback enum order and is observable.
     const EVENT_ORDER: [usize; 12] = [0, 1, 2, 3, 10, 11, 4, 5, 7, 8, 9, 6];
-    const PUBLIC: &[(&[u8], u32, i64)] = &[
-        (b"host", 1, 0),
-        (b"port", 2, 0),
-        (b"type", 2, 0),
-        (b"sock", 2, -1),
-        (b"ssl", 3, 0),
-        (b"setting", 1, 0),
-        (b"connections", 1, 0),
+    const PUBLIC: &[(&[u8], PropertyDefault)] = &[
+        (b"host", Null),
+        (b"port", Long(0)),
+        (b"type", Long(0)),
+        (b"sock", Long(-1)),
+        (b"ssl", Bool(false)),
+        (b"setting", Null),
+        (b"connections", Null),
     ];
-    let (name, kind, value, private) =
-        if let Some(&(_, name)) = EVENT_ORDER.get(index).and_then(|&event| EVENTS.get(event)) {
-            (name, 1, 0, 1)
-        } else if let Some(&(name, kind, value)) = index
-            .checked_sub(EVENT_ORDER.len())
-            .and_then(|i| PUBLIC.get(i))
-        {
-            (name, kind, value, 0)
-        } else {
-            return PortsProperty {
-                name: b"",
-                value: 0,
-                kind: 0,
-                private: 0,
-            };
-        };
-    PortsProperty {
-        name,
-        value,
-        kind,
-        private,
-    }
+    EVENT_ORDER
+        .into_iter()
+        .filter_map(|event| EVENTS.get(event))
+        .map(|&(_, name)| PortsProperty {
+            name,
+            value: Null,
+            private: true,
+        })
+        .chain(PUBLIC.iter().map(|&(name, value)| PortsProperty {
+            name,
+            value,
+            private: false,
+        }))
 }
 
 /// The event `name` registers (`on()`): its callback and callback property.

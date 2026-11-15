@@ -83,7 +83,11 @@ pub(super) mod ops {
         log("connect Async");
         mock(|m| m.connect_async.pop()).unwrap_or(Connect::Error)
     }
-    pub(in super::super) fn event(_: Handle, op: EventOp, events: c_int) -> bool {
+    pub(in super::super) fn event(
+        _: Handle,
+        op: EventOp,
+        events: swoole_rs_reactor::Events,
+    ) -> bool {
         log(format!("event {op:?} {events}"));
         true
     }

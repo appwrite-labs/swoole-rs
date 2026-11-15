@@ -74,12 +74,12 @@ fn location() {
                     )
                 } != 0;
                 let mut state = HttpStaticPath {
-                    phase: 1,
+                    phase: swoole_rs_http::StaticPhase::Locations,
                     ..HttpStaticPath::default()
                 };
                 let now = location_match(&url, &location, &mut state);
                 assert!(
-                    now == Ok(old) && state.last == u32::from(old),
+                    now == Ok(old) && u32::from(state.last) == u32::from(old),
                     "location:{a}:{b}"
                 );
             }

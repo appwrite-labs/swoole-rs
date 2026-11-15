@@ -6,7 +6,7 @@ use std::ffi::{c_char, c_int};
 use std::net::IpAddr;
 use swoole_rs_clients::dns::{DnsExchange, RecvError, query};
 use swoole_rs_http::llhttp::{self, Callbacks, Parser};
-use swoole_rs_http::multipart_parser::MultipartParser;
+use swoole_rs_http::multipart_parser::{Flow, MultipartParser};
 use swoole_rs_http2::{
     frame_length, sw_rs_http2_decode_frame, sw_rs_http2_inflate_step, sw_rs_http2_unpack_setting,
 };
@@ -137,25 +137,25 @@ struct Parts {
 }
 
 impl swoole_rs_http::multipart_parser::Parts for Parts {
-    fn on_header_field(&mut self, data: &[u8]) -> i32 {
+    fn on_header_field(&mut self, data: &[u8]) -> Flow {
         in_chunk(data.as_ptr().cast(), data.len());
-        0
+        Flow::Go
     }
 
-    fn on_header_value(&mut self, data: &[u8]) -> i32 {
+    fn on_header_value(&mut self, data: &[u8]) -> Flow {
         in_chunk(data.as_ptr().cast(), data.len());
         self.value.extend_from_slice(data);
-        0
+        Flow::Go
     }
 
-    fn on_headers_complete(&mut self) -> i32 {
+    fn on_headers_complete(&mut self) -> Flow {
         let mut value = std::mem::take(&mut self.value);
         value.push(0);
         // The scan reads the value through its first NUL.
         let end = value.iter().position(|&byte| byte == 0).unwrap_or_default();
         let status = swoole_rs_http::multipart_filename(&mut value[..=end]);
         assert!(status.is_ok(), "filename status {status:?}");
-        0
+        Flow::Go
     }
 }
 

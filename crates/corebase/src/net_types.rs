@@ -138,6 +138,12 @@ impl SocketAddress {
         self.named(fd, getpeername)
     }
 
+    /// `accept(2)` on `fd`, the peer's address and its length into this one: the new
+    /// fd, or -1 with errno set.
+    pub fn accept(&mut self, fd: c_int) -> c_int {
+        self.named(fd, accept)
+    }
+
     /// `name(fd, ...)` into the whole storage, its length going to `len`.
     fn named(&mut self, fd: c_int, name: NameCall) -> c_int {
         let mut room = Room::FULL;
@@ -170,12 +176,13 @@ impl Room {
     const FULL: Self = Self(SocketAddress::CAPACITY);
 }
 
-/// `getsockname` or `getpeername`.
+/// `getsockname`, `getpeername` or `accept`.
 type NameCall = extern "C" fn(c_int, &mut AddressStorage, &mut Room) -> c_int;
 
 // libc's. Each writes at most the room's incoming size (the whole storage) of
 // `address`, and the address's length into the room, and keeps nothing.
 unsafe extern "C" {
+    safe fn accept(fd: c_int, address: &mut AddressStorage, room: &mut Room) -> c_int;
     safe fn getsockname(fd: c_int, address: &mut AddressStorage, room: &mut Room) -> c_int;
     safe fn getpeername(fd: c_int, address: &mut AddressStorage, room: &mut Room) -> c_int;
 }

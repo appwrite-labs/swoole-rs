@@ -215,6 +215,15 @@ mod c {
             link_name = "__error"
         )]
         pub(crate) safe fn errno_location() -> &'static std::cell::Cell<c_int>;
+        /// This thread's `h_errno` slot, as [`errno_location`]'s: glibc and musl keep
+        /// one per thread.
+        #[cfg(target_os = "linux")]
+        #[link_name = "__h_errno_location"]
+        pub(crate) safe fn h_errno_location() -> &'static std::cell::Cell<c_int>;
+        /// Apple's `h_errno`, one for the process: an int, which Rust reads and writes
+        /// as one, atomically.
+        #[cfg(not(target_os = "linux"))]
+        pub(crate) safe static h_errno: std::sync::atomic::AtomicI32;
     }
 }
 #[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
@@ -293,6 +302,8 @@ impl sealed::Zero for libc::sigaction {}
 // Their strings are raw pointers, null until a lookup fills them.
 impl sealed::Zero for libc::group {}
 impl sealed::Zero for libc::passwd {}
+// Integers and the raw pointers to its vectors and name, null until a caller sets them.
+impl sealed::Zero for libc::msghdr {}
 // A System V message queue's status and the permissions in it: integers.
 impl sealed::Zero for libc::ipc_perm {}
 #[cfg(target_os = "linux")]
@@ -380,6 +391,23 @@ pub fn errno() -> c_int {
 /// Sets this thread's errno.
 pub fn set_errno(value: c_int) {
     c::errno_location().set(value);
+}
+
+/// The resolver's error, `h_errno`: this thread's on Linux, the process's on Apple.
+#[must_use]
+pub fn h_errno() -> c_int {
+    #[cfg(target_os = "linux")]
+    return c::h_errno_location().get();
+    #[cfg(not(target_os = "linux"))]
+    return c::h_errno.load(std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Sets `h_errno`, as [`h_errno`] reads it.
+pub fn set_h_errno(value: c_int) {
+    #[cfg(target_os = "linux")]
+    c::h_errno_location().set(value);
+    #[cfg(not(target_os = "linux"))]
+    c::h_errno.store(value, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// `strerror(3)`: libc's message for `code`, as std's `strerror_r` reads it.

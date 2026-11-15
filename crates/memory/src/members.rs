@@ -13,6 +13,7 @@
 
 use crate::global::{self, Global};
 use crate::table::Table;
+use core::cell::Cell;
 use std::ffi::{c_int, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
@@ -22,7 +23,7 @@ use swoole_rs_corebase::log::{self, set_last_error};
 const INVALID: i32 = -1;
 const NO_MEMORY: i32 = -2;
 /// `SW_ERROR_MALLOC_FAIL`.
-const MALLOC_FAIL: c_int = 501;
+const MALLOC_FAIL: c_int = swoole_rs_error::ErrorCode::SW_ERROR_MALLOC_FAIL as c_int;
 /// `SW_MIN_PAGE_SIZE`.
 const MIN_PAGE_SIZE: u32 = 4096;
 
@@ -236,47 +237,50 @@ fn alloc(pages: &mut Global, size: u32) -> *mut c_void {
 /// mapped, once. Native code reads it as the payload pointer.
 #[repr(transparent)]
 #[derive(Debug)]
-pub struct Shm(*mut c_void);
+pub struct Shm(Cell<*mut c_void>);
 
 impl Default for Shm {
     fn default() -> Self {
-        Self::NULL
+        Self::empty()
     }
 }
 
 impl Shm {
     /// No mapping.
-    pub const NULL: Self = Self(ptr::null_mut());
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self(Cell::new(ptr::null_mut()))
+    }
 
     /// `sw_shm_malloc(size)`: null when it fails.
     #[must_use]
     pub fn malloc(size: usize) -> Self {
-        Self(sw_shm_malloc(size))
+        Self(Cell::new(sw_shm_malloc(size)))
     }
 
     /// `sw_shm_calloc(count, size)`: null when it fails.
     #[must_use]
     pub fn calloc(count: usize, size: usize) -> Self {
-        Self(sw_shm_calloc(count, size))
+        Self(Cell::new(sw_shm_calloc(count, size)))
     }
 
     /// As [`Shm::calloc`], but a fork copies the mapping rather than sharing it, as
     /// it would `sw_calloc`'s memory.
     #[must_use]
     pub fn calloc_private(count: usize, size: usize) -> Self {
-        Self(
+        Self(Cell::new(
             count
                 .checked_mul(size)
                 .map_or(ptr::null_mut(), |size| map(size, libc::MAP_PRIVATE)),
-        )
+        ))
     }
 
     /// The mapping's base and total, if there is one.
     fn extent(&self) -> Option<(*mut c_void, usize)> {
-        if self.0.is_null() {
+        if self.0.get().is_null() {
             return None;
         }
-        let base = self.0.cast::<usize>().wrapping_sub(1);
+        let base = self.0.get().cast::<usize>().wrapping_sub(1);
         // SAFETY: only `map` filled the field, so its header precedes the payload.
         Some((base.cast(), unsafe { base.read() }))
     }
@@ -290,19 +294,15 @@ impl Shm {
     /// The payload, or null.
     #[must_use]
     pub fn as_ptr(&self) -> *mut c_void {
-        self.0
+        self.0.get()
     }
 
     #[must_use]
     pub fn is_null(&self) -> bool {
-        self.0.is_null()
+        self.0.get().is_null()
     }
 
     /// `SharedMemory::protect`: `mprotect`s the whole mapping; -1 without one.
-    #[expect(
-        clippy::must_use_candidate,
-        reason = "upstream's Server::worker_start_callback ignores mprotect's result"
-    )]
     pub fn protect(&self, flags: c_int) -> c_int {
         let Some((base, total)) = self.extent() else {
             return -1;
@@ -314,7 +314,13 @@ impl Shm {
     /// The payload, for an owner that frees it with `sw_shm_free`.
     #[must_use]
     pub fn into_raw(self) -> *mut c_void {
-        self.0
+        self.0.into_inner()
+    }
+
+    /// Takes `mapping`, unmapping the previous allocation and invalidating its
+    /// raw pointers. `Shm` lends no references into the mapping.
+    pub fn replace(&self, mapping: Self) {
+        Self(Cell::new(self.0.replace(mapping.into_raw()))).free();
     }
 
     /// `SharedMemory::free`: unmaps the mapping, if any, and leaves the field null.
@@ -322,7 +328,7 @@ impl Shm {
         let Some((base, total)) = self.extent() else {
             return;
         };
-        self.0 = ptr::null_mut();
+        self.0.set(ptr::null_mut());
         // SAFETY: the mapping its header describes, unmapped once: the field is null now.
         if unsafe { libc::munmap(base, total) } < 0 {
             log::sys_warning(
@@ -383,7 +389,7 @@ upstream! {
     /// # Safety
     /// `payload` is null or a live `sw_shm_malloc` payload, freed once.
     pub unsafe extern "C" fn sw_shm_free(payload: *mut c_void) {
-        Shm(payload).free();
+        Shm(Cell::new(payload)).free();
     }
 }
 
@@ -596,7 +602,7 @@ impl Drop for SharedTable {
             // `Table::destroy()`: frees the arena, then the header.
             // SAFETY: a made table, destroyed once: nothing uses it any more.
             let arena = unsafe { self.table.destroy() };
-            Shm(arena.cast()).free();
+            Shm(Cell::new(arena.cast())).free();
         }
     }
 }

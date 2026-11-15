@@ -1,10 +1,12 @@
 //! Swoole's PHP error macros (`php_swoole_private.h`).
 use swoole_rs_zend::{E_ERROR, Message, bailout, report};
 
-pub(crate) const PHP_FATAL_ERROR: i32 = 503;
-pub(crate) const INVALID_PARAMS: i32 = 505;
-pub(crate) const OPERATION_NOT_SUPPORT: i32 = 507;
-pub(crate) const PHP_RUNTIME_NOTICE: i32 = 510;
+pub(crate) const PHP_FATAL_ERROR: i32 = swoole_rs_error::ErrorCode::SW_ERROR_PHP_FATAL_ERROR as i32;
+pub(crate) const INVALID_PARAMS: i32 = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as i32;
+pub(crate) const OPERATION_NOT_SUPPORT: i32 =
+    swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as i32;
+pub(crate) const PHP_RUNTIME_NOTICE: i32 =
+    swoole_rs_error::ErrorCode::SW_ERROR_PHP_RUNTIME_NOTICE as i32;
 
 /// `errno`, and setting it (to 0 before a call whose -1 result is ambiguous).
 pub(crate) use swoole_rs_corebase::sys::{errno, set_errno};

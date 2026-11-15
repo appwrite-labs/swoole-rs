@@ -4,7 +4,7 @@
 //! as upstream's ZPP block does and makes one call on the coroutine socket
 //! (`crate::native`).
 use crate::{
-    native::{self, Co, Transfer},
+    native::{Co, Transfer},
     net::{SOCK_SSL, SOCK_TCP, SOCK_TCP6, SOCK_UNIX_STREAM, check_type, socket_type},
     socket::{Sock, strerror, warn},
 };
@@ -365,7 +365,7 @@ fn connect(call: &Call) {
         socket.close();
         return call.set_bool(false);
     }
-    socket.set_timeout(timeout, native::TIMEOUT_RDWR);
+    socket.set_timeout(timeout, swoole_rs_reactor::TimeoutKind::RDWR);
     if let Some(props) = props(call) {
         props.bool(c"connected", true);
     }

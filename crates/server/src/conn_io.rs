@@ -10,6 +10,7 @@ use crate::Mode;
 use core::ffi::{c_int, c_long};
 use core::sync::atomic::Ordering::{Relaxed, Release, SeqCst};
 use swoole_rs_corebase::ServerEvent;
+use swoole_rs_reactor::Events;
 
 use swoole_rs_buffer::EntryKind;
 use swoole_rs_buffer::cpp::{
@@ -139,7 +140,7 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
         if let Some(own) = conn.socket()
             && resume_timer(serv, conn, own)
         {
-            reactor.interest(sock, swoole_rs_reactor::Interest::RemoveRead, 0);
+            reactor.interest(sock, swoole_rs_reactor::Interest::RemoveRead);
         }
     }
     retval
@@ -167,14 +168,12 @@ fn verify_ssl(
     };
     conn.set_ssl_ready(true);
     let config = port.map(view::Port::config);
-    let fields = config.and_then(PortConfig::ssl_fields);
-    let verify_peer = fields.is_some_and(|f| f.verify_peer);
+    let (verify_peer, allow_self_signed) = config
+        .and_then(|config| config.with_ssl_fields(|_, f| (f.verify_peer, f.allow_self_signed)))
+        .unwrap_or_default();
     let peer =
         || with_thread_buffer(|buffer| tls::socket_ssl_peer_certificate_string(sock, buffer));
-    let verified = || {
-        let allow_self_signed = fields.is_some_and(|f| f.allow_self_signed);
-        tls::socket_ssl_verify(sock, allow_self_signed)
-    };
+    let verified = || tls::socket_ssl_verify(sock, allow_self_signed);
     let wanted = config.is_some_and(client_cert_file);
     match certificate(wanted, verify_peer, peer, verified) {
         Certificate::Rejected => return Handshake::Error,
@@ -201,9 +200,7 @@ fn verify_ssl(
             }
         }
     }
-    if state.config_ref().enable_delay_receive.get()
-        && !reactor.change(sock, swoole_rs_reactor::ChangeOp::Del, 0)
-    {
+    if state.config_ref().enable_delay_receive.get() && !reactor.del(sock) {
         return Handshake::Error;
     }
     Handshake::Ready
@@ -244,11 +241,11 @@ fn certificate(
 
 /// Whether the TLS port has a client certificate file.
 fn client_cert_file(port: &PortConfig) -> bool {
-    let Some(context) = port.ssl_context.as_deref() else {
+    let Some(context) = port.ssl_context.get() else {
         return false;
     };
     // `client_cert_file`'s slot.
-    let slot = swr_v1_tls_owner_view(context).strings[7];
+    let slot = swr_v1_tls_owner_view(&context).strings[7];
     // SAFETY: a stable slot of the port's live owner.
     !unsafe { &*slot }.bytes().is_empty()
 }
@@ -287,7 +284,7 @@ fn resume_data_receiving(serv: view::Server<'_>, socket: Socket<'static>) {
         }
     }
     // The firing timer's reactor: this thread's.
-    Reactor::thread().interest(socket, swoole_rs_reactor::Interest::AddRead, 0);
+    Reactor::thread().interest(socket, swoole_rs_reactor::Interest::AddRead);
     conn.set_timer(None);
 }
 
@@ -303,9 +300,7 @@ pub(crate) const fn status(ok: bool) -> c_int {
     if ok { OK } else { ERR }
 }
 /// `SW_EVENT_READ`, `SW_EVENT_WRITE` and `SW_SSL_STATE_READY`.
-const SW_EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
-const SW_EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
-const SSL_READY: u32 = swoole_rs_tls::SslState::SW_SSL_STATE_READY as u32;
+use swoole_rs_tls::SslState::SW_SSL_STATE_READY as SSL_READY;
 
 /// Whether the socket has TLS whose handshake is not finished.
 fn handshaking(sock: Socket<'_>) -> bool {
@@ -399,9 +394,9 @@ pub(crate) fn write(serv: view::Server<'_>, reactor: Reactor, event: &mut Event)
     if !conn.peer_closed() && !sock.read(|s| s.removed) && output(sock).1 {
         // A notified close no longer reads: it only drains.
         if BUILT_PREQUEUE {
-            reactor.interest(sock, swoole_rs_reactor::Interest::RemoveWrite, 0);
+            reactor.interest(sock, swoole_rs_reactor::Interest::RemoveWrite);
         } else {
-            reactor.change(sock, swoole_rs_reactor::ChangeOp::Set, SW_EVENT_READ);
+            reactor.change(sock, swoole_rs_reactor::ChangeOp::Set, Events::READ);
         }
     }
     true
@@ -419,7 +414,7 @@ pub(crate) fn peer_close(serv: view::Server<'_>, reactor: Reactor, event: &Event
     if state.config_ref().disable_notify.get() {
         return close_connection(serv, reactor, Some(sock));
     }
-    if !reactor.change(sock, swoole_rs_reactor::ChangeOp::Del, 0) {
+    if !reactor.del(sock) {
         return false;
     }
     if conn.close_queued() {
@@ -484,7 +479,7 @@ pub(crate) fn close_connection(
         if !conn.close_queued() {
             queue_close(conn, sock);
         }
-        let events = sock.read(|s| what_event_want(s, SW_EVENT_WRITE));
+        let events = sock.read(|s| what_event_want(s, Events::WRITE));
         let op = if removed {
             swoole_rs_reactor::ChangeOp::Add
         } else {
@@ -500,7 +495,7 @@ pub(crate) fn close_connection(
         unsafe { delete_string(websocket.cast()) };
         conn.set_websocket_buffer(core::ptr::null_mut());
     }
-    if !removed && !reactor.change(sock, swoole_rs_reactor::ChangeOp::Del, 0) {
+    if !removed && !reactor.del(sock) {
         return false;
     }
     count_close(state, port, reactor);
@@ -634,7 +629,7 @@ pub(crate) mod tests {
         if sock.read(|s| s.removed) {
             assert!(
                 live.reactor()
-                    .change(sock, swoole_rs_reactor::ChangeOp::Add, SW_EVENT_READ)
+                    .change(sock, swoole_rs_reactor::ChangeOp::Add, Events::READ)
             );
         }
         conn
@@ -773,7 +768,7 @@ pub(crate) mod tests {
         reactor.change(
             sock,
             swoole_rs_reactor::ChangeOp::Set,
-            SW_EVENT_READ | SW_EVENT_WRITE,
+            Events::READ | Events::WRITE,
         );
         assert!(write(serv, reactor, &mut conn.event(0, 0)));
         let mut got = [0; 6];
@@ -782,7 +777,7 @@ pub(crate) mod tests {
         assert_eq!(output(sock), (0, true));
         assert_eq!(conn.send_queued_bytes(), 0);
         let events = sock.read(|s| s.events);
-        assert_eq!(events & SW_EVENT_WRITE, 0, "reads only");
+        assert!(!events.intersects(Events::WRITE), "reads only");
         assert_eq!(calls(), []);
         conn.active().store(0, Relaxed);
         assert!(!write(serv, reactor, &mut conn.event(0, 0)), "gone");
@@ -884,7 +879,7 @@ pub(crate) mod tests {
         assert_eq!(conn.waiting_time(), 1);
         assert!(conn.timer().is_some(), "resumes on a timer");
         let events = conn.socket().unwrap().read(|s| s.events);
-        assert_eq!(events & SW_EVENT_READ, 0, "paused");
+        assert!(!events.intersects(Events::READ), "paused");
 
         let conn = session(&live, 2);
         conn.recv_queued_bytes().store(8, SeqCst);

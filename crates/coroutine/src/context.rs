@@ -124,7 +124,7 @@ impl Drop for Context {
 }
 
 /// `SW_ERROR_MALLOC_FAIL`.
-const SW_ERROR_MALLOC_FAIL: c_int = 501;
+const SW_ERROR_MALLOC_FAIL: c_int = swoole_rs_error::ErrorCode::SW_ERROR_MALLOC_FAIL as c_int;
 
 type StartSwitch = unsafe extern "C" fn(*mut *mut c_void, *const c_void, usize);
 type FinishSwitch = unsafe extern "C" fn(*mut c_void, *mut *const c_void, *mut usize);

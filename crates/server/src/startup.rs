@@ -10,11 +10,13 @@ use core::mem::offset_of;
 use core::sync::atomic::Ordering::{Relaxed, SeqCst};
 use swoole_rs_clients::address::assign;
 use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
+use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR, SW_LOG_WARNING};
 use swoole_rs_corebase::{CCast, log};
 use swoole_rs_error::ErrorCode;
 use swoole_rs_memory::members::Shm;
 use swoole_rs_process::process_pool::IpcMode;
 use swoole_rs_process::worker_record::{WorkerRecord, WorkerType};
+use swoole_rs_reactor::Events;
 
 /// `SW_MAX_THREAD_NCPU`, `SW_MAX_WORKER_NCPU`, `SW_TIMER_MIN_SEC`, `SW_BUFFER_MIN_SIZE`;
 /// native asserts each.
@@ -22,10 +24,6 @@ const MAX_THREAD_NCPU: u32 = 4;
 const MAX_WORKER_NCPU: u32 = 1000;
 const TIMER_MIN_SEC: f64 = 0.001;
 const BUFFER_MIN_SIZE: u32 = 65536;
-
-/// `SW_LOG_WARNING` and `SW_LOG_ERROR`.
-const SW_LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
-const SW_LOG_ERROR: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR as c_int;
 
 /// `Server::start`: checks, the daemon, the factory and the mode's workers, then
 /// the master's loop until shutdown, and `destroy`.
@@ -344,7 +342,7 @@ fn check_port(
     }
     let dgram = matches!(settings.r#type, 2 | 4 | 6);
     let stream = matches!(settings.r#type, 1 | 3 | 5);
-    let ssl = settings.ssl != 0;
+    let ssl = settings.ssl;
     if ((dgram && ssl) || stream) && !has(CallbackKind::Receive) {
         invalid_callback(format_args!("require 'onReceive' callback"));
         return false;
@@ -370,7 +368,6 @@ pub(crate) fn start_master_thread(serv: view::Server<'_>, reactor: Reactor) -> b
     /// `THREAD_MASTER`, `SW_FD_STREAM_SERVER` and `SW_EVENT_READ`.
     const THREAD_MASTER: u8 = 1;
     const FD_STREAM_SERVER: c_int = 1;
-    const EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
     let state = serv.state();
     let config = state.config_ref();
     let single = config.single_thread.get();
@@ -388,13 +385,13 @@ pub(crate) fn start_master_thread(serv: view::Server<'_>, reactor: Reactor) -> b
     }
     reactor.handle().set_object(serv.raw());
     let accept: swoole_rs_reactor::Handler = crate::server_methods::accept_connection;
-    reactor.set_handler(FD_STREAM_SERVER, EVENT_READ, accept);
+    reactor.set_handler(FD_STREAM_SERVER, Events::READ, accept);
     if let Some(pipe) = config.command_pipe() {
         if !single {
             hybrid().step(serv, Step::CommandHandler);
         }
         if let Some(master) = pipe.master_end() {
-            reactor.change(master, swoole_rs_reactor::ChangeOp::Add, EVENT_READ);
+            reactor.change(master, swoole_rs_reactor::ChangeOp::Add, Events::READ);
         }
     }
     if !hybrid().step(serv, Step::MasterTimer) {
@@ -434,6 +431,7 @@ pub(crate) fn store_listen_socket(serv: view::Server<'_>) {
         conn.set_socket(Some(socket));
         conn.set_socket_type(port.r#type);
         conn.set_object(ls);
+        conn.listen(listen);
         let mut info = conn.info();
         info.kind = port.r#type;
         let host = port.host.bytes_with_nul();
@@ -888,6 +886,16 @@ mod tests {
         let port = (&raw const *live.port()).addr();
         assert_eq!(conn.fd(), fd, "the slot's fd");
         assert_eq!(conn.object().addr(), port, "the slot holds its port");
+        let listed = conn.port().map(|port| port.raw().addr());
+        assert_eq!(listed, Some(port), "as its listening port");
+        let mut unrelated = 0_u64;
+        conn.set_object((&raw mut unrelated).cast());
+        let found = live
+            .state()
+            .port_by_server_fd(fd)
+            .map(|port| port.raw().addr());
+        assert_eq!(found, Some(port), "whatever the public object holds");
+        conn.set_object(core::ptr::from_ref(live.port()).cast_mut().cast());
         assert_eq!(conn.socket_type(), 1, "TCP");
         assert_eq!(conn.info().kind, 1, "its address");
         assert_eq!(

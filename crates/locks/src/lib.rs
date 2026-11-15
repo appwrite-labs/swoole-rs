@@ -1003,8 +1003,8 @@ mod tests {
         const TIMEOUT_1: i32 = 2;
         const TIMEOUT_2: i32 = 10;
         // Upstream unlocks after a fixed 10 ms sleep, which races the waiter's start and its
-        // second wait on a loaded runner. Main instead unlocks 1 ms after the first timeout,
-        // so the waiter blocks briefly in the second wait with TIMEOUT_2's whole margin left.
+        // second wait on a loaded runner. Main instead sleeps 1 ms after the first timeout
+        // before unlocking; report both intervals if scheduling still delays the unlock.
         // How soon the waiter runs after the unlock is the scheduler's, and the gates run 40
         // phases at once (#2939), so the bound holds if one of three attempts meets it.
         let attempt = || {
@@ -1018,13 +1018,20 @@ mod tests {
                     timed_out.wait();
                     let ms2 = millis();
                     assert!(ms2 - ms1 >= TIMEOUT_1 as u128);
-                    assert_eq!(lock.lock(LOCK_EX, TIMEOUT_2), 0);
-                    millis() - ms2
+                    let result = lock.lock(LOCK_EX, TIMEOUT_2);
+                    (result, ms2, millis())
                 });
                 timed_out.wait();
                 thread::sleep(Duration::from_millis(1));
+                let unlock_started = millis();
                 lock.unlock();
-                waiter.join().unwrap()
+                let unlock_finished = millis();
+                let (result, started, finished) = waiter.join().unwrap();
+                assert_eq!(
+                    result, 0,
+                    "second wait [{started}, {finished}], unlock [{unlock_started}, {unlock_finished}] (Unix ms)"
+                );
+                finished - started
             })
         };
         let waits: Vec<u128> = (0..3)

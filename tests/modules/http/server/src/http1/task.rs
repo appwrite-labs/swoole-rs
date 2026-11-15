@@ -555,6 +555,7 @@ unsafe extern "C" fn task_worker2_on_worker_start(
             serv.shutdown();
         });
     }
+    counter_incr(2 + worker_id(worker) as usize);
     counter_incr(1);
 }
 
@@ -581,7 +582,14 @@ fn task_worker2() {
     assert_eq!(serv.create(), SW_OK);
     assert_eq!(serv.start(), SW_OK);
 
-    assert_eq!(counter_get(1), 4); // onWorkerStart
+    assert_eq!(
+        counter_get(1),
+        4,
+        "onWorkerStart counts for workers 0/1/2: {:?}; pipe messages: {}; callback failure: {}",
+        [counter_get(2), counter_get(3), counter_get(4)],
+        counter_get(7),
+        shared().failed.load(Ordering::SeqCst),
+    );
     assert_eq!(counter_get(7), 1); // onPipeMessage
     assert_no_failure();
     serv.delete();

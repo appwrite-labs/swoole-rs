@@ -7,7 +7,7 @@ use swoole_rs_curl_sys::CURL;
 use swoole_rs_zend::{E_WARNING, Value, bailout};
 
 /// `SW_ERROR_PHP_FATAL_ERROR`.
-const PHP_FATAL_ERROR: i32 = 503;
+const PHP_FATAL_ERROR: i32 = swoole_rs_error::ErrorCode::SW_ERROR_PHP_FATAL_ERROR as i32;
 
 /// The `php_curl` of `zid` (whose first field is its easy handle) on behalf
 /// of the current coroutine; null after the warning of a missing coroutine

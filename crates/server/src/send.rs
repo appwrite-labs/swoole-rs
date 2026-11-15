@@ -19,20 +19,15 @@ use swoole_rs_buffer::cpp::{
 };
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_corebase::constants::SW_SEND_BUFFER_SIZE;
+use swoole_rs_corebase::log::LogLevel::{
+    SW_LOG_NOTICE as LOG_NOTICE, SW_LOG_TRACE as LOG_TRACE, SW_LOG_WARNING as LOG_WARNING,
+};
 use swoole_rs_corebase::{CCast, DataHead, log, microtime};
 use swoole_rs_error::ErrorCode as E;
+use swoole_rs_reactor::Events;
 use swoole_rs_reactor::{ChangeOp, Drain, Interest, Socket, record_send, record_write, steady_ms};
 
-/// `SW_EVENT_READ`, `SW_EVENT_WRITE`.
-const EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
-const EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
-/// `SW_OK` and `SW_ERR`.
-/// `SW_LOG_TRACE`, `SW_LOG_NOTICE` and `SW_LOG_WARNING`.
-const LOG_TRACE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as c_int;
-const LOG_NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
-const LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
-
-fn error(level: c_int, code: E, message: core::fmt::Arguments<'_>) {
+fn error(level: swoole_rs_corebase::log::LogLevel, code: E, message: core::fmt::Arguments<'_>) {
     log::error_log(level, code as c_int, c"Server::send_to_connection", message);
 }
 
@@ -233,17 +228,20 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
     }
     let halfclose = cfg!(feature = "halfclose");
     let (removed, notified, events) = sock.read(|s| (s.removed, s.close_notified, s.events));
-    let (reading, writing) = (events & EVENT_READ != 0, events & EVENT_WRITE != 0);
+    let (reading, writing) = (
+        events.intersects(Events::READ),
+        events.intersects(Events::WRITE),
+    );
     if kind == Some(ServerEvent::PauseRecv) {
         if removed || !reading {
             return true;
         }
         return if halfclose {
-            reactor.interest(sock, Interest::RemoveRead, 0)
+            reactor.interest(sock, Interest::RemoveRead)
         } else if writing {
-            reactor.change(sock, ChangeOp::Set, EVENT_WRITE)
+            reactor.change(sock, ChangeOp::Set, Events::WRITE)
         } else {
-            reactor.change(sock, ChangeOp::Del, 0)
+            reactor.del(sock)
         };
     }
     if kind == Some(ServerEvent::ResumeRecv) {
@@ -257,11 +255,11 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
             return true;
         }
         return if halfclose {
-            reactor.interest(sock, Interest::AddRead, 0)
+            reactor.interest(sock, Interest::AddRead)
         } else if writing {
-            reactor.change(sock, ChangeOp::Set, EVENT_READ | EVENT_WRITE)
+            reactor.change(sock, ChangeOp::Set, Events::READ | Events::WRITE)
         } else {
-            reactor.change(sock, ChangeOp::Add, EVENT_READ)
+            reactor.change(sock, ChangeOp::Add, Events::READ)
         };
     }
     let (mut data, file) = (data, kind == Some(ServerEvent::SendFile));
@@ -284,7 +282,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
         sock.read(|s| out_buffer(s).map(|b| swr_cpp_buffer_typed_close(b)));
         conn.set_close_queued(true);
         if halfclose {
-            reactor.interest(sock, Interest::RemoveRead, 0);
+            reactor.interest(sock, Interest::RemoveRead);
         }
     } else if file {
         if !send_file(sock, data) {
@@ -326,8 +324,8 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
     if idle > 0.0 && sock.read(|s| s.output.send_timer.is_none()) {
         idle_timer(serv, conn, sock, idle);
     }
-    if sock.read(|s| s.events) & EVENT_WRITE == 0 {
-        reactor.interest(sock, Interest::AddWrite, 0);
+    if !sock.read(|s| s.events.intersects(Events::WRITE)) {
+        reactor.interest(sock, Interest::AddWrite);
     }
     true
 }
@@ -520,7 +518,10 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn pause_and_resume_move_the_read_event() {
         let a = Accepted::new();
-        let events = || a.sock().read(|s| (s.removed, s.events & EVENT_READ != 0));
+        let events = || {
+            a.sock()
+                .read(|s| (s.removed, s.events.intersects(Events::READ)))
+        };
         assert_eq!(
             events(),
             (true, false),
@@ -582,7 +583,7 @@ mod tests {
         assert!(queued > 0 && queued < body.len(), "the body's tail waits");
         assert_eq!(a.conn().send_queued_bytes() as usize, queued);
         assert!(
-            a.sock().read(|s| s.events & EVENT_WRITE != 0),
+            a.sock().read(|s| s.events.intersects(Events::WRITE)),
             "waits to write"
         );
         let sent = 4 + body.len() - queued;
@@ -602,7 +603,7 @@ mod tests {
         assert_eq!(a.queued(), 5);
         assert_eq!(a.conn().send_queued_bytes(), 5);
         assert!(
-            a.sock().read(|s| s.events & EVENT_WRITE != 0),
+            a.sock().read(|s| s.events.intersects(Events::WRITE)),
             "waits to write"
         );
         a.conn().set_peer_closed(true);
@@ -717,7 +718,7 @@ mod tests {
         let file = task(b"Cargo.toml");
         assert_eq!(a.send(ServerEvent::SendFile, 1, &file), SW_OK);
         assert!(
-            a.sock().read(|s| s.events & EVENT_WRITE != 0),
+            a.sock().read(|s| s.events.intersects(Events::WRITE)),
             "waits to write"
         );
         assert_eq!(a.send(ServerEvent::SendFile, 1, &task(b"no-such-file")), 0);

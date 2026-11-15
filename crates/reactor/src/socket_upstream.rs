@@ -8,12 +8,11 @@ use crate::socket_sync::set_errno;
 use crate::{SocketAddress, SocketFields, SocketRecord};
 use std::ffi::{CStr, c_int};
 use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::constants::{EventType, ResultCode};
+use swoole_rs_corebase::constants::ResultCode;
 use swoole_rs_corebase::log;
 
 const OK: c_int = ResultCode::SW_OK as c_int;
 const ERR: c_int = ResultCode::SW_ERR as c_int;
-const EVENT_WRITE: c_int = EventType::SW_EVENT_WRITE as c_int;
 
 fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
@@ -39,7 +38,12 @@ pub extern "C" fn socket_wait_event(
     timeout_ms: c_int,
     events: c_int,
 ) -> c_int {
-    if wait_event(socket.fd, socket.dont_restart, timeout_ms, events) {
+    if wait_event(
+        socket.fd,
+        socket.dont_restart,
+        timeout_ms,
+        crate::Events::from_bits(events),
+    ) {
         OK
     } else {
         ERR
@@ -48,7 +52,12 @@ pub extern "C" fn socket_wait_event(
 
 /// [`socket_wait_event`] over a socket's `fd` and `dont_restart`: whether an event
 /// came, else the last error and errno say why not.
-pub(crate) fn wait_event(fd: c_int, dont_restart: bool, timeout_ms: c_int, events: c_int) -> bool {
+pub(crate) fn wait_event(
+    fd: c_int,
+    dont_restart: bool,
+    timeout_ms: c_int,
+    events: crate::Events,
+) -> bool {
     let result = crate::fd_wait(
         fd,
         crate::swr_v1_reactor_poll_events_to(events),
@@ -109,7 +118,7 @@ pub extern "C" fn connect_sync(socket: crate::Socket<'_>, address: &SocketAddres
     } else {
         timeout.c_cast::<c_int>()
     };
-    if !socket.wait_event(timeout_ms, EVENT_WRITE) {
+    if !socket.wait_event(timeout_ms, crate::Events::WRITE) {
         log::set_last_error(libc::ETIMEDOUT);
         return ERR;
     }
@@ -316,7 +325,12 @@ pub fn swr_v1_reactor_log(origin: &CStr, code: c_int, message: &str) {
     if code == 0 {
         log::sys_warning(origin, format_args!("{message}"));
     } else {
-        log::error_log(log::LOG_WARNING, code, origin, format_args!("{message}"));
+        log::error_log(
+            log::LogLevel::SW_LOG_WARNING,
+            code,
+            origin,
+            format_args!("{message}"),
+        );
     }
     swoole_rs_corebase::swoole_print_backtrace_on_error();
 }
@@ -334,6 +348,21 @@ pub fn event_reactor() -> Option<(*mut std::ffi::c_void, crate::ReactorPrepared)
 mod tests {
     use super::*;
     use std::ptr;
+
+    #[test]
+    fn reactor_errors_log_at_warning_level() {
+        thread_local! {
+            static SEEN: std::cell::Cell<c_int> = const { std::cell::Cell::new(-1) };
+        }
+        fn record(_: log::LogKind, level: c_int, _: c_int, origin: &CStr, _: &CStr) {
+            if origin == c"Reactor::change" {
+                SEEN.set(level);
+            }
+        }
+        log::swr_v1_core_set_log_host(record);
+        swr_v1_reactor_log(c"Reactor::change", 1015, "failed");
+        assert_eq!(SEEN.get(), 4, "upstream SW_LOG_WARNING");
+    }
 
     #[test]
     fn wait_event_times_out_with_the_poll_error() {
@@ -391,7 +420,7 @@ mod members {
         "_ZN6swoole7network6Socket15set_tcp_nodelayEi"
         fn set_tcp_nodelay(this, nodelay: c_int) -> bool { this.set_tcp_nodelay(nodelay) }
         "_ZN6swoole7network6Socket11set_timeoutEdi"
-        fn set_timeout(this, timeout: f64, kind: c_int) -> () { this.timeouts.set(timeout, kind) }
+        fn set_timeout(this, timeout: f64, kind: c_int) -> () { this.timeouts.set(timeout, crate::TimeoutKind::from_bits(kind)) }
         "_ZN6swoole7network6Socket17catch_write_errorEi"
         fn catch_write_error(this, error: c_int) -> c_int { this.catch_error(error) as c_int }
         "_ZN6swoole7network6Socket22catch_write_pipe_errorEi"

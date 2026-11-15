@@ -204,7 +204,7 @@ impl Handshake {
     /// Whether the socket is a `UringSocket`, whose handshake runs through the ring.
     #[cfg(feature = "iouring")]
     fn uring(&self) -> bool {
-        crate::uring_socket::of(self.socket).is_some()
+        crate::uring_socket::with(self.socket, |_| ()).is_some()
     }
 
     /// The socket's session over its own context.
@@ -284,8 +284,8 @@ impl Handshaking for Handshake {
             Some(Ok(Accept::Ready)) => Step::Ready,
             Some(Ok(Accept::Wait)) => Step::Wait,
             Some(Err(true)) => match socket.net(|record| record.tls.state) {
-                Some(state) if state == SslState::SW_SSL_STATE_READY as u32 => Step::Ready,
-                Some(state) if state == SslState::SW_SSL_STATE_WAIT_STREAM as u32 => Step::Wait,
+                Some(SslState::SW_SSL_STATE_READY) => Step::Ready,
+                Some(SslState::SW_SSL_STATE_WAIT_STREAM) => Step::Wait,
                 _ => Step::Again,
             },
         }

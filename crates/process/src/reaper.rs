@@ -33,8 +33,8 @@ pub trait Reap {
     fn running(&mut self) -> bool;
     /// Whether a reload was requested and not yet started (`ProcessPool::reload_init`).
     fn reload_requested(&mut self) -> bool;
-    /// The reload in progress.
-    fn active_reload(&mut self) -> Option<&mut ReloadTask>;
+    /// One operation on the reload in progress, ending before callbacks run.
+    fn with_reload<R>(&mut self, f: impl FnOnce(&mut ReloadTask) -> R) -> Option<R>;
     /// `wait()`, or `waitpid(-1, WNOHANG)` when `nonblock`: the pid, the status and
     /// the wait's `errno`.
     fn wait(&mut self, nonblock: bool) -> Waited;
@@ -83,7 +83,7 @@ pub fn run(host: &mut impl Reap) {
             if host.leave_when_stopped() && !host.running() {
                 break;
             }
-            if host.active_reload().is_none() {
+            if host.with_reload(|_| ()).is_none() {
                 if error > 0 && error != libc::EINTR {
                     host.wait_failed();
                 }
@@ -105,21 +105,22 @@ pub fn run(host: &mut impl Reap) {
                 if !host.reap(pid, status) {
                     continue;
                 }
-                if let Some(task) = host.active_reload() {
-                    task.remove(pid);
-                }
+                host.with_reload(|task| task.remove(pid));
             }
         }
 
         if kill_next {
-            if let Some(task) = host.active_reload() {
-                task.kill_one(libc::SIGTERM, warn);
-            }
+            host.with_reload(|task| task.kill_one(libc::SIGTERM, warn));
         } else if !host.reload_requested() {
-            match host.active_reload() {
-                Some(task) if task.completed() => host.finish_reload(),
-                Some(task) => task.kill_one(libc::SIGTERM, warn),
-                None => {}
+            let completed = host.with_reload(|task| {
+                let completed = task.completed();
+                if !completed {
+                    task.kill_one(libc::SIGTERM, warn);
+                }
+                completed
+            });
+            if completed == Some(true) {
+                host.finish_reload();
             }
         }
     }
@@ -159,8 +160,8 @@ mod tests {
         fn reload_requested(&mut self) -> bool {
             self.reload_requested
         }
-        fn active_reload(&mut self) -> Option<&mut ReloadTask> {
-            self.task.as_deref_mut()
+        fn with_reload<R>(&mut self, f: impl FnOnce(&mut ReloadTask) -> R) -> Option<R> {
+            self.task.as_deref_mut().map(f)
         }
         fn wait(&mut self, nonblock: bool) -> Waited {
             let Some((pid, error)) = self.waits.pop_front() else {

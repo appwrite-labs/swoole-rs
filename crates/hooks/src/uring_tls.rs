@@ -31,14 +31,14 @@ pub trait TlsSocket: Copy {
     fn ssl_error(self, function: &CStr, error: c_int, code: c_ulong);
 }
 
-/// One TLS operation's view of a `UringSocket`.
+/// One TLS operation's view of a `UringSocket`, borrowing its session for `'a`.
 #[derive(Clone, Copy)]
-pub struct Tls<S> {
+pub struct Tls<'a, S> {
     pub uring: &'static Host,
     pub socket: S,
-    pub ssl: Option<Ssl<'static>>,
-    pub rbio: Option<Bio<'static>>,
-    pub wbio: Option<Bio<'static>>,
+    pub ssl: Option<Ssl<'a>>,
+    pub rbio: Option<Bio<'a>>,
+    pub wbio: Option<Bio<'a>>,
     pub fd: c_int,
     pub read_timeout: f64,
     pub write_timeout: f64,
@@ -48,7 +48,21 @@ fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
-impl<S: TlsSocket> Tls<S> {
+impl<'a, S> Tls<'a, S> {
+    /// The view with `ssl` as its session, over the session's own BIOs while they are
+    /// memory BIOs (as [`crate::uring_socket::tls_session`] sets them), else none.
+    pub(crate) fn with_session(self, ssl: Option<Ssl<'a>>) -> Self {
+        let memory = |bio: Option<Bio<'a>>| bio.filter(|bio| bio.is_memory());
+        Self {
+            ssl,
+            rbio: memory(ssl.and_then(Ssl::read_bio)),
+            wbio: memory(ssl.and_then(Ssl::write_bio)),
+            ..self
+        }
+    }
+}
+
+impl<S: TlsSocket> Tls<'_, S> {
     fn pending(&self) -> usize {
         self.wbio.map_or(0, Bio::pending)
     }
@@ -262,6 +276,7 @@ mod tests {
     use super::*;
     use crate::uring::testing::{HOST, with_engine};
     use std::cell::RefCell;
+    use swoole_rs_reactor::{Socket, SocketRecord};
 
     thread_local! {
         static ERRORS: RefCell<Vec<c_int>> = const { RefCell::new(Vec::new()) };
@@ -287,17 +302,26 @@ mod tests {
         fn ssl_error(self, _function: &CStr, _error: c_int, _code: c_ulong) {}
     }
 
-    fn tls(fd: c_int, rbio: *mut ssl::BIO, wbio: *mut ssl::BIO) -> Tls<Recorder> {
-        Tls {
+    /// A socket record holding `session`, as a socket's does.
+    fn holding(session: *mut ssl::SSL) -> SocketRecord {
+        let mut record = SocketRecord::with_fd(-1, 0);
+        unsafe { record.set_ssl(session.cast()) };
+        record
+    }
+
+    /// The view over the session `network` holds.
+    fn tls(fd: c_int, network: Socket<'_>) -> Tls<'_, Recorder> {
+        let tls = Tls {
             uring: &HOST,
             socket: Recorder,
             ssl: None,
-            rbio: unsafe { Bio::new(rbio) },
-            wbio: unsafe { Bio::new(wbio) },
+            rbio: None,
+            wbio: None,
             fd,
             read_timeout: 1.0,
             write_timeout: 1.0,
-        }
+        };
+        tls.with_session(Ssl::of(network))
     }
 
     #[test]
@@ -347,10 +371,15 @@ mod tests {
                 0,
                 "socketpair"
             );
+            let ctx = ssl::SSL_CTX_new(ssl::TLS_method());
+            let session = ssl::SSL_new(ctx);
             let (rbio, wbio) = (
                 ssl::BIO_new(ssl::BIO_s_mem()),
                 ssl::BIO_new(ssl::BIO_s_mem()),
             );
+            ssl::SSL_set_bio(session, rbio, wbio);
+            let mut record = holding(session);
+            let network = Socket::new(&mut record);
             // Queued output, more than one buffer's worth, reaches the peer whole.
             let message = [7_u8; 100];
             assert_eq!(
@@ -358,7 +387,7 @@ mod tests {
                 100,
                 "queued"
             );
-            assert!(tls(fds[0], rbio, wbio).prepare(), "prepare sends");
+            assert!(tls(fds[0], network).prepare(), "prepare sends");
             let mut received = [0_u8; 128];
             assert_eq!(
                 libc::read(fds[1], received.as_mut_ptr().cast(), 128),
@@ -371,7 +400,7 @@ mod tests {
                 3,
                 "peer writes"
             );
-            assert!(tls(fds[0], rbio, wbio).bio_read(), "read");
+            assert!(tls(fds[0], network).bio_read(), "read");
             let mut out = [0_u8; 8];
             assert_eq!(
                 ssl::BIO_read(rbio, out.as_mut_ptr().cast(), 8),
@@ -380,14 +409,14 @@ mod tests {
             );
             // The peer closing is a TLS reset.
             libc::close(fds[1]);
-            assert!(!tls(fds[0], rbio, wbio).bio_read(), "closed");
+            assert!(!tls(fds[0], network).bio_read(), "closed");
             assert_eq!(
                 ERRORS.with(|errors| errors.borrow().clone()),
                 vec![SSL_RESET],
                 "reset"
             );
-            ssl::BIO_free_all(rbio);
-            ssl::BIO_free_all(wbio);
+            ssl::SSL_free(session);
+            ssl::SSL_CTX_free(ctx);
             libc::close(fds[0]);
         });
     }
@@ -452,10 +481,8 @@ mod tests {
             );
             ssl::SSL_set_bio(session, rbio, wbio);
             ssl::SSL_set_connect_state(session);
-            let tls = Tls {
-                ssl: Ssl::new(session),
-                ..tls(stream.as_raw_fd(), rbio, wbio)
-            };
+            let mut record = holding(session);
+            let tls = tls(stream.as_raw_fd(), Socket::new(&mut record));
             loop {
                 let rc = ssl::SSL_do_handshake(session);
                 if rc == 1 {

@@ -7,8 +7,8 @@ use swoole_rs_reactor::event_api;
 use swoole_rs_zend::{E_ERROR, E_WARNING, Message, Value, bailout::Bailout, contain, report};
 
 /// `SW_ERROR_PHP_FATAL_ERROR` and `SW_ERROR_PHP_RUNTIME_NOTICE`.
-const PHP_FATAL_ERROR: c_int = 503;
-const PHP_RUNTIME_NOTICE: c_int = 510;
+const PHP_FATAL_ERROR: c_int = swoole_rs_error::ErrorCode::SW_ERROR_PHP_FATAL_ERROR as c_int;
+const PHP_RUNTIME_NOTICE: c_int = swoole_rs_error::ErrorCode::SW_ERROR_PHP_RUNTIME_NOTICE as c_int;
 /// `SW_MANAGER`.
 const MANAGER: c_int = 3;
 

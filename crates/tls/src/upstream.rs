@@ -17,7 +17,7 @@ use std::io::IoSlice;
 use std::mem::MaybeUninit;
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::constants::{EventType, SocketFlag};
+use swoole_rs_corebase::constants::SocketFlag;
 use swoole_rs_corebase::net_address::{BAD_HOST_ADDR, assign, platform_parses};
 use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_corebase::{log, set_errno};
@@ -26,11 +26,11 @@ use swoole_rs_reactor::socket_upstream::{
     make_typed, socket_cork, socket_set_fd_option, socket_uncork,
 };
 use swoole_rs_reactor::{
-    CLASS_STREAM, CLASS_TCP, Drain, Fill, OutputEffects, RangeError, SYNC_ONCE, SYNC_RECV,
-    SYNC_SEND, SYNC_SENDFILE, Socket, SocketAddress, SocketFields, SocketFileRequest, SocketRecord,
-    SslSendfileWarning, SyncEffects, handle_send_owned, record_peek, record_recv, record_send,
-    sendfile_chunk, ssl_sendfile as ssl_sendfile_fd, steady_ms, swr_v1_reactor_poll_events_to,
-    swr_v1_socket_sync, type_is, what_event_want,
+    CLASS_STREAM, CLASS_TCP, Drain, Events, Fill, OutputEffects, RangeError, Socket, SocketAddress,
+    SocketFields, SocketFileRequest, SocketRecord, SslSendfileWarning, SyncEffects, SyncMode,
+    handle_send_owned, record_peek, record_recv, record_send, sendfile_chunk,
+    ssl_sendfile as ssl_sendfile_fd, steady_ms, swr_v1_reactor_poll_events_to, swr_v1_socket_sync,
+    type_is, what_event_want,
 };
 
 // libcrypto's own declaration: it reads only the code, and answers one of its
@@ -40,8 +40,6 @@ unsafe extern "C" {
 }
 
 /// `SW_LOG_NOTICE`, `SW_LOG_WARNING`, `SW_ERROR_FILE_EMPTY` and `SW_ERROR_INVALID_PARAMS`.
-const LOG_NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
-const LOG_WARNING: c_int = 4;
 const FILE_EMPTY: c_int = swoole_rs_error::ErrorCode::SW_ERROR_FILE_EMPTY as c_int;
 const INVALID_PARAMS: c_int = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as c_int;
 /// `SW_SOCKET_CORK_MIN_SIZE`.
@@ -51,8 +49,6 @@ const FD_STREAM_SERVER: c_int = 1;
 const SOCK_CLOEXEC: c_int = SocketFlag::SW_SOCK_CLOEXEC as c_int;
 const VERIFY_FAILED: c_int = ErrorCode::SW_ERROR_SSL_VERIFY_FAILED as c_int;
 const BAD_PROTOCOL: c_int = ErrorCode::SW_ERROR_SSL_BAD_PROTOCOL as c_int;
-const EVENT_READ: c_int = EventType::SW_EVENT_READ as c_int;
-const EVENT_WRITE: c_int = EventType::SW_EVENT_WRITE as c_int;
 
 fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
@@ -401,24 +397,24 @@ pub fn send(socket: Socket<'_>, data: &[u8], flags: c_int) -> isize {
 
 /// [`recv_sync_fill`] into `buffer`.
 pub fn recv_sync(socket: Socket<'_>, buffer: &mut [impl ReadSlot], flags: c_int) -> isize {
-    sync(socket, Io::Recv(Fill::new(buffer)), SYNC_RECV, flags, false)
+    sync(socket, Io::Recv(Fill::new(buffer)), flags)
 }
 
 /// [`send_sync_drain`] of `data`.
 #[must_use]
 pub fn send_sync(socket: Socket<'_>, data: &[u8], flags: c_int) -> isize {
-    sync_out(socket, Io::Send(Drain::new(data)), SYNC_SEND, flags)
+    sync_out(socket, Io::Send(Drain::new(data)), flags)
 }
 
 /// [`read_sync_fill`] into `buffer`.
 pub fn read_sync(socket: Socket<'_>, buffer: &mut [impl ReadSlot]) -> isize {
-    sync(socket, Io::Read(Fill::new(buffer)), SYNC_ONCE, 0, false)
+    sync(socket, Io::Read(Fill::new(buffer)), 0)
 }
 
 /// `ssize_t Socket::write_sync(const void *, size_t)` of `data`.
 #[must_use]
 pub fn write_sync(socket: Socket<'_>, data: &[u8]) -> isize {
-    sync_out(socket, Io::Write(Drain::new(data)), SYNC_ONCE, 0)
+    sync_out(socket, Io::Write(Drain::new(data)), 0)
 }
 
 /// `ssize_t Socket::sendto_sync(const Address &, const void *, size_t, int)` of `data`.
@@ -430,7 +426,7 @@ pub fn sendto_sync(
     flags: c_int,
 ) -> isize {
     let io = Io::SendTo(address, Drain::new(data));
-    sync_out(socket, io, SYNC_ONCE, flags)
+    sync_out(socket, io, flags)
 }
 
 /// `ssize_t Socket::recvfrom_sync(char *, size_t, int, Address *)` into `buffer`, and
@@ -442,7 +438,7 @@ pub fn recvfrom_sync(
     address: &mut SocketAddress,
 ) -> isize {
     let io = Io::RecvFrom(address, Fill::new(buffer));
-    sync(socket, io, SYNC_ONCE, flags, false)
+    sync(socket, io, flags)
 }
 
 /// `ssize_t Socket::peek(void *, size_t, int) const` into `buffer`.
@@ -488,6 +484,9 @@ enum Io<'a, S: ReadSlot = MaybeUninit<u8>> {
     Sendfile(&'a mut SocketFileRequest, usize),
 }
 
+use swoole_rs_corebase::log::LogLevel::{
+    SW_LOG_NOTICE as LOG_NOTICE, SW_LOG_WARNING as LOG_WARNING,
+};
 pub use swoole_rs_corebase::sys::writev;
 
 impl<S: ReadSlot> SyncEffects for Call<'_, S> {
@@ -514,7 +513,7 @@ impl<S: ReadSlot> SyncEffects for Call<'_, S> {
         });
     }
 
-    fn events(&self, event: c_int) -> i16 {
+    fn events(&self, event: swoole_rs_reactor::Events) -> i16 {
         swr_v1_reactor_poll_events_to(self.socket.read(|record| what_event_want(record, event)))
     }
 
@@ -563,16 +562,21 @@ impl<S: ReadSlot> SyncEffects for Call<'_, S> {
 
 /// `Socket::wait_for`'s loop (`crates/reactor/src/socket_sync.rs`) around `io`,
 /// waiting for writability (else readability) up to the socket's timeout.
-fn sync<S: ReadSlot>(
-    socket: Socket<'_>,
-    io: Io<'_, S>,
-    kind: c_int,
-    flags: c_int,
-    write: bool,
-) -> isize {
+fn sync<S: ReadSlot>(socket: Socket<'_>, io: Io<'_, S>, flags: c_int) -> isize {
+    let (mode, event) = match &io {
+        Io::Send(_) => (SyncMode::Send, Events::WRITE),
+        Io::Recv(_) => (SyncMode::Recv, Events::READ),
+        Io::Sendfile(..) => (SyncMode::Sendfile, Events::WRITE),
+        Io::Read(_) | Io::RecvFrom(..) => (SyncMode::Once, Events::READ),
+        Io::Write(_) | Io::Writev(_) | Io::SendTo(..) => (SyncMode::Once, Events::WRITE),
+    };
     let (timeout, dont_restart) = socket.read(|record| {
         let timeouts = record.timeouts;
-        let timeout = if write { timeouts.write } else { timeouts.read };
+        let timeout = if event == Events::WRITE {
+            timeouts.write
+        } else {
+            timeouts.read
+        };
         (timeout, record.dont_restart)
     });
     let mut call = Call {
@@ -580,20 +584,19 @@ fn sync<S: ReadSlot>(
         io,
         dont_restart,
     };
-    let event = if write { EVENT_WRITE } else { EVENT_READ };
     let timeout_ms = (timeout * 1000.0).c_cast::<c_long>().c_cast::<c_int>();
-    swr_v1_socket_sync(&mut call, kind, flags, event, timeout_ms)
+    swr_v1_socket_sync(&mut call, mode, flags, event, timeout_ms)
 }
 
 /// [`sync`] of an I/O that fills nothing, waiting for writability.
-fn sync_out(socket: Socket<'_>, io: Io<'_>, kind: c_int, flags: c_int) -> isize {
-    sync(socket, io, kind, flags, true)
+fn sync_out(socket: Socket<'_>, io: Io<'_>, flags: c_int) -> isize {
+    sync(socket, io, flags)
 }
 
 /// `ssize_t Socket::send_sync(const void *, size_t, int)` of the bytes `data` lends.
 #[must_use]
 pub fn send_sync_drain(socket: Socket<'_>, data: Drain<'_>, flags: c_int) -> isize {
-    sync_out(socket, Io::Send(data), SYNC_SEND, flags)
+    sync_out(socket, Io::Send(data), flags)
 }
 
 /// `ssize_t Socket::recv_sync(void *, size_t, int)` into the bytes `buffer` lends:
@@ -601,19 +604,19 @@ pub fn send_sync_drain(socket: Socket<'_>, data: Drain<'_>, flags: c_int) -> isi
 /// EAGAIN.
 #[must_use]
 pub fn recv_sync_fill(socket: Socket<'_>, buffer: Fill<'_>, flags: c_int) -> isize {
-    sync(socket, Io::Recv(buffer), SYNC_RECV, flags, false)
+    sync(socket, Io::Recv(buffer), flags)
 }
 
 /// `ssize_t Socket::read_sync(void *, size_t)` into the bytes `buffer` lends.
 #[must_use]
 pub fn read_sync_fill(socket: Socket<'_>, buffer: Fill<'_>) -> isize {
-    sync(socket, Io::Read(buffer), SYNC_ONCE, 0, false)
+    sync(socket, Io::Read(buffer), 0)
 }
 
 /// `ssize_t Socket::writev_sync(const iovec *, size_t)` of `vectors`.
 #[must_use]
 pub fn writev_sync(socket: Socket<'_>, vectors: &[IoSlice<'_>]) -> isize {
-    sync_out(socket, Io::Writev(vectors), SYNC_ONCE, 0)
+    sync_out(socket, Io::Writev(vectors), 0)
 }
 
 /// `X509 *Socket::ssl_get_peer_certificate() const`.
@@ -705,7 +708,7 @@ pub fn sendfile(socket: Socket<'_>, fd: c_int, offset: &mut libc::off_t, length:
     }
     // `swoole_sendfile` (src/os/sendfile.cc): the platform's sendfile.
     let sent = swoole_rs_ossupport::swr_v1_os_sendfile(out, fd, Some(offset), length);
-    if cfg!(not(target_os = "linux")) && sent.warn != 0 {
+    if cfg!(not(target_os = "linux")) && sent.warn {
         log::sys_warning(c"swoole_sendfile", format_args!("sendfile failed"));
     }
     sent.result
@@ -801,7 +804,7 @@ pub fn sendfile_sync(
     let total = request.length();
     let corked = total > CORK_MIN_SIZE && socket.edit(|record| socket_cork(record));
     let io = Io::Sendfile(&mut request, total);
-    let rv = sync_out(socket, io, SYNC_SENDFILE, 0);
+    let rv = sync_out(socket, io, 0);
     if corked {
         socket.edit(|record| socket_uncork(record));
     }
@@ -1291,7 +1294,7 @@ mod tests {
                 0
             );
             let mut socket = SocketRecord::with_fd(fds[0], 0);
-            socket.tls.state = 2;
+            socket.tls.state = crate::SslState::SW_SSL_STATE_WAIT_STREAM;
             socket.tls.want_read = true;
             let created = socket_ssl_create(
                 Socket::from_ptr(&raw mut socket).unwrap(),
@@ -1301,7 +1304,7 @@ mod tests {
             assert!(created);
             assert!(!socket.ssl().is_null());
             assert_eq!(
-                (socket.tls.state, socket.tls.want_read),
+                (socket.tls.state as u32, socket.tls.want_read),
                 (0, false),
                 "state and want flags cleared"
             );

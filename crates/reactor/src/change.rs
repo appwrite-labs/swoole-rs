@@ -2,10 +2,10 @@
 //! `ReactorEpoll`, `ReactorKqueue` and `ReactorPoll` methods over the Rust reactor
 //! state, the checks, kernel calls and registry update included. Native code only
 //! logs the warnings, under the upstream function each one names.
-use crate::Socket;
 use crate::reactor_state::{Backend, ReactorState};
 use crate::registration;
 use crate::socket_sync::set_errno;
+use crate::{Events, Socket};
 use std::ffi::{CStr, c_int, c_void};
 
 /// Logs `message` as from `origin`: `code` 0 is `swoole_sys_warning`, with errno as the
@@ -92,7 +92,7 @@ fn errno() -> c_int {
 struct Seen {
     fd: c_int,
     fd_type: c_int,
-    events: c_int,
+    events: Events,
     removed: bool,
     silent_remove: bool,
 }
@@ -102,7 +102,7 @@ struct Change {
     socket: Seen,
     id: u16,
     op: ChangeOp,
-    events: c_int,
+    events: Events,
 }
 
 impl Change {
@@ -335,7 +335,7 @@ impl Request<'_> {
 pub(crate) fn apply(
     state: &mut ReactorState,
     request: Request<'_>,
-    events: c_int,
+    events: Events,
     log: ChangeLog,
 ) -> bool {
     let (socket, op) = match request {
@@ -377,31 +377,30 @@ pub(crate) fn apply(
     done
 }
 
-const SW_EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
-const SW_EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
-
 /// What a `Reactor` interest helper asks of [`apply`], as upstream decides
 /// from the socket's events: the op and its events, or `None` when nothing changes.
 pub(crate) fn interest_change(
     record: Socket<'_>,
     kind: Interest,
-    event: c_int,
-) -> Option<(ChangeOp, c_int)> {
+    event: Events,
+) -> Option<(ChangeOp, Events)> {
     use Interest::{AddEvent, AddRead, AddWrite, DelEvent, RemoveRead, RemoveWrite};
     let events = record.read(|record| record.events);
     let (other, own) = if matches!(kind, AddRead | RemoveRead) {
-        (SW_EVENT_WRITE, SW_EVENT_READ)
+        (Events::WRITE, Events::READ)
     } else {
-        (SW_EVENT_READ, SW_EVENT_WRITE)
+        (Events::READ, Events::WRITE)
     };
     let (op, events) = match kind {
-        AddEvent if events & event == 0 => (ChangeOp::Set, events | event),
-        DelEvent if events & event != 0 => (ChangeOp::Set, events & !event),
+        AddEvent if !events.intersects(event) => (ChangeOp::Set, events | event),
+        DelEvent if events.intersects(event) => (ChangeOp::Set, events.without(event)),
         AddEvent | DelEvent => return None,
-        AddRead | AddWrite if events & other != 0 => (ChangeOp::Set, events | own),
+        AddRead | AddWrite if events.intersects(other) => (ChangeOp::Set, events | own),
         AddRead | AddWrite => (ChangeOp::Add, own),
-        RemoveRead | RemoveWrite if events & other != 0 => (ChangeOp::Set, events & !own),
-        RemoveRead | RemoveWrite => (ChangeOp::Del, 0),
+        RemoveRead | RemoveWrite if events.intersects(other) => {
+            (ChangeOp::Set, events.without(own))
+        }
+        RemoveRead | RemoveWrite => (ChangeOp::Del, Events::NONE),
     };
     if op == ChangeOp::Set && !matches!(kind, AddEvent | DelEvent) {
         // Upstream writes the socket's events before the set, so they stay when it fails.
@@ -422,7 +421,7 @@ mod tests {
         owner: *mut ReactorState,
         socket: *mut SocketRecord,
         op: u32,
-        events: c_int,
+        events: Events,
         log: ChangeLog,
     ) -> c_int {
         let socket = unsafe { Socket::from_ptr(socket) }.unwrap();
@@ -435,8 +434,8 @@ mod tests {
         if done { 0 } else { -1 }
     }
 
-    const SW_EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
-    const SW_EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
+    const SW_EVENT_READ: Events = Events::READ;
+    const SW_EVENT_WRITE: Events = Events::WRITE;
 
     thread_local! {
         static LOGGED: RefCell<Vec<(String, c_int, String)>> = const { RefCell::new(Vec::new()) };
@@ -477,11 +476,11 @@ mod tests {
             assert_eq!(change(&mut second, 0, SW_EVENT_READ), -1);
             assert_eq!(change(&mut first, 1, SW_EVENT_WRITE), 0);
             assert_eq!(first.events, SW_EVENT_WRITE);
-            assert_eq!(change(&mut first, 2, 0), 0);
+            assert_eq!(change(&mut first, 2, Events::NONE), 0);
             assert!(first.removed);
-            assert_eq!(change(&mut first, 2, 0), -1);
+            assert_eq!(change(&mut first, 2, Events::NONE), -1);
             second.removed = false;
-            assert_eq!(change(&mut second, 2, 0), -1);
+            assert_eq!(change(&mut second, 2, Events::NONE), -1);
             let set_missing = "[Reactor#3] failed to set events[fd=10, fd_type=5, events=512], the socket#10 has already been removed";
             let exists = "[Reactor#3] failed to add events[fd=10, fd_type=5, events=512], the socket#10 is already exists";
             assert_eq!(
@@ -542,7 +541,7 @@ mod tests {
             // Closed before removal: one warning, and the registry entry goes.
             libc::close(fds[0]);
             assert_eq!(
-                swr_v1_reactor_change(state.owner, &raw mut socket, 2, 0, log),
+                swr_v1_reactor_change(state.owner, &raw mut socket, 2, Events::NONE, log),
                 0
             );
             assert!(socket.removed);
@@ -560,7 +559,7 @@ mod tests {
                     fds[0]
                 ))));
             assert_eq!(
-                swr_v1_reactor_change(state.owner, &raw mut socket, 2, 0, log),
+                swr_v1_reactor_change(state.owner, &raw mut socket, 2, Events::NONE, log),
                 -1
             );
             let (origin, code, _) = &logged()[0];
@@ -592,25 +591,31 @@ mod tests {
                 })
             };
             // add_write_event on a new socket adds it for writing; add_read_event sets both.
-            assert_eq!(interest(&mut socket, Interest::AddWrite, 0), 0);
+            assert_eq!(interest(&mut socket, Interest::AddWrite, Events::NONE), 0);
             assert_eq!(socket.events, SW_EVENT_WRITE);
-            assert_eq!(interest(&mut socket, Interest::AddRead, 0), 0);
+            assert_eq!(interest(&mut socket, Interest::AddRead, Events::NONE), 0);
             assert_eq!(socket.events, SW_EVENT_READ | SW_EVENT_WRITE);
             // add_event of a bit it has, and del_event of one it lacks, change nothing.
             assert_eq!(interest(&mut socket, Interest::AddEvent, SW_EVENT_READ), 0);
-            assert_eq!(interest(&mut socket, Interest::DelEvent, 1 << 11), 0);
-            assert_eq!(interest(&mut socket, Interest::AddEvent, 1 << 11), 0);
-            assert_eq!(socket.events, SW_EVENT_READ | SW_EVENT_WRITE | (1 << 11));
-            assert_eq!(interest(&mut socket, Interest::DelEvent, 1 << 11), 0);
+            assert_eq!(interest(&mut socket, Interest::DelEvent, Events::ERROR), 0);
+            assert_eq!(interest(&mut socket, Interest::AddEvent, Events::ERROR), 0);
+            assert_eq!(
+                socket.events,
+                SW_EVENT_READ | SW_EVENT_WRITE | (Events::ERROR)
+            );
+            assert_eq!(interest(&mut socket, Interest::DelEvent, Events::ERROR), 0);
             // remove_read_event keeps the write interest; remove_write_event then deletes it.
-            assert_eq!(interest(&mut socket, Interest::RemoveRead, 0), 0);
+            assert_eq!(interest(&mut socket, Interest::RemoveRead, Events::NONE), 0);
             assert_eq!(socket.events, SW_EVENT_WRITE);
-            assert_eq!(interest(&mut socket, Interest::RemoveWrite, 0), 0);
-            assert_eq!((socket.events, socket.removed), (0, true));
+            assert_eq!(
+                interest(&mut socket, Interest::RemoveWrite, Events::NONE),
+                0
+            );
+            assert_eq!((socket.events, socket.removed), (Events::NONE, true));
             // A failed set keeps the events upstream wrote first.
             let mut missing = SocketRecord::with_fd(21, 5);
             missing.events = SW_EVENT_READ;
-            assert_eq!(interest(&mut missing, Interest::AddWrite, 0), -1);
+            assert_eq!(interest(&mut missing, Interest::AddWrite, Events::NONE), -1);
             assert_eq!(missing.events, SW_EVENT_READ | SW_EVENT_WRITE);
             assert_eq!(logged()[0].0, "ReactorPoll::set");
             assert_eq!(

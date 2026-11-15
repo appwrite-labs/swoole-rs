@@ -202,7 +202,10 @@ impl Server {
 impl Port {
     /// `config()->ssl_context`.
     pub(super) fn ssl_context(self) -> *const c_void {
-        self.config().ssl_context
+        self.settings()
+            .ssl_context
+            .get()
+            .map_or(std::ptr::null(), |context| context.as_ptr().cast())
     }
 }
 

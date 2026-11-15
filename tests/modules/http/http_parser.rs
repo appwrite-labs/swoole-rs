@@ -163,7 +163,7 @@ Origin: http://example.com\r\n\r\n";
         "whole request parsed"
     );
     assert_eq!(http.errno(), HPE_OK, "no error");
-    assert_eq!(http.parser.upgrade, 1, "upgrade");
+    assert_eq!(u8::from(http.parser.upgrade), 1, "upgrade");
     assert_eq!(http.ctx.completed, 1, "message complete");
 }
 

@@ -354,9 +354,14 @@ unsafe extern "C" {
 /// crates/tls's, so only the hybrid (`upstream-symbols`) sets them.
 #[unsafe(no_mangle)]
 pub extern "C-unwind" fn swr_v1_reactor_new(max_event: c_int, kind: c_int) -> *mut c_void {
+    create(max_event, kind).as_ptr()
+}
+
+/// [`swr_v1_reactor_new`]'s reactor, as its handle.
+fn create(max_event: c_int, kind: c_int) -> crate::Running<'static> {
     let mut owner = ReactorState::open(kind, max_event);
     if !owner.fields.ready {
-        return ReactorState::into_raw(owner).cast();
+        return crate::Running::leak(owner);
     }
     owner.fields.timeout_msec = -1;
     #[cfg(feature = "upstream-symbols")]
@@ -366,14 +371,16 @@ pub extern "C-unwind" fn swr_v1_reactor_new(max_event: c_int, kind: c_int) -> *m
         owner.fields.close = Some(reactor_close);
         owner.handlers.defaults[0].set(Some(reactor_writable_callback));
     }
-    let state = ReactorState::into_raw(owner);
+    let reactor = crate::Running::leak(owner);
     if swoole_rs_corebase::swoole_isset_hook(HookType::ON_REACTOR_CREATE) {
         // SAFETY: hooks receive the live `Reactor`.
-        unsafe { swoole_rs_corebase::swoole_call_hook(HookType::ON_REACTOR_CREATE, state.cast()) };
+        unsafe {
+            swoole_rs_corebase::swoole_call_hook(HookType::ON_REACTOR_CREATE, reactor.as_ptr());
+        };
     }
-    // SAFETY: the live state; the hook has returned.
-    crate::callbacks::install_builtins(unsafe { &mut (*state).callbacks });
-    state.cast()
+    // The hook has returned.
+    reactor.with(|state| crate::callbacks::install_builtins(&mut state.callbacks));
+    reactor
 }
 
 /// `delete reactor`: marks it destroyed, runs its destroy callbacks, closes its
@@ -425,18 +432,16 @@ pub unsafe extern "C-unwind" fn swr_v1_reactor_delete(reactor: *mut c_void) {
 pub extern "C-unwind" fn swoole_event_init(flags: c_int) -> c_int {
     const SW_REACTOR_MAXEVENTS: c_int = 4096;
     const SW_EVENTLOOP_WAIT_EXIT: c_int = 1;
-    let reactor = swr_v1_reactor_new(SW_REACTOR_MAXEVENTS, 0);
-    // SAFETY: the new reactor, on this thread, which no reference holds.
-    let handle = unsafe { crate::Running::new(reactor) };
+    let handle = create(SW_REACTOR_MAXEVENTS, 0);
     if !handle.with(|state| state.fields.ready) {
         // SAFETY: the reactor just made, which nothing else holds or uses again.
-        unsafe { swr_v1_reactor_delete(reactor) };
+        unsafe { swr_v1_reactor_delete(handle.as_ptr()) };
         return -1;
     }
     handle.with(|state| state.fields.wait_exit = flags & SW_EVENTLOOP_WAIT_EXIT != 0);
     system_init_reactor(handle);
     swr_v1_clients_init_reactor(handle);
-    swoole_rs_corebase::set_thread_reactor(reactor);
+    swoole_rs_corebase::set_thread_reactor(handle.as_ptr());
     0
 }
 
@@ -505,9 +510,13 @@ pub(crate) fn kernel_wait(
     deferred: bool,
     entries: &mut c_int,
 ) -> c_int {
-    // SAFETY: the handle's live state, which no reference holds; the kernel wait runs
-    // no native callback, so this borrow is the only one.
-    let owner = unsafe { &mut *reactor.state() };
+    // The kernel wait runs no native callback, so the borrow reaches no reactor.
+    reactor.with(|owner| backend_wait(owner, deferred, entries))
+}
+
+/// [`kernel_wait`] over the borrowed state.
+#[inline(always)]
+fn backend_wait(owner: &mut ReactorState, deferred: bool, entries: &mut c_int) -> c_int {
     match &mut owner.backend {
         Backend::None => -1,
         Backend::Poll(snapshot) => {
@@ -580,7 +589,7 @@ impl ReactorState {
         &mut self,
         socket: Socket<'_>,
         op: crate::ChangeOp,
-        events: c_int,
+        events: crate::Events,
     ) -> bool {
         socket.edit(|record| {
             match op {
@@ -596,7 +605,7 @@ impl ReactorState {
                     self.registry.set(record.fd, events);
                 }
                 crate::ChangeOp::Del => {
-                    record.events = 0;
+                    record.events = crate::Events::NONE;
                     record.removed = true;
                     self.registry.remove(record.fd);
                 }
@@ -628,7 +637,7 @@ pub(crate) mod tests {
         owner: *mut ReactorState,
         socket: *mut SocketRecord,
         op: crate::ChangeOp,
-        events: c_int,
+        events: crate::Events,
     ) -> bool {
         unsafe { (*owner).record(Socket::from_ptr(socket).unwrap(), op, events) }
     }
@@ -657,18 +666,28 @@ pub(crate) mod tests {
                 state.owner,
                 &raw mut socket,
                 crate::ChangeOp::Add,
-                512
+                crate::Events::from_bits(512)
             ));
-            assert_eq!(socket.events, 512);
+            assert_eq!(socket.events, crate::Events::from_bits(512));
             assert!(!socket.removed);
             assert_eq!(
                 crate::swr_v1_reactor_registry_count(state.registry.as_ref()),
                 1
             );
-            record(state.owner, &raw mut socket, crate::ChangeOp::Set, 1024);
-            assert_eq!(socket.events, 1024);
-            record(state.owner, &raw mut socket, crate::ChangeOp::Del, 0);
-            assert_eq!(socket.events, 0);
+            record(
+                state.owner,
+                &raw mut socket,
+                crate::ChangeOp::Set,
+                crate::Events::from_bits(1024),
+            );
+            assert_eq!(socket.events, crate::Events::from_bits(1024));
+            record(
+                state.owner,
+                &raw mut socket,
+                crate::ChangeOp::Del,
+                crate::Events::NONE,
+            );
+            assert_eq!(socket.events, crate::Events::NONE);
             assert!(socket.removed);
             assert_eq!(
                 crate::swr_v1_reactor_registry_count(state.registry.as_ref()),
@@ -703,7 +722,7 @@ pub(crate) mod tests {
                     state.owner,
                     &raw mut socket,
                     crate::ChangeOp::Add,
-                    512
+                    crate::Events::from_bits(512)
                 ));
                 #[cfg(target_os = "linux")]
                 if kind == 1 {
@@ -713,7 +732,7 @@ pub(crate) mod tests {
                             crate::ChangeOp::Add,
                             fds[0],
                             ptr::from_mut(&mut socket).cast(),
-                            512
+                            crate::Events::from_bits(512)
                         ),
                         0
                     );
@@ -725,7 +744,7 @@ pub(crate) mod tests {
                             descriptor,
                             fds[0],
                             ptr::from_mut(&mut socket).cast(),
-                            512
+                            crate::Events::from_bits(512)
                         ),
                         Ok(())
                     );

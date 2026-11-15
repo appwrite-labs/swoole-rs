@@ -7,7 +7,7 @@
 //! upstream routes it.
 use crate::co_io::set_errno;
 use crate::co_socket::Co;
-use crate::fd_control::{ALL, fd_poll_fake, fd_timeout, fd_wait, swr_v1_hook_fd_poll};
+use crate::fd_control::{fd_poll_fake, fd_timeout, fd_wait, swr_v1_hook_fd_poll};
 use crate::poll::swr_v1_hook_poll;
 use crate::socket_map;
 use crate::stdio::{Host, coroutine, on_pool, swr_v1_hook_close_fd};
@@ -185,19 +185,12 @@ pub fn connect(fd: c_int, address: &SocketAddress) -> c_int {
     if connected { 0 } else { -1 }
 }
 
-/// `accept(2)` on `fd`, the peer's address and its length into `peer`.
-fn sys_accept(fd: c_int, peer: &mut SocketAddress) -> c_int {
-    peer.len = SocketAddress::CAPACITY;
-    // SAFETY: the storage is writable for the `len` given.
-    unsafe { libc::accept(fd, (&raw mut peer.addr).cast(), &raw mut peer.len) }
-}
-
 /// Hooked `accept(2)`, the peer's address into `peer`: the accepted socket joins the
 /// map unless its fd has one.
 #[must_use]
 pub fn accept(fd: c_int, peer: &mut SocketAddress) -> c_int {
     let Some((_, socket)) = hooked(fd) else {
-        return sys_accept(fd, peer);
+        return peer.accept(fd);
     };
     let Some(conn) = socket.accept(0.0) else {
         return -1;
@@ -349,7 +342,7 @@ pub extern "C" fn swoole_coroutine_socket_wait_event(
     let saved = fd_wait(socket, event.cast_unsigned(), timeout);
     let ready = socket.poll(event.cast_unsigned(), 0.0);
     // The socket is still live: the map holds it.
-    socket.set_timeout(saved, ALL);
+    socket.set_timeout(saved, swoole_rs_reactor::TimeoutKind::ALL);
     if ready { 0 } else { -1 }
 }
 

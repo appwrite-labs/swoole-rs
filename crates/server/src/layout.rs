@@ -135,6 +135,7 @@ const RECORD_3_OFFSETS: &[usize] = &[
     offset_of!(crate::records::ConnectionRecord, lock),
     offset_of!(crate::records::ConnectionRecord, closed),
     offset_of!(crate::records::ConnectionRecord, server_fd),
+    crate::records::PORT_OFFSET,
 ];
 
 const RECORD_4_OFFSETS: &[usize] = &[

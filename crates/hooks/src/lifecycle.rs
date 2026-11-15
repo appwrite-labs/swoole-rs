@@ -170,8 +170,10 @@ fn settle(socket: Co, sys: Sys) -> bool {
 /// `Socket::connect(addr, addrlen)`, with `connect(2)` and the `SO_ERROR` read.
 fn connect(socket: Co, peer: &SocketAddress, sys: Sys) -> bool {
     #[cfg(feature = "iouring")]
-    if let Some(ops) = crate::uring_socket::of(socket) {
-        return crate::uring_socket::swr_v1_hook_uring_connect(&ops, peer);
+    if let Some(connected) = crate::uring_socket::with(socket, |ops| {
+        crate::uring_socket::swr_v1_hook_uring_connect(ops, peer)
+    }) {
+        return connected;
     }
     if !available(socket, READ | WRITE) {
         return false;

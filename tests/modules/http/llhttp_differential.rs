@@ -501,7 +501,7 @@ fn run_r(kind: u8, input: &[u8], cuts: &[usize], script: &[i32]) -> (Vec<String>
             };
             out.push(format!(
                 "r={res} pos={pos} reason={reason:?} m={} v={}.{} f={:#x} s={} u={} cl={} fin={} ka={} eof={}",
-                p.method, p.http_major, p.http_minor, p.flags, p.status_code, p.upgrade, p.content_length,
+                p.method, p.http_major, p.http_minor, p.flags, p.status_code, u8::from(p.upgrade), p.content_length,
                 match p.finish {
                     llhttp::Finish::Safe => 0,
                     llhttp::Finish::SafeWithCb => 1,

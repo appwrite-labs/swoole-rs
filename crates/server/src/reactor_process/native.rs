@@ -6,12 +6,13 @@ use swoole_rs_process::methods::ExitStatus;
 use swoole_rs_process::process_pool::{Hooks, IpcMode, PoolRef};
 use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::Worker;
+use swoole_rs_reactor::Events;
 use swoole_rs_reactor::{Event, Running};
 
 use crate::base_factory::SendData;
 use crate::callbacks::TaskSlot;
 use crate::objects::Bus;
-use crate::reactor_handle::{EVENT_READ, Reactor};
+use crate::reactor_handle::Reactor;
 use crate::view;
 
 /// `SW_FD_PIPE`, `Server::CLOSE_ACTIVELY`.
@@ -71,7 +72,7 @@ extern "C-unwind" fn worker_not_found(pool: PoolRef<'_>, status: &ExitStatus) {
 
 /// This thread's reactor reads its pipes with [`on_pipe_read`].
 pub(crate) fn set_pipe_handler() {
-    Reactor::thread().set_handler(FD_PIPE, EVENT_READ, on_pipe_read);
+    Reactor::thread().set_handler(FD_PIPE, Events::READ, on_pipe_read);
 }
 
 /// `ReactorProcess_onPipeRead`: a message from another worker or a task worker.

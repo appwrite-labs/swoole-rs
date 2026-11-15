@@ -2,8 +2,14 @@
 //! `thirdparty/multipart_parser.c` (node-formidable's, by way of libcat), state for
 //! state: the same callbacks, results, quirks and error messages.
 
-/// `MPPE_PAUSED`: a callback's result that stops [`MultipartParser::execute`] early.
-pub const MPPE_PAUSED: i32 = 1;
+/// A callback's result: upstream's 0 goes on, `MPPE_PAUSED` stops
+/// [`MultipartParser::execute`] where the parser is, any other value fails the call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Flow {
+    Go,
+    Pause,
+    Fail,
+}
 
 /// `enum multipart_error` past `MPPE_OK`: why the last call failed. The parser
 /// never sets `Paused` or `Unknown`, which only have messages.
@@ -23,31 +29,30 @@ pub enum MultipartError {
 const CR: u8 = b'\r';
 const LF: u8 = b'\n';
 
-/// The parser's callbacks. Each answers 0 to go on, [`MPPE_PAUSED`] to stop where
-/// the parser is, or anything else to fail the call.
+/// The parser's callbacks, each answering a [`Flow`].
 pub trait Parts {
-    fn on_header_field(&mut self, _data: &[u8]) -> i32 {
-        0
+    fn on_header_field(&mut self, _data: &[u8]) -> Flow {
+        Flow::Go
     }
-    fn on_header_value(&mut self, _data: &[u8]) -> i32 {
-        0
+    fn on_header_value(&mut self, _data: &[u8]) -> Flow {
+        Flow::Go
     }
-    fn on_part_data(&mut self, _data: &[u8]) -> i32 {
-        0
+    fn on_part_data(&mut self, _data: &[u8]) -> Flow {
+        Flow::Go
     }
     /// Before a part's headers; `boundary` is `--` and the boundary.
-    fn on_part_data_begin(&mut self, _boundary: &[u8]) -> i32 {
-        0
+    fn on_part_data_begin(&mut self, _boundary: &[u8]) -> Flow {
+        Flow::Go
     }
-    fn on_headers_complete(&mut self) -> i32 {
-        0
+    fn on_headers_complete(&mut self) -> Flow {
+        Flow::Go
     }
-    fn on_part_data_end(&mut self) -> i32 {
-        0
+    fn on_part_data_end(&mut self) -> Flow {
+        Flow::Go
     }
     /// After the final boundary; `boundary` is `--` and the boundary.
-    fn on_body_end(&mut self, _boundary: &[u8]) -> i32 {
-        0
+    fn on_body_end(&mut self, _boundary: &[u8]) -> Flow {
+        Flow::Go
     }
 }
 
@@ -226,10 +231,10 @@ impl MultipartParser {
         let is_last = i + 1 == buf.len();
         let at = |i: usize| isize::try_from(i).unwrap_or(isize::MAX);
         // NOTIFY_CB / EMIT_DATA_CB: a pause returns `r`, other failures -1.
-        let done = |result: i32, r: usize| match result {
-            0 => None,
-            MPPE_PAUSED => Some(Step::Return(at(r))),
-            _ => Some(Step::Return(-1)),
+        let done = |result: Flow, r: usize| match result {
+            Flow::Go => None,
+            Flow::Pause => Some(Step::Return(at(r))),
+            Flow::Fail => Some(Step::Return(-1)),
         };
         let span = |from: usize, to: usize| buf.get(from..to).unwrap_or_default();
         loop {
@@ -419,7 +424,7 @@ mod tests {
 
     const BODY: &[u8] = b"--AB\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nhello\r\n--AB\r\nX-Y: z\r\n\r\nworld\r\n--AB--";
 
-    /// Every callback as an event; the event numbered `pause` returns `MPPE_PAUSED`.
+    /// Every callback as an event; the event numbered `pause` pauses.
     #[derive(Default)]
     struct Recorder {
         events: Vec<String>,
@@ -427,33 +432,33 @@ mod tests {
     }
 
     impl Recorder {
-        fn push(&mut self, event: String) -> i32 {
+        fn push(&mut self, event: String) -> Flow {
             let paused = self.pause == Some(self.events.len());
             self.events.push(event);
-            if paused { MPPE_PAUSED } else { 0 }
+            if paused { Flow::Pause } else { Flow::Go }
         }
     }
 
     impl Parts for Recorder {
-        fn on_header_field(&mut self, data: &[u8]) -> i32 {
+        fn on_header_field(&mut self, data: &[u8]) -> Flow {
             self.push(format!("field {}", String::from_utf8_lossy(data)))
         }
-        fn on_header_value(&mut self, data: &[u8]) -> i32 {
+        fn on_header_value(&mut self, data: &[u8]) -> Flow {
             self.push(format!("value {}", String::from_utf8_lossy(data)))
         }
-        fn on_part_data(&mut self, data: &[u8]) -> i32 {
+        fn on_part_data(&mut self, data: &[u8]) -> Flow {
             self.push(format!("data {}", String::from_utf8_lossy(data)))
         }
-        fn on_part_data_begin(&mut self, _: &[u8]) -> i32 {
+        fn on_part_data_begin(&mut self, _: &[u8]) -> Flow {
             self.push("begin".into())
         }
-        fn on_headers_complete(&mut self) -> i32 {
+        fn on_headers_complete(&mut self) -> Flow {
             self.push("headers".into())
         }
-        fn on_part_data_end(&mut self) -> i32 {
+        fn on_part_data_end(&mut self) -> Flow {
             self.push("end".into())
         }
-        fn on_body_end(&mut self, _: &[u8]) -> i32 {
+        fn on_body_end(&mut self, _: &[u8]) -> Flow {
             self.push("body end".into())
         }
     }

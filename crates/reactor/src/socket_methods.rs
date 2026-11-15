@@ -259,14 +259,13 @@ pub fn record_peek<S: ReadSlot>(
 /// `Socket::what_event_want`: the event a pending TLS read or write waits for, else
 /// `default`.
 #[must_use]
-pub fn what_event_want(socket: &SocketFields, default: c_int) -> c_int {
+pub fn what_event_want(socket: &SocketFields, default: crate::Events) -> crate::Events {
     let tls = socket.tls;
     if !socket.ssl().is_null() && (tls.want_read || tls.want_write) {
-        use swoole_rs_corebase::constants::EventType::{SW_EVENT_READ, SW_EVENT_WRITE};
         if tls.want_write {
-            SW_EVENT_WRITE as c_int
+            crate::Events::WRITE
         } else {
-            SW_EVENT_READ as c_int
+            crate::Events::READ
         }
     } else {
         default
@@ -302,7 +301,10 @@ mod tests {
                         } else {
                             default
                         };
-                        assert_eq!(what_event_want(&socket, default), expected);
+                        assert_eq!(
+                            what_event_want(&socket, crate::Events::from_bits(default)),
+                            crate::Events::from_bits(expected)
+                        );
                     }
                 }
             }

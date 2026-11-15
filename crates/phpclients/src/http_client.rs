@@ -5,7 +5,7 @@
 //! coroutine socket, files and callables are reached through
 //! `crate::http_native`, as is WebSocket framing, which stays C++.
 use crate::{
-    http_native::{self as native, PushError, TIMEOUT_READ, WebSocket},
+    http_native::{self as native, PushError, WebSocket},
     http_request::{self as request, Compress},
     native::{Co, swoole_rs_php_error},
     socket::Sock,
@@ -963,7 +963,7 @@ impl Client {
         let mut controller = socket.read_timeout(timeout);
         let mut success = false;
         loop {
-            if controller.timed_out(TIMEOUT_READ) {
+            if controller.timed_out(swoole_rs_reactor::TimeoutKind::READ) {
                 break;
             }
             received = socket.recv_input();
@@ -1024,7 +1024,7 @@ impl Client {
                 llhttp::finish(&mut hooks);
             }
             if self.completed.get() {
-                if hooks.parser.upgrade != 0 && count > parsed + WEBSOCKET_HEADER {
+                if hooks.parser.upgrade && count > parsed + WEBSOCKET_HEADER {
                     // Keep the bytes past the handshake (`reduce`).
                     #[expect(clippy::cast_possible_wrap, reason = "a buffer offset")]
                     let parsed = parsed as i64;
@@ -1532,8 +1532,8 @@ fn write_download(client: &Client, body: &[u8]) -> bool {
 fn on_message_complete(hooks: &mut Hooks) -> c_int {
     let client = hooks.client;
     client.completed.set(true);
-    if hooks.parser.upgrade != 0 && !client.websocket.get() {
-        hooks.parser.upgrade = 0;
+    if hooks.parser.upgrade && !client.websocket.get() {
+        hooks.parser.upgrade = false;
         return llhttp::HPE_PAUSED;
     }
     client

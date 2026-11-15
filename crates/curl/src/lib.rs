@@ -38,10 +38,8 @@ use swoole_rs_curl_sys::{
     curl_multi_info_read, curl_multi_init, curl_multi_remove_handle, curl_multi_setopt,
     curl_multi_socket_action, curl_multi_timeout, curl_socket_t,
 };
+use swoole_rs_reactor::Events;
 
-/// `SW_EVENT_READ` and `SW_EVENT_WRITE`.
-const READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
-const WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
 /// `SW_OK` and `SW_ERR`.
 const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
 const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
@@ -131,22 +129,22 @@ pub struct Multi {
 }
 
 /// `Multi::get_event`: curl's poll action as reactor events.
-fn events(action: c_int) -> c_int {
+fn events(action: c_int) -> Events {
     match action {
-        CURL_POLL_IN => READ,
-        CURL_POLL_OUT => WRITE,
-        CURL_POLL_INOUT => READ | WRITE,
-        _ => 0,
+        CURL_POLL_IN => Events::READ,
+        CURL_POLL_OUT => Events::WRITE,
+        CURL_POLL_INOUT => Events::READ | Events::WRITE,
+        _ => Events::NONE,
     }
 }
 
 /// `translate_events_to_poll`.
-fn poll_events(events: c_int) -> i16 {
+fn poll_events(events: Events) -> i16 {
     let mut poll = 0;
-    if events & READ != 0 {
+    if events.intersects(Events::READ) {
         poll |= libc::POLLIN;
     }
-    if events & WRITE != 0 {
+    if events.intersects(Events::WRITE) {
         poll |= libc::POLLOUT;
     }
     poll
@@ -293,7 +291,7 @@ impl Multi {
         socket.sockfd.set(sockfd);
         socket.action.set(action);
         let events = events(action);
-        if socket.socket.events() == 0 {
+        if socket.socket.events().is_empty() {
             socket.socket.add(events)
         } else {
             socket.socket.set(events)

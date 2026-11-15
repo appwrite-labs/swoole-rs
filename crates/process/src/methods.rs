@@ -235,10 +235,9 @@ pub fn listen_socket(
 #[cfg(any(feature = "upstream-symbols", test))]
 fn listen(pool: &PoolRecord, host: &CStr, port: c_int, make: impl FnOnce() -> *mut c_void) -> bool {
     if pool.ipc_mode != crate::process_pool::IpcMode::Socket {
-        // SW_LOG_WARNING, SW_ERROR_OPERATION_NOT_SUPPORT.
         swoole_rs_corebase::log::error_log(
-            4,
-            507,
+            swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING,
+            swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as c_int,
             c"ProcessPool::listen",
             format_args!("not support, ipc_mode must be SW_IPC_SOCKET"),
         );
@@ -288,12 +287,12 @@ pub fn send_message(pool: PoolRef<'_>, worker_id: u32, message: &[u8]) -> bool {
     let index = worker_id.wrapping_sub(u32::from(pool.start_id)) as usize;
     // `pipes` owns the workers' pipes: `create` makes one per worker or none, and
     // `destroy` frees them and clears it.
-    let Some(worker) = pool.worker(index).filter(|_| !pool.pipes.is_null()) else {
+    let Some(worker) = pool.worker(index).filter(|_| pool.pipes.is_some()) else {
         return false;
     };
     let pipe = worker.pipe_master();
     let length = message.len();
-    if pool.message_bus.is_null() {
+    if !pool.has_message_bus() {
         // `pipe_master->send_async(message)`: the pipe's write, through the event
         // loop while one is available.
         let (id, flags) = (worker.id(), crate::pool::PIPE_NONBLOCK);
@@ -530,11 +529,17 @@ pub(crate) mod tests {
 
     static LOGGED: Mutex<Vec<Logged>> = Mutex::new(Vec::new());
 
-    fn record(kind: c_int, level: c_int, code: c_int, origin: &CStr, message: &CStr) {
+    fn record(
+        kind: swoole_rs_corebase::log::LogKind,
+        level: c_int,
+        code: c_int,
+        origin: &CStr,
+        message: &CStr,
+    ) {
         let text = |s: &CStr| s.to_string_lossy().into_owned();
         if let Ok(mut logged) = LOGGED.lock() {
             logged.push((
-                kind,
+                kind as c_int,
                 level,
                 code,
                 text(origin),

@@ -6,7 +6,7 @@ use std::ffi::{c_int, c_void};
 use std::ptr;
 use swoole_rs_memory::flat::Table;
 
-type Sockets = Table<(*mut c_void, c_int)>;
+type Sockets = Table<(*mut c_void, crate::Events)>;
 
 #[derive(Default)]
 pub struct Registry {
@@ -36,12 +36,12 @@ impl Registry {
 
     /// `Reactor::_add`/`_set`: maps `fd` to `socket` registered for `events`; false, leaving
     /// the registry unchanged, if allocation fails or `fd` is negative.
-    pub(crate) fn put(&mut self, fd: c_int, socket: *mut c_void, events: c_int) -> bool {
+    pub(crate) fn put(&mut self, fd: c_int, socket: *mut c_void, events: crate::Events) -> bool {
         slot(fd).is_some_and(|fd| self.sockets.insert(fd, (socket, events)).is_ok())
     }
 
     /// `Reactor::_set`: the events `fd` is registered for, if it is.
-    pub(crate) fn set(&mut self, fd: c_int, events: c_int) {
+    pub(crate) fn set(&mut self, fd: c_int, events: crate::Events) {
         if let Some(entry) = slot(fd).and_then(|fd| self.sockets.get_mut(fd)) {
             entry.1 = events;
         }
@@ -55,7 +55,7 @@ impl Registry {
     }
 
     /// Each registered fd, its socket and its events, in fd order.
-    pub(crate) fn registered(&self) -> impl Iterator<Item = (c_int, *mut c_void, c_int)> {
+    pub(crate) fn registered(&self) -> impl Iterator<Item = (c_int, *mut c_void, crate::Events)> {
         self.sockets
             .iter()
             .filter_map(|(fd, &(socket, events))| Some((c_int::try_from(fd).ok()?, socket, events)))
@@ -86,8 +86,8 @@ pub extern "C" fn swr_v1_reactor_registry_count(registry: Option<&Registry>) -> 
 mod tests {
     use super::*;
 
-    const SW_EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
-    const SW_EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
+    const SW_EVENT_READ: crate::Events = crate::Events::READ;
+    const SW_EVENT_WRITE: crate::Events = crate::Events::WRITE;
 
     #[test]
     fn registers_and_snapshots() {
@@ -98,7 +98,7 @@ mod tests {
         assert!(registry.put(3, socket(30), SW_EVENT_READ));
         assert!(registry.put(4, socket(40), SW_EVENT_WRITE));
         assert!(registry.put(5, socket(50), SW_EVENT_READ | SW_EVENT_WRITE));
-        assert!(registry.put(4, socket(40), 1 << 11));
+        assert!(registry.put(4, socket(40), crate::Events::ERROR));
         assert!(!registry.put(-1, socket(10), SW_EVENT_READ));
         registry.remove(5);
         registry.remove(9);
@@ -111,6 +111,9 @@ mod tests {
             .registered()
             .map(|(fd, socket, events)| (fd, socket as usize, events))
             .collect();
-        assert_eq!(registered, [(3, 30, SW_EVENT_WRITE), (4, 40, 1 << 11)]);
+        assert_eq!(
+            registered,
+            [(3, 30, SW_EVENT_WRITE), (4, 40, crate::Events::ERROR)]
+        );
     }
 }

@@ -9,6 +9,7 @@ use core::ffi::{CStr, c_char, c_int, c_long};
 use core::sync::atomic::Ordering::{Relaxed, SeqCst};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::ServerEvent;
+use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR, SW_LOG_TRACE, SW_LOG_WARNING};
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_utilities::misc::swoole_hash_php;
 
@@ -199,22 +200,16 @@ pub fn sendwait(serv: Server<'_>, session_id: c_long, data: &[u8]) -> bool {
     usize::try_from(sent) == Ok(data.len())
 }
 
-/// `SW_LOG_TRACE`.
-const SW_LOG_TRACE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as c_int;
-
 const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
 /// `sizeof(SendfileTask)`: its `off_t offset` and `size_t length`, then the name.
 const SENDFILE_TASK_SIZE: usize = 16;
-/// `SW_LOG_WARNING` and `SW_LOG_ERROR`.
-const SW_LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
-const SW_LOG_ERROR: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_ERROR as c_int;
 
 /// `Server::sendfile`'s buffer, aligned for the `SendfileTask` it starts with.
 #[repr(C, align(8))]
 struct SendfileBuffer([u8; IPC_BUFFER_SIZE]);
 
 fn log_error(
-    level: c_int,
+    level: swoole_rs_corebase::log::LogLevel,
     code: swoole_rs_error::ErrorCode,
     origin: &CStr,
     m: core::fmt::Arguments<'_>,
@@ -222,7 +217,11 @@ fn log_error(
     swoole_rs_corebase::log::error_log(level, code as c_int, origin, m);
 }
 
-fn sendfile_error(level: c_int, code: swoole_rs_error::ErrorCode, m: core::fmt::Arguments<'_>) {
+fn sendfile_error(
+    level: swoole_rs_corebase::log::LogLevel,
+    code: swoole_rs_error::ErrorCode,
+    m: core::fmt::Arguments<'_>,
+) {
     log_error(level, code, c"Server::sendfile", m);
 }
 
@@ -352,10 +351,10 @@ pub fn add_port<'a>(
     }
     if socket_type & SOCK_SSL != 0 {
         port.r#type = socket_type & !SOCK_SSL;
-        port.ssl = 1;
+        port.ssl = true;
         (methods().ssl_context_init)(&mut port);
     }
-    if !(methods().create_socket)(&port) {
+    if !(methods().create_socket)(&port, serv.config().enable_reuse_port.get()) {
         let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
         swoole_rs_corebase::log::set_last_error(errno);
         port.delete();
@@ -687,7 +686,7 @@ mod tests {
                 },
                 close: |_| unreachable!(),
                 listen: |_| unreachable!(),
-                create_socket: |config| config.port.get() != 1,
+                create_socket: |config, _| config.port.get() != 1,
                 close_socket: |_| unreachable!(),
                 get_protocols: |_| unreachable!(),
                 init_protocol: |_| unreachable!(),
@@ -721,7 +720,7 @@ mod tests {
         let config = port.config();
         assert_eq!(
             (config.r#type, config.ssl, config.port.get()),
-            (SOCK_UDP, 1, 9501)
+            (SOCK_UDP, true, 9501)
         );
         assert_eq!(serv.ports().len(), before + 1, "kept");
         assert_eq!(serv.ports()[before].raw(), port.raw());

@@ -7,11 +7,11 @@ use crate::handle::{Bio, CText, Ssl};
 use openssl_sys::{
     EVP_PKEY, OPENSSL_NPN_NEGOTIATED, SSL, SSL_CTRL_MODE, SSL_CTRL_SET_GROUPS_LIST,
     SSL_CTRL_SET_READ_AHEAD, SSL_CTRL_SET_SESS_CACHE_MODE, SSL_CTRL_SET_TLSEXT_SERVERNAME_CB,
-    SSL_CTX, SSL_CTX_set_alpn_select_cb__fixed_rust, SSL_FILETYPE_PEM, SSL_MODE_NO_AUTO_CHAIN,
-    SSL_MODE_RELEASE_BUFFERS, SSL_OP_CIPHER_SERVER_PREFERENCE, SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS,
-    SSL_OP_NO_COMPRESSION, SSL_OP_NO_SSLv2, SSL_OP_NO_SSLv3, SSL_OP_NO_TLSv1, SSL_OP_NO_TLSv1_1,
-    SSL_OP_NO_TLSv1_2, SSL_OP_NO_TLSv1_3, SSL_SESS_CACHE_SERVER, SSL_TLSEXT_ERR_NOACK,
-    SSL_TLSEXT_ERR_OK, SSL_VERIFY_NONE, SSL_VERIFY_PEER, SSL_select_next_proto, X509_STORE_CTX,
+    SSL_CTX, SSL_FILETYPE_PEM, SSL_MODE_NO_AUTO_CHAIN, SSL_MODE_RELEASE_BUFFERS,
+    SSL_OP_CIPHER_SERVER_PREFERENCE, SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS, SSL_OP_NO_COMPRESSION,
+    SSL_OP_NO_SSLv2, SSL_OP_NO_SSLv3, SSL_OP_NO_TLSv1, SSL_OP_NO_TLSv1_1, SSL_OP_NO_TLSv1_2,
+    SSL_OP_NO_TLSv1_3, SSL_SESS_CACHE_SERVER, SSL_TLSEXT_ERR_NOACK, SSL_TLSEXT_ERR_OK,
+    SSL_VERIFY_NONE, SSL_VERIFY_PEER, SSL_select_next_proto, X509_STORE_CTX,
 };
 use std::cell::RefCell;
 use std::ffi::{CStr, c_char, c_int, c_long, c_uchar, c_uint, c_void};
@@ -24,15 +24,8 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::StringSlot;
 use swoole_rs_corebase::log;
 
-// libssl/libcrypto's own declarations; openssl-sys binds none of them, or
-// (`SSL_CTX_set0_tmp_dh_pkey`) only over OpenSSL 3 headers, which the fuzz image,
-// building crates/clients' parsers against OpenSSL 1.1, lacks.
+// libssl's own declarations, which openssl-sys doesn't bind.
 unsafe extern "C" {
-    fn SSL_CTX_set0_tmp_dh_pkey(ctx: *mut SSL_CTX, key: *mut EVP_PKEY) -> c_int;
-    fn ERR_print_errors_cb(
-        callback: unsafe extern "C" fn(*const c_char, usize, *mut c_void) -> c_int,
-        user: *mut c_void,
-    );
     fn SSL_CTX_set_default_passwd_cb(ctx: *mut SSL_CTX, callback: PasswordCallback);
     fn SSL_CTX_set_default_passwd_cb_userdata(ctx: *mut SSL_CTX, data: *mut c_void);
 }
@@ -62,6 +55,9 @@ unsafe extern "C" {
     // Copies `length` bytes of the id, or fails for more than `SSL_MAX_SID_CTX_LENGTH`,
     // the array's 32.
     safe fn SSL_CTX_set_session_id_context(ctx: &SslCtx, id: &[u8; 32], length: c_uint) -> c_int;
+    // Pops each of this thread's queued errors and calls `callback` with its line, which
+    // it formats into a buffer and lends NUL-terminated, the line's `strlen` and `user`.
+    safe fn ERR_print_errors_cb(callback: ErrorLine, user: Option<&'static c_void>);
 
     safe fn TLS_method() -> &'static SslMethod;
     safe fn DTLS_method() -> &'static SslMethod;
@@ -110,6 +106,9 @@ unsafe extern "C" {
         free: Option<ExCallback>,
     ) -> c_int;
 }
+
+/// `ERR_print_errors_cb`'s callback: an error's line, its length and the user data.
+type ErrorLine = extern "C" fn(CText<'_>, usize, Option<&'static c_void>) -> c_int;
 
 /// `CRYPTO_EX_new` and `CRYPTO_EX_free`: `(parent, ptr, ad, idx, argl, argp)`.
 type ExCallback = extern "C" fn(*mut c_void, *mut c_void, *mut c_void, c_int, c_long, *mut c_void);
@@ -160,6 +159,26 @@ struct ClientCaNames(ptr::NonNull<c_void>);
 /// context takes them or `EVP_PKEY_free` frees them.
 #[repr(transparent)]
 struct DhParams(ptr::NonNull<EVP_PKEY>);
+
+/// `SSL_CTX_set0_tmp_dh_pkey`: the context takes `key`'s reference, or refuses it
+/// (false) and `key` is freed.
+fn set_dh_params(ctx: &SslCtx, key: DhParams) -> bool {
+    /// The reference the context takes on success: only this function makes one, from
+    /// the parameters it was given, once.
+    #[repr(transparent)]
+    struct Given(ptr::NonNull<EVP_PKEY>);
+    // libssl's declaration, which openssl-sys binds only over OpenSSL 3 headers (the
+    // fuzz image builds crates/clients' parsers against OpenSSL 1.1): it keeps the
+    // parameters on success (1) and leaves them the caller's otherwise.
+    unsafe extern "C" {
+        safe fn SSL_CTX_set0_tmp_dh_pkey(ctx: &SslCtx, key: Given) -> c_int;
+    }
+    if SSL_CTX_set0_tmp_dh_pkey(ctx, Given(key.0)) == 1 {
+        return true;
+    }
+    EVP_PKEY_free(key);
+    false
+}
 
 /// An `EVP_PKEY *` for `PEM_read_bio_Parameters` to reuse, which this side never makes.
 #[repr(C)]
@@ -545,11 +564,8 @@ impl Method<'_> {
             self.ssl_error(&quoted(b"PEM_read_bio_Parameters('", file, b"') failed"));
             return false;
         };
-        // SAFETY: a live context, which takes the key's reference on success: it is
-        // freed below only when refused.
-        if unsafe { SSL_CTX_set0_tmp_dh_pkey(self.ctx.as_ptr(), key.0.as_ptr()) } != 1 {
+        if !set_dh_params(self.ctx, key) {
             self.ssl_error(&quoted(b"SSL_CTX_set0_tmp_dh_pkey('", file, b"') failed"));
-            EVP_PKEY_free(key);
             return false;
         }
         true
@@ -659,14 +675,9 @@ impl Method<'_> {
                 );
                 return false;
             }
-            // SAFETY: a live context; the argument is a static.
-            unsafe {
-                SSL_CTX_set_alpn_select_cb__fixed_rust(
-                    raw,
-                    Some(select_alpn),
-                    ptr::from_ref(protos).cast_mut().cast(),
-                );
-            }
+            // SAFETY: a live context; OpenSSL calls the selector with the client's offered
+            // list and its length, and the static list given here.
+            unsafe { set_alpn_select_cb(ctx, Some(select_alpn), protos) };
             SSL_CTX_set_session_id_context(ctx, &SESSION_ID_CONTEXT, 4);
             ctx.ctrl(Ctrl::SessionCacheMode, SSL_SESS_CACHE_SERVER);
         }
@@ -689,7 +700,9 @@ fn quoted(prefix: &[u8], value: TlsStr<'_>, suffix: &[u8]) -> Vec<u8> {
     [prefix, &value.text(), suffix].concat()
 }
 
-/// An ALPN wire-format list: the first `length` bytes of `wire`.
+/// An ALPN wire-format list: the first `length` bytes of `wire`. OpenSSL only hands
+/// one back to the selector, as its argument.
+#[repr(C)]
 struct Protos {
     wire: [u8; 12],
     length: AlpnLength,
@@ -725,17 +738,36 @@ unsafe extern "C" {
     safe fn SSL_CTX_set_alpn_protos(ctx: &SslCtx, protos: &[u8; 12], length: AlpnLength) -> c_int;
 }
 
+/// OpenSSL's ALPN selector, with its argument typed as the static list `configure`
+/// installs it with.
+type SelectAlpn = unsafe extern "C" fn(
+    *mut SSL,
+    *mut *const c_uchar,
+    *mut c_uchar,
+    *const c_uchar,
+    c_uint,
+    &'static Protos,
+) -> c_int;
+
+// libssl's declaration, with the argument typed as what `configure` passes. A
+// selector reads the raw list it is lent, so storing one is not `safe`.
+unsafe extern "C" {
+    #[link_name = "SSL_CTX_set_alpn_select_cb"]
+    fn set_alpn_select_cb(ctx: &SslCtx, callback: Option<SelectAlpn>, arg: &'static Protos);
+}
+
 /// The server's ALPN choice: the first of its protocols the client offers.
+///
+/// # Safety
+/// `out` and `out_length` are writable, and `offered` holds `offered_length` bytes.
 unsafe extern "C" fn select_alpn(
     _ssl: *mut SSL,
     out: *mut *const c_uchar,
     out_length: *mut c_uchar,
     offered: *const c_uchar,
     offered_length: c_uint,
-    arg: *mut c_void,
+    protos: &'static Protos,
 ) -> c_int {
-    // SAFETY: `arg` is one of the static lists installed by `configure`.
-    let protos = unsafe { &*arg.cast::<Protos>() };
     let length = protos.length as c_uint;
     // SAFETY: OpenSSL's output slots and offered list; ours is static.
     let negotiated = unsafe {
@@ -970,15 +1002,14 @@ thread_local! {
     static ERROR_TEXT: RefCell<Vec<u8>> = RefCell::new(vec![0]);
 }
 
-/// # Safety
-/// `line` holds `length` bytes, as `ERR_print_errors_cb` lends them.
-unsafe extern "C" fn keep_last_line(
-    line: *const c_char,
-    length: usize,
-    _user: *mut c_void,
+/// `ERR_print_errors_cb`'s callback: keeps `line` as the thread's error line. It returns
+/// 0, as upstream's `ssl_error_cb` does, so OpenSSL stops after this one error.
+extern "C" fn keep_last_line(
+    line: CText<'_>,
+    _length: usize,
+    _user: Option<&'static c_void>,
 ) -> c_int {
-    // SAFETY: per the caller.
-    let line = unsafe { std::slice::from_raw_parts(line.cast::<u8>(), length) };
+    let line = line.get().to_bytes();
     ERROR_TEXT.with_borrow_mut(|text| {
         text.clear();
         text.extend_from_slice(line);
@@ -987,8 +1018,8 @@ unsafe extern "C" fn keep_last_line(
     0
 }
 
-/// `swoole_ssl_get_error`: drains this thread's error queue and returns its last
-/// line ("" when empty), valid until the thread's next call.
+/// `swoole_ssl_get_error`: pops this thread's oldest queued error and returns its line
+/// ("" when none is queued), valid until the thread's next call.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_Z20swoole_ssl_get_errorv")
@@ -1008,14 +1039,13 @@ pub fn error_line() -> String {
     })
 }
 
-/// Drains this thread's error queue, keeping its last line.
+/// Pops this thread's oldest queued error, keeping its line (none when the queue is empty).
 fn drain_errors() {
     ERROR_TEXT.with_borrow_mut(|text| {
         text.clear();
         text.push(0);
     });
-    // SAFETY: the callback only touches this thread's buffer.
-    unsafe { ERR_print_errors_cb(keep_last_line, ptr::null_mut()) };
+    ERR_print_errors_cb(keep_last_line, None);
 }
 
 /// # Safety
@@ -1278,7 +1308,6 @@ mod tests {
         let offered = b"\x08http/1.1\x02h2";
         let mut out = ptr::null();
         let mut length = 0;
-        let arg = ptr::from_ref(&H2_HTTP1).cast_mut().cast();
         let chosen = unsafe {
             select_alpn(
                 ptr::null_mut(),
@@ -1286,7 +1315,7 @@ mod tests {
                 &raw mut length,
                 offered.as_ptr(),
                 12,
-                arg,
+                &H2_HTTP1,
             )
         };
         assert_eq!(chosen, SSL_TLSEXT_ERR_OK);
@@ -1294,7 +1323,6 @@ mod tests {
             unsafe { std::slice::from_raw_parts(out, length.into()) },
             b"h2"
         );
-        let arg = ptr::from_ref(&HTTP1).cast_mut().cast();
         let chosen = unsafe {
             select_alpn(
                 ptr::null_mut(),
@@ -1302,7 +1330,7 @@ mod tests {
                 &raw mut length,
                 b"\x02h2".as_ptr(),
                 3,
-                arg,
+                &HTTP1,
             )
         };
         assert_eq!(chosen, SSL_TLSEXT_ERR_NOACK);
@@ -1314,6 +1342,15 @@ mod tests {
         assert!(swr_v1_tls_connection_index() >= 0);
         assert_ne!(swr_v1_tls_connection_index(), swr_v1_tls_port_index());
         unsafe { ERR_clear_error() };
+        assert_eq!(error_line(), "");
+        // A failed open queues OpenSSL's errors (fopen's, then the BIO's), which the
+        // callback receives as lines: it returns 0, so, as upstream's, it reads one per call.
+        assert!(crate::OwnedBio::open(c"/nonexistent/swoole-rs-tls.pem").is_none());
+        for _ in 0..2 {
+            let line = error_line();
+            assert!(line.contains(":error:"), "{line}");
+            assert!(line.to_lowercase().contains("no such file"), "{line}");
+        }
         assert_eq!(error_line(), "");
     }
 }

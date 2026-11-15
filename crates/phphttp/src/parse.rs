@@ -13,7 +13,7 @@ use std::{mem::ManuallyDrop, ptr};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{WebSocketStatus, log};
 use swoole_rs_http::llhttp::{self, Callbacks, Parser};
-use swoole_rs_http::multipart_parser::MultipartParser;
+use swoole_rs_http::multipart_parser::{Flow, MultipartParser};
 use swoole_rs_httpbindings::{
     RequestHeader, body_prefix, compression, request_header, request_key, request_url,
     swr_v1_httpbindings_form_source, token_list_contains, token_list_fast, trim_quotes,
@@ -52,15 +52,15 @@ use llhttp::{
     F_CHUNKED as CHUNKED, F_TRAILING as TRAILING, HPE_INVALID_HEADER_TOKEN as INVALID_HEADER_TOKEN,
     HPE_PAUSED as PAUSED, HPE_PAUSED_UPGRADE as PAUSED_UPGRADE, HPE_USER as USER,
 };
+use swoole_rs_corebase::log::LogLevel::{SW_LOG_NOTICE as LOG_NOTICE, SW_LOG_TRACE as LOG_TRACE};
 /// `PARSE_COOKIE` and `PARSE_STRING` (`main/php_variables.h`).
 const PARSE_COOKIE: c_int = 2;
 const PARSE_STRING: c_int = 3;
 /// `SW_LOG_TRACE`, `SW_LOG_NOTICE`, `SW_ERROR_SESSION_CLOSED` and
 /// `SW_ERROR_SERVER_INVALID_REQUEST` (asserted in ext-src).
-const LOG_TRACE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as c_int;
-const LOG_NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
-const SESSION_CLOSED: c_int = 1004;
-const SERVER_INVALID_REQUEST: c_int = 9010;
+const SESSION_CLOSED: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SESSION_CLOSED as c_int;
+const SERVER_INVALID_REQUEST: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SERVER_INVALID_REQUEST as c_int;
 /// `SW_STACK_BUFFER_SIZE` (also `sw_tg_buffer()`'s size), `SW_BUFFER_SIZE_STD`,
 /// `SW_HTTP_FORM_KEYLEN`, `SW_HTTP_UPLOAD_TMPDIR_SIZE`, `HT_MIN_SIZE`.
 const STACK_BUFFER_SIZE: usize = 65536;
@@ -98,7 +98,8 @@ impl Callbacks for Server<'_> {
         if self.0.parser.flags & TRAILING != 0 {
             return 0;
         }
-        header_field(self.0, data.as_ptr(), data.len())
+        header_field(self.0, data.as_ptr(), data.len());
+        0
     }
 
     fn on_header_value(&mut self, data: &[u8]) -> c_int {
@@ -152,24 +153,32 @@ impl Callbacks for Pieces<'_> {
 }
 
 impl swoole_rs_http::multipart_parser::Parts for Parts<'_> {
-    fn on_header_field(&mut self, data: &[u8]) -> c_int {
-        header_field(self.state, data.as_ptr(), data.len())
+    fn on_header_field(&mut self, data: &[u8]) -> Flow {
+        header_field(self.state, data.as_ptr(), data.len());
+        Flow::Go
     }
 
-    fn on_header_value(&mut self, data: &[u8]) -> c_int {
-        part_header_value(self.state, data)
+    fn on_header_value(&mut self, data: &[u8]) -> Flow {
+        if part_header_value(self.state, data) {
+            Flow::Go
+        } else {
+            Flow::Fail
+        }
     }
 
-    fn on_part_data(&mut self, data: &[u8]) -> c_int {
-        part_data(self.state, self.fp, data)
+    fn on_part_data(&mut self, data: &[u8]) -> Flow {
+        part_data(self.state, self.fp, data);
+        Flow::Go
     }
 
-    fn on_headers_complete(&mut self) -> c_int {
-        part_headers_complete(self.state, self.fp)
+    fn on_headers_complete(&mut self) -> Flow {
+        part_headers_complete(self.state, self.fp);
+        Flow::Go
     }
 
-    fn on_part_data_end(&mut self) -> c_int {
-        part_data_end(self.state, self.fp)
+    fn on_part_data_end(&mut self) -> Flow {
+        part_data_end(self.state, self.fp);
+        Flow::Go
     }
 }
 
@@ -470,11 +479,10 @@ fn url(state: &mut State, span: &[u8]) -> c_int {
     0
 }
 
-fn header_field(state: &mut State, at: *const u8, length: usize) -> c_int {
+fn header_field(state: &mut State, at: *const u8, length: usize) {
     state.parse.header_name = at;
     state.parse.header_name_len = length;
     state.parse.header_value_len = 0;
-    0
 }
 
 fn on_piece_url(state: &mut State, at: *const c_char, length: usize) -> c_int {
@@ -775,7 +783,12 @@ pub(crate) fn multipart_start(state: &mut State, content_type: &[u8]) -> bool {
         .and_then(|span| content_type.get(span.offset..span.offset + span.length));
     let Some(boundary) = boundary else {
         let message = format!("boundary of multipart/form-data not found, fd:{}", state.fd);
-        host::log(0, 0, c"Context::get_multipart_boundary", message);
+        host::log(
+            swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING,
+            0,
+            c"Context::get_multipart_boundary",
+            message,
+        );
         /* make it same with protocol error */
         state.parser.error = INVALID_HEADER_TOKEN;
         return false;
@@ -863,7 +876,7 @@ fn position(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
-fn part_header_value(state: &mut State, value_: &[u8]) -> c_int {
+fn part_header_value(state: &mut State, value_: &[u8]) -> bool {
     let length = value_.len();
     let func = c"multipart_body_on_header_value";
     // Hash collision attack
@@ -872,7 +885,7 @@ fn part_header_value(state: &mut State, value_: &[u8]) -> c_int {
         host::notice(&format!(
             "Input variables exceeded {max_input_vars}. To increase the limit change max_input_vars in php.ini"
         ));
-        return 0;
+        return true;
     }
     state.parse.input_var_num = state.parse.input_var_num.wrapping_add(1);
 
@@ -888,8 +901,13 @@ fn part_header_value(state: &mut State, value_: &[u8]) -> c_int {
             let mut message = b"Unsupported Content-Disposition [".to_vec();
             message.extend_from_slice(value_);
             message.push(b']');
-            host::log(0, 0, func, message);
-            return 0;
+            host::log(
+                swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING,
+                0,
+                func,
+                message,
+            );
+            return true;
         };
         // Released on every return, which upstream's early ones leak.
         let fields = OwnedArray::default().into_owned();
@@ -897,14 +915,19 @@ fn part_header_value(state: &mut State, value_: &[u8]) -> c_int {
         let field = |key: &[u8]| fields.array().and_then(|fields| fields.find(key));
 
         let Some((form_name, form_name_len)) = field(b"name").and_then(string_value) else {
-            return 0;
+            return true;
         };
         if form_name_len >= FORM_KEYLEN {
             let mut message = b"form_name[".to_vec();
             message.extend_from_slice(form_name);
             message.extend_from_slice(b"] is too large");
-            host::log(0, 0, func, message);
-            return -1;
+            host::log(
+                swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING,
+                0,
+                func,
+                message,
+            );
+            return false;
         }
         let form_name = trimmed(form_name, form_name_len);
         if let Some(filename) = field(b"filename") {
@@ -914,8 +937,13 @@ fn part_header_value(state: &mut State, value_: &[u8]) -> c_int {
                 let mut message = b"filename[".to_vec();
                 message.extend_from_slice(filename);
                 message.extend_from_slice(b"] is too large");
-                host::log(0, 0, func, message);
-                return -1;
+                host::log(
+                    swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING,
+                    0,
+                    func,
+                    message,
+                );
+                return false;
             }
             state.parse.input_name = Some(c_copy(&form_name));
             let mut header = OwnedArray::default();
@@ -970,7 +998,7 @@ fn part_header_value(state: &mut State, value_: &[u8]) -> c_int {
         upload_long(state, b"size", path_size(value_));
         add_upload(state, value_);
     }
-    0
+    true
 }
 
 /// The current upload's `error`, when it has one.
@@ -1008,37 +1036,36 @@ fn file_size(upload: &mut Upload) -> i64 {
     }
 }
 
-fn part_data(state: &mut State, upload: &mut Option<Upload>, data: &[u8]) -> c_int {
+fn part_data(state: &mut State, upload: &mut Option<Upload>, data: &[u8]) {
     if state.parse.form_data_name.is_some() {
         state
             .parse
             .form_data
             .get_or_insert_with(|| Box::new(Vec::with_capacity(BUFFER_SIZE_STD)))
             .extend_from_slice(data);
-        return 0;
+        return;
     }
     let Some(file) = upload else {
-        return 0;
+        return;
     };
     if let Err(error) = file.write_all(data) {
         upload_long(state, b"error", UPLOAD_CANT_WRITE);
         *upload = None;
         host::log(
-            0,
+            swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING,
             -error.raw_os_error().unwrap_or(0),
             c"multipart_body_on_data",
             "write upload file failed",
         );
     }
-    0
 }
 
-fn part_headers_complete(state: &mut State, upload: &mut Option<Upload>) -> c_int {
+fn part_headers_complete(state: &mut State, upload: &mut Option<Upload>) {
     if state.parse.input_name.is_none() {
-        return 0;
+        return;
     }
     if upload_error(state).is_none_or(|code| code.as_long().is_some_and(|code| code != UPLOAD_OK)) {
-        return 0;
+        return;
     }
     let mut path = crate::context::upload_tmp_dir(state).to_bytes().to_vec();
     path.extend_from_slice(b"/swoole.upfile.XXXXXX");
@@ -1048,15 +1075,14 @@ fn part_headers_complete(state: &mut State, upload: &mut Option<Upload>) -> c_in
     path.pop();
     let Some(fd) = fd else {
         upload_long(state, b"error", UPLOAD_NO_TMP_DIR);
-        return 0;
+        return;
     };
     *upload = Some(BufWriter::new(File::from(fd)));
     upload_bytes(state, b"tmp_name", &path);
     add_upload(state, &path);
-    0
 }
 
-fn part_data_end(state: &mut State, upload: &mut Option<Upload>) -> c_int {
+fn part_data_end(state: &mut State, upload: &mut Option<Upload>) {
     if let Some(name) = state.parse.form_data_name.take() {
         let post = property(state, Property::Post);
         let data = state.parse.form_data.get_or_insert_with(Default::default);
@@ -1070,17 +1096,17 @@ fn part_data_end(state: &mut State, upload: &mut Option<Upload>) -> c_int {
             );
         };
         data.clear();
-        return 0;
+        return;
     }
     let Some(input_name) = state.parse.input_name.take() else {
-        return 0;
+        return;
     };
     if let Some(mut file) = upload.take() {
         upload_long(state, b"size", file_size(&mut file));
     }
     let Some(code) = upload_error(state).map(Value::long) else {
         state.parse.input_name = Some(input_name);
-        return 0;
+        return;
     };
     if code == UPLOAD_FILE_READY {
         upload_long(state, b"error", UPLOAD_OK);
@@ -1117,7 +1143,6 @@ fn part_data_end(state: &mut State, upload: &mut Option<Upload>) -> c_int {
             unsafe { php_register_variable_ex(input_name.as_ptr().cast(), header.as_ptr(), files) };
         }
     }
-    0
 }
 
 /// `getContent()`: the body received so far.

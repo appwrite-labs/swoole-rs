@@ -12,15 +12,15 @@ use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::net_types::{PacketLength, Protocol};
 
+use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 use swoole_rs_websocket::{
     DecodedFrame, INVALID_CONTROL, control_invalid, decode_in_place, encode_close_into,
     encode_parts, encoded_size, frame_length,
 };
 
-/// `SW_LOG_WARNING`.
-const LOG_WARNING: c_int = 4;
 /// `SW_ERROR_WEBSOCKET_INCOMPLETE_PACKET`.
-const INCOMPLETE_PACKET: c_int = 8507;
+const INCOMPLETE_PACKET: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_WEBSOCKET_INCOMPLETE_PACKET as c_int;
 /// `FLAG_FIN`, `FLAG_MASK`, `FLAG_ENCODE_HEADER_ONLY`.
 const FIN: u8 = 1;
 const MASK: u8 = 32;

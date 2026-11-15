@@ -13,24 +13,23 @@ use crate::uring::{self, Host};
 use crate::uring_tls::{SSL_BAD_PROTOCOL, Tls, TlsSocket};
 use crate::vector::{IoVector, Lent, RecvMessage, SendMessage};
 use core::ffi::{CStr, c_char, c_int, c_ulong};
-use openssl_sys::BIO;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_reactor::{SocketFields, SocketRecord};
-use swoole_rs_tls::{Bio, OwnedBio, Ssl};
+use swoole_rs_tls::{OwnedBio, Ssl};
 
 const EVENT_READ: u32 = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as u32;
 const EVENT_WRITE: u32 = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as u32;
 const EVENT_RDWR: u32 = EVENT_READ | EVENT_WRITE;
 
 /// The socket's view and effects.
-pub struct UringSocketOps {
+pub struct UringSocketOps<'a> {
     pub socket: Co,
     /// The socket's TLS view; its `ssl` is null without TLS, and it carries the
     /// descriptor, the timeouts and the ring's host.
-    pub tls: Tls<Co>,
+    pub tls: Tls<'a, Co>,
     pub connect_timeout: f64,
     /// `is_available(event)`.
     pub available: fn(Co, u32) -> bool,
@@ -70,48 +69,32 @@ impl TlsSocket for Co {
     }
 }
 
-/// The session's own BIOs (read, write) while they are the memory BIOs `tls_session`
-/// stored for it, else none: a stored one is stale once the SSL is freed or its BIOs
-/// replaced, so it is only compared, never handed out.
-fn session_bios<'a>(ssl: Option<Ssl<'a>>, stored: [*mut BIO; 2]) -> [Option<Bio<'a>>; 2] {
-    let live = |bio: Option<Bio<'a>>, stored| bio.filter(|bio| bio.as_ptr() == stored);
-    let [read, write] = stored;
-    [
-        live(ssl.and_then(Ssl::read_bio), read),
-        live(ssl.and_then(Ssl::write_bio), write),
-    ]
-}
-
-/// The ring's view of `socket` when it is a `UringSocket`, else none.
-pub(crate) fn of(socket: Co) -> Option<UringSocketOps> {
-    let (uring, stored) = socket.with_extra(|extra| (extra.uring, extra.bio))?;
-    let uring = uring?;
-    if socket.socket().is_null() {
-        return None;
-    }
-    socket.net(|network| {
-        // SAFETY: the record's SSL is null or live until the unsafe `socket_ssl_close`,
-        // whose callers run it between the socket's operations, so not while this
-        // view, made per operation, is in use.
-        let ssl = unsafe { Ssl::new(network.ssl().cast()) };
-        let [rbio, wbio] = session_bios(ssl, stored);
-        UringSocketOps {
+/// `f` over the ring's view of `socket` when it is a `UringSocket`, else none. The
+/// view lives for the call: it borrows the record's TLS session, which the unsafe
+/// `socket_ssl_close` frees only between the socket's operations.
+pub(crate) fn with<T>(socket: Co, f: impl FnOnce(&UringSocketOps<'_>) -> T) -> Option<T> {
+    let uring = socket.with_extra(|extra| extra.uring)??;
+    socket.with_network(|network| {
+        let read = |record: &SocketFields| (record.fd, record.timeouts);
+        let (ssl, (fd, timeouts)) = Ssl::of_reading(network, read);
+        let tls = Tls {
+            uring,
             socket,
-            tls: Tls {
-                uring,
-                socket,
-                ssl,
-                rbio,
-                wbio,
-                fd: network.fd,
-                read_timeout: network.timeouts.read,
-                write_timeout: network.timeouts.write,
-            },
-            connect_timeout: network.timeouts.connect,
+            ssl: None,
+            rbio: None,
+            wbio: None,
+            fd,
+            read_timeout: timeouts.read,
+            write_timeout: timeouts.write,
+        };
+        f(&UringSocketOps {
+            socket,
+            tls: tls.with_session(ssl),
+            connect_timeout: timeouts.connect,
             available,
             check,
             set_err,
-        }
+        })
     })
 }
 
@@ -126,7 +109,7 @@ fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
-impl UringSocketOps {
+impl UringSocketOps<'_> {
     fn host(&self) -> &'static Host {
         self.tls.uring
     }
@@ -211,7 +194,7 @@ impl UringSocketOps {
 }
 
 /// `read` into `buf`, which may be uninitialized: the ring writes it.
-pub(crate) fn read(ops: &UringSocketOps, buf: &mut [impl ReadSlot]) -> isize {
+pub(crate) fn read(ops: &UringSocketOps<'_>, buf: &mut [impl ReadSlot]) -> isize {
     let (host, tls) = (ops.host(), ops.tls);
     ops.transfer(EVENT_READ, false, || {
         uring::read(host, tls.fd, buf, tls.read_timeout)
@@ -219,7 +202,7 @@ pub(crate) fn read(ops: &UringSocketOps, buf: &mut [impl ReadSlot]) -> isize {
 }
 
 /// `recv` into `buf`, which may be uninitialized: the ring or `SSL_read` writes it.
-pub(crate) fn recv(ops: &UringSocketOps, buf: &mut [impl ReadSlot]) -> isize {
+pub(crate) fn recv(ops: &UringSocketOps<'_>, buf: &mut [impl ReadSlot]) -> isize {
     let (host, tls) = (ops.host(), ops.tls);
     ops.transfer(EVENT_READ, false, || {
         if ops.ssl() {
@@ -232,7 +215,7 @@ pub(crate) fn recv(ops: &UringSocketOps, buf: &mut [impl ReadSlot]) -> isize {
 /// `recvfrom` into `buf` and the caller's `peer`: a peek through the ring, then the
 /// datagram itself without blocking. The result and the length of the peer's address.
 pub(crate) fn recvfrom_into(
-    ops: &UringSocketOps,
+    ops: &UringSocketOps<'_>,
     buf: &mut [impl ReadSlot],
     peer: &mut libc::sockaddr_storage,
 ) -> (isize, libc::socklen_t) {
@@ -253,7 +236,7 @@ pub(crate) fn recvfrom_into(
 
 /// `recvfrom` into `buf`, the sender into the socket's own peer address: a peek
 /// through the ring, then the datagram itself without blocking.
-pub(crate) fn recvfrom_peer(ops: &UringSocketOps, buf: &mut [impl ReadSlot]) -> isize {
+pub(crate) fn recvfrom_peer(ops: &UringSocketOps<'_>, buf: &mut [impl ReadSlot]) -> isize {
     let (host, tls) = (ops.host(), ops.tls);
     ops.transfer(EVENT_READ, false, || {
         let peeked = uring::recv(host, tls.fd, buf, libc::MSG_PEEK, tls.read_timeout);
@@ -268,7 +251,7 @@ pub(crate) fn recvfrom_peer(ops: &UringSocketOps, buf: &mut [impl ReadSlot]) -> 
 
 /// `sendto` of `buf` to `address`. The caller checked availability, before resolving
 /// the host.
-pub(crate) fn sendto(ops: &UringSocketOps, buf: &[u8], address: &SocketAddress) -> isize {
+pub(crate) fn sendto(ops: &UringSocketOps<'_>, buf: &[u8], address: &SocketAddress) -> isize {
     let (host, tls) = (ops.host(), ops.tls);
     ops.transfer(EVENT_WRITE, true, || {
         uring::sendto(host, tls.fd, buf, address, tls.write_timeout)
@@ -277,7 +260,7 @@ pub(crate) fn sendto(ops: &UringSocketOps, buf: &[u8], address: &SocketAddress) 
 
 /// `write` (`op` [`WRITE`]) or `send` ([`SEND`], through TLS when the socket has
 /// it) from `buf`.
-pub(crate) fn send(ops: &UringSocketOps, op: c_int, buf: &[u8]) -> isize {
+pub(crate) fn send(ops: &UringSocketOps<'_>, op: c_int, buf: &[u8]) -> isize {
     let (host, tls) = (ops.host(), ops.tls);
     let wt = tls.write_timeout;
     ops.transfer(EVENT_WRITE, false, || match op {
@@ -288,21 +271,21 @@ pub(crate) fn send(ops: &UringSocketOps, op: c_int, buf: &[u8]) -> isize {
 }
 
 /// `recv_all` into `buf`: recv until it is full, it failed, or the peer closed.
-pub(crate) fn recv_all(ops: &UringSocketOps, buf: &mut [impl ReadSlot]) -> isize {
+pub(crate) fn recv_all(ops: &UringSocketOps<'_>, buf: &mut [impl ReadSlot]) -> isize {
     all(ops, buf.len(), |at| {
         recv(ops, buf.get_mut(at..).unwrap_or_default())
     })
 }
 
 /// `send_all` of `buf`: send until all of it went or it failed.
-pub(crate) fn send_all(ops: &UringSocketOps, buf: &[u8]) -> isize {
+pub(crate) fn send_all(ops: &UringSocketOps<'_>, buf: &[u8]) -> isize {
     all(ops, buf.len(), |at| {
         send(ops, SEND, buf.get(at..).unwrap_or_default())
     })
 }
 
 /// `step(moved)` again while it moves bytes and fewer than `n` moved.
-fn all(ops: &UringSocketOps, n: usize, mut step: impl FnMut(usize) -> isize) -> isize {
+fn all(ops: &UringSocketOps<'_>, n: usize, mut step: impl FnMut(usize) -> isize) -> isize {
     let mut total = 0usize;
     let result = loop {
         let result = step(total);
@@ -327,7 +310,7 @@ fn transfer_result(result: isize, total: usize) -> isize {
 /// `readv`/`writev`, or with `all` their `_all` forms: again while each moves data
 /// and some remains.
 pub(crate) fn swr_v1_hook_uring_vector(
-    ops: &UringSocketOps,
+    ops: &UringSocketOps<'_>,
     vector: &mut IoVector<'_>,
     all: bool,
 ) -> isize {
@@ -352,7 +335,10 @@ pub(crate) fn swr_v1_hook_uring_vector(
 /// `accept`'s request: the ring's accept into `address` (close-on-exec,
 /// non-blocking) under the read timeout, reading bound to the current coroutine.
 /// A failure sets the socket's error from errno.
-pub(crate) fn swr_v1_hook_uring_accept(ops: &UringSocketOps, address: &mut SocketAddress) -> c_int {
+pub(crate) fn swr_v1_hook_uring_accept(
+    ops: &UringSocketOps<'_>,
+    address: &mut SocketAddress,
+) -> c_int {
     let (host, tls) = (ops.host(), ops.tls);
     let flags = libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK;
     let fd = ops.bound(EVENT_READ, || {
@@ -365,7 +351,7 @@ pub(crate) fn swr_v1_hook_uring_accept(ops: &UringSocketOps, address: &mut Socke
 }
 
 /// `connect(addr, len)` through the ring under the connect timeout.
-pub(crate) fn swr_v1_hook_uring_connect(ops: &UringSocketOps, peer: &SocketAddress) -> bool {
+pub(crate) fn swr_v1_hook_uring_connect(ops: &UringSocketOps<'_>, peer: &SocketAddress) -> bool {
     if !ops.available(EVENT_RDWR) {
         return false;
     }
@@ -386,7 +372,7 @@ pub(crate) fn swr_v1_hook_uring_connect(ops: &UringSocketOps, peer: &SocketAddre
 /// `poll(type, timeout)`: one descriptor for `events` (poll(2) bits), within
 /// `timeout` seconds (0 checks without the ring, negative waits indefinitely).
 pub(crate) fn swr_v1_hook_uring_poll(
-    ops: &UringSocketOps,
+    ops: &UringSocketOps<'_>,
     event: u32,
     events: libc::c_short,
     timeout: f64,
@@ -418,7 +404,7 @@ pub(crate) fn swr_v1_hook_uring_poll(
 /// `UringSocket::accept`'s connection: the ring's accept (under the read timeout,
 /// not the caller's, as upstream) as a new `UringSocket`, or none with the error
 /// set. `socket` is available, in a coroutine, and `ops` is its view.
-pub(crate) fn accept(socket: Co, ops: &UringSocketOps) -> Option<Co> {
+pub(crate) fn accept(socket: Co, ops: &UringSocketOps<'_>) -> Option<Co> {
     let mut conn = SocketRecord::new();
     let fd = swr_v1_hook_uring_accept(ops, &mut conn.info);
     if fd < 0 {
@@ -438,7 +424,12 @@ pub(crate) fn accept(socket: Co, ops: &UringSocketOps) -> Option<Co> {
 
 /// `UringSocket::sendfile`'s transfer once the file is open: as upstream, `end`
 /// bytes from `offset`, through the TLS session when there is one.
-pub(crate) fn sendfile(ops: &UringSocketOps, file: c_int, offset: libc::off_t, end: usize) -> bool {
+pub(crate) fn sendfile(
+    ops: &UringSocketOps<'_>,
+    file: c_int,
+    offset: libc::off_t,
+    end: usize,
+) -> bool {
     let mut offset = offset;
     let sent = ops.bound(EVENT_WRITE, || {
         if !ops.ssl() {
@@ -475,12 +466,12 @@ fn want(socket: Co) -> c_int {
 /// `UringSocket::send_once` or `recv_once`: `io`, the open socket's one attempt on
 /// its `network::Socket`, with the TLS BIOs pumped through the ring until it moves
 /// bytes.
-pub(crate) fn once(ops: &UringSocketOps, io: impl FnMut() -> isize) -> isize {
+pub(crate) fn once(ops: &UringSocketOps<'_>, io: impl FnMut() -> isize) -> isize {
     ops.tls.once(io, || want(ops.socket))
 }
 
 /// `UringSocket::poll(event, timeout)`, in a coroutine.
-pub(crate) fn poll(ops: &UringSocketOps, event: u32, timeout: f64) -> bool {
+pub(crate) fn poll(ops: &UringSocketOps<'_>, event: u32, timeout: f64) -> bool {
     let mut events = 0;
     if event & EVENT_READ != 0 {
         events |= libc::POLLIN;
@@ -505,28 +496,25 @@ pub(crate) fn tls_session(socket: Co, create: impl FnOnce() -> bool) -> bool {
             return None;
         };
         // SAFETY: `create` just made the session, whose socket BIO no handle holds.
-        let (rbio, wbio) = unsafe { session.set_bio(rbio, Some(wbio)) };
+        unsafe { session.set_bio(rbio, Some(wbio)) };
         if server {
             session.set_accept_state();
         } else {
             session.set_connect_state();
         }
-        Some([rbio.as_ptr(), wbio.as_ptr()])
+        Some(())
     });
-    let Some(bios) = made.flatten() else {
-        return false;
-    };
-    socket.with_extra(|extra| extra.bio = bios);
-    true
+    made.flatten().is_some()
 }
 
 /// One `UringSocket` handshake step through the ring, failed without a session
 /// from [`tls_session`].
 pub(crate) fn tls_step(socket: Co) -> crate::connect::Step {
+    with(socket, |ops| handshake_step(socket, ops)).unwrap_or(crate::connect::Step::Failed)
+}
+
+fn handshake_step(socket: Co, ops: &UringSocketOps<'_>) -> crate::connect::Step {
     use crate::connect::Step;
-    let Some(ops) = of(socket) else {
-        return Step::Failed;
-    };
     let Some(session) = ops.tls.ssl else {
         return Step::Failed;
     };
@@ -578,7 +566,7 @@ mod tests {
     fn set_err(_: Co, code: c_int) {
         log(format!("err {code}"));
     }
-    fn ops(fd: c_int, socket: Co) -> UringSocketOps {
+    fn ops(fd: c_int, socket: Co) -> UringSocketOps<'static> {
         UringSocketOps {
             socket,
             tls: Tls {
@@ -645,39 +633,44 @@ mod tests {
         assert_eq!(fresh.transfer_each(|_| -1), -1);
     }
 
-    /// `of` hands out a stored BIO only while it is still the live session's: not
-    /// once the BIOs are replaced, nor once the session is gone.
+    /// `with` lends a `UringSocket`'s view whose BIOs are its live session's memory
+    /// BIOs: none before the session, nor while its BIO is the socket's own; the
+    /// fresh pair once they are replaced.
     #[test]
-    fn session_bios_are_only_the_live_sessions() {
+    fn with_lends_the_live_sessions_memory_bios() {
         use openssl_sys as ssl;
+        use std::ptr::null_mut as null;
+        let mut socket = TestSocket::new();
+        let co = socket.co();
+        assert!(with(co, |_| ()).is_none(), "not a UringSocket");
+        co.with_extra(|extra| extra.uring = Some(&HOST));
+        let bios = || {
+            let view = with(co, |ops| {
+                let bio = |bio: Option<swoole_rs_tls::Bio<'_>>| {
+                    bio.map_or(null(), swoole_rs_tls::Bio::as_ptr)
+                };
+                let ssl = ops.tls.ssl.map_or(null(), Ssl::as_ptr);
+                (ssl, bio(ops.tls.rbio), bio(ops.tls.wbio))
+            });
+            view.unwrap()
+        };
+        assert_eq!(bios(), (null(), null(), null()), "no session");
         unsafe {
             let context = ssl::SSL_CTX_new(ssl::TLS_method());
             let made = ssl::SSL_new(context);
-            let session = Ssl::new(made).unwrap();
-            let pair = || {
-                (
-                    OwnedBio::memory().unwrap(),
-                    Some(OwnedBio::memory().unwrap()),
-                )
-            };
-            let (read, write) = pair();
-            let (read, write) = session.set_bio(read, write);
-            let stored = [read.as_ptr(), write.as_ptr()];
-            let live = [Some(read), Some(write)];
-            assert_eq!(session_bios(Some(session), stored), live);
-            assert_eq!(
-                session_bios(Some(session), [read.as_ptr(), std::ptr::null_mut()]),
-                [Some(read), None]
-            );
-            // Replaced: the stored pair is freed and no longer the session's.
-            let (read, write) = pair();
-            let (read, write) = session.set_bio(read, write);
-            assert_eq!(session_bios(Some(session), stored), [None, None]);
-            let fresh = [read.as_ptr(), write.as_ptr()];
-            let live = [Some(read), Some(write)];
-            assert_eq!(session_bios(Some(session), fresh), live);
-            // Closed: the record holds no session.
-            assert_eq!(session_bios(None, fresh), [None, None]);
+            let own = ssl::BIO_new_socket(0, 0);
+            ssl::SSL_set_bio(made, own, own);
+            co.net(|record| record.set_ssl(made.cast()));
+            assert_eq!(bios(), (made, null(), null()), "the socket's own BIO");
+            let (read, write) = (OwnedBio::memory().unwrap(), OwnedBio::memory());
+            let pair = with(co, |ops| {
+                let (read, write) = ops.tls.ssl.unwrap().set_bio(read, write);
+                (read.as_ptr(), write.as_ptr())
+            });
+            let (read, write) = pair.unwrap();
+            assert_eq!(bios(), (made, read, write), "the memory pair");
+            co.net(swoole_rs_reactor::SocketFields::take_ssl);
+            assert_eq!(bios(), (null(), null(), null()), "closed");
             ssl::SSL_free(made);
             ssl::SSL_CTX_free(context);
         }

@@ -21,8 +21,8 @@ use swoole_rs_buffer::string::CppString;
 use swoole_rs_buffer::string::with_thread_buffer;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::{
-    EventType, FdType, ResultCode, SW_BUFFER_SIZE_UDP, SW_CLIENT_BUFFER_SIZE, SW_SEND_BUFFER_SIZE,
-    SW_SOCKET_RETRY_COUNT, SW_SSL_BUFFER_SIZE, SocketFlag, SocketType, TimeoutType,
+    FdType, ResultCode, SW_BUFFER_SIZE_UDP, SW_CLIENT_BUFFER_SIZE, SW_SEND_BUFFER_SIZE,
+    SW_SOCKET_RETRY_COUNT, SW_SSL_BUFFER_SIZE, SocketFlag, SocketType,
 };
 use swoole_rs_corebase::net_types::{PacketLength, Protocol, SocketAddress};
 use swoole_rs_corebase::sys::ReadSlot;
@@ -36,7 +36,7 @@ use swoole_rs_reactor::{
     Caught, SOCKET_DEFAULTS, Socket, SocketRecord, fd_clean, swr_v1_socket_buffer_size,
     swr_v1_socket_domain_and_type,
 };
-use swoole_rs_reactor::{Event, Running};
+use swoole_rs_reactor::{Event, Events, Running};
 #[cfg(not(test))]
 use swoole_rs_tls::ssl_context_create;
 #[cfg(not(test))]
@@ -140,14 +140,11 @@ const SSL_BUFFER_SIZE: u32 = SW_SSL_BUFFER_SIZE;
 const BUFFER_SIZE_UDP: usize = SW_BUFFER_SIZE_UDP as usize;
 const CLIENT_BUFFER_SIZE: usize = SW_CLIENT_BUFFER_SIZE as usize;
 const SOCKET_RETRY_COUNT: usize = SW_SOCKET_RETRY_COUNT as usize;
-const EVENT_READ: c_int = EventType::SW_EVENT_READ as c_int;
-const EVENT_WRITE: c_int = EventType::SW_EVENT_WRITE as c_int;
-const EVENT_ERROR: c_int = EventType::SW_EVENT_ERROR as c_int;
-const TIMEOUT_ALL: c_int = TimeoutType::SW_TIMEOUT_ALL as c_int;
 /// crates/tls's `SW_SSL_STATE_READY`, `SW_SSL_STATE_WAIT_STREAM`, `SW_SSL_CLIENT`
 /// and `SW_SSL_DTLS`.
-pub const SSL_STATE_READY: u32 = SslState::SW_SSL_STATE_READY as u32;
-pub const SSL_STATE_WAIT_STREAM: u32 = SslState::SW_SSL_STATE_WAIT_STREAM as u32;
+pub use SslState::{
+    SW_SSL_STATE_READY as SSL_STATE_READY, SW_SSL_STATE_WAIT_STREAM as SSL_STATE_WAIT_STREAM,
+};
 pub const SSL_CLIENT: c_int = SslCreateFlag::SW_SSL_CLIENT as c_int;
 pub const SSL_DTLS: u32 = SslVersion::SW_SSL_DTLS as u32;
 /// The proxy states of `native/protocols/swoole_proxy.h`, which a test reads.
@@ -469,7 +466,7 @@ impl Handle {
         self.socket().read(|socket| socket.socket_type)
     }
 
-    fn tls_state(self) -> u32 {
+    fn tls_state(self) -> SslState {
         self.socket().read(|socket| socket.tls.state)
     }
 
@@ -499,7 +496,7 @@ impl Handle {
         listener(event, data, length);
     }
 
-    fn event(self, op: EventOp, events: c_int) -> bool {
+    fn event(self, op: EventOp, events: Events) -> bool {
         ops::event(self, op, events)
     }
 
@@ -687,8 +684,11 @@ impl Handle {
     }
 
     fn set_timeout(self, timeout: f64) {
-        self.socket()
-            .edit(|socket| socket.timeouts.set(timeout, TIMEOUT_ALL));
+        self.socket().edit(|socket| {
+            socket
+                .timeouts
+                .set(timeout, swoole_rs_reactor::TimeoutKind::ALL);
+        });
     }
 
     fn timer_clear(self) {
@@ -775,10 +775,10 @@ extern "C" fn on_failure(reactor: Running<'_>, event: &mut Event) -> c_int {
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_clients_init_reactor(reactor: Running<'_>) {
     let handlers: [(c_int, c_int, swoole_rs_reactor::Handler); 4] = [
-        (FD_STREAM_CLIENT, EVENT_READ, on_stream_read),
-        (FD_DGRAM_CLIENT, EVENT_READ, on_dgram_read),
-        (FD_STREAM_CLIENT, EVENT_WRITE, on_writable),
-        (FD_STREAM_CLIENT, EVENT_ERROR, on_failure),
+        (FD_STREAM_CLIENT, Events::READ.bits(), on_stream_read),
+        (FD_DGRAM_CLIENT, Events::READ.bits(), on_dgram_read),
+        (FD_STREAM_CLIENT, Events::WRITE.bits(), on_writable),
+        (FD_STREAM_CLIENT, Events::ERROR.bits(), on_failure),
     ];
     for (fd_type, event, handler) in handlers {
         reactor_set_handler(reactor, fd_type, event, Some(handler));
@@ -816,6 +816,13 @@ fn is_dgram(kind: c_int) -> bool {
 /// when the socket could not be made (logged as upstream's constructor does).
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut Client {
+    create(kind, is_async).map_or(core::ptr::null_mut(), |handle| handle.0)
+}
+
+/// [`swr_v1_clients_new`] as a handle on the new client, live until
+/// [`Handle::free`]; None with errno set when the socket could not be made.
+#[must_use]
+pub fn create(kind: c_int, is_async: bool) -> Option<Handle> {
     let fd_type = if is_stream(kind) {
         FD_STREAM_CLIENT
     } else {
@@ -827,7 +834,7 @@ pub extern "C" fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut Client
         let error = errno();
         log::sys_warning(c"Client", format_args!("socket() failed"));
         set_errno(error);
-        return core::ptr::null_mut();
+        return None;
     };
     let mut client = Box::new(Client {
         record: Cell::new(ClientRecord {
@@ -873,7 +880,7 @@ pub extern "C" fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut Client
     swr_v1_socket_domain_and_type(kind, &mut client.domain, &mut kind_out);
     let client = Box::into_raw(client);
     record.edit(|record| record.object = client.cast());
-    client
+    Some(Handle(client))
 }
 
 impl Handle {
@@ -1023,7 +1030,7 @@ pub fn close(this: Handle) -> bool {
     }
     if this.flag(Flag::Async) {
         if !saved.read(|socket| socket.removed) {
-            _ = this.event(EventOp::Del, 0);
+            _ = this.event(EventOp::Del, Events::NONE);
         }
         this.timer_clear();
         if this.flag(Flag::Active) {
@@ -1074,20 +1081,28 @@ pub fn shutdown(this: Handle, how: c_int) -> bool {
 /// `Client::sleep()`: stop reading (keeping write interest). Whether it worked.
 #[must_use]
 pub fn sleep(this: Handle) -> bool {
-    if this.socket().read(|socket| socket.events) & EVENT_WRITE != 0 {
-        this.event(EventOp::Set, EVENT_WRITE)
+    if this
+        .socket()
+        .read(|socket| socket.events)
+        .intersects(Events::WRITE)
+    {
+        this.event(EventOp::Set, Events::WRITE)
     } else {
-        this.event(EventOp::Del, 0)
+        this.event(EventOp::Del, Events::NONE)
     }
 }
 
 /// `Client::wakeup()`: read again. Whether it worked.
 #[must_use]
 pub fn wakeup(this: Handle) -> bool {
-    if this.socket().read(|socket| socket.events) & EVENT_WRITE != 0 {
-        this.event(EventOp::Set, EVENT_READ | EVENT_WRITE)
+    if this
+        .socket()
+        .read(|socket| socket.events)
+        .intersects(Events::WRITE)
+    {
+        this.event(EventOp::Set, Events::READ | Events::WRITE)
     } else {
-        this.event(EventOp::Add, EVENT_READ)
+        this.event(EventOp::Add, Events::READ)
     }
 }
 
@@ -1095,7 +1110,7 @@ pub fn wakeup(this: Handle) -> bool {
 /// worked.
 #[must_use]
 pub fn ssl_wait(this: Handle) -> bool {
-    this.event(EventOp::Set, EVENT_WRITE)
+    this.event(EventOp::Set, Events::WRITE)
 }
 
 /// `Client::enable_ssl_encrypt()`: a TLS context, TLS on, and DTLS for a datagram
@@ -1425,7 +1440,7 @@ fn tcp_connect_async(this: Handle, host: &CStr, port: c_int, timeout: f64) -> bo
                     return false;
                 }
             }
-            return this.event(EventOp::Add, EVENT_WRITE);
+            return this.event(EventOp::Add, Events::WRITE);
         }
         break;
     }
@@ -1497,7 +1512,7 @@ fn udp_connect(this: Handle, host: &CStr, port: c_int, timeout: f64, udp_connect
         fd_clean(fd);
     }
     if is_async && this.has(ClientEvent::Connect) {
-        if !this.event(EventOp::Add, EVENT_READ) {
+        if !this.event(EventOp::Add, Events::READ) {
             return false;
         }
         this.on_connect();
@@ -1592,7 +1607,7 @@ mod ops {
     /// The reactor's `swoole_event_*` on the socket: whether it worked, false without a
     /// socket or a reactor. The client's socket stays live while it is registered:
     /// `close` deletes it from the reactor before the record is freed.
-    pub(super) fn event(this: Handle, op: EventOp, events: c_int) -> bool {
+    pub(super) fn event(this: Handle, op: EventOp, events: swoole_rs_reactor::Events) -> bool {
         let Some(socket) = this.get().socket() else {
             return false;
         };
@@ -1711,7 +1726,7 @@ pub fn sendfile(this: Handle, file: &CStr, offset: i64, length: usize) -> bool {
         log::set_last_error(errno());
         return false;
     }
-    if is_async && !this.event(EventOp::AddOrUpdate, EVENT_WRITE) {
+    if is_async && !this.event(EventOp::AddOrUpdate, Events::WRITE) {
         return false;
     }
     true
@@ -1886,7 +1901,7 @@ fn on_write(this: Handle, reactor: Running<'_>, event: &mut Event) -> bool {
                 return true;
             }
             if this.socket().read(|socket| socket.tls.want_read) {
-                this.event(EventOp::Set, EVENT_READ);
+                this.event(EventOp::Set, Events::READ);
             }
             return true;
         }
@@ -1913,7 +1928,7 @@ fn on_write(this: Handle, reactor: Running<'_>, event: &mut Event) -> bool {
     if error != 0 {
         return write_failed(this);
     }
-    this.event(EventOp::Set, EVENT_READ);
+    this.event(EventOp::Set, Events::READ);
     this.set(Flag::Active, true);
     if this.proxy_state(Proxy::Socks5) == Some(SOCKS5_WAIT) {
         let length = this.socks5_negotiate();

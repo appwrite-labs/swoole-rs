@@ -233,7 +233,7 @@ mod native {
     /// `SW_LOG_WARNING`.
     const TOO_LARGE: c_int = swoole_rs_error::ErrorCode::SW_ERROR_PACKAGE_LENGTH_TOO_LARGE as c_int;
     const NOT_FOUND: c_int = swoole_rs_error::ErrorCode::SW_ERROR_PACKAGE_LENGTH_NOT_FOUND as c_int;
-    const LOG_WARNING: c_int = 4;
+    use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 
     fn packet_fail(socket: Co, kind: crate::packet::Failure, length: isize) {
         use super::Message;
@@ -283,7 +283,10 @@ mod native {
     }
 
     pub(super) fn reactor(socket: Co, events: u32, add: bool) -> bool {
-        socket.register(add, events.cast_signed())
+        socket.register(
+            add,
+            swoole_rs_reactor::Events::from_bits(events.cast_signed()),
+        )
     }
 
     pub(super) fn remove(socket: Co, event: u32) {
@@ -406,7 +409,13 @@ impl Co {
 /// `TimeoutController::has_timedout(kind)` at `now`: the first call starts the
 /// clock; later ones set the time left as `kind`'s timeout, or time out
 /// (`ETIMEDOUT`) with less than `SW_TIMER_MIN_SEC` left. No limit unless positive.
-pub fn timed_out(socket: Co, timeout: f64, startup: &mut f64, now: f64, kind: c_int) -> bool {
+pub fn timed_out(
+    socket: Co,
+    timeout: f64,
+    startup: &mut f64,
+    now: f64,
+    kind: swoole_rs_reactor::TimeoutKind,
+) -> bool {
     /// `SW_TIMER_MIN_SEC`.
     const MIN_SEC: f64 = 0.001;
     if timeout <= 0.0 || timeout.is_nan() {
@@ -994,7 +1003,13 @@ mod tests {
                     }
                 }
                 let before = unsafe { socket.0.record() }.timeouts.read;
-                let got = timed_out(socket.co(), timeout, &mut startup, now, 4);
+                let got = timed_out(
+                    socket.co(),
+                    timeout,
+                    &mut startup,
+                    now,
+                    swoole_rs_reactor::TimeoutKind::READ,
+                );
                 let after = unsafe { socket.0.record() }.timeouts.read;
                 assert_eq!(
                     (got, startup.to_bits()),

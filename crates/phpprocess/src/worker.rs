@@ -23,10 +23,9 @@ use swoole_rs_tls::{
 };
 use swoole_rs_zend::string::ZBuf;
 
-/// `SW_PIPE_CLOSE_READ`, `SW_PIPE_CLOSE_WRITE` and `SW_TIMEOUT_ALL`.
+/// `SW_PIPE_CLOSE_READ` and `SW_PIPE_CLOSE_WRITE`.
 const CLOSE_READ: i64 = 3;
 const CLOSE_WRITE: i64 = 4;
-const TIMEOUT_ALL: c_int = 15;
 
 /// What the methods read of a `Worker`.
 #[derive(Clone, Copy, Debug)]
@@ -222,7 +221,9 @@ pub(crate) fn pipe_close(worker: Worker<'_>, which: i64) -> bool {
 pub(crate) fn pipe_timeout(worker: Worker<'_>, seconds: f64) -> bool {
     pipe(worker).is_some_and(|socket| {
         socket.edit(|record| {
-            record.timeouts.set(seconds, TIMEOUT_ALL);
+            record
+                .timeouts
+                .set(seconds, swoole_rs_reactor::TimeoutKind::ALL);
             socket_set_kernel_read_timeout(record, seconds)
                 && socket_set_kernel_write_timeout(record, seconds)
         })

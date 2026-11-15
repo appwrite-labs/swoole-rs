@@ -72,7 +72,7 @@
     swr_v1_process_pool_ipc * ipc_; \
     void * message_box = nullptr; \
     void * message_bus = nullptr; \
-    swr_v1_process_reload_task * reload_task = nullptr; \
+    void * reload_task = nullptr; \
     void * ptr; \
     struct { uint64_t generation; long id; void *cancel; } kill_timer = {};
 #define SWR_SOCKET_PAIR_RECORD_FIELDS \

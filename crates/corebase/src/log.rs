@@ -53,24 +53,27 @@ pub enum LogLevel {
     SW_LOG_NONE = 6,
 }
 
-/// `swoole_sys_warning`, with errno set to the code first.
-pub const LOG_SYS_WARNING: c_int = 0;
-/// `swoole_warning`.
-pub const LOG_WARNING: c_int = 1;
-/// `swoole_notice`.
-pub const LOG_NOTICE: c_int = 2;
-/// `swoole_error_log(level, code, ...)`.
-pub const LOG_ERROR: c_int = 3;
-/// `swoole_info`.
-pub const LOG_INFO: c_int = 4;
-/// `swoole_sys_error`, with errno set to the code first; it exits the process.
-pub const LOG_SYS_ERROR: c_int = 5;
-/// `swoole_error`; it exits the process.
-pub const LOG_FATAL: c_int = 6;
+/// The logging operation, distinct from its severity level and error code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogKind {
+    /// `swoole_sys_warning`, with errno set to the code first.
+    SysWarning,
+    /// `swoole_warning`.
+    Warning,
+    /// `swoole_notice`.
+    Notice,
+    /// `swoole_error_log(level, code, ...)`.
+    Error,
+    /// `swoole_info`.
+    Info,
+    /// `swoole_sys_error`, with errno set to the code first; it exits the process.
+    SysError,
+    /// `swoole_error`; it exits the process.
+    Fatal,
+}
 
-/// Native's log macros: `kind` is a `LOG_*`, `level` and `code` are what that
-/// macro takes, and `message` is the formatted text after `__SW_FUNC__`'s part.
-pub type LogHost = fn(kind: c_int, level: c_int, code: c_int, origin: &CStr, message: &CStr);
+/// The logging operation, its level and code, and text after `__SW_FUNC__`'s part.
+pub type LogHost = fn(kind: LogKind, level: c_int, code: c_int, origin: &CStr, message: &CStr);
 
 static HOST: OnceLock<LogHost> = OnceLock::new();
 
@@ -83,7 +86,7 @@ fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
-fn emit(kind: c_int, level: c_int, code: c_int, origin: &CStr, message: fmt::Arguments<'_>) {
+fn emit(kind: LogKind, level: c_int, code: c_int, origin: &CStr, message: fmt::Arguments<'_>) {
     let Some(host) = HOST.get() else { return };
     // printf's %s stops at the first NUL, so the message does too.
     let mut text = message.to_string();
@@ -104,38 +107,38 @@ pub fn sys_warning(origin: &CStr, message: fmt::Arguments<'_>) {
 
 /// `swoole_sys_warning` from `origin`, with errno `code`.
 pub fn sys_warning_errno(code: c_int, origin: &CStr, message: fmt::Arguments<'_>) {
-    emit(LOG_SYS_WARNING, 0, code, origin, message);
+    emit(LogKind::SysWarning, 0, code, origin, message);
 }
 
 /// `swoole_warning` from `origin`.
 pub fn warning(origin: &CStr, message: fmt::Arguments<'_>) {
-    emit(LOG_WARNING, 0, 0, origin, message);
+    emit(LogKind::Warning, 0, 0, origin, message);
 }
 
 /// `swoole_notice`.
 pub fn notice(message: fmt::Arguments<'_>) {
-    emit(LOG_NOTICE, 0, 0, c"", message);
+    emit(LogKind::Notice, 0, 0, c"", message);
 }
 
 /// `swoole_info`.
 pub fn info(message: fmt::Arguments<'_>) {
-    emit(LOG_INFO, 0, 0, c"", message);
+    emit(LogKind::Info, 0, 0, c"", message);
 }
 
 /// `swoole_sys_error` from `origin`, with this thread's errno as on entry; the
 /// process exits.
 pub fn sys_error(origin: &CStr, message: fmt::Arguments<'_>) {
-    emit(LOG_SYS_ERROR, 0, errno(), origin, message);
+    emit(LogKind::SysError, 0, errno(), origin, message);
 }
 
 /// `swoole_error` from `origin`; the process exits.
 pub fn error(origin: &CStr, message: fmt::Arguments<'_>) {
-    emit(LOG_FATAL, 0, 0, origin, message);
+    emit(LogKind::Fatal, 0, 0, origin, message);
 }
 
 /// `swoole_error_log(level, code, ...)` from `origin`.
-pub fn error_log(level: c_int, code: c_int, origin: &CStr, message: fmt::Arguments<'_>) {
-    emit(LOG_ERROR, level, code, origin, message);
+pub fn error_log(level: LogLevel, code: c_int, origin: &CStr, message: fmt::Arguments<'_>) {
+    emit(LogKind::Error, level as c_int, code, origin, message);
 }
 
 /// Ends the process on a broken invariant. `unwrap`, `expect` and `panic` are
@@ -149,7 +152,7 @@ pub fn fatal(reason: &str) -> ! {
     let at = std::panic::Location::caller();
     if HOST.get().is_some() {
         emit(
-            LOG_ERROR,
+            LogKind::Error,
             LEVEL,
             0,
             c"fatal",
@@ -191,11 +194,11 @@ mod tests {
         }
     }
 
-    fn record(kind: c_int, level: c_int, code: c_int, origin: &CStr, message: &CStr) {
+    fn record(kind: LogKind, level: c_int, code: c_int, origin: &CStr, message: &CStr) {
         let text = |s: &CStr| s.to_string_lossy().into_owned();
         SEEN.lock()
             .unwrap()
-            .push((kind, level, code, text(origin), text(message)));
+            .push((kind as c_int, level, code, text(origin), text(message)));
     }
 
     #[test]
@@ -219,7 +222,12 @@ mod tests {
             c"Socket::connect_sync",
             format_args!("bind({}) failed\0tail", 3),
         );
-        error_log(4, 1015, c"Socket::ssl_verify", format_args!("x"));
+        error_log(
+            LogLevel::SW_LOG_WARNING,
+            1015,
+            c"Socket::ssl_verify",
+            format_args!("x"),
+        );
         let seen = SEEN.lock().unwrap();
         assert_eq!(
             seen[..],

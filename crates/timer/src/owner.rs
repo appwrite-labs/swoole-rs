@@ -18,8 +18,7 @@ use swoole_rs_reactor::{
 };
 
 /// `SW_LOG_WARNING` and `SW_ERROR_INVALID_PARAMS`.
-const LOG_WARNING: c_int = 4;
-const INVALID_PARAMS: c_int = 505;
+const INVALID_PARAMS: c_int = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as c_int;
 /// `swr_v1_timer_backend`'s modes.
 const MANUAL: u32 = 0;
 const REACTOR: u32 = 1;
@@ -73,6 +72,7 @@ const _: () = assert!(
 );
 
 pub(crate) use closure::Closure;
+use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 
 /// A `Copy` callback of at most two words, held in its node: no allocation, and
 /// nothing to free when the node goes.

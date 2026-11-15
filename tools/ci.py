@@ -11,7 +11,8 @@ puts a PR in main's merge queue once its PR tier passes.
   ci.py stuck                auto-merge PRs that conflict with main, failed a required check, have
                              a review requesting changes (answer it), or whose finished PR-tier run has none (GitHub abandoned its jobs:
                              re-run it), and PRs the merge queue dropped (fix what their run
-                             broke, then queue them again), oldest first (exit 2 when there are none);
+                             broke, then queue them again), and ready PRs whose `required` passed
+                             but were never put on auto-merge (queue them), oldest first (exit 2 when there are none);
                              first, a merge-tier run on main that a job waiting for a runner holds
                              open (cancel it: every later hourly run waits behind it)
   ci.py phpt-baseline [--variant NAME] [--php VERSION] [--saved DIR]
@@ -113,7 +114,7 @@ def resolve(commit):
 
 def seconds(job):
     # GitHub reports unfinished timestamps as 0001-01-01T00:00:00Z.
-    started, completed = (datetime.fromisoformat(job[key]) if job.get(key) and not job[key].startswith('0001')
+    started, completed = (datetime.fromisoformat(job[key].replace('Z', '+00:00')) if job.get(key) and not job[key].startswith('0001')
                           else None for key in ('startedAt', 'completedAt'))
     return int((completed - started).total_seconds()) if started and completed else None
 
@@ -504,6 +505,16 @@ def dequeued(pull):
             and [event['__typename'] for event in pull['timelineItems']['nodes']] == ['RemovedFromMergeQueueEvent'])
 
 
+def passed(pull):
+    """Whether a ready PR's `required` check passed but nothing will merge it: its author never ran
+    `gh pr merge --auto --squash`. A draft is how a PR is held back on purpose."""
+    required = [run['conclusion'] for commit in pull['commits']['nodes']
+                for suite in commit['commit']['checkSuites']['nodes'] for run in suite['checkRuns']['nodes']]
+    return (not (pull['isDraft'] or pull['isInMergeQueue'] or pull['autoMergeRequest'])
+            and pull['mergeable'] != 'CONFLICTING' and 'SUCCESS' in required
+            and not any(conclusion in ('FAILURE', 'TIMED_OUT', 'CANCELLED') for conclusion in required))
+
+
 def stuck():
     """Open PRs that won't merge by themselves: auto-merge ones that are blocked, and those the
     merge queue dropped, with the reason GitHub gives and their group's merge-tier run. Oldest
@@ -514,11 +525,13 @@ def stuck():
             blocking = blocked(pull)
         elif dequeued(pull):
             blocking = ['left the merge queue: ' + (pull['timelineItems']['nodes'][0].get('reason') or 'no reason given')]
+        elif passed(pull):
+            blocking = ['passed, not on auto-merge']
         else:
             continue
         if blocking:
             rows.append({'number': pull['number'], 'title': pull['title'], 'created': pull['createdAt'],
-                         'blocking': blocking, 'dequeued': not pull['autoMergeRequest']})
+                         'blocking': blocking, 'dequeued': dequeued(pull)})
     if any(row['dequeued'] for row in rows):
         # A group's branch is gh-readonly-queue/main/pr-<number>-<base sha>; only GitHub's run list has it.
         runs = json.loads(gh('run', 'list', '--workflow', 'merge.yml', '--event', 'merge_group', '--limit', '100',

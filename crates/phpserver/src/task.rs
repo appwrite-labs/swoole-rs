@@ -19,6 +19,7 @@ use std::{
 };
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING;
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_locks::SharedMutex;
 use swoole_rs_phpcoroutines::Coroutine;
@@ -55,7 +56,6 @@ const SW_ERROR_TASK_DISPATCH_FAIL: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_TASK_DISPATCH_FAIL as c_int;
 /// `SW_ERROR_TASK_TIMEOUT`, `SW_LOG_WARNING`.
 const SW_ERROR_TASK_TIMEOUT: c_int = swoole_rs_error::ErrorCode::SW_ERROR_TASK_TIMEOUT as c_int;
-const SW_LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
 /// `DATA`'s `Swoole\Server\TaskResult`.
 const TASK_RESULT: usize = 4;
 

@@ -10,14 +10,11 @@ use std::io::Write;
 use std::{ptr, rc::Rc};
 use swoole_rs_coroutine::{Coroutine, Resume};
 use swoole_rs_curl_sys::{CURL_CSELECT_ERR, CURL_CSELECT_IN, CURL_CSELECT_OUT, CURLcode};
+use swoole_rs_reactor::Events;
 use swoole_rs_reactor::{Socket, SocketRecord, event_api};
 
 /// Upstream's `PHP_SWOOLE_FD_CO_CURL`: `SW_FD_STREAM_CLIENT + 10`.
 const FD_CO_CURL: c_int = 17 + 10;
-/// `SW_EVENT_READ`, `SW_EVENT_WRITE` and `SW_EVENT_ERROR`.
-const EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
-const EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
-const EVENT_ERROR: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_ERROR as c_int;
 /// `SW_ERROR_CO_OUT_OF_COROUTINE` and `SW_ERROR_CO_HAS_BEEN_BOUND`.
 const CO_OUT_OF_COROUTINE: c_int = 10001;
 const CO_HAS_BEEN_BOUND: c_int = 10002;
@@ -44,16 +41,16 @@ pub(crate) fn event_available() -> bool {
 
 /// Install the cURL fd type's reactor handlers unless they are.
 pub(crate) fn install_handlers() {
-    if event_api::swoole_event_isset_handler(FD_CO_CURL, EVENT_READ) {
+    if event_api::swoole_event_isset_handler(FD_CO_CURL, Events::READ.bits()) {
         return;
     }
     let read: swoole_rs_reactor::Handler = on_event::<CURL_CSELECT_IN>;
     for (event, handler) in [
-        (EVENT_READ, read),
-        (EVENT_WRITE, on_event::<CURL_CSELECT_OUT>),
-        (EVENT_ERROR, on_event::<CURL_CSELECT_ERR>),
+        (Events::READ, read),
+        (Events::WRITE, on_event::<CURL_CSELECT_OUT>),
+        (Events::ERROR, on_event::<CURL_CSELECT_ERR>),
     ] {
-        event_api::swoole_event_set_handler(FD_CO_CURL, event, Some(handler));
+        event_api::swoole_event_set_handler(FD_CO_CURL, event.bits(), Some(handler));
     }
 }
 
@@ -82,7 +79,7 @@ impl ReactorSocket {
     }
 
     /// The events it is registered for.
-    pub(crate) fn events(self) -> c_int {
+    pub(crate) fn events(self) -> Events {
         self.0.read(|socket| socket.events)
     }
 
@@ -91,11 +88,11 @@ impl ReactorSocket {
         self.0.read(|socket| socket.removed)
     }
 
-    pub(crate) fn add(self, events: c_int) -> bool {
+    pub(crate) fn add(self, events: Events) -> bool {
         event_api::event_add(self.0, events)
     }
 
-    pub(crate) fn set(self, events: c_int) -> bool {
+    pub(crate) fn set(self, events: Events) -> bool {
         event_api::event_set(self.0, events)
     }
 
@@ -108,7 +105,7 @@ impl ReactorSocket {
     /// # Safety
     /// Nothing uses this socket, or a copy of it, afterwards.
     pub(crate) unsafe fn free(self) {
-        if self.events() != 0 && event_available() {
+        if !self.events().is_empty() && event_available() {
             self.0.edit(|socket| socket.silent_remove = true);
             self.del();
         }

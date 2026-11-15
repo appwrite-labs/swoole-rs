@@ -1,11 +1,10 @@
 //! `ProcessPool`'s lifecycle (once `src/os/process_pool.cc`): create, start, spawn,
 //! stop, detach, reload, the manager's wait and shutdown, destroy and the
 //! worker-side entry into the loops of [`crate::pool`]. Rust reads and writes
-//! the pool's fields in place through [`PoolRecord`], `ProcessPool`'s layout
-//! (the C++ view takes its fields from it), and owns its registry, IPC state and
-//! reload. `crates/server/src/pool_native.rs` keeps the objects (queue, pipes,
-//! channel, message bus, timers, reactor, fork) and the callbacks, and does each
-//! effect when this crate asks through [`PoolNative::call`].
+//! the pool's fields through [`PoolRecord`] (the C++ layout mirror follows it).
+//! The pool owns its registry, IPC, reload, pipes and message bus; the native
+//! owners are type-erased to avoid a dependency cycle. `crates/server/src/pool_native.rs`
+//! constructs them and supplies the effects and callbacks through [`PoolNative`].
 //!
 //! A callback that can reach PHP runs through [`PoolNative::callback`] inside
 //! the bailout trap; when it bails out, the export returns [`Bailed`] and its
@@ -30,6 +29,10 @@ use crate::reaper::{self, Reap, ReloadStart, Waited, wait_child};
 use crate::reload_task::{ReloadTask, Warn};
 use crate::worker_record::WorkerRecord;
 use crate::worker_registry::WorkerRegistry;
+
+/// The native pipe owners, kept alive at stable addresses until the pool closes.
+type Pipes = std::cell::RefCell<Vec<Box<dyn std::any::Any>>>;
+type MessageBus = std::cell::RefCell<Box<dyn std::any::Any>>;
 
 /// `swoole::ProcessPool`'s fields, in order. Rust owns this layout; the C++ view
 /// takes its fields from here (`SWR_POOL_RECORD_FIELDS`, `tools/process_records.py`).
@@ -74,20 +77,17 @@ pub struct PoolRecord {
     /// The round robin's next worker, which other processes update atomically.
     pub round_id: AtomicU32,
     pub(crate) workers: *mut WorkerRecord,
-    pub(crate) pipes: *mut c_void,
-    // `worker_num` and the pointers from `workers` on are crate-private, like
-    // `registry`: the pool's operations trust them, so safe code elsewhere reads
-    // them through the getters below and writes them only through the `unsafe`
-    // setters. So are the hooks above and `ptr`, which the hooks read: their owner
-    // installs them together ([`PoolRef::install`]).
+    pub(crate) pipes: Option<Box<Pipes>>,
+    // The records and resource owners are private: outside code uses the handle's
+    // operations. The hooks and `ptr` are installed together ([`PoolRef::install`]).
     /// The registry `create` made, which `destroy` (or dropping the record) frees.
     pub(crate) registry: Option<Box<WorkerRegistry>>,
     /// A message-queue pool's queue, which goes as the registry does.
     pub(crate) queue: Option<Box<swoole_rs_ossupport::QueueRecord>>,
     pub(crate) ipc: *mut PoolIpc,
     pub(crate) message_box: *mut c_void,
-    pub(crate) message_bus: *mut c_void,
-    pub(crate) reload_task: *mut ReloadTask,
+    message_bus: Option<Box<MessageBus>>,
+    reload_task: Option<Box<std::cell::RefCell<ReloadTask>>>,
     pub(crate) ptr: *mut c_void,
     /// The `max_wait_time` timer `wait` arms to SIGKILL the workers still
     /// running. It stays armed after `wait` returns, which reaps only the first,
@@ -96,6 +96,16 @@ pub struct PoolRecord {
 }
 
 impl PoolRecord {
+    #[must_use]
+    pub fn has_pipes(&self) -> bool {
+        self.pipes.is_some()
+    }
+
+    #[must_use]
+    pub fn has_message_bus(&self) -> bool {
+        self.message_bus.is_some()
+    }
+
     /// A pool before `create`, as C's `ProcessPool pool = {}`: every field zero,
     /// null or `None`.
     #[must_use]
@@ -139,13 +149,13 @@ impl PoolRecord {
             main_loop: None,
             round_id: AtomicU32::new(0),
             workers: ptr::null_mut(),
-            pipes: ptr::null_mut(),
+            pipes: None,
             registry: None,
             queue: None,
             ipc: ptr::null_mut(),
             message_box: ptr::null_mut(),
-            message_bus: ptr::null_mut(),
-            reload_task: ptr::null_mut(),
+            message_bus: None,
+            reload_task: None,
             ptr: ptr::null_mut(),
             kill_timer: None,
         }
@@ -161,12 +171,6 @@ impl PoolRecord {
     #[must_use]
     pub fn workers(&self) -> *mut WorkerRecord {
         self.workers
-    }
-
-    /// The native pipes `create` made for a unix-socket pool, or null.
-    #[must_use]
-    pub fn pipes(&self) -> *mut c_void {
-        self.pipes
     }
 
     /// The `SysV` message queue of a message-queue pool, or null.
@@ -199,18 +203,6 @@ impl PoolRecord {
                 .cast::<swoole_rs_memory::channel::Record>()
                 .as_ref()
         }
-    }
-
-    /// The pool's message bus, or null.
-    #[must_use]
-    pub fn message_bus(&self) -> *mut c_void {
-        self.message_bus
-    }
-
-    /// The reload in progress, or null.
-    #[must_use]
-    pub fn reload_task(&self) -> *mut ReloadTask {
-        self.reload_task
     }
 
     /// The pool's worker at `index`, or `None` past `worker_num`.
@@ -319,6 +311,76 @@ impl<'a> From<&'a core::cell::UnsafeCell<PoolRecord>> for PoolRef<'a> {
 }
 
 impl<'a> PoolRef<'a> {
+    /// Keeps a native pipe owner until this pool closes. False before its pipe
+    /// list is created; then `pipe` drops immediately.
+    #[must_use]
+    pub fn keep_pipe(self, pipe: Box<dyn std::any::Any>) -> bool {
+        let Some(pipes) = &self.record().pipes else {
+            return false;
+        };
+        pipes.borrow_mut().push(pipe);
+        true
+    }
+
+    fn set_pipes(self, pipes: Option<Box<Pipes>>) {
+        // SAFETY: this handle's live field; the borrow ends before any old owner drops.
+        let previous = core::mem::replace(unsafe { &mut (*self.raw).pipes }, pipes);
+        drop(previous);
+    }
+
+    /// Whether the pool owns its native message bus.
+    #[must_use]
+    pub fn has_message_bus(self) -> bool {
+        self.record().has_message_bus()
+    }
+
+    /// Borrows the native bus for one operation. No reference to it escapes;
+    /// callbacks run after the borrow ends.
+    pub fn with_message_bus<R>(self, f: impl FnOnce(&dyn std::any::Any) -> R) -> Option<R> {
+        let bus = self.record().message_bus.as_ref()?.borrow();
+        Some(f(bus.as_ref()))
+    }
+
+    pub(crate) fn set_message_bus(self, bus: Option<Box<dyn std::any::Any>>) {
+        if let Some(current) = &self.record().message_bus {
+            // Refuse destruction while a native operation still borrows the bus.
+            drop(current.borrow_mut());
+        }
+        let bus = bus.map(|bus| Box::new(std::cell::RefCell::new(bus)));
+        // SAFETY: this live field is unborrowed; any old owner drops after replacement.
+        let previous = core::mem::replace(unsafe { &mut (*self.raw).message_bus }, bus);
+        drop(previous);
+    }
+
+    /// One operation on the reload in progress, with no borrow across callbacks.
+    pub fn with_reload_task<R>(self, f: impl FnOnce(&mut ReloadTask) -> R) -> Option<R> {
+        let mut task = self.record().reload_task.as_ref()?.borrow_mut();
+        Some(f(&mut task))
+    }
+
+    /// Arms a timer against the boxed task's stable cell, then gives it to the
+    /// task to cancel on drop. The task cannot be removed while `arm` runs.
+    pub fn arm_reload_timer(
+        self,
+        arm: impl FnOnce(&std::cell::RefCell<ReloadTask>) -> Option<ArmedTimer>,
+    ) {
+        if let Some(task) = &self.record().reload_task {
+            let held = task.borrow();
+            let timer = arm(task);
+            drop(held);
+            task.borrow_mut().set_timer(timer);
+        }
+    }
+
+    fn set_reload_task(self, task: Option<Box<std::cell::RefCell<ReloadTask>>>) {
+        if let Some(current) = &self.record().reload_task {
+            drop(current.borrow_mut());
+        }
+        // SAFETY: this live field is unborrowed; its old task and timer drop afterwards.
+        let previous = core::mem::replace(unsafe { &mut (*self.raw).reload_task }, task);
+        drop(previous);
+    }
+
     /// The pool's worker at `raw` ([`PoolRecord::own`]), or `None` when `raw` is
     /// none of its records.
     #[must_use]
@@ -653,10 +715,8 @@ pub trait PoolNative: Sync {
     fn call(&self, call: &PoolCall, op: Op, arg: u64) -> i64;
     /// `count` workers from the global memory pool, or null.
     fn alloc_workers(&self, count: u32) -> *mut WorkerRecord;
-    /// The pool's pipe list, or null.
-    fn new_pipes(&self) -> *mut c_void;
-    /// A new message bus for the pool, or null.
-    fn new_message_bus(&self) -> *mut c_void;
+    /// A new native message bus, owned by the pool, or None on allocation failure.
+    fn new_message_bus(&self) -> Option<Box<dyn std::any::Any>>;
     /// The pool's `callback`; it runs inside the trap.
     fn callback(&self, call: &mut PoolCall, callback: Callback);
     /// `sizeof(EventData)`.
@@ -847,7 +907,6 @@ pub enum Op {
     HaveMsgqueue,
     AllocWorkers,
     NewMessageBox,
-    NewPipes,
     NewPipe,
     MainLoop,
     NewMessageBus,
@@ -878,9 +937,7 @@ pub enum Op {
     OnAfterReload,
     KillTimer,
     Waitpid,
-    FreePipes,
     FreeMessageBox,
-    FreeMessageBus,
     FreeWorkers,
     WorkerInit,
     EventInit,
@@ -936,10 +993,8 @@ pub(crate) trait PoolHost {
     fn free_box(&mut self);
     /// `count` workers for `create`, or null.
     fn alloc_workers(&mut self, count: u32) -> *mut WorkerRecord;
-    /// The pool's pipe list, or null.
-    fn new_pipes(&mut self) -> *mut c_void;
-    /// A new message bus, or null.
-    fn new_message_bus(&mut self) -> *mut c_void;
+    /// A new native message bus, owned by the pool, or None on allocation failure.
+    fn new_message_bus(&mut self) -> Option<Box<dyn std::any::Any>>;
     /// `sw_worker()`: this process's worker.
     fn current_worker(&mut self) -> *mut WorkerRecord;
 }
@@ -1024,11 +1079,7 @@ impl PoolHost for Native<'_> {
         self.native.alloc_workers(count)
     }
 
-    fn new_pipes(&mut self) -> *mut c_void {
-        self.native.new_pipes()
-    }
-
-    fn new_message_bus(&mut self) -> *mut c_void {
+    fn new_message_bus(&mut self) -> Option<Box<dyn std::any::Any>> {
         self.native.new_message_bus()
     }
 
@@ -1096,11 +1147,11 @@ fn effect(op: Op, arg: u64) -> Option<i64> {
 
 /// `LOG_*`'s warning, under the `ProcessPool` method upstream logged it from.
 fn log(kind: Log, arg: u64) {
-    use swoole_rs_corebase::log::{error_log, sys_warning, warning};
     /// `SW_LOG_WARNING`, `SW_ERROR_OPERATION_NOT_SUPPORT`, `SW_ERROR_WRONG_OPERATION`.
-    const WARNING: c_int = 4;
-    const NOT_SUPPORT: c_int = 507;
-    const WRONG_OPERATION: c_int = 509;
+    use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as WARNING;
+    use swoole_rs_corebase::log::{error_log, sys_warning, warning};
+    const NOT_SUPPORT: c_int = swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as c_int;
+    const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
     let pid = arg.c_cast::<c_int>();
     match kind {
         Log::NoSysvmsg => warning(
@@ -1244,11 +1295,8 @@ getters!(
     // The `unsafe fn`, whose caller says the pool holds it.
     pub on_message: Option<MessageFn>,
     pub workers: *mut WorkerRecord,
-    pub pipes: *mut c_void,
     pub ipc: *mut PoolIpc,
     pub message_box: *mut c_void,
-    pub message_bus: *mut c_void,
-    pub reload_task: *mut ReloadTask,
     ;
     pub ptr: *mut c_void,
     pub started: bool,
@@ -1285,13 +1333,10 @@ setters!(
     pub max_request_grace / set_max_request_grace: u32,
     pub scheduler_warning / set_scheduler_warning: bool,
     pub(crate) workers / set_workers: *mut WorkerRecord,
-    pub(crate) pipes / set_pipes: *mut c_void,
     pub(crate) registry / set_registry: Option<Box<WorkerRegistry>>,
     pub(crate) queue / set_queue: Option<Box<swoole_rs_ossupport::QueueRecord>>,
     pub(crate) ipc / set_ipc: *mut PoolIpc,
     pub(crate) message_box / set_message_box: *mut c_void,
-    pub(crate) message_bus / set_message_bus: *mut c_void,
-    pub(crate) reload_task / set_reload_task: *mut ReloadTask,
     pub kill_timer / set_kill_timer: Option<ArmedTimer>
     ;
     pub is_async / set_is_async: bool,
@@ -1385,16 +1430,14 @@ impl<H: PoolHost> Pool<'_, H> {
                 self.set_queue(Some(queue));
             }
             IpcMode::UnixSock => {
-                let pipes = self.h.new_pipes();
-                self.set_pipes(pipes);
+                self.p.set_pipes(Some(Box::default()));
                 for index in 0..worker_num {
                     if self.on(self.worker(index), Op::NewPipe, 0) == 0 {
-                        // The failed pipe freed the list, and with it the pipes of
-                        // the workers before this one.
+                        // Forget the workers' views before dropping their pipe owners.
                         for made in 0..index {
                             self.worker_at(made).clear_pipes();
                         }
-                        self.set_pipes(ptr::null_mut());
+                        self.p.set_pipes(None);
                         return false;
                     }
                 }
@@ -1430,16 +1473,15 @@ impl<H: PoolHost> Pool<'_, H> {
             self.op(Op::Log(Log::NeedsUnixsock), 0);
             return false;
         }
-        if !self.message_bus().is_null() {
+        if self.p.has_message_bus() {
             self.op(Op::Log(Log::BusExists), 0);
             return false;
         }
-        let bus = self.h.new_message_bus();
-        if bus.is_null() {
+        let Some(bus) = self.h.new_message_bus() else {
             self.op(Op::Log(Log::Alloc), 1);
             return false;
-        }
-        self.set_message_bus(bus);
+        };
+        self.p.set_message_bus(Some(bus));
         #[cfg(target_os = "linux")]
         let size = {
             // The largest unix dgram the pipes carry.
@@ -1640,13 +1682,13 @@ impl<H: PoolHost> Pool<'_, H> {
 
     /// `ProcessPool::reload`.
     pub(crate) fn reload(&mut self) -> Result<bool, Bailed> {
-        if !self.reload_task().is_null() {
+        if self.record().reload_task.is_some() {
             return Ok(false);
         }
         if self.on_before_reload().is_some() {
             self.h.callback(Callback::BeforeReload, ptr::null_mut())?;
         }
-        self.set_reload_task(Box::into_raw(Box::<ReloadTask>::default()));
+        self.p.set_reload_task(Some(Box::default()));
         if self.max_wait_time() != 0 {
             self.op(Op::ReloadTimer, 0);
         }
@@ -1658,12 +1700,7 @@ impl<H: PoolHost> Pool<'_, H> {
 
     /// `ProcessPool::drop_reload_task`: free the reload, and its timer with it.
     pub(crate) fn drop_reload_task(&mut self) {
-        let task = self.reload_task();
-        self.set_reload_task(ptr::null_mut());
-        if !task.is_null() {
-            // SAFETY: the pool's reload, boxed by `reload` and freed once.
-            drop(unsafe { Box::from_raw(task) });
-        }
+        self.p.set_reload_task(None);
     }
 
     /// `ProcessPool::at_worker_enter`.
@@ -1690,7 +1727,7 @@ impl<H: PoolHost> Pool<'_, H> {
                 return Ok(SW_ERR);
             }
             // The loop reads the bus: without one (it couldn't be made) there's no loop.
-            if self.message_bus().is_null() && !self.create_message_bus() {
+            if !self.p.has_message_bus() && !self.create_message_bus() {
                 return Ok(SW_ERR);
             }
         }
@@ -1729,12 +1766,12 @@ impl<H: PoolHost> Pool<'_, H> {
     fn run_async(&mut self, worker: *mut WorkerRecord) -> i64 {
         if self.ipc_mode() == IpcMode::UnixSock && self.on_message().is_some() {
             self.on(worker, Op::AddPipe, 0);
-            if self.message_bus().is_null() {
+            if self.p.has_message_bus() {
+                self.op(Op::PipeHandler, 1);
+            } else {
                 let size = self.max_packet_size();
                 self.with_ipc(|ipc| pool_ipc_prepare(ipc, size));
                 self.op(Op::PipeHandler, 0);
-            } else {
-                self.op(Op::PipeHandler, 1);
             }
         }
         self.op(Op::EventWait, 0)
@@ -1923,10 +1960,7 @@ impl<H: PoolHost> Pool<'_, H> {
     /// `ProcessPool::destroy`.
     pub(crate) fn destroy(&mut self) {
         self.set_kill_timer(None);
-        if !self.pipes().is_null() {
-            self.op(Op::FreePipes, 0);
-            self.set_pipes(ptr::null_mut());
-        }
+        self.p.set_pipes(None);
         self.set_queue(None);
         let ipc = self.ipc();
         if !ipc.is_null() {
@@ -1939,10 +1973,7 @@ impl<H: PoolHost> Pool<'_, H> {
         self.set_ipc(ptr::null_mut());
         self.set_registry(None);
         self.h.free_box();
-        if !self.message_bus().is_null() {
-            self.op(Op::FreeMessageBus, 0);
-            self.set_message_bus(ptr::null_mut());
-        }
+        self.p.set_message_bus(None);
         self.op(Op::FreeWorkers, 0);
     }
 }
@@ -1964,9 +1995,8 @@ impl<H: PoolHost> Reap for Pool<'_, H> {
         self.reload_init()
     }
 
-    fn active_reload(&mut self) -> Option<&mut ReloadTask> {
-        // SAFETY: the reload `reload` started, live until `drop_reload_task`.
-        unsafe { Pool::reload_task(self).as_mut() }
+    fn with_reload<R>(&mut self, f: impl FnOnce(&mut ReloadTask) -> R) -> Option<R> {
+        self.p.with_reload_task(f)
     }
 
     fn wait(&mut self, nonblock: bool) -> Waited {
@@ -1990,11 +2020,11 @@ impl<H: PoolHost> Reap for Pool<'_, H> {
             .filter_map(|i| self.record().worker(i))
             .map(|worker| (worker.pid(), worker.id()))
             .collect();
-        if let Some(task) = self.active_reload() {
+        self.with_reload(|task| {
             for (pid, id) in workers {
                 task.add(pid, id);
             }
-        }
+        });
         ReloadStart::KillOne
     }
 
@@ -2132,6 +2162,10 @@ impl<H: PoolHost> Pool<'_, H> {
 }
 
 #[cfg(test)]
+#[path = "../../../tests/modules/process/pool_owners.rs"]
+mod owner_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::mem::offset_of;
@@ -2238,11 +2272,9 @@ mod tests {
         fn alloc_workers(&mut self, count: u32) -> *mut WorkerRecord {
             pointer(self.op(ptr::null_mut(), Op::AllocWorkers, count.into()))
         }
-        fn new_pipes(&mut self) -> *mut c_void {
-            pointer(self.op(ptr::null_mut(), Op::NewPipes, 0))
-        }
-        fn new_message_bus(&mut self) -> *mut c_void {
-            pointer(self.op(ptr::null_mut(), Op::NewMessageBus, 0))
+        fn new_message_bus(&mut self) -> Option<Box<dyn std::any::Any>> {
+            (self.op(ptr::null_mut(), Op::NewMessageBus, 0) != 0)
+                .then(|| -> Box<dyn std::any::Any> { Box::new(()) })
         }
         fn current_worker(&mut self) -> *mut WorkerRecord {
             pointer(self.op(ptr::null_mut(), Op::CurrentWorker, 0))
@@ -2356,6 +2388,12 @@ mod tests {
 
     #[test]
     fn create_makes_a_pipe_per_worker_and_sets_the_defaults() {
+        struct PipeOwner(std::rc::Rc<std::cell::Cell<usize>>);
+        impl Drop for PipeOwner {
+            fn drop(&mut self) {
+                self.0.set(self.0.get() + 1);
+            }
+        }
         let mut fixture = Fixture::new(3);
         let mut pool = fixture.pool(Script::default());
         assert!(pool.create(3, 0, IpcMode::UnixSock.code()));
@@ -2364,7 +2402,6 @@ mod tests {
             [
                 Op::AllocWorkers,
                 Op::NewMessageBox,
-                Op::NewPipes,
                 Op::NewPipe,
                 Op::NewPipe,
                 Op::NewPipe,
@@ -2376,7 +2413,15 @@ mod tests {
         assert_eq!(pool.max_packet_size(), SW_INPUT_BUFFER_SIZE);
         assert_eq!(pool.max_wait_time(), SW_WORKER_MAX_WAIT_TIME);
         assert!(!pool.p.registry().is_null());
+        let dropped = std::rc::Rc::new(std::cell::Cell::new(0));
+        for _ in 0..3 {
+            assert!(pool.p.keep_pipe(Box::new(PipeOwner(dropped.clone()))));
+        }
+        assert_eq!(dropped.get(), 0);
         pool.destroy();
+        assert_eq!(dropped.get(), 3, "the pool drops each pipe owner once");
+        assert!(!pool.p.keep_pipe(Box::new(PipeOwner(dropped.clone()))));
+        assert_eq!(dropped.get(), 4, "a closed pool retains no new owner");
         assert!(pool.p.registry().is_null() && pool.ipc().is_null());
     }
 
@@ -2475,7 +2520,7 @@ mod tests {
         assert_eq!(pool.reload_count(), 1);
         assert_eq!(ops(&pool), [Op::ReloadTimer]);
         pool.drop_reload_task();
-        assert!(pool.reload_task().is_null());
+        assert!(pool.with_reload(|_| ()).is_none());
     }
 
     #[test]

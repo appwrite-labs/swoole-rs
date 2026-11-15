@@ -254,8 +254,8 @@ impl Co {
     /// `accept`'s connection as a new native socket. The socket is available.
     fn accepted(self, timeout: f64) -> Option<Self> {
         #[cfg(feature = "iouring")]
-        if let Some(ops) = crate::uring_socket::of(self) {
-            return ring::accept(self, &ops);
+        if let Some(n) = ring::with(self, |ops| ring::accept(self, ops)) {
+            return n;
         }
         let timeout = if timeout == 0.0 {
             self.read_timeout()
@@ -384,8 +384,8 @@ impl Co {
         }
         let to = (&raw mut address.addr).cast::<libc::sockaddr>();
         #[cfg(feature = "iouring")]
-        if let Some(ops) = crate::uring_socket::of(self) {
-            return ring::sendto(&ops, buf, &address);
+        if let Some(n) = ring::with(self, |ops| ring::sendto(ops, buf, &address)) {
+            return n;
         }
         let length = address.len;
         let call = call!(|s, at, len| libc::sendto(s.fd(), at.cast(), len, 0, to, length));
@@ -409,8 +409,8 @@ impl Co {
     /// `Socket::recv(buf, n)`: the count of `buf`'s first slots it wrote, or -1.
     pub fn recv(self, buf: &mut [impl ReadSlot]) -> isize {
         #[cfg(feature = "iouring")]
-        if let Some(ops) = crate::uring_socket::of(self) {
-            return ring::recv(&ops, buf);
+        if let Some(n) = ring::with(self, |ops| ring::recv(ops, buf)) {
+            return n;
         }
         let call = call!(|s, at, len| recv_fill(s, Fill::from_raw(at.cast(), len), 0));
         self.transfer(0, Buffer::read(buf), call)
@@ -420,8 +420,8 @@ impl Co {
     #[must_use]
     pub fn send(self, buf: &[u8]) -> isize {
         #[cfg(feature = "iouring")]
-        if let Some(ops) = crate::uring_socket::of(self) {
-            return ring::send(&ops, ring::SEND, buf);
+        if let Some(n) = ring::with(self, |ops| ring::send(ops, ring::SEND, buf)) {
+            return n;
         }
         let call = call!(|s, at, len| send_drain(s, Drain::from_raw(at.cast(), len), 0));
         self.transfer(0, Buffer::write(buf), call)
@@ -430,8 +430,8 @@ impl Co {
     /// `Socket::recv_all(buf, n)`: the count of `buf`'s first slots it wrote, or -1.
     pub fn recv_all(self, buf: &mut [impl ReadSlot]) -> isize {
         #[cfg(feature = "iouring")]
-        if let Some(ops) = crate::uring_socket::of(self) {
-            return ring::recv_all(&ops, buf);
+        if let Some(n) = ring::with(self, |ops| ring::recv_all(ops, buf)) {
+            return n;
         }
         let call = call!(|s, at, len| recv_fill(s, Fill::from_raw(at.cast(), len), 0));
         self.transfer(ALL, Buffer::read(buf), call)
@@ -441,8 +441,8 @@ impl Co {
     #[must_use]
     pub fn send_all(self, buf: &[u8]) -> isize {
         #[cfg(feature = "iouring")]
-        if let Some(ops) = crate::uring_socket::of(self) {
-            return ring::send_all(&ops, buf);
+        if let Some(n) = ring::with(self, |ops| ring::send_all(ops, buf)) {
+            return n;
         }
         let call = call!(|s, at, len| send_drain(s, Drain::from_raw(at.cast(), len), 0));
         self.transfer(ALL, Buffer::write(buf), call)
@@ -451,8 +451,8 @@ impl Co {
     /// `Socket::read(buf, n)`.
     pub fn read(self, buf: &mut [impl ReadSlot]) -> isize {
         #[cfg(feature = "iouring")]
-        if let Some(ops) = crate::uring_socket::of(self) {
-            return ring::read(&ops, buf);
+        if let Some(n) = ring::with(self, |ops| ring::read(ops, buf)) {
+            return n;
         }
         let call = call!(|s, at, len| libc::read(s.fd(), at.cast(), len));
         self.transfer(0, Buffer::read(buf), call)
@@ -462,8 +462,8 @@ impl Co {
     #[must_use]
     pub fn write(self, buf: &[u8]) -> isize {
         #[cfg(feature = "iouring")]
-        if let Some(ops) = crate::uring_socket::of(self) {
-            return ring::send(&ops, ring::WRITE, buf);
+        if let Some(n) = ring::with(self, |ops| ring::send(ops, ring::WRITE, buf)) {
+            return n;
         }
         let call = call!(|s, at, len| libc::write(s.fd(), at.cast(), len));
         self.transfer(0, Buffer::write(buf), call)
@@ -474,8 +474,8 @@ impl Co {
     #[must_use]
     pub fn vector(self, vector: &mut IoVector<'_>, all: bool) -> isize {
         #[cfg(feature = "iouring")]
-        if let Some(ops) = crate::uring_socket::of(self) {
-            return ring::swr_v1_hook_uring_vector(&ops, vector, all);
+        if let Some(n) = ring::with(self, |ops| ring::swr_v1_hook_uring_vector(ops, vector, all)) {
+            return n;
         }
         let event = if vector.write() { WRITE } else { READ };
         if all {
@@ -522,8 +522,8 @@ impl Co {
             length.wrapping_add(usize::try_from(offset).unwrap_or(0))
         };
         #[cfg(feature = "iouring")]
-        if let Some(ops) = crate::uring_socket::of(self) {
-            return ring::sendfile(&ops, file.0, offset, end);
+        if let Some(n) = ring::with(self, |ops| ring::sendfile(ops, file.0, offset, end)) {
+            return n;
         }
         let mut timer = Timer::new(self, WRITE, self.timeout(timeout_kind(WRITE)));
         let mut offset = offset;
@@ -562,8 +562,8 @@ impl Co {
         peer: &mut libc::sockaddr_storage,
     ) -> (isize, libc::socklen_t) {
         #[cfg(feature = "iouring")]
-        if let Some(ops) = crate::uring_socket::of(self) {
-            return ring::recvfrom_into(&ops, buf, peer);
+        if let Some(n) = ring::with(self, |ops| ring::recvfrom_into(ops, buf, peer)) {
+            return n;
         }
         let mut size = swoole_rs_corebase::sys::socklen::<libc::sockaddr_storage>();
         let (addr, addrlen) = (core::ptr::from_mut(peer).cast(), &raw mut size);
@@ -579,9 +579,9 @@ impl Co {
     pub fn recvfrom_peer(self, buf: &mut [impl ReadSlot]) -> isize {
         let receive = |addr, addrlen| {
             #[cfg(feature = "iouring")]
-            if let Some(ops) = crate::uring_socket::of(self) {
-                // The ring's path fills the same record's peer address itself.
-                return ring::recvfrom_peer(&ops, buf);
+            // The ring's path fills the same record's peer address itself.
+            if let Some(n) = ring::with(self, |ops| ring::recvfrom_peer(ops, buf)) {
+                return n;
             }
             let fd = self.sock_fd();
             // The record's peer address and its length, as `recvfrom_peer` lends them.
@@ -594,8 +594,8 @@ impl Co {
     /// `Socket::recvmsg(msg, flags)`.
     pub fn recvmsg(self, msg: &mut RecvMessage<'_>, flags: c_int) -> isize {
         #[cfg(feature = "iouring")]
-        if let Some(ops) = crate::uring_socket::of(self) {
-            return ops.recvmsg(msg, flags);
+        if let Some(n) = ring::with(self, |ops| ops.recvmsg(msg, flags)) {
+            return n;
         }
         let fd = self.sock_fd();
         let call = |_: Socket<'_>, _: *mut u8, _: usize| msg.recv(fd, flags);
@@ -606,8 +606,8 @@ impl Co {
     #[must_use]
     pub fn sendmsg(self, msg: &SendMessage<'_>, flags: c_int) -> isize {
         #[cfg(feature = "iouring")]
-        if let Some(ops) = crate::uring_socket::of(self) {
-            return ops.sendmsg(msg, flags);
+        if let Some(n) = ring::with(self, |ops| ops.sendmsg(msg, flags)) {
+            return n;
         }
         let fd = self.sock_fd();
         let call = |_: Socket<'_>, _: *mut u8, _: usize| msg.send(fd, flags);
@@ -622,8 +622,8 @@ impl Co {
                 .unwrap_or(-1)
         };
         #[cfg(feature = "iouring")]
-        if let Some(ops) = crate::uring_socket::of(self) {
-            return ring::once(&ops, io);
+        if let Some(n) = ring::with(self, |ops| ring::once(ops, &mut io)) {
+            return n;
         }
         io()
     }
@@ -637,8 +637,8 @@ impl Co {
                 .unwrap_or(-1)
         };
         #[cfg(feature = "iouring")]
-        if let Some(ops) = crate::uring_socket::of(self) {
-            return ring::once(&ops, io);
+        if let Some(n) = ring::with(self, |ops| ring::once(ops, io)) {
+            return n;
         }
         io()
     }
@@ -657,8 +657,8 @@ impl Co {
     #[must_use]
     pub fn poll(self, event: u32, timeout: f64) -> bool {
         #[cfg(feature = "iouring")]
-        if let Some(ops) = crate::uring_socket::of(self) {
-            return ring::poll(&ops, event, timeout);
+        if let Some(n) = ring::with(self, |ops| ring::poll(ops, event, timeout)) {
+            return n;
         }
         crate::socket_wait::poll(self, event, timeout)
     }
@@ -813,8 +813,9 @@ mod tests {
     #[test]
     fn timeouts_are_the_network_sockets() {
         let mut object = Object::new();
-        object.co().set_timeout(2.5, 4);
-        assert_eq!(object.co().timeout(4), 2.5);
+        let read = swoole_rs_reactor::TimeoutKind::READ;
+        object.co().set_timeout(2.5, read);
+        assert_eq!(object.co().timeout(read), 2.5);
     }
 
     #[test]
