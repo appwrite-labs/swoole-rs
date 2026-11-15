@@ -4,7 +4,7 @@
 //! `swoole::http::Context`, a copy of the session's settings context, released
 //! with the stream.
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     collections::HashMap,
     hash::{BuildHasherDefault, Hasher},
     rc::Rc,
@@ -48,12 +48,18 @@ pub(crate) type Stream = Rc<StreamState>;
 type Streams = IdMap<u32, Stream>;
 type Sessions = IdMap<i64, Session>;
 
-/// `http2::Session`. Its streams and HPACK codecs are in cells, taken out and
-/// put back with nothing in between that yields or runs PHP code.
+/// `http2::Session`. Its streams and HPACK encoder are in cells, taken out
+/// and put back with nothing in between that yields or runs PHP code.
 pub(crate) struct SessionState {
     fd: i64,
     streams: Cell<Streams>,
-    inflater: Cell<Decoder>,
+    /// A `RefCell`, not taken out and put back: `parse_header` hands
+    /// `request_header` each field borrowed from the decoder, and
+    /// `request_header` can run PHP code (`treat_data`'s `max_input_vars`
+    /// warning reaches a user error handler), so a take would span it.
+    /// Copying each field out first cost 3 to 10% more instructions per
+    /// HTTP/2 request (#4073).
+    pub(crate) inflater: RefCell<Decoder>,
     /// Made on first use, sized by the peer's `SETTINGS_HEADER_TABLE_SIZE` then.
     deflater: Cell<Option<Encoder>>,
     /// `local_settings`, in `swoole::http2::Settings` order; never changed.
@@ -141,7 +147,7 @@ impl SessionState {
         Self {
             fd,
             streams: Cell::default(),
-            inflater: Cell::default(),
+            inflater: RefCell::default(),
             deflater: Cell::default(),
             local,
             remote: local.map(Cell::new),
@@ -169,15 +175,6 @@ impl SessionState {
         let mut streams = self.streams.take();
         let result = f(&mut streams);
         self.streams.set(streams);
-        result
-    }
-
-    /// `f` over the HPACK decoder, taken out and put back: nothing in `f`
-    /// yields or runs PHP code.
-    pub(crate) fn with_inflater<R>(&self, f: impl FnOnce(&mut Decoder) -> R) -> R {
-        let mut inflater = self.inflater.take();
-        let result = f(&mut inflater);
-        self.inflater.set(inflater);
         result
     }
 

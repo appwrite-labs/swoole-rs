@@ -1206,30 +1206,10 @@ fn parse_header(
         input = block;
     }
     stream.ctx.header_arrays();
-    // Each step decodes one field with the decoder taken out, copies it, and
-    // puts the decoder back before the field reaches the request's arrays.
-    let last = flags & FLAG_END_HEADERS != 0;
-    let mut field = Vec::new();
+    let mut inflater = session.inflater.borrow_mut();
     loop {
-        let decoded = session.with_inflater(|inflater| {
-            let step = inflater.decode(input, last)?;
-            field.clear();
-            // Trailers are decoded for the HPACK table but never exposed or acted on.
-            let name = step.header.filter(|_| !discard).map(|(name, value)| {
-                field.extend_from_slice(name);
-                field.extend_from_slice(value);
-                name.len()
-            });
-            let read = step.read;
-            let rest = input.get(read..).unwrap_or_default();
-            let next = sw_rs_http2_inflate_step(step.flags(), rest.len(), false);
-            if next.end_headers {
-                inflater.end_headers();
-            }
-            Ok::<_, Error>((read, name, next.finish))
-        });
-        let (read, name, finish) = match decoded {
-            Ok(decoded) => decoded,
+        let step = match inflater.decode(input, flags & FLAG_END_HEADERS != 0) {
+            Ok(step) => step,
             Err(error) => {
                 let code = Error::CODE;
                 let text = format!("inflate failed, Error: {error}[{code}]");
@@ -1237,14 +1217,20 @@ fn parse_header(
                 return false;
             }
         };
-        input = input.get(read..).unwrap_or_default();
-        if let Some(name) = name {
-            let (name, value) = field.split_at_checked(name).unwrap_or_default();
-            request_header(session, stream, name, value);
+        input = input.get(step.read..).unwrap_or_default();
+        let inflate_flags = step.flags();
+        // Trailers are decoded for the HPACK table but never exposed or acted on.
+        if let Some((name, value)) = step.header.filter(|_| !discard)
+            && !request_header(session, stream, name, value)
+        {
+            continue;
         }
-        // A step that emits a field never ends the block, so the end of the
-        // block never depended on what `request_header` did with a field.
-        if finish {
+        let step = sw_rs_http2_inflate_step(inflate_flags, input.len(), false);
+        if step.end_headers {
+            inflater.end_headers();
+            break;
+        }
+        if step.finish {
             break;
         }
     }
@@ -1256,10 +1242,10 @@ fn add_string(ctx: Ctx, array: Value, key: &[u8], value: &[u8]) {
     ctx.insert(array, key, ZString::new(value));
 }
 
-/// One request header (a Cookie is parsed into `$cookie` and never kept in
-/// `$header`; a Content-Length is checked here and judged once the block is
-/// complete).
-fn request_header(session: &Session, stream: &Stream, name: &[u8], value: &[u8]) {
+/// One request header; `false` skips the rest of the step (a Cookie, parsed
+/// into `$cookie` and never kept in `$header`, or a Content-Length, checked
+/// here and judged once the block is complete).
+fn request_header(session: &Session, stream: &Stream, name: &[u8], value: &[u8]) -> bool {
     let ctx = stream.ctx;
     let kind = header_plan(HeaderRole::Request, name, false).kind;
     if name.first() == Some(&b':') {
@@ -1269,11 +1255,12 @@ fn request_header(session: &Session, stream: &Stream, name: &[u8], value: &[u8])
             HeaderKind::Authority => add_string(ctx, Value::Header, b"host", value),
             _ => {}
         }
-        return;
+        return true;
     }
     match kind {
         HeaderKind::Cookie => {
             ctx.cookie(value);
+            false
         }
         HeaderKind::ContentLength => {
             if !content_length_valid(session, value) {
@@ -1281,12 +1268,14 @@ fn request_header(session: &Session, stream: &Stream, name: &[u8], value: &[u8])
             }
             // The header keeps the last value.
             add_string(ctx, Value::Header, b"content-length", value);
+            false
         }
         _ => {
             if matches!(kind, HeaderKind::ContentType | HeaderKind::AcceptEncoding) {
                 stream.negotiates.set(true);
             }
             add_string(ctx, Value::Header, name, value);
+            true
         }
     }
 }
