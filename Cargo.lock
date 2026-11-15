@@ -431,7 +431,6 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-corebase",
- "swoole-rs-error",
 ]
 
 [[package]]
@@ -773,6 +772,7 @@ dependencies = [
  "swoole-rs-reactor",
  "swoole-rs-server",
  "swoole-rs-tls",
+ "swoole-rs-websocket",
  "swoole-rs-zend",
 ]
 
@@ -1101,7 +1101,6 @@ dependencies = [
  "swoole-rs-error",
  "swoole-rs-oracle",
  "swoole-rs-protocols",
- "swoole-rs-reactor",
 ]
 
 [[package]]

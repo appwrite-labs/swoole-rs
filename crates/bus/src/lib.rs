@@ -51,10 +51,17 @@ const ALIGNMENT: usize = size_of::<std::ffi::c_ulong>();
 const BUFFER_MIN: usize = HEAD + size_of::<BusPacket>();
 
 /// `BusRead::event`: what the caller does after `Bus::receive` returns.
-const BUS_ALLOCATE: u8 = 1;
-pub const BUS_CLOSED: u8 = 2;
-pub const BUS_ABNORMAL: u8 = 3;
-pub const BUS_READV_CLOSED: u8 = 4;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Event {
+    /// Allocate `BusRead::size` bytes and read again.
+    Allocate,
+    /// The peer closed the pipe.
+    Closed,
+    /// A chunk of a packet the bus never began.
+    Abnormal,
+    /// The peer closed the pipe mid-packet.
+    ReadvClosed,
+}
 
 /// `swoole::PacketPtr`.
 #[repr(C)]
@@ -83,17 +90,17 @@ const _: () = assert!(size_of::<Front>() == BUFFER_MIN, "a header and a PacketPt
 struct BusRead {
     /// Buffered reads: the datagram's length, kept across an allocation.
     received: isize,
-    /// `BUS_ALLOCATE`: the bytes to allocate.
+    /// `Event::Allocate`: the bytes to allocate.
     size: usize,
-    /// `BUS_ALLOCATE`: the block to reallocate, or null to allocate a new one.
+    /// `Event::Allocate`: the block to reallocate, or null to allocate a new one.
     data: *mut u8,
-    /// `BUS_ALLOCATE` with `data`: the allocator that owns it. The read's own
+    /// `Event::Allocate` with `data`: the allocator that owns it. The read's own
     /// allocator otherwise.
     allocator: TrustedAllocator,
     chunks: u16,
-    /// The buffer holds the current chunk; set by `BUS_ALLOCATE`.
+    /// The buffer holds the current chunk; set by `Event::Allocate`.
     resume: bool,
-    event: u8,
+    event: Option<Event>,
 }
 
 impl BusRead {
@@ -106,7 +113,7 @@ impl BusRead {
             allocator,
             chunks: 0,
             resume: false,
-            event: 0,
+            event: None,
         }
     }
 }
@@ -354,7 +361,7 @@ impl Bus {
         }
     }
 
-    /// Allocates the block `BUS_ALLOCATE` asked for and hands it to the current
+    /// Allocates the block `Event::Allocate` asked for and hands it to the current
     /// packet: a new block from `default`, or the packet's own, grown by the
     /// allocator that made it.
     fn grow(&self, state: &BusRead, default: TrustedAllocator) {
@@ -389,7 +396,7 @@ impl Bus {
     /// `MessageBus::read_with_buffer` (datagram pipes): >0 a whole packet, 0 wait
     /// (or allocate, see `state.event`), -1 an error or no buffer set.
     fn read(&self, fd: c_int, dgram: bool, state: &mut BusRead, nobufs: &mut bool) -> isize {
-        state.event = 0;
+        state.event = None;
         if self.buffer.get().is_null() {
             return -1;
         }
@@ -406,7 +413,7 @@ impl Bus {
                     return if waits(nobufs) { 0 } else { -1 };
                 }
                 if n == 0 {
-                    state.event = BUS_CLOSED;
+                    state.event = Some(Event::Closed);
                     return -1;
                 }
                 let head = self.head();
@@ -429,7 +436,7 @@ impl Bus {
                 if head.flags & BEGIN != 0 {
                     return Self::allocate(state, ptr::null_mut(), None, head.len as usize);
                 }
-                state.event = BUS_ABNORMAL;
+                state.event = Some(Event::Abnormal);
                 if dgram {
                     return -1;
                 }
@@ -465,7 +472,7 @@ impl Bus {
                 // the packet's unfilled tail (at most `remain` bytes).
                 let n = unsafe { libc::readv(fd, iov.as_ptr(), 2) };
                 if n == 0 {
-                    state.event = BUS_READV_CLOSED;
+                    state.event = Some(Event::ReadvClosed);
                     return -1;
                 }
                 if n < 0 && waits(nobufs) {
@@ -498,7 +505,7 @@ impl Bus {
         allocator: Option<TrustedAllocator>,
         size: usize,
     ) -> isize {
-        state.event = BUS_ALLOCATE;
+        state.event = Some(Event::Allocate);
         state.resume = true;
         state.data = data;
         if let Some(allocator) = allocator {
@@ -756,14 +763,14 @@ impl Bus {
             if nobufs {
                 sock.edit(|sock| sock.kernel_nobufs = true);
             }
-            if state.event != BUS_ALLOCATE {
+            if state.event != Some(Event::Allocate) {
                 return n;
             }
             self.grow(&state, allocator);
         }
     }
 
-    /// Reads from the pipe `fd`; see `Bus::read`. On `BUS_ALLOCATE` the caller
+    /// Reads from the pipe `fd`; see `Bus::read`. On `Event::Allocate` the caller
     /// allocates `state.size` bytes ([`Bus::grow`]) and calls this again with the
     /// same `state`.
     fn receive(&self, fd: c_int, dgram: bool, nobufs: &mut bool, state: &mut BusRead) -> isize {
@@ -774,18 +781,18 @@ impl Bus {
             c"MessageBus::read"
         };
         match state.event {
-            BUS_CLOSED => log::warning(
+            Some(Event::Closed) => log::warning(
                 origin,
                 format_args!("receive data from socket#{fd} returns 0"),
             ),
-            BUS_READV_CLOSED => log::warning(
+            Some(Event::ReadvClosed) => log::warning(
                 origin,
                 format_args!(
                     "receive pipeline data error, pipe_fd={fd}, reactor_id={}",
                     self.head().reactor_id
                 ),
             ),
-            BUS_ABNORMAL => log::error_log(
+            Some(Event::Abnormal) => log::error_log(
                 swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING,
                 /* SW_ERROR_SERVER_WORKER_ABNORMAL_PIPE_DATA */ 9102,
                 origin,
@@ -892,7 +899,7 @@ mod tests {
         let mut state = BusRead::new(allocator());
         let mut nobufs = false;
         assert_eq!(bus.receive(-1, false, &mut nobufs, &mut state), -1);
-        assert_eq!(state.event, 0, "no event");
+        assert_eq!(state.event, None, "no event");
         bus.pass(&BusHead::default(), ptr::null());
         assert_eq!(bus.packet().length, 0);
         assert!(bus.move_packet().is_null());
@@ -990,7 +997,7 @@ mod tests {
             let mut nobufs = false;
             loop {
                 let n = self.bus.read(self.fds[1], dgram, &mut state, &mut nobufs);
-                if state.event == BUS_ALLOCATE {
+                if state.event == Some(Event::Allocate) {
                     self.bus.grow(&state, allocator());
                     continue;
                 }
@@ -1061,7 +1068,7 @@ mod tests {
             pipe.bus.read(pipe.fds[1], false, &mut state, &mut nobufs),
             0
         );
-        assert_eq!((state.event, state.size), (BUS_ALLOCATE, 5000));
+        assert_eq!((state.event, state.size), (Some(Event::Allocate), 5000));
         pipe.bus.grow(&state, allocator());
         let data = pipe
             .bus
@@ -1195,7 +1202,7 @@ mod tests {
         let mut nobufs = false;
         loop {
             let n = bus.read(fd, dgram, &mut state, &mut nobufs);
-            if state.event != BUS_ALLOCATE {
+            if state.event != Some(Event::Allocate) {
                 return n;
             }
             bus.grow(&state, allocator());

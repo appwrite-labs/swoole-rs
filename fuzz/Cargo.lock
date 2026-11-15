@@ -179,7 +179,6 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-corebase",
- "swoole-rs-error",
 ]
 
 [[package]]
@@ -335,7 +334,6 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-error",
  "swoole-rs-protocols",
- "swoole-rs-reactor",
 ]
 
 [[package]]

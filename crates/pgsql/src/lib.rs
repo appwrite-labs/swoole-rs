@@ -32,10 +32,7 @@ use std::{
     time::Instant,
 };
 use swoole_rs_corebase::{CCast, sys::Text};
-
-/// `SW_EVENT_READ` and `SW_EVENT_WRITE`.
-const READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
-const WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
+use swoole_rs_hooks::wait_event::{Events, to_poll, wait_event};
 
 /// How long one wait lasts before libpq is asked again: on macOS `poll` may
 /// miss readiness, so a short timeout lets the caller retry.
@@ -250,26 +247,15 @@ pub fn version() -> String {
     version_text(lib_version())
 }
 
-/// `translate_events_to_poll`.
-fn to_poll(event: c_int) -> i16 {
-    let mut events = 0;
-    if event & READ != 0 {
-        events |= libc::POLLIN;
-    }
-    if event & WRITE != 0 {
-        events |= libc::POLLOUT;
-    }
-    events
-}
-
 /// `swoole_pgsql_socket_poll`: wait for `event` on the connection's socket;
 /// 1 ready, 0 timed out, -1 failed. A failed coroutine wait (cancelled, or
 /// refused by the reactor) is recorded against the connection.
-fn socket_poll(conn: Conn, event: c_int) -> c_int {
+fn socket_poll(conn: Conn, event: Events) -> c_int {
     let fd = conn.socket();
     if blocking() {
         let mut poll = libc::pollfd {
             fd,
+            // `translate_events_to_poll`.
             events: to_poll(event),
             revents: 0,
         };
@@ -280,7 +266,7 @@ fn socket_poll(conn: Conn, event: c_int) -> c_int {
         return if interrupted { 0 } else { result };
     }
     // The hook is on, so a coroutine runs the request, as upstream requires.
-    if swoole_rs_hooks::wait_event::system_wait_event(fd, event, POLL_TIMEOUT) >= 0 {
+    if wait_event(fd, event, POLL_TIMEOUT).is_some() {
         return 1;
     }
     let code = swoole_rs_corebase::log::last_error();
@@ -302,7 +288,7 @@ fn flush(conn: Conn) -> c_int {
         if flushed != 1 {
             return flushed;
         }
-        if socket_poll(conn, WRITE) < 0 {
+        if socket_poll(conn, Events::WRITE) < 0 {
             return -1;
         }
     }
@@ -311,7 +297,7 @@ fn flush(conn: Conn) -> c_int {
 /// `swoole_pgsql_wait_result`: read until libpq holds a whole result.
 fn wait_result(conn: Conn) -> bool {
     while conn.is_busy() {
-        if socket_poll(conn, READ) < 0 || !conn.consume_input() {
+        if socket_poll(conn, Events::READ) < 0 || !conn.consume_input() {
             return false;
         }
     }
@@ -322,7 +308,7 @@ fn wait_result(conn: Conn) -> bool {
 /// Without the hook one poll precedes `PQgetResult`, which may then block.
 fn get_result(conn: Conn) -> *mut PGresult {
     let blocking = blocking();
-    if blocking && socket_poll(conn, READ) < 0 {
+    if blocking && socket_poll(conn, Events::READ) < 0 {
         return ptr::null_mut();
     }
     let mut last = None;
@@ -389,8 +375,8 @@ fn wait_connect(conn: Conn, poll_connection: fn(Conn) -> PostgresPollingStatusTy
     let mut status = PostgresPollingStatusType::PGRES_POLLING_WRITING;
     loop {
         let event = match status {
-            PostgresPollingStatusType::PGRES_POLLING_READING => READ,
-            PostgresPollingStatusType::PGRES_POLLING_WRITING => WRITE,
+            PostgresPollingStatusType::PGRES_POLLING_READING => Events::READ,
+            PostgresPollingStatusType::PGRES_POLLING_WRITING => Events::WRITE,
             other => {
                 swoole_rs_corebase::log::warning(
                     c"swoole_pgsql_wait_connect",
@@ -611,8 +597,11 @@ mod tests {
 
     #[test]
     fn events_map_to_poll() {
-        assert_eq!(to_poll(READ), libc::POLLIN);
-        assert_eq!(to_poll(WRITE), libc::POLLOUT);
-        assert_eq!(to_poll(READ | WRITE), libc::POLLIN | libc::POLLOUT);
+        assert_eq!(to_poll(Events::READ), libc::POLLIN);
+        assert_eq!(to_poll(Events::WRITE), libc::POLLOUT);
+        assert_eq!(
+            to_poll(Events::READ | Events::WRITE),
+            libc::POLLIN | libc::POLLOUT
+        );
     }
 }

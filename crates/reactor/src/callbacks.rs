@@ -280,11 +280,12 @@ pub extern "C-unwind" fn reactor_if_exit(reactor: Running<'_>) -> bool {
 )]
 #[must_use]
 pub extern "C-unwind" fn reactor_wait(reactor: Running<'_>) -> c_int {
-    wait(reactor)
+    if wait(reactor) { 0 } else { -1 }
 }
 
 /// `Reactor::wait()` of the reactor `reactor` names.
-pub(crate) fn wait(reactor: Running<'_>) -> c_int {
+#[must_use]
+pub(crate) fn wait(reactor: Running<'_>) -> bool {
     fn begin(reactor: Running<'_>) {
         run_task(reactor.with(|state| state.fields.future_task));
     }
@@ -293,11 +294,7 @@ pub(crate) fn wait(reactor: Running<'_>) -> c_int {
         begin,
         end: execute_end,
     };
-    if crate::wait_loop::wait(&ops) < 0 {
-        -1
-    } else {
-        0
-    }
+    crate::wait_loop::wait(&ops)
 }
 
 #[cfg(test)]

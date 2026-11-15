@@ -17,7 +17,6 @@ libc = "=0.2.191"
 swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-clients = { path = "../clients" }
 swoole-rs-protocols = { path = "../protocols" }
-swoole-rs-reactor = { path = "../reactor" }
 
 [dev-dependencies]
 swoole-rs-oracle = { path = "../oracle" }

@@ -5,6 +5,9 @@ puts a PR in main's merge queue once its PR tier passes.
   ci.py wait [--commit SHA]  wait for a workflow run (default: the merge tier on main, which runs
                              hourly); a run replaced by a newer one on main follows the newer run
   ci.py status [--commit SHA]  the same, without waiting
+  ci.py timings [--since T]  latest successful PR runs with PHPT (created at or after T): time to
+                             required and job/step timestamps, as JSON (default: 20 qualifying
+                             runs among the latest 100)
   ci.py next                 the claimable issues in claim order (exit 2 when there are none),
                              without those whose title says they need workflow scope when gh's
                              token lacks it
@@ -42,6 +45,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import json
 import re
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -117,6 +121,36 @@ def seconds(job):
     started, completed = (datetime.fromisoformat(job[key].replace('Z', '+00:00')) if job.get(key) and not job[key].startswith('0001')
                           else None for key in ('startedAt', 'completedAt'))
     return int((completed - started).total_seconds()) if started and completed else None
+
+
+def timings(count, scan, since=None):
+    """A bounded historical sample, of runs created at or after `since` when given; skipped PHPT
+    jobs do not qualify a run."""
+    created = ('--created', f'>={since}') if since else ()
+    runs = json.loads(gh('run', 'list', '--workflow', 'pr.yml', '--event', 'pull_request',
+                         '--status', 'success', '--limit', str(scan), *created,
+                         '--json', 'databaseId,headSha,url,createdAt,attempt'))
+    samples = []
+    for run in runs:
+        jobs = json.loads(gh('run', 'view', str(run['databaseId']), '--attempt', str(run['attempt']),
+                             '--json', 'jobs'))['jobs']
+        active = [job for job in jobs if job['conclusion'] == 'success'
+                  and seconds(job) is not None]
+        if not any(job['name'].startswith('phpt / cargo ') for job in active):
+            continue
+        required = next((job for job in active if job['name'] == 'required'), None)
+        if required is None:
+            continue
+        start = min(job['startedAt'] for job in active)
+        elapsed = seconds({'startedAt': start, 'completedAt': required['completedAt']})
+        samples.append({**run, 'first_job_started_at': start, 'seconds_to_required': elapsed,
+                        'jobs': jobs})
+        if len(samples) == count:
+            break
+    return {'requested': count, 'scanned_limit': scan, 'since': since, 'sample_count': len(samples),
+            'median_seconds_to_required': statistics.median(
+                row['seconds_to_required'] for row in samples) if samples else None,
+            'runs': samples}
 
 
 def status(workflow, sha, run=None):
@@ -591,6 +625,10 @@ def main(argv=None):
         command.add_argument('--json', action='store_true')
     for name in ['next', 'stuck']:
         commands.add_parser(name).add_argument('--json', action='store_true')
+    timing = commands.add_parser('timings')
+    timing.add_argument('--count', type=int, default=20, help='qualifying runs to collect')
+    timing.add_argument('--scan', type=int, default=100, help='maximum successful PR runs to inspect')
+    timing.add_argument('--since', help='only runs created at or after this UTC time, e.g. a change\'s merge')
     baseline = commands.add_parser('phpt-baseline')
     baseline.add_argument('--variant', choices=[kind for kind in BASELINES if kind != 'phpt'], default='phpt',
                           help="a variant workflow's upstream report (default: phpt.yml's shards)")
@@ -599,6 +637,15 @@ def main(argv=None):
                           "call, when it has a meta.json")
     args = parser.parse_args(argv)
     global RETRY_DEADLINE, RETRY_BASE
+    if args.command == 'timings':
+        if not 0 < args.count <= args.scan:
+            parser.error('timings requires 0 < --count <= --scan')
+        try:
+            result = timings(args.count, args.scan, args.since)
+        except subprocess.CalledProcessError as failure:
+            sys.exit(f"gh {' '.join(failure.cmd[1:])}: {failure.stderr.strip()}")
+        print(json.dumps(result, indent=1))
+        return 0 if result['sample_count'] == args.count else 2
     if args.command == 'phpt-baseline':
         try:
             saved = args.variant == 'phpt' and args.saved and (args.saved / 'meta.json').exists()

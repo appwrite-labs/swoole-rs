@@ -13,6 +13,70 @@ fn mode(serv: Server<'_>) -> Mode {
     serv.config().mode_
 }
 
+/// Keep an early shutdown pending until the master's signalfd is ready. The
+/// caller's mask is restored on startup errors as well as normal shutdown.
+#[cfg(target_os = "linux")]
+pub(crate) struct ShutdownMask(libc::sigset_t);
+
+#[cfg(target_os = "linux")]
+impl ShutdownMask {
+    fn signal() -> libc::sigset_t {
+        let mut mask = swoole_rs_corebase::sys::zeroed();
+        swoole_rs_corebase::sys::sigemptyset(&mut mask);
+        swoole_rs_corebase::sys::sigaddset(&mut mask, libc::SIGTERM);
+        mask
+    }
+
+    pub(crate) fn block() -> Option<Self> {
+        let mut previous = swoole_rs_corebase::sys::zeroed();
+        let error = swoole_rs_corebase::sys::pthread_sigmask(
+            libc::SIG_BLOCK,
+            Some(&Self::signal()),
+            Some(&mut previous),
+        );
+        if error != 0 {
+            log::sys_warning_errno(
+                error,
+                c"Server::start",
+                format_args!("block SIGTERM failed"),
+            );
+            return None;
+        }
+        Some(Self(previous))
+    }
+
+    /// The forked manager has installed its own handler and must receive SIGTERM.
+    pub(crate) fn unblock_manager() {
+        let error = swoole_rs_corebase::sys::pthread_sigmask(
+            libc::SIG_UNBLOCK,
+            Some(&Self::signal()),
+            None,
+        );
+        if error != 0 {
+            log::sys_warning_errno(
+                error,
+                c"Server::start_manager_process",
+                format_args!("unblock SIGTERM failed"),
+            );
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for ShutdownMask {
+    fn drop(&mut self) {
+        let error =
+            swoole_rs_corebase::sys::pthread_sigmask(libc::SIG_SETMASK, Some(&self.0), None);
+        if error != 0 {
+            log::sys_warning_errno(
+                error,
+                c"Server::start",
+                format_args!("restore signal mask failed"),
+            );
+        }
+    }
+}
+
 fn warn(code: E, origin: &CStr, message: core::fmt::Arguments<'_>) {
     /// `SW_LOG_WARNING`.
     use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
@@ -252,6 +316,9 @@ pub(crate) fn master_timer(serv: Server<'_>) {
 pub(crate) fn init_signals(serv: Server<'_>) {
     use crate::hybrid::Step::{Handle, Ignore};
     let h = hybrid();
+    // Register this first: signalfd updates replace the blocked mask. An early
+    // shutdown must stay blocked through every intermediate registration.
+    h.step(serv, Handle(libc::SIGTERM));
     h.step(serv, Ignore(libc::SIGPIPE));
     h.step(serv, Ignore(libc::SIGHUP));
     let child = if mode(serv) == Mode::Process {
@@ -259,13 +326,7 @@ pub(crate) fn init_signals(serv: Server<'_>) {
     } else {
         libc::SIGIO
     };
-    for signo in [
-        child,
-        libc::SIGUSR1,
-        libc::SIGUSR2,
-        libc::SIGTERM,
-        libc::SIGWINCH,
-    ] {
+    for signo in [child, libc::SIGUSR1, libc::SIGUSR2, libc::SIGWINCH] {
         h.step(serv, Handle(signo));
     }
     #[cfg(target_os = "linux")]
@@ -281,6 +342,53 @@ mod tests {
     use super::*;
     use crate::fixture::LiveServer;
     use crate::hybrid::tests::{Call, calls};
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore = "Miri does not deliver POSIX signals")]
+    fn early_shutdown_stays_pending_and_the_original_mask_is_restored() {
+        std::thread::spawn(|| {
+            use swoole_rs_corebase::sys;
+            let mut initial = sys::zeroed();
+            sys::sigemptyset(&mut initial);
+            sys::sigaddset(&mut initial, libc::SIGUSR1);
+            assert_eq!(
+                sys::pthread_sigmask(libc::SIG_SETMASK, Some(&initial), None),
+                0
+            );
+            let current = || {
+                let mut mask = sys::zeroed();
+                assert_eq!(
+                    sys::pthread_sigmask(libc::SIG_BLOCK, None, Some(&mut mask)),
+                    0
+                );
+                mask
+            };
+            let guard = ShutdownMask::block().unwrap();
+            assert_eq!(sys::sigismember(&current(), libc::SIGTERM), 1);
+            assert_eq!(sys::sigismember(&current(), libc::SIGUSR1), 1);
+            assert_eq!(sys::sigismember(&current(), libc::SIGUSR2), 0);
+            let sent = unsafe { libc::pthread_kill(libc::pthread_self(), libc::SIGTERM) };
+            let mut pending = sys::zeroed();
+            let queried = unsafe { libc::sigpending(&raw mut pending) };
+            let mut received = 0;
+            // Consume the pending default-fatal signal before any assertion can
+            // unwind the guard and restore this thread's unblocked mask.
+            let waited = unsafe { libc::sigwait(&ShutdownMask::signal(), &raw mut received) };
+            assert_eq!((sent, queried, waited), (0, 0, 0));
+            assert_eq!(sys::sigismember(&pending, libc::SIGTERM), 1);
+            assert_eq!(received, libc::SIGTERM);
+            drop(guard);
+            assert_eq!(sys::sigismember(&current(), libc::SIGTERM), 0);
+            assert_eq!(sys::sigismember(&current(), libc::SIGUSR1), 1);
+            let _manager_mask = ShutdownMask::block().unwrap();
+            ShutdownMask::unblock_manager();
+            assert_eq!(sys::sigismember(&current(), libc::SIGTERM), 0);
+            assert_eq!(sys::sigismember(&current(), libc::SIGUSR1), 1);
+        })
+        .join()
+        .unwrap();
+    }
 
     fn set_mode(live: &LiveServer, mode: Mode) {
         // SAFETY: the fixture's config, which nothing else reads meanwhile.
@@ -501,12 +609,12 @@ mod tests {
         calls();
         init_signals(live.server());
         let expected = [
+            Handle(libc::SIGTERM),
             Ignore(libc::SIGPIPE),
             Ignore(libc::SIGHUP),
             Handle(libc::SIGIO),
             Handle(libc::SIGUSR1),
             Handle(libc::SIGUSR2),
-            Handle(libc::SIGTERM),
             Handle(libc::SIGWINCH),
         ];
         #[cfg(target_os = "linux")]
@@ -520,7 +628,7 @@ mod tests {
         set_mode(&live, Mode::Process);
         init_signals(live.server());
         assert_eq!(
-            calls()[2],
+            calls()[3],
             Call::Step(Handle(libc::SIGCHLD)),
             "SIGCHLD in process mode"
         );

@@ -51,6 +51,16 @@ pub(crate) fn start(serv: view::Server<'_>) -> bool {
     gs.start_time.store(swoole_rs_corebase::time_now(), Relaxed);
     crate::shared::workers_start(serv);
     state.set_running(true);
+    #[cfg(target_os = "linux")]
+    let _shutdown_mask =
+        if config.mode_ == Mode::Process && swoole_rs_corebase::swr_v1_core_enable_signalfd() {
+            let Some(mask) = crate::control::ShutdownMask::block() else {
+                return false;
+            };
+            Some(mask)
+        } else {
+            None
+        };
     if !hybrid().step(serv, Step::FactoryStart) {
         return false;
     }

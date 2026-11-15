@@ -26,8 +26,7 @@ use swoole_rs_zend::{method_table, sys as z};
 
 pub(crate) static RESPONSE: CustomClass<Data> = CustomClass::new();
 
-/// `WebSocket::OPCODE_TEXT` and `WebSocket::CLOSE_NORMAL` (RFC 6455).
-const OPCODE_TEXT: i64 = 1;
+/// `WebSocket::CLOSE_NORMAL` (RFC 6455).
 const CLOSE_NORMAL: i64 = 1000;
 /// `SW_ERROR_WEBSOCKET_PACK_FAILED`.
 const WEBSOCKET_PACK_FAILED: c_int =
@@ -470,8 +469,11 @@ fn ping(call: &Call) {
             return Some(());
         }
         let payload = data.map_or(&[][..], ZStr::bytes);
-        let Some(frame) = websocket::encode(payload, websocket::OPCODE_PING, websocket::FLAG_FIN)
-        else {
+        let Some(frame) = websocket::encode(
+            payload,
+            swoole_rs_websocket::Opcode::Ping.code(),
+            websocket::FLAG_FIN,
+        ) else {
             host::set_last_error(WEBSOCKET_PACK_FAILED);
             return None;
         };
@@ -524,7 +526,7 @@ fn push(call: &Call) {
         let parsed = call.arity(1, 3).and_then(|()| {
             Ok((
                 call.value(1),
-                call.long(2, OPCODE_TEXT)?,
+                call.long(2, i64::from(swoole_rs_websocket::Opcode::Text.code()))?,
                 call.zval_or_null(3),
             ))
         });
