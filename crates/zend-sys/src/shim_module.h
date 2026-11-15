@@ -28,7 +28,7 @@ void swr_zend_leak_check(void);
 void swr_zend_register_shutdown_function(const char *name);
 /* Set PHP_STREAM_FLAG_NO_CLOSE on the stream of the constant `name` (STDOUT,
  * STDERR), where PHP has the flag. */
-void swr_zend_stream_constant_no_close(const char *name, size_t length);
+void swr_zend_stream_constant_no_close(const char *name);
 
 int swr_zend_try_module_ini(const zend_ini_entry_def *, int, int);
 int swr_zend_try_info_start(void);

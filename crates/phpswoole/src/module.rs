@@ -24,8 +24,7 @@ use swoole_rs_zend::{
         HashTable, swr_zend_after_fork, swr_zend_execute_ex_reset, swr_zend_execute_ex_restore,
         swr_zend_fatal_error, swr_zend_leak_check, swr_zend_module_globals,
         swr_zend_print_stack_trace, swr_zend_register_shutdown_function,
-        swr_zend_runtime_call_handler, swr_zend_stream_constant_no_close, swr_zend_try_hook,
-        zend_class_entry,
+        swr_zend_runtime_call_handler, swr_zend_try_hook, zend_class_entry,
     },
 };
 
@@ -37,6 +36,12 @@ unsafe extern "C" {
     safe fn swr_zend_compiling_preload() -> c_int;
     /// `SIGG(check) = 0`: one flag of Zend's signal globals is cleared.
     safe fn swr_zend_signals_uncheck();
+    /// `PHP_STREAM_FLAG_NO_CLOSE` on the stream of the constant `name`, when it
+    /// names a file stream.
+    safe fn swr_zend_stream_constant_no_close(name: Text<'_>);
+    /// `body` inside `zend_try`: nonzero when it bailed out.
+    #[link_name = "swr_zend_try_hook"]
+    safe fn try_body(body: extern "C" fn()) -> c_int;
     /// `ZEND_INIT_MODULE_GLOBALS`: `ctor` runs on the NTS storage now, or on each
     /// thread's under ZTS; what the ini entries take comes back.
     fn swr_zend_module_globals_init(
@@ -535,8 +540,7 @@ pub fn load_library() -> Result<(), Bailout> {
     let _loading = LOADING
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    // SAFETY: the loader, a zend_try body.
-    if unsafe { swr_zend_try_hook(Some(load_library_body)) } == 0 {
+    if try_body(load_library_body) == 0 {
         Ok(())
     } else {
         Err(Bailout)
@@ -677,8 +681,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, _module_number
     globals.req_status.set(ReqStatus::RshutdownEnd);
     // Do not close stdout and stderr.
     for name in [c"STDOUT", c"STDERR"] {
-        // SAFETY: a constant's name; the shim checks the resource's type.
-        unsafe { swr_zend_stream_constant_no_close(name.as_ptr(), name.count_bytes()) };
+        swr_zend_stream_constant_no_close(name.into());
     }
     SUCCESS
 }

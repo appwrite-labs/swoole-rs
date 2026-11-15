@@ -96,9 +96,9 @@ void swr_zend_register_shutdown_function(const char *name) {
 #endif
 }
 
-void swr_zend_stream_constant_no_close(const char *name, size_t length) {
+void swr_zend_stream_constant_no_close(const char *name) {
 #ifdef PHP_STREAM_FLAG_NO_CLOSE
-    zval *zstream = zend_get_constant_str(name, length);
+    zval *zstream = zend_get_constant_str(name, strlen(name));
     if (!zstream) {
         return;
     }
