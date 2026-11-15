@@ -89,6 +89,11 @@ impl EventSocket {
             }
             self.0.edit(|record| record.fd = -1);
         }
+        self.release();
+    }
+
+    /// `socket->free()` of the record as it is: its fd, `-1` for none, is closed.
+    pub fn release(self) {
         // SAFETY: the record this owned, which nothing uses afterwards; a reactor
         // still holding it is told by `free` itself.
         unsafe { socket_free(self.0.as_ptr()) };

@@ -5,13 +5,15 @@
 //! and the C entry points the bundled `ext/curl` calls besides the multi's own.
 //! The tests swap in a fake with the same functions.
 use crate::{EXEC_NEEDS_COROUTINE, Easy, Multi};
+use std::cell::Cell;
 use std::ffi::{CStr, c_int, c_long, c_void};
 use std::io::Write;
 use std::{ptr, rc::Rc};
 use swoole_rs_coroutine::{Coroutine, Resume};
 use swoole_rs_curl_sys::{CURL_CSELECT_ERR, CURL_CSELECT_IN, CURL_CSELECT_OUT, CURLcode};
 use swoole_rs_reactor::Events;
-use swoole_rs_reactor::{Socket, SocketRecord, event_api};
+use swoole_rs_reactor::{SocketRecord, event_api};
+use swoole_rs_tls::event_socket::EventSocket;
 
 /// Upstream's `PHP_SWOOLE_FD_CO_CURL`: `SW_FD_STREAM_CLIENT + 10`.
 const FD_CO_CURL: c_int = 17 + 10;
@@ -54,64 +56,66 @@ pub(crate) fn install_handlers() {
     }
 }
 
-/// A reactor `network::Socket` of the cURL fd type over curl's fd. It is
-/// live from [`ReactorSocket::new`] until [`ReactorSocket::free`], and the
+/// A reactor `network::Socket` of the cURL fd type over curl's fd, owned from
+/// [`ReactorSocket::new`] until [`ReactorSocket::free`]; a freed one does nothing. The
 /// multi touches it only on the thread whose event loop it registers with.
-#[derive(Clone, Copy)]
-pub(crate) struct ReactorSocket(Socket<'static>);
+pub(crate) struct ReactorSocket(Cell<Option<EventSocket>>);
 
 impl ReactorSocket {
     /// Out of the reactor, carrying no object yet.
     pub(crate) fn new(fd: c_int) -> Self {
-        // The new record, on the heap as `new Socket()`: leaked until `free`, and
-        // touched only through this handle and the reactor on this thread.
-        let record = Box::leak(Box::new(SocketRecord::with_fd(fd, FD_CO_CURL)));
-        Self(Socket::new(record))
+        // The new record, on the heap as `new Socket()`.
+        let record = Box::new(SocketRecord::with_fd(fd, FD_CO_CURL));
+        Self(Cell::new(Some(EventSocket::adopt(record))))
     }
 
-    fn record(self) -> *mut SocketRecord {
-        self.0.as_ptr()
+    /// `f` of the record while it is owned, else the default.
+    fn with<R: Default>(&self, f: impl FnOnce(&EventSocket) -> R) -> R {
+        let socket = self.0.take();
+        let result = socket.as_ref().map_or_else(R::default, f);
+        self.0.set(socket);
+        result
     }
 
     /// Carry `object`, which the reactor handlers report.
-    pub(crate) fn set_object(self, object: *mut c_void) {
-        self.0.edit(|socket| socket.object = object);
+    pub(crate) fn set_object(&self, object: *mut c_void) {
+        self.with(|socket| socket.socket().edit(|socket| socket.object = object));
     }
 
     /// The events it is registered for.
-    pub(crate) fn events(self) -> Events {
-        self.0.read(|socket| socket.events)
+    pub(crate) fn events(&self) -> Events {
+        self.with(EventSocket::events)
     }
 
     /// Whether it is out of the reactor.
-    pub(crate) fn removed(self) -> bool {
-        self.0.read(|socket| socket.removed)
+    pub(crate) fn removed(&self) -> bool {
+        self.with(EventSocket::removed)
     }
 
-    pub(crate) fn add(self, events: Events) -> bool {
-        event_api::event_add(self.0, events)
+    pub(crate) fn add(&self, events: Events) -> bool {
+        self.with(|socket| socket.add(events))
     }
 
-    pub(crate) fn set(self, events: Events) -> bool {
-        event_api::event_set(self.0, events)
+    pub(crate) fn set(&self, events: Events) -> bool {
+        self.with(|socket| socket.set(events))
     }
 
-    pub(crate) fn del(self) -> bool {
-        event_api::event_del(self.0)
+    pub(crate) fn del(&self) -> bool {
+        self.with(EventSocket::del)
     }
 
     /// Leave the reactor silently if in it, then free the socket without
     /// closing the fd, which curl owns.
-    /// # Safety
-    /// Nothing uses this socket, or a copy of it, afterwards.
-    pub(crate) unsafe fn free(self) {
-        if !self.events().is_empty() && event_available() {
-            self.0.edit(|socket| socket.silent_remove = true);
-            self.del();
+    pub(crate) fn free(&self) {
+        let Some(socket) = self.0.take() else {
+            return;
+        };
+        if !socket.events().is_empty() && event_available() {
+            socket.socket().edit(|socket| socket.silent_remove = true);
+            _ = socket.del();
         }
-        self.0.edit(|socket| socket.fd = -1);
-        // SAFETY: per the caller; with fd -1 it closes nothing.
-        unsafe { swoole_rs_tls::upstream::socket_free(self.record()) };
+        socket.socket().edit(|socket| socket.fd = -1);
+        socket.release();
     }
 }
 
