@@ -135,7 +135,8 @@ pub(crate) extern "C" fn accept_connection(
     let Some(serv) = reactor.server() else {
         return -1;
     };
-    crate::connection::accept(serv, reactor, event)
+    crate::connection::accept(serv, reactor, event);
+    swoole_rs_corebase::constants::ResultCode::SW_OK as c_int
 }
 
 /// `Server::get_startup_error_message()`.

@@ -7,14 +7,7 @@ pub enum SslCreateFlag {
     SW_SSL_SERVER = 1,
     SW_SSL_CLIENT = 2,
 }
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[expect(non_camel_case_types, reason = "preserve the native SDK names")]
-pub enum SslState {
-    SW_SSL_STATE_HANDSHAKE = 0,
-    SW_SSL_STATE_READY = 1,
-    SW_SSL_STATE_WAIT_STREAM = 2,
-}
+pub use swoole_rs_corebase::constants::SslState;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(non_camel_case_types, reason = "preserve the native SDK names")]

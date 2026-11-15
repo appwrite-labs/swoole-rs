@@ -560,7 +560,7 @@ handlers! {
 // Queue.
 
 /// `SW_ERROR_NO_PAYLOAD`.
-const NO_PAYLOAD: i32 = 550;
+const NO_PAYLOAD: i32 = swoole_rs_error::ErrorCode::SW_ERROR_NO_PAYLOAD as i32;
 
 fn queue_construct(call: &Call) {
     let Some(cell) = cell::<QueueObject>(call) else {

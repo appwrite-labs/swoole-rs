@@ -8,7 +8,7 @@
 //! upstream routes it.
 use crate::co_io::set_errno;
 use crate::co_socket::Co;
-use crate::fd_control::{ALL, fd_poll_fake, fd_timeout, fd_wait, swr_v1_hook_fd_poll};
+use crate::fd_control::{fd_poll_fake, fd_timeout, fd_wait, swr_v1_hook_fd_poll};
 use crate::poll::swr_v1_hook_poll;
 use crate::socket_map;
 use crate::stdio::{Host, coroutine, on_pool, swr_v1_hook_close_fd};
@@ -23,7 +23,7 @@ use swoole_rs_corebase::{log, sys};
 use swoole_rs_reactor::{Socket, SocketRecord};
 
 /// `SW_ERROR_INVALID_PARAMS`.
-const INVALID_PARAMS: c_int = 505;
+const INVALID_PARAMS: c_int = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as c_int;
 
 /// How the hooked fds' sockets (`SocketImpl`: `coroutine::Socket`, or `UringSocket`
 /// with `--enable-uring-socket`) are made and deleted: Rust's own (`co_socket`), or
@@ -157,23 +157,11 @@ pub fn swoole_coroutine_recv(fd: c_int, buf: &mut [u8], flags: c_int) -> ssize_t
 /// Hooked `connect(2)` of `fd` to `address`.
 #[must_use]
 pub fn connect(fd: c_int, address: &SocketAddress) -> c_int {
-    match hooked(fd) {
-        Some((_, socket)) => {
-            if socket.connect_addr(address) {
-                0
-            } else {
-                -1
-            }
-        }
+    let connected = match hooked(fd) {
+        Some((_, socket)) => socket.connect_addr(address),
         None => address.connect(fd),
-    }
-}
-
-/// `accept(2)` on `fd`, the peer's address and its length into `peer`.
-fn sys_accept(fd: c_int, peer: &mut SocketAddress) -> c_int {
-    peer.len = SocketAddress::CAPACITY;
-    // SAFETY: the storage is writable for the `len` given.
-    unsafe { libc::accept(fd, (&raw mut peer.addr).cast(), &raw mut peer.len) }
+    };
+    if connected { 0 } else { -1 }
 }
 
 /// Hooked `accept(2)`, the peer's address into `peer`: the accepted socket joins the
@@ -181,7 +169,7 @@ fn sys_accept(fd: c_int, peer: &mut SocketAddress) -> c_int {
 #[must_use]
 pub fn accept(fd: c_int, peer: &mut SocketAddress) -> c_int {
     let Some((_, socket)) = hooked(fd) else {
-        return sys_accept(fd, peer);
+        return peer.accept(fd);
     };
     let Some(conn) = socket.accept(0.0) else {
         return -1;
@@ -333,7 +321,7 @@ pub extern "C" fn swoole_coroutine_socket_wait_event(
     let saved = fd_wait(socket, event.cast_unsigned(), timeout);
     let ready = socket.poll(event.cast_unsigned(), 0.0);
     // The socket is still live: the map holds it.
-    socket.set_timeout(saved, ALL);
+    socket.set_timeout(saved, swoole_rs_reactor::TimeoutKind::ALL);
     if ready { 0 } else { -1 }
 }
 

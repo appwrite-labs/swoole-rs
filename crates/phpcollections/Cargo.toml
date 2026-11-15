@@ -16,6 +16,7 @@ php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-memory", "dep:
        "dep:swoole-rs-phpcoroutines", "swoole-rs-phpcoroutines/php"]
 
 [dependencies]
+swoole-rs-error = { path = "../error" }
 swoole-rs-zend = { path = "../zend", optional = true }
 swoole-rs-phpstubs = { path = "../phpstubs", optional = true }
 swoole-rs-memory = { path = "../memory", optional = true }

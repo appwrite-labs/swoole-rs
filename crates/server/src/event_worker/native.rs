@@ -7,6 +7,7 @@ use core::ffi::{c_int, c_long, c_void};
 use core::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::HookType;
 use swoole_rs_corebase::ServerEvent;
+use swoole_rs_reactor::Events;
 
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{DataHead, log};
@@ -23,7 +24,7 @@ use swoole_rs_reactor::{Event, Running, Socket};
 
 use super::{SignalHandler, Wait};
 use crate::callbacks::{CallbackKind, EventSlot, ReceiveSlot, ServerSlot, TaskSlot, WorkerSlot};
-use crate::objects::{Bus, EVENT_READ, Reactor, set_nonblock, worker_pipe};
+use crate::objects::{Bus, Reactor, set_nonblock, worker_pipe};
 use crate::records::Lookup;
 use crate::view;
 
@@ -32,11 +33,14 @@ const FD_PIPE: c_int = 3;
 const PIPE_MASTER: c_int = 1;
 /// `SW_LOG_WARNING` and the `SW_ERROR_*` the worker logs.
 const WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
-const INVALID_PARAMS: c_int = 505;
-const WRONG_OPERATION: c_int = 509;
-const SESSION_DISCARD_TIMEOUT_DATA: c_int = 1007;
-const SERVER_WORKER_EXIT_TIMEOUT: c_int = 9101;
-const SERVER_WORKER_UNPROCESSED_DATA: c_int = 9103;
+const INVALID_PARAMS: c_int = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as c_int;
+const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
+const SESSION_DISCARD_TIMEOUT_DATA: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SESSION_DISCARD_TIMEOUT_DATA as c_int;
+const SERVER_WORKER_EXIT_TIMEOUT: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SERVER_WORKER_EXIT_TIMEOUT as c_int;
+const SERVER_WORKER_UNPROCESSED_DATA: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SERVER_WORKER_UNPROCESSED_DATA as c_int;
 
 /// `serv->get_worker_message_bus()`.
 fn bus(serv: view::Server<'_>) -> Bus<'_> {
@@ -592,8 +596,8 @@ pub(crate) fn start_event_worker(serv: view::Server<'_>, worker: Worker<'_>) -> 
         // SAFETY: this worker's reactor, freed after its loop below, before the worker
         // stops and while the server lives.
         unsafe { reactor.hold_server(serv) };
-        reactor.add(pipe, EVENT_READ);
-        reactor.set_handler(FD_PIPE, EVENT_READ, on_pipe_receive);
+        reactor.add(pipe, Events::READ);
+        reactor.set_handler(FD_PIPE, Events::READ, on_pipe_receive);
     }
     if matches!(
         config.dispatch(),

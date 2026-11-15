@@ -119,7 +119,7 @@ pub fn fd_accept(fd: c_int, address: &mut SocketAddress, nonblock: bool) -> (c_i
 /// [`IoError::InProgress`] on `EINPROGRESS`, else connect's failure.
 pub fn fd_connect(fd: c_int, address: &SocketAddress) -> Result<(), IoError> {
     loop {
-        if address.connect(fd) == 0 {
+        if address.connect(fd) {
             return Ok(());
         }
         match errno() {

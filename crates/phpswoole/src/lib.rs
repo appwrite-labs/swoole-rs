@@ -47,9 +47,9 @@ pub use interfaces::sys_warning;
 pub use memory::{sw_zend_string_allocator, zend_string_allocator, zend_string_buffers};
 pub use module::{
     Families, Globals, Hook, Http, HttpMinit, Minit, MinitArgs, ProcessSteps, ReqStatus,
-    RuntimeSteps, codecs, display_errors, enable_library, families, globals, load_library,
-    php_swoole_register_shutdown_function, swr_v1_phpswoole_mshutdown, swr_v1_phpswoole_rinit,
-    swr_v1_phpswoole_rshutdown, zif_swoole_set_process_name,
+    RuntimeSteps, SocketSettings, codecs, display_errors, enable_library, families, globals,
+    load_library, php_swoole_register_shutdown_function, swr_v1_phpswoole_mshutdown,
+    swr_v1_phpswoole_rinit, swr_v1_phpswoole_rshutdown, zif_swoole_set_process_name,
 };
 pub use optional::{set_blocking, socket_cast, socket_create};
 pub use options::{

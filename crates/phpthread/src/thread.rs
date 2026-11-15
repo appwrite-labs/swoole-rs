@@ -25,8 +25,8 @@ use swoole_rs_zend::{method_table, sys as z};
 static THREAD: CustomClass<PhpThread> = CustomClass::new();
 
 /// `SW_ERROR_SYSTEM_CALL_FAIL`, `SW_ERROR_INVALID_PARAMS`.
-const SYSTEM_CALL_FAIL: i64 = 502;
-const INVALID_PARAMS: i64 = 504;
+const SYSTEM_CALL_FAIL: i64 = swoole_rs_error::ErrorCode::SW_ERROR_SYSTEM_CALL_FAIL as i64;
+const INVALID_PARAMS: i64 = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as i64;
 
 /// What `swoole::Thread` tracks for one thread: written by the thread itself.
 #[derive(Debug, Default)]

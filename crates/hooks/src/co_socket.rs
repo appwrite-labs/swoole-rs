@@ -459,7 +459,7 @@ impl Co {
     /// thread's reactor: false without a socket or a reactor. The record's own
     /// network socket, which `~Socket()` takes off the reactor as it frees it.
     #[must_use]
-    pub fn register(self, add: bool, events: c_int) -> bool {
+    pub fn register(self, add: bool, events: swoole_rs_reactor::Events) -> bool {
         use swoole_rs_reactor::event_api::{event_add, event_set};
         let change = if add { event_add } else { event_set };
         self.record()
@@ -477,7 +477,7 @@ impl Co {
         self.record()
             .socket
             .get()
-            .is_some_and(|network| interest(network, kind, 0))
+            .is_some_and(|network| interest(network, kind, swoole_rs_reactor::Events::NONE))
     }
 
     /// The record's metadata, `None` once released.
@@ -511,14 +511,14 @@ impl Co {
 
     /// The socket's timeout of `kind`, or -1 when it has none.
     #[must_use]
-    pub fn timeout(self, kind: c_int) -> f64 {
+    pub fn timeout(self, kind: swoole_rs_reactor::TimeoutKind) -> f64 {
         self.net(|record| record.timeouts.get(kind))
             .flatten()
             .unwrap_or(-1.0)
     }
 
     /// Sets the socket's timeouts selected by `kind`.
-    pub fn set_timeout(self, timeout: f64, kind: c_int) {
+    pub fn set_timeout(self, timeout: f64, kind: swoole_rs_reactor::TimeoutKind) {
         self.net(|record| record.timeouts.set(timeout, kind));
     }
 }

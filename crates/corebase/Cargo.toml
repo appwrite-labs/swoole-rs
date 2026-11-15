@@ -11,6 +11,7 @@ publish = false
 upstream-symbols = ["dep:cc"]
 
 [dependencies]
+swoole-rs-error = { path = "../error" }
 itoa = "1.0.18"
 libc = "=0.2.191"
 swoole-rs-framing = { path = "../framing" }

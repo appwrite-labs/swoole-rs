@@ -15,6 +15,7 @@ use swoole_rs_error::ErrorCode;
 use swoole_rs_memory::members::Shm;
 use swoole_rs_process::process_pool::IpcMode;
 use swoole_rs_process::worker_record::{WorkerRecord, WorkerType};
+use swoole_rs_reactor::Events;
 
 /// `SW_MAX_THREAD_NCPU`, `SW_MAX_WORKER_NCPU`, `SW_TIMER_MIN_SEC`, `SW_BUFFER_MIN_SIZE`;
 /// native asserts each.
@@ -344,7 +345,7 @@ fn check_port(
     }
     let dgram = matches!(settings.r#type, 2 | 4 | 6);
     let stream = matches!(settings.r#type, 1 | 3 | 5);
-    let ssl = settings.ssl != 0;
+    let ssl = settings.ssl;
     if ((dgram && ssl) || stream) && !has(CallbackKind::Receive) {
         invalid_callback(format_args!("require 'onReceive' callback"));
         return false;
@@ -370,7 +371,6 @@ pub(crate) fn start_master_thread(serv: view::Server<'_>, reactor: Reactor) -> b
     /// `THREAD_MASTER`, `SW_FD_STREAM_SERVER` and `SW_EVENT_READ`.
     const THREAD_MASTER: u8 = 1;
     const FD_STREAM_SERVER: c_int = 1;
-    const EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
     let state = serv.state();
     let config = state.config_ref();
     let single = config.single_thread.get();
@@ -390,13 +390,13 @@ pub(crate) fn start_master_thread(serv: view::Server<'_>, reactor: Reactor) -> b
     // on a failed start) frees while the server lives.
     unsafe { reactor.hold_server(serv) };
     let accept: swoole_rs_reactor::Handler = crate::server_methods::accept_connection;
-    reactor.set_handler(FD_STREAM_SERVER, EVENT_READ, accept);
+    reactor.set_handler(FD_STREAM_SERVER, Events::READ, accept);
     if let Some(pipe) = config.command_pipe() {
         if !single {
             hybrid().step(serv, Step::CommandHandler);
         }
         if let Some(master) = pipe.master_end() {
-            reactor.change(master, swoole_rs_reactor::ChangeOp::Add, EVENT_READ);
+            reactor.change(master, swoole_rs_reactor::ChangeOp::Add, Events::READ);
         }
     }
     if !hybrid().step(serv, Step::MasterTimer) {

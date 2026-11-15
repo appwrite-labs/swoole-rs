@@ -659,25 +659,27 @@ pub(crate) mod tests {
     fn register_counts_ids_and_peak() {
         let mut s = scheduler();
         let (mut a, mut b, mut c) = (blank(), blank(), blank());
+        let (a, b, c) = (&raw mut a, &raw mut b, &raw mut c);
+        let co = |co| unsafe { Co::of(co) }.unwrap();
         // SAFETY: the coroutines live on this frame past their removal.
         unsafe {
-            assert!(s.register(Co::of(&raw mut a).unwrap(), ptr::null_mut(), 5, 9));
-            assert_eq!(a.cid, 1);
+            assert!(s.register(co(a), ptr::null_mut(), 5, 9));
+            assert_eq!((*a).cid, 1);
             s.activated = true;
-            assert!(!s.register(Co::of(&raw mut b).unwrap(), ptr::null_mut(), 5, 9));
+            assert!(!s.register(co(b), ptr::null_mut(), 5, 9));
             assert_eq!(s.peak_num, 2);
             assert_eq!(
-                (b.cid, b.state, b.init_msec, b.switch_usec),
+                ((*b).cid, (*b).state, (*b).init_msec, (*b).switch_usec),
                 (2, State::Init, 5, 9)
             );
             s.remove(1);
             s.remove(2);
-            assert!(!s.register(Co::of(&raw mut c).unwrap(), ptr::null_mut(), 0, 0));
-            assert_eq!((c.cid, s.peak_num, s.count()), (3, 2, 1));
+            assert!(!s.register(co(c), ptr::null_mut(), 0, 0));
+            assert_eq!(((*c).cid, s.peak_num, s.count()), (3, 2, 1));
             s.remove(3);
             s.last_cid = c_long::MAX;
-            s.register(Co::of(&raw mut c).unwrap(), ptr::null_mut(), 0, 0);
-            assert_eq!(c.cid, c_long::MIN);
+            s.register(co(c), ptr::null_mut(), 0, 0);
+            assert_eq!((*c).cid, c_long::MIN);
         }
         s.remove(c_long::MIN);
         s.set_active(false);
@@ -707,8 +709,8 @@ pub(crate) mod tests {
         let co = |co| unsafe { Co::of(co) }.unwrap();
         // SAFETY: the three coroutines live on this frame for the whole test.
         unsafe {
-            for co in [a, b, c] {
-                sp.with(|s| s.register(Co::of(co).unwrap(), ptr::null_mut(), 0, 0));
+            for child in [a, b, c] {
+                sp.with(|s| s.register(co(child), ptr::null_mut(), 0, 0));
             }
             enter(sp, co(a));
             enter(sp, co(b));

@@ -14,8 +14,8 @@ use crate::view;
 /// `SW_FD_SESSION`.
 const FD_SESSION: c_int = 0;
 /// The objects a reactor-thread op acts on: a live server, the reactor the op runs
-/// under, and the reactor thread an op found. The entry points (`reactor_entry`) build
-/// it.
+/// under, and its thread record. The entry points (`reactor_entry`) build it;
+/// messages stay in the thread's bus.
 #[cfg_attr(
     not(all(feature = "upstream-symbols", not(test))),
     expect(dead_code, reason = "only the reactor threads' shutdown reads it")
@@ -133,15 +133,12 @@ impl PoolBus {
         self.allocator.set(allocator);
     }
 
-    /// The bus a pool's `create_message_bus` made, or `None` before it or after its
-    /// `destroy`.
-    pub(crate) fn of_pool(pool: swoole_rs_process::process_pool::PoolRef<'_>) -> Option<&Self> {
-        // SAFETY: crates/process keeps a pool's `message_bus` private: null, or what
-        // this crate's `PoolNative` answered `Op::NewMessageBus` with, a boxed record
-        // the pool keeps until `Op::FreeMessageBus` in its `destroy` frees it and the
-        // pool forgets it. The pool, and so its bus, belongs to the process or thread
-        // that runs its operations, as this call does.
-        unsafe { pool.message_bus().cast::<Self>().as_ref() }
+    /// One operation over the pool's typed bus, without lending it beyond the call.
+    pub(crate) fn with_pool<R>(
+        pool: swoole_rs_process::process_pool::PoolRef<'_>,
+        f: impl FnOnce(&Self) -> R,
+    ) -> Option<R> {
+        pool.with_message_bus(|bus| bus.downcast_ref::<Self>().map(f))?
     }
 }
 
@@ -151,7 +148,7 @@ impl PoolBus {
 pub fn pool_bus_move_packet(
     pool: swoole_rs_process::process_pool::PoolRef<'_>,
 ) -> *mut core::ffi::c_char {
-    PoolBus::of_pool(pool).map_or(core::ptr::null_mut(), |bus| bus.bus.move_packet())
+    PoolBus::with_pool(pool, |bus| bus.bus.move_packet()).unwrap_or(core::ptr::null_mut())
 }
 
 /// `pool->message_bus->set_allocator(allocator)`, when the pool has a bus: its
@@ -160,9 +157,7 @@ pub fn pool_bus_set_allocator(
     pool: swoole_rs_process::process_pool::PoolRef<'_>,
     allocator: TrustedAllocator,
 ) {
-    if let Some(bus) = PoolBus::of_pool(pool) {
-        bus.set_allocator(allocator);
-    }
+    PoolBus::with_pool(pool, |bus| bus.set_allocator(allocator));
 }
 
 #[cfg(all(feature = "upstream-symbols", not(test)))]

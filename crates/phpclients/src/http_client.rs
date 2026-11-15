@@ -5,7 +5,7 @@
 //! coroutine socket, files and callables are reached through
 //! `crate::http_native`, as is WebSocket framing, which stays C++.
 use crate::{
-    http_native::{self as native, PushError, TIMEOUT_READ, WebSocket},
+    http_native::{self as native, PushError, WebSocket},
     http_request::{self as request, Compress},
     native::{Co, swoole_rs_php_error},
     socket::Sock,
@@ -74,12 +74,13 @@ impl ErrorStatus {
     }
 }
 /// `SW_ERROR_*`.
-const INVALID_PARAMS: c_int = 505;
-const NO_CONNECTION: c_int = 5001;
+const INVALID_PARAMS: c_int = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as c_int;
+const NO_CONNECTION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_CLIENT_NO_CONNECTION as c_int;
 const CO_HAS_BEEN_BOUND: c_int = swoole_rs_error::ErrorCode::SW_ERROR_CO_HAS_BEEN_BOUND as c_int;
-const INVALID_PROTOCOL: c_int = 7102;
-const HANDSHAKE_FAILED: c_int = 8504;
-const PACK_FAILED: c_int = 8505;
+const INVALID_PROTOCOL: c_int = swoole_rs_error::ErrorCode::SW_ERROR_HTTP_INVALID_PROTOCOL as c_int;
+const HANDSHAKE_FAILED: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_WEBSOCKET_HANDSHAKE_FAILED as c_int;
+const PACK_FAILED: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WEBSOCKET_PACK_FAILED as c_int;
 /// `SW_EVENT_WRITE` and `SW_EVENT_RDWR`.
 const EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
 const EVENT_RDWR: c_int = (1 << 9) | (1 << 10);
@@ -527,7 +528,7 @@ impl Client {
             }
         }
         if let Some(socket) = self.co() {
-            crate::socket_options::apply(socket, array, crate::socket_options::ALL);
+            crate::socket_options::apply(socket, array, swoole_rs_phpswoole::SocketSettings::All);
             if !swoole_rs_zend::bailout::pending() {
                 socket.skip_proxy_handshake();
             }
@@ -962,7 +963,7 @@ impl Client {
         let mut controller = socket.read_timeout(timeout);
         let mut success = false;
         loop {
-            if controller.timed_out(TIMEOUT_READ) {
+            if controller.timed_out(swoole_rs_reactor::TimeoutKind::READ) {
                 break;
             }
             received = socket.recv_input();
@@ -1023,7 +1024,7 @@ impl Client {
                 llhttp::finish(&mut hooks);
             }
             if self.completed.get() {
-                if hooks.parser.upgrade != 0 && count > parsed + WEBSOCKET_HEADER {
+                if hooks.parser.upgrade && count > parsed + WEBSOCKET_HEADER {
                     // Keep the bytes past the handshake (`reduce`).
                     #[expect(clippy::cast_possible_wrap, reason = "a buffer offset")]
                     let parsed = parsed as i64;
@@ -1531,8 +1532,8 @@ fn write_download(client: &Client, body: &[u8]) -> bool {
 fn on_message_complete(hooks: &mut Hooks) -> c_int {
     let client = hooks.client;
     client.completed.set(true);
-    if hooks.parser.upgrade != 0 && !client.websocket.get() {
-        hooks.parser.upgrade = 0;
+    if hooks.parser.upgrade && !client.websocket.get() {
+        hooks.parser.upgrade = false;
         return llhttp::HPE_PAUSED;
     }
     client

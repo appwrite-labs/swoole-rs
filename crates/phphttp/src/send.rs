@@ -14,7 +14,7 @@ use crate::{
     response::RESPONSE,
     state::State,
 };
-use std::{ffi::c_int, io::Write};
+use std::io::Write;
 use swoole_rs_zend::{
     ZStr,
     bailout::{self, Bailout},
@@ -23,29 +23,25 @@ use swoole_rs_zend::{
 /// `SW_HTTP_MAX_APPEND_DATA`: a larger body is sent on its own, uncopied.
 const MAX_APPEND_DATA: usize = 16384;
 
-/// The HTTP/2 server's operations.
-const HTTP2_END: c_int = 0;
-const HTTP2_WRITE: c_int = 1;
-const HTTP2_SEND_FILE: c_int = 2;
-pub(crate) const HTTP2_PING: c_int = 3;
+/// An HTTP/2 server operation and its arguments.
+#[derive(Clone, Copy)]
+pub(crate) enum Http2<'a> {
+    End(&'a [u8]),
+    Write(&'a [u8]),
+    SendFile(&'a [u8], i64, usize),
+    Ping,
+}
 
 pub(crate) use context::{close, send};
 
 /// The HTTP/2 server's `op`.
-pub(crate) fn http2(
-    ctx: Ctx,
-    op: c_int,
-    data: Option<&ZStr>,
-    offset: i64,
-    length: usize,
-) -> Result<bool, Bailout> {
-    let body = of(data);
+pub(crate) fn http2(ctx: Ctx, op: Http2<'_>) -> Result<bool, Bailout> {
     let server = crate::http2::server();
     let done = server.is_some_and(|server| match op {
-        HTTP2_END => (server.respond)(ctx, body),
-        HTTP2_WRITE => (server.write)(ctx, body),
-        HTTP2_PING => (server.ping)(ctx),
-        _ => (server.send_file)(ctx, body, offset, length),
+        Http2::End(body) => (server.respond)(ctx, body),
+        Http2::Write(body) => (server.write)(ctx, body),
+        Http2::SendFile(file, offset, length) => (server.send_file)(ctx, file, offset, length),
+        Http2::Ping => (server.ping)(ctx),
     });
     if bailout::pending() {
         return Err(Bailout);
@@ -85,7 +81,7 @@ fn of(data: Option<&ZStr>) -> &[u8] {
 /// `Context::write`: a chunk of a chunked body, the header first.
 pub(crate) fn write(mut ctx: Ctx, data: Option<&ZStr>) -> Result<bool, Bailout> {
     if ctx.flags() & HTTP2 != 0 {
-        return http2(ctx, HTTP2_WRITE, data, 0, 0);
+        return http2(ctx, Http2::Write(of(data)));
     }
     if !ctx.state().send_header {
         ctx.state().send_chunked = true;
@@ -128,7 +124,7 @@ fn send_trailer(mut ctx: Ctx) -> Result<bool, Bailout> {
 pub(crate) fn end(mut ctx: Ctx, data: Option<&ZStr>) -> Result<bool, Bailout> {
     let flags = ctx.flags();
     if flags & HTTP2 != 0 {
-        return http2(ctx, HTTP2_END, data, 0, 0);
+        return http2(ctx, Http2::End(of(data)));
     }
     if ctx.state().send_chunked {
         if !of(data).is_empty() && !write(ctx, data)? {
@@ -217,7 +213,7 @@ pub(crate) fn send_file(
     length: usize,
 ) -> Result<bool, Bailout> {
     if ctx.flags() & HTTP2 != 0 {
-        return http2(ctx, HTTP2_SEND_FILE, Some(file), offset, length);
+        return http2(ctx, Http2::SendFile(file.bytes(), offset, length));
     }
     file_type(ctx, file);
     if !ctx.state().send_header {

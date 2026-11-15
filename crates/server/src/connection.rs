@@ -2,13 +2,14 @@
 use core::ffi::{c_int, c_long};
 use core::sync::atomic::Ordering::{Acquire, Relaxed, Release, SeqCst};
 use swoole_rs_corebase::ServerEvent;
+use swoole_rs_reactor::Events;
 
 use swoole_rs_corebase::constants::{SW_ACCEPT_RETRY_TIME, SW_SEND_BUFFER_SIZE};
 use swoole_rs_corebase::{CCast, log};
 use swoole_rs_error::ErrorCode as E;
 use swoole_rs_reactor::{Event, Socket};
 
-use crate::reactor_handle::{EVENT_READ, Reactor};
+use crate::reactor_handle::Reactor;
 use crate::records::{ConnectionRecord, Lookup};
 use crate::{Connection, Mode, view};
 
@@ -16,7 +17,6 @@ use crate::{Connection, Mode, view};
 const ACCEPT_MAX_COUNT: u32 = 64;
 const MAX_CONNECTION: u32 = 100_000;
 const SESSION_LIST_SIZE: u32 = 1024 * 1024;
-const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
 /// `SW_SOCK_TCP`, `SW_SOCK_TCP6`.
 const SOCK_TCP: c_int = 1;
 const SOCK_TCP6: c_int = 3;
@@ -29,14 +29,14 @@ fn errno() -> c_int {
 
 /// `Server::accept_connection`: up to `SW_ACCEPT_MAX_COUNT` sockets per readable
 /// event on `reactor`, this thread's.
-pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) -> c_int {
+pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) {
     let server_fd = event.fd();
     let Some(listener) = event.socket() else {
-        return OK;
+        return;
     };
     // A listening socket's object is its port.
     let Some(port) = serv.state().listed_port(listener.read(|l| l.object)) else {
-        return OK;
+        return;
     };
     for _ in 0..ACCEPT_MAX_COUNT {
         let accepted = listener.edit(swoole_rs_reactor::SocketFields::accept);
@@ -47,7 +47,7 @@ pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) ->
             if accept_failed(serv, errno()) {
                 continue;
             }
-            return OK;
+            return;
         };
         if i64::from(sock.fd()) >= i64::from(serv.max_connection()) {
             let m = format_args!("Too many connections [now: {}]", sock.fd());
@@ -59,12 +59,12 @@ pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) ->
             );
             abort(serv, reactor, Some(port), sock);
             disable_accept(serv);
-            return OK;
+            return;
         }
-        if port.config().ssl != 0 {
+        if port.config().ssl {
             if !(crate::port_config::methods().ssl_create)(port.config(), Some(sock)) {
                 abort(serv, reactor, Some(port), sock);
-                return OK;
+                return;
             }
         } else {
             sock.edit(|s| {
@@ -73,7 +73,7 @@ pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) ->
         }
         let Some(conn) = add(serv, port, sock, server_fd) else {
             abort(serv, reactor, Some(port), sock);
-            return OK;
+            return;
         };
         sock.edit(|s| s.chunk_size = SW_SEND_BUFFER_SIZE);
         let started = if serv.config().single_thread.get() {
@@ -83,10 +83,9 @@ pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) ->
         };
         if !started {
             abort(serv, reactor, Some(port), sock);
-            return OK;
+            return;
         }
     }
-    OK
 }
 
 /// Whether the batch retries after `accept()` failed with `errno`. Out of
@@ -221,7 +220,7 @@ pub fn add<'a>(
         }
     }
     init(serv, conn, ls, sock, server_fd, reactor_id);
-    if ls.ssl == 0 {
+    if !ls.ssl {
         sock.edit(|s| s.direct_send = true);
     }
 
@@ -343,10 +342,10 @@ pub(crate) fn incoming(
         });
     }
     if !sock.read(|s| s.ssl().is_null()) {
-        return reactor.add(sock, EVENT_READ);
+        return reactor.add(sock, Events::READ);
     }
     // Delayed receive waits for the resume command.
-    if !serv.config().enable_delay_receive.get() && !reactor.add(sock, EVENT_READ) {
+    if !serv.config().enable_delay_receive.get() && !reactor.add(sock, Events::READ) {
         return false;
     }
     if serv.has_callback(crate::callbacks::CallbackKind::Connect)
@@ -425,7 +424,7 @@ pub(crate) fn disable_accept(serv: view::Server<'_>) {
 
 /// The accept retry timer: accept on stream ports again.
 pub(crate) fn enable_accept(serv: view::Server<'_>) {
-    for_stream_ports(serv, |reactor, sock| reactor.add(sock, EVENT_READ));
+    for_stream_ports(serv, |reactor, sock| reactor.add(sock, Events::READ));
     let tables = serv.state().tables_ref();
     tables.enable_accept_timer.store(None);
 }
@@ -477,10 +476,14 @@ mod tests {
     use std::io::{ErrorKind, Read};
     use std::net::TcpStream;
 
+    const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
+
+    /// The read handler's status, which upstream's accept always returns `SW_OK`.
     fn accept_on(live: &LiveServer) -> c_int {
         // SAFETY: the listener, live for the event's life.
         let event = unsafe { Event::new(live.listener_fd, 0, 1, live.listener().cast()) };
-        accept(live.server(), live.reactor(), &event)
+        accept(live.server(), live.reactor(), &event);
+        OK
     }
 
     #[test]
@@ -671,7 +674,7 @@ mod tests {
     fn accept_retry_reenables_stream_ports() {
         let live = LiveServer::new();
         let listener = live.port_socket();
-        assert!(live.reactor().add(listener, EVENT_READ), "reading");
+        assert!(live.reactor().add(listener, Events::READ), "reading");
         disable_accept(live.server());
         let tables = live.state().tables_ref();
         assert!(tables.enable_accept_timer.is_some(), "armed");
@@ -686,7 +689,7 @@ mod tests {
     fn eintr_retries_and_running_out_of_descriptors_disables_accept() {
         let live = LiveServer::new();
         let listener = live.port_socket();
-        assert!(live.reactor().add(listener, EVENT_READ), "reading");
+        assert!(live.reactor().add(listener, Events::READ), "reading");
         let tables = live.state().tables_ref();
         let armed = || tables.enable_accept_timer.is_some();
         assert!(accept_failed(live.server(), libc::EINTR), "EINTR retries");
@@ -743,7 +746,7 @@ mod tests {
 
     /// Whether the reactor reads `sock`.
     fn reading(sock: Socket<'_>) -> bool {
-        sock.read(|s| !s.removed && s.events & EVENT_READ != 0)
+        sock.read(|s| !s.removed && s.events.intersects(Events::READ))
     }
 
     fn set_tables_max(live: &LiveServer, max: u32) {

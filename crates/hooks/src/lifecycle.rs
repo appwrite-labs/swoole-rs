@@ -17,7 +17,7 @@ use swoole_rs_corebase::net_types::SocketAddress;
 #[derive(Clone, Copy)]
 struct Sys {
     shutdown: fn(c_int, c_int) -> c_int,
-    connect: fn(c_int, &SocketAddress) -> c_int,
+    connect: fn(c_int, &SocketAddress) -> bool,
     option: fn(c_int, &mut c_int) -> c_int,
 }
 
@@ -28,7 +28,7 @@ const SYS: Sys = Sys {
 };
 
 /// `connect(2)` of `fd` to `peer`.
-fn sys_connect(fd: c_int, peer: &SocketAddress) -> c_int {
+fn sys_connect(fd: c_int, peer: &SocketAddress) -> bool {
     peer.connect(fd)
 }
 
@@ -170,20 +170,22 @@ fn settle(socket: Co, sys: Sys) -> bool {
 /// `Socket::connect(addr, addrlen)`, with `connect(2)` and the `SO_ERROR` read.
 fn connect(socket: Co, peer: &SocketAddress, sys: Sys) -> bool {
     #[cfg(feature = "iouring")]
-    if let Some(ops) = crate::uring_socket::of(socket) {
-        return crate::uring_socket::swr_v1_hook_uring_connect(&ops, peer);
+    if let Some(connected) = crate::uring_socket::with(socket, |ops| {
+        crate::uring_socket::swr_v1_hook_uring_connect(ops, peer)
+    }) {
+        return connected;
     }
     if !available(socket, READ | WRITE) {
         return false;
     }
     let fd = socket.sock_fd();
-    let result = loop {
-        let result = (sys.connect)(fd, peer);
-        if result >= 0 || errno() != libc::EINTR {
-            break result;
+    let connected = loop {
+        let connected = (sys.connect)(fd, peer);
+        if connected || errno() != libc::EINTR {
+            break connected;
         }
     };
-    if result < 0 {
+    if !connected {
         let error = errno();
         if error != libc::EINPROGRESS {
             set_err(socket, error);
@@ -301,13 +303,13 @@ mod tests {
             len: libc::socklen_t::try_from(size_of::<libc::sockaddr>()).unwrap(),
             ..SocketAddress::default()
         };
-        let retval = loop {
-            let retval = (sys.connect)(s.sock_fd(), &peer);
-            if !(retval < 0 && errno() == libc::EINTR) {
-                break retval;
+        let connected = loop {
+            let connected = (sys.connect)(s.sock_fd(), &peer);
+            if connected || errno() != libc::EINTR {
+                break connected;
             }
         };
-        if retval < 0 {
+        if !connected {
             if errno() != libc::EINPROGRESS {
                 set_err(s, errno());
                 return false;
@@ -366,14 +368,14 @@ mod tests {
         }
         result
     }
-    fn fake_connect(fd: c_int, _: &SocketAddress) -> c_int {
+    fn fake_connect(fd: c_int, _: &SocketAddress) -> bool {
         log(format!("connect:{fd}"));
         let value = CONNECTS.with_borrow_mut(|c| c.remove(0));
         if value < 0 {
             set_errno(-value);
-            return -1;
+            return false;
         }
-        value
+        true
     }
     /// Modes: 0 no error, 1 `ECONNREFUSED`, 2 the call fails, 3 the call fails with no error.
     fn fake_option(_: c_int, error: &mut c_int) -> c_int {

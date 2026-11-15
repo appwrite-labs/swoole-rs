@@ -1,32 +1,39 @@
 //! Upstream `StaticHandler::parse_range`, the lazy boundary and the content type: the
 //! range parser and the response's accounting, stepped between the caller's effects.
 use super::{BOUNDARY_SIZE, HttpStaticContext, StaticEffects};
+use crate::range::{HttpRangeState, RangeStep};
 use crate::range_response::HttpRangeFormat;
 use crate::static_meta::{static_boundary, static_multipart};
-use crate::{HttpRangeFinish, HttpRangeState, HttpSpan, INVALID, OVERFLOW};
+use crate::{INVALID, OVERFLOW};
 
 #[derive(Default, Clone, Copy)]
 enum Stage {
     #[default]
     Idle,
     Parsing,
-    Header,
+    Header {
+        offset: usize,
+        length: usize,
+    },
     CommitHeader,
     Finish,
+    AfterFull,
     End,
+    CommitEnd,
     Date,
+    CheckedDate(bool),
+    Cleared,
+    AfterReplace,
     Done,
 }
 #[derive(Default)]
 pub(super) struct HttpContextRange {
     stage: Stage,
     cursor: HttpRangeState,
-    finish: HttpRangeFinish,
-    part: HttpSpan,
     last_length: usize,
     written: usize,
     length: usize,
-    if_range: u32,
+    if_range: bool,
 }
 /// The effect a range step waits on, or that the invocation is done.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,12 +46,18 @@ enum Effect {
     /// The If-Range date.
     Date,
 }
-/// What the last effect observed: the part's MIME type, the boundary, the date.
+/// One finalization step over the owned context, before applying its task effect.
+#[derive(Debug, PartialEq, Eq)]
+enum FinishAction {
+    Yield(Effect),
+    FullTask,
+    ClearTasks,
+}
+/// What the last effect observed: the part's MIME type or the If-Range date.
 #[derive(Default)]
 struct Observation<'a> {
     mime: &'a [u8],
-    boundary_ready: u32,
-    modified: u32,
+    modified: bool,
 }
 impl HttpStaticContext {
     /// Upstream's `parse_range(range, if_range)`: the `Range` and `If-Range` headers
@@ -56,36 +69,31 @@ impl HttpStaticContext {
         effects: &impl StaticEffects,
     ) {
         let range = range.unwrap_or_default();
-        if self
-            .range_begin(range.len(), u32::from(if_range.is_some()))
-            .is_err()
-        {
+        if self.range_begin(range.len(), if_range.is_some()).is_err() {
             return;
         }
         loop {
             let observed = match self.range_step(range) {
                 Ok(Effect::Header) => {
                     // The pinned compiler's argument order: the boundary, then the MIME type.
-                    let boundary_ready = self.ensure_boundary(effects);
+                    self.ensure_boundary(effects);
                     let mime = effects.mime(self.filename());
                     let observed = Observation {
                         mime: &mime,
-                        boundary_ready,
-                        modified: 0,
+                        modified: false,
                     };
                     if self.range_resume(&observed) == Ok(true) {
                         effects.overflow();
                     }
                     continue;
                 }
-                Ok(Effect::Boundary) => Observation {
-                    boundary_ready: self.ensure_boundary(effects),
-                    ..Observation::default()
-                },
+                Ok(Effect::Boundary) => {
+                    self.ensure_boundary(effects);
+                    Observation::default()
+                }
                 Ok(Effect::Date) => Observation {
-                    modified: u32::from(
-                        effects.modified_range(if_range.unwrap_or_default(), self.facts.mtime),
-                    ),
+                    modified: effects
+                        .modified_range(if_range.unwrap_or_default(), self.facts.mtime),
                     ..Observation::default()
                 },
                 _ => return,
@@ -95,14 +103,13 @@ impl HttpStaticContext {
     }
     /// Upstream's `ensure_boundary`: the boundary, made from random characters
     /// the first time.
-    fn ensure_boundary(&mut self, effects: &impl StaticEffects) -> u32 {
+    fn ensure_boundary(&mut self, effects: &impl StaticEffects) {
         if let Some(count) = static_boundary(self.boundary.len()) {
             let mut random = [0u8; BOUNDARY_SIZE];
             let count = count.min(BOUNDARY_SIZE - 1);
             effects.random(&mut random, count);
             self.set_boundary(random.get(..count).unwrap_or_default());
         }
-        1
     }
     /// The response's `Content-Type`: multipart with several ranges, else the file's.
     pub fn content_type(&mut self, effects: &impl StaticEffects) -> Vec<u8> {
@@ -114,7 +121,7 @@ impl HttpStaticContext {
         self.content.clone()
     }
     /// Begin one invocation; previous committed tasks persist, scratch resets.
-    fn range_begin(&mut self, length: usize, if_range: u32) -> Result<(), i32> {
+    fn range_begin(&mut self, length: usize, if_range: bool) -> Result<(), i32> {
         if length > isize::MAX as usize {
             return Err(OVERFLOW);
         }
@@ -128,23 +135,68 @@ impl HttpStaticContext {
             self.facts.content_length = 0;
             self.range.stage = Stage::Parsing;
         } else {
-            self.finishing();
+            self.range.stage = Stage::Finish;
         }
         Ok(())
     }
-    fn finishing(&mut self) {
-        self.range.finish = HttpRangeFinish {
-            content_length: self.facts.content_length,
-            last_length: self.range.last_length,
-            task_count: self.tasks.count(),
-            filesize: self.facts.filesize,
-            status: self.facts.status,
-            if_range: self.range.if_range,
-            ..HttpRangeFinish::default()
-        };
-        self.range.stage = Stage::Finish;
+    fn check_range_date(&mut self) -> FinishAction {
+        if self.range.if_range {
+            self.range.stage = Stage::Date;
+            FinishAction::Yield(Effect::Date)
+        } else {
+            self.range.stage = Stage::Done;
+            FinishAction::Yield(Effect::Done)
+        }
+    }
+    /// Publish accounting before a task effect, and success only after its push.
+    fn finish_step(&mut self) -> Result<FinishAction, i32> {
+        Ok(match self.range.stage {
+            Stage::Finish if self.range.last_length != 0 && self.tasks.count() == 0 => {
+                return Err(INVALID);
+            }
+            Stage::Finish if self.range.last_length == 0 => {
+                self.facts.content_length = self.facts.filesize;
+                self.range.stage = Stage::AfterFull;
+                FinishAction::FullTask
+            }
+            Stage::Finish if self.tasks.count() == 1 => {
+                self.facts.content_length = self.range.last_length;
+                self.facts.status = 206;
+                self.check_range_date()
+            }
+            Stage::Finish => {
+                self.range.stage = Stage::End;
+                FinishAction::Yield(Effect::Boundary)
+            }
+            Stage::AfterFull => self.check_range_date(),
+            Stage::CommitEnd => {
+                self.facts.content_length = self.facts.content_length.wrapping_add(self.end.len());
+                self.facts.status = 206;
+                self.check_range_date()
+            }
+            Stage::CheckedDate(true) => {
+                self.range.stage = Stage::Cleared;
+                FinishAction::ClearTasks
+            }
+            Stage::Cleared => {
+                self.facts.content_length = self.facts.filesize;
+                self.range.stage = Stage::AfterReplace;
+                FinishAction::FullTask
+            }
+            Stage::AfterReplace => {
+                self.facts.status = 200;
+                self.range.stage = Stage::Done;
+                FinishAction::Yield(Effect::Done)
+            }
+            Stage::CheckedDate(false) | Stage::Done => {
+                self.range.stage = Stage::Done;
+                FinishAction::Yield(Effect::Done)
+            }
+            _ => return Err(INVALID),
+        })
     }
     fn full_task(&mut self) -> Result<(), i32> {
+        self.range.last_length = self.facts.filesize;
         self.tasks.prepare_full(0, self.range.last_length);
         match self.tasks.push() {
             error if error < 0 => Err(error),
@@ -160,32 +212,28 @@ impl HttpStaticContext {
         }
         loop {
             match self.range.stage {
-                Stage::Parsing => {
-                    let result =
-                        self.range
-                            .cursor
-                            .step(input, self.facts.filesize, &mut self.range.part);
-                    if result < 0 {
+                Stage::Parsing => match self.range.cursor.step(input, self.facts.filesize) {
+                    Err(()) => {
                         self.facts.status = 416;
                         self.range.stage = Stage::Done;
                         return Ok(Effect::Done);
                     }
-                    match result {
-                        0 => self.finishing(),
-                        2 => {
-                            self.range.last_length = self.facts.filesize;
-                            self.facts.content_length = self.facts.filesize;
-                            let result = self.full_task();
-                            self.range.stage = Stage::Done;
-                            return result.map(|()| Effect::Done);
-                        }
-                        _ => {
-                            self.range.last_length = self.range.part.length;
-                            self.range.stage = Stage::Header;
-                            return Ok(Effect::Header);
-                        }
+                    Ok(RangeStep::Done) => self.range.stage = Stage::Finish,
+                    Ok(RangeStep::Ignore) => {
+                        self.facts.content_length = self.facts.filesize;
+                        let result = self.full_task();
+                        self.range.stage = Stage::Done;
+                        return result.map(|()| Effect::Done);
                     }
-                }
+                    Ok(RangeStep::Part(part)) => {
+                        self.range.last_length = part.length;
+                        self.range.stage = Stage::Header {
+                            offset: part.offset,
+                            length: part.length,
+                        };
+                        return Ok(Effect::Header);
+                    }
+                },
                 Stage::CommitHeader => {
                     self.facts.content_length = self
                         .facts
@@ -199,36 +247,16 @@ impl HttpStaticContext {
                     }
                     self.range.stage = Stage::Parsing;
                 }
-                Stage::Finish => {
-                    let action = self.range.finish.step();
-                    self.facts.content_length = self.range.finish.content_length;
-                    self.facts.status = self.range.finish.status;
-                    match action {
-                        0 => {
+                _ => match self.finish_step()? {
+                    FinishAction::FullTask => {
+                        if let Err(error) = self.full_task() {
                             self.range.stage = Stage::Done;
-                            return Ok(Effect::Done);
+                            return Err(error);
                         }
-                        1 => {
-                            self.range.last_length = self.range.finish.filesize;
-                            if let Err(error) = self.full_task() {
-                                self.range.stage = Stage::Done;
-                                return Err(error);
-                            }
-                        }
-                        2 => {
-                            self.range.stage = Stage::End;
-                            return Ok(Effect::Boundary);
-                        }
-                        3 => {
-                            self.range.stage = Stage::Date;
-                            return Ok(Effect::Date);
-                        }
-                        4 => self.tasks.clear(),
-                        _ => return Err(INVALID),
                     }
-                }
-                Stage::Done => return Ok(Effect::Done),
-                _ => return Err(INVALID),
+                    FinishAction::ClearTasks => self.tasks.clear(),
+                    FinishAction::Yield(effect) => return Ok(effect),
+                },
             }
         }
     }
@@ -236,22 +264,19 @@ impl HttpStaticContext {
     /// the caller applies before the next step.
     fn range_resume(&mut self, observed: &Observation<'_>) -> Result<bool, i32> {
         match self.range.stage {
-            Stage::Header => {
-                if observed.boundary_ready == 0 {
-                    return Err(INVALID);
-                }
+            Stage::Header { offset, length } => {
                 let format = HttpRangeFormat {
                     boundary: &self.boundary,
                     mime: observed.mime,
-                    offset: self.range.part.offset,
-                    length: self.range.part.length,
+                    offset,
+                    length,
                     filesize: self.facts.filesize,
                     part: 0,
-                    separator: u32::from(self.tasks.count() != 0),
+                    separator: self.tasks.count() != 0,
                 };
                 let result = self.tasks.prepare_range(
-                    i64::try_from(self.range.part.offset).unwrap_or(i64::MAX),
-                    self.range.part.length,
+                    i64::try_from(offset).unwrap_or(i64::MAX),
+                    length,
                     &format,
                     &mut self.range.written,
                 );
@@ -262,20 +287,15 @@ impl HttpStaticContext {
                 Ok(result == 1)
             }
             Stage::End => {
-                if observed.boundary_ready == 0 {
-                    return Err(INVALID);
-                }
                 let result = self.format_end();
                 if result < 0 {
                     return Err(result);
                 }
-                self.range.finish.end_length = self.end.len();
-                self.range.stage = Stage::Finish;
+                self.range.stage = Stage::CommitEnd;
                 Ok(false)
             }
             Stage::Date => {
-                self.range.finish.modified = observed.modified;
-                self.range.stage = Stage::Finish;
+                self.range.stage = Stage::CheckedDate(observed.modified);
                 Ok(false)
             }
             _ => Err(INVALID),
@@ -311,7 +331,7 @@ mod tests {
         owner.observed(&HttpStaticObservation {
             filesize: 10,
             mtime: 1_700_000_000,
-            kind: 32,
+            kind: crate::StaticFileKind::File,
             ..HttpStaticObservation::default()
         });
         assert_eq!(
@@ -320,15 +340,48 @@ mod tests {
         );
         owner
     }
-    fn observed(modified: u32) -> Observation<'static> {
+    fn observed(modified: bool) -> Observation<'static> {
         Observation {
             mime: b"text/plain",
-            boundary_ready: 1,
             modified,
         }
     }
     fn complete(owner: &mut HttpStaticContext, text: &[u8], modified: bool) {
         owner.parse_range(Some(text), Some(b""), &Fixed { modified });
+    }
+    #[test]
+    fn finalization_does_not_publish_success_before_task_push() {
+        let mut owner = owner();
+        owner.facts.content_length = 123;
+        owner.facts.filesize = 100;
+        owner.facts.status = 299;
+        owner.range.stage = Stage::Finish;
+        owner.range.last_length = 2;
+        owner.range.if_range = true;
+        owner.boundary = b"b".to_vec();
+        owner.tasks.prepare_full(0, 2);
+        assert_eq!(owner.tasks.push(), 0);
+        assert_eq!(owner.tasks.push(), 0);
+        assert_eq!(
+            owner.finish_step(),
+            Ok(FinishAction::Yield(Effect::Boundary))
+        );
+        assert_eq!((owner.facts.status, owner.facts.content_length), (299, 123));
+        assert_eq!(owner.range_resume(&observed(false)), Ok(false));
+        assert_eq!(owner.end.len(), 9);
+        assert_eq!(owner.finish_step(), Ok(FinishAction::Yield(Effect::Date)));
+        assert_eq!((owner.facts.status, owner.facts.content_length), (206, 132));
+        assert_eq!(owner.range_resume(&observed(true)), Ok(false));
+        assert_eq!(owner.finish_step(), Ok(FinishAction::ClearTasks));
+        assert_eq!((owner.facts.status, owner.facts.content_length), (206, 132));
+        owner.tasks.clear();
+        assert_eq!(owner.finish_step(), Ok(FinishAction::FullTask));
+        assert_eq!((owner.facts.status, owner.facts.content_length), (206, 100));
+        assert_eq!(owner.full_task(), Ok(()));
+        assert_eq!(owner.finish_step(), Ok(FinishAction::Yield(Effect::Done)));
+        assert_eq!(owner.facts.status, 200);
+        assert_eq!(owner.tasks.count(), 1);
+        assert_eq!(owner.tasks()[0].length, 100);
     }
     #[test]
     fn ordinary_empty_file_has_one_initialized_zero_length_task() {
@@ -344,18 +397,18 @@ mod tests {
     fn header_accounting_waits_for_native_errno_boundary_then_commits() {
         let mut owner = owner();
         let text = b"bytes=1-3,5-6";
-        assert_eq!(owner.range_begin(text.len(), 0), Ok(()));
+        assert_eq!(owner.range_begin(text.len(), false), Ok(()));
         assert_eq!(owner.range_step(text), Ok(Effect::Header));
-        assert_eq!(owner.range_resume(&observed(0)), Ok(false));
+        assert_eq!(owner.range_resume(&observed(false)), Ok(false));
         assert_eq!(owner.facts.content_length, 0);
         assert_eq!(owner.tasks.count(), 0);
         // The caller applies any errno effect before this next call can commit.
         assert_eq!(owner.range_step(text), Ok(Effect::Header));
         assert_eq!(owner.tasks.count(), 1);
         assert!(owner.facts.content_length > 3);
-        assert_eq!(owner.range_resume(&observed(0)), Ok(false));
+        assert_eq!(owner.range_resume(&observed(false)), Ok(false));
         assert_eq!(owner.range_step(text), Ok(Effect::Boundary));
-        assert_eq!(owner.range_resume(&observed(0)), Ok(false));
+        assert_eq!(owner.range_resume(&observed(false)), Ok(false));
         assert_eq!(owner.range_step(text), Ok(Effect::Done));
         assert_eq!(owner.facts.status, 206);
         let tasks: [HttpStaticTask; 2] = owner.tasks().try_into().unwrap();
@@ -387,8 +440,19 @@ mod tests {
     fn wrong_stage_and_changed_span_metadata_do_not_consume_effects() {
         let mut owner = owner();
         let text = b"bytes=0-0";
-        assert_eq!(owner.range_resume(&observed(0)), Err(INVALID));
-        assert_eq!(owner.range_begin(text.len(), 0), Ok(()));
+        owner.facts.status = 299;
+        let before = owner.observe();
+        assert_eq!(owner.finish_step(), Err(INVALID));
+        assert_eq!(owner.observe(), before);
+        assert!(matches!(owner.range.stage, Stage::Idle));
+        assert_eq!(owner.range_resume(&observed(false)), Err(INVALID));
+        owner.range.stage = Stage::Finish;
+        owner.range.last_length = 1;
+        assert_eq!(owner.finish_step(), Err(INVALID));
+        assert_eq!(owner.observe(), before);
+        assert!(matches!(owner.range.stage, Stage::Finish));
+        assert_eq!(owner.range.last_length, 1);
+        assert_eq!(owner.range_begin(text.len(), false), Ok(()));
         assert_eq!(owner.range_step(&text[..text.len() - 1]), Err(INVALID));
         assert_eq!(owner.tasks.count(), 0);
         assert_eq!(owner.range_step(text), Ok(Effect::Header));

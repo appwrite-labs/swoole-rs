@@ -11,11 +11,7 @@ use core::ffi::{c_int, c_void};
 use swoole_rs_reactor::reactor_upstream::{
     change as reactor_change, reactor_interest, reactor_set_handler,
 };
-use swoole_rs_reactor::{ChangeOp, Handler, Interest, ReactorPrepared, Running, Socket};
-
-/// `SW_EVENT_READ`.
-pub(crate) const EVENT_READ: c_int =
-    swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
+use swoole_rs_reactor::{ChangeOp, Events, Handler, Interest, ReactorPrepared, Running, Socket};
 
 /// The key a reactor holds its server under: private, so only [`Reactor::hold_server`]
 /// stores an object under it.
@@ -83,27 +79,27 @@ impl Reactor {
         unsafe { Running::new(self.0) }
     }
     /// `Reactor::change`'s `op` of `sock` with `events`: whether it applied.
-    pub(crate) fn change(self, sock: Socket<'_>, op: ChangeOp, events: c_int) -> bool {
+    pub(crate) fn change(self, sock: Socket<'_>, op: ChangeOp, events: Events) -> bool {
         // SAFETY: a live socket, which stays live while it is registered.
         let sock = unsafe { Socket::from_ptr(sock.as_ptr()) };
         sock.is_some_and(|sock| reactor_change(self.handle(), sock, op, events))
     }
-    /// `Reactor::interest`'s `kind` of `sock`: whether it applied.
-    pub(crate) fn interest(self, sock: Socket<'_>, kind: Interest, events: c_int) -> bool {
+    /// `Reactor::interest(sock, kind, 0)`: whether it applied.
+    pub(crate) fn interest(self, sock: Socket<'_>, kind: Interest) -> bool {
         // SAFETY: a live reactor and socket.
-        unsafe { reactor_interest(self.0, sock.as_ptr(), kind.code(), events) == 0 }
+        unsafe { reactor_interest(self.0, sock.as_ptr(), kind.code(), 0) == 0 }
     }
     /// `reactor->add(sock, events)`: whether it applied.
-    pub(crate) fn add(self, sock: Socket<'_>, events: c_int) -> bool {
+    pub(crate) fn add(self, sock: Socket<'_>, events: Events) -> bool {
         self.change(sock, ChangeOp::Add, events)
     }
     /// `reactor->del(sock)`: whether it applied.
     pub(crate) fn del(self, sock: Socket<'_>) -> bool {
-        self.change(sock, ChangeOp::Del, 0)
+        self.change(sock, ChangeOp::Del, Events::NONE)
     }
     /// `reactor->remove_read_event(sock)`.
     pub(crate) fn unread(self, sock: Socket<'_>) {
-        let _ = self.interest(sock, Interest::RemoveRead, 0);
+        let _ = self.interest(sock, Interest::RemoveRead);
     }
     /// The reactor's own `close` of `sock`, when it has one.
     pub(crate) fn close(self, sock: Socket<'_>) -> c_int {
@@ -116,8 +112,8 @@ impl Reactor {
     pub(crate) fn trigger_close(self, event: &mut swoole_rs_reactor::Event) -> c_int {
         swoole_rs_reactor::reactor_upstream::trigger_close_event(self.handle(), event)
     }
-    pub(crate) fn set_handler(self, fd_type: c_int, event: c_int, handler: Handler) {
-        reactor_set_handler(self.handle(), fd_type, event, Some(handler));
+    pub(crate) fn set_handler(self, fd_type: c_int, event: Events, handler: Handler) {
+        reactor_set_handler(self.handle(), fd_type, event.bits(), Some(handler));
     }
     /// `reactor->set_default_error_handler(handler)`.
     pub(crate) fn set_error_handler(self, handler: Handler) {

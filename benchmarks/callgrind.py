@@ -351,10 +351,13 @@ def send(port, workload, count):
 
 
 def instructions(engine, workload, requests, warmup, profiles=None):
-    with socket.socket() as reservation:
+    with socket.socket() as reservation, tempfile.TemporaryDirectory(prefix='swr-callgrind-') as out, \
+            tempfile.TemporaryDirectory() as data:
+        # Held until the server stops, as tools/harness.py's `server` holds it: released,
+        # another bind(0) could take the port during valgrind's slow start.
+        reservation.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         reservation.bind(('127.0.0.1', 0))
         port = reservation.getsockname()[1]
-    with tempfile.TemporaryDirectory(prefix='swr-callgrind-') as out, tempfile.TemporaryDirectory() as data:
         command = ['valgrind', '--tool=callgrind', '--trace-children=yes', '--instr-atstart=no',
                    f'--callgrind-out-file={out}/cg.%p',
                    *engine.command(ROOT / workload[0] / 'server.php')]

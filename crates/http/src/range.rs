@@ -1,12 +1,19 @@
-//! Incremental legacy byte-range parsing; native constructs response headers/tasks.
-use super::{HttpSpan, INVALID};
-#[repr(C)]
+//! Incremental legacy byte-range parsing for the owned static HTTP context.
+use super::HttpSpan;
+
+/// One parsed part, completion, or a header whose unit must be ignored.
+pub(crate) enum RangeStep {
+    Part(HttpSpan),
+    Done,
+    Ignore,
+}
+
 #[derive(Default)]
 pub(crate) struct HttpRangeState {
-    pub(crate) cursor: usize,
-    pub(crate) total: usize,
-    pub(crate) started: u32,
-    pub(crate) done: u32,
+    cursor: usize,
+    total: usize,
+    started: bool,
+    done: bool,
 }
 fn decimal(input: &[u8], at: &mut usize) -> Option<usize> {
     let start = *at;
@@ -24,12 +31,12 @@ fn spaces(input: &[u8], at: &mut usize) {
         *at += 1;
     }
 }
-fn next(input: &[u8], size: usize, state: &mut HttpRangeState) -> Result<Option<HttpSpan>, i32> {
+fn next(input: &[u8], size: usize, state: &mut HttpRangeState) -> Result<RangeStep, ()> {
     if state.cursor > input.len() {
-        return Err(INVALID);
+        return Err(());
     }
-    if state.done != 0 {
-        return Ok(None);
+    if state.done {
+        return Ok(RangeStep::Done);
     }
     loop {
         let mut at = state.cursor;
@@ -37,28 +44,28 @@ fn next(input: &[u8], size: usize, state: &mut HttpRangeState) -> Result<Option<
         let (start, mut end);
         if input.get(at) == Some(&b'-') {
             at += 1;
-            let suffix = decimal(input, &mut at).ok_or(INVALID)?;
+            let suffix = decimal(input, &mut at).ok_or(())?;
             spaces(input, &mut at);
             if !matches!(input.get(at), None | Some(b',' | b'\r')) {
-                return Err(INVALID);
+                return Err(());
             }
             start = size.saturating_sub(suffix);
             end = size;
         } else {
-            start = decimal(input, &mut at).ok_or(INVALID)?;
+            start = decimal(input, &mut at).ok_or(())?;
             spaces(input, &mut at);
             if input.get(at) != Some(&b'-') {
-                return Err(INVALID);
+                return Err(());
             }
             at += 1;
             spaces(input, &mut at);
             if matches!(input.get(at), None | Some(b',')) {
                 end = size;
             } else {
-                end = decimal(input, &mut at).ok_or(INVALID)?;
+                end = decimal(input, &mut at).ok_or(())?;
                 spaces(input, &mut at);
                 if !matches!(input.get(at), None | Some(b',' | b'\r')) {
-                    return Err(INVALID);
+                    return Err(());
                 }
                 end = if end >= size { size } else { end + 1 };
             }
@@ -67,65 +74,57 @@ fn next(input: &[u8], size: usize, state: &mut HttpRangeState) -> Result<Option<
             state.cursor = at + 1;
         } else {
             state.cursor = at;
-            state.done = 1;
+            state.done = true;
         }
         if start < end {
             let length = end - start;
-            state.total = state.total.checked_add(length).ok_or(INVALID)?;
-            return Ok(Some(HttpSpan {
+            state.total = state.total.checked_add(length).ok_or(())?;
+            return Ok(RangeStep::Part(HttpSpan {
                 offset: start,
                 length,
             }));
         }
         if start == 0 {
-            state.done = 1;
+            state.done = true;
         }
-        if state.done != 0 {
-            return Ok(None);
+        if state.done {
+            return Ok(RangeStep::Done);
         }
     }
 }
 impl HttpRangeState {
-    pub(crate) fn step(&mut self, input: &[u8], size: usize, span: &mut HttpSpan) -> i32 {
-        *span = HttpSpan::default();
-        if self.started == 0 {
-            self.started = 1;
+    pub(crate) fn step(&mut self, input: &[u8], size: usize) -> Result<RangeStep, ()> {
+        if !self.started {
+            self.started = true;
             if input.is_empty() {
-                self.done = 1;
-                return 0;
+                self.done = true;
+                return Ok(RangeStep::Done);
             }
             if !crate::case_prefix(input, b"bytes=") {
-                self.done = 1;
-                return 2;
+                self.done = true;
+                return Ok(RangeStep::Ignore);
             }
             self.cursor = 6;
         }
-        match next(input, size, self) {
-            Ok(Some(part)) => {
-                *span = part;
-                1
-            }
-            Ok(None) => 0,
-            Err(status) => {
-                self.done = 1;
-                status
-            }
-        }
+        let step = next(input, size, self);
+        self.done |= step.is_err();
+        step
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::INVALID;
     fn parse(input: &[u8], size: usize) -> (i32, Vec<(usize, usize)>) {
         let mut state = HttpRangeState::default();
-        let mut output = HttpSpan::default();
         let mut parts = Vec::new();
         loop {
-            let status = state.step(input, size, &mut output);
-            if status != 1 {
-                return (status, parts);
+            match state.step(input, size) {
+                Ok(RangeStep::Part(part)) => parts.push((part.offset, part.length)),
+                Ok(RangeStep::Done) => return (0, parts),
+                Ok(RangeStep::Ignore) => return (2, parts),
+                Err(()) => return (INVALID, parts),
             }
-            parts.push((output.offset, output.length));
         }
     }
     #[test]

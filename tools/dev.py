@@ -439,7 +439,7 @@ BARRIER_PHASES = {'ownership', 'cargo-build', 'reference-build', 'stdext-referen
 
 def serial_phase(name):
     """Phases that can't share the machine: fixed ports (the PHPT runners), timing, benchmarks."""
-    return (name == 'phpt' or name.endswith('-originals') or 'benchmark' in name or 'timing' in name)
+    return (name in {'phpt', 'locks-unit'} or name.endswith('-originals') or 'benchmark' in name or 'timing' in name)
 
 
 def phase_dependencies(commands, reports):
@@ -754,12 +754,11 @@ def main():
         # A pattern (`--phase 'halfclose-*'`) names every planned phase it matches.
         args.phase = [match for pattern in args.phase
                       for match in ([name for name, _ in planned if fnmatchcase(name, pattern)] or [pattern])]
-    if args.phase and args.with_prerequisites:
-        args.phase = with_prerequisites(planned, args.phase)
-    if args.phase:
         unknown = set(args.phase) - {name for name, _ in planned}
         if unknown:
             parser.error('Unknown phases: ' + ', '.join(sorted(unknown)))
+        if args.with_prerequisites:
+            args.phase = with_prerequisites(planned, args.phase)
         report_owners = {str(reports / (name + '.json')): name for name, _ in planned}
         for name, command in planned:
             if name in args.phase:

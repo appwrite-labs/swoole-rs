@@ -29,7 +29,7 @@ pub(crate) extern "C" fn info(ssl: Ssl<'_>, where_: c_int, _result: c_int) {
     };
     if renegotiating {
         socket.edit(|record| {
-            if record.tls.state == crate::constants::SslState::SW_SSL_STATE_READY as u32 {
+            if record.tls.state == crate::constants::SslState::SW_SSL_STATE_READY {
                 record.ssl_renegotiation = true;
             }
         });

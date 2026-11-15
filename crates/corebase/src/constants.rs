@@ -3,6 +3,17 @@
 //! Canonical legacy event, socket and configuration identifiers. Both native
 //! headers and Rust operations use these definitions.
 
+/// The socket TLS handshake state, shared by reactor storage and TLS operations.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[expect(non_camel_case_types, reason = "preserve the native SDK names")]
+pub enum SslState {
+    #[default]
+    SW_SSL_STATE_HANDSHAKE = 0,
+    SW_SSL_STATE_READY = 1,
+    SW_SSL_STATE_WAIT_STREAM = 2,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(

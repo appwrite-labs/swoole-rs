@@ -135,7 +135,8 @@ pub fn php_swoole_set_global_option(options: &Array) {
 }
 
 /// `SW_ERROR_OPERATION_NOT_SUPPORT`.
-const OPERATION_NOT_SUPPORT: i64 = 507;
+const OPERATION_NOT_SUPPORT: i64 =
+    swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as i64;
 
 /// `php_swoole_set_global_option`'s body: false after a size that does not
 /// parse, whose fatal error is deferred, or a conversion's deferred bailout.

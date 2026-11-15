@@ -12,11 +12,14 @@ use swoole_rs_protocols::{
 /// `SW_LOG_NOTICE`.
 const NOTICE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as c_int;
 /// `SW_ERROR_SOCKS5_*`.
-const UNSUPPORT_VERSION: c_int = 7001;
-const UNSUPPORT_METHOD: c_int = 7002;
-const AUTH_FAILED: c_int = 7003;
-const SERVER_ERROR: c_int = 7004;
-const HANDSHAKE_FAILED: c_int = 7005;
+const UNSUPPORT_VERSION: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SOCKS5_UNSUPPORT_VERSION as c_int;
+const UNSUPPORT_METHOD: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SOCKS5_UNSUPPORT_METHOD as c_int;
+const AUTH_FAILED: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SOCKS5_AUTH_FAILED as c_int;
+const SERVER_ERROR: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SOCKS5_SERVER_ERROR as c_int;
+const HANDSHAKE_FAILED: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SOCKS5_HANDSHAKE_FAILED as c_int;
 
 /// A `swoole::Socks5Proxy`: a borrow of its Rust proxy state.
 #[repr(C)]
@@ -281,8 +284,8 @@ mod tests {
     // `Socks5Proxy::create(SW_SOCK_TCP, "127.0.0.1", 1080, "", "")`, then a 255- and a
     // 256-byte target host through the tunnel.
     /// Native's `swoole_error_log`, as far as the case observes it: it sets the last error.
-    fn error_log(kind: c_int, _: c_int, code: c_int, _: &CStr, _: &CStr) {
-        if kind == log::LOG_ERROR {
+    fn error_log(kind: log::LogKind, _: c_int, code: c_int, _: &CStr, _: &CStr) {
+        if kind == log::LogKind::Error {
             log::set_last_error(code);
         }
     }

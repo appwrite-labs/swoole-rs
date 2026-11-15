@@ -1,11 +1,25 @@
 //! Static path/selection policy with native filesystem and allocation boundaries.
 use crate::{INVALID, OVERFLOW};
 
-#[repr(C)]
+/// The next effect consumed by static-file path selection.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StaticPhase {
+    #[default]
+    Root,
+    Locations,
+    Directory,
+    Stat,
+    CanonicalPath,
+    CanonicalLink,
+    TargetStat,
+    Mime,
+    Done,
+}
+
 #[derive(Default)]
 pub struct HttpStaticPath {
-    pub phase: u32,
-    pub last: u32,
+    pub phase: StaticPhase,
+    pub last: bool,
     pub url_length: usize,
     pub filename_length: usize,
 }
@@ -46,12 +60,12 @@ pub fn location_match(
     location: &[u8],
     state: &mut HttpStaticPath,
 ) -> Result<bool, i32> {
-    if state.phase != 1 {
+    if state.phase != StaticPhase::Locations {
         return Err(INVALID);
     }
     let found = prefix(url, location, true);
     if found {
-        state.last = 1;
+        state.last = true;
     }
     Ok(found)
 }
@@ -73,10 +87,10 @@ pub(crate) enum Action {
 }
 fn selected(state: &mut HttpStaticPath, facts: u32) -> Action {
     if facts & DIRECTORY != 0 && facts & (INDEX | AUTOINDEX) != 0 {
-        state.phase = 8;
+        state.phase = StaticPhase::Done;
         Action::Done(true)
     } else {
-        state.phase = 7;
+        state.phase = StaticPhase::Mime;
         Action::Mime
     }
 }
@@ -93,7 +107,7 @@ pub(crate) fn path_step(
     facts: u32,
 ) -> Result<Action, i32> {
     match state.phase {
-        0 => {
+        StaticPhase::Root => {
             // Old root copy precedes location rejection. Reject only its old
             // out-of-allocation case; exact-capacity copies remain observable.
             let Some(head) = span(output, capacity, 0, root.len()) else {
@@ -105,19 +119,19 @@ pub(crate) fn path_step(
                 .or_else(|| url.iter().position(|&b| b == b'#'))
                 .unwrap_or(url.len());
             head.copy_from_slice(root);
-            state.phase = 1;
+            state.phase = StaticPhase::Locations;
             return Ok(Action::Locations);
         }
-        1 => {
-            if facts & LOCATIONS != 0 && state.last == 0 {
-                state.phase = 8;
+        StaticPhase::Locations => {
+            if facts & LOCATIONS != 0 && !state.last {
+                state.phase = StaticPhase::Done;
                 return Ok(Action::Done(false));
             }
             let Some(url) = url.get(..state.url_length) else {
                 return Err(INVALID);
             };
             let Some(length) = root.len().checked_add(url.len()).filter(|&n| n < capacity) else {
-                state.phase = 8;
+                state.phase = StaticPhase::Done;
                 return Ok(Action::Catch);
             };
             let Some((nul, path)) =
@@ -127,13 +141,10 @@ pub(crate) fn path_step(
             };
             path.copy_from_slice(url);
             *nul = 0;
-            state.phase = 2;
+            state.phase = StaticPhase::Directory;
             return Ok(Action::Directory);
         }
-        2 => {
-            if state.url_length > url.len() {
-                return Err(INVALID);
-            }
+        StaticPhase::Directory => {
             if state.url_length > url.len() {
                 return Err(INVALID);
             }
@@ -150,64 +161,68 @@ pub(crate) fn path_step(
                 *nul = 0;
             }
             state.filename_length = length;
-            state.phase = 3;
+            state.phase = StaticPhase::Stat;
             return Ok(Action::Lstat);
         }
-        3..=7 => {}
-        _ => return Err(INVALID),
+        StaticPhase::Stat
+        | StaticPhase::CanonicalPath
+        | StaticPhase::CanonicalLink
+        | StaticPhase::TargetStat
+        | StaticPhase::Mime => {}
+        StaticPhase::Done => return Err(INVALID),
     }
     if state.filename_length >= capacity {
         return Err(INVALID);
     }
     let filename = output.get(..state.filename_length).unwrap_or_default();
     match state.phase {
-        3 => {
+        StaticPhase::Stat => {
             if facts & STAT_OK == 0 {
-                state.phase = 8;
+                state.phase = StaticPhase::Done;
                 return Ok(Action::Catch);
             }
             if filename.windows(2).any(|v| v == b"..") {
-                state.phase = 4;
+                state.phase = StaticPhase::CanonicalPath;
                 Ok(Action::Realpath)
             } else if facts & LINK != 0 {
-                state.phase = 5;
+                state.phase = StaticPhase::CanonicalLink;
                 Ok(Action::Realpath)
             } else {
                 Ok(selected(state, facts))
             }
         }
-        4 => {
+        StaticPhase::CanonicalPath => {
             if facts & CANONICAL_OK == 0
                 || filename.get(root.len()) != Some(&b'/')
                 || !prefix(filename, root, false)
             {
-                state.phase = 8;
+                state.phase = StaticPhase::Done;
                 Ok(Action::Catch)
             } else {
                 Ok(selected(state, facts))
             }
         }
-        5 => {
+        StaticPhase::CanonicalLink => {
             if facts & CANONICAL_OK == 0 {
-                state.phase = 8;
+                state.phase = StaticPhase::Done;
                 Ok(Action::Catch)
             } else {
-                state.phase = 6;
+                state.phase = StaticPhase::TargetStat;
                 Ok(Action::Lstat)
             }
         }
-        6 => {
+        StaticPhase::TargetStat => {
             if facts & STAT_OK == 0 {
-                state.phase = 8;
+                state.phase = StaticPhase::Done;
                 Ok(Action::Catch)
             } else {
                 Ok(selected(state, facts))
             }
         }
-        7 => {
-            state.phase = 8;
+        StaticPhase::Mime => {
+            state.phase = StaticPhase::Done;
             Ok(Action::Done(
-                (facts & MIME != 0 || state.last != 0) && facts & FILE != 0,
+                (facts & MIME != 0 || state.last) && facts & FILE != 0,
             ))
         }
         _ => Err(INVALID),
@@ -336,7 +351,7 @@ mod tests {
             Err(OVERFLOW)
         );
         assert_eq!(out, [0xa5; 4]);
-        assert_eq!(state.phase, 0);
+        assert_eq!(state.phase as u32, 0);
         assert_eq!(
             path_step(b"x", b"1234", &mut out, 4, &mut state, 0),
             Ok(Action::Locations)

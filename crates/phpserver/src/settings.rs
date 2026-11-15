@@ -12,8 +12,10 @@ use swoole_rs_server::{ServerText, server_methods, view};
 use swoole_rs_zend::{Array, Call, E_ERROR, E_WARNING, Value, bailout, message, report};
 
 /// `SW_ERROR_PHP_RUNTIME_NOTICE`, `SW_ERROR_SERVER_UNRELATED_THREAD`.
-const SW_ERROR_PHP_RUNTIME_NOTICE: c_int = 510;
-const SW_ERROR_SERVER_UNRELATED_THREAD: c_int = 9016;
+const SW_ERROR_PHP_RUNTIME_NOTICE: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_PHP_RUNTIME_NOTICE as c_int;
+const SW_ERROR_SERVER_UNRELATED_THREAD: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SERVER_UNRELATED_THREAD as c_int;
 /// `SW_WORKER_MIN_REQUEST`.
 const WORKER_MIN_REQUEST: i64 = 10;
 

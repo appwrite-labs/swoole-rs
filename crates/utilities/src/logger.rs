@@ -23,8 +23,8 @@ const SW_LOG_DEFAULT_DATE_FORMAT: &CStr = c"%F %T";
 
 /// `SW_LOG_WARNING`, `SW_ERROR_SYSTEM_CALL_FAIL` and `SW_ERROR_INVALID_PARAMS`.
 const LOG_WARNING: c_int = 4;
-const SYSTEM_CALL_FAIL: c_int = 502;
-const INVALID_PARAMS: c_int = 505;
+const SYSTEM_CALL_FAIL: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SYSTEM_CALL_FAIL as c_int;
+const INVALID_PARAMS: c_int = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as c_int;
 const REDIRECT_ORIGIN: &CStr = c"Logger::redirect_stdout_and_stderr";
 
 #[repr(C)]
@@ -570,10 +570,16 @@ pub fn set_log_file(file: &CStr) {
 }
 
 /// The log macros (`swoole_log.h`) for a log Rust emits on behalf of `origin`, of
-/// corebase's `LOG_*` `kind` (crates/corebase/src/log.rs): the last error, the level
+/// corebase's `LogKind` (crates/corebase/src/log.rs): the last error, the level
 /// check, the line formatted into `sw_error`, the put and, for the errors, the exit.
 /// `swoole_init` registers it as corebase's log host.
-pub fn swr_v1_utils_log(kind: c_int, level: c_int, code: c_int, origin: &CStr, message: &CStr) {
+pub fn swr_v1_utils_log(
+    kind: log::LogKind,
+    level: c_int,
+    code: c_int,
+    origin: &CStr,
+    message: &CStr,
+) {
     let origin = origin.to_bytes();
     let message = message.to_bytes();
     let threshold = swoole_get_log_level();
@@ -583,20 +589,20 @@ pub fn swr_v1_utils_log(kind: c_int, level: c_int, code: c_int, origin: &CStr, m
         let tail = [b", Error: ", reason.to_bytes(), b"[", code.as_bytes(), b"]"];
         [origin, b"(): ", message, &tail.concat()].concat()
     };
-    if matches!(kind, log::LOG_SYS_WARNING | log::LOG_SYS_ERROR) {
+    if matches!(kind, log::LogKind::SysWarning | log::LogKind::SysError) {
         swoole_rs_corebase::set_errno(code);
     }
-    if matches!(kind, log::LOG_SYS_WARNING | log::LOG_ERROR) {
+    if matches!(kind, log::LogKind::SysWarning | log::LogKind::Error) {
         log::set_last_error(code);
     }
     let (level, line) = match kind {
-        log::LOG_SYS_WARNING if SW_LOG_ERROR >= threshold => (LOG_WARNING, failed()),
-        log::LOG_WARNING if LOG_WARNING >= threshold => {
+        log::LogKind::SysWarning if SW_LOG_ERROR >= threshold => (LOG_WARNING, failed()),
+        log::LogKind::Warning if LOG_WARNING >= threshold => {
             (LOG_WARNING, [origin, b"(): ", message].concat())
         }
-        log::LOG_NOTICE if SW_LOG_NOTICE >= threshold => (SW_LOG_NOTICE, message.to_vec()),
-        log::LOG_INFO if SW_LOG_INFO >= threshold => (SW_LOG_INFO, message.to_vec()),
-        log::LOG_ERROR
+        log::LogKind::Notice if SW_LOG_NOTICE >= threshold => (SW_LOG_NOTICE, message.to_vec()),
+        log::LogKind::Info if SW_LOG_INFO >= threshold => (SW_LOG_INFO, message.to_vec()),
+        log::LogKind::Error
             if level >= threshold && !swoole_rs_error_ffi::swoole_is_ignored_error(code) =>
         {
             let code = code.to_string();
@@ -605,15 +611,15 @@ pub fn swr_v1_utils_log(kind: c_int, level: c_int, code: c_int, origin: &CStr, m
                 [origin, b"() (ERRNO ", code.as_bytes(), b"): ", message].concat(),
             )
         }
-        log::LOG_SYS_ERROR => (SW_LOG_ERROR, failed()),
-        log::LOG_FATAL => (SW_LOG_ERROR, [origin, b"(): ", message].concat()),
+        log::LogKind::SysError => (SW_LOG_ERROR, failed()),
+        log::LogKind::Fatal => (SW_LOG_ERROR, [origin, b"(): ", message].concat()),
         _ => return,
     };
     let length = swoole_rs_error::set_last_error_msg(&line);
     if let Some(logger) = process_logger() {
         logger.put(level, line.get(..length).unwrap_or(&line));
     }
-    if matches!(kind, log::LOG_SYS_ERROR | log::LOG_FATAL) {
+    if matches!(kind, log::LogKind::SysError | log::LogKind::Fatal) {
         swoole_rs_corebase::swoole_exit(1);
     }
 }
@@ -627,13 +633,13 @@ pub(crate) mod tests {
     use std::cell::RefCell;
 
     /// A corebase log call: kind, level, code, origin and message.
-    type Logged = (c_int, c_int, c_int, String, String);
+    type Logged = (log::LogKind, c_int, c_int, String, String);
 
     thread_local! {
         static HOST: RefCell<Vec<Logged>> = const { RefCell::new(Vec::new()) };
     }
 
-    fn logged(kind: c_int, level: c_int, code: c_int, origin: &CStr, message: &CStr) {
+    fn logged(kind: log::LogKind, level: c_int, code: c_int, origin: &CStr, message: &CStr) {
         let text = |s: &CStr| s.to_string_lossy().into_owned();
         let entry = (kind, level, code, text(origin), text(message));
         HOST.with(|host| host.borrow_mut().push(entry));
@@ -726,7 +732,7 @@ pub(crate) mod tests {
             assert_eq!(
                 host(),
                 [(
-                    log::LOG_ERROR,
+                    log::LogKind::Error,
                     LOG_WARNING,
                     SYSTEM_CALL_FAIL,
                     "Logger::open".into(),
@@ -753,7 +759,7 @@ pub(crate) mod tests {
             assert_eq!(
                 host(),
                 [(
-                    log::LOG_ERROR,
+                    log::LogKind::Error,
                     LOG_WARNING,
                     INVALID_PARAMS,
                     "Logger::set_date_format".into(),
@@ -773,7 +779,7 @@ pub(crate) mod tests {
             assert_eq!(log::last_error(), INVALID_PARAMS, "last error");
             let warning = |message: &str| {
                 (
-                    log::LOG_WARNING,
+                    log::LogKind::Warning,
                     0,
                     0,
                     REDIRECT_ORIGIN.to_string_lossy().into_owned(),
@@ -873,10 +879,10 @@ pub(crate) mod tests {
         let run = |kind, level, code, origin: &CStr| {
             swr_v1_utils_log(kind, level, code, origin, c"x");
         };
-        run(log::LOG_ERROR, 6, 1015, c"Socket::ssl_verify");
+        run(log::LogKind::Error, 6, 1015, c"Socket::ssl_verify");
         assert_eq!(log::last_error(), 1015);
         assert_eq!(last(), c"Socket::ssl_verify() (ERRNO 1015): x");
-        run(log::LOG_SYS_WARNING, 0, libc::ENOENT, c"f");
+        run(log::LogKind::SysWarning, 0, libc::ENOENT, c"f");
         assert_eq!(
             log::last_error(),
             libc::ENOENT,

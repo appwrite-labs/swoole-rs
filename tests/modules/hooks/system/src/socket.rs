@@ -22,6 +22,7 @@ use std::ptr;
 use swoole_rs_hooks::co_socket::{self, Co};
 use swoole_rs_hooks::vector::{IoVector, RecvMessage, SendMessage, Vectors};
 use swoole_rs_hooks::{TimeoutScope, co_io, packet};
+use swoole_rs_reactor::TimeoutKind;
 
 // glibc's values (the core-tests build is Linux).
 pub(super) const ECONNREFUSED: c_int = 111;
@@ -153,7 +154,11 @@ struct CppString {
 /// `slot` is a live owner's slot that nothing else reads or sets meanwhile.
 pub(super) unsafe fn string_set(slot: *const c_void, value: &[u8]) -> c_int {
     // SAFETY: the caller's slot, held exclusively for the call.
-    unsafe { (*slot.cast::<swoole_rs_corebase::StringSlot>()).set_shared(value) }
+    if unsafe { (*slot.cast::<swoole_rs_corebase::StringSlot>()).set_shared(value) } {
+        0
+    } else {
+        -2
+    }
 }
 
 /// `OwnedTlsPrepared` (crates/tls/src/owned.rs).
@@ -424,11 +429,11 @@ impl Sock {
     }
 
     fn set_timeout(&self, timeout: f64, kind: c_int) {
-        self.co().set_timeout(timeout, kind);
+        self.co().set_timeout(timeout, TimeoutKind::from_bits(kind));
     }
 
     fn get_timeout(&self, kind: c_int) -> f64 {
-        self.co().timeout(kind)
+        self.co().timeout(TimeoutKind::from_bits(kind))
     }
 
     fn network(&self) -> &mut NetHead {
@@ -623,12 +628,16 @@ struct TimeoutSetter(TimeoutScope);
 
 impl TimeoutSetter {
     fn new(sock: &Sock, timeout: f64, kind: c_int) -> Self {
-        Self(TimeoutScope::new(sock.co(), timeout, kind))
+        Self(TimeoutScope::new(
+            sock.co(),
+            timeout,
+            TimeoutKind::from_bits(kind),
+        ))
     }
 
     /// `TimeoutController::has_timedout(kind)`.
     fn has_timedout(&mut self, kind: c_int) -> bool {
-        self.0.timed_out(kind, microtime())
+        self.0.timed_out(TimeoutKind::from_bits(kind), microtime())
     }
 }
 
@@ -2044,8 +2053,7 @@ fn recv_packet() {
 
 fn set_error() {
     let sock = Sock::new(SW_SOCK_TCP);
-    let status = sock.co().set_error(1000, TEST_STR);
-    assert_eq!(status, 0);
+    assert!(sock.co().set_error(1000, TEST_STR));
 
     assert_eq!(sock.err_code(), 1000);
     // SAFETY: the record's error text, NUL-terminated.

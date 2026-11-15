@@ -12,7 +12,7 @@ use swoole_rs_reactor::signal_upstream::Handler;
 /// `SW_SIGNO_MAX`.
 const SIGNO_MAX: i32 = 128;
 /// `SW_ERROR_WRONG_OPERATION`: no event loop to register the handler on.
-const WRONG_OPERATION: i32 = 509;
+const WRONG_OPERATION: i32 = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as i32;
 
 /// A coroutine waiting for a signal (upstream's `SignalListener`).
 struct Listener {

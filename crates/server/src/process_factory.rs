@@ -45,12 +45,14 @@ const TRACE: c_int = 1;
 const NOTICE: c_int = 3;
 const WARNING: c_int = 4;
 /// `SW_ERROR_*`.
-const SESSION_CLOSING: c_int = 1003;
-const SESSION_CLOSED: c_int = 1004;
-const SESSION_NOT_EXIST: c_int = 1005;
-const OUTPUT_BUFFER_OVERFLOW: c_int = 1009;
-const OUTPUT_SEND_YIELD: c_int = 1010;
-const DATA_LENGTH_TOO_LARGE: c_int = 1203;
+const SESSION_CLOSING: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SESSION_CLOSING as c_int;
+const SESSION_CLOSED: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SESSION_CLOSED as c_int;
+const SESSION_NOT_EXIST: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SESSION_NOT_EXIST as c_int;
+const OUTPUT_BUFFER_OVERFLOW: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_OUTPUT_BUFFER_OVERFLOW as c_int;
+const OUTPUT_SEND_YIELD: c_int = swoole_rs_error::ErrorCode::SW_ERROR_OUTPUT_SEND_YIELD as c_int;
+const DATA_LENGTH_TOO_LARGE: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_DATA_LENGTH_TOO_LARGE as c_int;
 
 /// A worker id, as `Server::get_worker(uint16_t)` narrows it.
 fn worker_id(id: i64) -> u16 {

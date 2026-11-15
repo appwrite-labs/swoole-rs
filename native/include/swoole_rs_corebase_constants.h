@@ -195,6 +195,12 @@ typedef enum swPipeType {
   SW_PIPE_NONBLOCK = 2,
 } swPipeType;
 
+typedef enum swSSLState {
+  SW_SSL_STATE_HANDSHAKE = 0,
+  SW_SSL_STATE_READY = 1,
+  SW_SSL_STATE_WAIT_STREAM = 2,
+} swSSLState;
+
 typedef enum swResultCode {
   SW_OK = 0,
   SW_ERR = -1,

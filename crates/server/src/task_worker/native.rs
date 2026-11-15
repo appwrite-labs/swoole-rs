@@ -18,6 +18,7 @@ use swoole_rs_process::task_sync::ResultSlot;
 use swoole_rs_process::worker_record::{
     Worker, WorkerStatus, WorkerType, swr_v1_worker_init, swr_v1_worker_shutdown,
 };
+use swoole_rs_reactor::Events;
 use swoole_rs_reactor::{Event, Running, Socket};
 
 use crate::callbacks::TaskSlot;
@@ -25,7 +26,7 @@ use crate::event_worker::native::{
     call_worker_stop_callback, stop_async_worker, swr_workers_signal_set, worker_signal_handler,
     worker_start_callback,
 };
-use crate::objects::{EVENT_READ, Reactor, in_worker_bus, set_nonblock, worker_pipe};
+use crate::objects::{Reactor, in_worker_bus, set_nonblock, worker_pipe};
 use crate::view;
 
 const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
@@ -36,7 +37,6 @@ const TASK_WAITALL: u16 = 1 << 4;
 /// `SW_PIPE_MASTER`, `SW_FD_PIPE` and `SW_EVENT_WRITE`.
 const PIPE_MASTER: c_int = 1;
 const FD_PIPE: c_int = 3;
-const EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
 /// `SW_LOG_WARNING`, `SW_LOG_ERROR`, `SW_ERROR_SOCKET_POLL_TIMEOUT` and
 /// `SW_ERROR_SERVER_SEND_TO_WOKER_TIMEOUT`.
 const SW_LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
@@ -115,7 +115,7 @@ fn run_task(serv: view::Server<'_>, worker: Worker<'_>, task: Packed<'_>) -> c_i
             }
             return OK;
         }
-        Some(ServerEvent::CommandRequest) => command(serv, worker, task),
+        Some(ServerEvent::CommandRequest) => crate::conn_io::status(command(serv, worker, task)),
         _ => {
             let ret = callbacks.task(TaskSlot::Task, serv, task);
             // Only server tasks count as requests, not pipe messages or commands.
@@ -128,8 +128,8 @@ fn run_task(serv: view::Server<'_>, worker: Worker<'_>, task: Packed<'_>) -> c_i
 }
 
 /// `TaskWorker_call_command_handler`: the command `task` names, answered over the
-/// command reply socket.
-fn command(serv: view::Server<'_>, worker: Worker<'_>, task: Packed<'_>) -> c_int {
+/// command reply socket; false when no reply could be sent.
+fn command(serv: view::Server<'_>, worker: Worker<'_>, task: Packed<'_>) -> bool {
     let head = task.head();
     let state = serv.state();
     let Some(handler) = crate::commands::handler(state, i32::from(head.server_fd)) else {
@@ -139,25 +139,21 @@ fn command(serv: view::Server<'_>, worker: Worker<'_>, task: Packed<'_>) -> c_in
             c"TaskWorker_call_command_handler",
             format_args!("Unknown command[{}]", head.server_fd),
         );
-        return OK;
+        return true;
     };
     // A copy: the handler may use the thread buffer the message unpacks into.
     let message = swoole_rs_buffer::string::with_thread_buffer(|buffer| {
         task.unpack(buffer).map(|(data, _)| data.to_vec())
     });
     let Some(message) = message else {
-        return OK;
+        return true;
     };
     let Some(sock) = crate::commands::reply_socket(state, serv) else {
-        return ERR;
+        return false;
     };
     let id = u16::try_from(worker.id()).unwrap_or(u16::MAX);
     let reply = (state.message_bus(), sock);
-    if crate::commands::answer(&handler, serv, &message, reply, head.fd, id) {
-        OK
-    } else {
-        ERR
-    }
+    crate::commands::answer(&handler, serv, &message, reply, head.fd, id)
 }
 
 /// `TaskWorker_onStart`.
@@ -217,8 +213,8 @@ extern "C-unwind" fn loop_async(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int 
         // SAFETY: this task worker's reactor, which the loop's `swoole_event_wait` frees
         // while the server lives.
         unsafe { reactor.hold_server(serv) };
-        reactor.add(pipe, EVENT_READ);
-        reactor.set_handler(FD_PIPE, EVENT_READ, on_pipe_receive);
+        reactor.add(pipe, Events::READ);
+        reactor.set_handler(FD_PIPE, Events::READ, on_pipe_receive);
     });
     // A task's result may be larger than a pipe's buffer: let every worker's grow.
     let workers = config.worker_num.get() + config.task_worker_num.get();
@@ -342,7 +338,7 @@ pub fn finish(
             },
             || {
                 pipe.master_end()
-                    .is_some_and(|socket| socket.wait_event(-1, EVENT_WRITE))
+                    .is_some_and(|socket| socket.wait_event(-1, Events::WRITE))
             },
         )
     };

@@ -29,12 +29,9 @@ fn ported_cookie_flow_gate() {
         let mut buffer = [input, &[0]].concat();
         let (mut cursor, mut records, mut count) = (0, Vec::new(), 0);
         while let Some(cookie) = cookie_next(&mut buffer, &mut cursor).unwrap() {
-            for (offset, length) in [
-                (cookie.key_offset, cookie.key_length),
-                (cookie.value_offset, cookie.value_length),
-            ] {
-                records.extend_from_slice(&u32::try_from(length).unwrap().to_ne_bytes());
-                records.extend_from_slice(&buffer[offset..offset + length]);
+            for range in [cookie.key, cookie.value.unwrap_or_default()] {
+                records.extend_from_slice(&u32::try_from(range.len()).unwrap().to_ne_bytes());
+                records.extend_from_slice(&buffer[range]);
             }
             count += 1;
             if first_only {

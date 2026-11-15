@@ -7,9 +7,6 @@ use std::io::Error;
 use std::os::raw::c_int;
 use swoole_rs_corebase::CCast;
 
-/// `SW_ERR`.
-const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
-
 /// What queued output needs from its `Socket` (`crates/tls`'s `upstream.rs`).
 pub trait OutputEffects {
     /// `Socket::send(data, length, 0)`, leaving the kernel's errno.
@@ -29,11 +26,11 @@ fn classify(hooks: &impl OutputEffects) -> Caught {
 
 /// What the caller applies after `handle_send`/`handle_sendfile`: pop the front
 /// chunk, store `offset` into it, set `close_wait`/`send_wait`, and warn that the
-/// send failed (the sendfile of `requested` bytes, for `handle_sendfile`). `code` is
-/// returned.
+/// send failed (the sendfile of `requested` bytes, for `handle_sendfile`). `failed` is
+/// upstream's `SW_ERR`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OutputResult {
-    pub code: c_int,
+    pub failed: bool,
     pub pop: bool,
     pub set_offset: bool,
     pub offset: u32,
@@ -71,8 +68,8 @@ pub fn handle_send(hooks: &impl OutputEffects, data: &[u8], offset: u32) -> Outp
     if sent < 0 {
         match classify(hooks) {
             Caught::Error => result.warn = true,
-            Caught::Close => (result.close_wait, result.code) = (true, ERR),
-            Caught::Wait => (result.send_wait, result.code) = (true, ERR),
+            Caught::Close => (result.close_wait, result.failed) = (true, true),
+            Caught::Wait => (result.send_wait, result.failed) = (true, true),
             Caught::Invalid | Caught::ReduceSize => {}
         }
         return result;
@@ -85,7 +82,7 @@ pub fn handle_send(hooks: &impl OutputEffects, data: &[u8], offset: u32) -> Outp
     let advanced = offset.wrapping_add(sent.c_cast::<u32>());
     (result.set_offset, result.offset) = (true, advanced);
     if sent < rest.len() {
-        (result.send_wait, result.code) = (true, ERR);
+        (result.send_wait, result.failed) = (true, true);
     }
     result
 }
@@ -133,14 +130,14 @@ pub fn sendfile_sent(
             }
             Caught::Close => {
                 return OutputResult {
-                    code: ERR,
+                    failed: true,
                     close_wait: true,
                     ..result
                 };
             }
             Caught::Wait => {
                 return OutputResult {
-                    code: ERR,
+                    failed: true,
                     send_wait: true,
                     ..result
                 };
@@ -219,7 +216,6 @@ mod tests {
     use super::*;
     use std::os::raw::c_void;
 
-    const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
     use std::cell::RefCell;
 
     #[derive(Default)]
@@ -341,8 +337,8 @@ mod tests {
             reset(2, 0, false);
             let sent = handle_send_owned(handle, &mut queue, &hooks);
             assert_eq!(
-                (sent.status, sent.result.code, sent.result.offset),
-                (Ok(()), -1, 2)
+                (sent.status, sent.result.failed, sent.result.offset),
+                (Ok(()), true, 2)
             );
             assert!((*socket).fields.output.send_wait);
             assert_eq!(queue.front().unwrap().offset, 2);
@@ -351,10 +347,10 @@ mod tests {
             assert_eq!(
                 (
                     closed.status,
-                    closed.result.code,
+                    closed.result.failed,
                     (*socket).fields.output.close_wait
                 ),
-                (Ok(()), -1, true)
+                (Ok(()), true, true)
             );
             assert_eq!(queue.front().unwrap().offset, 2);
             reset(3, 0, false);
@@ -394,7 +390,7 @@ mod tests {
         assert_eq!(
             run(2, 0, 10, 5),
             OutputResult {
-                code: ERR,
+                failed: true,
                 set_offset: true,
                 offset: 7,
                 send_wait: true,
@@ -405,7 +401,7 @@ mod tests {
         assert_eq!(
             run(-1, libc::EAGAIN, 10, 0),
             OutputResult {
-                code: ERR,
+                failed: true,
                 send_wait: true,
                 ..Default::default()
             }
@@ -413,7 +409,7 @@ mod tests {
         assert_eq!(
             run(-1, libc::EPIPE, 10, 0),
             OutputResult {
-                code: ERR,
+                failed: true,
                 close_wait: true,
                 ..Default::default()
             }
@@ -464,7 +460,7 @@ mod tests {
         assert_eq!(
             waited,
             OutputResult {
-                code: ERR,
+                failed: true,
                 send_wait: true,
                 ..Default::default()
             }
@@ -496,7 +492,7 @@ mod tests {
             for sent in 1..=remaining {
                 reset(isize::try_from(sent).unwrap(), 0, false);
                 let result = handle_send(&hooks, &data[..(remaining + 3) as usize], 3);
-                assert_eq!(result.code, if sent == remaining { OK } else { ERR });
+                assert_eq!(result.failed, sent != remaining);
                 FAKE.with_borrow(|fake| {
                     assert_eq!(fake.supplied, data[3..3 + remaining as usize]);
                     assert_eq!(fake.sends.len(), 1);
@@ -619,7 +615,7 @@ mod tests {
                                 request.begin,
                                 request.end,
                             );
-                            assert_eq!(result.code, OK);
+                            assert!(!result.failed);
                             if result.pop {
                                 unsafe { request.destroy.unwrap()(context) };
                                 popped += 1;

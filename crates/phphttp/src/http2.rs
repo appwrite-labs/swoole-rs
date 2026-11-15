@@ -422,9 +422,7 @@ impl Ctx {
     /// `ctx->request.path`: the `:path` up to its query.
     pub fn set_path(mut self, path: &[u8]) {
         let state = self.state();
-        // The path's bytes, copied into request memory the context frees.
-        state.request.path = parse::estrndup(path).cast();
-        state.request.path_len = u32::try_from(path.len()).unwrap_or(u32::MAX);
+        state.request.path = Some(path.into());
     }
 
     /// A `multipart/form-data` content type's boundary starts the request's

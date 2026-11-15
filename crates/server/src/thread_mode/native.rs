@@ -4,6 +4,7 @@
 use crate::Mode;
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::Ordering;
+use swoole_rs_reactor::Events;
 
 use swoole_rs_corebase::{CCast, log};
 use swoole_rs_error::ErrorCode as E;
@@ -23,7 +24,6 @@ use crate::worker_methods::{create_event_workers, create_user_workers};
 use crate::{factory, pool_native, server_methods, view};
 
 /// `SW_EVENT_READ` and `Server::THREAD_WORKER`.
-const EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
 const THREAD_WORKER: u8 = 4;
 /// `SW_LOG_WARNING`, `SW_LOG_ERROR`.
 const WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
@@ -104,18 +104,10 @@ pub(crate) fn destroy_factory(serv: view::Server<'_>) {
 /// `ThreadFactory::start`: the pipes and the event, task and user workers' records.
 pub(crate) fn factory_start(serv: view::Server<'_>) -> bool {
     let config = serv.config();
-    let user_workers = || {
-        let workers = create_user_workers(serv);
-        let created = !workers.is_null();
-        // SAFETY: `ThreadFactory::start`, before it starts a thread; `config` isn't
-        // read after the write.
-        unsafe { serv.config_mut() }.user_workers = workers;
-        created
-    };
     crate::process_factory::native::create_worker_pipes(serv)
         && create_event_workers(serv)
         && (config.task_worker_num.get() == 0 || start_check(serv.task_pool_ref()))
-        && (serv.user_worker_num() == 0 || user_workers())
+        && (serv.user_worker_num() == 0 || create_user_workers(serv))
 }
 
 /// `Server::start_worker_threads`: the task, event and user worker threads, the
@@ -150,7 +142,7 @@ pub(crate) fn start_worker_threads(serv: view::Server<'_>) -> bool {
             return false;
         }
         if let Some(socket) = serv.port_socket_at(at) {
-            reactor.add(socket, EVENT_READ);
+            reactor.add(socket, Events::READ);
         }
     }
     let id = u16::try_from(all_worker_num(serv) + 1).unwrap_or(u16::MAX);

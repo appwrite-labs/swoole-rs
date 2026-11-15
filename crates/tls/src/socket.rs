@@ -25,8 +25,7 @@ const CLIENT: c_int = 2;
 const BAD_CLIENT: c_int = ErrorCode::SW_ERROR_SSL_BAD_CLIENT as c_int;
 const RESET: c_int = ErrorCode::SW_ERROR_SSL_RESET as c_int;
 const HANDSHAKE_FAILED: c_int = ErrorCode::SW_ERROR_SSL_HANDSHAKE_FAILED as c_int;
-const STATE_READY: u32 = SslState::SW_SSL_STATE_READY as u32;
-const STATE_WAIT_STREAM: u32 = SslState::SW_SSL_STATE_WAIT_STREAM as u32;
+use SslState::{SW_SSL_STATE_READY as STATE_READY, SW_SSL_STATE_WAIT_STREAM as STATE_WAIT_STREAM};
 
 fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
@@ -425,7 +424,7 @@ pub fn socket_ssl_new(
         // on and frees it only in `ssl_close`.
         unsafe { record.set_ssl(made.cast()) };
         if made_up.is_ok() {
-            record.tls.state = 0;
+            record.tls.state = SslState::SW_SSL_STATE_HANDSHAKE;
         }
     });
     made_up
@@ -540,7 +539,10 @@ mod tests {
                 SslHandshakeResult::returning(Accept::Wait),
                 "no client hello yet"
             );
-            assert_eq!((tls.state, tls.want_read, tls.want_write), (0, true, false));
+            assert_eq!(
+                (tls.state as u32, tls.want_read, tls.want_write),
+                (0, true, false)
+            );
             SSL_free(server);
         }
     }

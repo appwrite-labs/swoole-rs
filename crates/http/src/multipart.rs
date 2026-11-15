@@ -43,9 +43,7 @@ pub fn multipart_filename(data: &mut [u8]) -> Result<bool, i32> {
     loop {
         match crate::headers::cookie_next(data, &mut cursor) {
             Ok(Some(cookie)) => {
-                let key = data
-                    .get(cookie.key_offset..cookie.key_offset + cookie.key_length)
-                    .unwrap_or_default();
+                let key = data.get(cookie.key).unwrap_or_default();
                 if crate::case_equal(key, b"filename") {
                     return Ok(true);
                 }
@@ -77,9 +75,7 @@ mod tests {
             let result = loop {
                 match crate::headers::cookie_next(&mut expected, &mut cursor) {
                     Ok(Some(out)) => {
-                        if expected[out.key_offset..out.key_offset + out.key_length]
-                            .eq_ignore_ascii_case(b"filename")
-                        {
+                        if expected[out.key].eq_ignore_ascii_case(b"filename") {
                             break Ok(true);
                         }
                     }

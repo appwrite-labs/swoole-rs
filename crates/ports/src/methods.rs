@@ -143,13 +143,8 @@ fn set_option(fd: c_int, level: c_int, option: c_int) -> c_int {
 /// port's host and port, and takes the bound port. On failure it sets the last
 /// error to errno and frees the new socket, which the port still points at,
 /// and returns false.
-pub(crate) fn create_socket(config: &PortConfig) -> bool {
-    let serv = config.protocol.get().private_data_2;
-    // SAFETY: the port's live server, when it has one.
-    let reuse_port = cfg!(target_os = "linux")
-        && !serv.is_null()
-        // SAFETY: the port's live server.
-        && unsafe { view::Server::from_raw(serv) }.config().enable_reuse_port.get();
+pub(crate) fn create_socket(config: &PortConfig, reuse_port: bool) -> bool {
+    let reuse_port = cfg!(target_os = "linux") && reuse_port;
     if !config.socket_ptr().is_null() {
         if !reuse_port {
             return true;
@@ -521,7 +516,14 @@ mod tests {
         }
     }
     fn create_socket(at: *mut c_void) -> c_int {
-        if super::create_socket(port_at(at).config()) {
+        let config = port_at(at).config();
+        let serv = config.protocol.get().private_data_2;
+        let reuse_port = !serv.is_null()
+            && unsafe { view::Server::from_raw(serv) }
+                .config()
+                .enable_reuse_port
+                .get();
+        if super::create_socket(config, reuse_port) {
             0
         } else {
             -1
@@ -531,7 +533,7 @@ mod tests {
         super::close_socket(port_at(at).config());
     }
     fn close(at: *mut c_void) {
-        crate::lifecycle::close(port_at(at));
+        crate::lifecycle::close(port_at(at).config());
     }
     fn ssl_context_init(at: *mut c_void) -> bool {
         crate::lifecycle::ssl_context_init(unsafe { port_config::of(at) })
@@ -593,9 +595,9 @@ mod tests {
         let mut fresh = Fresh::new();
         let at = fresh.at();
         let config = unsafe { port_config::of(at) };
-        config.ssl = 1;
+        config.ssl = true;
         assert!(ssl_context_init(at), "a stream port's context");
-        let context = config.ssl_context.clone().expect("published");
+        let context = config.ssl_context.get().expect("published");
         let fields = context.fields();
         assert_eq!(
             (
@@ -611,13 +613,17 @@ mod tests {
         // No files: ssl_init refuses unless SNI contexts exist.
         assert!(!ssl_init(config), "no certificate");
         close(at);
-        assert!(config.ssl_context.is_none(), "released");
+        assert!(config.ssl_context.get().is_none(), "released");
+        assert!(
+            context.fields().prefer_server_ciphers,
+            "a reader's context stays alive after the port closes"
+        );
         config.r#type = 2;
         assert!(ssl_context_init(at), "a datagram port's context");
         assert!(config.is_dtls(), "DTLS");
         crate::lifecycle::tls_free(unsafe { &mut *fresh.0 });
         assert!(
-            config.ssl_context.is_none(),
+            config.ssl_context.get().is_none(),
             "the destructor releases what close left"
         );
     }
@@ -806,7 +812,7 @@ mod tests {
             (*config).r#type = kind;
             (*config).port.set(number);
             let set = (*config).host.set_shared(host.as_bytes());
-            assert_eq!(set, 0, "host set");
+            assert!(set, "host set");
         }
         config
     }
@@ -1227,14 +1233,14 @@ mod tests {
         );
 
         assert!(ssl_context_init(at));
-        let context = config.ssl_context.clone().unwrap();
+        let context = config.ssl_context.get().unwrap();
         assert!(!context_create(config, &context, false));
         assert_eq!(log::last_error(), 509, "SW_ERROR_WRONG_OPERATION");
         let cert_file = swoole_rs_tls::swr_v1_tls_owner_view(&context).strings[4];
         let set = |text: &str| unsafe { (*cert_file).set_shared(text.as_bytes()) };
-        assert_eq!(set("server.crt"), 0, "cert_file = \"server.crt\"");
+        assert!(set("server.crt"), "cert_file = \"server.crt\"");
         assert!(!context_create(config, &context, true));
-        assert_eq!(set(""), 0, "cert_file.clear()");
+        assert!(set(""), "cert_file.clear()");
         assert!(context_create(config, &context, true));
 
         close(at);

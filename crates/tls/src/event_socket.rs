@@ -23,7 +23,7 @@ impl EventSocket {
     }
 
     #[must_use]
-    pub fn events(&self) -> c_int {
+    pub fn events(&self) -> swoole_rs_reactor::Events {
         self.0.read(|record| record.events)
     }
 
@@ -34,13 +34,13 @@ impl EventSocket {
 
     /// `swoole_event_add(socket, events)`: whether it worked.
     #[must_use]
-    pub fn add(&self, events: c_int) -> bool {
+    pub fn add(&self, events: swoole_rs_reactor::Events) -> bool {
         event_api::event_add(self.0, events)
     }
 
     /// `swoole_event_set(socket, events)`: whether it worked.
     #[must_use]
-    pub fn set(&self, events: c_int) -> bool {
+    pub fn set(&self, events: swoole_rs_reactor::Events) -> bool {
         event_api::event_set(self.0, events)
     }
 

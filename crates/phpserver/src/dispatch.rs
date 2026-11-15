@@ -31,7 +31,8 @@ use swoole_rs_zend::{
 };
 
 /// `SW_ERROR_PHP_RUNTIME_NOTICE`.
-const SW_ERROR_PHP_RUNTIME_NOTICE: c_int = 510;
+const SW_ERROR_PHP_RUNTIME_NOTICE: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_PHP_RUNTIME_NOTICE as c_int;
 
 use crate::instance::{php_swoole_get_recv_data, php_swoole_server_get_callback};
 use swoole_rs_server::{Mode, server_methods, view};

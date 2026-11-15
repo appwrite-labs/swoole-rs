@@ -26,8 +26,10 @@ use swoole_rs_corebase::{
 use swoole_rs_zend::{Array, Call, E_ERROR, E_WARNING, Value, bailout, handlers, report};
 
 /// `SW_ERROR_OPERATION_NOT_SUPPORT` and `SW_ERROR_DNSLOOKUP_RESOLVE_FAILED`.
-const OPERATION_NOT_SUPPORT: i32 = 507;
-const DNSLOOKUP_RESOLVE_FAILED: i32 = 711;
+const OPERATION_NOT_SUPPORT: i32 =
+    swoole_rs_error::ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT as i32;
+const DNSLOOKUP_RESOLVE_FAILED: i32 =
+    swoole_rs_error::ErrorCode::SW_ERROR_DNSLOOKUP_RESOLVE_FAILED as i32;
 
 handlers! {
     zif_swoole_async_set => async_set;

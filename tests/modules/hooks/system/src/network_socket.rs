@@ -905,7 +905,10 @@ fn send_async_2() {
     unsafe {
         swoole_event_set_handler(SW_FD_STREAM_CLIENT, SW_EVENT_READ, send_async_2_read);
         let socket = swoole_rs_ffi::Socket::from_ptr(sock.0.cast()).unwrap();
-        let _ = swoole_rs_ffi::event_api::event_add(socket, SW_EVENT_READ | SW_EVENT_ONCE);
+        let _ = swoole_rs_ffi::event_api::event_add(
+            socket,
+            swoole_rs_ffi::Events::from_bits(SW_EVENT_READ | SW_EVENT_ONCE),
+        );
         swoole_event_wait();
     }
 

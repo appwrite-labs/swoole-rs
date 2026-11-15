@@ -8,7 +8,7 @@ use std::{
 };
 use swoole_rs_corebase::log::set_last_error;
 use swoole_rs_hooks::co_socket::{Co, swr_v1_hook_co_socket_free};
-use swoole_rs_reactor::SocketFields;
+use swoole_rs_reactor::{SocketFields, TimeoutKind};
 use swoole_rs_tls::upstream::{recv_sync, send_sync, socket_ssl_close};
 use swoole_rs_zend::{
     E_ERROR, Owned, Value, ZString,
@@ -50,14 +50,6 @@ pub(crate) mod kind {
     pub(crate) const TCP6: i32 = 3;
     pub(crate) const UNIX_STREAM: i32 = 5;
     pub(crate) const UNIX_DGRAM: i32 = 6;
-}
-
-/// `SW_TIMEOUT_*`.
-pub(crate) mod timeout {
-    pub(crate) const CONNECT: i32 = 1 << 1;
-    pub(crate) const READ: i32 = 1 << 2;
-    pub(crate) const RDWR: i32 = READ | (1 << 3);
-    pub(crate) const ALL: i32 = 0xf;
 }
 
 /// The sending operations: `send_sync`, `send_all`, `send` (once) and `send`.
@@ -245,7 +237,7 @@ impl Socket {
         self.co().set_zero_copy(true);
     }
 
-    pub(crate) fn set_timeout(&self, seconds: f64, kind: i32) {
+    pub(crate) fn set_timeout(&self, seconds: f64, kind: TimeoutKind) {
         self.co().set_timeout(seconds, kind);
     }
 
@@ -337,10 +329,10 @@ impl Socket {
         let mut applied = false;
         let apply = || {
             if let Some(families) = swoole_rs_phpswoole::families() {
-                // crates/phpclients ignores settings that are no array; 2 applies
-                // the SSL ones.
+                // crates/phpclients ignores settings that are no array.
+                let ssl = swoole_rs_phpswoole::SocketSettings::Ssl;
                 // SAFETY: inside the trap below.
-                applied = unsafe { (families.socket_settings)(socket, settings, 2) };
+                applied = unsafe { (families.socket_settings)(socket, settings, ssl) };
             }
         };
         // SAFETY: the body holds copies and the result slot; the settings' warnings
@@ -383,8 +375,8 @@ pub enum Report {
 /// The error handler bailed out.
 pub fn report(kind: Report, level: i32, message: &CStr) -> Result<(), Bailout> {
     /// `SW_ERROR_PHP_FATAL_ERROR` and `SW_ERROR_PHP_RUNTIME_NOTICE`.
-    const FATAL: i32 = 503;
-    const NOTICE: i32 = 510;
+    const FATAL: i32 = swoole_rs_error::ErrorCode::SW_ERROR_PHP_FATAL_ERROR as i32;
+    const NOTICE: i32 = swoole_rs_error::ErrorCode::SW_ERROR_PHP_RUNTIME_NOTICE as i32;
     match kind {
         Report::Docref => {}
         Report::Fatal => set_last_error(FATAL),
@@ -440,6 +432,7 @@ pub mod co {
     pub use swoole_rs_hooks::packet::recv_packet;
     use swoole_rs_hooks::vector::IoVector;
     use swoole_rs_hooks::{TimeoutScope, co_socket::swr_v1_hook_co_socket_free};
+    use swoole_rs_reactor::TimeoutKind;
     use swoole_rs_zend::bailout::{self, Bailout};
 
     /// `new SocketImpl(...)`: by `domain`, `kind` and `protocol` with `family`,
@@ -490,14 +483,14 @@ pub mod co {
 
     impl Timeout {
         #[must_use]
-        pub fn set(socket: Co, timeout: f64, kind: c_int) -> Self {
+        pub fn set(socket: Co, timeout: f64, kind: TimeoutKind) -> Self {
             Self(TimeoutScope::new(socket, timeout, kind))
         }
 
         /// `TimeoutController::has_timedout(kind)`: the first call starts the
         /// clock; later ones shrink the socket's timeout to what is left, or
         /// set `ETIMEDOUT` once none is.
-        pub fn timed_out(&mut self, kind: c_int) -> bool {
+        pub fn timed_out(&mut self, kind: TimeoutKind) -> bool {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0.0, |now| now.as_secs_f64());
@@ -536,7 +529,7 @@ pub mod co {
 
     /// `set_err(code, message)`, copying the message.
     pub fn set_error(socket: Co, code: c_int, message: &[u8]) {
-        if socket.set_error(code, message) != 0 {
+        if !socket.set_error(code, message) {
             // std::bad_alloc, which upstream leaves uncaught.
             swoole_rs_corebase::fatal("out of memory storing a socket error");
         }

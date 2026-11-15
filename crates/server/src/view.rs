@@ -81,8 +81,8 @@ impl<'a> Server<'a> {
     ///
     /// # Safety
     /// `serv` is a live `Server` for `'a`, and the server's own synchronization
-    /// keeps writers of its configuration and counters (such as
-    /// [`Server::config_mut`]) apart from the references the safe readers return.
+    /// keeps writers of its configuration and counters apart from the references
+    /// the safe readers return.
     #[must_use]
     pub unsafe fn from_raw(serv: *mut c_void) -> Self {
         Self {
@@ -147,7 +147,7 @@ impl<'a> Server<'a> {
     #[must_use]
     pub fn config(self) -> &'a ServerConfig {
         // SAFETY: the config allocation lives as long as the server, and writers
-        // hold no reference across a read (`config_mut`).
+        // hold no reference across a read.
         unsafe { &*self.fields().config }
     }
 
@@ -157,6 +157,7 @@ impl<'a> Server<'a> {
     /// No other reference to the configuration is live meanwhile, and no other
     /// thread reads the fields written (the server's own synchronization).
     #[must_use]
+    #[cfg(test)]
     pub unsafe fn config_mut(self) -> &'a mut ServerConfig {
         // SAFETY: per the caller; the allocation lives as long as the server.
         unsafe { &mut *self.fields().config }
@@ -621,7 +622,7 @@ impl<'a> Port<'a> {
     ///
     /// # Safety
     /// `port` is null or a live `ListenPort` for `'a`, and the port's own
-    /// synchronization keeps writers of its settings ([`Port::config_mut`]) apart
+    /// synchronization keeps writers of its settings apart
     /// from the references the safe readers return.
     #[must_use]
     pub unsafe fn from_raw(port: *mut c_void) -> Option<Self> {
@@ -654,18 +655,6 @@ impl<'a> Port<'a> {
             .protocol
             .update(|protocol| protocol.package_max_length = length);
     }
-    /// The port's settings, to write.
-    ///
-    /// # Safety
-    /// No other reference to the settings is live meanwhile, and no other thread
-    /// reads the fields written.
-    #[must_use]
-    pub unsafe fn config_mut(self) -> &'a mut PortConfig {
-        // SAFETY: a live port is its settings (`from_raw`), and per the caller nothing
-        // else accesses them while the borrow lasts.
-        unsafe { &mut *self.raw().cast::<PortConfig>() }
-    }
-
     /// `f` over the port's listening socket, or `None` before it has one (or after
     /// it closes). The socket can't outlive `f`: a port's socket closes while the port
     /// lives (`OP_PORT_CLOSE_SOCKET`), so no handle to it is kept past a read.

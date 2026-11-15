@@ -12,7 +12,7 @@ use std::{
     sync::atomic::Ordering,
 };
 use swoole_rs_phpstubs::server_port;
-use swoole_rs_ports::swr_v1_ports_class_property;
+use swoole_rs_ports::{PropertyDefault, class_properties};
 use swoole_rs_server::{SharedServer, view};
 use swoole_rs_zend::{
     Call, Custom, CustomClass, E_WARNING, Minit, Owned, Value, ZString, bailout, message,
@@ -121,11 +121,6 @@ impl PortData {
     }
 }
 
-/// The kinds `swoole_rs_ports::swr_v1_ports_class_property` returns.
-const PROPERTY_END: u32 = 0;
-const PROPERTY_LONG: u32 = 2;
-const PROPERTY_BOOL: u32 = 3;
-
 pub(crate) static PORT: CustomClass<PortData> = CustomClass::new();
 
 /// `getSocket()` of a bound port: a `Socket` over a duplicate of its
@@ -205,21 +200,17 @@ pub(crate) fn minit(minit: &Minit, sockets: bool) {
         METHODS.without(&[c"getSocket"])
     };
     minit.register_object::<PortData>(c"Swoole\\Server\\Port", methods, 0);
-    for index in 0.. {
-        let property = swr_v1_ports_class_property(index);
-        if property.kind == PROPERTY_END {
-            break;
-        }
-        let access = if property.private == 0 {
-            ZEND_ACC_PUBLIC
-        } else {
+    for property in class_properties() {
+        let access = if property.private {
             ZEND_ACC_PRIVATE
+        } else {
+            ZEND_ACC_PUBLIC
         };
         let name = std::ffi::CString::new(property.name).unwrap_or_default();
-        match property.kind {
-            PROPERTY_LONG => minit.property_long(&PORT, &name, property.value, access),
-            PROPERTY_BOOL => minit.property_bool(&PORT, &name, property.value != 0, access),
-            _ => minit.property_null(&PORT, &name, access),
+        match property.value {
+            PropertyDefault::Long(value) => minit.property_long(&PORT, &name, value, access),
+            PropertyDefault::Bool(value) => minit.property_bool(&PORT, &name, value, access),
+            PropertyDefault::Null => minit.property_null(&PORT, &name, access),
         }
     }
 }
@@ -366,8 +357,8 @@ fn apply_settings(port: view::Port<'_>, serv: view::Server<'_>, vht: &Value) -> 
     };
     port_settings::apply(&source)?;
     // A reference of this call's own, which keeps the context live throughout.
-    let (ssl, kind, context) = source.config(|c| (c.ssl, c.r#type, c.ssl_context.clone()));
-    let Some(context) = context.filter(|_| ssl != 0) else {
+    let (ssl, kind, context) = source.config(|c| (c.ssl, c.r#type, c.ssl_context.get()));
+    let Some(context) = context.filter(|_| ssl) else {
         return Ok(());
     };
     port_settings::tls(&source, &context, port_settings::is_dgram(kind))

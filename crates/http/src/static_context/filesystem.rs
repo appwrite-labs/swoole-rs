@@ -1,7 +1,7 @@
 //! The static handler's effects, and `try_serve` and `get_dir_files` over them.
 use super::serve::Event;
-use super::{BOUNDARY_SIZE, HttpStaticContext, HttpStaticObservation, INVALID};
-use crate::static_path::{Action, DIRECTORY, FILE, LINK};
+use super::{BOUNDARY_SIZE, HttpStaticContext, HttpStaticObservation, INVALID, StaticFileKind};
+use crate::static_path::Action;
 use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
@@ -13,8 +13,7 @@ const PATH_MAX: usize = libc::PATH_MAX as usize;
 /// What a static handler asks of the world, in the pinned handler's order. The
 /// filesystem defaults to the process's own through `std::fs`.
 pub trait StaticEffects {
-    /// `lstat(path)`: the size, modification time and kind (link8, directory16,
-    /// file32) of `path`, or None.
+    /// `lstat(path)`: the size, modification time and file kind of `path`, or None.
     fn stat(&self, path: &[u8]) -> Option<HttpStaticObservation> {
         let meta = fs::symlink_metadata(OsStr::from_bytes(path)).ok()?;
         let kind = meta.file_type();
@@ -27,13 +26,13 @@ pub trait StaticEffects {
             filesize,
             mtime: meta.mtime(),
             kind: if kind.is_dir() {
-                DIRECTORY
+                StaticFileKind::Directory
             } else if kind.is_file() {
-                FILE
+                StaticFileKind::File
             } else if kind.is_symlink() {
-                LINK
+                StaticFileKind::Symlink
             } else {
-                0
+                StaticFileKind::Other
             },
             ..HttpStaticObservation::default()
         })
@@ -143,7 +142,7 @@ impl HttpStaticContext {
         if !self.directory.is_empty() {
             return true;
         }
-        if self.facts.file_ready == 0 || self.facts.kind & DIRECTORY == 0 {
+        if !self.facts.file_ready || self.facts.kind != StaticFileKind::Directory {
             return false;
         }
         let Some(names) = self.effect_path().and_then(|path| effects.list(path)) else {
@@ -195,14 +194,14 @@ mod tests {
         set(&mut owner, &root.join("index.html"));
         assert_eq!(owner.stat(&Native), 1);
         assert_eq!(owner.facts.filesize, 7);
-        assert_eq!(owner.facts.kind, FILE);
+        assert_eq!(owner.facts.kind as u32, crate::static_path::FILE);
         let mtime = owner.facts.mtime;
         set(&mut owner, &root.join("absent"));
         assert_eq!(owner.stat(&Native), 0);
         assert_eq!(owner.facts.mtime, mtime);
         set(&mut owner, &root.join("link"));
         assert_eq!(owner.stat(&Native), 1);
-        assert_eq!(owner.facts.kind, LINK);
+        assert_eq!(owner.facts.kind as u32, crate::static_path::LINK);
         assert_eq!(
             Native.canonical(owner.effect_path().unwrap()).unwrap(),
             std::fs::canonicalize(root.join("index.html"))

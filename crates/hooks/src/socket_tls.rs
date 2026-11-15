@@ -22,8 +22,10 @@ const RDWR: u32 = READ | swoole_rs_corebase::constants::EventType::SW_EVENT_WRIT
 /// `SW_ERROR_SSL_VERIFY_FAILED`, `SW_ERROR_SSL_CREATE_CONTEXT_FAILED` and
 /// `SW_ERROR_SSL_CREATE_SESSION_FAILED`.
 const SSL_VERIFY_FAILED: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SSL_VERIFY_FAILED as c_int;
-const SSL_CREATE_CONTEXT_FAILED: c_int = 1019;
-const SSL_CREATE_SESSION_FAILED: c_int = 1020;
+const SSL_CREATE_CONTEXT_FAILED: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SSL_CREATE_CONTEXT_FAILED as c_int;
+const SSL_CREATE_SESSION_FAILED: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SSL_CREATE_SESSION_FAILED as c_int;
 
 impl Co {
     /// The socket's `SSLContext` owner, or null without one.
@@ -196,7 +198,7 @@ impl Handshake {
     /// Whether the socket is a `UringSocket`, whose handshake runs through the ring.
     #[cfg(feature = "iouring")]
     fn uring(&self) -> bool {
-        crate::uring_socket::of(self.socket).is_some()
+        crate::uring_socket::with(self.socket, |_| ()).is_some()
     }
 
     /// The socket's session over its own context.
@@ -276,8 +278,8 @@ impl Handshaking for Handshake {
             Some(Ok(Accept::Ready)) => Step::Ready,
             Some(Ok(Accept::Wait)) => Step::Wait,
             Some(Err(true)) => match socket.net(|record| record.tls.state) {
-                Some(state) if state == SslState::SW_SSL_STATE_READY as u32 => Step::Ready,
-                Some(state) if state == SslState::SW_SSL_STATE_WAIT_STREAM as u32 => Step::Wait,
+                Some(SslState::SW_SSL_STATE_READY) => Step::Ready,
+                Some(SslState::SW_SSL_STATE_WAIT_STREAM) => Step::Wait,
                 _ => Step::Again,
             },
         }

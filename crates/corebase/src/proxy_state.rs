@@ -7,7 +7,7 @@ use std::cell::{Cell, Ref, RefCell, RefMut};
 #[derive(Clone, Copy, Default)]
 pub struct ProxyFields {
     pub state: u8,
-    pub dont_handshake: u8,
+    pub dont_handshake: bool,
     pub version: u8,
     pub method: u8,
     pub dns_tunnel: u8,
@@ -86,7 +86,7 @@ impl ProxyState {
         self.strings
             .borrow_mut()
             .get_mut(index)
-            .is_some_and(|slot| slot.set(value) == 0)
+            .is_some_and(|slot| slot.set(value))
     }
     /// The SOCKS5 packet, none for an HTTP proxy.
     ///

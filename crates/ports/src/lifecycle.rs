@@ -30,8 +30,9 @@ use crate::methods::{FD_DGRAM_SERVER, FD_STREAM_SERVER, socket_free};
 /// `SW_ERROR_SSL_CREATE_SESSION_FAILED`.
 const LOG_WARNING: c_int = 4;
 const LOG_ERROR: c_int = 5;
-const WRONG_OPERATION: c_int = 509;
-const SSL_CREATE_SESSION_FAILED: c_int = 1020;
+const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
+const SSL_CREATE_SESSION_FAILED: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SSL_CREATE_SESSION_FAILED as c_int;
 /// `SSL_TLSEXT_ERR_OK` and `SSL_TLSEXT_ERR_NOACK`.
 const TLSEXT_OK: c_int = 0;
 const TLSEXT_NOACK: c_int = 3;
@@ -55,7 +56,7 @@ fn edit<R>(context: &OwnedTlsContext, edit: impl FnOnce(&mut OwnedTlsFields) -> 
 
 /// Releases the port's context and its TLS state with the SNI contexts.
 pub(crate) fn tls_free(config: &mut PortConfig) {
-    config.ssl_context = None;
+    drop(config.ssl_context.replace(None));
     *config.tls = TlsState::default();
 }
 
@@ -63,12 +64,12 @@ pub(crate) fn tls_free(config: &mut PortConfig) {
 #[must_use]
 pub fn context_dup(config: &PortConfig) -> TlsContext {
     // Without a context of the port's, the fresh one's defaults.
-    let Some(source) = config.ssl_context.as_ref() else {
+    let Some(source) = config.ssl_context.get() else {
         return TlsContext::new();
     };
     // SAFETY: the port's context, used on its one thread, which only this copy reads
     // meanwhile.
-    let mut source = unsafe { swoole_rs_tls::Lent::new(source) };
+    let mut source = unsafe { swoole_rs_tls::Lent::new(&source) };
     TlsContext::copy_of(&mut source)
         .unwrap_or_else(|| swoole_rs_corebase::fatal("copying a port's TLS context failed"))
 }
@@ -129,7 +130,7 @@ pub fn sni_add(config: &PortConfig, name: &[u8], context: TlsContext) -> bool {
 /// contexts exist), and the SNI callback when they do.
 #[must_use]
 pub fn ssl_init(config: &PortConfig) -> bool {
-    let Some(context) = config.ssl_context.clone() else {
+    let Some(context) = config.ssl_context.get() else {
         return false;
     };
     let has_sni = !sni(config).is_empty();
@@ -152,7 +153,7 @@ pub(crate) fn ssl_context_init(config: &mut PortConfig) -> bool {
         (Text::Ciphers, SW_SSL_CIPHER_LIST.as_bytes()),
         (Text::EcdhCurve, SW_SSL_ECDH_CURVE.as_bytes()),
     ]);
-    let context = config.ssl_context.insert(context).clone();
+    config.ssl_context.set(context.clone());
     edit(&context, |fields| {
         fields.prefer_server_ciphers = true;
         fields.session_tickets = false;
@@ -169,10 +170,10 @@ pub(crate) fn ssl_context_init(config: &mut PortConfig) -> bool {
 
 /// `ListenPort::ssl_create(sock)`: the socket's server-side `SSL`, which names the port.
 pub(crate) fn ssl_create(config: &PortConfig, sock: Option<Socket<'_>>) -> bool {
-    let context = config.ssl_context.as_ref();
+    let context = config.ssl_context.get();
     let flags = SslCreateFlag::SW_SSL_SERVER as c_int;
     let create = |sock| {
-        context.is_some_and(|context| {
+        context.as_ref().is_some_and(|context| {
             socket_ssl_create(sock, context.fields().context.as_deref(), flags)
         })
     };
@@ -265,7 +266,7 @@ pub(crate) fn import(config: &mut PortConfig, fd: c_int) -> bool {
     let info = socket.info;
     config.set_listening_socket(Box::new(socket).into_socket());
     config.r#type = kind;
-    if with_host(&info, |host| config.host.set(host.to_bytes())) != 0 {
+    if !with_host(&info, |host| config.host.set(host.to_bytes())) {
         swoole_rs_corebase::fatal("out of memory storing a port's host");
     }
     config.port.set(swr_v1_clients_address_port(&info));
@@ -275,14 +276,10 @@ pub(crate) fn import(config: &mut PortConfig, fd: c_int) -> bool {
 
 /// `ListenPort::close()`: drops the TLS context, frees the socket
 /// and unlinks a Unix socket's path.
-pub(crate) fn close(port: view::Port<'_>) {
-    if port.config().ssl != 0 {
-        // SAFETY: the server closes its ports as it shuts down, once nothing else
-        // reads their settings (`PortMethods::close`), and no borrow of them is
-        // held here: only the context is replaced.
-        unsafe { port.config_mut() }.ssl_context = None;
+pub(crate) fn close(config: &PortConfig) {
+    if config.ssl {
+        drop(config.ssl_context.replace(None));
     }
-    let config = port.config();
     // Taken first, so nothing finds the record once it is freed.
     let socket = config.take_socket_ptr();
     if !socket.is_null() {

@@ -18,7 +18,7 @@ use swoole_rs_zend::{
     Declared, Owned, Value, ZStr,
     bailout::{self, Bailout},
     host::Then,
-    sys::{swr_zend_efree, swr_zend_http_release_objects, zend_object, zval},
+    sys::{swr_zend_http_release_objects, zend_object, zval},
 };
 
 /// What a `Swoole\Http\Request` or `Swoole\Http\Response` object embeds
@@ -199,7 +199,7 @@ pub(crate) fn send(mut ctx: Ctx, data: &[u8]) -> bool {
 }
 
 /// `SW_ERROR_OUTPUT_SEND_YIELD`.
-const OUTPUT_SEND_YIELD: c_int = 1010;
+const OUTPUT_SEND_YIELD: c_int = swoole_rs_error::ErrorCode::SW_ERROR_OUTPUT_SEND_YIELD as c_int;
 
 /// `Server::send` to `fd`, waiting in a coroutine while the socket's buffer
 /// is full. A bailout while waiting is left for the handler to raise.
@@ -434,10 +434,6 @@ pub(crate) unsafe fn free(mut ctx: Ctx) {
         || state.stream_id > 0
     {
         return;
-    }
-    if !state.request.path.is_null() {
-        // SAFETY: the path the parser copied into request memory.
-        unsafe { swr_zend_efree(state.request.path.cast()) };
     }
     parse::parse_free(state);
     // SAFETY: `alloc`'s, which nothing references any more; the drop

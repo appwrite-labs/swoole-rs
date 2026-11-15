@@ -32,10 +32,7 @@ use swoole_rs_zend::{
     Array, Call, Class, Declared, Minit, Owned, Value, ZStr, ZString, bailout, handlers,
     method_table,
     string::{self},
-    sys::{
-        IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, zend_long, zval,
-        zval_ptr_dtor,
-    },
+    sys::{IS_NULL, ZEND_ACC_NOT_SERIALIZABLE, ZEND_ACC_PUBLIC, ZEND_ACC_STATIC, zend_long, zval},
 };
 
 static SERVER: Class = Class::new();
@@ -104,11 +101,14 @@ const CLOSE_REASON_MAX: usize = 125;
 const SEC_KEY_LENGTH: usize = 24;
 
 /// Swoole error codes and log levels (`include/swoole_error.h`, `swoole_log.h`).
-const PROTOCOL_ERROR: c_int = 508;
-const SESSION_NOT_EXIST: c_int = 1005;
-const WEBSOCKET_UNCONNECTED: c_int = 8503;
-const WEBSOCKET_PACK_FAILED: c_int = 8505;
-const WEBSOCKET_INCOMPLETE_PACKET: c_int = 8507;
+const PROTOCOL_ERROR: c_int = swoole_rs_error::ErrorCode::SW_ERROR_PROTOCOL_ERROR as c_int;
+const SESSION_NOT_EXIST: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SESSION_NOT_EXIST as c_int;
+const WEBSOCKET_UNCONNECTED: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_WEBSOCKET_UNCONNECTED as c_int;
+const WEBSOCKET_PACK_FAILED: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_WEBSOCKET_PACK_FAILED as c_int;
+const WEBSOCKET_INCOMPLETE_PACKET: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_WEBSOCKET_INCOMPLETE_PACKET as c_int;
 const LOG_TRACE: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_TRACE as c_int;
 const LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
 
@@ -915,14 +915,13 @@ fn message(view: view::Server<'_>, request: &RecvData) -> Result<bool, bailout::
     }
     let frame = construct(zend_long::from(opcode), &data, flags);
     set(&frame, FD, Owned::long(fd));
-    let mut args = [zserv(), frame.into_zval()];
+    // The handler borrows the Frame, whose drop releases it.
+    let mut args = [zserv(), frame.copy_value()];
     if let Err(bailout) = dispatch(server, server_fd, PortCallback::Message, &mut args, fd) {
         // As upstream, whose bailout jumps past the releases.
-        let _kept = data.into_zval();
+        let _kept = (data.into_zval(), frame.into_zval());
         return Err(bailout);
     }
-    // SAFETY: the Frame built above.
-    unsafe { zval_ptr_dtor(&raw mut args[1]) };
     Ok(true)
 }
 

@@ -4,7 +4,7 @@
 //! table the engine calls back through ([`HOST`]).
 //! The instance is created on the first request, registers the ring fd, the exit
 //! condition and the end-of-loop submit, and is freed with the reactor.
-use crate::uring::{self, Config, Host, Uring};
+use crate::uring::{self, Config, Host, OpenError, Uring};
 use std::cell::RefCell;
 use std::ffi::{c_int, c_void};
 use std::ptr;
@@ -15,10 +15,7 @@ use swoole_rs_corebase::log;
 use swoole_rs_reactor::event_api::{
     event_add, event_del, swoole_event_is_available, swoole_event_is_running,
 };
-use swoole_rs_reactor::{Socket, SocketRecord, UringOps};
-
-/// `SW_EVENT_READ`.
-const EVENT_READ: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_READ as c_int;
+use swoole_rs_reactor::{Events, Socket, SocketRecord, UringOps};
 
 /// The thread's `Iouring`: the engine (none if the ring could not be created) and
 /// its fd's record on the thread's reactor, whose destroy callback takes the instance.
@@ -95,7 +92,7 @@ fn create() -> Iouring {
     };
     let origin = c"Iouring::Iouring";
     match opened.status {
-        2 => {
+        Err(OpenError::Create) => {
             log::sys_error(
                 origin,
                 format_args!(
@@ -105,28 +102,28 @@ fn create() -> Iouring {
             );
             return iouring;
         }
-        3 => log::error(
+        Err(OpenError::Probe) => log::error(
             origin,
             format_args!("Failed to query the io_uring opcodes supported by the running kernel"),
         ),
-        4 => log::error(
+        Err(OpenError::Futex) => log::error(
             origin,
             format_args!(
                 "The running kernel does not support IORING_OP_FUTEX_WAIT and IORING_OP_FUTEX_WAKE"
             ),
         ),
-        5 => log::error(
+        Err(OpenError::Ftruncate) => log::error(
             origin,
             format_args!("The running kernel does not support IORING_OP_FTRUNCATE"),
         ),
-        6 => {
+        Err(OpenError::Workers) => {
             log::sys_error(
                 origin,
                 format_args!("Failed to set the maximum of io_uring async workers"),
             );
             return iouring;
         }
-        _ => {}
+        Ok(()) => {}
     }
     let Some(engine) = &iouring.engine else {
         return iouring;
@@ -143,7 +140,7 @@ fn create() -> Iouring {
         swoole_rs_reactor::Priority::IouringSubmit,
         submit,
     );
-    if !event_add(socket, EVENT_READ) {
+    if !event_add(socket, Events::READ) {
         log::sys_error(
             origin,
             format_args!("Failed to add io_uring ring fd to the event loop"),

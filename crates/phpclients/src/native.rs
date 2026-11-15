@@ -34,15 +34,11 @@ const LOG_WARNING: c_int = 4;
 /// A `SocketImpl *`.
 pub(crate) type Socket = *mut libc::c_void;
 
-/// `SW_TIMEOUT_*`.
-const TIMEOUT_CONNECT: c_int = 1 << 1;
-const TIMEOUT_READ: c_int = 1 << 2;
-const TIMEOUT_WRITE: c_int = 1 << 3;
-pub(crate) const TIMEOUT_RDWR: c_int = TIMEOUT_READ | TIMEOUT_WRITE;
+use swoole_rs_reactor::TimeoutKind;
 /// `SW_SOCK_UDP6`.
 const SOCK_UDP6: c_int = 4;
 /// `SW_ERROR_WRONG_OPERATION`.
-const WRONG_OPERATION: c_int = 509;
+const WRONG_OPERATION: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as c_int;
 /// `SW_IPC_BUFFER_SIZE`: `SW_IPC_MAX_SIZE - sizeof(DataHead)`.
 #[expect(clippy::cast_possible_truncation, reason = "a u16 field's value")]
 const IPC_BUFFER_SIZE: u16 = (swoole_rs_corebase::constants::SW_IPC_MAX_SIZE - 40) as u16;
@@ -113,16 +109,6 @@ impl NewSocket {
 /// Starting the reactor bailed out.
 pub(crate) fn check_reactor() -> Result<(), Bailout> {
     swoole_rs_zend::contain(swoole_rs_phpruntime::check_reactor)
-}
-
-/// Whether the build has an optional SSL option: the host name (0) or grease
-/// (1, `BoringSSL`'s).
-pub(crate) fn ssl_supports(option: c_int) -> bool {
-    match option {
-        0 => built_with(Switch::TlsHostName),
-        1 => built_with(Switch::BoringSsl),
-        _ => false,
-    }
 }
 
 /// A live coroutine socket (`SocketImpl *`) over crates/hooks' record handle.
@@ -224,7 +210,7 @@ impl Co {
 
     /// `set_err(code, message)`.
     pub(crate) fn set_error(self, code: c_int, message: &[u8]) {
-        if self.0.set_error(code, message) != 0 {
+        if !self.0.set_error(code, message) {
             // std::bad_alloc, which upstream leaves uncaught.
             swoole_rs_corebase::fatal("out of memory storing a socket error");
         }
@@ -276,14 +262,14 @@ impl Co {
 
     /// `connect(host, port)` under a connect timeout of `timeout`.
     pub(crate) fn connect(self, host: &[u8], port: i64, timeout: f64) -> bool {
-        let _timeout = self.timeout(timeout, TIMEOUT_CONNECT);
+        let _timeout = self.timeout(timeout, TimeoutKind::CONNECT);
         self.0.connect_host(host, port.c_cast::<c_int>())
     }
 
     /// `set_timeout(timeout, SW_TIMEOUT_CONNECT)`, then `connect(host, port)` of
     /// the host up to its first NUL, as upstream reads it.
     pub(crate) fn connect_host(self, host: &[u8], port: i64, timeout: f64) -> bool {
-        self.set_timeout(timeout, TIMEOUT_CONNECT);
+        self.set_timeout(timeout, TimeoutKind::CONNECT);
         let host = host.split(|byte| *byte == 0).next().unwrap_or_default();
         self.0.connect_host(host, port.c_cast::<c_int>())
     }
@@ -302,13 +288,13 @@ impl Co {
     }
 
     /// A timeout of `kind` for the guard's life (`TimeoutSetter`).
-    pub(crate) fn timeout(self, timeout: f64, kind: c_int) -> co::Timeout {
+    pub(crate) fn timeout(self, timeout: f64, kind: TimeoutKind) -> co::Timeout {
         co::Timeout::set(self.0, timeout, kind)
     }
 
     /// One send [`Transfer`] of `data` under `timeout`.
     pub(crate) fn send(self, op: Transfer, data: &[u8], timeout: f64) -> ssize_t {
-        let _timeout = self.timeout(timeout, TIMEOUT_WRITE);
+        let _timeout = self.timeout(timeout, TimeoutKind::WRITE);
         if matches!(op, Transfer::SendAll) {
             self.0.send_all(data)
         } else {
@@ -360,9 +346,9 @@ impl Co {
         timeout: f64,
     ) -> (ssize_t, c_int, size_t) {
         let kind = if matches!(vectors, co::Vectors::Read(_)) {
-            TIMEOUT_READ
+            TimeoutKind::READ
         } else {
-            TIMEOUT_WRITE
+            TimeoutKind::WRITE
         };
         let _timeout = self.timeout(timeout, kind);
         co::vector(self.0, vectors, all)
@@ -380,13 +366,14 @@ impl Co {
 
     /// `recvfrom` into `buffer`'s room under a read timeout of `timeout`.
     pub(crate) fn recvfrom(self, buffer: &mut ZBuf, timeout: f64) -> ssize_t {
-        let _timeout = self.timeout(timeout, TIMEOUT_READ);
+        let _timeout = self.timeout(timeout, TimeoutKind::READ);
         self.fill(None, buffer)
     }
 
     /// One receiving [`Transfer`] into `buffer`'s room under `timeout`.
     pub(crate) fn receive(self, op: Transfer, buffer: &mut ZBuf, timeout: f64) -> ssize_t {
-        let _timeout = (!matches!(op, Transfer::Peek)).then(|| self.timeout(timeout, TIMEOUT_READ));
+        let _timeout =
+            (!matches!(op, Transfer::Peek)).then(|| self.timeout(timeout, TimeoutKind::READ));
         self.fill(Some(op), buffer)
     }
 
@@ -447,24 +434,30 @@ impl Co {
         self.0.ssl_handshake()
     }
 
-    /// `open_length_check` (0), `open_eof_check` (1) or `http2` (2) = `value`.
-    pub(crate) fn set_flag(self, flag: c_int, value: bool) {
-        match flag {
-            0 => self.0.set_open_length_check(value),
-            1 => self.0.set_open_eof_check(value),
-            _ => self.0.set_http2(value),
-        }
+    /// `open_length_check = value`.
+    pub(crate) fn set_length_check(self, value: bool) {
+        self.0.set_open_length_check(value);
     }
 
-    /// `mqtt::set_protocol` (0) or `Protocol::default_length_func` (1).
-    pub(crate) fn protocol_preset(self, kind: c_int) {
+    /// `open_eof_check = value`.
+    pub(crate) fn set_eof_check(self, value: bool) {
+        self.0.set_open_eof_check(value);
+    }
+
+    /// `http2 = value`.
+    pub(crate) fn set_http2(self, value: bool) {
+        self.0.set_http2(value);
+    }
+
+    /// `mqtt::set_protocol`.
+    pub(crate) fn mqtt_protocol(self) {
+        self.0.edit_protocol(|protocol| mqtt_set_protocol(protocol));
+    }
+
+    /// `Protocol::default_length_func`.
+    pub(crate) fn length_protocol(self) {
         self.0.edit_protocol(|protocol| {
-            if kind == 0 {
-                mqtt_set_protocol(protocol);
-            } else {
-                protocol.get_package_length =
-                    Some(swoole_rs_ports::framing_recv::default_length_func);
-            }
+            protocol.get_package_length = Some(swoole_rs_ports::framing_recv::default_length_func);
         });
     }
 
@@ -473,11 +466,11 @@ impl Co {
         self.0.set_int_option(level, name, value)
     }
 
-    pub(crate) fn set_timeout(self, timeout: f64, kind: c_int) {
+    pub(crate) fn set_timeout(self, timeout: f64, kind: TimeoutKind) {
         self.0.set_timeout(timeout, kind);
     }
 
-    pub(crate) fn get_timeout(self, kind: c_int) -> f64 {
+    pub(crate) fn get_timeout(self, kind: TimeoutKind) -> f64 {
         self.0.timeout(kind)
     }
 
@@ -598,14 +591,10 @@ pub(crate) fn c_text(bytes: &[u8]) -> CString {
 
 /// `new Client(type, async)`: the client, or the errno of its failed socket.
 pub(crate) fn create(kind: c_int, is_async: bool) -> Result<Cli, c_int> {
-    let cli = swoole_rs_clients::client::swr_v1_clients_new(kind, is_async);
-    if cli.is_null() {
-        Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0))
-    } else {
-        // SAFETY: a new client from `swr_v1_clients_new`, which stays live until
-        // `destroy` frees it as its last operation.
-        Ok(Cli(unsafe { client::Handle::new(cli) }))
-    }
+    // Live until `destroy` frees it as its last operation.
+    client::create(kind, is_async)
+        .map(Cli)
+        .ok_or_else(|| std::io::Error::last_os_error().raw_os_error().unwrap_or(0))
 }
 
 /// `delete cli`, after the length callable of `package_length_func`.

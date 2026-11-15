@@ -104,8 +104,9 @@ fn main_thread() -> bool {
     swoole_rs_zend::is_main_thread()
 }
 
-const SW_ERROR_PHP_FATAL_ERROR: i64 = 503;
-const SW_ERROR_UNDEFINED_BEHAVIOR: i64 = 600;
+const SW_ERROR_PHP_FATAL_ERROR: i64 = swoole_rs_error::ErrorCode::SW_ERROR_PHP_FATAL_ERROR as i64;
+const SW_ERROR_UNDEFINED_BEHAVIOR: i64 =
+    swoole_rs_error::ErrorCode::SW_ERROR_UNDEFINED_BEHAVIOR as i64;
 
 /// The `SWOOLE_HOOK_*` constants before `SWOOLE_HOOK_ALL`, in upstream's
 /// order; a PDO driver's only when it is built in.

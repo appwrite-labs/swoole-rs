@@ -169,6 +169,7 @@ version = "0.1.0"
 dependencies = [
  "itoa",
  "libc",
+ "swoole-rs-error",
  "swoole-rs-framing",
 ]
 
@@ -178,6 +179,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-corebase",
+ "swoole-rs-error",
 ]
 
 [[package]]
@@ -244,6 +246,7 @@ dependencies = [
  "libc",
  "swoole-rs-buffer",
  "swoole-rs-corebase",
+ "swoole-rs-error",
  "swoole-rs-http",
  "swoole-rs-ossupport",
 ]
@@ -283,6 +286,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-corebase",
+ "swoole-rs-error",
  "swoole-rs-locks",
  "swoole-rs-utilities",
 ]
@@ -301,6 +305,7 @@ dependencies = [
  "libc",
  "swoole-rs-buffer",
  "swoole-rs-corebase",
+ "swoole-rs-error",
 ]
 
 [[package]]
@@ -310,6 +315,7 @@ dependencies = [
  "libc",
  "swoole-rs-buffer",
  "swoole-rs-corebase",
+ "swoole-rs-error",
  "swoole-rs-locks",
  "swoole-rs-memory",
  "swoole-rs-ossupport",
@@ -327,6 +333,7 @@ dependencies = [
  "libc",
  "swoole-rs-clients",
  "swoole-rs-corebase",
+ "swoole-rs-error",
  "swoole-rs-protocols",
  "swoole-rs-reactor",
 ]
@@ -351,6 +358,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-corebase",
+ "swoole-rs-error",
  "swoole-rs-reactor",
 ]
 

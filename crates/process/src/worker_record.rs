@@ -594,6 +594,17 @@ impl<'a> Worker<'a> {
         self.concurrency().load(Ordering::SeqCst)
     }
 
+    /// `worker->concurrency++`, returning what it was.
+    #[must_use]
+    pub fn add_concurrency(self) -> u32 {
+        self.concurrency().fetch_add(1, Ordering::SeqCst)
+    }
+
+    /// `worker->concurrency--`.
+    pub fn sub_concurrency(self) {
+        self.concurrency().fetch_sub(1, Ordering::SeqCst);
+    }
+
     /// `worker->concurrency`.
     fn concurrency(&self) -> &AtomicU32 {
         // SAFETY: `new`'s contract: a live record, for longer than this borrow; the
@@ -697,7 +708,7 @@ pub fn copy_for_process(
         // `network::Socket` begins with its fd.
         pipe = unsafe { worker.pipe_current.cast::<c_int>().read() };
     }
-    if !pool.message_bus.is_null() {
+    if pool.has_message_bus() {
         worker.pipe_current = core::ptr::null_mut();
         worker.pipe_object = core::ptr::null_mut();
     }
@@ -757,7 +768,7 @@ mod tests {
             (41, workers[1].pipe_master, core::ptr::null_mut())
         );
         // The message bus owns the pipe.
-        pool.message_bus = core::ptr::dangling_mut();
+        crate::process_pool::PoolRef::from(&mut pool).set_message_bus(Some(Box::new(())));
         assert_eq!(
             copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 1, &mut copy),
             7

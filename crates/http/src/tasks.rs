@@ -87,7 +87,7 @@ mod tests {
             length: 5,
             filesize: 100,
             part: 0,
-            separator: 0,
+            separator: false,
         };
         let mut written = 0;
         assert_eq!(owner.prepare_range(3, 5, &format, &mut written), 0);

@@ -5,8 +5,8 @@
 //! through their methods. `Ssl<'a>` and `Bio<'a>` borrow their owner for `'a`, so a
 //! handle can't outlive the record or SSL it came from, and the calls that need only a
 //! live handle are declared `safe`. What frees an SSL or replaces its BIOs within
-//! `'a` is unsafe: the constructors from raw pointers, `Ssl::set_fd`, `Ssl::set_bio`
-//! and `upstream::socket_ssl_close`.
+//! `'a` is unsafe: the crate's own constructors from raw pointers, `Ssl::set_fd`,
+//! `Ssl::set_bio` and `upstream::socket_ssl_close`.
 use crate::context::SslCtx;
 use openssl_sys::{
     BIO, BIO_read, BIO_write, OPENSSL_STACK, SSL, SSL_CIPHER, SSL_CTRL_MODE,
@@ -44,6 +44,7 @@ unsafe extern "C" {
     safe fn BIO_new_file(filename: CText<'_>, mode: CText<'_>) -> Option<OwnedBio>;
     /// `BIO_pending` as a function: the bytes queued to read.
     safe fn BIO_ctrl_pending(bio: Bio<'_>) -> usize;
+    safe fn BIO_method_type(bio: Bio<'_>) -> c_int;
     safe fn PEM_write_bio_X509(bio: Bio<'_>, cert: CertRef<'_>) -> c_int;
     safe fn SSL_get_error(ssl: Ssl<'_>, result: c_int) -> c_int;
     safe fn SSL_accept(ssl: Ssl<'_>) -> c_int;
@@ -235,19 +236,27 @@ impl<'a> Ssl<'a> {
     /// # Safety
     /// `ssl` is null or a live SSL that nothing frees for `'a`.
     #[must_use]
-    pub unsafe fn new(ssl: *mut SSL) -> Option<Self> {
+    pub(crate) unsafe fn new(ssl: *mut SSL) -> Option<Self> {
         NonNull::new(ssl).map(|ssl| Self(ssl, PhantomData))
     }
 
     /// The SSL of `socket`'s record, or None without one, for as long as the record.
     #[must_use]
     pub fn of(socket: Socket<'a>) -> Option<Self> {
-        let ssl = socket.read(SocketFields::ssl);
+        Self::of_reading(socket, |_| ()).0
+    }
+
+    /// [`Self::of`], and `read` over the record's fields in the same read of it.
+    pub fn of_reading<T>(
+        socket: Socket<'a>,
+        read: impl FnOnce(&SocketFields) -> T,
+    ) -> (Option<Self>, T) {
+        let (ssl, value) = socket.read(|record| (record.ssl(), read(record)));
         // SAFETY: the record's `ssl` is null or a live SSL it owns: only the unsafe
         // `set_ssl` (whose caller promises that) and native code (`Socket::from_ptr`'s
         // contract) set it, and only the unsafe `socket_ssl_close` frees it, its caller
         // promising that no handle to it is used afterwards.
-        unsafe { Self::new(ssl.cast()) }
+        (unsafe { Self::new(ssl.cast()) }, value)
     }
 
     #[must_use]
@@ -475,13 +484,6 @@ impl<'a> Ssl<'a> {
 pub struct Bio<'a>(NonNull<BIO>, PhantomData<&'a BIO>);
 
 impl Bio<'_> {
-    /// # Safety
-    /// `bio` is null or a live BIO that nothing frees for the handle's lifetime.
-    #[must_use]
-    pub unsafe fn new(bio: *mut BIO) -> Option<Self> {
-        NonNull::new(bio).map(|bio| Self(bio, PhantomData))
-    }
-
     #[must_use]
     pub fn as_ptr(self) -> *mut BIO {
         self.0.as_ptr()
@@ -491,6 +493,14 @@ impl Bio<'_> {
     #[must_use]
     pub fn pending(self) -> usize {
         BIO_ctrl_pending(self)
+    }
+
+    /// Whether it is a memory BIO (`BIO_TYPE_MEM`), as [`OwnedBio::memory`] makes.
+    #[must_use]
+    pub fn is_memory(self) -> bool {
+        /// OpenSSL's `BIO_TYPE_MEM`: `BIO_TYPE_SOURCE_SINK` (0x0400) with index 1.
+        const BIO_TYPE_MEM: c_int = 0x0401;
+        BIO_method_type(self) == BIO_TYPE_MEM
     }
 
     /// `BIO_read` into `buffer`.
@@ -564,8 +574,9 @@ pub struct CertRef<'a>(NonNull<X509>, PhantomData<&'a X509>);
 impl CertRef<'_> {
     /// # Safety
     /// `cert` is null or a live certificate, not freed while the handle is used.
+    #[cfg(test)]
     #[must_use]
-    pub unsafe fn new(cert: *mut X509) -> Option<Self> {
+    pub(crate) unsafe fn new(cert: *mut X509) -> Option<Self> {
         NonNull::new(cert).map(|cert| Self(cert, PhantomData))
     }
 

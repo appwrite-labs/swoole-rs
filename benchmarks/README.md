@@ -184,6 +184,15 @@ expose no hardware counters, so cycles and the rest are recorded only where coun
 The nightly `bench.yml` runs it with results as an artifact; never run it on a loaded
 machine.
 
+WebSocket uses one connection because its fixture broadcasts to every connected client.
+`--websocket-pipeline` (default 32) sends a bounded batch of messages before waiting for
+their echoes; `--connections` applies to HTTP. Every echo is validated, and each message's
+latency runs from its batch's send to the read completing that echo. Set the pipeline to 1
+to reproduce the serial round-trip workload used before #3409. Compare results only at
+the same pipeline size (recorded in the JSON); batching changes latency and server work
+per read. `client_cpu` records load-generator CPU seconds per wall second, so a client near
+one core (two for wrk) can bound the measured throughput even when server CPU is lower.
+
 ## Memory (nightly)
 
 `benchmarks/memory.py` starts each engine's server for a workload and reads

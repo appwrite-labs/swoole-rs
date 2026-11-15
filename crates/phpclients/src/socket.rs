@@ -891,7 +891,7 @@ fn set_protocol(call: &Call) {
     call.set_bool(crate::socket_options::apply(
         socket,
         settings,
-        crate::socket_options::PROTOCOL,
+        swoole_rs_phpswoole::SocketSettings::Protocol,
     ));
 }
 

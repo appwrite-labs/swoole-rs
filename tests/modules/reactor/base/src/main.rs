@@ -14,8 +14,8 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, Ordering::Relaxed};
 use std::time::{SystemTime, UNIX_EPOCH};
 use swoole_rs_ffi::socket_pair::{self, SocketPair};
 use swoole_rs_ffi::{
-    ChangeOp, ErrorCode, Event, Handler, ReactorFields, ReactorPrepared, ReactorState, Running,
-    Socket, SocketRecord, event_api, reactor_upstream,
+    ChangeOp, ErrorCode, Event, Events, Handler, ReactorFields, ReactorPrepared, ReactorState,
+    Running, Socket, SocketRecord, event_api, reactor_upstream,
 };
 
 const SW_OK: c_int = 0;
@@ -198,7 +198,7 @@ unsafe fn add(reactor: Running<'_>, socket: Sock, events: c_int) -> c_int {
         reactor,
         unsafe { handle(socket) },
         ChangeOp::Add,
-        events,
+        Events::from_bits(events),
     ))
 }
 
@@ -207,7 +207,7 @@ unsafe fn set(reactor: Running<'_>, socket: Sock, events: c_int) -> c_int {
         reactor,
         unsafe { handle(socket) },
         ChangeOp::Set,
-        events,
+        Events::from_bits(events),
     ))
 }
 
@@ -216,7 +216,7 @@ unsafe fn del(reactor: Running<'_>, socket: Sock) -> c_int {
         reactor,
         unsafe { handle(socket) },
         ChangeOp::Del,
-        0,
+        Events::NONE,
     ))
 }
 
@@ -418,7 +418,7 @@ unsafe fn wait() {
 
         event_api::swoole_event_set_handler(SW_FD_PIPE, SW_EVENT_READ, Some(read_hello));
 
-        let ret = event_api::event_add(handle(sock(&p, false)), SW_EVENT_READ);
+        let ret = event_api::event_add(handle(sock(&p, false)), Events::READ);
         assert_eq!(
             event_api::swoole_event_get_socket((*sock(&p, false)).fields.fd),
             sock(&p, false).cast()
@@ -445,7 +445,7 @@ unsafe fn get_missing_socket() {
         expect_eq!(event_api::swoole_event_get_socket(fd), null_mut());
         expect_eq!(!get_socket(tg(), fd).is_null(), false);
         expect_eq!(event_num(tg()), 0);
-        expect_eq!(event_api::event_add(handle(socket), SW_EVENT_READ), true);
+        expect_eq!(event_api::event_add(handle(socket), Events::READ), true);
         expect_eq!(event_api::swoole_event_get_socket(fd), socket.cast());
         expect_eq!(event_api::event_del(handle(socket)), true);
         expect_eq!(swoole_rs_ffi::swoole_event_free(), SW_OK);
@@ -467,7 +467,7 @@ unsafe fn write_case() {
         assert!(!tg_reactor().is_null());
 
         event_api::swoole_event_set_handler(SW_FD_PIPE, SW_EVENT_READ, Some(read_hello));
-        assert!(event_api::event_add(handle(sock(&p, false)), SW_EVENT_READ));
+        assert!(event_api::event_add(handle(sock(&p, false)), Events::READ));
 
         let n = event_api::event_write(handle(sock(&p, true)), HELLO);
         assert_eq!(n, HELLO.len() as isize);
@@ -603,7 +603,7 @@ unsafe fn write_2m() {
         socket_pair::set_blocking(&mut p, false);
         let _ = socket_pair::unix_socket_set_buffer_size(&p, 65536);
 
-        assert!(event_api::event_add(handle(sock(&p, false)), SW_EVENT_READ));
+        assert!(event_api::event_add(handle(sock(&p, false)), Events::READ));
 
         let data = random_data();
 
@@ -986,12 +986,12 @@ unsafe fn add_or_update() {
         assert!(!tg_reactor().is_null());
 
         let socket = sock(&p, false);
-        assert!(event_api::add_or_update(handle(socket), SW_EVENT_READ));
-        assert!((*socket).fields.events & SW_EVENT_READ != 0);
+        assert!(event_api::add_or_update(handle(socket), Events::READ));
+        assert!((*socket).fields.events.bits() & SW_EVENT_READ != 0);
 
-        assert!(event_api::add_or_update(handle(socket), SW_EVENT_WRITE));
-        assert!((*socket).fields.events & SW_EVENT_READ != 0);
-        assert!((*socket).fields.events & SW_EVENT_WRITE != 0);
+        assert!(event_api::add_or_update(handle(socket), Events::WRITE));
+        assert!((*socket).fields.events.bits() & SW_EVENT_READ != 0);
+        assert!((*socket).fields.events.bits() & SW_EVENT_WRITE != 0);
 
         let _ = swoole_rs_ffi::swoole_event_free();
         pair_delete(p);
@@ -1228,7 +1228,7 @@ unsafe fn drain_write_buffer() {
                 let mut rbuf = vec![0u8; DATA_SIZE];
                 let mut length = 0;
                 loop {
-                    let _ = handle(rsock).wait_event(1000, SW_EVENT_READ);
+                    let _ = handle(rsock).wait_event(1000, Events::READ);
                     let n = sock_read(rsock, &mut rbuf[length..]);
                     if n > 0 {
                         length += n as usize;
@@ -1297,10 +1297,7 @@ unsafe fn handle_fail() {
         let socket = sock(&p, false);
         (*socket).fields.object = ptr::from_ref::<SocketPair>(&p).cast_mut().cast();
 
-        assert!(event_api::event_add(
-            handle(socket),
-            SW_EVENT_READ | SW_EVENT_WRITE
-        ));
+        assert!(event_api::event_add(handle(socket), Events::RDWR));
 
         assert_eq!(event_api::swoole_event_wait(), SW_OK);
         assert!(tg_reactor().is_null());

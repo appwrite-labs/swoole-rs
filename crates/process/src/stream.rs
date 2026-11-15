@@ -17,7 +17,8 @@ const MAX_LENGTH: u32 = 2 * 1024 * 1024;
 /// `SW_LOG_WARNING`.
 const LOG_WARNING: c_int = 4;
 /// `SW_ERROR_SERVER_CONNECT_FAIL`.
-const SERVER_CONNECT_FAIL: c_int = 9011;
+const SERVER_CONNECT_FAIL: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_SERVER_CONNECT_FAIL as c_int;
 
 /// Where a stream connects: a Unix stream socket's path, or a TCP address.
 pub enum Peer<'a> {
@@ -72,7 +73,7 @@ fn connect(family: c_int, addr: AddressStorage, len: libc::socklen_t) -> io::Res
     set_flags(fd, libc::F_GETFD, libc::F_SETFD, libc::FD_CLOEXEC, true)?;
     set_flags(fd, libc::F_GETFL, libc::F_SETFL, libc::O_NONBLOCK, true)?;
     let address = SocketAddress { addr, len, kind: 0 };
-    if address.connect(fd) < 0 && errno() != libc::EINPROGRESS {
+    if !address.connect(fd) && errno() != libc::EINPROGRESS {
         return Err(io::Error::last_os_error());
     }
     Ok(socket)

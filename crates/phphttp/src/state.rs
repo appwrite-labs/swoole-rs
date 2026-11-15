@@ -66,10 +66,8 @@ impl Slot {
 #[repr(C)]
 pub(crate) struct Request {
     pub(crate) version: c_int,
-    pub(crate) path: *mut c_char,
-    pub(crate) path_len: u32,
-    pub(crate) ext: *const c_char,
-    pub(crate) ext_len: u32,
+    /// The path up to its query: `on_url`'s, or the HTTP/2 `:path`'s.
+    pub(crate) path: Option<Box<[u8]>>,
     pub(crate) post_form_urlencoded: bool,
     /// The request's bytes, a string once any arrive.
     pub(crate) zdata: Owned,

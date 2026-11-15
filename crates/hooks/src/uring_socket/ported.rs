@@ -37,8 +37,8 @@ fn no_check(_: Co, _: isize) {}
 
 /// A `UringSocket` over `fd`, which it closes when dropped (`sock.close()`).
 struct Sock {
-    ops: UringSocketOps,
-    _socket: TestSocket,
+    ops: UringSocketOps<'static>,
+    socket: TestSocket,
 }
 
 impl Sock {
@@ -61,10 +61,7 @@ impl Sock {
             check: no_check,
             set_err: crate::co_io::set_err,
         };
-        Self {
-            ops,
-            _socket: socket,
-        }
+        Self { ops, socket }
     }
 
     /// `UringSocket(type)`.
@@ -105,9 +102,11 @@ impl Sock {
             } else {
                 ssl::SSL_set_connect_state(session);
             }
-            self.ops.tls.ssl = swoole_rs_tls::Ssl::new(session);
-            self.ops.tls.rbio = swoole_rs_tls::Bio::new(rbio);
-            self.ops.tls.wbio = swoole_rs_tls::Bio::new(wbio);
+            // The test socket's record holds the session, as a socket's does, until
+            // `drop`; the record lives as long as `self`.
+            let network = self.socket.0.socket.get().unwrap();
+            network.edit(|record| record.set_ssl(session.cast()));
+            self.ops.tls = self.ops.tls.with_session(swoole_rs_tls::Ssl::of(network));
         }
     }
 
@@ -210,6 +209,9 @@ impl Drop for Sock {
     fn drop(&mut self) {
         unsafe {
             if let Some(session) = self.ops.tls.ssl {
+                self.ops
+                    .socket
+                    .net(swoole_rs_reactor::SocketFields::take_ssl);
                 ssl::SSL_free(session.as_ptr());
             }
             libc::close(self.ops.tls.fd);

@@ -109,12 +109,11 @@ pub fn create_event_workers(serv: view::Server<'_>) -> bool {
 }
 
 /// `Server::create_user_workers()`: copy the added user workers into shared
-/// memory (no process is forked) and give each its lock. The copies are the
-/// caller's to store in `user_workers`; null, after a warning, when they couldn't
-/// be mapped.
+/// memory (no process is forked), store them and give each its lock. False,
+/// after a warning, when they couldn't be mapped.
 #[cfg(feature = "upstream-symbols")]
 #[must_use]
-pub fn create_user_workers(serv: view::Server<'_>) -> swoole_rs_memory::members::Shm {
+pub fn create_user_workers(serv: view::Server<'_>) -> bool {
     let size = size_of::<WorkerRecord>();
     let count = serv.registry().pending().len();
     let workers = swoole_rs_memory::members::Shm::calloc(count, size);
@@ -122,7 +121,8 @@ pub fn create_user_workers(serv: view::Server<'_>) -> swoole_rs_memory::members:
     if copies.is_null() {
         let m = format_args!("sw_shm_calloc({count}, {size}) for user_workers failed");
         log::sys_warning(c"Server::create_user_workers", m);
-        return workers;
+        serv.config().user_workers.replace(workers);
+        return false;
     }
     for index in 0..count {
         let Some(worker) = serv.pending_worker(index) else {
@@ -133,7 +133,8 @@ pub fn create_user_workers(serv: view::Server<'_>) -> swoole_rs_memory::members:
         create_worker(serv, worker);
         worker.set_kind(WorkerType::User.code());
     }
-    workers
+    serv.config().user_workers.replace(workers);
+    true
 }
 
 #[cfg(test)]
@@ -212,7 +213,7 @@ mod tests {
         assert_eq!(worker.counters()[3], 0);
         assert_eq!(serv.counters().concurrency.load(SeqCst), 0);
 
-        unsafe { (*serv.state().tables()).session_list = swoole_rs_memory::members::Shm::NULL };
+        unsafe { (*serv.state().tables()).session_list = swoole_rs_memory::members::Shm::empty() };
         unsafe { serv.config_mut() }.workers.free();
         unsafe { serv.config_mut() }.gs.free();
         unsafe { crate::state::free_state(state) };

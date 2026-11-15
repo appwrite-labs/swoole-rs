@@ -408,3 +408,10 @@ mask and the flag are per thread.
 | `os_signal.dispatch` | `os_signal.dispatch` |
 | `os_signal.nested` | `os_signal.nested` |
 | `os_signal.error` | `os_signal.error` |
+
+The ported case runner records the executable SHA-256 in each report's `binary`
+field. It runs an independent `case-binary` copy in the report's artifacts directory,
+retaining it when a case or inventory check fails and deleting it after a passing
+suite. CI uploads retained copies with the reports. To investigate, use that copy
+with the same Linux dependencies and the suite's fixture working directory; a
+subsequent Cargo rebuild does not replace it.

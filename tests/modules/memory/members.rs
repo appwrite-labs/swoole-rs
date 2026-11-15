@@ -24,7 +24,7 @@ fn arena(shared: bool, size: usize) -> *mut c_void {
 /// `memory` is live and came from `arena(shared, ..)`.
 unsafe fn release(shared: bool, memory: *mut c_void) {
     if shared {
-        Shm(memory).free();
+        Shm(Cell::new(memory)).free();
     } else {
         // SAFETY: as the caller promises.
         unsafe { sw_free(memory) };
@@ -150,9 +150,9 @@ fn shared_mappings_are_zeroed_protected_and_freed() {
     assert!(!memory.is_null());
     unsafe {
         assert!((0..100).all(|i| memory.add(i).read() == 0));
-        assert_eq!(Shm(memory.cast()).protect(libc::PROT_READ), 0);
+        assert_eq!(Shm(Cell::new(memory.cast())).protect(libc::PROT_READ), 0);
         assert_eq!(
-            Shm(memory.cast()).protect(libc::PROT_READ | libc::PROT_WRITE),
+            Shm(Cell::new(memory.cast())).protect(libc::PROT_READ | libc::PROT_WRITE),
             0
         );
         memory.write_bytes(7, 100);
@@ -179,8 +179,34 @@ fn a_freed_shm_field_is_null_and_freeing_it_again_unmaps_nothing() {
     // reads no header from the unmapped payload.
     field.free();
     assert!(field.is_null());
-    assert!(Shm::NULL.is_null());
+    assert!(Shm::empty().is_null());
     assert!(Shm::calloc(usize::MAX, 2).is_null());
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "Miri has no fork or shared mappings")]
+fn replacing_a_mapping_releases_the_old_allocation_and_keeps_the_new_payload() {
+    // Isolate the address space: another test's mapping must not reuse the old address.
+    let child = unsafe { libc::fork() };
+    assert!(child >= 0);
+    if child == 0 {
+        let field = Shm::calloc(2, 8);
+        let old_header = field.as_ptr().cast::<u8>().wrapping_sub(8).cast();
+        let replacement = Shm::calloc(4, 8);
+        unsafe { replacement.as_ptr().cast::<u32>().write(42) };
+        field.replace(replacement);
+        let payload =
+            field.payload_len() == 32 && unsafe { field.as_ptr().cast::<u32>().read() } == 42;
+        let unmapped = unsafe { libc::mprotect(old_header, 1, libc::PROT_READ) } == -1
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOMEM);
+        field.replace(Shm::empty());
+        field.replace(Shm::empty());
+        unsafe { libc::_exit(i32::from(!(payload && unmapped && field.is_null()))) };
+    }
+    let mut status = 0;
+    assert_eq!(unsafe { libc::waitpid(child, &raw mut status, 0) }, child);
+    assert!(libc::WIFEXITED(status));
+    assert_eq!(libc::WEXITSTATUS(status), 0);
 }
 
 #[test]

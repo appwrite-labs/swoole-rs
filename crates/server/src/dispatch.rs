@@ -345,16 +345,16 @@ pub fn add_port<'a>(
     let mut port = PortConfig::new_port(serv.raw());
     port.r#type = socket_type;
     port.port.set(number);
-    if port.host.set(host.to_bytes()) < 0 {
+    if !port.host.set(host.to_bytes()) {
         // `throw std::bad_alloc()`, which nothing catches.
         swoole_rs_corebase::fatal("out of memory storing a port's host");
     }
     if socket_type & SOCK_SSL != 0 {
         port.r#type = socket_type & !SOCK_SSL;
-        port.ssl = 1;
+        port.ssl = true;
         (methods().ssl_context_init)(&mut port);
     }
-    if !(methods().create_socket)(&port) {
+    if !(methods().create_socket)(&port, serv.config().enable_reuse_port.get()) {
         let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
         swoole_rs_corebase::log::set_last_error(errno);
         port.delete();
@@ -686,7 +686,7 @@ mod tests {
                 },
                 close: |_| unreachable!(),
                 listen: |_| unreachable!(),
-                create_socket: |config| config.port.get() != 1,
+                create_socket: |config, _| config.port.get() != 1,
                 close_socket: |_| unreachable!(),
                 get_protocols: |_| unreachable!(),
                 init_protocol: |_| unreachable!(),
@@ -717,7 +717,7 @@ mod tests {
         let config = port.config();
         assert_eq!(
             (config.r#type, config.ssl, config.port.get()),
-            (SOCK_UDP, 1, 9501)
+            (SOCK_UDP, true, 9501)
         );
         assert_eq!(serv.ports().len(), before + 1, "kept");
         assert_eq!(serv.ports()[before].raw(), port.raw());

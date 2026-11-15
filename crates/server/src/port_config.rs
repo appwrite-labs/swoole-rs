@@ -75,9 +75,8 @@ impl ReaderSlot {
 /// [`set_methods`]. A port is one of the server's live `ListenPort`s
 /// (`server_object::port_new`): its settings, or their box while the server still
 /// makes it. The methods that take `&` write only the settings a `&` can
-/// ([`Setting`], [`Shared`], the socket's atomic), so they need no exclusive borrow
-/// of a port other threads read; `close`, which replaces the TLS context, takes the
-/// port's [`Port`] handle.
+/// ([`Setting`], [`Shared`], [`Published`], the socket's atomic), so they need no
+/// exclusive borrow of a port other threads read.
 pub struct PortMethods {
     /// On a port being made, before the server keeps it.
     pub ssl_context_init: fn(&mut PortConfig) -> bool,
@@ -85,11 +84,11 @@ pub struct PortMethods {
     pub ssl_create: fn(&PortConfig, sock: Option<Socket<'_>>) -> bool,
     /// `import(fd)`, of an inherited descriptor, on a port being made.
     pub import: fn(&mut PortConfig, fd: c_int) -> bool,
-    pub close: fn(Port<'_>),
+    pub close: fn(&PortConfig),
     /// `ListenPort::listen()`: false when it failed.
     pub listen: fn(&PortConfig) -> bool,
     /// `ListenPort::create_socket()`: false when it failed.
-    pub create_socket: fn(&PortConfig) -> bool,
+    pub create_socket: fn(&PortConfig, reuse_port: bool) -> bool,
     pub close_socket: fn(&PortConfig),
     pub get_protocols: fn(&PortConfig) -> &'static CStr,
     pub init_protocol: fn(&PortConfig),
@@ -137,7 +136,7 @@ pub struct PortConfig {
     pub buffer_high_watermark: Setting<u32>,
     pub buffer_low_watermark: Setting<u32>,
     pub r#type: c_int,
-    pub ssl: u8,
+    pub ssl: bool,
     pub port: Setting<c_int>,
     /// The listening socket's record (`network::Socket *`), or null: stored by
     /// `create_socket()` and `import()`, nulled by `close_socket()` and `close()`.
@@ -170,9 +169,9 @@ pub struct PortConfig {
     pub protocol: Shared<Protocol>,
     /// `ListenPort::onRead`, the readable callback `init_protocol` picks.
     pub on_read: ReaderSlot,
-    /// `ListenPort::ssl_context`: the port's `SSLContext` (one reference to its
-    /// Rust owner), or none: a nullable `SSLContext *` to native code.
-    pub ssl_context: Option<TlsContext>,
+    /// The port's TLS context, published so a reader keeps it alive across close.
+    /// A thin box, opaque to the native layout mirror.
+    pub ssl_context: Published<TlsContext>,
     /// The SNI contexts crates/ports keeps; `ListenPort`'s
     /// destructor releases them with the context. A thin box, as native code's
     /// mirror holds a `void *` here.
@@ -211,23 +210,24 @@ impl PortConfig {
     /// `ListenPort::is_dtls()`: the port's context speaks DTLS.
     #[must_use]
     pub fn is_dtls(&self) -> bool {
-        self.ssl_fields()
-            .is_some_and(|fields| fields.protocols & SslVersion::SW_SSL_DTLS as u32 != 0)
+        self.with_ssl_fields(|_, fields| fields.protocols & SslVersion::SW_SSL_DTLS as u32 != 0)
+            .unwrap_or(false)
     }
 
     /// `verify_peer` with no client certificate file, cafile or capath.
     #[must_use]
     pub fn ssl_verify_without_ca(&self) -> bool {
-        self.ssl_fields().is_some_and(|fields| fields.verify_peer)
-            && self
-                .ssl_context
-                .as_deref()
-                .is_some_and(swoole_rs_tls::OwnedTlsContext::names_no_ca)
+        self.with_ssl_fields(|context, fields| fields.verify_peer && context.names_no_ca())
+            .unwrap_or(false)
     }
 
-    /// The fields of the port's `SSLContext`, if it has one.
-    pub(crate) fn ssl_fields(&self) -> Option<&swoole_rs_tls::OwnedTlsFields> {
-        Some(self.ssl_context.as_ref()?.fields())
+    /// Reads the context's fields while holding a reference of this call's own.
+    pub(crate) fn with_ssl_fields<R>(
+        &self,
+        read: impl FnOnce(&TlsContext, &swoole_rs_tls::OwnedTlsFields) -> R,
+    ) -> Option<R> {
+        let context = self.ssl_context.get()?;
+        Some(read(&context, context.fields()))
     }
 }
 
@@ -308,7 +308,7 @@ impl PortConfig {
             buffer_high_watermark: Setting::new(0),
             buffer_low_watermark: Setting::new(0),
             r#type: 1,
-            ssl: 0,
+            ssl: false,
             port: Setting::new(0),
             socket: AtomicPtr::new(core::ptr::null_mut()),
             // Zero is the original native empty sentinel.
@@ -333,7 +333,7 @@ impl PortConfig {
             host: Box::default(),
             protocol: Shared::new(default_protocol()),
             on_read: ReaderSlot(AtomicPtr::new(core::ptr::null_mut())),
-            ssl_context: None,
+            ssl_context: Published::default(),
             tls: Box::default(),
             length_owner: Shared::new(None),
         })

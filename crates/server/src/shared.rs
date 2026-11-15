@@ -260,7 +260,7 @@ mod tests {
         let state = swr_v1_server_state_new();
         // SAFETY: a fresh state, its configuration and tables, all owned by this test.
         unsafe {
-            (*(*state).config()).gs = core::mem::replace(&mut gs, Shm::NULL);
+            (*(*state).config()).gs = core::mem::replace(&mut gs, Shm::empty());
             let tables = &mut *(*state).tables();
             tables.connection_list = crate::records::tests::naming(&mut connections);
             tables.session_list = crate::records::tests::naming(&mut sessions);

@@ -49,10 +49,12 @@ const NOREPLY: u32 = 1 << 7;
 const MAX_CONCURRENT_TASK: u32 = 1024;
 const TASKWAIT_TIMEOUT: f64 = 0.5;
 /// `SW_ERROR_PHP_FATAL_ERROR`, `SW_ERROR_TASK_DISPATCH_FAIL`.
-const SW_ERROR_PHP_FATAL_ERROR: c_int = 503;
-const SW_ERROR_TASK_DISPATCH_FAIL: c_int = 2002;
+const SW_ERROR_PHP_FATAL_ERROR: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_PHP_FATAL_ERROR as c_int;
+const SW_ERROR_TASK_DISPATCH_FAIL: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_TASK_DISPATCH_FAIL as c_int;
 /// `SW_ERROR_TASK_TIMEOUT`, `SW_LOG_WARNING`.
-const SW_ERROR_TASK_TIMEOUT: c_int = 2003;
+const SW_ERROR_TASK_TIMEOUT: c_int = swoole_rs_error::ErrorCode::SW_ERROR_TASK_TIMEOUT as c_int;
 const SW_LOG_WARNING: c_int = swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as c_int;
 /// `DATA`'s `Swoole\Server\TaskResult`.
 const TASK_RESULT: usize = 4;

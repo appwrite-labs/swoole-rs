@@ -218,8 +218,12 @@ fn recvfrom_into(
 }
 
 /// `SW_TIMEOUT_READ` for a read, else `SW_TIMEOUT_WRITE`.
-pub(crate) fn timeout_kind(event: u32) -> core::ffi::c_int {
-    if event == READ { 1 << 2 } else { 1 << 3 }
+pub(crate) fn timeout_kind(event: u32) -> swoole_rs_reactor::TimeoutKind {
+    if event == READ {
+        swoole_rs_reactor::TimeoutKind::READ
+    } else {
+        swoole_rs_reactor::TimeoutKind::WRITE
+    }
 }
 
 fn socklen(length: usize) -> libc::socklen_t {

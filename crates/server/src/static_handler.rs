@@ -6,11 +6,10 @@
 use crate::view;
 use core::cell::RefCell;
 use swoole_rs_http::{
-    BOUNDARY_SIZE, Calendar, HttpStaticContext, HttpStaticTask, StaticEffects, http_date,
+    BOUNDARY_SIZE, Calendar, HttpStaticContext, HttpStaticTask, StaticEffects, StaticFileKind,
+    http_date,
 };
 
-/// The path kinds' directory bit (`crates/http/src/static_path.rs`).
-const PATH_IS_DIRECTORY: u32 = 16;
 /// `PATH_MAX`, the context's filename capacity.
 const PATH_MAX: usize = libc::PATH_MAX as usize;
 /// `SW_HTTP_PAGE_CSS` and `SW_HTTP_POWER_BY`.
@@ -121,8 +120,8 @@ impl<'a, E: Effects> StaticHandler<'a, E> {
         let value = context.observe();
         context.index_file().is_empty()
             && self.autoindex()
-            && value.file_ready != 0
-            && value.kind & PATH_IS_DIRECTORY != 0
+            && value.file_ready
+            && value.kind == StaticFileKind::Directory
     }
 
     #[must_use]

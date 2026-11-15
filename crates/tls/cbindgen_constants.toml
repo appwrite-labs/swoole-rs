@@ -3,6 +3,7 @@ include_guard = "SWOOLE_RS_TLS_CONSTANTS_H"
 cpp_compat = true
 no_includes = true
 sys_includes = ["stdint.h"]
+includes = ["swoole_rs_corebase_constants.h"]
 documentation = false
 # Preserve the public preprocessor expression: casts emitted for Rust enum
 # discriminants are invalid in #if even though they have the same C++ value.
@@ -10,11 +11,10 @@ after_includes = "#define SW_SSL_ALL (SW_SSL_SSLv2 | SW_SSL_SSLv3 | SW_SSL_TLSv1
 autogen_warning = "/* Generated from crates/tls by cbindgen (tools/headers.sh); do not edit. */"
 [export]
 item_types = ["constants", "enums"]
-include = ["SslCreateFlag", "SslState", "SslVersion", "SslMethod"]
+include = ["SslCreateFlag", "SslVersion", "SslMethod"]
 exclude = ["SW_SSL_ALL"]
 [export.rename]
 "SslCreateFlag" = "swSSLCreateFlag"
-"SslState" = "swSSLState"
 "SslVersion" = "swSSLVersion"
 "SslMethod" = "swSSLMethod"
 [enum]

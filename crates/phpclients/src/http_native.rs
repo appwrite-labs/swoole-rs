@@ -64,9 +64,7 @@ pub(crate) fn websocket() -> Option<Box<dyn WebSocket>> {
     WEBSOCKET.get().map(|new| new())
 }
 
-/// `SW_TIMEOUT_CONNECT` and `SW_TIMEOUT_READ`.
-const TIMEOUT_CONNECT: c_int = 1 << 1;
-pub(crate) const TIMEOUT_READ: c_int = 1 << 2;
+use swoole_rs_reactor::TimeoutKind;
 /// `SW_WEBSOCKET_HEADER_LEN`.
 const WEBSOCKET_HEADER_LEN: u8 = 2;
 
@@ -116,37 +114,36 @@ pub fn websocket_protocol(socket: &Value) {
 
 /// What the HTTP client asks of its socket.
 impl Co {
-    /// The HTTP proxy's state, unless TLS tunnels through it.
-    fn plain_proxy<'a>(self) -> Option<&'a ProxyState> {
+    /// `f` over the HTTP proxy's state, unless TLS tunnels through it.
+    fn with_plain_proxy<T>(self, f: impl FnOnce(&ProxyState) -> T) -> Option<T> {
         if !self.ssl_context().is_null() {
             return None;
         }
-        // SAFETY: the socket owns its proxy state, if any.
-        unsafe { self.handle().http_proxy().as_ref() }
+        self.handle().with_http_proxy(f)
     }
 
     /// After the settings: no proxy handshake for plain HTTP proxying.
     pub(crate) fn skip_proxy_handshake(self) {
-        if let Some(proxy) = self.plain_proxy() {
-            proxy.update(|fields| fields.dont_handshake = 1);
-        }
+        self.with_plain_proxy(|proxy| proxy.update(|fields| fields.dont_handshake = true));
     }
 
     /// Whether requests go through a plain HTTP proxy.
     pub(crate) fn proxied(self) -> bool {
-        self.plain_proxy().is_some()
+        self.with_plain_proxy(|_| ()).is_some()
     }
 
     /// `"Basic " + http_proxy->get_auth_str()`, when a plain HTTP proxy has a
     /// password.
     pub(crate) fn proxy_authorization(self) -> Option<Vec<u8>> {
-        let proxy = self.plain_proxy()?;
-        if proxy.string(2).is_empty() {
-            return None;
-        }
-        let mut value = b"Basic ".to_vec();
-        value.extend(swoole_rs_http_ffi::authorization(proxy));
-        Some(value)
+        self.with_plain_proxy(|proxy| {
+            if proxy.string(2).is_empty() {
+                return None;
+            }
+            let mut value = b"Basic ".to_vec();
+            value.extend(swoole_rs_http_ffi::authorization(proxy));
+            Some(value)
+        })
+        .flatten()
     }
 
     /// Connect timeout (0: the default), the close hook and the zend string
@@ -157,7 +154,7 @@ impl Co {
         } else {
             timeout
         };
-        self.set_timeout(timeout, TIMEOUT_CONNECT);
+        self.set_timeout(timeout, TimeoutKind::CONNECT);
         self.use_zend_strings();
         set_close_hook(self.handle(), hook);
     }
@@ -226,7 +223,7 @@ impl Co {
         } else {
             timeout
         };
-        self.timeout(timeout, TIMEOUT_READ)
+        self.timeout(timeout, TimeoutKind::READ)
     }
 
     /// The socket frames WebSocket packets from now on.

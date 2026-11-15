@@ -64,26 +64,30 @@ def h2load(port, path, connections, seconds):
     return int(done[1]), percentile(times, 50), percentile(times, 99)
 
 
-def websocket(port, payload, seconds):
-    # One connection: 06-websocket broadcasts every message to every client. The loop sends one
-    # pre-masked frame and reads the known echo in one recv: the client's share of each round
-    # trip, which requests/s can't tell from the server's, is mostly its two syscalls (#3409).
+def websocket(port, payload, seconds, pipeline=32):
+    # One connection: 06-websocket broadcasts to every client. Bounded batches keep multiple
+    # messages in flight without changing that fixture into a fan-out workload (#3409).
+    if pipeline < 1 or len(payload) > 125:
+        raise ValueError('WebSocket wall load needs a positive pipeline and a short payload')
     client, times = WebSocket(port), []
     mask = os.urandom(4)
     frame = bytes([0x81, 0x80 | len(payload)]) + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
     echo = bytes([0x81, len(payload)]) + payload
+    frame, expected = frame * pipeline, echo * pipeline
     sendall, recv, clock = client.socket.sendall, client.socket.recv, time.perf_counter
     deadline = time.monotonic() + seconds
     try:
         while time.monotonic() < deadline:
             start = clock()
             sendall(frame)
-            got = recv(len(echo))
-            while len(got) < len(echo):
-                got += recv(len(echo) - len(got))
-            if got != echo:
-                raise RuntimeError(f'unexpected WebSocket frame {got!r}')
-            times.append((clock() - start) * 1e3)
+            received = 0
+            while received < len(expected):
+                got = recv(len(expected) - received)
+                if not got or got != expected[received:received + len(got)]:
+                    raise RuntimeError(f'unexpected WebSocket echo {got!r}')
+                complete = (received + len(got)) // len(echo) - received // len(echo)
+                times.extend([(clock() - start) * 1e3] * complete)
+                received += len(got)
     finally:
         client.close()
     times.sort()
@@ -94,7 +98,7 @@ def percentile(sorted_values, p):
     return sorted_values[min(len(sorted_values) - 1, len(sorted_values) * p // 100)]
 
 
-def run(engine, workload, connections, seconds, warmup):
+def run(engine, workload, connections, seconds, warmup, websocket_pipeline=32):
     directory, method, path, payload = WORKLOADS[workload][:4]
     with socket.socket() as reservation:
         reservation.bind(('127.0.0.1', 0))
@@ -111,7 +115,7 @@ def run(engine, workload, connections, seconds, warmup):
             time.sleep(0.2)  # perf attaches before the load starts
             start, client = time.monotonic(), client_seconds()
             if method == 'WS':
-                requests, p50, p99 = websocket(port, payload, seconds)
+                requests, p50, p99 = websocket(port, payload, seconds, websocket_pipeline)
             elif method == 'H2':
                 requests, p50, p99 = h2load(port, path, connections, seconds)
             elif method == 'GET':
@@ -163,6 +167,8 @@ def main():
     parser.add_argument('--repetitions', type=int, default=5)
     parser.add_argument('--seconds', type=int, default=5)
     parser.add_argument('--connections', type=int, default=32)
+    parser.add_argument('--websocket-pipeline', type=int, default=32,
+                        help='Messages per batch on the single WebSocket connection; 1 restores serial round trips')
     parser.add_argument('--warmup', type=int, default=200)
     parser.add_argument('--php', default='php')
     parser.add_argument('--php-extension', action='append', default=[])
@@ -173,6 +179,8 @@ def main():
     parser.add_argument('--output', type=Path,
                         default=ROOT / 'target' / 'wall' / time.strftime('%Y%m%dT%H%M%S') / 'wall.json')
     args = parser.parse_args()
+    if args.websocket_pipeline < 1:
+        parser.error('--websocket-pipeline must be positive')
     engines = parse_engines(args.engine, args.php, args.php_extension)
     if args.max_ratio and len(engines) != 2:
         parser.error('--max-ratio needs exactly two engines')
@@ -181,7 +189,8 @@ def main():
         rows = {engine.name: [] for engine in engines}
         for _ in range(args.repetitions):
             for engine in engines:
-                rows[engine.name].append(run(engine, workload, args.connections, args.seconds, args.warmup))
+                rows[engine.name].append(run(engine, workload, args.connections, args.seconds, args.warmup,
+                                            args.websocket_pipeline))
         results[workload] = {name: {'runs': runs, 'summary': summary(runs)} for name, runs in rows.items()}
         for name, result in results[workload].items():
             print(f'{name:10} {workload:15} ' + '  '.join(
@@ -201,6 +210,7 @@ def main():
                   + (f' exceeds {args.max_ratio}' if over else ''))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps({'seconds': args.seconds, 'connections': args.connections,
+                                       'websocket_pipeline': args.websocket_pipeline,
                                        'counter': args.counter, 'max_ratio': args.max_ratio,
                                        'workloads': results}, indent=2) + '\n')
     print('results: ' + str(args.output))

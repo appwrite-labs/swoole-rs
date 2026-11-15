@@ -202,7 +202,10 @@ impl Server {
 impl Port {
     /// `config()->ssl_context`.
     pub(super) fn ssl_context(self) -> *const c_void {
-        self.config().ssl_context
+        self.settings()
+            .ssl_context
+            .get()
+            .map_or(std::ptr::null(), |context| context.as_ptr().cast())
     }
 }
 
@@ -729,7 +732,7 @@ pub(crate) unsafe fn swr_case_ssl_client_ca(serv: *mut c_void, cafile: *const c_
         let slot = swr_v1_tls_owner_view(context).strings[CAFILE as usize];
         (*slot.cast::<swoole_rs_corebase::StringSlot>()).set_shared(path.to_bytes())
     };
-    assert_eq!(status, 0, "bad_alloc");
+    assert!(status, "bad_alloc");
 }
 
 pub(crate) unsafe fn swr_case_ssl_init(serv: *mut c_void) -> bool {

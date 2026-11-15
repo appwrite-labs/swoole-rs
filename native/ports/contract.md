@@ -48,8 +48,8 @@ tests/modules/http/server/src/http1/case.rs. Options are those the platform defi
 `TCP_DEFER_ACCEPT`, `TCP_KEEPIDLE`/`TCP_KEEPINTVL`/`TCP_KEEPCNT` and
 `TCP_USER_TIMEOUT` on Linux, `TCP_FASTOPEN` and `SO_KEEPALIVE` on both supported
 hosts (`SO_ACCEPTFILTER` is BSD-only). `host` is a Rust string slot in the
-settings.
-`create_socket` reads the server's `enable_reuse_port` (Linux) and `is_dtls()`
+settings, which C++ reads through a `RustStringView`.
+`create_socket` receives the server's `enable_reuse_port` (Linux) and reads `is_dtls()`
 (kqueue hosts). On failure the port keeps pointing at the freed socket, as
 upstream's does. Known: on macOS, querying `SO_ACCEPTCONN` returns `ENOPROTOOPT`
 for both native and Rust, so `import` refuses every descriptor there.
@@ -59,10 +59,11 @@ for both native and Rust, so `import` refuses every descriptor there.
 `crates/ports/src/lifecycle.rs` is `ssl_context_init`, `ssl_context_create`,
 `ssl_init`, `ssl_create`, `ssl_add_sni_cert`, the SNI callback, `import` and
 `close`, over the port's Rust-owned settings, its contexts' Rust TLS owners, the
-socket record and OpenSSL. The port's `ssl_context` is a `PortConfig` field holding one reference
-to its Rust owner; the SNI contexts, each with its reference, live in the Rust TLS
-state (`PortConfig::tls`). `swr_v1_server_delete` releases both. A DTLS session lives in
-its connection's SSL (crates/tls), which the server opens over the port's context. SNI contexts are matched in insertion order; upstream iterated an
+socket record and OpenSSL. The port's `ssl_context` publishes its Rust owner;
+readers take a reference that survives closing the port. The SNI contexts, each with its
+reference, live in the Rust TLS state (`PortConfig::tls`). `swr_v1_server_delete` releases
+both. A DTLS session lives in its connection's SSL (crates/tls), which the server opens over
+the port's context. SNI contexts are matched in insertion order; upstream iterated an
 `std::unordered_map`, whose order is unspecified.
 
 ## `Port::set`

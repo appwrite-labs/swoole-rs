@@ -1162,11 +1162,8 @@ mod tests {
         fn alloc_workers(&self, _: u32) -> *mut crate::worker_record::WorkerRecord {
             core::ptr::null_mut()
         }
-        fn new_pipes(&self) -> *mut core::ffi::c_void {
-            core::ptr::null_mut()
-        }
-        fn new_message_bus(&self) -> *mut core::ffi::c_void {
-            core::ptr::null_mut()
+        fn new_message_bus(&self) -> Option<Box<dyn std::any::Any>> {
+            None
         }
         fn callback(&self, _: &mut PoolCall, _: crate::process_pool::Callback) {}
         fn event_size(&self) -> usize {

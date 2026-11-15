@@ -12,7 +12,7 @@ class InterruptedClone(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             origin, pin = Path(temporary, 'origin'), Path(temporary, 'upstream/src')
             pin.parent.mkdir()
-            git = ['git', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', '-C', str(origin)]
+            git = ['git', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'tag.gpgSign=false', '-C', str(origin)]
             subprocess.run(['git', 'init', '-q', str(origin)], check=True)
             (origin / 'config.m4').write_text('original\n')
             subprocess.run([*git, 'add', '.'], check=True)
@@ -36,7 +36,7 @@ class InterruptedClone(unittest.TestCase):
 
 
 def fixture_origin(origin):
-    git = ['git', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', '-C', str(origin)]
+    git = ['git', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'tag.gpgSign=false', '-C', str(origin)]
     subprocess.run(['git', 'init', '-q', str(origin)], check=True)
     (origin / 'config.m4').write_text('original\n')
     subprocess.run([*git, 'add', '.'], check=True)

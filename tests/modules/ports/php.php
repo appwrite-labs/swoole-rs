@@ -3,6 +3,10 @@
 function ensure_port($value, string $message): void {
     if (!$value) { throw new RuntimeException($message); }
 }
+$declarations = [];
+foreach ((new ReflectionClass(Swoole\Server\Port::class))->getProperties() as $property) {
+    $declarations[] = [$property->getName(), $property->getModifiers(), $property->getDefaultValue()];
+}
 $server = new Swoole\Server('127.0.0.1', 0, SWOOLE_BASE);
 $port = $server->ports[0];
 $events = ['connect','receive','close','packet','request','handshake','beforehandshakeresponse','open','message','disconnect','bufferfull','bufferempty'];
@@ -53,7 +57,7 @@ $settings = ['backlog'=>32, 'socket_buffer_size'=>1048576, 'heartbeat_idle_time'
              'package_body_offset'=>4, 'package_max_length'=>1048576];
 $port->set($settings);
 foreach ($settings as $key=>$value) { ensure_port($port->setting[$key] === $value, 'setting publication '.$key); }
-echo json_encode(['registered_events'=>count($events), 'unknown_warnings'=>count($warnings),
+echo json_encode(['declarations'=>$declarations, 'registered_events'=>count($events), 'unknown_warnings'=>count($warnings),
                   'conversion_reentry'=>true, 'replaced_token_destroyed'=>PortOwnedToken::$destroyed,
                   'settings_published'=>count($settings), 'socket_optional'=>['available'=>method_exists($port,'getSocket'),'status'=>'unmeasured'],
                   'server_started'=>false], JSON_THROW_ON_ERROR), "\n";

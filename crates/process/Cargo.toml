@@ -22,6 +22,7 @@ thread = []
 workspace = true
 
 [dependencies]
+swoole-rs-error = { path = "../error" }
 swoole-rs-buffer = { path = "../buffer" }
 swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-memory = { path = "../memory" }

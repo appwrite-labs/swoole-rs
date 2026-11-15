@@ -113,7 +113,7 @@ def resolve(commit):
 
 def seconds(job):
     # GitHub reports unfinished timestamps as 0001-01-01T00:00:00Z.
-    started, completed = (datetime.fromisoformat(job[key]) if job.get(key) and not job[key].startswith('0001')
+    started, completed = (datetime.fromisoformat(job[key].replace('Z', '+00:00')) if job.get(key) and not job[key].startswith('0001')
                           else None for key in ('startedAt', 'completedAt'))
     return int((completed - started).total_seconds()) if started and completed else None
 

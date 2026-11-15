@@ -537,9 +537,9 @@ impl ServerTables {
 impl Default for ServerTables {
     fn default() -> Self {
         Self {
-            connection_list: Shm::NULL,
-            session_list: Shm::NULL,
-            port_gs_list: Shm::NULL,
+            connection_list: Shm::empty(),
+            session_list: Shm::empty(),
+            port_gs_list: Shm::empty(),
             max_connection: 0,
             enable_accept_timer: swoole_rs_corebase::timer_key::AtomicHeld::new(),
             reactor_pipe_num: 0,

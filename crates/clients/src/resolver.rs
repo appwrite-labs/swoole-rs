@@ -10,9 +10,11 @@ use swoole_rs_corebase::{
 };
 
 /// `SW_ERROR_DNSLOOKUP_RESOLVE_FAILED`.
-pub const RESOLVE_FAILED: c_int = 711;
-const RESOLVE_TIMEOUT: c_int = 712;
-const AIO_TIMEOUT: c_int = 4003;
+pub const RESOLVE_FAILED: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_DNSLOOKUP_RESOLVE_FAILED as c_int;
+const RESOLVE_TIMEOUT: c_int =
+    swoole_rs_error::ErrorCode::SW_ERROR_DNSLOOKUP_RESOLVE_TIMEOUT as c_int;
+const AIO_TIMEOUT: c_int = swoole_rs_error::ErrorCode::SW_ERROR_AIO_TIMEOUT as c_int;
 
 /// A request record, freed with this.
 pub struct Request(*mut ResolverRequest);

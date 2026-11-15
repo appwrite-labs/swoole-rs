@@ -295,19 +295,6 @@ pub fn swoole_coroutine_getaddrinfo(
 
 unsafe extern "C" {
     fn gethostbyname(name: *const c_char) -> *mut hostent;
-    // Takes nothing and returns this thread's slot: no preconditions.
-    #[cfg(target_os = "linux")]
-    safe fn __h_errno_location() -> *mut c_int;
-    #[cfg(not(target_os = "linux"))]
-    static mut h_errno: c_int;
-}
-
-/// This thread's `h_errno`.
-fn h_errno_slot() -> *mut c_int {
-    #[cfg(target_os = "linux")]
-    return __h_errno_location();
-    #[cfg(not(target_os = "linux"))]
-    return &raw mut h_errno;
 }
 
 /// Hooked `gethostbyname`, always on the pool: the lookup's `h_errno` (0 if the
@@ -317,13 +304,11 @@ pub fn swoole_coroutine_gethostbyname(name: &CStr) -> *mut hostent {
     let call = || {
         // SAFETY: a C string.
         let entry = unsafe { gethostbyname(name.as_ptr()) };
-        // SAFETY: this thread's slot.
-        (entry, unsafe { *h_errno_slot() })
+        (entry, swoole_rs_corebase::sys::h_errno())
     };
     // SAFETY: the caller passes native `async` or null.
     let (entry, error) = unsafe { offloaded(offload, (std::ptr::null_mut(), 0), call) };
-    // SAFETY: this thread's slot.
-    unsafe { *h_errno_slot() = error };
+    swoole_rs_corebase::sys::set_h_errno(error);
     entry
 }
 
@@ -483,9 +468,9 @@ pub(crate) mod tests {
             assert!(!with(Pool, || swoole_coroutine_gethostbyname(c"127.0.0.1")).is_null());
             let entry = with(Here, || swoole_coroutine_gethostbyname(c"127.0.0.1"));
             assert_eq!((*entry).h_addrtype, libc::AF_INET);
-            *h_errno_slot() = 3;
+            swoole_rs_corebase::sys::set_h_errno(3);
             assert!(with(Refuse, || swoole_coroutine_gethostbyname(c"localhost")).is_null());
-            assert_eq!(*h_errno_slot(), 0);
+            assert_eq!(swoole_rs_corebase::sys::h_errno(), 0);
 
             let mut fds = [0; 2];
             assert_eq!(libc::pipe(fds.as_mut_ptr()), 0);
