@@ -364,8 +364,12 @@ unsafe fn pair_write(pair: *const SocketPair, data: &[u8]) -> isize {
 unsafe fn get_handler(reactor: *mut Reactor, fd_type: c_int, event: c_int) -> *const c_void {
     // SAFETY: as the caller guarantees.
     let reactor = unsafe { running(reactor) };
-    swoole_rs_ffi::reactor_upstream::reactor_get_handler(reactor, fd_type, event)
-        .map_or(ptr::null(), |handler| handler as *const c_void)
+    swoole_rs_ffi::reactor_upstream::reactor_get_handler(
+        reactor,
+        fd_type,
+        swoole_rs_ffi::Events::from_bits(event),
+    )
+    .map_or(ptr::null(), |handler| handler as *const c_void)
 }
 
 unsafe fn create() {

@@ -41,7 +41,7 @@ pub(crate) fn event_available() -> bool {
 
 /// Install the cURL fd type's reactor handlers unless they are.
 pub(crate) fn install_handlers() {
-    if event_api::swoole_event_isset_handler(FD_CO_CURL, Events::READ.bits()) {
+    if event_api::isset_handler(FD_CO_CURL, Events::READ) {
         return;
     }
     let read: swoole_rs_reactor::Handler = on_event::<CURL_CSELECT_IN>;
@@ -50,7 +50,7 @@ pub(crate) fn install_handlers() {
         (Events::WRITE, on_event::<CURL_CSELECT_OUT>),
         (Events::ERROR, on_event::<CURL_CSELECT_ERR>),
     ] {
-        event_api::swoole_event_set_handler(FD_CO_CURL, event.bits(), Some(handler));
+        event_api::set_handler(FD_CO_CURL, event, Some(handler));
     }
 }
 

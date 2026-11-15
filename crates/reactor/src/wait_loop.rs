@@ -653,7 +653,7 @@ mod tests {
                 crate::ChangeOp::Add,
                 events
             ));
-            assert!((*state.handlers).set(5, 512, Some(read)));
+            assert!((*state.handlers).set(5, crate::Events::READ, Some(read)));
             let descriptor = (*state.owner).backend_fd;
             #[cfg(target_os = "linux")]
             if kind == 1 {

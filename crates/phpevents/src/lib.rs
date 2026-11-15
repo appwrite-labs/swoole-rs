@@ -21,6 +21,7 @@ use swoole_rs_corebase::constants::{EventType, FdType};
 use swoole_rs_memory::flat::Table;
 use swoole_rs_phpstubs::event;
 use swoole_rs_phpswoole::reactor::{self, PhpFdHandler};
+use swoole_rs_reactor::Events;
 use swoole_rs_reactor::event_api::{self, CycleTask, Deferred};
 use swoole_rs_tls::event_socket::EventSocket;
 use swoole_rs_zend::host::callable::Callable;
@@ -603,13 +604,12 @@ impl PhpFdHandler for Error {
 
 /// The user fd type's read, write and error handlers, unless they are set.
 fn install_handlers(php: Php<'_>) {
-    let read = EventType::SW_EVENT_READ as c_int;
-    if event_api::swoole_event_isset_handler(FD_USER, read) {
+    if event_api::isset_handler(FD_USER, Events::READ) {
         return;
     }
-    reactor::set_fd_handler::<Readable>(php, FD_USER, read);
-    reactor::set_fd_handler::<Writable>(php, FD_USER, EventType::SW_EVENT_WRITE as c_int);
-    reactor::set_fd_handler::<Error>(php, FD_USER, EventType::SW_EVENT_ERROR as c_int);
+    reactor::set_fd_handler::<Readable>(php, FD_USER, Events::READ);
+    reactor::set_fd_handler::<Writable>(php, FD_USER, Events::WRITE);
+    reactor::set_fd_handler::<Error>(php, FD_USER, Events::ERROR);
 }
 
 /// The errno's description, as libc's `strerror`.

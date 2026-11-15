@@ -201,8 +201,13 @@ pub unsafe extern "C-unwind" fn swoole_event_writev(
     unsafe(export_name = "_Z24swoole_event_set_handleriiPFiPN6swoole7ReactorEPNS_5EventEE")
 )]
 pub extern "C" fn swoole_event_set_handler(fd_type: c_int, event: c_int, handler: Option<Handler>) {
+    set_handler(fd_type, Events::from_bits(event), handler);
+}
+
+/// [`swoole_event_set_handler`] for typed `event`.
+pub fn set_handler(fd_type: c_int, event: Events, handler: Option<Handler>) {
     if let Some(reactor) = running() {
-        crate::reactor_upstream::reactor_set_handler(reactor, fd_type, event, handler);
+        crate::reactor_upstream::set_handler(reactor, fd_type, event, handler);
     }
 }
 
@@ -213,9 +218,13 @@ pub extern "C" fn swoole_event_set_handler(fd_type: c_int, event: c_int, handler
 )]
 #[must_use]
 pub extern "C" fn swoole_event_isset_handler(fd_type: c_int, event: c_int) -> bool {
-    running().is_some_and(|reactor| {
-        crate::reactor_upstream::reactor_isset_handler(reactor, fd_type, event)
-    })
+    isset_handler(fd_type, Events::from_bits(event))
+}
+
+/// [`swoole_event_isset_handler`] for typed `event`.
+#[must_use]
+pub fn isset_handler(fd_type: c_int, event: Events) -> bool {
+    running().is_some_and(|reactor| crate::reactor_upstream::isset_handler(reactor, fd_type, event))
 }
 
 /// `Socket *swoole_event_get_socket(int fd)`: null without a reactor.
@@ -310,8 +319,8 @@ extern "C" fn fd_handler<H: FdHandler>(_: crate::Running<'_>, event: &mut crate:
 }
 
 /// `swoole_event_set_handler(fd_type, event, H)`, when there is a reactor.
-pub fn swoole_event_set_fd_handler<H: FdHandler>(fd_type: c_int, event: c_int) {
-    swoole_event_set_handler(fd_type, event, Some(fd_handler::<H>));
+pub fn swoole_event_set_fd_handler<H: FdHandler>(fd_type: c_int, event: Events) {
+    set_handler(fd_type, event, Some(fd_handler::<H>));
 }
 
 /// A reactor cycle task: `Reactor::future_task` or `idle_task`. The reactor
