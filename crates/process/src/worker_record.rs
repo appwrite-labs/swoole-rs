@@ -78,7 +78,7 @@ impl WorkerType {
 /// `pool` and the pipe ends are private: `pool` is null or a live pool, and
 /// `pipe_master`, `pipe_worker` and `pipe_current` are each null or a live native
 /// socket, for as long as this process sends through the record or a copy of it.
-/// Only [`Worker::set_pool`] and [`Worker::set_pipes`], whose callers say so, write
+/// Only [`Worker::join`] and [`Worker::set_pipes`], whose callers say so, write
 /// them with anything but null or each other, so [`Worker::pool_ref`] and the sends
 /// over it trust them. The records are shared memory, and each process owns its
 /// own sockets at these addresses: a process that frees its pipes leaves the fields
@@ -488,21 +488,12 @@ impl<'a> Worker<'a> {
         if pool.is_null() {
             return None;
         }
-        // SAFETY: the record's invariant: a pool only `set_pool` and `join` write,
+        // SAFETY: the record's invariant: a pool only `join` writes,
         // live for as long as the record is sent through, so for the handle's `'a`.
         Some(unsafe { crate::process_pool::PoolRef::new(pool) })
     }
 
-    /// Makes the record one of `pool`'s workers.
-    ///
-    /// # Safety
-    /// `pool` stays live for as long as this process sends through this record or a
-    /// copy of it.
-    pub unsafe fn set_pool(self, pool: crate::process_pool::PoolRef<'_>) {
-        self.write_pool(pool.raw().cast());
-    }
-
-    /// [`Worker::set_pool`] for this crate's pool operations, over the pool that
+    /// Makes the record one of `pool`'s workers, for this crate's pool operations, over the pool that
     /// owns the record's array or was lent it for as long as itself: `create`,
     /// `start_check` and the server's startup.
     pub(crate) fn join(self, pool: crate::process_pool::PoolRef<'_>) {

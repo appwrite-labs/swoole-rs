@@ -31,8 +31,20 @@ use crate::worker_record::WorkerRecord;
 use crate::worker_registry::WorkerRegistry;
 
 /// The native pipe owners, kept alive at stable addresses until the pool closes.
-type Pipes = std::cell::RefCell<Vec<Box<dyn std::any::Any>>>;
-type MessageBus = std::cell::RefCell<Box<dyn std::any::Any>>;
+type Pipes = Vec<Box<dyn std::any::Any>>;
+/// A pool's boxed owner, one pointer wide in the record: replaced whole, and lent
+/// to one operation at a time by taking it out ([`lend`]).
+type Owner<T> = core::cell::Cell<Option<Box<T>>>;
+
+/// `f` over what `owner` holds, taken out for the call so nothing reaches it
+/// meanwhile, then put back (dropping whatever `f` put there); `None` while it
+/// holds nothing.
+fn lend<T: ?Sized, R>(owner: &Owner<T>, f: impl FnOnce(&mut T) -> R) -> Option<R> {
+    let mut held = owner.take()?;
+    let result = f(&mut held);
+    drop(owner.replace(Some(held)));
+    Some(result)
+}
 
 /// `swoole::ProcessPool`'s fields, in order. Rust owns this layout; the C++ view
 /// takes its fields from here (`SWR_POOL_RECORD_FIELDS`, `tools/process_records.py`).
@@ -77,7 +89,7 @@ pub struct PoolRecord {
     /// The round robin's next worker, which other processes update atomically.
     pub round_id: AtomicU32,
     pub(crate) workers: *mut WorkerRecord,
-    pub(crate) pipes: Option<Box<Pipes>>,
+    pipes: Owner<Pipes>,
     // The records and resource owners are private: outside code uses the handle's
     // operations. The hooks are installed together ([`PoolRef::install`]), and `ptr`
     // is written under a key ([`PoolRef::hold`]).
@@ -87,8 +99,8 @@ pub struct PoolRecord {
     pub(crate) queue: Option<Box<swoole_rs_ossupport::QueueRecord>>,
     pub(crate) ipc: *mut PoolIpc,
     pub(crate) message_box: *mut c_void,
-    message_bus: Option<Box<MessageBus>>,
-    reload_task: Option<Box<std::cell::RefCell<ReloadTask>>>,
+    message_bus: Owner<Box<dyn std::any::Any>>,
+    reload_task: Owner<std::cell::RefCell<ReloadTask>>,
     pub(crate) ptr: *mut c_void,
     /// The `max_wait_time` timer `wait` arms to SIGKILL the workers still
     /// running. It stays armed after `wait` returns, which reaps only the first,
@@ -121,12 +133,12 @@ impl PoolObjectKey {
 impl PoolRecord {
     #[must_use]
     pub fn has_pipes(&self) -> bool {
-        self.pipes.is_some()
+        lend(&self.pipes, |_| ()).is_some()
     }
 
     #[must_use]
     pub fn has_message_bus(&self) -> bool {
-        self.message_bus.is_some()
+        lend(&self.message_bus, |_| ()).is_some()
     }
 
     /// A pool before `create`, as C's `ProcessPool pool = {}`: every field zero,
@@ -172,13 +184,13 @@ impl PoolRecord {
             main_loop: None,
             round_id: AtomicU32::new(0),
             workers: ptr::null_mut(),
-            pipes: None,
+            pipes: Owner::new(None),
             registry: None,
             queue: None,
             ipc: ptr::null_mut(),
             message_box: ptr::null_mut(),
-            message_bus: None,
-            reload_task: None,
+            message_bus: Owner::new(None),
+            reload_task: Owner::new(None),
             ptr: ptr::null_mut(),
             kill_timer: None,
             ptr_key: ptr::null(),
@@ -240,6 +252,14 @@ impl PoolRecord {
         Some(unsafe { Worker::new(self.workers.wrapping_add(index)) })
     }
 
+    /// Sets `workers`.
+    ///
+    /// # Safety
+    /// `workers` holds the pool's `worker_num` records, live as long as the pool.
+    pub unsafe fn set_workers(&mut self, workers: *mut WorkerRecord) {
+        self.workers = workers;
+    }
+
     /// The pool's worker at `raw`, or `None` when `raw` is none of its records.
     #[must_use]
     pub fn own(&self, raw: *const WorkerRecord) -> Option<Worker<'_>> {
@@ -254,14 +274,6 @@ impl PoolRecord {
         let index = offset / size_of::<WorkerRecord>();
         let own = !self.workers.is_null() && index < self.worker_num as usize;
         (own && offset % size_of::<WorkerRecord>() == 0).then_some(index)
-    }
-
-    /// Sets `workers`.
-    ///
-    /// # Safety
-    /// `workers` holds the pool's `worker_num` records, live as long as the pool.
-    pub unsafe fn set_workers(&mut self, workers: *mut WorkerRecord) {
-        self.workers = workers;
     }
 
     /// `f` over the pool's IPC state; `None` before `create`.
@@ -345,17 +357,11 @@ impl<'a> PoolRef<'a> {
     /// list is created; then `pipe` drops immediately.
     #[must_use]
     pub fn keep_pipe(self, pipe: Box<dyn std::any::Any>) -> bool {
-        let Some(pipes) = &self.record().pipes else {
-            return false;
-        };
-        pipes.borrow_mut().push(pipe);
-        true
+        lend(&self.record().pipes, |pipes| pipes.push(pipe)).is_some()
     }
 
     fn set_pipes(self, pipes: Option<Box<Pipes>>) {
-        // SAFETY: this handle's live field; the borrow ends before any old owner drops.
-        let previous = core::mem::replace(unsafe { &mut (*self.raw).pipes }, pipes);
-        drop(previous);
+        drop(self.record().pipes.replace(pipes));
     }
 
     /// Whether the pool owns its native message bus.
@@ -364,58 +370,42 @@ impl<'a> PoolRef<'a> {
         self.record().has_message_bus()
     }
 
-    /// Borrows the native bus for one operation. No reference to it escapes;
-    /// callbacks run after the borrow ends.
+    /// Lends the native bus to one operation, taken out of the pool meanwhile: no
+    /// reference to it escapes, and the pool has no bus to drop until it returns.
     pub fn with_message_bus<R>(self, f: impl FnOnce(&dyn std::any::Any) -> R) -> Option<R> {
-        let bus = self.record().message_bus.as_ref()?.borrow();
-        Some(f(bus.as_ref()))
+        lend(&self.record().message_bus, |bus| f(bus.as_ref()))
     }
 
     pub(crate) fn set_message_bus(self, bus: Option<Box<dyn std::any::Any>>) {
-        if let Some(current) = &self.record().message_bus {
-            // Refuse destruction while a native operation still borrows the bus.
-            drop(current.borrow_mut());
-        }
-        let bus = bus.map(|bus| Box::new(std::cell::RefCell::new(bus)));
-        // SAFETY: this live field is unborrowed; any old owner drops after replacement.
-        let previous = core::mem::replace(unsafe { &mut (*self.raw).message_bus }, bus);
-        drop(previous);
+        drop(self.record().message_bus.replace(bus.map(Box::new)));
     }
 
     /// One operation on the reload in progress, with no borrow across callbacks.
     pub fn with_reload_task<R>(self, f: impl FnOnce(&mut ReloadTask) -> R) -> Option<R> {
-        let mut task = self.record().reload_task.as_ref()?.borrow_mut();
-        Some(f(&mut task))
+        lend(&self.record().reload_task, |task| f(&mut task.borrow_mut()))
     }
 
     /// Arms a timer against the boxed task's stable cell, then gives it to the
-    /// task to cancel on drop. The task cannot be removed while `arm` runs.
+    /// task to cancel on drop. The task is out of the pool while `arm` runs.
     pub fn arm_reload_timer(
         self,
         arm: impl FnOnce(&std::cell::RefCell<ReloadTask>) -> Option<ArmedTimer>,
     ) {
-        if let Some(task) = &self.record().reload_task {
-            let held = task.borrow();
+        lend(&self.record().reload_task, |task| {
             let timer = arm(task);
-            drop(held);
             task.borrow_mut().set_timer(timer);
-        }
+        });
     }
 
     fn set_reload_task(self, task: Option<Box<std::cell::RefCell<ReloadTask>>>) {
-        if let Some(current) = &self.record().reload_task {
-            drop(current.borrow_mut());
-        }
-        // SAFETY: this live field is unborrowed; its old task and timer drop afterwards.
-        let previous = core::mem::replace(unsafe { &mut (*self.raw).reload_task }, task);
-        drop(previous);
+        drop(self.record().reload_task.replace(task));
     }
 
     /// The pool's worker at `raw` ([`PoolRecord::own`]), or `None` when `raw` is
     /// none of its records.
     #[must_use]
     pub fn worker_of(self, raw: *const WorkerRecord) -> Option<Worker<'a>> {
-        // The pool's records live as long as it does (`set_workers`).
+        // The pool's records live as long as it does.
         self.record().own(raw)
     }
 
@@ -1740,7 +1730,7 @@ impl<H: PoolHost> Pool<'_, H> {
 
     /// `ProcessPool::reload`.
     pub(crate) fn reload(&mut self) -> Result<bool, Bailed> {
-        if self.record().reload_task.is_some() {
+        if self.p.with_reload_task(|_| ()).is_some() {
             return Ok(false);
         }
         if self.on_before_reload().is_some() {
