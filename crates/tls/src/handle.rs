@@ -235,6 +235,7 @@ pub struct Cipher {
 impl<'a> Ssl<'a> {
     /// # Safety
     /// `ssl` is null or a live SSL that nothing frees for `'a`.
+    #[cfg(test)]
     #[must_use]
     pub(crate) unsafe fn new(ssl: *mut SSL) -> Option<Self> {
         NonNull::new(ssl).map(|ssl| Self(ssl, PhantomData))
@@ -252,11 +253,14 @@ impl<'a> Ssl<'a> {
         read: impl FnOnce(&SocketFields) -> T,
     ) -> (Option<Self>, T) {
         let (ssl, value) = socket.read(|record| (record.ssl(), read(record)));
-        // SAFETY: the record's `ssl` is null or a live SSL it owns: only the unsafe
-        // `set_ssl` (whose caller promises that) and native code (`Socket::from_ptr`'s
-        // contract) set it, and only the unsafe `socket_ssl_close` frees it, its caller
-        // promising that no handle to it is used afterwards.
-        (unsafe { Self::new(ssl.cast()) }, value)
+        // The record's `ssl` is null or a live SSL it owns for as long as the record:
+        // only the unsafe `set_ssl` (whose caller promises that) and native code
+        // (`Socket::from_ptr`'s contract) set it, and only the unsafe `socket_ssl_close`
+        // frees it, its caller promising that no handle to it is used afterwards.
+        (
+            NonNull::new(ssl.cast()).map(|ssl| Self(ssl, PhantomData)),
+            value,
+        )
     }
 
     #[must_use]

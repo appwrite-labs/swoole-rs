@@ -9,8 +9,8 @@ use std::fs::File;
 use std::io::{ErrorKind, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::FileExt;
+use std::os::unix::fs::OpenOptionsExt;
 use swoole_rs_corebase::log;
 
 /// `SW_AIO_WRITE_FSYNC`, tested against the open flags as upstream does.
