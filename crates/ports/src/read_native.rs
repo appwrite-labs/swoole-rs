@@ -14,7 +14,7 @@ use swoole_rs_corebase::constants::{
     SW_HTTP_SERVICE_UNAVAILABLE_PACKET,
 };
 use swoole_rs_corebase::net_types::RecvData;
-use swoole_rs_corebase::{DataHead, WebSocketStatus, log};
+use swoole_rs_corebase::{DataHead, TrustedAllocator, WebSocketStatus, log};
 use swoole_rs_framing::recv::Mode;
 use swoole_rs_http_ffi::{HttpRequest, HttpString};
 use swoole_rs_reactor::reactor_upstream::trigger_close_event;
@@ -136,13 +136,14 @@ impl Read<'_> {
         if !held.is_null() {
             return held.cast();
         }
-        let allocator = self
-            .config()
-            .recv_buffer_allocator
-            .load(Ordering::Relaxed)
-            .cast::<swoole_rs_buffer::string::Allocator>();
-        // SAFETY: the server's allocator, null or live.
-        let made = new_sized_string(SW_BUFFER_SIZE_BIG as usize, unsafe { allocator.as_ref() });
+        let allocator = self.config().recv_buffer_allocator.load(Ordering::Relaxed);
+        // SAFETY: the server's allocator, null or a `swoole::Allocator` that lives for
+        // the process and keeps the allocator contract (Zend strings'); a
+        // `TrustedAllocator` is such a pointer, so the option is the nullable one.
+        let allocator = unsafe {
+            std::mem::transmute::<*mut core::ffi::c_void, Option<TrustedAllocator>>(allocator)
+        };
+        let made = new_sized_string(SW_BUFFER_SIZE_BIG as usize, allocator);
         self.socket.edit(|s| s.recv_buffer = made.cast());
         made
     }

@@ -180,15 +180,6 @@ fn writev_sync(socket: Socket<'_>, vectors: &[std::io::IoSlice<'_>]) -> isize {
     swoole_rs_corebase::sys::writev(socket.fd(), vectors)
 }
 
-/// `allocator`'s `malloc(size)`: a new block of `size` bytes, or null when it has
-/// none to give (or no `malloc`).
-fn malloc(allocator: TrustedAllocator, size: usize) -> *mut std::ffi::c_void {
-    allocator.get().malloc.map_or(ptr::null_mut(), |malloc| {
-        // SAFETY: a trusted allocator's `malloc`, which takes any size.
-        unsafe { malloc(size) }
-    })
-}
-
 fn aligned(size: usize) -> usize {
     size.wrapping_add(ALIGNMENT - 1) & !(ALIGNMENT - 1)
 }
@@ -354,7 +345,7 @@ impl Bus {
         let allocator = if fresh { default } else { state.allocator };
         let calls = allocator.get();
         let data = match (fresh, calls.realloc) {
-            (true, _) => malloc(allocator, state.size),
+            (true, _) => allocator.allocate(state.size),
             // SAFETY: the packet's block, which this allocator made (`Packet`), so
             // its `realloc` takes it back; the packet names the new block below.
             (false, Some(realloc)) => unsafe { realloc(state.data.cast(), state.size) },
@@ -694,7 +685,7 @@ impl Bus {
     /// passes below need one set. A buffer already set is forgotten, not freed.
     pub fn alloc_buffer(&self, size: usize, allocator: TrustedAllocator) -> bool {
         self.buffer_size.set(size);
-        let buffer = malloc(allocator, size.max(BUFFER_MIN)).cast::<BusHead>();
+        let buffer = allocator.allocate(size.max(BUFFER_MIN)).cast::<BusHead>();
         self.buffer.set(buffer);
         self.buffer_owner.set(Some(allocator));
         if !buffer.is_null() {
