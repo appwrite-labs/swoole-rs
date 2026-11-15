@@ -5,7 +5,7 @@
 //! in tests).
 use core::cell::Cell;
 use core::ffi::c_void;
-use swoole_rs_reactor::Events;
+pub use swoole_rs_reactor::Events;
 
 pub use native::Watch;
 
@@ -115,7 +115,8 @@ const fn failed(last_error: i32, error: i32) -> WaitEvent {
 }
 
 /// `translate_events_to_poll`.
-pub(crate) fn to_poll(events: Events) -> i16 {
+#[must_use]
+pub fn to_poll(events: Events) -> i16 {
     let mut poll = 0;
     if events.intersects(Events::READ) {
         poll |= libc::POLLIN;
@@ -144,14 +145,21 @@ pub(crate) fn from_poll(revents: i16) -> Events {
 }
 
 /// `int System::wait_event(int fd, int events, double timeout)`: the fired events, or
-/// -1 with errno and the last error set. Outside a coroutine a nonzero `timeout` is
-/// upstream's fatal error, which does not return.
+/// -1 with errno and the last error set.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole9coroutine6System10wait_eventEiid")
 )]
 #[must_use]
 pub extern "C" fn system_wait_event(fd: i32, events: i32, timeout: f64) -> i32 {
+    wait_event(fd, Events::from_bits(events), timeout).map_or(-1, Events::bits)
+}
+
+/// `System::wait_event`: the fired events, or none with errno and the last error set.
+/// Outside a coroutine a nonzero `timeout` is upstream's fatal error, which does not
+/// return.
+#[must_use]
+pub fn wait_event(fd: i32, events: Events, timeout: f64) -> Option<Events> {
     let ops = EventWaitOps {
         current: native::current,
         add: |fd, events, waiter| {
@@ -161,14 +169,14 @@ pub extern "C" fn system_wait_event(fd: i32, events: i32, timeout: f64) -> i32 {
         },
         park: native::park,
     };
-    let waited = swr_v1_hook_wait_event(fd, Events::from_bits(events), timeout, &ops);
+    let waited = swr_v1_hook_wait_event(fd, events, timeout, &ops);
     if waited.last_error != 0 {
         swoole_rs_corebase::log::set_last_error(waited.last_error);
     }
     if waited.error != 0 {
         crate::co_io::set_errno(waited.error);
     }
-    waited.result
+    (waited.result >= 0).then(|| Events::from_bits(waited.result))
 }
 
 /// The event waiter's reactor socket and coroutine: upstream's `make_socket`,
