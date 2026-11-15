@@ -701,8 +701,10 @@ mod tests {
 
     #[test]
     fn field_pointers_match_the_fields() {
-        let mut context = Context::EMPTY;
-        let ctx = &raw mut context;
+        // Never dropped: an empty context holds nothing, and its drop glue would
+        // link Zend's zval destructor into this binary.
+        let mut context = mem::ManuallyDrop::new(Context::EMPTY);
+        let ctx = &raw mut *context;
         let handle = Ctx(NonNull::new(ctx).unwrap());
         assert_eq!(handle.vm(), unsafe { &raw mut (*ctx).vm });
         assert_eq!(handle.call(), unsafe { &raw mut (*ctx).call });
@@ -712,7 +714,8 @@ mod tests {
 
     #[test]
     fn a_new_context_has_no_pending_state() {
-        let context = Context::EMPTY;
+        // Never dropped, as above.
+        let context = mem::ManuallyDrop::new(Context::EMPTY);
         assert!(context.defer.is_empty());
         assert!(context.join.is_none() && matches!(context.object, Object::None));
         assert!(!context.time_limited && context.return_value.is_none());
