@@ -6,8 +6,8 @@
 //! resolver's entry names its object, whose reference crates/phpcoroutines keeps.
 use crate::socket::warn;
 pub use native::swoole_name_resolver_php_remove;
-use std::{cell::UnsafeCell, ffi::c_void, mem::ManuallyDrop};
-use swoole_rs_corebase::NameResolverContext;
+use std::{cell::Cell, ffi::c_void, mem::ManuallyDrop, rc::Rc};
+use swoole_rs_corebase::{CCast, NameResolverContext, ResolverOptions};
 use swoole_rs_phpstubs::name_resolver;
 use swoole_rs_zend::{
     Call, Custom, CustomClass, Minit, Owned, Value, ZString, bailout, method_table,
@@ -24,9 +24,8 @@ static CONTEXT: CustomClass<Held> = CustomClass::new();
 /// A `NameResolver::Context` (crates/corebase's `NameResolverContext`) and the resolver
 /// list, as the rest of this file uses them.
 mod native {
-    use std::ffi::{c_int, c_void};
-    use swoole_rs_corebase::CCast;
-    use swoole_rs_corebase::{NameResolverContext, TYPE_PHP};
+    use std::ffi::c_void;
+    use swoole_rs_corebase::{NameResolverContext, ResolverOptions, TYPE_PHP};
     use swoole_rs_phpcoroutines::name_resolvers;
     use swoole_rs_zend::{Owned, Value};
 
@@ -36,7 +35,7 @@ mod native {
         with_port: bool,
     ) {
         let fresh = NameResolverContext {
-            with_port,
+            options: ResolverOptions::Owned(0, with_port),
             ..NameResolverContext::default()
         };
         #[expect(
@@ -44,18 +43,6 @@ mod native {
             reason = "upstream overwrites the old context without releasing it"
         )]
         std::mem::forget(std::mem::replace(context, fresh));
-    }
-
-    /// `__construct`'s `type` and `with_port`.
-    pub(super) fn swoole_name_resolver_context_set(
-        context: &mut NameResolverContext,
-        kind: i64,
-        with_port: bool,
-    ) {
-        context.with_port = with_port;
-        // `int` storage, as upstream's assignment.
-        let kind = kind.c_cast::<c_int>();
-        context.kind = kind;
     }
 
     /// A reference of our own to the cluster in `private_data`, if any: the PHP calls
@@ -127,28 +114,48 @@ mod native {
 
 pub(crate) use native::swoole_name_resolver_context_reset;
 
-/// `struct ContextObject { NameResolver::Context *context; zend_object std; }`. The
-/// context is boxed and reached through its pointer: a lookup keeps using it across
-/// PHP code, which may run `__construct` on the same object.
-struct Held(Box<UnsafeCell<NameResolverContext>>);
+/// The lookup owns its cluster state while PHP callbacks share only the settings
+/// that `__construct` may change. No mutable context borrow reaches those callbacks.
+struct Held {
+    context: Cell<Option<NameResolverContext>>,
+    options: Rc<Cell<(libc::c_int, bool)>>,
+}
 
 impl Custom for Held {
     fn class() -> &'static CustomClass<Self> {
         &CONTEXT
     }
     fn new() -> Self {
-        Self(Box::default())
+        let options = Rc::new(Cell::new((0, false)));
+        let context = NameResolverContext {
+            options: ResolverOptions::Shared(Rc::clone(&options)),
+            ..NameResolverContext::default()
+        };
+        Self {
+            context: Cell::new(Some(context)),
+            options,
+        }
     }
 }
 
-/// `swoole_name_resolver_context_get_object_safe`: the object's context, or
-/// Swoole's fatal error.
-fn context_of(held: Option<&Held>) -> Option<*mut NameResolverContext> {
-    let context = held.map(|held| held.0.get());
-    if context.is_none() {
+/// `swoole_name_resolver_context_get_object_safe`, then `f` of the object's
+/// context, taken out of the object meanwhile (a fresh one while a lookup holds
+/// it); None after Swoole's fatal error.
+fn with_context<T>(
+    held: Option<&Held>,
+    f: impl FnOnce(&mut NameResolverContext) -> T,
+) -> Option<T> {
+    let Some(held) = held else {
         crate::native::unconstructed();
-    }
-    context
+        return None;
+    };
+    let mut context = held.context.take().unwrap_or_else(|| NameResolverContext {
+        options: ResolverOptions::Shared(Rc::clone(&held.options)),
+        ..NameResolverContext::default()
+    });
+    let result = f(&mut context);
+    held.context.set(Some(context));
+    Some(result)
 }
 
 method_table! {
@@ -174,9 +181,11 @@ fn construct(call: &Call) {
         call.set_bool(false);
         return;
     };
-    if let Some(context) = context_of(call.custom::<Held>()) {
-        // SAFETY: the object's live context.
-        native::swoole_name_resolver_context_set(unsafe { &mut *context }, family, with_port);
+    if let Some(held) = call.custom::<Held>() {
+        held.options
+            .set((family.c_cast::<libc::c_int>(), with_port));
+    } else {
+        crate::native::unconstructed();
     }
 }
 
@@ -190,18 +199,17 @@ fn lookup(call: &Call) {
         return;
     };
     let held = call.value(2).map(Value::dereferenced);
-    let Some(context) = context_of(held.as_deref().and_then(Value::custom::<Held>)) else {
-        return;
-    };
-    // SAFETY: `context_of`'s live `NameResolver::Context`, which this call borrows alone.
-    let context = unsafe { &mut *context };
     let mut result = Vec::new();
     // The lookup holds only borrows of this frame; a PHP resolver may bail out,
     // which the trap catches.
-    let lookup = || swoole_rs_hooks::resolve::name_resolver_lookup(name, context, &mut result);
-    match swoole_rs_zend::contain_with(lookup) {
-        Ok(()) => call.set_zstring(ZString::new(&result)),
-        Err(bailout) => bailout.defer(),
+    let looked_up = with_context(held.as_deref().and_then(Value::custom::<Held>), |context| {
+        let lookup = || swoole_rs_hooks::resolve::name_resolver_lookup(name, context, &mut result);
+        swoole_rs_zend::contain_with(lookup)
+    });
+    match looked_up {
+        Some(Ok(())) => call.set_zstring(ZString::new(&result)),
+        Some(Err(bailout)) => bailout.defer(),
+        None => {}
     }
 }
 
@@ -356,7 +364,7 @@ fn resolve(
     };
     let mut result = host.to_vec();
     // The PHP calls may have re-run `__construct`: read `with_port` now, as upstream.
-    if context.with_port {
+    if context.options.get().1 {
         result.push(b':');
         let Some(port) = entry.find(b"port").and_then(Value::applied_long) else {
             return Ok(None);
