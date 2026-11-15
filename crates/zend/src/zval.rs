@@ -9,11 +9,11 @@ use crate::{
         _zval_struct__bindgen_ty_1, _zval_struct__bindgen_ty_2, HashPosition, HashTable, IS_ARRAY,
         IS_DOUBLE, IS_FALSE, IS_INDIRECT, IS_INTERNED_STRING_EX, IS_LONG, IS_NULL, IS_OBJECT,
         IS_PTR, IS_REFERENCE, IS_STR_INTERNED, IS_STRING, IS_STRING_EX, IS_TRUE, IS_UNDEF,
-        add_next_index_stringl, php_format_date, swr_zend_array_add_or_merge,
-        swr_zend_string_release, swr_zend_try_hash_update, swr_zend_try_ptr_dtor,
-        swr_zend_try_symtable_update, swr_zend_url_decode, zend_class_entry, zend_hash_add_new,
-        zend_hash_index_add, zend_hash_next_index_insert, zend_long, zend_object, zend_reference,
-        zend_string, zend_ulong, zend_value, zval, zval_ptr_dtor,
+        php_format_date, swr_zend_array_add_or_merge, swr_zend_string_release,
+        swr_zend_try_hash_update, swr_zend_try_ptr_dtor, swr_zend_try_symtable_update,
+        swr_zend_url_decode, zend_class_entry, zend_hash_add_new, zend_hash_index_add,
+        zend_hash_next_index_insert, zend_long, zend_object, zend_reference, zend_string,
+        zend_ulong, zend_value, zval, zval_ptr_dtor,
     },
 };
 use std::{
@@ -122,6 +122,10 @@ unsafe extern "C" {
     /// reference moves to the copy. The exclusive borrow means nothing holds a
     /// borrow of the table it may give up.
     safe fn swr_zend_separate_array(array: &mut ArrayMut);
+    /// `call_user_function(NULL, NULL, callable, retval, 0, NULL)` inside
+    /// `zend_try` (nonzero for a bailout): `retval` takes the result, in place
+    /// of what it held, which is not released. It runs PHP code.
+    safe fn swr_zend_try_call_value(callable: &Value, retval: &Owned) -> std::ffi::c_int;
     /// `SEPARATE_ARRAY(array)`, then `zend_hash_clean` inside `zend_try`
     /// (nonzero for a bailout); nothing unless the zval holds an array. Its
     /// destructors run PHP code, which can't reach the borrowed zval.
@@ -540,16 +544,9 @@ impl Value {
     /// # Errors
     /// The callable bailed out.
     pub fn call(&self) -> Result<Owned, bailout::Bailout> {
-        let mut callable = self.copy();
+        let callable = self.copy();
         let result = Owned::default();
-        let mut fci = crate::EMPTY_FCI;
-        fci.size = size_of::<crate::sys::zend_fcall_info>();
-        // ZVAL_COPY_VALUE of the reference `callable` holds through the call.
-        fci.function_name = *callable.0.0.get_mut();
-        fci.retval = result.as_ptr();
-        // SAFETY: a live callable and a return slot this owns; no Rust borrow
-        // spans the call.
-        let called = unsafe { bailout::call(&raw mut fci, ptr::null_mut()) };
+        let called = bailout::trapped(swr_zend_try_call_value(&callable, &result));
         drop(callable);
         called?;
         Ok(result)
@@ -1431,11 +1428,7 @@ impl ArrayMut {
     /// `add_next_index_stringl`: Zend copies the bytes.
     #[inline]
     pub fn push_bytes(&mut self, data: &[u8]) {
-        let Some(array) = self.separate().map(|array| array.zval()) else {
-            return;
-        };
-        // SAFETY: a live array.
-        unsafe { add_next_index_stringl(array, data.as_ptr().cast(), data.len()) };
+        self.push(ZString::new(data).into());
     }
 
     /// `add_next_index_long`.

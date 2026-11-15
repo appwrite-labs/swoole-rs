@@ -15,6 +15,12 @@ int swr_zend_try_facade_update(zend_class_entry *scope, zend_object *object, str
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
 }
+int swr_zend_try_call_value(zval *callable, zval *retval) {
+    volatile int bailed = 0;
+    SWR_ZEND_TRY { call_user_function(NULL, NULL, callable, retval, 0, NULL); }
+    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
+    return bailed;
+}
 zend_object *swr_zend_facade_exception(void) { return EG(exception); }
 void swr_zend_facade_exception_error(void *exception) { zend_exception_error(exception, E_ERROR); }
 int swr_zend_try_facade_user_call(zval *name, uint32_t argc, zval *argv, zval *retval, int *result) {

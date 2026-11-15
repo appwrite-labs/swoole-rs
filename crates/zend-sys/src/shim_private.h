@@ -11,6 +11,9 @@ int swr_zend_try_facade_update(zend_class_entry *, zend_object *, struct iovec, 
 zend_object *swr_zend_facade_exception(void);
 void swr_zend_facade_exception_error(void *);
 int swr_zend_try_facade_user_call(zval *, uint32_t, zval *, zval *, int *);
+/* call_user_function(NULL, NULL, callable, retval, 0, NULL) inside zend_try: 1 if it
+ * bailed out. */
+int swr_zend_try_call_value(zval *callable, zval *retval);
 /* Work after a coroutine call, inside its zend_try (zend::host::Then). */
 typedef void (*swr_zend_then)(void *);
 int swr_zend_try_facade_coroutine(long (*)(zend_fcall_info_cache *, uint32_t, zval *, zval *, uint8_t *),
