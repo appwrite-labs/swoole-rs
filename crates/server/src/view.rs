@@ -285,7 +285,7 @@ impl<'a> Server<'a> {
             && self.is_single_worker()
             && self.counters().master_pid.load(Ordering::Relaxed)
                 == std::process::id().cast_signed()
-            && !config.factory_.is_null()
+            && !config.factory_.get().is_null()
     }
 
     /// `Server::is_worker_thread()`: thread mode, on a worker thread.
@@ -390,7 +390,7 @@ impl<'a> Server<'a> {
     /// `Server::get_max_connection()`.
     #[must_use]
     pub fn max_connection(self) -> u32 {
-        self.state().tables_ref().max_connection
+        self.state().tables_ref().max_connection()
     }
 
     /// `serv->get_task_worker_pool()`.
@@ -754,7 +754,7 @@ mod tests {
         config.mode_ = Mode::Base;
         config.worker_num.set(1);
         let mut factory = 0u8;
-        config.factory_ = (&raw mut factory).cast();
+        config.factory_.set((&raw mut factory).cast());
         let own = std::process::id().cast_signed();
         serv.counters().master_pid.store(own, Ordering::Relaxed);
         assert!(serv.ran_its_single_worker_here());
@@ -762,9 +762,9 @@ mod tests {
         assert!(!serv.ran_its_single_worker_here(), "another process's");
         serv.counters().master_pid.store(own, Ordering::Relaxed);
         let config = unsafe { serv.config_mut() };
-        config.factory_ = core::ptr::null_mut();
+        config.factory_.set(core::ptr::null_mut());
         assert!(!serv.ran_its_single_worker_here(), "destroyed");
-        config.factory_ = (&raw mut factory).cast();
+        config.factory_.set((&raw mut factory).cast());
         config.mode_ = Mode::Process;
         assert!(!serv.ran_its_single_worker_here(), "process mode");
         config.mode_ = Mode::Base;
@@ -777,7 +777,7 @@ mod tests {
         config.task_worker_num.set(1);
         assert!(!serv.ran_its_single_worker_here(), "a task worker");
         config.task_worker_num.set(0);
-        config.factory_ = core::ptr::null_mut();
+        config.factory_.set(core::ptr::null_mut());
         config.gs.free();
         unsafe { crate::state::free_state(state) };
     }

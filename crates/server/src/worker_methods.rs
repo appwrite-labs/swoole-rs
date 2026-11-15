@@ -27,7 +27,7 @@ pub fn get_worker_by_pid(serv: view::Server<'_>, pid: c_int) -> *mut WorkerRecor
 #[must_use]
 pub fn add_worker(serv: view::Server<'_>, worker: Worker<'static>) -> c_int {
     let config = serv.config();
-    if !config.factory_.is_null() {
+    if !config.factory_.get().is_null() {
         let m = format_args!("must add worker before server is created");
         log::error_log(
             SW_LOG_ERROR,

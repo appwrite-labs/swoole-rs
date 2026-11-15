@@ -319,7 +319,7 @@ pub fn add_port<'a>(
         log_error(SW_LOG_ERROR, code, c"Server::add_port", m);
         None
     };
-    if !serv.state().config_ref().factory_.is_null() {
+    if !serv.state().config_ref().factory_.get().is_null() {
         let m = format_args!("must add port before server is created");
         return fail(E::SW_ERROR_WRONG_OPERATION, m);
     }
@@ -727,9 +727,9 @@ mod tests {
 
         // SAFETY: the fixture's config, which nothing else borrows here.
         let config = unsafe { serv.config_mut() };
-        config.factory_ = core::ptr::NonNull::dangling().as_ptr();
+        config.factory_.set(core::ptr::NonNull::dangling().as_ptr());
         assert!(add_port(serv, 1, c"::", 9503).is_none(), "created");
-        config.factory_ = core::ptr::null_mut();
+        config.factory_.set(core::ptr::null_mut());
     }
 
     #[test]

@@ -223,15 +223,14 @@ pub(crate) fn create(serv: view::Server<'_>) -> *mut c_void {
     config.reactor_num.set(workers.c_cast::<u16>());
     let origin = c"Server::create_base_factory";
     // Private, as `sw_calloc`'s memory was: each base worker indexes its own fds.
-    let max = state.tables_ref().max_connection as usize;
+    let max = state.tables_ref().max_connection() as usize;
     let connections = Shm::calloc_private(max, size_of::<crate::ConnectionRecord>());
     if connections.is_null() {
         let size = max * size_of::<crate::ConnectionRecord>();
         log::sys_warning(origin, format_args!("calloc[2]({size}) failed"));
         return core::ptr::null_mut();
     }
-    // SAFETY: as above; the write is the statement's only access to the tables.
-    unsafe { &mut *state.tables() }.connection_list = connections;
+    state.tables_ref().connection_list.replace(connections);
     let counts = |what: &str| {
         let cells = Shm::calloc(workers as usize, ATOMIC_SIZE);
         if cells.is_null() {
@@ -241,38 +240,22 @@ pub(crate) fn create(serv: view::Server<'_>) -> *mut c_void {
         }
         (!cells.is_null()).then_some(cells)
     };
-    // SAFETY: `slot` is the `connection_nums` of the server's counters, which
-    // `swr_v1_server_new` mapped, or of a port's, in the `port_gs_list` `Server::create`
-    // mapped; no other process shares them yet.
-    let store = |slot: *mut Shm, cells| unsafe { slot.write(cells) };
+    // The server's counters, which `swr_v1_server_new` mapped, and each port's, in the
+    // `port_gs_list` `Server::create` mapped; no other process shares them yet.
     let Some(cells) = counts("gs") else {
         return core::ptr::null_mut();
     };
-    let gs = config.gs.as_ptr();
-    store(
-        gs.wrapping_byte_add(core::mem::offset_of!(
-            crate::shared::ServerCounters,
-            connection_nums
-        ))
-        .cast(),
-        cells,
-    );
+    if let Some(gs) = crate::shared::server_counters(state) {
+        gs.connection_nums.replace(cells);
+    }
     for port in state.tables_ref().ports() {
-        let gs = port.config().gs.get();
-        if gs.is_null() {
+        let Some(gs) = port.config().counters() else {
             continue;
-        }
+        };
         let Some(cells) = counts("port") else {
             return core::ptr::null_mut();
         };
-        store(
-            gs.wrapping_byte_add(core::mem::offset_of!(
-                crate::shared::PortCounters,
-                connection_nums
-            ))
-            .cast(),
-            cells,
-        );
+        gs.connection_nums.replace(cells);
     }
     hybrid().factory_new(serv)
 }

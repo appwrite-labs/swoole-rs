@@ -35,7 +35,7 @@ pub extern "C" fn swr_v1_server_new(mode: c_int) -> *mut c_void {
         swoole_rs_utilities::timezone(),
         (&raw const crate::pool_native::STD_ALLOCATOR).cast(),
     );
-    tables.max_connection = swoole_rs_corebase::max_sockets().min(100_000);
+    tables.set_max_connection(swoole_rs_corebase::max_sockets().min(100_000));
     config.gs = swoole_rs_memory::members::Shm::calloc(1, size_of::<ServerShared>());
     let gs = config.gs.as_ptr();
     if gs.is_null() {
@@ -104,14 +104,9 @@ impl Drop for Owner {
         // SAFETY: the object `swr_v1_server_new` boxed, freed once.
         let object = unsafe { Box::from_raw(object_ptr.cast::<ServerObject>()) };
         state.close_pipes();
-        // SAFETY: the state's configuration, which nothing else uses now.
-        let config = unsafe { &mut *object.config };
-        let mut gs = core::mem::take(&mut config.gs);
         // SAFETY: `swr_v1_server_new`'s boxed state, not used again. Its tables own the
-        // message bus.
+        // message bus, and its configuration the shared record, freed after the bus.
         drop(unsafe { Box::from_raw(object.state) });
-        // After the bus, which numbers its messages from a counter in here.
-        gs.free();
         if swoole_rs_corebase::swr_v1_core_server() == object_ptr {
             swoole_rs_corebase::swr_v1_core_set_server(ptr::null_mut());
         }

@@ -438,8 +438,8 @@ fn for_stream_ports(serv: view::Server<'_>, change: impl Fn(Reactor, Socket<'_>)
 /// `Server::set_max_connection`: 0 means the default, bounded by the session list
 /// and `SwooleG.max_sockets`.
 pub fn set_max_connection(serv: view::Server<'_>, requested: u32) {
-    let state = serv.state();
-    if !state.tables_ref().connection_list.is_null() {
+    let tables = serv.state().tables_ref();
+    if !tables.connection_list.is_null() {
         let m = format_args!("max_connection must be set before server create");
         log::warning(c"Server::set_max_connection", m);
         return;
@@ -460,9 +460,7 @@ pub fn set_max_connection(serv: view::Server<'_>, requested: u32) {
         let m = format_args!("max_connection is exceed the maximum value, it's reset to {value}");
         log::warning(c"Server::set_max_connection", m);
     }
-    // SAFETY: before `Server::create` (no connection list yet), so no thread or
-    // process reads the tables, and the reference ends with the write.
-    unsafe { &mut *state.tables() }.max_connection = value;
+    tables.set_max_connection(value);
 }
 
 #[cfg(test)]
@@ -747,7 +745,7 @@ mod tests {
 
     fn set_tables_max(live: &LiveServer, max: u32) {
         // SAFETY: the fixture's tables, which no other thread reads.
-        unsafe { &mut *live.state().tables() }.max_connection = max;
+        unsafe { live.state().tables_ref().set_max_connection_unchecked(max) };
     }
 
     /// The peer sees the server close its end, once the reactor has run the close it

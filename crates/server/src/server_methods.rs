@@ -38,7 +38,7 @@ pub use crate::control::shutdown;
 /// `Server::create()`: false once created, else the hook and then startup's create.
 #[must_use]
 pub fn create(serv: view::Server<'_>) -> bool {
-    if !serv.config().factory_.is_null() {
+    if !serv.config().factory_.get().is_null() {
         return false;
     }
     serv.call_hook(view::ServerHook::BeforeCreate);
@@ -47,7 +47,7 @@ pub fn create(serv: view::Server<'_>) -> bool {
 
 /// `Server::destroy()`: nothing before the server is created.
 pub fn destroy(serv: view::Server<'_>) {
-    if !serv.config().factory_.is_null() {
+    if !serv.config().factory_.get().is_null() {
         crate::startup::destroy(serv);
     }
 }
@@ -237,7 +237,7 @@ pub fn has_kernel_nobufs_error(serv: view::Server<'_>, session_id: c_long) -> bo
         return socket.take_kernel_nobufs();
     }
     // `serv->get_reactor_pipe_socket(session_id, conn->reactor_id)`.
-    let pipes = i64::from(state.tables_ref().reactor_pipe_num);
+    let pipes = i64::from(state.tables_ref().reactor_pipe_num.get());
     let index = session_id % pipes;
     let id = i64::from(conn.reactor_id()) + index * i64::from(config.reactor_num.get());
     let id = u16::try_from(id).unwrap_or(u16::MAX);
@@ -442,8 +442,8 @@ mod tests {
             (*config).reactor_num.set(2);
             let tables = &mut *(*state).tables();
             tables.connection_list = naming(&mut connections);
-            tables.max_connection = 4;
-            tables.reactor_pipe_num = 2;
+            tables.set_max_connection_unchecked(4);
+            tables.reactor_pipe_num.set(2);
             [state.cast::<c_void>(), config.cast::<c_void>()]
         };
         // SAFETY: laid out as a Server's head, over the live state and config.

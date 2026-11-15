@@ -66,7 +66,7 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
     let reactor = handle.handle();
     reactor.set_id(id);
     reactor.set_wait_exit(false);
-    reactor.set_max_socket(tables.max_connection);
+    reactor.set_max_socket(tables.max_connection());
     reactor.set_close(Some(entry::close_connection));
     handle.set_error_handler(entry::on_close);
     handle.set_handler(FD_PIPE, Events::READ, on_pipe_read);
@@ -293,7 +293,7 @@ fn heartbeat_thread(serv: view::Server<'_>) {
 /// `session`: the reactor verifies the connection before closing it.
 fn send_close_force(serv: view::Server<'_>, conn: Connection<'_>, session: c_long) {
     let state = serv.state();
-    let pipes = i64::from(state.tables_ref().reactor_pipe_num);
+    let pipes = i64::from(state.tables_ref().reactor_pipe_num.get());
     let index = session.checked_rem(pipes).unwrap_or_default();
     let reactors = i64::from(state.config_ref().reactor_num.get());
     let id = i64::from(conn.reactor_id()) + index * reactors;

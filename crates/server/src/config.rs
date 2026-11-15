@@ -247,7 +247,7 @@ pub struct ServerConfig {
     /// The `dispatch_func` callable's owner, which phpserver sets and downcasts.
     pub private_data_3: Published<Box<dyn core::any::Any>>,
     pub private_data_4: *mut c_void,
-    pub factory_: *mut c_void,
+    pub factory_: Shared<*mut c_void>,
     pub manager_: Shared<*mut c_void>,
     pub task_worker_num: Setting<u32>,
     pub task_ipc_mode: Setting<u8>,
@@ -438,7 +438,7 @@ impl Default for ServerConfig {
             private_data_2: core::ptr::null_mut(),
             private_data_3: Published::default(),
             private_data_4: core::ptr::null_mut(),
-            factory_: core::ptr::null_mut(),
+            factory_: Shared::new(core::ptr::null_mut()),
             manager_: Shared::new(core::ptr::null_mut()),
             task_worker_num: Setting::new(0),
             task_ipc_mode: Setting::new(TaskIpcMode::UnixSock as u8),
