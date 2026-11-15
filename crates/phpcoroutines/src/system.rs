@@ -19,7 +19,6 @@ use swoole_rs_zend::{method_table, sys as z};
 use swoole_rs_hooks::resolve::{system_getaddrinfo, system_gethostbyname};
 use swoole_rs_hooks::sleep::system_sleep;
 use swoole_rs_hooks::stdio::swoole_coroutine_statvfs;
-use swoole_rs_hooks::wait_event::system_wait_event;
 // `swoole_async_dns_lookup_coro()`, which crates/phpswoole defines.
 pub(crate) use swoole_rs_phpswoole::zif_swoole_async_dns_lookup_coro;
 
@@ -450,10 +449,8 @@ fn wait_event(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let events = system_wait_event(fd, int(events), timeout);
-    if events < 0 {
-        call.set_bool(false);
-    } else {
-        call.set_long(events.into());
+    match swoole_rs_hooks::wait_event::wait_event(fd, Events::from_bits(int(events)), timeout) {
+        Some(fired) => call.set_long(fired.bits().into()),
+        None => call.set_bool(false),
     }
 }
