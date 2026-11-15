@@ -1260,8 +1260,7 @@ macro_rules! getters {
         #[doc = concat!("The record's `", stringify!($field), "`.")]
         #[must_use]
         $vis fn $field(self) -> $ty {
-            // SAFETY: a live pool (the handle's contract); only the field is read.
-            unsafe { (*self.raw).$field }
+            self.record().$field
         }
     };
     (
