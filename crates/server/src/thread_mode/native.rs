@@ -218,13 +218,13 @@ fn body(serv: view::Server<'_>, id: u32, kind: WorkerType, fresh: swoole_rs_core
     if worker.is_none() {
         swoole_rs_timer::swoole_timer_create(true);
     }
-    let mut main = Main { serv, slot, worker };
+    let main = Main { serv, slot, worker };
     let factory = manager(serv);
     let thread = factory.thread(id as usize);
-    // `serv->worker_thread_start(thread, fn)`: the registered starter runs
-    // `thread_main` over the `Main` it is lent, which outlives the call.
+    // `serv->worker_thread_start(thread, fn)`: the registered starter runs the
+    // thread's main, which it is lent for the call.
     match worker_thread_start() {
-        Some(start) => start(fresh, thread, thread_main, (&raw mut main).cast()),
+        Some(start) => start(fresh, thread, &|| run_main(&main)),
         None => run_main(&main),
     }
     if bus.is_some() {
@@ -270,15 +270,6 @@ struct Main<'a> {
     slot: u16,
     /// `None` for the manager.
     worker: Option<Worker<'a>>,
-}
-
-/// [`run_main`] as the `fn(void *)` a registered starter runs.
-///
-/// # Safety
-/// `main` is [`body`]'s live `Main`, lent for the call.
-unsafe extern "C" fn thread_main(main: *mut c_void) {
-    // SAFETY: per the caller.
-    run_main(unsafe { &*main.cast::<Main<'_>>() });
 }
 
 /// A thread's main inside `worker_thread_start`.

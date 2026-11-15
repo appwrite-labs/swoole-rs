@@ -7,7 +7,6 @@
     not(any(test, feature = "upstream-symbols")),
     expect(dead_code, reason = "only the hybrid runs thread mode")
 )]
-use core::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -146,12 +145,10 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// A worker thread's body (`Server::worker_thread_start`'s `fn`).
-pub type WorkerMain = unsafe extern "C" fn(*mut c_void);
-
-/// What runs a thread-mode worker thread's body on its `swoole::Thread`, which
-/// that thread's [`swoole_rs_corebase::Fresh`] lets enter PHP.
-pub type WorkerThreadStart = fn(swoole_rs_corebase::Fresh, &Thread, WorkerMain, *mut c_void);
+/// What runs a thread-mode worker thread's body (`Server::worker_thread_start`'s
+/// `fn`) on its `swoole::Thread`, which that thread's [`swoole_rs_corebase::Fresh`]
+/// lets enter PHP. The body is lent for the call.
+pub type WorkerThreadStart = fn(swoole_rs_corebase::Fresh, &Thread, &dyn Fn());
 
 static WORKER_THREAD_START: Mutex<Option<WorkerThreadStart>> = Mutex::new(None);
 
@@ -188,44 +185,35 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no sigfillset")]
     fn a_thread_body_runs_directly_or_inside_the_servers_hook() {
-        static RAN: AtomicBool = AtomicBool::new(false);
-        unsafe extern "C" fn run(context: *mut c_void) {
-            assert_eq!(context.addr(), 0x10);
-            // Other threads can start while this body runs.
-            assert!(WORKER_THREAD_START.try_lock().is_ok());
-            RAN.store(true, Ordering::Release);
-        }
-        fn hook(
-            _: swoole_rs_corebase::Fresh,
-            thread: &Thread,
-            run: WorkerMain,
-            context: *mut c_void,
-        ) {
+        static RAN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        fn hook(_: swoole_rs_corebase::Fresh, thread: &Thread, run: &dyn Fn()) {
             assert!(!thread.joinable());
-            // SAFETY (test): the body above takes any context.
-            unsafe { run(context.wrapping_byte_add(0x10)) };
+            run();
         }
         // A thread's start, as `native`'s `body` runs its main, on a thread of its own.
-        let start = |context: usize| {
+        let start = |offset: u32| {
             let runner = Thread::default();
             let body = move |fresh| {
                 let thread = Thread::default();
-                let context = core::ptr::without_provenance_mut(context);
+                let run = || {
+                    // Other threads can start while this body runs.
+                    assert!(WORKER_THREAD_START.try_lock().is_ok());
+                    RAN.store(offset, Ordering::Release);
+                };
                 match worker_thread_start() {
-                    Some(start) => start(fresh, &thread, run, context),
-                    // SAFETY (test): as above.
-                    None => unsafe { run(context) },
+                    Some(start) => start(fresh, &thread, &run),
+                    None => run(),
                 }
             };
             runner.start(body).unwrap();
             assert_eq!(runner.join(), Ok(()));
         };
         start(0x10);
-        assert!(RAN.swap(false, Ordering::AcqRel));
+        assert_eq!(RAN.swap(0, Ordering::AcqRel), 0x10);
         set_worker_thread_start(Some(hook));
-        start(0);
+        start(1);
         set_worker_thread_start(None);
-        assert!(RAN.load(Ordering::Acquire));
+        assert_eq!(RAN.load(Ordering::Acquire), 1);
     }
 
     #[test]
