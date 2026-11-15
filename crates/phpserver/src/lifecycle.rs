@@ -301,7 +301,9 @@ extern "C" fn php_memory() -> usize {
 /// nothing in between that yields or runs PHP code.
 pub(crate) struct ServerData {
     serv: OnceCell<SharedServer>,
-    property: Cell<Property>,
+    /// Boxed, so a take moves a pointer and leaves `None`, not a default
+    /// `Property`: every event's callback lookup takes it.
+    property: Cell<Option<Box<Property>>>,
     init_arguments: Cell<Owned>,
     /// What `instance::set_server_object` marked the object with when it became
     /// its thread's running one; 0 for an object that never was.
@@ -317,7 +319,7 @@ impl Custom for ServerData {
     fn new() -> Self {
         Self {
             serv: OnceCell::new(),
-            property: Cell::default(),
+            property: Cell::new(Some(Box::default())),
             init_arguments: Cell::new(Owned::null()),
             mark: Cell::new(0),
         }
@@ -495,9 +497,10 @@ impl ServerData {
     /// `f` over the property, taken out and put back: `f` neither yields nor
     /// runs PHP code, and what it removes is released after it is put back.
     fn property<R>(&self, f: impl FnOnce(&mut Property) -> R) -> R {
-        let mut property = self.property.take();
+        // Never out here: `f` reaches nothing that takes it again.
+        let mut property = self.property.take().unwrap_or_default();
         let result = f(&mut property);
-        self.property.set(property);
+        self.property.set(Some(property));
         result
     }
 
