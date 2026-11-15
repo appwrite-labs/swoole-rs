@@ -11,7 +11,7 @@ use core::ffi::{CStr, c_char, c_int, c_void};
 use core::mem::{MaybeUninit, offset_of, size_of};
 use core::ptr;
 use std::ffi::CString;
-use swoole_rs_buffer::string::{Allocator, CppString, new_sized_string};
+use swoole_rs_buffer::string::{CppString, new_sized_string};
 use swoole_rs_corebase::constants::{
     FdType, SW_BUFFER_SIZE_BIG, SW_INPUT_BUFFER_SIZE, SocketFlag, SocketType,
 };
@@ -48,7 +48,7 @@ pub struct CoSocket {
     pub connect_port: Cell<c_int>,
     pub backlog: Cell<c_int>,
     /// The buffers' allocator: none for the default.
-    pub(crate) buffer_allocator: Cell<Option<&'static Allocator>>,
+    pub(crate) buffer_allocator: Cell<Option<swoole_rs_corebase::TrustedAllocator>>,
     pub buffer_init_size: Cell<usize>,
     pub(crate) read_buffer: Cell<*mut c_void>,
     pub(crate) write_buffer: Cell<*mut c_void>,
@@ -290,12 +290,12 @@ impl Co {
 
     /// The buffers' allocator: none for the default.
     #[must_use]
-    pub fn buffer_allocator(self) -> Option<&'static Allocator> {
+    pub fn buffer_allocator(self) -> Option<swoole_rs_corebase::TrustedAllocator> {
         self.record().buffer_allocator.get()
     }
 
     /// The buffers' allocator from now on: none for the default.
-    pub fn set_buffer_allocator(self, allocator: Option<&'static Allocator>) {
+    pub fn set_buffer_allocator(self, allocator: Option<swoole_rs_corebase::TrustedAllocator>) {
         self.record().buffer_allocator.set(allocator);
     }
 

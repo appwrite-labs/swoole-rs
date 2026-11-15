@@ -227,7 +227,7 @@ fn pop_1() {
     assert_eq!(b",swoole,php,last", str.view());
     assert_eq!(INIT_SIZE, str.size);
 
-    unsafe { (str.allocator.unwrap().free)(str_1.cast()) };
+    unsafe { str.allocator.unwrap().get().free.unwrap()(str_1.cast()) };
     unsafe { delete_string(s) };
 }
 
@@ -248,7 +248,7 @@ fn pop_2() {
     assert_eq!(str.length, 0);
     assert_eq!(INIT_SIZE, str.size);
 
-    unsafe { (str.allocator.unwrap().free)(str_1.cast()) };
+    unsafe { str.allocator.unwrap().get().free.unwrap()(str_1.cast()) };
     unsafe { delete_string(s) };
 }
 

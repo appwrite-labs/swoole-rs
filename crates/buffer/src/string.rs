@@ -12,53 +12,7 @@
 use std::ffi::{c_int, c_void};
 use std::mem::{MaybeUninit, offset_of};
 use std::ptr;
-use swoole_rs_corebase::CCast;
-
-/// `swoole::Allocator`. Its fields are private, so `CppString`'s safe methods
-/// can trust them as `new` states.
-#[repr(C)]
-pub struct Allocator {
-    malloc: unsafe extern "C" fn(usize) -> *mut c_void,
-    calloc: unsafe extern "C" fn(usize, usize) -> *mut c_void,
-    realloc: unsafe extern "C" fn(*mut c_void, usize) -> *mut c_void,
-    free: unsafe extern "C" fn(*mut c_void),
-}
-
-impl Allocator {
-    /// # Safety
-    /// The four behave as libc's do on one heap: `malloc` and `calloc` take any
-    /// size and return a fresh allocation or null, `realloc` and `free` take
-    /// what this allocator returned.
-    #[must_use]
-    pub const unsafe fn new(
-        malloc: unsafe extern "C" fn(usize) -> *mut c_void,
-        calloc: unsafe extern "C" fn(usize, usize) -> *mut c_void,
-        realloc: unsafe extern "C" fn(*mut c_void, usize) -> *mut c_void,
-        free: unsafe extern "C" fn(*mut c_void),
-    ) -> Self {
-        Self {
-            malloc,
-            calloc,
-            realloc,
-            free,
-        }
-    }
-
-    /// `malloc(size)`: `size` bytes of this allocator's, or null.
-    #[inline]
-    fn allocate(&self, size: usize) -> *mut c_void {
-        // SAFETY: an allocator's malloc, which takes any size.
-        unsafe { (self.malloc)(size) }
-    }
-}
-
-/// `SwooleG.std_allocator`, which only ever holds libc's allocator.
-pub static STD_ALLOCATOR: Allocator = Allocator {
-    malloc: libc::malloc,
-    calloc: libc::calloc,
-    realloc: libc::realloc,
-    free: libc::free,
-};
+use swoole_rs_corebase::{CCast, TrustedAllocator};
 
 /// `swoole::String` (`string.cc` asserts the same layout).
 ///
@@ -75,7 +29,7 @@ pub struct CppString {
     offset: i64,
     str: *mut u8,
     /// A nullable `const Allocator *`, which lives for the process.
-    allocator: Option<&'static Allocator>,
+    allocator: Option<TrustedAllocator>,
 }
 
 const _: () = assert!(
@@ -83,7 +37,7 @@ const _: () = assert!(
         && offset_of!(CppString, offset) == 16
         && offset_of!(CppString, str) == 24
         && offset_of!(CppString, allocator) == 32
-        && size_of::<Allocator>() == 32,
+        && size_of::<Option<TrustedAllocator>>() == 8,
     "swoole::String's layout"
 );
 
@@ -197,8 +151,8 @@ impl CppString {
     }
 
     /// `String::alloc`: a fresh buffer, from the standard allocator when `with` is `None`.
-    pub fn alloc(&mut self, size: usize, with: Option<&'static Allocator>) {
-        let with = with.unwrap_or(&STD_ALLOCATOR);
+    pub fn alloc(&mut self, size: usize, with: Option<TrustedAllocator>) {
+        let with = with.unwrap_or(TrustedAllocator::STD);
         let size = aligned(size);
         self.length = 0;
         self.size = size;
@@ -210,11 +164,11 @@ impl CppString {
     /// The destructor's body, which leaves the String empty.
     pub fn dispose(&mut self) {
         let data = self.release();
-        if let Some(with) = self.allocator
+        if let Some(free) = self.allocator.and_then(|with| with.get().free)
             && !data.is_null()
         {
             // SAFETY: `data` was this allocator's live allocation.
-            unsafe { (with.free)(data.cast()) };
+            unsafe { free(data.cast()) };
         }
     }
 
@@ -259,8 +213,10 @@ impl CppString {
             return;
         };
         let new_size = aligned(new_size.max(self.length));
-        // SAFETY: `str` is this allocator's live allocation.
-        self.str = checked(unsafe { (with.realloc)(self.str.cast(), new_size) });
+        self.str = checked(with.get().realloc.map_or(ptr::null_mut(), |realloc| {
+            // SAFETY: `str` is this allocator's live allocation.
+            unsafe { realloc(self.str.cast(), new_size) }
+        }));
         self.size = new_size;
     }
 
@@ -464,7 +420,7 @@ impl CppString {
             length.max(init_size)
         });
         // An empty String has no allocator yet; the buffer then names the one that made it.
-        let with = self.allocator.unwrap_or(&STD_ALLOCATOR);
+        let with = self.allocator.unwrap_or(TrustedAllocator::STD);
         let new_value: *mut u8 = with.allocate(size).cast();
         if new_value.is_null() {
             return ptr::null_mut();
@@ -500,27 +456,32 @@ impl CppString {
     }
 
     pub fn print(&self, value: bool) {
+        let head = format!(
+            "String[length={},size={},offset={}]=",
+            self.length, self.size, self.offset
+        );
+        swoole_rs_corebase::sys::print(head.as_bytes());
         if value {
-            let head = format!(
-                "String[length={},size={},offset={}]=",
-                self.length, self.size, self.offset
-            );
             // `%.*s` of the content: `print` stops at a NUL, as upstream's does.
-            swoole_rs_corebase::sys::print(head.as_bytes());
             swoole_rs_corebase::sys::print(self.view());
             swoole_rs_corebase::sys::print(b"\n");
         } else {
-            // SAFETY: the arguments match the format.
-            unsafe {
-                libc::printf(
-                    c"String[length=%zu,size=%zu,offset=%jd]=%p\n".as_ptr(),
-                    self.length,
-                    self.size,
-                    self.offset,
-                    self.str,
-                )
-            };
+            swoole_rs_corebase::sys::print(format!("{}\n", pointer(self.str)).as_bytes());
         }
+    }
+}
+
+/// `%p` of `at`: `0x` and lowercase hex, and for null what this libc prints.
+fn pointer(at: *const u8) -> String {
+    if !at.is_null() {
+        return format!("{at:p}");
+    }
+    if cfg!(all(target_os = "linux", target_env = "gnu")) {
+        "(nil)".to_owned()
+    } else if cfg!(target_env = "musl") {
+        "0".to_owned()
+    } else {
+        "0x0".to_owned()
     }
 }
 
@@ -531,7 +492,7 @@ impl CppString {
 upstream! {
     "_ZN6swoole6StringC1EmPKNS_9AllocatorE", "_ZN6swoole6StringC1EmPKNS_9AllocatorE" =>
     /// `String(size_t, const Allocator *)`.
-    pub extern "C" fn swr_string_new(this: &mut MaybeUninit<CppString>, size: usize, with: Option<&'static Allocator>) -> *mut CppString {
+    pub extern "C" fn swr_string_new(this: &mut MaybeUninit<CppString>, size: usize, with: Option<TrustedAllocator>) -> *mut CppString {
         let string = this.write(CppString::EMPTY);
         string.alloc(size, with);
         string
@@ -642,7 +603,7 @@ pub fn new_string(data: &[u8]) -> *mut CppString {
 
 /// `new String(size, with)`, in boxed storage [`delete_string`] frees.
 #[must_use]
-pub fn new_sized_string(size: usize, with: Option<&'static Allocator>) -> *mut CppString {
+pub fn new_sized_string(size: usize, with: Option<TrustedAllocator>) -> *mut CppString {
     swr_string_new(Box::leak(Box::new_uninit()), size, with)
 }
 

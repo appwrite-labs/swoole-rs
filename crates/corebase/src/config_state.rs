@@ -17,13 +17,36 @@ pub struct CoreAllocator {
     pub free: Option<unsafe extern "C" fn(*mut c_void)>,
 }
 
+/// libc's allocator, `SwooleG.std_allocator`'s value.
+static LIBC: CoreAllocator = CoreAllocator {
+    malloc: Some(libc::malloc),
+    calloc: Some(libc::calloc),
+    realloc: Some(libc::realloc),
+    free: Some(libc::free),
+};
+
 /// A `CoreAllocator` whose callbacks keep the allocator contract: `malloc`,
 /// `calloc` and `realloc` return null or a block of the size asked for, which
-/// `realloc` and `free` take back, so a message bus may adopt what they return.
+/// `realloc` and `free` take back, so a message bus or a `swoole::String` may
+/// adopt what they return. As a C `const Allocator *`, never null.
+#[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct TrustedAllocator(&'static CoreAllocator);
 
 impl TrustedAllocator {
+    /// libc's `malloc`, `calloc`, `realloc` and `free`.
+    pub const STD: Self = Self(&LIBC);
+
+    /// `malloc(size)`: a fresh block of `size` bytes, or null when the allocator has
+    /// none to give (or no `malloc`).
+    #[must_use]
+    pub fn allocate(self, size: usize) -> *mut c_void {
+        self.0.malloc.map_or(std::ptr::null_mut(), |malloc| {
+            // SAFETY: a trusted allocator's `malloc`, which takes any size.
+            unsafe { malloc(size) }
+        })
+    }
+
     /// # Safety
     /// `allocator`'s callbacks keep the allocator contract above.
     #[must_use]

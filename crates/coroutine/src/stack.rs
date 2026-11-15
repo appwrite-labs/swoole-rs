@@ -4,6 +4,7 @@
 use core::ffi::c_void;
 use core::mem::MaybeUninit;
 use std::ptr;
+use swoole_rs_corebase::sys;
 
 const START: usize = 64 * 1024;
 const MAGIC: &[u8] = b"swoole_coroutine#5652a7fb2b38be";
@@ -49,30 +50,10 @@ impl Stack {
     pub fn alloc(size: u32, flags: u32) -> Option<Self> {
         let bytes = size as usize;
         let stack = if flags & STACK_PROTECT == 0 {
-            // SAFETY: malloc has no preconditions.
-            unsafe { libc::malloc(bytes) }
+            sys::malloc(bytes)
         } else {
             // Upstream adds MAP_STACK only on OpenBSD, where it is required.
-            #[cfg(target_os = "openbsd")]
-            let stack_flag = libc::MAP_STACK;
-            #[cfg(not(target_os = "openbsd"))]
-            let stack_flag = 0;
-            // SAFETY: a fresh anonymous private mapping aliases nothing.
-            let mapped = unsafe {
-                libc::mmap(
-                    ptr::null_mut(),
-                    bytes,
-                    libc::PROT_READ | libc::PROT_WRITE,
-                    libc::MAP_PRIVATE | libc::MAP_ANON | stack_flag,
-                    -1,
-                    0,
-                )
-            };
-            if mapped == libc::MAP_FAILED {
-                ptr::null_mut()
-            } else {
-                mapped
-            }
+            sys::map_anonymous(bytes, false, true)
         };
         if stack.is_null() {
             return None;
@@ -82,7 +63,7 @@ impl Stack {
             mark(unsafe { std::slice::from_raw_parts_mut(stack.cast::<MaybeUninit<u8>>(), bytes) });
         }
         if flags & STACK_PROTECT != 0 {
-            let page = swoole_rs_corebase::sys::sysconf(libc::_SC_PAGESIZE);
+            let page = sys::sysconf(libc::_SC_PAGESIZE);
             // SAFETY: the mapping starts at `stack`; protecting its first page only
             // removes access to memory nothing references yet.
             unsafe {

@@ -337,11 +337,10 @@ pub fn lend_thread_buffer<R>(f: impl FnOnce() -> R) -> R {
 /// The `SwooleTG` members a thread-context coroutine's thread shares with the
 /// thread that activated coroutines: the buffer stack, reactor, timer and async
 /// threads.
+/// The pointers travel as their exposed addresses: each is an opaque handle the
+/// adopting thread stores back as it was, and the threads run one at a time.
 #[derive(Clone, Copy)]
-pub struct SharedThread([*mut c_void; 4]);
-
-// SAFETY: plain pointers, handed to threads that run one at a time.
-unsafe impl Send for SharedThread {}
+pub struct SharedThread([usize; 4]);
 
 /// This thread's [`SharedThread`].
 #[must_use]
@@ -353,12 +352,14 @@ pub fn shared_thread() -> SharedThread {
             thread.timer.get(),
             thread.async_threads.get(),
         ]
+        .map(<*mut c_void>::expose_provenance)
     }))
 }
 
 /// Adopts `shared` in this new thread.
 pub fn adopt_shared_thread(shared: SharedThread) {
-    let [buffer_stack, reactor, timer, async_threads] = shared.0;
+    let [buffer_stack, reactor, timer, async_threads] =
+        shared.0.map(ptr::with_exposed_provenance_mut);
     with(|thread| {
         thread.buffer_stack.set(buffer_stack);
         thread.reactor.set(reactor);

@@ -48,7 +48,7 @@ impl FixedPool {
         // SAFETY: a fresh, malloc-aligned arena of `plan.total` bytes.
         let memory = unsafe { std::slice::from_raw_parts_mut(memory.as_ptr(), plan.total) };
         let pool = fixed::construct(memory, plan, shared, true).ok_or(INVALID)?;
-        Ok(Self(pool))
+        Ok(Self(NonNull::from(pool)))
     }
 
     fn header(&self) -> &Fixed {

@@ -95,7 +95,7 @@ mod c {
         pub(crate) safe fn chdir(path: Text<'_>) -> c_int;
         pub(crate) safe fn chroot(path: Text<'_>) -> c_int;
         pub(crate) safe fn mkdir(path: Text<'_>, mode: mode_t) -> c_int;
-        pub(crate) safe fn malloc(size: usize) -> *mut c_void;
+        pub safe fn malloc(size: usize) -> *mut c_void;
         pub(crate) safe fn calloc(count: usize, size: usize) -> *mut c_void;
         /// At most `length` bytes of `text`, in a `malloc` allocation.
         pub(crate) safe fn strndup(text: Text<'_>, length: usize) -> *mut c_char;
@@ -228,9 +228,10 @@ mod c {
 }
 #[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
 pub use c::kqueue;
+pub use c::malloc;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 pub use c::malloc_trim;
-pub(crate) use c::{calloc, fork, getrlimit, malloc, srandom, uname};
+pub(crate) use c::{calloc, fork, getrlimit, srandom, uname};
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub use c::{epoll_create, epoll_ctl, signalfd};
 pub use c::{
@@ -586,6 +587,35 @@ pub fn usleep(microseconds: libc::useconds_t) -> c_int {
 /// `nanosleep(2)` for `request`, the time left going to `remaining`.
 pub fn nanosleep(request: &libc::timespec, remaining: &mut libc::timespec) -> c_int {
     c::nanosleep(request, Some(remaining))
+}
+
+/// `mmap(2)` of a fresh anonymous read-write mapping of `len` bytes, `MAP_SHARED`
+/// across a fork when `shared`, else `MAP_PRIVATE`; `stack` adds `MAP_STACK` where it
+/// is required (OpenBSD). Zeroed. Null, with errno set, when it fails. A fresh mapping
+/// at an address the kernel picks aliases nothing; unmapping it is the caller's.
+#[must_use]
+pub fn map_anonymous(len: usize, shared: bool, stack: bool) -> *mut libc::c_void {
+    let sharing = if shared {
+        libc::MAP_SHARED
+    } else {
+        libc::MAP_PRIVATE
+    };
+    #[cfg(target_os = "openbsd")]
+    let stack = if stack { libc::MAP_STACK } else { 0 };
+    #[cfg(not(target_os = "openbsd"))]
+    let stack = {
+        _ = stack;
+        0
+    };
+    let flags = sharing | libc::MAP_ANON | stack;
+    let protection = libc::PROT_READ | libc::PROT_WRITE;
+    // SAFETY: no address is given (nor MAP_FIXED), so the mapping replaces nothing.
+    let mapped = unsafe { libc::mmap(std::ptr::null_mut(), len, protection, flags, -1, 0) };
+    if mapped == libc::MAP_FAILED {
+        std::ptr::null_mut()
+    } else {
+        mapped
+    }
 }
 
 /// `open(2)` of `path`; `mode` applies when `flags` has `O_CREAT`.
