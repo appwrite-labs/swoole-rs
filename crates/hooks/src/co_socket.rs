@@ -706,11 +706,7 @@ pub unsafe extern "C" fn swr_v1_hook_co_socket_release(socket: *mut CoSocket) {
             unsafe { socket_ssl_close(network) };
         }
     });
-    let network = co.socket();
-    if !network.is_null() {
-        // SAFETY: the live record, which nothing uses afterwards.
-        unsafe { socket_free(network) };
-    }
+    drop(co.record().socket.take().map(Released));
     // SAFETY: as the caller promises; no handle reaches the record any more.
     unsafe { &mut *socket }.fini();
 }
@@ -852,15 +848,34 @@ impl CoSocket {
     }
 }
 
+/// A `network::Socket` a record owned and gave up: no handle reaches it any more, so
+/// dropping this frees it (`Socket::free`). Only the record's own release and
+/// [`reinit`] make one, from the socket they take out of it.
+pub(crate) struct Released(Socket<'static>);
+
+impl Released {
+    #[cfg(test)]
+    pub(crate) fn socket(&self) -> Socket<'_> {
+        self.0
+    }
+}
+
+impl Drop for Released {
+    fn drop(&mut self) {
+        // SAFETY: the record's own socket, which it gave up and nothing uses afterwards.
+        unsafe { socket_free(self.0.as_ptr()) };
+    }
+}
+
 /// `reinit_sock(type)`: a new socket of `socket_type` replaces the record's, whose
-/// old `network::Socket` is returned for the caller to free. `None`, with errno set
-/// and nothing changed, if socket(2) failed.
-pub(crate) fn reinit(socket: Co, socket_type: c_int) -> Option<*mut SocketRecord> {
+/// old `network::Socket` is returned, freed as it drops. `None`, with errno set and
+/// nothing changed, if socket(2) failed.
+pub(crate) fn reinit(socket: Co, socket_type: c_int) -> Option<Released> {
     socket.record().reinit(socket.this(), socket_type)
 }
 
 impl CoSocket {
-    fn reinit(&self, owner: *mut c_void, socket_type: c_int) -> Option<*mut SocketRecord> {
+    fn reinit(&self, owner: *mut c_void, socket_type: c_int) -> Option<Released> {
         let socket = self;
         let (mut domain, mut kind) = (0, 0);
         domain_and_type(socket_type, &mut domain, &mut kind);
@@ -872,13 +887,14 @@ impl CoSocket {
             socket.sock_protocol.get(),
             OPEN_FLAGS,
         );
-        let old = socket.socket_ptr();
+        let old = socket.socket.get();
         // Upstream records the old type on the new socket before taking the new one.
         socket.attach(made, owner)?;
         socket.sock_domain.set(domain);
         socket.sock_type.set(kind);
         socket.kind.set(socket_type);
-        Some(old)
+        // The old socket, which the record no longer holds.
+        old.map(Released)
     }
 }
 
@@ -1262,16 +1278,13 @@ mod tests {
         new(&mut socket, New::ByType, 0, 1, 0, 0);
         let first = socket.socket_ptr();
         let old = reinit(unsafe { Co::new(&raw mut *socket) }, 3).unwrap();
-        assert_eq!(old, first);
+        assert_eq!(old.socket().as_ptr(), first);
         assert_eq!(
             (socket.kind.get(), socket.sock_domain.get()),
             (3, libc::AF_INET6)
         );
         assert_eq!(unsafe { (*socket.socket_ptr()).fields.info.kind }, 1);
-        unsafe {
-            libc::close((*old).fields.fd);
-            SocketRecord::free(old);
-        }
+        drop(old);
         release(socket);
     }
 
