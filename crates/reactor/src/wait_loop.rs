@@ -165,10 +165,11 @@ fn mask(read: bool, write: bool, hangup: bool) -> u32 {
     mask
 }
 
-/// Upstream's `wait()` for the state's backend: 0 when the loop stops (and when poll fails
-/// uncaught), -1 when epoll or kqueue fail uncaught. No reference to the state crosses an
-/// effect, so effects may change it through its native views.
-pub(crate) fn wait<'a>(ops: &'a WaitOps<'a>) -> i32 {
+/// Upstream's `wait()` for the state's backend: true when the loop stops (and when poll
+/// fails uncaught), false when epoll or kqueue fail uncaught. No reference to the state
+/// crosses an effect, so effects may change it through its native views.
+#[must_use]
+pub(crate) fn wait<'a>(ops: &'a WaitOps<'a>) -> bool {
     let reactor = ops.reactor;
     // No native effect is active, and this borrow ends before the first one.
     let (view, id) = reactor.with(|state| {
@@ -198,11 +199,7 @@ pub(crate) fn wait<'a>(ops: &'a WaitOps<'a>) -> i32 {
                 // upstream's Reactor::catch_error()
                 if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
                     wait_failed(&run, entries);
-                    return if run.backend == BackendKind::Poll {
-                        0
-                    } else {
-                        -1
-                    };
+                    return run.backend == BackendKind::Poll;
                 }
                 if run.backend == BackendKind::Epoll
                     && let Some(uring) = uring()
@@ -236,7 +233,7 @@ pub(crate) fn wait<'a>(ops: &'a WaitOps<'a>) -> i32 {
             break;
         }
     }
-    0
+    true
 }
 
 /// Decode and dispatch entry `index`, if the kernel wait filled it.
@@ -686,7 +683,7 @@ mod tests {
             begin,
             end,
         };
-        assert_eq!(wait(&ops), 0);
+        assert!(wait(&ops));
         let removed = socket.removed;
         unsafe {
             assert!((*state.fields).start);

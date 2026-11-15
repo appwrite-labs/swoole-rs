@@ -303,10 +303,11 @@ pub fn swoole_event_if_exit() -> bool {
     running().is_none_or(crate::callbacks::if_exit)
 }
 
-/// `sw_reactor()->wait()`: -1 without a reactor. Handlers may run PHP.
+/// `sw_reactor()->wait()`: whether it succeeded, false without a reactor. Handlers may
+/// run PHP.
 #[must_use]
-pub fn swoole_event_run() -> c_int {
-    running().map_or(-1, crate::callbacks::wait)
+pub fn swoole_event_run() -> bool {
+    running().is_some_and(crate::callbacks::wait)
 }
 
 /// A reactor handler over the fd of the event it is called with.
@@ -482,14 +483,10 @@ pub fn swoole_event_defer_value<T: Deferred>(value: T) -> Result<(), T> {
 pub extern "C-unwind" fn swoole_event_wait() -> c_int {
     // `if_exit` runs only under wait_exit, as upstream's `or`.
     let wait_exit = field(|fields| fields.wait_exit).unwrap_or(false);
-    let retval = if wait_exit && swoole_event_if_exit() {
-        0
-    } else {
-        swoole_event_run()
-    };
+    let ran = (wait_exit && swoole_event_if_exit()) || swoole_event_run();
     // The thread's reactor, which nothing here borrows any more.
     crate::swoole_event_free();
-    retval
+    if ran { 0 } else { -1 }
 }
 
 #[cfg(test)]
