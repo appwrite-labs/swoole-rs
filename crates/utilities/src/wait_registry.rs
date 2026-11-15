@@ -12,26 +12,29 @@
 )]
 
 use std::ffi::c_int;
-use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 const ENTRIES: usize = 1024;
 
-#[repr(C)]
-struct Entry {
-    address: AtomicUsize,
-    waiters: AtomicU32,
-    generation: AtomicU32,
-    notifications: AtomicU32,
-}
+/// One address's words: the address, its waiters, its generation and the
+/// notifications not yet taken.
+type Entry = [AtomicU64; 4];
+const ADDRESS: usize = 0;
+const WAITERS: usize = 1;
+const GENERATION: usize = 2;
+const NOTIFICATIONS: usize = 3;
 
-#[repr(C)]
+/// The registry's words, shared with every process that waits: the lock word, then
+/// the entries.
+#[derive(Clone, Copy)]
 pub(crate) struct Registry {
-    lock: AtomicU32,
-    entries: [Entry; ENTRIES],
+    lock: &'static AtomicU64,
+    entries: &'static [Entry; ENTRIES],
 }
 
-static REGISTRY: AtomicPtr<Registry> = AtomicPtr::new(std::ptr::null_mut());
+static REGISTRY: OnceLock<Registry> = OnceLock::new();
 
 // Entry fields are only touched under the registry lock, so Relaxed suffices.
 const R: Ordering = Ordering::Relaxed;
@@ -49,17 +52,25 @@ impl Drop for Locked<'_> {
     }
 }
 
-impl Entry {
-    fn reset(&self, address: usize) -> &Self {
-        self.address.store(address, R);
-        self.waiters.store(0, R);
-        self.generation.store(0, R);
-        self.notifications.store(0, R);
-        self
+fn reset(entry: &Entry, address: u64) -> &Entry {
+    entry[ADDRESS].store(address, R);
+    for word in &entry[WAITERS..] {
+        word.store(0, R);
     }
+    entry
 }
 
 impl Registry {
+    /// The registry over `memory`'s leading words; none when they are too few.
+    fn of(memory: &'static [AtomicU64]) -> Option<Self> {
+        let (lock, rest) = memory.split_first()?;
+        let (entries, _) = rest.as_chunks::<4>();
+        Some(Self {
+            lock,
+            entries: entries.first_chunk()?,
+        })
+    }
+
     fn lock(&self) -> Locked<'_> {
         while self
             .lock
@@ -76,24 +87,25 @@ impl Registry {
     /// empty slot, or else the first idle one, as upstream did.
     fn entry(&self, _: &Locked<'_>, address: usize, create: bool) -> Option<&Entry> {
         let start = (address >> 3) % ENTRIES;
+        let address = address as u64;
         let mut reusable = None;
         for entry in self.entries.iter().cycle().skip(start).take(ENTRIES) {
-            let current = entry.address.load(R);
+            let current = entry[ADDRESS].load(R);
             if current == address {
                 return Some(entry);
             }
             if current == 0 {
-                return create.then(|| reusable.unwrap_or(entry).reset(address));
+                return create.then(|| reset(reusable.unwrap_or(entry), address));
             }
             if create
                 && reusable.is_none()
-                && entry.waiters.load(R) == 0
-                && entry.notifications.load(R) == 0
+                && entry[WAITERS].load(R) == 0
+                && entry[NOTIFICATIONS].load(R) == 0
             {
                 reusable = Some(entry);
             }
         }
-        reusable.map(|entry| entry.reset(address))
+        reusable.map(|entry| reset(entry, address))
     }
 
     fn wait(&self, word: &AtomicU32, timeout: f64) -> Result<(), c_int> {
@@ -113,25 +125,25 @@ impl Registry {
         let Some(entry) = self.entry(&locked, address, true) else {
             return Err(libc::ENOSPC);
         };
-        let mut generation = entry.generation.load(R);
-        entry.waiters.fetch_add(1, R);
+        let mut generation = entry[GENERATION].load(R);
+        entry[WAITERS].fetch_add(1, R);
         drop(locked);
         loop {
             let locked = self.lock();
-            let current = entry.generation.load(R);
+            let current = entry[GENERATION].load(R);
             if current != generation {
                 generation = current;
-                if entry.notifications.load(R) > 0 {
-                    entry.notifications.fetch_sub(1, R);
-                    entry.waiters.fetch_sub(1, R);
+                if entry[NOTIFICATIONS].load(R) > 0 {
+                    entry[NOTIFICATIONS].fetch_sub(1, R);
+                    entry[WAITERS].fetch_sub(1, R);
                     return if acquire(word) { Ok(()) } else { Err(0) };
                 }
             } else if acquire(word) {
-                entry.waiters.fetch_sub(1, R);
+                entry[WAITERS].fetch_sub(1, R);
                 return Ok(());
             }
             if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                entry.waiters.fetch_sub(1, R);
+                entry[WAITERS].fetch_sub(1, R);
                 return Err(libc::ETIMEDOUT);
             }
             drop(locked);
@@ -158,38 +170,36 @@ impl Registry {
         };
         // Notifications go only to waiters already registered, so a later
         // waiter can't consume an earlier wakeup.
-        let available = entry
-            .waiters
+        let available = entry[WAITERS]
             .load(R)
-            .saturating_sub(entry.notifications.load(R));
-        let notified = n.min(available);
+            .saturating_sub(entry[NOTIFICATIONS].load(R));
+        let notified = u64::from(n).min(available);
         if notified > 0 {
-            entry.notifications.fetch_add(notified, R);
-            entry.generation.fetch_add(1, R);
+            entry[NOTIFICATIONS].fetch_add(notified, R);
+            entry[GENERATION].fetch_add(1, R);
         }
         Ok(c_int::try_from(notified).unwrap_or(c_int::MAX))
     }
 }
 
-/// Bytes `sw_atomic_wait_init` allocates from the shared memory pool.
+/// Bytes `sw_atomic_wait_init` allocates from the shared memory pool: the lock word
+/// and the entries.
 #[must_use]
 pub fn swr_v1_utils_wait_registry_size() -> usize {
-    size_of::<Registry>()
+    size_of::<AtomicU64>() + size_of::<[Entry; ENTRIES]>()
 }
 
 /// Zero and adopt `memory` as the registry: words shared with every process that
-/// waits, lent for the program's life. False when they are too few.
+/// waits, lent for the program's life. False when they are too few; the first
+/// registry adopted stays.
 pub fn swr_v1_utils_wait_registry_init(memory: &'static mut [AtomicU64]) -> bool {
-    if size_of_val(memory) < size_of::<Registry>()
-        || !memory.as_ptr().cast::<Registry>().is_aligned()
-    {
-        return false;
-    }
     for word in memory.iter_mut() {
         *word.get_mut() = 0;
     }
-    // Taken last: a reborrow of `memory` after it would invalidate the pointer.
-    REGISTRY.store(memory.as_mut_ptr().cast::<Registry>(), Ordering::SeqCst);
+    let Some(registry) = Registry::of(memory) else {
+        return false;
+    };
+    _ = REGISTRY.set(registry);
     true
 }
 
@@ -197,14 +207,8 @@ fn with<T>(
     word: &AtomicU32,
     run: impl FnOnce(&Registry, &AtomicU32) -> Result<T, c_int>,
 ) -> Result<T, c_int> {
-    let registry = REGISTRY.load(Ordering::SeqCst);
-    if registry.is_null() {
-        return Err(libc::EINVAL);
-    }
-    // SAFETY: init adopted it from words lent to it alone for the program's life,
-    // aligned, long enough and zeroed, which every field of a Registry (atomics
-    // only) takes.
-    run(unsafe { &*registry }, word)
+    let registry = REGISTRY.get().ok_or(libc::EINVAL)?;
+    run(registry, word)
 }
 
 /// `word`, or -1 with `EINVAL` recorded for null.
@@ -246,7 +250,7 @@ mod tests {
     fn registry() {
         static INIT: std::sync::Once = std::sync::Once::new();
         INIT.call_once(|| {
-            let words = size_of::<Registry>().div_ceil(8);
+            let words = swr_v1_utils_wait_registry_size().div_ceil(8);
             let memory = Vec::from_iter((0..words).map(|_| AtomicU64::new(1))).leak();
             assert!(swr_v1_utils_wait_registry_init(memory));
         });
@@ -306,12 +310,12 @@ mod tests {
         };
         // Wake only once the waiter has registered: a token published before
         // it starts would be taken by its fast path, leaving nobody to notify.
-        let registry = unsafe { &*REGISTRY.load(Ordering::SeqCst) };
+        let registry = REGISTRY.get().unwrap();
         let registered = || {
             let locked = registry.lock();
             registry
                 .entry(&locked, word.as_ptr() as usize, false)
-                .is_some_and(|entry| entry.waiters.load(R) > 0)
+                .is_some_and(|entry| entry[WAITERS].load(R) > 0)
         };
         while !registered() {
             std::thread::sleep(Duration::from_millis(1));
@@ -323,8 +327,9 @@ mod tests {
 
     #[test]
     fn entries_reuse_idle_slots_once_full() {
-        let memory = Box::new(std::mem::MaybeUninit::<Registry>::zeroed());
-        let registry = unsafe { memory.assume_init_ref() };
+        let words = swr_v1_utils_wait_registry_size().div_ceil(8);
+        let memory = Vec::from_iter((0..words).map(|_| AtomicU64::new(0))).leak();
+        let registry = &Registry::of(memory).unwrap();
         let locked = registry.lock();
         for address in 1..=ENTRIES {
             assert!(
@@ -334,12 +339,12 @@ mod tests {
         }
         let entry = registry.entry(&locked, (ENTRIES + 1) << 3, true).unwrap();
         assert_eq!(
-            entry.address.load(R),
-            (ENTRIES + 1) << 3,
+            entry[ADDRESS].load(R),
+            ((ENTRIES + 1) << 3) as u64,
             "an idle slot reused"
         );
-        for e in &registry.entries {
-            e.waiters.store(1, R);
+        for e in registry.entries {
+            e[WAITERS].store(1, R);
         }
         assert!(
             registry.entry(&locked, (ENTRIES + 2) << 3, true).is_none(),
