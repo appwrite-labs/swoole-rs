@@ -455,10 +455,9 @@ mod tests {
 
     impl Workers {
         fn new(n: u32, dispatch: DispatchMode) -> Self {
-            let live = LiveServer::new();
+            let mut live = LiveServer::new();
             let mut records: Vec<WorkerRecord> = (0..n).map(|_| *WorkerRecord::boxed()).collect();
-            // SAFETY: the fixture's configuration, which nothing else reads during the write.
-            let config = unsafe { &mut *live.state().config() };
+            let config = live.config_mut();
             config.worker_num.set(n);
             config.dispatch_mode.set(dispatch as u8);
             config.workers = crate::records::tests::naming_at(records.as_mut_ptr());
@@ -486,9 +485,8 @@ mod tests {
 
     impl Drop for Workers {
         fn drop(&mut self) {
-            // SAFETY: as in `new`; the records drop after the server forgets them.
-            let config = unsafe { &mut *self.live.state().config() };
-            config.workers = swoole_rs_memory::members::Shm::default();
+            // The records drop after the server forgets them.
+            self.live.config_mut().workers = swoole_rs_memory::members::Shm::default();
         }
     }
 
@@ -726,8 +724,7 @@ mod tests {
         assert!(add_port(serv, 1, c"::", 9502).is_some(), "a stream port");
         assert!(serv.config().have_stream_sock.get());
 
-        // SAFETY: the fixture's config, which nothing else borrows here.
-        let config = unsafe { serv.config_mut() };
+        let config = serv.config();
         config.factory_.set(core::ptr::NonNull::dangling().as_ptr());
         assert!(add_port(serv, 1, c"::", 9503).is_none(), "created");
         config.factory_.set(core::ptr::null_mut());

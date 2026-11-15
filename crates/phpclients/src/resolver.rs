@@ -6,8 +6,8 @@
 //! resolver's entry names its object, whose reference crates/phpcoroutines keeps.
 use crate::socket::warn;
 pub use native::swoole_name_resolver_php_remove;
-use std::{cell::Cell, ffi::c_void, mem::ManuallyDrop};
-use swoole_rs_corebase::NameResolverContext;
+use std::{cell::Cell, ffi::c_void, mem::ManuallyDrop, rc::Rc};
+use swoole_rs_corebase::{CCast, NameResolverContext, ResolverOptions};
 use swoole_rs_phpstubs::name_resolver;
 use swoole_rs_zend::{
     Call, Custom, CustomClass, Minit, Owned, Value, ZString, bailout, method_table,
@@ -24,9 +24,8 @@ static CONTEXT: CustomClass<Held> = CustomClass::new();
 /// A `NameResolver::Context` (crates/corebase's `NameResolverContext`) and the resolver
 /// list, as the rest of this file uses them.
 mod native {
-    use std::ffi::{c_int, c_void};
-    use swoole_rs_corebase::CCast;
-    use swoole_rs_corebase::{NameResolverContext, TYPE_PHP};
+    use std::ffi::c_void;
+    use swoole_rs_corebase::{NameResolverContext, ResolverOptions, TYPE_PHP};
     use swoole_rs_phpcoroutines::name_resolvers;
     use swoole_rs_zend::{Owned, Value};
 
@@ -36,7 +35,7 @@ mod native {
         with_port: bool,
     ) {
         let fresh = NameResolverContext {
-            with_port,
+            options: ResolverOptions::Owned(0, with_port),
             ..NameResolverContext::default()
         };
         #[expect(
@@ -44,18 +43,6 @@ mod native {
             reason = "upstream overwrites the old context without releasing it"
         )]
         std::mem::forget(std::mem::replace(context, fresh));
-    }
-
-    /// `__construct`'s `type` and `with_port`.
-    pub(super) fn swoole_name_resolver_context_set(
-        context: &mut NameResolverContext,
-        kind: i64,
-        with_port: bool,
-    ) {
-        context.with_port = with_port;
-        // `int` storage, as upstream's assignment.
-        let kind = kind.c_cast::<c_int>();
-        context.kind = kind;
     }
 
     /// A reference of our own to the cluster in `private_data`, if any: the PHP calls
@@ -127,17 +114,27 @@ mod native {
 
 pub(crate) use native::swoole_name_resolver_context_reset;
 
-/// `struct ContextObject { NameResolver::Context *context; zend_object std; }`. A
-/// lookup takes the context out while it uses it across PHP code, which may reach
-/// the same object: there it finds none.
-struct Held(Cell<Option<NameResolverContext>>);
+/// The lookup owns its cluster state while PHP callbacks share only the settings
+/// that `__construct` may change. No mutable context borrow reaches those callbacks.
+struct Held {
+    context: Cell<Option<NameResolverContext>>,
+    options: Rc<Cell<(libc::c_int, bool)>>,
+}
 
 impl Custom for Held {
     fn class() -> &'static CustomClass<Self> {
         &CONTEXT
     }
     fn new() -> Self {
-        Self(Cell::new(Some(NameResolverContext::default())))
+        let options = Rc::new(Cell::new((0, false)));
+        let context = NameResolverContext {
+            options: ResolverOptions::Shared(Rc::clone(&options)),
+            ..NameResolverContext::default()
+        };
+        Self {
+            context: Cell::new(Some(context)),
+            options,
+        }
     }
 }
 
@@ -152,9 +149,12 @@ fn with_context<T>(
         crate::native::unconstructed();
         return None;
     };
-    let mut context = held.0.take().unwrap_or_default();
+    let mut context = held.context.take().unwrap_or_else(|| NameResolverContext {
+        options: ResolverOptions::Shared(Rc::clone(&held.options)),
+        ..NameResolverContext::default()
+    });
     let result = f(&mut context);
-    held.0.set(Some(context));
+    held.context.set(Some(context));
     Some(result)
 }
 
@@ -181,9 +181,12 @@ fn construct(call: &Call) {
         call.set_bool(false);
         return;
     };
-    with_context(call.custom::<Held>(), |context| {
-        native::swoole_name_resolver_context_set(context, family, with_port);
-    });
+    if let Some(held) = call.custom::<Held>() {
+        held.options
+            .set((family.c_cast::<libc::c_int>(), with_port));
+    } else {
+        crate::native::unconstructed();
+    }
 }
 
 /// `swoole_name_resolver_lookup(string $name, Swoole\NameResolver\Context $ctx): string`.
@@ -361,7 +364,7 @@ fn resolve(
     };
     let mut result = host.to_vec();
     // The PHP calls may have re-run `__construct`: read `with_port` now, as upstream.
-    if context.with_port {
+    if context.options.get().1 {
         result.push(b':');
         let Some(port) = entry.find(b"port").and_then(Value::applied_long) else {
             return Ok(None);

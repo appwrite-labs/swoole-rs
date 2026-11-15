@@ -57,7 +57,7 @@ pub(crate) mod host {
             unsafe { *self.0 = [0, 1] };
             true
         }
-        pub(crate) unsafe fn free(self) {
+        pub(crate) fn free(self) {
             log("free".into());
             drop(unsafe { Box::from_raw(self.0) });
         }

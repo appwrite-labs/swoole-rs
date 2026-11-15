@@ -174,8 +174,8 @@ fn verify_ip_matches_upstream() {
             // SAFETY: `scratch` is the 46-byte buffer `verify_ip` parses into.
             unsafe { scratch.write_bytes(0x53, 46) };
             set_errno(17);
-            // SAFETY: `text` is NUL-terminated.
-            let actual = unsafe { swr_v1_clients_address_verify(family, text.as_ptr().cast()) };
+            let text = std::ffi::CStr::from_bytes_until_nul(&text).unwrap();
+            let actual = swr_v1_clients_address_verify(family, text.into());
             let actual_errno = errno();
             // SAFETY: as above.
             let parsed = unsafe { std::slice::from_raw_parts(scratch, 46) };

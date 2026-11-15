@@ -140,7 +140,6 @@ pub fn create_user_workers(serv: view::Server<'_>) -> bool {
 mod tests {
     use super::*;
     use crate::records::SessionRecord;
-    use core::ffi::c_void;
     use core::sync::atomic::Ordering::SeqCst;
 
     /// The repo-owned Server witness, formerly `tests/modules/process/worker_retirement.cc` and
@@ -152,19 +151,19 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
     fn abort_and_reset() {
-        let state = crate::swr_v1_server_state_new();
-        let head = [state.cast::<c_void>(), unsafe { (*state).config() }.cast()];
-        let serv = unsafe { view::Server::from_raw(head.as_ptr().cast_mut().cast()) };
-        unsafe { serv.config_mut() }.mode_ = Mode::Base;
-        unsafe { serv.config_mut() }.gs =
+        let mut server = crate::TestServer::new();
+        let config = server.config_mut();
+        config.mode_ = Mode::Base;
+        config.gs =
             swoole_rs_memory::members::Shm::calloc(1, size_of::<crate::shared::ServerShared>());
         let workers = swoole_rs_memory::members::Shm::calloc(2, size_of::<WorkerRecord>());
         let worker = workers.as_ptr().cast::<WorkerRecord>();
         let other = worker.wrapping_add(1);
         unsafe { worker.write(*WorkerRecord::boxed()) };
         unsafe { other.write(*WorkerRecord::boxed()) };
-        unsafe { serv.config_mut() }.worker_num.set(2);
-        unsafe { serv.config_mut() }.workers = workers;
+        config.worker_num.set(2);
+        config.workers = workers;
+        let serv = server.serv();
         unsafe { (*worker).set_pid(79) };
         unsafe { (*other).set_pid(79) };
         assert_eq!(get_worker_by_pid(serv, 79), worker);
@@ -193,9 +192,8 @@ mod tests {
             .collect();
         sessions[0].reactor_bits = 0x5a12_3400 | 1;
         sessions[last].reactor_bits = 0x5a12_3400 | 1;
-        unsafe {
-            (*serv.state().tables()).session_list = crate::records::tests::naming(&mut sessions);
-        };
+        server.tables_mut().session_list = crate::records::tests::naming(&mut sessions);
+        let serv = server.serv();
         abort_worker(serv, worker);
         assert_eq!(worker.counters(), [0, 0, 0, 0]);
         assert_eq!(serv.counters().concurrency.load(SeqCst), 4);
@@ -212,9 +210,8 @@ mod tests {
         assert_eq!(worker.counters()[3], 0);
         assert_eq!(serv.counters().concurrency.load(SeqCst), 0);
 
-        unsafe { (*serv.state().tables()).session_list = swoole_rs_memory::members::Shm::empty() };
-        unsafe { serv.config_mut() }.workers.free();
-        unsafe { serv.config_mut() }.gs.free();
-        unsafe { crate::state::free_state(state) };
+        server.tables_mut().session_list = swoole_rs_memory::members::Shm::empty();
+        server.config_mut().workers.free();
+        server.config_mut().gs.free();
     }
 }

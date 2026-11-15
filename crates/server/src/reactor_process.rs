@@ -17,8 +17,10 @@ use crate::view;
 pub(crate) mod native;
 
 /// `SW_FD_SESSION`, `SW_FD_STREAM_SERVER` and `SW_SSL_STATE_READY`.
+#[cfg(any(test, feature = "upstream-symbols"))]
 const FD_SESSION: c_int = 0;
 const FD_STREAM_SERVER: c_int = 1;
+#[cfg(any(test, feature = "upstream-symbols"))]
 use swoole_rs_tls::SslState::SW_SSL_STATE_READY as SSL_READY;
 
 /// `Socket::is_stream(type)`.
@@ -224,6 +226,7 @@ pub(crate) fn close(serv: view::Server<'_>, reactor: Reactor, event: &Event) -> 
 
 /// `ReactorProcess_onTimeout`: close the connections idle past the heartbeat, or
 /// tell their worker.
+#[cfg(any(test, feature = "upstream-symbols"))]
 pub(crate) fn heartbeat(serv: view::Server<'_>, reactor: Reactor) {
     let now = swoole_rs_corebase::microtime();
     crate::reactor_thread::each_connection(serv.state(), |conn| {
@@ -279,20 +282,16 @@ mod tests {
         steps.iter().map(|&step| Call::Step(step)).collect()
     }
 
-    /// The live server's configuration, which the test alone reads and writes.
-    #[expect(
-        clippy::mut_from_ref,
-        reason = "each use is the test's only reference to the configuration"
-    )]
-    fn config(live: &LiveServer) -> &mut crate::ServerConfig {
-        unsafe { &mut *live.state().config() }
+    /// The live server's configuration.
+    fn config(live: &LiveServer) -> &crate::ServerConfig {
+        live.server().config()
     }
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn start_listens_then_the_manager_runs_the_workers() {
-        let live = LiveServer::new();
-        config(&live).mode_ = crate::Mode::Base;
+        let mut live = LiveServer::new();
+        live.config_mut().mode_ = crate::Mode::Base;
         config(&live).have_stream_sock.set(true);
         config(&live).worker_num.set(2);
         calls();

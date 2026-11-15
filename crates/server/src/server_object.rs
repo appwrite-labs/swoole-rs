@@ -133,7 +133,6 @@ pub(crate) fn barrier(serv: view::Server<'_>, manager: bool) -> &swoole_rs_locks
     if manager {
         &ServerShared::of(serv).manager_barrier
     } else {
-        // SAFETY: a live server is a `ServerObject`.
-        unsafe { &(*serv.raw().cast::<ServerObject>()).reactor_thread_barrier }
+        &serv.state().reactor_thread_barrier
     }
 }

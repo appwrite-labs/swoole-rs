@@ -528,9 +528,11 @@ impl<'a> PoolRef<'a> {
 }
 
 /// `swoole::RecvData`: a message's head and its bytes, lent for one `onMessage`.
+#[repr(C)]
 pub struct RecvData<'a> {
-    pub info: DataHead,
-    pub data: &'a [u8],
+    info: DataHead,
+    data: *const u8,
+    borrowed: core::marker::PhantomData<&'a [u8]>,
 }
 
 impl<'a> RecvData<'a> {
@@ -540,8 +542,21 @@ impl<'a> RecvData<'a> {
         let len = u32::try_from(data.len()).unwrap_or(u32::MAX);
         Self {
             info: DataHead { len, ..info },
-            data,
+            data: data.as_ptr(),
+            borrowed: core::marker::PhantomData,
         }
+    }
+
+    #[must_use]
+    pub fn info(&self) -> &DataHead {
+        &self.info
+    }
+
+    #[must_use]
+    pub fn data(&self) -> &'a [u8] {
+        // SAFETY: only `new` constructs the private fields from a live slice;
+        // its lifetime is retained and its length cannot be changed by callers.
+        unsafe { core::slice::from_raw_parts(self.data, self.info.len as usize) }
     }
 }
 

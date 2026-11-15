@@ -494,18 +494,16 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn overflow_outside_process_mode_refuses() {
-        let a = Accepted::new();
+        let mut a = Accepted::new();
         a.conn().set_overflow(true);
         assert_eq!(
             a.send(ServerEvent::SendData, 1, b"data"),
             SW_OK,
             "process mode buffers it"
         );
-        // SAFETY: the fixture's config, which nothing else borrows here.
-        let config = unsafe { a.serv().config_mut() };
-        config.mode_ = Mode::Base;
+        a.live.config_mut().mode_ = Mode::Base;
         assert_eq!(a.send(ServerEvent::SendData, 1, b"data"), SW_ERR);
-        config.send_yield.set(true);
+        a.serv().config().send_yield.set(true);
         assert_eq!(a.send(ServerEvent::SendData, 1, b"data"), SW_ERR);
         assert_eq!(
             log::last_error(),
@@ -558,8 +556,7 @@ mod tests {
             None,
             "process mode sends through the factory"
         );
-        // SAFETY: the fixture's config, which nothing else borrows here.
-        unsafe { a.serv().config_mut() }.mode_ = Mode::Base;
+        a.live.config_mut().mode_ = Mode::Base;
         assert_eq!(send_parts(a.serv(), 1, b"head", b"body"), Some(true));
         assert_eq!(a.read(8), b"headbody");
         assert_eq!(a.queued(), 0, "nothing buffered");
@@ -574,8 +571,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn parts_the_socket_does_not_take_are_queued_in_order() {
         let mut a = Accepted::new();
-        // SAFETY: the fixture's config, which nothing else borrows here.
-        unsafe { a.serv().config_mut() }.mode_ = Mode::Base;
+        a.live.config_mut().mode_ = Mode::Base;
         // More than a loopback socket's buffers hold while the peer reads nothing.
         let body: Vec<u8> = (0..16usize << 20).map(|at| at.to_le_bytes()[0]).collect();
         assert_eq!(send_parts(a.serv(), 1, b"head", &body), Some(true));
@@ -747,8 +743,7 @@ mod tests {
             )]
         );
         assert_eq!(counters(&a), 1, "counted");
-        // SAFETY: the fixture's config, which nothing else borrows here.
-        unsafe { a.serv().config_mut() }.mode_ = Mode::Base;
+        a.live.config_mut().mode_ = Mode::Base;
         assert!(send(a.serv(), 1, b"here"));
         assert_eq!(calls(), [], "no factory");
         assert_eq!(a.read(4), b"here");

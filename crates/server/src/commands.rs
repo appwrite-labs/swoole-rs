@@ -168,16 +168,22 @@ pub(crate) fn reply_socket<'a>(
 /// `Server::command`'s `SW_SERVER_EVENT_COMMAND_REQUEST` to its target: a task worker
 /// through the task pool, the manager through the event pool's queue, else a worker
 /// or reactor thread's pipe. Whether it went.
-pub(crate) fn send(serv: Server<'_>, c: &CommandSend<'_>) -> bool {
-    let process_id = u16::try_from(c.process_id).unwrap_or(u16::MAX);
+pub(crate) fn send(
+    serv: Server<'_>,
+    route: swoole_rs_process::command::CommandRoute,
+    command_id: i32,
+    request_id: i64,
+    message: &[u8],
+) -> bool {
+    let process_id = u16::try_from(route.process_id).unwrap_or(u16::MAX);
     let head = |info: &mut DataHead| {
         info.kind = ServerEvent::CommandRequest.code();
-        info.fd = c.request_id;
-        info.server_fd = c.command_id.c_cast::<u16>();
+        info.fd = request_id;
+        info.server_fd = command_id.c_cast::<u16>();
     };
-    if c.target == Target::Manager {
+    if route.target == Target::Manager {
         // As much of the message as an `EventData` holds.
-        let (data, _) = c.message.split_at(c.message.len().min(IPC_BUFFER_SIZE));
+        let (data, _) = message.split_at(message.len().min(IPC_BUFFER_SIZE));
         let mut info = DataHead {
             len: u32::try_from(data.len()).unwrap_or(u32::MAX),
             ..DataHead::default()
@@ -186,14 +192,14 @@ pub(crate) fn send(serv: Server<'_>, c: &CommandSend<'_>) -> bool {
         let pool = serv.event_pool_ref();
         return swoole_rs_process::methods::push_event(pool, &info, data);
     }
-    if c.target == Target::TaskWorker {
+    if route.target == Target::TaskWorker {
         let mut buf = swoole_rs_process::task_file::TaskBuffer::default();
-        if !buf.pack(c.message) {
+        if !buf.pack(message) {
             return false;
         }
         buf.set_kind(ServerEvent::CommandRequest.code());
-        buf.set_fd(c.request_id);
-        buf.set_server_fd(c.command_id.c_cast::<u16>());
+        buf.set_fd(request_id);
+        buf.set_server_fd(command_id.c_cast::<u16>());
         let task = buf.packed();
         let (gs, pool) = (serv.counters(), serv.task_pool_ref());
         let dispatch = || {
@@ -213,12 +219,12 @@ pub(crate) fn send(serv: Server<'_>, c: &CommandSend<'_>) -> bool {
     };
     head(&mut info);
     // The worker's pipe: its worker end to a reactor thread, else its master end.
-    let to_worker = c.target != Target::ReactorThread;
+    let to_worker = route.target != Target::ReactorThread;
     let Some(pipe) = serv.worker_pipe(process_id, to_worker) else {
         return false;
     };
     // The bus sets the head's length to the message's.
-    serv.state().message_bus().write(pipe, &mut info, c.message)
+    serv.state().message_bus().write(pipe, &mut info, message)
 }
 
 fn error(
@@ -281,15 +287,6 @@ pub(crate) struct SendCommand<'a> {
     pub name: &'a [u8],
     pub message: &'a [u8],
     pub callback: CommandCallback,
-}
-
-/// A command request for another process.
-pub(crate) struct CommandSend<'a> {
-    pub(crate) target: Target,
-    pub(crate) process_id: u32,
-    pub(crate) command_id: i32,
-    pub(crate) request_id: i64,
-    pub(crate) message: &'a [u8],
 }
 
 /// `Server::command`: sends `message` to command `name` in the given process, whose
@@ -361,14 +358,7 @@ pub(crate) fn command(send: &SendCommand<'_>) -> bool {
     commands(state)
         .callbacks
         .insert(request_id, send.callback.clone());
-    let message = CommandSend {
-        target: route.target,
-        process_id: route.process_id,
-        command_id,
-        request_id,
-        message: send.message,
-    };
-    let sent = hybrid().command_send(serv, &message);
+    let sent = hybrid().command_send(serv, route, command_id, request_id, send.message);
     if !sent {
         commands(state).callbacks.remove(&request_id);
     }
@@ -438,9 +428,8 @@ mod tests {
 
     /// The live server in `mode`, with four event workers.
     fn live(mode: Mode) -> LiveServer {
-        let live = LiveServer::new();
-        // SAFETY: the fixture's configuration, which nothing else reads during the write.
-        let config = unsafe { &mut *live.state().config() };
+        let mut live = LiveServer::new();
+        let config = live.config_mut();
         config.mode_ = mode;
         config.worker_num.set(4);
         live
