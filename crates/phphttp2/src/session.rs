@@ -45,11 +45,14 @@ impl Hasher for IdHasher {
 
 pub(crate) type IdMap<K, V> = HashMap<K, V, BuildHasherDefault<IdHasher>>;
 pub(crate) type Stream = Rc<StreamState>;
+type Streams = IdMap<u32, Stream>;
+type Sessions = IdMap<i64, Session>;
 
-/// `http2::Session`.
+/// `http2::Session`. Its streams are in a cell, taken out and put back with
+/// nothing in between that yields or runs PHP code.
 pub(crate) struct SessionState {
     fd: i64,
-    streams: RefCell<IdMap<u32, Stream>>,
+    streams: Cell<Streams>,
     pub(crate) inflater: RefCell<Decoder>,
     /// Made on first use, sized by the peer's `SETTINGS_HEADER_TABLE_SIZE` then.
     pub(crate) deflater: RefCell<Option<Encoder>>,
@@ -96,7 +99,18 @@ pub(crate) struct StreamState {
 }
 
 thread_local! {
-    static SESSIONS: RefCell<IdMap<i64, Session>> = RefCell::new(IdMap::default());
+    static SESSIONS: Cell<Sessions> = Cell::default();
+}
+
+/// `f` over the sessions, taken out and put back: nothing in `f` yields, runs
+/// PHP code or releases a session.
+fn with_sessions<R>(f: impl FnOnce(&mut Sessions) -> R) -> R {
+    SESSIONS.with(|cell| {
+        let mut sessions = cell.take();
+        let result = f(&mut sessions);
+        cell.set(sessions);
+        result
+    })
 }
 
 fn defaults() -> [u32; 6] {
@@ -126,7 +140,7 @@ impl SessionState {
         let local = defaults();
         Self {
             fd,
-            streams: RefCell::new(IdMap::default()),
+            streams: Cell::default(),
             inflater: RefCell::default(),
             deflater: RefCell::default(),
             local,
@@ -146,7 +160,16 @@ impl SessionState {
 
     /// The session of connection `fd`.
     pub(crate) fn find(fd: i64) -> Option<Session> {
-        SESSIONS.with_borrow(|sessions| sessions.get(&fd).cloned())
+        with_sessions(|sessions| sessions.get(&fd).cloned())
+    }
+
+    /// `f` over the streams, taken out and put back: nothing in `f` yields,
+    /// runs PHP code or releases a stream.
+    fn with_streams<R>(&self, f: impl FnOnce(&mut Streams) -> R) -> R {
+        let mut streams = self.streams.take();
+        let result = f(&mut streams);
+        self.streams.set(streams);
+        result
     }
 
     /// The session a stream's context belongs to.
@@ -166,7 +189,7 @@ impl SessionState {
     /// `get_stream`, or `create_stream` when `create`.
     pub(crate) fn stream(&self, id: u32, create: bool) -> Option<Stream> {
         if !create {
-            return self.streams.borrow().get(&id).cloned();
+            return self.with_streams(|streams| streams.get(&id).cloned());
         }
         let hold = self.default_ctx.stream_context(self.fd, id);
         let stream = Rc::new(StreamState {
@@ -181,7 +204,7 @@ impl SessionState {
             negotiates: Cell::new(false),
             waiting: swoole_rs_phpcoroutines::Waiter::default(),
         });
-        let replaced = self.streams.borrow_mut().insert(id, stream.clone());
+        let replaced = self.with_streams(|streams| streams.insert(id, stream.clone()));
         drop(replaced);
         Some(stream)
     }
@@ -189,12 +212,12 @@ impl SessionState {
     /// `remove_stream`: the stream is released once nothing holds it, and a
     /// response waiting on its window resumes to find it gone.
     pub(crate) fn remove(&self, id: u32) -> bool {
-        let removed = self.streams.borrow_mut().remove(&id);
+        let removed = self.with_streams(|streams| streams.remove(&id));
         removed.is_none_or(|stream| stream.wake())
     }
 
     pub(crate) fn idle(&self) -> bool {
-        self.streams.borrow().is_empty()
+        self.with_streams(|streams| streams.is_empty())
     }
 
     /// `handle(session, stream)`: onRequest; a bailout waits for `finish`.
@@ -234,33 +257,36 @@ pub(crate) fn session_own(fd: i64, own: ServerCtx, max_body_size: u32, handle: H
 }
 
 fn insert(fd: i64, default_ctx: Ctx, own: Option<ServerCtx>, max_body_size: u32, handle: Handler) {
-    SESSIONS.with_borrow_mut(|sessions| {
-        sessions.entry(fd).or_insert_with(|| {
-            Rc::new(SessionState::new(
-                fd,
-                default_ctx,
-                own,
-                max_body_size,
-                handle,
-            ))
-        });
-    });
+    if with_sessions(|sessions| sessions.contains_key(&fd)) {
+        // The unused settings context is released here, outside the sessions.
+        drop(own);
+        return;
+    }
+    let session = Rc::new(SessionState::new(
+        fd,
+        default_ctx,
+        own,
+        max_body_size,
+        handle,
+    ));
+    let replaced = with_sessions(|sessions| sessions.insert(fd, session));
+    drop(replaced);
 }
 
 /// `swoole_http2_server_session_free`: forget connection `fd`'s session,
 /// removing its streams; each is released once nothing holds it.
 pub(crate) fn session_free(fd: i64) {
-    let Some(session) = SESSIONS.with_borrow(|sessions| sessions.get(&fd).cloned()) else {
+    let Some(session) = SessionState::find(fd) else {
         return;
     };
     loop {
-        let next = session.streams.borrow().keys().next().copied();
+        let next = session.with_streams(|streams| streams.keys().next().copied());
         let Some(id) = next else { break };
         if !session.remove(id) {
             return;
         }
     }
-    let removed = SESSIONS.with_borrow_mut(|sessions| sessions.remove(&fd));
+    let removed = with_sessions(|sessions| sessions.remove(&fd));
     drop(removed);
 }
 
