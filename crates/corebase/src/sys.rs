@@ -147,6 +147,9 @@ mod c {
         #[cfg_attr(target_os = "netbsd", link_name = "__clock_gettime50")]
         pub(crate) safe fn clock_gettime(clock: libc::clockid_t, now: &mut libc::timespec)
         -> c_int;
+        /// `gettid(2)`: the calling thread's kernel id (glibc 2.30, musl 1.2.2, bionic).
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        pub(crate) safe fn gettid() -> pid_t;
         /// The id of the calling thread, for a null `thread`.
         #[cfg(target_vendor = "apple")]
         pub(crate) safe fn pthread_threadid_np(thread: libc::pthread_t, id: &mut u64) -> c_int;
@@ -993,8 +996,7 @@ pub fn getpid() -> pid_t {
 #[must_use]
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub fn gettid() -> libc::c_long {
-    // SAFETY: SYS_gettid takes no arguments.
-    unsafe { libc::syscall(libc::SYS_gettid) }
+    libc::c_long::from(c::gettid())
 }
 
 /// The kernel's id for the calling thread.
