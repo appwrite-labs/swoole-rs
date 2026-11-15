@@ -263,21 +263,13 @@ impl Wire<'_> {
         // SAFETY: `static_select`'s caller: the connection's request, live at each read.
         unsafe { &*self.request }
     }
-
-    /// `length` bytes of the request's buffer at `offset`.
-    fn bytes(&self, offset: usize, length: usize) -> Vec<u8> {
-        // SAFETY: the request's live buffer.
-        let start = unsafe { (*self.request().buffer).str };
-        // SAFETY: the parser's spans lie in the buffer: `length` bytes of it at `offset`.
-        unsafe { core::slice::from_raw_parts(start.wrapping_add(offset), length) }.to_vec()
-    }
 }
 
 impl Exchange for Wire<'_> {
     fn header(&self, name: &[u8]) -> Vec<u8> {
         self.request()
-            .get_header(name)
-            .map_or_else(Vec::new, |span| self.bytes(span.offset, span.length))
+            .header_bytes(name)
+            .map_or_else(Vec::new, <[u8]>::to_vec)
     }
     fn keep_alive(&self) -> bool {
         self.request().keep_alive
@@ -319,10 +311,7 @@ pub unsafe fn static_select(
         session_id,
         socket,
     };
-    let url = wire.bytes(
-        wire.request().url_offset as usize,
-        wire.request().url_length as usize,
-    );
+    let url = wire.request().url_bytes().to_vec();
     let Some(handler) = StaticHandler::new(wire.server, &url) else {
         return false;
     };
