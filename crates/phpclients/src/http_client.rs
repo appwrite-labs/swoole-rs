@@ -43,6 +43,11 @@ unsafe extern "C" {
         name: *const std::ffi::c_char,
         length: usize,
     ) -> Option<&'a Value>;
+    /// `SEPARATE_ARRAY` of an array zval (anything else is left alone): a
+    /// shared table is copied for the slot, and its count only drops, so it
+    /// stays live for whoever else holds it.
+    #[link_name = "swr_zend_separate_array"]
+    safe fn separate_array(array: &Value);
 }
 
 /// `swHttpErrorStatusCode`: the negative `statusCode` a failed request leaves.
@@ -1725,8 +1730,7 @@ fn set_array_property(call: &Call, name: &CStr) {
     let Ok(array) = call.arity(1, 1).and_then(|()| call.array(1)) else {
         return call.set_bool(false);
     };
-    // SAFETY: an array argument the frame owns.
-    unsafe { swoole_rs_zend::sys::swr_zend_separate_array(array.as_ptr()) };
+    separate_array(array);
     if let Some(props) = props::this(call) {
         props.value(name, array);
     }
