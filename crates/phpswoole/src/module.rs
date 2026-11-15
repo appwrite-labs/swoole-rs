@@ -340,11 +340,12 @@ pub(crate) enum Step {
             feature = "pgsql",
             feature = "oci",
             feature = "sqlite",
-            feature = "firebird"
+            feature = "firebird",
+            feature = "ssh2"
         )),
         expect(
             dead_code,
-            reason = "only the bundled PDO drivers have MSHUTDOWN steps that take the token"
+            reason = "only the bundled PDO drivers and ssh2 have MSHUTDOWN steps that take the token"
         )
     )]
     Shutdown(fn(&swoole_rs_zend::Mshutdown)),

@@ -11,7 +11,6 @@ use swoole_rs_zend::{Owned, Value};
 #[cfg(feature = "ssh2")]
 // the bundled ext/ssh2's module hooks (thirdparty/php/ssh2), linked with this feature.
 unsafe extern "C" {
-    fn php_swoole_ssh2_mshutdown() -> c_int;
     /// ssh2's information table: rows of its static version strings, printed.
     safe fn php_swoole_ssh2_minfo();
 }
@@ -46,14 +45,17 @@ fn ssh2_minit(minit: &swoole_rs_zend::Minit) {
 pub(crate) fn client_mshutdown() -> Vec<Step> {
     Vec::from([
         #[cfg(feature = "ssh2")]
-        Step::Hook(ssh2_mshutdown),
+        Step::Shutdown(ssh2_mshutdown),
     ])
 }
 
 #[cfg(feature = "ssh2")]
-extern "C" fn ssh2_mshutdown() {
-    // SAFETY: MSHUTDOWN, after its MINIT.
-    unsafe { php_swoole_ssh2_mshutdown() };
+fn ssh2_mshutdown(_mshutdown: &swoole_rs_zend::Mshutdown) {
+    unsafe extern "C" {
+        /// ssh2's MSHUTDOWN, which the token proves this is, after its MINIT.
+        safe fn php_swoole_ssh2_mshutdown() -> c_int;
+    }
+    php_swoole_ssh2_mshutdown();
 }
 
 /// MINFO's ssh2 table, a `zend_try` body.
