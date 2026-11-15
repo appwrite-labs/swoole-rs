@@ -307,7 +307,7 @@ fn not_found(s: &impl Source, prefix: &[u8], file: &[u8]) -> Stop {
 }
 
 /// `php_swoole_server_set_ssl_option`: the context's certificate and key.
-fn files(s: &impl Source, owner: &tls::Lent<'_>) -> Step {
+fn files(s: &impl Source, owner: &mut tls::Lent<'_>) -> Step {
     for (key, which, prefix) in [
         (c"ssl_cert_file", Text::CertFile, &b"ssl cert file["[..]),
         (c"ssl_key_file", Text::KeyFile, b"ssl key file["),
@@ -323,37 +323,35 @@ fn files(s: &impl Source, owner: &tls::Lent<'_>) -> Step {
 
 /// The TLS options of an SSL port, then its SNI contexts and `ssl_init()`.
 pub(crate) fn tls(s: &impl Source, owner: &OwnedTlsContext, dgram: bool) -> Step {
-    let owner = owner.borrow_configuration();
-    files(s, &owner)?;
-    let set = |value| owner.set_value(value);
-    let text = |which, value: &[u8]| owner.set_text(which, value);
+    let mut owner = owner.borrow_configuration();
+    files(s, &mut owner)?;
     if let Some(on) = s.truth(c"ssl_compress") {
-        set(Value::DisableCompress(!on));
+        owner.set_value(Value::DisableCompress(!on));
     }
     if let Some(v) = s.long(c"ssl_protocols")? {
-        set(Value::Protocols(protocols(v, dgram)));
+        owner.set_value(Value::Protocols(protocols(v, dgram)));
     }
     if let Some(on) = s.truth(c"ssl_verify_peer") {
-        set(Value::VerifyPeer(on));
+        owner.set_value(Value::VerifyPeer(on));
     }
     if let Some(on) = s.truth(c"ssl_allow_self_signed") {
-        set(Value::AllowSelfSigned(on));
+        owner.set_value(Value::AllowSelfSigned(on));
     }
     if let Some(file) = s.bytes(c"ssl_client_cert_file")?
-        && !text(Text::ClientCertFile, &file)
+        && !owner.set_text(Text::ClientCertFile, &file)
     {
         return Err(not_found(s, b"ssl_client_cert_file[", &file));
     }
     for (key, which) in [(c"ssl_cafile", Text::Cafile), (c"ssl_capath", Text::Capath)] {
         if let Some(value) = s.bytes(key)? {
-            text(which, &value);
+            _ = owner.set_text(which, &value);
         }
     }
     if let Some(v) = s.long(c"ssl_verify_depth")? {
-        set(Value::VerifyDepth(u8_of(v)));
+        owner.set_value(Value::VerifyDepth(u8_of(v)));
     }
     if let Some(on) = s.truth(c"ssl_prefer_server_ciphers") {
-        set(Value::PreferServerCiphers(on));
+        owner.set_value(Value::PreferServerCiphers(on));
     }
     for (key, which) in [
         (c"ssl_ciphers", Text::Ciphers),
@@ -361,7 +359,7 @@ pub(crate) fn tls(s: &impl Source, owner: &OwnedTlsContext, dgram: bool) -> Step
         (c"ssl_dhparam", Text::DhParam),
     ] {
         if let Some(value) = s.bytes(key)? {
-            text(which, &value);
+            _ = owner.set_text(which, &value);
         }
     }
     drop(owner);
@@ -477,7 +475,7 @@ impl Source for Zend<'_> {
                 },
                 port: self.port,
             };
-            files(&item, &context.borrow_configuration())?;
+            files(&item, &mut context.borrow_configuration())?;
             let added = self.config(|c| sni_add(c, name, context));
             if !added {
                 return Err(self.fatal(E_ERROR, c"ssl_add_sni_cert() failed"));

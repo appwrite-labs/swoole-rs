@@ -1,6 +1,6 @@
 //! The `coroutine::Socket` TLS members: `ssl_context_create`, `ssl_create`,
-//! `ssl_verify` and `ssl_handshake`. The socket's `SSLContext` owner is the one its extra record holds:
-//! `enable_ssl_encrypt` makes it, and an accepted socket shares its server's.
+//! `ssl_verify` and `ssl_handshake`. The extra record retains the configuration
+//! builder and runtime snapshot; an accepted socket shares its server's snapshot.
 use crate::co_io::{Timer, available, default_err, set_err};
 use crate::co_socket::Co;
 use crate::connect::{HandshakeMode, Handshaking, Step, ssl_handshake};
@@ -96,7 +96,7 @@ impl Co {
         let (owner, http2) = (self.tls_context(), self.http2());
         let made = owner.and_then(|owner| {
             self.with_network(|socket| {
-                freeze_socket_context(&owner.borrow_configuration(), socket, http2, true)
+                freeze_socket_context(&mut owner.borrow_configuration(), socket, http2, true)
             })
         });
         match made.unwrap_or(Err(SocketContextError::Create)) {

@@ -718,7 +718,7 @@ fn tls_handshake_names_the_host_and_verifies_the_peer() {
     let tls = Handle(client).get().tls.get().unwrap().clone();
     let name = c"example.test";
     {
-        let owner = tls.borrow_configuration();
+        let mut owner = tls.borrow_configuration();
         assert!(owner.set_text(swoole_rs_tls::Text::HostName, name.to_bytes()));
         owner.set_value(swoole_rs_tls::Value::VerifyPeer(true));
         owner.set_value(swoole_rs_tls::Value::AllowSelfSigned(true));
@@ -763,7 +763,7 @@ fn pending_handshake_keeps_its_hostname_and_verification_snapshot() {
     assert!(enable_ssl(handle).is_some());
     let owner = handle.get().tls_context().unwrap().clone();
     {
-        let loan = owner.borrow_configuration();
+        let mut loan = owner.borrow_configuration();
         assert!(loan.set_text(swoole_rs_tls::Text::HostName, b"first.test"));
         loan.set_value(swoole_rs_tls::Value::VerifyPeer(true));
         loan.set_value(swoole_rs_tls::Value::AllowSelfSigned(true));
@@ -775,7 +775,7 @@ fn pending_handshake_keeps_its_hostname_and_verification_snapshot() {
     );
     _ = taken();
     {
-        let loan = owner.borrow_configuration();
+        let mut loan = owner.borrow_configuration();
         assert!(loan.set_text(swoole_rs_tls::Text::HostName, b"later.test"));
         loan.set_value(swoole_rs_tls::Value::VerifyPeer(false));
         loan.set_value(swoole_rs_tls::Value::AllowSelfSigned(false));
