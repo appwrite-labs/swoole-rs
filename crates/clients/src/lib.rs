@@ -25,9 +25,11 @@ pub mod ws;
 use std::ffi::c_int;
 use std::ops::Range;
 use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::net_address::{
-    TCP, TCP6, UDP, UDP6, UNIX_DGRAM, UNIX_STREAM, c_str, format_into,
+use swoole_rs_corebase::constants::SocketType::{
+    self, SW_SOCK_TCP as TCP, SW_SOCK_TCP6 as TCP6, SW_SOCK_UDP as UDP, SW_SOCK_UDP6 as UDP6,
+    SW_SOCK_UNIX_DGRAM as UNIX_DGRAM, SW_SOCK_UNIX_STREAM as UNIX_STREAM,
 };
+use swoole_rs_corebase::net_address::{c_str, format_into};
 
 /// `dns_lookup_impl_with_cares(domain, family, timeout)` when built with c-ares
 /// (`--enable-cares`), else `None`.
@@ -125,7 +127,7 @@ pub const URL_PORT_RANGE: c_int = -2;
 ///
 /// # Errors
 /// `URL_INVALID` outside the grammar, `URL_PORT_RANGE` for a port past `int`.
-pub fn url(url: &[u8]) -> Result<(c_int, Range<usize>, c_int), c_int> {
+pub fn url(url: &[u8]) -> Result<(SocketType, Range<usize>, c_int), c_int> {
     let plan = url_plan(url);
     let host = plan.host_offset..plan.host_offset + plan.host_length;
     match (plan.kind, plan.datagram) {

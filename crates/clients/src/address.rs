@@ -8,10 +8,8 @@ use std::ffi::{CStr, c_char, c_int};
 use std::io::Write;
 use std::net::Ipv4Addr;
 use swoole_rs_corebase::CCast;
-use swoole_rs_corebase::net_address::{
-    BAD_HOST_ADDR, DNSLOOKUP_RESOLVE_FAILED, RAW, RAW6, TCP, TCP6, UDP, UDP6, UNIX_DGRAM,
-    UNIX_STREAM, platform_parses,
-};
+use swoole_rs_corebase::constants::SocketType;
+use swoole_rs_corebase::net_address::{BAD_HOST_ADDR, DNSLOOKUP_RESOLVE_FAILED, platform_parses};
 use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
 use swoole_rs_corebase::ntop;
 use swoole_rs_tls::CText;
@@ -103,11 +101,15 @@ thread_local! {
 }
 
 fn inet4(kind: c_int) -> bool {
-    matches!(kind, TCP | UDP | RAW)
+    SocketType::from_raw(kind).is_some_and(SocketType::is_inet4)
 }
 
 fn inet6(kind: c_int) -> bool {
-    matches!(kind, TCP6 | UDP6 | RAW6)
+    SocketType::from_raw(kind).is_some_and(SocketType::is_inet6)
+}
+
+fn local(kind: c_int) -> bool {
+    SocketType::from_raw(kind).is_some_and(SocketType::is_local)
 }
 
 /// The bytes of an address of `family`: 4 for IPv4, 16 for IPv6, none for another.
@@ -178,7 +180,7 @@ pub extern "C" fn swr_v1_clients_address_host(address: &SocketAddress) -> *const
     } else if inet6(address.kind) {
         let ip = address.addr.v6().sin6_addr.s6_addr;
         address_string(libc::AF_INET6, &ip)
-    } else if matches!(address.kind, UNIX_STREAM | UNIX_DGRAM) {
+    } else if local(address.kind) {
         // A local socket selects the initialized Unix union member.
         (&raw const address.addr.un)
             .wrapping_byte_add(std::mem::offset_of!(libc::sockaddr_un, sun_path))
@@ -210,7 +212,7 @@ pub fn with_host<R>(address: &SocketAddress, f: impl FnOnce(&CStr) -> R) -> R {
         );
         let text = text.unwrap_or([0; 46]).map(|unit| unit.to_ne_bytes()[0]);
         f(CStr::from_bytes_until_nul(&text).unwrap_or_default())
-    } else if matches!(address.kind, UNIX_STREAM | UNIX_DGRAM) {
+    } else if local(address.kind) {
         let path = address.addr.unix().sun_path;
         // A byte past the path, so an unterminated one still ends.
         let mut bytes = [0u8; 109];
@@ -259,7 +261,7 @@ pub fn type_name(kind: c_int) -> &'static CStr {
         c"IPv4"
     } else if inet6(kind) {
         c"IPv6"
-    } else if matches!(kind, UNIX_STREAM | UNIX_DGRAM) {
+    } else if local(kind) {
         c"UnixSocket"
     } else {
         c"Unknown"
@@ -285,6 +287,13 @@ pub extern "C" fn swr_v1_clients_address_loopback(address: &SocketAddress) -> bo
 mod tests {
     use super::*;
     use swoole_rs_corebase::net_address::{BAD_PORT, BAD_SOCKET_TYPE, NAME_TOO_LONG};
+
+    const TCP: c_int = SocketType::SW_SOCK_TCP.raw();
+    const TCP6: c_int = SocketType::SW_SOCK_TCP6.raw();
+    const UDP: c_int = SocketType::SW_SOCK_UDP.raw();
+    const UDP6: c_int = SocketType::SW_SOCK_UDP6.raw();
+    const UNIX_STREAM: c_int = SocketType::SW_SOCK_UNIX_STREAM.raw();
+    const UNIX_DGRAM: c_int = SocketType::SW_SOCK_UNIX_DGRAM.raw();
 
     #[repr(C)]
     union Union {
