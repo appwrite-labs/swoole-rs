@@ -419,8 +419,8 @@ impl Co {
         Some(address(&sa))
     }
 
-    pub(crate) fn cancel(self, event: c_int) -> bool {
-        self.0.cancel(Events::from_bits(event))
+    pub(crate) fn cancel(self, event: Events) -> bool {
+        self.0.cancel(event)
     }
 
     pub(crate) fn ssl_handshake(self) -> bool {

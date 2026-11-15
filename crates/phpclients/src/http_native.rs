@@ -166,8 +166,8 @@ impl Co {
     }
 
     /// `check_bound_co(event)`: a fatal error if another coroutine holds it.
-    pub(crate) fn check_bound(self, event: c_int) {
-        self.handle().check_bound(Events::from_bits(event));
+    pub(crate) fn check_bound(self, event: Events) {
+        self.handle().check_bound(event);
     }
 
     /// The write buffer becomes `data`, then `send_all` of it: whether all went.

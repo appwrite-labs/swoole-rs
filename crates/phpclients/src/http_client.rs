@@ -23,6 +23,7 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_http::llhttp::{self, Callbacks, Parser};
 use swoole_rs_inflate::{Inflate, brotli, zstd};
 use swoole_rs_phpstubs::http_client_coro;
+use swoole_rs_reactor::Events;
 use swoole_rs_zend::{
     Array, ArrayMut, Call, Class, Custom, CustomClass, Minit, ObjectRef, Owned, OwnedArray, Props,
     Value, ZStr, ZString,
@@ -81,9 +82,6 @@ const INVALID_PROTOCOL: c_int = swoole_rs_error::ErrorCode::SW_ERROR_HTTP_INVALI
 const HANDSHAKE_FAILED: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_WEBSOCKET_HANDSHAKE_FAILED as c_int;
 const PACK_FAILED: c_int = swoole_rs_error::ErrorCode::SW_ERROR_WEBSOCKET_PACK_FAILED as c_int;
-/// `SW_EVENT_WRITE` and `SW_EVENT_RDWR`.
-const EVENT_WRITE: c_int = swoole_rs_corebase::constants::EventType::SW_EVENT_WRITE as c_int;
-const EVENT_RDWR: c_int = (1 << 9) | (1 << 10);
 /// `SW_HTTP_SWITCHING_PROTOCOLS`, `NO_CONTENT`, `BAD_GATEWAY`, `SERVICE_UNAVAILABLE`.
 const SWITCHING_PROTOCOLS: u16 = 101;
 const NO_CONTENT: u16 = 204;
@@ -603,7 +601,7 @@ impl Client {
     fn keep_liveness(&self) -> bool {
         if !self.co().is_some_and(Co::check_liveness) {
             if let Some(socket) = self.co() {
-                socket.check_bound(EVENT_RDWR);
+                socket.check_bound(Events::RDWR);
                 self.set_socket_error(socket, ErrorStatus::ServerReset);
                 self.close(false);
             }
@@ -640,7 +638,7 @@ impl Client {
         let Some(socket) = self.co() else {
             return false;
         };
-        socket.check_bound(EVENT_WRITE);
+        socket.check_bound(Events::WRITE);
         swoole_rs_corebase::log::set_last_error(0);
         self.body.borrow_mut().clear();
 
@@ -927,7 +925,7 @@ impl Client {
         let parser = self.parser.try_borrow_mut().ok();
         if parser.is_none() {
             if let Some(socket) = self.co() {
-                socket.check_bound(EVENT_RDWR);
+                socket.check_bound(Events::RDWR);
             }
             set_error_properties(
                 self.props(),
