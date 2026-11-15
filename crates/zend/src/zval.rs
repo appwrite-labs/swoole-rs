@@ -154,6 +154,38 @@ unsafe extern "C" {
     safe fn swr_zend_try_array_merge(dest: &mut ArrayMut, source: &Value) -> std::ffi::c_int;
 }
 
+/// A call's arguments lent to C (`swr_zvals`): `argc` zvals from `argv`, which
+/// the callee reads and copies, keeping no pointer to them. Made only from a
+/// borrowed slice, whose length bounds `argc`.
+#[repr(C)]
+pub(crate) struct Zvals<'a> {
+    argv: *mut zval,
+    argc: u32,
+    lent: std::marker::PhantomData<&'a [zval]>,
+}
+
+impl<'a> Zvals<'a> {
+    /// Zvals this code holds, as [`Value::of`] borrows one.
+    pub(crate) fn of(args: &'a mut [zval]) -> Self {
+        Self::lend(args.as_mut_ptr(), args.len())
+    }
+
+    /// Values this code owns (`Owned` is a transparent zval), which the callee
+    /// only reads.
+    pub(crate) fn owned(args: &'a [Owned]) -> Self {
+        Self::lend(args.as_ptr().cast_mut().cast(), args.len())
+    }
+
+    /// `len` zvals from `argv`, or the first `u32::MAX` of more.
+    fn lend(argv: *mut zval, len: usize) -> Self {
+        Self {
+            argv,
+            argc: u32::try_from(len).unwrap_or(u32::MAX),
+            lent: std::marker::PhantomData,
+        }
+    }
+}
+
 /// A borrowed zval. Zend may change it and what it points to (refcounts, a
 /// conversion's cache) through pointers on this thread, hence the cell.
 #[repr(transparent)]

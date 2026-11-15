@@ -91,7 +91,7 @@ fn keep_ready(array: &Array, fds: &[pollfd], count: usize, revent: c_short) -> O
 }
 
 /// `swoole_client_select(?array &$read, ?array &$write, ?array &$except, float $timeout = 0.5): int|false`.
-fn select(call: &Call) {
+fn select(call: &mut Call) {
     let parsed = call.arity(3, 4).and_then(|()| {
         Ok((
             length(call.array_or_null(1)?.as_ref()),
@@ -148,9 +148,8 @@ fn select(call: &Call) {
         else {
             return call.set_bool(false);
         };
-        // SAFETY: nothing is borrowed from argument `n`: `set` holds its own
-        // reference, and every later argument is read afresh.
-        unsafe { call.assign(n, ready.into_owned()) };
+        // `set` holds its own reference, and every later argument is read afresh.
+        call.assign(n, ready.into_owned());
     }
     call.set_long(i64::from(ready));
 }

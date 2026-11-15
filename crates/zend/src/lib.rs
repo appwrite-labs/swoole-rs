@@ -46,7 +46,7 @@ pub use descriptor::{
 };
 pub use error::{
     E_ERROR, E_WARNING, Message, report, throw_error, throw_trapped, type_error, type_name,
-    zend_error,
+    value_error, zend_error,
 };
 pub use function::{Function, create_object_deny};
 pub use helpers::{
@@ -65,7 +65,8 @@ pub use zval::{
 
 /// Export Zend handlers under Zend's own names (`zim_<class>_<method>` for
 /// methods, `zif_<function>` for functions) so upstream's tables name them
-/// unchanged; each runs `body(&Call)`, then raises a bailout it deferred
+/// unchanged; each runs `body(&mut Call)` (or `body(&Call)`), then raises a
+/// bailout it deferred
 /// ([`bailout::finish`]).
 #[macro_export]
 macro_rules! handlers {
@@ -87,7 +88,7 @@ macro_rules! handlers {
             value: *mut $crate::sys::zval,
         ) {
             // SAFETY: per Zend's handler contract.
-            $body(&unsafe { $crate::Call::new(frame, value) });
+            $body(&mut unsafe { $crate::Call::new(frame, value) });
             $then
         }
     )*};

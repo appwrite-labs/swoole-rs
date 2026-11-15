@@ -7,7 +7,7 @@ use crate::{
 };
 use std::{
     cell::{Cell, RefCell},
-    ffi::{c_char, c_int, c_long},
+    ffi::c_long,
     ptr,
     sync::{
         Arc, Mutex, PoisonError,
@@ -206,7 +206,9 @@ pub(crate) fn deactivate() -> Result<(), Bailout> {
 }
 
 unsafe extern "C" {
-    fn printf(format: *const c_char, ...) -> c_int;
+    /// Upstream's deadlock report through stdio's `printf`, so stdio buffers
+    /// it as it did: one formatted write of the count.
+    safe fn swr_zend_coroutine_deadlock_report(count: std::ffi::c_ulong);
 }
 
 /// `PHPCoroutine::deadlock_check`: report coroutines still asleep. Runs no
@@ -219,14 +221,7 @@ fn deadlock_check() -> Result<(), Bailout> {
     if host::flag(host::LIBRARY) {
         return host::deadlock_check();
     }
-    // Upstream's printf, so stdio buffers it as it did.
-    // SAFETY: a format taking one unsigned long.
-    unsafe {
-        printf(
-            c"\n ===================================================================\n  [FATAL ERROR]: all coroutines (count: %lu) are asleep - deadlock! \n ===================================================================\n".as_ptr(),
-            count as std::ffi::c_ulong,
-        );
-    }
+    swr_zend_coroutine_deadlock_report(count as std::ffi::c_ulong);
     Ok(())
 }
 

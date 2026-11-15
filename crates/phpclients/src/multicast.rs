@@ -77,9 +77,9 @@ impl AddressList {
 }
 
 unsafe extern "C" {
-    /// PHP's `php_network_gethostbyname`: `gethostbyname` of the name, which it only
-    /// reads; null, or an entry live until the thread's next lookup.
-    safe fn php_network_gethostbyname(name: Text<'_>) -> *mut libc::hostent;
+    /// `php_network_gethostbyname(host)`: 0 with the first address of an
+    /// `AF_INET` entry written, 1 for an entry of another family, -1 for none.
+    safe fn swr_zend_gethostbyname4(host: Text<'_>, address: &mut in_addr) -> c_int;
 }
 
 // libc's. Each reads its `Text`s and hints, writes only the one object a reference
@@ -210,25 +210,21 @@ fn inet4(s: Sock, host: &[u8]) -> Result<Option<in_addr>, Stop> {
             s_addr: u32::from_ne_bytes(address.octets()),
         }));
     }
-    let entry = if host.count_bytes() > MAXFQDNLEN {
-        ptr::null_mut()
+    let mut address = in_addr { s_addr: 0 };
+    let found = if host.count_bytes() > MAXFQDNLEN {
+        -1
     } else {
-        php_network_gethostbyname(host.as_c_str().into())
+        swr_zend_gethostbyname4(Text::from(host.as_c_str()), &mut address)
     };
-    if entry.is_null() {
+    if found < 0 {
         socket_error(s.socket, "Host lookup failed", host_error())?;
         return Ok(None);
     }
-    // SAFETY: a live entry, until the next lookup.
-    let entry = unsafe { &*entry };
-    if entry.h_addrtype != libc::AF_INET {
+    if found > 0 {
         warn(b"Host lookup failed: Non AF_INET domain returned on AF_INET socket")?;
         return Ok(None);
     }
-    // SAFETY: an AF_INET entry's first address holds an in_addr.
-    let first = unsafe { *entry.h_addr_list };
-    // SAFETY: as above.
-    Ok(Some(unsafe { first.cast::<in_addr>().read_unaligned() }))
+    Ok(Some(address))
 }
 
 /// `php_set_inet6_addr`: the address, then any `%scope`.

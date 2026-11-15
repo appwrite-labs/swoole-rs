@@ -402,13 +402,13 @@ impl Call {
 
     /// Make by-reference argument `n` (1-based), which must be passed, hold
     /// `value`: `zval_ptr_dtor` of what it referred to, then `ZVAL_COPY_VALUE`.
-    /// # Safety
-    /// Nothing borrowed from argument `n` ([`Call::value`], [`Call::zstr`],
-    /// [`Call::array_ref`], ...) is used afterwards: what it held is released.
+    /// The exclusive borrow means nothing borrowed from an argument
+    /// ([`Call::value`], [`Call::zstr`], [`Call::array_ref`], ...) is still
+    /// used: what it held is released.
     #[inline]
-    pub unsafe fn assign(&self, n: u32, value: crate::Owned) {
-        // Per the caller, nothing borrows what the slot holds: it reads null
-        // while that is released, then takes over the value.
+    pub fn assign(&mut self, n: u32, value: crate::Owned) {
+        // Nothing borrows what the slot holds (above): it reads null while
+        // that is released, then takes over the value.
         self.arg_value(n).referred().lend(|old| *old = value);
     }
 

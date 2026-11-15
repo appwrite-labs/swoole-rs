@@ -765,7 +765,7 @@ fn send_file(call: &Call) {
 }
 
 /// `recvfrom(&$peername, float $timeout = 0): string|false`.
-fn recvfrom(call: &Call) {
+fn recvfrom(call: &mut Call) {
     let parsed = call.arity(1, 2).and_then(|()| call.double(2, 0.0));
     let Ok(timeout) = parsed else {
         return call.set_bool(false);
@@ -778,8 +778,7 @@ fn recvfrom(call: &Call) {
     if bytes <= 0 {
         return set_received(call, buffer, bytes);
     }
-    // SAFETY: nothing borrows argument 1.
-    unsafe { call.assign(1, address(socket).into_owned()) };
+    call.assign(1, address(socket).into_owned());
     call.set_zstring(buffer.into_zstring());
 }
 

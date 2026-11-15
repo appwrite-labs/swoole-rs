@@ -20,9 +20,9 @@
  * bytes before the embedded zend_object. */
 void *swr_zend_object_alloc(size_t size, zend_class_entry *ce);
 
-/* INIT_CLASS_ENTRY_EX, then zend_register_internal_class_ex. */
-zend_class_entry *swr_zend_register_class(const char *name, size_t length,
-                                          const zend_function_entry *functions,
+/* INIT_CLASS_ENTRY_EX of the NUL-terminated name, then
+ * zend_register_internal_class_ex. */
+zend_class_entry *swr_zend_register_class(const char *name, const zend_function_entry *functions,
                                           zend_class_entry *parent);
 
 #include "shim_values.h"

@@ -10,6 +10,7 @@
 #include "ext/standard/basic_functions.h"
 #include "main/php_output.h"
 #include "SAPI.h"
+#include <stdio.h>
 #include "zend_closures.h"
 
 #define SWR_COROUTINE_PAGE_SIZE 8192
@@ -235,8 +236,9 @@ swr_zend_autoload_handler swr_zend_coroutine_set_autoload(swr_zend_autoload_hand
 }
 
 void swr_zend_autoload_forget(zend_string *lc_name) {
-    ZEND_ASSERT(EG(in_autoload) != NULL);
-    zend_hash_del(EG(in_autoload), lc_name);
+    if (EG(in_autoload)) {
+        zend_hash_del(EG(in_autoload), lc_name);
+    }
 }
 
 int swr_zend_autoload_try(swr_zend_autoload_handler handler, zend_string *name, zend_string *lc_name,
@@ -358,4 +360,11 @@ void swr_zend_coroutine_redirect(swr_zend_coroutine_vm *vm) {
         vm->opline_before_exception = frame->opline;
         frame->opline = EG(exception_op);
     }
+}
+
+void swr_zend_coroutine_deadlock_report(unsigned long count) {
+    printf("\n ===================================================================\n"
+           "  [FATAL ERROR]: all coroutines (count: %lu) are asleep - deadlock! \n"
+           " ===================================================================\n",
+           count);
 }

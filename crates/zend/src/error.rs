@@ -3,7 +3,7 @@ use crate::{
     Call, Class, ClassEntry,
     bailout::{self, Bailout},
     helpers::CText,
-    sys::{zend_long, zend_throw_error, zend_type_error},
+    sys::{zend_class_entry, zend_long, zend_throw_error},
 };
 use std::{
     ffi::{CStr, CString, c_int},
@@ -11,6 +11,10 @@ use std::{
 };
 
 unsafe extern "C" {
+    /// Zend's `TypeError` and `ValueError`: registered at startup, before any
+    /// extension code runs, and never written again.
+    safe static zend_ce_type_error: *mut zend_class_entry;
+    safe static zend_ce_value_error: *mut zend_class_entry;
     /// `zend_get_type_by_const(kind)` for a value's type (`IS_NULL` to
     /// `IS_RESOURCE`): one of Zend's static names, or null (`None`) for any
     /// other code. It reads nothing else.
@@ -41,8 +45,25 @@ pub fn throw_error(message: &CStr) {
 
 /// `zend_type_error("%s", message)`: a `TypeError`, as [`throw_error`].
 pub fn type_error(message: &CStr) {
-    // SAFETY: "%s" takes the NUL-terminated message, which Zend copies.
-    unsafe { zend_type_error(c"%s".as_ptr(), message.as_ptr()) };
+    throw_core(zend_ce_type_error, message);
+}
+
+/// `zend_value_error("%s", message)`: a `ValueError`, as [`throw_error`].
+pub fn value_error(message: &CStr) {
+    throw_core(zend_ce_value_error, message);
+}
+
+/// `zend_throw_exception(class, message, 0)` of one of Zend's own classes, as
+/// `zend_type_error` and `zend_value_error` throw theirs, inside `zend_try`; a
+/// bailout (no frame executing) is deferred.
+fn throw_core(class: *mut zend_class_entry, message: &CStr) {
+    // A class Zend registered at startup, which lives for the process.
+    let class = ClassEntry::live(class);
+    bailout::defer(bailout::trapped(swr_zend_try_facade_throw(
+        class,
+        message.into(),
+        0,
+    )));
 }
 
 /// `zend_throw_exception(class, message, code)` inside `zend_try`: an exception

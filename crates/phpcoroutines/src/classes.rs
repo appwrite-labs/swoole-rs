@@ -13,16 +13,22 @@ use std::{
 };
 use swoole_rs_phpstubs::{coroutine, coroutine_system};
 use swoole_rs_zend::{
-    Call, Class, Minit, ObjectRef, Owned, Props, Value, ZStr,
+    Call, Class, Minit, Owned, Value, ZStr,
     bailout::Bailout,
     opcode::{DISPATCH, Frame, Handler, handler},
     sys::{
-        ZEND_ACC_FINAL, ZEND_ACC_PRIVATE, swr_zend_autoload_forget, swr_zend_autoload_handler,
-        swr_zend_autoload_try, swr_zend_exit_status, user_opcode_handler_t, zend_class_entry,
-        zend_execute_data,
+        ZEND_ACC_FINAL, ZEND_ACC_PRIVATE, swr_zend_autoload_handler, swr_zend_autoload_try,
+        swr_zend_exit_status, user_opcode_handler_t, zend_class_entry, zend_execute_data,
     },
 };
 use swoole_rs_zend::{method_table, sys as z};
+
+unsafe extern "C" {
+    /// `zend_hash_del(EG(in_autoload), lc_name)` when the executor has that
+    /// table: it reads the name, and the table holds no values to release, so
+    /// no PHP code runs.
+    safe fn swr_zend_autoload_forget(lc_name: &ZStr);
+}
 
 /// `zend_autoload`'s type: Zend passes the class's name and its lowercase
 /// form, both live strings, for the call.
@@ -242,12 +248,12 @@ fn exit_flags() -> i64 {
 fn throw_exit(message: &CStr, flags: i64, status: &Value) {
     EXIT.throw(message, 0);
     // `zend_throw_exception`'s object: the new exception is the pending one.
-    let object = swoole_rs_zend::host::exception();
-    // SAFETY: the new exception, which Zend holds as thrown past these writes.
-    let Some(object) = (unsafe { ObjectRef::from_ptr(object) }) else {
+    let Some(object) = swoole_rs_zend::host::exception_owned() else {
         return;
     };
-    let props = Props::of(Some(&EXIT), object);
+    let Some(props) = object.props(Some(&EXIT)) else {
+        return;
+    };
     props.long(c"flags", flags);
     props.value(c"status", status);
 }
@@ -393,8 +399,8 @@ extern "C" fn autoload(name: &ZStr, lc_name: &ZStr) -> *mut zend_class_entry {
         };
         return ce;
     };
-    // SAFETY: Zend marked the class as loading.
-    unsafe { swr_zend_autoload_forget(lc_name.as_ptr()) };
+    // Zend marked the class as loading.
+    swr_zend_autoload_forget(lc_name);
     let key = lc_name.bytes().to_vec();
     let waiting = AUTOLOADING.with(|a| match a.borrow_mut().get_mut(&key) {
         Some(loading) if loading.owner == current => Some(None),
