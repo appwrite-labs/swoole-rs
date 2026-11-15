@@ -8,7 +8,7 @@ use crate::{
     server::{SERVER, fatal, running, server},
 };
 use std::{
-    cell::{Cell, OnceCell, RefCell},
+    cell::{Cell, OnceCell},
     collections::{HashMap, VecDeque},
     ffi::{CStr, CString, c_int, c_void},
     ptr,
@@ -208,17 +208,36 @@ fn add_worker(serv: view::Server<'_>, process: &Value) -> i64 {
 }
 
 /// `send_yield`'s coroutines waiting on one session, each with its token.
-pub(crate) type Waiters = Rc<RefCell<VecDeque<(u64, Coroutine)>>>;
+type Queue = VecDeque<(u64, Coroutine)>;
+
+/// A session's [`Queue`], shared by its waiters and whoever wakes them; taken
+/// out and put back with nothing in between that yields or runs PHP code.
+pub(crate) type Waiters = Rc<Cell<Queue>>;
+
+/// `f` over the waiters' queue, taken out and put back: `f` only moves
+/// coroutine handles, which neither yields nor runs PHP code.
+fn with_queue<R>(waiters: &Waiters, f: impl FnOnce(&mut Queue) -> R) -> R {
+    let mut queue = waiters.take();
+    let result = f(&mut queue);
+    waiters.set(queue);
+    result
+}
 
 /// `send_coroutine_map`: `send_yield`'s waiting coroutines by session.
 type SendWaiters = HashMap<i64, Waiters>;
 
-/// What upstream's `ServerProperty` held.
+/// The server-level callbacks' slots, each taken out and put back on its own.
+type Callbacks = [Cell<Option<Callable>>; CALLBACKS];
+
+/// Every slot empty.
+const fn no_callbacks() -> Callbacks {
+    [const { Cell::new(None) }; CALLBACKS]
+}
+
+/// What upstream's `ServerProperty` held, but for the callbacks.
 pub(crate) struct Property {
     /// The Port objects, each held by a reference of its own.
     ports: Vec<Owned>,
-    /// Server-level callbacks by type.
-    callbacks: [Option<Callable>; CALLBACKS],
     /// `addCommand`'s callables.
     commands: Vec<Callable>,
     send_waiters: SendWaiters,
@@ -240,7 +259,6 @@ impl Default for Property {
             send_waiters: SendWaiters::default(),
             send_token: 0,
             ports: const { Vec::new() },
-            callbacks: [const { None }; CALLBACKS],
             commands: const { Vec::new() },
             user_processes: const { Vec::new() },
         }
@@ -284,11 +302,17 @@ extern "C" fn php_memory() -> usize {
 /// What a Server object embeds: its share in its server, none until `__construct`
 /// binds one, what upstream's `ServerProperty` held, and the `init_arguments`
 /// setting, null until `set()` gives one. Methods, and PHP code they run, share
-/// it, so each field is a cell borrowed only for one access.
+/// it, so each field is a cell taken out and put back around one access, with
+/// nothing in between that yields or runs PHP code.
 pub(crate) struct ServerData {
     serv: OnceCell<SharedServer>,
-    property: RefCell<Property>,
-    init_arguments: RefCell<Owned>,
+    /// Boxed, so a take moves a pointer and leaves `None`, not a default
+    /// `Property`.
+    property: Cell<Option<Box<Property>>>,
+    /// Server-level callbacks by type, out of the property so that every
+    /// event's lookup moves one slot.
+    callbacks: Callbacks,
+    init_arguments: Cell<Owned>,
     /// What `instance::set_server_object` marked the object with when it became
     /// its thread's running one; 0 for an object that never was.
     mark: Cell<u64>,
@@ -303,8 +327,9 @@ impl Custom for ServerData {
     fn new() -> Self {
         Self {
             serv: OnceCell::new(),
-            property: RefCell::default(),
-            init_arguments: RefCell::new(Owned::null()),
+            property: Cell::new(Some(Box::default())),
+            callbacks: no_callbacks(),
+            init_arguments: Cell::new(Owned::null()),
             mark: Cell::new(0),
         }
     }
@@ -398,46 +423,55 @@ impl<'a> ServerObject<'a> {
 
     /// `init_arguments`, with a reference of its own; null without one.
     pub(crate) fn init_arguments(self) -> Owned {
-        self.data.init_arguments.borrow().copy()
+        let kept = self.data.init_arguments.replace(Owned::null());
+        let copy = kept.copy();
+        self.data.init_arguments.set(kept);
+        copy
     }
 
-    /// Keep `value` as `init_arguments`; the one it replaces is released after
-    /// the borrow ends, since releasing it can run PHP code.
+    /// Keep `value` as `init_arguments`; the one it replaces is released once
+    /// the new one is in, since releasing it can run PHP code.
     pub(crate) fn set_init_arguments(self, value: &Value) {
         drop(self.data.init_arguments.replace(value.copy()));
     }
 
     /// `f` over the property; `f` calls nothing that reaches the object.
     fn property<R>(self, f: impl FnOnce(&mut Property) -> R) -> R {
-        f(&mut self.data.property.borrow_mut())
+        self.data.property(f)
     }
 
     /// `get_callback(kind)`: the callable, a reference the call holds, or none.
     fn callback(self, kind: ServerCallback) -> Option<Callable> {
-        self.property(|p| p.callbacks.get(kind as usize).and_then(Option::clone))
+        let slot = self.data.callbacks.get(kind as usize)?;
+        let callable = slot.take();
+        let copy = callable.clone();
+        slot.set(callable);
+        copy
     }
 
     /// `on()`'s server-level callback: replace callback `kind` with `callable`;
     /// false if it is not callable, or once the old one's destructor bails out.
     pub(crate) fn set_callback(self, kind: ServerCallback, callable: &Value) -> bool {
-        let kind = kind as usize;
-        // Each callable drops out of the property: its destructor may call on() again.
-        let Some(old) = self.property(|p| p.callbacks.get_mut(kind).map(Option::take)) else {
+        let Some(slot) = self.data.callbacks.get(kind as usize) else {
             return false;
         };
-        drop(old);
+        // Each callable drops out of its slot: its destructor may call on() again.
+        drop(slot.take());
         if bailout::pending() {
             return false;
         }
         let Some(callable) = crate::callable::create(callable) else {
             return false;
         };
-        // A nested on() (from the old callable's destructor) stored its callable,
-        // and the property, after this one's write: keep that pair, drop ours.
-        drop(self.property(|p| match p.callbacks.get_mut(kind) {
-            Some(slot) if slot.is_none() => slot.replace(callable),
-            _ => Some(callable),
-        }));
+        // A nested on() (from the old callable's destructor) stored its callable
+        // after this one's write: keep theirs, drop ours once it is back.
+        match slot.take() {
+            None => slot.set(Some(callable)),
+            nested => {
+                slot.set(nested);
+                drop(callable);
+            }
+        }
         true
     }
 
@@ -475,6 +509,19 @@ pub(crate) fn owns_shared() -> bool {
 }
 
 impl ServerData {
+    /// `f` over the property, taken out and put back: `f` neither yields nor
+    /// runs PHP code, and what it removes is released after it is put back.
+    fn property<R>(&self, f: impl FnOnce(&mut Property) -> R) -> R {
+        // Never out here: `f` reaches nothing that takes it again.
+        let mut property = self.property.take().unwrap_or_default();
+        let result = f(&mut property);
+        // `set` would call the drop glue for the `None` it replaces, on every access.
+        if let Some(nested) = self.property.replace(Some(property)) {
+            drop(nested);
+        }
+        result
+    }
+
     /// `php_swoole_server_free_object`'s releases: the `dispatch_func` callable,
     /// the callbacks, the user processes, the ports' links and the commands.
     /// Each goes out of the object before it drops, since its destructor can
@@ -489,16 +536,16 @@ impl ServerData {
             let dispatch = server.config().private_data_3.replace(None);
             bailout::defer(crate::dispatch::release_dispatch_func(dispatch));
         }
-        let callbacks = std::mem::take(&mut self.property.borrow_mut().callbacks);
+        let callbacks = self.callbacks.each_ref().map(Cell::take);
         drop(callbacks);
         // `sw_zval_free`: each copy's reference goes.
-        let processes = std::mem::take(&mut self.property.borrow_mut().user_processes);
+        let processes = self.property(|p| std::mem::take(&mut p.user_processes));
         drop(processes);
-        let ports = std::mem::take(&mut self.property.borrow_mut().ports);
+        let ports = self.property(|p| std::mem::take(&mut p.ports));
         for port in ports {
             crate::port::release(&port);
         }
-        let commands = std::mem::take(&mut self.property.borrow_mut().commands);
+        let commands = self.property(|p| std::mem::take(&mut p.commands));
         drop(commands);
     }
 }
@@ -941,7 +988,7 @@ fn command_run(callable: &Weak<Kept>, message: &[u8], reply: &mut Vec<u8>) {
 /// memory: the server's callback table may keep the callback, and so this,
 /// past the request (a master-handled command's stays until shutdown).
 struct Wait {
-    reply: RefCell<Option<Vec<u8>>>,
+    reply: Cell<Option<Vec<u8>>>,
     waiter: Waiter,
     replied: Cell<bool>,
 }
@@ -982,7 +1029,7 @@ fn command(call: &Call) {
         return;
     }
     let wait = Rc::new(Wait {
-        reply: RefCell::default(),
+        reply: Cell::default(),
         waiter: Waiter::default(),
         replied: Cell::new(false),
     });
@@ -1380,11 +1427,13 @@ pub fn php_swoole_server_send_yield(
         let Some((waiters, token)) = queued else {
             return Ok(false);
         };
-        waiters.borrow_mut().push_back((token, co));
+        with_queue(&waiters, |queue| queue.push_back((token, co)));
         let timeout = server.config().send_timeout.get();
         // `onBufferEmpty` or `onClose` wakes it.
         if !swoole_rs_phpcoroutines::suspend_for(timeout) {
-            waiters.borrow_mut().retain(|&(waiter, _)| waiter != token);
+            with_queue(&waiters, |queue| {
+                queue.retain(|&(waiter, _)| waiter != token);
+            });
             return Ok(false);
         }
         let sent = server_methods::send(server, session_id, data);
@@ -1415,12 +1464,13 @@ pub(crate) fn send_waiters(session_id: i64) -> Option<std::mem::ManuallyDrop<Wai
 /// The next coroutine to wake: `pop` takes it off the queue (a resume), else
 /// it stays first until its `send_yield` leaves (a cancel).
 pub(crate) fn send_next(waiters: &Waiters, pop: bool) -> Option<Coroutine> {
-    let mut queue = waiters.borrow_mut();
-    let next = if pop {
-        queue.pop_front()
-    } else {
-        queue.front().copied()
-    };
+    let next = with_queue(waiters, |queue| {
+        if pop {
+            queue.pop_front()
+        } else {
+            queue.front().copied()
+        }
+    });
     next.map(|(_, co)| co)
 }
 
@@ -1444,11 +1494,13 @@ mod tests {
         // Not dropped: its drop would link `Owned`'s Zend destructor, which the test
         // binary has no PHP to resolve; an empty property owns nothing to free.
         let property = std::mem::ManuallyDrop::new(Property::default());
-        assert!(property.callbacks.iter().all(Option::is_none));
         assert!(property.ports.is_empty() && property.user_processes.is_empty());
-        assert_eq!(
-            property.callbacks.len(),
-            ServerCallback::PipeMessage as usize + 1
+        let callbacks = std::mem::ManuallyDrop::new(no_callbacks());
+        assert!(
+            callbacks
+                .iter()
+                .all(|slot| std::mem::ManuallyDrop::new(slot.take()).is_none())
         );
+        assert_eq!(callbacks.len(), ServerCallback::PipeMessage as usize + 1);
     }
 }
