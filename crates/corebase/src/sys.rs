@@ -96,7 +96,7 @@ mod c {
         pub(crate) safe fn chroot(path: Text<'_>) -> c_int;
         pub(crate) safe fn mkdir(path: Text<'_>, mode: mode_t) -> c_int;
         pub safe fn malloc(size: usize) -> *mut c_void;
-        pub(crate) safe fn calloc(count: usize, size: usize) -> *mut c_void;
+        pub safe fn calloc(count: usize, size: usize) -> *mut c_void;
         /// At most `length` bytes of `text`, in a `malloc` allocation.
         pub(crate) safe fn strndup(text: Text<'_>, length: usize) -> *mut c_char;
         pub(crate) safe fn strncasecmp(left: Text<'_>, right: Text<'_>, count: usize) -> c_int;
@@ -231,12 +231,12 @@ mod c {
 }
 #[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
 pub use c::kqueue;
-pub use c::malloc;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 pub use c::malloc_trim;
-pub(crate) use c::{calloc, fork, getrlimit, srandom, uname};
+pub use c::{calloc, malloc};
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub use c::{epoll_create, epoll_ctl, signalfd};
+pub(crate) use c::{fork, getrlimit, srandom, uname};
 pub use c::{
     pthread_sigmask, sigaddset, sigdelset, sigemptyset, sigfillset, sigismember, sigprocmask,
 };

@@ -929,8 +929,8 @@ mod tests {
     }
     /// libc's allocator, as `SwooleG.std_allocator`.
     static ALLOCATOR: CoreAllocator = CoreAllocator {
-        malloc: Some(libc::malloc),
-        calloc: Some(libc::calloc),
+        malloc: Some(swoole_rs_corebase::sys::malloc),
+        calloc: Some(swoole_rs_corebase::sys::calloc),
         realloc: Some(libc::realloc),
         free: Some(libc::free),
     };
