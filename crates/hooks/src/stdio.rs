@@ -282,15 +282,44 @@ pub fn swoole_coroutine_getaddrinfo(
     req: Option<&addrinfo>,
     pai: &mut *mut addrinfo,
 ) -> c_int {
-    let name = name.map_or(std::ptr::null(), CStr::as_ptr);
-    let service = service.map_or(std::ptr::null(), CStr::as_ptr);
-    let req = req.map_or(std::ptr::null(), std::ptr::from_ref);
-    let pai = std::ptr::from_mut(pai);
-    // SAFETY: C strings or null, hints or null (getaddrinfo reads only the hints'
-    // integers), and a writable result slot, each borrowed for this call.
-    let call = || unsafe { libc::getaddrinfo(name, service, req, pai) };
-    // SAFETY: `async_job`.
-    unsafe { offloaded(Some(NATIVE.offload), -1, call) }
+    // getaddrinfo reads only the hints' integers; the rest must be zero.
+    let hints = req.map(|req| {
+        (
+            req.ai_flags,
+            req.ai_family,
+            req.ai_socktype,
+            req.ai_protocol,
+        )
+    });
+    let call = || {
+        let name = name.map_or(std::ptr::null(), CStr::as_ptr);
+        let service = service.map_or(std::ptr::null(), CStr::as_ptr);
+        let hints = hints.map(|(flags, family, socktype, protocol)| addrinfo {
+            ai_flags: flags,
+            ai_family: family,
+            ai_socktype: socktype,
+            ai_protocol: protocol,
+            ai_addrlen: 0,
+            ai_addr: std::ptr::null_mut(),
+            ai_canonname: std::ptr::null_mut(),
+            ai_next: std::ptr::null_mut(),
+        });
+        let hints = hints.as_ref().map_or(std::ptr::null(), std::ptr::from_ref);
+        let mut list = std::ptr::null_mut();
+        // SAFETY: C strings or null, hints or null, and a writable result slot, each
+        // live for the call.
+        let found = unsafe { libc::getaddrinfo(name, service, hints, &raw mut list) };
+        // The list is the caller's to free on this thread: only its address crosses.
+        (found, list.expose_provenance())
+    };
+    let Some((found, list)) = on_pool(Some(NATIVE.offload), None, || Some(call())) else {
+        return -1;
+    };
+    // getaddrinfo stores a list only when it finds one.
+    if list != 0 {
+        *pai = std::ptr::with_exposed_provenance_mut(list);
+    }
+    found
 }
 
 unsafe extern "C" {
@@ -300,16 +329,19 @@ unsafe extern "C" {
 /// Hooked `gethostbyname`, always on the pool: the lookup's `h_errno` (0 if the
 /// pool refused it) becomes this thread's.
 pub fn swoole_coroutine_gethostbyname(name: &CStr) -> *mut hostent {
-    let offload = Some(NATIVE.offload);
     let call = || {
         // SAFETY: a C string.
         let entry = unsafe { gethostbyname(name.as_ptr()) };
-        (entry, swoole_rs_corebase::sys::h_errno())
+        // The entry is the looking-up thread's, handed to the caller as upstream does:
+        // only its address crosses.
+        (
+            entry.expose_provenance(),
+            swoole_rs_corebase::sys::h_errno(),
+        )
     };
-    // SAFETY: the caller passes native `async` or null.
-    let (entry, error) = unsafe { offloaded(offload, (std::ptr::null_mut(), 0), call) };
+    let (entry, error) = on_pool(Some(NATIVE.offload), (0, 0), call);
     swoole_rs_corebase::sys::set_h_errno(error);
-    entry
+    std::ptr::with_exposed_provenance_mut(entry)
 }
 
 #[cfg(test)]
