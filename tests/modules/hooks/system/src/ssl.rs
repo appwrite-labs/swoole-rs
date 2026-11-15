@@ -56,7 +56,8 @@ impl SslContext {
 
     fn create(&self) -> bool {
         // SAFETY: the live owner this context made, which only this test configures.
-        let mut owner = unsafe { swoole_rs_tls::Lent::new(&*self.0.owner.cast()) };
+        let owner = unsafe { &*self.0.owner.cast::<swoole_rs_tls::OwnedTlsContext>() };
+        let mut owner = owner.borrow_configuration();
         swoole_rs_tls::ssl_context_create(&mut owner)
     }
 

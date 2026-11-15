@@ -602,8 +602,7 @@ mod tests {
         use std::os::fd::AsRawFd;
         crate::swr_v1_tls_init().unwrap();
         let context = crate::TlsContext::new();
-        // SAFETY: the test's own owner, which nothing else reaches.
-        let lent = unsafe { crate::Lent::new(&context) };
+        let lent = context.borrow_configuration();
         lent.set_value(crate::Value::Protocols(
             crate::SslVersion::SW_SSL_DTLS as i64,
         ));

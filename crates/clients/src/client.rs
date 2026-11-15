@@ -47,8 +47,7 @@ use swoole_rs_tls::upstream::{
     socket_ssl_verify,
 };
 use swoole_rs_tls::{
-    OwnedTlsContext, OwnedTlsFields, OwnedTlsPrepared, SslCreateFlag, SslState, SslVersion,
-    TlsContext, swr_v1_tls_owner_view,
+    OwnedTlsContext, OwnedTlsFields, SslCreateFlag, SslState, SslVersion, TlsContext,
 };
 #[cfg(test)]
 use tests::{
@@ -534,24 +533,20 @@ impl Handle {
         })
     }
 
-    /// The TLS context's view; TLS is on.
-    fn tls(self) -> OwnedTlsPrepared {
-        let tls = self.get().tls.get();
-        swr_v1_tls_owner_view(
-            tls.unwrap_or_else(|| swoole_rs_corebase::fatal("a TLS client has no TLS context")),
-        )
-    }
-
     /// `edit` over the context's fields and a copy of the record; TLS is on.
     /// `edit` is a plain fn, which cannot reach the client to borrow the fields again.
     fn edit_tls<R>(self, edit: fn(&mut OwnedTlsFields, ClientRecord) -> R) -> R {
         let record = self.record();
-        // SAFETY: the live context's fields, which only `edit` reaches meanwhile.
-        edit(unsafe { &mut *self.tls().fields }, record)
+        self.get()
+            .tls
+            .get()
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("a TLS client has no TLS context"))
+            .borrow_configuration()
+            .edit(|fields| edit(fields, record))
     }
 
     /// The context's SNI host name, NUL-terminated and empty when unset.
-    fn tls_host_name(self) -> &'static CStr {
+    fn tls_host_name(self) -> CString {
         let tls = self.get().tls.get();
         swoole_rs_tls::owner_host_c_str(
             tls.unwrap_or_else(|| swoole_rs_corebase::fatal("a TLS client has no TLS context")),
@@ -676,8 +671,9 @@ impl Handle {
         };
         let tls = self.get().tls.get().is_some();
         let target = proxy.string(3);
-        let host = if tls && !self.tls_host_name().is_empty() {
-            self.tls_host_name().to_bytes()
+        let name = tls.then(|| self.tls_host_name());
+        let host = if let Some(name) = name.as_ref().filter(|name| !name.is_empty()) {
+            name.to_bytes()
         } else {
             &target
         };
@@ -1177,8 +1173,7 @@ pub fn ssl_handshake(this: Handle) -> bool {
         }
         missing
     });
-    // SAFETY: the client's context, which only this client configures, and only here.
-    if missing && !ssl_context_create(&mut unsafe { swoole_rs_tls::Lent::new(&tls) }) {
+    if missing && !ssl_context_create(&mut tls.borrow_configuration()) {
         return false;
     }
     if this.socket().read(|socket| socket.ssl().is_null()) {
@@ -1197,7 +1192,7 @@ pub fn ssl_handshake(this: Handle) -> bool {
         let name = this.tls_host_name();
         if !name.is_empty() {
             // On the new session; OpenSSL copies the name.
-            socket_ssl_set_host_name(this.socket(), name);
+            socket_ssl_set_host_name(this.socket(), &name);
         }
     }
     if !socket_ssl_connect(this.socket()) {
@@ -1221,7 +1216,7 @@ pub fn ssl_verify(this: Handle, allow_self_signed: bool) -> bool {
         return false;
     }
     let name = this.tls_host_name();
-    if !name.is_empty() && !socket_ssl_check_host(this.socket(), name) {
+    if !name.is_empty() && !socket_ssl_check_host(this.socket(), &name) {
         return false;
     }
     true

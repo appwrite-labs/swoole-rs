@@ -18,7 +18,7 @@ use swoole_rs_server::port_config::{PortConfig, TlsState};
 use swoole_rs_server::view;
 use swoole_rs_tls::{
     OwnedTlsContext, OwnedTlsFields, Ssl, SslVersion, Text, TlsContext, TlsSettings, has_files,
-    swr_v1_tls_owner_view, swr_v1_tls_port_index,
+    swr_v1_tls_port_index,
 };
 use swoole_rs_utilities::sni_wildcard_matches;
 
@@ -45,10 +45,7 @@ fn sni(config: &PortConfig) -> RwLockReadGuard<'_, Vec<(Vec<u8>, Arc<TlsSettings
 
 /// `edit`'s result over the fields of the live `context`.
 fn edit<R>(context: &OwnedTlsContext, edit: impl FnOnce(&mut OwnedTlsFields) -> R) -> R {
-    // SAFETY: the owner's fields live as long as the reference; a port's contexts are
-    // configured on its one thread before it serves, and every `edit` closure here
-    // ends without reaching another or taking a borrow through `fields()`.
-    edit(unsafe { &mut *swr_v1_tls_owner_view(context).fields })
+    context.borrow_configuration().edit(edit)
 }
 
 /// Releases the port's context and its TLS state with the SNI contexts.
@@ -64,9 +61,7 @@ pub fn context_dup(config: &PortConfig) -> TlsContext {
     let Some(source) = config.ssl_context.get() else {
         return TlsContext::new();
     };
-    // SAFETY: the port's context, used on its one thread, which only this copy reads
-    // meanwhile.
-    let mut source = unsafe { swoole_rs_tls::Lent::new(&source) };
+    let mut source = source.borrow_configuration();
     TlsContext::copy_of(&mut source)
         .unwrap_or_else(|| swoole_rs_corebase::fatal("copying a port's TLS context failed"))
 }
@@ -98,9 +93,8 @@ pub(crate) fn context_create(
             fields.http_v2 = true;
         }
     });
-    // SAFETY: configuration runs on the port's owner thread; the resulting
-    // snapshot owns independent fields, strings and OpenSSL configuration.
-    let owner = unsafe { swoole_rs_tls::Lent::new(context) };
+    // The snapshot owns independent fields, strings and OpenSSL configuration.
+    let owner = context.borrow_configuration();
     let settings = owner.freeze(callback);
     if settings.is_none() {
         log::warning(
@@ -303,9 +297,7 @@ mod tests {
     #[test]
     fn the_tls_state_lives_in_the_port_until_freed() {
         let builder = swoole_rs_tls::TlsContext::new();
-        let settings = unsafe { swoole_rs_tls::Lent::new(&builder) }
-            .freeze(None)
-            .unwrap();
+        let settings = builder.borrow_configuration().freeze(None).unwrap();
         let settings = std::sync::Arc::new(settings);
         let config = swoole_rs_server::port_config::swr_v1_port_config_new(0);
         let config = unsafe { &mut *config };

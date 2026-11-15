@@ -12,8 +12,8 @@ use swoole_rs_tls::upstream::{
     socket_ssl_accept, socket_ssl_check_host, socket_ssl_connect, socket_ssl_verify,
 };
 use swoole_rs_tls::{
-    Accept, Lent, OwnedTlsContext, OwnedTlsFields, SocketContextError, SslNewError, SslState,
-    TlsContext, owner_host_name, swoole_ssl_init, swr_v1_tls_owner_socket_context,
+    Accept, OwnedTlsContext, OwnedTlsFields, SocketContextError, SslNewError, SslState, TlsContext,
+    owner_host_name, swoole_ssl_init, swr_v1_tls_owner_socket_context,
     swr_v1_tls_owner_socket_session,
 };
 
@@ -44,7 +44,7 @@ impl Co {
     /// `read` over the `SSLContext` owner's fields, or none without one.
     pub(crate) fn tls_fields<R>(self, read: impl FnOnce(&OwnedTlsFields) -> R) -> Option<R> {
         let owner = self.tls_context()?;
-        Some(read(owner.fields()))
+        Some(read(&owner.fields()))
     }
 
     /// The `SSLContext` owner's `tls_host_name`, empty without one.
@@ -52,7 +52,7 @@ impl Co {
         let Some(owner) = self.tls_context() else {
             return Vec::new();
         };
-        owner_host_name(&owner).to_vec()
+        owner_host_name(&owner)
     }
 
     /// `Socket::enable_ssl_encrypt()`: a fresh `SSLContext` owner; false when the
@@ -89,8 +89,7 @@ impl Co {
         let (owner, http2) = (self.tls_context(), self.http2());
         let made = owner.and_then(|owner| {
             self.with_network(|socket| {
-                // SAFETY: the socket's owner, which only it configures, and only here.
-                swr_v1_tls_owner_socket_context(unsafe { Lent::new(&owner) }, socket, http2, true)
+                swr_v1_tls_owner_socket_context(owner.borrow_configuration(), socket, http2, true)
             })
         });
         match made.unwrap_or(Err(SocketContextError::Create)) {
