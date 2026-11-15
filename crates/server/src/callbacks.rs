@@ -1,6 +1,5 @@
 //! `Server`'s callbacks: upstream's on* `std::function` members and `dispatch_func`.
 //! Rust owns the slots, each typed by its signature. A slot holds `invoke(ctx, ...)`.
-use crate::ConnectionRecord;
 use crate::reactor_entry::RecvData;
 use crate::view::Server;
 use core::ffi::{c_int, c_void};
@@ -65,7 +64,7 @@ pub type WorkerErrorFn = extern "C" fn(Ctx, Server<'_>, Worker<'_>, &ExitStatus)
 pub type UserWorkerFn = extern "C" fn(Ctx, Server<'_>, Worker<'_>);
 /// `int (Server *, Connection *, SendData *)`.
 pub type DispatchFn =
-    extern "C" fn(Ctx, Server<'_>, Option<&ConnectionRecord>, Option<&RecvData>) -> c_int;
+    extern "C" fn(Ctx, Server<'_>, Option<crate::Connection<'_>>, Option<&RecvData>) -> c_int;
 
 /// A Rust fn for one of a server's slots, of that slot's own signature
 /// ([`Server::set_callback`]). The server calls it with a [`Ctx`] it ignores
@@ -379,7 +378,7 @@ impl ServerCallbacks {
     pub(crate) fn dispatch(
         &self,
         serv: Server<'_>,
-        conn: Option<&ConnectionRecord>,
+        conn: Option<crate::Connection<'_>>,
         send: Option<&RecvData>,
     ) -> c_int {
         self.dispatch_func

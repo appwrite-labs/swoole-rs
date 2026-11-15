@@ -104,6 +104,7 @@ fn decode<T>(object: *mut c_void) -> Option<*mut T> {
 /// time through the table's own pointer, so two handles to one slot never make two
 /// live `&mut` (#3554). The server's own synchronization orders the writes, as it
 /// orders native code's.
+#[repr(transparent)]
 pub struct Slot<'a, T> {
     cell: &'a UnsafeCell<T>,
 }

@@ -32,8 +32,7 @@ pub fn schedule_worker(serv: Server<'_>, fd: c_int, send: Option<&SendData>) -> 
     let key = c_long::from(fd);
     let dispatch_func = state.callbacks.slot(CallbackKind::DispatchFunc);
     if dispatch_func.is_set() {
-        // SAFETY: null, or the table's live slot of the fd, read for the call.
-        let conn = unsafe { state.connection_ptr(key, Lookup::ByFd).as_ref() };
+        let conn = state.connection(key, Lookup::ByFd);
         let id = state.callbacks.dispatch(serv, conn, send);
         if id != USERFUNC_FALLBACK {
             return u32::try_from(id).map_err(|_| id);
@@ -554,7 +553,7 @@ mod tests {
     extern "C" fn to_six(
         _: crate::callbacks::Ctx,
         _: Server<'_>,
-        _: Option<&crate::records::ConnectionRecord>,
+        _: Option<crate::Connection<'_>>,
         _: Option<&crate::reactor_entry::RecvData>,
     ) -> c_int {
         6
@@ -563,7 +562,7 @@ mod tests {
     extern "C" fn fall_back(
         _: crate::callbacks::Ctx,
         _: Server<'_>,
-        _: Option<&crate::records::ConnectionRecord>,
+        _: Option<crate::Connection<'_>>,
         _: Option<&crate::reactor_entry::RecvData>,
     ) -> c_int {
         USERFUNC_FALLBACK
