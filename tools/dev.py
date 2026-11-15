@@ -448,7 +448,7 @@ BARRIER_PHASES = {'ownership', 'cargo-build', 'reference-build', 'stdext-referen
 
 def serial_phase(name):
     """Phases that can't share the machine: fixed ports (the PHPT runners), timing, benchmarks."""
-    return (name == 'phpt' or name.endswith('-originals') or 'benchmark' in name or 'timing' in name)
+    return (name in {'phpt', 'locks-unit'} or name.endswith('-originals') or 'benchmark' in name or 'timing' in name)
 
 
 def phase_dependencies(commands, reports):
