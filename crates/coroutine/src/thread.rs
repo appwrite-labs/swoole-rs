@@ -192,7 +192,11 @@ impl Drop for Started {
 fn run(thread: &Arc<Thread>, entry: Entry) {
     thread.baton.wait();
     // The first swap_in follows activation, which records SHARED.
-    if let Some(shared) = *SHARED.lock().unwrap_or_else(PoisonError::into_inner) {
+    if let Some(shared) = SHARED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+    {
         adopt_shared_thread(shared);
     }
     ME.set(Some(Arc::clone(thread)));
