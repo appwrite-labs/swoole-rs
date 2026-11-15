@@ -843,9 +843,12 @@ pub fn pool_ipc_prepare(ipc: &mut PoolIpc, max_packet_size: u32) -> *mut c_char 
     ipc.prepare(max_packet_size).cast()
 }
 
-/// The packet buffer `_prepare` allocated.
-pub fn pool_ipc_packet(ipc: &mut PoolIpc) -> *mut c_char {
-    ipc.packet.as_mut_ptr().cast()
+/// The packet buffer `_prepare` allocated and its size in bytes; null and 0 before.
+pub fn pool_ipc_packet(ipc: &mut PoolIpc) -> (*mut c_char, usize) {
+    if ipc.packet.is_empty() {
+        return (ptr::null_mut(), 0);
+    }
+    (ipc.packet.as_mut_ptr().cast(), size_of_val(&*ipc.packet))
 }
 
 fn mode(ipc_mode: IpcMode) -> Mode {

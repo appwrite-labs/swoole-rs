@@ -792,7 +792,7 @@ mod tests {
     fn a_queue_pools_process_balances_over_the_pools_queue() {
         extern "C-unwind" fn on_message(
             _: crate::process_pool::PoolRef<'_>,
-            _: &crate::process_pool::RecvData,
+            _: &crate::process_pool::RecvData<'_>,
         ) {
         }
         let mut workers: [WorkerRecord; 2] = unsafe { core::mem::zeroed() };

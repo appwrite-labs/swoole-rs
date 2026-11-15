@@ -236,8 +236,7 @@ fn init(serv: view::Server<'_>, manager: &Manager) {
         on_worker_message: Some(read_worker_message),
         ..Hooks::default()
     };
-    // SAFETY: the hook reads the pool's server through `pool_server`, which checks it.
-    unsafe { event_pool.install(&hooks) };
+    event_pool.install(&hooks);
     event_pool.set_max_wait_time(config.max_wait_time.get());
     event_pool.set_master_pid(pid);
     serv.task_pool_ref().set_master_pid(pid);

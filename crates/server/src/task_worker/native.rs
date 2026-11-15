@@ -78,8 +78,7 @@ pub(crate) fn init(serv: view::Server<'_>) -> bool {
         main_loop: coroutine.then_some(loop_async),
         ..Hooks::default()
     };
-    // SAFETY: the hooks read the pool's server through `pool_server`, which checks it.
-    unsafe { pool.install(&hooks) };
+    pool.install(&hooks);
     if super::schedule_by_sysvmsg(mode) {
         pool.set_schedule_by_sysvmsg(true);
     }

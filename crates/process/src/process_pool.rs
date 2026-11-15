@@ -527,20 +527,32 @@ impl<'a> PoolRef<'a> {
         self.record().ipc_connection()
     }
 
-    /// The worker loop's receive buffer, or null before the loop allocates it.
+    /// The worker loop's receive buffer and its size in bytes; null and 0 before
+    /// the loop allocates it.
     #[must_use]
-    pub fn ipc_packet(self) -> *mut c_char {
+    pub fn ipc_packet(self) -> (*mut c_char, usize) {
         self.record()
             .with_ipc(crate::pool::pool_ipc_packet)
-            .unwrap_or(ptr::null_mut())
+            .unwrap_or((ptr::null_mut(), 0))
     }
 }
 
-/// `swoole::RecvData`: a message's head and its data.
-#[repr(C)]
-pub struct RecvData {
-    pub info: swoole_rs_corebase::DataHead,
-    pub data: *const core::ffi::c_char,
+/// `swoole::RecvData`: a message's head and its bytes, lent for one `onMessage`.
+pub struct RecvData<'a> {
+    pub info: DataHead,
+    pub data: &'a [u8],
+}
+
+impl<'a> RecvData<'a> {
+    /// A message of `data`, its head's `len` their length.
+    #[must_use]
+    pub fn new(info: DataHead, data: &'a [u8]) -> Self {
+        let len = u32::try_from(data.len()).unwrap_or(u32::MAX);
+        Self {
+            info: DataHead { len, ..info },
+            data,
+        }
+    }
 }
 
 /// The pool's callbacks, in `ProcessPool`'s C layout (`swoole_rs_process_views.h`).
@@ -558,11 +570,8 @@ pub type WorkerFn = extern "C-unwind" fn(PoolRef<'_>, Worker<'_>);
 pub type MainLoopFn = extern "C-unwind" fn(PoolRef<'_>, Worker<'_>) -> c_int;
 /// `onTask`: the task the worker read.
 pub type TaskFn = extern "C-unwind" fn(PoolRef<'_>, Worker<'_>, Packed<'_>) -> c_int;
-/// `onMessage`.
-///
-/// # Safety
-/// The pool is the one that holds the callback, and `data` points at `info.len` bytes.
-pub type MessageFn = unsafe extern "C-unwind" fn(PoolRef<'_>, &RecvData);
+/// `onMessage`: the message, lent for the call.
+pub type MessageFn = extern "C-unwind" fn(PoolRef<'_>, &RecvData<'_>);
 /// `onWorkerMessage`: the `EventData` the master popped, as its bytes.
 pub type EventFn = extern "C-unwind" fn(
     PoolRef<'_>,
@@ -590,12 +599,9 @@ pub struct Hooks {
 }
 
 impl PoolRef<'_> {
-    /// Installs `hooks` on the pool.
-    ///
-    /// # Safety
-    /// Every hook the pool then holds is sound to run on this pool with what the
-    /// pool lends it.
-    pub unsafe fn install(self, hooks: &Hooks) {
+    /// Installs `hooks` on the pool. A hook takes handles and what the pool lends
+    /// it, so it runs soundly on any pool.
+    pub fn install(self, hooks: &Hooks) {
         // One write per field named: the pool's own code and its signal handlers
         // read the record meanwhile.
         if hooks.on_start.is_some() {
@@ -692,6 +698,13 @@ impl PoolRef<'_> {
     /// `onWorkerStop(pool, worker)`; nothing without one.
     pub fn call_on_worker_stop(self, worker: Worker<'_>) {
         self.call_worker(self.on_worker_stop(), worker);
+    }
+
+    /// `onMessage(pool, message)`; nothing without one.
+    pub fn call_on_message(self, message: &RecvData<'_>) {
+        if let Some(hook) = self.on_message() {
+            hook(self, message);
+        }
     }
 
     /// `onWorkerExit(pool, worker)`; nothing without one.
@@ -1336,8 +1349,7 @@ getters!(
     pub(crate) on_worker_exit: Option<WorkerFn>,
     pub(crate) on_worker_not_found: Option<NotFoundFn>,
     pub(crate) main_loop: Option<MainLoopFn>,
-    // The `unsafe fn`, whose caller says the pool holds it.
-    pub on_message: Option<MessageFn>,
+    pub(crate) on_message: Option<MessageFn>,
     pub workers: *mut WorkerRecord,
     pub ipc: *mut PoolIpc,
     pub message_box: *mut c_void,

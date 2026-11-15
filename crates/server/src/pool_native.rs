@@ -70,15 +70,6 @@ fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
-/// `pool->onMessage(pool, &msg)`, whose `data` points at `info.len` bytes.
-fn on_message(pool: Pool<'_>, msg: &RecvData) {
-    if let Some(on_message) = pool.on_message() {
-        // SAFETY: the pool that holds the callback, and the message its caller read:
-        // `data` points at `info.len` bytes.
-        unsafe { on_message(pool, msg) };
-    }
-}
-
 fn exit_status(exited: u64) -> ExitStatus {
     ExitStatus::new((exited & 0xffff_ffff) as c_int, (exited >> 32) as c_int)
 }
@@ -98,18 +89,17 @@ fn bus_read(pool: Pool<'_>, sock: Option<Socket<'_>>) -> isize {
 
 /// `onMessage` with the bus's packet, then `message_bus->pop()`.
 fn bus_deliver(pool: Pool<'_>) {
-    let Some(message) = with_bus(pool, |bus| {
-        let mut info = bus.head();
-        let packet = bus.packet();
-        info.len = packet.length.c_cast::<u32>();
-        RecvData {
-            info,
-            data: packet.data,
-        }
-    }) else {
+    let Some((info, packet)) = with_bus(pool, |bus| (bus.head(), bus.packet())) else {
         return;
     };
-    on_message(pool, &message);
+    let data = if packet.data.is_null() {
+        &[][..]
+    } else {
+        // SAFETY: the bus's packet, `length` bytes it keeps until it pops or reads
+        // again, which only this worker's loop does, once `onMessage` returns.
+        unsafe { core::slice::from_raw_parts(packet.data.cast::<u8>(), packet.length) }
+    };
+    pool.call_on_message(&RecvData::new(info, data));
     PoolBus::with_pool(pool, |bus| bus.parts().0.pop());
 }
 
@@ -207,11 +197,15 @@ extern "C" fn recv_packet(_: Running<'_>, event: &mut Event) -> c_int {
     let Some(pool) = LOOP_POOL.get() else {
         return 0;
     };
-    let packet = pool.ipc_packet();
-    let size = pool.max_packet_size() as usize;
-    let fd = fd(event.socket());
-    // SAFETY: the packet buffer holds `max_packet_size` bytes.
-    let n = unsafe { libc::read(fd, packet.cast(), size) };
+    let (packet, size) = pool.ipc_packet();
+    if packet.is_null() {
+        return 0;
+    }
+    let size = size.min(pool.max_packet_size() as usize);
+    // SAFETY: the zeroed buffer the worker's loop allocated, at least `size` bytes,
+    // which only this handler fills and nothing borrows meanwhile.
+    let packet = unsafe { core::slice::from_raw_parts_mut(packet.cast::<u8>(), size) };
+    let n = swoole_rs_corebase::sys::read(fd(event.socket()), packet);
     if n < 0 && errno() != libc::EINTR {
         log::sys_warning(
             c"ProcessPool::recv_packet",
@@ -220,11 +214,13 @@ extern "C" fn recv_packet(_: Running<'_>, event: &mut Event) -> c_int {
     }
     let info = DataHead {
         reactor_id: -1,
-        // The bytes read: none when the read failed.
-        len: u32::try_from(n).unwrap_or(0),
         ..DataHead::default()
     };
-    on_message(pool, &RecvData { info, data: packet });
+    // The bytes read: none when the read failed.
+    let read = packet
+        .get(..usize::try_from(n).unwrap_or(0))
+        .unwrap_or_default();
+    pool.call_on_message(&RecvData::new(info, read));
     0
 }
 
@@ -316,9 +312,7 @@ fn objects(pool: Pool<'_>, op: Op, arg: u64) -> Option<i64> {
                 main_loop: Some(main_loop),
                 ..Hooks::default()
             };
-            // SAFETY: these loops run crates/process' own worker loop over the pool
-            // and worker they are given, and read nothing through the pool's `ptr`.
-            unsafe { pool.install(&hooks) };
+            pool.install(&hooks);
             0
         }
         Op::BusBuffer => bus_buffer(pool, arg),
@@ -632,16 +626,9 @@ impl PoolNative for Native {
     fn message(&self, c: &mut PoolCall) {
         let info = DataHead {
             reactor_id: -1,
-            len: c.length().c_cast::<u32>(),
             ..DataHead::default()
         };
-        on_message(
-            c.pool(),
-            &RecvData {
-                info,
-                data: c.data().cast(),
-            },
-        );
+        c.pool().call_on_message(&RecvData::new(info, c.bytes()));
     }
 
     fn shutdown(&self, c: &PoolCall) {

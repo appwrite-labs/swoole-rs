@@ -115,24 +115,23 @@ fn worker_busy(busy: bool) {
 }
 
 /// The message's payload as a string: the bus's packet itself when it holds one.
-fn message_data(pool: PoolRef<'_>, message: &RecvData) -> Owned {
-    let (length, data) = (
-        message.info.len as usize,
-        message.data.cast_mut().cast::<u8>(),
-    );
+fn message_data(pool: PoolRef<'_>, message: &RecvData<'_>) -> Owned {
+    let length = message.data.len();
+    let moved = if length != 0 && message.info.flags & EVENT_DATA_OBJ_PTR != 0 {
+        // An OBJ_PTR message comes from the pool's message bus: its packet, the
+        // message's bytes, is now the caller's.
+        swoole_rs_server::pool_bus_move_packet(pool).cast::<u8>()
+    } else {
+        std::ptr::null_mut()
+    };
     let string = if length == 0 {
         ZString::new(b"")
-    } else if message.info.flags & EVENT_DATA_OBJ_PTR != 0 {
+    } else if !moved.is_null() {
         // SAFETY: the bus allocates its packets as unshared zend strings of at
-        // least `length` written bytes.
-        let packet = unsafe { ZBuf::from_raw(string::from_val(data), length) };
-        // An OBJ_PTR message comes from the pool's message bus: the string, whose
-        // block `packet` already holds, is now the caller's.
-        _ = swoole_rs_server::pool_bus_move_packet(pool);
-        packet.into_zstring()
+        // least `length` written bytes, and this one is now ours.
+        unsafe { ZBuf::from_raw(string::from_val(moved), length) }.into_zstring()
     } else {
-        // SAFETY: `length` bytes at `data`.
-        ZString::new(unsafe { std::slice::from_raw_parts(data, length) })
+        ZString::new(message.data)
     };
     Owned::string(string)
 }
@@ -387,7 +386,7 @@ fn worker_signals(term: bool) {
     }
 }
 
-extern "C-unwind" fn on_message(pool: PoolRef<'_>, message: &RecvData) {
+extern "C-unwind" fn on_message(pool: PoolRef<'_>, message: &RecvData<'_>) {
     let mut slot = swoole_rs_zend::UNDEF;
     let Some((object, this)) = owner(&mut slot) else {
         return;
@@ -837,8 +836,7 @@ fn start(call: &Call) {
         on_worker_exit: with_exit.then_some(exit),
         ..Hooks::default()
     };
-    // SAFETY: no hook reads the pool's `ptr`; each finds its object in `OWNER`.
-    unsafe { view.install(&hooks) };
+    view.install(&hooks);
     OWNER.set(
         call.this_value()
             .map_or(swoole_rs_zend::UNDEF, Value::copy_value),
