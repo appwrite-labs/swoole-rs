@@ -44,9 +44,12 @@ enum {
     PHP_SWOOLE_RSHUTDOWN_BEGIN = 3,
 };
 
-// The curl hooks' exception extends this (SW_INIT_CLASS_ENTRY_EX pastes the names).
+// The curl hooks' exception extends this (SW_INIT_CLASS_ENTRY_EX pastes the names):
+// its handlers, which MINIT points at Swoole\Exception's.
 extern zend_class_entry *swoole_exception_ce;
-extern zend_object_handlers swoole_exception_handlers;
+extern const zend_object_handlers *swr_swoole_exception_handlers;
+#define swoole_exception_handlers (*swr_swoole_exception_handlers)
+
 
 // Defined in Rust.
 int php_swoole_reactor_init();

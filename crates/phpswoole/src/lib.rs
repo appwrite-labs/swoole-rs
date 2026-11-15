@@ -83,13 +83,15 @@ fn log_put(level: c_int, message: &[u8]) {
 
 /// `Swoole\Exception` and `Swoole\Error`, for code that links them by name
 /// (crates/phpredis, crates/phpevents and the shims), and Exception's handlers,
-/// which upstream's bundled curl copies by name for its exception class
-/// (`SW_INIT_CLASS_ENTRY_EX`); MINIT writes them. C reads each class as a
-/// `zend_class_entry *`: `AtomicPtr` has a pointer's layout.
+/// which upstream's bundled curl copies for its exception class
+/// (`SW_INIT_CLASS_ENTRY_EX`, through the header's `swoole_exception_handlers`);
+/// MINIT writes them. C reads each as a pointer: `AtomicPtr` has a pointer's
+/// layout.
 #[unsafe(no_mangle)]
 pub static swoole_exception_ce: AtomicPtr<zend_class_entry> = AtomicPtr::new(ptr::null_mut());
 #[unsafe(no_mangle)]
-pub static mut swoole_exception_handlers: zend_object_handlers = swoole_rs_zend::zeroed();
+pub static swr_swoole_exception_handlers: AtomicPtr<zend_object_handlers> =
+    AtomicPtr::new(ptr::null_mut());
 #[unsafe(no_mangle)]
 pub static swoole_error_ce: AtomicPtr<zend_class_entry> = AtomicPtr::new(ptr::null_mut());
 
@@ -146,10 +148,10 @@ pub unsafe extern "C" fn swr_v1_phpswoole_minit(kind: c_int, module_number: c_in
         minit.exception(),
         |_, _| {},
     );
-    // SAFETY: registered above, so its handlers are set.
-    let handlers = unsafe { *EXCEPTION.handlers() };
-    // SAFETY: MINIT, before any family copies it.
-    unsafe { swoole_exception_handlers = handlers };
+    // Registered above, so its handlers are set, for the process.
+    let handlers = EXCEPTION.handlers().cast_mut();
+    swr_swoole_exception_handlers.store(handlers, Ordering::Relaxed);
+
     minit.register_child(
         &ERROR,
         c"Swoole\\Error",
