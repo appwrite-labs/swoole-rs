@@ -155,6 +155,16 @@ class Ci(unittest.TestCase):
         self.out = result.stdout
         return result.returncode, json.loads(result.stdout) if result.stdout.startswith(('{', '[')) else {}, result.stderr
 
+    def test_timings_reports_an_incomplete_sample_without_claiming_success(self):
+        for count, expected in [(1, 0), (20, 2)]:
+            with self.subTest(count=count):
+                code, result, _ = self.ci('timings', '--count', str(count), runs={}, flags=(),
+                    history=[{'databaseId': 7, 'attempt': 1, 'status': 'success'}],
+                    jobs={'7': [['phpt / cargo 1', 'success'], ['required', 'success']]})
+                self.assertEqual(code, expected)
+                self.assertEqual(result['sample_count'], 1)
+                self.assertEqual(result['median_seconds_to_required'], 31)
+
     def test_wait_defaults_to_the_merge_tier_on_main(self):
         code, result, stderr = self.ci('wait', runs={'c' * 40: ['running', 'success']})
         self.assertEqual((code, result['workflow'], result['state']), (0, 'merge.yml', 'passed'))
@@ -510,6 +520,43 @@ class Ci(unittest.TestCase):
         # They come with the run's jobs, in its one GraphQL query: no call per job.
         self.assertEqual([call.split(' -F')[0] for call in self.gh_calls if call.startswith(('api', 'run'))],
                          ['api -i graphql', 'api -i graphql'])
+
+
+class TimingTests(unittest.TestCase):
+    def test_sample_excludes_skips_and_stops_at_requested_count(self):
+        sys.path.insert(0, str(ROOT))
+        from tools import ci
+
+        def job(name, start, end, conclusion='success'):
+            return {'name': name, 'conclusion': conclusion,
+                    'startedAt': f'2026-11-15T12:{start}:00Z',
+                    'completedAt': f'2026-11-15T12:{end}:00Z'}
+
+        runs = [{'databaseId': n, 'attempt': 2} for n in (5, 4, 3, 2, 1)]
+        skipped = [job('phpt / cargo 1', '00', '00', 'skipped'), job('required', '01', '02')]
+        missing_gate = [job('phpt / cargo 1', '00', '01')]
+        first = [job('changes', '01', '02'), job('phpt / cargo 1', '03', '04'),
+                 job('required', '04', '05'), job('informative', '02', '10')]
+        second = [job('phpt / cargo 2', '02', '04'), job('required', '04', '08')]
+        with unittest.mock.patch.object(ci, 'gh', side_effect=[json.dumps(runs), *[
+                json.dumps({'jobs': jobs}) for jobs in (skipped, missing_gate, first, second)]]) as gh:
+            result = ci.timings(2, 5)
+        self.assertEqual(result['sample_count'], 2)
+        self.assertEqual(result['median_seconds_to_required'], 300)
+        self.assertEqual([run['databaseId'] for run in result['runs']], [3, 2])
+        self.assertEqual(result['runs'][0]['jobs'], first)
+        self.assertEqual(gh.call_count, 5)
+        self.assertIn('--event', gh.call_args_list[0].args)
+        self.assertIn('pull_request', gh.call_args_list[0].args)
+        self.assertEqual(gh.call_args_list[1].args[3:5], ('--attempt', '2'))
+
+    def test_empty_history_has_no_median(self):
+        sys.path.insert(0, str(ROOT))
+        from tools import ci
+        with unittest.mock.patch.object(ci, 'gh', return_value='[]'):
+            result = ci.timings(20, 100)
+        self.assertEqual(result['sample_count'], 0)
+        self.assertIsNone(result['median_seconds_to_required'])
 
 
 if __name__ == '__main__':
