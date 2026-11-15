@@ -287,7 +287,7 @@ pub(crate) fn call_worker_error_callback(
     status: &ExitStatus,
 ) {
     serv.state().callbacks.worker_error(serv, worker, status);
-    if worker.kind() == WorkerType::Event.code() {
+    if worker.kind() == Some(WorkerType::Event) {
         crate::worker_methods::abort_worker(serv, worker);
     }
 }
@@ -332,7 +332,7 @@ pub fn kill_worker(serv: view::Server<'_>, worker_id: c_int) -> bool {
 pub fn stop_async_worker(serv: view::Server<'_>, worker: Worker<'_>) {
     let config = serv.config();
     swr_v1_worker_shutdown(worker);
-    if worker.kind() == WorkerType::Event.code() {
+    if worker.kind() == Some(WorkerType::Event) {
         crate::worker_methods::reset_worker_counter(serv, worker);
     }
     let reactor = Reactor::thread();

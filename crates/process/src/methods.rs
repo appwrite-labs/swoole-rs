@@ -75,7 +75,7 @@ pool_methods! {
     fn kill_all_workers(signo: c_int) -> () = |p| p.kill_all_workers(signo);
     fn shutdown() -> bool = |p| p.shutdown();
     fn set_max_request(max: u32, grace: u32) -> () = |p| p.set_max_requests(max, grace);
-    fn set_type(kind: c_int) -> () = |p| p.set_type(kind.c_cast::<u8>());
+    fn set_type(kind: WorkerType) -> () = |p| p.set_type(kind);
     fn set_start_id(id: c_int) -> () = |p| p.number_from(id.c_cast::<u16>());
     fn detach() -> bool = |p| p.detach();
     fn wait() -> c_int = raised |p| p.wait().map(CCast::c_cast::<c_int>);

@@ -504,14 +504,12 @@ pub fn restart_worker_process(serv: view::Server<'_>, status: &ExitStatus) {
     serv.registry().unregister(pid);
     check_exit_status(serv, Some(worker), status);
     match worker.kind() {
-        kind if kind == WorkerType::Event.code() => _ = spawn_event_worker(serv, worker),
-        kind if kind == WorkerType::Task.code() => {
-            _ = methods::spawn(serv.task_pool_ref(), worker.raw());
-        }
-        kind if kind == WorkerType::User.code() => _ = spawn_user_worker(serv, worker),
-        kind => log::warning(
+        Some(WorkerType::Event) => _ = spawn_event_worker(serv, worker),
+        Some(WorkerType::Task) => _ = methods::spawn(serv.task_pool_ref(), worker.raw()),
+        Some(WorkerType::User) => _ = spawn_user_worker(serv, worker),
+        _ => log::warning(
             ORIGIN,
-            format_args!("Unknown worker [pid={pid}] type [{kind}]"),
+            format_args!("Unknown worker [pid={pid}] type [{}]", worker.kind_code()),
         ),
     }
 }
