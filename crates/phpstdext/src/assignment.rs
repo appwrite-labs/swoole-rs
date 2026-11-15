@@ -221,10 +221,17 @@ fn assign_op(op: Op, data: Data, own: Typed, key: &Value) -> Result<(), Bailout>
     data.publish(op, target)
 }
 
-/// `ASSIGN_DIM` (or, for `operation`, `ASSIGN_DIM_OP`) at `frame`'s instruction.
-/// # Safety
-/// `frame` is at an `ASSIGN_DIM` or `ASSIGN_DIM_OP` instruction.
-unsafe fn dispatch(frame: Frame, operation: bool) -> Result<c_int, Bailout> {
+/// `ASSIGN_DIM` (or, for `operation`, `ASSIGN_DIM_OP`) at `frame`'s instruction; an
+/// instruction of any other opcode is left to Zend.
+fn dispatch(frame: Frame, operation: bool) -> Result<c_int, Bailout> {
+    let opcode = if operation {
+        z::ZEND_ASSIGN_DIM_OP
+    } else {
+        z::ZEND_ASSIGN_DIM
+    };
+    if u32::from(frame.instruction().opcode) != opcode {
+        return Ok(DISPATCH);
+    }
     let op = Op::current(frame);
     let Some(array) = op.op1_container() else {
         return Ok(DISPATCH);
@@ -269,15 +276,13 @@ pub(crate) struct AssignOp;
 
 impl Handler for Assign {
     fn run(frame: Frame<'_>) -> c_int {
-        // SAFETY: installed for `ASSIGN_DIM` only (lib.rs).
-        finish(unsafe { dispatch(frame, false) })
+        finish(dispatch(frame, false))
     }
 }
 
 impl Handler for AssignOp {
     fn run(frame: Frame<'_>) -> c_int {
-        // SAFETY: installed for `ASSIGN_DIM_OP` only (lib.rs).
-        finish(unsafe { dispatch(frame, true) })
+        finish(dispatch(frame, true))
     }
 }
 
