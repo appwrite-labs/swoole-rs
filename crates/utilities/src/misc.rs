@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/core/misc.cc (Swoole contributors).
-//! misc.cc's spinlock and futex wait/wake, defined under their upstream (Itanium) symbols
-//! with `upstream-symbols`, and its hashes, which only Rust calls; the corebase patch
-//! deletes the C++.
+//! misc.cc's spinlock, futex wait/wake and hashes (and crc32.cc's), defined under their upstream
+//! (Itanium) symbols with `upstream-symbols`; the corebase patch deletes the C++.
 use crate::{swoole_hash, swr_v1_utils_spinlock};
 use std::ffi::{c_char, c_int};
 use std::sync::atomic::AtomicU32;
@@ -81,22 +80,33 @@ pub fn futex_wakeup(word: &AtomicU32, n: c_int) -> c_int {
 /// `char` is signed on x86-64 and unsigned on arm64 Linux, and the hashes promote it.
 const SIGNED_CHAR: bool = c_char::MIN != 0;
 
-/// `swoole_hash_php(key, len)`.
-#[must_use]
-pub fn swoole_hash_php(key: &[u8]) -> u64 {
-    swoole_hash(key, 0, SIGNED_CHAR)
+macro_rules! hashes {
+    ($($symbol:literal => $name:ident -> $ret:ty = |$key:ident| $hash:expr;)*) => {$(
+        #[doc = concat!("`", stringify!($name), "(const char *key, size_t len)`.")]
+        ///
+        /// # Safety
+        /// `key` is readable for `len` bytes.
+        #[must_use]
+        #[cfg_attr(feature = "upstream-symbols", unsafe(export_name = $symbol))]
+        pub unsafe extern "C" fn $name(key: *const c_char, len: usize) -> $ret {
+            let $key: &[u8] = if key.is_null() || len == 0 {
+                &[]
+            } else {
+                // SAFETY: `key` is readable for `len` bytes, as the caller promises.
+                unsafe { std::slice::from_raw_parts(key.cast(), len) }
+            };
+            $hash
+        }
+    )*};
 }
 
-/// `swoole_hash_jenkins(key, len)`.
-#[must_use]
-pub fn swoole_hash_jenkins(key: &[u8]) -> u64 {
-    swoole_hash(key, 1, SIGNED_CHAR)
-}
-
-/// `swoole_hash_austin(key, len)`.
-#[must_use]
-pub fn swoole_hash_austin(key: &[u8]) -> u64 {
-    swoole_hash(key, 2, SIGNED_CHAR)
+hashes! {
+    "_Z15swoole_hash_phpPKcm" => swoole_hash_php -> u64 = |key| swoole_hash(key, 0, SIGNED_CHAR);
+    "_Z19swoole_hash_jenkinsPKcm" => swoole_hash_jenkins -> u64 =
+        |key| swoole_hash(key, 1, SIGNED_CHAR);
+    "_Z18swoole_hash_austinPKcm" => swoole_hash_austin -> u64 =
+        |key| swoole_hash(key, 2, SIGNED_CHAR);
+    "_Z12swoole_crc32PKcm" => swoole_crc32 -> u32 = |key| swoole_rs_crc32::crc32(key);
 }
 
 #[cfg(test)]
@@ -105,15 +115,17 @@ mod tests {
 
     #[test]
     fn the_hashes_are_the_utility_hashes() {
-        type Hash = fn(&[u8]) -> u64;
         let key = b"swoole";
-        let hashes: [(_, Hash); 3] = [
+        let hashes: [(_, unsafe extern "C" fn(*const c_char, usize) -> u64); 3] = [
             (0, swoole_hash_php),
             (1, swoole_hash_jenkins),
             (2, swoole_hash_austin),
         ];
         for (algorithm, hash) in hashes {
-            assert_eq!(hash(key), swoole_hash(key, algorithm, SIGNED_CHAR));
+            assert_eq!(
+                unsafe { hash(key.as_ptr().cast(), key.len()) },
+                swoole_hash(key, algorithm, SIGNED_CHAR)
+            );
         }
     }
 

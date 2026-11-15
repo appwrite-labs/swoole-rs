@@ -5,7 +5,7 @@ use crate::port_config::{PortConfig, methods};
 use crate::records::Lookup;
 use crate::view::{Port, Server};
 use crate::{DispatchMode, Mode};
-use core::ffi::{CStr, c_int, c_long};
+use core::ffi::{CStr, c_char, c_int, c_long};
 use core::sync::atomic::Ordering::{Relaxed, SeqCst};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::ServerEvent;
@@ -85,10 +85,10 @@ fn ip_key(state: &crate::ServerState, fd: c_long, send: Option<&SendData>) -> u3
     {
         u32::from_be(addr.addr.v4().sin_addr.s_addr)
     } else {
-        let v6 = (&raw const addr.addr).cast::<u8>();
-        // SAFETY: the address's storage holds a whole `sockaddr_in6`, plain bytes.
-        let v6 = unsafe { std::slice::from_raw_parts(v6, size_of::<libc::sockaddr_in6>()) };
-        swoole_hash_php(v6).c_cast::<u32>()
+        let v6 = (&raw const addr.addr).cast::<c_char>();
+        // SAFETY: the address's storage holds a whole `sockaddr_in6`.
+        let hash = unsafe { swoole_hash_php(v6, size_of::<libc::sockaddr_in6>()) };
+        hash.c_cast::<u32>()
     }
 }
 

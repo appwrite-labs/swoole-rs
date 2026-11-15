@@ -92,6 +92,9 @@ typedef unsigned long ulong_t;
 #define SW_THREAD_LOCAL
 #endif
 
+/*-----------------------------------Memory------------------------------------*/
+void sw_free(void *ptr);
+
 /*-------------------------------Declare Struct--------------------------------*/
 namespace swoole {
 class Reactor;
