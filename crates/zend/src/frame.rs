@@ -3,8 +3,8 @@
 use crate::{
     Call, Invalid,
     sys::{
-        swr_zend_parse_func, swr_zend_try_json_decode_ex, swr_zval_stringl, zend_execute_data,
-        zend_fcall_info, zend_fcall_info_cache, zval,
+        swr_zend_parse_func, swr_zend_try_json_decode_ex, zend_execute_data, zend_fcall_info,
+        zend_fcall_info_cache, zval,
     },
 };
 
@@ -62,9 +62,9 @@ impl Call {
     #[must_use]
     #[inline]
     pub fn this_zval(&self) -> *mut zval {
-        let frame: *mut zend_execute_data = self.frame;
-        // SAFETY: a live frame; only the field's address is taken.
-        unsafe { &raw mut (*frame).This }
+        self.frame
+            .wrapping_byte_add(std::mem::offset_of!(zend_execute_data, This))
+            .cast()
     }
 
     /// Swoole's `zend::json_decode` of `text[window]` into the return value,
@@ -99,7 +99,6 @@ impl Call {
 
     /// `RETVAL_STRINGL`: a copy of `bytes`.
     pub fn set_bytes(&self, bytes: &[u8]) {
-        // SAFETY: the return slot is live; Zend copies the bytes.
-        unsafe { swr_zval_stringl(self.return_value(), bytes.as_ptr().cast(), bytes.len()) };
+        self.set_zstring(crate::ZString::new(bytes));
     }
 }

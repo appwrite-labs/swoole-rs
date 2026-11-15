@@ -7,12 +7,11 @@ use crate::{
         _zend_expected_type_Z_EXPECTED_ARRAY, _zend_expected_type_Z_EXPECTED_BOOL,
         _zend_expected_type_Z_EXPECTED_BOOL_OR_NULL, _zend_expected_type_Z_EXPECTED_DOUBLE,
         _zend_expected_type_Z_EXPECTED_LONG, _zend_expected_type_Z_EXPECTED_RESOURCE,
-        _zend_expected_type_Z_EXPECTED_STRING, _zval_struct__bindgen_ty_1, IS_ARRAY, IS_FALSE,
-        IS_LONG, IS_NULL, IS_OBJ_DESTRUCTOR_CALLED, IS_RESOURCE, IS_TRUE, ZPP_ERROR_WRONG_ARG,
-        swr_zend_array_init, swr_zend_try_parse_bool, swr_zend_try_parse_double,
-        swr_zend_try_parse_long, swr_zend_try_parse_str, swr_zval_str, zend_argument_type_error,
-        zend_argument_value_error, zend_execute_data, zend_expected_type, zend_object, zend_string,
-        zend_value, zend_wrong_parameter_class_error, zend_wrong_parameter_error,
+        _zend_expected_type_Z_EXPECTED_STRING, IS_FALSE, IS_NULL, IS_OBJ_DESTRUCTOR_CALLED,
+        IS_RESOURCE, IS_TRUE, ZPP_ERROR_WRONG_ARG, swr_zend_try_parse_bool,
+        swr_zend_try_parse_double, swr_zend_try_parse_long, swr_zend_try_parse_str,
+        zend_argument_type_error, zend_argument_value_error, zend_execute_data, zend_expected_type,
+        zend_object, zend_string, zend_wrong_parameter_class_error, zend_wrong_parameter_error,
         zend_wrong_parameters_count_error, zval,
     },
 };
@@ -74,11 +73,20 @@ impl Call {
         crate::local::Php(std::marker::PhantomData)
     }
 
-    /// `EX(This)`, copied: its value is `$this` and its `u2` the argument count.
+    /// `EX(This)`: its value is `$this` and its `u2` the argument count.
     #[inline]
-    fn this_slot(&self) -> zval {
-        // SAFETY: a live frame.
-        unsafe { (*self.frame).This }
+    fn this_slot(&self) -> &Value {
+        // SAFETY: the handler's live frame (`new`) holds `This` for the call;
+        // `Value` is a transparent zval.
+        unsafe { &*self.this_zval().cast::<Value>() }
+    }
+
+    /// The return slot, live for the handler (`new`).
+    #[inline]
+    fn ret(&self) -> &Value {
+        // SAFETY: Zend's live return slot, which nothing else frees or
+        // overwrites while the handler runs; `Value` is a transparent zval.
+        unsafe { &*self.value.cast::<Value>() }
     }
 
     /// `EX(func)`: the function this call runs, which Zend keeps for the call.
@@ -94,18 +102,15 @@ impl Call {
     #[must_use]
     #[inline]
     pub fn num_args(&self) -> u32 {
-        let this = self.this_slot();
-        // SAFETY: a call frame's `This.u2` holds the argument count.
-        unsafe { this.u2.num_args }
+        // A call frame's `This.u2` holds the argument count.
+        self.this_slot().u2()
     }
 
-    /// `Z_OBJ_P(ZEND_THIS)`: valid in a non-static method only.
+    /// `Z_OBJ_P(ZEND_THIS)`: null without an object (a static method).
     #[must_use]
     #[inline]
     pub fn this(&self) -> *mut zend_object {
-        let this = self.this_slot();
-        // SAFETY: a non-static method's `This` holds its object.
-        unsafe { this.value.obj }
+        self.this_object().unwrap_or(ptr::null_mut())
     }
 
     /// `GC_FLAGS(Z_OBJ_P(ZEND_THIS)) & IS_OBJ_DESTRUCTOR_CALLED`: Zend is running
@@ -143,8 +148,7 @@ impl Call {
     #[must_use]
     #[inline]
     pub fn this_value(&self) -> Option<&Value> {
-        // SAFETY: the frame holds `This` for the call.
-        unsafe { Value::from_ptr(self.this_zval()) }.filter(|this| this.object().is_some())
+        Some(self.this_slot()).filter(|this| this.object().is_some())
     }
 
     /// `Z_OBJ_P(ZEND_THIS)`, or None without an object (a static method).
@@ -436,18 +440,10 @@ impl Call {
         Invalid
     }
 
-    #[inline]
-    fn set(&self, type_info: u32) {
-        // SAFETY: the return slot is live for the handler.
-        unsafe { (*self.value).u1 = _zval_struct__bindgen_ty_1 { type_info } };
-    }
-
     /// `RETVAL_LONG`.
     #[inline]
     pub fn set_long(&self, value: i64) {
-        // SAFETY: the return slot is live for the handler.
-        unsafe { (*self.value).value = zend_value { lval: value } };
-        self.set(IS_LONG);
+        self.set_owned(crate::Owned::long(value));
     }
 
     /// `Z_PARAM_ZVAL` of argument `n` (1-based), or null when an optional
@@ -488,17 +484,14 @@ impl Call {
     /// `RETVAL_ZVAL(value, 0, 0)` of a value this owns.
     #[inline]
     pub fn set_owned(&self, value: crate::Owned) {
-        // SAFETY: the return slot is live for the handler, and takes the
-        // value `Owned` gives up.
-        unsafe { *self.value = value.into_zval() };
+        // The return slot holds nothing that needs releasing.
+        self.ret().put(value);
     }
 
     /// `RETVAL_STR(string)`: the return slot takes over its reference.
     #[inline]
     pub fn set_zstring(&self, string: crate::ZString) {
-        // SAFETY: the return slot is live for the handler, and takes the live
-        // string's reference, which `ZString` gives up.
-        unsafe { swr_zval_str(self.value, string.into_raw()) };
+        self.set_owned(string.into());
     }
 
     /// `RETURN_ZVAL(ZEND_THIS, 1, 0)`: return `$this` with a new reference
@@ -511,19 +504,14 @@ impl Call {
 
     /// `array_init(return_value)`.
     pub fn set_array(&self) {
-        // SAFETY: the return slot is live for the handler.
-        unsafe { swr_zend_array_init(self.value) };
+        self.set_owned(crate::OwnedArray::default().into_owned());
     }
 
     /// Add to the array in the return slot, after `set_array` (nothing unless
     /// the slot holds an array).
     pub(crate) fn add(&self, add: impl FnOnce(&mut crate::ArrayMut)) {
-        // SAFETY: the return slot is live for the handler, and nothing else
-        // borrows it; `Owned` is a transparent zval, and is not dropped here.
-        let slot = unsafe { &mut *self.value.cast::<crate::Owned>() };
-        if let Some(array) = slot.array_mut() {
-            add(array);
-        }
+        self.ret()
+            .lend(|slot| slot.array_mut().map(|array| add(array)));
     }
 
     /// `add_assoc_long_ex(return_value, key, value)`, after `set_array`
@@ -579,43 +567,26 @@ impl Call {
     /// bailout is deferred, leaving the return slot as it was. A static method
     /// has no `$this` to read.
     pub fn set_property(&self, scope: Option<&Class>, name: &[u8]) {
-        let Some(this) = self.this_object() else {
+        let Some(this) = self.this_value() else {
             return;
         };
-        let scope = scope.map_or(ptr::null_mut(), Class::entry);
-        let rv = crate::Owned::default();
-        let mut property = ptr::null_mut();
-        // SAFETY: the frame's live `$this`, a registered class or null, a slot
-        // for a computed value, which outlives the copy below, and a writable local.
-        let bailed = unsafe {
-            crate::sys::swr_zend_try_facade_read(
-                scope,
-                this,
-                name.as_ptr().cast(),
-                name.len(),
-                true,
-                rv.as_ptr(),
-                &raw mut property,
-            )
-        };
-        if let Err(bailout) = crate::bailout::trapped(bailed) {
-            bailout.defer();
-            return;
+        match this.read(scope.and_then(Class::class_entry), name, true) {
+            Ok(Some(property)) => self.set_owned(property),
+            Ok(None) => {}
+            Err(bailout) => bailout.defer(),
         }
-        // SAFETY: the property's live value, copied with a reference.
-        unsafe { crate::sys::swr_zval_copy(self.value, property) };
     }
 
     /// `RETVAL_BOOL`.
     #[inline]
     pub fn set_bool(&self, value: bool) {
-        self.set(if value { IS_TRUE } else { IS_FALSE });
+        self.set_owned(crate::Owned::bool(value));
     }
 
     /// `RETVAL_NULL`.
     #[inline]
     pub fn set_null(&self) {
-        self.set(IS_NULL);
+        self.set_owned(crate::Owned::null());
     }
 
     /// `RETVAL_EMPTY_STRING`.
@@ -627,11 +598,7 @@ impl Call {
     /// `RETVAL_EMPTY_ARRAY`.
     #[inline]
     pub fn set_empty_array(&self) {
-        let empty = zend_value {
-            arr: crate::value::empty_array(),
-        };
-        // SAFETY: the return slot is live; the empty array is immutable.
-        unsafe { crate::value::set(self.value, empty, IS_ARRAY) };
+        self.set_owned(crate::Owned::empty_array());
     }
 }
 

@@ -10,14 +10,11 @@ use crate::{
         IS_DOUBLE, IS_FALSE, IS_INDIRECT, IS_INTERNED_STRING_EX, IS_LONG, IS_NULL, IS_OBJECT,
         IS_PTR, IS_REFERENCE, IS_STR_INTERNED, IS_STRING, IS_STRING_EX, IS_TRUE, IS_UNDEF,
         add_next_index_stringl, php_format_date, swr_zend_array_add_or_merge,
-        swr_zend_http_build_query, swr_zend_separate_array, swr_zend_serialize,
-        swr_zend_string_release, swr_zend_try_array_merge, swr_zend_try_get_double,
-        swr_zend_try_get_long, swr_zend_try_get_string, swr_zend_try_hash_clean,
-        swr_zend_try_hash_update, swr_zend_try_json_encode, swr_zend_try_ptr_dtor,
-        swr_zend_try_symtable_update, swr_zend_url_decode, swr_zval_is_true, zend_class_entry,
-        zend_hash_add_new, zend_hash_index_add, zend_hash_next_index_insert, zend_long,
-        zend_object, zend_reference, zend_string, zend_trace_to_string, zend_ulong, zend_value,
-        zval, zval_ptr_dtor,
+        swr_zend_separate_array, swr_zend_string_release, swr_zend_try_array_merge,
+        swr_zend_try_hash_clean, swr_zend_try_hash_update, swr_zend_try_ptr_dtor,
+        swr_zend_try_symtable_update, swr_zend_url_decode, zend_class_entry, zend_hash_add_new,
+        zend_hash_index_add, zend_hash_next_index_insert, zend_long, zend_object, zend_reference,
+        zend_string, zend_ulong, zend_value, zval, zval_ptr_dtor,
     },
 };
 use std::{
@@ -99,6 +96,27 @@ unsafe extern "C" {
     /// into `out`, in place of what it held, which is not released; false when
     /// they are not JSON. Objects decode as arrays, so no PHP code runs.
     safe fn swr_bytes_json_decode(text: IoSlice<'_>, out: &Owned);
+    /// `zval_get_long` inside `zend_try` (nonzero for a bailout): it reads the
+    /// value (an object warns, which runs the error handler) and writes `out`.
+    safe fn swr_zend_try_get_long(value: &Value, out: &mut zend_long) -> std::ffi::c_int;
+    /// `zval_get_double`, as [`swr_zend_try_get_long`].
+    safe fn swr_zend_try_get_double(value: &Value, out: &mut f64) -> std::ffi::c_int;
+    /// `zval_get_string`, as [`swr_zend_try_get_long`]: `out` takes a new
+    /// reference, even after a bailout.
+    safe fn swr_zend_try_get_string(value: &Value, out: &mut *mut zend_string) -> std::ffi::c_int;
+    /// `zval_is_true`: it reads the value (an object's cast handler may run).
+    safe fn swr_zval_is_true(value: &Value) -> bool;
+    /// `http_build_query($value)`: null or a new string.
+    safe fn swr_zend_http_build_query(value: &Value) -> *mut zend_string;
+    /// `serialize($value)` inside `zend_try` (`bailed` set for a bailout): null
+    /// or a new string.
+    safe fn swr_zend_serialize(value: &Value, bailed: &mut bool) -> *mut zend_string;
+    /// `json_encode($value)` inside `zend_try` (nonzero for a bailout): `out`
+    /// takes null or a new string.
+    safe fn swr_zend_try_json_encode(value: &Value, out: &mut *mut zend_string) -> std::ffi::c_int;
+    /// `zend_trace_to_string(trace, false)`: it reads the table and returns a
+    /// new string.
+    safe fn zend_trace_to_string(trace: &Array, include_main: bool) -> *mut zend_string;
 }
 
 /// A borrowed zval. Zend may change it and what it points to (refcounts, a
@@ -106,17 +124,19 @@ unsafe extern "C" {
 #[repr(transparent)]
 pub struct Value(Cell<zval>);
 
-/// A zval's value word and type, without the unions bindgen gives them: the
-/// two fields [`Value::word`] and [`Value::kind`] read, and nothing else.
+/// A zval's value word, type and `u2`, without the unions bindgen gives
+/// them: what [`Value::word`], [`Value::kind`] and [`Value::u2`] read.
 #[repr(C)]
 struct Tagged {
     word: *mut c_void,
     type_info: u32,
+    u2: u32,
 }
 
 const _: () = assert!(
     std::mem::offset_of!(Tagged, word) == std::mem::offset_of!(zval, value)
         && std::mem::offset_of!(Tagged, type_info) == std::mem::offset_of!(zval, u1)
+        && std::mem::offset_of!(Tagged, u2) == std::mem::offset_of!(zval, u2)
         && size_of::<Tagged>() <= size_of::<zval>()
         && align_of::<Tagged>() <= align_of::<zval>(),
     "Tagged is a zval's value and type_info"
@@ -148,13 +168,27 @@ impl Value {
         self.0.as_ptr()
     }
 
+    /// The zval's value word and type, copied out.
+    #[inline]
+    fn tagged(&self) -> Tagged {
+        // SAFETY: a live zval, every one of which sets `u1.type_info` and
+        // which its value union leads, read through `Tagged`'s plain fields at
+        // their offsets; any eight bytes are a raw pointer.
+        unsafe { self.as_ptr().cast::<Tagged>().read() }
+    }
+
     /// `Z_TYPE_P`.
     #[must_use]
     #[inline]
     pub fn kind(&self) -> u32 {
-        // SAFETY: a live zval, every one of which sets `u1.type_info`, read
-        // through `Tagged`'s plain field at its offset.
-        unsafe { (*self.as_ptr().cast::<Tagged>()).type_info & 0xff }
+        self.tagged().type_info & 0xff
+    }
+
+    /// `Z_NEXT_P`'s union (`u2`): a frame's `This` keeps its argument count
+    /// there.
+    #[inline]
+    pub(crate) fn u2(&self) -> u32 {
+        self.tagged().u2
     }
 
     /// The value union's first word: what `Z_STR_P`, `Z_ARRVAL_P`, `Z_OBJ_P`,
@@ -162,9 +196,7 @@ impl Value {
     /// `Z_DVAL_P` as bits. Only [`Value::kind`] says what it holds.
     #[inline]
     fn word(&self) -> *mut c_void {
-        // SAFETY: a live zval, which its value union leads; any eight bytes
-        // are a raw pointer.
-        unsafe { (*self.as_ptr().cast::<Tagged>()).word }
+        self.tagged().word
     }
 
     /// [`Value::word`] as a pointer to `T`.
@@ -316,6 +348,14 @@ impl Value {
     pub fn pointer(&self) -> Option<*mut c_void> {
         // A pointer zval holds `ptr`.
         (self.kind() == IS_PTR).then(|| self.payload())
+    }
+
+    /// Hold `value` and its reference in place of what this held, which is
+    /// not released: for a slot holding nothing that needs it (a return slot,
+    /// a fresh object's default), else a leak.
+    #[inline]
+    pub(crate) fn put(&self, value: Owned) {
+        self.0.set(value.into_zval());
     }
 
     /// Lend what the zval holds to `edit`, with null in its place meanwhile,
@@ -546,10 +586,7 @@ impl Value {
             return long;
         }
         let mut out = 0;
-        // SAFETY: a live zval; Zend reads the value only.
-        bailout::defer(bailout::trapped(unsafe {
-            swr_zend_try_get_long(self.as_ptr(), &raw mut out)
-        }));
+        bailout::defer(bailout::trapped(swr_zend_try_get_long(self, &mut out)));
         out
     }
 
@@ -561,10 +598,7 @@ impl Value {
             return double;
         }
         let mut out = 0.0;
-        // SAFETY: a live zval; Zend reads the value only.
-        bailout::defer(bailout::trapped(unsafe {
-            swr_zend_try_get_double(self.as_ptr(), &raw mut out)
-        }));
+        bailout::defer(bailout::trapped(swr_zend_try_get_double(self, &mut out)));
         out
     }
 
@@ -597,8 +631,7 @@ impl Value {
     #[must_use]
     #[inline]
     pub fn truthy(&self) -> bool {
-        // SAFETY: a live zval.
-        unsafe { swr_zval_is_true(self.as_ptr()) }
+        swr_zval_is_true(self)
     }
 
     /// `zval_get_string`: a new reference to the value as a string. An array
@@ -611,10 +644,7 @@ impl Value {
             return string.to_owned();
         }
         let mut out = ptr::null_mut();
-        // SAFETY: a live zval; Zend writes a new reference, even after a bailout.
-        bailout::defer(bailout::trapped(unsafe {
-            swr_zend_try_get_string(self.as_ptr(), &raw mut out)
-        }));
+        bailout::defer(bailout::trapped(swr_zend_try_get_string(self, &mut out)));
         ZString(out)
     }
 
@@ -622,8 +652,7 @@ impl Value {
     /// object, or one with nothing to encode.
     #[must_use]
     pub fn http_build_query(&self) -> Option<ZString> {
-        // SAFETY: a live zval; Zend returns null or a new string.
-        let query = unsafe { swr_zend_http_build_query(self.as_ptr()) };
+        let query = swr_zend_http_build_query(self);
         (!query.is_null()).then(|| ZString(query))
     }
 
@@ -632,8 +661,7 @@ impl Value {
     /// The bailout a `__serialize` raised, trapped.
     pub fn serialize(&self) -> Result<Option<ZString>, bailout::Bailout> {
         let mut bailed = false;
-        // SAFETY: a live zval; the shim traps a bailout and returns null or a new string.
-        let serialized = unsafe { swr_zend_serialize(self.as_ptr(), &raw mut bailed) };
+        let serialized = swr_zend_serialize(self, &mut bailed);
         bailout::trapped(bailed.into())?;
         Ok((!serialized.is_null()).then(|| ZString(serialized)))
     }
@@ -643,8 +671,7 @@ impl Value {
     /// The bailout a `jsonSerialize` raised, trapped.
     pub fn json_encode(&self) -> Result<Option<ZString>, bailout::Bailout> {
         let mut encoded = ptr::null_mut();
-        // SAFETY: a live zval; the shim traps a bailout and writes null or a new string.
-        bailout::trapped(unsafe { swr_zend_try_json_encode(self.as_ptr(), &raw mut encoded) })?;
+        bailout::trapped(swr_zend_try_json_encode(self, &mut encoded))?;
         Ok((!encoded.is_null()).then(|| ZString(encoded)))
     }
 
@@ -744,15 +771,31 @@ struct Counted {
     type_info: Cell<u32>,
 }
 
-/// The header of a `zend_string` or `HashTable`, which both begin with one,
-/// for as long as the value is borrowed.
+/// The header of a `HashTable`, which begins with one, for as long as the
+/// table is borrowed.
 #[inline]
-fn header<T>(counted: &UnsafeCell<T>) -> &Counted {
-    // SAFETY: the borrow keeps the value live, its first eight bytes are the
+fn header(table: &Array) -> &Counted {
+    // SAFETY: the borrow keeps the table live, its first eight bytes are the
     // header's two `u32`s, and `Cell` is a transparent `u32` that, like the
     // `UnsafeCell` it sits in, allows the writes Zend makes meanwhile.
-    unsafe { &*counted.get().cast::<Counted>() }
+    unsafe { &*table.0.get().cast::<Counted>() }
 }
+
+/// A `zend_string` up to its bytes: the counted header, the cached hash and
+/// the length, which Zend reads and writes through pointers on this thread.
+#[repr(C)]
+struct StrHead {
+    counted: Counted,
+    hash: Cell<zend_ulong>,
+    len: Cell<usize>,
+}
+
+const _: () = assert!(
+    std::mem::offset_of!(StrHead, hash) == std::mem::offset_of!(zend_string, h)
+        && std::mem::offset_of!(StrHead, len) == std::mem::offset_of!(zend_string, len)
+        && size_of::<StrHead>() <= size_of::<zend_string>(),
+    "StrHead is a zend_string's header, hash and length"
+);
 
 /// An array key: `ZEND_HASH_FOREACH_KEY`'s string or integer.
 #[derive(Clone, Copy)]
@@ -778,8 +821,7 @@ impl Array {
     /// `zend_trace_to_string(trace, false)`: a backtrace array as an exception prints it.
     #[must_use]
     pub fn trace_to_string(&self) -> ZString {
-        // SAFETY: a live table; Zend returns a new string.
-        ZString(unsafe { zend_trace_to_string(self.as_ptr(), false) })
+        ZString(zend_trace_to_string(self, false))
     }
 
     /// `zend_array_is_list`.
@@ -868,7 +910,7 @@ impl Drop for HeldArray {
     #[inline]
     fn drop(&mut self) {
         let Some(array) = self.0.array() else { return };
-        let header = header(&array.0);
+        let header = header(array);
         let refcount = header.refcount.get();
         let immutable = header.type_info.get() & crate::sys::IS_ARRAY_IMMUTABLE != 0;
         if !immutable && refcount == 1 {
@@ -946,22 +988,30 @@ impl ZStr {
         self.0.get()
     }
 
+    /// The header before the bytes, for as long as the string is borrowed.
+    #[inline]
+    fn head(&self) -> &StrHead {
+        // SAFETY: the borrow keeps the string live, and it begins with
+        // `StrHead`'s fields at their offsets; `Cell`s, like the `UnsafeCell`
+        // they sit in, allow the writes Zend makes meanwhile.
+        unsafe { &*self.0.get().cast::<StrHead>() }
+    }
+
     /// `ZSTR_VAL`/`ZSTR_LEN`: the bytes, without the NUL that follows them.
     #[must_use]
     #[inline]
     pub fn bytes(&self) -> &[u8] {
-        // SAFETY: a live string, read while borrowed.
-        let length = unsafe { (*self.as_ptr()).len };
-        // SAFETY: a live string holds `len` bytes at `val`, which it keeps while borrowed.
-        unsafe { std::slice::from_raw_parts(crate::string::val(self.as_ptr()), length) }
+        let bytes = self.bytes_with_nul();
+        bytes.split_last().map_or(bytes, |(_, bytes)| bytes)
     }
 
     /// The bytes and the NUL Zend keeps after them; a NUL among the bytes stays.
     #[must_use]
     #[inline]
     pub fn bytes_with_nul(&self) -> &[u8] {
-        let length = self.bytes().len() + 1;
-        // SAFETY: a live string holds its bytes at `val` and a NUL after them.
+        let length = self.head().len.get() + 1;
+        // SAFETY: a live string holds `len` bytes at `val` and a NUL after
+        // them, which it keeps while borrowed.
         unsafe { std::slice::from_raw_parts(crate::string::val(self.as_ptr()), length) }
     }
 
@@ -979,7 +1029,7 @@ impl ZStr {
     pub fn to_owned(&self) -> ZString {
         if !self.interned() {
             // A live, counted string; the new reference is the `ZString`'s.
-            let refcount = &header(&self.0).refcount;
+            let refcount = &self.head().counted.refcount;
             refcount.set(refcount.get() + 1);
         }
         ZString(self.as_ptr())
@@ -989,7 +1039,7 @@ impl ZStr {
     #[must_use]
     #[inline]
     pub fn interned(&self) -> bool {
-        header(&self.0).type_info.get() & IS_STR_INTERNED != 0
+        self.head().counted.type_info.get() & IS_STR_INTERNED != 0
     }
 
     /// `zendi_smart_strcmp`: PHP's `==` order of two strings, numeric when
@@ -1250,6 +1300,18 @@ impl Owned {
         Self(Value(Cell::new(zval)))
     }
 
+    /// `ZVAL_EMPTY_ARRAY`: the immutable empty array, which is not counted.
+    #[must_use]
+    #[inline]
+    pub fn empty_array() -> Self {
+        let mut zval = UNDEF;
+        zval.value = zend_value {
+            arr: crate::value::empty_array(),
+        };
+        zval.u1.type_info = IS_ARRAY;
+        Self(Value(Cell::new(zval)))
+    }
+
     /// `ZVAL_NULL`.
     #[must_use]
     #[inline]
@@ -1353,7 +1415,7 @@ impl ArrayMut {
         }
         // `GC_REFCOUNT(arr) > 1` is the only case SEPARATE_ARRAY acts on (an
         // immutable array counts 2), so an unshared one skips the call.
-        if header(&self.0.array()?.0).refcount.get() > 1 {
+        if header(self.0.array()?).refcount.get() > 1 {
             // SAFETY: an array zval borrowed mutably; a shared or immutable
             // array is duplicated, and the zval's reference moves to the copy.
             unsafe { swr_zend_separate_array(self.0.as_ptr()) };
