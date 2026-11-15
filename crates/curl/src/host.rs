@@ -9,8 +9,10 @@ use std::cell::Cell;
 use std::ffi::{CStr, c_int, c_long, c_void};
 use std::io::Write;
 use std::{ptr, rc::Rc};
-use swoole_rs_coroutine::{Coroutine, Resume};
-use swoole_rs_curl_sys::{CURL_CSELECT_ERR, CURL_CSELECT_IN, CURL_CSELECT_OUT, CURLcode};
+use swoole_rs_coroutine::Resume;
+use swoole_rs_curl_sys::{
+    CURL_CSELECT_ERR, CURL_CSELECT_IN, CURL_CSELECT_OUT, CURLE_FAILED_INIT, CURLcode,
+};
 use swoole_rs_reactor::Events;
 use swoole_rs_reactor::{SocketRecord, event_api};
 use swoole_rs_tls::event_socket::EventSocket;
@@ -143,6 +145,9 @@ pub(crate) fn current() -> *mut c_void {
     swoole_rs_coroutine::current_native()
 }
 
+/// `Coroutine::get_current_cid()`.
+pub(crate) use swoole_rs_coroutine::current_cid;
+
 /// `co->yield_ex(timeout)` of `co`, the running coroutine (aborting otherwise), then
 /// whether it was canceled.
 pub(crate) fn yield_(co: *mut c_void, timeout: f64) -> bool {
@@ -201,10 +206,8 @@ pub extern "C" fn swoole_curl_multi_new() -> *mut Multi {
 /// The fatal error may longjmp: the caller's frames own nothing that needs a drop.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swoole_curl_check_bound_co(multi: &Multi) -> *mut c_void {
-    let co = multi.co.get();
-    // SAFETY: the coroutine waiting on the multi is live.
-    if let Some(co) = unsafe { co.cast::<Coroutine>().as_ref() } {
-        swoole_rs_coroutine::set_socket_bound_cid(co.cid);
+    if let Some(waiter) = multi.co.get() {
+        swoole_rs_coroutine::set_socket_bound_cid(waiter.cid);
         // On the stack, NUL-terminated: the fatal error may longjmp past this frame.
         let mut buffer = [0u8; 128];
         let (mut text, _) = buffer.split_at_mut(127);
@@ -212,7 +215,7 @@ pub unsafe extern "C" fn swoole_curl_check_bound_co(multi: &Multi) -> *mut c_voi
         write!(
             text,
             "This cURL handle is currently executing in coroutine#{}, cannot be operated",
-            co.cid
+            waiter.cid
         )
         .unwrap_or_default();
         let message = CStr::from_bytes_until_nul(&buffer).unwrap_or(c"");
@@ -237,11 +240,13 @@ pub unsafe extern "C" fn swoole_curl_check_bound_co(multi: &Multi) -> *mut c_voi
 /// # Safety
 /// `cp` has a Swoole handle, which nothing else uses meanwhile.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_curl_easy_perform(cp: Easy) -> CURLcode {
-    // SAFETY: per the caller, the easy handle's live Swoole handle.
-    let handle = unsafe { &mut *cp.handle() };
+pub unsafe extern "C" fn swoole_curl_easy_perform(cp: Easy<'_>) -> CURLcode {
+    let Some(handle) = cp.handle() else {
+        return CURLE_FAILED_INIT;
+    };
     // The handle's own multi, held while it runs the handle.
-    let multi = Rc::clone(handle.easy_multi.get_or_insert_with(Multi::create));
+    let multi = handle.easy_multi.take().unwrap_or_else(Multi::create);
+    handle.easy_multi.set(Some(Rc::clone(&multi)));
     let result = multi.exec(handle);
     if result == EXEC_NEEDS_COROUTINE {
         // SAFETY: this frame owns nothing that needs a drop.

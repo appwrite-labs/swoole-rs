@@ -77,8 +77,9 @@ impl AddressList {
 }
 
 unsafe extern "C" {
-    /// PHP's `php_network_gethostbyname`.
-    fn php_network_gethostbyname(name: *const libc::c_char) -> *mut libc::hostent;
+    /// PHP's `php_network_gethostbyname`: `gethostbyname` of the name, which it only
+    /// reads; null, or an entry live until the thread's next lookup.
+    safe fn php_network_gethostbyname(name: Text<'_>) -> *mut libc::hostent;
 }
 
 // libc's. Each reads its `Text`s and hints, writes only the one object a reference
@@ -212,8 +213,7 @@ fn inet4(s: Sock, host: &[u8]) -> Result<Option<in_addr>, Stop> {
     let entry = if host.count_bytes() > MAXFQDNLEN {
         ptr::null_mut()
     } else {
-        // SAFETY: NUL-terminated text.
-        unsafe { php_network_gethostbyname(host.as_ptr()) }
+        php_network_gethostbyname(host.as_c_str().into())
     };
     if entry.is_null() {
         socket_error(s.socket, "Host lookup failed", host_error())?;
