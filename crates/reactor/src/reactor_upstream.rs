@@ -130,6 +130,11 @@ pub fn reactor_get_handler(
     reactor.handlers().of_event(fd_type, event)
 }
 
+/// `reactor->set_default_error_handler(handler)`.
+pub fn set_default_error_handler(reactor: crate::Running<'_>, handler: Handler) {
+    crate::swr_v1_reactor_handlers_set_default(reactor.handlers(), 2, Some(handler));
+}
+
 /// `Reactor::default_write_handler`, which `swoole_event_init` sets.
 #[must_use]
 pub fn reactor_default_write_handler(reactor: crate::Running<'_>) -> Option<Handler> {

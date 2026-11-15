@@ -11,7 +11,7 @@ use core::ffi::{c_int, c_void};
 use swoole_rs_reactor::reactor_upstream::{
     change as reactor_change, reactor_interest, set_handler,
 };
-use swoole_rs_reactor::{ChangeOp, Events, Handler, Interest, ReactorPrepared, Running, Socket};
+use swoole_rs_reactor::{ChangeOp, Events, Handler, Interest, Running, Socket};
 
 /// The key a reactor holds its server under: private, so only [`Reactor::hold_server`]
 /// stores an object under it.
@@ -117,10 +117,6 @@ impl Reactor {
     }
     /// `reactor->set_default_error_handler(handler)`.
     pub(crate) fn set_error_handler(self, handler: Handler) {
-        // A live reactor.
-        let handlers = ReactorPrepared::of(self.0).handlers;
-        // SAFETY: its live handler tables, which nothing else borrows meanwhile.
-        let handlers = unsafe { &mut *handlers };
-        swoole_rs_reactor::swr_v1_reactor_handlers_set_default(handlers, 2, Some(handler));
+        swoole_rs_reactor::reactor_upstream::set_default_error_handler(self.handle(), handler);
     }
 }
