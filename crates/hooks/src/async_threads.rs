@@ -44,15 +44,14 @@ thread_local! {
     static THREADS: Cell<Option<Box<AsyncThreads>>> = const { Cell::new(None) };
 }
 
-/// `f` over the thread's handle, taken out for the call and put back after it; none
-/// without one. Only this module calls it, never from inside another `f`.
+/// `f` over the current reactor's handle, including a thread-context coroutine
+/// that adopted its pointer. Those threads run serially; no `f` switches coroutine
+/// or runs a callback that can free the handle.
 fn with_current<R>(f: impl FnOnce(&mut AsyncThreads) -> R) -> Option<R> {
-    THREADS.with(|slot| {
-        let mut threads = slot.take()?;
-        let result = f(&mut threads);
-        slot.set(Some(threads));
-        Some(result)
-    })
+    let current = thread_async_threads().cast::<AsyncThreads>();
+    // SAFETY: the reactor owner keeps the box live, including while a serialized
+    // thread-context coroutine adopts it. No other borrow reaches it during `f`.
+    unsafe { current.as_mut() }.map(f)
 }
 
 /// A heap copy of an event, holding its own reference to the request, which only

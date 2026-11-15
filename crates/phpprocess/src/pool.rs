@@ -116,8 +116,8 @@ fn worker_busy(busy: bool) {
 
 /// The message's payload as a string: the bus's packet itself when it holds one.
 fn message_data(pool: PoolRef<'_>, message: &RecvData<'_>) -> Owned {
-    let length = message.data.len();
-    let moved = if length != 0 && message.info.flags & EVENT_DATA_OBJ_PTR != 0 {
+    let length = message.data().len();
+    let moved = if length != 0 && message.info().flags & EVENT_DATA_OBJ_PTR != 0 {
         // An OBJ_PTR message comes from the pool's message bus: its packet, the
         // message's bytes, is now the caller's.
         swoole_rs_server::pool_bus_move_packet(pool).cast::<u8>()
@@ -131,7 +131,7 @@ fn message_data(pool: PoolRef<'_>, message: &RecvData<'_>) -> Owned {
         // least `length` written bytes, and this one is now ours.
         unsafe { ZBuf::from_raw(string::from_val(moved), length) }.into_zstring()
     } else {
-        ZString::new(message.data)
+        ZString::new(message.data())
     };
     Owned::string(string)
 }
