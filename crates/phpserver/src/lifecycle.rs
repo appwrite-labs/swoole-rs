@@ -8,7 +8,7 @@ use crate::{
     server::{SERVER, fatal, running, server},
 };
 use std::{
-    cell::{Cell, OnceCell, RefCell},
+    cell::{Cell, OnceCell},
     collections::{HashMap, VecDeque},
     ffi::{CStr, CString, c_int, c_void},
     ptr,
@@ -208,7 +208,20 @@ fn add_worker(serv: view::Server<'_>, process: &Value) -> i64 {
 }
 
 /// `send_yield`'s coroutines waiting on one session, each with its token.
-pub(crate) type Waiters = Rc<RefCell<VecDeque<(u64, Coroutine)>>>;
+type Queue = VecDeque<(u64, Coroutine)>;
+
+/// A session's [`Queue`], shared by its waiters and whoever wakes them; taken
+/// out and put back with nothing in between that yields or runs PHP code.
+pub(crate) type Waiters = Rc<Cell<Queue>>;
+
+/// `f` over the waiters' queue, taken out and put back: `f` only moves
+/// coroutine handles, which neither yields nor runs PHP code.
+fn with_queue<R>(waiters: &Waiters, f: impl FnOnce(&mut Queue) -> R) -> R {
+    let mut queue = waiters.take();
+    let result = f(&mut queue);
+    waiters.set(queue);
+    result
+}
 
 /// `send_coroutine_map`: `send_yield`'s waiting coroutines by session.
 type SendWaiters = HashMap<i64, Waiters>;
@@ -284,11 +297,12 @@ extern "C" fn php_memory() -> usize {
 /// What a Server object embeds: its share in its server, none until `__construct`
 /// binds one, what upstream's `ServerProperty` held, and the `init_arguments`
 /// setting, null until `set()` gives one. Methods, and PHP code they run, share
-/// it, so each field is a cell borrowed only for one access.
+/// it, so each field is a cell taken out and put back around one access, with
+/// nothing in between that yields or runs PHP code.
 pub(crate) struct ServerData {
     serv: OnceCell<SharedServer>,
-    property: RefCell<Property>,
-    init_arguments: RefCell<Owned>,
+    property: Cell<Property>,
+    init_arguments: Cell<Owned>,
     /// What `instance::set_server_object` marked the object with when it became
     /// its thread's running one; 0 for an object that never was.
     mark: Cell<u64>,
@@ -303,8 +317,8 @@ impl Custom for ServerData {
     fn new() -> Self {
         Self {
             serv: OnceCell::new(),
-            property: RefCell::default(),
-            init_arguments: RefCell::new(Owned::null()),
+            property: Cell::default(),
+            init_arguments: Cell::new(Owned::null()),
             mark: Cell::new(0),
         }
     }
@@ -398,18 +412,21 @@ impl<'a> ServerObject<'a> {
 
     /// `init_arguments`, with a reference of its own; null without one.
     pub(crate) fn init_arguments(self) -> Owned {
-        self.data.init_arguments.borrow().copy()
+        let kept = self.data.init_arguments.replace(Owned::null());
+        let copy = kept.copy();
+        self.data.init_arguments.set(kept);
+        copy
     }
 
-    /// Keep `value` as `init_arguments`; the one it replaces is released after
-    /// the borrow ends, since releasing it can run PHP code.
+    /// Keep `value` as `init_arguments`; the one it replaces is released once
+    /// the new one is in, since releasing it can run PHP code.
     pub(crate) fn set_init_arguments(self, value: &Value) {
         drop(self.data.init_arguments.replace(value.copy()));
     }
 
     /// `f` over the property; `f` calls nothing that reaches the object.
     fn property<R>(self, f: impl FnOnce(&mut Property) -> R) -> R {
-        f(&mut self.data.property.borrow_mut())
+        self.data.property(f)
     }
 
     /// `get_callback(kind)`: the callable, a reference the call holds, or none.
@@ -475,6 +492,15 @@ pub(crate) fn owns_shared() -> bool {
 }
 
 impl ServerData {
+    /// `f` over the property, taken out and put back: `f` neither yields nor
+    /// runs PHP code, and what it removes is released after it is put back.
+    fn property<R>(&self, f: impl FnOnce(&mut Property) -> R) -> R {
+        let mut property = self.property.take();
+        let result = f(&mut property);
+        self.property.set(property);
+        result
+    }
+
     /// `php_swoole_server_free_object`'s releases: the `dispatch_func` callable,
     /// the callbacks, the user processes, the ports' links and the commands.
     /// Each goes out of the object before it drops, since its destructor can
@@ -489,16 +515,16 @@ impl ServerData {
             let dispatch = server.config().private_data_3.replace(None);
             bailout::defer(crate::dispatch::release_dispatch_func(dispatch));
         }
-        let callbacks = std::mem::take(&mut self.property.borrow_mut().callbacks);
+        let callbacks = self.property(|p| std::mem::take(&mut p.callbacks));
         drop(callbacks);
         // `sw_zval_free`: each copy's reference goes.
-        let processes = std::mem::take(&mut self.property.borrow_mut().user_processes);
+        let processes = self.property(|p| std::mem::take(&mut p.user_processes));
         drop(processes);
-        let ports = std::mem::take(&mut self.property.borrow_mut().ports);
+        let ports = self.property(|p| std::mem::take(&mut p.ports));
         for port in ports {
             crate::port::release(&port);
         }
-        let commands = std::mem::take(&mut self.property.borrow_mut().commands);
+        let commands = self.property(|p| std::mem::take(&mut p.commands));
         drop(commands);
     }
 }
@@ -941,7 +967,7 @@ fn command_run(callable: &Weak<Kept>, message: &[u8], reply: &mut Vec<u8>) {
 /// memory: the server's callback table may keep the callback, and so this,
 /// past the request (a master-handled command's stays until shutdown).
 struct Wait {
-    reply: RefCell<Option<Vec<u8>>>,
+    reply: Cell<Option<Vec<u8>>>,
     waiter: Waiter,
     replied: Cell<bool>,
 }
@@ -982,7 +1008,7 @@ fn command(call: &Call) {
         return;
     }
     let wait = Rc::new(Wait {
-        reply: RefCell::default(),
+        reply: Cell::default(),
         waiter: Waiter::default(),
         replied: Cell::new(false),
     });
@@ -1380,11 +1406,13 @@ pub fn php_swoole_server_send_yield(
         let Some((waiters, token)) = queued else {
             return Ok(false);
         };
-        waiters.borrow_mut().push_back((token, co));
+        with_queue(&waiters, |queue| queue.push_back((token, co)));
         let timeout = server.config().send_timeout.get();
         // `onBufferEmpty` or `onClose` wakes it.
         if !swoole_rs_phpcoroutines::suspend_for(timeout) {
-            waiters.borrow_mut().retain(|&(waiter, _)| waiter != token);
+            with_queue(&waiters, |queue| {
+                queue.retain(|&(waiter, _)| waiter != token);
+            });
             return Ok(false);
         }
         let sent = server_methods::send(server, session_id, data);
@@ -1415,12 +1443,13 @@ pub(crate) fn send_waiters(session_id: i64) -> Option<std::mem::ManuallyDrop<Wai
 /// The next coroutine to wake: `pop` takes it off the queue (a resume), else
 /// it stays first until its `send_yield` leaves (a cancel).
 pub(crate) fn send_next(waiters: &Waiters, pop: bool) -> Option<Coroutine> {
-    let mut queue = waiters.borrow_mut();
-    let next = if pop {
-        queue.pop_front()
-    } else {
-        queue.front().copied()
-    };
+    let next = with_queue(waiters, |queue| {
+        if pop {
+            queue.pop_front()
+        } else {
+            queue.front().copied()
+        }
+    });
     next.map(|(_, co)| co)
 }
 
