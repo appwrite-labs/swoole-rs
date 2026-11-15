@@ -3,7 +3,7 @@
 use std::{
     ffi::{c_char, c_void},
     io::IoSlice,
-    ptr,
+    ptr::NonNull,
 };
 use swoole_rs_zend::{
     Call, UNDEF, ZStr, handlers,
@@ -14,11 +14,13 @@ unsafe extern "C" {
     /// `estrndup`: it reads the lent bytes (an `IoSlice` is an iovec) and returns
     /// an emalloc'd NUL-terminated copy.
     safe fn swr_bytes_estrndup(bytes: IoSlice<'_>) -> *mut c_char;
-    fn swr_phpstdext_pcre_cache(regex: *mut zend_string, result: *mut *mut c_void) -> u8;
-    fn swr_phpstdext_pcre_retain(entry: *mut c_void);
-    fn swr_phpstdext_pcre_release(entry: *mut c_void);
+    /// `pcre_get_compiled_regex_cache` of a live string inside `zend_try`,
+    /// retaining what it returns: nonzero for a bailout, else `result` holds the
+    /// retained entry, or none after the warning of a pattern that failed.
+    safe fn swr_phpstdext_pcre_cache(regex: &ZStr, result: &mut Option<Pattern>) -> u8;
+    fn swr_phpstdext_pcre_release(entry: NonNull<c_void>);
     fn swr_phpstdext_pcre_match(
-        entry: *mut c_void,
+        entry: NonNull<c_void>,
         subject: *mut zend_string,
         count: *mut zval,
         result: *mut zval,
@@ -29,9 +31,11 @@ unsafe extern "C" {
     ) -> u8;
 }
 
-/// A retained PHP PCRE cache entry. Release is native refcount/memory work and
-/// cannot run PHP code, so a contained matching bailout still drops this owner.
-struct Pattern(*mut c_void);
+/// A retained PHP PCRE cache entry, which only `swr_phpstdext_pcre_cache`
+/// makes. Release is native refcount/memory work and cannot run PHP code, so a
+/// contained matching bailout still drops this owner.
+#[repr(transparent)]
+struct Pattern(NonNull<c_void>);
 impl Drop for Pattern {
     fn drop(&mut self) {
         // SAFETY: this owner retains exactly one live compiled-pattern reference.
@@ -48,18 +52,13 @@ fn match_pattern(
     flags: zend_long,
     offset: zend_long,
 ) -> Result<(), swoole_rs_zend::bailout::Bailout> {
-    let mut compiled = ptr::null_mut();
-    // SAFETY: both argument strings stay live; compilation warnings are trapped below Rust.
-    swoole_rs_zend::bailout::trapped(i32::from(unsafe {
-        swr_phpstdext_pcre_cache(regex.as_ptr(), &raw mut compiled)
-    }))?;
-    if compiled.is_null() {
+    let mut compiled = None;
+    // Compilation warnings are trapped below Rust.
+    swoole_rs_zend::bailout::trapped(i32::from(swr_phpstdext_pcre_cache(regex, &mut compiled)))?;
+    let Some(compiled) = compiled else {
         call.set_bool(false);
         return Ok(());
-    }
-    // SAFETY: PHP's live cache entry is retained before any matching effect.
-    unsafe { swr_phpstdext_pcre_retain(compiled) };
-    let compiled = Pattern(compiled);
+    };
     let mut count = UNDEF;
     // SAFETY: PHP borrows the retained pattern, subject and writable result slots
     // inside a native trap, below the Pattern owner and all caller frames.

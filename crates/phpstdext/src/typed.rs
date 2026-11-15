@@ -19,8 +19,8 @@ use swoole_rs_zend::{
     sys::{
         _zend_hash_init, _zval_struct__bindgen_ty_2, HashTable, IS_ARRAY, IS_ARRAY_EX, IS_DOUBLE,
         IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT, IS_RESOURCE, IS_STRING, IS_TRUE, IS_UNDEF,
-        swr_zend_efree, swr_zend_separate_array, zend_class_entry, zend_internal_function,
-        zend_long, zend_value, zif_handler, zval_ptr_dtor,
+        swr_zend_efree, zend_class_entry, zend_internal_function, zend_long, zend_value,
+        zif_handler, zval_ptr_dtor,
     },
     throw_error, type_error, value,
 };
@@ -221,6 +221,11 @@ impl Parsed {
 unsafe extern "C" {
     /// libc's `isspace`, as upstream's `remove_all_spaces` classifies bytes.
     safe fn isspace(c: c_int) -> c_int;
+    /// `SEPARATE_ARRAY` of an array zval (anything else is left alone): a
+    /// shared table is copied for the slot, and its count only drops, so it
+    /// stays live for whoever else holds it.
+    #[link_name = "swr_zend_separate_array"]
+    safe fn separate_array(array: &Value);
 }
 
 /// `get_type`.
@@ -488,8 +493,7 @@ fn check_array(typed: Typed, element: Option<Typed>) -> bool {
 /// `container` holds `source`, which nothing uses afterwards.
 pub(crate) unsafe fn separate<'a>(value: &'a Value, source: Typed<'a>) -> Typed<'a> {
     let container = value.as_ptr();
-    // SAFETY: Zend separates this exact live array slot.
-    unsafe { swr_zend_separate_array(container) };
+    separate_array(value);
     // Separation leaves the container holding an array: `source`'s, or its copy.
     let Some(ht) = value.array_ptr() else {
         return source;

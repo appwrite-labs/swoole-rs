@@ -706,7 +706,7 @@ pub extern "C" fn swr_v1_server_connection(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::state::{free_state, swr_v1_server_state_new};
+    use crate::TestServer;
 
     impl ServerTables {
         /// `max_connection = value` over a test's own tables, mapped or not.
@@ -736,7 +736,7 @@ pub(crate) mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "a million-session table takes Miri over 15 minutes")]
     fn retirement_scans_table_edges_without_truncating_worker_identity() {
-        let state = swr_v1_server_state_new();
+        let mut server = TestServer::new();
         let mut sessions: Vec<_> = (0..1_048_576)
             .map(|id| SessionRecord {
                 id,
@@ -746,10 +746,10 @@ pub(crate) mod tests {
             .collect();
         sessions[0].reactor_bits = 0x5a12_3401;
         sessions[1_048_575].reactor_bits = 0x5a12_3401;
-        unsafe { (*(*state).tables()).session_list = naming(&mut sessions) };
-        unsafe { &*state }.retire_sessions(257);
+        server.tables_mut().session_list = naming(&mut sessions);
+        server.state().retire_sessions(257);
         assert!(sessions.iter().all(|slot| slot.fd == 23));
-        unsafe { &*state }.retire_sessions(1);
+        server.state().retire_sessions(1);
         for (index, slot) in sessions.iter().enumerate() {
             let edge = index == 0 || index == 1_048_575;
             assert_eq!(slot.id, i64::try_from(index).unwrap());
@@ -759,12 +759,11 @@ pub(crate) mod tests {
             );
             assert_eq!(slot.fd, if edge { 0 } else { 23 });
         }
-        unsafe { free_state(state) };
     }
 
     #[test]
     fn sessions_validate_reused_slots_tls_and_iteration() {
-        let state = swr_v1_server_state_new();
+        let mut server = TestServer::new();
         let mut sessions = [
             SessionRecord {
                 id: 0,
@@ -784,36 +783,36 @@ pub(crate) mod tests {
             (&raw mut sessions).cast::<SessionRecord>(),
             (&raw mut connections).cast::<ConnectionRecord>(),
         );
+        let tables = server.tables_mut();
+        tables.session_list = naming_at(session_at);
+        tables.connection_list = naming_at(connection_at);
+        let state = server.state();
         unsafe {
-            let tables = &mut *(*state).tables();
-            tables.session_list = naming_at(session_at);
-            tables.connection_list = naming_at(connection_at);
-            tables.set_max_connection_unchecked(3);
-            assert_eq!(swr_v1_server_session(&*state, 1), session_at.add(1));
+            state.tables_ref().set_max_connection_unchecked(3);
+            assert_eq!(swr_v1_server_session(state, 1), session_at.add(1));
             let expected = connection_at.add(2);
-            assert_eq!(swr_v1_server_connection(&*state, 1, 2), expected);
-            assert!(swr_v1_server_connection(&*state, 1_048_577, 2).is_null());
-            assert!(swr_v1_server_connection(&*state, -1, 0).is_null());
-            assert!(swr_v1_server_connection(&*state, -1, 1).is_null());
-            assert!(swr_v1_server_connection(&*state, -1, 2).is_null());
+            assert_eq!(swr_v1_server_connection(state, 1, 2), expected);
+            assert!(swr_v1_server_connection(state, 1_048_577, 2).is_null());
+            assert!(swr_v1_server_connection(state, -1, 0).is_null());
+            assert!(swr_v1_server_connection(state, -1, 1).is_null());
+            assert!(swr_v1_server_connection(state, -1, 2).is_null());
             // fd == max_connection is one past the table.
-            assert!(swr_v1_server_connection(&*state, 3, 0).is_null());
+            assert!(swr_v1_server_connection(state, 3, 0).is_null());
             (*expected).ssl = true;
-            assert!(swr_v1_server_connection(&*state, 1, 3).is_null());
-            assert_eq!(swr_v1_server_connection(&*state, 1, 2), expected);
+            assert!(swr_v1_server_connection(state, 1, 3).is_null());
+            assert_eq!(swr_v1_server_connection(state, 1, 2), expected);
             (*expected).ssl_ready = true;
-            assert_eq!(swr_v1_server_connection(&*state, 1, 3), expected);
+            assert_eq!(swr_v1_server_connection(state, 1, 3), expected);
             (*expected)
                 .closed
                 .store(1, core::sync::atomic::Ordering::Relaxed);
-            assert!(swr_v1_server_connection(&*state, 2, 4).is_null());
+            assert!(swr_v1_server_connection(state, 2, 4).is_null());
             (*expected)
                 .closed
                 .store(0, core::sync::atomic::Ordering::Relaxed);
-            assert_eq!(swr_v1_server_connection(&*state, 2, 4), expected);
+            assert_eq!(swr_v1_server_connection(state, 2, 4), expected);
             (*expected).active.store(0, Relaxed);
-            assert!(swr_v1_server_connection(&*state, 1, 2).is_null());
-            free_state(state);
+            assert!(swr_v1_server_connection(state, 1, 2).is_null());
         }
     }
 }

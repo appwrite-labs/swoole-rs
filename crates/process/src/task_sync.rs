@@ -82,18 +82,6 @@ pub struct Tasks<'a, H> {
 pub struct ResultSlot<'a>(&'a [AtomicU32; EVENT_SIZE / 4]);
 
 impl<'a> ResultSlot<'a> {
-    /// The slot at `slot`.
-    ///
-    /// # Safety
-    /// `slot` is a worker's `task_results` slot: `SW_IPC_MAX_SIZE` bytes, aligned as
-    /// an `EventData`, live for `'a`, and written meanwhile only by the server's
-    /// task workers.
-    #[must_use]
-    pub const unsafe fn new(slot: std::ptr::NonNull<u8>) -> Self {
-        // SAFETY: as the caller promises; any bytes are a word.
-        Self(unsafe { slot.cast().as_ref() })
-    }
-
     /// The slot made of `words`, the slot's whole `EventData`.
     #[must_use]
     pub const fn of(words: &'a [AtomicU32; EVENT_SIZE / 4]) -> Self {
@@ -553,8 +541,8 @@ mod tests {
         result: &'a mut [u64],
     ) -> Waiting<'a, Script> {
         assert_eq!(result.len(), EVENT_SIZE / 8);
-        let slot = std::ptr::NonNull::from(result).cast();
-        tasks(script, counters).waiting(unsafe { ResultSlot::new(slot) })
+        let slot = std::ptr::NonNull::from(result).cast::<[AtomicU32; EVENT_SIZE / 4]>();
+        tasks(script, counters).waiting(ResultSlot::of(unsafe { slot.as_ref() }))
     }
 
     #[test]

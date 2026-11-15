@@ -11,8 +11,7 @@ use crate::port_config::PortConfig;
 use crate::records::tests::naming_at;
 use crate::records::{ConnectionRecord, ServerTables, SessionRecord};
 use crate::shared::{PortCounters, ServerCounters, ServerShared};
-use crate::view::Fields;
-use crate::{Mode, ServerState, view};
+use crate::{Mode, ServerState, TestServer, view};
 
 /// `SW_SESSION_LIST_SIZE`.
 const SESSIONS: usize = 1 << 20;
@@ -25,8 +24,7 @@ const FD_STREAM_SERVER: c_int = 1;
 /// A process-mode server with one reactor thread, its tables, shared counters and
 /// pools, one TCP port listening on 127.0.0.1, and this thread's reactor.
 pub(crate) struct LiveServer {
-    head: Box<Fields>,
-    state: Box<ServerState>,
+    server: TestServer,
     shared: Box<ServerShared>,
     port_counters: Box<PortCounters>,
     port: *mut PortConfig,
@@ -59,13 +57,12 @@ impl LiveServer {
         unsafe {
             tables.set_max_connection_unchecked(u32::try_from(CONNECTIONS).unwrap_or(u32::MAX));
         };
-        let state = Box::new(ServerState::with_tables(tables));
+        let mut server = TestServer::with_tables(tables);
         // SAFETY: the shared record is plain data, for which zero is the state
         // `swr_v1_server_new`'s calloc leaves it in.
         let mut shared: Box<ServerShared> = Box::new(unsafe { core::mem::zeroed() });
         let mut port_counters = Box::new(PortCounters::default());
-        // SAFETY: the state's own configuration, which nothing else reads yet.
-        let config = unsafe { &mut *state.config() };
+        let config = server.config_mut();
         config.mode_ = Mode::Process;
         config.reactor_num.set(1);
         config.gs = naming_at(&raw mut *shared);
@@ -88,6 +85,7 @@ impl LiveServer {
         let socket = unsafe { Socket::from_ptr(listener) }.unwrap();
         settings.set_listening_socket(socket);
         settings.gs.set((&raw mut *port_counters).cast());
+        let state = server.state();
         // SAFETY: the port boxed above, listed until the fixture frees it with the state;
         // no other thread reads the list.
         let _ = unsafe { state.push_port(Box::from_raw(port)) };
@@ -97,13 +95,11 @@ impl LiveServer {
         slot.set_socket(Some(socket));
         slot.set_socket_type(SOCK_TCP);
 
-        let head = Box::new(Fields::of(&state));
         // The thread's reactor, without `swoole_event_init`'s coroutine and client handlers.
         let reactor = swoole_rs_reactor::swr_v1_reactor_new(4096, 0);
         swoole_rs_corebase::set_thread_reactor(reactor);
         Self {
-            head,
-            state,
+            server,
             shared,
             port_counters,
             port,
@@ -117,12 +113,16 @@ impl LiveServer {
     }
 
     pub(crate) fn server(&self) -> view::Server<'_> {
-        // SAFETY: the head of a live server, which this fixture owns for the borrow.
-        unsafe { view::Server::from_raw((&raw const *self.head).cast_mut().cast()) }
+        self.server.serv()
     }
 
     pub(crate) fn state(&self) -> &ServerState {
-        &self.state
+        self.server.state()
+    }
+
+    /// The configuration, to write.
+    pub(crate) fn config_mut(&mut self) -> &mut crate::ServerConfig {
+        self.server.config_mut()
     }
 
     pub(crate) fn counters(&self) -> &ServerCounters {
@@ -190,10 +190,9 @@ impl Drop for LiveServer {
         }
         // SAFETY: the port this fixture boxed; the state that lists it drops with it.
         drop(unsafe { Box::from_raw(self.port) });
-        // SAFETY: the state's own configuration, which nothing else reads now. Its `gs`
-        // names the fixture's own record, which the state's drop must not unmap.
-        let config = unsafe { &mut *self.state.config() };
-        config.gs = swoole_rs_memory::members::Shm::empty();
+        // The configuration's `gs` names the fixture's own record, which the state's drop
+        // must not unmap.
+        self.config_mut().gs = swoole_rs_memory::members::Shm::empty();
     }
 }
 

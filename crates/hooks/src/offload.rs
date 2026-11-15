@@ -39,24 +39,12 @@ impl AsyncEvent {
         Self::new(core::ptr::null_mut(), None, None, core::ptr::null_mut())
     }
 
-    /// `AsyncEvent event = {}` with these members set: no request.
-    ///
-    /// # Safety
-    /// `handler` and `callback` are sound over `object`: whatever they read through
-    /// it stays valid, as they expect it, until the completion has run.
+    /// `AsyncEvent event = {}` with these members set: no request. Pairing a handler
+    /// with an object asks nothing of the caller: a [`Handler`] or [`Callback`] is a
+    /// safe function, sound over any event it is handed, and one that reads its object
+    /// as its own type stays private to the module that dispatches it with that object.
     #[must_use]
-    pub const unsafe fn request(
-        object: *mut c_void,
-        handler: Option<Handler>,
-        callback: Option<Callback>,
-        pipe_socket: *mut c_void,
-    ) -> Self {
-        Self::new(object, handler, callback, pipe_socket)
-    }
-
-    /// [`Self::request`] for this crate, whose callers pair each handler and
-    /// completion with the object they read.
-    pub(crate) const fn new(
+    pub const fn new(
         object: *mut c_void,
         handler: Option<Handler>,
         callback: Option<Callback>,

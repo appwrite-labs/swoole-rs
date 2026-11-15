@@ -631,12 +631,6 @@ pub(crate) mod tests {
         conn
     }
 
-    /// Edits the state's configuration, which the test alone touches.
-    fn configure(live: &LiveServer, edit: impl FnOnce(&mut crate::ServerConfig)) {
-        // SAFETY: the fixture's state, on this thread only.
-        edit(unsafe { &mut *live.state().config() });
-    }
-
     pub(crate) fn closed(conn: Connection<'_>) -> bool {
         !conn.is_active() && conn.closed().load(Relaxed) == 1 && conn.socket().is_none()
     }
@@ -705,7 +699,7 @@ pub(crate) mod tests {
     #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn peer_close_closes_when_nobody_is_told() {
         let (live, _clients) = accepted();
-        configure(&live, |c| c.disable_notify.set(true));
+        live.server().config().disable_notify.set(true);
         let conn = session(&live, 1);
         let event = conn.event(0, 0);
         assert!(peer_close(live.server(), live.reactor(), &event));
@@ -716,7 +710,7 @@ pub(crate) mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn prequeue_keeps_a_synchronous_process_response() {
-        let (live, _clients) = accepted();
+        let (mut live, _clients) = accepted();
         let (state, conn) = (live.state(), session(&live, 1));
         assert_eq!(state.config_ref().dispatch_mode.get(), 2, "fixed by fd");
         state.config_ref().enable_coroutine.set(false);
@@ -739,7 +733,8 @@ pub(crate) mod tests {
             assert!(fin_ends(true, state, conn));
             set(conn, false);
         }
-        configure(&live, |c| c.mode_ = Mode::Base);
+        live.config_mut().mode_ = Mode::Base;
+        let (state, conn) = (live.state(), session(&live, 1));
         assert!(fin_ends(true, state, conn), "base mode");
     }
 
@@ -798,7 +793,7 @@ pub(crate) mod tests {
         assert!(!conn.close_notify());
         assert_eq!(output(conn.socket().unwrap()).0, 4, "nothing flushed");
 
-        configure(&live, |c| c.disable_notify.set(true));
+        live.server().config().disable_notify.set(true);
         let conn = session(&live, 2);
         conn.set_close_force(true);
         assert!(write(serv, reactor, &mut conn.event(0, 0)));
@@ -866,7 +861,7 @@ pub(crate) mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn read_pauses_a_process_connection_over_its_queue() {
-        let (live, _clients) = reading();
+        let (mut live, _clients) = reading();
         let (serv, reactor) = (live.server(), live.reactor());
         live.state().config_ref().max_queued_bytes.set(8);
         let conn = session(&live, 1);
@@ -882,7 +877,8 @@ pub(crate) mod tests {
         read(serv, reactor, &mut conn.event(0, 0));
         assert_eq!(conn.waiting_time(), 0, "at the limit");
         conn.recv_queued_bytes().store(9, SeqCst);
-        configure(&live, |c| c.mode_ = Mode::Base);
+        live.config_mut().mode_ = Mode::Base;
+        let (serv, conn) = (live.server(), session(&live, 2));
         read(serv, reactor, &mut conn.event(0, 0));
         assert_eq!(conn.waiting_time(), 0, "base mode");
         assert_eq!(reads().len(), 3);

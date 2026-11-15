@@ -287,7 +287,7 @@ pub fn send_message(pool: PoolRef<'_>, worker_id: u32, message: &[u8]) -> bool {
     let index = worker_id.wrapping_sub(u32::from(pool.start_id)) as usize;
     // `pipes` owns the workers' pipes: `create` makes one per worker or none, and
     // `destroy` frees them and clears it.
-    let Some(worker) = pool.worker(index).filter(|_| pool.pipes.is_some()) else {
+    let Some(worker) = pool.worker(index).filter(|_| pool.has_pipes()) else {
         return false;
     };
     let pipe = worker.pipe_master();

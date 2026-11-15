@@ -18,10 +18,9 @@ use swoole_rs_ossupport::QueueRecord;
 use swoole_rs_phpstubs::process;
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_zend::{
-    Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Owned, Value, bailout, handlers,
-    message,
-    string::ZBuf,
-    sys::{_zend_bailout, IS_NULL, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, zend_string},
+    Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Owned, Value, ZString, bailout,
+    handlers, message,
+    sys::{IS_NULL, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, zend_string},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -342,10 +341,9 @@ fn start_child(worker: Worker<'_>, this: &Value) {
         host::event_wait();
     }
     drop(callable);
-    swoole_rs_zend::bailout::finish();
-    // SAFETY: equivalent to exit: Zend unwinds to its bailout point; this frame
-    // owns nothing that needs a drop.
-    unsafe { _zend_bailout(c"crates/phpprocess/src/process.rs".as_ptr(), line!()) }
+    // Equivalent to exit: Zend unwinds to its bailout point; this frame owns
+    // nothing that needs a drop.
+    swoole_rs_zend::bailout::raise(Err(swoole_rs_zend::bailout::Bailout));
 }
 
 fn construct(call: &Call) {
@@ -709,14 +707,12 @@ fn read(call: &Call) {
         return;
     }
     let size = size.c_cast::<usize>();
-    let mut buffer = ZBuf::with_capacity(size);
+    let mut buffer = vec![0; size];
     let Some(length) = worker::pipe_read(worker, &mut buffer, blocking(process)) else {
         call.set_bool(false);
         return;
     };
-    // SAFETY: the read wrote `length <= size` bytes.
-    unsafe { buffer.set_len(length) };
-    call.set_zstring(buffer.into_zstring());
+    call.set_zstring(ZString::new(buffer.get(..length).unwrap_or_default()));
 }
 
 /// The object's `blocking` flag.

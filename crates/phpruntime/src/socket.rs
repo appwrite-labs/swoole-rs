@@ -325,20 +325,12 @@ impl Socket {
     /// # Errors
     /// A warning's error handler bailed out.
     pub(crate) fn set_ssl(&self, settings: &Value) -> Result<bool, Bailout> {
-        let socket = self.co();
-        let mut applied = false;
-        let apply = || {
-            if let Some(families) = swoole_rs_phpswoole::families() {
-                // crates/phpclients ignores settings that are no array.
-                let ssl = swoole_rs_phpswoole::SocketSettings::Ssl;
-                // SAFETY: inside the trap below.
-                applied = unsafe { (families.socket_settings)(socket, settings, ssl) };
-            }
+        let Some(families) = swoole_rs_phpswoole::families() else {
+            return Ok(false);
         };
-        // The body holds copies and the result slot; the settings' warnings can
-        // run a PHP error handler.
-        swoole_rs_zend::contain_with(apply)?;
-        Ok(applied)
+        // crates/phpclients ignores settings that are no array.
+        let ssl = swoole_rs_phpswoole::SocketSettings::Ssl;
+        (families.socket_settings)(self.co(), settings, ssl)
     }
 }
 

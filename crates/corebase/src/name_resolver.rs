@@ -3,19 +3,53 @@
 //! The list is process-wide, as `SwooleG` is; `SwooleG = {}` clears it.
 use core::any::Any;
 use core::ffi::{c_int, c_void};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::{
+    cell::Cell,
+    rc::Rc,
+    sync::{Mutex, MutexGuard, PoisonError},
+};
 
 /// `NameResolver::Context`. Native code only holds a pointer to one.
 #[derive(Default)]
 pub struct NameResolverContext {
-    pub kind: c_int,
+    pub options: ResolverOptions,
     pub timeout: f64,
     /// A resolver's state kept for the rest of the lookup (the PHP resolver's
     /// cluster), dropped with the context or by [`release`](Self::release).
     pub private_data: Option<Box<dyn Any>>,
-    pub with_port: bool,
     pub cluster: bool,
     pub is_final: bool,
+}
+
+/// Socket contexts own their settings without allocating. PHP context objects share
+/// them with an active lookup so callbacks can re-run the constructor.
+#[derive(Clone)]
+pub enum ResolverOptions {
+    Owned(c_int, bool),
+    Shared(Rc<Cell<(c_int, bool)>>),
+}
+
+impl Default for ResolverOptions {
+    fn default() -> Self {
+        Self::Owned(0, false)
+    }
+}
+
+impl ResolverOptions {
+    #[must_use]
+    pub fn get(&self) -> (c_int, bool) {
+        match self {
+            Self::Owned(kind, with_port) => (*kind, *with_port),
+            Self::Shared(options) => options.get(),
+        }
+    }
+
+    pub fn set_kind(&mut self, kind: c_int) {
+        match self {
+            Self::Owned(current, _) => *current = kind,
+            Self::Shared(options) => options.set((kind, options.get().1)),
+        }
+    }
 }
 
 impl NameResolverContext {

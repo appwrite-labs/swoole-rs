@@ -433,8 +433,9 @@ pub fn socket_ssl_new(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::handle::{Cert, CertRef};
+    use crate::handle::Cert;
     use openssl_sys::*;
+    use std::mem::ManuallyDrop;
     use std::os::raw::c_int;
     use std::ptr;
 
@@ -617,9 +618,12 @@ mod tests {
             // `_ssl_read_x509_file` before its warnings: the PEM, then the reference
             // released when `consume`.
             let pem_of = |cert: *mut X509, buffer: &mut [u8], consume: bool| {
-                let written =
-                    CertRef::new(cert).map_or(Err(crate::PemError::Write), |cert| cert.pem(buffer));
-                drop(consume.then(|| std::ptr::NonNull::new(cert).map(Cert)));
+                // The test's reference, released only when `consume`.
+                let owned = std::ptr::NonNull::new(cert).map(|cert| ManuallyDrop::new(Cert(cert)));
+                let written = owned
+                    .as_ref()
+                    .map_or(Err(crate::PemError::Write), |cert| cert.get().pem(buffer));
+                drop(owned.filter(|_| consume).map(ManuallyDrop::into_inner));
                 written
             };
             let empty = X509_new();

@@ -35,6 +35,17 @@ unsafe extern "C" {
         op: *const zend_op,
     ) -> u8;
 }
+// crates/zend-sys' shims that take only live zvals, or nothing.
+unsafe extern "C" {
+    /// `ZVAL_COPY(target, source)`: `target` takes a new reference to what
+    /// `source` holds; what `target` held is left alone, never released.
+    #[link_name = "swr_zval_copy"]
+    safe fn copy_into(target: &Value, source: &Value);
+    /// Zend's "Cannot add element" error, thrown inside `zend_try`: nonzero
+    /// for a bailout.
+    safe fn swr_zend_try_stdext_cannot_add() -> c_int;
+}
+
 fn leaf(code: impl Into<c_int>) -> Result<(), Bailout> {
     if code.into() == 0 {
         Ok(())
@@ -79,12 +90,8 @@ impl Data<'_> {
     fn abandon(self, op: Op) -> Result<(), Bailout> {
         self.free()?;
         if let Some(slot) = op.result() {
-            // SAFETY: like ZVAL_NULL, overwrite only the result's type information.
-            unsafe {
-                (*slot.as_ptr()).u1 = z::_zval_struct__bindgen_ty_1 {
-                    type_info: z::IS_NULL,
-                }
-            };
+            // ZVAL_NULL: the result slot held nothing to release.
+            copy_into(slot, &Owned::null());
         }
         Ok(())
     }
@@ -92,9 +99,8 @@ impl Data<'_> {
     /// Publish `element` as `op`'s result, then free the operand.
     fn publish(self, op: Op, element: &Value) -> Result<(), Bailout> {
         if let Some(result) = op.result() {
-            // SAFETY: two live zvals; a retained copy of the actual
-            // post-operation element.
-            unsafe { z::swr_zval_copy(result.as_ptr(), element.as_ptr()) };
+            // A retained copy of the actual post-operation element.
+            copy_into(result, element);
         }
         self.free()
     }
@@ -130,8 +136,9 @@ fn assign(op: Op, data: Data, own: Typed, key: &Value) -> Result<(), Bailout> {
         // successful insertion.
         slot = unsafe { z::zend_hash_next_index_insert(ht, value.as_ptr()) };
         if slot.is_null() {
-            // SAFETY: preserve Zend's exact occupied-next-index error, below a native trap.
-            leaf(unsafe { z::swr_zend_try_stdext_cannot_add() })?;
+            // Zend's exact occupied-next-index error, below a native trap.
+            leaf(swr_zend_try_stdext_cannot_add())?;
+
             // This assignment failed before publishing its result.
             return data.abandon(op);
         }

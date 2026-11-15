@@ -5,7 +5,8 @@
 //! `network::Socket`, the master end writing and the worker end reading. With
 //! `upstream-symbols` each member is defined under its upstream (Itanium) symbol, and
 //! the process patch deletes `pipe.cc` and `unix_socket.cc`.
-use crate::upstream::{read_sync, socket_free, write_sync};
+use crate::event_socket::EventSocket;
+use crate::upstream::{read_sync, write_sync};
 use std::ffi::{CStr, c_int};
 use std::mem::MaybeUninit;
 use std::ptr;
@@ -31,10 +32,14 @@ pub struct SocketPair {
     pub blocking: bool,
     pub timeout: f64,
     pub socks: [c_int; 2],
-    master_socket: Option<Socket<'static>>,
-    worker_socket: Option<Socket<'static>>,
+    master_socket: Option<EventSocket>,
+    worker_socket: Option<EventSocket>,
 }
 
+#[expect(
+    clippy::non_send_fields_in_send_ty,
+    reason = "the ends are records the pair owns, not handles shared with this thread"
+)]
 // SAFETY: a pair owns its two socket records (`open` makes them, `drop` frees them),
 // and neither is tied to the thread that made it.
 unsafe impl Send for SocketPair {}
@@ -66,7 +71,7 @@ fn open(blocking: bool, unix: Option<c_int>, origin: &CStr) -> (SocketPair, bool
         return (pair, false);
     };
     pair.socks = socks;
-    let end = |fd| Box::new(SocketRecord::with_fd(fd, FD_PIPE)).into_socket();
+    let end = |fd| EventSocket::adopt(Box::new(SocketRecord::with_fd(fd, FD_PIPE)));
     pair.master_socket = Some(end(pair.socks[1]));
     pair.worker_socket = Some(end(pair.socks[0]));
     set_blocking(&mut pair, blocking);
@@ -119,7 +124,8 @@ pub fn unix_socket(blocking: bool, protocol: c_int) -> SocketPair {
 
 /// The two ends, master first (None once closed).
 fn ends(pair: &SocketPair) -> [Option<Socket<'_>>; 2] {
-    [pair.master_socket, pair.worker_socket]
+    let master = pair.master_socket.as_ref().map(EventSocket::socket);
+    [master, pair.worker_socket.as_ref().map(EventSocket::socket)]
 }
 
 impl SocketPair {
@@ -128,7 +134,8 @@ impl SocketPair {
     #[must_use]
     pub fn raw_ends(&self) -> (*mut SocketRecord, *mut SocketRecord) {
         let raw = |end: Option<Socket<'_>>| end.map_or(ptr::null_mut(), Socket::as_ptr);
-        (raw(self.master_socket), raw(self.worker_socket))
+        let [master, worker] = ends(self);
+        (raw(master), raw(worker))
     }
 
     /// The master's end, or `None` once closed.
@@ -141,6 +148,13 @@ impl SocketPair {
     #[must_use]
     pub fn worker_end(&self) -> Option<Socket<'_>> {
         ends(self)[1]
+    }
+
+    /// The worker's end as the pair owns it, to register on the reactor; `None` once
+    /// closed.
+    #[must_use]
+    pub const fn worker_event(&self) -> Option<&EventSocket> {
+        self.worker_socket.as_ref()
     }
 }
 
@@ -222,14 +236,8 @@ pub fn clean(this: &SocketPair) {
 }
 
 /// Frees the end in `slot`; false when it is already closed.
-fn close_end(slot: &mut Option<Socket<'static>>) -> bool {
-    let Some(socket) = slot.take() else {
-        return false;
-    };
-    // SAFETY: a pair's open end is a live socket, which only its close frees, and
-    // the pair no longer holds it.
-    unsafe { socket_free(socket.as_ptr()) };
-    true
+fn close_end(slot: &mut Option<EventSocket>) -> bool {
+    slot.take().map(|end| end.free(false)).is_some()
 }
 
 /// `bool SocketPair::close(int which)`: the master end, the worker end, or (any other

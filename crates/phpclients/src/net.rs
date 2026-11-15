@@ -10,7 +10,6 @@ use std::{
     cell::Cell,
     ffi::{CStr, CString},
     rc::Rc,
-    sync::{Mutex, MutexGuard, PoisonError},
 };
 use swoole_rs_clients::protocol::Protocol;
 use swoole_rs_clients::{
@@ -277,22 +276,21 @@ impl<'a> Obj<'a> {
 
 pub(crate) static CLIENT: CustomClass<Data> = CustomClass::new();
 static EXCEPTION: Class = Class::new();
-/// A persistent connection the pool owns until a client takes it back.
-struct Pooled(Box<Conn>);
-#[expect(
-    clippy::non_send_fields_in_send_ty,
-    reason = "the pool only moves a connection; whichever request takes it back owns it"
-)]
-// SAFETY: the pool only moves the connection, whose client is a raw pointer;
-// whichever request takes it back owns it, as with upstream's process-wide
-// `long_connections`.
-unsafe impl Send for Pooled {}
+thread_local! {
+    /// The persistent connections (`long_connections`), keyed by server id: a
+    /// thread's own, as its connections' sockets belong to its reactor.
+    static POOL: Cell<Option<Pool<Box<Conn>>>> = const { Cell::new(None) };
+}
 
-/// The persistent connections (`long_connections`), keyed by server id.
-static POOL: Mutex<Option<Pool<Pooled>>> = Mutex::new(None);
-
-fn long_connections() -> MutexGuard<'static, Option<Pool<Pooled>>> {
-    POOL.lock().unwrap_or_else(PoisonError::into_inner)
+/// `f` with this thread's pool, which is taken out meanwhile (`f` only
+/// pushes, takes or removes).
+fn long_connections<R>(f: impl FnOnce(&mut Option<Pool<Box<Conn>>>) -> R) -> R {
+    POOL.with(|cell| {
+        let mut pool = cell.take();
+        let result = f(&mut pool);
+        cell.set(pool);
+        result
+    })
 }
 
 method_table! {
@@ -473,10 +471,8 @@ pub(crate) fn release(object: Obj, conn: Rc<Conn>) -> Result<(), Bailout> {
     if conn.released.get() {
         return Ok(());
     }
-    if conn.keep
-        && let Some(pool) = long_connections().as_mut()
-    {
-        pool.remove_empty(&conn.key);
+    if conn.keep {
+        long_connections(|pool| pool.as_mut().map(|pool| pool.remove_empty(&conn.key)));
     }
     let data = object.data();
     data.set_conn(None);
@@ -580,8 +576,8 @@ fn connection(object: Obj, host: &[u8], port: i64) -> Option<Rc<Conn>> {
     };
     let mut conn = None;
     if kind & FLAG_KEEP != 0 {
-        let taken = long_connections().as_mut().and_then(|pool| pool.take(&key));
-        if let Some(Pooled(mut pooled)) = taken {
+        let taken = long_connections(|pool| pool.as_mut().and_then(|pool| pool.take(&key)));
+        if let Some(mut pooled) = taken {
             if pooled.alive() {
                 pooled.reuse_count += 1;
                 object
@@ -1233,14 +1229,14 @@ fn close(call: &Call) {
         bailed(release(object, conn));
         return call.set_bool(closed);
     }
-    let pushed = {
-        let mut pool = long_connections();
+    let pushed = long_connections(|pool| {
         if pool.is_none() {
             *pool = Pool::create();
         }
         pool.as_mut()
-            .map(|pool| pool.push(&conn.key, Pooled(Box::new(conn.detach()))))
-    };
+            .map(|pool| pool.push(&conn.key, Box::new(conn.detach())))
+    });
+
     if !matches!(pushed, Some(Ok(()))) {
         swoole_rs_corebase::fatal("the connection pool refused a connection");
     }

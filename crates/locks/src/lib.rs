@@ -629,9 +629,9 @@ atomic_api!(swr_v1_locks_atomic64, AtomicI64, i64);
 /// [`barrier_wait`] and [`barrier_destroy`]. Linux uses a pthread barrier, as upstream's `SW_USE_PTHREAD_BARRIER`
 /// (glibc and musl have `pthread_barrier_init`); macOS keeps the arrival/count words.
 /// The pthread barrier and its attribute are kept as atomic words only to be aligned,
-/// `Sync` storage that pthread alone reads and writes. Nothing here makes a `Barrier`:
-/// its owner zeroes one, as C++'s `Barrier barrier = {}`, so one is zeroed, made by
-/// [`barrier_init`] or destroyed.
+/// `Sync` storage that pthread alone reads and writes. Its owner starts with a zeroed one
+/// ([`Barrier::new`], or zeroed memory), as C++'s `Barrier barrier = {}`, so one is
+/// zeroed, made by [`barrier_init`] or destroyed.
 #[repr(C)]
 pub struct Barrier {
     #[cfg(target_os = "linux")]
@@ -644,6 +644,33 @@ pub struct Barrier {
     count: AtomicU32,
     #[cfg(not(target_os = "linux"))]
     arrived: AtomicU32,
+}
+
+impl Barrier {
+    /// A zeroed barrier, as C++'s `Barrier barrier = {}`.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            #[cfg(target_os = "linux")]
+            barrier: [const { AtomicU64::new(0) };
+                size_of::<pthread_barrier_t>() / size_of::<AtomicU64>()],
+            #[cfg(target_os = "linux")]
+            attr: [const { AtomicU32::new(0) };
+                size_of::<pthread_barrierattr_t>() / size_of::<AtomicU32>()],
+            #[cfg(target_os = "linux")]
+            shared: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(not(target_os = "linux"))]
+            count: AtomicU32::new(0),
+            #[cfg(not(target_os = "linux"))]
+            arrived: AtomicU32::new(0),
+        }
+    }
+}
+
+impl Default for Barrier {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// A `pthread_barrierattr_t`'s storage: on Linux an int of plain bits.
@@ -844,7 +871,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no pthread_barrier_init")]
     fn barrier_releases_every_party_together() {
-        let barrier = Box::new(unsafe { std::mem::zeroed::<super::Barrier>() });
+        let barrier = Box::new(super::Barrier::new());
         barrier_init(&barrier, false, 4);
         let arrived = AtomicU32::new(0);
         std::thread::scope(|scope| {

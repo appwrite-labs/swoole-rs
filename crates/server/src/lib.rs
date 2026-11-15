@@ -90,9 +90,9 @@ pub use layout::server_record_layout;
 pub static THREAD_SUPPORTED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
-pub use state::{ServerState, ServerText};
 #[cfg(test)]
-pub(crate) use state::{free_state as swr_v1_server_state_free, swr_v1_server_state_new};
+pub(crate) use state::TestServer;
+pub use state::{ServerState, ServerText};
 
 #[cfg(all(feature = "upstream-symbols", not(test)))]
 pub use admin::admin_register;

@@ -194,7 +194,8 @@ struct Stream {
 
 /// `swr_zend_try`'s signature: `body` is never null.
 type Trap = unsafe extern "C" fn(body: Option<Step>, arg: *mut c_void) -> c_int;
-type Raise = unsafe extern "C" fn();
+/// Zend's bailout: it leaves its caller's frame.
+type Raise = fn();
 
 /// The extension's trap and raise, which [`set_bailout`] installs.
 static BAILOUT: OnceLock<(Trap, Raise)> = OnceLock::new();
@@ -686,8 +687,7 @@ pub unsafe fn set_bailout(trap: Trap, raise: Raise) {
 /// `longjmp` crosses only this frame.
 pub fn raise_bailout() {
     if let Some(&(_, raise)) = BAILOUT.get() {
-        // SAFETY: Zend's bailout, from a frame that owns nothing.
-        unsafe { raise() };
+        raise();
     }
 }
 
@@ -843,9 +843,12 @@ pub fn pool_ipc_prepare(ipc: &mut PoolIpc, max_packet_size: u32) -> *mut c_char 
     ipc.prepare(max_packet_size).cast()
 }
 
-/// The packet buffer `_prepare` allocated.
-pub fn pool_ipc_packet(ipc: &mut PoolIpc) -> *mut c_char {
-    ipc.packet.as_mut_ptr().cast()
+/// The packet buffer `_prepare` allocated and its size in bytes; null and 0 before.
+pub fn pool_ipc_packet(ipc: &mut PoolIpc) -> (*mut c_char, usize) {
+    if ipc.packet.is_empty() {
+        return (ptr::null_mut(), 0);
+    }
+    (ipc.packet.as_mut_ptr().cast(), size_of_val(&*ipc.packet))
 }
 
 fn mode(ipc_mode: IpcMode) -> Mode {

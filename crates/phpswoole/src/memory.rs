@@ -35,12 +35,15 @@ extern "C" fn malloc(size: usize) -> *mut c_void {
     val(string::alloc(size)).cast()
 }
 
-/// Upstream zeroes the first `size` bytes, not `nmemb * size`.
-unsafe extern "C" fn calloc(nmemb: usize, size: usize) -> *mut c_void {
-    let memory = malloc(nmemb.wrapping_mul(size));
+/// `nmemb * size` zeroed bytes, or null when that overflows.
+extern "C" fn calloc(nmemb: usize, size: usize) -> *mut c_void {
+    let Some(bytes) = nmemb.checked_mul(size) else {
+        return std::ptr::null_mut();
+    };
+    let memory = malloc(bytes);
     if !memory.is_null() {
-        // SAFETY: as upstream: a buffer of `nmemb * size` bytes.
-        unsafe { memory.cast::<u8>().write_bytes(0, size) };
+        // SAFETY: a buffer of `bytes` bytes.
+        unsafe { memory.cast::<u8>().write_bytes(0, bytes) };
     }
     memory
 }

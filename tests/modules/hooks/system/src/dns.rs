@@ -29,7 +29,7 @@ const TEST_HTTP_DOMAIN: &CStr = c"www.gov.cn";
 /// `ctx = {type}`.
 fn context_of(kind: c_int) -> Context {
     Context {
-        kind,
+        options: swoole_rs_corebase::ResolverOptions::Owned(kind, false),
         ..Context::default()
     }
 }

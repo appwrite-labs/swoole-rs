@@ -7,22 +7,20 @@
 use crate::uring::{self, Config, Host, OpenError, Uring};
 use std::cell::RefCell;
 use std::ffi::{c_int, c_void};
-use std::ptr;
 use std::rc::Rc;
 use std::sync::atomic::AtomicU32;
 use swoole_rs_corebase::constants::FdType;
 use swoole_rs_corebase::log;
-use swoole_rs_reactor::event_api::{
-    event_add, event_del, swoole_event_is_available, swoole_event_is_running,
-};
-use swoole_rs_reactor::{Events, Socket, SocketRecord, UringOps};
+use swoole_rs_reactor::event_api::{swoole_event_is_available, swoole_event_is_running};
+use swoole_rs_reactor::{Events, SocketRecord, UringOps};
+use swoole_rs_tls::event_socket::EventSocket;
 
 /// The thread's `Iouring`: the engine (none if the ring could not be created) and
 /// its fd's record on the thread's reactor, whose destroy callback takes the instance.
 struct Iouring {
     engine: Option<Rc<Uring>>,
     /// The ring fd's record, which this instance owns until `destroyed` frees it.
-    socket: Option<Socket<'static>>,
+    socket: Option<EventSocket>,
 }
 
 thread_local! {
@@ -129,8 +127,7 @@ fn create() -> Iouring {
         return iouring;
     };
     let record = SocketRecord::with_fd(engine.fd(), FdType::SW_FD_IOURING as c_int);
-    let socket = Socket::new(Box::leak(Box::new(record)));
-    iouring.socket = Some(socket);
+    let socket = iouring.socket.insert(EventSocket::adopt(Box::new(record)));
     swoole_rs_reactor::swr_v1_event_set_exit_condition(
         swoole_rs_reactor::ExitCondition::Iouring,
         idle,
@@ -140,7 +137,7 @@ fn create() -> Iouring {
         swoole_rs_reactor::Priority::IouringSubmit,
         submit,
     );
-    if !event_add(socket, Events::READ) {
+    if !socket.add(Events::READ) {
         log::sys_error(
             origin,
             format_args!("Failed to add io_uring ring fd to the event loop"),
@@ -169,17 +166,10 @@ extern "C-unwind" fn destroyed(_data: *mut c_void) {
     let Some(iouring) = INSTANCE.take() else {
         return;
     };
-    let socket = iouring.socket.map_or(ptr::null_mut(), |record| {
-        if !record.read(|record| record.removed) {
-            _ = event_del(record);
-        }
-        // The engine closes the fd.
-        record.edit(|record| record.fd = -1);
-        record.as_ptr()
-    });
-    // SAFETY: null or the record `create` leaked, whose only handle went with the
-    // instance; nothing uses it afterwards.
-    unsafe { swoole_rs_tls::upstream::socket_free(socket) };
+    // Off the reactor, keeping the fd, which the engine closes.
+    if let Some(socket) = iouring.socket {
+        socket.free(true);
+    }
     // The engine goes with it, with nothing in flight as the loop has ended.
 }
 

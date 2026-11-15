@@ -429,31 +429,23 @@ mod tests {
                 (&raw mut pipe).cast(),
             );
         }
-        let state = crate::swr_v1_server_state_new();
-        // SAFETY: a fresh state; the records above outlive every read below.
-        let fields = unsafe {
-            let config = (*state).config();
-            // The whole `serv->gs`, as `ServerObject` maps it: the worker lookup reads its
-            // zeroed event pool, past the counters.
-            (*config).gs =
-                swoole_rs_memory::members::Shm::calloc(1, size_of::<crate::shared::ServerShared>());
-            (*config).workers = naming(&mut workers);
-            (*config).worker_num.set(4);
-            (*config).reactor_num.set(2);
-            let tables = &mut *(*state).tables();
-            tables.connection_list = naming(&mut connections);
-            tables.set_max_connection_unchecked(4);
-            tables.reactor_pipe_num.set(2);
-            [state.cast::<c_void>(), config.cast::<c_void>()]
-        };
-        // SAFETY: laid out as a Server's head, over the live state and config.
-        let serv = unsafe { view::Server::from_raw((&raw const fields).cast_mut().cast()) };
-        let set_mode = |mode: Mode| {
-            // SAFETY: the state's config, which no reference holds across this write.
-            unsafe { (*(*state).config()).mode_ = mode };
-        };
+        let mut server = crate::TestServer::new();
+        let config = server.config_mut();
+        // The whole `serv->gs`, as `ServerObject` maps it: the worker lookup reads its
+        // zeroed event pool, past the counters.
+        config.gs =
+            swoole_rs_memory::members::Shm::calloc(1, size_of::<crate::shared::ServerShared>());
+        config.workers = naming(&mut workers);
+        config.worker_num.set(4);
+        config.reactor_num.set(2);
+        config.mode_ = Mode::Base;
+        let tables = server.tables_mut();
+        tables.connection_list = naming(&mut connections);
+        tables.reactor_pipe_num.set(2);
+        // SAFETY: the table just named holds 4 records.
+        unsafe { tables.set_max_connection_unchecked(4) };
 
-        set_mode(Mode::Base);
+        let serv = server.serv();
         assert!(!has_kernel_nobufs_error(serv, 2), "no socket");
         assert!(!has_kernel_nobufs_error(serv, 4), "past the table");
         assert!(has_kernel_nobufs_error(serv, 3), "the socket's flag");
@@ -461,16 +453,13 @@ mod tests {
         assert!(pipe.kernel_nobufs, "base mode leaves the pipe");
 
         sock.kernel_nobufs = true;
-        set_mode(Mode::Process);
+        server.config_mut().mode_ = Mode::Process;
+        let serv = server.serv();
         assert!(has_kernel_nobufs_error(serv, 3), "the reactor pipe's flag");
         assert!(!has_kernel_nobufs_error(serv, 3), "taken");
         assert!(sock.kernel_nobufs, "process mode leaves the socket");
 
-        // SAFETY: allocated above, not used again.
-        unsafe {
-            (*(*state).config()).gs.free();
-            crate::swr_v1_server_state_free(state);
-        }
+        server.config_mut().gs.free();
     }
 
     #[test]

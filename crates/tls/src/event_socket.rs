@@ -1,11 +1,13 @@
-//! A `Socket` over a descriptor its caller keeps, on the thread's reactor:
-//! `Swoole\Event`'s user sockets.
+//! A `Socket` record this owns, on the thread's reactor: `Swoole\Event`'s user
+//! sockets, a pipe's ends and an event waiter's watch.
 use crate::upstream::socket_free;
 use std::ffi::c_int;
 use swoole_rs_reactor::{Socket, SocketRecord, event_api, socket_upstream};
 
-/// `make_socket(fd, fd_type)`, non-blocking, which this owns until [`EventSocket::free`].
-/// Its event calls do nothing, and fail, without a reactor.
+/// A heap record this owns until [`EventSocket::free`], lending it only for a borrow
+/// of `self`; the reactor reaches it only through the calls below, and `free` takes
+/// it off. Its event calls do nothing, and fail, without a reactor.
+#[repr(transparent)]
 pub struct EventSocket(Socket<'static>);
 
 fn reactor() -> bool {
@@ -13,13 +15,32 @@ fn reactor() -> bool {
 }
 
 impl EventSocket {
+    /// `make_socket(fd, fd_type)`, non-blocking.
     #[must_use]
     pub fn new(fd: c_int, fd_type: c_int) -> Self {
-        // The new record, which this owns until `free`; the reactor reaches it only
-        // through the calls below.
-        let socket = Box::new(SocketRecord::with_fd(fd, fd_type)).into_socket();
-        socket.edit(|record| socket_upstream::socket_set_fd_option(record, 1, -1));
-        Self(socket)
+        let socket = Self::adopt(Box::new(SocketRecord::with_fd(fd, fd_type)));
+        socket
+            .0
+            .edit(|record| socket_upstream::socket_set_fd_option(record, 1, -1));
+        socket
+    }
+
+    /// `record`, which this owns from here.
+    #[must_use]
+    pub fn adopt(record: Box<SocketRecord>) -> Self {
+        Self(record.into_socket())
+    }
+
+    /// The record, which the caller owns from here.
+    #[must_use]
+    pub fn into_raw(self) -> *mut SocketRecord {
+        self.0.as_ptr()
+    }
+
+    /// The record, for as long as this is borrowed.
+    #[must_use]
+    pub const fn socket(&self) -> Socket<'_> {
+        self.0
     }
 
     #[must_use]
@@ -68,6 +89,11 @@ impl EventSocket {
             }
             self.0.edit(|record| record.fd = -1);
         }
+        self.release();
+    }
+
+    /// `socket->free()` of the record as it is: its fd, `-1` for none, is closed.
+    pub fn release(self) {
         // SAFETY: the record this owned, which nothing uses afterwards; a reactor
         // still holding it is told by `free` itself.
         unsafe { socket_free(self.0.as_ptr()) };

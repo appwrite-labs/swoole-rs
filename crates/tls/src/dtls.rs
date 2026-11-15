@@ -244,8 +244,14 @@ unsafe extern "C" {
     safe fn BIO_clear_data(bio: &mut DtlsBio, data: Option<&'static Never>);
     safe fn BIO_set_init(bio: &DtlsBio, init: c_int);
     safe fn BIO_find_type<'a>(bio: crate::Bio<'a>, kind: SessionType) -> Option<&'a DtlsBio>;
-    fn BIO_set_data(bio: crate::Bio<'_>, data: *mut DtlsSession);
+    safe fn BIO_set_data(bio: FreshBio<'_>, data: Box<DtlsSession>);
 }
+
+/// A BIO of the table `BIO_new` just made, which holds no data yet: only
+/// [`dtls_open`] makes one, once, so the session it gives the BIO is the BIO's only
+/// data, which the destroy hook frees.
+#[repr(transparent)]
+struct FreshBio<'a>(crate::Bio<'a>);
 
 /// OpenSSL 3's `BIO_TYPE_SOURCE_SINK`, `BIO_FLAGS_READ`, `BIO_FLAGS_RWS` and
 /// `BIO_FLAGS_SHOULD_RETRY`, and `SW_ERROR_SSL_CREATE_SESSION_FAILED`.
@@ -420,8 +426,8 @@ pub fn dtls_open(socket: Socket<'_>, context: &std::sync::Arc<crate::TlsSettings
     };
     let (fd, peer) = socket.read(|record| (record.fd, record.info.addr));
     let session = Box::new(DtlsSession::new(fd, peer, Some(context.clone())));
-    // SAFETY: a fresh BIO of the table, which takes the session: its destroy hook frees it.
-    unsafe { BIO_set_data(bio.bio(), Box::into_raw(session)) };
+    // The fresh BIO of the table takes the session: its destroy hook frees it.
+    BIO_set_data(FreshBio(bio.bio()), session);
     // SAFETY: the SSL ssl_create just made takes the BIO for both directions and frees
     // the descriptor BIOs `SSL_set_fd` gave it, which no handle borrows.
     _ = unsafe { ssl.set_bio(bio, None) };
@@ -514,7 +520,7 @@ mod tests {
         assert!(ptr::eq(methods().unwrap(), table));
         unsafe {
             let lent = crate::handle::BIO_new(table).unwrap();
-            BIO_set_data(lent.bio(), owner.give());
+            BIO_set_data(FreshBio(lent.bio()), Box::from_raw(owner.give()));
             let bio: *mut BIO = lent.bio().as_ptr();
             let mut bytes = [0u8; 8];
             assert_eq!(openssl_sys::BIO_read(bio, bytes.as_mut_ptr().cast(), 8), -1);

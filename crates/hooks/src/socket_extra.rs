@@ -9,9 +9,6 @@ use swoole_rs_tls::{TlsContext, TlsSettings};
 /// A destructor callback, which gets the native socket.
 pub type CloseHook = Box<dyn FnOnce(*mut c_void)>;
 
-/// `repr(C)` for `tls`, first: the hooks system tests set it as `enable_ssl_encrypt`
-/// does.
-#[repr(C)]
 pub struct SocketExtra {
     /// The socket's `SSLContext` owner (null without one): one reference, which an
     /// accepted socket shares with its server. Dropped after the `network::Socket`
@@ -25,16 +22,13 @@ pub struct SocketExtra {
     /// The owner of the callable `protocol.private_data_1` names, when the
     /// socket has a `package_length_func`.
     length_owner: Option<Rc<dyn Any>>,
-    /// `socks5_proxy` and `http_proxy`: each the socket's own, or none.
-    pub(crate) proxies: [Option<Box<ProxyState>>; 2],
+    /// `socks5_proxy` and `http_proxy`: each the socket's own, or none. A connect
+    /// holds its own references, so a proxy replaced meanwhile lives until it ends.
+    pub(crate) proxies: [Option<Rc<ProxyState>>; 2],
     /// The ring's host when the socket is a `UringSocket`, else none.
     #[cfg(feature = "iouring")]
     pub(crate) uring: Option<&'static crate::uring::Host>,
 }
-const _: () = assert!(
-    core::mem::offset_of!(SocketExtra, tls) == 0,
-    "the hooks system tests set the TLS owner at the record's extra pointer"
-);
 
 impl SocketExtra {
     /// A record's fresh metadata.
@@ -95,23 +89,5 @@ pub(crate) fn run_close_hook(socket: Co) {
     let hook = socket.with_extra(|extra| extra.close_hook.take()).flatten();
     if let Some(hook) = hook {
         hook(socket.this());
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tls_slot_is_the_extra_records_owner() {
-        let mut extra = SocketExtra::boxed();
-        let owner = TlsContext::new();
-        let pointer = owner.as_ptr();
-        extra.tls = Some(owner);
-        let slot = unsafe { *(&raw const *extra).cast::<*const swoole_rs_tls::OwnedTlsContext>() };
-        assert_eq!(
-            slot, pointer,
-            "the slot is the owner pointer native code reads"
-        );
     }
 }

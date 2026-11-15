@@ -18,7 +18,8 @@ use swoole_rs_corebase::constants::{FdType, SW_DNS_SERVER_PORT};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::sys::Text;
 use swoole_rs_error::ErrorCode;
-use swoole_rs_reactor::{Event, Events, Running, Socket, SocketRecord, event_api};
+use swoole_rs_reactor::{Event, Events, Running, SocketRecord, event_api};
+use swoole_rs_tls::event_socket::EventSocket;
 
 /// A channel's socket-state callback: `(query, fd, readable, writable)`.
 type SocketState = extern "C" fn(&Query, c_int, c_int, c_int);
@@ -102,7 +103,7 @@ struct Query {
     retired: Arc<AtomicBool>,
     /// The wrapper of each descriptor c-ares watches, live until `socket_state` detaches it: one per
     /// server it asks, so a list beats a hash map.
-    sockets: RefCell<Vec<(i32, Socket<'static>)>>,
+    sockets: RefCell<Vec<(i32, EventSocket)>>,
     results: RefCell<Vec<Vec<u8>>>,
 }
 struct Completion {
@@ -160,17 +161,6 @@ fn install() {
     event_api::on_destroy(cleanup);
 }
 const FD: i32 = FdType::SW_FD_CARES as i32;
-/// A wrapper `socket_state` took out of the reactor and of its query's registry,
-/// which the next deferred pass frees (a freed reactor leaks it, as upstream's).
-struct Detached(*mut SocketRecord);
-impl event_api::Deferred for Detached {
-    fn run(self) {
-        // SAFETY: the detached wrapper, which nothing has used since `socket_state`
-        // took it out of the reactor and the registry.
-        unsafe { SocketRecord::free(self.0) };
-    }
-    fn dispose(self) {}
-}
 extern "C" fn socket_state(query: &Query, fd: i32, readable: i32, writable: i32) {
     let events = if readable != 0 {
         Events::READ
@@ -185,55 +175,40 @@ extern "C" fn socket_state(query: &Query, fd: i32, readable: i32, writable: i32)
         .sockets
         .borrow()
         .iter()
-        .find(|&&(watched, _)| watched == fd)
-        .map(|&(_, wrapper)| wrapper);
-    let wrapper = if let Some(wrapper) = registered {
+        .position(|&(watched, _)| watched == fd);
+    if let Some(index) = registered {
         if events.is_empty() {
-            // Remove the registered native socket before detaching its descriptor.
-            _ = event_api::event_del(wrapper);
-            // `Socket::free` of a wrapper whose descriptor c-ares keeps.
-            wrapper.edit(|wrapper| wrapper.fd = -1);
-            // Out of the reactor above, and of the registry below: the record goes on
-            // the next deferred pass while a reactor runs, as the event being handled
-            // may hold it.
-            let detached = Detached(wrapper.as_ptr());
-            let deferred = if event_api::swr_v1_event_reactor().is_null() {
-                Err(detached)
+            // Out of the registry, then out of the reactor and freed keeping the
+            // descriptor, which c-ares keeps: `Socket::free` defers the record to the
+            // next pass while a reactor runs, as the event being handled may hold it.
+            let (_, wrapper) = query.sockets.borrow_mut().remove(index);
+            wrapper.free(true);
+            return;
+        }
+        let sockets = query.sockets.borrow();
+        if let Some((_, wrapper)) = sockets.get(index) {
+            // Update this registered wrapper, which lives until it is freed above.
+            _ = if wrapper.events().is_empty() {
+                wrapper.add(events)
             } else {
-                event_api::swoole_event_defer_value(detached)
+                wrapper.set(events)
             };
-            if let Err(detached) = deferred {
-                // No reactor to defer to: now.
-                event_api::Deferred::run(detached);
-            }
-            query
-                .sockets
-                .borrow_mut()
-                .retain(|&(watched, _)| watched != fd);
-            return;
         }
-        wrapper
-    } else {
-        if events.is_empty() {
-            log::warning(ORIGIN, format_args!("error events, fd={fd}"));
-            return;
-        }
-        // c-ares lends fd; this stable query becomes the wrapper's callback userdata.
-        // `make_socket(fd, SW_FD_CARES)`: the fresh record, leaked until this function
-        // takes it out of the registry and its `Detached` frees it.
-        let wrapper = Socket::new(Box::leak(Box::new(SocketRecord::with_fd(fd, FD))));
-        let data = ptr::from_ref(query).cast_mut().cast();
-        wrapper.edit(|wrapper| wrapper.object = data);
-        query.sockets.borrow_mut().push((fd, wrapper));
-        wrapper
-    };
-    if wrapper.read(|wrapper| wrapper.events).is_empty() {
-        // Register this fresh wrapper.
-        _ = event_api::event_add(wrapper, events);
-    } else {
-        // Update this registered wrapper, which lives until it is detached above.
-        _ = event_api::event_set(wrapper, events);
+        return;
     }
+    if events.is_empty() {
+        log::warning(ORIGIN, format_args!("error events, fd={fd}"));
+        return;
+    }
+    // c-ares lends fd; this stable query becomes the wrapper's callback userdata.
+    // `make_socket(fd, SW_FD_CARES)`: the fresh record, owned by the registry until
+    // this function takes it out and frees it.
+    let wrapper = EventSocket::adopt(Box::new(SocketRecord::with_fd(fd, FD)));
+    let data = ptr::from_ref(query).cast_mut().cast();
+    wrapper.socket().edit(|wrapper| wrapper.object = data);
+    // Register this fresh wrapper.
+    _ = wrapper.add(events);
+    query.sockets.borrow_mut().push((fd, wrapper));
 }
 extern "C" fn host(query: &Query, status: i32, timeouts: i32, entry: Option<&libc::hostent>) {
     if timeouts > 0 || status != metadata().success {

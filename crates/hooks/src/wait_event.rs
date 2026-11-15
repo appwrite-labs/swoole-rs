@@ -162,11 +162,7 @@ pub extern "C" fn system_wait_event(fd: i32, events: i32, timeout: f64) -> i32 {
 pub fn wait_event(fd: i32, events: Events, timeout: f64) -> Option<Events> {
     let ops = EventWaitOps {
         current: native::current,
-        add: |fd, events, waiter| {
-            // SAFETY: `park`'s own waiter, the object `waiter_ready` takes, which
-            // outlives the watch it drops.
-            unsafe { Watch::add(fd, events, native::Object::Waiter(waiter)) }
-        },
+        add: |fd, events, waiter| Watch::add(fd, events, native::Object::Waiter(waiter)),
         park: native::park,
     };
     let waited = swr_v1_hook_wait_event(fd, events, timeout, &ops);
@@ -185,8 +181,9 @@ pub(crate) mod native {
     use core::ffi::{c_int, c_void};
     use swoole_rs_corebase::constants::FdType;
     use swoole_rs_corebase::log;
-    use swoole_rs_reactor::event_api::{event_add, event_del, swoole_event_is_available};
-    use swoole_rs_reactor::{Events, Socket, SocketRecord};
+    use swoole_rs_reactor::event_api::swoole_event_is_available;
+    use swoole_rs_reactor::{Events, SocketRecord};
+    use swoole_rs_tls::event_socket::EventSocket;
 
     /// `SW_ERROR_CO_OUT_OF_COROUTINE`.
     const OUT_OF_COROUTINE: c_int = 10001;
@@ -227,18 +224,16 @@ pub(crate) mod native {
     /// A reactor socket over an fd its owner borrows (upstream's `make_socket`), on
     /// the thread's reactor with an object the readiness handlers reach. Dropping it
     /// takes it off the reactor and frees the record, leaving the fd open.
-    pub struct Watch(Socket<'static>);
+    pub struct Watch(Option<EventSocket>);
 
     impl Watch {
-        /// Registers `fd` for `events`, with `object` and its fd type.
+        /// Registers `fd` for `events`, with `object` and its fd type. The readiness
+        /// handlers reach `object`'s task or waiter through the record until the watch
+        /// drops, which its `Registered` keeps live until then.
         ///
         /// # Errors
         /// The last error, when there is no reactor or it refuses the socket.
-        ///
-        /// # Safety
-        /// `object`'s task or waiter stays live until the watch is dropped: the
-        /// readiness handlers reach it through the record until then.
-        pub(crate) unsafe fn add(fd: i32, events: Events, object: Object) -> Result<Self, i32> {
+        pub(crate) fn add(fd: i32, events: Events, object: Object) -> Result<Self, i32> {
             if !swoole_event_is_available() {
                 return Err(WRONG_OPERATION);
             }
@@ -248,32 +243,32 @@ pub(crate) mod native {
             };
             let mut record = SocketRecord::with_fd(fd, fd_type as c_int);
             record.object = object;
-            // The record is this watch's until `release` frees it.
-            let watch = Self(Socket::new(Box::leak(Box::new(record))));
-            // A fresh record this watch owns until `release`, off the reactor by then.
-            if !event_add(watch.0, events) {
+            // The record is this watch's until it drops, off the reactor by then.
+            let socket = EventSocket::adopt(Box::new(record));
+            if !socket.add(events) {
                 let error = log::last_error();
-                watch.release();
+                release(socket);
                 return Err(error);
             }
-            Ok(watch)
+            Ok(Self(Some(socket)))
         }
+    }
 
-        /// Frees the record, off the reactor, without closing the fd it borrows.
-        fn release(self) {
-            let socket = core::mem::ManuallyDrop::new(self).0;
-            socket.edit(|record| record.fd = -1);
-            // SAFETY: the watch's own record, which nothing uses afterwards.
-            unsafe { swoole_rs_tls::upstream::socket_free(socket.as_ptr()) };
-        }
+    /// Frees the record, off the reactor, without closing the fd it borrows.
+    fn release(socket: EventSocket) {
+        socket.socket().edit(|record| record.fd = -1);
+        socket.free(false);
     }
 
     impl Drop for Watch {
         fn drop(&mut self) {
+            let Some(socket) = self.0.take() else {
+                return;
+            };
             if swoole_event_is_available() {
-                _ = event_del(self.0);
+                _ = socket.del();
             }
-            Self(self.0).release();
+            release(socket);
         }
     }
 

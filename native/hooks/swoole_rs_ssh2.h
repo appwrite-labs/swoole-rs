@@ -93,8 +93,10 @@ void php_swoole_ssh2_minfo(void);
  * session's socket once no other coroutine is bound to it, and the socket's
  * timeout, whole seconds of timeout_ms. */
 #ifdef SW_HAVE_SSH2LIB
-const struct swr_v1_ssh2_ops *swr_v1_ssh2_bound(LIBSSH2_SESSION *session);
-void swr_v1_ssh2_set_socket_timeout(LIBSSH2_SESSION *session, int timeout_ms);
+/* A live ext/ssh2 session, as crates/hooks takes it. */
+typedef LIBSSH2_SESSION *swr_v1_ssh2_session;
+const struct swr_v1_ssh2_ops *swr_v1_ssh2_bound(swr_v1_ssh2_session session);
+void swr_v1_ssh2_set_socket_timeout(swr_v1_ssh2_session session, int timeout_ms);
 #define ssh2_bound swr_v1_ssh2_bound
 #define ssh2_set_socket_timeout swr_v1_ssh2_set_socket_timeout
 #endif
