@@ -30,11 +30,19 @@ use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_process::worker_globals::with_current;
 use swoole_rs_process::worker_record::WorkerType;
 use swoole_rs_server::{Connection, DispatchMode, Mode, view};
-use swoole_rs_zend::sys::{
-    ZEND_ACC_NOT_SERIALIZABLE, swr_zend_http_uploads_rinit, swr_zend_http_uploads_rshutdown,
-    zend_long, zval,
-};
+use swoole_rs_zend::sys::{ZEND_ACC_NOT_SERIALIZABLE, zend_long, zval};
 use swoole_rs_zend::{Class, Owned, ZStr, ZString, bailout};
+
+unsafe extern "C" {
+    /// `SG(rfc1867_uploaded_files)`, made when the request has none: SAPI
+    /// globals of this thread only, and no PHP code runs.
+    safe fn swr_zend_http_uploads_rinit();
+    /// `SG(rfc1867_uploaded_files)`'s files unlinked and the table freed and
+    /// nulled, when there is one: SAPI globals of this thread only, which no
+    /// Rust borrows (an upload into the table finds none and skips it), and no
+    /// PHP code runs.
+    safe fn swr_zend_http_uploads_rshutdown();
+}
 
 /// `Swoole\Http\Server`: `Swoole\Server` with no methods of its own.
 pub(crate) static SERVER: Class = Class::new();
@@ -704,16 +712,14 @@ pub(crate) fn release_request() {
 /// `php_swoole_http_server_rinit`: the uploaded files `is_uploaded_file`
 /// and `move_uploaded_file` know.
 pub extern "C" fn server_rinit() {
-    // SAFETY: RINIT, on the request's thread.
-    unsafe { swr_zend_http_uploads_rinit() };
+    swr_zend_http_uploads_rinit();
 }
 
 /// `php_swoole_http_server_rshutdown`: forget the uploaded files, then drop
 /// the cached addresses and the queued requests. A bailout their release
 /// deferred is raised last, into the hook's `zend_try`.
 pub extern "C" fn server_rshutdown() {
-    // SAFETY: RSHUTDOWN, on the request's thread.
-    unsafe { swr_zend_http_uploads_rshutdown() };
+    swr_zend_http_uploads_rshutdown();
     let addresses = ADDRESSES
         .with_borrow_mut(|cached| std::mem::replace(cached, ManuallyDrop::new(Table::new())));
     drop(ManuallyDrop::into_inner(addresses));

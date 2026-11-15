@@ -21,7 +21,7 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_zend::{
     Call, Function, Owned, OwnedArray, Value, ZString, bailout, handlers,
     observer::{self, Observer},
-    sys::{swr_zend_mm_observer, swr_zend_try_write, zend_long},
+    sys::{swr_zend_mm_observer, zend_long},
 };
 
 // Reads of this PHP thread's executor, which take nothing from their caller and
@@ -32,6 +32,9 @@ unsafe extern "C" {
     safe fn zend_get_executed_filename() -> *const std::ffi::c_char;
     /// The line of the innermost user frame, 0 without one.
     safe fn swr_zend_tracer_lineno() -> u32;
+    /// `ZEND_WRITE` of the lent bytes (an `IoSlice` is an iovec) inside
+    /// `zend_try`: nonzero when an output handler bailed out.
+    safe fn swr_zend_try_write(text: std::io::IoSlice<'_>) -> std::ffi::c_int;
     /// The executor's frames as a new array in `trace`, written without reading
     /// what the slot held; `options` are `DEBUG_BACKTRACE_*` and `limit` 0 is
     /// every frame.
@@ -342,9 +345,7 @@ extern "C" fn on_free(ptr: *mut c_void) {
 
 /// `ZEND_WRITE`, trapping a bailout from an output handler.
 pub(crate) fn write(text: &[u8]) -> Result<(), bailout::Bailout> {
-    // SAFETY: live bytes; the shim traps a bailout.
-    let bailed = unsafe { swr_zend_try_write(text.as_ptr().cast(), text.len()) };
-    if bailed != 0 {
+    if swr_zend_try_write(std::io::IoSlice::new(text)) != 0 {
         Err(bailout::Bailout)
     } else {
         Ok(())

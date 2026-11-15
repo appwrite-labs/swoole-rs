@@ -433,7 +433,7 @@ fn sendto(call: &Call) {
 }
 
 /// `recvfrom(int $length, &$address, &$port = 0): string|false`.
-fn recvfrom(call: &Call) {
+fn recvfrom(call: &mut Call) {
     let Ok(length) = call.arity(2, 3).and_then(|()| call.long(1, 0)) else {
         return call.set_bool(false);
     };
@@ -450,11 +450,9 @@ fn recvfrom(call: &Call) {
         return call.set_bool(false);
     }
     let (peer, peer_port) = socket.address();
-    // SAFETY: nothing borrows arguments 2 and 3.
-    unsafe { call.assign(2, Owned::string(ZString::new(peer.to_bytes()))) };
+    call.assign(2, Owned::string(ZString::new(peer.to_bytes())));
     if call.num_args() >= 3 {
-        // SAFETY: as above.
-        unsafe { call.assign(3, Owned::long(i64::from(peer_port))) };
+        call.assign(3, Owned::long(i64::from(peer_port)));
     }
     call.set_zstring(buffer.into_zstring());
 }
