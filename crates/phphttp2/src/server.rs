@@ -242,8 +242,6 @@ impl Headers {
     /// HPACK-encode the set into the frame after its nine header bytes, which
     /// `seal` fills in, with the session's encoder, made on first use.
     fn deflate(mut self, session: &Session) -> Self {
-        let mut deflater = session.deflater.borrow_mut();
-        let encoder = deflater.get_or_insert_with(|| Encoder::new(session.remote[0].get()));
         let Buffers {
             bytes,
             slots,
@@ -251,14 +249,16 @@ impl Headers {
         } = &mut self.buffers;
         frame.resize(FRAME_HEADER, 0);
         let field = |start: usize, length: usize| bytes.get(start..start + length);
-        encoder.encode(
-            slots.iter().map(|&(start, name, value)| {
-                let value = field(start + name, value).unwrap_or_default();
-                (field(start, name).unwrap_or_default(), value)
-            }),
-            frame,
-        );
-        drop(deflater);
+        session.with_deflater(|deflater| {
+            let encoder = deflater.get_or_insert_with(|| Encoder::new(session.remote[0].get()));
+            encoder.encode(
+                slots.iter().map(|&(start, name, value)| {
+                    let value = field(start + name, value).unwrap_or_default();
+                    (field(start, name).unwrap_or_default(), value)
+                }),
+                frame,
+            );
+        });
         self
     }
 
@@ -509,7 +509,7 @@ fn send_header_then(
 ) -> bool {
     let Some(mut headers) = build_header(ctx, session, body) else {
         // Upstream closes once the session has an encoder.
-        if session.deflater.borrow().is_some() {
+        if session.with_deflater(|deflater| deflater.is_some()) {
             set(ctx, Field::End, 1);
             close(ctx);
         }
@@ -1105,29 +1105,29 @@ fn settings(session: &Session, payload: &[u8]) -> bool {
     };
     for entry in entries {
         let (id, value) = swoole_rs_http2::sw_rs_http2_unpack_setting(entry);
-        let mut deflater = session.deflater.borrow_mut();
-        let old = if id == SETTING_HEADER_TABLE_SIZE {
-            session.remote[0].get()
-        } else {
-            0
-        };
-        let change = id == SETTING_HEADER_TABLE_SIZE && value != old && deflater.is_some();
-        let plan = sw_rs_http2_setting_plan(u32::from(id), value, old, change, true);
-        if plan.set_value
-            && let Ok(field) = usize::try_from(plan.field)
-            && let Some(setting) = session.remote.get(field)
-        {
-            setting.set(value);
-        }
-        if plan.set_window {
-            session.remote_window_size.set(value);
-        }
-        if plan.change_deflater
-            && let Some(encoder) = deflater.as_mut()
-        {
-            encoder.set_table_size(value);
-        }
-        drop(deflater);
+        session.with_deflater(|deflater| {
+            let old = if id == SETTING_HEADER_TABLE_SIZE {
+                session.remote[0].get()
+            } else {
+                0
+            };
+            let change = id == SETTING_HEADER_TABLE_SIZE && value != old && deflater.is_some();
+            let plan = sw_rs_http2_setting_plan(u32::from(id), value, old, change, true);
+            if plan.set_value
+                && let Ok(field) = usize::try_from(plan.field)
+                && let Some(setting) = session.remote.get(field)
+            {
+                setting.set(value);
+            }
+            if plan.set_window {
+                session.remote_window_size.set(value);
+            }
+            if plan.change_deflater
+                && let Some(encoder) = deflater.as_mut()
+            {
+                encoder.set_table_size(value);
+            }
+        });
     }
     // The client assumes the server has not applied its settings until it acknowledges them.
     send(
@@ -1206,10 +1206,30 @@ fn parse_header(
         input = block;
     }
     stream.ctx.header_arrays();
-    let mut inflater = session.inflater.borrow_mut();
+    // Each step decodes one field with the decoder taken out, copies it, and
+    // puts the decoder back before the field reaches the request's arrays.
+    let last = flags & FLAG_END_HEADERS != 0;
+    let mut field = Vec::new();
     loop {
-        let step = match inflater.decode(input, flags & FLAG_END_HEADERS != 0) {
-            Ok(step) => step,
+        let decoded = session.with_inflater(|inflater| {
+            let step = inflater.decode(input, last)?;
+            field.clear();
+            // Trailers are decoded for the HPACK table but never exposed or acted on.
+            let name = step.header.filter(|_| !discard).map(|(name, value)| {
+                field.extend_from_slice(name);
+                field.extend_from_slice(value);
+                name.len()
+            });
+            let read = step.read;
+            let rest = input.get(read..).unwrap_or_default();
+            let next = sw_rs_http2_inflate_step(step.flags(), rest.len(), false);
+            if next.end_headers {
+                inflater.end_headers();
+            }
+            Ok::<_, Error>((read, name, next.finish))
+        });
+        let (read, name, finish) = match decoded {
+            Ok(decoded) => decoded,
             Err(error) => {
                 let code = Error::CODE;
                 let text = format!("inflate failed, Error: {error}[{code}]");
@@ -1217,20 +1237,14 @@ fn parse_header(
                 return false;
             }
         };
-        input = input.get(step.read..).unwrap_or_default();
-        let inflate_flags = step.flags();
-        // Trailers are decoded for the HPACK table but never exposed or acted on.
-        if let Some((name, value)) = step.header.filter(|_| !discard)
-            && !request_header(session, stream, name, value)
-        {
-            continue;
+        input = input.get(read..).unwrap_or_default();
+        if let Some(name) = name {
+            let (name, value) = field.split_at_checked(name).unwrap_or_default();
+            request_header(session, stream, name, value);
         }
-        let step = sw_rs_http2_inflate_step(inflate_flags, input.len(), false);
-        if step.end_headers {
-            inflater.end_headers();
-            break;
-        }
-        if step.finish {
+        // A step that emits a field never ends the block, so the end of the
+        // block never depended on what `request_header` did with a field.
+        if finish {
             break;
         }
     }
@@ -1242,10 +1256,10 @@ fn add_string(ctx: Ctx, array: Value, key: &[u8], value: &[u8]) {
     ctx.insert(array, key, ZString::new(value));
 }
 
-/// One request header; `false` skips the rest of the step (a Cookie, parsed
-/// into `$cookie` and never kept in `$header`, or a Content-Length, checked
-/// here and judged once the block is complete).
-fn request_header(session: &Session, stream: &Stream, name: &[u8], value: &[u8]) -> bool {
+/// One request header (a Cookie is parsed into `$cookie` and never kept in
+/// `$header`; a Content-Length is checked here and judged once the block is
+/// complete).
+fn request_header(session: &Session, stream: &Stream, name: &[u8], value: &[u8]) {
     let ctx = stream.ctx;
     let kind = header_plan(HeaderRole::Request, name, false).kind;
     if name.first() == Some(&b':') {
@@ -1255,12 +1269,11 @@ fn request_header(session: &Session, stream: &Stream, name: &[u8], value: &[u8])
             HeaderKind::Authority => add_string(ctx, Value::Header, b"host", value),
             _ => {}
         }
-        return true;
+        return;
     }
     match kind {
         HeaderKind::Cookie => {
             ctx.cookie(value);
-            false
         }
         HeaderKind::ContentLength => {
             if !content_length_valid(session, value) {
@@ -1268,14 +1281,12 @@ fn request_header(session: &Session, stream: &Stream, name: &[u8], value: &[u8])
             }
             // The header keeps the last value.
             add_string(ctx, Value::Header, b"content-length", value);
-            false
         }
         _ => {
             if matches!(kind, HeaderKind::ContentType | HeaderKind::AcceptEncoding) {
                 stream.negotiates.set(true);
             }
             add_string(ctx, Value::Header, name, value);
-            true
         }
     }
 }

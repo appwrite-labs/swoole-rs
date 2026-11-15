@@ -4,7 +4,7 @@
 //! `swoole::http::Context`, a copy of the session's settings context, released
 //! with the stream.
 use std::{
-    cell::{Cell, RefCell},
+    cell::Cell,
     collections::HashMap,
     hash::{BuildHasherDefault, Hasher},
     rc::Rc,
@@ -48,14 +48,14 @@ pub(crate) type Stream = Rc<StreamState>;
 type Streams = IdMap<u32, Stream>;
 type Sessions = IdMap<i64, Session>;
 
-/// `http2::Session`. Its streams are in a cell, taken out and put back with
-/// nothing in between that yields or runs PHP code.
+/// `http2::Session`. Its streams and HPACK codecs are in cells, taken out and
+/// put back with nothing in between that yields or runs PHP code.
 pub(crate) struct SessionState {
     fd: i64,
     streams: Cell<Streams>,
-    pub(crate) inflater: RefCell<Decoder>,
+    inflater: Cell<Decoder>,
     /// Made on first use, sized by the peer's `SETTINGS_HEADER_TABLE_SIZE` then.
-    pub(crate) deflater: RefCell<Option<Encoder>>,
+    deflater: Cell<Option<Encoder>>,
     /// `local_settings`, in `swoole::http2::Settings` order; never changed.
     local: [u32; 6],
     /// `remote_settings`, as the peer's SETTINGS frames set them.
@@ -141,8 +141,8 @@ impl SessionState {
         Self {
             fd,
             streams: Cell::default(),
-            inflater: RefCell::default(),
-            deflater: RefCell::default(),
+            inflater: Cell::default(),
+            deflater: Cell::default(),
             local,
             remote: local.map(Cell::new),
             remote_window_size: Cell::new(local[INIT_WINDOW_SIZE]),
@@ -169,6 +169,24 @@ impl SessionState {
         let mut streams = self.streams.take();
         let result = f(&mut streams);
         self.streams.set(streams);
+        result
+    }
+
+    /// `f` over the HPACK decoder, taken out and put back: nothing in `f`
+    /// yields or runs PHP code.
+    pub(crate) fn with_inflater<R>(&self, f: impl FnOnce(&mut Decoder) -> R) -> R {
+        let mut inflater = self.inflater.take();
+        let result = f(&mut inflater);
+        self.inflater.set(inflater);
+        result
+    }
+
+    /// `f` over the HPACK encoder (`None` until made), taken out and put back:
+    /// nothing in `f` yields or runs PHP code.
+    pub(crate) fn with_deflater<R>(&self, f: impl FnOnce(&mut Option<Encoder>) -> R) -> R {
+        let mut deflater = self.deflater.take();
+        let result = f(&mut deflater);
+        self.deflater.set(deflater);
         result
     }
 
