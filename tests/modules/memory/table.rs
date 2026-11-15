@@ -24,8 +24,8 @@ fn warnings() -> Vec<String> {
 
 /// The key a row holds.
 /// # Safety
-/// `row` is a row of a created table, or the iterator's copy of one.
-unsafe fn row_key<'a>(row: *const Row) -> &'a [u8] {
+/// `row` is a row of a created table.
+unsafe fn row_key(row: *const Row) -> Vec<u8> {
     Live(row.cast_mut()).key()
 }
 
@@ -36,26 +36,27 @@ unsafe fn unlock(row: *mut Row) {
     Live(row).unlock();
 }
 
-/// A row's column data, unchecked.
-fn data(row: *const Row) -> Data {
-    Data {
-        data: Live(row.cast_mut()).data(),
-        size: usize::MAX,
-    }
+/// A row's column data up to the end of `column`.
+/// # Safety
+/// `row` is a locked row of the column's table, and nothing else reaches its data
+/// for `'a`.
+unsafe fn data<'a>(row: *const Row, column: &Column) -> &'a mut [u8] {
+    let size = column.index + column.width as usize;
+    unsafe { slice::from_raw_parts_mut(Live(row.cast_mut()).data(), size) }
 }
 
 /// A number column's 8 bytes.
 /// # Safety
-/// `row` is a locked row (or the iterator's copy) of the column's table.
+/// As `data`.
 unsafe fn get_number(row: *const Row, column: &Column) -> u64 {
-    data(row).number(column)
+    number(unsafe { data(row, column) }, column)
 }
 
 /// A string column's bytes, valid while the row is locked.
 /// # Safety
-/// As `get_number`.
+/// As `data`.
 unsafe fn get_string<'a>(row: *const Row, column: &Column) -> &'a [u8] {
-    data(row).bytes(column)
+    bytes(unsafe { data(row, column) }, column)
 }
 
 /// The raw row access the tests drive, beside the guards.
@@ -64,14 +65,12 @@ trait Raw {
     unsafe fn clear_row(&self, row: *mut Row);
     /// `TableRow::set_value` with this table's warning log.
     unsafe fn set_value(&self, row: *mut Row, column: &Column, value: *const u8, length: usize);
-    /// `Table::current`: the iterator's copy of its row (null before `create`).
-    fn current(&self) -> *mut Row;
 }
 
 impl Raw for Table {
     unsafe fn clear_row(&self, row: *mut Row) {
         for column in self.columns() {
-            data(row).clear(column);
+            clear(unsafe { data(row, column) }, column);
         }
     }
 
@@ -87,12 +86,13 @@ impl Raw for Table {
         } else {
             unsafe { slice::from_raw_parts(value, length) }
         };
-        data(row).set(column, value, Live(row).key(), self.warning);
-    }
-
-    fn current(&self) -> *mut Row {
-        unsafe { self.cursor.as_mut() }
-            .map_or(ptr::null_mut(), |cursor| cursor.current.as_mut_ptr().cast())
+        set(
+            unsafe { data(row, column) },
+            column,
+            value,
+            Live(row),
+            self.warning,
+        );
     }
 }
 
@@ -388,12 +388,11 @@ fn iteration_visits_every_row_once_including_chains() {
         t.rewind();
         loop {
             t.forward();
-            let row = t.current();
-            let key = unsafe { row_key(row) };
+            let key = t.current_row().unwrap().key().to_vec();
             if key.is_empty() {
                 break;
             }
-            seen.push(key.to_vec());
+            seen.push(key);
         }
         seen.sort();
         assert_eq!(seen, keys);
@@ -501,7 +500,7 @@ fn uncreated_tables_refuse_row_operations() {
     let mut lock = ptr::null_mut();
     assert!(t.set(b"a", &mut lock, None).is_null() && lock.is_null());
     assert!(t.get(b"a", &mut lock).is_null() && !t.exists(b"a") && !t.del(b"a"));
-    assert!(t.current().is_null() && !t.ready() && !t.is_created());
+    assert!(t.current_row().is_none() && !t.ready() && !t.is_created());
     assert_eq!((t.available_slices(), t.total_slices()), (0, 0));
     t.rewind();
     t.forward();
@@ -694,12 +693,11 @@ fn start_iterator(ptr: &Table) {
     let mut count = 0;
     loop {
         ptr.forward();
-        let row = ptr.current();
-        let key_len = unsafe { (*row).key_len.load(Ordering::Relaxed) };
-        if key_len == 0 {
+        let row = ptr.current_row().unwrap();
+        let key = row.key();
+        if key.is_empty() {
             break;
         }
-        let key = unsafe { &(&*(*row).key.get())[..usize::from(key_len)] };
         assert!(ptr.exists(key));
         count += 1;
     }
@@ -812,9 +810,9 @@ fn table_get_value() {
         1.245
     );
     assert_eq!(unsafe { get_number(row, column_id) }.cast_signed(), 1);
-    data(row).clear(column_id);
-    data(row).clear(column_name);
-    data(row).clear(column_score);
+    clear(unsafe { data(row, column_id) }, column_id);
+    clear(unsafe { data(row, column_name) }, column_name);
+    clear(unsafe { data(row, column_score) }, column_score);
     streq(c"php");
     assert_eq!(
         f64::from_bits(unsafe { get_number(row, column_score) }),
@@ -927,14 +925,14 @@ fn guards_read_and_write_locked_rows() {
     let t = table.get();
     let column = |name: &[u8]| t.column(name).unwrap();
     let (id, name, score) = (column(b"id"), column(b"name"), column(b"score"));
-    let row = t.lock_set(b"k").unwrap();
+    let mut row = t.lock_set(b"k").unwrap();
     assert!(row.found() && row.is_new());
     row.set_number(id, 7);
     row.set_bytes(name, b"seven");
     row.set_number(score, 1.5f64.to_bits());
     row.set_bytes(id, b"ignored");
     drop(row);
-    let row = t.lock_set(b"k").unwrap();
+    let mut row = t.lock_set(b"k").unwrap();
     assert!(!row.is_new());
     assert_eq!((row.number(id), row.bytes(name)), (7, &b"seven"[..]));
     assert_eq!(f64::from_bits(row.number(score)), 1.5);

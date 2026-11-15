@@ -6,8 +6,9 @@
 //! The header holds what upstream's `Table` held in shared memory: sizes,
 //! counters, the pool mutex and the iterator mutex. Columns and the iterator's
 //! cursor are process-private heap objects, as upstream's maps and
-//! `TableIterator` were. The arena is `size` bucket pointers, `size` bucket
-//! rows, then a fixed pool of collision rows. Each row is an 88-byte header
+//! `TableIterator` were. The arena is room for upstream's `size` bucket pointers
+//! (unused: a bucket's row is found by its index), `size` bucket rows, then a
+//! fixed pool of collision rows. Each row is an 88-byte header
 //! followed by the column data, rounded up to 8
 //! bytes so every lock word and link is aligned.
 //!
@@ -16,9 +17,8 @@
 //! more than two seconds.
 use crate::fixed::{self, Fixed, Layout, Slice};
 use crate::members::Shm;
-use std::cell::UnsafeCell;
 use std::ffi::c_int;
-use std::mem::{MaybeUninit, size_of};
+use std::mem::{MaybeUninit, offset_of, size_of};
 use std::sync::atomic::{
     AtomicI32, AtomicI64, AtomicPtr, AtomicU8, AtomicU32, AtomicUsize, Ordering,
 };
@@ -75,9 +75,10 @@ pub type Warning = fn(message: &[u8]);
 pub type Error = fn(code: c_int);
 
 /// A row header, then `item_size` bytes of column data. Other processes read
-/// and write it at once, so every field is an atomic or a cell: fields other
-/// than the lock change only under the bucket's lock, and `active` is also read
-/// before it (`del`, the iterator), as upstream does.
+/// and write it at once, so every field is an atomic: fields other than the lock
+/// change only under the bucket's lock, and `active` is also read before it
+/// (`del`, the iterator), as upstream does. All-zero bytes are an unlocked,
+/// inactive row with no key or link, which is how `create` makes one.
 #[repr(C)]
 pub struct Row {
     lock: AtomicU32,
@@ -85,26 +86,11 @@ pub struct Row {
     active: AtomicU8,
     key_len: AtomicU8,
     next: AtomicPtr<Row>,
-    key: UnsafeCell<[u8; KEY_SIZE]>,
+    key: [AtomicU8; KEY_SIZE],
 }
 const ROW: usize = size_of::<Row>();
 
-impl Row {
-    /// An unlocked, inactive row with no key or link.
-    const fn empty() -> Self {
-        Self {
-            lock: AtomicU32::new(0),
-            lock_pid: AtomicI32::new(0),
-            active: AtomicU8::new(0),
-            key_len: AtomicU8::new(0),
-            next: AtomicPtr::new(ptr::null_mut()),
-            key: UnsafeCell::new([0; KEY_SIZE]),
-        }
-    }
-}
-
-/// A row of a created table, or the iterator's copy of one, read and written
-/// in place.
+/// A row of a created table, read and written in place.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Live(*mut Row);
 
@@ -142,11 +128,26 @@ impl Live {
         self.row().key_len.load(Ordering::Relaxed)
     }
 
-    fn key(self) -> &'static [u8] {
+    /// The key's `key_len` (at most 63) bytes, which change only under the bucket's lock.
+    fn key_bytes(self) -> &'static [AtomicU8] {
         let length = usize::from(self.key_len()).min(KEY_SIZE - 1);
-        // SAFETY: a live row holds `key_len` (at most 63) key bytes, which change
-        // only under the bucket's lock.
-        unsafe { slice::from_raw_parts(self.row().key.get().cast::<u8>(), length) }
+        self.row().key.get(..length).unwrap_or_default()
+    }
+
+    /// Whether the row's key is `key`.
+    fn key_is(self, key: &[u8]) -> bool {
+        let own = self.key_bytes();
+        own.len() == key.len()
+            && own
+                .iter()
+                .zip(key)
+                .all(|(byte, &other)| byte.load(Ordering::Relaxed) == other)
+    }
+
+    /// A copy of the row's key.
+    fn key(self) -> Vec<u8> {
+        let bytes = self.key_bytes().iter();
+        bytes.map(|byte| byte.load(Ordering::Relaxed)).collect()
     }
 
     fn data(self) -> *mut u8 {
@@ -169,13 +170,10 @@ impl Live {
     /// The key, NUL-padded, its length and `active`.
     fn set_key(self, key: &[u8], active: u8) {
         let row = self.row();
-        let mut bytes = [0; KEY_SIZE];
         let key = key.get(..KEY_SIZE - 1).unwrap_or(key);
-        for (to, from) in bytes.iter_mut().zip(key) {
-            *to = *from;
+        for (at, to) in row.key.iter().enumerate() {
+            to.store(key.get(at).copied().unwrap_or(0), Ordering::Relaxed);
         }
-        // SAFETY: a live row's key, under the bucket's lock.
-        unsafe { row.key.get().write(bytes) };
         #[expect(clippy::cast_possible_truncation, reason = "at most 63 bytes")]
         row.key_len.store(key.len() as u8, Ordering::Relaxed);
         row.active.store(active, Ordering::Relaxed);
@@ -184,14 +182,14 @@ impl Live {
     /// Move `from`'s key and data into this row (a deleted bucket row).
     fn take(self, from: Live, item_size: usize) {
         let key_len = from.key_len();
-        let (key, from_key) = (
-            self.row().key.get().cast::<u8>(),
-            from.row().key.get().cast(),
-        );
-        // SAFETY: two live rows of one table, under the bucket's lock; the key and its NUL.
-        unsafe { ptr::copy_nonoverlapping(from_key, key, usize::from(key_len) + 1) };
+        // The key and its NUL.
+        let key = self.row().key.iter().zip(&from.row().key);
+        for (to, byte) in key.take(usize::from(key_len) + 1) {
+            to.store(byte.load(Ordering::Relaxed), Ordering::Relaxed);
+        }
         self.row().key_len.store(key_len, Ordering::Relaxed);
-        // SAFETY: as above; both rows hold `item_size` data bytes.
+        // SAFETY: two live rows of one table, under the bucket's lock; both hold
+        // `item_size` data bytes.
         unsafe { ptr::copy_nonoverlapping(from.data(), self.data(), item_size) };
     }
 
@@ -273,7 +271,7 @@ struct Columns {
 struct Cursor {
     absolute: usize,
     collision: usize,
-    current: Vec<u64>,
+    current: Vec<u8>,
 }
 
 /// The process-private parts of a table this process made and hasn't destroyed, which
@@ -317,9 +315,9 @@ pub struct Stats {
 
 /// The table header, in `size_of::<Table>()` bytes of shared memory.
 ///
-/// Invariant: once `created`, `memory` is the arena `create` laid out: `rows`
-/// holds `size` pointers to bucket rows, `pool` is a fixed pool of collision
-/// rows, and `cursor` is this process's cursor.
+/// Invariant: once `created`, `memory` is the arena `create` laid out: bucket
+/// row `i` is at `first + i * stride`, `pool` is a fixed pool of collision rows,
+/// and `cursor` is this process's cursor.
 #[repr(C)]
 pub struct Table {
     mutex: SharedMutex,
@@ -341,7 +339,8 @@ pub struct Table {
     columns: *mut Columns,
     cursor: *mut Cursor,
     memory: *mut u8,
-    rows: *mut *mut Row,
+    first: *mut Row,
+    stride: usize,
     pool: *mut Fixed,
 }
 
@@ -435,7 +434,8 @@ impl Table {
             columns: ptr::null_mut(),
             cursor: ptr::null_mut(),
             memory: ptr::null_mut(),
-            rows: ptr::null_mut(),
+            first: ptr::null_mut(),
+            stride: 0,
             pool: ptr::null_mut(),
         };
         let table = this.write(table);
@@ -584,34 +584,33 @@ impl Table {
         if self.created || memory.is_null() || !memory.addr().is_multiple_of(8) || !fits {
             return false;
         }
-        #[expect(
-            clippy::cast_ptr_alignment,
-            reason = "the arena is 8-aligned (checked above)"
-        )]
-        let rows = memory.cast::<*mut Row>();
-        let first = memory.wrapping_add(self.size * size_of::<*mut Row>());
-        for i in 0..self.size {
-            #[expect(
-                clippy::cast_ptr_alignment,
-                reason = "8-aligned: the stride is a multiple of 8"
-            )]
-            let row = first.wrapping_add(i * plan.stride).cast::<Row>();
-            // SAFETY: bucket `i`'s pointer lies in the arena (see above).
-            unsafe { rows.wrapping_add(i).write(row) };
-            // SAFETY: as above; the row isn't shared yet.
-            unsafe { row.write(Row::empty()) };
+        // SAFETY: the mapping's payload, `plan.physical` bytes (checked above), which
+        // the table alone reaches from here on.
+        let bytes = unsafe { slice::from_raw_parts_mut(memory.cast(), plan.physical) };
+        // Upstream's bucket pointers come first; a bucket's row is found by its index.
+        let rows = bytes.get_mut(self.size * size_of::<*mut Row>()..);
+        let Some((rows, pool)) =
+            rows.and_then(|rest| rest.split_at_mut_checked(self.size * plan.stride))
+        else {
+            return false;
+        };
+        for row in rows.chunks_exact_mut(plan.stride) {
+            // Zero bytes are an empty row (see `Row`).
+            row.get_mut(..ROW)
+                .unwrap_or_default()
+                .fill(MaybeUninit::new(0));
         }
-        let pool = first.wrapping_add(self.size * plan.stride);
-        let pool_bytes = plan.physical - self.size * (plan.stride + size_of::<*mut Row>());
         let Ok(width) = u32::try_from(plan.stride) else {
             return false;
         };
-        let Some(layout) = Layout::new(0, width, pool_bytes, false) else {
+        let Some(layout) = Layout::new(0, width, pool.len(), false) else {
             return false;
         };
-        // SAFETY: the arena's last `pool_bytes` (see above), which nothing else reaches
-        // yet; afterwards only the pool does.
-        let pool = unsafe { slice::from_raw_parts_mut(pool.cast::<MaybeUninit<u8>>(), pool_bytes) };
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "8-aligned: the arena is (checked above), and so is the stride"
+        )]
+        let first = rows.as_mut_ptr().cast::<Row>();
         let Some(pool) = fixed::construct(pool, layout, true, false) else {
             return false;
         };
@@ -619,7 +618,7 @@ impl Table {
         let cursor = Box::new(Cursor {
             absolute: 0,
             collision: 0,
-            current: vec![0; plan.stride / 8],
+            current: vec![0; plan.stride],
         });
         // This process's parts of the table hold its cursor; none are left once
         // `release` has run, and then there is no table to create.
@@ -630,7 +629,8 @@ impl Table {
             return false;
         };
         self.cursor = cursor;
-        self.rows = rows;
+        self.first = first;
+        self.stride = plan.stride;
         self.pool = pool.as_ptr();
         self.memory_size = plan.logical - self.size * (plan.row_size + size_of::<*mut Row>());
         self.memory = std::mem::take(arena).into_raw().cast();
@@ -719,9 +719,9 @@ impl Table {
         self.pool().map_or(0, |pool| pool.slices().1)
     }
 
+    /// A created table's bucket row (see the invariant); callers keep `index < size`.
     fn bucket_row(&self, index: usize) -> Live {
-        // SAFETY: a created table's buckets (see the invariant); callers keep `index < size`.
-        Live(unsafe { self.rows.wrapping_add(index).read() })
+        Live(self.first.wrapping_byte_add(index * self.stride))
     }
 
     /// `get_by_index`: bucket `index`'s row if it is active.
@@ -765,7 +765,7 @@ impl Table {
         let mut row = root;
         if root.active() {
             let mut level = 1;
-            while row.key() != key {
+            while !row.key_is(key) {
                 if let Some(next) = row.next() {
                     row = next;
                     found |= CONFLICT;
@@ -809,7 +809,7 @@ impl Table {
         let (mut row, key) = self.bucket(key);
         *lock = row.0;
         row.lock(self.warning);
-        while row.key() != key {
+        while !row.key_is(key) {
             match row.next() {
                 Some(next) => row = next,
                 None => return ptr::null_mut(),
@@ -851,18 +851,18 @@ impl Table {
     /// Delete `key` from a locked bucket.
     fn unlink(&self, root: Live, key: &[u8]) -> bool {
         let Some(mut next) = root.next() else {
-            if root.key() != key {
+            if !root.key_is(key) {
                 return false;
             }
             root.clear();
             return true;
         };
-        if root.key() == key {
+        if root.key_is(key) {
             root.set_next(next.next());
             root.take(next, self.item_size);
         } else {
             let mut previous = root;
-            while next.key() != key {
+            while !next.key_is(key) {
                 previous = next;
                 let Some(after) = next.next() else {
                     return false;
@@ -920,18 +920,15 @@ impl Table {
     /// Copy `row_size` bytes of `row` (zeros for `None`) to the cursor's row,
     /// which holds `stride >= row_size` bytes.
     fn copy(cursor: &mut Cursor, row: Option<Live>, row_size: usize) {
-        let Some(row) = row else {
-            // The words `row_size` reaches: no copy writes the last one's bytes past
-            // `row_size`, so they are zero already.
-            let words = row_size.div_ceil(size_of::<u64>());
-            if let Some(header) = cursor.current.get_mut(..words) {
-                header.fill(0);
-            }
+        let Some(current) = cursor.current.get_mut(..row_size) else {
             return;
         };
-        let current = cursor.current.as_mut_ptr().cast::<u8>();
+        let Some(row) = row else {
+            current.fill(0);
+            return;
+        };
         // SAFETY: a locked row's bytes, into the cursor's row.
-        unsafe { ptr::copy_nonoverlapping(row.0.cast::<u8>(), current, row_size) };
+        unsafe { ptr::copy_nonoverlapping(row.0.cast::<u8>(), current.as_mut_ptr(), row_size) };
     }
 
     /// `Table::forward`: copies the next row to `current()`, or an empty
@@ -997,10 +994,18 @@ impl Table {
     }
 
     fn locked(&self, lock: *mut Row, row: *mut Row, flags: i32) -> Option<Locked<'_>> {
+        let row = (!row.is_null()).then(|| {
+            let row = Live(row);
+            // SAFETY: a row of this table holds `item_size` column bytes after its
+            // header. The bucket's lock, which the guard holds until it drops, keeps
+            // every other user out of them.
+            let data = unsafe { slice::from_raw_parts_mut(row.data(), self.item_size) };
+            (row, data)
+        });
         (!lock.is_null()).then(|| Locked {
             table: self,
             bucket: Live(lock),
-            row: (!row.is_null()).then_some(Live(row)),
+            row,
             flags,
         })
     }
@@ -1015,89 +1020,85 @@ impl Table {
     }
 }
 
-/// A row's column data, `size` bytes at `data`: a locked row's or the
-/// iterator's copy. Reads and writes stay inside the column's bytes; a column
-/// that does not fit (another table's) reads as zero or empty.
-#[derive(Clone, Copy)]
-struct Data {
-    data: *mut u8,
-    size: usize,
+/// A column's bytes in a row's column data: a number's 8, or a string's length
+/// word and capacity. A column that does not fit (another table's) has none, so
+/// it reads as zero or empty and takes no writes.
+fn field<'d>(data: &'d [u8], column: &Column) -> Option<&'d [u8]> {
+    let end = column.index.checked_add(column.width as usize)?;
+    data.get(column.index..end).filter(|_| column.width >= 8)
 }
 
-impl Data {
-    /// The column's bytes: a number's 8, or a string's length word and capacity.
-    fn slot(self, column: &Column) -> Option<*mut u8> {
-        let end = column.index.checked_add(column.width as usize)?;
-        (end <= self.size && column.width >= 8).then(|| self.data.wrapping_add(column.index))
-    }
+fn field_mut<'d>(data: &'d mut [u8], column: &Column) -> Option<&'d mut [u8]> {
+    let end = column.index.checked_add(column.width as usize)?;
+    data.get_mut(column.index..end)
+        .filter(|_| column.width >= 8)
+}
 
-    fn number(self, column: &Column) -> u64 {
-        // SAFETY: the column's 8 bytes inside the row (`slot`).
-        self.slot(column)
-            .map_or(0, |at| unsafe { at.cast::<u64>().read_unaligned() })
-    }
+/// A number column's 8 bytes.
+fn number(data: &[u8], column: &Column) -> u64 {
+    field(data, column)
+        .and_then(<[u8]>::first_chunk)
+        .map_or(0, |bytes| u64::from_ne_bytes(*bytes))
+}
 
-    fn bytes<'a>(self, column: &Column) -> &'a [u8] {
-        let Some(at) = self.slot(column) else {
-            return &[];
-        };
-        // SAFETY: the column's length word (`slot`).
-        let length = unsafe { at.cast::<u32>().read_unaligned() } as usize;
-        let length = length.min(column.width as usize - 4);
-        // SAFETY: at most the column's capacity, inside the row.
-        unsafe { slice::from_raw_parts(at.wrapping_add(4), length) }
-    }
+/// A string column's bytes: as many as its length word counts, at most its capacity.
+fn bytes<'d>(data: &'d [u8], column: &Column) -> &'d [u8] {
+    let Some((length, text)) = field(data, column).and_then(<[u8]>::split_first_chunk) else {
+        return &[];
+    };
+    let length = u32::from_ne_bytes(*length) as usize;
+    text.get(..length).unwrap_or(text)
+}
 
-    /// `TableRow::set_value()`: a number column takes `value`'s 8 bytes; a string
-    /// column `value`, cut to its capacity with a warning naming the row's `key`.
-    fn set(self, column: &Column, value: &[u8], key: &[u8], warning: Warning) {
-        let Some(at) = self.slot(column) else {
-            return;
-        };
-        if column.kind != ColumnType::String {
-            if let Some(number) = value.first_chunk::<8>() {
-                // SAFETY: the column's 8 bytes inside the row (`slot`), under its lock.
-                unsafe { at.cast::<[u8; 8]>().write_unaligned(*number) };
-            }
-            return;
+/// `TableRow::set_value()`: a number column takes `value`'s 8 bytes; a string
+/// column `value`, cut to its capacity with a warning naming `row`'s key.
+fn set(data: &mut [u8], column: &Column, value: &[u8], row: Live, warning: Warning) {
+    let Some(at) = field_mut(data, column) else {
+        return;
+    };
+    if column.kind != ColumnType::String {
+        if let (Some(to), Some(number)) = (at.first_chunk_mut::<8>(), value.first_chunk::<8>()) {
+            *to = *number;
         }
-        let capacity = column.width as usize - 4;
-        if value.len() > capacity {
-            let mut message = b"TableRow::set_value(): [key=".to_vec();
-            message.extend_from_slice(c_str(key));
-            message.extend_from_slice(b",field=");
-            message.extend_from_slice(c_str(column.name()));
-            message.extend_from_slice(b"]string value is too long");
-            warn(warning, &message);
-        }
-        let value = value.get(..capacity).unwrap_or(value);
-        let length = value.len().c_cast::<u32>();
-        // SAFETY: the column's length word inside the row (`slot`), under its lock.
-        unsafe { at.cast::<u32>().write_unaligned(length) };
-        // SAFETY: at most the column's capacity after its length word, inside the row.
-        unsafe { ptr::copy_nonoverlapping(value.as_ptr(), at.wrapping_add(4), value.len()) };
+        return;
     }
+    let Some((length, text)) = at.split_first_chunk_mut::<4>() else {
+        return;
+    };
+    if value.len() > text.len() {
+        let mut message = b"TableRow::set_value(): [key=".to_vec();
+        message.extend_from_slice(c_str(&row.key()));
+        message.extend_from_slice(b",field=");
+        message.extend_from_slice(c_str(column.name()));
+        message.extend_from_slice(b"]string value is too long");
+        warn(warning, &message);
+    }
+    let value = value.get(..text.len()).unwrap_or(value);
+    *length = value.len().c_cast::<u32>().to_ne_bytes();
+    if let Some(to) = text.get_mut(..value.len()) {
+        to.copy_from_slice(value);
+    }
+}
 
-    /// `TableColumn::clear()`: an empty string or a zero number.
-    fn clear(self, column: &Column) {
-        if let Some(at) = self.slot(column) {
-            let width = if column.kind == ColumnType::String {
-                4
-            } else {
-                8
-            };
-            // SAFETY: the column's first `width` bytes inside the row (`slot`).
-            unsafe { ptr::write_bytes(at, 0, width) };
-        }
+/// `TableColumn::clear()`: an empty string or a zero number.
+fn clear(data: &mut [u8], column: &Column) {
+    let width = if column.kind == ColumnType::String {
+        4
+    } else {
+        8
+    };
+    if let Some(at) = field_mut(data, column).and_then(|at| at.get_mut(..width)) {
+        at.fill(0);
     }
 }
 
 /// A bucket this process locked, with the key's row in it if there is one
-/// (`Table::set`'s or `Table::get`'s); unlocked on drop.
+/// (`Table::set`'s or `Table::get`'s) and that row's column data, which the lock
+/// keeps to this guard; unlocked on drop.
 pub struct Locked<'a> {
     table: &'a Table,
     bucket: Live,
-    row: Option<Live>,
+    row: Option<(Live, &'a mut [u8])>,
     flags: i32,
 }
 
@@ -1114,54 +1115,52 @@ impl Locked<'_> {
         self.flags & NEW_ROW != 0
     }
 
-    fn data(&self) -> Option<Data> {
-        self.row.map(|row| Data {
-            data: row.data(),
-            size: self.table.item_size,
-        })
+    fn data(&self) -> &[u8] {
+        self.row.as_ref().map_or(&[], |(_, data)| &**data)
     }
 
     /// A number column's 8 bytes (0 without a row).
     #[must_use]
     pub fn number(&self, column: &Column) -> u64 {
-        self.data().map_or(0, |data| data.number(column))
+        number(self.data(), column)
     }
 
     /// A string column's bytes (empty without a row).
     #[must_use]
     pub fn bytes(&self, column: &Column) -> &[u8] {
-        self.data().map_or(&[], |data| data.bytes(column))
+        bytes(self.data(), column)
     }
 
     /// `TableRow::set_value` of a number column's 8 bytes.
-    pub fn set_number(&self, column: &Column, value: u64) {
+    pub fn set_number(&mut self, column: &Column, value: u64) {
         self.set(column, &value.to_ne_bytes());
     }
 
     /// `TableRow::set_value` of a string column: cut to it with a warning.
     /// Nothing for a number column.
-    pub fn set_bytes(&self, column: &Column, value: &[u8]) {
+    pub fn set_bytes(&mut self, column: &Column, value: &[u8]) {
         if column.kind == ColumnType::String {
             self.set(column, value);
         }
     }
 
-    fn set(&self, column: &Column, value: &[u8]) {
-        if let (Some(row), Some(data)) = (self.row, self.data()) {
-            data.set(column, value, row.key(), self.table.warning);
+    fn set(&mut self, column: &Column, value: &[u8]) {
+        if let Some((row, data)) = &mut self.row {
+            set(data, column, value, *row, self.table.warning);
         }
     }
 
     /// `TableColumn::clear()`: an empty string or a zero number.
-    pub fn clear(&self, column: &Column) {
-        if let Some(data) = self.data() {
-            data.clear(column);
+    pub fn clear(&mut self, column: &Column) {
+        if let Some((_, data)) = &mut self.row {
+            clear(data, column);
         }
     }
 
     /// `Table::clear_row`: every column empty or zero.
-    pub fn clear_row(&self) {
-        for column in self.table.columns() {
+    pub fn clear_row(&mut self) {
+        let table = self.table;
+        for column in table.columns() {
             self.clear(column);
         }
     }
@@ -1175,38 +1174,34 @@ impl Drop for Locked<'_> {
 
 /// A copy of the iterator's current row: an empty key past the last.
 pub struct Current {
-    row: Vec<u64>,
+    row: Vec<u8>,
     size: usize,
 }
 
 impl Current {
-    fn live(&self) -> Live {
-        Live(self.row.as_ptr().cast_mut().cast())
-    }
-
-    fn data(&self) -> Data {
-        Data {
-            data: self.live().data(),
-            size: self.size,
-        }
+    fn data(&self) -> &[u8] {
+        self.row.get(ROW..ROW + self.size).unwrap_or_default()
     }
 
     /// The row's key.
     #[must_use]
     pub fn key(&self) -> &[u8] {
-        self.live().key()
+        let length = self.row.get(offset_of!(Row, key_len)).copied().unwrap_or(0);
+        let start = offset_of!(Row, key);
+        let end = start + usize::from(length).min(KEY_SIZE - 1);
+        self.row.get(start..end).unwrap_or_default()
     }
 
     /// A number column's 8 bytes.
     #[must_use]
     pub fn number(&self, column: &Column) -> u64 {
-        self.data().number(column)
+        number(self.data(), column)
     }
 
     /// A string column's bytes.
     #[must_use]
     pub fn bytes(&self, column: &Column) -> &[u8] {
-        self.data().bytes(column)
+        bytes(self.data(), column)
     }
 }
 
