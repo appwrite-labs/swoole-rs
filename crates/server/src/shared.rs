@@ -225,7 +225,7 @@ pub fn swr_v1_server_shared_init(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{free_state, swr_v1_server_state_new};
+    use crate::TestServer;
     use core::sync::atomic::Ordering;
     use swoole_rs_memory::members::Shm;
 
@@ -239,7 +239,7 @@ mod tests {
         // SAFETY: a fresh mapping of a whole `ServerCounters`.
         unsafe { counters.write(ServerCounters::default()) };
         // SAFETY: as above; the mapping outlives every use below.
-        let server = unsafe { &*counters };
+        let counted = unsafe { &*counters };
         let mut port = PortCounters::default();
         // A `ListenPort` is its settings.
         let config = swr_v1_port_config_new(0);
@@ -257,24 +257,25 @@ mod tests {
             })
             .collect();
         sessions[1].fd = 2;
-        let state = swr_v1_server_state_new();
-        // SAFETY: a fresh state, its configuration and tables, all owned by this test.
+        let mut server = TestServer::new();
+        server.config_mut().gs = core::mem::replace(&mut gs, Shm::empty());
+        let tables = server.tables_mut();
+        tables.connection_list = crate::records::tests::naming(&mut connections);
+        tables.session_list = crate::records::tests::naming(&mut sessions);
+        let state = server.state();
+        // SAFETY: the tables just named hold 3 records; the server's port, which the
+        // test still frees, outlives it.
         unsafe {
-            (*(*state).config()).gs = core::mem::replace(&mut gs, Shm::empty());
-            let tables = &mut *(*state).tables();
-            tables.connection_list = crate::records::tests::naming(&mut connections);
-            tables.session_list = crate::records::tests::naming(&mut sessions);
-            tables.set_max_connection_unchecked(3);
-            // The server's port, which the test still frees.
-            let _ = (*state).push_port(Box::from_raw(config));
-            (*state).tables_ref().hold_port(0, 1).unwrap();
-            count_send(&*state, 1, 4);
-            count_send(&*state, 0, 3);
+            state.tables_ref().set_max_connection_unchecked(3);
+            let _ = state.push_port(Box::from_raw(config));
         }
+        state.tables_ref().hold_port(0, 1).unwrap();
+        count_send(state, 1, 4);
+        count_send(state, 0, 3);
         let totals =
             |r: &AtomicU64, b: &AtomicU64| (r.load(Ordering::Relaxed), b.load(Ordering::Relaxed));
         assert_eq!(
-            totals(&server.response_count, &server.total_send_bytes),
+            totals(&counted.response_count, &counted.total_send_bytes),
             (2, 7)
         );
         assert_eq!(
@@ -282,12 +283,9 @@ mod tests {
             (1, 4),
             "session 0 has no port"
         );
+        drop(server);
         // SAFETY: allocated above and not used again.
-        unsafe {
-            (*(*state).config()).gs.free();
-            free_state(state);
-            drop(Box::from_raw(config));
-        }
+        unsafe { drop(Box::from_raw(config)) };
     }
 
     #[test]

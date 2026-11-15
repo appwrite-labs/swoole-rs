@@ -521,38 +521,37 @@ impl ServerConfig {
 
 #[cfg(test)]
 mod tests {
-    use crate::state::{free_state, swr_v1_server_state_new};
+    use crate::TestServer;
 
     #[test]
     fn runtime_defaults() {
-        let state = swr_v1_server_state_new();
-        unsafe {
-            let config = (*state).config();
-            (*config).init_defaults(16, 3600, core::ptr::null());
-            assert_eq!((*config).worker_num.get(), 16);
-            assert_eq!((*config).reactor_num.get(), 8);
-            assert_eq!((*config).timezone_, 3600);
-            (*state).set_running(false);
-            assert!(!(*state).running());
-            free_state(state);
-        }
+        let mut server = TestServer::new();
+        let config = server.config_mut();
+        config.init_defaults(16, 3600, core::ptr::null());
+        assert_eq!(config.worker_num.get(), 16);
+        assert_eq!(config.reactor_num.get(), 8);
+        assert_eq!(config.timezone_, 3600);
+        let state = server.state();
+        state.set_running(false);
+        assert!(!state.running());
     }
 
     #[test]
     fn pushed_ports_are_numbered_in_order() {
-        let state = swr_v1_server_state_new();
+        let server = TestServer::new();
+        let state = server.state();
         let ports: Vec<_> = [1, 2]
             .into_iter()
             .map(|_| crate::port_config::swr_v1_port_config_new(0))
             .collect();
         unsafe {
-            assert!((*state).tables_ref().ports().is_empty());
+            assert!(state.tables_ref().ports().is_empty());
             for &port in &ports {
-                let _ = (*state).push_port(Box::from_raw(port));
+                let _ = state.push_port(Box::from_raw(port));
             }
-            assert_eq!((*state).tables_ref().ports().len(), 2);
+            assert_eq!(state.tables_ref().ports().len(), 2);
             assert_eq!((*ports[1]).object_id, 2);
-            free_state(state);
+            drop(server);
             for port in ports {
                 drop(Box::from_raw(port));
             }

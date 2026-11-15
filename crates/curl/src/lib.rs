@@ -313,9 +313,8 @@ impl Multi {
         self.active
             .borrow_mut()
             .retain(|active| !Rc::ptr_eq(active, &socket));
-        // SAFETY: the socket's reactor socket, which nothing uses afterwards: it
-        // is out of the map, and the selector skips a deleted socket.
-        unsafe { socket.socket.free() };
+        // Out of the map, and the selector skips a deleted socket.
+        socket.socket.free();
         socket.deleted.set(true);
         true
     }

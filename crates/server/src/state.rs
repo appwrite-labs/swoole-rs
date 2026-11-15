@@ -68,6 +68,12 @@ pub struct ServerState {
     )]
     pub(crate) thread_manager:
         std::sync::Mutex<Option<std::sync::Arc<crate::thread_mode::ThreadManager>>>,
+    /// `Server::reactor_thread_barrier`.
+    #[cfg_attr(
+        not(all(feature = "upstream-symbols", not(test))),
+        expect(dead_code, reason = "only the hybrid's reactor threads wait on it")
+    )]
+    pub(crate) reactor_thread_barrier: swoole_rs_locks::Barrier,
 }
 
 /// A native thread entry: `void (*)(void *serv, uint64_t arg)`.
@@ -118,6 +124,7 @@ impl ServerState {
             worker_pipes: std::sync::Mutex::new(Vec::new()),
             stopping: AtomicBool::new(false),
             thread_manager: std::sync::Mutex::new(None),
+            reactor_thread_barrier: swoole_rs_locks::Barrier::new(),
         }
     }
 
@@ -439,7 +446,7 @@ pub(crate) fn boxed(
 }
 
 #[cfg(test)]
-pub(crate) use tests::{free_state, swr_v1_server_state_new};
+pub(crate) use tests::TestServer;
 
 /// A lock of one of the state's lists, which a panic can't leave inconsistent.
 fn lock<T>(list: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -473,18 +480,60 @@ pub(crate) fn startup_error(message: CString, code: c_int) -> CString {
 pub(crate) mod tests {
     use super::*;
 
-    /// A state with a new server's records, which [`free_state`] frees.
-    pub(crate) fn swr_v1_server_state_new() -> *mut ServerState {
-        let (config, tables) = fresh_records();
-        Box::into_raw(boxed(config, tables))
+    impl ServerState {
+        /// The configuration, to write: borrowing the state whole, so no reference
+        /// this state lent is live.
+        fn config_mut(&mut self) -> &mut crate::config::ServerConfig {
+            // SAFETY: the box this state owns until it drops, borrowed through `&mut self`.
+            unsafe { &mut **self.config.get_mut() }
+        }
+
+        /// The table view, to write, as [`Self::config_mut`].
+        fn tables_mut(&mut self) -> &mut crate::records::ServerTables {
+            // SAFETY: the box this state owns until it drops, borrowed through `&mut self`.
+            unsafe { &mut **self.tables.get_mut() }
+        }
     }
 
-    /// # Safety
-    /// `state` is null or came from [`swr_v1_server_state_new`] and is not used again.
-    pub(crate) unsafe fn free_state(state: *mut ServerState) {
-        if !state.is_null() {
-            // SAFETY: the caller transfers the box back.
-            drop(unsafe { Box::from_raw(state) });
+    /// A new server's state and the head a `Server *` points at, owned by a test: its
+    /// views borrow it, and its writes take it whole.
+    pub(crate) struct TestServer {
+        head: Box<crate::view::Fields>,
+        state: Box<ServerState>,
+    }
+
+    impl TestServer {
+        /// A server with a new server's records.
+        pub(crate) fn new() -> Self {
+            let (config, tables) = fresh_records();
+            Self::of(boxed(config, tables))
+        }
+
+        /// A server with these tables.
+        pub(crate) fn with_tables(tables: crate::records::ServerTables) -> Self {
+            Self::of(Box::new(ServerState::with_tables(tables)))
+        }
+
+        fn of(state: Box<ServerState>) -> Self {
+            let head = Box::new(crate::view::Fields::of(&state));
+            Self { head, state }
+        }
+
+        pub(crate) fn serv(&self) -> crate::view::Server<'_> {
+            // SAFETY: the head of a live server, which this value owns for the borrow.
+            unsafe { crate::view::Server::from_raw((&raw const *self.head).cast_mut().cast()) }
+        }
+
+        pub(crate) fn state(&self) -> &ServerState {
+            &self.state
+        }
+
+        pub(crate) fn config_mut(&mut self) -> &mut crate::config::ServerConfig {
+            self.state.config_mut()
+        }
+
+        pub(crate) fn tables_mut(&mut self) -> &mut crate::records::ServerTables {
+            self.state.tables_mut()
         }
     }
 
@@ -525,11 +574,7 @@ pub(crate) mod tests {
 
     #[test]
     fn state_round_trips() {
-        let state = swr_v1_server_state_new();
-        // SAFETY: a live state.
-        assert_eq!(unsafe { &*state }.next_round(), 0);
-        // SAFETY: freed once.
-        unsafe { free_state(state) };
+        assert_eq!(TestServer::new().state().next_round(), 0);
     }
 
     #[test]
