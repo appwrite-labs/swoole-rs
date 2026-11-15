@@ -5,8 +5,9 @@ puts a PR in main's merge queue once its PR tier passes.
   ci.py wait [--commit SHA]  wait for a workflow run (default: the merge tier on main, which runs
                              hourly); a run replaced by a newer one on main follows the newer run
   ci.py status [--commit SHA]  the same, without waiting
-  ci.py timings              latest successful PR runs with PHPT: time to required and job/step
-                             timestamps, as JSON (default: 20 qualifying runs among the latest 100)
+  ci.py timings [--since T]  latest successful PR runs with PHPT (created at or after T): time to
+                             required and job/step timestamps, as JSON (default: 20 qualifying
+                             runs among the latest 100)
   ci.py next                 the claimable issues in claim order (exit 2 when there are none),
                              without those whose title says they need workflow scope when gh's
                              token lacks it
@@ -122,10 +123,12 @@ def seconds(job):
     return int((completed - started).total_seconds()) if started and completed else None
 
 
-def timings(count, scan):
-    """A bounded historical sample; skipped PHPT jobs do not qualify a run."""
+def timings(count, scan, since=None):
+    """A bounded historical sample, of runs created at or after `since` when given; skipped PHPT
+    jobs do not qualify a run."""
+    created = ('--created', f'>={since}') if since else ()
     runs = json.loads(gh('run', 'list', '--workflow', 'pr.yml', '--event', 'pull_request',
-                         '--status', 'success', '--limit', str(scan),
+                         '--status', 'success', '--limit', str(scan), *created,
                          '--json', 'databaseId,headSha,url,createdAt,attempt'))
     samples = []
     for run in runs:
@@ -144,7 +147,7 @@ def timings(count, scan):
                         'jobs': jobs})
         if len(samples) == count:
             break
-    return {'requested': count, 'scanned_limit': scan, 'sample_count': len(samples),
+    return {'requested': count, 'scanned_limit': scan, 'since': since, 'sample_count': len(samples),
             'median_seconds_to_required': statistics.median(
                 row['seconds_to_required'] for row in samples) if samples else None,
             'runs': samples}
@@ -625,6 +628,7 @@ def main(argv=None):
     timing = commands.add_parser('timings')
     timing.add_argument('--count', type=int, default=20, help='qualifying runs to collect')
     timing.add_argument('--scan', type=int, default=100, help='maximum successful PR runs to inspect')
+    timing.add_argument('--since', help='only runs created at or after this UTC time, e.g. a change\'s merge')
     baseline = commands.add_parser('phpt-baseline')
     baseline.add_argument('--variant', choices=[kind for kind in BASELINES if kind != 'phpt'], default='phpt',
                           help="a variant workflow's upstream report (default: phpt.yml's shards)")
@@ -637,7 +641,7 @@ def main(argv=None):
         if not 0 < args.count <= args.scan:
             parser.error('timings requires 0 < --count <= --scan')
         try:
-            result = timings(args.count, args.scan)
+            result = timings(args.count, args.scan, args.since)
         except subprocess.CalledProcessError as failure:
             sys.exit(f"gh {' '.join(failure.cmd[1:])}: {failure.stderr.strip()}")
         print(json.dumps(result, indent=1))

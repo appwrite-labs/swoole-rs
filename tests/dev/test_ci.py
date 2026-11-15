@@ -558,6 +558,18 @@ class TimingTests(unittest.TestCase):
         self.assertEqual(result['sample_count'], 0)
         self.assertIsNone(result['median_seconds_to_required'])
 
+    def test_since_filters_by_creation_time(self):
+        sys.path.insert(0, str(ROOT))
+        from tools import ci
+        with unittest.mock.patch.object(ci, 'gh', return_value='[]') as gh:
+            result = ci.timings(20, 100, '2026-11-15T17:13:42Z')
+        self.assertEqual(result['since'], '2026-11-15T17:13:42Z')
+        args = gh.call_args_list[0].args
+        self.assertEqual(args[args.index('--created') + 1], '>=2026-11-15T17:13:42Z')
+        with unittest.mock.patch.object(ci, 'gh', return_value='[]') as gh:
+            ci.timings(20, 100)
+        self.assertNotIn('--created', gh.call_args_list[0].args)
+
 
 if __name__ == '__main__':
     unittest.main()
