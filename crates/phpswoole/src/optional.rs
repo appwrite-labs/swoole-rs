@@ -11,7 +11,6 @@ use swoole_rs_zend::{Owned, Value};
 #[cfg(feature = "ssh2")]
 // the bundled ext/ssh2's module hooks (thirdparty/php/ssh2), linked with this feature.
 unsafe extern "C" {
-    fn php_swoole_ssh2_minit(module_number: c_int) -> c_int;
     fn php_swoole_ssh2_mshutdown() -> c_int;
     /// ssh2's information table: rows of its static version strings, printed.
     safe fn php_swoole_ssh2_minfo();
@@ -35,8 +34,12 @@ pub(crate) fn client_minit() -> Vec<Step> {
 
 #[cfg(feature = "ssh2")]
 fn ssh2_minit(minit: &swoole_rs_zend::Minit) {
-    // SAFETY: MINIT, with the module's number; upstream ignores the result too.
-    unsafe { php_swoole_ssh2_minit(minit.module()) };
+    unsafe extern "C" {
+        /// ssh2's MINIT, which the token proves this is, with the module's number.
+        safe fn php_swoole_ssh2_minit(module_number: c_int) -> c_int;
+    }
+    // Upstream ignores the result too.
+    php_swoole_ssh2_minit(minit.module());
 }
 
 /// MSHUTDOWN, after the drivers': ssh2's.
