@@ -2,12 +2,7 @@
 //! `Co::getOptions()`, `php_swoole_set_coroutine_option`) and the reactor's
 //! user exit condition: what `swoole_coroutine_scheduler.cc` held.
 use crate::{host, runtime};
-use std::{
-    cell::{Cell, RefCell},
-    collections::VecDeque,
-    mem::ManuallyDrop,
-    rc::Rc,
-};
+use std::{cell::Cell, collections::VecDeque, mem::ManuallyDrop, rc::Rc};
 use swoole_rs_corebase::CCast;
 use swoole_rs_phpstubs::coroutine_scheduler;
 use swoole_rs_zend::host::callable as kept;
@@ -20,22 +15,34 @@ use swoole_rs_zend::{
 };
 use swoole_rs_zend::{method_table, sys as z};
 
+// Each is taken out and put back around code that neither yields nor runs
+// PHP; a value it replaces or removes is released after it is back.
 per_thread! {
     /// `PHPCoroutine::options`: what `Co::set()` was given. RSHUTDOWN frees
     /// them; a thread's locals drop after Zend's request memory is gone, so
     /// one that outlives it (a shutdown that bailed out) leaks with it.
-    static OPTIONS: RefCell<Option<ManuallyDrop<OwnedArray>>> = RefCell::new(None);
+    static OPTIONS: Cell<Option<ManuallyDrop<OwnedArray>>> = Cell::new(None);
     /// `exit_condition_fci_cache`: `Co::set()`'s `exit_condition` callable.
-    static EXIT_CONDITION: RefCell<Option<Rc<kept::Callable>>> = RefCell::new(None);
+    static EXIT_CONDITION: Cell<Option<Rc<kept::Callable>>> = Cell::new(None);
     /// The references crates/corebase's PHP name resolvers hold (crates/phpclients),
     /// one per entry, until a remove or RSHUTDOWN unlinks it.
-    static NAME_RESOLVERS: RefCell<Vec<Owned>> = RefCell::new(Vec::new());
+    static NAME_RESOLVERS: Cell<Vec<Owned>> = Cell::new(Vec::new());
 }
 
-/// `f` on this thread's kept PHP name resolvers. `f` runs no PHP code, which
-/// could register or remove one.
+/// `f` of the value taken out of `cell`, which is put back after: a nested
+/// use meanwhile sees the default.
+fn put_back<T: Default, R>(cell: &Cell<T>, f: impl FnOnce(&mut T) -> R) -> R {
+    let mut value = cell.take();
+    let result = f(&mut value);
+    cell.set(value);
+    result
+}
+
+/// `f` on this thread's kept PHP name resolvers, taken out meanwhile. `f`
+/// runs no PHP code, which could register or remove one; a reference it
+/// removes is returned, to release after.
 pub fn name_resolvers<R>(f: impl FnOnce(&mut Vec<Owned>) -> R) -> R {
-    NAME_RESOLVERS.with(|kept| f(&mut kept.borrow_mut()))
+    NAME_RESOLVERS.with(|kept| put_back(kept, f))
 }
 
 /// One `add()` or `parallel()`: its kept callable and how many coroutines run it.
@@ -44,11 +51,15 @@ struct Task {
     count: i64,
 }
 
+/// The tasks `start()` has yet to run, in order.
+type Tasks = VecDeque<Task>;
+
 /// `SchedulerObject`: the queued tasks and whether `start()` is running.
-/// Methods, and the coroutines `start()` runs, share it.
+/// Methods, and the coroutines `start()` runs, share it: the list is taken
+/// out only to push or pop, and a task runs after it is back.
 #[derive(Default)]
 struct Scheduler {
-    list: RefCell<VecDeque<Task>>,
+    list: Cell<Tasks>,
     started: Cell<bool>,
 }
 
@@ -132,10 +143,9 @@ fn refuse(call: &Call, state: &str, method: &str) {
 /// Queue a task with its callable kept past the call.
 fn queue(scheduler: &Scheduler, callable: Parsed, count: i64) {
     let callable = callable.keep(None);
-    scheduler
-        .list
-        .borrow_mut()
-        .push_back(Task { callable, count });
+    put_back(&scheduler.list, |list| {
+        list.push_back(Task { callable, count });
+    });
 }
 
 /// `add(callable $func, mixed ...$params)`.
@@ -179,14 +189,14 @@ fn start(call: &Call) {
         return;
     }
     scheduler.started.set(true);
-    if scheduler.list.borrow().is_empty() {
+    if put_back(&scheduler.list, |list| list.is_empty()) {
         host::fatal_error(E_WARNING, c"no coroutine task");
         call.set_bool(false);
         return;
     }
     // Each step pops before creating, so no frame here owns a task while a
     // coroutine runs.
-    let next = || scheduler.list.borrow_mut().pop_front();
+    let next = || put_back(&scheduler.list, Tasks::pop_front);
     while let Some(task) = next() {
         for _ in 0..task.count {
             let (fcc, argc, argv, name) = task.callable.parts();
@@ -273,10 +283,10 @@ pub fn set_coroutine_option(options: &swoole_rs_zend::Array) {
 /// them as they now are, as upstream's does.
 fn with_options(edit: impl FnOnce(&mut OwnedArray) -> Option<Owned>) {
     let mut options = OPTIONS
-        .with(RefCell::take)
+        .with(Cell::take)
         .map_or_else(OwnedArray::default, ManuallyDrop::into_inner);
     let old = edit(&mut options);
-    OPTIONS.with(|o| o.replace(Some(ManuallyDrop::new(options))));
+    OPTIONS.with(|o| o.set(Some(ManuallyDrop::new(options))));
     drop(old);
 }
 
@@ -293,7 +303,7 @@ pub fn set_hook_flags(flags: u32) {
 
 /// Free the options, at RSHUTDOWN.
 pub(crate) fn free_options() {
-    drop(OPTIONS.with(RefCell::take).map(ManuallyDrop::into_inner));
+    drop(OPTIONS.with(Cell::take).map(ManuallyDrop::into_inner));
 }
 
 /// `Co::set(array $options)`/`Scheduler::set()`.
@@ -338,14 +348,14 @@ fn set_exit_condition(condition: &Value) -> Result<(), Bailout> {
 
 /// Drop the exit condition, deferring its destructor's bailout.
 fn release_exit_condition() -> Result<(), Bailout> {
-    drop(EXIT_CONDITION.with(RefCell::take));
+    drop(EXIT_CONDITION.with(Cell::take));
     bailout::outcome(())
 }
 
 /// Install `Co::set`'s exit condition, if it gave one, on this thread's
 /// reactor, as `php_swoole_reactor_init` did for a new reactor.
 pub fn install_exit_condition() {
-    if EXIT_CONDITION.with(|c| c.borrow().is_some()) {
+    if EXIT_CONDITION.with(|c| put_back(c, |handle| handle.is_some())) {
         host::set_exit_condition(true);
     }
 }
@@ -365,7 +375,7 @@ pub(crate) extern "C-unwind" fn reactor_can_exit(_event_num: &mut usize) -> bool
 /// `php_swoole_coroutine_reactor_can_exit`: call the exit condition.
 fn can_exit() -> Result<bool, Bailout> {
     // Its own reference: the condition may replace itself (`Co::set`).
-    let Some(handle) = EXIT_CONDITION.with(|c| c.borrow().clone()) else {
+    let Some(handle) = EXIT_CONDITION.with(|c| put_back(c, |handle| handle.clone())) else {
         return Ok(true);
     };
     let mut retval = swoole_rs_zend::UNDEF;
@@ -403,7 +413,9 @@ fn rshutdown() -> Result<(), Bailout> {
 fn get_options(call: &Call) {
     // RETURN_ARR(zend_array_dup(options)): a shared copy, which the next
     // edit separates from.
-    if let Some(copy) = OPTIONS.with(|o| o.borrow().as_ref().map(|options| options.copy())) {
+    let copy =
+        OPTIONS.with(|o| put_back(o, |options| options.as_ref().map(|options| options.copy())));
+    if let Some(copy) = copy {
         call.set_owned(copy);
     }
 }
