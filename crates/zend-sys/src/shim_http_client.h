@@ -4,11 +4,9 @@
 #ifndef SWOOLE_RS_ZEND_SHIM_HTTP_CLIENT_H
 #define SWOOLE_RS_ZEND_SHIM_HTTP_CLIENT_H
 #include "shim.h"
-#include <sys/uio.h>
 
-/* sw_zend_read_property_ex: the declared property's slot, read directly; the name is
- * a byte range Rust lends as a `struct iovec`. */
-zval *swr_zend_property_slot(zend_object *object, struct iovec name);
+/* sw_zend_read_property_ex: the declared property's slot, read directly. */
+zval *swr_zend_property_slot(zend_object *object, const char *name, size_t length);
 /* sw_zend_read_property_not_null_ex: the property, or NULL when it is null. */
 zval *swr_zend_property_not_null(zend_object *object, const char *name, size_t length);
 /* Swoole's zend::array_add_or_merge: add `element` (taking it over) under `key`,

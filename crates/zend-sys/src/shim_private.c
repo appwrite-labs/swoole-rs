@@ -2,22 +2,16 @@
  * globals (EG(function_table), EG(exception), CG(function_table)). */
 #include "shim.h"
 #include "shim_private.h"
-int swr_zend_try_facade_read(zend_class_entry *scope, zend_object *object, struct iovec name, bool silent, zval *rv,
-                             zval **result) {
+int swr_zend_try_facade_read(zend_class_entry *scope, zend_object *object, const char *name, size_t length,
+                             bool silent, zval *rv, zval **result) {
     volatile int bailed = 0;
-    SWR_ZEND_TRY { *result = zend_read_property(scope, object, name.iov_base, name.iov_len, silent, rv); }
+    SWR_ZEND_TRY { *result = zend_read_property(scope, object, name, length, silent, rv); }
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
 }
-int swr_zend_try_facade_update(zend_class_entry *scope, zend_object *object, struct iovec name, zval *value) {
+int swr_zend_try_facade_update(zend_class_entry *scope, zend_object *object, const char *name, size_t length, zval *value) {
     volatile int bailed = 0;
-    SWR_ZEND_TRY { zend_update_property(scope, object, name.iov_base, name.iov_len, value); }
-    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
-    return bailed;
-}
-int swr_zend_try_call_value(zval *callable, zval *retval) {
-    volatile int bailed = 0;
-    SWR_ZEND_TRY { call_user_function(NULL, NULL, callable, retval, 0, NULL); }
+    SWR_ZEND_TRY { zend_update_property(scope, object, name, length, value); }
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
 }

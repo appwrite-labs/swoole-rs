@@ -9,11 +9,11 @@ use crate::{
         _zval_struct__bindgen_ty_1, _zval_struct__bindgen_ty_2, HashPosition, HashTable, IS_ARRAY,
         IS_DOUBLE, IS_FALSE, IS_INDIRECT, IS_INTERNED_STRING_EX, IS_LONG, IS_NULL, IS_OBJECT,
         IS_PTR, IS_REFERENCE, IS_STR_INTERNED, IS_STRING, IS_STRING_EX, IS_TRUE, IS_UNDEF,
-        php_format_date, swr_zend_array_add_or_merge, swr_zend_string_release,
-        swr_zend_try_hash_update, swr_zend_try_ptr_dtor, swr_zend_try_symtable_update,
-        swr_zend_url_decode, zend_class_entry, zend_hash_add_new, zend_hash_index_add,
-        zend_hash_next_index_insert, zend_long, zend_object, zend_reference, zend_string,
-        zend_ulong, zend_value, zval, zval_ptr_dtor,
+        add_next_index_stringl, php_format_date, swr_zend_array_add_or_merge,
+        swr_zend_string_release, swr_zend_try_hash_update, swr_zend_try_ptr_dtor,
+        swr_zend_try_symtable_update, swr_zend_url_decode, zend_class_entry, zend_hash_add_new,
+        zend_hash_index_add, zend_hash_next_index_insert, zend_long, zend_object, zend_reference,
+        zend_string, zend_ulong, zend_value, zval, zval_ptr_dtor,
     },
 };
 use std::{
@@ -76,18 +76,17 @@ unsafe extern "C" {
     /// `array_init(target)`: `target` holds a new, empty array in place of
     /// what it held, which is not released. No PHP code runs.
     safe fn swr_zend_array_init(target: &Owned);
-    /// `zend_read_property(scope, object, name, silent, rv)` inside `zend_try`
-    /// (nonzero for a bailout), under the lent bytes of `name`: `found` then
-    /// holds the property's slot, `rv` holding a computed value (in place of
-    /// what it held, which is not released), or the executor's null. It runs
-    /// PHP code (`__get`, a property hook, an error handler).
-    safe fn swr_zend_try_facade_read<'a>(
-        scope: crate::class::Scope<'_>,
-        object: crate::ObjectRef<'a>,
-        name: IoSlice<'_>,
+    /// `zend_read_property(scope, object, name, length, silent, rv)` inside
+    /// `zend_try` (nonzero for a bailout): `found` then holds the property's
+    /// slot, `rv` holding a computed value, or the executor's null.
+    fn swr_zend_try_facade_read(
+        scope: *mut zend_class_entry,
+        object: *mut zend_object,
+        name: *const c_char,
+        length: usize,
         silent: bool,
-        rv: &'a Owned,
-        found: &mut Option<&'a Value>,
+        rv: *mut zval,
+        found: &mut Option<&Value>,
     ) -> std::ffi::c_int;
     /// `php_url_encode`: it reads the lent bytes (an `IoSlice` is an iovec) and
     /// returns a new string; no PHP code runs.
@@ -122,10 +121,6 @@ unsafe extern "C" {
     /// reference moves to the copy. The exclusive borrow means nothing holds a
     /// borrow of the table it may give up.
     safe fn swr_zend_separate_array(array: &mut ArrayMut);
-    /// `call_user_function(NULL, NULL, callable, retval, 0, NULL)` inside
-    /// `zend_try` (nonzero for a bailout): `retval` takes the result, in place
-    /// of what it held, which is not released. It runs PHP code.
-    safe fn swr_zend_try_call_value(callable: &Value, retval: &Owned) -> std::ffi::c_int;
     /// `SEPARATE_ARRAY(array)`, then `zend_hash_clean` inside `zend_try`
     /// (nonzero for a bailout); nothing unless the zval holds an array. Its
     /// destructors run PHP code, which can't reach the borrowed zval.
@@ -449,25 +444,31 @@ impl Value {
         name: &[u8],
         silent: bool,
     ) -> Result<Option<Owned>, bailout::Bailout> {
-        let Some(object) = self.object_ref() else {
+        let Some(object) = self.object() else {
             return Ok(None);
         };
+        let scope = scope.map_or(ptr::null_mut(), crate::ClassEntry::as_ptr);
         let rv = Owned::default();
         let mut found = None;
-        let bailed = swr_zend_try_facade_read(
-            crate::class::Scope::of(scope),
-            object,
-            IoSlice::new(name),
-            silent,
-            &rv,
-            &mut found,
-        );
-        bailout::trapped(bailed)?;
-        if found.is_some_and(|slot| slot.as_ptr() == rv.as_ptr()) {
-            // `rv` holds the computed value, with the reference it gives up.
-            return Ok(Some(rv));
-        }
-        Ok(found.map(Self::copy))
+        // SAFETY: the zval holds the object while borrowed; a class or null; Zend
+        // reads `name`, and writes `rv` (undefined, this frame's) or nothing. What
+        // it finds is `rv`, a property slot of the object, which the borrow keeps
+        // alive, or the executor's null, which lives as long as it does.
+        bailout::trapped(unsafe {
+            swr_zend_try_facade_read(
+                scope,
+                object,
+                name.as_ptr().cast(),
+                name.len(),
+                silent,
+                rv.as_ptr(),
+                &mut found,
+            )
+        })?;
+        Ok(match found {
+            Some(slot) if slot.as_ptr() == rv.as_ptr() => Some(rv),
+            found => found.map(Self::copy),
+        })
     }
 
     /// `zend_call_method(object, scope, NULL, method, &result, args)` on the
@@ -544,9 +545,16 @@ impl Value {
     /// # Errors
     /// The callable bailed out.
     pub fn call(&self) -> Result<Owned, bailout::Bailout> {
-        let callable = self.copy();
+        let mut callable = self.copy();
         let result = Owned::default();
-        let called = bailout::trapped(swr_zend_try_call_value(&callable, &result));
+        let mut fci = crate::EMPTY_FCI;
+        fci.size = size_of::<crate::sys::zend_fcall_info>();
+        // ZVAL_COPY_VALUE of the reference `callable` holds through the call.
+        fci.function_name = *callable.0.0.get_mut();
+        fci.retval = result.as_ptr();
+        // SAFETY: a live callable and a return slot this owns; no Rust borrow
+        // spans the call.
+        let called = unsafe { bailout::call(&raw mut fci, ptr::null_mut()) };
         drop(callable);
         called?;
         Ok(result)
@@ -1428,7 +1436,11 @@ impl ArrayMut {
     /// `add_next_index_stringl`: Zend copies the bytes.
     #[inline]
     pub fn push_bytes(&mut self, data: &[u8]) {
-        self.push(ZString::new(data).into());
+        let Some(array) = self.separate().map(|array| array.zval()) else {
+            return;
+        };
+        // SAFETY: a live array.
+        unsafe { add_next_index_stringl(array, data.as_ptr().cast(), data.len()) };
     }
 
     /// `add_next_index_long`.

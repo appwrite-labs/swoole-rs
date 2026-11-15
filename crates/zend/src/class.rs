@@ -116,27 +116,6 @@ impl<'a> ClassEntry<'a> {
     }
 }
 
-/// The class a property access sees an object's properties as (Zend's
-/// `scope`): a live class, or null for none.
-#[derive(Clone, Copy)]
-#[repr(transparent)]
-pub(crate) struct Scope<'a>(*mut zend_class_entry, PhantomData<&'a zend_class_entry>);
-
-impl<'a> Scope<'a> {
-    #[inline]
-    pub(crate) fn of(class: Option<ClassEntry<'a>>) -> Self {
-        Self(
-            class.map_or(ptr::null_mut(), ClassEntry::as_ptr),
-            PhantomData,
-        )
-    }
-
-    #[inline]
-    pub(crate) fn as_ptr(self) -> *mut zend_class_entry {
-        self.0
-    }
-}
-
 /// What lays out a [`CustomClass`](crate::CustomClass)'s objects: `T`'s class
 /// and the create, free and destructor handlers that go with it. Only
 /// [`Layout::of`] makes one, so a class's objects never get another type's.

@@ -1,39 +1,28 @@
 //! Objects that embed their `zend_object` after Rust data, as Swoole's C++
 //! structs do (`struct { T data; zend_object std; }`).
-use crate::class::Scope;
 use crate::{
     ArrayMut, Class, Owned, OwnedArray, Value, ZString, bailout,
     sys::{
-        IS_OBJECT, swr_zend_object_create, zend_class_entry, zend_long, zend_object,
-        zend_object_handlers, zend_object_std_dtor, zend_objects_destroy_object,
-        zend_update_property,
+        IS_OBJECT, object_properties_init, swr_zend_object_alloc, swr_zend_try_facade_update,
+        zend_class_entry, zend_long, zend_object, zend_object_handlers, zend_object_std_dtor,
+        zend_object_std_init, zend_objects_destroy_object, zend_update_property,
     },
 };
 use std::{
     ffi::{CStr, c_char, c_int},
-    io::IoSlice,
     marker::PhantomData,
     mem::offset_of,
 };
 
 unsafe extern "C" {
     /// `sw_zend_read_property_ex` without its copy: null (`None`), or the slot
-    /// of the property `object`'s class declares as the lent bytes of `name`
-    /// (an `IoSlice` is an iovec), which lives as long as the object.
-    safe fn swr_zend_property_slot<'a>(
-        object: ObjectRef<'a>,
-        name: IoSlice<'_>,
+    /// of the property `object`'s class declares as the `length` bytes at
+    /// `name`, which lives as long as the object.
+    fn swr_zend_property_slot<'a>(
+        object: *mut zend_object,
+        name: *const c_char,
+        length: usize,
     ) -> Option<&'a Value>;
-    /// `zend_update_property(scope, object, name, value)` inside `zend_try`
-    /// (nonzero for a bailout), under the lent bytes of `name`: Zend copies
-    /// them and the value. It runs PHP code (`__set`, a property hook, the old
-    /// value's `__destruct`, an error handler).
-    safe fn swr_zend_try_facade_update(
-        scope: Scope<'_>,
-        object: ObjectRef<'_>,
-        name: IoSlice<'_>,
-        value: &Value,
-    ) -> c_int;
     /// The executor's live object at `handle` whose handlers are `handlers`
     /// (compared, never read), if there is one: `found` then holds it, with a
     /// reference of its own, in place of what it held, which is not released.
@@ -50,7 +39,6 @@ unsafe extern "C" {
 /// runs, so each read borrows it only while it copies a field out
 /// ([`ObjectRef::read`]).
 #[derive(Clone, Copy)]
-#[repr(transparent)]
 pub struct ObjectRef<'a>(
     pub(crate) *mut zend_object,
     pub(crate) PhantomData<&'a zend_object>,
@@ -153,12 +141,15 @@ impl<T> Object<T> {
     /// with handlers laid out for `T`.
     #[must_use]
     pub unsafe fn create(class: &Class, ce: *mut zend_class_entry, data: T) -> *mut zend_object {
-        // SAFETY: Zend's allocator, which zeroes everything before `std`, then
-        // the standard object of class `ce` (per the caller) and its property
-        // slots, initialised `OFFSET` bytes in, with the class's handlers.
-        let std = unsafe {
-            swr_zend_object_create(size_of::<Self>(), Self::OFFSET, ce, class.handlers())
-        };
+        // SAFETY: Zend's allocator; it zeroes everything before `std`.
+        let this = unsafe { swr_zend_object_alloc(size_of::<Self>(), ce) }.cast::<Self>();
+        let std = Self::std(this);
+        // SAFETY: `std` is freshly allocated storage for an object of class `ce`.
+        unsafe { zend_object_std_init(std, ce) };
+        // SAFETY: as above; the property slots follow `std`.
+        unsafe { object_properties_init(std, ce) };
+        // SAFETY: `std` is initialised and not yet shared.
+        unsafe { (*std).handlers = class.handlers() };
         // SAFETY: the object's data, allocated above and unused.
         unsafe { Self::data_ptr(std).write(data) };
         std
@@ -339,14 +330,18 @@ pub(crate) fn install_custom<T: Custom>(
 /// Property writes on a live object, under a class that sees them (Zend's
 /// `scope`). Zend copies every name and value.
 #[derive(Clone, Copy)]
-pub struct Props<'a>(Scope<'a>, ObjectRef<'a>);
+pub struct Props<'a>(
+    *mut zend_class_entry,
+    *mut zend_object,
+    PhantomData<&'a zend_object>,
+);
 
 impl Props<'_> {
     /// The same object, under its own class (`Z_OBJCE_P`).
     #[must_use]
     #[inline]
     pub fn own(self) -> Self {
-        Self(Scope::of(Some(self.class_entry())), self.1)
+        Self(self.class(), self.1, PhantomData)
     }
 
     /// `Z_OBJCE_P`: the object's own class.
@@ -362,12 +357,17 @@ impl Props<'_> {
     /// value's `__destruct`, an error handler) bailed out.
     #[inline]
     pub(crate) fn update_trapped(self, name: &[u8], value: &Value) -> Result<(), bailout::Bailout> {
-        bailout::trapped(swr_zend_try_facade_update(
-            self.0,
-            self.1,
-            IoSlice::new(name),
-            value,
-        ))
+        // SAFETY: a live object and a registered class or null, per `of`, and
+        // a live value; Zend copies the name's bytes and the value.
+        bailout::trapped(unsafe {
+            swr_zend_try_facade_update(
+                self.0,
+                self.1,
+                name.as_ptr().cast(),
+                name.len(),
+                value.as_ptr(),
+            )
+        })
     }
 
     /// `zend_update_property_long`.
@@ -409,7 +409,7 @@ impl Props<'_> {
         }
         let internal = self.class_entry().read(|ce| ce.type_) == INTERNAL;
         if internal && value.kind() != IS_OBJECT {
-            let (scope, object, length) = (self.0.as_ptr(), self.1.as_ptr(), name.count_bytes());
+            let (scope, object, length) = (self.0, self.1, name.count_bytes());
             // SAFETY: a live object, a registered class or null, and a live value
             // Zend copies.
             unsafe { zend_update_property(scope, object, name.as_ptr(), length, value.as_ptr()) };
@@ -434,14 +434,15 @@ impl<'a> Props<'a> {
     #[must_use]
     #[inline]
     pub fn of(scope: Option<&crate::Class>, object: ObjectRef<'a>) -> Self {
-        Self(Scope::of(scope.and_then(crate::Class::class_entry)), object)
+        let scope = scope.map_or(std::ptr::null_mut(), crate::Class::entry);
+        Self(scope, object.as_ptr(), PhantomData)
     }
 
     /// The object, live for `'a` ([`Props::of`]).
     #[must_use]
     #[inline]
     pub fn object(self) -> ObjectRef<'a> {
-        self.1
+        ObjectRef(self.1, PhantomData)
     }
 
     /// `Z_OBJCE_P` as a handle: the object's own class, which outlives it.
@@ -457,7 +458,9 @@ impl<'a> Props<'a> {
     #[must_use]
     #[inline]
     pub fn slot(self, name: &CStr) -> Option<&'a Value> {
-        swr_zend_property_slot(self.1, IoSlice::new(name.to_bytes()))
+        // SAFETY: a live object, per `of`, whose slots live for `'a`; Zend
+        // reads `name` only.
+        unsafe { swr_zend_property_slot(self.1, name.as_ptr(), name.count_bytes()) }
     }
 
     /// The array [`Props::array_slot`] finds, lent to `edit` out of its

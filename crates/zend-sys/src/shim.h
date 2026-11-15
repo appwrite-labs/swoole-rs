@@ -17,10 +17,8 @@
 #endif
 
 /* zend_object_alloc: emalloc the object and its property slots and zero the
- * bytes before the embedded zend_object, `offset` bytes in; then
- * zend_object_std_init, object_properties_init and `handlers` for it. */
-zend_object *swr_zend_object_create(size_t size, size_t offset, zend_class_entry *ce,
-                                    const zend_object_handlers *handlers);
+ * bytes before the embedded zend_object. */
+void *swr_zend_object_alloc(size_t size, zend_class_entry *ce);
 
 /* INIT_CLASS_ENTRY_EX, then zend_register_internal_class_ex. */
 zend_class_entry *swr_zend_register_class(const char *name, size_t length,
