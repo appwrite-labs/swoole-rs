@@ -317,6 +317,15 @@ pub fn sw_print(bytes: &[u8]) {
     }
 }
 
+/// `fflush` of Swoole's stdout stream, when one is set.
+pub fn sw_flush() {
+    let out = swr_v1_core_stdout();
+    if !out.is_null() {
+        // SAFETY: Swoole's open stdout stream.
+        unsafe { libc::fflush(out.cast()) };
+    }
+}
+
 /// `swoole_set_trace_flags(long)`.
 #[cfg_attr(
     feature = "upstream-symbols",

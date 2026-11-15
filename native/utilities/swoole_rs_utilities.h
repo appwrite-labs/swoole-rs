@@ -49,13 +49,12 @@ enum SwrLoggerSetting {
     SWR_LOGGER_ROTATION = 0, SWR_LOGGER_MICROSECONDS = 1,
     SWR_LOGGER_BACKTRACE = 2, SWR_LOGGER_RESET = 3
 };
-SwrLogger *swr_v1_logger_new(FILE *stdout_stream, struct SwrLoggerHost host);
+SwrLogger *swr_v1_logger_new(struct SwrLoggerHost host);
 /* Null, or the logger swr_v1_logger_new made, which is not used again. */
 void swr_v1_logger_free(SwrLogger *);
 bool swr_v1_logger_open(const SwrLogger *, SwrText file);
 void swr_v1_logger_reopen(const SwrLogger *);
 void swr_v1_logger_close(const SwrLogger *);
-void swr_v1_logger_set_stream(const SwrLogger *, FILE *stream);
 void swr_v1_logger_put(const SwrLogger *, int level, const char *content, size_t length);
 int swr_v1_logger_level(const SwrLogger *);
 void swr_v1_logger_set_level(const SwrLogger *, int level);
