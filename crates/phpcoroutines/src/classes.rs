@@ -18,7 +18,7 @@ use swoole_rs_zend::{
     opcode::{DISPATCH, Frame, Handler, handler},
     sys::{
         ZEND_ACC_FINAL, ZEND_ACC_PRIVATE, swr_zend_autoload_forget, swr_zend_autoload_handler,
-        swr_zend_autoload_try, swr_zend_coroutine_opcodes, swr_zend_exit_status, zend_class_entry,
+        swr_zend_autoload_try, swr_zend_exit_status, user_opcode_handler_t, zend_class_entry,
         zend_execute_data,
     },
 };
@@ -27,12 +27,6 @@ use swoole_rs_zend::{method_table, sys as z};
 /// `zend_autoload`'s type: Zend passes the class's name and its lowercase
 /// form, both live strings, for the call.
 type Autoload = extern "C" fn(name: &ZStr, lc_name: &ZStr) -> *mut zend_class_entry;
-
-unsafe extern "C" {
-    /// `zend_autoload = handler`; returns the previous one.
-    #[link_name = "swr_zend_coroutine_set_autoload"]
-    fn set_autoload(handler: Option<Autoload>) -> swr_zend_autoload_handler;
-}
 
 static COROUTINE: Class = Class::new();
 static ITERATOR: Class = Class::new();
@@ -185,21 +179,38 @@ pub fn php_swoole_coroutine_minit(minit: &Minit) -> Result<(), Bailout> {
     );
     minit.long_constant(c"SWOOLE_EXIT_IN_COROUTINE", EXIT_IN_COROUTINE);
     minit.long_constant(c"SWOOLE_EXIT_IN_SERVER", EXIT_IN_SERVER);
-    if host::flag(host::CLI) {
-        // SAFETY: MINIT; the handlers are static.
-        unsafe {
-            swr_zend_coroutine_opcodes(
-                Some(handler::<Exit>),
-                Some(handler::<BeginSilence>),
-                Some(end_silence),
-            );
-        };
-    }
-    // SAFETY: MINIT; restored never, as upstream.
-    let original = unsafe { set_autoload(Some(autoload)) };
-    ORIGINAL_AUTOLOAD.get_or_init(|| original);
-
+    hook_zend(minit);
     Ok(())
+}
+
+/// The exit and `@` opcode handlers (CLI only) and the coroutine-aware autoloader:
+/// Zend's process-wide hooks, which only MINIT (`_minit`) may set. Their shims are
+/// declared here, where the token proves it.
+fn hook_zend(_minit: &Minit) {
+    unsafe extern "C" {
+        /// `zend_set_user_opcode_handler` for `ZEND_EXIT` (before PHP 8.4),
+        /// `ZEND_BEGIN_SILENCE` and `ZEND_END_SILENCE`: Zend calls each with the
+        /// live frame of its opcode.
+        safe fn swr_zend_coroutine_opcodes(
+            exit: user_opcode_handler_t,
+            begin_silence: user_opcode_handler_t,
+            end_silence: user_opcode_handler_t,
+        );
+        /// `zend_autoload = handler`; returns the previous one.
+        safe fn swr_zend_coroutine_set_autoload(
+            handler: Option<Autoload>,
+        ) -> swr_zend_autoload_handler;
+    }
+    if host::flag(host::CLI) {
+        swr_zend_coroutine_opcodes(
+            Some(handler::<Exit>),
+            Some(handler::<BeginSilence>),
+            Some(end_silence),
+        );
+    }
+    // Restored never, as upstream.
+    let original = swr_zend_coroutine_set_autoload(Some(autoload));
+    ORIGINAL_AUTOLOAD.get_or_init(|| original);
 }
 
 /// `php_swoole_coroutine_rinit`.
