@@ -34,6 +34,7 @@
 //! DEALINGS IN THE SOFTWARE.
 //! ```
 
+use crate::coroutine::Co;
 use core::arch::naked_asm;
 use core::ffi::c_void;
 
@@ -43,11 +44,12 @@ compile_error!("coroutine: no fcontext switch for this architecture (x86_64 and 
 #[cfg(all(target_arch = "x86_64", target_pointer_width = "32"))]
 compile_error!("coroutine: no fcontext switch for x86_64 with 32-bit pointers (x32)");
 
-/// What a jump hands the context it lands in: the context it left, and its data.
+/// What a jump hands the context it lands in: the context it left, and its data, the
+/// coroutine whose context switches (every jump passes one).
 #[repr(C)]
 pub(crate) struct Transfer {
     pub(crate) fctx: *mut c_void,
-    pub(crate) data: *mut c_void,
+    pub(crate) data: Co,
 }
 
 /// Makes a context at the top of `stack` (its highest address) whose first jump calls
@@ -115,7 +117,7 @@ pub(crate) unsafe extern "C" fn make_fcontext(
 /// # Safety
 /// `to` came from [`make_fcontext`] or a [`Transfer`] and has not been resumed since.
 #[unsafe(naked)]
-pub(crate) unsafe extern "C" fn jump_fcontext(to: *mut c_void, data: *mut c_void) -> Transfer {
+pub(crate) unsafe extern "C" fn jump_fcontext(to: *mut c_void, data: Co) -> Transfer {
     #[cfg(target_arch = "x86_64")]
     naked_asm!(
         // Save MXCSR, the x87 CW and the callee-saved registers below the return address.

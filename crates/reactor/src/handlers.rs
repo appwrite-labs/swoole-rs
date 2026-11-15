@@ -32,6 +32,25 @@ macro_rules! field {
     };
 }
 
+/// A kind of object a reactor's `ptr` holds ([`Running::hold`]), named by the address of
+/// a `static`: a crate keeps its key private, so what a reactor holds under it is what
+/// that crate gave it.
+#[derive(Default)]
+pub struct ReactorObjectKey(
+    #[expect(
+        dead_code,
+        reason = "a byte gives each key's static an address of its own"
+    )]
+    u8,
+);
+
+impl ReactorObjectKey {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(0)
+    }
+}
+
 /// The `Reactor *` a handler is called with: live, and on this thread, for the call.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
@@ -125,10 +144,45 @@ impl Running<'_> {
         self.with(|state| state.fields.defer_tasks.is_some())
     }
 
-    field!(
-        /// `Reactor::ptr`: the object the reactor serves (a server or a process pool).
-        object, set_object, ptr: *mut c_void
-    );
+    /// `Reactor::ptr`: the object the reactor serves (a server or a process pool).
+    #[cfg(unix)]
+    #[inline]
+    #[must_use]
+    pub fn object(self) -> *mut c_void {
+        self.with(|state| state.fields.ptr)
+    }
+
+    /// `Reactor::ptr = object`, held under no key: [`Self::object_of`] returns it for none.
+    #[cfg(unix)]
+    #[inline]
+    pub fn set_object(self, object: *mut c_void) {
+        self.with(|state| {
+            state.fields.ptr = object;
+            state.object_key = None;
+        });
+    }
+
+    /// `Reactor::ptr = object`, held under `key`: [`Self::object_of`] with `key` returns
+    /// it until the next `hold` or [`Self::set_object`].
+    #[cfg(unix)]
+    #[inline]
+    pub fn hold(self, key: &'static ReactorObjectKey, object: *mut c_void) {
+        self.with(|state| {
+            state.fields.ptr = object;
+            state.object_key = Some(key);
+        });
+    }
+
+    /// `Reactor::ptr`, when the reactor holds it under `key` ([`Self::hold`]).
+    #[cfg(unix)]
+    #[inline]
+    #[must_use]
+    pub fn object_of(self, key: &'static ReactorObjectKey) -> Option<*mut c_void> {
+        self.with(|state| {
+            let held = state.object_key.is_some_and(|held| std::ptr::eq(held, key));
+            held.then_some(state.fields.ptr)
+        })
+    }
     field!(
         /// `Reactor::id`.
         id, set_id, id: u16
@@ -336,5 +390,29 @@ mod tests {
             assert_eq!(call((*h).dispatch(Table::Error, 6)), 3);
             assert_eq!(call((*h).get(Table::Read, -1)), 0);
         }
+    }
+
+    /// An object held under a key reads back under that key alone, until `set_object`
+    /// or another hold replaces it.
+    #[test]
+    fn a_held_object_reads_back_under_its_key_only() {
+        static ONE: ReactorObjectKey = ReactorObjectKey::new();
+        static TWO: ReactorObjectKey = ReactorObjectKey::new();
+        let state = crate::reactor_state::tests::state(3, 4);
+        let reactor = crate::reactor_state::tests::running(state.owner);
+        let mut object = 0_u8;
+        let object = (&raw mut object).cast::<c_void>();
+        assert_eq!(reactor.object_of(&ONE), None);
+        reactor.hold(&ONE, object);
+        assert_eq!(reactor.object(), object);
+        assert_eq!(reactor.object_of(&ONE), Some(object));
+        assert_eq!(reactor.object_of(&TWO), None);
+        reactor.hold(&TWO, object);
+        assert_eq!(reactor.object_of(&ONE), None);
+        assert_eq!(reactor.object_of(&TWO), Some(object));
+        reactor.set_object(object);
+        assert_eq!(reactor.object(), object);
+        assert_eq!(reactor.object_of(&TWO), None);
+        unsafe { crate::reactor_state::tests::free(state.owner) };
     }
 }

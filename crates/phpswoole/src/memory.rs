@@ -17,12 +17,9 @@ static ZEND_STRING_ALLOCATOR: CoreAllocator = CoreAllocator {
 
 /// The same callbacks as the `swoole::Allocator` a socket's buffers take.
 static ZEND_STRING_BUFFERS: swoole_rs_buffer::string::Allocator =
-    swoole_rs_buffer::string::Allocator {
-        malloc,
-        calloc,
-        realloc,
-        free,
-    };
+    // SAFETY: as `zend_string_allocator`: each hands out or takes back the
+    // value of a Zend string of the size asked for, or null on failure.
+    unsafe { swoole_rs_buffer::string::Allocator::new(malloc, calloc, realloc, free) };
 
 /// The zend string allocator, as a socket's buffers take it.
 #[must_use]

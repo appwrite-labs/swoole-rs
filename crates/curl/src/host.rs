@@ -236,15 +236,12 @@ pub unsafe extern "C" fn swoole_curl_check_bound_co(multi: &Multi) -> *mut c_voi
 pub unsafe extern "C" fn swoole_curl_easy_perform(cp: Easy) -> CURLcode {
     // SAFETY: per the caller, the easy handle's live Swoole handle.
     let handle = unsafe { &mut *cp.handle() };
-    if handle.easy_multi.is_null() {
-        handle.easy_multi = swoole_curl_multi_new();
-    }
-    // SAFETY: the handle's own multi, which lives as long as the handle.
-    let multi = unsafe { &*handle.easy_multi };
+    // The handle's own multi, held while it runs the handle.
+    let multi = Rc::clone(handle.easy_multi.get_or_insert_with(Multi::create));
     let result = multi.exec(handle);
     if result == EXEC_NEEDS_COROUTINE {
         // SAFETY: this frame owns nothing that needs a drop.
-        unsafe { swoole_curl_check_bound_co(multi) };
+        unsafe { swoole_curl_check_bound_co(&multi) };
     }
     result
 }

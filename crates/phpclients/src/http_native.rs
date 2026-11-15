@@ -13,7 +13,6 @@ use swoole_rs_hooks::stdio::{
     swoole_coroutine_ftruncate, swoole_coroutine_lseek, swoole_coroutine_open,
 };
 use swoole_rs_phpruntime::co;
-use swoole_rs_websocket_ffi::frame_api::get_package_length;
 use swoole_rs_zend::{Array, Owned, Value};
 
 /// `Coroutine\Http\Client`'s WebSocket state: its `WebSocketSettings` and
@@ -233,7 +232,7 @@ impl Co {
             protocol.package_length_size = WEBSOCKET_HEADER_LEN;
             protocol.package_length_offset = 0;
             protocol.package_body_offset = 0;
-            protocol.get_package_length = Some(get_package_length);
+            protocol.get_package_length = Some(swoole_rs_ports::http_routes::websocket_length);
         });
     }
 

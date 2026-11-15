@@ -7,8 +7,8 @@ use crate::socket_rw::IovState;
 pub struct ReactorIov {
     fields: ReactorIovFields,
     /// The two spans `fields` points into: the original descriptors, then the
-    /// iterator's copy. Only `fields` reaches them; the vector just owns them.
-    _descriptors: Vec<libc::iovec>,
+    /// iterator's copy, whose last `remain_count` are the ones left.
+    descriptors: Vec<libc::iovec>,
 }
 
 /// Stable public slots borrowed by the native facade. Payload and descriptor
@@ -21,22 +21,24 @@ pub struct ReactorIovFields {
 }
 /// Construct both descriptor spans from `source`. Payload bytes are neither read nor
 /// owned. Refused with -2 when it can't allocate.
-fn owned_new(source: &[libc::iovec]) -> Result<Box<ReactorIov>, i32> {
+fn owned_new(
+    source: impl IntoIterator<Item = libc::iovec, IntoIter: ExactSizeIterator + Clone>,
+) -> Result<Box<ReactorIov>, i32> {
+    let source = source.into_iter();
+    let count = source.len();
     // The pinned Native expression count+count has no defined signed-overflow
     // behavior. This explicit refusal does not establish parity in that domain.
-    let signed_count = i32::try_from(source.len())
+    let signed_count = i32::try_from(count)
         .ok()
         .filter(|&count| count <= i32::MAX / 2)
         .ok_or(-2)?;
     let mut descriptors = Vec::new();
-    descriptors
-        .try_reserve_exact(source.len() * 2)
-        .map_err(|_| -2)?;
-    descriptors.extend_from_slice(source);
-    descriptors.extend_from_slice(source);
+    descriptors.try_reserve_exact(count * 2).map_err(|_| -2)?;
+    descriptors.extend(source.clone());
+    descriptors.extend(source);
     // Moving the vector into the owner leaves its buffer, and these pointers, in place.
     let original = descriptors.as_mut_ptr();
-    let iterator = original.wrapping_add(source.len());
+    let iterator = original.wrapping_add(count);
     swoole_rs_buffer::try_box(|| ReactorIov {
         fields: ReactorIovFields {
             original,
@@ -48,7 +50,7 @@ fn owned_new(source: &[libc::iovec]) -> Result<Box<ReactorIov>, i32> {
                 offset_bytes: 0,
             },
         },
-        _descriptors: descriptors,
+        descriptors,
     })
     .ok_or(-2)
 }
@@ -57,21 +59,30 @@ impl ReactorIov {
     /// `IOVector(iov, count)`: a cursor over a copy of `source`'s descriptors, whose
     /// payload bytes stay the caller's; none when it can't allocate.
     #[must_use]
-    pub fn new(source: &[libc::iovec]) -> Option<Box<Self>> {
+    pub fn new(
+        source: impl IntoIterator<Item = libc::iovec, IntoIter: ExactSizeIterator + Clone>,
+    ) -> Option<Box<Self>> {
         owned_new(source).ok()
+    }
+
+    /// Where the descriptors left start: the iterator, which only `advance` moves,
+    /// together with `remain_count`, so it stays `remain_count` from the end.
+    fn left(&self) -> usize {
+        let left = usize::try_from(self.fields.state.remain_count).unwrap_or(0);
+        self.descriptors.len().saturating_sub(left)
     }
 
     /// The descriptors the cursor has left.
     fn remaining(&mut self) -> &mut [libc::iovec] {
-        let state = &self.fields.state;
-        match usize::try_from(state.remain_count) {
-            // SAFETY: the iterator names `remain_count` of this cursor's own
-            // descriptors, which only this cursor, borrowed for the span, reaches.
-            Ok(count) if count > 0 => unsafe {
-                std::slice::from_raw_parts_mut(state.iterator, count)
-            },
-            _ => &mut [],
-        }
+        let start = self.left();
+        self.descriptors.get_mut(start..).unwrap_or_default()
+    }
+
+    /// The descriptors the cursor has left, the current one trimmed to where the
+    /// transfers stopped.
+    #[must_use]
+    pub fn remaining_iovecs(&self) -> &[libc::iovec] {
+        self.descriptors.get(self.left()..).unwrap_or_default()
     }
 
     /// `IOVector::update_iterator(n)`: advance the descriptors and counters together.
@@ -144,13 +155,14 @@ pub unsafe fn swr_v1_socket_iov_owned(
                 }
             }
         } else {
-            let state = owner.fields.state;
+            let count = owner.fields.state.remain_count;
+            let left = owner.remaining().as_ptr();
             let done = if write {
-                // SAFETY: `remain_count` iovecs from the iterator are the caller's buffers.
-                unsafe { libc::writev(fd, state.iterator, state.remain_count) }
+                // SAFETY: the `remain_count` iovecs left name the caller's buffers.
+                unsafe { libc::writev(fd, left, count) }
             } else {
                 // SAFETY: as above, writable.
-                unsafe { libc::readv(fd, state.iterator, state.remain_count) }
+                unsafe { libc::readv(fd, left, count) }
             };
             owner.advance(done);
             done
@@ -223,7 +235,7 @@ mod tests {
                 let length = |owner: &ReactorIov| {
                     owned_length(span(owner.fields.original, owner.fields.count))
                 };
-                let owner = owned_new(&source).map(Box::into_raw);
+                let owner = owned_new(source.iter().copied()).map(Box::into_raw);
                 assert!(owner.is_ok_and(|owner| !owner.is_null()));
                 let owner = owner.unwrap();
                 let initial = swr_v1_reactor_iov_view(&*owner);
@@ -256,7 +268,9 @@ mod tests {
                 })
                 .collect();
             unsafe {
-                let owner = owned_new(&source).map(Box::into_raw).unwrap();
+                let owner = owned_new(source.iter().copied())
+                    .map(Box::into_raw)
+                    .unwrap();
                 let (original, iterator) =
                     ((*owner).fields.original, (*owner).fields.state.iterator);
                 assert_eq!(original.add(count), iterator);
@@ -290,9 +304,7 @@ mod tests {
             iov_len: 7,
         };
         unsafe {
-            let owner = owned_new(std::slice::from_ref(&source))
-                .map(Box::into_raw)
-                .unwrap();
+            let owner = owned_new([source]).map(Box::into_raw).unwrap();
             let (original, iterator) = ((*owner).fields.original, (*owner).fields.state.iterator);
             let partial = owned_progress(span(iterator, 1), 2, 1, 0, 0);
             assert_eq!(
@@ -331,7 +343,7 @@ mod tests {
     impl IoVector {
         fn new(input: &[libc::iovec]) -> Self {
             let count = input.len().c_cast::<i32>();
-            let owner = owned_new(input).map(Box::into_raw).unwrap();
+            let owner = owned_new(input.iter().copied()).map(Box::into_raw).unwrap();
             let fields = unsafe { &(*owner).fields };
             Self {
                 owner,

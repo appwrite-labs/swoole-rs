@@ -285,7 +285,7 @@ mod tests {
                 iov_len: 4,
             },
         ];
-        let mut owner = ReactorIov::new(&iov).unwrap();
+        let mut owner = ReactorIov::new(iov).unwrap();
         // SAFETY: the cursor names the two local iovecs.
         let sent = unsafe { swr_v1_socket_iov_owned(a, true, &mut owner, NO_TLS) };
         let state = swr_v1_reactor_iov_view(&owner);
@@ -303,7 +303,7 @@ mod tests {
                 iov_len: 5,
             },
         ];
-        let mut owner = ReactorIov::new(&iov).unwrap();
+        let mut owner = ReactorIov::new(iov).unwrap();
         // SAFETY: as above, writable.
         let read = unsafe { swr_v1_socket_iov_owned(b, false, &mut owner, NO_TLS) };
         let state = swr_v1_reactor_iov_view(&owner);
@@ -328,7 +328,7 @@ mod tests {
                 iov_len: 6,
             },
         ];
-        let mut owner = ReactorIov::new(&iov).unwrap();
+        let mut owner = ReactorIov::new(iov).unwrap();
         // The counter stands in for the socket; the iovecs are local.
         let counter = (&raw mut left).cast();
         let read = unsafe {

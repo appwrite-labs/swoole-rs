@@ -1,7 +1,8 @@
 //! The hooked socket functions of upstream's `src/coroutine/hook.cc`
-//! (`swoole_coroutine_socket`, `send`, `recv`, `poll`, `close`, `read`, `write`, …),
+//! (`swoole_coroutine_socket`, `poll`, `close`, `read`, `write`, …),
 //! exported under their upstream names for the C that calls them, and those only
-//! Rust calls ([`connect`], [`accept`], [`poll_fake`], [`sendmsg`], [`recvmsg`]). Inside a
+//! Rust calls ([`swoole_coroutine_send`], [`swoole_coroutine_recv`], [`connect`],
+//! [`accept`], [`poll_fake`], [`sendmsg`], [`recvmsg`]). Inside a
 //! coroutine an fd the socket map holds goes to its native socket through
 //! its Rust members; any other call goes to libc, the async pool or `io_uring`, as
 //! upstream routes it.
@@ -115,22 +116,12 @@ pub extern "C" fn swoole_coroutine_socket(domain: c_int, kind: c_int, protocol: 
     adopt((SOCKETS.open)(domain, kind, protocol)).unwrap_or(-1)
 }
 
-/// Hooked `send(2)`.
-///
-/// # Safety
-/// As for `send`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_coroutine_send(
-    fd: c_int,
-    buf: *const c_void,
-    len: size_t,
-    flags: c_int,
-) -> ssize_t {
+/// Hooked `send(2)` of `buf`.
+#[must_use]
+pub fn swoole_coroutine_send(fd: c_int, buf: &[u8], flags: c_int) -> ssize_t {
     match hooked(fd) {
-        // SAFETY: the caller's buffer.
-        Some((_, socket)) => socket.send(unsafe { bytes(buf, len) }),
-        // SAFETY: as the caller promises.
-        None => unsafe { libc::send(fd, buf, len, flags) },
+        Some((_, socket)) => socket.send(buf),
+        None => sys::send(fd, buf, flags),
     }
 }
 
@@ -151,23 +142,11 @@ pub fn recvmsg(fd: c_int, msg: &mut RecvMessage<'_>, flags: c_int) -> ssize_t {
     }
 }
 
-/// Hooked `recv(2)`; `MSG_PEEK` peeks, other flags are the socket's.
-///
-/// # Safety
-/// As for `recv`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_coroutine_recv(
-    fd: c_int,
-    buf: *mut c_void,
-    len: size_t,
-    flags: c_int,
-) -> ssize_t {
+/// Hooked `recv(2)` into `buf`; `MSG_PEEK` peeks, other flags are the socket's.
+pub fn swoole_coroutine_recv(fd: c_int, buf: &mut [u8], flags: c_int) -> ssize_t {
     let Some((_, socket)) = hooked(fd) else {
-        // SAFETY: as the caller promises.
-        return unsafe { libc::recv(fd, buf, len, flags) };
+        return sys::recv(fd, buf, flags);
     };
-    // SAFETY: the caller's buffer.
-    let buf = unsafe { slots_mut(buf, len) };
     if flags & libc::MSG_PEEK != 0 {
         socket.peek(buf)
     } else {
@@ -380,8 +359,14 @@ pub unsafe extern "C" fn swoole_coroutine_read(
     buf: *mut c_void,
     count: size_t,
 ) -> ssize_t {
-    // SAFETY: the caller's buffer.
-    read(fd, unsafe { slots_mut(buf, count) })
+    let buf: &mut [MaybeUninit<u8>] = if count == 0 {
+        &mut []
+    } else {
+        // SAFETY: the caller's `count` writable bytes, which a read only writes, so
+        // they may be uninitialized.
+        unsafe { core::slice::from_raw_parts_mut(buf.cast(), count) }
+    };
+    read(fd, buf)
 }
 
 /// The hooked `read(2)` into `buf`: a coroutine socket reads; any other fd reads on
@@ -413,8 +398,13 @@ pub unsafe extern "C" fn swoole_coroutine_write(
     buf: *const c_void,
     count: size_t,
 ) -> ssize_t {
-    // SAFETY: the caller's buffer.
-    write(fd, unsafe { bytes(buf, count) })
+    let buf: &[u8] = if count == 0 {
+        &[]
+    } else {
+        // SAFETY: the caller's `count` readable bytes.
+        unsafe { core::slice::from_raw_parts(buf.cast(), count) }
+    };
+    write(fd, buf)
 }
 
 /// The hooked `write(2)` of `buf`, as [`read`].
@@ -433,31 +423,6 @@ pub fn write(fd: c_int, buf: &[u8]) -> ssize_t {
         let mut socket = blocking(fd, true);
         swoole_rs_tls::upstream::write_sync(Socket::new(&mut socket), buf)
     })
-}
-
-/// The caller's `len` bytes at `buf`.
-///
-/// # Safety
-/// `buf` holds `len` readable bytes, or `len` is 0.
-pub(crate) unsafe fn bytes<'a>(buf: *const c_void, len: usize) -> &'a [u8] {
-    if len == 0 {
-        return &[];
-    }
-    // SAFETY: as the caller promises.
-    unsafe { core::slice::from_raw_parts(buf.cast(), len) }
-}
-
-/// The caller's `len` writable slots at `buf`, which may be uninitialized: a read
-/// only writes them.
-///
-/// # Safety
-/// `buf` holds `len` writable bytes, or `len` is 0.
-pub(crate) unsafe fn slots_mut<'a>(buf: *mut c_void, len: usize) -> &'a mut [MaybeUninit<u8>] {
-    if len == 0 {
-        return &mut [];
-    }
-    // SAFETY: as the caller promises.
-    unsafe { core::slice::from_raw_parts_mut(buf.cast(), len) }
 }
 
 /// The pool's `network::Socket` over `fd`: nonblocking, waiting without limit.
@@ -589,7 +554,7 @@ pub(crate) mod tests {
     fn a_coroutine_transfers_on_mapped_fds_through_the_rust_members() {
         wrapped(|fd, peer| unsafe {
             let mut buf = [0u8; 16];
-            assert_eq!(swoole_coroutine_send(fd, b"send".as_ptr().cast(), 4, 0), 4);
+            assert_eq!(swoole_coroutine_send(fd, b"send", 0), 4);
             assert_eq!(swoole_coroutine_write(fd, b"write".as_ptr().cast(), 5), 5);
             let iov = [std::io::IoSlice::new(b"msg")];
             assert_eq!(sendmsg(fd, &SendMessage::new(&iov), 0), 3);
@@ -598,12 +563,9 @@ pub(crate) mod tests {
 
             assert_eq!(libc::write(peer, b"abcdefgh".as_ptr().cast(), 8), 8);
             let mut got = [0u8; 2];
-            assert_eq!(
-                swoole_coroutine_recv(fd, got.as_mut_ptr().cast(), 2, libc::MSG_PEEK),
-                2
-            );
+            assert_eq!(swoole_coroutine_recv(fd, &mut got, libc::MSG_PEEK), 2);
             assert_eq!(&got, b"ab");
-            assert_eq!(swoole_coroutine_recv(fd, got.as_mut_ptr().cast(), 2, 0), 2);
+            assert_eq!(swoole_coroutine_recv(fd, &mut got, 0), 2);
             assert_eq!(&got, b"ab");
             assert_eq!(swoole_coroutine_read(fd, got.as_mut_ptr().cast(), 2), 2);
             assert_eq!(&got, b"cd");
@@ -688,16 +650,10 @@ pub(crate) mod tests {
                     libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, pair.as_mut_ptr()),
                     0
                 );
-                assert_eq!(
-                    swoole_coroutine_send(pair[0], b"hi".as_ptr().cast(), 2, 0),
-                    2
-                );
+                assert_eq!(swoole_coroutine_send(pair[0], b"hi", 0), 2);
                 assert_eq!(swoole_coroutine_socket_wait_event(pair[1], 1 << 9, 1.0), 0);
                 let mut buf = [0u8; 2];
-                assert_eq!(
-                    swoole_coroutine_recv(pair[1], buf.as_mut_ptr().cast(), 2, 0),
-                    2
-                );
+                assert_eq!(swoole_coroutine_recv(pair[1], &mut buf, 0), 2);
                 assert_eq!(
                     swoole_coroutine_socket_wait_event(pair[1], 1 << 9, 0.01),
                     -1

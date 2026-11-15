@@ -9,11 +9,6 @@ license = "Apache-2.0"
 name = "swoole_rs_ports"
 crate-type = ["rlib"]
 
-[features]
-# Define the upstream C++ symbols of the ListenPort methods `crates/ports/src/methods.rs`
-# holds; only the hybrid's archive, whose port.cc no longer defines them, turns it on.
-upstream-symbols = []
-
 [dependencies]
 libc = "=0.2.191"
 swoole-rs-reactor = { path = "../reactor" }

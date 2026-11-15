@@ -594,12 +594,13 @@ impl ServerState {
     /// `Server::get_port_by_server_fd(server_fd)`: the `ListenPort` listening on
     /// `server_fd`.
     pub(crate) fn port_by_server_fd(&self, server_fd: c_int) -> Option<Port<'_>> {
-        self.tables_ref().connection_at(server_fd)?.port()
+        // A listening socket's record holds its port.
+        self.connection(c_long::from(server_fd), Lookup::ByFd)?
+            .port()
     }
 
-    /// The server's port at `raw`, or `None` when `raw` is none of them: a slot's or a
-    /// socket's `object` names a port only on a listening socket, and anything else
-    /// (a session's protocol state, a pipe) elsewhere.
+    /// The server's port at `raw`, or `None` when `raw` is none of them: a listening
+    /// socket's `object`, which, unlike its slot's, is a public field.
     pub(crate) fn listed_port(&self, raw: *mut c_void) -> Option<Port<'_>> {
         let ports = self.tables_ref().ports();
         ports.iter().copied().find(|port| port.raw() == raw)

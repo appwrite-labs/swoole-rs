@@ -7,25 +7,32 @@
 
 `reactor/base.cpp`'s 26 TESTs are Rust (`base/`, the merge tier's `reactor-base-rust`
 phase): a case binary over the crates and system.py's static libswoole.a (the pin's thirdparty and native/'s Zend-free sources), built and run by
-`tests/modules/hooks/system.py --package tests/modules/reactor/base --fixture
-tests/modules/reactor/base/fixture.cc`. `fixture.cc` gives C entry points to what needs
-C++ (the `Reactor` constructor, members and `std::function` slots, `Pipe` and
-`UnixSocket`, and the C++-linkage event, hook, signal and timer calls); the handlers,
-callbacks and every assertion are in `base/src/main.rs`, one function per TEST under
-its own name (`write` is `write_case`): `create`, `create_failure`, `set_handler`,
-`wait`, `get_missing_socket`, `write`, `wait_timeout`, `wait_error`, `writev`,
-`write_2m`, `bad_fd`, `epoll`, `poll`, `poll_readiness_after_fd_reuse`, `poll_extra`,
+`tests/modules/hooks/system.py --package tests/modules/reactor/base`. The cases call
+the crates' Rust API by path, with no C++ fixture: one function per TEST under its own
+name (`write` is `write_case`, `error` is `error_case`), with upstream's inputs, counts
+and expected values: `create`, `create_failure`, `set_handler`, `wait`,
+`get_missing_socket`, `write`, `wait_timeout`, `wait_error`, `writev`, `write_2m`,
+`bad_fd`, `epoll`, `poll`, `poll_readiness_after_fd_reuse`, `poll_extra`,
 `poll_extra2`, `add_or_update`, `defer_task`, `cycle`, `priority_idle_task`, `hook`,
 `set_fd`, `error_event`, `error`, `drain_write_buffer`, `handle_fail`. Each case runs
 in its own process, so the hook-table save and restore upstream wraps around
 `create_failure` and `hook` has nothing to do. A failed EXPECT is printed and fails the
-case at exit, as GoogleTest's nonfatal assertions do. `Reactor::get_handler` and
-`default_write_handler` have no C++ caller, so the cases read them through
-crates/reactor (`reactor_upstream::reactor_get_handler`,
-`reactor_default_write_handler`), and `defer_task`'s `reactor->defer` on the thread's
-reactor is `swoole_event_defer`. Nor have `swoole_event_add_or_update` and
-`SocketPair::write`, which the cases call as `event_api::add_or_update` and crates/tls's
-`socket_pair::write_from`.
+case at exit, as GoogleTest's nonfatal assertions do.
+
+| Upstream call | Rust the cases call |
+| --- | --- |
+| `new Reactor(n, type)`, `delete reactor` | `swr_v1_reactor_new`, `swr_v1_reactor_delete` |
+| `reactor->add`, `set`, `del` | `reactor_upstream::change` with `ChangeOp::Add`, `Set`, `Del` |
+| `reactor->wait()` | `reactor_wait` |
+| `reactor->set_handler`, `isset_handler`, `get_handler`, `default_write_handler` | `reactor_upstream::reactor_set_handler`, `reactor_isset_handler`, `reactor_get_handler`, `reactor_default_write_handler` |
+| `reactor->exists(fd)`, `get_event_num()` | `swr_v1_reactor_registry_get`, `swr_v1_reactor_registry_count` |
+| `reactor->set_end_callback`, `erase_end_callback` | `swr_v1_reactor_set_end` |
+| the `Reactor`'s fields (`max_event_num`, `once`, `ptr`, `future_task`, ...) | `ReactorFields` through `ReactorPrepared::of`, and `Running`'s setters |
+| `reactor->drain_write_buffer` | crates/tls's `reactor_write::reactor_drain_write_buffer` |
+| `swoole_event_init`, `free`, `wait`, `add`, `add_or_update`, `del`, `write`, `writev`, `defer`, `set_handler`, `get_socket`, `is_available` | `swoole_event_init`, `swoole_event_free`, `event_api::swoole_event_wait`, `event_add`, `add_or_update`, `event_del`, `event_write` (`swoole_event_write` for `write_2m`'s over-long length), `swoole_event_writev`, `defer` (`Reactor::defer`'s body), `swoole_event_set_handler`, `swoole_event_get_socket`, `swoole_event_is_available` |
+| `new UnixSocket`/`Pipe`, `delete`, `ready`, `get_socket`, `set_blocking`, `set_buffer_size`, `write`, `close` | crates/tls's `socket_pair::unix_socket`, `pipe`, `drop`, both ends set, `raw_ends`, `set_blocking`, `unix_socket_set_buffer_size`, `write_from`, `close` |
+| `make_socket(fd, type)`, `socket->free()`, `move_fd()`, `wait_event`, `get_out_buffer_length()` | `socket_upstream::make_socket_fd`, crates/tls's `upstream::socket_free`, `fd = -1`, `Socket::wait_event`, `swr_cpp_buffer_length` of the output buffer |
+| `swoole_add_hook`, `swoole_clear_last_error`, `swoole_set_print_backtrace_on_error`, `swoole_signal_set`, `swoole_signal_block_all`, `swoole_random_bytes`, `swoole_timer_add`, `sw_tg_buffer()` | `swoole_add_hook`, `log::set_last_error(0)`, `swoole_set_print_backtrace_on_error`, `signal::swoole_signal_set_action`, `signal_block_all`, `random_bytes`, `swr_v1_timer_add_plain`, `thread_buffer` |
 
 `network/stream.cpp`'s TESTs are Rust tests of `network::Stream`, which is Rust
 (`crates/process/src/stream.rs`: `cargo test -p swoole-rs-process stream::`). A

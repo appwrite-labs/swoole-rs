@@ -1,6 +1,6 @@
 //! A DTLS port's sessions on the reactor thread: `Server::accept_dtls_connection`
-//! and the datagram, read and close steps over them. crates/tls owns each
-//! session's queue and handshake; crates/ports stores them by fd.
+//! and the datagram and read steps over them. crates/tls owns each session's queue
+//! and handshake, in its connection's SSL.
 use core::ffi::{CStr, c_int};
 use core::ptr;
 use std::ffi::CString;
@@ -12,10 +12,9 @@ use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_reactor::Socket;
 use swoole_rs_reactor::socket_upstream::make_typed;
 use swoole_rs_tls::{
-    DtlsSession, dtls_session_listen, dtls_session_receive, swr_v1_tls_dtls_append,
+    DtlsSession, dtls_open, dtls_session_listen, dtls_session_receive, swr_v1_tls_dtls_append,
 };
 
-use crate::port_config;
 use crate::reactor_entry::DgramPacket;
 use crate::records::ConnectionRecord;
 
@@ -51,8 +50,8 @@ fn bind(sock: Socket<'_>, kind: c_int, host: &CStr, port: c_int) -> bool {
 }
 
 /// `Server::accept_dtls_connection(port, sa)`: a socket bound to the port and
-/// connected to the peer, registered as a connection with a DTLS session: the
-/// session and its socket, which the server's connection keeps until it closes;
+/// connected to the peer, registered as a connection with a DTLS session: the socket,
+/// which the server's connection keeps until it closes, and its SSL the session;
 /// `None`, with everything it made undone, when a step fails.
 ///
 /// `listen` is one of `serv`'s DTLS ports.
@@ -60,7 +59,7 @@ fn accept<'s>(
     serv: crate::view::Server<'s>,
     listen: crate::view::Port<'_>,
     sa: &SocketAddress,
-) -> Option<(*mut DtlsSession, Socket<'s>)> {
+) -> Option<Socket<'s>> {
     let (kind, number, host) = {
         let config = listen.config();
         // NUL-terminated: the address parser reads the host as a C string.
@@ -108,9 +107,10 @@ fn accept<'s>(
         if conn.is_null() {
             break 'setup;
         }
-        let session = (port_config::methods().dtls_create)(listen, socket);
-        if !session.is_null() {
-            return Some((session, socket));
+        // `ListenPort::create_dtls_session(sock)`, over the port's context.
+        let context = listen.config().ssl_context.get();
+        if context.is_some_and(|context| dtls_open(socket, &context)) {
+            return Some(socket);
         }
     }
     if !conn.is_null() {
@@ -141,14 +141,13 @@ pub(crate) fn on_packet(
     peer: &SocketAddress,
     data: &[u8],
 ) -> bool {
-    // The session `dtls_create` made over the socket: `session->socket` is `record`.
-    let Some((session, record)) = accept(serv, port, peer) else {
+    let Some(record) = accept(serv, port, peer) else {
         return false;
     };
-    // SAFETY: the live session.
-    let session = unsafe { &*session };
-    appended(swr_v1_tls_dtls_append(session, data));
-    if !dtls_session_listen(session) {
+    if let Some(session) = DtlsSession::of(record) {
+        appended(swr_v1_tls_dtls_append(session, data));
+    }
+    if !dtls_session_listen(record) {
         return crate::conn_io::close_connection(serv, reactor, Some(record));
     }
     // A session socket's connection is its fd's slot.
@@ -175,14 +174,14 @@ pub(crate) fn on_packet(
     true
 }
 
-/// `ReactorThread_onRead` on a DTLS port, whose settings are `port`: the next datagram
-/// on `sock` goes to the session on `fd`; whether a pending handshake failed.
-pub(crate) fn on_read(port: &port_config::PortConfig, sock: Socket<'_>, fd: c_int) -> bool {
+/// `ReactorThread_onRead` on a DTLS port: the next datagram on `sock` goes to its
+/// session; whether a pending handshake failed (as it does without a session).
+pub(crate) fn on_read(sock: Socket<'_>) -> bool {
     let size = usize::try_from(SW_BUFFER_SIZE_UDP).unwrap_or(0);
-    let session = (port_config::methods().dtls_session)(port, fd);
-    // SAFETY: the socket's live session.
-    let session = unsafe { &*session };
+    let Some(session) = DtlsSession::of(sock) else {
+        return true;
+    };
     // A `dtls::Buffer` of the socket's next datagram, which the session queues.
     appended(dtls_session_receive(session, sock.fd(), size));
-    !session.listened() && !dtls_session_listen(session)
+    !session.listened() && !dtls_session_listen(sock)
 }

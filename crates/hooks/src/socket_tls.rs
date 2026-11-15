@@ -13,7 +13,7 @@ use swoole_rs_tls::upstream::{
 };
 use swoole_rs_tls::{
     Accept, Lent, OwnedTlsContext, OwnedTlsFields, SocketContextError, SslNewError, SslState,
-    TlsContext, owner_fields, owner_host_name, swoole_ssl_init, swr_v1_tls_owner_socket_context,
+    TlsContext, owner_host_name, swoole_ssl_init, swr_v1_tls_owner_socket_context,
     swr_v1_tls_owner_socket_session,
 };
 
@@ -44,8 +44,7 @@ impl Co {
     /// `read` over the `SSLContext` owner's fields, or none without one.
     pub(crate) fn tls_fields<R>(self, read: impl FnOnce(&OwnedTlsFields) -> R) -> Option<R> {
         let owner = self.tls_context()?;
-        // SAFETY: the owner's fields, which nothing writes meanwhile.
-        Some(read(unsafe { owner_fields(&owner) }))
+        Some(read(owner.fields()))
     }
 
     /// The `SSLContext` owner's `tls_host_name`, empty without one.
@@ -122,12 +121,7 @@ impl Co {
             return false;
         };
         let result = self.with_network(|socket| {
-            swr_v1_tls_owner_socket_session(
-                // SAFETY: the owner, which only the socket configures.
-                owner.map(|owner| unsafe { Lent::new(owner) }),
-                socket,
-                hostname.as_deref(),
-            )
+            swr_v1_tls_owner_socket_session(owner, socket, hostname.as_deref())
         });
         match result.unwrap_or(Err(SslNewError::New)) {
             Ok(()) => return true,

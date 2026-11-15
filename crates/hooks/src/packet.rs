@@ -63,10 +63,14 @@ impl Packet {
     }
     fn receive(&mut self, at: usize, length: usize, all: bool) -> isize {
         self.sync(BufferSync::Store);
+        let free = self
+            .view
+            .str
+            .wrapping_add(at)
+            .cast::<core::mem::MaybeUninit<u8>>();
         // SAFETY: the requested free space in the read String the view refreshed,
-        // which the receive borrows.
-        let buf =
-            unsafe { core::slice::from_raw_parts_mut(self.view.str.wrapping_add(at), length) };
+        // which the receive borrows; it may be uninitialized, so it is lent as slots.
+        let buf = unsafe { core::slice::from_raw_parts_mut(free, length) };
         (crate::co_io::host().recv)(self.socket, buf, all)
     }
     fn recv(&mut self, at: usize, length: usize) -> isize {
@@ -388,9 +392,13 @@ pub(crate) mod tests {
         }
         *view = fake.buffer;
     }
-    pub(crate) fn receive(socket: crate::co_socket::Co, buf: &mut [u8], all: bool) -> isize {
+    pub(crate) fn receive(
+        socket: crate::co_socket::Co,
+        buf: &mut [core::mem::MaybeUninit<u8>],
+        all: bool,
+    ) -> isize {
         let ctx = socket.resolve_context();
-        let (at, size) = (buf.as_mut_ptr(), buf.len());
+        let (at, size) = (buf.as_mut_ptr().cast::<u8>(), buf.len());
         if all {
             unsafe { recv_all(ctx, at, size) }
         } else {

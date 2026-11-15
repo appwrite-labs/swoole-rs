@@ -95,7 +95,7 @@ fn read_buffer(_: Co, view: &mut ReadBuffer, sync: BufferSync) {
     });
 }
 
-fn recv(_: Co, buf: &mut [u8], all: bool) -> isize {
+fn recv(_: Co, buf: &mut [core::mem::MaybeUninit<u8>], all: bool) -> isize {
     let n = buf.len();
     with(|s| {
         let Script {
@@ -126,7 +126,7 @@ fn recv(_: Co, buf: &mut [u8], all: bool) -> isize {
             if count == 0 {
                 break;
             }
-            buf[total..total + count].copy_from_slice(&input[*consumed..*consumed + count]);
+            buf[total..total + count].write_copy_of_slice(&input[*consumed..*consumed + count]);
             *consumed += count;
             total += count;
             if !all || total >= n {

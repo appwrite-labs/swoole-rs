@@ -1,14 +1,13 @@
 //! `swoole::http_server`'s request and frame routing from `src/protocol/http.cc`:
-//! the callbacks `init_protocol` puts on an HTTP port, defined under their
-//! upstream (Itanium) symbols when the hybrid links this crate (`upstream-symbols`).
-//! A connection past the WebSocket handshake goes to WebSocket, an HTTP/2 one to
+//! the callbacks `init_protocol` puts on an HTTP port. A connection past the WebSocket handshake goes to WebSocket, an HTTP/2 one to
 //! HTTP/2, and any other is a protocol error. WebSocket's own length and frame
 //! dispatch from `src/protocol/websocket.cc` live here too.
 
-use std::ffi::c_int;
+use std::ffi::{c_int, c_void};
 
+use swoole_rs_clients::protocol::Protocol;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
-use swoole_rs_corebase::net_types::SocketAddress;
+use swoole_rs_corebase::net_types::{PacketLength, SocketAddress};
 use swoole_rs_corebase::{WebSocketStatus, log};
 use swoole_rs_error::ErrorCode;
 use swoole_rs_server::Connection;
@@ -53,6 +52,15 @@ pub(crate) fn host_port(address: &SocketAddress) -> (String, c_int) {
     (host, swr_v1_clients_address_port(address))
 }
 
+/// `websocket::get_package_length` as a protocol's length callback: it reads only `pl`.
+pub extern "C" fn websocket_length(
+    _proto: *const Protocol,
+    _socket: *mut c_void,
+    pl: &mut PacketLength,
+) -> isize {
+    swoole_rs_websocket_ffi::frame_api::package_length(pl)
+}
+
 /// `get_package_length_size`'s result for `conn`.
 fn length_size(conn: Connection<'_>) -> u8 {
     route(
@@ -70,8 +78,9 @@ pub mod exports {
     use swoole_rs_corebase::CCast;
 
     use swoole_rs_buffer::string::{CppString, delete_string, new_string};
+    use swoole_rs_clients::protocol::Protocol;
     use swoole_rs_corebase::DataHead;
-    use swoole_rs_corebase::net_types::{PacketLength, Protocol};
+    use swoole_rs_corebase::net_types::{PacketLength, RecvData};
     use swoole_rs_corebase::{WebSocketStatus, log};
     use swoole_rs_reactor::{Drain, Socket, SocketRecord};
     use swoole_rs_server::{Connection, ConnectionRecord, view};
@@ -106,13 +115,6 @@ pub mod exports {
         Connection::from(unsafe { &*conn.cast::<core::cell::UnsafeCell<ConnectionRecord>>() })
     }
 
-    /// `swoole::RecvData`.
-    #[repr(C)]
-    pub(crate) struct RecvData {
-        pub(crate) info: DataHead,
-        pub(crate) data: *const u8,
-    }
-
     /// `SW_WEBSOCKET_HEADER_LEN + SW_WEBSOCKET_CLOSE_CODE_LEN + SW_WEBSOCKET_CLOSE_REASON_MAX_LEN`.
     const CLOSE_REPLY_MAX: usize = 2 + 2 + 125;
 
@@ -145,17 +147,15 @@ pub mod exports {
     ///
     /// # Safety
     /// Upstream's: the port's protocol (its `private_data_2` the server), a
-    /// connection socket and its whole frame.
+    /// connection socket of that port, and its whole frame, which this unmasks in place.
+    #[must_use]
     pub unsafe extern "C-unwind" fn websocket_dispatch_frame(
         proto: *const Protocol,
-        socket: *mut c_void,
-        rdata: *const c_void,
+        socket: Socket<'_>,
+        rdata: &RecvData,
     ) -> c_int {
-        let socket = socket.cast::<SocketRecord>();
         // SAFETY: as the caller guarantees.
         let serv = unsafe { (*proto).private_data_2 };
-        // SAFETY: as the caller guarantees.
-        let rdata = unsafe { &*rdata.cast::<RecvData>() };
         let length = rdata.info.len as usize;
         let bytes = if length == 0 {
             &mut []
@@ -169,7 +169,7 @@ pub mod exports {
         };
         let bytes: &[u8] = bytes;
         // SAFETY: as the caller guarantees.
-        let conn = unsafe { connection(socket) };
+        let conn = unsafe { connection(socket.as_ptr()) };
         let fragment = conn.websocket_buffer().cast::<CppString>();
         // SAFETY: null or the connection's live fragment buffer, which only this call
         // reaches until it deletes it.
@@ -209,7 +209,7 @@ pub mod exports {
             .and_then(|rest| rest.get(..decision.length));
         let dispatch_task = |dispatch: &RecvData| {
             // SAFETY: upstream's arguments, with this frame's payload or whole message.
-            unsafe { dispatch_task(proto, socket.cast(), (&raw const *dispatch).cast()) }
+            unsafe { dispatch_task(proto, socket, dispatch) }
         };
         match decision.action {
             Action::Reject => return -1,
@@ -251,9 +251,7 @@ pub mod exports {
                 let size = payload.map_or(0, |payload| {
                     encode_parts(payload.len(), payload, 8, 1, &mut reply)
                 });
-                // SAFETY: as the caller guarantees, a live connection socket.
-                let socket = unsafe { Socket::from_ptr(socket) };
-                if let Some(socket) = socket.filter(|_| size != 0) {
+                if size != 0 {
                     // SAFETY: the encoded reply's `size` bytes.
                     let reply = unsafe { Drain::from_raw(reply.as_ptr().cast(), size) };
                     _ = swoole_rs_tls::upstream::send_drain(socket, reply, 0);
@@ -282,26 +280,20 @@ pub mod exports {
     impl Packages for Frames {
         const HEAD: Option<u32> = Some(WEBSOCKET_FRAME_HEADER_SIZE as u32);
         #[inline(always)]
-        fn length(_: &Recv, _: &Protocol, bytes: &[u8]) -> i64 {
+        fn length(_: &Recv, bytes: &[u8]) -> i64 {
             swoole_rs_websocket::frame_length(bytes).0
         }
         #[inline(always)]
-        fn dispatch(r: &Recv, b: &CppString, start: usize) -> c_int {
+        fn dispatch(r: &Recv, data: *const u8, offset: i64) -> c_int {
             let frame = RecvData {
                 info: DataHead {
-                    len: u32::try_from(b.offset()).unwrap_or(u32::MAX),
+                    len: u32::try_from(offset).unwrap_or(u32::MAX),
                     ..DataHead::default()
                 },
-                data: b.as_ptr().wrapping_add(start),
+                data,
             };
             // SAFETY: the port's protocol, a connection socket and its whole frame.
-            unsafe {
-                websocket_dispatch_frame(
-                    r.protocol,
-                    r.socket.as_ptr().cast(),
-                    (&raw const frame).cast(),
-                )
-            }
+            unsafe { websocket_dispatch_frame(r.protocol, r.socket, &frame) }
         }
     }
 
@@ -317,7 +309,7 @@ pub mod exports {
         // SAFETY: as the caller guarantees.
         let conn = unsafe { connection(socket.cast()) };
         match route(conn, || Some(true), || Some(false), None) {
-            Some(true) => swoole_rs_websocket_ffi::frame_api::get_package_length(proto, socket, pl),
+            Some(true) => super::websocket_length(proto, socket, pl),
             Some(false) => http2_length(proto, socket, pl),
             None => -1,
         }
@@ -336,13 +328,14 @@ pub mod exports {
     ///
     /// # Safety
     /// Upstream's: the port's protocol, a connection socket and its data.
+    #[must_use]
     pub unsafe extern "C-unwind" fn dispatch_frame(
         proto: *const Protocol,
-        socket: *mut c_void,
-        rdata: *const c_void,
+        socket: Socket<'_>,
+        rdata: &RecvData,
     ) -> c_int {
         // SAFETY: as the caller guarantees.
-        let conn = unsafe { connection(socket.cast()) };
+        let conn = unsafe { connection(socket.as_ptr()) };
         route(
             conn,
             // SAFETY: upstream's arguments, forwarded.

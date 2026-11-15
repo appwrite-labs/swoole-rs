@@ -331,7 +331,7 @@ pub(crate) fn incoming(
     };
     let idle = port.config().max_idle_time.get();
     if idle > 0.0 {
-        let timer = idle_timer(serv, conn, idle);
+        let timer = idle_timer(conn, idle);
         sock.edit(|s| {
             s.timeouts.read = idle;
             s.recv_timer = timer;
@@ -354,22 +354,21 @@ pub(crate) fn incoming(
 
 /// `swoole_timer_add(sec2msec(idle), true, Server::get_timeout_callback(...))`: the
 /// persistent idle check of `conn`, on this thread's reactor, or none.
-pub(crate) fn idle_timer(
-    serv: view::Server<'_>,
-    conn: Connection<'_>,
-    idle: f64,
-) -> Option<swoole_rs_timer::Held> {
+pub(crate) fn idle_timer(conn: Connection<'_>, idle: f64) -> Option<swoole_rs_timer::Held> {
     // sec2msec's (long) cast.
     let msec = (idle * 1000.0).c_cast::<c_long>();
-    let (raw, fd) = (serv.raw(), c_long::from(conn.fd()));
+    let fd = c_long::from(conn.fd());
     swoole_rs_timer::add_fn(msec, true, move || {
-        // SAFETY: the server whose reactor armed the timer, which outlives the
-        // timers of its connections.
-        let serv = unsafe { view::Server::from_raw(raw) };
+        // The server of the reactor that armed the timer: this thread's.
+        let Some(reactor) = Reactor::current() else {
+            return;
+        };
         // A session socket's connection is its fd's slot, which deletes this timer
         // before it goes.
-        if let Some(conn) = serv.state().connection(fd, Lookup::ByFd) {
-            idle_timeout(serv, Reactor::thread(), conn);
+        if let Some(serv) = reactor.server()
+            && let Some(conn) = serv.state().connection(fd, Lookup::ByFd)
+        {
+            idle_timeout(serv, reactor, conn);
         }
     })
 }
@@ -405,11 +404,11 @@ pub(crate) fn disable_accept(serv: view::Server<'_>) {
     /// `SW_ACCEPT_RETRY_TIME`, in milliseconds.
     #[expect(clippy::cast_possible_truncation, reason = "1000.0")]
     const RETRY_MSEC: c_long = (SW_ACCEPT_RETRY_TIME * 1000.0) as c_long;
-    let raw = serv.raw();
-    let timer = swoole_rs_timer::add_fn(RETRY_MSEC, false, move || {
-        // SAFETY: the server that armed this one-shot timer, on its own thread; it
-        // outlives its timers, which `clear_timer` deletes before it goes.
-        enable_accept(unsafe { view::Server::from_raw(raw) });
+    let timer = swoole_rs_timer::add_fn(RETRY_MSEC, false, || {
+        // The server of the reactor that armed the timer: this thread's.
+        if let Some(serv) = Reactor::current().and_then(Reactor::server) {
+            enable_accept(serv);
+        }
     });
     let tables = serv.state().tables_ref();
     tables.enable_accept_timer.store(timer);

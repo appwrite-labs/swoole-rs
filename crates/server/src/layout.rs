@@ -121,7 +121,7 @@ const RECORD_3_OFFSETS: &[usize] = &[
     offset_of!(crate::records::ConnectionRecord, local_addr_index),
     offset_of!(crate::records::ConnectionRecord, timer),
     offset_of!(crate::records::ConnectionRecord, info),
-    offset_of!(crate::records::ConnectionRecord, object),
+    crate::records::OBJECT_OFFSET,
     offset_of!(crate::records::ConnectionRecord, socket),
     offset_of!(crate::records::ConnectionRecord, connect_time),
     offset_of!(crate::records::ConnectionRecord, last_recv_time),
@@ -135,7 +135,6 @@ const RECORD_3_OFFSETS: &[usize] = &[
     offset_of!(crate::records::ConnectionRecord, lock),
     offset_of!(crate::records::ConnectionRecord, closed),
     offset_of!(crate::records::ConnectionRecord, server_fd),
-    crate::records::PORT_OFFSET,
 ];
 
 const RECORD_4_OFFSETS: &[usize] = &[

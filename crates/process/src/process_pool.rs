@@ -79,7 +79,8 @@ pub struct PoolRecord {
     pub(crate) workers: *mut WorkerRecord,
     pub(crate) pipes: Option<Box<Pipes>>,
     // The records and resource owners are private: outside code uses the handle's
-    // operations. The hooks and `ptr` are installed together ([`PoolRef::install`]).
+    // operations. The hooks are installed together ([`PoolRef::install`]), and `ptr`
+    // is written under a key ([`PoolRef::hold`]).
     /// The registry `create` made, which `destroy` (or dropping the record) frees.
     pub(crate) registry: Option<Box<WorkerRegistry>>,
     /// A message-queue pool's queue, which goes as the registry does.
@@ -93,6 +94,28 @@ pub struct PoolRecord {
     /// running. It stays armed after `wait` returns, which reaps only the first,
     /// and goes with the pool: `destroy`, or dropping the record, deletes it.
     pub kill_timer: Option<ArmedTimer>,
+    /// The key `ptr` is held under ([`PoolRef::hold`]), or null for none. A raw
+    /// pointer, compared and never read, so a zeroed record holds nothing.
+    pub(crate) ptr_key: *const PoolObjectKey,
+}
+
+/// A kind of object a pool's `ptr` holds ([`PoolRef::hold`]), named by the address of a
+/// `static`: a crate keeps its key private, so what a pool holds under it is what that
+/// crate gave it.
+#[derive(Default)]
+pub struct PoolObjectKey(
+    #[expect(
+        dead_code,
+        reason = "a byte gives each key's static an address of its own"
+    )]
+    u8,
+);
+
+impl PoolObjectKey {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(0)
+    }
 }
 
 impl PoolRecord {
@@ -158,6 +181,7 @@ impl PoolRecord {
             reload_task: None,
             ptr: ptr::null_mut(),
             kill_timer: None,
+            ptr_key: ptr::null(),
         }
     }
 
@@ -219,11 +243,17 @@ impl PoolRecord {
     /// The pool's worker at `raw`, or `None` when `raw` is none of its records.
     #[must_use]
     pub fn own(&self, raw: *const WorkerRecord) -> Option<Worker<'_>> {
+        self.worker(self.index_of(raw)?)
+    }
+
+    /// The index of the pool's worker at `raw`, or `None` when `raw` is none of its
+    /// records.
+    #[must_use]
+    pub fn index_of(&self, raw: *const WorkerRecord) -> Option<usize> {
         let offset = raw.addr().checked_sub(self.workers.addr())?;
-        if offset % size_of::<WorkerRecord>() != 0 {
-            return None;
-        }
-        self.worker(offset / size_of::<WorkerRecord>())
+        let index = offset / size_of::<WorkerRecord>();
+        let own = !self.workers.is_null() && index < self.worker_num as usize;
+        (own && offset % size_of::<WorkerRecord>() == 0).then_some(index)
     }
 
     /// Sets `workers`.
@@ -389,6 +419,13 @@ impl<'a> PoolRef<'a> {
         self.record().own(raw)
     }
 
+    /// The index of `worker` among the pool's workers, or `None` when it is none of
+    /// them: [`PoolRef::worker`] gives it back.
+    #[must_use]
+    pub fn index_of(self, worker: Worker<'_>) -> Option<usize> {
+        self.record().index_of(worker.raw())
+    }
+
     /// The pool at `raw`.
     ///
     /// # Safety
@@ -511,9 +548,9 @@ pub struct RecvData {
 /// the call. `C-unwind`, as a PHP bailout longjmps over them.
 ///
 /// A hook runs only through the pool that holds it ([`PoolRef::call_on_start`] and
-/// the calls beside it), and only its owner installs it ([`PoolRef::install`]), with
-/// the `ptr` it reads. So a hook whose other arguments are handles and references is
-/// a safe fn: the pool it is given is the one it was installed on.
+/// the calls beside it), and only its owner installs it ([`PoolRef::install`]). So a
+/// hook whose other arguments are handles and references is a safe fn: the pool it
+/// is given is the one it was installed on.
 pub type PoolFn = extern "C-unwind" fn(PoolRef<'_>);
 /// `onWorkerStart`, `onWorkerStop`, `onWorkerExit`.
 pub type WorkerFn = extern "C-unwind" fn(PoolRef<'_>, Worker<'_>);
@@ -536,11 +573,10 @@ pub type ErrorFn = extern "C-unwind" fn(PoolRef<'_>, Worker<'_>, &crate::methods
 /// `onWorkerNotFound`.
 pub type NotFoundFn = extern "C-unwind" fn(PoolRef<'_>, &crate::methods::ExitStatus);
 
-/// What a pool's owner installs ([`PoolRef::install`]): the object its hooks read
-/// as the pool's `ptr`, and the hooks. `None` leaves what the pool has.
+/// What a pool's owner installs ([`PoolRef::install`]): its hooks. `None` leaves what
+/// the pool has.
 #[derive(Clone, Copy, Default)]
 pub struct Hooks {
-    pub ptr: Option<*mut c_void>,
     pub on_start: Option<PoolFn>,
     pub on_shutdown: Option<PoolFn>,
     pub on_task: Option<TaskFn>,
@@ -554,18 +590,14 @@ pub struct Hooks {
 }
 
 impl PoolRef<'_> {
-    /// Installs `hooks`' object and hooks on the pool.
+    /// Installs `hooks` on the pool.
     ///
     /// # Safety
     /// Every hook the pool then holds is sound to run on this pool with what the
-    /// pool lends it: what a hook reads through the pool's `ptr` is what `ptr` then
-    /// is, and stays live while the pool can run the hook.
+    /// pool lends it.
     pub unsafe fn install(self, hooks: &Hooks) {
         // One write per field named: the pool's own code and its signal handlers
         // read the record meanwhile.
-        if let Some(ptr) = hooks.ptr {
-            self.set_ptr(ptr);
-        }
         if hooks.on_start.is_some() {
             self.set_on_start(hooks.on_start);
         }
@@ -596,6 +628,21 @@ impl PoolRef<'_> {
         if hooks.main_loop.is_some() {
             self.set_main_loop(hooks.main_loop);
         }
+    }
+
+    /// `pool->ptr = object`, held under `key`: [`Self::object_of`] with `key` returns
+    /// it until the next `hold` or [`Self::reset`]. The object first, then its key, so
+    /// a reader that sees the key sees the object.
+    pub fn hold(self, key: &'static PoolObjectKey, object: *mut c_void) {
+        self.set_ptr(object);
+        self.set_ptr_key(key);
+    }
+
+    /// `pool->ptr`, when the pool holds it under `key` ([`Self::hold`]).
+    #[inline]
+    #[must_use]
+    pub fn object_of(self, key: &'static PoolObjectKey) -> Option<*mut c_void> {
+        ptr::eq(self.ptr_key(), key).then(|| self.ptr())
     }
 
     /// `pool->main_loop = nullptr`: the pool's workers run no loop of its own.
@@ -1295,7 +1342,8 @@ getters!(
     pub ipc: *mut PoolIpc,
     pub message_box: *mut c_void,
     ;
-    pub ptr: *mut c_void,
+    ptr: *mut c_void,
+    ptr_key: *const PoolObjectKey,
     pub started: bool,
     pub protocol_type: c_int,
     pub max_request: u32,
@@ -1339,9 +1387,10 @@ setters!(
     pub is_async / set_is_async: bool,
     pub warning_time / set_warning_time: i64,
     pub schedule_by_sysvmsg / set_schedule_by_sysvmsg: bool,
-    // The object the hooks read and the hooks, which `install` writes together (and
-    // the server's startup, for its event pool).
-    pub(crate) ptr / set_ptr: *mut c_void,
+    // The object `hold` writes under its key, and the hooks, which `install` writes
+    // together.
+    ptr / set_ptr: *mut c_void,
+    ptr_key / set_ptr_key: *const PoolObjectKey,
     on_start / set_on_start: Option<PoolFn>,
     on_shutdown / set_on_shutdown: Option<PoolFn>,
     on_message / set_on_message: Option<MessageFn>,
@@ -2198,7 +2247,8 @@ mod tests {
         assert_eq!(offset_of!(PoolRecord, workers), 192);
         assert_eq!(offset_of!(PoolRecord, ptr), 256);
         assert_eq!(offset_of!(PoolRecord, kill_timer), 264);
-        assert_eq!(size_of::<PoolRecord>(), 288);
+        assert_eq!(offset_of!(PoolRecord, ptr_key), 288);
+        assert_eq!(size_of::<PoolRecord>(), 296);
     }
 
     /// A scripted op's pointer answer.

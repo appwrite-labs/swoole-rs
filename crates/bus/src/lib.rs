@@ -232,8 +232,21 @@ impl Bus {
     }
 
     /// The current message's head; an empty one while no buffer is set.
-    fn head(&self) -> BusHead {
+    #[must_use]
+    pub fn head(&self) -> BusHead {
         self.head_cell().map_or_else(BusHead::default, Cell::get)
+    }
+
+    /// Whether the buffer holds the whole current message: its head and then the
+    /// `len` bytes it counts, read in one piece (not chunked into a packet, nor
+    /// passed by pointer), within the buffer's size.
+    #[must_use]
+    pub fn holds_whole(&self) -> bool {
+        let Some(head) = self.head_cell().map(Cell::get) else {
+            return false;
+        };
+        head.flags & (PTR | CHUNK | OBJ_PTR) == 0
+            && HEAD.saturating_add(head.len as usize) <= self.buffer_size.get()
     }
 
     fn set_flags(&self, flags: u8) {
@@ -1110,6 +1123,30 @@ mod tests {
             (bus.head().flags, bus.head().len, bus.head().fd),
             (PTR, 16, 3)
         );
+        assert!(!bus.holds_whole(), "a passed payload is not in the buffer");
+    }
+
+    #[test]
+    fn the_buffer_holds_a_whole_message_only_unchunked_and_within_its_size() {
+        assert!(!Bus::new(128).holds_whole(), "no buffer");
+        let mut buffer = [0u64; 16];
+        let bus = Bus::new(128);
+        bus.buffer.set(buffer.as_mut_ptr().cast());
+        let head = |len, flags| {
+            bus.head_cell().unwrap().set(BusHead {
+                len,
+                flags,
+                ..BusHead::default()
+            });
+        };
+        head(88, 0);
+        assert!(bus.holds_whole(), "a head and 88 bytes fill 128");
+        head(89, 0);
+        assert!(!bus.holds_whole(), "past the buffer");
+        for flags in [CHUNK, CHUNK | END | OBJ_PTR] {
+            head(8, flags);
+            assert!(!bus.holds_whole(), "chunked into a packet");
+        }
     }
 
     #[test]

@@ -3,15 +3,13 @@
 //! in [`crate::read_native`].
 
 use std::ffi::{CStr, c_char, c_int};
-use std::ptr;
 use swoole_rs_corebase::CCast;
 
 use swoole_rs_clients::address::{assign, swr_v1_clients_address_port, type_name};
+use swoole_rs_clients::protocol::{GetPackageLength, GetPackageLengthSize, OnPackage};
 use swoole_rs_corebase::constants::SW_DATA_EOF_MAXLEN;
 use swoole_rs_corebase::log;
-use swoole_rs_corebase::net_types::{
-    GetPackageLength, GetPackageLengthSize, OnPackage, SocketAddress,
-};
+use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_reactor::socket_upstream::make_typed;
 use swoole_rs_reactor::{Running, SocketFields, SocketRecord};
 #[cfg(not(test))]
@@ -314,7 +312,7 @@ const CALLBACKS: Callbacks = {
         http_length: http::get_package_length,
         http_length_size: http::get_package_length_size,
         http2_length: http::http2_length,
-        websocket_length: swoole_rs_websocket_ffi::frame_api::get_package_length,
+        websocket_length: crate::http_routes::websocket_length,
     }
 };
 
@@ -351,7 +349,7 @@ fn init_protocol_over(config: &PortConfig, dtls: impl FnOnce() -> bool) {
 /// framing it stores in `protocol`.
 fn init_protocol_callbacks(
     config: &PortConfig,
-    protocol: &mut swoole_rs_corebase::net_types::Protocol,
+    protocol: &mut swoole_rs_clients::protocol::Protocol,
 ) -> Reader {
     let c = &CALLBACKS;
     if config.open_eof_check.get() {
@@ -451,11 +449,10 @@ pub fn set_stream_protocol(config: &mut PortConfig) {
 
 /// `ListenPort::destroy_http_request(conn)`: frees the connection's request, if any.
 pub(crate) fn destroy_http_request(conn: swoole_rs_server::Connection<'_>) {
-    let request = conn.object();
-    conn.set_object(ptr::null_mut());
-    let request = ptr::NonNull::new(request.cast::<swoole_rs_http_ffi::HttpRequest>());
-    // SAFETY: its `object` is null or `request_new`'s box; nothing holds it after.
-    request_free(request.map(|request| unsafe { Box::from_raw(request.as_ptr()) }));
+    let request = conn.take_http_request();
+    // SAFETY: the box the session's reactor, this one, gave the connection; the slot
+    // no longer names it.
+    request_free(request.map(|request| unsafe { Box::from_raw(request) }));
 }
 
 #[cfg(not(test))]
@@ -541,7 +538,8 @@ mod tests {
     fn ssl_context_init(at: *mut c_void) -> bool {
         crate::lifecycle::ssl_context_init(unsafe { port_config::of(at) })
     }
-    use swoole_rs_corebase::net_types::{PacketLength, Protocol};
+    use swoole_rs_clients::protocol::Protocol;
+    use swoole_rs_corebase::net_types::PacketLength;
 
     /// `Socket::free()` for a socket no loop, timer or buffer has seen: tests link no
     /// C++, which `socket_free` reaches under `upstream-symbols`.
@@ -571,8 +569,8 @@ mod tests {
     /// Stub callbacks, each body distinct so that no two share an address.
     pub(super) unsafe extern "C-unwind" fn package<const N: u8>(
         _: *const Protocol,
-        _: *mut c_void,
-        _: *const c_void,
+        _: swoole_rs_reactor::Socket<'_>,
+        _: &swoole_rs_corebase::net_types::RecvData,
     ) -> c_int {
         N.into()
     }
@@ -600,7 +598,7 @@ mod tests {
         config.ssl = true;
         assert!(ssl_context_init(at), "a stream port's context");
         let context = config.ssl_context.get().expect("published");
-        let fields = unsafe { swoole_rs_tls::owner_fields(&context) };
+        let fields = context.fields();
         assert_eq!(
             (
                 fields.prefer_server_ciphers,
@@ -617,7 +615,7 @@ mod tests {
         close(at);
         assert!(config.ssl_context.get().is_none(), "released");
         assert!(
-            unsafe { swoole_rs_tls::owner_fields(&context) }.prefer_server_ciphers,
+            context.fields().prefer_server_ciphers,
             "a reader's context stays alive after the port closes"
         );
         config.r#type = 2;
@@ -807,18 +805,14 @@ mod tests {
             let server = Box::leak(Box::<swoole_rs_server::ServerConfig>::default());
             server.enable_reuse_port.set(true);
             let head: &mut [*mut c_void; 2] =
-                Box::leak(Box::new([ptr::null_mut(), (&raw mut *server).cast()]));
+                Box::leak(Box::new([std::ptr::null_mut(), (&raw mut *server).cast()]));
             unsafe { (*config).protocol.get_mut().private_data_2 = head.as_mut_ptr().cast() };
         }
         unsafe {
             (*config).r#type = kind;
             (*config).port.set(number);
-            let set = swoole_rs_corebase::swr_v1_core_string_set(
-                &raw const *(*config).host,
-                host.as_ptr().cast(),
-                host.len(),
-            );
-            assert_eq!(set, 0, "host set");
+            let set = (*config).host.set_shared(host.as_bytes());
+            assert!(set, "host set");
         }
         config
     }
@@ -1189,11 +1183,16 @@ mod tests {
         let mut conn: ConnectionRecord = unsafe { std::mem::zeroed() };
         // `request_new`'s boxed request.
         let request = swoole_rs_http_ffi::HttpRequest::new(None);
-        conn.object = Box::into_raw(Box::new(request)).cast();
-        destroy_http_request((&mut conn).into());
-        assert!(conn.object.is_null(), "the request is freed and cleared");
-        destroy_http_request((&mut conn).into());
-        assert!(conn.object.is_null(), "no request: nothing to do");
+        let slot = swoole_rs_server::Connection::from(&mut conn);
+        let held = slot.set_http_request(Box::new(request));
+        assert_eq!(slot.http_request(), Some(held));
+        destroy_http_request(slot);
+        assert!(
+            slot.http_request().is_none(),
+            "the request is freed and cleared"
+        );
+        destroy_http_request(slot);
+        assert!(slot.http_request().is_none(), "no request: nothing to do");
     }
 
     /// Upstream's `server_port.import`. Linux, as core-tests: macOS answers
@@ -1238,12 +1237,10 @@ mod tests {
         assert!(!context_create(config, &context, false));
         assert_eq!(log::last_error(), 509, "SW_ERROR_WRONG_OPERATION");
         let cert_file = swoole_rs_tls::swr_v1_tls_owner_view(&context).strings[4];
-        let set = |text: &str| unsafe {
-            swoole_rs_corebase::swr_v1_core_string_set(cert_file, text.as_ptr().cast(), text.len())
-        };
-        assert_eq!(set("server.crt"), 0, "cert_file = \"server.crt\"");
+        let set = |text: &str| unsafe { (*cert_file).set_shared(text.as_bytes()) };
+        assert!(set("server.crt"), "cert_file = \"server.crt\"");
         assert!(!context_create(config, &context, true));
-        assert_eq!(set(""), 0, "cert_file.clear()");
+        assert!(set(""), "cert_file.clear()");
         assert!(context_create(config, &context, true));
 
         close(at);

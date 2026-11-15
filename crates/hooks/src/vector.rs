@@ -160,14 +160,14 @@ impl<'a> IoVector<'a> {
     /// they were lent; none when the copy fails, where `IOVector`'s constructor throws.
     #[must_use]
     pub fn new(vectors: Vectors<'a, '_>) -> Option<Self> {
-        let (at, count, write) = match vectors {
-            Vectors::Read(read) => (read.as_ptr().cast::<libc::iovec>(), read.len(), false),
-            Vectors::Write(written) => (written.as_ptr().cast(), written.len(), true),
-        };
-        // SAFETY: `IoSlice` and `ReadVec` are ABI-compatible with `iovec`, so these
-        // are the borrowed slice's `count` iovecs, which are only copied.
-        let vectors = unsafe { core::slice::from_raw_parts(at, count) };
-        let owner = ReactorIov::new(vectors)?;
+        let write = matches!(vectors, Vectors::Write(_));
+        let owner = match vectors {
+            Vectors::Read(read) => ReactorIov::new(read.iter().map(|vector| vector.iov)),
+            Vectors::Write(written) => ReactorIov::new(written.iter().map(|bytes| libc::iovec {
+                iov_base: bytes.as_ptr().cast_mut().cast(),
+                iov_len: bytes.len(),
+            })),
+        }?;
         Some(Self {
             owner,
             write,
@@ -200,14 +200,7 @@ impl<'a> IoVector<'a> {
     /// stopped. The borrow ends before [`update`](Self::update) can move them.
     #[cfg(feature = "iouring")]
     pub(crate) fn iovecs(&self) -> &[libc::iovec] {
-        let view = swr_v1_reactor_iov_view(self.owner());
-        let count = usize::try_from(view.remain_count).unwrap_or(0);
-        if count == 0 {
-            return &[];
-        }
-        // SAFETY: the owner's iterator names `remain_count` live iovecs, which only
-        // `update` (taking `&mut self`) changes.
-        unsafe { core::slice::from_raw_parts(view.iterator, count) }
+        self.owner.remaining_iovecs()
     }
 
     /// Advance past a transfer's `result`. It takes `&mut self`, so no transfer
@@ -436,7 +429,7 @@ mod tests {
         }
         TIMER_OK.set(failure != 2);
         ON_SUSPEND.set(Some(Box::new(move |socket: Co, event| {
-            while ready(socket, event, false).is_null() {
+            while ready(socket, event, false).is_none() {
                 log("again");
             }
             if failure == 3 {

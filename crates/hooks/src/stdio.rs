@@ -4,6 +4,7 @@
 //! coroutine waits; outside one it runs here, as [`NATIVE`] decides. Native code
 //! lends the `io_uring` engine and the hooked sockets' constructors in [`Host`].
 //! The exports keep upstream's names.
+use std::ffi::CStr;
 use std::sync::OnceLock;
 
 use libc::{
@@ -274,17 +275,19 @@ pub extern "C" fn swoole_coroutine_usleep(usec: c_int) {
 }
 
 /// Hooked `getaddrinfo`, always on the pool: upstream does not test for a coroutine.
-///
-/// # Safety
-/// As for `getaddrinfo`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_coroutine_getaddrinfo(
-    name: *const c_char,
-    service: *const c_char,
-    req: *const addrinfo,
-    pai: *mut *mut addrinfo,
+/// A found list is stored in `pai` for the caller to `freeaddrinfo`.
+pub fn swoole_coroutine_getaddrinfo(
+    name: Option<&CStr>,
+    service: Option<&CStr>,
+    req: Option<&addrinfo>,
+    pai: &mut *mut addrinfo,
 ) -> c_int {
-    // SAFETY: the caller's arguments are valid for getaddrinfo.
+    let name = name.map_or(std::ptr::null(), CStr::as_ptr);
+    let service = service.map_or(std::ptr::null(), CStr::as_ptr);
+    let req = req.map_or(std::ptr::null(), std::ptr::from_ref);
+    let pai = std::ptr::from_mut(pai);
+    // SAFETY: C strings or null, hints or null (getaddrinfo reads only the hints'
+    // integers), and a writable result slot, each borrowed for this call.
     let call = || unsafe { libc::getaddrinfo(name, service, req, pai) };
     // SAFETY: `async_job`.
     unsafe { offloaded(Some(NATIVE.offload), -1, call) }
@@ -296,15 +299,11 @@ unsafe extern "C" {
 
 /// Hooked `gethostbyname`, always on the pool: the lookup's `h_errno` (0 if the
 /// pool refused it) becomes this thread's.
-///
-/// # Safety
-/// `name` is a C string.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_coroutine_gethostbyname(name: *const c_char) -> *mut hostent {
+pub fn swoole_coroutine_gethostbyname(name: &CStr) -> *mut hostent {
     let offload = Some(NATIVE.offload);
     let call = || {
-        // SAFETY: the caller passes a C string.
-        let entry = unsafe { gethostbyname(name) };
+        // SAFETY: a C string.
+        let entry = unsafe { gethostbyname(name.as_ptr()) };
         (entry, swoole_rs_corebase::sys::h_errno())
     };
     // SAFETY: the caller passes native `async` or null.
@@ -454,35 +453,23 @@ pub(crate) mod tests {
         use Mode::{Here, Pool, Refuse};
         unsafe {
             let mut list: *mut addrinfo = std::ptr::null_mut();
-            let lookup = |service: *const c_char, list: *mut *mut addrinfo| {
-                swoole_coroutine_getaddrinfo(c"127.0.0.1".as_ptr(), service, std::ptr::null(), list)
+            let lookup = |service: Option<&CStr>, list: &mut *mut addrinfo| {
+                swoole_coroutine_getaddrinfo(Some(c"127.0.0.1"), service, None, list)
             };
             // Upstream offloads the resolver even outside a coroutine.
-            assert_eq!(with(Here, || lookup(c"80".as_ptr(), &raw mut list)), 0);
+            assert_eq!(with(Here, || lookup(Some(c"80"), &mut list)), 0);
             assert_eq!(OFFLOADED.get(), 1);
             assert!(!list.is_null());
             libc::freeaddrinfo(list);
-            assert_eq!(with(Refuse, || lookup(std::ptr::null(), &raw mut list)), -1);
+            assert_eq!(with(Refuse, || lookup(None, &mut list)), -1);
 
             // The entry lives in the looking-up thread's storage, which may end with
             // the test's pool thread: read it only from a lookup run here.
-            assert!(
-                !with(Pool, || swoole_coroutine_gethostbyname(
-                    c"127.0.0.1".as_ptr()
-                ))
-                .is_null()
-            );
-            let entry = with(Here, || {
-                swoole_coroutine_gethostbyname(c"127.0.0.1".as_ptr())
-            });
+            assert!(!with(Pool, || swoole_coroutine_gethostbyname(c"127.0.0.1")).is_null());
+            let entry = with(Here, || swoole_coroutine_gethostbyname(c"127.0.0.1"));
             assert_eq!((*entry).h_addrtype, libc::AF_INET);
             swoole_rs_corebase::sys::set_h_errno(3);
-            assert!(
-                with(Refuse, || swoole_coroutine_gethostbyname(
-                    c"localhost".as_ptr()
-                ))
-                .is_null()
-            );
+            assert!(with(Refuse, || swoole_coroutine_gethostbyname(c"localhost")).is_null());
             assert_eq!(swoole_rs_corebase::sys::h_errno(), 0);
 
             let mut fds = [0; 2];

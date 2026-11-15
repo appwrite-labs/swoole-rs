@@ -427,9 +427,15 @@ impl<'a> Packed<'a> {
         }
         let str = buffer.as_mut_ptr();
         // Zeroed first: past the String's content, its allocation is uninitialized. It
-        // holds `pkg.length` bytes by now.
-        let target = buffer.zeroed(pkg.length).unwrap_or_default();
-        match read_file(pkg.path(), target, flags & PEEK != 0) {
+        // holds `pkg.length` bytes by now, which become the content once read; a
+        // failed read keeps the content's length.
+        let kept = buffer.len();
+        let mut read = Ok(());
+        buffer.read_zeroed(pkg.length, |target| {
+            read = read_file(pkg.path(), target, flags & PEEK != 0);
+            if read.is_ok() { target.len() } else { kept }
+        });
+        match read {
             Ok(()) => {}
             Err(TaskFileError::Short { .. }) => return None,
             Err(TaskFileError::Open(error)) => {
@@ -447,8 +453,6 @@ impl<'a> Packed<'a> {
                 return None;
             }
         }
-        // SAFETY: the read filled the buffer's first `pkg.length` bytes.
-        unsafe { buffer.set_len(pkg.length) };
         Some((buffer.view(), flags))
     }
 }

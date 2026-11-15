@@ -675,9 +675,7 @@ impl Method<'_> {
                 );
                 return false;
             }
-            // SAFETY: a live context; OpenSSL calls the selector with the client's offered
-            // list and its length, and the static list given here.
-            unsafe { set_alpn_select_cb(ctx, Some(select_alpn), protos) };
+            SSL_CTX_set_alpn_select_cb(ctx, Some(select_alpn), protos);
             SSL_CTX_set_session_id_context(ctx, &SESSION_ID_CONTEXT, 4);
             ctx.ctrl(Ctrl::SessionCacheMode, SSL_SESS_CACHE_SERVER);
         }
@@ -700,8 +698,7 @@ fn quoted(prefix: &[u8], value: TlsStr<'_>, suffix: &[u8]) -> Vec<u8> {
     [prefix, &value.text(), suffix].concat()
 }
 
-/// An ALPN wire-format list: the first `length` bytes of `wire`. OpenSSL only hands
-/// one back to the selector, as its argument.
+/// An ALPN wire-format list: the first `length` bytes of `wire`.
 #[repr(C)]
 struct Protos {
     wire: [u8; 12],
@@ -732,41 +729,38 @@ enum AlpnLength {
     H2Http1 = 12,
 }
 
-// libssl's declaration, typed so that the list is the array its length bounds; it
-// copies the list into the live context: 0 on success.
-unsafe extern "C" {
-    safe fn SSL_CTX_set_alpn_protos(ctx: &SslCtx, protos: &[u8; 12], length: AlpnLength) -> c_int;
-}
-
-/// OpenSSL's ALPN selector, with its argument typed as the static list `configure`
-/// installs it with.
-type SelectAlpn = unsafe extern "C" fn(
+/// OpenSSL's ALPN selector: the SSL, the output slots, the list the client offered
+/// and its length, and the selector's argument.
+type AlpnSelect = unsafe extern "C" fn(
     *mut SSL,
     *mut *const c_uchar,
     *mut c_uchar,
     *const c_uchar,
     c_uint,
-    &'static Protos,
+    &Protos,
 ) -> c_int;
 
-// libssl's declaration, with the argument typed as what `configure` passes. A
-// selector reads the raw list it is lent, so storing one is not `safe`.
+// libssl's declarations, typed so that the list is the array its length bounds; the
+// first copies the list into the live context: 0 on success. The second stores the
+// selector and its static argument, which OpenSSL hands it with the slots and the
+// offered list it lends.
 unsafe extern "C" {
-    #[link_name = "SSL_CTX_set_alpn_select_cb"]
-    fn set_alpn_select_cb(ctx: &SslCtx, callback: Option<SelectAlpn>, arg: &'static Protos);
+    safe fn SSL_CTX_set_alpn_protos(ctx: &SslCtx, protos: &[u8; 12], length: AlpnLength) -> c_int;
+    safe fn SSL_CTX_set_alpn_select_cb(
+        ctx: &SslCtx,
+        callback: Option<AlpnSelect>,
+        arg: &'static Protos,
+    );
 }
 
-/// The server's ALPN choice: the first of its protocols the client offers.
-///
-/// # Safety
-/// `out` and `out_length` are writable, and `offered` holds `offered_length` bytes.
+/// The server's ALPN choice: the first of `protos` the client offers.
 unsafe extern "C" fn select_alpn(
     _ssl: *mut SSL,
     out: *mut *const c_uchar,
     out_length: *mut c_uchar,
     offered: *const c_uchar,
     offered_length: c_uint,
-    protos: &'static Protos,
+    protos: &Protos,
 ) -> c_int {
     let length = protos.length as c_uint;
     // SAFETY: OpenSSL's output slots and offered list; ours is static.

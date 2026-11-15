@@ -25,8 +25,8 @@ mod typed;
 use std::alloc::{Layout, alloc};
 use std::collections::VecDeque;
 use std::ffi::c_void;
+use std::mem;
 use std::mem::MaybeUninit;
-use std::{mem, slice};
 pub use typed::{Detached as TypedDetached, Front as TypedFront, Kind as EntryKind};
 
 /// Why a queue operation failed; the queue is unchanged.
@@ -255,57 +255,12 @@ impl Buffer {
     }
 }
 
-/// Copy actual target POSIX iovecs without allocating descriptor staging storage.
-/// # Safety
-/// `iov` holds `count` descriptors, each over `iov_len` readable bytes (null only when
-/// empty) that the queue doesn't hold. No descriptor reference survives the call.
-/// # Errors
-/// `Invalid` for a negative or too-large offset or a null descriptor with bytes,
-/// `Overflow` and `NoMem` as for [`Buffer::append`].
-#[cfg(unix)]
-pub unsafe fn swr_v1_buffer_append_iovec(
-    queue: &mut Buffer,
-    iov: *const libc::iovec,
-    count: usize,
-    offset: i64,
-) -> Result<(), Error> {
-    if offset < 0 || (count != 0 && iov.is_null()) {
-        return Err(Error::Invalid);
-    }
-    if !slice_fits::<libc::iovec>(count) {
-        return Err(Error::Overflow);
-    }
-    let iov = if count == 0 {
-        &[]
-    } else {
-        // SAFETY: non-null, `count` fits isize (checked above), readable descriptors.
-        unsafe { slice::from_raw_parts(iov, count) }
-    };
-    for part in iov {
-        if !slice_fits::<u8>(part.iov_len) {
-            return Err(Error::Overflow);
-        }
-        if part.iov_len != 0 && part.iov_base.is_null() {
-            return Err(Error::Invalid);
-        }
-    }
-    let parts = iov.iter().map(|part| {
-        if part.iov_len == 0 {
-            return &[][..];
-        }
-        // SAFETY: non-null with `iov_len` readable bytes (checked above and as the caller
-        // promises), which outlast the append.
-        unsafe { slice::from_raw_parts(part.iov_base.cast::<u8>(), part.iov_len) }
-    });
-    queue.appendv(parts, offset.unsigned_abs())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::alloc::{GlobalAlloc, System};
     use std::cell::Cell;
-    use std::ptr;
+    use std::{ptr, slice};
 
     // Failure injection affects this test thread only, including actual Vec and
     // VecDeque allocation paths. Production has no allocator wrapper or state.
@@ -386,37 +341,14 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[test]
-    fn actual_posix_descriptors_share_validation_copy_and_atomic_rollback() {
-        let a: [u8; 3] = [0, 255, 7];
-        let b: [u8; 4] = [9, 0, 254, 8];
-        let vectors = [
-            libc::iovec {
-                iov_base: a.as_ptr().cast_mut().cast(),
-                iov_len: a.len(),
-            },
-            libc::iovec {
-                iov_base: ptr::null_mut(),
-                iov_len: 0,
-            },
-            libc::iovec {
-                iov_base: b.as_ptr().cast_mut().cast(),
-                iov_len: b.len(),
-            },
-        ];
+    fn vectored_appends_validate_copy_and_roll_back() {
+        let parts: [&[u8]; 3] = [&[0, 255, 7], &[], &[9, 0, 254, 8]];
         let expected = [0, 255, 7, 9, 0, 254, 8];
         for chunk in [1, 4, 32] {
             for offset in 0..=expected.len() + 1 {
                 let owned = Owned::new(chunk);
-                let status = unsafe {
-                    swr_v1_buffer_append_iovec(
-                        owned.queue(),
-                        vectors.as_ptr(),
-                        vectors.len(),
-                        i64::try_from(offset).unwrap(),
-                    )
-                };
+                let status = owned.appendv(&parts, offset as u64);
                 if offset > expected.len() {
                     assert_eq!(status, Err(Error::Invalid));
                     assert_eq!(owned.stats(), (0, 0));
@@ -441,9 +373,7 @@ mod tests {
             let before = owned.stats();
             let front = owned.view();
             FAIL_AFTER.with(|counter| counter.set(Some(budget)));
-            let status = unsafe {
-                swr_v1_buffer_append_iovec(owned.queue(), vectors.as_ptr(), vectors.len(), 0)
-            };
+            let status = owned.appendv(&parts, 0);
             FAIL_AFTER.with(|counter| counter.set(None));
             if status == Ok(()) {
                 succeeded = true;
@@ -459,24 +389,7 @@ mod tests {
         }
         assert!(succeeded);
         let owned = Owned::new(4);
-        assert_eq!(
-            unsafe {
-                swr_v1_buffer_append_iovec(owned.queue(), vectors.as_ptr(), vectors.len(), -1)
-            },
-            Err(Error::Invalid)
-        );
-        assert_eq!(
-            unsafe { swr_v1_buffer_append_iovec(owned.queue(), ptr::null(), 1, 0) },
-            Err(Error::Invalid)
-        );
-        assert_eq!(
-            unsafe { swr_v1_buffer_append_iovec(owned.queue(), ptr::null(), 0, 0) },
-            Ok(())
-        );
-        assert_eq!(
-            unsafe { swr_v1_buffer_append_iovec(owned.queue(), vectors.as_ptr(), usize::MAX, 0) },
-            Err(Error::Overflow)
-        );
+        assert_eq!(owned.appendv(&[], 0), Ok(()));
         assert_eq!(owned.stats(), (0, 0));
     }
 

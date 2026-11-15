@@ -49,7 +49,7 @@ fn receive_packets(
         return false;
     };
     let kind = conn.socket_type();
-    let Some(port) = state.listed_port(conn.object()) else {
+    let Some(port) = conn.port() else {
         return false;
     };
     let dtls = port.config().is_dtls();
@@ -240,11 +240,9 @@ mod tests {
         let server = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         server.set_nonblocking(true).unwrap();
         let fd = std::os::fd::AsRawFd::as_raw_fd(&server);
-        let slot = live.state().tables_ref().connection_at(fd).unwrap();
+        let slot = live.state().tables_ref().hold_port(0, fd).unwrap();
         slot.set_fd(fd);
         slot.set_socket_type(2); // SW_SOCK_UDP
-        slot.set_object(core::ptr::from_ref(live.port()).cast_mut().cast());
-        slot.listen(live.server().port_at(0).unwrap());
         let client = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         client.connect(server.local_addr().unwrap()).unwrap();
         (server, client)

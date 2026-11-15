@@ -14,7 +14,7 @@ use super::socket::{
     EADDRNOTAVAIL, ECONNREFUSED, IoVec, SHUT_RD, SHUT_RDWR, SHUT_WR, SIGTERM, SW_SOCK_TCP,
     SW_SOCK_TCP6, SW_SOCK_UDP, SW_SOCK_UDP6, SW_SOCK_UNIX_DGRAM, TEST_HOST, TEST_HTTP_EXPECT,
     TEST_HTTPS_EXPECT, TEST_PORT, TEST_REQUEST_BAIDU, TLS_HOST_NAME, TlsPrepared, contains,
-    get_random_port, http_get_request, is_github_ci, swr_v1_core_string_set, swr_v1_tls_owner_new,
+    get_random_port, http_get_request, is_github_ci, string_set, swr_v1_tls_owner_new,
 };
 use super::{
     _exit, AF_INET, CppString, EINVAL, ENOENT, ETIMEDOUT, SW_ERR, TEST_HTTP_DOMAIN, TEST_STR,
@@ -85,7 +85,7 @@ const _: () = assert!(
     "ClientRecord's layout moved"
 );
 
-/// `swr_v1_core_proxy_fields`.
+/// crates/corebase's `ProxyFields`.
 #[repr(C)]
 struct ProxyFields {
     state: u8,
@@ -98,19 +98,10 @@ struct ProxyFields {
     socket_type: i32,
 }
 
-/// `OwnedTlsCopy` (crates/tls/src/owned.rs).
-#[repr(C)]
-struct TlsCopy {
-    status: i32,
-    index: u32,
-}
-
 unsafe extern "C" {
     fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut c_void;
     fn swr_v1_clients_address_host(address: *const c_void) -> *const c_char;
     fn swr_v1_clients_address_port(address: *const c_void) -> c_int;
-    fn swr_v1_tls_owner_assign(destination: *const c_void, source: *const c_void) -> TlsCopy;
-    fn swr_v1_tls_owner_free(owner: *const c_void);
 
     #[link_name = "_ZNK6swoole7network6Socket12has_timedoutEv"]
     fn socket_has_timedout(socket: *const c_void) -> bool;
@@ -426,18 +417,18 @@ impl<'a> Client<'a> {
         unsafe {
             (*prepared.fields).disable_tls_host_name = u8::from(name.is_empty());
             assert_eq!(
-                swr_v1_core_string_set(
-                    prepared.strings[TLS_HOST_NAME],
-                    name.as_ptr().cast(),
-                    name.len()
-                ),
+                string_set(prepared.strings[TLS_HOST_NAME], name.as_bytes()),
                 0
             );
-            assert_eq!(
-                swr_v1_tls_owner_assign(self.ssl_context(), prepared.owner).status,
-                0
+            let owner = |context: *const c_void| swoole_rs_tls::Lent::new(&*context.cast());
+            let copied = swoole_rs_tls::owner_assign(
+                &mut owner(self.ssl_context()),
+                &mut owner(prepared.owner),
             );
-            swr_v1_tls_owner_free(prepared.owner);
+            assert_eq!(copied.status, 0);
+            drop(std::sync::Arc::<swoole_rs_tls::OwnedTlsContext>::from_raw(
+                prepared.owner.cast(),
+            ));
         }
     }
 

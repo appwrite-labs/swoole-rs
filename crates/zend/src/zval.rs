@@ -22,7 +22,7 @@ use crate::{
 };
 use std::{
     borrow::{Borrow, Cow},
-    cell::UnsafeCell,
+    cell::{Cell, UnsafeCell},
     ffi::{CStr, c_char, c_void},
     io::IoSlice,
     ptr,
@@ -57,13 +57,13 @@ unsafe extern "C" {
     safe fn swr_zend_zval_type_name(value: &Value) -> crate::helpers::CText<'_>;
     /// `ZEND_HASH_FOREACH`'s step: null (`None`) past the end, or the next
     /// defined element at or after `position` (any position: the walk stops at
-    /// the table's last slot), which then points past it, with its key (null
-    /// for an integer key) and index written. Past the end `key` is whatever
-    /// the last slot it skipped held, so it stays a raw pointer.
+    /// the table's last slot), which then points past it, with its key (null,
+    /// `None`, for an integer key: a string the table keeps while borrowed)
+    /// and index written. Past the end it writes neither.
     safe fn swr_zend_hash_next<'a>(
         table: &'a Array,
         position: &mut HashPosition,
-        key: &mut *mut zend_string,
+        key: &mut Option<&'a ZStr>,
         index: &mut zend_ulong,
     ) -> Option<&'a Value>;
     /// `zend_ini_parse_quantity`: it reads the string, and writes a new error
@@ -101,10 +101,26 @@ unsafe extern "C" {
     safe fn swr_bytes_json_decode(text: IoSlice<'_>, out: &Owned);
 }
 
-/// A borrowed zval. Zend may change what it points to (refcounts, a
-/// conversion's cache), hence the cell.
+/// A borrowed zval. Zend may change it and what it points to (refcounts, a
+/// conversion's cache) through pointers on this thread, hence the cell.
 #[repr(transparent)]
-pub struct Value(UnsafeCell<zval>);
+pub struct Value(Cell<zval>);
+
+/// A zval's value word and type, without the unions bindgen gives them: the
+/// two fields [`Value::word`] and [`Value::kind`] read, and nothing else.
+#[repr(C)]
+struct Tagged {
+    word: *mut c_void,
+    type_info: u32,
+}
+
+const _: () = assert!(
+    std::mem::offset_of!(Tagged, word) == std::mem::offset_of!(zval, value)
+        && std::mem::offset_of!(Tagged, type_info) == std::mem::offset_of!(zval, u1)
+        && size_of::<Tagged>() <= size_of::<zval>()
+        && align_of::<Tagged>() <= align_of::<zval>(),
+    "Tagged is a zval's value and type_info"
+);
 
 impl Value {
     /// Borrow the zval at `value`, or None for null.
@@ -129,32 +145,38 @@ impl Value {
     #[must_use]
     #[inline]
     pub fn as_ptr(&self) -> *mut zval {
-        self.0.get()
+        self.0.as_ptr()
     }
 
     /// `Z_TYPE_P`.
     #[must_use]
     #[inline]
     pub fn kind(&self) -> u32 {
-        // SAFETY: a live zval, borrowed only for this read.
-        crate::kind(unsafe { &*self.as_ptr() })
+        // SAFETY: a live zval, every one of which sets `u1.type_info`, read
+        // through `Tagged`'s plain field at its offset.
+        unsafe { (*self.as_ptr().cast::<Tagged>()).type_info & 0xff }
     }
 
-    /// The value union's first word as a pointer: what `Z_STR_P`, `Z_ARRVAL_P`,
-    /// `Z_OBJ_P`, `Z_REF_P` and `Z_PTR_P` read. Only [`Value::kind`] says what
-    /// it points to, if anything.
+    /// The value union's first word: what `Z_STR_P`, `Z_ARRVAL_P`, `Z_OBJ_P`,
+    /// `Z_REF_P` and `Z_PTR_P` read as a pointer, and `Z_LVAL_P` and
+    /// `Z_DVAL_P` as bits. Only [`Value::kind`] says what it holds.
+    #[inline]
+    fn word(&self) -> *mut c_void {
+        // SAFETY: a live zval, which its value union leads; any eight bytes
+        // are a raw pointer.
+        unsafe { (*self.as_ptr().cast::<Tagged>()).word }
+    }
+
+    /// [`Value::word`] as a pointer to `T`.
     #[inline]
     fn payload<T>(&self) -> *mut T {
-        // SAFETY: a live zval, which its value union leads (`value`'s
-        // assertion); any eight bytes are a raw pointer.
-        unsafe { self.as_ptr().cast::<*mut T>().read() }
+        self.word().cast()
     }
 
-    /// The value union's first word as bits: what `Z_LVAL_P` and `Z_DVAL_P` read.
+    /// [`Value::word`] as bits.
     #[inline]
     fn bits(&self) -> u64 {
-        // SAFETY: as `payload`; any eight bytes are a `u64`.
-        unsafe { self.as_ptr().cast::<u64>().read() }
+        self.word().addr() as u64
     }
 
     /// `Z_TYPE_P(value) == IS_NULL`.
@@ -252,8 +274,9 @@ impl Value {
         if self.kind() != IS_STRING {
             return None;
         }
-        // SAFETY: a string zval holds `str`, which it keeps alive while borrowed.
-        unsafe { ZStr::from_ptr(self.payload()) }
+        // SAFETY: a string zval holds `str`, never null, which it keeps alive
+        // while borrowed; `ZStr` is a transparent string.
+        Some(unsafe { &*self.payload::<ZStr>() })
     }
 
     /// `Z_OBJ_P` of an object.
@@ -300,9 +323,9 @@ impl Value {
     /// holds nothing borrowed from the zval.
     pub(crate) fn lend<R>(&self, edit: impl FnOnce(&mut Owned) -> R) -> R {
         let mut held = Owned::null();
-        // SAFETY: two live zvals: nothing borrows this one's content, and
-        // `held` is this frame's, borrowed by nothing else at either swap.
-        let swap = |held: &Owned| unsafe { self.0.get().swap(held.0.0.get()) };
+        // Two distinct zvals: nothing borrows this one's content, and `held`
+        // is this frame's.
+        let swap = |held: &Owned| self.0.swap(&held.0.0);
         swap(&held);
         let result = edit(&mut held);
         swap(&held);
@@ -695,8 +718,7 @@ impl Value {
     #[must_use]
     #[inline]
     pub fn copy_value(&self) -> zval {
-        // SAFETY: a live zval, read while borrowed.
-        unsafe { self.as_ptr().read() }
+        self.0.get()
     }
 
     /// `ZVAL_COPY`: the same value with a reference of its own.
@@ -704,7 +726,7 @@ impl Value {
     #[inline]
     pub fn copy(&self) -> Owned {
         // The copy carries the reference it adds below.
-        let owned = Owned(Self(UnsafeCell::new(self.copy_value())));
+        let owned = Owned(Self(Cell::new(self.copy_value())));
         swr_zval_try_addref(&owned);
         owned
     }
@@ -715,12 +737,21 @@ impl Value {
 pub struct Array(UnsafeCell<HashTable>);
 
 /// The `zend_refcounted_h` a counted value begins with: its refcount, then
-/// `type_info`. Only for a `zend_string` or `HashTable`, which both do.
+/// `type_info`, which Zend reads and writes through pointers on this thread.
+#[repr(C)]
+struct Counted {
+    refcount: Cell<u32>,
+    type_info: Cell<u32>,
+}
+
+/// The header of a `zend_string` or `HashTable`, which both begin with one,
+/// for as long as the value is borrowed.
 #[inline]
-fn header<T>(counted: &UnsafeCell<T>) -> [u32; 2] {
-    // SAFETY: the borrow keeps the value live, and its first eight bytes are
-    // the header's two `u32`s.
-    unsafe { counted.get().cast::<[u32; 2]>().read() }
+fn header<T>(counted: &UnsafeCell<T>) -> &Counted {
+    // SAFETY: the borrow keeps the value live, its first eight bytes are the
+    // header's two `u32`s, and `Cell` is a transparent `u32` that, like the
+    // `UnsafeCell` it sits in, allows the writes Zend makes meanwhile.
+    unsafe { &*counted.get().cast::<Counted>() }
 }
 
 /// An array key: `ZEND_HASH_FOREACH_KEY`'s string or integer.
@@ -837,15 +868,16 @@ impl Drop for HeldArray {
     #[inline]
     fn drop(&mut self) {
         let Some(array) = self.0.array() else { return };
-        let [refcount, info] = header(&array.0);
-        let immutable = info & crate::sys::IS_ARRAY_IMMUTABLE != 0;
+        let header = header(&array.0);
+        let refcount = header.refcount.get();
+        let immutable = header.type_info.get() & crate::sys::IS_ARRAY_IMMUTABLE != 0;
         if !immutable && refcount == 1 {
             // The last reference: `Owned`'s drop destroys the table inside `zend_try`.
             return;
         }
         if !immutable {
-            // SAFETY: another holder keeps the table live; this gives up its reference.
-            unsafe { (*array.as_ptr()).gc.refcount -= 1 };
+            // Another holder keeps the table live; this gives up its reference.
+            header.refcount.set(refcount - 1);
         }
         // Nothing is left for `Owned`'s drop to release.
         #[expect(
@@ -874,11 +906,9 @@ impl<'a> Entries<'a> {
     /// (None for an integer key), and the integer, to put an element back
     /// under (`zend::KeyValue`).
     pub fn next_stored(&mut self) -> Option<(Option<&'a ZStr>, zend_ulong, &'a Value)> {
-        let (mut key, mut index) = (ptr::null_mut(), 0);
+        let (mut key, mut index) = (None, 0);
         let value = swr_zend_hash_next(self.table, &mut self.position, &mut key, &mut index)?;
-        // SAFETY: the found element's key: null or a string, which the table
-        // keeps alive.
-        Some((unsafe { ZStr::from_ptr(key) }, index, value))
+        Some((key, index, value))
     }
 }
 
@@ -948,8 +978,9 @@ impl ZStr {
     #[inline]
     pub fn to_owned(&self) -> ZString {
         if !self.interned() {
-            // SAFETY: a live, counted string; the new reference is the `ZString`'s.
-            unsafe { (*self.as_ptr()).gc.refcount += 1 };
+            // A live, counted string; the new reference is the `ZString`'s.
+            let refcount = &header(&self.0).refcount;
+            refcount.set(refcount.get() + 1);
         }
         ZString(self.as_ptr())
     }
@@ -958,8 +989,7 @@ impl ZStr {
     #[must_use]
     #[inline]
     pub fn interned(&self) -> bool {
-        let [_, info] = header(&self.0);
-        info & IS_STR_INTERNED != 0
+        header(&self.0).type_info.get() & IS_STR_INTERNED != 0
     }
 
     /// `zendi_smart_strcmp`: PHP's `==` order of two strings, numeric when
@@ -1128,7 +1158,7 @@ impl Kept {
     /// What `value` holds lives until the copy is replaced or cleared.
     #[inline]
     pub unsafe fn keep(&mut self, value: &Value) {
-        self.put(Owned(Value(UnsafeCell::new(value.copy_value()))));
+        self.put(Owned(Value(Cell::new(value.copy_value()))));
     }
 
     /// Empty it, releasing nothing.
@@ -1180,7 +1210,7 @@ impl Default for Owned {
     /// `ZVAL_UNDEF`.
     #[inline]
     fn default() -> Self {
-        Self(Value(UnsafeCell::new(UNDEF)))
+        Self(Value(Cell::new(UNDEF)))
     }
 }
 
@@ -1198,7 +1228,7 @@ impl Owned {
     #[must_use]
     #[inline]
     pub fn long(value: zend_long) -> Self {
-        Self(Value(UnsafeCell::new(crate::long_zval(value))))
+        Self(Value(Cell::new(crate::long_zval(value))))
     }
 
     /// `ZVAL_DOUBLE`.
@@ -1208,7 +1238,7 @@ impl Owned {
         let mut zval = UNDEF;
         zval.value = zend_value { dval: value };
         zval.u1.type_info = IS_DOUBLE;
-        Self(Value(UnsafeCell::new(zval)))
+        Self(Value(Cell::new(zval)))
     }
 
     /// `ZVAL_BOOL`.
@@ -1217,7 +1247,7 @@ impl Owned {
     pub fn bool(value: bool) -> Self {
         let mut zval = UNDEF;
         zval.u1.type_info = if value { IS_TRUE } else { IS_FALSE };
-        Self(Value(UnsafeCell::new(zval)))
+        Self(Value(Cell::new(zval)))
     }
 
     /// `ZVAL_NULL`.
@@ -1226,7 +1256,7 @@ impl Owned {
     pub fn null() -> Self {
         let mut value = UNDEF;
         value.u1.type_info = IS_NULL;
-        Self(Value(UnsafeCell::new(value)))
+        Self(Value(Cell::new(value)))
     }
 
     /// `ZVAL_STR(value, string)`: the result takes over the reference.
@@ -1242,7 +1272,7 @@ impl Owned {
         zval.value = zend_value {
             str_: string.into_raw(),
         };
-        Self(Value(UnsafeCell::new(zval)))
+        Self(Value(Cell::new(zval)))
     }
 
     /// The array this holds, to add to ([`ArrayMut`] separates it first), or
@@ -1266,7 +1296,7 @@ impl Owned {
         let mut zval = UNDEF;
         zval.value = zend_value { obj: std };
         zval.u1.type_info = crate::sys::IS_OBJECT_EX;
-        Self(Value(UnsafeCell::new(zval)))
+        Self(Value(Cell::new(zval)))
     }
 
     /// Give up the zval to whoever takes it (`RETVAL_ZVAL(value, 0, 0)`),
@@ -1323,7 +1353,7 @@ impl ArrayMut {
         }
         // `GC_REFCOUNT(arr) > 1` is the only case SEPARATE_ARRAY acts on (an
         // immutable array counts 2), so an unshared one skips the call.
-        if header(&self.0.array()?.0)[0] > 1 {
+        if header(&self.0.array()?.0).refcount.get() > 1 {
             // SAFETY: an array zval borrowed mutably; a shared or immutable
             // array is duplicated, and the zval's reference moves to the copy.
             unsafe { swr_zend_separate_array(self.0.as_ptr()) };

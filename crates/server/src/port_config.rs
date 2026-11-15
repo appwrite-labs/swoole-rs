@@ -3,13 +3,13 @@ use crate::config::{Published, Setting, Shared};
 use core::ffi::{CStr, c_int, c_void};
 use core::sync::atomic::AtomicPtr;
 use core::sync::atomic::Ordering::Relaxed;
-use std::sync::{Mutex, OnceLock, RwLock};
+use std::sync::{OnceLock, RwLock};
 
+use swoole_rs_clients::protocol::Protocol;
 use swoole_rs_corebase::StringSlot;
 use swoole_rs_corebase::constants::{SW_DATA_EOF, SW_INPUT_BUFFER_SIZE};
-use swoole_rs_corebase::net_types::Protocol;
 use swoole_rs_reactor::Socket;
-use swoole_rs_tls::{DtlsSession, SslVersion, TlsContext, swr_v1_tls_owner_view};
+use swoole_rs_tls::{SslVersion, TlsContext};
 
 use crate::view::Port;
 
@@ -96,12 +96,6 @@ pub struct PortMethods {
     pub destroy_http_request: fn(conn: crate::Connection<'_>),
     /// Releases the port's context and its TLS state, as `ListenPort`'s destructor.
     pub tls_free: fn(&mut PortConfig),
-    /// `create_dtls_session(sock)` on a DTLS port; null if it fails to initialize.
-    pub dtls_create: fn(Port<'_>, Socket<'_>) -> *mut DtlsSession,
-    /// The DTLS session on an fd; null if none.
-    pub dtls_session: fn(&PortConfig, c_int) -> *mut DtlsSession,
-    /// Frees the DTLS session on an fd, if any.
-    pub dtls_free: fn(&PortConfig, c_int),
 }
 
 static METHODS: OnceLock<PortMethods> = OnceLock::new();
@@ -169,7 +163,7 @@ pub struct PortConfig {
     pub websocket_frames: Setting<u8>,
     /// `websocket_subprotocol`, the handshake's `Sec-WebSocket-Protocol`.
     pub websocket_protocol: Published<Vec<u8>>,
-    /// `ListenPort::host`, which native code reads and writes through a `RustStringView`.
+    /// `ListenPort::host`.
     pub host: Box<StringSlot>,
     /// `ListenPort::protocol`, which native code reads and writes by reference.
     pub protocol: Shared<Protocol>,
@@ -178,7 +172,7 @@ pub struct PortConfig {
     /// The port's TLS context, published so a reader keeps it alive across close.
     /// A thin box, opaque to the native layout mirror.
     pub ssl_context: Published<TlsContext>,
-    /// The SNI contexts and DTLS sessions crates/ports keeps; `ListenPort`'s
+    /// The SNI contexts crates/ports keeps; `ListenPort`'s
     /// destructor releases them with the context. A thin box, as native code's
     /// mirror holds a `void *` here.
     pub tls: Box<TlsState>,
@@ -195,14 +189,7 @@ pub struct PortConfig {
 pub struct TlsState {
     /// `sni_contexts`, in insertion order: the name and its context.
     pub sni: RwLock<Vec<(Vec<u8>, TlsContext)>>,
-    /// `dtls_sessions`.
-    pub dtls: Mutex<DtlsSessions>,
 }
-
-/// A port's DTLS sessions, one per peer, indexed by its fd: the session and the
-/// port's context. A flat table, as the connection table is, so `on_read`'s lookup
-/// per datagram stays constant-time.
-pub type DtlsSessions = Vec<Option<(*mut DtlsSession, TlsContext)>>;
 
 /// A `package_length_func`'s owner, whose callable the port's protocol names.
 pub type LengthOwner = Box<Box<dyn core::any::Any>>;
@@ -240,9 +227,7 @@ impl PortConfig {
         read: impl FnOnce(&TlsContext, &swoole_rs_tls::OwnedTlsFields) -> R,
     ) -> Option<R> {
         let context = self.ssl_context.get()?;
-        let fields = swr_v1_tls_owner_view(&context).fields;
-        // SAFETY: this call's reference keeps the owner and its fields alive.
-        unsafe { fields.as_ref() }.map(|fields| read(&context, fields))
+        Some(read(&context, context.fields()))
     }
 }
 

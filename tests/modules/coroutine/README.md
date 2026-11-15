@@ -19,8 +19,7 @@ case binary with the crates and system.py's static libswoole.a (the pin's thirdp
 The facade's getters are field reads over crates/coroutine's record, its operations
 crates/coroutine's `suspend` and `resume`, the `swr_v1_coroutine_*` exports and upstream symbols. `coroutine::run` and
 `Coroutine::bailout` take a function and its data (`swoole_coroutine_create`,
-`swr_v1_coroutine_bail`); `swoole_event_defer` has C++ linkage, so
-tests/modules/hooks/system/fixture.cc wraps it. The repo-owned
+`swr_v1_coroutine_bail`). The repo-owned
 `rust_coroutine_lifetime.cancellation_copy_failure_preserves_wait` witness checked
 that a throwing `CancelFunc` copy left the wait intact; it went with C++'s
 `std::function` cancel callbacks, since nothing is copied now.

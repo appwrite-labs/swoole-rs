@@ -8,8 +8,26 @@
 )]
 use core::ffi::{c_int, c_void};
 
-use swoole_rs_reactor::reactor_upstream::{reactor_change, reactor_interest, set_handler};
+use swoole_rs_reactor::reactor_upstream::{
+    change as reactor_change, reactor_interest, set_handler,
+};
 use swoole_rs_reactor::{ChangeOp, Events, Handler, Interest, ReactorPrepared, Running, Socket};
+
+/// The key a reactor holds its server under: private, so only [`Reactor::hold_server`]
+/// stores an object under it.
+static SERVER: swoole_rs_reactor::ReactorObjectKey = swoole_rs_reactor::ReactorObjectKey::new();
+
+/// The server's teardown: this thread's reactor, if it still holds `serv`, holds
+/// nothing from now on.
+pub(crate) fn release_server(serv: crate::view::Server<'_>) {
+    if let Some(reactor) = Reactor::current()
+        && reactor
+            .server()
+            .is_some_and(|held| held.raw() == serv.raw())
+    {
+        reactor.handle().set_object(core::ptr::null_mut());
+    }
+}
 
 /// A live `Reactor`, used by the thread that runs it.
 #[derive(Clone, Copy)]
@@ -29,6 +47,28 @@ impl Reactor {
     pub(crate) fn thread() -> Self {
         Self(swoole_rs_corebase::thread_reactor())
     }
+    /// The thread's reactor, if it has one.
+    pub(crate) fn current() -> Option<Self> {
+        let reactor = swoole_rs_corebase::thread_reactor();
+        (!reactor.is_null()).then_some(Self(reactor))
+    }
+    /// `reactor->ptr = serv`: the reactor serves `serv`, which [`Self::server`] reads
+    /// back.
+    ///
+    /// # Safety
+    /// `serv` stays live while the reactor holds it, and through every handler, timer
+    /// and callback that read it from the reactor: until the reactor is freed, another
+    /// object replaces it, or the server's teardown releases it ([`release_server`]).
+    pub(crate) unsafe fn hold_server(self, serv: crate::view::Server<'_>) {
+        self.handle().hold(&SERVER, serv.raw());
+    }
+    /// `reactor->ptr`, while it is the server [`Self::hold_server`] gave it.
+    pub(crate) fn server(self) -> Option<crate::view::Server<'static>> {
+        let serv = self.handle().object_of(&SERVER)?;
+        // SAFETY: only `hold_server` holds an object under the private `SERVER` key, and
+        // its caller keeps that server live while the reactor holds it.
+        Some(unsafe { crate::view::Server::from_raw(serv) })
+    }
     pub(crate) fn ptr(self) -> *mut c_void {
         self.0
     }
@@ -40,8 +80,9 @@ impl Reactor {
     }
     /// `Reactor::change`'s `op` of `sock` with `events`: whether it applied.
     pub(crate) fn change(self, sock: Socket<'_>, op: ChangeOp, events: Events) -> bool {
-        // SAFETY: a live reactor and socket.
-        unsafe { reactor_change(self.0, sock.as_ptr(), op.code(), events.bits()) == 0 }
+        // SAFETY: a live socket, which stays live while it is registered.
+        let sock = unsafe { Socket::from_ptr(sock.as_ptr()) };
+        sock.is_some_and(|sock| reactor_change(self.handle(), sock, op, events))
     }
     /// `Reactor::interest(sock, kind, 0)`: whether it applied.
     pub(crate) fn interest(self, sock: Socket<'_>, kind: Interest) -> bool {

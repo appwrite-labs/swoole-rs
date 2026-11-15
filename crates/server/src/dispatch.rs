@@ -34,8 +34,7 @@ pub fn schedule_worker(serv: Server<'_>, fd: c_int, send: Option<&SendData>) -> 
     if dispatch_func.is_set() {
         // SAFETY: null, or the table's live slot of the fd, read for the call.
         let conn = unsafe { state.connection_ptr(key, Lookup::ByFd).as_ref() };
-        let recv = send.map(SendData::as_recv);
-        let id = state.callbacks.dispatch(serv, conn, recv);
+        let id = state.callbacks.dispatch(serv, conn, send);
         if id != USERFUNC_FALLBACK {
             return u32::try_from(id).map_err(|_| id);
         }
@@ -78,7 +77,7 @@ fn ip_key(state: &crate::ServerState, fd: c_long, send: Option<&SendData>) -> u3
         conn.info()
     } else {
         // No connection: the data is a datagram, whose head names its sender.
-        let sender = send.and_then(|send| send.as_recv().datagram_sender());
+        let sender = send.and_then(SendData::datagram_sender);
         let Some(sender) = sender else { return 0 };
         sender
     };
@@ -694,9 +693,6 @@ mod tests {
                 init_protocol: |_| unreachable!(),
                 destroy_http_request: |_| unreachable!(),
                 tls_free: |_| {},
-                dtls_create: |_, _| unreachable!(),
-                dtls_session: |_, _| unreachable!(),
-                dtls_free: |_, _| unreachable!(),
             });
         }
     }

@@ -263,11 +263,7 @@ pub extern "C-unwind" fn reactor_writable_callback(
 }
 
 /// `void Reactor::drain_write_buffer(Socket *socket)`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole7Reactor18drain_write_bufferEPNS_7network6SocketE")
-)]
-pub extern "C-unwind" fn reactor_drain_write_buffer(reactor: Running<'_>, record: Socket<'_>) {
+pub fn reactor_drain_write_buffer(reactor: Running<'_>, record: Socket<'_>) {
     // SAFETY: a live socket, and the event lives for this call.
     let event = Cell::new(unsafe { Event::new(record.fd(), 0, 0, record.as_ptr().cast()) });
     let flush = Flush {

@@ -60,12 +60,6 @@ thread_local! {
     static LATEST_TASK: Cell<Option<DataHead>> = const { Cell::new(None) };
 }
 
-/// The server that owns task pool `pool`: its `ptr`, which [`init`] sets.
-fn server_of(pool: PoolRef<'_>) -> view::Server<'_> {
-    // SAFETY: a task pool's `ptr` is the live server that owns it (`init`).
-    unsafe { view::Server::from_raw(pool.ptr()) }
-}
-
 /// `Server::init_task_workers()`, after the task pool is made and before it starts:
 /// its callbacks, its scheduling and its workers.
 pub(crate) fn init(serv: view::Server<'_>) -> bool {
@@ -75,8 +69,8 @@ pub(crate) fn init(serv: view::Server<'_>) -> bool {
         return false;
     }
     let pool = serv.task_pool_ref();
+    crate::shared::hold_server(serv);
     let hooks = Hooks {
-        ptr: Some(serv.raw()),
         on_task: Some(on_task),
         on_worker_start: Some(on_start),
         on_worker_stop: Some(on_stop),
@@ -84,8 +78,7 @@ pub(crate) fn init(serv: view::Server<'_>) -> bool {
         main_loop: coroutine.then_some(loop_async),
         ..Hooks::default()
     };
-    // SAFETY: the hooks read the pool's `ptr` as the server that owns the pool
-    // (`server_of`), which is what this sets it to; it outlives its pool.
+    // SAFETY: the hooks read the pool's server through `pool_server`, which checks it.
     unsafe { pool.install(&hooks) };
     if super::schedule_by_sysvmsg(mode) {
         pool.set_schedule_by_sysvmsg(true);
@@ -100,7 +93,7 @@ pub(crate) fn init(serv: view::Server<'_>) -> bool {
 
 /// `TaskWorker_onTask`: the pool's task callback.
 extern "C-unwind" fn on_task(pool: PoolRef<'_>, worker: Worker<'_>, task: Packed<'_>) -> c_int {
-    run_task(server_of(pool), worker, task)
+    crate::shared::pool_server(pool).map_or(ERR, |serv| run_task(serv, worker, task))
 }
 
 /// `TaskWorker_onTask`: one task, pipe message, shutdown or command.
@@ -164,7 +157,9 @@ fn command(serv: view::Server<'_>, worker: Worker<'_>, task: Packed<'_>) -> bool
 
 /// `TaskWorker_onStart`.
 extern "C-unwind" fn on_start(pool: PoolRef<'_>, worker: Worker<'_>) {
-    let serv = server_of(pool);
+    let Some(serv) = crate::shared::pool_server(pool) else {
+        return;
+    };
     swoole_set_worker_id(worker.id());
     set_worker_type(WorkerType::Task);
     // Make the task worker support asynchronous.
@@ -199,18 +194,24 @@ fn signal_init(serv: view::Server<'_>) {
 /// `TaskWorker_onStop`.
 extern "C-unwind" fn on_stop(pool: PoolRef<'_>, worker: Worker<'_>) {
     swoole_rs_reactor::swoole_event_free();
-    call_worker_stop_callback(server_of(pool), worker);
+    if let Some(serv) = crate::shared::pool_server(pool) {
+        call_worker_stop_callback(serv, worker);
+    }
 }
 
 /// `TaskWorker_loop_async`: the coroutine task worker's event loop over its pipe.
 extern "C-unwind" fn loop_async(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int {
-    let serv = server_of(pool);
+    let Some(serv) = crate::shared::pool_server(pool) else {
+        return ERR;
+    };
     let (state, config) = (serv.state(), serv.config());
     worker.set_status(WorkerStatus::busy(false));
     in_worker_bus(state, config, worker_pipe(worker, false), |pipe| {
         set_nonblock(pipe);
         let reactor = Reactor::thread();
-        reactor.handle().set_object(pool.raw().cast());
+        // SAFETY: this task worker's reactor, which the loop's `swoole_event_wait` frees
+        // while the server lives.
+        unsafe { reactor.hold_server(serv) };
         reactor.add(pipe, Events::READ);
         reactor.set_handler(FD_PIPE, Events::READ, on_pipe_receive);
     });
@@ -228,9 +229,9 @@ extern "C-unwind" fn loop_async(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int 
 
 /// `TaskWorker_onPipeReceive`: a task from a worker, in the coroutine loop.
 extern "C" fn on_pipe_receive(reactor: Running<'_>, event: &mut Event) -> c_int {
-    // SAFETY: `loop_async` set this reactor's `ptr` to the live task pool.
-    let pool = unsafe { PoolRef::new(reactor.object().cast()) };
-    let serv = server_of(pool);
+    let Some(serv) = Reactor::running(reactor).server() else {
+        return ERR;
+    };
     let id = u16::try_from(swoole_get_worker_id()).unwrap_or(u16::MAX);
     let Some(worker) = serv.worker_record(id) else {
         return ERR;

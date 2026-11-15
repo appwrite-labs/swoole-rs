@@ -142,7 +142,9 @@ fn enter_child(worker: Worker<'_>, kind: WorkerType) {
     swoole_set_worker_id(worker.id());
     swoole_set_worker_pid(worker.pid());
     set_worker_type(kind);
-    swoole_rs_process::worker_globals::set_current_worker(worker.raw());
+    // SAFETY: the server's worker this child now runs, kept until the server frees
+    // its workers after the loop.
+    unsafe { swoole_rs_process::worker_globals::set_current_worker(worker.raw()) };
 }
 
 /// `Factory::spawn_event_worker`: fork; the child runs the worker and exits. The

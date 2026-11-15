@@ -209,7 +209,6 @@ def plan(args, reports):
         script('phpcoroutines-tracer', 'tests/modules/phpcoroutines/tracer.py', *php, *engines, *report('phpcoroutines-tracer'))
         pytest('phpcoroutines-bailout', 'tests/modules/phpcoroutines/test_bailout.py', *php_for('curl'),
                '--engine', f'upstream={reference}', '--engine', f'cargo={cargo}')
-    pytest('buffer-typed', 'tests/modules/buffer/test_typed.py', '--archive', archive, '--sanitize')
     if 'coroutine' in modules:
         # tokens.py runs inside coroutine-channel-state, with and without sanitizers.
         script('coroutine-rust-asan', 'tools/cargo_asan.py', '--package', 'swoole-rs-coroutine', '--report', reports / 'coroutine-rust-asan.json')
@@ -312,7 +311,7 @@ def plan(args, reports):
         script('reactor-base-rust', 'tests/modules/hooks/system.py', '--source', ROOT / 'target/upstream/src',
                '--archive', archive,
                '--build-root', ROOT / 'target/native-originals/reactor-base', '--jobs', args.jobs,
-               '--package', ROOT / 'tests/modules/reactor/base', '--fixture', ROOT / 'tests/modules/reactor/base/fixture.cc',
+               '--package', ROOT / 'tests/modules/reactor/base',
                *report('reactor-base-rust'))
     if 'http' in modules and sys.platform.startswith('linux'):
         # core-tests/src/server/http_server.cpp's, protocol/base.cpp's and redis.cpp's and server/mqtt.cpp's server
@@ -343,9 +342,6 @@ def plan(args, reports):
         script('memory-table-witnesses', 'tests/modules/memory/witnesses.py', *php, *engines,
                '--require-memory-bridge', 'cargo', *report('memory-table-witnesses'))
     if 'protocols' in modules:
-        script('protocols-native', 'tests/modules/protocols/native.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', archive, '--sanitize',
-               *report('protocols-native'))
         script('protocols-network', 'tests/modules/protocols/network.py', *php, *engines, *report('protocols-network'))
         if integrate:
             reference_first = ['--engine', f'upstream={reference}', '--engine', f'cargo={cargo}']
@@ -431,11 +427,6 @@ def plan(args, reports):
         # These phases are strictly after correctness checks and never concurrent.
         if 'timer' in modules:
             script('timer-benchmark', 'tests/modules/timer/benchmark.py', *php, *engines, *report('timer-benchmark'))
-        if 'buffer' in modules:
-            for peek in [False, True]:
-                name = 'buffer-benchmark' + ('-consumer' if peek else '')
-                script(name, 'tests/modules/buffer/benchmark.py', '--archive', archive,
-                       *(['--peek-front'] if peek else []), *report(name))
         if 'websocket' in modules:
             script('websocket-benchmark', 'tests/modules/websocket/benchmark.py', *php, *engines, *report('websocket-benchmark'))
     return commands

@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/protocol/websocket.cc (Swoole contributors).
 //! `src/protocol/websocket.cc`'s codec entry points over `swoole::String` and
-//! `websocket::Frame`, as safe functions over slices. Protocol tables hold
-//! [`get_package_length`], which `upstream-symbols` also defines under its upstream
-//! (Itanium) symbol.
+//! `websocket::Frame`, as safe functions over slices. [`get_package_length`], whose
+//! measure protocol tables hold through crates/ports' `websocket_length`,
+//! `upstream-symbols` also defines under its upstream (Itanium) symbol.
 use std::ffi::{CStr, c_char, c_int};
 use std::mem::MaybeUninit;
 use swoole_rs_corebase::CCast;
 
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::log;
-use swoole_rs_corebase::net_types::{PacketLength, Protocol};
+use swoole_rs_corebase::net_types::PacketLength;
 
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 use swoole_rs_websocket::{
@@ -128,10 +128,16 @@ pub fn decode_frame(data: &mut [u8]) -> Result<DecodedFrame, (DecodedFrame, bool
     )
 )]
 pub extern "C" fn get_package_length(
-    _protocol: *const Protocol,
+    _protocol: *const std::ffi::c_void,
     _socket: *mut std::ffi::c_void,
     pl: &mut PacketLength,
 ) -> isize {
+    package_length(pl)
+}
+
+/// [`get_package_length`]'s measure: it reads only `pl`.
+#[inline]
+pub fn package_length(pl: &mut PacketLength) -> isize {
     let bytes = pl.bytes();
     if bytes.len() < 2 {
         return 0;

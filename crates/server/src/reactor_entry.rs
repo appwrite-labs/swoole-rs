@@ -1,50 +1,22 @@
 //! The reactor-thread entry points that were master.cc's: the reactor handlers
 //! (`ReactorThread_on*`) and the `Server` and `ReactorThread` methods that build a
 //! context and run one operation over it. With `upstream-symbols`, `dispatch_task`
-//! keeps its upstream (Itanium) symbol, which crates/ports' protocols link. Every op
-//! they make is Rust's.
+//! is the `onPackage` crates/ports' protocols hold. Every op they make is Rust's.
 use core::ffi::{c_int, c_long, c_void};
 
-use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::constants::SocketType;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_reactor::{Event, Running, SocketRecord};
 
+use crate::base_factory::SendData;
 use crate::reactor_handle::Reactor;
 use crate::view;
 
-/// `swoole::RecvData`.
-#[repr(C)]
-pub struct RecvData {
-    pub(crate) info: DataHead,
-    pub(crate) data: *const c_void,
-}
+/// `swoole::RecvData`: the head and payload a receive or dispatch callback reads,
+/// which is a [`SendData`]'s.
+pub type RecvData<'a> = SendData<'a>;
 
-impl RecvData {
-    /// The event's head.
-    #[must_use]
-    pub fn info(&self) -> &DataHead {
-        &self.info
-    }
-
-    /// Where the event's payload starts: `info.len` bytes, or what the head's
-    /// flags say it is.
-    #[must_use]
-    pub fn data(&self) -> *const c_void {
-        self.data
-    }
-
-    /// The payload's `info.len` bytes; none for a null `data`.
-    #[must_use]
-    pub fn payload(&self) -> &[u8] {
-        if self.data.is_null() {
-            return &[];
-        }
-        // SAFETY: whoever lends a `RecvData` points `data` at `info.len` bytes live
-        // for the borrow, and its fields are private to this crate.
-        unsafe { core::slice::from_raw_parts(self.data.cast(), self.info.len as usize) }
-    }
-
+impl SendData<'_> {
     /// An `onPacket` payload: the `DgramPacket` head's socket type and sender,
     /// and the datagram that follows it; `None` if the payload is too short.
     #[must_use]
@@ -99,53 +71,59 @@ impl DgramPacket {
     }
 }
 
-/// `reactor->ptr`, a server reactor's server.
+/// `reactor->ptr`, a server reactor's server, unchecked: the per-event handlers' read,
+/// where [`Reactor::server`]'s check would cost every request.
 ///
 /// # Safety
-/// `reactor` is a server's reactor, whose `ptr` is the live `Server` for `'a`.
+/// `reactor` holds a live server ([`Reactor::hold_server`]) for `'a`.
 pub(crate) unsafe fn server<'a>(reactor: Reactor) -> view::Server<'a> {
     // SAFETY: per the caller.
     unsafe { view::Server::from_raw(reactor.handle().object()) }
 }
 
-/// A handler's server (`reactor->ptr`) and reactor.
-fn handler<'a>(reactor: Running<'_>) -> (view::Server<'a>, Reactor) {
+/// `f` over a handler's server (`reactor->ptr`) and reactor.
+#[inline]
+fn handler(reactor: Running<'_>, f: impl FnOnce(view::Server<'_>, Reactor) -> c_int) -> c_int {
     let reactor = Reactor::running(reactor);
-    // SAFETY: the handlers below are registered only on server reactors.
-    (unsafe { server(reactor) }, reactor)
+    // SAFETY: the handlers below are registered only on reactors that hold a server.
+    f(unsafe { server(reactor) }, reactor)
 }
 
-// The handlers below are registered only on server reactors, whose `ptr` is the live
-// `Server`.
+// The handlers below are registered only on reactors that hold a server.
 
 /// `ReactorThread_onPacketReceived`: a UDP port's datagram.
 pub extern "C" fn on_packet_received(reactor: Running<'_>, event: &mut Event) -> c_int {
-    let (serv, reactor) = handler(reactor);
-    crate::conn_io::status(crate::reactor_thread::packet_received(serv, reactor, event))
+    handler(reactor, |serv, reactor| {
+        crate::conn_io::status(crate::reactor_thread::packet_received(serv, reactor, event))
+    })
 }
 
 /// `ReactorThread_onClose`: the peer closed.
 pub extern "C" fn on_close(reactor: Running<'_>, event: &mut Event) -> c_int {
-    let (serv, reactor) = handler(reactor);
-    crate::conn_io::status(crate::conn_io::peer_close(serv, reactor, event))
+    handler(reactor, |serv, reactor| {
+        crate::conn_io::status(crate::conn_io::peer_close(serv, reactor, event))
+    })
 }
 
 /// `ReactorThread_onPipeWrite`: a worker pipe can be written.
 pub extern "C" fn on_pipe_write(reactor: Running<'_>, event: &mut Event) -> c_int {
-    let (serv, reactor) = handler(reactor);
-    crate::conn_io::status(crate::reactor_io::pipe_write(serv, reactor, event))
+    handler(reactor, |serv, reactor| {
+        crate::conn_io::status(crate::reactor_io::pipe_write(serv, reactor, event))
+    })
 }
 
 /// `ReactorThread_onRead`: a connection is readable.
 pub extern "C" fn on_read(reactor: Running<'_>, event: &mut Event) -> c_int {
-    let (serv, reactor) = handler(reactor);
-    crate::conn_io::read(serv, reactor, event)
+    handler(reactor, |serv, reactor| {
+        crate::conn_io::read(serv, reactor, event)
+    })
 }
 
 /// `ReactorThread_onWrite`: a connection is writable.
 pub extern "C" fn on_write(reactor: Running<'_>, event: &mut Event) -> c_int {
-    let (serv, reactor) = handler(reactor);
-    crate::conn_io::status(crate::conn_io::write(serv, reactor, event))
+    handler(reactor, |serv, reactor| {
+        crate::conn_io::status(crate::conn_io::write(serv, reactor, event))
+    })
 }
 
 /// `static int Server::close_connection(Reactor *, Socket *)`.
@@ -175,22 +153,17 @@ pub(crate) fn thread_shutdown(serv: view::Server<'_>, reactor: Reactor, id: usiz
 }
 
 /// `static int Server::dispatch_task(const Protocol *, Socket *, const RecvData *)`:
-/// a data frame to the workers.
+/// a data frame to the workers. A port protocol's `onPackage`.
 ///
 /// # Safety
-/// `proto` is a live server port's protocol, `socket` a live session socket and
-/// `rdata` the frame.
+/// `proto` is a live server port's protocol (its `private_data_2` the server) and
+/// `socket` a live session socket of that port.
 #[cfg(all(feature = "upstream-symbols", not(test)))]
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(
-        export_name = "_ZN6swoole6Server13dispatch_taskEPKNS_8ProtocolEPNS_7network6SocketEPKNS_8RecvDataE"
-    )
-)]
+#[must_use]
 pub unsafe extern "C-unwind" fn dispatch_task(
-    proto: *const swoole_rs_corebase::net_types::Protocol,
-    socket: *mut c_void,
-    rdata: *const c_void,
+    proto: *const swoole_rs_clients::protocol::Protocol,
+    socket: swoole_rs_reactor::Socket<'_>,
+    rdata: &swoole_rs_corebase::net_types::RecvData,
 ) -> c_int {
     use core::sync::atomic::Ordering::SeqCst;
     // SAFETY: per the caller; a port's protocol keeps its server.
@@ -198,16 +171,10 @@ pub unsafe extern "C-unwind" fn dispatch_task(
     // SAFETY: per the caller, a live server's.
     let server = unsafe { view::Server::from_raw(serv) };
     let state = server.state();
-    // SAFETY: per the caller, a live session socket.
-    let Some(socket) = (unsafe { swoole_rs_reactor::Socket::from_ptr(socket.cast()) }) else {
-        return -1;
-    };
     // A session socket's object is its live connection.
     let conn = socket
         .read(|s| s.object)
         .cast::<crate::records::ConnectionRecord>();
-    // SAFETY: per the caller.
-    let rdata = unsafe { &*rdata.cast::<RecvData>() };
     let len = rdata.info.len;
     // The slot is read only before the dispatch, as upstream does: base and thread mode
     // run the callback inline, and a close there hands the slot to the accept that reuses
@@ -220,7 +187,7 @@ pub unsafe extern "C-unwind" fn dispatch_task(
         if len > 0 {
             c.recv_queued_bytes.fetch_add(len, SeqCst);
         }
-        let info = DataHead {
+        let info = swoole_rs_corebase::DataHead {
             server_fd: crate::base_factory::low16(c.server_fd),
             reactor_id: c.reactor_id.into(),
             ext_flags: rdata.info.ext_flags,
@@ -228,11 +195,11 @@ pub unsafe extern "C-unwind" fn dispatch_task(
             time: c.last_recv_time,
             fd: c.fd.into(),
             len,
-            ..DataHead::default()
+            ..swoole_rs_corebase::DataHead::default()
         };
         // SAFETY: the caller's `RecvData`, whose `len` bytes at `data` (or null) stay
         // readable and unwritten until the dispatch returns.
-        let task = unsafe { crate::base_factory::SendData::from_raw(info, rdata.data.cast()) };
+        let task = unsafe { SendData::from_raw(info, rdata.data.cast()) };
         (
             server.port_of_fd(c.fd),
             c.reactor_id,

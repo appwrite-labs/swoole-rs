@@ -44,7 +44,7 @@ int swr_zend_event_socket_fd(zval *object, uint8_t *closed) {
 #ifdef HAVE_SOCKETS
     /* socket_ce, found by name: linking it would make ext/sockets a load-time dependency. */
     zend_class_entry *socket = zend_hash_str_find_ptr(CG(class_table), ZEND_STRL("socket"));
-    if (socket && instanceof_function(Z_OBJCE_P(object), socket)) {
+    if (socket && Z_TYPE_P(object) == IS_OBJECT && instanceof_function(Z_OBJCE_P(object), socket)) {
         php_socket *php_sock = Z_SOCKET_P(object);
         *closed = IS_INVALID_SOCKET(php_sock);
         return php_sock->bsd_socket;

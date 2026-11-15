@@ -42,7 +42,7 @@ All three are Rust (`crates/ports/src/methods.rs`), over the Rust-owned settings
 socket record. Only the server calls them, through the table `swoole_init` registers
 (`swoole_rs_ports::register_methods`, `swoole_rs_server::port_config::PortMethods`), with
 `get_protocols`, `init_protocol`, `destroy_http_request`, `ssl_context_init`,
-`ssl_create`, `import`, `close` and the DTLS session lookups: ports depends on the
+`ssl_create`, `import` and `close`: ports depends on the
 server, so the server can't name them. `init_protocol` keeps its upstream symbol for
 tests/modules/http/server/src/http1/case.rs. Options are those the platform defines:
 `TCP_DEFER_ACCEPT`, `TCP_KEEPIDLE`/`TCP_KEEPINTVL`/`TCP_KEEPCNT` and
@@ -60,9 +60,10 @@ for both native and Rust, so `import` refuses every descriptor there.
 `ssl_init`, `ssl_create`, `ssl_add_sni_cert`, the SNI callback, `import` and
 `close`, over the port's Rust-owned settings, its contexts' Rust TLS owners, the
 socket record and OpenSSL. The port's `ssl_context` publishes its Rust owner;
-readers take a reference that survives closing the port. The SNI contexts and the DTLS sessions by fd, each with its
+readers take a reference that survives closing the port. The SNI contexts, each with its
 reference, live in the Rust TLS state (`PortConfig::tls`). `swr_v1_server_delete` releases
-both. SNI contexts are matched in insertion order; upstream iterated an
+both. A DTLS session lives in its connection's SSL (crates/tls), which the server opens over
+the port's context. SNI contexts are matched in insertion order; upstream iterated an
 `std::unordered_map`, whose order is unspecified.
 
 ## `Port::set`

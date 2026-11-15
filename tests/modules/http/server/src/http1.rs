@@ -465,7 +465,6 @@ struct Connection {
     lock: u32,
     closed: u32,
     server_fd: c_int,
-    port: Native,
 }
 
 /// The offsets `detail::check_server_layouts` checks for record 3, in its order.
@@ -513,7 +512,6 @@ const CONNECTION_OFFSETS: &[usize] = &[
     offset_of!(Connection, lock),
     offset_of!(Connection, closed),
     offset_of!(Connection, server_fd),
-    offset_of!(Connection, port),
 ];
 
 /// The pointers that head a `Server` (crates/server/src/view.rs).
@@ -544,7 +542,6 @@ unsafe extern "C" {
 }
 
 unsafe extern "C-unwind" {
-    fn swr_v1_core_string_set(slot: *const c_void, bytes: *const c_char, length: usize) -> c_int;
     #[link_name = "_ZN6swoole9microtimeEv"]
     fn microtime() -> f64;
 }

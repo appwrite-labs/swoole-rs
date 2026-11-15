@@ -193,16 +193,17 @@ impl Scheduler {
         now: c_long,
     ) -> bool {
         self.last_cid = self.last_cid.wrapping_add(1);
+        let cid = self.last_cid;
         co.with(|co| {
             *co = Coroutine {
                 native,
-                cid: self.last_cid,
+                cid,
                 init_msec,
                 switch_usec: now,
                 ..Coroutine::IDLE
             };
         });
-        self.insert(self.last_cid, co);
+        self.insert(cid, co);
         let count = self.count() as u64;
         if count > self.peak_num {
             self.peak_num = count;
@@ -252,13 +253,9 @@ impl Co {
         NonNull::new(co).map(Self)
     }
 
-    /// The coroutine a new record starts with. The record is leaked, so it stays
-    /// live until the scheduler's `destroy` frees it.
-    #[cfg(feature = "upstream-symbols")]
-    #[cfg_attr(
-        test,
-        expect(dead_code, reason = "facade.rs, its only caller, builds outside tests")
-    )]
+    /// The coroutine a record handed over for good starts with: live until the
+    /// scheduler's `destroy` frees the record, once it registered and ended.
+    #[cfg(any(test, feature = "upstream-symbols"))]
     pub(crate) fn leak(native: Box<crate::context::Native>) -> Self {
         Self(NonNull::from(Box::leak(native)).cast())
     }

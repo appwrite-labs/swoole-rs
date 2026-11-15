@@ -1,16 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/core/buffer.cc and include/swoole_buffer.h
 // (Swoole contributors).
-//! `swoole::Buffer`: the C++ object (one Rust queue handle) and its member functions.
-//! With `upstream-symbols` each is defined under its upstream (Itanium) symbol, and the
-//! buffer patch deletes `src/core/buffer.cc`.
+//! `swoole::Buffer`: the socket record's output queue (one Rust queue handle) and the
+//! member functions Rust calls on it. No C++ calls them, so none is exported.
 //!
 //! A failed queue status aborts. `buffer.cc` threw `bad_alloc`, `length_error` or
 //! `invalid_argument`, which no first-party code catches, so the process ended either way.
 //! Nothing here calls C++: entry disposers are the Rust sendfile request's, so no C++
 //! exception can unwind into these frames.
 use crate::typed::Front;
-use std::mem::MaybeUninit;
 
 /// `swoole::Buffer`: its only member is the queue handle, a boxed [`crate::Buffer`]
 /// held as C++ sees it (an opaque pointer, so a record that embeds a `Buffer *` stays
@@ -86,91 +84,44 @@ impl Drop for CppBuffer {
     }
 }
 
-// Constructors and destructors return `this`: Apple's arm64 C++ ABI does, and elsewhere
-// the caller ignores it. Only the complete-object (C1/D1) symbols: nothing derives from
-// Buffer, so no caller names a base-object (C2/D2) one.
-upstream! {
-    "_ZN6swoole6BufferC1Ej", "_ZN6swoole6BufferC1Ej" =>
-    /// `Buffer(uint32_t chunk_size)`, in uninitialized storage.
-    pub extern "C" fn swr_cpp_buffer_new(this: &mut MaybeUninit<CppBuffer>, chunk_size: u32) -> *mut CppBuffer {
-        this.write(CppBuffer::new(chunk_size))
-    }
-    "_ZN6swoole6BufferD1Ev", "_ZN6swoole6BufferD1Ev" =>
-    /// `~Buffer()`, in place.
-    /// # Safety
-    /// `this` is not used, or dropped, again.
-    pub unsafe extern "C" fn swr_cpp_buffer_drop(this: &mut CppBuffer) -> *mut CppBuffer {
-        // SAFETY: a constructed `Buffer`, destroyed once, as the caller promises.
-        unsafe { std::ptr::drop_in_place(this) };
-        this
-    }
-    "_ZNK6swoole6Buffer11typed_frontEv", "_ZNK6swoole6Buffer11typed_frontEv" =>
-    /// `typed_front()`: the first entry; the queue must not be empty.
-    #[must_use]
-    pub extern "C" fn swr_cpp_buffer_typed_front(this: &CppBuffer) -> Front {
-        this.with(|queue| queue.front()).unwrap_or_else(|_| swoole_rs_corebase::fatal("typed_front of an empty buffer"))
-    }
-    "_ZN6swoole6Buffer13typed_consumeERK32swr_v1_buffer_typed_front_resultj", "_ZN6swoole6Buffer13typed_consumeERK32swr_v1_buffer_typed_front_resultj" =>
-    /// `typed_consume(front, count)`: commits `count` sent bytes of `front`'s entry.
-    pub extern "C" fn swr_cpp_buffer_typed_consume(this: &CppBuffer, front: &Front, count: u32) {
-        check(this.with(|queue| queue.consume(front.generation, front.offset, count)));
-    }
-    "_ZN6swoole6Buffer11typed_closeEv", "_ZN6swoole6Buffer11typed_closeEv" =>
-    /// `typed_close()`: queues a payload-free CLOSE marker.
-    pub extern "C" fn swr_cpp_buffer_typed_close(this: &CppBuffer) {
-        check(this.with(crate::Buffer::push_close));
-    }
-    "_ZN6swoole6Buffer3popEv", "_ZN6swoole6Buffer3popEv" =>
-    /// `pop()`: drops the first entry, if any.
-    pub extern "C" fn swr_cpp_buffer_pop(this: &CppBuffer) {
-        this.pop();
-    }
-    "_ZN6swoole6Buffer6appendEPKcj", "_ZN6swoole6Buffer6appendEPKcj" =>
-    /// `append(data, size)`.
-    /// # Safety
-    /// `data` holds `size` bytes.
-    pub unsafe extern "C" fn swr_cpp_buffer_append(this: &CppBuffer, data: *const u8, size: u32) {
-        let data = if size == 0 {
-            &[]
-        } else if data.is_null() {
-            swoole_rs_corebase::fatal("append of null data");
-        } else {
-            // SAFETY: non-null with `size` readable bytes, as the caller promises.
-            unsafe { std::slice::from_raw_parts(data, size as usize) }
-        };
-        this.append(data);
-    }
-    "_ZN6swoole6Buffer6appendEPK5iovecml", "_ZN6swoole6Buffer6appendEPK5iovecmx" =>
-    /// `append(iov, iovcnt, offset)`: the bytes past `offset`.
-    /// # Safety
-    /// `iov` holds `count` readable descriptors.
-    pub unsafe extern "C" fn swr_cpp_buffer_append_iovec(
-        this: &CppBuffer,
-        iov: *const libc::iovec,
-        count: usize,
-        offset: libc::off_t,
-    ) {
-        // SAFETY: as the caller promises.
-        check(this.with(|queue| unsafe { crate::swr_v1_buffer_append_iovec(queue, iov, count, offset) }));
-    }
-    "_ZNK6swoole6Buffer6lengthEv", "_ZNK6swoole6Buffer6lengthEv" =>
-    /// `length()`: queued bytes.
-    #[must_use]
-    pub extern "C" fn swr_cpp_buffer_length(this: &CppBuffer) -> u32 {
-        this.stats().0
-    }
-    "_ZNK6swoole6Buffer5countEv", "_ZNK6swoole6Buffer5countEv" =>
-    /// `count()`: queued entries.
-    #[must_use]
-    pub extern "C" fn swr_cpp_buffer_count(this: &CppBuffer) -> usize {
-        this.stats().1
-    }
-    "_ZNK6swoole6Buffer5emptyEv", "_ZNK6swoole6Buffer5emptyEv" =>
-    /// `empty()`.
-    #[must_use]
-    pub extern "C" fn swr_cpp_buffer_empty(this: &CppBuffer) -> bool {
-        this.stats().1 == 0
-    }
+/// `typed_front()`: the first entry; the queue must not be empty.
+#[must_use]
+pub fn swr_cpp_buffer_typed_front(this: &CppBuffer) -> Front {
+    this.with(|queue| queue.front())
+        .unwrap_or_else(|_| swoole_rs_corebase::fatal("typed_front of an empty buffer"))
+}
+
+/// `typed_consume(front, count)`: commits `count` sent bytes of `front`'s entry.
+pub fn swr_cpp_buffer_typed_consume(this: &CppBuffer, front: &Front, count: u32) {
+    check(this.with(|queue| queue.consume(front.generation, front.offset, count)));
+}
+
+/// `typed_close()`: queues a payload-free CLOSE marker.
+pub fn swr_cpp_buffer_typed_close(this: &CppBuffer) {
+    check(this.with(crate::Buffer::push_close));
+}
+
+/// `pop()`: drops the first entry, if any.
+pub fn swr_cpp_buffer_pop(this: &CppBuffer) {
+    this.pop();
+}
+
+/// `length()`: queued bytes.
+#[must_use]
+pub fn swr_cpp_buffer_length(this: &CppBuffer) -> u32 {
+    this.stats().0
+}
+
+/// `count()`: queued entries.
+#[must_use]
+pub fn swr_cpp_buffer_count(this: &CppBuffer) -> usize {
+    this.stats().1
+}
+
+/// `empty()`.
+#[must_use]
+pub fn swr_cpp_buffer_empty(this: &CppBuffer) -> bool {
+    this.stats().1 == 0
 }
 
 /// `new Buffer(chunk_size)`; dropping the box is `delete buffer`.
@@ -186,11 +137,7 @@ mod tests {
 
     /// Runs `body` over a constructed Buffer, then destroys it.
     fn with_buffer(chunk_size: u32, body: impl FnOnce(&CppBuffer)) {
-        let mut storage = MaybeUninit::<CppBuffer>::uninit();
-        swr_cpp_buffer_new(&mut storage, chunk_size);
-        let this = unsafe { storage.assume_init_mut() };
-        body(this);
-        unsafe { swr_cpp_buffer_drop(this) };
+        body(&new_buffer(chunk_size));
     }
 
     /// Drains the queue as upstream's tests read `front()`: each entry's bytes past its
@@ -230,23 +177,13 @@ mod tests {
                 .zip(b"ABCD")
                 .map(|(&n, &c)| vec![c; n])
                 .collect();
-            let v: Vec<libc::iovec> = parts
-                .iter()
-                .map(|p| libc::iovec {
-                    iov_base: p.as_ptr().cast_mut().cast(),
-                    iov_len: p.len(),
-                })
-                .collect();
             let mut offset = rand(&mut state, lengths[0] + 1, total_len - 1);
             with_buffer(1024, |buf| {
-                unsafe { swr_cpp_buffer_append_iovec(buf, v.as_ptr(), 4, 0) };
+                buf.append_from(&parts, 0);
                 assert_eq!(swr_cpp_buffer_length(buf) as usize, total_len);
             });
-            let at = i64::try_from(offset).unwrap();
             with_buffer(1024, |buf_for_offset| {
-                unsafe {
-                    swr_cpp_buffer_append_iovec(buf_for_offset, v.as_ptr(), 4, at);
-                }
+                buf_for_offset.append_from(&parts, offset as u64);
                 assert_eq!(
                     swr_cpp_buffer_length(buf_for_offset) as usize,
                     total_len - offset
@@ -284,17 +221,11 @@ mod tests {
         let mut cases = 0;
         for count in [1u8, 8, 9, 32] {
             let bytes: Vec<[u8; 3]> = (0..count).map(|i| [0, i, 255]).collect();
-            let parts: Vec<libc::iovec> = bytes
-                .iter()
-                .map(|part| libc::iovec {
-                    iov_base: part.as_ptr().cast_mut().cast(),
-                    iov_len: part.len(),
-                })
-                .collect();
+            let parts: Vec<&[u8]> = bytes.iter().map(|part| &part[..]).collect();
             let expected = bytes.concat();
             for chunk in [0u32, 1, 4] {
                 with_buffer(chunk, |buffer| {
-                    unsafe { swr_cpp_buffer_append_iovec(buffer, parts.as_ptr(), parts.len(), 0) };
+                    buffer.append_from(&parts, 0);
                     assert_eq!(swr_cpp_buffer_length(buffer) as usize, expected.len());
                     let effective = if chunk == 0 {
                         i32::MAX as usize
@@ -331,7 +262,7 @@ mod tests {
     fn typed_cursor_close_and_teardown() {
         with_buffer(2, |this| {
             assert!(swr_cpp_buffer_empty(this));
-            unsafe { swr_cpp_buffer_append(this, b"abc".as_ptr(), 3) };
+            this.append(b"abc");
             swr_cpp_buffer_typed_close(this);
             assert_eq!(
                 (swr_cpp_buffer_length(this), swr_cpp_buffer_count(this)),
@@ -354,9 +285,52 @@ mod tests {
     #[test]
     fn new_and_delete_buffer() {
         let buffer = new_buffer(4);
-        unsafe { swr_cpp_buffer_append(&buffer, b"abcdef".as_ptr(), 6) };
+        buffer.append(b"abcdef");
         assert_eq!(swr_cpp_buffer_count(&buffer), 2);
         // Deleting a non-empty Buffer pops its entries first.
         drop(buffer);
+    }
+
+    /// Ported from the `tests/modules/buffer/typed.cc` fixture: the DATA cursor and an
+    /// inert CLOSE marker at chunk sizes 1, 3, 16 and 0, and the front's layout.
+    #[test]
+    fn typed_queue_facade() {
+        assert_eq!(
+            (
+                size_of::<Front>(),
+                align_of::<Front>(),
+                std::mem::offset_of!(Front, data),
+                std::mem::offset_of!(Front, token),
+                std::mem::offset_of!(Front, generation),
+            ),
+            (40, 8, 16, 24, 32)
+        );
+        let bytes = [b'a', 0, 255, b'b', b'c', b'd', b'e'];
+        for chunk in [1u32, 3, 16, 0] {
+            let queue = new_buffer(chunk);
+            queue.append(&bytes);
+            swr_cpp_buffer_typed_close(&queue);
+            let mut copied = 0;
+            while swr_cpp_buffer_typed_front(&queue).kind == EntryKind::Data {
+                let front = swr_cpp_buffer_typed_front(&queue);
+                assert_eq!(front.offset, 0);
+                assert_eq!(
+                    unsafe { std::slice::from_raw_parts(front.data, front.length as usize) },
+                    &bytes[copied..copied + front.length as usize]
+                );
+                swr_cpp_buffer_typed_consume(&queue, &front, 1);
+                let next = swr_cpp_buffer_typed_front(&queue);
+                assert!(next.offset == 1 && next.generation == front.generation);
+                assert_eq!(swr_cpp_buffer_length(&queue) as usize, bytes.len() - copied);
+                swr_cpp_buffer_typed_consume(&queue, &next, next.length - next.offset);
+                copied += next.length as usize;
+                swr_cpp_buffer_pop(&queue);
+                assert_eq!(swr_cpp_buffer_length(&queue) as usize, bytes.len() - copied);
+            }
+            assert_eq!(copied, bytes.len());
+            assert_eq!(swr_cpp_buffer_typed_front(&queue).kind, EntryKind::Close);
+            swr_cpp_buffer_pop(&queue);
+            assert!(swr_cpp_buffer_empty(&queue) && swr_cpp_buffer_length(&queue) == 0);
+        }
     }
 }

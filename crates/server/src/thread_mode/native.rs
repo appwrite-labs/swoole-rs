@@ -212,7 +212,9 @@ fn body(serv: view::Server<'_>, id: u32, kind: WorkerType) {
         if kind == WorkerType::Task {
             worker.set_status(WorkerStatus::Idle);
         }
-        swoole_rs_process::worker_globals::set_current_worker(worker.raw());
+        // SAFETY: the server's worker this thread now runs, kept until the server
+        // joins the thread and frees its workers.
+        unsafe { swoole_rs_process::worker_globals::set_current_worker(worker.raw()) };
         worker
     });
     if worker.is_none() {

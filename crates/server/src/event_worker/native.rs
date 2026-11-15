@@ -14,7 +14,6 @@ use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_process::methods::{
     ExitStatus, push_stop, set_worker_type, swoole_get_worker_id, swoole_set_worker_id, worker_type,
 };
-use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_globals::{
     current_worker, with_current, with_globals, worker_global_detach, worker_global_stopped,
 };
@@ -46,14 +45,6 @@ const SERVER_WORKER_UNPROCESSED_DATA: c_int =
 /// `serv->get_worker_message_bus()`.
 fn bus(serv: view::Server<'_>) -> Bus<'_> {
     crate::master_ops::worker_message_bus(serv.state())
-}
-
-/// The event the bus just read, as its sender packed it: an `EventData`, its head and
-/// the payload the head counts.
-fn event_data(serv: view::Server<'_>) -> Packed<'_> {
-    // SAFETY: called once the bus has read a whole event into its buffer, which only
-    // this thread's next read replaces, after the callback it is lent to returns.
-    unsafe { Packed::from_raw(bus(serv).buffer().cast()) }
 }
 
 /// `serv->get_worker(id)`, or `None` past the last worker.
@@ -129,8 +120,12 @@ fn accept(serv: view::Server<'_>, worker: Worker<'_>, info: &DataHead) {
         }
         Some(ServerEvent::BufferFull) => callbacks.event(EventSlot::BufferFull, serv, info),
         Some(ServerEvent::BufferEmpty) => callbacks.event(EventSlot::BufferEmpty, serv, info),
-        Some(ServerEvent::Finish) => _ = callbacks.task(TaskSlot::Finish, serv, event_data(serv)),
-        Some(ServerEvent::PipeMessage) => callbacks.pipe_message(serv, event_data(serv)),
+        Some(ServerEvent::Finish) => {
+            _ = bus(serv).with_event(|event| callbacks.task(TaskSlot::Finish, serv, event));
+        }
+        Some(ServerEvent::PipeMessage) => {
+            _ = bus(serv).with_event(|event| callbacks.pipe_message(serv, event));
+        }
         Some(ServerEvent::CommandRequest) => {
             // The server's live command pipe, a `UnixSocket`.
             if let Some(pipe) = config.command_pipe() {
@@ -175,11 +170,13 @@ fn received(serv: view::Server<'_>, info: &DataHead) -> Option<bool> {
 /// succeeds.
 fn run_task(serv: view::Server<'_>, worker: Worker<'_>, info: &DataHead, slot: ReceiveSlot) {
     let packet = bus(serv).packet();
-    let mut recv = crate::reactor_entry::RecvData {
-        info: *info,
-        data: packet.data.cast(),
-    };
-    recv.info.len = u32::try_from(packet.length).unwrap_or(u32::MAX);
+    let mut head = *info;
+    head.len = u32::try_from(packet.length).unwrap_or(u32::MAX);
+    // SAFETY: the bus's packet, `length` bytes (or null) it keeps until it pops or reads
+    // again, which this thread does after the callback returns. Built here rather than
+    // through `Bus::with_message`, whose closure costs every process-mode request about
+    // 20 instructions (it moves `run_task` out of line).
+    let recv = unsafe { crate::base_factory::SendData::from_raw(head, packet.data) };
     if serv.state().callbacks.receive(slot, serv, &recv) == 0 {
         worker.add_request_count();
         serv.counters().request_count.fetch_add(1, Relaxed);
@@ -346,7 +343,9 @@ pub fn stop_async_worker(serv: view::Server<'_>, worker: Worker<'_>) {
         return;
     }
     // Separated from the event worker pool.
-    worker_global_detach(worker);
+    // SAFETY: this process's event worker, which the server keeps until it frees its
+    // workers after the loop.
+    unsafe { worker_global_detach(worker) };
     unread_in_bus(serv, reactor, worker_pipe(worker, false));
     let event_worker = worker_type() == Some(WorkerType::Event);
     match config.mode_ {
@@ -416,7 +415,9 @@ pub fn stop_async_worker(serv: view::Server<'_>, worker: Worker<'_>) {
 /// `Worker_reactor_try_to_exit`: the loop's end callback while the worker exits.
 extern "C-unwind" fn try_to_exit() {
     let reactor = Reactor::thread();
-    try_exit(server_of(reactor), reactor);
+    if let Some(serv) = reactor.server() {
+        try_exit(serv, reactor);
+    }
 }
 
 /// Once the reactor can exit, stop it; meanwhile call `onWorkerExit` once, then wait
@@ -457,26 +458,15 @@ fn try_exit(serv: view::Server<'_>, reactor: Reactor) {
     }
 }
 
-/// The server of this thread's `reactor`, whose `ptr` is the server (or, in a task
-/// worker, its pool, whose `ptr` is).
-fn server_of(reactor: Reactor) -> view::Server<'static> {
-    let mut serv = reactor.handle().object();
-    if worker_type() == Some(WorkerType::Task) {
-        // SAFETY: a task worker's reactor holds its live pool.
-        serv = unsafe { swoole_rs_process::process_pool::PoolRef::new(serv.cast()) }.ptr();
-    }
-    // SAFETY: the worker's live server, per the above.
-    unsafe { view::Server::from_raw(serv) }
-}
-
 /// `Worker_onPipeReceive`: a message from a reactor thread or the master (process mode).
 extern "C" fn on_pipe_receive(reactor: Running<'_>, event: &mut Event) -> c_int {
-    let serv = server_of(Reactor::running(reactor));
+    // SAFETY: registered only on a worker's reactor, which holds its server.
+    let serv = unsafe { crate::reactor_entry::server(Reactor::running(reactor)) };
     let bus = bus(serv);
     if event.socket().is_some_and(|socket| bus.read(socket) > 0) {
         // SAFETY: the head of the whole event the bus just read, which only this
-        // thread's next read replaces.
-        accept_event(serv, unsafe { &*bus.buffer() });
+        // thread's next read replaces. Lent, not copied: every request passes here.
+        accept_event(serv, unsafe { &*bus.rust().buffer() });
         bus.pop();
     }
     0
@@ -603,7 +593,9 @@ pub(crate) fn start_event_worker(serv: view::Server<'_>, worker: Worker<'_>) -> 
     let reactor = Reactor::thread();
     if let Some(pipe) = worker_pipe(worker, false) {
         set_nonblock(pipe);
-        reactor.handle().set_object(serv.raw());
+        // SAFETY: this worker's reactor, freed after its loop below, before the worker
+        // stops and while the server lives.
+        unsafe { reactor.hold_server(serv) };
         reactor.add(pipe, Events::READ);
         reactor.set_handler(FD_PIPE, Events::READ, on_pipe_receive);
     }

@@ -160,7 +160,9 @@ pub(crate) fn child_enter(worker: Worker<'_>) {
     let id = worker.id();
     swoole_set_worker_id(id);
     swoole_set_worker_pid(pid);
-    swoole_rs_process::worker_globals::set_current_worker(worker.raw());
+    // SAFETY: the pool's worker this process now runs, which the pool keeps until
+    // the worker loop ends.
+    unsafe { swoole_rs_process::worker_globals::set_current_worker(worker.raw()) };
 }
 
 /// Read up to `buffer`'s capacity from the pipe: the length read, or `None`.

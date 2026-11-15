@@ -6,6 +6,8 @@
 //! crates/hooks' `hooked::connect`, `accept`, `poll_fake`, `sendmsg` and `recvmsg`: they take
 //! the address as crates/corebase's `SocketAddress` (`Address::assign` is crates/clients'
 //! `address::assign`), the pollfds as a slice and the message as its borrowed buffers.
+//! `swoole_coroutine_send` and `_recv` are `hooked`'s, over byte slices.
+//! `swoole_coroutine_getaddrinfo` and `_gethostbyname` are `stdio`'s, over `&CStr` names.
 
 use super::socket::SW_SOCK_TCP;
 use super::{
@@ -22,6 +24,7 @@ use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_hooks::hooked::{
     self, swoole_coroutine_get_socket_object, swoole_coroutine_get_socket_object_ex,
 };
+use swoole_rs_hooks::stdio::{swoole_coroutine_getaddrinfo, swoole_coroutine_gethostbyname};
 
 // glibc's values (the core-tests build is Linux).
 const O_RDWR: c_int = 2;
@@ -160,19 +163,10 @@ unsafe extern "C" {
     fn swoole_coroutine_socket_create(fd: c_int) -> c_int;
     fn swoole_coroutine_socket_unwrap(fd: c_int) -> c_int;
     fn swoole_coroutine_socket_exists(fd: c_int) -> u8;
-    fn swoole_coroutine_send(fd: c_int, buf: *const c_void, len: usize, flags: c_int) -> isize;
-    fn swoole_coroutine_recv(fd: c_int, buf: *mut c_void, len: usize, flags: c_int) -> isize;
     fn swoole_coroutine_poll(fds: *mut PollFd, n: u64, timeout: c_int) -> c_int;
     fn swoole_coroutine_socket_set_timeout(fd: c_int, which: c_int, timeout: f64) -> c_int;
     fn swoole_coroutine_socket_set_connect_timeout(fd: c_int, timeout: f64) -> c_int;
     fn swoole_coroutine_socket_wait_event(fd: c_int, event: c_int, timeout: f64) -> c_int;
-    fn swoole_coroutine_getaddrinfo(
-        name: *const c_char,
-        service: *const c_char,
-        req: *const AddrInfo,
-        pai: *mut *mut AddrInfo,
-    ) -> c_int;
-    fn swoole_coroutine_gethostbyname(name: *const c_char) -> *mut c_void;
 }
 
 unsafe extern "C" {
@@ -384,12 +378,10 @@ fn file() {
 
 fn gethostbyname() {
     run(|| {
-        // SAFETY: a NUL-terminated name.
-        let result1 = unsafe { swoole_coroutine_gethostbyname(HOST_1.as_ptr()) };
+        let result1 = swoole_coroutine_gethostbyname(HOST_1);
         assert!(!result1.is_null());
 
-        // SAFETY: as above.
-        let result2 = unsafe { swoole_coroutine_gethostbyname(HOST_2.as_ptr()) };
+        let result2 = swoole_coroutine_gethostbyname(HOST_2);
         assert!(result2.is_null());
         // SAFETY: this thread's h_errno.
         assert_eq!(unsafe { *__h_errno_location() }, HOST_NOT_FOUND);
@@ -410,10 +402,10 @@ fn getaddrinfo() {
         };
 
         let mut result: *mut AddrInfo = std::ptr::null_mut();
-        // SAFETY: NUL-terminated names, readable hints, a writable result.
-        let result1 = unsafe {
-            swoole_coroutine_getaddrinfo(HOST_1.as_ptr(), c"http".as_ptr(), &hints, &mut result)
-        };
+        // SAFETY: the hints and the result slot as glibc's `addrinfo`, which `AddrInfo` is.
+        let (hints, slot) =
+            unsafe { (&*(&raw const hints).cast(), &mut *(&raw mut result).cast()) };
+        let result1 = swoole_coroutine_getaddrinfo(Some(HOST_1), Some(c"http"), Some(hints), slot);
         assert_eq!(result1, 0);
 
         let mut curr = result;
@@ -429,10 +421,9 @@ fn getaddrinfo() {
         unsafe { freeaddrinfo(result) };
 
         result = std::ptr::null_mut();
-        // SAFETY: as above, with no service.
-        let result2 = unsafe {
-            swoole_coroutine_getaddrinfo(HOST_2.as_ptr(), std::ptr::null(), &hints, &mut result)
-        };
+        // SAFETY: as above.
+        let slot = unsafe { &mut *(&raw mut result).cast() };
+        let result2 = swoole_coroutine_getaddrinfo(Some(HOST_2), None, Some(hints), slot);
         assert_eq!(result2, EAI_NONAME);
         assert!(result.is_null());
         // SAFETY: freeaddrinfo(NULL), as upstream.
@@ -531,8 +522,7 @@ fn test_hook_socket() {
 
     let req: &[u8] =
         b"GET / HTTP/1.1\r\nHost: www.baidu.com\r\nConnection: close\r\nKeepAlive: off\r\n\r\n";
-    // SAFETY: `req` is readable for its length.
-    let sent = unsafe { swoole_coroutine_send(sock, req.as_ptr().cast(), req.len(), 0) };
+    let sent = hooked::swoole_coroutine_send(sock, req, 0);
     assert_eq!(sent, isize::try_from(req.len()).unwrap());
 
     // swoole::String resp(1024)
@@ -540,8 +530,7 @@ fn test_hook_socket() {
     let mut length = 0;
     loop {
         let spare = &mut resp[length..];
-        // SAFETY: `spare` is writable for its length.
-        let n = unsafe { swoole_coroutine_recv(sock, spare.as_mut_ptr().cast(), spare.len(), 0) };
+        let n = hooked::swoole_coroutine_recv(sock, spare, 0);
         if n <= 0 {
             break;
         }
@@ -1237,8 +1226,7 @@ fn accept() {
                 assert_eq!(hooked::connect(client_sock, &actual_server_addr), 0);
 
                 let test_message = b"test_data";
-                let sent_bytes =
-                    swoole_coroutine_send(client_sock, test_message.as_ptr().cast(), 9, 0);
+                let sent_bytes = hooked::swoole_coroutine_send(client_sock, test_message, 0);
                 assert_eq!(sent_bytes, 9);
 
                 swoole_coroutine_close(client_sock);
@@ -1249,8 +1237,8 @@ fn accept() {
             assert!(client_sock > 0);
 
             let mut buffer = [0u8; 256];
-            let received_bytes =
-                swoole_coroutine_recv(client_sock, buffer.as_mut_ptr().cast(), buffer.len() - 1, 0);
+            let len = buffer.len() - 1;
+            let received_bytes = hooked::swoole_coroutine_recv(client_sock, &mut buffer[..len], 0);
             assert!(received_bytes > 0);
             assert_eq!(CStr::from_bytes_until_nul(&buffer).unwrap(), c"test_data");
 

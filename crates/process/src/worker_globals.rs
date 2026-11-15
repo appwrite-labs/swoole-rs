@@ -17,7 +17,7 @@ pub struct WorkerGlobalRecord {
     pub shutdown: AtomicBool,
     pub running: AtomicBool,
     pub max_request: AtomicU32,
-    pub worker: AtomicPtr<WorkerRecord>,
+    worker: AtomicPtr<WorkerRecord>,
     worker_copy: AtomicPtr<WorkerRecord>,
     pub exit_time: AtomicI64,
 }
@@ -45,6 +45,15 @@ const fn init() -> WorkerGlobalRecord {
 // `SwooleWG` is `SW_THREAD_LOCAL`: thread-local on a thread-safe PHP, one process
 // record otherwise, which saves a TLS lookup per access on the request path.
 // Tests (which unwind) keep it per thread, as they run in parallel.
+impl WorkerGlobalRecord {
+    /// `worker`: the current worker, or null. Only [`set_current_worker`] and the
+    /// stop below write it, so [`with_current`] can trust it.
+    #[must_use]
+    pub fn worker(&self) -> *mut WorkerRecord {
+        self.worker.load(Relaxed)
+    }
+}
+
 #[cfg(any(zts, panic = "unwind"))]
 std::thread_local! {
     static GLOBAL: WorkerGlobalRecord = const { init() };
@@ -62,14 +71,9 @@ pub fn with_globals<R>(f: impl FnOnce(&WorkerGlobalRecord) -> R) -> R {
     f(&GLOBAL)
 }
 
-/// The original native field view for this thread.
-/// The process-pool case fixture (tests/modules/hooks/system) reads it as `SwooleWG`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "swr_v1_worker_globals")
-)]
+/// This thread's record, as a pointer.
 #[must_use]
-pub extern "C" fn thread_globals() -> *mut WorkerGlobalRecord {
+pub fn thread_globals() -> *mut WorkerGlobalRecord {
     with_globals(|globals| core::ptr::from_ref(globals).cast_mut())
 }
 
@@ -92,7 +96,12 @@ pub fn with_current<R>(f: impl FnOnce(&crate::worker_record::Worker<'_>) -> R) -
 }
 
 /// `SwooleWG.worker = worker`.
-pub fn set_current_worker(worker: *mut WorkerRecord) {
+///
+/// # Safety
+/// `worker` is null, or the live record of the worker loop this thread runs, which
+/// its pool or server keeps until the loop ends and the slot is cleared or replaced:
+/// [`with_current`] lends it to safe code until then.
+pub unsafe fn set_current_worker(worker: *mut WorkerRecord) {
     with_globals(|globals| globals.worker.store(worker, Relaxed));
 }
 
@@ -147,10 +156,14 @@ pub fn worker_global_max_requests(
 
 /// Retains the exiting worker's local record without relying on C++ copying the
 /// reserved private field bytes. Shared/native resource pointers remain loans.
-pub fn worker_global_detach(worker: crate::worker_record::Worker<'_>) {
+///
+/// # Safety
+/// As [`set_current_worker`] for `worker`'s record, which outlives the handle.
+pub unsafe fn worker_global_detach(worker: crate::worker_record::Worker<'_>) {
     let copy = Box::into_raw(Box::new(worker.get()));
     with_globals(|globals| globals.worker_copy.store(copy, Relaxed));
-    set_current_worker(worker.raw());
+    // SAFETY: as the caller promises.
+    unsafe { set_current_worker(worker.raw()) };
 }
 
 /// Stops the current worker and releases its local detached copy.
@@ -243,7 +256,7 @@ mod tests {
     fn a_worker_stopped_during_with_current_stays_readable() {
         let mut worker: WorkerRecord = unsafe { std::mem::zeroed() };
         unsafe { Worker::new(&raw mut worker).set_id(7) };
-        worker_global_detach(unsafe { Worker::new(&raw mut worker) });
+        unsafe { worker_global_detach(Worker::new(&raw mut worker)) };
         let id = with_current(|current| {
             // Frees the detached copy and clears the slot, not the lent record.
             worker_global_stopped();

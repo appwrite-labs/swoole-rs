@@ -12,6 +12,7 @@ use std::{
     rc::Rc,
     sync::{Mutex, MutexGuard, PoisonError},
 };
+use swoole_rs_clients::protocol::Protocol;
 use swoole_rs_clients::{
     client::{self as state, Handle},
     pool::Pool,
@@ -19,7 +20,7 @@ use swoole_rs_clients::{
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::SocketType;
-use swoole_rs_corebase::net_types::{Protocol, SocketAddress};
+use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_phpruntime::Report;
 use swoole_rs_phpstubs::client;
 use swoole_rs_phpswoole::{Switch, built_with, display_errors};

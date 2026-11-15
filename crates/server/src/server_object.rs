@@ -93,6 +93,7 @@ impl Drop for Owner {
         // live until this drop frees it.
         let serv = unsafe { view::Server::from_raw(self.0) };
         crate::server_methods::destroy_running(serv);
+        crate::reactor_handle::release_server(serv);
         for port in serv.ports() {
             // SAFETY: a live port is its settings' box, deleted once.
             PortConfig::delete(unsafe { Box::from_raw(port.raw().cast::<PortConfig>()) });

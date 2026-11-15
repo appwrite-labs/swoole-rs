@@ -10,6 +10,7 @@
 //! reference to the state lives across one: operations work on a raw [`Handle`]
 //! and borrow the state only between effects. A PHP bailout in a callback
 //! longjmps out, so nothing that needs dropping is held across one.
+use crate::protocol::Protocol;
 use core::cell::{Cell, OnceCell, RefCell};
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr::NonNull;
@@ -24,7 +25,7 @@ use swoole_rs_corebase::constants::{
     FdType, ResultCode, SW_BUFFER_SIZE_UDP, SW_CLIENT_BUFFER_SIZE, SW_SEND_BUFFER_SIZE,
     SW_SOCKET_RETRY_COUNT, SW_SSL_BUFFER_SIZE, SocketFlag, SocketType,
 };
-use swoole_rs_corebase::net_types::{PacketLength, Protocol, SocketAddress};
+use swoole_rs_corebase::net_types::{PacketLength, RecvData, SocketAddress};
 use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_corebase::{ProxyState, ResolverRequest, log};
 use swoole_rs_error::ErrorCode;
@@ -147,7 +148,7 @@ pub use SslState::{
 };
 pub const SSL_CLIENT: c_int = SslCreateFlag::SW_SSL_CLIENT as c_int;
 pub const SSL_DTLS: u32 = SslVersion::SW_SSL_DTLS as u32;
-/// The proxy states of `native/protocols/swoole_proxy.h`, which a test reads.
+/// The proxy states of upstream's `include/swoole_proxy.h`.
 pub const SOCKS5_WAIT: u8 = 0;
 pub const SOCKS5_HANDSHAKE: u8 = 1;
 pub const SOCKS5_READY: u8 = 4;
@@ -299,7 +300,9 @@ pub struct ClientRecord {
     pub protocol: Protocol,
     pub server_addr: SocketAddress,
     pub remote_addr: SocketAddress,
-    pub socket: *mut SocketRecord,
+    /// `socket`: the record the constructor made, live until the client is destroyed
+    /// (an async one's free is deferred past its callbacks). Only the constructor sets it.
+    pub(crate) socket: Option<Socket<'static>>,
     pub object: *mut c_void,
     pub buffer: *mut c_void,
 }
@@ -377,8 +380,7 @@ impl Client {
     /// record, live until the client is destroyed (an async one's free is
     /// deferred past its callbacks).
     pub fn socket(&self) -> Option<Socket<'_>> {
-        // SAFETY: null or the client's live socket record, as above.
-        unsafe { Socket::from_ptr(self.record().socket) }
+        self.record().socket
     }
 
     /// The client's TLS context, which `set()` configures; none while TLS is off.
@@ -453,7 +455,9 @@ impl Handle {
     }
 
     fn socket_ptr(self) -> *mut SocketRecord {
-        self.record().socket
+        self.record()
+            .socket
+            .map_or(core::ptr::null_mut(), Socket::as_ptr)
     }
 
     fn socket(self) -> Socket<'static> {
@@ -710,31 +714,18 @@ use swoole_rs_timer::{add_fn_sec as add_fn_sec_id, del_id};
 #[cfg(test)]
 use tests::{add_fn_sec_id, del_id};
 
-/// `RecvData`: the package `Protocol::recv_with_*` hands `onPackage`.
-#[repr(C)]
-struct RecvData {
-    info: swoole_rs_corebase::DataHead,
-    data: *const c_char,
-}
-
 /// `Client_onPackage`: a framed package for `onReceive`; the receive loop stops
 /// once the callback left the socket waiting to close.
 /// # Safety
-/// `conn` is a client's socket record (or null), whose free is deferred past the call.
+/// `socket` is a client's socket, whose free is deferred past the call.
 unsafe extern "C-unwind" fn on_package(
     _: *const Protocol,
-    conn: *mut c_void,
-    package: *const c_void,
+    socket: Socket<'_>,
+    package: &RecvData,
 ) -> c_int {
-    // SAFETY: per the caller.
-    let Some(socket) = (unsafe { Socket::from_ptr(conn.cast()) }) else {
-        return ERR;
-    };
-    // SAFETY: per the caller, the package.
-    let package = unsafe { &*package.cast::<RecvData>() };
     Handle(socket.read(|socket| socket.object).cast()).call(
         ClientEvent::Receive,
-        package.data,
+        package.data.cast(),
         package.info.len as usize,
     );
     if socket.read(|socket| socket.output.close_wait) {
@@ -844,7 +835,7 @@ pub fn create(kind: c_int, is_async: bool) -> Option<Handle> {
             protocol: Protocol::EMPTY,
             server_addr: swoole_rs_corebase::sys::zeroed(),
             remote_addr: swoole_rs_corebase::sys::zeroed(),
-            socket: core::ptr::null_mut(),
+            socket: None,
             object: core::ptr::null_mut(),
             buffer: core::ptr::null_mut(),
         }),
@@ -865,7 +856,7 @@ pub fn create(kind: c_int, is_async: bool) -> Option<Handle> {
     });
     client.set(Flag::Async, is_async);
     let fields = client.record.get_mut();
-    fields.socket = record.as_ptr();
+    fields.socket = Some(record);
     fields.remote_addr.kind = kind;
     fields.protocol.package_length_type = b'N';
     fields.protocol.package_length_size = 4;
@@ -998,7 +989,7 @@ pub fn package_length(this: Handle, data: &[u8]) -> isize {
     };
     let mut packet = PacketLength::new(data);
     // SAFETY: the live client's protocol and socket, and the packet's bytes.
-    unsafe { get(this.protocol(), record.socket.cast(), &mut packet) }
+    unsafe { get(this.protocol(), this.socket_ptr().cast(), &mut packet) }
 }
 
 /// `Client::close()`: false without a socket, when already closed or when `close(2)`
@@ -1187,7 +1178,7 @@ pub fn ssl_handshake(this: Handle) -> bool {
         missing
     });
     // SAFETY: the client's context, which only this client configures, and only here.
-    if missing && !unsafe { ssl_context_create(&tls) } {
+    if missing && !ssl_context_create(&mut unsafe { swoole_rs_tls::Lent::new(&tls) }) {
         return false;
     }
     if this.socket().read(|socket| socket.ssl().is_null()) {
@@ -1767,8 +1758,7 @@ fn on_read(this: Handle) -> bool {
     let http = this.proxy_state(Proxy::Http);
     if http.is_some_and(|state| state != HTTP_PROXY_READY) {
         let accepted = this.edit_input(|input, socket| {
-            let n = net::recv(socket, input.spare(), 0);
-            n > 0 && http_handshake(input, input.len() + n.cast_unsigned())
+            net::recv_append(socket, input) > 0 && swoole_rs_http_ffi::proxy_accept(input.view())
         });
         if !accepted {
             log::set_last_error(ERROR_HTTP_PROXY_HANDSHAKE_ERROR);
@@ -1783,14 +1773,7 @@ fn on_read(this: Handle) -> bool {
     }
     let socks5 = this.proxy_state(Proxy::Socks5);
     if socks5.is_some_and(|state| state != SOCKS5_READY) {
-        let n = this.edit_input(|input, socket| {
-            let n = net::recv(socket, input.spare(), 0);
-            if n > 0 {
-                // SAFETY: the read filled `n` bytes of the free tail, which bounds them.
-                unsafe { input.set_len(input.len() + n.cast_unsigned()) };
-            }
-            n
-        });
+        let n = this.edit_input(|input, socket| net::recv_append(socket, input));
         if n <= 0 {
             log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
             return connect_failed(this);

@@ -148,6 +148,19 @@ struct CppString {
     allocator: *const c_void,
 }
 
+/// `RustStringView::operator=`: copies `value` into a TLS owner's string slot.
+///
+/// # Safety
+/// `slot` is a live owner's slot that nothing else reads or sets meanwhile.
+pub(super) unsafe fn string_set(slot: *const c_void, value: &[u8]) -> c_int {
+    // SAFETY: the caller's slot, held exclusively for the call.
+    if unsafe { (*slot.cast::<swoole_rs_corebase::StringSlot>()).set_shared(value) } {
+        0
+    } else {
+        -2
+    }
+}
+
 /// `OwnedTlsPrepared` (crates/tls/src/owned.rs).
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -195,16 +208,9 @@ unsafe extern "C" {
     ) -> bool;
 
     pub(super) safe fn swr_v1_tls_owner_new() -> TlsPrepared;
-    pub(super) fn swr_v1_core_string_set(
-        slot: *const c_void,
-        bytes: *const c_char,
-        length: usize,
-    ) -> c_int;
 
     #[link_name = "_ZN6swoole6String3popEm"]
     fn string_pop(this: *mut CppString, init_size: usize) -> *mut u8;
-    #[link_name = "_ZN6swoole8Protocol19default_length_funcEPKS0_PNS_7network6SocketEPNS_12PacketLengthE"]
-    static default_length_func: c_void;
     #[link_name = "_Z16swoole_type_sizec"]
     fn swoole_type_size(kind: c_char) -> c_int;
     #[link_name = "_Z11swoole_randii"]
@@ -471,7 +477,8 @@ impl Sock {
         record.protocol.package_length_size =
             u8::try_from(unsafe { swoole_type_size(kind as c_char) }).unwrap();
         record.protocol.package_body_offset = body_offset;
-        record.protocol.get_package_length = &raw const default_length_func;
+        record.protocol.get_package_length =
+            swoole_rs_ffi::ports::framing_recv::default_length_func as *const c_void;
         record.protocol.package_max_length = max_length;
         record.open_length_check = true;
     }
@@ -571,10 +578,7 @@ impl Tls {
     fn set_string(&self, index: usize, value: &str) {
         let slot = self.0.strings[index];
         // SAFETY: the owner's live slot and `value`'s bytes.
-        assert_eq!(
-            unsafe { swr_v1_core_string_set(slot, value.as_ptr().cast(), value.len()) },
-            0
-        );
+        assert_eq!(unsafe { string_set(slot, value.as_bytes()) }, 0);
     }
 
     /// `SSLContext::set_cert_file` or `set_key_file`: false, warned, when the file

@@ -236,8 +236,7 @@ fn init(serv: view::Server<'_>, manager: &Manager) {
         on_worker_message: Some(read_worker_message),
         ..Hooks::default()
     };
-    // SAFETY: the hook reads the event pool's `ptr` as its server, which
-    // `swr_v1_process_server_workers_start` set and which outlives the pool.
+    // SAFETY: the hook reads the pool's server through `pool_server`, which checks it.
     unsafe { event_pool.install(&hooks) };
     event_pool.set_max_wait_time(config.max_wait_time.get());
     event_pool.set_master_pid(pid);
@@ -459,9 +458,9 @@ fn head_field<const N: usize>(msg: &[u8; EVENT_DATA_SIZE], offset: usize) -> [u8
 /// and the message it popped: a command request from a worker.
 extern "C-unwind" fn read_worker_message(pool: PoolRef<'_>, msg: &[u8; EVENT_DATA_SIZE]) {
     use core::mem::offset_of;
-    // SAFETY: `init` installs this hook on the event worker pool only, whose `ptr`
-    // is its live server, and the pool calls it with itself.
-    let serv = unsafe { view::Server::from_raw(pool.ptr()) };
+    let Some(serv) = crate::shared::pool_server(pool) else {
+        return;
+    };
     let kind = msg[offset_of!(DataHead, kind)];
     if ServerEvent::from_code(kind) != Some(ServerEvent::CommandRequest) {
         let m = format_args!("unknown worker message type[{kind}]");

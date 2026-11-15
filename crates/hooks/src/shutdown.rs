@@ -67,7 +67,11 @@ impl SocketState {
     }
 
     /// Binds `co` (null to unbind) for reading, writing, or both when `event` has both bits.
-    pub fn bind(&mut self, event: Events, co: *mut c_void) {
+    /// Only this crate binds, and only the running coroutine for an operation it is about
+    /// to suspend in, which unbinds it before it returns: so a bound coroutine is live
+    /// and suspended, as [`Co::cancel`](crate::co_socket::Co::cancel) and the reactor
+    /// callbacks that resume it, and the bound-coroutine checks that read its id, rely on.
+    pub(crate) fn bind(&mut self, event: Events, co: *mut c_void) {
         if event.intersects(Events::READ) {
             self.read_co = co;
         }

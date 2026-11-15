@@ -66,10 +66,6 @@ struct Socket : swr_v1_socket {
         *timeouts() = swr_v1_socket_default_timeouts();
     }
 
-    uint32_t get_out_buffer_length() const {
-        return out_buffer ? out_buffer->length() : 0;
-    }
-
     int move_fd() {
         int sock_fd = fd;
         fd = SW_BAD_SOCKET;

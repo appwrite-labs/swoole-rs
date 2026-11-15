@@ -208,38 +208,33 @@ pub(crate) fn wait_for(socket: Co, event: Events) -> bool {
     !co.is_null() && Wait(socket).wait(co, event, None)
 }
 
-/// The readable (`event` read) or writable callback: the coroutine to resume, or
-/// null. Under a TLS wait the other direction's coroutine wakes; otherwise an
-/// installed barrier that keeps waiting holds the coroutine unless the peer hung up.
-pub(crate) fn ready(socket: Co, event: Events, hup: bool) -> *mut c_void {
+/// The readable (`event` read) or writable callback: the direction whose bound
+/// coroutine to resume, or none. Under a TLS wait the other direction's coroutine
+/// wakes; otherwise an installed barrier that keeps waiting holds the coroutine
+/// unless the peer hung up.
+pub(crate) fn ready(socket: Co, event: Events, hup: bool) -> Option<Events> {
     let other = if event == Events::READ {
         Events::WRITE
     } else {
         Events::READ
     };
-    let (want, woken, barrier) = socket.with_state(|state| {
-        let woken = if state.want == event {
-            state.co(other)
-        } else {
-            core::ptr::null_mut()
-        };
+    let (want, barrier) = socket.with_state(|state| {
         (
             state.want,
-            woken,
             state.barriers.get(slot(event)).copied().flatten(),
         )
     });
     if !want.is_empty() {
-        return woken;
+        return (want == event).then_some(other);
     }
     if let Some(barrier) = barrier {
         // SAFETY: an installed barrier is the live, exclusive borrow its suspended
         // `wait_barrier` lent; it does not touch the state's barriers or bindings.
         if unsafe { (*barrier)() } && !hup {
-            return core::ptr::null_mut();
+            return None;
         }
     }
-    socket.with_state(|state| state.co(event))
+    Some(event)
 }
 
 /// `Socket::poll(event, timeout)`: wait for `event` under `timeout`, or the
@@ -311,9 +306,16 @@ mod tests {
     fn wake_on_ready() {
         ON_SUSPEND.set(Some(Box::new(|socket: Co, event| {
             let bound = socket.with_state(|state| state.co(event));
-            let woken = ready(socket, event, false);
+            let woken = woken(socket, event);
             log(format!("woken:{}", !woken.is_null() && woken == bound));
         })));
+    }
+
+    /// The coroutine the ready callback for `event` resumes, or null.
+    fn woken(socket: Co, event: Events) -> *mut c_void {
+        ready(socket, event, false).map_or(core::ptr::null_mut(), |event| {
+            socket.with_state(|state| state.co(event))
+        })
     }
 
     fn wait_on(
@@ -407,7 +409,7 @@ mod tests {
     fn a_barrier_that_keeps_waiting_holds_the_coroutine() {
         let mut s = socket(0);
         ON_SUSPEND.set(Some(Box::new(|socket: Co, event| {
-            let woken = ready(socket, event, false);
+            let woken = woken(socket, event);
             log(format!("woken:{}", !woken.is_null()));
         })));
         assert!(wait_on(&mut s, Events::READ, Some(&mut || true)));

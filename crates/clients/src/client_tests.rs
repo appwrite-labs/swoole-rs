@@ -129,6 +129,16 @@ pub(super) mod net {
     pub(in super::super) fn recv(_: Socket<'_>, buffer: &mut [impl ReadSlot], _: c_int) -> isize {
         io("recv", buffer.len())
     }
+    pub(in super::super) fn recv_append(
+        _: Socket<'_>,
+        buffer: &mut swoole_rs_buffer::string::CppString,
+    ) -> isize {
+        let n = io("recv", buffer.spare().len());
+        if let Ok(count) = usize::try_from(n) {
+            unsafe { buffer.set_len(buffer.len() + count) };
+        }
+        n
+    }
     pub(in super::super) fn recv_sync(
         _: Socket<'_>,
         buffer: &mut [impl ReadSlot],
@@ -223,10 +233,9 @@ pub(super) extern "C" fn async_dispatch(event: &AsyncEvent) -> *mut c_void {
     core::ptr::without_provenance_mut(8)
 }
 // crates/tls's TLS operations, over its own context.
-pub(super) unsafe fn ssl_context_create(owner: &OwnedTlsContext) -> bool {
+pub(super) fn ssl_context_create(owner: &mut swoole_rs_tls::Lent<'_>) -> bool {
     log("ssl create");
-    // SAFETY: the client's live owner.
-    unsafe { swoole_rs_tls::ssl_context_create(owner) }
+    swoole_rs_tls::ssl_context_create(owner)
 }
 pub(super) fn socket_ssl_create(
     _: Socket<'_>,
@@ -644,7 +653,10 @@ fn public_record_defaults_and_direct_framing_writes_drive_reads() {
         // Read first: the handle borrows the whole record, which would end a reference
         // assert_eq! had already taken to the field.
         let socket = Handle(client).socket_ptr();
-        assert_eq!((*fields).socket, socket);
+        let field = (*fields)
+            .socket
+            .map_or(core::ptr::null_mut(), swoole_rs_reactor::Socket::as_ptr);
+        assert_eq!(field, socket);
         assert!((*fields).object.is_null() && (*fields).buffer.is_null());
         Handle(client).input_init();
         (*fields).open_length_check = true;
@@ -689,32 +701,20 @@ fn a_failed_socket_makes_no_client_and_keeps_its_errno() {
 #[test]
 fn framed_packages_reach_on_receive_until_the_socket_waits_to_close() {
     let client = client(1, true, true);
-    let socket = Handle(client).socket_ptr();
+    let socket = Handle(client).socket();
     let mut package = RecvData {
         info: swoole_rs_corebase::DataHead::default(),
-        data: c"data".as_ptr(),
+        data: c"data".as_ptr().cast(),
     };
     package.info.len = 4;
     assert_eq!(
-        unsafe {
-            on_package(
-                core::ptr::null(),
-                socket.cast(),
-                (&raw const package).cast(),
-            )
-        },
+        unsafe { on_package(core::ptr::null(), socket, &package) },
         OK
     );
     assert_eq!(taken(), ["call Receive 4"]);
     sock().output.close_wait = true;
     assert_eq!(
-        unsafe {
-            on_package(
-                core::ptr::null(),
-                socket.cast(),
-                (&raw const package).cast(),
-            )
-        },
+        unsafe { on_package(core::ptr::null(), socket, &package) },
         ERR
     );
     free(client);
@@ -730,11 +730,8 @@ fn tls_handshake_names_the_host_and_verifies_the_peer() {
     let name = c"example.test";
     // SAFETY: the double's live slot and fields.
     unsafe {
-        let slot = tls.strings[TLS_HOST_NAME].cast();
-        assert_eq!(
-            swoole_rs_corebase::swr_v1_core_string_set(slot, name.as_ptr(), name.count_bytes()),
-            0
-        );
+        let slot = tls.strings[TLS_HOST_NAME].cast::<swoole_rs_corebase::StringSlot>();
+        assert!((*slot).set_shared(name.to_bytes()));
         (*tls.fields).verify_peer = true;
         (*tls.fields).allow_self_signed = true;
     }
@@ -755,15 +752,17 @@ fn tls_handshake_names_the_host_and_verifies_the_peer() {
 }
 
 #[test]
-fn proxy_states_are_the_native_ones() {
-    let header = include_str!("../../../native/protocols/swoole_proxy.h");
-    for (name, value) in [
-        ("SW_SOCKS5_STATE_WAIT", SOCKS5_WAIT),
-        ("SW_SOCKS5_STATE_HANDSHAKE", SOCKS5_HANDSHAKE),
-        ("SW_SOCKS5_STATE_READY", SOCKS5_READY),
-        ("SW_HTTP_PROXY_STATE_WAIT", HTTP_PROXY_WAIT),
-        ("SW_HTTP_PROXY_STATE_READY", HTTP_PROXY_READY),
-    ] {
-        assert!(header.contains(&format!("{name} = {value},")), "{name}");
-    }
+fn proxy_states_are_upstreams() {
+    // Upstream's include/swoole_proxy.h counts its enums from 0.
+    assert_eq!(
+        [
+            SOCKS5_WAIT,
+            SOCKS5_HANDSHAKE,
+            SOCKS5_READY,
+            HTTP_PROXY_WAIT,
+            HTTP_PROXY_READY
+        ],
+        [0, 1, 4, 0, 2],
+        "SW_SOCKS5_STATE_{{WAIT,HANDSHAKE,READY}}, SW_HTTP_PROXY_STATE_{{WAIT,READY}}"
+    );
 }

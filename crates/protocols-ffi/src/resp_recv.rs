@@ -1,7 +1,7 @@
 //! `swoole::redis::recv_packet`: reads a connection until a whole RESP command is
 //! buffered, then hands it to `onPackage`. [`recv_packet`] is the loop over a
 //! [`RespConnection`], which the ports crate runs over the server's own records.
-use swoole_rs_corebase::{log, set_errno, sw_calloc};
+use swoole_rs_corebase::{log, set_errno};
 pub use swoole_rs_protocols::RespRequest;
 use swoole_rs_protocols::{RespAction, resp_extend_size, resp_receive_range};
 
@@ -101,24 +101,6 @@ pub fn recv_packet(c: &mut impl RespConnection, maximum: u32, page: usize) -> bo
             }
         }
     }
-}
-
-/// The request state in `slot`, allocated zeroed with `sw_calloc` when null; null
-/// (after a warning) when that fails.
-pub fn request(slot: &mut *mut RespRequest) -> *mut RespRequest {
-    if slot.is_null() {
-        // Zeroed, which every field of a RespRequest takes (`RespState::TotalLine`).
-        let fresh = sw_calloc(1, size_of::<RespRequest>()).cast::<RespRequest>();
-        if fresh.is_null() {
-            log::warning(
-                ORIGIN,
-                format_args!("malloc({}) failed", size_of::<RespRequest>()),
-            );
-            return fresh;
-        }
-        *slot = fresh;
-    }
-    *slot
 }
 
 #[cfg(test)]

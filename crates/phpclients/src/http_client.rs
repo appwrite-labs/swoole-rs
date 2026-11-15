@@ -24,7 +24,7 @@ use swoole_rs_http::llhttp::{self, Callbacks, Parser};
 use swoole_rs_inflate::{Inflate, brotli, zstd};
 use swoole_rs_phpstubs::http_client_coro;
 use swoole_rs_reactor::Events;
-use swoole_rs_websocket_ffi::Opcode;
+use swoole_rs_websocket::Opcode;
 use swoole_rs_zend::{
     Array, ArrayMut, Call, Class, Custom, CustomClass, Minit, ObjectRef, Owned, OwnedArray, Props,
     Value, ZStr, ZString,

@@ -18,7 +18,7 @@ use swoole_rs_corebase::constants::{
 use swoole_rs_reactor::{Socket, SocketAddress, SocketFields, SocketRecord};
 use swoole_rs_tls::upstream::{socket_free, socket_ssl_close};
 
-pub use swoole_rs_corebase::net_types::Protocol;
+pub use swoole_rs_clients::protocol::Protocol;
 
 /// `coroutine::Socket`'s scalar fields, each a cell: a coroutine parked in one member
 /// shares the record with another running a second, and native code writes the fields

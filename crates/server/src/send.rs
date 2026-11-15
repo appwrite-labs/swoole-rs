@@ -263,7 +263,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
         };
     }
     let (mut data, file) = (data, kind == Some(ServerEvent::SendFile));
-    let out_empty = sock.read(|s| out_buffer(s).is_none_or(|b| swr_cpp_buffer_empty(b)));
+    let out_empty = sock.read(|s| out_buffer(s).is_none_or(swr_cpp_buffer_empty));
     if out_empty {
         if close {
             reactor.close(sock);
@@ -277,9 +277,9 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
             sock.edit(|s| s.output.out_buffer = buffer);
         }
     }
-    let queued = || sock.read(|s| out_buffer(s).map_or(0, |b| swr_cpp_buffer_length(b)));
+    let queued = || sock.read(|s| out_buffer(s).map_or(0, swr_cpp_buffer_length));
     if close {
-        sock.read(|s| out_buffer(s).map(|b| swr_cpp_buffer_typed_close(b)));
+        sock.read(|s| out_buffer(s).map(swr_cpp_buffer_typed_close));
         conn.set_close_queued(true);
         if halfclose {
             reactor.interest(sock, Interest::RemoveRead);
@@ -322,7 +322,7 @@ fn to_connection(serv: Server<'_>, info: &DataHead, data: &[u8], first: Option<i
     let port = serv.port_by_server_fd(conn.server_fd());
     let idle = port.map_or(0.0, |port| port.config().max_idle_time.get());
     if idle > 0.0 && sock.read(|s| s.output.send_timer.is_none()) {
-        idle_timer(serv, conn, sock, idle);
+        idle_timer(conn, sock, idle);
     }
     if !sock.read(|s| s.events.intersects(Events::WRITE)) {
         reactor.interest(sock, Interest::AddWrite);
@@ -384,8 +384,8 @@ fn send_file(sock: Socket<'_>, task: &[u8]) -> bool {
 
 /// `swoole_timer_add(sec2msec(port->max_idle_time), true, ...)` for the socket's
 /// sends.
-fn idle_timer(serv: Server<'_>, conn: Connection<'_>, sock: Socket<'_>, idle: f64) {
-    let timer = crate::connection::idle_timer(serv, conn, idle);
+fn idle_timer(conn: Connection<'_>, sock: Socket<'_>, idle: f64) {
+    let timer = crate::connection::idle_timer(conn, idle);
     let now = steady_ms();
     sock.edit(|sock| {
         sock.timeouts.write = idle;
@@ -446,7 +446,7 @@ mod tests {
         }
         fn queued(&self) -> u32 {
             self.sock()
-                .read(|s| out_buffer(s).map_or(0, |b| swr_cpp_buffer_length(b)))
+                .read(|s| out_buffer(s).map_or(0, swr_cpp_buffer_length))
         }
         fn read(&mut self, len: usize) -> Vec<u8> {
             let mut got = vec![0; len];

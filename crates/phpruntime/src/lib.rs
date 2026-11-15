@@ -163,7 +163,7 @@ fn factory() -> *mut c_void {
 mod registration {
     use std::ffi::c_int;
     use swoole_rs_corebase::sys::Text;
-    use swoole_rs_zend::{Minit, sys::swr_zend_stream_factory_body};
+    use swoole_rs_zend::Minit;
 
     /// A `php_stream_wrapper`, which is only passed on by address.
     #[repr(C)]
@@ -183,7 +183,7 @@ mod registration {
             wrapper: &'static Wrapper,
         ) -> c_int;
         /// zend-sys's coroutine transport factory runs `body` from now on.
-        safe fn swr_zend_stream_factory_set(body: swr_zend_stream_factory_body);
+        safe fn swr_zend_stream_factory_set(body: crate::stream::FactoryBody);
     }
 
     #[cfg(feature = "curl")]
@@ -209,7 +209,7 @@ mod registration {
 
     /// The coroutine transport factory's body, [`crate::stream::transport_factory_body`].
     pub(super) fn transport_factory(_minit: &Minit) {
-        swr_zend_stream_factory_set(Some(crate::stream::transport_factory_body));
+        swr_zend_stream_factory_set(crate::stream::transport_factory_body);
     }
 
     /// `proc_open`'s resource type.

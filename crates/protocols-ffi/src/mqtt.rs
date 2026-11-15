@@ -1,5 +1,6 @@
 //! `swoole::mqtt`'s entries under their upstream symbols, over [`mqtt_frame_length`].
-use swoole_rs_corebase::net_types::{PacketLength, Protocol};
+use swoole_rs_clients::protocol::Protocol;
+use swoole_rs_corebase::net_types::PacketLength;
 use swoole_rs_protocols::mqtt_frame_length;
 
 /// `SW_MQTT_MAX_LENGTH_SIZE`.

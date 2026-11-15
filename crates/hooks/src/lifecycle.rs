@@ -266,9 +266,7 @@ mod tests {
         }
         if event == Events::READ || event == Events::WRITE {
             set_err(s, libc::ECANCELED);
-            let co = s.with_state(|state| state.co(event));
-            // SAFETY: the coroutine bound for `event`, parked in its wait on `s`.
-            unsafe { (NATIVE.resume)(co) };
+            (NATIVE.resume)(s, event);
             true
         } else {
             set_err(s, libc::EINVAL);

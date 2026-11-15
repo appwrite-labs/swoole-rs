@@ -71,15 +71,11 @@ pub(crate) unsafe extern "C" fn client_minfo(module: *mut c_void) {
 pub fn socket_cast(value: &Value) -> c_int {
     #[cfg(feature = "sockets")]
     {
-        let (Some(object), Some(class)) = (value.object(), value.class()) else {
+        // `Z_SOCKET_P(value)->bsd_socket` of a `Socket`, the class ext/sockets
+        // registers as `socket_ce`.
+        let Some((fd, _)) = value.php_socket_fd() else {
             return -3;
         };
-        // SAFETY: two live classes.
-        if !unsafe { swoole_rs_zend::sys::swr_zend_instanceof(class, socket_ce) } {
-            return -3;
-        }
-        // SAFETY: a `Socket`, whose `php_socket` starts with its descriptor.
-        let fd = unsafe { *php_socket(object).cast::<c_int>() };
         let (fd, message, code) = if fd == -1 {
             (-2, c"invalid socket fd", libc::EBADF)
         } else {

@@ -49,10 +49,9 @@ fn worker(serv: view::Server<'_>, id: impl TryInto<u16>) -> Option<Worker<'_>> {
 fn heartbeat_timer(state: &ServerState, reactor: Reactor) -> Option<swoole_rs_timer::Held> {
     let msec = c_long::from(state.config_ref().heartbeat_check_interval.get()) * 1000;
     swoole_rs_timer::add_fn(msec, true, move || {
-        // SAFETY: a server reactor whose `ptr` is its live server, which outlives its
-        // timers.
-        let serv = unsafe { entry::server(reactor) };
-        crate::reactor_thread::heartbeat_check(serv, reactor);
+        if let Some(serv) = reactor.server() {
+            crate::reactor_thread::heartbeat_check(serv, reactor);
+        }
     })
 }
 
@@ -61,8 +60,10 @@ fn heartbeat_timer(state: &ServerState, reactor: Reactor) -> Option<swoole_rs_ti
 fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Option<c_int> {
     let (server, handle) = (ctx.serv, ctx.reactor?);
     let (config, tables) = (state.config_ref(), state.tables_ref());
+    // SAFETY: the thread's own reactor, which only this thread runs, and the server joins
+    // its reactor and worker threads before it goes.
+    unsafe { handle.hold_server(server) };
     let reactor = handle.handle();
-    reactor.set_object(server.raw());
     reactor.set_id(id);
     reactor.set_wait_exit(false);
     reactor.set_max_socket(tables.max_connection);
@@ -80,12 +81,10 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
             }
             let socket = server.port_socket_at(index)?;
             let fd = socket.fd();
-            // The connection table's slot for the listening fd.
-            let serv_sock = state.connection(c_long::from(fd), Lookup::ByFd)?;
+            // The connection table's slot for the listening fd, holding its port.
+            let serv_sock = tables.hold_port(index, fd)?;
             serv_sock.set_fd(fd);
             serv_sock.set_socket_type(port.config().r#type);
-            serv_sock.set_object(port.raw());
-            serv_sock.listen(*port);
             // The reactor thread that reads the datagram port.
             port.config()
                 .thread_id
@@ -144,10 +143,11 @@ struct CloseConnections(Reactor);
 
 impl swoole_rs_reactor::event_api::Deferred for CloseConnections {
     fn run(self) {
-        // SAFETY: a reactor thread's reactor, which runs its destroy callbacks on its
-        // own thread while it lives, and whose `ptr` is its live server.
-        let serv = unsafe { entry::server(self.0) };
-        crate::reactor_thread::close_reactor_connections(serv, self.0);
+        // A reactor thread's reactor, which runs its destroy callbacks on its own
+        // thread while it lives.
+        if let Some(serv) = self.0.server() {
+            crate::reactor_thread::close_reactor_connections(serv, self.0);
+        }
     }
 
     /// Queued after the destroy pass, it closes nothing, as the native callback did.
@@ -305,19 +305,19 @@ fn send_close_force(serv: view::Server<'_>, conn: Connection<'_>, session: c_lon
 /// `ReactorThread_onPipeRead`: a worker's message.
 extern "C" fn on_pipe_read(reactor: Running<'_>, event: &mut Event) -> c_int {
     let reactor = Reactor::running(reactor);
-    // SAFETY: the handler is registered only on server reactors.
+    // SAFETY: the handler is registered only on reactors that hold a server.
     let serv = unsafe { entry::server(reactor) };
     let mut ctx = ReactorContext::new(serv, Some(reactor));
     ctx.thread = serv
         .state()
         .tables_ref()
         .reactor_thread(usize::from(reactor.handle().id()));
-    pipe_read(&mut ctx, event).unwrap_or(-1)
+    pipe_read(&ctx, event).unwrap_or(-1)
 }
 
 /// `ReactorThread_onPipeRead`: the messages workers send their reactor thread,
 /// until the pipe is drained.
-fn pipe_read(ctx: &mut ReactorContext<'_>, event: &Event) -> Option<c_int> {
+fn pipe_read(ctx: &ReactorContext<'_>, event: &Event) -> Option<c_int> {
     let (serv, reactor) = (ctx.serv, ctx.reactor?);
     let state = serv.state();
     let thread = ctx.thread_record()?;
@@ -355,16 +355,11 @@ fn pipe_read(ctx: &mut ReactorContext<'_>, event: &Event) -> Option<c_int> {
             Some(ServerEvent::ShutdownSignal) => {
                 swoole_rs_process::os::kill(std::process::id().cast_signed(), libc::SIGTERM);
             }
-            Some(ServerEvent::Finish | ServerEvent::PipeMessage) => {
-                // SAFETY: the bus's buffer: its `EventData`, its head and the payload it
-                // counts.
-                let event =
-                    unsafe { swoole_rs_process::task_file::Packed::from_raw(bus.buffer().cast()) };
-                if head.event() == Some(ServerEvent::Finish) {
-                    let _ = state.callbacks.task(TaskSlot::Finish, serv, event);
-                } else {
-                    state.callbacks.pipe_message(serv, event);
-                }
+            Some(ServerEvent::Finish) => {
+                _ = bus.with_event(|event| state.callbacks.task(TaskSlot::Finish, serv, event));
+            }
+            Some(ServerEvent::PipeMessage) => {
+                _ = bus.with_event(|event| state.callbacks.pipe_message(serv, event));
             }
             Some(ServerEvent::CloseForce) => {
                 crate::reactor_thread::close(serv, reactor, session);
@@ -373,10 +368,8 @@ fn pipe_read(ctx: &mut ReactorContext<'_>, event: &Event) -> Option<c_int> {
                 factory::end(serv, session, CLOSE_ACTIVELY);
             }
             _ => {
-                bus.with_packet(|data| {
-                    let mut info = head;
-                    info.len = u32::try_from(data.len()).unwrap_or(u32::MAX);
-                    methods::send_event_to_connection(serv, &info, data);
+                bus.with_message(&head, |message| {
+                    methods::send_event_to_connection(serv, message.info(), message.payload());
                 });
             }
         }

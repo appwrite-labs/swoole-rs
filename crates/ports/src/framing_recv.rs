@@ -2,17 +2,17 @@
 // Compatibility derived from Swoole v6.2.4 src/protocol/base.cc (Swoole contributors).
 //! `Protocol::recv_with_length_protocol`, `recv_with_eof_protocol` and
 //! `recv_split_by_eof`: [`swoole_rs_framing::recv::recv`] with each effect on the socket,
-//! the buffer and the protocol's callbacks; `default_length_func`, under its upstream
-//! symbol; and `swoole_unpack` and `swoole_hton64`/`swoole_ntoh64`. Logs name the
+//! the buffer and the protocol's callbacks; `default_length_func`; and `swoole_unpack` and `swoole_hton64`/`swoole_ntoh64`. Logs name the
 //! upstream function that wrote them.
 use core::ffi::{CStr, c_int, c_void};
 use core::marker::PhantomData;
 use core::sync::atomic::Ordering;
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_clients::client::Framing;
+use swoole_rs_clients::protocol::Protocol;
 use swoole_rs_corebase::constants::FdType::SW_FD_SESSION;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR as LOG_ERROR, SW_LOG_WARNING as LOG_WARNING};
-use swoole_rs_corebase::net_types::{PacketLength, Protocol};
+use swoole_rs_corebase::net_types::{PacketLength, RecvData};
 use swoole_rs_corebase::{DataHead, log, swr_v1_core_pagesize};
 use swoole_rs_error::ErrorCode;
 use swoole_rs_framing::recv::{self, Buffer, Effects, recv};
@@ -25,13 +25,6 @@ use swoole_rs_reactor::{Caught, Socket, SocketFields, swr_v1_socket_reset_on_clo
 use swoole_rs_server::ConnectionRecord;
 
 const SW_ERR: isize = swoole_rs_corebase::constants::ResultCode::SW_ERR as isize;
-
-/// `swoole::RecvData`.
-#[repr(C)]
-struct RecvData {
-    info: DataHead,
-    data: *const u8,
-}
 
 /// One receive: what each effect acts on, live for the receive.
 pub(crate) struct Recv<'a> {
@@ -57,9 +50,11 @@ pub(crate) trait Packages {
     /// The fixed length header size, or `None` to ask the protocol's callbacks.
     const HEAD: Option<u32>;
     /// `get_package_length` over the buffered `bytes`.
-    fn length(r: &Recv<'_>, p: &Protocol, bytes: &[u8]) -> i64;
-    /// `onPackage` over the buffer `b`'s `offset` bytes (the awaited package) from byte `start`.
-    fn dispatch(r: &Recv<'_>, b: &CppString, start: usize) -> c_int;
+    fn length(r: &Recv<'_>, bytes: &[u8]) -> i64;
+    /// `onPackage` over the package at `data`, which the buffer's `offset` (read before
+    /// the call) measures. No reference to the buffer or protocol is held across it:
+    /// the callback may run PHP that rewrites the protocol or frees the buffer.
+    fn dispatch(r: &Recv<'_>, data: *const u8, offset: i64) -> c_int;
 }
 
 /// The protocol's own callbacks, as upstream calls them.
@@ -68,9 +63,9 @@ pub(crate) struct Callbacks;
 impl Packages for Callbacks {
     const HEAD: Option<u32> = None;
     #[inline(always)]
-    fn length(r: &Recv<'_>, p: &Protocol, bytes: &[u8]) -> i64 {
+    fn length(r: &Recv<'_>, bytes: &[u8]) -> i64 {
         let mut pl = PacketLength::new(bytes);
-        let Some(get) = p.get_package_length else {
+        let Some(get) = r.protocol().get_package_length else {
             return -1;
         };
         // SAFETY: upstream's call over the live protocol, socket and buffer.
@@ -78,18 +73,10 @@ impl Packages for Callbacks {
         length as i64
     }
     #[inline(always)]
-    fn dispatch(r: &Recv<'_>, b: &CppString, start: usize) -> c_int {
-        let length = b.offset().unsigned_abs();
-        // SAFETY: the live protocol and socket, and the package's `length` bytes from
-        // `start`, inside the buffer (the loop dispatches only a whole one).
-        unsafe {
-            dispatch(
-                r.protocol(),
-                r.socket,
-                b.as_ptr().wrapping_add(start),
-                length,
-            )
-        }
+    fn dispatch(r: &Recv<'_>, data: *const u8, offset: i64) -> c_int {
+        // SAFETY: the live protocol and socket, and the package's `offset` bytes at
+        // `data`, inside the buffer (the loop dispatches only a whole one).
+        unsafe { dispatch(r.protocol, r.socket, data, offset.unsigned_abs()) }
     }
 }
 
@@ -141,8 +128,15 @@ fn paused(socket: &SocketFields) -> bool {
 /// `onPackage` over `length` bytes at `data`, or `SW_ERR` without one.
 ///
 /// # Safety
-/// `length` readable bytes at `data`, a package of the socket `protocol` reads.
-unsafe fn dispatch(protocol: &Protocol, socket: Socket<'_>, data: *const u8, length: u64) -> c_int {
+/// `protocol` is live, and `length` readable bytes at `data` are a package of the
+/// socket it reads. It stays a pointer: `onPackage` may run PHP whose `set()`
+/// rewrites it.
+unsafe fn dispatch(
+    protocol: *const Protocol,
+    socket: Socket<'_>,
+    data: *const u8,
+    length: u64,
+) -> c_int {
     let packet = RecvData {
         info: DataHead {
             len: u32::try_from(length).unwrap_or(u32::MAX),
@@ -150,11 +144,10 @@ unsafe fn dispatch(protocol: &Protocol, socket: Socket<'_>, data: *const u8, len
         },
         data,
     };
-    match protocol.on_package {
+    // SAFETY: the live protocol, read before the call.
+    match unsafe { (*protocol).on_package } {
         // SAFETY: upstream's call, over the live protocol, socket and packet.
-        Some(on_package) => unsafe {
-            on_package(protocol, socket.as_ptr().cast(), (&raw const packet).cast())
-        },
+        Some(on_package) => unsafe { on_package(protocol, socket, &packet) },
         None => -1,
     }
 }
@@ -231,7 +224,6 @@ impl<K: Packages> Effects for With<'_, K> {
 fn effect<K: Packages>(r: &Recv<'_>, op: Op, arg: u64) -> i64 {
     // SAFETY: the receive's live buffer; no other reference to it is live.
     let b = unsafe { &mut *r.buffer };
-    let p = r.protocol();
     let s = r.socket;
     match op {
         Op::Recv => {
@@ -242,11 +234,14 @@ fn effect<K: Packages>(r: &Recv<'_>, op: Op, arg: u64) -> i64 {
             if n >= 0 {
                 return n as i64;
             }
-            rare(r, b, p, s, op, arg)
+            rare(r, b, s, op, arg)
         }
-        Op::GetLength => K::length(r, p, b.view().get(start(arg)..).unwrap_or_default()),
-        Op::Dispatch => i64::from(K::dispatch(r, b, start(arg))),
-        _ => rare(r, b, p, s, op, arg),
+        Op::GetLength => K::length(r, b.view().get(start(arg)..).unwrap_or_default()),
+        Op::Dispatch => {
+            let (data, offset) = (b.as_ptr().wrapping_add(start(arg)), b.offset());
+            i64::from(K::dispatch(r, data, offset))
+        }
+        _ => rare(r, b, s, op, arg),
     }
 }
 
@@ -259,7 +254,7 @@ fn start(arg: u64) -> usize {
 /// A failed `Op::Recv`, and the effects a frame rarely needs.
 #[cold]
 #[inline(never)]
-fn rare(r: &Recv<'_>, b: &mut CppString, p: &Protocol, s: Socket<'_>, op: Op, arg: u64) -> i64 {
+fn rare(r: &Recv<'_>, b: &mut CppString, s: Socket<'_>, op: Op, arg: u64) -> i64 {
     let length_mode = r.mode == Mode::Length;
     let origin = if length_mode {
         c"Protocol::recv_with_length_protocol"
@@ -300,14 +295,19 @@ fn rare(r: &Recv<'_>, b: &mut CppString, p: &Protocol, s: Socket<'_>, op: Op, ar
             0
         }
         Op::Split => {
+            // A copy: `onPackage` may run PHP whose `set()` rewrites the protocol.
+            let (eof, eof_len) = {
+                let p = r.protocol();
+                (p.package_eof, p.package_eof_len)
+            };
             // The protocol's settings bound the length by the array.
-            let Some(eof) = p.package_eof.get(..usize::from(p.package_eof_len)) else {
+            let Some(eof) = eof.get(..usize::from(eof_len)) else {
                 return -1;
             };
             // Each part to `onPackage`, while the socket stays.
             b.split(eof, |data, length| {
                 // SAFETY: the live protocol and socket, and the part inside the buffer.
-                let result = unsafe { dispatch(p, s, data, length as u64) };
+                let result = unsafe { dispatch(r.protocol, s, data, length as u64) };
                 result >= 0 && !s.read(|s| s.removed)
             }) as i64
         }
@@ -424,12 +424,6 @@ pub const FRAMING: Framing = unsafe { Framing::new(client_recv::<true>, client_r
 ///
 /// # Safety
 /// A live protocol and socket, and a packet whose `buf` holds `buf_size` bytes.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(
-        export_name = "_ZN6swoole8Protocol19default_length_funcEPKS0_PNS_7network6SocketEPNS_12PacketLengthE"
-    )
-)]
 pub unsafe extern "C" fn default_length_func(
     p: *const Protocol,
     socket: *mut c_void,
@@ -514,13 +508,11 @@ mod tests {
 
     unsafe extern "C-unwind" fn record(
         _: *const Protocol,
-        _: *mut c_void,
-        packet: *const c_void,
+        _: Socket<'_>,
+        packet: &RecvData,
     ) -> c_int {
-        let packet = packet.cast::<RecvData>();
         // SAFETY: the receive's packet, `len` bytes at `data`.
-        let bytes =
-            unsafe { core::slice::from_raw_parts((*packet).data, (*packet).info.len as usize) };
+        let bytes = unsafe { core::slice::from_raw_parts(packet.data, packet.info.len as usize) };
         PACKAGES.with_borrow_mut(|p| p.push(bytes.to_vec()));
         0
     }

@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #pragma once
 #include "swoole_rs_corebase_constants.h"
-#include "swoole_rs_corebase_string_slot.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>

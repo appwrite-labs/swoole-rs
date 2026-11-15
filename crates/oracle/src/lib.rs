@@ -504,6 +504,88 @@ pub mod socks5 {
     }
 
     pub const UPSTREAM: Run = swr_oracle_socks5_upstream;
+
+    /// One pinned `Socks5Proxy`'s fields, each string as its bytes and length,
+    /// copied into a proxy before each call below and out of it after.
+    #[repr(C)]
+    #[derive(Clone)]
+    pub struct Proxy {
+        pub host: [u8; 512],
+        pub host_length: usize,
+        pub username: [u8; 512],
+        pub username_length: usize,
+        pub password: [u8; 512],
+        pub password_length: usize,
+        pub target_host: [u8; 512],
+        pub target_host_length: usize,
+        pub port: i32,
+        pub target_port: i32,
+        pub socket_type: i32,
+        pub state: u8,
+        pub version: u8,
+        pub method: u8,
+        pub dns_tunnel: u8,
+        pub buf: [u8; 512],
+    }
+
+    impl Default for Proxy {
+        fn default() -> Self {
+            Self {
+                host: [0; 512],
+                host_length: 0,
+                username: [0; 512],
+                username_length: 0,
+                password: [0; 512],
+                password_length: 0,
+                target_host: [0; 512],
+                target_host_length: 0,
+                port: 0,
+                target_port: 0,
+                socket_type: 0,
+                state: 0,
+                version: 0,
+                method: 0,
+                dns_tunnel: 0,
+                buf: [0; 512],
+            }
+        }
+    }
+
+    // The pinned socks5.cc's members, one call each.
+    unsafe extern "C" {
+        /// `pack_negotiate_request()` (0), `pack_auth_request()` (1) or
+        /// `pack_connect_request()` (2).
+        #[link_name = "swr_oracle_socks5_pack"]
+        pub fn pack(proxy: *mut Proxy, request: i32) -> isize;
+        /// `handshake(reply, reply_length, send)`, whose send copies what it is given
+        /// to `wire` (512 bytes) and its length to `*wire_length`, and returns that
+        /// length when `sent` is 1, else `sent`.
+        #[link_name = "swr_oracle_socks5_handshake"]
+        pub fn handshake(
+            proxy: *mut Proxy,
+            reply: *const u8,
+            reply_length: usize,
+            sent: isize,
+            wire: *mut u8,
+            wire_length: *mut usize,
+        ) -> bool;
+        /// `Socks5Proxy::strerror(code)`, a static string.
+        #[link_name = "swr_oracle_socks5_strerror"]
+        pub fn strerror(code: i32) -> *const std::ffi::c_char;
+        /// `Socks5Proxy::create(...)`'s fields in `*out`; false when it refuses.
+        #[link_name = "swr_oracle_socks5_create"]
+        pub fn create(
+            socket_type: i32,
+            host: *const u8,
+            host_length: usize,
+            port: i32,
+            user: *const u8,
+            user_length: usize,
+            password: *const u8,
+            password_length: usize,
+            out: *mut Proxy,
+        ) -> bool;
+    }
 }
 
 pub mod http_range {

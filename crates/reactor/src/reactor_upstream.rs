@@ -17,42 +17,6 @@ pub fn trigger_close_event(reactor: crate::Running<'_>, event: &mut crate::Event
     handler(reactor, event)
 }
 
-/// `int Reactor::change(Socket *socket, uint32_t op, int events) const`: -1 for a null
-/// socket.
-///
-/// # Safety
-/// `reactor` is a live `Reactor` on this thread, which no Rust reference borrows, and
-/// `socket` null or a live record distinct from it that stays live while it is
-/// registered.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZNK6swoole7Reactor6changeEPNS_7network6SocketEji")
-)]
-pub unsafe extern "C" fn reactor_change(
-    reactor: *const c_void,
-    socket: *mut SocketRecord,
-    op: u32,
-    events: c_int,
-) -> c_int {
-    // SAFETY: as the caller promises: live while it is registered, which is all a
-    // registered socket's `'static` claims.
-    let Some(socket) = (unsafe { crate::Socket::from_ptr(socket) }) else {
-        return -1;
-    };
-    // SAFETY: as the caller promises.
-    let reactor = unsafe { crate::Running::new(reactor.cast_mut()) };
-    if change(
-        reactor,
-        socket,
-        crate::ChangeOp::from_code(op),
-        crate::Events::from_bits(events),
-    ) {
-        0
-    } else {
-        -1
-    }
-}
-
 /// `Reactor::add` or `set` of a socket that is never freed while registered: whether
 /// it worked.
 /// A registered record's address stays in the registry and with the kernel until its
@@ -96,7 +60,9 @@ pub fn reactor_del(reactor: crate::Running<'_>, socket: crate::Socket<'_>) -> bo
 /// `int Reactor::interest(Socket *socket, uint32_t kind, int event) const`.
 ///
 /// # Safety
-/// As [`reactor_change`].
+/// `reactor` is a live `Reactor` on this thread, which no Rust reference borrows, and
+/// `socket` null or a live record distinct from it that stays live while it is
+/// registered.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZNK6swoole7Reactor8interestEPNS_7network6SocketEji")
@@ -118,7 +84,12 @@ pub unsafe extern "C" fn reactor_interest(
         return 0;
     };
     // SAFETY: as the caller promises.
-    unsafe { reactor_change(reactor, socket, op.code(), events.bits()) }
+    let reactor = unsafe { crate::Running::new(reactor.cast_mut()) };
+    if change(reactor, record, op, events) {
+        0
+    } else {
+        -1
+    }
 }
 
 /// `void Reactor::set_handler(int fd_type, int event, ReactorHandler handler)`:

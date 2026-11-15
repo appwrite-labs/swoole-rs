@@ -2,7 +2,8 @@
 //! names: an `Rc`'s value, whose reference a [`Named`] owner beside the slot
 //! keeps.
 use std::{ffi::c_void, mem::ManuallyDrop, rc::Rc};
-use swoole_rs_corebase::net_types::{PacketLength, Protocol};
+use swoole_rs_clients::protocol::Protocol;
+use swoole_rs_corebase::net_types::PacketLength;
 use swoole_rs_zend::{bailout, host::callable::Callable};
 
 /// A callable a protocol's `private_data_1` names: the owner holds the

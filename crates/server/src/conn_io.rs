@@ -24,7 +24,6 @@ use swoole_rs_corebase::{CCast, DataHead, microtime};
 use swoole_rs_reactor::{Event, Socket, what_event_want};
 use swoole_rs_timer::{del_id, delay_held};
 use swoole_rs_tls::Accept;
-use swoole_rs_tls::swr_v1_tls_owner_view;
 use swoole_rs_tls::upstream as tls;
 
 use crate::base_factory::SendData;
@@ -138,7 +137,7 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
         conn.set_waiting_time(1);
         // The active connection's socket: the event's.
         if let Some(own) = conn.socket()
-            && resume_timer(serv, conn, own)
+            && resume_timer(conn, own)
         {
             reactor.interest(sock, swoole_rs_reactor::Interest::RemoveRead);
         }
@@ -241,26 +240,21 @@ fn certificate(
 
 /// Whether the TLS port has a client certificate file.
 fn client_cert_file(port: &PortConfig) -> bool {
-    let Some(context) = port.ssl_context.get() else {
-        return false;
-    };
-    // `client_cert_file`'s slot.
-    let slot = swr_v1_tls_owner_view(&context).strings[7];
-    // SAFETY: a stable slot of the port's live owner.
-    !unsafe { &*slot }.bytes().is_empty()
+    port.ssl_context
+        .get()
+        .is_some_and(|context| context.has_client_cert_file())
 }
 
 /// Arms `conn`'s resume timer for its paused `socket`, after its waiting time.
 ///
 /// The connection's own socket, which deletes this timer before it goes.
-fn resume_timer(serv: view::Server<'_>, conn: Connection<'_>, socket: Socket<'static>) -> bool {
+fn resume_timer(conn: Connection<'_>, socket: Socket<'static>) -> bool {
     let msec = c_long::from(conn.waiting_time());
-    let raw = serv.raw();
     let timer = swoole_rs_timer::add_fn(msec, false, move || {
-        // SAFETY: the server whose reactor armed the timer, which outlives the
-        // timers of its sockets.
-        let serv = unsafe { view::Server::from_raw(raw) };
-        resume_data_receiving(serv, socket);
+        // The server of the reactor that armed the timer: this thread's.
+        if let Some(serv) = Reactor::current().and_then(Reactor::server) {
+            resume_data_receiving(serv, socket);
+        }
     });
     conn.set_timer(timer);
     timer.is_some()
@@ -279,7 +273,7 @@ fn resume_data_receiving(serv: view::Server<'_>, socket: Socket<'static>) {
         if waiting != MAX_WAITING_TIME {
             conn.set_waiting_time(waiting.saturating_mul(2));
         }
-        if resume_timer(serv, conn, socket) {
+        if resume_timer(conn, socket) {
             return;
         }
     }
@@ -499,15 +493,12 @@ pub(crate) fn close_connection(
         return false;
     }
     count_close(state, port, reactor);
-    let (ssl, dtls, recv_buffer) = sock.read(|s| (!s.ssl().is_null(), s.dtls, s.recv_buffer));
+    let (ssl, recv_buffer) = sock.read(|s| (!s.ssl().is_null(), s.recv_buffer));
     if ssl {
         sock.edit(|s| s.ssl_quiet_shutdown = conn.peer_closed());
         // SAFETY: handles to a session live only for the operation that took them,
         // and native code closes it between operations.
         unsafe { tls::socket_ssl_close(sock) };
-    }
-    if let Some(port) = port.filter(|_| dtls) {
-        (crate::port_config::methods().dtls_free)(port, fd);
     }
     if !recv_buffer.is_null() {
         // SAFETY: the socket's `new String`, not used again.
@@ -515,12 +506,15 @@ pub(crate) fn close_connection(
         sock.edit(|s| s.recv_buffer = core::ptr::null_mut());
     }
     if let Some(port) = port {
-        if port.open_http_protocol.get() && !conn.object().is_null() {
+        if port.open_http_protocol.get() && conn.http_request().is_some() {
             (crate::port_config::methods().destroy_http_request)(conn);
         }
-        if port.open_redis_protocol.get() && !conn.object().is_null() {
-            // SAFETY: the redis request the connection owns, not used again.
-            unsafe { swoole_rs_corebase::sw_free(conn.object()) };
+        if port.open_redis_protocol.get()
+            && let Some(request) = conn.take_resp_request()
+        {
+            // SAFETY: the box the session's reactor, this one, gave the connection; the
+            // slot no longer names it.
+            drop(unsafe { Box::from_raw(request) });
         }
     }
     if let Some(session) = state.session(conn.session_id()) {
@@ -529,7 +523,7 @@ pub(crate) fn close_connection(
     lower_max_fd(state, fd);
     conn.active().store(0, Relaxed);
     conn.set_socket(None);
-    conn.set_object(core::ptr::null_mut());
+    conn.clear_object();
     // The slot's last write before close(fd): an accept that gets the fd back
     // acquires it (OP_CONN_RESET) before reusing the slot.
     conn.closed().store(1, Release);
@@ -560,7 +554,7 @@ fn queue_close(conn: Connection<'_>, sock: Socket<'_>) {
         let buffer = Some(new_buffer(SW_SEND_BUFFER_SIZE));
         sock.edit(|s| s.output.out_buffer = buffer);
     }
-    sock.read(|s| out_buffer(s).map(|b| swr_cpp_buffer_typed_close(b)));
+    sock.read(|s| out_buffer(s).map(swr_cpp_buffer_typed_close));
     conn.set_close_queued(true);
 }
 

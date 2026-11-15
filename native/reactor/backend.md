@@ -19,7 +19,7 @@ callbacks and exit conditions ([callbacks.md](callbacks.md)).
 
 ## Registration
 
-`add`/`set`/`del` on every backend are one Rust call, `swr_v1_reactor_change`.
+`add`/`set`/`del` on every backend are one Rust call, `reactor_upstream::change`.
 
 ## Wait
 

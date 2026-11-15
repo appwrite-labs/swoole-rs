@@ -85,13 +85,10 @@ impl<'a> Bus<'a> {
     pub(crate) fn allocator(self) -> TrustedAllocator {
         self.allocator
     }
-    /// The bus's buffer, which starts with the head of its message.
-    pub(crate) fn buffer(self) -> *mut DataHead {
-        self.rust().buffer()
-    }
+    /// The head of the message the bus holds.
+    #[inline]
     pub(crate) fn head(self) -> DataHead {
-        // SAFETY: the live bus's buffer.
-        unsafe { *self.buffer() }
+        self.rust().head()
     }
     /// The whole packet the bus holds.
     #[inline]
@@ -100,13 +97,49 @@ impl<'a> Bus<'a> {
     }
     /// `f` over the bytes of the packet the bus holds, which stay put while it runs.
     pub(crate) fn with_packet<R>(self, f: impl FnOnce(&[u8]) -> R) -> R {
+        self.with_message(&DataHead::default(), |message| f(message.payload()))
+    }
+    /// `f` over the message the bus holds: a copy of `info`, its `len` the packet's,
+    /// and the packet's bytes, which stay put while it runs.
+    #[inline]
+    pub(crate) fn with_message<R>(
+        self,
+        info: &DataHead,
+        f: impl FnOnce(&crate::base_factory::SendData<'_>) -> R,
+    ) -> R {
         let packet = self.packet();
-        if packet.data.is_null() {
-            return f(&[]);
+        let len = u32::try_from(packet.length).unwrap_or(u32::MAX);
+        // SAFETY: the bus's packet, `length` bytes (or null) it keeps until it pops or
+        // reads again, which this thread alone would do and not during `f`.
+        let message = unsafe {
+            crate::base_factory::SendData::from_raw(DataHead { len, ..*info }, packet.data)
+        };
+        f(&message)
+    }
+    /// `f` over the event the bus just read whole into its buffer, as its sender
+    /// packed it: an `EventData`, its head and the payload the head counts. `None`,
+    /// without calling `f`, while the bus holds its message elsewhere (chunked into a
+    /// packet, or passed by pointer).
+    #[cfg_attr(
+        not(all(feature = "upstream-symbols", not(test))),
+        expect(
+            dead_code,
+            reason = "only the hybrid's workers and reactors read events"
+        )
+    )]
+    pub(crate) fn with_event<R>(
+        self,
+        f: impl FnOnce(swoole_rs_process::task_file::Packed<'_>) -> R,
+    ) -> Option<R> {
+        if !self.rust().holds_whole() {
+            return None;
         }
-        // SAFETY: the bus's packet, `length` bytes it keeps until it pops or reads again,
-        // which this thread alone would do and not during `f`.
-        f(unsafe { core::slice::from_raw_parts(packet.data.cast_const().cast(), packet.length) })
+        // SAFETY: the buffer's head and the `len` bytes after it, within the buffer,
+        // which keeps them until the bus reads again or frees it, which this thread
+        // alone would do and not during `f`.
+        let event =
+            unsafe { swoole_rs_process::task_file::Packed::from_raw(self.rust().buffer().cast()) };
+        Some(f(event))
     }
     pub(crate) fn pop(self) {
         self.rust().pop();

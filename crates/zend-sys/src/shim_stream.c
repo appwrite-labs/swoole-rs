@@ -72,11 +72,6 @@ void swr_zend_stream_to_zval(php_stream *stream, zval *value) {
     php_stream_to_zval(stream, value);
 }
 
-void swr_zend_stream_timeval(const struct timeval *time, double *seconds, double *micros) {
-    *seconds = (double) time->tv_sec;
-    *micros = (double) time->tv_usec;
-}
-
 bool swr_zend_stream_vm_active(void) {
     return EG(active);
 }

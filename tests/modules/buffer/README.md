@@ -15,21 +15,21 @@ shared options in `tests/conftest.py` and read sources from `target/upstream/src
 | Command | Checks |
 | --- | --- |
 | `baseline.py --sanitize` | Pinned upstream only: original `core-tests/src/memory/buffer.cpp` assertions (64 seeded runs) plus a scatter/gather matrix that records upstream defects. |
-| `test_typed.py --archive A [--sanitize]` | Typed queue facade compiled and run under C++14/17/20. |
 
-`swoole::Buffer`'s methods are Rust (`crates/buffer/src/cpp.rs`) under their upstream
-symbols; `src/core/buffer.cc` is not built. Upstream's `core-tests/src/memory/buffer.cpp`
-is ported there, one Rust test per `TEST`:
+`swoole::Buffer`'s methods are Rust (`crates/buffer/src/cpp.rs`); no C++ calls them, so
+none has a symbol, and `src/core/buffer.cc` is not built. Upstream's
+`core-tests/src/memory/buffer.cpp` is ported there, one Rust test per `TEST`:
 
 | Upstream `TEST` | Rust test |
 | --- | --- |
 | `buffer.append_iov` | `cpp::tests::append_iov` (64 seeded runs of the same lengths, offsets and checks) |
 
-The project-written `iovec.cc` fixture is ported there too:
+The project-written fixtures are ported there too, with the same inputs and checks:
 
 | Fixture | Rust test |
 | --- | --- |
 | `iovec.cc` (twelve positive offset-0 vectors and the `iovec` layout) | `cpp::tests::positive_iovec_vectors` |
+| `typed.cc` (the DATA cursor and a CLOSE marker at chunk sizes 1, 3, 16 and 0, and the front's layout; its C++14/17/20 builds went with the C++ caller) | `cpp::tests::typed_queue_facade` |
 
 ## String gates
 
@@ -88,16 +88,6 @@ checkout (`target/upstream/src`).
   `python3 corpus/upstream/run.py --manifest tests/modules/buffer/originals.json --source S --engine upstream=SO --engine hybrid=SO --require-all --isolate-cases`.
   On Linux PHP 8.2 add `--php-extension curl --php-extension sockets` for both engines.
 
-## Benchmark
-
-Run only on an idle host. `benchmark.py --build-manifest M` compares optimized
-upstream and Rust queue consumers (append/pop, contiguous and vectored, 50,000
-cycles, five alternating repeats). To split preparation from timing:
-`--prepare-dir D --output P.json` compiles and runs untimed checks, then
-`--prepared-report P.json [--peek-front] --repeat 7 --iterations 10000 --output R`
-times the prepared binaries after checking their hashes. `--previous-build-manifest`
-adds a previous hybrid build to the comparison.
-
 ## Known failures and intentional differences
 
 - Upstream `Buffer::append(iovec)` defects, reproduced by `baseline.py`: chunk
@@ -119,7 +109,6 @@ adds a previous hybrid build to the comparison.
 | Responsibility | Owner |
 | --- | --- |
 | Queue chunks, bytes, count, offset validation, failure rollback | Rust |
-| `swoole::Buffer`'s methods, sendfile tokens and their disposers | Rust, under the upstream symbols |
-| POSIX iovec adaptation | Rust reads the `iovec` array in place |
+| `swoole::Buffer`'s methods, sendfile tokens and their disposers | Rust |
 | `swoole::String`'s methods (growth, edits, copy/move, search, split, random bytes) | Rust, under the upstream symbols, calling the String's own allocator |
 | `format_impl`'s printf varargs, inline accessors | C++ |

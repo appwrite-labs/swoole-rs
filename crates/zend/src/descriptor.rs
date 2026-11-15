@@ -1,12 +1,12 @@
 //! What a descriptor candidate (`php_swoole_convert_to_fd`) reads from a value,
 //! and the executor state an event loop checks around its wait.
 use crate::{
-    Class, Value, ZStr,
+    Array, Class, Value, ZStr,
     bailout::{self, Bailout},
-    sys::{IS_RESOURCE, swr_zend_event_socket_fd, swr_zend_stream_select_fd, zend_long},
+    sys::{IS_RESOURCE, php_stream_context, swr_zend_stream_select_fd, zend_long},
 };
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
-use std::ptr;
+use std::{marker::PhantomData, ptr, ptr::NonNull};
 
 unsafe extern "C" {
     /// `php_stream_from_zval_no_verify`: the stream a resource zval names, or
@@ -29,6 +29,10 @@ unsafe extern "C" {
         file: &mut *const c_char,
         line: &mut c_int,
     ) -> bool;
+    /// An ext/sockets `Socket`'s descriptor, with `closed` set when it was
+    /// closed; -2 for any other value, or without ext/sockets. It reads the
+    /// class table and the value only.
+    safe fn swr_zend_event_socket_fd(value: &Value, closed: &mut u8) -> c_int;
     /// `zend_memory_usage`: it reads the allocator's statistics.
     safe fn zend_memory_usage(real: bool) -> usize;
     /// Clears the executor's in-shutdown flag and returns whether it was set;
@@ -42,6 +46,33 @@ unsafe extern "C" {
     safe fn swr_zend_stack_unlimit(saved: &mut [*mut c_void; 2]);
     /// Sets the executor's stack limit and base to `saved`'s.
     safe fn swr_zend_stack_restore(saved: &[*mut c_void; 2]);
+    /// `Z_ARRVAL(context->options)`, null (`None`) when they are no array.
+    safe fn swr_zend_stream_context_options<'a>(context: StreamContext<'a>) -> Option<&'a Array>;
+}
+
+/// A `php_stream_context` that lives for `'a`. Rust never makes one: it is a
+/// parameter, or a return value, of this type on the C boundary, where Zend's
+/// non-null `php_stream_context *` (a factory's argument, a stream's context)
+/// stands for the constructor, as a `&T` there does.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct StreamContext<'a>(
+    NonNull<php_stream_context>,
+    PhantomData<&'a php_stream_context>,
+);
+
+impl<'a> StreamContext<'a> {
+    #[must_use]
+    pub fn as_ptr(self) -> *mut php_stream_context {
+        self.0.as_ptr()
+    }
+
+    /// The context's options (`wrapper => [name => value]`), none when they are
+    /// no array. They live until PHP code changes the context.
+    #[must_use]
+    pub fn options(self) -> Option<&'a Array> {
+        swr_zend_stream_context_options(self)
+    }
 }
 
 impl Value {
@@ -107,8 +138,7 @@ impl Value {
     pub fn php_socket_fd(&self) -> Option<(c_int, bool)> {
         self.object()?;
         let mut closed = 0;
-        // SAFETY: a live object zval.
-        let fd = unsafe { swr_zend_event_socket_fd(self.as_ptr(), &raw mut closed) };
+        let fd = swr_zend_event_socket_fd(self, &mut closed);
         (fd != -2).then_some((fd, closed != 0))
     }
 }

@@ -2,16 +2,11 @@
 //! [`recv_packet`] loop over the connection's own records.
 use core::ffi::c_int;
 use swoole_rs_buffer::string::CppString;
-use swoole_rs_corebase::{DataHead, log, net_types::Protocol};
-use swoole_rs_protocols_ffi::{Dispatched, ORIGIN, Received, RespConnection, RespRequest, request};
+use swoole_rs_clients::protocol::Protocol;
+use swoole_rs_corebase::net_types::RecvData;
+use swoole_rs_corebase::{DataHead, log};
+use swoole_rs_protocols_ffi::{Dispatched, ORIGIN, Received, RespConnection, RespRequest};
 use swoole_rs_reactor::{Caught, Socket};
-
-/// `swoole::RecvData`.
-#[repr(C)]
-struct RecvData {
-    info: DataHead,
-    data: *const u8,
-}
 
 /// The connection's protocol, socket, receive buffer and request. The buffer and
 /// request stay raw: `onPackage` may free both.
@@ -34,10 +29,8 @@ impl RespConnection for Connection<'_> {
     fn recv(&mut self) -> Received {
         let socket = self.socket;
         let buffer = self.string();
-        let received = swoole_rs_tls::upstream::recv(socket, buffer.spare(), 0);
+        let received = swoole_rs_tls::upstream::recv_append(socket, buffer);
         if let Ok(received) = usize::try_from(received) {
-            // SAFETY: the read initialized the `received` spare bytes after the content.
-            unsafe { buffer.set_len(buffer.len() + received) };
             return Received::Bytes(received);
         }
         let error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
@@ -80,14 +73,7 @@ impl RespConnection for Connection<'_> {
             return Dispatched::Failed;
         };
         // SAFETY: upstream's call, over the live protocol, socket and packet.
-        if unsafe {
-            on_package(
-                self.protocol,
-                self.socket.as_ptr().cast(),
-                (&raw const data).cast(),
-            )
-        } < 0
-        {
+        if unsafe { on_package(self.protocol, self.socket, &data) } < 0 {
             return Dispatched::Failed;
         }
         if self.socket.read(|s| s.removed) {
@@ -106,19 +92,19 @@ impl RespConnection for Connection<'_> {
 /// protocol, record and `socket`: whether the connection stays open.
 ///
 /// # Safety
-/// `buffer` is live; `conn->object` is null or this receive's request.
+/// `buffer` is live, and `conn` is a session of this reactor's redis port, whose
+/// request state, if any, this reactor made.
 pub(crate) unsafe fn recv_packet(
     protocol: &Protocol,
     conn: swoole_rs_server::Connection<'_>,
     socket: Socket<'_>,
     buffer: *mut CppString,
 ) -> bool {
-    let mut slot = conn.object().cast::<RespRequest>();
-    let request = request(&mut slot);
-    conn.set_object(slot.cast());
-    if request.is_null() {
-        return false;
-    }
+    // Zeroed, which every field of a RespRequest takes (`RespState::TotalLine`).
+    let request = match conn.resp_request() {
+        Some(request) => request,
+        None => conn.set_resp_request(Box::default()),
+    };
     let mut connection = Connection {
         protocol,
         socket,
@@ -167,7 +153,8 @@ mod tests {
         assert_eq!(buffer.len(), 1);
         assert_eq!(buffer.size(), buffer_size);
 
-        unsafe { libc::free(conn.object) };
+        let request = swoole_rs_server::Connection::from(&mut conn).take_resp_request();
+        drop(unsafe { Box::from_raw(request.unwrap()) });
         buffer.dispose();
         unsafe { libc::close(pairs[1]) };
     }

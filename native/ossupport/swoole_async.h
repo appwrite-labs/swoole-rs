@@ -11,7 +11,6 @@
 #include "swoole_socket.h"
 
 #include <vector>
-#include "swoole_rs_corebase_string_view.h"
 
 struct swr_v1_core_resolver;
 

@@ -9,6 +9,3 @@
 )]
 
 pub mod frame_api;
-
-/// A frame's opcode, for callers that reach the codec only through this crate.
-pub use swoole_rs_websocket::Opcode;
