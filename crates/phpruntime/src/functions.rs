@@ -113,7 +113,7 @@ struct Table {
     /// and arginfo before its first hook this request.
     originals: HashMap<Box<[u8]>, (zif_handler, *mut zend_internal_arg_info)>,
     /// `child_class_entries`: classes given a parent, by name.
-    children: HashMap<Box<[u8]>, Class>,
+    children: HashMap<Box<[u8]>, ClassRef>,
 }
 
 #[expect(
@@ -437,22 +437,23 @@ pub(crate) fn user_func(call: &Call) -> Result<(), Bailout> {
     unsafe { bailout::call(&raw mut fci, fcc) }.map(|_| ())
 }
 
-/// A class Zend's class table held when [`Class::lookup`] found it: Zend frees
+/// A class Zend's class table held when [`ClassRef::lookup`] or
+/// [`crate::class`] found it: Zend frees
 /// none during a request, and RSHUTDOWN ([`finish`]) drops every one kept.
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
-struct Class(NonNull<zend_class_entry>);
+pub(crate) struct ClassRef(NonNull<zend_class_entry>);
 
 unsafe extern "C" {
     /// `ce->parent`, or null.
-    safe fn swr_zend_runtime_parent(ce: Class) -> Option<Class>;
+    safe fn swr_zend_runtime_parent(ce: ClassRef) -> Option<ClassRef>;
     /// `ce->parent = parent`, on the main thread, which the hooks edit on.
-    safe fn swr_zend_runtime_set_parent(ce: Class, parent: Option<Class>);
+    safe fn swr_zend_runtime_set_parent(ce: ClassRef, parent: Option<ClassRef>);
     /// `instanceof_function(child, parent)`.
-    safe fn swr_zend_runtime_instanceof(child: Class, parent: Class) -> bool;
+    safe fn swr_zend_runtime_instanceof(child: ClassRef, parent: ClassRef) -> bool;
 }
 
-impl Class {
+impl ClassRef {
     /// `zend_lookup_class`, which may run an autoloader.
     fn lookup(name: &CStr) -> Result<Option<Self>, Bailout> {
         swoole_rs_zend::lookup_class(&ZString::new(name.to_bytes()))
@@ -462,8 +463,8 @@ impl Class {
 
 /// `inherit_class(child, parent)`: make `parent` the root of `child`'s chain.
 fn inherit_class(child_name: &CStr, parent_name: &CStr) -> Result<(), Bailout> {
-    let child = Class::lookup(child_name)?;
-    let (Some(child), Some(parent_ce)) = (child, Class::lookup(parent_name)?) else {
+    let child = ClassRef::lookup(child_name)?;
+    let (Some(child), Some(parent_ce)) = (child, ClassRef::lookup(parent_name)?) else {
         return Ok(());
     };
     if swr_zend_runtime_instanceof(child, parent_ce) {
@@ -491,7 +492,7 @@ fn detach_parent(child: &CStr) {
 }
 
 /// `start_detach_parent_class`: cut the root grafted on last.
-fn detach_class(ce: Class) {
+fn detach_class(ce: ClassRef) {
     let mut below = ce;
     let Some(mut above) = swr_zend_runtime_parent(ce) else {
         return;
