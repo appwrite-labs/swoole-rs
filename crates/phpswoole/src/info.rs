@@ -1,28 +1,37 @@
 //! PHP information output and conditional row ordering owned by the module.
-use std::ffi::{CStr, CString, c_char, c_void};
-use swoole_rs_corebase::{Switch as C, built_with, switches::SWITCHES};
+use std::ffi::{CStr, CString, c_int, c_void};
+use swoole_rs_corebase::{Switch as C, built_with, switches::SWITCHES, sys::Text};
 use swoole_rs_zend::{
     bailout::{self, Bailout},
-    sys::{
-        swr_zend_try_info_end, swr_zend_try_info_header, swr_zend_try_info_ini,
-        swr_zend_try_info_row, swr_zend_try_info_start, zend_module_entry,
-    },
+    contain_with,
+    sys::{swr_zend_try_info_ini, zend_module_entry},
 };
 
 /// The headers' and libraries' versions (native/phphelpers/host.c), with no
-/// PHP output or row policy.
+/// PHP output or row policy: static strings, or none.
 #[repr(C)]
+#[derive(Default)]
 pub(crate) struct Info {
-    built: *const c_char,
-    openssl: *const c_char,
-    curl: *const c_char,
-    cares: *const c_char,
-    zlib: *const c_char,
-    zstd: *const c_char,
+    built: Option<Text<'static>>,
+    openssl: Option<Text<'static>>,
+    curl: Option<Text<'static>>,
+    cares: Option<Text<'static>>,
+    zlib: Option<Text<'static>>,
+    zstd: Option<Text<'static>>,
 }
 unsafe extern "C" {
     /// Fills every field with a static string, or leaves it null.
     safe fn swr_phpswoole_versions(info: &mut Info);
+}
+
+// crates/zend-sys' information-table shims: each prints the strings it is lent,
+// which it only reads, inside `zend_try`, and returns whether output bailed out.
+unsafe extern "C" {
+    safe fn swr_zend_try_info_start() -> c_int;
+    safe fn swr_zend_try_info_header(key: Text<'_>, value: Text<'_>) -> c_int;
+    /// A null value prints as none, as `php_info_print_table_row` does.
+    safe fn swr_zend_try_info_row(key: Text<'_>, value: Option<Text<'_>>) -> c_int;
+    safe fn swr_zend_try_info_end() -> c_int;
 }
 
 fn contained(bailed: impl Into<i32>) -> Result<(), Bailout> {
@@ -32,31 +41,30 @@ fn contained(bailed: impl Into<i32>) -> Result<(), Bailout> {
         Err(Bailout)
     }
 }
-fn row(key: &CStr, value: *const c_char) -> Result<(), Bailout> {
-    // SAFETY: keys are static and values are live NUL-terminated native or Rust strings;
-    // this leaf traps output-handler bailouts below every Rust string owner.
-    contained(unsafe { swr_zend_try_info_row(key.as_ptr(), value) })
+fn row<'a>(key: &CStr, value: impl Into<Option<Text<'a>>>) -> Result<(), Bailout> {
+    contained(swr_zend_try_info_row(key.into(), value.into()))
 }
 fn text(key: &CStr, value: &str) -> Result<(), Bailout> {
     let value = CString::new(value).map_err(|_| Bailout)?;
-    row(key, value.as_ptr())
+    row(key, Text::from(value.as_c_str()))
 }
 impl Info {
     fn enabled(first: C, last: C) -> Result<(), Bailout> {
         for &(switch, _, label) in SWITCHES {
             if (first as u8..=last as u8).contains(&(switch as u8)) && built_with(switch) {
-                row(label, c"enabled".as_ptr())?;
+                row(label, Text::from(c"enabled"))?;
             }
         }
         Ok(())
     }
     fn output(&self, module: *mut c_void) -> Result<(), Bailout> {
-        // SAFETY: a single PHP output effect is guarded below this Rust frame.
-        contained(unsafe { swr_zend_try_info_start() })?;
-        // SAFETY: both header strings have static lifetime; output bailouts are trapped.
-        contained(unsafe { swr_zend_try_info_header(c"Swoole".as_ptr(), c"enabled".as_ptr()) })?;
-        row(c"Author", c"Swoole Team <team@swoole.com>".as_ptr())?;
-        row(c"Version", crate::constants::VERSION.as_ptr())?;
+        contained(swr_zend_try_info_start())?;
+        contained(swr_zend_try_info_header(
+            c"Swoole".into(),
+            c"enabled".into(),
+        ))?;
+        row(c"Author", Text::from(c"Swoole Team <team@swoole.com>"))?;
+        row(c"Version", Text::from(crate::constants::VERSION))?;
         let abi = swoole_rs_error::swr_v1_abi_version();
         let features = swoole_rs_error::swr_v1_feature_bits();
         text(
@@ -64,31 +72,25 @@ impl Info {
             &format!("ABI {abi}, features {features}"),
         )?;
         row(c"Built", self.built)?;
-        row(
-            c"host byte order",
-            if cfg!(target_endian = "little") {
-                c"little endian"
-            } else {
-                c"big endian"
-            }
-            .as_ptr(),
-        )?;
-        row(
-            c"coroutine",
-            if built_with(C::ThreadContext) {
-                c"enabled with thread context"
-            } else if built_with(C::AsmContext) {
-                c"enabled with boost asm context"
-            } else {
-                c"enabled with ucontext"
-            }
-            .as_ptr(),
-        )?;
+        let order = if cfg!(target_endian = "little") {
+            c"little endian"
+        } else {
+            c"big endian"
+        };
+        row(c"host byte order", Text::from(order))?;
+        let coroutine = if built_with(C::ThreadContext) {
+            c"enabled with thread context"
+        } else if built_with(C::AsmContext) {
+            c"enabled with boost asm context"
+        } else {
+            c"enabled with ucontext"
+        };
+        row(c"coroutine", Text::from(coroutine))?;
         Self::enabled(C::Debug, C::Sockets)?;
         row(c"openssl", self.openssl)?;
         Self::enabled(C::Dtls, C::Dtls)?;
-        row(c"http2", c"enabled".as_ptr())?;
-        row(c"json", c"enabled".as_ptr())?;
+        row(c"http2", Text::from(c"enabled"))?;
+        row(c"json", Text::from(c"enabled"))?;
         if built_with(C::Curl) {
             Self::enabled(C::Curl, C::Curl)?;
             row(c"curl-version", self.curl)?;
@@ -109,7 +111,7 @@ impl Info {
         #[cfg(feature = "pgsql")]
         {
             text(c"postgresql(libpq) version", &swoole_rs_pgsql::version())?;
-            row(c"coroutine_pgsql", c"enabled".as_ptr())?;
+            row(c"coroutine_pgsql", Text::from(c"enabled"))?;
         }
         Self::enabled(C::Odbc, C::UringSocket)?;
         if built_with(C::Stacktrace) {
@@ -117,11 +119,9 @@ impl Info {
         } else {
             Self::enabled(C::Execinfo, C::Execinfo)?;
         }
-        // SAFETY: ssh2's MINFO, a native body whose bailout the trap's
-        // setjmp catches below every Rust frame; PHP lends its live module entry.
-        unsafe { bailout::trap(crate::optional::client_minfo, module) }?;
-        // SAFETY: closes the PHP information table; output bailouts are contained.
-        contained(unsafe { swr_zend_try_info_end() })?;
+        // ssh2's MINFO, whose bailout the trap catches below every Rust frame.
+        contain_with(crate::optional::client_minfo)?;
+        contained(swr_zend_try_info_end())?;
         // SAFETY: the live module entry selects its registered INI entries; guarded below Rust.
         contained(unsafe { swr_zend_try_info_ini(module) })
     }
@@ -132,15 +132,7 @@ impl Info {
 /// Zend's MINFO, with the module's live entry.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swr_v1_phpswoole_minfo(module: *mut zend_module_entry) {
-    let null = std::ptr::null();
-    let mut info = Info {
-        built: null,
-        openssl: null,
-        curl: null,
-        cares: null,
-        zlib: null,
-        zstd: null,
-    };
+    let mut info = Info::default();
     swr_phpswoole_versions(&mut info);
     bailout::raise(info.output(module.cast()));
 }

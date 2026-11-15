@@ -7,7 +7,7 @@
 use crate::{Switch, optional};
 use std::{
     cell::Cell,
-    ffi::{CStr, c_char, c_int, c_long, c_void},
+    ffi::{CStr, c_int, c_long, c_void},
     ptr,
     sync::OnceLock,
 };
@@ -23,20 +23,27 @@ use swoole_rs_zend::{
     sys::{
         HashTable, swr_zend_after_fork, swr_zend_execute_ex_reset, swr_zend_execute_ex_restore,
         swr_zend_fatal_error, swr_zend_leak_check, swr_zend_module_globals,
-        swr_zend_module_globals_init, swr_zend_print_stack_trace,
-        swr_zend_register_shutdown_function, swr_zend_runtime_call_handler,
-        swr_zend_stream_constant_no_close, swr_zend_try_hook, zend_class_entry,
+        swr_zend_print_stack_trace, swr_zend_register_shutdown_function,
+        swr_zend_runtime_call_handler, swr_zend_stream_constant_no_close, swr_zend_try_hook,
+        zend_class_entry,
     },
 };
 
 unsafe extern "C" {
     /// `php_get_temporary_directory()`: PHP's temporary directory, which it
-    /// works out once per request and keeps.
-    safe fn swr_zend_temporary_directory() -> *const c_char;
+    /// works out once and keeps until PHP shuts down.
+    safe fn swr_zend_temporary_directory() -> Text<'static>;
     /// Whether the compiler is preloading: one flag of its globals is read.
     safe fn swr_zend_compiling_preload() -> c_int;
     /// `SIGG(check) = 0`: one flag of Zend's signal globals is cleared.
     safe fn swr_zend_signals_uncheck();
+    /// `ZEND_INIT_MODULE_GLOBALS`: `ctor` runs on the NTS storage now, or on each
+    /// thread's under ZTS; what the ini entries take comes back.
+    fn swr_zend_module_globals_init(
+        nts: *mut c_void,
+        size: usize,
+        ctor: extern "C" fn(&Globals),
+    ) -> *mut c_void;
 }
 
 /// `zend_swoole_globals` (`php_swoole.h`'s layout, which Zend's ini handlers
@@ -126,7 +133,7 @@ pub(crate) fn globals_init() -> *mut c_void {
         swr_zend_module_globals_init(
             (&raw mut swoole_globals).cast(),
             size_of::<Globals>(),
-            Some(init_globals),
+            init_globals,
         )
     }
 }
@@ -531,12 +538,9 @@ pub fn load_library() -> Result<(), Bailout> {
 }
 
 /// `swoole_globals`' defaults (`php_swoole_init_globals`), before the ini
-/// entries apply.
-/// # Safety
-/// Zend's `ZEND_INIT_MODULE_GLOBALS` constructor, with this thread's globals.
-unsafe extern "C" fn init_globals(globals: *mut c_void) {
-    // SAFETY: per the caller, and nothing else reads them yet.
-    let globals = unsafe { &*globals.cast::<Globals>() };
+/// entries apply: Zend's `ZEND_INIT_MODULE_GLOBALS` constructor, with a
+/// thread's globals.
+extern "C" fn init_globals(globals: &Globals) {
     globals.enable_library.set(true);
     globals.enable_fiber_mock.set(false);
     globals.enable_preemptive_scheduler.set(false);
@@ -598,10 +602,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, _module_number: c_
     globals.req_status.set(ReqStatus::RinitBegin);
     // Task files go to `sys_get_temp_dir()`: `/tmp` does not exist everywhere
     // (Android, termux).
-    let directory = swr_zend_temporary_directory();
-    // SAFETY: PHP's directory, a NUL-terminated path that lives for the
-    // request; the setter copies it.
-    swoole_rs_corebase::set_task_tmpdir(unsafe { CStr::from_ptr(directory) });
+    swoole_rs_corebase::set_task_tmpdir(swr_zend_temporary_directory().get());
     php_swoole_register_shutdown_function(c"swoole_internal_call_user_shutdown_begin");
     if globals.enable_library.get() && swr_zend_compiling_preload() == 0 {
         // xdebug hooks zend_execute_ex, under which the library does not load

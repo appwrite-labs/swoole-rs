@@ -4,7 +4,7 @@
 //! hybrid turns on with their configure switches) and `Swoole\Thread`
 //! (`SW_THREAD`, [`built_with`]).
 use crate::module::{Families, Step, families};
-use std::ffi::{c_int, c_void};
+use std::ffi::c_int;
 use swoole_rs_corebase::{Switch, built_with};
 use swoole_rs_zend::{Owned, Value};
 
@@ -13,7 +13,8 @@ use swoole_rs_zend::{Owned, Value};
 unsafe extern "C" {
     fn php_swoole_ssh2_minit(module_number: c_int) -> c_int;
     fn php_swoole_ssh2_mshutdown() -> c_int;
-    fn php_swoole_ssh2_minfo();
+    /// ssh2's information table: rows of its static version strings, printed.
+    safe fn php_swoole_ssh2_minfo();
 }
 
 #[cfg(feature = "sockets")]
@@ -21,7 +22,7 @@ unsafe extern "C" {
 unsafe extern "C" {
     /// Written once, by ext/sockets' MINIT, before any request reads it.
     safe static socket_ce: *mut swoole_rs_zend::sys::zend_class_entry;
-    fn socket_import_file_descriptor(fd: c_int, socket: *mut c_void) -> bool;
+    fn socket_import_file_descriptor(fd: c_int, socket: *mut std::ffi::c_void) -> bool;
 }
 
 /// MINIT, after the HTTP/2 client: ssh2's.
@@ -53,15 +54,9 @@ extern "C" fn ssh2_mshutdown() {
 }
 
 /// MINFO's ssh2 table, a `zend_try` body.
-/// # Safety
-/// MINFO, with the module's live entry.
-pub(crate) unsafe extern "C" fn client_minfo(module: *mut c_void) {
+pub(crate) fn client_minfo() {
     #[cfg(feature = "ssh2")]
-    // SAFETY: per the caller.
-    unsafe {
-        php_swoole_ssh2_minfo();
-    }
-    let _ = module;
+    php_swoole_ssh2_minfo();
 }
 
 /// A duplicate of an ext/sockets `Socket`'s descriptor; -1 after throwing
