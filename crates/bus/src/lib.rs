@@ -64,6 +64,21 @@ pub struct BusPacket {
     pub data: *mut c_char,
 }
 
+/// No packet.
+const EMPTY: BusPacket = BusPacket {
+    length: 0,
+    data: ptr::null_mut(),
+};
+
+/// A set buffer's first [`BUFFER_MIN`] bytes: the current message's head, then the
+/// packet [`Bus::pass`] points the message at.
+#[repr(C)]
+struct Front {
+    head: Cell<BusHead>,
+    packet: Cell<BusPacket>,
+}
+const _: () = assert!(size_of::<Front>() == BUFFER_MIN, "a header and a PacketPtr");
+
 /// One read's progress across the allocations it asks for.
 struct BusRead {
     /// Buffered reads: the datagram's length, kept across an allocation.
@@ -206,13 +221,19 @@ impl Bus {
         }
     }
 
-    /// The set buffer's header, shared with the reads and writes that go through the
+    /// The set buffer's front, shared with the reads and writes that go through the
     /// buffer's pointer; `None` while no buffer is set.
+    fn front(&self) -> Option<&Front> {
+        // SAFETY: null, or the buffer `alloc_buffer` made: an allocator's block (so
+        // aligned) of at least `BUFFER_MIN` bytes, which start with the `Front` it
+        // wrote. Reads write only bytes into it, and any bytes are a `Front`. It lives
+        // until `free_buffer`, which no caller of this reaches while it holds the front.
+        unsafe { self.buffer.get().cast::<Front>().as_ref() }
+    }
+
+    /// The set buffer's header; `None` while no buffer is set.
     fn head_cell(&self) -> Option<&Cell<BusHead>> {
-        // SAFETY: null, or the buffer `alloc_buffer` made, which starts with the
-        // header it wrote and lives until `free_buffer`, which no caller of this
-        // reaches while it holds the header.
-        unsafe { self.buffer.get().cast::<Cell<BusHead>>().as_ref() }
+        self.front().map(|front| &front.head)
     }
 
     /// The current message's head; an empty one while no buffer is set.
@@ -277,19 +298,16 @@ impl Bus {
     pub fn packet(&self) -> BusPacket {
         let head = self.head();
         if head.flags & PTR != 0 {
-            // SAFETY: `pass` stored a `BusPacket` at the start of the data.
-            unsafe { self.data().cast::<BusPacket>().read_unaligned() }
+            // `pass` stored it.
+            self.front().map_or(EMPTY, |front| front.packet.get())
         } else if head.flags & OBJ_PTR != 0 {
-            self.packets.borrow().get(&head.msg_id).map_or(
-                BusPacket {
-                    length: 0,
-                    data: ptr::null_mut(),
-                },
-                |p| BusPacket {
+            self.packets
+                .borrow()
+                .get(&head.msg_id)
+                .map_or(EMPTY, |p| BusPacket {
                     length: p.length,
                     data: p.data.cast(),
-                },
-            )
+                })
         } else {
             BusPacket {
                 length: head.len as usize,
@@ -301,7 +319,7 @@ impl Bus {
     /// `MessageBus::pass`: the buffer points at `data` instead of holding it; nothing
     /// while no buffer is set.
     pub fn pass(&self, info: &BusHead, data: *const c_char) {
-        let Some(current) = self.head_cell() else {
+        let Some(current) = self.front() else {
             return;
         };
         let mut head = *info;
@@ -312,10 +330,9 @@ impl Bus {
                 length: info.len as usize,
                 data: data.cast_mut(),
             };
-            // SAFETY: the buffer holds at least a header and a pointer pair.
-            unsafe { self.data().cast::<BusPacket>().write_unaligned(packet) };
+            current.packet.set(packet);
         }
-        current.set(head);
+        current.head.set(head);
     }
 
     /// `MessageBus::move_packet`: the current packet's block, now the caller's.
@@ -689,8 +706,12 @@ impl Bus {
         self.buffer.set(buffer);
         self.buffer_owner.set(Some(allocator));
         if !buffer.is_null() {
-            // SAFETY: the fresh block, at least a header long and aligned for one.
-            unsafe { buffer.write(BusHead::default()) };
+            let front = Front {
+                head: Cell::new(BusHead::default()),
+                packet: Cell::new(EMPTY),
+            };
+            // SAFETY: the fresh block, at least a `Front` long and aligned for one.
+            unsafe { buffer.cast::<Front>().write(front) };
         }
         !buffer.is_null()
     }
