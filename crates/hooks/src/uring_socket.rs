@@ -8,7 +8,7 @@
 //! socket's own members (`socket_members.rs`, `socket_tls.rs`, `lifecycle.rs`)
 //! take these paths for it.
 use crate::co_io::{available, check, owned_err, set_err};
-use crate::co_socket::Co;
+use crate::co_socket::{Co, OwnedCo};
 use crate::uring::{self, Host};
 use crate::uring_tls::{SSL_BAD_PROTOCOL, Tls, TlsSocket};
 use crate::vector::{IoVector, Lent, RecvMessage, SendMessage};
@@ -400,7 +400,7 @@ pub(crate) fn swr_v1_hook_uring_poll(
 /// `UringSocket::accept`'s connection: the ring's accept (under the read timeout,
 /// not the caller's, as upstream) as a new `UringSocket`, or none with the error
 /// set. `socket` is available, in a coroutine, and `ops` is its view.
-pub(crate) fn accept(socket: Co, ops: &UringSocketOps<'_>) -> Option<Co> {
+pub(crate) fn accept(socket: Co, ops: &UringSocketOps<'_>) -> Option<OwnedCo> {
     let mut conn = SocketRecord::new();
     let fd = swr_v1_hook_uring_accept(ops, &mut conn.info);
     if fd < 0 {
@@ -414,7 +414,7 @@ pub(crate) fn accept(socket: Co, ops: &UringSocketOps<'_>) -> Option<Co> {
     conn.output.nonblock = true;
     conn.cloexec = true;
     let client = socket.adopt(Box::new(conn));
-    crate::socket_extra::swr_v1_hook_co_socket_uring(client);
+    crate::socket_extra::swr_v1_hook_co_socket_uring(client.co());
     Some(client)
 }
 

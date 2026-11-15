@@ -898,10 +898,38 @@ impl CoSocket {
     }
 }
 
+/// A socket Rust made or accepted, which only this holds: dropping it deletes it
+/// ([`swr_v1_hook_co_socket_free`]). Only [`owned`] and [`accepted`] make one.
+pub(crate) struct OwnedCo(Co);
+
+impl OwnedCo {
+    /// The socket, live while this is.
+    pub(crate) const fn co(&self) -> Co {
+        self.0
+    }
+
+    /// The socket, handed on to whoever deletes it next.
+    pub(crate) fn into_co(self) -> Co {
+        core::mem::ManuallyDrop::new(self).0
+    }
+}
+
+impl Drop for OwnedCo {
+    fn drop(&mut self) {
+        // SAFETY: `make` or `accepted` made it, and nothing else holds it.
+        unsafe { swr_v1_hook_co_socket_free(self.0.this()) };
+    }
+}
+
+/// [`make`]'s socket, which only the result holds.
+pub(crate) fn owned(fd: c_int, domain: c_int, kind: c_int, protocol: c_int) -> OwnedCo {
+    OwnedCo(make(fd, domain, kind, protocol, false))
+}
+
 /// `new Socket(conn, server)`, the accepting constructor: `conn`, accepted on
 /// `server`, with the server's type, framing and timeouts, connected; `accept`
-/// shares the TLS context after. [`swr_v1_hook_co_socket_free`] releases it.
-pub(crate) fn accepted(server: Co, mut conn: Box<SocketRecord>) -> Co {
+/// shares the TLS context after.
+pub(crate) fn accepted(server: Co, mut conn: Box<SocketRecord>) -> OwnedCo {
     let mut socket = Box::new(CoSocket::new());
     let owner = ptr::from_mut(&mut *socket).cast::<c_void>();
     let timeouts = server.net(|record| record.timeouts);
@@ -925,9 +953,9 @@ pub(crate) fn accepted(server: Co, mut conn: Box<SocketRecord>) -> Co {
     socket.http2.set(server.http2());
     socket.protocol.set(server.protocol());
     socket.ssl_is_server.set(server.ssl_is_server());
-    let socket = socket.into_co();
-    swr_v1_hook_co_socket_created(socket, result);
-    socket.with_state(|state| state.flags.connected = true);
+    let socket = OwnedCo(socket.into_co());
+    swr_v1_hook_co_socket_created(socket.co(), result);
+    socket.co().with_state(|state| state.flags.connected = true);
     socket
 }
 
@@ -1300,7 +1328,7 @@ mod tests {
         let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
         let conn = Box::new(SocketRecord::with_fd(fd, 0));
         let socket = accepted(unsafe { Co::new(&raw mut *server) }, conn);
-        let socket = unsafe { Box::from_raw(socket.raw()) };
+        let socket = unsafe { Box::from_raw(socket.into_co().raw()) };
         let conn = socket.socket_ptr();
         assert_eq!(
             unsafe { (*conn).fields.object },
