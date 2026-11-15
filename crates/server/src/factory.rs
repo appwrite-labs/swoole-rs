@@ -437,9 +437,12 @@ impl crate::hybrid::Hybrid for Linked {
     fn command_send(
         &self,
         serv: crate::view::Server<'_>,
-        c: &crate::commands::CommandSend<'_>,
+        route: swoole_rs_process::command::CommandRoute,
+        command_id: i32,
+        request_id: i64,
+        message: &[u8],
     ) -> bool {
-        crate::commands::send(serv, c)
+        crate::commands::send(serv, route, command_id, request_id, message)
     }
 
     fn factory_finish(
