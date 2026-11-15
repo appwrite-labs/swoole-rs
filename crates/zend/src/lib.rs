@@ -46,7 +46,7 @@ pub use descriptor::{
 };
 pub use error::{
     E_ERROR, E_WARNING, Message, report, throw_error, throw_trapped, type_error, type_name,
-    zend_error,
+    value_error, zend_error,
 };
 pub use function::{Function, create_object_deny};
 pub use helpers::{

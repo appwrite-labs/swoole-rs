@@ -9,13 +9,13 @@ use crate::{
     socket::{Sock, strerror, warn},
 };
 use libc::c_int;
-use std::{borrow::Cow, cell::Cell, ffi::CStr, ptr};
+use std::{borrow::Cow, cell::Cell, ffi::CStr};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::SocketType;
 use swoole_rs_phpstubs::client_coro;
 use swoole_rs_reactor::SocketFields;
 use swoole_rs_zend::{
-    Array, Call, Custom, CustomClass, Minit, ObjectRef, Owned, OwnedArray, Props, Value, ZString,
+    Array, Call, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Value, Weak, ZString,
     bailout::Bailout,
     string::ZBuf,
     sys::{ZEND_ACC_PUBLIC, zend_string},
@@ -233,19 +233,23 @@ fn create_socket(call: &Call, data: &Data, kind: i64) -> Option<Co> {
     own.long(c"fd", i64::from(socket.handle().sock_fd()));
     own.value(c"socket", &created);
     data.zsocket.set(created);
-    let client = ptr::from_ref(data);
-    // SAFETY: `$this` holds the client, which outlives the hook on its socket:
-    // its drop replaces the hook before it closes the socket.
-    let Some(object) = (unsafe { ObjectRef::from_ptr(call.this()) }) else {
+    // The client by its handle, found again when its socket closes: its drop
+    // replaces the hook before it closes the socket, and a client being freed
+    // is found no more.
+    let Some(client) = call.this_value().and_then(Weak::<Data>::of) else {
         // Never: `props` found `$this` above.
         return None;
     };
-    // `socket_closed` writes under the object's own class.
-    let hooked = Props::of(None, object);
     swoole_rs_hooks::socket_extra::set_close_hook(
         socket.handle(),
-        // SAFETY: as above; the client's data is only ever shared.
-        Box::new(move |_| socket_closed(unsafe { &*client }, hooked)),
+        Box::new(move |_| {
+            // `socket_closed` writes under the object's own class.
+            if let Some(object) = client.get()
+                && let (Some(data), Some(props)) = (object.custom::<Data>(), object.props(None))
+            {
+                socket_closed(data, props);
+            }
+        }),
     );
     socket.use_zend_strings();
     socket.handle().set_zero_copy(true);
