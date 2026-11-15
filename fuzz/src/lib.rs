@@ -334,12 +334,9 @@ pub fn http_cookies(bytes: &[u8]) {
             Ok(None) => break,
             Err(status) => panic!("status {status} for {bytes:?}"),
         };
-        for (offset, length) in [
-            (cookie.key_offset, cookie.key_length),
-            (cookie.value_offset, cookie.value_length),
-        ] {
-            ours.extend_from_slice(&(length as u32).to_ne_bytes());
-            ours.extend_from_slice(&buffer[offset..offset + length]);
+        for range in [cookie.key, cookie.value.unwrap_or_default()] {
+            ours.extend_from_slice(&(range.len() as u32).to_ne_bytes());
+            ours.extend_from_slice(&buffer[range]);
         }
     }
     assert_eq!(ours, theirs, "cookies for {bytes:?}");
