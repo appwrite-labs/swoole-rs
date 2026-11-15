@@ -4,6 +4,8 @@
 #include "shim.h"
 #include "shim_socket.h"
 #include "ext/standard/file.h"
+#include "php_network.h"
+#include <netdb.h>
 
 int swr_zend_stream_socketd(zval *zstream, php_stream **stream, int *fd) {
     volatile int result = 1;
@@ -26,6 +28,18 @@ void swr_zend_stream_unbuffer(zval *zstream) {
     if (stream) {
         php_stream_set_option(stream, PHP_STREAM_OPTION_READ_BUFFER, PHP_STREAM_BUFFER_NONE, NULL);
     }
+}
+
+int swr_zend_gethostbyname4(const char *host, struct in_addr *address) {
+    struct hostent *entry = php_network_gethostbyname(host);
+    if (!entry) {
+        return -1;
+    }
+    if (entry->h_addrtype != AF_INET) {
+        return 1;
+    }
+    memcpy(address, entry->h_addr_list[0], sizeof *address);
+    return 0;
 }
 
 HashTable *swr_zend_object_properties(zval *object) {

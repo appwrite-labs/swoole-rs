@@ -2,6 +2,7 @@
 #ifndef SWOOLE_RS_ZEND_SHIM_SOCKET_H
 #define SWOOLE_RS_ZEND_SHIM_SOCKET_H
 #include "php.h"
+#include <netinet/in.h>
 
 /* php_stream_from_zval (a TypeError for any other resource), then
  * php_stream_cast(stream, PHP_STREAM_AS_SOCKETD, fd, REPORT_ERRORS), inside
@@ -11,6 +12,9 @@ int swr_zend_stream_socketd(zval *zstream, php_stream **stream, int *fd);
  * PHP_STREAM_OPTION_READ_BUFFER, PHP_STREAM_BUFFER_NONE, NULL); nothing for a
  * value that holds no stream. */
 void swr_zend_stream_unbuffer(zval *zstream);
+/* php_network_gethostbyname(host): 0 with the first address of an AF_INET entry
+ * copied to *address, 1 for an entry of another family, -1 for none. */
+int swr_zend_gethostbyname4(const char *host, struct in_addr *address);
 /* Z_OBJPROP_P(object). */
 HashTable *swr_zend_object_properties(zval *object);
 /* convert_to_array(value), then Z_ARRVAL_P(value). */
