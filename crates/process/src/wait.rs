@@ -9,25 +9,29 @@
 //! the reaper through `swoole_signal_dispatch`, never in a signal frame.
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::{c_int, c_void};
-use std::sync::{Mutex, PoisonError};
+use std::sync::atomic::{AtomicI32, AtomicPtr, Ordering::Relaxed};
+use std::sync::{Arc, Mutex, PoisonError};
 
-/// A coroutine waiting for a child (upstream's `WaitTask`). It lives on the waiting
-/// coroutine's stack while it is registered.
+/// A coroutine waiting for a child (upstream's `WaitTask`), shared by the waiting
+/// coroutine and the registry while it is registered. The reaper hands it a child
+/// (`pid` > 0, its `status`) and resumes `co`.
 struct Task {
-    co: *mut c_void,
-    pid: libc::pid_t,
-    status: c_int,
+    co: AtomicPtr<c_void>,
+    pid: AtomicI32,
+    status: AtomicI32,
+}
+
+impl Task {
+    fn pid(&self) -> libc::pid_t {
+        self.pid.load(Relaxed)
+    }
 }
 
 struct Waits {
-    any: VecDeque<*mut Task>,
-    by_pid: BTreeMap<libc::pid_t, *mut Task>,
+    any: VecDeque<Arc<Task>>,
+    by_pid: BTreeMap<libc::pid_t, Arc<Task>>,
     exited: BTreeMap<libc::pid_t, c_int>,
 }
-
-// SAFETY: each task pointer is used only by the thread holding the coroutine
-// baton, while its coroutine is suspended.
-unsafe impl Send for Waits {}
 
 static WAITS: Mutex<Waits> = Mutex::new(Waits {
     any: VecDeque::new(),
@@ -108,37 +112,37 @@ pub unsafe fn wait_pid(
             timed_out: false,
         };
     }
-    let mut task = Task {
-        co,
-        pid: -1,
-        status: 0,
-    };
-    let registered = &raw mut task;
+    let task = Arc::new(Task {
+        co: AtomicPtr::new(co),
+        pid: AtomicI32::new(-1),
+        status: AtomicI32::new(0),
+    });
     waits(|waits| {
         if pid < 0 {
-            waits.any.push_back(registered);
+            waits.any.push_back(Arc::clone(&task));
         } else {
-            waits.by_pid.insert(pid, registered);
+            waits.by_pid.insert(pid, Arc::clone(&task));
         }
     });
-    // The reaper writes `task` through `registered` while this frame is suspended here.
+    // The reaper hands `task` a child while this frame is suspended here.
     (ops.yield_for)(timeout);
+    let child = task.pid();
     waits(|waits| {
         if pid >= 0 {
             waits.by_pid.remove(&pid);
-        } else if task.pid > 0 {
+        } else if child > 0 {
             waits.any.pop_front();
         } else {
-            waits.any.retain(|&waiting| waiting != registered);
+            waits.any.retain(|waiting| !Arc::ptr_eq(waiting, &task));
         }
     });
-    if task.pid > 0 {
-        *status = task.status;
+    if child > 0 {
+        *status = task.status.load(Relaxed);
     }
     Waited {
-        pid: task.pid,
+        pid: child,
         // `co` is the current coroutine again.
-        timed_out: task.pid <= 0 && (ops.timed_out)(),
+        timed_out: child <= 0 && (ops.timed_out)(),
     }
 }
 
@@ -162,18 +166,16 @@ pub unsafe fn wait_reap(signo: c_int, resume: unsafe extern "C-unwind" fn(*mut c
                 .by_pid
                 .get(&child)
                 .or_else(|| waits.any.front())
-                .copied();
+                .cloned();
             if task.is_none() {
                 waits.exited.insert(child, code);
             }
             task
         });
         if let Some(task) = task {
-            // SAFETY: a registered task lives on its suspended coroutine's stack.
-            let task = unsafe { &mut *task };
-            task.status = code;
-            task.pid = child;
-            let co = task.co;
+            task.status.store(code, Relaxed);
+            task.pid.store(child, Relaxed);
+            let co = task.co.load(Relaxed);
             // SAFETY: `co` is suspended in `wait_pid`.
             unsafe { resume(co) };
         }
@@ -214,12 +216,7 @@ pub(crate) mod tests {
         YIELDED.set(true);
         while wait_count() > 0 {
             unsafe { wait_reap(libc::SIGCHLD, resume) };
-            let handed = waits(|waits| {
-                waits
-                    .any
-                    .front()
-                    .is_some_and(|&task| unsafe { (*task).pid } > 0)
-            });
+            let handed = waits(|waits| waits.any.front().is_some_and(|task| task.pid() > 0));
             if handed {
                 break;
             }

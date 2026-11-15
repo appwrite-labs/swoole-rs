@@ -157,9 +157,12 @@ fn waiting(serv: Server) -> Waiting<'static, TaskPool> {
     tasks.host.pipe = view.task_notify_pipe(id);
     // SAFETY: this worker's live record.
     tasks.host.lock = unsafe { (*view.worker(id)).lock };
-    let slot = ptr::NonNull::new(serv.get_task_result().cast()).unwrap();
-    // SAFETY: this worker's slot of the running server's `task_results`.
-    tasks.waiting(unsafe { ResultSlot::new(slot) })
+    let slot = serv
+        .get_task_result()
+        .cast::<[AtomicU32; SW_IPC_MAX_SIZE as usize / 4]>();
+    // SAFETY: this worker's slot of the running server's `task_results`: an
+    // `EventData`, written meanwhile only by the server's task workers.
+    tasks.waiting(ResultSlot::of(unsafe { slot.as_ref() }.unwrap()))
 }
 
 /// The packed task in `buf`.
