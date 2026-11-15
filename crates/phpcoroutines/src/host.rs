@@ -295,8 +295,16 @@ pub(crate) fn kernel_coroutine(count: c_long, sleep: f64) {
         }
     }
     KERNEL_ARGS.with(|args| args.set((count, sleep)));
-    // SAFETY: `sleeper` reads no argument; the caller's frame owns nothing to drop.
-    unsafe { swoole_rs_coroutine::swr_v1_coroutine_create(sleeper, std::ptr::null_mut()) };
+    spawn(sleeper);
+}
+
+/// `Coroutine::create(entry, nullptr)`: a coroutine running `entry`, which
+/// reads no argument (its own per-thread slot hands it what it needs), until it
+/// first yields or ends; its id. As for [`resume`], the caller's frames own
+/// nothing that needs a drop.
+fn spawn(entry: extern "C" fn(*mut c_void)) -> c_long {
+    // SAFETY: a safe entry takes any argument, null too.
+    unsafe { swoole_rs_coroutine::swr_v1_coroutine_create(entry, std::ptr::null_mut()) }
 }
 
 /// The context of `co`'s origin, none for the main context (or no coroutine).
@@ -472,8 +480,7 @@ pub(crate) fn is_end(co: Co) -> bool {
 /// `Coroutine::create(main_func, nullptr)`: [`crate::context::create`] hands
 /// the coroutine its arguments.
 pub(crate) fn create() -> c_long {
-    // SAFETY: `main` reads no argument; the caller's frame owns nothing to drop.
-    unsafe { swoole_rs_coroutine::swr_v1_coroutine_create(main, std::ptr::null_mut()) }
+    spawn(main)
 }
 
 /// `main_func`: the coroutine's function and defer tasks run inside
