@@ -38,11 +38,13 @@ class ParallelPhases(unittest.TestCase):
 
     def test_independent_phases_overlap_but_barriers_and_serial_phases_run_alone(self):
         planned = [('a', ['a']), ('b', ['b']), ('ownership', ['ownership']), ('c', ['c']), ('d', ['d']),
-                   ('e-originals', ['e-originals']), ('f', ['f'])]
+                   ('e-originals', ['e-originals']), ('locks-unit', ['locks-unit']), ('f', ['f'])]
         overlaps, report = self.run_plan(planned, 4)
         self.assertTrue('a' in overlaps['b'] or 'b' in overlaps['a'], 'a and b should overlap')
         self.assertEqual(overlaps['ownership'], set())
         self.assertEqual(overlaps['e-originals'], set())
+        self.assertEqual(overlaps['locks-unit'], set())
+        self.assertTrue(all('locks-unit' not in active for active in overlaps.values()))
         self.assertNotIn('ownership', overlaps['c'] | overlaps['d'] | overlaps['f'])
         self.assertTrue(overlaps['d'] or overlaps['f'], 'later independent phases should overlap')
         # The serial phase nothing reads from runs after the parallel work, but rows stay in plan order.
