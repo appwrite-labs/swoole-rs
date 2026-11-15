@@ -806,26 +806,15 @@ impl Bus {
         self.next_id.set(Some(counter));
     }
 
-    /// `MessageBus::write` of `{head, data}`, `head.len` set to the data's length:
-    /// numbers the message, then writes it through the event loop while one is
-    /// available, else synchronously. False if the pipe failed.
-    ///
-    /// # Safety
-    /// `socket` outlives any registration the write makes: what the event loop
-    /// cannot send at once it queues, and watches `socket` until it drains.
-    #[inline]
-    pub unsafe fn send(&self, socket: Socket<'_>, head: &mut BusHead, data: &[u8]) -> bool {
-        head.len = u32::try_from(data.len()).unwrap_or(u32::MAX);
-        // SAFETY: the `head.len` bytes of `data`; `socket` as the caller promises.
-        unsafe { self.send_raw(socket, head, data.as_ptr()) }
-    }
-
-    /// [`Bus::send`] of a message its caller holds as a `SendData`: a head and the
-    /// pointer its `len` counts from.
+    /// `MessageBus::write` of a message its caller holds as a `SendData`: a head and
+    /// the pointer its `len` counts from. Numbers the message, then writes it through
+    /// the event loop while one is available, else synchronously. False if the pipe
+    /// failed.
     ///
     /// # Safety
     /// `data` covers `head.len` bytes or is null, and `socket` outlives any
-    /// registration the write makes (see [`Bus::send`]).
+    /// registration the write makes: what the event loop cannot send at once it
+    /// queues, and watches `socket` until it drains.
     pub unsafe fn send_raw(&self, socket: Socket<'_>, head: &mut BusHead, data: *const u8) -> bool {
         use swoole_rs_reactor::event_api;
         // `write` passes iovecs over `head` and the caller's bytes.
@@ -924,7 +913,8 @@ mod tests {
                 fd: 7,
                 ..BusHead::default()
             };
-            assert!(unsafe { pipe.bus.send(Socket::new(&mut socket), &mut head, payload) });
+            let socket = Socket::new(&mut socket);
+            assert!(unsafe { pipe.bus.send_raw(socket, &mut head, payload.as_ptr()) });
             assert_eq!(head.msg_id, expected);
             assert_eq!(pipe.read(false).as_deref(), Some(payload));
         }

@@ -22,11 +22,9 @@ macro_rules! upstream {
 
 pub mod cpp;
 mod typed;
-use std::alloc::{Layout, alloc};
 use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::mem;
-use std::mem::MaybeUninit;
 pub use typed::{Detached as TypedDetached, Front as TypedFront, Kind as EntryKind};
 
 /// Why a queue operation failed; the queue is unchanged.
@@ -73,17 +71,12 @@ fn slice_fits<T>(count: usize) -> bool {
 /// `Box::new(initialize())`, or `None` when the allocation fails. The storage is
 /// allocated before `initialize` runs, so a refused allocation builds no value.
 pub fn try_box<T>(initialize: impl FnOnce() -> T) -> Option<Box<T>> {
-    if size_of::<T>() == 0 {
-        return Some(Box::new(initialize()));
-    }
-    // SAFETY: `T` is not zero-sized (handled above); null is handled below.
-    let pointer = unsafe { alloc(Layout::new::<T>()) }.cast::<MaybeUninit<T>>();
-    if pointer.is_null() {
-        return None;
-    }
-    // SAFETY: a non-null global allocation with `T`'s layout; `MaybeUninit` needs no init.
-    let owner = unsafe { Box::from_raw(pointer) };
-    Some(Box::write(owner, initialize()))
+    let mut storage = Vec::new();
+    storage.try_reserve_exact(1).ok()?;
+    storage.push(initialize());
+    let one: Box<[T; 1]> = storage.into_boxed_slice().try_into().ok()?;
+    // SAFETY: a `[T; 1]` has `T`'s layout, so its global allocation is a `Box<T>`'s.
+    Some(unsafe { Box::from_raw(Box::into_raw(one).cast::<T>()) })
 }
 
 impl Buffer {
@@ -258,7 +251,7 @@ impl Buffer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::alloc::{GlobalAlloc, System};
+    use std::alloc::{GlobalAlloc, Layout, System};
     use std::cell::Cell;
     use std::{ptr, slice};
 
