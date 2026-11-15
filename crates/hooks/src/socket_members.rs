@@ -10,7 +10,7 @@ use crate::buffered::{recv_buffered, recv_line};
 use crate::co_io::{
     Message, NATIVE, Timer, available, borrowed_err, check, default_err, errno, owned_err, set_err,
 };
-use crate::co_socket::{Co, peer_name};
+use crate::co_socket::{Co, OwnedCo, peer_name};
 use crate::sendfile::{SendFailure, send_range};
 use crate::setup::{Setup, swr_v1_hook_accept};
 use crate::socket_wait::{error_event, ready, wait_for};
@@ -234,19 +234,18 @@ impl Co {
             return None;
         }
         let client = self.accepted(timeout)?;
-        if client.sock_fd() < 0 {
+        if client.co().sock_fd() < 0 {
             let error = errno();
             log::sys_warning(c"Socket::accept", format_args!("new Socket() failed"));
             set_err(self, error);
-            // SAFETY: the new native socket, used no more.
-            unsafe { (crate::hooked::SOCKETS.free)(client.this()) };
+            // The new native socket goes as it drops.
             return None;
         }
-        Some(client)
+        Some(client.into_co())
     }
 
     /// `accept`'s connection as a new native socket. The socket is available.
-    fn accepted(self, timeout: f64) -> Option<Self> {
+    fn accepted(self, timeout: f64) -> Option<OwnedCo> {
         #[cfg(feature = "iouring")]
         if let Some(n) = ring::with(self, |ops| ring::accept(self, ops)) {
             return n;
@@ -269,9 +268,9 @@ impl Co {
 
     /// `new Socket(conn, server)`: the accepting constructor, then the server's TLS
     /// context shared with the new socket.
-    pub(crate) fn adopt(self, conn: Box<SocketRecord>) -> Self {
+    pub(crate) fn adopt(self, conn: Box<SocketRecord>) -> OwnedCo {
         let client = crate::co_socket::accepted(self, conn);
-        client.share_tls(self);
+        client.co().share_tls(self);
         client
     }
 
