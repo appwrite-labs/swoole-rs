@@ -18,9 +18,8 @@ use swoole_rs_ossupport::QueueRecord;
 use swoole_rs_phpstubs::process;
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_zend::{
-    Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Owned, Value, bailout, handlers,
-    message,
-    string::ZBuf,
+    Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Owned, Value, ZString, bailout,
+    handlers, message,
     sys::{_zend_bailout, IS_NULL, ZEND_ACC_PRIVATE, ZEND_ACC_PUBLIC, zend_string},
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -709,14 +708,12 @@ fn read(call: &Call) {
         return;
     }
     let size = size.c_cast::<usize>();
-    let mut buffer = ZBuf::with_capacity(size);
+    let mut buffer = vec![0; size];
     let Some(length) = worker::pipe_read(worker, &mut buffer, blocking(process)) else {
         call.set_bool(false);
         return;
     };
-    // SAFETY: the read wrote `length <= size` bytes.
-    unsafe { buffer.set_len(length) };
-    call.set_zstring(buffer.into_zstring());
+    call.set_zstring(ZString::new(buffer.get(..length).unwrap_or_default()));
 }
 
 /// The object's `blocking` flag.

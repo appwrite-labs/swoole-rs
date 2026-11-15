@@ -21,7 +21,6 @@ use swoole_rs_tls::{
     socket_pair::{self, SocketPair},
     upstream::{read_sync, send_sync},
 };
-use swoole_rs_zend::string::ZBuf;
 
 /// `SW_PIPE_CLOSE_READ` and `SW_PIPE_CLOSE_WRITE`.
 const CLOSE_READ: i64 = 3;
@@ -165,15 +164,13 @@ pub(crate) fn child_enter(worker: Worker<'_>) {
     unsafe { swoole_rs_process::worker_globals::set_current_worker(worker.raw()) };
 }
 
-/// Read up to `buffer`'s capacity from the pipe: the length read, or `None`.
-pub(crate) fn pipe_read(worker: Worker<'_>, buffer: &mut ZBuf, blocking: bool) -> Option<usize> {
+/// Read up to `buffer`'s length from the pipe: the length read, or `None`.
+pub(crate) fn pipe_read(worker: Worker<'_>, buffer: &mut [u8], blocking: bool) -> Option<usize> {
     let socket = pipe(worker)?;
-    // An empty buffer: its whole capacity.
-    let spare = buffer.spare_capacity_mut();
     let read = if blocking {
-        read_sync(socket, spare)
+        read_sync(socket, buffer)
     } else {
-        swoole_rs_corebase::sys::read(socket.fd(), spare)
+        swoole_rs_corebase::sys::read(socket.fd(), buffer)
     };
     usize::try_from(read).ok()
 }
