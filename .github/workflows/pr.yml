@@ -318,7 +318,9 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always() && steps.touched.outputs.modules != ''
         with:
-          retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}
+          # A failed run keeps its retained case executables for two weeks, long enough to
+          # inspect an intermittent failure (#4046); others expire after a day (#3103).
+          retention-days: ${{ github.ref == 'refs/heads/main' && 90 || job.status == 'failure' && 14 || 1 }}
           name: gates-reports
           path: target/reports/
 
