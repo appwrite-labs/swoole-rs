@@ -1120,7 +1120,7 @@ mod tests {
 pub(crate) fn default_err(socket: Co, last_error: c_int) {
     let error = if last_error == 0 { errno() } else { last_error };
     socket.set_err_code(error);
-    set_message(socket, error, Message::Strerror);
+    socket.set_borrowed_err_msg(error, Message::Strerror);
 }
 
 /// An error message the record borrows rather than owns.
@@ -1137,14 +1137,16 @@ pub(crate) enum Message {
     LastError,
 }
 
-fn set_message(socket: Co, error: c_int, message: Message) {
-    let text = match message {
-        Message::Static(text) => text.as_ptr(),
-        Message::Strerror => (NATIVE.strerror)(error),
-        Message::LastError => swoole_rs_error::swoole_get_last_error_msg(),
-    };
-    // SAFETY: static, swoole_strerror's or the thread's last error message.
-    unsafe { socket.set_err_msg(text) };
+impl Message {
+    /// The text for `error`: static, `swoole_strerror`'s or the thread's last error
+    /// message, each NUL-terminated and kept for the thread's life.
+    pub(crate) fn text(self, error: c_int) -> *const c_char {
+        match self {
+            Self::Static(text) => text.as_ptr(),
+            Self::Strerror => (NATIVE.strerror)(error),
+            Self::LastError => swoole_rs_error::swoole_get_last_error_msg(),
+        }
+    }
 }
 
 /// `set_err(error, message)` with a message the record does not own.
@@ -1152,7 +1154,7 @@ pub(crate) fn borrowed_err(socket: Co, error: c_int, message: Message) {
     socket.set_err_code(error);
     set_errno(error);
     (NATIVE.set_last_error)(error);
-    set_message(socket, error, message);
+    socket.set_borrowed_err_msg(error, message);
 }
 
 /// `set_err(error, message)` with owned text: the code, errno and last error, then
@@ -1166,17 +1168,5 @@ pub fn owned_err(socket: Co, error: c_int, message: &[u8]) -> bool {
     socket.set_err_code(error);
     set_errno(error);
     (NATIVE.set_last_error)(error);
-    // The metadata's first slot owns the error string.
-    let Some((stored, view)) = socket.with_extra(|extra| {
-        let slot = &mut extra.strings[0];
-        (slot.set(message), slot.view())
-    }) else {
-        return false;
-    };
-    if stored {
-        // SAFETY: the record's own error string, whose assignment left stable,
-        // terminated bytes.
-        unsafe { socket.set_err_msg(view.data) };
-    }
-    stored
+    socket.set_owned_err_msg(message)
 }

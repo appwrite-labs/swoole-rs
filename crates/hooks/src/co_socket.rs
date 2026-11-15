@@ -317,6 +317,29 @@ impl Co {
         self.record().err_msg.set(message.as_ptr());
     }
 
+    /// `errMsg = message`'s text for `error`, which the record borrows: static,
+    /// `swoole_strerror`'s or the thread's last error message.
+    pub(crate) fn set_borrowed_err_msg(self, error: c_int, message: crate::co_io::Message) {
+        self.record().err_msg.set(message.text(error));
+    }
+
+    /// `errMsg` = a copy of `message` in the record's own error string, whose
+    /// assignment leaves stable, terminated bytes. A failed copy (allocation) leaves
+    /// the previous message and returns false.
+    pub(crate) fn set_owned_err_msg(self, message: &[u8]) -> bool {
+        // The metadata's first slot owns the error string.
+        let Some((stored, view)) = self.with_extra(|extra| {
+            let slot = &mut extra.strings[0];
+            (slot.set(message), slot.view())
+        }) else {
+            return false;
+        };
+        if stored {
+            self.record().err_msg.set(view.data);
+        }
+        stored
+    }
+
     /// `f` over a copy of `errMsg` (`None` when null), taken before `f` runs, so `f`
     /// may reach the socket again. A message that fits is copied to the stack: the
     /// clients read it after every send and receive.

@@ -319,8 +319,7 @@ pub(crate) mod native {
     use swoole_rs_timer::{add_fn_sec, del_id};
 
     pub(super) fn add(fd: i32, events: Events, task: Registered) -> Option<Watch> {
-        // SAFETY: a poll task, the object `poll_ready` takes, which outlives the watch.
-        unsafe { Watch::add(fd, events, Object::Poll(task)) }.ok()
+        Watch::add(fd, events, Object::Poll(task)).ok()
     }
 
     pub(super) fn timer_add(timeout: f64, task: Registered) -> Option<Timer> {

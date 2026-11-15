@@ -22,15 +22,12 @@ const SW_ERROR_AIO_BAD_REQUEST: c_int = 4001;
 const STDIN_FILENO: c_int = 0;
 
 /// `AsyncEvent event = {}`, with these members set.
-///
-/// # Safety
-/// As [`AsyncEvent::request`]: `handler` and `callback` are sound over `object`.
-pub(super) unsafe fn new_event(
+pub(super) fn new_event(
     object: *mut c_void,
     handler: Option<Handler>,
     callback: Option<Callback>,
 ) -> AsyncEvent {
-    unsafe { AsyncEvent::request(object, handler, callback, std::ptr::null_mut()) }
+    AsyncEvent::new(object, handler, callback, std::ptr::null_mut())
 }
 
 unsafe extern "C" {
@@ -186,14 +183,12 @@ fn async_dispatch_() {
     let count = 1000;
     CALLBACK_COUNT.store(0, Ordering::SeqCst);
     let handle_count = AtomicI32::new(0);
-    // SAFETY: the counters read `handle_count`, which outlives the pool's run.
-    let event = unsafe {
-        new_event(
-            (&raw const handle_count).cast_mut().cast(),
-            Some(count_handle),
-            Some(count_callback),
-        )
-    };
+    // The counters read `handle_count`, which outlives the pool's run.
+    let event = new_event(
+        (&raw const handle_count).cast_mut().cast(),
+        Some(count_handle),
+        Some(count_callback),
+    );
 
     event_init();
 
@@ -217,14 +212,12 @@ fn schedule() {
 
     event_init();
 
-    // SAFETY: the counters read `handle_count`, which outlives the pool's run.
-    let event = unsafe {
-        new_event(
-            (&raw const handle_count).cast_mut().cast(),
-            Some(sleep_and_count_handle),
-            Some(count_callback),
-        )
-    };
+    // The counters read `handle_count`, which outlives the pool's run.
+    let event = new_event(
+        (&raw const handle_count).cast_mut().cast(),
+        Some(sleep_and_count_handle),
+        Some(count_callback),
+    );
 
     // SwooleG's settings, before the pool exists.
     swoole_rs_corebase::swr_v1_core_set_aio_core_worker_num(4);
@@ -285,14 +278,12 @@ extern "C" fn bad_request_callback(event: &AsyncEvent) {
 fn misc() {
     CALLBACK_COUNT.store(0, Ordering::SeqCst);
     let handle_count = AtomicI32::new(0);
-    // SAFETY: the counters read `handle_count`, which outlives the pool's run.
-    let event = unsafe {
-        new_event(
-            (&raw const handle_count).cast_mut().cast(),
-            Some(count_handle),
-            Some(count_callback),
-        )
-    };
+    // The counters read `handle_count`, which outlives the pool's run.
+    let event = new_event(
+        (&raw const handle_count).cast_mut().cast(),
+        Some(count_handle),
+        Some(count_callback),
+    );
 
     event_init();
 
@@ -303,7 +294,7 @@ fn misc() {
     // sw_async_threads()->notify_one() has no exported counterpart (tests README).
 
     // SAFETY: the callback reads only the event's retval and error.
-    let event2 = unsafe { new_event(std::ptr::null_mut(), None, Some(bad_request_callback)) };
+    let event2 = new_event(std::ptr::null_mut(), None, Some(bad_request_callback));
     let rv = dispatch(&event2);
     assert!(!rv.is_null());
 
