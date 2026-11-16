@@ -308,7 +308,7 @@ fn start_child(worker: Worker<'_>, this: &Value) {
         (worker.redirect_stderr, libc::STDERR_FILENO),
     ] {
         // Without a pipe, `dup2(-1, …)` fails as upstream's does.
-        if redirect && swoole_rs_corebase::sys::dup2(worker.pipe.unwrap_or(-1), target) < 0 {
+        if redirect && swoole_rs_corebase::sys::dup2(worker.pipe.unwrap_or(-1), target).is_err() {
             sys(E_WARNING, &message!("dup2() failed"));
         }
     }

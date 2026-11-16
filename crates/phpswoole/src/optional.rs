@@ -79,13 +79,11 @@ pub fn socket_cast(value: &Value) -> c_int {
         let (fd, message, code) = if fd == -1 {
             (-2, c"invalid socket fd", libc::EBADF)
         } else {
-            let dup = swoole_rs_corebase::sys::dup(fd);
-            if dup != -1 {
-                return dup;
-            }
-            let errno = std::io::Error::last_os_error()
-                .raw_os_error()
-                .unwrap_or_default();
+            let error = match swoole_rs_corebase::sys::dup(fd) {
+                Ok(dup) => return dup,
+                Err(error) => error,
+            };
+            let errno = error.raw_os_error().unwrap_or_default();
             (-1, c"failed to dup socket fd", errno)
         };
         crate::EXCEPTION.throw(message, i64::from(code));

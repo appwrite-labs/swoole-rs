@@ -84,7 +84,7 @@ pub struct Opened {
 struct Event {
     coroutine: *mut c_void,
     data: squeue::Entry,
-    result: isize,
+    result: io::Result<isize>,
     /// The linked timeout, when the operation has one.
     timeout: Option<Timespec>,
 }
@@ -184,20 +184,21 @@ fn wait_status(code: c_int, status: c_int) -> c_int {
     }
 }
 
-/// The completion's result: negative errno becomes -1 with errno set, and a
+/// The completion retains its error and publishes errno before resuming; a
 /// cancelled request (its linked timeout fired) reports `ETIMEDOUT`.
-fn complete(result: isize) -> isize {
+fn complete(result: isize) -> io::Result<isize> {
     if result < 0 {
         // An io_uring result is an i32 `cqe.res`.
         let error = result.wrapping_neg().c_cast::<c_int>();
-        set_errno(if error == libc::ECANCELED {
+        let error = if error == libc::ECANCELED {
             libc::ETIMEDOUT
         } else {
             error
-        });
-        -1
+        };
+        set_errno(error);
+        Err(io::Error::from_raw_os_error(error))
     } else {
-        result
+        Ok(result)
     }
 }
 
@@ -207,7 +208,7 @@ impl Event {
         Self {
             coroutine: (host.current)(),
             data,
-            result: 0,
+            result: Ok(0),
             timeout: None,
         }
     }
@@ -220,17 +221,17 @@ impl Event {
     }
 
     /// Submit and suspend until the completion; the result as upstream's `execute`.
-    fn execute(&mut self, host: &Host) -> isize {
+    fn execute(mut self, host: &Host) -> io::Result<isize> {
         let Some(engine) = (host.instance)() else {
-            return -1;
+            return Err(io::Error::last_os_error());
         };
-        engine.dispatch(self);
+        engine.dispatch(&mut self);
         engine.task_num.set(engine.task_num.get() + 1);
         // The thread keeps the engine; this frame holds nothing across the switch.
         drop(engine);
         // The wakeup handler resumes this coroutine; the event stays in this frame
         // until then.
-        (host.suspend)(self.coroutine, ptr::from_mut(self).cast());
+        (host.suspend)(self.coroutine, ptr::from_mut(&mut self).cast());
         self.result
     }
 }
@@ -530,7 +531,7 @@ pub fn wakeup(engine: &Uring) -> bool {
 /// user data.
 pub fn cancel(host: &Host, event: *mut c_void) -> bool {
     let cancel = opcode::AsyncCancel::new(event.addr() as u64).build();
-    Event::new(host, cancel).execute(host) == 0
+    matches!(Event::new(host, cancel).execute(host), Ok(0))
 }
 
 /// One `io_uring` request, end to end.
@@ -538,24 +539,29 @@ pub fn cancel(host: &Host, event: *mut c_void) -> bool {
 /// # Safety
 /// The entry's pointers stay valid until the request completes, which is before
 /// this returns.
-unsafe fn request(host: &Host, timeout: f64, entry: squeue::Entry) -> isize {
+unsafe fn request(host: &Host, timeout: f64, entry: squeue::Entry) -> io::Result<isize> {
     Event::new(host, entry).with_timeout(timeout).execute(host)
 }
 
-fn int(result: isize) -> c_int {
-    result.c_cast::<c_int>()
+// Transfer callers still use the syscall protocol until their Result migration.
+fn transfer_result(result: io::Result<isize>) -> isize {
+    result.unwrap_or(-1)
+}
+
+fn int(result: io::Result<isize>) -> c_int {
+    transfer_result(result).c_cast::<c_int>()
 }
 
 fn count_result(result: isize) -> io::Result<c_int> {
     if result < 0 {
         Err(io::Error::last_os_error())
     } else {
-        Ok(int(result))
+        Ok(result.c_cast::<c_int>())
     }
 }
 
-fn file_status(result: isize) -> io::Result<()> {
-    count_result(result).map(|_| ())
+fn file_status(result: io::Result<isize>) -> io::Result<()> {
+    result.map(|_| ())
 }
 
 /// One request per operation, whose entries carry no pointer but their borrowed
@@ -582,22 +588,22 @@ macro_rules! safe_operations {
 
 safe_operations! {
     pub fn recv(fd: c_int, buf: &mut [impl ReadSlot], flags: c_int, timeout: f64) -> isize,
-        timeout timeout, opcode::Recv::new(Fd(fd), buf.as_mut_ptr().cast(), buf.len().c_cast::<u32>()).flags(flags), std::convert::identity;
+        timeout timeout, opcode::Recv::new(Fd(fd), buf.as_mut_ptr().cast(), buf.len().c_cast::<u32>()).flags(flags), transfer_result;
     pub fn send(fd: c_int, buf: &[u8], flags: c_int, timeout: f64) -> isize,
-        timeout timeout, opcode::Send::new(Fd(fd), buf.as_ptr(), buf.len().c_cast::<u32>()).flags(flags), std::convert::identity;
+        timeout timeout, opcode::Send::new(Fd(fd), buf.as_ptr(), buf.len().c_cast::<u32>()).flags(flags), transfer_result;
     pub fn close_fd(fd: c_int) -> io::Result<()>,
         timeout -1.0, opcode::Close::new(Fd(fd)), file_status;
     pub fn read(fd: c_int, buf: &mut [impl ReadSlot], timeout: f64) -> isize,
-        timeout timeout, opcode::Read::new(Fd(fd), buf.as_mut_ptr().cast(), buf.len().c_cast::<c_uint>()).offset(u64::MAX), std::convert::identity;
+        timeout timeout, opcode::Read::new(Fd(fd), buf.as_mut_ptr().cast(), buf.len().c_cast::<c_uint>()).offset(u64::MAX), transfer_result;
     pub fn write(fd: c_int, buf: &[u8], timeout: f64) -> isize,
-        timeout timeout, opcode::Write::new(Fd(fd), buf.as_ptr(), buf.len().c_cast::<c_uint>()).offset(u64::MAX), std::convert::identity;
+        timeout timeout, opcode::Write::new(Fd(fd), buf.as_ptr(), buf.len().c_cast::<c_uint>()).offset(u64::MAX), transfer_result;
     pub fn futex_wait(futex: &AtomicU32) -> io::Result<c_int>,
-        timeout -1.0, opcode::FutexWait::new(futex.as_ptr(), 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32), count_result;
+        timeout -1.0, opcode::FutexWait::new(futex.as_ptr(), 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32), |result: io::Result<isize>| result.map(CCast::c_cast::<c_int>);
     pub fn futex_wakeup(futex: &AtomicU32) -> io::Result<c_int>,
-        timeout -1.0, opcode::FutexWake::new(futex.as_ptr(), 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32), count_result;
+        timeout -1.0, opcode::FutexWake::new(futex.as_ptr(), 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32), |result: io::Result<isize>| result.map(CCast::c_cast::<c_int>);
     /// `IORING_OP_TIMEOUT` for `ts`.
     fn timer(ts: &Timespec) -> isize,
-        timeout -1.0, opcode::Timeout::new(ts), std::convert::identity;
+        timeout -1.0, opcode::Timeout::new(ts), transfer_result;
     /// `IORING_OP_STATX` of `path` under `dfd` into `buf`.
     fn statx_into(dfd: c_int, path: &CStr, flags: c_int, buf: &mut libc::statx) -> io::Result<()>,
         timeout -1.0, opcode::Statx::new(Fd(dfd), path.as_ptr(), ptr::from_mut(buf).cast()).flags(flags).mask(libc::STATX_BASIC_STATS | libc::STATX_BTIME), file_status;
@@ -615,7 +621,7 @@ safe_operations! {
     pub fn sendto(fd: c_int, buf: &[u8], address: &SocketAddress, timeout: f64) -> isize,
         timeout timeout, opcode::Send::new(Fd(fd), buf.as_ptr(), buf.len().c_cast::<u32>())
             .dest_addr((&raw const address.addr).cast())
-            .dest_addr_len(address.len.min(SocketAddress::CAPACITY)), std::convert::identity;
+            .dest_addr_len(address.len.min(SocketAddress::CAPACITY)), transfer_result;
     /// `IORING_OP_CONNECT` of `fd` to `address`, of which the kernel reads at most its storage.
     pub fn connect(fd: c_int, address: &SocketAddress, timeout: f64) -> c_int,
         timeout timeout, opcode::Connect::new(
@@ -625,15 +631,15 @@ safe_operations! {
         ), int;
     /// `IORING_OP_RECVMSG` into `message`'s buffers.
     pub fn recvmsg(fd: c_int, message: &mut RecvMessage<'_>, flags: c_int, timeout: f64) -> isize,
-        timeout timeout, opcode::RecvMsg::new(Fd(fd), message.as_mut_ptr()).flags(flags.cast_unsigned()), std::convert::identity;
+        timeout timeout, opcode::RecvMsg::new(Fd(fd), message.as_mut_ptr()).flags(flags.cast_unsigned()), transfer_result;
     /// `IORING_OP_SENDMSG` of `message`'s buffers.
     pub fn sendmsg(fd: c_int, message: &SendMessage<'_>, flags: c_int, timeout: f64) -> isize,
-        timeout timeout, opcode::SendMsg::new(Fd(fd), message.as_ptr()).flags(flags.cast_unsigned()), std::convert::identity;
+        timeout timeout, opcode::SendMsg::new(Fd(fd), message.as_ptr()).flags(flags.cast_unsigned()), transfer_result;
     /// `IORING_OP_POLL_ADD` of `fd`, which carries no pointer.
     fn poll_add(fd: c_int, events: u32, timeout: f64) -> io::Result<c_int>,
-        timeout timeout, opcode::PollAdd::new(Fd(fd), events), count_result;
+        timeout timeout, opcode::PollAdd::new(Fd(fd), events), |result: io::Result<isize>| result.map(CCast::c_cast::<c_int>);
     pub fn open_file(pathname: &CStr, flags: c_int, mode: libc::mode_t) -> io::Result<c_int>,
-        timeout -1.0, opcode::OpenAt::new(Fd(libc::AT_FDCWD), pathname.as_ptr()).flags(flags | libc::O_CLOEXEC).mode(mode), count_result;
+        timeout -1.0, opcode::OpenAt::new(Fd(libc::AT_FDCWD), pathname.as_ptr()).flags(flags | libc::O_CLOEXEC).mode(mode), |result: io::Result<isize>| result.map(CCast::c_cast::<c_int>);
     pub fn rename(oldpath: &CStr, newpath: &CStr) -> io::Result<()>,
         timeout -1.0, opcode::RenameAt::new(Fd(libc::AT_FDCWD), oldpath.as_ptr(), Fd(libc::AT_FDCWD), newpath.as_ptr()), file_status;
     pub fn mkdir(pathname: &CStr, mode: libc::mode_t) -> io::Result<()>,
@@ -669,7 +675,8 @@ pub fn vector(host: &Host, fd: c_int, vector: &IoVector<'_>, timeout: f64) -> is
     // SAFETY: the entry's pointers are the borrowed vector's iovecs, which only its
     // `&mut` methods move, and their buffers, valid in its direction while it lives
     // (the type's invariant); the request completes before `request` returns.
-    unsafe { request(host, timeout, entry) }
+    let result = unsafe { request(host, timeout, entry) };
+    transfer_result(result)
 }
 
 /// Sleep `seconds` in the ring's timer: 0 when it expired, -1 if cancelled.
@@ -714,7 +721,7 @@ pub fn sendfile(
     // Each splice completes before the next, and carries no pointers.
     let splice = |fd_in, off_in, fd_out, nbytes| {
         let splice = opcode::Splice::new(Fd(fd_in), off_in, Fd(fd_out), -1, nbytes).build();
-        Event::new(host, splice).with_timeout(timeout).execute(host)
+        transfer_result(Event::new(host, splice).with_timeout(timeout).execute(host))
     };
     while total_sent < size {
         let to_send = (size - total_sent).min(pipe_size);
@@ -1160,11 +1167,40 @@ mod tests {
     }
 
     #[test]
+    fn completion_error_survives_errno_changes() {
+        for (completion, expected) in [
+            (-libc::EBADF, libc::EBADF),
+            (-libc::ECANCELED, libc::ETIMEDOUT),
+            (-libc::ETIME, libc::ETIME),
+        ] {
+            let result = complete(completion as isize);
+            assert_eq!(errno(), expected);
+            set_errno(libc::EINTR);
+            assert_eq!(
+                file_status(result).unwrap_err().raw_os_error(),
+                Some(expected)
+            );
+        }
+        set_errno(libc::EINTR);
+        assert_eq!(complete(0).unwrap(), 0);
+        assert_eq!(complete(123).unwrap(), 123);
+        assert_eq!(errno(), libc::EINTR);
+    }
+
+    #[test]
     fn completion_maps_cancel_to_timeout() {
-        assert_eq!(complete(5), 5, "success passes through");
-        assert_eq!(complete(-(libc::ECANCELED as isize)), -1, "failure is -1");
+        assert_eq!(transfer_result(complete(5)), 5, "success passes through");
+        assert_eq!(
+            transfer_result(complete(-(libc::ECANCELED as isize))),
+            -1,
+            "failure is -1"
+        );
         assert_eq!(errno(), libc::ETIMEDOUT, "cancelled reads as a timeout");
-        assert_eq!(complete(-(libc::EBADF as isize)), -1, "failure is -1");
+        assert_eq!(
+            transfer_result(complete(-(libc::EBADF as isize))),
+            -1,
+            "failure is -1"
+        );
         assert_eq!(errno(), libc::EBADF, "other errors pass through");
     }
 }

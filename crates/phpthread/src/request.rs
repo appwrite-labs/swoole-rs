@@ -49,7 +49,7 @@ fn error(errno: i64) -> Owned {
 /// -1. A warning's handler that bailed out is deferred.
 pub(crate) fn stream_cast(value: &Value) -> c_int {
     match value.stream_fd() {
-        Ok(Some(fd)) => sys::dup(fd),
+        Ok(Some(fd)) => sys::dup(fd).unwrap_or(-1),
         Ok(None) => -1,
         Err(bailout) => {
             bailout.defer();
@@ -89,12 +89,7 @@ pub(crate) fn socket_create(
     fd: c_int,
     create: impl FnOnce(c_int) -> Option<Owned>,
 ) -> Option<Owned> {
-    let duplicate = sys::dup(fd);
-    let created = if duplicate >= 0 {
-        create(duplicate)
-    } else {
-        None
-    };
+    let created = sys::dup(fd).ok().and_then(create);
     if created.is_some() || swoole_rs_zend::bailout::pending() {
         return created;
     }

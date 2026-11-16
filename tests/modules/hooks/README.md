@@ -211,6 +211,9 @@ test adapters restore the integer protocol; failed stat calls leave output intac
 Ring process waits, descriptor polls and futex operations also return `io::Result`,
 retaining their PID/count or errno. Reactor/syscall callbacks and original test
 adapters restore the integer protocol; a failed wait leaves its status word intact.
+Completion events and requests retain `io::Result` across coroutine resumption;
+errno is still published before resuming, including ECANCELED to ETIMEDOUT.
+Transfer adapters temporarily retain the syscall protocol pending #4089.
 `System::sleep` is `uring::sleep`, as it is with io_uring.
 `sleep(tv_sec, tv_nsec)` is `sleep_timespec`, which `sleep(seconds)` converts to.
 Three calls have left the build, and only core-tests called them at the pin.

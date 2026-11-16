@@ -622,10 +622,7 @@ pub(crate) fn export_socket(cli: Cli) -> Option<Owned> {
     if !built_with(Switch::Sockets) {
         return None;
     }
-    let fd = swoole_rs_corebase::sys::dup(cli.net()?.fd());
-    if fd < 0 {
-        return None;
-    }
+    let fd = swoole_rs_corebase::sys::dup(cli.net()?.fd()).ok()?;
     Some(swoole_rs_phpswoole::socket_create(fd).0)
 }
 

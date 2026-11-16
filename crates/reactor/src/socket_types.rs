@@ -94,11 +94,11 @@ pub fn swr_v1_socket_open(domain: c_int, kind: c_int, protocol: c_int, flags: c_
     {
         let extra = if nonblock { libc::SOCK_NONBLOCK } else { 0 }
             | if cloexec { libc::SOCK_CLOEXEC } else { 0 };
-        swoole_rs_corebase::sys::socket(domain, kind | extra, protocol)
+        swoole_rs_corebase::sys::socket(domain, kind | extra, protocol).unwrap_or(-1)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let fd = swoole_rs_corebase::sys::socket(domain, kind, protocol);
+        let fd = swoole_rs_corebase::sys::socket(domain, kind, protocol).unwrap_or(-1);
         if fd >= 0
             && (nonblock || cloexec)
             && !crate::swr_v1_socket_fd_option(
