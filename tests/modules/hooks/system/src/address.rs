@@ -79,8 +79,8 @@ impl Address {
         // SAFETY: the record's union, which is `AddressStorage`'s size and alignment.
         let storage = unsafe { &mut *self.addr.as_mut_ptr().cast::<AddressStorage>() };
         let host = host.as_bytes_with_nul();
-        let error = address::assign(storage, &mut self.len, kind, host, port, resolve_name);
-        if error != 0 {
+        let assigned = address::assign(storage, &mut self.len, kind, host, port, resolve_name);
+        if let Err(error) = assigned {
             // SAFETY: sets this thread's last error.
             unsafe { swr_v1_core_set_last_error(error) };
             return false;

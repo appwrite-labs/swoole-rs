@@ -7,7 +7,7 @@
     reason = "generated inputs index within their own lengths"
 )]
 use std::ffi::{CStr, c_char, c_int, c_void};
-use swoole_rs_http::llhttp::{self, Callbacks, Parser as RParser};
+use swoole_rs_http::llhttp::{self, Callbacks, Flow, Parser as RParser};
 use swoole_rs_oracle as _;
 
 #[repr(C)]
@@ -141,23 +141,23 @@ impl Callbacks<'_> for R {
     fn parser(&mut self) -> &mut RParser {
         &mut self.parser
     }
-    fn on_url(&mut self, d: &[u8]) -> i32 {
-        self.log.ev("url", Some(d))
+    fn on_url(&mut self, d: &[u8]) -> Flow {
+        Flow::from_code(self.log.ev("url", Some(d)))
     }
-    fn on_header_field(&mut self, d: &[u8]) -> i32 {
-        self.log.ev("field", Some(d))
+    fn on_header_field(&mut self, d: &[u8]) -> Flow {
+        Flow::from_code(self.log.ev("field", Some(d)))
     }
-    fn on_header_value(&mut self, d: &[u8]) -> i32 {
-        self.log.ev("value", Some(d))
+    fn on_header_value(&mut self, d: &[u8]) -> Flow {
+        Flow::from_code(self.log.ev("value", Some(d)))
     }
-    fn on_body(&mut self, d: &[u8]) -> i32 {
-        self.log.ev("body", Some(d))
+    fn on_body(&mut self, d: &[u8]) -> Flow {
+        Flow::from_code(self.log.ev("body", Some(d)))
     }
-    fn on_headers_complete(&mut self) -> i32 {
-        self.log.ev("headers", None)
+    fn on_headers_complete(&mut self) -> Flow {
+        Flow::from_code(self.log.ev("headers", None))
     }
-    fn on_message_complete(&mut self) -> i32 {
-        self.log.ev("complete", None)
+    fn on_message_complete(&mut self) -> Flow {
+        Flow::from_code(self.log.ev("complete", None))
     }
 }
 

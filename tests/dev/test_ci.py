@@ -47,9 +47,13 @@ if args[:3] == ['api', '-i', 'graphql'] and 'object(expression' in query:
         queue = data['runs'].get(rev, [])
         conclusion = queue.pop(0) if len(queue) > 1 else (queue[0] if queue else None)
         save()
-        runs = ([(7, conclusion, 'u')] if conclusion is not None else []) + [
-            (row['databaseId'], row['conclusion'], row['url']) for row in data.get('history', [])
-            if row.get('headSha', 'h' * 40) == rev and 'databaseId' in row]
+        runs = [(7, conclusion, 'u')] if conclusion is not None else []
+        for row in data.get('history', []):
+            if row.get('headSha', 'h' * 40) == rev and 'databaseId' in row:
+                states = data.get('run_states', {}).get(str(row['databaseId']), [row['conclusion']])
+                conclusion = states.pop(0) if len(states) > 1 else states[0]
+                runs.append((row['databaseId'], conclusion, row['url']))
+        save()
         def job(index, name, conclusion):
             return {'name': name, 'databaseId': index + 100, 'status': 'COMPLETED' if conclusion else 'IN_PROGRESS',
                     'conclusion': conclusion.upper() or None, 'startedAt': '2026-10-25T21:00:00Z',
@@ -61,7 +65,7 @@ if args[:3] == ['api', '-i', 'graphql'] and 'object(expression' in query:
              'workflowRun': {'databaseId': run, 'url': url, 'workflow': {'resourcePath': '/o/r/actions/workflows/' + workflow}},
              'checkRuns': {'nodes': [job(index, *row) for index, row in
                                      enumerate(data.get('jobs', {}).get(str(run), [['rust', 'success']]))]}}
-            for run, conclusion, url in runs for workflow in ('merge.yml', 'pr.yml')]}}
+            for run, conclusion, url in runs for workflow in ('merge.yml', 'pr.yml', 'bench.yml')]}}
     print('HTTP/2.0 200 OK')
     print()
     print(json.dumps({'data': {'repository': {'object': found}}}))
@@ -101,8 +105,11 @@ elif args[0] == 'api':
 elif args[:2] == ['run', 'list'] and '--commit' not in args:
     # History rows are completed runs unless they say otherwise.
     status = args[args.index('--status') + 1] if '--status' in args else None
+    event = args[args.index('--event') + 1] if '--event' in args else None
+    limit = int(args[args.index('--limit') + 1])
     print(json.dumps([{'headSha': 'h' * 40, **row} for row in data.get('history', [])
-                      if status is None or row.get('status', 'completed') == status]))
+                      if (status is None or row.get('status', 'completed') == status)
+                      and (event is None or row.get('event') == event)][:limit]))
 elif args[:2] == ['run', 'download'] and '-n' in args:
     report = Path(args[args.index('-D') + 1]) / data['report']
     report.parent.mkdir(parents=True, exist_ok=True)
@@ -159,7 +166,7 @@ class Ci(unittest.TestCase):
         for count, expected in [(1, 0), (20, 2)]:
             with self.subTest(count=count):
                 code, result, _ = self.ci('timings', '--count', str(count), runs={}, flags=(),
-                    history=[{'databaseId': 7, 'attempt': 1, 'status': 'success'}],
+                    history=[{'databaseId': 7, 'attempt': 1, 'status': 'success', 'event': 'pull_request'}],
                     jobs={'7': [['phpt / cargo 1', 'success'], ['required', 'success']]})
                 self.assertEqual(code, expected)
                 self.assertEqual(result['sample_count'], 1)
@@ -327,7 +334,8 @@ class Ci(unittest.TestCase):
         queue = [pull(8, '2026-10-15T00:00:00Z', removed), pull(9, '2026-10-16T00:00:00Z', [{'__typename': 'AddedToMergeQueueEvent'}], queued=True),
                  pull(10, '2026-10-17T00:00:00Z', []), pull(11, '2026-10-18T00:00:00Z', removed, auto={'enabledAt': 'x'}),
                  pull(12, '2026-10-19T00:00:00Z', [{'__typename': 'RemovedFromMergeQueueEvent', 'reason': None}])]
-        history = [{'headBranch': 'gh-readonly-queue/main/pr-8-abc', 'url': 'u8'}, {'headBranch': 'main', 'url': 'm'}]
+        history = [{'headBranch': 'gh-readonly-queue/main/pr-8-abc', 'url': 'u8', 'event': 'merge_group'},
+                   {'headBranch': 'main', 'url': 'm', 'event': 'schedule'}]
         code, result, _ = self.ci('stuck', runs={}, flags=('--json',), queue=queue, history=history)
         # 9 is queued, 10 never was, and 11 was queued again: its auto-merge waits on a new PR-tier run.
         self.assertEqual((code, [(row['number'], row['blocking']) for row in result]),
@@ -336,9 +344,9 @@ class Ci(unittest.TestCase):
         # A merge-tier run on main held open by a job no runner took (#3553) comes first, with no PR stuck
         # too: 5 holds main's group, since 6 waits behind it, while 3 is a run GitHub abandoned long before.
         ago = lambda hours: (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime('%Y-%m-%dT%H:%M:%SZ')
-        history = [{'databaseId': 6, 'status': 'pending', 'createdAt': ago(1), 'url': 'u6'},
-                   {'databaseId': 5, 'status': 'queued', 'createdAt': ago(5), 'url': 'u5'},
-                   {'databaseId': 3, 'status': 'in_progress', 'createdAt': ago(24 * 7), 'url': 'u3'}]
+        history = [{'databaseId': 6, 'status': 'pending', 'createdAt': ago(1), 'url': 'u6', 'event': 'schedule'},
+                   {'databaseId': 5, 'status': 'queued', 'createdAt': ago(5), 'url': 'u5', 'event': 'schedule'},
+                   {'databaseId': 3, 'status': 'in_progress', 'createdAt': ago(24 * 7), 'url': 'u3', 'event': 'schedule'}]
         jobs = {'5': [['rust', 'success'], ['phpt / cargo 2', None]], '3': [['phpt-gate', None]]}
         code, result, _ = self.ci('stuck', runs={}, flags=('--json',), queue=[], history=history, jobs=jobs)
         self.assertEqual((code, result['pulls'], result['stalled_main']['run'], result['stalled_main']['waiting']),
@@ -486,6 +494,57 @@ class Ci(unittest.TestCase):
     def test_status_without_a_run_is_none(self):
         code, result, _ = self.ci('status', '--commit', 'abc1234', runs={})
         self.assertEqual((code, result['state']), (2, 'none'))
+
+    def test_latest_schedule_selects_run_id_even_with_a_newer_dispatch_on_the_same_commit(self):
+        history = [dict(databaseId=9, headSha='h' * 40, conclusion='success', event='workflow_dispatch',
+                        attempt=1, createdAt='2026-11-16T04:00:00Z', url='u9'),
+                   dict(databaseId=8, headSha='h' * 40, conclusion='failure', event='schedule',
+                        attempt=2, createdAt='2026-11-16T03:00:00Z', url='u8')]
+        code, result, _ = self.ci('status', '--workflow', 'bench.yml', '--latest', '--event', 'schedule',
+                                  runs={'c' * 40: ['success']}, history=history)
+        self.assertEqual((code, result['commit'], result['run'], result['state']), (1, 'h' * 40, 8, 'failed'))
+        self.assertEqual((result['event'], result['attempt'], result['created_at'], result['url']),
+                         ('schedule', 2, '2026-11-16T03:00:00Z', 'u8'))
+        self.assertFalse(any('rev=main ' in call for call in self.gh_calls))
+        # The default still asks for the current commit, not that older nightly.
+        code, result, _ = self.ci('status', '--workflow', 'bench.yml', runs={}, history=history)
+        self.assertEqual((code, result['commit'], result['state']), (2, 'c' * 40, 'none'))
+        self.assertFalse(any(call.startswith('run list') for call in self.gh_calls))
+        code, result, _ = self.ci('status', '--workflow', 'bench.yml', '--latest', runs={}, history=history)
+        self.assertEqual((code, result['run'], result['event']), (0, 9, 'workflow_dispatch'))
+
+    def test_latest_wait_stays_on_its_selected_run(self):
+        history = [dict(databaseId=9, headSha='h' * 40, conclusion='success', event='workflow_dispatch',
+                        attempt=1, createdAt='2026-11-16T04:00:00Z', url='u9'),
+                   dict(databaseId=8, headSha='h' * 40, conclusion='success', event='schedule',
+                        attempt=1, createdAt='2026-11-16T03:00:00Z', url='u8')]
+        for state, expected in [('success', 0), ('cancelled', 3)]:
+            with self.subTest(state=state):
+                code, result, _ = self.ci('wait', '--workflow', 'bench.yml', '--latest', '--event', 'schedule',
+                    runs={}, history=history, run_states={'8': ['running', state]})
+                self.assertEqual((code, result['run']), (expected, 8))
+                self.assertEqual(sum(call.startswith('run list') for call in self.gh_calls), 1)
+
+    def test_latest_without_a_matching_run_does_not_substitute_main_or_another_event(self):
+        history = [dict(databaseId=9, headSha='h' * 40, conclusion='success', event='workflow_dispatch',
+                        attempt=1, createdAt='2026-11-16T04:00:00Z', url='u9')]
+        for command in ['status', 'wait']:
+            with self.subTest(command=command):
+                code, result, _ = self.ci(command, '--latest', '--event', 'schedule', runs={}, history=history)
+                self.assertEqual((code, result['state'], result['commit'], result['event']), (2, 'none', None, 'schedule'))
+                self.assertNotIn('last_completed', result)
+                self.assertEqual(len(self.gh_calls), 1)
+        code, _, _ = self.ci('status', '--latest', '--event', 'schedule', runs={}, history=history, flags=())
+        self.assertEqual(code, 2)
+        self.assertIn('merge.yml latest: none', self.out)
+
+    def test_latest_and_commit_are_exclusive_and_event_requires_latest(self):
+        for flags in [('--latest', '--commit', 'main'), ('--event', 'schedule')]:
+            with self.subTest(flags=flags):
+                code, _, error = self.ci('status', *flags, runs={})
+                self.assertEqual(code, 2)
+                self.assertIn('error:', error)
+                self.assertEqual(self.gh_calls, [])
 
     def test_unfinished_head_shows_completed_failures_without_changing_its_state(self):
         history = [{'databaseId': 6, 'conclusion': 'cancelled', 'url': 'u6', 'headSha': 'f' * 40},

@@ -1151,7 +1151,7 @@ fn bind_host(socket: Socket<'_>, host: &CStr, port: c_int) -> bool {
     let mut address = SocketAddress::default();
     let text = host.to_bytes();
     let (storage, length) = (&mut address.addr, &mut address.len);
-    let error = assign(storage, length, kind, text, port, |family| {
+    let assigned = assign(storage, length, kind, text, port, |family| {
         // the platform's, which reads the NUL-terminated source and writes at
         // most an IPv6 address's 16 bytes (nothing for a family it doesn't know).
         unsafe extern "C" {
@@ -1167,7 +1167,7 @@ fn bind_host(socket: Socket<'_>, host: &CStr, port: c_int) -> bool {
             Err(BAD_HOST_ADDR)
         }
     });
-    if error != 0 {
+    if let Err(error) = assigned {
         log::set_last_error(error);
         return false;
     }

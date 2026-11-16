@@ -160,8 +160,11 @@ pub fn set_hosts_path(path: &[u8]) {
 }
 
 /// Queries `domain` for `family`'s address records with `request_id` over
-/// `exchange`, pushing each address of the answer; 0, [`INVALID_DOMAIN`], or the
-/// code native sets as the last error (also when the answer has no address).
+/// `exchange`, pushing each address of the answer.
+///
+/// # Errors
+/// [`INVALID_DOMAIN`], or the code native sets as the last error (also when the
+/// answer has no address).
 /// `signed_char` is native `char`'s signedness.
 pub fn query(
     domain: &CStr,
@@ -169,7 +172,7 @@ pub fn query(
     request_id: u16,
     exchange: &mut impl DnsExchange,
     signed_char: bool,
-) -> c_int {
+) -> Result<(), c_int> {
     let mut packet = vec![0u8; PACKET];
     let [id_high, id_low] = request_id.to_be_bytes();
     // ID, RD, one question.
@@ -178,11 +181,11 @@ pub fn query(
     let name = domain.to_bytes();
     let capacity = PACKET - HEADER;
     if name.len() > capacity - 3 {
-        return INVALID_DOMAIN;
+        return Err(INVALID_DOMAIN);
     }
     let question = packet.get_mut(HEADER..).unwrap_or_default();
     if !domain_encode(name, question) {
-        return INVALID_DOMAIN;
+        return Err(INVALID_DOMAIN);
     }
     let mut steps = HEADER + c_len(question) + 1;
     let [type_high, type_low] = if family == libc::AF_INET6 { AAAA } else { A }.to_be_bytes();
@@ -192,12 +195,12 @@ pub fn query(
     let query_initialized = PACKET.min(steps.max(HEADER + name.len() + 3));
 
     if !exchange.send(packet.get(..steps).unwrap_or_default()) {
-        return RESOLVE_FAILED;
+        return Err(RESOLVE_FAILED);
     }
     let received = match exchange.recv(packet.get_mut(..PACKET - 1).unwrap_or_default()) {
         Ok(received @ 1..) => received,
-        Err(RecvError::Canceled) => return CANCELED,
-        Ok(0) | Err(RecvError::Failed) => return RESOLVE_FAILED,
+        Err(RecvError::Canceled) => return Err(CANCELED),
+        Ok(0) | Err(RecvError::Failed) => return Err(RESOLVE_FAILED),
     };
     let received = received.min(PACKET - 1);
     put(&mut packet, received, &[0]);
@@ -227,7 +230,7 @@ pub fn query(
     }
 
     if u16_at(&packet, 0) != request_id {
-        return RESOLVE_FAILED;
+        return Err(RESOLVE_FAILED);
     }
     let mut found = false;
     for (kind, data) in &records {
@@ -241,7 +244,7 @@ pub fn query(
         exchange.push(text.bytes.get(..length).unwrap_or_default());
         found = true;
     }
-    if found { 0 } else { RESOLVE_FAILED }
+    if found { Ok(()) } else { Err(RESOLVE_FAILED) }
 }
 
 /// The coroutine UDP socket `dns_lookup_impl_with_socket` exchanges its query over
@@ -314,21 +317,23 @@ pub fn lookup<S: DnsSocket>(
         port,
         found: Vec::new(),
     };
-    let error = query(
+    let queried = query(
         domain,
         family,
         REQUEST_ID.fetch_add(1, Ordering::Relaxed),
         &mut exchange,
         c_char::MIN != 0,
     );
-    if error == INVALID_DOMAIN {
-        let domain = domain.to_string_lossy();
-        log::warning(
-            c"dns_lookup_impl_with_socket",
-            format_args!("invalid domain[{domain}]"),
-        );
-    } else if error != 0 {
-        log::set_last_error(error);
+    match queried {
+        Err(INVALID_DOMAIN) => {
+            let domain = domain.to_string_lossy();
+            log::warning(
+                c"dns_lookup_impl_with_socket",
+                format_args!("invalid domain[{domain}]"),
+            );
+        }
+        Err(error) => log::set_last_error(error),
+        Ok(()) => {}
     }
     exchange.found
 }
@@ -458,7 +463,9 @@ mod tests {
             results: Vec::new(),
             cancelled,
         };
-        let error = query(c"example.test", family, 7, &mut exchange, true);
+        let error = query(c"example.test", family, 7, &mut exchange, true)
+            .err()
+            .unwrap_or(0);
         (error, exchange)
     }
 
