@@ -704,7 +704,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn max_connection_bounds() {
         let live = LiveServer::new();
         let before = live.server().max_connection();

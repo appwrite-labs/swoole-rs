@@ -353,7 +353,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn close_tells_the_worker_unless_nobody_is_told() {
         let (live, _client) = accepted();
         let (serv, reactor) = (live.server(), live.reactor());
@@ -375,7 +374,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn heartbeat_closes_only_this_reactors_stale_sessions() {
         let (live, _client) = accepted();
         let (serv, reactor) = (live.server(), live.reactor());
@@ -394,7 +392,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn init_reactor_sets_the_session_handlers() {
         use swoole_rs_reactor::reactor_upstream::isset_handler as isset;
         let live = crate::fixture::LiveServer::new();
@@ -417,7 +414,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn join_waits_for_each_reactor_thread_and_the_heartbeat() {
         let live = crate::fixture::LiveServer::new();
         let (serv, state) = (live.server(), live.state());

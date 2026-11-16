@@ -189,7 +189,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
+    #[cfg_attr(miri, ignore = "Miri's socketpair is stream-only")]
     fn pipe_write_sends_every_queued_message() {
         let messages = [
             message(SendData, 1, b"live"),
@@ -207,7 +207,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
+    #[cfg_attr(miri, ignore = "Miri's socketpair is stream-only")]
     fn pipe_write_drops_closed_and_timed_out_sessions() {
         let messages = [
             message(SendData, 1, b"closed"),
@@ -227,7 +227,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
+    #[cfg_attr(miri, ignore = "Miri's socketpair is stream-only")]
     fn a_full_pipe_waits_and_a_closed_one_fails() {
         let p = Pipe::new(&[message(SendData, 9, b"later")]);
         while p.ours.send(b"fill").is_ok() {}
