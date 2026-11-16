@@ -1,14 +1,26 @@
 //! Genuine POSIX iovec progress policy. Native retains both existing arrays,
 //! public counters and all payload-pointer writes; Rust reads only live lengths.
 use swoole_rs_corebase::CCast;
-#[repr(C)]
+/// What a transfer of `n` bytes does to an iovec cursor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IovStep {
+    /// Nothing moves: no bytes, or no descriptors left.
+    Unchanged,
+    /// The cursor moves and descriptors remain.
+    Advanced,
+    /// The last descriptor completes.
+    Finished,
+    /// More bytes than the descriptors hold, outside the original's domain.
+    Overrun,
+}
+
 pub struct ReactorIovProgress {
     pub offset_bytes: usize,
     pub advance: usize,
     pub consumed: usize,
     pub remain_count: i32,
     pub index: i32,
-    pub action: i32,
+    pub action: IovStep,
 }
 pub(crate) fn progress(
     lengths: impl IntoIterator<Item = usize>,
@@ -24,7 +36,7 @@ pub(crate) fn progress(
             consumed: 0,
             remain_count: remaining,
             index,
-            action: 0,
+            action: IovStep::Unchanged,
         };
     }
     let mut total = 0usize;
@@ -44,7 +56,11 @@ pub(crate) fn progress(
                 consumed,
                 remain_count,
                 index: index.wrapping_add(advance.c_cast::<i32>()),
-                action: if remain_count == 0 { 2 } else { 1 },
+                action: if remain_count == 0 {
+                    IovStep::Finished
+                } else {
+                    IovStep::Advanced
+                },
             };
         }
     }
@@ -54,6 +70,6 @@ pub(crate) fn progress(
         consumed: 0,
         remain_count: remaining,
         index,
-        action: -1,
+        action: IovStep::Overrun,
     }
 }

@@ -69,12 +69,12 @@ impl DgramPacket {
     }
 }
 
-/// `f` over a handler's server (`reactor->ptr`) and reactor; `SW_ERR` on a reactor that
-/// holds none, where no handler below is registered.
+/// `f` over a handler's server (`reactor->ptr`) and reactor, as upstream's `SW_OK`/`SW_ERR`;
+/// `SW_ERR` on a reactor that holds none, where no handler below is registered.
 #[inline]
-fn handler(reactor: Running<'_>, f: impl FnOnce(view::Server<'_>, Reactor) -> c_int) -> c_int {
+fn handler(reactor: Running<'_>, f: impl FnOnce(view::Server<'_>, Reactor) -> bool) -> c_int {
     let reactor = Reactor::running(reactor);
-    reactor.server().map_or(-1, |serv| f(serv, reactor))
+    crate::conn_io::status(reactor.server().is_some_and(|serv| f(serv, reactor)))
 }
 
 // The handlers below are registered only on reactors that hold a server.
@@ -82,21 +82,21 @@ fn handler(reactor: Running<'_>, f: impl FnOnce(view::Server<'_>, Reactor) -> c_
 /// `ReactorThread_onPacketReceived`: a UDP port's datagram.
 pub extern "C" fn on_packet_received(reactor: Running<'_>, event: &mut Event) -> c_int {
     handler(reactor, |serv, reactor| {
-        crate::conn_io::status(crate::reactor_thread::packet_received(serv, reactor, event))
+        crate::reactor_thread::packet_received(serv, reactor, event)
     })
 }
 
 /// `ReactorThread_onClose`: the peer closed.
 pub extern "C" fn on_close(reactor: Running<'_>, event: &mut Event) -> c_int {
     handler(reactor, |serv, reactor| {
-        crate::conn_io::status(crate::conn_io::peer_close(serv, reactor, event))
+        crate::conn_io::peer_close(serv, reactor, event)
     })
 }
 
 /// `ReactorThread_onPipeWrite`: a worker pipe can be written.
 pub extern "C" fn on_pipe_write(reactor: Running<'_>, event: &mut Event) -> c_int {
     handler(reactor, |serv, reactor| {
-        crate::conn_io::status(crate::reactor_io::pipe_write(serv, reactor, event))
+        crate::reactor_io::pipe_write(serv, reactor, event)
     })
 }
 
@@ -110,7 +110,7 @@ pub extern "C" fn on_read(reactor: Running<'_>, event: &mut Event) -> c_int {
 /// `ReactorThread_onWrite`: a connection is writable.
 pub extern "C" fn on_write(reactor: Running<'_>, event: &mut Event) -> c_int {
     handler(reactor, |serv, reactor| {
-        crate::conn_io::status(crate::conn_io::write(serv, reactor, event))
+        crate::conn_io::write(serv, reactor, event)
     })
 }
 
@@ -122,11 +122,7 @@ pub extern "C-unwind" fn close_connection(
     socket: swoole_rs_reactor::Socket<'static>,
 ) -> c_int {
     handler(reactor, |serv, reactor| {
-        crate::conn_io::status(crate::conn_io::close_connection(
-            serv,
-            reactor,
-            Some(socket),
-        ))
+        crate::conn_io::close_connection(serv, reactor, Some(socket))
     })
 }
 

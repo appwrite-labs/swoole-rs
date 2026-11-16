@@ -31,9 +31,9 @@ pub struct Host {
     pub recv: fn(Co, &mut [core::mem::MaybeUninit<u8>], bool) -> Option<usize>,
     /// The protocol's `get_package_length` over the read buffer's first bytes;
     /// writes the header length.
-    pub package_length: fn(Co, u32, &mut u32) -> isize,
+    pub package_length: fn(Co, u32, &mut u32) -> crate::packet::Length,
     /// Packet error diagnostics, with the same kinds as the packet receive.
-    pub packet_fail: fn(Co, crate::packet::Failure, isize),
+    pub packet_fail: fn(Co, crate::packet::Failure),
 }
 
 static HOST: std::sync::OnceLock<&'static Host> = std::sync::OnceLock::new();
@@ -215,7 +215,7 @@ mod native {
         }
     }
 
-    fn package_length(socket: Co, size: u32, header: &mut u32) -> isize {
+    fn package_length(socket: Co, size: u32, header: &mut u32) -> crate::packet::Length {
         // The record's read String, which the packet receive fills.
         let buf = socket.with_buffer(false, CppString::as_mut_ptr);
         let bytes = if buf.is_null() {
@@ -228,12 +228,12 @@ mod native {
         let mut packet = PacketLength::new(bytes);
         let (protocol, callback) = (socket.protocol_ptr(), socket.protocol().get_package_length);
         let Some(call) = callback else {
-            return -1;
+            return crate::packet::Length::NotFound;
         };
         // SAFETY: the record's protocol and network socket, and `size` bytes at `buf`.
         let length = unsafe { call(protocol, socket.socket().cast(), &mut packet) };
         *header = packet.header_len;
-        length
+        crate::packet::Length::of(length)
     }
 
     /// `SW_ERROR_PACKAGE_LENGTH_TOO_LARGE`, `SW_ERROR_PACKAGE_LENGTH_NOT_FOUND` and
@@ -242,12 +242,12 @@ mod native {
     const NOT_FOUND: c_int = swoole_rs_error::ErrorCode::SW_ERROR_PACKAGE_LENGTH_NOT_FOUND as c_int;
     use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 
-    fn packet_fail(socket: Co, kind: crate::packet::Failure, length: isize) {
+    fn packet_fail(socket: Co, kind: crate::packet::Failure) {
         use super::Message;
         use crate::packet::Failure;
         let (error, message) = match kind {
             Failure::LengthNotFound => (NOT_FOUND, Message::Static(c"get package length failed")),
-            Failure::TooLarge => {
+            Failure::TooLarge(length) => {
                 use swoole_rs_clients::address::{address_port, with_host};
                 let (addr, port) = socket
                     .net(|record| {
@@ -261,8 +261,7 @@ mod native {
                     TOO_LARGE,
                     c"Socket::recv_packet_with_length_protocol",
                     format_args!(
-                        "packet length is too big, remote_addr={addr}:{port}, length={}",
-                        length.cast_unsigned()
+                        "packet length is too big, remote_addr={addr}:{port}, length={length}"
                     ),
                 );
                 (TOO_LARGE, Message::LastError)

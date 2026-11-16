@@ -85,19 +85,6 @@ const _: () = assert!(
     "ClientRecord's layout moved"
 );
 
-/// crates/corebase's `ProxyFields`.
-#[repr(C)]
-struct ProxyFields {
-    state: u8,
-    dont_handshake: u8,
-    version: u8,
-    method: u8,
-    dns_tunnel: u8,
-    port: i32,
-    target_port: i32,
-    socket_type: i32,
-}
-
 unsafe extern "C" {
     fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut c_void;
 
@@ -427,7 +414,7 @@ impl<'a> Client<'a> {
                 &mut owner(self.ssl_context()),
                 &mut owner(prepared.owner),
             );
-            assert_eq!(copied.status, 0);
+            assert_eq!(copied, Ok(()));
             drop(std::rc::Rc::<swoole_rs_tls::OwnedTlsContext>::from_raw(
                 prepared.owner.cast(),
             ));
@@ -457,7 +444,7 @@ impl<'a> Client<'a> {
 
     /// `client.socks5_proxy`'s `dns_tunnel`, or None without one.
     fn socks5_dns_tunnel(&self) -> Option<&mut u8> {
-        let fields = self.handle().proxy_fields(false).cast::<ProxyFields>();
+        let fields = self.handle().proxy_fields(false);
         // SAFETY: the client's live proxy's fields.
         (!fields.is_null()).then(|| unsafe { &mut (*fields).dns_tunnel })
     }

@@ -13,7 +13,7 @@ use std::sync::{Arc, PoisonError, RwLockReadGuard};
 use swoole_rs_clients::address::{address_port, with_host};
 use swoole_rs_corebase::constants::{SW_SSL_CIPHER_LIST, SW_SSL_ECDH_CURVE};
 use swoole_rs_corebase::{log, sys};
-use swoole_rs_reactor::{Socket, SocketRecord, swr_v1_socket_type};
+use swoole_rs_reactor::{Socket, SocketRecord, socket_type};
 use swoole_rs_server::port_config::{PortConfig, TlsState};
 use swoole_rs_server::view;
 use swoole_rs_tls::{
@@ -248,10 +248,10 @@ pub(crate) fn import(config: &mut PortConfig, fd: c_int) -> bool {
         return false;
     }
     let family = c_int::from(socket.info.addr.family());
-    let kind = swr_v1_socket_type(family, so_type);
-    socket.socket_type = kind;
-    socket.info.kind = kind;
-    socket.fd_type = if matches!(kind, 2 | 4 | 6) {
+    let kind = socket_type(family, so_type);
+    socket.socket_type = kind.raw();
+    socket.info.kind = kind.raw();
+    socket.fd_type = if kind.is_dgram() {
         FD_DGRAM_SERVER
     } else {
         FD_STREAM_SERVER
@@ -259,7 +259,7 @@ pub(crate) fn import(config: &mut PortConfig, fd: c_int) -> bool {
     socket.removed = true;
     let info = socket.info;
     config.set_listening_socket(Box::new(socket).into_socket());
-    config.r#type = kind;
+    config.r#type = kind.raw();
     if !with_host(&info, |host| config.host.set(host.to_bytes())) {
         swoole_rs_corebase::fatal("out of memory storing a port's host");
     }

@@ -1,8 +1,8 @@
 //! Owned POSIX descriptor spans and their cursor. The allocation header owns the
 //! complete `IOVector`; native callers borrow views instead of mirroring counters.
-use crate::ReactorIovProgress;
 use crate::iov_progress::progress;
 use crate::socket_rw::IovState;
+use crate::{IovStep, ReactorIovProgress};
 use std::io::IoSlice;
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;
@@ -44,7 +44,6 @@ impl<'b> ReadVec<'b> {
 
 /// Stable public slots borrowed by the native facade. Payload and descriptor
 /// replacement obey the same live-span requirements as the original interface.
-#[repr(C)]
 pub struct ReactorIovFields {
     pub original: *mut libc::iovec,
     pub count: i32,
@@ -146,18 +145,18 @@ impl<'a> ReactorIov<'a> {
             state.index,
             state.offset_bytes,
         );
-        if reply.action == 0 {
+        if reply.action == IovStep::Unchanged {
             return;
         }
         assert!(
-            reply.action > 0,
+            reply.action != IovStep::Overrun,
             "iovec progress outside the original domain"
         );
         let state = &mut self.fields.state;
         state.remain_count = reply.remain_count;
         state.index = reply.index;
         state.offset_bytes = reply.offset_bytes;
-        if reply.action == 1 {
+        if reply.action == IovStep::Advanced {
             state.iterator = state.iterator.wrapping_add(reply.advance);
         }
     }
@@ -247,7 +246,7 @@ pub(crate) fn owned_progress(
         index,
         offset,
     );
-    if reply.action == 1
+    if reply.action == IovStep::Advanced
         && let Some(current) = iterator.get_mut(reply.advance)
     {
         current.iov_base = current
@@ -342,7 +341,14 @@ mod tests {
                 );
                 assert_eq!(reply.remain_count, count.c_cast::<i32>() - 1);
                 assert_eq!(reply.index, 1);
-                assert_eq!(reply.action, if count == 1 { 2 } else { 1 });
+                assert_eq!(
+                    reply.action,
+                    if count == 1 {
+                        IovStep::Finished
+                    } else {
+                        IovStep::Advanced
+                    }
+                );
                 assert_eq!(owned_length(span(original, count.c_cast::<i32>())), count);
                 drop(Box::from_raw(owner));
             }
@@ -360,7 +366,7 @@ mod tests {
             let partial = owned_progress(span(iterator, 1), 2, 1, 0, 0);
             assert_eq!(
                 (partial.action, partial.offset_bytes, partial.remain_count),
-                (1, 2, 1)
+                (IovStep::Advanced, 2, 1)
             );
             assert_eq!((*iterator).iov_base, bytes.as_mut_ptr().add(2).cast());
             assert_eq!((*iterator).iov_len, 5);
@@ -372,7 +378,7 @@ mod tests {
                     final_piece.index,
                     final_piece.remain_count
                 ),
-                (2, 1, 0)
+                (IovStep::Finished, 1, 0)
             );
             assert_eq!((*iterator).iov_len, 5);
             assert_eq!((*iterator).iov_base, bytes.as_mut_ptr().add(2).cast());
@@ -418,14 +424,14 @@ mod tests {
                     self.offset_bytes,
                 )
             };
-            assert!(reply.action >= 0);
-            if reply.action == 0 {
+            assert_ne!(reply.action, IovStep::Overrun);
+            if reply.action == IovStep::Unchanged {
                 return;
             }
             self.remain_count = reply.remain_count;
             self.index = reply.index;
             self.offset_bytes = reply.offset_bytes;
-            if reply.action == 1 {
+            if reply.action == IovStep::Advanced {
                 self.iterator = self.iterator.wrapping_add(reply.advance);
             }
         }

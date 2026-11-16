@@ -15,6 +15,16 @@ name codec, the DNS address text and the socket DNS lookup
 `network/dns.cpp` and `address.cpp` are Rust cases in `hooks-system-rust` (see
 [the hooks README](../hooks/README.md)).
 
+## Native socket-control unit coverage
+
+`socket_ops.rs` runs the production client's socket-control table in the Rust
+unit-test binary: descriptor flags, successful and failed address assignment,
+both kernel timeouts, raw/synchronous/nonblocking TCP connects, `SO_ERROR`, and
+an event with no socket. The existing recording cases receive their table at
+construction and retain their original inputs and expected traces. The socket
+record operations compile in both builds; the remaining I/O, TLS, timer and host
+stand-ins are tracked by #4093.
+
 ## network/client.cpp in Rust
 
 `core-tests/src/network/client.cpp` no longer builds. `client.rs` holds its 43

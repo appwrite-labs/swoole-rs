@@ -58,7 +58,6 @@ pub struct Host {
 }
 
 /// `SwooleG.iouring_*` and the opcode probes this build requires.
-#[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Config {
     pub entries: u32,
