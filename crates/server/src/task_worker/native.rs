@@ -296,7 +296,10 @@ pub fn finish(
             ),
         }
     } else {
-        let Some(slot) = super::result_slot(serv, source) else {
+        let (Some(slot), Some(pipe)) = (
+            super::result_slot(serv, source),
+            serv.task_notify_pipe(source),
+        ) else {
             log::warning(
                 c"Server::finish",
                 format_args!("no result slot for worker {source}"),
@@ -321,8 +324,6 @@ pub fn finish(
             log::warning(c"Server::finish", format_args!("large task pack failed()"));
             return false;
         }
-        // SAFETY: the source worker's live notify pipe.
-        let pipe = unsafe { &*serv.state().task_pipe(source.into()) };
         let flag = 1u64.to_ne_bytes();
         super::notify(
             || swoole_rs_tls::socket_pair::write_from(pipe, &flag),

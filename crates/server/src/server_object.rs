@@ -80,7 +80,6 @@ impl Drop for Owner {
         crate::server_methods::destroy_running(serv);
         crate::reactor_handle::release_server(serv);
         let object_ptr = serv.raw();
-        serv.state().close_pipes();
         if swoole_rs_corebase::swr_v1_core_server() == object_ptr {
             swoole_rs_corebase::swr_v1_core_set_server(ptr::null_mut());
         }
