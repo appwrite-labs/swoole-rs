@@ -25,7 +25,8 @@ use swoole_rs_zend::{method_table, sys as z};
 const CALLBACKS: usize = swoole_rs_ports::PortCallback::ALL.len();
 
 /// `swoole::ServerPortProperty`: the port's callables and its server. The
-/// server's dispatch finds it through [`PROPERTIES`], and PHP code a method
+/// server's dispatch finds it through the port's weak slot (or [`PROPERTIES`]
+/// in thread mode), and PHP code a method
 /// runs can call this object's methods, so every field is a cell and the
 /// property is only ever borrowed shared. A callback slot is taken out and put
 /// back with nothing in between that runs PHP code.
@@ -75,8 +76,16 @@ pub(crate) fn callback(
     port: view::Port<'_>,
     kind: swoole_rs_ports::PortCallback,
 ) -> Option<Callable> {
-    let index = usize::from(port.config().object_id);
-    let property = with_properties(|properties| properties.get(index).and_then(Weak::upgrade));
+    let config = port.config();
+    let property = if crate::server::THREAD.load(Ordering::Relaxed) {
+        let index = usize::from(config.object_id);
+        with_properties(|properties| properties.get(index).and_then(Weak::upgrade))
+    } else {
+        let weak = config.property.replace(None);
+        let property = weak.as_ref().and_then(Weak::upgrade);
+        config.property.set(weak);
+        property.and_then(|property| property.downcast::<PortProperty>().ok())
+    };
     property?.callback(kind)
 }
 
@@ -190,15 +199,21 @@ pub(crate) fn new_object(serv: SharedServer, port: view::Port<'_>) -> Owned {
     data.property.serv.get_or_init(|| serv);
     data.property.bound.set(true);
     // `php_swoole_server_set_port_property`.
-    let index = usize::from(port.config().object_id);
-    with_properties(|properties| {
-        if properties.len() <= index {
-            properties.resize(index + 1, Weak::new());
-        }
-        if let Some(entry) = properties.get_mut(index) {
-            *entry = Rc::downgrade(&data.property);
-        }
-    });
+    let config = port.config();
+    let property = Rc::downgrade(&data.property);
+    if crate::server::THREAD.load(Ordering::Relaxed) {
+        let index = usize::from(config.object_id);
+        with_properties(|properties| {
+            if properties.len() <= index {
+                properties.resize(index + 1, Weak::new());
+            }
+            if let Some(entry) = properties.get_mut(index) {
+                *entry = property;
+            }
+        });
+    } else {
+        config.property.set(Some(property));
+    }
     zport
 }
 
