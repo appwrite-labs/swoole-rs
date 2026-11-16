@@ -13,7 +13,7 @@
 
 /* crates/phpswoole. */
 extern zend_class_entry *swoole_error_ce;
-void swr_v1_phpswoole_fatal_exit(int code);
+void swr_v1_phpswoole_fatal_exit(const int *code);
 /* crates/phpprocess. */
 void php_swoole_process_signal_clean(void);
 
@@ -60,7 +60,7 @@ void swr_zend_fatal_error(int code, const char *format, ...) {
     free(message);
     /* Prints the exception; the VM is not terminated. */
     zend_exception_error(exception, E_ERROR);
-    swr_v1_phpswoole_fatal_exit(code);
+    swr_v1_phpswoole_fatal_exit(&code);
 }
 
 #ifdef ZTS

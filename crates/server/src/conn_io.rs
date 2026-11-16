@@ -495,17 +495,11 @@ pub(crate) fn close_connection(
     if let Some(mut recv_buffer) = sock.edit(|s| s.recv_buffer.take()) {
         recv_buffer.dispose();
     }
-    if let Some(port) = port {
-        if port.open_http_protocol.get() && conn.http_request().is_some() {
-            (crate::port_config::methods().destroy_http_request)(conn);
-        }
-        if port.open_redis_protocol.get()
-            && let Some(request) = conn.take_resp_request()
-        {
-            // SAFETY: the box the session's reactor, this one, gave the connection; the
-            // slot no longer names it.
-            drop(unsafe { Box::from_raw(request) });
-        }
+    if let Some(port) = port
+        && port.open_http_protocol.get()
+        && conn.http_request().is_some()
+    {
+        (crate::port_config::methods().destroy_http_request)(conn);
     }
     if let Some(session) = state.session(conn.session_id()) {
         session.set_fd(0);

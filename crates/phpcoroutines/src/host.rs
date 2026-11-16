@@ -8,10 +8,7 @@ use std::{
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_coroutine::Resume;
-use swoole_rs_zend::{
-    E_ERROR, Zvals, bailout,
-    sys::{zend_execute_data, zval},
-};
+use swoole_rs_zend::{E_ERROR, Zvals, bailout};
 
 /// `Co::stats()`'s native counts.
 #[derive(Default)]
@@ -642,13 +639,13 @@ pub(crate) fn defer(value: impl swoole_rs_reactor::event_api::Deferred) {
     }
 }
 
-/// PHP 8.4+ `exit()`: the original handler, false if there is none.
-pub(crate) fn exit_original(execute_data: *mut zend_execute_data, return_value: *mut zval) -> bool {
+/// PHP 8.4+ `exit()`: the original handler over `call`, its bailout deferred
+/// to the handler's end; false if there is none.
+pub(crate) fn exit_original(call: &swoole_rs_zend::Call) -> bool {
     let Some(handler) = swoole_rs_phpruntime::original(b"exit") else {
         return false;
     };
-    // SAFETY: the handler's own frame and result.
-    unsafe { handler(execute_data, return_value) };
+    bailout::defer(call.forward(Some(handler)));
     true
 }
 

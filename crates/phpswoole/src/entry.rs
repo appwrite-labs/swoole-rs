@@ -10,7 +10,7 @@ use std::{
 };
 use swoole_rs_corebase::{Switch as C, built_with};
 use swoole_rs_zend::{
-    bailout,
+    Fatal, bailout,
     sys::{zend_module_dep, zend_module_entry},
 };
 
@@ -99,11 +99,10 @@ pub fn module_entry(families: &'static module::Families) -> *mut zend_module_ent
 /// `fatal_error`'s tail, after `swr_zend_fatal_error` threw and printed the
 /// `Swoole\Error`: a coroutine bound to a socket prints its backtrace, then
 /// the thread bails out (outside the main thread) or the process exits 255.
-/// # Safety
-/// From `swr_zend_fatal_error`, after MINIT.
+/// Only that shim calls it: only it makes the [`Fatal`] it lends.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpswoole_fatal_exit(code: c_int) {
-    if code == CO_HAS_BEEN_BOUND {
+pub extern "C" fn swr_v1_phpswoole_fatal_exit(error: Fatal<'_>) {
+    if error.is(CO_HAS_BEEN_BOUND) {
         let cid = swoole_rs_coroutine::socket_bound_cid();
         let rule = "-------------------------------------------------------------------";
         // Upstream's fprintf: nothing to do when stderr fails.
@@ -112,11 +111,9 @@ pub unsafe extern "C" fn swr_v1_phpswoole_fatal_exit(code: c_int) {
             "\n [Coroutine-{cid}] Stack trace:\n {rule}\n"
         )
         .unwrap_or_default();
-        // SAFETY: `swr_zend_fatal_error` runs on the PHP thread that raised the error.
-        let php = unsafe { swoole_rs_zend::Php::assume() };
         // The coroutine's backtrace, printed; a bailout is trapped.
         if let Some(families) = module::families()
-            && let Err(bailed) = (families.print_backtrace)(php, cid)
+            && let Err(bailed) = (families.print_backtrace)(error.php(), cid)
         {
             bailout::raise(Err(bailed));
             return;
