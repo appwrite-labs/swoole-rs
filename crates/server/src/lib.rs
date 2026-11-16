@@ -80,10 +80,7 @@ pub mod view;
 pub mod worker_methods;
 pub use static_config::Collection as StaticCollection;
 
-pub use records::{
-    Connection, ConnectionRecord, ServerTables, Session, SessionRecord, Slot,
-    swr_v1_server_connection, swr_v1_server_session,
-};
+pub use records::{Connection, ConnectionRecord, ServerTables, Session, SessionRecord, Slot};
 
 pub use shared::{PortCounters, ServerCounters, swr_v1_server_shared_init};
 

@@ -26,9 +26,10 @@ condition, the idle task, signal dispatch (main thread), try-exit, `malloc_trim`
 ## Handlers
 
 `set_handler`, `isset_handler`, `get_handler` and `get_error_handler` are Rust
-tables (`crates/reactor/src/handlers.rs`). `get_handler` and `default_write_handler`
-have no C++ caller, so the class no longer has them: Rust reads them as
-`reactor_upstream::reactor_get_handler` and `reactor_default_write_handler`.
+tables (`crates/reactor/src/handlers.rs`) of Rust `fn`s. No C++ sets, reads or calls a
+handler, so the class declares only `isset_handler` and nothing exports `set_handler`: Rust
+registers through `reactor_upstream::set_handler` and `event_api::set_handler`, and
+reads through `reactor_get_handler` and `reactor_default_write_handler`.
 
 ## Deferred queues
 

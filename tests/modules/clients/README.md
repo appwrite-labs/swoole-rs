@@ -20,10 +20,13 @@ name codec, the DNS address text and the socket DNS lookup
 `socket_ops.rs` runs the production client's socket-control table in the Rust
 unit-test binary: descriptor flags, successful and failed address assignment,
 both kernel timeouts, raw/synchronous/nonblocking TCP connects, `SO_ERROR`, and
-an event with no socket. The existing recording cases receive their table at
+an event with no socket. A real OpenSSL session on a loopback connection also
+checks that a pending handshake requests input and reuses its original session
+and frozen hostname after the mutable context changes. Its test owner releases
+the native session before freeing the client. The existing recording cases receive their table at
 construction and retain their original inputs and expected traces. The socket
-record operations compile in both builds; the remaining I/O, TLS, timer and host
-stand-ins are tracked by #4093.
+record and safe TLS operations compile in both builds; the remaining I/O, TLS
+close/free, timer and host stand-ins are tracked by #4093.
 
 ## network/client.cpp in Rust
 

@@ -120,10 +120,10 @@ impl event_api::Deferred for Completion {
     fn dispose(self) {}
 }
 /// The `SW_FD_CARES` read and write handlers: the wrapper's object is its query.
-extern "C" fn readable(_: Running<'_>, event: &mut Event) -> i32 {
+fn readable(_: Running<'_>, event: &mut Event) -> i32 {
     if process(event, false) { 0 } else { -1 }
 }
-extern "C" fn writable(_: Running<'_>, event: &mut Event) -> i32 {
+fn writable(_: Running<'_>, event: &mut Event) -> i32 {
     if process(event, true) { 0 } else { -1 }
 }
 /// Hands the ready descriptor to its query's channel: false for an event that has none.
