@@ -287,8 +287,8 @@ impl Live<'_> {
     }
 
     /// The SOCKS5 packet's first `length` bytes.
-    fn socks5_packet(&self, length: isize) -> Vec<u8> {
-        let length = usize::try_from(length).unwrap_or(0).min(512);
+    fn socks5_packet(&self, length: Option<usize>) -> Vec<u8> {
+        let length = length.unwrap_or(0).min(512);
         self.socks5
             .and_then(|proxy| {
                 proxy.with_packet(|packet| packet.get(..length).unwrap_or_default().to_vec())
@@ -444,15 +444,15 @@ impl Connecting for Live<'_> {
         let Some(owner) = self.socks5 else {
             return Vec::new();
         };
-        let length = pack_negotiate_request(&Socks5Proxy::new(owner));
+        let length = usize::try_from(pack_negotiate_request(&Socks5Proxy::new(owner))).ok();
         owner.update(|fields| fields.state = SOCKS5_HANDSHAKE);
         self.socks5_packet(length)
     }
 
     fn socks5_step(&mut self, reply: &[u8]) -> Option<bool> {
         let owner = self.socks5?;
-        let n = swoole_rs_protocols_ffi::socks5_step(&Socks5Proxy::new(owner), reply);
-        if n < 0 || (n > 0 && self.send(&self.socks5_packet(n)) != usize::try_from(n).ok()) {
+        let n = swoole_rs_protocols_ffi::socks5_step(&Socks5Proxy::new(owner), reply)?;
+        if n > 0 && self.send(&self.socks5_packet(Some(n))) != Some(n) {
             return None;
         }
         Some(owner.fields().state == SOCKS5_READY)
