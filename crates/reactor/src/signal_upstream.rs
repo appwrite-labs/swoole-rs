@@ -26,6 +26,10 @@ use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 #[cfg(target_os = "linux")]
 unsafe extern "C-unwind" {
     #[link_name = "_ZN6swoole7network6Socket4freeEv"]
+    #[expect(
+        improper_ctypes,
+        reason = "the socket record is opaque behind its handle; Rust defines both sides"
+    )]
     safe fn socket_free(socket: Option<crate::OwnedSocket>);
 }
 

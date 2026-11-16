@@ -232,10 +232,16 @@ impl View {
     }
 }
 
-/// [`call`] as a deferred call (`Reactor::defer` takes the unwinding ABI).
-unsafe extern "C-unwind" fn deferred_call(data: *mut c_void) {
-    // SAFETY: the deferrer's closure, live until the loop runs this.
-    unsafe { call(data) }
+/// [`call`] as a deferred value, over the deferrer's closure.
+struct DeferredCall(*mut c_void);
+
+impl swoole_rs_ffi::event_api::Deferred for DeferredCall {
+    fn run(self) {
+        // SAFETY: the deferrer's closure, live until the loop runs this.
+        unsafe { call(self.0) }
+    }
+
+    fn dispose(self) {}
 }
 
 /// Calls the `&dyn Fn()` at `data`.
@@ -622,7 +628,7 @@ fn bailout_() {
         co_run(|| {
             // SAFETY: the loop runs the deferred call before `co_run` returns, while
             // `deferred` is live.
-            assert!(unsafe { swoole_rs_ffi::defer(deferred_call, data, None) });
+            assert!(swoole_rs_ffi::event_api::swoole_event_defer_value(DeferredCall(data)).is_ok());
             exit.set(true);
         });
 
