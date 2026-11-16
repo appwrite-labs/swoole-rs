@@ -7,9 +7,7 @@ use super::*;
 use crate::TEST_STR;
 use case::TimerNode;
 use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicU16, AtomicU64};
-use swoole_rs_clients::client::{
-    self as native, Client, ClientEvent, Handle, listen, swr_v1_clients_new,
-};
+use swoole_rs_clients::client::{self as native, Client, ClientEvent, Handle, listen};
 use swoole_rs_process::methods::{ExitStatus, send_pipe_message, swoole_get_worker_type};
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_server::{event_worker, manager, task_worker, worker_methods};
@@ -1767,7 +1765,7 @@ fn test_clean_worker(mode: c_int) {
 
     counter_init();
 
-    let client = swr_v1_clients_new(SW_SOCK_TCP, true);
+    let client = native::create(SW_SOCK_TCP, true).map_or(std::ptr::null_mut(), Handle::as_ptr);
     assert!(
         !client.is_null(),
         "AsyncClient ac(SW_SOCK_TCP) has a socket"

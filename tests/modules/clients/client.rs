@@ -86,7 +86,6 @@ const _: () = assert!(
 );
 
 unsafe extern "C" {
-    fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut c_void;
     fn swr_v1_clients_address_host(address: *const c_void) -> *const c_char;
     fn swr_v1_clients_address_port(address: *const c_void) -> c_int;
 
@@ -193,8 +192,8 @@ unsafe extern "C" fn listener(
 impl<'a> Client<'a> {
     /// `Client cli(type, async)`; None when it has no socket (`!cli.ready()`).
     pub(super) fn new(kind: c_int, is_async: bool) -> Option<Box<Self>> {
-        // SAFETY: no preconditions.
-        let state = unsafe { swr_v1_clients_new(kind, is_async) };
+        let state: *mut c_void = native::create(kind, is_async)
+            .map_or(std::ptr::null_mut(), |client| client.as_ptr().cast());
         if state.is_null() {
             return None;
         }

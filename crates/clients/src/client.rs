@@ -798,15 +798,9 @@ fn is_dgram(kind: c_int) -> bool {
     SocketType::from_raw(kind).is_some_and(SocketType::is_dgram)
 }
 
-/// `new Client(type, async)`: the socket and the state, or null with errno set
-/// when the socket could not be made (logged as upstream's constructor does).
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut Client {
-    create(kind, is_async).map_or(core::ptr::null_mut(), |handle| handle.0)
-}
-
-/// [`swr_v1_clients_new`] as a handle on the new client, live until
-/// [`Handle::free`]; None with errno set when the socket could not be made.
+/// `new Client(type, async)`: a handle on the new client, live until [`Handle::free`];
+/// None with errno set when the socket could not be made (logged as upstream's
+/// constructor does).
 #[must_use]
 pub fn create(kind: c_int, is_async: bool) -> Option<Handle> {
     create_with(kind, is_async, &SocketOps::NATIVE)
@@ -880,11 +874,17 @@ impl Handle {
     /// A handle on `client`.
     ///
     /// # Safety
-    /// `client` came from [`swr_v1_clients_new`] and stays live while this handle
-    /// or a copy of it is used.
+    /// `client` came from [`create`] ([`Handle::as_ptr`]) and stays live while this
+    /// handle or a copy of it is used.
     #[must_use]
     pub const unsafe fn new(client: *mut Client) -> Self {
         Self(client)
+    }
+
+    /// The client's pointer, which [`Handle::new`] takes back.
+    #[must_use]
+    pub const fn as_ptr(self) -> *mut Client {
+        self.0
     }
 
     /// The client, borrowed while this handle is: live per [`Handle::new`].
@@ -938,7 +938,7 @@ impl Handle {
             // SAFETY: `delete socket`: the record make_socket allocated, released once.
             unsafe { SocketRecord::free(self.record().socket) };
         }
-        // SAFETY: a Box from swr_v1_clients_new, released once (per the caller).
+        // SAFETY: a Box from `create`, released once (per the caller).
         let client = unsafe { Box::from_raw(self.0) };
         // The proxies first, then the rest of the state.
         for proxy in [&client.socks5, &client.http_proxy] {
