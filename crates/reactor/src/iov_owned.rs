@@ -559,11 +559,11 @@ mod tests {
         let mut data = *b"abcde";
         let input = [
             libc::iovec {
-                iov_base: data.as_mut_ptr().cast(),
+                iov_base: (&raw mut data).cast::<u8>().cast(),
                 iov_len: 2,
             },
             libc::iovec {
-                iov_base: data.as_mut_ptr().wrapping_add(2).cast(),
+                iov_base: (&raw mut data).cast::<u8>().wrapping_add(2).cast(),
                 iov_len: 3,
             },
         ];
