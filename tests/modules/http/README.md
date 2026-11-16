@@ -85,6 +85,10 @@ leave stored parser diagnostics unchanged. The original multipart TESTs convert
 results to integer counts only at their assertion boundary.
 
 `swoole_llhttp_parser_execute` is reproduced in `http_parser.rs` (`Http::execute`).
+The Rust llhttp entry points return `Result<(), i32>`: their error payload keeps
+arbitrary callback codes, including pause/upgrade. Original parser and oracle
+assertions convert back to the original integer at the test boundary. Finish
+still succeeds for an already-failed parser and retains completion callback codes.
 
 Four `http_server` TESTs drove a request through the `http_server::listen` SDK
 (`src/wrapper/http.cc`), which nothing else used; the SDK left the build (#1672) and

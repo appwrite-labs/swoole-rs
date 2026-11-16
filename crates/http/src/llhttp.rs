@@ -512,19 +512,20 @@ impl Parser {
     }
 }
 
-/// `llhttp_execute`: parse `data`, returning `HPE_OK` or the error that stopped it.
-pub fn execute<'i>(cb: &mut (impl Callbacks<'i> + ?Sized), data: &'i [u8]) -> i32 {
+/// `llhttp_execute`: parse `data`.
+/// # Errors
+/// The exact llhttp or callback code, including pause and upgrade. Callback
+/// codes are open-ended, so the error payload retains the caller's integer.
+pub fn execute<'i>(cb: &mut (impl Callbacks<'i> + ?Sized), data: &'i [u8]) -> Result<(), i32> {
     let parser = cb.parser();
     if parser.error != 0 {
-        return parser.error;
+        return Err(parser.error);
     }
     if parser.span != Span::None {
         parser.span_start = 0;
     }
     let mut run = Run { cb, data, p: 0 };
-    if let Err(error) = run.run() {
-        return error;
-    }
+    run.run()?;
     let parser = run.cb.parser();
     let span = parser.span;
     let start = parser.span_start;
@@ -534,24 +535,30 @@ pub fn execute<'i>(cb: &mut (impl Callbacks<'i> + ?Sized), data: &'i [u8]) -> i3
             let parser = run.cb.parser();
             parser.error = error;
             parser.error_pos = data.len();
-            return error;
+            return Err(error);
         }
     }
-    0
+    Ok(())
 }
 
 /// `llhttp_finish`: the end of input.
-pub fn finish<'i>(cb: &mut (impl Callbacks<'i> + ?Sized)) -> i32 {
+/// # Errors
+/// The exact invalid-EOF or completion-callback code. A parser that already
+/// failed returns success here, matching llhttp's finish contract.
+pub fn finish<'i>(cb: &mut (impl Callbacks<'i> + ?Sized)) -> Result<(), i32> {
     let parser = cb.parser();
     if parser.error != 0 {
-        return 0;
+        return Ok(());
     }
     match parser.finish {
-        Finish::Safe => 0,
-        Finish::SafeWithCb => cb.on_message_complete().code(),
+        Finish::Safe => Ok(()),
+        Finish::SafeWithCb => match cb.on_message_complete().code() {
+            0 => Ok(()),
+            error => Err(error),
+        },
         Finish::Unsafe => {
             parser.reason = Some(&"Invalid EOF state");
-            HPE_INVALID_EOF_STATE
+            Err(HPE_INVALID_EOF_STATE)
         }
     }
 }
@@ -1804,5 +1811,89 @@ impl<'i, C: Callbacks<'i> + ?Sized> Run<'_, 'i, C> {
                 self.consume(state)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod result_tests {
+    use super::*;
+
+    struct Hooks {
+        parser: Parser,
+        answer: Flow,
+        calls: usize,
+    }
+
+    impl Callbacks<'_> for Hooks {
+        fn parser(&mut self) -> &mut Parser {
+            &mut self.parser
+        }
+        fn on_url(&mut self, _: &[u8]) -> Flow {
+            self.calls += 1;
+            self.answer
+        }
+        fn on_message_complete(&mut self) -> Flow {
+            self.calls += 1;
+            self.answer
+        }
+    }
+
+    #[test]
+    fn flushed_spans_retain_arbitrary_callback_codes_and_error_position() {
+        let input = b"GET /partial";
+        for code in [0, 1, 2, -1, -7, 21, 22, 23, 99, i32::MIN, i32::MAX] {
+            let mut hooks = Hooks {
+                parser: Parser::new(Kind::Request),
+                answer: Flow::from_code(code),
+                calls: 0,
+            };
+            let expected = match code {
+                0 => Ok(()),
+                -1 => Err(HPE_USER),
+                code => Err(code),
+            };
+            assert_eq!(execute(&mut hooks, input), expected);
+            assert_eq!(hooks.calls, 1);
+            if let Err(error) = expected {
+                assert_eq!(hooks.parser.error, error);
+                assert_eq!(hooks.parser.error_pos(), input.len());
+                assert_eq!(execute(&mut hooks, b"ignored"), expected);
+                assert_eq!(finish(&mut hooks), Ok(()));
+                assert_eq!(hooks.calls, 1, "an existing error invokes no callback");
+            }
+        }
+    }
+
+    #[test]
+    fn finish_retains_completion_codes_without_storing_a_parser_error() {
+        for code in [0, 1, 2, -1, -7, 21, 22, 23, 99, i32::MIN, i32::MAX] {
+            let mut hooks = Hooks {
+                parser: Parser::new(Kind::Response),
+                answer: Flow::from_code(code),
+                calls: 0,
+            };
+            assert_eq!(execute(&mut hooks, b"HTTP/1.1 200 OK\r\n\r\nbody"), Ok(()));
+            assert_eq!(hooks.parser.finish, Finish::SafeWithCb);
+            assert_eq!(hooks.calls, 0);
+            let expected = if code == 0 { Ok(()) } else { Err(code) };
+            assert_eq!(finish(&mut hooks), expected);
+            assert_eq!(hooks.calls, 1);
+            assert_eq!(hooks.parser.error, 0);
+            assert_eq!(hooks.parser.reason(), "");
+        }
+    }
+
+    #[test]
+    fn incomplete_eof_sets_reason_but_does_not_store_an_error() {
+        let mut hooks = Hooks {
+            parser: Parser::new(Kind::Request),
+            answer: Flow::Go,
+            calls: 0,
+        };
+        assert_eq!(execute(&mut hooks, b"GET / HTTP/1.1\r\nHost:"), Ok(()));
+        assert_eq!(finish(&mut hooks), Err(HPE_INVALID_EOF_STATE));
+        assert_eq!(hooks.parser.reason(), "Invalid EOF state");
+        assert_eq!(hooks.parser.error, 0);
+        assert_eq!(hooks.calls, 1);
     }
 }

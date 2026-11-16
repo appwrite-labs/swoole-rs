@@ -491,7 +491,7 @@ fn run_r(kind: u8, input: &[u8], cuts: &[usize], script: &[i32]) -> (Vec<String>
     'outer: for chunk in chunks {
         let mut data = chunk;
         for _ in 0..8 {
-            let res = llhttp::execute(&mut r, data);
+            let res = llhttp::execute(&mut r, data).map_or_else(|code| code, |()| 0);
             let p = &r.parser;
             let pos = if res == 0 { data.len() } else { p.error_pos() };
             let reason = if res != 0 {
@@ -518,7 +518,7 @@ fn run_r(kind: u8, input: &[u8], cuts: &[usize], script: &[i32]) -> (Vec<String>
             data = &data[pos..];
         }
     }
-    let f = llhttp::finish(&mut r);
+    let f = llhttp::finish(&mut r).map_or_else(|code| code, |()| 0);
     out.push(format!("finish={f}"));
     (out, r.log.events)
 }
