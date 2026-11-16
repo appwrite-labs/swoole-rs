@@ -33,6 +33,12 @@ signal waits return typed `Result`s; local adapters retain the original test
 assertions and expected integer/optional outcomes. `file_io` also checks that
 pool refusal is distinct from an I/O error carried back from the worker thread.
 
+Hooked `read`, `write` and the pool close adapter return a captured I/O error or
+`PoolRefused`; the C read/write/close exports keep their original integer ABI.
+`stdio::tests::close_errors_cross_the_pool_and_refusal_keeps_errno` checks that
+an error from the worker thread survives independently of caller errno and that
+refusing the job preserves errno without running close.
+
 Event waits and descriptor polls return typed `Result`s too. `WaitError` preserves
 whether validation/immediate polling sets Swoole's last error or a suspended wait
 sets errno. Poll failures distinguish an I/O error, no registered descriptor and

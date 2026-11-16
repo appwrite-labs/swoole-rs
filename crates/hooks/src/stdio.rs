@@ -13,6 +13,21 @@ use libc::{
     ssize_t, stat, statvfs,
 };
 
+/// A hooked I/O operation failed or the pool refused to start it.
+#[derive(Debug)]
+pub enum IoError {
+    /// The operation's captured OS error, on its executing thread.
+    Io(std::io::Error),
+    /// No operation ran; errno keeps the runtime's existing value.
+    PoolRefused,
+}
+
+impl IoError {
+    pub(crate) fn last_os_error() -> Self {
+        Self::Io(std::io::Error::last_os_error())
+    }
+}
+
 /// Runs `job` on the async pool and parks the coroutine until it is done; false if
 /// the pool refused it.
 pub type Offload = fn(&mut (dyn FnMut() + Send)) -> bool;
@@ -258,10 +273,12 @@ hooked! {
 }
 
 /// Hooked `close` of an fd that is no coroutine socket, on the pool (`offload`).
-#[must_use]
-pub fn swr_v1_hook_close_fd(fd: c_int, offload: Option<Offload>) -> c_int {
-    on_pool(offload, -1, || {
-        swoole_rs_corebase::sys::close(fd).map_or(-1, |()| 0)
+///
+/// # Errors
+/// Captures a close failure on its executing thread, or reports pool refusal.
+pub fn close_fd(fd: c_int, offload: Option<Offload>) -> Result<(), IoError> {
+    on_pool(offload, Err(IoError::PoolRefused), || {
+        swoole_rs_corebase::sys::close(fd).map_err(IoError::Io)
     })
 }
 
@@ -524,9 +541,22 @@ pub(crate) mod tests {
 
             let mut fds = [0; 2];
             assert_eq!(libc::pipe(fds.as_mut_ptr()), 0);
-            assert_eq!(swr_v1_hook_close_fd(fds[0], Some(pool)), 0);
-            assert_eq!(swr_v1_hook_close_fd(fds[1], None), 0);
+            assert_eq!(close_fd(fds[0], Some(pool)).map_or(-1, |()| 0), 0);
+            assert_eq!(close_fd(fds[1], None).map_or(-1, |()| 0), 0);
         }
+    }
+
+    #[test]
+    fn close_errors_cross_the_pool_and_refusal_keeps_errno() {
+        // This test pool runs on another thread without copying its errno back.
+        swoole_rs_corebase::set_errno(libc::EINTR);
+        let error = with(Mode::Pool, || close_fd(-1, Some(pool))).unwrap_err();
+        assert!(matches!(error, IoError::Io(error) if error.raw_os_error() == Some(libc::EBADF)));
+        assert_eq!(swoole_rs_corebase::sys::errno(), libc::EINTR);
+
+        let error = with(Mode::Refuse, || close_fd(-1, Some(pool))).unwrap_err();
+        assert!(matches!(error, IoError::PoolRefused));
+        assert_eq!(swoole_rs_corebase::sys::errno(), libc::EINTR);
     }
 
     #[test]

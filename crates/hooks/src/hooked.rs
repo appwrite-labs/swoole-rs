@@ -10,7 +10,7 @@ use crate::co_io::set_errno;
 use crate::co_socket::{Co, OwnedCo};
 use crate::fd_control::{fd_poll_fake, fd_timeout, fd_wait, swr_v1_hook_fd_poll};
 use crate::socket_map;
-use crate::stdio::{Host, coroutine, on_pool, swr_v1_hook_close_fd};
+use crate::stdio::{Host, IoError, close_fd, coroutine, on_pool};
 pub use crate::vector::{RecvMessage, SendMessage};
 use core::mem::MaybeUninit;
 /// `struct pollfd`, as [`poll_fake`] takes it.
@@ -345,7 +345,7 @@ pub extern "C" fn swoole_coroutine_close(fd: c_int) -> c_int {
     if let Some(ring) = crate::stdio::host().and_then(ring) {
         return crate::uring::close_fd(ring, fd).map_or(-1, |()| 0);
     }
-    swr_v1_hook_close_fd(fd, Some(crate::stdio::runtime().offload))
+    close_fd(fd, Some(crate::stdio::runtime().offload)).map_or(-1, |()| 0)
 }
 
 /// Hooked `read(2)`, as [`read`].
@@ -365,27 +365,34 @@ pub unsafe extern "C" fn swoole_coroutine_read(
         // they may be uninitialized.
         unsafe { core::slice::from_raw_parts_mut(buf.cast(), count) }
     };
-    read(fd, buf)
+    read(fd, buf).map_or(-1, usize::cast_signed)
 }
 
 /// The hooked `read(2)` into `buf`: a coroutine socket reads; any other fd reads on
 /// the ring, or waits for readiness and reads on the pool.
-pub fn read(fd: c_int, buf: &mut [MaybeUninit<u8>]) -> ssize_t {
+///
+/// # Errors
+/// Captures the I/O error on its executing thread, or reports pool refusal.
+pub fn read(fd: c_int, buf: &mut [MaybeUninit<u8>]) -> Result<usize, IoError> {
     if coroutine().is_none() {
-        return sys::read(fd, buf).map_or(-1, usize::cast_signed);
+        return sys::read(fd, buf).ok_or_else(IoError::last_os_error);
     }
     if let Some(socket) = socket_map::get(fd) {
-        return socket.read(buf).map_or(-1, usize::cast_signed);
+        return socket.read(buf).ok_or_else(IoError::last_os_error);
     }
     #[cfg(feature = "iouring")]
     if let Some(ring) = crate::stdio::host().and_then(ring) {
-        return crate::uring::read(ring, fd, buf, -1.0).map_or(-1, usize::cast_signed);
+        return crate::uring::read(ring, fd, buf, -1.0).map_err(IoError::Io);
     }
-    on_pool(Some(crate::stdio::runtime().offload), -1, || {
-        let mut socket = blocking(fd, false);
-        swoole_rs_tls::upstream::read_sync(Socket::new(&mut socket), buf)
-            .map_or(-1, usize::cast_signed)
-    })
+    on_pool(
+        Some(crate::stdio::runtime().offload),
+        Err(IoError::PoolRefused),
+        || {
+            let mut socket = blocking(fd, false);
+            swoole_rs_tls::upstream::read_sync(Socket::new(&mut socket), buf)
+                .ok_or_else(IoError::last_os_error)
+        },
+    )
 }
 
 /// Hooked `write(2)`, as [`write`].
@@ -404,27 +411,33 @@ pub unsafe extern "C" fn swoole_coroutine_write(
         // SAFETY: the caller's `count` readable bytes.
         unsafe { core::slice::from_raw_parts(buf.cast(), count) }
     };
-    write(fd, buf)
+    write(fd, buf).map_or(-1, usize::cast_signed)
 }
 
 /// The hooked `write(2)` of `buf`, as [`read`].
-#[must_use]
-pub fn write(fd: c_int, buf: &[u8]) -> ssize_t {
+///
+/// # Errors
+/// Captures the I/O error on its executing thread, or reports pool refusal.
+pub fn write(fd: c_int, buf: &[u8]) -> Result<usize, IoError> {
     if coroutine().is_none() {
-        return sys::write(fd, buf).map_or(-1, usize::cast_signed);
+        return sys::write(fd, buf).ok_or_else(IoError::last_os_error);
     }
     if let Some(socket) = socket_map::get(fd) {
-        return socket.write(buf).map_or(-1, usize::cast_signed);
+        return socket.write(buf).ok_or_else(IoError::last_os_error);
     }
     #[cfg(feature = "iouring")]
     if let Some(ring) = crate::stdio::host().and_then(ring) {
-        return crate::uring::write(ring, fd, buf, -1.0).map_or(-1, usize::cast_signed);
+        return crate::uring::write(ring, fd, buf, -1.0).map_err(IoError::Io);
     }
-    on_pool(Some(crate::stdio::runtime().offload), -1, || {
-        let mut socket = blocking(fd, true);
-        swoole_rs_tls::upstream::write_sync(Socket::new(&mut socket), buf)
-            .map_or(-1, usize::cast_signed)
-    })
+    on_pool(
+        Some(crate::stdio::runtime().offload),
+        Err(IoError::PoolRefused),
+        || {
+            let mut socket = blocking(fd, true);
+            swoole_rs_tls::upstream::write_sync(Socket::new(&mut socket), buf)
+                .ok_or_else(IoError::last_os_error)
+        },
+    )
 }
 
 /// The pool's `network::Socket` over `fd`: nonblocking, waiting without limit.
