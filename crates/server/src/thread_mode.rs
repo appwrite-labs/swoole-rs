@@ -7,6 +7,7 @@
     not(any(test, feature = "upstream-symbols")),
     expect(dead_code, reason = "only the hybrid runs thread mode")
 )]
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -147,8 +148,9 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// What runs a thread-mode worker thread's body (`Server::worker_thread_start`'s
 /// `fn`) on its `swoole::Thread`, which that thread's [`swoole_rs_corebase::Fresh`]
-/// lets enter PHP. The body is lent for the call.
-pub type WorkerThreadStart = fn(swoole_rs_corebase::Fresh, &Thread, &dyn Fn());
+/// lets enter PHP. The body is the thread's to keep: it may run it from deeper in
+/// the thread's own calls.
+pub type WorkerThreadStart = fn(swoole_rs_corebase::Fresh, &Thread, Rc<dyn Fn()>);
 
 static WORKER_THREAD_START: Mutex<Option<WorkerThreadStart>> = Mutex::new(None);
 
@@ -186,22 +188,24 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no sigfillset")]
     fn a_thread_body_runs_directly_or_inside_the_servers_hook() {
         static RAN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        fn hook(_: swoole_rs_corebase::Fresh, thread: &Thread, run: &dyn Fn()) {
+        fn hook(_: swoole_rs_corebase::Fresh, thread: &Thread, run: Rc<dyn Fn()>) {
             assert!(!thread.joinable());
-            run();
+            // The body is the hook's to keep.
+            let kept = run;
+            kept();
         }
         // A thread's start, as `native`'s `body` runs its main, on a thread of its own.
         let start = |offset: u32| {
             let runner = Thread::default();
             let body = move |fresh| {
                 let thread = Thread::default();
-                let run = || {
+                let run = Rc::new(move || {
                     // Other threads can start while this body runs.
                     assert!(WORKER_THREAD_START.try_lock().is_ok());
                     RAN.store(offset, Ordering::Release);
-                };
+                });
                 match worker_thread_start() {
-                    Some(start) => start(fresh, &thread, &run),
+                    Some(start) => start(fresh, &thread, run),
                     None => run(),
                 }
             };

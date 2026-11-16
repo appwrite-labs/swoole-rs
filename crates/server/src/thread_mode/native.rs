@@ -4,6 +4,7 @@
 use crate::Mode;
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::Ordering;
+use std::rc::Rc;
 use swoole_rs_reactor::Events;
 
 use swoole_rs_corebase::{CCast, log};
@@ -170,7 +171,8 @@ fn spawn(serv: view::Server<'_>, id: u32, kind: WorkerType) {
     let address = serv.raw().expose_provenance();
     let body = move |fresh| {
         let serv = core::ptr::with_exposed_provenance_mut(address);
-        // SAFETY: the live server, which outlives the factory's threads.
+        // SAFETY: the live server, which outlives the factory's threads: whatever this
+        // thread keeps of it, its thread-locals included, goes before the join returns.
         body(unsafe { view::Server::from_raw(serv) }, id, kind, fresh);
     };
     // An uncaught `std::system_error` upstream: the process ends.
@@ -182,7 +184,7 @@ fn spawn(serv: view::Server<'_>, id: u32, kind: WorkerType) {
 /// A thread's body: enter the thread as its worker (or the manager), run its main
 /// inside the server's `worker_thread_start`, then leave, telling the manager
 /// thread when a worker exited.
-fn body(serv: view::Server<'_>, id: u32, kind: WorkerType, fresh: swoole_rs_corebase::Fresh) {
+fn body(serv: view::Server<'static>, id: u32, kind: WorkerType, fresh: swoole_rs_corebase::Fresh) {
     let slot = u16::try_from(id).unwrap_or(u16::MAX);
     swoole_rs_corebase::swoole_thread_init(false);
     swoole_rs_corebase::set_thread(THREAD_WORKER, slot);
@@ -215,14 +217,13 @@ fn body(serv: view::Server<'_>, id: u32, kind: WorkerType, fresh: swoole_rs_core
     if worker.is_none() {
         swoole_rs_timer::swoole_timer_create(true);
     }
-    let main = Main { serv, slot, worker };
     let factory = manager(serv);
     let thread = factory.thread(id as usize);
     // `serv->worker_thread_start(thread, fn)`: the registered starter runs the
-    // thread's main, which it is lent for the call.
+    // thread's main.
     match worker_thread_start() {
-        Some(start) => start(fresh, thread, &|| run_main(&main)),
-        None => run_main(&main),
+        Some(start) => start(fresh, thread, Rc::new(move || run_main(serv, slot, worker))),
+        None => run_main(serv, slot, worker),
     }
     if bus.is_some() {
         swoole_rs_corebase::set_thread_message_bus(core::ptr::null_mut());
@@ -261,19 +262,10 @@ fn init_bus(serv: view::Server<'_>, bus: &PoolBus) {
     server_methods::init_pipe_sockets(serv, handle);
 }
 
-/// What a thread runs inside `worker_thread_start`: its server, slot and worker.
-struct Main<'a> {
-    serv: view::Server<'a>,
-    slot: u16,
-    /// `None` for the manager.
-    worker: Option<Worker<'a>>,
-}
-
-/// A thread's main inside `worker_thread_start`.
-fn run_main(main: &Main<'_>) {
-    let Main { serv, slot, worker } = main;
-    let serv = *serv;
-    let Some(worker) = *worker else {
+/// A thread's main inside `worker_thread_start`: its server, slot and worker
+/// (`None` for the manager).
+fn run_main(serv: view::Server<'_>, slot: u16, worker: Option<Worker<'_>>) {
+    let Some(worker) = worker else {
         let callbacks = &serv.state().callbacks;
         callbacks.call_server(ServerSlot::ManagerStart, serv);
         wait(serv, &manager(serv));
@@ -285,7 +277,7 @@ fn run_main(main: &Main<'_>) {
     // record meanwhile.
     let pool = serv.task_pool_ref();
     match worker.kind() {
-        Some(WorkerType::Event) => crate::thread_ops::main_loop(serv, *slot),
+        Some(WorkerType::Event) => crate::thread_ops::main_loop(serv, slot),
         Some(WorkerType::Task) => {
             pool.call_on_worker_start(worker);
             _ = pool.call_main_loop(worker);

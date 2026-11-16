@@ -52,7 +52,8 @@ pub use error::{
 };
 pub use function::{Function, create_object_deny};
 pub use helpers::{
-    EMPTY_FCC, EMPTY_FCI, Record, is_main_thread, long_zval, module_loaded, numeric, time, zeroed,
+    EMPTY_FCC, EMPTY_FCI, Record, is_main_thread, long_zval, mkdir_recursive, module_loaded,
+    numeric, time, zeroed,
 };
 pub use local::{EnvLock, Php};
 pub use minit::{Lifecycle, Minfo, Minit, Mshutdown, Parent, Request, Shutdown, Startup};

@@ -12,7 +12,7 @@ use std::{
 };
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR as LOG_ERROR, SW_LOG_NOTICE as LOG_NOTICE};
-use swoole_rs_corebase::{constants::EventDataFlag, log, sys::Text};
+use swoole_rs_corebase::{constants::EventDataFlag, log};
 pub use swoole_rs_ports::PortCallback;
 use swoole_rs_process::{methods::worker_is_running, worker_globals, worker_record};
 use swoole_rs_server::{SharedServer, event_worker, server_methods, view};
@@ -148,13 +148,7 @@ pub fn php_swoole_create_dir(path: &[u8]) -> bool {
     // `access(path, F_OK) == 0`: it resolves, symbolic links followed.
     let exists = std::path::Path::new(std::ffi::OsStr::from_bytes(path)).exists();
     let path = CString::new(path).unwrap_or_default();
-    exists || swr_zend_mkdir_recursive(Text::from(path.as_c_str()))
-}
-
-unsafe extern "C" {
-    /// `php_stream_mkdir(path, 0777, PHP_STREAM_MKDIR_RECURSIVE | REPORT_ERRORS)`:
-    /// it reads the string and keeps none of it.
-    safe fn swr_zend_mkdir_recursive(path: Text<'_>) -> bool;
+    exists || swoole_rs_zend::mkdir_recursive(&path)
 }
 
 /// `php_swoole_server_check_kernel_nobufs`: in a coroutine, pause 10 ms after a
