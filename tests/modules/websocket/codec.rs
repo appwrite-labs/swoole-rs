@@ -6,12 +6,35 @@ use std::mem::MaybeUninit;
 
 use swoole_rs_oracle::websocket as reference;
 use swoole_rs_websocket::{
-    Action, Context, Decision, DecodedFrame, Delivery, INVALID_CONTROL, PolicyError,
-    control_invalid, decide_frame, decode_in_place, encode_close_into, encode_parts, encoded_size,
-    message_policy, pack_policy,
+    Action, Context, Decision, DecodeErrorKind, DecodedFrame, Delivery, PolicyError,
+    control_invalid, decide_frame, encode_close_into, encode_parts, encoded_size, message_policy,
+    pack_policy,
 };
 
 const FILL: u8 = 0xa5;
+const INVALID_CONTROL: i64 = -2;
+
+/// Adapt typed outcomes to the former gate's integer protocol; keep its assertions intact.
+fn decode_in_place(data: &mut [u8]) -> (i64, DecodedFrame) {
+    match swoole_rs_websocket::decode_in_place(data) {
+        Ok(frame) => (
+            i64::try_from(frame.header_length + frame.payload_length).unwrap_or(-1),
+            frame,
+        ),
+        Err(error) => {
+            let total = match error.kind {
+                DecodeErrorKind::IncompleteHeader => 0,
+                DecodeErrorKind::IncompleteBody => {
+                    i64::try_from(error.frame.header_length + error.frame.payload_length)
+                        .unwrap_or(-1)
+                }
+                DecodeErrorKind::LengthOverflow => -1,
+                DecodeErrorKind::CompressedControl => INVALID_CONTROL,
+            };
+            (total, error.frame)
+        }
+    }
+}
 
 /// `count` bytes of the fill the C++ gate pre-loaded its outputs with.
 fn filled(count: usize) -> Vec<MaybeUninit<u8>> {
@@ -59,6 +82,30 @@ fn layouts() {
     assert_eq!(size_of::<DecodedFrame>(), 24);
     assert_eq!(size_of::<Context>(), 24);
     assert_eq!(size_of::<Decision>(), 32);
+}
+
+#[test]
+fn typed_errors_preserve_header_facts_and_payload() {
+    use DecodeErrorKind::{CompressedControl, IncompleteBody, IncompleteHeader, LengthOverflow};
+    for (wire, kind, header, payload) in [
+        (vec![], IncompleteHeader, 0, 0),
+        (vec![0x81, 3, b'a'], IncompleteBody, 2, 3),
+        (
+            vec![0x82, 127, 255, 255, 255, 255, 255, 255, 255, 255],
+            LengthOverflow,
+            10,
+            0,
+        ),
+        (vec![0xc9, 0x81, 1, 2, 3, 4, b'q'], CompressedControl, 6, 1),
+    ] {
+        let mut data = wire.clone();
+        let error = swoole_rs_websocket::decode_in_place(&mut data)
+            .expect_err("an invalid or incomplete frame");
+        assert_eq!(error.kind, kind);
+        assert_eq!(error.frame.header_length, header);
+        assert_eq!(error.frame.payload_length, payload);
+        assert_eq!(data, wire);
+    }
 }
 
 #[test]

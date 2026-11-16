@@ -14,7 +14,7 @@ use swoole_rs_corebase::net_types::PacketLength;
 
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 use swoole_rs_websocket::{
-    DecodedFrame, INVALID_CONTROL, Opcode, control_invalid, decode_in_place, encode_close_into,
+    DecodeErrorKind, DecodedFrame, Opcode, control_invalid, decode_in_place, encode_close_into,
     encode_parts, encoded_size, frame_length,
 };
 
@@ -94,30 +94,33 @@ fn control_warning(origin: &CStr, opcode: u8, fin: u8, length: usize) {
 #[inline]
 pub fn decode_frame(data: &mut [u8]) -> Result<DecodedFrame, (DecodedFrame, bool)> {
     let length = data.len();
-    let (total, decoded) = decode_in_place(data);
-    if total == INVALID_CONTROL {
-        log::warning(
-            c"websocket::decode",
-            format_args!(
-                "invalid compressed websocket control frame received: opcode={}",
-                decoded.opcode
-            ),
-        );
-        return Err((decoded, true));
-    }
-    if total <= 0 || usize::try_from(total).is_ok_and(|total| length < total) {
-        log::error_log(
-            LOG_WARNING,
-            INCOMPLETE_PACKET,
-            c"websocket::decode",
-            format_args!(
-                "incomplete packet, expected length is {}, actual length is {length}",
-                total.cast_unsigned()
-            ),
-        );
-        return Err((decoded, false));
-    }
-    Ok(decoded)
+    let error = match decode_in_place(data) {
+        Ok(decoded) => return Ok(decoded),
+        Err(error) => error,
+    };
+    let decoded = error.frame;
+    let expected = match error.kind {
+        DecodeErrorKind::CompressedControl => {
+            log::warning(
+                c"websocket::decode",
+                format_args!(
+                    "invalid compressed websocket control frame received: opcode={}",
+                    decoded.opcode
+                ),
+            );
+            return Err((decoded, true));
+        }
+        DecodeErrorKind::IncompleteHeader => 0,
+        DecodeErrorKind::IncompleteBody => (decoded.header_length + decoded.payload_length) as u64,
+        DecodeErrorKind::LengthOverflow => u64::MAX,
+    };
+    log::error_log(
+        LOG_WARNING,
+        INCOMPLETE_PACKET,
+        c"websocket::decode",
+        format_args!("incomplete packet, expected length is {expected}, actual length is {length}"),
+    );
+    Err((decoded, false))
 }
 
 /// `ssize_t get_package_length(const Protocol *, Socket *, PacketLength *)`.
