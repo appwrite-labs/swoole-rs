@@ -1,5 +1,5 @@
-//! The C ABI over crates/protocols' codecs: `swoole::mqtt` and `swoole::Socks5Proxy`
-//! under their upstream symbols, and `redis::recv_packet`'s loop.
+//! The C ABI over crates/protocols' codecs: `swoole::mqtt` under its upstream symbols,
+//! `swoole::Socks5Proxy`'s methods for Rust callers, and `redis::recv_packet`'s loop.
 #![cfg_attr(
     not(test),
     deny(

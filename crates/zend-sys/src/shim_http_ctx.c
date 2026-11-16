@@ -127,9 +127,8 @@ bool swr_zend_http_treat_data(int arg, char *str, zval *dest) {
     return within;
 }
 
-void swr_zend_http_uploads_release(zend_object *object, uint32_t offset) {
+void swr_zend_http_uploads_release(zval *tmpfiles) {
     zval *path;
-    zval *tmpfiles = OBJ_PROP(object, offset);
     ZVAL_DEREF(tmpfiles);
     if (Z_TYPE_P(tmpfiles) != IS_ARRAY) {
         return;

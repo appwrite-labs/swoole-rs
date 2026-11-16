@@ -490,30 +490,6 @@ pub extern "C" fn swoole_rand_any() -> c_int {
     swoole_rand(0, c_int::MAX)
 }
 
-/// `void *sw_malloc(size_t)`. Upstream calls through `SwooleG.std_allocator`,
-/// which only ever holds libc's allocator.
-#[must_use]
-#[cfg_attr(feature = "upstream-symbols", unsafe(export_name = "_Z9sw_mallocm"))]
-pub extern "C" fn sw_malloc(size: usize) -> *mut c_void {
-    crate::sys::malloc(size)
-}
-
-/// `void sw_free(void *)`.
-/// # Safety
-/// `pointer` is null or a live allocation from this allocator.
-#[cfg_attr(feature = "upstream-symbols", unsafe(export_name = "_Z7sw_freePv"))]
-pub unsafe extern "C" fn sw_free(pointer: *mut c_void) {
-    // SAFETY: the caller passes null or a live allocation.
-    unsafe { libc::free(pointer) }
-}
-
-/// `void *sw_calloc(size_t, size_t)`.
-#[must_use]
-#[cfg_attr(feature = "upstream-symbols", unsafe(export_name = "_Z9sw_callocmm"))]
-pub extern "C" fn sw_calloc(count: usize, size: usize) -> *mut c_void {
-    crate::sys::calloc(count, size)
-}
-
 /// `swoole_rand(min, max)`: uniform over the closed range; `min` when it is empty.
 #[must_use]
 #[cfg_attr(
@@ -660,14 +636,14 @@ pub extern "C" fn swoole_exit(status: c_int) -> ! {
     std::process::exit(status)
 }
 
-/// Commit libc formatting's bounded result and terminator. Native keeps only
-/// the platform `va_list` effect and forwards its exact returned integer.
-/// # Safety
-/// buffer covers size writable bytes, with a positive bound unless
-/// `zero_query` is true and size is zero. formatted is libc's returned count.
+/// `sw_snprintf`'s and `sw_vsnprintf`'s bound on what `vsnprintf` returned: a
+/// query of size 0 gets the count as is, an error 0 with the output emptied through
+/// `first` (the buffer's first byte, none for size 0), and a truncation `size - 1`.
+/// C's `vsnprintf` already ended truncated output at `size - 1`, which upstream
+/// writes again.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_core_format_result(
-    buffer: *mut c_char,
+pub extern "C" fn swr_v1_core_format_result(
+    first: Option<&mut c_char>,
     size: usize,
     formatted: c_int,
     zero_query: bool,
@@ -675,16 +651,13 @@ pub unsafe extern "C" fn swr_v1_core_format_result(
     if zero_query && size == 0 {
         return formatted.c_cast::<usize>();
     }
-    let result = if formatted < 0 {
-        0
-    } else {
-        usize::try_from(formatted).unwrap_or(0).min(size - 1)
+    let Ok(formatted) = usize::try_from(formatted) else {
+        if let Some(first) = first {
+            *first = 0;
+        }
+        return 0;
     };
-    if formatted < 0 || usize::try_from(formatted).is_ok_and(|value| value >= size) {
-        // SAFETY: the caller's positive bounded destination contains this terminator slot.
-        unsafe { buffer.wrapping_add(result).write(0) };
-    }
-    result
+    formatted.min(size.saturating_sub(1))
 }
 
 #[cfg(test)]
@@ -694,41 +667,37 @@ mod tests {
 
     #[test]
     fn formatting_result_keeps_query_error_and_termination_boundaries() {
-        unsafe {
-            assert_eq!(
-                swr_v1_core_format_result(std::ptr::null_mut(), 0, -1, true),
-                usize::MAX
-            );
-            assert_eq!(
-                swr_v1_core_format_result(std::ptr::null_mut(), 0, 17, true),
-                17
-            );
-            for size in [1usize, 2, 8, 16] {
-                for formatted in [-7, -1, 0, 1, 7, 8, 16, 99] {
-                    let mut bytes = [0x55u8; 18];
-                    let mut expected = bytes;
-                    let length = if formatted < 0 {
-                        0
-                    } else {
-                        usize::try_from(formatted).unwrap().min(size - 1)
-                    };
-                    if formatted < 0 || usize::try_from(formatted).is_ok_and(|count| count >= size)
-                    {
-                        expected[length] = 0;
-                    }
-                    assert_eq!(
-                        swr_v1_core_format_result(
-                            bytes.as_mut_ptr().cast(),
-                            size,
-                            formatted,
-                            false
-                        ),
-                        length
-                    );
-                    assert_eq!(bytes, expected);
-                }
+        assert_eq!(swr_v1_core_format_result(None, 0, -1, true), usize::MAX);
+        assert_eq!(swr_v1_core_format_result(None, 0, 17, true), 17);
+        for size in [1usize, 2, 8, 16] {
+            for formatted in [-7, -1, 0, 1, 7, 8, 16, 99] {
+                let mut first: c_char = 0x55;
+                let length = usize::try_from(formatted).map_or(0, |count| count.min(size - 1));
+                assert_eq!(
+                    swr_v1_core_format_result(Some(&mut first), size, formatted, false),
+                    length
+                );
+                assert_eq!(first, if formatted < 0 { 0 } else { 0x55 });
             }
         }
+    }
+
+    /// libc ends truncated output at `size - 1` itself, so the bound writes nothing.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no snprintf")]
+    fn formatting_result_keeps_libc_truncation() {
+        let mut bytes = [c_char::from_ne_bytes([0x55]); 8];
+        let formatted =
+            unsafe { libc::snprintf(bytes.as_mut_ptr(), 4, c"%s".as_ptr(), c"abcdef".as_ptr()) };
+        let [first, ..] = &mut bytes;
+        assert_eq!(
+            swr_v1_core_format_result(Some(first), 4, formatted, false),
+            3
+        );
+        assert_eq!(
+            bytes.map(|byte| byte.to_ne_bytes()[0]),
+            *b"abc\0\x55\x55\x55\x55"
+        );
     }
     #[test]
     fn dump_bin_skips_types_without_a_size() {

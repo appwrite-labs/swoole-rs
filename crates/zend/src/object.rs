@@ -43,6 +43,13 @@ unsafe extern "C" {
         handlers: *const zend_object_handlers,
         found: &Owned,
     ) -> bool;
+    /// The object the executor's store holds at `handle`, if its handlers are
+    /// `handlers` (compared, never read), or null. No reference is taken and no
+    /// PHP code runs.
+    safe fn swr_zend_objects_lookup(
+        handle: u32,
+        handlers: *const zend_object_handlers,
+    ) -> *mut zend_object;
 }
 
 /// A live object, borrowed for `'a`: one a zval or frame holds, or one Zend
@@ -210,6 +217,10 @@ pub trait Custom: Sized + 'static {
     /// went, so Zend frees it next unless this step gives it a new one; at
     /// shutdown an object something still holds is destructed with `last` false.
     fn destruct(&self, _last: bool) {}
+    /// The object's `free_obj` step before its data drops: `this` names the
+    /// object, whose properties are still live, without a reference of its
+    /// own. Zend frees the object next, so it must not run PHP code.
+    fn free(&self, _this: &Value) {}
     /// Whether PHP may serialize the objects, asked once, when the class registers.
     #[must_use]
     fn serializable() -> bool {
@@ -265,6 +276,27 @@ impl<T: Custom> Weak<T> {
         let found = Owned::default();
         swr_zend_objects_hold(self.0, T::class().handlers(), &found).then_some(found)
     }
+
+    /// The object, borrowed as long as `part` is, when `part` lies in its data:
+    /// for a holder inside the object, which finds the object it is part of.
+    /// None once Zend took the object out of its store to free it (shutdown
+    /// frees objects in place, so it finds them then). A zero-sized `part` is
+    /// in no object.
+    #[must_use]
+    pub fn owner<'a, P>(&self, part: &'a P) -> Option<ObjectRef<'a>> {
+        let std = swr_zend_objects_lookup(self.0, T::class().handlers());
+        if std.is_null() || size_of::<P>() == 0 {
+            return None;
+        }
+        let data = Object::<T>::data_ptr(std).addr();
+        let at = std::ptr::from_ref(part).addr();
+        let inside = data <= at && at + size_of::<P>() <= data + size_of::<T>();
+        // A live object of `T`'s class, so an `Object<T>` (as `custom` reads it):
+        // `part` borrows bytes of its data for `'a`, and the data lives until
+        // `free::<T>` drops it, which needs nothing to borrow it, so the object
+        // outlives `'a`.
+        inside.then_some(ObjectRef(std, PhantomData))
+    }
 }
 
 /// A new object of `T`'s class around `data`, as its `create_object` handler
@@ -292,13 +324,20 @@ unsafe extern "C" fn create<T: Custom>(ce: *mut zend_class_entry) -> *mut zend_o
     LaidOut::<T>(ce, PhantomData).create(T::new())
 }
 
-/// `T`'s `free_obj` handler: drop the data, then free the standard object.
+/// `T`'s `free_obj` handler: [`Custom::free`], drop the data, then free the
+/// standard object.
 /// A bailout the drop defers (releasing a callable can run PHP code) is
 /// raised last, unless one was already pending.
 /// # Safety
 /// Zend calls it once, with one of `T`'s objects whose last reference went.
 unsafe extern "C" fn free<T: Custom>(std: *mut zend_object) {
     bailout::finish_after(|| {
+        // Per Zend, a live object of `T`'s class until the drop below.
+        let object = ObjectRef(std, PhantomData);
+        if let Some(data) = object.custom::<T>() {
+            let mut this = object.copy_value();
+            data.free(Value::of(&mut this));
+        }
         // SAFETY: per Zend; nothing borrows the data any more.
         unsafe { Object::<T>::data_ptr(std).drop_in_place() };
         // SAFETY: as above.
