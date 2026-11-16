@@ -580,14 +580,6 @@ extern "C" fn init_globals(globals: &Globals) {
     }
 }
 
-/// MSHUTDOWN's release of the tables' process-private parts, which upstream
-/// leaves to the exit.
-extern "C" fn release_tables() {
-    // SAFETY: MSHUTDOWN, after every request and PHP thread has ended, so no
-    // table is used afterwards.
-    unsafe { swoole_rs_memory::table::release() };
-}
-
 /// MSHUTDOWN's `swoole_clean()`.
 extern "C" fn clean() {
     swoole_rs_corebase::swoole_clean();
@@ -606,11 +598,7 @@ pub(crate) extern "C" fn swr_v1_phpswoole_mshutdown(_kind: c_int, shutdown: Shut
     steps.extend(optional::mshutdown());
     steps.extend(optional::client_mshutdown());
     steps.extend(families().map(|families| Step::Hook(families.server_mshutdown)));
-    steps.extend([
-        Step::Hook(release_tables),
-        Step::Hook(clean),
-        Step::Hook(swr_zend_leak_check),
-    ]);
+    steps.extend([Step::Hook(clean), Step::Hook(swr_zend_leak_check)]);
     bailout::raise(shutdown.with(|mshutdown| run(steps, Phase::Mshutdown(mshutdown))));
     SUCCESS
 }

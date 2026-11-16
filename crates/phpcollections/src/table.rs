@@ -371,7 +371,7 @@ fn update(call: &Call, subtract: bool) {
         return;
     };
     if row.is_new() {
-        row.clear_row();
+        row.clear_row(table.columns());
     }
     match column.kind {
         ColumnType::String => {
