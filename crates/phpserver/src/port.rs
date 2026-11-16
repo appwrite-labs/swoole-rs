@@ -33,13 +33,19 @@ pub struct PortProperty {
 }
 
 impl PortProperty {
-    /// `callbacks[kind]`: the callable, a reference the call holds, or none.
-    fn callback(&self, kind: swoole_rs_ports::PortCallback) -> Option<Callable> {
-        let slot = self.callbacks.get(kind.index())?;
+    /// Select a callable while its slot is temporarily taken, without running PHP.
+    fn select<R>(
+        &self,
+        kind: swoole_rs_ports::PortCallback,
+        select: impl FnOnce(&Option<Callable>) -> R,
+    ) -> R {
+        let Some(slot) = self.callbacks.get(kind.index()) else {
+            return select(&None);
+        };
         let callable = slot.take();
-        let copy = callable.clone();
+        let selected = select(&callable);
         slot.set(callable);
-        copy
+        selected
     }
 }
 
@@ -66,17 +72,32 @@ fn with_properties<R>(f: impl FnOnce(&mut Vec<Weak<PortProperty>>) -> R) -> R {
 /// `php_swoole_server_get_port_property(port)->callbacks[kind]`: the callable,
 /// a reference the call holds; none without one, or without a live Port object
 /// of this thread's for the port.
+#[inline]
 pub(crate) fn callback(
     port: view::Port<'_>,
     kind: swoole_rs_ports::PortCallback,
 ) -> Option<Callable> {
+    property(port, |property| property.select(kind, Clone::clone)).flatten()
+}
+
+/// Whether the port has a callable, without taking a reference to the callable.
+#[inline]
+pub(crate) fn has_callback(port: view::Port<'_>, kind: swoole_rs_ports::PortCallback) -> bool {
+    property(port, |property| property.select(kind, Option::is_some)).unwrap_or(false)
+}
+
+/// Borrow the callback storage just long enough to select a slot; no PHP runs here.
+#[inline]
+fn property<R>(port: view::Port<'_>, select: impl FnOnce(&PortProperty) -> R) -> Option<R> {
     let config = port.config();
     if crate::server::THREAD.load(Ordering::Relaxed) {
         let index = usize::from(config.object_id);
-        with_properties(|properties| properties.get(index).and_then(Weak::upgrade))?.callback(kind)
+        let property = with_properties(|properties| properties.get(index).and_then(Weak::upgrade))?;
+        Some(select(&property))
     } else {
-        let property = config.property.get()?;
-        property.downcast_ref::<PortProperty>()?.callback(kind)
+        Some(select(
+            config.property.get()?.downcast_ref::<PortProperty>()?,
+        ))
     }
 }
 

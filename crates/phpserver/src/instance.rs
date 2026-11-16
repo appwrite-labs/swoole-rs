@@ -3,7 +3,6 @@
 //! request's payload (were ext-src/swoole_server.cc's `php_swoole_server_*`),
 //! for crates/phphttp, crates/phphttp2 and crates/phpredis too.
 use crate::RecvData;
-use crate::callable::Callable;
 use crate::lifecycle::ServerObject;
 use std::os::unix::ffi::OsStrExt;
 use std::{
@@ -73,11 +72,6 @@ pub fn php_swoole_server_of(value: &Value) -> Option<view::Server<'_>> {
     ServerObject::server_of(value)
 }
 
-/// The port's callback `kind`, or none.
-fn port_callback(port: Option<view::Port<'_>>, kind: PortCallback) -> Option<Callable> {
-    crate::port::callback(port?, kind)
-}
-
 /// `php_swoole_server_isset_callback`: the port, or the primary port, has callback `kind`.
 #[must_use]
 #[inline]
@@ -86,8 +80,8 @@ pub fn php_swoole_server_isset_callback(
     port: Option<view::Port<'_>>,
     kind: PortCallback,
 ) -> bool {
-    let primary = serv.port_at(0);
-    port_callback(port, kind).is_some() || port_callback(primary, kind).is_some()
+    let has = |port| crate::port::has_callback(port, kind);
+    port.is_some_and(has) || serv.port_at(0).is_some_and(has)
 }
 
 /// `php_swoole_server_get_callback`: callback `kind` of the port listening on
@@ -101,7 +95,7 @@ pub fn php_swoole_server_get_callback(
     kind: PortCallback,
 ) -> Option<Rc<Kept>> {
     let port = serv.port_by_server_fd(server_fd)?;
-    port_callback(Some(port), kind).or_else(|| port_callback(serv.port_at(0), kind))
+    crate::port::callback(port, kind).or_else(|| crate::port::callback(serv.port_at(0)?, kind))
 }
 
 /// `php_swoole_get_recv_data`: a request's payload, taking the message bus's
