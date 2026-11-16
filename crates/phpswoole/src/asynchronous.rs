@@ -8,7 +8,7 @@ use crate::{
     options::{self, get},
 };
 use std::{
-    cell::RefCell,
+    cell::Cell,
     collections::HashMap,
     ffi::CStr,
     hash::{BuildHasherDefault, Hasher},
@@ -64,10 +64,20 @@ impl Hasher for Fnv {
     }
 }
 
+/// `request_cache_map`, keyed by the domain's bytes.
+type Lookups = HashMap<Vec<u8>, Cached, BuildHasherDefault<Fnv>>;
+
 thread_local! {
-    /// `request_cache_map`, keyed by the domain's bytes.
-    static CACHE: RefCell<HashMap<Vec<u8>, Cached, BuildHasherDefault<Fnv>>> =
-        RefCell::default();
+    /// Taken out and put back around each lookup and store, which run no PHP code.
+    static CACHE: Cell<Lookups> = const { Cell::new(Lookups::with_hasher(BuildHasherDefault::new())) };
+}
+
+/// `f` on the cache, out of its cell until `f` returns.
+fn with_cache<R>(f: impl FnOnce(&mut Lookups) -> R) -> R {
+    let mut cache = CACHE.take();
+    let result = f(&mut cache);
+    CACHE.set(cache);
+    result
 }
 
 fn truthy(value: &Value) -> bool {
@@ -81,7 +91,7 @@ fn bounded(value: i64, low: u32) -> u32 {
 
 /// `php_swoole_async_coro_rshutdown`: the cache goes with the request.
 pub(crate) extern "C" fn rshutdown() {
-    CACHE.with_borrow_mut(HashMap::clear);
+    with_cache(Lookups::clear);
 }
 
 /// `php_swoole_set_aio_option(options)`, after MINIT: the AIO pool's sizes and
@@ -203,7 +213,7 @@ fn dns_lookup(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let cached = CACHE.with_borrow(|cache| {
+    let cached = with_cache(|cache| {
         let now = swoole_rs_timer::absolute_msec();
         cache
             .get(name)
@@ -234,7 +244,7 @@ fn dns_lookup(call: &Call) {
     let now = swoole_rs_timer::absolute_msec();
     let expires = now + (refresh * 1000.0).c_cast::<i64>();
     let entry = Cached { address, expires };
-    CACHE.with_borrow_mut(|cache| match cache.get_mut(name) {
+    with_cache(|cache| match cache.get_mut(name) {
         Some(cached) => *cached = entry,
         None => {
             cache.insert(name.to_vec(), entry);
