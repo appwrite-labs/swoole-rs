@@ -114,8 +114,6 @@ unsafe extern "C" {
     pub safe fn curl_multi_init() -> Option<MultiHandle>;
     pub fn curl_multi_cleanup(multi: *mut CURLM) -> CURLMcode;
     pub fn curl_multi_setopt(multi: *mut CURLM, option: CURLMoption, ...) -> CURLMcode;
-    pub fn curl_multi_add_handle(multi: *mut CURLM, easy: *mut CURL) -> CURLMcode;
-    pub fn curl_multi_remove_handle(multi: *mut CURLM, easy: *mut CURL) -> CURLMcode;
     pub fn curl_multi_assign(
         multi: *mut CURLM,
         sockfd: curl_socket_t,

@@ -3,7 +3,7 @@
 //! callbacks (password, ALPN, verify, DTLS cookies). The configuration lives in the
 //! owner (`owned.rs`), the info callback in `info.rs`; warnings go through the
 //! configuration's `warn` callback. Requires OpenSSL 3.
-use crate::handle::{Bio, CText, Ssl};
+use crate::handle::{Bio, Ssl};
 use openssl_sys::{
     EVP_PKEY, OPENSSL_NPN_NEGOTIATED, SSL, SSL_CTRL_MODE, SSL_CTRL_SET_GROUPS_LIST,
     SSL_CTRL_SET_READ_AHEAD, SSL_CTRL_SET_SESS_CACHE_MODE, SSL_CTRL_SET_TLSEXT_SERVERNAME_CB,
@@ -23,6 +23,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::StringSlot;
 use swoole_rs_corebase::log;
+use swoole_rs_corebase::sys::Text;
 
 // libssl's own declarations, which openssl-sys doesn't bind.
 unsafe extern "C" {
@@ -31,21 +32,21 @@ unsafe extern "C" {
 }
 
 // libssl/libcrypto's declarations, typed so that a live context is a
-// reference and a NUL-terminated string a `CText`: each reads only its arguments
+// reference and a NUL-terminated string a `Text`: each reads only its arguments
 // (copying what it keeps of a string), `SSL_CTX_new` returns its new context's one
 // reference, or null, and `SSL_load_client_CA_file` a new list, which
 // `SSL_CTX_set_client_CA_list` takes over.
 unsafe extern "C" {
     safe fn SSL_CTX_load_verify_locations(
         ctx: &SslCtx,
-        file: Option<CText<'_>>,
-        path: Option<CText<'_>>,
+        file: Option<Text<'_>>,
+        path: Option<Text<'_>>,
     ) -> c_int;
-    safe fn SSL_CTX_set_cipher_list(ctx: &SslCtx, ciphers: CText<'_>) -> c_int;
-    safe fn SSL_CTX_use_certificate_file(ctx: &SslCtx, file: CText<'_>, kind: c_int) -> c_int;
-    safe fn SSL_CTX_use_certificate_chain_file(ctx: &SslCtx, file: CText<'_>) -> c_int;
-    safe fn SSL_CTX_use_PrivateKey_file(ctx: &SslCtx, file: CText<'_>, kind: c_int) -> c_int;
-    safe fn SSL_load_client_CA_file(file: CText<'_>) -> Option<ClientCaNames>;
+    safe fn SSL_CTX_set_cipher_list(ctx: &SslCtx, ciphers: Text<'_>) -> c_int;
+    safe fn SSL_CTX_use_certificate_file(ctx: &SslCtx, file: Text<'_>, kind: c_int) -> c_int;
+    safe fn SSL_CTX_use_certificate_chain_file(ctx: &SslCtx, file: Text<'_>) -> c_int;
+    safe fn SSL_CTX_use_PrivateKey_file(ctx: &SslCtx, file: Text<'_>, kind: c_int) -> c_int;
+    safe fn SSL_load_client_CA_file(file: Text<'_>) -> Option<ClientCaNames>;
     safe fn SSL_CTX_set_client_CA_list(ctx: &SslCtx, names: ClientCaNames);
     // Reads the BIO for new parameters, its one reference the caller's, or null; it
     // reuses no key, since this side has no slot to pass.
@@ -84,7 +85,7 @@ unsafe extern "C" {
         out_length: &mut c_uint,
     ) -> *mut c_uchar;
     /// `Ctrl`'s commands: `GroupsList` parses `text`, and the others read only `value`.
-    safe fn SSL_CTX_ctrl(ctx: &SslCtx, command: Ctrl, value: c_long, text: CText<'_>) -> c_long;
+    safe fn SSL_CTX_ctrl(ctx: &SslCtx, command: Ctrl, value: c_long, text: Text<'_>) -> c_long;
     /// `ServernameCallback`, the one command, takes a callback of its type, which
     /// OpenSSL calls with the live, non-null SSL whose client hello it is reading.
     safe fn SSL_CTX_callback_ctrl(
@@ -108,7 +109,7 @@ unsafe extern "C" {
 }
 
 /// `ERR_print_errors_cb`'s callback: an error's line, its length and the user data.
-type ErrorLine = extern "C" fn(CText<'_>, usize, Option<&'static c_void>) -> c_int;
+type ErrorLine = extern "C" fn(Text<'_>, usize, Option<&'static c_void>) -> c_int;
 
 /// `CRYPTO_EX_new` and `CRYPTO_EX_free`: `(parent, ptr, ad, idx, argl, argp)`.
 type ExCallback = extern "C" fn(*mut c_void, *mut c_void, *mut c_void, c_int, c_long, *mut c_void);
@@ -371,11 +372,11 @@ impl<'a> TlsStr<'a> {
     }
 
     /// The `c_str()`, or None when empty (upstream passes null for an unset path).
-    fn path(&self) -> Option<CText<'a>> {
+    fn path(&self) -> Option<Text<'a>> {
         if self.is_empty() {
             None
         } else {
-            self.c_str().map(CText::from)
+            self.c_str().map(Text::from)
         }
     }
 }
@@ -1010,7 +1011,7 @@ fn with_error_text<R>(edit: impl FnOnce(&mut Vec<u8>) -> R) -> R {
 /// `ERR_print_errors_cb`'s callback: keeps `line` as the thread's error line. It returns
 /// 0, as upstream's `ssl_error_cb` does, so OpenSSL stops after this one error.
 extern "C" fn keep_last_line(
-    line: CText<'_>,
+    line: Text<'_>,
     _length: usize,
     _user: Option<&'static c_void>,
 ) -> c_int {

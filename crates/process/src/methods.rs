@@ -191,7 +191,7 @@ pub fn send_pipe_message(worker: Worker<'_>, data: &[u8], flags: c_int) -> isize
 
 #[cfg(feature = "upstream-symbols")]
 // crates/tls defines it under its upstream symbol, as a safe Rust fn taking
-// plain values and a `CText` (the same repr as `Text`); declared, since
+// plain values and a `Text`; declared, since
 // crates/tls (through crates/reactor) depends on this crate. It returns a native
 // socket the caller owns, or null.
 unsafe extern "C-unwind" {
