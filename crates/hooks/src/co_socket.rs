@@ -401,12 +401,7 @@ impl Co {
 
     /// The record's read or write buffer slot.
     fn buffer_slot(&self, write: bool) -> &Cell<*mut c_void> {
-        let record = self.record();
-        if write {
-            &record.write_buffer
-        } else {
-            &record.read_buffer
-        }
+        self.record().buffer_slot(write)
     }
 
     /// The read or write buffer, which the record gives up, as before its first use;
@@ -416,14 +411,7 @@ impl Co {
     #[track_caller]
     #[must_use]
     pub(crate) fn take_buffer(self, write: bool) -> Option<Box<CppString>> {
-        let part = if write { WRITE_BUFFER } else { READ_BUFFER };
-        self.lend(part, |_| {
-            let buffer = self.buffer_slot(write).replace(ptr::null_mut());
-            let buffer = buffer.cast::<CppString>();
-            // SAFETY: null or the `new String` the record owned, which nothing else
-            // reaches: the record no longer does and no `with_buffer` lends it.
-            (!buffer.is_null()).then(|| unsafe { Box::from_raw(buffer) })
-        })
+        self.record().take_buffer(write)
     }
 
     /// [`Co::take_buffer`] of the write buffer. The read buffer is not given up
@@ -447,11 +435,7 @@ impl Co {
     /// live, ends with the call.
     #[track_caller]
     fn lend<T>(self, part: u8, f: impl FnOnce(&Bound) -> T) -> T {
-        let bound = self.record().state.as_deref();
-        let bound =
-            bound.unwrap_or_else(|| swoole_rs_corebase::fatal("a hooked socket without its state"));
-        let _loan = Loan::take(&bound.lent, part);
-        f(bound)
+        self.record().lend(part, f)
     }
 
     /// `f` over [`Co::buffer`]'s String.
@@ -548,6 +532,39 @@ impl CoSocket {
     #[must_use]
     pub fn is_closed(&self) -> bool {
         self.sock_fd.get() == -1
+    }
+
+    /// `f` with `part` lent out of the record's [`Bound`], live until `fini`; the
+    /// loan ends with the call.
+    #[track_caller]
+    fn lend<T>(&self, part: u8, f: impl FnOnce(&Bound) -> T) -> T {
+        let bound = self.state.as_deref();
+        let bound =
+            bound.unwrap_or_else(|| swoole_rs_corebase::fatal("a hooked socket without its state"));
+        let _loan = Loan::take(&bound.lent, part);
+        f(bound)
+    }
+
+    /// The read or write buffer slot.
+    fn buffer_slot(&self, write: bool) -> &Cell<*mut c_void> {
+        if write {
+            &self.write_buffer
+        } else {
+            &self.read_buffer
+        }
+    }
+
+    /// [`Co::take_buffer`].
+    #[track_caller]
+    fn take_buffer(&self, write: bool) -> Option<Box<CppString>> {
+        let part = if write { WRITE_BUFFER } else { READ_BUFFER };
+        self.lend(part, |_| {
+            let buffer = self.buffer_slot(write).replace(ptr::null_mut());
+            let buffer = buffer.cast::<CppString>();
+            // SAFETY: null or the `new String` the record owned, which nothing else
+            // reaches: the record no longer does and no `with_buffer` lends it.
+            (!buffer.is_null()).then(|| unsafe { Box::from_raw(buffer) })
+        })
     }
 
     /// The `network::Socket`'s address: null before the socket opens.
@@ -680,32 +697,31 @@ fn domain_and_type(socket_type: c_int, domain: &mut c_int, kind: &mut c_int) {
 
 /// `~Socket()`: the destructor callback if it has not run, the buffers, the
 /// `network::Socket` (its TLS session closed first), then the bound state and the
-/// metadata, whose TLS context outlived the session.
-///
-/// # Safety
-/// `socket` is a live record, not used afterwards; its buffers came from `new String`.
+/// metadata, whose TLS context outlived the session. The buffers and the socket are
+/// the record's own (only this crate sets them), so the borrow is all it needs; a
+/// second release finds the state gone and stops with Swoole's fatal error.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_co_socket_release(socket: *mut CoSocket) {
-    // SAFETY: as the caller promises.
-    let co = unsafe { Co::new(socket) };
-    // The callback runs before anything is freed.
-    crate::socket_extra::run_close_hook(co);
+pub extern "C" fn swr_v1_hook_co_socket_release(socket: &mut CoSocket) {
+    // The callback runs before anything is freed, over the record's address.
+    let extra = socket.extra.get_mut().as_mut();
+    if let Some(hook) = extra.and_then(|extra| extra.close_hook.take()) {
+        hook(ptr::from_mut(socket).cast());
+    }
     for write in [false, true] {
         // `delete` of the socket's own `new String`.
-        if let Some(mut buffer) = co.take_buffer(write) {
+        if let Some(mut buffer) = socket.take_buffer(write) {
             buffer.dispose();
         }
     }
-    co.with_network(|network| {
+    if let Some(network) = socket.socket.take() {
         if !network.read(|record| record.ssl().is_null()) {
             // SAFETY: handles to a session live only for the operation that took them,
             // and the socket being released runs none.
             unsafe { socket_ssl_close(network) };
         }
-    });
-    drop(co.record().socket.take().map(Released));
-    // SAFETY: as the caller promises; no handle reaches the record any more.
-    unsafe { &mut *socket }.fini();
+        drop(Released(network));
+    }
+    socket.fini();
 }
 
 /// `new SocketImpl(...)` for the sockets Rust hands out: by `domain`, `kind` and
@@ -757,8 +773,8 @@ pub fn warn_created(socket: Co, result: u32) {
 /// afterwards.
 pub unsafe extern "C" fn swr_v1_hook_co_socket_free(socket: *mut c_void) {
     let socket = socket.cast::<CoSocket>();
-    // SAFETY: as the caller promises.
-    unsafe { swr_v1_hook_co_socket_release(socket) };
+    // SAFETY: as the caller promises: a live record, which nothing else borrows now.
+    swr_v1_hook_co_socket_release(unsafe { &mut *socket });
     // SAFETY: the record `make` or `accept` boxed, released once.
     drop(unsafe { Box::from_raw(socket) });
 }
