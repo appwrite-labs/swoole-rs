@@ -53,8 +53,8 @@ pub(crate) fn host_port(address: &SocketAddress) -> (String, c_int) {
 }
 
 /// `websocket::get_package_length` as a protocol's length callback: it reads only `pl`.
-pub extern "C" fn websocket_length(
-    _proto: *const Protocol,
+pub fn websocket_length(
+    _proto: &Protocol,
     _socket: Option<Socket<'_>>,
     pl: &mut PacketLength,
 ) -> isize {
@@ -98,7 +98,7 @@ pub mod exports {
     use swoole_rs_clients::protocol::Protocol;
     use swoole_rs_corebase::DataHead;
     use swoole_rs_corebase::lent::lend_spare;
-    use swoole_rs_corebase::net_types::{PacketLength, RecvData};
+    use swoole_rs_corebase::net_types::PacketLength;
     use swoole_rs_corebase::{WebSocketStatus, log};
     use swoole_rs_reactor::Socket;
     use swoole_rs_server::{Connection, view};
@@ -108,13 +108,14 @@ pub mod exports {
     use swoole_rs_websocket_ffi::frame_api::decode_frame;
 
     use super::{Session, WEBSOCKET_FRAME_HEADER_SIZE, length_size, route};
-    use crate::framing_recv::{Package, Packages, Recv, paused};
+    use crate::framing_recv::{Packages, Recv, paused, send_data};
+    use swoole_rs_clients::protocol::Package;
 
     /// `swoole::http2::get_frame_length(const Protocol *, Socket *, PacketLength *)`:
     /// the length callback of an HTTP/2 port, and of crates/phphttp2's client and
     /// crates/phphttp's coroutine server.
-    pub extern "C" fn http2_length(
-        _proto: *const Protocol,
+    pub fn http2_length(
+        _proto: &Protocol,
         _socket: Option<Socket<'_>>,
         pl: &mut PacketLength,
     ) -> isize {
@@ -277,7 +278,7 @@ pub mod exports {
 
     impl Handler for Task {
         fn handle(s: Session<'_>, mut package: Package<'_>, info: DataHead) -> bool {
-            s.task(package.send_data(info))
+            s.task(send_data(&mut package, info))
         }
     }
 
@@ -314,23 +315,25 @@ pub mod exports {
     ///
     /// [`OnPackage`]: swoole_rs_clients::protocol::OnPackage
     #[must_use]
-    pub(crate) extern "C-unwind" fn on_package<H: Handler>(
+    pub(crate) fn on_package<H: Handler>(
         _: *const Protocol,
         socket: Socket<'_>,
-        rdata: &RecvData,
+        package: Package<'_>,
     ) -> c_int {
         let handled = view::Server::with_reactor(|server| {
             let Some(conn) = server.at(socket.fd()) else {
                 return false;
             };
-            // SAFETY: the package's `len` bytes, as `OnPackage`'s caller guarantees.
-            let package = unsafe { Package::from_raw(rdata.data, rdata.info.len as usize) };
+            let info = DataHead {
+                len: u32::try_from(package.len()).unwrap_or(u32::MAX),
+                ..DataHead::default()
+            };
             let s = Session {
                 server,
                 conn,
                 socket,
             };
-            H::handle(s, package, rdata.info)
+            H::handle(s, package, info)
         });
         if handled == Some(true) { 0 } else { -1 }
     }
@@ -343,7 +346,7 @@ pub mod exports {
         const HEAD: Option<u32> = None;
         #[inline(always)]
         fn dispatch(&self, _: &Recv<'_>, mut package: Package<'_>) -> bool {
-            self.0.task(package.send_data(DataHead::default()))
+            self.0.task(send_data(&mut package, DataHead::default()))
         }
         fn paused(&self) -> bool {
             paused(self.0.conn)
@@ -422,12 +425,10 @@ pub mod exports {
         }
     }
 
-    /// `ssize_t get_package_length(const Protocol *, Socket *, PacketLength *)`.
-    ///
-    /// # Safety
-    /// Upstream's: the port's protocol, a connection socket and its packet length.
-    pub unsafe extern "C" fn get_package_length(
-        proto: *const Protocol,
+    /// `ssize_t get_package_length(const Protocol *, Socket *, PacketLength *)` over a
+    /// connection socket.
+    pub fn get_package_length(
+        proto: &Protocol,
         socket: Option<Socket<'_>>,
         pl: &mut PacketLength,
     ) -> isize {
@@ -436,20 +437,18 @@ pub mod exports {
         let Some(conn) = socket else {
             return -1;
         };
-        // SAFETY: as the caller guarantees.
-        match unsafe { get_package_length_size(conn) } {
+        match get_package_length_size(conn) {
             WEBSOCKET_FRAME_HEADER_SIZE => super::websocket_length(proto, socket, pl),
             super::HTTP2_FRAME_HEADER_SIZE => http2_length(proto, socket, pl),
             _ => -1,
         }
     }
 
-    /// `uint8_t get_package_length_size(Socket *)`.
-    ///
-    /// # Safety
-    /// `socket` is a connection socket.
+    /// `uint8_t get_package_length_size(Socket *)` of a connection socket: only an
+    /// HTTP port's protocol holds it, so the socket's kind makes its object a
+    /// connection slot.
     #[must_use]
-    pub unsafe extern "C" fn get_package_length_size(socket: Socket<'_>) -> u8 {
+    pub fn get_package_length_size(socket: Socket<'_>) -> u8 {
         let conn = socket.read(|s| s.object);
         // SAFETY: a connection socket's object is its live connection slot, shared
         // through the slot's handle, as its fields are cells and atomics.

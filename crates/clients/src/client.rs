@@ -10,7 +10,7 @@
 //! reference to the state lives across one: operations work on a raw [`Handle`]
 //! and borrow the state only between effects. A PHP bailout in a callback
 //! longjmps out, so nothing that needs dropping is held across one.
-use crate::protocol::Protocol;
+use crate::protocol::{Package, Protocol};
 use core::cell::{Cell, OnceCell};
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr::NonNull;
@@ -23,7 +23,7 @@ use swoole_rs_corebase::constants::{
     FdType, ResultCode, SW_BUFFER_SIZE_UDP, SW_CLIENT_BUFFER_SIZE, SW_SEND_BUFFER_SIZE,
     SW_SOCKET_RETRY_COUNT, SW_SSL_BUFFER_SIZE, SocketFlag, SocketType,
 };
-use swoole_rs_corebase::net_types::{PacketLength, RecvData, SocketAddress};
+use swoole_rs_corebase::net_types::{PacketLength, SocketAddress};
 use swoole_rs_corebase::sys::{ReadBuffer, ReadSlot};
 use swoole_rs_corebase::{ProxyState, ResolverRequest, log};
 use swoole_rs_error::ErrorCode;
@@ -619,18 +619,18 @@ impl Handle {
 
 /// `Client_onPackage`: a framed package for `onReceive`; the receive loop stops
 /// once the callback left the socket waiting to close. Only a client's protocol
-/// holds it, and [`OnPackage`](crate::protocol::OnPackage)'s contract has a caller pass that protocol's socket,
-/// a client's, whose free is deferred past the call: as for the reactor handlers
-/// below, the socket's kind is what makes its object a client.
-extern "C-unwind" fn on_package(
-    _: *const Protocol,
-    socket: Socket<'_>,
-    package: &RecvData,
-) -> c_int {
+/// holds it, and a client's framed receive calls it with that client's socket, whose
+/// free is deferred past the call: as for the reactor handlers below, the socket's
+/// kind is what makes its object a client.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`OnPackage` lends the package by value"
+)]
+fn on_package(_: *const Protocol, socket: Socket<'_>, package: Package<'_>) -> c_int {
     Handle(socket.read(|socket| socket.object).cast()).call(
         ClientEvent::Receive,
-        package.data.cast(),
-        package.info.len as usize,
+        package.as_ptr().cast(),
+        package.len(),
     );
     if socket.read(|socket| socket.output.close_wait) {
         ERR
@@ -914,8 +914,7 @@ pub fn package_length(this: Handle, data: &[u8]) -> isize {
         return -1;
     };
     let mut packet = PacketLength::new(data);
-    // SAFETY: the live client's protocol and socket, and the packet's bytes.
-    unsafe { get(this.protocol(), Some(this.socket()), &mut packet) }
+    get(&record.protocol, Some(this.socket()), &mut packet)
 }
 
 /// `Client::close()`: false when already closed or when `close(2)` fails; true when
@@ -1416,12 +1415,12 @@ fn bind_unix(this: Handle) -> bool {
     let path = format!("/tmp/swoole-client.{pid}.{}.sock", socket.fd());
     let bound = std::ffi::CString::new(path.as_str()).unwrap_or_default();
     let bound_ok = socket.edit(|socket| {
-        let address = socket.info.addr.unix_mut();
-        for (slot, byte) in address.sun_path.iter_mut().zip(path.bytes().chain([0])) {
-            *slot = c_char::from_ne_bytes([byte]);
-        }
-        let family = libc::AF_UNIX.c_cast::<libc::sa_family_t>();
-        address.sun_family = family;
+        socket.info.addr.edit_unix(|address| {
+            for (slot, byte) in address.sun_path.iter_mut().zip(path.bytes().chain([0])) {
+                *slot = c_char::from_ne_bytes([byte]);
+            }
+            address.sun_family = libc::AF_UNIX.c_cast::<libc::sa_family_t>();
+        });
         _ = swoole_rs_corebase::sys::unlink(&bound);
         // The address just written, bound at `sizeof(sockaddr_un)`; the record keeps
         // its own length.
@@ -1493,11 +1492,7 @@ impl SocketOps {
         sendfile_sync: swoole_rs_tls::upstream::sendfile_sync,
         sendfile_async: swoole_rs_tls::upstream::socket_sendfile_async,
         free_socket: |socket| swoole_rs_tls::upstream::socket_free(socket),
-        close_tls: |socket| {
-            // SAFETY: only close calls this; session handles live only for their
-            // operation, and none is running on the closing client.
-            unsafe { swoole_rs_tls::upstream::socket_ssl_close(socket) };
-        },
+        close_tls: swoole_rs_tls::upstream::socket_ssl_close,
         write: swoole_rs_reactor::event_api::event_write,
         writable: swoole_rs_tls::reactor_write::reactor_writable_callback,
         make_socket: ops::make_socket,

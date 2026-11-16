@@ -4,13 +4,13 @@
 //! (a borrowed and an owned certificate), and this thread's error queue. Callers go
 //! through their methods. `Ssl<'a>` and `Bio<'a>` borrow their owner for `'a`, so a
 //! handle can't outlive the record or SSL it came from, and the calls that need only a
-//! live handle are declared `safe`. What frees an SSL or replaces its BIOs within
-//! `'a` is unsafe: the crate's own constructors from raw pointers, `Ssl::set_fd`,
-//! `Ssl::set_bio` and `upstream::socket_ssl_close`.
+//! live handle are declared `safe`. An SSL's BIOs are set only while this side owns
+//! it ([`OwnedSsl`]), before any handle exists. Socket operations retain a
+//! [`HeldSsl`] reference; closing the socket slot cannot free a borrowed session.
 use crate::context::SslCtx;
 use openssl_sys::{
     BIO, OPENSSL_STACK, SSL, SSL_CIPHER, SSL_CTRL_MODE, SSL_CTRL_SET_TLSEXT_HOSTNAME, SSL_CTX,
-    SSL_set_bio, TLSEXT_NAMETYPE_host_name, X509, stack_st_X509,
+    TLSEXT_NAMETYPE_host_name, X509, stack_st_X509,
 };
 use std::ffi::{CStr, c_char, c_int, c_long, c_uint, c_ulong, c_void};
 use std::marker::PhantomData;
@@ -55,6 +55,7 @@ unsafe extern "C" {
     safe fn BIO_ctrl_pending(bio: Bio<'_>) -> usize;
     safe fn BIO_method_type(bio: Bio<'_>) -> c_int;
     safe fn PEM_write_bio_X509(bio: Bio<'_>, cert: CertRef<'_>) -> c_int;
+    safe fn SSL_up_ref(ssl: Ssl<'_>) -> c_int;
     safe fn SSL_get_error(ssl: Ssl<'_>, result: c_int) -> c_int;
     /// Writes at most `length` bytes of `buffer`, the count its lending gives.
     safe fn SSL_read<'id>(
@@ -123,8 +124,9 @@ unsafe extern "C" {
     /// Gives the fresh SSL socket BIOs over `fd`, freeing the ones it had, which only
     /// a borrow of the [`OwnedSsl`] the exclusive `Fresh` was taken from could reach.
     safe fn SSL_set_fd(ssl: Fresh<'_>, fd: c_int) -> c_int;
-    /// Gives the fresh SSL `bio` for both directions, taking the one reference
-    /// [`Given`] carries, and frees the BIOs it had, as `SSL_set_fd` does.
+    /// Gives the fresh SSL `read` and `write` (the same BIO for both directions takes
+    /// one reference), taking the references [`Given`] carries, and frees the BIOs it
+    /// had, as `SSL_set_fd` does.
     #[link_name = "SSL_set_bio"]
     safe fn set_bios(ssl: Fresh<'_>, read: Given, write: Given);
     /// A new SSL of `ctx`, which it references; null on failure, or without a context.
@@ -162,7 +164,8 @@ impl ConnectionIndex {
 // libssl's ex data calls at the connection's index, typed as what it holds.
 #[expect(
     clashing_extern_declarations,
-    reason = "the ex data calls, typed for the connection's index"
+    improper_ctypes,
+    reason = "the ex data calls, typed for the connection's index; libssl keeps the socket as an opaque `void *`"
 )]
 unsafe extern "C" {
     #[link_name = "SSL_get_ex_data"]
@@ -262,12 +265,44 @@ pub fn error_string(error: c_ulong) -> String {
 }
 
 /// A live SSL on this thread for `'a`. A socket record's is live while the record
-/// holds it: `Socket::ssl_create` gives it one, and the unsafe `socket_ssl_close`
-/// takes it and frees it, its caller promising that no handle to the SSL or its BIOs
-/// is used afterwards.
+/// holds it: socket operations borrow a retained [`HeldSsl`], while a new
+/// session's setup borrows its [`OwnedSsl`].
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ssl<'a>(NonNull<SSL>, PhantomData<&'a SSL>);
+
+/// An operation's retained SSL reference, still bounded by the socket record's
+/// lifetime. Its handles borrow this lease, so none can survive its release.
+///
+/// ```compile_fail
+/// use swoole_rs_reactor::Socket;
+/// use swoole_rs_tls::Ssl;
+/// fn escape(socket: Socket<'_>) -> Option<Ssl<'_>> {
+///     let held = Ssl::of(socket)?;
+///     Some(held.get())
+/// }
+/// ```
+#[derive(Debug)]
+pub struct HeldSsl<'a>(NonNull<SSL>, PhantomData<Socket<'a>>);
+
+impl HeldSsl<'_> {
+    #[must_use]
+    pub fn get(&self) -> Ssl<'_> {
+        Ssl(self.0, PhantomData)
+    }
+}
+
+impl Drop for HeldSsl<'_> {
+    fn drop(&mut self) {
+        /// The one reference acquired by `SSL_up_ref`, released once by this drop.
+        #[repr(transparent)]
+        struct Released(NonNull<SSL>);
+        unsafe extern "C" {
+            safe fn SSL_free(ssl: Released);
+        }
+        SSL_free(Released(self.0));
+    }
+}
 
 /// An entry of OpenSSL's static cipher table.
 #[repr(transparent)]
@@ -284,25 +319,29 @@ pub struct Cipher {
 }
 
 impl<'a> Ssl<'a> {
-    /// The SSL of `socket`'s record, or None without one, for as long as the record.
+    /// Retain the record's SSL for this operation. Handles borrowed from the
+    /// returned lease remain live even if another operation closes the SSL slot.
     #[must_use]
-    pub fn of(socket: Socket<'a>) -> Option<Self> {
+    pub fn of(socket: Socket<'a>) -> Option<HeldSsl<'a>> {
         Self::of_reading(socket, |_| ()).0
     }
 
     /// [`Self::of`], and `read` over the record's fields in the same read of it.
+    /// # Panics
+    /// When OpenSSL cannot retain the live session reference.
     pub fn of_reading<T>(
         socket: Socket<'a>,
         read: impl FnOnce(&SocketFields) -> T,
-    ) -> (Option<Self>, T) {
-        let (ssl, value) = socket.read(|record| (record.ssl(), read(record)));
-        // The record's `ssl` is null or the live SSL its `SocketSsl` owns, freed with
-        // the record or by the unsafe `take_ssl`, whose caller promises that no handle
-        // to it is used afterwards; `set_ssl` leaves one it replaces unfreed.
-        (
-            NonNull::new(ssl.cast()).map(|ssl| Self(ssl, PhantomData)),
-            value,
-        )
+    ) -> (Option<HeldSsl<'a>>, T) {
+        socket.read(|record| {
+            let held = NonNull::new(record.ssl().cast()).map(|ptr| {
+                // The record owns this reference throughout its read. Retain
+                // another before any callback or coroutine can close the slot.
+                assert_eq!(SSL_up_ref(Self(ptr, PhantomData)), 1, "SSL_up_ref failed");
+                HeldSsl(ptr, PhantomData)
+            });
+            (held, read(record))
+        })
     }
 
     #[must_use]
@@ -497,22 +536,8 @@ impl<'a> Ssl<'a> {
         SSL_set_connect_state(self);
     }
 
-    /// `SSL_set_bio`: the SSL takes both BIOs (one reference when they are the same
-    /// BIO) and frees them with itself; the handles borrow them meanwhile.
-    ///
-    /// # Safety
-    /// No handle to the SSL's current BIOs is used afterwards: it frees them.
-    pub unsafe fn set_bio(self, read: OwnedBio, write: Option<OwnedBio>) -> (Bio<'a>, Bio<'a>) {
-        let read = read.into_raw();
-        let write = write.map_or(read, OwnedBio::into_raw);
-        // SAFETY: a live SSL takes the references this side owned, and frees the BIOs
-        // it replaces, which the caller promises have no handle in use.
-        unsafe { SSL_set_bio(self.as_ptr(), read.as_ptr(), write.as_ptr()) };
-        (Bio(read, PhantomData), Bio(write, PhantomData))
-    }
-
-    /// `SSL_get_rbio` (`get0`), None without one: live until the SSL is freed or the
-    /// unsafe `set_bio`/`set_fd` replace it.
+    /// `SSL_get_rbio` (`get0`), None without one: live until the SSL is freed (its
+    /// BIOs are set before a handle to it exists).
     #[must_use]
     pub fn read_bio(self) -> Option<Bio<'a>> {
         SSL_get_rbio(self)
@@ -759,9 +784,9 @@ impl Drop for Cert {
 #[derive(Debug)]
 pub(crate) struct OwnedSsl(SocketSsl);
 
-/// The one reference to a BIO an [`OwnedBio`] gave up, passed as both of
-/// `SSL_set_bio`'s BIOs, which then takes that one reference: only
-/// [`OwnedSsl::set_bio`] makes one.
+/// The one reference to a BIO an [`OwnedBio`] gave up, passed to `SSL_set_bio`, which
+/// then takes it (once when passed as both BIOs): only [`OwnedSsl::set_bio`] makes
+/// one.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 struct Given(NonNull<BIO>);
@@ -786,11 +811,13 @@ impl OwnedSsl {
         SSL_set_fd(Fresh(self.ptr(), PhantomData), fd) != 0
     }
 
-    /// `SSL_set_bio(ssl, bio, bio)`: the SSL takes `bio` for both directions and frees
-    /// it with itself. The BIOs it frees are reachable only through borrows of `self`.
-    pub(crate) fn set_bio(&mut self, bio: OwnedBio) {
-        let bio = Given(bio.into_raw());
-        set_bios(Fresh(self.ptr(), PhantomData), bio, bio);
+    /// `SSL_set_bio(ssl, read, write)`: the SSL takes `read`, and `write` or else
+    /// `read` again for writes, and frees them with itself. The BIOs it frees are
+    /// reachable only through borrows of `self`.
+    pub(crate) fn set_bio(&mut self, read: OwnedBio, write: Option<OwnedBio>) {
+        let read = Given(read.into_raw());
+        let write = write.map_or(read, |write| Given(write.into_raw()));
+        set_bios(Fresh(self.ptr(), PhantomData), read, write);
     }
 
     /// Records `socket`, which takes the SSL next, as its connection's ex data, which

@@ -10,6 +10,8 @@ use core::ffi::c_int;
 use core::marker::PhantomData;
 use std::io::{IoSlice, IoSliceMut};
 use swoole_rs_reactor::Events;
+#[cfg(feature = "iouring")]
+pub(crate) use swoole_rs_reactor::IovBuffer;
 use swoole_rs_reactor::{
     Drain, Fill, ReactorIov, Socket, swr_v1_reactor_iov_view, swr_v1_socket_iov_owned,
 };
@@ -118,15 +120,7 @@ pub use swoole_rs_reactor::ReadVec;
 /// buffers the iovecs name are borrowed for `'a` as [`Vectors`] lent them: writable
 /// and reached through nothing else for a read, readable for a write.
 pub struct IoVector<'a> {
-    owner: Box<ReactorIov<'a>>,
-}
-
-/// What is left of one of an [`IoVector`]'s buffers, lent in the vector's direction:
-/// slots to read into, or bytes to write.
-#[cfg(feature = "iouring")]
-pub(crate) enum Lent<'a> {
-    Read(&'a mut [core::mem::MaybeUninit<u8>]),
-    Write(&'a [u8]),
+    owner: ReactorIov<'a>,
 }
 
 impl<'a> IoVector<'a> {
@@ -163,14 +157,15 @@ impl<'a> IoVector<'a> {
     }
 
     /// The iovecs left to transfer, the current one trimmed to where the transfers
-    /// stopped. The borrow ends before [`update`](Self::update) can move them.
+    /// stopped: where the array starts and how many, valid while the vector is
+    /// borrowed, during which [`update`](Self::update) can't move them.
     #[cfg(feature = "iouring")]
-    pub(crate) fn iovecs(&self) -> &[libc::iovec] {
+    pub(crate) fn iovecs(&self) -> (*const libc::iovec, usize) {
         self.owner.remaining_iovecs()
     }
 
     /// Advance past a transfer's `result`. It takes `&mut self`, so no transfer
-    /// holding [`iovecs`](Self::iovecs) can advance the vector itself.
+    /// borrowing the vector can advance it itself.
     #[cfg(feature = "iouring")]
     pub(crate) fn update(&mut self, result: Option<usize>) {
         self.owner.advance(result.map_or(-1, usize::cast_signed));
@@ -182,30 +177,20 @@ impl<'a> IoVector<'a> {
     #[cfg(feature = "iouring")]
     pub(crate) fn transfer_each(
         &mut self,
-        mut io: impl FnMut(Lent<'_>) -> Option<usize>,
+        mut io: impl FnMut(IovBuffer<'_>) -> Option<usize>,
     ) -> Option<usize> {
-        let write = self.write();
         let mut total = 0;
         let mut result = Some(0);
-        'iovecs: for iov in self.iovecs() {
-            let mut done = 0usize;
-            while done < iov.iov_len {
-                let (at, n) = (iov.iov_base.wrapping_byte_add(done), iov.iov_len - done);
-                result = io(if write {
-                    // SAFETY: the `n > 0` bytes left of a remaining iovec's buffer,
-                    // readable while the vector lives (the type's invariant).
-                    Lent::Write(unsafe { core::slice::from_raw_parts(at.cast(), n) })
-                } else {
-                    // SAFETY: the `n > 0` bytes left of a remaining iovec's buffer,
-                    // writable and unreferenced while the vector lives (the type's
-                    // invariant); lent for this call only, one buffer at a time.
-                    Lent::Read(unsafe { core::slice::from_raw_parts_mut(at.cast(), n) })
-                });
+        'buffers: for mut buffer in self.owner.buffers() {
+            while !buffer.is_empty() {
+                result = io(buffer.reborrow());
                 let Some(moved @ 1..) = result else {
-                    break 'iovecs;
+                    break 'buffers;
                 };
                 total += moved;
-                done += moved;
+                if !buffer.advance(moved) {
+                    break;
+                }
             }
         }
         if total > 0 { Some(total) } else { result }

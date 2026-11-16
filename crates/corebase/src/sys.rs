@@ -503,6 +503,16 @@ pub fn writev(fd: c_int, vectors: &[std::io::IoSlice<'_>]) -> Option<usize> {
     .ok()
 }
 
+/// `readv(2)` into `vectors`' buffers, in order.
+#[must_use]
+#[inline]
+pub fn readv(fd: c_int, vectors: &mut [lent::ReadVec<'_>]) -> Option<usize> {
+    usize::try_from(lent::lend_out(vectors, |iov, count| {
+        lent::readv(fd, iov, count)
+    }))
+    .ok()
+}
+
 /// `listen(2)`.
 ///
 /// # Errors
@@ -643,12 +653,19 @@ const INTEGER_COMMANDS: [c_int; 8] = [
 /// # Errors
 /// The syscall's captured errno, or `EINVAL` for a command outside the integer list.
 pub fn fcntl(fd: c_int, cmd: c_int, arg: c_int) -> std::io::Result<c_int> {
+    /// A command from `INTEGER_COMMANDS`, made only after the check below.
+    #[repr(transparent)]
+    struct IntegerCommand(c_int);
+    // An integer command reads its argument as an int, or not at all, and
+    // dereferences nothing.
+    unsafe extern "C" {
+        #[link_name = "fcntl"]
+        safe fn integer_fcntl(fd: c_int, cmd: IntegerCommand, ...) -> c_int;
+    }
     if !INTEGER_COMMANDS.contains(&cmd) {
         return Err(std::io::Error::from_raw_os_error(libc::EINVAL));
     }
-    // SAFETY: `cmd` takes an integer argument or none, so nothing is dereferenced.
-    let result = unsafe { libc::fcntl(fd, cmd, arg) };
-    nonnegative_result(result)
+    nonnegative_result(integer_fcntl(fd, IntegerCommand(cmd), arg))
 }
 
 /// `flock(2)`.
@@ -812,8 +829,17 @@ mod anonymous {
 /// # Errors
 /// The syscall's errno.
 pub fn open(path: &CStr, flags: c_int, mode: libc::mode_t) -> std::io::Result<c_int> {
-    // SAFETY: `path` is NUL-terminated; the mode is promoted as C does.
-    nonnegative_result(unsafe { libc::open(path.as_ptr(), flags, libc::c_uint::from(mode)) })
+    // `open(2)` reads only the path, and its one optional argument as a mode.
+    #[expect(
+        suspicious_runtime_symbol_definitions,
+        reason = "`Text` is a transparent `const char *` that is never null"
+    )]
+    unsafe extern "C" {
+        #[link_name = "open"]
+        safe fn libc_open(path: Text<'_>, flags: c_int, ...) -> c_int;
+    }
+    // The mode is promoted as C does.
+    nonnegative_result(libc_open(path.into(), flags, libc::c_uint::from(mode)))
 }
 
 /// `execv(3)`: runs `path` in place of this process, with `argv` as its arguments,

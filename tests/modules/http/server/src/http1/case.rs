@@ -742,11 +742,13 @@ pub(crate) unsafe fn swr_case_ssl_client_ca(serv: *mut c_void, cafile: *const c_
     let fields = tls_fields(context);
     fields.verify_peer = 1;
     fields.allow_self_signed = 1;
-    // SAFETY: a live context's slot; a NUL-terminated path.
+    // SAFETY: a live context; a NUL-terminated path.
     let status = unsafe {
         let path = CStr::from_ptr(cafile);
-        let slot = tls_view(context).strings[CAFILE as usize];
-        (*slot).set_shared(path.to_bytes())
+        let owner = &*context.cast::<swoole_rs_tls::OwnedTlsContext>();
+        owner
+            .borrow_configuration()
+            .set_string(CAFILE as usize, path.to_bytes())
     };
     assert!(status, "bad_alloc");
 }

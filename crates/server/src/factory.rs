@@ -397,10 +397,6 @@ impl crate::hybrid::Hybrid for Linked {
         crate::thread_mode::native::create_factory(serv)
     }
 
-    fn destroy_thread_factory(&self, serv: crate::view::Server<'_>) {
-        crate::thread_mode::native::destroy_factory(serv);
-    }
-
     fn start_worker_threads(&self, serv: crate::view::Server<'_>) -> bool {
         crate::thread_mode::native::start_worker_threads(serv)
     }

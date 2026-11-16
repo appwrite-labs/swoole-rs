@@ -1516,14 +1516,14 @@ impl Owned {
         Some(unsafe { &mut *ptr::from_mut(self).cast::<OwnedArray>() })
     }
 
-    /// `ZVAL_OBJ(value, std)`: the result takes over the reference `std` carries.
-    /// # Safety
-    /// `std` is a live object carrying a reference the caller gives up.
+    /// `ZVAL_OBJ(value, std)`: the result takes over the new object's reference.
     #[must_use]
     #[inline]
-    pub unsafe fn object(std: *mut zend_object) -> Self {
+    pub(crate) fn object(std: crate::object::Fresh) -> Self {
         let mut zval = UNDEF;
-        zval.value = zend_value { obj: std };
+        zval.value = zend_value {
+            obj: std.into_ptr(),
+        };
         zval.u1.type_info = crate::sys::IS_OBJECT_EX;
         Self(Value(Cell::new(zval)))
     }

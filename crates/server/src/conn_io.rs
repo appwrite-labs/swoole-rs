@@ -488,30 +488,22 @@ pub(crate) fn close_connection(
     let ssl = sock.read(|s| !s.ssl().is_null());
     if ssl {
         sock.edit(|s| s.ssl_quiet_shutdown = conn.peer_closed());
-        // SAFETY: handles to a session live only for the operation that took them,
-        // and native code closes it between operations.
-        unsafe { tls::socket_ssl_close(sock) };
+        tls::socket_ssl_close(sock);
     }
     if let Some(mut recv_buffer) = sock.edit(|s| s.recv_buffer.take()) {
         recv_buffer.dispose();
     }
-    if let Some(port) = port {
-        if port.open_http_protocol.get() && conn.http_request().is_some() {
-            (crate::port_config::methods().destroy_http_request)(conn);
-        }
-        if port.open_redis_protocol.get()
-            && let Some(request) = conn.take_resp_request()
-        {
-            // SAFETY: the box the session's reactor, this one, gave the connection; the
-            // slot no longer names it.
-            drop(unsafe { Box::from_raw(request) });
-        }
+    if let Some(port) = port
+        && port.open_http_protocol.get()
+        && conn.http_request().is_some()
+    {
+        (crate::port_config::methods().destroy_http_request)(conn);
     }
     if let Some(session) = state.session(conn.session_id()) {
         session.set_fd(0);
     }
     lower_max_fd(state, fd);
-    conn.active().store(0, Relaxed);
+    conn.active().store(false, Relaxed);
     conn.set_socket(None);
     conn.clear_object();
     // The slot's last write before close(fd): an accept that gets the fd back
@@ -754,7 +746,7 @@ pub(crate) mod tests {
         let events = sock.read(|s| s.events);
         assert!(!events.intersects(Events::WRITE), "reads only");
         assert_eq!(calls(), []);
-        conn.active().store(0, Relaxed);
+        conn.active().store(false, Relaxed);
         assert!(!write(serv, reactor, &mut conn.event(0, 0)), "gone");
     }
 

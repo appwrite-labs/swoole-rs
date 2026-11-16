@@ -20,7 +20,7 @@ import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools.annotations import annotate
 from tools.harness import ROOT, write_report
-from tools.build_upstream import require_build_space, tree
+from tools.build_upstream import JOBS_VARIABLES, default_jobs, require_build_space, tree
 from tools.check_migration import GRADUATED, MODULES
 from tools.dev_report import read_json
 
@@ -269,6 +269,11 @@ def plan(args, reports):
     if 'hooks' in modules:
         script('hooks-select-handler-arrays', 'tests/modules/hooks/select_handler_arrays.py', *php,
                '--engine', f'cargo={cargo}', *report('hooks-select-handler-arrays'))
+        if integrate:
+            script('hooks-packet-bailout', 'tests/differential/fuzz.py', *php,
+                   '--engine', f'upstream={reference}', '--engine', f'cargo={cargo}',
+                   '--programs', '0', '--cases', ROOT / 'tests/modules/hooks/bailouts',
+                   *report('hooks-packet-bailout'))
     if 'hooks' in modules and sys.platform.startswith('linux'):
         # core-tests/src/coroutine/{system,hook,socket,base,file,async}.cpp, network/{client,dns,address,socket}.cpp,
         # os/{timer,pipe,process_pool,wait,async}.cpp, os.daemon and protocol/ssl.cpp, ported to Rust over the Cargo build's libswoole, and the repo-owned C++
@@ -651,6 +656,8 @@ def docker(arguments):
                # Docker Desktop (macOS) already gives the host user what a container writes.
                *(['-e', f'SWR_USER={os.getuid()}:{os.getgid()}'] if sys.platform == 'linux' and os.getuid() else []),
                *[part for variable in git_config for part in ('-e', variable)],
+               # The upstream prep's make -j follows the caller's job limit (#4477).
+               *[part for name in JOBS_VARIABLES if os.environ.get(name) for part in ('-e', name)],
                image, 'bash', '-c', DOCKER_SCRIPT, 'dev.py', *arguments]
     return subprocess.run(command).returncode
 

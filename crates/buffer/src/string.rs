@@ -255,6 +255,15 @@ impl CppString {
         unsafe { std::slice::from_raw_parts(self.str, self.length) }
     }
 
+    /// [`view`](Self::view), writable in place.
+    #[must_use]
+    pub fn view_mut(&mut self) -> &mut [u8] {
+        let length = self.length;
+        let content = self.allocation().get_mut(..length).unwrap_or_default();
+        // SAFETY: the first `length` bytes are the content, which is initialized.
+        unsafe { content.assume_init_mut() }
+    }
+
     /// `String::reserve`, never below the content's length.
     pub fn reserve(&mut self, new_size: usize) {
         let Some(with) = self.allocator.filter(|_| self.size != 0) else {
@@ -379,23 +388,17 @@ impl CppString {
         unsafe { std::slice::from_raw_parts_mut(self.str.cast(), self.size) }
     }
 
-    /// The allocation's first `length` bytes, zeroed, for a read to fill before
-    /// `set_len`; `None` when the allocation is shorter. Content among them is zeroed
-    /// too, so every byte lent is initialized and stays so whatever is written.
-    pub fn zeroed(&mut self, length: usize) -> Option<&mut [u8]> {
-        let bytes = self.allocation().get_mut(..length)?;
-        bytes.fill(MaybeUninit::new(0));
-        // SAFETY: every byte was just written.
-        Some(unsafe { bytes.assume_init_mut() })
-    }
-
     /// Replaces the content with what `read` writes into the allocation's first
-    /// `length` bytes, [`zeroed`](Self::zeroed) first (none when the allocation is
-    /// shorter): as many as it returns, at most `length`.
+    /// `length` bytes, zeroed first (none when the allocation is shorter): as many as
+    /// it returns, at most `length`.
     pub fn read_zeroed(&mut self, length: usize, read: impl FnOnce(&mut [u8]) -> usize) {
-        let bytes = self.zeroed(length).unwrap_or_default();
-        let room = bytes.len();
-        self.length = read(bytes).min(room);
+        let room = self.allocation().get_mut(..length).map_or(0, |bytes| {
+            bytes.fill(MaybeUninit::new(0));
+            bytes.len()
+        });
+        // The zeroed bytes are content while `read` writes them.
+        self.length = room;
+        self.length = read(self.view_mut()).min(room);
     }
 
     /// The allocated bytes after the content, for a read to fill before `grow`. They are
@@ -702,12 +705,26 @@ pub unsafe fn delete_string(string: *mut CppString) {
     unsafe { Box::from_raw(string) }.dispose();
 }
 
-/// `f` over this thread's String (`sw_tg_buffer()`), lent to `f` alone.
+/// `f` over this thread's String (`sw_tg_buffer()`), lent to `f` alone. A thread
+/// `swoole_thread_init` didn't set up has none, which aborts.
+#[inline]
 pub fn with_thread_buffer<R>(f: impl FnOnce(&mut CppString) -> R) -> R {
+    try_with_thread_buffer(f)
+        .unwrap_or_else(|| swoole_rs_corebase::fatal("a thread without its buffer"))
+}
+
+/// [`with_thread_buffer`], or `None` on a thread without a buffer.
+#[inline]
+pub fn try_with_thread_buffer<R>(f: impl FnOnce(&mut CppString) -> R) -> Option<R> {
     swoole_rs_corebase::lend_thread_buffer(|| {
-        // SAFETY: the calling thread's live buffer, which `swoole_thread_init` set
-        // up, lent to `f` alone.
-        f(unsafe { &mut *swoole_rs_corebase::thread_buffer().cast::<CppString>() })
+        // SAFETY: null, or the calling thread's live buffer, which
+        // `swoole_thread_init` set up, lent to `f` alone.
+        unsafe {
+            swoole_rs_corebase::thread_buffer()
+                .cast::<CppString>()
+                .as_mut()
+        }
+        .map(f)
     })
 }
 
@@ -810,8 +827,24 @@ mod tests {
         assert_eq!(unsafe { ((*s).length, (*s).size) }, (0, 16));
         unsafe { delete_string(s) };
     }
+
+    #[test]
+    fn view_mut_writes_the_content_alone() {
+        let mut empty = CppString::EMPTY;
+        assert_eq!(empty.view_mut(), b"");
+        let mut s = boxed_string(b"abc");
+        s.view_mut().make_ascii_uppercase();
+        assert_eq!(s.view(), b"ABC");
+        s.truncate(1);
+        assert_eq!(s.view_mut(), b"A");
+        s.dispose();
+    }
 }
 
 #[cfg(test)]
 #[path = "../../../tests/modules/buffer/string/originals.rs"]
 mod originals;
+
+#[cfg(test)]
+#[path = "../../../tests/modules/buffer/thread_buffer.rs"]
+mod thread_buffer;

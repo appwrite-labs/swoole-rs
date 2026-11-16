@@ -5,6 +5,7 @@ The default profile builds in the pinned checkout (target/upstream/src); --stdex
 --configure build a copy of the pin (see tree()). Prints `Built upstream: <swoole.so>`, or
 `Cached upstream: <swoole.so>` when that profile's last build had the same configuration."""
 import argparse
+import filecmp
 import json
 import os
 import re
@@ -35,8 +36,22 @@ def require_build_space(path):
     return free
 
 
+JOBS_VARIABLES = ('SWR_JOBS', 'CARGO_BUILD_JOBS')
+
+
+def default_jobs():
+    """make's -j: `SWR_JOBS`, else a positive `CARGO_BUILD_JOBS`, else up to four. A caller
+    sharing the machine can lower it, which `-j` on make's command line otherwise
+    overrides even through MAKEFLAGS (#4477)."""
+    for name in JOBS_VARIABLES:
+        value = os.environ.get(name, '')
+        if value.isdigit() and int(value) > 0:
+            return int(value)
+    return min(os.cpu_count() or 2, 4)
+
+
 def add_build_arguments(parser):
-    parser.add_argument('--jobs', type=int, default=min(os.cpu_count() or 2, 4))
+    parser.add_argument('--jobs', type=int, default=default_jobs())
     parser.add_argument('--php-config', default='php-config')
     parser.add_argument('--phpize', default='phpize')
     parser.add_argument('--stdext', action='store_true', help='Explicit experimental upstream stdext profile; separate runtime qualification required')
@@ -151,9 +166,13 @@ def tree(stdext=False, php_sockets=False, configure=()):
 def runner(source, pin):
     """PHPT runs read the pin's tests with phpize's run-tests.php (corpus/upstream/run.py --source),
     which only a build in the pin itself leaves there; a profile's build lends it its own, since
-    the runner comes from the PHP (phpize) that profile was built with."""
-    if source != pin:
-        shutil.copy2(source / 'run-tests.php', pin / 'run-tests.php')
+    the runner comes from the PHP (phpize) that profile was built with. phpize can copy the runner
+    read-only (Homebrew's PHP does), so an identical one in the pin stays untouched and a different one is replaced, never
+    written through."""
+    official, lent = source / 'run-tests.php', pin / 'run-tests.php'
+    if source != pin and not (lent.is_file() and filecmp.cmp(official, lent, shallow=False)):
+        lent.unlink(missing_ok=True)
+        shutil.copy2(official, lent)
 
 
 def clone(pin, url='https://github.com/swoole/swoole-src.git'):

@@ -21,7 +21,7 @@ use swoole_rs_zend::{
     Call, Declared, Owned, Value, ZStr,
     bailout::{self, Bailout},
     host::Then,
-    sys::{swr_zend_http_release_objects, zend_object, zval},
+    sys::{swr_zend_http_release_objects, zval},
 };
 
 /// What a `Swoole\Http\Request` or `Swoole\Http\Response` object embeds
@@ -130,52 +130,33 @@ pub(crate) enum Kind {
     Response,
 }
 
-/// A new `Swoole\Http\Request` or `Response` in the context's `slot`,
-/// holding `hold`.
-pub(crate) fn new_object(slot: &mut Slot, kind: Kind, hold: Hold) -> Option<*mut zend_object> {
-    // The context keeps the object's reference.
-    slot.put(kind.class().create_object());
-    point(slot.get()?, kind, hold)
-}
-
 /// A new `Swoole\Http\Request` or `Response` as `call`'s return value,
 /// holding `hold`, whose `slot` borrows it, as upstream's `RETVAL_OBJ` and
 /// `ctx->request.zobject` do.
 pub(crate) fn lend_object(call: &Call, slot: &mut Slot, kind: Kind, hold: Hold) {
-    call.set_owned(kind.class().create_object());
-    // SAFETY: the return value holds the object, and the object (`point`) the
+    call.set_owned(kind.object(hold));
+    // SAFETY: the return value holds the object, and the object holds the
     // context and so the slot: the object's free handler clears the slot
     // before the object goes.
     unsafe { slot.keep(call.ret()) };
-    if let Some(object) = slot.get() {
-        point(object, kind, hold);
-    }
-}
-
-/// Give `object`, a new `kind` object, `hold`.
-fn point(object: &Value, kind: Kind, hold: Hold) -> Option<*mut zend_object> {
-    match kind {
-        Kind::Request => object.custom::<crate::request::Data>()?.0.set(hold),
-        Kind::Response => object.custom::<crate::response::Data>()?.0.set(hold),
-    }
-    .ok()?;
-    object.object()
 }
 
 impl Kind {
-    fn class(self) -> &'static swoole_rs_zend::Class {
+    /// These are the registered base classes, with no constructor to run.
+    /// Initialize the context holder before publishing the new object.
+    fn object(self, hold: Hold) -> Owned {
+        let holder = Holder::from(hold);
         match self {
-            Self::Request => &crate::request::REQUEST,
-            Self::Response => &crate::response::RESPONSE,
+            Self::Request => swoole_rs_zend::new_object(crate::request::Data(holder)),
+            Self::Response => swoole_rs_zend::new_object(crate::response::Data(holder)),
         }
     }
 }
 
 /// A new object in `slot`, holding `hold`, with its declared `fd` property set.
 fn object(slot: &mut Slot, kind: Kind, hold: Hold, property: &Declared, fd: i64) {
-    if new_object(slot, kind, hold).is_some()
-        && let Some(object) = slot.get()
-    {
+    slot.put(kind.object(hold));
+    if let Some(object) = slot.get() {
         property.init(object, Owned::long(fd));
     }
 }

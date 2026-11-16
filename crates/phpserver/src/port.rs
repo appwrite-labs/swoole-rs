@@ -9,6 +9,7 @@ use std::{
     cell::{Cell, OnceCell},
     ffi::c_void,
     ptr,
+    rc::{Rc, Weak},
     sync::atomic::Ordering,
 };
 use swoole_rs_phpstubs::server_port;
@@ -23,28 +24,91 @@ use swoole_rs_zend::{method_table, sys as z};
 /// `PHP_SWOOLE_SERVER_PORT_CALLBACK_NUM`.
 const CALLBACKS: usize = swoole_rs_ports::PortCallback::ALL.len();
 
-/// `swoole::ServerPortProperty`: the port's callables and its server. The
-/// server's dispatch reads it through the port's link, and PHP code a method
-/// runs can call this object's methods, so every field is a cell and the
-/// property is only ever borrowed shared. A callback slot is taken out and put
-/// back with nothing in between that runs PHP code.
+/// The port's callables, shared with dispatch through the port's slot (or
+/// [`PROPERTIES`] in thread mode). Server ownership stays in [`PortData`] so
+/// the dispatch reference cannot form a cycle. A callback slot is taken out
+/// and put back with nothing in between that runs PHP code.
 pub struct PortProperty {
     callbacks: [Cell<Option<Callable>>; CALLBACKS],
-    /// The port's share in its server, once `new_object` bound it.
-    serv: OnceCell<SharedServer>,
-    /// Whether the port names its server: from `new_object` until `release`.
-    bound: Cell<bool>,
 }
 
 impl PortProperty {
-    /// `callbacks[kind]`: the callable, a reference the call holds, or none.
-    pub(crate) fn callback(&self, kind: swoole_rs_ports::PortCallback) -> Option<Callable> {
-        let slot = self.callbacks.get(kind.index())?;
+    /// Select a callable while its slot is temporarily taken, without running PHP.
+    #[inline]
+    fn select<R>(
+        &self,
+        kind: swoole_rs_ports::PortCallback,
+        select: impl FnOnce(&Option<Callable>) -> R,
+    ) -> R {
+        let Some(slot) = self.callbacks.get(kind.index()) else {
+            return select(&None);
+        };
         let callable = slot.take();
-        let copy = callable.clone();
+        let selected = select(&callable);
         slot.set(callable);
-        copy
+        selected
     }
+}
+
+thread_local! {
+    /// `php_swoole_server_{get,set}_port_property`: this thread's
+    /// `ServerPortProperty` of each port, by the port's `object_id`. Upstream keeps
+    /// one per thread in thread mode, where each worker thread has Port objects of
+    /// its own for the shared ports, and in the port's `ptr` otherwise, where one
+    /// thread runs PHP. The Port object owns its property; this only finds it.
+    /// Taken out and put back around each access, which runs no PHP code.
+    static PROPERTIES: Cell<Vec<Weak<PortProperty>>> = const { Cell::new(Vec::new()) };
+}
+
+/// `f` over this thread's [`PROPERTIES`], taken out and put back.
+fn with_properties<R>(f: impl FnOnce(&mut Vec<Weak<PortProperty>>) -> R) -> R {
+    PROPERTIES.with(|cell| {
+        let mut properties = cell.take();
+        let result = f(&mut properties);
+        cell.set(properties);
+        result
+    })
+}
+
+/// `php_swoole_server_get_port_property(port)->callbacks[kind]`: the callable,
+/// a reference the call holds; none without one, or without a live Port object
+/// of this thread's for the port.
+#[inline]
+pub(crate) fn callback(
+    port: view::Port<'_>,
+    kind: swoole_rs_ports::PortCallback,
+) -> Option<Callable> {
+    property(port, |property| property.select(kind, Clone::clone)).flatten()
+}
+
+/// Whether the port has a callable, without taking a reference to the callable.
+#[inline]
+pub(crate) fn has_callback(port: view::Port<'_>, kind: swoole_rs_ports::PortCallback) -> bool {
+    property(port, |property| property.select(kind, Option::is_some)).unwrap_or(false)
+}
+
+/// Borrow the callback storage just long enough to select a slot; no PHP runs here.
+#[inline(always)]
+fn property<R>(port: view::Port<'_>, select: impl FnOnce(&PortProperty) -> R) -> Option<R> {
+    let config = port.config();
+    if crate::server::THREAD.load(Ordering::Relaxed) {
+        let property = thread_property(config.object_id)?;
+        Some(select(&property))
+    } else {
+        Some(select(
+            config.property.get()?.downcast_ref::<PortProperty>()?,
+        ))
+    }
+}
+
+/// Keep the TLS table and temporary owner out of the shared-port lookup.
+#[inline(never)]
+fn thread_property(object_id: u16) -> Option<Rc<PortProperty>> {
+    with_properties(|properties| {
+        properties
+            .get(usize::from(object_id))
+            .and_then(Weak::upgrade)
+    })
 }
 
 /// `ServerPortObject` without its `zend_object`: the `ListenPort` and property.
@@ -52,7 +116,11 @@ pub struct PortData {
     /// Which of the server's ports, by address; null before `new_object` and
     /// after `release`.
     port: Cell<*mut c_void>,
-    property: PortProperty,
+    property: Rc<PortProperty>,
+    /// The port's share in its server, once `new_object` bound it.
+    serv: OnceCell<SharedServer>,
+    /// Whether the port names its server: from `new_object` until `release`.
+    bound: Cell<bool>,
 }
 
 impl Custom for PortData {
@@ -64,11 +132,11 @@ impl Custom for PortData {
     fn new() -> Self {
         Self {
             port: Cell::new(ptr::null_mut()),
-            property: PortProperty {
+            property: Rc::new(PortProperty {
                 callbacks: Default::default(),
-                serv: OnceCell::new(),
-                bound: Cell::new(false),
-            },
+            }),
+            serv: OnceCell::new(),
+            bound: Cell::new(false),
         }
     }
 
@@ -87,29 +155,25 @@ impl Drop for PortData {
 impl PortData {
     /// The bound server: none before `new_object` binds it and after `release`.
     fn server(&self) -> Option<view::Server<'_>> {
-        let serv = self
-            .property
-            .serv
-            .get()
-            .filter(|_| self.property.bound.get());
+        let serv = self.serv.get().filter(|_| self.bound.get());
         serv.map(SharedServer::view)
     }
 
     /// The bound `ListenPort`, one of its server's: none before `new_object`
     /// binds it and after `release`.
     fn port(&self) -> Option<view::Port<'_>> {
-        crate::server::port_of(self.property.serv.get()?.view(), self.port.get())
+        crate::server::port_of(self.serv.get()?.view(), self.port.get())
     }
 
     /// `php_swoole_server_port_deref`: drop the callables and the port's link,
     /// all of them even when a destructor leaves a bailout pending.
     fn release(&self) {
-        if self.property.bound.get() {
+        if self.bound.get() {
             for slot in &self.property.callbacks {
                 // Out of its slot first: a destructor this runs may reach the slot again.
                 drop(slot.take());
             }
-            self.property.bound.set(false);
+            self.bound.set(false);
         }
         if let Some(port) = self.port()
             && crate::lifecycle::owns_shared()
@@ -154,12 +218,25 @@ pub(crate) fn new_object(serv: SharedServer, port: view::Port<'_>) -> Owned {
     };
     data.port.set(port.raw());
     // A new object has no server yet.
-    data.property.serv.get_or_init(|| serv);
-    data.property.bound.set(true);
+    data.serv.get_or_init(|| serv);
+    data.bound.set(true);
+    // `php_swoole_server_set_port_property`.
     let config = port.config();
-    // The object's property lives as long as the port's link, which only reads it.
-    let property = ptr::from_ref(&data.property).cast_mut().cast();
-    crate::server::port_property(config.object_id, &config.ptr, property, true);
+    if crate::server::THREAD.load(Ordering::Relaxed) {
+        let property = Rc::downgrade(&data.property);
+        let index = usize::from(config.object_id);
+        with_properties(|properties| {
+            if properties.len() <= index {
+                properties.resize(index + 1, Weak::new());
+            }
+            if let Some(entry) = properties.get_mut(index) {
+                *entry = property;
+            }
+        });
+    } else {
+        // Each non-threaded ListenPort gets its object once: during bind, or listen.
+        config.property.get_or_init(|| data.property.clone());
+    }
     zport
 }
 

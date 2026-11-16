@@ -757,7 +757,7 @@ pub fn copy_for_process(
     let mut worker = pool.worker(id).map(Worker::get)?;
     let null = core::ptr::null_mut();
     let mut pipe = None;
-    if pool.ipc_mode == IpcMode::UnixSock {
+    if pool.ipc_mode.get() == IpcMode::UnixSock {
         let current = if worker.id() == crate::methods::swoole_get_worker_id() {
             worker.pipe_worker.get()
         } else {
@@ -773,7 +773,7 @@ pub fn copy_for_process(
         *worker.pipe_current.get_mut() = null;
         worker.pipe_object.set(null);
     }
-    if pool.ipc_mode == IpcMode::MsgQueue && pool.on_message.is_none() {
+    if pool.ipc_mode.get() == IpcMode::MsgQueue && pool.on_message.get().is_none() {
         worker.queue.set(pool.queue());
         worker.msgqueue_mode.set(MSGQUEUE_BALANCE);
     }
@@ -809,9 +809,9 @@ mod tests {
         workers[1].pipe_worker.set((&raw mut fds[1]).cast());
         workers[1].pipe_object.set(core::ptr::dangling_mut());
         let mut pool: crate::process_pool::PoolRecord = unsafe { core::mem::zeroed() };
-        pool.workers = workers.as_mut_ptr();
-        pool.worker_num = 2;
-        pool.ipc_mode = IpcMode::UnixSock;
+        pool.workers.set(workers.as_mut_ptr());
+        pool.worker_num.set(2);
+        pool.ipc_mode.set(IpcMode::UnixSock);
         let mut copy: WorkerRecord = unsafe { core::mem::zeroed() };
         // A worker the pool doesn't have: no copy.
         assert_eq!(
@@ -847,11 +847,11 @@ mod tests {
         fn on_message(_: crate::process_pool::PoolRef<'_>, _: &crate::process_pool::RecvData<'_>) {}
         let mut workers: [WorkerRecord; 2] = unsafe { core::mem::zeroed() };
         let mut pool: crate::process_pool::PoolRecord = unsafe { core::mem::zeroed() };
-        pool.workers = workers.as_mut_ptr();
-        pool.worker_num = 2;
+        pool.workers.set(workers.as_mut_ptr());
+        pool.worker_num.set(2);
         let mut copy: WorkerRecord = unsafe { core::mem::zeroed() };
         // Without onMessage, a message-queue pool's process balances over the pool's queue.
-        pool.ipc_mode = IpcMode::MsgQueue;
+        pool.ipc_mode.set(IpcMode::MsgQueue);
         pool.queue = Some(Box::new(swoole_rs_ossupport::QueueRecord::new(
             libc::IPC_PRIVATE,
             false,
@@ -868,7 +868,7 @@ mod tests {
         if let Some(queue) = pool.queue.as_deref_mut() {
             queue.destroy();
         }
-        pool.on_message = Some(on_message);
+        pool.on_message.set(Some(on_message));
         assert_eq!(
             copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 1, &mut copy),
             None
@@ -1021,13 +1021,16 @@ mod public_pid_array_tests {
         use crate::process_pool::{PoolRecord, PoolRef};
         let mut pools = [PoolRecord::empty(), PoolRecord::empty()];
         let [event_pool, task_pool] = pools.each_mut().map(|pool| unsafe { PoolRef::new(pool) });
-        let view = unsafe {
-            crate::server_workers::ServerWorkers::new(
-                (event_pool, workers, count),
-                (task_pool, 0),
-                (core::ptr::null_mut(), 0),
-            )
+        let events = if workers.is_null() {
+            &[][..]
+        } else {
+            unsafe { core::slice::from_raw_parts(workers, count as usize) }
         };
+        let view = crate::server_workers::ServerWorkers::new(
+            (event_pool, events, count),
+            (task_pool, 0),
+            (&[], 0),
+        );
         crate::server_workers::swr_v1_process_server_worker_by_pid(&view, None, pid)
     }
 

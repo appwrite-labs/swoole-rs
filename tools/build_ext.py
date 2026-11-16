@@ -22,6 +22,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tomllib
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools.build_upstream import COMMIT, VERSION
@@ -136,6 +137,13 @@ def main():
     out = ROOT / 'target/ext'
     out.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, 'PHP_CONFIG': args.php_config}
+    # The commit `php --ri swoole` reports beside the swoole-rs version: unknown outside a checkout.
+    try:
+        git = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=ROOT, capture_output=True, text=True)
+        source_ref = git.stdout.strip() if git.returncode == 0 else 'unknown'
+    except OSError:
+        source_ref = 'unknown'
+    env['SWOOLE_RS_COMMIT'] = source_ref[:12]
     switches = {**HOOK_SWITCHES, 'mysqlnd': '--enable-mysqlnd', 'uring-socket': '--enable-uring-socket',
                 'cares': '--enable-cares', 'thread-context': '--enable-thread-context',
                 'thread': '--enable-swoole-thread', 'stdext': '--enable-swoole-stdext'}
@@ -171,10 +179,10 @@ def main():
                              capture_output=True, text=True)
     if version.stdout != VERSION.removeprefix('v'):
         raise SystemExit(f'{extension} does not load as Swoole {VERSION}:\n{version.stdout}{version.stderr}')
-    source_ref = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
     (out / 'build-manifest.json').write_text(json.dumps({
         'extension_sha256': hashlib.sha256(extension.read_bytes()).hexdigest(), 'upstream_commit': COMMIT,
-        'features': sorted(features), 'profile': args.profile, 'source_ref': source_ref}, indent=1) + '\n')
+        'features': sorted(features), 'profile': args.profile, 'source_ref': source_ref,
+        'swoole_rs_version': tomllib.loads((ROOT / 'Cargo.toml').read_text())['workspace']['package']['version']}, indent=1) + '\n')
     print(f'Built cargo: {extension}')
 
 

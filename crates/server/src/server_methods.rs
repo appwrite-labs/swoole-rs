@@ -25,12 +25,41 @@ pub fn store_listen_socket(serv: view::Server<'_>) {
     crate::startup::store_listen_socket(serv);
 }
 
+/// Which process's signal handler runs: each is one of [`on_signal`]'s bodies.
+#[derive(Clone, Copy)]
+pub(crate) enum SignalBody {
+    /// `Server::master_signal_handler`.
+    Master,
+    /// `Manager_signal_handler`.
+    #[cfg(feature = "upstream-symbols")]
+    Manager,
+    /// `Server::worker_signal_handler`.
+    #[cfg(feature = "upstream-symbols")]
+    Worker,
+}
+
+/// The server's signal handlers: `body` over `SwooleG.server`, when there is one.
+pub(crate) fn on_signal(body: SignalBody, signo: c_int) {
+    let serv = swoole_rs_corebase::swr_v1_core_server();
+    if serv.is_null() {
+        return;
+    }
+    // SAFETY: the process's server (only `SharedServer::new` sets it), which its last
+    // share's drop stops naming before the server is freed. The view lives for the
+    // body below, which runs the server's own reaction to the signal and ends no share.
+    let serv = unsafe { view::Server::from_raw(serv) };
+    match body {
+        SignalBody::Master => crate::control::signal(serv, signo),
+        #[cfg(feature = "upstream-symbols")]
+        SignalBody::Manager => crate::manager::native::signal(serv, signo),
+        #[cfg(feature = "upstream-symbols")]
+        SignalBody::Worker => crate::event_worker::native::signal(serv, signo),
+    }
+}
+
 /// `Server::master_signal_handler(signo)`: the signal over `SwooleG.server`.
 pub extern "C" fn master_signal_handler(signo: c_int) {
-    // SAFETY: the master's signal runs while its server lives; the view ends with it.
-    if let Some(serv) = unsafe { view::Server::current() } {
-        crate::control::signal(serv, signo);
-    }
+    on_signal(SignalBody::Master, signo);
 }
 
 pub use crate::control::shutdown;
@@ -61,10 +90,9 @@ pub fn destroy_running(serv: view::Server<'_>) {
             .master_pid
             .load(core::sync::atomic::Ordering::Relaxed);
     if master
-        && counters
+        && !counters
             .shutdown
             .load(core::sync::atomic::Ordering::Relaxed)
-            == 0
     {
         destroy(serv);
     }
@@ -441,7 +469,7 @@ mod tests {
         config.reactor_num.set(2);
         config.mode_ = Mode::Base;
         let tables = server.tables_mut();
-        tables.connection_list = naming(&mut connections);
+        *tables.connection_list_mut() = naming(&mut connections);
         tables.reactor_pipe_num.set(2);
         // SAFETY: the table just named holds 4 records.
         unsafe { tables.set_max_connection_unchecked(4) };

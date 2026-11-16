@@ -147,7 +147,9 @@ pub(crate) fn on_packet(
     let Some(record) = accept(serv, port, peer) else {
         return false;
     };
-    if let Some(session) = DtlsSession::of(record) {
+    if let Some(held) = swoole_rs_tls::Ssl::of(record)
+        && let Some(session) = DtlsSession::of(held.get())
+    {
         appended(swr_v1_tls_dtls_append(session, data));
     }
     if !dtls_session_listen(record) {
@@ -181,7 +183,10 @@ pub(crate) fn on_packet(
 /// session; whether a pending handshake failed (as it does without a session).
 pub(crate) fn on_read(sock: Socket<'_>) -> bool {
     let size = usize::try_from(SW_BUFFER_SIZE_UDP).unwrap_or(0);
-    let Some(session) = DtlsSession::of(sock) else {
+    let Some(held) = swoole_rs_tls::Ssl::of(sock) else {
+        return true;
+    };
+    let Some(session) = DtlsSession::of(held.get()) else {
         return true;
     };
     // A `dtls::Buffer` of the socket's next datagram, which the session queues.

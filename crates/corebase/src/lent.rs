@@ -185,12 +185,12 @@ pub struct HeadedOut<'id, H>(*mut H, Brand<'id>);
 #[repr(transparent)]
 pub struct HeadedIn<'id, H>(*const H, Brand<'id>);
 
-impl Count<'_> {
+impl<N: Narrow + Ord> Count<'_, N> {
     /// At most `limit` of the same lending's items.
     #[inline]
     #[must_use]
     pub fn at_most(self, limit: usize) -> Self {
-        Self(self.0.min(limit), PhantomData)
+        Self(self.0.min(N::narrow(limit)), PhantomData)
     }
 }
 
@@ -270,6 +270,12 @@ unsafe extern "C" {
     pub(crate) safe fn writev<'id>(
         fd: c_int,
         vectors: In<'id, libc::iovec>,
+        count: Count<'id, c_int>,
+    ) -> isize;
+    /// Fills the buffers that the count's vectors name, in order.
+    pub(crate) safe fn readv<'id>(
+        fd: c_int,
+        vectors: Out<'id, ReadVec<'_>>,
         count: Count<'id, c_int>,
     ) -> isize;
     pub(crate) safe fn poll<'id>(
@@ -798,6 +804,10 @@ impl<'a> Drain<'a> {
 }
 
 #[cfg(test)]
+#[path = "../../../tests/modules/corebase/lent.rs"]
+mod tests;
+
+#[cfg(test)]
 #[path = "../../../tests/modules/corebase/spare.rs"]
 mod spare_tests;
 
@@ -814,6 +824,42 @@ impl<'b> ReadVec<'b> {
     #[must_use]
     pub fn descriptor(&self) -> libc::iovec {
         self.iov
+    }
+
+    /// How many slots are left to fill.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.iov.iov_len
+    }
+
+    /// Whether no slots are left to fill.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.iov.iov_len == 0
+    }
+
+    /// The same slots, lent again while this is borrowed.
+    pub fn reborrow(&mut self) -> ReadVec<'_> {
+        ReadVec {
+            iov: self.iov,
+            lent: PhantomData,
+        }
+    }
+
+    /// The slots as a [`Fill`], for a read while this is borrowed.
+    pub fn fill(&mut self) -> Fill<'_> {
+        Fill {
+            at: self.iov.iov_base.cast(),
+            len: self.iov.iov_len,
+            lent: PhantomData,
+        }
+    }
+
+    /// Steps past the first `n` slots, at most all of them.
+    pub fn advance(&mut self, n: usize) {
+        let n = n.min(self.iov.iov_len);
+        self.iov.iov_base = self.iov.iov_base.wrapping_byte_add(n);
+        self.iov.iov_len -= n;
     }
 
     /// The vector over `slots`.

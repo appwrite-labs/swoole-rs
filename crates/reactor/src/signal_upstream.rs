@@ -248,22 +248,20 @@ pub extern "C" fn swoole_signal_set(signo: c_int, handler: Handler, safety: bool
 }
 
 /// `void swoole_signal_callback(int signo)`: runs the handler registered for `signo`,
-/// which [`Handler::from_raw`] made sound to call with any signal number.
-#[unsafe(export_name = "_Z22swoole_signal_callbacki")]
+/// which [`Handler::new`] or C++'s `SignalHandler` made sound to call with any
+/// signal number.
 pub extern "C" fn swoole_signal_callback(signo: c_int) {
     signal_loop::callback(signo, &OPS);
 }
 
 /// `SignalHandler swoole_signal_get_handler(int signo)`.
 #[must_use]
-#[unsafe(export_name = "_Z25swoole_signal_get_handleri")]
 pub extern "C" fn swoole_signal_get_handler(signo: c_int) -> usize {
     get(signo).raw()
 }
 
 /// `uint32_t swoole_signal_get_listener_num()`.
 #[must_use]
-#[unsafe(export_name = "_Z30swoole_signal_get_listener_numv")]
 pub extern "C" fn swoole_signal_get_listener_num() -> u32 {
     signal_loop::listener_num()
 }

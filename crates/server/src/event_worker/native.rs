@@ -219,11 +219,7 @@ pub(crate) fn worker_start_callback(serv: view::Server<'_>, worker: Worker<'_>) 
     worker.set_status(WorkerStatus::Idle);
     if config.mode_ == Mode::Process {
         // Upstream ignores whether the session list became read-only.
-        _ = serv
-            .state()
-            .tables_ref()
-            .session_list
-            .protect(libc::PROT_READ);
+        _ = serv.state().tables_ref().protect_sessions(libc::PROT_READ);
     }
     call_worker_start_callback(serv, worker);
 }
@@ -491,10 +487,11 @@ pub(crate) fn swr_workers_signal_set(
 
 /// `Server::worker_signal_handler(signo)`, over `SwooleG.server`.
 pub(crate) extern "C" fn worker_signal_handler(signo: c_int) {
-    // SAFETY: a worker's signal runs while its server lives; the view ends with it.
-    let Some(serv) = (unsafe { view::Server::current() }) else {
-        return;
-    };
+    crate::server_methods::on_signal(crate::server_methods::SignalBody::Worker, signo);
+}
+
+/// [`worker_signal_handler`]'s body over the server.
+pub(crate) fn signal(serv: view::Server<'_>, signo: c_int) {
     let live = swoole_rs_corebase::swr_v1_core_running() && serv.state().running();
     _ = with_current(|&worker| {
         if !live {

@@ -375,7 +375,7 @@ impl<'a> Client<'a> {
         unsafe {
             (*prepared.fields).disable_tls_host_name = u8::from(name.is_empty());
             assert_eq!(
-                string_set(prepared.strings[TLS_HOST_NAME], name.as_bytes()),
+                string_set(prepared.owner, TLS_HOST_NAME, name.as_bytes()),
                 0
             );
             let owner = |context: *const c_void| {
@@ -1391,7 +1391,7 @@ fn peer_cert_chain(sock: swoole_rs_reactor::Socket<'_>, limit: usize) -> Vec<Vec
     let mut chain = Vec::new();
     let mut buffer = vec![0_u8; SW_BUFFER_SIZE_BIG];
     if let Some(ssl) = swoole_rs_tls::Ssl::of(sock) {
-        ssl.each_peer_cert(|cert| {
+        ssl.get().each_peer_cert(|cert| {
             // `_ssl_read_x509_file`, which fails without a certificate.
             let rv = cert.pem(&mut buffer).ok();
             chain.push(rv.filter(|&n| n > 0).map(|n| buffer[..n].to_vec()));

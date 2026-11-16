@@ -147,6 +147,8 @@ pub struct Co(*mut CoSocket);
 pub struct Bound {
     state: UnsafeCell<SocketState>,
     lent: Cell<u8>,
+    #[cfg(any(test, feature = "iouring"))]
+    tls_buffers: [std::cell::OnceCell<TlsBuffer>; 2],
 }
 
 impl Bound {
@@ -155,12 +157,26 @@ impl Bound {
         Self {
             state: UnsafeCell::new(SocketState::new()),
             lent: Cell::new(0),
+            #[cfg(any(test, feature = "iouring"))]
+            tls_buffers: std::array::from_fn(|_| std::cell::OnceCell::new()),
         }
     }
 
     /// The bound state's address, which [`Co::with_state`] borrows.
     fn state(&self) -> *mut SocketState {
         self.state.get()
+    }
+}
+
+/// BIO scratch belongs to TLS, independently of the application buffers lent
+/// throughout a receive. Its bytes use the socket's allocator, as those do.
+#[cfg(any(test, feature = "iouring"))]
+struct TlsBuffer(CppString);
+
+#[cfg(any(test, feature = "iouring"))]
+impl Drop for TlsBuffer {
+    fn drop(&mut self) {
+        self.0.dispose();
     }
 }
 
@@ -371,14 +387,6 @@ impl Co {
         result
     }
 
-    /// The protocol's address, for the native length callbacks.
-    #[must_use]
-    pub fn protocol_ptr(self) -> *const Protocol {
-        self.0
-            .wrapping_byte_add(offset_of!(CoSocket, protocol))
-            .cast()
-    }
-
     /// `is_closed`.
     #[must_use]
     pub fn is_closed(self) -> bool {
@@ -402,6 +410,24 @@ impl Co {
         made
     }
 
+    /// TLS's read/write BIO scratch, allocated once and held until the socket
+    /// closes. No application buffer loan reaches these bytes.
+    #[cfg(any(test, feature = "iouring"))]
+    pub(crate) fn tls_buffer(self, write: bool) -> (*mut c_char, usize) {
+        let bound = self
+            .record()
+            .state
+            .as_ref()
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("a hooked socket without its state"));
+        let [read, send] = &bound.tls_buffers;
+        let buffer = if write { send } else { read }.get_or_init(|| {
+            let mut string = CppString::EMPTY;
+            string.alloc(BUFFER_SIZE_BIG, self.buffer_allocator());
+            TlsBuffer(string)
+        });
+        (buffer.0.as_ptr().cast_mut().cast(), buffer.0.size())
+    }
+
     /// The record's read or write buffer slot.
     fn buffer_slot(&self, write: bool) -> &Cell<*mut c_void> {
         self.record().buffer_slot(write)
@@ -415,6 +441,18 @@ impl Co {
     #[must_use]
     pub(crate) fn take_buffer(self, write: bool) -> Option<Box<CppString>> {
         self.record().take_buffer(write)
+    }
+
+    /// Restores the read allocation owned by a completed receive. While parked,
+    /// that receive owns it independently of socket teardown; an abandoned frame
+    /// must retain it because a kernel request may still reach its bytes.
+    pub(crate) fn put_read_buffer(self, buffer: Box<CppString>) {
+        let slot = self.buffer_slot(false);
+        assert!(
+            slot.get().is_null(),
+            "a pending receive owns the read buffer"
+        );
+        slot.set(Box::into_raw(buffer).cast());
     }
 
     /// [`Co::take_buffer`] of the write buffer. The read buffer is not given up
@@ -718,9 +756,7 @@ pub extern "C" fn swr_v1_hook_co_socket_release(socket: &mut CoSocket) {
     }
     if let Some(network) = socket.socket.take() {
         if !network.read(|record| record.ssl().is_null()) {
-            // SAFETY: handles to a session live only for the operation that took them,
-            // and the socket being released runs none.
-            unsafe { socket_ssl_close(network) };
+            socket_ssl_close(network);
         }
         drop(Released(network));
     }
@@ -1450,6 +1486,62 @@ mod tests {
         let co = socket.co();
         co.with_buffer(false, |outer| {
             co.with_buffer(false, |inner| inner.size() + outer.size())
+        });
+    }
+
+    #[test]
+    fn pending_read_allocation_survives_socket_teardown() {
+        let mut socket = TestSocket::new();
+        let co = socket.co();
+        let address = co.with_buffer(false, |buffer| {
+            buffer.append(b"header");
+            buffer.as_ptr()
+        });
+        let mut pending = co.take_buffer(false).unwrap();
+        assert!(co.read_buffer().is_null());
+        assert_eq!(pending.as_ptr(), address);
+        drop(socket);
+        // A completion can still write after the socket's teardown. The pending
+        // receive, rather than the socket, releases this allocation afterwards.
+        pending.fill_within(4, |spare| {
+            assert!(spare.put(b"body").is_some());
+        });
+        assert_eq!(pending.view(), b"headerbody");
+        pending.dispose();
+    }
+
+    #[test]
+    fn completed_read_restores_its_allocation_and_initialized_prefix() {
+        let mut socket = TestSocket::new();
+        let co = socket.co();
+        let address = co.with_buffer(false, |buffer| buffer.as_ptr());
+        let mut pending = co.take_buffer(false).unwrap();
+        pending.fill_within(3, |spare| {
+            assert!(spare.put(b"abc").is_some());
+        });
+        co.put_read_buffer(pending);
+        co.with_buffer(false, |buffer| {
+            assert_eq!(buffer.as_ptr(), address);
+            assert_eq!(buffer.view(), b"abc");
+        });
+    }
+
+    #[test]
+    fn tls_scratch_is_stable_and_independent_of_application_loans() {
+        let mut socket = TestSocket::new();
+        let co = socket.co();
+        co.with_buffer(false, |read| {
+            co.with_buffer(true, |write| {
+                let inbound = co.tls_buffer(false);
+                let outbound = co.tls_buffer(true);
+                assert_eq!(inbound.1, BUFFER_SIZE_BIG);
+                assert_eq!(outbound.1, BUFFER_SIZE_BIG);
+                assert_ne!(inbound.0, outbound.0);
+                assert_ne!(inbound.0.cast::<u8>(), read.as_mut_ptr());
+                assert_ne!(outbound.0.cast::<u8>(), write.as_mut_ptr());
+                assert_eq!(co.tls_buffer(false), inbound);
+                assert_eq!(co.tls_buffer(true), outbound);
+            });
         });
     }
 

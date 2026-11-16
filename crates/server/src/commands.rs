@@ -39,16 +39,6 @@ pub(crate) struct Commands {
     next_request: i64,
 }
 
-#[expect(
-    clippy::non_send_fields_in_send_ty,
-    reason = "the closures run on the thread their owner gives them from, as upstream's \
-              std::functions, and the lock keeps the tables apart"
-)]
-// SAFETY: the tables only hold the closures, as upstream's `std::function`s: each
-// runs on the thread its owner gives it to the server from or answers commands on,
-// and the lock keeps the tables themselves apart.
-unsafe impl Send for Commands {}
-
 impl Commands {
     pub(crate) const fn new() -> Self {
         Self {
@@ -442,7 +432,7 @@ mod tests {
     }
 
     fn start(live: &LiveServer) {
-        live.counters().start.store(1, Relaxed);
+        live.counters().start.store(true, Relaxed);
     }
 
     fn add(live: &LiveServer, name: &[u8], types: impl Into<ProcessTypes>) -> bool {

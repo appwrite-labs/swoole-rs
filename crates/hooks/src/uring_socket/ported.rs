@@ -39,9 +39,22 @@ fn no_check(_: Co, _: Option<usize>) {}
 struct Sock {
     ops: UringSocketOps<'static>,
     socket: TestSocket,
+    held_ssl: Option<swoole_rs_tls::HeldSsl<'static>>,
 }
 
 impl Sock {
+    fn ops(&self) -> UringSocketOps<'_> {
+        let tls = self.ops.tls;
+        UringSocketOps {
+            socket: self.ops.socket,
+            tls: tls.with_session(self.held_ssl.as_ref().map(swoole_rs_tls::HeldSsl::get)),
+            connect_timeout: self.ops.connect_timeout,
+            available: self.ops.available,
+            check: self.ops.check,
+            set_err: self.ops.set_err,
+        }
+    }
+
     fn new(fd: c_int) -> Self {
         let mut socket = TestSocket::new();
         let ops = UringSocketOps {
@@ -61,7 +74,11 @@ impl Sock {
             check: no_check,
             set_err: crate::co_io::set_err,
         };
-        Self { ops, socket }
+        Self {
+            ops,
+            socket,
+            held_ssl: None,
+        }
     }
 
     /// `UringSocket(type)`.
@@ -73,7 +90,7 @@ impl Sock {
 
     /// `errCode`: the socket's last `set_err`.
     fn err_code(&self) -> c_int {
-        self.ops.socket.err_code()
+        self.ops().socket.err_code()
     }
 
     /// `enable_ssl_encrypt()` and the session `connect` or `accept` opens.
@@ -107,7 +124,7 @@ impl Sock {
             let network = self.socket.0.socket.get().unwrap();
             network
                 .edit(|record| record.set_ssl(Some(crate::co_socket::record_ssl(session.cast()))));
-            self.ops.tls = self.ops.tls.with_session(swoole_rs_tls::Ssl::of(network));
+            self.held_ssl = swoole_rs_tls::Ssl::of(network);
         }
     }
 
@@ -120,14 +137,14 @@ impl Sock {
                 code: openssl_sys::SSL_ERROR_SSL,
             };
             let step = self
-                .ops
+                .ops()
                 .tls
                 .ssl
                 .map_or(Err(none), swoole_rs_tls::Ssl::do_handshake);
             let Err(failure) = step else {
                 return true;
             };
-            if !self.ops.tls.perform(failure, c"ssl_handshake") {
+            if !self.ops().tls.perform(failure, c"ssl_handshake") {
                 return false;
             }
         }
@@ -145,21 +162,21 @@ impl Sock {
                 .cast::<u8>()
                 .copy_to_nonoverlapping((&raw mut peer.addr).cast(), addr.len as usize);
         }
-        let ok = swr_v1_hook_uring_connect(&self.ops, &peer);
-        ok && (self.ops.tls.ssl.is_none() || self.ssl_handshake())
+        let ok = swr_v1_hook_uring_connect(&self.ops(), &peer);
+        ok && (self.ops().tls.ssl.is_none() || self.ssl_handshake())
     }
 
     fn io(&self, op: c_int, buf: &mut [u8]) -> isize {
         match op {
-            READ => read(&self.ops, buf),
-            RECV => recv(&self.ops, buf),
-            _ => send(&self.ops, op, buf),
+            READ => read(&self.ops(), buf),
+            RECV => recv(&self.ops(), buf),
+            _ => send(&self.ops(), op, buf),
         }
         .map_or(-1, usize::cast_signed)
     }
 
     fn send(&self, data: &[u8]) -> isize {
-        send(&self.ops, SEND, data).map_or(-1, usize::cast_signed)
+        send(&self.ops(), SEND, data).map_or(-1, usize::cast_signed)
     }
 
     /// `accept()`: the accepted connection.
@@ -168,7 +185,7 @@ impl Sock {
             len: socklen::<libc::sockaddr_storage>(),
             ..SocketAddress::default()
         };
-        accept_descriptor(&self.ops, &mut address)
+        accept_descriptor(&self.ops(), &mut address)
             .ok()
             .map(Self::new)
     }
@@ -182,13 +199,13 @@ impl Sock {
             Vectors::Read(unsafe { core::slice::from_raw_parts_mut(at.cast(), count) })
         };
         let mut vector = IoVector::new(vectors).expect("IOVector");
-        swr_v1_hook_uring_vector(&self.ops, &mut vector, all).map_or(-1, usize::cast_signed)
+        swr_v1_hook_uring_vector(&self.ops(), &mut vector, all).map_or(-1, usize::cast_signed)
     }
 
     fn set_buffer_size(&self, option: c_int, size: c_int) {
         let set = unsafe {
             libc::setsockopt(
-                self.ops.tls.fd,
+                self.ops().tls.fd,
                 libc::SOL_SOCKET,
                 option,
                 (&raw const size).cast(),
@@ -203,7 +220,7 @@ impl Sock {
         let mut byte = 0_u8;
         let n = unsafe {
             libc::recv(
-                self.ops.tls.fd,
+                self.ops().tls.fd,
                 (&raw mut byte).cast(),
                 1,
                 libc::MSG_PEEK | libc::MSG_DONTWAIT,
@@ -216,12 +233,12 @@ impl Sock {
 impl Drop for Sock {
     fn drop(&mut self) {
         unsafe {
-            if let Some(session) = self.ops.tls.ssl {
+            if let Some(session) = self.ops().tls.ssl {
                 // Freed below.
-                self.ops.socket.net(|record| record.set_ssl(None));
+                self.ops().socket.net(|record| record.set_ssl(None));
                 ssl::SSL_free(session.as_ptr());
             }
-            libc::close(self.ops.tls.fd);
+            libc::close(self.ops().tls.fd);
         }
     }
 }
@@ -300,14 +317,14 @@ fn listen() -> (Sock, Address) {
     let mut addr = Address::new(IpAddr::from([127, 0, 0, 1]), 0);
     unsafe {
         assert_eq!(
-            libc::bind(sock.ops.tls.fd, addr.as_ptr(), addr.len),
+            libc::bind(sock.ops().tls.fd, addr.as_ptr(), addr.len),
             0,
             "bind"
         );
-        assert_eq!(libc::listen(sock.ops.tls.fd, 128), 0, "listen");
+        assert_eq!(libc::listen(sock.ops().tls.fd, 128), 0, "listen");
         let mut len = addr.len;
         libc::getsockname(
-            sock.ops.tls.fd,
+            sock.ops().tls.fd,
             (&raw mut addr.storage).cast(),
             &raw mut len,
         );
@@ -402,13 +419,13 @@ fn ssl_connect() {
             sock.attach(ctx, false);
             assert_eq!(
                 ssl::SSL_set_tlsext_host_name(
-                    sock.ops.tls.ssl.unwrap().as_ptr(),
+                    sock.ops().tls.ssl.unwrap().as_ptr(),
                     host.as_ptr().cast_mut()
                 ),
                 1
             );
             // The verification checks the certificate's name, as upstream's ssl_verify does.
-            let param = ssl::SSL_get0_param(sock.ops.tls.ssl.unwrap().as_ptr());
+            let param = ssl::SSL_get0_param(sock.ops().tls.ssl.unwrap().as_ptr());
             assert_eq!(ssl::X509_VERIFY_PARAM_set1_host(param, host.as_ptr(), 0), 1);
         }
 
@@ -507,7 +524,7 @@ fn ssl_accept() {
 
             let fd = unsafe { libc::open(file.as_ptr(), libc::O_RDONLY) };
             assert!(fd >= 0, "open");
-            assert!(sendfile(&sock.ops, fd, 0, fsize));
+            assert!(sendfile(&sock.ops(), fd, 0, fsize));
             unsafe { libc::close(fd) };
         },
     );
@@ -526,7 +543,7 @@ fn sendmsg_and_recvmsg() {
             let mut ivec = [std::io::IoSliceMut::new(&mut buf)];
             let mut msg = RecvMessage::new(&mut ivec);
 
-            let ret = sock.ops.recvmsg(&mut msg, 0);
+            let ret = sock.ops().recvmsg(&mut msg, 0);
             buf.truncate(ret.unwrap_or(0));
             assert_eq!(buf, text);
         },
@@ -535,7 +552,7 @@ fn sendmsg_and_recvmsg() {
             let ivec = [std::io::IoSlice::new(text)];
             let msg = SendMessage::new(&ivec);
 
-            let ret = sock.ops.sendmsg(&msg, 0);
+            let ret = sock.ops().sendmsg(&msg, 0);
             drop(sock);
             assert_eq!(ret, Some(length));
         },
@@ -555,12 +572,12 @@ fn sendto(sock: &Sock, to: &Address, data: &[u8]) -> isize {
             to.len as usize,
         );
     }
-    super::sendto(&sock.ops, data, &address).map_or(-1, usize::cast_signed)
+    super::sendto(&sock.ops(), data, &address).map_or(-1, usize::cast_signed)
 }
 
 fn recvfrom(sock: &Sock, buf: &mut [u8], from: Option<&mut Address>) -> isize {
-    let result = recvfrom_peer(&sock.ops, buf).map_or(-1, usize::cast_signed);
-    if let (Some(from), Some(info)) = (from, sock.ops.socket.net(|record| record.info)) {
+    let result = recvfrom_peer(&sock.ops(), buf).map_or(-1, usize::cast_signed);
+    if let (Some(from), Some(info)) = (from, sock.ops().socket.net(|record| record.info)) {
         from.len = info.len;
         unsafe {
             ptr::copy_nonoverlapping(
@@ -589,7 +606,7 @@ fn test_sendto_recvfrom(v6: bool) {
         unsafe {
             assert_eq!(
                 libc::bind(
-                    sock_server.ops.tls.fd,
+                    sock_server.ops().tls.fd,
                     server_addr.as_ptr(),
                     server_addr.len
                 ),
@@ -597,7 +614,7 @@ fn test_sendto_recvfrom(v6: bool) {
             );
             let mut len = server_addr.len;
             libc::getsockname(
-                sock_server.ops.tls.fd,
+                sock_server.ops().tls.fd,
                 (&raw mut server_addr.storage).cast(),
                 &raw mut len,
             );
@@ -606,7 +623,7 @@ fn test_sendto_recvfrom(v6: bool) {
         let client_addr = Address::new(ip, port + 1);
         unsafe {
             libc::bind(
-                sock_client.ops.tls.fd,
+                sock_client.ops().tls.fd,
                 client_addr.as_ptr(),
                 client_addr.len,
             );
@@ -773,7 +790,7 @@ fn sendfile_() {
             let sock = Sock::new(pairs[0]);
             let fd = unsafe { libc::open(file.as_ptr(), libc::O_RDONLY) };
             assert!(fd >= 0, "open");
-            let result = sendfile(&sock.ops, fd, 0, content.len());
+            let result = sendfile(&sock.ops(), fd, 0, content.len());
             unsafe { libc::close(fd) };
             drop(sock);
             assert!(result);
@@ -792,7 +809,7 @@ fn send_and_recv_all() {
             sock.set_buffer_size(libc::SO_RCVBUF, 65536);
 
             let mut rbuf = vec![0_u8; wbuf.len()];
-            let result = recv_all(&sock.ops, &mut rbuf).map_or(-1, usize::cast_signed);
+            let result = recv_all(&sock.ops(), &mut rbuf).map_or(-1, usize::cast_signed);
             assert_eq!(result, wbuf.len().cast_signed());
             assert_eq!(rbuf, wbuf);
             thread::sleep(std::time::Duration::from_millis(100));
@@ -802,7 +819,7 @@ fn send_and_recv_all() {
             sock.set_buffer_size(libc::SO_SNDBUF, 65536);
 
             assert_eq!(
-                send_all(&sock.ops, &wbuf).map_or(-1, usize::cast_signed),
+                send_all(&sock.ops(), &wbuf).map_or(-1, usize::cast_signed),
                 wbuf.len().cast_signed()
             );
 
@@ -819,14 +836,14 @@ fn poll_() {
         let sock = Sock::new(pairs[1]);
         sock.set_buffer_size(libc::SO_RCVBUF, 65536);
 
-        let rs = poll(&sock.ops, Events::READ, 0.01);
+        let rs = poll(&sock.ops(), Events::READ, 0.01);
         assert!(!rs);
         assert_eq!(sock.err_code(), libc::ETIMEDOUT);
 
         // TEST_WRITE(pairs[0], TEST_STR)
         let written = unsafe { libc::write(pairs[0], TEST_STR.as_ptr().cast(), TEST_STR.len()) };
         assert_eq!(written, TEST_STR.len().cast_signed());
-        let rs = poll(&sock.ops, Events::READ, 0.01);
+        let rs = poll(&sock.ops(), Events::READ, 0.01);
         assert!(rs);
         unsafe { libc::close(pairs[0]) };
     });
@@ -843,7 +860,7 @@ fn ssl_readv() {
             client.attach(ctx, false);
             assert_eq!(
                 ssl::SSL_set_tlsext_host_name(
-                    client.ops.tls.ssl.unwrap().as_ptr(),
+                    client.ops().tls.ssl.unwrap().as_ptr(),
                     host.as_ptr().cast_mut()
                 ),
                 1

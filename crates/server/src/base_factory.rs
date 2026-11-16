@@ -164,7 +164,7 @@ pub(crate) fn low16(value: c_int) -> u16 {
 /// Whether the server has allocated its session and connection tables.
 pub(crate) fn allocated(state: &crate::ServerState) -> bool {
     let tables = state.tables_ref();
-    !tables.session_list.is_null() && !tables.connection_list.is_null()
+    tables.sessions_mapped() && tables.connections_mapped()
 }
 
 /// onClose's event for session `fd`: `reactor_id` is -1 when the server closed it.
@@ -221,7 +221,7 @@ pub(crate) fn create(serv: view::Server<'_>) -> *mut c_void {
         log::sys_warning(origin, format_args!("calloc[2]({size}) failed"));
         return core::ptr::null_mut();
     }
-    state.tables_ref().connection_list.replace(connections);
+    state.tables_ref().map_connections(connections);
     let counts = |what: &str| {
         let cells = Shm::calloc(workers as usize, ATOMIC_SIZE);
         if cells.is_null() {
@@ -586,7 +586,7 @@ mod tests {
         conn.closed().store(1, Ordering::Relaxed);
         let mut task = send(c_long::from(conn.fd()), ServerEvent::RecvData, 5);
         assert!(!dispatch(serv, &mut task, true), "closed by server");
-        conn.active().store(0, Ordering::Relaxed);
+        conn.active().store(false, Ordering::Relaxed);
         assert!(!dispatch(serv, &mut task, true), "inactive");
         let mut far = send(1 << 20, ServerEvent::Close, 0);
         assert!(!dispatch(serv, &mut far, true), "past max_connection");
@@ -717,9 +717,9 @@ mod tests {
         conn.set_close_force(true);
         assert!(!end(serv, 1, 0), "no socket");
         conn.set_socket(Some(sock));
-        conn.active().store(0, Ordering::Relaxed);
+        conn.active().store(false, Ordering::Relaxed);
         assert!(!end(serv, 1, 0), "no connection");
-        conn.active().store(1, Ordering::Relaxed);
+        conn.active().store(true, Ordering::Relaxed);
     }
 
     #[test]
