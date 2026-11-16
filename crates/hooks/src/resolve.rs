@@ -155,20 +155,16 @@ pub fn system_getaddrinfo(
 }
 
 /// `new Socket(SW_SOCK_UDP)`, deleted on drop.
-struct DnsUdp(crate::hooked::Owned);
+struct DnsUdp(crate::co_socket::OwnedCo);
 
 impl DnsUdp {
     /// The socket, with `timeout` set when positive.
     fn open(timeout: f64) -> Self {
-        let socket = Self(crate::hooked::Owned::open(
-            libc::AF_INET,
-            libc::SOCK_DGRAM,
-            0,
-        ));
+        let socket = Self(crate::hooked::open(libc::AF_INET, libc::SOCK_DGRAM, 0));
         if timeout > 0.0 {
             socket
                 .0
-                .socket()
+                .co()
                 .set_timeout(timeout, swoole_rs_reactor::TimeoutKind::ALL);
         }
         socket
@@ -177,11 +173,11 @@ impl DnsUdp {
 
 impl DnsSocket for DnsUdp {
     fn sendto(&mut self, host: &CStr, port: c_int, data: &[u8]) -> bool {
-        self.0.socket().sendto(host.to_bytes(), port, data) != 0
+        self.0.co().sendto(host.to_bytes(), port, data) != 0
     }
 
     fn recv(&mut self, buffer: &mut [u8]) -> Result<usize, RecvError> {
-        let socket = self.0.socket();
+        let socket = self.0.co();
         let n = socket.recv(buffer);
         received(n, socket.err_code() == libc::ECANCELED)
     }

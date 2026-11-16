@@ -1,27 +1,31 @@
 //! The hooked fds' coroutine sockets (`swoole_coroutine_socket`, `accept`,
-//! `socket_create`): fd to [`Co`], shared by every thread.
+//! `socket_create`): fd to the [`OwnedCo`] it owns, shared by every thread.
 //!
 //! A lookup lends the handle, no reference count: the socket lives until the
-//! fd's hooked `close` (or `socket_unwrap`) takes it out of the map, and native code
-//! deletes what the map hands back. `close` takes it out only once
+//! fd's hooked `close` (or `socket_unwrap`) takes it out of the map, and is deleted
+//! as what the map hands back drops. `close` takes it out only once
 //! `Socket::close()` succeeds, which it does not while a coroutine is bound to the
 //! socket, so a coroutine parked in an operation keeps a live pointer.
 //!
 //! `Socket::close()` cancels the bound coroutines, which resume inside it and may
 //! close the fd themselves; the sockets those nested closes remove are deleted only
 //! when this thread's outermost close returns.
-use crate::co_socket::Co;
+use crate::co_socket::{Co, OwnedCo};
 use libc::c_int;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use swoole_rs_corebase::set_errno;
 
-/// A live socket the map holds.
-struct Socket(Co);
+/// A live socket the map owns.
+struct Socket(OwnedCo);
 
-// SAFETY: the map only stores and returns the handle; native code, which owns the
-// socket, decides which thread uses it.
+#[expect(
+    clippy::non_send_fields_in_send_ty,
+    reason = "OwnedCo is not Send so that only the map moves a socket between threads"
+)]
+// SAFETY: the map only stores and returns the socket; native code decides which
+// thread uses it.
 unsafe impl Send for Socket {}
 
 static SOCKETS: Mutex<Option<HashMap<c_int, Socket>>> = Mutex::new(None);
@@ -37,12 +41,12 @@ pub fn get(fd: c_int) -> Option<Co> {
     let socket = sockets()
         .as_ref()
         .and_then(|map| map.get(&fd))
-        .map(|socket| socket.0);
+        .map(|socket| socket.0.co());
     not_socket(socket)
 }
 
 /// `socket`, setting errno `ENOTSOCK` when there is none.
-fn not_socket(socket: Option<Co>) -> Option<Co> {
+fn not_socket<T>(socket: Option<T>) -> Option<T> {
     if socket.is_none() {
         set_errno(libc::ENOTSOCK);
     }
@@ -55,10 +59,10 @@ pub fn exists(fd: c_int) -> bool {
     sockets().as_ref().is_some_and(|map| map.contains_key(&fd))
 }
 
-/// Map `fd` to the live `socket`. With `replace` an existing socket gives way
-/// (`map[fd] =`), else the new one does (`emplace`). Returns the socket the map no
-/// longer holds, for native code to delete.
-pub fn insert(fd: c_int, socket: Co, replace: bool) -> Option<Co> {
+/// Map `fd` to `socket`. With `replace` an existing socket gives way (`map[fd] =`),
+/// else the new one does (`emplace`). Returns the socket the map does not hold,
+/// deleted as it drops, which is after the lock is released.
+pub(crate) fn insert(fd: c_int, socket: OwnedCo, replace: bool) -> Option<OwnedCo> {
     let mut sockets = sockets();
     let map = sockets.get_or_insert_with(HashMap::new);
     match map.get_mut(&fd) {
@@ -71,10 +75,10 @@ pub fn insert(fd: c_int, socket: Co, replace: bool) -> Option<Co> {
     }
 }
 
-/// Take `fd`'s socket out of the map, for native code to delete; none with errno
+/// Take `fd`'s socket out of the map, deleted as it drops; none with errno
 /// `ENOTSOCK` if there is none.
 #[must_use]
-pub fn remove(fd: c_int) -> Option<Co> {
+pub(crate) fn remove(fd: c_int) -> Option<OwnedCo> {
     not_socket(
         sockets()
             .as_mut()
@@ -88,20 +92,15 @@ thread_local! {
     static CLOSING: Cell<usize> = const { Cell::new(0) };
     /// The sockets they removed, which wait for the outermost one to return.
     /// Taken out and put back around one extend, which runs no close.
-    static DOOMED: Cell<Vec<Co>> = const { Cell::new(Vec::new()) };
+    static DOOMED: Cell<Vec<OwnedCo>> = const { Cell::new(Vec::new()) };
 }
 
 /// `swoole_coroutine_close(fd)` for a coroutine socket: 0 once `close(socket)`
 /// succeeds and the socket leaves the map, -1 when it fails, 1 (errno `ENOTSOCK`)
-/// when `fd` has no socket. `delete` frees each removed socket after the
-/// outermost close on this thread returns, so no close still running uses a
-/// freed one: `close` gets the socket while the map holds it, and `delete_socket`
-/// once it is removed and no close still running uses it.
-pub fn close(
-    fd: c_int,
-    close: impl FnOnce(Co) -> bool,
-    mut delete_socket: impl FnMut(Co),
-) -> c_int {
+/// when `fd` has no socket. Each removed socket is deleted after the outermost
+/// close on this thread returns, so no close still running uses a freed one:
+/// `close` gets the socket while the map holds it.
+pub(crate) fn close(fd: c_int, close: impl FnOnce(Co) -> bool) -> c_int {
     let Some(socket) = get(fd) else {
         return 1;
     };
@@ -117,20 +116,24 @@ pub fn close(
         DOOMED.set(doomed);
         doomed = Vec::new();
     }
-    for socket in doomed {
-        delete_socket(socket);
-    }
+    drop(doomed);
     if closed { 0 } else { -1 }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::co_socket::unopened;
     use std::cell::RefCell;
 
-    /// A handle the map only stores, never dereferenced.
-    fn fake(at: usize) -> Co {
-        unsafe { Co::new(core::ptr::without_provenance_mut(at)) }
+    /// A socket that logs `delete <name>` as it is deleted.
+    fn named(name: &'static str) -> OwnedCo {
+        let socket = unopened();
+        crate::socket_extra::set_close_hook(
+            socket.co(),
+            Box::new(move |_| log(&format!("delete {name}"))),
+        );
+        socket
     }
 
     fn errno() -> c_int {
@@ -139,7 +142,8 @@ mod tests {
 
     #[test]
     fn lends_until_removed() {
-        let (a, b) = (fake(8), fake(16));
+        let (a, b) = (named("a"), named("b"));
+        let (ca, cb) = (a.co(), b.co());
         let fd = 1_000_001;
         assert!(get(fd).is_none());
         assert_eq!(errno(), libc::ENOTSOCK);
@@ -147,15 +151,20 @@ mod tests {
 
         assert!(insert(fd, a, true).is_none());
         assert!(exists(fd));
-        assert_eq!(get(fd), Some(a));
+        assert_eq!(get(fd), Some(ca));
         // emplace keeps the first; the new one comes back to be deleted.
-        assert_eq!(insert(fd, b, false), Some(b));
-        assert_eq!(get(fd), Some(a));
+        let b = insert(fd, b, false).unwrap();
+        assert_eq!(b.co(), cb);
+        assert_eq!(get(fd), Some(ca));
         // assignment replaces; the old one comes back.
-        assert_eq!(insert(fd, b, true), Some(a));
-        assert_eq!(get(fd), Some(b));
+        let a = insert(fd, b, true).unwrap();
+        assert_eq!(a.co(), ca);
+        assert_eq!(get(fd), Some(cb));
+        drop(a);
+        assert_eq!(LOG.take(), ["delete a"]);
 
-        assert_eq!(remove(fd), Some(b));
+        assert_eq!(remove(fd).map(|b| b.co()), Some(cb));
+        assert_eq!(LOG.take(), ["delete b"]);
         assert!(!exists(fd));
         assert!(remove(fd).is_none());
         assert_eq!(errno(), libc::ENOTSOCK);
@@ -171,10 +180,6 @@ mod tests {
         LOG.with_borrow_mut(|log| log.push(event.to_owned()));
     }
 
-    fn delete(socket: Co) {
-        log(&format!("delete {}", socket.this() as usize));
-    }
-
     /// The cancelled reader's close, which succeeds.
     fn inner_close(_: Co) -> bool {
         log("inner close");
@@ -185,7 +190,7 @@ mod tests {
     /// fails with close-wait while still holding the socket.
     fn outer_close(_: Co) -> bool {
         log("outer close");
-        assert_eq!(close(NESTED, inner_close, delete), 0);
+        assert_eq!(close(NESTED, inner_close), 0);
         assert!(!exists(NESTED));
         log("outer returns");
         false
@@ -193,13 +198,18 @@ mod tests {
 
     #[test]
     fn nested_close_defers_the_delete() {
-        assert!(insert(NESTED, fake(8), true).is_none());
-        assert_eq!(close(NESTED, outer_close, delete), -1);
+        assert!(insert(NESTED, named("nested"), true).is_none());
+        assert_eq!(close(NESTED, outer_close), -1);
         assert_eq!(
-            LOG.with_borrow(Clone::clone),
-            ["outer close", "inner close", "outer returns", "delete 8"]
+            LOG.take(),
+            [
+                "outer close",
+                "inner close",
+                "outer returns",
+                "delete nested"
+            ]
         );
-        assert_eq!(close(NESTED, outer_close, delete), 1);
+        assert_eq!(close(NESTED, outer_close), 1);
         assert_eq!(errno(), libc::ENOTSOCK);
     }
 }

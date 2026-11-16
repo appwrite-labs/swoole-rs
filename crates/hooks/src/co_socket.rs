@@ -919,8 +919,14 @@ impl Drop for OwnedCo {
 }
 
 /// [`make`]'s socket, which only the result holds.
-pub(crate) fn owned(fd: c_int, domain: c_int, kind: c_int, protocol: c_int) -> OwnedCo {
-    OwnedCo(make(fd, domain, kind, protocol, false))
+pub(crate) fn owned(
+    fd: c_int,
+    domain: c_int,
+    kind: c_int,
+    protocol: c_int,
+    family: bool,
+) -> OwnedCo {
+    OwnedCo(make(fd, domain, kind, protocol, family))
 }
 
 /// `new Socket(conn, server)`, the accepting constructor: `conn`, accepted on
@@ -1029,6 +1035,20 @@ mod test_support {
         unsafe { socket.write(CoSocket::new()) };
     }
 
+    /// A record never opened, which the result owns.
+    pub(crate) fn unopened() -> OwnedCo {
+        OwnedCo(Box::new(CoSocket::new()).into_co())
+    }
+
+    /// A record over a `network::Socket` record with `fd`, which the result owns.
+    pub(crate) fn over(fd: c_int) -> OwnedCo {
+        let socket = unopened();
+        let record = Box::new(SocketRecord::with_fd(fd, FD_CO_SOCKET));
+        socket.co().record().socket.set(Some(record.into_socket()));
+        socket.co().set_sock_fd(fd);
+        socket
+    }
+
     /// An open record over a `network::Socket` record without a descriptor, for the
     /// operations' tests.
     pub(crate) struct TestSocket(pub Box<CoSocket>);
@@ -1076,7 +1096,7 @@ mod test_support {
     }
 }
 #[cfg(test)]
-pub(crate) use test_support::{TestSocket, init};
+pub(crate) use test_support::{TestSocket, init, over, unopened};
 
 #[cfg(test)]
 mod tests {
