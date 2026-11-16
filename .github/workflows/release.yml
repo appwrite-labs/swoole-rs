@@ -107,12 +107,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           case $GITHUB_REF_NAME in v0.*|*-*) prerelease=true;; *) prerelease=false;; esac
-          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --prerelease=$prerelease --generate-notes --notes "$(cat <<'NOTES'
+          # No generated notes: GitHub refuses a release body over
+          # 125,000 characters, which v0.1.0's list of every merged PR passed. The notes link the history.
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --prerelease=$prerelease --notes "$(cat <<'NOTES'
           Prebuilt `swoole.so` for PHP 8.2 to 8.5 on Linux, x86-64 and arm64. Pick the file for your PHP series, `nts` or `zts`, and `gnu` (glibc 2.36 or newer; built on Debian 12) or `musl` (Alpine), check it against `SHA256SUMS`, and load it with `extension=`.
 
           Built in: OpenSSL (TLS and DTLS), HTTP/2, Brotli, zstd and zlib. The `zts` builds add `Swoole\Thread`.
           Not built in, so that the binary loads in a PHP with no other extension: PHP sockets integration, the native cURL hook, the coroutine PDO drivers, ssh2, c-ares and io_uring. Build from source for those (README, Build).
 
           `gh attestation verify <file> --repo ${{ github.repository }}` checks a file's build provenance.
+
+          [The commit history at this tag](${{ github.server_url }}/${{ github.repository }}/commits/${{ github.ref_name }}).
           NOTES
           )"
