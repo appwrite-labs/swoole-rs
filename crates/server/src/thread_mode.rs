@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 use swoole_rs_corebase::Thread;
 
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 pub mod native;
 
 /// What the manager thread waits for.

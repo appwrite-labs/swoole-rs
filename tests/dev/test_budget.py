@@ -70,10 +70,11 @@ class Budget(unittest.TestCase):
             (src / 'lib.rs').write_text(LIB)
             (src / 'imp.rs').write_text('fn d() { unsafe {} }\n#[cfg(test)]\nmod tests;\n')
             (src / 'imp').mkdir()
-            (src / 'imp/tests.rs').write_text('unsafe {}\n')
-            (src / 'loaded_tests.rs').write_text('unsafe {}\n')
+            test_source = 'unsafe {}\nfn status() -> i32 { 0 }\n#[repr(C)]\nstruct Test;\n'
+            (src / 'imp/tests.rs').write_text(test_source)
+            (src / 'loaded_tests.rs').write_text(test_source)
             (root / 'crates/one/tests').mkdir()
-            (root / 'crates/one/tests/it.rs').write_text('unsafe {}\n')
+            (root / 'crates/one/tests/it.rs').write_text(test_source)
             # a, its block, c, the impl, the cfg(test) helper's block, imp's block.
             self.assertEqual(budget.counts(root), {
                 'unsafe': {'one': 6}, 'maps': {'one': 1}, 'lists': {'one': 1},
@@ -87,7 +88,51 @@ class Budget(unittest.TestCase):
                 'casts': {'one': 2},
                 # STATE and queue; the import and the constructors name no type.
                 'cells': {'one': 2},
+                'statuses': {'one': 0}, 'reprs': {'one': 0},
             })
+
+    def test_status_bodies_and_c_layouts_exclude_test_modules(self):
+        source = '''\
+fn status() -> i32 { 0 }
+pub unsafe extern "C" fn wrapper() -> c_int { 0 }
+fn wide() -> i64 { 0 }
+fn multiline(
+    callback: fn() -> i32,
+) -> isize { 0 }
+fn split() ->
+    i32
+{ 0 }
+fn generic<T>() -> i64
+where T: Copy
+{ 0 }
+fn typed() -> Result<i32, Error> { todo!() }
+fn unsigned() -> usize { 0 }
+unsafe extern "C" { fn foreign() -> c_int; }
+type Callback = extern "C" fn() -> c_int;
+#[repr(C)]
+struct Record;
+#[repr(C, packed)]
+struct Packed;
+#[repr(
+    align(8), C
+)]
+struct Aligned;
+#[repr(transparent)]
+struct Handle;
+// fn comment() -> i32 { 0 } #[repr(C)]
+#[cfg(test)]
+mod tests {
+    fn helper() -> i32 { 0 }
+    #[repr(C)]
+    struct Test;
+}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'lib.rs'
+            path.write_text(source)
+            counted = budget.count_file(path, set())
+            self.assertEqual(counted['statuses'], 6)
+            self.assertEqual(counted['reprs'], 3)
 
     def test_a_crate_that_forbids_unsafe_code_counts_zero_unforbidden(self):
         with tempfile.TemporaryDirectory() as directory:

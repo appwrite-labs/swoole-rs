@@ -329,13 +329,13 @@ fn worker_ops(pool: Pool<'_>, worker: Record<'_>, op: Op, arg: u64) -> Option<i6
         Op::Sndbuf => {
             let mut size: c_int = 0;
             let fd = fd(worker_pipe(worker, true));
-            let failed = swoole_rs_corebase::sys::getsockopt_int(
+            let failed = swoole_rs_corebase::sys::getsockopt(
                 fd,
                 libc::SOL_SOCKET,
                 libc::SO_SNDBUF,
                 &mut size,
             );
-            if failed != 0 { -1 } else { i64::from(size) }
+            failed.map_or(-1, |_| i64::from(size))
         }
         Op::UnlimitPipes => {
             for master in [false, true] {

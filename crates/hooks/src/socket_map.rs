@@ -12,7 +12,7 @@
 //! when this thread's outermost close returns.
 use crate::co_socket::Co;
 use libc::c_int;
-use std::cell::RefCell;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use swoole_rs_corebase::set_errno;
@@ -84,9 +84,11 @@ pub fn remove(fd: c_int) -> Option<Co> {
 }
 
 thread_local! {
-    /// How many hooked closes are running on this thread, and the sockets they
-    /// removed, which wait for the outermost one to return.
-    static CLOSING: RefCell<(usize, Vec<Co>)> = const { RefCell::new((0, Vec::new())) };
+    /// How many hooked closes are running on this thread.
+    static CLOSING: Cell<usize> = const { Cell::new(0) };
+    /// The sockets they removed, which wait for the outermost one to return.
+    /// Taken out and put back around one extend, which runs no close.
+    static DOOMED: Cell<Vec<Co>> = const { Cell::new(Vec::new()) };
 }
 
 /// `swoole_coroutine_close(fd)` for a coroutine socket: 0 once `close(socket)`
@@ -103,18 +105,18 @@ pub fn close(
     let Some(socket) = get(fd) else {
         return 1;
     };
-    CLOSING.with_borrow_mut(|(depth, _)| *depth += 1);
+    CLOSING.set(CLOSING.get() + 1);
     let closed = close(socket);
     let removed = if closed { remove(fd) } else { None };
-    let doomed = CLOSING.with_borrow_mut(|(depth, doomed)| {
-        doomed.extend(removed);
-        *depth -= 1;
-        if *depth == 0 {
-            std::mem::take(doomed)
-        } else {
-            Vec::new()
-        }
-    });
+    let depth = CLOSING.get() - 1;
+    CLOSING.set(depth);
+    let mut doomed = DOOMED.take();
+    doomed.extend(removed);
+    if depth > 0 {
+        // A close further out deletes them.
+        DOOMED.set(doomed);
+        doomed = Vec::new();
+    }
     for socket in doomed {
         delete_socket(socket);
     }
@@ -124,6 +126,7 @@ pub fn close(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
 
     /// A handle the map only stores, never dereferenced.
     fn fake(at: usize) -> Co {

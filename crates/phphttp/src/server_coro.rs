@@ -22,8 +22,7 @@ use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
 use swoole_rs_corebase::CCast;
 use swoole_rs_hooks::{co_socket::Co, packet::recv_packet};
 use swoole_rs_httpbindings::Setting;
-use swoole_rs_phpclients::{get_socket, is_socket_closed, socket_settings};
-use swoole_rs_phpruntime::co;
+use swoole_rs_phpclients::{NewSocket, get_socket, is_socket_closed, socket_settings};
 use swoole_rs_phpstubs::http_server_coro;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_phpswoole::SocketSettings;
@@ -58,9 +57,9 @@ impl Custom for Data {
 struct HttpServer {
     /// The listening coroutine socket.
     socket: Co,
-    /// The same socket as crates/phpclients' handle, for its accept and its
-    /// length callable.
-    listener: swoole_rs_phpclients::Co,
+    /// The same socket, which the server owns, as crates/phpclients' handle:
+    /// for its accept and its length callable, and freed in the drop.
+    listener: Option<NewSocket>,
     /// `handlers`, by pattern, in the order they were first set. Upstream's
     /// `std::unordered_map` leaves the order among overlapping prefixes to
     /// the standard library's hashing; registration order is ours.
@@ -89,11 +88,10 @@ const Z_BEST_SPEED: i8 = 1;
 const COMPRESSION_MIN_LENGTH_DEFAULT: u32 = 20;
 
 impl HttpServer {
-    fn new(socket: Co) -> Self {
+    fn new(listener: NewSocket) -> Self {
         Self {
-            socket,
-            // The listening socket, which the server frees in its drop.
-            listener: swoole_rs_phpclients::Co::from(socket),
+            socket: listener.co().handle(),
+            listener: Some(listener),
             handlers: Cell::default(),
             default_handler: Cell::default(),
             running: Cell::new(true),
@@ -228,10 +226,12 @@ impl Drop for HttpServer {
         // Releasing a handler defers what it raises.
         drop(self.default_handler.take());
         drop(self.handlers.take());
-        // Each connection frees its own copy (`Co::accept`); the listener owns the original.
-        bailout::defer(self.listener.free_length_callable());
-        // SAFETY: the listening socket `__construct` made, freed once.
-        bailout::defer(unsafe { co::free(self.socket.this()) });
+        if let Some(listener) = self.listener.take() {
+            // Each connection frees its own copy (`Co::accept`); the listener
+            // owns the original.
+            bailout::defer(listener.co().free_length_callable());
+            bailout::defer(listener.free());
+        }
     }
 }
 
@@ -422,12 +422,14 @@ fn construct(call: &Call) {
             return None;
         }
         let kind = swoole_rs_reactor::host_type(host);
-        let Ok(socket) = co::make(-1, 0, kind.socket_type, 0, false) else {
+        let Ok(listener) = swoole_rs_phpclients::new_socket(-1, 0, kind.socket_type, 0, false)
+        else {
             bailout::Bailout.defer();
             return None;
         };
+        let socket = listener.co().handle();
         // The server owns the new socket until it drops.
-        if data.0.set(HttpServer::new(socket)).is_err() {
+        if data.0.set(HttpServer::new(listener)).is_err() {
             return None;
         }
         if reuse_port {
@@ -673,7 +675,7 @@ impl swoole_rs_httpbindings::AcceptHost for Start<'_> {
     fn accept(&mut self) -> Option<i64> {
         // The listener's accept, in `start`'s coroutine, gives the connection its own
         // copy of the listener's length callable, which the connection's object frees.
-        let conn = self.server.listener.accept(0.0)?;
+        let conn = self.server.listener.as_ref()?.co().accept(0.0)?;
         // The loop's reference to the connection object.
         let Ok(zsocket) = swoole_rs_phpclients::init_socket_object(conn) else {
             self.bailed = true;
@@ -734,7 +736,12 @@ fn nul_terminated(text: &[u8]) -> &[u8] {
 /// `SO_REUSEPORT`, as `set_reuse_port()`; a failure is ignored.
 fn set_reuse_port(fd: c_int) {
     let enable: c_int = 1;
-    swoole_rs_corebase::sys::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT, &enable);
+    drop(swoole_rs_corebase::sys::setsockopt(
+        fd,
+        libc::SOL_SOCKET,
+        libc::SO_REUSEPORT,
+        &enable,
+    ));
 }
 
 fn handle(call: &Call) {

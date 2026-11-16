@@ -6,12 +6,22 @@ use crate::stdio::{Offload, on_pool};
 use libc::c_int;
 use std::ffi::CStr;
 use std::fs::File;
-use std::io::{ErrorKind, Read, Write};
+use std::io::{self, ErrorKind, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::FileExt;
 use std::os::unix::fs::OpenOptionsExt;
 use swoole_rs_corebase::log;
+
+/// A whole-file operation could not start; transfer errors keep the partial content
+/// or byte count, as upstream does.
+#[derive(Debug)]
+pub enum FileError {
+    /// Opening or locking the file failed on the pool thread.
+    Io(io::Error),
+    /// The pool refused the operation before it ran.
+    PoolRefused,
+}
 
 /// `SW_AIO_WRITE_FSYNC`, tested against the open flags as upstream does.
 const WRITE_FSYNC: c_int = 1 << 1;
@@ -82,20 +92,23 @@ struct Job<'a> {
 
 impl Job<'_> {
     /// `"{call}({file}{args}) failed"` from `origin`, with the current errno.
-    fn warn(&self, origin: &CStr, call: &str, args: &str) {
-        let error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+    fn warn(&self, origin: &CStr, call: &str, args: &str) -> io::Error {
+        let error = io::Error::last_os_error();
         let file = self.file.to_string_lossy();
-        (self.warn)(error, origin, &format!("{call}({file}{args}) failed"));
+        (self.warn)(
+            error.raw_os_error().unwrap_or(0),
+            origin,
+            &format!("{call}({file}{args}) failed"),
+        );
+        error
     }
 
-    fn read(&self, lock: bool) -> Option<Vec<u8>> {
+    fn read(&self, lock: bool) -> io::Result<Vec<u8>> {
         let Some(file) = open(self.file, libc::O_RDONLY) else {
-            self.warn(c"System::read_file", "open", ", O_RDONLY");
-            return None;
+            return Err(self.warn(c"System::read_file", "open", ", O_RDONLY"));
         };
         if lock && !flock(&file, libc::LOCK_SH) {
-            self.warn(c"System::read_file", "flock", ", LOCK_SH");
-            return None;
+            return Err(self.warn(c"System::read_file", "flock", ", LOCK_SH"));
         }
         let content = match regular_size(&file) {
             Some(size) if size > 0 => self.read_all(&file, size),
@@ -104,7 +117,7 @@ impl Job<'_> {
         if lock && !flock(&file, libc::LOCK_UN) {
             self.warn(c"System::read_file", "flock", ", LOCK_UN");
         }
-        Some(content)
+        Ok(content)
     }
 
     fn read_all(&self, file: &File, size: usize) -> Vec<u8> {
@@ -131,14 +144,12 @@ impl Job<'_> {
         buf
     }
 
-    fn write(&self, data: &[u8], lock: bool, flags: c_int) -> isize {
+    fn write(&self, data: &[u8], lock: bool, flags: c_int) -> io::Result<usize> {
         let Some(mut file) = open(self.file, flags) else {
-            self.warn(c"System::write_file", "open", &format!(", {flags}"));
-            return -1;
+            return Err(self.warn(c"System::write_file", "open", &format!(", {flags}")));
         };
         if lock && !flock(&file, libc::LOCK_EX) {
-            self.warn(c"System::write_file", "flock", ", LOCK_EX");
-            return -1;
+            return Err(self.warn(c"System::write_file", "flock", ", LOCK_EX"));
         }
         let append = flags & libc::O_APPEND != 0;
         let fd = file.as_raw_fd();
@@ -167,21 +178,23 @@ impl Job<'_> {
         if lock && !flock(&file, libc::LOCK_UN) {
             self.warn(c"System::write_file", "flock", ", LOCK_UN");
         }
-        isize::try_from(written).unwrap_or(isize::MAX)
+        Ok(written)
     }
 }
 
-/// `System::read_file`, in a coroutine: the content, or none when the file can't be
-/// opened or locked, or the pool refuses the job.
-#[must_use]
-pub fn read_file(file: &CStr, lock: bool) -> Option<Vec<u8>> {
+/// `System::read_file`, in a coroutine.
+///
+/// # Errors
+/// The file cannot be opened or locked, or the pool refuses the job.
+pub fn read_file(file: &CStr, lock: bool) -> Result<Vec<u8>, FileError> {
     read_with(file, lock, sys_warning, Some(crate::offload::async_job))
 }
 
-/// `System::write_file`, in a coroutine: bytes written, or -1 when the file can't be
-/// opened or locked, or the pool refuses the job. `O_CREAT | O_WRONLY` are added.
-#[must_use]
-pub fn write_file(file: &CStr, data: &[u8], lock: bool, flags: c_int) -> isize {
+/// `System::write_file`, in a coroutine: bytes written. `O_CREAT | O_WRONLY` are added.
+///
+/// # Errors
+/// The file cannot be opened or locked, or the pool refuses the job.
+pub fn write_file(file: &CStr, data: &[u8], lock: bool, flags: c_int) -> Result<usize, FileError> {
     let flags = flags | libc::O_CREAT | libc::O_WRONLY;
     write_with(
         file,
@@ -193,9 +206,16 @@ pub fn write_file(file: &CStr, data: &[u8], lock: bool, flags: c_int) -> isize {
     )
 }
 
-fn read_with(file: &CStr, lock: bool, warn: Warn, offload: Option<Offload>) -> Option<Vec<u8>> {
+fn read_with(
+    file: &CStr,
+    lock: bool,
+    warn: Warn,
+    offload: Option<Offload>,
+) -> Result<Vec<u8>, FileError> {
     let job = Job { file, warn };
-    on_pool(offload, None, || job.read(lock))
+    on_pool(offload, Err(FileError::PoolRefused), || {
+        job.read(lock).map_err(FileError::Io)
+    })
 }
 
 fn write_with(
@@ -205,9 +225,11 @@ fn write_with(
     flags: c_int,
     warn: Warn,
     offload: Option<Offload>,
-) -> isize {
+) -> Result<usize, FileError> {
     let job = Job { file, warn };
-    on_pool(offload, -1, || job.write(data, lock, flags))
+    on_pool(offload, Err(FileError::PoolRefused), || {
+        job.write(data, lock, flags).map_err(FileError::Io)
+    })
 }
 
 #[cfg(test)]
@@ -226,7 +248,7 @@ mod tests {
     }
 
     fn read(path: &CString, lock: bool) -> Option<Vec<u8>> {
-        read_with(path, lock, warn, None)
+        read_with(path, lock, warn, None).ok()
     }
 
     fn write(path: &CString, data: &[u8], flags: c_int) -> isize {
@@ -238,10 +260,43 @@ mod tests {
             warn,
             None,
         )
+        .map_or(-1, |n| isize::try_from(n).unwrap_or(isize::MAX))
     }
 
     fn warnings() -> Vec<(String, c_int)> {
         WARNINGS.with(RefCell::take)
+    }
+
+    #[test]
+    fn distinguishes_pool_refusal_from_worker_io_errors() {
+        fn refused(_: &mut (dyn FnMut() + Send)) -> bool {
+            false
+        }
+        fn worker(job: &mut (dyn FnMut() + Send)) -> bool {
+            std::thread::scope(|scope| {
+                scope.spawn(job).join().unwrap();
+            });
+            true
+        }
+        let path = c"/nonexistent-swr/file";
+        assert!(matches!(
+            read_with(path, false, warn, Some(refused)),
+            Err(FileError::PoolRefused)
+        ));
+        assert!(matches!(
+            write_with(path, b"x", false, libc::O_WRONLY, warn, Some(refused)),
+            Err(FileError::PoolRefused)
+        ));
+        assert_eq!(warnings(), []);
+        for error in [
+            read_with(path, false, warn, Some(worker)).unwrap_err(),
+            write_with(path, b"x", false, libc::O_WRONLY, warn, Some(worker)).unwrap_err(),
+        ] {
+            let FileError::Io(error) = error else {
+                panic!("worker must report its own I/O error")
+            };
+            assert_eq!(error.raw_os_error(), Some(libc::ENOENT));
+        }
     }
 
     #[test]

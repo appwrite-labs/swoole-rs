@@ -94,6 +94,18 @@ impl Callable {
         )
     }
 
+    /// The kept callable's cache and bound arguments, lent for
+    /// [`crate::host::function_call`]: the record keeps both while borrowed.
+    #[must_use]
+    #[inline]
+    pub fn call_parts(&self) -> (crate::host::Callee<'_>, crate::Zvals<'_>) {
+        let (cache, argc, argv, _) = self.parts();
+        (
+            crate::host::Callee(cache, std::marker::PhantomData),
+            crate::Zvals::counted(argv, argc),
+        )
+    }
+
     /// The callback and destructor of a C owner, such as a timer, whose data is
     /// this callable's [`Callable::as_raw`]: each runs `H`'s with the callable.
     #[must_use]

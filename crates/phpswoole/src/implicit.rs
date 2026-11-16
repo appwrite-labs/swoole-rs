@@ -2,7 +2,7 @@
 //! and unsafe by design (they exit, bail out, abort and print raw handler
 //! addresses), as `php_swoole.cc` defined it.
 use crate::EXCEPTION;
-use std::ffi::{c_char, c_int, c_void};
+use std::ffi::{c_int, c_void};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{Switch, built_with};
 use swoole_rs_error::ErrorCode::{SW_ERROR_FOR_TEST, SW_ERROR_INVALID_PARAMS};
@@ -17,7 +17,9 @@ handlers! {
 }
 
 unsafe extern "C" {
-    fn php_printf(format: *const c_char, ...) -> usize;
+    /// `ZEND_WRITE` of the lent bytes (an `IoSlice` is an iovec) inside
+    /// `zend_try`: nonzero when an output handler bailed out.
+    safe fn swr_zend_try_write(text: std::io::IoSlice<'_>) -> c_int;
     /// `EG(exit_status) = status`: one value of the executor's is written.
     safe fn swr_zend_set_exit_status(status: c_int);
     /// `zval_refcount_p`: the count of what a live zval holds, read only; 0 for
@@ -51,8 +53,9 @@ fn implicit_fn(call: &Call) {
             bailout.defer();
             return;
         }
-        // SAFETY: a literal format with no conversions.
-        unsafe { php_printf(c"never be executed here\n".as_ptr()) };
+        // `php_printf` of a format with no conversions: its bytes, written.
+        let text = std::io::IoSlice::new(b"never be executed here\n");
+        bailout::defer(bailout::trapped(swr_zend_try_write(text)));
     } else if is(b"bailout") {
         let status = arg.map_or(95, |status| status.long().c_cast::<c_int>());
         // It bails out across this frame, which owns nothing.

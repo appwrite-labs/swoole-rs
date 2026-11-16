@@ -10,7 +10,7 @@ use core::cell::{Cell, RefCell};
 use core::ffi::c_int;
 use core::ops::Range;
 
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 pub mod native;
 
 /// What upstream's `struct Manager` held: the requested reloads, and the pids

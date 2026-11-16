@@ -3,10 +3,9 @@
 //! `Reactor` members of base.cc that are whole Rust operations. Each receives the
 //! `Reactor`, which begins with its prepared Rust state. With `upstream-symbols`
 //! they are defined under their upstream (Itanium) symbols.
-use crate::SocketRecord;
 use crate::handlers::Handler;
 use crate::socket_upstream::swr_v1_reactor_log;
-use std::ffi::{c_int, c_void};
+use std::ffi::c_int;
 
 /// `int Reactor::trigger_close_event(Event *)`: the default error handler, or `-1`
 /// when none is set.
@@ -57,24 +56,21 @@ pub fn reactor_del(reactor: crate::Running<'_>, socket: crate::Socket<'_>) -> bo
         .with(|state| crate::change::apply(state, request, crate::Events::NONE, swr_v1_reactor_log))
 }
 
-/// `int Reactor::interest(Socket *socket, uint32_t kind, int event) const`.
-///
-/// # Safety
-/// `reactor` is a live `Reactor` on this thread, which no Rust reference borrows, and
-/// `socket` null or a live record distinct from it that stays live while it is
-/// registered.
+/// `int Reactor::interest(Socket *socket, uint32_t kind, int event) const`: -1 without
+/// a socket. The handle types state what C++ passes: the live reactor, and null or a
+/// record that stays live while it is registered.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZNK6swoole7Reactor8interestEPNS_7network6SocketEji")
 )]
-pub unsafe extern "C" fn reactor_interest(
-    reactor: *const c_void,
-    socket: *mut SocketRecord,
+#[must_use]
+pub extern "C" fn reactor_interest(
+    reactor: crate::Running<'_>,
+    socket: Option<crate::Socket<'static>>,
     kind: u32,
     event: c_int,
 ) -> c_int {
-    // SAFETY: as the caller promises.
-    let Some(record) = (unsafe { crate::Socket::from_ptr(socket) }) else {
+    let Some(record) = socket else {
         return -1;
     };
     let kind = crate::Interest::from_code(kind);
@@ -83,8 +79,6 @@ pub unsafe extern "C" fn reactor_interest(
     else {
         return 0;
     };
-    // SAFETY: as the caller promises.
-    let reactor = unsafe { crate::Running::new(reactor.cast_mut()) };
     if change(reactor, record, op, events) {
         0
     } else {

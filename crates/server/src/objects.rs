@@ -32,8 +32,8 @@ pub(crate) fn in_worker_bus<R>(
     }
 }
 
-// Only the upstream-symbol operations, which the unit tests don't link, use these.
-#[cfg(not(test))]
+// Only the upstream-symbol operations use these.
+#[cfg(feature = "upstream-symbols")]
 impl crate::ServerState {
     /// The server's own `MessageBus` record.
     pub(crate) fn message_bus_record(&self) -> &PoolBus {
@@ -121,7 +121,7 @@ impl<'a> Bus<'a> {
     /// without calling `f`, while the bus holds its message elsewhere (chunked into a
     /// packet, or passed by pointer).
     #[cfg_attr(
-        not(all(feature = "upstream-symbols", not(test))),
+        not(feature = "upstream-symbols"),
         expect(
             dead_code,
             reason = "only the hybrid's workers and reactors read events"

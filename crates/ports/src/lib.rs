@@ -14,9 +14,11 @@ pub mod http_routes;
 pub mod lifecycle;
 pub mod methods;
 pub mod read;
-#[cfg(not(test))]
 mod read_native;
 mod resp_recv;
+// Linked for System::init_reactor (Cargo.toml).
+#[cfg(test)]
+use swoole_rs_hooks as _;
 
 const _: () = {
     assert!(

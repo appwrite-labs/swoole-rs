@@ -102,8 +102,8 @@ class Logger {
     }
     static std::string get_pretty_name(const std::string &pretty_function, bool strip = true) {
         size_t begin = 0, count = 0;
-        if (swr_v1_utils_pretty_range(reinterpret_cast<const uint8_t *>(pretty_function.data()),
-                                      pretty_function.size(), strip, &begin, &count) != 0) {
+        const iovec name = {const_cast<char *>(pretty_function.data()), pretty_function.size()};
+        if (swr_v1_utils_pretty_range(name, strip, &begin, &count) != 0) {
             return {};
         }
         return pretty_function.substr(begin, count);

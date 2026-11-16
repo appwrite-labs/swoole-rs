@@ -9,6 +9,16 @@ use std::{
 };
 
 unsafe extern "C" {
+    /// `call_user_function(EG(function_table), NULL, name, retval, args)`
+    /// inside `zend_try` (nonzero for a bailout): the lent arguments, which
+    /// Zend copies, and `result` written; `retval` holds the call's result in
+    /// place of what it held, which is not released.
+    safe fn swr_zend_try_facade_user_call(
+        name: &crate::Value,
+        args: crate::zval::Zvals<'_>,
+        retval: &Owned,
+        result: &mut c_int,
+    ) -> c_int;
     /// `EG(exception)`: one pointer of the executor's is read; null for none.
     safe fn swr_zend_facade_exception() -> *mut zend_object;
     /// `zend_exception_error(EG(exception), E_ERROR)` inside `zend_try`, as
@@ -49,6 +59,21 @@ fn discard(value: Owned) {
 #[must_use]
 pub fn exception() -> *mut zend_object {
     swr_zend_facade_exception()
+}
+
+/// `EG(exception)` with a reference of its own: the exception pending on this
+/// thread, or None for none.
+#[must_use]
+pub fn exception_owned() -> Option<Owned> {
+    let object = exception();
+    if object.is_null() {
+        return None;
+    }
+    // The executor's pending exception, which it holds while this copies it:
+    // nothing runs in between.
+    let mut value = crate::ObjectRef(object, std::marker::PhantomData).copy_value();
+    // `ZVAL_COPY` takes the reference.
+    Some(crate::Value::of(&mut value).copy())
 }
 
 /// `zend_exception_error(EG(exception), E_ERROR)` of a pending exception,
@@ -126,37 +151,75 @@ pub(super) unsafe fn direct_call(
 pub type Create =
     unsafe extern "C" fn(*mut zend_fcall_info_cache, u32, *mut zval, *mut zval, *mut u8) -> c_long;
 
+/// The coroutine leaf of [`function_call`], which only [`Creator::new`] makes.
+#[derive(Clone, Copy)]
+pub struct Creator(Create);
+
+impl Creator {
+    /// # Safety
+    /// `create`, called inside the call's `zend_try` on the thread running PHP
+    /// with a live callable cache (resolved or not), its arguments and a null
+    /// callable zval, starts the coroutine as crates/phpcoroutines'
+    /// `create_coroutine` does, and writes only its last argument.
+    #[must_use]
+    pub const unsafe fn new(create: Create) -> Self {
+        Self(create)
+    }
+}
+
 /// The caller's work after a coroutine call, `body(arg)` (`None`: none), done
 /// inside the call's own `zend_try`, which saves it a setjmp (#3260). It runs
 /// where the caller's code after [`function_call`] would: once the coroutine
 /// runs or waits and no exception is pending, so the call's exception check
 /// stays before it. A direct call, or one that did not run, leaves it undone,
-/// so `body` records in `arg` that it began. As [`bailout::trap`]'s body,
-/// `body`'s frame owns nothing that needs a drop.
-pub type Then = (sys::swr_zend_then, *mut c_void);
+/// so `body` records in `arg` that it began. Only [`Then::new`] makes one,
+/// besides [`NO_THEN`].
+#[derive(Clone, Copy)]
+pub struct Then(sys::swr_zend_then, *mut c_void);
+
+impl Then {
+    /// # Safety
+    /// `body(arg)` (none: nothing) may run, inside a `zend_try`, during any [`function_call`]
+    /// given this: `arg` stays what `body` takes until each returns. As
+    /// [`bailout::trap`]'s body, `body`'s frame owns nothing that needs a drop.
+    #[must_use]
+    pub const unsafe fn new(body: sys::swr_zend_then, arg: *mut c_void) -> Self {
+        Self(body, arg)
+    }
+}
+
+/// The resolved (or empty) callable cache of a callable that lives for `'a`,
+/// lent for a call: made only from a callable that owns it.
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub struct Callee<'a>(
+    pub(crate) *mut zend_fcall_info_cache,
+    pub(crate) std::marker::PhantomData<&'a zend_fcall_info_cache>,
+);
 
 /// Invoke directly or create a coroutine, preserving the immediate fatal-exception check;
-/// in a coroutine, then `then`.
+/// in a coroutine, then `then`. The call writes its result into `retval`, in place of
+/// what it held (a coroutine call writes null), which is not released.
 /// # Errors
 /// PHP bailed out, in the call or in `then`; no jump is resumed while a Rust caller owns its state.
-/// # Safety
-/// A live resolved cache, argument span and optional return slot. `create` is the coroutine leaf,
-/// and `then` may be called.
-pub unsafe fn function_call(
-    cache: *mut zend_fcall_info_cache,
-    argc: u32,
-    argv: *mut zval,
-    retval: *mut zval,
+pub fn function_call(
+    cache: Callee<'_>,
+    args: crate::zval::Zvals<'_>,
+    retval: Option<&crate::Value>,
     coroutine: bool,
-    create: Create,
-    (then, arg): Then,
+    Creator(create): Creator,
+    Then(then, arg): Then,
 ) -> Result<bool, bailout::Bailout> {
+    let (cache, argc, argv) = (cache.0, args.argc(), args.argv());
+    let retval = retval.map_or(ptr::null_mut(), crate::Value::as_ptr);
     // Upstream never ran past a pending bailout: no coroutine starts, as no call runs.
     bailout::outcome(())?;
     let mut ran = false;
     let success = if coroutine {
         if !retval.is_null() {
-            // SAFETY: coroutines publish null before creation and have no return value.
+            // SAFETY: the caller's live return slot, whose type alone this
+            // writes: coroutines publish null before creation and have no
+            // return value.
             unsafe {
                 (*retval).u1 = sys::_zval_struct__bindgen_ty_1 {
                     type_info: sys::IS_NULL,
@@ -164,7 +227,9 @@ pub unsafe fn function_call(
             };
         }
         let mut result: c_long = -1;
-        // SAFETY: the native coroutine leaf runs inside the C trap; no Rust borrow spans a switch.
+        // SAFETY: the leaf (`Creator`) and `then` (`Then`) are as their makers
+        // vouched, with a callable's cache and lent arguments; they run inside
+        // the C trap, and no Rust borrow spans a switch.
         bailed(unsafe {
             sys::swr_zend_try_facade_coroutine(
                 Some(create),
@@ -180,7 +245,8 @@ pub unsafe fn function_call(
         });
         result >= 0
     } else {
-        // SAFETY: the caller lends a resolved cache and live arguments.
+        // SAFETY: a callable's cache (`Callee`), lent arguments (`Zvals`) and a
+        // live return slot or null.
         unsafe { direct_call(cache, argc, argv, retval) == 0 }
     };
     // `then` ran with no exception pending, as this check would have found it.
@@ -196,7 +262,7 @@ pub unsafe fn function_call(
 }
 
 /// No [`Then`].
-pub const NO_THEN: Then = (None, ptr::null_mut());
+pub const NO_THEN: Then = Then(None, ptr::null_mut());
 
 /// `zend::function::call(name, args)` into `retval`, an undefined slot of the
 /// caller's, a bailout left pending: the caller finishes or relays it. The
@@ -207,22 +273,13 @@ pub fn named_call_into(name: &[u8], args: &[Owned], retval: &Owned) {
     }
     // ZVAL_STRINGL: the complete binary function name, in a request string.
     let function = Owned::string(crate::ZString::new(name));
-    // Never more than the slice holds.
-    let argc = u32::try_from(args.len()).unwrap_or(0);
-    let argv = args.as_ptr().cast_mut().cast::<zval>();
     let mut result = -1;
-    // SAFETY: a live name, `argc` live arguments (`Owned` is a transparent
-    // zval) and a writable result; Zend's macro invocation is one leaf effect
-    // inside the C trap.
-    bailed(unsafe {
-        sys::swr_zend_try_facade_user_call(
-            function.as_ptr(),
-            argc,
-            argv,
-            retval.as_ptr(),
-            &raw mut result,
-        )
-    });
+    bailed(swr_zend_try_facade_user_call(
+        &function,
+        crate::zval::Zvals::owned(args),
+        retval,
+        &mut result,
+    ));
     if bailout::pending() {
         // Upstream never ran past a bailout to release the name.
         #[expect(

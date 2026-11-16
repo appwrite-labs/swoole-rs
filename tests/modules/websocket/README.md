@@ -5,7 +5,12 @@ The frame codec is `crates/websocket`, which forbids `unsafe`. `crates/websocket
 `websocket::Frame`: safe functions over slices, and `get_package_length`, the one a
 protocol table holds, also under its C++ symbol. `encode`, `decode`, `mask`,
 `pack_close_frame` and `print_frame` had C++ symbols too, which only Rust tests linked;
-those call the functions by path now. `mask`'s null-pointer and oversized-length
+those call the functions by path now. The safe decoder returns `Result<DecodedFrame,
+DecodeError>`; its error preserves the partial header and distinguishes incomplete
+input, length overflow, and compressed control frames. `DecodedFrame`, `Context`
+and `Decision` are plain Rust records; the native `websocket::Frame` layout stays
+in `websocket-ffi`. The codec test adapts typed errors to the former integer
+protocol so its original assertions remain unchanged. `mask`'s null-pointer and oversized-length
 refusals went with its export, and their test (`tests/kernel.rs`'s
 `invalid_mask_pointers_and_lengths_do_not_write`) with them: a slice and a key by value
 cannot carry those arguments. The PHP side is `crates/phphttp/src/websocket.rs`.

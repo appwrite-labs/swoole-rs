@@ -8,9 +8,9 @@ int swr_zend_try_uncaught_exception(void) {
     zend_object *exception = EG(exception);
     return exception ? swr_zend_try(swr_zend_facade_exception_error, exception) : SWR_ZEND_RETURN;
 }
-int swr_zend_try_facade_user_call(zval *name, uint32_t argc, zval *argv, zval *retval, int *result) {
+int swr_zend_try_facade_user_call(zval *name, swr_zvals args, zval *retval, int *result) {
     volatile int bailed = 0;
-    SWR_ZEND_TRY { *result = call_user_function(EG(function_table), NULL, name, retval, argc, argv); }
+    SWR_ZEND_TRY { *result = call_user_function(EG(function_table), NULL, name, retval, args.argc, args.argv); }
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
 }

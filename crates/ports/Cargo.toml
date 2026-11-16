@@ -29,6 +29,8 @@ swoole-rs-http2 = { path = "../http2" }
 
 [dev-dependencies]
 swoole-rs-oracle = { path = "../oracle" }
+# System::init_reactor, which crates/reactor's swoole_event_init calls.
+swoole-rs-hooks = { path = "../hooks", features = ["upstream-symbols"] }
 
 # The former native gates against the pinned catalog and getter (tests/modules/ports/README.md).
 [[test]]

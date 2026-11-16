@@ -653,7 +653,7 @@ impl Handle {
     /// first: the send may raise a callback that reaches the proxy again.
     fn socks5_send(self, length: usize) -> isize {
         let packet = self
-            .with_proxy(Proxy::Socks5, |proxy| proxy.packet().map(|packet| *packet))
+            .with_proxy(Proxy::Socks5, |proxy| proxy.with_packet(|packet| *packet))
             .flatten()
             .unwrap_or([0; 512]);
         send(self, packet.get(..length).unwrap_or_default(), 0)
@@ -957,7 +957,7 @@ impl Handle {
         let fd = self.socket().fd();
         let enable: c_int = 1;
         if swoole_rs_corebase::sys::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, &enable)
-            < 0
+            .is_err()
         {
             log::sys_warning(
                 c"bind",
@@ -1239,7 +1239,7 @@ fn inet_addr(this: Handle, host: &CStr, port: c_int) -> bool {
             let Some(next) = this.with_proxy(which, |proxy| {
                 proxy.set_string(3, host.to_bytes());
                 proxy.update(|fields| fields.target_port = port);
-                (proxy.string(0).to_vec(), proxy.fields().port)
+                (proxy.string(0), proxy.fields().port)
             }) else {
                 continue;
             };
@@ -1619,7 +1619,7 @@ mod ops {
     /// `getsockopt(SOL_SOCKET, SO_ERROR)` into `error`: whether it succeeded.
     pub(super) fn socket_error(this: Handle, error: &mut c_int) -> bool {
         let fd = this.socket().fd();
-        swoole_rs_corebase::sys::getsockopt_int(fd, libc::SOL_SOCKET, libc::SO_ERROR, error) == 0
+        swoole_rs_corebase::sys::getsockopt(fd, libc::SOL_SOCKET, libc::SO_ERROR, error).is_ok()
     }
 }
 

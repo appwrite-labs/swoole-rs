@@ -6,9 +6,8 @@ use crate::{
     host,
 };
 use std::{
-    cell::{Cell, RefCell},
-    ffi::{c_char, c_int, c_long},
-    ptr,
+    cell::Cell,
+    ffi::c_long,
     sync::{
         Arc, Mutex, PoisonError,
         atomic::{AtomicBool, Ordering},
@@ -17,8 +16,9 @@ use std::{
     time::Duration,
 };
 use swoole_rs_zend::{
-    E_ERROR, E_WARNING, Php,
+    E_ERROR, E_WARNING, Php, Zvals,
     bailout::{self, Bailout},
+    host::{Creator, NO_THEN, function_call},
     message,
     sys::{
         swr_zend_interrupt_handler, zend_atomic_bool, zend_execute_data, zend_fcall_info_cache,
@@ -57,7 +57,8 @@ per_thread! {
             deadlock_check: Cell::new(true),
         };
     static INTERRUPT_RUNNING: Cell<bool> = Cell::new(false);
-    static INTERRUPT: RefCell<Option<Interrupt>> = RefCell::new(None);
+    /// The interrupt thread, set by `interrupt_start` and taken by `interrupt_stop`.
+    static INTERRUPT: Cell<Option<Interrupt>> = Cell::new(None);
 }
 
 /// How many threads' runtimes are active, and the interrupt function Zend ran
@@ -206,7 +207,9 @@ pub(crate) fn deactivate() -> Result<(), Bailout> {
 }
 
 unsafe extern "C" {
-    fn printf(format: *const c_char, ...) -> c_int;
+    /// Upstream's deadlock report through stdio's `printf`, so stdio buffers
+    /// it as it did: one formatted write of the count.
+    safe fn swr_zend_coroutine_deadlock_report(count: std::ffi::c_ulong);
 }
 
 /// `PHPCoroutine::deadlock_check`: report coroutines still asleep. Runs no
@@ -219,14 +222,7 @@ fn deadlock_check() -> Result<(), Bailout> {
     if host::flag(host::LIBRARY) {
         return host::deadlock_check();
     }
-    // Upstream's printf, so stdio buffers it as it did.
-    // SAFETY: a format taking one unsigned long.
-    unsafe {
-        printf(
-            c"\n ===================================================================\n  [FATAL ERROR]: all coroutines (count: %lu) are asleep - deadlock! \n ===================================================================\n".as_ptr(),
-            count as std::ffi::c_ulong,
-        );
-    }
+    swr_zend_coroutine_deadlock_report(count as std::ffi::c_ulong);
     Ok(())
 }
 
@@ -314,7 +310,7 @@ fn interrupt_start() {
         })
     });
     if let Ok(thread) = spawned {
-        INTERRUPT.with(|i| *i.borrow_mut() = Some(Interrupt { running, thread }));
+        INTERRUPT.with(|i| i.set(Some(Interrupt { running, thread })));
         INTERRUPT_RUNNING.with(|r| r.set(true));
     }
 }
@@ -325,7 +321,7 @@ fn interrupt_stop() {
         return;
     }
     INTERRUPT_RUNNING.with(|r| r.set(false));
-    if let Some(interrupt) = INTERRUPT.with(|i| i.borrow_mut().take()) {
+    if let Some(interrupt) = INTERRUPT.with(Cell::take) {
         interrupt.running.store(false, Ordering::Release);
         drop(interrupt.thread.join());
     }
@@ -373,26 +369,18 @@ pub unsafe extern "C" fn create_coroutine(
     created.unwrap_or(ERR_INVALID)
 }
 
+/// [`create_coroutine`], the leaf of every coroutine call.
+// SAFETY: `create_coroutine` is that leaf: it writes only its last argument.
+pub const CREATOR: Creator = unsafe { Creator::new(create_coroutine) };
+
 /// `zend::function::call(&fcc, argc, argv, nullptr, coroutine)` of a kept
 /// callable with its bound arguments: whether it ran, warning as
 /// `sw_callable_warning` when it could not.
 /// # Errors
 /// PHP bailed out.
 pub fn call_kept(callable: &swoole_rs_zend::Callable, coroutine: bool) -> Result<bool, Bailout> {
-    let (cache, argc, argv, _) = callable.parts();
-    // SAFETY: a kept callable's cache and arguments, which its owner keeps
-    // live through the call; the leaves are this crate's and C's.
-    unsafe {
-        swoole_rs_zend::host::function_call(
-            cache,
-            argc,
-            argv,
-            ptr::null_mut(),
-            coroutine,
-            create_coroutine,
-            swoole_rs_zend::host::NO_THEN,
-        )
-    }
+    let (cache, args) = callable.call_parts();
+    function_call(cache, args, None, coroutine, CREATOR, NO_THEN)
 }
 
 /// `zend::function::call(&cache, args, retval, coroutine)` of a
@@ -406,21 +394,14 @@ pub fn call_handler(
     retval: &swoole_rs_zend::Owned,
     coroutine: bool,
 ) -> Result<bool, Bailout> {
-    let argc = u32::try_from(args.len()).unwrap_or(u32::MAX);
-    // SAFETY: the handler's resolved cache, which its owner keeps live through
-    // the call, live arguments and a return slot; the leaves are this crate's
-    // and C's.
-    unsafe {
-        swoole_rs_zend::host::function_call(
-            handler.cache_ptr(),
-            argc,
-            args.as_ptr().cast_mut().cast(),
-            retval.as_ptr(),
-            coroutine,
-            create_coroutine,
-            swoole_rs_zend::host::NO_THEN,
-        )
-    }
+    function_call(
+        handler.cache(),
+        Zvals::owned(args),
+        Some(retval),
+        coroutine,
+        CREATOR,
+        NO_THEN,
+    )
 }
 
 /// [`call_handler`] over the zvals of a callback's arguments, with the return
@@ -433,20 +414,12 @@ pub fn call_args(
     retval: Option<&swoole_rs_zend::Value>,
     coroutine: bool,
 ) -> Result<bool, Bailout> {
-    let argc = u32::try_from(args.len()).unwrap_or(u32::MAX);
-    let retval = retval.map_or(ptr::null_mut(), swoole_rs_zend::Value::as_ptr);
-    // SAFETY: the handler's resolved cache, which its owner keeps live through
-    // the call, `argc` arguments and a return slot or null; the leaves are this
-    // crate's and C's.
-    unsafe {
-        swoole_rs_zend::host::function_call(
-            handler.cache_ptr(),
-            argc,
-            args.as_mut_ptr(),
-            retval,
-            coroutine,
-            create_coroutine,
-            swoole_rs_zend::host::NO_THEN,
-        )
-    }
+    function_call(
+        handler.cache(),
+        Zvals::of(args),
+        retval,
+        coroutine,
+        CREATOR,
+        NO_THEN,
+    )
 }

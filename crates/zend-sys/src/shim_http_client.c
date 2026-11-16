@@ -6,13 +6,6 @@
 #include "zend_smart_str.h"
 
 
-zval *swr_zend_property_not_null(zend_object *object, const char *name, size_t length) {
-    zval rv;
-    zval *property = zend_read_property(object->ce, object, name, length, 0, &rv);
-    uint8_t type = Z_TYPE_P(property);
-    return (type == IS_NULL || UNEXPECTED(type == IS_UNDEF)) ? NULL : property;
-}
-
 void swr_zend_array_add_or_merge(zval *array, const char *key, size_t length, zval *element) {
     zend_ulong index;
     HashTable *table = Z_ARRVAL_P(array);

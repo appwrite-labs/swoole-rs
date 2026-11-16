@@ -747,7 +747,7 @@ fn bind(call: &Call, share: &SharedServer) {
     crate::instance::set_server_object(object);
     object.set_serv(share.clone());
     let serv = share.view();
-    for &port in serv.ports() {
+    for port in serv.ports() {
         add_port(object, port);
     }
     let props = Props::server(object);

@@ -24,6 +24,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::BTreeMap,
     ffi::{c_int, c_long, c_void},
+    marker::PhantomData,
     ptr,
     rc::{Rc, Weak},
 };
@@ -34,9 +35,9 @@ use swoole_rs_curl_sys::{
     CURLE_FAILED_INIT, CURLE_OK, CURLINFO_PRIVATE, CURLM, CURLM_INTERNAL_ERROR, CURLM_OK,
     CURLMOPT_SOCKETDATA, CURLMOPT_SOCKETFUNCTION, CURLMOPT_TIMERDATA, CURLMOPT_TIMERFUNCTION,
     CURLMSG_DONE, CURLMcode, CURLOPT_PRIVATE, CURLcode, LiveMulti, MultiHandle, curl_easy_getinfo,
-    curl_easy_reset, curl_easy_setopt, curl_multi_add_handle, curl_multi_cleanup,
-    curl_multi_info_read, curl_multi_init, curl_multi_remove_handle, curl_multi_setopt,
-    curl_multi_socket_action, curl_multi_timeout, curl_socket_t,
+    curl_easy_setopt, curl_multi_add_handle, curl_multi_cleanup, curl_multi_info_read,
+    curl_multi_init, curl_multi_remove_handle, curl_multi_setopt, curl_multi_socket_action,
+    curl_multi_timeout, curl_socket_t,
 };
 use swoole_rs_reactor::Events;
 
@@ -49,17 +50,25 @@ const CO_CANCELED: c_int = 10017;
 /// coroutine to wait in (or one already bound): C++ raises the fatal error.
 pub const EXEC_NEEDS_COROUTINE: CURLcode = -1;
 
-/// A live easy handle, as the bundled `ext/curl` hands over its `ch->cp`. Only an
-/// export's parameter makes one (and `php.rs`, reading a live `php_curl`'s), where the
-/// C caller's contract stands for the constructor, as it does for a `&T` parameter
-/// there. A `CURL *`'s layout, and neither `Send` nor `Sync`.
+/// A live easy handle for `'a`, as the bundled `ext/curl` hands over its `ch->cp`.
+/// Only an export's parameter makes one (and `php.rs`, reading a live `php_curl`'s),
+/// where the C caller's contract stands for the constructor, as it does for a `&T`
+/// parameter there. A `CURL *`'s layout, and neither `Send` nor `Sync`.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
-pub struct Easy(*mut CURL);
+pub struct Easy<'a>(*mut CURL, PhantomData<&'a CURL>);
 
-impl Easy {
+impl<'a> Easy<'a> {
+    /// The easy handle's Swoole handle, which lives until the unsafe
+    /// [`swr_v1_curl_destroy_handle`], whose caller promises nothing uses it
+    /// afterwards: within `'a`, no export frees it.
+    fn handle(self) -> Option<&'a Handle> {
+        // SAFETY: null or the live handle create_handle made, as above.
+        unsafe { self.handle_ptr().as_ref() }
+    }
+
     /// `CURLINFO_PRIVATE`: the easy handle's Swoole handle, or null without one.
-    fn handle(self) -> *mut Handle {
+    fn handle_ptr(self) -> *mut Handle {
         let mut handle: *mut Handle = ptr::null_mut();
         // SAFETY: the live easy handle; CURLINFO_PRIVATE writes a pointer.
         if unsafe { curl_easy_getinfo(self.0, CURLINFO_PRIVATE, &raw mut handle) } == CURLE_OK {
@@ -82,14 +91,14 @@ impl Easy {
 #[repr(C)]
 pub struct Handle {
     cp: *mut CURL,
-    multi: *mut Multi,
+    multi: Cell<*mut Multi>,
     /// The handle's reference to its exec multi, which [`swr_v1_curl_destroy_handle`]
     /// releases. C++ never reads it: to C it is an opaque pointer of the same size.
-    easy_multi: Option<Rc<Multi>>,
+    easy_multi: Cell<Option<Rc<Multi>>>,
 }
 
 const _: () = assert!(
-    size_of::<Option<Rc<Multi>>>() == size_of::<*mut Multi>(),
+    size_of::<Cell<Option<Rc<Multi>>>>() == size_of::<*mut Multi>(),
     "C's `struct swr_v1_curl_multi *easy_multi`"
 );
 
@@ -121,7 +130,7 @@ pub struct Multi {
     /// The id of the pending timer.
     timer: Cell<Option<swoole_rs_timer::Held>>,
     /// The coroutine waiting on this multi.
-    co: Cell<*mut c_void>,
+    co: Cell<Option<Waiter>>,
     running: Cell<c_int>,
     defer_callback: Cell<bool>,
     /// C++ let go of it while a deferred wake-up was queued: the wake-up
@@ -189,7 +198,7 @@ impl Multi {
             this: this.clone(),
             handle: made,
             timer: Cell::new(None),
-            co: Cell::new(ptr::null_mut()),
+            co: Cell::new(None),
             running: Cell::new(0),
             defer_callback: Cell::new(false),
             released: Cell::new(false),
@@ -319,19 +328,19 @@ impl Multi {
         true
     }
 
-    fn add_handle(&self, handle: &mut Handle) -> CURLMcode {
+    fn add_handle(&self, handle: &Handle) -> CURLMcode {
         // SAFETY: this multi's handle and the handle's live easy handle.
         let result = unsafe { curl_multi_add_handle(self.raw(), handle.cp) };
         if result == CURLM_OK {
-            handle.multi = ptr::from_ref(self).cast_mut();
+            handle.multi.set(ptr::from_ref(self).cast_mut());
         }
         result
     }
 
-    fn remove_handle(&self, handle: &mut Handle) -> CURLMcode {
+    fn remove_handle(&self, handle: &Handle) -> CURLMcode {
         // SAFETY: this multi's handle and the handle's live easy handle.
         let result = unsafe { curl_multi_remove_handle(self.raw(), handle.cp) };
-        handle.multi = ptr::null_mut();
+        handle.multi.set(ptr::null_mut());
         if result == CURLM_OK {
             // Refresh the running count even if no socket event follows.
             self.timer_callback.set(true);
@@ -351,7 +360,7 @@ impl Multi {
     }
 
     /// `Multi::exec`: run one easy handle to completion (`curl_exec`).
-    fn exec(&self, handle: &mut Handle) -> CURLcode {
+    fn exec(&self, handle: &Handle) -> CURLcode {
         if self.add_handle(handle) != CURLM_OK {
             return CURLE_FAILED_INIT;
         }
@@ -360,12 +369,12 @@ impl Multi {
             self.selector_prepare();
             if self.wait_event() {
                 let co = host::current();
-                if !self.co.get().is_null() || co.is_null() {
+                let Some(waiter) = Waiter::running(co).filter(|_| self.co.get().is_none()) else {
                     return EXEC_NEEDS_COROUTINE;
-                }
-                self.co.set(co);
+                };
+                self.co.set(Some(waiter));
                 canceled = host::yield_(co, -1.0);
-                self.co.set(ptr::null_mut());
+                self.co.set(None);
                 if canceled {
                     set_last_error(CO_CANCELED);
                     break;
@@ -513,9 +522,9 @@ impl Multi {
         if !self.wait_event() {
             return 0;
         }
-        self.co.set(co);
+        self.co.set(Waiter::running(co));
         host::yield_(co, timeout);
-        self.co.set(ptr::null_mut());
+        self.co.set(None);
         self.ready()
     }
 
@@ -532,7 +541,7 @@ impl Multi {
         if socket.is_none() {
             self.timer_callback.set(true);
         }
-        if self.co.get().is_null() {
+        if self.co.get().is_none() {
             match socket {
                 Some(socket) => {
                     socket.socket.del();
@@ -548,6 +557,22 @@ impl Multi {
             insert(&self.active, &socket);
         }
         host::defer(self);
+    }
+}
+
+/// The coroutine waiting on a multi, which is the running one as it starts to wait:
+/// its record and its id.
+#[derive(Clone, Copy)]
+struct Waiter {
+    co: ptr::NonNull<c_void>,
+    cid: c_long,
+}
+
+impl Waiter {
+    /// `co`, the running coroutine, or none outside one.
+    fn running(co: *mut c_void) -> Option<Self> {
+        let cid = host::current_cid();
+        ptr::NonNull::new(co).map(|co| Self { co, cid })
     }
 }
 
@@ -607,16 +632,21 @@ fn release(multi: Rc<Multi>) {
     drop(multi);
 }
 
-/// `Multi::release` of the multi `swoole_curl_multi_new` gave C++.
-/// # Safety
-/// `multi` is null or came from `swoole_curl_multi_new`; nothing uses it afterwards.
+/// The reference [`swoole_curl_multi_new`] gave C++, which C++ gives back to
+/// [`swr_v1_curl_multi_free`] and uses no more. Only that export's parameter makes
+/// one, where the C caller's contract stands for the constructor; it is not `Copy`,
+/// so it is released once.
+#[repr(transparent)]
+pub struct Released(ptr::NonNull<Multi>);
+
+/// `Multi::release` of the multi `swoole_curl_multi_new` gave C++; nothing for null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_curl_multi_free(multi: *mut Multi) {
-    if multi.is_null() {
+pub extern "C" fn swr_v1_curl_multi_free(multi: Option<Released>) {
+    let Some(Released(multi)) = multi else {
         return;
-    }
-    // SAFETY: per the caller, the reference `swoole_curl_multi_new` gave up.
-    release(unsafe { Rc::from_raw(multi) });
+    };
+    // SAFETY: the reference `swoole_curl_multi_new` gave up, as the type carries.
+    release(unsafe { Rc::from_raw(multi.as_ptr()) });
 }
 
 /// `Multi::get_multi_handle`.
@@ -658,7 +688,7 @@ pub extern "C" fn swr_v1_curl_multi_select(multi: &Multi, co: *mut c_void, timeo
 
 /// `Multi::exec`; [`EXEC_NEEDS_COROUTINE`] when it must wait outside a
 /// coroutine or while another one waits.
-pub fn swr_v1_curl_multi_exec(multi: &Multi, handle: &mut Handle) -> CURLcode {
+pub fn swr_v1_curl_multi_exec(multi: &Multi, handle: &Handle) -> CURLcode {
     multi.exec(handle)
 }
 
@@ -669,10 +699,9 @@ fn multi_deferred(this: &Multi) -> bool {
     if this.released.get() {
         return true;
     }
-    let co = this.co.get();
-    if !co.is_null() {
+    if let Some(waiter) = this.co.get() {
         // SAFETY: the coroutine waiting on this multi.
-        unsafe { host::resume(co) };
+        unsafe { host::resume(waiter.co.as_ptr()) };
     }
     false
 }
@@ -687,33 +716,50 @@ fn socket_event(socket: &Socket, bitmask: c_int) {
 
 /// `swoole::curl::get_handle`.
 #[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_curl_get_handle(cp: Easy) -> *mut Handle {
-    cp.handle()
+pub extern "C" fn swr_v1_curl_get_handle(cp: Easy<'_>) -> *mut Handle {
+    cp.handle_ptr()
 }
 
 /// `swoole::curl::create_handle`.
 #[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_curl_create_handle(cp: Easy) -> *mut Handle {
+pub extern "C" fn swr_v1_curl_create_handle(cp: Easy<'_>) -> *mut Handle {
     let handle = Box::into_raw(Box::new(Handle {
         cp: cp.0,
-        multi: ptr::null_mut(),
-        easy_multi: None,
+        multi: Cell::new(ptr::null_mut()),
+        easy_multi: Cell::new(None),
     }));
     cp.set_private(handle);
     handle
 }
 
+/// An easy handle on which no transfer runs, and whose Swoole handle nothing else
+/// uses, during the call: the parameter of the exports that reset or run it, where
+/// the C caller's contract stands for the constructor, as for [`Easy`].
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Idle<'a>(Easy<'a>);
+
+/// An [`Idle`] easy handle whose Swoole handle nothing uses after the call:
+/// [`swr_v1_curl_destroy_handle`]'s parameter, made as [`Idle`] is.
+#[repr(transparent)]
+pub struct Retired<'a>(Easy<'a>);
+
+unsafe extern "C" {
+    /// libcurl's, with the handle typed as idle: it clears the handle's options and
+    /// state, which no transfer is using.
+    safe fn curl_easy_reset(easy: Idle<'_>);
+}
+
 /// `swoole::curl::destroy_handle`.
-/// # Safety
-/// No transfer of `cp` runs, and nothing uses its Swoole handle afterwards.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_curl_destroy_handle(cp: Easy) {
-    let handle = cp.handle();
+pub extern "C" fn swr_v1_curl_destroy_handle(cp: Retired<'_>) {
+    let Retired(cp) = cp;
+    let handle = cp.handle_ptr();
     if handle.is_null() {
         return;
     }
     // SAFETY: the handle create_handle made, which only this frees.
-    let mut handle = unsafe { Box::from_raw(handle) };
+    let handle = unsafe { Box::from_raw(handle) };
     if let Some(multi) = handle.easy_multi.take() {
         release(multi);
     }
@@ -721,15 +767,12 @@ pub unsafe extern "C" fn swr_v1_curl_destroy_handle(cp: Easy) {
 }
 
 /// `swoole_curl_easy_reset`: `curl_easy_reset`, keeping the handle.
-/// # Safety
-/// As `curl_easy_reset`: no transfer of `cp` runs.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_curl_easy_reset(cp: Easy) {
-    let handle = cp.handle();
-    // SAFETY: per the caller.
-    unsafe { curl_easy_reset(cp.0) };
+pub extern "C" fn swoole_curl_easy_reset(cp: Idle<'_>) {
+    let handle = cp.0.handle_ptr();
+    curl_easy_reset(cp);
     // The easy handle keeps the Swoole handle it held.
-    cp.set_private(handle);
+    cp.0.set_private(handle);
 }
 
 #[cfg(not(test))]

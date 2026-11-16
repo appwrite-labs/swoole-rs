@@ -12,7 +12,6 @@ use swoole_rs_reactor::Events;
 use swoole_rs_reactor::wait_upstream::{system_wait, system_waitpid};
 use swoole_rs_zend::{
     Call, Class, E_WARNING, Minit, Owned, OwnedArray, Value, ZString, bailout::Bailout,
-    sys::zend_value_error,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -122,8 +121,7 @@ fn sleep(call: &Call) {
 
 /// `zend_value_error(message)`, then false.
 fn value_error(call: &Call, message: &CStr) {
-    // SAFETY: a NUL-terminated message without format directives.
-    unsafe { zend_value_error(message.as_ptr()) };
+    swoole_rs_zend::value_error(message);
     call.set_bool(false);
 }
 
@@ -145,8 +143,8 @@ fn read_file(call: &Call) {
         return;
     };
     match swoole_rs_hooks::file_io::read_file(&path, flags & FILE_LOCK != 0) {
-        Some(content) => call.set_bytes(&content),
-        None => call.set_bool(false),
+        Ok(content) => call.set_bytes(&content),
+        Err(_) => call.set_bool(false),
     }
 }
 
@@ -178,10 +176,9 @@ fn write_file(call: &Call) {
         flags & FILE_LOCK != 0,
         libc::O_NOFOLLOW | mode,
     );
-    if written < 0 {
-        call.set_bool(false);
-    } else {
-        call.set_long(i64::try_from(written).unwrap_or(i64::MAX));
+    match written {
+        Ok(written) => call.set_long(i64::try_from(written).unwrap_or(i64::MAX)),
+        Err(_) => call.set_bool(false),
     }
 }
 
@@ -422,7 +419,7 @@ fn wait_signal(call: &Call) {
     let signals = std::mem::ManuallyDrop::new(signals);
     let signo = swoole_rs_hooks::wait_signal::system_wait_signal(&signals, timeout);
     drop(std::mem::ManuallyDrop::into_inner(signals));
-    if signo != -1 {
+    if let Ok(signo) = signo {
         call.set_long(signo.into());
         return;
     }

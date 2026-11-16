@@ -9,10 +9,6 @@ const RSV1: u8 = 4;
 const MASK: u8 = 32;
 const HEADER_ONLY: u8 = 64;
 const MASK_KEY: [u8; 4] = *b"258E";
-/// [`decode_in_place`] result for a complete compressed (RSV1) control frame.
-pub const INVALID_CONTROL: i64 = -2;
-
-#[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DecodedFrame {
     pub payload_length: usize,
@@ -21,6 +17,21 @@ pub struct DecodedFrame {
     pub flags: u8,
     pub length_code: u8,
     pub mask_key: [u8; 4],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DecodeErrorKind {
+    IncompleteHeader,
+    IncompleteBody,
+    LengthOverflow,
+    CompressedControl,
+}
+
+/// A rejected frame retains the header facts read before the error.
+#[derive(Clone, Copy, Debug)]
+pub struct DecodeError {
+    pub kind: DecodeErrorKind,
+    pub frame: DecodedFrame,
 }
 
 fn flags(first: u8, second: u8) -> u8 {
@@ -32,20 +43,15 @@ fn flags(first: u8, second: u8) -> u8 {
 }
 
 /// Decode one frame, unmasking only a complete payload. Trailing bytes are left
-/// untouched. Returns the expected frame length even when its body is incomplete,
-/// or `INVALID_CONTROL` (payload left masked) for a complete compressed control
-/// frame, with the decoded header.
+/// untouched.
+///
+/// # Errors
+/// Incomplete input, an unrepresentable length, or a complete compressed control
+/// frame. Errors retain the decoded header and leave the payload untouched.
 #[inline]
-pub fn decode_in_place(data: &mut [u8]) -> (i64, DecodedFrame) {
+pub fn decode_in_place(data: &mut [u8]) -> Result<DecodedFrame, DecodeError> {
     let length = data.len();
-    // The native Frame decoder passes header availability through uint32_t.
-    // Preserve that conversion even for unusually large borrowed buffers.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the native uint32_t header availability"
-    )]
-    let available = length as u32 as usize;
-    let (total, header) = frame_length(data.get(..available).unwrap_or_default());
+    let (total, header) = frame_length(data);
     let header = header.unwrap_or(0);
     let mut frame = DecodedFrame {
         header_length: header as usize,
@@ -56,23 +62,40 @@ pub fn decode_in_place(data: &mut [u8]) -> (i64, DecodedFrame) {
         frame.flags = flags(first, second);
         frame.length_code = second & 127;
     }
-    if let Some(size) = usize::try_from(total).ok().filter(|&size| size > 0) {
-        frame.payload_length = size - frame.header_length;
-        if length >= size && is_control(frame.opcode) && frame.flags & RSV1 != 0 {
-            return (INVALID_CONTROL, frame);
-        }
-        let at = frame.header_length;
-        if frame.payload_length != 0
-            && frame.flags & MASK != 0
-            && let Some(key) = data.get(at.wrapping_sub(4)..at)
-            && let Ok(key) = <[u8; 4]>::try_from(key)
-            && let Some(payload) = data.get_mut(at..size)
-        {
-            frame.mask_key = key;
-            mask(payload, key);
-        }
+    let size = usize::try_from(total).map_err(|_| DecodeError {
+        kind: DecodeErrorKind::LengthOverflow,
+        frame,
+    })?;
+    if size == 0 {
+        return Err(DecodeError {
+            kind: DecodeErrorKind::IncompleteHeader,
+            frame,
+        });
     }
-    (total, frame)
+    frame.payload_length = size - frame.header_length;
+    if length < size {
+        return Err(DecodeError {
+            kind: DecodeErrorKind::IncompleteBody,
+            frame,
+        });
+    }
+    if is_control(frame.opcode) && frame.flags & RSV1 != 0 {
+        return Err(DecodeError {
+            kind: DecodeErrorKind::CompressedControl,
+            frame,
+        });
+    }
+    let at = frame.header_length;
+    if frame.payload_length != 0
+        && frame.flags & MASK != 0
+        && let Some(key) = data.get(at.wrapping_sub(4)..at)
+        && let Ok(key) = <[u8; 4]>::try_from(key)
+        && let Some(payload) = data.get_mut(at..size)
+    {
+        frame.mask_key = key;
+        mask(payload, key);
+    }
+    Ok(frame)
 }
 
 fn is_control(opcode: u8) -> bool {
@@ -176,7 +199,6 @@ pub fn encode_close_into(
     encode_into(payload, 8, flags | FIN, out)
 }
 
-#[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Context {
     pub fragment_length: usize,
@@ -213,7 +235,6 @@ pub enum PolicyError {
     CloseTooBig,
 }
 
-#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Decision {
     pub offset: usize,

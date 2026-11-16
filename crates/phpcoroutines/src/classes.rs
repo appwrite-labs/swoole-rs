@@ -1,9 +1,9 @@
 //! MINIT: `Swoole\Coroutine` and its iterator, context and exception
 //! classes, the constants, `Swoole\ExitException`, the exit and `@` opcode
 //! handlers and the coroutine-aware autoloader.
-use crate::{context, host, runtime};
+use crate::{context, host, put_back, runtime};
 use std::{
-    cell::{Cell, RefCell},
+    cell::Cell,
     collections::{HashMap, VecDeque},
     ffi::{CStr, c_int, c_long},
     hash::{BuildHasherDefault, DefaultHasher},
@@ -13,16 +13,35 @@ use std::{
 };
 use swoole_rs_phpstubs::{coroutine, coroutine_system};
 use swoole_rs_zend::{
-    Call, Class, Minit, ObjectRef, Owned, Props, Value, ZStr,
+    Call, Class, Minit, Owned, Value, ZStr,
     bailout::Bailout,
     opcode::{DISPATCH, Frame, Handler, handler},
     sys::{
-        ZEND_ACC_FINAL, ZEND_ACC_PRIVATE, swr_zend_autoload_forget, swr_zend_autoload_handler,
-        swr_zend_autoload_try, swr_zend_exit_status, user_opcode_handler_t, zend_class_entry,
-        zend_execute_data,
+        ZEND_ACC_FINAL, ZEND_ACC_PRIVATE, user_opcode_handler_t, zend_class_entry,
+        zend_execute_data, zval,
     },
 };
 use swoole_rs_zend::{method_table, sys as z};
+
+unsafe extern "C" {
+    /// `zend_hash_del(EG(in_autoload), lc_name)` when the executor has that
+    /// table: it reads the name, and the table holds no values to release, so
+    /// no PHP code runs.
+    safe fn swr_zend_autoload_forget(lc_name: &ZStr);
+    /// `handler(name, lc_name)` inside `zend_try`: nonzero for a bailout, else
+    /// `result` holds the class it found (null for none).
+    safe fn swr_zend_autoload_try(
+        handler: Autoload,
+        name: &ZStr,
+        lc_name: &ZStr,
+        result: &mut *mut zend_class_entry,
+    ) -> c_int;
+    /// The exit operand's value (`exit`'s status, null without one) of the
+    /// frame's instruction, duplicated into `status`, which it writes without
+    /// reading: an operand of a live instruction is a literal of its script or a
+    /// slot of its frame.
+    safe fn swr_zend_exit_status(frame: Frame<'_>, status: &mut zval);
+}
 
 /// `zend_autoload`'s type: Zend passes the class's name and its lowercase
 /// form, both live strings, for the call.
@@ -196,10 +215,9 @@ fn hook_zend(_minit: &Minit) {
             begin_silence: user_opcode_handler_t,
             end_silence: user_opcode_handler_t,
         );
-        /// `zend_autoload = handler`; returns the previous one.
-        safe fn swr_zend_coroutine_set_autoload(
-            handler: Option<Autoload>,
-        ) -> swr_zend_autoload_handler;
+        /// `zend_autoload = handler`; returns the previous one, Zend's (SPL's
+        /// `spl_perform_autoload` once registered), which takes two live names.
+        safe fn swr_zend_coroutine_set_autoload(handler: Option<Autoload>) -> Option<Autoload>;
     }
     if host::flag(host::CLI) {
         swr_zend_coroutine_opcodes(
@@ -220,7 +238,7 @@ pub extern "C" fn php_swoole_coroutine_rinit() {
 
 /// `php_swoole_coroutine_rshutdown`: a bailout in deactivation is raised.
 pub extern "C" fn php_swoole_coroutine_rshutdown() {
-    AUTOLOADING.with(|a| a.borrow_mut().clear());
+    drop(AUTOLOADING.with(Cell::take));
     if runtime::shutdown() {
         runtime::raise();
     }
@@ -242,12 +260,12 @@ fn exit_flags() -> i64 {
 fn throw_exit(message: &CStr, flags: i64, status: &Value) {
     EXIT.throw(message, 0);
     // `zend_throw_exception`'s object: the new exception is the pending one.
-    let object = swoole_rs_zend::host::exception();
-    // SAFETY: the new exception, which Zend holds as thrown past these writes.
-    let Some(object) = (unsafe { ObjectRef::from_ptr(object) }) else {
+    let Some(object) = swoole_rs_zend::host::exception_owned() else {
         return;
     };
-    let props = Props::of(Some(&EXIT), object);
+    let Some(props) = object.props(Some(&EXIT)) else {
+        return;
+    };
     props.long(c"flags", flags);
     props.value(c"status", status);
 }
@@ -260,8 +278,7 @@ impl Handler for Exit {
         let flags = exit_flags();
         if flags != 0 {
             let mut status = swoole_rs_zend::UNDEF;
-            // SAFETY: the exit opcode's frame: installed for `ZEND_EXIT` only.
-            unsafe { swr_zend_exit_status(frame.as_ptr(), &raw mut status) };
+            swr_zend_exit_status(frame, &mut status);
             let status = Value::of(&mut status);
             // Upstream's extra reference, kept (never released) as it was.
             #[expect(
@@ -349,7 +366,7 @@ extern "C" fn end_silence(_: *mut zend_execute_data) -> c_int {
 }
 
 /// The autoloader Zend had (`original_zend_autoload`).
-static ORIGINAL_AUTOLOAD: OnceLock<swr_zend_autoload_handler> = OnceLock::new();
+static ORIGINAL_AUTOLOAD: OnceLock<Option<Autoload>> = OnceLock::new();
 
 /// A coroutine waiting for another's autoload of the same class, and where
 /// the loader leaves the class for it.
@@ -364,20 +381,30 @@ struct Loading {
     waiters: VecDeque<Waiter>,
 }
 
+/// The coroutines loading classes, by lowercase class name.
+type Loads = HashMap<Vec<u8>, Loading, BuildHasherDefault<DefaultHasher>>;
+
 per_thread! {
-    /// Classes being autoloaded, by lowercase name (`SWOOLE_G(in_autoload)`).
-    static AUTOLOADING: RefCell<HashMap<Vec<u8>, Loading, BuildHasherDefault<DefaultHasher>>> =
-        RefCell::new(HashMap::with_hasher(BuildHasherDefault::new()));
+    /// Classes being autoloaded (`SWOOLE_G(in_autoload)`). Taken out and put
+    /// back around one lookup, insert or remove, which runs no PHP code and
+    /// cannot reach `autoload` again; the autoloader runs, and coroutines
+    /// wait and are woken, with it back.
+    static AUTOLOADING: Cell<Loads> = Cell::new(Loads::with_hasher(BuildHasherDefault::new()));
+}
+
+/// `f` on the classes being autoloaded, taken out meanwhile.
+fn autoloading<R>(f: impl FnOnce(&mut Loads) -> R) -> R {
+    AUTOLOADING.with(|loads| put_back(loads, f))
 }
 
 /// Run Zend's autoloader, trapping its bailouts.
 fn load(name: &ZStr, lc_name: &ZStr) -> Result<*mut zend_class_entry, ()> {
-    let handler = ORIGINAL_AUTOLOAD.get().copied().flatten();
     let mut result = ptr::null_mut();
-    // SAFETY: Zend's autoloader of two live names, trapped in C.
-    if unsafe { swr_zend_autoload_try(handler, name.as_ptr(), lc_name.as_ptr(), &raw mut result) }
-        != 0
-    {
+    // Without an autoloader Zend looks no further (`zend_lookup_class_ex`).
+    let Some(handler) = ORIGINAL_AUTOLOAD.get().copied().flatten() else {
+        return Ok(result);
+    };
+    if swr_zend_autoload_try(handler, name, lc_name, &mut result) != 0 {
         return Err(());
     }
     Ok(result)
@@ -393,10 +420,10 @@ extern "C" fn autoload(name: &ZStr, lc_name: &ZStr) -> *mut zend_class_entry {
         };
         return ce;
     };
-    // SAFETY: Zend marked the class as loading.
-    unsafe { swr_zend_autoload_forget(lc_name.as_ptr()) };
+    // Zend marked the class as loading.
+    swr_zend_autoload_forget(lc_name);
     let key = lc_name.bytes().to_vec();
-    let waiting = AUTOLOADING.with(|a| match a.borrow_mut().get_mut(&key) {
+    let waiting = autoloading(|loads| match loads.get_mut(&key) {
         Some(loading) if loading.owner == current => Some(None),
         Some(loading) => {
             let found = Rc::new(Cell::new(ptr::null_mut()));
@@ -417,8 +444,9 @@ extern "C" fn autoload(name: &ZStr, lc_name: &ZStr) -> *mut zend_class_entry {
         }
         None => {}
     }
-    AUTOLOADING.with(|a| {
-        a.borrow_mut().insert(
+    // None loads it (that was the lookup's `None`), so nothing is replaced.
+    let replaced = autoloading(|loads| {
+        loads.insert(
             key.clone(),
             Loading {
                 owner: current,
@@ -426,8 +454,9 @@ extern "C" fn autoload(name: &ZStr, lc_name: &ZStr) -> *mut zend_class_entry {
             },
         )
     });
+    drop(replaced);
     let loaded = load(name, lc_name);
-    let loading = AUTOLOADING.with(|a| a.borrow_mut().remove(&key));
+    let loading = autoloading(|loads| loads.remove(&key));
     drop(key);
     let Ok(ce) = loaded else {
         drop(loading);

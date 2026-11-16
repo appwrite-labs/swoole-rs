@@ -3,11 +3,12 @@
 use std::{
     ffi::{c_char, c_void},
     io::IoSlice,
+    marker::PhantomData,
     ptr::NonNull,
 };
 use swoole_rs_zend::{
-    Call, UNDEF, ZStr, handlers,
-    sys::{swr_zend_treat_string, zend_long, zend_string, zval},
+    Call, ReturnSlot, UNDEF, ZStr, handlers,
+    sys::{swr_zend_treat_string, zend_long, zval},
 };
 
 unsafe extern "C" {
@@ -20,11 +21,15 @@ unsafe extern "C" {
     safe fn swr_phpstdext_pcre_cache(regex: &ZStr, result: &mut Option<Pattern>) -> u8;
     /// `php_pcre_pce_decref` of the reference the pattern held, which it gives up.
     safe fn swr_phpstdext_pcre_release(entry: Pattern);
-    fn swr_phpstdext_pcre_match(
-        entry: NonNull<c_void>,
-        subject: *mut zend_string,
-        count: *mut zval,
-        result: *mut zval,
+    /// `php_pcre_match_impl` of the lent pattern and live subject inside
+    /// `zend_try`, as upstream calls it: the match count goes in `count`, which
+    /// it writes without reading, and the matches in `result`. Nonzero for a
+    /// bailout.
+    safe fn swr_phpstdext_pcre_match(
+        entry: Lent<'_>,
+        subject: &ZStr,
+        count: &mut zval,
+        result: ReturnSlot<'_>,
         global: bool,
         flags_passed: bool,
         flags: i64,
@@ -38,6 +43,17 @@ unsafe extern "C" {
 /// refcount/memory work and cannot run PHP code.
 #[repr(transparent)]
 struct Pattern(NonNull<c_void>);
+
+/// A [`Pattern`]'s entry, lent while the pattern holds its reference.
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+struct Lent<'a>(NonNull<c_void>, PhantomData<&'a Pattern>);
+
+impl Pattern {
+    fn lend(&self) -> Lent<'_> {
+        Lent(self.0, PhantomData)
+    }
+}
 
 /// Upstream's `php_do_pcre_match` once its arguments parsed.
 fn match_pattern(
@@ -56,20 +72,16 @@ fn match_pattern(
         return Ok(());
     };
     let mut count = UNDEF;
-    // SAFETY: PHP borrows the retained pattern, subject and writable result slots
-    // inside a native trap, below the Pattern owner and all caller frames.
-    let bailed = unsafe {
-        swr_phpstdext_pcre_match(
-            compiled.0,
-            subject.as_ptr(),
-            &raw mut count,
-            call.return_value(),
-            global,
-            call.num_args() >= 3,
-            flags,
-            offset,
-        )
-    };
+    let bailed = swr_phpstdext_pcre_match(
+        compiled.lend(),
+        subject,
+        &mut count,
+        call.return_slot(),
+        global,
+        call.num_args() >= 3,
+        flags,
+        offset,
+    );
     // The trap returned, bailout or not: the reference goes either way.
     swr_phpstdext_pcre_release(compiled);
     swoole_rs_zend::bailout::trapped(i32::from(bailed))

@@ -177,9 +177,9 @@ pub struct Bus {
 impl Drop for Bus {
     /// `~MessageBus`: the pipe records go, their descriptors stay open.
     fn drop(&mut self) {
-        // Outside the hybrid (and in tests, which link no C++) a record has no
-        // timers, buffers or loop: `Socket::free` is the record's deallocation.
-        #[cfg(not(all(feature = "upstream-symbols", not(test))))]
+        // Outside the hybrid a record has no timers, buffers or loop: `Socket::free`
+        // is the record's deallocation.
+        #[cfg(not(feature = "upstream-symbols"))]
         let free_socket: unsafe fn(*mut SocketRecord) = SocketRecord::free;
         // By descriptor, as `init_pipe_socket` recorded them.
         for record in self.pipe_sockets.get_mut().drain(..).flatten() {
@@ -191,7 +191,7 @@ impl Drop for Bus {
     }
 }
 
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 use swoole_rs_tls::upstream::socket_free as free_socket;
 #[cfg(feature = "upstream-symbols")]
 use swoole_rs_tls::upstream::writev_sync;
@@ -826,15 +826,16 @@ impl Bus {
         use swoole_rs_reactor::event_api;
         // `write` passes iovecs over `head` and the caller's bytes.
         let send = |iov: &[libc::iovec]| {
-            if event_api::swoole_event_is_available() {
-                // SAFETY: the caller's live record, on the thread's live loop, and
-                // `write`'s iovecs, over `head` and inside the caller's `data`.
-                unsafe { event_api::swoole_event_writev(socket.as_ptr(), iov.as_ptr(), iov.len()) }
-            } else {
-                // SAFETY: `write`'s iovecs, an `IoSlice`'s layout: the head's bytes and a
-                // chunk inside the caller's `data`, each readable for the call.
-                let vectors = unsafe { std::slice::from_raw_parts(iov.as_ptr().cast(), iov.len()) };
-                writev_sync(socket, vectors)
+            // SAFETY: `write`'s iovecs, an `IoSlice`'s layout: the head's bytes and a
+            // chunk inside the caller's `data`, each readable for the call.
+            let vectors = unsafe { std::slice::from_raw_parts(iov.as_ptr().cast(), iov.len()) };
+            // SAFETY: the same (non-null) record, which the caller keeps alive while
+            // the loop has it registered.
+            match unsafe { Socket::from_ptr(socket.as_ptr()) } {
+                Some(registered) if event_api::swoole_event_is_available() => {
+                    event_api::swoole_event_writev(registered, vectors)
+                }
+                _ => writev_sync(socket, vectors),
             }
         };
         let reduce = || {

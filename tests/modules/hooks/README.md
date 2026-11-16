@@ -28,7 +28,10 @@ excluding `getaddrinfo` (external DNS and network) and `getaddrinfo_timeout` (a
 lookup that misses the resolver cache), as the GoogleTest run did. Where
 upstream's `System` signature carries C++ library types the cases call the hooks
 crate's Rust functions instead (`file_io::read_file`, `wait_signal::system_wait_signal`,
-`poll::socket_poll`), or `resolve::system_getaddrinfo`.
+`poll::socket_poll`), or `resolve::system_getaddrinfo`. Whole-file operations and
+signal waits return typed `Result`s; local adapters retain the original test
+assertions and expected integer/optional outcomes. `file_io` also checks that
+pool refusal is distinct from an I/O error carried back from the worker thread.
 
 `core-tests/src/coroutine/hook.cpp` is Rust too: `system/src/hook.rs` holds its 26
 TESTs, one function each (`coroutine_hook.<name>`, upstream's names, inputs and

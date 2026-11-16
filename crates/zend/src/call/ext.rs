@@ -6,11 +6,24 @@ use crate::{
     bailout::Bailout,
     sys::{
         _zend_expected_type_Z_EXPECTED_PATH, _zend_expected_type_Z_EXPECTED_STRING_OR_LONG,
-        _zend_expected_type_Z_EXPECTED_STRING_OR_NULL, swr_zend_try_call_known,
-        swr_zend_try_parse_str_or_long, zend_string, zval,
+        _zend_expected_type_Z_EXPECTED_STRING_OR_NULL, swr_zend_try_parse_str_or_long, zend_string,
+        zval,
     },
+    zval::Zvals,
 };
 use std::ptr;
+
+unsafe extern "C" {
+    /// `zend_call_known_function(function, NULL, NULL, retval, args, NULL)`
+    /// inside `zend_try` (nonzero for a bailout): a live function, called with
+    /// the lent arguments, which Zend copies, writing its result to `retval`
+    /// in place of what it held, which is not released.
+    safe fn swr_zend_try_call_known(
+        function: Function<'_>,
+        retval: &crate::Value,
+        args: Zvals<'_>,
+    ) -> std::ffi::c_int;
+}
 
 impl Call {
     /// `zend_call_known_function(function, NULL, NULL, return_value, argc,
@@ -18,14 +31,11 @@ impl Call {
     /// # Errors
     /// The function bailed out.
     pub fn call_known(&self, function: Function<'_>, argv: &mut [zval]) -> Result<(), Bailout> {
-        // A frame's argument count plus one at most.
-        let count = u32::try_from(argv.len()).unwrap_or(u32::MAX);
-        // SAFETY: a live function, per its type, and this call's return slot;
-        // Zend reads `count` arguments, copies them, and keeps no pointer to `argv`.
-        let bailed = unsafe {
-            swr_zend_try_call_known(function.as_ptr(), self.value, count, argv.as_mut_ptr())
-        };
-        if bailed != 0 { Err(Bailout) } else { Ok(()) }
+        if swr_zend_try_call_known(function, self.ret(), Zvals::of(argv)) != 0 {
+            Err(Bailout)
+        } else {
+            Ok(())
+        }
     }
     /// `Z_PARAM_STR_OR_NULL`: as `str`, but a passed null is `None`.
     /// # Errors

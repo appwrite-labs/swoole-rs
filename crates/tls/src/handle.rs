@@ -233,14 +233,6 @@ pub struct Cipher {
 }
 
 impl<'a> Ssl<'a> {
-    /// # Safety
-    /// `ssl` is null or a live SSL that nothing frees for `'a`.
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) unsafe fn new(ssl: *mut SSL) -> Option<Self> {
-        NonNull::new(ssl).map(|ssl| Self(ssl, PhantomData))
-    }
-
     /// The SSL of `socket`'s record, or None without one, for as long as the record.
     #[must_use]
     pub fn of(socket: Socket<'a>) -> Option<Self> {
@@ -686,5 +678,19 @@ impl Drop for OwnedSsl {
             safe fn SSL_free(ssl: Released);
         }
         SSL_free(Released(self.0));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NonNull, PhantomData, SSL, Ssl};
+
+    impl Ssl<'_> {
+        /// # Safety
+        /// `ssl` is null or a live SSL that nothing frees while the handle is used.
+        #[must_use]
+        pub(crate) unsafe fn new(ssl: *mut SSL) -> Option<Self> {
+            NonNull::new(ssl).map(|ssl| Self(ssl, PhantomData))
+        }
     }
 }

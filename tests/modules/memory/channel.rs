@@ -240,13 +240,9 @@ fn record_locks_signals_and_prints_like_native_channel() {
     for flags in [0, LOCK, NOTIFY, LOCK | NOTIFY] {
         let bytes = swr_v1_memory_channel_bytes(128, 32);
         assert_eq!(bytes, size_of::<Record>() + 128 + 32 + 4);
-        let mut memory = vec![0u64; bytes.div_ceil(8)];
-        let record = memory.as_mut_ptr().cast::<Record>();
-        assert_eq!(
-            unsafe { swr_v1_memory_channel_init(record, 128, 32, flags) },
-            Ok(())
-        );
-        let live = unsafe { &*record };
+        let mut channel = SharedChannel::make(128, 32, flags).expect("a channel");
+        let record = channel.as_ptr().cast::<Record>();
+        let live = channel.get().expect("a record");
         assert_eq!(live.queue(|queue| queue.mem), record.wrapping_add(1).cast());
         assert!(live.push(b"life"));
         let mut output = [0u8; 32];
@@ -257,12 +253,13 @@ fn record_locks_signals_and_prints_like_native_channel() {
             assert!(live.signal(true), "notify");
             assert!(live.signal(false), "wait");
         }
-        unsafe { swr_v1_memory_channel_close(record) };
+        channel.free();
+        assert!(channel.is_none() && channel.get().is_none(), "freed");
     }
     assert_eq!(swr_v1_memory_channel_bytes(8, 16), 0, "maxlen above size");
     assert_eq!(swr_v1_memory_channel_bytes(usize::MAX, 4), 0, "overflow");
     assert_eq!(
-        unsafe { swr_v1_memory_channel_init(ptr::null_mut(), 128, 32, 0) },
+        SharedChannel::make(8, 16, 0).map(|_| ()),
         Err(ChannelInitError::Invalid)
     );
 }
@@ -304,24 +301,14 @@ fn public_capacity_predicate_preserves_defined_modular_scalar_domain() {
 
 /// `swoole::Channel` as upstream's `include/swoole_channel.h` drove the record: `make`, the
 /// locked `push`, `pop` and `peek`, `wait`, `notify` and `destroy`.
-struct Native(Vec<u64>);
+struct Native(SharedChannel);
 
 impl Native {
     fn make(size: usize, maxlen: usize, flags: i32) -> Self {
-        let total = swr_v1_memory_channel_bytes(size, maxlen);
-        let mut memory = vec![0u64; total.div_ceil(8)];
-        let record = memory.as_mut_ptr().cast::<Record>();
-        assert_eq!(
-            unsafe { swr_v1_memory_channel_init(record, size, maxlen, flags) },
-            Ok(())
-        );
-        Native(memory)
-    }
-    fn record(&self) -> *mut Record {
-        self.0.as_ptr().cast::<Record>().cast_mut()
+        Native(SharedChannel::make(size, maxlen, flags).expect("a channel"))
     }
     fn live(&self) -> &Record {
-        unsafe { &*self.record() }
+        self.0.get().expect("a record")
     }
     /// `push`: 0, or -1 (`SW_ERR`) when it doesn't fit.
     fn push(&self, data: &[u8]) -> i32 {
@@ -343,7 +330,7 @@ impl Native {
 
 impl Drop for Native {
     fn drop(&mut self) {
-        unsafe { swr_v1_memory_channel_close(self.record()) };
+        self.0.free();
     }
 }
 

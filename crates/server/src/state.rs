@@ -3,7 +3,11 @@
 //! `master.cc` kept: worker scheduling, commands, the document root, worker counters, aborts, connection iteration, sends, timers
 //! and the startup error message.
 use core::ffi::c_int;
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering};
+use std::sync::OnceLock;
+
+use crate::port_config::PortConfig;
+use crate::view::Port;
 use std::ffi::CString;
 use swoole_rs_tls::socket_pair::SocketPair;
 
@@ -14,14 +18,12 @@ pub struct ServerState {
     round: AtomicU32,
     /// `command_current_id`: the id the next command gets, from 1.
     pub(crate) next_command: AtomicI32,
-    config: AtomicPtr<crate::config::ServerConfig>,
-    tables: AtomicPtr<crate::records::ServerTables>,
-    pub(crate) static_config:
-        std::sync::OnceLock<std::sync::Mutex<crate::static_config::StaticConfig>>,
+    config: Heap<crate::config::ServerConfig>,
+    tables: Heap<crate::records::ServerTables>,
+    pub(crate) static_config: crate::static_config::Configs,
     pub(crate) commands: std::sync::Mutex<crate::commands::Commands>,
-    /// `Server::ports`, published to `ServerTables::ports` on each push.
-    /// The ports are native's to delete, in `~Server`.
-    ports: std::sync::Mutex<Vec<AtomicPtr<core::ffi::c_void>>>,
+    /// `Server::ports`, which the state deletes as it drops, as `~Server` did.
+    pub(crate) ports: Ports,
     /// The on* members and `dispatch_func` (`callbacks.rs`).
     pub(crate) callbacks: crate::callbacks::ServerCallbacks,
     /// `upload_tmp_dir`, the HTTP server's directory for uploaded files
@@ -30,9 +32,8 @@ pub struct ServerState {
     /// `chroot_`, `user_`, `group_`, `pid_file` and `document_root`, in
     /// [`ServerText`] order. Readers share the value; a write replaces it.
     texts: [std::sync::Mutex<std::sync::Arc<[u8]>>; 5],
-    /// `Server::lock_`, the connection list's fd range lock: whether it is held,
-    /// and how many threads wait for it.
-    locked: (std::sync::Mutex<(bool, u32)>, std::sync::Condvar),
+    /// `Server::lock_`, the connection list's fd range lock.
+    pub(crate) locked: FdLock,
     /// The reactor threads and the heartbeat thread, by `start_thread`'s `arg`.
     #[cfg(any(test, feature = "upstream-symbols"))]
     threads: std::sync::Mutex<Vec<(u64, std::thread::JoinHandle<()>)>>,
@@ -41,7 +42,7 @@ pub struct ServerState {
     /// `gs->pipe_packet_msg_id`, which numbers every bus's messages: the shared
     /// counter `swr_v1_server_shared_init` returned, mapped as long as the buses use it.
     #[cfg_attr(
-        not(all(feature = "upstream-symbols", not(test))),
+        not(feature = "upstream-symbols"),
         expect(dead_code, reason = "only the hybrid's threads number their buses")
     )]
     pub(crate) msg_ids: std::sync::OnceLock<&'static core::sync::atomic::AtomicU64>,
@@ -55,7 +56,7 @@ pub struct ServerState {
     /// `Server::worker_pipes`: each event worker's `UnixSocket`, which
     /// the last `SharedServer` drop closes, as `~Server` did.
     #[cfg_attr(
-        not(all(feature = "upstream-symbols", not(test))),
+        not(feature = "upstream-symbols"),
         expect(dead_code, reason = "only the hybrid makes pipes")
     )]
     #[expect(clippy::vec_box, reason = "a worker holds its pair's address")]
@@ -64,14 +65,14 @@ pub struct ServerState {
     pub(crate) stopping: AtomicBool,
     /// Thread mode's factory's manager, from its factory's creation to its deletion.
     #[cfg_attr(
-        not(all(feature = "upstream-symbols", not(test))),
+        not(feature = "upstream-symbols"),
         expect(dead_code, reason = "only the hybrid makes factories")
     )]
     pub(crate) thread_manager:
         std::sync::Mutex<Option<std::sync::Arc<crate::thread_mode::ThreadManager>>>,
     /// `Server::reactor_thread_barrier`.
     #[cfg_attr(
-        not(all(feature = "upstream-symbols", not(test))),
+        not(feature = "upstream-symbols"),
         expect(dead_code, reason = "only the hybrid's reactor threads wait on it")
     )]
     pub(crate) reactor_thread_barrier: swoole_rs_locks::Barrier,
@@ -80,6 +81,165 @@ pub struct ServerState {
 /// A native thread entry: `void (*)(void *serv, uint64_t arg)`.
 #[cfg(any(test, feature = "upstream-symbols"))]
 pub(crate) type ThreadEntry = fn(crate::view::Server<'_>, u64);
+
+/// A port's place in [`Ports`], set once.
+type Slot = OnceLock<Box<PortConfig>>;
+
+/// `Server::ports`: the listen ports in listen order, each owned from its push to the
+/// state's drop. Append-only, in chunks that never move, so a [`Port`] lent out stays
+/// valid while more ports are added, as upstream's `ListenPort *`s did.
+#[derive(Default)]
+pub struct Ports {
+    /// Chunk `k` holds ports `2^k - 1` to `2^(k+1) - 2`: sixteen hold 65,535, more than
+    /// `add_port` allows.
+    chunks: [OnceLock<Box<[Slot]>>; 16],
+    /// How many are pushed: every port below it is set before the count is published.
+    len: AtomicUsize,
+    /// Held by a push.
+    push: std::sync::Mutex<()>,
+}
+
+impl Ports {
+    /// The chunk and the slot in it of port `index`.
+    fn slot(index: usize) -> (usize, usize) {
+        let n = index + 1;
+        let chunk = usize::try_from(n.ilog2()).unwrap_or(0);
+        (chunk, n - (1 << chunk))
+    }
+
+    /// How many ports the server has.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.len.load(Ordering::Acquire)
+    }
+
+    /// Whether the server has no port.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// `ports[index]`, or `None` past the last.
+    #[must_use]
+    #[inline]
+    pub fn get(&self, index: usize) -> Option<Port<'_>> {
+        if index >= self.len() {
+            return None;
+        }
+        let (chunk, at) = Self::slot(index);
+        let port = self.chunks.get(chunk)?.get()?.get(at)?.get()?;
+        Some(Port::from(&**port))
+    }
+
+    /// The ports in listen order.
+    #[must_use]
+    pub fn iter(&self) -> PortsIter<'_> {
+        PortsIter {
+            ports: self,
+            range: 0..self.len(),
+        }
+    }
+
+    /// The last port added.
+    #[must_use]
+    pub fn last(&self) -> Option<Port<'_>> {
+        self.get(self.len().checked_sub(1)?)
+    }
+
+    /// `ports.push_back(port)`: the list owns the port from now on, and the port's
+    /// `object_id` is the new count.
+    pub(crate) fn push(&self, mut port: Box<PortConfig>) -> Port<'_> {
+        let push = lock(&self.push);
+        let index = self.len.load(Ordering::Relaxed);
+        port.object_id = u16::try_from(index + 1).unwrap_or(u16::MAX);
+        let (chunk, at) = Self::slot(index);
+        let Some(slots) = self.chunks.get(chunk) else {
+            swoole_rs_corebase::fatal("more ports than the list holds");
+        };
+        let slots = slots.get_or_init(|| (0..1 << chunk).map(|_| OnceLock::new()).collect());
+        if slots.get(at).is_none_or(|slot| slot.set(port).is_err()) {
+            swoole_rs_corebase::fatal("a port slot is taken");
+        }
+        self.len.store(index + 1, Ordering::Release);
+        drop(push);
+        self.get(index)
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("a pushed port is not listed"))
+    }
+
+    /// The ports, which the list no longer holds.
+    fn drain(&mut self) -> impl Iterator<Item = Box<PortConfig>> {
+        *self.len.get_mut() = 0;
+        self.chunks
+            .iter_mut()
+            .filter_map(OnceLock::take)
+            .flat_map(|slots| slots.into_iter().filter_map(OnceLock::into_inner))
+    }
+}
+
+/// [`Ports::iter`]: the ports listed when it began.
+pub struct PortsIter<'a> {
+    ports: &'a Ports,
+    range: core::ops::Range<usize>,
+}
+
+impl<'a> Iterator for PortsIter<'a> {
+    type Item = Port<'a>;
+
+    fn next(&mut self) -> Option<Port<'a>> {
+        self.ports.get(self.range.next()?)
+    }
+}
+
+impl DoubleEndedIterator for PortsIter<'_> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        self.ports.get(self.range.next_back()?)
+    }
+}
+
+impl<'a> IntoIterator for &'a Ports {
+    type Item = Port<'a>;
+    type IntoIter = PortsIter<'a>;
+
+    fn into_iter(self) -> PortsIter<'a> {
+        self.iter()
+    }
+}
+
+/// `Server::lock_`: whether it is held, and how many threads wait for it.
+#[derive(Default)]
+pub(crate) struct FdLock(std::sync::Mutex<(bool, u32)>, std::sync::Condvar);
+
+impl FdLock {
+    /// `Server::lock()`: blocks until this thread holds the lock.
+    pub(crate) fn lock(&self) {
+        let Self(lock, released) = self;
+        let mut lock = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while lock.0 {
+            lock.1 += 1;
+            lock = released
+                .wait(lock)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            lock.1 -= 1;
+        }
+        lock.0 = true;
+    }
+
+    /// `Server::unlock()`, by the thread holding the lock. std's condvar makes a
+    /// futex syscall on every notify, so only a waiter is woken: `add` and
+    /// `close_connection` unlock once each a connection (#2964).
+    pub(crate) fn unlock(&self) {
+        let Self(lock, released) = self;
+        let mut lock = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        lock.0 = false;
+        if lock.1 > 0 {
+            released.notify_one();
+        }
+    }
+}
 
 /// The server's text members, `ServerState::texts`' slots.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,15 +270,15 @@ impl ServerState {
         Self {
             round: AtomicU32::new(0),
             next_command: AtomicI32::new(1),
-            config: AtomicPtr::new(Box::into_raw(Box::new(config))),
-            tables: AtomicPtr::new(Box::into_raw(Box::new(tables))),
+            config: Heap::new(config),
+            tables: Heap::new(tables),
             static_config: std::sync::OnceLock::new(),
             commands: std::sync::Mutex::new(crate::commands::Commands::new()),
-            ports: std::sync::Mutex::new(Vec::new()),
+            ports: Ports::default(),
             callbacks: crate::callbacks::ServerCallbacks::new(),
             upload_tmp_dir: std::sync::Mutex::new(None),
             texts: Default::default(),
-            locked: (std::sync::Mutex::new((false, 0)), std::sync::Condvar::new()),
+            locked: FdLock::default(),
             #[cfg(any(test, feature = "upstream-symbols"))]
             threads: std::sync::Mutex::new(Vec::new()),
             local_addrs: std::sync::OnceLock::new(),
@@ -133,7 +293,7 @@ impl ServerState {
 
     /// `new UnixSocket(true, SOCK_DGRAM)` for `worker`'s pipes: false, closing it,
     /// when the pair isn't ready.
-    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    #[cfg(feature = "upstream-symbols")]
     pub(crate) fn push_worker_pipe(
         &self,
         worker: swoole_rs_process::worker_record::Worker<'_>,
@@ -174,7 +334,7 @@ impl ServerState {
 
     /// `~Server`'s close of `task_notify_pipes` and `worker_pipes`. Not the state's
     /// drop: an archive user that never runs a server links no C++ for `Socket::free`.
-    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    #[cfg(feature = "upstream-symbols")]
     pub(crate) fn close_pipes(&self) {
         let task = core::mem::take(&mut *lock(&self.task_pipes));
         let worker = core::mem::take(&mut *lock(&self.worker_pipes));
@@ -244,42 +404,12 @@ impl ServerState {
 
     /// `swoole_set_isolation(group_, user_, chroot_)`: a worker drops to the
     /// configured group and user, then chroots.
-    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    #[cfg(feature = "upstream-symbols")]
     pub(crate) fn set_isolation(&self) {
         let text = |kind| CString::new(&*self.text(kind)).unwrap_or_default();
         let root = text(ServerText::Chroot);
         let (user, group) = (text(ServerText::User), text(ServerText::Group));
         swoole_rs_ossupport::set_isolation(&group, &user, &root);
-    }
-
-    /// `Server::lock()`: blocks until this thread holds the lock.
-    pub(crate) fn lock(&self) {
-        let (lock, released) = &self.locked;
-        let mut lock = lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        while lock.0 {
-            lock.1 += 1;
-            lock = released
-                .wait(lock)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            lock.1 -= 1;
-        }
-        lock.0 = true;
-    }
-
-    /// `Server::unlock()`, by the thread holding the lock. std's condvar makes a
-    /// futex syscall on every notify, so only a waiter is woken: `add` and
-    /// `close_connection` unlock once each a connection (#2964).
-    pub(crate) fn unlock(&self) {
-        let (lock, released) = &self.locked;
-        let mut lock = lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        lock.0 = false;
-        if lock.1 > 0 {
-            released.notify_one();
-        }
     }
 
     /// Starts a thread of `serv`, whose state this is, running `entry(serv, arg)`;
@@ -317,36 +447,6 @@ impl ServerState {
         Some(threads.swap_remove(index).1)
     }
 
-    /// `Server::ports.push_back(port)`: the server owns the port from now on, and the
-    /// port's `object_id` is the new count.
-    ///
-    /// # Safety
-    /// No other thread reads the list during the push, and no slice of it
-    /// ([`crate::records::ServerTables::ports`]) is used after it.
-    pub(crate) unsafe fn push_port(
-        &self,
-        mut port: Box<crate::port_config::PortConfig>,
-    ) -> crate::view::Port<'_> {
-        let mut ports = self
-            .ports
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let count = u32::try_from(ports.len() + 1).unwrap_or(u32::MAX);
-        port.object_id = u16::try_from(count).unwrap_or(u16::MAX);
-        let port = Box::into_raw(port).cast::<core::ffi::c_void>();
-        ports.push(AtomicPtr::new(port));
-        // `AtomicPtr` has the layout of the pointer it holds. No reader runs during the
-        // push, per the caller.
-        self.tables_ref().ports.set(crate::records::PortList {
-            items: ports.as_ptr().cast(),
-            count,
-        });
-        drop(ports);
-        // The port just published, the list's last.
-        let kept = self.tables_ref().ports().last().copied();
-        kept.unwrap_or_else(|| swoole_rs_corebase::fatal("a pushed port is not listed"))
-    }
-
     /// `serv->running`.
     pub(crate) fn running(&self) -> bool {
         self.config_ref().running.load(Ordering::Acquire)
@@ -358,24 +458,22 @@ impl ServerState {
     }
 
     pub(crate) fn config(&self) -> *mut crate::config::ServerConfig {
-        self.config.load(Ordering::Relaxed)
+        self.config.as_ptr()
     }
 
     pub(crate) fn tables(&self) -> *mut crate::records::ServerTables {
-        self.tables.load(Ordering::Relaxed)
+        self.tables.as_ptr()
     }
 
     /// The configuration, which native code writes only before the server
     /// starts or under the server's own synchronization.
     pub(crate) fn config_ref(&self) -> &crate::config::ServerConfig {
-        // SAFETY: the box this state owns until it drops.
-        unsafe { &*self.config() }
+        &self.config
     }
 
     /// The table view, written as `config_ref` says.
     pub(crate) fn tables_ref(&self) -> &crate::records::ServerTables {
-        // SAFETY: the box this state owns until it drops.
-        unsafe { &*self.tables() }
+        &self.tables
     }
 
     #[cfg(test)]
@@ -463,14 +561,59 @@ fn lock<T>(list: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 impl Drop for ServerState {
     fn drop(&mut self) {
-        // SAFETY: this state owns its unique table-view box; the shared arena is a loan.
-        drop(unsafe { Box::from_raw(*self.tables.get_mut()) });
-        // SAFETY: this state owns its unique configuration box; native reference
-        // views have ended before the base owner frees the state.
-        let mut config = unsafe { Box::from_raw(*self.config.get_mut()) };
-        // The shared record, after the tables' message bus, which numbers its messages
-        // from a counter in it.
-        config.gs.free();
+        for port in self.ports.drain() {
+            port.delete();
+        }
+        // The tables' message bus numbers its messages from a counter in the shared
+        // record, so the tables go first.
+        drop(core::mem::replace(
+            &mut self.tables,
+            Heap::new(crate::records::ServerTables::default()),
+        ));
+        self.config
+            .gs
+            .replace(swoole_rs_memory::members::Shm::empty());
+    }
+}
+
+/// A record kept on the heap from its construction to its drop: lent as `&T`, and,
+/// to the code that writes it under the server's own synchronization, as the address
+/// it was boxed at, which no reference this lends retags.
+pub(crate) struct Heap<T: ?Sized>(core::ptr::NonNull<T>);
+
+impl<T> Heap<T> {
+    pub(crate) fn new(value: T) -> Self {
+        Self::from(Box::new(value))
+    }
+}
+
+impl<T: ?Sized> From<Box<T>> for Heap<T> {
+    fn from(value: Box<T>) -> Self {
+        Self(core::ptr::NonNull::from(Box::leak(value)))
+    }
+}
+
+impl<T: ?Sized> Heap<T> {
+    /// The record's address.
+    pub(crate) fn as_ptr(&self) -> *mut T {
+        self.0.as_ptr()
+    }
+}
+
+impl<T: ?Sized> core::ops::Deref for Heap<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        // SAFETY: the box `from` leaked, which only `drop` frees; a writer through
+        // `as_ptr` keeps to the server's synchronization, as it would through `&T`.
+        unsafe { self.0.as_ref() }
+    }
+}
+
+impl<T: ?Sized> Drop for Heap<T> {
+    fn drop(&mut self) {
+        // SAFETY: the box `from` leaked, freed once, here.
+        drop(unsafe { Box::from_raw(self.0.as_ptr()) });
     }
 }
 
@@ -492,13 +635,13 @@ pub(crate) mod tests {
         /// this state lent is live.
         fn config_mut(&mut self) -> &mut crate::config::ServerConfig {
             // SAFETY: the box this state owns until it drops, borrowed through `&mut self`.
-            unsafe { &mut **self.config.get_mut() }
+            unsafe { &mut *self.config.as_ptr() }
         }
 
         /// The table view, to write, as [`Self::config_mut`].
         fn tables_mut(&mut self) -> &mut crate::records::ServerTables {
             // SAFETY: the box this state owns until it drops, borrowed through `&mut self`.
-            unsafe { &mut **self.tables.get_mut() }
+            unsafe { &mut *self.tables.as_ptr() }
         }
     }
 
@@ -591,35 +734,31 @@ pub(crate) mod tests {
         assert_eq!(&*state.text(ServerText::DocumentRoot), b"/srv/www");
         assert_eq!(&*state.text(ServerText::PidFile), b"");
 
-        let state = std::sync::Arc::new(state);
-        state.lock();
+        let lock = std::sync::Arc::new(FdLock::default());
+        lock.lock();
         // Two waiters: the unlock wakes one, whose unlock wakes the other.
         let waiters: Vec<_> = (0..2)
             .map(|_| {
-                let state = std::sync::Arc::clone(&state);
+                let lock = std::sync::Arc::clone(&lock);
                 std::thread::spawn(move || {
-                    state.lock();
-                    state.unlock();
+                    lock.lock();
+                    lock.unlock();
                 })
             })
             .collect();
         // Both blocked in the wait before the unlock, so it must hand over twice.
-        while state.locked.0.lock().unwrap().1 < 2 {
+        while lock.0.lock().unwrap().1 < 2 {
             std::thread::yield_now();
         }
         assert!(
             !waiters.iter().any(std::thread::JoinHandle::is_finished),
             "the lock is held"
         );
-        state.unlock();
+        lock.unlock();
         for waiter in waiters {
             waiter.join().unwrap();
         }
-        assert_eq!(
-            *state.locked.0.lock().unwrap(),
-            (false, 0),
-            "free, no waiters"
-        );
+        assert_eq!(*lock.0.lock().unwrap(), (false, 0), "free, no waiters");
     }
 
     #[test]

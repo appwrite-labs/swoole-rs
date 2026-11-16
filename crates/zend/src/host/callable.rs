@@ -90,6 +90,13 @@ impl Callable {
         ptr::from_ref(&self.cache).cast_mut()
     }
 
+    /// The cache, lent for [`super::function_call`].
+    #[must_use]
+    #[inline]
+    pub fn cache(&self) -> super::Callee<'_> {
+        super::Callee(self.cache_ptr(), std::marker::PhantomData)
+    }
+
     /// `callable->call(args.len(), args, retval)` inside `zend_try`, or with
     /// `from_loop` `sw_zend_call_function_ex2`, which raises an uncaught
     /// exception at once as the event loop's callbacks do: whether the call

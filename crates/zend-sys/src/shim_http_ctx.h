@@ -12,7 +12,8 @@ void swr_zend_array_init_size(zval *target, uint32_t size);
 /* PG(max_input_vars). */
 zend_long swr_zend_http_max_input_vars(void);
 /* Append `file` to the request's `tmpfiles` and register it in
- * SG(rfc1867_uploaded_files) for is_uploaded_file()/move_uploaded_file(). */
+ * SG(rfc1867_uploaded_files), when there is one, for
+ * is_uploaded_file()/move_uploaded_file(). */
 void swr_zend_http_upload(zval *tmpfiles, const char *file, size_t length);
 /* Swoole's copy of php_default_treat_data for PARSE_STRING and PARSE_COOKIE:
  * the variables in `str` (an emalloc'd string it frees) into `array`. False

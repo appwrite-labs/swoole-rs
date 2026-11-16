@@ -60,7 +60,7 @@ pub struct CoSocket {
     /// lent out, which `init` makes and `fini` releases.
     pub(crate) state: Option<Box<Bound>>,
     /// The record's metadata, which `init` makes and `fini` releases.
-    pub(crate) extra: UnsafeCell<Option<Box<SocketExtra>>>,
+    pub(crate) extra: Cell<Option<Box<SocketExtra>>>,
 }
 
 /// Field offsets native code asserts too (`swoole_rs_co_socket.h`).
@@ -162,7 +162,6 @@ impl Bound {
 
 /// The parts `with_*` lend as `&mut`, one bit each in [`Bound`]'s `lent`.
 const STATE: u8 = 1;
-const EXTRA: u8 = 2;
 const READ_BUFFER: u8 = 4;
 const WRITE_BUFFER: u8 = 8;
 
@@ -503,17 +502,15 @@ impl Co {
             .is_some_and(|network| interest(network, kind, swoole_rs_reactor::Events::NONE))
     }
 
-    /// The record's metadata, `None` once released.
-    /// # Panics
-    /// Inside another `with_extra` over the same record.
-    #[track_caller]
+    /// `f` over the record's metadata, which the record gives up while `f` runs and
+    /// takes back after: `None` once released, and inside another `with_extra` over
+    /// the same record.
     pub fn with_extra<T>(self, f: impl FnOnce(&mut SocketExtra) -> T) -> Option<T> {
-        self.lend(EXTRA, |_| {
-            // SAFETY: the live record's metadata, which the loan makes this its only
-            // reference to.
-            let extra = unsafe { &mut *self.record().extra.get() };
-            extra.as_deref_mut().map(f)
-        })
+        let slot = &self.record().extra;
+        let mut extra = slot.take()?;
+        let result = f(&mut extra);
+        slot.set(Some(extra));
+        Some(result)
     }
 
     /// The bound coroutines, barriers and timers.
@@ -591,7 +588,7 @@ impl CoSocket {
             zero_copy: Cell::new(false),
             resolve_context: Cell::new(ptr::null_mut()),
             state: Some(Box::new(Bound::new())),
-            extra: UnsafeCell::new(Some(SocketExtra::boxed())),
+            extra: Cell::new(Some(SocketExtra::boxed())),
         }
     }
 
@@ -643,7 +640,7 @@ impl CoSocket {
             let on: c_int = 1;
             let set =
                 swoole_rs_corebase::sys::setsockopt(fd, libc::IPPROTO_TCP, libc::TCP_NODELAY, &on);
-            if set < 0 {
+            if set.is_err() {
                 result |= NODELAY_FAILED;
             }
         }
@@ -794,7 +791,7 @@ impl CoSocket {
     /// constructor's undo or the end of `~Socket()`.
     pub(crate) fn fini(&mut self) {
         self.state = None;
-        *self.extra.get_mut() = None;
+        self.extra.set(None);
     }
 
     /// The public constructors' work over a fresh record (see
@@ -1390,14 +1387,15 @@ mod tests {
         });
     }
 
+    /// The metadata is the outer call's while it runs: a nested call sees none, and
+    /// the record has it back after.
     #[test]
-    #[should_panic(expected = "overlaps")]
-    fn nested_extra_borrow_panics() {
+    fn nested_extra_sees_none() {
         let mut socket = TestSocket::new();
         let co = socket.co();
-        co.with_extra(|outer| {
-            co.with_extra(|inner| inner.proxies = core::mem::take(&mut outer.proxies))
-        });
+        let nested = co.with_extra(|_| co.with_extra(|_| ()));
+        assert_eq!(nested, Some(None));
+        assert_eq!(co.with_extra(|_| ()), Some(()));
     }
 
     #[test]

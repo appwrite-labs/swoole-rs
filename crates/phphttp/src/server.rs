@@ -12,13 +12,13 @@ use crate::{
     websocket,
 };
 use std::{
-    cell::RefCell,
+    cell::Cell,
     collections::VecDeque,
     ffi::c_int,
     mem::ManuallyDrop,
     sync::atomic::{AtomicU32, Ordering::SeqCst},
 };
-use swoole_rs_corebase::{CCast, HookType, swoole_call_hook, swoole_isset_hook};
+use swoole_rs_corebase::{CCast, HookType, swoole_isset_hook};
 use swoole_rs_corebase::{DataHead, WebSocketStatus, log};
 use swoole_rs_memory::flat::Table;
 use swoole_rs_phpserver::PortCallback;
@@ -30,11 +30,19 @@ use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_process::worker_globals::with_current;
 use swoole_rs_process::worker_record::WorkerType;
 use swoole_rs_server::{Connection, DispatchMode, Mode, view};
-use swoole_rs_zend::sys::{
-    ZEND_ACC_NOT_SERIALIZABLE, swr_zend_http_uploads_rinit, swr_zend_http_uploads_rshutdown,
-    zend_long, zval,
-};
+use swoole_rs_zend::sys::{ZEND_ACC_NOT_SERIALIZABLE, zend_long, zval};
 use swoole_rs_zend::{Class, Owned, ZStr, ZString, bailout};
+
+unsafe extern "C" {
+    /// `SG(rfc1867_uploaded_files)`, made when the request has none: SAPI
+    /// globals of this thread only, and no PHP code runs.
+    safe fn swr_zend_http_uploads_rinit();
+    /// `SG(rfc1867_uploaded_files)`'s files unlinked and the table freed and
+    /// nulled, when there is one: SAPI globals of this thread only, which no
+    /// Rust borrows (an upload into the table finds none and skips it), and no
+    /// PHP code runs.
+    safe fn swr_zend_http_uploads_rshutdown();
+}
 
 /// `Swoole\Http\Server`: `Swoole\Server` with no methods of its own.
 pub(crate) static SERVER: Class = Class::new();
@@ -116,11 +124,36 @@ use swoole_rs_clients::address::{
 /// connection's fd. The session check drops a reused fd's entry. RSHUTDOWN
 /// releases them; a thread's exit, after the request heap is gone, must not.
 type Addresses = ManuallyDrop<Table<(i64, [ZString; 2])>>;
+/// Requests waiting for the worker's concurrency to drop, oldest first.
+type Queue = VecDeque<Ctx>;
 
 php_local! {
-    static ADDRESSES: RefCell<Addresses> = RefCell::new(ManuallyDrop::new(Table::new()));
-    /// Requests waiting for the worker's concurrency to drop.
-    static QUEUED: RefCell<VecDeque<Ctx>> = RefCell::new(VecDeque::new());
+    /// Taken out and put back around each lookup, which runs no PHP code; an
+    /// entry it replaces or removes is released once the table is back.
+    static ADDRESSES: Cell<Addresses> = Cell::new(ManuallyDrop::new(Table::new()));
+    /// Taken out and put back around each push and pop.
+    static QUEUED: Cell<Queue> = Cell::new(Queue::new());
+}
+
+/// The address table, out of its cell until the caller puts it back; an
+/// empty table allocates nothing.
+fn take_addresses() -> Addresses {
+    ADDRESSES.replace(ManuallyDrop::new(Table::new()))
+}
+
+/// Queue `ctx` behind the waiting requests.
+fn enqueue(ctx: Ctx) {
+    let mut queued = QUEUED.take();
+    queued.push_back(ctx);
+    QUEUED.set(queued);
+}
+
+/// The oldest waiting request, out of the queue before the caller acts on it.
+fn dequeue() -> Option<Ctx> {
+    let mut queued = QUEUED.take();
+    let ctx = queued.pop_front();
+    QUEUED.set(queued);
+    ctx
 }
 
 fn address(server: view::Server<'_>, conn: Connection<'_>, local: bool) -> ZString {
@@ -176,16 +209,20 @@ fn cached(
     fd: usize,
     session: i64,
 ) -> Option<[ZString; 2]> {
-    ADDRESSES.with_borrow_mut(|cached| {
-        if let Some((owner, addresses)) = cached.get(fd)
-            && *owner == session
-        {
-            return Some(addresses.each_ref().map(|address| ZStr::to_owned(address)));
-        }
-        let addresses = [address(server, conn, true), address(server, conn, false)];
+    let mut cached = take_addresses();
+    if let Some((owner, addresses)) = cached.get(fd)
+        && *owner == session
+    {
         let copies = addresses.each_ref().map(|address| ZStr::to_owned(address));
-        cached.insert(fd, (session, addresses)).ok().map(|_| copies)
-    })
+        ADDRESSES.set(cached);
+        return Some(copies);
+    }
+    let addresses = [address(server, conn, true), address(server, conn, false)];
+    let copies = addresses.each_ref().map(|address| ZStr::to_owned(address));
+    let inserted = cached.insert(fd, (session, addresses));
+    ADDRESSES.set(cached);
+    // A reused fd's old entry, or the entry the table couldn't hold, goes now.
+    inserted.ok().map(|_| copies)
 }
 
 /// `php_swoole_http_server_onReceive`: route the data to another protocol's
@@ -319,20 +356,14 @@ pub(crate) fn call_handler(
     coroutine: bool,
     then: Then,
 ) -> Result<bool, bailout::Bailout> {
-    // SAFETY: the resolved cache of a callable the caller holds through the
-    // call, and the arguments; the coroutine leaf, `then` and the reporter run
-    // inside C traps.
-    let called = unsafe {
-        swoole_rs_zend::host::function_call(
-            callable.cache_ptr(),
-            u32::try_from(args.len()).unwrap_or(0),
-            args.as_mut_ptr(),
-            std::ptr::null_mut(),
-            coroutine,
-            swoole_rs_phpcoroutines::create_coroutine,
-            then,
-        )
-    };
+    let called = swoole_rs_zend::host::function_call(
+        callable.cache(),
+        swoole_rs_zend::Zvals::of(args),
+        None,
+        coroutine,
+        swoole_rs_phpcoroutines::CREATOR,
+        then,
+    );
     called.map_err(|bailout| {
         let _relayed = bailout::relay_to_c(Err(bailout));
         bailout::Bailout
@@ -463,8 +494,7 @@ fn handle(
     add_server(state, Key::MasterTime, master_time);
     // The hooks may reach the context: no borrow of it is held across them.
     if swoole_isset_hook(HookType::BEFORE_REQUEST) {
-        // SAFETY: the hook's context argument.
-        unsafe { swoole_call_hook(HookType::BEFORE_REQUEST, ctx.raw()) };
+        ctx.call_hook(context::Hook::BeforeRequest);
     }
     // Parsing an upgrade request sets the connection's status.
     let handshake = server
@@ -620,11 +650,13 @@ pub fn http_server_on_close(server: view::Server<'_>, info: &DataHead) {
     if let Some(conn) = server.by_session(session)
         && let Ok(fd) = usize::try_from(conn.fd())
     {
-        ADDRESSES.with_borrow_mut(|cached| {
-            if cached.get(fd).is_some_and(|(owner, _)| *owner == session) {
-                cached.remove(fd);
-            }
-        });
+        let mut cached = take_addresses();
+        let removed = cached
+            .get(fd)
+            .is_some_and(|(owner, _)| *owner == session)
+            .then(|| cached.remove(fd));
+        ADDRESSES.set(cached);
+        drop(removed);
     }
     php_swoole_server_on_close(server, info);
 }
@@ -670,7 +702,7 @@ pub(crate) fn admit(ctx: Ctx) -> bool {
     if with_current(|current| current.add_concurrency()).unwrap_or_default()
         >= worker.max_concurrency
     {
-        QUEUED.with_borrow_mut(|queued| queued.push_back(ctx));
+        enqueue(ctx);
         return false;
     }
     true
@@ -684,7 +716,7 @@ pub(crate) fn release_request() {
         return;
     };
     if worker.shutdown {
-        while let Some(ctx) = QUEUED.with_borrow_mut(VecDeque::pop_front) {
+        while let Some(ctx) = dequeue() {
             context::send(ctx, SERVICE_UNAVAILABLE);
             context::close(ctx);
             abandon(ctx);
@@ -693,7 +725,7 @@ pub(crate) fn release_request() {
     }
     worker.server_concurrency.fetch_sub(1, SeqCst);
     with_current(|current| current.sub_concurrency());
-    if let Some(ctx) = QUEUED.with_borrow_mut(VecDeque::pop_front) {
+    if let Some(ctx) = dequeue() {
         // Upstream dereferences `sw_reactor()` here unchecked.
         if swoole_rs_reactor::event_api::swoole_event_defer_value(Turn(ctx)).is_err() {
             swoole_rs_corebase::fatal("no reactor to defer the queued request to");
@@ -704,20 +736,16 @@ pub(crate) fn release_request() {
 /// `php_swoole_http_server_rinit`: the uploaded files `is_uploaded_file`
 /// and `move_uploaded_file` know.
 pub extern "C" fn server_rinit() {
-    // SAFETY: RINIT, on the request's thread.
-    unsafe { swr_zend_http_uploads_rinit() };
+    swr_zend_http_uploads_rinit();
 }
 
 /// `php_swoole_http_server_rshutdown`: forget the uploaded files, then drop
 /// the cached addresses and the queued requests. A bailout their release
 /// deferred is raised last, into the hook's `zend_try`.
 pub extern "C" fn server_rshutdown() {
-    // SAFETY: RSHUTDOWN, on the request's thread.
-    unsafe { swr_zend_http_uploads_rshutdown() };
-    let addresses = ADDRESSES
-        .with_borrow_mut(|cached| std::mem::replace(cached, ManuallyDrop::new(Table::new())));
-    drop(ManuallyDrop::into_inner(addresses));
-    while let Some(ctx) = QUEUED.with_borrow_mut(VecDeque::pop_front) {
+    swr_zend_http_uploads_rshutdown();
+    drop(ManuallyDrop::into_inner(take_addresses()));
+    while let Some(ctx) = dequeue() {
         abandon(ctx);
     }
     bailout::finish();

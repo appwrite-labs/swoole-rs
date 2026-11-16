@@ -9,6 +9,7 @@
 //! is printed and fails the case at exit, as GoogleTest's nonfatal assertions do.
 
 use std::ffi::{CStr, c_char, c_int, c_void};
+use std::io::IoSlice;
 use std::ptr::{self, null_mut};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, Ordering::Relaxed};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -69,12 +70,6 @@ struct CppString {
     offset: i64,
     str: *mut c_char,
     allocator: *const c_void,
-}
-
-#[repr(C)]
-struct Iovec {
-    base: *const c_void,
-    len: usize,
 }
 
 unsafe extern "C" {
@@ -160,7 +155,7 @@ fn reactor_new(max_event: c_int, kind: c_int) -> Running<'static> {
 /// `delete reactor`.
 unsafe fn reactor_delete(reactor: Running<'_>) {
     // SAFETY: as the caller guarantees: a reactor from `reactor_new`, used no more.
-    unsafe { swoole_rs_ffi::swr_v1_reactor_delete(reactor.as_ptr()) }
+    unsafe { swoole_rs_ffi::swr_v1_reactor_delete(reactor) }
 }
 
 /// The reactor's public fields.
@@ -525,20 +520,8 @@ unsafe fn writev() {
 
         let _ = swoole_rs_ffi::swoole_event_init(SW_EVENTLOOP_WAIT_EXIT);
 
-        let iov = [
-            Iovec {
-                base: c"hello ".as_ptr().cast(),
-                len: 6,
-            },
-            Iovec {
-                base: c"world\n".as_ptr().cast(),
-                len: 6,
-            },
-        ];
-        assert_eq!(
-            event_api::swoole_event_writev(fake_sock, iov.as_ptr().cast(), 2),
-            12
-        );
+        let iov = [IoSlice::new(b"hello "), IoSlice::new(b"world\n")];
+        assert_eq!(event_api::swoole_event_writev(handle(fake_sock), &iov), 12);
 
         let mut buf = [0u8; 32];
         assert_eq!(sock_read(sock(&p, false), &mut buf), 12);
@@ -546,10 +529,7 @@ unsafe fn writev() {
 
         // `fake_sock.ssl = (SSL *) -1`: a non-null SSL the write refuses before using.
         (*fake_sock).fields.set_ssl(usize::MAX as *mut c_void);
-        assert_eq!(
-            event_api::swoole_event_writev(fake_sock, iov.as_ptr().cast(), 2),
-            -1
-        );
+        assert_eq!(event_api::swoole_event_writev(handle(fake_sock), &iov), -1);
         assert_eq!(
             last_error(),
             error(ErrorCode::SW_ERROR_OPERATION_NOT_SUPPORT)

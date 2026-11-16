@@ -144,6 +144,16 @@ impl SocketAddress {
         self.named(fd, accept)
     }
 
+    /// `accept4(2)` on `fd` with `flags`, as [`Self::accept`]: the accepted
+    /// descriptor, or `None` with `errno` set.
+    #[cfg(target_os = "linux")]
+    pub fn accept4(&mut self, fd: c_int, flags: c_int) -> Option<std::os::fd::OwnedFd> {
+        let mut room = Room::FULL;
+        let result = accept4(fd, &mut self.addr, &mut room, flags);
+        self.len = room.0;
+        result
+    }
+
     /// `name(fd, ...)` into the whole storage, its length going to `len`.
     fn named(&mut self, fd: c_int, name: NameCall) -> c_int {
         let mut room = Room::FULL;
@@ -185,6 +195,13 @@ unsafe extern "C" {
     safe fn accept(fd: c_int, address: &mut AddressStorage, room: &mut Room) -> c_int;
     safe fn getsockname(fd: c_int, address: &mut AddressStorage, room: &mut Room) -> c_int;
     safe fn getpeername(fd: c_int, address: &mut AddressStorage, room: &mut Room) -> c_int;
+    #[cfg(target_os = "linux")]
+    safe fn accept4(
+        fd: c_int,
+        address: &mut AddressStorage,
+        room: &mut Room,
+        flags: c_int,
+    ) -> Option<std::os::fd::OwnedFd>;
 }
 
 /// `swoole::PacketLength`: the bytes a length function measures, and the header

@@ -90,10 +90,10 @@ uint32_t swr_zend_tracer_lineno(void) {
     return ex->opline->lineno;
 }
 
-int swr_zend_try_write(const char *text, size_t length) {
+int swr_zend_try_write(struct iovec text) {
     volatile int bailed = 0;
     SWR_ZEND_TRY {
-        ZEND_WRITE(text, length);
+        ZEND_WRITE(text.iov_base, text.iov_len);
     }
     SWR_ZEND_CATCH {
         bailed = 1;

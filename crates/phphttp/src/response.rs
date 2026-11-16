@@ -12,7 +12,7 @@ use std::{
     ffi::{CString, c_int},
     sync::atomic::Ordering::Relaxed,
 };
-use swoole_rs_corebase::{CCast, HookType, swoole_call_hook, swoole_isset_hook};
+use swoole_rs_corebase::{CCast, HookType, swoole_isset_hook};
 use swoole_rs_httpbindings::{canonical_case, swr_v1_httpbindings_file_range};
 use swoole_rs_phpstubs::http_response;
 use swoole_rs_phpswoole::MinitArgs;
@@ -218,10 +218,7 @@ fn after(ctx: Ctx) -> Result<(), Bailout> {
     if !swoole_isset_hook(HookType::AFTER_RESPONSE) {
         return Ok(());
     }
-    swoole_rs_zend::contain_with(|| {
-        // SAFETY: the hooks take the live context, as upstream passed it.
-        unsafe { swoole_call_hook(HookType::AFTER_RESPONSE, ctx.raw()) };
-    })
+    swoole_rs_zend::contain_with(|| ctx.call_hook(context::Hook::AfterResponse))
 }
 
 fn end(call: &Call) {
@@ -644,6 +641,8 @@ fn refuse(call: &Call, message: &str) {
 fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
     let mut paired = false;
     let mut ctx = None;
+    // The running server's share, which keeps it while this method reads it.
+    let shared;
     let mut server = None;
     let mut socket = None;
     if let Some(pair) = object.array() {
@@ -691,8 +690,8 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
         }
     } else {
         fd = object.long();
-        // SAFETY: the running server, which nothing deletes during this method.
-        server = unsafe { swoole_rs_server::view::Server::current() };
+        shared = swoole_rs_server::SharedServer::current();
+        server = shared.as_ref().map(swoole_rs_server::SharedServer::view);
     }
     if server.is_some_and(|server| !server.is_started()) {
         return refuse(call, "server is not running");

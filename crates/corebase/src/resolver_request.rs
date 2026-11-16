@@ -3,7 +3,7 @@
 //! `AsyncEvent` carrying it another. Records contain no callbacks.
 use crate::StringSlot;
 use crate::resolver::{DIAGNOSTIC_FAILED, gethostbyname, ntop, resolve_addresses};
-use core::cell::{Cell, RefCell};
+use core::cell::Cell;
 use core::ffi::{c_char, c_int};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::ffi::CString;
@@ -35,7 +35,8 @@ pub struct ResolverRequest {
     refs: AtomicUsize,
     fields: Cell<ResolverFields>,
     strings: [StringSlot; 3],
-    results: RefCell<Vec<libc::sockaddr_in6>>,
+    /// Set whole by `lookup`; readers take it out and put it back around a copy.
+    results: Cell<Vec<libc::sockaddr_in6>>,
 }
 #[repr(C)]
 pub struct PreparedResolver {
@@ -96,7 +97,7 @@ impl ResolverRequest {
                 count: 0,
             }),
             strings: std::array::from_fn(|_| StringSlot::default()),
-            results: RefCell::new(Vec::new()),
+            results: Cell::new(Vec::new()),
         })
     }
 
@@ -192,7 +193,7 @@ impl ResolverRequest {
         let Some(found) = copied(found.get(..count).unwrap_or_default()) else {
             return Err(ResolveError::Alloc);
         };
-        self.results.replace(found);
+        self.results.set(found);
         Ok(())
     }
 
@@ -217,11 +218,8 @@ impl ResolverRequest {
         }
     }
 
-    /// Address `index` as text, or none past the end; `valid` false if it does not
-    /// format.
-    fn text(&self, index: usize) -> Option<ResolverText> {
-        let family = self.fields().family;
-        let address = *self.results.borrow().get(index)?;
+    /// `address` as text; `valid` false if it does not format.
+    fn text(family: c_int, address: &libc::sockaddr_in6) -> ResolverText {
         let binary = if family == libc::AF_INET6 {
             address.sin6_addr.s6_addr
         } else {
@@ -233,26 +231,34 @@ impl ResolverRequest {
         };
         let binary = binary.map(|byte| c_char::from_ne_bytes(byte.to_ne_bytes()));
         let text = ntop(family, &binary);
-        Some(ResolverText {
+        ResolverText {
             bytes: text.unwrap_or([0; 46]),
             valid: text.is_some(),
-        })
+        }
     }
 
     /// The text addresses `lookup` found, skipping any that do not format.
     #[must_use]
     pub fn addresses(&self) -> Vec<Vec<u8>> {
-        (0..)
-            .map_while(|index| self.text(index))
+        let family = self.fields().family;
+        let results = self.results.take();
+        let texts = results
+            .iter()
+            .map(|address| Self::text(family, address))
             .filter(|text| text.valid)
             .map(|text| terminated(&text.bytes))
-            .collect()
+            .collect();
+        self.results.set(results);
+        texts
     }
 
     /// A copy of the socket addresses `lookup` found.
     #[must_use]
     pub fn results(&self) -> Vec<libc::sockaddr_in6> {
-        self.results.borrow().clone()
+        let results = self.results.take();
+        let copy = results.clone();
+        self.results.set(results);
+        copy
     }
 }
 

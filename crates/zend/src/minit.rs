@@ -139,10 +139,8 @@ impl Mshutdown {
 pub struct Parent(*mut zend_class_entry);
 
 impl Parent {
-    /// The class's entry.
-    pub(crate) fn entry(self) -> *mut zend_class_entry {
-        self.0
-    }
+    /// No parent: Zend's null.
+    pub(crate) const NONE: Self = Self(std::ptr::null_mut());
 }
 
 impl Minit {

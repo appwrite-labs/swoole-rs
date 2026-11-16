@@ -8,7 +8,6 @@ use core::ptr;
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use crate::Mode;
-use crate::port_config::PortConfig;
 use crate::shared::ServerShared;
 use crate::view::{self, ServerObject};
 use swoole_rs_corebase::log;
@@ -70,7 +69,7 @@ unsafe impl Send for Owner {}
 unsafe impl Sync for Owner {}
 
 /// `delete serv` of the server no share names any more: destroys it if it still
-/// runs in its master, deletes its ports, closes its pipes, then frees the CPU list,
+/// runs in its master, closes its pipes, then frees the ports, the CPU list,
 /// the shared record, the message bus, the state and the object (which owns the
 /// state). It stops being `SwooleG.server`.
 impl Drop for Owner {
@@ -78,10 +77,6 @@ impl Drop for Owner {
         let serv = self.view();
         crate::server_methods::destroy_running(serv);
         crate::reactor_handle::release_server(serv);
-        for port in serv.ports() {
-            // SAFETY: a live port is its settings' box, deleted once.
-            PortConfig::delete(unsafe { Box::from_raw(port.raw().cast::<PortConfig>()) });
-        }
         let object_ptr = serv.raw();
         serv.state().close_pipes();
         if swoole_rs_corebase::swr_v1_core_server() == object_ptr {

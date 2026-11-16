@@ -38,7 +38,7 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> b
         // In the master, after the process factory forks and before any reactor
         // thread, base-mode worker or worker thread starts.
         Step::InitProtocols => {
-            for port in state.tables_ref().ports() {
+            for port in &state.ports {
                 (crate::port_config::methods().init_protocol)(port.config());
             }
         }
@@ -72,7 +72,7 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> b
         Step::FactoryShutdown => _ = shutdown(serv),
         Step::ReleasePipeBuffers => state.message_bus().free_buffer(),
         Step::ClosePorts => {
-            for &port in state.tables_ref().ports() {
+            for port in &state.ports {
                 (crate::port_config::methods().close)(port.config());
             }
         }
@@ -81,7 +81,7 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> b
         Step::DestroyTaskPool => swoole_rs_process::methods::destroy(serv.task_pool_ref()),
         Step::DeleteFactory => delete(state),
         Step::Listen(index) | Step::ClosePortSocket(index) | Step::CreatePortSocket(index) => {
-            let Some(port) = state.tables_ref().ports().get(index) else {
+            let Some(port) = state.ports.get(index) else {
                 return false;
             };
             let (methods, config) = (crate::port_config::methods(), port.config());

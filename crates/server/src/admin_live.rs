@@ -344,8 +344,7 @@ impl Facts for Live<'_> {
 
     fn ports(&mut self) -> Vec<Port> {
         let serv = self.serv;
-        self.tables
-            .ports()
+        serv.ports()
             .iter()
             .map(|port| {
                 let config = port.config();

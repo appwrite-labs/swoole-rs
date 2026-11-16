@@ -168,10 +168,11 @@ const char *swr_zend_tsrm_api_name(void) {
 #endif
 }
 
-void swr_zend_thread_set_argv(zval *argv, zend_long argc) {
-    zval count;
+void swr_zend_thread_set_argv(const zval *argv, zend_long argc) {
+    zval copy, count;
+    ZVAL_COPY(&copy, argv);
     ZVAL_LONG(&count, argc);
-    zend_hash_update(&EG(symbol_table), ZSTR_KNOWN(ZEND_STR_ARGV), argv);
+    zend_hash_update(&EG(symbol_table), ZSTR_KNOWN(ZEND_STR_ARGV), &copy);
     zend_hash_update(&EG(symbol_table), ZSTR_KNOWN(ZEND_STR_ARGC), &count);
 }
 

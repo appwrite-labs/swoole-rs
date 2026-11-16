@@ -18,9 +18,9 @@ pub mod context;
 mod coroutine;
 mod fcontext;
 pub use coroutine::*;
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 mod facade;
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 pub use facade::{
     activate, cancel, deactivate, print_socket_bound_error, swoole_coroutine_count,
     swr_v1_coroutine_create, yield_ex, yield_resumed, yield_timed,

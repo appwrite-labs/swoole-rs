@@ -108,7 +108,6 @@ impl CURLMsg {
 unsafe extern "C" {
     pub fn curl_easy_init() -> *mut CURL;
     pub fn curl_easy_cleanup(curl: *mut CURL);
-    pub fn curl_easy_reset(curl: *mut CURL);
     pub fn curl_easy_setopt(curl: *mut CURL, option: CURLoption, ...) -> CURLcode;
     pub fn curl_easy_getinfo(curl: *mut CURL, info: CURLINFO, ...) -> CURLcode;
     /// A new multi handle, or none: it takes nothing and touches no caller state.

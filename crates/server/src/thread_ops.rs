@@ -74,7 +74,7 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
     let reactors = config.reactor_num.get();
     // Listen on this thread's UDP ports.
     if config.have_dgram_sock.get() {
-        for (index, port) in tables.ports().iter().enumerate() {
+        for (index, port) in state.ports.iter().enumerate() {
             let dgram = matches!(port.config().r#type, 2 | 4 | 6);
             if !dgram || !owns(i64::from(port.fd()), reactors, id) {
                 continue;
@@ -82,7 +82,7 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
             let socket = server.port_socket_at(index)?;
             let fd = socket.fd();
             // The connection table's slot for the listening fd, holding its port.
-            let serv_sock = tables.hold_port(index, fd)?;
+            let serv_sock = state.hold_port(index, fd)?;
             serv_sock.set_fd(fd);
             serv_sock.set_socket_type(port.config().r#type);
             // The reactor thread that reads the datagram port.
@@ -185,7 +185,7 @@ pub(crate) fn start_reactor_threads(serv: view::Server<'_>) -> bool {
         return false;
     }
     let reactor = Reactor::thread();
-    for (index, port) in state.tables_ref().ports().iter().enumerate() {
+    for (index, port) in state.ports.iter().enumerate() {
         if matches!(port.config().r#type, 2 | 4 | 6) {
             continue;
         }
@@ -385,7 +385,7 @@ pub(crate) fn shutdown(ctx: &ReactorContext<'_>) -> Option<()> {
     let config = state.config_ref();
     let (reactors, id) = (config.reactor_num.get(), reactor.handle().id());
     if config.have_dgram_sock.get() {
-        for (index, port) in state.tables_ref().ports().iter().enumerate() {
+        for (index, port) in state.ports.iter().enumerate() {
             let dgram = matches!(port.config().r#type, 2 | 4 | 6);
             if !dgram || !owns(i64::from(port.fd()), reactors, id) {
                 continue;

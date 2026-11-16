@@ -497,7 +497,7 @@ fn sync_connect_through_socks5_routes_and_handshakes() {
     );
     let (target, target_port) = Handle(client)
         .with_proxy(Proxy::Socks5, |proxy| {
-            (proxy.string(3).to_vec(), proxy.fields().target_port)
+            (proxy.string(3), proxy.fields().target_port)
         })
         .unwrap();
     assert_eq!(target, b"example.test");
