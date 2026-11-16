@@ -3,13 +3,13 @@
 use crate::{
     ArrayMut, Class, ClassEntry, Owned, OwnedArray, Value, ZString, bailout,
     sys::{
-        IS_OBJECT, object_properties_init, swr_zend_object_alloc, zend_class_entry, zend_long,
-        zend_object, zend_object_handlers, zend_object_std_dtor, zend_object_std_init,
-        zend_objects_destroy_object, zend_update_property,
+        object_properties_init, swr_zend_object_alloc, zend_class_entry, zend_long, zend_object,
+        zend_object_handlers, zend_object_std_dtor, zend_object_std_init,
+        zend_objects_destroy_object,
     },
 };
 use std::{
-    ffi::{CStr, c_char, c_int},
+    ffi::{CStr, c_int},
     io::IoSlice,
     marker::PhantomData,
     mem::offset_of,
@@ -29,6 +29,15 @@ unsafe extern "C" {
     /// sees, or none; Zend reads the lent name and copies `value` first, so the
     /// PHP code the write runs can't free what it reads.
     safe fn swr_lent_update_property(
+        scope: Option<ClassEntry<'_>>,
+        object: ObjectRef<'_>,
+        name: IoSlice<'_>,
+        value: &Value,
+    ) -> c_int;
+    /// As `swr_lent_update_property`, but an internal class's object takes a
+    /// value that is no object outside `zend_try` (zero then): no PHP code runs
+    /// for it.
+    safe fn swr_lent_set_property(
         scope: Option<ClassEntry<'_>>,
         object: ObjectRef<'_>,
         name: IoSlice<'_>,
@@ -415,21 +424,13 @@ impl Props<'_> {
     /// written while a bailout is pending: upstream never ran past it.
     #[inline]
     pub fn value(self, name: &CStr, value: &Value) {
-        /// `ZEND_INTERNAL_CLASS` (`zend_compile.h`).
-        const INTERNAL: c_char = 1;
         if bailout::pending() {
             return;
         }
-        let internal = self.class_entry().read(|ce| ce.type_) == INTERNAL;
-        if internal && value.kind() != IS_OBJECT {
-            let scope = self.0.map_or(std::ptr::null_mut(), ClassEntry::as_ptr);
-            let (object, length) = (self.1.as_ptr(), name.count_bytes());
-            // SAFETY: a live object, a registered class or null, and a live value
-            // Zend copies.
-            unsafe { zend_update_property(scope, object, name.as_ptr(), length, value.as_ptr()) };
-            return;
-        }
-        bailout::defer(self.update_trapped(name.to_bytes(), value));
+        let name = IoSlice::new(name.to_bytes());
+        bailout::defer(bailout::trapped(swr_lent_set_property(
+            self.0, self.1, name, value,
+        )));
     }
 
     /// The `set()` merge: `php_array_merge` of `settings` into the array

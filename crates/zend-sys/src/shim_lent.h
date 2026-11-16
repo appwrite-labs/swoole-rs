@@ -35,6 +35,10 @@ int swr_lent_read_property(zend_class_entry *scope, zend_object *object, struct 
  * bailout). */
 int swr_lent_update_property(zend_class_entry *scope, zend_object *object, struct iovec name, zval *value);
 
+/* swr_lent_update_property, but an internal class's object takes a value that is no
+ * object outside zend_try, as no PHP code runs for it (zero then). */
+int swr_lent_set_property(zend_class_entry *scope, zend_object *object, struct iovec name, zval *value);
+
 /* zend_call_method(object, scope, NULL, name, retval, ...) inside zend_try (nonzero
  * for a bailout), with `arg1`, then `arg2`, as far as they are not null. A null scope
  * is the object's class; nothing is called for an object that is no `scope`. */
