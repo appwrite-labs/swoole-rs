@@ -489,12 +489,7 @@ mod tests {
             install_builtins(callbacks());
             let fields = &raw mut (*owner).fields;
             assert!(if_exit(running(owner)));
-            crate::deferred::tests::defer(
-                fields,
-                record,
-                std::ptr::without_provenance_mut(4),
-                None,
-            );
+            crate::deferred::tests::defer(fields, crate::deferred::tests::task(4).then(|| push(4)));
             assert!(!if_exit(running(owner)));
             (*fields).idle_task = Some(std::rc::Rc::new(Pushes(6)));
             (*fields).running = true;
