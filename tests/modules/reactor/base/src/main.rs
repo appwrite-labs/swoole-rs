@@ -1259,7 +1259,7 @@ unsafe fn drain_write_buffer() {
     }
 }
 
-extern "C-unwind" fn write_pkt(pair: *mut c_void) {
+fn write_pkt(pair: *mut c_void) {
     // SAFETY: the timer's data is handle_fail's UnixSocket.
     unsafe { sock_write(sock(&*pair.cast::<SocketPair>(), true), PKT) };
 }
@@ -1284,7 +1284,8 @@ fn fail_write(reactor: Running<'_>, event: &mut Event) -> c_int {
     unsafe {
         let socket = ev_socket(event);
         expect_eq!(set(reactor, socket, SW_EVENT_READ), 0);
-        swoole_rs_ffi::swr_v1_timer_add_plain(10, false, write_pkt, (*socket).fields.object);
+        let pair = (*socket).fields.object;
+        assert!(swoole_rs_ffi::add_fn(10, false, move || write_pkt(pair)).is_some());
     }
     SW_ERR
 }
