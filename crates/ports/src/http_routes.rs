@@ -53,8 +53,8 @@ pub(crate) fn host_port(address: &SocketAddress) -> (String, c_int) {
 }
 
 /// `websocket::get_package_length` as a protocol's length callback: it reads only `pl`.
-pub extern "C" fn websocket_length(
-    _proto: *const Protocol,
+pub fn websocket_length(
+    _proto: &Protocol,
     _socket: Option<Socket<'_>>,
     pl: &mut PacketLength,
 ) -> isize {
@@ -114,8 +114,8 @@ pub mod exports {
     /// `swoole::http2::get_frame_length(const Protocol *, Socket *, PacketLength *)`:
     /// the length callback of an HTTP/2 port, and of crates/phphttp2's client and
     /// crates/phphttp's coroutine server.
-    pub extern "C" fn http2_length(
-        _proto: *const Protocol,
+    pub fn http2_length(
+        _proto: &Protocol,
         _socket: Option<Socket<'_>>,
         pl: &mut PacketLength,
     ) -> isize {
@@ -425,12 +425,10 @@ pub mod exports {
         }
     }
 
-    /// `ssize_t get_package_length(const Protocol *, Socket *, PacketLength *)`.
-    ///
-    /// # Safety
-    /// Upstream's: the port's protocol, a connection socket and its packet length.
-    pub unsafe extern "C" fn get_package_length(
-        proto: *const Protocol,
+    /// `ssize_t get_package_length(const Protocol *, Socket *, PacketLength *)` over a
+    /// connection socket.
+    pub fn get_package_length(
+        proto: &Protocol,
         socket: Option<Socket<'_>>,
         pl: &mut PacketLength,
     ) -> isize {
@@ -439,20 +437,18 @@ pub mod exports {
         let Some(conn) = socket else {
             return -1;
         };
-        // SAFETY: as the caller guarantees.
-        match unsafe { get_package_length_size(conn) } {
+        match get_package_length_size(conn) {
             WEBSOCKET_FRAME_HEADER_SIZE => super::websocket_length(proto, socket, pl),
             super::HTTP2_FRAME_HEADER_SIZE => http2_length(proto, socket, pl),
             _ => -1,
         }
     }
 
-    /// `uint8_t get_package_length_size(Socket *)`.
-    ///
-    /// # Safety
-    /// `socket` is a connection socket.
+    /// `uint8_t get_package_length_size(Socket *)` of a connection socket: only an
+    /// HTTP port's protocol holds it, so the socket's kind makes its object a
+    /// connection slot.
     #[must_use]
-    pub unsafe extern "C" fn get_package_length_size(socket: Socket<'_>) -> u8 {
+    pub fn get_package_length_size(socket: Socket<'_>) -> u8 {
         let conn = socket.read(|s| s.object);
         // SAFETY: a connection socket's object is its live connection slot, shared
         // through the slot's handle, as its fields are cells and atomics.

@@ -79,6 +79,12 @@ impl EventData {
         buf
     }
 
+    /// The whole `EventData`'s bytes.
+    fn as_bytes(&self) -> &[u8] {
+        // SAFETY: plain integers and bytes, with no padding, all initialized.
+        unsafe { std::slice::from_raw_parts(ptr::from_ref(self).cast(), size_of::<Self>()) }
+    }
+
     fn head(&mut self) -> *mut EventHead {
         ptr::from_mut(self).cast()
     }
@@ -171,9 +177,8 @@ fn waiting(serv: Server) -> Waiting<'static, TaskPool> {
 }
 
 /// The packed task in `buf`.
-fn packed(buf: &mut EventData) -> Packed<'_> {
-    // SAFETY: an `EventData`: its head, then the bytes it counts.
-    unsafe { Packed::from_raw(buf.head().cast()) }
+fn packed(buf: &EventData) -> Packed<'_> {
+    Packed::from_bytes(buf.as_bytes()).expect("an EventData holds the bytes its head counts")
 }
 
 unsafe extern "C" {
@@ -339,7 +344,7 @@ impl TaskServer for Server {
             pool::dispatch(
                 swoole_rs_server::process_pool_native(),
                 swoole_rs_process::process_pool::PoolRef::new(self.task_pool()),
-                swoole_rs_process::task_file::Packed::from_raw(buf.head().cast()),
+                packed(buf),
                 u32::try_from(*dst_worker_id).ok(),
                 false,
             )
@@ -447,7 +452,7 @@ fn task_worker_on_task(serv: view::Server<'_>, task: Packed<'_>) -> c_int {
         "string(task->data, task->info.len) == packet",
     );
     // SAFETY: the created server's task pool.
-    unsafe { (*serv.task_pool()).running = false };
+    unsafe { (*serv.task_pool()).running.set(false) };
     serv.view()
         .counters()
         .task_count
@@ -473,7 +478,7 @@ fn task_worker() {
         let pool = serv.task_pool();
         // SAFETY: the created server's task pool, its first worker and its main loop.
         unsafe {
-            (*pool).running = true;
+            (*pool).running.set(true);
             PoolRef::new(pool)
                 .call_main_loop(Worker::new((*pool).workers()))
                 .unwrap();
@@ -835,7 +840,7 @@ fn unpack(task: Packed<'_>) -> Option<Vec<u8>> {
 }
 
 fn task_sync_multi_on_task(serv: view::Server<'_>, task: Packed<'_>) -> c_int {
-    let Some(packet) = unpack(unsafe { Packed::from_raw(task.as_ptr()) }) else {
+    let Some(packet) = unpack(task) else {
         return -1;
     };
     // SAFETY: the live task.
@@ -970,10 +975,10 @@ fn task_sync_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
     let serv = Server(serv.raw());
     if worker.id() == 1 {
         let dst_worker_id = -1;
-        let mut buf = EventData::packed(PACKET);
+        let buf = EventData::packed(PACKET);
         check(
             waiting(serv)
-                .task_sync(packed(&mut buf), u32::try_from(dst_worker_id).ok(), 0.5)
+                .task_sync(packed(&buf), u32::try_from(dst_worker_id).ok(), 0.5)
                 .unwrap_or(false),
             "serv->task_sync(&buf, &_dst_worker_id, 0.5)",
         );
@@ -1101,7 +1106,7 @@ fn primary_port_connection_num(serv: Server) -> usize {
 fn event_pool_read_message(serv: Server) -> bool {
     let pool = serv.task_pool().wrapping_add(1);
     // SAFETY: the running server's event pool, in its shared counters.
-    unsafe { ptr::read_volatile(&raw const (*pool).read_message) }
+    unsafe { ptr::read_volatile((&raw const (*pool).read_message).cast::<bool>()) }
 }
 
 /// Polls `done` every millisecond for up to 3 s, where upstream sleeps a fixed time for

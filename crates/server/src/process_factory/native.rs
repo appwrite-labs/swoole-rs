@@ -58,25 +58,15 @@ pub(crate) fn create(serv: view::Server<'_>) -> *mut c_void {
         return core::ptr::null_mut();
     }
     tables.install_reactor_threads(threads);
-    tables.connection_list.replace(list);
+    tables.map_connections(list);
     (tables.reactor_pipe_num).set(u16::try_from(pipes & 0xffff).unwrap_or_default());
     barriers(serv, true);
     crate::factory::new()
 }
 
-/// Either factory's destroy of what its create mapped: the connection list and the
-/// reactor threads.
-pub(crate) fn free_tables(serv: view::Server<'_>) {
-    // SAFETY: a factory's destroy runs once its workers and reactor threads are gone,
-    // and nothing reads the tables while this lives.
-    let tables = unsafe { &mut *serv.state().tables() };
-    tables.connection_list.free();
-    drop(tables.take_reactor_threads());
-}
-
-/// `Server::destroy_process_factory`.
+/// `Server::destroy_process_factory`, but for the connection list and the reactor
+/// threads, which the server's teardown frees with its other tables.
 pub(crate) fn destroy(serv: view::Server<'_>) {
-    free_tables(serv);
     barriers(serv, false);
     let pool = crate::shared::ServerShared::of(serv).event_pool();
     if !pool.message_box().is_null() {

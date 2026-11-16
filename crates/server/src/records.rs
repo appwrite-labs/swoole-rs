@@ -420,12 +420,14 @@ impl<'a> Connection<'a> {
 /// Server-private shared table loans and bounds. The arena owns the underlying shared mappings.
 ///
 /// Setup and teardown write the tables through `&`: every field they write is a cell
-/// (a [`Shm`] is one), written while the master is the server's only thread.
+/// (a [`Shm`] is one), written while the master is the server's only thread. The two
+/// lists it lends slots of are private: a factory maps each once through `&`, and only
+/// [`Self::unmap_lists`], through `&mut`, unmaps them, so no lent slot outlives its list.
 pub struct ServerTables {
     /// `ConnectionRecord`s, `max_connection` of them.
-    pub connection_list: Shm,
+    connection_list: Shm,
     /// `SessionRecord`s, `SW_SESSION_LIST_SIZE` of them.
-    pub session_list: Shm,
+    session_list: Shm,
     pub port_gs_list: Shm,
     /// How many records `connection_list` maps. Private: [`Self::set_max_connection`]
     /// changes it only while the list is unmapped, so [`Self::connections`] never
@@ -453,11 +455,49 @@ impl ServerTables {
     /// `max_connection = value`, while the connection list is unmapped: whether it
     /// changed.
     pub(crate) fn set_max_connection(&self, value: u32) -> bool {
-        let unmapped = self.connection_list.is_null();
+        let unmapped = !self.connections_mapped();
         if unmapped {
             self.max_connection.set(value);
         }
         unmapped
+    }
+
+    /// Whether a factory has mapped the connection list.
+    pub(crate) fn connections_mapped(&self) -> bool {
+        !self.connection_list.is_null()
+    }
+
+    /// Whether `Server::create` has mapped the session list.
+    pub(crate) fn sessions_mapped(&self) -> bool {
+        !self.session_list.is_null()
+    }
+
+    /// `connection_list = list`: a factory's `max_connection` zeroed records. A list
+    /// already mapped stays, as its slots may be lent, and `list` is unmapped.
+    pub(crate) fn map_connections(&self, list: Shm) {
+        fill(&self.connection_list, list);
+    }
+
+    /// `session_list = list`: `SW_SESSION_LIST_SIZE` zeroed records, as
+    /// [`Self::map_connections`].
+    pub(crate) fn map_sessions(&self, list: Shm) {
+        fill(&self.session_list, list);
+    }
+
+    /// `session_list`'s `SharedMemory::protect(flags)`.
+    #[cfg_attr(
+        not(feature = "upstream-symbols"),
+        expect(dead_code, reason = "only the hybrid's event workers protect it")
+    )]
+    pub(crate) fn protect_sessions(&self, flags: c_int) -> std::io::Result<()> {
+        self.session_list.protect(flags)
+    }
+
+    /// `sw_shm_free(connection_list)` and `sw_shm_free(session_list)`: exclusive access
+    /// means no slot either lent is still borrowed.
+    pub(crate) fn unmap_lists(&mut self) {
+        self.connection_list.free();
+        self.session_list.free();
     }
 
     /// The connection slots, exactly `max_connection` of them, or none before
@@ -468,9 +508,9 @@ impl ServerTables {
         if base.is_null() {
             return &[];
         }
-        // SAFETY: every factory maps the table with `max_connection` zeroed records
-        // and frees it only by nulling `connection_list`; the record's cells and
-        // atomics let slots be written under the server's own synchronization.
+        // SAFETY: every factory maps the table with `max_connection` zeroed records,
+        // and only `unmap_lists`, through `&mut self`, unmaps it; the record's cells
+        // and atomics let slots be written under the server's own synchronization.
         unsafe { core::slice::from_raw_parts(base.cast(), self.max_connection() as usize) }
     }
 
@@ -512,8 +552,8 @@ impl ServerTables {
             return None;
         }
         // SAFETY: a factory maps the table with 1,048,576 zeroed records, which the
-        // modulo keeps `index` within, and frees it only by nulling `session_list`;
-        // the record's fields are cells.
+        // modulo keeps `index` within, and only `unmap_lists`, through `&mut self`,
+        // unmaps it; the record's fields are cells.
         Some(unsafe { &*base.wrapping_add(index) })
     }
 }
@@ -545,6 +585,18 @@ impl ServerTables {
     /// or before a factory made them.
     pub(crate) fn reactor_thread(&self, id: usize) -> Option<&ThreadRecord> {
         self.reactor_threads.get()?.get(id)
+    }
+}
+
+/// `list = mapping` for a list that lends slots: an empty list takes `mapping`; one
+/// already mapped keeps its mapping, which `mapping` must not unmap, and `mapping`
+/// is unmapped instead.
+fn fill(list: &Shm, mut mapping: Shm) {
+    if list.is_null() {
+        // Nothing to unmap: the list is empty.
+        list.replace(mapping);
+    } else {
+        mapping.free();
     }
 }
 
@@ -665,6 +717,16 @@ pub(crate) mod tests {
         pub(crate) unsafe fn set_max_connection_unchecked(&self, value: u32) {
             self.max_connection.set(value);
         }
+
+        /// The connection list, to name a test's own records or forget them.
+        pub(crate) fn connection_list_mut(&mut self) -> &mut Shm {
+            &mut self.connection_list
+        }
+
+        /// The session list, as [`Self::connection_list_mut`].
+        pub(crate) fn session_list_mut(&mut self) -> &mut Shm {
+            &mut self.session_list
+        }
     }
 
     /// A table field naming a test's own records, so several states can share them as
@@ -723,7 +785,7 @@ pub(crate) mod tests {
             .collect();
         sessions[0].reactor_bits.set(0x5a12_3401);
         sessions[1_048_575].reactor_bits.set(0x5a12_3401);
-        server.tables_mut().session_list = naming(&mut sessions);
+        *server.tables_mut().session_list_mut() = naming(&mut sessions);
         server.state().retire_sessions(257);
         assert!(sessions.iter().all(|slot| slot.fd.get() == 23));
         server.state().retire_sessions(1);
@@ -761,8 +823,8 @@ pub(crate) mod tests {
             (&raw mut connections).cast::<ConnectionRecord>(),
         );
         let tables = server.tables_mut();
-        tables.session_list = naming_at(session_at);
-        tables.connection_list = naming_at(connection_at);
+        *tables.session_list_mut() = naming_at(session_at);
+        *tables.connection_list_mut() = naming_at(connection_at);
         let state = server.state();
         unsafe {
             state.tables_ref().set_max_connection_unchecked(3);
@@ -858,6 +920,35 @@ pub(crate) mod tests {
         }
     }
 
+    /// A list is mapped once through `&` and unmapped only through `&mut`: a second
+    /// mapping leaves the first, so a slot lent from it stays usable. Mapping by
+    /// replacing unmapped it under the lent slot, which then reached freed memory.
+    #[test]
+    fn a_lent_slot_outlives_a_second_mapping() {
+        let mut tables = ServerTables::default();
+        assert!(tables.set_max_connection(2));
+        let connections = || Shm::calloc_private(2, size_of::<ConnectionRecord>());
+        let sessions = || Shm::calloc_private(2, size_of::<SessionRecord>());
+        tables.map_connections(connections());
+        tables.map_sessions(sessions());
+        let (slot, session) = (&tables.connections()[1], tables.session_slot(1).unwrap());
+        tables.map_connections(connections());
+        tables.map_sessions(sessions());
+        slot.fd.set(7);
+        session.fd.set(9);
+        assert_eq!(tables.connections()[1].fd.get(), 7, "the first list stays");
+        assert_eq!(
+            tables.session_slot(1).unwrap().fd.get(),
+            9,
+            "so do the sessions"
+        );
+        assert!(!tables.set_max_connection(3), "fixed while mapped");
+        tables.unmap_lists();
+        assert!(tables.connections().is_empty(), "unmapped");
+        assert!(tables.session_slot(1).is_none(), "sessions unmapped");
+        assert!(tables.set_max_connection(3), "free to change again");
+    }
+
     /// A reset keeps a slot's `active` and `closed` and zeroes what lies between; a
     /// clear zeroes all of it; neither reaches outside the table.
     #[test]
@@ -866,7 +957,7 @@ pub(crate) mod tests {
         // SAFETY: a connection record is plain data; zero is a closed one.
         let mut connections: [ConnectionRecord; 3] = unsafe { core::mem::zeroed() };
         let at = (&raw mut connections).cast::<ConnectionRecord>();
-        server.tables_mut().connection_list = naming_at(at);
+        *server.tables_mut().connection_list_mut() = naming_at(at);
         let tables = server.state().tables_ref();
         // SAFETY: the table above holds 3 records.
         unsafe { tables.set_max_connection_unchecked(3) };

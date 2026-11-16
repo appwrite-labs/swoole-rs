@@ -469,7 +469,7 @@ mod tests {
         config.reactor_num.set(2);
         config.mode_ = Mode::Base;
         let tables = server.tables_mut();
-        tables.connection_list = naming(&mut connections);
+        *tables.connection_list_mut() = naming(&mut connections);
         tables.reactor_pipe_num.set(2);
         // SAFETY: the table just named holds 4 records.
         unsafe { tables.set_max_connection_unchecked(4) };

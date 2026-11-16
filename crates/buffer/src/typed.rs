@@ -198,7 +198,7 @@ mod tests {
         assert_eq!(mem::offset_of!(Front, data), 16);
         assert_eq!(mem::offset_of!(Front, token), 24);
         assert_eq!(mem::offset_of!(Front, generation), 32);
-        let mut queue = Buffer::create(3).unwrap();
+        let mut queue = Buffer::new(3);
         assert_eq!(queue.append(b"abcdefg"), Ok(()));
         assert_eq!(queue.push_close(), Ok(()));
         let mut total = 7;
@@ -241,6 +241,6 @@ mod tests {
         assert_eq!(drops.get(), 0, "popping leaves the request to its caller");
         detached.dispose();
         assert_eq!(drops.get(), 1);
-        assert!(queue.release().is_ok());
+        assert!(!queue.holds_token());
     }
 }

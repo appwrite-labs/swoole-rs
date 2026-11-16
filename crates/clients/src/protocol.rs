@@ -14,15 +14,16 @@ pub type OnPackage = fn(*const Protocol, Socket<'_>, Package<'_>) -> c_int;
 
 /// `Protocol::get_package_length`: the length of the package in the packet's
 /// `buf_size` readable bytes at `buf`, 0 while incomplete, -1 when bad. A caller
-/// passes the live protocol the socket reads with, and the callback may rely on the
-/// private data stored beside it there; the socket is `None` (null) where a measure
-/// has none.
-pub type GetPackageLength =
-    unsafe extern "C" fn(*const Protocol, Option<Socket<'_>>, &mut PacketLength) -> isize;
+/// passes a copy of the protocol the socket reads with, taken before the call, so
+/// PHP code the callback runs may `set()` the protocol meanwhile; the callback may
+/// rely on the private data stored beside it there. The socket is `None` where a
+/// measure has none. Only Rust calls it.
+pub type GetPackageLength = fn(&Protocol, Option<Socket<'_>>, &mut PacketLength) -> isize;
 
-/// `Protocol::get_package_length_size`: a socket's length-header size, which may rely
-/// on the socket being of the kind the protocol was set up for.
-pub type GetPackageLengthSize = unsafe extern "C" fn(Socket<'_>) -> u8;
+/// `Protocol::get_package_length_size`: a socket's length-header size. As for
+/// [`OnPackage`], the socket's kind, which the protocol was set up for, is what
+/// makes its object the callback's. Only Rust calls it.
+pub type GetPackageLengthSize = fn(Socket<'_>) -> u8;
 
 /// A whole package in a receive buffer, lent to its handler: `len` bytes at `data`
 /// (null for none), readable and writable for `'a`. It stays a pointer: the handler

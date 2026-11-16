@@ -83,15 +83,10 @@ pub(crate) fn create_factory(serv: view::Server<'_>) -> *mut c_void {
     let threads =
         crate::process_factory::native::new_reactor_threads(state, config.reactor_num.get());
     let tables = state.tables_ref();
-    tables.connection_list.replace(list);
+    tables.map_connections(list);
     tables.install_reactor_threads(threads);
     tables.reactor_pipe_num.set(1);
     factory::new_thread(state, all_worker_num(serv) as usize + 1)
-}
-
-/// `Server::destroy_thread_factory`: the connections and the reactor threads.
-pub(crate) fn destroy_factory(serv: view::Server<'_>) {
-    crate::process_factory::native::free_tables(serv);
 }
 
 /// `ThreadFactory::start`: the pipes and the event, task and user workers' records.

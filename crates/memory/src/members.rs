@@ -318,7 +318,7 @@ impl Shm {
         }
     }
 
-    /// The payload, for an owner that frees it with `sw_shm_free`.
+    /// The payload, transferring ownership of the mapping to its next owner.
     #[must_use]
     pub fn into_raw(self) -> *mut c_void {
         self.0.into_inner()
@@ -397,13 +397,6 @@ upstream! {
     #[must_use]
     pub extern "C" fn sw_shm_calloc(count: usize, size: usize) -> *mut c_void {
         count.checked_mul(size).map_or(ptr::null_mut(), |size| sw_shm_malloc(size))
-    }
-    "_Z11sw_shm_freePv", "_Z11sw_shm_freePv" =>
-    /// `void sw_shm_free(void *ptr)`, for native code, whose payload pointer is the
-    /// [`Shm`] it gives up, as the C caller's contract (null or a live `sw_shm_malloc`
-    /// payload, freed once) makes it.
-    pub extern "C" fn sw_shm_free(mut payload: Shm) {
-        payload.free();
     }
 }
 

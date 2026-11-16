@@ -14,9 +14,7 @@ pub mod http_server;
 mod owned_proxy;
 pub use owned_proxy::*;
 mod request;
-pub use request::{
-    HttpForm, HttpNative, HttpRequest, HttpString, NativeOp, request_free, request_new,
-};
+pub use request::{HttpForm, HttpRequest, request_free, request_new};
 #[cfg(test)]
 mod pin_helpers;
 

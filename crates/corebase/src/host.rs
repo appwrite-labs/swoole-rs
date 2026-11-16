@@ -391,6 +391,33 @@ impl DataHead {
         }
         bytes
     }
+
+    /// The head native code laid out in `bytes` ([`Self::to_bytes`]'s inverse).
+    #[must_use]
+    #[inline]
+    pub fn from_bytes(bytes: &[u8; size_of::<Self>()]) -> Self {
+        use std::mem::offset_of;
+        fn at<const N: usize>(bytes: &[u8], offset: usize) -> [u8; N] {
+            bytes
+                .get(offset..)
+                .and_then(<[u8]>::first_chunk)
+                .copied()
+                .unwrap_or([0; N])
+        }
+        let [kind, flags] = at(bytes, offset_of!(Self, kind));
+        Self {
+            fd: c_long::from_ne_bytes(at(bytes, offset_of!(Self, fd))),
+            msg_id: u64::from_ne_bytes(at(bytes, offset_of!(Self, msg_id))),
+            len: u32::from_ne_bytes(at(bytes, offset_of!(Self, len))),
+            reactor_id: i16::from_ne_bytes(at(bytes, offset_of!(Self, reactor_id))),
+            kind,
+            flags,
+            server_fd: u16::from_ne_bytes(at(bytes, offset_of!(Self, server_fd))),
+            ext_flags: u16::from_ne_bytes(at(bytes, offset_of!(Self, ext_flags))),
+            reserved: u32::from_ne_bytes(at(bytes, offset_of!(Self, reserved))),
+            time: f64::from_ne_bytes(at(bytes, offset_of!(Self, time))),
+        }
+    }
 }
 
 /// `DataHead::dump`: the fields in upstream's format, with `sw_snprintf`'s
