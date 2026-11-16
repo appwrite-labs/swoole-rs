@@ -553,7 +553,7 @@ if [ -n "${SWR_USER:-}" ] && [ "$(id -u)" = 0 ]; then
         [ "$(stat -c %u:%g "$dir")" = "$SWR_USER" ] || chown -R "$SWR_USER" "$dir"
     done
     chown "$SWR_USER" /usr/local/cargo
-    builds="$SWR_TARGET target/upstream target/upstream-builds target/ext"
+    builds="$SWR_TARGET target/upstream target/upstream-builds target/ext target/reports"
     if [ -n "$(find $builds -maxdepth 1 -uid 0 -print -quit 2>/dev/null)" ]; then
         find $builds -uid 0 -exec chown -h "$SWR_USER" {} + 2>/dev/null || true
     fi
