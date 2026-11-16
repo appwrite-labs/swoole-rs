@@ -759,15 +759,8 @@ pub(crate) fn install(minit: &swoole_rs_zend::Minit) {
         (c"array_unshift", zif_swoole_array_unshift),
         (c"array_splice", zif_swoole_array_splice),
     ];
-    let [push, unshift, splice] = handlers.map(|(name, handler)| {
-        // `internal_function` starts the `zend_function` union.
-        let slot = minit
-            .compiled_function(name)
-            .wrapping_byte_add(offset_of!(zend_internal_function, handler))
-            .cast::<zif_handler>();
-        // SAFETY: a core internal function's handler slot, at MINIT.
-        unsafe { ptr::replace(slot, Some(handler)) }
-    });
+    let [push, unshift, splice] =
+        handlers.map(|(name, handler)| minit.replace_handler(name, handler));
     let originals = Originals {
         push,
         unshift,

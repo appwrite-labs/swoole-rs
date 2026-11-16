@@ -2,7 +2,7 @@
 //! constants, classes and their function aliases.
 use crate::{
     Class, ClassEntry, Function, Owned, Value,
-    arginfo::{ArgInfo, Table},
+    arginfo::{ArgInfo, Handler, Table},
     bailout::Bailout,
     class::Layout,
     function::{arg_info, deny},
@@ -11,7 +11,7 @@ use crate::{
     sys::{
         HashTable, IS_STRING, ZEND_ACC_NOT_SERIALIZABLE, swr_zend_try_facade_register_functions,
         zend_class_entry, zend_function, zend_function_entry, zend_internal_arg_info, zend_long,
-        zend_module_entry, zend_object_handlers, zend_string,
+        zend_module_entry, zend_object_handlers, zend_string, zif_handler,
     },
 };
 use std::{
@@ -63,6 +63,10 @@ unsafe extern "C" {
     /// `CG(function_table)`'s function `name`, or null: one lookup in the
     /// compiler's table.
     safe fn swr_zend_compiled_function_find(name: CText<'_>) -> *mut zend_function;
+    /// The internal function `name`'s handler, replaced by `handler`, which
+    /// Zend calls as it calls any: the original, or none for no such internal
+    /// function. Only [`Minit::replace_handler`] calls it, before any request.
+    safe fn swr_zend_minit_replace_handler(name: CText<'_>, handler: Handler) -> zif_handler;
     /// The php.ini entry `name`'s string, or none for an unset or non-string entry:
     /// one lookup in the configuration, filled before MINIT and freed at module
     /// shutdown. Only [`Minit::ini_string`] calls it, which ties the string to MINIT.
@@ -509,6 +513,12 @@ impl Minit {
     #[must_use]
     pub fn compiled_function(&self, name: &CStr) -> *mut zend_function {
         swr_zend_compiled_function_find(name.into())
+    }
+
+    /// The compiled internal function `name` (lower case) runs `handler` from
+    /// now on: its original handler, or none when there is no such function.
+    pub fn replace_handler(&self, name: &CStr, handler: Handler) -> zif_handler {
+        swr_zend_minit_replace_handler(name.into(), handler)
     }
 
     /// `cfg_get_string(name)`: the php.ini entry `name`, or None when it is unset

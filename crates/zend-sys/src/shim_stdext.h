@@ -8,6 +8,10 @@
  * `name`: null for no such function. */
 zend_function *swr_zend_compiled_function_find(const char *name);
 
+/* The internal function `name`'s handler, replaced by `handler`, at MINIT:
+ * the original, or NULL (and nothing replaced) for no such internal function. */
+zif_handler swr_zend_minit_replace_handler(const char *name, zif_handler handler);
+
 /* zend_call_known_function(fn, NULL, NULL, retval, argc, argv, NULL) inside
  * zend_try: 1 if it bailed out. */
 int swr_zend_try_call_known(zend_function *fn, zval *retval, swr_zvals args);

@@ -14,6 +14,16 @@ zend_function *swr_zend_compiled_function_find(const char *name) {
     return zend_hash_str_find_ptr(CG(function_table), name, strlen(name));
 }
 
+zif_handler swr_zend_minit_replace_handler(const char *name, zif_handler handler) {
+    zend_function *fn = swr_zend_compiled_function_find(name);
+    if (!fn || fn->type != ZEND_INTERNAL_FUNCTION) {
+        return NULL;
+    }
+    zif_handler original = fn->internal_function.handler;
+    fn->internal_function.handler = handler;
+    return original;
+}
+
 int swr_zend_try_call_known(zend_function *fn, zval *retval, swr_zvals args) {
     volatile int bailed = 0;
     SWR_ZEND_TRY {
