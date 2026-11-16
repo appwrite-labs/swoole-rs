@@ -29,7 +29,9 @@ struct swr_v1_curl_handle {
     struct swr_v1_curl_multi *multi;
     void *easy_multi; /* Rust-owned (an Rc), opaque to C */
 };
-void swr_v1_curl_multi_free(struct swr_v1_curl_multi *multi);
+/* A multi the caller gives up (or null), freed by swr_v1_curl_multi_free. */
+typedef struct swr_v1_curl_multi *swr_v1_curl_released;
+void swr_v1_curl_multi_free(swr_v1_curl_released multi);
 void *swr_v1_curl_multi_handle(const struct swr_v1_curl_multi *multi);
 int swr_v1_curl_multi_running(const struct swr_v1_curl_multi *multi);
 int swr_v1_curl_multi_add_handle(const struct swr_v1_curl_multi *multi, struct swr_v1_curl_handle *handle);

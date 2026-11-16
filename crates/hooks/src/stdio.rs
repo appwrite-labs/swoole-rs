@@ -6,6 +6,7 @@
 //! The exports keep upstream's names.
 use std::ffi::CStr;
 use std::sync::OnceLock;
+use swoole_rs_corebase::sys::Text;
 
 use libc::{
     DIR, FILE, addrinfo, c_char, c_int, c_uint, c_void, dirent, hostent, mode_t, off_t, size_t,
@@ -292,23 +293,21 @@ pub fn swoole_coroutine_getaddrinfo(
         )
     });
     let call = || {
-        let name = name.map_or(std::ptr::null(), CStr::as_ptr);
-        let service = service.map_or(std::ptr::null(), CStr::as_ptr);
-        let hints = hints.map(|(flags, family, socktype, protocol)| addrinfo {
-            ai_flags: flags,
-            ai_family: family,
-            ai_socktype: socktype,
-            ai_protocol: protocol,
-            ai_addrlen: 0,
-            ai_addr: std::ptr::null_mut(),
-            ai_canonname: std::ptr::null_mut(),
-            ai_next: std::ptr::null_mut(),
+        let hints = hints.map(|(flags, family, socktype, protocol)| {
+            Hints(addrinfo {
+                ai_flags: flags,
+                ai_family: family,
+                ai_socktype: socktype,
+                ai_protocol: protocol,
+                ai_addrlen: 0,
+                ai_addr: std::ptr::null_mut(),
+                ai_canonname: std::ptr::null_mut(),
+                ai_next: std::ptr::null_mut(),
+            })
         });
-        let hints = hints.as_ref().map_or(std::ptr::null(), std::ptr::from_ref);
+        let (name, service) = (name.map(Text::from), service.map(Text::from));
         let mut list = std::ptr::null_mut();
-        // SAFETY: C strings or null, hints or null, and a writable result slot, each
-        // live for the call.
-        let found = unsafe { libc::getaddrinfo(name, service, hints, &raw mut list) };
+        let found = getaddrinfo(name, service, hints.as_ref(), &mut list);
         // The list is the caller's to free on this thread: only its address crosses.
         (found, list.expose_provenance())
     };
@@ -322,8 +321,25 @@ pub fn swoole_coroutine_getaddrinfo(
     found
 }
 
+/// `getaddrinfo`'s hints: integers, with every pointer null as getaddrinfo requires.
+/// Only [`swoole_coroutine_getaddrinfo`] makes one, so getaddrinfo reads no pointer
+/// of it.
+#[repr(transparent)]
+struct Hints(addrinfo);
+
+// libc's resolvers. Each reads its `Text`s and the hints' integers, writes at most
+// the one slot a reference names and keeps nothing it is given, so they are `safe`.
 unsafe extern "C" {
-    fn gethostbyname(name: *const c_char) -> *mut hostent;
+    /// Resolves `name` and `service` (none for none) under `hints`, storing a new
+    /// list for the caller to `freeaddrinfo` in `list` when it finds one.
+    safe fn getaddrinfo(
+        name: Option<Text<'_>>,
+        service: Option<Text<'_>>,
+        hints: Option<&Hints>,
+        list: &mut *mut addrinfo,
+    ) -> c_int;
+    /// The calling thread's static entry for `name`, or null.
+    safe fn gethostbyname(name: Text<'_>) -> *mut hostent;
 }
 
 /// Hooked `gethostbyname`, always on the pool: the lookup's `h_errno` (0 if the
@@ -331,8 +347,7 @@ unsafe extern "C" {
 #[must_use]
 pub fn swoole_coroutine_gethostbyname(name: &CStr) -> *mut hostent {
     let call = || {
-        // SAFETY: a C string.
-        let entry = unsafe { gethostbyname(name.as_ptr()) };
+        let entry = gethostbyname(name.into());
         // The entry is the looking-up thread's, handed to the caller as upstream does:
         // only its address crosses.
         (

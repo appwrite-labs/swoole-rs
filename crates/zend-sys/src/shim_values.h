@@ -1,6 +1,13 @@
 /* Declarations for shim_values.c; included by shim.h. */
 #ifndef SWOOLE_RS_ZEND_SHIM_VALUES_H
 #define SWOOLE_RS_ZEND_SHIM_VALUES_H
+#include "php.h"
+/* A call's arguments, as Rust lends them (zend::Zvals): `argc` zvals from
+ * `argv`, which the callee reads and copies, keeping no pointer to them. */
+typedef struct {
+    zval *argv;
+    uint32_t argc;
+} swr_zvals;
 /* array_init / OBJ_RELEASE: an inline function and a macro. */
 void swr_zend_array_init(zval *target);
 void swr_zend_object_release(zend_object *object);

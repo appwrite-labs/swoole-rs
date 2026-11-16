@@ -71,7 +71,6 @@ fn length_size(conn: Connection<'_>) -> u8 {
     )
 }
 
-#[cfg(not(test))]
 pub mod exports {
     use std::ffi::{c_int, c_void};
     use std::mem::MaybeUninit;
@@ -248,10 +247,10 @@ pub mod exports {
             Action::ClientClose => {
                 dispatch_task(&dispatch);
                 let mut reply = [MaybeUninit::<u8>::uninit(); CLOSE_REPLY_MAX];
-                let size = payload.map_or(0, |payload| {
-                    encode_parts(payload.len(), payload, 8, 1, &mut reply)
+                let size = payload.and_then(|payload| {
+                    encode_parts(payload.len(), payload, 8, 1, &mut reply).ok()
                 });
-                if size != 0 {
+                if let Some(size) = size {
                     // SAFETY: the encoded reply's `size` bytes.
                     let reply = unsafe { Drain::from_raw(reply.as_ptr().cast(), size) };
                     _ = swoole_rs_tls::upstream::send_drain(socket, reply, 0);
@@ -281,7 +280,11 @@ pub mod exports {
         const HEAD: Option<u32> = Some(WEBSOCKET_FRAME_HEADER_SIZE as u32);
         #[inline(always)]
         fn length(_: &Recv, bytes: &[u8]) -> i64 {
-            swoole_rs_websocket::frame_length(bytes).0
+            match swoole_rs_websocket::frame_length(bytes) {
+                Ok(frame) => i64::try_from(frame.total).unwrap_or(-1),
+                Err(swoole_rs_websocket::LengthError::IncompleteHeader { .. }) => 0,
+                Err(swoole_rs_websocket::LengthError::Overflow { .. }) => -1,
+            }
         }
         #[inline(always)]
         fn dispatch(r: &Recv, data: *const u8, offset: i64) -> c_int {

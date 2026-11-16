@@ -9,7 +9,6 @@
 use crate::co_io::set_errno;
 use crate::co_socket::Co;
 use crate::fd_control::{fd_poll_fake, fd_timeout, fd_wait, swr_v1_hook_fd_poll};
-use crate::poll::swr_v1_hook_poll;
 use crate::socket_map;
 use crate::stdio::{Host, coroutine, on_pool, swr_v1_hook_close_fd};
 pub use crate::vector::{RecvMessage, SendMessage};
@@ -237,7 +236,7 @@ pub unsafe extern "C" fn swoole_coroutine_poll(
     {
         return crate::uring::poll(ring, fd, timeout);
     }
-    swr_v1_hook_poll(fds, timeout, &crate::poll::NATIVE)
+    crate::poll::poll(fds, timeout, &crate::poll::NATIVE).map_or(-1, CCast::c_cast::<c_int>)
 }
 
 /// Wrap the open `fd` in a nonblocking coroutine socket, which takes it: 0, or -1

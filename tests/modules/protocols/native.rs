@@ -820,8 +820,8 @@ impl Pair {
     /// Whether both packets' first `length` bytes match.
     fn bufs_match(&self, length: usize) -> bool {
         self.candidate
-            .packet()
-            .is_some_and(|packet| self.reference.buf.get(..length) == packet.get(..length))
+            .with_packet(|packet| self.reference.buf.get(..length) == packet.get(..length))
+            .unwrap_or(false)
     }
 }
 
@@ -832,8 +832,8 @@ fn candidate_handshake(owner: &ProxyState, reply: &[u8], sent: isize, wire: &mut
     n == 0
         || n > 0 && {
             *wire = owner
-                .packet()
-                .and_then(|packet| packet.get(..n.cast_unsigned()).map(<[u8]>::to_vec))
+                .with_packet(|packet| packet.get(..n.cast_unsigned()).map(<[u8]>::to_vec))
+                .flatten()
                 .unwrap_or_default();
             (if sent == 1 { n } else { sent }) == n
         }
@@ -924,7 +924,9 @@ fn socks5_packs() {
             assert_eq!(pair.set_string(0, &vec![b'p'; proxy_length]), 0);
             assert_eq!(pair.set_string(3, &vec![b'd'; target_length]), 0);
             pair.reference.buf = [0xa5; 512];
-            *pair.candidate.packet().unwrap() = [0xa5; 512];
+            pair.candidate
+                .with_packet(|packet| *packet = [0xa5; 512])
+                .unwrap();
             let (before, after) = pair.pack(2);
             assert_eq!(before, after);
             // Failure prefix and untouched tail.

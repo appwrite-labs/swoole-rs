@@ -121,7 +121,7 @@ impl Co {
     fn create_session(self, owner: Option<&TlsSettings>) -> bool {
         // The automatic host name, as C reads it, none when the slot is empty.
         let hostname = self.with_extra(|extra| {
-            let slot = &extra.strings[2];
+            let slot = &extra.strings.as_ref()[2];
             (!slot.bytes().is_empty()).then(|| slot.c_str().to_owned())
         });
         let Some(hostname) = hostname else {

@@ -18,7 +18,7 @@ use swoole_rs_reactor::Events;
 struct Sys {
     shutdown: fn(c_int, c_int) -> c_int,
     connect: fn(c_int, &SocketAddress) -> bool,
-    option: fn(c_int, &mut c_int) -> c_int,
+    option: fn(c_int, &mut c_int) -> std::io::Result<()>,
 }
 
 const SYS: Sys = Sys {
@@ -151,7 +151,7 @@ fn settle(socket: Co, sys: Sys) -> bool {
         let mut error = socket.err_code();
         let result = (sys.option)(socket.sock_fd(), &mut error);
         socket.set_err_code(error);
-        if result < 0 || error != 0 {
+        if result.is_err() || error != 0 {
             set_err(socket, error);
             false
         } else {
@@ -203,8 +203,8 @@ fn connect(socket: Co, peer: &SocketAddress, sys: Sys) -> bool {
 }
 
 /// `getsockopt(fd, SOL_SOCKET, SO_ERROR)` into `error`.
-fn so_error(fd: c_int, error: &mut c_int) -> c_int {
-    swoole_rs_corebase::sys::getsockopt_int(fd, libc::SOL_SOCKET, libc::SO_ERROR, error)
+fn so_error(fd: c_int, error: &mut c_int) -> std::io::Result<()> {
+    swoole_rs_corebase::sys::getsockopt(fd, libc::SOL_SOCKET, libc::SO_ERROR, error).map(|_| ())
 }
 
 /// The lifecycle gate's former scenarios, ported: each runs Rust's operation and
@@ -323,7 +323,9 @@ mod tests {
                 timer.stop();
                 return false;
             }
-            if (sys.option)(s.sock_fd(), unsafe { &mut *(*s.raw()).err_code.as_ptr() }) < 0
+            if (sys.option)(s.sock_fd(), unsafe { &mut *(*s.raw()).err_code.as_ptr() })
+                .map_or(-1, |()| 0)
+                < 0
                 || s.err_code() != 0
             {
                 set_err(s, s.err_code());
@@ -378,7 +380,7 @@ mod tests {
         true
     }
     /// Modes: 0 no error, 1 `ECONNREFUSED`, 2 the call fails, 3 the call fails with no error.
-    fn fake_option(_: c_int, error: &mut c_int) -> c_int {
+    fn fake_option(_: c_int, error: &mut c_int) -> std::io::Result<()> {
         let mode = OPTION.get();
         log(format!("get-option:{error}"));
         match mode {
@@ -387,7 +389,11 @@ mod tests {
             _ => {}
         }
         set_errno(libc::EIO);
-        if mode >= 2 { -1 } else { 0 }
+        if mode >= 2 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
     }
     const FAKE: Sys = Sys {
         shutdown: fake_shutdown,

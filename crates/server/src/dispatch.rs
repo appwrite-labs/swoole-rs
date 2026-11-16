@@ -378,10 +378,7 @@ fn keep_port(serv: Server<'_>, port: Box<PortConfig>) -> Port<'_> {
     } else {
         config.have_stream_sock.set(true);
     }
-    // SAFETY: ports are added before the server starts, while the master is its only
-    // thread, so no other thread reads the list, and the caller's views of it ended
-    // before the push.
-    unsafe { serv.state().push_port(port) }
+    serv.state().ports.push(port)
 }
 
 /// `Server::add_systemd_socket()`: imports the sockets systemd passed; the number
@@ -718,7 +715,7 @@ mod tests {
             (SOCK_UDP, true, 9501)
         );
         assert_eq!(serv.ports().len(), before + 1, "kept");
-        assert_eq!(serv.ports()[before].raw(), port.raw());
+        assert_eq!(serv.ports().get(before).unwrap().raw(), port.raw());
         assert!(serv.config().have_dgram_sock.get());
         assert_eq!(serv.config().dgram_port_num.get(), 1);
         assert!(add_port(serv, 1, c"::", 9502).is_some(), "a stream port");
@@ -758,8 +755,10 @@ mod tests {
             2,
             "from fd 3; 5 refused"
         );
-        let kept: Vec<_> = serv.ports()[before..]
+        let kept: Vec<_> = serv
+            .ports()
             .iter()
+            .skip(before)
             .map(|port| (port.config().port.get(), port.config().r#type))
             .collect();
         assert_eq!(kept, [(3, 1), (4, SOCK_UDP)]);

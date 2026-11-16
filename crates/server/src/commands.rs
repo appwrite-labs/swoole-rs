@@ -13,7 +13,7 @@ use swoole_rs_corebase::log;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR, SW_LOG_NOTICE};
 use swoole_rs_error::ErrorCode as E;
 use swoole_rs_process::command::{CommandInput, ProcessTypes, Rejected, Rejection, Target, route};
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 use {
     swoole_rs_corebase::{CCast, DataHead, ServerEvent},
     swoole_rs_reactor::Socket,
@@ -102,7 +102,7 @@ pub(crate) fn command_result(state: &ServerState, request_id: i64, message: &[u8
     drop(ManuallyDrop::into_inner(callback));
 }
 
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 /// `Server::call_command_handler(bus, worker_id, sock)`: answers the command request
 /// in `bus`'s buffer with its handler and writes the reply back over `sock`, the
 /// pipe the request came from.
@@ -126,7 +126,7 @@ pub(crate) fn call_command_handler(
     bus.with_packet(|message| answer(&handler, serv, message, (bus, sock), request.fd, worker_id));
 }
 
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 /// `command_answer(handler, ...)`, written back as `SW_SERVER_EVENT_COMMAND_RESPONSE`
 /// to request `fd` from `reactor_id`: whether `bus` wrote it to `sock`.
 pub(crate) fn answer(
@@ -149,7 +149,7 @@ pub(crate) fn answer(
     bus.write(sock, &mut head, &reply)
 }
 
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 /// `serv->get_command_reply_socket()`: worker 0's master pipe in base mode, else the
 /// command pipe's worker end.
 pub(crate) fn reply_socket<'a>(
@@ -164,7 +164,7 @@ pub(crate) fn reply_socket<'a>(
     config.command_pipe()?.worker_end()
 }
 
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 /// `Server::command`'s `SW_SERVER_EVENT_COMMAND_REQUEST` to its target: a task worker
 /// through the task pool, the manager through the event pool's queue, else a worker
 /// or reactor thread's pipe. Whether it went.
@@ -452,10 +452,10 @@ mod tests {
     fn close_command_pipe(live: &LiveServer) -> usize {
         let pipe = live.server().config().pipe_command.as_ptr();
         if !pipe.is_null() {
-            // SAFETY: the pair `add_command` boxed, which nothing uses after the test.
-            let mut pair =
-                unsafe { Box::from_raw(pipe.cast::<swoole_rs_tls::socket_pair::SocketPair>()) };
-            swoole_rs_tls::socket_pair::drop(&mut pair);
+            // SAFETY: the pair `add_command` kept, which nothing uses after the test;
+            // the configuration frees it.
+            let pair = unsafe { &mut *pipe.cast::<swoole_rs_tls::socket_pair::SocketPair>() };
+            swoole_rs_tls::socket_pair::drop(pair);
         }
         pipe.addr()
     }

@@ -138,7 +138,7 @@ impl<'a> SendData<'a> {
     /// # Safety
     /// `socket` outlives any registration the write makes, as `send_raw` requires.
     #[cfg_attr(
-        not(all(feature = "upstream-symbols", not(test))),
+        not(feature = "upstream-symbols"),
         expect(dead_code, reason = "only the hybrid's factories write to a pipe")
     )]
     pub(crate) unsafe fn send_raw(
@@ -248,7 +248,7 @@ pub(crate) fn create(serv: view::Server<'_>) -> *mut c_void {
     if let Some(gs) = crate::shared::server_counters(state) {
         gs.connection_nums.replace(cells);
     }
-    for port in state.tables_ref().ports() {
+    for port in &state.ports {
         let Some(gs) = port.config().counters() else {
             continue;
         };

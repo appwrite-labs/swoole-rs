@@ -137,11 +137,7 @@ impl Port {
 impl Server {
     /// `ports.at(index)`.
     fn port_at(self, index: usize) -> Port {
-        // SAFETY: the state's tables live as long as the server.
-        let ports = unsafe { &(*self.head().tables).ports };
-        assert!(index < ports.count as usize);
-        // SAFETY: `count` listening ports.
-        Port(unsafe { *ports.items.add(index) })
+        Port(self.view().port_at(index).unwrap().raw())
     }
 
     /// `add_port(type, TEST_HOST, 0)`, or exit 2 as the cases do on a failed listen.

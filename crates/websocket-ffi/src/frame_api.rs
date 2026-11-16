@@ -14,8 +14,8 @@ use swoole_rs_corebase::net_types::PacketLength;
 
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 use swoole_rs_websocket::{
-    DecodeErrorKind, DecodedFrame, Opcode, control_invalid, decode_in_place, encode_close_into,
-    encode_parts, encoded_size, frame_length,
+    DecodeErrorKind, DecodedFrame, EncodeError, Opcode, control_invalid, decode_in_place,
+    encode_close_into, encode_parts, encoded_size, frame_length,
 };
 
 /// `SW_ERROR_WEBSOCKET_INCOMPLETE_PACKET`.
@@ -55,10 +55,10 @@ fn header_only_mask(flags: u8) -> bool {
 fn append_frame(
     buffer: &mut CppString,
     size: usize,
-    write: impl FnOnce(&mut [MaybeUninit<u8>]) -> usize,
+    write: impl FnOnce(&mut [MaybeUninit<u8>]) -> Result<usize, EncodeError>,
 ) -> bool {
     let length = buffer.len();
-    if size == 0 || size > usize::MAX - length {
+    if size > usize::MAX - length {
         return false;
     }
     if length + size > buffer.size() {
@@ -67,7 +67,7 @@ fn append_frame(
     let Some(spare) = buffer.spare().get_mut(..size) else {
         return false;
     };
-    if write(spare) != size {
+    if write(spare) != Ok(size) {
         return false;
     }
     // SAFETY: `write` filled the `size` bytes after the content, inside the buffer.
@@ -141,15 +141,20 @@ pub extern "C" fn get_package_length(
 /// [`get_package_length`]'s measure: it reads only `pl`.
 #[inline]
 pub fn package_length(pl: &mut PacketLength) -> isize {
-    let bytes = pl.bytes();
-    if bytes.len() < 2 {
-        return 0;
-    }
-    let (length, header) = frame_length(bytes);
+    let (length, header) = match frame_length(pl.bytes()) {
+        Ok(frame) => (frame.total.c_cast::<isize>(), Some(frame.header_length)),
+        Err(error) => (
+            match error {
+                swoole_rs_websocket::LengthError::IncompleteHeader { .. } => 0,
+                swoole_rs_websocket::LengthError::Overflow { .. } => -1,
+            },
+            error.header_length(),
+        ),
+    };
     if let Some(header) = header {
-        pl.header_len = header;
+        pl.header_len = header.c_cast::<u32>();
     }
-    length.c_cast::<isize>()
+    length
 }
 
 /// `bool encode(String *buffer, const char *data, size_t length, uint8_t opcode, uint8_t flags)`
@@ -165,7 +170,9 @@ pub fn encode(buffer: &mut CppString, data: &[u8], opcode: u8, flags: u8) -> boo
         );
         return false;
     }
-    let size = encoded_size(length, flags);
+    let Ok(size) = encoded_size(length, flags) else {
+        return false;
+    };
     let data = if flags & HEADER_ONLY != 0 { &[] } else { data };
     append_frame(buffer, size, |out| {
         encode_parts(length, data, opcode, flags, out)
@@ -221,7 +228,9 @@ pub fn pack_close_frame(buffer: &mut CppString, code: c_int, reason: &[u8], flag
         control_warning(origin, Opcode::Close.code(), 1, CLOSE_CODE_LEN + length);
         return false;
     }
-    let size = encoded_size(length + CLOSE_CODE_LEN, flags | FIN);
+    let Ok(size) = encoded_size(length + CLOSE_CODE_LEN, flags | FIN) else {
+        return false;
+    };
     append_frame(buffer, size, |out| {
         encode_close_into(code, reason, flags, out)
     }) && !header_only_mask(flags)

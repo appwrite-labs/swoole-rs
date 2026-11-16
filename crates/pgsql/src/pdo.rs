@@ -9,7 +9,6 @@ use crate::{
 use pq_sys::{ConnStatusType, PostgresPollingStatusType};
 use std::ffi::{c_char, c_int, c_void};
 use std::marker::PhantomData;
-use swoole_rs_zend::sys::swr_zend_pdo_forget_persistent;
 
 impl Conn {
     fn reset_poll(self) -> PostgresPollingStatusType {
@@ -37,11 +36,17 @@ const FAILURE: c_int = -1;
 pub struct Dbh<'a>(*mut c_void, PhantomData<&'a ()>);
 
 // crates/zend-sys' shim (shim_pdo.c), with the handle typed as what it is
-// (`Dbh` has a `void *`'s layout): it only reads the live handle's `driver_data`,
-// a `pdo_pgsql_db_handle` the handle factory set, whose first field is the
-// connection and which lives as long as the handle.
+// (`Dbh` has a `void *`'s layout). `Dbh` is neither `Send` nor `Sync`, so both run
+// on the request's thread.
 unsafe extern "C" {
+    /// It only reads the live handle's `driver_data`, a `pdo_pgsql_db_handle` the
+    /// handle factory set, whose first field is the connection and which lives as
+    /// long as the handle.
     safe fn swr_zend_pdo_driver_data<'a>(dbh: Dbh<'a>) -> &'a Conn;
+    /// The persistent pool forgets the live handle if it holds it: it clears the
+    /// pool entry's pointer before deleting the entry, so the entry's destructor
+    /// leaves the handle, whose owners keep their references.
+    safe fn swr_zend_pdo_forget_persistent(dbh: Dbh<'_>);
 }
 
 impl Dbh<'_> {
@@ -70,8 +75,7 @@ pub extern "C" fn php_swoole_pgsql_handle_io_error(
             swoole_rs_corebase::sys::shutdown(fd, libc::SHUT_RDWR);
             conn.consume_input();
         }
-        // SAFETY: a live `pdo_dbh_t`.
-        unsafe { swr_zend_pdo_forget_persistent(dbh.0) };
+        swr_zend_pdo_forget_persistent(dbh);
     }
     *message = swoole_rs_error_ffi::swoole_strerror(code);
     true

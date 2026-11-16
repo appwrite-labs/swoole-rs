@@ -290,8 +290,9 @@ impl Live<'_> {
     fn socks5_packet(&self, length: isize) -> Vec<u8> {
         let length = usize::try_from(length).unwrap_or(0).min(512);
         self.socks5
-            .and_then(ProxyState::packet)
-            .map(|packet| packet.get(..length).unwrap_or_default().to_vec())
+            .and_then(|proxy| {
+                proxy.with_packet(|packet| packet.get(..length).unwrap_or_default().to_vec())
+            })
             .unwrap_or_default()
     }
 }
@@ -360,7 +361,7 @@ impl Connecting for Live<'_> {
             proxy.set_string(3, &host);
             proxy.update(|fields| fields.target_port = port);
             port = proxy.fields().port;
-            host = proxy.string(0).to_vec();
+            host = proxy.string(0);
         }
         if which == Host::Tls {
             self.set_slot(SSL_HOST_NAME, &host);
@@ -463,7 +464,7 @@ impl Connecting for Live<'_> {
         };
         let mut name = self.socket.tls_host_name();
         if name.is_empty() {
-            name = http.string(3).to_vec();
+            name = http.string(3);
         }
         self.socket.with_buffer(true, |write| {
             let mut request = vec![0; write.size()];
@@ -560,7 +561,7 @@ impl Co {
     }
 
     /// `f` over the socket's HTTP proxy owner; None without one. `f` must not
-    /// reach the socket's metadata again (a nested loan panics).
+    /// reach the socket's metadata again (a nested one sees none).
     pub fn with_http_proxy<T>(self, f: impl FnOnce(&ProxyState) -> T) -> Option<T> {
         self.with_extra(|extra| extra.proxies[1].as_deref().map(f))
             .flatten()

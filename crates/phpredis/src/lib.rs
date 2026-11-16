@@ -18,7 +18,7 @@
 mod format;
 
 use std::{
-    cell::RefCell,
+    cell::Cell,
     collections::HashMap,
     ffi::{CString, c_int, c_long},
     rc::Rc,
@@ -51,10 +51,22 @@ const REPLY_TYPES: [(&std::ffi::CStr, zend_long); 7] = [
 const PHP_FATAL_ERROR: c_int = swoole_rs_error::ErrorCode::SW_ERROR_PHP_FATAL_ERROR as c_int;
 const PHP_RUNTIME_NOTICE: c_int = swoole_rs_error::ErrorCode::SW_ERROR_PHP_RUNTIME_NOTICE as c_int;
 
+/// `redis_handlers`: each command key's callable.
+type Handlers = HashMap<Vec<u8>, Rc<Callable>>;
+
 thread_local! {
-    /// `redis_handlers`: each command key's callable. A handler that replaces
-    /// itself while it runs lives until its call returns.
-    static HANDLERS: RefCell<HashMap<Vec<u8>, Rc<Callable>>> = RefCell::new(HashMap::new());
+    /// Taken out and put back around each lookup and insert. A handler runs, and
+    /// one replaced or freed is released, only once the map is back, so a
+    /// handler that replaces itself while it runs lives until its call returns.
+    static HANDLERS: Cell<Handlers> = Cell::default();
+}
+
+/// `f` on the handlers, out of their cell until `f` returns. `f` runs no PHP code.
+fn with_handlers<R>(f: impl FnOnce(&mut Handlers) -> R) -> R {
+    let mut handlers = HANDLERS.take();
+    let result = f(&mut handlers);
+    HANDLERS.set(handlers);
+    result
 }
 
 method_table! {
@@ -96,9 +108,8 @@ pub fn redis_minit(minit: &Minit) -> Result<(), bailout::Bailout> {
 
 /// RSHUTDOWN: free the handlers, then re-raise a destructor's bailout.
 pub extern "C" fn redis_rshutdown() {
-    let handlers: Vec<_> = HANDLERS.with_borrow_mut(|map| map.drain().map(|(_, h)| h).collect());
-    // A destructor's bailout stays pending.
-    drop(handlers);
+    // Out of the cell first: a destructor may set a handler. Its bailout stays pending.
+    drop(HANDLERS.take());
     bailout::finish();
 }
 
@@ -153,7 +164,7 @@ fn set_handler(call: &Call) {
         return;
     }
     // The handler this one replaces goes; a destructor's bailout stays pending.
-    let old = HANDLERS.with_borrow_mut(|map| map.insert(key, callable));
+    let old = with_handlers(|map| map.insert(key, callable));
     drop(old);
     call.set_bool(true);
 }
@@ -212,7 +223,7 @@ fn receive(
         return Ok(true);
     }
     let key = handler_key(command);
-    let Some(callable) = HANDLERS.with_borrow(|map| map.get(&key).cloned()) else {
+    let Some(callable) = with_handlers(|map| map.get(&key).cloned()) else {
         let mut reply = b"-ERR unknown command '".to_vec();
         reply.extend_from_slice(until_nul(command));
         reply.extend_from_slice(b"'\r\n");

@@ -112,7 +112,7 @@ fn wake(co: Parked) {
 )]
 mod tests {
     use super::*;
-    use crate::wait_event::{EventWaitOps, Registered, swr_v1_hook_wait_event};
+    use crate::wait_event::{EventWaitOps, Registered, wait_with};
     use std::cell::{Cell, RefCell};
     use swoole_rs_reactor::SocketRecord;
 
@@ -193,7 +193,10 @@ mod tests {
             }
         }
         let ops = EventWaitOps { current, add, park };
-        let waited = swr_v1_hook_wait_event(7, Events::READ | Events::WRITE, 1.0, &ops);
-        assert_eq!((waited.result, WOKEN.get()), (Events::RDWR.bits(), 1));
+        let waited = wait_with(7, Events::READ | Events::WRITE, 1.0, &ops);
+        assert_eq!(
+            (waited.unwrap_or(Events::NONE).bits(), WOKEN.get()),
+            (Events::RDWR.bits(), 1)
+        );
     }
 }

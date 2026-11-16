@@ -209,7 +209,8 @@ pub fn add<'a>(
         ),
     ] {
         if size > 0
-            && swoole_rs_corebase::sys::setsockopt(listen_fd, libc::SOL_SOCKET, name, &size) != 0
+            && swoole_rs_corebase::sys::setsockopt(listen_fd, libc::SOL_SOCKET, name, &size)
+                .is_err()
         {
             let m = format_args!("setsockopt({label}, {size}) failed");
             log::sys_warning(c"Server::add_connection", m);
@@ -220,13 +221,13 @@ pub fn add<'a>(
         sock.edit(|s| s.direct_send = true);
     }
 
-    state.lock();
+    state.locked.lock();
     if fd > gs.max_fd() {
         gs.max_fd.store(fd, Relaxed);
     } else if fd < gs.min_fd() {
         gs.min_fd.store(fd, Relaxed);
     }
-    state.unlock();
+    state.locked.unlock();
 
     gs.accept_count.fetch_add(1, Relaxed);
     let port_gs = ls.counters();

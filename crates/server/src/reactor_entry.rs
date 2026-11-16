@@ -143,7 +143,7 @@ pub unsafe extern "C-unwind" fn close_connection(
 
 /// `void ReactorThread::shutdown(Reactor *)`, over `serv`'s reactor thread `id` and
 /// its reactor.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 pub(crate) fn thread_shutdown(serv: view::Server<'_>, reactor: Reactor, id: usize) {
     let mut ctx = crate::reactor_ops::ReactorContext::new(serv, Some(reactor));
     ctx.thread = serv.state().tables_ref().reactor_thread(id);
@@ -156,7 +156,7 @@ pub(crate) fn thread_shutdown(serv: view::Server<'_>, reactor: Reactor, id: usiz
 /// # Safety
 /// `proto` is a live server port's protocol (its `private_data_2` the server) and
 /// `socket` a live session socket of that port.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 #[must_use]
 pub unsafe extern "C-unwind" fn dispatch_task(
     proto: *const swoole_rs_clients::protocol::Protocol,

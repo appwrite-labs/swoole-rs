@@ -1,6 +1,5 @@
 //! The static handler's configuration: three string collections and the rewrite
 //! rules, which the server's state owns.
-use crate::ServerState;
 use std::sync::{Arc, Mutex, MutexGuard};
 use swoole_rs_http::{HttpStaticContext, RewriteRules};
 
@@ -68,9 +67,11 @@ impl StaticConfig {
     }
 }
 
-fn owner(state: &ServerState) -> MutexGuard<'_, StaticConfig> {
-    state
-        .static_config
+/// `ServerState::static_config`: the collections, made at their first use.
+pub(crate) type Configs = std::sync::OnceLock<Mutex<StaticConfig>>;
+
+fn owner(configs: &Configs) -> MutexGuard<'_, StaticConfig> {
+    configs
         .get_or_init(Mutex::default)
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -78,12 +79,12 @@ fn owner(state: &ServerState) -> MutexGuard<'_, StaticConfig> {
 
 /// `collection`: whether it is set, and its values, read after the lock is released.
 pub(crate) fn strings<R>(
-    state: &ServerState,
+    configs: &Configs,
     collection: Collection,
     f: impl FnOnce(bool, &[Arc<[u8]>]) -> R,
 ) -> R {
     let (enabled, values) = {
-        let mut owner = owner(state);
+        let mut owner = owner(configs);
         let strings = owner.strings(collection);
         (strings.enabled, Arc::clone(&strings.values))
     };
@@ -92,8 +93,8 @@ pub(crate) fn strings<R>(
 
 /// `operation` on `collection`. The named index setter does its original duplicate
 /// lookup before appending.
-pub(crate) fn config(state: &ServerState, collection: Collection, operation: Op<'_>) -> usize {
-    let mut owner = owner(state);
+pub(crate) fn config(configs: &Configs, collection: Collection, operation: Op<'_>) -> usize {
+    let mut owner = owner(configs);
     let strings = owner.strings(collection);
     let find = |strings: &Strings, bytes: &[u8]| {
         let found = strings.values.iter().position(|value| **value == *bytes);
@@ -123,12 +124,12 @@ pub(crate) fn config(state: &ServerState, collection: Collection, operation: Op<
 }
 
 /// `url_rewrite_rules`: add one rule (upstream's `Server::add_rewrite_rule`).
-pub(crate) fn add_rewrite_rule(state: &ServerState, pattern: &[u8], replacement: &[u8]) {
-    owner(state).rewrite_rules.add(pattern, replacement);
+pub(crate) fn add_rewrite_rule(configs: &Configs, pattern: &[u8], replacement: &[u8]) {
+    owner(configs).rewrite_rules.add(pattern, replacement);
 }
 /// Upstream's `Server::apply_rewrite_rules` over the server's rules.
-pub(crate) fn apply_rewrite_rules(state: &ServerState, context: &mut HttpStaticContext) -> bool {
-    context.rewrite(&owner(state).rewrite_rules)
+pub(crate) fn apply_rewrite_rules(configs: &Configs, context: &mut HttpStaticContext) -> bool {
+    context.rewrite(&owner(configs).rewrite_rules)
 }
 
 #[cfg(test)]
@@ -138,7 +139,7 @@ mod tests {
 
     #[test]
     fn optional_collections_distinguish_absent_empty_and_ordered_unique_values() {
-        let state = ServerState::new();
+        let state = Configs::new();
         let config = |collection, op| config(&state, collection, op);
         let text = |collection, index: usize| {
             strings(&state, collection, |_, values| values.get(index).cloned())
@@ -180,10 +181,9 @@ mod tests {
 
     #[test]
     fn a_writer_proceeds_while_a_reader_holds_the_snapshot() {
-        let state = Arc::new(ServerState::new());
-        let append = |state: &ServerState, bytes: &'static [u8]| {
-            config(state, IndexFiles, Op::Append(bytes))
-        };
+        let state = Arc::new(Configs::new());
+        let append =
+            |state: &Configs, bytes: &'static [u8]| config(state, IndexFiles, Op::Append(bytes));
         append(&state, b"index.php");
         let writer = strings(&state, IndexFiles, |enabled, values| {
             assert!(enabled);
@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn rewrite_rules_rewrite_the_context_url() {
-        let state = ServerState::new();
+        let state = Configs::new();
         let mut context = HttpStaticContext::new(b"/view/post/3", 128).unwrap();
         assert!(!apply_rewrite_rules(&state, &mut context));
         add_rewrite_rule(&state, b"~^/view/post/(\\d+)$~", b"/static/$1.html");
@@ -221,7 +221,7 @@ mod tests {
     // which only native static contexts held.
     #[test]
     fn locations_insert_uniquely_and_index_files_append_duplicates() {
-        let state = ServerState::new();
+        let state = Configs::new();
         let config = |collection, op| config(&state, collection, op);
         // Locations: absent until the first insert, which is unique.
         assert_eq!(config(Locations, Op::Enabled), 0);

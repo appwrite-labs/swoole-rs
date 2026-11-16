@@ -13,7 +13,7 @@ use crate::hybrid::{Step, hybrid};
 use crate::reactor_handle::Reactor;
 use crate::view;
 
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 pub(crate) mod native;
 
 /// `SW_FD_SESSION`, `SW_FD_STREAM_SERVER` and `SW_SSL_STATE_READY`.
@@ -40,7 +40,7 @@ pub(crate) fn start_reactor_processes(serv: view::Server<'_>) -> bool {
     config.single_thread.set(true);
     // Listen on the TCP ports; with SO_REUSEPORT each worker listens itself.
     if config.have_stream_sock.get() {
-        for (index, &port) in serv.ports().iter().enumerate() {
+        for (index, port) in serv.ports().iter().enumerate() {
             if !is_stream(port) {
                 continue;
             }
@@ -94,7 +94,7 @@ pub(crate) fn main_loop(serv: view::Server<'_>, worker: Worker<'_>) -> bool {
     }
     let reactor = Reactor::thread();
     let config = serv.config();
-    for (index, &port) in serv.ports().iter().enumerate() {
+    for (index, port) in serv.ports().iter().enumerate() {
         if reuse_port(config) && is_stream(port) {
             if !hybrid().step(serv, Step::CreatePortSocket(index)) {
                 hybrid().step(serv, Step::EventFree);

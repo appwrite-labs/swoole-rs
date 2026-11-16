@@ -7,7 +7,7 @@
 use crate::Routine;
 use core::cell::RefCell;
 use core::ffi::{c_int, c_void};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use swoole_rs_corebase::{SharedThread, adopt_shared_thread, shared_thread};
@@ -93,24 +93,24 @@ pub(crate) struct Started {
 pub const THREAD: u32 = 4;
 
 /// A coroutine's entry over the creator's data, which only [`Entry::new`] makes:
-/// the context it is handed to runs it once, on its own stack or thread.
-pub struct Entry(Routine, *mut c_void);
-
-// SAFETY: only the coroutine's thread uses the creator's entry and data, while
-// it holds the baton, so no two threads touch the data at once.
-unsafe impl Send for Entry {}
+/// the context it is handed to runs it once, on its own stack or thread. The data's
+/// address goes with it to that thread, which uses it only while it holds the baton.
+pub struct Entry(Routine, AtomicPtr<c_void>);
 
 impl Entry {
     /// # Safety
-    /// `routine` takes `data`: calling it once with it is sound.
+    /// `routine` takes `data`: calling it once with it is sound, on whichever thread
+    /// runs the coroutine while no other runs.
     pub const unsafe fn new(routine: Routine, data: *mut c_void) -> Self {
-        Self(routine, data)
+        Self(routine, AtomicPtr::new(data))
     }
 
     /// Runs the entry; this takes it, so it runs once.
     pub(crate) fn run(self) {
+        let Self(routine, data) = self;
+        let data = data.into_inner();
         // SAFETY: the routine and data `new`'s caller paired, called once.
-        unsafe { (self.0)(self.1) };
+        unsafe { routine(data) };
     }
 }
 
@@ -192,7 +192,11 @@ impl Drop for Started {
 fn run(thread: &Arc<Thread>, entry: Entry) {
     thread.baton.wait();
     // The first swap_in follows activation, which records SHARED.
-    if let Some(shared) = *SHARED.lock().unwrap_or_else(PoisonError::into_inner) {
+    if let Some(shared) = SHARED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+    {
         adopt_shared_thread(shared);
     }
     ME.set(Some(Arc::clone(thread)));

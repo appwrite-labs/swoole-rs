@@ -375,27 +375,29 @@ fn create(max_event: c_int, kind: c_int) -> crate::Running<'static> {
         owner.handlers.defaults[0].set(Some(reactor_writable_callback));
     }
     let reactor = crate::Running::leak(owner);
-    if swoole_rs_corebase::swoole_isset_hook(HookType::ON_REACTOR_CREATE) {
-        // SAFETY: hooks receive the live `Reactor`.
-        unsafe {
-            swoole_rs_corebase::swoole_call_hook(HookType::ON_REACTOR_CREATE, reactor.as_ptr());
-        };
-    }
+    reactor_hook(HookType::ON_REACTOR_CREATE, reactor);
     // The hook has returned.
     reactor.with(|state| crate::callbacks::install_builtins(&mut state.callbacks));
     reactor
+}
+
+/// The `kind` hooks (`ON_REACTOR_CREATE` or `ON_REACTOR_DESTROY`) over `reactor`, if
+/// any is set.
+fn reactor_hook(kind: HookType, reactor: crate::Running<'_>) {
+    if swoole_rs_corebase::swoole_isset_hook(kind) {
+        // SAFETY: the reactor hooks take a `Reactor *`, and the handle's is live.
+        unsafe { swoole_rs_corebase::swoole_call_hook(kind, reactor.as_ptr()) };
+    }
 }
 
 /// `delete reactor`: marks it destroyed, runs its destroy callbacks, closes its
 /// backend, calls the destroy hook and frees it.
 ///
 /// # Safety
-/// `reactor` is from [`swr_v1_reactor_new`] and nothing uses it afterwards.
-pub unsafe fn swr_v1_reactor_delete(reactor: *mut c_void) {
-    let state = reactor.cast::<ReactorState>();
-    // SAFETY: as the caller promises: the live reactor, on its thread, which no
-    // reference holds. Each borrow below ends before a callback, hook or disposer runs.
-    let handle = unsafe { crate::Running::new(reactor) };
+/// `handle` is a reactor from [`swr_v1_reactor_new`], and nothing uses it afterwards.
+/// Each borrow below ends before a callback, hook or disposer runs.
+pub unsafe fn swr_v1_reactor_delete(handle: crate::Running<'_>) {
+    let state = handle.state();
     let cycle_tasks = handle.with(|state| {
         state.fields.destroyed = true;
         crate::event_api::take_cycle_tasks(&mut state.fields)
@@ -404,10 +406,7 @@ pub unsafe fn swr_v1_reactor_delete(reactor: *mut c_void) {
     drop(cycle_tasks);
     crate::deferred::run_destroy(handle);
     handle.with(ReactorState::close_backend);
-    if swoole_rs_corebase::swoole_isset_hook(HookType::ON_REACTOR_DESTROY) {
-        // SAFETY: hooks receive the live `Reactor`.
-        unsafe { swoole_rs_corebase::swoole_call_hook(HookType::ON_REACTOR_DESTROY, reactor) };
-    }
+    reactor_hook(HookType::ON_REACTOR_DESTROY, handle);
     // A disposer can defer again through the reactor's head (a PHP destructor calling
     // `Event::defer`), so the queues are detached and freed until they stay empty, and
     // no reference to the state (a `Drop`'s `&mut self` included) is live meanwhile.
@@ -437,7 +436,7 @@ pub extern "C-unwind" fn swoole_event_init(flags: c_int) -> c_int {
     let handle = create(SW_REACTOR_MAXEVENTS, 0);
     if !handle.with(|state| state.fields.ready) {
         // SAFETY: the reactor just made, which nothing else holds or uses again.
-        unsafe { swr_v1_reactor_delete(handle.as_ptr()) };
+        unsafe { swr_v1_reactor_delete(handle) };
         return -1;
     }
     handle.with(|state| state.fields.wait_exit = flags & SW_EVENTLOOP_WAIT_EXIT != 0);
@@ -455,10 +454,9 @@ pub extern "C-unwind" fn swoole_event_init(flags: c_int) -> c_int {
     reason = "callers, `swoole_event_wait` among them, ignore it as upstream's do"
 )]
 pub fn swoole_event_free() -> c_int {
-    let reactor = swoole_rs_corebase::thread_reactor();
-    if reactor.is_null() {
+    let Some(reactor) = crate::event_api::running() else {
         return -1;
-    }
+    };
     // SAFETY: the thread's reactor, which `swoole_event_init` made; it is cleared below.
     unsafe { swr_v1_reactor_delete(reactor) };
     swoole_rs_corebase::set_thread_reactor(ptr::null_mut());
@@ -643,7 +641,7 @@ pub(crate) mod tests {
         unsafe { (*owner).record(Socket::from_ptr(socket).unwrap(), op, events) }
     }
     pub(crate) unsafe fn free(owner: *mut ReactorState) {
-        unsafe { swr_v1_reactor_delete(owner.cast()) };
+        unsafe { swr_v1_reactor_delete(running(owner)) };
     }
     /// The test's state as the handle its operations take.
     pub(crate) fn running(owner: *mut ReactorState) -> crate::Running<'static> {

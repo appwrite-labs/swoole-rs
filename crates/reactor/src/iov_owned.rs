@@ -3,12 +3,43 @@
 use crate::ReactorIovProgress;
 use crate::iov_progress::progress;
 use crate::socket_rw::IovState;
+use std::io::IoSlice;
+use std::marker::PhantomData;
+use std::mem::MaybeUninit;
+use swoole_rs_corebase::sys::ReadSlot;
 
-pub struct ReactorIov {
+/// An `IOVector` over buffers lent for `'a` in one direction: writable and reached
+/// through nothing else for a read ([`Self::reading`]), readable for a write
+/// ([`Self::writing`]). Only those make one, so its descriptors always name them.
+pub struct ReactorIov<'a> {
     fields: ReactorIovFields,
     /// The two spans `fields` points into: the original descriptors, then the
     /// iterator's copy, whose last `remain_count` are the ones left.
     descriptors: Vec<libc::iovec>,
+    write: bool,
+    lent: PhantomData<&'a mut [u8]>,
+}
+
+/// One buffer a vectored read fills, as an `iovec`: slots that may not be written
+/// yet, lent for `'b`.
+#[repr(transparent)]
+pub struct ReadVec<'b> {
+    iov: libc::iovec,
+    lent: PhantomData<&'b mut [MaybeUninit<u8>]>,
+}
+
+impl<'b> ReadVec<'b> {
+    /// The vector over `slots`.
+    #[must_use]
+    pub fn new(slots: &'b mut [impl ReadSlot]) -> Self {
+        Self {
+            iov: libc::iovec {
+                iov_base: slots.as_mut_ptr().cast(),
+                iov_len: slots.len(),
+            },
+            lent: PhantomData,
+        }
+    }
 }
 
 /// Stable public slots borrowed by the native facade. Payload and descriptor
@@ -19,11 +50,12 @@ pub struct ReactorIovFields {
     pub count: i32,
     pub state: IovState,
 }
-/// Construct both descriptor spans from `source`. Payload bytes are neither read nor
-/// owned. Refused with -2 when it can't allocate.
-fn owned_new(
+/// Construct both descriptor spans from `source`, in `write`'s direction. Payload
+/// bytes are neither read nor owned. Refused with -2 when it can't allocate.
+fn owned_new<'a>(
     source: impl IntoIterator<Item = libc::iovec, IntoIter: ExactSizeIterator + Clone>,
-) -> Result<Box<ReactorIov>, i32> {
+    write: bool,
+) -> Result<Box<ReactorIov<'a>>, i32> {
     let source = source.into_iter();
     let count = source.len();
     // The pinned Native expression count+count has no defined signed-overflow
@@ -51,18 +83,35 @@ fn owned_new(
             },
         },
         descriptors,
+        write,
+        lent: PhantomData,
     })
     .ok_or(-2)
 }
 
-impl ReactorIov {
-    /// `IOVector(iov, count)`: a cursor over a copy of `source`'s descriptors, whose
-    /// payload bytes stay the caller's; none when it can't allocate.
+impl<'a> ReactorIov<'a> {
+    /// `IOVector(iov, count)` to read into `vectors`' buffers: a cursor over a copy of
+    /// their descriptors; none when it can't allocate.
     #[must_use]
-    pub fn new(
-        source: impl IntoIterator<Item = libc::iovec, IntoIter: ExactSizeIterator + Clone>,
-    ) -> Option<Box<Self>> {
-        owned_new(source).ok()
+    pub fn reading(vectors: &'a mut [ReadVec<'_>]) -> Option<Box<Self>> {
+        owned_new(vectors.iter().map(|vector| vector.iov), false).ok()
+    }
+
+    /// `IOVector(iov, count)` to write `vectors`' bytes: a cursor over a copy of their
+    /// descriptors; none when it can't allocate.
+    #[must_use]
+    pub fn writing(vectors: &'a [IoSlice<'_>]) -> Option<Box<Self>> {
+        let iovecs = vectors.iter().map(|bytes| libc::iovec {
+            iov_base: bytes.as_ptr().cast_mut().cast(),
+            iov_len: bytes.len(),
+        });
+        owned_new(iovecs, true).ok()
+    }
+
+    /// Whether it was made to write from.
+    #[must_use]
+    pub const fn write(&self) -> bool {
+        self.write
     }
 
     /// Where the descriptors left start: the iterator, which only `advance` moves,
@@ -116,24 +165,23 @@ impl ReactorIov {
 
 /// Observe the cursor. No reference to the owner escapes the call.
 #[must_use]
-pub fn swr_v1_reactor_iov_view(owner: &ReactorIov) -> IovState {
+pub fn swr_v1_reactor_iov_view(owner: &ReactorIov<'_>) -> IovState {
     owner.fields.state
 }
 
-/// `Socket::readv`/`writev` through an owned `IOVector`: readv(2)/writev(2) over the
-/// remaining iovecs, or `tls` (its read and its write) one iovec at a time until one
-/// comes up short, advancing the cursor; retried on EINTR.
-/// # Safety
-/// Each payload is valid for the direction.
-pub unsafe fn swr_v1_socket_iov_owned(
+/// `Socket::readv`/`writev` through an owned `IOVector`, in the direction it was made
+/// for: readv(2)/writev(2) over the remaining iovecs, or `tls` (its read and its
+/// write) one iovec at a time until one comes up short, advancing the cursor; retried
+/// on EINTR.
+pub fn swr_v1_socket_iov_owned(
     fd: i32,
-    write: bool,
-    owner: &mut ReactorIov,
+    owner: &mut ReactorIov<'_>,
     tls: Option<&(
         impl Fn(crate::Fill<'_>) -> isize,
         impl Fn(crate::Drain<'_>) -> isize,
     )>,
 ) -> isize {
+    let write = owner.write;
     loop {
         let result = if let Some((read, send)) = tls {
             let mut total: isize = 0;
@@ -142,10 +190,12 @@ pub unsafe fn swr_v1_socket_iov_owned(
                     break total;
                 };
                 let done = if write {
-                    // SAFETY: the caller's readable payload, by that iovec.
+                    // SAFETY: the type's invariant: a remaining iovec of a writing
+                    // vector names bytes readable while it lives.
                     send(unsafe { crate::Drain::from_raw(current.iov_base, current.iov_len) })
                 } else {
-                    // SAFETY: the caller's writable payload, by that iovec.
+                    // SAFETY: the type's invariant: a remaining iovec of a reading
+                    // vector names writable bytes nothing else reaches while it lives.
                     read(unsafe { crate::Fill::from_raw(current.iov_base, current.iov_len) })
                 };
                 total += done.max(0);
@@ -158,10 +208,11 @@ pub unsafe fn swr_v1_socket_iov_owned(
             let count = owner.fields.state.remain_count;
             let left = owner.remaining().as_ptr();
             let done = if write {
-                // SAFETY: the `remain_count` iovecs left name the caller's buffers.
+                // SAFETY: the `remain_count` iovecs left name buffers readable while
+                // the vector lives (the type's invariant).
                 unsafe { libc::writev(fd, left, count) }
             } else {
-                // SAFETY: as above, writable.
+                // SAFETY: as above, writable and reached through nothing else.
                 unsafe { libc::readv(fd, left, count) }
             };
             owner.advance(done);
@@ -232,10 +283,10 @@ mod tests {
                 })
                 .collect();
             unsafe {
-                let length = |owner: &ReactorIov| {
+                let length = |owner: &ReactorIov<'_>| {
                     owned_length(span(owner.fields.original, owner.fields.count))
                 };
-                let owner = owned_new(source.iter().copied()).map(Box::into_raw);
+                let owner = owned_new(source.iter().copied(), false).map(Box::into_raw);
                 assert!(owner.is_ok_and(|owner| !owner.is_null()));
                 let owner = owner.unwrap();
                 let initial = swr_v1_reactor_iov_view(&*owner);
@@ -268,7 +319,7 @@ mod tests {
                 })
                 .collect();
             unsafe {
-                let owner = owned_new(source.iter().copied())
+                let owner = owned_new(source.iter().copied(), false)
                     .map(Box::into_raw)
                     .unwrap();
                 let (original, iterator) =
@@ -304,7 +355,7 @@ mod tests {
             iov_len: 7,
         };
         unsafe {
-            let owner = owned_new([source]).map(Box::into_raw).unwrap();
+            let owner = owned_new([source], false).map(Box::into_raw).unwrap();
             let (original, iterator) = ((*owner).fields.original, (*owner).fields.state.iterator);
             let partial = owned_progress(span(iterator, 1), 2, 1, 0, 0);
             assert_eq!(
@@ -332,7 +383,7 @@ mod tests {
     /// Upstream's `IOVector` as the hybrid's C++ facade drives these exports
     /// (socket.cc: the constructor, destructor and `update_iterator`).
     struct IoVector {
-        owner: *mut ReactorIov,
+        owner: *mut ReactorIov<'static>,
         iov: *mut libc::iovec,
         iterator: *mut libc::iovec,
         count: i32,
@@ -343,7 +394,9 @@ mod tests {
     impl IoVector {
         fn new(input: &[libc::iovec]) -> Self {
             let count = input.len().c_cast::<i32>();
-            let owner = owned_new(input.iter().copied()).map(Box::into_raw).unwrap();
+            let owner = owned_new(input.iter().copied(), false)
+                .map(Box::into_raw)
+                .unwrap();
             let fields = unsafe { &(*owner).fields };
             Self {
                 owner,

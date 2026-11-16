@@ -77,8 +77,9 @@ impl AddressList {
 }
 
 unsafe extern "C" {
-    /// PHP's `php_network_gethostbyname`.
-    fn php_network_gethostbyname(name: *const libc::c_char) -> *mut libc::hostent;
+    /// `php_network_gethostbyname(host)`: 0 with the first address of an
+    /// `AF_INET` entry written, 1 for an entry of another family, -1 for none.
+    safe fn swr_zend_gethostbyname4(host: Text<'_>, address: &mut in_addr) -> c_int;
 }
 
 // libc's. Each reads its `Text`s and hints, writes only the one object a reference
@@ -155,7 +156,7 @@ fn apply<T: swoole_rs_corebase::sys::Pod>(
     name: c_int,
     value: &T,
 ) -> Handled {
-    if setsockopt(s.fd, level, name, value) != 0 {
+    if setsockopt(s.fd, level, name, value).is_err() {
         socket_error(s.socket, "unable to set socket option", errno())?;
         return Ok(Some(false));
     }
@@ -209,26 +210,21 @@ fn inet4(s: Sock, host: &[u8]) -> Result<Option<in_addr>, Stop> {
             s_addr: u32::from_ne_bytes(address.octets()),
         }));
     }
-    let entry = if host.count_bytes() > MAXFQDNLEN {
-        ptr::null_mut()
+    let mut address = in_addr { s_addr: 0 };
+    let found = if host.count_bytes() > MAXFQDNLEN {
+        -1
     } else {
-        // SAFETY: NUL-terminated text.
-        unsafe { php_network_gethostbyname(host.as_ptr()) }
+        swr_zend_gethostbyname4(Text::from(host.as_c_str()), &mut address)
     };
-    if entry.is_null() {
+    if found < 0 {
         socket_error(s.socket, "Host lookup failed", host_error())?;
         return Ok(None);
     }
-    // SAFETY: a live entry, until the next lookup.
-    let entry = unsafe { &*entry };
-    if entry.h_addrtype != libc::AF_INET {
+    if found > 0 {
         warn(b"Host lookup failed: Non AF_INET domain returned on AF_INET socket")?;
         return Ok(None);
     }
-    // SAFETY: an AF_INET entry's first address holds an in_addr.
-    let first = unsafe { *entry.h_addr_list };
-    // SAFETY: as above.
-    Ok(Some(unsafe { first.cast::<in_addr>().read_unaligned() }))
+    Ok(Some(address))
 }
 
 /// `php_set_inet6_addr`: the address, then any `%scope`.
@@ -396,7 +392,7 @@ fn change(
         request.gr_group = stored(group);
         setsockopt(s.fd, level, name, &request)
     };
-    Ok(Some(result == 0))
+    Ok(Some(result.is_ok()))
 }
 
 /// `IP_ADD_MEMBERSHIP` and `IP_DROP_MEMBERSHIP`; upstream picks the request
@@ -432,7 +428,7 @@ fn change(
         } else {
             libc::IP_DROP_MEMBERSHIP
         };
-        Ok(Some(setsockopt(s.fd, level, name, &request) == 0))
+        Ok(Some(setsockopt(s.fd, level, name, &request).is_ok()))
     } else if s.kind == libc::AF_INET6 {
         let request = libc::ipv6_mreq {
             // As above, as a sockaddr_in6.
@@ -444,7 +440,7 @@ fn change(
         } else {
             libc::IPV6_LEAVE_GROUP
         };
-        Ok(Some(setsockopt(s.fd, level, name, &request) == 0))
+        Ok(Some(setsockopt(s.fd, level, name, &request).is_ok()))
     } else {
         let option = if join {
             "MCAST_JOIN_GROUP"
@@ -679,7 +675,7 @@ pub(crate) fn get_ipv6(call: &Call, socket: Co, level: c_int, name: c_int) -> Ha
         return Ok(None);
     }
     let mut info: libc::in6_pktinfo = zeroed();
-    if crate::socket_options::getsockopt(fd(socket), level, name, &mut info).is_none() {
+    if crate::socket_options::getsockopt(fd(socket), level, name, &mut info).is_err() {
         socket_error(socket, "unable to get socket option", errno())?;
         return Ok(Some(false));
     }

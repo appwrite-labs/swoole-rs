@@ -2,7 +2,7 @@
 //! Allocation, connection state, PHP and callbacks stay with the native caller.
 use std::mem::MaybeUninit;
 
-use crate::{Opcode, frame_length, header, mask};
+use crate::{LengthError, Opcode, frame_length, header, mask};
 
 const FIN: u8 = 1;
 const RSV1: u8 = 4;
@@ -51,10 +51,13 @@ fn flags(first: u8, second: u8) -> u8 {
 #[inline]
 pub fn decode_in_place(data: &mut [u8]) -> Result<DecodedFrame, DecodeError> {
     let length = data.len();
-    let (total, header) = frame_length(data);
-    let header = header.unwrap_or(0);
+    let measured = frame_length(data);
+    let header = measured.map_or_else(
+        |error| error.header_length().unwrap_or(0),
+        |frame| frame.header_length,
+    );
     let mut frame = DecodedFrame {
-        header_length: header as usize,
+        header_length: header,
         ..DecodedFrame::default()
     };
     if let [first, second, ..] = *data {
@@ -62,16 +65,15 @@ pub fn decode_in_place(data: &mut [u8]) -> Result<DecodedFrame, DecodeError> {
         frame.flags = flags(first, second);
         frame.length_code = second & 127;
     }
-    let size = usize::try_from(total).map_err(|_| DecodeError {
-        kind: DecodeErrorKind::LengthOverflow,
-        frame,
-    })?;
-    if size == 0 {
-        return Err(DecodeError {
-            kind: DecodeErrorKind::IncompleteHeader,
+    let size = measured
+        .map_err(|error| DecodeError {
+            kind: match error {
+                LengthError::IncompleteHeader { .. } => DecodeErrorKind::IncompleteHeader,
+                LengthError::Overflow { .. } => DecodeErrorKind::LengthOverflow,
+            },
             frame,
-        });
-    }
+        })?
+        .total;
     frame.payload_length = size - frame.header_length;
     if length < size {
         return Err(DecodeError {
@@ -108,9 +110,20 @@ pub fn control_invalid(opcode: u8, flags: u8, length: usize) -> bool {
     is_control(opcode) && (flags & FIN == 0 || length > 125)
 }
 
+/// Why a frame could not be encoded. Rejected inputs leave the output untouched.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EncodeError {
+    LengthOverflow,
+    InvalidControl,
+    PayloadLength,
+    OutputTooSmall,
+}
+
 /// Actual encoded size, including the pinned header-only behavior.
-#[must_use]
-pub fn encoded_size(length: usize, flags: u8) -> usize {
+///
+/// # Errors
+/// The encoded length cannot fit in a slice.
+pub fn encoded_size(length: usize, flags: u8) -> Result<usize, EncodeError> {
     let header: usize = if length < 126 {
         2
     } else if length <= 65535 {
@@ -123,30 +136,34 @@ pub fn encoded_size(length: usize, flags: u8) -> usize {
         .checked_add(if flags & MASK != 0 { 4 } else { 0 })
         .and_then(|size| size.checked_add(payload))
         .filter(|size| isize::try_from(*size).is_ok())
-        .unwrap_or(0)
+        .ok_or(EncodeError::LengthOverflow)
 }
 
 /// One frame of a `length`-byte payload into `out`; `data`, the payload, is
-/// unused for a header-only frame. Returns the encoded size, or 0 without
-/// writes when `out` is too short or the frame is invalid.
+/// unused for a header-only frame. Returns the number of initialized output bytes.
+///
+/// # Errors
+/// An overflowing length, invalid control frame, mismatched payload length or
+/// short output. Errors leave `out` untouched.
 pub fn encode_parts(
     length: usize,
     data: &[u8],
     opcode: u8,
     flags: u8,
     out: &mut [MaybeUninit<u8>],
-) -> usize {
-    let size = encoded_size(length, flags);
-    if size == 0 || control_invalid(opcode, flags, length) {
-        return 0;
+) -> Result<usize, EncodeError> {
+    let size = encoded_size(length, flags)?;
+    if control_invalid(opcode, flags, length) {
+        return Err(EncodeError::InvalidControl);
+    }
+    if flags & HEADER_ONLY == 0 && length != data.len() {
+        return Err(EncodeError::PayloadLength);
     }
     let (header, header_length) = header(length as u64, opcode, flags);
-    let Some((head, rest)) = out
+    let (head, rest) = out
         .get_mut(..size)
         .and_then(|out| out.split_at_mut_checked(header_length))
-    else {
-        return 0;
-    };
+        .ok_or(EncodeError::OutputTooSmall)?;
     head.write_copy_of_slice(header.get(..header_length).unwrap_or_default());
     let payload = match rest.split_first_chunk_mut::<4>() {
         Some((key, payload)) if flags & MASK != 0 => {
@@ -156,36 +173,46 @@ pub fn encode_parts(
         _ => rest,
     };
     // Not header-only: `size` left exactly the payload's bytes.
-    if flags & HEADER_ONLY == 0 && payload.len() == data.len() {
+    if flags & HEADER_ONLY == 0 {
         let payload = payload.write_copy_of_slice(data);
         if flags & MASK != 0 {
             mask(payload, MASK_KEY);
         }
     }
-    size
+    Ok(size)
 }
 
-/// One frame of `data` into `out`, with no allocation; the encoded size, or 0
-/// without writes when `out` is too short or the frame is invalid.
-pub fn encode_into(data: &[u8], opcode: u8, flags: u8, out: &mut [MaybeUninit<u8>]) -> usize {
+/// One frame of `data` into `out`, with no allocation.
+///
+/// # Errors
+/// As for [`encode_parts`].
+pub fn encode_into(
+    data: &[u8],
+    opcode: u8,
+    flags: u8,
+    out: &mut [MaybeUninit<u8>],
+) -> Result<usize, EncodeError> {
     encode_parts(data.len(), data, opcode, flags, out)
 }
 
 /// A close frame of `code` and `reason` into `out`, as [`encode_into`]. The
 /// signed code truncates to 16 bits as upstream's; code plus reason is a
 /// control payload, so reasons over 123 bytes are rejected.
+///
+/// # Errors
+/// An invalid control payload or short output.
 pub fn encode_close_into(
     code: i32,
     reason: &[u8],
     flags: u8,
     out: &mut [MaybeUninit<u8>],
-) -> usize {
+) -> Result<usize, EncodeError> {
     let mut payload = [0u8; 127];
     let Some((code_bytes, reason_bytes)) = payload
         .get_mut(..reason.len() + 2)
         .and_then(<[u8]>::split_first_chunk_mut)
     else {
-        return 0;
+        return Err(EncodeError::InvalidControl);
     };
     #[expect(
         clippy::cast_possible_truncation,

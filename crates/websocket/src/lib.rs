@@ -68,15 +68,42 @@ pub fn accept(key: &[u8]) -> [u8; 28] {
     accept
 }
 
-/// A frame's header plus payload length over the `bytes` received so far: 0 while
-/// the header is incomplete, -1 when it overflows `ssize_t`. The header length is
-/// reported as soon as the bytes read so far settle it (`None` under two bytes),
-/// as upstream's incremental output.
+/// A complete frame header's sizes, whether or not its payload has arrived.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrameLength {
+    pub total: usize,
+    pub header_length: usize,
+}
+
+/// Measuring a header preserves its incremental length even when it is incomplete
+/// or its payload cannot fit in a Rust slice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LengthError {
+    IncompleteHeader { header_length: Option<usize> },
+    Overflow { header_length: usize },
+}
+
+impl LengthError {
+    /// The header length, once at least its first two bytes have arrived.
+    #[must_use]
+    pub const fn header_length(self) -> Option<usize> {
+        match self {
+            Self::IncompleteHeader { header_length } => header_length,
+            Self::Overflow { header_length } => Some(header_length),
+        }
+    }
+}
+
+/// Measure a frame's header and payload, retaining incremental header progress.
+///
+/// # Errors
+/// The header is incomplete or the total exceeds Rust's maximum slice length.
 #[inline]
-#[must_use]
-pub fn frame_length(bytes: &[u8]) -> (i64, Option<u32>) {
+pub fn frame_length(bytes: &[u8]) -> Result<FrameLength, LengthError> {
     let [_, second, ref extended @ ..] = *bytes else {
-        return (0, None);
+        return Err(LengthError::IncompleteHeader {
+            header_length: None,
+        });
     };
     let (mut header, mut payload) = match second & 0x7f {
         126 => (4, 0),
@@ -95,23 +122,22 @@ pub fn frame_length(bytes: &[u8]) -> (i64, Option<u32>) {
     if bytes.len() >= header && second & 0x80 != 0 {
         header += 4;
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "a header is at most 14 bytes"
-    )]
-    let reported = Some(header as u32);
-    // Subtract before adding: even a positive payload can overflow ssize_t once
-    // the header is included. Upstream's signed addition is undefined there.
     if bytes.len() < header {
-        (0, reported)
-    } else if payload > (isize::MAX as u64) - header as u64 {
-        (-1, reported)
-    } else {
-        (
-            i64::try_from(payload + header as u64).unwrap_or(-1),
-            reported,
-        )
+        return Err(LengthError::IncompleteHeader {
+            header_length: Some(header),
+        });
     }
+    let total = usize::try_from(payload)
+        .ok()
+        .and_then(|payload| payload.checked_add(header))
+        .filter(|total| isize::try_from(*total).is_ok())
+        .ok_or(LengthError::Overflow {
+            header_length: header,
+        })?;
+    Ok(FrameLength {
+        total,
+        header_length: header,
+    })
 }
 
 /// A wire header without a mask key or payload, and its length.

@@ -272,41 +272,23 @@ mod tests {
 
     #[test]
     fn iov_plain_and_tls() {
-        use crate::{ReactorIov, swr_v1_reactor_iov_view, swr_v1_socket_iov_owned};
+        use crate::{ReactorIov, ReadVec, swr_v1_reactor_iov_view, swr_v1_socket_iov_owned};
+        use std::io::IoSlice;
         let [a, b] = pair();
-        let (mut first, mut second) = (*b"abc", *b"defg");
-        let iov = [
-            libc::iovec {
-                iov_base: first.as_mut_ptr().cast(),
-                iov_len: 3,
-            },
-            libc::iovec {
-                iov_base: second.as_mut_ptr().cast(),
-                iov_len: 4,
-            },
-        ];
-        let mut owner = ReactorIov::new(iov).unwrap();
-        // SAFETY: the cursor names the two local iovecs.
-        let sent = unsafe { swr_v1_socket_iov_owned(a, true, &mut owner, NO_TLS) };
+        let (first, second) = (*b"abc", *b"defg");
+        let iov = [IoSlice::new(&first), IoSlice::new(&second)];
+        let mut owner = ReactorIov::writing(&iov).unwrap();
+        let sent = swr_v1_socket_iov_owned(a, &mut owner, NO_TLS);
         let state = swr_v1_reactor_iov_view(&owner);
         assert_eq!((sent, state.remain_count), (7, 0));
 
         let mut into = [0_u8; 5];
         let mut tail = [0_u8; 5];
-        let iov = [
-            libc::iovec {
-                iov_base: into.as_mut_ptr().cast(),
-                iov_len: 5,
-            },
-            libc::iovec {
-                iov_base: tail.as_mut_ptr().cast(),
-                iov_len: 5,
-            },
-        ];
-        let mut owner = ReactorIov::new(iov).unwrap();
-        // SAFETY: as above, writable.
-        let read = unsafe { swr_v1_socket_iov_owned(b, false, &mut owner, NO_TLS) };
+        let mut iov = [ReadVec::new(&mut into), ReadVec::new(&mut tail)];
+        let mut owner = ReactorIov::reading(&mut iov).unwrap();
+        let read = swr_v1_socket_iov_owned(b, &mut owner, NO_TLS);
         let state = swr_v1_reactor_iov_view(&owner);
+        drop(owner);
         assert_eq!(read, 7);
         assert_eq!((&into, &tail[..2]), (b"abcde", &b"fg"[..]));
         assert_eq!(
@@ -318,23 +300,13 @@ mod tests {
         let mut left: usize = 7;
         let mut into = [0_u8; 4];
         let mut tail = [0_u8; 6];
-        let iov = [
-            libc::iovec {
-                iov_base: into.as_mut_ptr().cast(),
-                iov_len: 4,
-            },
-            libc::iovec {
-                iov_base: tail.as_mut_ptr().cast(),
-                iov_len: 6,
-            },
-        ];
-        let mut owner = ReactorIov::new(iov).unwrap();
+        let mut iov = [ReadVec::new(&mut into), ReadVec::new(&mut tail)];
+        let mut owner = ReactorIov::reading(&mut iov).unwrap();
         // The counter stands in for the socket; the iovecs are local.
         let counter = (&raw mut left).cast();
         let read = unsafe {
             swr_v1_socket_iov_owned(
                 -1,
-                false,
                 &mut owner,
                 Some(&(
                     |mut fill: crate::Fill<'_>| {

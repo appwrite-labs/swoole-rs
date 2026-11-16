@@ -17,7 +17,7 @@ const FD_SESSION: c_int = 0;
 /// under, and its thread record. The entry points (`reactor_entry`) build it;
 /// messages stay in the thread's bus.
 #[cfg_attr(
-    not(all(feature = "upstream-symbols", not(test))),
+    not(feature = "upstream-symbols"),
     expect(dead_code, reason = "only the reactor threads' shutdown reads it")
 )]
 pub(crate) struct ReactorContext<'a> {
@@ -29,7 +29,7 @@ pub(crate) struct ReactorContext<'a> {
 impl<'a> ReactorContext<'a> {
     /// A context over `serv` and `reactor` with nothing else set.
     #[cfg_attr(
-        not(all(feature = "upstream-symbols", not(test))),
+        not(feature = "upstream-symbols"),
         expect(
             dead_code,
             reason = "only the reactor threads' setup and shutdown make one"
@@ -45,7 +45,7 @@ impl<'a> ReactorContext<'a> {
 
     /// The context's reactor thread, once an op has set it.
     #[cfg_attr(
-        not(all(feature = "upstream-symbols", not(test))),
+        not(feature = "upstream-symbols"),
         expect(dead_code, reason = "only the reactor threads' ops call it")
     )]
     pub(crate) fn thread_record(&self) -> Option<&'a ThreadRecord> {
@@ -103,7 +103,7 @@ pub(crate) struct PoolBus {
 }
 
 #[cfg_attr(
-    not(all(feature = "upstream-symbols", not(test))),
+    not(feature = "upstream-symbols"),
     expect(dead_code, reason = "only the hybrid makes and reads message buses")
 )]
 impl PoolBus {
@@ -156,7 +156,7 @@ pub fn pool_bus_set_allocator(
     PoolBus::with_pool(pool, |bus| bus.set_allocator(allocator));
 }
 
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 impl ThreadRecord {
     /// `message_bus`.
     pub(crate) fn message_bus(&self) -> crate::objects::Bus<'_> {
@@ -171,7 +171,7 @@ const _: () = assert!(
     "server.cc ReactorThread layout"
 );
 
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 impl ThreadRecord {
     /// `new ReactorThread[count]()`: each with a fresh bus over the allocator of `like`.
     pub(crate) fn new_array(count: u16, like: crate::objects::Bus<'_>) -> Box<[Self]> {
