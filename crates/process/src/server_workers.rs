@@ -22,6 +22,7 @@ pub struct ServerWorkers<'a> {
 impl<'a> ServerWorkers<'a> {
     /// A server's worker arrays and counts: the event workers (the pool, its array and
     /// count), the task pool and its count, and the user workers' array and count.
+    /// Each array is empty (not mapped yet) or holds exactly its count.
     #[must_use]
     #[inline]
     pub fn new(
@@ -63,22 +64,20 @@ impl<'a> ServerWorkers<'a> {
 
     /// Event worker `index`, or `None` past the last or before the array exists.
     fn event(&self, index: usize) -> Option<Worker<'a>> {
-        Self::slot(self.event_workers, self.event_count as usize, index)
+        Self::slot(self.event_workers, index)
     }
 
     /// User worker `index`, or `None` past the last or before the array exists.
     #[must_use]
     pub fn user(&self, index: usize) -> Option<Worker<'a>> {
-        Self::slot(self.user_workers, self.user_count, index)
+        Self::slot(self.user_workers, index)
     }
 
-    /// Record `index` of one of the arrays `new` was given, below its count.
+    /// Record `index` of one of the arrays `new` was given, each empty or holding
+    /// exactly its count.
     #[inline]
-    fn slot(workers: &'a [WorkerRecord], count: usize, index: usize) -> Option<Worker<'a>> {
-        workers
-            .get(index)
-            .filter(|_| index < count)
-            .map(Worker::from)
+    fn slot(workers: &'a [WorkerRecord], index: usize) -> Option<Worker<'a>> {
+        workers.get(index).map(Worker::from)
     }
 
     /// The event array as the pool holds it, and how many of its records the pool
