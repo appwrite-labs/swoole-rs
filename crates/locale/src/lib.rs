@@ -95,22 +95,25 @@ pub fn strftime(output: &mut [u8], format: &CStr, tm: &Tm) -> usize {
         )
     }
 }
-/// `tolower(byte)` in the current locale. Every locale lowers ASCII as
-/// `to_ascii_lowercase` does except Turkish `I` (to `ı`), so only `I` and
+/// `tolower(left) == tolower(right)` in the current locale. Every locale lowers
+/// ASCII as `to_ascii_lowercase` does except Turkish `I` (to `ı`), so only `I` and
 /// non-ASCII bytes ask libc.
-fn lower(byte: u8) -> c_int {
-    if byte.is_ascii() && byte != b'I' {
-        c_int::from(byte.to_ascii_lowercase())
-    } else {
-        tolower(c_int::from(byte))
-    }
+fn lower_alike(left: u8, right: u8) -> bool {
+    let lower = |byte: u8| {
+        if byte.is_ascii() && byte != b'I' {
+            c_int::from(byte.to_ascii_lowercase())
+        } else {
+            tolower(c_int::from(byte))
+        }
+    };
+    lower(left) == lower(right)
 }
 /// glibc's portable `strncasecmp` loop, for operands [`alike`] does not settle.
 #[cold]
 #[inline(never)]
 fn bytewise(left: &[u8], right: &[u8]) -> bool {
     for (&left, &right) in left.iter().zip(right) {
-        if left != right && lower(left) != lower(right) {
+        if left != right && !lower_alike(left, right) {
             return false;
         }
         if left == 0 {
