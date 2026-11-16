@@ -263,13 +263,19 @@ impl Wire<'_> {
         // SAFETY: `static_select`'s caller: the connection's request, live at each read.
         unsafe { &*self.request }
     }
+
+    /// `read` over the request and its receive buffer's bytes: the socket's, which a
+    /// close takes, so none after one.
+    fn read<R>(&self, read: impl FnOnce(&swoole_rs_http_ffi::HttpRequest, &[u8]) -> R) -> R {
+        let request = self.request();
+        (self.socket).read(|s| read(request, s.recv_buffer.as_ref().map_or(&[], |b| b.view())))
+    }
 }
 
 impl Exchange for Wire<'_> {
     fn header(&self, name: &[u8]) -> Vec<u8> {
-        self.request()
-            .header_bytes(name)
-            .map_or_else(Vec::new, <[u8]>::to_vec)
+        self.read(|request, input| request.header_bytes(input, name).map(<[u8]>::to_vec))
+            .unwrap_or_default()
     }
     fn keep_alive(&self) -> bool {
         self.request().keep_alive
@@ -311,7 +317,7 @@ pub unsafe fn static_select(
         session_id,
         socket,
     };
-    let url = wire.request().url_bytes().to_vec();
+    let url = wire.read(|request, input| request.url_bytes(input).to_vec());
     let Some(mut handler) = StaticHandler::new(wire.server, &url) else {
         return false;
     };

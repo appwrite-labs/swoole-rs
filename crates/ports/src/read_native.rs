@@ -34,9 +34,11 @@ const SETTING_FRAME_SIZE: usize = 9 + 6 * 6;
 
 /// One readable event on a live connection, which only this reactor thread touches.
 struct Read<'a> {
-    /// The current buffer, and the connection's request once made current.
+    /// The current buffer, and the connection's request and the socket's receive
+    /// buffer it is read into once made current.
     buffer: *mut CppString,
     request: *mut HttpRequest,
+    recv: *mut CppString,
     reactor: Running<'a>,
     /// The reactor's event, which the close handler may change; the caller sees it after.
     event: Cell<Event>,
@@ -72,6 +74,7 @@ pub(crate) fn on_read(
     let mut read = Read {
         buffer: ptr::null_mut(),
         request: ptr::null_mut(),
+        recv: ptr::null_mut(),
         reactor,
         event: lent,
         socket,
@@ -137,6 +140,14 @@ impl<'a> Read<'a> {
         let made = boxed_sized_string(SW_BUFFER_SIZE_BIG as usize, allocator);
         self.socket
             .edit(|s| Box::as_mut_ptr(s.recv_buffer.insert(made)))
+    }
+
+    /// Makes the buffer the current request receives into current: its multipart
+    /// body's, if any, else the receive buffer.
+    #[inline]
+    fn use_request_buffer(&mut self) {
+        let recv = self.recv;
+        self.buffer = self.request().body().map_or(recv, ptr::from_mut);
     }
 
     fn send_bytes(&self, packet: &[u8]) {
@@ -388,11 +399,8 @@ impl Connection for Read<'_> {
             Some(request) => request,
             None => (self.conn).set_http_request(swoole_rs_http_ffi::request_new()),
         };
-        if self.request().buffer.is_null() {
-            let buffer = self.recv_buffer();
-            self.request().buffer = buffer.cast();
-        }
-        self.buffer = self.request().buffer.cast();
+        self.recv = self.recv_buffer();
+        self.use_request_buffer();
     }
 
     #[inline]
@@ -408,21 +416,26 @@ impl Connection for Read<'_> {
         unsafe { &mut *self.request }
     }
 
+    #[inline]
+    fn parse<R>(&mut self, parse: impl FnOnce(&mut HttpRequest, &mut CppString) -> R) -> R {
+        let recv = self.recv;
+        // SAFETY: the socket's receive buffer, live while the request `init_request`
+        // made current is, and apart from it; only calls on `self`, which the borrow
+        // excludes, touch it.
+        parse(self.request(), unsafe { &mut *recv })
+    }
+
     fn init_multipart(&mut self) -> bool {
         let dir = self.server.upload_tmp_dir();
         let max = self.config().upload_max_filesize.get();
-        let ok = self.request().init_multipart_parser(dir.as_bytes(), max);
-        self.buffer = self.request().buffer.cast();
+        let ok = self.parse(|r, b| r.init_multipart_parser(b, dir.as_bytes(), max));
+        self.use_request_buffer();
         ok
-    }
-
-    fn parse_multipart(&mut self) -> bool {
-        self.request().parse_multipart_data()
     }
 
     fn finish_multipart(&mut self) {
         self.request().destroy_multipart_parser();
-        self.buffer = self.request().buffer.cast();
+        self.use_request_buffer();
     }
 
     fn client(&mut self) -> (i64, String, i64) {
