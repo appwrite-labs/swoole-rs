@@ -132,6 +132,14 @@ fn create_on(serv: view::Server<'_>, cpu: u32) -> bool {
         log::sys_warning(c"Server::create", m);
         return false;
     }
+    // A retry retains the first mapping, whose slots may already be lent.
+    if count > tables.port_gs_list.payload_len() / size_of::<PortCounters>() {
+        log::warning(
+            c"Server::create",
+            format_args!("cannot add ports to an existing counter mapping"),
+        );
+        return false;
+    }
     for (index, port) in state.ports.iter().enumerate() {
         port.set_gs(list.wrapping_add(index).cast());
     }
@@ -723,6 +731,38 @@ mod tests {
         let port = state.ports.get(0).unwrap().config();
         assert_eq!(port.cells().len(), 2, "a port count per worker");
         free(&live);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no getifaddrs")]
+    fn create_retry_rejects_more_ports_than_the_retained_mapping() {
+        let mut live = LiveServer::new();
+        live.forget_tables(true);
+        let state = live.state();
+        let tables = state.tables_ref();
+        tables
+            .port_gs_list
+            .fill(Shm::calloc(1, size_of::<PortCounters>()));
+        let first = state.ports.get(0).unwrap();
+        first.set_gs(tables.port_gs_list.as_ptr());
+        let held = first.config().counters().unwrap();
+        held.connection_num.store(7, Relaxed);
+        let second = state.ports.push(crate::port_config::PortConfig::boxed(0));
+        calls();
+        let created = create_on(live.server(), 4);
+        // The stand-in factory is not a real allocation.
+        config(&live).factory_.set(core::ptr::null_mut());
+        assert!(!created, "a retained one-port map cannot serve two ports");
+        assert!(
+            second.config().counters().is_none(),
+            "no out-of-range slot published"
+        );
+        assert_eq!(
+            held.connection_num.load(Relaxed),
+            7,
+            "the old loan stays live"
+        );
+        assert_eq!(calls(), [], "no factory started");
     }
 
     #[test]
