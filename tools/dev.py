@@ -340,6 +340,7 @@ def plan(args, reports):
                 name = 'protocols-' + Path(runner).stem
                 script(name, runner, *php, *reference_first, *report(name))
     if 'timer' in modules:
+        pytest('timer-benchmark-artifacts', 'tests/modules/timer/test_benchmark.py')
         pytest('timer-fork-active', 'tests/modules/timer/test_fork.py', *php, *engines)
         if integrate:
             pytest('timer-bailout', 'tests/modules/timer/test_bailout.py', *php,

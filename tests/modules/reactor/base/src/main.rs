@@ -1007,13 +1007,12 @@ unsafe fn add_or_update() {
     }
 }
 
-/// Increments the case's counter when the loop runs it.
-struct Increment(*mut c_int);
+/// `[&count](void *) { count++; }`.
+struct Increment(std::rc::Rc<std::cell::Cell<c_int>>);
 
-impl swoole_rs_ffi::event_api::Deferred for Increment {
+impl event_api::Deferred for Increment {
     fn run(self) {
-        // SAFETY: the case's counter.
-        unsafe { *self.0 += 1 };
+        self.0.set(self.0.get() + 1);
     }
 
     fn dispose(self) {}
@@ -1025,12 +1024,11 @@ unsafe fn defer_task() {
         let reactor = tg();
         assert_eq!((*fields(reactor)).max_event_num, SW_REACTOR_MAXEVENTS);
 
-        let count: *mut c_int = Box::into_raw(Box::new(0));
-        // `reactor->defer(fn, count)` on the thread's reactor, which `reactor` is.
-        assert!(swoole_rs_ffi::event_api::swoole_event_defer_value(Increment(count)).is_ok());
+        let count = std::rc::Rc::new(std::cell::Cell::new(0));
+        // `reactor->defer(fn)` on the thread's reactor, which `reactor` is.
+        assert!(event_api::swoole_event_defer_value(Increment(count.clone())).is_ok());
         let _ = event_api::swoole_event_wait();
-        assert_eq!(*count, 1);
-        drop(Box::from_raw(count));
+        assert_eq!(count.get(), 1);
         let _ = swoole_rs_ffi::swoole_event_free();
     }
 }

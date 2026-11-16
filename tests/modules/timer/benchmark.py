@@ -17,6 +17,21 @@ from tools.build_upstream import COMMIT
 from tools.harness import ROOT, parse_engines, run_isolated, write_report
 
 
+def cargo_build(extension):
+    """Validate the optimized Cargo artifact independently of the native source layout."""
+    manifest = extension.resolve().parent / 'build-manifest.json'
+    data = json.loads(manifest.read_text())
+    if data['extension_sha256'] != hashlib.sha256(extension.read_bytes()).hexdigest():
+        raise ValueError('extension hash differs from selected manifest')
+    if data['upstream_commit'] != COMMIT:
+        raise ValueError('wrong upstream source pin in Cargo manifest')
+    if data['profile'] not in {'release', 'release-lto', 'release-checked'}:
+        raise ValueError('optimized Cargo build required')
+    if not re.fullmatch(r'[0-9a-f]{40}', data['source_ref']):
+        raise ValueError('Cargo source commit required')
+    return data
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--engine', action='append', required=True)
@@ -40,6 +55,9 @@ def main():
     if len({(row['php'], row['zts']) for row in report['engines']}) != 1:
         raise ValueError('matching PHP build required')
     for engine in engines:
+        if engine.name != 'upstream':
+            report['builds'][engine.name] = cargo_build(engine.extension)
+            continue
         source = engine.extension.resolve().parents[1]
         makefile = source / 'Makefile'
         text = makefile.read_text()
@@ -49,17 +67,8 @@ def main():
         pin = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=source, text=True).strip()
         if pin != report['upstream_commit']:
             raise ValueError('wrong upstream source pin')
-        if engine.name == 'upstream':
-            subprocess.run(['git', 'diff', '--quiet', 'HEAD', '--'], cwd=source, check=True)
+        subprocess.run(['git', 'diff', '--quiet', 'HEAD', '--'], cwd=source, check=True)
         report['native_builds'][engine.name] = {'source': str(source), 'commit': pin, 'flags': flags}
-        manifest = engine.extension.resolve().parents[2] / 'build-manifest.json'
-        if manifest.exists():
-            data = json.loads(manifest.read_text())
-            if data['extension_sha256'] != hashlib.sha256(engine.extension.read_bytes()).hexdigest():
-                raise ValueError('extension hash differs from selected manifest')
-            report['builds'][engine.name] = data
-    if len({json.dumps(row['flags'], sort_keys=True) for row in report['native_builds'].values()}) != 1:
-        raise ValueError('matching native optimization flags required')
     try:
         for mode in ['cancel', 'dispatch', 'repeat']:
             for trial in range(args.repeat):

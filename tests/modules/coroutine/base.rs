@@ -232,7 +232,7 @@ impl View {
     }
 }
 
-/// [`call`] as a deferred value, over the deferrer's closure.
+/// [`call`] of the `&dyn Fn()` at its pointer, as a deferred task.
 struct DeferredCall(*mut c_void);
 
 impl swoole_rs_ffi::event_api::Deferred for DeferredCall {
@@ -626,9 +626,10 @@ fn bailout_() {
         let deferred: &dyn Fn() = &deferred;
         let data = (&raw const deferred).cast_mut().cast();
         co_run(|| {
-            // SAFETY: the loop runs the deferred call before `co_run` returns, while
-            // `deferred` is live.
-            assert!(swoole_rs_ffi::event_api::swoole_event_defer_value(DeferredCall(data)).is_ok());
+            // The loop runs the deferred call before `co_run` returns, while `deferred`
+            // is live.
+            let task = DeferredCall(data);
+            assert!(swoole_rs_ffi::event_api::swoole_event_defer_value(task).is_ok());
             exit.set(true);
         });
 

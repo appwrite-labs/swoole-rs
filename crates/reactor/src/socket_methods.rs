@@ -340,7 +340,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no datagram socketpair")]
+    #[cfg_attr(miri, ignore = "Miri's socketpair can't peek")]
     fn send_recv_and_peek_count_bytes_and_stamp_timers() {
         let [mut a, mut b] = pair();
         let timer = Some(swoole_rs_corebase::timer_key::Held::detached(1));

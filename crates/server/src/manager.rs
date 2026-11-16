@@ -14,10 +14,13 @@ use core::ops::Range;
 pub mod native;
 
 /// What upstream's `struct Manager` held: the requested reloads, and the pids
-/// SIGALRM kills once `max_wait_time` runs out on shutdown. Signal handlers reach
-/// it through `Server::manager_` while the manager runs, so every field is a cell.
+/// SIGALRM kills once `max_wait_time` runs out on shutdown. The server's
+/// configuration holds it; signal handlers reach it there while the manager runs,
+/// so every field is a cell.
 #[derive(Default)]
 pub(crate) struct Manager {
+    /// Whether `wait` runs the manager in this process.
+    running: Cell<bool>,
     reload_all_workers: Cell<bool>,
     reload_task_workers: Cell<bool>,
     force_kill: Cell<bool>,
@@ -37,6 +40,21 @@ enum Reload {
 }
 
 impl Manager {
+    /// `wait` runs the manager in this process from here.
+    fn enter(&self) {
+        self.running.set(true);
+    }
+
+    /// `wait` has returned: signals and reloads no longer reach the manager.
+    fn leave(&self) {
+        self.running.set(false);
+    }
+
+    /// The manager, while `wait` runs it in this process.
+    fn live(&self) -> Option<&Self> {
+        self.running.get().then_some(self)
+    }
+
     /// `Server::reload`'s request, which the manager's next round starts.
     fn request(&self, all: bool) {
         if all {
@@ -114,6 +132,16 @@ mod tests {
         manager.request(true);
         assert_eq!(manager.take_reload(1), Reload::All);
         assert_eq!(manager.take_reload(1), Reload::Tasks);
+    }
+
+    #[test]
+    fn the_manager_is_reached_only_while_it_runs() {
+        let config = crate::config::ServerConfig::default();
+        assert!(config.manager.live().is_none());
+        config.manager.enter();
+        assert!(config.manager.live().is_some());
+        config.manager.leave();
+        assert!(config.manager.live().is_none());
     }
 
     #[test]

@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/reactor/base.cc (Swoole contributors).
 //! The reactor's deferred queues (`Reactor::defer_tasks`, `Reactor::destroy_callbacks`):
-//! FIFO Rust values ([`crate::event_api::Deferred`]), each disposed of when the queue is
-//! freed unrun.
+//! FIFO Rust values ([`crate::event_api::Deferred`]), each run once or, when the queue
+//! is freed unrun, disposed of.
 use crate::Running;
 use crate::event_api::Deferred;
 use crate::reactor_state::ReactorFields;
 use std::collections::VecDeque;
-use std::ffi::c_void;
 
-/// A native callback over its data: a cycle task's or a timer's.
-pub type DeferCall = unsafe extern "C-unwind" fn(*mut c_void);
+/// A native `(callback, data)` task: the reactor's `future_task` and `idle_task`.
+pub type DeferCall = unsafe extern "C-unwind" fn(*mut std::ffi::c_void);
 
 enum Task {
     /// A destroy callback that takes nothing ([`crate::event_api::on_destroy`]).
@@ -198,82 +197,83 @@ fn run_queue(reactor: Running<'_>) {
 pub(crate) mod tests {
     use super::*;
     use crate::reactor_state::tests::running;
+    use std::cell::{Cell, RefCell};
     use std::ptr;
-
-    /// A native `(call, data)` task, with a `dispose` of its data if it never runs.
-    struct Native {
-        call: DeferCall,
-        data: *mut c_void,
-        dispose: Option<DeferCall>,
-    }
-
-    impl Deferred for Native {
-        fn run(self) {
-            unsafe { (self.call)(self.data) };
-        }
-
-        fn dispose(self) {
-            if let Some(dispose) = self.dispose {
-                unsafe { dispose(self.data) };
-            }
-        }
-    }
-
-    /// The native task `call(data)` onto `fields`' queue rather than the thread's reactor.
-    pub(crate) unsafe fn defer(
-        fields: *mut ReactorFields,
-        call: DeferCall,
-        data: *mut c_void,
-        dispose: Option<DeferCall>,
-    ) {
-        push_native(unsafe { &mut (*fields).defer_tasks }, call, data, dispose);
-    }
-    use std::cell::RefCell;
 
     thread_local! {
         static TRACE: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
-        static FIELDS: std::cell::Cell<*mut ReactorFields> = const { std::cell::Cell::new(ptr::null_mut()) };
+        static FIELDS: Cell<*mut ReactorFields> = const { Cell::new(ptr::null_mut()) };
     }
 
-    unsafe extern "C-unwind" fn record(data: *mut c_void) {
-        TRACE.with_borrow_mut(|trace| trace.push(data as usize));
-    }
-
-    unsafe extern "C-unwind" fn disposed(data: *mut c_void) {
-        TRACE.with_borrow_mut(|trace| trace.push(1000 + data as usize));
-    }
-
-    /// Defers `record(4)` from inside a deferred task.
-    unsafe extern "C-unwind" fn defer_again(data: *mut c_void) {
-        TRACE.with_borrow_mut(|trace| trace.push(data as usize));
-        // SAFETY: the test's live fields; the running queue is detached.
-        unsafe {
-            assert!((*FIELDS.get()).defer_tasks.is_none());
-            defer(FIELDS.get(), record, token(4), None);
-        }
+    fn trace(n: usize) {
+        TRACE.with_borrow_mut(|trace| trace.push(n));
     }
 
     fn take() -> Vec<usize> {
         TRACE.with_borrow_mut(std::mem::take)
     }
 
-    fn token(value: usize) -> *mut c_void {
-        ptr::without_provenance_mut(value)
+    /// A task traced as its number when run, then `then`; when disposed of unrun,
+    /// `disposed` (if any) gets the number.
+    #[derive(Clone, Copy)]
+    pub(crate) struct Traced {
+        n: usize,
+        then: fn(),
+        disposed: Option<fn(usize)>,
     }
 
-    /// `push` of the native task `call(data)`.
-    fn push_native(
-        slot: &mut Option<ReactorDeferred>,
-        call: DeferCall,
-        data: *mut c_void,
-        dispose: Option<DeferCall>,
-    ) {
-        let task = Native {
-            call,
-            data,
-            dispose,
-        };
+    impl Deferred for Traced {
+        fn run(self) {
+            trace(self.n);
+            (self.then)();
+        }
+
+        fn dispose(self) {
+            if let Some(disposed) = self.disposed {
+                disposed(self.n);
+            }
+        }
+    }
+
+    /// Traces `n` when run, nothing when disposed of.
+    pub(crate) fn task(n: usize) -> Traced {
+        Traced {
+            n,
+            then: || {},
+            disposed: None,
+        }
+    }
+
+    impl Traced {
+        pub(crate) fn then(self, then: fn()) -> Self {
+            Self { then, ..self }
+        }
+
+        /// Also traced, as 1000 + its number, when disposed of.
+        fn disposed(self) -> Self {
+            Self {
+                disposed: Some(|n| trace(1000 + n)),
+                ..self
+            }
+        }
+    }
+
+    /// `Reactor::defer` of `task` onto `fields`' queue rather than the thread's reactor.
+    pub(crate) unsafe fn defer(fields: *mut ReactorFields, task: Traced) {
+        defer_value(unsafe { &mut *fields }, task);
+    }
+
+    fn push_task(slot: &mut Option<ReactorDeferred>, task: Traced) {
         push(slot, Task::Value(Box::new(task)));
+    }
+
+    /// Defers task 4 from inside a deferred task.
+    fn defer_again() {
+        // SAFETY: the test's live fields; the running queue is detached.
+        unsafe {
+            assert!((*FIELDS.get()).defer_tasks.is_none());
+            defer(FIELDS.get(), task(4));
+        }
     }
 
     /// base.cc's `Reactor::defer` and the defer end callback: FIFO, a task's own defer
@@ -285,13 +285,13 @@ pub(crate) mod tests {
         FIELDS.set(fields);
         unsafe {
             assert!((*fields).defer_tasks.is_none());
-            defer(fields, record, token(1), None);
-            defer(fields, record, token(2), None);
+            defer(fields, task(1));
+            defer(fields, task(2));
             assert!((*fields).defer_tasks.is_some());
             run_defer(running(state.owner));
             assert_eq!(take(), [1, 2]);
             assert!((*fields).defer_tasks.is_none());
-            defer(fields, defer_again, token(3), None);
+            defer(fields, task(3).then(defer_again));
             run_defer(running(state.owner));
             assert_eq!(take(), [3]);
             assert!((*fields).defer_tasks.is_some());
@@ -304,12 +304,11 @@ pub(crate) mod tests {
         }
     }
 
-    /// Defers `record(3)` and runs a pass of its own (a nested loop) from inside a task.
-    unsafe extern "C-unwind" fn nest(data: *mut c_void) {
-        TRACE.with_borrow_mut(|trace| trace.push(data as usize));
+    /// Defers task 3 and runs a pass of its own (a nested loop) from inside a task.
+    fn nest() {
         // SAFETY: the test's live reactor, which no reference holds.
         unsafe {
-            defer(FIELDS.get(), record, token(3), None);
+            defer(FIELDS.get(), task(3));
             run_defer(running((*FIELDS.get()).ptr.cast()));
         }
     }
@@ -323,8 +322,8 @@ pub(crate) mod tests {
         FIELDS.set(fields);
         unsafe {
             (*fields).ptr = state.owner.cast();
-            defer(fields, nest, token(1), None);
-            defer(fields, record, token(2), None);
+            defer(fields, task(1).then(nest));
+            defer(fields, task(2));
             run_defer(running(state.owner));
             assert_eq!(take(), [1, 3, 2]);
             assert!((*fields).defer_tasks.is_none());
@@ -334,8 +333,7 @@ pub(crate) mod tests {
     }
 
     /// Stands for a task that bails out of the loop (a `longjmp` in PHP): it never returns.
-    unsafe extern "C-unwind" fn escape(data: *mut c_void) {
-        TRACE.with_borrow_mut(|trace| trace.push(data as usize));
+    fn escape() {
         panic!("escape");
     }
 
@@ -346,10 +344,9 @@ pub(crate) mod tests {
         let state = crate::reactor_state::tests::state(3, 1);
         let fields = state.fields;
         unsafe {
-            defer(fields, record, token(1), None);
-            defer(fields, escape, token(2), None);
-            let slot = &raw mut (*fields).defer_tasks;
-            push_native(&mut *slot, record, token(3), Some(disposed));
+            defer(fields, task(1));
+            defer(fields, task(2).then(escape));
+            defer(fields, task(3).disposed());
             let owner = std::panic::AssertUnwindSafe(state.owner);
             assert!(std::panic::catch_unwind(move || run_defer(running(*owner))).is_err());
             assert_eq!(take(), [1, 2]);
@@ -360,10 +357,10 @@ pub(crate) mod tests {
         }
     }
 
-    unsafe extern "C-unwind" fn catch_nested_escape(_: *mut c_void) {
+    fn catch_nested_escape() {
         unsafe {
-            defer(FIELDS.get(), escape, token(3), None);
-            defer(FIELDS.get(), record, token(4), Some(disposed));
+            defer(FIELDS.get(), task(3).then(escape));
+            defer(FIELDS.get(), task(4).disposed());
             let owner = std::panic::AssertUnwindSafe((*FIELDS.get()).ptr.cast());
             assert!(std::panic::catch_unwind(move || run_defer(running(*owner))).is_err());
         }
@@ -375,10 +372,10 @@ pub(crate) mod tests {
         FIELDS.set(state.fields);
         unsafe {
             (*state.fields).ptr = state.owner.cast();
-            defer(state.fields, catch_nested_escape, ptr::null_mut(), None);
-            defer(state.fields, record, token(2), None);
+            defer(state.fields, task(1).then(catch_nested_escape));
+            defer(state.fields, task(2));
             run_defer(running(state.owner));
-            assert_eq!(take(), [3, 2]);
+            assert_eq!(take(), [1, 3, 2]);
             crate::reactor_state::tests::free(state.owner);
             assert_eq!(take(), [1004]);
         }
@@ -395,14 +392,14 @@ pub(crate) mod tests {
             unsafe {
                 let queue = &raw mut (*state.fields).destroy_callbacks;
                 for i in 0..count {
-                    push_native(&mut *queue, record, token(i), None);
+                    push_task(&mut *queue, task(i));
                 }
                 assert_eq!(take(), []);
                 run_destroy(reactor);
                 assert_eq!(take(), (0..count).collect::<Vec<_>>());
                 run_destroy(reactor);
                 assert_eq!(take(), []);
-                push_native(&mut *queue, record, token(99), None);
+                push_task(&mut *queue, task(99));
                 run_destroy(reactor);
                 assert_eq!(take(), [99]);
                 deferred_free(&mut *queue);
@@ -412,16 +409,8 @@ pub(crate) mod tests {
         }
     }
 
-    unsafe extern "C-unwind" fn append_destroy(data: *mut c_void) {
-        TRACE.with_borrow_mut(|trace| trace.push(data as usize));
-        unsafe {
-            push_native(
-                &mut (*FIELDS.get()).destroy_callbacks,
-                record,
-                token(3),
-                None,
-            );
-        }
+    fn append_destroy() {
+        unsafe { push_task(&mut (*FIELDS.get()).destroy_callbacks, task(3)) };
     }
 
     #[test]
@@ -430,76 +419,48 @@ pub(crate) mod tests {
         FIELDS.set(state.fields);
         unsafe {
             let queue = &mut (*state.fields).destroy_callbacks;
-            push_native(queue, append_destroy, token(1), None);
-            push_native(queue, record, token(2), None);
+            push_task(queue, task(1).then(append_destroy));
+            push_task(queue, task(2));
             run_destroy(running(state.owner));
             assert_eq!(take(), [1, 2, 3]);
             crate::reactor_state::tests::free(state.owner);
         }
     }
 
-    /// Disposes of its data, then defers `record(5)` (disposed as 1005), the way a PHP
-    /// destructor run by a disposer can call `Event::defer`.
-    unsafe extern "C-unwind" fn dispose_and_defer(data: *mut c_void) {
-        TRACE.with_borrow_mut(|trace| trace.push(1000 + data as usize));
-        // SAFETY: the test's reactor, still being dropped.
-        unsafe { defer(FIELDS.get(), record, token(5), Some(disposed)) };
-    }
-
     /// A task deferred while the reactor's drop disposes of the queue is disposed of too,
-    /// not left in a queue nothing frees.
+    /// not left in a queue nothing frees: task 1's disposal (traced as 1001) defers task
+    /// 5 (disposed as 1005), the way a PHP destructor run by a disposer can call
+    /// `Event::defer`.
     #[test]
     fn a_task_deferred_while_the_reactor_drops_is_disposed() {
         let state = crate::reactor_state::tests::state(3, 1);
         let fields = state.fields;
         FIELDS.set(fields);
+        let dispose_and_defer = |n| {
+            trace(1000 + n);
+            // SAFETY: the test's reactor, still being dropped.
+            unsafe { defer(FIELDS.get(), task(5).disposed()) };
+        };
+        let first = Traced {
+            disposed: Some(dispose_and_defer),
+            ..task(1)
+        };
         unsafe {
-            defer(fields, record, token(1), Some(dispose_and_defer));
+            defer(fields, first);
             crate::reactor_state::tests::free(state.owner);
         }
         assert_eq!(take(), [1001, 1005]);
     }
 
-    /// Freeing a queue disposes of each unrun task's data instead of calling it.
+    /// Freeing a queue disposes of each unrun task instead of running it.
     #[test]
     fn free_disposes_unrun_tasks() {
         let mut queue = None;
-        push_native(&mut queue, record, token(99), Some(disposed));
-        push_native(&mut queue, record, token(7), None);
+        push_task(&mut queue, task(99).disposed());
+        push_task(&mut queue, task(7));
         deferred_free(&mut queue);
         assert_eq!(take(), [1099]);
         assert!(queue.is_none());
         deferred_free(&mut queue);
-    }
-
-    /// A Rust value, traced as 100 + its number when run and 2000 + it when disposed.
-    struct Value(usize);
-
-    impl Deferred for Value {
-        fn run(self) {
-            TRACE.with_borrow_mut(|trace| trace.push(100 + self.0));
-        }
-
-        fn dispose(self) {
-            TRACE.with_borrow_mut(|trace| trace.push(2000 + self.0));
-        }
-    }
-
-    /// Rust values share the native tasks' FIFO, and one never run is disposed of
-    /// with the reactor.
-    #[test]
-    fn values_run_in_order_with_native_tasks_and_are_disposed_unrun() {
-        let state = crate::reactor_state::tests::state(3, 1);
-        let fields = state.fields;
-        unsafe {
-            defer(fields, record, token(1), None);
-            defer_value(&mut *fields, Value(2));
-            defer(fields, record, token(3), None);
-            run_defer(running(state.owner));
-            assert_eq!(take(), [1, 102, 3]);
-            defer_value(&mut *fields, Value(4));
-            crate::reactor_state::tests::free(state.owner);
-            assert_eq!(take(), [2004]);
-        }
     }
 }
