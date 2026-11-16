@@ -89,12 +89,11 @@ impl<'a> ObjectRef<'a> {
     #[must_use]
     #[inline]
     pub fn class_entry(self) -> ClassEntry<'a> {
-        let class = self.read(|object| object.ce);
-        // SAFETY: every live object has its class, which is never null.
-        ClassEntry(
-            unsafe { std::ptr::NonNull::new_unchecked(class) },
-            PhantomData,
-        )
+        // Every live object has its class, which outlives it.
+        match ClassEntry::live(self.read(|object| object.ce)) {
+            Some(class) => class,
+            None => unreachable!("every live object has its class"),
+        }
     }
 
     /// `ZVAL_OBJ`: a zval naming the object without a reference of its own, for
