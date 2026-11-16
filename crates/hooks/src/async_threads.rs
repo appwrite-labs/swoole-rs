@@ -98,7 +98,7 @@ impl HeapEvent {
         // SAFETY: the type's invariant: the live write end of the event's pipe.
         let socket = unsafe { Socket::from_ptr(pipe.cast()) };
         let token = self.0.expose_provenance().to_ne_bytes();
-        if socket.map_or(-1, |socket| write_sync(socket, &token)) > 0 {
+        if socket.and_then(|socket| write_sync(socket, &token)) > Some(0) {
             // The reactor thread owns it now.
             _ = self.into_raw();
             return;

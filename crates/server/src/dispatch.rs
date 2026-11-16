@@ -191,10 +191,10 @@ pub fn sendwait(serv: Server<'_>, session_id: c_long, data: &[u8]) -> bool {
         );
         return false;
     };
-    let sent = conn.socket().map_or(-1, |socket| {
-        swoole_rs_tls::upstream::send_sync(socket, data, 0)
-    });
-    usize::try_from(sent) == Ok(data.len())
+    let sent = conn
+        .socket()
+        .and_then(|socket| swoole_rs_tls::upstream::send_sync(socket, data, 0));
+    sent == Some(data.len())
 }
 
 const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;

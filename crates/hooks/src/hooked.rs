@@ -365,6 +365,7 @@ pub fn read(fd: c_int, buf: &mut [MaybeUninit<u8>]) -> ssize_t {
     on_pool(Some(crate::stdio::runtime().offload), -1, || {
         let mut socket = blocking(fd, false);
         swoole_rs_tls::upstream::read_sync(Socket::new(&mut socket), buf)
+            .map_or(-1, usize::cast_signed)
     })
 }
 
@@ -403,6 +404,7 @@ pub fn write(fd: c_int, buf: &[u8]) -> ssize_t {
     on_pool(Some(crate::stdio::runtime().offload), -1, || {
         let mut socket = blocking(fd, true);
         swoole_rs_tls::upstream::write_sync(Socket::new(&mut socket), buf)
+            .map_or(-1, usize::cast_signed)
     })
 }
 
