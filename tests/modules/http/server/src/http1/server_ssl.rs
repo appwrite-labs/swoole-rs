@@ -144,7 +144,7 @@ impl Server {
 
 /// `network::SyncClient`, closed and deleted on drop.
 struct SyncClient {
-    state: Handle,
+    state: Handle<'static>,
     dgram: bool,
     connected: bool,
     created: bool,
@@ -162,7 +162,7 @@ impl SyncClient {
     }
 
     /// crates/clients' handle on the client.
-    fn handle(&self) -> Handle {
+    fn handle(&self) -> Handle<'static> {
         self.state
     }
 

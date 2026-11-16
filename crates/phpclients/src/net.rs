@@ -861,7 +861,7 @@ fn sendfile(call: &Call) {
 
 /// Run an IO `op`: a sync client raises no callbacks, so only an async one
 /// needs the `zend_try` frame.
-fn io<T: Default>(cli: Cli, op: impl FnOnce(Handle) -> T) -> Result<T, Bailout> {
+fn io<T: Default>(cli: Cli, op: impl FnOnce(Handle<'static>) -> T) -> Result<T, Bailout> {
     if cli.get().flag(state::Flag::Async) {
         cli.run(op)
     } else {

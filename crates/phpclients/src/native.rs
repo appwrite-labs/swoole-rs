@@ -558,7 +558,7 @@ pub(crate) fn length_callable(socket: Co, value: &Value) {
 /// A live `network::Client` (crates/clients' state), from [`create`] until
 /// [`destroy`]: crates/clients' handle, made once by `create`.
 #[derive(Clone, Copy)]
-pub(crate) struct Cli(client::Handle);
+pub(crate) struct Cli(client::Handle<'static>);
 
 impl Cli {
     pub(crate) fn get(&self) -> &Client {
@@ -571,7 +571,7 @@ impl Cli {
     }
 
     /// crates/clients' handle on the client.
-    pub(crate) fn handle(self) -> client::Handle {
+    pub(crate) fn handle(self) -> client::Handle<'static> {
         self.0
     }
 
@@ -580,7 +580,7 @@ impl Cli {
     /// PHP code it ran bailed out.
     pub(crate) fn run<T: Default>(
         self,
-        op: impl FnOnce(client::Handle) -> T,
+        op: impl FnOnce(client::Handle<'static>) -> T,
     ) -> Result<T, Bailout> {
         let (handle, mut result) = (self.handle(), T::default());
         // crates/clients' operations own nothing a bailout would skip dropping.

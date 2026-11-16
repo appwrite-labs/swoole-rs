@@ -480,7 +480,7 @@ fn replace(object: Obj, slot: Slot, callable: Rc<Callable>) {
 }
 
 /// `sleep()`/`pause()` and `wakeup()`/`resume()`.
-fn pause(call: &Call, op: fn(Handle) -> bool) {
+fn pause(call: &Call, op: fn(Handle<'_>) -> bool) {
     let Some(conn) = net::connected(call) else {
         return call.set_bool(false);
     };

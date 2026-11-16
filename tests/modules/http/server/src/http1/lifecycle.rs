@@ -1569,7 +1569,7 @@ static CLEAN_CLIENT: Mutex<Option<CleanClient>> = Mutex::new(None);
 
 /// The client's handle, which the server's threads share as upstream's test does.
 #[derive(Clone, Copy)]
-struct CleanClient(Handle);
+struct CleanClient(Handle<'static>);
 
 // SAFETY: one thread at a time drives the client: the timer connects it, and the
 // test frees it once the server stopped.
@@ -1577,7 +1577,7 @@ unsafe impl Send for CleanClient {}
 static CLEAN_PORT: AtomicU16 = AtomicU16::new(0);
 
 /// `ac.get_client()`.
-fn clean_client() -> Handle {
+fn clean_client() -> Handle<'static> {
     let client = *CLEAN_CLIENT.lock().unwrap();
     client.expect("test_clean_worker made the client").0
 }

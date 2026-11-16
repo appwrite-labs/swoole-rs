@@ -452,7 +452,7 @@ pub(crate) fn receive<'a, K: Packages>(
 
 /// `int Protocol::recv_with_length_protocol(Socket *, String *) const` when `LENGTH`, else
 /// `int Protocol::recv_with_eof_protocol(Socket *, String *) const`, over `client`'s.
-fn client_recv<const LENGTH: bool>(client: Handle) -> c_int {
+fn client_recv<const LENGTH: bool>(client: Handle<'_>) -> c_int {
     let mode = if LENGTH { Mode::Length } else { Mode::Eof };
     client.with_framed(|protocol, socket, buffer| {
         // SAFETY: a live client's input buffer, or null before an async connect made it.
