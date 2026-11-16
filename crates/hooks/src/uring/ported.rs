@@ -354,7 +354,8 @@ fn sendfile() {
                 Some(&mut offset),
                 TEST_JPG_SIZE,
                 -1.0,
-            );
+            )
+            .map_or(-1, usize::cast_signed);
             sent_tx.send(rv).unwrap();
         });
     });
@@ -440,7 +441,11 @@ fn sleep() {
             tv_sec: 1,
             tv_nsec: 200 * SW_NUM_MILLION,
         };
-        assert_eq!(uring::sleep_timespec(&HOST, ts), 0, "sleep(1, 200ms)");
+        assert_eq!(
+            uring::sleep_timespec(&HOST, ts).map_or(-1, |()| 0),
+            0,
+            "sleep(1, 200ms)"
+        );
         assert!(begin.elapsed().as_secs_f64() >= 1.2, "slept 1.2s");
 
         let begin = Instant::now();
@@ -448,7 +453,11 @@ fn sleep() {
             tv_sec: 0,
             tv_nsec: 300 * SW_NUM_MILLION,
         };
-        assert_eq!(uring::sleep_timespec(&HOST, ts), 0, "sleep(0, 300ms)");
+        assert_eq!(
+            uring::sleep_timespec(&HOST, ts).map_or(-1, |()| 0),
+            0,
+            "sleep(0, 300ms)"
+        );
         assert!(begin.elapsed().as_secs_f64() >= 0.3, "slept 0.3s");
     });
 }
