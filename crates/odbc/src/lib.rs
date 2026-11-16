@@ -22,37 +22,127 @@ pub mod minit;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use swoole_rs_odbc_sys::{
-    RETCODE, SQLCHAR, SQLConnect, SQLDescribeCol, SQLDriverConnect, SQLEndTran, SQLExecDirect,
-    SQLGetData, SQLHANDLE, SQLHDBC, SQLHSTMT, SQLHWND, SQLINTEGER, SQLLEN, SQLPOINTER, SQLPrepare,
-    SQLPutData, SQLRETURN, SQLSMALLINT, SQLULEN, SQLUSMALLINT,
+    SQLCHAR, SQLHANDLE, SQLHDBC, SQLHSTMT, SQLHWND, SQLINTEGER, SQLLEN, SQLPOINTER, SQLRETURN,
+    SQLSMALLINT, SQLULEN, SQLUSMALLINT,
 };
 
-/// A connection handle the driver handed over: live, as ODBC's own calls
-/// require, for as long as the value is used. [`swoole_odbc_SQLDisconnect`]
-/// takes one in place of the `SQLHDBC` it has the layout of. Nothing here makes
-/// one, and it is neither `Send` nor `Sync`: it reaches the pool only through
-/// [`offload`].
+// The driver's arguments, each typed as what ODBC requires of it. Nothing here makes
+// one: only the exports' parameters do, where the C caller's contract (the ODBC call
+// each forwards to, as `php_swoole_odbc.h` declares) stands for the constructor. None
+// is `Send` or `Sync`, so they reach the pool only through [`offload`].
+
+/// A connection handle the driver handed over: allocated and live, as ODBC's own
+/// calls require, for as long as the value is used.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct Connection(SQLHDBC);
 
-/// A prepared statement handle the driver handed over: live, with the parameter
-/// buffers it bound live, as ODBC's own calls require, for as long as the value is
-/// used. [`swoole_odbc_SQLExecute`] takes one in place of the `SQLHSTMT` it has the
-/// layout of. Nothing here makes one, and, as [`Connection`], it reaches the pool only
-/// through [`offload`].
+/// A statement handle the driver handed over: live, with the parameter buffers it
+/// bound live, as ODBC's own calls require, for as long as the value is used.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct Statement(SQLHSTMT);
 
-// ODBC's own declarations of `SQLDisconnect` and `SQLExecute`, typed as the handle
-// each takes: the first reads no bound buffer, the second only the ones the statement
-// bound, which its type keeps live; neither runs a callback.
+/// An environment or connection handle, live and of the handle type passed beside it.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Handle(SQLHANDLE);
+
+/// The parent window `SQLDriverConnect` may prompt over: null or a live window.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Window(SQLHWND);
+
+/// A string the driver handed over: null where the call allows none, else readable
+/// for the length passed beside it, or up to its NUL when that length is `SQL_NTS`.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Text(*mut SQLCHAR);
+
+/// A value `SQLPutData` sends: readable for the length passed beside it in the C
+/// type the parameter was bound with.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Data(SQLPOINTER);
+
+/// Where the call writes its `T`s: null where the call allows none, else writable for
+/// the capacity passed beside it, or for one `T` when none is.
+#[repr(transparent)]
+pub struct Out<T>(*mut T);
+
+impl<T> Clone for Out<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> Copy for Out<T> {}
+
+/// [`Out`] for a target whose C type the call is told beside it.
+pub type Target = Out<std::ffi::c_void>;
+
+// ODBC's own declarations, each argument typed as what the call requires of it. None
+// keeps an argument past the call (`SQLExecute` reads only the buffers the statement
+// bound, which its type keeps live) or runs a callback.
 unsafe extern "C" {
-    #[link_name = "SQLDisconnect"]
-    safe fn disconnect(connection: Connection) -> SQLRETURN;
+    #[link_name = "SQLConnect"]
+    safe fn connect(
+        connection: Connection,
+        server_name: Text,
+        name_length1: SQLSMALLINT,
+        user_name: Text,
+        name_length2: SQLSMALLINT,
+        authentication: Text,
+        name_length3: SQLSMALLINT,
+    ) -> SQLRETURN;
+    #[link_name = "SQLDriverConnect"]
+    safe fn driver_connect(
+        connection: Connection,
+        window: Window,
+        conn_str_in: Text,
+        conn_str_in_length: SQLSMALLINT,
+        conn_str_out: Out<SQLCHAR>,
+        conn_str_out_max: SQLSMALLINT,
+        conn_str_out_length: Out<SQLSMALLINT>,
+        driver_completion: SQLUSMALLINT,
+    ) -> SQLRETURN;
+    #[link_name = "SQLExecDirect"]
+    safe fn exec_direct(statement: Statement, text: Text, length: SQLINTEGER) -> SQLRETURN;
+    #[link_name = "SQLPrepare"]
+    safe fn prepare(statement: Statement, text: Text, length: SQLINTEGER) -> SQLRETURN;
     #[link_name = "SQLExecute"]
     safe fn execute(statement: Statement) -> SQLRETURN;
+    #[link_name = "SQLPutData"]
+    safe fn put_data(statement: Statement, data: Data, length_or_indicator: SQLLEN) -> SQLRETURN;
+    #[link_name = "SQLGetData"]
+    safe fn get_data(
+        statement: Statement,
+        column: SQLUSMALLINT,
+        target_type: SQLSMALLINT,
+        target: Target,
+        buffer_length: SQLLEN,
+        length_or_indicator: Out<SQLLEN>,
+    ) -> SQLRETURN;
+    #[link_name = "SQLDescribeCol"]
+    safe fn describe_col(
+        statement: Statement,
+        column: SQLUSMALLINT,
+        name: Out<SQLCHAR>,
+        buffer_length: SQLSMALLINT,
+        name_length: Out<SQLSMALLINT>,
+        data_type: Out<SQLSMALLINT>,
+        column_size: Out<SQLULEN>,
+        decimal_digits: Out<SQLSMALLINT>,
+        nullable: Out<SQLSMALLINT>,
+    ) -> SQLRETURN;
+    #[link_name = "SQLEndTran"]
+    safe fn end_tran(
+        handle_type: SQLSMALLINT,
+        handle: Handle,
+        completion: SQLSMALLINT,
+    ) -> SQLRETURN;
+    #[link_name = "SQLDisconnect"]
+    safe fn disconnect(connection: Connection) -> SQLRETURN;
 }
 
 /// `SQL_ERROR`.
@@ -74,187 +164,153 @@ fn offload(call: impl FnMut() -> SQLRETURN) -> SQLRETURN {
     unsafe { swoole_rs_hooks::stdio::offloaded(offload, SQL_ERROR, call) }
 }
 
-/// `swoole_odbc_SQLConnect`.
-/// # Safety
-/// As `SQLConnect`.
+/// `swoole_odbc_SQLConnect`: `SQLConnect`, whose whole contract the arguments' types carry.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_odbc_SQLConnect(
-    connection: SQLHDBC,
-    server_name: *mut SQLCHAR,
+pub extern "C" fn swoole_odbc_SQLConnect(
+    connection: Connection,
+    server_name: Text,
     name_length1: SQLSMALLINT,
-    user_name: *mut SQLCHAR,
+    user_name: Text,
     name_length2: SQLSMALLINT,
-    authentication: *mut SQLCHAR,
+    authentication: Text,
     name_length3: SQLSMALLINT,
-) -> RETCODE {
+) -> SQLRETURN {
     offload(|| {
-        // SAFETY: per the caller.
-        unsafe {
-            SQLConnect(
-                connection,
-                server_name,
-                name_length1,
-                user_name,
-                name_length2,
-                authentication,
-                name_length3,
-            )
-        }
+        connect(
+            connection,
+            server_name,
+            name_length1,
+            user_name,
+            name_length2,
+            authentication,
+            name_length3,
+        )
     })
 }
 
-/// `swoole_odbc_SQLDriverConnect`.
-/// # Safety
-/// As `SQLDriverConnect`.
+/// `swoole_odbc_SQLDriverConnect`: `SQLDriverConnect`, as [`swoole_odbc_SQLConnect`].
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_odbc_SQLDriverConnect(
-    hdbc: SQLHDBC,
-    hwnd: SQLHWND,
-    conn_str_in: *mut SQLCHAR,
+pub extern "C" fn swoole_odbc_SQLDriverConnect(
+    connection: Connection,
+    window: Window,
+    conn_str_in: Text,
     conn_str_in_length: SQLSMALLINT,
-    conn_str_out: *mut SQLCHAR,
+    conn_str_out: Out<SQLCHAR>,
     conn_str_out_max: SQLSMALLINT,
-    conn_str_out_length: *mut SQLSMALLINT,
+    conn_str_out_length: Out<SQLSMALLINT>,
     driver_completion: SQLUSMALLINT,
 ) -> SQLRETURN {
     offload(|| {
-        // SAFETY: per the caller.
-        unsafe {
-            SQLDriverConnect(
-                hdbc,
-                hwnd,
-                conn_str_in,
-                conn_str_in_length,
-                conn_str_out,
-                conn_str_out_max,
-                conn_str_out_length,
-                driver_completion,
-            )
-        }
+        driver_connect(
+            connection,
+            window,
+            conn_str_in,
+            conn_str_in_length,
+            conn_str_out,
+            conn_str_out_max,
+            conn_str_out_length,
+            driver_completion,
+        )
     })
 }
 
-/// `swoole_odbc_SQLExecDirect`.
-/// # Safety
-/// As `SQLExecDirect`.
+/// `swoole_odbc_SQLExecDirect`: `SQLExecDirect`, as [`swoole_odbc_SQLConnect`].
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_odbc_SQLExecDirect(
-    statement: SQLHSTMT,
-    text: *mut SQLCHAR,
+pub extern "C" fn swoole_odbc_SQLExecDirect(
+    statement: Statement,
+    text: Text,
     length: SQLINTEGER,
 ) -> SQLRETURN {
-    // SAFETY: per the caller.
-    offload(|| unsafe { SQLExecDirect(statement, text, length) })
+    offload(|| exec_direct(statement, text, length))
 }
 
-/// `swoole_odbc_SQLPrepare`.
-/// # Safety
-/// As `SQLPrepare`.
+/// `swoole_odbc_SQLPrepare`: `SQLPrepare`, as [`swoole_odbc_SQLConnect`].
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_odbc_SQLPrepare(
-    statement: SQLHSTMT,
-    text: *mut SQLCHAR,
+pub extern "C" fn swoole_odbc_SQLPrepare(
+    statement: Statement,
+    text: Text,
     length: SQLINTEGER,
 ) -> SQLRETURN {
-    // SAFETY: per the caller.
-    offload(|| unsafe { SQLPrepare(statement, text, length) })
+    offload(|| prepare(statement, text, length))
 }
 
-/// `swoole_odbc_SQLExecute`: `SQLExecute`'s whole contract is the live statement the
-/// type carries.
+/// `swoole_odbc_SQLExecute`: `SQLExecute`, as [`swoole_odbc_SQLConnect`].
 #[unsafe(no_mangle)]
 pub extern "C" fn swoole_odbc_SQLExecute(statement: Statement) -> SQLRETURN {
     offload(|| execute(statement))
 }
 
-/// `swoole_odbc_SQLPutData`.
-/// # Safety
-/// As `SQLPutData`.
+/// `swoole_odbc_SQLPutData`: `SQLPutData`, as [`swoole_odbc_SQLConnect`].
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_odbc_SQLPutData(
-    statement: SQLHSTMT,
-    data: SQLPOINTER,
+pub extern "C" fn swoole_odbc_SQLPutData(
+    statement: Statement,
+    data: Data,
     length_or_indicator: SQLLEN,
 ) -> SQLRETURN {
-    // SAFETY: per the caller.
-    offload(|| unsafe { SQLPutData(statement, data, length_or_indicator) })
+    offload(|| put_data(statement, data, length_or_indicator))
 }
 
-/// `swoole_odbc_SQLGetData`.
-/// # Safety
-/// As `SQLGetData`.
+/// `swoole_odbc_SQLGetData`: `SQLGetData`, as [`swoole_odbc_SQLConnect`].
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_odbc_SQLGetData(
-    statement: SQLHSTMT,
+pub extern "C" fn swoole_odbc_SQLGetData(
+    statement: Statement,
     column: SQLUSMALLINT,
     target_type: SQLSMALLINT,
-    target: SQLPOINTER,
+    target: Target,
     buffer_length: SQLLEN,
-    length_or_indicator: *mut SQLLEN,
+    length_or_indicator: Out<SQLLEN>,
 ) -> SQLRETURN {
     offload(|| {
-        // SAFETY: per the caller.
-        unsafe {
-            SQLGetData(
-                statement,
-                column,
-                target_type,
-                target,
-                buffer_length,
-                length_or_indicator,
-            )
-        }
+        get_data(
+            statement,
+            column,
+            target_type,
+            target,
+            buffer_length,
+            length_or_indicator,
+        )
     })
 }
 
-/// `swoole_odbc_SQLDescribeCol`.
-/// # Safety
-/// As `SQLDescribeCol`.
+/// `swoole_odbc_SQLDescribeCol`: `SQLDescribeCol`, as [`swoole_odbc_SQLConnect`].
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_odbc_SQLDescribeCol(
-    statement: SQLHSTMT,
+pub extern "C" fn swoole_odbc_SQLDescribeCol(
+    statement: Statement,
     column: SQLUSMALLINT,
-    name: *mut SQLCHAR,
+    name: Out<SQLCHAR>,
     buffer_length: SQLSMALLINT,
-    name_length: *mut SQLSMALLINT,
-    data_type: *mut SQLSMALLINT,
-    column_size: *mut SQLULEN,
-    decimal_digits: *mut SQLSMALLINT,
-    nullable: *mut SQLSMALLINT,
+    name_length: Out<SQLSMALLINT>,
+    data_type: Out<SQLSMALLINT>,
+    column_size: Out<SQLULEN>,
+    decimal_digits: Out<SQLSMALLINT>,
+    nullable: Out<SQLSMALLINT>,
 ) -> SQLRETURN {
     offload(|| {
-        // SAFETY: per the caller.
-        unsafe {
-            SQLDescribeCol(
-                statement,
-                column,
-                name,
-                buffer_length,
-                name_length,
-                data_type,
-                column_size,
-                decimal_digits,
-                nullable,
-            )
-        }
+        describe_col(
+            statement,
+            column,
+            name,
+            buffer_length,
+            name_length,
+            data_type,
+            column_size,
+            decimal_digits,
+            nullable,
+        )
     })
 }
 
-/// `swoole_odbc_SQLEndTran`.
-/// # Safety
-/// As `SQLEndTran`.
+/// `swoole_odbc_SQLEndTran`: `SQLEndTran`, as [`swoole_odbc_SQLConnect`].
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_odbc_SQLEndTran(
+pub extern "C" fn swoole_odbc_SQLEndTran(
     handle_type: SQLSMALLINT,
-    handle: SQLHANDLE,
+    handle: Handle,
     completion: SQLSMALLINT,
 ) -> SQLRETURN {
-    // SAFETY: per the caller.
-    offload(|| unsafe { SQLEndTran(handle_type, handle, completion) })
+    offload(|| end_tran(handle_type, handle, completion))
 }
 
-/// `swoole_odbc_SQLDisconnect`: `SQLDisconnect`'s whole contract is the live
-/// connection the type carries.
+/// `swoole_odbc_SQLDisconnect`: `SQLDisconnect`, as [`swoole_odbc_SQLConnect`].
 #[unsafe(no_mangle)]
 pub extern "C" fn swoole_odbc_SQLDisconnect(connection: Connection) -> SQLRETURN {
     offload(|| disconnect(connection))

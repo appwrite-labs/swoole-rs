@@ -1,10 +1,10 @@
 //! `sw_zend_string_allocator()`: the `swoole::Allocator` whose buffers are the
 //! `ZSTR_VAL` of `zend_string`s, so a received message becomes a PHP string
 //! without a copy.
-use std::ffi::c_void;
+use std::{ffi::c_void, mem::MaybeUninit};
 use swoole_rs_corebase::{CoreAllocator, TrustedAllocator};
 use swoole_rs_zend::{
-    string::{self, from_val, val},
+    string::{self, ZBuf, from_val, val},
     sys::swr_zend_string_release,
 };
 
@@ -40,12 +40,10 @@ extern "C" fn calloc(nmemb: usize, size: usize) -> *mut c_void {
     let Some(bytes) = nmemb.checked_mul(size) else {
         return std::ptr::null_mut();
     };
-    let memory = malloc(bytes);
-    if !memory.is_null() {
-        // SAFETY: a buffer of `bytes` bytes.
-        unsafe { memory.cast::<u8>().write_bytes(0, bytes) };
-    }
-    memory
+    // The string's reference goes to the caller, which frees it through `free`.
+    let mut buffer = std::mem::ManuallyDrop::new(ZBuf::with_capacity(bytes));
+    buffer.spare_capacity_mut().fill(MaybeUninit::new(0));
+    buffer.as_mut_ptr().cast()
 }
 
 /// # Safety

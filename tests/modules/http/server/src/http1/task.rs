@@ -156,7 +156,7 @@ fn waiting(serv: Server) -> Waiting<'static, TaskPool> {
     let id = u16::try_from(pool::swoole_get_worker_id()).unwrap();
     tasks.host.pipe = view.task_notify_pipe(id);
     // SAFETY: this worker's live record.
-    tasks.host.lock = unsafe { (*view.worker(id)).lock };
+    tasks.host.lock = unsafe { (*view.worker(id)).lock.get() };
     let slot = serv
         .get_task_result()
         .cast::<[AtomicU32; SW_IPC_MAX_SIZE as usize / 4]>();

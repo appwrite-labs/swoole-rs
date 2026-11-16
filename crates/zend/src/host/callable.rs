@@ -110,24 +110,20 @@ impl Callable {
         retval: Option<&crate::Value>,
         from_loop: bool,
     ) -> Result<bool, bailout::Bailout> {
-        let argc = u32::try_from(args.len()).unwrap_or(u32::MAX);
-        let argv = args.as_mut_ptr();
-        let retval = retval.map_or(ptr::null_mut(), crate::Value::as_ptr);
+        let args = crate::zval::Zvals::of(args);
         let mut result = false;
         let body = || {
             result = if from_loop {
-                // SAFETY: this live callable's cache, `argc` live arguments and a
-                // writable return slot or null.
-                let called =
-                    unsafe { super::private::direct_call(self.cache_ptr(), argc, argv, retval) };
+                let called = super::private::direct_call(self.cache(), args, retval);
                 if !bailout::pending() {
                     // A loop callback reports an uncaught exception at once.
                     super::private::fatal_exception();
                 }
                 bailout::finish();
-                called == 0
+                called
             } else {
-                let called = self.invoke(argc, argv, retval);
+                let retval = retval.map_or(ptr::null_mut(), crate::Value::as_ptr);
+                let called = self.invoke(args.argc(), args.argv(), retval);
                 bailout::finish();
                 called.unwrap_or(false)
             };

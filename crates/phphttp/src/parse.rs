@@ -4,7 +4,7 @@
 //! `swoole_http_request.cc` did. Both parsers are crates/http's; what Swoole
 //! itself owns goes through `host`.
 use crate::host;
-use crate::state::{Slot, State};
+use crate::state::{Request, Slot, State};
 use std::ffi::{c_char, c_int};
 use std::fs::File;
 use std::io::{BufWriter, IoSlice, Write};
@@ -18,7 +18,7 @@ use swoole_rs_httpbindings::{
     RequestHeader, body_prefix, compression, request_header, request_key, request_url,
     swr_v1_httpbindings_form_source, token_list_contains, token_list_fast, trim_quotes,
 };
-use swoole_rs_zend::sys::{swr_zend_http_treat_data, swr_zend_http_upload, zval};
+use swoole_rs_zend::sys::zval;
 use swoole_rs_zend::{Declared, Interned, Minit, Owned, OwnedArray, Value, ZStr, ZString};
 
 /// A request's multipart parser and the upload it is writing.
@@ -30,10 +30,14 @@ pub(crate) struct Multipart {
 /// The upload file being written, buffered as upstream's `fdopen` stream was.
 type Upload = BufWriter<File>;
 
-/// The multipart parser's callbacks: the context and the current upload's stream.
-struct Parts<'a> {
+/// The multipart parser's callbacks: the context, the current upload's stream,
+/// and the current part header's name and the last unclaimed `Content-Type`,
+/// both spans of the call's input.
+struct Parts<'a, 'i> {
     state: &'a mut State,
     fp: &'a mut Option<Upload>,
+    name: &'i [u8],
+    content_type: Option<&'i [u8]>,
 }
 
 unsafe extern "C" {
@@ -76,13 +80,14 @@ const UPLOAD_FILE_READY: i64 = 8;
 const CODECS: u32 = 7;
 const COMPRESSION: u32 = 8;
 
-/// The server's llhttp callbacks, over a context's state.
-struct Server<'a>(&'a mut State);
+/// The server's llhttp callbacks, over a context's state, with the current
+/// header's name, a span of the call's input.
+struct Server<'a, 'i>(&'a mut State, &'i [u8]);
 
 /// `Request::parse()`'s: input arrives in pieces appended to `request.zdata`.
 struct Pieces<'a>(&'a mut State);
 
-impl Callbacks for Server<'_> {
+impl<'i> Callbacks<'i> for Server<'_, 'i> {
     fn parser(&mut self) -> &mut Parser {
         &mut self.0.parser
     }
@@ -91,12 +96,13 @@ impl Callbacks for Server<'_> {
         url(self.0, data)
     }
 
-    fn on_header_field(&mut self, data: &[u8]) -> c_int {
+    fn on_header_field(&mut self, data: &'i [u8]) -> c_int {
         // A request's trailer fields are ignored.
         if self.0.parser.flags & TRAILING != 0 {
             return 0;
         }
-        header_field(self.0, data.as_ptr(), data.len());
+        self.1 = data;
+        self.0.parse.header_value_len = 0;
         0
     }
 
@@ -104,7 +110,7 @@ impl Callbacks for Server<'_> {
         if self.0.parser.flags & TRAILING != 0 {
             return 0;
         }
-        header_value(self.0, data)
+        header_value(self.0, self.1, data)
     }
 
     fn on_headers_complete(&mut self) -> c_int {
@@ -120,7 +126,7 @@ impl Callbacks for Server<'_> {
     }
 }
 
-impl Callbacks for Pieces<'_> {
+impl Callbacks<'_> for Pieces<'_> {
     fn parser(&mut self) -> &mut Parser {
         &mut self.0.parser
     }
@@ -150,14 +156,15 @@ impl Callbacks for Pieces<'_> {
     }
 }
 
-impl swoole_rs_http::multipart_parser::Parts for Parts<'_> {
-    fn on_header_field(&mut self, data: &[u8]) -> Flow {
-        header_field(self.state, data.as_ptr(), data.len());
+impl<'i> swoole_rs_http::multipart_parser::Parts<'i> for Parts<'_, 'i> {
+    fn on_header_field(&mut self, data: &'i [u8]) -> Flow {
+        self.name = data;
+        self.state.parse.header_value_len = 0;
         Flow::Go
     }
 
-    fn on_header_value(&mut self, data: &[u8]) -> Flow {
-        if part_header_value(self.state, data) {
+    fn on_header_value(&mut self, data: &'i [u8]) -> Flow {
+        if part_header_value(self, data) {
             Flow::Go
         } else {
             Flow::Fail
@@ -305,8 +312,7 @@ pub(crate) fn tmpfiles_offset() -> u32 {
 
 /// `swoole_http_init_and_read_property`: the array behind a property slot,
 /// creating it on first use. Like upstream, the slot keeps an uncounted copy.
-pub(crate) fn property(state: &mut State, which: Property) -> *mut zval {
-    let request = &mut state.request;
+pub(crate) fn property(request: &mut Request, which: Property) -> Option<&Value> {
     let slot: &mut Slot = match which {
         Property::Get => &mut request.zget,
         Property::Post => &mut request.zpost,
@@ -316,15 +322,18 @@ pub(crate) fn property(state: &mut State, which: Property) -> *mut zval {
         Property::Server => &mut request.zserver,
         Property::Header => &mut request.zheader,
     };
-    let Some(property) = PROPERTIES.get(which as usize) else {
-        return ptr::null_mut();
-    };
+    let property = PROPERTIES.get(which as usize)?;
     let size = if matches!(which, Property::Server) {
         HT_MIN_SIZE << 1
     } else {
         HT_MIN_SIZE
     };
     slot.init_array(&request.zobject, property, size)
+}
+
+/// [`property`]'s array zval, for a C writer; null without one.
+fn raw_property(state: &mut State, which: Property) -> *mut zval {
+    property(&mut state.request, which).map_or(ptr::null_mut(), Value::as_ptr)
 }
 
 /// `http_server_add_server_array`: `$request->server[key] = value`.
@@ -362,18 +371,31 @@ pub(crate) fn request_path(request: &crate::state::Request) -> &[u8] {
 /// Bytes copied into request memory (`estrndup`) for `swoole_php_treat_data`,
 /// which frees them. Copied first, they leave nothing borrowed or owned here
 /// while PHP parses them, which may bail out.
-struct Copied(*mut c_char);
+///
+/// Invariant: a NUL-terminated string `estrndup` returned, which nothing else
+/// holds. Only [`Copied::of`] makes one, and the call it is moved into frees it.
+#[repr(transparent)]
+pub(crate) struct Copied(*mut c_char);
 
 impl Copied {
-    fn of(bytes: &[u8]) -> Self {
+    pub(crate) fn of(bytes: &[u8]) -> Self {
         Self(estrndup(bytes))
     }
 }
 
-/// `swoole_php_treat_data(arg, text, array)`.
-fn treat_data(arg: c_int, Copied(text): Copied, array: *mut zval) {
-    // SAFETY: a fresh request-memory string, which the call frees, and a live array.
-    if !unsafe { swr_zend_http_treat_data(arg, text, array) } {
+unsafe extern "C" {
+    /// `swoole_php_treat_data`: the pairs of the string, which it frees, into the
+    /// array the zval holds, which it does not replace; false once it stopped at
+    /// `max_input_vars`.
+    safe fn swr_zend_http_treat_data(arg: c_int, text: Copied, array: &Value) -> bool;
+    /// `sapi_module.treat_data(PARSE_STRING, text, array)`, which frees the string.
+    pub(crate) safe fn swr_zend_treat_string(text: Copied, array: &Value);
+}
+
+/// `swoole_php_treat_data(arg, text, array)`; nothing without the array.
+fn treat_data(arg: c_int, text: Copied, array: Option<&Value>) {
+    let Some(array) = array else { return };
+    if !swr_zend_http_treat_data(arg, text, array) {
         let limit = max_input_vars();
         log::warning(
             c"swoole_php_treat_data",
@@ -390,11 +412,18 @@ unsafe extern "C" {
     safe fn max_input_vars() -> i64;
 }
 
-/// `$request->tmpfiles[] = path`, and the upload `is_uploaded_file` knows.
+unsafe extern "C" {
+    /// `$request->tmpfiles[] = path` into the array the zval holds, which it does
+    /// not replace, and the upload `is_uploaded_file` knows; it copies the bytes.
+    safe fn swr_zend_http_upload(tmpfiles: &Value, path: IoSlice<'_>);
+}
+
+/// `$request->tmpfiles[] = path`, and the upload `is_uploaded_file` knows;
+/// nothing without the array.
 fn add_upload(state: &mut State, path: &[u8]) {
-    let tmpfiles = property(state, Property::TmpFiles);
-    // SAFETY: the request's `tmpfiles` array and the path's bytes, which it copies.
-    unsafe { swr_zend_http_upload(tmpfiles, path.as_ptr().cast(), path.len()) };
+    if let Some(tmpfiles) = property(&mut state.request, Property::TmpFiles) {
+        swr_zend_http_upload(tmpfiles, IoSlice::new(path));
+    }
 }
 
 /// `swoole_llhttp_parser_init(&ctx->parser, HTTP_REQUEST, ctx)`.
@@ -403,7 +432,7 @@ pub(crate) fn init_request_parser(mut ctx: crate::context::Ctx) {
 }
 
 /// `swoole_http_parse_cookie`.
-pub(crate) fn parse_cookie(array: *mut zval, bytes: &[u8]) {
+pub(crate) fn parse_cookie(array: Option<&Value>, bytes: &[u8]) {
     if !bytes.is_empty() {
         treat_data(PARSE_COOKIE, Copied::of(bytes), array);
     }
@@ -414,7 +443,7 @@ fn execute(state: &mut State, pieces: bool, input: &[u8]) -> usize {
     let result = if pieces {
         llhttp::execute(&mut Pieces(state), input)
     } else {
-        llhttp::execute(&mut Server(state), input)
+        llhttp::execute(&mut Server(state, &[]), input)
     };
     if result == 0 {
         return input.len();
@@ -472,15 +501,12 @@ fn url(state: &mut State, span: &[u8]) -> c_int {
         return 0;
     }
     add_server(state, Key::QueryString, stringl(query));
-    let get = property(state, Property::Get);
-    treat_data(PARSE_STRING, Copied::of(query), get);
+    treat_data(
+        PARSE_STRING,
+        Copied::of(query),
+        property(&mut state.request, Property::Get),
+    );
     0
-}
-
-fn header_field(state: &mut State, at: *const u8, length: usize) {
-    state.parse.header_name = at;
-    state.parse.header_name_len = length;
-    state.parse.header_value_len = 0;
 }
 
 fn on_piece_url(state: &mut State, at: *const c_char, length: usize) -> c_int {
@@ -517,12 +543,16 @@ fn on_piece_header_value(state: &mut State, at: *const c_char, length: usize) ->
     if at.wrapping_add(length).cast() == start.wrapping_add(total) {
         return 0;
     }
-    let name = start.wrapping_add(state.parse.header_name_offset);
-    header_field(state, name, state.parse.header_name_length);
+    state.parse.header_value_len = 0;
     // A reference of its own to `zdata`, which `header_value` reads but doesn't replace.
     let held = state.request.zdata.copy();
+    let offset = state.parse.header_name_offset;
+    let name = held.bytes().unwrap_or_default();
+    let name = name
+        .get(offset..offset.saturating_add(state.parse.header_name_length))
+        .unwrap_or_default();
     let value = pieces(&held, at, length, state.parse.header_value_length);
-    let result = header_value(state, value);
+    let result = header_value(state, name, value);
     state.parse.header_name_length = 0;
     state.parse.header_value_length = 0;
     result
@@ -562,11 +592,8 @@ fn websocket_connection(state: &State) -> bool {
     true
 }
 
-fn header_value(state: &mut State, value_: &[u8]) -> c_int {
+fn header_value(state: &mut State, name: &[u8], value_: &[u8]) -> c_int {
     let length = value_.len();
-    // SAFETY: the current header's name, inside llhttp's input.
-    let name =
-        unsafe { std::slice::from_raw_parts(state.parse.header_name, state.parse.header_name_len) };
     let compression = CAPABILITIES.load(Relaxed) & COMPRESSION != 0 && state.enable_compression;
     let action = request_header(
         name,
@@ -577,8 +604,7 @@ fn header_value(state: &mut State, value_: &[u8]) -> c_int {
     );
     match action {
         RequestHeader::Cookie => {
-            let cookie = property(state, Property::Cookie);
-            parse_cookie(cookie, value_);
+            parse_cookie(property(&mut state.request, Property::Cookie), value_);
             return 0;
         }
         RequestHeader::Upgrade => {
@@ -656,7 +682,6 @@ fn on_headers_complete(state: &mut State) -> c_int {
 
     state.keepalive = state.parser.should_keep_alive();
     state.recv_chunked = state.parser.flags & CHUNKED != 0;
-    state.parse.header_name = ptr::null();
     0
 }
 
@@ -734,20 +759,24 @@ fn on_message_complete(state: &mut State) -> c_int {
     );
     match (form_source, chunked) {
         (1, true) => {
-            let post = property(state, Property::Post);
             let body = state.parse.chunked_body.as_deref();
+            let text = Copied::of(body.map_or(&[], Vec::as_slice));
             treat_data(
                 PARSE_STRING,
-                Copied::of(body.map_or(&[], Vec::as_slice)),
-                post,
+                text,
+                property(&mut state.request, Property::Post),
             );
         }
         (2, _) => {
-            let post = property(state, Property::Post);
             let body = state.request.body_at.cast();
             // SAFETY: the body's span of the input, which is live until the request completes.
             let body = unsafe { std::slice::from_raw_parts(body, state.request.body_length) };
-            treat_data(PARSE_STRING, Copied::of(body), post);
+            let text = Copied::of(body);
+            treat_data(
+                PARSE_STRING,
+                text,
+                property(&mut state.request, Property::Post),
+            );
         }
         _ => {}
     }
@@ -806,7 +835,13 @@ pub(crate) fn multipart_parse(state: &mut State, data: &[u8]) -> bool {
         return false;
     };
     let Multipart { parser, fp } = &mut *multipart;
-    let parsed = parser.execute(&mut Parts { state, fp }, data);
+    let mut parts = Parts {
+        state,
+        fp,
+        name: &[],
+        content_type: None,
+    };
+    let parsed = parser.execute(&mut parts, data);
     let mut reason = parser.error_message();
     state.mt_parser = Some(multipart);
     let func = c"Context::parse_multipart_data";
@@ -874,8 +909,8 @@ fn position(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
-fn part_header_value(state: &mut State, value_: &[u8]) -> bool {
-    let length = value_.len();
+fn part_header_value<'i>(parts: &mut Parts<'_, 'i>, value_: &'i [u8]) -> bool {
+    let (state, name) = (&mut *parts.state, parts.name);
     let func = c"multipart_body_on_header_value";
     // Hash collision attack
     let max_input_vars = max_input_vars();
@@ -887,9 +922,6 @@ fn part_header_value(state: &mut State, value_: &[u8]) -> bool {
     }
     state.parse.input_var_num = state.parse.input_var_num.wrapping_add(1);
 
-    // SAFETY: the current part header's name, inside the parser's input.
-    let name =
-        unsafe { std::slice::from_raw_parts(state.parse.header_name, state.parse.header_name_len) };
     if name.eq_ignore_ascii_case(b"content-disposition") {
         let offset = if position(value_, b"form-data;").is_some() {
             b"form-data;".len()
@@ -909,7 +941,7 @@ fn part_header_value(state: &mut State, value_: &[u8]) -> bool {
         };
         // Released on every return, which upstream's early ones leak.
         let fields = OwnedArray::default().into_owned();
-        parse_cookie(fields.as_ptr(), value_.get(offset..).unwrap_or_default());
+        parse_cookie(Some(&fields), value_.get(offset..).unwrap_or_default());
         let field = |key: &[u8]| fields.array().and_then(|fields| fields.find(key));
 
         let Some((form_name, form_name_len)) = field(b"name").and_then(string_value) else {
@@ -945,19 +977,8 @@ fn part_header_value(state: &mut State, value_: &[u8]) -> bool {
             }
             state.parse.input_name = Some(c_copy(&form_name));
             let mut header = OwnedArray::default();
-            if state.parse.tmp_content_type.is_null() {
-                header.insert_bytes(b"type", Some(b""));
-            } else {
-                // SAFETY: a span of the parser's input, still live.
-                let content_type = unsafe {
-                    std::slice::from_raw_parts(
-                        state.parse.tmp_content_type,
-                        state.parse.tmp_content_type_len,
-                    )
-                };
-                header.insert_bytes(b"type", Some(content_type));
-                state.parse.tmp_content_type = ptr::null();
-            }
+            let content_type = parts.content_type.take();
+            header.insert_bytes(b"type", Some(content_type.unwrap_or_default()));
             header.insert_bytes(b"tmp_name", Some(b""));
             header.insert_long(b"size", 0);
             let filename = trimmed(filename, filename_len);
@@ -981,8 +1002,7 @@ fn part_header_value(state: &mut State, value_: &[u8]) -> bool {
                 upload_bytes(state, b"type", value_);
             }
         } else {
-            state.parse.tmp_content_type = value_.as_ptr();
-            state.parse.tmp_content_type_len = length;
+            parts.content_type = Some(value_);
         }
     } else if name.eq_ignore_ascii_case(b"swoole-upload-file") && state.upload_preprocessed {
         // When the "SW_HTTP_UPLOAD_FILE" header appears in the request, it indicates that the uploaded file has been
@@ -1082,7 +1102,7 @@ fn part_headers_complete(state: &mut State, upload: &mut Option<Upload>) {
 
 fn part_data_end(state: &mut State, upload: &mut Option<Upload>) {
     if let Some(name) = state.parse.form_data_name.take() {
-        let post = property(state, Property::Post);
+        let post = raw_property(state, Property::Post);
         let data = state.parse.form_data.get_or_insert_with(Default::default);
         // SAFETY: a NUL-terminated name, the field's bytes and the request's `post` array.
         unsafe {
@@ -1109,7 +1129,7 @@ fn part_data_end(state: &mut State, upload: &mut Option<Upload>) {
     if code == UPLOAD_FILE_READY {
         upload_long(state, b"error", UPLOAD_OK);
     }
-    let files = property(state, Property::Files);
+    let files = raw_property(state, Property::Files);
     // The array moves into `$request->files`; like upstream, only the holder
     // goes, not the array it registered.
     let header = ManuallyDrop::new(std::mem::take(&mut state.parse.multipart_header));

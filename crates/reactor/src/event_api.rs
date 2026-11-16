@@ -243,6 +243,14 @@ pub fn swoole_event_num() -> Option<usize> {
     with_registry(|registry| registry.map_or(0, crate::Registry::count))
 }
 
+/// The sockets the thread's `Reactor` holds, in fd order; none without one.
+#[must_use]
+pub fn swoole_event_sockets() -> Vec<*mut c_void> {
+    with_registry(|registry| registry.map(crate::Registry::sockets))
+        .flatten()
+        .unwrap_or_default()
+}
+
 /// A field of the thread's `Reactor`, written; `None` without one. `write` reaches
 /// no reactor (no `event_api` call, no handler or task): a nested call would be a
 /// second `&mut` to the same fields, which debug builds refuse.

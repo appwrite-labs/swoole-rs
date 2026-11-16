@@ -217,13 +217,23 @@ pub fn contain<T: Copy>(body: fn() -> T) -> Result<T, Bailout> {
 /// # Errors
 /// `body` bailed out.
 pub fn contain_with<F: FnOnce()>(body: F) -> Result<(), Bailout> {
+    /// Takes and runs the closure: a bailout leaves the slot empty, so nothing
+    /// is dropped twice.
+    unsafe extern "C" fn run<F: FnOnce()>(slot: *mut c_void) {
+        // SAFETY: `contain_with`'s live slot, which it lends for this call only.
+        let body = unsafe { &mut *slot.cast::<Option<F>>() }.take();
+        if let Some(body) = body {
+            body();
+        }
+    }
     const {
         assert!(
             !std::mem::needs_drop::<F>(),
             "a bailout skips the drop of what the trap holds"
         );
     };
-    // SAFETY: `body` needs no drop (asserted above), and its frames are its
-    // caller's (above).
-    unsafe { bailout::trap_with(body) }
+    let mut slot = Some(body);
+    // SAFETY: `run::<F>` takes the slot of an `F`; `body` needs no drop
+    // (asserted above), and its frames are its caller's (above).
+    unsafe { bailout::trap(run::<F>, (&raw mut slot).cast()) }
 }

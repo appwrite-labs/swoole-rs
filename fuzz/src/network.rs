@@ -136,7 +136,7 @@ struct Parts {
     value: Vec<u8>,
 }
 
-impl swoole_rs_http::multipart_parser::Parts for Parts {
+impl swoole_rs_http::multipart_parser::Parts<'_> for Parts {
     fn on_header_field(&mut self, data: &[u8]) -> Flow {
         in_chunk(data.as_ptr().cast(), data.len());
         Flow::Go
@@ -194,7 +194,7 @@ struct Chunked {
     body: usize,
 }
 
-impl Callbacks for Chunked {
+impl Callbacks<'_> for Chunked {
     fn parser(&mut self) -> &mut Parser {
         &mut self.parser
     }

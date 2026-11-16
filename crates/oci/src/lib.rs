@@ -39,9 +39,9 @@ type Sb4 = i32;
 pub type Handle = *mut c_void;
 
 /// An OCI handle of kind `K` the driver handed over: null, which OCI rejects
-/// without touching memory, or live for as long as the value is used. The
-/// exports that pass nothing else by pointer take it in place of the `dvoid *`
-/// it has the layout of. Nothing here makes one, and it is neither `Send` nor
+/// without touching memory (or, for a snapshot, takes as none), or live for as
+/// long as the value is used. The exports take it in place of the `dvoid *` it
+/// has the layout of. Nothing here makes one, and it is neither `Send` nor
 /// `Sync`: it reaches the pool only through [`offload`].
 #[repr(transparent)]
 pub struct Live<K>(Handle, PhantomData<K>);
@@ -54,14 +54,21 @@ impl<K> Clone for Live<K> {
 
 impl<K> Copy for Live<K> {}
 
-/// The kinds: `OCISvcCtx`, `OCIError`, `OCISession`, `OCIServer` and `OCIStmt`. A
-/// statement's defines, the buffers and the driver's callbacks over them, stay live
-/// with it.
+/// The kinds: `OCISvcCtx`, `OCIError`, `OCISession`, `OCIServer`, `OCIStmt` and
+/// `OCISnapshot`. A statement's binds and defines, the buffers and the driver's
+/// callbacks over them, stay live with it.
 pub enum Svc {}
 pub enum Error {}
 pub enum Session {}
 pub enum Server {}
 pub enum Stmt {}
+pub enum Snapshot {}
+
+/// Statement text the driver handed over: readable for the length passed beside it.
+/// As with [`Live`], only the exports' parameters make one.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Text(*const c_uchar);
 
 // OCI's own declarations of the calls that take only handles and plain values,
 // with each handle typed as the kind it is. They drive that connection alone,
@@ -94,25 +101,24 @@ unsafe extern "C" {
         offset: Sb4,
         mode: Ub4,
     ) -> Sword;
-}
-
-unsafe extern "C" {
-    fn OCIStmtPrepare(
-        stmt: Handle,
-        err: Handle,
-        text: *const c_uchar,
+    /// Reads the text, keeping a copy with the statement.
+    safe fn OCIStmtPrepare(
+        stmt: Live<Stmt>,
+        err: Live<Error>,
+        text: Text,
         text_len: Ub4,
         language: Ub4,
         mode: Ub4,
     ) -> Sword;
-    fn OCIStmtExecute(
-        svc: Handle,
-        stmt: Handle,
-        err: Handle,
+    /// Runs the statement over its binds and defines.
+    safe fn OCIStmtExecute(
+        svc: Live<Svc>,
+        stmt: Live<Stmt>,
+        err: Live<Error>,
         iters: Ub4,
         rowoff: Ub4,
-        snap_in: *const c_void,
-        snap_out: Handle,
+        snap_in: Live<Snapshot>,
+        snap_out: Live<Snapshot>,
         mode: Ub4,
     ) -> Sword;
 }
@@ -187,38 +193,34 @@ pub extern "C" fn swoole_oci_server_detach(
     offload(|| OCIServerDetach(server, err, mode))
 }
 
-/// `swoole_oci_stmt_prepare`.
-/// # Safety
-/// As `OCIStmtPrepare`.
+/// `swoole_oci_stmt_prepare`: `OCIStmtPrepare`, whose whole contract the arguments'
+/// types carry.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_oci_stmt_prepare(
-    stmt: Handle,
-    err: Handle,
-    text: *const c_uchar,
+pub extern "C" fn swoole_oci_stmt_prepare(
+    stmt: Live<Stmt>,
+    err: Live<Error>,
+    text: Text,
     text_len: Ub4,
     language: Ub4,
     mode: Ub4,
 ) -> Sword {
-    // SAFETY: per the caller.
-    offload(|| unsafe { OCIStmtPrepare(stmt, err, text, text_len, language, mode) })
+    offload(|| OCIStmtPrepare(stmt, err, text, text_len, language, mode))
 }
 
-/// `swoole_oci_stmt_execute`.
-/// # Safety
-/// As `OCIStmtExecute`.
+/// `swoole_oci_stmt_execute`: `OCIStmtExecute`, whose whole contract the handles' type
+/// carries.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_oci_stmt_execute(
-    svc: Handle,
-    stmt: Handle,
-    err: Handle,
+pub extern "C" fn swoole_oci_stmt_execute(
+    svc: Live<Svc>,
+    stmt: Live<Stmt>,
+    err: Live<Error>,
     iters: Ub4,
     rowoff: Ub4,
-    snap_in: *const c_void,
-    snap_out: Handle,
+    snap_in: Live<Snapshot>,
+    snap_out: Live<Snapshot>,
     mode: Ub4,
 ) -> Sword {
-    // SAFETY: per the caller.
-    offload(|| unsafe { OCIStmtExecute(svc, stmt, err, iters, rowoff, snap_in, snap_out, mode) })
+    offload(|| OCIStmtExecute(svc, stmt, err, iters, rowoff, snap_in, snap_out, mode))
 }
 
 /// `swoole_oci_stmt_fetch`: `OCIStmtFetch`, whose whole contract the handles' type carries.

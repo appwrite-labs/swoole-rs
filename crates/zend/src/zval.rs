@@ -9,11 +9,10 @@ use crate::{
         _zval_struct__bindgen_ty_1, _zval_struct__bindgen_ty_2, HashPosition, HashTable, IS_ARRAY,
         IS_DOUBLE, IS_FALSE, IS_INDIRECT, IS_INTERNED_STRING_EX, IS_LONG, IS_NULL, IS_OBJECT,
         IS_PTR, IS_REFERENCE, IS_STR_INTERNED, IS_STRING, IS_STRING_EX, IS_TRUE, IS_UNDEF,
-        add_next_index_stringl, swr_zend_array_add_or_merge, swr_zend_string_release,
-        swr_zend_try_hash_update, swr_zend_try_ptr_dtor, swr_zend_try_symtable_update,
-        zend_class_entry, zend_hash_add_new, zend_hash_index_add, zend_hash_next_index_insert,
-        zend_long, zend_object, zend_reference, zend_string, zend_ulong, zend_value, zval,
-        zval_ptr_dtor,
+        add_next_index_stringl, swr_zend_array_add_or_merge, swr_zend_try_hash_update,
+        swr_zend_try_symtable_update, zend_class_entry, zend_hash_add_new, zend_hash_index_add,
+        zend_hash_next_index_insert, zend_long, zend_object, zend_reference, zend_string,
+        zend_ulong, zend_value, zval,
     },
 };
 use std::{
@@ -152,7 +151,22 @@ unsafe extern "C" {
     /// `zend_try` (nonzero for a bailout); nothing unless both hold arrays. A
     /// replaced value's `__destruct` runs PHP code.
     safe fn swr_zend_try_array_merge(dest: &mut ArrayMut, source: &Value) -> std::ffi::c_int;
+    /// `zend_string_release`: the string loses the reference the `ZString`
+    /// held, and is freed with its last.
+    safe fn swr_zend_string_release(string: ZString);
+    /// `zval_ptr_dtor` of a string [`Owned`]'s drop gives up, which runs no
+    /// PHP code.
+    #[link_name = "zval_ptr_dtor"]
+    safe fn release_string(value: Dying<'_>);
+    /// `zval_ptr_dtor` inside `zend_try` (nonzero for a bailout) of anything
+    /// else [`Owned`]'s drop gives up.
+    safe fn swr_zend_try_ptr_dtor(value: Dying<'_>) -> std::ffi::c_int;
 }
+
+/// The zval of an [`Owned`] being dropped, made only by its drop: Zend destroys
+/// it, once, and nothing reads it again.
+#[repr(transparent)]
+struct Dying<'a>(&'a Value);
 
 /// A call's arguments lent to C (`swr_zvals`): `argc` zvals from `argv`, which
 /// the callee reads and copies, keeping no pointer to them. Made only from a
@@ -1130,6 +1144,7 @@ impl ZStr {
 
 /// A `zend_string` reference this holds (`zend::String`), released on drop.
 /// Built in this crate only, from a live string's reference it gives up.
+#[repr(transparent)]
 pub struct ZString(pub(crate) *mut zend_string);
 
 impl std::ops::Deref for ZString {
@@ -1290,8 +1305,8 @@ impl Clone for ZString {
 impl Drop for ZString {
     #[inline]
     fn drop(&mut self) {
-        // SAFETY: the reference this holds.
-        unsafe { swr_zend_string_release(self.0) };
+        // The reference this holds, handed over as it goes.
+        swr_zend_string_release(Self(self.0));
     }
 }
 
@@ -1761,13 +1776,9 @@ impl Drop for Owned {
     #[inline]
     fn drop(&mut self) {
         if self.kind() == IS_STRING {
-            // SAFETY: the zval this owns, destroyed once.
-            unsafe { zval_ptr_dtor(self.as_ptr()) };
+            release_string(Dying(self));
         } else if self.kind() > IS_STRING {
-            // SAFETY: as above.
-            bailout::defer(bailout::trapped(unsafe {
-                swr_zend_try_ptr_dtor(self.as_ptr())
-            }));
+            bailout::defer(bailout::trapped(swr_zend_try_ptr_dtor(Dying(self))));
         }
     }
 }

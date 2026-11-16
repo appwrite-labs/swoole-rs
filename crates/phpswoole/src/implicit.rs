@@ -25,6 +25,8 @@ unsafe extern "C" {
     /// `zval_refcount_p`: the count of what a live zval holds, read only; 0 for
     /// a value that holds nothing counted.
     safe fn swr_zval_facade_refcount(value: &Value) -> u32;
+    /// libc's `puts`: the NUL-terminated line and a newline to C's stdout.
+    safe fn puts(line: swoole_rs_corebase::sys::Text<'_>) -> c_int;
 }
 
 /// `sw_php_exit(status)`: `EG(exit_status) = status`, then the bailout that
@@ -76,8 +78,14 @@ fn implicit_fn(call: &Call) {
             return;
         };
         let address = handler.map_or(std::ptr::null(), |handler| handler as *const c_void);
-        // SAFETY: C's stdout, as upstream's printf.
-        unsafe { libc::printf(c"zif_handler=%p\n".as_ptr(), address) };
+        // Upstream's `printf("zif_handler=%p\n")` to C's stdout; glibc spells null `(nil)`.
+        let address = if address.is_null() && cfg!(target_env = "gnu") {
+            "(nil)".to_owned()
+        } else {
+            format!("{address:p}")
+        };
+        let line = std::ffi::CString::new(format!("zif_handler={address}")).unwrap_or_default();
+        puts(line.as_c_str().into());
     } else {
         let mut message = Message::new();
         message.push(b"unknown fn '");

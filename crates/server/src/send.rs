@@ -401,7 +401,6 @@ mod tests {
 
     const SW_OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
     const SW_ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
-    use core::ffi::c_void;
     use std::io::Read;
 
     /// The live server with one accepted connection, session 1, and its client.
@@ -465,12 +464,10 @@ mod tests {
     }
 
     unsafe extern "C-unwind" fn record_close(
-        _: *mut c_void,
-        socket: *mut swoole_rs_reactor::SocketRecord,
+        _: swoole_rs_reactor::Running<'_>,
+        socket: Socket<'_>,
     ) -> c_int {
-        // SAFETY: the reactor's live socket.
-        let fd = unsafe { Socket::from_ptr(socket) }.map_or(-1, Socket::fd);
-        CLOSED.with_borrow_mut(|closed| closed.push(fd));
+        CLOSED.with_borrow_mut(|closed| closed.push(socket.fd()));
         0
     }
 

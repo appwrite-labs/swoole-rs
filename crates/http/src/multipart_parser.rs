@@ -29,12 +29,13 @@ pub enum MultipartError {
 const CR: u8 = b'\r';
 const LF: u8 = b'\n';
 
-/// The parser's callbacks, each answering a [`Flow`].
-pub trait Parts {
-    fn on_header_field(&mut self, _data: &[u8]) -> Flow {
+/// The parser's callbacks, each answering a [`Flow`]. A header field or value
+/// is a slice of the input `execute` was given, lent for that whole call (`'i`).
+pub trait Parts<'i> {
+    fn on_header_field(&mut self, _data: &'i [u8]) -> Flow {
         Flow::Go
     }
-    fn on_header_value(&mut self, _data: &[u8]) -> Flow {
+    fn on_header_value(&mut self, _data: &'i [u8]) -> Flow {
         Flow::Go
     }
     fn on_part_data(&mut self, _data: &[u8]) -> Flow {
@@ -195,7 +196,7 @@ impl MultipartParser {
 
     /// `multipart_parser_execute`: how many bytes were consumed, or -1 on an error.
     /// Header fields and values must each arrive whole within one call.
-    pub fn execute(&mut self, parts: &mut impl Parts, buf: &[u8]) -> isize {
+    pub fn execute<'i>(&mut self, parts: &mut impl Parts<'i>, buf: &'i [u8]) -> isize {
         let mut mark = 0;
         let mut i = 0;
         while let Some(&c) = buf.get(i) {
@@ -220,10 +221,10 @@ impl MultipartParser {
         clippy::too_many_lines,
         reason = "one state machine, as upstream's switch"
     )]
-    fn step(
+    fn step<'i>(
         &mut self,
-        parts: &mut impl Parts,
-        buf: &[u8],
+        parts: &mut impl Parts<'i>,
+        buf: &'i [u8],
         i: usize,
         c: u8,
         mark: &mut usize,
@@ -439,7 +440,7 @@ mod tests {
         }
     }
 
-    impl Parts for Recorder {
+    impl Parts<'_> for Recorder {
         fn on_header_field(&mut self, data: &[u8]) -> Flow {
             self.push(format!("field {}", String::from_utf8_lossy(data)))
         }

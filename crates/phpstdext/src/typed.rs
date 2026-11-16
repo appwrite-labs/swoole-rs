@@ -7,7 +7,7 @@ use std::{
     cell::Cell,
     ffi::{CStr, CString, c_int},
     marker::PhantomData,
-    mem::offset_of,
+    mem::{MaybeUninit, offset_of},
     ptr, slice,
     sync::OnceLock,
 };
@@ -213,10 +213,21 @@ impl Parsed {
         self.this.key == other.key && self.this.value == other.value && self.text() == typed.text()
     }
 
-    /// Write the definition behind a table.
-    /// # Safety
-    /// `info` has `info_size(self.text().len())` writable bytes.
-    unsafe fn write(&self, info: *mut TypeInfo) {
+    /// Write the definition into `room`, the bytes behind a table.
+    ///
+    /// # Panics
+    /// If `room` is misaligned for a `TypeInfo` or shorter than the
+    /// definition.
+    fn write(&self, room: &mut [MaybeUninit<u8>]) {
+        #[expect(
+            clippy::cast_ptr_alignment,
+            reason = "the assert below checks the alignment before any write"
+        )]
+        let info = room.as_mut_ptr().cast::<TypeInfo>();
+        assert!(
+            info.is_aligned() && room.len() >= info_size(self.text().len()),
+            "room for the definition"
+        );
         let header = TypeInfo {
             this: self.this,
             element: self.element,
@@ -225,12 +236,12 @@ impl Parsed {
             len: u16::try_from(self.text().len()).unwrap_or(u16::MAX),
             text: [],
         };
-        // SAFETY: per the caller, room for the header.
+        // SAFETY: `room`, aligned and long enough (checked), holds the header.
         unsafe { info.write(header) };
         let text = info
             .wrapping_byte_add(offset_of!(TypeInfo, text))
             .cast::<u8>();
-        // SAFETY: per the caller, room for the text and its NUL.
+        // SAFETY: `room` holds the text and its NUL after the header (checked).
         unsafe { ptr::copy_nonoverlapping(self.text.as_ptr(), text, self.text.len()) };
     }
 }
@@ -671,12 +682,12 @@ fn fill(call: &Call, parsed: &Parsed, init: Option<&Value>) -> Result<(), Failur
         definition.element =
             parse_value(&parsed.text, start, usize::from(this.len)).ok_or(Failure::Thrown)?;
     }
-    let array = make_typed_array(
-        init.map_or(0, swoole_rs_zend::Array::count),
-        parsed.text().len(),
-    );
-    // SAFETY: room for the definition behind the table just made.
-    unsafe { definition.write(info_of(array)) };
+    let len = parsed.text().len();
+    let array = make_typed_array(init.map_or(0, swoole_rs_zend::Array::count), len);
+    // SAFETY: the table just made has `info_size(len)` bytes behind it, which
+    // nothing else references yet.
+    let room = unsafe { slice::from_raw_parts_mut(info_of(array).cast(), info_size(len)) };
+    definition.write(room);
     // The table just made, with its definition, which `made` holds below and
     // this frame keeps until it returns it.
     let typed = Typed {
@@ -921,7 +932,7 @@ mod tests {
         };
         let mut buffer = vec![u64::MAX; info_size(12).div_ceil(8)];
         let info = buffer.as_mut_ptr().cast::<TypeInfo>();
-        unsafe { parsed.write(info) };
+        parsed.write(unsafe { slice::from_raw_parts_mut(info.cast(), info_size(12)) });
         let text = info
             .wrapping_byte_add(offset_of!(TypeInfo, text))
             .cast::<u8>();

@@ -530,7 +530,7 @@ pub(crate) fn close_connection(
     // acquires it (OP_CONN_RESET) before reusing the slot.
     conn.closed().store(1, Release);
     // SAFETY: the closing socket, which nothing uses afterwards.
-    unsafe { swoole_rs_tls::reactor_write::reactor_close(reactor.ptr(), sock.as_ptr()) };
+    _ = unsafe { swoole_rs_tls::reactor_write::reactor_close(reactor.handle(), sock) };
     true
 }
 
