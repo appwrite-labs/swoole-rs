@@ -22,6 +22,9 @@
 zend_object *swr_zend_object_new(size_t size, size_t offset, zend_class_entry *ce,
                                  const zend_object_handlers *handlers);
 
+/* GC_FLAGS(object) & IS_OBJ_DESTRUCTOR_CALLED of a live object. */
+bool swr_zend_object_destructor_called(const zend_object *object);
+
 /* INIT_CLASS_ENTRY_EX of the NUL-terminated name, then
  * zend_register_internal_class_ex. */
 zend_class_entry *swr_zend_register_class(const char *name, const zend_function_entry *functions,

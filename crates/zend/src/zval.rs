@@ -1167,6 +1167,14 @@ impl ZStr {
         unsafe { std::slice::from_raw_parts(crate::string::val(self.as_ptr()), length) }
     }
 
+    /// `ZSTR_LEN(string) = len` when that shortens it: the bytes it keeps stay
+    /// inside the string. [`crate::string::ZBuf`] ends its string so.
+    #[inline]
+    pub(crate) fn shorten(&self, len: usize) {
+        let length = &self.head().len;
+        length.set(length.get().min(len));
+    }
+
     /// `ZSTR_VAL` as C's `%s` reads it: up to the first NUL.
     #[must_use]
     #[inline]
@@ -1496,14 +1504,14 @@ impl Owned {
         Some(unsafe { &mut *ptr::from_mut(self).cast::<OwnedArray>() })
     }
 
-    /// `ZVAL_OBJ(value, std)`: the result takes over the reference `std` carries.
-    /// # Safety
-    /// `std` is a live object carrying a reference the caller gives up.
+    /// `ZVAL_OBJ(value, std)`: the result takes over the new object's reference.
     #[must_use]
     #[inline]
-    pub unsafe fn object(std: *mut zend_object) -> Self {
+    pub(crate) fn object(std: crate::object::Fresh) -> Self {
         let mut zval = UNDEF;
-        zval.value = zend_value { obj: std };
+        zval.value = zend_value {
+            obj: std.into_ptr(),
+        };
         zval.u1.type_info = crate::sys::IS_OBJECT_EX;
         Self(Value(Cell::new(zval)))
     }

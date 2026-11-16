@@ -3,9 +3,8 @@
 use crate::{
     ArrayMut, Class, ClassEntry, Owned, OwnedArray, Value, ZString, bailout,
     sys::{
-        IS_OBJECT, swr_zend_object_new, zend_class_entry, zend_long, zend_object,
-        zend_object_handlers, zend_object_std_dtor, zend_objects_destroy_object,
-        zend_update_property,
+        IS_OBJECT, zend_class_entry, zend_long, zend_object, zend_object_handlers,
+        zend_object_std_dtor, zend_objects_destroy_object, zend_update_property,
     },
 };
 use std::{
@@ -17,6 +16,15 @@ use std::{
 };
 
 unsafe extern "C" {
+    /// `zend_object_alloc(size, ce)`, then `zend_object_std_init`,
+    /// `object_properties_init` and `handlers`, on the `zend_object` `offset`
+    /// bytes in: a new object, with its one reference, never null.
+    fn swr_zend_object_new(
+        size: usize,
+        offset: usize,
+        ce: *mut zend_class_entry,
+        handlers: *const zend_object_handlers,
+    ) -> Fresh;
     /// `sw_zend_read_property_ex` without its copy: null (`None`), or the slot
     /// of the instance property the live object's class declares as the lent
     /// bytes (an `IoSlice` is an iovec), which lives as long as the object.
@@ -177,15 +185,27 @@ impl<T: Custom> LaidOut<T> {
     /// standard object and its properties, install `T`'s class's handlers,
     /// and write `data` before the object is shared.
     #[must_use]
-    fn create(self, data: T) -> *mut zend_object {
+    fn create(self, data: T) -> Fresh {
         let Self(ce, _) = self;
         let (size, offset) = (size_of::<Object<T>>(), Object::<T>::OFFSET);
         // SAFETY: an `Object<T>` laid out for class `ce`, its `zend_object`
         // last, `offset` bytes in, with `T`'s class's handlers.
         let std = unsafe { swr_zend_object_new(size, offset, ce, T::class().handlers()) };
         // SAFETY: the object's data, allocated above and unused.
-        unsafe { Object::<T>::data_ptr(std).write(data) };
+        unsafe { Object::<T>::data_ptr(std.0.as_ptr()).write(data) };
         std
+    }
+}
+
+/// An object `swr_zend_object_new` just made, with its one reference, which
+/// whoever takes it holds. Only that call makes one.
+#[repr(transparent)]
+pub(crate) struct Fresh(NonNull<zend_object>);
+
+impl Fresh {
+    /// The object, giving up its reference to the caller.
+    pub(crate) fn into_ptr(self) -> *mut zend_object {
+        self.0.as_ptr()
     }
 }
 
@@ -278,9 +298,7 @@ pub fn new_object<T: Custom>(data: T) -> Owned {
     let class = T::class();
     assert!(!class.entry().is_null(), "a registered class");
     // The registered class's own entry, laid out for `T`.
-    let std = LaidOut::<T>(class.entry(), PhantomData).create(data);
-    // SAFETY: the new object, whose one reference this takes.
-    unsafe { Owned::object(std) }
+    Owned::object(LaidOut::<T>(class.entry(), PhantomData).create(data))
 }
 
 /// `T`'s `create_object` handler. Creating an object never bails out (Zend's
@@ -290,7 +308,9 @@ pub fn new_object<T: Custom>(data: T) -> Owned {
 extern "C" fn create<T: Custom>(ce: ClassEntry<'_>) -> *mut zend_object {
     const { assert!(align_of::<T>() <= 8, "emalloc aligns to 8 bytes") };
     // Per Zend; `register_object` gave `T`'s class `T`'s handlers.
-    LaidOut::<T>(ce.as_ptr(), PhantomData).create(T::new())
+    LaidOut::<T>(ce.as_ptr(), PhantomData)
+        .create(T::new())
+        .into_ptr()
 }
 
 /// The object Zend passes a `free_obj` or `dtor_obj` handler [`install_custom`]
