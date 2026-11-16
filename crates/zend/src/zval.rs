@@ -67,6 +67,9 @@ unsafe extern "C" {
         index: zend_ulong,
         value: Given<'_>,
     ) -> std::ffi::c_int;
+    /// `zend_hash_index_del` inside `zend_try` (nonzero for a bailout): the
+    /// value under `index`, if any, is released, which can run `__destruct`.
+    safe fn swr_zend_try_hash_index_del(table: Table<'_>, index: zend_ulong) -> std::ffi::c_int;
     /// `add_next_index_stringl`: the array takes a new string of the lent bytes
     /// (an `IoSlice` is an iovec) under its next index. No PHP code runs.
     safe fn swr_lent_push_bytes(array: Separated<'_>, bytes: IoSlice<'_>);
@@ -517,7 +520,7 @@ impl Value {
     /// Lend what the zval holds to `edit`, with null in its place meanwhile,
     /// then put it back and release whatever `edit` left there. The caller
     /// holds nothing borrowed from the zval.
-    pub(crate) fn lend<R>(&self, edit: impl FnOnce(&mut Owned) -> R) -> R {
+    pub fn lend<R>(&self, edit: impl FnOnce(&mut Owned) -> R) -> R {
         let mut held = Owned::null();
         // Two distinct zvals: nothing borrows this one's content, and `held`
         // is this frame's.
@@ -1670,6 +1673,15 @@ impl ArrayMut {
             index,
             Given(&mut value),
         )));
+    }
+
+    /// `zend_hash_index_del`: the value under `index`, if any, is released,
+    /// and a bailout its `__destruct` raises is deferred.
+    #[inline]
+    pub fn remove_index(&mut self, index: zend_ulong) {
+        if let Some(table) = self.separate().and_then(Separated::table) {
+            bailout::defer(bailout::trapped(swr_zend_try_hash_index_del(table, index)));
+        }
     }
 
     /// Swoole's `zend::array_add_or_merge`: `value` under `key`, or appended to

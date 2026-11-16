@@ -36,6 +36,7 @@ int swr_zend_try_get_string(zval *value, zend_string **out);
  * separates the array a zval holds first, and leaves any other value alone. */
 int swr_zend_try_ptr_dtor(zval *value);
 int swr_zend_try_hash_update(HashTable *table, zend_string *key, zend_ulong index, zval *value);
+int swr_zend_try_hash_index_del(HashTable *table, zend_ulong index);
 int swr_zend_try_hash_clean(zval *array);
 int swr_lent_symtable_update(zval *array, struct iovec key, zval *value);
 #endif
