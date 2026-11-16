@@ -527,7 +527,7 @@ pub(crate) fn finish(serv: view::Server<'_>, send: &SendData) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::callbacks::{Callback, Ctx};
+    use crate::callbacks::Callback;
     use crate::conn_io::tests::{accepted, closed, queue, session};
     use crate::hybrid::tests::{Call, calls};
     use crate::reactor_entry::RecvData;
@@ -547,13 +547,13 @@ mod tests {
         HEARD.with_borrow_mut(core::mem::take)
     }
 
-    extern "C" fn on_receive(_: Ctx, _: view::Server<'_>, data: &RecvData) -> c_int {
+    fn on_receive(_: view::Server<'_>, data: &RecvData) -> c_int {
         let i = data.info;
         HEARD.with_borrow_mut(|h| h.push((i.kind, i.fd, i.reactor_id, i.flags, i.len)));
         0
     }
 
-    extern "C" fn closing(_: Ctx, _: view::Server<'_>, i: &DataHead) {
+    fn closing(_: view::Server<'_>, i: &DataHead) {
         HEARD.with_borrow_mut(|h| h.push((4, i.fd, i.reactor_id, i.flags, i.len)));
     }
 
