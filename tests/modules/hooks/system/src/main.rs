@@ -16,7 +16,29 @@
 //! core-tests' main does (`swoole_init`, the case, `swoole_clean`). It exits 0 when
 //! every assertion held. A failed assertion panics; inside a coroutine the panic
 //! cannot unwind through the context switch, so the trampoline `_exit(1)`s instead.
-
+#![expect(
+    clippy::assert_is_empty,
+    clippy::borrow_as_ptr,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_ptr_alignment,
+    clippy::cast_sign_loss,
+    clippy::doc_markdown,
+    clippy::duration_suboptimal_units,
+    clippy::fn_to_numeric_cast_any,
+    clippy::items_after_statements,
+    clippy::large_stack_arrays,
+    clippy::let_underscore_must_use,
+    clippy::manual_assert_eq,
+    clippy::print_stderr,
+    clippy::print_stdout,
+    clippy::semicolon_if_nothing_returned,
+    clippy::trivially_copy_pass_by_ref,
+    clippy::unnecessary_box_returns,
+    clippy::unnecessary_safety_comment,
+    clippy::unreadable_literal,
+    reason = "existing uses from before this port inherited [workspace.lints] (#4377); count them down"
+)]
 #![expect(
     clippy::mut_from_ref,
     reason = "the records' views lend what the native pointer they wrap owns, as the C++ cases' pointers do"

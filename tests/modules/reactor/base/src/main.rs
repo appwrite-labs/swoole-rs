@@ -7,6 +7,19 @@
 //! does (`swoole_init`, the case, `swoole_clean`), and exits 0 when every assertion held.
 //! A failed ASSERT panics (inside a handler called from the loop that aborts); a failed EXPECT
 //! is printed and fails the case at exit, as GoogleTest's nonfatal assertions do.
+#![expect(
+    clippy::borrow_as_ptr,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::doc_markdown,
+    clippy::fn_to_numeric_cast_any,
+    clippy::let_underscore_must_use,
+    clippy::print_stdout,
+    clippy::semicolon_if_nothing_returned,
+    clippy::unnecessary_box_returns,
+    clippy::unreadable_literal,
+    reason = "existing uses from before this port inherited [workspace.lints] (#4377); count them down"
+)]
 
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::io::IoSlice;
@@ -547,7 +560,8 @@ unsafe fn writev() {
         assert_eq!(&buf[..12], b"hello world\n");
 
         // `fake_sock.ssl = (SSL *) -1`: a non-null SSL the write refuses before using.
-        (*fake_sock).fields.set_ssl(usize::MAX as *mut c_void);
+        let stub = std::mem::transmute::<usize, swoole_rs_ffi::SocketSsl>(usize::MAX);
+        (*fake_sock).fields.set_ssl(Some(stub));
         assert_eq!(
             event_api::swoole_event_writev(handle(fake_sock), &iov),
             None
@@ -816,7 +830,7 @@ unsafe fn poll_readiness_after_fd_reuse() {
         assert!(ready(&sockets[0]));
         assert!(ready(&sockets[1]));
 
-        let mut pipe_fds = [0 as c_int; 2];
+        let mut pipe_fds: [c_int; 2] = [0; 2];
         assert_eq!(pipe(pipe_fds.as_mut_ptr()), 0);
 
         let reactor = reactor_new(32, TYPE_POLL);
@@ -959,12 +973,8 @@ unsafe fn poll_extra2() {
         set_end_callback(reactor, PRIORITY_DEFER_TASK, Some(end_timed_out));
         assert_eq!(swoole_rs_ffi::reactor_wait(reactor), SW_OK);
 
-        let _ = swoole_rs_ffi::signal::swoole_signal_set_action(
-            SIGIO,
-            on_sigio as extern "C" fn(c_int) as usize,
-            0,
-            0,
-        );
+        let handler: extern "C" fn(c_int) = on_sigio;
+        let _ = swoole_rs_ffi::signal::swoole_signal_set_action(SIGIO, handler as usize, 0, 0);
 
         set_end_callback(reactor, PRIORITY_DEFER_TASK, None);
         reactor.set_timeout_msec(1000);
@@ -1007,9 +1017,15 @@ unsafe fn add_or_update() {
     }
 }
 
-extern "C-unwind" fn increment(count: *mut c_void) {
-    // SAFETY: the case's counter.
-    unsafe { *count.cast::<c_int>() += 1 };
+/// `[&count](void *) { count++; }`.
+struct Increment(std::rc::Rc<std::cell::Cell<c_int>>);
+
+impl event_api::Deferred for Increment {
+    fn run(self) {
+        self.0.set(self.0.get() + 1);
+    }
+
+    fn dispose(self) {}
 }
 
 unsafe fn defer_task() {
@@ -1018,30 +1034,37 @@ unsafe fn defer_task() {
         let reactor = tg();
         assert_eq!((*fields(reactor)).max_event_num, SW_REACTOR_MAXEVENTS);
 
-        let count: *mut c_int = Box::into_raw(Box::new(0));
-        // `reactor->defer(fn, count)` on the thread's reactor, which `reactor` is.
-        assert!(swoole_rs_ffi::defer(increment, count.cast(), None));
+        let count = std::rc::Rc::new(std::cell::Cell::new(0));
+        // `reactor->defer(fn)` on the thread's reactor, which `reactor` is.
+        assert!(event_api::swoole_event_defer_value(Increment(count.clone())).is_ok());
         let _ = event_api::swoole_event_wait();
-        assert_eq!(*count, 1);
-        drop(Box::from_raw(count));
+        assert_eq!(count.get(), 1);
         let _ = swoole_rs_ffi::swoole_event_free();
     }
 }
 
 static EVENT_LOOP_COUNT: AtomicI32 = AtomicI32::new(0);
 
-extern "C-unwind" fn future_task(data: *mut c_void) {
-    // SAFETY: the task's data is the case's C string.
-    assert_eq!(unsafe { CStr::from_ptr(data.cast()) }, c"hello world");
+fn future_task(data: &CStr) {
+    assert_eq!(data, c"hello world");
     EVENT_LOOP_COUNT.fetch_add(1, Relaxed);
 }
 
-/// `reactor->future_task` (`before`) or `idle_task` = `{callback, data}`.
-unsafe fn set_task(reactor: Running<'_>, before: bool, callback: swoole_rs_ffi::DeferCall) {
-    let task = swoole_rs_ffi::ReactorTask {
-        callback: Some(callback),
-        data: c"hello world".as_ptr().cast_mut().cast(),
-    };
+/// A task's `{callback, data}`.
+struct Task(fn(&CStr), &'static CStr);
+
+impl event_api::CycleTask for Task {
+    fn run(self: std::rc::Rc<Self>) {
+        (self.0)(self.1);
+    }
+
+    fn retire(self: std::rc::Rc<Self>) {}
+}
+
+/// `reactor->future_task` (`before`) or `idle_task` = `{callback, "hello world"}`.
+unsafe fn set_task(reactor: Running<'_>, before: bool, callback: fn(&CStr)) {
+    let task: Option<std::rc::Rc<dyn event_api::CycleTask>> =
+        Some(std::rc::Rc::new(Task(callback, c"hello world")));
     // SAFETY: the live reactor's fields, which nothing else borrows meanwhile.
     let fields = unsafe { &mut *fields(reactor) };
     if before {
@@ -1061,9 +1084,8 @@ unsafe fn cycle() {
     }
 }
 
-extern "C-unwind" fn event_idle_callback(data: *mut c_void) {
-    // SAFETY: the task's data is the case's C string.
-    assert_eq!(unsafe { CStr::from_ptr(data.cast()) }, c"hello world");
+fn event_idle_callback(data: &CStr) {
+    assert_eq!(data, c"hello world");
 }
 
 unsafe fn priority_idle_task() {

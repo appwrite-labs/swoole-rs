@@ -20,7 +20,7 @@ name codec, the DNS address text and the socket DNS lookup
 `socket_ops.rs` runs the production client's socket-control table in the Rust
 unit-test binary: descriptor flags, successful and failed address assignment,
 both kernel timeouts, raw/synchronous/nonblocking TCP connects, `SO_ERROR`, and
-an event with no socket. A real OpenSSL session on a loopback connection also
+an event with no reactor. A real OpenSSL session on a loopback connection also
 checks that a pending handshake requests input and reuses its original session
 and frozen hostname after the mutable context changes. It releases the native
 session through production client close before its owner frees the client. The
@@ -41,8 +41,9 @@ Unit fixtures register their recording dispatcher and retain the original DNS
 success/error traces. The hooks crate constructs its own pool event and retains
 its resolver request until completion; clients no longer mirrors the event layout.
 SOCKS5 admit, negotiation and handshake operations use the same registered host,
-with typed proxy references and reply slices. The input buffer keeps its Box owner
-while the public record exposes its pointer to framing code.
+with typed proxy references and reply slices. The input buffer lives in a `Cell`
+in the client, whose address the public record exposes to framing code; Miri runs
+`the_framed_receive_buffer_stays_usable_across_input_edits` over that pointer.
 Receive, append, synchronous receive and datagram receive use the same operation
 table in production and tests. `ReadBuffer` retains initialized bytes versus spare
 capacity across the callback boundary. Real TCP and async UDP tests check binary
@@ -53,6 +54,7 @@ Proxy handshakes receive the scratch-buffer loan through the same table. The
 native entry uses the real thread buffer; recording tests keep their 64-byte
 fixture and original traces. The synchronous receive loops stay inside the loan,
 and async HTTP requests are still copied before a send can invoke callbacks.
+The SOCKS5 handshake is handed the bytes the read wrote.
 
 ## network/client.cpp in Rust
 
@@ -175,3 +177,9 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
 - `network::Client` itself (crates/clients/src/client.rs) is covered by its Rust
   unit tests with explicit socket, reactor, framing, DNS and SOCKS5 operations,
   the original client cases and the PHPTs.
+
+The HTTP connection fixture also splits response headers across writes, receives a
+128 KiB body across multiple reads, and reuses the same connection for a second
+response. Existing callback-close and callback-throw cases cover response-buffer
+ownership while the parser invokes PHP. A local WebSocket handshake includes its
+first frame in the same write, checking that upgrade retains the received tail.

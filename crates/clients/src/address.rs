@@ -431,9 +431,11 @@ mod tests {
             kind: UNIX_STREAM,
             ..SocketAddress::default()
         };
-        let path = &mut address.addr.unix_mut().sun_path;
-        path.fill(c_char::from_ne_bytes(*b"x"));
-        let full = vec![b'x'; path.len()];
+        let len = address.addr.edit_unix(|un| {
+            un.sun_path.fill(c_char::from_ne_bytes(*b"x"));
+            un.sun_path.len()
+        });
+        let full = vec![b'x'; len];
         assert!(with_host(&address, |host| host.to_bytes() == full));
     }
 

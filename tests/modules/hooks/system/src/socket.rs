@@ -148,13 +148,14 @@ struct CppString {
     allocator: *const c_void,
 }
 
-/// `RustStringView::operator=`: copies `value` into a TLS owner's string slot.
+/// `RustStringView::operator=`: copies `value` into a TLS owner's string slot `index`.
 ///
 /// # Safety
-/// `slot` is a live owner's slot that nothing else reads or sets meanwhile.
-pub(super) unsafe fn string_set(slot: *const c_void, value: &[u8]) -> c_int {
-    // SAFETY: the caller's slot, held exclusively for the call.
-    if unsafe { (*slot.cast::<swoole_rs_corebase::StringSlot>()).set_shared(value) } {
+/// `owner` is a live owner that nothing else configures meanwhile.
+pub(super) unsafe fn string_set(owner: *const c_void, index: usize, value: &[u8]) -> c_int {
+    // SAFETY: the caller's live owner.
+    let owner = unsafe { &*owner.cast::<swoole_rs_tls::OwnedTlsContext>() };
+    if owner.borrow_configuration().set_string(index, value) {
         0
     } else {
         -2
@@ -166,7 +167,6 @@ pub(super) unsafe fn string_set(slot: *const c_void, value: &[u8]) -> c_int {
 pub(super) struct TlsPrepared {
     pub(super) owner: *const c_void,
     pub(super) fields: *mut TlsFields,
-    pub(super) strings: [*const c_void; 11],
 }
 
 impl From<swoole_rs_tls::OwnedTlsPrepared> for TlsPrepared {
@@ -174,7 +174,6 @@ impl From<swoole_rs_tls::OwnedTlsPrepared> for TlsPrepared {
         Self {
             owner: view.owner.cast(),
             fields: view.fields.cast(),
-            strings: view.strings.map(<*const _>::cast),
         }
     }
 }
@@ -495,7 +494,7 @@ impl Sock {
         record.protocol.package_length_type = kind;
         // SAFETY: a pure function of the type character.
         record.protocol.package_length_size =
-            u8::try_from(unsafe { swoole_type_size(kind as c_char) }).unwrap();
+            u8::try_from(unsafe { swoole_type_size(c_char::from_ne_bytes([kind])) }).unwrap();
         record.protocol.package_body_offset = body_offset;
         record.protocol.get_package_length =
             swoole_rs_ffi::ports::framing_recv::default_length_func as *const c_void;
@@ -577,9 +576,11 @@ impl Tls {
     }
 
     fn set_string(&self, index: usize, value: &str) {
-        let slot = self.0.strings[index];
-        // SAFETY: the owner's live slot and `value`'s bytes.
-        assert_eq!(unsafe { string_set(slot, value.as_bytes()) }, 0);
+        // SAFETY: the live owner, which only the case's thread configures.
+        assert_eq!(
+            unsafe { string_set(self.0.owner, index, value.as_bytes()) },
+            0
+        );
     }
 
     /// `SSLContext::set_cert_file` or `set_key_file`: false, warned, when the file

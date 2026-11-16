@@ -103,19 +103,6 @@ impl<'a> SendData<'a> {
         unsafe { core::slice::from_raw_parts(self.data.cast(), self.info.len as usize) }
     }
 
-    /// The head's fd.
-    pub(crate) fn set_fd(&mut self, fd: c_long) {
-        self.info.fd = fd;
-    }
-
-    /// The head's payload length.
-    ///
-    /// # Safety
-    /// `data` points at `len` bytes that are readable, and not written, for `'a`.
-    pub(crate) unsafe fn set_len(&mut self, len: u32) {
-        self.info.len = len;
-    }
-
     /// The head's session, and the listening fd it arrived on.
     pub(crate) fn set_session(&mut self, fd: c_long, server_fd: u16) {
         self.info.fd = fd;
@@ -129,6 +116,7 @@ impl<'a> SendData<'a> {
     }
 
     /// The payload under the head `info`, whose `len` stays the payload's.
+    #[cfg(feature = "upstream-symbols")]
     #[must_use]
     pub(crate) fn rehead(self, info: DataHead) -> Self {
         let len = self.info.len;
@@ -176,7 +164,7 @@ pub(crate) fn low16(value: c_int) -> u16 {
 /// Whether the server has allocated its session and connection tables.
 pub(crate) fn allocated(state: &crate::ServerState) -> bool {
     let tables = state.tables_ref();
-    !tables.session_list.is_null() && !tables.connection_list.is_null()
+    tables.sessions_mapped() && tables.connections_mapped()
 }
 
 /// onClose's event for session `fd`: `reactor_id` is -1 when the server closed it.
@@ -233,7 +221,7 @@ pub(crate) fn create(serv: view::Server<'_>) -> *mut c_void {
         log::sys_warning(origin, format_args!("calloc[2]({size}) failed"));
         return core::ptr::null_mut();
     }
-    state.tables_ref().connection_list.replace(connections);
+    state.tables_ref().map_connections(connections);
     let counts = |what: &str| {
         let cells = Shm::calloc(workers as usize, ATOMIC_SIZE);
         if cells.is_null() {

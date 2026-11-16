@@ -1,7 +1,7 @@
 //! `swoole::redis::recv_packet`, the redis port's read: protocols-ffi's
 //! [`recv_packet`] loop over the connection's own records.
-use core::ffi::c_int;
-use swoole_rs_buffer::string::CppString;
+use core::cell::Cell;
+use core::ffi::{c_int, c_long};
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_protocols_ffi::{Dispatched, ORIGIN, Received, RespConnection, RespRequest};
 use swoole_rs_reactor::{Caught, Socket};
@@ -9,26 +9,37 @@ use swoole_rs_server::reactor_entry::RecvData;
 
 use crate::framing_recv::Lent;
 
-/// The connection's socket, receive buffer and request, and where a whole command
-/// goes. The buffer and request stay lent: the dispatch may free both.
+thread_local! {
+    /// Each fd's request state on this reactor thread (upstream's `conn->object`),
+    /// with the session it belongs to. A session that finds another's starts afresh,
+    /// as upstream's does once the close freed the last one.
+    static REQUESTS: Cell<Vec<(c_long, RespRequest)>> = const { Cell::new(Vec::new()) };
+}
+
+/// `f` over this thread's request states, taken out of the cell for `f` only.
+fn requests<R>(f: impl FnOnce(&mut Vec<(c_long, RespRequest)>) -> R) -> R {
+    REQUESTS.with(|cell| {
+        let mut requests = cell.take();
+        let result = f(&mut requests);
+        cell.set(requests);
+        result
+    })
+}
+
+/// The connection's socket, receive buffer and request state, and where a whole
+/// command goes. The buffer stays lent: the dispatch may free it.
 struct Connection<'a, D> {
     socket: Socket<'a>,
     buffer: Lent<'a>,
-    request: *mut RespRequest,
+    request: RespRequest,
     fd: c_int,
     dispatch: D,
-}
-
-impl<D> Connection<'_, D> {
-    fn string(&mut self) -> &mut CppString {
-        self.buffer.get()
-    }
 }
 
 impl<D: FnMut(RecvData<'_>) -> bool> RespConnection for Connection<'_, D> {
     fn recv(&mut self) -> Received {
         let socket = self.socket;
-        let buffer = self.string();
+        let buffer = self.buffer.get();
         if let Some(received) = swoole_rs_tls::upstream::recv_append(socket, buffer) {
             return Received::Bytes(received);
         }
@@ -44,19 +55,16 @@ impl<D: FnMut(RecvData<'_>) -> bool> RespConnection for Connection<'_, D> {
     }
 
     fn view(&mut self) -> (&[u8], usize, &mut RespRequest) {
-        // SAFETY: the connection's live request, apart from the buffer and not held
-        // across `onPackage`.
-        let request = unsafe { &mut *self.request };
-        let buffer = &*self.string();
-        (buffer.view(), buffer.size(), request)
+        let buffer = &*self.buffer.get();
+        (buffer.view(), buffer.size(), &mut self.request)
     }
 
     fn set_offset(&mut self, offset: i64) {
-        self.string().set_offset(offset);
+        self.buffer.get().set_offset(offset);
     }
 
     fn extend(&mut self, size: usize) {
-        self.string().extend(size);
+        self.buffer.get().extend(size);
     }
 
     fn dispatch(&mut self) -> Dispatched {
@@ -72,44 +80,56 @@ impl<D: FnMut(RecvData<'_>) -> bool> RespConnection for Connection<'_, D> {
     }
 
     fn clear(&mut self) {
-        self.string().clear();
+        self.buffer.get().clear();
     }
 }
 
 /// `int redis::recv_packet(Protocol *, Connection *, String *)` over the connection's
 /// record and `socket`, up to the protocol's `max_length`, each whole command to
 /// `dispatch` (the port's `onPackage`, which `init_protocol` set to
-/// `Server::dispatch_task`'s): whether the connection stays open.
-///
-/// # Safety
-/// `conn` is a session of this reactor's redis port, whose request state, if any,
-/// this reactor made.
-pub(crate) unsafe fn recv_packet<'a>(
+/// `Server::dispatch_task`'s): whether the connection stays open. `conn` is a
+/// session of this reactor thread's redis port.
+pub(crate) fn recv_packet<'a>(
     max_length: u32,
     conn: swoole_rs_server::Connection<'a>,
     socket: Socket<'a>,
     buffer: Lent<'a>,
     dispatch: impl FnMut(RecvData<'_>) -> bool,
 ) -> bool {
-    // Zeroed, which every field of a RespRequest takes (`RespState::TotalLine`).
-    let request = match conn.resp_request() {
-        Some(request) => request,
-        None => conn.set_resp_request(Box::default()),
-    };
+    let (fd, session) = (conn.fd(), conn.session_id());
+    let slot = usize::try_from(fd).ok();
+    // A new session's is zeroed, which every field takes (`RespState::TotalLine`).
+    let request = slot
+        .and_then(|slot| requests(|all| all.get(slot).copied()))
+        .filter(|&(owner, _)| owner == session)
+        .map_or_default(|(_, request)| request);
     let mut connection = Connection {
         socket,
         buffer,
         request,
-        fd: conn.fd(),
+        fd,
         dispatch,
     };
     let page = swoole_rs_corebase::swr_v1_core_pagesize() as usize;
-    swoole_rs_protocols_ffi::recv_packet(&mut connection, max_length, page)
+    let open = swoole_rs_protocols_ffi::recv_packet(&mut connection, max_length, page);
+    // Stored afterwards, not held across `onPackage`, which may read another session.
+    if let Some(slot) = slot {
+        requests(|all| {
+            if all.len() <= slot {
+                all.resize(slot + 1, (0, RespRequest::default()));
+            }
+            if let Some(stored) = all.get_mut(slot) {
+                *stored = (session, connection.request);
+            }
+        });
+    }
+    open
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use swoole_rs_buffer::string::CppString;
     use swoole_rs_clients::protocol::Protocol;
     use swoole_rs_reactor::SocketRecord;
     use swoole_rs_server::ConnectionRecord;
@@ -143,20 +163,21 @@ mod tests {
 
         let max_length = protocol.package_max_length;
         let dispatch = |_: RecvData<'_>| unreachable!("a partial command");
-        assert!(!unsafe {
-            recv_packet(
-                max_length,
-                (&mut conn).into(),
-                handle,
-                Lent::new(&mut buffer),
-                dispatch,
-            )
-        });
+        assert!(!recv_packet(
+            max_length,
+            (&mut conn).into(),
+            handle,
+            Lent::new(&mut buffer),
+            dispatch,
+        ));
         assert_eq!(buffer.len(), 1);
         assert_eq!(buffer.size(), buffer_size);
 
-        let request = swoole_rs_server::Connection::from(&mut conn).take_resp_request();
-        drop(unsafe { Box::from_raw(request.unwrap()) });
+        // The session's state stays for its next read.
+        let slot = usize::try_from(pairs[1]).unwrap();
+        assert!(requests(|all| all
+            .get(slot)
+            .is_some_and(|&(owner, _)| owner == 0)));
         buffer.dispose();
         unsafe { libc::close(pairs[1]) };
     }

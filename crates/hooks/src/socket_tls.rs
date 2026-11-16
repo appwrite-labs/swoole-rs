@@ -9,6 +9,7 @@ use core::ffi::{CStr, c_int};
 use std::sync::Arc;
 use swoole_rs_corebase::log;
 use swoole_rs_reactor::Events;
+use swoole_rs_tls::SslCreateFlag::{SW_SSL_CLIENT as CLIENT, SW_SSL_SERVER as SERVER};
 use swoole_rs_tls::upstream::{
     socket_ssl_accept, socket_ssl_check_host, socket_ssl_connect, socket_ssl_verify,
 };
@@ -117,7 +118,8 @@ impl Co {
         }
     }
 
-    /// `Socket::ssl_create(context)`: the socket's TLS session over `owner`.
+    /// `Socket::ssl_create(context)`: the socket's TLS session over `owner`. A
+    /// `UringSocket`'s runs over the ring's memory BIOs, in its side's state.
     fn create_session(self, owner: Option<&TlsSettings>) -> bool {
         // The automatic host name, as C reads it, none when the slot is empty.
         let hostname = self.with_extra(|extra| {
@@ -128,7 +130,16 @@ impl Co {
             set_err(self, SSL_CREATE_SESSION_FAILED);
             return false;
         };
-        let result = self.with_network(|socket| socket_session(owner, socket, hostname.as_deref()));
+        #[cfg(feature = "iouring")]
+        let uring = self.with_extra(|extra| extra.uring.is_some()) == Some(true);
+        #[cfg(not(feature = "iouring"))]
+        let uring = false;
+        let ring = uring.then(|| {
+            let side = if self.ssl_is_server() { SERVER } else { CLIENT };
+            side as c_int
+        });
+        let result =
+            self.with_network(|socket| socket_session(owner, socket, hostname.as_deref(), ring));
         match result.unwrap_or(Err(SslNewError::New)) {
             Ok(()) => return true,
             Err(error) => error.warn(),
@@ -248,12 +259,7 @@ impl Handshaking for Handshake {
         self.socket.ssl_context_create()
     }
 
-    /// A `UringSocket`'s session is over the ring's memory BIOs.
     fn create(&mut self) -> bool {
-        #[cfg(feature = "iouring")]
-        if self.uring() {
-            return crate::uring_socket::tls_session(self.socket, || self.create_session());
-        }
         self.create_session()
     }
 

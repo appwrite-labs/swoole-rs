@@ -371,14 +371,6 @@ impl Co {
         result
     }
 
-    /// The protocol's address, for the native length callbacks.
-    #[must_use]
-    pub fn protocol_ptr(self) -> *const Protocol {
-        self.0
-            .wrapping_byte_add(offset_of!(CoSocket, protocol))
-            .cast()
-    }
-
     /// `is_closed`.
     #[must_use]
     pub fn is_closed(self) -> bool {
@@ -506,7 +498,7 @@ impl Co {
     #[track_caller]
     pub fn with_state<T>(self, f: impl FnOnce(&mut SocketState) -> T) -> T {
         // SAFETY: the live state; the loan makes this its only reference.
-        self.lend(STATE, |bound| f(unsafe { &mut *bound.state.get() }))
+        self.lend(STATE, |bound| f(unsafe { bound.state.as_mut_unchecked() }))
     }
 
     /// `errno` classified by the open socket, as `catch_read_error`/`catch_write_error`
@@ -1054,6 +1046,18 @@ mod test_support {
         socket
     }
 
+    /// The owner a record holds `ssl` by: a live `SSL` whose one reference the owner
+    /// takes, or one the test never uses and takes back with `set_ssl(None)`, which
+    /// leaves it unfreed (as [`TestSocket`]'s drop does).
+    pub(crate) unsafe fn record_ssl(ssl: *mut core::ffi::c_void) -> swoole_rs_reactor::SocketSsl {
+        unsafe { core::mem::transmute(ptr::NonNull::new(ssl).unwrap()) }
+    }
+
+    /// A dangling owner for a test that only asks whether a record holds an `SSL`.
+    pub(crate) fn stub_ssl() -> swoole_rs_reactor::SocketSsl {
+        unsafe { record_ssl(ptr::NonNull::<u8>::dangling().as_ptr().cast()) }
+    }
+
     /// An open record over a `network::Socket` record without a descriptor, for the
     /// operations' tests.
     pub(crate) struct TestSocket(pub Box<CoSocket>);
@@ -1095,6 +1099,8 @@ mod test_support {
                     }
                 }
                 if let Some(s) = Socket::from_ptr(self.0.socket_ptr()) {
+                    // A test's `SSL` is its own to free, or a stub.
+                    s.edit(|record| record.set_ssl(None));
                     swoole_rs_reactor::OwnedSocket::from_socket(s).free();
                 }
                 self.0.fini();
@@ -1102,8 +1108,10 @@ mod test_support {
         }
     }
 }
+#[cfg(all(test, feature = "iouring"))]
+pub(crate) use test_support::record_ssl;
 #[cfg(test)]
-pub(crate) use test_support::{TestSocket, init, over, unopened};
+pub(crate) use test_support::{TestSocket, init, over, stub_ssl, unopened};
 
 #[cfg(test)]
 mod tests {

@@ -4,7 +4,7 @@
 //! request loop (`onAccept`), HTTP/2 on a connection and its request
 //! dispatch, over the coroutine sockets through `phpruntime::co`.
 use crate::{
-    context::{self, CompressionTypes, Ctx},
+    context::{self, CompressionTypes, Ctx, Hold},
     host,
     parse::{Key, add_protocol, add_server, parse_request},
     server::{Callable, NO_THEN, call_handler},
@@ -183,8 +183,9 @@ impl HttpServer {
     }
 
     /// `create_context`: the settings, the socket and the parser.
-    fn context(&self, socket: Co, zconn: &Value) -> Ctx {
-        let mut context = context::context_new(i64::from(socket.sock_fd()));
+    fn context(&self, socket: Co, zconn: &Value) -> Hold {
+        let hold = context::context_new(i64::from(socket.sock_fd()));
+        let mut context = hold.ctx();
         crate::parse::init_request_parser(context);
         if let Some(response) = context.state().response.zobject.props() {
             response.value(c"socket", zconn);
@@ -206,7 +207,7 @@ impl HttpServer {
             state.compression_level = self.compression_level.get();
             state.compression_min_length = self.compression_min_length.get();
         }
-        context
+        hold
     }
 }
 
@@ -918,7 +919,7 @@ fn add_peer(mut context: Ctx, peer: &Peer) {
 
 /// The request loop: parse each request on the connection and run its handler.
 fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
-    let mut current: Option<Ctx> = None;
+    let mut current: Option<Hold> = None;
     let mut header_completed = false;
     let mut crlf_offset = 0;
     let mut total = 0;
@@ -936,8 +937,9 @@ fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
             unsafe { buffer.set_len(length + received) };
         }
         step = Step::Recv;
-        let mut context =
-            *current.get_or_insert_with(|| conn.server.context(conn.socket, conn.zconn));
+        let mut context = current
+            .get_or_insert_with(|| conn.server.context(conn.socket, conn.zconn))
+            .ctx();
         let max = conn.package_max_length();
         if !header_completed {
             let length = conn.buffer().len();
@@ -1052,7 +1054,7 @@ fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
             step = Step::Parse;
         }
     }
-    current.map_or(Ok(()), context::release_objects)
+    current.map_or(Ok(()), |hold| context::release_objects(hold.ctx()))
 }
 
 /// `swoole_strnpos(.., "\r\n\r\n")`.
@@ -1065,14 +1067,13 @@ fn http2(conn: &mut Connection, mut context: Ctx) -> Result<(), bailout::Bailout
     let fd = context.state().fd;
     let max_body_size = conn.package_max_length().c_cast::<u32>();
     if let Some(server) = crate::http2::server() {
-        // The context outlives the session, freed below; the session's
-        // handler holds the server object.
+        // The session holds the context, and its handler the server object.
         let this = conn.this.copy();
         (server.session_new)(
             fd,
-            context,
+            context.hold(),
             max_body_size,
-            Box::new(move |ctx, http1| {
+            Box::new(move |ctx: Ctx<'_>, http1: Ctx<'_>| {
                 let Some(server) = this.custom::<Data>().and_then(|data| data.0.get()) else {
                     return Ok(());
                 };

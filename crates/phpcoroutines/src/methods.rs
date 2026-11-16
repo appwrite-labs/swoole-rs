@@ -46,13 +46,13 @@ swoole_rs_zend::handlers! {
 /// `go()`/`Co::create()`: `(callable $func, mixed ...$params)`.
 fn create(call: &Call) {
     let (mut fci, mut fcc) = (swoole_rs_zend::EMPTY_FCI, swoole_rs_zend::EMPTY_FCC);
-    let parsed = call
+    let Ok(fcc) = call
         .arity(1, u32::MAX)
-        .and_then(|()| call.callable(1, &mut fci, &mut fcc));
-    if parsed.is_err() {
+        .and_then(|()| call.resolve(1, &mut fci, &mut fcc))
+    else {
         call.set_bool(false);
         return;
-    }
+    };
     let argc = call.num_args() - 1;
     let argv = if argc > 0 {
         call.zval(2)
@@ -69,7 +69,7 @@ fn create(call: &Call) {
     }
     match runtime::create(
         call.php(),
-        Some(&fcc),
+        Some(fcc),
         argc,
         argv,
         &raw mut fci.function_name,

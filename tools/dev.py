@@ -20,7 +20,7 @@ import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools.annotations import annotate
 from tools.harness import ROOT, write_report
-from tools.build_upstream import require_build_space, tree
+from tools.build_upstream import JOBS_VARIABLES, default_jobs, require_build_space, tree
 from tools.check_migration import GRADUATED, MODULES
 from tools.dev_report import read_json
 
@@ -340,6 +340,7 @@ def plan(args, reports):
                 name = 'protocols-' + Path(runner).stem
                 script(name, runner, *php, *reference_first, *report(name))
     if 'timer' in modules:
+        pytest('timer-benchmark-artifacts', 'tests/modules/timer/test_benchmark.py')
         pytest('timer-fork-active', 'tests/modules/timer/test_fork.py', *php, *engines)
         if integrate:
             pytest('timer-bailout', 'tests/modules/timer/test_bailout.py', *php,
@@ -650,6 +651,8 @@ def docker(arguments):
                # Docker Desktop (macOS) already gives the host user what a container writes.
                *(['-e', f'SWR_USER={os.getuid()}:{os.getgid()}'] if sys.platform == 'linux' and os.getuid() else []),
                *[part for variable in git_config for part in ('-e', variable)],
+               # The upstream prep's make -j follows the caller's job limit (#4477).
+               *[part for name in JOBS_VARIABLES if os.environ.get(name) for part in ('-e', name)],
                image, 'bash', '-c', DOCKER_SCRIPT, 'dev.py', *arguments]
     return subprocess.run(command).returncode
 

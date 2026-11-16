@@ -671,6 +671,7 @@ name = "swoole-rs-locale"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "swoole-rs-corebase",
 ]
 
 [[package]]
@@ -1108,6 +1109,7 @@ name = "swoole-rs-reactor"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "openssl-sys",
  "swoole-rs-buffer",
  "swoole-rs-corebase",
  "swoole-rs-coroutine",
@@ -1145,7 +1147,6 @@ dependencies = [
  "swoole-rs-oracle",
  "swoole-rs-ossupport",
  "swoole-rs-process",
- "swoole-rs-protocols",
  "swoole-rs-protocols-ffi",
  "swoole-rs-reactor",
  "swoole-rs-timer",
@@ -1186,6 +1187,7 @@ dependencies = [
  "swoole-rs-corebase",
  "swoole-rs-error",
  "swoole-rs-reactor",
+ "swoole-rs-zend",
 ]
 
 [[package]]

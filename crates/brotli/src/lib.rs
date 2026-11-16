@@ -56,7 +56,7 @@ impl Owned {
 struct Live<'a>(NonNull<State>, PhantomData<&'a Owned>);
 /// Where libbrotli takes a custom allocator's `alloc`, `free` or `opaque`: always
 /// null here (nothing makes the reference), which selects malloc and free.
-type DefaultAllocator = Option<&'static std::convert::Infallible>;
+type DefaultAllocator = Option<&'static !>;
 
 unsafe extern "C" {
     safe fn BrotliEncoderVersion() -> u32;

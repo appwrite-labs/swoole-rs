@@ -38,7 +38,7 @@ const HEAD_LEN: usize = 16;
 const HEAD_SERVER_FD: usize = 24;
 const HEAD_EXT_FLAGS: usize = 26;
 /// `SW_TASK_TMPFILE`: the task's data is a `PacketTask` naming a temporary file.
-const TASK_TMPFILE: u16 = 1;
+const TASK_TMPFILE: u16 = swoole_rs_corebase::constants::TaskFlag::SW_TASK_TMPFILE.bits();
 /// `sizeof(PacketTask)`: its `size_t` length and `SW_TASK_TMP_PATH_SIZE` path.
 const PACKET_TASK: u32 = 8 + 256;
 /// `sizeof(long)`, `QueueNode::mtype`.
@@ -250,19 +250,15 @@ pub(crate) fn trapped<R, F: FnOnce() -> R>(body: F) -> Result<R, Bailed> {
 /// One worker's loop over its pool.
 struct Worker<'a> {
     native: &'a dyn PoolNative,
-    /// Borrowed per use: the worker's callbacks reach the same handle, as
-    /// `swr_v1_process_pool_ipc_respond` does.
-    ipc: *mut PoolIpc,
     pool: crate::process_pool::PoolRef<'a>,
     worker: Record<'a>,
 }
 
 impl<'a> Worker<'a> {
-    const fn ipc(&mut self) -> &mut PoolIpc {
-        // SAFETY: `pool_run` found its live pool's IPC state there, not null: the
-        // field is crate-private, written by `create` and cleared by `destroy`, which
-        // no loop reaches. Borrowed until the next callback at most.
-        unsafe { &mut *self.ipc }
+    /// `f` over the pool's IPC state, borrowed per use: the worker's callbacks reach
+    /// it too, as `swr_v1_process_pool_ipc_respond` does. `None` without one.
+    fn with_ipc<R>(&self, f: impl FnOnce(&mut PoolIpc) -> R) -> Option<R> {
+        self.pool.record().with_ipc(f)
     }
 
     fn call(&self) -> PoolCall<'a> {
@@ -361,22 +357,49 @@ impl<'a> Worker<'a> {
         Ok(if n == size.cast_signed() { n } else { -1 })
     }
 
-    fn connection(&mut self) -> Option<&mut Stream> {
-        self.ipc()
-            .stream
-            .as_mut()
-            .filter(|stream| !stream.connection.is_null())
+    /// Whether a stream connection is being served.
+    fn connected(&self) -> bool {
+        self.with_ipc(|ipc| !pool_ipc_connection(ipc).is_null()) == Some(true)
     }
 
-    fn set_connection(&mut self, socket: *mut c_void) {
-        if let Some(stream) = self.ipc().stream.as_mut() {
-            stream.connection = socket;
-        }
+    fn set_connection(&self, socket: *mut c_void) {
+        self.with_ipc(|ipc| {
+            if let Some(stream) = ipc.stream.as_mut() {
+                stream.connection = socket;
+            }
+        });
+    }
+
+    /// The connection being served, which the stream forgets; `None` without one.
+    fn take_connection(&self) -> Option<*mut c_void> {
+        self.with_ipc(|ipc| {
+            let stream = ipc.stream.as_mut()?;
+            let socket = std::mem::replace(&mut stream.connection, ptr::null_mut());
+            (!socket.is_null()).then_some(socket)
+        })?
+    }
+
+    /// The reply written to the connection, taken.
+    fn take_response(&self) -> Vec<u8> {
+        self.with_ipc(|ipc| ipc.stream.as_mut()?.response.as_mut().map(std::mem::take))
+            .flatten()
+            .unwrap_or_default()
+    }
+
+    /// Give the reply's buffer back, emptied but keeping its capacity, as
+    /// `String::clear` does.
+    fn restore_response(&self, mut response: Vec<u8>) {
+        response.clear();
+        self.with_ipc(|ipc| {
+            if let Some(stream) = ipc.stream.as_mut() {
+                stream.response = Some(response);
+            }
+        });
     }
 
     /// `SW_PROTOCOL_TASK`: one `EventData` per message.
     fn run_task(
-        &mut self,
+        &self,
         mode: Mode,
         event_size: usize,
         by_sysvmsg: bool,
@@ -454,7 +477,7 @@ impl<'a> Worker<'a> {
                 let size = HEAD as u64 + u64::from(length);
                 let tmpfile =
                     u16::from_ne_bytes(head_bytes(&out, HEAD_EXT_FLAGS)) & TASK_TMPFILE != 0;
-                let alone = self.connection().is_none();
+                let alone = !self.connected();
                 if n.c_cast::<u64>() != size || (tmpfile && length != PACKET_TASK) {
                     // No task runs; a connection is still answered.
                     self.warn(
@@ -484,8 +507,7 @@ impl<'a> Worker<'a> {
                         continue;
                     }
                 }
-                if let Some(stream) = self.connection() {
-                    let socket = std::mem::replace(&mut stream.connection, ptr::null_mut());
+                if let Some(socket) = self.take_connection() {
                     self.send(socket, &0i32.to_ne_bytes())?;
                     self.close(socket);
                 }
@@ -496,26 +518,33 @@ impl<'a> Worker<'a> {
     }
 
     /// `SW_PROTOCOL_STREAM`: raw messages, length-prefixed over the stream socket.
-    fn run_stream(&mut self, mode: Mode, max_packet_size: u32) -> Result<(), Bailed> {
+    fn run_stream(&self, mode: Mode, max_packet_size: u32) -> Result<(), Bailed> {
         // A zeroed buffer: the `QueueNode` mtype is 0.
-        let packet = self.ipc().prepare(max_packet_size);
+        let Some(packet) = self.with_ipc(|ipc| ipc.prepare(max_packet_size)) else {
+            return Ok(());
+        };
 
         while self.running() {
             let (data, n) = match mode {
                 Mode::Queue => {
                     let call = self.call();
-                    let node = &mut self.ipc().packet;
-                    let (n, error) = trapped(|| call.pool().queue_pop(node, MSGMAX))?;
+                    let popped = self
+                        .with_ipc(|ipc| trapped(|| call.pool().queue_pop(&mut ipc.packet, MSGMAX)));
+                    let Some((n, error)) = popped.transpose()? else {
+                        break;
+                    };
                     if n < 0 && fatal(error) {
                         self.warn(Warning::Msgrcv, error);
                         break;
                     }
-                    let node = &mut self.ipc().packet;
-                    if let Some(mtype) = node.first_mut() {
-                        *mtype = 0;
-                    }
-                    // The receive borrowed the packet: its payload's address again.
-                    (node.as_mut_ptr().cast::<u8>().wrapping_add(MTYPE), n)
+                    let payload = self.with_ipc(|ipc| {
+                        if let Some(mtype) = ipc.packet.first_mut() {
+                            *mtype = 0;
+                        }
+                        // The receive borrowed the packet: its payload's address again.
+                        ipc.packet.as_mut_ptr().cast::<u8>().wrapping_add(MTYPE)
+                    });
+                    (payload.unwrap_or(packet), n)
                 }
                 Mode::Socket => {
                     let socket = match self.accept()? {
@@ -568,24 +597,14 @@ impl<'a> Worker<'a> {
                     length,
                     0,
                 )?;
-                if let Some(stream) = self.connection() {
-                    let socket = std::mem::replace(&mut stream.connection, ptr::null_mut());
-                    let response = stream
-                        .response
-                        .as_mut()
-                        .map(std::mem::take)
-                        .unwrap_or_default();
+                if let Some(socket) = self.take_connection() {
+                    let response = self.take_response();
                     if !response.is_empty() {
                         let head = response.len().c_cast::<u32>().to_be_bytes();
                         self.send(socket, &head)?;
                         self.send(socket, &response)?;
                     }
-                    if let Some(stream) = self.ipc().stream.as_mut() {
-                        // Keep the buffer's capacity, as `String::clear` does.
-                        let mut response = response;
-                        response.clear();
-                        stream.response = Some(response);
-                    }
+                    self.restore_response(response);
                     self.close(socket);
                 }
             }
@@ -595,7 +614,7 @@ impl<'a> Worker<'a> {
     }
 
     /// `SW_PROTOCOL_MESSAGE`: the message bus over the worker's pipe.
-    fn run_message(&mut self) -> Result<(), Bailed> {
+    fn run_message(&self) -> Result<(), Bailed> {
         while self.running() {
             match self.receive_message()? {
                 Received::Continue | Received::Ready => self.end()?,
@@ -882,13 +901,11 @@ pub fn pool_run(
     pool_loop: &PoolLoop<'_>,
     protocol: Protocol,
 ) -> Result<(), Bailed> {
-    let ipc = pool_loop.pool.record().ipc;
-    if ipc.is_null() {
+    if pool_loop.pool.ipc().is_null() {
         return Ok(());
     }
-    let mut worker = Worker {
+    let worker = Worker {
         native,
-        ipc,
         pool: pool_loop.pool,
         worker: pool_loop.worker,
     };
@@ -1287,8 +1304,8 @@ mod tests {
             *s = script;
             s.ipc = ipc as usize;
         });
-        let mut pool = crate::process_pool::PoolRecord::empty();
-        pool.ipc = ipc;
+        let pool = crate::process_pool::PoolRecord::empty();
+        pool.ipc.set(ipc);
         let pool = std::cell::UnsafeCell::new(pool);
         let mut worker = crate::worker_record::WorkerRecord::empty();
         let pool_loop = PoolLoop {

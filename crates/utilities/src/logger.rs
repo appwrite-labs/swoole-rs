@@ -10,6 +10,7 @@ use std::ffi::{CStr, CString};
 use std::sync::atomic::{AtomicI32, Ordering::Relaxed};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
+use swoole_rs_corebase::lent::{Count, In};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::sys::{self, errno};
 use swoole_rs_corebase::{CCast, Stream};
@@ -247,7 +248,7 @@ impl Logger {
                 // strerror's text: std's, without the code it appends.
                 let reason = std::io::Error::from_raw_os_error(code).to_string();
                 let suffix = format!(" (os error {code})");
-                let reason = reason.strip_suffix(&suffix).unwrap_or(&reason);
+                let reason = reason.trim_suffix(&suffix);
                 log::error_log(
                     log::LogLevel::SW_LOG_WARNING,
                     SYSTEM_CALL_FAIL,
@@ -417,31 +418,21 @@ impl Logger {
     }
 }
 
-/// [`Logger::put`].
-/// # Safety
-/// `content` is readable as upstream's `%.*s` with `static_cast<int>(length)` reads it.
+/// [`Logger::put`] of the `length` bytes C lends at `content`, through the first NUL,
+/// as upstream's `%.*s` with `static_cast<int>(length)` reads them.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_logger_put(
+pub extern "C" fn swr_v1_logger_put<'id>(
     logger: &Logger,
     level: c_int,
-    content: *const c_char,
-    length: usize,
+    content: In<'id, u8>,
+    length: Count<'id>,
 ) {
-    let precision = length.c_cast::<i32>();
-    // printf precision is a signed int: negative means read through the terminator.
-    let limit = usize::try_from(precision).unwrap_or(usize::MAX);
-    let data = content.cast::<u8>();
-    let content = if limit == 0 {
-        &[]
-    } else {
-        let mut length = 0;
-        // SAFETY: the input is readable through its first NUL or `precision` bytes.
-        while length < limit && unsafe { data.wrapping_add(length).read() } != 0 {
-            length += 1;
-        }
-        // SAFETY: the loop read exactly these `length` bytes.
-        unsafe { std::slice::from_raw_parts(data, length) }
-    };
+    let content = content.drain(length);
+    // printf precision is a signed int: negative means read through the terminator,
+    // within the lent bytes.
+    let limit = usize::try_from(content.len().c_cast::<i32>()).unwrap_or(usize::MAX);
+    let content = content.first(limit).bytes();
+    let content = content.split(|&byte| byte == 0).next().unwrap_or_default();
     logger.put(level, content);
 }
 
@@ -546,6 +537,7 @@ mod ported;
 pub(crate) mod tests {
     use super::*;
     use std::cell::RefCell;
+    use swoole_rs_corebase::lent::lend_in;
 
     /// A corebase log call: kind, level, code, origin and message.
     type Logged = (log::LogKind, c_int, c_int, String, String);
@@ -598,10 +590,8 @@ pub(crate) mod tests {
         assert!(logger.open(&name), "opened");
         assert!(logger.is_opened(), "is_opened");
         assert!(logger.set_date_format(c"%Y"), "date format");
-        unsafe {
-            swr_v1_logger_put(logger, 1, c"hidden".as_ptr(), 6);
-            swr_v1_logger_put(logger, 4, c"hello world".as_ptr(), 5);
-        }
+        lend_in(b"hidden", |at, n| swr_v1_logger_put(logger, 1, at, n));
+        lend_in(b"hello", |at, n| swr_v1_logger_put(logger, 4, at, n));
         logger.close();
         assert!(!logger.is_opened(), "closed");
         assert_eq!(file(logger, false), "", "close clears the file");
@@ -737,9 +727,10 @@ pub(crate) mod tests {
                 let logger = &logger;
                 scope.spawn(move || {
                     for i in 0..1000 {
-                        let message = CString::new(format!("t{thread}-{i}")).unwrap();
-                        let length = message.as_bytes().len();
-                        unsafe { swr_v1_logger_put(logger, 4, message.as_ptr(), length) };
+                        let message = format!("t{thread}-{i}");
+                        lend_in(message.as_bytes(), |at, n| {
+                            swr_v1_logger_put(logger, 4, at, n);
+                        });
                     }
                 });
             }

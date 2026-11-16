@@ -60,9 +60,7 @@ pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) {
                 return;
             }
         } else {
-            sock.edit(|s| {
-                s.take_ssl();
-            });
+            sock.edit(|s| s.set_ssl(None));
         }
         let Some(conn) = add(serv, port, sock, server_fd) else {
             abort(serv, reactor, Some(port), sock);
@@ -384,8 +382,7 @@ pub(crate) fn idle_timeout(serv: view::Server<'_>, reactor: Reactor, conn: Conne
     let now = swoole_rs_reactor::steady_ms();
     let (received, sent) = conn
         .socket()
-        .map(|s| s.read(|s| (s.last_received_time, s.last_sent_time)))
-        .unwrap_or_default();
+        .map_or_default(|s| s.read(|s| (s.last_received_time, s.last_sent_time)));
     if now - received < idle && now - sent < idle {
         return;
     }
@@ -439,7 +436,7 @@ fn for_stream_ports(serv: view::Server<'_>, change: impl Fn(Reactor, Socket<'_>)
 /// and `SwooleG.max_sockets`.
 pub fn set_max_connection(serv: view::Server<'_>, requested: u32) {
     let tables = serv.state().tables_ref();
-    if !tables.connection_list.is_null() {
+    if tables.connections_mapped() {
         let m = format_args!("max_connection must be set before server create");
         log::warning(c"Server::set_max_connection", m);
         return;
@@ -703,7 +700,7 @@ mod tests {
 
         // SAFETY: the fixture's tables, which no other thread reads.
         let tables = unsafe { &mut *live.state().tables() };
-        let list = core::mem::take(&mut tables.connection_list);
+        let list = core::mem::take(tables.connection_list_mut());
         let run = |requested| {
             set_max_connection(live.server(), requested);
             live.server().max_connection()
@@ -724,7 +721,7 @@ mod tests {
             "session list bound"
         );
         // SAFETY: as above.
-        unsafe { &mut *live.state().tables() }.connection_list = list;
+        *unsafe { &mut *live.state().tables() }.connection_list_mut() = list;
     }
 
     /// Whether the reactor reads `sock`.

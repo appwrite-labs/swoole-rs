@@ -748,10 +748,10 @@ fn restart_worker_process() {
     let fake_exit = ExitStatus::new(pid(), 0);
     let pool = serv.view().task_pool();
     let worker = serv.view().worker(2);
-    // SAFETY: the created server's event pool, which follows its task pool, and its
-    // event workers; then the task worker, and the task pool it joins.
+    // Upstream also points the event pool at the server's workers; the port finds
+    // workers by pid in the server's own arrays, so that pool is not read here.
+    // SAFETY: the created server's task worker, and the task pool it joins.
     unsafe {
-        (*pool.add(1)).set_workers(serv.config().workers.as_ptr().cast());
         Worker::new(worker).set_pid(pid());
         swoole_rs_process::methods::add_worker(&*pool, Worker::new(worker));
     }
@@ -1696,7 +1696,7 @@ fn clean_worker_2() {
     test_clean_worker(MODE_THREAD);
 }
 
-pub const CASES: &[(&str, fn())] = &[
+pub(crate) const CASES: &[(&str, fn())] = &[
     ("base", base),
     ("process", process),
     ("process_single_thread", process_single_thread),

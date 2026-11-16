@@ -46,6 +46,10 @@ unsafe extern "C" {
         object: crate::ObjectRef<'_>,
         out: &Owned,
     ) -> std::ffi::c_int;
+    /// `convert_to_array` of the zval in place, inside `zend_try` (nonzero for
+    /// a bailout): the reference it held goes into the new array, or (an
+    /// object's) is released, which can run `__destruct`.
+    safe fn swr_zend_try_convert_to_array(value: &Owned) -> std::ffi::c_int;
     /// `zend_hash_next_index_insert`: the table takes `value` under its next
     /// index, or (null, at `ZEND_LONG_MAX`) leaves it to the caller. No PHP
     /// code runs.
@@ -522,6 +526,16 @@ impl Value {
     pub(crate) fn retype_null(&self) {
         let mut value = self.0.get();
         value.u1.type_info = IS_NULL;
+        self.0.set(value);
+    }
+
+    /// `ZVAL_UNDEF` then `Z_FE_ITER_P(value) = -1`: a failed `FE_RESET_*`'s
+    /// result, with no iterator. What the slot held is not released: for a
+    /// result slot holding nothing that needs it, else a leak.
+    #[inline]
+    pub fn undef_iteration(&self) {
+        let mut value = UNDEF;
+        value.u2.fe_iter_idx = u32::MAX;
         self.0.set(value);
     }
 
@@ -1492,14 +1506,14 @@ impl Owned {
         Some(unsafe { &mut *ptr::from_mut(self).cast::<OwnedArray>() })
     }
 
-    /// `ZVAL_OBJ(value, std)`: the result takes over the reference `std` carries.
-    /// # Safety
-    /// `std` is a live object carrying a reference the caller gives up.
+    /// `ZVAL_OBJ(value, std)`: the result takes over the new object's reference.
     #[must_use]
     #[inline]
-    pub unsafe fn object(std: *mut zend_object) -> Self {
+    pub(crate) fn object(std: crate::object::Fresh) -> Self {
         let mut zval = UNDEF;
-        zval.value = zend_value { obj: std };
+        zval.value = zend_value {
+            obj: std.into_ptr(),
+        };
         zval.u1.type_info = crate::sys::IS_OBJECT_EX;
         Self(Value(Cell::new(zval)))
     }
@@ -1510,6 +1524,15 @@ impl Owned {
     #[inline]
     pub fn into_zval(self) -> zval {
         *std::mem::ManuallyDrop::new(self).0.0.get_mut()
+    }
+
+    /// `convert_to_array`, as PHP's `(array)` cast: this then holds an array,
+    /// unless the conversion bailed out.
+    /// # Errors
+    /// Releasing an object ran PHP code that bailed out.
+    #[inline]
+    pub fn convert_to_array(&mut self) -> Result<(), bailout::Bailout> {
+        bailout::trapped(swr_zend_try_convert_to_array(self))
     }
 
     /// The zval a [`Given`] left to its giver, with the reference it holds.

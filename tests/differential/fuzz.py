@@ -60,7 +60,8 @@ function s(string $label, callable $call): mixed {
 '''
 # Timestamps, pids and the temporary program's path are the only legitimate differences.
 MASKS = [(re.compile(r'\[\d{4}-\d\d-\d\d \d\d:\d\d:\d\d[^\]]*\]'), '[time]'),
-         (re.compile(r'\b(pid|process) ?[=#:]? ?\d+', re.I), r'\1 N'),
+         # `pid 12`, `pid=12`, `process #12`, and r()'s `'pid'=>12` in an array.
+         (re.compile(r"\b(pid|process)'? ?(?:=>|[=#:])? ?\d+", re.I), r'\1 N'),
          (re.compile(r'/[^\s\'"]*/fuzz-\d+\.php'), 'PROGRAM')]
 TIMEOUT = 10
 VERDICTS = ('same', 'timeout', 'control-crash', 'divergent', 'flaky')
@@ -313,10 +314,14 @@ def outcome(engine, path):
         result = run_isolated(engine.command(path), timeout=TIMEOUT)
     except subprocess.TimeoutExpired:
         return {'status': 'timeout', 'output': ''}
-    text = result.stdout + result.stderr
-    for pattern, mask in MASKS:
-        text = pattern.sub(mask, text)
-    return {'status': result.returncode, 'output': text}
+    return {'status': result.returncode, 'output': mask(result.stdout + result.stderr)}
+
+
+def mask(text):
+    """`text` with its legitimate differences (MASKS) masked."""
+    for pattern, replacement in MASKS:
+        text = pattern.sub(replacement, text)
+    return text
 
 
 def compare(engines, path):

@@ -152,7 +152,7 @@ pub(crate) fn execute_end(reactor: Running<'_>, timed_out: bool) {
         match end {
             End::Call(call) => call(),
             End::Defer => crate::deferred::run_defer(reactor),
-            End::Idle => run_task(reactor.with(|state| state.fields.idle_task)),
+            End::Idle => run_idle(reactor),
             End::Signal => swoole_rs_process::signal::swoole_signal_dispatch(),
             End::TryExit => {
                 if reactor.with(|state| state.fields.wait_exit) && if_exit(reactor) {
@@ -167,11 +167,16 @@ pub(crate) fn execute_end(reactor: Running<'_>, timed_out: bool) {
     }
 }
 
-/// `Swoole\Event::cycle`'s idle or future task, when set.
-fn run_task(task: crate::ReactorTask) {
-    if let Some(callback) = task.callback {
-        // SAFETY: the task's callback and the data it was set with.
-        unsafe { callback(task.data) };
+// Keep the Rc clone out of the end-callback walk so LLVM can unroll its eight slots.
+#[inline(never)]
+fn run_idle(reactor: Running<'_>) {
+    run_task(reactor.with(|state| state.fields.idle_task.clone()));
+}
+
+/// `Swoole\Event::cycle`'s idle or future task, when set, given a reference of its own.
+fn run_task(task: Option<std::rc::Rc<dyn crate::event_api::CycleTask>>) {
+    if let Some(task) = task {
+        task.run();
     }
 }
 
@@ -282,7 +287,7 @@ pub extern "C-unwind" fn reactor_wait(reactor: Running<'_>) -> c_int {
 #[must_use]
 pub(crate) fn wait(reactor: Running<'_>) -> bool {
     fn begin(reactor: Running<'_>) {
-        run_task(reactor.with(|state| state.fields.future_task));
+        run_task(reactor.with(|state| state.fields.future_task.clone()));
     }
     let ops = crate::WaitOps {
         reactor,
@@ -297,7 +302,6 @@ mod tests {
     use super::*;
     use crate::reactor_state::tests::running;
     use std::cell::{Cell, RefCell};
-    use std::ffi::c_void;
 
     thread_local! {
         static TRACE: RefCell<Vec<i32>> = const { RefCell::new(Vec::new()) };
@@ -467,27 +471,29 @@ mod tests {
         });
     }
 
+    /// An idle task that pushes its number.
+    struct Pushes(i32);
+
+    impl crate::event_api::CycleTask for Pushes {
+        fn run(self: std::rc::Rc<Self>) {
+            push(self.0);
+        }
+
+        fn retire(self: std::rc::Rc<Self>) {}
+    }
+
     /// The built-ins: the deferred queue runs at the end and holds the loop open; the
     /// default condition refuses while sockets are registered; try-exit stops the loop
     /// only under `wait_exit` once every condition agrees.
     #[test]
     fn builtins_defer_idle_and_exit() {
-        unsafe extern "C-unwind" fn record(data: *mut c_void) {
-            push(data as i32);
-        }
         with_state(|owner| unsafe {
             install_builtins(callbacks());
             let fields = &raw mut (*owner).fields;
             assert!(if_exit(running(owner)));
-            crate::deferred::tests::defer(
-                fields,
-                record,
-                std::ptr::without_provenance_mut(4),
-                None,
-            );
+            crate::deferred::tests::defer(fields, crate::deferred::tests::task(4).then(|| push(4)));
             assert!(!if_exit(running(owner)));
-            (*fields).idle_task.callback = Some(record);
-            (*fields).idle_task.data = std::ptr::without_provenance_mut(6);
+            (*fields).idle_task = Some(std::rc::Rc::new(Pushes(6)));
             (*fields).running = true;
             execute_end(running(owner), false);
             assert_eq!(take(), [4, 6]);

@@ -6,9 +6,11 @@ use crate::{
 };
 use std::{
     borrow::Cow,
+    cell::UnsafeCell,
     collections::HashSet,
     ffi::{CStr, CString, c_int},
-    ptr::{self, NonNull},
+    mem::MaybeUninit,
+    ptr,
     rc::Rc,
     sync::atomic::Ordering::Relaxed,
 };
@@ -19,39 +21,65 @@ use swoole_rs_zend::{
     Call, Declared, Owned, Value, ZStr,
     bailout::{self, Bailout},
     host::Then,
-    sys::{swr_zend_http_release_objects, zend_object, zval},
+    sys::{swr_zend_http_release_objects, zval},
 };
 
 /// What a `Swoole\Http\Request` or `Swoole\Http\Response` object embeds
-/// (`struct { swoole::http::Context *ctx; zend_object std; }`): its context,
-/// none once released or before one is set.
-pub(crate) type Holder = std::cell::Cell<Option<Ctx>>;
+/// (`struct { swoole::http::Context *ctx; zend_object std; }`): its hold on
+/// its context, set once when the context makes the object and let go when
+/// the object is freed, so a method's `$this` lends it for the call.
+pub(crate) type Holder = std::cell::OnceCell<Hold>;
 
-/// A live `swoole::http::Context`: the only way to reach its state. Only
-/// [`alloc`] makes one, of a fresh context; an object holds one until it lets
-/// go of it. What is read and done over it is then safe, until [`free`],
-/// whose callers promise no copy is used after, ends it.
+/// A hold on a `swoole::http::Context`: its request and response objects, an
+/// HTTP/2 stream or connection, a queued request and the code working on it
+/// each have one, and the context goes with the last. Only [`alloc`] makes the
+/// first, of a fresh context.
+#[derive(Clone)]
+pub struct Hold(Rc<UnsafeCell<State>>);
+
+impl Hold {
+    /// The context, for as long as this hold is borrowed.
+    #[must_use]
+    pub fn ctx(&self) -> Ctx<'_> {
+        Ctx(self)
+    }
+}
+
+/// A `swoole::http::Context` a [`Hold`] keeps live: the only way to reach its
+/// state, safe to read and change for as long as the hold is borrowed.
 ///
 /// The handle is `Copy`, and a send can yield to a coroutine that reaches the
 /// same context through its objects, so a [`Ctx::state`] borrow ends before
 /// any host call, and before the handle (or a copy) is passed on.
-#[derive(Clone, Copy, PartialEq, Eq)]
-#[repr(transparent)]
-pub struct Ctx(NonNull<Context>);
+#[derive(Clone, Copy)]
+pub struct Ctx<'a>(&'a Hold);
 
-impl Ctx {
+impl PartialEq for Ctx<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0.0, &other.0.0)
+    }
+}
+
+impl Eq for Ctx<'_> {}
+
+impl Ctx<'_> {
     /// The context the handle names.
     pub(crate) fn raw(self) -> *mut Context {
-        self.0.as_ptr()
+        self.0.0.get().cast()
+    }
+
+    /// Another hold on the context, to keep past this handle's borrow.
+    #[must_use]
+    pub fn hold(self) -> Hold {
+        self.0.clone()
     }
 
     /// The context's `ContextState`, its first base, for as long as the
     /// handle is borrowed.
     pub(crate) fn state(&mut self) -> &mut State {
-        // SAFETY: `alloc`'s context, which starts with its `ContextState` and is
-        // live until `free` (whose callers use no copy after); no other
+        // SAFETY: the hold the handle borrows keeps the state live; no other
         // reference to it outlives a host call.
-        unsafe { self.0.cast::<State>().as_mut() }
+        unsafe { self.0.0.as_mut_unchecked() }
     }
 
     /// The `kind` hook of Swoole's global hooks, which take the context as
@@ -102,99 +130,80 @@ pub(crate) enum Kind {
     Response,
 }
 
-/// A new `Swoole\Http\Request` or `Response` in the context's `slot`,
-/// pointing at `ctx`.
-pub(crate) fn new_object(slot: &mut Slot, kind: Kind, ctx: Ctx) -> Option<*mut zend_object> {
-    // The context keeps the object's reference.
-    slot.put(kind.class().create_object());
-    point(slot.get()?, kind, ctx)
-}
-
 /// A new `Swoole\Http\Request` or `Response` as `call`'s return value,
-/// pointing at `ctx`, whose `slot` borrows it, as upstream's `RETVAL_OBJ`
-/// and `ctx->request.zobject` do.
-pub(crate) fn lend_object(call: &Call, slot: &mut Slot, kind: Kind, ctx: Ctx) {
-    call.set_owned(kind.class().create_object());
-    // SAFETY: the return value holds the object, and the object (`point`) the
+/// holding `hold`, whose `slot` borrows it, as upstream's `RETVAL_OBJ` and
+/// `ctx->request.zobject` do.
+pub(crate) fn lend_object(call: &Call, slot: &mut Slot, kind: Kind, hold: Hold) {
+    call.set_owned(kind.object(hold));
+    // SAFETY: the return value holds the object, and the object holds the
     // context and so the slot: the object's free handler clears the slot
     // before the object goes.
     unsafe { slot.keep(call.ret()) };
-    if let Some(object) = slot.get() {
-        point(object, kind, ctx);
-    }
-}
-
-/// Point `object`, a new `kind` object, at `ctx`.
-fn point(object: &Value, kind: Kind, ctx: Ctx) -> Option<*mut zend_object> {
-    match kind {
-        Kind::Request => object.custom::<crate::request::Data>()?.0.set(Some(ctx)),
-        Kind::Response => object.custom::<crate::response::Data>()?.0.set(Some(ctx)),
-    }
-    object.object()
 }
 
 impl Kind {
-    fn class(self) -> &'static swoole_rs_zend::Class {
+    /// These are the registered base classes, with no constructor to run.
+    /// Initialize the context holder before publishing the new object.
+    fn object(self, hold: Hold) -> Owned {
+        let holder = Holder::from(hold);
         match self {
-            Self::Request => &crate::request::REQUEST,
-            Self::Response => &crate::response::RESPONSE,
+            Self::Request => swoole_rs_zend::new_object(crate::request::Data(holder)),
+            Self::Response => swoole_rs_zend::new_object(crate::response::Data(holder)),
         }
     }
 }
 
-/// A new object in `slot`, pointing at `ctx`, with its declared `fd`
-/// property set.
-fn object(slot: &mut Slot, kind: Kind, ctx: Ctx, property: &Declared, fd: i64) {
-    if new_object(slot, kind, ctx).is_some()
-        && let Some(object) = slot.get()
-    {
+/// A new object in `slot`, holding `hold`, with its declared `fd` property set.
+fn object(slot: &mut Slot, kind: Kind, hold: Hold, property: &Declared, fd: i64) {
+    slot.put(kind.object(hold));
+    if let Some(object) = slot.get() {
         property.init(object, Owned::long(fd));
     }
 }
 
 /// `swoole_http_context_new`: a new context with its request and response
-/// objects, both pointing at it and holding `fd`, and the request's `server`
-/// and `header` arrays.
-pub(crate) fn context_new(fd: i64) -> Ctx {
-    let mut ctx = alloc();
-    // The objects' copies, which nothing reads until the context is filled.
-    let held = ctx;
+/// objects, both holding it and `fd`, and the request's `server` and `header`
+/// arrays.
+pub(crate) fn context_new(fd: i64) -> Hold {
+    let hold = alloc();
+    let mut ctx = hold.ctx();
     let state = ctx.state();
     object(
         &mut state.request.zobject,
         Kind::Request,
-        held,
+        hold.clone(),
         &parse::REQUEST_FD,
         fd,
     );
     object(
         &mut state.response.zobject,
         Kind::Response,
-        held,
+        hold.clone(),
         &RESPONSE_FD,
         fd,
     );
     parse::property(&mut state.request, Property::Server);
     parse::property(&mut state.request, Property::Header);
     state.fd = fd;
-    ctx
+    hold
 }
 
-/// `new Context()`: a value-initialised context, which
-/// `free` releases.
+/// `new Context()`: a value-initialised context, which goes with its last
+/// hold.
 #[must_use]
-pub(crate) fn alloc() -> Ctx {
-    // Not `Box::new_zeroed`: glibc's `calloc` skips the thread cache and cost
+pub(crate) fn alloc() -> Hold {
+    // Not `Rc::new_zeroed`: glibc's `calloc` skips the thread cache and cost
     // 500 instructions a request where `malloc` and a memset cost about 100
     // (#2129). `black_box` keeps LLVM from folding them back into `calloc`.
-    let state = std::hint::black_box(NonNull::from(Box::leak(Box::<State>::new_uninit())));
-    // SAFETY: a fresh, writable `State`; all zeroes is a valid one (null
-    // pointers, `None`s and `IS_UNDEF` zvals, as upstream's value-initialisation
-    // left it, and a null socket handle, which `socket` reads only once `bind`
-    // set it), which `free` drops as a `Box<State>`.
-    unsafe { state.write_bytes(0, 1) };
-    // The context just made, live until `free`.
-    Ctx(state.cast())
+    let mut fresh = std::hint::black_box(Rc::<UnsafeCell<State>>::new_uninit());
+    if let Some(state) = Rc::get_mut(&mut fresh) {
+        *state = MaybeUninit::zeroed();
+    }
+    // SAFETY: a fresh `Rc` is unique, so `get_mut` zeroed it, and all zeroes
+    // is a valid `State` (null pointers, `None`s and `IS_UNDEF` zvals, as
+    // upstream's value-initialisation left it, and a null socket handle, which
+    // `socket` reads only once `bind` set it).
+    Hold(unsafe { fresh.assume_init() })
 }
 
 /// `Context::init(Server *)`: the server's request settings, then bound to it.
@@ -471,25 +480,6 @@ impl Release {
 /// A destructor bailed out, or a bailout is pending.
 pub(crate) fn release_objects(ctx: Ctx) -> Result<(), Bailout> {
     Release::new(ctx).finish()
-}
-
-/// `Context::free`: release the context once neither object nor an HTTP/2
-/// stream holds it.
-/// # Safety
-/// No copy of the handle is used once this released the context: the caller's
-/// was the last hold on it, or another object or stream still has one.
-pub(crate) unsafe fn free(mut ctx: Ctx) {
-    let state = ctx.state();
-    if state.request.zobject.get().is_some()
-        || state.response.zobject.get().is_some()
-        || state.stream_id > 0
-    {
-        return;
-    }
-    parse::parse_free(state);
-    // SAFETY: `alloc`'s, which nothing references any more; the drop
-    // releases the request's data, the socket and any unfinished upload.
-    drop(unsafe { Box::from_raw(ctx.raw().cast::<State>()) });
 }
 
 #[cfg(test)]

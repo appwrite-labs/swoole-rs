@@ -95,9 +95,9 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "openssl-sys"
-version = "0.9.117"
+version = "0.9.118"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b47e7e6bb2c38cd930d25a23b40fa52e068c10e85f3e03a7f5ba5aaca5713695"
+checksum = "19c413d6ec9ebaf5e1c829d355cb3e9f783778d700f135be0921d52fce3c60ae"
 dependencies = [
  "cc",
  "libc",
@@ -214,7 +214,9 @@ dependencies = [
  "libc",
  "libfuzzer-sys",
  "swoole-rs-base64",
+ "swoole-rs-buffer",
  "swoole-rs-clients",
+ "swoole-rs-corebase",
  "swoole-rs-deflate",
  "swoole-rs-framing",
  "swoole-rs-http",
@@ -268,6 +270,7 @@ name = "swoole-rs-locale"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "swoole-rs-corebase",
 ]
 
 [[package]]
@@ -341,6 +344,7 @@ name = "swoole-rs-reactor"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "openssl-sys",
  "swoole-rs-buffer",
  "swoole-rs-corebase",
  "swoole-rs-coroutine",

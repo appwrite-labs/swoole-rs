@@ -267,7 +267,7 @@ pub(crate) unsafe fn swr_case_protocol_server(
     let port = serv.listen_port(SW_SOCK_TCP, 0).settings();
     match framing {
         0 => methods::set_stream_protocol(port),
-        1 => methods::set_length_protocol(port, 0, b'l' as c_char, 4),
+        1 => methods::set_length_protocol(port, 0, c_char::from_ne_bytes(*b"l"), 4),
         _ => methods::set_eof_protocol(port, b"\r\n", false),
     }
     serv.create();
@@ -742,11 +742,13 @@ pub(crate) unsafe fn swr_case_ssl_client_ca(serv: *mut c_void, cafile: *const c_
     let fields = tls_fields(context);
     fields.verify_peer = 1;
     fields.allow_self_signed = 1;
-    // SAFETY: a live context's slot; a NUL-terminated path.
+    // SAFETY: a live context; a NUL-terminated path.
     let status = unsafe {
         let path = CStr::from_ptr(cafile);
-        let slot = tls_view(context).strings[CAFILE as usize];
-        (*slot).set_shared(path.to_bytes())
+        let owner = &*context.cast::<swoole_rs_tls::OwnedTlsContext>();
+        owner
+            .borrow_configuration()
+            .set_string(CAFILE as usize, path.to_bytes())
     };
     assert!(status, "bad_alloc");
 }

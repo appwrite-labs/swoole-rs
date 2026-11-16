@@ -168,7 +168,7 @@ soak run, other PHP versions and a debug PHP. See the
 
 You need:
 
-- Rust through `rustup`. `rust-toolchain.toml` pins 1.99.0 and `rustup` installs it on
+- Rust through `rustup`. `rust-toolchain.toml` pins 1.100.0 and `rustup` installs it on
   first use.
 - PHP 8.2 to 8.5 with its development headers (`php-config`).
 - A C and C++ compiler, libclang, and the OpenSSL and PCRE2 development files.

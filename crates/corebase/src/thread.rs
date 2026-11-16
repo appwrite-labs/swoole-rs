@@ -43,10 +43,6 @@ unsafe extern "C" {
     ) -> c_int;
 }
 
-// SAFETY: a pthread handle names a thread, not memory; any thread may join it,
-// and the record's mutex lets only one do so.
-unsafe impl Send for Handle {}
-
 #[derive(Default)]
 pub struct Thread {
     handle: Mutex<Option<Handle>>,

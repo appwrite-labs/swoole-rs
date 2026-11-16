@@ -460,9 +460,7 @@ pub fn set_h_errno(value: c_int) {
 pub fn strerror(code: c_int) -> String {
     let mut text = std::io::Error::from_raw_os_error(code).to_string();
     // std appends the code; strip that, leaving libc's message.
-    let message = text
-        .strip_suffix(&format!(" (os error {code})"))
-        .map_or(text.len(), str::len);
+    let message = text.trim_suffix(&format!(" (os error {code})")).len();
     text.truncate(message);
     text
 }
@@ -501,6 +499,16 @@ pub fn close(fd: c_int) -> std::io::Result<()> {
 pub fn writev(fd: c_int, vectors: &[std::io::IoSlice<'_>]) -> Option<usize> {
     usize::try_from(lent::lend_vectors(vectors, |iov, count| {
         lent::writev(fd, iov, count)
+    }))
+    .ok()
+}
+
+/// `readv(2)` into `vectors`' buffers, in order.
+#[must_use]
+#[inline]
+pub fn readv(fd: c_int, vectors: &mut [lent::ReadVec<'_>]) -> Option<usize> {
+    usize::try_from(lent::lend_out(vectors, |iov, count| {
+        lent::readv(fd, iov, count)
     }))
     .ok()
 }
@@ -645,12 +653,19 @@ const INTEGER_COMMANDS: [c_int; 8] = [
 /// # Errors
 /// The syscall's captured errno, or `EINVAL` for a command outside the integer list.
 pub fn fcntl(fd: c_int, cmd: c_int, arg: c_int) -> std::io::Result<c_int> {
+    /// A command from `INTEGER_COMMANDS`, made only after the check below.
+    #[repr(transparent)]
+    struct IntegerCommand(c_int);
+    // An integer command reads its argument as an int, or not at all, and
+    // dereferences nothing.
+    unsafe extern "C" {
+        #[link_name = "fcntl"]
+        safe fn integer_fcntl(fd: c_int, cmd: IntegerCommand, ...) -> c_int;
+    }
     if !INTEGER_COMMANDS.contains(&cmd) {
         return Err(std::io::Error::from_raw_os_error(libc::EINVAL));
     }
-    // SAFETY: `cmd` takes an integer argument or none, so nothing is dereferenced.
-    let result = unsafe { libc::fcntl(fd, cmd, arg) };
-    nonnegative_result(result)
+    nonnegative_result(integer_fcntl(fd, IntegerCommand(cmd), arg))
 }
 
 /// `flock(2)`.
@@ -667,6 +682,22 @@ pub fn flock(fd: c_int, operation: c_int) -> std::io::Result<()> {
 pub fn poll(fds: &mut [libc::pollfd], timeout: c_int) -> std::io::Result<c_int> {
     nonnegative_result(lent::lend_out(fds, |fds, count| {
         lent::poll(fds, count, timeout)
+    }))
+}
+
+/// `epoll_wait(2)` into `events`, at most all of them: the number ready, or zero on
+/// timeout.
+/// # Errors
+/// The syscall's captured errno (`EINVAL` for no room).
+#[cfg(any(target_os = "linux", target_os = "android"))]
+#[inline]
+pub fn epoll_wait(
+    epfd: c_int,
+    events: &mut [libc::epoll_event],
+    timeout: c_int,
+) -> std::io::Result<c_int> {
+    nonnegative_result(lent::lend_out(events, |events, count| {
+        lent::epoll_wait(epfd, events, count, timeout)
     }))
 }
 
@@ -798,8 +829,17 @@ mod anonymous {
 /// # Errors
 /// The syscall's errno.
 pub fn open(path: &CStr, flags: c_int, mode: libc::mode_t) -> std::io::Result<c_int> {
-    // SAFETY: `path` is NUL-terminated; the mode is promoted as C does.
-    nonnegative_result(unsafe { libc::open(path.as_ptr(), flags, libc::c_uint::from(mode)) })
+    // `open(2)` reads only the path, and its one optional argument as a mode.
+    #[expect(
+        suspicious_runtime_symbol_definitions,
+        reason = "`Text` is a transparent `const char *` that is never null"
+    )]
+    unsafe extern "C" {
+        #[link_name = "open"]
+        safe fn libc_open(path: Text<'_>, flags: c_int, ...) -> c_int;
+    }
+    // The mode is promoted as C does.
+    nonnegative_result(libc_open(path.into(), flags, libc::c_uint::from(mode)))
 }
 
 /// `execv(3)`: runs `path` in place of this process, with `argv` as its arguments,
@@ -836,43 +876,53 @@ pub fn print(bytes: &[u8]) {
 /// `kevent(2)`'s errno.
 #[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
 pub fn kevent_change(kq: c_int, change: &libc::kevent) -> std::io::Result<()> {
-    nonnegative_result(kevent::kevent(
-        kq,
-        change,
-        kevent::Count::One,
-        None,
-        kevent::Count::Zero,
-        None,
-    ))
+    nonnegative_result(lent::lend_out(&mut [], |events, count| {
+        kevent::kevent(kq, change, kevent::Changes::One, events, count, None)
+    }))
     .map(drop)
 }
 
-/// `kevent(2)` declared for one change and no events out.
+/// No change to the kqueue `kq`, and its ready events into `events`, at most all of
+/// them, waiting up to `timeout` (`None`: until one comes): the number ready.
+///
+/// # Errors
+/// `kevent(2)`'s errno.
+#[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
+#[inline]
+pub fn kevent_wait(
+    kq: c_int,
+    events: &mut [libc::kevent],
+    timeout: Option<&libc::timespec>,
+) -> std::io::Result<c_int> {
+    nonnegative_result(lent::lend_out(events, |events, count| {
+        kevent::kevent(kq, &zeroed(), kevent::Changes::Zero, events, count, timeout)
+    }))
+}
+
+/// `kevent(2)` declared for at most one change.
 #[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
 mod kevent {
+    use crate::lent::{Count, Out};
     use libc::c_int;
 
-    /// A count of `kevent` records: each value is the length of the one record, or
-    /// of none, that its parameter is given.
+    /// How many `kevent` records the change parameter is given: none, or the one.
     #[repr(i32)]
-    pub(super) enum Count {
+    pub(super) enum Changes {
         Zero = 0,
         One = 1,
     }
 
-    /// No value: a null-only event list.
-    pub(super) enum Nothing {}
-
-    // libc's. It reads the `changes` count of records at `change`, which is one, and
-    // writes at most the `count` given for `events`, which is none; a null timeout
-    // returns at once. It keeps nothing, so it is declared `safe`.
+    // libc's. It reads the `changes` count of records at `change`, and writes at most
+    // the lending's `count` events into `events`; with no room it returns once the
+    // change is made, else it waits up to `timeout` (null: until an event comes). It
+    // keeps nothing, so it is declared `safe`.
     unsafe extern "C" {
-        pub(super) safe fn kevent(
+        pub(super) safe fn kevent<'id>(
             kq: c_int,
             change: &libc::kevent,
-            changes: Count,
-            events: Option<&'static mut Nothing>,
-            count: Count,
+            changes: Changes,
+            events: Out<'id, libc::kevent>,
+            count: Count<'id, c_int>,
             timeout: Option<&libc::timespec>,
         ) -> c_int;
     }
@@ -1409,7 +1459,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no fcntl for these flags")]
     fn fcntl_errors_keep_errno_and_success_keeps_flags() {
         let error = fcntl(-1, libc::F_GETFL, 0).unwrap_err();
         set_errno(libc::EINTR);
@@ -1443,7 +1492,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no poll")]
     fn poll_distinguishes_timeout_readiness_and_invalid_descriptors() {
         let [reader, writer] = pipe().unwrap();
         let mut event = libc::pollfd {

@@ -10,11 +10,15 @@ description = "Thin safe Zend layer: call frames, objects, classes and errors"
 
 [features]
 # See swoole-rs-zend-sys: without it the crate is empty.
-php = ["dep:swoole-rs-zend-sys", "swoole-rs-zend-sys/php"]
+php = ["dep:swoole-rs-corebase", "dep:swoole-rs-zend-sys", "swoole-rs-zend-sys/php"]
 
 [dependencies]
-swoole-rs-corebase = { path = "../corebase" }
+swoole-rs-corebase = { path = "../corebase", optional = true }
 swoole-rs-zend-sys = { path = "../zend-sys", optional = true }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "allocator"
+path = "../../tests/modules/zend/allocator.rs"

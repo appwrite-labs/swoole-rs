@@ -13,14 +13,6 @@ use swoole_rs_corebase::HookType;
 /// `Reactor::close`: frees `socket`, one of the reactor's.
 pub type ReactorClose = extern "C-unwind" fn(crate::Running<'_>, crate::OwnedSocket) -> c_int;
 
-/// `Reactor::idle_task` and `future_task` (`Swoole\Event::cycle`): unset until set.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct ReactorTask {
-    pub callback: Option<crate::DeferCall>,
-    pub data: *mut c_void,
-}
-
 #[repr(C)]
 pub struct ReactorFields {
     pub kind: c_int,
@@ -40,13 +32,14 @@ pub struct ReactorFields {
     pub max_socket: u32,
     pub last_malloc_trim_time: libc::time_t,
     pub close: Option<ReactorClose>,
-    pub idle_task: ReactorTask,
-    pub future_task: ReactorTask,
-    // Rust-only fields follow the native head. No native caller reads these queues.
+    // Rust-only fields follow the native head. No native caller reads these.
     /// No queue until a task is deferred; detached before its callbacks run.
     pub defer_tasks: Option<crate::ReactorDeferred>,
     /// Callbacks run as the reactor is destroyed.
     pub destroy_callbacks: Option<crate::ReactorDeferred>,
+    /// `Reactor::idle_task` and `future_task` (`Swoole\Event::cycle`): none until set.
+    pub idle_task: Option<std::rc::Rc<dyn crate::event_api::CycleTask>>,
+    pub future_task: Option<std::rc::Rc<dyn crate::event_api::CycleTask>>,
 }
 
 /// The C++ `Reactor` object (`swr_v1_reactor_head`, which the methods-only class
@@ -74,7 +67,7 @@ const _: () = assert!(
 );
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(
-    size_of::<ReactorPrepared>() == 32 && std::mem::offset_of!(ReactorFields, defer_tasks) == 96,
+    size_of::<ReactorPrepared>() == 32 && std::mem::offset_of!(ReactorFields, defer_tasks) == 64,
     "swr_v1_reactor_head's layout"
 );
 
@@ -92,7 +85,7 @@ pub(crate) enum Backend {
         target_os = "netbsd",
         target_os = "dragonfly"
     ))]
-    Kqueue(Vec<libc::kevent>, c_int),
+    Kqueue(Vec<libc::kevent>),
 }
 impl Drop for ReactorState {
     fn drop(&mut self) {
@@ -202,14 +195,8 @@ impl ReactorState {
                 close: None,
                 defer_tasks: None,
                 destroy_callbacks: None,
-                idle_task: ReactorTask {
-                    callback: None,
-                    data: ptr::null_mut(),
-                },
-                future_task: ReactorTask {
-                    callback: None,
-                    data: ptr::null_mut(),
-                },
+                idle_task: None,
+                future_task: None,
             },
             registry: Registry::default(),
             handlers: Handlers::default(),
@@ -270,7 +257,7 @@ impl ReactorState {
                 target_os = "netbsd",
                 target_os = "dragonfly"
             ))]
-            BackendKind::Kqueue => Backend::Kqueue(output(length), count),
+            BackendKind::Kqueue => Backend::Kqueue(output(length)),
             _ => Backend::Poll(PollSnapshot::new(length)),
         };
         self.backend_limit = count;
@@ -486,7 +473,7 @@ impl ReactorState {
     #[inline]
     pub(crate) fn kqueue_entry(&self, index: usize) -> Option<libc::kevent> {
         match &self.backend {
-            Backend::Kqueue(array, _) => array.get(index).copied(),
+            Backend::Kqueue(array) => array.get(index).copied(),
             _ => None,
         }
     }
@@ -506,7 +493,7 @@ impl ReactorState {
                 target_os = "netbsd",
                 target_os = "dragonfly"
             ))]
-            Backend::Kqueue(array, _) => array.as_ptr().cast(),
+            Backend::Kqueue(array) => array.as_ptr().cast(),
         }
     }
 }
@@ -531,7 +518,7 @@ fn backend_wait(
     entries: &mut usize,
 ) -> std::io::Result<usize> {
     let ready = match &mut owner.backend {
-        Backend::None => -1,
+        Backend::None => Err(std::io::Error::last_os_error()),
         Backend::Poll(snapshot) => {
             let count = snapshot.fill(&owner.registry);
             *entries = count;
@@ -540,25 +527,22 @@ fn backend_wait(
             } else {
                 owner.fields.timeout_msec
             };
-            return swoole_rs_corebase::sys::poll(snapshot.filled(), timeout)
-                .map(|ready| ready.unsigned_abs() as usize);
+            swoole_rs_corebase::sys::poll(snapshot.filled(), timeout)
         }
         #[cfg(target_os = "linux")]
         Backend::Epoll(array) => {
-            // SAFETY: a valid owned epoll fd and its writable output array of
-            // max_event_num records.
-            unsafe {
-                libc::epoll_wait(
-                    owner.backend_fd,
-                    array.as_mut_ptr().cast(),
-                    c_int::try_from(owner.fields.max_event_num).unwrap_or(c_int::MAX),
-                    if deferred {
-                        0
-                    } else {
-                        owner.fields.timeout_msec
-                    },
-                )
-            }
+            // Room for `max_event_num` records, which the array holds.
+            let room = usize::try_from(owner.fields.max_event_num)
+                .map_or(array.len(), |max| max.min(array.len()));
+            swoole_rs_corebase::sys::epoll_wait(
+                owner.backend_fd,
+                array.get_mut(..room).unwrap_or_default(),
+                if deferred {
+                    0
+                } else {
+                    owner.fields.timeout_msec
+                },
+            )
         }
         #[cfg(any(
             target_os = "macos",
@@ -567,26 +551,15 @@ fn backend_wait(
             target_os = "netbsd",
             target_os = "dragonfly"
         ))]
-        Backend::Kqueue(array, count) => {
+        Backend::Kqueue(array) => {
             let timeout = crate::kqueue_timeout(
                 owner.fields.timeout_msec,
                 owner.fields.timeout_msec <= 0 && deferred,
             );
-            // SAFETY: valid owned kqueue, output array of `count` records and optional
-            // stack timeout.
-            unsafe {
-                libc::kevent(
-                    owner.backend_fd,
-                    ptr::null(),
-                    0,
-                    array.as_mut_ptr().cast(),
-                    *count,
-                    timeout.as_ref().map_or(ptr::null(), ptr::from_ref),
-                )
-            }
+            swoole_rs_corebase::sys::kevent_wait(owner.backend_fd, array, timeout.as_ref())
         }
     };
-    usize::try_from(ready).map_err(|_| std::io::Error::last_os_error())
+    ready.map(|ready| ready.unsigned_abs() as usize)
 }
 /// The wait loop's initial state transition, over the actual borrowed slots.
 pub(crate) const fn before_wait(fields: &mut ReactorFields) {

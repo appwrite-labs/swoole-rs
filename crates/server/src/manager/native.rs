@@ -55,11 +55,9 @@ unsafe extern "C" {
     safe fn alarm(seconds: libc::c_uint) -> libc::c_uint;
 }
 
-/// `Server::manager_`, while the manager runs in this process.
+/// `Server::manager`, while the manager runs in this process.
 fn manager(serv: view::Server<'_>) -> Option<&Manager> {
-    // SAFETY: a non-null `Server::manager_` is the `Manager` that `wait` keeps alive
-    // on its stack while the manager runs; only shared references exist.
-    unsafe { serv.config().manager_.get().cast::<Manager>().as_ref() }
+    serv.config().manager.live()
 }
 
 /// Whether this process is the server's manager.
@@ -161,8 +159,8 @@ fn spawn<'a>(
 /// `Manager::wait`: the manager's life after forking.
 fn wait(serv: view::Server<'_>) {
     let (state, config) = (serv.state(), serv.config());
-    let manager = Manager::default();
-    init(serv, &manager);
+    let manager = &config.manager;
+    init(serv, manager);
     swoole_rs_reactor::swoole_event_free();
     set_signal(libc::SIGHUP, SignalHandler::None);
     for signo in [
@@ -191,10 +189,7 @@ fn wait(serv: view::Server<'_>) {
     }
     state.callbacks.call_server(ServerSlot::ManagerStart, serv);
 
-    reaper::run(&mut Reaping {
-        serv,
-        manager: &manager,
-    });
+    reaper::run(&mut Reaping { serv, manager });
 
     methods::drop_reload_task(crate::process_pool_native(), serv.event_pool_ref());
     if swoole_rs_timer::swoole_timer_is_available() {
@@ -227,10 +222,11 @@ fn wait(serv: view::Server<'_>) {
         alarm(0);
     }
     state.callbacks.call_server(ServerSlot::ManagerStop, serv);
+    manager.leave();
 }
 
 /// The manager's start: its pid, the event pool's message hook and its master pid,
-/// and `Server::manager_`.
+/// and `Server::manager`.
 fn init(serv: view::Server<'_>, manager: &Manager) {
     let config = serv.config();
     let pid = std::process::id().cast_signed();
@@ -244,8 +240,7 @@ fn init(serv: view::Server<'_>, manager: &Manager) {
     event_pool.set_max_wait_time(config.max_wait_time.get());
     event_pool.set_master_pid(pid);
     serv.task_pool_ref().set_master_pid(pid);
-    let manager = core::ptr::from_ref(manager).cast_mut().cast();
-    config.manager_.set(manager);
+    manager.enter();
 }
 
 /// The reap loop's host over the manager's server.
@@ -400,10 +395,11 @@ impl Reap for Reaping<'_> {
 /// inherits these handlers; it must not act as the manager (reopening the log
 /// would send SIGWINCH back to itself forever).
 extern "C" fn signal_handler(signo: c_int) {
-    // SAFETY: the manager's signal runs while its server lives; the view ends with it.
-    let Some(serv) = (unsafe { view::Server::current() }) else {
-        return;
-    };
+    crate::server_methods::on_signal(crate::server_methods::SignalBody::Manager, signo);
+}
+
+/// [`signal_handler`]'s body over the server.
+pub(crate) fn signal(serv: view::Server<'_>, signo: c_int) {
     if signo == libc::SIGTERM {
         // Before `wait` sets up the manager too: `main` takes it while forking.
         if is_manager(serv) {

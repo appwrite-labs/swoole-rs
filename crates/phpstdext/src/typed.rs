@@ -2,13 +2,13 @@
 //! and flagged [`TYPED`]. Writes check keys and values against the definition:
 //! `swoole_typed_array`, the `array_push`/`array_unshift`/`array_splice`
 //! overrides, and the `ASSIGN_DIM`/`UNSET_DIM`/`FE_RESET_RW` opcode handlers.
-use crate::{CONTINUE, DISPATCH, Frame, Op};
+use crate::{Frame, Next, Op};
 use std::{
     cell::Cell,
     ffi::{CStr, CString, c_int},
     io::IoSlice,
     marker::PhantomData,
-    mem::{MaybeUninit, offset_of},
+    mem::offset_of,
     slice,
     sync::OnceLock,
 };
@@ -57,6 +57,11 @@ struct TypeInfo<'a> {
     len: u16,
     text: [u8; 0],
 }
+
+const _: () = assert!(
+    size_of::<TypeInfo<'static>>() == 32 && offset_of!(TypeInfo, text) == 26,
+    "stdext.c's swr_type_info"
+);
 
 /// Why a definition did not parse.
 enum Failure {
@@ -225,35 +230,15 @@ impl Parsed<'_> {
         self.this.key == other.key && self.this.value == other.value && self.text() == typed.text()
     }
 
-    /// Write the definition into `room`, the bytes behind a table.
-    ///
-    /// # Panics
-    /// If `room` is misaligned for a `TypeInfo` or shorter than the
-    /// definition.
-    fn write(&self, room: &mut [MaybeUninit<u8>]) {
-        #[expect(
-            clippy::cast_ptr_alignment,
-            reason = "the assert below checks the alignment before any write"
-        )]
-        let info = room.as_mut_ptr().cast::<TypeInfo>();
-        assert!(
-            info.is_aligned() && room.len() >= info_size(self.text().len()),
-            "room for the definition"
-        );
-        let header = TypeInfo {
+    /// The header behind a table: what [`typed_new`] copies there, then the text.
+    fn header(&self) -> TypeInfo<'_> {
+        TypeInfo {
             this: self.this,
             element: self.element,
             ce: self.ce,
             // Shorter than 65535 bytes: `parse` checked.
             len: u16::try_from(self.text().len()).unwrap_or(u16::MAX),
             text: [],
-        };
-        // SAFETY: `room`, aligned and long enough (checked), holds the header.
-        unsafe { info.write(header) };
-        // The text and its NUL, after the header (the length is checked above).
-        let start = offset_of!(TypeInfo, text);
-        if let Some(text) = room.get_mut(start..start + self.text.len()) {
-            text.write_copy_of_slice(&self.text);
         }
     }
 }
@@ -267,16 +252,16 @@ unsafe extern "C" {
     /// live for whoever else holds it.
     #[link_name = "swr_phpstdext_separate"]
     safe fn separate_array(array: &Value, info: IoSlice<'_>);
-    /// `ZVAL_ARR(made, ...)` of a new table of `size` elements with `extra`
-    /// uninitialised bytes behind it, which it returns; what `made` held is
-    /// not released.
-    /// `FE_RESET_RW`'s failure at `frame`'s instruction: `ZVAL_UNDEF` of its
-    /// result, then `Z_FE_ITER_P(result) = -1`; nothing for any other
-    /// instruction or an unused result.
-    #[link_name = "swr_phpstdext_foreach_undef"]
-    safe fn foreach_undef(frame: Frame<'_>);
+    /// `ZVAL_ARR(made, ...)` of a new table of `size` elements with a copy of
+    /// `header` behind it, then `header.len` bytes of the lent `text` (zeros past
+    /// its end) and a NUL: the table. What `made` held is not released.
     #[link_name = "swr_phpstdext_typed_new"]
-    safe fn typed_new(made: &Owned, size: u32, extra: usize) -> *mut HashTable;
+    safe fn typed_new(
+        made: &Owned,
+        size: u32,
+        header: &TypeInfo<'_>,
+        text: IoSlice<'_>,
+    ) -> *mut HashTable;
 }
 
 /// `get_type`.
@@ -577,17 +562,17 @@ pub(crate) struct Unset;
 
 impl Handler for Unset {
     const OPCODE: u32 = swoole_rs_zend::sys::ZEND_UNSET_DIM;
-    fn run(frame: Frame<'_>) -> c_int {
+    fn run(frame: Frame<'_>) -> Next {
         // `get_array_on_opline`: op1's slot.
         let Some(array) = Op::current(frame).op1_container() else {
-            return DISPATCH;
+            return Next::Dispatch;
         };
         match Typed::of(array) {
             Some(typed) if typed.this().key == 0 => {
                 throw_error(c"The typed array list do not support random deletion of elements");
-                CONTINUE
+                Next::Continue
             }
-            _ => DISPATCH,
+            _ => Next::Dispatch,
         }
     }
 }
@@ -598,16 +583,19 @@ pub(crate) struct ForeachBegin;
 
 impl Handler for ForeachBegin {
     const OPCODE: u32 = swoole_rs_zend::sys::ZEND_FE_RESET_RW;
-    fn run(frame: Frame<'_>) -> c_int {
+    fn run(frame: Frame<'_>) -> Next {
         let op = Op::current(frame);
         if op.op1_container().and_then(Typed::of).is_none() {
-            return DISPATCH;
+            return Next::Dispatch;
         }
         throw_error(
             c"The type array do not support using references for element value during iteration",
         );
-        foreach_undef(frame);
-        CONTINUE
+        // The instruction's failure: an undefined result, if it is used.
+        if let Some(result) = op.result() {
+            result.undef_iteration();
+        }
+        Next::Continue
     }
 }
 
@@ -670,18 +658,14 @@ fn fill(call: &Call, parsed: &Parsed, init: Option<&Value>) -> Result<(), Failur
         definition.element =
             parse_value(&parsed.text, start, usize::from(this.len)).ok_or(Failure::Thrown)?;
     }
-    let len = parsed.text().len();
     // `made` takes the new table's reference.
     let mut made = Owned::default();
     let array = typed_new(
         &made,
         init.map_or(0, swoole_rs_zend::Array::count),
-        info_size(len),
+        &definition.header(),
+        IoSlice::new(definition.text()),
     );
-    // SAFETY: the table just made has `info_size(len)` bytes behind it, which
-    // nothing else references yet.
-    let room = unsafe { slice::from_raw_parts_mut(info_of(array).cast(), info_size(len)) };
-    definition.write(room);
     // The table just made, with its definition, which `made` holds and this
     // frame keeps until it returns it.
     let typed = Typed {
@@ -789,8 +773,8 @@ fn check_appended(typed: Typed, call: &Call) -> bool {
 
 /// An override: unless the first argument names a typed array that `allowed`
 /// refuses (Zend has thrown), run the `original` handler, then, with `remark`,
-/// flag the table it rebuilt in place typed again. The original may bail out
-/// through this frame and its handler's, which own nothing to drop.
+/// flag the table it rebuilt in place typed again. A bailout in the original
+/// is trapped and deferred to the handler's end, with no table flagged.
 fn guarded(
     call: &Call,
     original: fn(&Originals) -> zif_handler,
@@ -803,19 +787,21 @@ fn guarded(
     {
         return;
     }
-    if let Some(handler) = ORIGINALS.get().and_then(original) {
-        // SAFETY: a core function's handler, whose whole contract is a live
-        // handler frame and return slot: `call`'s. It parses its own arguments.
-        unsafe { handler(call.frame(), call.return_value()) };
+    if let Some(handler) = ORIGINALS.get().map(original)
+        && handler.is_some()
+        && let Err(bailout) = call.forward(handler)
+    {
+        bailout.defer();
+        return;
     }
     if remark && let Some(typed) = target {
         typed.mark();
     }
 }
 
-// Upstream's `PHP_FUNCTION` names; `install` puts them in the core functions' slots.
+// Upstream's `PHP_FUNCTION` names; `install` puts them in the core functions'
+// slots. Each ends by raising the bailout `guarded` deferred.
 swoole_rs_zend::handlers! {
-    leaf:
     zif_swoole_array_push => push;
     zif_swoole_array_unshift => unshift;
     zif_swoole_array_splice => splice;
@@ -900,27 +886,6 @@ mod tests {
         assert_eq!((empty.value, empty.len), (code(IS_OBJECT), 0));
         let nul = parsed(b"<int\0,string>");
         assert_eq!(nul.key, 0, "strchr stops at a NUL");
-    }
-
-    #[test]
-    fn the_text_follows_the_header_intact() {
-        let parsed = Parsed {
-            this: TypeValue::default(),
-            element: TypeValue::default(),
-            ce: None,
-            text: b"<string,int>\0".to_vec(),
-        };
-        let mut buffer = vec![u64::MAX; info_size(12).div_ceil(8)];
-        let info = buffer.as_mut_ptr().cast::<TypeInfo>();
-        parsed.write(unsafe { slice::from_raw_parts_mut(info.cast(), info_size(12)) });
-        let text = info
-            .wrapping_byte_add(offset_of!(TypeInfo, text))
-            .cast::<u8>();
-        assert_eq!(
-            unsafe { slice::from_raw_parts(text, 13) },
-            b"<string,int>\0"
-        );
-        assert_eq!(unsafe { (*info).len }, 12);
     }
 
     #[test]

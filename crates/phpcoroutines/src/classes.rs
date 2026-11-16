@@ -15,11 +15,8 @@ use swoole_rs_phpstubs::{coroutine, coroutine_system};
 use swoole_rs_zend::{
     Call, Class, Minit, Owned, Value, ZStr,
     bailout::Bailout,
-    opcode::{DISPATCH, Frame, Handler, handler},
-    sys::{
-        ZEND_ACC_FINAL, ZEND_ACC_PRIVATE, user_opcode_handler_t, zend_class_entry,
-        zend_execute_data, zval,
-    },
+    opcode::{Entry, Frame, Handler, Next, handler},
+    sys::{ZEND_ACC_FINAL, ZEND_ACC_PRIVATE, zend_class_entry, zval},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -224,9 +221,9 @@ fn hook_zend(_minit: &Minit) {
         /// `ZEND_BEGIN_SILENCE` and `ZEND_END_SILENCE`: Zend calls each with the
         /// live frame of its opcode.
         safe fn swr_zend_coroutine_opcodes(
-            exit: user_opcode_handler_t,
-            begin_silence: user_opcode_handler_t,
-            end_silence: user_opcode_handler_t,
+            exit: Option<Entry>,
+            begin_silence: Option<Entry>,
+            end_silence: Option<Entry>,
         );
         /// `zend_autoload = handler`; returns the previous one, Zend's (SPL's
         /// `spl_perform_autoload` once registered), which takes two live names.
@@ -236,7 +233,7 @@ fn hook_zend(_minit: &Minit) {
         swr_zend_coroutine_opcodes(
             Some(handler::<Exit>),
             Some(handler::<BeginSilence>),
-            Some(end_silence),
+            Some(handler::<EndSilence>),
         );
     }
     // Restored never, as upstream.
@@ -290,7 +287,7 @@ impl Handler for Exit {
     /// `ZEND_EXIT` before PHP 8.4 (asserted in `shim_coroutine.c`, which
     /// installs it only there).
     const OPCODE: u32 = 79;
-    fn run(frame: Frame<'_>) -> c_int {
+    fn run(frame: Frame<'_>) -> Next {
         let flags = exit_flags();
         if flags != 0 {
             let mut status = swoole_rs_zend::UNDEF;
@@ -304,7 +301,7 @@ impl Handler for Exit {
             std::mem::forget(status.copy());
             throw_exit(c"swoole exit", flags, status);
         }
-        DISPATCH
+        Next::Dispatch
     }
 }
 
@@ -335,7 +332,7 @@ fn exit(call: &Call) {
         }
         return;
     }
-    if host::exit_original(call.frame(), call.return_value()) {
+    if host::exit_original(call) {
         return;
     }
     host::exit_fallback(message.map(ZStr::bytes), code);
@@ -370,16 +367,21 @@ struct BeginSilence;
 
 impl Handler for BeginSilence {
     const OPCODE: u32 = swoole_rs_zend::sys::ZEND_BEGIN_SILENCE;
-    fn run(frame: Frame<'_>) -> c_int {
+    fn run(frame: Frame<'_>) -> Next {
         context::current().set_silence(Some(frame.php().error_reporting()));
-        DISPATCH
+        Next::Dispatch
     }
 }
 
 /// `coro_end_silence_handler`.
-extern "C" fn end_silence(_: *mut zend_execute_data) -> c_int {
-    context::current().set_silence(None);
-    DISPATCH
+struct EndSilence;
+
+impl Handler for EndSilence {
+    const OPCODE: u32 = swoole_rs_zend::sys::ZEND_END_SILENCE;
+    fn run(_: Frame<'_>) -> Next {
+        context::current().set_silence(None);
+        Next::Dispatch
+    }
 }
 
 /// The autoloader Zend had (`original_zend_autoload`).

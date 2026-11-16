@@ -1,13 +1,12 @@
 //! Thread-local TLS configuration builders and immutable runtime snapshots.
 //! [`TlsContext`] retains a builder; sessions use independent [`TlsSettings`].
-use crate::context::{PasswordBinding, copy_password, create_context};
+use crate::context::create_context;
 use crate::{TlsConfig, Warn};
 use openssl_sys::SSL_CTX;
 use std::{
     cell::Cell,
-    ffi::{CStr, c_char, c_int},
+    ffi::{CStr, c_int},
     rc::Rc,
-    sync::Arc,
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::StringSlot;
@@ -54,10 +53,9 @@ impl OwnedTlsFields {
 }
 pub struct OwnedTlsContext {
     fields: Cell<Option<Box<OwnedTlsFields>>>,
-    strings: [Arc<StringSlot>; STRING_COUNT],
-    /// The passphrase slot the context's password callback reads, kept while it may.
-    /// Only a [`Lent`] reaches it.
-    context_password: Cell<Option<Arc<StringSlot>>>,
+    /// Each taken out and put back around plain Rust work, never around a callback;
+    /// no pointer to one leaves the owner.
+    strings: [Cell<StringSlot>; STRING_COUNT],
     warn: Warn,
 }
 
@@ -65,8 +63,7 @@ pub struct OwnedTlsContext {
 /// builder aliases; readers can create sessions without borrowing a builder.
 pub struct TlsSettings {
     fields: OwnedTlsFields,
-    // Drop the context before these slots, including its password callback's storage.
-    strings: [Arc<StringSlot>; STRING_COUNT],
+    strings: [StringSlot; STRING_COUNT],
 }
 #[expect(
     clippy::non_send_fields_in_send_ty,
@@ -124,7 +121,7 @@ impl TlsSettings {
     ) -> bool {
         let context = self.fields.context.as_deref();
         let server = crate::SslCreateFlag::SW_SSL_SERVER as c_int;
-        crate::socket::socket_ssl_new_over(socket, context, server, Some(bio))
+        crate::socket::socket_ssl_new_over(socket, context, server, Some((bio, None)))
             .inspect_err(|error| error.warn())
             .is_ok()
     }
@@ -147,33 +144,31 @@ impl TlsSettings {
         ssl.set_context(self.fields.context.as_deref());
     }
 }
-/// An owner's pointer, scalar fields and string slots.
+/// An owner's pointer and scalar fields; its strings are read and set through the
+/// owner.
 pub struct OwnedTlsPrepared {
     pub owner: *const OwnedTlsContext,
     pub fields: *mut OwnedTlsFields,
-    pub strings: [*const StringSlot; STRING_COUNT],
 }
 /// `SSLContext`'s warnings, `function(): message` at warning level.
 pub fn tls_warning(function: &CStr, message: &str) {
     swoole_rs_corebase::log::warning(function, format_args!("{message}"));
 }
-/// `owner`'s scalar fields and string slots, valid while a reference is held. A write
-/// through them holds the owner as a [`Lent`] does.
+/// `owner`'s scalar fields, valid while a reference is held. A write through them
+/// holds the owner as a [`Lent`] does.
 #[must_use]
 pub fn owner_view(owner: &OwnedTlsContext) -> OwnedTlsPrepared {
     let mut loan = owner.borrow_configuration();
     OwnedTlsPrepared {
         owner,
         fields: loan.edit(std::ptr::from_mut),
-        strings: owner.strings.each_ref().map(Arc::as_ptr),
     }
 }
 /// A new owner that warns through `warn`, with fresh string slots of its own.
 fn fresh(warn: Warn) -> Rc<OwnedTlsContext> {
     Rc::new(OwnedTlsContext {
         fields: Cell::new(Some(Box::default())),
-        strings: std::array::from_fn(|_| StringSlot::empty()),
-        context_password: Cell::new(None),
+        strings: std::array::from_fn(|_| Cell::default()),
         warn,
     })
 }
@@ -281,18 +276,54 @@ impl OwnedTlsContext {
     /// Whether `client_cert_file` is set.
     #[must_use]
     pub fn has_client_cert_file(&self) -> bool {
-        !self.strings[CLIENT_CERT_FILE].bytes().is_empty()
+        self.is_set(CLIENT_CERT_FILE)
+    }
+
+    /// `read` over the string slot `index`, none past the last. The slot is taken out
+    /// and put back around it, so `read` must not reach this owner again.
+    fn with_string<R>(&self, index: usize, read: impl FnOnce(&mut StringSlot) -> R) -> Option<R> {
+        let cell = self.strings.get(index)?;
+        let mut slot = cell.take();
+        let result = read(&mut slot);
+        cell.set(slot);
+        Some(result)
+    }
+
+    /// Whether the string at `index` is set.
+    fn is_set(&self, index: usize) -> bool {
+        self.with_string(index, |slot| !slot.bytes().is_empty())
+            .unwrap_or(false)
+    }
+
+    /// A copy of the string at `index`, embedded NULs included; empty past the last.
+    #[must_use]
+    pub fn string(&self, index: usize) -> Vec<u8> {
+        self.with_string(index, |slot| slot.bytes().to_vec())
+            .unwrap_or_default()
+    }
+
+    /// Copies of the strings, which OpenSSL callbacks can't reach.
+    fn copy_strings(&self) -> [StringSlot; STRING_COUNT] {
+        std::array::from_fn(|index| {
+            let mut copy = StringSlot::new();
+            if self.with_string(index, |slot| copy.set(slot.bytes())) != Some(true) {
+                swoole_rs_corebase::fatal("out of memory copying TLS settings");
+            }
+            copy
+        })
     }
 }
 /// A copy of `tls_host_name`, independent of later configuration changes.
 #[must_use]
 pub fn owner_host_name(owner: &OwnedTlsContext) -> Vec<u8> {
-    owner.strings[TLS_HOST_NAME].bytes().to_vec()
+    owner.string(TLS_HOST_NAME)
 }
 /// A copy of `tls_host_name` up to its first NUL, as C reads it.
 #[must_use]
 pub fn owner_host_c_str(owner: &OwnedTlsContext) -> std::ffi::CString {
-    owner.strings[TLS_HOST_NAME].c_str().to_owned()
+    owner
+        .with_string(TLS_HOST_NAME, |slot| slot.c_str().to_owned())
+        .unwrap_or_default()
 }
 /// An exclusive configuration loan on the builder's owning thread.
 pub struct Lent<'a> {
@@ -309,50 +340,28 @@ impl Lent<'_> {
     /// this builder cannot change the context or password a reader already holds.
     #[must_use]
     pub fn freeze(&self, callback: Option<crate::ServernameCallback>) -> Option<TlsSettings> {
-        let owner = OwnedTlsContext {
-            fields: Cell::new(Some(Box::new(OwnedTlsFields {
-                context: None,
-                ..*self.fields.as_deref()?
-            }))),
-            strings: self.owner.strings.each_ref().map(|from| {
-                let mut slot = StringSlot::new();
-                if !slot.set(from.bytes()) {
-                    swoole_rs_corebase::fatal("out of memory freezing TLS settings");
-                }
-                Arc::new(slot)
-            }),
-            context_password: Cell::new(None),
-            warn: self.owner.warn,
+        let mut fields = OwnedTlsFields {
+            context: None,
+            ..*self.fields.as_deref()?
         };
+        let strings = self.owner.copy_strings();
         crate::swoole_ssl_init();
-        if !create(&mut owner.borrow_configuration()) {
-            return None;
-        }
-        let fields = owner.fields.into_inner()?;
+        let mut config = configuration(&strings, &fields, self.owner.warn);
+        fields.context = Some(new_context(&mut config)?);
+        fields.protocols = config.protocols;
         if let Some(callback) = callback {
             fields.context.as_deref()?.set_servername_callback(callback);
         }
-        Some(TlsSettings {
-            fields: *fields,
-            strings: owner.strings,
-        })
-    }
-
-    /// Another reference to the retained password.
-    fn password(&mut self) -> Option<Arc<StringSlot>> {
-        let held = self.owner.context_password.take();
-        let shared = held.clone();
-        self.owner.context_password.set(held);
-        shared
-    }
-    /// Retains `password` in place of the one held, which goes.
-    fn retain(&mut self, password: Option<Arc<StringSlot>>) {
-        drop(self.owner.context_password.replace(password));
+        Some(TlsSettings { fields, strings })
     }
 }
-/// The owner's strings, as views, and the scalar `fields` copied from it.
-fn configuration<'a>(owner: &'a OwnedTlsContext, fields: &OwnedTlsFields) -> TlsConfig<'a> {
-    let strings = owner.strings.each_ref().map(|slot| &**slot);
+/// Views of `strings`, and the scalar `fields` copied.
+fn configuration<'a>(
+    strings: &'a [StringSlot; STRING_COUNT],
+    fields: &OwnedTlsFields,
+    warn: Warn,
+) -> TlsConfig<'a> {
+    let strings = strings.each_ref();
     TlsConfig {
         ciphers: strings[0].into(),
         ecdh_curve: strings[1].into(),
@@ -370,47 +379,26 @@ fn configuration<'a>(owner: &'a OwnedTlsContext, fields: &OwnedTlsFields) -> Tls
         prefer_server_ciphers: fields.prefer_server_ciphers,
         disable_compress: fields.disable_compress,
         verify_peer: fields.verify_peer,
-        warn: owner.warn,
+        warn,
     }
 }
-/// # Safety
-/// `buffer` holds `capacity` writable bytes, as OpenSSL's password callback lends
-/// them; `slot` is the owner's passphrase slot (the binding's userdata).
-unsafe extern "C" fn slot_password(
-    buffer: *mut c_char,
-    capacity: c_int,
-    _verify: c_int,
-    slot: &StringSlot,
-) -> c_int {
-    let passphrase = slot.bytes_with_nul();
-    let capacity = usize::try_from(capacity).unwrap_or(0);
-    // SAFETY: per the caller: `capacity` writable bytes, lent for this call.
-    let mut buffer = unsafe { swoole_rs_reactor::Fill::from_raw(buffer.cast(), capacity) };
-    let buffer = buffer.slots();
-    copy_password(buffer, passphrase)
+/// A new `SSL_CTX` from `config` that reports its info, none when OpenSSL makes none.
+fn new_context(config: &mut TlsConfig<'_>) -> Option<crate::SslContext> {
+    let ctx = create_context(config);
+    if let Some(ctx) = &ctx {
+        crate::info::SSL_CTX_set_info_callback(ctx, Some(crate::info::info));
+    }
+    ctx
 }
 /// A new `SSL_CTX` from the lent owner's configuration, which replaces the one it
 /// held: false when OpenSSL makes none. The owner's logger does not throw.
 fn create(owner: &mut Lent<'_>) -> bool {
-    let state = owner.owner;
-    // `configuration` copies the fields, so no borrow of them is kept across
-    // OpenSSL/log callbacks.
-    let mut config = owner.edit(|fields| configuration(state, fields));
-    let slot = Arc::as_ptr(&state.strings[PASSPHRASE]);
-    let retained_password = if config.passphrase.is_empty() {
-        None
-    } else {
-        Some(Arc::clone(&state.strings[PASSPHRASE]))
-    };
-    let password = PasswordBinding {
-        userdata: slot,
-        callback: slot_password,
-    };
-    // SAFETY: a live password binding: the owner keeps the slot (`retained_password`).
-    let ctx = unsafe { create_context(&mut config, Some(password)) };
-    if let Some(ctx) = &ctx {
-        crate::info::SSL_CTX_set_info_callback(ctx, Some(crate::info::info));
-    }
+    // `configuration` reads copies of the strings and fields, so no borrow of the
+    // owner is kept across OpenSSL/log callbacks.
+    let strings = owner.owner.copy_strings();
+    let warn = owner.owner.warn;
+    let mut config = owner.edit(|fields| configuration(&strings, fields, warn));
+    let ctx = new_context(&mut config);
     let created = ctx.is_some();
     // The callbacks have returned.
     owner.edit(|fields| {
@@ -418,8 +406,6 @@ fn create(owner: &mut Lent<'_>) -> bool {
         fields.context = ctx;
         fields.protocols = config.protocols;
     });
-    // The new context's live password data is retained independently of native views.
-    owner.retain(retained_password);
     created
 }
 /// `bool SSLContext::create()` of the lent owner, which initializes OpenSSL first.
@@ -447,9 +433,12 @@ pub fn owner_assign(destination: &mut Lent<'_>, source: &mut Lent<'_>) -> Result
     if std::ptr::eq(destination.owner, source.owner) {
         return Ok(());
     }
-    for (index, from) in source.owner.strings.iter().enumerate() {
-        // The source's bytes, a distinct owner's, stay unchanged while they are copied.
-        if !destination.store(index, from.bytes()) {
+    for index in 0..STRING_COUNT {
+        // The source, a distinct owner, lends its slot while it is copied.
+        let copied = source
+            .owner
+            .with_string(index, |from| destination.set_string(index, from.bytes()));
+        if copied != Some(true) {
             return Err(CopyError::String(index));
         }
     }
@@ -458,13 +447,9 @@ pub fn owner_assign(destination: &mut Lent<'_>, source: &mut Lent<'_>) -> Result
     let Some(fields) = source.edit(|fields| fields.try_clone()) else {
         return Err(CopyError::Fields);
     };
-    // Independent retention of the context's actual live password value.
-    let password = source.password();
     // Publish the copied scalar values and reference, releasing the destination's
     // previous one.
     destination.edit(|to| *to = fields);
-    // Release old password ownership only after releasing its OpenSSL reference.
-    destination.retain(password);
     Ok(())
 }
 
@@ -515,11 +500,15 @@ pub fn freeze_socket_context(
 /// # Errors
 /// As [`crate::socket_ssl_new`].
 ///
-/// `hostname` is the automatic host name, none when it is empty.
+/// `hostname` is the automatic host name, none when it is empty. A `UringSocket`'s
+/// session gives `ring` the `SW_SSL_CLIENT` or `SW_SSL_SERVER` flag: it runs in that
+/// state over a pair of memory BIOs, which the ring pumps (failing as `SSL_new` does
+/// when OpenSSL can't make them).
 pub fn socket_session(
     owner: Option<&TlsSettings>,
     record: swoole_rs_reactor::Socket<'_>,
     hostname: Option<&CStr>,
+    ring: Option<c_int>,
 ) -> Result<(), crate::SslNewError> {
     if !record.read(swoole_rs_reactor::SocketFields::ssl).is_null() {
         return Ok(());
@@ -529,7 +518,13 @@ pub fn socket_session(
         return Err(crate::SslNewError::New);
     };
     let fields = &owner.fields;
-    crate::socket_ssl_new(record, fields.context.as_deref(), 0)?;
+    let bios = match ring.map(|_| (crate::OwnedBio::memory(), crate::OwnedBio::memory())) {
+        None => None,
+        Some((Some(read), Some(write))) => Some((read, Some(write))),
+        Some(_) => return Err(crate::SslNewError::New),
+    };
+    let flags = ring.unwrap_or(0);
+    crate::socket::socket_ssl_new_over(record, fields.context.as_deref(), flags, bios)?;
     let disable_tls_host_name = fields.disable_tls_host_name;
     let ssl = crate::Ssl::of(record);
     let explicit = &owner.strings[TLS_HOST_NAME];
@@ -621,7 +616,7 @@ impl Lent<'_> {
         }
         // The stored value keeps every byte. An allocation refusal, which
         // std::bad_alloc ends.
-        if !self.store(slot, value) {
+        if !self.set_string(slot, value) {
             swoole_rs_corebase::fatal("out of memory storing a TLS setting");
         }
         if matches!(which, Text::HostName) {
@@ -643,14 +638,13 @@ impl Lent<'_> {
         });
     }
 
-    /// Stores `value` in the owner's string slot `index`: false, leaving the slot as it
-    /// was, when the allocation fails.
-    fn store(&self, index: usize, value: &[u8]) -> bool {
-        // SAFETY: this loan holds the builder's checked exclusive configuration borrow
-        // on its owning thread, and no safe API lends the owner's string slots out, so
-        // nothing else reads or sets the slot and `value` is not its bytes.
-        let store = |slot: &Arc<StringSlot>| unsafe { slot.set_shared(value) };
-        self.owner.strings.get(index).is_some_and(store)
+    /// Stores `value` in the owner's string slot `index`, as `RustStringView`'s
+    /// assignment does: false, leaving the slot as it was, when the allocation fails or
+    /// past the last.
+    pub fn set_string(&mut self, index: usize, value: &[u8]) -> bool {
+        self.owner
+            .with_string(index, |slot| slot.set(value))
+            .unwrap_or(false)
     }
 
     /// Edits the configuration owned by this loan.
@@ -665,8 +659,7 @@ impl Lent<'_> {
 /// Whether the owner has a certificate file and a key file.
 #[must_use]
 pub fn has_files(owner: &OwnedTlsContext) -> (bool, bool) {
-    let set = |slot: &Arc<StringSlot>| !slot.bytes().is_empty();
-    (set(&owner.strings[4]), set(&owner.strings[5]))
+    (owner.is_set(4), owner.is_set(5))
 }
 
 impl OwnedTlsContext {
@@ -674,10 +667,9 @@ impl OwnedTlsContext {
     /// verified without a CA.
     #[must_use]
     pub fn names_no_ca(&self) -> bool {
-        let [.., client_cert_file, _, cafile, capath] = &self.strings;
-        [client_cert_file, cafile, capath]
-            .iter()
-            .all(|slot| slot.bytes().is_empty())
+        [CLIENT_CERT_FILE, 9, 10]
+            .into_iter()
+            .all(|index| !self.is_set(index))
     }
 }
 
@@ -686,6 +678,7 @@ mod tests {
     use super::*;
     use std::ffi::c_void;
     use std::ptr;
+    use std::sync::Arc;
 
     #[test]
     fn configuration_loans_reject_aliases_and_hostname_copies_survive_changes() {
@@ -747,20 +740,8 @@ mod tests {
         panic!("unexpected TLS warning");
     }
     unsafe extern "C" {
-        fn SSL_CTX_get_default_passwd_cb(
-            ctx: *mut SSL_CTX,
-        ) -> Option<extern "C" fn(*mut c_char, c_int, c_int, *mut c_void) -> c_int>;
+        fn SSL_CTX_get_default_passwd_cb(ctx: *mut SSL_CTX) -> *mut c_void;
         fn SSL_CTX_get_default_passwd_cb_userdata(ctx: *mut SSL_CTX) -> *mut c_void;
-    }
-    /// Whether `ctx`'s password callback is `callback` with `data`.
-    unsafe fn password_binding_matches(
-        ctx: *mut SSL_CTX,
-        data: *mut c_void,
-        callback: crate::context::PasswordCallback,
-    ) -> bool {
-        let actual = unsafe { SSL_CTX_get_default_passwd_cb(ctx) };
-        let userdata = unsafe { SSL_CTX_get_default_passwd_cb_userdata(ctx) };
-        actual.is_some_and(|actual| std::ptr::fn_addr_eq(actual, callback)) && userdata == data
     }
     #[test]
     fn client_settings_write_the_owner() {
@@ -768,10 +749,7 @@ mod tests {
             let prepared = owner_new(warning);
             let owner = prepared.owner;
             let mut lent = (&*owner).borrow_configuration();
-            let text = |index: usize| {
-                let view = swoole_rs_corebase::swr_v1_core_string_view(&*prepared.strings[index]);
-                std::slice::from_raw_parts(view.data.cast::<u8>(), view.length).to_vec()
-            };
+            let text = |index: usize| (*owner).string(index);
             assert!(lent.set_text(Text::HostName, b"example.test"));
             assert_eq!(text(8), b"example.test");
             assert!(!(*prepared.fields).disable_tls_host_name);
@@ -825,31 +803,28 @@ mod tests {
                 ("", false, "", None),
             ] {
                 let prepared = owner_new(warning);
-                assert!((*prepared.strings[8]).set_shared(explicit.as_bytes()));
+                let owner = |prepared: &OwnedTlsPrepared| (*prepared.owner).borrow_configuration();
+                assert!(owner(&prepared).set_string(TLS_HOST_NAME, explicit.as_bytes()));
                 (*prepared.fields).disable_tls_host_name = disabled;
-                let hostname = StringSlot::empty();
-                assert!(hostname.set_shared(automatic.as_bytes()));
+                let mut hostname = StringSlot::new();
+                assert!(hostname.set(automatic.as_bytes()));
                 let socket =
                     swoole_rs_reactor::SocketRecord::with_fd(stream.as_raw_fd(), 6).into_raw();
                 let handle = swoole_rs_reactor::Socket::from_ptr(socket).unwrap();
-                let settings = freeze_socket_context(
-                    &mut (&*prepared.owner).borrow_configuration(),
-                    handle,
-                    true,
-                    true,
-                )
-                .unwrap();
+                let settings =
+                    freeze_socket_context(&mut owner(&prepared), handle, true, true).unwrap();
                 assert!((*socket).fields.output.ssl_send);
                 assert!((*prepared.fields).http_v2);
                 // Session creation must use the snapshot even after the builder changes
                 // and its last reference is released.
-                assert!((*prepared.strings[8]).set_shared(b"changed.test"));
+                assert!(owner(&prepared).set_string(TLS_HOST_NAME, b"changed.test"));
                 (*prepared.fields).disable_tls_host_name = !disabled;
                 drop(Rc::from_raw(prepared.owner));
                 let result = socket_session(
                     Some(&settings),
                     handle,
                     (!automatic.is_empty()).then(|| hostname.c_str()),
+                    None,
                 );
                 assert_eq!(result, Ok(()));
                 let ssl = (*socket).fields.ssl().cast::<openssl_sys::SSL>();
@@ -869,42 +844,29 @@ mod tests {
                         & openssl_sys::SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER,
                     0
                 );
-                assert_eq!(socket_session(None, handle, None), Ok(()));
-                openssl_sys::SSL_free(ssl);
+                assert_eq!(socket_session(None, handle, None, None), Ok(()));
+                // The record frees its SSL.
                 drop(Box::from_raw(socket));
             }
         }
     }
     #[test]
-    fn copied_ready_context_retains_independent_configuration_and_live_password() {
+    fn copied_ready_context_retains_independent_configuration() {
         unsafe {
             let source = owner_new(warning);
             let destination = owner_new(warning);
-            assert!((*source.strings[PASSPHRASE]).set_shared(b"source"));
-            assert!(create(&mut (&*source.owner).borrow_configuration()));
+            let owner = |prepared: &OwnedTlsPrepared| (*prepared.owner).borrow_configuration();
+            assert!(owner(&source).set_string(PASSPHRASE, b"source"));
+            assert!(create(&mut owner(&source)));
             let context = (*source.fields).context_ptr();
             assert_eq!(
-                owner_assign(
-                    &mut (&*destination.owner).borrow_configuration(),
-                    &mut (&*source.owner).borrow_configuration()
-                ),
+                owner_assign(&mut owner(&destination), &mut owner(&source)),
                 Ok(())
             );
             assert_eq!((*destination.fields).context_ptr(), context);
-            assert!((*destination.strings[PASSPHRASE]).set_shared(b"copy"));
-            assert_eq!(
-                std::ffi::CStr::from_ptr(
-                    swoole_rs_corebase::swr_v1_core_string_view(&*source.strings[PASSPHRASE]).data
-                )
-                .to_bytes(),
-                b"source"
-            );
+            assert!(owner(&destination).set_string(PASSPHRASE, b"copy"));
+            assert_eq!((*source.owner).string(PASSPHRASE), b"source");
             drop(Rc::from_raw(source.owner));
-            let password = (*destination.owner).context_password.as_ptr();
-            let slot = Arc::as_ptr((&*password).as_ref().unwrap());
-            let mut output = [0u8; 16];
-            assert_eq!(slot_password(output.as_mut_ptr().cast(), 16, 0, &*slot), 6);
-            assert_eq!(&output[..7], b"source\0");
             assert_eq!(
                 openssl_sys::SSL_CTX_get_options(context),
                 openssl_sys::SSL_CTX_get_options((*destination.fields).context_ptr())
@@ -912,50 +874,65 @@ mod tests {
             drop(Rc::from_raw(destination.owner));
         }
     }
-    #[test]
-    fn shared_context_reads_the_live_passphrase_after_the_first_reference_goes() {
+    /// The PEM text `write` puts in a memory BIO.
+    unsafe fn pem(write: impl FnOnce(*mut openssl_sys::BIO) -> c_int) -> Vec<u8> {
         unsafe {
-            let prepared = owner_new(warning);
-            let owner = prepared.owner;
-            let slot = &*prepared.strings[PASSPHRASE];
-            assert!((*prepared.strings[PASSPHRASE]).set_shared(b"initial"));
-            assert!(create(&mut (&*owner).borrow_configuration()));
-            let ctx = (*prepared.fields).context_ptr();
-            assert_eq!((*prepared.fields).protocols, 126);
-            let data = ptr::from_ref(slot).cast_mut().cast();
-            assert!(password_binding_matches(ctx, data, slot_password));
-            for value in [b"swoole".as_slice(), b"a\0b", b"", b"1234567"] {
-                assert!((*prepared.strings[PASSPHRASE]).set_shared(value));
-                for capacity in [-8, -1, 0, 1, 2, 3, 4, 7, 8, 15, 16] {
-                    let mut bytes = [0x55u8; 16];
-                    let mut expected = bytes;
-                    let length = if !value.is_empty()
-                        && c_int::try_from(value.len()).unwrap() < capacity - 1
-                    {
-                        value.len()
-                    } else {
-                        0
-                    };
-                    if length != 0 {
-                        expected[..length].copy_from_slice(value);
-                        expected[length] = 0;
-                    }
-                    assert_eq!(
-                        slot_password(bytes.as_mut_ptr().cast(), capacity, 0, slot),
-                        c_int::try_from(length).unwrap()
-                    );
-                    assert_eq!(bytes, expected);
-                }
-            }
-            // Another ownership handle, as a `TlsContext` clone takes one.
-            Rc::increment_strong_count(owner);
-            let retained = owner;
-            drop(Rc::from_raw(owner));
-            assert!((*prepared.strings[PASSPHRASE]).set_shared(b"retained"));
-            let mut bytes = [0u8; 16];
-            assert_eq!(slot_password(bytes.as_mut_ptr().cast(), 16, 0, slot), 8);
-            assert_eq!(&bytes[..9], b"retained\0");
-            drop(Rc::from_raw(retained));
+            let bio = openssl_sys::BIO_new(openssl_sys::BIO_s_mem());
+            assert_eq!(write(bio), 1);
+            let mut data = ptr::null_mut();
+            let length = usize::try_from(openssl_sys::BIO_get_mem_data(bio, &raw mut data));
+            let text = std::slice::from_raw_parts(data.cast::<u8>(), length.unwrap()).to_vec();
+            openssl_sys::BIO_free_all(bio);
+            text
         }
+    }
+    #[test]
+    fn encrypted_key_loads_with_its_passphrase_and_leaves_no_callback() {
+        use openssl_sys::*;
+        fn quiet(_function: &CStr, _message: &str) {}
+        let dir = std::env::temp_dir();
+        let id = std::process::id();
+        let cert_file = dir.join(format!("swr-tls-{id}-passphrase-cert.pem"));
+        let key_file = dir.join(format!("swr-tls-{id}-passphrase-key.pem"));
+        unsafe {
+            let keygen = EVP_PKEY_CTX_new_id(EVP_PKEY_ED25519, ptr::null_mut());
+            let mut key = ptr::null_mut();
+            assert_eq!(EVP_PKEY_keygen_init(keygen), 1);
+            assert_eq!(EVP_PKEY_keygen(keygen, &raw mut key), 1);
+            EVP_PKEY_CTX_free(keygen);
+            let cert = X509_new();
+            assert_eq!(X509_set_version(cert, 2), 1);
+            assert_eq!(ASN1_INTEGER_set(X509_get_serialNumber(cert), 1), 1);
+            assert!(!X509_gmtime_adj(X509_getm_notBefore(cert), 0).is_null());
+            assert!(!X509_gmtime_adj(X509_getm_notAfter(cert), 3600).is_null());
+            assert_eq!(X509_set_pubkey(cert, key), 1);
+            assert!(X509_sign(cert, key, ptr::null()) > 0);
+            std::fs::write(&cert_file, pem(|bio| PEM_write_bio_X509(bio, cert))).unwrap();
+            // Upstream copies the whole `std::string`, an embedded NUL included.
+            let secret = b"a\0b secret";
+            let encrypted = pem(|bio| {
+                let length = c_int::try_from(secret.len()).unwrap();
+                let (cipher, text) = (EVP_aes_128_cbc(), secret.as_ptr().cast());
+                PEM_write_bio_PKCS8PrivateKey(bio, key, cipher, text, length, None, ptr::null_mut())
+            });
+            std::fs::write(&key_file, encrypted).unwrap();
+            X509_free(cert);
+            EVP_PKEY_free(key);
+        }
+        let owner = fresh(quiet);
+        let mut lent = owner.borrow_configuration();
+        assert!(lent.set_text(Text::CertFile, cert_file.to_str().unwrap().as_bytes()));
+        assert!(lent.set_text(Text::KeyFile, key_file.to_str().unwrap().as_bytes()));
+        for (passphrase, loads) in [(b"a".as_slice(), false), (b"a\0b secret", true)] {
+            assert!(lent.set_text(Text::Passphrase, passphrase));
+            assert_eq!(create(&mut lent), loads, "{passphrase:?}");
+        }
+        let ctx = lent.edit(|fields| fields.context_ptr());
+        unsafe {
+            assert!(SSL_CTX_get_default_passwd_cb(ctx).is_null());
+            assert!(SSL_CTX_get_default_passwd_cb_userdata(ctx).is_null());
+        }
+        _ = std::fs::remove_file(cert_file);
+        _ = std::fs::remove_file(key_file);
     }
 }

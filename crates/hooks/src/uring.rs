@@ -561,7 +561,7 @@ fn file_status(result: io::Result<isize>) -> io::Result<()> {
 }
 
 /// One request per operation, whose entries carry no pointer but their borrowed
-/// arguments'.
+/// arguments' (an [`IoVector`]'s include its buffers, in its direction).
 macro_rules! safe_operations {
     ($(
         $(#[$doc:meta])*
@@ -650,31 +650,34 @@ safe_operations! {
         timeout -1.0, opcode::Fsync::new(Fd(fd)).flags(FsyncFlags::DATASYNC), file_status;
     pub fn ftruncate(fd: c_int, length: libc::off_t) -> io::Result<()>,
         timeout -1.0, opcode::Ftruncate::new(Fd(fd), length.cast_unsigned()), file_status;
+    /// `IORING_OP_READV` into `vector`'s remaining buffers, or `IORING_OP_WRITEV` from
+    /// them, as the vector was made for.
+    pub fn vector(fd: c_int, vector: &IoVector<'_>, timeout: f64) -> io::Result<usize>,
+        timeout timeout, Vectored::new(fd, vector), byte_count;
 }
 
-/// `IORING_OP_READV` into `vector`'s remaining buffers, or `IORING_OP_WRITEV` from
-/// them, as the vector was made for.
-/// # Errors
-/// The completion's captured errno, including linked timeouts.
-#[must_use = "check the transfer result"]
-pub fn vector(host: &Host, fd: c_int, vector: &IoVector<'_>, timeout: f64) -> io::Result<usize> {
-    let iovecs = vector.iovecs();
-    let count = c_int::try_from(iovecs.len()).unwrap_or(0).cast_unsigned();
-    let iov = iovecs.as_ptr();
-    let entry = if vector.write() {
-        opcode::Writev::new(Fd(fd), iov, count)
-            .offset(u64::MAX)
-            .build()
-    } else {
-        opcode::Readv::new(Fd(fd), iov, count)
-            .offset(u64::MAX)
-            .build()
-    };
-    // SAFETY: the entry's pointers are the borrowed vector's iovecs, which only its
-    // `&mut` methods move, and their buffers, valid in its direction while it lives
-    // (the type's invariant); the request completes before `request` returns.
-    let result = unsafe { request(host, timeout, entry) };
-    byte_count(result)
+/// The `IORING_OP_READV` or `IORING_OP_WRITEV` entry over a vector's remaining
+/// iovecs, which only its `&mut` methods move, in the direction it was made for.
+struct Vectored(squeue::Entry);
+
+impl Vectored {
+    fn new(fd: c_int, vector: &IoVector<'_>) -> Self {
+        let (iov, count) = vector.iovecs();
+        let count = c_int::try_from(count).unwrap_or(0).cast_unsigned();
+        Self(if vector.write() {
+            opcode::Writev::new(Fd(fd), iov, count)
+                .offset(u64::MAX)
+                .build()
+        } else {
+            opcode::Readv::new(Fd(fd), iov, count)
+                .offset(u64::MAX)
+                .build()
+        })
+    }
+
+    fn build(self) -> squeue::Entry {
+        self.0
+    }
 }
 
 /// Sleep `seconds` in the ring's timer.

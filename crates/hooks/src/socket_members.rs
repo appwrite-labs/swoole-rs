@@ -20,6 +20,7 @@ use crate::uring_socket as ring;
 use crate::vector::{IoVector, RecvMessage, SendMessage, vector_all};
 use core::ffi::{CStr, c_int};
 use swoole_rs_corebase::constants::{SW_STACK_BUFFER_SIZE, SocketType};
+use swoole_rs_corebase::lent::{Spare, SpareVectors};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::sys::{self, ReadSlot, strerror};
 use swoole_rs_reactor::Events;
@@ -30,6 +31,17 @@ use swoole_rs_tls::upstream::{
     peek, recv, recv_fill, send, send_drain, sendfile as socket_sendfile_fd,
     socket_ssl_peer_certificate_pem,
 };
+
+/// Which socket receive fills a lent buffer.
+#[derive(Clone, Copy)]
+pub enum Receive {
+    Recv,
+    All,
+    Line,
+    Buffered,
+    Peek,
+    Peer,
+}
 
 /// The coroutine socket a reactor event came from, and its `network::Socket`.
 fn event_socket(event: &Event) -> Option<(Co, Socket<'_>)> {
@@ -403,6 +415,23 @@ impl Co {
         Vec::new()
     }
 
+    /// Receive into `out`, counting the bytes the selected operation initialized.
+    #[inline]
+    pub fn recv_spare(self, op: Receive, out: &mut Spare<'_>) -> Option<usize> {
+        // SAFETY: each socket receive initializes the reported prefix of its room;
+        // recvfrom may report the full datagram length, which Spare clamps to the room.
+        unsafe {
+            out.read(|room| match op {
+                Receive::Recv => self.recv(room),
+                Receive::All => self.recv_all(room),
+                Receive::Line => self.recv_line(room),
+                Receive::Buffered => self.recv_with_buffer(room),
+                Receive::Peek => self.peek(room),
+                Receive::Peer => self.recvfrom_peer(room),
+            })
+        }
+    }
+
     /// `Socket::recv(buf, n)`: the count of `buf`'s first slots it wrote, or -1.
     pub fn recv(self, buf: &mut [impl ReadSlot]) -> Option<usize> {
         #[cfg(feature = "iouring")]
@@ -464,6 +493,29 @@ impl Co {
         }
         let call = call!(|s, at, len| count(libc::write(s.fd(), at.cast(), len)));
         self.transfer(0, Buffer::write(buf), call)
+    }
+
+    /// A vectored receive into lent rooms, with the cursor where it stopped.
+    pub fn recv_spare_vectors(
+        self,
+        out: &mut SpareVectors<'_>,
+        all: bool,
+    ) -> Option<(usize, c_int, usize)> {
+        // SAFETY: vector's read paths initialize their successful byte count in
+        // descriptor order, including a partial read before an error. The cursor
+        // advances a private descriptor copy, leaving the original rooms intact.
+        unsafe {
+            out.read(|rooms| {
+                if c_int::try_from(rooms.len()).is_err() {
+                    swoole_rs_corebase::fatal("too many I/O vectors for an int");
+                }
+                let mut vector = IoVector::new(crate::vector::Vectors::Read(rooms))
+                    .unwrap_or_else(|| swoole_rs_corebase::fatal("the I/O vectors can't be built"));
+                let received = self.vector(&mut vector, all);
+                let (index, offset) = vector.stopped();
+                (received.map(|count| (count, index, offset)), received)
+            })
+        }
     }
 
     /// `Socket::readv(io_vector)` or `writev`, in the direction the vector was made

@@ -4,7 +4,7 @@ use core::cell::Cell;
 use core::ffi::c_int;
 
 use swoole_rs_buffer::cpp::CppBuffer;
-use swoole_rs_corebase::{CoreAllocator, TrustedAllocator};
+use swoole_rs_corebase::TrustedAllocator;
 use swoole_rs_reactor::{SocketFields, SocketRecord};
 
 use crate::reactor_handle::Reactor;
@@ -70,9 +70,8 @@ pub(crate) fn valid(conn: Option<Connection<'_>>) -> bool {
         .is_some_and(|socket| socket.read(|s| s.fd_type == FD_SESSION))
 }
 
-/// `ReactorThread`; server.cc asserts this layout. Its own thread writes it, so the
-/// fields it sets are cells behind a shared reference.
-#[repr(C)]
+/// `ReactorThread`. Its own thread writes it, so the fields it sets are cells behind a
+/// shared reference.
 pub(crate) struct ThreadRecord {
     pub(crate) id: Cell<c_int>,
     pub(crate) notify_pipe: Cell<Option<swoole_rs_reactor::Socket<'static>>>,
@@ -83,29 +82,17 @@ pub(crate) struct ThreadRecord {
     pub(crate) bus: PoolBus,
 }
 
-/// `SwooleG.std_allocator`.
-static STD_ALLOCATOR: CoreAllocator = CoreAllocator {
-    malloc: Some(swoole_rs_corebase::sys::malloc),
-    calloc: Some(swoole_rs_corebase::sys::calloc),
-    realloc: Some(libc::realloc),
-    free: Some(libc::free),
-};
-
-/// `SwooleG.std_allocator`, vouched for.
+/// `SwooleG.std_allocator`: libc's.
 #[cfg_attr(
     not(any(test, feature = "upstream-symbols")),
     expect(dead_code, reason = "only the hybrid makes servers and message buses")
 )]
-pub(crate) const STD: TrustedAllocator =
-    // SAFETY: libc's `malloc`, `calloc`, `realloc` and `free`, which keep the
-    // allocator contract.
-    unsafe { TrustedAllocator::new(&STD_ALLOCATOR) };
+pub(crate) const STD: TrustedAllocator = TrustedAllocator::STD;
 
 /// A `MessageBus` record: the Rust bus, then the allocator its packets and buffer
 /// come from. Only the constructors here fill one, with `SwooleG.std_allocator` or
 /// another record's allocator, and only [`PoolBus::set_allocator`] replaces it, with
 /// one a [`TrustedAllocator`] vouched for.
-#[repr(C)]
 pub(crate) struct PoolBus {
     bus: Box<swoole_rs_bus::MessageBus>,
     /// A cell: [`PoolBus::set_allocator`] replaces it in place.
@@ -170,13 +157,6 @@ impl ThreadRecord {
         crate::objects::Bus::over(&self.bus)
     }
 }
-
-const _: () = assert!(
-    core::mem::offset_of!(ThreadRecord, heartbeat_timer) == 32
-        && core::mem::offset_of!(ThreadRecord, bus) == 40
-        && size_of::<ThreadRecord>() == 56,
-    "server.cc ReactorThread layout"
-);
 
 #[cfg(feature = "upstream-symbols")]
 impl ThreadRecord {

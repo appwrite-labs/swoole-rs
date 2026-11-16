@@ -76,11 +76,10 @@ pub fn try_box<T>(initialize: impl FnOnce() -> T) -> Option<Box<T>> {
 }
 
 impl Buffer {
-    /// A new queue; chunk size 0 means `INT32_MAX`.
-    /// # Errors
-    /// `NoMem` when the allocation fails.
-    pub fn create(chunk_size: u32) -> Result<Box<Self>, Error> {
-        try_box(|| Self {
+    /// A new queue by value; chunk size 0 means `INT32_MAX`.
+    #[must_use]
+    pub fn new(chunk_size: u32) -> Self {
+        Self {
             entries: VecDeque::new(),
             recycled: Vec::new(),
             recycled_bytes: 0,
@@ -91,8 +90,7 @@ impl Buffer {
             },
             length: 0,
             cursor: typed::Cursor::default(),
-        })
-        .ok_or(Error::NoMem)
+        }
     }
 
     // Limit idle retention to 64 KiB and 64 descriptors per queue. Recycling is
@@ -137,18 +135,12 @@ impl Buffer {
         (self.length, self.entries.len())
     }
 
-    /// Drops the queue.
-    /// # Errors
-    /// The queue itself, unchanged, while it still holds a native token.
-    pub fn release(self: Box<Self>) -> Result<(), Box<Self>> {
-        if self
-            .entries
+    /// Whether it still holds a native token, which it may not be dropped with.
+    #[must_use]
+    pub fn holds_token(&self) -> bool {
+        self.entries
             .iter()
             .any(|e| matches!(e, Entry::TypedToken(_)))
-        {
-            return Err(self);
-        }
-        Ok(())
     }
 
     // Expose the contiguous append's single part to the optimizer.
@@ -294,7 +286,7 @@ mod tests {
     pub(super) struct Owned(pub(super) *mut Buffer);
     impl Owned {
         pub(super) fn new(size: u32) -> Self {
-            Self(Box::into_raw(Buffer::create(size).unwrap()))
+            Self(Box::into_raw(Box::new(Buffer::new(size))))
         }
         #[expect(
             clippy::mut_from_ref,
@@ -326,7 +318,8 @@ mod tests {
     }
     impl Drop for Owned {
         fn drop(&mut self) {
-            assert!(unsafe { Box::from_raw(self.0) }.release().is_ok());
+            let queue = unsafe { Box::from_raw(self.0) };
+            assert!(!queue.holds_token());
         }
     }
 
@@ -439,8 +432,7 @@ mod tests {
         let (token, status) = buffer.push(Box::new(42));
         assert_eq!(status, Ok(()));
         assert_eq!(buffer.append(b"g"), Ok(()));
-        let kept = Box::into_raw(unsafe { Box::from_raw(buffer.0) }.release().unwrap_err());
-        assert_eq!(kept, buffer.0);
+        assert!(buffer.queue().holds_token());
         assert_eq!(buffer.stats(), (7, 4));
         assert!(buffer.pop().is_null());
         assert!(buffer.pop().is_null());
@@ -534,7 +526,7 @@ mod tests {
     )]
     fn every_allocation_failure_is_atomic() {
         FAIL_AFTER.set(Some(0));
-        let status = Buffer::create(4).err();
+        let status = try_box(|| Buffer::new(4)).ok_or(Error::NoMem).err();
         FAIL_AFTER.set(None);
         assert_eq!(status, Some(Error::NoMem));
         let mut failures = 0;

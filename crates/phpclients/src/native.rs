@@ -356,6 +356,17 @@ impl Co {
         co::vector(self.0, vectors, all)
     }
 
+    /// Read into the strings' lent rooms under `timeout`, counting their content.
+    pub(crate) fn read_vector(
+        self,
+        buffers: &mut [ZBuf],
+        all: bool,
+        timeout: f64,
+    ) -> Option<(usize, c_int, usize)> {
+        let _timeout = self.timeout(timeout, TimeoutKind::READ);
+        ZBuf::fill_vectored(buffers, |out| self.0.recv_spare_vectors(out, all))
+    }
+
     /// `sendfile(file, offset, length)` of the file named up to the first NUL,
     /// as upstream reads it.
     pub(crate) fn sendfile(self, file: &[u8], offset: i64, length: i64) -> bool {
@@ -382,22 +393,16 @@ impl Co {
     /// One receiving [`Transfer`] (`recvfrom` for none) into `buffer`'s room,
     /// counting what it wrote there.
     fn fill(self, op: Option<Transfer>, buffer: &mut ZBuf) -> Option<usize> {
-        let out = buffer.spare_capacity_mut();
-        let received = match op {
-            None => self.0.recvfrom_peer(out),
-            Some(Transfer::Peek) => self.0.peek(out),
-            Some(Transfer::RecvAll) => self.0.recv_all(out),
-            Some(Transfer::RecvLine) => self.0.recv_line(out),
-            Some(Transfer::RecvWithBuffer) => self.0.recv_with_buffer(out),
-            Some(_) => self.0.recv(out),
+        use swoole_rs_hooks::socket_members::Receive;
+        let op = match op {
+            None => Receive::Peer,
+            Some(Transfer::Peek) => Receive::Peek,
+            Some(Transfer::RecvAll) => Receive::All,
+            Some(Transfer::RecvLine) => Receive::Line,
+            Some(Transfer::RecvWithBuffer) => Receive::Buffered,
+            Some(_) => Receive::Recv,
         };
-        if let Some(count) = received {
-            let len = buffer.capacity().min(buffer.len() + count);
-            // SAFETY: each of these receives returns the count of the room's first
-            // slots it wrote, and the room ends at the capacity.
-            unsafe { buffer.set_len(len) };
-        }
-        received
+        buffer.fill(|out| self.0.recv_spare(op, out))
     }
 
     /// `get_addr()` and `get_port()`.

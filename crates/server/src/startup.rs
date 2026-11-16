@@ -116,7 +116,7 @@ fn create_on(serv: view::Server<'_>, cpu: u32) -> bool {
         log::sys_warning(c"Server::create", m);
         return false;
     }
-    tables.session_list.replace(sessions);
+    tables.map_sessions(sessions);
     let count = state.ports.len();
     let port_gs = Shm::calloc(count, size_of::<PortCounters>());
     let list = port_gs.as_ptr().cast::<PortCounters>();
@@ -497,7 +497,8 @@ pub(crate) fn destroy(serv: view::Server<'_>) {
     match mode {
         Mode::Base => destroy_base_factory(state),
         Mode::Process => _ = hybrid().step(serv, Step::DestroyProcessFactory),
-        Mode::Thread => hybrid().destroy_thread_factory(serv),
+        // `destroy_thread_factory` frees only tables, which `free_server` frees.
+        Mode::Thread => {}
     }
     if config.task_worker_num.get() > 0 {
         unmap(&config.task_results);
@@ -513,11 +514,10 @@ fn unmap(shm: &Shm) {
     shm.replace(Shm::empty());
 }
 
-/// `Server::destroy_base_factory()`: the connection list and the connection counts,
-/// the server's and each port's, which no other process shares once the workers
-/// are reaped.
+/// `Server::destroy_base_factory()`: the connection counts, the server's and each
+/// port's, which no other process shares once the workers are reaped. The connection
+/// list goes with the other tables, in [`free_server`].
 fn destroy_base_factory(state: &crate::ServerState) {
-    unmap(&state.tables_ref().connection_list);
     if let Some(gs) = crate::shared::server_counters(state) {
         unmap(&gs.connection_nums);
     }
@@ -528,11 +528,17 @@ fn destroy_base_factory(state: &crate::ServerState) {
     }
 }
 
-/// The session list, port counters, workers and factory, then `SwooleG.server`.
+/// The tables (the connection and session lists and the reactor threads, which every
+/// mode's factory destroy left), port counters, workers and factory, then
+/// `SwooleG.server`.
 fn free_server(serv: view::Server<'_>) {
     let state = serv.state();
+    // SAFETY: the master's teardown, once the workers, reactor threads and shutdown
+    // callbacks are done: nothing borrows the tables while this lives.
+    let tables = unsafe { &mut *state.tables() };
+    tables.unmap_lists();
+    drop(tables.take_reactor_threads());
     let (tables, config) = (state.tables_ref(), state.config_ref());
-    unmap(&tables.session_list);
     unmap(&tables.port_gs_list);
     unmap(&config.workers);
     if !config.factory_.get().is_null() {
@@ -708,7 +714,7 @@ mod tests {
         assert_eq!(config(&live).reactor_num.get(), 1, "the reactor stays");
         let free = |live: &LiveServer| {
             let tables = unsafe { &mut *state.tables() };
-            assert!(!tables.session_list.is_null(), "sessions");
+            assert!(tables.sessions_mapped(), "sessions");
             assert!(!config(live).workers.is_null(), "workers");
             let port = state.ports.get(0).unwrap().config();
             assert_eq!(
@@ -719,7 +725,7 @@ mod tests {
             assert_eq!(config(live).factory_.get().addr(), 0x70, "the factory");
             config(live).factory_.set(core::ptr::null_mut());
             config(live).workers.free();
-            tables.session_list.free();
+            tables.unmap_lists();
             tables.port_gs_list.free();
         };
         free(&live);
@@ -728,17 +734,15 @@ mod tests {
         assert!(create_on(live.server(), 4), "base mode");
         assert_eq!(calls(), [Call::FactoryNew]);
         assert_eq!(config(&live).reactor_num.get(), 2, "a reactor per worker");
-        let tables = unsafe { &mut *state.tables() };
         assert!(
-            !tables.connection_list.is_null(),
+            state.tables_ref().connections_mapped(),
             "the worker's own connections"
         );
-        tables.connection_list.free();
         let gs = config(&live)
             .gs
             .as_ptr()
-            .cast::<crate::shared::ServerCounters>();
-        unsafe { (*gs).connection_nums.free() };
+            .cast::<crate::shared::ServerShared>();
+        unsafe { (*gs).counters.connection_nums.free() };
         let port = state.ports.get(0).unwrap().config();
         let port_gs = port.gs.get().cast::<PortCounters>();
         unsafe { (*port_gs).connection_nums.free() };
@@ -967,10 +971,16 @@ mod tests {
     fn destroy_joins_the_reactors_before_the_factory_stops() {
         for mode in [Mode::Base, Mode::Process] {
             let mut live = LiveServer::new();
-            live.forget_tables(mode == Mode::Base);
+            live.forget_tables(true);
             set_mode(&live, mode);
             config(&live).worker_num.set(2);
             assert!(create_on(live.server(), 4), "mode {mode:?}");
+            if mode == Mode::Process {
+                // What the process factory's create maps, which the stand-in doesn't.
+                let max = live.server().max_connection() as usize;
+                let list = Shm::calloc(max, size_of::<crate::ConnectionRecord>());
+                live.state().tables_ref().map_connections(list);
+            }
             live.counters().start.store(1, SeqCst);
             calls();
             destroy(live.server());
@@ -999,15 +1009,11 @@ mod tests {
                 "shut down"
             );
             let tables = live.state().tables_ref();
-            assert!(tables.session_list.is_null(), "sessions freed");
+            assert!(!tables.sessions_mapped(), "sessions freed");
             assert!(tables.port_gs_list.is_null(), "port counters freed");
             assert!(config(&live).workers.is_null(), "workers freed");
             assert!(config(&live).factory_.get().is_null(), "factory deleted");
-            assert_eq!(
-                tables.connection_list.is_null(),
-                mode == Mode::Base,
-                "base mode's own connections"
-            );
+            assert!(!tables.connections_mapped(), "connections freed");
         }
     }
 
@@ -1023,8 +1029,8 @@ mod tests {
         assert_eq!(calls(), steps(&[DeleteFactory]), "no shutdown steps");
         assert_eq!(live.counters().shutdown.load(Relaxed), 1, "shut down");
         let tables = live.state().tables_ref();
-        assert!(tables.connection_list.is_null(), "connections freed");
-        assert!(tables.session_list.is_null(), "sessions freed");
+        assert!(!tables.connections_mapped(), "connections freed");
+        assert!(!tables.sessions_mapped(), "sessions freed");
         assert!(config(&live).factory_.get().is_null(), "factory deleted");
     }
 }

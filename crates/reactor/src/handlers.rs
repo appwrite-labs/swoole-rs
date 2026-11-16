@@ -123,7 +123,7 @@ impl Running<'_> {
         #[cfg(debug_assertions)]
         let _borrowing = {
             assert!(!BORROWED.replace(true), "a reactor's state borrowed twice");
-            Borrowing
+            core::mem::DropGuard::new((), |()| BORROWED.set(false))
         };
         // SAFETY: the handle's live state, which no reference holds across a call that
         // takes the handle (its contract); this borrow ends with `f`, which takes none.
@@ -210,17 +210,6 @@ impl Running<'_> {
 thread_local! {
     /// Whether a [`Running::with`] borrow is live on this thread.
     static BORROWED: Cell<bool> = const { Cell::new(false) };
-}
-
-/// A [`Running::with`] borrow, which ends when `f` returns or unwinds.
-#[cfg(debug_assertions)]
-struct Borrowing;
-
-#[cfg(debug_assertions)]
-impl Drop for Borrowing {
-    fn drop(&mut self) {
-        BORROWED.set(false);
-    }
 }
 
 const FD_TYPES: usize = swoole_rs_corebase::constants::SW_MAX_FDTYPE as usize;

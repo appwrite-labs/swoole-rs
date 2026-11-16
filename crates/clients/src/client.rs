@@ -10,7 +10,7 @@
 //! reference to the state lives across one: operations work on a raw [`Handle`]
 //! and borrow the state only between effects. A PHP bailout in a callback
 //! longjmps out, so nothing that needs dropping is held across one.
-use crate::protocol::Protocol;
+use crate::protocol::{Package, Protocol};
 use core::cell::{Cell, OnceCell};
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr::NonNull;
@@ -23,14 +23,14 @@ use swoole_rs_corebase::constants::{
     FdType, ResultCode, SW_BUFFER_SIZE_UDP, SW_CLIENT_BUFFER_SIZE, SW_SEND_BUFFER_SIZE,
     SW_SOCKET_RETRY_COUNT, SW_SSL_BUFFER_SIZE, SocketFlag, SocketType,
 };
-use swoole_rs_corebase::net_types::{PacketLength, RecvData, SocketAddress};
+use swoole_rs_corebase::net_types::{PacketLength, SocketAddress};
 use swoole_rs_corebase::sys::{ReadBuffer, ReadSlot};
 use swoole_rs_corebase::{ProxyState, ResolverRequest, log};
 use swoole_rs_error::ErrorCode;
 use swoole_rs_reactor::reactor_upstream::set_handler;
 use swoole_rs_reactor::socket_upstream::Connect;
 use swoole_rs_reactor::{
-    Caught, OwnedSocket, SOCKET_DEFAULTS, Socket, SocketRecord, fd_clean, set_socket_buffer_size,
+    Caught, OwnedSocket, SOCKET_DEFAULTS, Socket, fd_clean, set_socket_buffer_size,
     socket_domain_and_type,
 };
 use swoole_rs_reactor::{Event, Events, Running};
@@ -196,13 +196,6 @@ pub struct Socks5 {
     pub handshake: fn(&ProxyState, &[u8]) -> Option<usize>,
 }
 
-/// A `String`'s free tail: where the next read lands and how much fits.
-#[derive(Clone, Copy)]
-struct Tail {
-    str: *mut c_char,
-    size: usize,
-}
-
 /// The public, trivially copyable fields of `network::Client`.
 #[derive(Clone, Copy)]
 pub struct ClientRecord {
@@ -212,9 +205,6 @@ pub struct ClientRecord {
     pub protocol: Protocol,
     pub server_addr: SocketAddress,
     pub remote_addr: SocketAddress,
-    /// `socket`: the record the constructor made, live until the client is destroyed
-    /// (an async one's free is deferred past its callbacks). Only the constructor sets it.
-    pub(crate) socket: Option<Socket<'static>>,
     pub object: *mut c_void,
     pub buffer: *mut c_void,
 }
@@ -222,9 +212,13 @@ pub struct ClientRecord {
 /// One client's state: `network::Client`.
 pub struct Client {
     record: Cell<ClientRecord>,
+    /// `socket`: the record the constructor made, freed with the client (an async
+    /// one's free is deferred past its callbacks).
+    socket: OwnedSocket,
     socket_ops: &'static SocketOps,
-    /// Owns the allocation exposed through the public record's buffer pointer.
-    input_owner: Cell<Option<Box<CppString>>>,
+    /// The input buffer, whose address the public record's buffer pointer names
+    /// once it is allocated: a pointer derived from the cell outlives its edits.
+    input: Cell<CppString>,
     flags: Cell<u32>,
     domain: c_int,
     sock_flags: Cell<c_int>,
@@ -280,11 +274,10 @@ impl Client {
         self.record.get()
     }
 
-    /// `cli->socket`, while the client has one: a constructed client's socket
-    /// record, live until the client is destroyed (an async one's free is
-    /// deferred past its callbacks).
+    /// `cli->socket`: a constructed client's socket record, live until the client is
+    /// destroyed (an async one's free is deferred past its callbacks).
     pub fn socket(&self) -> Option<Socket<'_>> {
-        self.record().socket
+        Some(self.socket.socket())
     }
 
     /// The client's TLS context, which `set()` configures; none while TLS is off.
@@ -358,16 +351,8 @@ impl Handle {
             .cast()
     }
 
-    fn socket_ptr(self) -> *mut SocketRecord {
-        self.record()
-            .socket
-            .map_or(core::ptr::null_mut(), Socket::as_ptr)
-    }
-
     fn socket(self) -> Socket<'static> {
-        self.get()
-            .socket()
-            .unwrap_or_else(|| swoole_rs_corebase::fatal("a connected client has no socket"))
+        self.get().socket.socket()
     }
 
     fn socket_type(self) -> c_int {
@@ -506,44 +491,38 @@ impl Handle {
     fn edit_input<R>(self, edit: fn(&mut CppString, Socket<'static>, &SocketOps) -> R) -> R {
         let socket = self.socket();
         let ops = self.get().socket_ops;
-        let mut buffer =
-            self.get().input_owner.take().unwrap_or_else(|| {
-                swoole_rs_corebase::fatal("client input buffer is not available")
-            });
+        if self.input().is_null() {
+            swoole_rs_corebase::fatal("client input buffer is not available");
+        }
+        let mut buffer = self.get().input.replace(CppString::EMPTY);
         let result = edit(&mut buffer, socket, ops);
-        self.get().input_owner.set(Some(buffer));
+        self.get().input.set(buffer);
         result
     }
 
     /// `new String(SW_CLIENT_BUFFER_SIZE)`, once.
     fn input_init(self) {
         if self.input().is_null() {
-            let mut buffer = Box::new(CppString::EMPTY);
+            let mut buffer = CppString::EMPTY;
             buffer.alloc(CLIENT_BUFFER_SIZE, None);
-            self.get()
-                .edit_record(|record| record.buffer = core::ptr::from_mut(&mut *buffer).cast());
-            self.get().input_owner.set(Some(buffer));
+            self.get().input.set(buffer);
+            let input = self.get().input.as_ptr().cast();
+            self.get().edit_record(|record| record.buffer = input);
         }
     }
 
     /// `delete buffer`.
     fn input_free(self) {
-        if let Some(mut buffer) = self.get().input_owner.take() {
+        if !self.input().is_null() {
             self.get()
                 .edit_record(|record| record.buffer = core::ptr::null_mut());
-            buffer.dispose();
+            self.get().input.replace(CppString::EMPTY).dispose();
         }
     }
 
-    /// The input buffer's free tail; the buffer exists.
-    fn input_tail(self) -> Tail {
-        self.edit_input(|buffer, _, _| {
-            let length = buffer.len();
-            Tail {
-                str: buffer.as_mut_ptr().wrapping_add(length).cast(),
-                size: buffer.size() - length,
-            }
-        })
+    /// Where the input buffer's next read lands; the buffer exists.
+    fn input_tail(self) -> *const c_char {
+        self.edit_input(|buffer, _, _| buffer.as_mut_ptr().wrapping_add(buffer.len()).cast())
     }
 
     /// One read into the input buffer's free tail; the buffer exists.
@@ -575,11 +554,9 @@ impl Handle {
         send(self, packet.get(..length).unwrap_or_default(), 0)
     }
 
-    /// `Client::socks5_handshake`: applies `length` received bytes at `data` and
-    /// sends the answer the proxy packed.
-    fn socks5_handshake(self, data: *const c_char, length: usize) -> bool {
-        // SAFETY: the received buffer lends `length` initialized bytes at `data`.
-        let reply = unsafe { std::slice::from_raw_parts(data.cast(), length) };
+    /// `Client::socks5_handshake`: applies the received `reply` and sends the answer
+    /// the proxy packed.
+    fn socks5_handshake(self, reply: &[u8]) -> bool {
         let n = self
             .with_proxy(Proxy::Socks5, |proxy| {
                 (native_host().socks5.handshake)(proxy, reply)
@@ -642,18 +619,18 @@ impl Handle {
 
 /// `Client_onPackage`: a framed package for `onReceive`; the receive loop stops
 /// once the callback left the socket waiting to close. Only a client's protocol
-/// holds it, and [`OnPackage`](crate::protocol::OnPackage)'s contract has a caller pass that protocol's socket,
-/// a client's, whose free is deferred past the call: as for the reactor handlers
-/// below, the socket's kind is what makes its object a client.
-extern "C-unwind" fn on_package(
-    _: *const Protocol,
-    socket: Socket<'_>,
-    package: &RecvData,
-) -> c_int {
+/// holds it, and a client's framed receive calls it with that client's socket, whose
+/// free is deferred past the call: as for the reactor handlers below, the socket's
+/// kind is what makes its object a client.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`OnPackage` lends the package by value"
+)]
+fn on_package(_: *const Protocol, socket: Socket<'_>, package: Package<'_>) -> c_int {
     Handle(socket.read(|socket| socket.object).cast()).call(
         ClientEvent::Receive,
-        package.data.cast(),
-        package.info.len as usize,
+        package.as_ptr().cast(),
+        package.len(),
     );
     if socket.read(|socket| socket.output.close_wait) {
         ERR
@@ -741,15 +718,20 @@ fn create_with(kind: c_int, is_async: bool, socket_ops: &'static SocketOps) -> O
         SocketFlag::NONE
     } | SocketFlag::SW_SOCK_CLOEXEC;
     // The new socket record, which nothing else holds yet.
-    let Some(record) = (socket_ops.make_socket)(kind, fd_type, flags.bits()) else {
+    let Some(socket) = (socket_ops.make_socket)(kind, fd_type, flags.bits()) else {
         let error = errno();
         log::sys_warning(c"Client", format_args!("socket() failed"));
         set_errno(error);
         return None;
     };
+    let socket_type = socket.socket().edit(|record| {
+        record.chunk_size = SEND_BUFFER_SIZE;
+        record.socket_type
+    });
     let mut client = Box::new(Client {
+        socket,
         socket_ops,
-        input_owner: Cell::new(None),
+        input: Cell::new(CppString::EMPTY),
         record: Cell::new(ClientRecord {
             http2: false,
             open_length_check: false,
@@ -757,7 +739,6 @@ fn create_with(kind: c_int, is_async: bool, socket_ops: &'static SocketOps) -> O
             protocol: Protocol::EMPTY,
             server_addr: swoole_rs_corebase::sys::zeroed(),
             remote_addr: swoole_rs_corebase::sys::zeroed(),
-            socket: None,
             object: core::ptr::null_mut(),
             buffer: core::ptr::null_mut(),
         }),
@@ -779,23 +760,20 @@ fn create_with(kind: c_int, is_async: bool, socket_ops: &'static SocketOps) -> O
     });
     client.set(Flag::Async, is_async);
     let fields = client.record.get_mut();
-    fields.socket = Some(record);
     fields.remote_addr.kind = kind;
     fields.protocol.package_length_type = b'N';
     fields.protocol.package_length_size = 4;
     fields.protocol.package_max_length = 2 * 1024 * 1024;
     fields.protocol.on_package = Some(on_package);
-    let socket_type = record.edit(|record| {
-        record.chunk_size = SEND_BUFFER_SIZE;
-        record.socket_type
-    });
     client.set(Flag::Stream, is_stream(socket_type));
     if let Some((domain, _)) = socket_domain_and_type(kind) {
         client.domain = domain;
     }
-    let client = Box::into_raw(client);
-    record.edit(|record| record.object = client.cast());
-    Some(Handle(client))
+    let client = Handle(Box::into_raw(client));
+    client
+        .socket()
+        .edit(|record| record.object = client.0.cast());
+    Some(client)
 }
 
 impl Handle {
@@ -866,25 +844,30 @@ impl Handle {
         self.input_free();
         // A pending connect timer would fire on a freed client.
         self.timer_clear();
-        // SAFETY: the heap record make_socket allocated, which the client owned and,
-        // freed (per the caller), never uses again.
-        let socket =
-            (self.record().socket).map(|socket| unsafe { OwnedSocket::from_socket(socket) });
-        if self.flag(Flag::Async) {
+        let is_async = self.flag(Flag::Async);
+        if is_async {
             // A cleared object tells a close in progress that the client is gone.
             self.socket()
                 .edit(|socket| socket.object = core::ptr::null_mut());
-            (self.get().socket_ops.free_socket)(socket);
-        } else if let Some(socket) = socket {
-            // `delete socket`.
-            socket.free();
         }
         // SAFETY: a Box from `create`, released once (per the caller).
         let client = unsafe { Box::from_raw(self.0) };
-        // The proxies first, then the rest of the state.
-        for proxy in [&client.socks5, &client.http_proxy] {
-            drop(proxy.take());
+        let Client {
+            socket,
+            socket_ops,
+            socks5,
+            http_proxy,
+            ..
+        } = *client;
+        if is_async {
+            (socket_ops.free_socket)(Some(socket));
+        } else {
+            // `delete socket`.
+            socket.free();
         }
+        // The proxies first, then the rest of the state.
+        drop(socks5);
+        drop(http_proxy);
     }
 
     /// `Client::get_peer_name`: datagram peers are value snapshots of the last
@@ -931,18 +914,17 @@ pub fn package_length(this: Handle, data: &[u8]) -> isize {
         return -1;
     };
     let mut packet = PacketLength::new(data);
-    // SAFETY: the live client's protocol and socket, and the packet's bytes.
-    unsafe { get(this.protocol(), record.socket, &mut packet) }
+    get(&record.protocol, Some(this.socket()), &mut packet)
 }
 
-/// `Client::close()`: false without a socket, when already closed or when `close(2)`
-/// fails; true when it closed or `onClose` released the client.
+/// `Client::close()`: false when already closed or when `close(2)` fails; true when
+/// it closed or `onClose` released the client.
 #[expect(
     clippy::must_use_candidate,
     reason = "most callers close for the effect"
 )]
 pub fn close(this: Handle) -> bool {
-    if this.socket_ptr().is_null() || this.flag(Flag::Closed) {
+    if this.flag(Flag::Closed) {
         return false;
     }
     this.set(Flag::Closed, true);
@@ -986,7 +968,7 @@ pub fn close(this: Handle) -> bool {
 /// `Client::shutdown(how)`. Upstream's `SHUT_RDWR` records only a read shutdown.
 #[must_use]
 pub fn shutdown(this: Handle, how: c_int) -> bool {
-    if this.socket_ptr().is_null() || this.flag(Flag::Closed) {
+    if this.flag(Flag::Closed) {
         return false;
     }
     let fd = this.socket().fd();
@@ -1160,10 +1142,7 @@ pub fn ssl_verify(this: Handle, allow_self_signed: bool) -> bool {
         return false;
     }
     let name = this.tls_host_name();
-    if !name.is_empty() && !(this.get().socket_ops.tls_check_host)(this.socket(), &name) {
-        return false;
-    }
-    true
+    name.is_empty() || (this.get().socket_ops.tls_check_host)(this.socket(), &name)
 }
 
 /// `Client_inet_addr`: the first call routes through the proxies and records the
@@ -1267,10 +1246,9 @@ fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblo
         // Each answer lands at the start of the emptied buffer.
         let ready = this.with_buffer(|shared| {
             loop {
-                shared.clear();
-                let spare = shared.spare();
-                let n = recv(this, spare, 0).unwrap_or(0);
-                if n == 0 || !this.socks5_handshake(spare.as_ptr().cast(), n) {
+                // Zeroed first, so the reply is the bytes read.
+                shared.read_zeroed(shared.size(), |bytes| recv(this, bytes, 0).unwrap_or(0));
+                if shared.is_empty() || !this.socks5_handshake(shared.view()) {
                     return false;
                 }
                 if this.proxy_state(Proxy::Socks5) == Some(SOCKS5_READY) {
@@ -1437,12 +1415,12 @@ fn bind_unix(this: Handle) -> bool {
     let path = format!("/tmp/swoole-client.{pid}.{}.sock", socket.fd());
     let bound = std::ffi::CString::new(path.as_str()).unwrap_or_default();
     let bound_ok = socket.edit(|socket| {
-        let address = socket.info.addr.unix_mut();
-        for (slot, byte) in address.sun_path.iter_mut().zip(path.bytes().chain([0])) {
-            *slot = c_char::from_ne_bytes([byte]);
-        }
-        let family = libc::AF_UNIX.c_cast::<libc::sa_family_t>();
-        address.sun_family = family;
+        socket.info.addr.edit_unix(|address| {
+            for (slot, byte) in address.sun_path.iter_mut().zip(path.bytes().chain([0])) {
+                *slot = c_char::from_ne_bytes([byte]);
+            }
+            address.sun_family = libc::AF_UNIX.c_cast::<libc::sa_family_t>();
+        });
         _ = swoole_rs_corebase::sys::unlink(&bound);
         // The address just written, bound at `sizeof(sockaddr_un)`; the record keeps
         // its own length.
@@ -1474,7 +1452,7 @@ struct SocketOps {
     close_tls: fn(Socket<'_>),
     write: fn(Socket<'static>, &[u8]) -> Option<usize>,
     writable: extern "C-unwind" fn(Running<'_>, &mut Event) -> c_int,
-    make_socket: fn(c_int, c_int, c_int) -> Option<Socket<'static>>,
+    make_socket: fn(c_int, c_int, c_int) -> Option<OwnedSocket>,
     kernel_timeout: fn(Handle, f64),
     assign: fn(Handle, &CStr, c_int, bool) -> bool,
     connect_async: fn(Handle) -> Connect,
@@ -1543,17 +1521,17 @@ impl SocketOps {
 
 /// The reactor and socket operations used by production clients.
 mod ops {
-    use super::{Connect, ConnectMode, EventOp, Handle, SocketRecord, address_of};
+    use super::{Connect, ConnectMode, EventOp, Handle, address_of};
     use core::ffi::{CStr, c_int};
     use swoole_rs_reactor::{event_api, socket_upstream};
 
-    /// `make_socket(type, fd_type, flags)`: the new record's socket, or none.
+    /// `make_socket(type, fd_type, flags)`: the new record, or none.
     pub(super) fn make_socket(
         kind: c_int,
         fd_type: c_int,
         flags: c_int,
-    ) -> Option<swoole_rs_reactor::Socket<'static>> {
-        socket_upstream::make_typed(kind, fd_type, flags).map(SocketRecord::into_socket)
+    ) -> Option<swoole_rs_reactor::OwnedSocket> {
+        socket_upstream::make_typed(kind, fd_type, flags).map(swoole_rs_reactor::OwnedSocket::new)
     }
 
     /// `socket->set_kernel_timeout(timeout)`, the write timeout only once the
@@ -1595,12 +1573,10 @@ mod ops {
     }
 
     /// The reactor's `swoole_event_*` on the socket: whether it worked, false without a
-    /// socket or a reactor. The client's socket stays live while it is registered:
-    /// `close` deletes it from the reactor before the record is freed.
+    /// reactor. The client's socket stays live while it is registered: `close` deletes
+    /// it from the reactor before the record is freed.
     pub(super) fn event(this: Handle, op: EventOp, events: swoole_rs_reactor::Events) -> bool {
-        let Some(socket) = this.get().socket() else {
-            return false;
-        };
+        let socket = this.socket();
         match op {
             EventOp::Add => event_api::event_add(socket, events),
             EventOp::Set => event_api::event_set(socket, events),
@@ -1709,10 +1685,7 @@ pub fn sendfile(this: Handle, file: &CStr, offset: i64, length: usize) -> bool {
         log::set_last_error(errno());
         return false;
     }
-    if is_async && !this.event(EventOp::AddOrUpdate, Events::WRITE) {
-        return false;
-    }
-    true
+    !is_async || this.event(EventOp::AddOrUpdate, Events::WRITE)
 }
 
 /// `Client::recv(data, length, flags)`: the bytes read, or none (`SW_ERR`).
@@ -1732,6 +1705,18 @@ pub fn recv(this: Handle, buffer: &mut [impl ReadSlot], flags: c_int) -> Option<
     }
 }
 
+/// [`recv`] into lent room, counting the prefix that the receive initialized.
+#[inline]
+pub fn recv_spare(
+    this: Handle,
+    out: &mut swoole_rs_corebase::lent::Spare<'_>,
+    flags: c_int,
+) -> Option<usize> {
+    // SAFETY: all recv paths initialize the reported prefix, bounded by the room
+    // when MSG_TRUNC reports the full length of a datagram.
+    unsafe { out.read(|room| recv(this, room, flags)) }
+}
+
 /// A handshake in the read or write handler failed: close and report.
 fn connect_failed(this: Handle) -> bool {
     this.set(Flag::Active, false);
@@ -1745,7 +1730,7 @@ fn connect_failed(this: Handle) -> bool {
 /// `Client_onStreamRead`: the proxy and TLS handshakes that finish a connect,
 /// then framed or plain reads, on a live async stream client with its input buffer.
 fn on_read(this: Handle) -> bool {
-    let Tail { str: buf, size } = this.input_tail();
+    let buf = this.input_tail();
     let do_ssl_handshake = this.flag(Flag::OpenSsl);
     let http = this.proxy_state(Proxy::Http);
     if http.is_some_and(|state| state != HTTP_PROXY_READY) {
@@ -1766,13 +1751,17 @@ fn on_read(this: Handle) -> bool {
     }
     let socks5 = this.proxy_state(Proxy::Socks5);
     if socks5.is_some_and(|state| state != SOCKS5_READY) {
-        let n = this.edit_input(|input, socket, ops| (ops.recv_append)(socket, input));
-        if n <= Some(0) {
+        // What this read appended, copied: the handshake's send may reach the client.
+        let reply = this.edit_input(|input, socket, ops| {
+            let start = input.len();
+            (ops.recv_append)(socket, input)?;
+            Some(input.view().get(start..).unwrap_or_default().to_vec())
+        });
+        let Some(reply) = reply.filter(|reply| !reply.is_empty()) else {
             log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
             return connect_failed(this);
-        }
-        // Upstream hands the handshake the buffer's free size, not what was read.
-        if !this.socks5_handshake(buf, size) {
+        };
+        if !this.socks5_handshake(&reply) {
             log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
             return connect_failed(this);
         }

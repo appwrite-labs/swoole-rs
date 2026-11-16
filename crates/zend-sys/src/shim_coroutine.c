@@ -355,6 +355,10 @@ int swr_zend_coroutine_print_trace(int skip_last, int options, int limit) {
     return bailed;
 }
 
+void swr_zend_coroutine_fiber_status(zend_fiber_context *fiber, zend_fiber_status status) {
+    fiber->status = status;
+}
+
 zend_object *swr_zend_coroutine_exception(zend_class_entry *ce) {
     zend_object *exception = zend_objects_new(ce);
     object_properties_init(exception, ce);

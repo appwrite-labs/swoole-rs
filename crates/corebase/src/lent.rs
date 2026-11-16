@@ -185,12 +185,12 @@ pub struct HeadedOut<'id, H>(*mut H, Brand<'id>);
 #[repr(transparent)]
 pub struct HeadedIn<'id, H>(*const H, Brand<'id>);
 
-impl Count<'_> {
+impl<N: Narrow + Ord> Count<'_, N> {
     /// At most `limit` of the same lending's items.
     #[inline]
     #[must_use]
     pub fn at_most(self, limit: usize) -> Self {
-        Self(self.0.min(limit), PhantomData)
+        Self(self.0.min(N::narrow(limit)), PhantomData)
     }
 }
 
@@ -272,9 +272,23 @@ unsafe extern "C" {
         vectors: In<'id, libc::iovec>,
         count: Count<'id, c_int>,
     ) -> isize;
+    /// Fills the buffers that the count's vectors name, in order.
+    pub(crate) safe fn readv<'id>(
+        fd: c_int,
+        vectors: Out<'id, ReadVec<'_>>,
+        count: Count<'id, c_int>,
+    ) -> isize;
     pub(crate) safe fn poll<'id>(
         fds: Out<'id, libc::pollfd>,
         count: Count<'id, libc::nfds_t>,
+        timeout: c_int,
+    ) -> c_int;
+    /// Writes at most `count` ready events into `events`.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    pub(crate) safe fn epoll_wait<'id>(
+        epfd: c_int,
+        events: Out<'id, libc::epoll_event>,
+        count: Count<'id, c_int>,
         timeout: c_int,
     ) -> c_int;
     /// Writes at most `length`'s bytes of `value`, and how many it stored into
@@ -625,6 +639,21 @@ impl Spare<'_> {
         n
     }
 
+    /// Receives into the remaining room and counts the initialized prefix.
+    ///
+    /// # Safety
+    /// On `Some(n)`, `read` must have initialized the first `min(n, room.len())`
+    /// slots it was lent. A datagram read may report more than the room with
+    /// `MSG_TRUNC`; a failed read contributes no initialized bytes.
+    #[inline]
+    pub unsafe fn read(
+        &mut self,
+        read: impl FnOnce(&mut [MaybeUninit<u8>]) -> Option<usize>,
+    ) -> Option<usize> {
+        let received = read(self.rest().slots());
+        self.count(received)
+    }
+
     /// recv(2) into the room, as [`Fill::recv`].
     #[inline]
     pub fn recv(&mut self, fd: c_int, flags: c_int) -> Option<usize> {
@@ -771,5 +800,119 @@ impl<'a> Drain<'a> {
     pub fn sendto(self, fd: c_int, flags: c_int, address: &SocketAddress) -> Option<usize> {
         let length = address.stored();
         count(self.lend(|buf, n| sendto(fd, buf, n, flags, &address.addr, length)))
+    }
+}
+
+#[cfg(test)]
+#[path = "../../../tests/modules/corebase/lent.rs"]
+mod tests;
+
+#[cfg(test)]
+#[path = "../../../tests/modules/corebase/spare.rs"]
+mod spare_tests;
+
+/// One buffer a vectored read fills, as an `iovec`: slots that may not be written
+/// yet, lent for `'b`.
+#[repr(transparent)]
+pub struct ReadVec<'b> {
+    iov: libc::iovec,
+    lent: PhantomData<&'b mut [MaybeUninit<u8>]>,
+}
+
+impl<'b> ReadVec<'b> {
+    /// The descriptor while this vector's borrowed storage remains live.
+    #[must_use]
+    pub fn descriptor(&self) -> libc::iovec {
+        self.iov
+    }
+
+    /// How many slots are left to fill.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.iov.iov_len
+    }
+
+    /// Whether no slots are left to fill.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.iov.iov_len == 0
+    }
+
+    /// The same slots, lent again while this is borrowed.
+    pub fn reborrow(&mut self) -> ReadVec<'_> {
+        ReadVec {
+            iov: self.iov,
+            lent: PhantomData,
+        }
+    }
+
+    /// The slots as a [`Fill`], for a read while this is borrowed.
+    pub fn fill(&mut self) -> Fill<'_> {
+        Fill {
+            at: self.iov.iov_base.cast(),
+            len: self.iov.iov_len,
+            lent: PhantomData,
+        }
+    }
+
+    /// Steps past the first `n` slots, at most all of them.
+    pub fn advance(&mut self, n: usize) {
+        let n = n.min(self.iov.iov_len);
+        self.iov.iov_base = self.iov.iov_base.wrapping_byte_add(n);
+        self.iov.iov_len -= n;
+    }
+
+    /// The vector over `slots`.
+    #[must_use]
+    pub fn new(slots: &'b mut [impl ReadSlot]) -> Self {
+        Self {
+            iov: libc::iovec {
+                iov_base: slots.as_mut_ptr().cast(),
+                iov_len: slots.len(),
+            },
+            lent: PhantomData,
+        }
+    }
+}
+
+/// Ordered rooms lent to one vectored receive. Only the trusted reader can count
+/// their initialized prefix; callers cannot exchange individual rooms or counts.
+pub struct SpareVectors<'s> {
+    vectors: Vec<ReadVec<'s>>,
+    filled: usize,
+    lent: Brand<'s>,
+}
+
+/// Lends several rooms in order: the operation's result and its initialized prefix.
+pub fn lend_spare_vectors<'a, R>(
+    rooms: impl IntoIterator<Item = &'a mut [MaybeUninit<u8>]>,
+    fill: impl for<'s> FnOnce(&mut SpareVectors<'s>) -> R,
+) -> (R, usize) {
+    let mut out = SpareVectors {
+        vectors: rooms.into_iter().map(ReadVec::new).collect(),
+        filled: 0,
+        lent: PhantomData,
+    };
+    let result = fill(&mut out);
+    (result, out.filled)
+}
+
+impl SpareVectors<'_> {
+    /// Runs a vectored receive and counts its successful initialized prefix.
+    ///
+    /// # Safety
+    /// When the returned count is `Some(n)`, `read` initialized that many bytes
+    /// across the original rooms in order (or all rooms if the count exceeds them).
+    /// It must not change which storage the descriptors name.
+    pub unsafe fn read<R>(
+        &mut self,
+        read: impl FnOnce(&mut [ReadVec<'_>]) -> (R, Option<usize>),
+    ) -> R {
+        let (result, count) = read(&mut self.vectors);
+        let capacity = self.vectors.iter().fold(0usize, |size, vector| {
+            size.saturating_add(vector.iov.iov_len)
+        });
+        self.filled = count.unwrap_or(0).min(capacity);
+        result
     }
 }

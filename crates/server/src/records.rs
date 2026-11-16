@@ -18,8 +18,7 @@ pub struct SessionRecord {
     pub reactor_bits: Cell<u32>,
 }
 
-/// The wire connection record; native code holds a borrowed view of these fields.
-#[repr(C)]
+/// A connection-table slot's record.
 pub struct ConnectionRecord {
     /// Read by every reactor thread (`is_valid_connection` over the fd range).
     pub active: AtomicU8,
@@ -82,6 +81,59 @@ impl ConnectionRecord {
     #[must_use]
     pub fn is_active(&self) -> bool {
         self.active.load(Acquire) != 0
+    }
+
+    /// Upstream's `memset` of the slot from `socket_type` up to `closed`: every field
+    /// but `active`, `closed` and `server_fd` back to its zero value.
+    fn clear(&self) {
+        self.socket_type.set(0);
+        self.fd.set(0);
+        self.worker_id.set(0);
+        self.session_id.set(0);
+        for flag in [
+            &self.ssl,
+            &self.ssl_ready,
+            &self.overflow,
+            &self.high_watermark,
+            &self.http_upgrade,
+            &self.http2_stream,
+            &self.websocket_compression,
+            &self.close_actively,
+            &self.close_queued,
+            &self.closing,
+            &self.close_reset,
+            &self.peer_closed,
+            &self.protect,
+            &self.close_notify,
+            &self.close_force,
+        ] {
+            flag.set(false);
+        }
+        self.reactor_id.set(0);
+        self.close_errno.set(0);
+        self.recv_queued_bytes.store(0, Relaxed);
+        self.send_queued_bytes.set(0);
+        self.waiting_time.set(0);
+        self.local_port.set(0);
+        self.local_addr_index.set(0);
+        self.timer.set(None);
+        self.info.set(SocketAddress::default());
+        self.object.set(core::ptr::null_mut());
+        self.socket.set(None);
+        for time in [
+            &self.connect_time,
+            &self.last_recv_time,
+            &self.last_send_time,
+            &self.last_dispatch_time,
+        ] {
+            time.set(0.0);
+        }
+        self.uid.set(0);
+        self.websocket_status.set(WebSocketStatus::None);
+        self.websocket_buffer.set(None);
+        self.ssl_client_cert.set(core::ptr::null_mut());
+        self.ssl_client_cert_pid.set(0);
+        self.lock.store(0, Relaxed);
     }
 }
 
@@ -177,6 +229,12 @@ impl Session<'_> {
 }
 
 impl<'a> Connection<'a> {
+    /// Resets the slot for a new connection: every field but `active`, `closed` and
+    /// `server_fd` back to zero, as `Server::add_connection`'s `memset`.
+    pub(crate) fn clear(self) {
+        self.record.clear();
+    }
+
     field!(socket_type, set_socket_type: c_int);
     field!(fd, set_fd: c_int);
     field!(worker_id, set_worker_id: c_int);
@@ -303,34 +361,6 @@ impl<'a> Connection<'a> {
         request
     }
 
-    /// The redis request state a session holds, or `None`: a redis port's session
-    /// holds nothing else.
-    #[must_use]
-    pub fn resp_request(self) -> Option<*mut swoole_rs_protocols::RespRequest> {
-        decode(self.object())
-    }
-
-    /// The session holds `request`, whose address comes back; the slot keeps it until
-    /// [`Self::take_resp_request`].
-    #[must_use]
-    pub fn set_resp_request(
-        self,
-        request: Box<swoole_rs_protocols::RespRequest>,
-    ) -> *mut swoole_rs_protocols::RespRequest {
-        let request = Box::into_raw(request);
-        self.set_object(encode(request));
-        request
-    }
-
-    /// The redis request state the session held, which the slot no longer names: the
-    /// box [`Self::set_resp_request`] took, in the process that stored it.
-    #[must_use]
-    pub fn take_resp_request(self) -> Option<*mut swoole_rs_protocols::RespRequest> {
-        let request = self.resp_request();
-        self.clear_object();
-        request
-    }
-
     /// `Server::store_pipe_fd`: a pipe end's slot names its pipe, which nothing reads
     /// back as a port. An address with the top bit set, which no user-space pointer
     /// has, is not kept.
@@ -390,12 +420,14 @@ impl<'a> Connection<'a> {
 /// Server-private shared table loans and bounds. The arena owns the underlying shared mappings.
 ///
 /// Setup and teardown write the tables through `&`: every field they write is a cell
-/// (a [`Shm`] is one), written while the master is the server's only thread.
+/// (a [`Shm`] is one), written while the master is the server's only thread. The two
+/// lists it lends slots of are private: a factory maps each once through `&`, and only
+/// [`Self::unmap_lists`], through `&mut`, unmaps them, so no lent slot outlives its list.
 pub struct ServerTables {
     /// `ConnectionRecord`s, `max_connection` of them.
-    pub connection_list: Shm,
+    connection_list: Shm,
     /// `SessionRecord`s, `SW_SESSION_LIST_SIZE` of them.
-    pub session_list: Shm,
+    session_list: Shm,
     pub port_gs_list: Shm,
     /// How many records `connection_list` maps. Private: [`Self::set_max_connection`]
     /// changes it only while the list is unmapped, so [`Self::connections`] never
@@ -404,13 +436,12 @@ pub struct ServerTables {
     /// Armed when accepting runs out of fds and cleared by its callback, at runtime.
     pub enable_accept_timer: swoole_rs_corebase::timer_key::AtomicHeld,
     pub reactor_pipe_num: Cell<u16>,
-    /// How many records `reactor_threads` holds. Private with it: only [`Self::install_reactor_threads`] and
-    /// [`Self::take_reactor_threads`] write the pair.
-    reactor_thread_num: Cell<u16>,
-    /// `ReactorThread[]`: null, or the array `install_reactor_threads` leaked.
-    reactor_threads: Cell<*mut c_void>,
+    /// `ReactorThread[]`: the array [`Self::install_reactor_threads`] gave, until
+    /// [`Self::take_reactor_threads`].
+    reactor_threads: core::cell::OnceCell<Box<[ThreadRecord]>>,
     /// `&Server::message_bus`, whose `MessageBus` starts with its Rust bus: the
     /// one `swr_v1_server_new` made, which the tables own.
+    #[cfg(feature = "upstream-symbols")]
     pub(crate) message_bus: Option<Box<crate::reactor_ops::PoolBus>>,
 }
 
@@ -424,11 +455,49 @@ impl ServerTables {
     /// `max_connection = value`, while the connection list is unmapped: whether it
     /// changed.
     pub(crate) fn set_max_connection(&self, value: u32) -> bool {
-        let unmapped = self.connection_list.is_null();
+        let unmapped = !self.connections_mapped();
         if unmapped {
             self.max_connection.set(value);
         }
         unmapped
+    }
+
+    /// Whether a factory has mapped the connection list.
+    pub(crate) fn connections_mapped(&self) -> bool {
+        !self.connection_list.is_null()
+    }
+
+    /// Whether `Server::create` has mapped the session list.
+    pub(crate) fn sessions_mapped(&self) -> bool {
+        !self.session_list.is_null()
+    }
+
+    /// `connection_list = list`: a factory's `max_connection` zeroed records. A list
+    /// already mapped stays, as its slots may be lent, and `list` is unmapped.
+    pub(crate) fn map_connections(&self, list: Shm) {
+        fill(&self.connection_list, list);
+    }
+
+    /// `session_list = list`: `SW_SESSION_LIST_SIZE` zeroed records, as
+    /// [`Self::map_connections`].
+    pub(crate) fn map_sessions(&self, list: Shm) {
+        fill(&self.session_list, list);
+    }
+
+    /// `session_list`'s `SharedMemory::protect(flags)`.
+    #[cfg_attr(
+        not(feature = "upstream-symbols"),
+        expect(dead_code, reason = "only the hybrid's event workers protect it")
+    )]
+    pub(crate) fn protect_sessions(&self, flags: c_int) -> std::io::Result<()> {
+        self.session_list.protect(flags)
+    }
+
+    /// `sw_shm_free(connection_list)` and `sw_shm_free(session_list)`: exclusive access
+    /// means no slot either lent is still borrowed.
+    pub(crate) fn unmap_lists(&mut self) {
+        self.connection_list.free();
+        self.session_list.free();
     }
 
     /// The connection slots, exactly `max_connection` of them, or none before
@@ -439,9 +508,9 @@ impl ServerTables {
         if base.is_null() {
             return &[];
         }
-        // SAFETY: every factory maps the table with `max_connection` zeroed records
-        // and frees it only by nulling `connection_list`; the record's cells and
-        // atomics let slots be written under the server's own synchronization.
+        // SAFETY: every factory maps the table with `max_connection` zeroed records,
+        // and only `unmap_lists`, through `&mut self`, unmaps it; the record's cells
+        // and atomics let slots be written under the server's own synchronization.
         unsafe { core::slice::from_raw_parts(base.cast(), self.max_connection() as usize) }
     }
 
@@ -450,23 +519,29 @@ impl ServerTables {
         Some(self.connections().get(usize::try_from(fd).ok()?)?.into())
     }
 
-    /// Zeroes `fd`'s slot from after `active` up to `closed`, as upstream does on
-    /// reuse. It writes through the table's own pointer: the padding between the
-    /// cells is no cell, so a slot's shared borrow can't write it. Borrow the slot
-    /// again afterwards.
+    /// Resets `fd`'s slot for reuse: every field but `active`, `closed` and
+    /// `server_fd` back to zero, as upstream's `memset` up to `closed`.
     pub(crate) fn reset_connection(&self, fd: c_int) {
+        if let Some(conn) = self.connection_at(fd) {
+            conn.clear();
+        }
+    }
+
+    /// Zeroes all of `fd`'s slot, as a DTLS session that fails its setup leaves it.
+    /// It writes through the table's own pointer: the padding between the cells is no
+    /// cell, so a slot's shared borrow can't write it. Borrow the slot again afterwards.
+    #[cfg(any(test, feature = "upstream-symbols"))]
+    pub(crate) fn clear_connection(&self, fd: c_int) {
         let Some(index) = usize::try_from(fd)
             .ok()
             .filter(|&i| i < self.connections().len())
         else {
             return;
         };
-        let start = core::mem::offset_of!(ConnectionRecord, socket_type);
         let record = self.connection_list.as_ptr().cast::<ConnectionRecord>();
-        let bytes = record.wrapping_add(index).cast::<u8>().wrapping_add(start);
         // SAFETY: a slot of the mapped table, which `connections` bounds, written
         // through the mapping's own pointer.
-        unsafe { bytes.write_bytes(0, core::mem::offset_of!(ConnectionRecord, closed) - start) };
+        unsafe { record.wrapping_add(index).write_bytes(0, 1) };
     }
 
     /// Session slot `index` (below `SW_SESSION_LIST_SIZE`), or none before the table is
@@ -477,8 +552,8 @@ impl ServerTables {
             return None;
         }
         // SAFETY: a factory maps the table with 1,048,576 zeroed records, which the
-        // modulo keeps `index` within, and frees it only by nulling `session_list`;
-        // the record's fields are cells.
+        // modulo keeps `index` within, and only `unmap_lists`, through `&mut self`,
+        // unmaps it; the record's fields are cells.
         Some(unsafe { &*base.wrapping_add(index) })
     }
 }
@@ -489,46 +564,39 @@ impl ServerTables {
 )]
 impl ServerTables {
     /// `reactor_threads = threads`: the tables keep the array until
-    /// [`Self::take_reactor_threads`]. One already kept is leaked, so a record read
-    /// from it stays valid.
+    /// [`Self::take_reactor_threads`]. A factory makes one per create, which its
+    /// destroy takes, so a second is a bug, which aborts.
     pub(crate) fn install_reactor_threads(&self, threads: Box<[ThreadRecord]>) {
-        let Ok(count) = u16::try_from(threads.len()) else {
+        if u16::try_from(threads.len()).is_err() {
             swoole_rs_corebase::fatal("more reactor threads than a reactor id counts");
-        };
-        self.reactor_threads.set(Box::into_raw(threads).cast());
-        self.reactor_thread_num.set(count);
+        }
+        if self.reactor_threads.set(threads).is_err() {
+            swoole_rs_corebase::fatal("a server's reactor threads made twice");
+        }
     }
 
     /// `delete[] reactor_threads`'s array, to drop: the tables forget it. Exclusive
     /// access means no record lent by [`Self::reactor_thread`] is still borrowed.
     pub(crate) fn take_reactor_threads(&mut self) -> Option<Box<[ThreadRecord]>> {
-        let threads = self.reactor_threads.replace(core::ptr::null_mut());
-        let count = usize::from(self.reactor_thread_num.take());
-        if threads.is_null() {
-            return None;
-        }
-        let threads = core::ptr::slice_from_raw_parts_mut(threads.cast::<ThreadRecord>(), count);
-        // SAFETY: the box of `count` records `install_reactor_threads` leaked, which
-        // the tables no longer name; only those two methods write the pair.
-        Some(unsafe { Box::from_raw(threads) })
+        self.reactor_threads.take()
     }
 
     /// `serv->get_thread(id)`: reactor thread `id`'s record, or `None` past the last
     /// or before a factory made them.
     pub(crate) fn reactor_thread(&self, id: usize) -> Option<&ThreadRecord> {
-        if id >= usize::from(self.reactor_thread_num.get()) {
-            return None;
-        }
-        // SAFETY: within the live array of `reactor_thread_num` records
-        // `install_reactor_threads` leaked, which is freed only through `&mut self`
-        // (an install leaks the array it replaces).
-        Some(unsafe {
-            &*self
-                .reactor_threads
-                .get()
-                .cast::<ThreadRecord>()
-                .wrapping_add(id)
-        })
+        self.reactor_threads.get()?.get(id)
+    }
+}
+
+/// `list = mapping` for a list that lends slots: an empty list takes `mapping`; one
+/// already mapped keeps its mapping, which `mapping` must not unmap, and `mapping`
+/// is unmapped instead.
+fn fill(list: &Shm, mut mapping: Shm) {
+    if list.is_null() {
+        // Nothing to unmap: the list is empty.
+        list.replace(mapping);
+    } else {
+        mapping.free();
     }
 }
 
@@ -541,8 +609,8 @@ impl Default for ServerTables {
             max_connection: Cell::new(0),
             enable_accept_timer: swoole_rs_corebase::timer_key::AtomicHeld::new(),
             reactor_pipe_num: Cell::new(0),
-            reactor_thread_num: Cell::new(0),
-            reactor_threads: Cell::new(core::ptr::null_mut()),
+            reactor_threads: core::cell::OnceCell::new(),
+            #[cfg(feature = "upstream-symbols")]
             message_bus: None,
         }
     }
@@ -649,6 +717,16 @@ pub(crate) mod tests {
         pub(crate) unsafe fn set_max_connection_unchecked(&self, value: u32) {
             self.max_connection.set(value);
         }
+
+        /// The connection list, to name a test's own records or forget them.
+        pub(crate) fn connection_list_mut(&mut self) -> &mut Shm {
+            &mut self.connection_list
+        }
+
+        /// The session list, as [`Self::connection_list_mut`].
+        pub(crate) fn session_list_mut(&mut self) -> &mut Shm {
+            &mut self.session_list
+        }
     }
 
     /// A table field naming a test's own records, so several states can share them as
@@ -667,6 +745,34 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn clearing_a_slot_keeps_only_active_closed_and_server_fd() {
+        // SAFETY: a connection record is plain data; zero is a closed one.
+        let record: ConnectionRecord = unsafe { core::mem::zeroed() };
+        let conn = Connection::from(&record);
+        record.active.store(1, Relaxed);
+        record.closed.store(1, Relaxed);
+        conn.set_server_fd(3);
+        conn.set_fd(4);
+        conn.set_session_id(5);
+        conn.set_close_force(true);
+        conn.set_last_recv_time(1.5);
+        conn.set_uid(6);
+        conn.set_websocket_status(WebSocketStatus::Active);
+        conn.set_ssl_client_cert_pid(7);
+        record.lock.store(1, Relaxed);
+        conn.clear();
+        assert!(conn.is_active());
+        assert_eq!(record.closed.load(Relaxed), 1);
+        assert_eq!(conn.server_fd(), 3);
+        assert_eq!((conn.fd(), conn.session_id(), conn.uid()), (0, 0, 0));
+        assert!(!conn.close_force());
+        assert_eq!(conn.last_recv_time().to_bits(), 0);
+        assert_eq!(conn.websocket_status(), WebSocketStatus::None);
+        assert_eq!(conn.ssl_client_cert_pid(), 0);
+        assert_eq!(record.lock.load(Relaxed), 0);
+    }
+
+    #[test]
     #[cfg_attr(miri, ignore = "a million-session table takes Miri over 15 minutes")]
     fn retirement_scans_table_edges_without_truncating_worker_identity() {
         let mut server = TestServer::new();
@@ -679,7 +785,7 @@ pub(crate) mod tests {
             .collect();
         sessions[0].reactor_bits.set(0x5a12_3401);
         sessions[1_048_575].reactor_bits.set(0x5a12_3401);
-        server.tables_mut().session_list = naming(&mut sessions);
+        *server.tables_mut().session_list_mut() = naming(&mut sessions);
         server.state().retire_sessions(257);
         assert!(sessions.iter().all(|slot| slot.fd.get() == 23));
         server.state().retire_sessions(1);
@@ -717,8 +823,8 @@ pub(crate) mod tests {
             (&raw mut connections).cast::<ConnectionRecord>(),
         );
         let tables = server.tables_mut();
-        tables.session_list = naming_at(session_at);
-        tables.connection_list = naming_at(connection_at);
+        *tables.session_list_mut() = naming_at(session_at);
+        *tables.connection_list_mut() = naming_at(connection_at);
         let state = server.state();
         unsafe {
             state.tables_ref().set_max_connection_unchecked(3);
@@ -812,5 +918,75 @@ pub(crate) mod tests {
                     .is_null()
             );
         }
+    }
+
+    /// A list is mapped once through `&` and unmapped only through `&mut`: a second
+    /// mapping leaves the first, so a slot lent from it stays usable. Mapping by
+    /// replacing unmapped it under the lent slot, which then reached freed memory.
+    #[test]
+    fn a_lent_slot_outlives_a_second_mapping() {
+        let mut tables = ServerTables::default();
+        assert!(tables.set_max_connection(2));
+        let connections = || Shm::calloc_private(2, size_of::<ConnectionRecord>());
+        let sessions = || Shm::calloc_private(2, size_of::<SessionRecord>());
+        tables.map_connections(connections());
+        tables.map_sessions(sessions());
+        let (slot, session) = (&tables.connections()[1], tables.session_slot(1).unwrap());
+        tables.map_connections(connections());
+        tables.map_sessions(sessions());
+        slot.fd.set(7);
+        session.fd.set(9);
+        assert_eq!(tables.connections()[1].fd.get(), 7, "the first list stays");
+        assert_eq!(
+            tables.session_slot(1).unwrap().fd.get(),
+            9,
+            "so do the sessions"
+        );
+        assert!(!tables.set_max_connection(3), "fixed while mapped");
+        tables.unmap_lists();
+        assert!(tables.connections().is_empty(), "unmapped");
+        assert!(tables.session_slot(1).is_none(), "sessions unmapped");
+        assert!(tables.set_max_connection(3), "free to change again");
+    }
+
+    /// A reset keeps a slot's `active` and `closed` and zeroes what lies between; a
+    /// clear zeroes all of it; neither reaches outside the table.
+    #[test]
+    fn reset_and_clear_zero_their_part_of_one_slot() {
+        let mut server = TestServer::new();
+        // SAFETY: a connection record is plain data; zero is a closed one.
+        let mut connections: [ConnectionRecord; 3] = unsafe { core::mem::zeroed() };
+        let at = (&raw mut connections).cast::<ConnectionRecord>();
+        *server.tables_mut().connection_list_mut() = naming_at(at);
+        let tables = server.state().tables_ref();
+        // SAFETY: the table above holds 3 records.
+        unsafe { tables.set_max_connection_unchecked(3) };
+        let fill = |slot: &ConnectionRecord| {
+            slot.active.store(1, Relaxed);
+            slot.fd.set(7);
+            slot.reactor_id.set(2);
+            slot.closed.store(1, Relaxed);
+        };
+        let read = |index: usize| {
+            // SAFETY: a record of the table, read afresh after each write.
+            let slot = unsafe { &*at.add(index) };
+            (
+                slot.active.load(Relaxed),
+                slot.fd.get(),
+                slot.reactor_id.get(),
+                slot.closed.load(Relaxed),
+            )
+        };
+        for index in 0..3 {
+            // SAFETY: as above.
+            fill(unsafe { &*at.add(index) });
+        }
+        tables.reset_connection(1);
+        tables.clear_connection(2);
+        tables.reset_connection(3);
+        tables.clear_connection(-1);
+        assert_eq!(read(0), (1, 7, 2, 1), "untouched");
+        assert_eq!(read(1), (1, 0, 0, 1), "reset");
+        assert_eq!(read(2), (0, 0, 0, 0), "cleared");
     }
 }

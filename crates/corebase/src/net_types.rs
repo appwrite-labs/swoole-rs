@@ -43,12 +43,6 @@ impl AddressStorage {
         unsafe { &*std::ptr::from_ref(self).cast::<T>() }
     }
 
-    /// The storage as its member `T`, to fill.
-    const fn member_mut<T: Member>(&mut self) -> &mut T {
-        // SAFETY: as for `member`, and any bytes written are a value of every member.
-        unsafe { &mut *std::ptr::from_mut(self).cast::<T>() }
-    }
-
     /// The storage as an IPv4 address.
     #[must_use]
     pub const fn v4(&self) -> &libc::sockaddr_in {
@@ -67,9 +61,13 @@ impl AddressStorage {
         self.member()
     }
 
-    /// The storage as a Unix address, to fill.
-    pub const fn unix_mut(&mut self) -> &mut libc::sockaddr_un {
-        self.member_mut()
+    /// Runs `edit` on the storage as a Unix address and stores the result whole, so
+    /// bytes `edit` leaves alone keep their value.
+    pub fn edit_unix<R>(&mut self, edit: impl FnOnce(&mut libc::sockaddr_un) -> R) -> R {
+        let mut un = *self.unix();
+        let result = edit(&mut un);
+        self.un = un;
+        result
     }
 }
 

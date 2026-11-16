@@ -20,8 +20,8 @@ use swoole_rs_corebase::{
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_ossupport::fd_write_all;
 
+use crate::methods::swoole_get_worker_id;
 use crate::process_pool::SW_IPC_MAX_SIZE;
-use crate::worker_globals::swr_v1_worker_global_get;
 
 /// Why reading a task's temporary file failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -286,7 +286,7 @@ impl TaskBuffer {
     pub fn pack(&mut self, data: &[u8]) -> bool {
         let id = swr_v1_core_current_task_id();
         swr_v1_core_set_current_task_id(id.wrapping_add(1));
-        let reactor_id = swr_v1_worker_global_get(0).c_cast::<i16>();
+        let reactor_id = swoole_get_worker_id().c_cast::<i16>();
         self.head = DataHead {
             fd: id,
             msg_id: 0,
@@ -528,6 +528,7 @@ mod tests {
 
     #[test]
     fn a_task_buffer_counts_the_payload_it_packs() {
+        let _turn = methods::TASK_ID.lock();
         let mut buf = TaskBuffer::default();
         assert_eq!(
             buf.bytes().len(),
@@ -659,7 +660,7 @@ mod tests {
         use super::super::*;
 
         /// `task_pack` draws from the process-wide task id, so its tests take turns.
-        static TASK_ID: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        pub(super) static TASK_ID: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
         /// An `EventData`-sized, 8-aligned buffer.
         fn event() -> Vec<u64> {
