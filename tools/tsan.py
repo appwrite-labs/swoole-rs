@@ -34,8 +34,8 @@ OUT = ROOT / 'target/tsan'
 SANITIZE = '-fsanitize=thread -fno-omit-frame-pointer'
 FAMILIES = ['swoole_thread', 'swoole_atomic', 'swoole_lock']
 # Reports outside upstream's run that main's run has. Lower it with each fix. 4 on CI once a thread-mode
-# worker record's copy and a new connection's publish stopped racing (#4286): the 3 wrong-thread
-# unlocks that upstream's run has too, and TSan's "can't find longjmp buf".
+# worker record's copy and a new connection's publish stopped racing (#4286): the thread lock
+# tests' 3 wrong-thread unlocks, and TSan's "can't find longjmp buf".
 LIMIT = 4
 
 
