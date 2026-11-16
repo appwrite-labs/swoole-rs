@@ -204,10 +204,23 @@ struct DtlsBio {
 /// OpenSSL calls the write and read hooks with the bytes it lends and their count.
 type Write = for<'id> extern "C" fn(&DtlsBio, In<'id, u8>, Count<'id, c_int>) -> c_int;
 type Read = for<'id> extern "C" fn(&DtlsBio, Out<'id, MaybeUninit<u8>>, Count<'id, c_int>) -> c_int;
-type Control = unsafe extern "C" fn(&DtlsBio, c_int, c_long, *mut c_void) -> c_long;
-/// OpenSSL calls the create hook with a BIO it is making and the destroy hook with one
-/// it is freeing, which nothing else uses meanwhile: the only `&mut DtlsBio`s there are.
+/// OpenSSL calls the control hook with the command, its value and its argument.
+type Control = extern "C" fn(&DtlsBio, c_int, c_long, Argument) -> c_long;
+/// OpenSSL calls the create hook with a BIO it is making, which nothing else uses
+/// meanwhile: the only `&mut DtlsBio` there is.
 type Hook = extern "C" fn(&mut DtlsBio) -> c_int;
+/// OpenSSL calls the destroy hook once per BIO, as it frees it.
+type Destroy = extern "C" fn(Freeing) -> c_int;
+
+/// The pointer argument OpenSSL lends a control command: for `DGRAM_GET_PEER`, null or
+/// a destination writable for the native address union. Only OpenSSL makes one.
+#[repr(transparent)]
+struct Argument(*mut c_void);
+
+/// The BIO OpenSSL hands the destroy hook as it frees it, once per BIO: only OpenSSL
+/// makes one, and [`BIO_take_data`] consumes it.
+#[repr(transparent)]
+struct Freeing(core::ptr::NonNull<DtlsBio>);
 
 /// The type of the table's BIOs, unique to it in the process: made only from
 /// [`SESSION_TYPE`].
@@ -215,13 +228,10 @@ type Hook = extern "C" fn(&mut DtlsBio) -> c_int;
 #[repr(transparent)]
 struct SessionType(c_int);
 
-/// A pointer type that is always null.
-enum Never {}
-
 // libcrypto's declarations, typed so that a live BIO of the table is a reference: the
 // `safe` ones read or write only the BIO's own flags, init and shutdown fields, or its
 // data, which is null or the session the BIO owns (set only by `dtls_open`, on a fresh
-// BIO; freed only by the destroy hook, which holds the BIO exclusively; and each method
+// BIO; taken only by the destroy hook, once, as OpenSSL frees the BIO; and each method
 // takes a BIO without a session). `BIO_find_type` answers a BIO of the table's type
 // from the chain it is given. `BIO_meth_new` copies the name and returns a table
 // nothing else holds (null on failure), which this side never frees, and the `safe`
@@ -239,7 +249,7 @@ unsafe extern "C" {
     safe fn BIO_get_new_index() -> c_int;
     safe fn BIO_meth_new(kind: c_int, name: Text<'_>) -> Option<&'static mut BioMethod>;
     safe fn BIO_meth_set_create(table: &mut BioMethod, create: Option<Hook>) -> c_int;
-    safe fn BIO_meth_set_destroy(table: &mut BioMethod, destroy: Option<Hook>) -> c_int;
+    safe fn BIO_meth_set_destroy(table: &mut BioMethod, destroy: Option<Destroy>) -> c_int;
     safe fn BIO_meth_set_write(table: &mut BioMethod, write: Option<Write>) -> c_int;
     safe fn BIO_meth_set_read(table: &mut BioMethod, read: Option<Read>) -> c_int;
     safe fn BIO_meth_set_ctrl(table: &mut BioMethod, control: Option<Control>) -> c_int;
@@ -248,10 +258,10 @@ unsafe extern "C" {
     safe fn BIO_set_flags(bio: &DtlsBio, flags: c_int);
     safe fn BIO_clear_flags(bio: &DtlsBio, flags: c_int);
     safe fn BIO_get_data(bio: &DtlsBio) -> Option<&DtlsSession>;
+    /// The session the BIO owns, out of it: OpenSSL reads its data no more once it
+    /// has called the destroy hook.
     #[link_name = "BIO_get_data"]
-    safe fn BIO_take_data(bio: &mut DtlsBio) -> *mut DtlsSession;
-    #[link_name = "BIO_set_data"]
-    safe fn BIO_clear_data(bio: &mut DtlsBio, data: Option<&'static Never>);
+    safe fn BIO_take_data(bio: Freeing) -> Option<Box<DtlsSession>>;
     safe fn BIO_set_init(bio: &DtlsBio, init: c_int);
     safe fn BIO_find_type<'a>(bio: crate::Bio<'a>, kind: SessionType) -> Option<&'a DtlsBio>;
     safe fn BIO_set_data(bio: FreshBio<'_>, data: Box<DtlsSession>);
@@ -342,12 +352,7 @@ extern "C" fn bio_read<'id>(
 }
 
 /// `dtls::BIO_ctrl`.
-unsafe extern "C" fn bio_ctrl(
-    bio: &DtlsBio,
-    command: c_int,
-    value: c_long,
-    pointer: *mut c_void,
-) -> c_long {
+extern "C" fn bio_ctrl(bio: &DtlsBio, command: c_int, value: c_long, pointer: Argument) -> c_long {
     let Some(session) = BIO_get_data(bio) else {
         return 0;
     };
@@ -358,8 +363,8 @@ unsafe extern "C" fn bio_ctrl(
     if known == Command::SetClose {
         BIO_set_shutdown(bio, value.c_cast::<c_int>());
     }
-    if known == Command::GetPeer && !pointer.is_null() {
-        let out = pointer.cast::<AddressStorage>();
+    if known == Command::GetPeer && !pointer.0.is_null() {
+        let out = pointer.0.cast::<AddressStorage>();
         // SAFETY: OpenSSL lends the peer command a destination writable for the native
         // address union.
         unsafe { out.write_unaligned(session.peer) };
@@ -375,14 +380,8 @@ extern "C" fn bio_create(bio: &mut DtlsBio) -> c_int {
 }
 
 /// Frees the BIO's session, if it has one.
-extern "C" fn bio_destroy(bio: &mut DtlsBio) -> c_int {
-    let session = BIO_take_data(bio);
-    BIO_clear_data(bio, None);
-    if !session.is_null() {
-        // SAFETY: the box `dtls_open` gave the BIO, now out of it; with the BIO held
-        // exclusively, no borrow of it is live.
-        drop(unsafe { Box::from_raw(session) });
-    }
+extern "C" fn bio_destroy(bio: Freeing) -> c_int {
+    drop(BIO_take_data(bio));
     1
 }
 
