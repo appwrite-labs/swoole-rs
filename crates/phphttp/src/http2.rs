@@ -177,16 +177,9 @@ impl Ctx<'_> {
             Value::Header => parse::Property::Header,
             _ => return,
         };
-        let request = &mut state.request;
-        parse::property(request, property);
-        let slot = if matches!(which, Value::Server) {
-            &mut request.zserver
-        } else {
-            &mut request.zheader
-        };
-        if let Some(array) = slot.array_mut() {
+        parse::edit(&mut state.request, property, |array| {
             array.insert(key, Owned::string(value));
-        }
+        });
     }
 
     /// `$request->server`, `header`, `get`, `post` or `cookie` (made on first
@@ -228,16 +221,16 @@ impl Ctx<'_> {
     /// the lookup. None before the array is made.
     #[must_use]
     pub fn entry(mut self, which: Value, key: &[u8]) -> Option<Owned> {
-        let request = &self.state().request;
-        let slot = match which {
-            Value::Server => &request.zserver,
-            Value::Header => &request.zheader,
-            Value::Get => &request.zget,
-            Value::Post => &request.zpost,
-            Value::Cookie => &request.zcookie,
+        let property = match which {
+            Value::Server => parse::Property::Server,
+            Value::Header => parse::Property::Header,
+            Value::Get => parse::Property::Get,
+            Value::Post => parse::Property::Post,
+            Value::Cookie => parse::Property::Cookie,
             Value::Response => return None,
         };
-        Some(slot.get()?.array()?.find(key)?.copy())
+        let array = parse::made(&self.state().request, property)?.array()?;
+        Some(array.find(key)?.copy())
     }
 
     /// Start the request body (`SW_HTTP2_DATA_BUFFER_SIZE` reserved), unless

@@ -7,7 +7,7 @@
 use crate::{
     context::{self, Ctx, Hold},
     host,
-    parse::{Key, add_protocol, add_server, key, parse_request, request_times},
+    parse::{self, Key, add_field, add_protocol, add_server, key, parse_request, request_times},
     state::State,
     websocket,
 };
@@ -163,7 +163,7 @@ fn address(server: view::Server<'_>, conn: Connection<'_>, local: bool) -> ZStri
 }
 
 /// `swoole_http_server_populate_ip_and_port`: `$request->server`'s ports and
-/// addresses. `loopback` is 4 or 6 for a loopback peer, otherwise 0. With
+/// addresses, then optionally `master_time`. `loopback` is 4 or 6 for a loopback peer, otherwise 0. With
 /// `cache`, the connection's fd, a session's addresses are made once and kept
 /// until the session closes. `server` and `conn` are the live server and the
 /// request's connection; `state` the request's context.
@@ -177,26 +177,33 @@ fn addresses(
     remote_port: i64,
     loopback: c_int,
     cache: Option<usize>,
+    master_time: Option<zend_long>,
 ) {
-    add_server(state, Key::ServerPort, Owned::long(local_port));
-    add_server(state, Key::RemotePort, Owned::long(remote_port));
-    if loopback != 0 {
+    let names = if loopback != 0 {
         let name = if loopback == 6 {
             Key::LoopbackV6
         } else {
             Key::LoopbackV4
         };
-        if let Some(name) = key(name) {
-            add_server(state, Key::ServerAddr, Owned::string(name.to_owned()));
-            add_server(state, Key::RemoteAddr, Owned::string(name.to_owned()));
+        key(name).map(|name| [name.to_owned(), name.to_owned()])
+    } else {
+        Some(
+            cache
+                .and_then(|fd| cached(server, conn, fd, session))
+                .unwrap_or_else(|| [address(server, conn, true), address(server, conn, false)]),
+        )
+    };
+    parse::edit_server(state, |server| {
+        add_field(server, Key::ServerPort, Owned::long(local_port));
+        add_field(server, Key::RemotePort, Owned::long(remote_port));
+        if let Some([local, remote]) = names {
+            add_field(server, Key::ServerAddr, Owned::string(local));
+            add_field(server, Key::RemoteAddr, Owned::string(remote));
         }
-        return;
-    }
-    let cached = cache.and_then(|fd| cached(server, conn, fd, session));
-    let [local, remote] =
-        cached.unwrap_or_else(|| [address(server, conn, true), address(server, conn, false)]);
-    add_server(state, Key::ServerAddr, Owned::string(local));
-    add_server(state, Key::RemoteAddr, Owned::string(remote));
+        if let Some(time) = master_time {
+            add_field(server, Key::MasterTime, Owned::long(time));
+        }
+    });
 }
 
 /// The session's cached addresses, each referenced once more for the caller;
@@ -476,6 +483,7 @@ fn handle(
     }
     let state = ctx.state();
     let cache = facts.cache.filter(|_| state.keepalive);
+    let master_time = facts.last_recv_time.c_cast::<zend_long>();
     if let Some(conn) = server.by_session(session) {
         addresses(
             server,
@@ -486,10 +494,11 @@ fn handle(
             facts.remote_port,
             facts.loopback,
             cache,
+            Some(master_time),
         );
+    } else {
+        add_server(state, Key::MasterTime, Owned::long(master_time));
     }
-    let master_time = Owned::long(facts.last_recv_time.c_cast::<zend_long>());
-    add_server(state, Key::MasterTime, master_time);
     // The hooks may reach the context: no borrow of it is held across them.
     if swoole_isset_hook(HookType::BEFORE_REQUEST) {
         ctx.call_hook(context::Hook::BeforeRequest);
@@ -601,6 +610,7 @@ pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
         facts.remote_port,
         facts.loopback,
         cache,
+        None,
     );
     request_times(state);
     let master_time = Owned::long(facts.last_recv_time.c_cast::<zend_long>());

@@ -56,7 +56,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 use swoole_rs_corebase::WebSocketStatus;
-use swoole_rs_ffi::frame_api::Frame;
+use swoole_rs_ports::frame_api::Frame;
 // The crates, once: the C++ in libswoole.a and the cases call them by symbol.
 use swoole_rs_clients::protocol::Socket;
 use swoole_rs_ffi as _;
@@ -146,12 +146,6 @@ unsafe extern "C" {
     fn string_new(this: *mut CppString, size: usize, allocator: *const c_void);
     #[link_name = "_ZN6swoole6String19append_random_bytesEmb"]
     fn string_append_random_bytes(this: *mut CppString, length: usize, base64: bool) -> bool;
-    #[link_name = "_ZN6swoole9websocket18get_package_lengthEPKNS_8ProtocolEPNS_7network6SocketEPNS_12PacketLengthE"]
-    fn ws_get_package_length(
-        protocol: *const c_void,
-        socket: *mut c_void,
-        pl: *mut PacketLength,
-    ) -> isize;
 }
 
 /// `websocket::encode`.
@@ -160,12 +154,21 @@ unsafe extern "C" {
 /// `buffer` is a live String, laid out as the crates'.
 unsafe fn ws_encode(buffer: *mut CppString, data: &[u8], opcode: u8, flags: u8) -> bool {
     // SAFETY: per the caller.
-    swoole_rs_ffi::frame_api::encode(unsafe { &mut *buffer.cast() }, data, opcode, flags)
+    swoole_rs_ports::frame_api::encode(unsafe { &mut *buffer.cast() }, data, opcode, flags)
+}
+
+/// `websocket::get_package_length` over `bytes`: the packet's length and the header
+/// length it found.
+fn ws_get_package_length(bytes: &[u8]) -> (isize, u32) {
+    let mut pl = swoole_rs_corebase::net_types::PacketLength::new(bytes);
+    let protocol = swoole_rs_clients::protocol::Protocol::EMPTY;
+    let length = swoole_rs_ports::http_routes::websocket_length(&protocol, None, &mut pl);
+    (length, pl.header_len)
 }
 
 /// `websocket::decode`.
 fn ws_decode(frame: &mut Frame, data: &mut [u8]) -> bool {
-    swoole_rs_ffi::frame_api::decode(frame, data)
+    swoole_rs_ports::frame_api::decode(frame, data)
 }
 
 /// `http_server::get_package_length`, over the cases' records.
@@ -578,32 +581,22 @@ fn push(cli: &mut TcpStream, data: &[u8], mask: bool) -> bool {
 fn recv(cli: &mut TcpStream) -> Option<Vec<u8>> {
     let mut buf = [0u8; 1024];
     cli.read_exact(&mut buf[..SW_WEBSOCKET_HEADER_LEN]).ok()?;
-    let mut pl = PacketLength {
-        buf: buf.as_ptr(),
-        buf_size: SW_WEBSOCKET_HEADER_LEN as u32,
-        header_len: 0,
-    };
-    // SAFETY: `pl` covers `buf_size` bytes of `buf`.
-    let mut packet_len =
-        unsafe { ws_get_package_length(std::ptr::null(), std::ptr::null_mut(), &mut pl) };
-    if packet_len < 0 {
+    let mut pl = ws_get_package_length(&buf[..SW_WEBSOCKET_HEADER_LEN]);
+    if pl.0 < 0 {
         return None;
     }
-    if packet_len == 0 {
-        cli.read_exact(&mut buf[SW_WEBSOCKET_HEADER_LEN..pl.header_len as usize])
+    if pl.0 == 0 {
+        cli.read_exact(&mut buf[SW_WEBSOCKET_HEADER_LEN..pl.1 as usize])
             .ok()?;
-        pl.buf_size = pl.header_len;
-        // SAFETY: as above, over the whole header.
-        packet_len =
-            unsafe { ws_get_package_length(std::ptr::null(), std::ptr::null_mut(), &mut pl) };
-        if packet_len <= 0 {
+        pl = ws_get_package_length(&buf[..pl.1 as usize]);
+        if pl.0 <= 0 {
             return None;
         }
     }
-    let packet_len = packet_len as usize;
+    let (packet_len, header_len) = (pl.0 as usize, pl.1);
     let mut data = vec![0u8; packet_len + 1];
-    let header_len = if pl.header_len > 0 {
-        pl.header_len as usize
+    let header_len = if header_len > 0 {
+        header_len as usize
     } else {
         SW_WEBSOCKET_HEADER_LEN
     };

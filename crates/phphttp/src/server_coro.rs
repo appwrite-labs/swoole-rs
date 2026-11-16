@@ -6,7 +6,7 @@
 use crate::{
     context::{self, CompressionTypes, Ctx, Hold},
     host,
-    parse::{Key, add_protocol, add_server, parse_request},
+    parse::{self, Key, Property, add_field, add_protocol, parse_request},
     server::{Callable, NO_THEN, call_handler},
     websocket,
 };
@@ -896,12 +896,28 @@ fn on_accept(call: &Call) {
 fn add_peer(mut context: Ctx, peer: &Peer) {
     let state = context.state();
     // The array takes a reference of its own to each of the loop's strings.
-    let remote_addr = Owned::string(peer.remote_addr.clone());
-    add_server(state, Key::RemoteAddr, remote_addr);
-    add_server(state, Key::RemotePort, Owned::long(peer.remote_port.into()));
-    let server_addr = Owned::string(peer.server_addr.clone());
-    add_server(state, Key::ServerAddr, server_addr);
-    add_server(state, Key::ServerPort, Owned::long(peer.server_port.into()));
+    parse::edit_server(state, |server| {
+        add_field(
+            server,
+            Key::RemoteAddr,
+            Owned::string(peer.remote_addr.clone()),
+        );
+        add_field(
+            server,
+            Key::RemotePort,
+            Owned::long(peer.remote_port.into()),
+        );
+        add_field(
+            server,
+            Key::ServerAddr,
+            Owned::string(peer.server_addr.clone()),
+        );
+        add_field(
+            server,
+            Key::ServerPort,
+            Owned::long(peer.server_port.into()),
+        );
+    });
 }
 
 /// The request loop: parse each request on the connection and run its handler.
@@ -1100,8 +1116,7 @@ fn find_crlf2(data: &[u8]) -> Option<usize> {
 
 /// `Expect: 100-continue` (case-insensitive) among the request headers.
 fn expects_continue(mut context: Ctx) -> bool {
-    let header = context.state().request.zheader.get();
-    header
+    parse::made(&context.state().request, Property::Header)
         .and_then(Value::array)
         .and_then(|header| header.find(b"expect"))
         .and_then(Value::bytes)
@@ -1124,14 +1139,16 @@ fn http2_request(
     mut http1: Ctx,
     server: &HttpServer,
 ) -> Result<(), bailout::Bailout> {
-    let source = http1.state().request.zserver.get().and_then(Value::array);
-    if let (Some(source), Some(target)) = (source, context.state().request.zserver.array_mut()) {
+    let source = parse::made(&http1.state().request, Property::Server);
+    if let Some(source) = source.and_then(Value::array) {
         // `http_server_add_server_array(ht, key, value)`: each entry with a
         // reference of its own.
-        source.for_each(|key, entry| {
-            if let ArrayKey::Name(key) = key {
-                target.add_new(&ZString::new(key), entry.copy());
-            }
+        parse::edit(&mut context.state().request, Property::Server, |target| {
+            source.for_each(|key, entry| {
+                if let ArrayKey::Name(key) = key {
+                    target.add_new(&ZString::new(key), entry.copy());
+                }
+            });
         });
     }
     add_protocol(context.state(), Key::Http2);

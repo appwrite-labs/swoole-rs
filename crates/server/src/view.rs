@@ -817,8 +817,8 @@ impl PipeSocket {
 
 /// The listening socket of `pool`'s stream IPC, or `None` without one.
 #[must_use]
-pub fn pool_ipc_listener(pool: PoolRef<'_>) -> Option<Socket<'_>> {
-    pool.ipc_listener().map(Socket::lent)
+pub fn pool_ipc_listener(pool: PoolRef<'_>) -> Option<std::rc::Rc<swoole_rs_reactor::OwnedSocket>> {
+    pool.ipc_listener()?.downcast().ok()
 }
 
 /// `sock->set_nonblock()`.

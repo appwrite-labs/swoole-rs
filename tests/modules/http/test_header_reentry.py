@@ -3,7 +3,9 @@
 The response carries the array as it was when sending began, and the server keeps serving.
 """
 from pathlib import Path
+import json
 import socket
+import subprocess
 
 import pytest
 
@@ -40,3 +42,31 @@ def test_trailer_walk(engine):
         assert status == 'HTTP/1.1 200 OK'
         assert body == b'5\r\nchunk\r\n0\r\nx-t1: t1\r\nx-t2: t2\r\n\r\n'
         assert get(port, '/')[0] == 'HTTP/1.1 200 OK'
+
+
+def test_request_metadata_separates_the_current_property(engine):
+    code = r'''
+    foreach ([[], ['seed' => 7]] as $initial) {
+        $request = Swoole\Http\Request::create();
+        $request->parse("GET /path HTTP/1.1\r\nHost: localhost\r\n");
+        $request->server = $initial;
+        $copy = $request->server;
+        $request->parse("\r\n");
+        echo json_encode([$copy, $request->server]), "\n";
+    }
+    '''
+    result = subprocess.run(engine.command('-r', code), capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stdout + result.stderr
+    rows = [json.loads(line) for line in result.stdout.splitlines()]
+    assert len(rows) == 2
+    for (copy, current), initial in zip(rows, [[], {'seed': 7}]):
+        assert copy == initial
+        assert list(current) == list(initial) + [
+            'request_method', 'request_uri', 'path_info', 'request_time',
+            'request_time_float', 'server_protocol',
+        ]
+        assert [current[key] for key in ('request_method', 'request_uri', 'path_info', 'server_protocol')] == [
+            'GET', '/path', '/path', 'HTTP/1.1',
+        ]
+        assert isinstance(current['request_time'], int)
+        assert isinstance(current['request_time_float'], float)

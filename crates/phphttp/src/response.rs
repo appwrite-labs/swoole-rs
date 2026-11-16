@@ -18,7 +18,7 @@ use swoole_rs_phpstubs::http_response;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_zend::bailout::Bailout;
 use swoole_rs_zend::{
-    Call, Custom, CustomClass, Invalid, Owned, Separated, Value, ZStr, ZString, bailout, handlers,
+    Call, Custom, CustomClass, Invalid, Owned, Value, ZStr, ZString, bailout, handlers,
     sys::{IS_NULL, IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, zend_long},
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -167,7 +167,8 @@ fn or_false(call: &Call, done: Option<()>) {
     }
 }
 
-fn property<'a>(ctx: &'a mut Ctx, which: Property) -> Option<Separated<'a>> {
+#[inline]
+fn property<'a>(ctx: &'a mut Ctx, which: Property) -> Option<&'a Value> {
     crate::header::response_property(ctx.state(), which)
 }
 
@@ -357,7 +358,7 @@ fn set_cookie(call: &Call, encode: bool) {
         return call.set_bool(false);
     };
     if let Some(cookies) = property(&mut ctx, Property::Cookie) {
-        cookies.push(cookie.into());
+        cookies.edit_array(|cookies| cookies.push(cookie.into()));
     }
     call.set_bool(true);
 }
@@ -436,10 +437,8 @@ fn trailer(call: &Call) {
         if !bailout::pending()
             && let Some(trailer) = property(&mut ctx, Property::Trailer)
         {
-            trailer.update(
-                &key,
-                value.map_or_else(Owned::null, |value| ZString::new(value).into()),
-            );
+            let value = value.map_or_else(Owned::null, |value| ZString::new(value).into());
+            trailer.edit_array(|trailer| trailer.insert(&key, value));
         }
         ctx.state().send_trailer = true;
         call.set_bool(true);
@@ -617,7 +616,7 @@ pub(crate) fn set_header(mut ctx: Ctx, key: &[u8], value: &Value, format: bool) 
     };
     if let Some(header) = property(&mut ctx, Property::Header) {
         // The array takes this copy's reference.
-        header.update(name, value.copy());
+        header.edit_array(|header| header.insert(name, value.copy()));
     }
     true
 }
