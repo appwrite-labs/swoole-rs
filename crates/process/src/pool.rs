@@ -1144,6 +1144,21 @@ mod tests {
         fn call(&self, _: &PoolCall, _: crate::process_pool::Op, _: u64) -> i64 {
             0
         }
+        fn new_pipe(&self, _: &PoolCall) -> Result<(), crate::process_pool::PipeError> {
+            unreachable!("loop-only fixture")
+        }
+        fn add_pipe(&self, _: &PoolCall) -> Result<(), crate::process_pool::PipeError> {
+            unreachable!("loop-only fixture")
+        }
+        fn push_stop(&self, _: &PoolCall) -> Result<(), crate::process_pool::PipeError> {
+            unreachable!("loop-only fixture")
+        }
+        fn send_buffer_size(&self, _: &PoolCall) -> std::io::Result<c_int> {
+            unreachable!("loop-only fixture")
+        }
+        fn bus_buffer(&self, _: &PoolCall, _: usize) -> Result<(), crate::process_pool::PipeError> {
+            unreachable!("loop-only fixture")
+        }
         fn alloc_workers(&self, _: u32) -> *mut crate::worker_record::WorkerRecord {
             core::ptr::null_mut()
         }
