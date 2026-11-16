@@ -488,15 +488,16 @@ pub(crate) fn create(args: crate::context::Args) -> c_long {
 /// `zend_first_try`; a coroutine that ended in an exception or a bailout
 /// bails the whole process out. Its frame owns nothing to drop.
 fn main(args: crate::context::Args) {
-    let Some(ctx) = crate::context::open(args) else {
-        return;
-    };
-    let caught = swr_zend_coroutine_run(crate::context::enter, defers, ctx);
-    crate::context::close(ctx);
-    if caught != 0 {
+    if crate::context::run(args) {
         // SAFETY: the main context runs `bail_out`; this frame owns nothing.
         unsafe { swoole_rs_coroutine::swr_v1_coroutine_bail(Some(bail_out), std::ptr::null_mut()) };
     }
+}
+
+/// The running coroutine's function, then its defer tasks, inside
+/// `zend_first_try`: whether an exception or a bailout ended it.
+pub(crate) fn run(ctx: Ctx) -> bool {
+    swr_zend_coroutine_run(crate::context::enter, defers, ctx) != 0
 }
 
 /// The bailout of a coroutine that ended in an exception or a bailout, in the
@@ -553,7 +554,6 @@ pub(crate) fn check_reactor() {
 pub(crate) fn attach(
     on_yield: extern "C" fn(swoole_rs_coroutine::CoroutineTask),
     on_resume: extern "C" fn(swoole_rs_coroutine::CoroutineTask),
-    on_close: extern "C" fn(swoole_rs_coroutine::CoroutineTask),
 ) {
     // Upstream dereferences `sw_reactor()` here unchecked.
     if swoole_rs_reactor::event_api::current_prepared().is_none() {
@@ -562,7 +562,7 @@ pub(crate) fn attach(
     swoole_rs_reactor::event_api::on_destroy(deactivate_on_free);
     // The core's activation, on a running loop.
     swoole_rs_coroutine::activate();
-    set_callbacks([Some(on_yield), Some(on_resume), Some(on_close)]);
+    set_callbacks([Some(on_yield), Some(on_resume), None]);
 }
 
 pub(crate) fn detach() {
