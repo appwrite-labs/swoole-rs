@@ -29,8 +29,6 @@ use swoole_rs_corebase::net_types::{PacketLength, RecvData, SocketAddress};
 use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_corebase::{ProxyState, ResolverRequest, log};
 use swoole_rs_error::ErrorCode;
-#[cfg(not(test))]
-use swoole_rs_reactor::event_api::event_write;
 use swoole_rs_reactor::reactor_upstream::set_handler;
 use swoole_rs_reactor::socket_upstream::Connect;
 use swoole_rs_reactor::{
@@ -47,8 +45,8 @@ use swoole_rs_tls::{
 };
 #[cfg(test)]
 use tests::{
-    async_dispatch, event_write, net, sendfile_sync, socket_free, socket_sendfile_async,
-    socket_ssl_close, with_thread_buffer, writable_callback,
+    async_dispatch, net, sendfile_sync, socket_free, socket_sendfile_async, socket_ssl_close,
+    with_thread_buffer,
 };
 
 /// The flags [`Client::flag`] reads.
@@ -158,10 +156,6 @@ const ERROR_SOCKET_POLL_TIMEOUT: c_int = ErrorCode::SW_ERROR_SOCKET_POLL_TIMEOUT
 const ERROR_SOCKS5_HANDSHAKE_FAILED: c_int = ErrorCode::SW_ERROR_SOCKS5_HANDSHAKE_FAILED as c_int;
 const ERROR_HTTP_PROXY_HANDSHAKE_ERROR: c_int =
     ErrorCode::SW_ERROR_HTTP_PROXY_HANDSHAKE_ERROR as c_int;
-
-// crates/tls's reactor write (the unit tests use a double instead).
-#[cfg(not(test))]
-use swoole_rs_tls::reactor_write::reactor_writable_callback as writable_callback;
 
 /// One of `Protocol::recv_with_length_protocol` and `recv_with_eof_protocol` over a
 /// live protocol, socket and input buffer.
@@ -1526,6 +1520,8 @@ fn bind_unix(this: Handle) -> bool {
 /// table outside the record preserves its C layout; callbacks copy the function
 /// pointer before an effect can release the client.
 struct SocketOps {
+    write: fn(Socket<'static>, &[u8]) -> Option<usize>,
+    writable: extern "C-unwind" fn(Running<'_>, &mut Event) -> c_int,
     make_socket: fn(c_int, c_int, c_int) -> Option<Socket<'static>>,
     kernel_timeout: fn(Handle, f64),
     assign: fn(Handle, &CStr, c_int, bool) -> bool,
@@ -1545,6 +1541,8 @@ struct SocketOps {
 
 impl SocketOps {
     const NATIVE: Self = Self {
+        write: swoole_rs_reactor::event_api::event_write,
+        writable: swoole_rs_tls::reactor_write::reactor_writable_callback,
         make_socket: ops::make_socket,
         kernel_timeout: ops::kernel_timeout,
         assign: ops::assign,
@@ -1699,7 +1697,7 @@ pub fn send(this: Handle, data: &[u8], flags: c_int) -> Option<usize> {
 fn send_async(this: Handle, data: &[u8]) -> Option<usize> {
     let mut n = Some(data.len());
     // The live client's socket, deleted from the reactor before its record is freed.
-    if event_write(this.socket(), data).is_none() {
+    if (this.get().socket_ops.write)(this.socket(), data).is_none() {
         if log::last_error() != ERROR_OUTPUT_BUFFER_OVERFLOW {
             return None;
         }
@@ -1900,7 +1898,7 @@ fn on_write(this: Handle, reactor: Running<'_>, event: &mut Event) -> bool {
             }
             return true;
         }
-        if writable_callback(reactor, event) < 0 {
+        if (this.get().socket_ops.writable)(reactor, event) < 0 {
             return false;
         }
         if this.has(ClientEvent::BufferEmpty)
