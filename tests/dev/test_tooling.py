@@ -310,7 +310,8 @@ class Cleanup(unittest.TestCase):
             with self.subTest(phase=phase, exited=exited):
                 process = Mock(pid=12345, returncode=exited)
                 process.poll.side_effect = [exited if phase == 'startup' else None, exited]
-                with patch.object(harness.subprocess, 'Popen', return_value=process), \
+                with patch.object(harness, 'reserved_port', return_value=harness.contextlib.nullcontext(12345)), \
+                     patch.object(harness.subprocess, 'Popen', return_value=process), \
                      patch.object(harness.socket, 'create_connection', return_value=harness.contextlib.nullcontext()), \
                      patch.object(harness, 'stop_process_group', side_effect=PermissionError('denied')), \
                      patch.object(harness.sys, 'stderr'), \
