@@ -132,7 +132,7 @@ pub(crate) struct State {
     pub(crate) parse_files: bool,
     pub(crate) enable_compression: bool,
     pub(crate) accept_compression: bool,
-    pub(crate) compression_method: i8,
+    pub(crate) compression_method: swoole_rs_httpbindings::Compression,
     pub(crate) parse: Parse,
     pub(crate) response: Response,
     pub(crate) compression_min_length: u32,
