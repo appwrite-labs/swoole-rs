@@ -268,7 +268,7 @@ pub fn ws_decode(bytes: &[u8]) {
         let got = upstream_ws::Frame {
             payload_length: got.payload_length as u64,
             header_length: got.header_length as u16,
-            opcode: got.opcode,
+            opcode: got.opcode.code(),
             flags: got.flags,
             length_code: got.length_code,
             mask_key: got.mask_key,

@@ -105,7 +105,7 @@ pub fn decode_frame(data: &mut [u8]) -> Result<DecodedFrame, (DecodedFrame, bool
                 c"websocket::decode",
                 format_args!(
                     "invalid compressed websocket control frame received: opcode={}",
-                    decoded.opcode
+                    decoded.opcode.code()
                 ),
             );
             return Err((decoded, true));
@@ -189,7 +189,7 @@ pub fn decode(frame: &mut Frame, data: &mut [u8]) -> bool {
     };
     let flags = decoded.flags;
     // Header's bitfields: FIN 1 -> bit 7, RSV1 4 -> 6, RSV2 8 -> 5, RSV3 16 -> 4.
-    frame.header[0] = (decoded.opcode & 15)
+    frame.header[0] = (decoded.opcode.code() & 15)
         | (flags & 16)
         | ((flags & 8) << 2)
         | ((flags & 4) << 4)
