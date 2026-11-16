@@ -531,11 +531,10 @@ pub extern "C" fn swr_v1_logger_rotation_date(logger: &Logger, date: &mut [u8; 1
 /// this crate's `Logger`, or null before `swoole_init`.
 #[must_use]
 pub fn process_logger() -> Option<&'static Logger> {
-    let cpp = swoole_rs_corebase::swr_v1_core_logger().cast::<*const Logger>();
-    // SAFETY: a live `swoole::Logger` whenever set.
-    let member = unsafe { cpp.as_ref() }?;
-    // SAFETY: its only member is a live Logger.
-    Some(unsafe { &**member })
+    let cpp = swoole_rs_corebase::swr_v1_core_logger().cast::<&'static Logger>();
+    // SAFETY: null, or a live `swoole::Logger` whose only member is a non-null pointer
+    // to a live Logger (`swr_v1_logger_new`'s, freed only with the object).
+    unsafe { cpp.as_ref() }.copied()
 }
 
 /// `void swoole_set_log_level(int level)` (upstream `src/core/base.cc`).
