@@ -338,18 +338,17 @@ pub(crate) fn swr_v1_hook_uring_vector(
 /// `accept`'s request: the ring's accept into `address` (close-on-exec,
 /// non-blocking) under the read timeout, reading bound to the current coroutine.
 /// A failure sets the socket's error from errno.
-pub(crate) fn swr_v1_hook_uring_accept(
+pub(crate) fn accept_descriptor(
     ops: &UringSocketOps<'_>,
     address: &mut SocketAddress,
-) -> c_int {
+) -> std::io::Result<c_int> {
     let (host, tls) = (ops.host(), ops.tls);
     let flags = libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK;
     let fd = ops.bound(Events::READ, || {
         uring::accept(host, tls.fd, address, flags, tls.read_timeout)
     });
-    fd.unwrap_or_else(|error| {
+    fd.inspect_err(|error| {
         (ops.set_err)(ops.socket, error.raw_os_error().unwrap_or(0));
-        -1
     })
 }
 
@@ -410,10 +409,7 @@ pub(crate) fn swr_v1_hook_uring_poll(
 /// set. `socket` is available, in a coroutine, and `ops` is its view.
 pub(crate) fn accept(socket: Co, ops: &UringSocketOps<'_>) -> Option<OwnedCo> {
     let mut conn = SocketRecord::new();
-    let fd = swr_v1_hook_uring_accept(ops, &mut conn.info);
-    if fd < 0 {
-        return None;
-    }
+    let fd = accept_descriptor(ops, &mut conn.info).ok()?;
     conn.fd = fd;
     conn.removed = true;
     conn.info.kind = socket
@@ -445,19 +441,23 @@ pub(crate) fn sendfile(
                 end,
                 ops.tls.write_timeout,
             )
-            .map_or(-1, usize::cast_signed);
+            .ok();
         }
         let (total, warn) = ops.tls.sendfile(file, &mut offset, end, |error| {
             ops.socket.catch_error(error)
         });
         match warn {
-            1 => log::sys_warning(c"UringSocket::ssl_sendfile", format_args!("pread() failed")),
-            2 => log::sys_warning(c"UringSocket::ssl_sendfile", format_args!("write() failed")),
-            _ => {}
+            Some(crate::sendfile::TlsWarning::Read) => {
+                log::sys_warning(c"UringSocket::ssl_sendfile", format_args!("pread() failed"));
+            }
+            Some(crate::sendfile::TlsWarning::Write) => {
+                log::sys_warning(c"UringSocket::ssl_sendfile", format_args!("write() failed"));
+            }
+            None => {}
         }
-        total.cast_signed()
+        Some(total)
     });
-    sent == end.cast_signed()
+    sent == Some(end)
 }
 
 /// The socket's `ssl_want_read` (bit 0) and `ssl_want_write` (bit 1).
@@ -727,6 +727,21 @@ mod tests {
     }
 
     #[test]
+    fn accept_keeps_error_after_socket_publication() {
+        with_engine(|| {
+            let mut socket = TestSocket::new();
+            let mut server = ops(-1, socket.co());
+            server.set_err = |_, error| {
+                assert_eq!(error, libc::EBADF);
+                swoole_rs_corebase::sys::set_errno(libc::EINTR);
+            };
+            let error = accept_descriptor(&server, &mut SocketAddress::default()).unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(libc::EBADF));
+            assert_eq!(errno(), libc::EINTR);
+        });
+    }
+
+    #[test]
     fn accepts_and_sends_to_an_address() {
         use std::net::{TcpListener, TcpStream, UdpSocket};
         use std::os::fd::AsRawFd;
@@ -739,7 +754,7 @@ mod tests {
                 len: libc::socklen_t::try_from(size_of::<libc::sockaddr_storage>()).unwrap(),
                 ..SocketAddress::default()
             };
-            let fd = swr_v1_hook_uring_accept(&server, &mut address);
+            let fd = accept_descriptor(&server, &mut address).unwrap();
             assert!(fd >= 0);
             assert_eq!(
                 unsafe { address.addr.ss.sa_family },
