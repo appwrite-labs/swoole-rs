@@ -218,11 +218,7 @@ extern "C" fn host(query: &Query, status: i32, timeouts: i32, entry: Option<Host
         query.error.set(error);
     } else if let Some(entry) = entry {
         // The family of the storage the addresses are.
-        let version = if entry.family() == libc::AF_INET {
-            4
-        } else {
-            6
-        };
+        let version = if entry.is_inet() { 4 } else { 6 };
         for address in entry.addresses() {
             let text = swr_v1_clients_ip_text(version, address);
             let length = usize::try_from(text.length).unwrap_or(0);
