@@ -576,7 +576,9 @@ pub(crate) fn watch_switches(watch: bool) -> usize {
 /// opened, run (the function and defer tasks inside `zend_first_try`) and
 /// closed. Whether an exception or a bailout ended it.
 pub(crate) fn run(args: Args) -> bool {
-    let mut context = Context::empty();
+    // `close` drops everything the context holds that needs a drop, so the frame
+    // only frees its bytes, as upstream's `efree` does, with no drop pass.
+    let mut context = mem::ManuallyDrop::new(Context::empty());
     let Some(ctx) = open(args, &mut context) else {
         return false;
     };
