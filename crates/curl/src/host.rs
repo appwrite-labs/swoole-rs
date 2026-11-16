@@ -171,15 +171,14 @@ pub(crate) fn timer_available() -> bool {
     swoole_rs_timer::swoole_timer_is_available()
 }
 
-/// A one-shot timer of `ms` that reaches `multi`, which deletes it, unless it
-/// fired, before it is freed: its id, or none.
+/// A one-shot timer of `ms` that reaches `multi` through its own `Weak`: its id, or none.
 pub(crate) fn timer_add(ms: c_long, multi: &Multi) -> Option<swoole_rs_timer::Held> {
-    let multi = ptr::from_ref(multi);
-    swoole_rs_timer::add_fn(ms, false, move || {
-        // SAFETY: the multi deletes its timer before it is freed.
-        let multi = unsafe { &*multi };
-        multi.timer.set(None);
-        multi.callback(None);
+    let multi = multi.this.clone();
+    swoole_rs_timer::add_owned(ms, false, move || {
+        if let Some(multi) = multi.upgrade() {
+            multi.timer.set(None);
+            multi.callback(None);
+        }
     })
 }
 
