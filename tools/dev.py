@@ -269,6 +269,11 @@ def plan(args, reports):
     if 'hooks' in modules:
         script('hooks-select-handler-arrays', 'tests/modules/hooks/select_handler_arrays.py', *php,
                '--engine', f'cargo={cargo}', *report('hooks-select-handler-arrays'))
+        if integrate:
+            script('hooks-packet-bailout', 'tests/differential/fuzz.py', *php,
+                   '--engine', f'upstream={reference}', '--engine', f'cargo={cargo}',
+                   '--programs', '0', '--cases', ROOT / 'tests/modules/hooks/bailouts',
+                   *report('hooks-packet-bailout'))
     if 'hooks' in modules and sys.platform.startswith('linux'):
         # core-tests/src/coroutine/{system,hook,socket,base,file,async}.cpp, network/{client,dns,address,socket}.cpp,
         # os/{timer,pipe,process_pool,wait,async}.cpp, os.daemon and protocol/ssl.cpp, ported to Rust over the Cargo build's libswoole, and the repo-owned C++

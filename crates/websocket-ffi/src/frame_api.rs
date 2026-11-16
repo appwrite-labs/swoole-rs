@@ -329,6 +329,13 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no fopen")]
     fn websocket_encode() {
+        unsafe extern "C" {
+            /// A stream open until the `fclose` below, as a `Stream` (`FILE *`).
+            fn fopen(
+                path: *const c_char,
+                mode: *const c_char,
+            ) -> Option<swoole_rs_corebase::Stream>;
+        }
         let mut buffer = string();
         let packet = b"hello world\n";
         assert!(encode(&mut buffer, packet, 1, FIN | MASK));
@@ -341,16 +348,14 @@ mod tests {
             std::process::id()
         ));
         let path = std::ffi::CString::new(log.to_str().unwrap()).unwrap();
-        let fp = unsafe { libc::fopen(path.as_ptr(), c"a+".as_ptr()) };
-        assert!(!fp.is_null());
+        let fp = unsafe { fopen(path.as_ptr(), c"a+".as_ptr()) };
+        assert!(fp.is_some());
         let ori_fp = swoole_rs_corebase::swoole_get_stdout_stream();
-        swoole_rs_corebase::swoole_set_stdout_stream(unsafe {
-            swoole_rs_corebase::Stream::new(fp)
-        });
+        swoole_rs_corebase::swoole_set_stdout_stream(fp);
         let payload = &wire[usize::from(ws.header_length)..][..ws.payload_length];
         print_frame(ws.header, payload);
         swoole_rs_corebase::swoole_set_stdout_stream(ori_fp);
-        unsafe { libc::fclose(fp) };
+        unsafe { libc::fclose(fp.unwrap().as_ptr()) };
 
         let rs = std::fs::read_to_string(&log).unwrap();
         assert!(rs.contains("FIN: 1,"), "{rs}");

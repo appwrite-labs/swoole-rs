@@ -777,15 +777,14 @@ fn a_failed_socket_makes_no_client_and_keeps_its_errno() {
 fn framed_packages_reach_on_receive_until_the_socket_waits_to_close() {
     let client = client(1, true, true);
     let socket = Handle(client).socket();
-    let mut package = RecvData {
-        info: swoole_rs_corebase::DataHead::default(),
-        data: c"data".as_ptr().cast(),
-    };
-    package.info.len = 4;
-    assert_eq!(on_package(core::ptr::null(), socket, &package), OK);
+    let mut data = swoole_rs_buffer::string::boxed_string(b"data");
+    let package = Package::of(&mut data, 0, 4);
+    assert_eq!(on_package(core::ptr::null(), socket, package), OK);
     assert_eq!(taken(), ["call Receive 4"]);
     sock().output.close_wait = true;
-    assert_eq!(on_package(core::ptr::null(), socket, &package), ERR);
+    let package = Package::of(&mut data, 0, 4);
+    assert_eq!(on_package(core::ptr::null(), socket, package), ERR);
+    data.dispose();
     free(client);
 }
 

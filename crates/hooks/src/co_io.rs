@@ -216,38 +216,64 @@ mod native {
 
     fn recv(socket: Co, at: usize, length: usize, all: bool) -> Option<usize> {
         use crate::socket_members::Receive;
-        socket.with_buffer(false, |string| {
-            if at > string.len() {
-                return None;
+        use swoole_rs_corebase::lent::lend_spare;
+        let (data, length) = socket.with_buffer(false, |string| {
+            (at <= string.len()).then(|| {
+                (
+                    string.as_mut_ptr().wrapping_add(at),
+                    length.min(string.size() - at),
+                )
+            })
+        })?;
+        // A PHP bailout can abandon this coroutine while recv is parked. End the
+        // metadata loan before yielding so teardown can take the socket's buffer.
+        let room = if length == 0 {
+            &mut [][..]
+        } else {
+            // SAFETY: this socket's one reader owns these allocation slots until recv
+            // returns; TLS uses separate BIO scratch, and no String borrow spans recv.
+            unsafe {
+                std::slice::from_raw_parts_mut(data.cast::<core::mem::MaybeUninit<u8>>(), length)
             }
-            string.truncate(at);
-            let result = string.fill_within(length, |spare| {
-                socket.recv_spare(if all { Receive::All } else { Receive::Recv }, spare)
-            });
-            result.map(|_| string.len() - at)
-        })
+        };
+        let (result, filled) = lend_spare(room, |spare| {
+            socket.recv_spare(if all { Receive::All } else { Receive::Recv }, spare)
+        });
+        socket.with_buffer(false, |string| {
+            let length = string.len().max(at + filled);
+            // SAFETY: at was in the initialized prefix, and Spare verified exactly
+            // filled newly initialized bytes in this still-live allocation.
+            unsafe { string.set_len(length) };
+        });
+        result.map(|_| filled)
     }
 
     fn package_length(socket: Co, size: u32, header: &mut u32) -> crate::packet::Length {
-        socket.with_buffer(false, |string| {
-            let bytes = string.view().get(..size as usize).unwrap_or_default();
-            let mut packet = PacketLength::new(bytes);
-            let (protocol, callback) =
-                (socket.protocol_ptr(), socket.protocol().get_package_length);
-            let Some(call) = callback else {
-                return crate::packet::Length::NotFound;
-            };
-            // SAFETY: the record's live protocol and network socket, if open,
-            // and the initialized bytes held by the String loan.
-            let mut measure = |net: Option<swoole_rs_reactor::Socket<'_>>| unsafe {
-                call(protocol, net, &mut packet)
-            };
-            let length = socket
-                .with_network(|net| measure(Some(net)))
-                .unwrap_or_else(|| measure(None));
-            *header = packet.header_len;
-            crate::packet::Length::of(length)
-        })
+        let (data, length) = socket.with_buffer(false, |string| {
+            (string.as_ptr(), string.len().min(size as usize))
+        });
+        // The protocol callback may bail out, so it must not own a metadata loan.
+        let bytes = if length == 0 {
+            &[][..]
+        } else {
+            // SAFETY: the socket's initialized prefix, kept live by its current packet
+            // receive until the callback returns; the callback only reads these bytes.
+            unsafe { std::slice::from_raw_parts(data, length) }
+        };
+        let mut packet = PacketLength::new(bytes);
+        let (protocol, callback) = (socket.protocol_ptr(), socket.protocol().get_package_length);
+        let Some(call) = callback else {
+            return crate::packet::Length::NotFound;
+        };
+        // SAFETY: the live protocol, network socket if open, and initialized packet.
+        let mut measure = |net: Option<swoole_rs_reactor::Socket<'_>>| unsafe {
+            call(protocol, net, &mut packet)
+        };
+        let length = socket
+            .with_network(|net| measure(Some(net)))
+            .unwrap_or_else(|| measure(None));
+        *header = packet.header_len;
+        crate::packet::Length::of(length)
     }
 
     /// `SW_ERROR_PACKAGE_LENGTH_TOO_LARGE`, `SW_ERROR_PACKAGE_LENGTH_NOT_FOUND` and

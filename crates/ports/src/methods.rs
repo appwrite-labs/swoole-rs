@@ -747,7 +747,7 @@ mod tests {
         unsafe {
             (*config).r#type = kind;
             (*config).port.set(number);
-            let set = (*config).host.set_shared(host.as_bytes());
+            let set = (*config).host.set(host.as_bytes());
             assert!(set, "host set");
         }
         config
@@ -1173,8 +1173,11 @@ mod tests {
         let context = config.ssl_context.get().unwrap();
         assert!(context_create(config, &context, false, None).is_none());
         assert_eq!(log::last_error(), 509, "SW_ERROR_WRONG_OPERATION");
-        let cert_file = swoole_rs_tls::owner_view(&context).strings[4];
-        let set = |text: &str| unsafe { (*cert_file).set_shared(text.as_bytes()) };
+        let set = |text: &str| {
+            context
+                .borrow_configuration()
+                .set_string(4, text.as_bytes())
+        };
         assert!(set("server.crt"), "cert_file = \"server.crt\"");
         assert!(context_create(config, &context, true, None).is_none());
         assert!(set(""), "cert_file.clear()");
