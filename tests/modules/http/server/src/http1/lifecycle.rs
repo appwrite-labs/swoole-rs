@@ -1100,7 +1100,12 @@ unsafe extern "C" fn kill_on_worker_start(
                 std::slice::from_raw_parts((&raw const ev).cast::<u8>(), size_of::<DataHead>()),
             )
         };
-        let sent = send_pipe_message(dst, head, SW_PIPE_MASTER | SW_PIPE_NONBLOCK);
+        let sent = send_pipe_message(
+            swoole_rs_server::process_pool_native(),
+            dst,
+            head,
+            SW_PIPE_MASTER | SW_PIPE_NONBLOCK,
+        );
         check(
             sent.is_some_and(|sent| sent > 0),
             "send_to_worker_from_worker(1, &ev, ...) > 0",

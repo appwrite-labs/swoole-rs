@@ -24,10 +24,17 @@ pub(crate) fn create_pool(serv: view::Server<'_>) -> bool {
     // The server's event pool, reset as `*pool = {}` did.
     pool_ref.reset();
     let ipc = IpcMode::UnixSock.code().into();
-    if !swoole_rs_process::methods::create(pool_ref, config.worker_num.get(), 0, ipc) {
+    if !swoole_rs_process::methods::create(
+        crate::process_pool_native(),
+        pool_ref,
+        config.worker_num.get(),
+        0,
+        ipc,
+    ) {
         return false;
     }
     swoole_rs_process::methods::set_max_request(
+        crate::process_pool_native(),
         pool_ref,
         config.max_request.get(),
         config.max_request_grace.get(),

@@ -289,6 +289,7 @@ unsafe fn pool_create(pool: *mut Pool, worker_num: c_uint, key: c_int, ipc_mode:
     // SAFETY: as the caller guarantees.
     let created = unsafe {
         pm::create(
+            swoole_rs_server::process_pool_native(),
             swoole_rs_process::process_pool::PoolRef::new(pool.cast()),
             worker_num,
             key,
@@ -333,6 +334,7 @@ unsafe fn pool_set_protocol(pool: *mut Pool, protocol: Protocol) {
     // SAFETY: as the caller guarantees.
     unsafe {
         pm::set_protocol(
+            swoole_rs_server::process_pool_native(),
             swoole_rs_process::process_pool::PoolRef::new(pool.cast()),
             protocol,
         )
@@ -347,6 +349,7 @@ unsafe fn pool_dispatch_sync(
     // SAFETY: as the caller guarantees.
     let sent = unsafe {
         pm::dispatch(
+            swoole_rs_server::process_pool_native(),
             swoole_rs_process::process_pool::PoolRef::new(pool.cast()),
             swoole_rs_process::task_file::Packed::from_raw(data.cast()),
             u32::try_from(*worker_id).ok(),
@@ -358,44 +361,80 @@ unsafe fn pool_dispatch_sync(
 
 unsafe fn pool_start(pool: *mut Pool) -> c_int {
     // SAFETY: as the caller guarantees.
-    let started = unsafe { pm::start(swoole_rs_process::process_pool::PoolRef::new(pool.cast())) };
+    let started = unsafe {
+        pm::start(
+            swoole_rs_server::process_pool_native(),
+            swoole_rs_process::process_pool::PoolRef::new(pool.cast()),
+        )
+    };
     if started { SW_OK } else { SW_ERR }
 }
 
 unsafe fn pool_wait(pool: *mut Pool) -> c_int {
     // SAFETY: as the caller guarantees.
-    unsafe { pm::wait(swoole_rs_process::process_pool::PoolRef::new(pool.cast())) }
+    unsafe {
+        pm::wait(
+            swoole_rs_server::process_pool_native(),
+            swoole_rs_process::process_pool::PoolRef::new(pool.cast()),
+        )
+    }
 }
 
 unsafe fn pool_destroy(pool: *mut Pool) {
     // SAFETY: as the caller guarantees.
-    unsafe { pm::destroy(swoole_rs_process::process_pool::PoolRef::new(pool.cast())) }
+    unsafe {
+        pm::destroy(
+            swoole_rs_server::process_pool_native(),
+            swoole_rs_process::process_pool::PoolRef::new(pool.cast()),
+        )
+    }
 }
 
 unsafe fn pool_shutdown(pool: *mut Pool) -> bool {
     // SAFETY: as the caller guarantees.
-    unsafe { pm::shutdown(swoole_rs_process::process_pool::PoolRef::new(pool.cast())) }
+    unsafe {
+        pm::shutdown(
+            swoole_rs_server::process_pool_native(),
+            swoole_rs_process::process_pool::PoolRef::new(pool.cast()),
+        )
+    }
 }
 
 unsafe fn pool_reload(pool: *mut Pool) -> bool {
     // SAFETY: as the caller guarantees.
-    unsafe { pm::reload(swoole_rs_process::process_pool::PoolRef::new(pool.cast())) }
+    unsafe {
+        pm::reload(
+            swoole_rs_server::process_pool_native(),
+            swoole_rs_process::process_pool::PoolRef::new(pool.cast()),
+        )
+    }
 }
 
 unsafe fn pool_detach(pool: *mut Pool) -> bool {
     // SAFETY: as the caller guarantees.
-    unsafe { pm::detach(swoole_rs_process::process_pool::PoolRef::new(pool.cast())) }
+    unsafe {
+        pm::detach(
+            swoole_rs_server::process_pool_native(),
+            swoole_rs_process::process_pool::PoolRef::new(pool.cast()),
+        )
+    }
 }
 
 unsafe fn pool_reopen_logger(pool: *mut Pool) {
     // SAFETY: as the caller guarantees.
-    unsafe { pm::reopen_logger(swoole_rs_process::process_pool::PoolRef::new(pool.cast())) }
+    unsafe {
+        pm::reopen_logger(
+            swoole_rs_server::process_pool_native(),
+            swoole_rs_process::process_pool::PoolRef::new(pool.cast()),
+        )
+    }
 }
 
 unsafe fn pool_stop(pool: *mut Pool, worker: *mut Worker) {
     // SAFETY: as the caller guarantees.
     unsafe {
         pm::stop(
+            swoole_rs_server::process_pool_native(),
             swoole_rs_process::process_pool::PoolRef::new(pool.cast()),
             worker.cast(),
         )
@@ -405,7 +444,10 @@ unsafe fn pool_stop(pool: *mut Pool, worker: *mut Worker) {
 unsafe fn pool_create_message_bus(pool: *mut Pool) -> c_int {
     // SAFETY: as the caller guarantees.
     let created = unsafe {
-        pm::create_message_bus(swoole_rs_process::process_pool::PoolRef::new(pool.cast()))
+        pm::create_message_bus(
+            swoole_rs_server::process_pool_native(),
+            swoole_rs_process::process_pool::PoolRef::new(pool.cast()),
+        )
     };
     if created { SW_OK } else { SW_ERR }
 }
@@ -419,6 +461,7 @@ unsafe fn pool_push_message(
     // SAFETY: as the caller guarantees.
     let pushed = unsafe {
         pm::push_message(
+            swoole_rs_server::process_pool_native(),
             swoole_rs_process::process_pool::PoolRef::new(pool.cast_mut().cast()),
             kind,
             std::slice::from_raw_parts(data.cast(), length),
@@ -436,6 +479,7 @@ unsafe fn pool_send_message(
     // SAFETY: as the caller guarantees.
     unsafe {
         pm::send_message(
+            swoole_rs_server::process_pool_native(),
             swoole_rs_process::process_pool::PoolRef::new(pool.cast_mut().cast()),
             worker_id,
             std::slice::from_raw_parts(message.cast(), len),
@@ -495,7 +539,7 @@ unsafe fn worker_send_pipe_message(
             std::slice::from_raw_parts(data, n),
         )
     };
-    pm::send_pipe_message(worker, data, flags)
+    pm::send_pipe_message(swoole_rs_server::process_pool_native(), worker, data, flags)
 }
 
 unsafe fn worker_shutdown(worker: *mut Worker) {

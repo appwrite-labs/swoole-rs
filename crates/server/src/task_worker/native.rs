@@ -290,7 +290,12 @@ pub fn finish(
         reply(&mut buf, super::nonblocking_flags(flags, task.ext_flags));
         match stream_connection(worker) {
             Some(socket) => send_stream(socket, data),
-            None => send_pipe_message(worker, buf.bytes(), PIPE_MASTER),
+            None => send_pipe_message(
+                crate::process_pool_native(),
+                worker,
+                buf.bytes(),
+                PIPE_MASTER,
+            ),
         }
     } else {
         let Some(slot) = super::result_slot(serv, source) else {
