@@ -21,7 +21,7 @@ use swoole_rs_reactor::reactor_upstream::trigger_close_event;
 use swoole_rs_reactor::{Caught, Event, Fill, Running, Socket};
 use swoole_rs_server::port_config::{PortConfig, ReadEvent};
 use swoole_rs_server::static_select::static_select;
-use swoole_rs_server::{Connection as Slot, ConnectionRecord, ServerConfig, view};
+use swoole_rs_server::{Connection as Slot, ServerConfig, view};
 use swoole_rs_tls::upstream::{recv_fill, send};
 
 use crate::framing_recv::{self, Callbacks, Packages};
@@ -63,16 +63,11 @@ pub(crate) fn on_read(
     read: ReadEvent<'_>,
     kind: Readable,
 ) -> c_int {
-    let (server, event) = read.into_parts();
+    let (server, event, conn) = read.into_parts();
     let lent = Cell::new(*event);
     let Some(socket) = event.socket() else {
         return -1;
     };
-    // A connection socket's object is its connection: the event as `read` lent it.
-    let conn = socket.read(|s| s.object).cast::<ConnectionRecord>();
-    // SAFETY: the event's live connection slot, shared through the slot's handle, as
-    // its fields are cells and atomics.
-    let conn = Slot::from(unsafe { &*conn });
     let port = port.config();
     let mut read = Read {
         buffer: ptr::null_mut(),

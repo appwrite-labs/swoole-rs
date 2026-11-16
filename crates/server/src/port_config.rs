@@ -18,22 +18,34 @@ use crate::view::Port;
 pub struct ReadEvent<'a> {
     server: crate::view::Server<'a>,
     event: &'a mut swoole_rs_reactor::Event,
+    connection: crate::Connection<'a>,
 }
 
 impl<'a> ReadEvent<'a> {
-    /// The read's server and its event, which is the connection's as lent: the reader
-    /// reads the connection off it before anything changes it.
+    /// The read's server, its event and the connection of the event's socket (the
+    /// slot its `object` holds).
     pub(crate) fn new(
         server: crate::view::Server<'a>,
         event: &'a mut swoole_rs_reactor::Event,
+        connection: crate::Connection<'a>,
     ) -> Self {
-        Self { server, event }
+        Self {
+            server,
+            event,
+            connection,
+        }
     }
 
-    /// The server and the event.
+    /// The server, the event and the connection.
     #[must_use]
-    pub fn into_parts(self) -> (crate::view::Server<'a>, &'a mut swoole_rs_reactor::Event) {
-        (self.server, self.event)
+    pub fn into_parts(
+        self,
+    ) -> (
+        crate::view::Server<'a>,
+        &'a mut swoole_rs_reactor::Event,
+        crate::Connection<'a>,
+    ) {
+        (self.server, self.event, self.connection)
     }
 }
 
