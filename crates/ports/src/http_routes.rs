@@ -83,7 +83,9 @@ pub mod exports {
     use swoole_rs_corebase::{WebSocketStatus, log};
     use swoole_rs_reactor::{Drain, Socket, SocketRecord};
     use swoole_rs_server::{Connection, ConnectionRecord, view};
-    use swoole_rs_websocket::{Action, Context, PolicyError, decide_frame, encode_parts};
+    use swoole_rs_websocket::{
+        Action, Context, FrameFlags, Opcode, PolicyError, decide_frame, encode_parts,
+    };
     use swoole_rs_websocket_ffi::frame_api::decode_frame;
 
     use super::{WEBSOCKET_FRAME_HEADER_SIZE, length_size, route};
@@ -252,7 +254,14 @@ pub mod exports {
                 dispatch_task(&dispatch);
                 let mut reply = [MaybeUninit::<u8>::uninit(); CLOSE_REPLY_MAX];
                 let size = payload.and_then(|payload| {
-                    encode_parts(payload.len(), payload, 8, 1, &mut reply).ok()
+                    encode_parts(
+                        payload.len(),
+                        payload,
+                        Opcode::Close,
+                        FrameFlags::default().with_final(),
+                        &mut reply,
+                    )
+                    .ok()
                 });
                 if let Some(size) = size {
                     // SAFETY: the encoded reply's `size` bytes.
