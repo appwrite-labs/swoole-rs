@@ -16,21 +16,21 @@ unsafe extern "C" {
     /// The table's writable element for `key` into `result`, left alone on a
     /// bailout: none when the lookup failed, else a slot of the table that lives
     /// while nothing else changes it.
-    fn swr_phpstdext_dimension<'a>(
+    fn swr_phpstdext_dimension(
         frame: *mut zend_execute_data,
         table: *mut z::HashTable,
         key: *const zval,
         constant: bool,
-        result: &mut Option<&'a Value>,
+        result: &mut Option<&Value>,
     ) -> u8;
     /// `zend_assign_to_variable` into `result`, left alone on a bailout: the
     /// assigned slot, none when the assignment failed.
-    fn swr_phpstdext_assign<'a>(
+    fn swr_phpstdext_assign(
         slot: *mut zval,
         value: *mut zval,
         kind: u8,
         strict: bool,
-        result: &mut Option<&'a Value>,
+        result: &mut Option<&Value>,
     ) -> u8;
     fn swr_phpstdext_binary(slot: *mut zval, value: *mut zval, op: *const zend_op) -> u8;
     fn swr_phpstdext_typed_ref(
