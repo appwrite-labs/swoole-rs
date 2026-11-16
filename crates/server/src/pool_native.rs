@@ -9,7 +9,7 @@
 //! up; the frames here hold nothing to drop, so the `longjmp` may cross them.
 use core::cell::Cell;
 use core::ffi::{CStr, c_int, c_long};
-use core::ptr;
+use std::rc::Rc;
 use swoole_rs_corebase::CCast;
 use swoole_rs_process::worker_record::Worker as Record;
 use swoole_rs_process::worker_record::WorkerType;
@@ -397,14 +397,23 @@ fn master_ops(pool: Pool<'_>, op: Op, arg: u64) {
     }
 }
 
-/// Runs `io` and records its result and errno in the call.
-/// The socket `c` works on: none, or the live native socket the call lends its
-/// hook, as every `PoolCall` crates/process makes holds.
-#[inline]
-fn lent_socket<'c>(c: &'c PoolCall<'_>) -> Option<Socket<'c>> {
-    c.lent_socket().map(Socket::lent)
+/// The socket of a stream connection `accept` gave the pool.
+fn connection_socket(connection: &dyn core::any::Any) -> Option<Socket<'_>> {
+    connection
+        .downcast_ref::<swoole_rs_reactor::OwnedSocket>()
+        .map(swoole_rs_reactor::OwnedSocket::socket)
 }
 
+/// `socket->send_sync(data, length)` on the socket `pick` finds in `c`.
+fn send_on(c: &mut PoolCall, pick: for<'c> fn(&'c PoolCall<'_>) -> Option<Socket<'c>>) {
+    io(c, |c| {
+        pick(c)
+            .and_then(|socket| upstream::send_sync(socket, c.bytes(), 0))
+            .map_or(-1, usize::cast_signed)
+    });
+}
+
+/// Runs `io` and records its result and errno in the call.
 fn io(c: &mut PoolCall, io: impl FnOnce(&mut PoolCall) -> isize) {
     let result = io(c);
     c.set_result(result);
@@ -553,38 +562,42 @@ impl PoolNative for Native {
     }
 
     fn accept(&self, c: &mut PoolCall) {
-        let socket = ipc_listener(c.pool()).map_or(ptr::null_mut(), |listener| {
-            listener.edit(swoole_rs_reactor::SocketFields::accept)
-        });
-        // SAFETY: null, or the connection the listener just accepted, which the pool frees.
-        unsafe { c.set_socket(socket.cast()) };
+        let accepted = ipc_listener(c.pool())
+            .and_then(|listener| listener.edit(swoole_rs_reactor::SocketFields::accepted));
         c.set_error(errno());
+        if let Some(record) = accepted {
+            c.set_connection(Rc::new(swoole_rs_reactor::OwnedSocket::new(record)));
+        }
     }
 
     fn recv(&self, c: &mut PoolCall) {
         io(c, |c| {
             let flags = c.flags();
-            let (socket, buffer) = c.socket_fill();
-            socket
-                .and_then(|socket| recv_sync_fill(Socket::lent(socket), buffer, flags))
+            let (connection, buffer) = c.connection_fill();
+            connection
+                .and_then(connection_socket)
+                .and_then(|socket| recv_sync_fill(socket, buffer, flags))
                 .map_or(-1, usize::cast_signed)
         });
     }
 
     fn send(&self, c: &mut PoolCall) {
-        io(c, |c| {
-            lent_socket(c)
-                .and_then(|socket| upstream::send_sync(socket, c.bytes(), 0))
-                .map_or(-1, usize::cast_signed)
-        });
+        send_on(c, |c| c.connection().and_then(connection_socket));
     }
 
-    fn close(&self, c: &PoolCall) {
-        let socket = c.lent_socket().map(|socket| {
-            // SAFETY: the connection `accept` gave the call, a heap record the loop is
-            // done with.
-            unsafe { swoole_rs_reactor::OwnedSocket::from_socket(Socket::lent(socket)) }
-        });
+    fn close(&self, c: &mut PoolCall) {
+        let socket = match c.take_connection() {
+            // The loop's only hold on the connection.
+            Some(connection) => connection
+                .downcast::<swoole_rs_reactor::OwnedSocket>()
+                .ok()
+                .and_then(Rc::into_inner),
+            None => c.lent_socket().map(|socket| {
+                // SAFETY: the stream listener `destroy` gives up, a heap record nothing
+                // uses again.
+                unsafe { swoole_rs_reactor::OwnedSocket::from_socket(Socket::lent(socket)) }
+            }),
+        };
         socket_free(socket);
     }
 
@@ -599,7 +612,7 @@ impl PoolNative for Native {
                 pipe.timeouts
                     .set(timeout, swoole_rs_reactor::TimeoutKind::READ);
             });
-            read_sync_fill(pipe, c.socket_fill().1).map_or(-1, usize::cast_signed)
+            read_sync_fill(pipe, c.connection_fill().1).map_or(-1, usize::cast_signed)
         });
     }
 
@@ -673,7 +686,8 @@ impl PoolNative for Native {
                     .map_or(-1, usize::cast_signed)
             });
         } else {
-            self.send(c);
+            // The worker's pipe the call lends.
+            send_on(c, |c| c.lent_socket().map(Socket::lent));
         }
     }
 
