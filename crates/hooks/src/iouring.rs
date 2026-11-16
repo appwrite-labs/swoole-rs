@@ -250,14 +250,16 @@ pub fn stats() -> Option<(u32, usize, f32)> {
     })
 }
 
-/// `Iouring::futex_wait` on `word`, in a coroutine.
+/// `Iouring::futex_wait` on `word`, in a coroutine: false with errno set when
+/// it failed (upstream's nonzero).
 #[must_use]
-pub fn futex_wait(word: &AtomicU32) -> c_int {
-    uring::futex_wait(&HOST, word)
+pub fn futex_wait(word: &AtomicU32) -> bool {
+    uring::futex_wait(&HOST, word) == 0
 }
 
-/// `Iouring::futex_wakeup` on `word`, in a coroutine.
+/// `Iouring::futex_wakeup` on `word`, in a coroutine: false with errno set when
+/// it failed (upstream's negative).
 #[must_use]
-pub fn futex_wakeup(word: &AtomicU32) -> c_int {
-    uring::futex_wakeup(&HOST, word)
+pub fn futex_wakeup(word: &AtomicU32) -> bool {
+    uring::futex_wakeup(&HOST, word) >= 0
 }
