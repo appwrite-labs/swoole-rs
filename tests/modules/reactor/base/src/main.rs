@@ -365,7 +365,7 @@ unsafe fn create_failure() {
         assert_eq!(REACTOR_DESTROY_COUNT.load(Relaxed), 1);
 
         assert_eq!(swoole_rs_ffi::swoole_event_init(0), SW_OK);
-        assert_eq!(swoole_rs_ffi::swoole_event_free(), SW_OK);
+        assert!(swoole_rs_ffi::swoole_event_free());
         assert_eq!(REACTOR_DESTROY_COUNT.load(Relaxed), 2);
     }
 }
@@ -458,7 +458,7 @@ unsafe fn get_missing_socket() {
         expect_eq!(event_api::event_add(handle(socket), Events::READ), true);
         expect_eq!(event_api::swoole_event_get_socket(fd), socket.cast());
         expect_eq!(event_api::event_del(handle(socket)), true);
-        expect_eq!(swoole_rs_ffi::swoole_event_free(), SW_OK);
+        expect_eq!(swoole_rs_ffi::swoole_event_free(), true);
         pair_delete(p);
     }
 }

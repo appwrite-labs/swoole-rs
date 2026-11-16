@@ -1729,24 +1729,25 @@ impl<H: PoolHost> Pool<'_, H> {
             self.h.callback(Callback::Start, ptr::null_mut())?;
         }
         for index in 0..self.worker_num() {
-            if self.spawn(self.worker(index))? < 0 {
+            if self.spawn(self.worker(index))?.is_none() {
                 return Ok(false);
             }
         }
         Ok(true)
     }
 
-    /// `ProcessPool::spawn`: fork `worker`, which runs its loop and exits.
-    /// -1 for a `worker` that is none of the pool's ([`PoolRecord::own`]).
-    pub(crate) fn spawn(&mut self, worker: *mut WorkerRecord) -> Result<i64, Bailed> {
+    /// `ProcessPool::spawn`: fork `worker`, which runs its loop and exits; the
+    /// child's pid. `None` when the fork failed or `worker` is none of the pool's
+    /// ([`PoolRecord::own`]).
+    pub(crate) fn spawn(&mut self, worker: *mut WorkerRecord) -> Result<Option<c_int>, Bailed> {
         let Some(old) = self.record().own(worker).map(Worker::pid) else {
-            return Ok(SW_ERR);
+            return Ok(None);
         };
         self.with_registry(|registry| registry.unregister(old));
         let pid = self.h.fork(worker).unwrap_or(-1);
         if pid == 0 {
-            self.child(worker)?;
-            return Ok(0);
+            let Err(bailed) = self.child(worker);
+            return Err(bailed);
         }
         if let Some(worker) = self.record().own(worker) {
             worker.set_pid(pid);
@@ -1754,11 +1755,11 @@ impl<H: PoolHost> Pool<'_, H> {
         self.with_registry(|registry| {
             registry.register(pid, worker.cast(), 0);
         });
-        Ok(pid.into())
+        Ok((pid > 0).then_some(pid))
     }
 
     /// The forked worker: its callbacks and loop, then `exit`.
-    fn child(&mut self, worker: *mut WorkerRecord) -> Result<(), Bailed> {
+    fn child(&mut self, worker: *mut WorkerRecord) -> Result<std::convert::Infallible, Bailed> {
         self.on(worker, Op::WorkerInit, 0);
         if self.is_async() && !self.h.event_init() {
             // exit(3), as upstream.
@@ -2013,7 +2014,7 @@ impl<H: PoolHost> Pool<'_, H> {
 
     /// `ProcessPool::wait`: reap and restart workers until the pool stops, then
     /// stop them all.
-    pub(crate) fn wait(&mut self) -> Result<i64, Bailed> {
+    pub(crate) fn wait(&mut self) -> Result<(), Bailed> {
         reaper::run(self);
 
         self.set_running(false);
@@ -2038,7 +2039,7 @@ impl<H: PoolHost> Pool<'_, H> {
             }
         }
         self.set_started(false);
-        Ok(SW_OK)
+        Ok(())
     }
 
     /// `ProcessPool::push_message(msg)`: the `EventData` with `head` and `data` into
@@ -2590,7 +2591,7 @@ mod tests {
         }
         let mut pool = fixture.pool(Script::default());
         record(&mut pool).max_wait_time = 3;
-        assert!(matches!(pool.wait(), Ok(SW_OK)));
+        assert!(matches!(pool.wait(), Ok(())));
         for child in &mut children {
             child.wait().unwrap();
         }
@@ -2740,11 +2741,11 @@ mod tests {
         let mut pool = fixture.pool(script);
         pool.set_registry(Some(Box::default()));
         let worker = pool.worker(0);
-        assert_eq!(pool.spawn(worker).ok(), Some(4321));
+        assert_eq!(pool.spawn(worker).ok(), Some(Some(4321)));
         assert_eq!(pool.worker_by_pid(4321), worker);
         // A respawn forgets the old pid.
         pool.h.answers.insert(Op::Fork, 4322);
-        assert_eq!(pool.spawn(worker).ok(), Some(4322));
+        assert_eq!(pool.spawn(worker).ok(), Some(Some(4322)));
         assert!(pool.worker_by_pid(4321).is_null());
         pool.destroy();
     }

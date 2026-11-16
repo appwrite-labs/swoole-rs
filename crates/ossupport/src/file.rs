@@ -3,6 +3,7 @@
 //! function returns right after the failing call with its errno intact.
 use libc::{c_char, c_int, off_t};
 use std::ffi::CStr;
+use std::io;
 use std::marker::PhantomData;
 use std::os::fd::OwnedFd;
 use std::ptr::NonNull;
@@ -42,8 +43,10 @@ fn to_off(done: usize) -> off_t {
 }
 
 /// `File::open`: closes the open descriptor first; created files default to 0644.
-#[must_use]
-pub fn file_open(fd: c_int, path: &CStr, flags: c_int, mode: c_int) -> c_int {
+///
+/// # Errors
+/// `open(2)`'s, with errno set.
+pub fn file_open(fd: c_int, path: &CStr, flags: c_int, mode: c_int) -> io::Result<c_int> {
     if fd != -1 {
         // The caller's previous descriptor, released here as upstream does.
         _ = sys::close(fd);
@@ -53,7 +56,7 @@ pub fn file_open(fd: c_int, path: &CStr, flags: c_int, mode: c_int) -> c_int {
     } else {
         0o644
     };
-    sys::open(path, flags, libc::mode_t::try_from(mode).unwrap_or(0o644)).unwrap_or(-1)
+    sys::open(path, flags, libc::mode_t::try_from(mode).unwrap_or(0o644))
 }
 
 /// `File::close`: false for an already-closed descriptor.
@@ -405,13 +408,13 @@ mod tests {
         let fd = tmpfile(&mut template).map_or(-1, std::os::fd::IntoRawFd::into_raw_fd);
         assert!(fd >= 0, "a temporary file");
         let path = std::ffi::CStr::from_bytes_until_nul(&template).unwrap_or_default();
-        let reopened = file_open(fd, path, libc::O_RDONLY, 0);
+        let reopened = file_open(fd, path, libc::O_RDONLY, 0).unwrap_or(-1);
         assert!(reopened >= 0, "reopened after closing the old descriptor");
         assert!(file_close(reopened), "closed");
         assert!(!file_close(-1), "nothing to close");
         let created =
             std::ffi::CString::new(format!("{}.new", path.to_string_lossy())).unwrap_or_default();
-        let fd = file_open(-1, &created, libc::O_WRONLY | libc::O_CREAT, 0);
+        let fd = file_open(-1, &created, libc::O_WRONLY | libc::O_CREAT, 0).unwrap_or(-1);
         let mode =
             std::fs::metadata(created.to_string_lossy().as_ref()).map(|m| m.permissions().mode());
         let reference = format!("{}.ref", path.to_string_lossy());

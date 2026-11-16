@@ -80,8 +80,13 @@ impl WriteEffects for Write<'_> {
     }
 }
 
-/// `Reactor::write_func`.
-fn write(reactor: Running<'_>, socket: Socket<'static>, payload: WritePayload<'_>) -> isize {
+/// `Reactor::write_func`: the bytes written or queued, or `None` once the failure is
+/// logged or set as the last error.
+fn write(
+    reactor: Running<'_>,
+    socket: Socket<'static>,
+    payload: WritePayload<'_>,
+) -> Option<usize> {
     let ops = Write {
         reactor,
         socket,
@@ -91,7 +96,7 @@ fn write(reactor: Running<'_>, socket: Socket<'static>, payload: WritePayload<'_
     let result = swoole_rs_reactor::swr_v1_reactor_write(socket, default_size, payload, &ops);
     let origin = c"Reactor::write_func";
     match result {
-        Ok(value) => return value.cast_signed(),
+        Ok(value) => return Some(value),
         Err(WriteError::TooLarge) => log::error_log(
             log::LogLevel::SW_LOG_WARNING,
             SW_ERROR_PACKAGE_LENGTH_TOO_LARGE,
@@ -111,7 +116,7 @@ fn write(reactor: Running<'_>, socket: Socket<'static>, payload: WritePayload<'_
             log::set_last_error(std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
         }
     }
-    -1
+    None
 }
 
 /// `ssize_t Reactor::_write(Reactor *, Socket *, const void *buf, size_t n)`.
@@ -132,7 +137,7 @@ pub unsafe extern "C-unwind" fn reactor_write(
 ) -> isize {
     // SAFETY: as the caller promises.
     let data = unsafe { Drain::from_raw(data, length) };
-    write(reactor, socket, WritePayload::Bytes(data))
+    write(reactor, socket, WritePayload::Bytes(data)).map_or(-1, usize::cast_signed)
 }
 
 /// `ssize_t Reactor::_writev(Reactor *, Socket *, const iovec *iov, size_t iovcnt)`:
@@ -160,7 +165,7 @@ pub unsafe extern "C-unwind" fn reactor_writev(
         return -1;
     }
     if count == 0 {
-        return write(reactor, socket, WritePayload::Vectors(&[]));
+        return write(reactor, socket, WritePayload::Vectors(&[])).map_or(-1, usize::cast_signed);
     }
     // SAFETY: as the caller promises: `count` iovecs.
     let raw = unsafe { std::slice::from_raw_parts(iov, count) };
@@ -169,7 +174,8 @@ pub unsafe extern "C-unwind" fn reactor_writev(
     // parts `raw` shows at a non-null base are used.
     let vectors = unsafe { std::slice::from_raw_parts(iov.cast::<IoSlice<'_>>(), count) };
     if raw.iter().all(|part| !part.iov_base.is_null()) {
-        return write(reactor, socket, WritePayload::Vectors(vectors));
+        return write(reactor, socket, WritePayload::Vectors(vectors))
+            .map_or(-1, usize::cast_signed);
     }
     // A `{NULL, 0}` part is empty; a null base with a length is refused.
     if raw
@@ -189,7 +195,7 @@ pub unsafe extern "C-unwind" fn reactor_writev(
             }
         })
         .collect();
-    write(reactor, socket, WritePayload::Vectors(&vectors))
+    write(reactor, socket, WritePayload::Vectors(&vectors)).map_or(-1, usize::cast_signed)
 }
 
 impl FlushEffects for Flush<'_> {

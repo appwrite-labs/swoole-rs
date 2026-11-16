@@ -34,7 +34,7 @@ impl FileRecord {
     #[must_use]
     pub fn open_readonly(path: &CStr) -> Option<Self> {
         let path_bytes = path_copy(path.to_bytes())?;
-        let fd = file_open(-1, path, libc::O_RDONLY, 0);
+        let fd = file_open(-1, path, libc::O_RDONLY, 0).unwrap_or(-1);
         let file = Self {
             fd,
             flags: 0,
@@ -61,7 +61,7 @@ impl FileRecord {
 
     /// `File::open`: closes a descriptor it still owns, then opens `path`.
     pub fn open(&mut self, path: &CStr, flags: c_int, mode: c_int) -> bool {
-        self.fd = file_open(self.fd, path, flags, mode);
+        self.fd = file_open(self.fd, path, flags, mode).unwrap_or(-1);
         self.path = path.to_bytes().to_vec();
         self.flags = flags;
         self.ready()

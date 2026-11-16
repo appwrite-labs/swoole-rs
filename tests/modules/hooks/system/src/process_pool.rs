@@ -364,7 +364,8 @@ unsafe fn pool_start(pool: *mut Pool) -> c_int {
 
 unsafe fn pool_wait(pool: *mut Pool) -> c_int {
     // SAFETY: as the caller guarantees.
-    unsafe { pm::wait(swoole_rs_process::process_pool::PoolRef::new(pool.cast())) }
+    unsafe { pm::wait(swoole_rs_process::process_pool::PoolRef::new(pool.cast())) };
+    SW_OK
 }
 
 unsafe fn pool_destroy(pool: *mut Pool) {

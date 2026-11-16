@@ -470,7 +470,7 @@ thread_local! {
     };
 }
 
-/// `int swoole_event_free()`: deletes the thread's `Reactor`, then clears it; `SW_ERR`
+/// `swoole_event_free()`: deletes the thread's `Reactor`, then clears it; false
 /// without one. Only `swoole_event_init` sets a thread's reactor, so it is the one that
 /// call made here; a reactor another thread made and shares (a coroutine thread's) is
 /// cleared but left to the thread that owns it.
@@ -479,16 +479,16 @@ thread_local! {
     clippy::must_use_candidate,
     reason = "callers, `swoole_event_wait` among them, ignore it as upstream's do"
 )]
-pub fn swoole_event_free() -> c_int {
+pub fn swoole_event_free() -> bool {
     let Some(reactor) = crate::event_api::running() else {
-        return -1;
+        return false;
     };
     match EVENT_REACTOR.take() {
         Some(owned) if owned.as_ptr() == reactor.as_ptr() => swr_v1_reactor_delete(owned),
         other => EVENT_REACTOR.set(other),
     }
     swoole_rs_corebase::set_thread_reactor(ptr::null_mut());
-    0
+    true
 }
 pub(crate) struct ReactorBackendView {
     pub(crate) events: *mut c_void,

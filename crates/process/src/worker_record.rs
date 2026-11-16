@@ -744,22 +744,19 @@ impl<'a> Worker<'a> {
 /// pool's worker `id`, separated from shared memory. PHP may not close a pipe
 /// it shares with the pool, nor touch one the message bus owns; without
 /// `onMessage`, a message-queue pool's process pushes and pops the pool's
-/// queue. Returns the copy's pipe fd, or -1 unless the pool talks over unix
-/// sockets, or for an `id` the pool has no worker for.
-///
+/// queue. Returns the copy's pipe fd when the pool talks over unix sockets and
+/// has a worker `id`.
 pub fn copy_for_process(
     pool: crate::process_pool::PoolRef<'_>,
     id: usize,
     copy: &mut WorkerRecord,
-) -> c_int {
+) -> Option<c_int> {
     const MSGQUEUE_BALANCE: u8 = 2;
     let pool = pool.record();
     // Copied by value, as upstream's `new Worker(...)` does.
-    let Some(worker) = pool.worker(id).map(Worker::get) else {
-        return -1;
-    };
+    let worker = pool.worker(id).map(Worker::get)?;
     let null = core::ptr::null_mut();
-    let mut pipe = -1;
+    let mut pipe = None;
     if pool.ipc_mode == IpcMode::UnixSock {
         worker
             .pipe_current
@@ -771,7 +768,7 @@ pub fn copy_for_process(
         worker.pipe_object.set(null);
         // SAFETY: a unix-socket pool's worker pipes are live sockets, and
         // `network::Socket` begins with its fd.
-        pipe = unsafe { worker.pipe_current.get().cast::<c_int>().read() };
+        pipe = Some(unsafe { worker.pipe_current.get().cast::<c_int>().read() });
     }
     if pool.has_message_bus() {
         worker.pipe_current.set(null);
@@ -820,13 +817,13 @@ mod tests {
         // A worker the pool doesn't have: no copy.
         assert_eq!(
             copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 2, &mut copy),
-            -1
+            None
         );
         assert_eq!(copy.pid.get(), 0);
         // Another process's worker: the master's end of its pipe.
         assert_eq!(
             copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 1, &mut copy),
-            7
+            Some(7)
         );
         assert_eq!(
             (
@@ -840,7 +837,7 @@ mod tests {
         crate::process_pool::PoolRef::from(&mut pool).set_message_bus(Some(Box::new(())));
         assert_eq!(
             copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 1, &mut copy),
-            7
+            Some(7)
         );
         assert!(copy.pipe_current.get().is_null());
     }
@@ -867,7 +864,7 @@ mod tests {
         )));
         assert_eq!(
             copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 1, &mut copy),
-            -1
+            None
         );
         assert_eq!(
             (copy.queue.get(), copy.msgqueue_mode.get()),
@@ -879,7 +876,7 @@ mod tests {
         pool.on_message = Some(on_message);
         assert_eq!(
             copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 1, &mut copy),
-            -1
+            None
         );
         assert!(copy.queue.get().is_null());
     }
