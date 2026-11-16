@@ -140,20 +140,6 @@ impl<'a> Server<'a> {
         }
     }
 
-    /// `sw_server()`: the process's server (`SwooleG.server`), or `None` while it has
-    /// none.
-    ///
-    /// # Safety
-    /// The server is not deleted during `'a`: the last `SharedServer` drop frees it before
-    /// it clears `SwooleG.server`, so a view kept past that dangles.
-    #[must_use]
-    pub unsafe fn current() -> Option<Self> {
-        let serv = swoole_rs_corebase::swr_v1_core_server();
-        // SAFETY: null, or the process's server (only `swr_v1_server_new` sets it),
-        // live for `'a` per the caller.
-        (!serv.is_null()).then(|| unsafe { Server::from_raw(serv) })
-    }
-
     fn fields(self) -> &'a Fields {
         // SAFETY: the head of a live Server, per the module comment and `from_raw`'s caller.
         unsafe { &*self.raw.cast::<Fields>() }
@@ -195,9 +181,7 @@ impl<'a> Server<'a> {
     /// The server's configuration.
     #[must_use]
     pub fn config(self) -> &'a ServerConfig {
-        // SAFETY: the config allocation lives as long as the server, and writers
-        // hold no reference across a read.
-        unsafe { &*self.fields().config }
+        self.state().config_ref()
     }
 
     /// `serv->get_worker_message_bus()->move_packet()`: the bus no longer frees
@@ -481,11 +465,11 @@ impl<'a> Server<'a> {
         );
         let tasks = (self.task_pool_ref(), config.task_worker_num.get());
         let users = (config.user_workers.as_ptr().cast(), self.user_worker_num());
-        // SAFETY: `create` maps `workers` with `worker_num` records, and the factory's
-        // start `user_workers` with one per added user worker (`add_worker` refuses
-        // once the factory exists); each stays mapped, as the counts stay, until the
-        // server is destroyed after its pools stop. The same arrays `worker_record`
-        // lends records of.
+        // SAFETY: `create` maps `workers` with `worker_num` records, the task pool's
+        // create its array with `task_worker_num`, and the factory's start
+        // `user_workers` with one per added user worker (`add_worker` refuses once the
+        // factory exists); each stays mapped, as the counts stay, until the server is
+        // destroyed after its pools stop.
         unsafe { ServerWorkers::new(events, tasks, users) }
     }
 
@@ -499,9 +483,20 @@ impl<'a> Server<'a> {
     /// [`Server::worker`]'s record, or `None` past the last.
     #[must_use]
     pub fn worker_record(self, id: u16) -> Option<Worker<'a>> {
-        // SAFETY: null or one of the server's live workers, in memory the server
-        // keeps for `'a`.
-        unsafe { Worker::from_raw(self.worker(id)) }
+        self.workers().get(id)
+    }
+
+    /// The server's worker at `raw`: one of its event, task or user workers, or a
+    /// user worker `add_worker` added; `None` for any other address.
+    pub(crate) fn own_worker(self, raw: *const WorkerRecord) -> Option<Worker<'a>> {
+        let workers = self.workers();
+        let count = u64::from(workers.event_count())
+            + u64::from(workers.task_count())
+            + workers.user_count() as u64;
+        let ids = (0..u16::try_from(count).unwrap_or(u16::MAX)).filter_map(|id| workers.get(id));
+        let pending = (0..).map_while(|index| self.pending_worker(index));
+        ids.chain(pending)
+            .find(|worker| core::ptr::eq(worker.raw(), raw))
     }
 
     /// The `index`th user worker `worker_methods::add_worker` added, or `None` past the

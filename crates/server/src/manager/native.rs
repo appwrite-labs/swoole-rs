@@ -396,10 +396,11 @@ impl Reap for Reaping<'_> {
 /// inherits these handlers; it must not act as the manager (reopening the log
 /// would send SIGWINCH back to itself forever).
 extern "C" fn signal_handler(signo: c_int) {
-    // SAFETY: the manager's signal runs while its server lives; the view ends with it.
-    let Some(serv) = (unsafe { view::Server::current() }) else {
+    // A share keeps the server live while the handler reads it.
+    let Some(share) = crate::SharedServer::current() else {
         return;
     };
+    let serv = share.view();
     if signo == libc::SIGTERM {
         // Before `wait` sets up the manager too: `main` takes it while forking.
         if is_manager(serv) {
@@ -493,8 +494,7 @@ pub fn restart_worker_process(serv: view::Server<'_>, status: &ExitStatus) {
     const ORIGIN: &core::ffi::CStr = c"Server::restart_worker_process";
     let pid = status.pid();
     let worker = worker_methods::get_worker_by_pid(serv, pid);
-    // SAFETY: null or one of the server's live workers, kept for its life.
-    let Some(worker) = (unsafe { Worker::from_raw(worker) }) else {
+    let Some(worker) = serv.own_worker(worker) else {
         // A child that is not a worker: a detached worker finishing, or unknown.
         if !serv.registry().reap_detached(pid) {
             let m = format_args!("Unknown type child process [{pid}] exited");

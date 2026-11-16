@@ -370,7 +370,8 @@ pub(crate) fn before_request(mut ctx: Ctx) -> bool {
     }
     state.before_request = false;
     state.after_response = true;
-    crate::server::admit(ctx)
+    // Only `init` sets `before_request`, after binding the server (or a copy, with it).
+    crate::server::admit(server(state), ctx)
 }
 
 /// `onAfterResponse`: the server uncounts the request and starts a queued one.
@@ -378,7 +379,8 @@ pub(crate) fn after_response(mut ctx: Ctx) {
     let state = ctx.state();
     if state.after_response {
         state.after_response = false;
-        crate::server::release_request();
+        // Set only by `before_request`, on a server-bound context.
+        crate::server::release_request(server(state));
     }
 }
 

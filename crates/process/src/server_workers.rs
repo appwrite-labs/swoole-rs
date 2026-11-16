@@ -24,9 +24,9 @@ impl<'a> ServerWorkers<'a> {
     /// A server's worker arrays and counts.
     ///
     /// # Safety
-    /// `event_workers` is null or `event_count` live records, and `user_workers` null
-    /// or `user_count` live records, each live for `'a` and for as long as
-    /// `event_pool`; the process protocol that owns them orders the field writes made
+    /// `event_workers` is null or `event_count` live records, `task_pool`'s workers
+    /// null or `task_count` live records, and `user_workers` null or `user_count` live
+    /// records, each live for `'a` and for as long as `event_pool`; the process protocol that owns them orders the field writes made
     /// through them (as [`Worker::new`]).
     #[must_use]
     #[inline]
@@ -69,12 +69,46 @@ impl<'a> ServerWorkers<'a> {
 
     /// Event worker `index`, or `None` past the last or before the array exists.
     fn event(&self, index: usize) -> Option<Worker<'a>> {
-        if self.event_workers.is_null() || index >= self.event_count as usize {
+        Self::slot(self.event_workers, self.event_count as usize, index)
+    }
+
+    /// User worker `index`, or `None` past the last or before the array exists.
+    #[must_use]
+    pub fn user(&self, index: usize) -> Option<Worker<'a>> {
+        Self::slot(self.user_workers, self.user_count, index)
+    }
+
+    /// Record `index` of one of the arrays `new` was given, with its count.
+    fn slot(workers: *mut WorkerRecord, count: usize, index: usize) -> Option<Worker<'a>> {
+        if workers.is_null() || index >= count {
             return None;
         }
-        // SAFETY: `new`'s contract: `event_workers` holds `event_count` live records
+        // SAFETY: `new`'s contract: a non-null array holds its count of live records
         // for `'a`, and `index` is below it.
-        Some(unsafe { Worker::new(self.event_workers.wrapping_add(index)) })
+        Some(unsafe { Worker::new(workers.wrapping_add(index)) })
+    }
+
+    /// `Server::get_worker(id)`: event workers, then task workers, then user workers;
+    /// `None` past the last.
+    #[must_use]
+    pub fn get(&self, id: u16) -> Option<Worker<'a>> {
+        let id = u32::from(id);
+        if id < self.event_count {
+            // The pool holds the event array from `start`; before it, `workers[id]` is
+            // the array's, which `get_idle_worker_id` reads after `create`.
+            return if self.event_pool.workers().is_null() {
+                self.event(id as usize)
+            } else {
+                self.event_pool.worker(id as usize)
+            };
+        }
+        let user_start = self.event_count.wrapping_add(self.task_count);
+        if id < user_start {
+            // The task pool's canonical array has task_count slots.
+            let index = id.wrapping_sub(self.event_count) as usize;
+            return Self::slot(self.task_pool.workers(), self.task_count as usize, index);
+        }
+        self.user(id.wrapping_sub(user_start) as usize)
     }
 
     /// Base mode's reactor process, after `create` gave the event pool records of
@@ -144,31 +178,7 @@ pub fn swr_v1_process_server_workers_start<'w>(
 /// the last. The pointer is a loan of that array, without extending its lifetime.
 #[must_use]
 pub fn swr_v1_process_server_worker(view: &ServerWorkers<'_>, id: u16) -> *mut WorkerRecord {
-    let id = u32::from(id);
-    if id < view.event_count {
-        let published = view.event_pool.workers();
-        // The pool holds the event array from `start`; before it, `workers[id]` is the
-        // array's, which `get_idle_worker_id` reads after `create`.
-        let workers = if published.is_null() {
-            view.event_workers
-        } else {
-            published
-        };
-        return workers.wrapping_add(id as usize);
-    }
-    let user_start = view.event_count.wrapping_add(view.task_count);
-    if id < user_start {
-        // The task pool's canonical array has task_count slots.
-        let workers = view.task_pool.workers();
-        return workers.wrapping_add(id.wrapping_sub(view.event_count) as usize);
-    }
-    let users = u32::try_from(view.user_count & u32::MAX as usize).unwrap_or_default();
-    if id < user_start.wrapping_add(users) {
-        return view
-            .user_workers
-            .wrapping_add(id.wrapping_sub(user_start) as usize);
-    }
-    core::ptr::null_mut()
+    view.get(id).map_or(core::ptr::null_mut(), Worker::raw)
 }
 
 /// Ordered Server PID lookup: event records first, then the task pool's live
