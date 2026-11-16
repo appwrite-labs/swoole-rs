@@ -408,16 +408,26 @@ impl<'a> Connection<'a> {
 
 /// Server-private shared table loans and bounds. The arena owns the underlying shared mappings.
 ///
-/// Setup and teardown write the tables through `&`: every field they write is a cell
-/// (a [`Shm`] is one), written while the master is the server's only thread. The two
-/// lists it lends slots of are private: a factory maps each once through `&`, and only
-/// [`Self::unmap_lists`], through `&mut`, unmaps them, so no lent slot outlives its list.
+/// Setup writes the tables through `&`: every field it writes is a cell (a [`Shm`] is
+/// one), written while the master is the server's only thread. Each [`Shm`] is mapped
+/// once through `&`, and only [`Self::unmap`], through `&mut`, unmaps them, so nothing
+/// lent out of one outlives its mapping. The two lists are private, so that the tables
+/// bound the slots they lend.
 pub struct ServerTables {
     /// `ConnectionRecord`s, `max_connection` of them.
     connection_list: Shm,
     /// `SessionRecord`s, `SW_SESSION_LIST_SIZE` of them.
     session_list: Shm,
     pub port_gs_list: Shm,
+    /// `WorkerRecord`s, `worker_num` of them.
+    pub(crate) workers: Shm,
+    /// A `WorkerRecord` per added user worker.
+    pub(crate) user_workers: Shm,
+    /// Each event worker's result slot, which its tasks' results fill.
+    pub(crate) task_results: Shm,
+    /// Base mode's server connection counts (`gs->connection_nums`): an `AtomicU32`
+    /// per worker.
+    pub(crate) connection_nums: Shm,
     /// How many records `connection_list` maps. Private: [`Self::set_max_connection`]
     /// changes it only while the list is unmapped, so [`Self::connections`] never
     /// reaches past the mapping.
@@ -464,13 +474,13 @@ impl ServerTables {
     /// `connection_list = list`: a factory's `max_connection` zeroed records. A list
     /// already mapped stays, as its slots may be lent, and `list` is unmapped.
     pub(crate) fn map_connections(&self, list: Shm) {
-        fill(&self.connection_list, list);
+        self.connection_list.fill(list);
     }
 
     /// `session_list = list`: `SW_SESSION_LIST_SIZE` zeroed records, as
     /// [`Self::map_connections`].
     pub(crate) fn map_sessions(&self, list: Shm) {
-        fill(&self.session_list, list);
+        self.session_list.fill(list);
     }
 
     /// `session_list`'s `SharedMemory::protect(flags)`.
@@ -482,11 +492,20 @@ impl ServerTables {
         self.session_list.protect(flags)
     }
 
-    /// `sw_shm_free(connection_list)` and `sw_shm_free(session_list)`: exclusive access
-    /// means no slot either lent is still borrowed.
-    pub(crate) fn unmap_lists(&mut self) {
-        self.connection_list.free();
-        self.session_list.free();
+    /// `sw_shm_free` of each table: exclusive access means nothing lent out of one is
+    /// still borrowed.
+    pub(crate) fn unmap(&mut self) {
+        for table in [
+            &mut self.connection_list,
+            &mut self.session_list,
+            &mut self.port_gs_list,
+            &mut self.workers,
+            &mut self.user_workers,
+            &mut self.task_results,
+            &mut self.connection_nums,
+        ] {
+            table.free();
+        }
     }
 
     /// The connection slots, exactly `max_connection` of them, or none before
@@ -498,7 +517,7 @@ impl ServerTables {
             return &[];
         }
         // SAFETY: every factory maps the table with `max_connection` zeroed records,
-        // and only `unmap_lists`, through `&mut self`, unmaps it; the record's cells
+        // and only `unmap`, through `&mut self`, unmaps it; the record's cells
         // and atomics let slots be written under the server's own synchronization.
         unsafe { core::slice::from_raw_parts(base.cast(), self.max_connection() as usize) }
     }
@@ -541,7 +560,7 @@ impl ServerTables {
             return None;
         }
         // SAFETY: a factory maps the table with 1,048,576 zeroed records, which the
-        // modulo keeps `index` within, and only `unmap_lists`, through `&mut self`,
+        // modulo keeps `index` within, and only `unmap`, through `&mut self`,
         // unmaps it; the record's fields are cells.
         Some(unsafe { &*base.wrapping_add(index) })
     }
@@ -577,24 +596,16 @@ impl ServerTables {
     }
 }
 
-/// `list = mapping` for a list that lends slots: an empty list takes `mapping`; one
-/// already mapped keeps its mapping, which `mapping` must not unmap, and `mapping`
-/// is unmapped instead.
-fn fill(list: &Shm, mut mapping: Shm) {
-    if list.is_null() {
-        // Nothing to unmap: the list is empty.
-        list.replace(mapping);
-    } else {
-        mapping.free();
-    }
-}
-
 impl Default for ServerTables {
     fn default() -> Self {
         Self {
             connection_list: Shm::empty(),
             session_list: Shm::empty(),
             port_gs_list: Shm::empty(),
+            workers: Shm::empty(),
+            user_workers: Shm::empty(),
+            task_results: Shm::empty(),
+            connection_nums: Shm::empty(),
             max_connection: Cell::new(0),
             enable_accept_timer: swoole_rs_corebase::timer_key::AtomicHeld::new(),
             reactor_pipe_num: Cell::new(0),
@@ -932,7 +943,7 @@ pub(crate) mod tests {
             "so do the sessions"
         );
         assert!(!tables.set_max_connection(3), "fixed while mapped");
-        tables.unmap_lists();
+        tables.unmap();
         assert!(tables.connections().is_empty(), "unmapped");
         assert!(tables.session_slot(1).is_none(), "sessions unmapped");
         assert!(tables.set_max_connection(3), "free to change again");

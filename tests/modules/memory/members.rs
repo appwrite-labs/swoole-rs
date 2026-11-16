@@ -203,23 +203,26 @@ fn a_freed_shm_field_is_null_and_freeing_it_again_unmaps_nothing() {
 
 #[test]
 #[cfg_attr(miri, ignore = "Miri has no fork or shared mappings")]
-fn replacing_a_mapping_releases_the_old_allocation_and_keeps_the_new_payload() {
-    // Isolate the address space: another test's mapping must not reuse the old address.
+fn filling_a_mapped_field_keeps_its_payload_and_unmaps_the_new_mapping() {
+    // Isolate the address space: another test's mapping must not reuse the new address.
     let child = unsafe { libc::fork() };
     assert!(child >= 0);
     if child == 0 {
-        let field = Shm::calloc(2, 8);
-        let old_header = field.as_ptr().cast::<u8>().wrapping_sub(8).cast();
-        let replacement = Shm::calloc(4, 8);
-        unsafe { replacement.as_ptr().cast::<u32>().write(42) };
-        field.replace(replacement);
+        let mut field = Shm::empty();
+        let first = Shm::calloc(2, 8);
+        unsafe { first.as_ptr().cast::<u32>().write(42) };
+        let filled = field.fill(first);
+        let second = Shm::calloc(4, 8);
+        let new_header = second.as_ptr().cast::<u8>().wrapping_sub(8).cast();
+        let kept = !field.fill(second);
         let payload =
-            field.payload_len() == 32 && unsafe { field.as_ptr().cast::<u32>().read() } == 42;
-        let unmapped = unsafe { libc::mprotect(old_header, 1, libc::PROT_READ) } == -1
+            field.payload_len() == 16 && unsafe { field.as_ptr().cast::<u32>().read() } == 42;
+        let unmapped = unsafe { libc::mprotect(new_header, 1, libc::PROT_READ) } == -1
             && std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOMEM);
-        field.replace(Shm::empty());
-        field.replace(Shm::empty());
-        unsafe { libc::_exit(i32::from(!(payload && unmapped && field.is_null()))) };
+        field.free();
+        field.free();
+        let ok = filled && kept && payload && unmapped && field.is_null();
+        unsafe { libc::_exit(i32::from(!ok)) };
     }
     let mut status = 0;
     assert_eq!(unsafe { libc::waitpid(child, &raw mut status, 0) }, child);
