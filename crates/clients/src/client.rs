@@ -18,8 +18,6 @@ use std::ffi::{CStr, CString};
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 use swoole_rs_buffer::string::CppString;
-#[cfg(not(test))]
-use swoole_rs_buffer::string::with_thread_buffer;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::{
     FdType, ResultCode, SW_BUFFER_SIZE_UDP, SW_CLIENT_BUFFER_SIZE, SW_SEND_BUFFER_SIZE,
@@ -42,7 +40,7 @@ use swoole_rs_tls::{
     OwnedTlsContext, OwnedTlsFields, SslCreateFlag, SslState, SslVersion, TlsContext, TlsSettings,
 };
 #[cfg(test)]
-use tests::{net, with_thread_buffer};
+use tests::net;
 
 /// The flags [`Client::flag`] reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -634,6 +632,17 @@ impl Handle {
         // SAFETY: the live SOCKS5 proxy; `length` bytes at `data`.
         let n = unsafe { socks5_handshake_step(owner, data, length) };
         n == 0 || n > 0 && self.socks5_send(n.cast_unsigned()) == Some(n.cast_unsigned())
+    }
+
+    /// A result from the scratch buffer, without holding a client borrow across
+    /// the loan or letting the buffer escape it.
+    fn with_buffer<R>(self, mut f: impl FnMut(&mut CppString) -> R) -> R {
+        let mut result = None;
+        (self.get().socket_ops.with_buffer)(&mut |buffer| {
+            result = Some(f(buffer));
+        });
+        result
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("the scratch-buffer callback did not run"))
     }
 
     /// The HTTP proxy's CONNECT request, packed into `shared`.
@@ -1327,7 +1336,7 @@ fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblo
         }
         this.set_proxy_state(Proxy::Socks5, SOCKS5_HANDSHAKE);
         // Each answer lands at the start of the emptied buffer.
-        let ready = with_thread_buffer(|shared| {
+        let ready = this.with_buffer(|shared| {
             loop {
                 shared.clear();
                 let spare = shared.spare();
@@ -1344,7 +1353,7 @@ fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblo
             return false;
         }
     } else if this.proxy_state(Proxy::Http).is_some()
-        && !with_thread_buffer(|shared| {
+        && !this.with_buffer(|shared| {
             if send(this, this.http_pack(shared), 0).is_none() {
                 return false;
             }
@@ -1518,10 +1527,13 @@ fn bind_unix(this: Handle) -> bool {
     bound_ok
 }
 
-/// Socket control effects, selected when the client is constructed. Keeping the
-/// table outside the record preserves its C layout; callbacks copy the function
-/// pointer before an effect can release the client.
+type BufferLoan = fn(&mut dyn FnMut(&mut CppString));
+
+/// Host effects selected at construction; callbacks copy the function pointer
+/// before an effect can release the client.
 struct SocketOps {
+    /// Lends the scratch buffer to the callback exactly once, synchronously.
+    with_buffer: BufferLoan,
     send_sync: fn(Socket<'_>, &[u8], c_int) -> Option<usize>,
     sendfile_sync: fn(Socket<'_>, &CStr, i64, usize) -> bool,
     sendfile_async: fn(Socket<'_>, &CStr, i64, usize) -> bool,
@@ -1548,6 +1560,7 @@ struct SocketOps {
 
 impl SocketOps {
     const NATIVE: Self = Self {
+        with_buffer: |f| swoole_rs_buffer::string::with_thread_buffer(f),
         send_sync: swoole_rs_tls::upstream::send_sync,
         sendfile_sync: swoole_rs_tls::upstream::sendfile_sync,
         sendfile_async: swoole_rs_tls::upstream::socket_sendfile_async,
@@ -1943,7 +1956,7 @@ fn on_write(this: Handle, reactor: Running<'_>, event: &mut Event) -> bool {
     if this.proxy_state(Proxy::Http) == Some(HTTP_PROXY_WAIT) {
         // A copy: the async send may raise `onBufferFull`, whose callback may
         // reuse the shared buffer the request was packed into.
-        let request = with_thread_buffer(|shared| this.http_pack(shared).to_vec());
+        let request = this.with_buffer(|shared| this.http_pack(shared).to_vec());
         return send(this, &request, 0).is_some();
     }
     if this.flag(Flag::OpenSsl) {
