@@ -22,7 +22,7 @@ pub use coroutine::*;
 mod facade;
 #[cfg(feature = "upstream-symbols")]
 pub use facade::{
-    activate, cancel, deactivate, print_socket_bound_error, swoole_coroutine_count,
+    activate, cancel, deactivate, print_socket_bound_error, spawn, swoole_coroutine_count,
     swr_v1_coroutine_create, yield_ex, yield_resumed, yield_timed,
 };
 mod live;

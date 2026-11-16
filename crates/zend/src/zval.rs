@@ -1408,11 +1408,17 @@ impl Default for Owned {
     /// `ZVAL_UNDEF`.
     #[inline]
     fn default() -> Self {
-        Self(Value(Cell::new(UNDEF)))
+        Self::empty()
     }
 }
 
 impl Owned {
+    /// `ZVAL_UNDEF`, for a constant (all-zero bytes, as a zeroed record holds).
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self(Value(Cell::new(UNDEF)))
+    }
+
     /// `php_json_decode(text)` with objects as arrays; false when `text` is
     /// not JSON. It runs no PHP code.
     #[must_use]

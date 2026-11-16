@@ -164,8 +164,9 @@ void swr_zend_coroutine_output_reset(void) {
     }
 }
 
-void swr_zend_coroutine_vm_destroy(void) {
+void swr_zend_coroutine_finish(swr_zend_coroutine_vm *origin) {
     zend_vm_stack_destroy();
+    swr_zend_coroutine_restore(origin);
 }
 
 zend_fiber_context *swr_zend_coroutine_main(swr_zend_coroutine_vm *vm) {
@@ -187,7 +188,9 @@ int swr_zend_coroutine_run(swr_zend_callable *(*enter)(void *context), void (*de
     volatile int caught = 0;
     zend_first_try {
         swr_zend_callable *call = enter(context);
-        zend_call_function(&call->fci, &call->fcc);
+        if (call) {
+            zend_call_function(&call->fci, &call->fcc);
+        }
         caught = coroutine_catch();
         defers(context);
     }
