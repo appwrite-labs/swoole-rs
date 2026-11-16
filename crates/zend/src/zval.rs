@@ -462,12 +462,20 @@ impl Value {
     #[must_use]
     #[inline]
     pub fn str(&self) -> Option<&ZStr> {
-        if self.kind() != IS_STRING {
+        self.held()
+    }
+
+    /// The counted value a zval of `T`'s kind holds, borrowed: what
+    /// `Z_STR_P` and `Z_ARRVAL_P` read.
+    #[inline]
+    fn held<T: Held>(&self) -> Option<&T> {
+        if self.kind() != T::KIND {
             return None;
         }
-        // SAFETY: a string zval holds `str`, never null, which it keeps alive
-        // while borrowed; `ZStr` is a transparent string.
-        Some(unsafe { &*self.payload::<ZStr>() })
+        // SAFETY: a zval of `T`'s kind holds a pointer to a live `T` (`str`, a
+        // string, or `arr`, a table: never null), which it keeps while
+        // borrowed; `T` is that type, transparent.
+        Some(unsafe { &*self.payload::<T>() })
     }
 
     /// `Z_OBJ_P` of an object.
@@ -861,12 +869,7 @@ impl Value {
     #[must_use]
     #[inline]
     pub fn array(&self) -> Option<&Array> {
-        if self.kind() != IS_ARRAY {
-            return None;
-        }
-        // SAFETY: an array zval holds `arr`, which it keeps while borrowed;
-        // `Array` is a transparent table.
-        Some(unsafe { &*self.payload::<Array>() })
+        self.held()
     }
 
     /// `Z_ARRVAL_P` of an array, as the pointer the zval holds: unlike a borrow
@@ -895,6 +898,20 @@ impl Value {
         swr_zval_try_addref(&owned);
         owned
     }
+}
+
+/// A transparent view of what a zval of kind `KIND` points to: only
+/// [`ZStr`] (`IS_STRING`) and [`Array`] (`IS_ARRAY`), for [`Value::held`].
+trait Held {
+    const KIND: u32;
+}
+
+impl Held for ZStr {
+    const KIND: u32 = IS_STRING;
+}
+
+impl Held for Array {
+    const KIND: u32 = IS_ARRAY;
 }
 
 /// A borrowed hash table (`zend_array`).
@@ -1138,17 +1155,20 @@ impl ZStr {
     #[must_use]
     #[inline]
     pub fn bytes(&self) -> &[u8] {
-        let length = self.head().len.get();
-        // SAFETY: a live string holds `len` bytes at `val`, which it keeps while
-        // borrowed.
-        unsafe { std::slice::from_raw_parts(crate::string::val(self.as_ptr()), length) }
+        self.val::<false>()
     }
 
     /// The bytes and the NUL Zend keeps after them; a NUL among the bytes stays.
     #[must_use]
     #[inline]
     pub fn bytes_with_nul(&self) -> &[u8] {
-        let length = self.head().len.get() + 1;
+        self.val::<true>()
+    }
+
+    /// `ZSTR_VAL` for `ZSTR_LEN` bytes, and the NUL after them when `NUL`.
+    #[inline]
+    fn val<const NUL: bool>(&self) -> &[u8] {
+        let length = self.head().len.get() + usize::from(NUL);
         // SAFETY: a live string holds `len` bytes at `val` and a NUL after
         // them, which it keeps while borrowed.
         unsafe { std::slice::from_raw_parts(crate::string::val(self.as_ptr()), length) }
