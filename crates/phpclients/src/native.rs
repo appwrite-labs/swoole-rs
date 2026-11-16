@@ -89,11 +89,6 @@ impl NewSocket {
         self.0
     }
 
-    /// Give up ownership, to the object that now holds the socket.
-    pub(crate) fn into_co(self) -> Co {
-        self.0
-    }
-
     /// `delete socket`.
     /// # Errors
     /// A close hook bailed out.

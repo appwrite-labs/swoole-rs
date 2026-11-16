@@ -10,7 +10,7 @@ use crate::{
 use libc::c_int;
 use std::{
     borrow::Cow,
-    cell::Cell,
+    cell::{Cell, OnceCell},
     ffi::{CStr, CString},
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -38,10 +38,11 @@ pub(crate) mod owner;
 const IOV_MAX: u32 = 1024;
 
 /// The object's state: the core socket it owns (none before the constructor
-/// ran) and the stream it imported (undefined unless it imported one). Cells:
-/// methods, and PHP code they run, share the data. It drops with the object.
+/// ran; set once, and freed by the drop) and the stream it imported
+/// (undefined unless it imported one). Cells: methods, and PHP code they run,
+/// share the data. It drops with the object.
 pub(crate) struct Data {
-    socket: Cell<Option<Co>>,
+    socket: OnceCell<NewSocket>,
     stream: Cell<Owned>,
 }
 
@@ -64,16 +65,16 @@ impl Drop for Data {
 }
 
 impl Data {
-    fn owning(socket: Option<Co>) -> Self {
+    fn owning(socket: Option<NewSocket>) -> Self {
         Self {
-            socket: Cell::new(socket),
+            socket: socket.map_or_else(OnceCell::new, OnceCell::from),
             stream: Cell::default(),
         }
     }
 
     /// The core socket, once constructed.
     fn co(&self) -> Option<Co> {
-        self.socket.get()
+        self.socket.get().map(NewSocket::co)
     }
 
     /// The imported stream (`php_stream_from_zval_no_verify`), or null when
@@ -133,9 +134,10 @@ impl<'a> Sock<'a> {
         }
     }
 
-    /// The object takes `socket`, then publishes it. A socket it held before leaks.
+    /// The object takes `socket`, then publishes it. It keeps a socket it held
+    /// before, and `socket` leaks.
     fn adopt(self, socket: NewSocket) {
-        self.0.socket.set(Some(socket.into_co()));
+        let _first_kept = self.0.socket.set(socket);
         self.publish();
     }
 
