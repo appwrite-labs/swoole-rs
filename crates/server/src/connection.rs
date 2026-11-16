@@ -285,7 +285,6 @@ fn init(
     let now = swoole_rs_corebase::microtime();
     conn.set_last_recv_time(now);
     conn.set_connect_time(now);
-    conn.active().store(1, Relaxed);
     conn.closed().store(0, Relaxed);
     conn.set_worker_id(-1);
     conn.set_socket_type(ls.r#type);
@@ -294,6 +293,9 @@ fn init(
     conn.info().kind = conn.socket_type();
     conn.set_local_port(u16::try_from(local_port).unwrap_or_default());
     conn.set_local_addr_index(local_addr_index);
+    // Last: a reactor thread that sees the slot active (`is_active`) reads the fields
+    // above, which this publishes.
+    conn.active().store(1, Release);
 }
 
 /// `Server::abort_connection(reactor, port, sock)`: counted, then closed through the
