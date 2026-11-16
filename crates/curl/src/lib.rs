@@ -78,11 +78,31 @@ impl<'a> Easy<'a> {
         }
     }
 
-    /// Sets `CURLINFO_PRIVATE`, which [`Easy::handle`] reads back: null, or the
-    /// Swoole handle [`swr_v1_curl_create_handle`] made for this easy handle.
-    fn set_private(self, handle: *mut Handle) {
+    /// What `CURLINFO_PRIVATE` holds now, to set back with [`Easy::set_private`].
+    fn private(self) -> Private {
+        Private(self.handle_ptr())
+    }
+
+    /// Sets `CURLINFO_PRIVATE`, which [`Easy::handle`] reads back.
+    fn set_private(self, handle: Private) {
         // SAFETY: the live easy handle; CURLOPT_PRIVATE stores a pointer and reads nothing.
-        unsafe { curl_easy_setopt(self.0, CURLOPT_PRIVATE, handle.cast::<c_void>()) };
+        unsafe { curl_easy_setopt(self.0, CURLOPT_PRIVATE, handle.0.cast::<c_void>()) };
+    }
+}
+
+/// What an easy handle's `CURLINFO_PRIVATE` may hold: null, or a Swoole handle
+/// [`swr_v1_curl_create_handle`] made for it that [`swr_v1_curl_destroy_handle`]
+/// has not freed. Only [`Private::NONE`], [`Private::new`] and [`Easy::private`]
+/// make one.
+#[derive(Clone, Copy)]
+struct Private(*mut Handle);
+
+impl Private {
+    const NONE: Self = Self(ptr::null_mut());
+
+    /// A new Swoole handle, which only [`swr_v1_curl_destroy_handle`] frees.
+    fn new(handle: Handle) -> Self {
+        Self(Box::into_raw(Box::new(handle)))
     }
 }
 
@@ -802,13 +822,13 @@ pub extern "C" fn swr_v1_curl_get_handle(cp: Easy<'_>) -> *mut Handle {
 /// `swoole::curl::create_handle`.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_curl_create_handle(cp: Easy<'_>) -> *mut Handle {
-    let handle = Box::into_raw(Box::new(Handle {
+    let handle = Private::new(Handle {
         cp: cp.0,
         multi: Cell::new(ptr::null_mut()),
         easy_multi: Cell::new(None),
-    }));
+    });
     cp.set_private(handle);
-    handle
+    handle.0
 }
 
 /// An easy handle on which no transfer runs, and whose Swoole handle nothing else
@@ -842,13 +862,13 @@ pub extern "C" fn swr_v1_curl_destroy_handle(cp: Retired<'_>) {
     if let Some(multi) = handle.easy_multi.take() {
         release(multi);
     }
-    cp.set_private(ptr::null_mut());
+    cp.set_private(Private::NONE);
 }
 
 /// `swoole_curl_easy_reset`: `curl_easy_reset`, keeping the handle.
 #[unsafe(no_mangle)]
 pub extern "C" fn swoole_curl_easy_reset(cp: Idle<'_>) {
-    let handle = cp.0.handle_ptr();
+    let handle = cp.0.private();
     curl_easy_reset(cp);
     // The easy handle keeps the Swoole handle it held.
     cp.0.set_private(handle);

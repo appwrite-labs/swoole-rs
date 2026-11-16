@@ -239,7 +239,8 @@ pub struct ServerConfig {
     pub private_data_3: Published<Box<dyn core::any::Any>>,
     pub private_data_4: *mut c_void,
     pub factory_: Shared<*mut c_void>,
-    pub manager_: Shared<*mut c_void>,
+    /// The manager's state, live while it runs in this process.
+    pub(crate) manager: crate::manager::Manager,
     pub task_worker_num: Setting<u32>,
     pub task_ipc_mode: Setting<u8>,
     pub task_max_request: Setting<u32>,
@@ -428,7 +429,7 @@ impl Default for ServerConfig {
             private_data_3: Published::default(),
             private_data_4: core::ptr::null_mut(),
             factory_: Shared::new(core::ptr::null_mut()),
-            manager_: Shared::new(core::ptr::null_mut()),
+            manager: crate::manager::Manager::default(),
             task_worker_num: Setting::new(0),
             task_ipc_mode: Setting::new(TaskIpcMode::UnixSock as u8),
             task_max_request: Setting::new(0),

@@ -613,8 +613,7 @@ fn vector_count(socket: Co, array: &Array) -> Option<usize> {
 /// `zend_get_type_by_const(Z_TYPE_P(item))`.
 fn type_name(item: &Value) -> String {
     swoole_rs_zend::type_name(item.kind())
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default()
+        .map_or_default(|name| name.to_string_lossy().into_owned())
 }
 
 /// `(array $io_vector, float $timeout = 0)`.

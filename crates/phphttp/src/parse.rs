@@ -891,11 +891,7 @@ fn trimmed(text: &[u8], length: usize) -> Box<[u8]> {
     for (slot, byte) in buffer.iter_mut().zip(text).take(FORM_KEYLEN - 1) {
         *slot = *byte;
     }
-    buffer
-        .get(..length)
-        .map(trim_quotes)
-        .unwrap_or_default()
-        .into()
+    buffer.get(..length).map_or_default(trim_quotes).into()
 }
 
 /// A NUL-terminated copy (`estrndup`).
