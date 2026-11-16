@@ -24,7 +24,7 @@ use swoole_rs_corebase::constants::{
     SW_SOCKET_RETRY_COUNT, SW_SSL_BUFFER_SIZE, SocketFlag, SocketType,
 };
 use swoole_rs_corebase::net_types::{PacketLength, RecvData, SocketAddress};
-use swoole_rs_corebase::sys::ReadSlot;
+use swoole_rs_corebase::sys::{ReadBuffer, ReadSlot};
 use swoole_rs_corebase::{ProxyState, ResolverRequest, log};
 use swoole_rs_error::ErrorCode;
 use swoole_rs_reactor::reactor_upstream::set_handler;
@@ -34,13 +34,9 @@ use swoole_rs_reactor::{
     socket_domain_and_type,
 };
 use swoole_rs_reactor::{Event, Events, Running};
-#[cfg(not(test))]
-use swoole_rs_tls::upstream as net;
 use swoole_rs_tls::{
     OwnedTlsContext, OwnedTlsFields, SslCreateFlag, SslState, SslVersion, TlsContext, TlsSettings,
 };
-#[cfg(test)]
-use tests::net;
 
 /// The flags [`Client::flag`] reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -492,8 +488,14 @@ impl Handle {
     /// `Socket::recvfrom_sync(data, length, flags, &remote_addr)`.
     fn recvfrom_sync(self, buffer: &mut [impl ReadSlot], flags: c_int) -> Option<usize> {
         let socket = self.socket();
+        let receive = self.get().socket_ops.recvfrom_sync;
         self.get().edit_record(|record| {
-            net::recvfrom_sync(socket, buffer, flags, &mut record.remote_addr)
+            receive(
+                socket,
+                ReadSlot::buffer(buffer),
+                flags,
+                &mut record.remote_addr,
+            )
         })
     }
 
@@ -555,13 +557,14 @@ impl Handle {
         self.record().buffer.cast()
     }
 
-    /// `edit` over the input buffer, which exists, and the client's socket.
+    /// `edit` over the input buffer, which exists, the socket and its operations.
     /// `edit` is a plain fn, which cannot reach the client to borrow the buffer again.
-    fn edit_input<R>(self, edit: fn(&mut CppString, Socket<'static>) -> R) -> R {
+    fn edit_input<R>(self, edit: fn(&mut CppString, Socket<'static>, &SocketOps) -> R) -> R {
         let socket = self.socket();
+        let ops = self.get().socket_ops;
         // SAFETY: the Box `input_init` made, live until `input_free`, which only
         // `edit` reaches meanwhile.
-        edit(unsafe { &mut *self.input() }, socket)
+        edit(unsafe { &mut *self.input() }, socket, ops)
     }
 
     /// `new String(SW_CLIENT_BUFFER_SIZE)`, once.
@@ -587,7 +590,7 @@ impl Handle {
 
     /// The input buffer's free tail; the buffer exists.
     fn input_tail(self) -> Tail {
-        self.edit_input(|buffer, _| {
+        self.edit_input(|buffer, _, _| {
             let length = buffer.len();
             Tail {
                 str: buffer.as_mut_ptr().wrapping_add(length).cast(),
@@ -598,12 +601,12 @@ impl Handle {
 
     /// One read into the input buffer's free tail; the buffer exists.
     fn input_recv(self) -> Option<usize> {
-        self.edit_input(|buffer, socket| net::recv(socket, buffer.spare(), 0))
+        self.edit_input(|buffer, socket, ops| (ops.recv)(socket, buffer.spare(), 0))
     }
 
     /// `buffer->clear()`.
     fn input_clear(self) {
-        self.edit_input(|buffer, _| buffer.clear());
+        self.edit_input(|buffer, _, _| buffer.clear());
     }
 
     /// The SOCKS5 negotiation request's length in [`Self::socks5_packet`].
@@ -1534,6 +1537,10 @@ type BufferLoan = fn(&mut dyn FnMut(&mut CppString));
 struct SocketOps {
     /// Lends the scratch buffer to the callback exactly once, synchronously.
     with_buffer: BufferLoan,
+    recv: fn(Socket<'_>, &mut [core::mem::MaybeUninit<u8>], c_int) -> Option<usize>,
+    recv_append: fn(Socket<'_>, &mut CppString) -> Option<usize>,
+    recv_sync: fn(Socket<'_>, ReadBuffer<'_>, c_int) -> Option<usize>,
+    recvfrom_sync: fn(Socket<'_>, ReadBuffer<'_>, c_int, &mut SocketAddress) -> Option<usize>,
     send_sync: fn(Socket<'_>, &[u8], c_int) -> Option<usize>,
     sendfile_sync: fn(Socket<'_>, &CStr, i64, usize) -> bool,
     sendfile_async: fn(Socket<'_>, &CStr, i64, usize) -> bool,
@@ -1561,6 +1568,22 @@ struct SocketOps {
 impl SocketOps {
     const NATIVE: Self = Self {
         with_buffer: |f| swoole_rs_buffer::string::with_thread_buffer(f),
+        recv: swoole_rs_tls::upstream::recv,
+        recv_append: swoole_rs_tls::upstream::recv_append,
+        recv_sync: |socket, buffer, flags| match buffer {
+            ReadBuffer::Initialized(buffer) => {
+                swoole_rs_tls::upstream::recv_sync(socket, buffer, flags)
+            }
+            ReadBuffer::Spare(buffer) => swoole_rs_tls::upstream::recv_sync(socket, buffer, flags),
+        },
+        recvfrom_sync: |socket, buffer, flags, address| match buffer {
+            ReadBuffer::Initialized(buffer) => {
+                swoole_rs_tls::upstream::recvfrom_sync(socket, buffer, flags, address)
+            }
+            ReadBuffer::Spare(buffer) => {
+                swoole_rs_tls::upstream::recvfrom_sync(socket, buffer, flags, address)
+            }
+        },
         send_sync: swoole_rs_tls::upstream::send_sync,
         sendfile_sync: swoole_rs_tls::upstream::sendfile_sync,
         sendfile_async: swoole_rs_tls::upstream::socket_sendfile_async,
@@ -1770,7 +1793,7 @@ pub fn sendfile(this: Handle, file: &CStr, offset: i64, length: usize) -> bool {
 #[must_use]
 pub fn recv(this: Handle, buffer: &mut [impl ReadSlot], flags: c_int) -> Option<usize> {
     if this.flag(Flag::Stream) || this.flag(Flag::Dtls) {
-        let n = net::recv_sync(this.socket(), buffer, flags);
+        let n = (this.get().socket_ops.recv_sync)(this.socket(), ReadSlot::buffer(buffer), flags);
         // A poll timeout reads as recv(2)'s EAGAIN, as it did before poll.
         if n.is_none() && log::last_error() == ERROR_SOCKET_POLL_TIMEOUT {
             set_errno(libc::EAGAIN);
@@ -1800,8 +1823,8 @@ fn on_read(this: Handle) -> bool {
     let do_ssl_handshake = this.flag(Flag::OpenSsl);
     let http = this.proxy_state(Proxy::Http);
     if http.is_some_and(|state| state != HTTP_PROXY_READY) {
-        let accepted = this.edit_input(|input, socket| {
-            net::recv_append(socket, input) > Some(0)
+        let accepted = this.edit_input(|input, socket, ops| {
+            (ops.recv_append)(socket, input) > Some(0)
                 && swoole_rs_http_ffi::proxy_accept(input.view())
         });
         if !accepted {
@@ -1817,7 +1840,7 @@ fn on_read(this: Handle) -> bool {
     }
     let socks5 = this.proxy_state(Proxy::Socks5);
     if socks5.is_some_and(|state| state != SOCKS5_READY) {
-        let n = this.edit_input(|input, socket| net::recv_append(socket, input));
+        let n = this.edit_input(|input, socket, ops| (ops.recv_append)(socket, input));
         if n <= Some(0) {
             log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
             return connect_failed(this);

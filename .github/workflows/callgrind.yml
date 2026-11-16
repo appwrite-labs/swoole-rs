@@ -99,6 +99,7 @@ jobs:
           args: ${{ matrix.configure }}
           php: ${{ steps.install.outputs.php }}
       - name: Build cargo engine
+        id: engine
         run: python3 tools/build_ext.py --profile release-lto ${{ matrix.configure }}
       - name: Run callgrind workloads
         run: >
@@ -108,6 +109,21 @@ jobs:
           --engine cargo=target/ext/swoole.so
           --engine upstream=${{ steps.configured.outputs.library || 'target/upstream/src/modules/swoole.so' }}
           --profiles target/callgrind/profiles --output callgrind.json | tee -a "$GITHUB_STEP_SUMMARY"
+      # #4328: the same binary can take different allocator paths. Fixed extra
+      # fresh-process samples all gate the result; this never retries until pass.
+      - name: Repeat connect on the same binaries
+        if: always() && matrix.shard == 3 && steps.engine.outcome == 'success'
+        run: |
+          failed=0
+          for sample in 2 3; do
+            python3 benchmarks/callgrind.py --requests 1000 --limits benchmarks/callgrind_limits \
+              --workload connect --php-extension pdo --php-extension pdo_sqlite \
+              --php-extension mysqlnd --php-extension pdo_mysql \
+              --engine cargo=target/ext/swoole.so --engine upstream=target/upstream/src/modules/swoole.so \
+              --profiles "target/callgrind/profiles/connect-$sample" \
+              --output "target/callgrind/connect-$sample.json" || failed=1
+          done
+          exit "$failed"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -116,3 +132,4 @@ jobs:
           path: |
             callgrind.json
             target/callgrind/profiles/
+            target/callgrind/connect-*.json

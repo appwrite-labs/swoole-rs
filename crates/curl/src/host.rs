@@ -3,7 +3,7 @@
 //! What a [`Multi`] needs of the process: the reactor (crates/reactor), this
 //! thread's timer (crates/timer) and coroutine scheduler (crates/coroutine),
 //! and the C entry points the bundled `ext/curl` calls besides the multi's own.
-//! The tests swap in a fake with the same functions.
+//! The engine uses an explicit operation table in every build.
 use crate::{EXEC_NEEDS_COROUTINE, Idle, Multi};
 use std::cell::Cell;
 use std::ffi::{CStr, c_int, c_long, c_void};
@@ -16,6 +16,48 @@ use swoole_rs_curl_sys::{
 use swoole_rs_reactor::Events;
 use swoole_rs_reactor::{SocketRecord, event_api};
 use swoole_rs_tls::event_socket::EventSocket;
+
+/// Effects borrowed by a multi for its whole lifetime. Socket records and their
+/// ownership are shared by native and recording callbacks.
+pub(crate) struct Ops {
+    pub event_available: fn() -> bool,
+    pub install_handlers: fn(),
+    pub socket_new: fn(c_int) -> EventSocket,
+    pub socket_add: fn(&EventSocket, Events) -> bool,
+    pub socket_set: fn(&EventSocket, Events) -> bool,
+    pub socket_del: fn(&EventSocket) -> bool,
+    pub socket_release: fn(EventSocket),
+    pub timer_available: fn() -> bool,
+    pub timer_add: fn(c_long, &Multi) -> Option<swoole_rs_timer::Held>,
+    pub timer_del: fn(swoole_rs_timer::Held),
+    pub current: fn() -> *mut c_void,
+    pub current_cid: fn() -> c_long,
+    pub yield_: fn(*mut c_void, f64, &mut dyn FnMut(swoole_rs_coroutine::Waker)) -> bool,
+    pub wake: fn(swoole_rs_coroutine::Waker),
+    pub defer: fn(&Multi),
+}
+
+pub(crate) static NATIVE: Ops = Ops {
+    event_available,
+    install_handlers,
+    socket_new,
+    socket_add: EventSocket::add,
+    socket_set: EventSocket::set,
+    socket_del: EventSocket::del,
+    socket_release: EventSocket::release,
+    timer_available,
+    timer_add,
+    timer_del,
+    current,
+    current_cid,
+    yield_,
+    wake,
+    defer,
+};
+
+fn socket_new(fd: c_int) -> EventSocket {
+    EventSocket::adopt(Box::new(SocketRecord::with_fd(fd, FD_CO_CURL)))
+}
 
 /// Upstream's `PHP_SWOOLE_FD_CO_CURL`: `SW_FD_STREAM_CLIENT + 10`.
 const FD_CO_CURL: c_int = 17 + 10;
@@ -61,21 +103,25 @@ pub(crate) fn install_handlers() {
 /// A reactor `network::Socket` of the cURL fd type over curl's fd, owned from
 /// [`ReactorSocket::new`] until [`ReactorSocket::free`]; a freed one does nothing. The
 /// multi touches it only on the thread whose event loop it registers with.
-pub(crate) struct ReactorSocket(Cell<Option<EventSocket>>);
+pub(crate) struct ReactorSocket {
+    socket: Cell<Option<EventSocket>>,
+    ops: &'static Ops,
+}
 
 impl ReactorSocket {
     /// Out of the reactor, carrying no object yet.
-    pub(crate) fn new(fd: c_int) -> Self {
-        // The new record, on the heap as `new Socket()`.
-        let record = Box::new(SocketRecord::with_fd(fd, FD_CO_CURL));
-        Self(Cell::new(Some(EventSocket::adopt(record))))
+    pub(crate) fn new(fd: c_int, ops: &'static Ops) -> Self {
+        Self {
+            socket: Cell::new(Some((ops.socket_new)(fd))),
+            ops,
+        }
     }
 
     /// `f` of the record while it is owned, else the default.
     fn with<R: Default>(&self, f: impl FnOnce(&EventSocket) -> R) -> R {
-        let socket = self.0.take();
+        let socket = self.socket.take();
         let result = socket.as_ref().map_or_else(R::default, f);
-        self.0.set(socket);
+        self.socket.set(socket);
         result
     }
 
@@ -95,29 +141,29 @@ impl ReactorSocket {
     }
 
     pub(crate) fn add(&self, events: Events) -> bool {
-        self.with(|socket| socket.add(events))
+        self.with(|socket| (self.ops.socket_add)(socket, events))
     }
 
     pub(crate) fn set(&self, events: Events) -> bool {
-        self.with(|socket| socket.set(events))
+        self.with(|socket| (self.ops.socket_set)(socket, events))
     }
 
     pub(crate) fn del(&self) -> bool {
-        self.with(EventSocket::del)
+        self.with(self.ops.socket_del)
     }
 
     /// Leave the reactor silently if in it, then free the socket without
     /// closing the fd, which curl owns.
     pub(crate) fn free(&self) {
-        let Some(socket) = self.0.take() else {
+        let Some(socket) = self.socket.take() else {
             return;
         };
-        if !socket.events().is_empty() && event_available() {
+        if !socket.events().is_empty() && (self.ops.event_available)() {
             socket.socket().edit(|socket| socket.silent_remove = true);
-            _ = socket.del();
+            _ = (self.ops.socket_del)(&socket);
         }
         socket.socket().edit(|socket| socket.fd = -1);
-        socket.release();
+        (self.ops.socket_release)(socket);
     }
 }
 
@@ -153,7 +199,7 @@ pub(crate) use swoole_rs_coroutine::current_cid;
 pub(crate) fn yield_(
     co: *mut c_void,
     timeout: f64,
-    arm: impl FnOnce(swoole_rs_coroutine::Waker),
+    arm: &mut dyn FnMut(swoole_rs_coroutine::Waker),
 ) -> bool {
     let code = swoole_rs_coroutine::yield_timed_armed(co, timeout, arm);
     // `yield_ex`: the last error of a timeout or a cancel.
@@ -227,7 +273,7 @@ pub unsafe extern "C" fn swoole_curl_check_bound_co(multi: &Multi) -> *mut c_voi
         let message = CStr::from_bytes_until_nul(&buffer).unwrap_or(c"");
         (CO_HAS_BEEN_BOUND, message)
     } else {
-        let co = current();
+        let co = (multi.host.current)();
         if !co.is_null() {
             return co;
         }
