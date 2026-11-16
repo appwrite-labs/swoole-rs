@@ -69,6 +69,10 @@ class CaseComparisons(unittest.TestCase):
                     subprocess.run([env[compiler], obj, '-o', binary], env=env,
                                    check=True, capture_output=True)
                     self.assertEqual(subprocess.check_output([binary], env=env, text=True), expected)
+                    # Libtool records the helper in its compiler dependencies and passes it back.
+                    subprocess.run([env[compiler], obj, out / 'bin/case.o', '-o', binary],
+                                   env=env, check=True, capture_output=True)
+                    self.assertEqual(subprocess.check_output([binary], env=env, text=True), expected)
                     for comparison in ['n', 'unbounded']:
                         failed = subprocess.run([binary, comparison], env=env, text=True,
                                                 capture_output=True)

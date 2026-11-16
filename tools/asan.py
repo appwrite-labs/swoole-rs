@@ -49,11 +49,11 @@ def compilers(shims):
                     ROOT / 'tools/asan_case.c', '-o', case], check=True)
     for name, compiler in [('cc', 'clang'), ('c++', 'clang++')]:
         command = f'{compiler} {SANITIZE} "$@" -fno-sanitize=vptr'
-        # Compiler probes and compile/preprocess-only invocations must not link.
+        # Probes/compilation must not link; libtool may already pass our helper back.
         (shims / name).write_text(f'''#!/bin/sh
 case "$*" in --version|-v|-V|-dump*|-print*) exec {command};; esac
 for arg; do
-    case "$arg" in -c|-E|-S) exec {command};; esac
+    case "$arg" in -c|-E|-S|{shlex.quote(str(case))}) exec {command};; esac
 done
 exec {command} {shlex.quote(str(case))}
 ''')
