@@ -784,8 +784,8 @@ pub(crate) fn swr_v1_process_pool_ipc_set_listener(ipc: &mut PoolIpc, socket: *m
 }
 
 /// The stream listener, or null.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_process_pool_ipc_listener(ipc: &PoolIpc) -> *mut c_void {
+#[must_use]
+pub fn swr_v1_process_pool_ipc_listener(ipc: &PoolIpc) -> *mut c_void {
     ipc.stream
         .as_ref()
         .map_or(ptr::null_mut(), |stream| stream.socket)
