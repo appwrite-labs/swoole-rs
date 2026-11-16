@@ -161,14 +161,9 @@ impl Call {
 
 /// Swoole's `sw_zend_create_object_deny`: the `create_object` of a class that
 /// cannot be instantiated. It throws and returns the bare object Zend expects
-/// (declared properties undefined), which Zend then releases.
-/// # Safety
-/// Installed as `create_object`, so Zend passes a registered class.
-pub unsafe extern "C" fn create_object_deny(ce: *mut zend_class_entry) -> *mut zend_object {
-    // Per Zend, a registered class, which lives for the process.
-    let Some(class) = ClassEntry::live(ce) else {
-        return std::ptr::null_mut();
-    };
+/// (declared properties undefined), which Zend then releases. Installed as
+/// `create_object` ([`deny`]), so Zend passes a registered class.
+extern "C" fn create_object_deny(class: ClassEntry<'_>) -> *mut zend_object {
     let mut bailed = false;
     let object = swr_zend_object_deny(class, &mut bailed);
     if bailed {
@@ -180,8 +175,7 @@ pub unsafe extern "C" fn create_object_deny(ce: *mut zend_class_entry) -> *mut z
 
 /// `SW_SET_CLASS_CREATE(.., sw_zend_create_object_deny)`.
 pub(crate) fn deny(entry: &mut zend_class_entry, _: &mut zend_object_handlers) {
-    // `ce->create_object`, in the union it shares with an interface's hook.
-    entry.__bindgen_anon_2.create_object = Some(create_object_deny);
+    crate::object::set_create(entry, create_object_deny);
 }
 
 /// The row of `method` in a method table, with its arginfo.
@@ -192,12 +186,9 @@ pub(crate) fn arg_info(methods: Table, method: &CStr) -> Option<&'static zend_fu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        arginfo::{ArgInfo, END, Methods, begin, entry},
-        sys::{zend_execute_data, zval},
-    };
+    use crate::arginfo::{ArgInfo, END, Methods, begin, entry};
 
-    unsafe extern "C" fn handler(_: *mut zend_execute_data, _: *mut zval) {}
+    extern "C" fn handler(_: crate::Entered<'_>, _: crate::Returned<'_>) {}
 
     static TICK: ArgInfo<1> = ArgInfo::new([begin(0, 0)]);
     static AFTER: ArgInfo<1> = ArgInfo::new([begin(0, 0)]);

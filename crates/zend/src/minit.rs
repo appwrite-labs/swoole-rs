@@ -143,15 +143,9 @@ macro_rules! phase {
         #[repr(transparent)]
         pub struct $name<'a>(c_int, PhantomData<&'a *mut ()>);
 
-        impl Phase for $name<'static> {}
-
         const _: () = assert!(size_of::<$name<'static>>() == size_of::<c_int>());
     )*};
 }
-
-/// The phase tokens, each a transparent `c_int`: what makes a phase function
-/// one Zend's slot for it may call ([`hook`]).
-trait Phase {}
 
 phase! {
     /// Zend's MINIT call of this module ([`Startup::with`] lends its [`Minit`]).
@@ -204,18 +198,6 @@ impl Minfo<'_> {
     }
 }
 
-/// A module phase function as Zend's entry stores it.
-type Hook = unsafe extern "C" fn(c_int, c_int) -> c_int;
-
-/// `f` as Zend's slot for phase `P` stores it.
-fn hook<P: Phase>(f: extern "C" fn(c_int, P) -> c_int) -> Hook {
-    // SAFETY: `P` is a transparent `c_int` (`phase!`), so the two function
-    // pointer types share one ABI; calling the result is unsafe, and Zend calls
-    // it only as the phase whose slot `Lifecycle::install` put it in, which is
-    // what `P` stands for.
-    unsafe { std::mem::transmute::<extern "C" fn(c_int, P) -> c_int, Hook>(f) }
-}
-
 /// A module's phase functions, each taking the token of Zend's call of it.
 pub struct Lifecycle {
     pub startup: extern "C" fn(c_int, Startup<'_>) -> c_int,
@@ -225,23 +207,32 @@ pub struct Lifecycle {
     pub info: extern "C" fn(Minfo<'_>),
 }
 
+unsafe extern "C" {
+    /// Stores the phase functions in the entry's slots, which Zend calls only
+    /// as their phase: with the module number, which a [`Startup`],
+    /// [`Shutdown`] or [`Request`] is (a transparent `c_int`), or for MINFO
+    /// with the live entry, which a [`Minfo`] is (a transparent non-null pointer).
+    safe fn swr_slot_module(
+        entry: &mut zend_module_entry,
+        startup: extern "C" fn(c_int, Startup<'_>) -> c_int,
+        shutdown: extern "C" fn(c_int, Shutdown<'_>) -> c_int,
+        request_startup: extern "C" fn(c_int, Request<'_>) -> c_int,
+        request_shutdown: extern "C" fn(c_int, Request<'_>) -> c_int,
+        info: extern "C" fn(Minfo<'_>),
+    );
+}
+
 impl Lifecycle {
     /// Put each function in `entry`'s slot for its phase.
     pub fn install(self, entry: &mut zend_module_entry) {
-        entry.module_startup_func = Some(hook::<Startup<'static>>(self.startup));
-        entry.module_shutdown_func = Some(hook::<Shutdown<'static>>(self.shutdown));
-        entry.request_startup_func = Some(hook::<Request<'static>>(self.request_startup));
-        entry.request_shutdown_func = Some(hook::<Request<'static>>(self.request_shutdown));
-        let info: extern "C" fn(Minfo<'static>) = self.info;
-        // SAFETY: `Minfo` is a transparent non-null entry pointer, so the two
-        // function pointer types share one ABI; Zend calls the slot only as
-        // the module's MINFO, with its live entry, which `Minfo` stands for.
-        entry.info_func = Some(unsafe {
-            std::mem::transmute::<
-                extern "C" fn(Minfo<'static>),
-                unsafe extern "C" fn(*mut zend_module_entry),
-            >(info)
-        });
+        swr_slot_module(
+            entry,
+            self.startup,
+            self.shutdown,
+            self.request_startup,
+            self.request_shutdown,
+            self.info,
+        );
     }
 }
 

@@ -147,14 +147,31 @@ pub struct Call {
     value: *mut zval,
 }
 
+/// The frame Zend passes an internal function's handler (`execute_data`),
+/// live for its call. Rust never makes one: it is a
+/// [`Handler`](crate::arginfo::Handler)'s parameter, which Zend's call stands
+/// for, and [`Call::run`] takes it with the call's [`Returned`].
+#[repr(transparent)]
+pub struct Entered<'a>(
+    *mut zend_execute_data,
+    std::marker::PhantomData<&'a mut zval>,
+);
+
+/// The return slot Zend passes an internal function's handler with its
+/// [`Entered`] frame (`return_value`), live for the call.
+#[repr(transparent)]
+pub struct Returned<'a>(*mut zval, std::marker::PhantomData<&'a mut zval>);
+
 impl Call {
-    /// # Safety
-    /// `frame` and `value` are the live frame and return slot Zend passed this
-    /// handler, and the `Call` does not outlive the handler.
-    #[must_use]
+    /// `body` over the call Zend passed a handler: its frame and return slot,
+    /// which live for the handler, as the `Call` lent to `body` does.
     #[inline]
-    pub unsafe fn new(frame: *mut zend_execute_data, value: *mut zval) -> Self {
-        Self { frame, value }
+    pub fn run(
+        Entered(frame, _): Entered<'_>,
+        Returned(value, _): Returned<'_>,
+        body: impl FnOnce(&mut Self),
+    ) {
+        body(&mut Self { frame, value });
     }
 
     /// This thread runs PHP for as long as the call lasts.

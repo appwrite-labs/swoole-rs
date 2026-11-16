@@ -35,9 +35,9 @@ pub mod string;
 pub mod value;
 mod zval;
 
-pub use call::{Call, CallFrame, Invalid, ReturnSlot};
+pub use call::{Call, CallFrame, Entered, Invalid, ReturnSlot, Returned};
 pub use callable::{Callable, Callback, Holder, Parsed};
-pub use class::{Class, ClassEntry, Declared, lookup_class, unset_property_deny};
+pub use class::{Class, ClassEntry, Declared, deny_unset, lookup_class};
 pub use descriptor::{
     FatalError, StreamContext, contain, contain_with, fatal_error, last_fatal_error, memory_usage,
     pause_shutdown, restore_shutdown, with_unlimited_stack,
@@ -46,7 +46,7 @@ pub use error::{
     E_ERROR, E_WARNING, Message, report, throw_error, throw_trapped, type_error, type_name,
     value_error, zend_error,
 };
-pub use function::{Function, create_object_deny};
+pub use function::Function;
 pub use helpers::{
     EMPTY_FCC, EMPTY_FCI, Record, is_main_thread, long_zval, module_loaded, numeric, time, zeroed,
 };
@@ -77,15 +77,9 @@ macro_rules! handlers {
     // Each handler, ending with `$then`.
     (@then $then:block $($name:ident => $body:path;)*) => {$(
         /// A Zend handler.
-        /// # Safety
-        /// Called by Zend with a live frame and return slot.
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $name(
-            frame: *mut $crate::sys::zend_execute_data,
-            value: *mut $crate::sys::zval,
-        ) {
-            // SAFETY: per Zend's handler contract.
-            $body(&mut unsafe { $crate::Call::new(frame, value) });
+        pub extern "C" fn $name(frame: $crate::Entered<'_>, value: $crate::Returned<'_>) {
+            $crate::Call::run(frame, value, |call| $body(call));
             $then
         }
     )*};
