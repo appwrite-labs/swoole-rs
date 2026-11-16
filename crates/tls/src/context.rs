@@ -22,7 +22,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::StringSlot;
-use swoole_rs_corebase::lent::{Count, In};
+use swoole_rs_corebase::lent::{Count, In, Out};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::sys::Text;
 
@@ -409,10 +409,14 @@ pub struct TlsConfig<'a> {
     pub warn: Warn,
 }
 
-/// OpenSSL's `pem_password_cb`: the buffer and its capacity, whether to verify, and
-/// the userdata it was installed with.
-pub(crate) type PasswordCallback =
-    unsafe extern "C" fn(*mut c_char, c_int, c_int, &StringSlot) -> c_int;
+/// OpenSSL's `pem_password_cb`: the buffer it lends and its capacity, whether to
+/// verify, and the userdata it was installed with.
+pub(crate) type PasswordCallback = for<'id> extern "C" fn(
+    Out<'id, MaybeUninit<u8>>,
+    Count<'id, c_int>,
+    c_int,
+    &StringSlot,
+) -> c_int;
 
 /// One upstream method: its log name and the configuration it reads.
 #[derive(Clone, Copy)]

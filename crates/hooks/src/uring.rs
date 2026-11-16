@@ -650,31 +650,30 @@ safe_operations! {
         timeout -1.0, opcode::Fsync::new(Fd(fd)).flags(FsyncFlags::DATASYNC), file_status;
     pub fn ftruncate(fd: c_int, length: libc::off_t) -> io::Result<()>,
         timeout -1.0, opcode::Ftruncate::new(Fd(fd), length.cast_unsigned()), file_status;
+    /// `IORING_OP_READV` into `vector`'s remaining buffers, or `IORING_OP_WRITEV` from
+    /// them, as the vector was made for: its iovecs, which only its `&mut` methods
+    /// move, and their buffers, valid in its direction while it lives.
+    pub fn vector(fd: c_int, vector: &IoVector<'_>, timeout: f64) -> io::Result<usize>,
+        timeout timeout, {
+            let iovecs = vector.iovecs();
+            let (iov, count) = (iovecs.as_ptr(), c_int::try_from(iovecs.len()).unwrap_or(0).cast_unsigned());
+            if vector.write() {
+                opcode::Writev::new(Fd(fd), iov, count).offset(u64::MAX).build()
+            } else {
+                opcode::Readv::new(Fd(fd), iov, count).offset(u64::MAX).build()
+            }
+        }, byte_count;
 }
 
-/// `IORING_OP_READV` into `vector`'s remaining buffers, or `IORING_OP_WRITEV` from
-/// them, as the vector was made for.
-/// # Errors
-/// The completion's captured errno, including linked timeouts.
-#[must_use = "check the transfer result"]
-pub fn vector(host: &Host, fd: c_int, vector: &IoVector<'_>, timeout: f64) -> io::Result<usize> {
-    let iovecs = vector.iovecs();
-    let count = c_int::try_from(iovecs.len()).unwrap_or(0).cast_unsigned();
-    let iov = iovecs.as_ptr();
-    let entry = if vector.write() {
-        opcode::Writev::new(Fd(fd), iov, count)
-            .offset(u64::MAX)
-            .build()
-    } else {
-        opcode::Readv::new(Fd(fd), iov, count)
-            .offset(u64::MAX)
-            .build()
-    };
-    // SAFETY: the entry's pointers are the borrowed vector's iovecs, which only its
-    // `&mut` methods move, and their buffers, valid in its direction while it lives
-    // (the type's invariant); the request completes before `request` returns.
-    let result = unsafe { request(host, timeout, entry) };
-    byte_count(result)
+/// An entry built already, which a [`safe_operations!`] entry may be.
+trait Built {
+    fn build(self) -> squeue::Entry;
+}
+
+impl Built for squeue::Entry {
+    fn build(self) -> squeue::Entry {
+        self
+    }
 }
 
 /// Sleep `seconds` in the ring's timer.
