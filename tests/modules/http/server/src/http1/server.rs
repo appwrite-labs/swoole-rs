@@ -69,4 +69,4 @@ fn send_buffer() {
     serv.delete();
 }
 
-pub const CASES: &[(&str, fn())] = &[("send_buffer", send_buffer)];
+pub(crate) const CASES: &[(&str, fn())] = &[("send_buffer", send_buffer)];

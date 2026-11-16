@@ -554,12 +554,9 @@ impl Handle {
         send(self, packet.get(..length).unwrap_or_default(), 0)
     }
 
-    /// `Client::socks5_handshake`: applies `length` received bytes at `data` and
-    /// sends the answer the proxy packed.
-    fn socks5_handshake(self, data: *const c_char, length: usize) -> bool {
-        // SAFETY: `data` is where the last receive wrote `length` bytes, in the live
-        // input buffer.
-        let reply = unsafe { std::slice::from_raw_parts(data.cast(), length) };
+    /// `Client::socks5_handshake`: applies the received `reply` and sends the answer
+    /// the proxy packed.
+    fn socks5_handshake(self, reply: &[u8]) -> bool {
         let n = self
             .with_proxy(Proxy::Socks5, |proxy| {
                 (native_host().socks5.handshake)(proxy, reply)
@@ -1250,10 +1247,9 @@ fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblo
         // Each answer lands at the start of the emptied buffer.
         let ready = this.with_buffer(|shared| {
             loop {
-                shared.clear();
-                let spare = shared.spare();
-                let n = recv(this, spare, 0).unwrap_or(0);
-                if n == 0 || !this.socks5_handshake(spare.as_ptr().cast(), n) {
+                // Zeroed first, so the reply is the bytes read.
+                shared.read_zeroed(shared.size(), |bytes| recv(this, bytes, 0).unwrap_or(0));
+                if shared.is_empty() || !this.socks5_handshake(shared.view()) {
                     return false;
                 }
                 if this.proxy_state(Proxy::Socks5) == Some(SOCKS5_READY) {
@@ -1744,12 +1740,17 @@ fn on_read(this: Handle) -> bool {
     }
     let socks5 = this.proxy_state(Proxy::Socks5);
     if socks5.is_some_and(|state| state != SOCKS5_READY) {
-        let n = this.edit_input(|input, socket, ops| (ops.recv_append)(socket, input));
-        let Some(n) = n.filter(|&n| n > 0) else {
+        // What this read appended, copied: the handshake's send may reach the client.
+        let reply = this.edit_input(|input, socket, ops| {
+            let start = input.len();
+            (ops.recv_append)(socket, input)?;
+            Some(input.view().get(start..).unwrap_or_default().to_vec())
+        });
+        let Some(reply) = reply.filter(|reply| !reply.is_empty()) else {
             log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
             return connect_failed(this);
         };
-        if !this.socks5_handshake(buf, n) {
+        if !this.socks5_handshake(&reply) {
             log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
             return connect_failed(this);
         }

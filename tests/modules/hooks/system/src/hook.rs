@@ -1201,7 +1201,7 @@ fn create_socket_fail() {
 /// Fixtures the core-tests run prepares, before a case: `TEST_TMP_FILE` as
 /// base.file_put_contents writes it (65535 random alphanumerics and a NUL), and no
 /// `/tmp/123.txt`, which `ftruncate` creates with mode 0 and leaves behind.
-pub fn prepare() {
+pub(crate) fn prepare() {
     const ALNUM: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     let mut content = vec![0u8; 65535];
     assert_eq!(random_bytes(&mut content), content.len());
@@ -1271,7 +1271,7 @@ fn accept() {
     });
 }
 
-pub const CASES: super::Cases = &[
+pub(crate) const CASES: super::Cases = &[
     ("file", file),
     ("gethostbyname", gethostbyname),
     ("getaddrinfo", getaddrinfo),

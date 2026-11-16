@@ -17,7 +17,8 @@ Keep module tests under tests/modules/<module>/.
 
 A new dependency needs a sentence in the PR on why the standard library or an existing
 dependency won't do. The PR tier checks dependencies with `cargo deny` (`deny.toml`:
-advisories, licences, duplicate versions, no async runtime) and `cargo machete` (unused).
+advisories, licences, duplicate versions, no async runtime); Cargo's
+`unused_dependencies` lint, denied in the root `Cargo.toml`, fails a build on an unused one.
 
 Rust lint levels live only in the root `Cargo.toml` (`[workspace.lints]`) and
 `clippy.toml`. Never lower one in a PR that also changes code; lowering one needs
