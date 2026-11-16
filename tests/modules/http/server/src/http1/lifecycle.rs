@@ -209,17 +209,11 @@ fn sleep_forever() -> ! {
 }
 
 /// `new Worker()`, as the server's user worker: the id `add_worker` returns is the one it sets.
-fn add_user_worker(serv: Server) -> *mut WorkerRecord {
-    let worker = Worker::from(Box::leak(WorkerRecord::boxed()));
-    let id = worker_methods::add_worker(serv.view(), worker);
-    assert_eq!(id, Some(worker.id()));
-    worker.raw()
-}
-
-/// `delete worker`.
-fn delete_worker(worker: *mut WorkerRecord) {
-    // SAFETY: made by add_user_worker, freed once.
-    drop(unsafe { Box::from_raw(worker) });
+fn add_user_worker(serv: Server) -> swoole_rs_server::process_worker::ProcessWorker {
+    let worker = swoole_rs_server::process_worker::ProcessWorker::new(WorkerRecord::empty());
+    let id = worker_methods::add_worker(serv.view(), worker.clone());
+    assert_eq!(id, Some(worker.get().id()));
+    worker
 }
 
 /// `TEST(server, create_task_worker_fail)`.
@@ -453,8 +447,8 @@ fn kill_user_workers() {
     serv.set_callback(Callback::Receive(receive_ok));
 
     assert_eq!(serv.start(), 0);
-    delete_worker(worker1);
-    delete_worker(worker2);
+    drop(worker1);
+    drop(worker2);
     assert_no_failure();
     serv.delete();
 }
@@ -500,8 +494,8 @@ fn force_kill_all_workers() {
     assert_eq!(serv.start(), 0);
     assert_eq!(counter_get(1), 7);
 
-    delete_worker(worker1);
-    delete_worker(worker2);
+    drop(worker1);
+    drop(worker2);
     assert_no_failure();
     serv.delete();
 }
@@ -622,10 +616,10 @@ fn reload_thread_server(prepare: impl FnOnce(Server)) -> Server {
 /// `TEST(server, reload_thread_2)`: two task workers and a user worker too. Its `lock`,
 /// which the last `onWorkerStart` unlocks, has no other user, so it is left out.
 fn reload_thread_2() {
-    let mut user_worker = ptr::null_mut();
+    let mut user_worker = None;
     let serv = reload_thread_server(|serv| {
         serv.config().task_worker_num.set(2);
-        user_worker = add_user_worker(serv);
+        user_worker = Some(add_user_worker(serv));
     });
     serv.set_callback(Callback::Task(task_ok));
     serv.set_callback(Callback::UserWorkerStart(reload_thread_2_user_start));
@@ -642,7 +636,7 @@ fn reload_thread_2() {
     assert!(counter_get(USER_WORKER_STARTS) >= 2);
     assert_no_failure();
     serv.delete();
-    delete_worker(user_worker);
+    drop(user_worker);
 }
 
 /// `reload_thread`'s `onUserWorkerStart`: until the server stops.
@@ -663,10 +657,10 @@ fn unlock_on_manager_start(_: view::Server<'_>) {
 /// starts, and a second reload is refused while the first runs. Its trace logging is
 /// left out.
 fn reload_thread() {
-    let mut user_worker = ptr::null_mut();
+    let mut user_worker = None;
     let serv = reload_thread_server(|serv| {
         serv.config().task_worker_num.set(2);
-        user_worker = add_user_worker(serv);
+        user_worker = Some(add_user_worker(serv));
     });
     client_thread(
         move || master_pid(serv),
@@ -698,7 +692,7 @@ fn reload_thread() {
     assert_eq!(counter_get(WORKER_STARTS), 4 * 2);
     assert_no_failure();
     serv.delete();
-    delete_worker(user_worker);
+    drop(user_worker);
 }
 
 /// `reload_thread_3`'s `onAfterReload`: a task-worker reload is refused (there are none),
@@ -1523,10 +1517,13 @@ fn test_process(single_thread: bool) {
     assert_eq!(last_error(), SW_ERROR_WRONG_OPERATION);
 
     clear_last_error();
-    let fake_worker = Worker::from(Box::leak(WorkerRecord::boxed()));
-    assert_eq!(worker_methods::add_worker(serv.view(), fake_worker), None);
+    let fake_worker = swoole_rs_server::process_worker::ProcessWorker::new(WorkerRecord::empty());
+    assert_eq!(
+        worker_methods::add_worker(serv.view(), fake_worker.clone()),
+        None
+    );
     assert_eq!(last_error(), SW_ERROR_WRONG_OPERATION);
-    delete_worker(fake_worker.raw());
+    drop(fake_worker);
 
     serv.set_callback(Callback::Start(process_on_start));
     serv.set_callback(Callback::WorkerStart(process_worker_start));

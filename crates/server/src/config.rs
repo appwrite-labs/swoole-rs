@@ -250,7 +250,7 @@ pub struct ServerConfig {
     /// The server's worker registry, which crates/process and the manager reach
     /// through `registry`'s pointer and write through `&`; native sees only a
     /// `void *` handle.
-    pub worker_registry: Option<Box<WorkerRegistry>>,
+    pub worker_registry: Option<Box<WorkerRegistry<crate::process_worker::ProcessWorker>>>,
     pub user_workers: Shm,
     pub workers: Shm,
     pub gs: Shm,
