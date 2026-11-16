@@ -1157,9 +1157,17 @@ pub fn strftime(out: &mut [u8], format: &CStr, tm: &libc::tm) -> usize {
     unsafe { libc::strftime(out.as_mut_ptr().cast(), out.len(), format.as_ptr(), tm) }
 }
 
-/// `waitpid(2)`, storing the status in `status` when given.
-pub fn waitpid(pid: pid_t, status: Option<&mut c_int>, options: c_int) -> pid_t {
-    c::waitpid(pid, status, options)
+/// `waitpid(2)`, storing the status in `status` when given. `None` means
+/// `WNOHANG` found no child ready to reap.
+///
+/// # Errors
+/// The syscall's captured errno.
+pub fn waitpid(
+    pid: pid_t,
+    status: Option<&mut c_int>,
+    options: c_int,
+) -> std::io::Result<Option<pid_t>> {
+    nonnegative_result(c::waitpid(pid, status, options)).map(|child| (child != 0).then_some(child))
 }
 
 /// `getpid(2)`.
@@ -1229,6 +1237,46 @@ mod tests {
             std::io::Error::last_os_error().raw_os_error(),
             Some(libc::ENOENT)
         );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri can't spawn a process")]
+    fn waitpid_distinguishes_pending_child_and_exit() {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "read line; exit 7"])
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = libc::pid_t::try_from(child.id()).unwrap();
+        let mut status = 123;
+        assert_eq!(
+            waitpid(pid, Some(&mut status), libc::WNOHANG).unwrap(),
+            None
+        );
+        assert_eq!(status, 123);
+        child.stdin.take().unwrap().write_all(b"done\n").unwrap();
+        assert_eq!(waitpid(pid, Some(&mut status), 0).unwrap(), Some(pid));
+        assert!(libc::WIFEXITED(status));
+        assert_eq!(libc::WEXITSTATUS(status), 7);
+        assert_eq!(
+            waitpid(pid, None, 0).unwrap_err().raw_os_error(),
+            Some(libc::ECHILD)
+        );
+        // The syscall above already reaped it; the owning handle cannot wait twice.
+        assert_eq!(child.wait().unwrap_err().raw_os_error(), Some(libc::ECHILD));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri can't wait for a process")]
+    fn waitpid_captures_errors_without_changing_status() {
+        let mut status = 123;
+        let error = waitpid(getpid(), Some(&mut status), libc::WNOHANG).unwrap_err();
+        set_errno(libc::EINTR);
+        assert_eq!(error.raw_os_error(), Some(libc::ECHILD));
+        assert_eq!(status, 123);
     }
 
     #[test]
