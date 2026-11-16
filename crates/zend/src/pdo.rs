@@ -1,6 +1,6 @@
 //! PDO's side of a bundled driver's MINIT: the `PDO` class's constants and the
 //! driver table, behind [`Minit::pdo`], which checks PDO's own MINIT has run.
-use crate::{Minit, Mshutdown, helpers::CText, sys::zend_long};
+use crate::{Minit, Mshutdown, bailout::Bailout, helpers::CText, sys::zend_long};
 use std::{
     ffi::{CStr, c_int},
     marker::PhantomData,
@@ -15,12 +15,6 @@ pub struct Driver {
 }
 
 unsafe extern "C" {
-    /// PDO's `php_pdo_register_driver`: `SUCCESS` (0) or `FAILURE` (-1).
-    /// # Safety
-    /// MINIT, on the main thread. A driver built for another PDO API, or PDO
-    /// not loaded, raises `E_ERROR`, which bails out over the caller's frames:
-    /// they own nothing that needs a drop.
-    pub fn php_pdo_register_driver(driver: &'static Driver) -> c_int;
     /// Whether PDO has registered its class: it reads one pointer PDO's MINIT
     /// wrote.
     safe fn swr_zend_pdo_loaded() -> bool;
@@ -31,6 +25,10 @@ unsafe extern "C" {
 // only the methods of a [`Pdo`] or an [`Mshutdown`], the tokens of those two
 // phases, call them.
 unsafe extern "C" {
+    /// PDO's `php_pdo_register_driver`: `SUCCESS` (0) or `FAILURE` (-1). A driver
+    /// built for another PDO API raises `E_ERROR`, which may bail out: only
+    /// [`Pdo::register`] calls it, inside `zend_try`.
+    safe fn php_pdo_register_driver(driver: &'static Driver) -> c_int;
     /// PDO's `php_pdo_unregister_driver`: nothing once PDO has shut down, or
     /// when it is not loaded. It raises no error.
     safe fn php_pdo_unregister_driver(driver: &'static Driver);
@@ -81,5 +79,15 @@ impl Pdo<'_> {
     /// driver registered it.
     pub fn unregister(&self, driver: &'static Driver) {
         php_pdo_unregister_driver(driver);
+    }
+
+    /// `php_pdo_register_driver` inside `zend_try`: PDO adds `driver` under its
+    /// name, unless the name is taken.
+    /// # Errors
+    /// PDO raised `E_ERROR` (a driver built for another PDO API) and bailed out.
+    pub fn register(&self, driver: &'static Driver) -> Result<(), Bailout> {
+        crate::contain_with(|| {
+            php_pdo_register_driver(driver);
+        })
     }
 }

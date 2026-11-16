@@ -3,10 +3,7 @@
 //! declared them, and the driver.
 use crate::swoole_pdo_oci_Env;
 use std::{convert::Infallible, ffi::c_int, sync::atomic::Ordering};
-use swoole_rs_zend::{
-    Minit, Mshutdown,
-    pdo::{Driver, php_pdo_register_driver},
-};
+use swoole_rs_zend::{Minit, Mshutdown, pdo::Driver};
 
 unsafe extern "C" {
     /// The bundled driver (`thirdparty/pdo_oci/oci_driver.c`).
@@ -41,9 +38,9 @@ pub fn minit(minit: &Minit) {
     }
     // Registering replaces pdo_oci's own.
     pdo.unregister(&swoole_pdo_oci_driver);
-    // SAFETY: MINIT, with PDO loaded. PDO raises `E_ERROR` for a driver built
-    // against another PDO API: no frame up to the step's `zend_try` owns a drop.
-    unsafe { php_pdo_register_driver(&swoole_pdo_oci_driver) };
+    // A bailout (`E_ERROR` for a driver built against another PDO API) is raised
+    // from this outermost Rust frame.
+    swoole_rs_zend::bailout::raise(pdo.register(&swoole_pdo_oci_driver));
 }
 
 /// `php_swoole_oracle_mshutdown`: the driver goes, and the environment free
