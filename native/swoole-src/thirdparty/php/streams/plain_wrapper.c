@@ -1058,7 +1058,9 @@ static php_stream *_sw_php_stream_fopen(const char *filename,
     }
 
     if (options & STREAM_ASSUME_REALPATH) {
-        strlcpy(_realpath, filename, sizeof(_realpath));
+        /* Not strlcpy: PHP's headers turn it into php_strlcpy where libc has none, a symbol a
+         * PHP built against glibc 2.38 or newer doesn't export, so the binary wouldn't load there. */
+        snprintf(_realpath, sizeof(_realpath), "%s", filename);
     } else {
         if (expand_filepath(filename, _realpath) == NULL) {
             return NULL;

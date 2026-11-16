@@ -70,9 +70,8 @@ What is not:
 - **Linux is what CI tests.** Every merge runs Ubuntu 24.04 on x86-64 with PHP 8.3, plus
   Alpine (musl) and a thread-safe PHP. PHP 8.2, 8.4 and 8.5 run nightly, as does
   arm64 with PHP 8.3. The build scripts handle macOS, which CI doesn't run.
-- **No release, no packages, no licence file.** There is no tag and no PECL or PIE
-  package; you build it from source. The repository root has no `LICENSE` yet. Upstream
-  Swoole is Apache-2.0 and the bundled PHP code is under the PHP License 3.01.
+- **No release, no packages.** There is no tag and no PECL or PIE package; you build it
+  from source.
 - **Coding agents wrote it.** About 2,100 commits since 2026-10-25 came from AI coding
   agents working through GitHub issues under one maintainer's direction
   ([AGENTS.md](AGENTS.md)). CI is the reviewer: a change lands when its gates pass,
@@ -224,6 +223,12 @@ before a change lands.
 - [`corpus/`](corpus/README.md): the applications and the
   [upstream PHPT selection](corpus/upstream/README.md).
 - [`benchmarks/`](benchmarks/README.md): the Callgrind workloads and their limits.
+
+## Licence
+
+[Apache-2.0](LICENSE), as upstream Swoole. Bundled PHP code retains the
+[PHP License 3.01](native/swoole-src/thirdparty/LICENSE), and the Zend Engine file retains
+[Zend License 2.00](native/swoole-src/thirdparty/LICENSE-ZEND). [`NOTICE`](NOTICE) lists the attributions.
 
 ## Badges
 
