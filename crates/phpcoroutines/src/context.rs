@@ -87,6 +87,9 @@ unsafe extern "C" {
     safe fn zend_observer_fiber_switch_notify(from: Fiber, to: Fiber);
     /// The fiber observers' notice that a live fiber goes; it stays allocated.
     safe fn zend_observer_fiber_destroy_notify(fiber: Fiber);
+    /// Sets a live fiber's status, as Zend's fiber observers read it.
+    #[link_name = "swr_zend_coroutine_fiber_status"]
+    safe fn set_fiber_status(fiber: Fiber, status: zend_fiber_status);
     /// `efree` of a mock fiber, which the handle spends.
     #[link_name = "swr_zend_efree"]
     safe fn free_mock(fiber: Mock);
@@ -107,8 +110,7 @@ pub(crate) struct Mock(Fiber);
 impl Fiber {
     /// Set its status, as Zend's fiber observers read it.
     fn set_status(self, status: zend_fiber_status) {
-        // SAFETY: a live fiber (the handle's invariant); a field write.
-        unsafe { (*self.0.as_ptr()).status = status };
+        set_fiber_status(self, status);
     }
 }
 

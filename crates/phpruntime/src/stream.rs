@@ -1097,20 +1097,19 @@ pub(crate) extern "C" fn transport_factory_body(
             }
             return Ok(stream.into_ptr());
         }
-        let factory = crate::transport::original(protocol);
-        if factory.is_null() {
+        let Some(factory) = crate::transport::original(protocol) else {
             // The native diagnostic used %s, so retain its complete NUL-terminated spelling.
             let message = [b"unknown protocol '".as_slice(), spelling, b"'"].concat();
             let message = CString::new(message).unwrap_or_default();
             report(Report::Fatal, E_WARNING, &message)?;
             return Ok(ptr::null_mut());
-        }
+        };
         let mut bailed = false;
         // SAFETY: the original process-lived PHP callback runs below Rust in a C Zend trap,
         // with the compiler supplying its exact STREAMS_CC debug arguments.
         let stream = unsafe {
             swoole_rs_zend::sys::swr_zend_try_stream_factory(
-                factory,
+                factory.as_ptr(),
                 proto.get().as_ptr(),
                 protolen,
                 name.get().as_ptr(),

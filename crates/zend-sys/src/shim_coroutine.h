@@ -130,6 +130,9 @@ void swr_zend_coroutine_fcc_discard(zend_fcall_info_cache *fcc);
  * (output handlers may run): 1 if it bailed out. */
 int swr_zend_coroutine_print_trace(int skip_last, int options, int limit);
 
+/* fiber->status = status, as the fiber observers read it. */
+void swr_zend_coroutine_fiber_status(zend_fiber_context *fiber, zend_fiber_status status);
+
 /* A new object of the exception class `ce`, its properties initialised and no
  * constructor run (zend_objects_new, object_properties_init). */
 zend_object *swr_zend_coroutine_exception(zend_class_entry *ce);
