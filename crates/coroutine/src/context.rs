@@ -34,9 +34,9 @@ pub struct Context {
     asan_size: usize,
     /// The context's `ThreadSanitizer` fiber, and the one that last switched it in.
     #[cfg(tsan)]
-    tsan_fiber: *mut c_void,
+    tsan_fiber: Option<tsan::Fiber>,
     #[cfg(tsan)]
-    tsan_caller: Cell<*mut c_void>,
+    tsan_caller: Cell<Option<tsan::To<'static>>>,
     /// Set once the entry returned.
     end: Cell<bool>,
     /// The [`THREAD`] context's thread.
@@ -74,9 +74,9 @@ impl Context {
             asan_bottom: ptr::null(),
             asan_size: 0,
             #[cfg(tsan)]
-            tsan_fiber: __tsan_create_fiber(0),
+            tsan_fiber: tsan::create(),
             #[cfg(tsan)]
-            tsan_caller: Cell::new(ptr::null_mut()),
+            tsan_caller: Cell::new(None),
             end: Cell::new(false),
             thread: None,
         };
@@ -103,16 +103,6 @@ pub enum Unmade {
     NoStack,
     /// The [`THREAD`] context's thread failed to start, with this errno.
     Thread(c_int),
-}
-
-#[cfg(tsan)]
-impl Drop for Context {
-    fn drop(&mut self) {
-        // SAFETY: the context's own fiber, which is not running: the context ended or never ran.
-        unsafe {
-            __tsan_destroy_fiber(self.tsan_fiber);
-        }
-    }
 }
 
 /// A stack's fake stack as `AddressSanitizer` set it aside: none, or what a
@@ -143,11 +133,61 @@ type FinishSwitch = extern "C" fn(FakeStack, Option<&mut *const c_void>, Option<
 // drop the thread's own buffers, and a later bailout to one aborts with "can't find
 // longjmp buf" (#3400). A fiber keeps a list of its own.
 #[cfg(tsan)]
-unsafe extern "C" {
-    safe fn __tsan_get_current_fiber() -> *mut c_void;
-    safe fn __tsan_create_fiber(flags: core::ffi::c_uint) -> *mut c_void;
-    fn __tsan_destroy_fiber(fiber: *mut c_void);
-    fn __tsan_switch_to_fiber(fiber: *mut c_void, flags: core::ffi::c_uint);
+mod tsan {
+    use core::ffi::{c_uint, c_void};
+    use core::marker::PhantomData;
+    use core::ptr::NonNull;
+
+    /// A context's own fiber, made with it and destroyed with it: once it ended or
+    /// never ran, so while the fiber is not running.
+    #[repr(transparent)]
+    pub(super) struct Fiber(NonNull<c_void>);
+
+    /// A live fiber to switch to: a [`Fiber`], borrowed, or the fiber that switched a
+    /// context in, which waits in `swap_in` until that context switches out, the one
+    /// switch to it made here. Only this module makes one.
+    #[repr(transparent)]
+    #[derive(Clone, Copy)]
+    pub(super) struct To<'a>(NonNull<c_void>, PhantomData<&'a Fiber>);
+
+    unsafe extern "C" {
+        /// The running fiber, never null, so `None` never comes back.
+        #[link_name = "__tsan_get_current_fiber"]
+        pub(super) safe fn current() -> Option<To<'static>>;
+        safe fn __tsan_create_fiber(flags: c_uint) -> Option<Fiber>;
+        /// Switches to a live fiber.
+        #[link_name = "__tsan_switch_to_fiber"]
+        safe fn switch_to(fiber: To<'_>, flags: c_uint);
+    }
+
+    /// A new fiber, `None` if `ThreadSanitizer` made none.
+    pub(super) fn create() -> Option<Fiber> {
+        __tsan_create_fiber(0)
+    }
+
+    impl Fiber {
+        pub(super) fn to(&self) -> To<'_> {
+            To(self.0, PhantomData)
+        }
+    }
+
+    impl To<'_> {
+        pub(super) fn switch(self) {
+            switch_to(self, 0);
+        }
+    }
+
+    impl Drop for Fiber {
+        fn drop(&mut self) {
+            /// The fiber a dropped `Fiber` held: only this drop makes one, once per fiber.
+            #[repr(transparent)]
+            struct Released(NonNull<c_void>);
+            unsafe extern "C" {
+                safe fn __tsan_destroy_fiber(fiber: Released);
+            }
+            __tsan_destroy_fiber(Released(self.0));
+        }
+    }
 }
 
 /// `__sanitizer_{start,finish}_switch_fiber`, when `AddressSanitizer` is loaded.
@@ -236,9 +276,11 @@ pub(crate) fn swap_in(co: Co) -> bool {
         }
         #[cfg(tsan)]
         {
-            ctx.tsan_caller.set(__tsan_get_current_fiber());
-            // SAFETY: the context's live fiber, which runs from the jump on.
-            unsafe { __tsan_switch_to_fiber(ctx.tsan_fiber, 0) };
+            ctx.tsan_caller.set(tsan::current());
+            // The context's own fiber, which runs from the jump on.
+            if let Some(fiber) = &ctx.tsan_fiber {
+                fiber.to().switch();
+            }
         }
         Ok(ctx.fctx)
     });
@@ -276,10 +318,10 @@ pub(crate) fn swap_out(co: Co) {
             // Announces the switch back to the stack that switched in.
             start(save, ctx.asan_bottom, ctx.asan_size);
         }
+        // The fiber that switched this context in, which runs from the jump on.
         #[cfg(tsan)]
-        // SAFETY: the fiber that switched this context in, which runs from the jump on.
-        unsafe {
-            __tsan_switch_to_fiber(ctx.tsan_caller.get(), 0);
+        if let Some(caller) = ctx.tsan_caller.get() {
+            caller.switch();
         }
         Some(ctx.swap_fctx)
     });
