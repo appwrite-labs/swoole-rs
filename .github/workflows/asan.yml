@@ -34,7 +34,7 @@ jobs:
       - uses: actions/cache@v6
         with:
           path: target/asan/php
-          key: php-asan-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh', 'tools/asan.py') }}-${{ github.workspace }}
+          key: php-asan-${{ runner.os }}-${{ hashFiles('.devcontainer/php.sh', 'tools/asan.py', 'tools/asan_case.c') }}-${{ github.workspace }}
       - name: Fetch crates
         run: cargo fetch --locked
       - name: Prepare hyperf
