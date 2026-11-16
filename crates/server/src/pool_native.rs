@@ -556,7 +556,9 @@ impl PoolNative for Native {
 
     fn send(&self, c: &mut PoolCall) {
         io(c, |c| {
-            lent_socket(c).map_or(-1, |socket| upstream::send_sync(socket, c.bytes(), 0))
+            lent_socket(c)
+                .and_then(|socket| upstream::send_sync(socket, c.bytes(), 0))
+                .map_or(-1, usize::cast_signed)
         });
     }
 

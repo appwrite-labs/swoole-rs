@@ -199,12 +199,11 @@ pub fn read_into(this: &SocketPair, buffer: &mut [MaybeUninit<u8>]) -> Option<us
     let [_, Some(socket)] = ends(this) else {
         return None;
     };
-    let read = if this.blocking {
+    if this.blocking {
         read_sync(socket, buffer)
     } else {
-        swoole_rs_corebase::sys::read(socket.fd(), buffer)
-    };
-    usize::try_from(read).ok()
+        usize::try_from(swoole_rs_corebase::sys::read(socket.fd(), buffer)).ok()
+    }
 }
 
 /// `ssize_t SocketPair::write(const void *, size_t) const` of `data`: to the master
@@ -214,12 +213,11 @@ pub fn write_from(this: &SocketPair, data: &[u8]) -> Option<usize> {
     let [Some(socket), _] = ends(this) else {
         return None;
     };
-    let written = if this.blocking {
+    if this.blocking {
         write_sync(socket, data)
     } else {
-        swoole_rs_corebase::sys::write(socket.fd(), data)
-    };
-    usize::try_from(written).ok()
+        usize::try_from(swoole_rs_corebase::sys::write(socket.fd(), data)).ok()
+    }
 }
 
 /// `void SocketPair::clean() const`: reads and drops whatever the worker end holds.
