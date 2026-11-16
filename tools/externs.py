@@ -244,8 +244,11 @@ def check(sources, headers, flags):
     with tempfile.NamedTemporaryFile('w', suffix='.cpp') as tmp:
         tmp.write(headers + PREAMBLE + source + '\n')
         tmp.flush()
-        result = subprocess.run([*compiler, '-fsyntax-only', '-fmax-errors=0', tmp.name], text=True, capture_output=True)
-    errors = re.findall(r'error: static assertion failed: (.*)', result.stderr)
+        # GCC reports every error by default; `-fmax-errors` would be an unused-argument
+        # warning from clang, which macOS's g++ is.
+        result = subprocess.run([*compiler, '-fsyntax-only', tmp.name], text=True, capture_output=True)
+    # GCC's form, and clang's, which names the failed requirement first.
+    errors = re.findall(r"error: static assertion failed(?: due to requirement '.*?')?: (.*)", result.stderr)
     problems += errors or ([result.stderr] if result.returncode else [])
     return problems, [f'{d[0]}: {d[1]}' for d in decls if d[1] not in declared]
 
