@@ -740,8 +740,8 @@ mod tests {
         let gs = config(&live)
             .gs
             .as_ptr()
-            .cast::<crate::shared::ServerCounters>();
-        unsafe { (*gs).connection_nums.free() };
+            .cast::<crate::shared::ServerShared>();
+        unsafe { (*gs).counters.connection_nums.free() };
         let port = state.ports.get(0).unwrap().config();
         let port_gs = port.gs.get().cast::<PortCounters>();
         unsafe { (*port_gs).connection_nums.free() };
