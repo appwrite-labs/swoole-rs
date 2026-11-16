@@ -219,19 +219,16 @@ mod native {
         // The receive owns its allocation while parked. A PHP bailout abandons
         // this frame without dropping it, so teardown cannot free bytes a pending
         // io_uring request may still write. No socket metadata loan spans a yield.
-        let mut string = socket.take_buffer(false)?;
-        let result = if at <= string.len() {
-            string.truncate(at);
-            string
-                .fill_within(length, |spare| {
-                    socket.recv_spare(if all { Receive::All } else { Receive::Recv }, spare)
-                })
-                .map(|_| string.len() - at)
-        } else {
-            None
-        };
-        socket.put_read_buffer(string);
-        result
+        let mut string = socket.own_read_buffer();
+        if at > string.len() {
+            return None;
+        }
+        string.truncate(at);
+        string
+            .fill_within(length, |spare| {
+                socket.recv_spare(if all { Receive::All } else { Receive::Recv }, spare)
+            })
+            .map(|_| string.len() - at)
     }
 
     fn package_length(socket: Co, size: u32, header: &mut u32) -> crate::packet::Length {
