@@ -1,7 +1,7 @@
 //! `Swoole\Server`'s classes, its connection and worker methods, and
 //! `Swoole\Connection\Iterator`; lifecycle.rs owns the Server objects.
 use std::{
-    cell::{Cell, OnceCell, RefCell},
+    cell::{Cell, OnceCell},
     ffi::{CStr, c_int, c_long, c_void},
     ptr,
     sync::atomic::{AtomicPtr, AtomicU64, Ordering},
@@ -102,7 +102,8 @@ pub(crate) use swoole_rs_server::THREAD_SUPPORTED as THREAD;
 thread_local! {
     /// Each thread's `ServerPortProperty` per port `object_id` (`SW_THREAD`):
     /// every worker thread has its own port objects for the shared ports.
-    static PORT_PROPERTIES: RefCell<Vec<*mut c_void>> = const { RefCell::new(Vec::new()) };
+    /// Taken out and put back around each access, which runs no PHP code.
+    static PORT_PROPERTIES: Cell<Vec<*mut c_void>> = const { Cell::new(Vec::new()) };
 }
 
 /// `php_swoole_server_{get,set}_port_property`: the port's `ServerPortProperty`,
@@ -122,7 +123,8 @@ pub(crate) fn port_property(
         return slot.load(Ordering::Relaxed);
     }
     let index = usize::from(object_id);
-    PORT_PROPERTIES.with_borrow_mut(|properties| {
+    PORT_PROPERTIES.with(|cell| {
+        let mut properties = cell.take();
         if set {
             if properties.len() <= index {
                 properties.resize(index + 1, ptr::null_mut());
@@ -131,7 +133,9 @@ pub(crate) fn port_property(
                 *entry = property;
             }
         }
-        properties.get(index).copied().unwrap_or(ptr::null_mut())
+        let found = properties.get(index).copied().unwrap_or(ptr::null_mut());
+        cell.set(properties);
+        found
     })
 }
 

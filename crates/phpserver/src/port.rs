@@ -6,7 +6,7 @@ use crate::{
     settings::{Settings, Stop},
 };
 use std::{
-    cell::{Cell, OnceCell, RefCell},
+    cell::{Cell, OnceCell},
     ffi::c_void,
     ptr,
     sync::atomic::Ordering,
@@ -26,9 +26,10 @@ const CALLBACKS: usize = swoole_rs_ports::PortCallback::ALL.len();
 /// `swoole::ServerPortProperty`: the port's callables and its server. The
 /// server's dispatch reads it through the port's link, and PHP code a method
 /// runs can call this object's methods, so every field is a cell and the
-/// property is only ever borrowed shared.
+/// property is only ever borrowed shared. A callback slot is taken out and put
+/// back with nothing in between that runs PHP code.
 pub struct PortProperty {
-    callbacks: [RefCell<Option<Callable>>; CALLBACKS],
+    callbacks: [Cell<Option<Callable>>; CALLBACKS],
     /// The port's share in its server, once `new_object` bound it.
     serv: OnceCell<SharedServer>,
     /// Whether the port names its server: from `new_object` until `release`.
@@ -39,7 +40,10 @@ impl PortProperty {
     /// `callbacks[kind]`: the callable, a reference the call holds, or none.
     pub(crate) fn callback(&self, kind: swoole_rs_ports::PortCallback) -> Option<Callable> {
         let slot = self.callbacks.get(kind.index())?;
-        slot.borrow().clone()
+        let callable = slot.take();
+        let copy = callable.clone();
+        slot.set(callable);
+        copy
     }
 }
 
@@ -287,13 +291,14 @@ fn on(call: &Call) {
         return call.set_bool(false);
     };
     // A nested on() stored its callable, and the property, after this one's
-    // write: keep that pair and drop ours.
-    let kept = if slot.borrow().is_none() {
-        slot.replace(Some(callable))
-    } else {
-        Some(callable)
-    };
-    drop(kept);
+    // write: keep that pair and drop ours once it is back.
+    match slot.take() {
+        None => slot.set(Some(callable)),
+        nested => {
+            slot.set(nested);
+            drop(callable);
+        }
+    }
     crate::dispatch::port_hook(serv, index);
     call.set_bool(true);
 }
