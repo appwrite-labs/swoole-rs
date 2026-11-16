@@ -65,7 +65,7 @@ pub(crate) fn unconstructed() {
 /// `swSocketType` (`kind`), over `fd` unless it is negative.
 /// # Errors
 /// The constructor bailed out.
-pub(crate) fn make(
+pub fn make(
     fd: c_int,
     domain: c_int,
     kind: c_int,
@@ -84,7 +84,8 @@ pub(crate) fn make(
 pub struct NewSocket(Co);
 
 impl NewSocket {
-    pub(crate) fn co(&self) -> Co {
+    #[must_use]
+    pub fn co(&self) -> Co {
         self.0
     }
 
@@ -96,7 +97,7 @@ impl NewSocket {
     /// `delete socket`.
     /// # Errors
     /// A close hook bailed out.
-    pub(crate) fn free(self) -> Result<(), Bailout> {
+    pub fn free(self) -> Result<(), Bailout> {
         // SAFETY: an owned socket, which nothing else holds; gone after the call.
         unsafe { co::free(self.0.as_ptr()) }
     }

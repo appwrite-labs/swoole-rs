@@ -18,7 +18,7 @@ use std::{
     mem::ManuallyDrop,
     sync::atomic::{AtomicU32, Ordering::SeqCst},
 };
-use swoole_rs_corebase::{CCast, HookType, swoole_call_hook, swoole_isset_hook};
+use swoole_rs_corebase::{CCast, HookType, swoole_isset_hook};
 use swoole_rs_corebase::{DataHead, WebSocketStatus, log};
 use swoole_rs_memory::flat::Table;
 use swoole_rs_phpserver::PortCallback;
@@ -471,8 +471,7 @@ fn handle(
     add_server(state, Key::MasterTime, master_time);
     // The hooks may reach the context: no borrow of it is held across them.
     if swoole_isset_hook(HookType::BEFORE_REQUEST) {
-        // SAFETY: the hook's context argument.
-        unsafe { swoole_call_hook(HookType::BEFORE_REQUEST, ctx.raw()) };
+        ctx.call_hook(context::Hook::BeforeRequest);
     }
     // Parsing an upgrade request sets the connection's status.
     let handshake = server

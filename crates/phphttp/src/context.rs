@@ -12,6 +12,7 @@ use std::{
     rc::Rc,
     sync::atomic::Ordering::Relaxed,
 };
+use swoole_rs_corebase::{HookType, swoole_call_hook};
 use swoole_rs_phpruntime::co;
 use swoole_rs_server::{server_methods, view};
 use swoole_rs_zend::{
@@ -53,6 +54,18 @@ impl Ctx {
         unsafe { self.0.cast::<State>().as_mut() }
     }
 
+    /// The `kind` hook of Swoole's global hooks, which take the context as
+    /// upstream passes them its `HttpContext *`.
+    #[inline]
+    pub(crate) fn call_hook(self, kind: Hook) {
+        let kind = match kind {
+            Hook::BeforeRequest => HookType::BEFORE_REQUEST,
+            Hook::AfterResponse => HookType::AFTER_RESPONSE,
+        };
+        // SAFETY: the hooks of both kinds take a live context.
+        unsafe { swoole_call_hook(kind, self.raw()) };
+    }
+
     /// The context's state bits.
     pub(crate) fn flags(mut self) -> u32 {
         let state = self.state();
@@ -65,6 +78,13 @@ impl Ctx {
             | (u32::from(state.upgrade) << 6)
             | (u32::from(state.websocket) << 7)
     }
+}
+
+/// The global hooks that take an HTTP context.
+#[derive(Clone, Copy)]
+pub(crate) enum Hook {
+    BeforeRequest,
+    AfterResponse,
 }
 
 /// `Swoole\Http\Response`'s declared `fd` slot (MINIT).

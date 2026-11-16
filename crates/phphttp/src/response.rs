@@ -12,7 +12,7 @@ use std::{
     ffi::{CString, c_int},
     sync::atomic::Ordering::Relaxed,
 };
-use swoole_rs_corebase::{CCast, HookType, swoole_call_hook, swoole_isset_hook};
+use swoole_rs_corebase::{CCast, HookType, swoole_isset_hook};
 use swoole_rs_httpbindings::{canonical_case, swr_v1_httpbindings_file_range};
 use swoole_rs_phpstubs::http_response;
 use swoole_rs_phpswoole::MinitArgs;
@@ -218,10 +218,7 @@ fn after(ctx: Ctx) -> Result<(), Bailout> {
     if !swoole_isset_hook(HookType::AFTER_RESPONSE) {
         return Ok(());
     }
-    swoole_rs_zend::contain_with(|| {
-        // SAFETY: the hooks take the live context, as upstream passed it.
-        unsafe { swoole_call_hook(HookType::AFTER_RESPONSE, ctx.raw()) };
-    })
+    swoole_rs_zend::contain_with(|| ctx.call_hook(context::Hook::AfterResponse))
 }
 
 fn end(call: &Call) {
