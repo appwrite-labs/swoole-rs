@@ -29,7 +29,6 @@ static LISTENERS: [AtomicPtr<Listener>; SIGNO_MAX as usize] =
 
 /// The signal table, reactor and coroutine operations a signal wait needs. The wait
 /// passes each only its own coroutine and records.
-#[derive(Clone, Copy)]
 struct SignalOps {
     /// `Coroutine::get_current_safe()`.
     current: extern "C" fn() -> *mut c_void,
@@ -417,10 +416,10 @@ mod tests {
         last_error: i32,
     }
 
-    fn wait(signals: &[i32], ops: &SignalOps) -> (Signalled, Vec<String>) {
+    fn wait(signals: &[i32], ops: &'static SignalOps) -> (Signalled, Vec<String>) {
         LOG.with_borrow_mut(Vec::clear);
         let signals: Vec<c_long> = signals.iter().map(|&signo| signo.into()).collect();
-        let result = match wait_signal(&signals, 1.0, Box::leak(Box::new(*ops))) {
+        let result = match wait_signal(&signals, 1.0, ops) {
             Ok(signo) => Signalled {
                 signo,
                 last_error: 0,
@@ -445,7 +444,7 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (result, log) = wait(
             &[libc::SIGUSR1, libc::SIGUSR2, libc::SIGUSR1],
-            &ops(idle, signalled),
+            &const { ops(idle, signalled) },
         );
         assert_eq!(
             result,
@@ -467,22 +466,31 @@ mod tests {
         assert_eq!(log, expected);
         assert!(LISTENERS.iter().all(|slot| slot.load(Relaxed).is_null()));
 
-        let (result, _) = wait(&[libc::SIGUSR1], &ops(idle, timed_out));
+        let (result, _) = wait(&[libc::SIGUSR1], &const { ops(idle, timed_out) });
         assert_eq!(result.signo, -1);
         assert_eq!(
-            wait(&[libc::SIGUSR1], &ops(busy, timed_out)).0.last_error,
+            wait(&[libc::SIGUSR1], &const { ops(busy, timed_out) })
+                .0
+                .last_error,
             libc::EBUSY
         );
         assert_eq!(
-            wait(&[libc::SIGCHLD], &ops(idle, timed_out)).0.last_error,
+            wait(&[libc::SIGCHLD], &const { ops(idle, timed_out) })
+                .0
+                .last_error,
             libc::EINVAL
         );
         assert_eq!(
-            wait(&[SIGNO_MAX], &ops(idle, timed_out)).0.last_error,
+            wait(&[SIGNO_MAX], &const { ops(idle, timed_out) })
+                .0
+                .last_error,
             libc::EINVAL
         );
         // An invalid signal anywhere in the list registers none of them.
-        let (result, log) = wait(&[libc::SIGUSR1, libc::SIGCHLD], &ops(idle, timed_out));
+        let (result, log) = wait(
+            &[libc::SIGUSR1, libc::SIGCHLD],
+            &const { ops(idle, timed_out) },
+        );
         assert_eq!(result.last_error, libc::EINVAL);
         assert_eq!(log, Vec::<String>::new());
     }
@@ -492,11 +500,13 @@ mod tests {
         let _serial = SERIAL
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let ops = SignalOps {
-            listen: unreachable_loop,
-            ..ops(idle, signalled)
+        let ops = &const {
+            SignalOps {
+                listen: unreachable_loop,
+                ..ops(idle, signalled)
+            }
         };
-        let (result, log) = wait(&[libc::SIGUSR1, libc::SIGUSR2], &ops);
+        let (result, log) = wait(&[libc::SIGUSR1, libc::SIGUSR2], ops);
         assert_eq!(
             result,
             Signalled {
@@ -514,12 +524,14 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         QUEUED.with_borrow_mut(Vec::clear);
-        let ops = SignalOps {
-            listen: deferred,
-            ..ops(idle, timed_out)
+        let ops = &const {
+            SignalOps {
+                listen: deferred,
+                ..ops(idle, timed_out)
+            }
         };
         let (one, two) = (libc::SIGUSR1, libc::SIGUSR2);
-        let (result, log) = wait(&[one, two], &ops);
+        let (result, log) = wait(&[one, two], ops);
         assert_eq!(result.signo, -1);
         let expected = [
             format!("queued {one}"),
