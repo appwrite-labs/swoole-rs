@@ -25,7 +25,6 @@ on:
       - 'crates/oracle/**'
       - 'crates/ossupport/**'
       - 'crates/process/**'
-      - 'crates/protocols-ffi/**'
       - 'crates/protocols/**'
       - 'crates/reactor/**'
       - 'crates/timer/**'
