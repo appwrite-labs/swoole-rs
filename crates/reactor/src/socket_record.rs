@@ -357,10 +357,7 @@ impl SocketRecord {
         protocol: c_int,
         flags: c_int,
     ) -> Option<Box<Self>> {
-        let fd = crate::swr_v1_socket_open(domain, kind, protocol, flags);
-        if fd < 0 {
-            return None;
-        }
+        let fd = crate::swr_v1_socket_open(domain, kind, protocol, flags).ok()?;
         let mut socket = Self::with_fd(fd, fd_type);
         socket.output.nonblock = flags & crate::socket_types::NONBLOCK != 0;
         socket.cloexec = flags & crate::socket_types::CLOEXEC != 0;

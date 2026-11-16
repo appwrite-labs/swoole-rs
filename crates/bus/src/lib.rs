@@ -605,7 +605,7 @@ impl Bus {
         &self,
         head: &mut BusHead,
         data: *const u8,
-        mut send: impl FnMut(&[libc::iovec]) -> isize,
+        mut send: impl FnMut(&[libc::iovec]) -> Option<usize>,
         mut reduce: impl FnMut() -> bool,
     ) -> bool {
         let maximum = u32::try_from(self.buffer_size.get() - HEAD).unwrap_or(u32::MAX);
@@ -642,9 +642,9 @@ impl Bus {
             let sent = send(iov.get(..count).unwrap_or_default());
             // Chunks accept any nonnegative write; direct writes need every byte.
             let success = if chunk.mode == Mode::Chunks {
-                sent >= 0
+                sent.is_some()
             } else {
-                sent.cast_unsigned() == HEAD + chunk.length as usize
+                sent == Some(HEAD + chunk.length as usize)
             };
             let smaller = !success && chunk.mode != Mode::Empty && reduce();
             if !writer.complete(success, smaller) {
@@ -929,7 +929,7 @@ impl Bus {
             if event_api::swoole_event_is_available() {
                 event_api::swoole_event_writev(socket, vectors)
             } else {
-                writev_sync(socket, vectors).map_or(-1, usize::cast_signed)
+                writev_sync(socket, vectors)
             }
         };
         let reduce = || {
@@ -1086,8 +1086,9 @@ mod tests {
                 payload.as_ptr()
             };
             let fd = self.fds[0];
-            let send = |iov: &[libc::iovec]| unsafe {
-                libc::writev(fd, iov.as_ptr(), c_int::try_from(iov.len()).unwrap())
+            let send = |iov: &[libc::iovec]| {
+                let count = c_int::try_from(iov.len()).unwrap();
+                usize::try_from(unsafe { libc::writev(fd, iov.as_ptr(), count) }).ok()
             };
             self.bus.write(&mut head, data, send, || false)
         }
@@ -1313,12 +1314,10 @@ mod tests {
     /// the failure's for `pipe_reduce`) every packet the reader can read now. Upstream's
     /// reactor interleaves its writes and reads; reading only whole writes keeps a
     /// partly written stream chunk from being read as a whole one.
-    fn loopback_send(pipe: &mut Loopback, iov: &[libc::iovec]) -> isize {
+    fn loopback_send(pipe: &mut Loopback, iov: &[libc::iovec]) -> Option<usize> {
         let count = c_int::try_from(iov.len()).unwrap();
-        let sent = unsafe { libc::writev(pipe.fds[0], iov.as_ptr(), count) };
-        if sent < 0 {
-            return sent;
-        }
+        let sent = usize::try_from(unsafe { libc::writev(pipe.fds[0], iov.as_ptr(), count) });
+        let sent = sent.ok()?;
         loop {
             let mut poll = libc::pollfd {
                 fd: pipe.fds[1],
@@ -1326,7 +1325,7 @@ mod tests {
                 revents: 0,
             };
             if unsafe { libc::poll(&raw mut poll, 1, 0) } != 1 {
-                return sent;
+                return Some(sent);
             }
             let n = mb_read(&mut pipe.bus, pipe.fds[1], pipe.dgram);
             assert!(n.is_some());

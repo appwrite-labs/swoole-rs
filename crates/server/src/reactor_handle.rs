@@ -93,15 +93,16 @@ impl Reactor {
     pub(crate) fn unread(self, sock: Socket<'_>) {
         let _ = self.interest(sock, Interest::RemoveRead);
     }
-    /// The reactor's own `close` of `sock`, when it has one.
-    pub(crate) fn close(self, sock: Socket<'static>) -> c_int {
-        self.handle().close().map_or(0, |close| {
+    /// The reactor's own `close` of `sock`, when it has one: whether it succeeded.
+    pub(crate) fn close(self, sock: Socket<'static>) -> bool {
+        self.handle().close().is_none_or(|close| {
             // SAFETY: the reactor's close on one of its live sockets.
-            unsafe { close(self.handle(), sock) }
+            unsafe { close(self.handle(), sock) >= 0 }
         })
     }
-    /// `reactor->trigger_close_event(event)`: the default error handler, or `-1` with none.
-    pub(crate) fn trigger_close(self, event: &mut swoole_rs_reactor::Event) -> c_int {
+    /// `reactor->trigger_close_event(event)`: the default error handler, whether it
+    /// succeeded; false with none.
+    pub(crate) fn trigger_close(self, event: &mut swoole_rs_reactor::Event) -> bool {
         swoole_rs_reactor::reactor_upstream::trigger_close_event(self.handle(), event)
     }
     pub(crate) fn set_handler(self, fd_type: c_int, event: Events, handler: Handler) {

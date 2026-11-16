@@ -669,7 +669,8 @@ impl PoolNative for Native {
                 // The worker's pipe, in this thread's loop.
                 let pipe = c.lent_socket().map(Socket::lent);
                 pipe.and_then(crate::reactor_handle::registered)
-                    .map_or(-1, |pipe| event_write(pipe, c.bytes()))
+                    .and_then(|pipe| event_write(pipe, c.bytes()))
+                    .map_or(-1, usize::cast_signed)
             });
         } else {
             self.send(c);

@@ -142,9 +142,10 @@ pub unsafe extern "C-unwind" fn swoole_event_write(
 }
 
 /// [`swoole_event_write`] of `data` on a socket that is never freed while registered
-/// (a write that can't all go out registers it for writing).
+/// (a write that can't all go out registers it for writing): the bytes taken, `None`
+/// when it failed.
 #[must_use]
-pub fn event_write(socket: crate::Socket<'static>, data: &[u8]) -> isize {
+pub fn event_write(socket: crate::Socket<'static>, data: &[u8]) -> Option<usize> {
     let reactor = current();
     let Some(write) = field(|fields| fields.write).flatten() else {
         swoole_rs_corebase::fatal("the reactor has no write function")
@@ -152,14 +153,19 @@ pub fn event_write(socket: crate::Socket<'static>, data: &[u8]) -> isize {
     // SAFETY: `Reactor::write` of the thread's live reactor, which only its
     // constructor sets (`ReactorFields` is written through nothing public): a live
     // record that outlives its registration, and the slice's bytes, which it copies.
-    unsafe { write(reactor, socket.as_ptr(), data.as_ptr().cast(), data.len()) }
+    let written = unsafe { write(reactor, socket.as_ptr(), data.as_ptr().cast(), data.len()) };
+    usize::try_from(written).ok()
 }
 
 /// `ssize_t swoole_event_writev(Socket *socket, const iovec *iov, size_t iovcnt)` of
 /// `vectors` on a socket that is never freed while registered (what can't all go out
-/// is copied and the socket registered for writing).
+/// is copied and the socket registered for writing): the bytes taken, `None` when it
+/// failed.
 #[must_use]
-pub fn swoole_event_writev(socket: crate::Socket<'static>, vectors: &[IoSlice<'_>]) -> isize {
+pub fn swoole_event_writev(
+    socket: crate::Socket<'static>,
+    vectors: &[IoSlice<'_>],
+) -> Option<usize> {
     let reactor = current();
     let Some(writev) = field(|fields| fields.writev).flatten() else {
         swoole_rs_corebase::fatal("the reactor has no writev function")
@@ -167,14 +173,15 @@ pub fn swoole_event_writev(socket: crate::Socket<'static>, vectors: &[IoSlice<'_
     // SAFETY: `Reactor::writev` of the thread's live reactor, which only its
     // constructor sets: a live record that outlives its registration, and iovecs (an
     // `IoSlice` is one) over readable bytes, which it copies.
-    unsafe {
+    let written = unsafe {
         writev(
             reactor,
             socket.as_ptr(),
             vectors.as_ptr().cast(),
             vectors.len(),
         )
-    }
+    };
+    usize::try_from(written).ok()
 }
 
 /// `void swoole_event_set_handler(int fd_type, int event, ReactorHandler handler)`;
@@ -304,11 +311,12 @@ pub fn swoole_event_run() -> bool {
 
 /// A reactor handler over the fd of the event it is called with.
 pub trait FdHandler {
-    fn handle(fd: c_int) -> c_int;
+    /// Whether handling `fd`'s event succeeded.
+    fn handle(fd: c_int) -> bool;
 }
 
 extern "C" fn fd_handler<H: FdHandler>(_: crate::Running<'_>, event: &mut crate::Event) -> c_int {
-    H::handle(event.fd())
+    if H::handle(event.fd()) { 0 } else { -1 }
 }
 
 /// `swoole_event_set_handler(fd_type, event, H)`, when there is a reactor.
