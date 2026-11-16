@@ -92,12 +92,6 @@ pub fn coroutine_get(cid: c_long) -> *mut c_void {
     with_scheduler(|s| s.get(cid))
 }
 
-/// [`Scheduler::cid_of`] on this thread: the id of the live coroutine at `co`.
-#[must_use]
-pub fn live_cid(co: *const c_void) -> Option<c_long> {
-    with_scheduler(|s| s.cid_of(co))
-}
-
 /// [`Scheduler::state`] on this thread.
 #[must_use]
 pub fn coroutine_state(cid: c_long) -> Option<crate::State> {
