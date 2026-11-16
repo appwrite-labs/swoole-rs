@@ -35,8 +35,7 @@ pub trait Reap {
     fn reload_requested(&mut self) -> bool;
     /// One operation on the reload in progress, ending before callbacks run.
     fn with_reload<R>(&mut self, f: impl FnOnce(&mut ReloadTask) -> R) -> Option<R>;
-    /// `wait()`, or `waitpid(-1, WNOHANG)` when `nonblock`: the pid, the status and
-    /// the wait's `errno`.
+    /// `wait()`, or `waitpid(-1, WNOHANG)` when `nonblock`: the typed result and status.
     fn wait(&mut self, nonblock: bool) -> Waited;
     /// Dispatch signals, run timers and read worker messages.
     fn service(&mut self);
@@ -53,11 +52,10 @@ pub trait Reap {
 }
 
 /// What one wait returned.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct Waited {
-    pub pid: c_int,
+    pub pid: std::io::Result<Option<c_int>>,
     pub status: c_int,
-    pub error: c_int,
 }
 
 /// `wait()`, or `waitpid(-1, WNOHANG)` when `nonblock`.
@@ -67,8 +65,7 @@ pub fn wait_child(nonblock: bool) -> Waited {
     // `wait(&status)` is `waitpid(-1, &status, 0)`.
     let options = if nonblock { libc::WNOHANG } else { 0 };
     let pid = swoole_rs_corebase::sys::waitpid(-1, Some(&mut status), options);
-    let error = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-    Waited { pid, status, error }
+    Waited { pid, status }
 }
 
 /// Run a manager's reap loop until it stops running.
@@ -76,15 +73,16 @@ pub fn run(host: &mut impl Reap) {
     let warn = host.warn();
     while host.running() {
         let nonblock = host.reload_requested();
-        let Waited { pid, status, error } = host.wait(nonblock);
+        let Waited { pid, status } = host.wait(nonblock);
         host.service();
 
-        if pid < 0 {
+        if let Err(error) = &pid {
             if host.leave_when_stopped() && !host.running() {
                 break;
             }
             if host.with_reload(|_| ()).is_none() {
-                if error > 0 && error != libc::EINTR {
+                let code = error.raw_os_error().unwrap_or(0);
+                if code > 0 && code != libc::EINTR {
                     host.wait_failed();
                 }
                 continue;
@@ -99,9 +97,13 @@ pub fn run(host: &mut impl Reap) {
                 ReloadStart::None | ReloadStart::Signalled => {}
             }
             if !kill_next {
-                if pid < 0 || (host.skip_no_child() && pid == 0) {
+                let Ok(child) = pid else {
+                    continue;
+                };
+                if host.skip_no_child() && child.is_none() {
                     continue;
                 }
+                let pid = child.unwrap_or(0);
                 if !host.reap(pid, status) {
                     continue;
                 }
@@ -167,15 +169,18 @@ mod tests {
             let Some((pid, error)) = self.waits.pop_front() else {
                 self.running = false;
                 return Waited {
-                    pid: -1,
-                    ..Waited::default()
+                    pid: Err(std::io::Error::from_raw_os_error(0)),
+                    status: 0,
                 };
             };
             self.log.push(format!("wait nonblock={nonblock}"));
             Waited {
-                pid,
+                pid: if pid < 0 {
+                    Err(std::io::Error::from_raw_os_error(error))
+                } else {
+                    Ok((pid != 0).then_some(pid))
+                },
                 status: 9,
-                error,
             }
         }
         fn service(&mut self) {

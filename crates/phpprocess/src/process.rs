@@ -440,11 +440,10 @@ fn wait(call: &Call) {
     };
     let mut status = 0;
     let options = if blocking { 0 } else { libc::WNOHANG };
-    let pid = swoole_rs_corebase::sys::waitpid(-1, Some(&mut status), options);
-    if pid <= 0 {
+    let Ok(Some(pid)) = swoole_rs_corebase::sys::waitpid(-1, Some(&mut status), options) else {
         call.set_bool(false);
         return;
-    }
+    };
     call.set_array();
     call.add_assoc_long(c"pid", i64::from(pid));
     call.add_assoc_long(c"code", i64::from(libc::WEXITSTATUS(status)));

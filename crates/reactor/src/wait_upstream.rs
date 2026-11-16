@@ -143,7 +143,7 @@ pub extern "C" fn system_waitpid(
         crate::socket_sync::set_errno(libc::ETIMEDOUT);
         log::set_last_error(libc::ETIMEDOUT);
     }
-    waited.pid
+    waited.pid.map_or(-1, |pid| pid.unwrap_or(0))
 }
 
 /// `pid_t System::wait(int *, double timeout)`: any child.
@@ -176,17 +176,20 @@ pub extern "C" fn system_waitpid_safe(
     let outside = crate::event_api::swr_v1_event_current().is_null()
         || swoole_rs_coroutine::current().is_null();
     if outside || options & libc::WNOHANG != 0 {
-        return sys::waitpid(pid, status, options);
+        return sys::waitpid(pid, status, options).map_or(-1, |pid| pid.unwrap_or(0));
     }
     if let Some(uring) = crate::wait_loop::uring() {
         return iouring_waitpid(uring, pid, status, options, -1.0);
     }
     let mut second = LOCK_DEFAULT_SECOND;
     loop {
-        let result = sys::waitpid(pid, status.as_deref_mut(), libc::WNOHANG);
-        // In a coroutine, checked above.
-        if result != 0 || system_sleep(second) != OK {
-            return result;
+        match sys::waitpid(pid, status.as_deref_mut(), libc::WNOHANG) {
+            Ok(Some(child)) => return child,
+            Err(_) => return -1,
+            // In a coroutine, checked above. A failed sleep keeps its errno and
+            // returns the wait's no-child result, as upstream does.
+            Ok(None) if system_sleep(second) != OK => return 0,
+            Ok(None) => {}
         }
         second = crate::backoff(second, LOCK_DEFAULT_SECOND, LOCK_MAX_SECOND);
     }
@@ -226,9 +229,10 @@ pub extern "C" fn swoole_waitpid(
 ) -> libc::pid_t {
     let mut status = status;
     loop {
-        let result = sys::waitpid(pid, status.as_deref_mut(), options);
-        if result >= 0 || errno() != libc::EINTR {
-            return result;
+        match sys::waitpid(pid, status.as_deref_mut(), options) {
+            Ok(child) => return child.unwrap_or(0),
+            Err(error) if error.raw_os_error() == Some(libc::EINTR) => {}
+            Err(_) => return -1,
         }
         swoole_signal_dispatch();
         // The thread's timer, if any.
