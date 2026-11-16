@@ -54,7 +54,8 @@ its sub-issues. It may reprioritise or close any ticket.
 Interchangeable and disposable: a checkout, `gh` with `GH_TOKEN` and the
 toolchain are all you need. Executors run in cloud environments by default
 (`.devcontainer/`; see docs/development.md). For Linux-only phases elsewhere, use
-`python3 tools/dev.py docker -- <lane> …` rather than `docker` directly.
+`python3 tools/dev.py docker -- <lane> …` rather than `docker` directly (add
+`--iouring` before `--` to run io_uring tests against a real ring; docs/development.md).
 
 You own the ticket you claim, end to end, and you're trusted to use your
 judgment: choose the approach, size each PR, fix what you trip over on the way,

@@ -323,7 +323,29 @@ class Lanes(unittest.TestCase):
     def test_help_names_the_docker_wrapper(self):
         # AGENTS.md sends Linux-only phases through `dev.py docker`; argparse never sees it.
         result = subprocess.run([sys.executable, ROOT / 'tools/dev.py', '--help'], capture_output=True, text=True)
-        self.assertIn('dev.py docker [-- dev.py arguments | -- SCRIPT.py arguments]', ' '.join(result.stdout.split()))
+        self.assertIn('dev.py docker [--iouring] [-- dev.py arguments | -- SCRIPT.py arguments | -- cargo arguments]',
+                      ' '.join(result.stdout.split()))
+
+    def test_docker_iouring_only_adds_the_io_uring_seccomp_profile(self):
+        # Docker's default seccomp profile answers io_uring_setup with EPERM (#4167); --iouring
+        # swaps in that profile plus the three io_uring syscalls, and nothing else.
+        def argv(*arguments):
+            run = patch.object(dev.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout=''))
+            with run as mock, patch.object(dev.subprocess, 'check_output', return_value=f'{ROOT}/.git\n'), \
+                    patch.object(dev.Path, 'mkdir'):
+                self.assertEqual(dev.docker(list(arguments)), 0)
+            command = mock.call_args.args[0]
+            return command[:command.index('bash')]
+        cargo = ['cargo', 'test', '-p', 'swoole-rs-hooks']
+        plain, opted = argv('--', *cargo), argv('--iouring', '--', *cargo)
+        self.assertFalse([part for part in plain if 'seccomp' in part or 'privileged' in part or part.startswith('--cap')])
+        self.assertEqual([part for part in opted if part not in plain],
+                         ['--security-opt', f'seccomp={ROOT}/tools/docker-seccomp-iouring.json'])
+        profile = json.loads((ROOT / 'tools/docker-seccomp-iouring.json').read_text())
+        self.assertEqual(profile['defaultAction'], 'SCMP_ACT_ERRNO')
+        self.assertEqual(profile['syscalls'][-1], {'names': ['io_uring_enter', 'io_uring_register', 'io_uring_setup'],
+                                                   'action': 'SCMP_ACT_ALLOW'})
+        self.assertFalse([rule for rule in profile['syscalls'][:-1] if any('io_uring' in n for n in rule['names'])])
 
     def test_linux_consumer_hooks_load_curl_once_unless_compiled_in(self):
         for explicit, compiled_in, expected in [([], '', 1), (['curl'], '', 1), ([], 'Core\ncurl\n', 0)]:
