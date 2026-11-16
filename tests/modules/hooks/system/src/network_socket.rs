@@ -149,8 +149,6 @@ unsafe extern "C-unwind" {
     fn socket_cork(socket: *mut Record) -> bool;
     #[link_name = "_ZN6swoole7network6Socket6uncorkEv"]
     fn socket_uncork(socket: *mut Record) -> bool;
-    #[link_name = "_ZN6swoole7network6Socket10send_asyncEPKvm"]
-    fn socket_send_async(socket: *mut Record, data: *const c_void, n: usize) -> isize;
     #[link_name = "_ZN6swoole7network6Socket13sendfile_syncEPKclm"]
     fn socket_sendfile_sync(
         socket: *mut Record,
@@ -429,8 +427,9 @@ impl Socket {
     }
 
     fn send_async(&self, buf: &[u8]) -> isize {
-        // SAFETY: `buf` is readable for its length.
-        unsafe { socket_send_async(self.0, buf.as_ptr().cast(), buf.len()) }
+        // SAFETY: a live record, which the case frees only once its loop is done.
+        let socket = unsafe { swoole_rs_reactor::Socket::from_ptr(self.0.cast()) }.unwrap();
+        swoole_rs_tls::upstream::send_async(socket, buf).map_or(-1, usize::cast_signed)
     }
 
     fn read_sync(&self, buf: &mut [u8]) -> isize {
