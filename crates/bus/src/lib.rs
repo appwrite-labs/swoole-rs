@@ -212,8 +212,8 @@ use swoole_rs_tls::upstream::writev_sync;
 
 /// `Socket::writev_sync` outside the hybrid: one writev(2).
 #[cfg(not(feature = "upstream-symbols"))]
-fn writev_sync(socket: Socket<'_>, vectors: &[std::io::IoSlice<'_>]) -> isize {
-    swoole_rs_corebase::sys::writev(socket.fd(), vectors)
+fn writev_sync(socket: Socket<'_>, vectors: &[std::io::IoSlice<'_>]) -> Option<usize> {
+    usize::try_from(swoole_rs_corebase::sys::writev(socket.fd(), vectors)).ok()
 }
 
 /// `f` over the packets or pipe records `cell` boxes, taken out and put back; `None`,
@@ -926,7 +926,7 @@ impl Bus {
                 Some(registered) if event_api::swoole_event_is_available() => {
                     event_api::swoole_event_writev(registered, vectors)
                 }
-                _ => writev_sync(socket, vectors),
+                _ => writev_sync(socket, vectors).map_or(-1, usize::cast_signed),
             }
         };
         let reduce = || {
