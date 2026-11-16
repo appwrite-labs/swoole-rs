@@ -440,28 +440,28 @@ pub fn strerror(code: c_int) -> String {
     text
 }
 
-/// `read(2)` into `buf`.
-pub fn read(fd: c_int, buf: &mut [impl ReadSlot]) -> isize {
+/// `read(2)` into `buf`: the bytes read, or `None` with errno set.
+pub fn read(fd: c_int, buf: &mut [impl ReadSlot]) -> Option<usize> {
     // SAFETY: `buf` is writable for its length.
-    unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) }
+    usize::try_from(unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) }).ok()
 }
 
-/// `write(2)` of `buf`.
-pub fn write(fd: c_int, buf: &[u8]) -> isize {
+/// `write(2)` of `buf`: the bytes written, or `None` with errno set.
+pub fn write(fd: c_int, buf: &[u8]) -> Option<usize> {
     // SAFETY: `buf` is readable for its length.
-    unsafe { libc::write(fd, buf.as_ptr().cast(), buf.len()) }
+    usize::try_from(unsafe { libc::write(fd, buf.as_ptr().cast(), buf.len()) }).ok()
 }
 
 /// `pread(2)` into `buf` at `offset`.
-pub fn pread(fd: c_int, buf: &mut [impl ReadSlot], offset: off_t) -> isize {
+pub fn pread(fd: c_int, buf: &mut [impl ReadSlot], offset: off_t) -> Option<usize> {
     // SAFETY: `buf` is writable for its length.
-    unsafe { libc::pread(fd, buf.as_mut_ptr().cast(), buf.len(), offset) }
+    usize::try_from(unsafe { libc::pread(fd, buf.as_mut_ptr().cast(), buf.len(), offset) }).ok()
 }
 
 /// `pwrite(2)` of `buf` at `offset`.
-pub fn pwrite(fd: c_int, buf: &[u8], offset: off_t) -> isize {
+pub fn pwrite(fd: c_int, buf: &[u8], offset: off_t) -> Option<usize> {
     // SAFETY: `buf` is readable for its length.
-    unsafe { libc::pwrite(fd, buf.as_ptr().cast(), buf.len(), offset) }
+    usize::try_from(unsafe { libc::pwrite(fd, buf.as_ptr().cast(), buf.len(), offset) }).ok()
 }
 
 /// `close(2)`.
@@ -475,10 +475,10 @@ pub fn close(fd: c_int) -> std::io::Result<()> {
 /// `writev(2)` of `vectors`.
 #[must_use]
 #[inline]
-pub fn writev(fd: c_int, vectors: &[std::io::IoSlice<'_>]) -> isize {
+pub fn writev(fd: c_int, vectors: &[std::io::IoSlice<'_>]) -> Option<usize> {
     let count = c_int::try_from(vectors.len()).unwrap_or(c_int::MAX);
     // SAFETY: an `IoSlice` is ABI-compatible with an iovec, of readable bytes.
-    unsafe { libc::writev(fd, vectors.as_ptr().cast(), count) }
+    usize::try_from(unsafe { libc::writev(fd, vectors.as_ptr().cast(), count) }).ok()
 }
 
 /// `listen(2)`.
@@ -560,15 +560,15 @@ pub fn socketpair(domain: c_int, kind: c_int, protocol: c_int) -> Option<[c_int;
 }
 
 /// `recv(2)` into `buf`.
-pub fn recv(fd: c_int, buf: &mut [impl ReadSlot], flags: c_int) -> isize {
+pub fn recv(fd: c_int, buf: &mut [impl ReadSlot], flags: c_int) -> Option<usize> {
     // SAFETY: `buf` is writable for its length.
-    unsafe { libc::recv(fd, buf.as_mut_ptr().cast(), buf.len(), flags) }
+    usize::try_from(unsafe { libc::recv(fd, buf.as_mut_ptr().cast(), buf.len(), flags) }).ok()
 }
 
 /// `send(2)` of `buf`.
-pub fn send(fd: c_int, buf: &[u8], flags: c_int) -> isize {
+pub fn send(fd: c_int, buf: &[u8], flags: c_int) -> Option<usize> {
     // SAFETY: `buf` is readable for its length.
-    unsafe { libc::send(fd, buf.as_ptr().cast(), buf.len(), flags) }
+    usize::try_from(unsafe { libc::send(fd, buf.as_ptr().cast(), buf.len(), flags) }).ok()
 }
 
 /// `dup(2)`.
@@ -1218,15 +1218,15 @@ mod tests {
         // SAFETY: `fds` holds two descriptors.
         assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
         let [reader, writer] = fds;
-        assert_eq!(write(writer, b"abc"), 3);
+        assert_eq!(write(writer, b"abc"), Some(3));
         let copy = dup(reader);
         assert!(copy >= 0);
         assert_eq!(fcntl(copy, libc::F_SETFL, libc::O_NONBLOCK), 0);
         assert_ne!(fcntl(copy, libc::F_GETFL, 0) & libc::O_NONBLOCK, 0);
         let mut buf = [0; 8];
-        assert_eq!(read(copy, &mut buf), 3);
+        assert_eq!(read(copy, &mut buf), Some(3));
         assert_eq!(&buf[..3], b"abc");
-        assert_eq!(read(copy, &mut buf), -1);
+        assert_eq!(read(copy, &mut buf), None);
         assert_eq!(errno(), libc::EAGAIN);
         set_errno(0);
         assert_eq!(errno(), 0);
@@ -1295,10 +1295,10 @@ mod tests {
             (length, kind),
             (Some(socklen::<c_int>()), libc::SOCK_STREAM)
         );
-        assert_eq!(send(left, b"abc", 0), 3);
+        assert_eq!(send(left, b"abc", 0), Some(3));
         let mut buf = [0_u8; 8];
-        assert_eq!(recv(right, &mut buf, libc::MSG_PEEK), 3);
-        assert_eq!(recv(right, &mut buf, 0), 3);
+        assert_eq!(recv(right, &mut buf, libc::MSG_PEEK), Some(3));
+        assert_eq!(recv(right, &mut buf, 0), Some(3));
         assert_eq!(&buf[..3], b"abc");
         assert!(close(left).is_ok());
         assert!(close(right).is_ok());

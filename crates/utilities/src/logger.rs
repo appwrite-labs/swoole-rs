@@ -119,12 +119,9 @@ fn real_file(rotation: c_int, file: &CStr) -> CString {
 /// writes continue, and an error drops the rest.
 fn write_all(fd: c_int, mut bytes: &[u8]) {
     while !bytes.is_empty() {
-        let Ok(written) = usize::try_from(sys::write(fd, bytes)) else {
+        let Some(written @ 1..) = sys::write(fd, bytes) else {
             return;
         };
-        if written == 0 {
-            return;
-        }
         bytes = bytes.get(written..).unwrap_or_default();
     }
 }
