@@ -1,26 +1,26 @@
 # Unsafe code by crate
 
-`unsafe` blocks, fns and impls in non-test code of each crate under `crates/`, counted by `tools/budget.py` on `1e0cda2`. ✅ marks a crate whose `lib.rs` has `#![forbid(unsafe_code)]`. The PR tier fails a pull request that raises a crate's count or drops its `forbid`.
+`unsafe` blocks, fns and impls in non-test code of each crate under `crates/`, counted by `tools/budget.py` on `d20269a`. ✅ marks a crate whose `lib.rs` has `#![forbid(unsafe_code)]`. The PR tier fails a pull request that raises a crate's count or drops its `forbid`.
 
 | crate | unsafe | forbids |
 | --- | ---: | :---: |
 | `zend` | 103 |  |
-| `server` | 72 |  |
+| `server` | 71 |  |
 | `hooks` | 65 |  |
 | `corebase` | 51 |  |
 | `coroutine` | 44 |  |
 | `process` | 33 |  |
 | `reactor` | 26 |  |
-| `phphttp` | 25 |  |
 | `ports` | 25 |  |
 | `phpcoroutines` | 24 |  |
+| `phphttp` | 24 |  |
 | `memory` | 23 |  |
 | `curl` | 18 |  |
 | `clients` | 16 |  |
 | `phpruntime` | 16 |  |
-| `phpstdext` | 16 |  |
 | `phpswoole` | 16 |  |
 | `phpclients` | 15 |  |
+| `phpstdext` | 15 |  |
 | `tls` | 14 |  |
 | `buffer` | 12 |  |
 | `timer` | 10 |  |
@@ -31,14 +31,12 @@
 | `phpserver` | 6 |  |
 | `utilities` | 6 |  |
 | `ossupport` | 4 |  |
-| `phpthread` | 4 |  |
 | `zlib` | 4 |  |
 | `brotli` | 3 |  |
 | `firebird` | 3 |  |
 | `pgsql` | 3 |  |
 | `cares-sys` | 2 |  |
 | `locale` | 2 |  |
-| `protocols-ffi` | 2 |  |
 | `sqlite` | 2 |  |
 | `ssh2` | 2 |  |
 | `ssh2-sys` | 2 |  |
@@ -47,6 +45,7 @@
 | `locks` | 1 |  |
 | `oci` | 1 |  |
 | `odbc` | 1 |  |
+| `phpthread` | 1 |  |
 | `base64` | 0 | ✅ |
 | `crc32` | 0 | ✅ |
 | `deflate` | 0 | ✅ |
@@ -68,8 +67,9 @@
 | `phpstubs` | 0 | ✅ |
 | `phptimer` | 0 | ✅ |
 | `protocols` | 0 | ✅ |
+| `protocols-ffi` | 0 |  |
 | `websocket` | 0 | ✅ |
 | `websocket-ffi` | 0 |  |
 | `zend-sys` | 0 |  |
 
-Total 706. Goal: the hardened runtime ([#1893](https://github.com/appwrite-labs/swoole-rs/issues/1893), [#1902](https://github.com/appwrite-labs/swoole-rs/issues/1902)).
+Total 698. Goal: the hardened runtime ([#1893](https://github.com/appwrite-labs/swoole-rs/issues/1893), [#1902](https://github.com/appwrite-labs/swoole-rs/issues/1902)).
