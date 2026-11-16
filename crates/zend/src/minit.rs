@@ -356,9 +356,7 @@ impl Minit {
     /// # Panics
     /// `class` is not registered.
     pub fn alias(&self, class: &Class, name: &CStr) -> Result<(), Bailout> {
-        // SAFETY: MINIT (the token).
-        unsafe { crate::registration::class_alias(name.to_bytes(), registered(class), false) }
-            .map(|_| ())
+        crate::registration::class_alias(name.to_bytes(), registered(class), false).map(|_| ())
     }
 
     /// Register `T`'s class as `name` with `methods` and `flags` added to its

@@ -26,11 +26,11 @@ pub(crate) fn leaf(code: c_int) -> Result<(), Bailout> {
 /// whether Zend registered it.
 /// `sdk_prefix` retains the native SDK's handling of a leading backslash,
 /// including its original string length; ordinary Rust aliases pass false.
+/// Private, as [`swr_lent_class_alias`]: only [`crate::Minit::alias`] and the
+/// SDK's MINIT export call it, at MINIT, on its thread.
 /// # Errors
 /// Returns a contained PHP interning or registration bailout.
-/// # Safety
-/// MINIT, on its thread.
-pub unsafe fn class_alias(
+pub(crate) fn class_alias(
     name: &[u8],
     entry: ClassEntry<'static>,
     sdk_prefix: bool,

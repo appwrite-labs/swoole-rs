@@ -18,10 +18,8 @@ pub(crate) unsafe extern "C" fn swr_v1_phphelpers_class_alias(
     let Some(entry) = crate::ClassEntry::live(entry) else {
         return -1;
     };
-    // SAFETY: MINIT, which the SDK's class registration runs in, and its
-    // registered CE.
-    let result = unsafe { crate::registration::class_alias(name, entry, true) };
-    match result {
+    // MINIT, which the SDK's class registration runs in (the caller's contract).
+    match crate::registration::class_alias(name, entry, true) {
         // Zend's `SUCCESS` or `FAILURE`.
         Ok(true) => 0,
         Ok(false) => -1,

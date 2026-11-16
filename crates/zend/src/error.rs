@@ -3,12 +3,9 @@ use crate::{
     Call, Class, ClassEntry,
     bailout::{self, Bailout},
     helpers::CText,
-    sys::{zend_class_entry, zend_long, zend_throw_error},
+    sys::{zend_class_entry, zend_long},
 };
-use std::{
-    ffi::{CStr, CString, c_int},
-    ptr,
-};
+use std::ffi::{CStr, CString, c_int};
 
 unsafe extern "C" {
     /// Zend's `TypeError` and `ValueError`: registered at startup, before any
@@ -33,14 +30,17 @@ unsafe extern "C" {
     safe fn swr_zend_try_error(level: c_int, message: CText<'_>) -> c_int;
     /// `zend_error(level, "%s", message)`, as [`swr_zend_try_error`].
     safe fn swr_zend_try_zend_error(level: c_int, message: CText<'_>) -> c_int;
+    /// `zend_throw_error(class, format, ...)`: called only by [`throw_error`],
+    /// with no class (`Error`), `"%s"` and the message, which Zend copies.
+    /// With no frame executing it raises a fatal error.
+    safe fn zend_throw_error(class: Option<ClassEntry<'_>>, format: CText<'_>, ...);
 }
 
 /// `zend_throw_error(NULL, "%s", message)`: an `Error`. Like [`Class::throw`], from a
 /// handler or a callback Zend runs under one: with a frame executing, Zend only sets
 /// the exception.
 pub fn throw_error(message: &CStr) {
-    // SAFETY: "%s" takes the NUL-terminated message, which Zend copies.
-    unsafe { zend_throw_error(ptr::null_mut(), c"%s".as_ptr(), message.as_ptr()) };
+    zend_throw_error(None, c"%s".into(), CText::from(message));
 }
 
 /// `zend_type_error("%s", message)`: a `TypeError`, as [`throw_error`].
