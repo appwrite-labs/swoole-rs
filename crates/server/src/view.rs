@@ -500,6 +500,19 @@ impl<'a> Server<'a> {
         self.workers().get(id)
     }
 
+    /// The server's worker at `raw`: one of its event, task or user workers, or a
+    /// user worker `add_worker` added; `None` for any other address.
+    pub(crate) fn own_worker(self, raw: *const WorkerRecord) -> Option<Worker<'a>> {
+        let workers = self.workers();
+        let count = u64::from(workers.event_count())
+            + u64::from(workers.task_count())
+            + workers.user_count() as u64;
+        let ids = (0..u16::try_from(count).unwrap_or(u16::MAX)).filter_map(|id| workers.get(id));
+        let pending = (0..).map_while(|index| self.pending_worker(index));
+        ids.chain(pending)
+            .find(|worker| core::ptr::eq(worker.raw(), raw))
+    }
+
     /// The `index`th user worker `worker_methods::add_worker` added, or `None` past the
     /// last.
     pub(crate) fn pending_worker(self, index: usize) -> Option<Worker<'a>> {

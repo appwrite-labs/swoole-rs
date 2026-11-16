@@ -493,8 +493,7 @@ pub fn restart_worker_process(serv: view::Server<'_>, status: &ExitStatus) {
     const ORIGIN: &core::ffi::CStr = c"Server::restart_worker_process";
     let pid = status.pid();
     let worker = worker_methods::get_worker_by_pid(serv, pid);
-    // SAFETY: null or one of the server's live workers, kept for its life.
-    let Some(worker) = (unsafe { Worker::from_raw(worker) }) else {
+    let Some(worker) = serv.own_worker(worker) else {
         // A child that is not a worker: a detached worker finishing, or unknown.
         if !serv.registry().reap_detached(pid) {
             let m = format_args!("Unknown type child process [{pid}] exited");
