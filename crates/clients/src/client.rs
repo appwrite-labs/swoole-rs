@@ -35,16 +35,12 @@ use swoole_rs_reactor::{
 };
 use swoole_rs_reactor::{Event, Events, Running};
 #[cfg(not(test))]
-use swoole_rs_tls::upstream::{
-    self as net, sendfile_sync, socket_free, socket_sendfile_async, socket_ssl_close,
-};
+use swoole_rs_tls::upstream as net;
 use swoole_rs_tls::{
     OwnedTlsContext, OwnedTlsFields, SslCreateFlag, SslState, SslVersion, TlsContext, TlsSettings,
 };
 #[cfg(test)]
-use tests::{
-    async_dispatch, net, sendfile_sync, socket_free, socket_sendfile_async, socket_ssl_close,
-};
+use tests::{async_dispatch, net};
 
 /// The flags [`Client::flag`] reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -910,8 +906,7 @@ impl Handle {
             // A cleared object tells a close in progress that the client is gone.
             self.socket()
                 .edit(|socket| socket.object = core::ptr::null_mut());
-            // SAFETY: the live client's socket, released once.
-            unsafe { socket_free(self.record().socket) };
+            (self.get().socket_ops.free_socket)(self);
         } else {
             // SAFETY: `delete socket`: the record make_socket allocated, released once.
             unsafe { SocketRecord::free(self.record().socket) };
@@ -988,9 +983,7 @@ pub fn close(this: Handle) -> bool {
         && this.get().tls.get().is_some()
         && !saved.read(|socket| socket.ssl().is_null())
     {
-        // SAFETY: handles to a session live only for the operation that took them,
-        // and none is running on the closing client.
-        unsafe { socket_ssl_close(saved) };
+        (this.get().socket_ops.close_tls)(saved);
     }
     if this.socket_type() == SOCK_UNIX_DGRAM {
         let path = saved.read(|socket| socket.info.addr.unix().sun_path);
@@ -1531,6 +1524,11 @@ type BufferLoan = fn(&mut dyn FnMut(&mut CppString));
 struct SocketOps {
     /// Lends the scratch buffer to the callback exactly once, synchronously.
     with_buffer: BufferLoan,
+    send_sync: fn(Socket<'_>, &[u8], c_int) -> Option<usize>,
+    sendfile_sync: fn(Socket<'_>, &CStr, i64, usize) -> bool,
+    sendfile_async: fn(Socket<'_>, &CStr, i64, usize) -> bool,
+    free_socket: fn(Handle),
+    close_tls: fn(Socket<'_>),
     write: fn(Socket<'static>, &[u8]) -> Option<usize>,
     writable: extern "C-unwind" fn(Running<'_>, &mut Event) -> c_int,
     make_socket: fn(c_int, c_int, c_int) -> Option<Socket<'static>>,
@@ -1553,6 +1551,18 @@ struct SocketOps {
 impl SocketOps {
     const NATIVE: Self = Self {
         with_buffer: |f| swoole_rs_buffer::string::with_thread_buffer(f),
+        send_sync: swoole_rs_tls::upstream::send_sync,
+        sendfile_sync: swoole_rs_tls::upstream::sendfile_sync,
+        sendfile_async: swoole_rs_tls::upstream::socket_sendfile_async,
+        free_socket: |this| {
+            // SAFETY: only Handle::free calls this, once, for its still-owned socket.
+            unsafe { swoole_rs_tls::upstream::socket_free(this.record().socket) };
+        },
+        close_tls: |socket| {
+            // SAFETY: only close calls this; session handles live only for their
+            // operation, and none is running on the closing client.
+            unsafe { swoole_rs_tls::upstream::socket_ssl_close(socket) };
+        },
         write: swoole_rs_reactor::event_api::event_write,
         writable: swoole_rs_tls::reactor_write::reactor_writable_callback,
         make_socket: ops::make_socket,
@@ -1696,7 +1706,7 @@ pub fn sendto(this: Handle, host: &CStr, port: c_int, data: &[u8]) -> bool {
 #[must_use]
 pub fn send(this: Handle, data: &[u8], flags: c_int) -> Option<usize> {
     if this.flag(Flag::Dtls) || this.flag(Flag::Stream) && !this.flag(Flag::Async) {
-        net::send_sync(this.socket(), data, flags)
+        (this.get().socket_ops.send_sync)(this.socket(), data, flags)
     } else if this.flag(Flag::Stream) {
         send_async(this, data)
     } else {
@@ -1735,9 +1745,9 @@ pub fn sendfile(this: Handle, file: &CStr, offset: i64, length: usize) -> bool {
     let is_async = this.flag(Flag::Async);
     let socket = this.socket();
     let sent = if is_async {
-        socket_sendfile_async(socket, file, offset, length)
+        (this.get().socket_ops.sendfile_async)(socket, file, offset, length)
     } else {
-        sendfile_sync(socket, file, offset, length)
+        (this.get().socket_ops.sendfile_sync)(socket, file, offset, length)
     };
     if !sent {
         log::set_last_error(errno());

@@ -52,10 +52,6 @@ impl Server {
     }
 }
 
-unsafe extern "C" fn return_ok(_: *mut c_void, _: *mut c_void, _: *mut c_void) -> c_int {
-    SW_OK
-}
-
 /// `TEST(server, max_connection)`.
 fn max_connection() {
     let serv = Server::new(MODE_BASE);
@@ -197,7 +193,7 @@ fn startup_error() {
     assert!(startup_error.contains("require 'onTask' callback"));
     assert_eq!(last_error(), SW_ERROR_SERVER_INVALID_CALLBACK);
 
-    server.set_callback(Slot::Task, return_ok as *const c_void);
+    server.set_callback(Callback::Task(task_ok));
 
     assert_eq!(server.start(), -1);
     assert!(
@@ -219,7 +215,7 @@ fn startup_error() {
     // SAFETY: restores it.
     unsafe { swoole_set_log_level(ori_log_level) };
 
-    server.set_callback(Slot::Receive, return_ok as *const c_void);
+    server.set_callback(Callback::Receive(receive_ok));
 
     assert_eq!(server.start(), -1);
     assert!(

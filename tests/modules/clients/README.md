@@ -22,17 +22,20 @@ unit-test binary: descriptor flags, successful and failed address assignment,
 both kernel timeouts, raw/synchronous/nonblocking TCP connects, `SO_ERROR`, and
 an event with no socket. A real OpenSSL session on a loopback connection also
 checks that a pending handshake requests input and reuses its original session
-and frozen hostname after the mutable context changes. Its test owner releases
-the native session before freeing the client. The existing recording cases receive their table at
-construction and retain their original inputs and expected traces. The socket
+and frozen hostname after the mutable context changes. It releases the native
+session through production client close before its owner frees the client. The
+recording cases receive their table at construction and retain their original
+inputs and expected traces. The socket
 record operations, safe TLS operations, reactor enqueue/drain callbacks and the
 one-shot connect-timer closure compile in both builds. Recording clients receive
 explicit callbacks for the unchanged send and watermark traces, and explicitly
 supply timer creation/cancellation effects, retaining their cancellation-before-free
 and timeout traces. Original async client cases exercise the real callbacks and
 timeout delivery; the native-table test verifies real timer creation and idempotent
-cancellation with a manually driven thread timer. Remaining I/O, TLS close/free and
-host stand-ins are tracked by #4093.
+cancellation with a manually driven thread timer. Synchronous sends, sync/async
+sendfile and socket/TLS release also use the supplied table; recording cases retain their original send and cleanup traces. The native
+TLS test closes a pending session through the production client and checks that a
+second close does nothing. Remaining receive and host stand-ins are tracked by #4093.
 
 Proxy handshakes receive the scratch-buffer loan through the same table. The
 native entry uses the real thread buffer; recording tests keep their 64-byte

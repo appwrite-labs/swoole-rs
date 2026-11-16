@@ -16,7 +16,7 @@ struct Mock {
     /// The record `make_socket` allocated; the client releases it.
     socket: Option<core::ptr::NonNull<SocketRecord>>,
     fail_socket: bool,
-    /// The records `socket_free` released, which tests still read: freed with the test.
+    /// The records `free_socket` released, which tests still read: freed with the test.
     freed: Freed,
 }
 
@@ -134,9 +134,9 @@ pub(super) fn with_thread_buffer(f: &mut dyn FnMut(&mut CppString)) {
 }
 
 // crates/tls's socket operations.
-pub(super) unsafe fn socket_free(socket: Option<Socket<'static>>) {
+fn free_socket(this: Handle) {
     log("free");
-    mock(|m| m.freed.0.extend(socket));
+    mock(|m| m.freed.0.extend(this.record().socket));
 }
 /// crates/tls's slice-taking transfers.
 pub(super) mod net {
@@ -274,7 +274,7 @@ pub(super) fn socket_ssl_check_host(_: Socket<'_>, _: &CStr) -> bool {
     log("ssl host");
     true
 }
-pub(super) unsafe fn socket_ssl_close(_: Socket<'_>) {
+fn socket_ssl_close(_: Socket<'_>) {
     log("ssl close");
 }
 /// `SSL_set_tlsext_host_name`: logged as the `SSL_ctrl` command it is.
@@ -312,6 +312,11 @@ fn set_proxy(client: *mut Client, http: bool) {
 fn new_client(kind: c_int, is_async: bool) -> *mut Client {
     const OPS: SocketOps = SocketOps {
         with_buffer: with_thread_buffer,
+        send_sync: net::send_sync,
+        sendfile_sync,
+        sendfile_async: socket_sendfile_async,
+        free_socket,
+        close_tls: socket_ssl_close,
         write: event_write,
         writable: writable_callback,
         make_socket: ops::make_socket,

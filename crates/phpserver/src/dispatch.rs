@@ -21,7 +21,7 @@ use swoole_rs_process::methods::ExitStatus;
 use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::Worker;
 use swoole_rs_server::Connection;
-use swoole_rs_server::callbacks::{Callback, CallbackKind, Ctx};
+use swoole_rs_server::callbacks::{Callback, CallbackKind};
 use swoole_rs_zend::host::callable;
 use swoole_rs_zend::{
     E_WARNING, Owned, OwnedArray, UNDEF, Value, ZString,
@@ -530,7 +530,7 @@ fn worker_id(worker: Worker<'_>) -> i64 {
 
 macro_rules! lifecycle_slots {
     ($($name:ident => $kind:expr;)*) => {$(
-        extern "C" fn $name(_: Ctx, server: view::Server<'_>) {
+        fn $name(server: view::Server<'_>) {
             relay(on_lifecycle(server, $kind, 0));
         }
     )*};
@@ -546,7 +546,7 @@ lifecycle_slots! {
     on_after_reload => ServerCallback::AfterReload;
 }
 
-extern "C" fn on_worker_start(_: Ctx, server: view::Server<'_>, worker: Worker<'_>) {
+fn on_worker_start(server: view::Server<'_>, worker: Worker<'_>) {
     relay(on_lifecycle(
         server,
         ServerCallback::WorkerStart,
@@ -554,7 +554,7 @@ extern "C" fn on_worker_start(_: Ctx, server: view::Server<'_>, worker: Worker<'
     ));
 }
 
-extern "C" fn on_worker_stop(_: Ctx, server: view::Server<'_>, worker: Worker<'_>) {
+fn on_worker_stop(server: view::Server<'_>, worker: Worker<'_>) {
     if swoole_rs_process::methods::worker_is_running() {
         relay(on_lifecycle(
             server,
@@ -564,7 +564,7 @@ extern "C" fn on_worker_stop(_: Ctx, server: view::Server<'_>, worker: Worker<'_
     }
 }
 
-extern "C" fn on_worker_exit(_: Ctx, server: view::Server<'_>, worker: Worker<'_>) {
+fn on_worker_exit(server: view::Server<'_>, worker: Worker<'_>) {
     relay(on_lifecycle(
         server,
         ServerCallback::WorkerExit,
@@ -572,12 +572,7 @@ extern "C" fn on_worker_exit(_: Ctx, server: view::Server<'_>, worker: Worker<'_
     ));
 }
 
-extern "C" fn on_worker_error_slot(
-    _: Ctx,
-    server: view::Server<'_>,
-    worker: Worker<'_>,
-    exit: &ExitStatus,
-) {
+fn on_worker_error_slot(server: view::Server<'_>, worker: Worker<'_>, exit: &ExitStatus) {
     let (pid, status) = (exit.pid(), exit.status());
     let (code, signal) = (libc::WEXITSTATUS(status), libc::WTERMSIG(status));
     let id = worker_id(worker);
@@ -608,15 +603,15 @@ fn task_result(outcome: Result<bool, Bailout>) -> c_int {
     code(ok)
 }
 
-extern "C" fn on_task(_: Ctx, server: view::Server<'_>, task: Packed<'_>) -> c_int {
+fn on_task(server: view::Server<'_>, task: Packed<'_>) -> c_int {
     task_result(crate::task::on_task(server, task))
 }
 
-extern "C" fn on_finish(_: Ctx, server: view::Server<'_>, task: Packed<'_>) -> c_int {
+fn on_finish(server: view::Server<'_>, task: Packed<'_>) -> c_int {
     task_result(crate::task::on_finish(server, task))
 }
 
-extern "C" fn on_pipe_message_slot(_: Ctx, server: view::Server<'_>, message: Packed<'_>) {
+fn on_pipe_message_slot(server: view::Server<'_>, message: Packed<'_>) {
     let bailed = match crate::task::decode(message) {
         Ok(Some((data, true))) => {
             let info = message.head();
@@ -647,7 +642,7 @@ pub fn php_swoole_server_on_receive(server: view::Server<'_>, request: &RecvData
     });
 }
 
-extern "C" fn on_receive(_: Ctx, server: view::Server<'_>, request: &RecvData) -> c_int {
+fn on_receive(server: view::Server<'_>, request: &RecvData) -> c_int {
     php_swoole_server_on_receive(server, request);
     SW_OK
 }
@@ -674,13 +669,13 @@ pub(crate) fn http() -> Option<&'static HttpHooks> {
     HTTP.get().copied()
 }
 
-extern "C" fn on_http_receive(_: Ctx, server: view::Server<'_>, request: &RecvData) -> c_int {
+fn on_http_receive(server: view::Server<'_>, request: &RecvData) -> c_int {
     code(http().is_none_or(|http| (http.on_receive)(server, request)))
 }
 
 /// `php_swoole_redis_server_onReceive`: Redis ports parse the request in
 /// crates/phpredis, others take the plain `onReceive`.
-extern "C" fn on_redis_receive(_: Ctx, server: view::Server<'_>, request: &RecvData) -> c_int {
+fn on_redis_receive(server: view::Server<'_>, request: &RecvData) -> c_int {
     let fd = request.info().fd;
     let Some(conn) = server.by_session(fd) else {
         log::warning(
@@ -708,7 +703,7 @@ extern "C" fn on_redis_receive(_: Ctx, server: view::Server<'_>, request: &RecvD
     code(result.unwrap_or(false))
 }
 
-extern "C" fn on_packet_slot(_: Ctx, server: view::Server<'_>, request: &RecvData) -> c_int {
+fn on_packet_slot(server: view::Server<'_>, request: &RecvData) -> c_int {
     let Some((socket_type, socket_addr, data)) = request.datagram() else {
         return SW_ERR;
     };
@@ -742,7 +737,7 @@ extern "C" fn on_packet_slot(_: Ctx, server: view::Server<'_>, request: &RecvDat
     SW_OK
 }
 
-extern "C" fn on_connect(_: Ctx, server: view::Server<'_>, info: &DataHead) {
+fn on_connect(server: view::Server<'_>, info: &DataHead) {
     if let Some(cb) = port_callback(server, info.server_fd, PortCallback::Connect) {
         let reactor_id = i64::from(info.reactor_id);
         relay(on_connection(
@@ -817,17 +812,17 @@ fn close(server: view::Server<'_>, info: &DataHead) {
     }
 }
 
-extern "C" fn on_close(_: Ctx, server: view::Server<'_>, info: &DataHead) {
+fn on_close(server: view::Server<'_>, info: &DataHead) {
     close(server, info);
 }
 
-extern "C" fn on_http_close(_: Ctx, server: view::Server<'_>, info: &DataHead) {
+fn on_http_close(server: view::Server<'_>, info: &DataHead) {
     if let Some(http) = http() {
         (http.on_close)(server, info);
     }
 }
 
-extern "C" fn on_buffer_full(_: Ctx, server: view::Server<'_>, info: &DataHead) {
+fn on_buffer_full(server: view::Server<'_>, info: &DataHead) {
     relay(on_buffer(
         server,
         true,
@@ -836,7 +831,7 @@ extern "C" fn on_buffer_full(_: Ctx, server: view::Server<'_>, info: &DataHead) 
     ));
 }
 
-extern "C" fn on_buffer_empty(_: Ctx, server: view::Server<'_>, info: &DataHead) {
+fn on_buffer_empty(server: view::Server<'_>, info: &DataHead) {
     if server.config().send_yield.get() {
         send_wake(info.fd, false);
     }
@@ -851,7 +846,7 @@ extern "C" fn on_buffer_empty(_: Ctx, server: view::Server<'_>, info: &DataHead)
 /// `php_swoole_server_onUserWorkerStart`: run the user process's callable in
 /// the worker `addProcess` added. The worker is a [`Worker`] handle: starting the
 /// process writes its pid and pipe, so no reference to the record may live here.
-extern "C" fn on_user_worker_start(_: Ctx, server: view::Server<'_>, worker: Worker<'_>) {
+fn on_user_worker_start(server: view::Server<'_>, worker: Worker<'_>) {
     let id = i64::from(worker.id());
     let config = server.config();
     let index = id - i64::from(config.worker_num.get()) - i64::from(config.task_worker_num.get());
@@ -988,8 +983,7 @@ fn call_unlimited(
 
 /// `php_swoole_server_dispatch_func`: `dispatch_func($server, $fd, $type[, $data])`'s
 /// worker id, or -1.
-extern "C" fn on_dispatch(
-    _: Ctx,
+fn on_dispatch(
     server: view::Server<'_>,
     conn: Option<Connection<'_>>,
     send: Option<&RecvData>,
