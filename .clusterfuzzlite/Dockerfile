@@ -1,4 +1,4 @@
-FROM gcr.io/oss-fuzz-base/base-builder-rust:v1
+FROM gcr.io/oss-fuzz-base/base-builder-rust:v1@sha256:3428d0a90b1e7efbe2ba947bd1d0c9a70594986b4b6553804547f1fb24cfc92f
 # OpenSSL reaches the fuzz build through swoole-rs-tls, libzstd and libbrotli through
 # crates/inflate. Without the -dev packages' unversioned .so links, -lssl, -lcrypto,
 # -lzstd and -lbrotli* pick their .a, so the fuzzers run without them in the runner image.
