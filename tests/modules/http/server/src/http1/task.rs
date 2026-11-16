@@ -391,7 +391,7 @@ impl TaskServer for Server {
         // SAFETY: one of the server's workers, and the event's bytes.
         let (worker, bytes) = unsafe {
             (
-                Worker::new(self.get_worker(id)),
+                Worker::from(&*(self.get_worker(id))),
                 std::slice::from_raw_parts(ptr::from_ref(ev).cast::<u8>(), ev.size()),
             )
         };
@@ -475,7 +475,7 @@ fn task_worker() {
         unsafe {
             (*pool).running.set(true);
             PoolRef::new(pool)
-                .call_main_loop(Worker::new((*pool).workers()))
+                .call_main_loop(Worker::from(&*((*pool).workers())))
                 .unwrap();
         }
         check(serv.get_tasking_num() == 0, "serv.get_tasking_num() == 0");

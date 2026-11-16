@@ -259,8 +259,8 @@ mod tests {
         };
         // Event pool workers remain null before publication: PID lookup has
         // always scanned the Server array directly, including direct PID writes.
-        unsafe { Worker::new(workers).set_pid(-7) };
-        unsafe { Worker::new(workers.add(1)).set_pid(-7) };
+        unsafe { Worker::from(&*workers).set_pid(-7) };
+        unsafe { Worker::from(&*(workers.add(1))).set_pid(-7) };
         unsafe {
             (*tasks).register(-7, (&raw mut task).cast(), 1);
             (*registry).register(-7, (&raw mut user).cast(), CATEGORY_USER);
@@ -268,12 +268,12 @@ mod tests {
                 swr_v1_process_server_worker_by_pid(&view, Some(&*registry), -7),
                 workers
             );
-            Worker::new(workers).set_pid(5);
+            Worker::from(&*workers).set_pid(5);
             assert_eq!(
                 swr_v1_process_server_worker_by_pid(&view, Some(&*registry), -7),
                 workers.add(1)
             );
-            Worker::new(workers.add(1)).set_pid(0);
+            Worker::from(&*(workers.add(1))).set_pid(0);
             assert_eq!(
                 swr_v1_process_server_worker_by_pid(&view, Some(&*registry), 0),
                 workers.add(1)
@@ -327,7 +327,7 @@ mod tests {
         swr_v1_process_server_workers_start(
             &view,
             (&SERVER, (&raw mut server).cast()),
-            pending_ptrs.map(|worker| unsafe { Worker::new(worker) }),
+            pending_ptrs.map(|worker| unsafe { Worker::from(&*worker) }),
         );
         assert_eq!(event_pool.workers.get(), events_ptr);
         assert_eq!(event_pool.ptr.get(), (&raw mut server).cast());
@@ -340,11 +340,11 @@ mod tests {
             (2, false, 91)
         );
         assert_eq!(
-            unsafe { Worker::new(&raw const pending[0]).id() },
+            Worker::from(&pending[0]).id(),
             5,
             "duplicate pointer keeps last configured ID"
         );
-        assert_eq!(unsafe { Worker::new(&raw const pending[1]).id() }, 4);
+        assert_eq!(Worker::from(&pending[1]).id(), 4);
         let expected = [
             events_ptr,
             events_ptr.wrapping_add(1),
@@ -357,22 +357,19 @@ mod tests {
             let found = swr_v1_process_server_worker(&view, u16::try_from(id).unwrap());
             assert_eq!(found, expected);
             unsafe {
-                Worker::new(found).set_pid(123);
+                Worker::from(&*found).set_pid(123);
             }
             assert_eq!(
-                unsafe { Worker::new(expected).pid() },
+                unsafe { Worker::from(&*expected).pid() },
                 123,
                 "lookup lends canonical mutable records"
             );
         }
         assert!(swr_v1_process_server_worker(&view, 6).is_null());
         for (id, event) in events.iter().enumerate() {
+            assert_eq!(Worker::from(event).id(), u32::try_from(id).unwrap());
             assert_eq!(
-                unsafe { Worker::new(event).id() },
-                u32::try_from(id).unwrap()
-            );
-            assert_eq!(
-                unsafe { Worker::new(event).kind() },
+                Worker::from(event).kind(),
                 Some(crate::worker_record::WorkerType::Event)
             );
         }

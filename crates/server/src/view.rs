@@ -541,6 +541,25 @@ impl<'a> Server<'a> {
             .find(|worker| core::ptr::eq(worker.raw(), raw))
     }
 
+    /// `SwooleWG.worker = worker`: this thread now runs `worker`, one of the server's
+    /// own ([`Self::own_worker`]), or none. False, leaving the slot as it was, for any
+    /// other record.
+    #[cfg(feature = "upstream-symbols")]
+    pub(crate) fn enter_worker(self, worker: Option<Worker<'_>>) -> bool {
+        let raw = match worker {
+            None => core::ptr::null_mut(),
+            Some(worker) => match self.own_worker(worker.raw()) {
+                Some(own) => own.raw(),
+                None => return false,
+            },
+        };
+        // SAFETY: null, or one of the server's records: its arrays stay mapped, and an
+        // added user worker live, until the server frees its workers, which it does
+        // only after the loops of the workers it runs have ended.
+        unsafe { swoole_rs_process::worker_globals::set_current_worker(raw) };
+        true
+    }
+
     /// The `index`th user worker `worker_methods::add_worker` added, or `None` past the
     /// last.
     pub(crate) fn pending_worker(self, index: usize) -> Option<Worker<'a>> {
@@ -550,7 +569,7 @@ impl<'a> Server<'a> {
         }
         // SAFETY: a live worker `add_worker` added, which outlives the server
         // (its contract; nothing else adds to the server's pending workers).
-        Some(unsafe { Worker::new(worker.cast()) })
+        Some(unsafe { Worker::from(&*worker.cast::<WorkerRecord>()) })
     }
 
     /// Worker `id`'s pipe socket, its master end or its worker end, or `None` while it has none.

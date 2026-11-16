@@ -1592,7 +1592,7 @@ fn abnormal_send(serv: Server, flags: u8, msg_id: u64) {
     // SAFETY: `server->get_worker_pipe_master(0)`: worker 0's pipe to the master, whose
     // first member is its fd.
     let fd = unsafe {
-        *swoole_rs_process::worker_record::Worker::new(serv.view().worker(0))
+        *swoole_rs_process::worker_record::Worker::from(&*(serv.view().worker(0)))
             .pipe_master()
             .cast::<c_int>()
     };
