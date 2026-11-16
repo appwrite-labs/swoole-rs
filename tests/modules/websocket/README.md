@@ -9,8 +9,11 @@ those call the functions by path now. The safe decoder returns `Result<DecodedFr
 DecodeError>`; its error preserves the partial header and distinguishes incomplete
 input, length overflow, and compressed control frames. `DecodedFrame`, `Context`
 and `Decision` are plain Rust records; the native `websocket::Frame` layout stays
-in `websocket-ffi`. The codec test adapts typed errors to the former integer
-protocol so its original assertions remain unchanged. `mask`'s null-pointer and oversized-length
+in `websocket-ffi`. Frame measurement returns `Result<FrameLength, LengthError>`
+with `usize` sizes; incomplete and overflowing headers retain their incremental
+header length. Only the native framing adapters convert those outcomes to zero
+or -1. The kernel, codec and fuzz tests adapt typed outcomes to the former integer
+protocol so their original assertions remain unchanged. `mask`'s null-pointer and oversized-length
 refusals went with its export, and their test (`tests/kernel.rs`'s
 `invalid_mask_pointers_and_lengths_do_not_write`) with them: a slice and a key by value
 cannot carry those arguments. The PHP side is `crates/phphttp/src/websocket.rs`.
