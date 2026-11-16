@@ -609,8 +609,7 @@ mod tests {
         let mut task = send(c_long::from(conn.fd()), ServerEvent::RecvData, 5);
         task.info.time = 1.5;
         assert!(dispatch(serv, &mut task, true));
-        // SAFETY: as above.
-        assert!(unsafe { Worker::new(&raw const worker).is_idle() });
+        assert!(Worker::from(&worker).is_idle());
         assert_eq!(
             conn.recv_queued_bytes().load(Ordering::Relaxed),
             0,

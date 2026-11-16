@@ -139,14 +139,12 @@ pub(crate) fn kill_task_workers(serv: view::Server<'_>) {
 }
 
 /// Makes this forked child `worker`, of `kind`.
-fn enter_child(worker: Worker<'_>, kind: WorkerType) {
+fn enter_child(serv: view::Server<'_>, worker: Worker<'_>, kind: WorkerType) {
     worker.set_pid(std::process::id().cast_signed());
     swoole_set_worker_id(worker.id());
     swoole_set_worker_pid(worker.pid());
     set_worker_type(kind);
-    // SAFETY: the server's worker this child now runs, kept until the server frees
-    // its workers after the loop.
-    unsafe { swoole_rs_process::worker_globals::set_current_worker(worker.raw()) };
+    serv.enter_worker(Some(worker));
 }
 
 /// `Factory::spawn_event_worker`: fork; the child runs the worker and exits. The
@@ -164,7 +162,7 @@ pub(crate) fn spawn_event_worker(serv: view::Server<'_>, worker: Worker<'_>) -> 
             .register(pid, worker.raw().cast(), REGISTRY_EVENT);
         return Some(pid);
     }
-    enter_child(worker, WorkerType::Event);
+    enter_child(serv, worker, WorkerType::Event);
     if serv.config().mode_ == Mode::Base {
         _ = serv.event_pool_ref().call_main_loop(worker);
     } else {
@@ -188,7 +186,7 @@ pub(crate) fn spawn_user_worker(serv: view::Server<'_>, worker: Worker<'_>) -> O
         return None;
     }
     if pid == 0 {
-        enter_child(worker, WorkerType::User);
+        enter_child(serv, worker, WorkerType::User);
         serv.state().callbacks.user_worker_start(serv, worker);
         std::process::exit(0)
     }

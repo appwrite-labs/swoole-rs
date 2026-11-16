@@ -41,6 +41,25 @@ impl<'a> Text<'a> {
     }
 }
 
+/// An open stdio stream (`FILE *`) native code lends to one call: only C mints one,
+/// as a parameter of an export typed as this, where its caller's open stream stands
+/// for the constructor, as for [`Text`]. Not `Copy`: the call it is lent to takes it,
+/// so a close leaves no handle behind.
+#[repr(transparent)]
+pub struct OpenFile(NonNull<libc::FILE>);
+
+// SAFETY: stdio locks a stream inside each call (POSIX `flockfile`), so the call it is
+// lent to may run on another thread.
+unsafe impl Send for OpenFile {}
+
+/// An open directory stream (`DIR *`) native code lends to one call, as [`OpenFile`].
+#[repr(transparent)]
+pub struct OpenDir(NonNull<libc::DIR>);
+
+// SAFETY: a directory stream belongs to no thread; the one call it is lent to may run
+// on another while its lender waits.
+unsafe impl Send for OpenDir {}
+
 /// An argument list as `execv` reads it: strings up to the null that ends the list.
 ///
 /// Invariant: it points at a slice of `Option<Text>`s, each `None` a null pointer,

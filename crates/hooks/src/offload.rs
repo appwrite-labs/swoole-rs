@@ -25,8 +25,8 @@ pub struct AsyncEvent {
     /// The result, which a pool thread stores into its heap copy while the
     /// dispatching thread may set `canceled` there: [`AsyncEvent::result`].
     error: AtomicI32,
-    /// The request's resolver record: one reference per heap copy, or null.
-    pub(crate) data: *mut swoole_rs_corebase::ResolverRequest,
+    /// A reference to the request's resolver record, or none.
+    pub(crate) data: Option<swoole_rs_corebase::ResolverRef>,
     retval: AtomicIsize,
     pub pipe_socket: *mut c_void,
     pub timestamp: f64,
@@ -58,7 +58,7 @@ impl AsyncEvent {
             task_id: 0,
             canceled: AtomicU8::new(0),
             error: AtomicI32::new(0),
-            data: core::ptr::null_mut(),
+            data: None,
             retval: AtomicIsize::new(0),
             pipe_socket,
             timestamp: 0.0,
@@ -93,10 +93,8 @@ impl AsyncEvent {
     }
 
     /// The request's resolver record, when the event has one.
-    pub(crate) const fn record(&self) -> Option<&swoole_rs_corebase::ResolverRequest> {
-        // SAFETY: `data` is null or a record that outlives the event: the request's
-        // owner waits for its event, and a heap copy holds a reference of its own.
-        unsafe { self.data.as_ref() }
+    pub(crate) fn record(&self) -> Option<&swoole_rs_corebase::ResolverRequest> {
+        self.data.as_deref()
     }
 }
 
@@ -106,6 +104,7 @@ impl Clone for AsyncEvent {
             canceled: AtomicU8::new(self.canceled.load(Relaxed)),
             error: AtomicI32::new(self.error.load(Relaxed)),
             retval: AtomicIsize::new(self.retval.load(Relaxed)),
+            data: self.data.clone(),
             ..*self
         }
     }
