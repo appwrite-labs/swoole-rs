@@ -126,7 +126,7 @@ impl<T, W: Copy + PartialEq> Channel<T, W> {
 /// `Sync`, and `f` (only the bodies below) runs no effect.
 fn with<T, W, R>(ch: &UnsafeCell<Channel<T, W>>, f: impl FnOnce(&mut Channel<T, W>) -> R) -> R {
     // SAFETY: as above.
-    f(unsafe { &mut *ch.get() })
+    f(unsafe { ch.as_mut_unchecked() })
 }
 
 /// What a channel reports: its last error, items and waiters.

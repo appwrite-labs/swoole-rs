@@ -1795,7 +1795,7 @@ impl<H: PoolHost> Pool<'_, H> {
     }
 
     /// The forked worker: its callbacks and loop, then `exit`.
-    fn child(&mut self, worker: *mut WorkerRecord) -> Result<std::convert::Infallible, Bailed> {
+    fn child(&mut self, worker: *mut WorkerRecord) -> Result<!, Bailed> {
         self.on(worker, Op::WorkerInit, 0);
         if self.is_async() && !self.h.event_init() {
             // exit(3), as upstream.

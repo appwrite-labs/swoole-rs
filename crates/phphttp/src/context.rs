@@ -79,7 +79,7 @@ impl Ctx<'_> {
     pub(crate) fn state(&mut self) -> &mut State {
         // SAFETY: the hold the handle borrows keeps the state live; no other
         // reference to it outlives a host call.
-        unsafe { &mut *self.0.0.get() }
+        unsafe { self.0.0.as_mut_unchecked() }
     }
 
     /// The `kind` hook of Swoole's global hooks, which take the context as

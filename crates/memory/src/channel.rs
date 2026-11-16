@@ -395,7 +395,7 @@ impl Record {
         let _held = self.hold();
         // SAFETY: the mutex (or, without `SW_CHAN_LOCK`, the one thread a `Record` is
         // confined to) serializes the queue; the borrow ends with `f`.
-        f(unsafe { &mut *self.queue.get() })
+        f(unsafe { self.queue.as_mut_unchecked() })
     }
 
     /// `Channel::push(data, length)`: false when it doesn't fit.
