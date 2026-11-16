@@ -2,15 +2,23 @@
 //! code Rust calls. A bailout must never jump over a Rust frame, so Rust traps
 //! it in C, returns normally, and hands a [`Bailout`] back to the C or C++ that
 //! called it, which re-raises it with `zend_bailout()`. See docs/zend.md.
-use crate::sys::{
-    swr_zend_guard_resume, swr_zend_try, swr_zend_try_call, zend_fcall_info, zend_fcall_info_cache,
-};
+use crate::{Value, Zvals, host::Callee, sys::swr_zend_guard_resume, sys::swr_zend_try};
 use std::ffi::{c_int, c_void};
 
 unsafe extern "C" {
     /// The shim's whole-thread exit mark: a C thread-local of its own, not
     /// executor state, read on any thread; no arguments, and nothing runs.
     safe fn swr_zend_guard_pending() -> c_int;
+    /// `zend_call_function` inside `zend_try` (nonzero for a bailout) over a
+    /// callable's cache (an empty one resolves `name`, when given), its lent
+    /// arguments and a live return slot: `result` says whether it succeeded.
+    safe fn swr_zend_try_call(
+        cache: Callee<'_>,
+        args: Zvals<'_>,
+        name: Option<&Value>,
+        retval: &Value,
+        result: &mut c_int,
+    ) -> c_int;
 }
 
 /// A trapped bailout. Its owner finishes its Rust work, then reports it to
@@ -169,23 +177,23 @@ pub unsafe fn trap(
     trapped(unsafe { swr_zend_try(Some(body), arg) })
 }
 
-/// `zend_call_function(fci, fcc)` inside `zend_try`: whether the call
+/// `zend_call_function` of `cache`'s callable (an empty cache resolves `name`,
+/// when given) with `args`, into `retval`, inside `zend_try`: whether the call
 /// succeeded. Nothing is called, and the result slot is left as it was, while
 /// a bailout is pending: upstream never ran past it.
 /// # Errors
 /// The callable bailed out (`exit()`, a fatal error), or a bailout is pending.
-/// # Safety
-/// `fci` and `fcc` describe a live callable, as `zend_call_function` requires.
-pub unsafe fn call(
-    fci: *mut zend_fcall_info,
-    fcc: *mut zend_fcall_info_cache,
+pub fn call(
+    cache: Callee<'_>,
+    args: Zvals<'_>,
+    name: Option<&Value>,
+    retval: &Value,
 ) -> Result<bool, Bailout> {
     if pending() {
         return Err(Bailout);
     }
     let mut result = 0;
-    // SAFETY: per the caller; Zend runs in the C shim's frame.
-    if unsafe { swr_zend_try_call(fci, fcc, &raw mut result) } != 0 {
+    if swr_zend_try_call(cache, args, name, retval, &mut result) != 0 {
         return Err(Bailout);
     }
     Ok(result != 0)

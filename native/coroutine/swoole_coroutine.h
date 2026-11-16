@@ -13,7 +13,7 @@
 
 #include "swoole_rs_coroutine.h"
 
-static_assert(sizeof(void *) != 8 || (sizeof(swr_v1_coroutine) == 96 && sizeof(swr_v1_coroutine_scheduler) == 136),
+static_assert(sizeof(void *) != 8 || (sizeof(swr_v1_coroutine) == 104 && sizeof(swr_v1_coroutine_scheduler) == 136),
               "crates/coroutine layout");
 
 namespace swoole {

@@ -152,10 +152,11 @@ impl ZBuf {
 
     /// Append as much of `bytes` as there is room for.
     pub fn extend_from_slice(&mut self, bytes: &[u8]) {
-        let count = bytes.len().min(self.capacity - self.len);
-        let at = self.as_mut_ptr().wrapping_add(self.len);
-        // SAFETY: `count` bytes of room past the written ones.
-        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), at, count) };
+        let room = self.spare_capacity_mut();
+        let count = bytes.len().min(room.len());
+        if let (Some(room), Some(bytes)) = (room.get_mut(..count), bytes.get(..count)) {
+            room.write_copy_of_slice(bytes);
+        }
         self.len += count;
     }
 

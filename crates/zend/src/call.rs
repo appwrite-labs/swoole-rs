@@ -164,11 +164,20 @@ impl Call {
     }
 
     /// The return slot, live for the handler (`new`).
+    #[must_use]
     #[inline]
-    pub(crate) fn ret(&self) -> &Value {
+    pub fn ret(&self) -> &Value {
         // SAFETY: Zend's live return slot, which nothing else frees or
         // overwrites while the handler runs; `Value` is a transparent zval.
         unsafe { &*self.value.cast::<Value>() }
+    }
+
+    /// The passed arguments, which the frame holds for the call, lent to
+    /// another call ([`crate::bailout::call`]).
+    #[must_use]
+    #[inline]
+    pub fn args(&self) -> crate::Zvals<'_> {
+        crate::Zvals::counted(self.arg(1), self.num_args())
     }
 
     /// `EX(func)`: the function this call runs, which Zend keeps for the call.
@@ -541,16 +550,6 @@ impl Call {
     #[inline]
     pub fn return_slot(&self) -> ReturnSlot<'_> {
         ReturnSlot(self.ret())
-    }
-
-    /// `RETVAL_ZVAL(value, 0, 0)`: the return slot takes over `value`.
-    /// # Safety
-    /// `value` is a valid zval carrying the reference the slot takes, as
-    /// [`crate::Owned::into_zval`] gives one up.
-    #[inline]
-    pub unsafe fn set_value(&self, value: zval) {
-        // SAFETY: the return slot is live for the handler; `value` per the caller.
-        unsafe { *self.value = value };
     }
 
     /// `RETVAL_ZVAL(value, 0, 0)` of a value this owns.

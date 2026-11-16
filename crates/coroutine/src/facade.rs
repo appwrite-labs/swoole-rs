@@ -9,7 +9,7 @@
 //! The build's switches are `swoole_rs_corebase::built_with`'s (`build`).
 use crate::context::{Context, Native, Unmade};
 use crate::coroutine::{self, Co, Sched, run};
-use crate::scheduler::{bailed_out, current, with_scheduler, yield_with_cancel};
+use crate::scheduler::{bailed_out, current, with_scheduler, yield_with_cancel_armed};
 use crate::thread::{Entry, THREAD, swr_v1_thread_context_clean, swr_v1_thread_context_init};
 use crate::{Canceler, Coroutine, Resume, Routine, STACK_MARK, STACK_PROTECT, Scheduler};
 use core::ffi::{c_int, c_long, c_void};
@@ -234,6 +234,13 @@ pub fn yield_resumed(code: Resume) -> bool {
 /// (this aborts otherwise); as [`suspend`](crate::suspend), it asks nothing more.
 #[must_use]
 pub fn yield_timed(co: *mut c_void, timeout: f64) -> Resume {
+    yield_timed_armed(co, timeout, |_| ())
+}
+
+/// [`yield_timed`], handing `arm` the [`Waker`](crate::Waker) that ends this park
+/// before `co` switches out.
+#[must_use]
+pub fn yield_timed_armed(co: *mut c_void, timeout: f64, arm: impl FnOnce(crate::Waker)) -> Resume {
     let running = Co::running(Sched::this(), co.cast());
     let timer = if timeout > 0.0 {
         // SAFETY: the timer fires only while `co` waits below, or is deleted first,
@@ -247,7 +254,7 @@ pub fn yield_timed(co: *mut c_void, timeout: f64) -> Resume {
         coroutine::resume(Sched::this(), running);
         true
     };
-    yield_with_cancel(co, resume_canceled);
+    yield_with_cancel_armed(co, resume_canceled, arm);
     // `co` runs again.
     let code = running.with(|co| co.resume_code);
     if code != Resume::TimedOut && timer != 0 {
@@ -277,6 +284,27 @@ pub unsafe fn print_socket_bound_error(fd: c_int, event: &CStr, bound_cid: c_lon
     let message = CString::new(message).unwrap_or_default();
     // SAFETY: Swoole's fatal error hook, as the caller promises.
     unsafe { fatal_error(SW_ERROR_CO_HAS_BEEN_BOUND, &message) };
+}
+
+/// [`swr_v1_coroutine_create`] of `entry`, which the new coroutine moves off this
+/// frame before anything else and runs; its id, or -1. `entry` is `Copy`, so this
+/// frame owns nothing with a destructor. As every creation, a fatal error or the
+/// coroutine's bailout may longjmp over the caller's frames, leaking what they own.
+/// Under thread contexts `entry` moves to the coroutine's thread while this one
+/// waits for the baton, so the two never run at once.
+#[must_use]
+pub fn spawn<F: FnOnce() + Copy + 'static>(entry: F) -> c_long {
+    /// # Safety
+    /// `slot` is a live `F`.
+    unsafe extern "C" fn take<F: FnOnce() + Copy>(slot: *mut c_void) {
+        // SAFETY: per the caller; a `Copy` value is read out before the entry runs.
+        let entry = unsafe { slot.cast::<F>().read() };
+        entry();
+    }
+    // SAFETY: `take::<F>` copies the `F` at its data, `entry` on this frame, which
+    // lives until the coroutine first switches back: creation runs it until then,
+    // and it copies the entry first.
+    unsafe { swr_v1_coroutine_create(take::<F>, (&raw const entry).cast_mut().cast()) }
 }
 
 /// `long swoole_coroutine_create(void (*)(void *), void *)`: in the running

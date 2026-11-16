@@ -16,7 +16,7 @@ use crate::{
 use std::{
     borrow::{Borrow, Cow},
     cell::{Cell, UnsafeCell},
-    ffi::{CStr, c_char, c_void},
+    ffi::{CStr, c_void},
     io::IoSlice,
     ptr,
     sync::atomic::{AtomicPtr, Ordering::Relaxed},
@@ -34,9 +34,9 @@ unsafe extern "C" {
     /// `zend_hash_index_find`: null (`None`), or the element under `index`,
     /// which lives as the table's others do, while the table is borrowed.
     safe fn zend_hash_index_find(table: &Array, index: zend_ulong) -> Option<&Value>;
-    /// `zend_hash_str_find`: as [`zend_hash_index_find`], under the `length`
-    /// bytes at `key`, which it reads.
-    fn zend_hash_str_find(table: &Array, key: *const c_char, length: usize) -> Option<&Value>;
+    /// `zend_hash_str_find`: as [`zend_hash_index_find`], under the lent
+    /// bytes (an `IoSlice` is an iovec), which it reads only.
+    safe fn swr_lent_hash_find<'a>(table: &'a Array, key: IoSlice<'_>) -> Option<&'a Value>;
     /// `Z_OBJPROP` of a live object inside `zend_try` (nonzero for a bailout:
     /// its `get_properties` handler may build the table, and a lazy object's
     /// initializer runs PHP code): `out` then holds the table, if it has one,
@@ -251,6 +251,13 @@ impl<'a> Zvals<'a> {
         Self::lend(args.as_ptr().cast_mut().cast(), args.len())
     }
 
+    /// One value, which the callee only reads.
+    #[must_use]
+    #[inline]
+    pub fn one(value: &'a Value) -> Self {
+        Self::lend(value.as_ptr(), 1)
+    }
+
     pub(crate) fn argv(&self) -> *mut zval {
         self.argv
     }
@@ -423,23 +430,6 @@ impl Value {
     pub fn indirect(&self) -> Option<*mut zval> {
         // An indirect zval holds `zv`.
         (self.kind() == IS_INDIRECT).then(|| self.payload::<zval>())
-    }
-
-    /// `ZEND_REF_HAS_TYPE_SOURCES`: a reference that typed properties point at,
-    /// whose assignments Zend must verify against their types.
-    #[must_use]
-    pub fn typed_reference(&self) -> Option<*mut zend_reference> {
-        if self.kind() != IS_REFERENCE {
-            return None;
-        }
-        // A reference zval holds `ref`.
-        let reference = self.payload::<zend_reference>();
-        let sources = reference
-            .wrapping_byte_add(std::mem::offset_of!(zend_reference, sources))
-            .cast::<*const std::ffi::c_void>();
-        // SAFETY: the live reference this zval keeps alive; its source list's
-        // union is pointer-sized, and Zend tests it through its pointer member too.
-        (!unsafe { sources.read() }.is_null()).then_some(reference)
     }
 
     /// `Z_LVAL_P` of an int, with no conversion.
@@ -989,8 +979,7 @@ impl Array {
     #[must_use]
     #[inline]
     pub fn find(&self, key: &[u8]) -> Option<&Value> {
-        // SAFETY: Zend reads `key`'s bytes only.
-        unsafe { zend_hash_str_find(self, key.as_ptr().cast(), key.len()) }
+        swr_lent_hash_find(self, IoSlice::new(key))
     }
 
     /// `zend_hash_index_find`.
@@ -1408,11 +1397,17 @@ impl Default for Owned {
     /// `ZVAL_UNDEF`.
     #[inline]
     fn default() -> Self {
-        Self(Value(Cell::new(UNDEF)))
+        Self::empty()
     }
 }
 
 impl Owned {
+    /// `ZVAL_UNDEF`, for a constant (all-zero bytes, as a zeroed record holds).
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self(Value(Cell::new(UNDEF)))
+    }
+
     /// `php_json_decode(text)` with objects as arrays; false when `text` is
     /// not JSON. It runs no PHP code.
     #[must_use]

@@ -82,11 +82,14 @@ pub fn module_entry(families: &'static module::Families) -> *mut zend_module_ent
     entry.deps = Box::leak(deps().into_boxed_slice()).as_ptr();
     entry.name = c"swoole".as_ptr();
     entry.functions = table::functions();
-    entry.module_startup_func = Some(crate::swr_v1_phpswoole_minit);
-    entry.module_shutdown_func = Some(module::swr_v1_phpswoole_mshutdown);
-    entry.request_startup_func = Some(module::swr_v1_phpswoole_rinit);
-    entry.request_shutdown_func = Some(module::swr_v1_phpswoole_rshutdown);
-    entry.info_func = Some(info::swr_v1_phpswoole_minfo);
+    swoole_rs_zend::Lifecycle {
+        startup: crate::swr_v1_phpswoole_minit,
+        shutdown: module::swr_v1_phpswoole_mshutdown,
+        request_startup: module::swr_v1_phpswoole_rinit,
+        request_shutdown: module::swr_v1_phpswoole_rshutdown,
+        info: info::swr_v1_phpswoole_minfo,
+    }
+    .install(&mut entry);
     entry.version = constants::VERSION.as_ptr();
     let entry = Box::into_raw(Box::new(entry));
     ENTRY.store(entry, Ordering::Release);

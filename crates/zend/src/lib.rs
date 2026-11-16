@@ -51,7 +51,7 @@ pub use helpers::{
     EMPTY_FCC, EMPTY_FCI, Record, is_main_thread, long_zval, module_loaded, numeric, time, zeroed,
 };
 pub use local::{EnvLock, Php};
-pub use minit::{Minit, Mshutdown, Parent};
+pub use minit::{Lifecycle, Minfo, Minit, Mshutdown, Parent, Request, Shutdown, Startup};
 pub use object::{Custom, CustomClass, Object, ObjectRef, Props, Weak, new_object};
 pub use swoole_rs_zend_sys as sys;
 pub use sys::add_next_index_long;

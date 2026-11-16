@@ -228,13 +228,11 @@ pub(crate) fn send(serv: view::Server<'_>, to: Pipe, send: &mut SendData) -> boo
                 return false;
             };
             // This reactor thread's bus, and its copy of the worker's pipe.
-            let thread = state
-                .tables_ref()
-                .reactor_threads_ptr()
-                .cast::<ThreadRecord>()
-                .wrapping_add(usize::from(swoole_rs_corebase::thread_id()));
-            // SAFETY: this reactor thread's live record.
-            let bus = unsafe { &*thread }.message_bus();
+            let thread_id = usize::from(swoole_rs_corebase::thread_id());
+            let Some(thread) = state.tables_ref().reactor_thread(thread_id) else {
+                return false;
+            };
+            let bus = thread.message_bus();
             let Some(pipe) = PipeSocket::of_bus(bus.rust(), pipe) else {
                 return false;
             };

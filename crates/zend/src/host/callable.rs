@@ -122,8 +122,7 @@ impl Callable {
                 bailout::finish();
                 called
             } else {
-                let retval = retval.map_or(ptr::null_mut(), crate::Value::as_ptr);
-                let called = self.invoke(args.argc(), args.argv(), retval);
+                let called = self.invoke(args, retval);
                 bailout::finish();
                 called.unwrap_or(false)
             };
@@ -150,28 +149,19 @@ impl Callable {
     /// `zend::Callable::call`: whether the call succeeded, a bailout left pending.
     fn invoke(
         &self,
-        argc: u32,
-        argv: *mut zval,
-        retval: *mut zval,
+        args: crate::Zvals<'_>,
+        retval: Option<&crate::Value>,
     ) -> Result<bool, bailout::Bailout> {
-        let mut fci = crate::EMPTY_FCI;
         // The call's result when the caller wants none; undefined otherwise.
         let temporary = Owned::default();
-        fci.size = size_of::<sys::zend_fcall_info>();
-        fci.retval = if retval.is_null() {
-            temporary.as_ptr()
-        } else {
-            retval
-        };
-        fci.param_count = argc;
-        fci.params = argv;
-        if self.cache.function_handler.is_null() {
-            // ZVAL_COPY_VALUE of the borrowed function name.
-            fci.function_name = self.value.copy_value();
-        }
-        // SAFETY: `call`'s live arguments and return storage, and this callable's
-        // cache, which its zval keeps live; no Rust borrow spans PHP reentry.
-        let result = unsafe { bailout::call(&raw mut fci, self.cache_ptr()) };
+        // An unresolved cache resolves the borrowed function name.
+        let name = self
+            .cache
+            .function_handler
+            .is_null()
+            .then_some(&*self.value);
+        // No Rust borrow spans PHP reentry.
+        let result = bailout::call(self.cache(), args, name, retval.unwrap_or(&temporary));
         let success = match result {
             Ok(success) => success,
             Err(error) => {
