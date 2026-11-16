@@ -2,15 +2,23 @@
 //! native `Socket` and the events it was registered with. Native keeps writing the
 //! `Socket`'s own `events` and `removed` fields, which other modules read. Fds are
 //! small and dense, so the registry is a flat table indexed by fd.
+use crate::Socket;
 use std::ffi::{c_int, c_void};
-use std::ptr;
 use swoole_rs_memory::flat::Table;
 
-type Sockets = Table<(*mut c_void, crate::Events)>;
+/// Only an add, which takes a socket never freed while registered, puts one here.
+type Sockets = Table<(Socket<'static>, crate::Events)>;
 
-#[derive(Default)]
 pub struct Registry {
     sockets: Sockets,
+}
+
+impl Default for Registry {
+    fn default() -> Self {
+        Self {
+            sockets: Table::new(),
+        }
+    }
 }
 
 impl Registry {
@@ -22,21 +30,26 @@ impl Registry {
 
     /// The registered sockets, in fd order (`Reactor::foreach_socket`'s copy).
     #[must_use]
-    pub fn sockets(&self) -> Vec<*mut c_void> {
+    pub fn sockets(&self) -> Vec<Socket<'static>> {
         self.sockets.iter().map(|(_, entry)| entry.0).collect()
     }
 
-    /// `Reactor::get_socket`: the socket registered for `fd`, or null.
+    /// `Reactor::get_socket`: the socket registered for `fd`, if any.
     #[must_use]
-    pub fn get(&self, fd: c_int) -> *mut c_void {
+    pub fn get(&self, fd: c_int) -> Option<Socket<'static>> {
         slot(fd)
             .and_then(|fd| self.sockets.get(fd))
-            .map_or(ptr::null_mut(), |entry| entry.0)
+            .map(|entry| entry.0)
     }
 
     /// `Reactor::_add`/`_set`: maps `fd` to `socket` registered for `events`; false, leaving
     /// the registry unchanged, if allocation fails or `fd` is negative.
-    pub(crate) fn put(&mut self, fd: c_int, socket: *mut c_void, events: crate::Events) -> bool {
+    pub(crate) fn put(
+        &mut self,
+        fd: c_int,
+        socket: Socket<'static>,
+        events: crate::Events,
+    ) -> bool {
         slot(fd).is_some_and(|fd| self.sockets.insert(fd, (socket, events)).is_ok())
     }
 
@@ -55,7 +68,9 @@ impl Registry {
     }
 
     /// Each registered fd, its socket and its events, in fd order.
-    pub(crate) fn registered(&self) -> impl Iterator<Item = (c_int, *mut c_void, crate::Events)> {
+    pub(crate) fn registered(
+        &self,
+    ) -> impl Iterator<Item = (c_int, Socket<'static>, crate::Events)> {
         self.sockets
             .iter()
             .filter_map(|(fd, &(socket, events))| Some((c_int::try_from(fd).ok()?, socket, events)))
@@ -73,7 +88,9 @@ pub extern "C" fn swr_v1_reactor_registry_get(
     registry: Option<&Registry>,
     fd: c_int,
 ) -> *mut c_void {
-    registry.map_or(ptr::null_mut(), |registry| registry.get(fd))
+    registry
+        .and_then(|registry| registry.get(fd))
+        .map_or(std::ptr::null_mut(), |socket| socket.as_ptr().cast())
 }
 
 /// `Reactor::get_event_num`: how many fds are registered.
@@ -83,16 +100,22 @@ pub extern "C" fn swr_v1_reactor_registry_count(registry: Option<&Registry>) -> 
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     const SW_EVENT_READ: crate::Events = crate::Events::READ;
     const SW_EVENT_WRITE: crate::Events = crate::Events::WRITE;
 
+    /// A handle at address `n`, which the registry stores and never reads through.
+    pub(crate) fn fake(n: usize) -> Socket<'static> {
+        unsafe { Socket::from_ptr(n as *mut crate::SocketRecord) }.unwrap()
+    }
+
     #[test]
     fn registers_and_snapshots() {
         let mut registry = Registry::default();
-        let socket = |n: usize| n as *mut c_void;
+        let socket = fake;
+        let at = |socket: Option<Socket<'static>>| socket.map(Socket::as_ptr);
         assert_eq!(swr_v1_reactor_registry_count(None), 0);
         assert!(swr_v1_reactor_registry_get(None, 3).is_null());
         assert!(registry.put(3, socket(30), SW_EVENT_READ));
@@ -103,13 +126,14 @@ mod tests {
         registry.remove(5);
         registry.remove(9);
         assert_eq!(registry.count(), 2);
-        assert_eq!(registry.get(4), socket(40));
-        assert!(registry.get(5).is_null());
-        assert_eq!(registry.sockets(), [socket(30), socket(40)]);
+        assert_eq!(at(registry.get(4)), at(Some(socket(40))));
+        assert!(registry.get(5).is_none());
+        let sockets: Vec<_> = registry.sockets().into_iter().map(Socket::as_ptr).collect();
+        assert_eq!(sockets, [socket(30).as_ptr(), socket(40).as_ptr()]);
         registry.set(3, SW_EVENT_WRITE);
         let registered: Vec<_> = registry
             .registered()
-            .map(|(fd, socket, events)| (fd, socket as usize, events))
+            .map(|(fd, socket, events)| (fd, socket.as_ptr() as usize, events))
             .collect();
         assert_eq!(
             registered,

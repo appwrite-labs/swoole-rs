@@ -530,8 +530,9 @@ fn oneshot(ops: &Loop<'_>, socket: Socket<'_>, live: impl Fn() -> bool) {
     {
         if ops.backend == BackendKind::Epoll {
             // epoll's oneshot entry is already disarmed, so only the registry forgets it.
-            ops.reactor
-                .with(|state| state.record(socket, crate::ChangeOp::Del, crate::Events::NONE));
+            ops.reactor.with(|state| {
+                state.record(crate::change::Request::Del(socket), crate::Events::NONE)
+            });
         } else {
             // poll and kqueue run `Reactor::del`, which logs a failure.
             _ = crate::reactor_upstream::reactor_del(ops.reactor, socket);
