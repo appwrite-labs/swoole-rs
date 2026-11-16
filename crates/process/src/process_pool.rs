@@ -318,7 +318,6 @@ impl PoolRecord {
 /// `unsafe` setters, so safe code can't forge them, and the operations check each
 /// pointer for null before using it.
 #[derive(Clone, Copy)]
-#[repr(transparent)]
 pub struct PoolRef<'a> {
     raw: *mut PoolRecord,
     live: core::marker::PhantomData<&'a PoolRecord>,
@@ -570,32 +569,28 @@ impl<'a> RecvData<'a> {
     }
 }
 
-/// The pool's callbacks, in `ProcessPool`'s C layout (`swoole_rs_process_views.h`).
-/// Each takes the live pool and the objects of the event, which the pool lends for
-/// the call. `C-unwind`, as a PHP bailout longjmps over them.
+/// The pool's callbacks. Each takes the live pool and the objects of the event,
+/// which the pool lends for the call.
 ///
 /// A hook runs only through the pool that holds it ([`PoolRef::call_on_start`] and
 /// the calls beside it), and only its owner installs it ([`PoolRef::install`]). So a
 /// hook whose other arguments are handles and references is a safe fn: the pool it
 /// is given is the one it was installed on.
-pub type PoolFn = extern "C-unwind" fn(PoolRef<'_>);
+pub type PoolFn = fn(PoolRef<'_>);
 /// `onWorkerStart`, `onWorkerStop`, `onWorkerExit`.
-pub type WorkerFn = extern "C-unwind" fn(PoolRef<'_>, Worker<'_>);
+pub type WorkerFn = fn(PoolRef<'_>, Worker<'_>);
 /// `main_loop`: the worker's loop, and its exit code.
-pub type MainLoopFn = extern "C-unwind" fn(PoolRef<'_>, Worker<'_>) -> c_int;
+pub type MainLoopFn = fn(PoolRef<'_>, Worker<'_>) -> c_int;
 /// `onTask`: the task the worker read.
-pub type TaskFn = extern "C-unwind" fn(PoolRef<'_>, Worker<'_>, Packed<'_>) -> c_int;
+pub type TaskFn = fn(PoolRef<'_>, Worker<'_>, Packed<'_>) -> c_int;
 /// `onMessage`: the message, lent for the call.
-pub type MessageFn = extern "C-unwind" fn(PoolRef<'_>, &RecvData<'_>);
+pub type MessageFn = fn(PoolRef<'_>, &RecvData<'_>);
 /// `onWorkerMessage`: the `EventData` the master popped, as its bytes.
-pub type EventFn = extern "C-unwind" fn(
-    PoolRef<'_>,
-    &[u8; swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize],
-);
+pub type EventFn = fn(PoolRef<'_>, &[u8; swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize]);
 /// `onWorkerError`.
-pub type ErrorFn = extern "C-unwind" fn(PoolRef<'_>, Worker<'_>, &crate::methods::ExitStatus);
+pub type ErrorFn = fn(PoolRef<'_>, Worker<'_>, &crate::methods::ExitStatus);
 /// `onWorkerNotFound`.
-pub type NotFoundFn = extern "C-unwind" fn(PoolRef<'_>, &crate::methods::ExitStatus);
+pub type NotFoundFn = fn(PoolRef<'_>, &crate::methods::ExitStatus);
 
 /// What a pool's owner installs ([`PoolRef::install`]): its hooks. `None` leaves what
 /// the pool has.
@@ -2733,7 +2728,7 @@ mod tests {
 
     #[test]
     fn a_bailout_in_on_start_spawns_nothing() {
-        extern "C-unwind" fn on_start(_: PoolRef<'_>) {}
+        fn on_start(_: PoolRef<'_>) {}
         let mut fixture = Fixture::new(2);
         let script = Script {
             bail: Some(Callback::Start),
@@ -2853,7 +2848,7 @@ mod tests {
 
     #[test]
     fn async_loop_still_waits_after_pipe_registration_failure() {
-        extern "C-unwind" fn on_message(_: PoolRef<'_>, _: &RecvData<'_>) {}
+        fn on_message(_: PoolRef<'_>, _: &RecvData<'_>) {}
         let mut fixture = Fixture::new(1);
         let mut script = Script::default();
         script.answers.insert(Op::AddPipe, -1);
@@ -2872,7 +2867,7 @@ mod tests {
 
     #[test]
     fn stop_outside_an_event_loop_only_shuts_down() {
-        extern "C-unwind" fn on_worker_exit(_: PoolRef<'_>, _: Worker<'_>) {}
+        fn on_worker_exit(_: PoolRef<'_>, _: Worker<'_>) {}
         let mut fixture = Fixture::new(1);
         let mut script = Script::default();
         script.answers.insert(Op::EventAvailable, 0);
