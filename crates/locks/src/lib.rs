@@ -61,9 +61,9 @@ struct RwLock {
     lock: Words<RW_LOCK>,
     attr: Words<RW_ATTR>,
 }
-/// A spinlock's storage.
+/// A spinlock's storage: a word, the lock in its first bytes.
 #[cfg(target_os = "linux")]
-type Spin = AtomicU32;
+type Spin = AtomicU64;
 
 const _: () = {
     assert!(
@@ -81,9 +81,9 @@ const _: () = {
 };
 #[cfg(target_os = "linux")]
 const _: () = assert!(
-    size_of::<Spin>() == size_of::<pthread_spinlock_t>()
-        && align_of::<Spin>() == align_of::<pthread_spinlock_t>(),
-    "the word is C's spinlock"
+    size_of::<Spin>() >= size_of::<pthread_spinlock_t>()
+        && align_of::<Spin>() >= align_of::<pthread_spinlock_t>(),
+    "the word holds C's spinlock"
 );
 
 /// A mutex in storage live for `'a`: one [`init_mutex`] made, or [`SharedMutex`]'s
@@ -463,10 +463,8 @@ impl Lock {
             }
             #[cfg(target_os = "linux")]
             Kind::Spin => {
-                let word: *mut AtomicU64 = storage.first_mut()?;
-                // SAFETY: the first bytes of an exclusive word that lives for the program,
-                // which has a spinlock's size and alignment to spare.
-                let spin = unsafe { &mut *word.cast::<Spin>() };
+                // An exclusive word that lives for the program.
+                let spin: &'static mut Spin = storage.first_mut()?;
                 (pthread_spin_init(spin, 1) == 0).then_some(Self(Held::SharedSpin(spin)))
             }
         }

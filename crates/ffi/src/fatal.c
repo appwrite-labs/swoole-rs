@@ -30,7 +30,3 @@ void swr_v1_ffi_fatal_error(int code, const char *format, ...) {
     }
     swr_v1_ffi_exit(1);
 }
-
-void *swr_v1_ffi_stdout(void) {
-    return stdout;
-}

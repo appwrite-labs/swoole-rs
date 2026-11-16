@@ -93,15 +93,11 @@ record! {
         swr_v1_core_aio_max_wait_time_bits, swr_v1_core_set_aio_max_wait_time_bits;
     aio_max_idle_time: AtomicU64, u64 = 0,
         swr_v1_core_aio_max_idle_time_bits, swr_v1_core_set_aio_max_idle_time_bits;
-    stdout: AtomicPtr<c_void>, *mut c_void = ptr::null_mut(),
-        #[unsafe(no_mangle)] swr_v1_core_stdout, swr_v1_core_set_stdout;
     logger: AtomicPtr<c_void>, *mut c_void = ptr::null_mut(),
         #[unsafe(no_mangle)] swr_v1_core_logger, swr_v1_core_set_logger;
     server: AtomicPtr<c_void>, *mut c_void = ptr::null_mut(), swr_v1_core_server, swr_v1_core_set_server;
     aio_default_socket: AtomicPtr<c_void>, *mut c_void = ptr::null_mut(),
         swr_v1_core_aio_default_socket, swr_v1_core_set_aio_default_socket;
-    print_backtrace: AtomicPtr<c_void>, *mut c_void = ptr::null_mut(),
-        swr_v1_core_print_backtrace, swr_v1_core_set_print_backtrace;
 }
 
 /// `swoole_fatal_error(code, "%s", message)`: `SwooleG.fatal_error`, which exits
@@ -136,6 +132,101 @@ pub extern "C" fn swr_v1_core_fatal_error() -> Option<FatalError> {
 /// `SwooleG.fatal_error = hook`.
 pub fn set_fatal_error(hook: Option<FatalError>) {
     *fatal_hook() = hook;
+}
+
+/// A C stdio stream that stays open for the rest of the process: C's `stdout`,
+/// or one native code hands over under that contract (a `FILE *` parameter of an
+/// export typed as this). stdio locks a stream inside each call, so any thread may
+/// write through it.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Stream(ptr::NonNull<libc::FILE>);
+
+// SAFETY: stdio serializes the calls on a stream (POSIX `flockfile`), and the
+// stream stays open (the type's invariant), so it may be used from any thread.
+unsafe impl Send for Stream {}
+
+// C's `stdout` (Apple's libc names it `__stdoutp`), which a hosted C program always
+// has open.
+unsafe extern "C" {
+    #[cfg_attr(target_vendor = "apple", link_name = "__stdoutp")]
+    #[cfg_attr(not(target_vendor = "apple"), link_name = "stdout")]
+    safe static C_STDOUT: Stream;
+}
+
+impl Stream {
+    /// C's `stdout`.
+    #[must_use]
+    pub fn stdout() -> Self {
+        C_STDOUT
+    }
+
+    /// The stream at `raw`, none for null.
+    ///
+    /// # Safety
+    /// `raw` is null or an open stream that nothing closes while this, or a copy of
+    /// it, is in use.
+    #[must_use]
+    pub unsafe fn new(raw: *mut libc::FILE) -> Option<Self> {
+        ptr::NonNull::new(raw).map(Self)
+    }
+
+    #[must_use]
+    pub const fn as_ptr(self) -> *mut libc::FILE {
+        self.0.as_ptr()
+    }
+
+    /// `fwrite` of `bytes`, buffered as the stream is.
+    pub fn write(self, bytes: &[u8]) {
+        // SAFETY: an open stream (the type's invariant); fwrite reads `bytes.len()`
+        // bytes of `bytes`.
+        unsafe { libc::fwrite(bytes.as_ptr().cast(), 1, bytes.len(), self.as_ptr()) };
+    }
+
+    /// `fflush`.
+    pub fn flush(self) {
+        // SAFETY: an open stream (the type's invariant).
+        unsafe { libc::fflush(self.as_ptr()) };
+    }
+}
+
+/// `SwooleG.stdout`: null, or the [`Stream`] last set.
+static STDOUT: AtomicPtr<libc::FILE> = AtomicPtr::new(ptr::null_mut());
+
+/// `SwooleG.stdout`, none before one is set.
+#[unsafe(no_mangle)]
+#[must_use]
+pub extern "C" fn swr_v1_core_stdout() -> Option<Stream> {
+    // Only `swr_v1_core_set_stdout` stores, a stream's address or null.
+    ptr::NonNull::new(STDOUT.load(Ordering::Acquire)).map(Stream)
+}
+
+/// `SwooleG.stdout = stream`.
+pub fn swr_v1_core_set_stdout(stream: Option<Stream>) {
+    STDOUT.store(
+        stream.map_or(ptr::null_mut(), Stream::as_ptr),
+        Ordering::Release,
+    );
+}
+
+/// `SwooleG.print_backtrace`: the host's own backtrace, typed as the call it is.
+static PRINT_BACKTRACE: Mutex<Option<extern "C" fn()>> = Mutex::new(None);
+
+fn backtrace_hook() -> std::sync::MutexGuard<'static, Option<extern "C" fn()>> {
+    PRINT_BACKTRACE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// `SwooleG.print_backtrace`, none until the host sets one.
+#[must_use]
+pub fn swr_v1_core_print_backtrace() -> Option<extern "C" fn()> {
+    *backtrace_hook()
+}
+
+/// `SwooleG.print_backtrace = hook`.
+pub fn swr_v1_core_set_print_backtrace(hook: Option<extern "C" fn()>) {
+    *backtrace_hook() = hook;
 }
 
 /// The two `double` fields travel as their bit patterns, so the record needs
@@ -180,6 +271,8 @@ pub fn bug_report_append(text: &[u8]) {
 pub fn swr_v1_core_reset() {
     reset_record();
     set_fatal_error(None);
+    swr_v1_core_set_print_backtrace(None);
+    swr_v1_core_set_stdout(None);
     bug_report().clear();
 }
 
@@ -310,7 +403,7 @@ pub extern "C" fn sw_logger() -> *mut c_void {
     all(feature = "upstream-symbols", not(target_vendor = "apple")),
     unsafe(export_name = "_Z24swoole_set_stdout_streamP8_IO_FILE")
 )]
-pub extern "C" fn swoole_set_stdout_stream(stream: *mut c_void) {
+pub extern "C" fn swoole_set_stdout_stream(stream: Option<Stream>) {
     swr_v1_core_set_stdout(stream);
 }
 
@@ -320,17 +413,15 @@ pub extern "C" fn swoole_set_stdout_stream(stream: *mut c_void) {
     unsafe(export_name = "_Z24swoole_get_stdout_streamv")
 )]
 #[must_use]
-pub extern "C" fn swoole_get_stdout_stream() -> *mut c_void {
+pub extern "C" fn swoole_get_stdout_stream() -> Option<Stream> {
     swr_v1_core_stdout()
 }
 
 /// `sw_printf("%s", ...)` of `bytes`: Swoole's stdout stream, which
 /// `swoole_set_stdout_stream` replaces; nothing before one is set.
 pub fn sw_print(bytes: &[u8]) {
-    let out = swr_v1_core_stdout();
-    if !out.is_null() {
-        // SAFETY: Swoole's open stdout stream; fwrite reads `bytes.len()` bytes of `bytes`.
-        unsafe { libc::fwrite(bytes.as_ptr().cast(), 1, bytes.len(), out.cast()) };
+    if let Some(out) = swr_v1_core_stdout() {
+        out.write(bytes);
     }
 }
 
@@ -384,11 +475,12 @@ mod tests {
     fn record_lifecycle() {
         swr_v1_core_reset();
         let pool = ptr::from_mut(&mut 7_u8).cast::<c_void>();
-        swr_v1_core_set_stdout(pool);
+        let stdout = Some(Stream::stdout());
+        swr_v1_core_set_stdout(stdout);
         assert!(swr_v1_core_init());
         assert!(swr_v1_core_initialized());
         // Initialisation starts from a reset record.
-        assert!(swr_v1_core_stdout().is_null());
+        assert!(swr_v1_core_stdout().is_none());
         assert!(swr_v1_core_cpu_num() >= 1);
         assert_eq!(swr_v1_core_dns_tries(), 1);
         assert!(swr_v1_core_running() && swr_v1_core_enable_coroutine());
@@ -397,7 +489,7 @@ mod tests {
         assert_eq!(swr_v1_core_max_file_content(), 64 * 1024 * 1024);
         swr_v1_core_set_wait_signal(true);
         swr_v1_core_set_dns_lookup_random(true);
-        swr_v1_core_set_stdout(pool);
+        swr_v1_core_set_stdout(stdout);
         swr_v1_core_set_logger(pool);
         swr_v1_core_set_signal_fd(-1);
         swr_v1_core_set_current_task_id(c_long::MAX);
@@ -406,7 +498,7 @@ mod tests {
         swoole_set_trace_flags(0x7fff_ffff);
         assert!(!swr_v1_core_init(), "a second init is a no-op");
         assert!(swr_v1_core_wait_signal() && swr_v1_core_dns_lookup_random());
-        assert_eq!(swr_v1_core_stdout(), pool);
+        assert_eq!(swr_v1_core_stdout(), stdout);
         assert_eq!(swr_v1_core_logger(), pool);
         assert_eq!(swr_v1_core_signal_fd(), -1);
         assert_eq!(swr_v1_core_current_task_id(), c_long::MAX);
@@ -427,7 +519,7 @@ mod tests {
         assert!(!swr_v1_core_initialized());
         assert_eq!(swr_v1_core_cpu_num(), 0);
         assert!(!swr_v1_core_running() && !swr_v1_core_wait_signal());
-        assert!(swr_v1_core_stdout().is_null() && swr_v1_core_logger().is_null());
+        assert!(swr_v1_core_stdout().is_none() && swr_v1_core_logger().is_null());
         assert_eq!(swr_v1_core_signal_fd(), 0);
         assert_eq!(swr_v1_core_aio_max_wait_time().to_bits(), 0);
         assert_eq!(bug_report_message(), "");
