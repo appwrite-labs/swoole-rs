@@ -177,43 +177,43 @@ impl<S: TlsSocket> Tls<'_, S> {
         &self,
         function: &CStr,
         mut io: impl FnMut() -> Result<usize, SslFailure>,
-    ) -> isize {
+    ) -> Option<usize> {
         loop {
             let moved = io();
             if !self.prepare() {
-                return -1;
+                return None;
             }
             match moved {
-                Ok(count) => return isize::try_from(count).unwrap_or(-1),
+                Ok(count) => return Some(count),
                 Err(failure) => {
                     if !self.perform(failure, function) {
-                        return -1;
+                        return None;
                     }
                 }
             }
         }
     }
 
-    /// `ssl_recv`: decrypted bytes into `buf`, or -1.
-    pub(crate) fn recv(&self, buf: &mut [impl ReadSlot]) -> isize {
-        let Some(ssl) = self.ssl else {
-            return -1;
-        };
+    /// `ssl_recv`: decrypted bytes into `buf`, or `None`.
+    pub(crate) fn recv(&self, buf: &mut [impl ReadSlot]) -> Option<usize> {
+        let ssl = self.ssl?;
         self.transfer(c"ssl_recv", || ssl.read(buf))
     }
 
-    /// `ssl_send`: bytes of `buf` encrypted and sent, or -1.
-    pub(crate) fn send(&self, buf: &[u8]) -> isize {
-        let Some(ssl) = self.ssl else {
-            return -1;
-        };
+    /// `ssl_send`: bytes of `buf` encrypted and sent, or `None`.
+    pub(crate) fn send(&self, buf: &[u8]) -> Option<usize> {
+        let ssl = self.ssl?;
         self.transfer(c"ssl_send", || ssl.write(buf))
     }
 
     /// `send_once` / `recv_once`: `io` is the network socket's `send` or `recv`,
     /// and `want` its `ssl_want_read` (bit 0) and `ssl_want_write` (bit 1).
     /// Without a TLS session it runs once.
-    pub(crate) fn once(&self, mut io: impl FnMut() -> isize, want: impl FnMut() -> c_int) -> isize {
+    pub(crate) fn once(
+        &self,
+        mut io: impl FnMut() -> Option<usize>,
+        want: impl FnMut() -> c_int,
+    ) -> Option<usize> {
         if self.ssl.is_none() {
             return io();
         }
@@ -251,27 +251,21 @@ impl<S: TlsSocket> Tls<'_, S> {
 /// BIO pumps the socket's want flags (`want`: bit 0 read, bit 1 write, read
 /// afresh at each check as upstream does) ask for, until `io` moves bytes.
 fn once(
-    mut io: impl FnMut() -> isize,
+    mut io: impl FnMut() -> Option<usize>,
     mut want: impl FnMut() -> c_int,
     mut prepare: impl FnMut() -> bool,
     mut read: impl FnMut() -> bool,
     mut write: impl FnMut() -> bool,
-) -> isize {
+) -> Option<usize> {
     loop {
         let n = io();
-        if n == -1 && want() == 0 {
-            return -1;
+        if n.is_none() && want() == 0 {
+            return None;
         }
-        if !prepare() {
-            return -1;
+        if !prepare() || want() & 1 != 0 && !read() || want() & 2 != 0 && !write() {
+            return None;
         }
-        if want() & 1 != 0 && !read() {
-            return -1;
-        }
-        if want() & 2 != 0 && !write() {
-            return -1;
-        }
-        if n >= 0 {
+        if n.is_some() {
             return n;
         }
     }
@@ -336,7 +330,7 @@ mod tests {
         let mut attempts = [-1, -1, 5].into_iter();
         let mut wants = [1, 1, 0, 2, 0, 2, 0, 0].into_iter();
         let n = once(
-            || attempts.next().unwrap(),
+            || usize::try_from(attempts.next().unwrap()).ok(),
             || wants.next().unwrap(),
             || {
                 steps.borrow_mut().push("prepare");
@@ -351,7 +345,7 @@ mod tests {
                 true
             },
         );
-        assert_eq!(n, 5);
+        assert_eq!(n, Some(5));
         assert_eq!(
             steps.into_inner(),
             ["prepare", "read", "prepare", "write", "prepare"]
@@ -361,11 +355,14 @@ mod tests {
     #[test]
     fn once_fails_without_a_want_or_a_pump() {
         assert_eq!(
-            once(|| -1, || 0, || panic!("prepare"), || true, || true),
-            -1
+            once(|| None, || 0, || panic!("prepare"), || true, || true),
+            None
         );
-        assert_eq!(once(|| -1, || 1, || true, || false, || panic!("write")), -1);
-        assert_eq!(once(|| 3, || 0, || false, || true, || true), -1);
+        assert_eq!(
+            once(|| None, || 1, || true, || false, || panic!("write")),
+            None
+        );
+        assert_eq!(once(|| Some(3), || 0, || false, || true, || true), None);
     }
 
     #[test]
@@ -506,13 +503,13 @@ mod tests {
                 "errCode 0"
             );
 
-            assert_eq!(tls.send(b"ping"), 4);
+            assert_eq!(tls.send(b"ping"), Some(4));
 
             let mut buf = [0_u8; 16];
-            assert_eq!(tls.recv(&mut buf), 2);
+            assert_eq!(tls.recv(&mut buf), Some(2));
 
             // the next read sees the close_notify
-            assert!(tls.recv(&mut buf) <= 0);
+            assert!(tls.recv(&mut buf) <= Some(0));
             assert_eq!(
                 ERRORS.with(|errors| errors.borrow().clone()),
                 [SSL_RESET, -1],

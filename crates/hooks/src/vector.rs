@@ -172,18 +172,21 @@ impl<'a> IoVector<'a> {
     /// Advance past a transfer's `result`. It takes `&mut self`, so no transfer
     /// holding [`iovecs`](Self::iovecs) can advance the vector itself.
     #[cfg(feature = "iouring")]
-    pub(crate) fn update(&mut self, result: isize) {
-        self.owner.advance(result);
+    pub(crate) fn update(&mut self, result: Option<usize>) {
+        self.owner.advance(result.map_or(-1, usize::cast_signed));
     }
 
     /// `io` over each remaining buffer in order while it moves data, again over what a
     /// short transfer left of one. The bytes moved, or the failing result when none
     /// moved; the caller advances the vector by that, once ([`update`](Self::update)).
     #[cfg(feature = "iouring")]
-    pub(crate) fn transfer_each(&mut self, mut io: impl FnMut(Lent<'_>) -> isize) -> isize {
+    pub(crate) fn transfer_each(
+        &mut self,
+        mut io: impl FnMut(Lent<'_>) -> Option<usize>,
+    ) -> Option<usize> {
         let write = self.write();
-        let mut total = 0isize;
-        let mut result = 0isize;
+        let mut total = 0;
+        let mut result = Some(0);
         'iovecs: for iov in self.iovecs() {
             let mut done = 0usize;
             while done < iov.iov_len {
@@ -198,14 +201,14 @@ impl<'a> IoVector<'a> {
                     // invariant); lent for this call only, one buffer at a time.
                     Lent::Read(unsafe { core::slice::from_raw_parts_mut(at.cast(), n) })
                 });
-                if result <= 0 {
+                let Some(moved @ 1..) = result else {
                     break 'iovecs;
-                }
-                total += result;
-                done += result.unsigned_abs();
+                };
+                total += moved;
+                done += moved;
             }
         }
-        if total > 0 { total } else { result }
+        if total > 0 { Some(total) } else { result }
     }
 
     /// `Socket::readv(io_vector)` or `writev` on `socket`, in the direction the vector
