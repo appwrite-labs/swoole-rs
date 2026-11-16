@@ -125,12 +125,6 @@ unsafe extern "C" {
         multi: Option<LiveMulti<'_>>,
         milliseconds: &mut c_long,
     ) -> CURLMcode;
-    pub fn curl_multi_socket_action(
-        multi: *mut CURLM,
-        s: curl_socket_t,
-        ev_bitmask: c_int,
-        running_handles: *mut c_int,
-    ) -> CURLMcode;
     /// The next message of the handle's queue, which libcurl keeps until the handle's
     /// next call, or null (as without a handle): it pops the queue and runs no callback.
     pub safe fn curl_multi_info_read(
