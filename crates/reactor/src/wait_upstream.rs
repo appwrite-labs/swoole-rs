@@ -33,11 +33,11 @@ mod registry {
         wait_reap(signo, &COROUTINES);
     }
 
-    extern "C-unwind" fn no_waiters(_event_num: &mut usize) -> bool {
+    fn no_waiters(_event_num: &mut usize) -> bool {
         wait_count() == 0
     }
 
-    extern "C-unwind" fn destroyed(_data: *mut c_void) {
+    fn destroyed() {
         SIGNAL_READY.store(false, Ordering::Relaxed);
         signal_upstream::clear();
     }

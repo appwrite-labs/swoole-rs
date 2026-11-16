@@ -15,7 +15,7 @@ use std::ffi::c_int;
 pub type EndFn = extern "C-unwind" fn();
 /// An exit condition a caller sets: whether the loop may exit, given the event count it
 /// may change for the conditions after it.
-pub type ExitFn = extern "C-unwind" fn(&mut usize) -> bool;
+pub type ExitFn = fn(&mut usize) -> bool;
 
 /// `Reactor::EndCallback` (`PRIORITY_*`): the order the end callbacks run in, the
 /// `io_uring` submit last because the others may queue entries for it.
@@ -419,27 +419,27 @@ mod tests {
         });
     }
 
-    extern "C-unwind" fn exit1(n: &mut usize) -> bool {
+    fn exit1(n: &mut usize) -> bool {
         push(1);
         assert_eq!(*n, 0);
         *n += 7;
         true
     }
-    extern "C-unwind" fn exit2(n: &mut usize) -> bool {
+    fn exit2(n: &mut usize) -> bool {
         push(2);
         assert_eq!(*n, 7);
         false
     }
-    extern "C-unwind" fn exit3(n: &mut usize) -> bool {
+    fn exit3(n: &mut usize) -> bool {
         push(3);
         assert_eq!(*n, 7);
         true
     }
-    extern "C-unwind" fn refuse(_: &mut usize) -> bool {
+    fn refuse(_: &mut usize) -> bool {
         push(3);
         false
     }
-    extern "C-unwind" fn exit_mutating(n: &mut usize) -> bool {
+    fn exit_mutating(n: &mut usize) -> bool {
         push(1);
         set_exit(2, exit3);
         callbacks().set_exit(condition(3), None);

@@ -8,8 +8,6 @@
 use crate::ReactorPrepared;
 use crate::socket_sync::set_errno;
 use std::ffi::c_int;
-#[cfg(target_os = "linux")]
-use std::ffi::c_void;
 use swoole_rs_corebase::log;
 pub use swoole_rs_process::signal::Handler;
 use swoole_rs_process::signal::signal_name;
@@ -120,7 +118,7 @@ fn report(report: Report) {
 
 #[cfg(target_os = "linux")]
 mod descriptor {
-    use super::{FD_SIGNAL, OPS, c_int, c_void, socket_free};
+    use super::{FD_SIGNAL, OPS, c_int, socket_free};
     use crate::event_api::{
         FdHandler, event_add, event_del, isset_handler, swoole_event_set_fd_handler,
     };
@@ -186,12 +184,12 @@ mod descriptor {
         }
     }
 
-    extern "C-unwind" fn destroyed(_data: *mut c_void) {
+    fn destroyed() {
         swoole_rs_process::signal_loop::destroyed(&OPS);
     }
 
     /// The signalfd's exit condition, which the reactor calls with its event count.
-    extern "C-unwind" fn exit_condition(event_num: &mut usize) -> bool {
+    fn exit_condition(event_num: &mut usize) -> bool {
         swoole_rs_process::signal_loop::exit_condition(event_num)
     }
 

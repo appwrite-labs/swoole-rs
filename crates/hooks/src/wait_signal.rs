@@ -314,7 +314,7 @@ mod native {
         swoole_event_defer_value(change).is_ok()
     }
 
-    extern "C-unwind" fn listeners_done(_: &mut usize) -> bool {
+    fn listeners_done(_: &mut usize) -> bool {
         swr_v1_core_signal_async_listener_num() == 0
     }
 

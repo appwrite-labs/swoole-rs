@@ -1058,6 +1058,7 @@ unsafe extern "C" fn kill_on_receive(
 }
 
 unsafe extern "C" fn kill_on_worker_stop(_: *mut c_void, serv: *mut c_void, _: *mut WorkerRecord) {
+    super::timeline::mark("worker stop");
     server_methods::close(Server(serv).view(), c_long::from(counter_get(4)), false);
     event_worker::native::drain_worker_pipe(Server(serv).view());
 }
@@ -1079,6 +1080,7 @@ unsafe extern "C" fn kill_on_worker_start(
     serv: *mut c_void,
     worker: *mut WorkerRecord,
 ) {
+    super::timeline::mark("worker start");
     let options = kill_options();
     let c = counter_incr(1, 1) - 1;
     if options.worker_exit_callback {
@@ -1161,15 +1163,18 @@ fn kill_client(serv: Server, port: u16, victim: fn() -> c_int) -> JoinHandle<()>
         let rn = sync_recv(&mut c);
         expect(rn == 2, "rn == 2");
 
+        super::timeline::mark("client kills a worker");
         kill_worker(serv, victim());
 
         let rn = sync_recv(&mut c);
+        super::timeline::mark("client EOF");
         expect(rn == 0, "rn == 0");
 
         counter_incr(3, 1);
 
         sleep(0.05);
 
+        super::timeline::mark("client shutdown");
         shutdown(serv);
     })
 }
@@ -1200,13 +1205,16 @@ fn test_kill_worker(mode: c_int, options: Options) {
 
     let t = kill_client(serv, port.unwrap().port(), || 1 - counter_get(5));
 
+    super::timeline::arm();
     assert_eq!(serv.start(), SW_OK);
     t.join().unwrap();
 
     assert_eq!(counter_get(0), 1); // Client receive
     assert_eq!(
         counter_get(1),
-        if options.test_shutdown_event { 4 } else { 3 }
+        if options.test_shutdown_event { 4 } else { 3 },
+        "{}",
+        super::timeline::render()
     ); // Server onWorkerStart
     assert_eq!(counter_get(2), 1); // Server onClose
     assert_eq!(counter_get(3), 1); // Client close
