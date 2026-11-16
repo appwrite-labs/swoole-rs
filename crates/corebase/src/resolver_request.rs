@@ -9,7 +9,6 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use std::ffi::CString;
 use std::ptr::{self, NonNull};
 
-#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ResolverFields {
     pub family: c_int,
@@ -38,7 +37,6 @@ pub struct ResolverRequest {
     /// Set whole by `lookup`; readers take it out and put it back around a copy.
     results: Cell<Vec<libc::sockaddr_in6>>,
 }
-#[repr(C)]
 pub struct PreparedResolver {
     pub owner: *mut ResolverRequest,
     pub fields: *mut ResolverFields,
@@ -307,7 +305,6 @@ struct ResolverText {
     valid: bool,
 }
 
-#[repr(C)]
 pub struct ResolverCompletion {
     pub error: c_int,
     pub failed: bool,

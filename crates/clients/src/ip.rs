@@ -2,7 +2,6 @@
 //! layouts, publication and resolver/errno effects stay outside Rust.
 use std::net::{Ipv4Addr, Ipv6Addr};
 use swoole_rs_corebase::net_address::{ipv4, ipv6};
-#[repr(C)]
 pub struct ClientsIp {
     pub bytes: [u8; 16],
     pub length: u32,
@@ -54,7 +53,6 @@ pub fn swr_v1_clients_loopback(version: u8, address: &[u8]) -> u8 {
     })
 }
 
-#[repr(C)]
 pub struct ClientsIpText {
     pub bytes: [u8; 40],
     pub length: u32,
