@@ -2,6 +2,7 @@
 //! value or an array, or freed.
 use crate::sys::{swr_zend_string_alloc, zend_string, zend_ulong};
 use std::{io::IoSlice, mem::offset_of};
+use swoole_rs_corebase::lent::{Spare, SpareVectors, lend_spare, lend_spare_vectors};
 
 unsafe extern "C" {
     /// `zend_hash_func`: it reads the lent bytes (an `IoSlice` is an iovec) only.
@@ -142,6 +143,43 @@ impl ZBuf {
     #[inline]
     pub unsafe fn set_len(&mut self, len: usize) {
         self.len = len;
+    }
+
+    /// Appends what `fill` writes into the room past the written bytes: what it
+    /// returned.
+    #[inline]
+    pub fn fill<R>(&mut self, fill: impl for<'s> FnOnce(&mut Spare<'s>) -> R) -> R {
+        self.fill_within(usize::MAX, fill)
+    }
+
+    /// [`fill`](Self::fill) of at most `limit` bytes.
+    #[inline]
+    pub fn fill_within<R>(
+        &mut self,
+        limit: usize,
+        fill: impl for<'s> FnOnce(&mut Spare<'s>) -> R,
+    ) -> R {
+        let room = self.spare_capacity_mut();
+        let limit = limit.min(room.len());
+        let (result, filled) = lend_spare(room.get_mut(..limit).unwrap_or_default(), fill);
+        self.len += filled;
+        result
+    }
+
+    /// Lends these buffers' remaining rooms to one vectored receive, counting
+    /// the initialized prefix across them in order.
+    pub fn fill_vectored<R>(
+        buffers: &mut [Self],
+        fill: impl for<'s> FnOnce(&mut SpareVectors<'s>) -> R,
+    ) -> R {
+        let (result, mut filled) =
+            lend_spare_vectors(buffers.iter_mut().map(Self::spare_capacity_mut), fill);
+        for buffer in buffers {
+            let count = filled.min(buffer.capacity - buffer.len);
+            buffer.len += count;
+            filled -= count;
+        }
+        result
     }
 
     /// Count only the first `len` bytes as written; nothing when fewer are.

@@ -31,19 +31,10 @@ pub(super) fn close(sock: Sock, socket: Co) -> Result<(), Bailout> {
     }
     // The original no-verify lookup of the imported stream's zval.
     let stream = sock.data().stream();
-    if !stream.is_null() {
-        let mut flags = z::PHP_STREAM_FREE_KEEP_RSRC | z::PHP_STREAM_FREE_CLOSE;
-        // SAFETY: read the real PHP stream bitfield before calling its close operation.
-        if unsafe { (*stream).is_persistent() } != 0 {
-            flags |= z::PHP_STREAM_FREE_CLOSE_PERSISTENT;
-        }
-        let flags = i32::try_from(flags).unwrap_or_else(|_| {
-            swoole_rs_corebase::fatal("PHP stream close flags overflow an int")
-        });
-        // SAFETY: PHP owns this stream; retain its resource slot while closing it inside zend_try.
-        if unsafe { z::swr_zend_try_stream_free(stream, flags) } != 0 {
-            return Err(Bailout);
-        }
+    // SAFETY: the live stream PHP owns; its resource slot stays while it
+    // closes inside zend_try.
+    if !stream.is_null() && unsafe { z::swr_zend_try_stream_free(stream) } != 0 {
+        return Err(Bailout);
     }
     // The original close discards this now-invalid resource slot without another dtor.
     sock.forget_stream();

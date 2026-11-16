@@ -241,16 +241,8 @@ impl PoolRecord {
             return None;
         }
         // SAFETY: `workers` holds the pool's `worker_num` records, live as long as the
-        // pool (the field is crate-private; `set_workers` states it).
+        // pool (the field is crate-private, and only `PoolRef::set_workers` publishes it).
         Some(unsafe { Worker::new(self.workers.wrapping_add(index)) })
-    }
-
-    /// Sets `workers`.
-    ///
-    /// # Safety
-    /// `workers` holds the pool's `worker_num` records, live as long as the pool.
-    pub unsafe fn set_workers(&mut self, workers: *mut WorkerRecord) {
-        self.workers = workers;
     }
 
     /// The pool's worker at `raw`, or `None` when `raw` is none of its records.
@@ -318,7 +310,6 @@ impl PoolRecord {
 /// `unsafe` setters, so safe code can't forge them, and the operations check each
 /// pointer for null before using it.
 #[derive(Clone, Copy)]
-#[repr(transparent)]
 pub struct PoolRef<'a> {
     raw: *mut PoolRecord,
     live: core::marker::PhantomData<&'a PoolRecord>,
@@ -538,22 +529,20 @@ impl<'a> PoolRef<'a> {
 }
 
 /// `swoole::RecvData`: a message's head and its bytes, lent for one `onMessage`.
-#[repr(C)]
 pub struct RecvData<'a> {
     info: DataHead,
-    data: *const u8,
-    borrowed: core::marker::PhantomData<&'a [u8]>,
+    data: &'a [u8],
 }
 
 impl<'a> RecvData<'a> {
-    /// A message of `data`, its head's `len` their length.
+    /// A message of `data` (at most `u32::MAX` bytes of it), its head's `len` their
+    /// length.
     #[must_use]
     pub fn new(info: DataHead, data: &'a [u8]) -> Self {
         let len = u32::try_from(data.len()).unwrap_or(u32::MAX);
         Self {
             info: DataHead { len, ..info },
-            data: data.as_ptr(),
-            borrowed: core::marker::PhantomData,
+            data: data.get(..len as usize).unwrap_or(data),
         }
     }
 
@@ -564,38 +553,32 @@ impl<'a> RecvData<'a> {
 
     #[must_use]
     pub fn data(&self) -> &'a [u8] {
-        // SAFETY: only `new` constructs the private fields from a live slice;
-        // its lifetime is retained and its length cannot be changed by callers.
-        unsafe { core::slice::from_raw_parts(self.data, self.info.len as usize) }
+        self.data
     }
 }
 
-/// The pool's callbacks, in `ProcessPool`'s C layout (`swoole_rs_process_views.h`).
-/// Each takes the live pool and the objects of the event, which the pool lends for
-/// the call. `C-unwind`, as a PHP bailout longjmps over them.
+/// The pool's callbacks. Each takes the live pool and the objects of the event,
+/// which the pool lends for the call.
 ///
 /// A hook runs only through the pool that holds it ([`PoolRef::call_on_start`] and
 /// the calls beside it), and only its owner installs it ([`PoolRef::install`]). So a
 /// hook whose other arguments are handles and references is a safe fn: the pool it
 /// is given is the one it was installed on.
-pub type PoolFn = extern "C-unwind" fn(PoolRef<'_>);
+pub type PoolFn = fn(PoolRef<'_>);
 /// `onWorkerStart`, `onWorkerStop`, `onWorkerExit`.
-pub type WorkerFn = extern "C-unwind" fn(PoolRef<'_>, Worker<'_>);
+pub type WorkerFn = fn(PoolRef<'_>, Worker<'_>);
 /// `main_loop`: the worker's loop, and its exit code.
-pub type MainLoopFn = extern "C-unwind" fn(PoolRef<'_>, Worker<'_>) -> c_int;
+pub type MainLoopFn = fn(PoolRef<'_>, Worker<'_>) -> c_int;
 /// `onTask`: the task the worker read.
-pub type TaskFn = extern "C-unwind" fn(PoolRef<'_>, Worker<'_>, Packed<'_>) -> c_int;
+pub type TaskFn = fn(PoolRef<'_>, Worker<'_>, Packed<'_>) -> c_int;
 /// `onMessage`: the message, lent for the call.
-pub type MessageFn = extern "C-unwind" fn(PoolRef<'_>, &RecvData<'_>);
+pub type MessageFn = fn(PoolRef<'_>, &RecvData<'_>);
 /// `onWorkerMessage`: the `EventData` the master popped, as its bytes.
-pub type EventFn = extern "C-unwind" fn(
-    PoolRef<'_>,
-    &[u8; swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize],
-);
+pub type EventFn = fn(PoolRef<'_>, &[u8; swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize]);
 /// `onWorkerError`.
-pub type ErrorFn = extern "C-unwind" fn(PoolRef<'_>, Worker<'_>, &crate::methods::ExitStatus);
+pub type ErrorFn = fn(PoolRef<'_>, Worker<'_>, &crate::methods::ExitStatus);
 /// `onWorkerNotFound`.
-pub type NotFoundFn = extern "C-unwind" fn(PoolRef<'_>, &crate::methods::ExitStatus);
+pub type NotFoundFn = fn(PoolRef<'_>, &crate::methods::ExitStatus);
 
 /// What a pool's owner installs ([`PoolRef::install`]): its hooks. `None` leaves what
 /// the pool has.
@@ -603,11 +586,14 @@ pub type NotFoundFn = extern "C-unwind" fn(PoolRef<'_>, &crate::methods::ExitSta
 pub struct Hooks {
     pub on_start: Option<PoolFn>,
     pub on_shutdown: Option<PoolFn>,
+    pub on_before_reload: Option<PoolFn>,
+    pub on_after_reload: Option<PoolFn>,
     pub on_task: Option<TaskFn>,
     pub on_worker_start: Option<WorkerFn>,
     pub on_message: Option<MessageFn>,
     pub on_worker_exit: Option<WorkerFn>,
     pub on_worker_stop: Option<WorkerFn>,
+    pub on_worker_error: Option<ErrorFn>,
     pub on_worker_message: Option<EventFn>,
     pub on_worker_not_found: Option<NotFoundFn>,
     pub main_loop: Option<MainLoopFn>,
@@ -625,6 +611,12 @@ impl PoolRef<'_> {
         if hooks.on_shutdown.is_some() {
             self.set_on_shutdown(hooks.on_shutdown);
         }
+        if hooks.on_before_reload.is_some() {
+            self.set_on_before_reload(hooks.on_before_reload);
+        }
+        if hooks.on_after_reload.is_some() {
+            self.set_on_after_reload(hooks.on_after_reload);
+        }
         if hooks.on_task.is_some() {
             self.set_on_task(hooks.on_task);
         }
@@ -639,6 +631,9 @@ impl PoolRef<'_> {
         }
         if hooks.on_worker_stop.is_some() {
             self.set_on_worker_stop(hooks.on_worker_stop);
+        }
+        if hooks.on_worker_error.is_some() {
+            self.set_on_worker_error(hooks.on_worker_error);
         }
         if hooks.on_worker_message.is_some() {
             self.set_on_worker_message(hooks.on_worker_message);
@@ -987,9 +982,11 @@ const _: () = assert!(
     "DataHead heads an EventData"
 );
 
-/// `head`'s bytes, in its C layout.
+/// `head`'s bytes, in its C layout: each field's native bytes at its offset.
 #[must_use]
-pub fn head_view(head: &DataHead) -> &[u8; EVENT_DATA] {
+#[inline]
+pub fn head_view(head: &DataHead) -> [u8; EVENT_DATA] {
+    use core::mem::offset_of;
     // Every byte of a `DataHead` is a field's: its fields end where the next begins.
     const _: () = assert!(
         core::mem::offset_of!(DataHead, time) + size_of::<f64>() == EVENT_DATA
@@ -1004,9 +1001,34 @@ pub fn head_view(head: &DataHead) -> &[u8; EVENT_DATA] {
             && core::mem::offset_of!(DataHead, time) == 32,
         "DataHead has no padding"
     );
-    // SAFETY: a live head of `EVENT_DATA` initialized bytes (no padding, checked
-    // above), borrowed as long as the head; bytes have no alignment.
-    unsafe { &*ptr::from_ref(head).cast() }
+    let fields: [(usize, &[u8]); 10] = [
+        (offset_of!(DataHead, fd), &head.fd.to_ne_bytes()),
+        (offset_of!(DataHead, msg_id), &head.msg_id.to_ne_bytes()),
+        (offset_of!(DataHead, len), &head.len.to_ne_bytes()),
+        (
+            offset_of!(DataHead, reactor_id),
+            &head.reactor_id.to_ne_bytes(),
+        ),
+        (offset_of!(DataHead, kind), &[head.kind]),
+        (offset_of!(DataHead, flags), &[head.flags]),
+        (
+            offset_of!(DataHead, server_fd),
+            &head.server_fd.to_ne_bytes(),
+        ),
+        (
+            offset_of!(DataHead, ext_flags),
+            &head.ext_flags.to_ne_bytes(),
+        ),
+        (offset_of!(DataHead, reserved), &head.reserved.to_ne_bytes()),
+        (offset_of!(DataHead, time), &head.time.to_ne_bytes()),
+    ];
+    let mut bytes = [0; EVENT_DATA];
+    for (at, field) in fields {
+        if let Some(to) = bytes.get_mut(at..at + field.len()) {
+            to.copy_from_slice(field);
+        }
+    }
+    bytes
 }
 
 /// A pool effect, which `crates/server/src/pool_native.rs` answers; the process-wide
@@ -1145,6 +1167,13 @@ pub(crate) struct Native<'a> {
     pool: PoolRef<'a>,
 }
 
+impl<'a> Native<'a> {
+    /// A call over the pool and `worker`, when it is one of the pool's records.
+    fn call(&self, worker: *const c_void) -> PoolCall<'a> {
+        PoolCall::new(self.pool, self.pool.worker_of(worker.cast()))
+    }
+}
+
 impl PoolHost for Native<'_> {
     fn op(&mut self, worker: *mut c_void, op: Op, arg: u64) {
         if let Op::Log(kind) = op {
@@ -1156,7 +1185,7 @@ impl PoolHost for Native<'_> {
             return;
         }
         // A native effect on the live pool this export runs over.
-        self.native.call(&PoolCall::new(self.pool, worker), op, arg);
+        self.native.call(&self.call(worker), op, arg);
     }
 
     /// The message queue is Rust's on every platform (crates/ossupport).
@@ -1165,8 +1194,7 @@ impl PoolHost for Native<'_> {
     }
 
     fn event_init(&mut self) -> bool {
-        self.native
-            .event_init(&PoolCall::new(self.pool, ptr::null_mut()))
+        self.native.event_init(&PoolCall::new(self.pool, None))
     }
 
     fn event_available(&mut self) -> bool {
@@ -1196,33 +1224,29 @@ impl PoolHost for Native<'_> {
     }
 
     fn new_pipe(&mut self, worker: *mut WorkerRecord) -> Result<(), PipeError> {
-        self.native
-            .new_pipe(&PoolCall::new(self.pool, worker.cast()))
+        self.native.new_pipe(&self.call(worker.cast()))
     }
 
     #[cfg(target_os = "linux")]
     fn send_buffer_size(&mut self, worker: *mut WorkerRecord) -> std::io::Result<c_int> {
-        self.native
-            .send_buffer_size(&PoolCall::new(self.pool, worker.cast()))
+        self.native.send_buffer_size(&self.call(worker.cast()))
     }
 
     fn bus_buffer(&mut self, size: usize) -> Result<(), PipeError> {
         self.native
-            .bus_buffer(&PoolCall::new(self.pool, ptr::null_mut()), size)
+            .bus_buffer(&PoolCall::new(self.pool, None), size)
     }
 
     fn add_pipe(&mut self, worker: *mut WorkerRecord) -> Result<(), PipeError> {
-        self.native
-            .add_pipe(&PoolCall::new(self.pool, worker.cast()))
+        self.native.add_pipe(&self.call(worker.cast()))
     }
 
     fn push_stop(&mut self, worker: *mut WorkerRecord) -> Result<(), PipeError> {
-        self.native
-            .push_stop(&PoolCall::new(self.pool, worker.cast()))
+        self.native.push_stop(&self.call(worker.cast()))
     }
 
     fn callback(&mut self, callback: Callback, worker: *mut c_void) -> Result<isize, Bailed> {
-        let mut call = PoolCall::new(self.pool, worker);
+        let mut call = self.call(worker);
         crate::pool::trapped(|| self.native.callback(&mut call, callback))?;
         Ok(call.result)
     }
@@ -1244,7 +1268,7 @@ impl PoolHost for Native<'_> {
     }
 
     fn close(&self, socket: *mut c_void) {
-        let mut call = PoolCall::new(self.pool, ptr::null_mut());
+        let mut call = PoolCall::new(self.pool, None);
         call.socket = socket;
         self.native.close(&call);
     }
@@ -1515,6 +1539,9 @@ setters!(
     ptr_key / set_ptr_key: *const PoolObjectKey,
     on_start / set_on_start: Option<PoolFn>,
     on_shutdown / set_on_shutdown: Option<PoolFn>,
+    on_before_reload / set_on_before_reload: Option<PoolFn>,
+    on_after_reload / set_on_after_reload: Option<PoolFn>,
+    on_worker_error / set_on_worker_error: Option<ErrorFn>,
     on_message / set_on_message: Option<MessageFn>,
     on_worker_exit / set_on_worker_exit: Option<WorkerFn>,
     on_task / set_on_task: Option<TaskFn>,
@@ -1756,7 +1783,7 @@ impl<H: PoolHost> Pool<'_, H> {
     }
 
     /// The forked worker: its callbacks and loop, then `exit`.
-    fn child(&mut self, worker: *mut WorkerRecord) -> Result<std::convert::Infallible, Bailed> {
+    fn child(&mut self, worker: *mut WorkerRecord) -> Result<!, Bailed> {
         self.on(worker, Op::WorkerInit, 0);
         if self.is_async() && !self.h.event_init() {
             // exit(3), as upstream.
@@ -2622,7 +2649,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no mmap")]
     fn create_makes_a_pipe_per_worker_and_sets_the_defaults() {
         struct PipeOwner(std::rc::Rc<std::cell::Cell<usize>>);
         impl Drop for PipeOwner {
@@ -2662,7 +2688,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no mmap")]
     fn create_stops_at_the_first_pipe_that_fails() {
         let mut fixture = Fixture::new(3);
         let mut script = Script::default();
@@ -2680,7 +2705,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no mmap")]
     fn an_unknown_ipc_mode_is_none() {
         let mut fixture = Fixture::new(1);
         let mut pool = fixture.pool(Script::default());
@@ -2718,7 +2742,7 @@ mod tests {
 
     #[test]
     fn a_bailout_in_on_start_spawns_nothing() {
-        extern "C-unwind" fn on_start(_: PoolRef<'_>) {}
+        fn on_start(_: PoolRef<'_>) {}
         let mut fixture = Fixture::new(2);
         let script = Script {
             bail: Some(Callback::Start),
@@ -2762,7 +2786,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no mmap")]
     fn detach_needs_a_running_pool_with_a_message_box() {
         let mut fixture = Fixture::new(0);
         let mut pool = fixture.pool(Script::default());
@@ -2818,7 +2841,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no mmap")]
     fn failed_stop_message_keeps_the_pool_running() {
         let mut fixture = Fixture::new(1);
         let mut script = Script::default();
@@ -2838,7 +2860,7 @@ mod tests {
 
     #[test]
     fn async_loop_still_waits_after_pipe_registration_failure() {
-        extern "C-unwind" fn on_message(_: PoolRef<'_>, _: &RecvData<'_>) {}
+        fn on_message(_: PoolRef<'_>, _: &RecvData<'_>) {}
         let mut fixture = Fixture::new(1);
         let mut script = Script::default();
         script.answers.insert(Op::AddPipe, -1);
@@ -2857,7 +2879,7 @@ mod tests {
 
     #[test]
     fn stop_outside_an_event_loop_only_shuts_down() {
-        extern "C-unwind" fn on_worker_exit(_: PoolRef<'_>, _: Worker<'_>) {}
+        fn on_worker_exit(_: PoolRef<'_>, _: Worker<'_>) {}
         let mut fixture = Fixture::new(1);
         let mut script = Script::default();
         script.answers.insert(Op::EventAvailable, 0);
@@ -2888,7 +2910,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no mmap")]
     fn push_message_needs_a_message_box_then_wakes_the_master() {
         let mut fixture = Fixture::new(0);
         let mut pool = fixture.pool(Script::default());
@@ -2900,7 +2921,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no network sockets")]
+    #[cfg_attr(miri, ignore = "Miri has no Unix sockets")]
     fn a_socket_pool_sends_a_dispatch_length_prefixed() {
         use std::io::Read;
         let path = std::env::temp_dir().join(format!("swr-pool-sync-{}.sock", std::process::id()));

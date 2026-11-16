@@ -153,17 +153,14 @@ fn add(call: &Call, persistent: bool) {
     if thread_reactor().is_null() && swoole_rs_phpprocess::timer_uses_reactor() {
         swoole_rs_phpswoole::check_reactor();
     }
-    // The timer keeps the callable as its data until `free`.
-    let (run, free) = Callable::callbacks::<Timer>();
-    let Some(id) = php::add_php(ms, persistent, run, free, callable.as_raw()) else {
-        fatal_warning(c"add timer failed");
-        callable.discard();
-        call.set_bool(false);
-        return;
-    };
-    // The timer owns it now; its destructor frees it.
-    let _owned = callable.keep(persistent.then_some(id)).into_raw();
-    call.set_long(id);
+    match php::add_php::<Timer>(ms, persistent, callable) {
+        Ok(id) => call.set_long(id),
+        Err(callable) => {
+            fatal_warning(c"add timer failed");
+            callable.discard();
+            call.set_bool(false);
+        }
+    }
 }
 
 fn after(call: &Call) {

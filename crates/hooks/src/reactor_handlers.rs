@@ -134,7 +134,7 @@ mod tests {
         reason = "the native wake's signature, which defers it"
     )]
     fn wake(co: Parked) {
-        assert_eq!(co.co(), CO);
+        assert_eq!(co.waker(), swoole_rs_coroutine::Waker::NONE);
         WOKEN.set(WOKEN.get() + 1);
     }
     fn handler(fd_type: FdType, events: Events) -> Handler {
@@ -155,7 +155,7 @@ mod tests {
 
     impl Drop for Socket {
         fn drop(&mut self) {
-            unsafe { SocketRecord::free(swoole_rs_reactor::Socket::from_ptr(self.0)) };
+            drop(unsafe { Box::from_raw(self.0) });
         }
     }
 
@@ -166,7 +166,8 @@ mod tests {
         Ok(Socket(socket))
     }
     /// The reactor fires write, then read, on the waiter's socket.
-    fn park(_: f64) -> Result<(), i32> {
+    fn park(_: f64, waker: &crate::resolve::WakerSlot) -> Result<(), i32> {
+        waker.set(Some(swoole_rs_coroutine::Waker::NONE));
         let mut event = unsafe {
             Event::of(
                 7,

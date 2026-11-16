@@ -32,7 +32,7 @@ runs:
     # from this week holds the base set, so a job with other extras downloads just those.
     # Until main saves the new week's cache, last week's still holds most packages.
     - id: apt
-      uses: actions/cache/restore@v6
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
       with:
         path: .apt-cache
         key: apt-${{ runner.os }}-${{ steps.week.outputs.sources }}-${{ steps.week.outputs.week }}-${{ hashFiles('.devcontainer/install.sh') }}-${{ inputs.runtime }}-${{ inputs.packages }}
@@ -58,7 +58,7 @@ runs:
           apt_install
         }
     - if: github.ref == 'refs/heads/main' && steps.apt.outputs.cache-hit != 'true'
-      uses: actions/cache/save@v6
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
       with:
         path: .apt-cache
         key: ${{ steps.apt.outputs.cache-primary-key }}

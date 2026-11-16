@@ -39,8 +39,9 @@ bool swr_zend_stream_zval_buffered(zval *value);
 
 /* FG(default_socket_timeout). */
 zend_long swr_zend_stream_default_timeout(void);
-/* One stream free effect inside zend_try; Rust chooses the PHP_STREAM_FREE flags. */
-int swr_zend_try_stream_free(php_stream *stream, int flags);
+/* php_stream_free(stream, KEEP_RSRC | CLOSE, and CLOSE_PERSISTENT for a
+ * persistent stream) inside zend_try: 1 if it bailed out. */
+int swr_zend_try_stream_free(php_stream *stream);
 /* Invoke one PHP transport factory with its native debug ABI, inside zend_try. */
 php_stream *swr_zend_try_stream_factory(void *factory, const char *proto, size_t protolen,
     const char *name, size_t namelen, const char *persistent, int options, int flags,

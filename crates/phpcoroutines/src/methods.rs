@@ -3,7 +3,8 @@
 //! in another coroutine may longjmp across them on the main stack.
 use crate::{
     classes,
-    context::{self, Ctx},
+    classes::ExceptionClass,
+    context::{self, Ctx, Exception},
     host::{
         self, SW_ERROR_CO_CANCELED, SW_ERROR_CO_NOT_EXISTS, SW_ERROR_INVALID_PARAMS,
         SW_ERROR_WRONG_OPERATION,
@@ -12,15 +13,7 @@ use crate::{
 };
 use std::{cell::Cell, ffi::c_long, ptr, rc::Rc};
 use swoole_rs_corebase::CCast;
-use swoole_rs_zend::{
-    Call, Callable, E_ERROR, E_WARNING, OwnedArray, Php,
-    bailout::Bailout,
-    sys::{
-        object_properties_init, swr_zend_coroutine_locate, swr_zend_coroutine_redirect,
-        swr_zend_coroutine_stack_usage, zend_class_entry, zend_exception_set_previous,
-        zend_objects_new, zend_throw_exception_internal,
-    },
-};
+use swoole_rs_zend::{Call, Callable, E_ERROR, E_WARNING, OwnedArray, Php, bailout::Bailout};
 
 /// `DEBUG_BACKTRACE_PROVIDE_OBJECT`.
 const PROVIDE_OBJECT: i64 = 1;
@@ -53,13 +46,13 @@ swoole_rs_zend::handlers! {
 /// `go()`/`Co::create()`: `(callable $func, mixed ...$params)`.
 fn create(call: &Call) {
     let (mut fci, mut fcc) = (swoole_rs_zend::EMPTY_FCI, swoole_rs_zend::EMPTY_FCC);
-    let parsed = call
+    let Ok(fcc) = call
         .arity(1, u32::MAX)
-        .and_then(|()| call.callable(1, &mut fci, &mut fcc));
-    if parsed.is_err() {
+        .and_then(|()| call.resolve(1, &mut fci, &mut fcc))
+    else {
         call.set_bool(false);
         return;
-    }
+    };
     let argc = call.num_args() - 1;
     let argv = if argc > 0 {
         call.zval(2)
@@ -76,7 +69,7 @@ fn create(call: &Call) {
     }
     match runtime::create(
         call.php(),
-        &raw mut fcc,
+        Some(fcc),
         argc,
         argv,
         &raw mut fci.function_name,
@@ -303,7 +296,7 @@ fn join(call: &Call) {
 
 /// `php_swoole_coroutine_throw_exception`: cancel `cid`, throwing `ce` in it
 /// when `throw`.
-pub(crate) fn throw_exception(cid: c_long, throw: bool, ce: *mut zend_class_entry) -> bool {
+pub(crate) fn throw_exception(cid: c_long, throw: bool, class: Option<ExceptionClass>) -> bool {
     if !throw {
         let Some(co) = host::by_cid(cid) else {
             host::set_last_error(SW_ERROR_CO_NOT_EXISTS);
@@ -315,40 +308,28 @@ pub(crate) fn throw_exception(cid: c_long, throw: bool, ce: *mut zend_class_entr
         host::set_last_error(SW_ERROR_CO_NOT_EXISTS);
         return false;
     };
+    // Registered at MINIT, before any coroutine runs.
+    let Some(class) = class else {
+        return false;
+    };
     let is_current = Some(co) == host::current();
-    let (pending, class) = task.exception();
-    if !is_current && !pending.is_null() && class == ce {
+    if !is_current && task.pending_class() == Some(class.as_ptr()) {
         host::set_last_error(SW_ERROR_CO_CANCELED);
         return false;
     }
-    // SAFETY: a registered exception class.
-    let exception = unsafe { zend_objects_new(ce) };
-    // SAFETY: a new object of `ce`.
-    unsafe { object_properties_init(exception, ce) };
-    if !is_current {
-        task.set_exception(exception, ce);
-        if !pending.is_null() {
-            // SAFETY: two live exceptions.
-            unsafe { zend_exception_set_previous(exception, pending) };
-        }
-    }
+    let exception = Exception::new(class);
     // The new exception, located in the coroutine's frame: the running one's
     // is the live Co::cancel frame, internal, so Zend redirects the user caller
     // when it returns.
-    // SAFETY: a new exception, and the frame `in_frame` installs or keeps.
-    task.in_frame(|| unsafe { swr_zend_coroutine_locate(exception) });
+    task.in_frame(|| exception.locate());
     if is_current {
         // `zend_throw_exception_object` of a zval holding it, past its
-        // Throwable check (`ce` is a Swoole exception class): Zend takes the
-        // new object's reference.
-        // SAFETY: a new exception, thrown in the running frame.
-        unsafe { zend_throw_exception_internal(exception) };
+        // Throwable check (a Swoole exception class): Zend takes the new
+        // object's reference.
+        exception.throw();
         return true;
     }
-    if pending.is_null() {
-        // SAFETY: the suspended coroutine's VM state.
-        unsafe { swr_zend_coroutine_redirect(task.vm()) };
-    }
+    task.set_exception(exception, class);
     // Even an irrevocable wait ends: the exception terminates the coroutine.
     host::cancel(co);
     true
@@ -514,8 +495,7 @@ fn get_stack_usage(call: &Call) {
         call.set_bool(false);
         return;
     };
-    // SAFETY: a VM stack chain (or the running one).
-    let usage = unsafe { swr_zend_coroutine_stack_usage(ctx.vm_stack(), cid == current) };
+    let usage = ctx.stack_usage();
     call.set_long(i64::try_from(usage).unwrap_or(i64::MAX));
 }
 

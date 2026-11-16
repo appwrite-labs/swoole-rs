@@ -8,7 +8,7 @@ variadic fatal-error hook and libc's `stdout` are crates/ffi's `src/fatal.c`. No
 C++ called the throwing `swoole_get_env` (`std::stoi`), so it left `swoole.h`; Rust reads the
 environment itself (`get_env`, which aborts where `std::stoi` would throw an
 exception nothing catches). Rust owns `SwooleG` and `SwooleTG`; `swoole::Global`
-and `swoole::ThreadGlobal` are their C++ views. `swoole_get_task_tmpdir` and
+is `SwooleG`'s C++ layout, and no C++ reads `SwooleTG`. `swoole_get_task_tmpdir` and
 `sw_thread_lock`, which nothing called, are gone.
 
 Rust holds numeric/byte/path comparison and formatting policy. Apart from the
@@ -63,7 +63,7 @@ string needing an appended slash are undefined upstream; Rust rejects them.
 
 Rust defines `swoole_thread_init`, `swoole_thread_clean`, `swoole_is_main_thread`,
 `swoole_clean` and `swoole_fork` under their C++ symbols, `swoole_init`'s body
-(`swr_v1_core_swoole_init`) and `swoole_fork_exec` (`fork_exec`, which crates/server's manager calls).
+(`swr_v1_core_swoole_init`, which crates/ffi calls by path) and `swoole_fork_exec` (`fork_exec`, which crates/server's manager calls).
 `swoole_init` itself is crates/ffi's (`src/init.rs`): each leaf in a crate above
 corebase (the stack buffer's and memory pool's `new`/`delete`, `swoole_init`'s
 native leaves, the timer, event, signal and coroutine leaves, the process logger's
@@ -90,16 +90,14 @@ host. Before that the sequences skip those leaves and `swoole_fork` returns -1.
 
 ## `SwooleTG` (`lifecycle.rs`)
 
-Each thread's `swoole::ThreadGlobal` is a Rust `thread_local` without a destructor;
-`swoole.h`'s `SwooleTG` is `*swr_v1_core_thread_global()`, so `SwooleTG.field` code
-compiles unchanged. Both sides assert the layout. `swr_v1_core_timer_slot` is
-`&SwooleTG.timer` for crates/timer and crates/server.
+Each thread's `ThreadGlobal` is a Rust `thread_local` without a destructor, read
+and written through `thread_*`/`set_thread_*`. No compiled C++ read `SwooleTG`,
+`sw_tg_buffer()` or `sw_reactor()`, so they left `swoole.h` (#4310).
 
 ## `SwooleG` (`config_state.rs`, `global.rs`)
 
 Rust defines the `SwooleG` symbol: the fields native code reads in place
-(`max_sockets`, `dns_cache_refresh_time`, `std_allocator`) followed by the bytes of
-`swoole::Global`'s empty accessor members. `task_tmpfile` lives in Rust only:
+(`max_sockets`, `dns_cache_refresh_time`, `std_allocator`). `task_tmpfile` lives in Rust only:
 `task_tmpfile()` hands each reader an `Arc<CStr>`, so a path another thread
 replaces stays alive while it is used. `set_task_tmpdir` is
 `swoole_set_task_tmpdir` under its lock, for Rust callers only. Both sides assert the layout.
@@ -113,11 +111,9 @@ guard, `cpu_num`, `dns_tries`, the flags (`running`, `enable_signalfd`,
 bug-report text, and native pointers Rust only holds (memory pool, stdout,
 logger, server, AIO pipe socket, the fatal-error and backtrace hooks). Each has a
 `swr_v1_core_<field>`/`swr_v1_core_set_<field>` pair, exported only where native
-code calls it; Rust calls the rest by path. `swoole::Global` keeps the
-member names C++ reads (`running`, `enable_coroutine`, `pagesize`) as
-`swoole::RustField` views over those pairs, so that `SwooleG.field` code
-compiles unchanged. A view can't be copied, so passing one through `...`
-fails to compile instead of printing garbage. `swr_v1_core_reset` clears the
+code calls it; Rust calls the rest by path. `swoole::Global`'s `running`,
+`enable_coroutine` and `pagesize` views over those pairs had no compiled reader,
+so they left it (#4310). `swr_v1_core_reset` clears the
 record; `swoole_clean` resets `SwooleG`'s fields, paths and name resolvers with it.
 
 `swr_v1_core_init` is `swoole_init`'s guard: false when already initialised,
@@ -133,9 +129,9 @@ Upstream's own C++ symbols defined in Rust (`export_name`): `swoole_common_divis
 `swoole_set_trace_flags`, `swoole_set_print_backtrace_on_error`, `sw_logger`,
 `swoole_set_stdout_stream`/`swoole_get_stdout_stream` (`FILE` mangles as its libc's
 struct tag), `swoole_hex2dec` (in the target's plain-char mode), both `swoole_rand` overloads, `swoole_random_int`, and
-`swoole_version`/`swoole_version_id`/`swoole_api_version_id` (C names), and
-`sw_malloc`/`sw_free`/`sw_calloc`, which call libc's allocator
-directly. `tests/modules/corebase/numbers.rs` compares the number helpers with the pinned
+`swoole_version`/`swoole_version_id`/`swoole_api_version_id` (C names). No compiled
+code calls `sw_malloc`, `sw_free` or `sw_calloc`, so Rust doesn't define them.
+`tests/modules/corebase/numbers.rs` compares the number helpers with the pinned
 `base.cc`; `swoole_itoa`, which no C++ called, is a Rust function over a slice.
 
 Whole operations in Rust (`host.rs`), with native code keeping only their

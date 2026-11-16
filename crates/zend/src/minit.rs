@@ -2,7 +2,7 @@
 //! constants, classes and their function aliases.
 use crate::{
     Class, ClassEntry, Function, Owned, Value,
-    arginfo::{ArgInfo, Table},
+    arginfo::{ArgInfo, Handler, Table},
     bailout::Bailout,
     class::Layout,
     function::{arg_info, deny},
@@ -11,7 +11,7 @@ use crate::{
     sys::{
         HashTable, IS_STRING, ZEND_ACC_NOT_SERIALIZABLE, swr_zend_try_facade_register_functions,
         zend_class_entry, zend_function, zend_function_entry, zend_internal_arg_info, zend_long,
-        zend_module_entry, zend_object_handlers, zend_string,
+        zend_module_entry, zend_object_handlers, zend_string, zif_handler,
     },
 };
 use std::{
@@ -63,6 +63,10 @@ unsafe extern "C" {
     /// `CG(function_table)`'s function `name`, or null: one lookup in the
     /// compiler's table.
     safe fn swr_zend_compiled_function_find(name: CText<'_>) -> *mut zend_function;
+    /// The internal function `name`'s handler, replaced by `handler`, which
+    /// Zend calls as it calls any: the original, or none for no such internal
+    /// function. Only [`Minit::replace_handler`] calls it, before any request.
+    safe fn swr_zend_minit_replace_handler(name: CText<'_>, handler: Handler) -> zif_handler;
     /// The php.ini entry `name`'s string, or none for an unset or non-string entry:
     /// one lookup in the configuration, filled before MINIT and freed at module
     /// shutdown. Only [`Minit::ini_string`] calls it, which ties the string to MINIT.
@@ -103,6 +107,13 @@ unsafe extern "C" {
     safe static zend_ce_countable: *mut zend_class_entry;
     /// `CG(function_table)`: one pointer of the compiler's globals is read.
     safe fn swr_zend_facade_compiler_functions() -> *mut HashTable;
+    /// Zend runs `handler` for each instruction of `opcode` from now on. Only
+    /// [`Minit::opcode_handler`] calls it, before any PHP code runs, with a
+    /// handler written for that opcode.
+    safe fn zend_set_user_opcode_handler(
+        opcode: u8,
+        handler: Option<crate::opcode::Entry>,
+    ) -> crate::sys::zend_result;
 }
 
 /// This module's MINIT, running on this thread: what makes registration safe.
@@ -132,15 +143,9 @@ macro_rules! phase {
         #[repr(transparent)]
         pub struct $name<'a>(c_int, PhantomData<&'a *mut ()>);
 
-        impl Phase for $name<'static> {}
-
         const _: () = assert!(size_of::<$name<'static>>() == size_of::<c_int>());
     )*};
 }
-
-/// The phase tokens, each a transparent `c_int`: what makes a phase function
-/// one Zend's slot for it may call ([`hook`]).
-trait Phase {}
 
 phase! {
     /// Zend's MINIT call of this module ([`Startup::with`] lends its [`Minit`]).
@@ -193,18 +198,6 @@ impl Minfo<'_> {
     }
 }
 
-/// A module phase function as Zend's entry stores it.
-type Hook = unsafe extern "C" fn(c_int, c_int) -> c_int;
-
-/// `f` as Zend's slot for phase `P` stores it.
-fn hook<P: Phase>(f: extern "C" fn(c_int, P) -> c_int) -> Hook {
-    // SAFETY: `P` is a transparent `c_int` (`phase!`), so the two function
-    // pointer types share one ABI; calling the result is unsafe, and Zend calls
-    // it only as the phase whose slot `Lifecycle::install` put it in, which is
-    // what `P` stands for.
-    unsafe { std::mem::transmute::<extern "C" fn(c_int, P) -> c_int, Hook>(f) }
-}
-
 /// A module's phase functions, each taking the token of Zend's call of it.
 pub struct Lifecycle {
     pub startup: extern "C" fn(c_int, Startup<'_>) -> c_int,
@@ -214,23 +207,32 @@ pub struct Lifecycle {
     pub info: extern "C" fn(Minfo<'_>),
 }
 
+unsafe extern "C" {
+    /// Stores the phase functions in the entry's slots, which Zend calls only
+    /// as their phase: with the module number, which a [`Startup`],
+    /// [`Shutdown`] or [`Request`] is (a transparent `c_int`), or for MINFO
+    /// with the live entry, which a [`Minfo`] is (a transparent non-null pointer).
+    safe fn swr_slot_module(
+        entry: &mut zend_module_entry,
+        startup: extern "C" fn(c_int, Startup<'_>) -> c_int,
+        shutdown: extern "C" fn(c_int, Shutdown<'_>) -> c_int,
+        request_startup: extern "C" fn(c_int, Request<'_>) -> c_int,
+        request_shutdown: extern "C" fn(c_int, Request<'_>) -> c_int,
+        info: extern "C" fn(Minfo<'_>),
+    );
+}
+
 impl Lifecycle {
     /// Put each function in `entry`'s slot for its phase.
     pub fn install(self, entry: &mut zend_module_entry) {
-        entry.module_startup_func = Some(hook::<Startup<'static>>(self.startup));
-        entry.module_shutdown_func = Some(hook::<Shutdown<'static>>(self.shutdown));
-        entry.request_startup_func = Some(hook::<Request<'static>>(self.request_startup));
-        entry.request_shutdown_func = Some(hook::<Request<'static>>(self.request_shutdown));
-        let info: extern "C" fn(Minfo<'static>) = self.info;
-        // SAFETY: `Minfo` is a transparent non-null entry pointer, so the two
-        // function pointer types share one ABI; Zend calls the slot only as
-        // the module's MINFO, with its live entry, which `Minfo` stands for.
-        entry.info_func = Some(unsafe {
-            std::mem::transmute::<
-                extern "C" fn(Minfo<'static>),
-                unsafe extern "C" fn(*mut zend_module_entry),
-            >(info)
-        });
+        swr_slot_module(
+            entry,
+            self.startup,
+            self.shutdown,
+            self.request_startup,
+            self.request_shutdown,
+            self.info,
+        );
     }
 }
 
@@ -509,6 +511,20 @@ impl Minit {
     #[must_use]
     pub fn compiled_function(&self, name: &CStr) -> *mut zend_function {
         swr_zend_compiled_function_find(name.into())
+    }
+
+    /// The compiled internal function `name` (lower case) runs `handler` from
+    /// now on: its original handler, or none when there is no such function.
+    pub fn replace_handler(&self, name: &CStr, handler: Handler) -> zif_handler {
+        swr_zend_minit_replace_handler(name.into(), handler)
+    }
+
+    /// `zend_set_user_opcode_handler(H::OPCODE, handler::<H>)`: Zend runs `H`
+    /// for each instruction of its opcode from now on.
+    pub fn opcode_handler<H: crate::opcode::Handler>(&self) {
+        if let Ok(opcode) = u8::try_from(H::OPCODE) {
+            zend_set_user_opcode_handler(opcode, Some(crate::opcode::handler::<H>));
+        }
     }
 
     /// `cfg_get_string(name)`: the php.ini entry `name`, or None when it is unset

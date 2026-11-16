@@ -15,15 +15,15 @@ jobs:
     runs-on: gcrunner=${{ github.run_id }}/runner=standard
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: ./.github/actions/install
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: release
           save-if: false
       - name: Clear cached builds
         run: rm -rf target/ext target/thirdparty
-      - uses: actions/cache/restore@v6
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: target/upstream
           key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
@@ -38,7 +38,7 @@ jobs:
         run: >
           python3 tests/modules/http2/h2spec.py --engine upstream=target/upstream/src/modules/swoole.so
           --engine cargo=target/ext/swoole.so --output target/reports/h2spec.json | tee -a "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: always()
         with:
           retention-days: ${{ github.ref != 'refs/heads/main' && 1 || 0 }}

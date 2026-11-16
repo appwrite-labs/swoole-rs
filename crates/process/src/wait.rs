@@ -9,14 +9,14 @@
 //! the reaper through `swoole_signal_dispatch`, never in a signal frame.
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::{c_int, c_void};
-use std::sync::atomic::{AtomicI32, AtomicPtr, Ordering::Relaxed};
+use std::sync::atomic::{AtomicI32, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, PoisonError};
 
 /// A coroutine waiting for a child (upstream's `WaitTask`), shared by the waiting
 /// coroutine and the registry while it is registered. The reaper hands it a child
-/// (`pid` > 0, its `status`) and resumes `co`.
+/// (`pid` > 0, its `status`) and wakes the park `wake` names.
 struct Task {
-    co: AtomicPtr<c_void>,
+    wake: Mutex<Wake>,
     pid: AtomicI32,
     status: AtomicI32,
 }
@@ -43,44 +43,28 @@ fn waits<T>(f: impl FnOnce(&mut Waits) -> T) -> T {
     f(&mut WAITS.lock().unwrap_or_else(PoisonError::into_inner))
 }
 
-/// The native coroutine operations a wait needs. Made only by [`Coroutines::new`],
-/// whose caller vouches that they suspend and resume as a wait expects, so
-/// [`wait_pid`] and [`wait_reap`] ask nothing more of theirs.
-pub struct Coroutines {
-    /// The current coroutine if this thread has a reactor, else null.
-    current: fn() -> *mut c_void,
-    /// Registers the SIGCHLD reaper and the reactor callbacks, once.
-    signal_init: fn(),
-    /// `co->yield_ex(timeout)` of the current coroutine, if any.
-    yield_for: fn(f64),
-    /// `co->is_timedout()` of the current coroutine, if any.
-    timed_out: fn() -> bool,
-    /// `co->resume()`.
-    resume: unsafe extern "C-unwind" fn(*mut c_void),
+/// A parked coroutine's waker as plain data (its id and the park it names): the
+/// runtime's [`Coroutines`] makes one as the coroutine parks and wakes it, which
+/// does nothing once that park has ended.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Wake {
+    pub cid: core::ffi::c_long,
+    pub park: u64,
 }
 
-impl Coroutines {
-    /// The operations, in their fields' order.
-    ///
-    /// # Safety
-    /// `yield_for` suspends the coroutine `current` returns (when not null) until
-    /// `resume` of it or the timeout, and `resume` resumes a coroutine suspended so.
-    #[must_use]
-    pub const unsafe fn new(
-        current: fn() -> *mut c_void,
-        signal_init: fn(),
-        yield_for: fn(f64),
-        timed_out: fn() -> bool,
-        resume: unsafe extern "C-unwind" fn(*mut c_void),
-    ) -> Self {
-        Self {
-            current,
-            signal_init,
-            yield_for,
-            timed_out,
-            resume,
-        }
-    }
+/// The coroutine operations a wait needs.
+pub struct Coroutines {
+    /// The current coroutine if this thread has a reactor, else null.
+    pub current: fn() -> *mut c_void,
+    /// Registers the SIGCHLD reaper and the reactor callbacks, once.
+    pub signal_init: fn(),
+    /// `co->yield_ex(timeout)` of the current coroutine, if any, handing its waker to
+    /// the callback before it switches out.
+    pub yield_for: fn(f64, &dyn Fn(Wake)),
+    /// `co->is_timedout()` of the current coroutine, if any.
+    pub timed_out: fn() -> bool,
+    /// `co->resume()` of the park a [`Wake`] names, if it still waits there.
+    pub wake: fn(Wake),
 }
 
 /// What `System::waitpid` returns.
@@ -133,7 +117,7 @@ pub fn wait_pid(
         };
     }
     let task = Arc::new(Task {
-        co: AtomicPtr::new(co),
+        wake: Mutex::new(Wake::default()),
         pid: AtomicI32::new(-1),
         status: AtomicI32::new(0),
     });
@@ -144,8 +128,11 @@ pub fn wait_pid(
             waits.by_pid.insert(pid, Arc::clone(&task));
         }
     });
-    // The reaper hands `task` a child while this frame is suspended here.
-    (ops.yield_for)(timeout);
+    // The reaper hands `task` a child, and wakes this park, while this frame is
+    // suspended here.
+    (ops.yield_for)(timeout, &|wake| {
+        *task.wake.lock().unwrap_or_else(PoisonError::into_inner) = wake;
+    });
     let child = task.pid();
     waits(|waits| {
         if pid >= 0 {
@@ -198,10 +185,7 @@ pub fn wait_reap(signo: c_int, ops: &Coroutines) {
         if let Some(task) = task {
             task.status.store(code, Relaxed);
             task.pid.store(child, Relaxed);
-            let co = task.co.load(Relaxed);
-            // SAFETY: `co` is suspended in `wait_pid`'s `yield_for` (only it registers
-            // a task), which `Coroutines::new`'s caller vouched `resume` resumes.
-            unsafe { (ops.resume)(co) };
+            (ops.wake)(*task.wake.lock().unwrap_or_else(PoisonError::into_inner));
         }
     }
 }
@@ -231,21 +215,19 @@ pub(crate) mod tests {
         std::ptr::dangling_mut()
     }
     fn nothing() {}
-    unsafe extern "C-unwind" fn resume(_: *mut c_void) {}
-    static PLAIN: Coroutines = unsafe {
-        Coroutines::new(
-            no_coroutine,
-            nothing,
-            reap_while_yielded,
-            not_timed_out,
-            resume,
-        )
+    fn wake(_: Wake) {}
+    static PLAIN: Coroutines = Coroutines {
+        current: no_coroutine,
+        signal_init: nothing,
+        yield_for: reap_while_yielded,
+        timed_out: not_timed_out,
+        wake,
     };
     fn not_timed_out() -> bool {
         false
     }
     /// Stands in for a suspension during which the child exits and SIGCHLD is reaped.
-    fn reap_while_yielded(_: f64) {
+    fn reap_while_yielded(_: f64, _: &dyn Fn(Wake)) {
         YIELDED.set(true);
         while wait_count() > 0 {
             wait_reap(libc::SIGCHLD, &PLAIN);
@@ -277,14 +259,9 @@ pub(crate) mod tests {
             (child, 3)
         );
 
-        let coroutine = unsafe {
-            Coroutines::new(
-                a_coroutine,
-                nothing,
-                reap_while_yielded,
-                not_timed_out,
-                resume,
-            )
+        let coroutine = Coroutines {
+            current: a_coroutine,
+            ..PLAIN
         };
         let child = spawn(5);
         let waited = wait_pid(-1, &mut status, 0, -1.0, &coroutine);

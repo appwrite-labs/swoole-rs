@@ -105,7 +105,8 @@ impl Sock {
             // The test socket's record holds the session, as a socket's does, until
             // `drop`; the record lives as long as `self`.
             let network = self.socket.0.socket.get().unwrap();
-            network.edit(|record| record.set_ssl(session.cast()));
+            network
+                .edit(|record| record.set_ssl(Some(crate::co_socket::record_ssl(session.cast()))));
             self.ops.tls = self.ops.tls.with_session(swoole_rs_tls::Ssl::of(network));
         }
     }
@@ -216,9 +217,8 @@ impl Drop for Sock {
     fn drop(&mut self) {
         unsafe {
             if let Some(session) = self.ops.tls.ssl {
-                self.ops
-                    .socket
-                    .net(swoole_rs_reactor::SocketFields::take_ssl);
+                // Freed below.
+                self.ops.socket.net(|record| record.set_ssl(None));
                 ssl::SSL_free(session.as_ptr());
             }
             libc::close(self.ops.tls.fd);

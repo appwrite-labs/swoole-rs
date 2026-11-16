@@ -15,6 +15,27 @@
 //! core-tests' main does (`swoole_init`, the case, `swoole_clean`), from the tree
 //! root (core-tests' `get_root_path()`). It exits 0 when every assertion held.
 #![expect(
+    clippy::borrow_as_ptr,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_ptr_alignment,
+    clippy::cast_sign_loss,
+    clippy::doc_markdown,
+    clippy::elidable_lifetime_names,
+    clippy::format_push_string,
+    clippy::let_underscore_must_use,
+    clippy::manual_assert_eq,
+    clippy::print_stderr,
+    clippy::print_stdout,
+    clippy::redundant_closure_for_method_calls,
+    clippy::single_match_else,
+    clippy::unnecessary_safety_comment,
+    clippy::unreadable_literal,
+    clippy::unused_self,
+    reason = "existing uses from before this port inherited [workspace.lints] (#4377); count them down"
+)]
+#![expect(
     clippy::disallowed_types,
     reason = "the clients' headers and the Redis and MQTT servers' tables: test code, off the data-layout budget"
 )]
@@ -37,13 +58,24 @@ use std::time::Duration;
 use swoole_rs_corebase::WebSocketStatus;
 use swoole_rs_ffi::frame_api::Frame;
 // The crates, once: the C++ in libswoole.a and the cases call them by symbol.
+use swoole_rs_clients::protocol::Socket;
 use swoole_rs_ffi as _;
 use swoole_rs_ports::http_routes::exports as http;
 
 mod client;
 mod http1;
 
-use http1::case::*;
+use http1::case::{
+    swr_case_abort_server, swr_case_base_server, swr_case_close, swr_case_close_actively,
+    swr_case_close_after, swr_case_connection, swr_case_connection_status, swr_case_create,
+    swr_case_data, swr_case_fake_socket, swr_case_healthy, swr_case_http_server,
+    swr_case_idle_worker_num, swr_case_info, swr_case_init_protocol, swr_case_last_error,
+    swr_case_length_port, swr_case_master_pid, swr_case_mqtt_server, swr_case_port,
+    swr_case_protocol_server, swr_case_redis_server, swr_case_send, swr_case_sendfile,
+    swr_case_set_max_sockets, swr_case_shutdown, swr_case_ssl_client_ca, swr_case_ssl_files,
+    swr_case_ssl_init, swr_case_ssl_protocols, swr_case_ssl_server, swr_case_ssl_sni,
+    swr_case_start, swr_case_tg_buffer, swr_case_tick, swr_case_worker_num,
+};
 
 type Server = c_void;
 type Receive = extern "C" fn(*mut Server, *const c_void) -> c_int;
@@ -147,7 +179,13 @@ unsafe fn http_get_package_length(
     pl: *mut PacketLength,
 ) -> isize {
     // SAFETY: per the caller.
-    unsafe { http::get_package_length(protocol.cast(), socket.cast(), &mut *pl.cast()) }
+    unsafe {
+        http::get_package_length(
+            protocol.cast(),
+            Socket::from_ptr(socket.cast()),
+            &mut *pl.cast(),
+        )
+    }
 }
 
 /// `http_server::get_package_length_size`.
@@ -156,7 +194,7 @@ unsafe fn http_get_package_length(
 /// `socket` is a connection socket.
 unsafe fn http_get_package_length_size(socket: *mut c_void) -> u8 {
     // SAFETY: per the caller.
-    unsafe { http::get_package_length_size(socket.cast()) }
+    unsafe { http::get_package_length_size(Socket::from_ptr(socket.cast()).expect("a socket")) }
 }
 
 // The handshake's `Sec-WebSocket-Accept`, as upstream's `http_context` computes it.
@@ -321,8 +359,7 @@ fn websocket_accept(key: &str) -> String {
 
 /// `sw_tg_buffer()`, cleared.
 fn tg_buffer() -> *mut CppString {
-    // SAFETY: the thread's buffer.
-    let buffer = unsafe { swr_case_tg_buffer() };
+    let buffer = swr_case_tg_buffer();
     // SAFETY: as String::clear.
     unsafe { ((*buffer).length, (*buffer).offset) = (0, 0) };
     buffer

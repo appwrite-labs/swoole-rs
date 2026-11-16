@@ -51,13 +51,13 @@ pub(crate) fn create(serv: view::Server<'_>) -> *mut c_void {
     let list = Shm::calloc(max as usize, size_of::<ConnectionRecord>());
     let pipes = config.worker_num.get() / u32::from(config.reactor_num.get());
     let tables = state.tables_ref();
-    tables.install_reactor_threads(threads);
     if list.is_null() {
         let size = size_of::<ConnectionRecord>();
         let m = format_args!("sw_shm_calloc({max}, {size}) for connection_list failed");
         log::sys_warning(c"Server::create_process_factory", m);
         return core::ptr::null_mut();
     }
+    tables.install_reactor_threads(threads);
     tables.connection_list.replace(list);
     (tables.reactor_pipe_num).set(u16::try_from(pipes & 0xffff).unwrap_or_default());
     barriers(serv, true);
@@ -263,7 +263,7 @@ pub(crate) fn send(serv: view::Server<'_>, to: Pipe, send: &mut SendData) -> boo
             let sent = swoole_rs_process::methods::send_pipe_message(
                 crate::process_pool_native(),
                 target,
-                head,
+                &head,
                 PIPE_MASTER,
             );
             sent.is_some_and(|sent| sent > 0)

@@ -1,6 +1,7 @@
 //! `network::Socket`'s mapping between `swSocketType` and (domain, type), and the
 //! type a host string names.
 use std::os::raw::c_int;
+use swoole_rs_corebase::constants::SocketFlag;
 use swoole_rs_corebase::constants::SocketType::{
     self, SW_SOCK_RAW as RAW, SW_SOCK_RAW6 as RAW6, SW_SOCK_TCP as TCP, SW_SOCK_TCP6 as TCP6,
     SW_SOCK_UDP as UDP, SW_SOCK_UDP6 as UDP6, SW_SOCK_UNIX_DGRAM as UNIX_DGRAM,
@@ -68,9 +69,8 @@ pub fn host_type(host: &[u8]) -> HostType {
 
 /// `SW_SOCK_NONBLOCK` and `SW_SOCK_CLOEXEC`.
 pub(crate) const NONBLOCK: c_int =
-    swoole_rs_corebase::constants::SocketFlag::SW_SOCK_NONBLOCK as c_int;
-pub(crate) const CLOEXEC: c_int =
-    swoole_rs_corebase::constants::SocketFlag::SW_SOCK_CLOEXEC as c_int;
+    swoole_rs_corebase::constants::SocketFlag::SW_SOCK_NONBLOCK.bits();
+pub(crate) const CLOEXEC: c_int = swoole_rs_corebase::constants::SocketFlag::SW_SOCK_CLOEXEC.bits();
 
 /// `swoole::socket`: socket(2) with `SW_SOCK_NONBLOCK`/`SW_SOCK_CLOEXEC` applied,
 /// atomically where the platform has `SOCK_NONBLOCK`/`SOCK_CLOEXEC`, else by fcntl.
@@ -84,7 +84,11 @@ pub fn swr_v1_socket_open(
     protocol: c_int,
     flags: c_int,
 ) -> std::io::Result<c_int> {
-    let (nonblock, cloexec) = (flags & NONBLOCK != 0, flags & CLOEXEC != 0);
+    let flags = SocketFlag::from_bits(flags);
+    let (nonblock, cloexec) = (
+        flags.contains(SocketFlag::SW_SOCK_NONBLOCK),
+        flags.contains(SocketFlag::SW_SOCK_CLOEXEC),
+    );
     #[cfg(target_os = "linux")]
     {
         let extra = if nonblock { libc::SOCK_NONBLOCK } else { 0 }
@@ -123,7 +127,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no network sockets")]
+    #[cfg_attr(miri, ignore = "Miri aborts on an unsupported socket domain")]
     fn open_applies_the_flags() {
         let fd = swr_v1_socket_open(libc::AF_INET, libc::SOCK_STREAM, 0, NONBLOCK | CLOEXEC)
             .expect("a socket");

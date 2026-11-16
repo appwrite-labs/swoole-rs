@@ -6,10 +6,14 @@ use crate::{
 };
 use std::{ffi::c_int, marker::PhantomData};
 
-/// `ZEND_USER_OPCODE_CONTINUE`: the handler ran the instruction.
-pub const CONTINUE: c_int = 0;
-/// `ZEND_USER_OPCODE_DISPATCH`: Zend runs the instruction itself.
-pub const DISPATCH: c_int = 2;
+/// What a user opcode handler leaves Zend to do with its instruction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Next {
+    /// `ZEND_USER_OPCODE_CONTINUE`: the handler ran the instruction.
+    Continue,
+    /// `ZEND_USER_OPCODE_DISPATCH`: Zend runs the instruction itself.
+    Dispatch,
+}
 
 /// A frame executing on this thread, live for `'a`: one Zend passes an
 /// internal function's handler, a user opcode handler or an observer. Zend changes it (its instruction, its
@@ -112,19 +116,26 @@ impl<'a> Frame<'a> {
     }
 }
 
-/// A user opcode handler's body: `ZEND_USER_OPCODE_*` for the instruction
-/// `frame` is at.
+/// A user opcode handler's body: what Zend does next with the instruction
+/// `frame` is at, whose opcode is `OPCODE` ([`crate::Minit::opcode_handler`]
+/// installs it for that one).
 pub trait Handler {
-    fn run(frame: Frame<'_>) -> c_int;
+    /// The `ZEND_*` opcode whose instructions `run` is written for.
+    const OPCODE: u32;
+    fn run(frame: Frame<'_>) -> Next;
 }
 
-/// `H` as Zend's `user_opcode_handler_t`.
-/// # Safety
-/// Zend's user opcode handler contract: `frame` is the live frame executing on
-/// this thread, at an instruction of an opcode `H` was installed for.
-pub unsafe extern "C" fn handler<H: Handler>(frame: *mut zend_execute_data) -> c_int {
-    H::run(Frame {
-        ptr: frame,
-        live: PhantomData,
-    })
+/// A user opcode handler as Zend stores it (`user_opcode_handler_t`): Zend
+/// calls it with the live frame executing on this thread, at an instruction of
+/// the opcode it was installed for, which only that call makes a [`Frame`] of.
+pub type Entry = extern "C" fn(Frame<'_>) -> c_int;
+
+/// `H` as Zend's `user_opcode_handler_t`, installed for `H::OPCODE` only.
+#[must_use]
+pub extern "C" fn handler<H: Handler>(frame: Frame<'_>) -> c_int {
+    // zend-sys' shim_stdext.c asserts the two codes.
+    match H::run(frame) {
+        Next::Continue => 0,
+        Next::Dispatch => 2,
+    }
 }

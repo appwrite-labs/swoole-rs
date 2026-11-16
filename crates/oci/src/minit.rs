@@ -2,7 +2,7 @@
 //! `php_swoole_oracle_minit`): PDO's `OCI_ATTR_*` constants unless `pdo_oci`
 //! declared them, and the driver.
 use crate::swoole_pdo_oci_Env;
-use std::{convert::Infallible, ffi::c_int, sync::atomic::Ordering};
+use std::{ffi::c_int, sync::atomic::Ordering};
 use swoole_rs_zend::{Minit, Mshutdown, pdo::Driver};
 
 unsafe extern "C" {
@@ -10,7 +10,7 @@ unsafe extern "C" {
     safe static swoole_pdo_oci_driver: Driver;
     /// `OCIHandleFree` of no handle, the only one this passes it (nothing makes the
     /// reference): OCI rejects a null handle without touching memory, whatever the kind.
-    safe fn OCIHandleFree(handle: Option<&'static Infallible>, kind: u32) -> c_int;
+    safe fn OCIHandleFree(handle: Option<&'static !>, kind: u32) -> c_int;
 }
 
 /// `PDO_ATTR_DRIVER_SPECIFIC`, where `php_pdo_oci_int.h`'s attributes start.

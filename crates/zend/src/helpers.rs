@@ -1,33 +1,11 @@
 //! Zvals, arrays and properties for crates/phpprocess: zval construction,
 //! typed property updates.
 use crate::sys::{time_t, zend_fcall_info, zend_fcall_info_cache, zval};
-use std::{
-    ffi::{CStr, c_char},
-    io::IoSlice,
-    marker::PhantomData,
-    ptr::NonNull,
-};
+use std::{ffi::CStr, io::IoSlice};
 
-/// A NUL-terminated C string borrowed for `'a`: a `&CStr` one pointer wide, as
-/// C takes and returns one, for the `safe fn` declarations over such strings.
-#[derive(Clone, Copy)]
-#[repr(transparent)]
-pub(crate) struct CText<'a>(NonNull<c_char>, PhantomData<&'a CStr>);
-
-impl<'a> From<&'a CStr> for CText<'a> {
-    fn from(text: &'a CStr) -> Self {
-        Self(NonNull::from(text).cast(), PhantomData)
-    }
-}
-
-impl<'a> CText<'a> {
-    /// The string.
-    pub(crate) fn get(self) -> &'a CStr {
-        // SAFETY: made from a `&'a CStr`, or returned by a function declared to
-        // return a NUL-terminated string that lives for `'a`.
-        unsafe { CStr::from_ptr(self.0.as_ptr()) }
-    }
-}
+/// A NUL-terminated C string borrowed for `'a`, one pointer wide, for the `safe fn`
+/// declarations over such strings.
+pub(crate) use swoole_rs_corebase::sys::Text as CText;
 
 unsafe extern "C" {
     /// Zend's table of loaded extensions, keyed by lowercase name: filled at
@@ -42,6 +20,9 @@ unsafe extern "C" {
     /// the lent bytes (an `IoSlice` is an iovec), which it writes the two numbers
     /// from; errors are off, so it raises nothing.
     safe fn swr_bytes_numeric(text: IoSlice<'_>, lval: &mut i64, dval: &mut f64) -> u8;
+    /// `php_stream_mkdir(path, 0777, PHP_STREAM_MKDIR_RECURSIVE | REPORT_ERRORS)`:
+    /// it reads the string and keeps none of it.
+    safe fn swr_zend_mkdir_recursive(path: CText<'_>) -> bool;
 }
 
 mod sealed {
@@ -90,6 +71,13 @@ pub fn module_loaded(name: &CStr) -> bool {
 #[must_use]
 pub fn is_main_thread() -> bool {
     swr_zend_tsrm_is_main_thread()
+}
+
+/// `php_stream_mkdir(path, 0777, PHP_STREAM_MKDIR_RECURSIVE | REPORT_ERRORS)`:
+/// whether `path` was made, with its parents; a failure is reported as a warning.
+#[must_use]
+pub fn mkdir_recursive(path: &CStr) -> bool {
+    swr_zend_mkdir_recursive(CText::from(path))
 }
 
 /// `php_time`: PHP's clock, in seconds.

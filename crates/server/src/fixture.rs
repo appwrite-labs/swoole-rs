@@ -12,11 +12,13 @@ use crate::records::tests::naming_at;
 use crate::records::{ConnectionRecord, ServerTables, SessionRecord};
 use crate::shared::{PortCounters, ServerCounters, ServerShared};
 use crate::{Mode, ServerState, TestServer, view};
+use std::rc::Rc;
 
 /// `SW_SESSION_LIST_SIZE`.
 const SESSIONS: usize = 1 << 20;
-/// Connection slots: fds below this are accepted.
-pub(crate) const CONNECTIONS: usize = 4096;
+/// Connection slots: fds below this are accepted. Miri's descriptors stay small, and it
+/// takes ~5 ms a slot to set the table up.
+pub(crate) const CONNECTIONS: usize = if cfg!(miri) { 256 } else { 4096 };
 /// `SW_SOCK_TCP` and `SW_FD_STREAM_SERVER`.
 const SOCK_TCP: c_int = swoole_rs_corebase::constants::SocketType::SW_SOCK_TCP.raw();
 const FD_STREAM_SERVER: c_int = 1;
@@ -25,8 +27,10 @@ const FD_STREAM_SERVER: c_int = 1;
 /// pools, one TCP port listening on 127.0.0.1, and this thread's reactor.
 pub(crate) struct LiveServer {
     server: TestServer,
-    shared: Box<ServerShared>,
-    port_counters: Box<PortCounters>,
+    // `Rc`s, not `Box`es: moving a `Box` asserts it unique, which would leave the
+    // state's pointers to it stale.
+    shared: Rc<ServerShared>,
+    port_counters: Rc<PortCounters>,
     listener: *mut SocketRecord,
     /// This thread's reactor, which the fixture made.
     reactor: Option<swoole_rs_reactor::OwnedReactor>,
@@ -39,10 +43,11 @@ pub(crate) struct LiveServer {
     _connections: Vec<ConnectionRecord>,
 }
 
-/// `count` zeroed records: a table of free slots.
+/// `count` zeroed records: a table of free slots, zeroed in one allocation (Miri
+/// takes minutes to zero a million records one by one).
 fn free_slots<T>(count: usize) -> Vec<T> {
     // SAFETY: the tables' records are plain data, and zero is a free slot.
-    (0..count).map(|_| unsafe { core::mem::zeroed() }).collect()
+    unsafe { Box::<[T]>::new_zeroed_slice(count).assume_init() }.into_vec()
 }
 
 impl LiveServer {
@@ -59,12 +64,12 @@ impl LiveServer {
         let mut server = TestServer::with_tables(tables);
         // SAFETY: the shared record is plain data, for which zero is the state
         // `swr_v1_server_new`'s calloc leaves it in.
-        let mut shared: Box<ServerShared> = Box::new(unsafe { core::mem::zeroed() });
-        let mut port_counters = Box::new(PortCounters::default());
+        let shared: Rc<ServerShared> = Rc::new(unsafe { core::mem::zeroed() });
+        let port_counters = Rc::new(PortCounters::default());
         let config = server.config_mut();
         config.mode_ = Mode::Process;
         config.reactor_num.set(1);
-        config.gs = naming_at(&raw mut *shared);
+        config.gs = naming_at(Rc::as_ptr(&shared).cast_mut());
         config.worker_registry = Some(Box::default());
 
         let listening = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -80,8 +85,11 @@ impl LiveServer {
         settings.r#type = SOCK_TCP;
         // SAFETY: the record just boxed, which the port frees with the state.
         let socket = unsafe { Socket::from_ptr(listener) }.unwrap();
-        settings.set_listening_socket(socket);
-        settings.gs.set((&raw mut *port_counters).cast());
+        settings
+            .set_listening_socket(unsafe { swoole_rs_reactor::OwnedSocket::from_socket(socket) });
+        settings
+            .gs
+            .set(Rc::as_ptr(&port_counters).cast_mut().cast());
         let state = server.state();
         let _ = state.ports.push(settings);
         // The listening fd's slot holds its port, as `Server::store_listen_socket` leaves it.
@@ -90,7 +98,9 @@ impl LiveServer {
         slot.set_socket(Some(socket));
         slot.set_socket_type(SOCK_TCP);
 
-        // The thread's reactor, without `swoole_event_init`'s coroutine and client handlers.
+        // The thread's reactor, without `swoole_event_init`'s coroutine and client handlers,
+        // over crates/tls's writes and close, which `swoole_init` registers.
+        swoole_rs_reactor::event_api::set_writers(swoole_rs_tls::reactor_write::WRITERS);
         let reactor = swoole_rs_reactor::swr_v1_reactor_new(4096, 0);
         swoole_rs_corebase::set_thread_reactor(reactor.as_ptr());
         Self {
@@ -207,7 +217,6 @@ mod tests {
     use core::sync::atomic::Ordering::Relaxed;
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn accepts_a_real_connection_into_the_tables_and_counters() {
         let live = LiveServer::new();
         let client = live.connect();

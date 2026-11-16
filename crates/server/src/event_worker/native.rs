@@ -2,9 +2,8 @@
 //! start and stop callbacks, its signals, the async stop and its exit wait, and the
 //! process-mode main loop.
 use crate::{DispatchMode, Mode};
-use core::ffi::{c_int, c_long, c_void};
+use core::ffi::{c_int, c_long};
 use core::sync::atomic::Ordering::Relaxed;
-use swoole_rs_corebase::HookType;
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_reactor::Events;
 
@@ -203,21 +202,6 @@ fn client_cert(data: &[u8]) -> CppString {
     cert
 }
 
-/// `Worker_global_hook`: the worker start/stop and server shutdown hooks.
-fn global_hook(serv: view::Server<'_>, worker: Worker<'_>, hook: HookType) {
-    if !swoole_rs_corebase::swoole_isset_hook(hook) {
-        return;
-    }
-    if hook == HookType::BEFORE_SERVER_SHUTDOWN {
-        serv.call_hook(view::ServerHook::BeforeShutdown);
-        return;
-    }
-    let id = worker.id() as usize;
-    let mut args: [*mut c_void; 2] = [serv.raw(), core::ptr::without_provenance_mut(id)];
-    // SAFETY: the worker hooks take { server, worker id }.
-    unsafe { swoole_rs_corebase::swoole_call_hook(hook, args.as_mut_ptr().cast()) };
-}
-
 /// `Server::worker_start_callback(worker)`.
 pub(crate) fn worker_start_callback(serv: view::Server<'_>, worker: Worker<'_>) {
     let config = serv.config();
@@ -250,7 +234,7 @@ pub(crate) fn call_worker_start_callback(serv: view::Server<'_>, worker: Worker<
     if serv.config().open_cpu_affinity.get() {
         set_cpu_affinity(serv.config(), worker.id());
     }
-    global_hook(serv, worker, HookType::BEFORE_WORKER_START);
+    serv.call_hook(view::ServerHook::BeforeWorkerStart(worker.id()));
     log::set_last_error(0);
     swoole_rs_error::swoole_clear_last_error_msg();
     let callbacks = &serv.state().callbacks;
@@ -259,7 +243,7 @@ pub(crate) fn call_worker_start_callback(serv: view::Server<'_>, worker: Worker<
 
 /// `Server::call_worker_stop_callback(worker)`.
 pub(crate) fn call_worker_stop_callback(serv: view::Server<'_>, worker: Worker<'_>) {
-    global_hook(serv, worker, HookType::BEFORE_WORKER_STOP);
+    serv.call_hook(view::ServerHook::BeforeWorkerStop(worker.id()));
     serv.state()
         .callbacks
         .worker(WorkerSlot::Stop, serv, worker);
@@ -322,7 +306,7 @@ pub fn kill_worker(serv: view::Server<'_>, worker_id: c_int) -> bool {
     swoole_rs_process::methods::send_pipe_message(
         crate::process_pool_native(),
         worker,
-        data,
+        &data,
         PIPE_MASTER,
     )
     .is_some()
@@ -354,7 +338,7 @@ pub fn stop_async_worker(serv: view::Server<'_>, worker: Worker<'_>) {
         Mode::Base if event_worker => {
             let pool = crate::shared::ServerShared::of(serv).event_pool();
             if worker.id() == 0 && !pool.running() {
-                global_hook(serv, worker, HookType::BEFORE_SERVER_SHUTDOWN);
+                serv.call_hook(view::ServerHook::BeforeShutdown);
                 serv.state()
                     .callbacks
                     .call_server(ServerSlot::BeforeShutdown, serv);
@@ -507,10 +491,11 @@ pub(crate) fn swr_workers_signal_set(
 
 /// `Server::worker_signal_handler(signo)`, over `SwooleG.server`.
 pub(crate) extern "C" fn worker_signal_handler(signo: c_int) {
-    // SAFETY: a worker's signal runs while its server lives; the view ends with it.
-    let Some(serv) = (unsafe { view::Server::current() }) else {
-        return;
-    };
+    crate::server_methods::on_signal(crate::server_methods::SignalBody::Worker, signo);
+}
+
+/// [`worker_signal_handler`]'s body over the server.
+pub(crate) fn signal(serv: view::Server<'_>, signo: c_int) {
     let live = swoole_rs_corebase::swr_v1_core_running() && serv.state().running();
     _ = with_current(|&worker| {
         if !live {
@@ -633,9 +618,9 @@ pub(crate) fn send_to_reactor_thread(serv: view::Server<'_>, head: &DataHead) ->
     let info = swoole_rs_process::process_pool::head_view(head);
     if swoole_rs_reactor::event_api::swoole_event_is_available() {
         crate::reactor_handle::registered(pipe)
-            .and_then(|pipe| swoole_rs_reactor::event_api::event_write(pipe, info))
+            .and_then(|pipe| swoole_rs_reactor::event_api::event_write(pipe, &info))
     } else {
-        let event = swoole_rs_reactor::Drain::new(info);
+        let event = swoole_rs_reactor::Drain::new(&info);
         swoole_rs_tls::upstream::send_sync_drain(pipe, event, 0)
     }
 }

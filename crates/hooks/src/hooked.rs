@@ -18,6 +18,7 @@ pub use libc::pollfd;
 use libc::{c_int, c_void, nfds_t, size_t, ssize_t};
 use std::io;
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::lent::{Count, In, Out};
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::{log, sys};
 use swoole_rs_reactor::{Socket, SocketRecord};
@@ -174,9 +175,7 @@ pub fn accept(fd: c_int, peer: &mut SocketAddress) -> io::Result<c_int> {
             .map(std::os::fd::IntoRawFd::into_raw_fd)
             .ok_or_else(io::Error::last_os_error);
     };
-    let conn = socket
-        .accept_owned(0.0)
-        .ok_or_else(io::Error::last_os_error)?;
+    let conn = socket.accept(0.0).ok_or_else(io::Error::last_os_error)?;
     conn.co().net(|accepted| {
         peer.addr = accepted.info.addr;
         peer.len = accepted.info.len;
@@ -358,24 +357,15 @@ pub extern "C" fn swoole_coroutine_close(fd: c_int) -> c_int {
     close_fd(fd, Some(crate::stdio::runtime().offload)).map_or(-1, |()| 0)
 }
 
-/// Hooked `read(2)`, as [`read`].
-///
-/// # Safety
-/// As for `read`.
+/// Hooked `read(2)`, as [`read`], into the `count` bytes C lends at `buf` (none
+/// when null).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_coroutine_read(
+pub extern "C" fn swoole_coroutine_read<'id>(
     fd: c_int,
-    buf: *mut c_void,
-    count: size_t,
+    buf: Out<'id, MaybeUninit<u8>>,
+    count: Count<'id, size_t>,
 ) -> ssize_t {
-    let buf: &mut [MaybeUninit<u8>] = if count == 0 {
-        &mut []
-    } else {
-        // SAFETY: the caller's `count` writable bytes, which a read only writes, so
-        // they may be uninitialized.
-        unsafe { core::slice::from_raw_parts_mut(buf.cast(), count) }
-    };
-    read(fd, buf).map_or(-1, usize::cast_signed)
+    read(fd, buf.fill(count).slots()).map_or(-1, usize::cast_signed)
 }
 
 /// The hooked `read(2)` into `buf`: a coroutine socket reads; any other fd reads on
@@ -405,23 +395,15 @@ pub fn read(fd: c_int, buf: &mut [MaybeUninit<u8>]) -> Result<usize, IoError> {
     )
 }
 
-/// Hooked `write(2)`, as [`write`].
-///
-/// # Safety
-/// As for `write`.
+/// Hooked `write(2)`, as [`write`], of the `count` bytes C lends at `buf` (none
+/// when null).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_coroutine_write(
+pub extern "C" fn swoole_coroutine_write<'id>(
     fd: c_int,
-    buf: *const c_void,
-    count: size_t,
+    buf: In<'id, u8>,
+    count: Count<'id, size_t>,
 ) -> ssize_t {
-    let buf: &[u8] = if count == 0 {
-        &[]
-    } else {
-        // SAFETY: the caller's `count` readable bytes.
-        unsafe { core::slice::from_raw_parts(buf.cast(), count) }
-    };
-    write(fd, buf).map_or(-1, usize::cast_signed)
+    write(fd, buf.drain(count).bytes()).map_or(-1, usize::cast_signed)
 }
 
 /// The hooked `write(2)` of `buf`, as [`read`].
@@ -481,6 +463,19 @@ pub(crate) mod tests {
     use super::*;
     use crate::stdio::tests::{LAST_ERROR, Mode, with};
     use std::cell::RefCell;
+    use swoole_rs_corebase::lent::{lend_in, lend_out};
+
+    /// The hooked `write` of `data`, lent as C lends it.
+    fn write_c(fd: c_int, data: &[u8]) -> ssize_t {
+        lend_in(data, |at, count| swoole_coroutine_write(fd, at, count))
+    }
+
+    /// The hooked `read` into `buf`, lent as C lends it.
+    fn read_c(fd: c_int, buf: &mut [u8]) -> ssize_t {
+        // Initialized bytes are slots a read may overwrite.
+        let slots = unsafe { &mut *(core::ptr::from_mut(buf) as *mut [MaybeUninit<u8>]) };
+        lend_out(slots, |at, count| swoole_coroutine_read(fd, at, count))
+    }
 
     thread_local! {
         static CALLS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
@@ -556,7 +551,7 @@ pub(crate) mod tests {
         wrapped(|fd, peer| unsafe {
             let mut buf = [0u8; 16];
             assert_eq!(send(fd, b"send", 0).map_or(-1, usize::cast_signed), 4);
-            assert_eq!(swoole_coroutine_write(fd, b"write".as_ptr().cast(), 5), 5);
+            assert_eq!(write_c(fd, b"write"), 5);
             let iov = [std::io::IoSlice::new(b"msg")];
             assert_eq!(
                 sendmsg(fd, &SendMessage::new(&iov), 0).map_or(-1, usize::cast_signed),
@@ -574,7 +569,7 @@ pub(crate) mod tests {
             assert_eq!(&got, b"ab");
             assert_eq!(recv(fd, &mut got, 0).map_or(-1, usize::cast_signed), 2);
             assert_eq!(&got, b"ab");
-            assert_eq!(swoole_coroutine_read(fd, got.as_mut_ptr().cast(), 2), 2);
+            assert_eq!(read_c(fd, &mut got), 2);
             assert_eq!(&got, b"cd");
             let mut into = [std::io::IoSliceMut::new(&mut buf[..4])];
             assert_eq!(
@@ -592,7 +587,7 @@ pub(crate) mod tests {
         wrapped(|fd, _| unsafe {
             // The members record a failure on the socket.
             let mut addr = SocketAddress::default();
-            addr.addr.unix_mut().sun_family = libc::sa_family_t::try_from(libc::AF_UNIX).unwrap();
+            addr.addr.un.sun_family = libc::sa_family_t::try_from(libc::AF_UNIX).unwrap();
             addr.len = libc::socklen_t::try_from(size_of::<libc::sa_family_t>()).unwrap();
             assert_eq!(connect(fd, &addr).map_or(-1, |()| 0), -1);
             assert_ne!(err_code(fd), 0);
@@ -684,28 +679,15 @@ pub(crate) mod tests {
                 0
             );
             with(Mode::Pool, || {
-                assert_eq!(
-                    swoole_coroutine_write(pair[0], b"hey".as_ptr().cast(), 3),
-                    3
-                );
+                assert_eq!(write_c(pair[0], b"hey"), 3);
                 let mut buf = [0u8; 3];
-                assert_eq!(
-                    swoole_coroutine_read(pair[1], buf.as_mut_ptr().cast(), 3),
-                    3
-                );
+                assert_eq!(read_c(pair[1], &mut buf), 3);
                 assert_eq!(&buf, b"hey");
             });
             // While the fd is still open: a closed fd's number can be reused and
             // mapped by a parallel test.
             let mut buf = [0u8; 3];
-            assert_eq!(
-                with(Mode::Refuse, || swoole_coroutine_read(
-                    pair[1],
-                    buf.as_mut_ptr().cast(),
-                    3
-                )),
-                -1
-            );
+            assert_eq!(with(Mode::Refuse, || read_c(pair[1], &mut buf)), -1);
             with(Mode::Pool, || {
                 // Not a coroutine socket: the fd closes on the pool.
                 assert_eq!(swoole_coroutine_close(pair[0]), 0);

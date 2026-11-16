@@ -13,6 +13,7 @@
     )
 )]
 mod c_cast;
+mod flags;
 pub use c_cast::{CCast, CastFrom};
 pub mod constants;
 mod global;
@@ -60,21 +61,20 @@ pub mod worker_registry;
 pub use global::*;
 pub use hook::{HookType, swoole_add_hook, swoole_call_hook, swoole_isset_hook};
 pub use host::{
-    DataHead, ServerEvent, WebSocketStatus, datahead_dump, microtime, sw_calloc, sw_free,
-    sw_malloc, swoole_dump_ascii, swoole_dump_bin, swoole_dump_hex, swoole_exit,
-    swoole_print_backtrace, swoole_print_backtrace_on_error, swoole_rand, swoole_rand_any,
-    swoole_random_int, swoole_redirect_stdout, swoole_redirect_stdout_file, swoole_shell_exec,
-    swoole_system_random, swr_v1_core_format_result,
+    DataHead, ServerEvent, WebSocketStatus, datahead_dump, microtime, swoole_dump_ascii,
+    swoole_dump_bin, swoole_dump_hex, swoole_exit, swoole_print_backtrace,
+    swoole_print_backtrace_on_error, swoole_rand, swoole_rand_any, swoole_random_int,
+    swoole_redirect_stdout, swoole_redirect_stdout_file, swoole_shell_exec, swoole_system_random,
+    swr_v1_core_format_result,
 };
 pub use lifecycle::{
     SharedThread, adopt_shared_thread, lend_thread_buffer, shared_thread, thread_buffer,
 };
 pub use lifecycle::{
-    ThreadGlobal, fork_exec, set_thread, set_thread_async_threads, set_thread_message_bus,
-    set_thread_reactor, set_thread_timer, swoole_clean, swoole_fork, swoole_is_main_thread,
-    swoole_thread_clean, swoole_thread_init, swr_v1_core_swoole_init, swr_v1_core_thread_global,
-    swr_v1_core_timer_slot, thread_async_threads, thread_id, thread_kind, thread_message_bus,
-    thread_reactor, thread_timer,
+    fork_exec, set_thread, set_thread_async_threads, set_thread_message_bus, set_thread_reactor,
+    set_thread_timer, swoole_clean, swoole_fork, swoole_is_main_thread, swoole_thread_clean,
+    swoole_thread_init, swr_v1_core_swoole_init, thread_async_threads, thread_id, thread_kind,
+    thread_message_bus, thread_reactor, thread_timer,
 };
 pub use log::fatal;
 pub use random::{random_bytes, swoole_random_string};

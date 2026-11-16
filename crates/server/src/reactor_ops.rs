@@ -4,7 +4,7 @@ use core::cell::Cell;
 use core::ffi::c_int;
 
 use swoole_rs_buffer::cpp::CppBuffer;
-use swoole_rs_corebase::{CoreAllocator, TrustedAllocator};
+use swoole_rs_corebase::TrustedAllocator;
 use swoole_rs_reactor::{SocketFields, SocketRecord};
 
 use crate::reactor_handle::Reactor;
@@ -82,13 +82,12 @@ pub(crate) struct ThreadRecord {
     pub(crate) bus: PoolBus,
 }
 
-/// `SwooleG.std_allocator`.
-pub(crate) static STD_ALLOCATOR: CoreAllocator = CoreAllocator {
-    malloc: Some(swoole_rs_corebase::sys::malloc),
-    calloc: Some(swoole_rs_corebase::sys::calloc),
-    realloc: Some(libc::realloc),
-    free: Some(libc::free),
-};
+/// `SwooleG.std_allocator`: libc's.
+#[cfg_attr(
+    not(any(test, feature = "upstream-symbols")),
+    expect(dead_code, reason = "only the hybrid makes servers and message buses")
+)]
+pub(crate) const STD: TrustedAllocator = TrustedAllocator::STD;
 
 /// A `MessageBus` record: the Rust bus, then the allocator its packets and buffer
 /// come from. Only the constructors here fill one, with `SwooleG.std_allocator` or
@@ -107,12 +106,9 @@ pub(crate) struct PoolBus {
 impl PoolBus {
     /// A record of `bus` over `SwooleG.std_allocator`.
     pub(crate) fn std(bus: Box<swoole_rs_bus::MessageBus>) -> Self {
-        // SAFETY: libc's `malloc`, `calloc`, `realloc` and `free`, which keep the
-        // allocator contract.
-        let std = unsafe { TrustedAllocator::new(&STD_ALLOCATOR) };
         Self {
             bus,
-            allocator: Cell::new(std),
+            allocator: Cell::new(STD),
         }
     }
 

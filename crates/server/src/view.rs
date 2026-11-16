@@ -1,8 +1,7 @@
 //! A native `Server`'s Rust-owned records, read straight from its pointer by
 //! the crates that bind it (phpserver), without a native call.
 //!
-//! A `Server *` is `object.rs`'s record, which starts `{ state, config, tables,
-//! callbacks }`, and a `ListenPort *` is the box of the port's settings.
+//! A `Server *` is `object.rs`'s record, which starts `{ state, config, tables }`, and a `ListenPort *` is the box of the port's settings.
 //! `ServerGS` is `shared::ServerShared`.
 use crate::Mode;
 use crate::port_config::PortConfig;
@@ -38,7 +37,6 @@ pub(crate) struct Fields {
 pub(crate) struct ServerObject {
     head: Fields,
     tables: *mut crate::ServerTables,
-    callbacks: *mut c_void,
     /// The state `head` names, freed with the object.
     state: Arc<ServerState>,
 }
@@ -58,7 +56,6 @@ impl ServerObject {
                 config,
             },
             tables,
-            callbacks: ServerState::callbacks_ptr(Arc::as_ptr(&state).cast_mut()),
             state,
         }
     }
@@ -66,10 +63,11 @@ impl ServerObject {
 
 #[cfg(test)]
 impl Fields {
-    /// A head over `state`, as a server's own: a test's server.
-    pub(crate) fn of(state: &ServerState) -> Self {
+    /// A head over `state`, as a server's own: a test's server. It keeps the
+    /// `Rc`'s own pointer, as [`ServerObject::new`] keeps the `Arc`'s.
+    pub(crate) fn of(state: &std::rc::Rc<ServerState>) -> Self {
         Self {
-            state,
+            state: std::rc::Rc::as_ptr(state),
             config: state.config(),
         }
     }
@@ -78,16 +76,14 @@ impl Fields {
 /// A live `Server`, borrowed for `'a`. [`Server::from_raw`] is the one unsafe
 /// step; the reads it then allows are safe, and only the methods that hand out
 /// `&mut` to state other threads share, or take another raw pointer, stay unsafe.
-/// It is laid out as the `Server *` it views, so a slot fn
-/// ([`Server::set_callback`]) takes one where native code passes its server.
 #[derive(Clone, Copy)]
-#[repr(transparent)]
 pub struct Server<'a> {
     raw: *mut c_void,
     live: PhantomData<&'a Fields>,
 }
 
-/// The global hooks whose callbacks take the server alone.
+/// The global hooks of a server: those whose callbacks take the server alone, and
+/// the worker hooks, whose take `{ server, worker id }`.
 #[derive(Clone, Copy)]
 pub enum ServerHook {
     BeforeStart,
@@ -95,23 +91,40 @@ pub enum ServerHook {
     AfterShutdown,
     BeforeCreate,
     AfterCreate,
+    /// Worker `id`'s start.
+    BeforeWorkerStart(u32),
+    /// Worker `id`'s stop.
+    BeforeWorkerStop(u32),
 }
 
 impl<'a> Server<'a> {
-    /// `if (swoole_isset_hook(hook)) swoole_call_hook(hook, serv)`.
+    /// `if (swoole_isset_hook(hook)) swoole_call_hook(hook, arg)`, `arg` the server or,
+    /// for a worker hook, `Worker_global_hook`'s `{ server, worker id }`.
     pub fn call_hook(self, hook: ServerHook) {
         use swoole_rs_corebase::HookType;
-        let kind = match hook {
-            ServerHook::BeforeStart => HookType::BEFORE_SERVER_START,
-            ServerHook::BeforeShutdown => HookType::BEFORE_SERVER_SHUTDOWN,
-            ServerHook::AfterShutdown => HookType::AFTER_SERVER_SHUTDOWN,
-            ServerHook::BeforeCreate => HookType::BEFORE_SERVER_CREATE,
-            ServerHook::AfterCreate => HookType::AFTER_SERVER_CREATE,
+        let (kind, worker) = match hook {
+            ServerHook::BeforeStart => (HookType::BEFORE_SERVER_START, None),
+            ServerHook::BeforeShutdown => (HookType::BEFORE_SERVER_SHUTDOWN, None),
+            ServerHook::AfterShutdown => (HookType::AFTER_SERVER_SHUTDOWN, None),
+            ServerHook::BeforeCreate => (HookType::BEFORE_SERVER_CREATE, None),
+            ServerHook::AfterCreate => (HookType::AFTER_SERVER_CREATE, None),
+            ServerHook::BeforeWorkerStart(id) => (HookType::BEFORE_WORKER_START, Some(id)),
+            ServerHook::BeforeWorkerStop(id) => (HookType::BEFORE_WORKER_STOP, Some(id)),
         };
-        if swoole_rs_corebase::swoole_isset_hook(kind) {
-            // SAFETY: every `ServerHook`'s callbacks take the server, which is live.
-            unsafe { swoole_rs_corebase::swoole_call_hook(kind, self.raw) };
+        if !swoole_rs_corebase::swoole_isset_hook(kind) {
+            return;
         }
+        let mut args: [*mut c_void; 2] = [self.raw, core::ptr::null_mut()];
+        let arg = match worker {
+            None => self.raw,
+            Some(id) => {
+                args[1] = core::ptr::without_provenance_mut(id as usize);
+                args.as_mut_ptr().cast()
+            }
+        };
+        // SAFETY: the server hooks' callbacks take the server, which is live, and the
+        // worker hooks' `{ server, worker id }`, which lives for the call.
+        unsafe { swoole_rs_corebase::swoole_call_hook(kind, arg) };
     }
 
     /// The server at `serv`.
@@ -128,6 +141,12 @@ impl<'a> Server<'a> {
         }
     }
 
+    /// `f` over the server this thread's reactor serves, or `None` when it serves
+    /// none: a reactor holds its server while it runs it.
+    pub fn with_reactor<R>(f: impl FnOnce(Server<'_>) -> R) -> Option<R> {
+        crate::reactor_handle::Reactor::current()?.server().map(f)
+    }
+
     /// The server `object` is, live as long as the borrow.
     #[cfg_attr(
         not(feature = "upstream-symbols"),
@@ -138,20 +157,6 @@ impl<'a> Server<'a> {
             raw: core::ptr::from_ref(object).cast_mut().cast(),
             live: PhantomData,
         }
-    }
-
-    /// `sw_server()`: the process's server (`SwooleG.server`), or `None` while it has
-    /// none.
-    ///
-    /// # Safety
-    /// The server is not deleted during `'a`: the last `SharedServer` drop frees it before
-    /// it clears `SwooleG.server`, so a view kept past that dangles.
-    #[must_use]
-    pub unsafe fn current() -> Option<Self> {
-        let serv = swoole_rs_corebase::swr_v1_core_server();
-        // SAFETY: null, or the process's server (only `swr_v1_server_new` sets it),
-        // live for `'a` per the caller.
-        (!serv.is_null()).then(|| unsafe { Server::from_raw(serv) })
     }
 
     fn fields(self) -> &'a Fields {
@@ -478,19 +483,27 @@ impl<'a> Server<'a> {
     #[must_use]
     pub fn workers(self) -> ServerWorkers<'a> {
         let config = self.config();
-        let events = (
-            self.event_pool_ref(),
-            config.workers.as_ptr().cast(),
-            config.worker_num.get(),
-        );
-        let tasks = (self.task_pool_ref(), config.task_worker_num.get());
-        let users = (config.user_workers.as_ptr().cast(), self.user_worker_num());
-        // SAFETY: `create` maps `workers` with `worker_num` records, the task pool's
-        // create its array with `task_worker_num`, and the factory's start
-        // `user_workers` with one per added user worker (`add_worker` refuses once the
-        // factory exists); each stays mapped, as the counts stay, until the server is
-        // destroyed after its pools stop.
-        unsafe { ServerWorkers::new(events, tasks, users) }
+        let array = |records: &swoole_rs_memory::members::Shm, count: usize| {
+            let base = records.as_ptr().cast::<WorkerRecord>();
+            if base.is_null() {
+                return &[][..];
+            }
+            // SAFETY: `create` maps `workers` with `worker_num` records, and the
+            // factory's start `user_workers` with one per added user worker
+            // (`add_worker` refuses once the factory exists); each stays mapped, as the
+            // counts stay, until the server is destroyed after its pools stop.
+            unsafe { core::slice::from_raw_parts::<'a, WorkerRecord>(base, count) }
+        };
+        let (events, users) = (config.worker_num.get(), self.user_worker_num());
+        ServerWorkers::new(
+            (
+                self.event_pool_ref(),
+                array(&config.workers, events as usize),
+                events,
+            ),
+            (self.task_pool_ref(), config.task_worker_num.get()),
+            (array(&config.user_workers, users), users),
+        )
     }
 
     /// `Server::get_worker(id)`: event workers, then task workers, then user
@@ -503,11 +516,20 @@ impl<'a> Server<'a> {
     /// [`Server::worker`]'s record, or `None` past the last.
     #[must_use]
     pub fn worker_record(self, id: u16) -> Option<Worker<'a>> {
+        // An event worker once its pool holds the array, as `get` finds it, without
+        // lending the other arrays: a task's reply looks its sender up so.
+        if u32::from(id) < self.config().worker_num.get() {
+            let pool = self.event_pool_ref();
+            if !pool.workers().is_null() {
+                return pool.worker(usize::from(id));
+            }
+        }
         self.workers().get(id)
     }
 
     /// The server's worker at `raw`: one of its event, task or user workers, or a
     /// user worker `add_worker` added; `None` for any other address.
+    #[cfg(feature = "upstream-symbols")]
     pub(crate) fn own_worker(self, raw: *const WorkerRecord) -> Option<Worker<'a>> {
         let workers = self.workers();
         let count = u64::from(workers.event_count())
@@ -523,9 +545,12 @@ impl<'a> Server<'a> {
     /// last.
     pub(crate) fn pending_worker(self, index: usize) -> Option<Worker<'a>> {
         let &worker = self.registry().pending().get(index)?;
-        // SAFETY: null, or a live worker `add_worker` added, which outlives the server
+        if worker.is_null() {
+            return None;
+        }
+        // SAFETY: a live worker `add_worker` added, which outlives the server
         // (its contract; nothing else adds to the server's pending workers).
-        unsafe { Worker::from_raw(worker.cast()) }
+        Some(unsafe { Worker::new(worker.cast()) })
     }
 
     /// Worker `id`'s pipe socket, its master end or its worker end, or `None` while it has none.
@@ -785,17 +810,15 @@ pub(crate) fn set_nonblock(sock: Socket<'_>) {
     let _ = sock.edit(|sock| set(sock, 1, -1));
 }
 
-/// The connection socket's `recv_buffer` (a `swoole::String *`), or null.
+/// `conn->socket->recv_buffer->pop(size)`, its whole size: the block holding the
+/// buffer's bytes, now the caller's, while the buffer takes a fresh one as large;
+/// `None` without a socket or buffer.
 #[must_use]
-pub fn recv_buffer(conn: Connection<'_>) -> *mut c_void {
-    conn.socket().map_or(core::ptr::null_mut(), |socket| {
-        socket.edit(|s| {
-            s.recv_buffer
-                .as_mut()
-                .map_or(core::ptr::null_mut(), |buffer| {
-                    Box::as_mut_ptr(buffer).cast()
-                })
-        })
+pub fn pop_recv_buffer(conn: Connection<'_>) -> Option<*mut u8> {
+    conn.socket()?.edit(|s| {
+        s.recv_buffer
+            .as_mut()
+            .map(|buffer| buffer.pop(buffer.size()))
     })
 }
 
@@ -808,7 +831,6 @@ mod tests {
     /// one, or one with a manager or a task worker. Unit tests link no
     /// `swr_v1_server_new`, so the test lends the server its shared record.
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
     fn only_a_single_base_worker_that_ran_here_and_was_not_destroyed_counts() {
         let mut server = crate::TestServer::new();
         let config = server.config_mut();
@@ -850,7 +872,6 @@ mod tests {
     /// A port counts its connections in the per-worker cells when it has them, one
     /// per event worker, and in its one shared count otherwise.
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
     fn port_counts_use_the_shared_worker_cells_when_present() {
         use crate::PortCounters;
         let server = crate::TestServer::new();
@@ -871,5 +892,39 @@ mod tests {
         port.gs.set(core::ptr::null_mut());
         assert_eq!(serv.port_connections(&port), 0, "no counters yet");
         counters.connection_nums.free();
+    }
+
+    /// A worker hook gets `{ server, worker id }`; a server hook, the server.
+    #[test]
+    fn worker_hooks_get_the_server_and_the_workers_id() {
+        use std::sync::Mutex;
+        use swoole_rs_corebase::{HookType, swoole_add_hook};
+        // Other tests' servers may run these hooks too: each call notes its server.
+        static SEEN: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new());
+        unsafe extern "C" fn worker(arg: *mut c_void) {
+            // SAFETY: a worker hook's `{ server, worker id }`.
+            let [serv, id] = unsafe { arg.cast::<[*mut c_void; 2]>().read() };
+            SEEN.lock().unwrap().push((serv.addr(), id.addr()));
+        }
+        unsafe extern "C" fn server(arg: *mut c_void) {
+            SEEN.lock().unwrap().push((arg.addr(), usize::MAX));
+        }
+        swoole_add_hook(HookType::BEFORE_WORKER_START, worker, 1);
+        swoole_add_hook(HookType::BEFORE_WORKER_STOP, worker, 1);
+        swoole_add_hook(HookType::AFTER_SERVER_CREATE, server, 1);
+        let test = crate::TestServer::new();
+        let serv = test.serv();
+        serv.call_hook(ServerHook::BeforeWorkerStart(3));
+        serv.call_hook(ServerHook::BeforeWorkerStop(4));
+        serv.call_hook(ServerHook::AfterCreate);
+        let raw = serv.raw().addr();
+        let seen: Vec<_> = SEEN
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|&&(serv, _)| serv == raw)
+            .map(|&(_, id)| id)
+            .collect();
+        assert_eq!(seen, [3, 4, usize::MAX]);
     }
 }

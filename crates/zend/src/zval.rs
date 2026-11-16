@@ -46,6 +46,10 @@ unsafe extern "C" {
         object: crate::ObjectRef<'_>,
         out: &Owned,
     ) -> std::ffi::c_int;
+    /// `convert_to_array` of the zval in place, inside `zend_try` (nonzero for
+    /// a bailout): the reference it held goes into the new array, or (an
+    /// object's) is released, which can run `__destruct`.
+    safe fn swr_zend_try_convert_to_array(value: &Owned) -> std::ffi::c_int;
     /// `zend_hash_next_index_insert`: the table takes `value` under its next
     /// index, or (null, at `ZEND_LONG_MAX`) leaves it to the caller. No PHP
     /// code runs.
@@ -522,6 +526,16 @@ impl Value {
     pub(crate) fn retype_null(&self) {
         let mut value = self.0.get();
         value.u1.type_info = IS_NULL;
+        self.0.set(value);
+    }
+
+    /// `ZVAL_UNDEF` then `Z_FE_ITER_P(value) = -1`: a failed `FE_RESET_*`'s
+    /// result, with no iterator. What the slot held is not released: for a
+    /// result slot holding nothing that needs it, else a leak.
+    #[inline]
+    pub fn undef_iteration(&self) {
+        let mut value = UNDEF;
+        value.u2.fe_iter_idx = u32::MAX;
         self.0.set(value);
     }
 
@@ -1492,14 +1506,14 @@ impl Owned {
         Some(unsafe { &mut *ptr::from_mut(self).cast::<OwnedArray>() })
     }
 
-    /// `ZVAL_OBJ(value, std)`: the result takes over the reference `std` carries.
-    /// # Safety
-    /// `std` is a live object carrying a reference the caller gives up.
+    /// `ZVAL_OBJ(value, std)`: the result takes over the new object's reference.
     #[must_use]
     #[inline]
-    pub unsafe fn object(std: *mut zend_object) -> Self {
+    pub(crate) fn object(std: crate::object::Fresh) -> Self {
         let mut zval = UNDEF;
-        zval.value = zend_value { obj: std };
+        zval.value = zend_value {
+            obj: std.into_ptr(),
+        };
         zval.u1.type_info = crate::sys::IS_OBJECT_EX;
         Self(Value(Cell::new(zval)))
     }
@@ -1510,6 +1524,15 @@ impl Owned {
     #[inline]
     pub fn into_zval(self) -> zval {
         *std::mem::ManuallyDrop::new(self).0.0.get_mut()
+    }
+
+    /// `convert_to_array`, as PHP's `(array)` cast: this then holds an array,
+    /// unless the conversion bailed out.
+    /// # Errors
+    /// Releasing an object ran PHP code that bailed out.
+    #[inline]
+    pub fn convert_to_array(&mut self) -> Result<(), bailout::Bailout> {
+        bailout::trapped(swr_zend_try_convert_to_array(self))
     }
 
     /// The zval a [`Given`] left to its giver, with the reference it holds.
@@ -1628,13 +1651,8 @@ impl ArrayMut {
     /// instead when the array has no next index (it would pass `ZEND_LONG_MAX`).
     #[inline]
     pub fn push(&mut self, value: Owned) {
-        let Some(table) = self.separate().and_then(Separated::table) else {
-            return;
-        };
-        let mut value = value.into_zval();
-        if zend_hash_next_index_insert(table, Given(&mut value)).is_null() {
-            // Left to this, which releases it.
-            drop(Owned::from_zval(value));
+        if let Some(array) = self.separate() {
+            array.push(value);
         }
     }
 
@@ -1742,22 +1760,6 @@ impl ArrayMut {
     }
 }
 
-/// `add_assoc_stringl_ex`, or `add_assoc_null_ex` when `value` is `None`,
-/// without separating the array; nothing once a bailout is pending.
-/// # Safety
-/// `array` is a live array zval that nothing else borrows for the call, whose
-/// table may be written in place: no other holder may see the write, or the
-/// caller writes it there as upstream does.
-pub unsafe fn set_key(array: *mut zval, key: &[u8], value: Option<&[u8]>) {
-    if bailout::pending() {
-        return;
-    }
-    let value = value.map_or_else(Owned::null, |value| ZString::new(value).into());
-    // SAFETY: per the caller, which vouches for the write in place that
-    // `Separated` stands for.
-    Separated(unsafe { ArrayMut::from_ptr(array) }).update(key, value);
-}
-
 /// An [`ArrayMut`] that [`ArrayMut::separate`] separated: its array has no
 /// other holder and is not immutable while this borrows it, so only this may
 /// change the table in place. One pointer wide, as C takes the `zval *`.
@@ -1765,6 +1767,34 @@ pub unsafe fn set_key(array: *mut zval, key: &[u8], value: Option<&[u8]>) {
 pub struct Separated<'a>(&'a mut ArrayMut);
 
 impl<'a> Separated<'a> {
+    /// The array zval at `array`, written in place without separating it, as
+    /// upstream writes the arrays an object's properties hold and it keeps.
+    /// # Safety
+    /// `array` is a live array zval that nothing else borrows for `'a`, whose
+    /// table may be written in place: it is not immutable, and no other holder
+    /// may see the write, or the caller writes it there as upstream does.
+    #[must_use]
+    #[inline]
+    pub unsafe fn in_place(array: *mut zval) -> Self {
+        // SAFETY: per the caller, which vouches for the write in place that
+        // `Separated` stands for.
+        Self(unsafe { ArrayMut::from_ptr(array) })
+    }
+
+    /// `add_next_index_zval`: the array takes `value`, which is released
+    /// instead when the array has no next index (it would pass `ZEND_LONG_MAX`).
+    #[inline]
+    pub fn push(self, value: Owned) {
+        let Some(table) = self.table() else {
+            return;
+        };
+        let mut value = value.into_zval();
+        if zend_hash_next_index_insert(table, Given(&mut value)).is_null() {
+            // Left to this, which releases it.
+            drop(Owned::from_zval(value));
+        }
+    }
+
     /// The table `separate` checked was there, for one write.
     #[inline]
     fn table(self) -> Option<Table<'a>> {
@@ -1775,7 +1805,7 @@ impl<'a> Separated<'a> {
     /// `add_assoc_zval_ex(array, key, value)`, with a released value's
     /// `__destruct` run inside `zend_try` and a bailout deferred.
     #[inline]
-    fn update(self, key: &[u8], value: Owned) {
+    pub fn update(self, key: &[u8], value: Owned) {
         let mut value = value.into_zval();
         bailout::defer(bailout::trapped(swr_lent_symtable_update(
             self,

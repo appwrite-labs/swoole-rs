@@ -9,9 +9,7 @@ use std::ffi::{CStr, c_char, c_int, c_void};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use libc::{AF_INET, AF_INET6, SOCK_STREAM, addrinfo, sockaddr_in6, sockaddr_storage};
-use swoole_rs_corebase::{
-    ResolveError, ResolverCompletion, ResolverRef, ResolverRequest, swr_v1_core_resolver_view,
-};
+use swoole_rs_corebase::{ResolveError, ResolverCompletion, ResolverRef, ResolverRequest};
 
 /// What the faked `getaddrinfo` answers on this thread.
 #[derive(Clone, Copy)]
@@ -121,9 +119,7 @@ impl Request {
 
     /// `request.fields-><field> = value`, as the native views wrote the hints and results.
     fn set(&self, change: impl FnOnce(&mut swoole_rs_corebase::ResolverFields)) {
-        let fields = swr_v1_core_resolver_view(&self.0).fields;
-        // SAFETY: the record's fields, which nothing else reads meanwhile.
-        change(unsafe { &mut *fields });
+        self.0.update(change);
     }
 }
 

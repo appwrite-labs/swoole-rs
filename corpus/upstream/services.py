@@ -11,7 +11,8 @@ NEEDS comes from the pinned tests/<family>/ trees: config.php's service constant
 (MYSQL_SERVER_*, ODBC_DSN, PGSQL_*, REDIS_SERVER_*, HTTPBIN_*, TEST_HTTP2_SERVERPUSH_URL,
 HTTP_PROXY_*, SOCKS5_PROXY_*, FTP_*, FIREBIRD_*, ORACLE_*), the include/ helpers that read
 them (skip_if_*mysql8, skip_if_not_redis5, skip_if_no_*proxy, skip_if_no_ftp,
-build_ftp_url, SwooleTest\\Redis) and curl's PHP_CURL_FTP_REMOTE_SERVER.
+build_ftp_url, SwooleTest\\Redis), curl's PHP_CURL_FTP_REMOTE_SERVER and swoole_client_sync's
+http_get.php, which fetches httpbin.org through the proxies (services.yml's alias).
 """
 import sys
 
@@ -26,7 +27,7 @@ NONE = ['swoole_atomic', 'swoole_client_async', 'swoole_client_coro', 'swoole_co
         'swoole_table', 'swoole_test_runner', 'swoole_thread', 'swoole_timer', 'swoole_websocket_server']
 NEEDS = {family: [] for family in NONE} | {
     'swoole_channel_coro': ['redis'],
-    'swoole_client_sync': ['tinyproxy', 'socks5'],
+    'swoole_client_sync': ['httpbin', 'tinyproxy', 'socks5'],
     'swoole_coroutine': ['mysql', 'redis'],
     'swoole_curl': ['httpbin', 'golang-h2demo', 'ftp'],
     'swoole_feature': ['redis'],

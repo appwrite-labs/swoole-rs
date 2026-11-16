@@ -23,13 +23,8 @@ pub(crate) fn park(waker: &WakerSlot) {
     swoole_rs_coroutine::park(current().cast(), |park| waker.set(Some(park)));
 }
 
-/// `co->yield_ex(timeout)` of the current coroutine (fatal outside one).
-pub(crate) fn park_for(timeout: f64) -> bool {
-    let code = swoole_rs_coroutine::yield_timed(current().cast(), timeout);
-    swoole_rs_coroutine::yield_resumed(code)
-}
-
-/// [`park_for`], its waker in `waker`.
+/// `co->yield_ex(timeout)` of the current coroutine (fatal outside one), its waker
+/// in `waker`.
 pub(crate) fn park_for_armed(timeout: f64, waker: &WakerSlot) -> bool {
     let arm = |park| waker.set(Some(park));
     let code = swoole_rs_coroutine::yield_timed_armed(current().cast(), timeout, arm);
@@ -56,6 +51,28 @@ extern "C" fn handler_gethostbyname(event: &mut AsyncEvent) {
     if let Some((retval, error)) = event.record().map(resolver::host) {
         event.set_result(retval, error);
     }
+}
+
+/// Dispatches a client's DNS lookup, retaining the request in the pool's copy.
+pub fn dispatch_client(client: swoole_rs_clients::client::Handle, request: &Request) -> bool {
+    let mut event = AsyncEvent::new(
+        client.as_ptr().cast(),
+        Some(handler_gethostbyname),
+        Some(client_completed),
+        std::ptr::null_mut(),
+    );
+    event.data = request.as_ptr();
+    !crate::async_threads::dispatch(&event).is_null()
+}
+
+extern "C" fn client_completed(event: &AsyncEvent) {
+    let Some(request) = event.record() else {
+        return;
+    };
+    // SAFETY: only dispatch_client installs this completion with the client awaiting
+    // this DNS result; the pool calls it on that client's reactor thread.
+    let client = unsafe { swoole_rs_clients::client::Handle::new(event.object().cast()) };
+    swoole_rs_clients::client::resolve_completed(client, request, event.result().1);
 }
 
 /// `async::handler_getaddrinfo`: the request's addresses, on a pool thread.

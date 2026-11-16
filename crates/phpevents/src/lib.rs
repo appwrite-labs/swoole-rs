@@ -478,23 +478,23 @@ fn defer(call: &Call) {
 struct Cycle(Rc<Callable>);
 
 impl CycleTask for Cycle {
-    fn run(&self) {
-        // Its own reference: the callback may clear this task.
-        let callable = Rc::clone(&self.0);
-        let result = invoke(&callable, None).and_then(|ok| {
+    /// The task is its own reference, which the callback may clear it under, given
+    /// up before a bailout is raised so the reactor can still free it.
+    fn run(self: Rc<Self>) {
+        let result = invoke(&self.0, None).and_then(|ok| {
             if ok {
                 Ok(())
             } else {
                 native::warning(c"Swoole\\Event::end callback handler error")
             }
         });
-        drop(callable);
+        drop(self);
         bailout::raise(result);
     }
 
     /// Release the callable, then raise a destructor's bailout from this
     /// frame, which owns nothing by then.
-    fn retire(self: Box<Self>) {
+    fn retire(self: Rc<Self>) {
         drop(self);
         bailout::finish();
     }
@@ -527,7 +527,7 @@ fn cycle(call: &Call) {
             call.set_bool(false);
             return;
         };
-        event_api::swoole_event_cycle(before, Some(Box::new(Cycle(callback))));
+        event_api::swoole_event_cycle(before, Some(Rc::new(Cycle(callback))));
     }
     call.set_bool(true);
 }
@@ -754,7 +754,7 @@ fn dispatch(call: &Call) {
 }
 
 /// `php_swoole_reactor_init()`: whether the event loop is ready. Raises a
-/// bailout, so only an export C calls may call it last.
+/// bailout, so it is its caller's last step (`swoole_rs_phpswoole::EventSteps`).
 #[must_use]
 pub fn reactor_init() -> bool {
     let result = loop_driver::init().unwrap_or_else(|error| {

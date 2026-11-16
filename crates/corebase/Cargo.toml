@@ -37,5 +37,10 @@ path = "../../tests/modules/corebase/numbers.rs"
 [dev-dependencies]
 swoole-rs-oracle = { path = "../oracle" }
 
+# The identifiers no C header exports, for tests/modules/corebase/constants.py.
+[[example]]
+name = "constants"
+path = "../../tests/modules/corebase/corebase_enums.rs"
+
 [lints]
 workspace = true

@@ -309,7 +309,7 @@ fn record() {
     assert_eq!(local.get_addr(), local.sun_path().cast_const());
     let mut copy = local.clone();
     // SAFETY: byte 1 of sun_path is inside the union.
-    unsafe { *local.sun_path().add(1) = b'X' as c_char };
+    unsafe { *local.sun_path().add(1) = c_char::from_ne_bytes(*b"X") };
     assert_eq!(text(copy.get_addr()), c"/tmp/address-record");
     assert!(v4.is_loopback_addr() && v6.is_loopback_addr());
     assert!(v4.assign(SW_SOCK_TCP, "127.0.0.2", 0, false));

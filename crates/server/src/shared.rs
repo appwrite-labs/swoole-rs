@@ -209,21 +209,14 @@ pub(crate) fn count_send(state: &crate::ServerState, session_id: i64, len: u32) 
     swoole_rs_process::worker_globals::with_current(|worker| worker.add_response_count());
 }
 
-/// Initializes a new shared allocation's server counters, and returns them.
-#[must_use]
-pub fn swr_v1_server_shared_init(
-    counters: &'static mut core::mem::MaybeUninit<ServerCounters>,
-) -> &'static ServerCounters {
-    let value = ServerCounters::default();
-    value
+/// Initializes a new shared allocation's zeroed server counters, and returns them.
+pub fn swr_v1_server_shared_init(counters: &ServerCounters) -> &ServerCounters {
+    counters
         .pipe_packet_msg_id
         .store(1, core::sync::atomic::Ordering::Relaxed);
     // The limit is configuration, initialized before publication to any worker.
-    let value = ServerCounters {
-        max_concurrency: AtomicU32::new(u32::MAX),
-        ..value
-    };
-    counters.write(value)
+    counters.max_concurrency.store(u32::MAX, Relaxed);
+    counters
 }
 
 #[cfg(test)]
@@ -234,7 +227,6 @@ mod tests {
     use swoole_rs_memory::members::Shm;
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
     fn a_send_counts_on_the_server_and_its_sessions_port() {
         use crate::records::{ConnectionRecord, SessionRecord};
         let mut gs = swoole_rs_memory::members::Shm::calloc(1, size_of::<ServerShared>());
@@ -293,7 +285,7 @@ mod tests {
             let gs = swoole_rs_memory::members::Shm::calloc(1, size_of::<ServerShared>());
             let mapping = gs.as_ptr().cast::<ServerShared>();
             assert!(!mapping.is_null());
-            let counters = swr_v1_server_shared_init(&mut *(&raw mut (*mapping).counters).cast());
+            let counters = swr_v1_server_shared_init(&(*mapping).counters);
             assert_eq!(counters.max_concurrency.load(Relaxed), u32::MAX);
             assert_eq!(counters.pipe_packet_msg_id.load(Ordering::Relaxed), 1);
             counters.concurrency.store(7, Ordering::Relaxed);

@@ -11,14 +11,14 @@ use crate::co_io::{available, check, owned_err, set_err};
 use crate::co_socket::{Co, OwnedCo};
 use crate::uring::{self, Host};
 use crate::uring_tls::{SSL_BAD_PROTOCOL, Tls, TlsSocket};
-use crate::vector::{IoVector, Lent, RecvMessage, SendMessage};
+use crate::vector::{IoVector, IovBuffer, RecvMessage, SendMessage};
 use core::ffi::{CStr, c_char, c_int, c_ulong};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_reactor::{Events, SocketFields, SocketRecord};
-use swoole_rs_tls::{OwnedBio, Ssl};
+use swoole_rs_tls::Ssl;
 
 /// The socket's view and effects.
 pub struct UringSocketOps<'a> {
@@ -177,8 +177,8 @@ impl UringSocketOps<'_> {
             loop {
                 let result = if self.ssl() {
                     vector.transfer_each(|buffer| match buffer {
-                        Lent::Write(bytes) => tls.send(bytes),
-                        Lent::Read(slots) => tls.recv(slots),
+                        IovBuffer::Write(data) => tls.send(data.bytes()),
+                        IovBuffer::Read(mut fill) => tls.recv(fill.slots()),
                     })
                 } else {
                     uring::vector(host, tls.fd, vector, timeout).ok()
@@ -327,7 +327,7 @@ pub(crate) fn swr_v1_hook_uring_vector(
             break result;
         };
         total += moved;
-        if vector.iovecs().is_empty() {
+        if vector.remaining() == 0 {
             break result;
         }
     };
@@ -417,8 +417,11 @@ pub(crate) fn accept(socket: Co, ops: &UringSocketOps<'_>) -> Option<OwnedCo> {
         .unwrap_or_default();
     conn.output.nonblock = true;
     conn.cloexec = true;
-    let client = socket.adopt(Box::new(conn));
+    // A `UringSocket` before it shares the server's TLS, so its session is over the
+    // ring's memory BIOs.
+    let client = crate::co_socket::accepted(socket, Box::new(conn));
     crate::socket_extra::swr_v1_hook_co_socket_uring(client.co());
+    client.co().share_tls(socket);
     Some(client)
 }
 
@@ -487,33 +490,7 @@ pub(crate) fn poll(ops: &UringSocketOps<'_>, event: Events, timeout: f64) -> boo
     swr_v1_hook_uring_poll(ops, event, events, timeout)
 }
 
-/// `UringSocket::ssl_handshake`'s session: `create` makes the socket's own, then
-/// it runs over a pair of memory BIOs the ring pumps, on the socket's side. False
-/// when `create` fails or leaves no session.
-pub(crate) fn tls_session(socket: Co, create: impl FnOnce() -> bool) -> bool {
-    if !create() {
-        return false;
-    }
-    let server = socket.ssl_is_server();
-    let made = socket.with_network(|network| {
-        let session = Ssl::of(network)?;
-        let (Some(rbio), Some(wbio)) = (OwnedBio::memory(), OwnedBio::memory()) else {
-            return None;
-        };
-        // SAFETY: `create` just made the session, whose socket BIO no handle holds.
-        unsafe { session.set_bio(rbio, Some(wbio)) };
-        if server {
-            session.set_accept_state();
-        } else {
-            session.set_connect_state();
-        }
-        Some(())
-    });
-    made.flatten().is_some()
-}
-
-/// One `UringSocket` handshake step through the ring, failed without a session
-/// from [`tls_session`].
+/// One `UringSocket` handshake step through the ring, failed without a session.
 pub(crate) fn tls_step(socket: Co) -> crate::connect::Step {
     with(socket, |ops| handshake_step(socket, ops)).unwrap_or(crate::connect::Step::Failed)
 }
@@ -613,9 +590,10 @@ mod tests {
         let mut transfer = |vector: &mut IoVector, results: &[isize]| {
             let mut results = results.iter().copied();
             let result = vector.transfer_each(|lent| {
-                let Lent::Read(slots) = lent else {
+                let IovBuffer::Read(mut fill) = lent else {
                     panic!("a vector to read into");
                 };
+                let slots = fill.slots();
                 calls.push((slots.as_ptr().addr() - base.addr(), slots.len()));
                 usize::try_from(results.next().unwrap()).ok()
             });
@@ -631,7 +609,7 @@ mod tests {
         assert_eq!(vector.stopped(), (1, 2));
         let (moved, made) = transfer(&mut vector, &[2]);
         assert_eq!((moved, made), (2, vec![(6, 2)]));
-        assert!(vector.iovecs().is_empty());
+        assert_eq!(vector.remaining(), 0);
         // Nothing moved: the failure itself.
         drop(vector);
         // SAFETY: as above.
@@ -667,16 +645,16 @@ mod tests {
             let made = ssl::SSL_new(context);
             let own = ssl::BIO_new_socket(0, 0);
             ssl::SSL_set_bio(made, own, own);
-            co.net(|record| record.set_ssl(made.cast()));
+            co.net(|record| record.set_ssl(Some(crate::co_socket::record_ssl(made.cast()))));
             assert_eq!(bios(), (made, null(), null()), "the socket's own BIO");
-            let (read, write) = (OwnedBio::memory().unwrap(), OwnedBio::memory());
-            let pair = with(co, |ops| {
-                let (read, write) = ops.tls.ssl.unwrap().set_bio(read, write);
-                (read.as_ptr(), write.as_ptr())
-            });
-            let (read, write) = pair.unwrap();
+            let (read, write) = (
+                ssl::BIO_new(ssl::BIO_s_mem()),
+                ssl::BIO_new(ssl::BIO_s_mem()),
+            );
+            ssl::SSL_set_bio(made, read, write);
             assert_eq!(bios(), (made, read, write), "the memory pair");
-            co.net(swoole_rs_reactor::SocketFields::take_ssl);
+            // Freed below.
+            co.net(|record| record.set_ssl(None));
             assert_eq!(bios(), (null(), null(), null()), "closed");
             ssl::SSL_free(made);
             ssl::SSL_CTX_free(context);

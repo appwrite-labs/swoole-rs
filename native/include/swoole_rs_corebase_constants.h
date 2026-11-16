@@ -189,34 +189,6 @@
 
 #define SW_IPC_BUFFER_SIZE ((uintptr_t)SW_IPC_MAX_SIZE - 40)
 
-typedef enum swPipeType {
-  SW_PIPE_WORKER = 0,
-  SW_PIPE_MASTER = 1,
-  SW_PIPE_NONBLOCK = 2,
-} swPipeType;
-
-typedef enum swSSLState {
-  SW_SSL_STATE_HANDSHAKE = 0,
-  SW_SSL_STATE_READY = 1,
-  SW_SSL_STATE_WAIT_STREAM = 2,
-} swSSLState;
-
-typedef enum swResultCode {
-  SW_OK = 0,
-  SW_ERR = -1,
-} swResultCode;
-
-typedef enum swReturnCode {
-  SW_SUCCESS = 0,
-  SW_CONTINUE = 1,
-  SW_WAIT = 2,
-  SW_CLOSE = 3,
-  SW_ERROR = 4,
-  SW_READY = 5,
-  SW_INVALID = 6,
-  SW_REDUCE_SIZE = 7,
-} swReturnCode;
-
 typedef enum swFdType {
   SW_FD_SESSION = 0,
   SW_FD_STREAM_SERVER = 1,
@@ -236,12 +208,6 @@ typedef enum swFdType {
   SW_FD_DGRAM_CLIENT = 18,
 } swFdType;
 
-typedef enum swSocketFlag {
-  SW_SOCK_NONBLOCK = 4,
-  SW_SOCK_CLOEXEC = 8,
-  SW_SOCK_SSL = 512,
-} swSocketFlag;
-
 typedef enum swSocketType {
   SW_SOCK_TCP = 1,
   SW_SOCK_UDP = 2,
@@ -253,25 +219,6 @@ typedef enum swSocketType {
   SW_SOCK_RAW6 = 8,
 } swSocketType;
 
-typedef enum swTimeoutType {
-  SW_TIMEOUT_DNS = 1,
-  SW_TIMEOUT_CONNECT = 2,
-  SW_TIMEOUT_READ = 4,
-  SW_TIMEOUT_WRITE = 8,
-  SW_TIMEOUT_RDWR = 12,
-  SW_TIMEOUT_ALL = 15,
-} swTimeoutType;
-
-typedef enum swEventType {
-  SW_EVENT_NULL = 0,
-  SW_EVENT_DEAULT = 256,
-  SW_EVENT_READ = 512,
-  SW_EVENT_WRITE = 1024,
-  SW_EVENT_RDWR = 1536,
-  SW_EVENT_ERROR = 2048,
-  SW_EVENT_ONCE = 4096,
-} swEventType;
-
 typedef enum swForkType {
   SW_FORK_SPAWN = 0,
   SW_FORK_EXEC = 2,
@@ -279,44 +226,41 @@ typedef enum swForkType {
   SW_FORK_PRECHECK = 8,
 } swForkType;
 
-typedef enum swTraverseOperation {
-  SW_TRAVERSE_KEEP = 0,
-  SW_TRAVERSE_REMOVE = 1,
-  SW_TRAVERSE_STOP = 2,
-} swTraverseOperation;
 
-typedef enum swEventDataFlag {
-  SW_EVENT_DATA_NORMAL = 0,
-  SW_EVENT_DATA_PTR = 2,
-  SW_EVENT_DATA_CHUNK = 4,
-  SW_EVENT_DATA_BEGIN = 8,
-  SW_EVENT_DATA_END = 16,
-  SW_EVENT_DATA_OBJ_PTR = 32,
-  SW_EVENT_DATA_POP_PTR = 64,
-} swEventDataFlag;
 
-typedef enum swTaskFlag {
-  SW_TASK_TMPFILE = 1,
-  SW_TASK_SERIALIZE = 2,
-  SW_TASK_NONBLOCK = 4,
-  SW_TASK_CALLBACK = 8,
-  SW_TASK_WAITALL = 16,
-  SW_TASK_COROUTINE = 32,
-  SW_TASK_PEEK = 64,
-  SW_TASK_NOREPLY = 128,
-} swTaskFlag;
 
-typedef enum swDNSLookupFlag {
-  SW_DNS_LOOKUP_RANDOM = 2048,
-} swDNSLookupFlag;
 
-typedef enum swEventInitFlag {
-  SW_EVENTLOOP_WAIT_EXIT = 1,
-} swEventInitFlag;
 
-#define SW_PIPE_READ SW_PIPE_WORKER
 
-#define SW_PIPE_WRITE SW_PIPE_MASTER
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 #define SW_DATA_EOF "\r\n\r\n"
 #define SW_TASK_TMP_DIR "/tmp"

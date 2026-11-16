@@ -20,22 +20,29 @@ void swr_zend_http_upload(zval *tmpfiles, struct iovec file);
  * the variables in `str` (an emalloc'd string it frees) into `array`. False
  * when it stopped at PG(max_input_vars), for the caller's warning. */
 bool swr_zend_http_treat_data(int arg, char *str, zval *array);
-/* Unlink the uploaded files the request's `tmpfiles` property (at `offset`)
- * holds now, and forget them in SG(rfc1867_uploaded_files). User code may have
- * replaced the array, so the property is read here, not a cached copy. */
-void swr_zend_http_uploads_release(zend_object *object, uint32_t offset);
+/* Unlink the uploaded files the request's `tmpfiles` property (the slot
+ * `tmpfiles`) holds now, and forget them in SG(rfc1867_uploaded_files). User
+ * code may have replaced the array, so the caller passes the property's slot,
+ * not a cached copy. */
+void swr_zend_http_uploads_release(zval *tmpfiles);
 /* Swoole\Http\Server's RINIT and RSHUTDOWN of SG(rfc1867_uploaded_files),
  * the uploads is_uploaded_file() and move_uploaded_file() know. */
 void swr_zend_http_uploads_rinit(void);
 void swr_zend_http_uploads_rshutdown(void);
 /* A context's references to its request and response objects, released in
- * that order as a zend::bailout::trap body (a property's __destruct may run):
+ * that order as a zend::host::Then body (a property's __destruct may run):
  * `arg` is a swr_zend_http_release, whose `begun` counts the releases begun,
- * so after a bailout in the request's a second call releases the response. */
+ * so after a bailout in the request's a second call releases the response,
+ * and a call once both have begun does nothing. */
 typedef struct {
     zval *request;
     zval *response;
     uint8_t begun;
 } swr_zend_http_release;
 void swr_zend_http_release_objects(void *arg);
+/* The same inside zend_try: 1 if a destructor bailed out. */
+int swr_zend_http_try_release_objects(swr_zend_http_release *release);
+/* swoole::rtrim's write: `text` ends after its first `length` bytes, the rest
+ * zeroed; nothing when it is no longer. */
+void swr_zend_http_rtrim(zend_string *text, size_t length);
 #endif

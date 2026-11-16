@@ -6,8 +6,6 @@
         clippy::multiple_unsafe_ops_per_block
     )
 )]
-mod frontdoor;
-pub use frontdoor::*;
 use swoole_rs_corebase::CCast;
 mod helpers;
 pub use helpers::timezone;
@@ -140,8 +138,7 @@ pub fn swoole_hash(bytes: &[u8], algorithm: u32, signed_char: bool) -> u64 {
 }
 
 /// Native-compatible process-shared spinlock. Unlock remains the native release store.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_utils_spinlock(lock: Option<&AtomicU32>, cpus: u32, backoff_limit: u32) {
+pub fn swr_v1_utils_spinlock(lock: Option<&AtomicU32>, cpus: u32, backoff_limit: u32) {
     let Some(lock) = lock else {
         return;
     };
@@ -170,62 +167,6 @@ pub extern "C" fn swr_v1_utils_spinlock(lock: Option<&AtomicU32>, cpus: u32, bac
         }
         std::thread::yield_now();
     }
-}
-
-/// Futex wait on the native atomic utility's word (`HAVE_FUTEX` builds only).
-#[cfg(target_os = "linux")]
-#[must_use]
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_utils_wait(word: Option<&AtomicU32>, timeout: f64) -> i32 {
-    if word.is_some_and(|word| swoole_rs_locks::wait(word, timeout)) {
-        0
-    } else {
-        -1
-    }
-}
-
-/// Futex wake for the native atomic utility's waiters.
-#[cfg(target_os = "linux")]
-#[must_use]
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_utils_wakeup(word: Option<&AtomicU32>, n: i32) -> i32 {
-    word.and_then(|word| swoole_rs_locks::wakeup(word, n))
-        .map_or(-1, |woken| i32::try_from(woken).unwrap_or(i32::MAX))
-}
-
-/// Return the exact pinned pretty-function substring as a byte span. `name` is a
-/// `struct iovec` on the C side: the caller's borrowed bytes, live for the call.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_utils_pretty_range(
-    name: std::io::IoSlice<'_>,
-    strip: u8,
-    begin: Option<&mut usize>,
-    count: Option<&mut usize>,
-) -> i32 {
-    let (Some(begin), Some(count)) = (begin, count) else {
-        return -1;
-    };
-    (*begin, *count) = pretty_range(&name, strip != 0);
-    0
-}
-
-/// `Logger::get_pretty_name`'s substring of `name` as (offset, length).
-fn pretty_range(name: &[u8], strip: bool) -> (usize, usize) {
-    let Some(bracket) = name.iter().position(|b| *b == b'(') else {
-        return (0, 0);
-    };
-    let head = name.get(..bracket).unwrap_or_default();
-    let mut start = head.iter().rposition(|b| *b == b' ').map_or(0, |p| p + 1);
-    let method = head.get(start..).unwrap_or_default();
-    if strip && let Some(last) = method.windows(2).rposition(|w| w == b"::") {
-        // Native rfind skips overlapping separators; a lone separator strips
-        // itself, including the original wrapped search at positions zero/one.
-        let prior = method
-            .get(..last)
-            .and_then(|head| head.windows(2).rposition(|w| w == b"::"));
-        start += prior.unwrap_or(last) + 2;
-    }
-    (start, bracket - start)
 }
 
 /// Clamp the configured native logging threshold to its defined enum range.

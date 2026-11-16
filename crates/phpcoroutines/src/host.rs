@@ -8,10 +8,7 @@ use std::{
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_coroutine::Resume;
-use swoole_rs_zend::{
-    E_ERROR, Zvals, bailout,
-    sys::{zend_execute_data, zval},
-};
+use swoole_rs_zend::{E_ERROR, Zvals, bailout};
 
 /// `Co::stats()`'s native counts.
 #[derive(Default)]
@@ -70,11 +67,7 @@ impl Co {
 
 use swoole_rs_hooks::sleep::system_sleep;
 
-// Declared, since crates/phpevents (its `php_swoole_reactor_init` and
-// `swr_v1_phpevents_wait`) depends on this crate.
 unsafe extern "C" {
-    safe fn php_swoole_reactor_init() -> i32;
-    safe fn swr_v1_phpevents_wait();
     /// A coroutine's body (`main_func`) inside `zend_first_try`: Zend calls the
     /// callable `enter(context)` returns (none: nothing), reports an uncaught
     /// exception as `E_ERROR`, then runs `defers(context)`; a bailout's exception
@@ -489,15 +482,16 @@ pub(crate) fn create(args: crate::context::Args) -> c_long {
 /// `zend_first_try`; a coroutine that ended in an exception or a bailout
 /// bails the whole process out. Its frame owns nothing to drop.
 fn main(args: crate::context::Args) {
-    let Some(ctx) = crate::context::open(args) else {
-        return;
-    };
-    let caught = swr_zend_coroutine_run(crate::context::enter, defers, ctx);
-    crate::context::close(ctx);
-    if caught != 0 {
+    if crate::context::run(args) {
         // SAFETY: the main context runs `bail_out`; this frame owns nothing.
         unsafe { swoole_rs_coroutine::swr_v1_coroutine_bail(Some(bail_out), std::ptr::null_mut()) };
     }
+}
+
+/// The running coroutine's function, then its defer tasks, inside
+/// `zend_first_try`: whether an exception or a bailout ended it.
+pub(crate) fn run(ctx: Ctx) -> bool {
+    swr_zend_coroutine_run(crate::context::enter, defers, ctx) != 0
 }
 
 /// The bailout of a coroutine that ended in an exception or a bailout, in the
@@ -554,7 +548,6 @@ pub(crate) fn check_reactor() {
 pub(crate) fn attach(
     on_yield: extern "C" fn(swoole_rs_coroutine::CoroutineTask),
     on_resume: extern "C" fn(swoole_rs_coroutine::CoroutineTask),
-    on_close: extern "C" fn(swoole_rs_coroutine::CoroutineTask),
 ) {
     // Upstream dereferences `sw_reactor()` here unchecked.
     if swoole_rs_reactor::event_api::current_prepared().is_none() {
@@ -563,7 +556,7 @@ pub(crate) fn attach(
     swoole_rs_reactor::event_api::on_destroy(deactivate_on_free);
     // The core's activation, on a running loop.
     swoole_rs_coroutine::activate();
-    set_callbacks([Some(on_yield), Some(on_resume), Some(on_close)]);
+    set_callbacks([Some(on_yield), Some(on_resume), None]);
 }
 
 pub(crate) fn detach() {
@@ -646,13 +639,13 @@ pub(crate) fn defer(value: impl swoole_rs_reactor::event_api::Deferred) {
     }
 }
 
-/// PHP 8.4+ `exit()`: the original handler, false if there is none.
-pub(crate) fn exit_original(execute_data: *mut zend_execute_data, return_value: *mut zval) -> bool {
+/// PHP 8.4+ `exit()`: the original handler over `call`, its bailout deferred
+/// to the handler's end; false if there is none.
+pub(crate) fn exit_original(call: &swoole_rs_zend::Call) -> bool {
     let Some(handler) = swoole_rs_phpruntime::original(b"exit") else {
         return false;
     };
-    // SAFETY: the handler's own frame and result.
-    unsafe { handler(execute_data, return_value) };
+    bailout::defer(call.forward(Some(handler)));
     true
 }
 
@@ -665,14 +658,7 @@ pub(crate) fn exit_fallback(message: Option<&[u8]>, status: c_long) {
     swoole_rs_phpswoole::sw_php_exit(status.c_cast::<c_int>());
 }
 
-/// `php_swoole_reactor_init()`: whether the event loop is ready.
-pub(crate) fn reactor_init() -> bool {
-    php_swoole_reactor_init() >= 0
-}
-
-pub(crate) fn event_wait() {
-    swr_v1_phpevents_wait();
-}
+pub(crate) use swoole_rs_phpswoole::{event_wait, reactor_init};
 
 /// `Coroutine::set_stack_size(php_swoole_parse_to_size(size))`.
 pub(crate) fn set_stack_size(size: &swoole_rs_zend::Value) {

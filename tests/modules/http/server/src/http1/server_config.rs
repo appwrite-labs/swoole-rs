@@ -231,7 +231,7 @@ fn startup_error() {
     );
 }
 
-pub const CASES: &[(&str, fn())] = &[
+pub(crate) const CASES: &[(&str, fn())] = &[
     ("max_connection", max_connection),
     ("min_connection", min_connection),
     ("worker_num", worker_num),

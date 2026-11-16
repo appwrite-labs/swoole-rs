@@ -2,7 +2,6 @@
 //! `php_swoole_odbc_minit`): connection pooling from `pdo_odbc.connection_pooling`,
 //! PDO's `ODBC_*` constants unless `pdo_odbc` declared them, and the driver.
 use std::{
-    convert::Infallible,
     ffi::CStr,
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -18,7 +17,7 @@ unsafe extern "C" {
     /// reads no memory for.
     #[link_name = "SQLSetEnvAttr"]
     safe fn set_process_attr(
-        environment: Option<&'static Infallible>,
+        environment: Option<&'static !>,
         attribute: ProcessAttribute,
         value: usize,
         length: SQLINTEGER,

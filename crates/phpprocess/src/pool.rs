@@ -35,7 +35,8 @@ use swoole_rs_zend::{
 use swoole_rs_zend::{method_table, sys as z};
 
 /// `SW_EVENT_DATA_OBJ_PTR`.
-const EVENT_DATA_OBJ_PTR: u8 = 1 << 5;
+const EVENT_DATA_OBJ_PTR: u8 =
+    swoole_rs_corebase::constants::EventDataFlag::SW_EVENT_DATA_OBJ_PTR.bits();
 
 static POOL: CustomClass<PoolObject> = CustomClass::new();
 /// `current_pool` and `current_worker`.
@@ -362,7 +363,7 @@ fn owner(slot: &mut zval) -> Option<(&Value, &PoolObject)> {
     Some((object, object.custom()?))
 }
 
-extern "C-unwind" fn on_worker_start(pool: PoolRef<'_>, worker: Worker<'_>) {
+fn on_worker_start(pool: PoolRef<'_>, worker: Worker<'_>) {
     let mut slot = swoole_rs_zend::UNDEF;
     let Some((object, this)) = owner(&mut slot) else {
         return;
@@ -409,7 +410,7 @@ fn worker_signals(term: bool) {
     }
 }
 
-extern "C-unwind" fn on_message(pool: PoolRef<'_>, message: &RecvData<'_>) {
+fn on_message(pool: PoolRef<'_>, message: &RecvData<'_>) {
     let mut slot = swoole_rs_zend::UNDEF;
     let Some((object, this)) = owner(&mut slot) else {
         return;
@@ -452,17 +453,17 @@ fn worker_stopped(worker: Worker<'_>, exit: bool) {
     }
 }
 
-extern "C-unwind" fn on_worker_stop(_: PoolRef<'_>, worker: Worker<'_>) {
+fn on_worker_stop(_: PoolRef<'_>, worker: Worker<'_>) {
     worker_stopped(worker, false);
     swoole_rs_zend::bailout::finish();
 }
 
-extern "C-unwind" fn on_worker_exit(_: PoolRef<'_>, worker: Worker<'_>) {
+fn on_worker_exit(_: PoolRef<'_>, worker: Worker<'_>) {
     worker_stopped(worker, true);
     swoole_rs_zend::bailout::finish();
 }
 
-extern "C-unwind" fn on_start(_: PoolRef<'_>) {
+fn on_start(_: PoolRef<'_>) {
     let mut slot = swoole_rs_zend::UNDEF;
     if let Some((object, this)) = owner(&mut slot) {
         update_long(object, c"master_pid", getpid());
@@ -476,7 +477,7 @@ extern "C-unwind" fn on_start(_: PoolRef<'_>) {
     swoole_rs_zend::bailout::finish();
 }
 
-extern "C-unwind" fn on_shutdown(_: PoolRef<'_>) {
+fn on_shutdown(_: PoolRef<'_>) {
     let mut slot = swoole_rs_zend::UNDEF;
     if let Some((object, this)) = owner(&mut slot) {
         update_bool(object, c"running", false);

@@ -18,7 +18,7 @@ use swoole_rs_utilities::swoole_hash;
 const USERFUNC_FALLBACK: c_int = -3;
 
 /// `SW_SOCK_SSL`, `SW_MAX_LISTEN_PORT`, `SW_SYSTEMD_FDS_START`.
-const SOCK_SSL: c_int = 1 << 9;
+const SOCK_SSL: c_int = swoole_rs_corebase::constants::SocketFlag::SW_SOCK_SSL.bits();
 const MAX_LISTEN_PORT: usize = 60000;
 const SYSTEMD_FDS_START: c_int = 3;
 
@@ -538,7 +538,6 @@ mod tests {
     const UNLISTED: c_int = 5000;
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn schedule_by_mode() {
         assert_eq!(
             Workers::new(4, DispatchMode::FdMod).schedule(10),
@@ -586,8 +585,7 @@ mod tests {
         assert_eq!(idle.live.state().next_round(), 6, "four tries after two");
     }
 
-    extern "C" fn to_six(
-        _: crate::callbacks::Ctx,
+    fn to_six(
         _: Server<'_>,
         _: Option<crate::Connection<'_>>,
         _: Option<&crate::reactor_entry::RecvData>,
@@ -595,8 +593,7 @@ mod tests {
         6
     }
 
-    extern "C" fn fall_back(
-        _: crate::callbacks::Ctx,
+    fn fall_back(
         _: Server<'_>,
         _: Option<crate::Connection<'_>>,
         _: Option<&crate::reactor_entry::RecvData>,
@@ -605,7 +602,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn a_dispatch_function_comes_first_unless_it_falls_back() {
         let w = Workers::new(4, DispatchMode::FdMod);
         let callbacks = &w.live.state().callbacks;
@@ -616,7 +612,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn a_datagram_hashes_its_sender() {
         let w = Workers::new(4, DispatchMode::IpMod);
         // SAFETY: a plain record, for which zero is valid.
@@ -639,7 +634,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn worker_side_sends() {
         use crate::hybrid::tests::{Call, calls};
         let live = LiveServer::new();
@@ -656,7 +650,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn idle_and_tasking_counts() {
         let w = Workers::new(3, DispatchMode::FdMod);
         w.set(&[0, 2], WorkerStatus::Idle);
@@ -671,7 +664,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn sendfile_checks() {
         use crate::hybrid::tests::{Call, calls};
         let live = LiveServer::new();
@@ -728,7 +720,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn add_port_checks_then_keeps_the_port() {
         fake_port_methods();
         let live = LiveServer::new();
@@ -764,7 +755,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn systemd_sockets_import_from_listen_fds_start() {
         fake_port_methods();
         let live = LiveServer::new();

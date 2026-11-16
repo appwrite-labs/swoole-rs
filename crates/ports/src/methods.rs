@@ -3,23 +3,19 @@
 //! in [`crate::read_native`].
 
 use std::ffi::{CStr, c_char, c_int};
-use swoole_rs_corebase::CCast;
-
 use swoole_rs_clients::address::{address_port, assign, type_name};
 use swoole_rs_clients::protocol::{GetPackageLength, GetPackageLengthSize, OnPackage};
-use swoole_rs_corebase::constants::SW_DATA_EOF_MAXLEN;
+use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::constants::{SW_DATA_EOF_MAXLEN, SocketFlag};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_reactor::socket_upstream::make_typed;
-use swoole_rs_reactor::{Running, SocketRecord};
+use swoole_rs_reactor::{OwnedSocket, Running, SocketRecord};
 pub(crate) use swoole_rs_tls::upstream::socket_free;
 
 /// `SW_FD_STREAM_SERVER` and `SW_FD_DGRAM_SERVER`.
 pub(crate) const FD_STREAM_SERVER: c_int = 1;
 pub(crate) const FD_DGRAM_SERVER: c_int = 2;
-/// `SW_SOCK_NONBLOCK` and `SW_SOCK_CLOEXEC`.
-const SOCK_NONBLOCK: c_int = swoole_rs_corebase::constants::SocketFlag::SW_SOCK_NONBLOCK as c_int;
-const SOCK_CLOEXEC: c_int = swoole_rs_corebase::constants::SocketFlag::SW_SOCK_CLOEXEC as c_int;
 use swoole_rs_server::port_config::{PortConfig, ReadEvent, Reader};
 use swoole_rs_server::view;
 
@@ -154,7 +150,11 @@ pub(crate) fn create_socket(config: &PortConfig, reuse_port: bool) -> bool {
         FD_STREAM_SERVER
     };
     // The record just made, which only this function owns until the port takes it.
-    let Some(mut made) = make_typed(kind, fd_type, SOCK_NONBLOCK | SOCK_CLOEXEC) else {
+    let Some(mut made) = make_typed(
+        kind,
+        fd_type,
+        (SocketFlag::SW_SOCK_NONBLOCK | SocketFlag::SW_SOCK_CLOEXEC).bits(),
+    ) else {
         log::set_last_error(errno());
         return false;
     };
@@ -218,7 +218,7 @@ pub(crate) fn create_socket(config: &PortConfig, reuse_port: bool) -> bool {
     config.port.set(address_port(&info).into());
     // Only a bound record: each failure above frees its own, which the port's
     // delete would otherwise free again.
-    config.set_listening_socket(made.into_socket());
+    config.set_listening_socket(OwnedSocket::new(made));
     true
 }
 
@@ -230,9 +230,8 @@ pub(crate) fn close_socket(config: &PortConfig) {
     let Some(socket) = config.take_socket() else {
         return;
     };
-    // SAFETY: `delete socket`: the port's live socket, which Rust boxed
-    // (`SocketRecord::into_raw`) and nothing else uses, taken back to drop.
-    let socket = unsafe { Box::from_raw(socket.as_ptr()) };
+    // `delete socket`.
+    let socket = socket.into_box();
     let fd = socket.fd;
     if swoole_rs_corebase::sys::close(fd).is_err() {
         log::sys_warning(
@@ -517,7 +516,7 @@ mod tests {
     /// A stub length function, each `N` a distinct body and address.
     pub(super) unsafe extern "C" fn length<const N: u8>(
         _: *const Protocol,
-        _: *mut c_void,
+        _: Option<swoole_rs_reactor::Socket<'_>>,
         _: &mut PacketLength,
     ) -> isize {
         N.into()
@@ -626,7 +625,8 @@ mod tests {
                     "bind(2)"
                 );
             }
-            (*config).set_listening_socket(swoole_rs_reactor::Socket::from_ptr(socket).unwrap());
+            (*config)
+                .set_listening_socket(swoole_rs_reactor::OwnedSocket::new(Box::from_raw(socket)));
         }
         config
     }
@@ -747,7 +747,7 @@ mod tests {
         unsafe {
             (*config).r#type = kind;
             (*config).port.set(number);
-            let set = (*config).host.set_shared(host.as_bytes());
+            let set = (*config).host.set(host.as_bytes());
             assert!(set, "host set");
         }
         config
@@ -1173,8 +1173,11 @@ mod tests {
         let context = config.ssl_context.get().unwrap();
         assert!(context_create(config, &context, false, None).is_none());
         assert_eq!(log::last_error(), 509, "SW_ERROR_WRONG_OPERATION");
-        let cert_file = swoole_rs_tls::owner_view(&context).strings[4];
-        let set = |text: &str| unsafe { (*cert_file).set_shared(text.as_bytes()) };
+        let set = |text: &str| {
+            context
+                .borrow_configuration()
+                .set_string(4, text.as_bytes())
+        };
         assert!(set("server.crt"), "cert_file = \"server.crt\"");
         assert!(context_create(config, &context, true, None).is_none());
         assert!(set(""), "cert_file.clear()");
