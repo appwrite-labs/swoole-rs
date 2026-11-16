@@ -50,7 +50,7 @@ runs:
           "$(dpkg -L odbc-mariadb | grep '/libmaodbc.so$' | head -1)" | sudo tee /etc/odbcinst.ini
         printf '[mysql-test]\nDescription = MySQL test database\nDriver = mysql\nSERVER = mysql\nUSER = root\nPASSWORD = root\nPORT = 3306\nDATABASE = test\n' \
           | sudo tee /etc/odbc.ini
-    - uses: actions/cache/restore@v6
+    - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
       with:
         path: target/upstream
         key: upstream-${{ runner.os }}-${{ hashFiles('tools/build_upstream.py') }}-${{ github.workspace }}
@@ -84,7 +84,7 @@ runs:
         catch (mysqli_sql_exception $e) { if ($i >= 30) throw $e; sleep(1); } }
         $m->multi_query(file_get_contents("target/upstream/src/tests/test.sql")) or exit($m->error . "\n");
         do { if ($m->errno) exit($m->error . "\n"); } while ($m->more_results() && $m->next_result());'
-    - uses: actions/download-artifact@v8
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
       with:
         name: phpt-engines
         path: target/phpt
@@ -92,7 +92,7 @@ runs:
     # composer.json for but no lock; install them from the committed lock into the
     # upstream tree, where corpus/upstream/run.py copies the vendor dir into each
     # sandbox. Reproducible (exact lock) and cached on the lock hash.
-    - uses: actions/cache@v6
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
       with:
         path: ~/.cache/composer
         key: composer-${{ runner.os }}-${{ hashFiles('corpus/upstream/lib-composer.lock') }}
