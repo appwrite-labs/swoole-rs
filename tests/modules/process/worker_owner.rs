@@ -62,6 +62,8 @@ fn a_thread_copy_retains_the_native_resources_and_closes_the_pair_once() {
     assert!(copy.share_resources(owner));
     assert!(fd_open(fd));
     assert!(queue_exists(queue));
+    assert_eq!(copy.close_pipe(1), Some(true));
+    assert_eq!(copy.close_pipe(1), Some(false), "already closed");
     assert_eq!(copy.close_pipe(0), Some(true));
     assert!(copy.get().pipe_object().is_null());
     assert!(!fd_open(fd));

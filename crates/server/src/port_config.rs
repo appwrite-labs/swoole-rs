@@ -6,6 +6,7 @@ use std::sync::{OnceLock, RwLock};
 use swoole_rs_clients::protocol::Protocol;
 use swoole_rs_corebase::StringSlot;
 use swoole_rs_corebase::constants::{SW_DATA_EOF, SW_INPUT_BUFFER_SIZE};
+use swoole_rs_memory::members::Shm;
 use swoole_rs_reactor::Socket;
 use swoole_rs_tls::{SslVersion, TlsContext};
 
@@ -162,6 +163,9 @@ pub struct PortConfig {
     pub kernel_socket_recv_buffer_size: Setting<c_int>,
     pub kernel_socket_send_buffer_size: Setting<c_int>,
     pub gs: Shared<*mut c_void>,
+    /// Base mode's per-worker connection counts (`gs->connection_nums`): an
+    /// `AtomicU32` per worker, which [`Self::delete`] unmaps.
+    pub(crate) connection_nums: Shm,
     /// The non-threaded PHP Port object's property, installed once at bind/listen.
     /// Shared callback storage only: it must not own the server. The PHP object
     /// clears its callbacks on release, including when the object is freed first.
@@ -278,6 +282,12 @@ impl PortConfig {
         // SAFETY: null, or the port's slot in `port_gs_list`, mapped for the server's life.
         unsafe { self.gs.get().cast::<crate::shared::PortCounters>().as_ref() }
     }
+
+    /// The per-worker connection counts; none when the server keeps one total.
+    pub(crate) fn cells(&self) -> &[core::sync::atomic::AtomicU32] {
+        crate::shared::words(&self.connection_nums)
+    }
+
     /// The listening socket's record as native code holds it, or null.
     #[must_use]
     pub fn socket_ptr(&self) -> *mut c_void {
@@ -310,7 +320,8 @@ impl PortConfig {
         self.socket.get()
     }
     /// A new port's settings.
-    pub(crate) fn boxed(buffer_size: c_int) -> Box<Self> {
+    #[must_use]
+    pub fn boxed(buffer_size: c_int) -> Box<Self> {
         Box::new(Self {
             object_id: 0,
             backlog: Setting::new(512),
@@ -345,6 +356,7 @@ impl PortConfig {
             kernel_socket_recv_buffer_size: Setting::new(0),
             kernel_socket_send_buffer_size: Setting::new(0),
             gs: Shared::new(core::ptr::null_mut()),
+            connection_nums: Shm::empty(),
             property: std::cell::OnceCell::new(),
             websocket_frames: Setting::new(0),
             websocket_protocol: Published::default(),
@@ -366,9 +378,10 @@ impl PortConfig {
         config
     }
 
-    /// `delete port` of a port still in its box: its TLS state, its settings, and
-    /// the record of a socket `destroy` never closed.
+    /// `delete port` of a port still in its box: its TLS state, its settings, its
+    /// connection counts, and the record of a socket `destroy` never closed.
     pub(crate) fn delete(mut self: Box<Self>) {
+        self.connection_nums.free();
         // Without methods, nothing made the port's TLS state.
         if let Some(methods) = METHODS.get() {
             (methods.tls_free)(&mut self);

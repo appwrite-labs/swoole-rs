@@ -246,13 +246,10 @@ pub struct ServerConfig {
     pub task_ipc_mode: Setting<u8>,
     pub task_max_request: Setting<u32>,
     pub task_max_request_grace: Setting<u32>,
-    pub task_results: Shm,
     /// The server's worker registry, which crates/process and the manager reach
     /// through `registry`'s pointer and write through `&`; native sees only a
     /// `void *` handle.
     pub worker_registry: Option<Box<WorkerRegistry<crate::process_worker::ProcessWorker>>>,
-    pub user_workers: Shm,
-    pub workers: Shm,
     pub gs: Shm,
     pub upload_max_filesize: Setting<usize>,
     pub http_compression_level: Setting<u8>,
@@ -436,10 +433,7 @@ impl Default for ServerConfig {
             task_ipc_mode: Setting::new(TaskIpcMode::UnixSock as u8),
             task_max_request: Setting::new(0),
             task_max_request_grace: Setting::new(0),
-            task_results: Shm::empty(),
             worker_registry: None,
-            user_workers: Shm::empty(),
-            workers: Shm::empty(),
             gs: Shm::empty(),
             upload_max_filesize: Setting::new(0),
             http_compression_level: Setting::new(0),

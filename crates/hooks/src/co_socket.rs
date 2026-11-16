@@ -464,20 +464,28 @@ impl Co {
         self.record().take_buffer(write)
     }
 
-    /// Restores the read allocation owned by a completed receive. While parked,
-    /// that receive owns it independently of socket teardown; an abandoned frame
-    /// must retain it because a kernel request may still reach its bytes.
-    pub(crate) fn put_read_buffer(self, buffer: Box<CppString>) {
-        let slot = self.buffer_slot(false);
-        assert!(
-            slot.get().is_null(),
-            "a pending receive owns the read buffer"
-        );
-        slot.set(Box::into_raw(buffer).cast());
+    /// The read buffer (made first when the socket has none), which the socket gives
+    /// up until the result drops. Unlike a [`Co::with_buffer`] loan, it may be held
+    /// across a yield or a call that bails out: an abandoned frame keeps the
+    /// allocation, so teardown cannot free bytes a parked receive may still write.
+    /// Nothing else may read from the socket meanwhile.
+    /// # Panics
+    /// Inside a `with_buffer` over the read buffer.
+    #[track_caller]
+    #[must_use]
+    pub fn own_read_buffer(self) -> OwnedRead {
+        let _made = self.buffer(false);
+        let Some(buffer) = self.take_buffer(false) else {
+            swoole_rs_corebase::fatal("a coroutine socket without its read buffer")
+        };
+        OwnedRead {
+            socket: self,
+            buffer: core::mem::ManuallyDrop::new(buffer),
+        }
     }
 
     /// [`Co::take_buffer`] of the write buffer. The read buffer is not given up
-    /// outside this crate: a coroutine HTTP server reads requests out of it.
+    /// outside this crate: [`Co::own_read_buffer`] hands it back.
     /// # Panics
     /// Inside a `with_buffer` over the write buffer.
     #[track_caller]
@@ -971,6 +979,36 @@ impl Drop for OwnedCo {
         // SAFETY: the record `into_owned` boxed, which only this owner frees.
         let mut record = unsafe { Box::from_raw(self.0.raw()) };
         swr_v1_hook_co_socket_release(&mut record);
+    }
+}
+
+/// [`Co::own_read_buffer`]'s buffer, which the socket gets back when this drops. A
+/// frame abandoned while holding it keeps the allocation from the socket's teardown.
+pub struct OwnedRead {
+    socket: Co,
+    /// Never dropped: `drop` hands the box to the socket's slot.
+    buffer: core::mem::ManuallyDrop<Box<CppString>>,
+}
+
+impl core::ops::Deref for OwnedRead {
+    type Target = CppString;
+    fn deref(&self) -> &CppString {
+        &self.buffer
+    }
+}
+
+impl core::ops::DerefMut for OwnedRead {
+    fn deref_mut(&mut self) -> &mut CppString {
+        &mut self.buffer
+    }
+}
+
+impl Drop for OwnedRead {
+    fn drop(&mut self) {
+        let slot = self.socket.buffer_slot(false);
+        assert!(slot.get().is_null(), "the read buffer is owned elsewhere");
+        // The slot owns the box from here, as `Box::into_raw` would leave it.
+        slot.set(ptr::from_mut::<CppString>(&mut self.buffer).cast());
     }
 }
 
@@ -1536,11 +1574,12 @@ mod tests {
         let mut socket = TestSocket::new();
         let co = socket.co();
         let address = co.with_buffer(false, |buffer| buffer.as_ptr());
-        let mut pending = co.take_buffer(false).unwrap();
+        let mut pending = co.own_read_buffer();
+        assert!(co.read_buffer().is_null(), "given up while owned");
         pending.fill_within(3, |spare| {
             assert!(spare.put(b"abc").is_some());
         });
-        co.put_read_buffer(pending);
+        drop(pending);
         co.with_buffer(false, |buffer| {
             assert_eq!(buffer.as_ptr(), address);
             assert_eq!(buffer.view(), b"abc");

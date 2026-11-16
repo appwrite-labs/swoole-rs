@@ -496,14 +496,9 @@ impl Source for Zend<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{
-        cell::{Cell, RefCell},
-        collections::HashMap,
-        ptr::NonNull,
-    };
+    use std::{cell::RefCell, collections::HashMap};
     use swoole_rs_clients::protocol::Protocol;
     use swoole_rs_corebase::net_types::PacketLength;
-    use swoole_rs_server::port_config::swr_v1_port_config_new;
 
     /// The mock settings' `package_length_func` callback.
     fn length_func(
@@ -536,8 +531,6 @@ mod tests {
     struct Table {
         values: HashMap<&'static str, Fixture>,
         trace: RefCell<Vec<String>>,
-        /// The settings `apply` below hands over.
-        config: Cell<Option<NonNull<PortConfig>>>,
         /// A `set()` of the same port that reading `tcp_keepidle` runs, as a PHP
         /// conversion can.
         nested: Option<Box<Table>>,
@@ -548,27 +541,45 @@ mod tests {
             self.values.insert(key, value);
             self
         }
+    }
 
+    struct Applying<'a> {
+        table: &'a Table,
+        config: &'a PortConfig,
+    }
+
+    impl std::ops::Deref for Applying<'_> {
+        type Target = Table;
+        fn deref(&self) -> &Table {
+            self.table
+        }
+    }
+
+    impl Applying<'_> {
         fn get(&self, key: &CStr, kind: &str) -> Option<Fixture> {
             let key = key.to_str().unwrap();
             self.trace.borrow_mut().push(format!("{kind}:{key}"));
             if let Some(nested) = &self.nested
                 && key == "tcp_keepidle"
             {
-                nested.config.set(self.config.get());
-                assert!(super::apply(&**nested).is_ok());
+                assert!(
+                    super::apply(&Applying {
+                        table: nested,
+                        config: self.config
+                    })
+                    .is_ok()
+                );
             }
             self.values.get(key).cloned()
         }
     }
 
     /// `super::apply` over `c`.
-    fn apply(table: &Table, c: &mut PortConfig) -> Step {
-        table.config.set(Some(NonNull::from(c)));
-        super::apply(table)
+    fn apply(table: &Table, c: &PortConfig) -> Step {
+        super::apply(&Applying { table, config: c })
     }
 
-    impl Source for Table {
+    impl Source for Applying<'_> {
         fn long(&self, key: &CStr) -> Result<Option<i64>, Stop> {
             Ok(self.get(key, "long").map(|v| v.number))
         }
@@ -616,13 +627,12 @@ mod tests {
             true
         }
         fn config<R>(&self, f: impl FnOnce(&PortConfig) -> R) -> R {
-            f(unsafe { self.config.get().unwrap().as_ref() })
+            f(self.config)
         }
     }
 
     fn port() -> Box<PortConfig> {
-        // SAFETY: a new allocation, owned by the box.
-        unsafe { Box::from_raw(swr_v1_port_config_new(8192)) }
+        PortConfig::boxed(8192)
     }
 
     fn text(value: &[u8]) -> Fixture {
@@ -679,8 +689,8 @@ mod tests {
     #[test]
     fn options_are_read_in_upstream_order() {
         let table = Table::default();
-        let mut c = port();
-        assert!(apply(&table, &mut c).is_ok());
+        let c = port();
+        assert!(apply(&table, &c).is_ok());
         let trace = table.trace.borrow().join(";");
         let expected = [
             "long:backlog",
@@ -744,7 +754,7 @@ mod tests {
             ]
             .into_iter()
             .fold(Table::default(), |t, key| t.with(key, value.clone()));
-            assert!(apply(&table, &mut c).is_ok());
+            assert!(apply(&table, &c).is_ok());
             assert_eq!(c.open_tcp_nodelay.get(), on);
             assert_eq!(c.open_tcp_keepalive.get(), on);
             assert_eq!(c.protocol.get_mut().split_by_eof, on);
@@ -766,20 +776,20 @@ mod tests {
             assert_eq!(c.open_length_check.get(), on);
         }
         // A false dependent leaves the flag it would set as it was.
-        let mut c = port();
+        let c = port();
         c.open_eof_check.set(true);
         c.open_http_protocol.set(true);
         let table = Table::default()
             .with("open_eof_split", fixture(0))
             .with("open_websocket_protocol", fixture(0))
             .with("open_http2_protocol", fixture(0));
-        assert!(apply(&table, &mut c).is_ok());
+        assert!(apply(&table, &c).is_ok());
         assert!(c.open_eof_check.get() && c.open_http_protocol.get());
         // open_redis_protocol is read as an integer.
         for v in [i64::MIN, -1, 0, 1, i64::MAX] {
-            let mut c = port();
+            let c = port();
             let table = Table::default().with("open_redis_protocol", fixture(v));
-            assert!(apply(&table, &mut c).is_ok());
+            assert!(apply(&table, &c).is_ok());
             assert_eq!(c.open_redis_protocol.get(), v != 0);
         }
     }
@@ -805,7 +815,7 @@ mod tests {
             ]
             .into_iter()
             .fold(Table::default(), |t, key| t.with(key, fixture(v)));
-            assert!(apply(&table, &mut c).is_ok());
+            assert!(apply(&table, &c).is_ok());
             assert_eq!(c.backlog.get(), u16_of(v));
             assert_eq!(c.heartbeat_idle_time.get(), u16_of(v));
             for size in [
@@ -838,13 +848,13 @@ mod tests {
             (f64::NAN, TIMER_MIN_SEC),
             (0.5, 0.5),
         ] {
-            let mut c = port();
+            let c = port();
             let value = Fixture {
                 real: v,
                 ..fixture(0)
             };
             let table = Table::default().with("max_idle_time", value);
-            assert!(apply(&table, &mut c).is_ok());
+            assert!(apply(&table, &c).is_ok());
             assert_eq!(c.max_idle_time.get().to_bits(), expected.to_bits());
         }
     }
@@ -857,7 +867,7 @@ mod tests {
             let mut c = port();
             let eof = vec![b'x'; length];
             let table = Table::default().with("package_eof", text(&eof));
-            let result = apply(&table, &mut c);
+            let result = apply(&table, &c);
             assert_eq!(
                 c.protocol.get_mut().package_eof_len,
                 length.to_le_bytes()[0]
@@ -887,7 +897,7 @@ mod tests {
         ] {
             let mut c = port();
             let table = Table::default().with("package_length_type", text(kind));
-            let result = apply(&table, &mut c);
+            let result = apply(&table, &c);
             assert_eq!(
                 c.protocol.get_mut().package_length_type,
                 kind.first().copied().unwrap_or(0)
@@ -909,7 +919,7 @@ mod tests {
             ] {
                 let mut c = port();
                 let table = Table::default().with(key, fixture(v));
-                let result = apply(&table, &mut c);
+                let result = apply(&table, &c);
                 let field = if key == "package_length_offset" {
                     c.protocol.get_mut().package_length_offset
                 } else {
@@ -924,7 +934,7 @@ mod tests {
         let table = Table::default()
             .with("package_body_offset", fixture(3))
             .with("package_body_start", fixture(5));
-        assert!(apply(&table, &mut c).is_ok());
+        assert!(apply(&table, &c).is_ok());
         assert_eq!(c.protocol.get_mut().package_body_offset, 3);
     }
 
@@ -934,7 +944,7 @@ mod tests {
         let previous: Box<dyn std::any::Any> = Box::new(7_usize);
         c.length_owner.set(Some(Box::new(previous)));
         let table = Table::default().with("package_length_func", fixture(9));
-        assert!(apply(&table, &mut c).is_ok());
+        assert!(apply(&table, &c).is_ok());
         assert_eq!(c.protocol.get_mut().private_data_1.addr(), 9);
         assert_eq!(c.protocol.get_mut().package_length_size, 0);
         assert_eq!(c.protocol.get_mut().package_length_type, 0);
@@ -955,14 +965,14 @@ mod tests {
 
     #[test]
     fn websocket_frames_and_subprotocol() {
-        let mut c = port();
+        let c = port();
         c.websocket_frames.set(2);
         let table = Table::default()
             .with("open_websocket_close_frame", fixture(1))
             .with("open_websocket_ping_frame", fixture(0))
             .with("open_websocket_pong_frame", fixture(1))
             .with("websocket_subprotocol", text(b"chat"));
-        assert!(apply(&table, &mut c).is_ok());
+        assert!(apply(&table, &c).is_ok());
         assert_eq!(c.websocket_frames.get(), 5);
         assert_eq!(
             c.websocket_protocol.get().as_deref().map(Vec::as_slice),
@@ -983,19 +993,16 @@ mod tests {
                 .with("tcp_keepidle", fixture(7))
         };
         let mut c = port();
-        assert!(apply(&table, &mut c).is_ok());
+        assert!(apply(&table, &c).is_ok());
         assert_eq!(c.backlog.get(), 9);
         assert_eq!(c.tcp_keepidle.get(), 7);
         assert_eq!(c.protocol.get_mut().package_max_length, 3);
     }
 
-    fn warning(_function: &CStr, _message: &str) {}
-
     #[test]
     fn tls_options_in_order_and_converted() {
         // tls_settings: each option's order and conversion.
-        let prepared = tls::owner_new(warning);
-        let owner = prepared.owner;
+        let owner = tls::TlsContext::new();
         let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml").as_bytes();
         let table = Table::default()
             .with("ssl_cert_file", text(manifest))
@@ -1012,8 +1019,17 @@ mod tests {
             .with("ssl_ciphers", text(b"HIGH"))
             .with("ssl_ecdh_curve", text(b"auto"))
             .with("ssl_dhparam", text(b"dh"));
-        // SAFETY: the owner made above, freed at the end.
-        assert!(tls(&table, unsafe { &*owner }, true).is_ok());
+        assert!(
+            tls(
+                &Applying {
+                    table: &table,
+                    config: &port()
+                },
+                &owner,
+                true
+            )
+            .is_ok()
+        );
         let expected = [
             "string:ssl_cert_file",
             "string:ssl_key_file",
@@ -1034,15 +1050,13 @@ mod tests {
         ]
         .join(";");
         assert_eq!(table.trace.borrow().join(";"), expected);
-        // SAFETY: the owner's fields, live until it is freed below.
-        let fields = unsafe { &*prepared.fields };
+        let fields = owner.fields();
         assert!(!fields.disable_compress, "ssl_compress is inverted");
         assert_eq!(fields.protocols, 4, "a datagram port drops DTLS");
         assert!(fields.verify_peer && fields.allow_self_signed);
         assert_eq!(fields.verify_depth, 255);
         assert!(fields.prefer_server_ciphers);
-        // SAFETY: the owner made above, freed at the end.
-        let view = |index: usize| unsafe { &*owner }.string(index);
+        let view = |index: usize| owner.string(index);
         assert_eq!(view(0), b"HIGH");
         assert_eq!(view(1), b"auto");
         assert_eq!(view(3), b"dh");
@@ -1053,17 +1067,24 @@ mod tests {
         for v in [i64::MIN, -1, 0, 1, 255, 256, i64::MAX] {
             assert_eq!(i64::from(u8_of(v)), v.clamp(0, 255));
         }
-        // SAFETY: the owner made above.
-        unsafe { drop(std::rc::Rc::from_raw(owner)) };
     }
 
     #[test]
     fn a_missing_certificate_is_fatal() {
-        let prepared = tls::owner_new(warning);
+        let owner = tls::TlsContext::new();
         for key in ["ssl_cert_file", "ssl_key_file", "ssl_client_cert_file"] {
             let table = Table::default().with(key, text(b"/nonexistent/x.pem\0tail"));
-            // SAFETY: the owner made above, freed at the end.
-            assert!(tls(&table, unsafe { &*prepared.owner }, false).is_err());
+            assert!(
+                tls(
+                    &Applying {
+                        table: &table,
+                        config: &port()
+                    },
+                    &owner,
+                    false
+                )
+                .is_err()
+            );
             let message = match key {
                 "ssl_cert_file" => "ssl cert file[/nonexistent/x.pem] not found",
                 "ssl_key_file" => "ssl key file[/nonexistent/x.pem] not found",
@@ -1072,7 +1093,5 @@ mod tests {
             let trace = table.trace.borrow().join(";");
             assert!(trace.ends_with(&format!("fatal1:{message}")), "{trace}");
         }
-        // SAFETY: the owner made above.
-        unsafe { drop(std::rc::Rc::from_raw(prepared.owner)) };
     }
 }

@@ -18,7 +18,7 @@ EXEMPT = {
     'ports': 'datagram sockets: Miri opens SOCK_STREAM only',
     'oracle': 'the pinned upstream C++, for differential tests',
     **dict.fromkeys(['zend', 'phpclients', 'phpcoroutines', 'phphttp', 'phpprocess', 'phpruntime',
-                     'phpserver', 'phpstdext', 'phpswoole'],
+                     'phpstdext', 'phpswoole'],
                     "PHP's Zend engine, which exists only in a loaded extension"),
 }
 

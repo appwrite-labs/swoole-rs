@@ -51,3 +51,22 @@ unsafe extern "C" fn free(address: *mut c_void) {
     // SAFETY: per the caller.
     unsafe { swr_zend_string_release(from_val(address.cast())) };
 }
+
+/// Adopt a received allocation when Zend made it, otherwise copy its initialized
+/// bytes. The owner frees a copied allocation; a transferred one is Zend's again.
+#[must_use]
+pub fn received_string(
+    mut buffer: swoole_rs_buffer::string::OwnedString,
+) -> swoole_rs_zend::ZString {
+    let zend = buffer
+        .allocator()
+        .is_some_and(|allocator| std::ptr::eq(allocator.get(), &raw const ZEND_STRING_ALLOCATOR));
+    if !zend || buffer.as_ptr().is_null() {
+        return swoole_rs_zend::ZString::new(buffer.view());
+    }
+    let length = buffer.len();
+    let data = buffer.release();
+    // SAFETY: this owner held the sole reference to a block from our Zend-string
+    // allocator, and its length counts initialized bytes within that allocation.
+    unsafe { ZBuf::from_raw(from_val(data), length) }.into_zstring()
+}

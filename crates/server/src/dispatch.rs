@@ -496,7 +496,7 @@ mod tests {
             let config = live.config_mut();
             config.worker_num.set(n);
             config.dispatch_mode.set(dispatch as u8);
-            config.workers = crate::records::tests::naming_at(records.as_mut_ptr());
+            live.tables_mut().workers = crate::records::tests::naming_at(records.as_mut_ptr());
             Self { live, records }
         }
 
@@ -522,7 +522,7 @@ mod tests {
     impl Drop for Workers {
         fn drop(&mut self) {
             // The records drop after the server forgets them.
-            self.live.config_mut().workers = swoole_rs_memory::members::Shm::default();
+            self.live.tables_mut().workers = swoole_rs_memory::members::Shm::default();
         }
     }
 

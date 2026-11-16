@@ -1,7 +1,7 @@
 //! A Process object's `Worker` and its pipe (were the host table's worker and
 //! pipe entries in ext-src/swoole_server.cc): the record crates/process lays
 //! out, the `UnixSocket` crates/tls defines, and the pipe's `network::Socket`.
-use std::{cell::OnceCell, ffi::c_int, mem::ManuallyDrop};
+use std::{cell::OnceCell, ffi::c_int};
 use swoole_rs_corebase::CCast;
 use swoole_rs_process::{
     methods::{swoole_set_worker_id, swoole_set_worker_pid},
@@ -14,10 +14,7 @@ use swoole_rs_reactor::{
     },
 };
 use swoole_rs_server::view;
-use swoole_rs_tls::{
-    socket_pair::{self, SocketPair},
-    upstream::{read_sync, send_sync},
-};
+use swoole_rs_tls::upstream::{read_sync, send_sync};
 
 /// `SW_PIPE_CLOSE_READ` and `SW_PIPE_CLOSE_WRITE`.
 const CLOSE_READ: i64 = 3;
@@ -36,7 +33,7 @@ pub(crate) struct WorkerView {
     pub redirect_stderr: bool,
 }
 
-/// The `Worker` a Process object owns, boxed so that native code can keep its
+/// The `Worker` a Process object owns, retained so that native code can keep its
 /// address: none before the constructor (or `Pool::getProcess`) makes it, then
 /// the same record until the Process and every retaining server are freed. It is set once and never moved
 /// or replaced, so a handle borrowed from the slot names a live record.
@@ -46,7 +43,7 @@ pub(crate) struct Slot(OnceCell<swoole_rs_server::process_worker::ProcessWorker>
 impl Slot {
     /// The object's worker, once it has one.
     pub(crate) fn get(&self) -> Option<Worker<'_>> {
-        // The slot's own boxed record, which lives until the slot drops, so for
+        // The slot's retained record, which lives until the slot drops, so for
         // longer than the borrow.
         Some(self.0.get()?.get())
     }
@@ -97,11 +94,6 @@ impl Slot {
 /// `new Worker()`.
 pub(crate) fn new() -> WorkerRecord {
     WorkerRecord::empty()
-}
-
-/// `delete pair`: the pair's ends, then its box.
-fn delete_pair(mut pair: Box<SocketPair>) {
-    socket_pair::drop(&mut pair);
 }
 
 /// In a server worker thread, the worker becomes a copy of its server worker
@@ -188,30 +180,14 @@ pub(crate) fn pipe_write(worker: Worker<'_>, data: &[u8], blocking: bool) -> Opt
 /// then free the pair); false when it failed or the worker owns no pipe object.
 pub(crate) fn pipe_close(slot: &Slot, worker: Worker<'_>, which: i64) -> bool {
     let fd = pipe(worker).map_or(-1, Socket::fd);
-    let pair = worker.pipe_object().cast::<SocketPair>();
+    let pair = worker.pipe_object();
     if pair.is_null() {
         return false;
     }
     match which {
         CLOSE_READ => swoole_rs_corebase::sys::shutdown(fd, libc::SHUT_RD).is_ok(),
         CLOSE_WRITE => swoole_rs_corebase::sys::shutdown(fd, libc::SHUT_WR).is_ok(),
-        _ => {
-            if let Some(closed) = slot.close_pipe(which.c_cast::<c_int>()) {
-                return closed;
-            }
-            // SAFETY: the worker's live pair, boxed as [`open_pipe`] and crates/server's
-            // pools make them; the record keeps it unless it is deleted below, and
-            // nothing else touches it meanwhile.
-            let mut owned = ManuallyDrop::new(unsafe { Box::from_raw(pair) });
-            let closed = socket_pair::close(&mut owned, which.c_cast::<c_int>());
-            if closed && which == 0 {
-                // The record forgets the pair's ends before they go; upstream deletes
-                // the pair even when shared.
-                worker.clear_pipes();
-                delete_pair(ManuallyDrop::into_inner(owned));
-            }
-            closed
-        }
+        _ => slot.close_pipe(which.c_cast::<c_int>()).unwrap_or(false),
     }
 }
 

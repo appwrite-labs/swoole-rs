@@ -223,7 +223,7 @@ thread_local! {
 }
 
 /// Each server's pending tasks, by its address.
-type Servers = HashMap<usize, Pending>;
+type Servers<P = Pending> = HashMap<usize, P>;
 
 fn pending<R>(server: view::Server<'_>, f: impl FnOnce(&mut Pending) -> R) -> R {
     pending_at(server.raw() as usize, f)
@@ -231,15 +231,20 @@ fn pending<R>(server: view::Server<'_>, f: impl FnOnce(&mut Pending) -> R) -> R 
 
 /// The pending table of the server at `key` (its address).
 fn pending_at<R>(key: usize, f: impl FnOnce(&mut Pending) -> R) -> R {
-    PENDING.with(|cell| {
-        let mut all = cell.take().unwrap_or_default();
-        let result = f(all.entry(key).or_default());
-        // `set` would call the drop glue for the `None` it replaces, on every access.
-        if let Some(nested) = cell.replace(Some(all)) {
-            drop(nested);
-        }
-        result
-    })
+    PENDING.with(|cell| pending_in(cell, key, f))
+}
+
+fn pending_in<P: Default, R>(
+    cell: &Cell<Option<Box<Servers<P>>>>,
+    key: usize,
+    f: impl FnOnce(&mut P) -> R,
+) -> R {
+    let mut all = cell.take().unwrap_or_default();
+    let result = f(all.entry(key).or_default());
+    if let Some(nested) = cell.replace(Some(all)) {
+        drop(nested);
+    }
+    result
 }
 
 fn facts(server: view::Server<'_>) -> Facts {
@@ -853,18 +858,24 @@ mod tests {
 
     #[test]
     fn pending_tasks_are_per_server() {
+        #[derive(Default)]
+        struct TestPending {
+            callbacks: HashMap<i64, ManuallyDrop<std::rc::Rc<()>>>,
+        }
         let (a, b) = (0x1000, 0x2000);
-        // An all-zero callable (an undefined zval, an empty cache), never called
-        // or dropped.
-        let callable: Callable = unsafe { std::rc::Rc::new_zeroed().assume_init() };
+        let cell: Cell<Option<Box<Servers<TestPending>>>> = Cell::new(None);
+        let callable = std::rc::Rc::new(());
         let callable = ManuallyDrop::new(callable);
         let raw = std::rc::Rc::as_ptr(&callable);
-        pending_at(a, |p| p.callbacks.insert(7, callable));
+        pending_in(&cell, a, |p| p.callbacks.insert(7, callable));
         assert_eq!(
-            pending_at(b, |p| p.callbacks.get(&7).map(|c| std::rc::Rc::as_ptr(c))),
+            pending_in(&cell, b, |p| p
+                .callbacks
+                .get(&7)
+                .map(|c| std::rc::Rc::as_ptr(c))),
             None
         );
-        let removed = pending_at(a, |p| p.callbacks.remove(&7));
+        let removed = pending_in(&cell, a, |p| p.callbacks.remove(&7));
         assert_eq!(removed.map(|c| std::rc::Rc::as_ptr(&c)), Some(raw));
     }
 }

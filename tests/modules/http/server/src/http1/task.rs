@@ -165,12 +165,7 @@ fn waiting(serv: Server) -> Waiting<'static, TaskPool> {
     tasks.host.pipe = view.task_notify_pipe(id);
     // SAFETY: this worker's live record.
     tasks.host.lock = unsafe { (*view.worker(id)).lock.get() };
-    let slot = serv
-        .get_task_result()
-        .cast::<[AtomicU32; SW_IPC_MAX_SIZE as usize / 4]>();
-    // SAFETY: this worker's slot of the running server's `task_results`: an
-    // `EventData`, written meanwhile only by the server's task workers.
-    tasks.waiting(ResultSlot::of(unsafe { slot.as_ref() }.unwrap()))
+    tasks.waiting(serv.get_task_result())
 }
 
 /// The packed task in `buf`.
@@ -317,7 +312,7 @@ trait TaskServer: Copy {
     /// `serv->send_pipe_message(worker_id, data, len)`.
     fn send_pipe_message(self, worker_id: u32, data: &[u8]) -> bool;
     /// `serv->get_task_result()`: this worker's slot of `task_results`.
-    fn get_task_result(self) -> *mut EventData;
+    fn get_task_result(self) -> ResultSlot<'static>;
 }
 
 impl TaskServer for Server {
@@ -410,14 +405,9 @@ impl TaskServer for Server {
         buf.pack(data) && server_methods::send_pipe_message(self.view(), worker_id, &mut buf)
     }
 
-    fn get_task_result(self) -> *mut EventData {
-        let id = pool::swoole_get_worker_id() as usize;
-        self.config()
-            .task_results
-            .as_ptr()
-            .cast::<u8>()
-            .wrapping_add(id * IPC_MAX_SIZE)
-            .cast()
+    fn get_task_result(self) -> ResultSlot<'static> {
+        let id = u16::try_from(pool::swoole_get_worker_id()).unwrap();
+        swoole_rs_server::task_worker::result_slot(self.view(), id).unwrap()
     }
 }
 
@@ -809,8 +799,8 @@ fn task_worker4_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
         serv.dispatch(&mut buf, &mut dst_worker_id);
         sleep(1.0);
 
-        // SAFETY: this worker's result slot, an EventData.
-        unsafe { serv.get_task_result().write_bytes(0, 1) };
+        // `memset(serv.get_task_result(), 0, 1)`.
+        serv.get_task_result().store(&[0]);
         let mut buf = EventData::raw(PACKET, 0, reactor_id);
         serv.tasking_num().fetch_add(1, Ordering::SeqCst);
         serv.dispatch(&mut buf, &mut dst_worker_id);
@@ -979,10 +969,9 @@ fn task_sync_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
                 .unwrap_or(false),
             "serv->task_sync(&buf, &_dst_worker_id, 0.5)",
         );
-        // SAFETY: this worker's result slot, an EventData.
-        let task_result = unsafe { &*serv.get_task_result() };
+        let payload = |bytes: &[u8]| bytes.get(size_of::<DataHead>()..) == Some(PACKET);
         check(
-            task_result.payload() == PACKET,
+            serv.get_task_result().read(payload),
             "string(task_result->data, task_result->info.len) == packet",
         );
         kill_pid(serv.get_master_pid());

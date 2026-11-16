@@ -9,8 +9,6 @@ use swoole_rs_process::process_pool::{PoolObjectKey, PoolRef};
 #[derive(Default)]
 pub struct PortCounters {
     pub connection_num: AtomicU32,
-    /// An `AtomicU32` per worker.
-    pub connection_nums: Shm,
     pub abort_count: AtomicU64,
     pub accept_count: AtomicU64,
     pub close_count: AtomicU64,
@@ -27,17 +25,10 @@ pub(crate) fn words(nums: &Shm) -> &[AtomicU32] {
     if base.is_null() {
         return &[];
     }
-    // SAFETY: only `Shm`'s constructors fill the field: a zeroed shared mapping whose
-    // `payload_len` bytes follow `base`, 8-aligned, mapped until its owner frees it at
-    // shutdown, and only ever updated atomically.
+    // SAFETY: a zeroed mapping whose `payload_len` bytes follow `base`, 8-aligned, and
+    // only ever updated atomically. Only `Shm::free`, through `&mut`, unmaps it, so it
+    // stays mapped while `nums` is borrowed.
     unsafe { core::slice::from_raw_parts(base, nums.payload_len() / size_of::<AtomicU32>()) }
-}
-
-impl PortCounters {
-    /// The per-worker connection counts; none when the server keeps one total.
-    pub(crate) fn cells(&self) -> &[AtomicU32] {
-        words(&self.connection_nums)
-    }
 }
 
 impl ServerCounters {
@@ -49,11 +40,6 @@ impl ServerCounters {
     #[must_use]
     pub fn min_fd(&self) -> c_int {
         self.min_fd.load(Relaxed)
-    }
-
-    /// The per-worker connection counts; none when the server keeps one total.
-    pub(crate) fn cells(&self) -> &[AtomicU32] {
-        words(&self.connection_nums)
     }
 }
 
@@ -73,8 +59,6 @@ pub struct ServerCounters {
     /// `time_t`.
     pub start_time: AtomicI64,
     pub connection_num: AtomicU32,
-    /// An `AtomicU32` per worker.
-    pub connection_nums: Shm,
     pub tasking_num: AtomicU32,
     /// Set by `Server::set()`, read by every worker.
     pub max_concurrency: AtomicU32,
@@ -276,6 +260,25 @@ mod tests {
             "session 0 has no port"
         );
         drop(server);
+    }
+
+    /// A mapping is filled once through `&` and unmapped only through `&mut`: a second
+    /// fill leaves the first, so words lent from it stay usable. Filling by replacing
+    /// unmapped it under the lent words, which then reached freed memory.
+    #[test]
+    fn a_lent_word_outlives_a_second_fill() {
+        let mut nums = Shm::calloc_private(2, 4);
+        let lent = words(&nums);
+        assert!(
+            !nums.fill(Shm::calloc_private(2, 4)),
+            "the field stays mapped"
+        );
+        lent[1].store(7, Relaxed);
+        assert_eq!(words(&nums)[1].load(Relaxed), 7, "the first mapping stays");
+        nums.free();
+        assert!(words(&nums).is_empty(), "unmapped");
+        assert!(nums.fill(Shm::calloc_private(1, 4)), "an empty field fills");
+        nums.free();
     }
 
     #[test]

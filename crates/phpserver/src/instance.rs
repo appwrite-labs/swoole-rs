@@ -16,11 +16,7 @@ pub use swoole_rs_ports::PortCallback;
 use swoole_rs_process::{methods::worker_is_running, worker_globals, worker_record};
 use swoole_rs_server::{SharedServer, event_worker, server_methods, view};
 use swoole_rs_zend::host::callable::Callable as Kept;
-use swoole_rs_zend::{
-    Owned, Value, ZString, bailout,
-    string::{self, ZBuf},
-    sys::zval,
-};
+use swoole_rs_zend::{Owned, Value, ZString, bailout, sys::zval};
 
 thread_local! {
     /// Upstream's `static SW_THREAD_LOCAL zval swoole_server_instance`: the running
@@ -112,28 +108,19 @@ pub fn php_swoole_get_recv_data(serv: view::Server<'_>, req: &RecvData) -> Owned
     if length == 0 {
         return Owned::string(ZString::empty());
     }
-    let data: *mut u8 = if flags.contains(EventDataFlag::SW_EVENT_DATA_OBJ_PTR) {
-        // An OBJ_PTR payload is the bus's packet, a zend string, which the bus hands over.
-        let data = req.data().cast_mut().cast();
-        serv.move_worker_packet();
-        data
-    } else if let Some(data) = flags
-        .contains(EventDataFlag::SW_EVENT_DATA_POP_PTR)
-        .then(|| serv.by_session(req.info().fd))
-        .flatten()
-        .and_then(view::pop_recv_buffer)
-    {
-        // The reader gets a buffer as large as the one it gives up: how much a buffer
-        // holds decides how the connection's next request is read.
-        data
+    let buffer = if flags.contains(EventDataFlag::SW_EVENT_DATA_OBJ_PTR) {
+        serv.move_worker_packet()
+    } else if flags.contains(EventDataFlag::SW_EVENT_DATA_POP_PTR) {
+        serv.by_session(req.info().fd)
+            .and_then(view::pop_recv_buffer)
     } else {
+        None
+    };
+    let Some(mut buffer) = buffer else {
         return Owned::string(ZString::new(req.payload()));
     };
-    // SAFETY: `ZSTR_VAL` of a live, unshared zend string of at least `length` bytes,
-    // whose only reference is handed over: the packet the bus just gave up, or
-    // `pop`'s zend-allocated block of the payload.
-    let text = unsafe { ZBuf::from_raw(string::from_val(data), length) };
-    Owned::string(text.into_zstring())
+    buffer.truncate(length);
+    Owned::string(swoole_rs_phpswoole::received_string(buffer))
 }
 
 /// `php_swoole_create_dir`: whether `path`, up to its first NUL as C reads it,

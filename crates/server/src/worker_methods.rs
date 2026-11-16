@@ -124,7 +124,7 @@ pub fn create_user_workers(serv: view::Server<'_>) -> bool {
     let workers = swoole_rs_memory::members::Shm::calloc(count, size);
     let mapped = !workers.is_null();
     // A zeroed record is an empty worker, so the array is `count` records from now on.
-    serv.config().user_workers.replace(workers);
+    serv.state().tables_ref().user_workers.fill(workers);
     if !mapped {
         let m = format_args!("sw_shm_calloc({count}, {size}) for user_workers failed");
         log::sys_warning(c"Server::create_user_workers", m);
@@ -170,7 +170,7 @@ mod tests {
         unsafe { worker.write(*WorkerRecord::boxed()) };
         unsafe { other.write(*WorkerRecord::boxed()) };
         config.worker_num.set(2);
-        config.workers = workers;
+        server.tables_mut().workers = workers;
         let serv = server.serv();
         unsafe { (*worker).set_pid(79) };
         unsafe { (*other).set_pid(79) };
@@ -219,7 +219,7 @@ mod tests {
         assert_eq!(serv.counters().concurrency.load(SeqCst), 0);
 
         *server.tables_mut().session_list_mut() = swoole_rs_memory::members::Shm::empty();
-        server.config_mut().workers.free();
+        server.tables_mut().workers.free();
         server.config_mut().gs.free();
     }
 }
