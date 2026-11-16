@@ -1,7 +1,5 @@
-//! `putenv` for Swoole's threads (ZTS builds, `SW_THREAD`): PHP's own keeps
-//! its strings per request, so a thread exiting would leave `environ`
-//! pointing at freed memory. These strings live for the process, one per
-//! name, under PHP's environment lock.
+//! `putenv` for Swoole's threads (ZTS builds, `SW_THREAD`): its strings live
+//! for the process, one per name, under PHP's environment lock.
 use std::{
     collections::HashMap,
     ffi::CString,

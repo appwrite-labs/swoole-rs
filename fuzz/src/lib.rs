@@ -245,8 +245,7 @@ pub fn ws_frame_length(bytes: &[u8]) {
 
 /// Any bytes as one frame: the same verdict, fields and in-place unmasking.
 pub fn ws_decode(bytes: &[u8]) {
-    // Upstream reads the first two bytes unconditionally; servers only decode
-    // frames whose length check has passed.
+    // Servers only decode frames whose length check has passed.
     if bytes.len() < 2 {
         return;
     }
@@ -702,7 +701,7 @@ pub fn clients_cookie(bytes: &[u8]) {
     );
 }
 
-/// Any bytes as a received DNS name buffer: where Rust decodes in bounds, upstream
+/// Any bytes as a received DNS name buffer: where Rust decodes it, upstream
 /// decodes to the same bytes. Other inputs are outside the compared domain: Rust
 /// reports 0 and upstream isn't run.
 pub fn clients_domain_decode(bytes: &[u8]) {
@@ -710,7 +709,7 @@ pub fn clients_domain_decode(bytes: &[u8]) {
     if !domain_decode(&mut ours, c_char::MIN != 0) {
         return;
     }
-    // SAFETY: Rust decoded the same bytes in bounds, so upstream's identical walk does too.
+    // SAFETY: `theirs` is a NUL-terminated name in the compared domain, decoded within its bytes.
     unsafe { clients::domain_decode(theirs.as_mut_ptr().cast()) };
     assert_eq!(theirs, ours, "domain {bytes:?}");
 }
