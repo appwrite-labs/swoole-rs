@@ -138,8 +138,11 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, 'PHP_CONFIG': args.php_config}
     # The commit `php --ri swoole` reports beside the swoole-rs version: unknown outside a checkout.
-    git = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=ROOT, capture_output=True, text=True)
-    source_ref = git.stdout.strip() if git.returncode == 0 else 'unknown'
+    try:
+        git = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=ROOT, capture_output=True, text=True)
+        source_ref = git.stdout.strip() if git.returncode == 0 else 'unknown'
+    except OSError:
+        source_ref = 'unknown'
     env['SWOOLE_RS_COMMIT'] = source_ref[:12]
     switches = {**HOOK_SWITCHES, 'mysqlnd': '--enable-mysqlnd', 'uring-socket': '--enable-uring-socket',
                 'cares': '--enable-cares', 'thread-context': '--enable-thread-context',
