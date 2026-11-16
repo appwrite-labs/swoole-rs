@@ -7,6 +7,11 @@ Each test's docstring says what it checks.
 | `test_fork.py` | `timer-fork-active` | `--engine` |
 | `test_bailout.py` | `timer-bailout` | `--engine`; the first is the control |
 | `benchmark.py` | `timer-benchmark` | optimized builds, an idle host |
+| `test_benchmark.py` | `timer-benchmark-artifacts` | Cargo artifact identity/profile rejection checks |
+
+The throughput benchmark reads the Cargo extension's adjacent `build-manifest.json`
+and verifies its checksum, pinned upstream, source commit and optimized profile.
+The upstream control retains its pristine-source and optimized Makefile checks.
 
 ```sh
 python3 -m pytest tests/modules/timer/test_bailout.py \
