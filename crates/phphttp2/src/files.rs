@@ -80,7 +80,9 @@ fn serve(server: view::Server<'_>, ctx: Ctx) -> bool {
     let Some(uri) = entry(ctx, Value::Server, b"request_uri") else {
         return false;
     };
-    let Some(mut handler) = StaticHandler::new(server, &uri) else {
+    // Borrowed where it was made: moving the handler out of the `Option` copies it.
+    let mut made = StaticHandler::new(server, &uri);
+    let Some(handler) = made.as_mut() else {
         return false;
     };
     if !handler.try_serve() {
@@ -138,7 +140,7 @@ fn serve(server: view::Server<'_>, ctx: Ctx) -> bool {
         respond(ctx, &[]);
         return true;
     }
-    send_ranges(ctx, &mut handler)
+    send_ranges(ctx, handler)
 }
 
 /// The single range's `Content-Range`, as upstream's stringstream writes it
