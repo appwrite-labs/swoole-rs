@@ -60,7 +60,8 @@ impl WritePayload<'_> {
 pub trait WriteEffects {
     /// `socket->set_fd_option(1, -1)`, which also sets `nonblock`.
     fn set_nonblock(&self);
-    fn send(&self) -> isize;
+    /// How many bytes the kernel took, or None with errno set.
+    fn send(&self) -> Option<usize>;
     /// `socket->out_buffer = new Buffer(chunk_size)`.
     fn create_buffer(&self);
     /// `add_write_event` unless the socket already wants writes.
@@ -73,7 +74,7 @@ pub enum WriteError {
     /// The packet is larger than the buffer size (a warning).
     TooLarge,
     /// The output buffer would overflow, with this many bytes queued (a warning).
-    Overflow(isize),
+    Overflow(usize),
     /// The send failed: the last error comes from errno.
     Send,
 }
@@ -88,7 +89,7 @@ pub fn swr_v1_reactor_write(
     default_buffer_size: u32,
     payload: WritePayload<'_>,
     ops: &impl WriteEffects,
-) -> Result<isize, WriteError> {
+) -> Result<usize, WriteError> {
     let length = payload.length();
     // Making the socket nonblocking leaves the queue as it is.
     let (mut buffer_size, nonblock, ssl_send, held) = socket.read(|record| {
@@ -110,21 +111,19 @@ pub fn swr_v1_reactor_write(
     if length.c_cast::<u32>() > buffer_size {
         return Err(WriteError::TooLarge);
     }
-    let mut sent = 0isize;
+    let mut sent = 0;
     if let Some(held) = held {
         if u64::from(held) + length as u64 > u64::from(buffer_size) {
-            return Err(WriteError::Overflow(
-                isize::try_from(held).unwrap_or(isize::MAX),
-            ));
+            return Err(WriteError::Overflow(held as usize));
         }
     } else {
         if !ssl_send {
             loop {
-                sent = ops.send();
-                if sent > 0 {
-                    if usize::try_from(sent).is_ok_and(|sent| sent == length) {
-                        return Ok(sent);
+                if let Some(n @ 1..) = ops.send() {
+                    if n == length {
+                        return Ok(n);
                     }
+                    sent = n;
                     break;
                 }
                 let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
@@ -141,7 +140,7 @@ pub fn swr_v1_reactor_write(
         }
         ops.watch_writable();
     }
-    let offset = u64::try_from(sent.max(0)).unwrap_or(u64::MAX);
+    let offset = sent as u64;
     socket.read(|record| {
         let Some(buffer) = record.output.buffer() else {
             // `new Buffer` threw, which nothing catches.
@@ -153,7 +152,7 @@ pub fn swr_v1_reactor_write(
             WritePayload::Vectors(vectors) => buffer.append_from(vectors, offset),
         }
     });
-    Ok(isize::try_from(length).unwrap_or(isize::MAX))
+    Ok(length)
 }
 
 #[cfg(test)]
@@ -178,7 +177,7 @@ mod tests {
         fn set_nonblock(&self) {
             NATIVE.with_borrow_mut(|n| n.trace.push("nonblock"));
         }
-        fn send(&self) -> isize {
+        fn send(&self) -> Option<usize> {
             let (sent, errno) = NATIVE.with_borrow_mut(|n| {
                 n.trace.push("send");
                 (n.sends.remove(0), n.errno)
@@ -186,7 +185,7 @@ mod tests {
             if sent < 0 {
                 swoole_rs_corebase::sys::set_errno(errno);
             }
-            sent
+            usize::try_from(sent).ok()
         }
         fn create_buffer(&self) {
             let record = NATIVE.with_borrow_mut(|n| {
@@ -209,7 +208,7 @@ mod tests {
         data: &[u8],
         sends: Vec<isize>,
         errno: c_int,
-    ) -> (Result<isize, WriteError>, Vec<&'static str>, u32) {
+    ) -> (Result<usize, WriteError>, Vec<&'static str>, u32) {
         let had_buffer = output.out_buffer.is_some();
         let mut record = SocketRecord::new();
         record.output = SocketOutput {
