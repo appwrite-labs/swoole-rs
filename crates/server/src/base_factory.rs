@@ -128,6 +128,16 @@ impl<'a> SendData<'a> {
         self.info.server_fd = server_fd;
     }
 
+    /// The payload under the head `info`, whose `len` stays the payload's.
+    #[must_use]
+    pub(crate) fn rehead(self, info: DataHead) -> Self {
+        let len = self.info.len;
+        Self {
+            info: DataHead { len, ..info },
+            ..self
+        }
+    }
+
     /// The head's flags.
     pub(crate) fn set_flags(&mut self, flags: u8) {
         self.info.flags = flags;

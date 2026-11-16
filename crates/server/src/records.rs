@@ -62,7 +62,9 @@ pub struct ConnectionRecord {
     pub last_dispatch_time: Cell<f64>,
     pub uid: Cell<u32>,
     pub websocket_status: Cell<WebSocketStatus>,
-    pub websocket_buffer: Cell<*mut c_void>,
+    /// The WebSocket message being reassembled: a box only the connection's reactor
+    /// makes, takes and frees.
+    pub(crate) websocket_buffer: Cell<Option<Box<swoole_rs_buffer::string::CppString>>>,
     /// Null, or the `CppString` box the worker `ssl_client_cert_pid` stored with
     /// [`Connection::store_client_cert`]. Private with the pid, so nothing else names a
     /// certificate here.
@@ -223,9 +225,22 @@ impl<'a> Connection<'a> {
     field!(last_dispatch_time, set_last_dispatch_time: f64);
     field!(uid, set_uid: u32);
     field!(websocket_status, set_websocket_status: WebSocketStatus);
-    field!(websocket_buffer, set_websocket_buffer: *mut c_void);
     field!(private ssl_client_cert, set_ssl_client_cert: *mut c_void);
     field!(private ssl_client_cert_pid, set_ssl_client_cert_pid: c_int);
+
+    /// The WebSocket message being reassembled, taken out of the connection.
+    #[must_use]
+    pub fn take_websocket_buffer(self) -> Option<Box<swoole_rs_buffer::string::CppString>> {
+        self.record.websocket_buffer.take()
+    }
+
+    /// The connection reassembles `buffer`, which must hold none (one it held is
+    /// freed).
+    pub fn set_websocket_buffer(self, buffer: Box<swoole_rs_buffer::string::CppString>) {
+        if let Some(mut held) = self.record.websocket_buffer.replace(Some(buffer)) {
+            held.dispose();
+        }
+    }
 
     /// `OP_STORE_CLIENT_CERT`: `cert` is the connection's client certificate, which
     /// only this worker reads and frees.

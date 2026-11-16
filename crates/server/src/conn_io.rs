@@ -17,7 +17,6 @@ use swoole_rs_buffer::cpp::{
     new_buffer, swr_cpp_buffer_empty, swr_cpp_buffer_length, swr_cpp_buffer_typed_close,
     swr_cpp_buffer_typed_front,
 };
-use swoole_rs_buffer::string::delete_string;
 use swoole_rs_buffer::string::with_thread_buffer;
 use swoole_rs_corebase::constants::{SW_SEND_BUFFER_SIZE, SocketType};
 use swoole_rs_corebase::{CCast, DataHead, microtime};
@@ -481,27 +480,22 @@ pub(crate) fn close_connection(
             return true;
         }
     }
-    let websocket = conn.websocket_buffer();
-    if !websocket.is_null() {
-        // SAFETY: the connection's `new String`, not used again.
-        unsafe { delete_string(websocket.cast()) };
-        conn.set_websocket_buffer(core::ptr::null_mut());
+    if let Some(mut websocket) = conn.take_websocket_buffer() {
+        websocket.dispose();
     }
     if !removed && !reactor.del(sock) {
         return false;
     }
     count_close(state, port, reactor);
-    let (ssl, recv_buffer) = sock.read(|s| (!s.ssl().is_null(), s.recv_buffer));
+    let ssl = sock.read(|s| !s.ssl().is_null());
     if ssl {
         sock.edit(|s| s.ssl_quiet_shutdown = conn.peer_closed());
         // SAFETY: handles to a session live only for the operation that took them,
         // and native code closes it between operations.
         unsafe { tls::socket_ssl_close(sock) };
     }
-    if !recv_buffer.is_null() {
-        // SAFETY: the socket's `new String`, not used again.
-        unsafe { delete_string(recv_buffer.cast()) };
-        sock.edit(|s| s.recv_buffer = core::ptr::null_mut());
+    if let Some(mut recv_buffer) = sock.edit(|s| s.recv_buffer.take()) {
+        recv_buffer.dispose();
     }
     if let Some(port) = port {
         if port.open_http_protocol.get() && conn.http_request().is_some() {
