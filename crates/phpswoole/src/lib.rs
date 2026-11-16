@@ -44,7 +44,7 @@ pub use functions::{mime_type, zif_swoole_last_error};
 pub use implicit::sw_php_exit;
 pub use info::swr_v1_phpswoole_minfo;
 pub use interfaces::sys_warning;
-pub use memory::{sw_zend_string_allocator, zend_string_allocator};
+pub use memory::zend_string_allocator;
 pub use module::{
     EventSteps, Families, Globals, Hook, Http, HttpMinit, Minit, MinitArgs, ProcessSteps,
     ReqStatus, RuntimeSteps, SocketSettings, codecs, display_errors, enable_library, families,
@@ -60,7 +60,7 @@ pub use swoole_rs_corebase::{Switch, built_with};
 use std::{
     ffi::{CStr, c_int},
     ptr,
-    sync::atomic::{AtomicI32, AtomicPtr, AtomicU32, Ordering},
+    sync::atomic::{AtomicPtr, AtomicU32, Ordering},
 };
 use swoole_rs_zend::{
     Class,
@@ -69,7 +69,6 @@ use swoole_rs_zend::{
 
 /// The `swr_v1_phpswoole_minit` flags.
 static FLAGS: AtomicU32 = AtomicU32::new(0);
-static MODULE_NUMBER: AtomicI32 = AtomicI32::new(0);
 static EXCEPTION: Class = Class::new();
 static ERROR: Class = Class::new();
 
@@ -142,7 +141,6 @@ fn minit_body(minit: &swoole_rs_zend::Minit, kind: c_int) {
         flags |= constants::SHORTNAME;
     }
     FLAGS.store(flags, Ordering::Relaxed);
-    MODULE_NUMBER.store(minit.module(), Ordering::Relaxed);
     constants::register(minit, flags);
     minit.register_child(
         &EXCEPTION,
@@ -241,10 +239,4 @@ pub fn coroutine_check() -> Result<(), swoole_rs_zend::bailout::Bailout> {
         return Ok(());
     }
     swoole_fatal_error(OUT_OF_COROUTINE, c"API must be called in the coroutine")
-}
-
-/// `sw_module_number()`: the number Zend gave the module at MINIT.
-#[unsafe(no_mangle)]
-pub extern "C" fn sw_module_number() -> c_int {
-    MODULE_NUMBER.load(Ordering::Relaxed)
 }
