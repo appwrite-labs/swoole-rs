@@ -405,7 +405,7 @@ impl ServerCallbacks {
 
 /// The slots of a `void (Server *)` signature ([`ServerFn`]).
 #[cfg_attr(
-    not(all(feature = "upstream-symbols", not(test))),
+    not(feature = "upstream-symbols"),
     expect(
         dead_code,
         reason = "only the hybrid raises the manager, reload and shutdown hooks"
@@ -424,7 +424,7 @@ pub(crate) enum ServerSlot {
 
 /// The slots of a `void (Server *, DataInfo *)` signature ([`EventFn`]).
 #[cfg_attr(
-    not(all(feature = "upstream-symbols", not(test))),
+    not(feature = "upstream-symbols"),
     expect(dead_code, reason = "only the hybrid raises connect and buffer events")
 )]
 #[derive(Clone, Copy)]
@@ -473,7 +473,7 @@ impl ServerCallbacks {
 }
 
 /// The slots of an `int (Server *, EventData *)` signature ([`TaskFn`]).
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 #[derive(Clone, Copy)]
 pub(crate) enum TaskSlot {
     Task,
@@ -482,7 +482,7 @@ pub(crate) enum TaskSlot {
 
 /// The slots of a `void (Server *, Worker *)` signature over a worker this thread
 /// or process runs ([`WorkerFn`]).
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 #[derive(Clone, Copy)]
 pub(crate) enum WorkerSlot {
     Start,
@@ -492,7 +492,7 @@ pub(crate) enum WorkerSlot {
 
 /// The typed calls. Each names its slots by a type that admits no other, and every
 /// argument is a live handle or a reference its caller lends for the call.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 impl ServerCallbacks {
     /// `serv->onTask(serv, task)` or `onFinish(serv, task)`; -1 when the slot is
     /// empty. A caller that discards the result (onFinish) still calls through the
@@ -541,7 +541,7 @@ impl ServerCallbacks {
 }
 
 #[cfg_attr(
-    any(test, not(feature = "upstream-symbols")),
+    not(feature = "upstream-symbols"),
     expect(dead_code, reason = "only `SharedServer` makes a server object")
 )]
 impl crate::ServerState {

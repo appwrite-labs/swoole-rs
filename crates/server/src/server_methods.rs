@@ -72,7 +72,7 @@ pub fn destroy_running(serv: view::Server<'_>) {
 
 /// `Server::start_master_thread(reactor)`, on the master's reactor: whether its loop
 /// ran and ended cleanly.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 #[must_use]
 pub(crate) fn start_master_thread(
     serv: view::Server<'_>,
@@ -82,7 +82,7 @@ pub(crate) fn start_master_thread(
 }
 
 /// `Server::init_pipe_sockets(mb)`, once the server has started.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 pub(crate) fn init_pipe_sockets(serv: view::Server<'_>, mb: crate::objects::Bus<'_>) {
     if !serv.is_started() {
         // upstream's `assert(is_started())`.
@@ -110,7 +110,7 @@ pub(crate) fn init_pipe_sockets(serv: view::Server<'_>, mb: crate::objects::Bus<
 /// `Server::connection_incoming(reactor, conn)`, over the port `conn` arrived on:
 /// `reactor`, this thread's, takes one of `serv`'s live connections.
 #[cfg_attr(
-    not(all(feature = "upstream-symbols", not(test))),
+    not(feature = "upstream-symbols"),
     expect(dead_code, reason = "its callers are the hybrid's, outside tests")
 )]
 pub(crate) fn connection_incoming(
@@ -207,7 +207,7 @@ pub fn set_document_root(serv: view::Server<'_>, path: &[u8]) -> bool {
 
 /// Arms the master timer on this thread, the master's: each second it runs
 /// `Server::timer_callback` over the server its reactor holds. The timer, or none.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 pub(crate) fn master_timer() -> Option<swoole_rs_timer::Held> {
     use crate::reactor_handle::Reactor;
     swoole_rs_timer::add_fn(1000, true, || {
@@ -248,7 +248,7 @@ pub fn has_kernel_nobufs_error(serv: view::Server<'_>, session_id: c_long) -> bo
 pub use crate::dispatch::sendfile;
 
 /// `serv->reactor_thread_barrier.wait()`.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 pub(crate) fn reactor_barrier(serv: view::Server<'_>) {
     swoole_rs_locks::barrier_wait(crate::server_object::barrier(serv, false));
 }

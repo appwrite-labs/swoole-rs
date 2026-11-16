@@ -1,17 +1,17 @@
 //! The master's message bus: which bus a worker uses, base mode's pass and forward
 //! over it, and its buffer.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 use crate::{Mode, ServerState};
 
 /// `serv->get_worker_message_bus()`: this thread's in thread mode, else the
 /// server's.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 pub(crate) fn worker_message_bus(state: &ServerState) -> crate::objects::Bus<'_> {
     crate::objects::Bus::over(state.worker_bus_record())
 }
 
 /// Base mode's message bus takes `send`, then `worker_accept_event` of it.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 pub(crate) fn base_pass(serv: crate::view::Server<'_>, send: &crate::base_factory::SendData) {
     let bus = worker_message_bus(serv.state());
     bus.rust().pass(send.info(), send.data());
@@ -19,7 +19,7 @@ pub(crate) fn base_pass(serv: crate::view::Server<'_>, send: &crate::base_factor
 }
 
 /// The message bus writes `send` to the pipe of the worker that owns its session.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 pub(crate) fn forward(serv: crate::view::Server<'_>, send: &crate::base_factory::SendData) -> bool {
     let state = serv.state();
     let Some(session) = state.session(send.info().fd) else {
@@ -44,7 +44,7 @@ pub(crate) fn forward(serv: crate::view::Server<'_>, send: &crate::base_factory:
 }
 
 /// `Server::create_pipe_buffers()`: the bus's buffer, `ipc_max_size` bytes.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 pub(crate) fn create_pipe_buffers(serv: crate::view::Server<'_>) -> bool {
     let state = serv.state();
     let size = state.config_ref().ipc_max_size();

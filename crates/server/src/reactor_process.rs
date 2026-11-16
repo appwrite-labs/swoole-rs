@@ -13,7 +13,7 @@ use crate::hybrid::{Step, hybrid};
 use crate::reactor_handle::Reactor;
 use crate::view;
 
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 pub(crate) mod native;
 
 /// `SW_FD_SESSION`, `SW_FD_STREAM_SERVER` and `SW_SSL_STATE_READY`.

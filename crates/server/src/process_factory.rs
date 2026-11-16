@@ -23,7 +23,7 @@ use swoole_rs_corebase::log::LogLevel::{
     SW_LOG_NOTICE as NOTICE, SW_LOG_TRACE as TRACE, SW_LOG_WARNING as WARNING,
 };
 
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 pub(crate) mod native;
 
 /// Where process mode writes a message.

@@ -275,21 +275,21 @@ fn missing() -> ! {
 }
 
 /// A build that links none of the hybrid.
-#[cfg(not(any(test, feature = "upstream-symbols")))]
+#[cfg(not(feature = "upstream-symbols"))]
 struct Unlinked;
 
-#[cfg(not(any(test, feature = "upstream-symbols")))]
+#[cfg(not(feature = "upstream-symbols"))]
 impl Hybrid for Unlinked {}
 
 /// The side this build links.
 pub(crate) fn hybrid() -> &'static dyn Hybrid {
-    #[cfg(all(feature = "upstream-symbols", not(test)))]
-    let hybrid = &crate::factory::Linked;
+    #[cfg(feature = "upstream-symbols")]
+    let linked: &'static dyn Hybrid = &crate::factory::Linked;
+    #[cfg(not(feature = "upstream-symbols"))]
+    let linked: &'static dyn Hybrid = &Unlinked;
     #[cfg(test)]
-    let hybrid = &tests::Recorder;
-    #[cfg(not(any(test, feature = "upstream-symbols")))]
-    let hybrid = &Unlinked;
-    hybrid
+    let linked = tests::recorder(linked);
+    linked
 }
 
 #[cfg(test)]
@@ -360,6 +360,12 @@ pub(crate) mod tests {
     fn hear(call: Call) -> bool {
         CALLS.with_borrow_mut(|calls| calls.push(call));
         true
+    }
+
+    /// The unit tests' side in place of `linked`: it records each call and succeeds,
+    /// since the tests run no live server for the linked side to act on.
+    pub(crate) fn recorder(_linked: &'static dyn Hybrid) -> &'static dyn Hybrid {
+        &Recorder
     }
 
     /// Records each call and succeeds.

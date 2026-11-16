@@ -460,7 +460,7 @@ impl Default for ServerConfig {
 
 impl ServerConfig {
     /// `serv->ipc_max_size`.
-    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    #[cfg(feature = "upstream-symbols")]
     pub(crate) fn ipc_max_size(&self) -> u32 {
         self.ipc_max_size.load(Relaxed)
     }

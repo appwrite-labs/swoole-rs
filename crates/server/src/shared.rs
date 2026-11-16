@@ -132,7 +132,7 @@ static SERVER: PoolObjectKey = PoolObjectKey::new();
 /// `pool->ptr = serv` for both of `serv`'s pools, which [`pool_server`] reads back.
 /// The pools live in the record `serv` maps for its life and frees before itself.
 #[cfg_attr(
-    not(all(feature = "upstream-symbols", not(test))),
+    not(feature = "upstream-symbols"),
     expect(
         dead_code,
         reason = "only the hybrid's pools run the hooks that read it"
@@ -160,7 +160,7 @@ pub(crate) fn workers_start(serv: crate::view::Server<'_>) {
 /// The server `pool` belongs to, when it is one of a server's own pools that holds it
 /// ([`hold_server`]); `None` for any other pool.
 #[cfg_attr(
-    not(all(feature = "upstream-symbols", not(test))),
+    not(feature = "upstream-symbols"),
     expect(
         dead_code,
         reason = "only the hybrid's pools run the hooks that read it"

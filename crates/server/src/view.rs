@@ -32,7 +32,7 @@ pub(crate) struct Fields {
 /// is a live server ([`Server::of_object`]).
 #[repr(C)]
 #[cfg_attr(
-    any(test, not(feature = "upstream-symbols")),
+    not(feature = "upstream-symbols"),
     expect(dead_code, reason = "only `SharedServer` makes a server object")
 )]
 pub(crate) struct ServerObject {
@@ -42,7 +42,7 @@ pub(crate) struct ServerObject {
 }
 
 #[cfg_attr(
-    any(test, not(feature = "upstream-symbols")),
+    not(feature = "upstream-symbols"),
     expect(dead_code, reason = "only `SharedServer` makes a server object")
 )]
 impl ServerObject {
@@ -132,7 +132,7 @@ impl<'a> Server<'a> {
 
     /// The server `object` is, live as long as the borrow.
     #[cfg_attr(
-        any(test, not(feature = "upstream-symbols")),
+        not(feature = "upstream-symbols"),
         expect(dead_code, reason = "only `SharedServer` makes a server object")
     )]
     pub(crate) fn of_object(object: &'a ServerObject) -> Self {
@@ -204,7 +204,7 @@ impl<'a> Server<'a> {
 
     /// `serv->get_worker_message_bus()->move_packet()`: the bus no longer frees
     /// the packet it holds; its new owner, given its block (null for none), does.
-    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    #[cfg(feature = "upstream-symbols")]
     #[expect(
         clippy::must_use_candidate,
         reason = "a caller that read the message already holds the block it returns"
@@ -218,7 +218,7 @@ impl<'a> Server<'a> {
     /// `set_allocator(allocator)` on the server's own `MessageBus`, or with
     /// `worker` on `get_worker_message_bus()`: the bus allocates its packets with
     /// `allocator` from now on.
-    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    #[cfg(feature = "upstream-symbols")]
     pub fn set_bus_allocator(self, worker: bool, allocator: swoole_rs_corebase::TrustedAllocator) {
         let state = self.state();
         let bus = if worker {
