@@ -7,7 +7,7 @@ use crate::{
         IS_LONG, swr_zend_callable, swr_zend_callable_release, zend_fcall_info_cache, zend_value,
         zval,
     },
-    value::emalloc,
+    value::{emalloc, enew},
 };
 use std::{
     ffi::{c_int, c_void},
@@ -59,11 +59,8 @@ impl Callable {
     /// # Errors
     /// Argument `n` is not callable; Zend has raised its parameter error.
     pub fn parse(call: &Call, n: u32) -> Result<Parsed, Invalid> {
-        // Zend's allocator, for one callable (`ecalloc`).
-        let raw = emalloc(size_of::<swr_zend_callable>()).cast::<swr_zend_callable>();
-        // SAFETY: fresh storage; all-zero is an empty callable.
-        unsafe { raw.write_bytes(0, 1) };
-        let mut this = Parsed(raw);
+        // Zend's allocator, for one empty callable (`ecalloc`).
+        let mut this = Parsed(enew(crate::zeroed::<swr_zend_callable>()));
         let callable = this.record();
         if let Err(invalid) = call.callable(n, &mut callable.fci, &mut callable.fcc) {
             this.discard();
