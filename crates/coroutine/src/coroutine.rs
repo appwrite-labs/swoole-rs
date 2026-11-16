@@ -515,6 +515,20 @@ impl Waker {
         self.cid
     }
 
+    /// The coroutine's id and the park this names, as plain data that can wait on
+    /// another thread's list; [`Waker::of_parts`] gives the waker back.
+    #[must_use]
+    pub const fn parts(self) -> (c_long, u64) {
+        (self.cid, self.park)
+    }
+
+    /// The waker [`Waker::parts`] took apart. Any pair is one: waking a pair that
+    /// names no live park of a coroutine of this thread's scheduler does nothing.
+    #[must_use]
+    pub const fn of_parts((cid, park): (c_long, u64)) -> Self {
+        Self::new(cid, park)
+    }
+
     /// `co->resume()` of the coroutine while it is still parked in the yield that
     /// made this; nothing otherwise.
     #[inline]

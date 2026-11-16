@@ -157,6 +157,8 @@ pub struct HttpForm {
     fp: Option<Upload>,
     /// The receive buffer, cut back to the header, that the body is rewritten into.
     saved: *mut HttpString,
+    /// The saved buffer's length: only the form's own appends change it.
+    saved_length: usize,
     /// The current upload's file name, NUL-terminated.
     upload: Vec<u8>,
     /// `upload_tmp_dir + "/swoole.upfile.XXXXXX"`.
@@ -172,12 +174,6 @@ impl HttpForm {
     #[must_use]
     pub fn boundary(&self) -> &HttpSpan {
         &self.boundary
-    }
-
-    /// The saved buffer's length, 0 before `init_multipart_parser` saves one.
-    fn saved_length(&self) -> usize {
-        // SAFETY: null, or the saved buffer, which is live while the form is.
-        unsafe { self.saved.as_ref() }.map_or(0, |saved| saved.length)
     }
 }
 
@@ -347,6 +343,7 @@ impl HttpRequest {
                 parser: None,
                 fp: None,
                 saved: ptr::null_mut(),
+                saved_length: 0,
                 upload: Vec::new(),
                 template: Vec::new(),
                 header_name: Vec::new(),
@@ -442,7 +439,11 @@ impl HttpRequest {
     /// `append(data)` on the form's saved buffer when `saved`, else on the request's.
     fn append(&mut self, saved: bool, data: &[u8]) {
         let string = if saved {
-            form_of(self).saved
+            let form = form_of(self);
+            if !form.saved.is_null() {
+                form.saved_length = form.saved_length.wrapping_add(data.len());
+            }
+            form.saved
         } else {
             self.buffer
         };
@@ -517,6 +518,7 @@ impl HttpRequest {
             return false;
         };
         form.saved = saved;
+        form.saved_length = header;
         form.template = template;
         form.upload_max = upload_max;
         true
@@ -689,7 +691,7 @@ impl Parts<'_> for HttpRequest {
         let length = data.len();
         let form = form_of(self);
         let Some(fp) = form.fp.as_mut() else {
-            if (form.saved_length() as u64).wrapping_add(length as u64) > max_length {
+            if (form.saved_length as u64).wrapping_add(length as u64) > max_length {
                 (self.excepted, self.unavailable) = (true, true);
                 return Flow::Pause;
             }
@@ -751,7 +753,7 @@ impl Parts<'_> for HttpRequest {
     fn on_body_end(&mut self, boundary: &[u8]) -> Flow {
         self.save(boundary);
         self.save(b"--");
-        let length = form_of(self).saved_length();
+        let length = form_of(self).saved_length;
         self.content_length = (length as u64).wrapping_sub(u64::from(self.header_length));
         self.tried_to_dispatch = true;
         Flow::Go
@@ -1363,7 +1365,7 @@ mod tests {
             str: ptr::null_mut(),
         };
         if let Some(form) = r.form.as_deref_mut() {
-            (form.saved, form.upload_max) = (&raw mut saved, 3);
+            (form.saved, form.saved_length, form.upload_max) = (&raw mut saved, 10, 3);
         }
         r.max_length = 12;
         assert_eq!(r.on_part_data(b"abc"), Flow::Pause, "rejected");
@@ -1406,6 +1408,7 @@ mod tests {
                 parser: None,
                 fp: None,
                 saved: ptr::null_mut(),
+                saved_length: 0,
                 upload: Vec::new(),
                 template: Vec::new(),
                 header_name: Vec::new(),

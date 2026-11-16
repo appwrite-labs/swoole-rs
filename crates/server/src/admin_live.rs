@@ -284,11 +284,8 @@ impl Facts for Live<'_> {
         let workers = u64::from(config.worker_num.get()) + u64::from(config.task_worker_num.get());
         let workers = workers + user_workers as u64;
         let global = swoole_rs_memory::members::pool::memory_size();
-        let buffer = swoole_rs_corebase::thread_buffer();
-        let buffer = buffer.cast::<swoole_rs_buffer::string::CppString>();
-        // SAFETY: null, or this thread's live buffer.
         let thread_buffer =
-            unsafe { buffer.as_ref() }.map_or(0, swoole_rs_buffer::string::CppString::size);
+            swoole_rs_buffer::string::try_with_thread_buffer(|buffer| buffer.size()).unwrap_or(0);
         let sockets = swoole_rs_reactor::event_api::swoole_event_sockets();
         let out_buffers = sockets.iter().map(|s| s.read(out_buffer_length)).sum();
         let php = PHP_MEMORY.get().map_or(0, |usage| usage());
