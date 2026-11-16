@@ -89,7 +89,9 @@ pub(crate) fn start_manager_process(serv: view::Server<'_>) -> bool {
         return false;
     }
     let pool = serv.event_pool_ref();
-    if pool.message_box().is_null() && !methods::create_message_box(pool, MESSAGE_BOX_SIZE) {
+    if pool.message_box().is_null()
+        && !methods::create_message_box(crate::process_pool_native(), pool, MESSAGE_BOX_SIZE)
+    {
         return false;
     }
     if serv.workers().user_count() > 0 && !worker_methods::create_user_workers(serv) {
@@ -119,7 +121,9 @@ fn main(serv: view::Server<'_>) {
     if config.mode_ == Mode::Process && swoole_rs_corebase::swr_v1_core_enable_signalfd() {
         crate::control::ShutdownMask::unblock_manager();
     }
-    if config.task_worker_num.get() > 0 && !methods::start(serv.task_pool_ref()) {
+    if config.task_worker_num.get() > 0
+        && !methods::start(crate::process_pool_native(), serv.task_pool_ref())
+    {
         log::sys_error(ORIGIN, format_args!("failed to start task worker"));
         return;
     }
@@ -192,7 +196,7 @@ fn wait(serv: view::Server<'_>) {
         manager: &manager,
     });
 
-    methods::drop_reload_task(serv.event_pool_ref());
+    methods::drop_reload_task(crate::process_pool_native(), serv.event_pool_ref());
     if swoole_rs_timer::swoole_timer_is_available() {
         swoole_rs_timer::swoole_timer_free();
         // The timer overrode SIGALRM's handler: the manager needs it back.
@@ -324,7 +328,7 @@ impl Reap for Reaping<'_> {
                 let worker = worker_at(serv, id.into());
                 if u32::from(id) >= serv.config().worker_num.get() {
                     let worker = worker.map_or(core::ptr::null_mut(), Worker::raw);
-                    methods::spawn(serv.task_pool_ref(), worker);
+                    methods::spawn(crate::process_pool_native(), serv.task_pool_ref(), worker);
                 } else {
                     _ = spawn(serv, spawn_event_worker, worker);
                 }
@@ -381,7 +385,7 @@ impl Reap for Reaping<'_> {
 
     fn finish_reload(&mut self) {
         let serv = self.serv;
-        methods::drop_reload_task(serv.event_pool_ref());
+        methods::drop_reload_task(crate::process_pool_native(), serv.event_pool_ref());
         serv.state()
             .callbacks
             .call_server(ServerSlot::AfterReload, serv);
@@ -506,7 +510,11 @@ pub fn restart_worker_process(serv: view::Server<'_>, status: &ExitStatus) {
     check_exit_status(serv, Some(worker), status);
     match worker.kind() {
         Some(WorkerType::Event) => _ = spawn_event_worker(serv, worker),
-        Some(WorkerType::Task) => methods::spawn(serv.task_pool_ref(), worker.raw()),
+        Some(WorkerType::Task) => methods::spawn(
+            crate::process_pool_native(),
+            serv.task_pool_ref(),
+            worker.raw(),
+        ),
         Some(WorkerType::User) => _ = spawn_user_worker(serv, worker),
         _ => log::warning(
             ORIGIN,
@@ -540,7 +548,7 @@ pub fn reload(serv: view::Server<'_>, reload_all_workers: bool) -> bool {
         };
         return kill(manager_pid, signo).is_ok();
     }
-    if !methods::reload(serv.event_pool_ref()) {
+    if !methods::reload(crate::process_pool_native(), serv.event_pool_ref()) {
         return false;
     }
     if let Some(manager) = manager(serv) {
