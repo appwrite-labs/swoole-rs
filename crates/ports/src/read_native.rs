@@ -25,7 +25,6 @@ use swoole_rs_tls::upstream::{recv_append, send};
 use crate::framing_recv::{self, Lent, Packages, Proto};
 use crate::http_routes::Session;
 use crate::http_routes::exports::{Frames, Port, Route, Tasks};
-use crate::methods::{self, Owner};
 use crate::read::{Connection, Dispatch, Framing, Readable, Reply, Upgrade, readable};
 
 /// `http_server::SW_HTTP_EXT_FLAG_UPLOAD_PREPROCESSED`.
@@ -37,10 +36,9 @@ const SETTING_FRAME_SIZE: usize = 9 + 6 * 6;
 struct Read<'a> {
     /// The current buffer.
     buffer: *mut CppString,
-    /// The connection's request once made current, taken out of [`methods`]' table
-    /// until a dispatch or the read's end, and the connection it belongs to.
+    /// The connection's request once made current, taken out of its slot until a
+    /// dispatch or the read's end.
     request: Option<Box<HttpRequest>>,
-    owner: Owner,
     reactor: Running<'a>,
     /// The reactor's event, which the close handler may change; the caller sees it after.
     event: Cell<Event>,
@@ -76,7 +74,6 @@ pub(crate) fn on_read(
     let mut read = Read {
         buffer: ptr::null_mut(),
         request: None,
-        owner: (0, 0),
         reactor,
         event: lent,
         socket,
@@ -96,7 +93,7 @@ pub(crate) fn on_read(
         if read.removed() {
             request_free(Some(request));
         } else {
-            methods::hold_http_request(read.owner, request);
+            read.conn.hold_http_request(request);
         }
     }
     *event = read.event.get();
@@ -284,7 +281,7 @@ impl Connection for Read<'_> {
         if dispatch != Dispatch::Task
             && let Some(request) = self.request.take()
         {
-            methods::hold_http_request(self.owner, request);
+            self.conn.hold_http_request(request);
         }
         // A request waits its turn under `max_concurrency`; a task never does.
         let busy = dispatch != Dispatch::Task && {
@@ -310,7 +307,7 @@ impl Connection for Read<'_> {
         self.request = if self.removed() {
             None
         } else {
-            methods::take_http_request(self.owner)
+            self.conn.take_http_request()
         };
         dispatched
     }
@@ -372,7 +369,7 @@ impl Connection for Read<'_> {
     }
 
     fn serve_static(&mut self) -> bool {
-        let (server, session, socket) = (self.server, self.owner.1, self.socket);
+        let (server, session, socket) = (self.server, self.conn.session_id(), self.socket);
         static_select(server, self.request(), session, socket)
     }
 
@@ -399,9 +396,8 @@ impl Connection for Read<'_> {
 
     #[inline]
     fn init_request(&mut self) {
-        self.owner = (self.conn.fd(), self.conn.session_id());
         if self.request.is_none() {
-            let held = methods::take_http_request(self.owner);
+            let held = self.conn.take_http_request();
             self.request = Some(held.unwrap_or_else(swoole_rs_http_ffi::request_new));
         }
         if self.request().buffer.is_null() {
@@ -416,7 +412,7 @@ impl Connection for Read<'_> {
         match self.request.take() {
             Some(request) => request_free(Some(request)),
             // A WebSocket upgrade's, which no read made current.
-            None => methods::destroy_http_request(self.conn),
+            None => crate::methods::destroy_http_request(self.conn),
         }
     }
 

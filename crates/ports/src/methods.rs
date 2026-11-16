@@ -19,9 +19,7 @@ pub(crate) const FD_DGRAM_SERVER: c_int = 2;
 use swoole_rs_server::port_config::{PortConfig, ReadEvent, Reader};
 use swoole_rs_server::view;
 
-use core::cell::Cell;
-use core::ffi::c_long;
-use swoole_rs_http_ffi::{HttpRequest, request_free};
+use swoole_rs_http_ffi::request_free;
 
 use crate::read::Readable;
 
@@ -420,61 +418,9 @@ pub fn set_stream_protocol(config: &mut PortConfig) {
     protocol.package_length_offset = 0;
 }
 
-/// An HTTP request's owner: the fd and session of its connection.
-pub(crate) type Owner = (c_int, c_long);
-
-type Requests = Vec<Option<(c_long, Box<HttpRequest>)>>;
-
-thread_local! {
-    /// Each fd's HTTP request on this reactor thread (upstream's `conn->object`),
-    /// with the session it belongs to. A read takes its connection's out while it
-    /// parses, so a close meanwhile finds nothing here and the read frees it.
-    static REQUESTS: Cell<Requests> = const { Cell::new(Vec::new()) };
-}
-
-/// `f` over this thread's requests, taken out of the cell for `f` only.
-fn requests<R>(f: impl FnOnce(&mut Requests) -> R) -> R {
-    REQUESTS.with(|cell| {
-        let mut requests = cell.take();
-        let result = f(&mut requests);
-        cell.set(requests);
-        result
-    })
-}
-
-/// The request `owner`'s fd holds, now `owner`'s to keep. One another session left
-/// is freed.
-pub(crate) fn take_http_request((fd, session): Owner) -> Option<Box<HttpRequest>> {
-    let slot = usize::try_from(fd).ok()?;
-    let (held_by, request) = requests(|all| all.get_mut(slot)?.take())?;
-    if held_by == session {
-        return Some(request);
-    }
-    request_free(Some(request));
-    None
-}
-
-/// `owner`'s connection holds `request` until [`take_http_request`] or
-/// [`destroy_http_request`].
-pub(crate) fn hold_http_request((fd, session): Owner, request: Box<HttpRequest>) {
-    let Ok(slot) = usize::try_from(fd) else {
-        return request_free(Some(request));
-    };
-    let stale = requests(|all| {
-        if all.len() <= slot {
-            all.resize_with(slot + 1, || None);
-        }
-        all.get_mut(slot)?.replace((session, request))
-    });
-    request_free(stale.map(|(_, request)| request));
-}
-
 /// `ListenPort::destroy_http_request(conn)`: frees the connection's request, if any.
 pub(crate) fn destroy_http_request(conn: swoole_rs_server::Connection<'_>) {
-    let held = usize::try_from(conn.fd())
-        .ok()
-        .and_then(|slot| requests(|all| all.get_mut(slot)?.take()));
-    request_free(held.map(|(_, request)| request));
+    request_free(conn.take_http_request());
 }
 
 use crate::read_native::on_read;
@@ -1170,35 +1116,17 @@ mod tests {
         // SAFETY: an all-zero record is a closed connection with no object.
         let mut conn: ConnectionRecord = unsafe { std::mem::zeroed() };
         let slot = swoole_rs_server::Connection::from(&mut conn);
-        slot.set_fd(7);
-        hold_http_request((7, 3), swoole_rs_http_ffi::request_new());
+        slot.hold_http_request(swoole_rs_http_ffi::request_new());
         destroy_http_request(slot);
         assert!(
-            take_http_request((7, 3)).is_none(),
+            slot.take_http_request().is_none(),
             "the request is freed and cleared"
         );
         destroy_http_request(slot);
         assert!(
-            take_http_request((7, 3)).is_none(),
+            slot.take_http_request().is_none(),
             "no request: nothing to do"
         );
-    }
-
-    #[test]
-    fn a_request_belongs_to_its_session() {
-        hold_http_request((9, 1), swoole_rs_http_ffi::request_new());
-        assert!(
-            take_http_request((9, 2)).is_none(),
-            "another session's is freed"
-        );
-        assert!(take_http_request((9, 1)).is_none(), "and gone");
-        hold_http_request((9, 2), swoole_rs_http_ffi::request_new());
-        assert!(
-            take_http_request((9, 2)).is_some(),
-            "its own comes back once"
-        );
-        assert!(take_http_request((9, 2)).is_none());
-        assert!(take_http_request((-1, 2)).is_none(), "no fd holds nothing");
     }
 
     /// Upstream's `server_port.import`. Linux, as core-tests: macOS answers
