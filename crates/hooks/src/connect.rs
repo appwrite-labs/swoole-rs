@@ -8,7 +8,7 @@ use crate::co_socket::{Co, reinit};
 use crate::packet::recv_packet;
 use crate::socket_members::assign;
 use crate::socket_scope::ProtocolScope;
-use core::ffi::{c_char, c_int};
+use core::ffi::c_int;
 use core::ptr::null_mut;
 use std::rc::Rc;
 use swoole_rs_reactor::Events;
@@ -569,19 +569,14 @@ impl Co {
 }
 
 /// `Socket::connect(host, port)` of the native `socket` (its `this`, a live
-/// [`Co`]), for C++.
-///
-/// # Safety
-/// In a coroutine; `host` holds `length` bytes.
+/// [`Co`]), for C++ in a coroutine. `host` is a `struct iovec` on the C side: the
+/// caller's bytes, live and unchanged for the call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_hook_co_socket_connect_host(
+pub extern "C" fn swr_v1_hook_co_socket_connect_host(
     socket: Co,
-    host: *const c_char,
-    length: usize,
+    host: std::io::IoSlice<'_>,
     port: c_int,
 ) -> bool {
-    // SAFETY: as the caller promises; copied before any effect.
-    let host = unsafe { core::slice::from_raw_parts(host.cast::<u8>(), length) }.to_vec();
     socket.connect_host(&host, port)
 }
 

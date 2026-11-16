@@ -40,7 +40,7 @@ class Socket : public swr_v1_co_socket {
     // Rust's (crates/hooks/src/connect.rs), through the socket's proxies; with SSL
     // enabled, true means the handshake succeeded too.
     bool connect(const std::string &host, int port = 0, int flags = 0) {
-        return swr_v1_hook_co_socket_connect_host(this, host.data(), host.size(), port);
+        return swr_v1_hook_co_socket_connect_host(this, {const_cast<char *>(host.data()), host.size()}, port);
     }
 
     int get_fd() const {
