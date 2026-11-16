@@ -287,7 +287,7 @@ fn entry(ops: &Loop<'_>, index: usize) {
             let event = ops.events.cast::<libc::kevent>().wrapping_add(index);
             // SAFETY: `index` is below the kernel's ready count, checked above.
             let event = unsafe { event.read() };
-            return kqueue(ops, event.udata.cast(), c_int::from(event.filter));
+            return kqueue(ops, &event);
         }
         _ => return,
     };
@@ -327,14 +327,18 @@ fn ready(ops: &Loop<'_>, socket: Socket<'_>, fd: c_int, mask: u32) {
     target_os = "netbsd",
     target_os = "dragonfly"
 ))]
-fn kqueue(ops: &Loop<'_>, udata: *mut c_void, filter: c_int) {
+fn kqueue(ops: &Loop<'_>, event: &libc::kevent) {
+    let (udata, filter) = (
+        event.udata.cast::<crate::SocketRecord>(),
+        c_int::from(event.filter),
+    );
     if udata.is_null() {
         return;
     }
     if filter == c_int::from(libc::EVFILT_READ) || filter == c_int::from(libc::EVFILT_WRITE) {
         // SAFETY: a read or write entry's udata is its registered socket, live while its
         // handlers run.
-        let Some(socket) = (unsafe { Socket::from_ptr(udata.cast()) }) else {
+        let Some(socket) = (unsafe { Socket::from_ptr(udata) }) else {
             return;
         };
         let fd_type = prepare(ops, socket, -1, false);
@@ -352,9 +356,8 @@ fn kqueue(ops: &Loop<'_>, udata: *mut c_void, filter: c_int) {
         }
         oneshot(ops, socket, live);
     } else if filter == c_int::from(libc::EVFILT_SIGNAL) {
-        // SAFETY: a signal entry's udata is its registered `swoole::Signal`, copied
-        // before its handler, which may register another, runs.
-        dispatch_signal(unsafe { udata.cast::<kqueue_signal::Signal>().read() });
+        // A signal entry's ident is its signal number, whose table slot is its udata.
+        dispatch_signal(c_int::try_from(event.ident).unwrap_or(0));
     } else {
         log::error_log(
             LOG_WARNING,
@@ -383,25 +386,19 @@ mod kqueue_signal {
     pub(super) const EVENT_UNKNOWN_DATA: c_int =
         swoole_rs_error::ErrorCode::SW_ERROR_EVENT_UNKNOWN_DATA as c_int;
 
-    /// Upstream's `swoole::Signal`, as the signal loop registered it: its handler, when
-    /// neither none nor `SIG_IGN`, is sound to call with its signal number. The fields
-    /// are private, so safe code outside this module can't make one that isn't.
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    pub(super) struct Signal {
-        handler: swoole_rs_process::signal::Handler,
-        signo: u16,
-        activated: bool,
+    /// `ReactorKqueue::wait`'s signal entry for `signo`: its registration is read before
+    /// its handler, which may register another, runs.
+    pub(super) fn dispatch_signal(signo: c_int) {
+        dispatch(signo, swoole_rs_process::signal::signal_activated(signo));
     }
 
-    /// `ReactorKqueue::wait`'s signal entry: an activated signal runs its handler unless that is
-    /// `SIG_IGN`, and warns when it has none.
-    pub(super) fn dispatch_signal(signal: Signal) {
-        if !signal.activated {
+    /// An activated signal (`Some` handler) runs its handler unless that is `SIG_IGN`,
+    /// and warns when it has none.
+    pub(super) fn dispatch(signo: c_int, activated: Option<swoole_rs_process::signal::Handler>) {
+        let Some(handler) = activated else {
             return;
-        }
-        let signo = c_int::from(signal.signo);
-        match signal.handler {
+        };
+        match handler {
             swoole_rs_process::signal::Handler::NONE => {
                 let name = swoole_rs_process::signal::signal_name(signo);
                 let name = name.as_cstr();
@@ -706,34 +703,20 @@ mod tests {
         target_os = "dragonfly"
     ))]
     fn signal_entries_run_their_handler_as_upstreams_kqueue_wait() {
-        /// The registered `swoole::Signal`, as the kernel hands it back in `udata`.
-        #[repr(C)]
-        struct Registered {
-            handler: Option<unsafe extern "C" fn(c_int)>,
-            signo: u16,
-            activated: bool,
-        }
+        use swoole_rs_process::signal::Handler;
         static SEEN: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
-        unsafe extern "C" fn handler(signo: c_int) {
+        extern "C" fn handler(signo: c_int) {
             SEEN.store(signo, std::sync::atomic::Ordering::SeqCst);
         }
-        // SAFETY: `SIG_IGN` is the address 1, which is never called.
-        let ignore: unsafe extern "C" fn(c_int) = unsafe { std::mem::transmute(libc::SIG_IGN) };
-        let handler: unsafe extern "C" fn(c_int) = handler;
-        for (handler, activated, seen) in [
-            (Some(handler), false, 0),
-            (None, true, 0),
-            (Some(ignore), true, 0),
-            (Some(handler), true, libc::SIGUSR1),
+        let handler = Handler::new(handler);
+        for (activated, seen) in [
+            (None, 0),
+            (Some(Handler::NONE), 0),
+            (Some(Handler::IGNORE), 0),
+            (Some(handler), libc::SIGUSR1),
         ] {
             SEEN.store(0, std::sync::atomic::Ordering::SeqCst);
-            let registered = Registered {
-                handler,
-                signo: u16::try_from(libc::SIGUSR1).unwrap(),
-                activated,
-            };
-            let udata = (&raw const registered).cast::<kqueue_signal::Signal>();
-            dispatch_signal(unsafe { udata.read() });
+            kqueue_signal::dispatch(libc::SIGUSR1, activated);
             assert_eq!(SEEN.load(std::sync::atomic::Ordering::SeqCst), seen);
         }
     }
