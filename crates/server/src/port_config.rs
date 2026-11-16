@@ -99,7 +99,8 @@ pub struct PortMethods {
     pub close_socket: fn(&PortConfig),
     pub get_protocols: fn(&PortConfig) -> &'static CStr,
     pub init_protocol: fn(&PortConfig),
-    /// `destroy_http_request(conn)`, of a live connection.
+    /// `destroy_http_request(conn)`, of a live connection of an HTTP port: frees its
+    /// request, if any.
     pub destroy_http_request: fn(conn: crate::Connection<'_>),
     /// Releases the port's context and its TLS state, as `ListenPort`'s destructor.
     pub tls_free: fn(&mut PortConfig),

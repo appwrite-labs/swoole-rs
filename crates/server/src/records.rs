@@ -51,8 +51,8 @@ pub struct ConnectionRecord {
     pub timer: Cell<Option<swoole_rs_corebase::timer_key::Held>>,
     pub info: Cell<SocketAddress>,
     /// Null, a listening slot's port ([`ServerState::hold_port`]) as its plain
-    /// address, or anything else (a session's protocol state, a pipe) [`encode`]d
-    /// negative. Private: only this module's typed setters write it.
+    /// address, a pipe end's pipe with [`NOT_PORT`] set, or a session's HTTP request
+    /// with [`REQUEST`] set too. Private: only this module's typed setters write it.
     object: Cell<*mut c_void>,
     /// The session socket, `None` before the connection has one or after it closes: a
     /// record live until the unsafe free that ends the connection.
@@ -139,19 +139,9 @@ impl ConnectionRecord {
 
 /// The top address bit: set on every slot object but a port.
 const NOT_PORT: usize = 1 << (usize::BITS - 1);
-
-/// A 2-aligned `object` that isn't a port, as `(address >> 1) | NOT_PORT`: negative,
-/// so [`Connection::port`] reads it as none with the sign test that replaces its null
-/// test, and [`decode`] gives back every bit of the address.
-fn encode<T>(object: *mut T) -> *mut c_void {
-    const { assert!(align_of::<T>() >= 2, "the encoding drops the lowest bit") };
-    object.cast::<c_void>().map_addr(|a| (a >> 1) | NOT_PORT)
-}
-
-/// The address [`encode`] stored, or `None` for null or a port.
-fn decode<T>(object: *mut c_void) -> Option<*mut T> {
-    (object.addr().cast_signed() < 0).then(|| object.map_addr(|a| a << 1).cast())
-}
+/// The low address bit, set beside [`NOT_PORT`] on an HTTP request
+/// (`(address >> 1) | NOT_PORT | REQUEST`) and on nothing else.
+const REQUEST: usize = 1;
 
 /// A slot of a shared table, borrowed for `'a` and read and written one field at a
 /// time: every field is a cell or an atomic, so two handles to one slot share it and
@@ -322,52 +312,51 @@ impl<'a> Connection<'a> {
         if raw.addr().cast_signed() <= 0 {
             return None;
         }
-        // SAFETY: a positive object is a port: everything else is null or `encode`d
-        // negative, and only `hold_port` stores one, from the port list of the server
-        // whose table holds the slot. The server frees its ports only with that table, so
+        // SAFETY: a positive object is a port: everything else is null or has
+        // `NOT_PORT` set, and only `hold_port` stores one, from the port list of the
+        // server whose table holds the slot. The server frees its ports only with that table, so
         // the port lives as long as the slot's borrow.
         unsafe { raw.cast::<crate::port_config::PortConfig>().as_ref() }
             .map(crate::view::Port::from)
     }
 
-    /// The HTTP request a session holds, or `None`: an HTTP port's session holds
-    /// nothing else.
+    /// The HTTP request the session holds, which the slot no longer names, or `None`.
     #[must_use]
     #[inline]
-    pub fn http_request(self) -> Option<*mut swoole_rs_http_ffi::HttpRequest> {
-        decode(self.object())
-    }
-
-    /// The session holds `request`, whose address comes back; the slot keeps it until
-    /// [`Self::take_http_request`].
-    #[inline]
-    #[must_use]
-    pub fn set_http_request(
-        self,
-        request: Box<swoole_rs_http_ffi::HttpRequest>,
-    ) -> *mut swoole_rs_http_ffi::HttpRequest {
-        let request = Box::into_raw(request);
-        self.set_object(encode(request));
-        request
-    }
-
-    /// The HTTP request the session held, which the slot no longer names: the box
-    /// [`Self::set_http_request`] took, in the process that stored it.
-    #[must_use]
-    #[inline]
-    pub fn take_http_request(self) -> Option<*mut swoole_rs_http_ffi::HttpRequest> {
-        let request = self.http_request();
+    pub fn take_http_request(self) -> Option<Box<swoole_rs_http_ffi::HttpRequest>> {
+        const TAG: usize = NOT_PORT | REQUEST;
+        let raw = self.object();
+        if raw.addr() & TAG != TAG {
+            return None;
+        }
         self.clear_object();
-        request
+        let request = raw.map_addr(|a| (a & !TAG) << 1).cast();
+        // SAFETY: only `hold_http_request` sets `REQUEST`, on the box it leaked, and
+        // this take clears it, so each box comes back once.
+        Some(unsafe { Box::from_raw(request) })
+    }
+
+    /// The session holds `request` until [`Self::take_http_request`].
+    #[inline]
+    pub fn hold_http_request(self, request: Box<swoole_rs_http_ffi::HttpRequest>) {
+        const {
+            assert!(
+                align_of::<swoole_rs_http_ffi::HttpRequest>() >= 4,
+                "the tag takes the low bit after the shift"
+            );
+        }
+        let raw = Box::into_raw(request).cast::<c_void>();
+        self.set_object(raw.map_addr(|a| (a >> 1) | NOT_PORT | REQUEST));
     }
 
     /// `Server::store_pipe_fd`: a pipe end's slot names its pipe, which nothing reads
-    /// back as a port. An address with the top bit set, which no user-space pointer
-    /// has, is not kept.
+    /// back as a port or a request. An address with the top bit set, which no
+    /// user-space pointer has, is not kept; a pipe is 2-aligned, so its low bit is
+    /// clear.
     pub(crate) fn set_pipe(self, pipe: *mut c_void) {
         let kept = pipe.addr().cast_signed() >= 0;
         self.set_object(if kept {
-            pipe.map_addr(|a| a | NOT_PORT)
+            pipe.map_addr(|a| (a | NOT_PORT) & !REQUEST)
         } else {
             core::ptr::null_mut()
         });

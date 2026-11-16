@@ -248,32 +248,22 @@ impl SendfileTask {
     }
 }
 
-/// The server, connection, session and socket of an HTTP/1 static response.
+/// The server, request, session and socket of an HTTP/1 static response.
 struct Wire<'a> {
     server: crate::view::Server<'a>,
-    conn: crate::Connection<'a>,
+    request: &'a swoole_rs_http_ffi::HttpRequest,
     session_id: core::ffi::c_long,
     socket: swoole_rs_reactor::Socket<'a>,
 }
 
 impl Wire<'_> {
-    /// The connection's request, for one read; `None` once a send closed the
-    /// connection, which frees it.
-    fn request(&self) -> Option<&swoole_rs_http_ffi::HttpRequest> {
-        let request = self.conn.http_request()?;
-        // SAFETY: the box the connection's slot names until a close takes it back,
-        // which runs only inside one of this thread's sends, not during this read.
-        unsafe { request.as_ref() }
-    }
-
-    /// `read` over the request and its receive buffer's bytes (the socket's); `None`
-    /// once a send closed the connection.
+    /// Read the owned request with its receive buffer's bytes, while the socket
+    /// still holds the buffer.
     fn read<R>(
         &self,
         read: impl FnOnce(&swoole_rs_http_ffi::HttpRequest, &[u8]) -> R,
     ) -> Option<R> {
-        let request = self.request()?;
-        (self.socket).read(|s| Some(read(request, s.recv_buffer.as_ref()?.view())))
+        (self.socket).read(|s| Some(read(self.request, s.recv_buffer.as_ref()?.view())))
     }
 }
 
@@ -284,11 +274,10 @@ impl Exchange for Wire<'_> {
             .unwrap_or_default()
     }
     fn keep_alive(&self) -> bool {
-        self.request().is_some_and(|request| request.keep_alive)
+        self.request.keep_alive
     }
     fn head(&self) -> bool {
-        self.request()
-            .is_some_and(|request| request.method == HTTP_HEAD)
+        self.request.method == HTTP_HEAD
     }
     fn cork(&self) {
         // An `extern "C"` fn is no closure.
@@ -306,19 +295,20 @@ impl Exchange for Wire<'_> {
     }
 }
 
-/// `Server::select_static_handler(request, conn)` for the ports read path, over the
-/// request `conn` holds: `conn` is session `session_id`'s, whose socket is `socket`.
-/// The last send may close the connection, which frees the request.
+/// `Server::select_static_handler(request, conn)` for the ports read path: `request`
+/// is the request of the connection of session `session_id`, whose socket is `socket`.
+/// The caller owns the request, which the last send's close leaves alone; nothing
+/// reads it after that send.
 #[must_use]
 pub fn static_select(
     server: crate::view::Server<'_>,
-    conn: crate::Connection<'_>,
+    request: &swoole_rs_http_ffi::HttpRequest,
     session_id: core::ffi::c_long,
     socket: swoole_rs_reactor::Socket<'_>,
 ) -> bool {
     let wire = Wire {
         server,
-        conn,
+        request,
         session_id,
         socket,
     };

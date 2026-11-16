@@ -511,7 +511,8 @@ mod tests {
             "no pipe, no change"
         );
 
-        let mut pipe = 0_u8;
+        // A pipe is a heap object, at least 2-aligned.
+        let mut pipe = 0_u64;
         let pipe: *mut c_void = (&raw mut pipe).cast();
         // SAFETY: two sockets that outlive the record's use below.
         unsafe { worker.set_pipes(pipe, (&raw mut master).cast(), (&raw mut end).cast()) };

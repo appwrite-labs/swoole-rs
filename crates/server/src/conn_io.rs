@@ -495,7 +495,6 @@ pub(crate) fn close_connection(
     }
     if let Some(port) = port
         && port.open_http_protocol.get()
-        && conn.http_request().is_some()
     {
         (crate::port_config::methods().destroy_http_request)(conn);
     }

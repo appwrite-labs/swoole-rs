@@ -14,7 +14,7 @@ use swoole_rs_corebase::constants::{
 };
 use swoole_rs_corebase::{DataHead, WebSocketStatus, log};
 use swoole_rs_framing::recv::{Mode, Status};
-use swoole_rs_http_ffi::HttpRequest;
+use swoole_rs_http_ffi::{HttpRequest, request_free};
 use swoole_rs_reactor::reactor_upstream::trigger_close_event;
 use swoole_rs_reactor::{Caught, Event, Running, Socket};
 use swoole_rs_server::port_config::{PortConfig, ReadEvent};
@@ -34,11 +34,12 @@ const SETTING_FRAME_SIZE: usize = 9 + 6 * 6;
 
 /// One readable event on a live connection, which only this reactor thread touches.
 struct Read<'a> {
-    /// The current buffer, and the connection's request and the socket's receive
-    /// buffer it is read into once made current.
+    /// The current buffer and the socket's receive buffer.
     buffer: *mut CppString,
-    request: *mut HttpRequest,
     recv: *mut CppString,
+    /// The connection's request once made current, taken out of its slot until a
+    /// dispatch or the read's end.
+    request: Option<Box<HttpRequest>>,
     reactor: Running<'a>,
     /// The reactor's event, which the close handler may change; the caller sees it after.
     event: Cell<Event>,
@@ -73,7 +74,7 @@ pub(crate) fn on_read(
     let port = port.config();
     let mut read = Read {
         buffer: ptr::null_mut(),
-        request: ptr::null_mut(),
+        request: None,
         recv: ptr::null_mut(),
         reactor,
         event: lent,
@@ -89,6 +90,14 @@ pub(crate) fn on_read(
             && port.open_websocket_protocol.get();
     }
     let ok = readable(kind, &mut read);
+    // The connection keeps its request for the next read, unless it closed.
+    if let Some(request) = read.request.take() {
+        if read.removed() {
+            request_free(Some(request));
+        } else {
+            read.conn.hold_http_request(request);
+        }
+    }
     *event = read.event.get();
     ok
 }
@@ -278,6 +287,12 @@ impl Connection for Read<'_> {
             },
             ..DataHead::default()
         };
+        // The connection holds the request while it runs, so a close frees it there.
+        if dispatch != Dispatch::Task
+            && let Some(request) = self.request.take()
+        {
+            self.conn.hold_http_request(request);
+        }
         // A request waits its turn under `max_concurrency`; a task never does.
         let busy = dispatch != Dispatch::Task && {
             let counters = self.server.counters();
@@ -297,12 +312,12 @@ impl Connection for Read<'_> {
         if dispatch == Dispatch::Task {
             return dispatched;
         }
-        // The connection, which dispatch may have given a new request, unless the
-        // request callback closed it ([`Connection::active`]).
+        // The connection's request back, unless the request callback closed it
+        // ([`Connection::active`]).
         self.request = if self.removed() {
-            ptr::null_mut()
+            None
         } else {
-            self.conn.http_request().unwrap_or(ptr::null_mut())
+            self.conn.take_http_request()
         };
         dispatched
     }
@@ -364,8 +379,8 @@ impl Connection for Read<'_> {
     }
 
     fn serve_static(&mut self) -> bool {
-        let conn = self.conn;
-        static_select(self.server, conn, conn.session_id(), self.socket)
+        let (server, session, socket) = (self.server, self.conn.session_id(), self.socket);
+        static_select(server, self.request(), session, socket)
     }
 
     #[inline]
@@ -391,25 +406,28 @@ impl Connection for Read<'_> {
 
     #[inline]
     fn init_request(&mut self) {
-        self.request = match self.conn.http_request() {
-            Some(request) => request,
-            None => (self.conn).set_http_request(swoole_rs_http_ffi::request_new()),
-        };
+        if self.request.is_none() {
+            let held = self.conn.take_http_request();
+            self.request = Some(held.unwrap_or_else(swoole_rs_http_ffi::request_new));
+        }
         self.recv = self.recv_buffer();
         self.use_request_buffer();
     }
 
     #[inline]
     fn destroy_request(&mut self) {
-        crate::methods::destroy_http_request(self.conn);
-        self.request = ptr::null_mut();
+        match self.request.take() {
+            Some(request) => request_free(Some(request)),
+            // A WebSocket upgrade's, which no read made current.
+            None => crate::methods::destroy_http_request(self.conn),
+        }
     }
 
     #[inline]
     fn request(&mut self) -> &mut HttpRequest {
-        // SAFETY: after `init_request` the connection's request is live; only calls on
-        // `self`, which the borrow excludes, touch it.
-        unsafe { &mut *self.request }
+        // Made current by `init_request` before any use.
+        self.request
+            .get_or_insert_with(swoole_rs_http_ffi::request_new)
     }
 
     #[inline]
