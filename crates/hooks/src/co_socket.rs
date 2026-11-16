@@ -1014,14 +1014,11 @@ pub extern "C" fn swr_v1_hook_co_socket_created(socket: Co, result: u32) {
     }
 }
 
-/// `getpeername(sa)`: the peer's address and the record's type into `address`; 0,
-/// or the errno to set.
-pub(crate) fn peer_name(socket: Co, address: &mut SocketAddress) -> c_int {
-    if let Err(error) = address.peer_name(socket.sock_fd()) {
-        return error.raw_os_error().unwrap_or(0);
-    }
+/// `getpeername(sa)`: the peer's address and, on success, the record's type.
+pub(crate) fn peer_name(socket: Co, address: &mut SocketAddress) -> std::io::Result<()> {
+    address.peer_name(socket.sock_fd())?;
     address.kind = socket.kind();
-    0
+    Ok(())
 }
 
 /// The tests' records, here and in the operations' modules.
@@ -1389,7 +1386,7 @@ mod tests {
         new(&mut socket, New::ByType, 0, 1, 0, 0);
         let mut address: SocketAddress = unsafe { core::mem::zeroed() };
         let error = peer_name(unsafe { Co::new(&raw mut *socket) }, &mut address);
-        assert_eq!(error, libc::ENOTCONN);
+        assert_eq!(error.unwrap_err().raw_os_error(), Some(libc::ENOTCONN));
         assert_eq!(address.kind, 0);
         release(socket);
     }

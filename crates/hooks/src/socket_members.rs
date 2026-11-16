@@ -41,27 +41,28 @@ fn event_socket(event: &Event) -> Option<(Co, Socket<'_>)> {
 
 /// `Socket::readable_event_callback` and `writable_event_callback`: Rust picks the
 /// coroutine to wake, a TLS wait's other direction, or none while a barrier waits.
-fn on_ready(event: &Event, kind: Events) -> c_int {
+fn on_ready(event: &Event, kind: Events) {
     let Some((socket, source)) = event_socket(event) else {
-        return 0;
+        return;
     };
     set_err(socket, 0);
     let hup = source.read(|record| record.event_hup);
     if let Some(event) = ready(socket, kind, hup) {
         (ops().resume)(socket, event);
     }
-    0
 }
 
 /// `Socket::readable_event_callback(reactor, event)`, registered for
 /// `SW_FD_CO_SOCKET` by `swr_v1_hook_init_reactor`.
 pub extern "C" fn readable_event_callback(_: Running<'_>, event: &mut Event) -> c_int {
-    on_ready(event, Events::READ)
+    on_ready(event, Events::READ);
+    0
 }
 
 /// `Socket::writable_event_callback(reactor, event)`.
 pub extern "C" fn writable_event_callback(_: Running<'_>, event: &mut Event) -> c_int {
-    on_ready(event, Events::WRITE)
+    on_ready(event, Events::WRITE);
+    0
 }
 
 /// `Socket::error_event_callback(reactor, event)`: wakes the writer, then the
@@ -161,11 +162,13 @@ impl Co {
 
     /// `Socket::getpeername(sa)`.
     pub fn getpeername(self, address: &mut SocketAddress) -> bool {
-        let error = peer_name(self, address);
-        if error != 0 {
-            set_err(self, error);
+        match peer_name(self, address) {
+            Ok(()) => true,
+            Err(error) => {
+                set_err(self, error.raw_os_error().unwrap_or(0));
+                false
+            }
         }
-        error == 0
     }
 
     /// `Socket::recv_with_buffer(buf, n)` into `out`, which is outside the socket's
@@ -537,11 +540,9 @@ impl Co {
         let send = |offset: &mut libc::off_t, length| {
             self.with_network(|socket| socket_sendfile_fd(socket, file.0, offset, length))
                 .flatten()
-                .map_or(-1, usize::cast_signed)
         };
         let ready = || timer.start() && wait_for(self, Events::WRITE);
         let outcome = send_range(&mut offset, end, send, ready);
-        let error = errno();
         timer.stop();
         match outcome {
             Ok(()) => return true,
@@ -550,7 +551,7 @@ impl Co {
                 SYSTEM_CALL_FAIL,
                 Message::Static(c"sendfile return zero"),
             ),
-            Err(SendFailure::Failed) => {
+            Err(SendFailure::Failed(error)) => {
                 let fd = self.sock_fd();
                 self.set_err_text(
                     error,

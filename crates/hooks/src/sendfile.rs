@@ -10,8 +10,8 @@ const CHUNK: usize = swoole_rs_corebase::constants::SW_SENDFILE_CHUNK_SIZE as us
 pub(crate) enum SendFailure {
     /// A send returned zero.
     Zero,
-    /// A send failed other than with `EAGAIN`, errno left set.
-    Failed,
+    /// A send failed other than with `EAGAIN`; the captured errno.
+    Failed(core::ffi::c_int),
     /// The wait failed.
     Wait,
 }
@@ -22,7 +22,7 @@ pub(crate) enum SendFailure {
 pub(crate) fn send_range(
     offset: &mut libc::off_t,
     end: usize,
-    mut send: impl FnMut(&mut libc::off_t, usize) -> isize,
+    mut send: impl FnMut(&mut libc::off_t, usize) -> Option<usize>,
     mut wait: impl FnMut() -> bool,
 ) -> Result<(), SendFailure> {
     loop {
@@ -30,18 +30,18 @@ pub(crate) fn send_range(
         if at >= end {
             return Ok(());
         }
-        let sent = send(offset, (end - at).min(CHUNK));
-        if sent > 0 {
-            continue;
-        }
-        if sent == 0 {
-            return Err(SendFailure::Zero);
-        }
-        if std::io::Error::last_os_error().raw_os_error() != Some(libc::EAGAIN) {
-            return Err(SendFailure::Failed);
-        }
-        if !wait() {
-            return Err(SendFailure::Wait);
+        match send(offset, (end - at).min(CHUNK)) {
+            Some(0) => return Err(SendFailure::Zero),
+            Some(_) => {}
+            None => {
+                let error = swoole_rs_corebase::sys::errno();
+                if error != libc::EAGAIN {
+                    return Err(SendFailure::Failed(error));
+                }
+                if !wait() {
+                    return Err(SendFailure::Wait);
+                }
+            }
         }
     }
 }
@@ -115,15 +115,15 @@ mod tests {
         }
     }
 
-    fn send(offset: &mut libc::off_t, length: usize) -> isize {
+    fn send(offset: &mut libc::off_t, length: usize) -> Option<usize> {
         LOG.with(|log| log.borrow_mut().push(format!("send {length}")));
         let result = SENDS.with(|sends| sends.borrow_mut().remove(0));
         if result < 0 {
             set_errno(c_int::try_from(-result).unwrap());
-            return -1;
+            return None;
         }
         *offset += libc::off_t::try_from(result).unwrap();
-        result
+        Some(usize::try_from(result).unwrap())
     }
     fn wait() -> bool {
         LOG.with(|log| log.borrow_mut().push("wait".into()));
@@ -153,10 +153,10 @@ mod tests {
         assert_eq!(log, ["send 65536", "send 34454", "wait", "send 34454"]);
         assert_eq!(run(&[], true, 5, 5).0, Ok(()), "nothing to send");
         assert_eq!(run(&[0], true, 0, 10).0, Err(SendFailure::Zero));
-        assert_eq!(
-            run(&[-isize::try_from(libc::EPIPE).unwrap()], true, 0, 10).0,
-            Err(SendFailure::Failed)
-        );
+        let failed = run(&[-isize::try_from(libc::EPIPE).unwrap()], true, 0, 10).0;
+        // Timer cleanup in the caller must not replace the send's error.
+        set_errno(libc::EINVAL);
+        assert_eq!(failed, Err(SendFailure::Failed(libc::EPIPE)));
         assert_eq!(run(&[eagain], false, 0, 10).0, Err(SendFailure::Wait));
     }
 
