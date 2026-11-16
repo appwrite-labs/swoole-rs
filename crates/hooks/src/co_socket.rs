@@ -451,6 +451,18 @@ impl Co {
         self.record().take_buffer(write)
     }
 
+    /// Restores the read allocation owned by a completed receive. While parked,
+    /// that receive owns it independently of socket teardown; an abandoned frame
+    /// must retain it because a kernel request may still reach its bytes.
+    pub(crate) fn put_read_buffer(self, buffer: Box<CppString>) {
+        let slot = self.buffer_slot(false);
+        assert!(
+            slot.get().is_null(),
+            "a pending receive owns the read buffer"
+        );
+        slot.set(Box::into_raw(buffer).cast());
+    }
+
     /// [`Co::take_buffer`] of the write buffer. The read buffer is not given up
     /// outside this crate: a coroutine HTTP server reads requests out of it.
     /// # Panics
@@ -1484,6 +1496,43 @@ mod tests {
         let co = socket.co();
         co.with_buffer(false, |outer| {
             co.with_buffer(false, |inner| inner.size() + outer.size())
+        });
+    }
+
+    #[test]
+    fn pending_read_allocation_survives_socket_teardown() {
+        let mut socket = TestSocket::new();
+        let co = socket.co();
+        let address = co.with_buffer(false, |buffer| {
+            buffer.append(b"header");
+            buffer.as_ptr()
+        });
+        let mut pending = co.take_buffer(false).unwrap();
+        assert!(co.read_buffer().is_null());
+        assert_eq!(pending.as_ptr(), address);
+        drop(socket);
+        // A completion can still write after the socket's teardown. The pending
+        // receive, rather than the socket, releases this allocation afterwards.
+        pending.fill_within(4, |spare| {
+            assert!(spare.put(b"body").is_some());
+        });
+        assert_eq!(pending.view(), b"headerbody");
+        pending.dispose();
+    }
+
+    #[test]
+    fn completed_read_restores_its_allocation_and_initialized_prefix() {
+        let mut socket = TestSocket::new();
+        let co = socket.co();
+        let address = co.with_buffer(false, |buffer| buffer.as_ptr());
+        let mut pending = co.take_buffer(false).unwrap();
+        pending.fill_within(3, |spare| {
+            assert!(spare.put(b"abc").is_some());
+        });
+        co.put_read_buffer(pending);
+        co.with_buffer(false, |buffer| {
+            assert_eq!(buffer.as_ptr(), address);
+            assert_eq!(buffer.view(), b"abc");
         });
     }
 

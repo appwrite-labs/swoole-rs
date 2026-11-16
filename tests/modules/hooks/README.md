@@ -20,7 +20,12 @@ checked against the pinned bodies' traces in `ported.txt`:
 The framing host lends initialized bytes and receives through
 `Co::recv_spare`; its metadata view carries no pointer. The native receive and
 protocol callback end metadata loans before a yield or PHP bailout can abandon
-their frames; native code commits only the prefix verified by `Spare`. The 240 trace expectations
+their frames. A parked receive owns its read allocation outside the socket and
+restores it on return; teardown cannot free pending kernel write storage.
+`pending_read_allocation_survives_socket_teardown` checks a completion write after
+teardown, and `completed_read_restores_its_allocation_and_initialized_prefix`
+checks normal restoration. `CppString::fill_within` commits only the prefix
+verified by `Spare`. The 240 trace expectations
 are unchanged. `co_socket::tests::tls_scratch_is_stable_and_independent_of_application_loans`
 checks that TLS BIO scratch remains distinct and reusable while both application
 buffers are lent; the scratch keeps the socket allocator and is freed with its state.

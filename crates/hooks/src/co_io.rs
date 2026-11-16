@@ -216,36 +216,22 @@ mod native {
 
     fn recv(socket: Co, at: usize, length: usize, all: bool) -> Option<usize> {
         use crate::socket_members::Receive;
-        use swoole_rs_corebase::lent::lend_spare;
-        let (data, length) = socket.with_buffer(false, |string| {
-            (at <= string.len()).then(|| {
-                (
-                    string.as_mut_ptr().wrapping_add(at),
-                    length.min(string.size() - at),
-                )
-            })
-        })?;
-        // A PHP bailout can abandon this coroutine while recv is parked. End the
-        // metadata loan before yielding so teardown can take the socket's buffer.
-        let room = if length == 0 {
-            &mut [][..]
+        // The receive owns its allocation while parked. A PHP bailout abandons
+        // this frame without dropping it, so teardown cannot free bytes a pending
+        // io_uring request may still write. No socket metadata loan spans a yield.
+        let mut string = socket.take_buffer(false)?;
+        let result = if at <= string.len() {
+            string.truncate(at);
+            string
+                .fill_within(length, |spare| {
+                    socket.recv_spare(if all { Receive::All } else { Receive::Recv }, spare)
+                })
+                .map(|_| string.len() - at)
         } else {
-            // SAFETY: this socket's one reader owns these allocation slots until recv
-            // returns; TLS uses separate BIO scratch, and no String borrow spans recv.
-            unsafe {
-                std::slice::from_raw_parts_mut(data.cast::<core::mem::MaybeUninit<u8>>(), length)
-            }
+            None
         };
-        let (result, filled) = lend_spare(room, |spare| {
-            socket.recv_spare(if all { Receive::All } else { Receive::Recv }, spare)
-        });
-        socket.with_buffer(false, |string| {
-            let length = string.len().max(at + filled);
-            // SAFETY: at was in the initialized prefix, and Spare verified exactly
-            // filled newly initialized bytes in this still-live allocation.
-            unsafe { string.set_len(length) };
-        });
-        result.map(|_| filled)
+        socket.put_read_buffer(string);
+        result
     }
 
     fn package_length(socket: Co, size: u32, header: &mut u32) -> crate::packet::Length {
