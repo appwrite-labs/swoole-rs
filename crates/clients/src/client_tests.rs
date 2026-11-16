@@ -101,7 +101,7 @@ fn sock() -> &'static mut SocketFields {
 }
 
 /// `f` over `sw_tg_buffer()`: a 64-byte String per test thread.
-pub(super) fn with_thread_buffer<R>(f: impl FnOnce(&mut CppString) -> R) -> R {
+pub(super) fn with_thread_buffer(f: &mut dyn FnMut(&mut CppString)) {
     thread_local! {
         static SHARED: std::cell::RefCell<CppString> = {
             let mut buffer = CppString::EMPTY;
@@ -109,7 +109,7 @@ pub(super) fn with_thread_buffer<R>(f: impl FnOnce(&mut CppString) -> R) -> R {
             std::cell::RefCell::new(buffer)
         };
     }
-    SHARED.with_borrow_mut(f)
+    SHARED.with_borrow_mut(f);
 }
 
 // crates/tls's socket operations.
@@ -293,6 +293,7 @@ fn set_proxy(client: *mut Client, http: bool) {
 
 fn new_client(kind: c_int, is_async: bool) -> *mut Client {
     const OPS: SocketOps = SocketOps {
+        with_buffer: with_thread_buffer,
         make_socket: ops::make_socket,
         kernel_timeout: ops::kernel_timeout,
         assign: ops::assign,

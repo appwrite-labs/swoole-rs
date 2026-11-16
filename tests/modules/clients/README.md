@@ -28,6 +28,11 @@ construction and retain their original inputs and expected traces. The socket
 record and safe TLS operations compile in both builds; the remaining I/O, TLS
 close/free, timer and host stand-ins are tracked by #4093.
 
+Proxy handshakes receive the scratch-buffer loan through the same table. The
+native entry uses the real thread buffer; recording tests keep their 64-byte
+fixture and original traces. The synchronous receive loops stay inside the loan,
+and async HTTP requests are still copied before a send can invoke callbacks.
+
 ## network/client.cpp in Rust
 
 `core-tests/src/network/client.cpp` no longer builds. `client.rs` holds its 43
