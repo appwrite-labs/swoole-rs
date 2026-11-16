@@ -769,10 +769,13 @@ mod anonymous {
     }
 }
 
-/// `open(2)` of `path`; `mode` applies when `flags` has `O_CREAT`.
-pub fn open(path: &CStr, flags: c_int, mode: libc::mode_t) -> c_int {
+/// `open(2)` of `path`: the new descriptor. `mode` applies when `flags` has `O_CREAT`.
+///
+/// # Errors
+/// The syscall's errno.
+pub fn open(path: &CStr, flags: c_int, mode: libc::mode_t) -> std::io::Result<c_int> {
     // SAFETY: `path` is NUL-terminated; the mode is promoted as C does.
-    unsafe { libc::open(path.as_ptr(), flags, libc::c_uint::from(mode)) }
+    nonnegative_result(unsafe { libc::open(path.as_ptr(), flags, libc::c_uint::from(mode)) })
 }
 
 /// `execv(3)`: runs `path` in place of this process, with `argv` as its arguments,
@@ -803,18 +806,21 @@ pub fn print(bytes: &[u8]) {
     }
 }
 
-/// One change to the kqueue `kq`, no events out: `kevent(2)`'s result.
+/// One change to the kqueue `kq`, no events out.
+///
+/// # Errors
+/// `kevent(2)`'s errno.
 #[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
-#[must_use]
-pub fn kevent_change(kq: c_int, change: &libc::kevent) -> c_int {
-    kevent::kevent(
+pub fn kevent_change(kq: c_int, change: &libc::kevent) -> std::io::Result<()> {
+    nonnegative_result(kevent::kevent(
         kq,
         change,
         kevent::Count::One,
         None,
         kevent::Count::Zero,
         None,
-    )
+    ))
+    .map(drop)
 }
 
 /// `kevent(2)` declared for one change and no events out.
@@ -871,8 +877,15 @@ pub enum InterfaceRequest {
     Name,
 }
 
-/// `ioctl(fd, request, value)`: -1 with errno set on failure.
-pub fn interface_ioctl(fd: c_int, request: InterfaceRequest, value: &mut libc::ifreq) -> c_int {
+/// `ioctl(fd, request, value)`.
+///
+/// # Errors
+/// The syscall's errno.
+pub fn interface_ioctl(
+    fd: c_int,
+    request: InterfaceRequest,
+    value: &mut libc::ifreq,
+) -> std::io::Result<()> {
     // The request numbers as `ioctl` takes them (an int on musl).
     #[cfg(target_os = "linux")]
     let request: libc::Ioctl = match request {
@@ -886,7 +899,7 @@ pub fn interface_ioctl(fd: c_int, request: InterfaceRequest, value: &mut libc::i
         InterfaceRequest::Address => libc::SIOCGIFADDR,
     };
     // SAFETY: each request reads and writes only the one live ifreq.
-    unsafe { libc::ioctl(fd, request, std::ptr::from_mut(value)) }
+    nonnegative_result(unsafe { libc::ioctl(fd, request, std::ptr::from_mut(value)) }).map(drop)
 }
 
 /// The head of a list `getifaddrs` stored, not yet freed. Only `getifaddrs` makes one

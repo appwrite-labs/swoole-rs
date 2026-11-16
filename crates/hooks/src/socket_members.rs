@@ -144,9 +144,7 @@ struct OpenFile(c_int);
 
 impl Drop for OpenFile {
     fn drop(&mut self) {
-        if self.0 != -1 {
-            _ = sys::close(self.0);
-        }
+        _ = sys::close(self.0);
     }
 }
 
@@ -510,13 +508,13 @@ impl Co {
         if !available(self, Events::WRITE) {
             return false;
         }
-        let file = OpenFile(sys::open(filename, libc::O_RDONLY, 0));
         let name = filename.to_string_lossy();
-        if file.0 == -1 {
+        let Ok(fd) = sys::open(filename, libc::O_RDONLY, 0) else {
             let error = errno();
             self.set_err_text(error, &format!("open({name}) failed, {}", strerror(error)));
             return false;
-        }
+        };
+        let file = OpenFile(fd);
         let end = if length == 0 {
             let Some(stat) = sys::fstat(file.0) else {
                 let error = errno();

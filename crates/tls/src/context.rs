@@ -461,15 +461,16 @@ impl Method<'_> {
         ssl_error(self.config, self.function, message);
     }
 
-    /// `SSL_CTX_load_verify_locations`, an empty file or path given as null.
-    fn load_verify_locations(&self, file: TlsStr<'_>, path: TlsStr<'_>) -> c_int {
-        SSL_CTX_load_verify_locations(self.ctx, file.path(), path.path())
+    /// `SSL_CTX_load_verify_locations`, an empty file or path given as null: whether
+    /// it loaded them.
+    fn load_verify_locations(&self, file: TlsStr<'_>, path: TlsStr<'_>) -> bool {
+        SSL_CTX_load_verify_locations(self.ctx, file.path(), path.path()) != 0
     }
 
     fn set_capath(&self) -> bool {
         let config = self.config;
         if !config.cafile.is_empty() || !config.capath.is_empty() {
-            if self.load_verify_locations(config.cafile, config.capath) == 0 {
+            if !self.load_verify_locations(config.cafile, config.capath) {
                 return false;
             }
         } else if SSL_CTX_set_default_verify_paths(self.ctx) == 0 {
@@ -512,7 +513,7 @@ impl Method<'_> {
         SSL_CTX_set_verify(self.ctx, SSL_VERIFY_PEER, Some(verify_callback));
         SSL_CTX_set_verify_depth(self.ctx, c_int::from(self.config.verify_depth));
         // `configure` calls this for a file that is set, and with no directory.
-        if self.load_verify_locations(file, TlsStr::NONE) == 0 {
+        if !self.load_verify_locations(file, TlsStr::NONE) {
             self.ssl_error(&quoted(
                 b"SSL_CTX_load_verify_locations(\"",
                 file,
@@ -831,8 +832,8 @@ fn field<const N: usize>(bytes: &[u8], at: usize) -> [u8; N] {
 }
 
 /// DTLS cookie: HMAC-SHA1 of the peer's port and address, keyed by the SSL's address,
-/// into `cookie` with its length in `cookie_length`.
-fn cookie_of(ssl: Ssl<'_>, cookie: &mut [u8; 255], cookie_length: &mut c_uint) -> c_int {
+/// into `cookie` with its length in `cookie_length`: whether there is one.
+fn cookie_of(ssl: Ssl<'_>, cookie: &mut [u8; 255], cookie_length: &mut c_uint) -> bool {
     let mut secret = [0; 32];
     let address_bytes = (ssl.as_ptr() as c_long).to_ne_bytes();
     for chunk in secret.as_chunks_mut::<{ size_of::<c_long>() }>().0 {
@@ -865,7 +866,7 @@ fn cookie_of(ssl: Ssl<'_>, cookie: &mut [u8; 255], cookie_length: &mut c_uint) -
         *slot = byte;
     }
     let Some(sha1) = EVP_sha1() else {
-        return 0;
+        return false;
     };
     let digest = HMAC(
         sha1,
@@ -876,7 +877,7 @@ fn cookie_of(ssl: Ssl<'_>, cookie: &mut [u8; 255], cookie_length: &mut c_uint) -
         cookie,
         cookie_length,
     );
-    c_int::from(!digest.is_null())
+    !digest.is_null()
 }
 
 /// OpenSSL's cookie generator: [`cookie_of`] into the buffer it lends, the length
@@ -889,14 +890,14 @@ extern "C" fn generate_cookie(
     let mut made_cookie = [0; 255];
     let mut length = 0;
     let made = cookie_of(ssl, &mut made_cookie, &mut length);
-    if made != 0 {
+    if made {
         let digest = made_cookie.get(..length as usize).unwrap_or_default();
         for (slot, &byte) in cookie.iter_mut().zip(digest) {
             slot.write(byte);
         }
         cookie_length.write(length);
     }
-    made
+    c_int::from(made)
 }
 
 /// # Safety

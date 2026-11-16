@@ -139,8 +139,7 @@ mod kqueue {
         event.flags = flags;
         event.fflags = fflags;
         event.udata = socket.cast();
-        let result = swoole_rs_corebase::sys::kevent_change(kq, &event);
-        result >= 0
+        swoole_rs_corebase::sys::kevent_change(kq, &event).is_ok()
     }
 
     type Filter = fn(c_int, c_int, u16, *mut c_void) -> bool;
