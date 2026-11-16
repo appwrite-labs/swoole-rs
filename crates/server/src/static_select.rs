@@ -524,9 +524,7 @@ mod tests {
         }
     }
 
-    fn errno() -> i32 {
-        std::io::Error::last_os_error().raw_os_error().unwrap()
-    }
+    use swoole_rs_corebase::sys::errno;
 
     fn set_errno(value: i32) {
         #[cfg(target_os = "linux")]

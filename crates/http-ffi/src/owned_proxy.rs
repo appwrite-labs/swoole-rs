@@ -98,9 +98,7 @@ mod tests {
     use super::*;
     use swoole_rs_oracle::http_proxy as oracle;
 
-    fn errno() -> i32 {
-        std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-    }
+    use swoole_rs_corebase::sys::errno;
 
     /// An `HttpProxy`: its Rust owner.
     struct Proxy(Box<ProxyState>);

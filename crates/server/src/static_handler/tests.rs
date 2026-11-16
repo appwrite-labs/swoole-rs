@@ -116,9 +116,7 @@ fn c_text(text: &[u8]) -> &[u8] {
     text.split(|&byte| byte == 0).next().unwrap_or_default()
 }
 
-fn os_errno() -> i32 {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+use swoole_rs_corebase::sys::errno as os_errno;
 
 /// The candidate's effects: the script, traced as the oracle traces its own.
 struct Scripted;

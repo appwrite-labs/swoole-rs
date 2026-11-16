@@ -406,6 +406,4 @@ fn send_stream(socket: Socket<'_>, data: &[u8]) -> Option<usize> {
     }
 }
 
-fn errno() -> c_int {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+use swoole_rs_corebase::sys::errno;

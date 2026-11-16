@@ -105,9 +105,7 @@ pub struct Uring {
     ready: Cell<Vec<(*mut Event, isize)>>,
 }
 
-fn errno() -> c_int {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+use swoole_rs_corebase::sys::errno;
 
 /// Upstream's `DOUBLE_TO_TIMESPEC`.
 fn timespec(seconds: f64) -> libc::timespec {
