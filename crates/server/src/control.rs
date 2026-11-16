@@ -404,7 +404,7 @@ mod tests {
     const NO_PROCESS: libc::pid_t = libc::pid_t::MAX;
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn shutdown_by_mode() {
         let live = LiveServer::new();
         let serv = live.server();
@@ -479,7 +479,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn signal_shutdown_by_mode() {
         let live = LiveServer::new();
         let serv = live.server();
@@ -512,7 +512,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn stop_master_thread_by_mode() {
         let live = LiveServer::new();
         let serv = live.server();
@@ -543,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn master_timer_warns_once_per_second_and_stops() {
         let live = LiveServer::new();
         let serv = live.server();
@@ -571,7 +571,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn signals_dispatch() {
         let live = LiveServer::new();
         let serv = live.server();
@@ -596,7 +596,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn signals_need_a_running_server() {
         let live = LiveServer::new();
         // The thread's event pool outlives a test: clear what one before it left.
@@ -606,7 +606,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn signal_set() {
         use crate::hybrid::Step::{Handle, Ignore};
         let live = LiveServer::new();
