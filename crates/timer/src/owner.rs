@@ -11,6 +11,7 @@ use crate::{
 use std::cell::Cell;
 use std::ffi::{CStr, c_int, c_long, c_void};
 use std::marker::PhantomData;
+use std::rc::Rc;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{log, swr_v1_core_set_signal_alarm, thread_reactor};
 use swoole_rs_reactor::{
@@ -84,6 +85,10 @@ pub struct TimerNode {
     plain_drop: Option<Plain>,
     /// A [`TimerNode::closure`] node's callback.
     closure: Option<Closure>,
+    /// A [`TimerNode::owning`] node's callback, dropped with the node. An `Rc`, not a
+    /// `Box`: `apply` writes the node while the callback runs, and that must not
+    /// reborrow what the callback is borrowed from.
+    owned: Option<Rc<dyn Fn()>>,
 }
 const _: () = assert!(
     std::mem::offset_of!(TimerNode, exec_msec) == 16
@@ -173,6 +178,7 @@ impl TimerNode {
             plain: None,
             plain_drop: None,
             closure: None,
+            owned: None,
         }
     }
 
@@ -180,6 +186,14 @@ impl TimerNode {
     pub(crate) fn closure(f: Closure) -> Self {
         let mut node = Self::new(None, std::ptr::null_mut());
         node.closure = Some(f);
+        node
+    }
+
+    /// A node whose callback is `f`, which it owns: what `f` captured is dropped with
+    /// the node, once it fires for the last time, is deleted, or its timer is freed.
+    pub(crate) fn owning(f: Rc<dyn Fn()>) -> Self {
+        let mut node = Self::new(None, std::ptr::null_mut());
+        node.owned = Some(f);
         node
     }
 
@@ -587,6 +601,11 @@ impl Owner {
                 } else if let Some((callback, node)) = calls.callback.zip(Lent::of(node)) {
                     // The selected node, which the queue holds until `complete`.
                     callback(self, node);
+                } else if let Some(owned) = self.get(view.id).and_then(|node| node.owned.as_deref())
+                {
+                    // Last, so the other kinds don't look the node up. The queue holds
+                    // it, with its callback, until `complete`.
+                    owned();
                 }
             }
             self.complete(view.id);
@@ -1080,6 +1099,49 @@ mod tests {
         assert!(intact.get(), "parent_intact");
         assert!(drained, "parent_drained");
         assert_eq!(p.destructors(), 2, "parent_destructors");
+    }
+
+    #[test]
+    fn an_owning_node_drops_its_capture_with_the_node() {
+        let p = Probe::new();
+        let timer = p.timer();
+        let capture = Rc::new(Cell::new(0));
+        let ids = Rc::new(Cell::new(0));
+        // A tick that removes itself when it fires, so `apply` writes its node while
+        // the callback borrowed from it runs.
+        let add = |persistent, remove: bool| {
+            let (seen, me) = (Rc::clone(&capture), Rc::clone(&ids));
+            let f = Rc::new(move || {
+                seen.set(seen.get() + 1);
+                if remove {
+                    assert!(timer.remove(me.get()));
+                }
+            });
+            let (_, id) = timer
+                .add(1000, persistent, TimerNode::owning(f))
+                .expect("add failed");
+            timer.update(id, 0);
+            id
+        };
+        let (_once, deleted, _tick) = (add(false, false), add(false, false), add(true, false));
+        ids.set(add(true, true));
+        assert_eq!(Rc::strong_count(&capture), 5, "held by each node");
+        assert!(timer.remove(deleted));
+        assert_eq!(Rc::strong_count(&capture), 4, "dropped on delete");
+        timer.select();
+        timer.select();
+        assert_eq!(capture.get(), 3, "the one-shot and both ticks ran");
+        assert_eq!(
+            Rc::strong_count(&capture),
+            2,
+            "dropped once the one-shot fired and the tick removed itself"
+        );
+        p.free();
+        assert_eq!(
+            Rc::strong_count(&capture),
+            1,
+            "dropped when the timer is freed"
+        );
     }
 
     #[test]
