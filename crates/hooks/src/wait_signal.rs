@@ -17,8 +17,8 @@ const WRONG_OPERATION: i32 = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATIO
 /// A coroutine waiting for a signal (upstream's `SignalListener`).
 struct Listener {
     co: *mut c_void,
-    /// How the signal handler resumes `co`: the wait's [`SignalOps::resume`].
-    resume: unsafe extern "C-unwind" fn(*mut c_void),
+    /// The wait's operations, whose `resume` the signal handler calls.
+    ops: &'static SignalOps,
     signo: Cell<Option<i32>>,
 }
 
@@ -29,6 +29,7 @@ static LISTENERS: [AtomicPtr<Listener>; SIGNO_MAX as usize] =
 
 /// The signal table, reactor and coroutine operations a signal wait needs. The wait
 /// passes each only its own coroutine and records.
+#[derive(Clone, Copy)]
 struct SignalOps {
     /// `Coroutine::get_current_safe()`.
     current: extern "C" fn() -> *mut c_void,
@@ -136,7 +137,7 @@ pub extern "C" fn swr_v1_hook_signal_wake(signo: i32) {
     waiting.signo.set(Some(signo));
     // SAFETY: the listener's coroutine, parked in `wait_signal`, which unpublishes
     // every slot before it returns.
-    unsafe { (waiting.resume)(waiting.co) };
+    unsafe { (waiting.ops.resume)(waiting.co) };
 }
 
 /// `signo` as upstream's `std::vector<int>` holds it.
@@ -165,11 +166,15 @@ pub fn system_wait_signal(signals: &[c_long], timeout: f64) -> Result<i32, Signa
 }
 
 /// Waits for any of `signals` for up to `timeout` seconds.
-fn wait_signal(signals: &[c_long], timeout: f64, ops: &SignalOps) -> Result<i32, SignalWaitError> {
+fn wait_signal(
+    signals: &[c_long],
+    timeout: f64,
+    ops: &'static SignalOps,
+) -> Result<i32, SignalWaitError> {
     let co = (ops.current)();
     let waiting = Rc::new(Listener {
         co,
-        resume: ops.resume,
+        ops,
         signo: Cell::new(None),
     });
     if (ops.busy)() {
@@ -415,7 +420,7 @@ mod tests {
     fn wait(signals: &[i32], ops: &SignalOps) -> (Signalled, Vec<String>) {
         LOG.with_borrow_mut(Vec::clear);
         let signals: Vec<c_long> = signals.iter().map(|&signo| signo.into()).collect();
-        let result = match wait_signal(&signals, 1.0, ops) {
+        let result = match wait_signal(&signals, 1.0, Box::leak(Box::new(*ops))) {
             Ok(signo) => Signalled {
                 signo,
                 last_error: 0,
