@@ -449,19 +449,21 @@ pub mod pool {
         POOL.memory_size()
     }
 
-    /// An atomic that is valid zeroed and needs no more than the pool's alignment:
-    /// a process-shared mutex's storage is such words, zeroed until `init`.
+    /// A type that is valid zeroed: an atomic (a process-shared mutex's storage is
+    /// such words, zeroed until `init`), or room for a value not yet written.
     pub trait Word: sealed::Sealed {}
     impl Word for AtomicU32 {}
     impl Word for AtomicI64 {}
     impl Word for AtomicU64 {}
     impl Word for swoole_rs_locks::SharedMutex {}
+    impl<T> Word for MaybeUninit<T> {}
     mod sealed {
         pub trait Sealed {}
         impl Sealed for std::sync::atomic::AtomicU32 {}
         impl Sealed for std::sync::atomic::AtomicI64 {}
         impl Sealed for std::sync::atomic::AtomicU64 {}
         impl Sealed for swoole_rs_locks::SharedMutex {}
+        impl<T> Sealed for std::mem::MaybeUninit<T> {}
     }
 
     /// A block of `size` bytes from [`alloc`], for the process's life, or null. The pool
@@ -476,25 +478,20 @@ pub mod pool {
     }
 
     /// `count` zero words from [`alloc`], for the process's life: `Swoole\Atomic`'s
-    /// and `Swoole\Lock`'s.
+    /// and `Swoole\Lock`'s, or a shared table's header, which forked workers reach at
+    /// the same address.
     #[must_use]
     pub fn words<W: Word>(count: usize) -> Option<&'static mut [W]> {
+        const { assert!(align_of::<W>() <= 8, "the pool's blocks are 8-aligned") };
         let size = u32::try_from(count.checked_mul(size_of::<W>())?).ok()?;
         let block = pinned(size).cast::<W>();
         if block.is_null() {
             return None;
         }
-        // SAFETY: `count` zeroed (so valid) words, 8-aligned (enough for each
-        // `Word`), which the pool gives no one else and keeps for the process's life.
+        // SAFETY: `count` zeroed (so valid) words, 8-aligned (enough for each `Word`,
+        // asserted above), which the pool gives no one else and keeps for the process's
+        // life.
         Some(unsafe { slice::from_raw_parts_mut(block, count) })
-    }
-
-    /// Room for one `T` from [`alloc`], for the process's life, or null: a shared
-    /// table's header, which forked workers reach at the same address. The block is
-    /// 8-aligned, `size_of::<T>()` writable bytes the pool gives no one else.
-    pub(crate) fn header<T>() -> *mut MaybeUninit<T> {
-        const { assert!(align_of::<T>() <= 8, "the pool's blocks are 8-aligned") };
-        u32::try_from(size_of::<T>()).map_or(std::ptr::null_mut(), |size| pinned(size).cast())
     }
 }
 
@@ -551,9 +548,9 @@ impl SharedTable {
     /// so forked workers share it.
     #[must_use]
     pub fn make(rows: u32, conflict: f32, hash: crate::table::Hash) -> Option<Self> {
-        // SAFETY: null, or a fresh block for one `Table` nothing else references, kept
-        // for the process's life; any bytes are a `MaybeUninit`.
-        let slot = unsafe { pool::header::<Table>().as_mut() }?;
+        let [slot] = pool::words::<std::mem::MaybeUninit<Table>>(1)? else {
+            return None;
+        };
         let table = Table::init(slot, rows, conflict, php_hash, table_warning, table_error)?;
         table.set_hash(hash);
         Some(Self {
