@@ -587,7 +587,7 @@ impl<'a> Worker<'a> {
 
     field!(
         /// `worker->coroutine_num`.
-        coroutine_num, write_coroutine_num, coroutine_num: usize
+        coroutine_num, pub write_coroutine_num, coroutine_num: usize
     );
 
     /// `worker->concurrency`, now.
