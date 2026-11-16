@@ -53,18 +53,23 @@ fn offload<R>(fallback: R, call: impl FnMut() -> R) -> R {
 /// What a wrapper returns when the pool could not run the call.
 const NOT_RUN: ISC_STATUS = -1;
 
-/// Each `swoole_<call>` runs `<call>` through [`offload`].
+/// Each `swoole_<call>` runs `<call>` through [`offload`], returning `NOT_RUN` (or
+/// the fallback given) when the pool did not run it.
 macro_rules! offloaded {
-    ($($name:ident => $call:ident($($arg:ident: $ty:ty),*);)*) => {$(
+    ($($name:ident => $call:ident($($arg:ident: $ty:ty),*) $(-> $ret:ty = $fallback:expr)?;)*) => {$(
         #[doc = concat!("`", stringify!($name), "`: `", stringify!($call), "` off the coroutine.")]
         /// # Safety
         /// As the Firebird call.
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $name($($arg: $ty),*) -> ISC_STATUS {
+        pub unsafe extern "C" fn $name($($arg: $ty),*) -> offloaded!(@ret $($ret)?) {
             // SAFETY: per the caller.
-            offload(NOT_RUN, || unsafe { $call($($arg),*) })
+            offload(offloaded!(@fallback $($fallback)?), || unsafe { $call($($arg),*) })
         }
     )*};
+    (@ret) => { ISC_STATUS };
+    (@ret $ret:ty) => { $ret };
+    (@fallback) => { NOT_RUN };
+    (@fallback $fallback:expr) => { $fallback };
 }
 
 offloaded! {
@@ -111,38 +116,12 @@ offloaded! {
     swoole_isc_dsql_set_cursor_name => isc_dsql_set_cursor_name(
         status: *mut ISC_STATUS, stmt: *mut isc_stmt_handle, name: *const ISC_SCHAR, kind: c_ushort);
     swoole_fb_ping => fb_ping(status: *mut ISC_STATUS, db: *mut isc_db_handle);
-}
-
-/// `swoole_isc_start_transaction`: one database's transaction, its TPB passed
-/// on through the variadic `isc_start_transaction`.
-/// # Safety
-/// As `isc_start_transaction` with one database.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_isc_start_transaction(
-    status: *mut ISC_STATUS,
-    tr: *mut isc_tr_handle,
-    count: c_short,
-    db: *mut isc_db_handle,
-    tpb_length: usize,
-    tpb: *mut c_char,
-) -> ISC_STATUS {
-    // SAFETY: per the caller.
-    offload(NOT_RUN, || unsafe {
-        isc_start_transaction(status, tr, count, db, tpb_length, tpb)
-    })
-}
-
-/// `swoole_isc_version`.
-/// # Safety
-/// As `isc_version`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_isc_version(
-    db: *mut isc_db_handle,
-    callback: ISC_VERSION_CALLBACK,
-    arg: *mut c_void,
-) -> c_int {
-    // SAFETY: per the caller.
-    offload(-1, || unsafe { isc_version(db, callback, arg) })
+    // One database's transaction, its TPB passed on through the variadic call.
+    swoole_isc_start_transaction => isc_start_transaction(
+        status: *mut ISC_STATUS, tr: *mut isc_tr_handle, count: c_short, db: *mut isc_db_handle,
+        tpb_length: usize, tpb: *mut c_char);
+    swoole_isc_version => isc_version(
+        db: *mut isc_db_handle, callback: ISC_VERSION_CALLBACK, arg: *mut c_void) -> c_int = -1;
 }
 
 #[cfg(test)]

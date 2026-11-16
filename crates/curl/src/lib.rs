@@ -250,19 +250,22 @@ impl Multi {
             active: Cell::default(),
         });
         let data = Rc::as_ptr(&multi).cast_mut().cast::<c_void>();
-        for option in [CURLMOPT_SOCKETDATA, CURLMOPT_TIMERDATA] {
+        let (on_socket, on_timer): (OnSocket, OnTimer) = (handle_socket, handle_timeout);
+        // Each callback as the pointer it is passed as: POSIX gives function and data
+        // pointers one representation, and curl reads each option's argument as one.
+        for (option, argument) in [
+            (CURLMOPT_SOCKETDATA, data),
+            (CURLMOPT_TIMERDATA, data),
+            (CURLMOPT_SOCKETFUNCTION, on_socket as *mut c_void),
+            (CURLMOPT_TIMERFUNCTION, on_timer as *mut c_void),
+        ] {
             // SAFETY: the handle just made (curl refuses a null one), and the multi,
             // which outlives it: only `Multi::close` cleans the handle up, before the
-            // last reference to the multi goes.
-            unsafe { curl_multi_setopt(handle, option, data) };
+            // last reference to the multi goes. Curl calls each callback with its own
+            // arguments and the data set here, the live multi, which is what `OnSocket`
+            // and `OnTimer` take.
+            unsafe { curl_multi_setopt(handle, option, argument) };
         }
-        let on_socket: OnSocket = handle_socket;
-        let on_timer: OnTimer = handle_timeout;
-        // SAFETY: as above. Curl calls the callback with its own arguments and the
-        // socket data set above, the live multi, which is what `OnSocket` takes.
-        unsafe { curl_multi_setopt(handle, CURLMOPT_SOCKETFUNCTION, on_socket) };
-        // SAFETY: as above, with the timer data, for `OnTimer`.
-        unsafe { curl_multi_setopt(handle, CURLMOPT_TIMERFUNCTION, on_timer) };
         multi
     }
 
@@ -523,8 +526,7 @@ impl Multi {
     }
 
     fn socket_action(&self, sockfd: curl_socket_t, bitmask: c_int) -> CURLMcode {
-        // SAFETY: this multi's handle; curl writes the running count.
-        unsafe { curl_multi_socket_action(self.raw(), sockfd, bitmask, self.running.as_ptr()) }
+        curl_multi_socket_action(self.live(), sockfd, bitmask, &self.running)
     }
 
     /// `Multi::selector_finish`: report the timeout and the sockets' events.
