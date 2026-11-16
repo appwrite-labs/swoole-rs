@@ -530,7 +530,7 @@ pub extern "C" fn swoole_system_random(min: c_int, max: c_int) -> c_int {
     assert!(max > min, "swoole_system_random: max > min");
     let mut fd = DEV_RANDOM.load(Ordering::Relaxed);
     if fd == -1 {
-        fd = crate::sys::open(c"/dev/urandom", libc::O_RDONLY, 0);
+        fd = crate::sys::open(c"/dev/urandom", libc::O_RDONLY, 0).unwrap_or(-1);
         DEV_RANDOM.store(fd, Ordering::Relaxed);
         if fd < 0 {
             return swoole_rand(min, max);
@@ -584,8 +584,8 @@ pub extern "C" fn swoole_redirect_stdout(new_fd: c_int) {
 
 /// `void swoole_redirect_stdout(const char *file)`: append to `file`, created 0644.
 pub fn swoole_redirect_stdout_file(file: &CStr) {
-    let fd = crate::sys::open(file, libc::O_WRONLY | libc::O_APPEND | libc::O_CREAT, 0o644);
-    if fd >= 0 {
+    let opened = crate::sys::open(file, libc::O_WRONLY | libc::O_APPEND | libc::O_CREAT, 0o644);
+    if let Ok(fd) = opened {
         swoole_redirect_stdout(fd);
         _ = close(fd);
     } else {

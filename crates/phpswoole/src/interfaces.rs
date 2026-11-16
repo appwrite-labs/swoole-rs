@@ -113,7 +113,7 @@ fn local_mac(call: &Call) {
         for (slot, &byte) in name.take(libc::IFNAMSIZ - 1) {
             *slot = libc::c_char::from_ne_bytes([byte]);
         }
-        if interface_ioctl(sock, InterfaceRequest::HardwareAddress, &mut request) == 0 {
+        if interface_ioctl(sock, InterfaceRequest::HardwareAddress, &mut request).is_ok() {
             // SAFETY: SIOCGIFHWADDR filled the hardware address.
             let data = unsafe { request.ifr_ifru.ifru_hwaddr.sa_data };
             let bytes = data.map(|byte| byte.to_ne_bytes()[0]);

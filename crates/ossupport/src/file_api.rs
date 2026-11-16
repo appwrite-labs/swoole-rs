@@ -71,12 +71,11 @@ pub fn create_tmpfile(template: &mut [u8]) -> Option<OwnedFd> {
 /// `file_get_contents`: true with the file's bytes, NUL-terminated, in `content`
 /// (a default-constructed String); false after upstream's log.
 pub fn file_get_contents(path: &CStr, content: &mut CppString) -> bool {
-    let fd = sys::open(path, libc::O_RDONLY, 0);
     let name = path.to_string_lossy();
-    if fd < 0 {
+    let Ok(fd) = sys::open(path, libc::O_RDONLY, 0) else {
         log::sys_warning(c"file_get_contents", format_args!("open('{name}') failed"));
         return false;
-    }
+    };
     let record = FileRecord::adopt(fd, libc::O_RDONLY);
     let size = size_of_fd(fd);
     if size < 0 {

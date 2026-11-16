@@ -53,7 +53,7 @@ pub fn file_open(fd: c_int, path: &CStr, flags: c_int, mode: c_int) -> c_int {
     } else {
         0o644
     };
-    sys::open(path, flags, libc::mode_t::try_from(mode).unwrap_or(0o644))
+    sys::open(path, flags, libc::mode_t::try_from(mode).unwrap_or(0o644)).unwrap_or(-1)
 }
 
 /// `File::close`: false for an already-closed descriptor.

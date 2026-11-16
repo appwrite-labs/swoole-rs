@@ -63,11 +63,10 @@ fn daemon_detach(nochdir: bool, noclose: bool) -> bool {
     if noclose {
         return true;
     }
-    let fd = sys::open(c"/dev/null", libc::O_RDWR, 0);
-    if fd < 0 {
+    let Ok(fd) = sys::open(c"/dev/null", libc::O_RDWR, 0) else {
         log::sys_warning(c"swoole_daemon", format_args!("open() failed"));
         return false;
-    }
+    };
     // dup2 onto the standard descriptors, as upstream.
     let redirected = (0..3).all(|target| sys::dup2(fd, target).is_ok());
     if !redirected {

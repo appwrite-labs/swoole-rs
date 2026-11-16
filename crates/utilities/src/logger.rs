@@ -143,19 +143,15 @@ impl State {
             real_file(self.rotation, &file)
         };
         self.file = file;
-        let fd = sys::open(
-            &self.real_file,
-            libc::O_APPEND | libc::O_RDWR | libc::O_CREAT,
-            0o666,
-        );
-        if fd < 0 {
+        let flags = libc::O_APPEND | libc::O_RDWR | libc::O_CREAT;
+        let Ok(fd) = sys::open(&self.real_file, flags, 0o666) else {
             effects.push(Effect::OpenFailed(
                 errno(),
                 std::mem::take(&mut self.real_file),
             ));
             self.file = CString::default();
             return false;
-        }
+        };
         self.file_fd = Some(fd);
         true
     }
