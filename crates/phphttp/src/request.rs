@@ -134,10 +134,7 @@ fn create_request(call: &Call) {
     let held = ctx;
     let state = ctx.state();
     let slot = &mut state.request.zobject;
-    let _made = context::new_object(slot, context::Kind::Request, held);
-    // SAFETY: the object just made. The return slot takes the reference; the
-    // context borrows it, as upstream's does.
-    unsafe { call.set_value(slot.copy_value()) };
+    context::lend_object(call, slot, context::Kind::Request, held);
     state.parse_cookie = true;
     state.parse_body = true;
     state.parse_files = true;

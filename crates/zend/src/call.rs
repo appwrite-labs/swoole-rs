@@ -552,16 +552,6 @@ impl Call {
         ReturnSlot(self.ret())
     }
 
-    /// `RETVAL_ZVAL(value, 0, 0)`: the return slot takes over `value`.
-    /// # Safety
-    /// `value` is a valid zval carrying the reference the slot takes, as
-    /// [`crate::Owned::into_zval`] gives one up.
-    #[inline]
-    pub unsafe fn set_value(&self, value: zval) {
-        // SAFETY: the return slot is live for the handler; `value` per the caller.
-        unsafe { *self.value = value };
-    }
-
     /// `RETVAL_ZVAL(value, 0, 0)` of a value this owns.
     #[inline]
     pub fn set_owned(&self, value: crate::Owned) {

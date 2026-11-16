@@ -728,10 +728,7 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
     let state = ctx.state();
     state.fd = fd;
     let slot = &mut state.response.zobject;
-    let _made = context::new_object(slot, context::Kind::Response, held);
-    // SAFETY: the object just made. The return slot takes the reference; the
-    // context borrows it.
-    unsafe { call.set_value(slot.copy_value()) };
+    context::lend_object(call, slot, context::Kind::Response, held);
     let Some(props) = slot.get().and_then(|value| value.props(Some(&RESPONSE))) else {
         return;
     };
