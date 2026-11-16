@@ -6,6 +6,7 @@ use crate::{CONTINUE, DISPATCH, Frame, Op};
 use std::{
     cell::Cell,
     ffi::{CStr, CString, c_int},
+    io::IoSlice,
     marker::PhantomData,
     mem::{MaybeUninit, offset_of},
     ptr, slice,
@@ -155,11 +156,21 @@ impl<'a> Typed<'a> {
         self.header().this
     }
 
+    /// The definition behind the table: its header, text and NUL.
+    fn info(self) -> &'a [u8] {
+        let length = info_size(usize::from(self.header().len));
+        // SAFETY: a parsed definition, `info_size` of its text's length,
+        // follows the table, which Zend never writes.
+        unsafe { slice::from_raw_parts(info_of(self.ht).cast::<u8>(), length) }
+    }
+
     /// The definition's text.
     fn text(self) -> &'a [u8] {
-        let start = info_of(self.ht).wrapping_byte_add(offset_of!(TypeInfo, text));
-        // SAFETY: a parsed definition's `len` bytes of text follow its header.
-        unsafe { slice::from_raw_parts(start.cast::<u8>(), usize::from(self.header().len)) }
+        let start = offset_of!(TypeInfo, text);
+        let text = self
+            .info()
+            .get(start..start + usize::from(self.header().len));
+        text.unwrap_or_default()
     }
 
     /// `get_value_type_str()` with its length.
@@ -252,10 +263,11 @@ unsafe extern "C" {
     /// libc's `isspace`, as upstream's `remove_all_spaces` classifies bytes.
     safe fn isspace(c: c_int) -> c_int;
     /// `SEPARATE_ARRAY` of an array zval (anything else is left alone): a
-    /// shared table is copied for the slot, and its count only drops, so it
-    /// stays live for whoever else holds it.
-    #[link_name = "swr_zend_separate_array"]
-    safe fn separate_array(array: &Value);
+    /// shared table is copied for the slot, with the lent bytes (an `IoSlice`
+    /// is an iovec) behind the copy, and its count only drops, so it stays
+    /// live for whoever else holds it.
+    #[link_name = "swr_phpstdext_separate"]
+    safe fn separate_array(array: &Value, info: IoSlice<'_>);
 }
 
 /// `get_type`.
@@ -517,33 +529,19 @@ fn check_array(typed: Typed, element: Option<Typed>) -> bool {
 /// array.
 pub(crate) fn separate(value: &Value) -> Option<Typed<'_>> {
     let source = Typed::of(value)?;
-    let container = value.as_ptr();
-    separate_array(value);
-    // Separation leaves the container holding an array: `source`'s, or its copy.
+    separate_array(value, IoSlice::new(source.info()));
+    // Separation leaves the container holding an array: `source`'s, or its
+    // copy with the definition behind it.
     let ht = value.array_ptr()?;
     if source.ht == ht {
         return Some(source);
     }
-    // `source` remains shared or immutable; `ht` is the fresh unshared copy.
-    let source_info = info_of(source.ht);
-    let extra = info_size(usize::from(source.header().len));
-    // The real table header and trailing type metadata.
-    let copy = value::emalloc(size_of::<HashTable>() + extra).cast::<HashTable>();
-    // SAFETY: both hold a table.
-    unsafe { ptr::copy_nonoverlapping(ht, copy, 1) };
-    // SAFETY: the source holds `extra` bytes of definition; the copy has room.
-    unsafe { ptr::copy_nonoverlapping(source_info.cast::<u8>(), info_of(copy).cast(), extra) };
-    // The table just made, with the definition copied behind it, which
-    // `container` holds for `'a` in place of `ht`.
+    // The fresh unshared copy, which `value` holds for `'a`.
     let own = Typed {
-        ht: copy,
+        ht,
         live: PhantomData,
     };
     own.mark();
-    // SAFETY: an array zval, which now holds the copy.
-    unsafe { (*container).value = zend_value { arr: copy } };
-    // SAFETY: the copy separation made, which nothing references now.
-    unsafe { swr_zend_efree(ht.cast()) };
     Some(own)
 }
 

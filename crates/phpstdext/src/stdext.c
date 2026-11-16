@@ -7,6 +7,7 @@
 #include "php.h"
 #include "zend_exceptions.h"
 #include "ext/pcre/php_pcre.h"
+#include <sys/uio.h>
 #include "thirdparty/php/zend/zend_execute.c"
 
 /* Each shim below reads what it needs of the frame's current instruction, and
@@ -91,6 +92,26 @@ uint8_t swr_phpstdext_pcre_cache(zend_string *regex, void **result) {
     }
     zend_catch { bailed = 1; } zend_end_try();
     return bailed;
+}
+
+/* SEPARATE_ARRAY of an array zval (anything else is left alone); a table it
+ * copies is moved into an allocation with the lent bytes behind it, a typed
+ * array's definition, which its plain copy lacks. */
+void swr_phpstdext_separate(zval *array, struct iovec info) {
+    if (Z_TYPE_P(array) != IS_ARRAY) {
+        return;
+    }
+    HashTable *shared = Z_ARR_P(array);
+    SEPARATE_ARRAY(array);
+    HashTable *plain = Z_ARR_P(array);
+    if (plain == shared) {
+        return;
+    }
+    HashTable *copy = emalloc(sizeof(HashTable) + info.iov_len);
+    memcpy(copy, plain, sizeof(HashTable));
+    memcpy(copy + 1, info.iov_base, info.iov_len);
+    Z_ARR_P(array) = copy;
+    efree(plain);
 }
 
 void swr_phpstdext_pcre_release(void *entry) {
