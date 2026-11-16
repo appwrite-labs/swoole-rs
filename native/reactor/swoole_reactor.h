@@ -17,35 +17,16 @@ class Reactor : public swr_v1_reactor_head {
     ~Reactor() = delete;
     swr_v1_reactor_state *handle() const { return state_.owner; }
 
-    // wait and the end callbacks are Rust's (crates/reactor's callbacks.rs), keyed by
-    // upstream's PRIORITY_* values (Rust's copies) and holding plain functions.
+    // wait and the end callbacks are Rust's (crates/reactor's callbacks.rs).
     int wait();
-    void set_end_callback(int _id, void (*fn)(void)) {
-        swr_v1_reactor_set_end(handle(), _id, fn);
-    }
-    void erase_end_callback(int _id) {
-        swr_v1_reactor_set_end(handle(), _id, nullptr);
-    }
     bool isset_handler(int fd_type, int event) const;
 
     bool ready() const {
         return ready_;
     }
 
-    bool exists(const int fd) const {
-        return get_socket(fd) != nullptr;
-    }
-
     void set_timeout_msec(int mesc) {
         timeout_msec = mesc;
-    }
-
-    size_t get_event_num() const {
-        return swr_v1_reactor_registry_count(state_.registry);
-    }
-
-    network::Socket *get_socket(const int fd) const {
-        return static_cast<network::Socket *>(swr_v1_reactor_registry_get(state_.registry, fd));
     }
 };
 
