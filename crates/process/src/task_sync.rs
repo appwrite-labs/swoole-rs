@@ -410,7 +410,7 @@ impl<'a, H: TaskHost> Waiting<'a, H> {
         if !read {
             return Ok(Some(false));
         }
-        swoole_rs_corebase::sys::unlink(path);
+        _ = swoole_rs_corebase::sys::unlink(path);
         Ok(Some(true))
     }
 }

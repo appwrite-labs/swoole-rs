@@ -667,8 +667,11 @@ pub fn execv(path: &CStr, argv: &[Option<Text<'_>>]) {
 }
 
 /// `unlink(2)`.
-pub fn unlink(path: &CStr) -> c_int {
-    c::unlink(path.into())
+///
+/// # Errors
+/// The syscall's errno.
+pub fn unlink(path: &CStr) -> std::io::Result<()> {
+    status_result(c::unlink(path.into()))
 }
 
 /// `bytes` to C's `stdout`, which native code's own `printf` shares, so the two
@@ -864,21 +867,27 @@ impl<'a> Interface<'a> {
 }
 
 /// `access(2)`.
-#[must_use]
-pub fn access(path: &CStr, mode: c_int) -> c_int {
-    c::access(path.into(), mode)
+///
+/// # Errors
+/// The syscall's errno.
+pub fn access(path: &CStr, mode: c_int) -> std::io::Result<()> {
+    status_result(c::access(path.into(), mode))
 }
 
 /// `chdir(2)`.
-#[must_use]
-pub fn chdir(path: &CStr) -> c_int {
-    c::chdir(path.into())
+///
+/// # Errors
+/// The syscall's errno.
+pub fn chdir(path: &CStr) -> std::io::Result<()> {
+    status_result(c::chdir(path.into()))
 }
 
 /// `chroot(2)`.
-#[must_use]
-pub fn chroot(path: &CStr) -> c_int {
-    c::chroot(path.into())
+///
+/// # Errors
+/// The syscall's errno.
+pub fn chroot(path: &CStr) -> std::io::Result<()> {
+    status_result(c::chroot(path.into()))
 }
 
 /// The id of the group named `name` (`getgrnam_r(3)`), or none if there is no such
@@ -937,9 +946,11 @@ fn lookup_id<T>(mut lookup: impl FnMut(&mut [libc::c_char], &mut *mut T) -> c_in
 }
 
 /// `mkdir(2)`.
-#[must_use]
-pub fn mkdir(path: &CStr, mode: libc::mode_t) -> c_int {
-    c::mkdir(path.into(), mode)
+///
+/// # Errors
+/// The syscall's errno.
+pub fn mkdir(path: &CStr, mode: libc::mode_t) -> std::io::Result<()> {
+    status_result(c::mkdir(path.into(), mode))
 }
 
 /// `strndup(3)`: at most `length` bytes of `text` in a `malloc` allocation the
@@ -1198,7 +1209,7 @@ mod tests {
         assert_eq!(zeroed::<[u8; 4]>(), [0; 4]);
         assert!(stat(c"/").is_some_and(|root| root.st_mode & libc::S_IFMT == libc::S_IFDIR));
         assert!(stat(c"/no/such/path").is_none());
-        assert_eq!(access(c"/", libc::R_OK), 0);
+        assert_eq!(access(c"/", libc::R_OK).map_or(-1, |()| 0), 0);
         assert!(sysconf(libc::_SC_PAGESIZE) > 0);
         assert_eq!(kill(getpid(), 0), 0);
         assert_eq!(if_nametoindex(c"no-such-interface"), 0);

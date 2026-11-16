@@ -466,7 +466,7 @@ impl SocketFields {
             if let Ok(path) = std::ffi::CStr::from_bytes_until_nul(&path)
                 && !path.is_empty()
             {
-                sys::unlink(path);
+                _ = sys::unlink(path);
             }
         }
         self.fd == -1 || sys::close(self.fd) == 0

@@ -56,7 +56,7 @@ pub extern "C" fn swr_v1_os_is_root_user() -> bool {
 #[cfg(all(feature = "upstream-symbols", target_vendor = "apple"))]
 fn daemon_detach(nochdir: bool, noclose: bool) -> bool {
     use swoole_rs_corebase::sys;
-    if !nochdir && sys::chdir(c"/") != 0 {
+    if !nochdir && sys::chdir(c"/").is_err() {
         log::sys_warning(c"swoole_daemon", format_args!("chdir() failed"));
         return false;
     }
@@ -163,8 +163,8 @@ fn isolate(group: &CStr, user: &CStr, root: &CStr, mut warn: impl FnMut(Isolatio
         warn(IsolationStep::Setuid);
     }
     if !root.is_empty() {
-        if swoole_rs_corebase::sys::chroot(root) == 0 {
-            if swoole_rs_corebase::sys::chdir(c"/") < 0 {
+        if swoole_rs_corebase::sys::chroot(root).is_ok() {
+            if swoole_rs_corebase::sys::chdir(c"/").is_err() {
                 warn(IsolationStep::Chdir);
             }
         } else {
