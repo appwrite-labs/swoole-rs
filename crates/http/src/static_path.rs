@@ -108,6 +108,16 @@ pub(crate) fn path_step(
 ) -> Result<Action, i32> {
     match state.phase {
         StaticPhase::Root => {
+            // One allocation for a selected path, without reserving PATH_MAX
+            // for requests that stop after the location check.
+            let reserve = root
+                .len()
+                .saturating_add(url.len())
+                .saturating_add(1)
+                .min(capacity);
+            output
+                .try_reserve(reserve.saturating_sub(output.len()))
+                .map_err(|_| OVERFLOW)?;
             // Old root copy precedes location rejection. Reject only its old
             // out-of-allocation case; exact-capacity copies remain observable.
             let Some(head) = span(output, capacity, 0, root.len()) else {
@@ -229,8 +239,9 @@ pub(crate) fn path_step(
     }
 }
 
-/// `output[from..to]`, zero-filled past what was written so far; None past `capacity`.
-/// The buffer grows only as far as it is written: zeroing all `PATH_MAX` bytes up front
+/// `output[from..to]`, zero-filled past what was written so far; None past `capacity`
+/// or when allocation fails. Reserve only what is written: most requests miss the
+/// configured static locations after copying just the root. Zeroing `PATH_MAX` up front
 /// cost every request 4 KiB of memset, where upstream's `char filename[PATH_MAX]` is
 /// left uninitialised.
 pub(crate) fn span(
@@ -243,6 +254,7 @@ pub(crate) fn span(
         return None;
     }
     if output.len() < to {
+        output.try_reserve(to - output.len()).ok()?;
         output.resize(to, 0);
     }
     output.get_mut(from..to)
