@@ -12,9 +12,9 @@ use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_reactor::Events;
 use swoole_rs_reactor::Socket;
 
-/// The transfer of `length` bytes at `buffer`; sets errno when it fails. A native
-/// call must not throw.
-pub type Call<'a> = &'a mut dyn FnMut(*mut u8, usize) -> isize;
+/// The transfer of `length` bytes at `buffer`: the bytes moved, or `None` with errno
+/// set. A native call must not throw.
+pub type Call<'a> = &'a mut dyn FnMut(*mut u8, usize) -> Option<usize>;
 
 /// A transfer's buffer and direction: the caller's slots a read fills, the bytes a
 /// write sends, or none for the vector and message calls, which carry their own.
@@ -78,7 +78,7 @@ struct Op<'a> {
 }
 
 impl Op<'_> {
-    fn call(&mut self, buffer: *mut u8, length: usize) -> isize {
+    fn call(&mut self, buffer: *mut u8, length: usize) -> Option<usize> {
         (self.call)(buffer, length)
     }
 
@@ -88,37 +88,43 @@ impl Op<'_> {
 }
 
 /// `recv_all`/`send_all`: `length` bytes, or fewer at EOF, error or timeout.
-/// Returns the bytes transferred, -1 when none were, or the first call's result
+/// Returns the bytes transferred, `None` when none were, or the first call's result
 /// when it finished at once or failed outright.
-fn all(mut op: Op<'_>, timer: &mut Timer, event: Events, buffer: *mut u8, length: usize) -> isize {
+fn all(
+    mut op: Op<'_>,
+    timer: &mut Timer,
+    event: Events,
+    buffer: *mut u8,
+    length: usize,
+) -> Option<usize> {
     let first = op.call(buffer, length);
-    if first == 0 || first > 0 && first.unsigned_abs() == length {
+    if first == Some(0) || first == Some(length) {
         return first;
     }
-    if first < 0 && !op.would_block() {
+    if first.is_none() && !op.would_block() {
         set_err(op.socket, errno());
-        return first;
+        return None;
     }
     let socket = op.socket;
-    let mut total = if first > 0 { first.unsigned_abs() } else { 0 };
-    let mut result = -1;
+    let mut total = first.unwrap_or(0);
+    let mut result = None;
     // The barrier's retry: transfer the rest; keep waiting while it would block or
     // is still short.
     let mut rest = || {
         result = op.call(buffer.wrapping_add(total), length - total);
-        if result > 0 {
-            total += result.unsigned_abs();
+        match result {
+            None => op.would_block(),
+            Some(0) => false,
+            Some(n) => {
+                total += n;
+                total < length
+            }
         }
-        result < 0 && op.would_block() || result > 0 && total < length
     };
     if timer.start() && wait_barrier(socket, event, &mut rest) {
         check(socket, result);
     }
-    if result < 0 && total == 0 {
-        -1
-    } else {
-        total.cast_signed()
-    }
+    (result.is_some() || total > 0).then_some(total)
 }
 
 /// One transfer, retried while the socket would block: start the timer, wait,
@@ -134,11 +140,11 @@ fn one(
     buffer: *mut u8,
     length: usize,
     written: &[u8],
-) -> isize {
+) -> Option<usize> {
     let mut buffer = buffer;
     let moves = event == Events::WRITE && !buffer.is_null();
     let mut result = op.call(buffer, length);
-    while result < 0 {
+    while result.is_none() {
         if flags & RETRY_INTERRUPTED != 0 && errno() == libc::EINTR {
             result = op.call(buffer, length);
             continue;
@@ -158,12 +164,17 @@ fn one(
 
 /// A transfer of `buffer` in its direction, timed by the socket's read or write
 /// timeout; `flags` are [`ALL`], [`RETRY_INTERRUPTED`] and [`CHECKED`]. `call`
-/// gets the buffer, or the write buffer a write's wait moved it to. -1 when the
+/// gets the buffer, or the write buffer a write's wait moved it to. `None` when the
 /// socket is not available.
-pub(crate) fn transfer(socket: Co, flags: u32, buffer: Buffer<'_>, call: Call<'_>) -> isize {
+pub(crate) fn transfer(
+    socket: Co,
+    flags: u32,
+    buffer: Buffer<'_>,
+    call: Call<'_>,
+) -> Option<usize> {
     let (buffer, length, event, written) = buffer.into_parts();
     if flags & CHECKED == 0 && !available(socket, event) {
-        return -1;
+        return None;
     }
     let event = if event == Events::READ {
         Events::READ
@@ -186,21 +197,21 @@ pub(crate) fn transfer(socket: Co, flags: u32, buffer: Buffer<'_>, call: Call<'_
 /// empty.
 pub(crate) fn recvfrom_peer(
     socket: Co,
-    call: impl FnOnce(*mut libc::sockaddr, *mut libc::socklen_t) -> isize,
-) -> isize {
+    call: impl FnOnce(*mut libc::sockaddr, *mut libc::socklen_t) -> Option<usize>,
+) -> Option<usize> {
     if !available(socket, Events::READ) {
-        return -1;
+        return None;
     }
     socket
         .with_network(|network| recvfrom_into(network, call))
-        .unwrap_or(-1)
+        .flatten()
 }
 
 /// [`recvfrom_peer`] over the socket's handle.
 fn recvfrom_into(
     network: Socket<'_>,
-    call: impl FnOnce(*mut libc::sockaddr, *mut libc::socklen_t) -> isize,
-) -> isize {
+    call: impl FnOnce(*mut libc::sockaddr, *mut libc::socklen_t) -> Option<usize>,
+) -> Option<usize> {
     // The pointers outlive the borrow: `call` fills them, and nothing else touches the
     // record until it returns.
     let (local, addr, addrlen) = network.edit(|network| {
@@ -212,7 +223,7 @@ fn recvfrom_into(
         )
     });
     let result = call(addr.cast(), addrlen);
-    if result >= 0 && local {
+    if result.is_some() && local {
         network.edit(|network| {
             let info = &mut network.info;
             if info.len as usize <= core::mem::offset_of!(libc::sockaddr_un, sun_path) {
@@ -254,15 +265,15 @@ mod tests {
         static RESULTS: RefCell<VecDeque<isize>> = const { RefCell::new(VecDeque::new()) };
     }
 
-    fn call(at: *mut u8, length: usize) -> isize {
+    fn call(at: *mut u8, length: usize) -> Option<usize> {
         let result = RESULTS.with_borrow_mut(VecDeque::pop_front).unwrap_or(0);
         log(format!("io:{length}:{}", !at.is_null()));
         if result < 0 {
             set_errno(i32::try_from(-result).unwrap());
-            return -1;
+            return None;
         }
         set_errno(0);
-        result.min(length.c_cast::<isize>())
+        Some(result.unsigned_abs().min(length))
     }
 
     const EAGAIN: isize = -(libc::EAGAIN as isize);
@@ -315,6 +326,7 @@ mod tests {
             Buffer::new(at, 8, event, written),
             &mut call,
         );
+        let result = result.map_or(-1, usize::cast_signed);
         let error = socket.0.err_code.get();
         socket.0.sock_fd.set(100);
         let events = take()
@@ -516,7 +528,7 @@ mod tests {
         RESULTS.set([EAGAIN].into_iter().collect());
         let buffer = Buffer::new(core::ptr::null_mut(), 8, Events::READ, &[]);
         let result = transfer(socket.co(), CHECKED, buffer, &mut call);
-        assert_eq!(result, -1);
+        assert_eq!(result, None);
         // A zero timeout starts no timer.
         assert!(!take().iter().any(|e| e.starts_with("timer")));
     }
@@ -552,9 +564,11 @@ mod tests {
             RESULTS.set([result].into());
             let got = unsafe {
                 let s = socket.co();
-                recvfrom_peer(s, |addr, len| peer(s, core::ptr::null_mut(), 8, addr, len))
+                recvfrom_peer(s, |addr, len| {
+                    usize::try_from(peer(s, core::ptr::null_mut(), 8, addr, len)).ok()
+                })
             };
-            assert_eq!(got, result);
+            assert_eq!(got.map_or(-1, usize::cast_signed), result);
             assert_eq!(take(), [format!("recvfrom:true:{size}")]);
             let info = unsafe { socket.0.record() }.info;
             assert_eq!(
@@ -568,9 +582,11 @@ mod tests {
         assert_eq!(
             unsafe {
                 let s = socket.co();
-                recvfrom_peer(s, |addr, len| peer(s, core::ptr::null_mut(), 8, addr, len))
+                recvfrom_peer(s, |addr, len| {
+                    usize::try_from(peer(s, core::ptr::null_mut(), 8, addr, len)).ok()
+                })
             },
-            -1
+            None
         );
         assert!(!take().iter().any(|e| e.starts_with("recvfrom")));
         socket.0.sock_fd.set(100);

@@ -41,7 +41,7 @@ impl TlsSocket for Co {
     }
 
     fn check_failure(self) {
-        check(self, -1);
+        check(self, None);
     }
 
     fn buffer(self, write: bool) -> (*mut c_char, usize) {
