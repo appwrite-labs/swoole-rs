@@ -585,7 +585,9 @@ fn from_bytes<'a>(this: &'a mut MaybeUninit<CppString>, data: &[u8]) -> &'a mut 
 /// `new String(data.data(), data.size())`, owned: [`CppString::dispose`] frees its bytes.
 #[must_use]
 pub fn boxed_string(data: &[u8]) -> Box<CppString> {
-    let mut string = Box::new(CppString::EMPTY);
+    // `EMPTY` is all zeros, and LLVM turns a fresh allocation stored with zeros into
+    // `calloc`, which costs more per string than `malloc`; opaque, it stays `malloc`.
+    let mut string = Box::new(core::hint::black_box(CppString::EMPTY));
     fill(&mut string, data);
     string
 }
@@ -616,7 +618,9 @@ pub fn new_string(data: &[u8]) -> *mut CppString {
 /// `new String(size, with)`, owned: [`CppString::dispose`] frees its bytes.
 #[must_use]
 pub fn boxed_sized_string(size: usize, with: Option<TrustedAllocator>) -> Box<CppString> {
-    let mut string = Box::new(CppString::EMPTY);
+    // `EMPTY` is all zeros, and LLVM turns a fresh allocation stored with zeros into
+    // `calloc`, which costs more per string than `malloc`; opaque, it stays `malloc`.
+    let mut string = Box::new(core::hint::black_box(CppString::EMPTY));
     string.alloc(size, with);
     string
 }
