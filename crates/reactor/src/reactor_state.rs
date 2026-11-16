@@ -15,7 +15,8 @@ pub type ReactorWrite =
     unsafe extern "C-unwind" fn(*mut c_void, *mut SocketRecord, *const c_void, usize) -> isize;
 pub type ReactorWritev =
     unsafe extern "C-unwind" fn(*mut c_void, *mut SocketRecord, *const libc::iovec, usize) -> isize;
-pub type ReactorClose = unsafe extern "C-unwind" fn(*mut c_void, *mut SocketRecord) -> c_int;
+/// `Reactor::close`: frees `socket`, one of the reactor's.
+pub type ReactorClose = unsafe extern "C-unwind" fn(crate::Running<'_>, Socket<'_>) -> c_int;
 
 /// `Reactor::idle_task` and `future_task` (`Swoole\Event::cycle`): unset until set.
 #[repr(C)]
@@ -334,7 +335,7 @@ unsafe extern "C-unwind" {
         count: usize,
     ) -> isize;
     #[link_name = "_ZN6swoole7Reactor6_closeEPS0_PNS_7network6SocketE"]
-    fn reactor_close(reactor: *mut c_void, socket: *mut SocketRecord) -> c_int;
+    fn reactor_close(reactor: crate::Running<'_>, socket: Socket<'_>) -> c_int;
     #[link_name = "_ZN6swoole9coroutine6System12init_reactorEPNS_7ReactorE"]
     safe fn system_init_reactor(reactor: crate::Running<'_>);
 }

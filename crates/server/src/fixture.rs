@@ -180,7 +180,9 @@ impl LiveServer {
     /// This thread's reactor, which the fixture made.
     pub(crate) fn reactor(&self) -> crate::reactor_handle::Reactor {
         // SAFETY: the reactor this fixture made, live until it drops, on this thread.
-        unsafe { crate::reactor_handle::Reactor::of(self.reactor) }
+        crate::reactor_handle::Reactor::running(unsafe {
+            swoole_rs_reactor::Running::new(self.reactor)
+        })
     }
 }
 

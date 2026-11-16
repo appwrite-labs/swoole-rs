@@ -96,15 +96,11 @@ pub struct PortMethods {
 
 static METHODS: OnceLock<PortMethods> = OnceLock::new();
 
-/// Registers crates/ports' methods; later registrations are ignored. Only the
-/// server calls them, so no safe caller elsewhere can pass them a bad pointer.
-///
-/// # Safety
-/// Each method is sound for any live port, socket or connection of the server,
-/// which is all the server passes them, and `close` and `close_socket` when the
-/// server calls them as `ListenPort`'s own did: with no handle to the port's socket
-/// and no borrow of what they replace held across the call.
-pub unsafe fn set_methods(methods: PortMethods) {
+/// Registers crates/ports' methods; later registrations are ignored. Each is a safe
+/// fn, sound for whatever its types admit, so registering one promises nothing; the
+/// server calls `close` and `close_socket` as `ListenPort`'s own did, with no handle
+/// to the port's socket and no borrow of what they replace held across the call.
+pub fn set_methods(methods: PortMethods) {
     METHODS.get_or_init(|| methods);
 }
 

@@ -33,9 +33,7 @@ const _: () = {
 
 /// Registers the `ListenPort` methods the server calls; `swoole_init` does this.
 pub fn register_methods() {
-    // SAFETY: each method takes a live port, socket or connection of the server,
-    // all the server passes; nothing outside it can reach them.
-    unsafe { swoole_rs_server::port_config::set_methods(METHODS) };
+    swoole_rs_server::port_config::set_methods(METHODS);
 }
 
 const METHODS: PortMethods = PortMethods {

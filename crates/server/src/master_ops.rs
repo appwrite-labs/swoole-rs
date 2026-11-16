@@ -1,7 +1,7 @@
 //! The master's message bus: which bus a worker uses, base mode's pass and forward
 //! over it, and its buffer.
 #[cfg(feature = "upstream-symbols")]
-use crate::{Mode, ServerState};
+use crate::{Mode, ServerState, view::PipeSocket};
 
 /// `serv->get_worker_message_bus()`: this thread's in thread mode, else the
 /// server's.
@@ -26,21 +26,21 @@ pub(crate) fn forward(serv: crate::view::Server<'_>, send: &crate::base_factory:
         return false;
     };
     let id = session.reactor_bits() & 0xff;
-    let Some(pipe) = serv.worker_pipe(u16::try_from(id).unwrap_or(u16::MAX), true) else {
+    let worker = serv.worker_record(u16::try_from(id).unwrap_or(u16::MAX));
+    let Some(pipe) = worker.and_then(|worker| PipeSocket::of_worker(worker, true)) else {
         return false;
     };
     let bus = worker_message_bus(state);
-    let socket = if state.config_ref().mode_ == Mode::Thread {
-        bus.pipe_socket(pipe)
+    let pipe = if state.config_ref().mode_ == Mode::Thread {
+        PipeSocket::of_bus(bus.rust(), pipe)
     } else {
         Some(pipe)
     };
-    let Some(socket) = socket else {
+    let Some(pipe) = pipe else {
         return false;
     };
     let mut send = *send;
-    // SAFETY: a live pipe socket.
-    unsafe { send.send_raw(bus.rust(), socket) }
+    send.send(bus.rust(), pipe)
 }
 
 /// `Server::create_pipe_buffers()`: the bus's buffer, `ipc_max_size` bytes.

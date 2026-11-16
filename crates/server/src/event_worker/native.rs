@@ -2,7 +2,6 @@
 //! start and stop callbacks, its signals, the async stop and its exit wait, and the
 //! process-mode main loop.
 use crate::{DispatchMode, Mode};
-use core::cell::Cell;
 use core::ffi::{c_int, c_long, c_void};
 use core::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::HookType;
@@ -17,9 +16,7 @@ use swoole_rs_process::methods::{
 use swoole_rs_process::worker_globals::{
     current_worker, with_current, with_globals, worker_global_detach, worker_global_stopped,
 };
-use swoole_rs_process::worker_record::{
-    Worker, WorkerRecord, WorkerStatus, WorkerType, swr_v1_worker_shutdown,
-};
+use swoole_rs_process::worker_record::{Worker, WorkerStatus, WorkerType, swr_v1_worker_shutdown};
 use swoole_rs_reactor::{Event, Running, Socket};
 
 use super::{SignalHandler, Wait};
@@ -555,17 +552,11 @@ pub fn clean_worker_connections(serv: view::Server<'_>, worker: Worker<'_>) {
     });
 }
 
-thread_local! {
-    /// The worker whose coroutines `count_coroutines` counts: this thread's event worker.
-    static COUNTED: Cell<*mut WorkerRecord> = const { Cell::new(core::ptr::null_mut()) };
-}
-
-/// `worker->coroutine_num = Coroutine::count()`, after each round of the loop.
+/// `worker->coroutine_num = Coroutine::count()`, after each round of the loop, of the
+/// worker `start_event_worker` runs: the process's current one (`enter_child`).
 extern "C-unwind" fn count_coroutines() {
-    // SAFETY: the worker `start_event_worker` named, live while its loop runs.
-    if let Some(worker) = unsafe { COUNTED.get().as_mut() } {
-        worker.coroutine_num = swoole_rs_coroutine::swoole_coroutine_count();
-    }
+    let count = swoole_rs_coroutine::swoole_coroutine_count();
+    _ = with_current(|worker| worker.write_coroutine_num(count));
 }
 
 /// `Server::start_event_worker(worker)`: the process-mode worker's main loop.
@@ -591,9 +582,7 @@ pub(crate) fn start_event_worker(serv: view::Server<'_>, worker: Worker<'_>) -> 
     let reactor = Reactor::thread();
     if let Some(pipe) = worker_pipe(worker, false) {
         set_nonblock(pipe);
-        // SAFETY: this worker's reactor, freed after its loop below, before the worker
-        // stops and while the server lives.
-        unsafe { reactor.hold_server(serv) };
+        reactor.hold_server(serv);
         reactor.add(pipe, Events::READ);
         reactor.set_handler(FD_PIPE, Events::READ, on_pipe_receive);
     }
@@ -601,7 +590,6 @@ pub(crate) fn start_event_worker(serv: view::Server<'_>, worker: Worker<'_>) -> 
         config.dispatch(),
         Some(DispatchMode::CoConnLb | DispatchMode::CoReqLb)
     ) {
-        COUNTED.set(worker.raw());
         let count = count_coroutines;
         swoole_rs_reactor::swr_v1_event_set_end_callback(
             swoole_rs_reactor::Priority::WorkerCallback,
