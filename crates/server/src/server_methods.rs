@@ -182,13 +182,13 @@ pub fn get_idle_worker_num(serv: view::Server<'_>) -> u32 {
 
 /// `Server::get_idle_task_worker_num()`.
 #[must_use]
-pub fn get_idle_task_worker_num(serv: view::Server<'_>) -> c_int {
-    crate::dispatch::idle_workers(serv, true).cast_signed()
+pub fn get_idle_task_worker_num(serv: view::Server<'_>) -> u32 {
+    crate::dispatch::idle_workers(serv, true)
 }
 
 /// `Server::get_tasking_num()`.
 #[must_use]
-pub fn get_tasking_num(serv: view::Server<'_>) -> c_int {
+pub fn get_tasking_num(serv: view::Server<'_>) -> u32 {
     crate::dispatch::tasking(serv)
 }
 

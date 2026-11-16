@@ -149,10 +149,10 @@ pub(crate) fn idle_workers(serv: Server<'_>, task: bool) -> u32 {
 
 /// `Server::get_tasking_num`: a negative count is reset to 0.
 #[must_use]
-pub(crate) fn tasking(serv: Server<'_>) -> c_int {
+pub(crate) fn tasking(serv: Server<'_>) -> u32 {
     let tasking = &serv.counters().tasking_num;
-    let count = tasking.load(SeqCst).cast_signed();
-    if count < 0 {
+    let count = tasking.load(SeqCst);
+    if count.cast_signed() < 0 {
         tasking.store(0, SeqCst);
         return 0;
     }
@@ -384,7 +384,7 @@ fn keep_port(serv: Server<'_>, port: Box<PortConfig>) -> Port<'_> {
 /// `Server::add_systemd_socket()`: imports the sockets systemd passed; the number
 /// imported.
 #[must_use]
-pub fn add_systemd_socket(serv: Server<'_>) -> c_int {
+pub fn add_systemd_socket(serv: Server<'_>) -> u32 {
     use swoole_rs_corebase::get_env;
     let count = || swoole_rs_corebase::get_systemd_listen_fds();
     let start = || get_env(c"LISTEN_FDS_START");
@@ -398,7 +398,7 @@ fn import_sockets(
     listen_pid: Option<c_int>,
     count: impl FnOnce() -> Option<c_int>,
     start: impl FnOnce() -> Option<c_int>,
-) -> c_int {
+) -> u32 {
     let origin = c"Server::add_systemd_socket";
     // Upstream compares an unset `LISTEN_PID` with an indeterminate value; treat it as foreign.
     if listen_pid.is_none() {

@@ -221,7 +221,7 @@ fn sleep_forever() -> ! {
 fn add_user_worker(serv: Server) -> *mut WorkerRecord {
     let worker = Worker::from(Box::leak(WorkerRecord::boxed()));
     let id = worker_methods::add_worker(serv.view(), worker);
-    assert_eq!(id, worker_id(worker.raw()).cast_signed());
+    assert_eq!(id, Some(worker_id(worker.raw())));
     worker.raw()
 }
 
@@ -1632,7 +1632,7 @@ fn test_process(single_thread: bool) {
 
     clear_last_error();
     let fake_worker = Worker::from(Box::leak(WorkerRecord::boxed()));
-    assert_eq!(worker_methods::add_worker(serv.view(), fake_worker), SW_ERR);
+    assert_eq!(worker_methods::add_worker(serv.view(), fake_worker), None);
     assert_eq!(last_error(), SW_ERROR_WRONG_OPERATION);
     delete_worker(fake_worker.raw());
 

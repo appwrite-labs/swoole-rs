@@ -324,7 +324,7 @@ impl Reap for Reaping<'_> {
                 let worker = worker_at(serv, id.into());
                 if u32::from(id) >= serv.config().worker_num.get() {
                     let worker = worker.map_or(core::ptr::null_mut(), Worker::raw);
-                    _ = methods::spawn(serv.task_pool_ref(), worker);
+                    methods::spawn(serv.task_pool_ref(), worker);
                 } else {
                     _ = spawn(serv, spawn_event_worker, worker);
                 }
@@ -507,7 +507,7 @@ pub fn restart_worker_process(serv: view::Server<'_>, status: &ExitStatus) {
     check_exit_status(serv, Some(worker), status);
     match worker.kind() {
         Some(WorkerType::Event) => _ = spawn_event_worker(serv, worker),
-        Some(WorkerType::Task) => _ = methods::spawn(serv.task_pool_ref(), worker.raw()),
+        Some(WorkerType::Task) => methods::spawn(serv.task_pool_ref(), worker.raw()),
         Some(WorkerType::User) => _ = spawn_user_worker(serv, worker),
         _ => log::warning(
             ORIGIN,

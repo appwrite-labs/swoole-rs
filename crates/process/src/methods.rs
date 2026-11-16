@@ -105,12 +105,12 @@ pub fn signal(pool: PoolRef<'_>, signo: c_int, worker: *mut WorkerRecord) {
     raised(with(native(), pool, |p| p.signal(signo, worker)));
 }
 
-/// `ProcessPool::spawn(worker)`; -1 when `worker` is none of the pool's.
-pub fn spawn(pool: PoolRef<'_>, worker: *mut WorkerRecord) -> c_int {
-    let Some(worker) = pool.worker_of(worker) else {
-        return -1;
-    };
-    raised(with(native(), pool, |p| p.spawn(worker.raw()))).c_cast::<c_int>()
+/// `ProcessPool::spawn(worker)`, whose pid every caller ignores; nothing when `worker`
+/// is none of the pool's.
+pub fn spawn(pool: PoolRef<'_>, worker: *mut WorkerRecord) {
+    if let Some(worker) = pool.worker_of(worker) {
+        raised(with(native(), pool, |p| p.spawn(worker.raw())));
+    }
 }
 
 /// `ProcessPool::create(worker_num, msgqueue_key, ipc_mode)`.
