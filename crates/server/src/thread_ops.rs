@@ -304,8 +304,10 @@ fn send_close_force(serv: view::Server<'_>, conn: Connection<'_>, session: c_lon
 /// `ReactorThread_onPipeRead`: a worker's message.
 extern "C" fn on_pipe_read(reactor: Running<'_>, event: &mut Event) -> c_int {
     let reactor = Reactor::running(reactor);
-    // SAFETY: the handler is registered only on reactors that hold a server.
-    let serv = unsafe { entry::server(reactor) };
+    // The handler is registered only on reactors that hold a server.
+    let Some(serv) = reactor.server() else {
+        return -1;
+    };
     let mut ctx = ReactorContext::new(serv, Some(reactor));
     ctx.thread = serv
         .state()

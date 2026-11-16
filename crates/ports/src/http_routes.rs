@@ -71,27 +71,43 @@ fn length_size(conn: Connection<'_>) -> u8 {
     )
 }
 
+/// A server session as a port's package handlers see it: the port's server, the
+/// session's connection and its socket, live for the read that lends them. The
+/// server's reader makes one from the connection its read looked up; an `onPackage`
+/// callback, from the protocol and socket it is called with.
+#[derive(Clone, Copy)]
+pub(crate) struct Session<'a> {
+    pub(crate) server: swoole_rs_server::view::Server<'a>,
+    pub(crate) conn: Connection<'a>,
+    pub(crate) socket: swoole_rs_reactor::Socket<'a>,
+}
+
+impl Session<'_> {
+    /// `Server::dispatch_task` of `data` to the workers; whether it went.
+    pub(crate) fn task(self, data: swoole_rs_server::reactor_entry::RecvData<'_>) -> bool {
+        swoole_rs_server::reactor_entry::dispatch_data(self.server, self.conn, data)
+    }
+}
+
 pub mod exports {
     use std::ffi::{c_int, c_void};
     use std::mem::MaybeUninit;
     use swoole_rs_corebase::CCast;
 
-    use swoole_rs_buffer::string::{CppString, delete_string, new_string};
+    use swoole_rs_buffer::string::boxed_string;
     use swoole_rs_clients::protocol::Protocol;
     use swoole_rs_corebase::DataHead;
     use swoole_rs_corebase::net_types::{PacketLength, RecvData};
     use swoole_rs_corebase::{WebSocketStatus, log};
     use swoole_rs_reactor::{Drain, Socket, SocketRecord};
-    use swoole_rs_server::{Connection, ConnectionRecord, view};
+    use swoole_rs_server::{Connection, view};
     use swoole_rs_websocket::{
         Action, Context, FrameFlags, Opcode, PolicyError, decide_frame, encode_parts,
     };
     use swoole_rs_websocket_ffi::frame_api::decode_frame;
 
-    use super::{WEBSOCKET_FRAME_HEADER_SIZE, length_size, route};
-    use crate::framing_recv::{Packages, Recv};
-
-    pub use swoole_rs_server::reactor_entry::dispatch_task;
+    use super::{Session, WEBSOCKET_FRAME_HEADER_SIZE, length_size, route};
+    use crate::framing_recv::{Package, Packages, Recv, paused};
 
     /// `swoole::http2::get_frame_length(const Protocol *, Socket *, PacketLength *)`:
     /// the length callback of an HTTP/2 port, and of crates/phphttp2's client and
@@ -113,7 +129,35 @@ pub mod exports {
         let conn = unsafe { (*socket).fields.object };
         // SAFETY: a connection socket's object is its live connection slot, shared
         // through the slot's handle, as its fields are cells and atomics.
-        Connection::from(unsafe { &*conn.cast::<ConnectionRecord>() })
+        Connection::from(unsafe { &*conn.cast::<swoole_rs_server::ConnectionRecord>() })
+    }
+
+    /// The session and package of an `onPackage` call on a server port; `None` for a
+    /// socket outside the server's connection table.
+    ///
+    /// # Safety
+    /// Upstream's: the port's protocol (its `private_data_2` the server), a connection
+    /// socket of that port, and a whole package of it, which the handler may change.
+    unsafe fn package<'a>(
+        proto: *const Protocol,
+        socket: Socket<'a>,
+        rdata: &RecvData,
+    ) -> Option<(Session<'a>, Package<'a>)> {
+        // SAFETY: as the caller guarantees.
+        let serv = unsafe { (*proto).private_data_2 };
+        // SAFETY: a port's protocol keeps its live server.
+        let server = unsafe { view::Server::from_raw(serv) };
+        let conn = server.at(socket.fd())?;
+        // SAFETY: the package's `len` bytes, as the caller guarantees.
+        let package = unsafe { Package::from_raw(rdata.data, rdata.info.len as usize) };
+        Some((
+            Session {
+                server,
+                conn,
+                socket,
+            },
+            package,
+        ))
     }
 
     /// `SW_WEBSOCKET_HEADER_LEN + SW_WEBSOCKET_CLOSE_CODE_LEN + SW_WEBSOCKET_CLOSE_REASON_MAX_LEN`.
@@ -142,45 +186,27 @@ pub mod exports {
         );
     }
 
-    /// `int websocket::dispatch_frame(const Protocol *, Socket *, const RecvData *)`:
-    /// decode the frame, let [`decide_frame`] choose, and carry out its action on
-    /// the connection's fragment buffer, the server and the socket.
-    ///
-    /// # Safety
-    /// Upstream's: the port's protocol (its `private_data_2` the server), a
-    /// connection socket of that port, and its whole frame, which this unmasks in place.
-    #[must_use]
-    pub unsafe extern "C-unwind" fn websocket_dispatch_frame(
-        proto: *const Protocol,
-        socket: Socket<'_>,
-        rdata: &RecvData,
-    ) -> c_int {
-        // SAFETY: as the caller guarantees.
-        let serv = unsafe { (*proto).private_data_2 };
-        let length = rdata.info.len as usize;
-        let bytes = if length == 0 {
-            &mut []
-        } else {
-            // SAFETY: the whole frame, as the caller guarantees; `decode` unmasks it in
-            // place, as upstream's does.
-            unsafe { std::slice::from_raw_parts_mut(rdata.data.cast_mut(), length) }
-        };
+    /// `websocket::dispatch_frame` over a session's whole frame: decode it (unmasking
+    /// it in place), let [`decide_frame`] choose, and carry out its action on the
+    /// connection's fragment buffer, the server and the socket. Whether the connection
+    /// reads on.
+    pub(crate) fn websocket_frame(s: Session<'_>, mut package: Package<'_>) -> bool {
+        let length = package.len();
+        let bytes = package.bytes();
         let Ok(frame) = decode_frame(bytes) else {
-            return -1;
+            return false;
         };
         let bytes: &[u8] = bytes;
-        // SAFETY: as the caller guarantees.
-        let conn = unsafe { connection(socket.as_ptr()) };
-        let fragment = conn.websocket_buffer().cast::<CppString>();
-        // SAFETY: null or the connection's live fragment buffer, which only this call
-        // reaches until it deletes it.
-        let mut buffered = unsafe { fragment.as_mut() };
+        let conn = s.conn;
+        // Out of the connection while this frame works on it: a close the dispatch
+        // runs finds none to free.
+        let fragment = conn.take_websocket_buffer();
         let mut context = Context {
-            has_fragment: buffered.is_some(),
+            has_fragment: fragment.is_some(),
             closing: conn.websocket_status() == WebSocketStatus::Closing,
             ..Context::default()
         };
-        if let Some(fragment) = buffered.as_deref() {
+        if let Some(fragment) = fragment.as_deref() {
             context.fragment_length = fragment.len();
             let flags = fragment.offset().c_cast::<u16>();
             let [opcode, flags] = flags.to_be_bytes();
@@ -189,14 +215,15 @@ pub mod exports {
                 flags: swoole_rs_websocket::FrameFlags::from_bits(flags),
             };
             if frame.opcode == swoole_rs_websocket::Opcode::Continuation {
-                // SAFETY: the port's live server, as the caller guarantees.
-                let serv = unsafe { view::Server::from_raw(serv) };
-                let max = swoole_rs_server::server_methods::package_max_length(serv, conn.fd());
+                let max = swoole_rs_server::server_methods::package_max_length(s.server, conn.fd());
                 context.package_max_length = max as usize;
             }
         }
         let Some(decision) = decide_frame(&frame, length, &context) else {
-            return -1;
+            if let Some(fragment) = fragment {
+                conn.set_websocket_buffer(fragment);
+            }
+            return false;
         };
         if decision.error != PolicyError::None {
             policy_warning(conn, decision.error, frame.opcode.code());
@@ -205,53 +232,53 @@ pub mod exports {
             decision.metadata.opcode.code(),
             decision.metadata.flags.bits(),
         ]);
-        let mut dispatch = RecvData {
-            info: DataHead {
-                len: decision.length.c_cast::<u32>(),
-                ext_flags,
-                ..DataHead::default()
-            },
-            data: bytes.as_ptr().wrapping_add(decision.offset),
+        let head = DataHead {
+            ext_flags,
+            ..DataHead::default()
         };
         let payload = bytes
             .get(decision.offset..)
             .and_then(|rest| rest.get(..decision.length));
-        let dispatch_task = |dispatch: &RecvData| {
-            // SAFETY: upstream's arguments, with this frame's payload or whole message.
-            unsafe { dispatch_task(proto, socket, dispatch) }
+        if let Action::Append | Action::Finish = decision.action {
+            // The decision appends only to a live fragment.
+            let Some(mut buffer) = fragment else {
+                return false;
+            };
+            buffer.append(payload.unwrap_or_default());
+            if decision.action == Action::Finish {
+                s.task(swoole_rs_server::reactor_entry::RecvData::new(
+                    head,
+                    buffer.view(),
+                ));
+                buffer.dispose();
+            } else {
+                conn.set_websocket_buffer(buffer);
+            }
+            return true;
+        }
+        if let Some(fragment) = fragment {
+            conn.set_websocket_buffer(fragment);
+        }
+        let task = |payload: Option<&[u8]>| {
+            s.task(match payload {
+                Some(payload) => swoole_rs_server::reactor_entry::RecvData::new(head, payload),
+                None => swoole_rs_server::reactor_entry::RecvData::empty(head),
+            })
         };
         match decision.action {
-            Action::Reject => return -1,
+            Action::Reject => return false,
             Action::Start => {
-                let buffer = new_string(payload.unwrap_or_default());
-                // SAFETY: just constructed.
-                unsafe { (*buffer).set_offset(ext_flags.into()) };
-                conn.set_websocket_buffer(buffer.cast());
+                let mut buffer = boxed_string(payload.unwrap_or_default());
+                buffer.set_offset(ext_flags.into());
+                conn.set_websocket_buffer(buffer);
             }
-            Action::Append | Action::Finish => {
-                // The decision appends only to a live fragment.
-                let Some(buffer) = buffered.take() else {
-                    return -1;
-                };
-                buffer.append(payload.unwrap_or_default());
-                if decision.action == Action::Finish {
-                    let whole = u32::try_from(buffer.len()).unwrap_or(u32::MAX);
-                    dispatch.info.len = whole;
-                    dispatch.data = buffer.as_mut_ptr();
-                    dispatch_task(&dispatch);
-                    // SAFETY: `new String`'s, not used again.
-                    unsafe { delete_string(fragment) };
-                    conn.set_websocket_buffer(std::ptr::null_mut());
-                }
-            }
+            Action::Append | Action::Finish => {}
             Action::Control | Action::Dispatch => {
-                if decision.action == Action::Control && decision.length == 0 {
-                    dispatch.data = std::ptr::null();
-                }
-                dispatch_task(&dispatch);
+                let empty = decision.action == Action::Control && decision.length == 0;
+                task(if empty { None } else { payload });
             }
             Action::ClientClose => {
-                dispatch_task(&dispatch);
+                task(payload);
                 let mut reply = [MaybeUninit::<u8>::uninit(); CLOSE_REPLY_MAX];
                 let size = payload.and_then(|payload| {
                     encode_parts(
@@ -266,13 +293,13 @@ pub mod exports {
                 if let Some(size) = size {
                     // SAFETY: the encoded reply's `size` bytes.
                     let reply = unsafe { Drain::from_raw(reply.as_ptr().cast(), size) };
-                    _ = swoole_rs_tls::upstream::send_drain(socket, reply, 0);
+                    _ = swoole_rs_tls::upstream::send_drain(s.socket, reply, 0);
                 }
-                return -1;
+                return false;
             }
             Action::ServerClose => {
                 conn.set_websocket_status(WebSocketStatus::None);
-                return -1;
+                return false;
             }
             Action::Unknown => {
                 log::warning(
@@ -281,18 +308,90 @@ pub mod exports {
                 );
             }
         }
-        0
+        true
+    }
+
+    /// `int websocket::dispatch_frame(const Protocol *, Socket *, const RecvData *)`:
+    /// [`websocket_frame`] over the call's session and frame.
+    ///
+    /// # Safety
+    /// Upstream's: the port's protocol (its `private_data_2` the server), a
+    /// connection socket of that port, and its whole frame, which this unmasks in place.
+    #[must_use]
+    pub unsafe extern "C-unwind" fn websocket_dispatch_frame(
+        proto: *const Protocol,
+        socket: Socket<'_>,
+        rdata: &RecvData,
+    ) -> c_int {
+        // SAFETY: as the caller guarantees.
+        let Some((s, frame)) = (unsafe { package(proto, socket, rdata) }) else {
+            return -1;
+        };
+        if websocket_frame(s, frame) { 0 } else { -1 }
+    }
+
+    /// `static int Server::dispatch_task(const Protocol *, Socket *, const RecvData *)`:
+    /// a data frame to the workers. A port protocol's `onPackage`.
+    ///
+    /// # Safety
+    /// Upstream's: the port's protocol (its `private_data_2` the server), a live
+    /// session socket of that port, and its package.
+    #[must_use]
+    pub unsafe extern "C-unwind" fn dispatch_task(
+        proto: *const Protocol,
+        socket: Socket<'_>,
+        rdata: &RecvData,
+    ) -> c_int {
+        // SAFETY: as the caller guarantees.
+        let Some((s, mut data)) = (unsafe { package(proto, socket, rdata) }) else {
+            return -1;
+        };
+        if s.task(data.send_data(rdata.info)) {
+            0
+        } else {
+            -1
+        }
+    }
+
+    /// A session's packages, all [`Session::task`]'s: an EOF or length port's, whose
+    /// protocol's `onPackage` `init_protocol` set to [`dispatch_task`] with its reader.
+    pub(crate) struct Tasks<'a>(pub(crate) Session<'a>);
+
+    impl Packages for Tasks<'_> {
+        const HEAD: Option<u32> = None;
+        #[inline(always)]
+        fn dispatch(&self, _: &Recv<'_>, mut package: Package<'_>) -> bool {
+            self.0.task(package.send_data(DataHead::default()))
+        }
+        fn paused(&self) -> bool {
+            paused(self.0.conn)
+        }
+    }
+
+    /// A session's packages through its port protocol's own callbacks: an HTTP/2
+    /// stream's.
+    pub(crate) struct Port<'a>(pub(crate) Session<'a>);
+
+    impl Packages for Port<'_> {
+        const HEAD: Option<u32> = None;
+        #[inline(always)]
+        fn dispatch(&self, r: &Recv<'_>, package: Package<'_>) -> bool {
+            crate::framing_recv::protocol_dispatch(r, &package)
+        }
+        fn paused(&self) -> bool {
+            paused(self.0.conn)
+        }
     }
 
     /// A WebSocket connection's frames, measured by `frame_length` and handed to
-    /// [`websocket_dispatch_frame`] directly: an HTTP port's own callbacks route
-    /// each frame through the connection's status to the same two.
-    pub(crate) struct Frames;
+    /// [`websocket_frame`] directly: an HTTP port's own callbacks route each frame
+    /// through the connection's status to the same two.
+    pub(crate) struct Frames<'a>(pub(crate) Session<'a>);
 
-    impl Packages for Frames {
+    impl Packages for Frames<'_> {
         const HEAD: Option<u32> = Some(WEBSOCKET_FRAME_HEADER_SIZE as u32);
         #[inline(always)]
-        fn length(_: &Recv, bytes: &[u8]) -> i64 {
+        fn length(&self, _: &Recv<'_>, bytes: &[u8]) -> i64 {
             match swoole_rs_websocket::frame_length(bytes) {
                 Ok(frame) => i64::try_from(frame.total).unwrap_or(-1),
                 Err(swoole_rs_websocket::LengthError::IncompleteHeader { .. }) => 0,
@@ -300,16 +399,11 @@ pub mod exports {
             }
         }
         #[inline(always)]
-        fn dispatch(r: &Recv, data: *const u8, offset: i64) -> c_int {
-            let frame = RecvData {
-                info: DataHead {
-                    len: u32::try_from(offset).unwrap_or(u32::MAX),
-                    ..DataHead::default()
-                },
-                data,
-            };
-            // SAFETY: the port's protocol, a connection socket and its whole frame.
-            unsafe { websocket_dispatch_frame(r.protocol, r.socket, &frame) }
+        fn dispatch(&self, _: &Recv<'_>, package: Package<'_>) -> bool {
+            websocket_frame(self.0, package)
+        }
+        fn paused(&self) -> bool {
+            paused(self.0.conn)
         }
     }
 
@@ -351,15 +445,15 @@ pub mod exports {
         rdata: &RecvData,
     ) -> c_int {
         // SAFETY: as the caller guarantees.
-        let conn = unsafe { connection(socket.as_ptr()) };
-        route(
-            conn,
-            // SAFETY: upstream's arguments, forwarded.
-            || unsafe { websocket_dispatch_frame(proto, socket, rdata) },
-            // SAFETY: as above.
-            || unsafe { dispatch_task(proto, socket, rdata) },
-            -1,
-        )
+        let Some((s, mut package)) = (unsafe { package(proto, socket, rdata) }) else {
+            return -1;
+        };
+        let done = match route(s.conn, || Some(true), || Some(false), None) {
+            Some(true) => websocket_frame(s, package),
+            Some(false) => s.task(package.send_data(rdata.info)),
+            None => false,
+        };
+        if done { 0 } else { -1 }
     }
 }
 

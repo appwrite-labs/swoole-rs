@@ -13,7 +13,6 @@ use swoole_rs_corebase::constants::{
     SW_HTTP_BAD_REQUEST_PACKET, SW_HTTP_REQUEST_ENTITY_TOO_LARGE_PACKET,
     SW_HTTP_SERVICE_UNAVAILABLE_PACKET,
 };
-use swoole_rs_corebase::net_types::RecvData;
 use swoole_rs_corebase::{DataHead, TrustedAllocator, WebSocketStatus, log};
 use swoole_rs_framing::recv::Mode;
 use swoole_rs_http_ffi::{HttpRequest, HttpString};
@@ -24,8 +23,9 @@ use swoole_rs_server::static_select::static_select;
 use swoole_rs_server::{Connection as Slot, ServerConfig, view};
 use swoole_rs_tls::upstream::{recv_fill, send};
 
-use crate::framing_recv::{self, Callbacks, Packages};
-use crate::http_routes::exports::{Frames, dispatch_task};
+use crate::framing_recv::{self, Packages};
+use crate::http_routes::Session;
+use crate::http_routes::exports::{Frames, Port, Tasks};
 use crate::read::{Connection, Dispatch, Framing, Readable, Reply, Upgrade, readable};
 
 /// `http_server::SW_HTTP_EXT_FLAG_UPLOAD_PREPROCESSED`.
@@ -92,7 +92,16 @@ pub(crate) fn on_read(
 
 use swoole_rs_corebase::sys::errno;
 
-impl Read<'_> {
+impl<'a> Read<'a> {
+    /// The session this read is on.
+    fn session(&self) -> Session<'a> {
+        Session {
+            server: self.server,
+            conn: self.conn,
+            socket: self.socket,
+        }
+    }
+
     /// The current buffer, borrowed until the next call on `self`.
     fn string(&mut self) -> &mut CppString {
         // SAFETY: the current buffer is live once a receive buffer or request made it
@@ -143,12 +152,15 @@ impl Read<'_> {
         _ = send(self.socket, packet, 0);
     }
 
-    /// One receive of `mode` through the port's protocol, its packages handled by `K`.
+    /// One receive of `mode` through the port's protocol, its packages handled by
+    /// `packages`.
     #[inline(always)]
-    fn framed<K: Packages>(&self, mode: Mode) -> i64 {
+    fn framed(&self, mode: Mode, packages: impl Packages) -> i64 {
         let protocol = self.port.protocol.as_ptr().cast_const();
         // SAFETY: the port's protocol and the current buffer.
-        i64::from(unsafe { framing_recv::receive::<K>(protocol, self.socket, self.buffer, mode) })
+        i64::from(unsafe {
+            framing_recv::receive(protocol, self.socket, self.buffer, mode, packages)
+        })
     }
 }
 
@@ -223,9 +235,14 @@ impl Connection for Read<'_> {
     #[inline(always)]
     fn receive(&mut self, framing: Framing) -> i64 {
         match framing {
-            Framing::Length if self.frames => self.framed::<Frames>(Mode::Length),
-            Framing::Length => self.framed::<Callbacks>(Mode::Length),
-            Framing::Eof => self.framed::<Callbacks>(Mode::Eof),
+            Framing::Length if self.frames => self.framed(Mode::Length, Frames(self.session())),
+            // An HTTP/2 stream's frames, through the port's own callbacks.
+            Framing::Length if self.kind == Readable::Http => {
+                self.framed(Mode::Length, Port(self.session()))
+            }
+            // A length or EOF port's packages, whose `onPackage` is `dispatch_task`.
+            Framing::Length => self.framed(Mode::Length, Tasks(self.session())),
+            Framing::Eof => self.framed(Mode::Eof, Tasks(self.session())),
             Framing::Redis => {
                 let (port, socket, buffer, conn) = (self.port, self.socket, self.buffer, self.conn);
                 // SAFETY: the current buffer; the connection's object is its request.
@@ -243,24 +260,19 @@ impl Connection for Read<'_> {
     /// callgrind `socket` workload about 40 instructions a request (#3908).
     #[inline(always)]
     fn dispatch(&mut self, dispatch: Dispatch, length: u64) -> bool {
-        let data = RecvData {
-            info: DataHead {
-                len: u32::try_from(length).unwrap_or(u32::MAX),
-                flags: if self.whole_buffer(length) {
-                    SW_EVENT_DATA_POP_PTR as u8
-                } else {
-                    0
-                },
-                ext_flags: if dispatch == Dispatch::Upload {
-                    UPLOAD_PREPROCESSED
-                } else {
-                    0
-                },
-                ..DataHead::default()
+        let head = DataHead {
+            flags: if self.whole_buffer(length) {
+                SW_EVENT_DATA_POP_PTR as u8
+            } else {
+                0
             },
-            data: self.string().as_mut_ptr(),
+            ext_flags: if dispatch == Dispatch::Upload {
+                UPLOAD_PREPROCESSED
+            } else {
+                0
+            },
+            ..DataHead::default()
         };
-        let proto = self.port.protocol.as_ptr().cast_const();
         // A request waits its turn under `max_concurrency`; a task never does.
         let busy = dispatch != Dispatch::Task && {
             let counters = self.server.counters();
@@ -271,8 +283,11 @@ impl Connection for Read<'_> {
             self.send(Reply::Unavailable);
             false
         } else {
-            // SAFETY: the port's protocol, the live socket and its data.
-            unsafe { dispatch_task(proto, self.socket, &data) >= 0 }
+            let session = self.session();
+            let bytes = self.string().view();
+            let length = usize::try_from(length).unwrap_or(usize::MAX);
+            let data = bytes.get(..length).unwrap_or(bytes);
+            session.task(swoole_rs_server::reactor_entry::RecvData::new(head, data))
         };
         if dispatch == Dispatch::Task {
             return dispatched;

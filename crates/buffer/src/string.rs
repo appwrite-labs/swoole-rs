@@ -579,8 +579,20 @@ upstream! {
 
 /// `String(data.data(), data.size())` in `this`: a NUL-terminated copy.
 fn from_bytes<'a>(this: &'a mut MaybeUninit<CppString>, data: &[u8]) -> &'a mut CppString {
+    fill(this.write(CppString::EMPTY), data)
+}
+
+/// `new String(data.data(), data.size())`, owned: [`CppString::dispose`] frees its bytes.
+#[must_use]
+pub fn boxed_string(data: &[u8]) -> Box<CppString> {
+    let mut string = Box::new(CppString::EMPTY);
+    fill(&mut string, data);
+    string
+}
+
+/// An empty `string`'s NUL-terminated copy of `data`.
+fn fill<'a>(string: &'a mut CppString, data: &[u8]) -> &'a mut CppString {
     let length = data.len();
-    let string = this.write(CppString::EMPTY);
     string.alloc(length.wrapping_add(1), None);
     // The allocation holds `length + 1` bytes.
     if let Some((end, to)) = string

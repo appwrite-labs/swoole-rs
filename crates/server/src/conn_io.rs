@@ -481,11 +481,8 @@ pub(crate) fn close_connection(
             return true;
         }
     }
-    let websocket = conn.websocket_buffer();
-    if !websocket.is_null() {
-        // SAFETY: the connection's `new String`, not used again.
-        unsafe { delete_string(websocket.cast()) };
-        conn.set_websocket_buffer(core::ptr::null_mut());
+    if let Some(mut websocket) = conn.take_websocket_buffer() {
+        websocket.dispose();
     }
     if !removed && !reactor.del(sock) {
         return false;

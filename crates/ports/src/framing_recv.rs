@@ -10,7 +10,6 @@ use core::sync::atomic::Ordering;
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_clients::client::Framing;
 use swoole_rs_clients::protocol::Protocol;
-use swoole_rs_corebase::constants::FdType::SW_FD_SESSION;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR as LOG_ERROR, SW_LOG_WARNING as LOG_WARNING};
 use swoole_rs_corebase::net_types::{PacketLength, RecvData};
 use swoole_rs_corebase::{DataHead, log, swr_v1_core_pagesize};
@@ -22,7 +21,6 @@ use swoole_rs_framing::recv::{
 };
 use swoole_rs_framing::{DefaultLength, UnpackError, default_length, unpack};
 use swoole_rs_reactor::{Caught, Socket, SocketFields, swr_v1_socket_reset_on_close};
-use swoole_rs_server::ConnectionRecord;
 
 const SW_ERR: isize = swoole_rs_corebase::constants::ResultCode::SW_ERR as isize;
 
@@ -45,25 +43,79 @@ impl Recv<'_> {
     }
 }
 
+/// A whole package in the receive buffer, lent to its handler: `len` bytes at `data`
+/// (null for none), readable and writable for `'a`. It stays a pointer: the handler
+/// may run PHP that frees the buffer, after which it reads the package no more.
+pub(crate) struct Package<'a> {
+    data: *mut u8,
+    len: usize,
+    lent: PhantomData<&'a mut [u8]>,
+}
+
+impl<'a> Package<'a> {
+    /// `len` bytes of `buffer` from `start`, cut to what it holds.
+    fn of(buffer: &'a mut CppString, start: usize, len: usize) -> Self {
+        Self {
+            len: len.min(buffer.len().saturating_sub(start)),
+            data: buffer.as_mut_ptr().wrapping_add(start),
+            lent: PhantomData,
+        }
+    }
+
+    /// The `len` bytes at `data` an `onPackage` caller hands on.
+    ///
+    /// # Safety
+    /// `data` is null, or points at `len` bytes that are readable and writable, and that
+    /// nothing else uses, for `'a`.
+    pub(crate) unsafe fn from_raw(data: *const u8, len: usize) -> Self {
+        Self {
+            data: data.cast_mut(),
+            len: if data.is_null() { 0 } else { len },
+            lent: PhantomData,
+        }
+    }
+
+    /// Where the package starts, or null for none.
+    pub(crate) fn as_ptr(&self) -> *const u8 {
+        self.data
+    }
+
+    /// The package's length.
+    pub(crate) fn len(&self) -> usize {
+        self.len
+    }
+
+    /// The package's bytes, borrowed from it.
+    pub(crate) fn bytes(&mut self) -> &mut [u8] {
+        if self.data.is_null() {
+            return &mut [];
+        }
+        // SAFETY: the type's invariant: `len` bytes at `data`, lent to the package.
+        unsafe { core::slice::from_raw_parts_mut(self.data, self.len) }
+    }
+
+    /// The package as the payload a dispatch with the head `info` sends: none (a null
+    /// one) when the package is.
+    pub(crate) fn send_data(
+        &mut self,
+        info: DataHead,
+    ) -> swoole_rs_server::reactor_entry::RecvData<'_> {
+        use swoole_rs_server::reactor_entry::RecvData as SendData;
+        if self.data.is_null() {
+            SendData::empty(info)
+        } else {
+            SendData::new(info, self.bytes())
+        }
+    }
+}
+
 /// How a length receive measures and hands on each package.
 pub(crate) trait Packages {
     /// The fixed length header size, or `None` to ask the protocol's callbacks.
     const HEAD: Option<u32>;
-    /// `get_package_length` over the buffered `bytes`.
-    fn length(r: &Recv<'_>, bytes: &[u8]) -> i64;
-    /// `onPackage` over the package at `data`, which the buffer's `offset` (read before
-    /// the call) measures. No reference to the buffer or protocol is held across it:
-    /// the callback may run PHP that rewrites the protocol or frees the buffer.
-    fn dispatch(r: &Recv<'_>, data: *const u8, offset: i64) -> c_int;
-}
-
-/// The protocol's own callbacks, as upstream calls them.
-pub(crate) struct Callbacks;
-
-impl Packages for Callbacks {
-    const HEAD: Option<u32> = None;
+    /// `get_package_length` over the buffered `bytes`: the protocol's, -1 without one.
     #[inline(always)]
-    fn length(r: &Recv<'_>, bytes: &[u8]) -> i64 {
+    fn length(&self, r: &Recv<'_>, bytes: &[u8]) -> i64 {
         let mut pl = PacketLength::new(bytes);
         let Some(get) = r.protocol().get_package_length else {
             return -1;
@@ -72,17 +124,49 @@ impl Packages for Callbacks {
         let length = unsafe { get(r.protocol, r.socket.as_ptr().cast(), &mut pl) };
         length as i64
     }
+    /// `onPackage` over a whole package; whether it succeeded. No reference to the
+    /// protocol is held across it: the callback may run PHP that rewrites it.
+    fn dispatch(&self, r: &Recv<'_>, package: Package<'_>) -> bool;
+    /// Whether the socket, which is out of the reactor, was paused rather than closed.
+    fn paused(&self) -> bool;
+}
+
+/// The protocol's `onPackage` over `package`; false without one.
+pub(crate) fn protocol_dispatch(r: &Recv<'_>, package: &Package<'_>) -> bool {
+    let packet = RecvData {
+        info: DataHead {
+            len: u32::try_from(package.len()).unwrap_or(u32::MAX),
+            ..DataHead::default()
+        },
+        data: package.as_ptr(),
+    };
+    // Read before the call, which may rewrite the protocol.
+    let Some(on_package) = r.protocol().on_package else {
+        return false;
+    };
+    // SAFETY: upstream's call, over the live protocol, the socket it reads and a whole
+    // package of it, which the package lends.
+    (unsafe { on_package(r.protocol, r.socket, &packet) }) >= 0
+}
+
+/// The protocol's own callbacks, as upstream calls them, over a client's socket: never
+/// a server session's, so never a paused one.
+pub(crate) struct Callbacks;
+
+impl Packages for Callbacks {
+    const HEAD: Option<u32> = None;
     #[inline(always)]
-    fn dispatch(r: &Recv<'_>, data: *const u8, offset: i64) -> c_int {
-        // SAFETY: the live protocol and socket, and the package's `offset` bytes at
-        // `data`, inside the buffer (the loop dispatches only a whole one).
-        unsafe { dispatch(r.protocol, r.socket, data, offset.unsigned_abs()) }
+    fn dispatch(&self, r: &Recv<'_>, package: Package<'_>) -> bool {
+        protocol_dispatch(r, &package)
+    }
+    fn paused(&self) -> bool {
+        false
     }
 }
 
 /// A [`Recv`] whose packages `K` measures and hands on, and the `recv_wait` the
 /// socket holds: only this receive writes it, so a flag that didn't change costs no edit.
-struct With<'a, K>(Recv<'a>, bool, PhantomData<K>);
+struct With<'a, K>(Recv<'a>, bool, K);
 
 impl<K> With<'_, K> {
     /// `socket->recv_wait = flags & FLAG_WAIT`, when it differs.
@@ -96,23 +180,20 @@ impl<K> With<'_, K> {
     }
 }
 
-fn socket_flags(socket: &SocketFields) -> u32 {
+fn socket_flags(packages: &impl Packages, socket: &SocketFields) -> u32 {
     (if socket.removed { FLAG_REMOVED } else { 0 })
         | (if socket.recv_wait { FLAG_WAIT } else { 0 })
         | (if socket.ssl().is_null() { 0 } else { FLAG_TLS })
-        | (if paused(socket) { FLAG_PAUSED } else { 0 })
+        | (if socket.removed && packages.paused() {
+            FLAG_PAUSED
+        } else {
+            0
+        })
 }
 
-/// A session socket out of the reactor whose connection no one is closing: `pause`
-/// took it out to stop reading.
-fn paused(socket: &SocketFields) -> bool {
-    if !socket.removed || socket.fd_type != SW_FD_SESSION as c_int || socket.object.is_null() {
-        return false;
-    }
-    let conn = socket.object.cast::<ConnectionRecord>();
-    // SAFETY: a session socket's object is its live connection slot, whose fields
-    // are cells and atomics, so it is shared through the slot's handle.
-    let conn = swoole_rs_server::Connection::from(unsafe { &*conn });
+/// A session out of the reactor whose connection no one is closing: `pause` took its
+/// socket out to stop reading.
+pub(crate) fn paused(conn: swoole_rs_server::Connection<'_>) -> bool {
     conn.is_active()
         && conn.closed().load(Ordering::Relaxed) == 0
         && !(conn.closing()
@@ -121,33 +202,6 @@ fn paused(socket: &SocketFields) -> bool {
             || conn.close_reset()
             || conn.close_force()
             || conn.peer_closed())
-}
-
-/// `onPackage` over `length` bytes at `data`, or `SW_ERR` without one.
-///
-/// # Safety
-/// `protocol` is live, and `length` readable bytes at `data` are a package of the
-/// socket it reads. It stays a pointer: `onPackage` may run PHP whose `set()`
-/// rewrites it.
-unsafe fn dispatch(
-    protocol: *const Protocol,
-    socket: Socket<'_>,
-    data: *const u8,
-    length: u64,
-) -> c_int {
-    let packet = RecvData {
-        info: DataHead {
-            len: u32::try_from(length).unwrap_or(u32::MAX),
-            ..DataHead::default()
-        },
-        data,
-    };
-    // SAFETY: the live protocol, read before the call.
-    match unsafe { (*protocol).on_package } {
-        // SAFETY: upstream's call, over the live protocol, socket and packet.
-        Some(on_package) => unsafe { on_package(protocol, socket, &packet) },
-        None => -1,
-    }
 }
 
 /// `proto_error`: the warning, with the peer's address (or the socket's own when
@@ -173,11 +227,11 @@ impl<K: Packages> Effects for With<'_, K> {
     #[inline(always)]
     fn effect(&mut self, op: Op, arg: u64, flags: &mut u32) -> i64 {
         self.apply_wait(*flags);
-        let result = effect::<K>(&self.0, op, arg);
+        let result = effect(&self.0, &self.2, op, arg);
         // A read or a length leaves the socket as it was; a callback or a failure
         // may remove, pause or close it.
         if !matches!(op, Op::Recv | Op::GetLength) || result < 0 {
-            *flags = self.0.socket.read(socket_flags);
+            *flags = self.0.socket.read(|s| socket_flags(&self.2, s));
             self.1 = *flags & FLAG_WAIT != 0;
         }
         result
@@ -219,7 +273,7 @@ impl<K: Packages> Effects for With<'_, K> {
 /// Each call site's op is a constant, so the match folds: every frame's receive,
 /// length and dispatch run inline, and a failed receive and the rare ops don't.
 #[inline(always)]
-fn effect<K: Packages>(r: &Recv<'_>, op: Op, arg: u64) -> i64 {
+fn effect<K: Packages>(r: &Recv<'_>, k: &K, op: Op, arg: u64) -> i64 {
     // SAFETY: the receive's live buffer; no other reference to it is live.
     let b = unsafe { &mut *r.buffer };
     let s = r.socket;
@@ -233,10 +287,14 @@ fn effect<K: Packages>(r: &Recv<'_>, op: Op, arg: u64) -> i64 {
             }
             rare(r, b, s, op, arg)
         }
-        Op::GetLength => K::length(r, b.view().get(start(arg)..).unwrap_or_default()),
+        Op::GetLength => k.length(r, b.view().get(start(arg)..).unwrap_or_default()),
         Op::Dispatch => {
-            let (data, offset) = (b.as_ptr().wrapping_add(start(arg)), b.offset());
-            i64::from(K::dispatch(r, data, offset))
+            let length = usize::try_from(b.offset().unsigned_abs()).unwrap_or(usize::MAX);
+            if k.dispatch(r, Package::of(b, start(arg), length)) {
+                0
+            } else {
+                -1
+            }
         }
         _ => rare(r, b, s, op, arg),
     }
@@ -303,9 +361,9 @@ fn rare(r: &Recv<'_>, b: &mut CppString, s: Socket<'_>, op: Op, arg: u64) -> i64
             };
             // Each part to `onPackage`, while the socket stays.
             b.split(eof, |data, length| {
-                // SAFETY: the live protocol and socket, and the part inside the buffer.
-                let result = unsafe { dispatch(r.protocol, s, data, length as u64) };
-                result >= 0 && !s.read(|s| s.removed)
+                // SAFETY: the part, inside the buffer, which the split lends.
+                let part = unsafe { Package::from_raw(data, length) };
+                protocol_dispatch(r, &part) && !s.read(|s| s.removed)
             }) as i64
         }
         Op::SslPending => swoole_rs_tls::Ssl::of(s).map_or(0, |ssl| i64::from(ssl.pending())),
@@ -368,6 +426,7 @@ pub(crate) unsafe fn receive<K: Packages>(
     socket: Socket<'_>,
     buffer: *mut CppString,
     mode: Mode,
+    packages: K,
 ) -> c_int {
     let mut r = With::<K>(
         Recv {
@@ -377,10 +436,10 @@ pub(crate) unsafe fn receive<K: Packages>(
             buffer,
         },
         false,
-        PhantomData,
+        packages,
     );
     let p = r.0.protocol();
-    let (mut flags, skip) = socket.read(|s| (socket_flags(s), s.skip_recv));
+    let (mut flags, skip) = socket.read(|s| (socket_flags(&r.2, s), s.skip_recv));
     r.1 = flags & FLAG_WAIT != 0;
     let mut head = 0;
     if let Some(fixed) = K::HEAD {
@@ -409,7 +468,7 @@ fn client_recv<const LENGTH: bool>(
 ) -> c_int {
     let mode = if LENGTH { Mode::Length } else { Mode::Eof };
     // SAFETY: the live protocol and input buffer `Framing::new` asks for.
-    unsafe { receive::<Callbacks>(protocol, socket, buffer, mode) }
+    unsafe { receive(protocol, socket, buffer, mode, Callbacks) }
 }
 
 /// The framed receives a client's reads use, which `swoole_init` registers
