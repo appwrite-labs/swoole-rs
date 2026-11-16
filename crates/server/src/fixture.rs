@@ -215,7 +215,6 @@ mod tests {
     use core::sync::atomic::Ordering::Relaxed;
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn accepts_a_real_connection_into_the_tables_and_counters() {
         let live = LiveServer::new();
         let client = live.connect();
