@@ -187,7 +187,9 @@ int swr_zend_coroutine_run(swr_zend_callable *(*enter)(void *context), void (*de
     volatile int caught = 0;
     zend_first_try {
         swr_zend_callable *call = enter(context);
-        zend_call_function(&call->fci, &call->fcc);
+        if (call) {
+            zend_call_function(&call->fci, &call->fcc);
+        }
         caught = coroutine_catch();
         defers(context);
     }

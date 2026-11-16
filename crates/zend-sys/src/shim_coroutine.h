@@ -64,7 +64,7 @@ void swr_zend_coroutine_vm_destroy(void);
 /* init_main_context: EG(main_fiber_context), then save_context into `vm`. */
 zend_fiber_context *swr_zend_coroutine_main(swr_zend_coroutine_vm *vm);
 /* A coroutine's body (main_func) inside zend_first_try: call the function
- * `enter` returns and report an uncaught exception on this coroutine's stack
+ * `enter` returns (null: none) and report an uncaught exception on this coroutine's stack
  * (zend_exception_error, E_ERROR), then run `defers`, its defer tasks, which
  * bail out on an exception; a bailout's exception is reported too. 1 if an
  * exception or bailout ended it. */

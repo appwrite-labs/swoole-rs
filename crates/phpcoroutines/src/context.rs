@@ -152,8 +152,14 @@ fn fcc(callable: *mut swr_zend_callable) -> *mut zend_fcall_info_cache {
 /// [`on_close`]. Only this module makes one, from the thread-local main context
 /// and the host's task pointers. Each method borrows the context for that one
 /// access and keeps no reference.
+#[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Ctx(NonNull<Context>);
+
+/// A live context's callable, which `open` resolved and held: only [`enter`]
+/// makes one, for Zend to call while the coroutine runs.
+#[repr(transparent)]
+pub(crate) struct Call(NonNull<swr_zend_callable>);
 
 /// The frame Zend ran before a swap to another one, made current again on drop.
 /// Only [`Ctx::in_frame`] and [`enter`] make one, of `swr_zend_coroutine_set_frame`'s
@@ -501,7 +507,7 @@ pub(crate) fn open(args: Args) -> Option<Ctx> {
 
 /// The start hook and the fiber switch into the running coroutine's function;
 /// its callable, to call (`zend::Function *`).
-pub(crate) fn enter(ctx: Ctx) -> *mut swr_zend_callable {
+pub(crate) extern "C" fn enter(ctx: Ctx) -> Option<Call> {
     host::coro_hook(false, ctx.ptr().cast());
     let fiber = ctx.fiber();
     let handler = ctx.with(|context| context.call.fcc.function_handler);
@@ -520,7 +526,7 @@ pub(crate) fn enter(ctx: Ctx) -> *mut swr_zend_callable {
         let _previous = Restore(unsafe { swr_zend_coroutine_set_frame(&raw mut frame) });
         fiber_switch_try_notify(origin(ctx), ctx);
     }
-    ctx.call()
+    NonNull::new(ctx.call()).map(Call)
 }
 
 /// The next defer task (last in, first out), and the coroutine's return value,

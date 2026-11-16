@@ -10,7 +10,7 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_coroutine::Resume;
 use swoole_rs_zend::{
     E_ERROR, bailout,
-    sys::{swr_zend_callable, zend_execute_data, zval},
+    sys::{zend_execute_data, zval},
 };
 
 /// `Co::stats()`'s native counts.
@@ -75,6 +75,20 @@ use swoole_rs_hooks::sleep::system_sleep;
 unsafe extern "C" {
     safe fn php_swoole_reactor_init() -> i32;
     safe fn swr_v1_phpevents_wait();
+    /// A coroutine's body (`main_func`) inside `zend_first_try`: Zend calls the
+    /// callable `enter(context)` returns (none: nothing), reports an uncaught
+    /// exception as `E_ERROR`, then runs `defers(context)`; a bailout's exception
+    /// is reported too. 1 if an exception or bailout ended it. Bailouts after
+    /// it, outside a coroutine's first frame, end the process.
+    #[expect(
+        improper_ctypes,
+        reason = "C takes the context as an opaque pointer and only hands it back"
+    )]
+    safe fn swr_zend_coroutine_run(
+        enter: extern "C" fn(Ctx) -> Option<crate::context::Call>,
+        defers: extern "C" fn(Ctx),
+        context: Ctx,
+    ) -> c_int;
 }
 
 /// The globals, server state and build switches [`flag`] reads.
@@ -477,10 +491,7 @@ fn main(args: crate::context::Args) {
     let Some(ctx) = crate::context::open(args) else {
         return;
     };
-    let context = ctx.ptr().cast();
-    // SAFETY: Rust's entry and defer loop, over this coroutine's context.
-    let caught =
-        unsafe { swoole_rs_zend::sys::swr_zend_coroutine_run(Some(enter), Some(defers), context) };
+    let caught = swr_zend_coroutine_run(crate::context::enter, defers, ctx);
     crate::context::close(ctx);
     if caught != 0 {
         // SAFETY: the main context runs `bail_out`; this frame owns nothing.
@@ -495,16 +506,9 @@ extern "C" fn bail_out(_: *mut c_void) {
     bailout::raise(Err(bailout::Bailout));
 }
 
-/// The running coroutine's entry, whose `context` `main` passes.
-extern "C" fn enter(_context: *mut c_void) -> *mut swr_zend_callable {
-    current_task().map_or(std::ptr::null_mut(), crate::context::enter)
-}
-
-/// The defer tasks, last in first out; an exception bails out to the trap.
-extern "C" fn defers(_context: *mut c_void) {
-    let Some(ctx) = current_task() else {
-        return;
-    };
+/// The defer tasks of `ctx`, the running coroutine's context, last in first
+/// out; an exception bails out to the trap.
+extern "C" fn defers(ctx: Ctx) {
     while let Some((task, returned)) = crate::context::defer_next(ctx) {
         let (fcc, mut argc, mut argv, _) = task.parts();
         if let Some(returned) = returned {
