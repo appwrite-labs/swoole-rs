@@ -35,10 +35,10 @@ impl Request {
         }))
     }
 
-    /// The record, for an event's `data`.
+    /// Another reference to the record, for an event's `data`.
     #[must_use]
-    pub const fn as_ptr(&self) -> *mut ResolverRequest {
-        self.0.as_ptr()
+    pub fn reference(&self) -> ResolverRef {
+        self.0.clone()
     }
 
     /// The record, for an event's `data`.

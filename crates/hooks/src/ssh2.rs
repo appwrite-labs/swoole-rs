@@ -3,6 +3,7 @@
 //! over, the bound-coroutine check before each call, and the session timeout.
 use crate::co_socket::Co;
 use core::ffi::{c_int, c_void};
+use core::marker::PhantomData;
 use swoole_rs_reactor::Events;
 use swoole_rs_ssh2_sys::LIBSSH2_SESSION;
 
@@ -14,44 +15,46 @@ struct SessionData {
     socket: Co,
 }
 
-/// A live ext/ssh2 session whose abstract is its session data, for as long as the
-/// value is used. Only an export's parameter makes one, where the C caller's contract
-/// stands for the constructor, as it does for a `&T` parameter; crates/ssh2 passes its
-/// own `Session`, the same pointer under the same contract, to the table's wait.
-/// Neither `Send` nor `Sync`.
+/// An ext/ssh2 session live for `'a`, whose abstract is its session data. Only an
+/// export's parameter makes one, where the C caller's contract stands for the
+/// constructor, as it does for a `&T` parameter; crates/ssh2 passes its own `Session`,
+/// the same pointer under the same contract, to the table's wait. Neither `Send` nor
+/// `Sync`.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
-pub struct Session(*mut LIBSSH2_SESSION);
+pub struct Session<'a>(*mut LIBSSH2_SESSION, PhantomData<&'a LIBSSH2_SESSION>);
 
 // libssh2's declaration, typed for the live session: it returns the address of the
-// session's abstract slot and reads nothing else.
+// session's abstract slot, which holds ext/ssh2's session data (the type's
+// invariant), and reads nothing else.
+#[expect(
+    improper_ctypes,
+    reason = "the result is the slot's address; only Rust reads the session data behind \
+              it, and C never calls the socket record's Rust callbacks through it"
+)]
 unsafe extern "C" {
     #[link_name = "libssh2_session_abstract"]
-    safe fn session_abstract(session: Session) -> *mut *mut c_void;
+    safe fn session_abstract<'a>(session: Session<'a>) -> &'a &'a SessionData;
 }
 
-impl Session {
+impl Session<'_> {
     /// `ssh2_get_socket`: the session's coroutine socket.
     fn socket(self) -> Co {
-        // SAFETY: ext/ssh2 stores its session data's address in a live session's
-        // abstract (the type's invariant).
-        let data = unsafe { *session_abstract(self) }.cast::<SessionData>();
-        // SAFETY: live session data, whose socket is the session's coroutine socket.
-        unsafe { (*data).socket }
+        session_abstract(self).socket
     }
 }
 
 /// `swr_v1_ssh2_ops`, as crates/ssh2 takes it.
 #[repr(C)]
 pub struct Ops {
-    wait: extern "C" fn(session: Session, event: c_int) -> bool,
+    wait: extern "C" fn(session: Session<'_>, event: c_int) -> bool,
 }
 
 static OPS: Ops = Ops { wait };
 
 /// `ssh2_wait`: park the coroutine until `event` on the session's socket. crates/ssh2
 /// calls it in a coroutine.
-extern "C" fn wait(session: Session, event: c_int) -> bool {
+extern "C" fn wait(session: Session<'_>, event: c_int) -> bool {
     session
         .socket()
         .poll(swoole_rs_reactor::Events::from_bits(event), 0.0)
@@ -59,7 +62,7 @@ extern "C" fn wait(session: Session, event: c_int) -> bool {
 
 /// `ssh2_bound`: the wait, once no other coroutine is bound to the session's socket.
 #[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_ssh2_bound(session: Session) -> *const Ops {
+pub extern "C" fn swr_v1_ssh2_bound(session: Session<'_>) -> *const Ops {
     let socket = session.socket();
     socket.check_bound(Events::READ);
     socket.check_bound(Events::WRITE);
@@ -68,7 +71,7 @@ pub extern "C" fn swr_v1_ssh2_bound(session: Session) -> *const Ops {
 
 /// `ssh2_set_socket_timeout`: whole seconds of `timeout_ms` for every kind.
 #[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_ssh2_set_socket_timeout(session: Session, timeout_ms: c_int) {
+pub extern "C" fn swr_v1_ssh2_set_socket_timeout(session: Session<'_>, timeout_ms: c_int) {
     session.socket().set_timeout(
         f64::from(timeout_ms / 1000),
         swoole_rs_reactor::TimeoutKind::ALL,
