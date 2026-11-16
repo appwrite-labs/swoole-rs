@@ -157,7 +157,7 @@ pub(crate) fn ssl_context_init(config: &mut PortConfig) -> bool {
     });
     // crates/tls requires OpenSSL 3, which has DTLS.
     if matches!(config.r#type, 2 | 4 | 6) {
-        let protocols = SslVersion::SW_SSL_DTLS as u32;
+        let protocols = SslVersion::SW_SSL_DTLS.bits();
         edit(&context, |fields| fields.protocols = protocols);
     }
     true

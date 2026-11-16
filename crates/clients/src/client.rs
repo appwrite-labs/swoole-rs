@@ -114,8 +114,6 @@ const ERR: c_int = ResultCode::SW_ERR as c_int;
 const SOCK_UNIX_DGRAM: c_int = SocketType::SW_SOCK_UNIX_DGRAM as c_int;
 const FD_STREAM_CLIENT: c_int = FdType::SW_FD_STREAM_CLIENT as c_int;
 const FD_DGRAM_CLIENT: c_int = FdType::SW_FD_DGRAM_CLIENT as c_int;
-const SOCK_NONBLOCK: c_int = SocketFlag::SW_SOCK_NONBLOCK as c_int;
-const SOCK_CLOEXEC: c_int = SocketFlag::SW_SOCK_CLOEXEC as c_int;
 const SEND_BUFFER_SIZE: u32 = SW_SEND_BUFFER_SIZE;
 const SSL_BUFFER_SIZE: u32 = SW_SSL_BUFFER_SIZE;
 const BUFFER_SIZE_UDP: usize = SW_BUFFER_SIZE_UDP as usize;
@@ -127,7 +125,7 @@ pub use SslState::{
     SW_SSL_STATE_READY as SSL_STATE_READY, SW_SSL_STATE_WAIT_STREAM as SSL_STATE_WAIT_STREAM,
 };
 pub const SSL_CLIENT: c_int = SslCreateFlag::SW_SSL_CLIENT as c_int;
-pub const SSL_DTLS: u32 = SslVersion::SW_SSL_DTLS as u32;
+pub const SSL_DTLS: u32 = SslVersion::SW_SSL_DTLS.bits();
 /// The proxy states of upstream's `include/swoole_proxy.h`.
 pub const SOCKS5_WAIT: u8 = 0;
 pub const SOCKS5_HANDSHAKE: u8 = 1;
@@ -739,8 +737,7 @@ fn on_failure(reactor: Running<'_>, event: &mut Event) -> c_int {
 }
 
 /// `Client::init_reactor`: the client sockets' handlers.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_clients_init_reactor(reactor: Running<'_>) {
+pub fn init_reactor(reactor: Running<'_>) {
     let handlers: [(c_int, Events, swoole_rs_reactor::Handler); 4] = [
         (FD_STREAM_CLIENT, Events::READ, on_stream_read),
         (FD_DGRAM_CLIENT, Events::READ, on_dgram_read),
@@ -785,9 +782,13 @@ fn create_with(kind: c_int, is_async: bool, socket_ops: &'static SocketOps) -> O
     } else {
         FD_DGRAM_CLIENT
     };
-    let flags = if is_async { SOCK_NONBLOCK } else { 0 } | SOCK_CLOEXEC;
+    let flags = if is_async {
+        SocketFlag::SW_SOCK_NONBLOCK
+    } else {
+        SocketFlag::NONE
+    } | SocketFlag::SW_SOCK_CLOEXEC;
     // The new socket record, which nothing else holds yet.
-    let Some(record) = (socket_ops.make_socket)(kind, fd_type, flags) else {
+    let Some(record) = (socket_ops.make_socket)(kind, fd_type, flags.bits()) else {
         let error = errno();
         log::sys_warning(c"Client", format_args!("socket() failed"));
         set_errno(error);

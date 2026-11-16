@@ -300,28 +300,6 @@ fn output<T: swoole_rs_corebase::sys::Zeroed>(count: usize) -> Vec<T> {
     entries
 }
 
-#[cfg(feature = "upstream-symbols")]
-// crates/tls's `Reactor::_close` and crates/hooks's `System::init_reactor`,
-// under their upstream symbols; declared, since both depend on this crate.
-unsafe extern "C-unwind" {
-    #[link_name = "_ZN6swoole7Reactor6_closeEPS0_PNS_7network6SocketE"]
-    safe fn reactor_close(reactor: crate::Running<'_>, socket: crate::OwnedSocket) -> c_int;
-    #[link_name = "_ZN6swoole9coroutine6System12init_reactorEPNS_7ReactorE"]
-    safe fn system_init_reactor(reactor: crate::Running<'_>);
-}
-#[cfg(feature = "upstream-symbols")]
-// crates/tls's, under its upstream symbol, and crates/clients's; declared,
-// since both depend on this crate. Each takes the live reactor's handle, and the
-// writable callback is a reactor handler, sound for any event the reactor lends it.
-unsafe extern "C" {
-    safe fn swr_v1_clients_init_reactor(reactor: crate::Running<'_>);
-    #[link_name = "_ZN6swoole7Reactor18_writable_callbackEPS0_PNS_5EventE"]
-    safe fn reactor_writable_callback(
-        reactor: crate::Running<'_>,
-        event: &mut crate::Event,
-    ) -> c_int;
-}
-
 /// A reactor [`swr_v1_reactor_new`] made, held by the one owner that deletes it
 /// ([`swr_v1_reactor_delete`]); one never deleted stays allocated, as a C++ `Reactor *`
 /// never deleted does. It is neither `Copy` nor `Clone`, so a reactor is deleted once.
@@ -344,21 +322,17 @@ impl OwnedReactor {
 
 /// `new Reactor(max_event, type)`: the state `ReactorState::open` makes and, once
 /// ready, upstream's close and default write handler, the create hook and then the
-/// built-in end callbacks and exit conditions. Those two are crates/tls's, so only the
-/// hybrid (`upstream-symbols`) sets them; its writes, `swoole_init` registers
-/// ([`crate::event_api::set_writers`]).
+/// built-in end callbacks and exit conditions. Those two are crates/tls's, which
+/// `swoole_init` registers with its writes ([`crate::event_api::set_writers`]).
 pub fn swr_v1_reactor_new(max_event: c_int, kind: c_int) -> OwnedReactor {
     let mut owner = ReactorState::open(kind, max_event);
     if !owner.fields.ready {
         return OwnedReactor(crate::Running::leak(owner));
     }
     owner.fields.timeout_msec = -1;
-    #[cfg(feature = "upstream-symbols")]
-    {
-        owner.fields.close = Some(reactor_close);
-        owner.handlers.defaults[0].set(Some(|reactor, event| {
-            reactor_writable_callback(reactor, event)
-        }));
+    if let Some(writers) = crate::event_api::registered_writers() {
+        owner.fields.close = Some(writers.close);
+        owner.handlers.defaults[0].set(Some(writers.writable));
     }
     let reactor = crate::Running::leak(owner);
     reactor_hook(HookType::ON_REACTOR_CREATE, reactor);
@@ -424,8 +398,7 @@ pub extern "C-unwind" fn swoole_event_init(flags: c_int) -> c_int {
         return -1;
     }
     handle.with(|state| state.fields.wait_exit = flags & SW_EVENTLOOP_WAIT_EXIT != 0);
-    system_init_reactor(handle);
-    swr_v1_clients_init_reactor(handle);
+    crate::event_api::init_reactor(handle);
     swoole_rs_corebase::set_thread_reactor(handle.as_ptr());
     // A reactor this replaces stays allocated, as upstream's overwritten pointer did.
     EVENT_REACTOR.set(Some(reactor));
