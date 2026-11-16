@@ -71,10 +71,12 @@ pub(crate) const INTERNAL_FUNCTION: u8 = 1;
 pub(crate) const USER_FUNCTION: u8 = 2;
 
 /// `PHPCoroutine::Args`, built by `create` for the new coroutine's entry, which
-/// reads them before its first switch, while `create`'s frame still lends them.
-pub(crate) struct Args<'a> {
+/// copies them in before its first switch, while `create`'s frame still lends
+/// the arguments and callable they point to.
+#[derive(Clone, Copy)]
+pub(crate) struct Args {
     /// The resolved callable.
-    pub(crate) fcc: &'a zend_fcall_info_cache,
+    pub(crate) fcc: zend_fcall_info_cache,
     pub(crate) argv: *mut zval,
     pub(crate) argc: u32,
     pub(crate) callable: *mut zval,
@@ -429,11 +431,7 @@ pub(crate) extern "C" fn on_close(task: CoroutineTask) {
 }
 
 /// `create_context`, on the new coroutine: its context, live until [`on_close`].
-/// # Safety
-/// `args` is the creator's live `Args`, and this runs on the new coroutine.
-pub(crate) unsafe fn open(args: *mut c_void) -> Option<Ctx> {
-    // SAFETY: per the caller.
-    let args = unsafe { &*args.cast::<Args<'_>>() };
+pub(crate) fn open(args: Args) -> Option<Ctx> {
     let co = host::current()?;
     let pcid = host::origin_cid(co);
     let ctx = swoole_rs_zend::value::emalloc(size_of::<Context>()).cast::<Context>();
@@ -458,7 +456,7 @@ pub(crate) unsafe fn open(args: *mut c_void) -> Option<Ctx> {
     record_last_msec(this);
     let retval = this.return_value();
     this.with(|context| {
-        context.call.fcc = *args.fcc;
+        context.call.fcc = args.fcc;
         let fci = &mut context.call.fci;
         fci.size = size_of::<zend_fcall_info>();
         fci.object = ptr::null_mut();

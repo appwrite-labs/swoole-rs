@@ -279,6 +279,28 @@ pub unsafe fn print_socket_bound_error(fd: c_int, event: &CStr, bound_cid: c_lon
     unsafe { fatal_error(SW_ERROR_CO_HAS_BEEN_BOUND, &message) };
 }
 
+/// [`swr_v1_coroutine_create`] of `entry`, which the new coroutine moves off this
+/// frame before anything else and runs; its id, or -1. `entry` is `Copy`, so this
+/// frame owns nothing with a destructor. As every creation, a fatal error or the
+/// coroutine's bailout may longjmp over the caller's frames, leaking what they own.
+#[must_use]
+pub fn spawn<F: FnOnce() + Copy + 'static>(entry: F) -> c_long {
+    /// # Safety
+    /// `slot` is a live `Option<F>` nothing else reaches until this takes it.
+    unsafe extern "C" fn take<F: FnOnce()>(slot: *mut c_void) {
+        // SAFETY: per the caller; the borrow ends before the entry runs.
+        let entry = unsafe { &mut *slot.cast::<Option<F>>() }.take();
+        if let Some(entry) = entry {
+            entry();
+        }
+    }
+    let mut slot = Some(entry);
+    // SAFETY: `take::<F>` takes the `Option<F>` at its data, this frame's `slot`,
+    // which lives until the coroutine first switches back: creation runs it until
+    // then, and it takes the slot first.
+    unsafe { swr_v1_coroutine_create(take::<F>, (&raw mut slot).cast()) }
+}
+
 /// `long swoole_coroutine_create(void (*)(void *), void *)`: in the running
 /// event loop, or (`coroutine::run`) in a fresh one that runs until it exits;
 /// the coroutine's id, or -1 if the loop could not start.

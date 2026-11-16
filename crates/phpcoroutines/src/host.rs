@@ -3,7 +3,6 @@
 //! hooks, the event loop and the server.
 use crate::context::Ctx;
 use std::{
-    cell::Cell,
     ffi::{CStr, c_int, c_long, c_void},
     ptr::NonNull,
 };
@@ -273,17 +272,9 @@ fn iouring_stats(stats: &mut Stats) {
     stats.iouring_waiting_task_num = i64::try_from(waiting).unwrap_or(i64::MAX);
 }
 
-per_thread! {
-    /// `swoole_test_kernel_coroutine`'s arguments, from its call to the start of
-    /// the coroutine it creates, which takes them before its first switch.
-    static KERNEL_ARGS: Cell<(c_long, f64)> = Cell::new((0, 0.0));
-}
-
 /// `swoole_test_kernel_coroutine`'s coroutine: sleeps `count` times.
 pub(crate) fn kernel_coroutine(count: c_long, sleep: f64) {
-    /// The coroutine's body: [`KERNEL_ARGS`]'s `(count, sleep)`.
-    extern "C" fn sleeper(_: *mut c_void) {
-        let (count, sleep) = KERNEL_ARGS.with(Cell::get);
+    let _cid = swoole_rs_coroutine::spawn(move || {
         for _ in 0..count {
             #[expect(
                 clippy::let_underscore_must_use,
@@ -291,18 +282,7 @@ pub(crate) fn kernel_coroutine(count: c_long, sleep: f64) {
             )]
             let _ = super::sleep(sleep);
         }
-    }
-    KERNEL_ARGS.with(|args| args.set((count, sleep)));
-    spawn(sleeper);
-}
-
-/// `Coroutine::create(entry, nullptr)`: a coroutine running `entry`, which
-/// reads no argument (its own per-thread slot hands it what it needs), until it
-/// first yields or ends; its id. As for [`resume`], the caller's frames own
-/// nothing that needs a drop.
-fn spawn(entry: extern "C" fn(*mut c_void)) -> c_long {
-    // SAFETY: a safe entry takes any argument, null too.
-    unsafe { swoole_rs_coroutine::swr_v1_coroutine_create(entry, std::ptr::null_mut()) }
+    });
 }
 
 /// The context of `co`'s origin, none for the main context (or no coroutine).
@@ -486,17 +466,15 @@ pub(crate) fn is_end(co: Co) -> bool {
 }
 
 /// `PHPCoroutine::create`'s `Coroutine::create(main_func, args)`.
-pub(crate) fn create(args: *mut c_void) -> c_long {
-    // SAFETY: the coroutine's entry, with the creator's live arguments.
-    unsafe { swoole_rs_coroutine::swr_v1_coroutine_create(main, args) }
+pub(crate) fn create(args: crate::context::Args) -> c_long {
+    swoole_rs_coroutine::spawn(move || main(args))
 }
 
 /// `main_func`: the coroutine's function and defer tasks run inside
 /// `zend_first_try`; a coroutine that ended in an exception or a bailout
 /// bails the whole process out. Its frame owns nothing to drop.
-unsafe extern "C" fn main(args: *mut c_void) {
-    // SAFETY: on the new coroutine, with its creator's arguments.
-    let Some(ctx) = (unsafe { crate::context::open(args) }) else {
+fn main(args: crate::context::Args) {
+    let Some(ctx) = crate::context::open(args) else {
         return;
     };
     let context = ctx.ptr().cast();
