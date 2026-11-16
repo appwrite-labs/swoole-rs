@@ -38,12 +38,19 @@ void swr_zend_http_upload(zval *tmpfiles, struct iovec file) {
 
 void swr_zend_http_release_objects(void *arg) {
     swr_zend_http_release *release = arg;
+    if (release->begun >= 2) {
+        return;
+    }
     if (release->begun == 0) {
         release->begun = 1;
         zval_ptr_dtor(release->request);
     }
     release->begun = 2;
     zval_ptr_dtor(release->response);
+}
+
+int swr_zend_http_try_release_objects(swr_zend_http_release *release) {
+    return swr_zend_try(swr_zend_http_release_objects, release);
 }
 
 bool swr_zend_http_treat_data(int arg, char *str, zval *dest) {
