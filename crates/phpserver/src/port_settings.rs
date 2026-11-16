@@ -506,8 +506,8 @@ mod tests {
     use swoole_rs_server::port_config::swr_v1_port_config_new;
 
     /// The mock settings' `package_length_func` callback.
-    unsafe extern "C" fn length_func(
-        _: *const Protocol,
+    fn length_func(
+        _: &Protocol,
         _: Option<swoole_rs_clients::protocol::Socket<'_>>,
         _: &mut PacketLength,
     ) -> isize {

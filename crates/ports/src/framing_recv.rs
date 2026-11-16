@@ -110,9 +110,10 @@ pub(crate) trait Packages {
     #[inline(always)]
     fn length(&self, r: &Recv<'_>, bytes: &[u8]) -> Option<usize> {
         let mut pl = PacketLength::new(bytes);
-        let get = r.protocol().get_package_length?;
-        // SAFETY: upstream's call over the live protocol, socket and buffer.
-        let length = unsafe { get(r.protocol.protocol, Some(r.socket), &mut pl) };
+        // A copy: the callback may run PHP that rewrites the protocol.
+        let protocol = *r.protocol();
+        let get = protocol.get_package_length?;
+        let length = get(&protocol, Some(r.socket), &mut pl);
         usize::try_from(length).ok()
     }
     /// `onPackage` over a whole package; whether it succeeded. No reference to the
@@ -440,10 +441,7 @@ pub(crate) fn receive<'a, K: Packages>(
         flags |= if skip { FLAG_SKIP } else { 0 };
     } else if mode == Mode::Length {
         let size = p.get_package_length_size;
-        head = u32::from(size.map_or(p.package_length_size, |size| {
-            // SAFETY: upstream's call over the socket the protocol was set up for.
-            unsafe { size(socket) }
-        }));
+        head = u32::from(size.map_or(p.package_length_size, |size| size(socket)));
         flags |=
             (if skip { FLAG_SKIP } else { 0 }) | (if size.is_some() { FLAG_DYNAMIC } else { 0 });
     }
@@ -476,19 +474,13 @@ fn client_recv<const LENGTH: bool>(client: Handle) -> c_int {
 pub const FRAMING: Framing = Framing::new(client_recv::<true>, client_recv::<false>);
 
 /// `static ssize_t Protocol::default_length_func(const Protocol *, Socket *, PacketLength *)`.
-///
-/// # Safety
-/// A live protocol and socket, and a packet whose `buf` holds `buf_size` bytes.
-pub unsafe extern "C" fn default_length_func(
-    p: *const Protocol,
+pub fn default_length_func(
+    p: &Protocol,
     socket: Option<Socket<'_>>,
     pl: &mut PacketLength,
 ) -> isize {
-    // SAFETY: as the caller promises.
-    let p = unsafe { &*p };
     let size = match (p.get_package_length_size, socket) {
-        // SAFETY: upstream's call over the socket the protocol was set up for.
-        (Some(size), Some(socket)) => unsafe { size(socket) },
+        (Some(size), Some(socket)) => size(socket),
         _ => p.package_length_size,
     };
     let bytes = pl.bytes();

@@ -226,15 +226,13 @@ mod native {
             unsafe { std::slice::from_raw_parts(buf, size as usize) }
         };
         let mut packet = PacketLength::new(bytes);
-        let (protocol, callback) = (socket.protocol_ptr(), socket.protocol().get_package_length);
-        let Some(call) = callback else {
+        // A copy: the callback may run PHP that rewrites the protocol.
+        let protocol = socket.protocol();
+        let Some(call) = protocol.get_package_length else {
             return crate::packet::Length::NotFound;
         };
-        // SAFETY: the record's protocol and network socket, if open, and `size` bytes
-        // at `buf`.
-        let mut measure = |net: Option<swoole_rs_reactor::Socket<'_>>| unsafe {
-            call(protocol, net, &mut packet)
-        };
+        let mut measure =
+            |net: Option<swoole_rs_reactor::Socket<'_>>| call(&protocol, net, &mut packet);
         let length = socket
             .with_network(|net| measure(Some(net)))
             .unwrap_or_else(|| measure(None));
