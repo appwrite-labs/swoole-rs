@@ -211,26 +211,21 @@ pub(crate) fn recv(ops: &UringSocketOps<'_>, buf: &mut [impl ReadSlot]) -> Optio
     })
 }
 
-/// `recvfrom` into `buf` and the caller's `peer`: a peek through the ring, then the
-/// datagram itself without blocking. The result and the length of the peer's address.
+/// `recvfrom` into `buf` and the caller's `peer`, its length into `peer.len`: a peek
+/// through the ring, then the datagram itself without blocking.
 pub(crate) fn recvfrom_into(
     ops: &UringSocketOps<'_>,
     buf: &mut [impl ReadSlot],
-    peer: &mut libc::sockaddr_storage,
-) -> (Option<usize>, libc::socklen_t) {
+    peer: &mut SocketAddress,
+) -> Option<usize> {
     let (host, tls) = (ops.host(), ops.tls);
-    let mut size = swoole_rs_corebase::sys::socklen::<libc::sockaddr_storage>();
-    let received = ops.transfer(Events::READ, false, || {
+    ops.transfer(Events::READ, false, || {
         let peeked = uring::recv(host, tls.fd, buf, libc::MSG_PEEK, tls.read_timeout).ok();
         if peeked <= Some(0) {
             return peeked;
         }
-        let (at, n) = (buf.as_mut_ptr().cast(), buf.len());
-        let (addr, flags) = (core::ptr::from_mut(peer).cast(), libc::MSG_DONTWAIT);
-        // SAFETY: `buf`'s writable bytes, and the borrowed storage with its own size.
-        usize::try_from(unsafe { libc::recvfrom(tls.fd, at, n, flags, addr, &raw mut size) }).ok()
-    });
-    (received, size)
+        peer.recvfrom(tls.fd, buf, libc::MSG_DONTWAIT)
+    })
 }
 
 /// `recvfrom` into `buf`, the sender into the socket's own peer address: a peek
@@ -768,6 +763,20 @@ mod tests {
             assert_eq!(&received, b"ping");
             // sendto checks availability itself, before resolving the host.
             assert_eq!(logged(), ["check 4"]);
+
+            // The reply comes back with its sender's address and length.
+            let replier = receiver.local_addr().unwrap();
+            receiver
+                .send_to(b"pong", sender.local_addr().unwrap())
+                .unwrap();
+            let (mut peer, mut reply) = (SocketAddress::default(), [0u8; 8]);
+            assert_eq!(recvfrom_into(&to, &mut reply, &mut peer), Some(4));
+            assert_eq!(&reply[..4], b"pong");
+            assert_eq!(
+                peer.len,
+                libc::socklen_t::try_from(size_of::<libc::sockaddr_in>()).unwrap()
+            );
+            assert_eq!(peer.addr.v4().sin_port, replier.port().to_be());
         });
     }
 }

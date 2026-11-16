@@ -63,7 +63,7 @@ extern const php_stream_ops swoole_runtime_socket_ops;
 int swr_zend_try_socket_stream_alloc(const char *persistent, php_stream **stream);
 int swr_zend_try_stream_close(php_stream *);
 /* php_network_populate_name_from_sockaddr of the first `size` bytes of `peer`,
- * at most all of it. */
-void swr_zend_stream_populate_name(const struct sockaddr_storage *peer, socklen_t size,
+ * which holds them. */
+void swr_zend_stream_populate_name(const struct sockaddr *peer, socklen_t size,
     zend_string **textaddr, struct sockaddr **addr, socklen_t *addrlen);
 #endif

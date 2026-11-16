@@ -214,10 +214,9 @@ int swr_zend_try_socket_stream_alloc(const char *persistent, php_stream **stream
     return bailed;
 }
 
-void swr_zend_stream_populate_name(const struct sockaddr_storage *peer, socklen_t size,
+void swr_zend_stream_populate_name(const struct sockaddr *peer, socklen_t size,
     zend_string **textaddr, struct sockaddr **addr, socklen_t *addrlen) {
-    php_network_populate_name_from_sockaddr((struct sockaddr *) peer,
-        size < sizeof *peer ? size : (socklen_t) sizeof *peer, textaddr, addr, addrlen);
+    php_network_populate_name_from_sockaddr((struct sockaddr *) peer, size, textaddr, addr, addrlen);
 }
 int swr_zend_try_stream_close(php_stream *stream) {
     volatile int bailed = 0;
