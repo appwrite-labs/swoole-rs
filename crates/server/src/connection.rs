@@ -384,8 +384,7 @@ pub(crate) fn idle_timeout(serv: view::Server<'_>, reactor: Reactor, conn: Conne
     let now = swoole_rs_reactor::steady_ms();
     let (received, sent) = conn
         .socket()
-        .map(|s| s.read(|s| (s.last_received_time, s.last_sent_time)))
-        .unwrap_or_default();
+        .map_or_default(|s| s.read(|s| (s.last_received_time, s.last_sent_time)));
     if now - received < idle && now - sent < idle {
         return;
     }

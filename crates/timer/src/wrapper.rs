@@ -355,7 +355,7 @@ pub mod php {
     /// `Timer::get_ids()`: every timer's id, empty without a timer.
     #[must_use]
     pub fn ids() -> Vec<i64> {
-        current().map(Timer::ids).unwrap_or_default()
+        current().map_or_default(Timer::ids)
     }
 
     /// `swoole_timer_clear`'s lookup and removal of a PHP timer: whether the
