@@ -144,7 +144,7 @@ impl Server {
 
 /// `network::SyncClient`, closed and deleted on drop.
 struct SyncClient {
-    state: *mut c_void,
+    state: Handle,
     dgram: bool,
     connected: bool,
     created: bool,
@@ -152,9 +152,7 @@ struct SyncClient {
 
 impl SyncClient {
     fn new(kind: c_int) -> Self {
-        let state: *mut c_void = native::create(kind, false)
-            .map_or(std::ptr::null_mut(), |client| client.as_ptr().cast());
-        assert!(!state.is_null(), "the client has a socket");
+        let state = native::create(kind, false).expect("the client has a socket");
         Self {
             state,
             dgram: kind == SW_SOCK_UDP || kind == SW_SOCK_UDP6,
@@ -165,8 +163,7 @@ impl SyncClient {
 
     /// crates/clients' handle on the client.
     fn handle(&self) -> Handle {
-        // SAFETY: the client `new` made, live until the drop frees it.
-        unsafe { Handle::new(self.state.cast()) }
+        self.state
     }
 
     fn connect(&mut self, host: &str, port: c_int) -> bool {
@@ -208,8 +205,7 @@ impl SyncClient {
     }
 
     fn close(&mut self) -> bool {
-        // SAFETY: the client `new` made, live until the drop frees it.
-        let client = unsafe { &*self.state.cast::<swoole_rs_clients::client::Client>() };
+        let client = self.state.client();
         if !self.created || client.flag(Flag::Closed) {
             return false;
         }

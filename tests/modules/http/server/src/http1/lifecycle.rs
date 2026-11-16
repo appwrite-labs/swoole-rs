@@ -7,7 +7,7 @@ use super::*;
 use crate::TEST_STR;
 use case::TimerNode;
 use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicU16, AtomicU64};
-use swoole_rs_clients::client::{self as native, Client, ClientEvent, Handle, listen};
+use swoole_rs_clients::client::{self as native, ClientEvent, Handle, listen};
 use swoole_rs_process::methods::{ExitStatus, send_pipe_message, swoole_get_worker_type};
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_server::{event_worker, manager, task_worker, worker_methods};
@@ -1566,13 +1566,21 @@ fn process_single_thread() {
 
 /// `test_clean_worker`'s `AsyncClient ac(SW_SOCK_TCP)`, made before the server forks, so
 /// a worker's `ac.get_client()` is the master's client, over the same socket.
-static CLEAN_CLIENT: AtomicPtr<Client> = AtomicPtr::new(ptr::null_mut());
+static CLEAN_CLIENT: Mutex<Option<CleanClient>> = Mutex::new(None);
+
+/// The client's handle, which the server's threads share as upstream's test does.
+#[derive(Clone, Copy)]
+struct CleanClient(Handle);
+
+// SAFETY: one thread at a time drives the client: the timer connects it, and the
+// test frees it once the server stopped.
+unsafe impl Send for CleanClient {}
 static CLEAN_PORT: AtomicU16 = AtomicU16::new(0);
 
 /// `ac.get_client()`.
 fn clean_client() -> Handle {
-    // SAFETY: the client `test_clean_worker` made, live until it frees it.
-    unsafe { Handle::new(CLEAN_CLIENT.load(Ordering::SeqCst)) }
+    let client = *CLEAN_CLIENT.lock().unwrap();
+    client.expect("test_clean_worker made the client").0
 }
 
 /// The client's `on_connect`, `on_close`, `on_error` and `on_receive`.
@@ -1598,9 +1606,11 @@ unsafe extern "C" fn clean_connect_timer(_: *mut c_void, _: *mut TimerNode) {
     ]
     .iter()
     .fold(0, |events, kind| events | kind.bit());
-    // SAFETY: the live client.
-    let client = unsafe { &*CLEAN_CLIENT.load(Ordering::SeqCst) };
-    listen(client, events, std::rc::Rc::new(clean_client_event));
+    listen(
+        clean_client().client(),
+        events,
+        std::rc::Rc::new(clean_client_event),
+    );
     let host = CString::new(TEST_HOST).unwrap();
     let port = CLEAN_PORT.load(Ordering::SeqCst).into();
     let connected = native::connect(clean_client(), &host, port, -1.0, 0);
@@ -1656,12 +1666,9 @@ fn test_clean_worker(mode: c_int) {
 
     counter_init();
 
-    let client = native::create(SW_SOCK_TCP, true).map_or(std::ptr::null_mut(), Handle::as_ptr);
-    assert!(
-        !client.is_null(),
-        "AsyncClient ac(SW_SOCK_TCP) has a socket"
-    );
-    CLEAN_CLIENT.store(client, Ordering::SeqCst);
+    let client =
+        native::create(SW_SOCK_TCP, true).expect("AsyncClient ac(SW_SOCK_TCP) has a socket");
+    *CLEAN_CLIENT.lock().unwrap() = Some(CleanClient(client));
 
     let port = serv.add_port(SW_SOCK_TCP, TEST_HOST, 0);
     assert!(port.is_some());
