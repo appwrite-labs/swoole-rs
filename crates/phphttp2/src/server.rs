@@ -792,10 +792,10 @@ fn write(ctx: Ctx, chunk: &[u8]) -> bool {
     send_body(ctx, &session, &stream, chunk, false)
 }
 
-pub(crate) fn begin_file(ctx: Ctx, content_type: &[u8], length: usize) -> c_int {
-    let Some((session, stream)) = of(ctx) else {
-        return -1;
-    };
+/// Sends a file response's headers: whether trailers follow the body, `None` when
+/// the headers could not be sent.
+pub(crate) fn begin_file(ctx: Ctx, content_type: &[u8], length: usize) -> Option<bool> {
+    let (session, stream) = of(ctx)?;
     set(ctx, Field::AcceptCompression, 0);
     let trailer = has_trailer(ctx);
     // The held array's reference ends here: a write to a shared array asserts.
@@ -808,11 +808,11 @@ pub(crate) fn begin_file(ctx: Ctx, content_type: &[u8], length: usize) -> c_int 
     }
     let body = Body { data: &[], length };
     if !send_header(ctx, &session, &stream, Some(body), !trailer) {
-        return -1;
+        return None;
     }
     // Headers are sent: retries are no longer allowed, even if the body fails.
     set(ctx, Field::End, 1);
-    c_int::from(trailer)
+    Some(trailer)
 }
 
 /// The trailer, then the stream is done: false after an error.

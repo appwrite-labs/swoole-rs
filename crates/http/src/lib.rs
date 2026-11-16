@@ -22,7 +22,7 @@ mod framing;
 pub use framing::{HttpFrame, expect as has_expect_header, header_value};
 mod headers;
 mod index_page;
-pub use headers::{HttpCookie, HttpHeaderInfo, cookie_next, header_info};
+pub use headers::{HttpCookie, HttpHeaderInfo, MalformedHead, cookie_next, header_info};
 mod maps;
 mod multipart;
 pub use multipart::{MultipartError, multipart_disposition, multipart_filename, multipart_result};
