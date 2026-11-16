@@ -5,6 +5,9 @@ puts a PR in main's merge queue once its PR tier passes.
   ci.py wait [--commit SHA]  wait for a workflow run (default: the merge tier on main, which runs
                              hourly); a run replaced by a newer one on main follows the newer run
   ci.py status [--commit SHA]  the same, without waiting
+  ci.py status --latest --workflow bench.yml --event schedule
+                             newest matching run on main, even after main advances; wait with
+                             --latest pins that run (exit 2 immediately if none exists)
   ci.py timings [--since T]  latest successful PR runs with PHPT (created at or after T): time to
                              required and job/step timestamps, as JSON (default: 20 qualifying
                              runs among the latest 100)
@@ -194,15 +197,27 @@ def conflicting(sha):
     return None
 
 
-def wait(workflow, sha, deadline, poll):
+def latest(workflow, event):
+    """Select one run on main independently of its current head; never substitute another event."""
+    runs = json.loads(gh('run', 'list', '--workflow', workflow, '--branch', 'main', '--limit', '1',
+                         *(('--event', event) if event else ()),
+                         '--json', 'databaseId,headSha,url,event,attempt,createdAt'))
+    if not runs:
+        return {}
+    run = runs[0]
+    return {'run': run['databaseId'], 'commit': run['headSha'], 'url': run['url'],
+            'event': run['event'], 'attempt': run['attempt'], 'created_at': run['createdAt']}
+
+
+def wait(workflow, sha, deadline, poll, run=None):
     """Wait for the run on sha to finish, reporting each job as its state changes. A run
     replaced by a newer run on main follows the newer run, which also covers sha. The merge tier
-    runs on main hourly, so its run may take up to an hour to appear."""
+    runs on main hourly, so its run may take up to an hour to appear. An explicit run stays pinned."""
     seen, appear_by = {}, time.monotonic() + (4500 if workflow == 'merge.yml' else 300)
     while True:
-        result = status(workflow, sha)
+        result = status(workflow, sha, run)
         # An hourly run on main may start after a later merge, so sha may never get one of its own.
-        newer = (result['state'] == 'cancelled' or (result['state'] == 'none' and workflow == 'merge.yml')) \
+        newer = run is None and (result['state'] == 'cancelled' or (result['state'] == 'none' and workflow == 'merge.yml')) \
             and successor(workflow, sha)
         if newer:
             say(f'{workflow} {sha[:7]}: replaced by the run on {newer[:7]}, which contains it')
@@ -215,7 +230,7 @@ def wait(workflow, sha, deadline, poll):
                 say(f"{workflow} {sha[:7]} {job['name']}: {job['state']}{took}")
         if result['state'] not in ('running', 'none'):
             return result
-        if result['state'] == 'none' and workflow != 'merge.yml' and (number := conflicting(sha)):
+        if run is None and result['state'] == 'none' and workflow != 'merge.yml' and (number := conflicting(sha)):
             say(f'PR #{number} conflicts with main: rebase it; no {workflow} run starts until then')
             return {**result, 'state': 'conflicts', 'pr': number, 'pr_state': 'open'}
         if result['state'] == 'none' and time.monotonic() > appear_by:
@@ -351,7 +366,7 @@ def report(result, as_json):
         return
     if 'pr' in result:
         print(f"PR #{result['pr']}: {result['pr_state']}")
-    line = f"{result['workflow']} {result['commit'][:7]}: {result['state']}"
+    line = f"{result['workflow']} {(result['commit'] or 'latest')[:7]}: {result['state']}"
     print(line + (' (timed out)' if result.get('timed_out') else '') + (f"  {result['url']}" if 'url' in result else ''))
     for job in result.get('jobs', []):
         print(f"  {job['name']}: {job['state']}" + (f" in {job['seconds']}s" if job['seconds'] is not None else ''))
@@ -617,7 +632,10 @@ def main(argv=None):
     commands = parser.add_subparsers(dest='command', required=True)
     for name in ['status', 'wait']:
         command = commands.add_parser(name)
-        command.add_argument('--commit', help='sha or branch (default: main)')
+        selection = command.add_mutually_exclusive_group()
+        selection.add_argument('--commit', help='sha or branch (default: main)')
+        selection.add_argument('--latest', action='store_true', help='select the newest workflow run on main')
+        command.add_argument('--event', help='with --latest, select only this trigger (e.g. schedule)')
         command.add_argument('--workflow', default='merge.yml')
         command.add_argument('--timeout', type=int, help='seconds (default '
                              + ('6300 for merge.yml, else 3600)' if name == 'wait' else '3600)'))
@@ -636,6 +654,8 @@ def main(argv=None):
     baseline.add_argument('--saved', type=Path, help="the restored phpt-baseline cache: answer from it, with no API "
                           "call, when it has a meta.json")
     args = parser.parse_args(argv)
+    if args.command in ('status', 'wait') and args.event and not args.latest:
+        parser.error('--event requires --latest')
     global RETRY_DEADLINE, RETRY_BASE
     if args.command == 'timings':
         if not 0 < args.count <= args.scan:
@@ -674,10 +694,15 @@ def main(argv=None):
     deadline = time.monotonic() + timeout
     RETRY_DEADLINE, RETRY_BASE = deadline, min(RETRY_BASE, args.poll) if args.poll else 0.0
     try:
-        sha = resolve(args.commit)
-        result = status(args.workflow, sha) if args.command == 'status' else wait(args.workflow, sha, deadline, args.poll)
+        selected = latest(args.workflow, args.event) if args.latest else {}
+        sha = selected.get('commit') if args.latest else resolve(args.commit)
+        result = {'workflow': args.workflow, 'commit': None, 'state': 'none', 'event': args.event}
+        if sha is not None:
+            result = (status(args.workflow, sha, selected.get('run')) if args.command == 'status' else
+                      wait(args.workflow, sha, deadline, args.poll, selected.get('run')))
+        result = {**selected, **result}
         result = diagnostics(result)
-        if args.command == 'status' and args.workflow == 'merge.yml' and result['state'] not in ('passed', 'failed'):
+        if not args.latest and args.command == 'status' and args.workflow == 'merge.yml' and result['state'] not in ('passed', 'failed'):
             result['last_completed'] = completed_main()
     except subprocess.CalledProcessError as failure:
         sys.exit(f"gh {' '.join(failure.cmd[1:])}: {failure.stderr.strip()}")
