@@ -651,8 +651,9 @@ mod tests {
                         fds[0],
                         token,
                         events
-                    ),
-                    0
+                    )
+                    .ok(),
+                    Some(())
                 );
             }
             #[cfg(not(target_os = "linux"))]

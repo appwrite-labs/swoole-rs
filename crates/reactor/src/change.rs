@@ -142,7 +142,7 @@ impl Change {
             );
             return false;
         }
-        if registration::epoll_ctl(epfd, self.op, fd, token, self.events) >= 0 {
+        if registration::epoll_ctl(epfd, self.op, fd, token, self.events).is_ok() {
             return true;
         }
         let error = errno();
