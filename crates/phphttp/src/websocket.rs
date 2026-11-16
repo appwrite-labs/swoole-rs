@@ -26,7 +26,7 @@ use swoole_rs_phpstubs::websocket as stubs;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_server::{server_methods, view};
 use swoole_rs_websocket::{
-    DecodedFrame, Delivery, INVALID_CONTROL, Opcode, control_invalid, encode_close_into,
+    DecodeErrorKind, DecodedFrame, Delivery, Opcode, control_invalid, encode_close_into,
     encode_into, encoded_size, header, message_policy, pack_policy,
 };
 use swoole_rs_zend::{
@@ -648,31 +648,36 @@ fn to_string(call: &Call) {
 /// unmasked in place.
 fn decode(data: &mut [u8]) -> Option<DecodedFrame> {
     let func = c"websocket::decode";
-    let (total, frame) = swoole_rs_websocket::decode_in_place(data);
-    if total == INVALID_CONTROL {
-        warning(
-            func,
-            &format!(
-                "invalid compressed websocket control frame received: opcode={}",
-                frame.opcode
-            ),
-        );
-        return None;
-    }
-    if total <= 0 || usize::try_from(total).is_ok_and(|total| data.len() < total) {
-        host::log(
-            LOG_WARNING,
-            WEBSOCKET_INCOMPLETE_PACKET,
-            func,
-            format!(
-                "incomplete packet, expected length is {}, actual length is {}",
-                total.cast_unsigned(),
-                data.len()
-            ),
-        );
-        return None;
-    }
-    Some(frame)
+    let error = match swoole_rs_websocket::decode_in_place(data) {
+        Ok(frame) => return Some(frame),
+        Err(error) => error,
+    };
+    let frame = error.frame;
+    let expected = match error.kind {
+        DecodeErrorKind::CompressedControl => {
+            warning(
+                func,
+                &format!(
+                    "invalid compressed websocket control frame received: opcode={}",
+                    frame.opcode
+                ),
+            );
+            return None;
+        }
+        DecodeErrorKind::IncompleteHeader => 0,
+        DecodeErrorKind::IncompleteBody => (frame.header_length + frame.payload_length) as u64,
+        DecodeErrorKind::LengthOverflow => u64::MAX,
+    };
+    host::log(
+        LOG_WARNING,
+        WEBSOCKET_INCOMPLETE_PACKET,
+        func,
+        format!(
+            "incomplete packet, expected length is {expected}, actual length is {}",
+            data.len()
+        ),
+    );
+    None
 }
 
 fn unpack(call: &Call) {
