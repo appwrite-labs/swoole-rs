@@ -39,11 +39,11 @@ resume callback still sees the old current; yield clears the resume code before
 its callback). They call back through the scheduler's `hooks`: `swap_in` (returns
 whether the coroutine ended), `swap_out` and `destroy` (frees the record and its
 stack, or joins its thread), Rust functions over the live coroutine; `bailout`
-(`on_bailout`, a C function and its data) and, under `SW_CORO_TIME`, `clock`. After a switch in, an ended
+(`on_bailout`, a C function, or null) and, under `SW_CORO_TIME`, `clock`. After a switch in, an ended
 coroutine closes: the close callback, then `release` restores current, orphans
 the coroutines this one resumed, unlinks it from its origin and drops it from
 the live map, then `destroy`. Otherwise a set bailout mark runs the bailout
-hook. `swr_v1_coroutine_bail(callback, data)` is `Coroutine::bailout`: inside a
+hook. `swr_v1_coroutine_bail(callback)` is `Coroutine::bailout`: inside a
 coroutine it sets the hook, jumps to the main context and exits with
 `SW_CORO_BAILOUT_EXIT_CODE` if that returns; outside one it marks the scheduler.
 

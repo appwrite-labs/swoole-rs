@@ -240,20 +240,17 @@ impl ResolverRequest {
     }
 }
 
-/// Takes another reference to `owner`.
-pub fn swr_v1_core_resolver_retain(owner: &ResolverRequest) {
-    owner.refs.fetch_add(1, Ordering::Relaxed);
-}
-
 /// One reference to a record [`ResolverRequest::create`] leaked: it reads the
-/// record, which it keeps live, and gives the reference up when it drops.
+/// record, which it keeps live, and gives the reference up when it drops. A clone
+/// takes another reference. Transparent over the record's address, which C carries
+/// as `AsyncEvent::data`.
+#[repr(transparent)]
 pub struct ResolverRef(NonNull<ResolverRequest>);
 
-impl ResolverRef {
-    /// The record, for an event's `data`, whose holder takes a reference of its own.
-    #[must_use]
-    pub const fn as_ptr(&self) -> *mut ResolverRequest {
-        self.0.as_ptr()
+impl Clone for ResolverRef {
+    fn clone(&self) -> Self {
+        self.refs.fetch_add(1, Ordering::Relaxed);
+        Self(self.0)
     }
 }
 
@@ -275,13 +272,6 @@ impl Drop for ResolverRef {
             drop(unsafe { Box::from_raw(self.0.as_ptr()) });
         }
     }
-}
-
-/// Drops one reference; the last frees the record.
-/// # Safety
-/// owner is null or a reference the caller holds and gives up here.
-pub unsafe extern "C" fn swr_v1_core_resolver_free(owner: *mut ResolverRequest) {
-    drop(NonNull::new(owner).map(ResolverRef));
 }
 
 /// One address as text; `valid` false if it does not format.
@@ -333,12 +323,10 @@ mod completion_tests {
     #[test]
     fn the_last_reference_frees_the_record() {
         let request = ResolverRequest::create(libc::AF_INET, 0, 0, b"", b"").unwrap();
-        let owner = request.as_ptr();
-        swr_v1_core_resolver_retain(&request);
+        let copy = request.clone();
         drop(request);
         // The pool copy's reference keeps the record after its request went.
-        assert_eq!(unsafe { &*owner }.refs.load(Ordering::Relaxed), 1);
-        unsafe { swr_v1_core_resolver_free(owner) };
-        unsafe { swr_v1_core_resolver_free(core::ptr::null_mut()) };
+        assert_eq!(copy.refs.load(Ordering::Relaxed), 1);
+        drop(copy);
     }
 }
