@@ -6,8 +6,9 @@
 //! coroutine waiting on the transfer is resumed when either fires.
 //!
 //! The bundled `ext/curl` calls these exports directly (`swoole_rs_curl.h`).
-//! The reactor, timer and coroutine operations are `host`'s; the tests fake
-//! them. `swoole_curl_get_handle` reads the PHP objects (the `php` feature).
+//! Each multi carries its reactor, timer and coroutine operations; tests inject
+//! recording callbacks into the same engine. `swoole_curl_get_handle` reads the
+//! PHP objects (the `php` feature).
 #![expect(
     clippy::disallowed_types,
     reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
@@ -150,6 +151,7 @@ struct Socket {
 pub struct Multi {
     /// This multi, for what reaches it later: its sockets, timer and wake-up.
     this: Weak<Multi>,
+    host: &'static host::Ops,
     /// None when libcurl could make no handle: its calls then refuse the null one.
     handle: Option<MultiHandle>,
     /// The id of the pending timer.
@@ -243,10 +245,15 @@ impl Multi {
     /// `Multi::Multi`: a multi handle whose socket and timer callbacks reach
     /// this multi, which therefore stays where it is until [`Multi::close`].
     fn create() -> Rc<Self> {
+        Self::with_host(&host::NATIVE)
+    }
+
+    fn with_host(host: &'static host::Ops) -> Rc<Self> {
         let made = curl_multi_init();
         let handle = made.as_ref().map_or(ptr::null_mut(), MultiHandle::as_ptr);
         let multi = Rc::new_cyclic(|this| Self {
             this: this.clone(),
+            host,
             handle: made,
             timer: Cell::new(None),
             co: Cell::new(None),
@@ -294,14 +301,14 @@ impl Multi {
 
     fn add_timer(&self, timeout_ms: c_long) {
         self.del_timer();
-        self.timer.set(host::timer_add(timeout_ms, self));
+        self.timer.set((self.host.timer_add)(timeout_ms, self));
     }
 
     fn del_timer(&self) {
         if let Some(timer) = self.timer.get()
-            && host::timer_available()
+            && (self.host.timer_available)()
         {
-            host::timer_del(timer);
+            (self.host.timer_del)(timer);
             self.timer.set(None);
         }
     }
@@ -319,7 +326,7 @@ impl Multi {
 
     /// `Multi::handle_timeout`.
     fn on_timeout(&self, timeout_ms: c_long) -> c_int {
-        if !host::event_available() {
+        if !(self.host.event_available)() {
             return -1;
         }
         if timeout_ms < 0 {
@@ -337,15 +344,15 @@ impl Multi {
 
     /// `Multi::set_event`: whether the socket is in the reactor for `action`.
     fn set_event(&self, sockfd: curl_socket_t, action: c_int) -> bool {
-        if !host::event_available() {
+        if !(self.host.event_available)() {
             return false;
         }
-        host::install_handlers();
+        (self.host.install_handlers)();
         let known = with(&self.sockets, |sockets| sockets.get(&sockfd).cloned());
         let socket = known.unwrap_or_else(|| {
             let socket = Rc::new(Socket {
                 multi: self.this.clone(),
-                socket: host::ReactorSocket::new(sockfd),
+                socket: host::ReactorSocket::new(sockfd, self.host),
                 bitmask: Cell::new(0),
                 sockfd: Cell::new(0),
                 action: Cell::new(0),
@@ -429,12 +436,16 @@ impl Multi {
         loop {
             self.selector_prepare();
             if self.wait_event() {
-                let co = host::current();
-                let Some(waiter) = Waiter::running(co).filter(|_| self.co.get().is_none()) else {
+                let co = (self.host.current)();
+                let Some(waiter) = Waiter::running(co, (self.host.current_cid)())
+                    .filter(|_| self.co.get().is_none())
+                else {
                     return EXEC_NEEDS_COROUTINE;
                 };
                 self.co.set(Some(waiter));
-                canceled = host::yield_(co, -1.0, |waker| self.co.set(Some(waiter.parked(waker))));
+                canceled = (self.host.yield_)(co, -1.0, &mut |waker| {
+                    self.co.set(Some(waiter.parked(waker)));
+                });
                 self.co.set(None);
                 if canceled {
                     set_last_error(CO_CANCELED);
@@ -582,10 +593,10 @@ impl Multi {
         if !self.wait_event() {
             return 0;
         }
-        let waiter = Waiter::running(co);
+        let waiter = Waiter::running(co, (self.host.current_cid)());
         self.co.set(waiter);
-        let arm = |waker| self.co.set(waiter.map(|waiter| waiter.parked(waker)));
-        host::yield_(co, timeout, arm);
+        let mut arm = |waker| self.co.set(waiter.map(|waiter| waiter.parked(waker)));
+        (self.host.yield_)(co, timeout, &mut arm);
         self.co.set(None);
         self.ready()
     }
@@ -618,7 +629,7 @@ impl Multi {
         if let Some(socket) = with(&self.sockets, |sockets| sockets.get(&sockfd?).cloned()) {
             self.activate(&socket);
         }
-        host::defer(self);
+        (self.host.defer)(self);
     }
 }
 
@@ -632,8 +643,7 @@ struct Waiter {
 
 impl Waiter {
     /// `co`, the running coroutine, or none outside one.
-    fn running(co: *mut c_void) -> Option<Self> {
-        let cid = host::current_cid();
+    fn running(co: *mut c_void, cid: c_long) -> Option<Self> {
         (!co.is_null()).then_some(Self { cid, waker: None })
     }
 
@@ -770,7 +780,7 @@ fn multi_deferred(this: &Multi) -> bool {
         return true;
     }
     if let Some(waker) = this.co.get().and_then(|waiter| waiter.waker) {
-        host::wake(waker);
+        (this.host.wake)(waker);
     }
     false
 }
@@ -844,15 +854,12 @@ pub extern "C" fn swoole_curl_easy_reset(cp: Idle<'_>) {
     cp.0.set_private(handle);
 }
 
-#[cfg(not(test))]
 mod host;
-#[cfg(not(test))]
 pub use host::{swoole_curl_check_bound_co, swoole_curl_easy_perform, swoole_curl_multi_new};
-#[cfg(all(feature = "php", not(test)))]
+#[cfg(feature = "php")]
 mod php;
-#[cfg(all(feature = "php", not(test)))]
+#[cfg(feature = "php")]
 pub use php::swoole_curl_get_handle;
 #[cfg(test)]
+#[path = "../../../tests/modules/hooks/curl.rs"]
 mod tests;
-#[cfg(test)]
-use tests::host;
