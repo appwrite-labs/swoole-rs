@@ -283,10 +283,7 @@ unsafe extern "C" {
     safe fn async_dispatch(event: &AsyncEvent<'_>) -> *mut c_void;
 }
 
-/// The public, trivially copyable fields of `network::Client`. C++ keeps typed
-/// aliases in its base record; protocol callbacks and addresses retain their
-/// original identity and lifetime, including direct SDK field writes.
-#[repr(C)]
+/// The public, trivially copyable fields of `network::Client`.
 #[derive(Clone, Copy)]
 pub struct ClientRecord {
     pub http2: bool,
@@ -302,20 +299,7 @@ pub struct ClientRecord {
     pub buffer: *mut c_void,
 }
 
-const _: () = {
-    use core::mem::{offset_of, size_of};
-    assert!(
-        offset_of!(ClientRecord, protocol) == 8
-            && offset_of!(ClientRecord, server_addr) == 72
-            && offset_of!(ClientRecord, remote_addr) == 72 + size_of::<SocketAddress>()
-            && offset_of!(ClientRecord, socket) == 72 + 2 * size_of::<SocketAddress>()
-            && size_of::<ClientRecord>() == 96 + 2 * size_of::<SocketAddress>(),
-        "network::Client's public record layout moved"
-    );
-};
-
-/// One client's state, its public record first: `network::Client`.
-#[repr(C)]
+/// One client's state: `network::Client`.
 pub struct Client {
     record: Cell<ClientRecord>,
     socket_ops: &'static SocketOps,

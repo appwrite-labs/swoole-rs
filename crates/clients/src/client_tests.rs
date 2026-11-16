@@ -641,7 +641,8 @@ fn datagram_sends_fail_with_sendto_and_dtls_sends_as_a_stream() {
 #[test]
 fn public_record_defaults_and_direct_framing_writes_drive_reads() {
     let client = client(1, true, true);
-    let fields = client.cast::<ClientRecord>();
+    // SAFETY: the live client.
+    let fields = unsafe { (*client).record.as_ptr() };
     unsafe {
         assert!(!(*fields).http2 && !(*fields).open_eof_check && !(*fields).open_length_check);
         assert_eq!((*fields).remote_addr.kind, 1);
@@ -678,7 +679,8 @@ fn public_record_defaults_and_direct_framing_writes_drive_reads() {
 #[test]
 fn datagram_peer_is_a_snapshot() {
     let client = client(2, false, false);
-    let fields = client.cast::<ClientRecord>();
+    // SAFETY: the live client.
+    let fields = unsafe { (*client).record.as_ptr() };
     unsafe {
         (*fields).remote_addr.len = 17;
         (*fields).remote_addr.kind = 4;
