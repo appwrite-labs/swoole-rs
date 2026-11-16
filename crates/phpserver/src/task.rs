@@ -82,7 +82,7 @@ struct Info {
 /// The server's task pool, and this worker's notify pipe and lock.
 struct Host<'a> {
     pool: PoolRef<'a>,
-    pipe: Option<&'a mut SocketPair>,
+    pipe: Option<&'a SocketPair>,
     lock: Option<&'static SharedMutex>,
 }
 
@@ -98,19 +98,19 @@ impl TaskHost for Host<'_> {
     }
 
     fn pipe_clean(&mut self) {
-        if let Some(pipe) = &self.pipe {
+        if let Some(pipe) = self.pipe {
             socket_pair::clean(pipe);
         }
     }
 
     fn set_timeout(&mut self, timeout: f64) {
-        if let Some(pipe) = &mut self.pipe {
+        if let Some(pipe) = self.pipe {
             socket_pair::set_timeout(pipe, timeout);
         }
     }
 
     fn read_notify(&mut self) -> Option<usize> {
-        let pipe = self.pipe.as_ref()?;
+        let pipe = self.pipe?;
         let mut notify = [std::mem::MaybeUninit::uninit(); size_of::<u64>()];
         socket_pair::read_into(pipe, &mut notify)
     }
@@ -141,8 +141,7 @@ fn task_state(serv: view::Server<'_>) -> Tasks<'_, Host<'_>> {
 fn wait_state(serv: view::Server<'_>) -> Option<Waiting<'_, Host<'_>>> {
     let mut tasks = task_state(serv);
     let id = swoole_get_worker_id().c_cast::<u16>();
-    // SAFETY: this worker's live notify pipe, which only this call uses meanwhile.
-    tasks.host.pipe = unsafe { serv.task_notify_pipe(id).as_mut() };
+    tasks.host.pipe = serv.task_notify_pipe(id);
     tasks.host.lock = serv
         .worker_record(id)
         .and_then(swoole_rs_process::worker_record::Worker::lock);
