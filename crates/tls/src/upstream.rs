@@ -46,7 +46,6 @@ const INVALID_PARAMS: c_int = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAM
 const CORK_MIN_SIZE: usize = 65536;
 /// `SW_FD_STREAM_SERVER`.
 const FD_STREAM_SERVER: c_int = 1;
-const SOCK_CLOEXEC: c_int = SocketFlag::SW_SOCK_CLOEXEC as c_int;
 const VERIFY_FAILED: c_int = ErrorCode::SW_ERROR_SSL_VERIFY_FAILED as c_int;
 const BAD_PROTOCOL: c_int = ErrorCode::SW_ERROR_SSL_BAD_PROTOCOL as c_int;
 
@@ -1133,7 +1132,8 @@ pub extern "C-unwind" fn make_server_socket(
 ) -> *mut SocketRecord {
     const ORIGIN: &CStr = c"make_server_socket";
     // The new record, which only this function holds.
-    let Some(record) = make_typed(kind, FD_STREAM_SERVER, SOCK_CLOEXEC) else {
+    let Some(record) = make_typed(kind, FD_STREAM_SERVER, SocketFlag::SW_SOCK_CLOEXEC.bits())
+    else {
         log::sys_warning(ORIGIN, format_args!("socket() failed"));
         return std::ptr::null_mut();
     };

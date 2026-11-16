@@ -618,9 +618,9 @@ mod tests {
         crate::swr_v1_tls_init().unwrap();
         let context = crate::TlsContext::new();
         let mut lent = context.borrow_configuration();
-        lent.set_value(crate::Value::Protocols(
-            crate::SslVersion::SW_SSL_DTLS as i64,
-        ));
+        lent.set_value(crate::Value::Protocols(i64::from(
+            crate::SslVersion::SW_SSL_DTLS.bits(),
+        )));
         let context = std::sync::Arc::new(lent.freeze(None).unwrap());
         let (_peer, stream) = std::os::unix::net::UnixDatagram::pair().unwrap();
         let raw = swoole_rs_reactor::SocketRecord::with_fd(stream.as_raw_fd(), 6).into_raw();

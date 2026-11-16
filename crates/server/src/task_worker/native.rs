@@ -5,6 +5,7 @@ use crate::Mode;
 use core::cell::Cell;
 use core::ffi::c_int;
 use swoole_rs_corebase::ServerEvent;
+use swoole_rs_corebase::constants::TaskFlag;
 use swoole_rs_corebase::{CCast, DataHead, log};
 use swoole_rs_error::ErrorCode as E;
 use swoole_rs_locks::SharedMutex;
@@ -32,9 +33,6 @@ use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR, SW_LOG_WARNING};
 
 const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
 const ERR: c_int = swoole_rs_corebase::constants::ResultCode::SW_ERR as c_int;
-/// `swoole::TaskFlag` bits.
-const TASK_NONBLOCK: u16 = 1 << 2;
-const TASK_WAITALL: u16 = 1 << 4;
 /// `SW_PIPE_MASTER`, `SW_FD_PIPE` and `SW_EVENT_WRITE`.
 const PIPE_MASTER: c_int = 1;
 const FD_PIPE: c_int = 3;
@@ -282,7 +280,7 @@ pub fn finish(
         buf.set_fd(task.fd);
     };
     let mut buf = TaskBuffer::default();
-    let sent = if task.ext_flags & TASK_NONBLOCK != 0 {
+    let sent = if TaskFlag::from_bits(task.ext_flags).contains(TaskFlag::SW_TASK_NONBLOCK) {
         if !buf.pack(data) {
             log::warning(c"Server::finish", format_args!("large task pack failed()"));
             return false;
@@ -307,7 +305,7 @@ pub fn finish(
         };
         let lock = worker.lock();
         _ = lock.map(SharedMutex::lock);
-        let stored = if task.ext_flags & TASK_WAITALL != 0 {
+        let stored = if TaskFlag::from_bits(task.ext_flags).contains(TaskFlag::SW_TASK_WAITALL) {
             write_waitall(slot, &mut buf, data, |buf| reply(buf, flags));
             true
         } else if buf.pack(data) {

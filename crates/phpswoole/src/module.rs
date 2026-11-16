@@ -261,6 +261,20 @@ pub struct Families {
     /// crates/phpprocess's and phpruntime's, which depend on this crate.
     pub process: ProcessSteps,
     pub runtime: RuntimeSteps,
+    /// crates/phpevents', which crates/phpcoroutines, phpprocess and phpruntime
+    /// read through this crate's [`crate::reactor_init`] and the rest.
+    pub events: EventSteps,
+}
+
+/// crates/phpevents' event loop steps. Each raises a bailout it contained once its
+/// effect is complete, so it is its caller's last step.
+pub struct EventSteps {
+    /// `php_swoole_reactor_init()`: whether the event loop is ready.
+    pub reactor_init: fn() -> bool,
+    /// `php_swoole_convert_to_fd(value)`: an fd, or -1 after a warning.
+    pub convert_to_fd: fn(Option<&swoole_rs_zend::Value>) -> i32,
+    /// `Swoole\Event::wait()`'s native lifecycle effect.
+    pub wait: fn(),
 }
 
 /// crates/phpprocess's phase steps: `php_swoole_process_minit`, `_pool_minit` and

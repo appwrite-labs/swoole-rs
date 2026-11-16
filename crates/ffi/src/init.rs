@@ -59,6 +59,10 @@ pub(crate) extern "C-unwind" fn swoole_init() {
         event_is_available: || swoole_rs_reactor::event_api::swoole_event_is_available(),
     });
     swoole_rs_reactor::event_api::set_writers(swoole_rs_tls::reactor_write::WRITERS);
+    swoole_rs_reactor::event_api::set_init_reactor([
+        |reactor| swoole_rs_hooks::reactor_handlers::system_init_reactor(reactor),
+        swoole_rs_clients::client::init_reactor,
+    ]);
     swoole_rs_reactor::host::set_host(swoole_rs_reactor::host::Host {
         sleep: swoole_rs_hooks::sleep::system_sleep,
         timer_select: || swoole_rs_timer::swoole_timer_select(),

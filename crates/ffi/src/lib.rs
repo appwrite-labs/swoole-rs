@@ -148,32 +148,6 @@ static HTTP_HOOKS: swoole_rs_phpserver::HttpHooks = swoole_rs_phpserver::HttpHoo
     can_cache_session_addr: swoole_rs_phphttp::can_cache_session_addr,
 };
 
-/// `php_swoole_reactor_init()`: 0, or -1 after an error (crates/phpevents).
-#[cfg(feature = "php")]
-#[unsafe(no_mangle)]
-pub extern "C" fn php_swoole_reactor_init() -> i32 {
-    if swoole_rs_phpevents::reactor_init() {
-        0
-    } else {
-        -1
-    }
-}
-
-/// `php_swoole_convert_to_fd(value)` (crates/phpevents): C lends the zval
-/// as a `Value`, which wraps it transparently.
-#[cfg(feature = "php")]
-#[unsafe(no_mangle)]
-pub extern "C" fn php_swoole_convert_to_fd(value: Option<&swoole_rs_zend::Value>) -> i32 {
-    swoole_rs_phpevents::convert_to_fd(value)
-}
-
-/// `Swoole\Event::wait()`'s native lifecycle effect (crates/phpevents).
-#[cfg(feature = "php")]
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_phpevents_wait() {
-    swoole_rs_phpevents::wait_and_raise();
-}
-
 #[cfg(feature = "php")]
 static FAMILIES: swoole_rs_phpswoole::Families = {
     use swoole_rs_phpclients as clients;
@@ -267,6 +241,11 @@ static FAMILIES: swoole_rs_phpswoole::Families = {
             minit: swoole_rs_phpruntime::php_swoole_runtime_minit,
             mshutdown: swoole_rs_phpruntime::php_swoole_runtime_mshutdown,
             rshutdown: swoole_rs_phpruntime::rshutdown,
+        },
+        events: swoole_rs_phpswoole::EventSteps {
+            reactor_init: swoole_rs_phpevents::reactor_init,
+            convert_to_fd: swoole_rs_phpevents::convert_to_fd,
+            wait: swoole_rs_phpevents::wait_and_raise,
         },
     }
 };

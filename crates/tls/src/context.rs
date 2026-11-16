@@ -292,14 +292,14 @@ impl Drop for SslContext {
 }
 
 /// `swSSLVersion`'s protocol bits.
-const SSLV2: u32 = crate::constants::SslVersion::SW_SSL_SSLv2 as u32;
-const SSLV3: u32 = crate::constants::SslVersion::SW_SSL_SSLv3 as u32;
-const TLSV1: u32 = crate::constants::SslVersion::SW_SSL_TLSv1 as u32;
-const TLSV1_1: u32 = crate::constants::SslVersion::SW_SSL_TLSv1_1 as u32;
-const TLSV1_2: u32 = crate::constants::SslVersion::SW_SSL_TLSv1_2 as u32;
-const TLSV1_3: u32 = crate::constants::SslVersion::SW_SSL_TLSv1_3 as u32;
-const DTLS: u32 = crate::constants::SslVersion::SW_SSL_DTLS as u32;
-const ALL: u32 = crate::constants::SW_SSL_ALL.unsigned_abs();
+const SSLV2: crate::SslVersion = crate::constants::SslVersion::SW_SSL_SSLv2;
+const SSLV3: crate::SslVersion = crate::constants::SslVersion::SW_SSL_SSLv3;
+const TLSV1: crate::SslVersion = crate::constants::SslVersion::SW_SSL_TLSv1;
+const TLSV1_1: crate::SslVersion = crate::constants::SslVersion::SW_SSL_TLSv1_1;
+const TLSV1_2: crate::SslVersion = crate::constants::SslVersion::SW_SSL_TLSv1_2;
+const TLSV1_3: crate::SslVersion = crate::constants::SslVersion::SW_SSL_TLSv1_3;
+const DTLS: crate::SslVersion = crate::constants::SslVersion::SW_SSL_DTLS;
+const ALL: crate::SslVersion = crate::constants::SW_SSL_ALL;
 
 /// `OPENSSL_INIT_LOAD_CONFIG | OPENSSL_INIT_LOAD_SSL_STRINGS | OPENSSL_INIT_LOAD_CRYPTO_STRINGS`.
 const INIT_OPTIONS: u64 = 0x40 | 0x0020_0000 | 0x2;
@@ -587,7 +587,7 @@ impl Method<'_> {
         let config = self.config;
         let ctx = self.ctx;
         let raw = ctx.as_ptr();
-        let protocols = config.protocols;
+        let protocols = crate::SslVersion::from_bits(config.protocols);
         // The other legacy SSL_OP_*_BUG workarounds are 0 in OpenSSL 3.
         SSL_CTX_set_options(ctx, SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS);
         SSL_CTX_clear_options(ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1);
@@ -601,7 +601,7 @@ impl Method<'_> {
             (TLSV1_3, SSL_OP_NO_TLSv1_3),
         ] {
             // DTLS keeps TLS 1.2 (DTLS 1.2 shares its option bit).
-            if protocols & bit == 0 && !(bit == TLSV1_2 && protocols & DTLS != 0) {
+            if !(protocols.contains(bit) || bit == TLSV1_2 && protocols.contains(DTLS)) {
                 disable |= option;
             }
         }
@@ -656,7 +656,7 @@ impl Method<'_> {
                 return false;
             }
         }
-        if protocols & DTLS != 0 {
+        if protocols.contains(DTLS) {
             set_cookie_generate_cb(ctx, Some(generate_cookie));
             set_cookie_verify_cb(ctx, Some(verify_cookie));
         }
@@ -1061,13 +1061,13 @@ pub(crate) unsafe fn create_context(
     config: &mut TlsConfig<'_>,
     password: Option<PasswordBinding>,
 ) -> Option<SslContext> {
-    let method = if config.protocols & DTLS != 0 {
+    let method = if crate::SslVersion::from_bits(config.protocols).contains(DTLS) {
         DTLS_method()
     } else {
         TLS_method()
     };
     if config.protocols == 0 {
-        config.protocols = ALL;
+        config.protocols = ALL.bits();
     }
     let function = c"SSLContext::create";
     let Some(ctx) = SSL_CTX_new(method) else {
@@ -1196,13 +1196,13 @@ mod tests {
         let mut config = Owned::config();
         unsafe {
             let ctx = swr_v1_tls_context_create(&mut config).unwrap();
-            assert_eq!(config.protocols, ALL, "zero means every version");
+            assert_eq!(config.protocols, ALL.bits(), "zero means every version");
             let options = SSL_CTX_get_options(ctx.as_ptr());
             assert_eq!(options & (SSL_OP_NO_TLSv1_2 | SSL_OP_NO_TLSv1_3), 0);
             assert_eq!(SSL_CTX_get_verify_mode(ctx.as_ptr()), SSL_VERIFY_NONE);
             drop(ctx);
 
-            config.protocols = TLSV1_3 | DTLS;
+            config.protocols = (TLSV1_3 | DTLS).bits();
             config.disable_compress = true;
             let ctx = swr_v1_tls_context_create(&mut config).unwrap();
             let options = SSL_CTX_get_options(ctx.as_ptr());

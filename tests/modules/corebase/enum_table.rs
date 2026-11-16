@@ -9,3 +9,9 @@ macro_rules! enum_table {
         }
     )+};
 }
+
+macro_rules! flag_table {
+    ($($ty:ident { $($flag:ident),+ $(,)? })+) => {$(
+        $(println!("{} {}", stringify!($flag), $ty::$flag.bits());)+
+    )+};
+}
