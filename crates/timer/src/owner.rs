@@ -11,7 +11,6 @@ use crate::{
 use std::cell::Cell;
 use std::ffi::{CStr, c_int, c_long, c_void};
 use std::marker::PhantomData;
-use std::rc::Rc;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{log, swr_v1_core_set_signal_alarm, thread_reactor};
 use swoole_rs_reactor::{
@@ -85,10 +84,6 @@ pub struct TimerNode {
     plain_drop: Option<Plain>,
     /// A [`TimerNode::closure`] node's callback.
     closure: Option<Closure>,
-    /// A [`TimerNode::owning`] node's callback, dropped with the node. An `Rc`, not a
-    /// `Box`: `apply` writes the node while the callback runs, and that must not
-    /// reborrow what the callback is borrowed from.
-    owned: Option<Rc<dyn Fn()>>,
 }
 const _: () = assert!(
     std::mem::offset_of!(TimerNode, exec_msec) == 16
@@ -162,6 +157,86 @@ mod closure {
     }
 }
 
+/// The callbacks of this thread's [`TimerNode::owning`] nodes, by slot. A thread's
+/// timer, and so its nodes, stay on that thread.
+mod owned {
+    use std::cell::Cell;
+    use std::ffi::c_void;
+    use std::rc::Rc;
+
+    #[derive(Default)]
+    pub(super) struct Slots {
+        slots: Vec<Option<Rc<dyn Fn()>>>,
+        /// Emptied slots, reused first.
+        free: Vec<usize>,
+    }
+
+    thread_local! {
+        static SLOTS: Cell<Slots> = const {
+            Cell::new(Slots {
+                slots: Vec::new(),
+                free: Vec::new(),
+            })
+        };
+    }
+
+    /// `f` over this thread's slots, taken out for the call. `f` only moves callbacks
+    /// in and out: none runs or drops inside it, so nothing reaches the slots while
+    /// they are out. None after the thread's teardown dropped them.
+    fn with<R>(f: impl FnOnce(&mut Slots) -> R) -> Option<R> {
+        SLOTS
+            .try_with(|slots| {
+                let mut taken = slots.take();
+                let out = f(&mut taken);
+                slots.set(taken);
+                out
+            })
+            .ok()
+    }
+
+    pub(super) fn insert(f: Rc<dyn Fn()>) -> usize {
+        let slot = with(|s| {
+            if let Some(slot) = s.free.pop()
+                && let Some(entry) = s.slots.get_mut(slot)
+            {
+                *entry = Some(f);
+                return slot;
+            }
+            s.slots.push(Some(f));
+            s.slots.len() - 1
+        });
+        slot.unwrap_or_else(|| swoole_rs_corebase::fatal("a timer added during thread teardown"))
+    }
+
+    /// Runs `slot`'s callback, held for the call: it may add owning nodes, moving
+    /// the slots. A Zend bailout out of it leaks that hold, and so what it captured.
+    pub(super) fn run(slot: usize) {
+        if let Some(f) = with(|s| s.slots.get(slot).cloned().flatten()).flatten() {
+            f();
+        }
+    }
+
+    /// The node's `plain_drop`: frees the slot its `data` keeps, then drops the
+    /// callback, once the slots are back.
+    pub(super) extern "C-unwind" fn free(data: *mut c_void) {
+        let slot = data.addr();
+        let f = with(|s| {
+            let f = s.slots.get_mut(slot).and_then(Option::take);
+            if f.is_some() {
+                s.free.push(slot);
+            }
+            f
+        });
+        drop(f);
+    }
+
+    /// This thread's slots: (made, free).
+    #[cfg(test)]
+    pub(super) fn counts() -> (usize, usize) {
+        with(|s| (s.slots.len(), s.free.len())).unwrap_or_default()
+    }
+}
+
 impl TimerNode {
     pub(crate) fn new(callback: Option<Callback>, data: *mut c_void) -> Self {
         Self {
@@ -178,7 +253,6 @@ impl TimerNode {
             plain: None,
             plain_drop: None,
             closure: None,
-            owned: None,
         }
     }
 
@@ -191,9 +265,14 @@ impl TimerNode {
 
     /// A node whose callback is `f`, which it owns: what `f` captured is dropped with
     /// the node, once it fires for the last time, is deleted, or its timer is freed.
-    pub(crate) fn owning(f: Rc<dyn Fn()>) -> Self {
-        let mut node = Self::new(None, std::ptr::null_mut());
-        node.owned = Some(f);
+    /// `f` waits in an [`owned`] slot, which the node keeps in `data`, calls through its
+    /// closure and frees as its `plain_drop`: no field or branch the other kinds pay for.
+    pub(crate) fn owning(f: std::rc::Rc<dyn Fn()>) -> Self {
+        let slot = owned::insert(f);
+        let mut node = Self::closure(Closure::new(move || owned::run(slot)));
+        node.data = std::ptr::without_provenance_mut(slot);
+        let free: Plain = owned::free;
+        node.plain_drop = Some(free);
         node
     }
 
@@ -601,11 +680,6 @@ impl Owner {
                 } else if let Some((callback, node)) = calls.callback.zip(Lent::of(node)) {
                     // The selected node, which the queue holds until `complete`.
                     callback(self, node);
-                } else if let Some(owned) = self.get(view.id).and_then(|node| node.owned.as_deref())
-                {
-                    // Last, so the other kinds don't look the node up. The queue holds
-                    // it, with its callback, until `complete`.
-                    owned();
                 }
             }
             self.complete(view.id);
@@ -1107,8 +1181,7 @@ mod tests {
         let timer = p.timer();
         let capture = Rc::new(Cell::new(0));
         let ids = Rc::new(Cell::new(0));
-        // A tick that removes itself when it fires, so `apply` writes its node while
-        // the callback borrowed from it runs.
+        // A tick that removes itself when it fires, while its callback runs.
         let add = |persistent, remove: bool| {
             let (seen, me) = (Rc::clone(&capture), Rc::clone(&ids));
             let f = Rc::new(move || {
@@ -1142,6 +1215,14 @@ mod tests {
             1,
             "dropped when the timer is freed"
         );
+        let (made, free) = owned::counts();
+        assert_eq!(made, free, "every slot freed for reuse");
+        let again = Probe::new();
+        again
+            .timer()
+            .add(1000, false, TimerNode::owning(Rc::new(|| {})));
+        assert_eq!(owned::counts(), (made, free - 1), "a freed slot reused");
+        again.free();
     }
 
     #[test]
