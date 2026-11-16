@@ -223,8 +223,9 @@ pub struct ClientRecord {
 pub struct Client {
     record: Cell<ClientRecord>,
     socket_ops: &'static SocketOps,
-    /// Owns the allocation exposed through the public record's buffer pointer.
-    input_owner: Cell<Option<Box<CppString>>>,
+    /// The input buffer, whose address the public record's buffer pointer names
+    /// once it is allocated: a pointer derived from the cell outlives its edits.
+    input: Cell<CppString>,
     flags: Cell<u32>,
     domain: c_int,
     sock_flags: Cell<c_int>,
@@ -506,32 +507,32 @@ impl Handle {
     fn edit_input<R>(self, edit: fn(&mut CppString, Socket<'static>, &SocketOps) -> R) -> R {
         let socket = self.socket();
         let ops = self.get().socket_ops;
-        let mut buffer =
-            self.get().input_owner.take().unwrap_or_else(|| {
-                swoole_rs_corebase::fatal("client input buffer is not available")
-            });
+        if self.input().is_null() {
+            swoole_rs_corebase::fatal("client input buffer is not available");
+        }
+        let mut buffer = self.get().input.replace(CppString::EMPTY);
         let result = edit(&mut buffer, socket, ops);
-        self.get().input_owner.set(Some(buffer));
+        self.get().input.set(buffer);
         result
     }
 
     /// `new String(SW_CLIENT_BUFFER_SIZE)`, once.
     fn input_init(self) {
         if self.input().is_null() {
-            let mut buffer = Box::new(CppString::EMPTY);
+            let mut buffer = CppString::EMPTY;
             buffer.alloc(CLIENT_BUFFER_SIZE, None);
-            self.get()
-                .edit_record(|record| record.buffer = core::ptr::from_mut(&mut *buffer).cast());
-            self.get().input_owner.set(Some(buffer));
+            self.get().input.set(buffer);
+            let input = self.get().input.as_ptr().cast();
+            self.get().edit_record(|record| record.buffer = input);
         }
     }
 
     /// `delete buffer`.
     fn input_free(self) {
-        if let Some(mut buffer) = self.get().input_owner.take() {
+        if !self.input().is_null() {
             self.get()
                 .edit_record(|record| record.buffer = core::ptr::null_mut());
-            buffer.dispose();
+            self.get().input.replace(CppString::EMPTY).dispose();
         }
     }
 
@@ -749,7 +750,7 @@ fn create_with(kind: c_int, is_async: bool, socket_ops: &'static SocketOps) -> O
     };
     let mut client = Box::new(Client {
         socket_ops,
-        input_owner: Cell::new(None),
+        input: Cell::new(CppString::EMPTY),
         record: Cell::new(ClientRecord {
             http2: false,
             open_length_check: false,
