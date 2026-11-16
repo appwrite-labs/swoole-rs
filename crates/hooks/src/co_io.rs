@@ -254,12 +254,12 @@ mod native {
         let (error, message) = match kind {
             Failure::LengthNotFound => (NOT_FOUND, Message::Static(c"get package length failed")),
             Failure::TooLarge(length) => {
-                use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
+                use swoole_rs_clients::address::{address_port, with_host};
                 let (addr, port) = socket
                     .net(|record| {
                         let peer = &record.info;
                         let addr = with_host(peer, |addr| addr.to_string_lossy().into_owned());
-                        (addr, swr_v1_clients_address_port(peer))
+                        (addr, address_port(peer))
                     })
                     .unwrap_or_default();
                 swoole_rs_corebase::log::error_log(

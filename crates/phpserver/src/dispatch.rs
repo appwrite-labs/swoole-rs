@@ -13,7 +13,7 @@ use std::{
     mem::ManuallyDrop,
     sync::{Arc, OnceLock},
 };
-use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
+use swoole_rs_clients::address::{address_port, with_host};
 use swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;
 use swoole_rs_corebase::{DataHead, log, net_types::SocketAddress};
 use swoole_rs_corebase::{ServerEvent, WebSocketStatus};
@@ -718,7 +718,7 @@ extern "C" fn on_packet_slot(_: Ctx, server: view::Server<'_>, request: &RecvDat
         ..socket_addr
     };
     let port = if matches!(socket_type, UDP | UDP6) {
-        i64::from(swr_v1_clients_address_port(&sender))
+        i64::from(address_port(&sender))
     } else {
         -1
     };
@@ -727,9 +727,9 @@ extern "C" fn on_packet_slot(_: Ctx, server: view::Server<'_>, request: &RecvDat
             data,
             address: matches!(socket_type, UDP | UDP6 | UNIX_DGRAM).then_some(address),
             port,
-            server_port: server.at(c_int::from(info.server_fd)).map_or(-1, |sock| {
-                i64::from(swr_v1_clients_address_port(&sock.info()))
-            }),
+            server_port: server
+                .at(c_int::from(info.server_fd))
+                .map_or(-1, |sock| i64::from(address_port(&sock.info()))),
         };
         relay(on_packet(
             server,

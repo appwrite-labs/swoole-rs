@@ -39,11 +39,6 @@ pub struct ReactorFields {
     pub id: u16,
     pub max_socket: u32,
     pub last_malloc_trim_time: libc::time_t,
-    /// `Reactor::write` and `writev` (C++'s function pointers): crates/tls's, which the
-    /// constructor sets, or null. Rust only reads whether they are set, then calls
-    /// crates/tls's typed write directly.
-    pub write: *const c_void,
-    pub writev: *const c_void,
     pub close: Option<ReactorClose>,
     /// `Reactor::defer_tasks`: null (`None`) until a task is deferred.
     pub defer_tasks: Option<Box<crate::ReactorDeferred>>,
@@ -82,7 +77,7 @@ const _: () = assert!(
 );
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(
-    size_of::<ReactorPrepared>() == 32 && size_of::<ReactorFields>() == 128,
+    size_of::<ReactorPrepared>() == 32 && size_of::<ReactorFields>() == 112,
     "swr_v1_reactor_head's layout"
 );
 
@@ -208,8 +203,6 @@ impl ReactorState {
                 id: 0,
                 max_socket: 0,
                 last_malloc_trim_time: 0,
-                write: ptr::null(),
-                writev: ptr::null(),
                 close: None,
                 defer_tasks: None,
                 destroy_callbacks: None,
@@ -307,23 +300,9 @@ fn output<T: swoole_rs_corebase::sys::Zeroed>(count: usize) -> Vec<T> {
 }
 
 #[cfg(feature = "upstream-symbols")]
-// crates/tls's `Reactor` statics and crates/hooks's `System::init_reactor`,
+// crates/tls's `Reactor::_close` and crates/hooks's `System::init_reactor`,
 // under their upstream symbols; declared, since both depend on this crate.
 unsafe extern "C-unwind" {
-    #[link_name = "_ZN6swoole7Reactor6_writeEPS0_PNS_7network6SocketEPKvm"]
-    fn reactor_write(
-        reactor: *mut c_void,
-        socket: *mut crate::SocketRecord,
-        data: *const c_void,
-        length: usize,
-    ) -> isize;
-    #[link_name = "_ZN6swoole7Reactor7_writevEPS0_PNS_7network6SocketEPK5iovecm"]
-    fn reactor_writev(
-        reactor: *mut c_void,
-        socket: *mut crate::SocketRecord,
-        iov: *const libc::iovec,
-        count: usize,
-    ) -> isize;
     #[link_name = "_ZN6swoole7Reactor6_closeEPS0_PNS_7network6SocketE"]
     safe fn reactor_close(reactor: crate::Running<'_>, socket: crate::OwnedSocket) -> c_int;
     #[link_name = "_ZN6swoole9coroutine6System12init_reactorEPNS_7ReactorE"]
@@ -363,9 +342,10 @@ impl OwnedReactor {
 }
 
 /// `new Reactor(max_event, type)`: the state `ReactorState::open` makes and, once
-/// ready, upstream's write, writev, close and default write handler, the create hook
-/// and then the built-in end callbacks and exit conditions. The write functions are
-/// crates/tls's, so only the hybrid (`upstream-symbols`) sets them.
+/// ready, upstream's close and default write handler, the create hook and then the
+/// built-in end callbacks and exit conditions. Those two are crates/tls's, so only the
+/// hybrid (`upstream-symbols`) sets them; its writes, `swoole_init` registers
+/// ([`crate::event_api::set_writers`]).
 pub fn swr_v1_reactor_new(max_event: c_int, kind: c_int) -> OwnedReactor {
     let mut owner = ReactorState::open(kind, max_event);
     if !owner.fields.ready {
@@ -374,8 +354,6 @@ pub fn swr_v1_reactor_new(max_event: c_int, kind: c_int) -> OwnedReactor {
     owner.fields.timeout_msec = -1;
     #[cfg(feature = "upstream-symbols")]
     {
-        owner.fields.write = reactor_write as *const c_void;
-        owner.fields.writev = reactor_writev as *const c_void;
         owner.fields.close = Some(reactor_close);
         owner.handlers.defaults[0].set(Some(|reactor, event| {
             reactor_writable_callback(reactor, event)

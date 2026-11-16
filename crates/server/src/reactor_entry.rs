@@ -58,7 +58,7 @@ impl DgramPacket {
             let ip = self.socket_addr.addr.v4().sin_addr.s_addr;
             return c_long::from(ip.cast_signed());
         }
-        let host = swoole_rs_clients::address::swr_v1_clients_address_host(&self.socket_addr);
+        let host = swoole_rs_clients::address::host_in_scratch(&self.socket_addr);
         let length = self.socket_addr.len as usize;
         if host.is_null() || length == 0 {
             return 0;

@@ -73,10 +73,8 @@ jobs:
           - name: timer
             flags: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations
             packages: -p swoole-rs-timer --features upstream-symbols
-          # The clients tests' fake ops never free a closed socket (tests read it
-          # after close), so its leaks are ignored.
           - name: clients
-            flags: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations -Zmiri-ignore-leaks
+            flags: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations
             packages: -p swoole-rs-clients
           - name: hooks
             flags: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations

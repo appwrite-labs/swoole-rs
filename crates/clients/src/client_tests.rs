@@ -16,6 +16,20 @@ struct Mock {
     /// The record `make_socket` allocated; the client releases it.
     socket: Option<core::ptr::NonNull<SocketRecord>>,
     fail_socket: bool,
+    /// The records `socket_free` released, which tests still read: freed with the test.
+    freed: Freed,
+}
+
+#[derive(Default)]
+struct Freed(Vec<swoole_rs_reactor::OwnedSocket>);
+
+impl Drop for Freed {
+    fn drop(&mut self) {
+        // `make_socket`'s records, which the client released once.
+        self.0
+            .drain(..)
+            .for_each(swoole_rs_reactor::OwnedSocket::free);
+    }
 }
 
 thread_local! {
@@ -102,19 +116,27 @@ fn sock() -> &'static mut SocketFields {
 
 /// `f` over `sw_tg_buffer()`: a 64-byte String per test thread.
 pub(super) fn with_thread_buffer<R>(f: impl FnOnce(&mut CppString) -> R) -> R {
+    /// Freed with the test's thread.
+    struct Shared(CppString);
+    impl Drop for Shared {
+        fn drop(&mut self) {
+            self.0.dispose();
+        }
+    }
     thread_local! {
-        static SHARED: std::cell::RefCell<CppString> = {
+        static SHARED: std::cell::RefCell<Shared> = {
             let mut buffer = CppString::EMPTY;
             buffer.alloc(64, None);
-            std::cell::RefCell::new(buffer)
+            std::cell::RefCell::new(Shared(buffer))
         };
     }
-    SHARED.with_borrow_mut(f)
+    SHARED.with_borrow_mut(|shared| f(&mut shared.0))
 }
 
 // crates/tls's socket operations.
-pub(super) fn socket_free(_: Option<swoole_rs_reactor::OwnedSocket>) {
+pub(super) fn socket_free(socket: Option<swoole_rs_reactor::OwnedSocket>) {
     log("free");
+    mock(|m| m.freed.0.extend(socket));
 }
 /// crates/tls's slice-taking transfers.
 pub(super) mod net {
@@ -178,7 +200,7 @@ pub(super) fn event_write(_: swoole_rs_reactor::Socket<'static>, data: &[u8]) ->
     (log::last_error() != ERROR_OUTPUT_BUFFER_OVERFLOW).then_some(length)
 }
 /// crates/tls's `Reactor::_writable_callback`.
-pub(super) fn writable_callback(
+pub(super) extern "C-unwind" fn writable_callback(
     _: swoole_rs_reactor::Running<'_>,
     _: &mut swoole_rs_reactor::Event,
 ) -> c_int {
@@ -208,13 +230,9 @@ fn listener(event: ClientEvent, _: *const c_char, length: usize) {
         sock().object = core::ptr::null_mut();
     }
 }
-/// crates/timer's `add_fn_sec_id`: logs, adds nothing.
+/// The connect timer: logs, adds nothing.
 #[expect(clippy::unnecessary_wraps, reason = "crates/timer's signature")]
-pub(super) fn add_fn_sec_id(
-    timeout: f64,
-    _: bool,
-    _: impl Fn() + Copy + 'static,
-) -> Option<swoole_rs_timer::Held> {
+pub(super) fn timer_add(timeout: f64, _: Handle) -> Option<swoole_rs_timer::Held> {
     log(format!("timer {timeout}"));
     Some(swoole_rs_timer::Held::detached(1))
 }
@@ -293,6 +311,8 @@ fn set_proxy(client: *mut Client, http: bool) {
 
 fn new_client(kind: c_int, is_async: bool) -> *mut Client {
     const OPS: SocketOps = SocketOps {
+        write: event_write,
+        writable: writable_callback,
         make_socket: ops::make_socket,
         kernel_timeout: ops::kernel_timeout,
         assign: ops::assign,
@@ -300,6 +320,8 @@ fn new_client(kind: c_int, is_async: bool) -> *mut Client {
         connect: ops::connect,
         event: ops::event,
         socket_error: ops::socket_error,
+        timer_add,
+        timer_delete: del_id,
         tls_freeze,
         tls_session,
         tls_connect: socket_ssl_connect,

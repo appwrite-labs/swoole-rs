@@ -11,6 +11,7 @@ use std::cell::Cell;
 use std::ffi::{c_int, c_void};
 use std::io::IoSlice;
 use std::rc::Rc;
+use std::sync::OnceLock;
 
 /// `SwooleTG.reactor`.
 fn current() -> *mut c_void {
@@ -123,67 +124,45 @@ pub fn add_or_update(socket: crate::Socket<'static>, event: Events) -> bool {
     crate::reactor_upstream::interest(reactor, socket, kind, Events::NONE)
 }
 
-#[cfg(feature = "upstream-symbols")]
-// crates/tls's `Reactor::_write` (bytes) and `_writev` (vectors) over typed
-// arguments, under a Rust symbol; declared, since crates/tls depends on this crate.
-unsafe extern "Rust" {
-    safe fn swr_v1_reactor_write_payload(
-        reactor: crate::Running<'_>,
-        socket: crate::Socket<'static>,
-        payload: crate::WritePayload<'_>,
-    ) -> Option<usize>;
+/// `Reactor::write` and `Reactor::writev`: send what the socket takes now, copy the
+/// rest into its output buffer and register the socket, never freed while registered,
+/// for writing. The bytes taken, or `None` when it failed.
+#[derive(Clone, Copy)]
+pub struct Writers {
+    pub write: fn(crate::Running<'_>, crate::Socket<'static>, &[u8]) -> Option<usize>,
+    pub writev: fn(crate::Running<'_>, crate::Socket<'static>, &[IoSlice<'_>]) -> Option<usize>,
 }
 
-/// `sw_reactor()->write` (`writev` for vectors) of `payload` on a socket that is never
-/// freed while registered: the bytes taken, `None` when it failed. The constructor sets both to crates/tls's,
-/// which this calls directly; the process ends when the thread's reactor has none, where
-/// upstream calls them unchecked.
-fn write(socket: crate::Socket<'static>, payload: crate::WritePayload<'_>) -> Option<usize> {
-    let vectors = matches!(payload, crate::WritePayload::Vectors(_));
-    let set = |fields: &ReactorFields| {
-        let write = if vectors { fields.writev } else { fields.write };
-        !write.is_null()
-    };
-    let Some(reactor) = running().filter(|reactor| reactor.with(|state| set(&state.fields))) else {
-        swoole_rs_corebase::fatal(if vectors {
-            "the reactor has no writev function"
-        } else {
-            "the reactor has no write function"
-        })
-    };
-    #[cfg(feature = "upstream-symbols")]
-    return swr_v1_reactor_write_payload(reactor, socket, payload);
-    #[cfg(not(feature = "upstream-symbols"))]
-    {
-        // Only the hybrid's constructor sets them.
-        _ = (reactor, socket);
-        swoole_rs_corebase::fatal("the reactor has no write function")
+/// crates/tls's [`Writers`], which depends on this crate: `swoole_init` registers them.
+static WRITERS: OnceLock<Writers> = OnceLock::new();
+
+/// Registers crates/tls's writers; later registrations are ignored.
+pub fn set_writers(writers: Writers) {
+    WRITERS.get_or_init(|| writers);
+}
+
+/// The writers `swoole_init` registered, if it has.
+#[must_use]
+pub fn registered_writers() -> Option<Writers> {
+    WRITERS.get().copied()
+}
+
+/// The thread's reactor and the registered writers. Upstream calls `reactor->write`
+/// unchecked; a reactor with no write function is fatal here.
+fn writers<'a>() -> (crate::Running<'a>, &'static Writers) {
+    match (running(), WRITERS.get()) {
+        (Some(reactor), Some(writers)) => (reactor, writers),
+        _ => swoole_rs_corebase::fatal("the reactor has no write function"),
     }
 }
 
-/// `ssize_t swoole_event_write(Socket *socket, const void *data, size_t len)` on a
-/// socket that is never freed while registered.
-///
-/// # Safety
-/// `data` is null or holds `len` readable bytes, as `Reactor::write` reads them.
-#[must_use]
-pub unsafe fn swoole_event_write(
-    socket: crate::Socket<'static>,
-    data: *const c_void,
-    len: usize,
-) -> isize {
-    // SAFETY: as the caller promises.
-    let data = unsafe { crate::Drain::from_raw(data, len) };
-    write(socket, crate::WritePayload::Bytes(data)).map_or(-1, usize::cast_signed)
-}
-
-/// [`swoole_event_write`] of `data` on a socket that is never freed while registered
-/// (a write that can't all go out registers it for writing): the bytes taken, `None`
-/// when it failed.
+/// `ssize_t swoole_event_write(Socket *socket, const void *data, size_t len)` of `data`
+/// on a socket that is never freed while registered (a write that can't all go out
+/// registers it for writing): the bytes taken, `None` when it failed.
 #[must_use]
 pub fn event_write(socket: crate::Socket<'static>, data: &[u8]) -> Option<usize> {
-    let data = crate::Drain::new(data);
-    write(socket, crate::WritePayload::Bytes(data))
+    let (reactor, writers) = writers();
+    (writers.write)(reactor, socket, data)
 }
 
 /// `ssize_t swoole_event_writev(Socket *socket, const iovec *iov, size_t iovcnt)` of
@@ -195,7 +174,8 @@ pub fn swoole_event_writev(
     socket: crate::Socket<'static>,
     vectors: &[IoSlice<'_>],
 ) -> Option<usize> {
-    write(socket, crate::WritePayload::Vectors(vectors))
+    let (reactor, writers) = writers();
+    (writers.writev)(reactor, socket, vectors)
 }
 
 /// `void swoole_event_set_handler(int fd_type, int event, ReactorHandler handler)`;

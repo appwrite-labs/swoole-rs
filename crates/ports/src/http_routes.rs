@@ -47,9 +47,9 @@ fn route<T>(
 /// The host and port of an address that holds its socket type's member, as
 /// upstream's warnings print them.
 pub(crate) fn host_port(address: &SocketAddress) -> (String, c_int) {
-    use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
+    use swoole_rs_clients::address::{address_port, with_host};
     let host = with_host(address, |host| host.to_string_lossy().into_owned());
-    (host, swr_v1_clients_address_port(address))
+    (host, address_port(address).into())
 }
 
 /// `websocket::get_package_length` as a protocol's length callback: it reads only `pl`.
