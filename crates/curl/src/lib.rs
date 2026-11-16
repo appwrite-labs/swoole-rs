@@ -110,8 +110,10 @@ impl Handle {
 }
 
 // libcurl's declarations, with the handles typed as live. Each adds or removes the
-// easy handle, which may run the multi's socket and timer callbacks: they take the
-// multi by shared reference. Without a multi handle libcurl answers `CURLM_BAD_HANDLE`.
+// easy handle and may run callbacks meanwhile: the multi's socket and timer callbacks,
+// which take the multi by shared reference, and the easy handle's own, which ext/curl
+// set under the contract `Easy` carries. Without a multi handle libcurl answers
+// `CURLM_BAD_HANDLE`.
 unsafe extern "C" {
     safe fn curl_multi_add_handle(multi: Option<LiveMulti<'_>>, easy: Easy<'_>) -> CURLMcode;
     safe fn curl_multi_remove_handle(multi: Option<LiveMulti<'_>>, easy: Easy<'_>) -> CURLMcode;
