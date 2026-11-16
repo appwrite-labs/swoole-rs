@@ -38,16 +38,14 @@ use swoole_rs_reactor::{
 use swoole_rs_reactor::{Event, Events, Running};
 #[cfg(not(test))]
 use swoole_rs_tls::upstream::{
-    self as net, sendfile_sync, socket_free, socket_sendfile_async, socket_ssl_check_host,
-    socket_ssl_close, socket_ssl_connect, socket_ssl_set_host_name, socket_ssl_verify,
+    self as net, sendfile_sync, socket_free, socket_sendfile_async, socket_ssl_close,
 };
 use swoole_rs_tls::{
     OwnedTlsContext, OwnedTlsFields, SslCreateFlag, SslState, SslVersion, TlsContext, TlsSettings,
 };
 #[cfg(test)]
 use tests::{
-    async_dispatch, net, sendfile_sync, socket_free, socket_sendfile_async, socket_ssl_check_host,
-    socket_ssl_close, socket_ssl_connect, socket_ssl_set_host_name, socket_ssl_verify, tls_session,
+    async_dispatch, net, sendfile_sync, socket_free, socket_sendfile_async, socket_ssl_close,
     with_thread_buffer,
 };
 
@@ -743,19 +741,19 @@ const fn status(ok: bool) -> c_int {
     if ok { OK } else { ERR }
 }
 
-extern "C" fn on_stream_read(_: Running<'_>, event: &mut Event) -> c_int {
+fn on_stream_read(_: Running<'_>, event: &mut Event) -> c_int {
     status(event_client(event).is_some_and(on_read))
 }
 
-extern "C" fn on_dgram_read(_: Running<'_>, event: &mut Event) -> c_int {
+fn on_dgram_read(_: Running<'_>, event: &mut Event) -> c_int {
     status(event_client(event).is_some_and(on_datagram))
 }
 
-extern "C" fn on_writable(reactor: Running<'_>, event: &mut Event) -> c_int {
+fn on_writable(reactor: Running<'_>, event: &mut Event) -> c_int {
     status(event_client(event).is_some_and(|this| on_write(this, reactor, event)))
 }
 
-extern "C" fn on_failure(reactor: Running<'_>, event: &mut Event) -> c_int {
+fn on_failure(reactor: Running<'_>, event: &mut Event) -> c_int {
     status(event_client(event).is_some_and(|this| on_error(this, reactor, event)))
 }
 
@@ -792,15 +790,9 @@ fn is_dgram(kind: c_int) -> bool {
     SocketType::from_raw(kind).is_some_and(SocketType::is_dgram)
 }
 
-/// `new Client(type, async)`: the socket and the state, or null with errno set
-/// when the socket could not be made (logged as upstream's constructor does).
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut Client {
-    create(kind, is_async).map_or(core::ptr::null_mut(), |handle| handle.0)
-}
-
-/// [`swr_v1_clients_new`] as a handle on the new client, live until
-/// [`Handle::free`]; None with errno set when the socket could not be made.
+/// `new Client(type, async)`: a handle on the new client, live until [`Handle::free`];
+/// None with errno set when the socket could not be made (logged as upstream's
+/// constructor does).
 #[must_use]
 pub fn create(kind: c_int, is_async: bool) -> Option<Handle> {
     create_with(kind, is_async, &SocketOps::NATIVE)
@@ -874,11 +866,17 @@ impl Handle {
     /// A handle on `client`.
     ///
     /// # Safety
-    /// `client` came from [`swr_v1_clients_new`] and stays live while this handle
-    /// or a copy of it is used.
+    /// `client` came from [`create`] ([`Handle::as_ptr`]) and stays live while this
+    /// handle or a copy of it is used.
     #[must_use]
     pub const unsafe fn new(client: *mut Client) -> Self {
         Self(client)
+    }
+
+    /// The client's pointer, which [`Handle::new`] takes back.
+    #[must_use]
+    pub const fn as_ptr(self) -> *mut Client {
+        self.0
     }
 
     /// The client, borrowed while this handle is: live per [`Handle::new`].
@@ -932,7 +930,7 @@ impl Handle {
             // SAFETY: `delete socket`: the record make_socket allocated, released once.
             unsafe { SocketRecord::free(self.record().socket) };
         }
-        // SAFETY: a Box from swr_v1_clients_new, released once (per the caller).
+        // SAFETY: a Box from `create`, released once (per the caller).
         let client = unsafe { Box::from_raw(self.0) };
         // The proxies first, then the rest of the state.
         for proxy in [&client.socks5, &client.http_proxy] {
@@ -1158,14 +1156,7 @@ fn enable_dtls(this: Handle) {
 }
 
 fn tls_freeze(owner: &TlsContext) -> Option<TlsSettings> {
-    #[cfg(test)]
-    tests::log("ssl create");
     owner.borrow_configuration().freeze(None)
-}
-
-#[cfg(not(test))]
-fn tls_session(socket: Socket<'_>, settings: &TlsSettings) -> bool {
-    settings.create_client_session(socket)
 }
 
 /// `Client::ssl_handshake()`.
@@ -1183,7 +1174,7 @@ pub fn ssl_handshake(this: Handle) -> bool {
                     swoole_rs_corebase::fatal("a TLS client has no TLS context")
                 });
             this.edit_tls(|fields, record| fields.http_v2 = record.http2);
-            let Some(settings) = tls_freeze(&tls) else {
+            let Some(settings) = (this.get().socket_ops.tls_freeze)(&tls) else {
                 return false;
             };
             let settings = Arc::new(settings);
@@ -1192,17 +1183,17 @@ pub fn ssl_handshake(this: Handle) -> bool {
         };
     if this.socket().read(|socket| socket.ssl().is_null()) {
         this.socket().edit(|socket| socket.output.ssl_send = true);
-        if !tls_session(this.socket(), &settings) {
+        if !(this.get().socket_ops.tls_session)(&settings, this.socket()) {
             log::set_last_error(ERROR_SSL_CREATE_SESSION_FAILED);
             return false;
         }
         let name = this.tls_host_name();
         if !name.is_empty() {
             // On the new session; OpenSSL copies the name.
-            socket_ssl_set_host_name(this.socket(), &name);
+            (this.get().socket_ops.tls_set_host_name)(this.socket(), &name);
         }
     }
-    if !socket_ssl_connect(this.socket()) {
+    if !(this.get().socket_ops.tls_connect)(this.socket()) {
         return false;
     }
     if this.tls_state() == SSL_STATE_READY
@@ -1218,11 +1209,11 @@ pub fn ssl_handshake(this: Handle) -> bool {
 /// when the context names one.
 #[must_use]
 pub fn ssl_verify(this: Handle, allow_self_signed: bool) -> bool {
-    if !socket_ssl_verify(this.socket(), allow_self_signed) {
+    if !(this.get().socket_ops.tls_verify)(this.socket(), allow_self_signed) {
         return false;
     }
     let name = this.tls_host_name();
-    if !name.is_empty() && !socket_ssl_check_host(this.socket(), &name) {
+    if !name.is_empty() && !(this.get().socket_ops.tls_check_host)(this.socket(), &name) {
         return false;
     }
     true
@@ -1560,6 +1551,12 @@ struct SocketOps {
     connect: fn(Handle, ConnectMode) -> bool,
     event: fn(Handle, EventOp, Events) -> bool,
     socket_error: fn(Handle, &mut c_int) -> bool,
+    tls_freeze: fn(&TlsContext) -> Option<TlsSettings>,
+    tls_session: fn(&TlsSettings, Socket<'_>) -> bool,
+    tls_connect: fn(Socket<'_>) -> bool,
+    tls_set_host_name: fn(Socket<'_>, &CStr) -> bool,
+    tls_verify: fn(Socket<'_>, bool) -> bool,
+    tls_check_host: fn(Socket<'_>, &CStr) -> bool,
 }
 
 impl SocketOps {
@@ -1573,6 +1570,12 @@ impl SocketOps {
         connect: ops::connect,
         event: ops::event,
         socket_error: ops::socket_error,
+        tls_freeze,
+        tls_session: TlsSettings::create_client_session,
+        tls_connect: swoole_rs_tls::upstream::socket_ssl_connect,
+        tls_set_host_name: swoole_rs_tls::upstream::socket_ssl_set_host_name,
+        tls_verify: swoole_rs_tls::upstream::socket_ssl_verify,
+        tls_check_host: swoole_rs_tls::upstream::socket_ssl_check_host,
     };
 }
 

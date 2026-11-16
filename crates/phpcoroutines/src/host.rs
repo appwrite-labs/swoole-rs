@@ -258,11 +258,12 @@ pub(crate) fn stats(stats: &mut Stats) {
     }
     #[cfg(feature = "iouring")]
     iouring_stats(stats);
-    swoole_rs_hooks::async_threads::swr_v1_async_threads_stats(
-        &mut stats.aio_task_num,
-        &mut stats.aio_worker_num,
-        &mut stats.aio_queue_size,
-    );
+    if let Some((tasks, workers, queued)) = swoole_rs_hooks::async_threads::stats() {
+        let count = |n| i64::try_from(n).unwrap_or(i64::MAX);
+        stats.aio_task_num = count(tasks);
+        stats.aio_worker_num = count(workers);
+        stats.aio_queue_size = count(queued);
+    }
     // crates/reactor counts this thread's listeners.
     stats.signal_listener_num =
         i64::from(swoole_rs_reactor::signal_upstream::swoole_signal_get_listener_num());
@@ -581,7 +582,7 @@ fn set_callbacks(callbacks: [swoole_rs_coroutine::SwapCallback; 3]) {
 }
 
 /// The reactor's destroy callback.
-extern "C-unwind" fn deactivate_on_free(_: *mut c_void) {
+fn deactivate_on_free() {
     bailout::raise(crate::runtime::deactivate());
 }
 

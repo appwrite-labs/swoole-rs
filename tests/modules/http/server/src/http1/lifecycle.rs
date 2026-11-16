@@ -7,9 +7,7 @@ use super::*;
 use crate::TEST_STR;
 use case::TimerNode;
 use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicU16, AtomicU64};
-use swoole_rs_clients::client::{
-    self as native, Client, ClientEvent, Handle, listen, swr_v1_clients_new,
-};
+use swoole_rs_clients::client::{self as native, Client, ClientEvent, Handle, listen};
 use swoole_rs_process::methods::{ExitStatus, send_pipe_message, swoole_get_worker_type};
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_server::{event_worker, manager, task_worker, worker_methods};
@@ -1060,6 +1058,7 @@ unsafe extern "C" fn kill_on_receive(
 }
 
 unsafe extern "C" fn kill_on_worker_stop(_: *mut c_void, serv: *mut c_void, _: *mut WorkerRecord) {
+    super::timeline::mark("worker stop");
     server_methods::close(Server(serv).view(), c_long::from(counter_get(4)), false);
     event_worker::native::drain_worker_pipe(Server(serv).view());
 }
@@ -1081,6 +1080,7 @@ unsafe extern "C" fn kill_on_worker_start(
     serv: *mut c_void,
     worker: *mut WorkerRecord,
 ) {
+    super::timeline::mark("worker start");
     let options = kill_options();
     let c = counter_incr(1, 1) - 1;
     if options.worker_exit_callback {
@@ -1100,7 +1100,12 @@ unsafe extern "C" fn kill_on_worker_start(
                 std::slice::from_raw_parts((&raw const ev).cast::<u8>(), size_of::<DataHead>()),
             )
         };
-        let sent = send_pipe_message(dst, head, SW_PIPE_MASTER | SW_PIPE_NONBLOCK);
+        let sent = send_pipe_message(
+            swoole_rs_server::process_pool_native(),
+            dst,
+            head,
+            SW_PIPE_MASTER | SW_PIPE_NONBLOCK,
+        );
         check(
             sent.is_some_and(|sent| sent > 0),
             "send_to_worker_from_worker(1, &ev, ...) > 0",
@@ -1158,15 +1163,18 @@ fn kill_client(serv: Server, port: u16, victim: fn() -> c_int) -> JoinHandle<()>
         let rn = sync_recv(&mut c);
         expect(rn == 2, "rn == 2");
 
+        super::timeline::mark("client kills a worker");
         kill_worker(serv, victim());
 
         let rn = sync_recv(&mut c);
+        super::timeline::mark("client EOF");
         expect(rn == 0, "rn == 0");
 
         counter_incr(3, 1);
 
         sleep(0.05);
 
+        super::timeline::mark("client shutdown");
         shutdown(serv);
     })
 }
@@ -1197,13 +1205,16 @@ fn test_kill_worker(mode: c_int, options: Options) {
 
     let t = kill_client(serv, port.unwrap().port(), || 1 - counter_get(5));
 
+    super::timeline::arm();
     assert_eq!(serv.start(), SW_OK);
     t.join().unwrap();
 
     assert_eq!(counter_get(0), 1); // Client receive
     assert_eq!(
         counter_get(1),
-        if options.test_shutdown_event { 4 } else { 3 }
+        if options.test_shutdown_event { 4 } else { 3 },
+        "{}",
+        super::timeline::render()
     ); // Server onWorkerStart
     assert_eq!(counter_get(2), 1); // Server onClose
     assert_eq!(counter_get(3), 1); // Client close
@@ -1762,7 +1773,7 @@ fn test_clean_worker(mode: c_int) {
 
     counter_init();
 
-    let client = swr_v1_clients_new(SW_SOCK_TCP, true);
+    let client = native::create(SW_SOCK_TCP, true).map_or(std::ptr::null_mut(), Handle::as_ptr);
     assert!(
         !client.is_null(),
         "AsyncClient ac(SW_SOCK_TCP) has a socket"

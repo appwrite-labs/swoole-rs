@@ -42,6 +42,8 @@ pub(super) mod server_config;
 pub(super) mod server_conn;
 pub(super) mod server_ssl;
 pub(super) mod task;
+/// timeline.rs: the worker-replacement cases' cross-process event log.
+mod timeline;
 
 const TEST_HOST: &str = "127.0.0.1";
 const MODE_BASE: c_int = 1;
@@ -74,9 +76,6 @@ const TEXT_GROUP: ServerText = ServerText::Group;
 const LOCATIONS: StaticCollection = StaticCollection::Locations;
 const INDEX_FILES: StaticCollection = StaticCollection::IndexFiles;
 const COMPRESSION_TYPES: StaticCollection = StaticCollection::CompressionTypes;
-
-// `get_connection_by_session_id`'s lookup kind.
-const BY_SESSION: u32 = 1;
 
 // The SWR_SERVER_NATIVE pointer members, opaque here.
 type Native = *mut c_void;
@@ -521,7 +520,6 @@ unsafe extern "C-unwind" {
     fn swoole_signal_block_all();
     fn swr_v1_core_last_error() -> c_int;
 
-    fn swr_v1_server_connection(state: *const c_void, key: c_long, kind: u32) -> *mut Connection;
 }
 
 unsafe extern "C" {
@@ -629,10 +627,6 @@ impl Server {
         unsafe { &*self.0.cast::<Head>() }
     }
 
-    fn state(self) -> *mut c_void {
-        self.head().state
-    }
-
     fn config(self) -> &'static mut ServerConfig {
         // SAFETY: the state's configuration lives as long as the server.
         unsafe { &mut *self.head().config }
@@ -720,8 +714,9 @@ impl Server {
     }
 
     fn get_connection_by_session_id(self, session: c_long) -> &'static mut Connection {
+        let slot = self.view().by_session(session).expect("a live session");
         // SAFETY: a live session's connection.
-        unsafe { &mut *swr_v1_server_connection(self.state(), session, BY_SESSION) }
+        unsafe { &mut *slot.as_ptr().cast::<Connection>() }
     }
 
     fn get_idle_worker_num(self) -> u32 {

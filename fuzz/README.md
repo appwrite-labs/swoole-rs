@@ -111,6 +111,9 @@ as gzip, zlib or raw deflate and feeds it to `Inflate::decode` (or the HTTP/2 cl
 `Inflate::gzip_only`) in fuzzer-chosen chunks: one call and the chunks both give the body
 back, except where a raw stream's first chunk can't trigger upstream's first-chunk raw
 retry. The uncompressed body, whole and in the same chunks, decodes without a panic.
+`http_decompress` does the same for the HTTP client's Brotli and zstd decoders
+(`swoole_rs_inflate::brotli` and `zstd`): the compressed body comes back in any chunks,
+and the body itself decodes in chunks of at most 16 bytes until the output passes 16 MiB.
 
 libFuzzer writes new inputs to the first corpus directory, so keep `corpus/`
 (ignored) first and the committed `seeds/` second. A failure leaves its input in

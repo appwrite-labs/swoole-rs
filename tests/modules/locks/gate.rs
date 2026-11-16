@@ -13,7 +13,7 @@ use swoole_rs_error::ErrorCode;
 use swoole_rs_locks::coroutine::{CoroutineHost, CoroutineLock};
 use swoole_rs_locks::{
     Barrier, Kind, Lock, SharedMutex, barrier_destroy, barrier_init, barrier_wait,
-    swr_v1_locks_atomic32, swr_v1_locks_atomic64, swr_v1_locks_coroutine_backoff,
+    coroutine_backoff, swr_v1_locks_atomic32, swr_v1_locks_atomic64,
 };
 use swoole_rs_oracle::locks as reference;
 
@@ -423,8 +423,17 @@ fn wait_and_wake() {
     );
     #[cfg(target_os = "linux")]
     wait_wake(
-        |word, timeout| swoole_rs_locks::swr_v1_locks_wait(Some(word), timeout),
-        |word, count| swoole_rs_locks::swr_v1_locks_wakeup(Some(word), count),
+        |word, timeout| {
+            if swoole_rs_locks::wait(word, timeout) {
+                0
+            } else {
+                -1
+            }
+        },
+        |word, count| {
+            swoole_rs_locks::wakeup(word, count)
+                .map_or(-1, |woken| i32::try_from(woken).unwrap_or(i32::MAX))
+        },
     );
 }
 
@@ -498,7 +507,7 @@ fn coroutine_policy() {
     assert_eq!(word(), 1);
     let mut second = 0.001;
     for expected in [0.002, 0.004, 0.008, 0.016, 0.032, 0.064, 0.1, 0.001] {
-        second = swr_v1_locks_coroutine_backoff(second, 0.001, 0.1);
+        second = coroutine_backoff(second, 0.001, 0.1);
         assert_eq!(second, expected);
     }
 }

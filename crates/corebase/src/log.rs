@@ -40,7 +40,6 @@ pub extern "C" fn swr_v1_core_set_last_error(code: c_int) {
 }
 
 /// `swoole_log.h`'s levels (`SW_LOG_*`), which a test reads from that header.
-#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(non_camel_case_types, reason = "the native level names")]
 pub enum LogLevel {

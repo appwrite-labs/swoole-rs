@@ -7,7 +7,7 @@
 //! request record. The ossupport patch deletes `src/os/async_thread.cc`.
 use crate::offload::AsyncEvent;
 use std::cell::Cell;
-use std::ffi::{c_int, c_void};
+use std::ffi::c_int;
 use std::ptr;
 use std::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::{
@@ -191,7 +191,7 @@ static HOOKS: PoolHooks = PoolHooks {
 };
 
 /// The reactor's destroy callback: unregisters the pipe and frees the handle.
-extern "C-unwind" fn destroyed(_data: *mut c_void) {
+fn destroyed() {
     let Some(mut threads) = THREADS.take() else {
         return;
     };
@@ -209,7 +209,7 @@ extern "C-unwind" fn destroyed(_data: *mut c_void) {
 }
 
 /// The reactor's exit condition: in-flight events keep it running.
-extern "C-unwind" fn pending(event_num: &mut usize) -> bool {
+fn pending(event_num: &mut usize) -> bool {
     if with_current(|threads| threads.task_num) == Some(0) {
         *event_num -= 1;
     }
@@ -318,7 +318,7 @@ fn complete(token: usize) {
 
 /// Upstream's `AsyncThreads::callback`, the pipe's reactor handler: completes every event
 /// waiting on the pipe.
-pub extern "C" fn callback(_: Running<'_>, event: &mut Event) -> c_int {
+pub fn callback(_: Running<'_>, event: &mut Event) -> c_int {
     if pool_complete(event.fd(), complete).is_none() {
         log::sys_warning(
             c"AsyncThreads::callback",
@@ -330,19 +330,13 @@ pub extern "C" fn callback(_: Running<'_>, event: &mut Event) -> c_int {
 }
 
 /// `Co::stats()`'s AIO counts for this thread: events in flight, the pool's
-/// workers and its queue; left as they are when the thread has no pool.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_async_threads_stats(
-    task_num: &mut i64,
-    worker_num: &mut i64,
-    queue_size: &mut i64,
-) {
+/// workers and its queue; none when the thread has no async threads.
+#[must_use]
+pub fn stats() -> Option<(usize, usize, usize)> {
     with_current(|threads| {
-        *task_num = i64::try_from(threads.task_num).unwrap_or(i64::MAX);
         let (workers, queued) = threads
             .pool
             .map_or((0, 0), |pool| (pool.worker_num(), pool.queue_size()));
-        *worker_num = i64::try_from(workers).unwrap_or(i64::MAX);
-        *queue_size = i64::try_from(queued).unwrap_or(i64::MAX);
-    });
+        (threads.task_num, workers, queued)
+    })
 }

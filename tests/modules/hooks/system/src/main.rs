@@ -121,7 +121,6 @@ unsafe extern "C-unwind" {
     #[link_name = "_ZN6swoole6StringC1EmPKNS_9AllocatorE"]
     fn string_new(this: *mut CppString, size: usize, allocator: *const c_void);
     fn swr_v1_core_last_error() -> c_int;
-    fn swr_v1_core_set_signal_listener_num(value: u32);
 
     fn swoole_coroutine_create(routine: Routine, arg: *mut c_void) -> c_long;
     fn swoole_coroutine_get_id() -> c_long;
@@ -538,12 +537,10 @@ fn wait_signal_invalid_signo() {
 
 fn wait_signal_fail() {
     run(|| {
-        // SAFETY: SwooleG.signal_listener_num = 1.
-        unsafe { swr_v1_core_set_signal_listener_num(1) };
+        swoole_rs_corebase::swr_v1_core_set_signal_listener_num(1);
         assert_eq!(wait_signal(SIGUSR1, 1.0), SW_ERR);
         assert_eq!(last_error(), EBUSY);
-        // SAFETY: as above.
-        unsafe { swr_v1_core_set_signal_listener_num(0) };
+        swoole_rs_corebase::swr_v1_core_set_signal_listener_num(0);
     });
 }
 

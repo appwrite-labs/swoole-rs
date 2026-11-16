@@ -109,8 +109,8 @@ fn with_tls<P, R>(
     pick: impl FnOnce(&SocketFields) -> P,
     step: impl FnOnce(&mut SocketTls, Ssl, P) -> R,
 ) -> Option<R> {
-    let (before, picked) = socket.read(|record| (record.tls, pick(record)));
-    let ssl = Ssl::of(socket)?;
+    let (ssl, (before, picked)) = Ssl::of_reading(socket, |record| (record.tls, pick(record)));
+    let ssl = ssl?;
     let mut tls = before;
     let result = step(&mut tls, ssl, picked);
     // Most transfers leave the group as it was, and then the record needs no edit.
@@ -1242,7 +1242,7 @@ mod tests {
     #[test]
     fn ssl_create_then_close_frees_the_ssl() {
         unsafe {
-            let owner = crate::swr_v1_tls_owner_new();
+            let owner = crate::owner_new(crate::tls_warning);
             (*owner.fields).context = Some(crate::SslContext::tls());
             let mut fds = [0; 2];
             assert_eq!(
@@ -1281,7 +1281,7 @@ mod tests {
         let handle = unsafe { Socket::from_ptr(&raw mut socket) }.unwrap();
         assert_eq!(socket_ssl_session(handle), None);
         unsafe {
-            let owner = crate::swr_v1_tls_owner_new();
+            let owner = crate::owner_new(crate::tls_warning);
             (*owner.fields).context = Some(crate::SslContext::tls());
             assert!(socket_ssl_create(
                 Socket::from_ptr(&raw mut socket).unwrap(),

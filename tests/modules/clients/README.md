@@ -20,12 +20,15 @@ name codec, the DNS address text and the socket DNS lookup
 `socket_ops.rs` runs the production client's socket-control table in the Rust
 unit-test binary: descriptor flags, successful and failed address assignment,
 both kernel timeouts, raw/synchronous/nonblocking TCP connects, `SO_ERROR`, and
-an event with no socket. The existing recording cases receive their table at
+an event with no socket. A real OpenSSL session on a loopback connection also
+checks that a pending handshake requests input and reuses its original session
+and frozen hostname after the mutable context changes. Its test owner releases
+the native session before freeing the client. The existing recording cases receive their table at
 construction and retain their original inputs and expected traces. The socket
-record operations and reactor enqueue/drain callbacks compile in both builds;
-recording clients receive explicit callbacks for the unchanged send and watermark
-traces. The original async client cases exercise the real callbacks. Remaining
-I/O, TLS, timer and host stand-ins are tracked by #4093.
+record operations, safe TLS operations and reactor enqueue/drain callbacks compile in
+both builds; recording clients receive explicit callbacks for the unchanged send and
+watermark traces. The original async client cases exercise the real callbacks. Remaining
+I/O, TLS close/free, timer and host stand-ins are tracked by #4093.
 
 ## network/client.cpp in Rust
 
@@ -35,7 +38,7 @@ TEST `client.<name>` is the case `client.<name>` (function `<name>`). The case
 binary is the hooks one (`tests/modules/hooks/system`, which includes this file),
 so `hooks-system-rust` builds and runs it over
 the crates and system.py's static libswoole.a (the pin's thirdparty and native/'s Zend-free sources). A
-`Client` is crates/clients' state: made by `swr_v1_clients_new` and given its
+`Client` is crates/clients' state: made by `client::create` and given its
 callbacks by `client::listen`; its methods, `enable_ssl_encrypt`, `ssl_verify`
 and its deletion among them, are `client::Handle` calls or other
 `swr_v1_clients_*` exports, and the `Socket` TLS reads are called under their

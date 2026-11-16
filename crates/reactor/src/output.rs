@@ -199,7 +199,10 @@ pub fn handle_send_owned(
             return output;
         }
     }
-    socket.edit(|record| output.result.publish(&mut record.output));
+    // A complete send sets neither flag, and then the record needs no edit.
+    if output.result.close_wait || output.result.send_wait {
+        socket.edit(|record| output.result.publish(&mut record.output));
+    }
     if output.result.pop {
         // Detach transfers custody to the caller without invoking a disposer.
         match queue.pop() {
