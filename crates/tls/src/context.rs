@@ -690,20 +690,16 @@ impl Method<'_> {
 /// leaves the callback installed for the context's life, but only the certificate
 /// and key files `f` loads read through it, so it goes when `f` returns.
 fn with_password<R>(ctx: &SslCtx, passphrase: &TlsStr<'_>, f: impl FnOnce() -> R) -> R {
-    /// Clears the callback, then its userdata, even when `f` unwinds.
-    struct Installed<'a>(&'a SslCtx);
-    impl Drop for Installed<'_> {
-        fn drop(&mut self) {
-            SSL_CTX_set_default_passwd_cb(self.0, None);
-            SSL_CTX_set_default_passwd_cb_userdata(self.0, None);
-        }
-    }
     if passphrase.is_empty() {
         return f();
     }
     SSL_CTX_set_default_passwd_cb_userdata(ctx, Some(passphrase));
     SSL_CTX_set_default_passwd_cb(ctx, Some(password));
-    let _installed = Installed(ctx);
+    // Clear the callback, then its userdata, even when `f` unwinds.
+    let _installed = core::mem::DropGuard::new(ctx, |ctx| {
+        SSL_CTX_set_default_passwd_cb(ctx, None);
+        SSL_CTX_set_default_passwd_cb_userdata(ctx, None);
+    });
     f()
 }
 

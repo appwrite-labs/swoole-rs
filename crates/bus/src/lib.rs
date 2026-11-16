@@ -6,10 +6,10 @@
 //! what a read reports.
 //!
 //! The buffer and each packet's block come from a [`TrustedAllocator`] the bus's
-//! owner names. The allocator may be Zend's, whose `emalloc` can bail out
-//! (longjmp), so a read returns from `Bus::receive` with nothing borrowed before
-//! [`Bus::read_from`] allocates a packet, and resumes after. Freeing a block calls
-//! its allocator's `free`, which never bails out.
+//! owner names. A read returns from `Bus::receive` with nothing borrowed before
+//! [`Bus::read_from`] allocates a packet, then resumes. Zend's supported request
+//! allocator defers memory-limit errors (docs/zend.md); freeing a block through
+//! its allocator's `free` never bails out.
 #![expect(
     clippy::disallowed_types,
     reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"

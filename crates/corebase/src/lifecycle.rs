@@ -296,14 +296,8 @@ thread_local! {
 /// # Panics
 /// Inside another lend's `f` on this thread.
 pub fn lend_thread_buffer<R>(f: impl FnOnce() -> R) -> R {
-    struct Lent;
-    impl Drop for Lent {
-        fn drop(&mut self) {
-            BUFFER_LENT.set(false);
-        }
-    }
     assert!(!BUFFER_LENT.replace(true), "sw_tg_buffer() is lent already");
-    let _lent = Lent;
+    let _lent = core::mem::DropGuard::new((), |()| BUFFER_LENT.set(false));
     f()
 }
 

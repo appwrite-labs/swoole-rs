@@ -66,6 +66,14 @@ bool swr_zend_class_declares(const zend_class_entry *ce, zend_string *member) {
     return zend_hash_find(&ce->properties_info, member) != NULL;
 }
 
+zend_class_entry *swr_zend_class_root(zend_class_entry *ce) {
+    /* A parent still held by name (no ZEND_ACC_RESOLVED_PARENT) ends the walk. */
+    while ((ce->ce_flags & ZEND_ACC_RESOLVED_PARENT) && ce->parent) {
+        ce = ce->parent;
+    }
+    return ce;
+}
+
 bool swr_zend_instanceof(const zend_class_entry *ce, const zend_class_entry *parent) {
     return instanceof_function(ce, parent);
 }

@@ -173,15 +173,6 @@ pub(crate) fn wait(socket: Co, event: Events, buffer: Option<WriteSlot<'_>>) -> 
     !co.is_null() && Wait(socket).wait(co, event, buffer)
 }
 
-/// Clears the barrier [`wait_barrier`] installed, also when the wait unwinds.
-struct Installed(Wait, Events);
-
-impl Drop for Installed {
-    fn drop(&mut self) {
-        self.0.set_barrier(self.1, None);
-    }
-}
-
 /// [`wait_for`] with `barrier` retrying the transfer while it is installed: the
 /// ready callback calls it, and holds the coroutine while it returns true.
 pub(crate) fn wait_barrier(socket: Co, event: Events, barrier: &mut dyn FnMut() -> bool) -> bool {
@@ -194,13 +185,14 @@ pub(crate) fn wait_barrier(socket: Co, event: Events, barrier: &mut dyn FnMut() 
         clippy::transmute_ptr_to_ptr,
         reason = "a raw pointer cast cannot extend a trait object's lifetime"
     )]
-    // SAFETY: only the lifetime changes. `Installed` uninstalls the barrier before
+    // SAFETY: only the lifetime changes. The guard uninstalls the barrier before
     // this returns, while the borrow is still live, and only `ready` calls it meanwhile.
     let barrier =
         unsafe { core::mem::transmute::<*mut (dyn FnMut() -> bool + '_), Barrier>(barrier) };
-    let installed = Installed(Wait(socket), event);
-    installed.0.set_barrier(event, Some(barrier));
-    installed.0.wait(co, event, None)
+    let wait = Wait(socket);
+    let _installed = core::mem::DropGuard::new((), |()| wait.set_barrier(event, None));
+    wait.set_barrier(event, Some(barrier));
+    wait.wait(co, event, None)
 }
 
 /// [`wait`] with no barrier and no buffer.

@@ -15,8 +15,8 @@ use swoole_rs_phpstubs::{coroutine, coroutine_system};
 use swoole_rs_zend::{
     Call, Class, Minit, Owned, Value, ZStr,
     bailout::Bailout,
-    opcode::{Frame, Handler, Next, handler},
-    sys::{ZEND_ACC_FINAL, ZEND_ACC_PRIVATE, user_opcode_handler_t, zend_class_entry, zval},
+    opcode::{Entry, Frame, Handler, Next, handler},
+    sys::{ZEND_ACC_FINAL, ZEND_ACC_PRIVATE, zend_class_entry, zval},
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -221,9 +221,9 @@ fn hook_zend(_minit: &Minit) {
         /// `ZEND_BEGIN_SILENCE` and `ZEND_END_SILENCE`: Zend calls each with the
         /// live frame of its opcode.
         safe fn swr_zend_coroutine_opcodes(
-            exit: user_opcode_handler_t,
-            begin_silence: user_opcode_handler_t,
-            end_silence: user_opcode_handler_t,
+            exit: Option<Entry>,
+            begin_silence: Option<Entry>,
+            end_silence: Option<Entry>,
         );
         /// `zend_autoload = handler`; returns the previous one, Zend's (SPL's
         /// `spl_perform_autoload` once registered), which takes two live names.
@@ -332,7 +332,7 @@ fn exit(call: &Call) {
         }
         return;
     }
-    if host::exit_original(call.frame(), call.return_value()) {
+    if host::exit_original(call) {
         return;
     }
     host::exit_fallback(message.map(ZStr::bytes), code);
