@@ -542,20 +542,20 @@ impl Value {
     /// Lend what the zval holds to `edit`, with null in its place meanwhile,
     /// then put it back and release whatever `edit` left there. The caller
     /// holds nothing borrowed from the zval.
+    #[inline(always)]
     pub fn lend<R>(&self, edit: impl FnOnce(&mut Owned) -> R) -> R {
-        let mut held = Owned::null();
-        // Two distinct zvals: nothing borrows this one's content, and `held`
-        // is this frame's.
-        let swap = |held: &Owned| self.0.swap(&held.0.0);
-        swap(&held);
+        let mut held = Owned::from_zval(self.0.replace(Owned::null().into_zval()));
         let result = edit(&mut held);
-        swap(&held);
+        // Replace the slot once: any value installed by a reentrant edit is
+        // released after the held value is back in its slot.
+        drop(Owned::from_zval(self.0.replace(held.into_zval())));
         result
     }
 
     /// The array this holds, lent to `edit` as [`Value::lend`] lends it: the
     /// zval reads null meanwhile, so nothing `edit` does can free or replace
     /// the array under it. None for anything but an array.
+    #[inline(always)]
     pub fn edit_array<R>(&self, edit: impl FnOnce(&mut ArrayMut) -> R) -> Option<R> {
         self.lend(|held| held.array_mut().map(|array| edit(array)))
     }

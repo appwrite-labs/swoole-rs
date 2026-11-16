@@ -347,7 +347,7 @@ pub(crate) fn made(request: &Request, which: Property) -> Option<&Value> {
 }
 
 /// [`property`]'s array, lent to `edit`; None without one.
-#[inline]
+#[inline(always)]
 pub(crate) fn edit<R>(
     request: &mut Request,
     which: Property,
