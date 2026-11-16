@@ -86,3 +86,7 @@ worse than on the first engine (`test_autobahn_verdict.py`).
 `benchmark.py` (`websocket-benchmark`) times PHP `Frame::pack` + `Frame::unpack`
 round trips; run it on an idle host. `--kind binary|object|close|compressed`
 picks the workload and `--check` verifies the workloads without timing.
+
+Encoder/header and pack/delivery policy arguments use `Opcode` and `FrameFlags`.
+PHP/native callers and the original codec/kernel test adapters convert raw bytes
+at their boundaries; reserved values and every original expected byte remain.

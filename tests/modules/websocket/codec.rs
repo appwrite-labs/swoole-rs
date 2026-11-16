@@ -7,7 +7,7 @@ use std::mem::MaybeUninit;
 use swoole_rs_oracle::websocket as reference;
 use swoole_rs_websocket::{
     Action, Context, Decision, DecodeErrorKind, DecodedFrame, Delivery, FrameFlags, FrameMetadata,
-    Opcode, PolicyError, control_invalid, decide_frame, message_policy, pack_policy,
+    Opcode, PolicyError, decide_frame,
 };
 
 // The original policy assertions observe the native packed representation.
@@ -25,7 +25,7 @@ fn unpacked(bits: u16) -> FrameMetadata {
 
 // Preserve the original oracle's zero-sentinel assertions at the test boundary.
 fn encoded_size(length: usize, flags: u8) -> usize {
-    swoole_rs_websocket::encoded_size(length, flags).unwrap_or(0)
+    swoole_rs_websocket::encoded_size(length, FrameFlags::from_bits(flags)).unwrap_or(0)
 }
 
 fn encode_parts(
@@ -35,11 +35,40 @@ fn encode_parts(
     flags: u8,
     out: &mut [MaybeUninit<u8>],
 ) -> usize {
-    swoole_rs_websocket::encode_parts(length, data, opcode, flags, out).unwrap_or(0)
+    swoole_rs_websocket::encode_parts(
+        length,
+        data,
+        Opcode::from_code(opcode),
+        FrameFlags::from_bits(flags),
+        out,
+    )
+    .unwrap_or(0)
 }
 
 fn encode_close_into(code: i32, reason: &[u8], flags: u8, out: &mut [MaybeUninit<u8>]) -> usize {
-    swoole_rs_websocket::encode_close_into(code, reason, flags, out).unwrap_or(0)
+    swoole_rs_websocket::encode_close_into(code, reason, FrameFlags::from_bits(flags), out)
+        .unwrap_or(0)
+}
+
+fn control_invalid(opcode: u8, flags: u8, length: usize) -> bool {
+    swoole_rs_websocket::control_invalid(
+        Opcode::from_code(opcode),
+        FrameFlags::from_bits(flags),
+        length,
+    )
+}
+
+fn pack_policy(opcode: u8, flags: u8, length: usize) -> (u8, bool) {
+    let (flags, compress) = swoole_rs_websocket::pack_policy(
+        Opcode::from_code(opcode),
+        FrameFlags::from_bits(flags),
+        length,
+    );
+    (flags.bits(), compress)
+}
+
+fn message_policy(opcode: u8, settings: u8) -> Delivery {
+    swoole_rs_websocket::message_policy(Opcode::from_code(opcode), settings)
 }
 
 const FILL: u8 = 0xa5;
@@ -477,7 +506,13 @@ fn encoding_errors_leave_output_untouched() {
         ),
     ] {
         assert_eq!(
-            encode_parts(length, data, opcode, flags, &mut output),
+            encode_parts(
+                length,
+                data,
+                Opcode::from_code(opcode),
+                FrameFlags::from_bits(flags),
+                &mut output
+            ),
             Err(error)
         );
         assert_eq!(bytes(&output), vec![FILL; 16]);

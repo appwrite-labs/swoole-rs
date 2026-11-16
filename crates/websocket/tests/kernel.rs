@@ -1,4 +1,12 @@
-use swoole_rs_websocket::{frame_length, header};
+use swoole_rs_websocket::{FrameFlags, Opcode, frame_length};
+
+fn header(length: u64, opcode: u8, flags: u8) -> ([u8; 10], usize) {
+    swoole_rs_websocket::header(
+        length,
+        Opcode::from_code(opcode),
+        FrameFlags::from_bits(flags),
+    )
+}
 
 /// The deleted `swr_v1_ws_frame_length`'s view: the header length lands in
 /// `header` once known.

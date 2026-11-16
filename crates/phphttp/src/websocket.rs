@@ -26,8 +26,9 @@ use swoole_rs_phpstubs::websocket as stubs;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_server::{server_methods, view};
 use swoole_rs_websocket::{
-    DecodeErrorKind, DecodedFrame, Delivery, EncodeError, FrameMetadata, Opcode, control_invalid,
-    encode_close_into, encode_into, encoded_size, header, message_policy, pack_policy,
+    DecodeErrorKind, DecodedFrame, Delivery, EncodeError, FrameFlags, FrameMetadata, Opcode,
+    control_invalid, encode_close_into, encode_into, encoded_size, header, message_policy,
+    pack_policy,
 };
 use swoole_rs_zend::{
     Array, Call, Class, Declared, Minit, Owned, Value, ZStr, ZString, bailout, handlers,
@@ -422,7 +423,12 @@ fn packed<T>(frame: &FrameObject, emit: impl FnOnce(&[u8], u8) -> Option<T>) -> 
         );
         return None;
     }
-    let (mut flags, deflate) = pack_policy(frame.opcode, frame.flags, data.len());
+    let (flags, deflate) = pack_policy(
+        Opcode::from_code(frame.opcode),
+        FrameFlags::from_bits(frame.flags),
+        data.len(),
+    );
+    let mut flags = flags.bits();
     let compressed = if !deflate {
         None
     } else if let Some(compressed) = compress(data) {
@@ -503,18 +509,21 @@ fn encoded(
 }
 
 /// Upstream's encoders fail a masked header-only frame after writing it.
-fn header_only_mask(flags: u8) -> bool {
-    flags & FLAG_MASK != 0 && flags & FLAG_ENCODE_HEADER_ONLY != 0
+fn header_only_mask(flags: FrameFlags) -> bool {
+    flags.is_masked() && flags.is_header_only()
 }
 
 /// `websocket::encode`.
 pub(crate) fn encode(data: &[u8], opcode: u8, flags: u8) -> Option<Frame> {
+    let opcode = Opcode::from_code(opcode);
+    let flags = FrameFlags::from_bits(flags);
     if control_invalid(opcode, flags, data.len()) {
         warning(
             c"websocket::encode",
             &format!(
-                "invalid websocket control frame: opcode={opcode}, fin={}, payload_length={}",
-                u8::from(flags & FLAG_FIN != 0),
+                "invalid websocket control frame: opcode={}, fin={}, payload_length={}",
+                opcode.code(),
+                u8::from(flags.is_final()),
                 data.len()
             ),
         );
@@ -527,12 +536,17 @@ pub(crate) fn encode(data: &[u8], opcode: u8, flags: u8) -> Option<Frame> {
 
 /// `websocket::pack_close_frame`.
 fn close_frame(code: i32, reason: &[u8], flags: u8) -> Option<Frame> {
+    let flags = FrameFlags::from_bits(flags);
     let func = c"websocket::pack_close_frame";
     if reason.len() > CLOSE_REASON_MAX {
         warning(func, "the max length of close reason is 125");
         return None;
     }
-    if control_invalid(Opcode::Close.code(), FLAG_FIN, reason.len() + 2) {
+    if control_invalid(
+        Opcode::Close,
+        FrameFlags::from_bits(FLAG_FIN),
+        reason.len() + 2,
+    ) {
         warning(
             func,
             &format!(
@@ -542,7 +556,7 @@ fn close_frame(code: i32, reason: &[u8], flags: u8) -> Option<Frame> {
         );
         return None;
     }
-    let size = encoded_size(reason.len() + 2, flags | FLAG_FIN).ok()?;
+    let size = encoded_size(reason.len() + 2, flags.with_final()).ok()?;
     let frame = encoded(size, |out| encode_close_into(code, reason, flags, out))?;
     (!header_only_mask(flags)).then_some(frame)
 }
@@ -791,7 +805,11 @@ fn push(call: &Call) {
                 && frame.opcode < Opcode::Close.code()
                 && flags & FLAG_ENCODE_HEADER_ONLY == 0
             {
-                let (head, length) = header(payload.len() as u64, frame.opcode, flags);
+                let (head, length) = header(
+                    payload.len() as u64,
+                    Opcode::from_code(frame.opcode),
+                    FrameFlags::from_bits(flags),
+                );
                 let head = head.get(..length).unwrap_or_default();
                 return Some(push_frame(server, fd, head, payload));
             }
@@ -908,7 +926,7 @@ fn message(view: view::Server<'_>, request: &RecvData) -> Result<bool, bailout::
     };
     let mut data = php_swoole_get_recv_data(view, request);
     let [opcode, flags] = ext_flags.to_be_bytes();
-    let delivery = message_policy(opcode, settings);
+    let delivery = message_policy(Opcode::from_code(opcode), settings);
     if delivery != Delivery::Deliver {
         if delivery == Delivery::Pong
             && let Some(pong) = encode(
@@ -1439,9 +1457,12 @@ mod tests {
     #[test]
     fn a_masked_header_only_frame_fails() {
         assert!(
-            header_only_mask(FLAG_MASK | FLAG_ENCODE_HEADER_ONLY),
+            header_only_mask(FrameFlags::from_bits(FLAG_MASK | FLAG_ENCODE_HEADER_ONLY)),
             "both"
         );
-        assert!(!header_only_mask(FLAG_MASK), "mask only");
+        assert!(
+            !header_only_mask(FrameFlags::from_bits(FLAG_MASK)),
+            "mask only"
+        );
     }
 }
