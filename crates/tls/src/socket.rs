@@ -291,11 +291,18 @@ impl ShutdownCalls for OpenSsl {
     }
 }
 
-/// `Socket::ssl_shutdown`'s results: false, true, or false after native code warns
-/// with `ssl_get_error_reason`.
-const SHUTDOWN_FALSE: c_int = 0;
-const SHUTDOWN_TRUE: c_int = 1;
-const SHUTDOWN_WARN: c_int = 2;
+/// The queued OpenSSL error captured when shutdown needs a warning.
+/// The code may be zero when OpenSSL supplied no queued reason.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShutdownError(c_ulong);
+
+impl ShutdownError {
+    /// The captured reason and its optional diagnostic, without reading the error queue.
+    #[must_use]
+    pub fn reason(self) -> (c_int, Option<&'static CStr>) {
+        (error_reason(self.0), reason_string(self.0))
+    }
+}
 
 fn shutdown(
     tls: &mut SocketTls,
@@ -304,9 +311,9 @@ fn shutdown(
     quiet: bool,
     repaired: bool,
     calls: &mut impl ShutdownCalls,
-) -> c_int {
+) -> Result<bool, ShutdownError> {
     if *closed || ssl.in_init() {
-        return SHUTDOWN_FALSE;
+        return Ok(false);
     }
     // If the peer closed first, shut down quietly: sending data then makes the peer
     // reply with an RST segment.
@@ -338,26 +345,29 @@ fn shutdown(
         (n, error)
     };
     match result {
-        (1, _) | (_, 0 | SSL_ERROR_ZERO_RETURN) => SHUTDOWN_TRUE,
-        _ => SHUTDOWN_WARN,
+        (1, _) | (_, 0 | SSL_ERROR_ZERO_RETURN) => Ok(true),
+        _ => Err(ShutdownError(pop_error())),
     }
 }
 
 /// `Socket::ssl_shutdown`: one `SSL_shutdown` once the handshake is done, quiet when
-/// `quiet` is set. Returns 1 for true, 0 for false and 2 for false after native code
-/// warns with `ssl_get_error_reason`.
+/// `quiet` is set. Returns false when already closed or still handshaking.
+///
+/// # Errors
+/// A shutdown requiring a warning, with the oldest queued OpenSSL error captured
+/// exactly once. The caller reports its reason after publishing the closed state.
 ///
 /// Upstream marks the shutdown sent and received first, so no `close_notify` is
 /// written, and closes the socket (`closed`, its `ssl_closed_`) whatever the result.
 /// `repaired` (`--fix-halfclose`, M15) writes the alert: a pending read or write
 /// leaves the socket open with its want flag set, to retry, and anything else closes it.
-pub fn swr_v1_socket_ssl_shutdown(
+pub fn ssl_shutdown(
     tls: &mut SocketTls,
     ssl: Ssl,
     closed: &mut bool,
     quiet: bool,
     repaired: bool,
-) -> c_int {
+) -> Result<bool, ShutdownError> {
     shutdown(tls, ssl, closed, quiet, repaired, &mut OpenSsl)
 }
 
@@ -849,15 +859,15 @@ mod shutdown_tests {
                 self.repaired,
                 &mut self.calls,
             );
-            if result == SHUTDOWN_WARN {
-                let (_, reason_string) = swr_v1_socket_ssl_error_reason();
+            if let Err(error) = result {
+                let (_, reason_string) = error.reason();
                 let message = reason_string
                     .unwrap_or(c"no OpenSSL reason available")
                     .as_ptr();
                 self.warnings += 1;
                 self.null_warnings += usize::from(message.is_null());
             }
-            result == SHUTDOWN_TRUE
+            matches!(result, Ok(true))
         }
 
         fn ssl_close(&mut self) {
@@ -1305,6 +1315,32 @@ mod shutdown_tests {
             "all terminal and injected diagnostics have a non-null message"
         );
     }
+    #[test]
+    fn shutdown_warning_retains_the_captured_reason() {
+        let pair = Pair::new(false);
+        let mut socket = Socket::new(pair.server);
+        socket.calls.injected = SSL_ERROR_SSL;
+        clear_errors();
+        assert!(crate::OwnedBio::open(c"/nonexistent/shutdown-reason").is_none());
+        let queued = peek_error();
+        assert_ne!(queued, 0);
+        let error = shutdown(
+            &mut socket.tls,
+            unsafe { Ssl::new(pair.server) }.unwrap(),
+            &mut socket.closed,
+            false,
+            false,
+            &mut socket.calls,
+        )
+        .unwrap_err();
+        assert!(socket.closed);
+        assert_eq!(error.0, queued);
+        let reason = error.reason();
+        clear_errors();
+        assert_eq!(error.reason(), reason);
+        assert_ne!(reason.0, 0);
+    }
+
     /// Upstream's shutdown (no `--fix-halfclose`): both directions are marked shut
     /// first, so no alert is written, and the socket closes whatever OpenSSL returns.
     #[test]

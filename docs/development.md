@@ -133,11 +133,16 @@ of an unsupported run. To run them against a real ring, opt in:
 python3 tools/dev.py docker --iouring -- cargo test --locked -p swoole-rs-hooks --features iouring,upstream-symbols uring
 ```
 
-`--iouring` adds exactly `--security-opt seccomp=tools/docker-seccomp-iouring.json` to
-`docker run`: Docker's default profile (moby/profiles `seccomp/default.json`) plus one
-rule allowing `io_uring_setup`, `io_uring_enter` and `io_uring_register`. Capabilities,
-AppArmor, devices and ulimits stay Docker's defaults; it is not `--privileged` and not
-`seccomp=unconfined`. Ring memory is charged to the container's memory cgroup, so no
+`--iouring` adds exactly `--security-opt seccomp=tools/docker-seccomp-iouring.json` and
+`--cap-add SYS_RESOURCE` to `docker run`. The profile is Docker's default (moby/profiles
+`seccomp/default.json`) plus one rule allowing `io_uring_setup`, `io_uring_enter` and
+`io_uring_register`. `CAP_SYS_RESOURCE` lets the ring's sendfile grow its pipe to 1 MiB
+as upstream does. A container's root shares the host VM's per-user pipe quota
+(`fs.pipe-user-pages-soft`), and on a busy host (self-hosted runners, dind) that quota
+runs out. Pipes then shrink to two pages and the resize fails with EPERM, so a spliced
+file no longer fits a socketpair and the sendfile tests block (#4230). AppArmor, devices,
+ulimits and the other capabilities stay Docker's defaults; it is not `--privileged` and
+not `seccomp=unconfined`. Ring memory is charged to the container's memory cgroup, so no
 `memlock` ulimit is needed. The flag applies to whatever command the run executes.
 
 The host must still allow io_uring: a Linux kernel built with `CONFIG_IO_URING` and
