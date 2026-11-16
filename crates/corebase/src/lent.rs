@@ -523,13 +523,6 @@ impl<S: ReadSlot> Fill<'_, S> {
 }
 
 impl Spare<'_> {
-    /// How many bytes are written.
-    #[inline]
-    #[must_use]
-    pub fn filled(&self) -> usize {
-        self.filled
-    }
-
     /// How many bytes are left to fill.
     #[inline]
     #[must_use]
@@ -602,13 +595,6 @@ impl Spare<'_> {
     pub fn recv(&mut self, fd: c_int, flags: c_int) -> Option<usize> {
         let received = self.rest().recv(fd, flags);
         self.count(received)
-    }
-
-    /// read(2) into the room, as [`Fill::read`].
-    #[inline]
-    pub fn read(&mut self, fd: c_int) -> Option<usize> {
-        let read = self.rest().read(fd);
-        self.count(read)
     }
 
     /// recvfrom(2) into the room, as [`Fill::recvfrom`].
