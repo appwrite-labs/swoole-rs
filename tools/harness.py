@@ -109,10 +109,15 @@ def reserved_port():
         if sys.platform == 'darwin':
             # BSD refuses the server's SO_REUSEADDR bind while this socket is bound, but allows
             # it over TIME_WAIT, which bind(0) and connect() skip for 2*MSL (30s by default).
-            # Closing the accepted end first leaves the port itself in TIME_WAIT.
+            # Closing the accepted end first leaves the port itself in TIME_WAIT. The connection
+            # is a plain socket, not `create_connection`, which tests patch out; a timeout turns a
+            # connection that never arrives into an error rather than a hang.
             reservation.listen()
-            with socket.create_connection(('127.0.0.1', port)), reservation.accept()[0]:
-                pass
+            reservation.settimeout(5)
+            with socket.socket() as client:
+                client.settimeout(5)
+                client.connect(('127.0.0.1', port))
+                reservation.accept()[0].close()
             reservation.close()
         # On Linux it stays held, not listening, until the server stops, and the server's own
         # SO_REUSEADDR bind still succeeds.

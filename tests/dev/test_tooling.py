@@ -43,7 +43,8 @@ class ReservedPort(unittest.TestCase):
                 listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 listener.bind(('127.0.0.1', port))
                 listener.listen()
-                with socket.create_connection(('127.0.0.1', port)), listener.accept()[0]:
+                listener.settimeout(5)
+                with socket.create_connection(('127.0.0.1', port), timeout=5), listener.accept()[0]:
                     pass
 
 
