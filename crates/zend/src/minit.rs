@@ -107,6 +107,13 @@ unsafe extern "C" {
     safe static zend_ce_countable: *mut zend_class_entry;
     /// `CG(function_table)`: one pointer of the compiler's globals is read.
     safe fn swr_zend_facade_compiler_functions() -> *mut HashTable;
+    /// Zend runs `handler` for each instruction of `opcode` from now on. Only
+    /// [`Minit::opcode_handler`] calls it, before any PHP code runs, with a
+    /// handler written for that opcode.
+    safe fn zend_set_user_opcode_handler(
+        opcode: u8,
+        handler: crate::sys::user_opcode_handler_t,
+    ) -> crate::sys::zend_result;
 }
 
 /// This module's MINIT, running on this thread: what makes registration safe.
@@ -519,6 +526,14 @@ impl Minit {
     /// now on: its original handler, or none when there is no such function.
     pub fn replace_handler(&self, name: &CStr, handler: Handler) -> zif_handler {
         swr_zend_minit_replace_handler(name.into(), handler)
+    }
+
+    /// `zend_set_user_opcode_handler(H::OPCODE, handler::<H>)`: Zend runs `H`
+    /// for each instruction of its opcode from now on.
+    pub fn opcode_handler<H: crate::opcode::Handler>(&self) {
+        if let Ok(opcode) = u8::try_from(H::OPCODE) {
+            zend_set_user_opcode_handler(opcode, Some(crate::opcode::handler::<H>));
+        }
     }
 
     /// `cfg_get_string(name)`: the php.ini entry `name`, or None when it is unset

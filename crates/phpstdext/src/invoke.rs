@@ -63,6 +63,7 @@ pub(crate) fn install(minit: &swoole_rs_zend::Minit) {
 pub(crate) struct MethodCall;
 
 impl Handler for MethodCall {
+    const OPCODE: u32 = swoole_rs_zend::sys::ZEND_INIT_METHOD_CALL;
     fn run(frame: Frame<'_>) -> c_int {
         let op = Op::current(frame);
         let Some(object) = op.op1() else {

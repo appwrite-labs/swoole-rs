@@ -576,6 +576,7 @@ pub(crate) fn operation(typed: Typed, concat: bool) -> bool {
 pub(crate) struct Unset;
 
 impl Handler for Unset {
+    const OPCODE: u32 = swoole_rs_zend::sys::ZEND_UNSET_DIM;
     fn run(frame: Frame<'_>) -> c_int {
         // `get_array_on_opline`: op1's slot.
         let Some(array) = Op::current(frame).op1_container() else {
@@ -596,6 +597,7 @@ impl Handler for Unset {
 pub(crate) struct ForeachBegin;
 
 impl Handler for ForeachBegin {
+    const OPCODE: u32 = swoole_rs_zend::sys::ZEND_FE_RESET_RW;
     fn run(frame: Frame<'_>) -> c_int {
         let op = Op::current(frame);
         if op.op1_container().and_then(Typed::of).is_none() {

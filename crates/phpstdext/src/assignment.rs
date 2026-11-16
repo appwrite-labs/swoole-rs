@@ -286,12 +286,14 @@ pub(crate) struct Assign;
 pub(crate) struct AssignOp;
 
 impl Handler for Assign {
+    const OPCODE: u32 = swoole_rs_zend::sys::ZEND_ASSIGN_DIM;
     fn run(frame: Frame<'_>) -> c_int {
         finish(dispatch(frame, false))
     }
 }
 
 impl Handler for AssignOp {
+    const OPCODE: u32 = swoole_rs_zend::sys::ZEND_ASSIGN_DIM_OP;
     fn run(frame: Frame<'_>) -> c_int {
         finish(dispatch(frame, true))
     }

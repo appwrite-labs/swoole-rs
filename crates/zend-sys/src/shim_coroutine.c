@@ -260,6 +260,7 @@ int swr_zend_autoload_try(swr_zend_autoload_handler handler, zend_string *name, 
 void swr_zend_coroutine_opcodes(user_opcode_handler_t exit_handler, user_opcode_handler_t begin_silence,
                                 user_opcode_handler_t end_silence) {
 #if PHP_VERSION_ID < 80400
+    _Static_assert(ZEND_EXIT == 79, "crates/phpcoroutines' Exit::OPCODE");
     zend_set_user_opcode_handler(ZEND_EXIT, exit_handler);
 #else
     (void) exit_handler;

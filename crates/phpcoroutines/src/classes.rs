@@ -274,6 +274,9 @@ fn throw_exit(message: &CStr, flags: i64, status: &Value) {
 struct Exit;
 
 impl Handler for Exit {
+    /// `ZEND_EXIT` before PHP 8.4 (asserted in `shim_coroutine.c`, which
+    /// installs it only there).
+    const OPCODE: u32 = 79;
     fn run(frame: Frame<'_>) -> c_int {
         let flags = exit_flags();
         if flags != 0 {
@@ -353,6 +356,7 @@ fn get_status(call: &Call) {
 struct BeginSilence;
 
 impl Handler for BeginSilence {
+    const OPCODE: u32 = swoole_rs_zend::sys::ZEND_BEGIN_SILENCE;
     fn run(frame: Frame<'_>) -> c_int {
         context::current().set_silence(Some(frame.php().error_reporting()));
         DISPATCH

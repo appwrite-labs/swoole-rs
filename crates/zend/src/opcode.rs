@@ -113,8 +113,11 @@ impl<'a> Frame<'a> {
 }
 
 /// A user opcode handler's body: `ZEND_USER_OPCODE_*` for the instruction
-/// `frame` is at.
+/// `frame` is at, whose opcode is `OPCODE` ([`crate::Minit::opcode_handler`]
+/// installs it for that one).
 pub trait Handler {
+    /// The `ZEND_*` opcode whose instructions `run` is written for.
+    const OPCODE: u32;
     fn run(frame: Frame<'_>) -> c_int;
 }
 
