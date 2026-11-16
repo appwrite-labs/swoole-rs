@@ -7,6 +7,8 @@
 
 use crate::process_pool::IpcMode;
 use core::cell::Cell;
+use core::marker::PhantomData;
+use core::ptr::NonNull;
 use core::sync::atomic::{AtomicI64, AtomicU8, AtomicU32, Ordering};
 use std::ffi::{c_int, c_void};
 use swoole_rs_locks::SharedMutex;
@@ -71,6 +73,45 @@ impl WorkerType {
     pub const fn code(self) -> u8 {
         self as u8
     }
+}
+
+/// A native socket record this crate keeps for its owner, lent for `'a`. Only the
+/// fields whose writers vouch for them are lent as one: a worker's pipe ends (the
+/// unsafe [`Worker::set_pipes`], or copies of them), a hook's socket (the unsafe
+/// [`crate::pool::PoolCall::set_socket`], or one of the former), and the stream
+/// listener and connection the pool makes and frees itself. So the record is live
+/// for `'a`, and crates/reactor takes one as its `Socket`.
+#[derive(Clone, Copy)]
+pub struct NativeSocket<'a> {
+    raw: NonNull<c_void>,
+    life: PhantomData<&'a c_void>,
+}
+
+impl NativeSocket<'_> {
+    /// One of the vouched-for fields above, or `None` while it is null.
+    pub(crate) fn lend(raw: *mut c_void) -> Option<Self> {
+        Some(Self {
+            raw: NonNull::new(raw)?,
+            life: PhantomData,
+        })
+    }
+
+    /// The record's address.
+    #[must_use]
+    pub fn as_non_null(self) -> NonNull<c_void> {
+        self.raw
+    }
+}
+
+/// An end of a worker's pipe.
+#[derive(Clone, Copy)]
+pub enum PipeEnd {
+    /// `pipe_master`, the master's end.
+    Master,
+    /// `pipe_worker`, the worker's end.
+    Worker,
+    /// `pipe_current`, the end this process uses: one of the other two, or none.
+    Current,
 }
 
 /// `swoole::Worker`'s fields, in upstream's order (`SWR_WORKER_RECORD_FIELDS`). The
@@ -529,6 +570,17 @@ impl<'a> Worker<'a> {
         self.write_pipe_object(object);
         self.write_pipe_master(master);
         self.write_pipe_worker(end);
+    }
+
+    /// The `end` of the worker's pipe, or `None` while it has none: live for the
+    /// handle, as the record's invariant has it.
+    #[must_use]
+    pub fn pipe(self, end: PipeEnd) -> Option<NativeSocket<'a>> {
+        NativeSocket::lend(match end {
+            PipeEnd::Master => self.pipe_master(),
+            PipeEnd::Worker => self.pipe_worker(),
+            PipeEnd::Current => self.pipe_current(),
+        })
     }
 
     /// Forgets the worker's pipe, which its owner is about to free.

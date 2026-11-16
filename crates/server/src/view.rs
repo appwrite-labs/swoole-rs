@@ -693,30 +693,13 @@ impl<'a> Port<'a> {
     }
 }
 
-/// An end of a worker's pipe.
-#[derive(Clone, Copy)]
-pub enum PipeEnd {
-    /// `pipe_master`, the master's end.
-    Master,
-    /// `pipe_worker`, the worker's end.
-    Worker,
-    /// `pipe_current`, the end this process uses: one of the other two, or none.
-    Current,
-}
+pub use swoole_rs_process::worker_record::PipeEnd;
 
 /// The `end` of `worker`'s pipe, or `None` while it has none.
 #[inline]
 #[must_use]
 pub fn worker_pipe_end(worker: Worker<'_>, end: PipeEnd) -> Option<Socket<'_>> {
-    let pipe = match end {
-        PipeEnd::Master => worker.pipe_master(),
-        PipeEnd::Worker => worker.pipe_worker(),
-        PipeEnd::Current => worker.pipe_current(),
-    };
-    // SAFETY: crates/process keeps the pipe fields private: null, or an end of the
-    // pair `Worker::set_pipes` gave, live until its owner clears or frees it (and
-    // `pipe_current` a copy of one of them), so for the worker's handle.
-    unsafe { Socket::from_ptr(pipe.cast()) }
+    worker.pipe(end).map(Socket::lent)
 }
 
 /// The master end (`master`) or the worker end of `worker`'s pipe, or `None` while
@@ -767,9 +750,7 @@ impl<'a> PipeSocket<'a> {
 /// The listening socket of `pool`'s stream IPC, or `None` without one.
 #[must_use]
 pub fn pool_ipc_listener(pool: PoolRef<'_>) -> Option<Socket<'_>> {
-    // SAFETY: crates/process keeps a pool's IPC private: null, or the listener the
-    // pool's IPC owns until the pool's `destroy` frees it.
-    unsafe { Socket::from_ptr(pool.ipc_listener().cast()) }
+    pool.ipc_listener().map(Socket::lent)
 }
 
 /// `sock->set_nonblock()`.
