@@ -676,7 +676,7 @@ impl swoole_rs_httpbindings::AcceptHost for Start<'_> {
         // SAFETY: the resolved cache, the connection object and the callable's
         // name; the shim traps what the new coroutine raises.
         self.bailed = bailout::trapped(unsafe {
-            z::swr_zend_try_facade_coroutine(
+            swoole_rs_zend::host::swr_zend_try_facade_coroutine(
                 Some(swoole_rs_phpcoroutines::create_coroutine),
                 &raw mut self.accept.cache,
                 1,
