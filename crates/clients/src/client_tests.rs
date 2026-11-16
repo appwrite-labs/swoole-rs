@@ -113,7 +113,7 @@ pub(super) fn with_thread_buffer<R>(f: impl FnOnce(&mut CppString) -> R) -> R {
 }
 
 // crates/tls's socket operations.
-pub(super) unsafe fn socket_free(_: Option<Socket<'static>>) {
+pub(super) fn socket_free(_: Option<swoole_rs_reactor::OwnedSocket>) {
     log("free");
 }
 /// crates/tls's slice-taking transfers.

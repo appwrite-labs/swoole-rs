@@ -1423,7 +1423,9 @@ mod tests {
             0,
             "getsockname filled the port"
         );
-        unsafe { socket_free(Socket::from_ptr(socket)) };
+        socket_free(Some(unsafe {
+            swoole_rs_reactor::OwnedSocket::from_socket(Socket::from_ptr(socket).unwrap())
+        }));
         let invalid = make_server_socket(1, c"not an address".into(), 0, 8);
         assert!(invalid.is_null());
         assert_ne!(log::last_error(), 0);

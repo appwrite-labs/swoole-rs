@@ -15,8 +15,8 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, Ordering::Relaxed};
 use std::time::{SystemTime, UNIX_EPOCH};
 use swoole_rs_ffi::socket_pair::{self, SocketPair};
 use swoole_rs_ffi::{
-    ChangeOp, ErrorCode, Event, Events, Handler, ReactorFields, ReactorPrepared, ReactorState,
-    Running, Socket, SocketRecord, event_api, reactor_upstream,
+    ChangeOp, ErrorCode, Event, Events, Handler, OwnedSocket, ReactorFields, ReactorPrepared,
+    ReactorState, Running, Socket, SocketRecord, event_api, reactor_upstream,
 };
 
 const SW_OK: c_int = 0;
@@ -666,7 +666,7 @@ unsafe fn bad_fd() {
         let _ = swoole_rs_ffi::swoole_event_free();
         // `socket->move_fd()`.
         (*socket).fields.fd = -1;
-        swoole_rs_ffi::upstream::socket_free(Some(handle(socket)));
+        swoole_rs_ffi::upstream::socket_free(Some(OwnedSocket::from_socket(handle(socket))));
     }
 }
 
@@ -854,7 +854,9 @@ unsafe fn poll_readiness_after_fd_reuse() {
         // A local Reactor does not defer Socket::free(), so release sockets after the batch.
         assert_eq!(del(reactor, (*state).dispatched_socket), SW_OK);
         assert_eq!(del(reactor, (*state).replacement_socket), SW_OK);
-        swoole_rs_ffi::upstream::socket_free(Some(handle((*state).replacement_socket)));
+        swoole_rs_ffi::upstream::socket_free(Some(OwnedSocket::from_socket(handle(
+            (*state).replacement_socket,
+        ))));
         assert_eq!(close(pipe_fds[0]), 0);
         assert_eq!(close(pipe_fds[1]), 0);
 

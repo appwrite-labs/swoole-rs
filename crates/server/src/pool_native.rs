@@ -581,9 +581,12 @@ impl PoolNative for Native {
     }
 
     fn close(&self, c: &PoolCall) {
-        let socket = c.lent_socket().map(Socket::lent);
-        // SAFETY: a connection the loop is done with.
-        unsafe { socket_free(socket.and_then(crate::reactor_handle::registered)) };
+        let socket = c.lent_socket().map(|socket| {
+            // SAFETY: the connection `accept` gave the call, a heap record the loop is
+            // done with.
+            unsafe { swoole_rs_reactor::OwnedSocket::from_socket(Socket::lent(socket)) }
+        });
+        socket_free(socket);
     }
 
     fn pipe_read(&self, c: &mut PoolCall) {

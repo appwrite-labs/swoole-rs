@@ -1,7 +1,7 @@
 //! A `Socket` record this owns, on the thread's reactor: `Swoole\Event`'s user
 //! sockets, a pipe's ends and an event waiter's watch.
 use std::ffi::{c_int, c_void};
-use swoole_rs_reactor::{Socket, SocketRecord, event_api, socket_upstream};
+use swoole_rs_reactor::{OwnedSocket, Socket, SocketRecord, event_api, socket_upstream};
 
 /// A heap record this owns until [`EventSocket::free`], lending it only for a borrow
 /// of `self`; the reactor reaches it only through the calls below, and `free` takes
@@ -27,7 +27,7 @@ impl EventSocket {
     /// `record`, which this owns from here.
     #[must_use]
     pub fn adopt(record: Box<SocketRecord>) -> Self {
-        Self(record.into_socket())
+        Self::from(OwnedSocket::new(record))
     }
 
     /// The record, which the caller owns from here.
@@ -150,17 +150,19 @@ unsafe extern "C-unwind" fn free_deferred(socket: *mut c_void) {
     unsafe { Box::from_raw(socket.cast::<SocketRecord>()) }.close_and_free();
 }
 
+impl From<OwnedSocket> for EventSocket {
+    fn from(owned: OwnedSocket) -> Self {
+        Self(owned.leak())
+    }
+}
+
 /// `void Socket::free()`: [`EventSocket::release`] of the record.
-///
-/// # Safety
-/// `socket` is none or a record [`SocketRecord`] allocated, which its caller gives up as
-/// an `EventSocket` owns one: nothing uses it afterwards.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7network6Socket4freeEv")
 )]
-pub unsafe extern "C-unwind" fn socket_free(socket: Option<Socket<'static>>) {
-    if let Some(record) = socket {
-        EventSocket(record).release();
+pub extern "C-unwind" fn socket_free(socket: Option<OwnedSocket>) {
+    if let Some(owned) = socket {
+        EventSocket::from(owned).release();
     }
 }

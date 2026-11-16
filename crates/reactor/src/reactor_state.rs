@@ -5,7 +5,7 @@
 //! lifetime, from its constructor and `swoole_event_init` to its destructor and
 //! `swoole_event_free`. The C++ class is methods over this state (`swoole_reactor.h`).
 use crate::wait_loop::BackendKind;
-use crate::{PollSnapshot, Socket, SocketRecord, handlers::Handlers, registry::Registry};
+use crate::{PollSnapshot, SocketRecord, handlers::Handlers, registry::Registry};
 use libc::{c_int, c_void};
 use std::mem::MaybeUninit;
 use std::ptr;
@@ -16,7 +16,7 @@ pub type ReactorWrite =
 pub type ReactorWritev =
     unsafe extern "C-unwind" fn(*mut c_void, *mut SocketRecord, *const libc::iovec, usize) -> isize;
 /// `Reactor::close`: frees `socket`, one of the reactor's.
-pub type ReactorClose = unsafe extern "C-unwind" fn(crate::Running<'_>, Socket<'static>) -> c_int;
+pub type ReactorClose = extern "C-unwind" fn(crate::Running<'_>, crate::OwnedSocket) -> c_int;
 
 /// `Reactor::idle_task` and `future_task` (`Swoole\Event::cycle`): unset until set.
 #[repr(C)]
@@ -335,7 +335,7 @@ unsafe extern "C-unwind" {
         count: usize,
     ) -> isize;
     #[link_name = "_ZN6swoole7Reactor6_closeEPS0_PNS_7network6SocketE"]
-    fn reactor_close(reactor: crate::Running<'_>, socket: Socket<'static>) -> c_int;
+    safe fn reactor_close(reactor: crate::Running<'_>, socket: crate::OwnedSocket) -> c_int;
     #[link_name = "_ZN6swoole9coroutine6System12init_reactorEPNS_7ReactorE"]
     safe fn system_init_reactor(reactor: crate::Running<'_>);
 }
@@ -674,7 +674,7 @@ pub(crate) mod tests {
         op: crate::ChangeOp,
         events: crate::Events,
     ) -> bool {
-        let socket = unsafe { Socket::from_ptr(socket) }.unwrap();
+        let socket = unsafe { crate::Socket::from_ptr(socket) }.unwrap();
         unsafe { (*owner).record(crate::change::Request::new(socket, op), events) }
     }
     pub(crate) unsafe fn free(owner: *mut ReactorState) {

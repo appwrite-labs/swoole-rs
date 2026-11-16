@@ -293,29 +293,17 @@ impl SocketRecord {
         socket
     }
 
-    /// The record moved to the heap, as `new Socket()`; freed with [`Self::free`].
+    /// The record moved to the heap, as `new Socket()`; freed by its [`crate::OwnedSocket`].
     #[must_use]
     pub fn into_raw(self) -> *mut Self {
         Box::into_raw(Box::new(self))
     }
 
-    /// A new heap record as the socket its maker holds: live until an unsafe free
-    /// ([`Self::free`], `Socket::free`), whose caller answers for the handles left.
+    /// A new heap record as the socket its maker holds: live until an owner taken
+    /// back with the unsafe [`crate::OwnedSocket::from_socket`] frees it.
     #[must_use]
     pub fn into_socket(self: Box<Self>) -> crate::Socket<'static> {
         crate::Socket::new(Box::leak(self))
-    }
-
-    /// `Socket::operator delete`.
-    ///
-    /// # Safety
-    /// `socket` is none or came from [`Self::into_raw`] (or a call here that returns
-    /// a record, or [`Self::into_socket`]) and is not used again.
-    pub unsafe fn free(socket: Option<crate::Socket<'_>>) {
-        if let Some(socket) = socket {
-            // SAFETY: as the caller promises.
-            drop(unsafe { Box::from_raw(socket.as_ptr()) });
-        }
     }
 
     /// base.cc's `socket_free_defer`: [`SocketFields::release`], warning when close(2)
@@ -585,7 +573,7 @@ mod tests {
         let record = unsafe { &*socket };
         assert_eq!((record.fd, record.fd_type, record.removed), (7, 3, true));
         // SAFETY: as above, not used again.
-        unsafe { SocketRecord::free(crate::Socket::from_ptr(socket)) };
+        unsafe { drop(Box::from_raw(socket)) };
     }
 
     #[test]
@@ -614,7 +602,7 @@ mod tests {
         // SAFETY: the socket's own fd.
         unsafe { libc::close(record.fd) };
         // SAFETY: not used again.
-        unsafe { SocketRecord::free(crate::Socket::from_ptr(socket)) };
+        unsafe { drop(Box::from_raw(socket)) };
     }
 
     #[test]
@@ -634,7 +622,7 @@ mod tests {
             unsafe { libc::close(fd) };
         }
         // SAFETY: not used again.
-        unsafe { SocketRecord::free(crate::Socket::from_ptr(copy)) };
+        unsafe { drop(Box::from_raw(copy)) };
     }
 
     #[test]
@@ -650,6 +638,6 @@ mod tests {
         // SAFETY: the listener's own fd.
         unsafe { libc::close(record.fd) };
         // SAFETY: not used again.
-        unsafe { SocketRecord::free(crate::Socket::from_ptr(listener)) };
+        unsafe { drop(Box::from_raw(listener)) };
     }
 }

@@ -31,7 +31,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use swoole_rs_corebase::sys::{self, errno};
 use swoole_rs_corebase::{DataHead as BusHead, TrustedAllocator, log};
-use swoole_rs_reactor::{Caught, Socket, SocketRecord};
+use swoole_rs_reactor::{Caught, OwnedSocket, Socket, SocketRecord};
 
 pub use Bus as MessageBus;
 
@@ -190,7 +190,7 @@ impl Drop for Bus {
         // Outside the hybrid a record has no timers, buffers or loop: `Socket::free`
         // is the record's deallocation.
         #[cfg(not(feature = "upstream-symbols"))]
-        let free_socket = SocketRecord::free;
+        let free_socket = |socket: Option<OwnedSocket>| socket.map(OwnedSocket::free);
         // By descriptor, as `init_pipe_socket` recorded them.
         let records = self
             .pipe_sockets
@@ -199,9 +199,9 @@ impl Drop for Bus {
             .map_or_else(Vec::new, |b| *b);
         for record in records.into_iter().flatten() {
             record.edit(|record| record.fd = -1);
-            // SAFETY: a record `init_pipe_socket` made, used by nothing else now and
-            // freed once: the bus is dropping.
-            unsafe { free_socket(Some(record)) };
+            // SAFETY: a heap record `init_pipe_socket` made, used by nothing else now
+            // and freed once: the bus is dropping.
+            free_socket(Some(unsafe { OwnedSocket::from_socket(record) }));
         }
     }
 }
@@ -1005,7 +1005,7 @@ mod tests {
             assert_eq!(pipe.read(false).as_deref(), Some(payload));
         }
         assert_eq!(COUNTER.load(Ordering::Relaxed), 3);
-        unsafe { SocketRecord::free(Some(socket)) };
+        drop(unsafe { Box::from_raw(socket.as_ptr()) });
     }
     /// libc's allocator, as `SwooleG.std_allocator`.
     static ALLOCATOR: CoreAllocator = CoreAllocator {

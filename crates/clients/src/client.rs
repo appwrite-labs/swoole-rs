@@ -34,8 +34,8 @@ use swoole_rs_reactor::event_api::event_write;
 use swoole_rs_reactor::reactor_upstream::set_handler;
 use swoole_rs_reactor::socket_upstream::Connect;
 use swoole_rs_reactor::{
-    Caught, SOCKET_DEFAULTS, Socket, SocketRecord, fd_clean, swr_v1_socket_buffer_size,
-    swr_v1_socket_domain_and_type,
+    Caught, OwnedSocket, SOCKET_DEFAULTS, Socket, SocketRecord, fd_clean,
+    swr_v1_socket_buffer_size, swr_v1_socket_domain_and_type,
 };
 use swoole_rs_reactor::{Event, Events, Running};
 #[cfg(not(test))]
@@ -921,15 +921,18 @@ impl Handle {
         self.input_free();
         // A pending connect timer would fire on a freed client.
         self.timer_clear();
+        // SAFETY: the heap record make_socket allocated, which the client owned and,
+        // freed (per the caller), never uses again.
+        let socket =
+            (self.record().socket).map(|socket| unsafe { OwnedSocket::from_socket(socket) });
         if self.flag(Flag::Async) {
             // A cleared object tells a close in progress that the client is gone.
             self.socket()
                 .edit(|socket| socket.object = core::ptr::null_mut());
-            // SAFETY: the live client's socket, released once.
-            unsafe { socket_free(self.record().socket) };
-        } else {
-            // SAFETY: `delete socket`: the record make_socket allocated, released once.
-            unsafe { SocketRecord::free(self.record().socket) };
+            socket_free(socket);
+        } else if let Some(socket) = socket {
+            // `delete socket`.
+            socket.free();
         }
         // SAFETY: a Box from swr_v1_clients_new, released once (per the caller).
         let client = unsafe { Box::from_raw(self.0) };
