@@ -60,8 +60,8 @@ What is not:
   count is Rust outside tests only. It leaves out the C the crates still compile (about
   4,000 lines, almost all in `crates/zend-sys`; `tools/budget.py` counts them separately)
   and calls through `safe fn` declarations of C functions, which have no `unsafe` at the
-  call; `tools/externs.py` checks 591 of those 984 declarations against the C headers
-  (both figures from 2026-11-16). Much of
+  call. `tools/externs.py` checks 617 of the 1,029 hand-written `extern "C"` function
+  declarations, `safe fn` or not, against the C headers (figures from 2026-11-16). Much of
   the Rust is a close port of C++ that still passes raw pointers between crates. The
   AddressSanitizer run fails on `main`, and ThreadSanitizer has open reports in thread
   mode ([#3342](https://github.com/appwrite-labs/swoole-rs/issues/3342),
