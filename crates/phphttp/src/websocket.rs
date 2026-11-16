@@ -1235,8 +1235,7 @@ impl swoole_rs_phpclients::WebSocket for ClientWebSocket {
         }
         let packed = pack(&frame).ok_or(swoole_rs_phpclients::PushError::Pack)?;
         let packed = packed.bytes();
-        let written = socket.handle().send_all(packed);
-        if usize::try_from(written).is_ok_and(|written| written == packed.len()) {
+        if socket.handle().send_all(packed) == Some(packed.len()) {
             Ok(())
         } else {
             Err(swoole_rs_phpclients::PushError::Send)

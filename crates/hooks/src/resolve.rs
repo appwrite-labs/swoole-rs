@@ -173,7 +173,7 @@ impl DnsUdp {
 
 impl DnsSocket for DnsUdp {
     fn sendto(&mut self, host: &CStr, port: c_int, data: &[u8]) -> bool {
-        self.0.co().sendto(host.to_bytes(), port, data) != 0
+        self.0.co().sendto(host.to_bytes(), port, data) != Some(0)
     }
 
     fn recv(&mut self, buffer: &mut [u8]) -> Result<usize, RecvError> {

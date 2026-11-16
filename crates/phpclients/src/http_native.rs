@@ -185,7 +185,7 @@ impl Co {
 
     /// `send_all(data)`: whether all went.
     pub(crate) fn send_all(self, data: &[u8]) -> bool {
-        self.handle().send_all(data).cast_unsigned() == data.len()
+        self.handle().send_all(data) == Some(data.len())
     }
 
     /// The socket gives up its write buffer, as before its first write.
@@ -205,7 +205,7 @@ impl Co {
 
     /// `recv` into the read buffer's room past its length. The receive isn't lent
     /// the buffer: under `io_uring`, TLS stages its own reads in it.
-    pub(crate) fn recv_input(self) -> isize {
+    pub(crate) fn recv_input(self) -> Option<usize> {
         let (at, room) = self.with_input(|input| {
             let length = input.len();
             (

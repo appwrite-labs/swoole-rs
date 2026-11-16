@@ -395,15 +395,14 @@ fn send(call: &Call) {
     let Some((socket, _hold)) = connected(call) else {
         return;
     };
-    let sent = socket.send(Transfer::SendAll, data, timeout);
-    let Ok(count) = usize::try_from(sent) else {
+    let Some(sent) = socket.send(Transfer::SendAll, data, timeout) else {
         report_socket(call, socket);
         return call.set_bool(false);
     };
-    if count < data.len() && socket.err_code() != 0 {
+    if sent < data.len() && socket.err_code() != 0 {
         report_socket(call, socket);
     }
-    call.set_long(sent as i64);
+    call.set_long(sent.c_cast());
 }
 
 /// `sendto(string $host, int $port, string $data): bool`.
@@ -428,8 +427,7 @@ fn sendto(call: &Call) {
         warn(true, "The port is invalid");
         return call.set_bool(false);
     }
-    let sent = socket.sendto(host, port, data);
-    if sent < 0 {
+    if socket.sendto(host, port, data).is_none() {
         report_socket(call, socket);
         return call.set_bool(false);
     }
@@ -449,7 +447,7 @@ fn recvfrom(call: &mut Call) {
     };
     let mut buffer = ZBuf::with_capacity(length);
     // A zero timeout leaves the socket's own.
-    if socket.recvfrom(&mut buffer, 0.0) < 0 {
+    if socket.recvfrom(&mut buffer, 0.0).is_none() {
         report_socket(call, socket);
         return call.set_bool(false);
     }
@@ -501,21 +499,24 @@ fn recv(call: &Call) {
         return;
     };
     let (received, result) = if socket.packet_mode() {
-        let received = socket.recv_packet(timeout, false);
-        match usize::try_from(received) {
-            Ok(length @ 1..) => socket
+        let received = usize::try_from(socket.recv_packet(timeout, false)).ok();
+        match received {
+            Some(length @ 1..) => socket
                 .pop_packet(length)
-                .map_or((-1, None), |packet| (received, Some(packet))),
+                .map_or((None, None), |packet| (received, Some(packet))),
             _ => (received, None),
         }
     } else {
         let length = usize::try_from(BUFFER_SIZE).unwrap_or(0) - size_of::<zend_string>();
         let mut buffer = ZBuf::with_capacity(length);
         let received = socket.receive(Transfer::Recv, &mut buffer, timeout);
-        (received, (received > 0).then(|| buffer.into_zstring()))
+        (
+            received,
+            (received > Some(0)).then(|| buffer.into_zstring()),
+        )
     };
     match result {
-        _ if received < 0 => {
+        _ if received.is_none() => {
             report_socket(call, socket);
             call.set_bool(false);
         }
@@ -534,7 +535,7 @@ fn peek(call: &Call) {
     };
     let length = usize::try_from(length).unwrap_or(0);
     let mut buffer = ZBuf::with_capacity(length);
-    if socket.receive(Transfer::Peek, &mut buffer, 0.0) < 0 {
+    if socket.receive(Transfer::Peek, &mut buffer, 0.0).is_none() {
         report_socket(call, socket);
         return call.set_bool(false);
     }

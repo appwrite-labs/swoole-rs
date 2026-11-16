@@ -352,35 +352,37 @@ impl Sock {
     }
 
     fn send(&self, buf: &[u8]) -> isize {
-        self.co().send(buf)
+        self.co().send(buf).map_or(-1, usize::cast_signed)
     }
 
     fn recv(&self, buf: &mut [u8]) -> isize {
-        self.co().recv(buf)
+        self.co().recv(buf).map_or(-1, usize::cast_signed)
     }
 
     fn send_all(&self, buf: &[u8]) -> isize {
-        self.co().send_all(buf)
+        self.co().send_all(buf).map_or(-1, usize::cast_signed)
     }
 
     fn recv_all(&self, buf: *mut u8, n: usize) -> isize {
         // SAFETY: `buf` holds `n` writable bytes.
         self.co()
             .recv_all(unsafe { std::slice::from_raw_parts_mut(buf, n) })
+            .map_or(-1, usize::cast_signed)
     }
 
     fn write(&self, buf: &[u8]) -> isize {
-        self.co().write(buf)
+        self.co().write(buf).map_or(-1, usize::cast_signed)
     }
 
     fn read(&self, buf: &mut [u8]) -> isize {
-        self.co().read(buf)
+        self.co().read(buf).map_or(-1, usize::cast_signed)
     }
 
     fn recv_line(&self, buf: *mut u8, n: usize) -> isize {
         // SAFETY: `buf` holds `n` writable bytes.
         self.co()
             .recv_line(unsafe { std::slice::from_raw_parts_mut(buf, n) })
+            .map_or(-1, usize::cast_signed)
     }
 
     fn recv_packet(&self, timeout: f64) -> isize {
@@ -548,6 +550,7 @@ impl Sock {
         let mut vector = IoVector::new(vectors).unwrap();
         self.co()
             .vector(&mut vector, matches!(op, READV_ALL | WRITEV_ALL))
+            .map_or(-1, usize::cast_signed)
     }
 }
 
@@ -1648,7 +1651,8 @@ fn test_sendto_recvfrom(sock_type: c_int) {
             .sendto(local.to_bytes(), port, &client_text[..client_length]);
         let result = sock_server
             .co()
-            .recvfrom_peer(&mut data_from_client[..client_length]);
+            .recvfrom_peer(&mut data_from_client[..client_length])
+            .map_or(-1, usize::cast_signed);
         assert_eq!(
             result,
             client_length.cast_signed(),
@@ -1850,7 +1854,10 @@ fn peek() {
 
         let mut data = [0_u8; 128];
         let sock = Sock::with_fd(pairs[1], SW_SOCK_UNIX_STREAM);
-        let result = sock.co().peek(&mut data[..5]);
+        let result = sock
+            .co()
+            .peek(&mut data[..5])
+            .map_or(-1, usize::cast_signed);
         sock.close();
         assert_eq!(result, 5);
         assert_eq!(&data[..size(result)], b"Hello");
@@ -1867,7 +1874,7 @@ fn sendmsg_and_recvmsg() {
             let ivec = [std::io::IoSlice::new(HELLO)];
             let msg = SendMessage::new(&ivec);
 
-            let ret = sock.co().sendmsg(&msg, 0);
+            let ret = sock.co().sendmsg(&msg, 0).map_or(-1, usize::cast_signed);
             sock.close();
             assert_eq!(size(ret), length);
         });
@@ -1877,7 +1884,10 @@ fn sendmsg_and_recvmsg() {
         let mut ivec = [std::io::IoSliceMut::new(&mut buf[..length])];
         let mut msg = RecvMessage::new(&mut ivec);
 
-        let ret = sock.co().recvmsg(&mut msg, 0);
+        let ret = sock
+            .co()
+            .recvmsg(&mut msg, 0)
+            .map_or(-1, usize::cast_signed);
         sock.close();
         assert_eq!(&buf[..size(ret)], HELLO);
     });
