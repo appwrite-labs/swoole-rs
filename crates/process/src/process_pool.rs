@@ -804,8 +804,8 @@ pub trait PoolNative: Sync {
     fn event_init(&self, call: &PoolCall) -> bool;
     /// `swoole_event_is_available()`.
     fn event_available(&self) -> bool;
-    /// `swoole_event_wait()`: the loop's return value.
-    fn event_wait(&self) -> c_int;
+    /// `swoole_event_wait()`: false when the loop failed.
+    fn event_wait(&self) -> bool;
     /// `swoole_waitpid(pid)`: false when it failed.
     fn waitpid(&self, pid: c_int) -> bool;
     /// Create and retain the worker's datagram pipe.
@@ -1103,8 +1103,8 @@ pub(crate) trait PoolHost {
     /// This thread's event loop for the pool's worker: false when it can't be made.
     fn event_init(&mut self) -> bool;
     fn event_available(&mut self) -> bool;
-    /// `swoole_event_wait()`: the loop's return value.
-    fn event_wait(&mut self) -> c_int;
+    /// `swoole_event_wait()`: false when the loop failed.
+    fn event_wait(&mut self) -> bool;
     /// This process is the pool's master.
     fn is_master(&mut self) -> bool;
     /// `swoole_fork(0)` for `worker`: 0 in the child, the child's pid in the parent,
@@ -1176,7 +1176,7 @@ impl PoolHost for Native<'_> {
         self.native.event_available()
     }
 
-    fn event_wait(&mut self) -> c_int {
+    fn event_wait(&mut self) -> bool {
         self.native.event_wait()
     }
 
@@ -1885,33 +1885,33 @@ impl<H: PoolHost> Pool<'_, H> {
         }
     }
 
-    /// `ProcessPool::run_with_*_protocol` and `run_async`: the worker's loop; -1 for
-    /// a `worker` that is none of the pool's.
+    /// `ProcessPool::run_with_*_protocol` and `run_async`: the worker's loop; false
+    /// where upstream returns `SW_ERR`, as for a `worker` that is none of the pool's.
     fn main(
         &mut self,
         worker: *mut WorkerRecord,
         protocol: Option<Protocol>,
-    ) -> Result<i64, Bailed> {
+    ) -> Result<bool, Bailed> {
         let Some(protocol) = protocol else {
             return Ok(self.run_async(worker));
         };
         if protocol == Protocol::Message {
             if self.ipc_mode() != IpcMode::UnixSock {
                 self.op(Op::Log(Log::NeedsUnixsock), 1);
-                return Ok(SW_ERR);
+                return Ok(false);
             }
             // The loop reads the bus: without one (it couldn't be made) there's no loop.
             if !self.p.has_message_bus() && !self.create_message_bus() {
-                return Ok(SW_ERR);
+                return Ok(false);
             }
         }
         if self.ipc().is_null() {
             // A pool `create` never made.
-            return Ok(SW_ERR);
+            return Ok(false);
         }
         let Some(own) = self.p.worker_of(worker) else {
             // None of the pool's workers.
-            return Ok(SW_ERR);
+            return Ok(false);
         };
         let worker_id = own.id();
         let ipc_mode = if self.use_msgqueue() {
@@ -1933,11 +1933,11 @@ impl<H: PoolHost> Pool<'_, H> {
         self.at_worker_enter(worker);
         self.h.run_loop(&pool_loop, protocol)?;
         self.op(Op::TimerFree, 0);
-        Ok(SW_OK)
+        Ok(true)
     }
 
-    /// `ProcessPool::run_async`.
-    fn run_async(&mut self, worker: *mut WorkerRecord) -> i64 {
+    /// `ProcessPool::run_async`: false when the event loop failed.
+    fn run_async(&mut self, worker: *mut WorkerRecord) -> bool {
         if self.ipc_mode() == IpcMode::UnixSock && self.on_message().is_some() {
             let _registered = self.h.add_pipe(worker);
             if self.p.has_message_bus() {
@@ -1948,7 +1948,7 @@ impl<H: PoolHost> Pool<'_, H> {
                 self.op(Op::PipeHandler, 0);
             }
         }
-        i64::from(self.h.event_wait())
+        self.h.event_wait()
     }
 
     /// `ProcessPool::wait`'s per-iteration service: signals, timers, then the
@@ -2289,8 +2289,8 @@ pub extern "C" fn swr_v1_worker_symbol(kind: c_int) -> std::ffi::c_char {
 }
 
 /// `ProcessPool::run_with_*_protocol`, or `run_async` for no `protocol`:
-/// `worker`'s loop in `pool`: the loop's return value, -1 when `worker`
-/// is none of the pool's ([`PoolRef::worker_of`]).
+/// `worker`'s loop in `pool`; false where upstream returns `SW_ERR`, as when
+/// `worker` is none of the pool's ([`PoolRef::worker_of`]).
 ///
 /// # Errors
 /// [`Bailed`] when a callback bailed out; the caller raises it.
@@ -2299,10 +2299,10 @@ pub fn pool_run_main(
     pool: PoolRef<'_>,
     worker: Worker<'_>,
     protocol: Option<Protocol>,
-) -> Result<i64, Bailed> {
+) -> Result<bool, Bailed> {
     match pool.worker_of(worker.raw()) {
         Some(worker) => with(native, pool, |p| p.main(worker.raw(), protocol)),
-        None => Ok(SW_ERR),
+        None => Ok(false),
     }
 }
 
@@ -2423,8 +2423,8 @@ mod tests {
         fn event_available(&mut self) -> bool {
             self.ask(Op::EventAvailable, 0) != 0
         }
-        fn event_wait(&mut self) -> c_int {
-            self.ask(Op::EventWait, 0).c_cast::<c_int>()
+        fn event_wait(&mut self) -> bool {
+            self.ask(Op::EventWait, 0) >= 0
         }
         fn is_master(&mut self) -> bool {
             self.ask(Op::IsMaster, 0) != 0
@@ -2844,12 +2844,12 @@ mod tests {
         let mut fixture = Fixture::new(1);
         let mut script = Script::default();
         script.answers.insert(Op::AddPipe, -1);
-        script.answers.insert(Op::EventWait, 7);
+        script.answers.insert(Op::EventWait, -1);
         let mut pool = fixture.pool(script);
         pool.set_ipc_mode(IpcMode::UnixSock);
         record(&mut pool).on_message = Some(on_message);
         pool.p.set_message_bus(Some(Box::new(())));
-        assert_eq!(pool.run_async(pool.worker(0)), 7);
+        assert!(!pool.run_async(pool.worker(0)), "the loop's failure");
         assert_eq!(
             pool.h.log,
             [(Op::AddPipe, 0), (Op::PipeHandler, 1), (Op::EventWait, 0)]
@@ -2876,7 +2876,7 @@ mod tests {
         pool.set_ipc_mode(IpcMode::MsgQueue);
         assert!(matches!(
             pool.main(pool.worker(0), Some(Protocol::Message)),
-            Ok(SW_ERR)
+            Ok(false)
         ));
         assert_eq!(pool.h.log, [(Op::Log(Log::NeedsUnixsock), 1)]);
     }
