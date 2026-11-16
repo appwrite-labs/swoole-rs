@@ -265,10 +265,10 @@ pub(crate) fn field_mut<T>(write: impl FnOnce(&mut ReactorFields) -> T) -> Optio
     Some(running()?.with(|state| write(&mut state.fields)))
 }
 
-/// Runs `call` (with null data) when the thread's `Reactor` is destroyed;
-/// nothing without one, and the process ends if it can't allocate.
-pub fn on_destroy(call: extern "C-unwind" fn(*mut c_void)) {
-    field_mut(|fields| crate::deferred::defer_destroy_any(fields, call));
+/// Runs `call` when the thread's `Reactor` is destroyed; nothing without one, and
+/// the process ends if it can't allocate.
+pub fn on_destroy(call: fn()) {
+    field_mut(|fields| crate::deferred::defer_destroy_call(fields, call));
 }
 
 /// `sw_reactor()->running = running`, when there is a reactor.
@@ -594,7 +594,7 @@ mod tests {
         assert_eq!(take(), ["idle"]);
     }
 
-    extern "C-unwind" fn noop(_: *mut c_void) {}
+    fn noop() {}
 
     /// A second `&mut` to the fields while the first is live is refused before it
     /// is made; Miri reports the nested borrow without the check (#3248).

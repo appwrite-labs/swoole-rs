@@ -7,7 +7,7 @@
 //! request record. The ossupport patch deletes `src/os/async_thread.cc`.
 use crate::offload::AsyncEvent;
 use std::cell::Cell;
-use std::ffi::{c_int, c_void};
+use std::ffi::c_int;
 use std::ptr;
 use std::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::{
@@ -191,7 +191,7 @@ static HOOKS: PoolHooks = PoolHooks {
 };
 
 /// The reactor's destroy callback: unregisters the pipe and frees the handle.
-extern "C-unwind" fn destroyed(_data: *mut c_void) {
+fn destroyed() {
     let Some(mut threads) = THREADS.take() else {
         return;
     };
@@ -209,7 +209,7 @@ extern "C-unwind" fn destroyed(_data: *mut c_void) {
 }
 
 /// The reactor's exit condition: in-flight events keep it running.
-extern "C-unwind" fn pending(event_num: &mut usize) -> bool {
+fn pending(event_num: &mut usize) -> bool {
     if with_current(|threads| threads.task_num) == Some(0) {
         *event_num -= 1;
     }
