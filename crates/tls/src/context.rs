@@ -387,7 +387,6 @@ pub type Warn = fn(function: &CStr, message: &str);
 
 /// A view of `swoole::SSLContext`'s configuration, built for one call by `owned.rs`'s
 /// `configuration`.
-#[repr(C)]
 #[derive(Debug)]
 pub struct TlsConfig<'a> {
     pub ciphers: TlsStr<'a>,
