@@ -283,6 +283,8 @@ pub unsafe fn print_socket_bound_error(fd: c_int, event: &CStr, bound_cid: c_lon
 /// frame before anything else and runs; its id, or -1. `entry` is `Copy`, so this
 /// frame owns nothing with a destructor. As every creation, a fatal error or the
 /// coroutine's bailout may longjmp over the caller's frames, leaking what they own.
+/// Under thread contexts `entry` moves to the coroutine's thread while this one
+/// waits for the baton, so the two never run at once.
 #[must_use]
 pub fn spawn<F: FnOnce() + Copy + 'static>(entry: F) -> c_long {
     /// # Safety
