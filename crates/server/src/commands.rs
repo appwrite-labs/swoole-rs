@@ -442,7 +442,7 @@ mod tests {
     }
 
     fn start(live: &LiveServer) {
-        live.counters().start.store(1, Relaxed);
+        live.counters().start.store(true, Relaxed);
     }
 
     fn add(live: &LiveServer, name: &[u8], types: impl Into<ProcessTypes>) -> bool {

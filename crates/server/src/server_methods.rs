@@ -61,10 +61,9 @@ pub fn destroy_running(serv: view::Server<'_>) {
             .master_pid
             .load(core::sync::atomic::Ordering::Relaxed);
     if master
-        && counters
+        && !counters
             .shutdown
             .load(core::sync::atomic::Ordering::Relaxed)
-            == 0
     {
         destroy(serv);
     }

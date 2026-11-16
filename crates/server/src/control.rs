@@ -416,7 +416,7 @@ mod tests {
             "error set"
         );
 
-        live.counters().start.store(1, Relaxed);
+        live.counters().start.store(true, Relaxed);
         assert!(shutdown(serv), "process mode: the pipe message went");
         assert_eq!(calls(), [Call::SendShutdown], "by pipe, no signal");
 

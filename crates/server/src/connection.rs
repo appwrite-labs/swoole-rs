@@ -134,7 +134,7 @@ pub fn add<'a>(
     // its last write: acquire that before reusing it.
     conn.closed().load(Acquire);
     // Upstream zeroes the slot up to `closed`; other reactor threads read `active`.
-    conn.active().store(0, Relaxed);
+    conn.active().store(false, Relaxed);
     conn.clear();
 
     // `sw_spinlock`, with `SW_SPINLOCK_LOOP_N`.
@@ -292,7 +292,7 @@ fn init(
     conn.set_local_addr_index(local_addr_index);
     // Last: a reactor thread that sees the slot active (`is_active`) reads the fields
     // above, which this publishes.
-    conn.active().store(1, Release);
+    conn.active().store(true, Release);
 }
 
 /// `Server::abort_connection(reactor, port, sock)`: counted, then closed through the

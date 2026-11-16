@@ -303,7 +303,7 @@ impl<'a> Server<'a> {
     /// `Server::is_started()`.
     #[must_use]
     pub fn is_started(self) -> bool {
-        self.counters().start.load(Ordering::Relaxed) != 0
+        self.counters().start.load(Ordering::Relaxed)
     }
 
     /// `Server::is_single_worker()`: one event worker, which the master runs itself.

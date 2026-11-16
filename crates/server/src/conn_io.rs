@@ -516,7 +516,7 @@ pub(crate) fn close_connection(
         session.set_fd(0);
     }
     lower_max_fd(state, fd);
-    conn.active().store(0, Relaxed);
+    conn.active().store(false, Relaxed);
     conn.set_socket(None);
     conn.clear_object();
     // The slot's last write before close(fd): an accept that gets the fd back
@@ -762,7 +762,7 @@ pub(crate) mod tests {
         let events = sock.read(|s| s.events);
         assert!(!events.intersects(Events::WRITE), "reads only");
         assert_eq!(calls(), []);
-        conn.active().store(0, Relaxed);
+        conn.active().store(false, Relaxed);
         assert!(!write(serv, reactor, &mut conn.event(0, 0)), "gone");
     }
 

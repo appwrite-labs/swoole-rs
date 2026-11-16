@@ -64,8 +64,8 @@ pub struct ServerCounters {
     pub manager_pid: AtomicI32,
     /// `long`, read under the shared spin lock.
     pub session_round: AtomicI64,
-    pub start: AtomicU32,
-    pub shutdown: AtomicU32,
+    pub start: AtomicBool,
+    pub shutdown: AtomicBool,
     /// The connection fd range; written under the server lock, read by every thread.
     pub max_fd: AtomicI32,
     pub min_fd: AtomicI32,

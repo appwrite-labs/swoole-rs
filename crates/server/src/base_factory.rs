@@ -596,7 +596,7 @@ mod tests {
         conn.closed().store(1, Ordering::Relaxed);
         let mut task = send(c_long::from(conn.fd()), ServerEvent::RecvData, 5);
         assert!(!dispatch(serv, &mut task, true), "closed by server");
-        conn.active().store(0, Ordering::Relaxed);
+        conn.active().store(false, Ordering::Relaxed);
         assert!(!dispatch(serv, &mut task, true), "inactive");
         let mut far = send(1 << 20, ServerEvent::Close, 0);
         assert!(!dispatch(serv, &mut far, true), "past max_connection");
@@ -732,9 +732,9 @@ mod tests {
         conn.set_close_force(true);
         assert!(!end(serv, 1, 0), "no socket");
         conn.set_socket(Some(sock));
-        conn.active().store(0, Ordering::Relaxed);
+        conn.active().store(false, Ordering::Relaxed);
         assert!(!end(serv, 1, 0), "no connection");
-        conn.active().store(1, Ordering::Relaxed);
+        conn.active().store(true, Ordering::Relaxed);
     }
 
     #[test]
