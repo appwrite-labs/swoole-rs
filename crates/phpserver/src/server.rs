@@ -580,6 +580,12 @@ pub(crate) fn running(call: &Call) -> Option<view::Server<'_>> {
     if serv.is_started() {
         return Some(serv);
     }
+    not_running(call)
+}
+
+/// [`running`]'s warning and `false`, off its fast path.
+#[cold]
+fn not_running(call: &Call) -> Option<view::Server<'_>> {
     fatal(E_WARNING, c"server is not running");
     call.set_bool(false);
     None

@@ -152,6 +152,15 @@ OrbStack aarch64 kernel without this flag; check `--iouring` there) is no better
 a host the tests still fail at ring creation with `--iouring`, visibly; native CI's
 iouring variant remains the qualifying run.
 
+#### Timing on a VM
+
+On a Docker VM with idle vCPUs (OrbStack's aarch64 kernel, #4261), a sleep wakes late:
+plain PHP's `usleep` of 10 to 100 ms overshot by 6.5 ms on average, with 184 of 300 calls
+outside 10%. Under full CPU load the overshoot was 0.1 ms. Tests that check a sleep with
+`time_approximate` (`tests/swoole_runtime/sleep.phpt` failed 11 of 20 idle runs on
+upstream and 12 on Cargo, and none under load) then fail on both engines. Native CI
+runners don't do this, and they are the qualifying run.
+
 Any other image a tool or README builds gets one fixed name per purpose (for
 example `swoole-protocols-core`), never a hash or `:local` tag, so a rebuild
 replaces it instead of adding one; `docker image prune` clears the dangling one.

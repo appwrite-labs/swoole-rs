@@ -15,7 +15,7 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::sys::Text;
 use swoole_rs_corebase::{log::set_last_error, set_fatal_error, swr_v1_core_set_print_backtrace};
 use swoole_rs_zend::{
-    Call, Class, E_WARNING,
+    Call, Class, E_WARNING, Request, Shutdown,
     bailout::{self, Bailout},
     contain_with, report,
     sys::{
@@ -210,7 +210,7 @@ pub struct Families {
     pub thread_classes_minit: [fn(&swoole_rs_zend::Minit); 4],
     /// RINIT's coroutine, thread and tracer steps.
     pub coroutine_rinit: Hook,
-    pub thread_rinit: Hook,
+    pub thread_rinit: fn(Request<'_>),
     pub tracer_rinit: Hook,
     /// RSHUTDOWN's server, coroutine and scheduler, thread and tracer steps.
     pub server_rshutdown: Hook,
@@ -342,6 +342,7 @@ pub(crate) enum Step {
         )
     )]
     Shutdown(fn(&swoole_rs_zend::Mshutdown)),
+    Request(fn(Request<'_>)),
     Hook(Hook),
 }
 
@@ -350,7 +351,7 @@ pub(crate) enum Step {
 enum Phase<'a> {
     Minit(&'a swoole_rs_zend::Minit),
     Mshutdown(&'a swoole_rs_zend::Mshutdown),
-    Request,
+    Request(Request<'a>),
 }
 
 /// Run `steps` in order, each inside `zend_try`, stopping at a bailout. It
@@ -366,10 +367,11 @@ fn run(steps: Vec<Step>, phase: Phase<'_>) -> Result<(), Bailout> {
             }
             (Step::Typed(step), Phase::Minit(minit)) => contain_with(|| step(minit)),
             (Step::Shutdown(step), Phase::Mshutdown(mshutdown)) => contain_with(|| step(mshutdown)),
+            (Step::Request(step), Phase::Request(request)) => contain_with(|| step(request)),
             // SAFETY: a C or C++ hook that Zend may run at this phase; the shim's
             // setjmp sits between this frame and the hook.
             (Step::Hook(hook), _) => flag(unsafe { swr_zend_try_hook(Some(hook)) }),
-            (Step::Minit(_) | Step::Typed(_) | Step::Shutdown(_), _) => Ok(()),
+            (Step::Minit(_) | Step::Typed(_) | Step::Shutdown(_) | Step::Request(_), _) => Ok(()),
         }?;
     }
     Ok(())
@@ -585,9 +587,7 @@ extern "C" fn event_free() {
 }
 
 /// `PHP_MSHUTDOWN_FUNCTION(swoole)`.
-/// # Safety
-/// Zend's MSHUTDOWN.
-pub unsafe extern "C" fn swr_v1_phpswoole_mshutdown(_kind: c_int, _module_number: c_int) -> c_int {
+pub(crate) extern "C" fn swr_v1_phpswoole_mshutdown(_kind: c_int, shutdown: Shutdown<'_>) -> c_int {
     let mut steps = vec![Step::Hook(swoole_rs_zend::host::known_free)];
     steps.extend(families().map(|families| Step::Hook(families.runtime.mshutdown)));
     steps.extend(optional::mshutdown());
@@ -599,23 +599,18 @@ pub unsafe extern "C" fn swr_v1_phpswoole_mshutdown(_kind: c_int, _module_number
         Step::Hook(clean),
         Step::Hook(swr_zend_leak_check),
     ]);
-    // SAFETY: Zend's MSHUTDOWN of this module, per the caller; the token goes
-    // before it returns.
-    let mshutdown = unsafe { swoole_rs_zend::Mshutdown::new() };
-    bailout::raise(run(steps, Phase::Mshutdown(&mshutdown)));
+    bailout::raise(shutdown.with(|mshutdown| run(steps, Phase::Mshutdown(mshutdown))));
     SUCCESS
 }
 
 /// `PHP_RINIT_FUNCTION(swoole)`.
-/// # Safety
-/// Zend's RINIT.
-pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, _module_number: c_int) -> c_int {
+pub(crate) extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, request: Request<'_>) -> c_int {
     /// The `zend_execute_ex` hook the reset below replaced, which only it makes.
     #[repr(transparent)]
     struct Replaced(*mut c_void);
     unsafe extern "C" {
         /// `zend_execute_ex = execute_ex`, returning the hook it replaced: in
-        /// RINIT, which this function's contract is, before any PHP code runs.
+        /// RINIT, which this function's `Request` stands for, before any PHP code runs.
         safe fn swr_zend_execute_ex_reset() -> Replaced;
         /// `zend_execute_ex = hook`, the one the reset replaced.
         safe fn swr_zend_execute_ex_restore(hook: Replaced);
@@ -650,7 +645,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, _module_number: c_
     ];
     steps.extend(optional::rinit(families));
     steps.push(Step::Hook(families.tracer_rinit));
-    if let Err(bailed) = run(steps, Phase::Request) {
+    if let Err(bailed) = run(steps, Phase::Request(request)) {
         bailout::raise(Err(bailed));
         return SUCCESS;
     }
@@ -659,9 +654,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rinit(_kind: c_int, _module_number: c_
 }
 
 /// `PHP_RSHUTDOWN_FUNCTION(swoole)`.
-/// # Safety
-/// Zend's RSHUTDOWN.
-pub unsafe extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, _module_number: c_int) -> c_int {
+pub(crate) extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, request: Request<'_>) -> c_int {
     let globals = globals();
     if !globals.cli.get() {
         return SUCCESS;
@@ -687,7 +680,7 @@ pub unsafe extern "C" fn swr_v1_phpswoole_rshutdown(_kind: c_int, _module_number
         Step::Hook(families.tracer_rshutdown),
         Step::Hook(event_free),
     ]);
-    if let Err(bailed) = run(steps, Phase::Request) {
+    if let Err(bailed) = run(steps, Phase::Request(request)) {
         bailout::raise(Err(bailed));
         return SUCCESS;
     }

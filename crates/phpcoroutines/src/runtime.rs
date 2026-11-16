@@ -156,14 +156,14 @@ pub(crate) fn create(
     if !activated() {
         activate(php)?;
     }
-    let mut args = Args {
-        fcc,
+    let args = Args {
+        fcc: *fcc,
         argv,
         argc,
         callable,
     };
     context::save_current();
-    let cid = host::create((&raw mut args).cast());
+    let cid = host::create(args);
     bailout::trapped(0)?;
     Ok(cid)
 }
