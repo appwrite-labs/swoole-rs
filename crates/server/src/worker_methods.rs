@@ -117,23 +117,25 @@ pub fn create_user_workers(serv: view::Server<'_>) -> bool {
     let size = size_of::<WorkerRecord>();
     let count = serv.registry().pending().len();
     let workers = swoole_rs_memory::members::Shm::calloc(count, size);
-    let copies = workers.as_ptr().cast::<WorkerRecord>();
-    if copies.is_null() {
+    let mapped = !workers.is_null();
+    // A zeroed record is an empty worker, so the array is `count` records from now on.
+    serv.config().user_workers.replace(workers);
+    if !mapped {
         let m = format_args!("sw_shm_calloc({count}, {size}) for user_workers failed");
         log::sys_warning(c"Server::create_user_workers", m);
-        serv.config().user_workers.replace(workers);
         return false;
     }
+    let copies = serv.workers();
     for index in 0..count {
         let Some(worker) = serv.pending_worker(index) else {
             continue;
         };
-        // SAFETY: its slot in the fresh shared array of `count` records.
-        unsafe { copies.wrapping_add(index).write(worker.get()) };
+        if let Some(copy) = copies.user(index) {
+            copy.put(worker.get());
+        }
         create_worker(serv, worker);
         worker.set_kind(WorkerType::User);
     }
-    serv.config().user_workers.replace(workers);
     true
 }
 

@@ -268,7 +268,10 @@ impl ServerState {
     }
 
     /// A state that owns `config` and `tables`, so neither pointer is ever null.
-    fn with(config: crate::config::ServerConfig, tables: crate::records::ServerTables) -> Self {
+    pub(crate) fn with(
+        config: crate::config::ServerConfig,
+        tables: crate::records::ServerTables,
+    ) -> Self {
         Self {
             round: AtomicU32::new(0),
             next_command: AtomicI32::new(1),

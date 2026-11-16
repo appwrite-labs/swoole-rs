@@ -150,14 +150,20 @@ pub(crate) use swoole_rs_coroutine::current_cid;
 
 /// `co->yield_ex(timeout)` of `co`, the running coroutine (aborting otherwise), then
 /// whether it was canceled.
-pub(crate) fn yield_(co: *mut c_void, timeout: f64) -> bool {
-    let code = swoole_rs_coroutine::yield_timed(co, timeout);
+pub(crate) fn yield_(
+    co: *mut c_void,
+    timeout: f64,
+    arm: impl FnOnce(swoole_rs_coroutine::Waker),
+) -> bool {
+    let code = swoole_rs_coroutine::yield_timed_armed(co, timeout, arm);
     // `yield_ex`: the last error of a timeout or a cancel.
     !swoole_rs_coroutine::yield_resumed(code) && code == Resume::Canceled
 }
 
-/// `co->resume()` of a live, suspended coroutine.
-pub(crate) use swoole_rs_coroutine::resume;
+/// `co->resume()` of a coroutine parked where `waker` was made, if it still is.
+pub(crate) fn wake(waker: swoole_rs_coroutine::Waker) {
+    waker.wake();
+}
 
 /// A multi's queued wake-up, which holds the multi. `defer` marks the multi before it
 /// queues one, and `swr_v1_curl_multi_free` leaves a marked multi to its wake-up.

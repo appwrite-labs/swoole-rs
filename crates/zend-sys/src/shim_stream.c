@@ -129,11 +129,91 @@ php_stream *swr_zend_stream_factory(const char *proto, size_t protolen, const ch
     return stream;
 }
 
-int swr_zend_try_stream_alloc(const php_stream_ops *ops, void *abstract, const char *persistent, php_stream **stream) {
+/* Rust's "socket/coroutine" operations (crates/phpruntime/src/stream.rs), over a
+ * stream of the table below. Each argument arrives typed: a buffer Zend lends as
+ * one iovec, a parameter only for the option that says what it points to. */
+ssize_t swr_v1_phpruntime_socket_write(php_stream *stream, struct iovec data);
+ssize_t swr_v1_phpruntime_socket_read(php_stream *stream, struct iovec out);
+bool swr_v1_phpruntime_socket_close(php_stream *stream);
+bool swr_v1_phpruntime_socket_cast(php_stream *stream, int castas, FILE **file, php_socket_t *fd);
+bool swr_v1_phpruntime_socket_stat(php_stream *stream, zend_stat_t *sb);
+bool swr_v1_phpruntime_socket_xport(php_stream *stream, php_stream_xport_param *param,
+    const struct timeval *timeout, const struct iovec *name, const struct iovec *send,
+    struct iovec *recv);
+bool swr_v1_phpruntime_socket_option(php_stream *stream, int option, int value, zval *data,
+    const struct timeval *timeout, php_stream_xport_crypto_param *crypto);
+
+/* The `count` bytes Zend lends at `buf`, never null. */
+static inline struct iovec lend(const void *buf, size_t count) {
+    struct iovec lent = {(void *) (count ? buf : ""), count};
+    return lent;
+}
+
+static ssize_t socket_write(php_stream *stream, const char *buf, size_t count) {
+    return swr_v1_phpruntime_socket_write(stream, lend(buf, count));
+}
+
+static ssize_t socket_read(php_stream *stream, char *buf, size_t count) {
+    return swr_v1_phpruntime_socket_read(stream, lend(buf, count));
+}
+
+static int socket_close(php_stream *stream, int close_handle) {
+    (void) close_handle;
+    return swr_v1_phpruntime_socket_close(stream) ? SUCCESS : FAILURE;
+}
+
+/* Nothing is buffered. */
+static int socket_flush(php_stream *stream) {
+    (void) stream;
+    return 0;
+}
+
+static int socket_cast(php_stream *stream, int castas, void **ret) {
+    bool stdio = castas == PHP_STREAM_AS_STDIO;
+    return swr_v1_phpruntime_socket_cast(
+               stream, castas, stdio ? (FILE **) ret : NULL, stdio ? NULL : (php_socket_t *) ret)
+               ? SUCCESS
+               : FAILURE;
+}
+
+static int socket_stat(php_stream *stream, php_stream_statbuf *ssb) {
+    return swr_v1_phpruntime_socket_stat(stream, &ssb->sb) ? SUCCESS : FAILURE;
+}
+
+static int socket_set_option(php_stream *stream, int option, int value, void *ptrparam) {
+    bool done;
+    if (option == PHP_STREAM_OPTION_XPORT_API) {
+        php_stream_xport_param *param = ptrparam;
+        struct iovec name = lend(param->inputs.name, param->inputs.namelen);
+        struct iovec buf = lend(param->inputs.buf, param->inputs.buflen);
+        done = swr_v1_phpruntime_socket_xport(stream, param, param->inputs.timeout,
+            param->inputs.name ? &name : NULL, param->op == STREAM_XPORT_OP_SEND ? &buf : NULL,
+            param->op == STREAM_XPORT_OP_RECV ? &buf : NULL);
+    } else {
+        done = swr_v1_phpruntime_socket_option(stream, option, value,
+            option == PHP_STREAM_OPTION_META_DATA_API ? ptrparam : NULL,
+            option == PHP_STREAM_OPTION_READ_TIMEOUT ? ptrparam : NULL,
+            option == PHP_STREAM_OPTION_CRYPTO_API ? ptrparam : NULL);
+    }
+    return done ? PHP_STREAM_OPTION_RETURN_OK : PHP_STREAM_OPTION_RETURN_ERR;
+}
+
+const php_stream_ops swoole_runtime_socket_ops = {
+    socket_write, socket_read, socket_close, socket_flush, "socket/coroutine", NULL,
+    socket_cast, socket_stat, socket_set_option,
+};
+
+int swr_zend_try_socket_stream_alloc(const char *persistent, php_stream **stream) {
     volatile int bailed = 0;
-    SWR_ZEND_TRY { *stream = php_stream_alloc(ops, abstract, persistent, "r+"); }
+    SWR_ZEND_TRY { *stream = php_stream_alloc(&swoole_runtime_socket_ops, NULL, persistent, "r+"); }
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
+}
+
+void swr_zend_stream_populate_name(const struct sockaddr_storage *peer, socklen_t size,
+    zend_string **textaddr, struct sockaddr **addr, socklen_t *addrlen) {
+    php_network_populate_name_from_sockaddr((struct sockaddr *) peer,
+        size < sizeof *peer ? size : (socklen_t) sizeof *peer, textaddr, addr, addrlen);
 }
 int swr_zend_try_stream_close(php_stream *stream) {
     volatile int bailed = 0;

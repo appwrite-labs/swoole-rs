@@ -48,8 +48,7 @@ pub use memory::{sw_zend_string_allocator, zend_string_allocator};
 pub use module::{
     Families, Globals, Hook, Http, HttpMinit, Minit, MinitArgs, ProcessSteps, ReqStatus,
     RuntimeSteps, SocketSettings, codecs, display_errors, enable_library, families, globals,
-    load_library, php_swoole_register_shutdown_function, swr_v1_phpswoole_mshutdown,
-    swr_v1_phpswoole_rinit, swr_v1_phpswoole_rshutdown, zif_swoole_set_process_name,
+    load_library, php_swoole_register_shutdown_function, zif_swoole_set_process_name,
 };
 pub use optional::{set_blocking, socket_cast, socket_create};
 pub use options::{
@@ -128,19 +127,23 @@ pub fn swoole_fatal_error(
 /// (`swoole_exception_ce` and `swoole_error_ce`),
 /// the short-name function aliases, then Swoole's core and every family
 /// (`module::startup`).
-/// # Safety
-/// Zend's MINIT.
-pub unsafe extern "C" fn swr_v1_phpswoole_minit(kind: c_int, module_number: c_int) -> c_int {
-    // SAFETY: Zend's MINIT of this module, on this thread.
-    let minit = unsafe { swoole_rs_zend::Minit::new(module_number) };
-    begin(&minit, kind);
+pub(crate) extern "C" fn swr_v1_phpswoole_minit(
+    kind: c_int,
+    startup: swoole_rs_zend::Startup<'_>,
+) -> c_int {
+    startup.with(|minit| minit_body(minit, kind));
+    0
+}
+
+fn minit_body(minit: &swoole_rs_zend::Minit, kind: c_int) {
+    begin(minit, kind);
     let mut flags = constants::flags();
     if module::globals().use_shortname.get() {
         flags |= constants::SHORTNAME;
     }
     FLAGS.store(flags, Ordering::Relaxed);
-    MODULE_NUMBER.store(module_number, Ordering::Relaxed);
-    constants::register(&minit, flags);
+    MODULE_NUMBER.store(minit.module(), Ordering::Relaxed);
+    constants::register(minit, flags);
     minit.register_child(
         &EXCEPTION,
         c"Swoole\\Exception",
@@ -162,13 +165,12 @@ pub unsafe extern "C" fn swr_v1_phpswoole_minit(kind: c_int, module_number: c_in
     // MINIT, before any family reads them.
     swoole_exception_ce.store(EXCEPTION.entry(), Ordering::Relaxed);
     swoole_error_ce.store(ERROR.entry(), Ordering::Relaxed);
-    if let Err(error) = table::register_aliases(&minit, flags) {
+    if let Err(error) = table::register_aliases(minit, flags) {
         error.defer();
     } else {
-        module::startup(&minit);
+        module::startup(minit);
     }
     swoole_rs_zend::bailout::finish();
-    0
 }
 
 /// MINIT's start: the `SWOOLE_RS_*` constants, then the module globals and
