@@ -7,15 +7,16 @@
 //! counters, the pool mutex and the iterator mutex. Columns and the iterator's
 //! cursor are process-private, as upstream's maps and `TableIterator` were: a
 //! [`Handle`] owns them beside its header, and a fork copies them. The arena is room for upstream's `size` bucket pointers
-//! (unused: a bucket's row is found by its index), `size` bucket rows, then a
-//! fixed pool of collision rows. Each row is an 88-byte header
+//! (unused: a bucket's row is found by its index), `size` bucket rows, then
+//! room for upstream's pool header (unused too: the pool's state is in the table's
+//! header) and the pool's collision rows. Each row is an 88-byte header
 //! followed by the column data, rounded up to 8
 //! bytes so every lock word and link is aligned.
 //!
 //! Row locks are upstream's spin locks, with its recovery from a dead owner
 //! (`kill(pid, 0)` fails with `ESRCH`) and from an owner that holds a lock for
 //! more than two seconds.
-use crate::fixed::{self, Fixed, Layout, Slice};
+use crate::fixed::{self, Fixed, HEADER, Layout, Slice};
 use crate::members::Shm;
 use std::cell::Cell;
 use std::ffi::c_int;
@@ -306,7 +307,7 @@ pub struct Table {
     memory: Shm,
     first: *mut Row,
     stride: usize,
-    pool: Option<&'static Fixed>,
+    pool: Option<Fixed>,
 }
 
 /// The arena of a table about to be created.
@@ -426,7 +427,7 @@ impl Table {
             row.checked_add(size_of::<*mut Row>())?
                 .checked_mul(self.size)?
                 .checked_add(pool)?
-                .checked_add(size_of::<Fixed>())
+                .checked_add(HEADER)
         };
         Some(Plan {
             logical: bytes(row_size)?,
@@ -495,7 +496,7 @@ impl Table {
             reason = "8-aligned: the arena is (checked above), and so is the stride"
         )]
         let first = rows.as_mut_ptr().cast::<Row>();
-        let Some(pool) = fixed::construct(pool, layout, true, false) else {
+        let Some(pool) = fixed::construct(pool, layout) else {
             return false;
         };
         self.first = first;
@@ -552,7 +553,7 @@ impl Table {
     }
 
     fn pool(&self) -> Option<&Fixed> {
-        self.pool
+        self.pool.as_ref()
     }
 
     /// Spare collision rows (0 before `create`).
