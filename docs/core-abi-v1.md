@@ -3,9 +3,12 @@
 Reference: Swoole v6.2.5, `76c657d88be39b7af6bf85e46bcbac0da7387760`. Feature
 values: base64 8, CRC32 16, error messages 32.
 
-The primitives allocate nothing, retain no pointer, invoke no callback,
-have no mutable global state and cannot panic or throw. They are safe on
-independent inputs from any thread and after fork.
+The primitives this page describes (Base64, CRC32 and the error-message
+lookup) allocate nothing, retain no pointer, invoke no callback, have no
+mutable global state and cannot panic or throw. They are safe on independent
+inputs from any thread and after fork. The error exports with a formatter
+callback, a per-thread buffer or the ignored-error set keep their own rules in
+[the error contract](../native/error/contract.md).
 
 ## M09 Base64 (crate `swoole-rs-base64`)
 
