@@ -155,7 +155,7 @@ mod tests {
 
     impl Drop for Socket {
         fn drop(&mut self) {
-            unsafe { SocketRecord::free(self.0) };
+            unsafe { SocketRecord::free(swoole_rs_reactor::Socket::from_ptr(self.0)) };
         }
     }
 
@@ -167,8 +167,14 @@ mod tests {
     }
     /// The reactor fires write, then read, on the waiter's socket.
     fn park(_: f64) -> Result<(), i32> {
-        let mut event =
-            unsafe { Event::new(7, 0, FdType::SW_FD_CO_EVENT as c_int, SOCKET.get().cast()) };
+        let mut event = unsafe {
+            Event::of(
+                7,
+                0,
+                FdType::SW_FD_CO_EVENT as c_int,
+                swoole_rs_reactor::Socket::from_ptr(SOCKET.get()),
+            )
+        };
         for events in [Events::WRITE, Events::READ] {
             let ready = handler(FdType::SW_FD_CO_EVENT, events);
             assert_eq!(

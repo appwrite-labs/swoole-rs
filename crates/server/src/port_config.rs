@@ -277,11 +277,11 @@ impl PortConfig {
         self.socket.set(Some(socket));
     }
 
-    /// The listening socket's record, or null, taken from the port so nothing finds it
-    /// once the caller frees it.
+    /// The listening socket, taken from the port so nothing finds it once the caller
+    /// frees it.
     #[must_use]
-    pub fn take_socket_ptr(&self) -> *mut swoole_rs_reactor::SocketRecord {
-        (self.socket.replace(None)).map_or(core::ptr::null_mut(), Socket::as_ptr)
+    pub fn take_socket(&self) -> Option<Socket<'static>> {
+        self.socket.replace(None)
     }
 
     /// The port's listening socket, or `None` before it has one or after it closes
@@ -364,6 +364,6 @@ impl PortConfig {
         std::mem::forget(self.length_owner.replace(None));
         // SAFETY: the record of a port `destroy` never closed (a server never started),
         // which nothing else holds. Its descriptor stays open to the exit, as upstream's.
-        unsafe { swoole_rs_reactor::SocketRecord::free(self.take_socket_ptr()) };
+        unsafe { swoole_rs_reactor::SocketRecord::free(self.take_socket()) };
     }
 }

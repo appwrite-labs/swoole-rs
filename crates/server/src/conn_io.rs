@@ -453,7 +453,7 @@ fn fin_ends(prequeue: bool, state: &crate::ServerState, conn: Connection<'_>) ->
 pub(crate) fn close_connection(
     serv: view::Server<'_>,
     reactor: Reactor,
-    sock: Option<Socket<'_>>,
+    sock: Option<Socket<'static>>,
 ) -> bool {
     let state = serv.state();
     let Some(sock) = sock else {
@@ -609,8 +609,7 @@ pub(crate) mod tests {
         let live = LiveServer::new();
         let clients = [(); 2].map(|()| {
             let client = live.connect();
-            // SAFETY: the fixture's listener, live for the event.
-            let event = unsafe { Event::new(live.listener_fd, 0, 1, live.listener().cast()) };
+            let event = live.accept_event();
             crate::connection::accept(live.server(), live.reactor(), &event);
             client
         });

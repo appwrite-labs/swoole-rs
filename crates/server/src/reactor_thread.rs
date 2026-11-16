@@ -324,10 +324,7 @@ mod tests {
     fn accepted() -> (crate::fixture::LiveServer, std::net::TcpStream) {
         let live = crate::fixture::LiveServer::new();
         let client = live.connect();
-        // SAFETY: the fixture's listener, live for the event.
-        let event = unsafe {
-            swoole_rs_reactor::Event::new(live.listener_fd, 0, 1, live.listener().cast())
-        };
+        let event = live.accept_event();
         crate::connection::accept(live.server(), live.reactor(), &event);
         live.reactor().set_error_handler(record_error);
         drop(handled());

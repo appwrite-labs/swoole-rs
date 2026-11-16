@@ -885,7 +885,7 @@ mod tests {
                 );
                 assert_eq!(socket_session(None, handle, None), Ok(()));
                 openssl_sys::SSL_free(ssl);
-                swoole_rs_reactor::SocketRecord::free(socket);
+                swoole_rs_reactor::SocketRecord::free(swoole_rs_reactor::Socket::from_ptr(socket));
             }
         }
     }

@@ -142,8 +142,7 @@ mod tests {
         fn new(messages: &[Vec<u8>]) -> Self {
             let live = LiveServer::new();
             let client = live.connect();
-            // SAFETY: the fixture's listener, live for the event.
-            let event = unsafe { Event::new(live.listener_fd, 0, 1, live.listener().cast()) };
+            let event = live.accept_event();
             crate::connection::accept(live.server(), live.reactor(), &event);
             let (ours, theirs) = UnixDatagram::pair().unwrap();
             ours.set_nonblocking(true).unwrap();
@@ -164,9 +163,7 @@ mod tests {
         }
         /// The handler's status, as upstream returns it.
         fn write(&self) -> c_int {
-            // SAFETY: the pipe's live record.
-            let event =
-                unsafe { Event::new(self.ours.as_raw_fd(), 0, FD_PIPE, self.sock.as_ptr().cast()) };
+            let event = Event::of(self.ours.as_raw_fd(), 0, FD_PIPE, Some(self.sock));
             if pipe_write(self.live.server(), self.live.reactor(), &event) {
                 SW_OK
             } else {

@@ -359,7 +359,7 @@ mod tests {
             assert!(completed.detached.token().is_null());
             assert_eq!(queue.front().err(), Some(swoole_rs_buffer::Error::Empty));
             assert!(queue.release().is_ok());
-            crate::SocketRecord::free(socket);
+            crate::SocketRecord::free(crate::Socket::from_ptr(socket));
         }
     }
     #[test]

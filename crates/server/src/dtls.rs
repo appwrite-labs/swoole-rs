@@ -57,11 +57,11 @@ fn bind(sock: Socket<'_>, kind: c_int, host: &CStr, port: c_int) -> bool {
 /// `None`, with everything it made undone, when a step fails.
 ///
 /// `listen` is one of `serv`'s DTLS ports.
-fn accept<'s>(
-    serv: crate::view::Server<'s>,
+fn accept(
+    serv: crate::view::Server<'_>,
     listen: crate::view::Port<'_>,
     sa: &SocketAddress,
-) -> Option<Socket<'s>> {
+) -> Option<Socket<'static>> {
     let (kind, number, host) = {
         let config = listen.config();
         // NUL-terminated: the address parser reads the host as a C string.
@@ -120,7 +120,7 @@ fn accept<'s>(
         unsafe { ptr::write_bytes(conn, 0, 1) };
     }
     // SAFETY: the socket just made, which nothing uses afterwards.
-    unsafe { swoole_rs_tls::upstream::socket_free(socket.as_ptr()) };
+    unsafe { swoole_rs_tls::upstream::socket_free(Some(socket)) };
     None
 }
 

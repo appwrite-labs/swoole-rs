@@ -578,8 +578,9 @@ impl PoolNative for Native {
     }
 
     fn close(&self, c: &PoolCall) {
+        let socket = c.lent_socket().map(Socket::lent);
         // SAFETY: a connection the loop is done with.
-        unsafe { socket_free(c.socket().cast()) };
+        unsafe { socket_free(socket.and_then(crate::reactor_handle::registered)) };
     }
 
     fn pipe_read(&self, c: &mut PoolCall) {

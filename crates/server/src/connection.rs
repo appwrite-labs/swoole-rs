@@ -302,7 +302,7 @@ pub(crate) fn abort(
     serv: view::Server<'_>,
     reactor: Reactor,
     port: Option<view::Port<'_>>,
-    sock: Socket<'_>,
+    sock: Socket<'static>,
 ) {
     serv.counters().abort_count.fetch_add(1, SeqCst);
     if let Some(gs) = port.and_then(|port| port.config().counters()) {
@@ -312,7 +312,7 @@ pub(crate) fn abort(
         reactor.close(sock);
     } else {
         // SAFETY: an accepted socket no connection took, which nothing uses afterwards.
-        unsafe { swoole_rs_tls::upstream::socket_free(sock.as_ptr()) };
+        unsafe { swoole_rs_tls::upstream::socket_free(Some(sock)) };
     }
 }
 
@@ -472,8 +472,7 @@ mod tests {
 
     /// The read handler's status, which upstream's accept always returns `SW_OK`.
     fn accept_on(live: &LiveServer) -> c_int {
-        // SAFETY: the listener, live for the event's life.
-        let event = unsafe { Event::new(live.listener_fd, 0, 1, live.listener().cast()) };
+        let event = live.accept_event();
         accept(live.server(), live.reactor(), &event);
         OK
     }
