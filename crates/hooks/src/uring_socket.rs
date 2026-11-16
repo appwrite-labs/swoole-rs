@@ -85,7 +85,7 @@ pub(crate) fn with<T>(socket: Co, f: impl FnOnce(&UringSocketOps<'_>) -> T) -> O
         };
         f(&UringSocketOps {
             socket,
-            tls: tls.with_session(ssl),
+            tls: tls.with_session(ssl.as_ref().map(swoole_rs_tls::HeldSsl::get)),
             connect_timeout: timeouts.connect,
             available,
             check,

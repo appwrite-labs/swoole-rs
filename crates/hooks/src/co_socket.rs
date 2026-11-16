@@ -756,9 +756,7 @@ pub extern "C" fn swr_v1_hook_co_socket_release(socket: &mut CoSocket) {
     }
     if let Some(network) = socket.socket.take() {
         if !network.read(|record| record.ssl().is_null()) {
-            // SAFETY: handles to a session live only for the operation that took them,
-            // and the socket being released runs none.
-            unsafe { socket_ssl_close(network) };
+            socket_ssl_close(network);
         }
         drop(Released(network));
     }

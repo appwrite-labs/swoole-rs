@@ -272,7 +272,7 @@ impl<K: Packages> Effects for With<'_, K> {
     }
     fn ssl_pending(&mut self, flags: &mut u32) -> bool {
         self.around(flags, |r, _| {
-            swoole_rs_tls::Ssl::of(r.socket).is_some_and(|ssl| ssl.pending() > 0)
+            swoole_rs_tls::Ssl::of(r.socket).is_some_and(|ssl| ssl.get().pending() > 0)
         })
     }
     fn page(&mut self, flags: &mut u32) -> usize {

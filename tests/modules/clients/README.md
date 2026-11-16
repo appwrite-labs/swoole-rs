@@ -36,6 +36,11 @@ cancellation with a manually driven thread timer. Synchronous sends, sync/async
 sendfile and socket/TLS release also use the supplied table; recording cases retain their original send and cleanup traces. The native
 TLS test closes a pending session through the production client and checks that a
 second close does nothing.
+Socket TLS calls retain an OpenSSL reference in `HeldSsl` and borrow `Ssl`/`Bio`
+handles from it. Closing the socket's SSL slot drops its reference while a pending
+operation retains its session. `tls::dtls::tests::the_session_is_its_sockets_ssls`
+also reads the retained BIO's queue after close; the `HeldSsl` compile-fail example
+checks that a copied handle cannot escape the lease.
 The client host registers the DNS pool dispatcher alongside framed receives.
 Unit fixtures register their recording dispatcher and retain the original DNS
 success/error traces. The hooks crate constructs its own pool event and retains
