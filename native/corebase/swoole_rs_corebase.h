@@ -8,9 +8,6 @@ extern "C" {
 #endif
 /* Rust also defines swoole_init, swoole_fork, swoole_waitpid, swoole_clean,
  * swoole_thread_init/_clean and swoole_is_main_thread. */
-/* swoole_init's body (crates/corebase/src/lifecycle.rs), which crates/ffi's
- * swoole_init calls once it has registered the leaves. */
-void swr_v1_core_swoole_init(void);
 /* Rust defines these upstream functions under their C++ symbols, so swoole.h and
  * native/framing/swoole_protocol.h stay their declarations: sw_free/sw_calloc
  * (libc's allocator), swoole_common_divisor/_multiple, swoole_version_compare,
@@ -21,17 +18,7 @@ void swr_v1_core_swoole_init(void);
  * swoole_redirect_stdout overloads, swoole_print_backtrace(_on_error),
  * swoole_exit, swoole_set_log_level, swoole_set/get_stdout_stream and sw_printf
  * (crates/corebase/src/format.c). No compiled C++ calls them. */
-/* Process-wide core state: upstream's SwooleG scalars that C++ reads. swoole::Global's
- * members of these names are swoole::RustField views over the accessor pairs below.
- * Pointers (the fatal-error hook) are native objects Rust only holds. */
-bool swr_v1_core_running(void);
-void swr_v1_core_set_running(bool value);
-bool swr_v1_core_enable_coroutine(void);
-void swr_v1_core_set_enable_coroutine(bool value);
-long swr_v1_core_trace_flags(void);
-uint32_t swr_v1_core_pagesize(void);
-void swr_v1_core_set_pagesize(uint32_t value);
-/* SwooleG.fatal_error: null until a host sets it. */
+/* SwooleG.fatal_error, a native object Rust only holds: null until a host sets it. */
 typedef void (*SwrFatalError)(int code, const char *format, ...);
 SwrFatalError swr_v1_core_fatal_error(void);
 #ifdef __cplusplus

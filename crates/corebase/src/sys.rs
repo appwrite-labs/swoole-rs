@@ -205,6 +205,9 @@ mod c {
         /// `epoll_create(2)`.
         #[cfg(any(target_os = "linux", target_os = "android"))]
         pub safe fn epoll_create(size: c_int) -> c_int;
+        /// `epoll_create1(2)`: the call Miri implements.
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        pub safe fn epoll_create1(flags: c_int) -> c_int;
         /// `epoll_ctl(2)`: `event` is the interest and token to keep, none for
         /// `EPOLL_CTL_DEL`.
         #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -251,20 +254,36 @@ pub use c::kqueue;
 pub use c::malloc_trim;
 pub use c::{calloc, malloc};
 #[cfg(any(target_os = "linux", target_os = "android"))]
-pub use c::{epoll_create, epoll_ctl, signalfd};
+pub use c::{epoll_create, epoll_create1, epoll_ctl, signalfd};
 pub(crate) use c::{fork, getrlimit, srandom, uname};
 pub use c::{
     pthread_sigmask, sigaddset, sigdelset, sigemptyset, sigfillset, sigismember, sigprocmask,
 };
 
+/// A receive buffer crossing a callback boundary, retaining whether its bytes
+/// must stay initialized. Neither variant permits uninitializing a `u8` buffer.
+pub enum ReadBuffer<'a> {
+    /// Bytes that remain initialized after the receive.
+    Initialized(&'a mut [u8]),
+    /// Spare capacity that the receive may initialize.
+    Spare(&'a mut [MaybeUninit<u8>]),
+}
+
 /// A byte a read may overwrite with any value: `u8`, or one not yet written
 /// (`CppString::spare`). Readers only write their buffer, so they take either.
 pub trait ReadSlot: sealed::Sealed + Sized {
+    /// Lend `slots` to a callback without erasing its initialization guarantee.
+    fn buffer(slots: &mut [Self]) -> ReadBuffer<'_>;
     /// Copy what fits of `bytes` to the start of `slots`: the count copied.
     fn copy_in(slots: &mut [Self], bytes: &[u8]) -> usize;
 }
 
 impl ReadSlot for u8 {
+    #[inline]
+    fn buffer(slots: &mut [Self]) -> ReadBuffer<'_> {
+        ReadBuffer::Initialized(slots)
+    }
+
     #[inline]
     fn copy_in(slots: &mut [Self], bytes: &[u8]) -> usize {
         let n = slots.len().min(bytes.len());
@@ -276,6 +295,11 @@ impl ReadSlot for u8 {
 }
 
 impl ReadSlot for MaybeUninit<u8> {
+    #[inline]
+    fn buffer(slots: &mut [Self]) -> ReadBuffer<'_> {
+        ReadBuffer::Spare(slots)
+    }
+
     #[inline]
     fn copy_in(slots: &mut [Self], bytes: &[u8]) -> usize {
         let n = slots.len().min(bytes.len());

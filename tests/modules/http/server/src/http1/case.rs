@@ -119,7 +119,6 @@ struct Tick {
 }
 
 unsafe extern "C-unwind" {
-    fn swr_v1_core_thread_global() -> *mut c_void;
     #[link_name = "_Z25swoole_get_last_error_msgv"]
     fn swoole_get_last_error_msg() -> *const c_char;
     #[link_name = "_ZN6swoole11make_socketEi8swFdType"]
@@ -615,10 +614,9 @@ pub(crate) unsafe fn swr_case_sendfile(
     Server(serv).sendfile(session_id, str_of(file))
 }
 
-/// `sw_tg_buffer()`: `SwooleTG.buffer_stack`, the thread global's second pointer.
-pub(crate) unsafe fn swr_case_tg_buffer() -> *mut CppString {
-    // SAFETY: this thread's live global.
-    unsafe { *swr_v1_core_thread_global().cast::<*mut CppString>().add(1) }
+/// `sw_tg_buffer()`: `SwooleTG.buffer_stack`.
+pub(crate) fn swr_case_tg_buffer() -> *mut CppString {
+    swoole_rs_corebase::thread_buffer().cast()
 }
 
 /// The request header fields a callback reads.

@@ -4,9 +4,14 @@
 # An image with no version tag is pinned by digest: `latest` of golang-h2demo was arm64
 # only for a while on 2026-11-12, and every shard on an amd64 runner failed (#3382).
 services:
+  # Also httpbin.org inside this network: swoole_client_sync's http_proxy and socks5_proxy
+  # fetch http://httpbin.org/ through the proxies below (tests/include/api/swoole_client/
+  # http_get.php) and expect this image's homepage, which links to requests/httpbin; the
+  # public site's no longer does (#4325). The proxies resolve the name, so only they see it.
   httpbin:
     image: kennethreitz/httpbin@sha256:599fe5e5073102dbb0ee3dbb65f049dab44fa9fc251f6835c9990f8fb196a72b
     ports: ['80:80']
+    networks: {default: {aliases: [httpbin.org]}}
   pgsql:
     image: postgres:14
     environment:

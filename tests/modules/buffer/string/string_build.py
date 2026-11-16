@@ -1,5 +1,4 @@
-"""Build a String consumer against the pinned String sources, or the Cargo build's headers,
-native objects and Rust archive."""
+"""Build a String consumer against the pinned String sources."""
 import io
 import re
 import shlex
@@ -8,7 +7,6 @@ import sys
 import tarfile
 from pathlib import Path
 
-from tools.build_ext import native_flags, native_link
 from tools.build_upstream import COMMIT
 from tools.harness import run_isolated
 
@@ -35,16 +33,12 @@ def original_ids(tests):
     return ['.'.join(match) for match in re.findall(r'^TEST\(\s*(\w+)\s*,\s*(\w+)\s*\)', tests.read_text(), re.MULTILINE)]
 
 
-def build(tree, engine, consumer, binary, archive=None, *, sanitize=False, optimize=False, extra=()):
-    """Compile consumer (a file under this directory) for engine 'upstream' (the pinned tree's
-    String sources) or 'rust' (the Cargo build's headers, linked with its native archives and Rust
-    archive). Returns the compiler result."""
-    if engine == 'rust':
-        headers, link = native_flags(archive), native_link(archive)
-    else:
-        headers, link = ['-I' + str(tree / 'include')], [str(tree / name) for name in SOURCES]
-    command = ['c++', '-std=c++17', '-O3' if optimize else '-O1', '-g', '-ffunction-sections', '-fdata-sections',
-               '-I' + str(HERE), *headers, *map(str, extra), str(HERE / consumer), *link]
+def build(tree, consumer, binary, *, sanitize=False, extra=()):
+    """Compile consumer (a file under this directory) with the pinned tree's String sources.
+    Returns the compiler result."""
+    command = ['c++', '-std=c++17', '-O1', '-g', '-ffunction-sections', '-fdata-sections',
+               '-I' + str(HERE), '-I' + str(tree / 'include'), *map(str, extra), str(HERE / consumer),
+               *[str(tree / name) for name in SOURCES]]
     command += shlex.split(subprocess.check_output(['pkg-config', '--cflags', '--libs', 'openssl'], text=True))
     command += ['-Wl,-dead_strip' if sys.platform == 'darwin' else '-Wl,--gc-sections', '-lm']
     if sys.platform.startswith('linux'):

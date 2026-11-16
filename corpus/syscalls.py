@@ -34,7 +34,7 @@ KEEP = {
     'socket': (0, 1, 2), 'socketpair': (0, 1, 2), 'bind': (1,), 'connect': (1,), 'listen': (1,),
     'accept4': (3,), 'setsockopt': (1, 2, 3), 'getsockopt': (1, 2), 'shutdown': (1,),
     'sendto': (3,), 'recvfrom': (3,), 'sendmsg': (2,), 'recvmsg': (2,), 'sendmmsg': (3,), 'recvmmsg': (3,),
-    'fcntl': (1, 2), 'ioctl': (1,), 'epoll_create1': (0,), 'epoll_ctl': (1, 3), 'pipe2': (1,),
+    'fcntl': (1, 2), 'ioctl': (1,), 'epoll_create': (0,), 'epoll_create1': (0,), 'epoll_ctl': (1, 3), 'pipe2': (1,),
     'eventfd2': (1,), 'signalfd4': (1, 3), 'timerfd_create': (0, 1), 'dup3': (2,),
     'wait4': (2,), 'kill': (1,), 'tgkill': (2,), 'prctl': (0, 1),
     'rt_sigaction': (0, 1),
@@ -98,6 +98,10 @@ def signature(line):
         raise ValueError(f'unparsed strace line: {line!r}')
     name, text = call['name'], call['args'].replace('<unfinished ...>', '')
     args = split_args(text)
+    # Linux ignores a positive epoll_create size; this is epoll_create1 without
+    # CLOEXEC. Keep invalid sizes, flags and result classes distinct.
+    if name == 'epoll_create' and len(args) == 1 and args[0].isdigit() and int(args[0]) > 0:
+        name, args = 'epoll_create1', ['0']
     kept = [clean(args[index]) for index in KEEP.get(name, ()) if index < len(args)]
     if name in ('clone', 'clone3'):  # flags=..., among stacks, tids and tls pointers
         kept = re.findall(r'flags=[\w|]+', text)[:1]

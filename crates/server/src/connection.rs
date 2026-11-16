@@ -135,7 +135,10 @@ pub fn add<'a>(
     conn.closed().load(Acquire);
     // Upstream zeroes the slot up to `closed`; other reactor threads read `active`.
     conn.active().store(0, Relaxed);
-    conn.zero(crate::records::Zeroed::Reused);
+    state
+        .tables_ref()
+        .reset_connection(fd, crate::records::Zeroed::Reused);
+    let conn = state.tables_ref().connection_at(fd)?;
 
     // `sw_spinlock`, with `SW_SPINLOCK_LOOP_N`.
     let cpus = u32::from(swoole_rs_corebase::swr_v1_core_cpu_num());
@@ -703,7 +706,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn max_connection_bounds() {
         let live = LiveServer::new();
         let before = live.server().max_connection();

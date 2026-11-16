@@ -24,15 +24,21 @@ the spinlock across threads and a forked process. Austin is compared only on
 ASCII input: the pinned body shifts negative promoted `char`s. It runs in
 `utilities-unit`.
 
-## Wait gate
+## The wait record
 
-```sh
-python3 tests/modules/utilities/wait.py --source /pinned/reference \
-  --archive /inputs/libswoole_rs_ffi.a --sanitize --output target/utilities-wait.json
-```
+`wait.py` (`utilities-wait`, Linux) built `wait.cc` against the pinned misc.cc futex
+bodies and the `swr_v1_utils_wait`/`_wakeup` exports. The oracle crate compiles the same
+bodies (`swoole_rs_oracle::locks::wait`/`wake`), so its checks are Rust tests in
+`crates/utilities/src/upstream.rs` (Linux, in `utilities-unit`) over
+`sw_atomic_futex_wait`/`_wakeup`, which called the exports and now call the locks module
+themselves:
 
-`wait.py` (`utilities-wait`, Linux) checks the wait/wake result, errno and word,
-a real shared fork wake, and the futex wait channel and fallback.
+| `wait.cc` | Rust test |
+| --- | --- |
+| `differential`: wake on words 0, 1, 2, `0x7fffffff`, `0x80000000`, `0xffffffff` with n of `INT_MIN`, -2, -1, 0, 1, 2 and `INT_MAX`; waits of 1 µs, 1 ms and 1.5 ms, and of -123, -0 and 0 where the word isn't 0; result, errno (from `EDOM`) and word equal | `upstream::futex_wait_and_wake_match_the_pin`, same inputs and comparison |
+| `shared_process`, pinned then Rust: a forked child waits (2 s, `alarm(5)`) on a shared word, the parent sees `futex` in its `/proc/<pid>/wchan` within 3 s, one wake returns 1, the child's wait returns 0 and the word ends 0 | `upstream::futex_wakes_a_shared_waiter`, the same steps in a single-threaded child test process |
+
+The gate compiled `wait.cc` under ASan and UBSan; the tests have no sanitizer of their own.
 
 ## Logger
 

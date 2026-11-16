@@ -40,12 +40,13 @@ pub struct ReactorFields {
     pub max_socket: u32,
     pub last_malloc_trim_time: libc::time_t,
     pub close: Option<ReactorClose>,
-    /// `Reactor::defer_tasks`: null (`None`) until a task is deferred.
-    pub defer_tasks: Option<Box<crate::ReactorDeferred>>,
-    /// `Reactor::destroy_callbacks`.
-    pub destroy_callbacks: Option<Box<crate::ReactorDeferred>>,
     pub idle_task: ReactorTask,
     pub future_task: ReactorTask,
+    // Rust-only fields follow the native head. No native caller reads these queues.
+    /// No queue until a task is deferred; detached before its callbacks run.
+    pub defer_tasks: Option<crate::ReactorDeferred>,
+    /// Callbacks run as the reactor is destroyed.
+    pub destroy_callbacks: Option<crate::ReactorDeferred>,
 }
 
 /// The C++ `Reactor` object (`swr_v1_reactor_head`, which the methods-only class
@@ -64,11 +65,7 @@ pub struct ReactorState {
     pub(crate) object_key: Option<&'static crate::ReactorObjectKey>,
     /// The `defer_tasks` queues the defer end callback detached and is running, innermost
     /// last: one a task bailed out of stays here for the drop to free.
-    #[expect(
-        clippy::vec_box,
-        reason = "a running queue's address stays put while the list grows, and it moves here from its slot uncopied"
-    )]
-    pub(crate) running_defer: Vec<Box<crate::ReactorDeferred>>,
+    pub(crate) running_defer: Vec<crate::ReactorDeferred>,
 }
 // swoole_rs_reactor.h asserts the same layout for swr_v1_reactor_head.
 const _: () = assert!(
@@ -77,7 +74,7 @@ const _: () = assert!(
 );
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(
-    size_of::<ReactorPrepared>() == 32 && size_of::<ReactorFields>() == 112,
+    size_of::<ReactorPrepared>() == 32 && std::mem::offset_of!(ReactorFields, defer_tasks) == 96,
     "swr_v1_reactor_head's layout"
 );
 
@@ -105,8 +102,7 @@ impl Drop for ReactorState {
 
 impl ReactorState {
     /// Takes the queues [`swr_v1_reactor_delete`] still has to free out of the state.
-    #[expect(clippy::vec_box, reason = "the queues as their slots own them")]
-    fn detach_queues(&mut self) -> Vec<Box<crate::ReactorDeferred>> {
+    fn detach_queues(&mut self) -> Vec<crate::ReactorDeferred> {
         let mut queues = std::mem::take(&mut self.running_defer);
         queues.extend(self.fields.destroy_callbacks.take());
         queues.extend(self.fields.defer_tasks.take());
@@ -240,8 +236,13 @@ impl ReactorState {
     fn open_backend(&mut self, kind: BackendKind, count: c_int) -> bool {
         #[cfg(target_os = "linux")]
         if kind == BackendKind::Epoll {
-            // Upstream's fixed size hint.
-            self.backend_fd = swoole_rs_corebase::sys::epoll_create(512);
+            // Upstream's fixed size hint; Miri has only `epoll_create1`, the same call
+            // without it.
+            #[cfg(not(miri))]
+            let fd = swoole_rs_corebase::sys::epoll_create(512);
+            #[cfg(miri)]
+            let fd = swoole_rs_corebase::sys::epoll_create1(0);
+            self.backend_fd = fd;
         }
         #[cfg(any(
             target_os = "macos",

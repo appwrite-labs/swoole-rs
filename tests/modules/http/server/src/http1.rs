@@ -23,6 +23,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
+use swoole_rs_corebase::log::last_error;
 use swoole_rs_corebase::net_types::SocketAddress as Address;
 use swoole_rs_corebase::{DataHead, ServerEvent};
 use swoole_rs_process::task_file::Packed;
@@ -106,7 +107,6 @@ unsafe extern "C-unwind" {
     pub(super) fn swoole_set_log_level(level: c_int);
     #[link_name = "_Z23swoole_signal_block_allv"]
     fn swoole_signal_block_all();
-    fn swr_v1_core_last_error() -> c_int;
 
 }
 
@@ -280,11 +280,6 @@ impl Server {
         // SAFETY: the cases' Servers live until the case ends.
         unsafe { view::Server::from_raw(self.0) }
     }
-}
-
-fn last_error() -> c_int {
-    // SAFETY: reads this thread's last error.
-    unsafe { swr_v1_core_last_error() }
 }
 
 /// `test::get_root_path()`: the directory the runner starts each case in, the tree's

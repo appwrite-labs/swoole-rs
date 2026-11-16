@@ -48,7 +48,7 @@ impl Lent<'_> {
         self.0.as_ptr()
     }
 }
-/// A callback of the node's data alone, for `swr_v1_timer_add_plain`'s callers.
+/// A callback of the node's data alone.
 pub type Plain = swoole_rs_reactor::DeferCall;
 /// `abandon_selection`'s pending Zend bailout, raised once the node is gone.
 pub type Bailout = extern "C-unwind" fn();

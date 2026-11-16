@@ -91,6 +91,7 @@ jobs:
           cargo test --locked -p swoole-rs-clients --features cares completion_
       # The control is the pinned reference itself, unpatched.
       - name: Build cargo engine
+        id: engine
         run: |
           python3 tools/build_ext.py $BUILD
           mkdir -p "target/phpt/$VARIANT"
@@ -171,6 +172,20 @@ jobs:
             --engine cargo=target/phpt/cargo.so --engine upstream=target/phpt/upstream.so \
             --profiles target/callgrind/profiles \
             --output "target/phpt/$VARIANT/callgrind.json" | tee -a "$GITHUB_STEP_SUMMARY"
+      # Fixed samples expose allocator-path variation before the merge queue.
+      - name: Repeat io_uring instruction count
+        if: always() && inputs.callgrind && inputs.variant == 'iouring' && steps.engine.outcome == 'success'
+        run: |
+          read -r -a run_args <<< "$RUN"
+          failed=0
+          for sample in 2 3; do
+            python3 benchmarks/callgrind.py --limits benchmarks/callgrind_limits \
+              --workload uring-file --requests 1000 "${run_args[@]}" \
+              --engine cargo=target/phpt/cargo.so --engine upstream=target/phpt/upstream.so \
+              --profiles "target/callgrind/profiles/sample-$sample" \
+              --output "target/phpt/$VARIANT/callgrind-$sample.json" || failed=1
+          done
+          exit "$failed"
       - uses: actions/upload-artifact@v7
         if: always() && inputs.callgrind && (inputs.variant == 'iouring' || inputs.variant == 'zts')
         with:

@@ -273,9 +273,7 @@ impl WorkerRecord {
 /// A live worker record: the only way to reach one's fields. Every field is a
 /// `Cell` or an atomic, so the shared borrow [`Worker::record`] lends lets other
 /// handles, and other processes in shared memory, write the record meanwhile.
-/// Native code passes one as a `Worker *`.
 #[derive(Clone, Copy)]
-#[repr(transparent)]
 pub struct Worker<'a> {
     raw: *mut WorkerRecord,
     life: core::marker::PhantomData<&'a WorkerRecord>,

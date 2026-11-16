@@ -65,39 +65,6 @@ class String {
 
     void print(bool print_value = true) const;
 
-    enum FormatFlag {
-        FORMAT_APPEND = 1 << 0,
-    };
-
-    template <typename... Args>
-    size_t format_impl(int flags, const char *format, Args... args) {
-        size_t _size = sw_snprintf(nullptr, 0, format, args...);
-        if (_size == 0) {
-            return 0;
-        }
-        ++_size;  // the NUL
-        size_t n;
-        if (flags & FORMAT_APPEND) {
-            if (_size > size - length) {
-                reserve(length + _size);
-            }
-            n = sw_snprintf(str + length, size - length, format, args...);
-            length += n;
-        } else {
-            if (_size > size) {
-                reserve(_size);
-            }
-            n = sw_snprintf(str, size, format, args...);
-            length = n;
-        }
-        return n;
-    }
-
-    template <typename... Args>
-    size_t format(const char *format, Args... args) {
-        return format_impl(0, format, args...);
-    }
-
     char *pop(size_t init_size);
     void reduce(off_t offset);
 };

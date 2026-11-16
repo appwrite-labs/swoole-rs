@@ -259,8 +259,6 @@ def plan(args, reports):
             script('ports-configuration', 'tests/modules/ports/configuration.py', *php_for('curl', 'sockets'), *engines,
                    '--build-manifest', built, *report('ports-configuration'))
     if 'corebase' in modules:
-        script('corebase-record-views', 'tests/modules/corebase/record_views.py',
-               '--archive', archive, *report('corebase-record-views'))
         script('corebase-constants', 'tests/modules/corebase/constants.py', '--source', ROOT / 'target/upstream/src', *report('corebase-constants'))
         if integrate:
             script('corebase-startup', 'tests/modules/corebase/mkdir_startup.py', *php, *engines,
@@ -323,9 +321,6 @@ def plan(args, reports):
                '--exclude', 'http_server.node_websocket_client_1=' + NODE_WS, '--exclude', 'http_server.node_websocket_client_2=' + NODE_WS,
                '--exclude', 'redis.get=needs a Redis server on 127.0.0.1:6379', '--exclude', 'mqtt.echo=needs Node.js and its mqtt and pino packages',
                *report('http-server-rust'))
-    if 'utilities' in modules and sys.platform.startswith('linux'):  # Rust implements only the futex path; others run upstream's registry.
-        script('utilities-wait', 'tests/modules/utilities/wait.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', archive, '--sanitize', *report('utilities-wait'))
     if 'utilities' in modules and integrate:
         script('utilities-hash-originals', 'tests/modules/utilities/hash_originals.py', '--source', ROOT / 'target/upstream/src',
                *php_for('curl'), *engines, '--build-manifest', built, '--archive', archive, *report('utilities-hash-originals'))
@@ -355,8 +350,7 @@ def plan(args, reports):
                    '--manifest', ROOT / 'tests/modules/buffer/originals.json',
                    '--case', 'tests/swoole_server/sendfile_02.phpt', *php_for('curl', 'sockets'),
                    *engines, '--require-all', '--isolate-cases', *report('php-sockets-sendfile-original'))
-        pytest('string-originals', 'tests/modules/buffer/string/test_gate.py',
-               '--archive', archive, '--sanitize')
+        pytest('string-originals', 'tests/modules/buffer/string/test_gate.py', '--sanitize')
         pytest('buffer-network', 'tests/modules/buffer/test_network.py', *php, *engines)
     if 'http2' in modules:
         pytest('http2-frames', 'tests/modules/http2', *php, '--engine', f'cargo={cargo}')
@@ -545,6 +539,23 @@ def docker_image(architecture):
 # Inside the container: the pinned toolchain, the locked crates and the pinned upstream
 # build, then dev.py with the image's PHP extensions unless the command names its own.
 DOCKER_SCRIPT = r'''set -e
+# Started as root: give the invoking user the toolchain and crate volumes, and what an
+# earlier root run left on the build mounts, then run the rest as them, so the host can
+# remove everything a run writes (#4303).
+if [ -n "${SWR_USER:-}" ] && [ "$(id -u)" = 0 ]; then
+    for dir in /usr/local/rustup /usr/local/cargo/registry; do
+        [ "$(stat -c %u:%g "$dir")" = "$SWR_USER" ] || chown -R "$SWR_USER" "$dir"
+    done
+    chown "$SWR_USER" /usr/local/cargo
+    builds="$SWR_TARGET target/upstream target/upstream-builds target/ext target/reports"
+    if [ -n "$(find $builds -maxdepth 1 -uid 0 -print -quit 2>/dev/null)" ]; then
+        find $builds -uid 0 -exec chown -h "$SWR_USER" {} + 2>/dev/null || true
+    fi
+    mkdir -p /tmp/home && chown "$SWR_USER" /tmp/home
+    exec setpriv --reuid "${SWR_USER%%:*}" --regid "${SWR_USER#*:}" --clear-groups \
+        ${SWR_CAPS:+--inh-caps "$SWR_CAPS" --ambient-caps "$SWR_CAPS"} \
+        env HOME=/tmp/home bash -c "$BASH_EXECUTION_STRING" "$0" "$@"
+fi
 git config --global --add safe.directory '*'
 # Cargo builds into the target/docker of the worktree it runs in: worktrees sharing one
 # target dir hash a crate alike, so each takes the other's build of it as fresh.
@@ -579,8 +590,9 @@ exec python3 tools/dev.py "$@" $extensions
 DOCKER_IOURING_SECCOMP = ROOT / 'tools/docker-seccomp-iouring.json'
 # The ring's sendfile splices through a pipe it grows to 1 MiB, as upstream does. A
 # container's root shares the host VM's per-user pipe quota (pipe-user-pages-soft), which
-# a busy host exhausts: pipes then shrink to two pages and the resize fails (#4230).
-DOCKER_IOURING_CAPS = ['--cap-add', 'SYS_RESOURCE']
+# a busy host exhausts: pipes then shrink to two pages and the resize fails (#4230). The
+# lane keeps the capability as the invoking user's ambient one.
+DOCKER_IOURING_CAPS = ['--cap-add', 'SYS_RESOURCE', '-e', 'SWR_CAPS=+sys_resource']
 
 
 def docker(arguments):
@@ -635,6 +647,8 @@ def docker(arguments):
                '-v', f'swr-rustup-{architecture}:/usr/local/rustup',
                '-v', f'swr-cargo-{architecture}:/usr/local/cargo/registry',
                '-e', f'SWR_TARGET={(private / "cargo").relative_to(ROOT)}',
+               # Docker Desktop (macOS) already gives the host user what a container writes.
+               *(['-e', f'SWR_USER={os.getuid()}:{os.getgid()}'] if sys.platform == 'linux' and os.getuid() else []),
                *[part for variable in git_config for part in ('-e', variable)],
                image, 'bash', '-c', DOCKER_SCRIPT, 'dev.py', *arguments]
     return subprocess.run(command).returncode

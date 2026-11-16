@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Compare canonical Rust-generated identifiers/defaults with the clean pin, including C++ types and string bytes."""
+"""Compare canonical Rust identifiers/defaults with the clean pin: those the C headers export by C++ type,
+value and string bytes, and the enums no header exports by the values the crates' `constants` examples print."""
 import argparse
 import json
 from pathlib import Path
@@ -40,6 +41,20 @@ def main():
         if args.include_tls:
             constants += (ROOT / 'crates/tls/src/constants.rs').read_text()
         names = sorted(set(names) | set(re.findall(r'pub const (SW_\w+):', constants)))
+        values = {}
+        for package in ['swoole-rs-corebase'] + ['swoole-rs-tls'] * args.include_tls:
+            command = ['cargo', 'run', '--quiet', '--locked', '-p', package, '--example', 'constants']
+            result = run_isolated(command, cwd=ROOT, timeout=1800)
+            report['commands'].append(dict(command=command, exit=result.returncode, stderr=result.stderr))
+            if result.returncode:
+                raise RuntimeError(f'{package} constants table failed')
+            values.update(line.split(' ') for line in result.stdout.splitlines())
+        # SslState's identifiers are swoole_ssl.h's, which only the TLS run reads.
+        if args.include_tls and set(values) - set(names):
+            raise RuntimeError(f'not upstream identifiers: {sorted(set(values) - set(names))}')
+        values = {name: value for name, value in values.items() if name in names}
+        # The headers define every other name, so one upstream has and Rust lacks fails their compile.
+        exported = [name for name in names if name not in values]
         prelude = '''#include <climits>
 #include <cstdint>
 #include <cstddef>
@@ -58,8 +73,8 @@ template<size_t N> void emit(const char *name, const char (&value)[N]) {
  std::cout << std::dec << '\\n';
 }
 '''
-        pp_probe = '\n#if SW_SSL_ALL\nstatic constexpr int native_ssl_mask_pp = 1;\n#else\nstatic constexpr int native_ssl_mask_pp = 0;\n#endif\n' if args.include_tls else ''
-        driver = pp_probe + '\nint main(){\n' + ''.join(f'emit("{name}", {name});\n' for name in names) + ('emit("SW_SSL_ALL#if", native_ssl_mask_pp);\n' if args.include_tls else '') + '}\n'
+        def driver(emitted):
+            return '\nint main(){\n' + ''.join(f'emit("{name}", {name});\n' for name in emitted) + '}\n'
         with tempfile.TemporaryDirectory(prefix='constants-', dir=args.output.parent) as directory:
             work = Path(directory)
             # SW_IPC_BUFFER_SIZE subtracts sizeof(swoole::DataHead): the pinned struct comes first.
@@ -73,19 +88,22 @@ template<size_t N> void emit(const char *name, const char (&value)[N]) {
                 observations = {}
                 for engine in ['native', 'rust']:
                     declarations = (tls_policy + '#include "original_config.h"\n' + enums if engine == 'native' else
-                                    '#include "swoole_rs_corebase_constants.h"\n#include "swoole_rs_error.h"\n' +
-                                    ('#include "swoole_rs_tls_constants.h"\n' if args.include_tls else ''))
+                                    '#include "swoole_rs_corebase_constants.h"\n#include "swoole_rs_error.h"\n')
                     source = work / f'{engine}-{apple}.cc'; binary = source.with_suffix('')
-                    source.write_text(prelude + platform + declarations + driver)
+                    source.write_text(prelude + platform + declarations + driver(names if engine == 'native' else exported))
                     for command in [['c++', *tls_flags, '-std=c++14', '-Wall', '-Wextra', '-Werror', '-I' + str(ROOT / 'native/include'), str(source), '-o', str(binary)], [str(binary)]]:
                         result = run_isolated(command, cwd=work, timeout=60)
                         report['commands'].append(dict(command=command, exit=result.returncode, stderr=result.stderr))
                         if result.returncode or result.stderr:
                             raise RuntimeError(f'{engine} constants comparison failed')
                     observations[engine] = result.stdout.splitlines()
-                differences = [dict(native=a, rust=b) for a,b in zip(observations['native'], observations['rust']) if a != b]
-                report['profiles'].append(dict(apple=apple, constants=len(names), preprocessor_cases=int(args.include_tls), differences=differences))
-                if observations['native'] != observations['rust']:
+                native = dict(zip(names, observations['native']))
+                # A table name compares by value, the native line's last field.
+                rust = dict(zip(exported, observations['rust'])) | {
+                    name: native[name].rsplit(':', 1)[0] + ':' + value for name, value in values.items()}
+                differences = [dict(native=native[name], rust=rust[name]) for name in names if native[name] != rust[name]]
+                report['profiles'].append(dict(apple=apple, constants=len(names), values=len(values), differences=differences))
+                if differences or len(observations['native']) != len(names) or len(observations['rust']) != len(exported):
                     raise RuntimeError('Identifier value/type or literal-byte differences')
         report['passed'] = True
     except Exception as error:

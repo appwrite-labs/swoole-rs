@@ -176,32 +176,13 @@ impl Session<'_> {
     field!(reactor_bits, set_reactor_bits: u32);
 }
 
-/// What [`Connection::zero`] clears of a slot.
+/// What [`ServerTables::reset_connection`] clears of a slot.
 #[derive(Clone, Copy)]
 pub(crate) enum Zeroed {
     /// From `socket_type` up to `closed`, before an accept reuses the slot.
     Reused,
     /// The whole slot.
     Whole,
-}
-
-impl Connection<'_> {
-    /// Zeroes the slot's bytes that `extent` names, as upstream's `memset`s do. An
-    /// all-zero record is an empty slot, as every factory maps them; what the cleared
-    /// fields held is forgotten, not freed.
-    pub(crate) fn zero(self, extent: Zeroed) {
-        let (start, end) = match extent {
-            Zeroed::Reused => (
-                core::mem::offset_of!(ConnectionRecord, socket_type),
-                core::mem::offset_of!(ConnectionRecord, closed),
-            ),
-            Zeroed::Whole => (0, size_of::<ConnectionRecord>()),
-        };
-        let bytes = self.as_ptr().cast::<u8>().wrapping_add(start);
-        // SAFETY: bytes `start..end` of this live slot, all zero a valid record's; its
-        // fields are cells and atomics, written under the server's own synchronization.
-        unsafe { bytes.write_bytes(0, end - start) };
-    }
 }
 
 impl<'a> Connection<'a> {
@@ -474,6 +455,32 @@ impl ServerTables {
     /// The slot of `fd`, or `None` when `fd` is outside the table.
     pub(crate) fn connection_at(&self, fd: c_int) -> Option<Connection<'_>> {
         Some(self.connections().get(usize::try_from(fd).ok()?)?.into())
+    }
+
+    /// Zeroes the bytes of `fd`'s slot that `extent` names, as upstream's `memset`s
+    /// do; an all-zero record is an empty slot, and what the cleared fields held is
+    /// forgotten, not freed. It writes through the table's own pointer: the padding
+    /// between the cells is no cell, so a slot's shared borrow can't write it. Borrow
+    /// the slot again afterwards.
+    pub(crate) fn reset_connection(&self, fd: c_int, extent: Zeroed) {
+        let Some(index) = usize::try_from(fd)
+            .ok()
+            .filter(|&i| i < self.connections().len())
+        else {
+            return;
+        };
+        let (start, end) = match extent {
+            Zeroed::Reused => (
+                core::mem::offset_of!(ConnectionRecord, socket_type),
+                core::mem::offset_of!(ConnectionRecord, closed),
+            ),
+            Zeroed::Whole => (0, size_of::<ConnectionRecord>()),
+        };
+        let record = self.connection_list.as_ptr().cast::<ConnectionRecord>();
+        let bytes = record.wrapping_add(index).cast::<u8>().wrapping_add(start);
+        // SAFETY: a slot of the mapped table, which `connections` bounds, written
+        // through the mapping's own pointer.
+        unsafe { bytes.write_bytes(0, end - start) };
     }
 
     /// Session slot `index` (below `SW_SESSION_LIST_SIZE`), or none before the table is

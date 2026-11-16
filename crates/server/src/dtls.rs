@@ -113,7 +113,9 @@ fn accept(
         }
     }
     if let Some(conn) = conn {
-        conn.zero(crate::records::Zeroed::Whole);
+        serv.state()
+            .tables_ref()
+            .reset_connection(conn.fd(), crate::records::Zeroed::Whole);
     }
     // SAFETY: the heap record made above, which nothing uses afterwards.
     let socket = unsafe { swoole_rs_reactor::OwnedSocket::from_socket(socket) };

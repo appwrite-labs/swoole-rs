@@ -127,7 +127,7 @@ jobs:
               echo "$variant"
             fi
           done > variants <<'EOF'
-          iouring native/hooks/|crates/(hooks|phpcoroutines|phplocks)/|\.devcontainer/install\.sh$
+          iouring native/(hooks|reactor)/|crates/(hooks|reactor|phpcoroutines|phplocks)/|\.devcontainer/install\.sh$
           cares crates/(clients|corebase|cares-sys)/
           zts crates/(phplocks|phpthread|phpstubs|zend[^/]*)/|crates/(corebase|process|server|phpserver)/src/([^/]+/)*thread[^/]*\.rs$|native/(locks|phpthread)/|\.devcontainer/(install|php)\.sh$
           threadcontext native/(coroutine|phpcoroutines)/|crates/(coroutine|phpcoroutines|phpcollections|phpevents|process)/|crates/ext/build\.rs$|crates/hooks/src/wait_signal\.rs$|crates/reactor/src/wait_upstream\.rs$
@@ -244,6 +244,7 @@ jobs:
       actions: read
     with:
       variant: ${{ matrix.variant }}
+      callgrind: ${{ matrix.variant == 'iouring' }}
 
   # The merge tier's instruction counts, when a PR touches what they build and run. Blocking:
   # a slowdown past a limit that reached the queue would fail its group and rebuild every
