@@ -39,6 +39,17 @@ impl<'a> Text<'a> {
     }
 }
 
+/// An argument list as `execv` reads it: strings up to the null that ends the list.
+///
+/// Invariant: it points at a slice of `Option<Text>`s, each `None` a null pointer,
+/// whose last is `None`, live for `'a`. Only [`execv`] makes one, from such a slice.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct Argv<'a>(
+    NonNull<Option<Text<'a>>>,
+    PhantomData<&'a [Option<Text<'a>>]>,
+);
+
 /// libc's calls that take only plain values, a live reference of the exact type they
 /// read or write, or a NUL-terminated string, and keep none of them: they have no
 /// memory preconditions, so they are declared `safe`.
@@ -57,6 +68,7 @@ mod c {
     #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
     type Which = c_int;
 
+    use super::Argv;
     pub(crate) use super::Text;
 
     // POSIX's prototypes, the same on every Unix this builds for. Each reads
@@ -95,6 +107,8 @@ mod c {
         pub(crate) safe fn chdir(path: Text<'_>) -> c_int;
         pub(crate) safe fn chroot(path: Text<'_>) -> c_int;
         pub(crate) safe fn mkdir(path: Text<'_>, mode: mode_t) -> c_int;
+        /// Reads `path` and the strings of `argv` up to its null; returns only on failure.
+        pub(crate) safe fn execv(path: Text<'_>, argv: Argv<'_>) -> c_int;
         pub safe fn malloc(size: usize) -> *mut c_void;
         pub safe fn calloc(count: usize, size: usize) -> *mut c_void;
         /// At most `length` bytes of `text`, in a `malloc` allocation.
@@ -627,6 +641,17 @@ pub fn open(path: &CStr, flags: c_int, mode: libc::mode_t) -> c_int {
     unsafe { libc::open(path.as_ptr(), flags, libc::c_uint::from(mode)) }
 }
 
+/// `execv(3)`: runs `path` in place of this process, with `argv` as its arguments,
+/// which end with `None` (C's null). Returns only on failure: -1, with errno set
+/// by `execv`, or as it was when `argv` doesn't end with `None`. Allocates nothing,
+/// so a forked child may call it.
+pub fn execv(path: &CStr, argv: &[Option<Text<'_>>]) -> c_int {
+    if !matches!(argv.last(), Some(None)) {
+        return -1;
+    }
+    c::execv(path.into(), Argv(NonNull::from(argv).cast(), PhantomData))
+}
+
 /// `unlink(2)`.
 pub fn unlink(path: &CStr) -> c_int {
     c::unlink(path.into())
@@ -1035,6 +1060,14 @@ pub fn clock_gettime(clock: libc::clockid_t) -> Option<libc::timespec> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn execv_refuses_a_list_without_its_end() {
+        assert_eq!(execv(c"/bin/true", &[Some(c"true".into())]), -1);
+        assert_eq!(execv(c"/bin/true", &[]), -1);
+        // A path that doesn't exist fails in execv itself.
+        assert_eq!(execv(c"/nonexistent/swoole-rs", &[None]), -1);
+    }
 
     #[test]
     fn descriptor_calls_round_trip_through_a_pipe() {

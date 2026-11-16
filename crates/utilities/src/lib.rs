@@ -188,13 +188,11 @@ pub extern "C" fn swr_v1_utils_wakeup(word: Option<&AtomicU32>, n: i32) -> i32 {
     swoole_rs_locks::swr_v1_locks_wakeup(word, n)
 }
 
-/// Return the exact pinned pretty-function substring as a byte span.
-/// # Safety
-/// Input is borrowed/readable.
+/// Return the exact pinned pretty-function substring as a byte span. `name` is a
+/// `struct iovec` on the C side: the caller's borrowed bytes, live for the call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_utils_pretty_range(
-    data: *const u8,
-    length: usize,
+pub extern "C" fn swr_v1_utils_pretty_range(
+    name: std::io::IoSlice<'_>,
     strip: u8,
     begin: Option<&mut usize>,
     count: Option<&mut usize>,
@@ -202,18 +200,7 @@ pub unsafe extern "C" fn swr_v1_utils_pretty_range(
     let (Some(begin), Some(count)) = (begin, count) else {
         return -1;
     };
-    *begin = 0;
-    *count = 0;
-    if length > isize::MAX as usize || (data.is_null() && length != 0) {
-        return -1;
-    }
-    let bytes = if length == 0 {
-        &[]
-    } else {
-        // SAFETY: non-null, `length <= isize::MAX` (checked above), readable bytes.
-        unsafe { std::slice::from_raw_parts(data, length) }
-    };
-    (*begin, *count) = pretty_range(bytes, strip != 0);
+    (*begin, *count) = pretty_range(&name, strip != 0);
     0
 }
 
