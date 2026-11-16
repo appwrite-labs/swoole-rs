@@ -21,30 +21,33 @@
 classes, functions and constants as upstream Swoole v6.2.5, and upstream is built only
 to compare against.
 
-The numbers on this page were measured on 2026-11-11 at `9f077d8`. The badges above are live.
+The numbers on this page were measured on 2026-11-16: the code counts at `d577a1d`, the
+test and speed results in the merge-tier run on `94a6fef`. The badges above are live.
 
 ## Status
 
-Experimental. It passes upstream's own tests and nobody runs it in production.
+Experimental. It passes upstream's own tests, [v0.1.0](#install) is its first
+pre-release, and nobody runs it in production.
 
 What is done:
 
 - **No upstream source is compiled.** Nothing from swoole-src's `src/`, `ext-src/` or
   `include/` is in the build, and the build needs no swoole-src checkout. 67 crates hold
   about 209,000 lines of Rust.
-- **Some C remains, on purpose.** 38,000 lines of C and C++ that swoole-src itself bundles
+- **Some C remains, on purpose.** 42,000 lines of C and C++ that swoole-src itself bundles
   from elsewhere (PHP's PDO drivers, curl and `proc_open`, and PECL ssh2, adapted to
-  coroutine hooks) live in `native/swoole-src/thirdparty`, plus about 450 lines of our own
-  glue (`native/corebase/switches.cc`, `native/phphelpers/host.c` and three C shims in
-  `crates/`). TLS is OpenSSL, as it is upstream.
+  coroutine hooks) live in `native/swoole-src/thirdparty`. Our own C is about 4,100 lines
+  of shims under `crates/`, nearly all in `crates/zend-sys` over the parts of PHP's C API
+  that Rust can't call ([what stays C](docs/zend.md#what-stays-c)), and 225 lines in
+  `native/`. TLS is OpenSSL, as it is upstream.
 - **Upstream's PHP tests pass wherever upstream passes them.** Of 1,866 pinned PHPTs, 55
   can't run here: upstream skips them unconditionally, or they need an older PHP or an
   outside network ([the list, with reasons](corpus/upstream/not_applicable.json)). Of the
-  other 1,811 this build passes 1,745 and upstream passes 1,742 in the same CI runs. No
-  test passes on upstream and fails here. The 66 that neither build passes are 38 the
+  other 1,811 this build passes 1,746 and upstream passes 1,742 in the same CI run. No
+  test passes on upstream and fails here. The 65 that neither build passes are 39 the
   runner sets aside because something outside the extension decides them (a race in the
-  test, the network, a missing tool), and 28 that fail or skip on both.
-- **It is faster than upstream on 31 of 34 benchmark workloads**, by instruction count.
+  test, the network, a missing tool), and 26 that fail or skip on both.
+- **It is faster than upstream on all 34 benchmark workloads**, by instruction count.
   See [the comparison](#compared-with-upstream-swoole).
 
 What is not:
@@ -52,18 +55,19 @@ What is not:
 - **No production use.** Appwrite's end-to-end suite runs against it in CI
   (`appwrite-e2e.yml`). On 2026-10-27 an earlier build, still part C++, gave the same
   results as stock Swoole (7,260 tests,
-  [#90](https://github.com/appwrite-labs/swoole-rs/issues/90)). The two scheduled runs
-  since failed, and a run by hand on 2026-11-11 passed. No Appwrite deployment uses it.
-- **Memory safety is not demonstrated.** The code has 5,699 `unsafe` blocks, fns and
-  impls, and 17 of 67 crates forbid `unsafe`
-  ([per crate](https://github.com/appwrite-labs/swoole-rs/blob/badges/unsafe.md)). Much of
-  it is a close port of C++ that still passes raw pointers between crates. The
-  nightly AddressSanitizer run failed on three of the five nights to 2026-11-16, and
+  [#90](https://github.com/appwrite-labs/swoole-rs/issues/90)). Of the three weekly runs
+  since, two failed and the latest, on 2026-11-16, passed. No Appwrite deployment uses it.
+- **Memory safety is not demonstrated.** The code has 476 `unsafe` blocks, fns and
+  impls, down from 5,699 on 2026-11-11, and 19 of 67 crates forbid `unsafe`
+  ([per crate](https://github.com/appwrite-labs/swoole-rs/blob/badges/unsafe.md)). Half of
+  what is left sits in five crates: the layer over PHP's C API, the server, the core
+  state, coroutines and the runtime hooks. The count says how much the compiler can't
+  check, not that the rest is right: the nightly AddressSanitizer run failed on three of the five nights to 2026-11-16, and
   ThreadSanitizer on one; its thread-mode reports
   ([#3342](https://github.com/appwrite-labs/swoole-rs/issues/3342),
   [#3343](https://github.com/appwrite-labs/swoole-rs/issues/3343)) were fixed on
   2026-11-12. Miri, the API fuzzer and the soak run passed all five.
-- **The tests reach 74% of the Rust.** That is line coverage of `crates/` under the PHPTs,
+- **The tests reach 76% of the Rust.** That is line coverage of `crates/` under the PHPTs,
   the corpus apps and swoole/library's suite. The coverage build has no thread support, so
   `Swoole\Thread`'s code counts as unreached; its own PHPTs run in a separate job
   ([per crate](https://github.com/appwrite-labs/swoole-rs/blob/badges/coverage.md)).
@@ -75,7 +79,7 @@ What is not:
 - **Pre-releases only, and no packages.** [Releases](#install) are prebuilt binaries for
   Linux. There is no PECL or PIE package and no Docker image, and nothing for macOS: build
   from source there.
-- **Coding agents wrote it.** About 2,100 commits since 2026-10-25 came from AI coding
+- **Coding agents wrote it.** About 3,000 commits since 2026-10-25 came from AI coding
   agents working through GitHub issues under one maintainer's direction
   ([AGENTS.md](AGENTS.md)). CI is the reviewer: a change lands when its gates pass,
   without a person reading each line.
@@ -86,8 +90,8 @@ What is not:
   Upstream's tests, run with their original assertions, are the definition of the same
   behaviour.
 - **Faster than upstream on every workload**
-  ([#1894](https://github.com/appwrite-labs/swoole-rs/issues/1894)). Three of 34 are not
-  there yet.
+  ([#1894](https://github.com/appwrite-labs/swoole-rs/issues/1894)). All 34 are now, and
+  each one's limit keeps it there.
 - **Memory-safe under load, with evidence**
   ([#1893](https://github.com/appwrite-labs/swoole-rs/issues/1893)): clean sanitizer,
   fuzz, soak and Miri runs, and an `unsafe` count that only falls. Replacing the C ABI
@@ -138,20 +142,20 @@ Optional parts are build switches. Each of upstream's `configure` switches goes 
 
 | | Upstream Swoole v6.2.5 | swoole-rs |
 | --- | --- | --- |
-| Language | C and C++ | Rust, plus the 38,000 lines of C and C++ that upstream bundles |
+| Language | C and C++ | Rust, plus the 42,000 lines of C and C++ that upstream bundles |
 | Build | `phpize`, `configure`, `make` | Cargo, through `tools/build_ext.py` |
 | PHP API | the reference | the same, generated from upstream's stubs (`tools/arginfo.py`) |
-| Upstream PHPTs passing, of 1,811 | 1,742 | 1,745 |
-| Instructions per request | 1.00× | 0.90× geometric mean over 34 workloads |
+| Upstream PHPTs passing, of 1,811 | 1,742 | 1,746 |
+| Instructions per request | 1.00× | 0.85× geometric mean over 34 workloads |
 | Releases and packages | yes | prebuilt Linux binaries, as pre-releases; no packages |
 | Production use | years | none |
 
 **Speed.** The merge tier counts instructions per request under Callgrind on 34 workloads
 and fails a change that raises one more than 2% above its record
 ([results](https://github.com/appwrite-labs/swoole-rs/blob/badges/speed.md)). The largest
-gains are uploads (0.41×), EOF-framed TCP (0.54×) and timers (0.64×). Plain HTTP is 0.92×.
-Three workloads are not faster: length-framed TCP (1.04×), HTTPS (1.0005×) and UDP
-(1.0003×). Workloads that spend their time in OpenSSL or zlib sit at 1.00×, as expected.
+gains are uploads (0.31×), EOF-framed TCP (0.50×) and 64 KiB WebSocket frames (0.56×). Plain
+HTTP is 0.90×. The closest are gzip, compressed WebSocket and DNS at 0.98×, and HTTPS at
+0.97×: they spend their time in zlib, the resolver and OpenSSL, which both builds share.
 These are instruction counts, not requests per second. The one wall-clock comparison so
 far, Appwrite's endpoints in October on an earlier build, was within 1% of upstream.
 
@@ -163,7 +167,7 @@ still truncate ([open problem](docs/http-response-lifetime.md)).
 **How it is checked.** Every merge runs upstream's PHPTs on both builds, twelve
 [corpus applications](corpus/README.md) including an unchanged Hyperf skeleton, h2spec,
 Autobahn and swoole/library's suite. Nightly runs add Miri, the sanitizers, fuzzing, a
-soak run, other PHP versions and a debug PHP. See the
+soak run, other PHP versions, arm64 and a debug PHP. See the
 [validation layers](docs/validation-suite.md).
 
 ## Install
@@ -278,7 +282,7 @@ before a change lands.
   is skipped.
 - **Speed vs upstream**: how many workloads beat upstream, and the slowest.
 - **Unsafe blocks**: the count in non-test crate code and how many crates forbid `unsafe`.
-  `tools/budget.py` fails a PR that raises a crate's count or drops its `forbid`.
+  `tools/budget.py` fails a PR that raises the workspace's count or drops a crate's `forbid`.
 - **Coverage**: lines of `crates/` the tests ran, measured nightly.
 
 The second row is the latest completed run of each nightly workflow on `main`.
