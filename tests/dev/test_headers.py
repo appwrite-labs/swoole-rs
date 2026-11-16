@@ -1,6 +1,7 @@
 """tools/headers.py fails a hand-written prototype that drifts from cbindgen's, and
 tools/externs.py a hand-written extern declaration that drifts from the C header."""
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -93,7 +94,9 @@ unsafe extern "C" {
 """
 
 
-@unittest.skipUnless(shutil.which('g++'), 'g++ required')
+# macOS's g++ is clang, which rejects -fmax-errors and words a failed static assertion differently.
+@unittest.skipUnless(shutil.which('g++') and 'Free Software Foundation' in subprocess.run(
+    ['g++', '--version'], capture_output=True, text=True).stdout, 'GNU g++ required')
 class Externs(unittest.TestCase):
     def check(self, rust):
         with tempfile.TemporaryDirectory() as tmp:

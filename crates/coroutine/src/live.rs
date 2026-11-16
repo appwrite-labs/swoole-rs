@@ -3,7 +3,7 @@
 //! coroutines by id, from creation until close, kept in the scheduler itself so
 //! no lookup goes through a thread-local. Lists run newest first, the order
 //! upstream's map iterates in while its buckets keep one coroutine each.
-use crate::coroutine::{Co, Scheduler, State};
+use crate::coroutine::{Co, Coroutine, Scheduler, State};
 use core::ffi::{c_long, c_void};
 use core::ptr;
 
@@ -94,6 +94,16 @@ impl Scheduler {
     #[must_use]
     pub fn state(&self, cid: c_long) -> Option<State> {
         self.live()?.get(cid).map(|co| co.with(|co| co.state))
+    }
+
+    /// The id of the live coroutine at `co`, found by its address alone, so any
+    /// address may be asked about: `None` when no live coroutine is there.
+    #[must_use]
+    pub fn cid_of(&self, co: *const Coroutine) -> Option<c_long> {
+        let live = self.live()?;
+        live.entries
+            .iter()
+            .find_map(|&(cid, live)| (live?.ptr().cast_const() == co).then_some(cid))
     }
 
     /// The newest live coroutine older than `before`, with its id.
@@ -210,6 +220,9 @@ mod tests {
             assert_eq!((*sp).state(2), Some(State::Waiting));
             assert_eq!((*sp).state(1), Some(State::Running));
             assert_eq!((*sp).state(4), None);
+            assert_eq!((*sp).cid_of(&raw const b), Some(2));
+            assert_eq!((*sp).cid_of(&raw const c), Some(3));
+            assert_eq!((*sp).cid_of(ptr::null()), None, "no coroutine is at null");
 
             let (cid, first) = (*sp).older_native(c_long::MAX).unwrap();
             assert_eq!((first as usize, cid), (0xc0, 3));
@@ -218,6 +231,7 @@ mod tests {
 
             (*sp).remove(2);
             assert_eq!((*sp).state(2), None, "an ended coroutine has no state");
+            assert_eq!((*sp).cid_of(&raw const b), None, "nor an id by address");
             (*sp).iterator_reset();
             assert_eq!((*sp).iterator_each() as usize, 0xc0);
             assert_eq!((*sp).iterator_each() as usize, 0xa0);

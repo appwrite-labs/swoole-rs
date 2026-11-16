@@ -62,11 +62,6 @@ fn fd(socket: Option<Socket<'_>>) -> c_int {
     socket.map_or(-1, Socket::fd)
 }
 
-/// The pool's stream listener, or `None` without one.
-fn ipc_listener(pool: Pool<'_>) -> Option<Socket<'_>> {
-    crate::view::pool_ipc_listener(pool)
-}
-
 use swoole_rs_corebase::sys::errno;
 
 fn exit_status(exited: u64) -> ExitStatus {
@@ -562,8 +557,11 @@ impl PoolNative for Native {
     }
 
     fn accept(&self, c: &mut PoolCall) {
-        let accepted = ipc_listener(c.pool())
-            .and_then(|listener| listener.edit(swoole_rs_reactor::SocketFields::accepted));
+        let accepted = crate::view::pool_ipc_listener(c.pool()).and_then(|listener| {
+            listener
+                .socket()
+                .edit(swoole_rs_reactor::SocketFields::accepted)
+        });
         c.set_error(errno());
         if let Some(record) = accepted {
             c.set_connection(Rc::new(swoole_rs_reactor::OwnedSocket::new(record)));
@@ -586,18 +584,11 @@ impl PoolNative for Native {
     }
 
     fn close(&self, c: &mut PoolCall) {
-        let socket = match c.take_connection() {
-            // The loop's only hold on the connection.
-            Some(connection) => connection
-                .downcast::<swoole_rs_reactor::OwnedSocket>()
-                .ok()
-                .and_then(Rc::into_inner),
-            None => c.lent_socket().map(|socket| {
-                // SAFETY: the stream listener `destroy` gives up, a heap record nothing
-                // uses again.
-                unsafe { swoole_rs_reactor::OwnedSocket::from_socket(Socket::lent(socket)) }
-            }),
-        };
+        // The pool's only hold on the connection or listener.
+        let socket = c
+            .take_connection()
+            .and_then(|socket| socket.downcast::<swoole_rs_reactor::OwnedSocket>().ok())
+            .and_then(Rc::into_inner);
         socket_free(socket);
     }
 
@@ -703,10 +694,11 @@ impl PoolNative for Native {
                 log::sys_warning(origin, format_args!("[Worker#{id}] msgrcv({queue}) failed"));
             }
             Warning::Accept => {
-                log::sys_warning(
-                    origin,
-                    format_args!("[Worker#{id}] accept({}) failed", fd(ipc_listener(pool))),
-                );
+                let listener = crate::view::pool_ipc_listener(pool);
+                let fd = fd(listener
+                    .as_deref()
+                    .map(swoole_rs_reactor::OwnedSocket::socket));
+                log::sys_warning(origin, format_args!("[Worker#{id}] accept({fd}) failed"));
             }
             Warning::Read => {
                 let fd = fd(worker.and_then(|worker| worker_pipe(worker, false)));

@@ -540,6 +540,13 @@ static CURRENT_POOL: AtomicPtr<Pool> = AtomicPtr::new(null_mut());
 static CURRENT_WORKER: AtomicPtr<Worker> = AtomicPtr::new(null_mut());
 static COUNTERS: AtomicPtr<AtomicI32> = AtomicPtr::new(null_mut());
 
+/// The fd of a pool's stream listener, or -1 without one.
+fn listener_fd(listener: Option<&swoole_rs_process::pool::Connection>) -> c_int {
+    listener
+        .and_then(|listener| listener.downcast_ref::<swoole_rs_reactor::OwnedSocket>())
+        .map_or(-1, |listener| listener.socket().fd())
+}
+
 fn current_pool() -> *mut Pool {
     CURRENT_POOL.load(SeqCst)
 }
@@ -902,7 +909,7 @@ fn tcp_raw() {
                 let listener = swoole_rs_process::pool::swr_v1_process_pool_ipc_listener(
                     &*(ipc as *const swoole_rs_process::pool::PoolIpc),
                 );
-                shutdown(*listener.cast::<c_int>(), SHUT_RDWR);
+                shutdown(listener_fd(listener), SHUT_RDWR);
             }
             swoole_thread_clean(false);
             dispatch_result
@@ -1791,7 +1798,7 @@ fn task_protocol_rejects_malformed_socket_packet() {
                 let listener = swoole_rs_process::pool::swr_v1_process_pool_ipc_listener(
                     &*(*pool).ipc.cast::<swoole_rs_process::pool::PoolIpc>(),
                 );
-                shutdown(*listener.cast::<c_int>(), SHUT_RDWR);
+                shutdown(listener_fd(listener), SHUT_RDWR);
             }
         }
         // SAFETY: as above.

@@ -15,7 +15,6 @@ pub use swoole_rs_error::*;
 pub use swoole_rs_error_ffi::*;
 
 pub use swoole_rs_websocket::*;
-pub use swoole_rs_websocket_ffi::*;
 
 pub use swoole_rs_buffer::*;
 

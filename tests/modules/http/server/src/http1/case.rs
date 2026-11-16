@@ -678,7 +678,7 @@ unsafe extern "C" fn close_timeout(_: *mut c_void, node: *mut TimerNode) {
         let buffer = swr_case_tg_buffer();
         (*buffer).length = 0;
         (*buffer).offset = 0;
-        swoole_rs_ffi::frame_api::pack_close_frame(
+        swoole_rs_ports::frame_api::pack_close_frame(
             &mut *buffer.cast(),
             CLOSE_POLICY_ERROR,
             reason.as_bytes(),

@@ -273,11 +273,11 @@ impl PoolRecord {
         unsafe { self.ipc.get().as_mut() }.map(f)
     }
 
-    /// The pool's stream listener (a native socket), or null.
+    /// The pool's stream listener, if any.
     #[must_use]
-    pub fn ipc_listener(&self) -> *mut c_void {
-        self.with_ipc(|ipc| swr_v1_process_pool_ipc_listener(ipc))
-            .unwrap_or(ptr::null_mut())
+    pub fn ipc_listener(&self) -> Option<crate::pool::Connection> {
+        self.with_ipc(|ipc| swr_v1_process_pool_ipc_listener(ipc).cloned())
+            .flatten()
     }
 
     /// The stream connection being served, if any.
@@ -554,8 +554,8 @@ impl<'a> PoolRef<'a> {
     /// The pool's stream listener, which its IPC owns until `destroy` frees it, or
     /// `None` without one.
     #[must_use]
-    pub fn ipc_listener(self) -> Option<crate::worker_record::NativeSocket<'a>> {
-        crate::worker_record::NativeSocket::lend(self.record().ipc_listener())
+    pub fn ipc_listener(self) -> Option<crate::pool::Connection> {
+        self.record().ipc_listener()
     }
 
     /// The stream connection being served, which the worker loop frees once it is
@@ -889,8 +889,8 @@ pub trait PoolNative: Sync {
     fn recv(&self, call: &mut PoolCall);
     /// `socket->send_sync(data, length)` on the call's connection.
     fn send(&self, call: &mut PoolCall);
-    /// `socket->free()` of the call's connection, or else of its socket (the
-    /// listener), which is not used again.
+    /// `socket->free()` of the call's connection (or the listener), which is not
+    /// used again.
     fn close(&self, call: &mut PoolCall);
     /// The worker's pipe, with the next timer as its read timeout: `read_sync`.
     fn pipe_read(&self, call: &mut PoolCall);
@@ -1194,8 +1194,8 @@ pub(crate) trait PoolHost {
     fn native(&self) -> Option<&dyn PoolNative>;
     fn warn(&self) -> Warn;
     fn event_size(&self) -> usize;
-    /// The native socket free.
-    fn close(&self, socket: *mut c_void);
+    /// The stream listener's free.
+    fn close(&self, listener: crate::pool::Connection);
     /// `Channel::make(size, sizeof(EventData), SW_CHAN_LOCK | SW_CHAN_SHM)`: the
     /// pool's new message box, or null.
     fn new_box(&mut self, size: u64) -> SharedChannel;
@@ -1316,9 +1316,9 @@ impl PoolHost for Native<'_> {
         self.native.event_size()
     }
 
-    fn close(&self, socket: *mut c_void) {
+    fn close(&self, listener: crate::pool::Connection) {
         let mut call = PoolCall::new(self.pool, None);
-        call.socket = socket;
+        call.connection = Some(listener);
         self.native.close(&mut call);
     }
 
@@ -1766,7 +1766,7 @@ impl<H: PoolHost> Pool<'_, H> {
     pub(crate) fn start_check(&mut self) -> bool {
         if self.ipc_mode() == IpcMode::Socket
             && self
-                .with_ipc(|ipc| swr_v1_process_pool_ipc_listener(ipc).is_null())
+                .with_ipc(|ipc| swr_v1_process_pool_ipc_listener(ipc).is_none())
                 .unwrap_or(true)
         {
             self.op(Op::Log(Log::MustListen), 0);
@@ -2213,7 +2213,7 @@ impl<H: PoolHost> Pool<'_, H> {
             // crate-private), taken back once: the field is cleared next.
             let ipc = unsafe { Box::from_raw(ipc) };
             // The native close frees its listener.
-            pool_ipc_free(*ipc, |socket| self.h.close(socket));
+            pool_ipc_free(*ipc, |listener| self.h.close(listener));
         }
         self.set_ipc(ptr::null_mut());
         self.p.set_registry(None);
@@ -2557,7 +2557,7 @@ mod tests {
         fn event_size(&self) -> usize {
             8192
         }
-        fn close(&self, _: *mut c_void) {}
+        fn close(&self, _: crate::pool::Connection) {}
         fn new_box(&mut self, size: u64) -> SharedChannel {
             if self.ask(Op::NewMessageBox, size) == 0 {
                 return SharedChannel::none();
@@ -2589,7 +2589,7 @@ mod tests {
         }
     }
 
-    fn close(_: *mut c_void) {}
+    fn close(_: crate::pool::Connection) {}
 
     fn warn(_: crate::reload_task::KillWarning, _: c_int, _: u32) {}
 

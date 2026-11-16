@@ -121,8 +121,21 @@ extern "C-unwind" fn swoole_timer_add(
 /// `swoole_timer_add(ms, persistent, ...)` of `f`, held by id, or none.
 #[must_use]
 pub fn add_fn(ms: c_long, persistent: bool, f: impl Fn() + Copy + 'static) -> Option<Held> {
+    held(ms, persistent, TimerNode::closure(Closure::new(f)))
+}
+
+/// [`add_fn`] of a callback that owns what it captures, a `Weak` say: it is dropped
+/// once the timer fires for the last time, is deleted, or this thread's timer is freed.
+#[must_use]
+pub fn add_owned(ms: c_long, persistent: bool, f: impl Fn() + 'static) -> Option<Held> {
+    held(ms, persistent, TimerNode::owning(std::rc::Rc::new(f)))
+}
+
+/// Adds `node` to this thread's timer, held by id, or none.
+#[inline]
+fn held(ms: c_long, persistent: bool, node: TimerNode) -> Option<Held> {
     let timer = created()?;
-    let (_, id) = timer.add(ms, persistent, TimerNode::closure(Closure::new(f)))?;
+    let (_, id) = timer.add(ms, persistent, node)?;
     let held = Held::new(timer.generation(), id);
     if held.is_none() {
         // An id past what a `Held` packs: as if the add had failed.

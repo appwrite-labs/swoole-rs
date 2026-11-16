@@ -9,6 +9,7 @@
 
 use swoole_rs_server::port_config::PortMethods;
 
+pub mod frame_api;
 pub mod framing_recv;
 pub mod http_routes;
 pub mod lifecycle;
