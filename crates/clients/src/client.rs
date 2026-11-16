@@ -1706,6 +1706,18 @@ pub fn recv(this: Handle, buffer: &mut [impl ReadSlot], flags: c_int) -> Option<
     }
 }
 
+/// [`recv`] into lent room, counting the prefix that the receive initialized.
+#[inline]
+pub fn recv_spare(
+    this: Handle,
+    out: &mut swoole_rs_corebase::lent::Spare<'_>,
+    flags: c_int,
+) -> Option<usize> {
+    // SAFETY: all recv paths initialize the reported prefix, bounded by the room
+    // when MSG_TRUNC reports the full length of a datagram.
+    unsafe { out.read(|room| recv(this, room, flags)) }
+}
+
 /// A handshake in the read or write handler failed: close and report.
 fn connect_failed(this: Handle) -> bool {
     this.set(Flag::Active, false);
