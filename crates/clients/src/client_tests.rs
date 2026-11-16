@@ -200,7 +200,7 @@ pub(super) fn event_write(_: swoole_rs_reactor::Socket<'static>, data: &[u8]) ->
     (log::last_error() != ERROR_OUTPUT_BUFFER_OVERFLOW).then_some(length)
 }
 /// crates/tls's `Reactor::_writable_callback`.
-pub(super) fn writable_callback(
+pub(super) extern "C-unwind" fn writable_callback(
     _: swoole_rs_reactor::Running<'_>,
     _: &mut swoole_rs_reactor::Event,
 ) -> c_int {
@@ -311,6 +311,8 @@ fn set_proxy(client: *mut Client, http: bool) {
 
 fn new_client(kind: c_int, is_async: bool) -> *mut Client {
     const OPS: SocketOps = SocketOps {
+        write: event_write,
+        writable: writable_callback,
         make_socket: ops::make_socket,
         kernel_timeout: ops::kernel_timeout,
         assign: ops::assign,

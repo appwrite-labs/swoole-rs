@@ -25,11 +25,13 @@ checks that a pending handshake requests input and reuses its original session
 and frozen hostname after the mutable context changes. Its test owner releases
 the native session before freeing the client. The existing recording cases receive their table at
 construction and retain their original inputs and expected traces. The socket
-record and safe TLS operations and the one-shot connect-timer closure compile in
-both builds. Recording clients explicitly supply timer creation/cancellation
-effects and retain their cancellation-before-free and timeout traces. Original
-async client cases exercise timeout delivery; the native-table test verifies real
-timer creation and idempotent cancellation with a manually driven thread timer.
+record operations, safe TLS operations, reactor enqueue/drain callbacks and the
+one-shot connect-timer closure compile in both builds. Recording clients receive
+explicit callbacks for the unchanged send and watermark traces, and explicitly
+supply timer creation/cancellation effects, retaining their cancellation-before-free
+and timeout traces. Original async client cases exercise the real callbacks and
+timeout delivery; the native-table test verifies real timer creation and idempotent
+cancellation with a manually driven thread timer.
 The client host registers the DNS pool dispatcher alongside framed receives.
 Unit fixtures register their recording dispatcher and retain the original DNS
 success/error traces; the composition root adapts the existing pool ABI, which
