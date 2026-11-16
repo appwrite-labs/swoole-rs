@@ -16,7 +16,7 @@ use crate::{
 use std::{
     borrow::{Borrow, Cow},
     cell::{Cell, UnsafeCell},
-    ffi::{CStr, c_char, c_void},
+    ffi::{CStr, c_void},
     io::IoSlice,
     ptr,
     sync::atomic::{AtomicPtr, Ordering::Relaxed},
@@ -34,9 +34,9 @@ unsafe extern "C" {
     /// `zend_hash_index_find`: null (`None`), or the element under `index`,
     /// which lives as the table's others do, while the table is borrowed.
     safe fn zend_hash_index_find(table: &Array, index: zend_ulong) -> Option<&Value>;
-    /// `zend_hash_str_find`: as [`zend_hash_index_find`], under the `length`
-    /// bytes at `key`, which it reads.
-    fn zend_hash_str_find(table: &Array, key: *const c_char, length: usize) -> Option<&Value>;
+    /// `zend_hash_str_find`: as [`zend_hash_index_find`], under the lent
+    /// bytes (an `IoSlice` is an iovec), which it reads only.
+    safe fn swr_lent_hash_find<'a>(table: &'a Array, key: IoSlice<'_>) -> Option<&'a Value>;
     /// `Z_OBJPROP` of a live object inside `zend_try` (nonzero for a bailout:
     /// its `get_properties` handler may build the table, and a lazy object's
     /// initializer runs PHP code): `out` then holds the table, if it has one,
@@ -996,8 +996,7 @@ impl Array {
     #[must_use]
     #[inline]
     pub fn find(&self, key: &[u8]) -> Option<&Value> {
-        // SAFETY: Zend reads `key`'s bytes only.
-        unsafe { zend_hash_str_find(self, key.as_ptr().cast(), key.len()) }
+        swr_lent_hash_find(self, IoSlice::new(key))
     }
 
     /// `zend_hash_index_find`.
