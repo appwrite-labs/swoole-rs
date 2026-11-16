@@ -25,6 +25,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int};
 use std::hash::{BuildHasherDefault, Hasher};
+use std::io::IoSlice;
 use std::mem::MaybeUninit;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -212,7 +213,7 @@ use swoole_rs_tls::upstream::writev_sync;
 
 /// `Socket::writev_sync` outside the hybrid: one writev(2).
 #[cfg(not(feature = "upstream-symbols"))]
-fn writev_sync(socket: Socket<'_>, vectors: &[std::io::IoSlice<'_>]) -> Option<usize> {
+fn writev_sync(socket: Socket<'_>, vectors: &[IoSlice<'_>]) -> Option<usize> {
     swoole_rs_corebase::sys::writev(socket.fd(), vectors)
 }
 
@@ -595,17 +596,15 @@ impl Bus {
     /// `MessageBus::write`: one direct write, or chunks of at most the buffer's
     /// payload, halved down to `SW_IPC_MSG_MIN` while the pipe asks for less.
     ///
-    /// `send` writes the iovecs to the pipe and never bails out; `reduce` says
+    /// `send` writes the vectors to the pipe and never bails out; `reduce` says
     /// whether the failed write's errno asks for smaller chunks (`SW_REDUCE_SIZE`).
-    ///
-    /// It only names memory, never reads it: each call's iovecs are `head` (first)
-    /// and, unless `data` is null, a chunk within the `head.len` bytes at `data`.
-    /// `send` is what reads them, so its caller is who knows they are readable.
+    /// Each call's vectors are `head`'s bytes and, with `data`, a chunk of its first
+    /// `head.len` bytes (none past its end).
     fn write(
         &self,
         head: &mut BusHead,
-        data: *const u8,
-        mut send: impl FnMut(&[libc::iovec]) -> Option<usize>,
+        data: Option<&[u8]>,
+        mut send: impl FnMut(&[IoSlice<'_>]) -> Option<usize>,
         mut reduce: impl FnMut() -> bool,
     ) -> bool {
         let maximum = u32::try_from(self.buffer_size.get() - HEAD).unwrap_or(u32::MAX);
@@ -613,7 +612,7 @@ impl Bus {
             head.len,
             maximum,
             IPC_MSG_MIN,
-            !data.is_null(),
+            data.is_some(),
             self.always_chunked.get(),
         ) else {
             return false;
@@ -624,20 +623,12 @@ impl Bus {
             if chunk.mode == Mode::Empty {
                 head.len = 0;
             }
-            let iov = [
-                libc::iovec {
-                    iov_base: ptr::from_mut(head).cast(),
-                    iov_len: HEAD,
-                },
-                libc::iovec {
-                    iov_base: if data.is_null() {
-                        ptr::null_mut()
-                    } else {
-                        data.wrapping_add(chunk.offset as usize).cast_mut().cast()
-                    },
-                    iov_len: chunk.length as usize,
-                },
-            ];
+            let bytes = head.to_bytes();
+            let start = chunk.offset as usize;
+            let payload = data
+                .and_then(|data| data.get(start..start.wrapping_add(chunk.length as usize)))
+                .unwrap_or_default();
+            let iov = [IoSlice::new(&bytes), IoSlice::new(payload)];
             let count = if chunk.mode == Mode::Empty { 1 } else { 2 };
             let sent = send(iov.get(..count).unwrap_or_default());
             // Chunks accept any nonnegative write; direct writes need every byte.
@@ -906,26 +897,15 @@ impl Bus {
         self.next_id.set(Some(counter));
     }
 
-    /// `MessageBus::write` of a message its caller holds as a `SendData`: a head and
-    /// the pointer its `len` counts from. Numbers the message, then writes it through
-    /// the event loop while one is available, else synchronously. False if the pipe
-    /// failed.
-    ///
-    /// # Safety
-    /// `data` covers `head.len` bytes or is null. (What the event loop cannot send at
-    /// once it queues, and watches `socket` until it drains: a `Socket<'static>` may be.)
-    pub unsafe fn send_raw(
-        &self,
-        socket: Socket<'static>,
-        head: &mut BusHead,
-        data: *const u8,
-    ) -> bool {
+    /// `MessageBus::write` of a message its caller holds as a `SendData`: a head and,
+    /// unless it has none, the payload its `len` counts (at most `data`'s bytes are
+    /// sent). Numbers the message, then writes it through the event loop while one is
+    /// available, else synchronously. False if the pipe failed. (What the event loop
+    /// cannot send at once it queues, and watches `socket` until it drains: a
+    /// `Socket<'static>` may be.)
+    pub fn send(&self, socket: Socket<'static>, head: &mut BusHead, data: Option<&[u8]>) -> bool {
         use swoole_rs_reactor::event_api;
-        // `write` passes iovecs over `head` and the caller's bytes.
-        let send = |iov: &[libc::iovec]| {
-            // SAFETY: `write`'s iovecs, an `IoSlice`'s layout: the head's bytes and a
-            // chunk inside the caller's `data`, each readable for the call.
-            let vectors = unsafe { std::slice::from_raw_parts(iov.as_ptr().cast(), iov.len()) };
+        let send = |vectors: &[IoSlice<'_>]| {
             if event_api::swoole_event_is_available() {
                 event_api::swoole_event_writev(socket, vectors)
             } else {
@@ -1020,7 +1000,7 @@ mod tests {
                 fd: 7,
                 ..BusHead::default()
             };
-            assert!(unsafe { pipe.bus.send_raw(socket, &mut head, payload.as_ptr()) });
+            assert!(pipe.bus.send(socket, &mut head, Some(payload)));
             assert_eq!(head.msg_id, expected);
             assert_eq!(pipe.read(false).as_deref(), Some(payload));
         }
@@ -1080,16 +1060,9 @@ mod tests {
                 fd: 7,
                 ..BusHead::default()
             };
-            let data = if payload.is_empty() {
-                ptr::null()
-            } else {
-                payload.as_ptr()
-            };
+            let data = (!payload.is_empty()).then_some(payload);
             let fd = self.fds[0];
-            let send = |iov: &[libc::iovec]| {
-                let count = c_int::try_from(iov.len()).unwrap();
-                usize::try_from(unsafe { libc::writev(fd, iov.as_ptr(), count) }).ok()
-            };
+            let send = |iov: &[IoSlice<'_>]| sys::writev(fd, iov);
             self.bus.write(&mut head, data, send, || false)
         }
         /// Reads until a packet completes, allocating like the native facade.
@@ -1314,10 +1287,8 @@ mod tests {
     /// the failure's for `pipe_reduce`) every packet the reader can read now. Upstream's
     /// reactor interleaves its writes and reads; reading only whole writes keeps a
     /// partly written stream chunk from being read as a whole one.
-    fn loopback_send(pipe: &mut Loopback, iov: &[libc::iovec]) -> Option<usize> {
-        let count = c_int::try_from(iov.len()).unwrap();
-        let sent = usize::try_from(unsafe { libc::writev(pipe.fds[0], iov.as_ptr(), count) });
-        let sent = sent.ok()?;
+    fn loopback_send(pipe: &mut Loopback, iov: &[IoSlice<'_>]) -> Option<usize> {
+        let sent = sys::writev(pipe.fds[0], iov)?;
         loop {
             let mut poll = libc::pollfd {
                 fd: pipe.fds[1],
@@ -1385,7 +1356,7 @@ mod tests {
         ];
         let writer = Bus::new(65536);
         let mut msg_id = 0;
-        let mut write = |fd: i64, data: *const u8, len: usize| {
+        let mut write = |fd: i64, data: Option<&[u8]>, len: usize| {
             let mut head = BusHead {
                 fd,
                 msg_id,
@@ -1393,14 +1364,14 @@ mod tests {
                 ..BusHead::default()
             };
             msg_id += 1;
-            let send = |iov: &[libc::iovec]| loopback_send(&mut pipe, iov);
+            let send = |iov: &[IoSlice<'_>]| loopback_send(&mut pipe, iov);
             writer.write(&mut head, data, send, pipe_reduce)
         };
         for (fd, packet) in (1..).zip(&sent) {
-            assert!(write(fd, packet.as_ptr(), packet.len()));
+            assert!(write(fd, Some(packet), packet.len()));
         }
-        assert!(write(4, b"hello world".as_ptr(), 0));
-        assert!(write(5, ptr::null(), 10));
+        assert!(write(4, Some(b"hello world"), 0));
+        assert!(write(5, None, 10));
         assert_eq!(pipe.q.len(), 5);
         for fd in fds {
             unsafe { libc::close(fd) };

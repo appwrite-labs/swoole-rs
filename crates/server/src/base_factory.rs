@@ -34,7 +34,7 @@ use swoole_rs_process::worker_record::{Worker, WorkerStatus};
 /// the safe readers ([`SendData::payload`], [`crate::send::send_to_connection`]) rely
 /// on: `data` is null, or points at `info.len` bytes that are readable, and not written,
 /// for `'a`. Only the constructors set `data` and `info.len`; the setters change the
-/// rest of the head, and only the bus's writes ([`SendData::send_raw`]) lower `len`.
+/// rest of the head, and only the bus's writes ([`SendData::send`]) lower `len`.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct SendData<'a> {
@@ -143,15 +143,15 @@ impl<'a> SendData<'a> {
         self.info.flags = flags;
     }
 
-    /// [`swoole_rs_bus::Bus::send_raw`] of the head and payload to `pipe`.
+    /// [`swoole_rs_bus::Bus::send`] of the head and payload to `pipe`.
     #[cfg_attr(
         not(feature = "upstream-symbols"),
         expect(dead_code, reason = "only the hybrid's factories write to a pipe")
     )]
     pub(crate) fn send(&mut self, bus: &swoole_rs_bus::Bus, pipe: crate::view::PipeSocket) -> bool {
-        // SAFETY: `data` covers `info.len` bytes or is null (the fields' invariant;
-        // the write only ever lowers `len`).
-        unsafe { bus.send_raw(pipe.socket(), &mut self.info, self.data.cast()) }
+        // The write only ever lowers `len`, so the payload stays within `data`'s bytes.
+        let data = (!self.data.is_null()).then(|| self.payload());
+        bus.send(pipe.socket(), &mut self.info, data)
     }
 }
 
