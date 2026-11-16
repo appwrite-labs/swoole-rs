@@ -144,9 +144,10 @@ impl SocketAddress {
         self.named(fd, accept)
     }
 
-    /// `accept4(2)` on `fd` with `flags`, as [`Self::accept`].
+    /// `accept4(2)` on `fd` with `flags`, as [`Self::accept`]: the accepted
+    /// descriptor, or `None` with `errno` set.
     #[cfg(target_os = "linux")]
-    pub fn accept4(&mut self, fd: c_int, flags: c_int) -> c_int {
+    pub fn accept4(&mut self, fd: c_int, flags: c_int) -> Option<std::os::fd::OwnedFd> {
         let mut room = Room::FULL;
         let result = accept4(fd, &mut self.addr, &mut room, flags);
         self.len = room.0;
@@ -200,7 +201,7 @@ unsafe extern "C" {
         address: &mut AddressStorage,
         room: &mut Room,
         flags: c_int,
-    ) -> c_int;
+    ) -> Option<std::os::fd::OwnedFd>;
 }
 
 /// `swoole::PacketLength`: the bytes a length function measures, and the header

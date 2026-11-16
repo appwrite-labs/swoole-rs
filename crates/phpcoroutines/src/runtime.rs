@@ -6,7 +6,7 @@ use crate::{
     host,
 };
 use std::{
-    cell::{Cell, RefCell},
+    cell::Cell,
     ffi::c_long,
     sync::{
         Arc, Mutex, PoisonError,
@@ -57,7 +57,8 @@ per_thread! {
             deadlock_check: Cell::new(true),
         };
     static INTERRUPT_RUNNING: Cell<bool> = Cell::new(false);
-    static INTERRUPT: RefCell<Option<Interrupt>> = RefCell::new(None);
+    /// The interrupt thread, set by `interrupt_start` and taken by `interrupt_stop`.
+    static INTERRUPT: Cell<Option<Interrupt>> = Cell::new(None);
 }
 
 /// How many threads' runtimes are active, and the interrupt function Zend ran
@@ -309,7 +310,7 @@ fn interrupt_start() {
         })
     });
     if let Ok(thread) = spawned {
-        INTERRUPT.with(|i| *i.borrow_mut() = Some(Interrupt { running, thread }));
+        INTERRUPT.with(|i| i.set(Some(Interrupt { running, thread })));
         INTERRUPT_RUNNING.with(|r| r.set(true));
     }
 }
@@ -320,7 +321,7 @@ fn interrupt_stop() {
         return;
     }
     INTERRUPT_RUNNING.with(|r| r.set(false));
-    if let Some(interrupt) = INTERRUPT.with(|i| i.borrow_mut().take()) {
+    if let Some(interrupt) = INTERRUPT.with(Cell::take) {
         interrupt.running.store(false, Ordering::Release);
         drop(interrupt.thread.join());
     }

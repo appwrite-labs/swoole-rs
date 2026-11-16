@@ -826,13 +826,12 @@ impl Value {
 #[repr(transparent)]
 pub struct Array(UnsafeCell<HashTable>);
 
-/// The `zend_refcounted_h` a counted value begins with: its refcount, then
-/// `type_info`, which Zend reads and writes through pointers on this thread.
-#[repr(C)]
-struct Counted {
-    refcount: Cell<u32>,
-    type_info: Cell<u32>,
-}
+/// The `zend_refcounted_h` a counted value begins with: its refcount
+/// ([`REFCOUNT`]), then `type_info` ([`TYPE_INFO`]), which Zend reads and
+/// writes through pointers on this thread.
+type Counted = [Cell<u32>; 2];
+const REFCOUNT: usize = 0;
+const TYPE_INFO: usize = 1;
 
 /// The header of a `HashTable`, which begins with one, for as long as the
 /// table is borrowed.
@@ -974,15 +973,15 @@ impl Drop for HeldArray {
     fn drop(&mut self) {
         let Some(array) = self.0.array() else { return };
         let header = header(array);
-        let refcount = header.refcount.get();
-        let immutable = header.type_info.get() & crate::sys::IS_ARRAY_IMMUTABLE != 0;
+        let refcount = header[REFCOUNT].get();
+        let immutable = header[TYPE_INFO].get() & crate::sys::IS_ARRAY_IMMUTABLE != 0;
         if !immutable && refcount == 1 {
             // The last reference: `Owned`'s drop destroys the table inside `zend_try`.
             return;
         }
         if !immutable {
             // Another holder keeps the table live; this gives up its reference.
-            header.refcount.set(refcount - 1);
+            header[REFCOUNT].set(refcount - 1);
         }
         // Nothing is left for `Owned`'s drop to release.
         #[expect(
@@ -1094,7 +1093,7 @@ impl ZStr {
     pub fn to_owned(&self) -> ZString {
         if !self.interned() {
             // A live, counted string; the new reference is the `ZString`'s.
-            let refcount = &self.head().counted.refcount;
+            let refcount = &self.head().counted[REFCOUNT];
             refcount.set(refcount.get() + 1);
         }
         ZString(self.as_ptr())
@@ -1104,7 +1103,7 @@ impl ZStr {
     #[must_use]
     #[inline]
     pub fn interned(&self) -> bool {
-        self.head().counted.type_info.get() & IS_STR_INTERNED != 0
+        self.head().counted[TYPE_INFO].get() & IS_STR_INTERNED != 0
     }
 
     /// `zendi_smart_strcmp`: PHP's `==` order of two strings, numeric when
@@ -1468,7 +1467,7 @@ impl ArrayMut {
         }
         // `GC_REFCOUNT(arr) > 1` is the only case SEPARATE_ARRAY acts on (an
         // immutable array counts 2), so an unshared one skips the call.
-        if header(self.0.array()?).refcount.get() > 1 {
+        if header(self.0.array()?)[REFCOUNT].get() > 1 {
             swr_zend_separate_array(self);
         }
         Some(Separated(self))

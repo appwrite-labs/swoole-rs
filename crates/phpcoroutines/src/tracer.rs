@@ -7,7 +7,7 @@
 //!
 //! The heap hooks are C (their signatures follow the PHP build), and call back
 //! here with the hooks removed while Rust may allocate.
-use crate::{context, host::now_us, runtime};
+use crate::{context, host::now_us, put_back, runtime};
 use std::{
     cell::Cell,
     collections::{BTreeMap, HashMap, hash_map::DefaultHasher},
@@ -141,15 +141,6 @@ per_thread! {
         root_path: Vec::new(),
         events: None,
     });
-}
-
-/// `f` of the value taken out of `cell`, which is put back after: a nested
-/// use meanwhile sees the default.
-fn put_back<T: Default, R>(cell: &Cell<T>, f: impl FnOnce(&mut T) -> R) -> R {
-    let mut value = cell.take();
-    let result = f(&mut value);
-    cell.set(value);
-    result
 }
 
 fn with_leaks<R>(f: impl FnOnce(&mut Leaks) -> R) -> R {

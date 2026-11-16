@@ -12,7 +12,7 @@ use crate::{
     websocket,
 };
 use std::{
-    cell::RefCell,
+    cell::Cell,
     collections::VecDeque,
     ffi::c_int,
     mem::ManuallyDrop,
@@ -124,11 +124,36 @@ use swoole_rs_clients::address::{
 /// connection's fd. The session check drops a reused fd's entry. RSHUTDOWN
 /// releases them; a thread's exit, after the request heap is gone, must not.
 type Addresses = ManuallyDrop<Table<(i64, [ZString; 2])>>;
+/// Requests waiting for the worker's concurrency to drop, oldest first.
+type Queue = VecDeque<Ctx>;
 
 php_local! {
-    static ADDRESSES: RefCell<Addresses> = RefCell::new(ManuallyDrop::new(Table::new()));
-    /// Requests waiting for the worker's concurrency to drop.
-    static QUEUED: RefCell<VecDeque<Ctx>> = RefCell::new(VecDeque::new());
+    /// Taken out and put back around each lookup, which runs no PHP code; an
+    /// entry it replaces or removes is released once the table is back.
+    static ADDRESSES: Cell<Addresses> = Cell::new(ManuallyDrop::new(Table::new()));
+    /// Taken out and put back around each push and pop.
+    static QUEUED: Cell<Queue> = Cell::new(Queue::new());
+}
+
+/// The address table, out of its cell until the caller puts it back; an
+/// empty table allocates nothing.
+fn take_addresses() -> Addresses {
+    ADDRESSES.replace(ManuallyDrop::new(Table::new()))
+}
+
+/// Queue `ctx` behind the waiting requests.
+fn enqueue(ctx: Ctx) {
+    let mut queued = QUEUED.take();
+    queued.push_back(ctx);
+    QUEUED.set(queued);
+}
+
+/// The oldest waiting request, out of the queue before the caller acts on it.
+fn dequeue() -> Option<Ctx> {
+    let mut queued = QUEUED.take();
+    let ctx = queued.pop_front();
+    QUEUED.set(queued);
+    ctx
 }
 
 fn address(server: view::Server<'_>, conn: Connection<'_>, local: bool) -> ZString {
@@ -184,16 +209,20 @@ fn cached(
     fd: usize,
     session: i64,
 ) -> Option<[ZString; 2]> {
-    ADDRESSES.with_borrow_mut(|cached| {
-        if let Some((owner, addresses)) = cached.get(fd)
-            && *owner == session
-        {
-            return Some(addresses.each_ref().map(|address| ZStr::to_owned(address)));
-        }
-        let addresses = [address(server, conn, true), address(server, conn, false)];
+    let mut cached = take_addresses();
+    if let Some((owner, addresses)) = cached.get(fd)
+        && *owner == session
+    {
         let copies = addresses.each_ref().map(|address| ZStr::to_owned(address));
-        cached.insert(fd, (session, addresses)).ok().map(|_| copies)
-    })
+        ADDRESSES.set(cached);
+        return Some(copies);
+    }
+    let addresses = [address(server, conn, true), address(server, conn, false)];
+    let copies = addresses.each_ref().map(|address| ZStr::to_owned(address));
+    let inserted = cached.insert(fd, (session, addresses));
+    ADDRESSES.set(cached);
+    // A reused fd's old entry, or the entry the table couldn't hold, goes now.
+    inserted.ok().map(|_| copies)
 }
 
 /// `php_swoole_http_server_onReceive`: route the data to another protocol's
@@ -621,11 +650,13 @@ pub fn http_server_on_close(server: view::Server<'_>, info: &DataHead) {
     if let Some(conn) = server.by_session(session)
         && let Ok(fd) = usize::try_from(conn.fd())
     {
-        ADDRESSES.with_borrow_mut(|cached| {
-            if cached.get(fd).is_some_and(|(owner, _)| *owner == session) {
-                cached.remove(fd);
-            }
-        });
+        let mut cached = take_addresses();
+        let removed = cached
+            .get(fd)
+            .is_some_and(|(owner, _)| *owner == session)
+            .then(|| cached.remove(fd));
+        ADDRESSES.set(cached);
+        drop(removed);
     }
     php_swoole_server_on_close(server, info);
 }
@@ -671,7 +702,7 @@ pub(crate) fn admit(ctx: Ctx) -> bool {
     if with_current(|current| current.add_concurrency()).unwrap_or_default()
         >= worker.max_concurrency
     {
-        QUEUED.with_borrow_mut(|queued| queued.push_back(ctx));
+        enqueue(ctx);
         return false;
     }
     true
@@ -685,7 +716,7 @@ pub(crate) fn release_request() {
         return;
     };
     if worker.shutdown {
-        while let Some(ctx) = QUEUED.with_borrow_mut(VecDeque::pop_front) {
+        while let Some(ctx) = dequeue() {
             context::send(ctx, SERVICE_UNAVAILABLE);
             context::close(ctx);
             abandon(ctx);
@@ -694,7 +725,7 @@ pub(crate) fn release_request() {
     }
     worker.server_concurrency.fetch_sub(1, SeqCst);
     with_current(|current| current.sub_concurrency());
-    if let Some(ctx) = QUEUED.with_borrow_mut(VecDeque::pop_front) {
+    if let Some(ctx) = dequeue() {
         // Upstream dereferences `sw_reactor()` here unchecked.
         if swoole_rs_reactor::event_api::swoole_event_defer_value(Turn(ctx)).is_err() {
             swoole_rs_corebase::fatal("no reactor to defer the queued request to");
@@ -713,10 +744,8 @@ pub extern "C" fn server_rinit() {
 /// deferred is raised last, into the hook's `zend_try`.
 pub extern "C" fn server_rshutdown() {
     swr_zend_http_uploads_rshutdown();
-    let addresses = ADDRESSES
-        .with_borrow_mut(|cached| std::mem::replace(cached, ManuallyDrop::new(Table::new())));
-    drop(ManuallyDrop::into_inner(addresses));
-    while let Some(ctx) = QUEUED.with_borrow_mut(VecDeque::pop_front) {
+    drop(ManuallyDrop::into_inner(take_addresses()));
+    while let Some(ctx) = dequeue() {
         abandon(ctx);
     }
     bailout::finish();

@@ -21,6 +21,9 @@
            or a PHP callback is re-entered, and the process aborts. Make the state a
            plain field of the handle that owns it, borrowed `&mut`, or a `Cell` taken and
            put back (#3565). A `RefCell::new` whose type is inferred isn't counted
+  statuses integer-returning bodies (`i32`, `c_int`, `i64`, `isize`), including extern
+           wrappers; foreign declarations and callback types have no body to migrate
+  reprs    `#[repr(C)]` layouts, including C combined with other representation hints
   unforbidden  1 unless the crate's lib.rs has `#![forbid(unsafe_code)]`, so a crate
                the compiler verifies safe stays that way
 
@@ -62,7 +65,10 @@ KINDS = {
     'fakes': re.compile(r'\bcfg!?\([^\n]*\bnot\(\s*test\s*\)'),
     'casts': re.compile(r'\bclippy::cast_(?:possible_truncation|sign_loss|possible_wrap|precision_loss)\b'),
     'cells': re.compile(r'\bRefCell\s*<'),
+    'statuses': re.compile(r'\)\s*->\s*(?:i32|c_int|i64|isize)\s*(?:where\b[^;{]*)?\{'),
+    'reprs': re.compile(r'#\s*\[\s*repr\s*\([^\]]*\bC\b[^\]]*\)\s*\]'),
 }
+MULTILINE = ('statuses', 'reprs')
 # What `forbid(unsafe_code)` rejects and KINDS['unsafe'] doesn't count.
 UNCOUNTED = re.compile(r'\bunsafe\s+extern\b|#\[unsafe\(')
 FORBID = re.compile(r'^#!\[forbid\([^)]*\bunsafe_code\b', re.M)
@@ -73,6 +79,7 @@ PATH_ATTR = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
 def count_file(path, test_files):
     """{kind: matches} in `path` outside #[cfg(test)] modules; adds files those modules load to `test_files`."""
     count = dict.fromkeys(KINDS, 0)
+    source = []
     skip_until, pending, pending_path, depth = None, False, None, 0
     for line in path.read_text(errors='replace').splitlines():
         if skip_until is not None:
@@ -102,8 +109,13 @@ def count_file(path, test_files):
             pending, pending_path, depth = True, None, 0
             continue
         code = line.split('//', 1)[0]
+        source.append(code)
         for kind, pattern in KINDS.items():
-            count[kind] += len(pattern.findall(code))
+            if kind not in MULTILINE:
+                count[kind] += len(pattern.findall(code))
+    code = '\n'.join(source)
+    for kind in MULTILINE:
+        count[kind] = len(KINDS[kind].findall(code))
     return count
 
 

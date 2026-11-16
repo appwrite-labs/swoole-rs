@@ -7,9 +7,9 @@
 //! Contexts are reached through a [`Ctx`] handle, which reads and writes one
 //! field at a time: another coroutine may change a suspended context
 //! (`Co::cancel`, `Co::join`), so no reference to one lives across a switch.
-use crate::{host, methods::Join, runtime};
+use crate::{host, methods::Join, put_back, runtime};
 use std::{
-    cell::{RefCell, UnsafeCell},
+    cell::{Cell, UnsafeCell},
     ffi::{c_int, c_long, c_void},
     mem,
     ptr::{self, NonNull},
@@ -305,8 +305,9 @@ impl Ctx {
 
 per_thread! {
     static MAIN: UnsafeCell<Context> = UnsafeCell::new(Context::EMPTY);
-    /// The armed `Co::setTimeLimit` timers, by coroutine id: few at a time, so a list.
-    static TIME_LIMITS: RefCell<Vec<(c_long, Held)>> = RefCell::new(Vec::new());
+    /// The armed `Co::setTimeLimit` timers, by coroutine id: few at a time, so a
+    /// list. Taken out and put back around one swap, which releases nothing.
+    static TIME_LIMITS: Cell<Vec<(c_long, Held)>> = Cell::new(Vec::new());
 }
 
 /// Coroutine `cid`'s time-limit timer becomes `timer` (none: it fired, or the
@@ -315,13 +316,14 @@ pub(crate) fn swap_time_limit(ctx: Ctx, cid: c_long, timer: Option<Held>) -> Opt
     let limited = ctx.time_limited();
     ctx.set_time_limited(timer.is_some());
     TIME_LIMITS.with(|limits| {
-        let mut limits = limits.borrow_mut();
-        let old = limits
-            .iter()
-            .position(|&(owner, _)| limited && owner == cid)
-            .map(|at| limits.swap_remove(at).1);
-        limits.extend(timer.map(|timer| (cid, timer)));
-        old
+        put_back(limits, |limits| {
+            let old = limits
+                .iter()
+                .position(|&(owner, _)| limited && owner == cid)
+                .map(|at| limits.swap_remove(at).1);
+            limits.extend(timer.map(|timer| (cid, timer)));
+            old
+        })
     })
 }
 

@@ -64,27 +64,20 @@ enum Failure {
     Bailout(Bailout),
 }
 
-/// A `HashTable`'s header as this module reads it, each word a `Cell`: Zend
-/// rewrites the table in place, through pointers, as it changes it.
-#[repr(C)]
-struct Table {
-    _gc: [Cell<u32>; 2],
-    /// `HT_FLAGS(ht)`.
-    flags: Cell<u32>,
-    _mask: Cell<u32>,
-    _data: Cell<usize>,
-    _used: Cell<u32>,
-    /// `zend_hash_num_elements`.
-    count: Cell<u32>,
-    _rest: [Cell<u64>; 3],
-}
+/// A `HashTable`'s header as this module reads it, word by word, each a `Cell`:
+/// Zend rewrites the table in place, through pointers, as it changes it.
+type Table = [Cell<u32>; size_of::<HashTable>() / 4];
+
+/// `HT_FLAGS(ht)`'s word in a [`Table`].
+const FLAGS: usize = offset_of!(HashTable, u) / 4;
+/// `zend_hash_num_elements`'s word in a [`Table`].
+const COUNT: usize = offset_of!(HashTable, nNumOfElements) / 4;
 
 const _: () = assert!(
-    offset_of!(Table, flags) == offset_of!(HashTable, u)
-        && offset_of!(Table, count) == offset_of!(HashTable, nNumOfElements)
-        && size_of::<Table>() == size_of::<HashTable>()
-        && align_of::<Table>() <= align_of::<HashTable>(),
-    "Table is a HashTable's header"
+    offset_of!(HashTable, u) % 4 == 0
+        && offset_of!(HashTable, nNumOfElements) % 4 == 0
+        && size_of::<HashTable>() % 4 == 0,
+    "Table words are a HashTable's header"
 );
 
 /// `get_type_info`: the definition behind a typed array's table.
@@ -135,14 +128,14 @@ impl<'a> Typed<'a> {
     fn table_header(self) -> &'a Table {
         // SAFETY: a live table for `'a` (every `Typed` is made from one), which
         // Zend writes only through pointers, never a reference; `Table` is its
-        // header word for word, each a `Cell`.
+        // header word for word, each a `Cell`, at no greater alignment.
         unsafe { &*self.ht.cast::<Table>() }
     }
 
     /// `HT_FLAGS(ht)`.
     #[inline]
     fn flags(self) -> &'a Cell<u32> {
-        &self.table_header().flags
+        &self.table_header()[FLAGS]
     }
 
     /// Flag the table typed again, after a builtin rebuilt it in place.
@@ -174,7 +167,7 @@ impl<'a> Typed<'a> {
 
     /// `zend_hash_num_elements`.
     fn count(self) -> u32 {
-        self.table_header().count.get()
+        self.table_header()[COUNT].get()
     }
 
     /// `ArrayTypeInfo::element_type_equals`: whether `element` is the type of

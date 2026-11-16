@@ -97,7 +97,11 @@ pub fn fd_accept(fd: c_int, address: &mut SocketAddress, nonblock: bool) -> (c_i
     #[cfg(target_os = "linux")]
     {
         let flags = libc::SOCK_CLOEXEC | if nonblock { libc::SOCK_NONBLOCK } else { 0 };
-        (address.accept4(fd, flags), false)
+        let accepted = address.accept4(fd, flags);
+        (
+            accepted.map_or(-1, std::os::fd::IntoRawFd::into_raw_fd),
+            false,
+        )
     }
     #[cfg(not(target_os = "linux"))]
     {
