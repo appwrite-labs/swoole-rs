@@ -527,6 +527,7 @@ impl<'a> Server<'a> {
 
     /// The server's worker at `raw`: one of its event, task or user workers, or a
     /// user worker `add_worker` added; `None` for any other address.
+    #[cfg(feature = "upstream-symbols")]
     pub(crate) fn own_worker(self, raw: *const WorkerRecord) -> Option<Worker<'a>> {
         let workers = self.workers();
         let count = u64::from(workers.event_count())
