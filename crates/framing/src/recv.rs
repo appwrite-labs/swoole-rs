@@ -314,15 +314,13 @@ impl<E: Effects> Recv<'_, E> {
     fn get_length(&mut self, head: u32, drained: bool) -> Step {
         let packet = self.effects.length(self.start, &mut self.flags);
         let max = self.max() as usize;
-        if packet.is_none_or(|packet| packet == 0 || packet > max) {
-            // Failures and a short header report the buffer as upstream holds it.
-            self.settle();
-        }
         let Some(packet) = packet else {
+            self.settle();
             self.op(Op::LogMalformed, 0);
             return self.fail(head);
         };
         if packet == 0 {
+            self.settle();
             // The whole length header is here and holds no length.
             if self.pending() >= self.header(head) {
                 self.op(Op::LogNoLength, 0);
@@ -331,6 +329,7 @@ impl<E: Effects> Recv<'_, E> {
             return self.more(drained);
         }
         if packet > max {
+            self.settle();
             self.op(Op::LogTooLarge, packet);
             return self.fail(head);
         }
@@ -763,6 +762,26 @@ mod tests {
             native.events,
             ["recv:8", "length:4", "LogTooLarge:17", "Reset:0"]
         );
+    }
+
+    #[test]
+    fn a_bad_package_after_dispatch_settles_before_logging() {
+        let mut native = Native::new(Mode::Length, 8, vec![b"\x01a\x10abc"]);
+        native.protocol.package_max_length = 4;
+        assert_eq!(run(&mut native), Status::Err);
+        assert_eq!(
+            native.events,
+            [
+                "recv:8",
+                "length:6",
+                "package:\x01a",
+                "length:4",
+                "reduce:2",
+                "LogTooLarge:17",
+                "Reset:0"
+            ]
+        );
+        assert_eq!(native.data(), b"\x10abc");
     }
 
     #[test]
