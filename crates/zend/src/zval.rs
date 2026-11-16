@@ -517,6 +517,16 @@ impl Value {
         self.0.set(value.into_zval());
     }
 
+    /// `Z_TYPE_INFO_P(value) = IS_NULL`: null, its value word and `u2` left as
+    /// they were and what it held not released, for a slot holding nothing
+    /// that needs it. One store of the type word.
+    #[inline]
+    pub(crate) fn retype_null(&self) {
+        let mut value = self.0.get();
+        value.u1.type_info = IS_NULL;
+        self.0.set(value);
+    }
+
     /// Lend what the zval holds to `edit`, with null in its place meanwhile,
     /// then put it back and release whatever `edit` left there. The caller
     /// holds nothing borrowed from the zval.

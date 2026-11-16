@@ -208,14 +208,9 @@ pub fn function_call(
     let mut ran = false;
     let success = if coroutine {
         if let Some(retval) = retval {
-            // SAFETY: the caller's live return slot, whose type alone this
-            // writes: coroutines publish null before creation and have no
-            // return value.
-            unsafe {
-                (*retval.as_ptr()).u1 = sys::_zval_struct__bindgen_ty_1 {
-                    type_info: sys::IS_NULL,
-                }
-            };
+            // The caller's return slot, whose type alone this writes:
+            // coroutines publish null before creation and have no return value.
+            retval.retype_null();
         }
         let mut result: c_long = -1;
         // SAFETY: the leaf (`Creator`) and `then` (`Then`) are as their makers
