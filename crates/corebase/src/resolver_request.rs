@@ -7,7 +7,7 @@ use core::cell::Cell;
 use core::ffi::{c_char, c_int};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::ffi::CString;
-use std::ptr;
+use std::ptr::{self, NonNull};
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -101,19 +101,8 @@ impl ResolverRequest {
         })
     }
 
-    /// The views over `record`, which the returned owner holds one reference to.
-    fn prepared(record: Box<Self>) -> PreparedResolver {
-        let state = Box::leak(record);
-        let view = swr_v1_core_resolver_view(state);
-        // A handle from the mutable borrow, as one from a shared borrow can't free the record.
-        PreparedResolver {
-            owner: &raw mut *state,
-            ..view
-        }
-    }
-
-    /// A record for `name` and `service` whose owner holds one reference, freed
-    /// with `swr_v1_core_resolver_free`; all null on allocation refusal.
+    /// A record for `name` and `service`, held by the one reference returned;
+    /// none on allocation refusal.
     #[must_use]
     pub fn create(
         family: c_int,
@@ -121,19 +110,13 @@ impl ResolverRequest {
         protocol: c_int,
         name: &[u8],
         service: &[u8],
-    ) -> PreparedResolver {
+    ) -> Option<ResolverRef> {
         let mut record = Self::boxed(family, socktype, protocol);
         let [name_slot, service_slot, _] = &mut record.strings;
         if !name_slot.set(name) || !service_slot.set(service) {
-            return PreparedResolver {
-                owner: ptr::null_mut(),
-                fields: ptr::null_mut(),
-                name: ptr::null(),
-                service: ptr::null(),
-                address: ptr::null(),
-            };
+            return None;
         }
-        Self::prepared(record)
+        Some(ResolverRef(NonNull::from(Box::leak(record))))
     }
 
     /// The hints and results.
@@ -279,19 +262,43 @@ pub fn swr_v1_core_resolver_retain(owner: &ResolverRequest) {
     owner.refs.fetch_add(1, Ordering::Relaxed);
 }
 
+/// One reference to a record [`ResolverRequest::create`] leaked: it reads the
+/// record, which it keeps live, and gives the reference up when it drops.
+pub struct ResolverRef(NonNull<ResolverRequest>);
+
+impl ResolverRef {
+    /// The record, for an event's `data`, whose holder takes a reference of its own.
+    #[must_use]
+    pub const fn as_ptr(&self) -> *mut ResolverRequest {
+        self.0.as_ptr()
+    }
+}
+
+impl core::ops::Deref for ResolverRef {
+    type Target = ResolverRequest;
+
+    fn deref(&self) -> &ResolverRequest {
+        // SAFETY: the leaked record, which this reference keeps live.
+        unsafe { self.0.as_ref() }
+    }
+}
+
+impl Drop for ResolverRef {
+    /// Drops the reference; the last frees the record.
+    fn drop(&mut self) {
+        if self.refs.fetch_sub(1, Ordering::Release) == 1 {
+            core::sync::atomic::fence(Ordering::Acquire);
+            // SAFETY: that was the last reference to the leaked box.
+            drop(unsafe { Box::from_raw(self.0.as_ptr()) });
+        }
+    }
+}
+
 /// Drops one reference; the last frees the record.
 /// # Safety
 /// owner is null or a reference the caller holds and gives up here.
 pub unsafe extern "C" fn swr_v1_core_resolver_free(owner: *mut ResolverRequest) {
-    // SAFETY: null or live while the caller's reference stands.
-    let Some(record) = (unsafe { owner.as_ref() }) else {
-        return;
-    };
-    if record.refs.fetch_sub(1, Ordering::Release) == 1 {
-        core::sync::atomic::fence(Ordering::Acquire);
-        // SAFETY: that was the last reference to the leaked box.
-        drop(unsafe { Box::from_raw(owner) });
-    }
+    drop(NonNull::new(owner).map(ResolverRef));
 }
 
 /// One address as text; `valid` false if it does not format.
@@ -343,18 +350,22 @@ mod completion_tests {
 
     #[test]
     fn the_last_reference_frees_the_record() {
-        let prepared = ResolverRequest::create(libc::AF_INET, 0, 0, b"", b"");
-        let record = unsafe { &*prepared.owner };
-        let view = swr_v1_core_resolver_view(record);
+        let request = ResolverRequest::create(libc::AF_INET, 0, 0, b"", b"").unwrap();
+        let owner = request.as_ptr();
+        let view = swr_v1_core_resolver_view(&request);
         assert_eq!(
-            (view.fields, view.address),
-            (prepared.fields, prepared.address)
+            (view.owner, view.fields, view.address),
+            (
+                owner,
+                request.fields.as_ptr(),
+                &raw const request.strings[2]
+            )
         );
-        swr_v1_core_resolver_retain(record);
-        unsafe { swr_v1_core_resolver_free(prepared.owner) };
+        swr_v1_core_resolver_retain(&request);
+        drop(request);
         // The pool copy's reference keeps the record after its request went.
-        assert_eq!(record.refs.load(Ordering::Relaxed), 1);
-        unsafe { swr_v1_core_resolver_free(prepared.owner) };
+        assert_eq!(unsafe { &*owner }.refs.load(Ordering::Relaxed), 1);
+        unsafe { swr_v1_core_resolver_free(owner) };
         unsafe { swr_v1_core_resolver_free(core::ptr::null_mut()) };
     }
 }

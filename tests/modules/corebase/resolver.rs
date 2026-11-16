@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use libc::{AF_INET, AF_INET6, SOCK_STREAM, addrinfo, sockaddr_in6, sockaddr_storage};
 use swoole_rs_corebase::{
-    PreparedResolver, ResolveError, ResolverCompletion, ResolverRequest, swr_v1_core_resolver_free,
+    ResolveError, ResolverCompletion, ResolverRef, ResolverRequest, swr_v1_core_resolver_view,
 };
 
 /// What the faked `getaddrinfo` answers on this thread.
@@ -106,31 +106,24 @@ unsafe extern "C" fn freeaddrinfo(list: *mut addrinfo) {
 }
 
 /// A record and the one reference `create` gave its owner, dropped with this.
-struct Request(PreparedResolver);
+struct Request(ResolverRef);
 
 impl Request {
     fn new(family: c_int, socktype: c_int, name: &[u8]) -> Self {
-        let prepared = ResolverRequest::create(family, socktype, 0, name, b"");
-        assert!(!prepared.owner.is_null(), "the record's allocation");
-        Self(prepared)
+        let request = ResolverRequest::create(family, socktype, 0, name, b"");
+        assert!(request.is_some(), "the record's allocation");
+        Self(request.unwrap_or_else(|| unreachable!()))
     }
 
     fn record(&self) -> &ResolverRequest {
-        // SAFETY: live until this drops.
-        unsafe { &*self.0.owner }
+        &self.0
     }
 
     /// `request.fields-><field> = value`, as the native views wrote the hints and results.
     fn set(&self, change: impl FnOnce(&mut swoole_rs_corebase::ResolverFields)) {
+        let fields = swr_v1_core_resolver_view(&self.0).fields;
         // SAFETY: the record's fields, which nothing else reads meanwhile.
-        change(unsafe { &mut *self.0.fields });
-    }
-}
-
-impl Drop for Request {
-    fn drop(&mut self) {
-        // SAFETY: this request's own reference.
-        unsafe { swr_v1_core_resolver_free(self.0.owner) };
+        change(unsafe { &mut *fields });
     }
 }
 
