@@ -15,8 +15,11 @@ void swr_zend_stream_unbuffer(zval *zstream);
 /* php_network_gethostbyname(host): 0 with the first address of an AF_INET entry
  * copied to *address, 1 for an entry of another family, -1 for none. */
 int swr_zend_gethostbyname4(const char *host, struct in_addr *address);
-/* Z_OBJPROP_P(object). */
-HashTable *swr_zend_object_properties(zval *object);
+/* Z_OBJPROP of `object` inside zend_try (nonzero for a bailout: a lazy object's
+ * initializer runs PHP code): `out` then holds the table, if any, with a reference
+ * of its own (none for an immutable one), in place of what it held, which is not
+ * released. */
+int swr_zend_try_object_properties(zend_object *object, zval *out);
 /* convert_to_array(value), then Z_ARRVAL_P(value). */
 HashTable *swr_zend_convert_to_array(zval *value);
 /* zend_zval_value_name (PHP 8.3+), else zend_zval_type_name. */

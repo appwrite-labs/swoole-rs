@@ -6,7 +6,10 @@
 #include "zend_smart_str.h"
 
 
-void swr_zend_array_add_or_merge(zval *array, const char *key, size_t length, zval *element) {
+void swr_lent_array_add_or_merge(zval *array, struct iovec name, zval *element) {
+    /* ZEND_HANDLE_NUMERIC_STR reads a first byte even of an empty key. */
+    const char *key = name.iov_len ? name.iov_base : "";
+    size_t length = name.iov_len;
     zend_ulong index;
     HashTable *table = Z_ARRVAL_P(array);
     bool numeric = ZEND_HANDLE_NUMERIC_STR(key, length, index);

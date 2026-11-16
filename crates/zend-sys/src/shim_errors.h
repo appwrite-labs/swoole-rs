@@ -5,6 +5,7 @@
 #ifndef SWOOLE_RS_ZEND_SHIM_ERRORS_H
 #define SWOOLE_RS_ZEND_SHIM_ERRORS_H
 #include "shim.h"
+#include <sys/uio.h>
 
 /* php_error_docref(NULL, level, "%s", message), and zend_error(level, "%s", message). */
 int swr_zend_try_error(int level, const char *message);
@@ -36,5 +37,5 @@ int swr_zend_try_get_string(zval *value, zend_string **out);
 int swr_zend_try_ptr_dtor(zval *value);
 int swr_zend_try_hash_update(HashTable *table, zend_string *key, zend_ulong index, zval *value);
 int swr_zend_try_hash_clean(zval *array);
-int swr_zend_try_symtable_update(zval *array, const char *key, size_t length, zval *value);
+int swr_lent_symtable_update(zval *array, struct iovec key, zval *value);
 #endif

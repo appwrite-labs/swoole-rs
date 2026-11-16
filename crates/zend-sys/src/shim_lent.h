@@ -38,6 +38,10 @@ int swr_lent_update_property(zend_class_entry *scope, zend_object *object, struc
 int swr_lent_call_method(zend_object *object, zend_class_entry *scope, struct iovec name, zval *retval,
                          zval *arg1, zval *arg2);
 
+/* add_next_index_stringl(array, bytes): the array, separated, takes a new string of
+ * the bytes under its next index (none at ZEND_LONG_MAX, leaking it, as Zend's). */
+void swr_lent_push_bytes(zval *array, struct iovec bytes);
+
 /* php_format_date(format, timestamp, local): a new string. */
 zend_string *swr_lent_format_date(struct iovec format, zend_long timestamp, bool local);
 #endif
