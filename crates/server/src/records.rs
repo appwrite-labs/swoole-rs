@@ -2,7 +2,7 @@
 use core::cell::Cell;
 use core::ffi::{c_int, c_void};
 use core::sync::atomic::{
-    AtomicU8, AtomicU32,
+    AtomicBool, AtomicU32,
     Ordering::{Acquire, Relaxed},
 };
 use swoole_rs_corebase::WebSocketStatus;
@@ -21,7 +21,7 @@ pub struct SessionRecord {
 /// A connection-table slot's record.
 pub struct ConnectionRecord {
     /// Read by every reactor thread (`is_valid_connection` over the fd range).
-    pub active: AtomicU8,
+    pub active: AtomicBool,
     pub socket_type: Cell<c_int>,
     pub fd: Cell<c_int>,
     pub worker_id: Cell<c_int>,
@@ -80,7 +80,7 @@ impl ConnectionRecord {
     /// Whether the slot holds a connection (`active`), whose fields `add` published.
     #[must_use]
     pub fn is_active(&self) -> bool {
-        self.active.load(Acquire) != 0
+        self.active.load(Acquire)
     }
 
     /// Upstream's `memset` of the slot from `socket_type` up to `closed`: every field
@@ -385,7 +385,7 @@ impl<'a> Connection<'a> {
         self.set_object(core::ptr::null_mut());
     }
 
-    field!(atomic active: AtomicU8);
+    field!(atomic active: AtomicBool);
     field!(atomic recv_queued_bytes: AtomicU32);
     field!(atomic lock: AtomicU32);
     field!(atomic closed: AtomicU32);
@@ -393,7 +393,7 @@ impl<'a> Connection<'a> {
     /// Whether the slot holds a connection (`active`), whose fields `add` published.
     #[must_use]
     pub fn is_active(self) -> bool {
-        self.active().load(Acquire) != 0
+        self.active().load(Acquire)
     }
 
     /// A reactor event over the connection's socket, as the reactor would deliver it.
@@ -749,7 +749,7 @@ pub(crate) mod tests {
         // SAFETY: a connection record is plain data; zero is a closed one.
         let record: ConnectionRecord = unsafe { core::mem::zeroed() };
         let conn = Connection::from(&record);
-        record.active.store(1, Relaxed);
+        record.active.store(true, Relaxed);
         record.closed.store(1, Relaxed);
         conn.set_server_fd(3);
         conn.set_fd(4);
@@ -816,7 +816,7 @@ pub(crate) mod tests {
             },
         ];
         let mut connections: [ConnectionRecord; 3] = unsafe { core::mem::zeroed() };
-        connections[2].active.store(1, Relaxed);
+        connections[2].active.store(true, Relaxed);
         connections[2].session_id.set(1);
         let (session_at, connection_at) = (
             (&raw mut sessions).cast::<SessionRecord>(),
@@ -910,7 +910,7 @@ pub(crate) mod tests {
                     .map_or(core::ptr::null_mut(), Connection::as_ptr),
                 expected
             );
-            (*expected).active.store(0, Relaxed);
+            (*expected).active.store(false, Relaxed);
             assert!(
                 state
                     .connection(1, Lookup::Verified)
@@ -962,7 +962,7 @@ pub(crate) mod tests {
         // SAFETY: the table above holds 3 records.
         unsafe { tables.set_max_connection_unchecked(3) };
         let fill = |slot: &ConnectionRecord| {
-            slot.active.store(1, Relaxed);
+            slot.active.store(true, Relaxed);
             slot.fd.set(7);
             slot.reactor_id.set(2);
             slot.closed.store(1, Relaxed);
@@ -985,8 +985,8 @@ pub(crate) mod tests {
         tables.clear_connection(2);
         tables.reset_connection(3);
         tables.clear_connection(-1);
-        assert_eq!(read(0), (1, 7, 2, 1), "untouched");
-        assert_eq!(read(1), (1, 0, 0, 1), "reset");
-        assert_eq!(read(2), (0, 0, 0, 0), "cleared");
+        assert_eq!(read(0), (true, 7, 2, 1), "untouched");
+        assert_eq!(read(1), (true, 0, 0, 1), "reset");
+        assert_eq!(read(2), (false, 0, 0, 0), "cleared");
     }
 }

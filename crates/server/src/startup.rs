@@ -43,7 +43,11 @@ pub(crate) fn start(serv: view::Server<'_>) -> bool {
         return false;
     };
     // Cannot start two servers at the same time; use process->exec.
-    if gs.start.compare_exchange(0, 1, SeqCst, SeqCst).is_err() {
+    if gs
+        .start
+        .compare_exchange(false, true, SeqCst, SeqCst)
+        .is_err()
+    {
         let code = ErrorCode::SW_ERROR_SERVER_ONLY_START_ONE as c_int;
         let m = format_args!("can only start one server");
         log::error_log(SW_LOG_ERROR, code, c"Server::start", m);
@@ -477,7 +481,7 @@ pub(crate) fn destroy(serv: view::Server<'_>) {
         hybrid().step(serv, Step::JoinReactorThreads);
     }
     let gs = crate::shared::server_counters(state);
-    if gs.is_some_and(|gs| gs.start.load(Relaxed) != 0) {
+    if gs.is_some_and(|gs| gs.start.load(Relaxed)) {
         hybrid().step(serv, Step::FactoryShutdown);
     }
     for id in 0..config.worker_num.get() {
@@ -490,8 +494,8 @@ pub(crate) fn destroy(serv: view::Server<'_>) {
     unmap(&config.user_workers);
     hybrid().step(serv, Step::ClearSignals);
     if let Some(gs) = gs {
-        gs.start.store(0, SeqCst);
-        gs.shutdown.store(1, SeqCst);
+        gs.start.store(false, SeqCst);
+        gs.shutdown.store(true, SeqCst);
     }
     state.callbacks.call_server(ServerSlot::Shutdown, serv);
     match mode {
@@ -555,7 +559,7 @@ fn free_server(serv: view::Server<'_>) {
 pub(crate) fn release_abandoned_base(serv: view::Server<'_>) {
     let state = serv.state();
     if let Some(gs) = crate::shared::server_counters(state) {
-        gs.shutdown.store(1, SeqCst);
+        gs.shutdown.store(true, SeqCst);
     }
     destroy_base_factory(state);
     free_server(serv);
@@ -588,7 +592,7 @@ mod tests {
             (Mode::Thread, vec![Call::StartWorkerThreads]),
         ] {
             set_mode(&live, mode);
-            live.counters().start.store(0, SeqCst);
+            live.counters().start.store(false, SeqCst);
             live.counters().master_pid.store(0, Relaxed);
             live.state().set_running(false);
             calls();
@@ -599,7 +603,7 @@ mod tests {
                 "mode {mode:?}"
             );
             assert!(live.state().running(), "running");
-            assert_eq!(live.counters().start.load(Relaxed), 1, "claimed");
+            assert!(live.counters().start.load(Relaxed), "claimed");
             assert_eq!(
                 live.counters().master_pid.load(Relaxed) != 0,
                 mode == Mode::Thread,
@@ -613,9 +617,9 @@ mod tests {
         let live = LiveServer::new();
         calls();
         assert!(!start(live.server()), "TCP needs onReceive");
-        assert_eq!(live.counters().start.load(Relaxed), 0, "not claimed");
+        assert!(!live.counters().start.load(Relaxed), "not claimed");
         on(&live, CallbackKind::Receive);
-        live.counters().start.store(1, SeqCst);
+        live.counters().start.store(true, SeqCst);
         assert!(!start(live.server()), "only one server");
         assert_eq!(calls(), [], "nothing started");
 
@@ -628,7 +632,7 @@ mod tests {
                 &[Daemon, FactoryStart, InitProtocols, StartProcess],
             ),
         ] {
-            live.counters().start.store(0, SeqCst);
+            live.counters().start.store(false, SeqCst);
             fail(Some(failing));
             assert!(!start(live.server()), "{failing:?}");
             assert_eq!(calls(), steps(ran), "{failing:?}");
@@ -981,7 +985,7 @@ mod tests {
                 let list = Shm::calloc(max, size_of::<crate::ConnectionRecord>());
                 live.state().tables_ref().map_connections(list);
             }
-            live.counters().start.store(1, SeqCst);
+            live.counters().start.store(true, SeqCst);
             calls();
             destroy(live.server());
             let mut expected = Vec::new();
@@ -1005,7 +1009,7 @@ mod tests {
                     counters.start.load(Relaxed),
                     counters.shutdown.load(Relaxed)
                 ),
-                (0, 1),
+                (false, true),
                 "shut down"
             );
             let tables = live.state().tables_ref();
@@ -1027,7 +1031,7 @@ mod tests {
         calls();
         release_abandoned_base(live.server());
         assert_eq!(calls(), steps(&[DeleteFactory]), "no shutdown steps");
-        assert_eq!(live.counters().shutdown.load(Relaxed), 1, "shut down");
+        assert!(live.counters().shutdown.load(Relaxed), "shut down");
         let tables = live.state().tables_ref();
         assert!(!tables.connections_mapped(), "connections freed");
         assert!(!tables.sessions_mapped(), "sessions freed");
