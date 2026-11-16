@@ -167,7 +167,7 @@ pub(crate) fn on_packet(
             reactor_id: i16::from(reactor_id),
             ..DataHead::default()
         };
-        crate::event_worker::native::send_to_reactor_thread(serv, &ev) < 0
+        crate::event_worker::native::send_to_reactor_thread(serv, &ev).is_none()
     };
     if failed {
         // The reactor's own close, which is what the caller passes as `_close`.
