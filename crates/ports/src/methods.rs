@@ -356,7 +356,7 @@ fn init_protocol_callbacks(
         protocol.package_body_offset = 0;
         readable_callback_http
     } else if config.open_mqtt_protocol.get() {
-        swoole_rs_protocols_ffi::set_protocol(protocol);
+        swoole_rs_clients::mqtt::set_protocol(protocol);
         protocol.on_package = Some(c.dispatch_task);
         readable_callback_length
     } else if config.open_redis_protocol.get() {
@@ -1024,7 +1024,7 @@ mod tests {
         let task = Some(c.dispatch_task);
         let package = |f: Option<OnPackage>| f.map_or(0, |f| (f as *const ()).addr());
         let size = |f: Option<GetPackageLengthSize>| f.map_or(0, |f| (f as *const ()).addr());
-        let mqtt: GetPackageLength = swoole_rs_protocols_ffi::get_package_length;
+        let mqtt: GetPackageLength = swoole_rs_clients::mqtt::get_package_length;
         // Settings; reader; package, length and length-size callbacks; length size, offsets.
         #[rustfmt::skip]
         let branches = [

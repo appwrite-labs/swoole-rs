@@ -1,6 +1,6 @@
 //! `swoole::Socks5Proxy`'s methods over the Rust proxy owner and its packet buffer.
-//! No native code calls them: crates/hooks calls them by path and crates/clients
-//! through the host crates/ffi registers.
+//! crates/hooks calls them by path, and [`crate::client`] through the host crates/ffi
+//! registers.
 use std::ffi::{CStr, c_int};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as NOTICE;
@@ -49,12 +49,6 @@ struct Packet {
     last_error: i32,
 }
 
-/// A packet size as `ssize_t`: -1 for none.
-fn ssize(size: Option<usize>) -> isize {
-    size.and_then(|size| isize::try_from(size).ok())
-        .unwrap_or(-1)
-}
-
 /// Packs `request` into the owner's packet.
 fn packet(proxy: &Socks5Proxy<'_>, request: Request) -> Packet {
     let owner = proxy.owner;
@@ -88,7 +82,7 @@ fn pack(owner: &ProxyState, request: Request, buffer: &mut [u8]) -> Packet {
             let (kind, address): (u8, &[u8]) = if fields.dns_tunnel != 0 {
                 (3, name)
             } else {
-                let assigned = swoole_rs_clients::address::assign(
+                let assigned = crate::address::assign(
                     &mut address,
                     &mut length,
                     fields.socket_type,
@@ -128,10 +122,10 @@ fn pack(owner: &ProxyState, request: Request, buffer: &mut [u8]) -> Packet {
     result
 }
 
-/// `ssize_t Socks5Proxy::pack_negotiate_request()`.
+/// `ssize_t Socks5Proxy::pack_negotiate_request()`: the packet's size, or `None`.
 #[must_use]
-pub fn pack_negotiate_request(proxy: &Socks5Proxy<'_>) -> isize {
-    ssize(packet(proxy, Request::Negotiate).size)
+pub fn pack_negotiate_request(proxy: &Socks5Proxy<'_>) -> Option<usize> {
+    packet(proxy, Request::Negotiate).size
 }
 
 /// `ssize_t Socks5Proxy::pack_auth_request()`: the packet's size, or `None`.
@@ -298,7 +292,7 @@ mod tests {
         assert_eq!(admit(4, 4), 2);
         assert_eq!(admit(251, 0), 0);
         let p = &Socks5Proxy::new(&owner);
-        assert_eq!(pack_negotiate_request(p), 3);
+        assert_eq!(pack_negotiate_request(p), Some(3));
         assert_eq!(owner.fields().method, 2);
         owner.update(|fields| fields.state = 1);
         let buffer = |n: Option<usize>| {

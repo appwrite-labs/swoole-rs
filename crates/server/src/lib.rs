@@ -38,7 +38,7 @@ pub mod factory;
 mod fixture;
 // Linked for the upstream symbols the hybrid's modules call (Cargo.toml).
 #[cfg(test)]
-use {swoole_rs_hooks as _, swoole_rs_protocols_ffi as _};
+use swoole_rs_hooks as _;
 mod hybrid;
 #[cfg(any(test, feature = "upstream-symbols"))]
 mod json;

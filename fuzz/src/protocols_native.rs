@@ -7,7 +7,7 @@ use swoole_rs_protocols::{
     RespRequest, resp_spans, socks_auth, socks_config, socks_connect, socks_negotiate,
     SocksConfig, SocksSend, socks_strerror, socks_transition,
 };
-use swoole_rs_protocols_ffi::{Dispatched, Received, RespConnection, recv_packet};
+use swoole_rs_clients::resp_recv::{Dispatched, Received, RespConnection, recv_packet};
 
 /// `redis::parse` over [`resp_spans`]: each string after its u32 length (an integer
 /// span in decimal; nothing for a malformed wire), and whether a number overflowed a

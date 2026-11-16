@@ -12,14 +12,13 @@ use core::ffi::{c_char, c_int, c_long};
 use std::collections::VecDeque;
 
 use core::ffi::CStr;
+use swoole_rs_clients::resp_recv::{Dispatched, Received, RespConnection, recv_packet};
 use swoole_rs_corebase::{ProxyState, net_types::PacketLength, set_errno, sys::errno};
 use swoole_rs_oracle::{protocols as pinned, resp_stream, socks5};
 use swoole_rs_protocols::{
     ConnectRefusal, Malformed, RespKind, RespPhpState, RespRequest, resp_format, resp_handler_key,
     resp_php_next, resp_spans, socks_auth, socks_connect,
 };
-use swoole_rs_protocols_ffi as ffi;
-use swoole_rs_protocols_ffi::{Dispatched, Received, RespConnection, recv_packet};
 
 /// The oracle shim's socket, String and connection: each recv hands out at most the
 /// next chunk, then would block. Its log is the shim's trace.
@@ -702,8 +701,11 @@ fn parse_integer_reply() {
 fn mqtt_candidate(packet: &[u8]) -> (isize, u32) {
     let mut pl = PacketLength::new(packet);
     pl.header_len = 99;
-    let length =
-        ffi::get_package_length(&swoole_rs_clients::protocol::Protocol::EMPTY, None, &mut pl);
+    let length = swoole_rs_clients::mqtt::get_package_length(
+        &swoole_rs_clients::protocol::Protocol::EMPTY,
+        None,
+        &mut pl,
+    );
     (length, pl.header_len)
 }
 
@@ -813,11 +815,14 @@ impl Pair {
     fn pack(&mut self, request: i32) -> (isize, isize) {
         // SAFETY: a live record.
         let before = unsafe { socks5::pack(&raw mut self.reference, request) };
-        let proxy = ffi::Socks5Proxy::new(&self.candidate);
+        let proxy = swoole_rs_clients::owned_proxy::Socks5Proxy::new(&self.candidate);
         let after = match request {
-            0 => ffi::pack_negotiate_request(&proxy),
-            1 => ffi::pack_auth_request(&proxy).map_or(-1, usize::cast_signed),
-            _ => ffi::pack_connect_request(&proxy).map_or(-1, usize::cast_signed),
+            0 => swoole_rs_clients::owned_proxy::pack_negotiate_request(&proxy)
+                .map_or(-1, usize::cast_signed),
+            1 => swoole_rs_clients::owned_proxy::pack_auth_request(&proxy)
+                .map_or(-1, usize::cast_signed),
+            _ => swoole_rs_clients::owned_proxy::pack_connect_request(&proxy)
+                .map_or(-1, usize::cast_signed),
         };
         (before, after)
     }
@@ -833,7 +838,11 @@ impl Pair {
 /// The candidate header's `handshake`: the step, then its packet through a send that
 /// keeps what it is given in `wire` and returns its length when `sent` is 1, else `sent`.
 fn candidate_handshake(owner: &ProxyState, reply: &[u8], sent: isize, wire: &mut Vec<u8>) -> bool {
-    let n = ffi::socks5_step(&ffi::Socks5Proxy::new(owner), reply).map_or(-1, usize::cast_signed);
+    let n = swoole_rs_clients::owned_proxy::socks5_step(
+        &swoole_rs_clients::owned_proxy::Socks5Proxy::new(owner),
+        reply,
+    )
+    .map_or(-1, usize::cast_signed);
     n == 0
         || n > 0 && {
             *wire = owner
@@ -949,7 +958,7 @@ fn socks5_strerror_codes() {
     for code in (-32..=288).chain([i32::MIN, i32::MAX]) {
         // SAFETY: the pinned strerror returns a static NUL-terminated string.
         let expected = unsafe { CStr::from_ptr(socks5::strerror(code)) };
-        assert_eq!(expected, ffi::strerror(code));
+        assert_eq!(expected, swoole_rs_clients::owned_proxy::strerror(code));
         socks += 1;
     }
     assert_eq!(socks, 321 + 2);
@@ -964,7 +973,7 @@ fn candidate_create(
     user: &[u8],
     password: &[u8],
 ) -> Result<Option<Box<ProxyState>>, i32> {
-    let config = ffi::admit(user.len(), password.len());
+    let config = swoole_rs_clients::owned_proxy::admit(user.len(), password.len());
     if config == 0 {
         return Ok(None);
     }

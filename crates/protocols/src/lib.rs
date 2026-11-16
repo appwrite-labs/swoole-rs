@@ -1,6 +1,6 @@
 //! Packet codecs and protocol decisions over borrowed bytes: MQTT framing, SOCKS5,
-//! RESP and PHP RESP replies. Their C ABI and upstream-symbol entries are
-//! crates/protocols-ffi; the `MessageBus` is crates/bus.
+//! RESP and PHP RESP replies. crates/clients' `mqtt`, `owned_proxy` and `resp_recv`
+//! run them over the client's and server's records; the `MessageBus` is crates/bus.
 #![forbid(unsafe_code)]
 mod mqtt;
 mod redis;
