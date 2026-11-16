@@ -97,7 +97,7 @@ fn local_mac(call: &Call) {
     // label its address carries, which `getifaddrs` lists the same way.
     let Some(interfaces) = Interfaces::new() else {
         sys_warning(b"ioctl SIOCGIFCONF failed");
-        swoole_rs_corebase::sys::close(sock);
+        _ = swoole_rs_corebase::sys::close(sock);
         call.set_bool(false);
         return;
     };
@@ -124,7 +124,7 @@ fn local_mac(call: &Call) {
             add_address(&mut array, name.to_bytes(), &bytes);
         }
     }
-    swoole_rs_corebase::sys::close(sock);
+    _ = swoole_rs_corebase::sys::close(sock);
     call.set_owned(array.into_owned());
 }
 

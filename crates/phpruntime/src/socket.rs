@@ -177,7 +177,7 @@ impl Socket {
         match op {
             SendOp::Sync => socket
                 .with_network(|network| send_sync(network, data, 0))
-                .and_then(|n| usize::try_from(n).ok()),
+                .flatten(),
             SendOp::All => socket.send_all(data),
             SendOp::Once => socket.send_once(data),
             SendOp::Send => socket.send(data),
@@ -190,7 +190,7 @@ impl Socket {
         match op {
             RecvOp::Sync => socket
                 .with_network(|network| recv_sync(network, out, 0))
-                .and_then(|n| usize::try_from(n).ok()),
+                .flatten(),
             RecvOp::Recv => socket.recv(out),
             RecvOp::Once => socket.recv_once(out),
             RecvOp::Peek => socket.peek(out),

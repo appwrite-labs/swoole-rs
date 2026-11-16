@@ -14,9 +14,7 @@ use swoole_rs_corebase::log;
 const OK: c_int = ResultCode::SW_OK as c_int;
 const ERR: c_int = ResultCode::SW_ERR as c_int;
 
-fn errno() -> c_int {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+use swoole_rs_corebase::sys::errno;
 
 /// `void Socket::clean() const`.
 #[cfg_attr(

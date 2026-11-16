@@ -121,7 +121,7 @@ unsafe extern "C" {
     #[link_name = "libssh2_channel_open_ex"]
     safe fn channel_open(
         session: Session,
-        kind: &[u8; 7],
+        kind: &[u8; 8],
         kind_length: KindLength,
         window_size: c_uint,
         packet_size: c_uint,
@@ -130,7 +130,7 @@ unsafe extern "C" {
     ) -> *mut LIBSSH2_CHANNEL;
 }
 
-/// The length of `channel_open`'s type: its array's.
+/// The channel type length excludes its trailing NUL.
 #[derive(Clone, Copy)]
 #[repr(u32)]
 enum KindLength {
@@ -149,7 +149,7 @@ enum NoMessage {
 fn open_session(session: Session) -> *mut LIBSSH2_CHANNEL {
     channel_open(
         session,
-        b"session",
+        b"session\0",
         KindLength::Session,
         2 * 1024 * 1024,
         32768,

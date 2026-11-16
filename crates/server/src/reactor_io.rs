@@ -27,7 +27,9 @@ pub(crate) fn pipe_write(serv: view::Server<'_>, reactor: Reactor, event: &Event
         // SAFETY: the front entry's bytes, a worker message that stays queued, and
         // so live, until this thread pops it.
         let message = unsafe { core::slice::from_raw_parts(front.data, front.length as usize) };
-        if !discard(serv.state(), message) && swoole_rs_tls::upstream::send(sock, message, 0) < 0 {
+        if !discard(serv.state(), message)
+            && swoole_rs_tls::upstream::send(sock, message, 0).is_none()
+        {
             let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
             return sock.catch_error(errno) == swoole_rs_reactor::Caught::Wait;
         }

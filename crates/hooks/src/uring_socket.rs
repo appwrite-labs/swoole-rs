@@ -101,9 +101,7 @@ pub const WRITE: c_int = 1;
 pub const RECV: c_int = 2;
 pub const SEND: c_int = 3;
 
-fn errno() -> c_int {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+use swoole_rs_corebase::sys::errno;
 
 impl UringSocketOps<'_> {
     fn host(&self) -> &'static Host {
@@ -241,7 +239,10 @@ pub(crate) fn recvfrom_peer(ops: &UringSocketOps<'_>, buf: &mut [impl ReadSlot])
         }
         let receive =
             |record: &mut SocketFields| record.info.recvfrom(tls.fd, buf, libc::MSG_DONTWAIT);
-        ops.socket.net(receive).unwrap_or(-1)
+        ops.socket
+            .net(receive)
+            .flatten()
+            .map_or(-1, usize::cast_signed)
     })
 }
 
@@ -388,13 +389,14 @@ pub(crate) fn swr_v1_hook_uring_poll(
         timeout
     })
     .c_cast::<c_int>();
-    let rc = uring::poll(ops.host(), &mut fd, milliseconds);
-    if rc != 1 {
-        let error = if rc == 0 { libc::ETIMEDOUT } else { errno() };
-        (ops.set_err)(ops.socket, error);
-        return false;
-    }
-    true
+    let error = match uring::poll(ops.host(), &mut fd, milliseconds) {
+        Ok(1) => return true,
+        Ok(0) => libc::ETIMEDOUT,
+        Ok(_) => errno(),
+        Err(error) => error.raw_os_error().unwrap_or_else(errno),
+    };
+    (ops.set_err)(ops.socket, error);
+    false
 }
 
 /// `UringSocket::accept`'s connection: the ring's accept (under the read timeout,

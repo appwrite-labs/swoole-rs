@@ -66,9 +66,7 @@ fn ipc_listener(pool: Pool<'_>) -> Option<Socket<'_>> {
     crate::view::pool_ipc_listener(pool)
 }
 
-fn errno() -> c_int {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+use swoole_rs_corebase::sys::errno;
 
 fn exit_status(exited: u64) -> ExitStatus {
     ExitStatus::new((exited & 0xffff_ffff) as c_int, (exited >> 32) as c_int)
@@ -550,13 +548,17 @@ impl PoolNative for Native {
             let (socket, data, length, flags) = (lent_socket(c), c.data(), c.length(), c.flags());
             // SAFETY: the call's buffer.
             let buffer = unsafe { swoole_rs_reactor::Fill::from_raw(data, length) };
-            socket.map_or(-1, |socket| recv_sync_fill(socket, buffer, flags))
+            socket
+                .and_then(|socket| recv_sync_fill(socket, buffer, flags))
+                .map_or(-1, usize::cast_signed)
         });
     }
 
     fn send(&self, c: &mut PoolCall) {
         io(c, |c| {
-            lent_socket(c).map_or(-1, |socket| upstream::send_sync(socket, c.bytes(), 0))
+            lent_socket(c)
+                .and_then(|socket| upstream::send_sync(socket, c.bytes(), 0))
+                .map_or(-1, usize::cast_signed)
         });
     }
 
@@ -578,7 +580,7 @@ impl PoolNative for Native {
             });
             // SAFETY: the call's buffer.
             let buffer = unsafe { swoole_rs_reactor::Fill::from_raw(c.data(), c.length()) };
-            read_sync_fill(pipe, buffer)
+            read_sync_fill(pipe, buffer).map_or(-1, usize::cast_signed)
         });
     }
 

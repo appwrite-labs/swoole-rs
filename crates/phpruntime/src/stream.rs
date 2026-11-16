@@ -17,7 +17,10 @@ use std::{
     ptr::{self, NonNull},
     rc::Rc,
 };
-use swoole_rs_corebase::{CCast, sys::Text};
+use swoole_rs_corebase::{
+    CCast,
+    sys::{Text, errno},
+};
 use swoole_rs_reactor::{Caught, TimeoutKind};
 use swoole_rs_zend::{
     ArrayMut, Call, E_WARNING, Message, Owned, OwnedArray, StreamContext, Value,
@@ -155,10 +158,6 @@ const E_NOTICE: i32 = swoole_rs_zend::sys::E_NOTICE as i32;
 struct NetStream {
     socket: Rc<Socket>,
     blocking: std::cell::Cell<bool>,
-}
-
-fn errno() -> i32 {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
 }
 
 /// Report a trapped bailout through `flag`; `failed` stands in for the result.

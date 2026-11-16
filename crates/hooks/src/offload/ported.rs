@@ -73,9 +73,7 @@ fn record(line: String) {
 fn knobs() -> Knobs {
     KNOBS.get()
 }
-fn errno() -> c_int {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+use swoole_rs_corebase::sys::errno;
 fn flag(value: bool) -> u8 {
     u8::from(value)
 }

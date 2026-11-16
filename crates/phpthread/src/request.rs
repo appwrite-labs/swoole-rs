@@ -121,7 +121,7 @@ pub(crate) fn keep_stdio(fds: [c_int; 3]) {
 pub(crate) fn stdio_close() {
     for fd in STDIO.replace([-1; 3]).into_iter().filter(|fd| *fd >= 0) {
         // A descriptor this thread's streams left open.
-        sys::close(fd);
+        _ = sys::close(fd);
     }
 }
 

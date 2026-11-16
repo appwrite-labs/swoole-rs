@@ -811,8 +811,8 @@ impl Pair {
         let proxy = ffi::Socks5Proxy::new(&self.candidate);
         let after = match request {
             0 => ffi::pack_negotiate_request(&proxy),
-            1 => ffi::pack_auth_request(&proxy),
-            _ => ffi::pack_connect_request(&proxy),
+            1 => ffi::pack_auth_request(&proxy).map_or(-1, usize::cast_signed),
+            _ => ffi::pack_connect_request(&proxy).map_or(-1, usize::cast_signed),
         };
         (before, after)
     }
@@ -828,7 +828,7 @@ impl Pair {
 /// The candidate header's `handshake`: the step, then its packet through a send that
 /// keeps what it is given in `wire` and returns its length when `sent` is 1, else `sent`.
 fn candidate_handshake(owner: &ProxyState, reply: &[u8], sent: isize, wire: &mut Vec<u8>) -> bool {
-    let n = ffi::socks5_step(&ffi::Socks5Proxy::new(owner), reply);
+    let n = ffi::socks5_step(&ffi::Socks5Proxy::new(owner), reply).map_or(-1, usize::cast_signed);
     n == 0
         || n > 0 && {
             *wire = owner

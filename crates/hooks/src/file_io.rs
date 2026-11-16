@@ -53,7 +53,7 @@ fn open(file: &CStr, flags: c_int) -> Option<File> {
 }
 
 fn flock(file: &File, operation: c_int) -> bool {
-    swoole_rs_corebase::sys::flock(file.as_raw_fd(), operation) == 0
+    swoole_rs_corebase::sys::flock(file.as_raw_fd(), operation).is_ok()
 }
 
 /// `file_get_size`: the size of a regular file.

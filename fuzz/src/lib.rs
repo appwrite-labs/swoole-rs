@@ -268,8 +268,8 @@ pub fn ws_decode(bytes: &[u8]) {
         let got = upstream_ws::Frame {
             payload_length: got.payload_length as u64,
             header_length: got.header_length as u16,
-            opcode: got.opcode,
-            flags: got.flags,
+            opcode: got.opcode.code(),
+            flags: got.flags.bits(),
             length_code: got.length_code,
             mask_key: got.mask_key,
         };
@@ -855,7 +855,7 @@ fn range_candidate(
         modified: flags & 2 != 0,
     };
     let mut context = HttpStaticContext::new(b"/file", 4096).expect("a static context");
-    context.stat(&facade);
+    _ = context.stat(&facade);
     context.parse_range(Some(range), (flags & 1 != 0).then_some(b""), &facade);
     let facts = context.observe();
     let end = context.end_part();

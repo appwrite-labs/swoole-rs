@@ -136,15 +136,16 @@ pub extern "C" fn pack_negotiate_request(proxy: &Socks5Proxy<'_>) -> isize {
     ssize(packet(proxy, Request::Negotiate).size)
 }
 
-/// `ssize_t Socks5Proxy::pack_auth_request()`.
+/// `ssize_t Socks5Proxy::pack_auth_request()`: the packet's size, or `None`.
 #[must_use]
-pub fn pack_auth_request(proxy: &Socks5Proxy<'_>) -> isize {
-    ssize(packet(proxy, Request::Auth).size)
+pub fn pack_auth_request(proxy: &Socks5Proxy<'_>) -> Option<usize> {
+    packet(proxy, Request::Auth).size
 }
 
-/// `ssize_t Socks5Proxy::pack_connect_request()`, with upstream's notices.
+/// `ssize_t Socks5Proxy::pack_connect_request()`, with upstream's notices: the
+/// packet's size, or `None`.
 #[must_use]
-pub fn pack_connect_request(proxy: &Socks5Proxy<'_>) -> isize {
+pub fn pack_connect_request(proxy: &Socks5Proxy<'_>) -> Option<usize> {
     let result = packet(proxy, Request::Connect);
     if result.last_error != 0 {
         log::set_last_error(result.last_error);
@@ -157,7 +158,7 @@ pub fn pack_connect_request(proxy: &Socks5Proxy<'_>) -> isize {
             format_args!("{message}"),
         );
     }
-    ssize(result.size)
+    result.size
 }
 
 /// `ssize_t Socks5Proxy::handshake_step(const char *, size_t)`: applies a server
@@ -175,18 +176,21 @@ pub unsafe extern "C" fn handshake_step(
     length: usize,
 ) -> isize {
     if length == 0 {
-        return socks5_step(proxy, &[]);
+        return ssize(socks5_step(proxy, &[]));
     }
     if data.is_null() || length > isize::MAX as usize {
         return -1;
     }
     // SAFETY: non-null, `length <= isize::MAX`; the caller lends `length` readable bytes.
-    socks5_step(proxy, unsafe { std::slice::from_raw_parts(data, length) })
+    ssize(socks5_step(proxy, unsafe {
+        std::slice::from_raw_parts(data, length)
+    }))
 }
 
-/// [`handshake_step`] over a borrowed reply.
+/// [`handshake_step`] over a borrowed reply: the answering packet's size, 0 when none
+/// is due, `None` on failure.
 #[must_use]
-pub fn socks5_step(proxy: &Socks5Proxy<'_>, reply: &[u8]) -> isize {
+pub fn socks5_step(proxy: &Socks5Proxy<'_>, reply: &[u8]) -> Option<usize> {
     let owner = proxy.owner;
     let fields = owner.fields();
     let notice = |code, message: std::fmt::Arguments<'_>| {
@@ -220,7 +224,7 @@ pub fn socks5_step(proxy: &Socks5Proxy<'_>, reply: &[u8]) -> isize {
                     ),
                 ),
             }
-            return -1;
+            return None;
         }
     };
     // The state advances before packing, as in upstream's member order.
@@ -228,7 +232,7 @@ pub fn socks5_step(proxy: &Socks5Proxy<'_>, reply: &[u8]) -> isize {
     match send {
         Some(SocksSend::Auth) => pack_auth_request(proxy),
         Some(SocksSend::Connect) => pack_connect_request(proxy),
-        None => 0,
+        None => Some(0),
     }
 }
 
@@ -300,7 +304,7 @@ mod tests {
         assert!(owner.set_string(3, &target_host));
         owner.update(|fields| fields.target_port = 80);
 
-        assert_eq!(pack_connect_request(p), 262);
+        assert_eq!(pack_connect_request(p).map_or(-1, usize::cast_signed), 262);
         let buf = owner.with_packet(|packet| *packet).unwrap();
         assert_eq!(buf[3], 0x03);
         assert_eq!(buf[4], u8::MAX);
@@ -309,7 +313,7 @@ mod tests {
         assert_eq!(u16::from_be_bytes([port[0], port[1]]), 80);
 
         assert!(owner.set_string(3, &[b'a'; 256]));
-        assert_eq!(pack_connect_request(p), -1);
+        assert_eq!(pack_connect_request(p).map_or(-1, usize::cast_signed), -1);
         assert_eq!(log::last_error(), HANDSHAKE_FAILED);
     }
 

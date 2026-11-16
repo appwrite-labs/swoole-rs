@@ -72,7 +72,7 @@ pub extern "C" fn php_swoole_pgsql_handle_io_error(
     if first {
         let fd = conn.socket();
         if fd >= 0 {
-            swoole_rs_corebase::sys::shutdown(fd, libc::SHUT_RDWR);
+            _ = swoole_rs_corebase::sys::shutdown(fd, libc::SHUT_RDWR);
             conn.consume_input();
         }
         swr_zend_pdo_forget_persistent(dbh);

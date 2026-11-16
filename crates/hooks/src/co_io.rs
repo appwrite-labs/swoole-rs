@@ -27,8 +27,8 @@ pub struct Host {
     pub read_buffer: fn(Co, &mut crate::packet::ReadBuffer, crate::packet::BufferSync),
     /// `Socket::recv/recv_all` (all selects the latter) into the read String's
     /// free space, which may be uninitialized: how many of its first slots it wrote,
-    /// or 0 or -1. The read buffers count those as written (`crate::buffered`).
-    pub recv: fn(Co, &mut [core::mem::MaybeUninit<u8>], bool) -> isize,
+    /// or None on error. The read buffers count those as written (`crate::buffered`).
+    pub recv: fn(Co, &mut [core::mem::MaybeUninit<u8>], bool) -> Option<usize>,
     /// The protocol's `get_package_length` over the read buffer's first bytes;
     /// writes the header length.
     pub package_length: fn(Co, u32, &mut u32) -> isize,
@@ -207,13 +207,12 @@ mod native {
         });
     }
 
-    fn recv(socket: Co, buf: &mut [core::mem::MaybeUninit<u8>], all: bool) -> isize {
+    fn recv(socket: Co, buf: &mut [core::mem::MaybeUninit<u8>], all: bool) -> Option<usize> {
         if all {
             socket.recv_all(buf)
         } else {
             socket.recv(buf)
         }
-        .map_or(-1, usize::cast_signed)
     }
 
     fn package_length(socket: Co, size: u32, header: &mut u32) -> isize {

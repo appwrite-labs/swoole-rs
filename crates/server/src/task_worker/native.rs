@@ -398,14 +398,11 @@ fn stream_connection(worker: Worker<'_>) -> Option<Socket<'_>> {
 
 /// The result over a stream: its length, big-endian, then its bytes.
 fn send_stream(socket: Socket<'_>, data: &[u8]) -> Option<usize> {
-    let send =
-        |data: &[u8]| usize::try_from(swoole_rs_tls::upstream::send_sync(socket, data, 0)).ok();
+    let send = |data: &[u8]| swoole_rs_tls::upstream::send_sync(socket, data, 0);
     match send(&data.len().c_cast::<u32>().to_be_bytes())? {
         0 => Some(0),
         _ => send(data),
     }
 }
 
-fn errno() -> c_int {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+use swoole_rs_corebase::sys::errno;

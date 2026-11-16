@@ -51,10 +51,7 @@ impl HttpStaticContext {
                 if let Some(value) = value
                     && value.len() < self.capacity
                 {
-                    let status = self.publish(Filename, value);
-                    if status < 0 {
-                        return Err(status);
-                    }
+                    self.publish(Filename, value)?;
                     self.serve.facts |= path::CANONICAL_OK;
                 }
             }

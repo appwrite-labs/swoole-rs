@@ -1079,7 +1079,7 @@ fn http2(conn: &mut Connection, mut context: Ctx) -> Result<(), bailout::Bailout
         loop {
             // The frame stays in the read buffer.
             let retval = recv_packet(conn.socket, 0.0);
-            if retval <= 0 || !(server.session_receive)(fd, conn.buffer().view()) {
+            if retval <= Some(0) || !(server.session_receive)(fd, conn.buffer().view()) {
                 break;
             }
             if bailout::pending() {

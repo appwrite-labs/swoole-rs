@@ -29,8 +29,9 @@ pub trait SyncEffects {
     fn prepare(&self);
     /// `what_event_want(event)` as poll bits.
     fn events(&self, event: crate::Events) -> i16;
-    /// One I/O call on the bytes the call has left.
-    fn io(&mut self, flags: c_int) -> isize;
+    /// One I/O call on the bytes the call has left: how many it moved, or None with
+    /// errno set.
+    fn io(&mut self, flags: c_int) -> Option<usize>;
     /// Steps past the `moved` bytes the last call moved: whether any are left.
     fn advance(&mut self, moved: usize) -> bool;
     /// `catch_error(error)` over the socket's `kernel_nobufs`, which it sets on ENOBUFS.
@@ -53,14 +54,14 @@ pub(crate) use swoole_rs_corebase::sys::set_errno;
 /// `Socket::wait_for`'s loop around `mode`'s progress rule on the bytes `hooks`
 /// holds, waiting for `event` up to `timeout_ms` (no limit unless positive;
 /// the elapsed time since the start is subtracted on every wait, as upstream does).
-/// Returns the bytes moved, or -1 with the last error and errno set.
+/// Returns the bytes moved, or None with the last error and errno set.
 pub fn swr_v1_socket_sync(
     hooks: &mut impl SyncEffects,
     mode: SyncMode,
     flags: c_int,
     event: crate::Events,
     mut timeout_ms: c_int,
-) -> isize {
+) -> Option<usize> {
     let began = Instant::now();
     hooks.prepare();
     let mut bytes: usize = 0;
@@ -70,9 +71,8 @@ pub fn swr_v1_socket_sync(
         flags
     };
     loop {
-        let n = hooks.io(call_flags);
-        let step = match n.cmp(&0) {
-            core::cmp::Ordering::Less => {
+        let step = match hooks.io(call_flags) {
+            None => {
                 let error = errno();
                 let retry = error == libc::EINTR || hooks.catch_error(error) == crate::Caught::Wait;
                 if retry {
@@ -82,10 +82,9 @@ pub fn swr_v1_socket_sync(
                     Step::Error
                 }
             }
-            core::cmp::Ordering::Equal if mode == SyncMode::Sendfile => Step::Error,
-            core::cmp::Ordering::Equal => Step::Ready,
-            core::cmp::Ordering::Greater => {
-                let moved = n.cast_unsigned();
+            Some(0) if mode == SyncMode::Sendfile => Step::Error,
+            Some(0) => Step::Ready,
+            Some(moved) => {
                 bytes += moved;
                 // Only a call that goes on steps past what it moved: `SyncMode::Once` (and a
                 // `recv` without `MSG_WAITALL`) ends here.
@@ -98,8 +97,8 @@ pub fn swr_v1_socket_sync(
             }
         };
         match step {
-            Step::Error => return -1,
-            Step::Ready => return bytes.cast_signed(),
+            Step::Error => return None,
+            Step::Ready => return Some(bytes),
             Step::Continue => {
                 if hooks.take_nobufs() {
                     std::thread::sleep(Duration::from_millis(10));
@@ -111,7 +110,7 @@ pub fn swr_v1_socket_sync(
         if let Err(error) = crate::fd_wait(hooks.fd(), events, timeout_ms, hooks.dont_restart()) {
             hooks.set_last_error(error.last_error());
             set_errno(error.errno());
-            return -1;
+            return None;
         }
         if timeout_ms > 0 {
             let elapsed = began.elapsed().as_millis().c_cast::<c_int>();
@@ -119,7 +118,7 @@ pub fn swr_v1_socket_sync(
             if timeout_ms <= 0 {
                 hooks.set_last_error(libc::ETIMEDOUT);
                 set_errno(libc::ETIMEDOUT);
-                return -1;
+                return None;
             }
         }
     }
@@ -136,7 +135,7 @@ mod tests {
         fd: c_int,
         kernel_nobufs: *mut bool,
         events: fn() -> i16,
-        io: fn(usize, c_int) -> isize,
+        io: fn(usize, c_int) -> Option<usize>,
         /// The bytes the call has left.
         left: usize,
     }
@@ -152,7 +151,7 @@ mod tests {
         fn events(&self, _: crate::Events) -> i16 {
             (self.events)()
         }
-        fn io(&mut self, flags: c_int) -> isize {
+        fn io(&mut self, flags: c_int) -> Option<usize> {
             (self.io)(self.left, flags)
         }
         fn advance(&mut self, moved: usize) -> bool {
@@ -182,16 +181,20 @@ mod tests {
         libc::POLLOUT
     }
     /// Moves at most 3 bytes per call.
-    fn three(length: usize, flags: c_int) -> isize {
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "an I/O hook, whose type returns None on error"
+    )]
+    fn three(length: usize, flags: c_int) -> Option<usize> {
         CALLS.with(|calls| calls.borrow_mut().push((length, flags)));
-        length.min(3).cast_signed()
+        Some(length.min(3))
     }
-    fn fails(_: usize, _: c_int) -> isize {
+    fn fails(_: usize, _: c_int) -> Option<usize> {
         set_errno(libc::ECONNRESET);
-        -1
+        None
     }
 
-    fn hooks(fd: c_int, nobufs: &mut bool, io: fn(usize, c_int) -> isize) -> SyncHooks {
+    fn hooks(fd: c_int, nobufs: &mut bool, io: fn(usize, c_int) -> Option<usize>) -> SyncHooks {
         SyncHooks {
             fd,
             kernel_nobufs: nobufs,
@@ -206,7 +209,7 @@ mod tests {
         mode: SyncMode,
         length: usize,
         flags: c_int,
-    ) -> (isize, Vec<(usize, c_int)>) {
+    ) -> (Option<usize>, Vec<(usize, c_int)>) {
         CALLS.with(|calls| calls.borrow_mut().clear());
         let mut hooks = SyncHooks {
             left: length,
@@ -228,32 +231,32 @@ mod tests {
         let hooks = hooks(fds[0], &mut nobufs, three);
         assert_eq!(
             run(&hooks, SyncMode::Send, 7, 0),
-            (7, vec![(7, 0), (4, 0), (1, 0)]),
+            (Some(7), vec![(7, 0), (4, 0), (1, 0)]),
             "send retries short writes"
         );
         assert_eq!(
             run(&hooks, SyncMode::Sendfile, 5, 0),
-            (5, vec![(5, 0), (2, 0)])
+            (Some(5), vec![(5, 0), (2, 0)])
         );
         assert_eq!(
             run(&hooks, SyncMode::Once, 7, 9),
-            (3, vec![(7, 9)]),
+            (Some(3), vec![(7, 9)]),
             "one call"
         );
         assert_eq!(
             run(&hooks, SyncMode::Recv, 7, 0),
-            (3, vec![(7, 0)]),
+            (Some(3), vec![(7, 0)]),
             "recv returns what one call read"
         );
         let waitall = libc::MSG_WAITALL | 1;
         assert_eq!(
             run(&hooks, SyncMode::Recv, 7, waitall),
-            (7, vec![(7, 1), (4, 1), (1, 1)]),
+            (Some(7), vec![(7, 1), (4, 1), (1, 1)]),
             "WAITALL loops, cleared per call"
         );
 
         let hooks = SyncHooks { io: fails, ..hooks };
-        assert_eq!(run(&hooks, SyncMode::Send, 7, 0).0, -1);
+        assert_eq!(run(&hooks, SyncMode::Send, 7, 0).0, None);
         assert_eq!(LAST_ERROR.with(|last| *last.borrow()), libc::ECONNRESET);
         // SAFETY: closes the pair this test opened.
         unsafe {
@@ -264,9 +267,9 @@ mod tests {
 
     #[test]
     fn times_out_waiting() {
-        fn again(_: usize, _: c_int) -> isize {
+        fn again(_: usize, _: c_int) -> Option<usize> {
             set_errno(libc::EAGAIN);
-            -1
+            None
         }
         fn readable() -> i16 {
             libc::POLLIN
@@ -290,7 +293,7 @@ mod tests {
             crate::Events::from_bits(1),
             20,
         );
-        assert_eq!((result, errno()), (-1, libc::EAGAIN));
+        assert_eq!((result, errno()), (None, libc::EAGAIN));
         assert_eq!(
             LAST_ERROR.with(|last| *last.borrow()),
             crate::socket_io::POLL_TIMEOUT
@@ -321,15 +324,15 @@ mod tests {
             fn events(&self, _: crate::Events) -> i16 {
                 libc::POLLIN
             }
-            fn io(&mut self, _: c_int) -> isize {
+            fn io(&mut self, _: c_int) -> Option<usize> {
                 // The first call swaps in the readable descriptor and would block.
                 let (now, next) = FD.with(std::cell::Cell::get);
                 if now == next {
-                    return self.0.left.cast_signed();
+                    return Some(self.0.left);
                 }
                 FD.with(|fd| fd.set((next, next)));
                 set_errno(libc::EAGAIN);
-                -1
+                None
             }
             fn advance(&mut self, moved: usize) -> bool {
                 self.0.advance(moved)
@@ -366,7 +369,7 @@ mod tests {
             crate::Events::from_bits(1),
             1000,
         );
-        assert_eq!(result, 4, "the wait polled the swapped descriptor");
+        assert_eq!(result, Some(4), "the wait polled the swapped descriptor");
         // SAFETY: closes the pairs this test opened.
         unsafe {
             for fd in idle.into_iter().chain(ready) {

@@ -1222,7 +1222,7 @@ fn accept() {
 
                 // getsockname(server_sock, &actual_server_addr, &addr_len)
                 let mut actual_server_addr = SocketAddress::default();
-                assert_eq!(actual_server_addr.local_name(server_sock), 0);
+                assert!(actual_server_addr.local_name(server_sock).is_ok());
                 assert_eq!(hooked::connect(client_sock, &actual_server_addr), 0);
 
                 let test_message = b"test_data";

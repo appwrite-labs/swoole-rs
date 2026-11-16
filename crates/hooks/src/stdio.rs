@@ -173,8 +173,8 @@ fn ring(gate: fn(&Host) -> bool) -> Option<&'static crate::uring::Host> {
 /// dereference the caller's pointers, `fd ring` one over plain values.
 macro_rules! hooked {
     ($($name:ident($($arg:ident: $ty:ty),*) -> $ret:ty, refused $refused:expr
-        $(, ring $gate:expr => $ring:ident($($ring_arg:expr),*))?
-        $(, fd ring $fd_gate:expr => $fd_ring:ident($($fd_ring_arg:expr),*))? => $call:expr;)*) => {$(
+        $(, ring $gate:expr => $ring:ident($($ring_arg:expr),*) map $ring_map:expr)?
+        $(, fd ring $fd_gate:expr => $fd_ring:ident($($fd_ring_arg:expr),*) map $fd_map:expr)? => $call:expr;)*) => {$(
         #[doc = concat!("Hooked `", stringify!($call), "`: inside a coroutine it runs on the pool",
             $(", or as `", stringify!($ring), "` on `io_uring`",)?
             $(", or as `", stringify!($fd_ring), "` on `io_uring`",)? ".")]
@@ -187,13 +187,13 @@ macro_rules! hooked {
                 #[cfg(feature = "iouring")]
                 if let Some(ring) = ring($gate) {
                     // SAFETY: the caller's arguments are valid for the call.
-                    return unsafe { crate::uring::$ring(ring, $($ring_arg),*) };
+                    return unsafe { crate::uring::$ring(ring, $($ring_arg),*) }.map_or(-1, $ring_map);
                 }
             )?
             $(
                 #[cfg(feature = "iouring")]
                 if let Some(ring) = ring($fd_gate) {
-                    return crate::uring::$fd_ring(ring, $($fd_ring_arg),*);
+                    return crate::uring::$fd_ring(ring, $($fd_ring_arg),*).map_or(-1, $fd_map);
                 }
             )?
             // SAFETY: the caller's arguments are valid for the libc call.
@@ -219,26 +219,26 @@ hooked! {
     swoole_coroutine_readdir(dirp: *mut DIR) -> *mut dirent, refused std::ptr::null_mut() => libc::readdir(dirp);
     swoole_coroutine_closedir(dirp: *mut DIR) -> c_int, refused -1 => libc::closedir(dirp);
     swoole_coroutine_open(pathname: *const c_char, flags: c_int, mode: mode_t) -> c_int, refused -1,
-        ring |_| true => open_file(std::ffi::CStr::from_ptr(pathname), flags, mode) => libc::open(pathname, flags, c_uint::from(mode));
+        ring |_| true => open_file(std::ffi::CStr::from_ptr(pathname), flags, mode) map std::convert::identity => libc::open(pathname, flags, c_uint::from(mode));
     swoole_coroutine_fstat(fd: c_int, statbuf: *mut stat) -> c_int, refused -1,
-        ring |host| host.uring_statx => fstat(fd, &mut *statbuf) => libc::fstat(fd, statbuf);
+        ring |host| host.uring_statx => fstat(fd, &mut *statbuf) map |()| 0 => libc::fstat(fd, statbuf);
     swoole_coroutine_stat(path: *const c_char, statbuf: *mut stat) -> c_int, refused -1,
-        ring |host| host.uring_statx => stat(std::ffi::CStr::from_ptr(path), &mut *statbuf) => libc::stat(path, statbuf);
+        ring |host| host.uring_statx => stat(std::ffi::CStr::from_ptr(path), &mut *statbuf) map |()| 0 => libc::stat(path, statbuf);
     // Upstream's io_uring lstat is its stat.
     swoole_coroutine_lstat(path: *const c_char, statbuf: *mut stat) -> c_int, refused -1,
-        ring |host| host.uring_statx => stat(std::ffi::CStr::from_ptr(path), &mut *statbuf) => libc::lstat(path, statbuf);
+        ring |host| host.uring_statx => stat(std::ffi::CStr::from_ptr(path), &mut *statbuf) map |()| 0 => libc::lstat(path, statbuf);
     swoole_coroutine_unlink(pathname: *const c_char) -> c_int, refused -1,
-        ring |_| true => unlink(std::ffi::CStr::from_ptr(pathname)) => libc::unlink(pathname);
+        ring |_| true => unlink(std::ffi::CStr::from_ptr(pathname)) map |()| 0 => libc::unlink(pathname);
     swoole_coroutine_mkdir(pathname: *const c_char, mode: mode_t) -> c_int, refused -1,
-        ring |_| true => mkdir(std::ffi::CStr::from_ptr(pathname), mode) => libc::mkdir(pathname, mode);
+        ring |_| true => mkdir(std::ffi::CStr::from_ptr(pathname), mode) map |()| 0 => libc::mkdir(pathname, mode);
     swoole_coroutine_rmdir(pathname: *const c_char) -> c_int, refused -1,
-        ring |_| true => rmdir(std::ffi::CStr::from_ptr(pathname)) => libc::rmdir(pathname);
+        ring |_| true => rmdir(std::ffi::CStr::from_ptr(pathname)) map |()| 0 => libc::rmdir(pathname);
     swoole_coroutine_rename(oldpath: *const c_char, newpath: *const c_char) -> c_int, refused -1,
-        ring |_| true => rename(std::ffi::CStr::from_ptr(oldpath), std::ffi::CStr::from_ptr(newpath)) => libc::rename(oldpath, newpath);
+        ring |_| true => rename(std::ffi::CStr::from_ptr(oldpath), std::ffi::CStr::from_ptr(newpath)) map |()| 0 => libc::rename(oldpath, newpath);
     swoole_coroutine_fsync(fd: c_int) -> c_int, refused -1,
-        fd ring |_| true => fsync(fd) => libc::fsync(fd);
+        fd ring |_| true => fsync(fd) map |()| 0 => libc::fsync(fd);
     swoole_coroutine_ftruncate(fd: c_int, length: off_t) -> c_int, refused -1,
-        fd ring |host| host.uring_ftruncate => ftruncate(fd, length) => libc::ftruncate(fd, length);
+        fd ring |host| host.uring_ftruncate => ftruncate(fd, length) map |()| 0 => libc::ftruncate(fd, length);
     swoole_coroutine_lseek(fd: c_int, offset: off_t, whence: c_int) -> off_t, refused -1 => libc::lseek(fd, offset, whence);
     swoole_coroutine_readlink(pathname: *const c_char, buf: *mut c_char, len: size_t) -> ssize_t, refused -1 => libc::readlink(pathname, buf, len);
     swoole_coroutine_statvfs(path: *const c_char, buf: *mut statvfs) -> c_int, refused -1 => libc::statvfs(path, buf);
@@ -249,18 +249,20 @@ hooked! {
 #[cfg(target_vendor = "apple")]
 hooked! {
     swoole_coroutine_fdatasync(fd: c_int) -> c_int, refused -1,
-        fd ring |_| true => fdatasync(fd) => libc::fcntl(fd, libc::F_FULLFSYNC, 0);
+        fd ring |_| true => fdatasync(fd) map |()| 0 => libc::fcntl(fd, libc::F_FULLFSYNC, 0);
 }
 #[cfg(not(target_vendor = "apple"))]
 hooked! {
     swoole_coroutine_fdatasync(fd: c_int) -> c_int, refused -1,
-        fd ring |_| true => fdatasync(fd) => libc::fdatasync(fd);
+        fd ring |_| true => fdatasync(fd) map |()| 0 => libc::fdatasync(fd);
 }
 
 /// Hooked `close` of an fd that is no coroutine socket, on the pool (`offload`).
 #[must_use]
 pub fn swr_v1_hook_close_fd(fd: c_int, offload: Option<Offload>) -> c_int {
-    on_pool(offload, -1, || swoole_rs_corebase::sys::close(fd))
+    on_pool(offload, -1, || {
+        swoole_rs_corebase::sys::close(fd).map_or(-1, |()| 0)
+    })
 }
 
 /// Hooked `sleep`: `System::sleep` (fatal outside a coroutine, as upstream).

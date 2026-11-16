@@ -9,37 +9,46 @@ mod codec;
 pub mod sha1;
 pub use codec::*;
 
-/// `swoole::websocket::Opcode`: a frame's opcode.
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A frame opcode, including reserved values carried through native boundaries.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Opcode {
-    Continuation = 0,
-    Text = 1,
-    Binary = 2,
-    Close = 8,
-    Ping = 9,
-    Pong = 10,
+    #[default]
+    Continuation,
+    Text,
+    Binary,
+    Close,
+    Ping,
+    Pong,
+    Reserved(u8),
 }
 
 impl Opcode {
-    /// The opcode `code` names, `None` for a reserved one.
+    /// Interpret a raw opcode without discarding reserved values.
     #[must_use]
-    pub const fn from_code(code: u8) -> Option<Self> {
-        Some(match code {
+    pub const fn from_code(code: u8) -> Self {
+        match code {
             0 => Self::Continuation,
             1 => Self::Text,
             2 => Self::Binary,
             8 => Self::Close,
             9 => Self::Ping,
             10 => Self::Pong,
-            _ => return None,
-        })
+            other => Self::Reserved(other),
+        }
     }
 
-    /// The opcode's wire code.
+    /// The opcode's original code.
     #[must_use]
     pub const fn code(self) -> u8 {
-        self as u8
+        match self {
+            Self::Continuation => 0,
+            Self::Text => 1,
+            Self::Binary => 2,
+            Self::Close => 8,
+            Self::Ping => 9,
+            Self::Pong => 10,
+            Self::Reserved(code) => code,
+        }
     }
 
     /// Close, ping or pong.

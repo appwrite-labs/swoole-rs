@@ -54,7 +54,7 @@ pub fn swr_v1_timer_system_set(milliseconds: i64) -> c_int {
         it_value: every,
     };
     // The old value is not wanted.
-    if swoole_rs_corebase::sys::setitimer(libc::ITIMER_REAL, &value) < 0 {
+    if swoole_rs_corebase::sys::setitimer(libc::ITIMER_REAL, &value).is_err() {
         -1
     } else {
         0

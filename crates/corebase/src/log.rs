@@ -82,9 +82,7 @@ pub fn swr_v1_core_set_log_host(host: LogHost) {
     HOST.get_or_init(|| host);
 }
 
-fn errno() -> c_int {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+use crate::sys::errno;
 
 fn emit(kind: LogKind, level: c_int, code: c_int, origin: &CStr, message: fmt::Arguments<'_>) {
     let Some(host) = HOST.get() else { return };

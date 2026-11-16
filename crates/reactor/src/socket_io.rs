@@ -2,13 +2,9 @@
 //! `wait_event`'s poll, `clean`, `recvfrom`, `accept` and `connect`. Callers keep
 //! the `Socket` fields, the last-error slot and signal dispatch, which they pass in.
 use crate::SocketAddress;
-use std::io::Error;
 use std::os::raw::c_int;
 use swoole_rs_corebase::CCast;
-
-fn errno() -> c_int {
-    Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+use swoole_rs_corebase::sys::errno;
 
 /// Why a wait or connect is not ready.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,7 +101,9 @@ pub fn fd_accept(fd: c_int, address: &mut SocketAddress, nonblock: bool) -> (c_i
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let accepted = address.accept(fd);
+        let accepted = address
+            .accept(fd)
+            .map_or(-1, std::os::fd::IntoRawFd::into_raw_fd);
         let cloexec =
             accepted >= 0 && crate::swr_v1_socket_fd_option(fd, Some(nonblock), Some(true)).ok;
         (accepted, cloexec)
@@ -258,7 +256,7 @@ mod tests {
             ..SocketAddress::default()
         };
         let n = crate::Fill::new(&mut buffer).recvfrom(a, 0, &mut address);
-        assert_eq!(&buffer[..n.cast_unsigned()], b"hello");
+        assert_eq!(&buffer[..n.unwrap()], b"hello");
         close(&[a, b]);
     }
 

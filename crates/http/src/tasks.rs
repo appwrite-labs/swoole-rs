@@ -32,12 +32,10 @@ impl HttpTasks {
         self.scratch = HttpStaticTask::default();
     }
     /// Commit the prepared value with fallible admission; error publishes no task.
-    pub(crate) fn push(&mut self) -> i32 {
-        if self.items.try_reserve(1).is_err() {
-            return ALLOCATION;
-        }
+    pub(crate) fn push(&mut self) -> Result<(), i32> {
+        self.items.try_reserve(1).map_err(|_| ALLOCATION)?;
         self.items.push(self.scratch);
-        0
+        Ok(())
     }
     pub(crate) fn count(&self) -> usize {
         self.items.len()
@@ -66,7 +64,7 @@ impl HttpTasks {
         length: usize,
         format: &HttpRangeFormat<'_>,
         written: &mut usize,
-    ) -> i32 {
+    ) -> Result<bool, i32> {
         self.prepare_full(offset, length);
         range_format(format, &mut self.scratch.part_header, written)
     }
@@ -90,9 +88,9 @@ mod tests {
             separator: false,
         };
         let mut written = 0;
-        assert_eq!(owner.prepare_range(3, 5, &format, &mut written), 0);
+        assert_eq!(owner.prepare_range(3, 5, &format, &mut written), Ok(false));
         assert!(written > 0);
-        assert_eq!(owner.push(), 0);
+        assert_eq!(owner.push(), Ok(()));
         boundary.fill(b'x');
         let snapshot = owner.items()[0];
         assert!(
@@ -104,7 +102,7 @@ mod tests {
         owner.clear();
         assert_eq!(owner.count(), 0);
         owner.prepare_full(0, 100);
-        assert_eq!(owner.push(), 0);
+        assert_eq!(owner.push(), Ok(()));
         let full = owner.items()[0];
         assert_eq!(full.part_header, snapshot.part_header);
         assert_eq!(full.offset, 0);

@@ -103,8 +103,9 @@ pub trait Connecting {
     /// Packs the HTTP CONNECT request into the write buffer, and returns it.
     fn http_request(&mut self) -> Vec<u8>;
     /// Receives the HTTP proxy's response head (`recv_packet` under a "\r\n\r\n"
-    /// protocol): its result, and whether `HttpProxy::handshake` accepts it.
-    fn http_response(&mut self) -> (isize, bool);
+    /// protocol): whether it received a head, and whether `HttpProxy::handshake`
+    /// accepts it.
+    fn http_response(&mut self) -> (bool, bool);
     /// Clears the write buffer, and the read buffer when `received`.
     fn http_done(&mut self, received: bool);
     /// `ssl_is_server = false`.
@@ -175,7 +176,7 @@ fn http(ops: &mut impl Connecting) -> bool {
         return false;
     }
     let (received, accepted) = ops.http_response();
-    if received > 0 && !accepted {
+    if received && !accepted {
         // Upstream reports the request as the response too.
         let mut text = b"wrong http_proxy response received, \n[Request]: ".to_vec();
         text.extend_from_slice(&request);
@@ -184,7 +185,7 @@ fn http(ops: &mut impl Connecting) -> bool {
         ops.set_err_text(HTTP_PROXY_BAD_RESPONSE, Some(&text));
     }
     ops.http_done(true);
-    received > 0 && accepted
+    received && accepted
 }
 
 /// `Socket::connect(host, port)` over `ops`.
@@ -286,8 +287,8 @@ impl Live<'_> {
     }
 
     /// The SOCKS5 packet's first `length` bytes.
-    fn socks5_packet(&self, length: isize) -> Vec<u8> {
-        let length = usize::try_from(length).unwrap_or(0).min(512);
+    fn socks5_packet(&self, length: Option<usize>) -> Vec<u8> {
+        let length = length.unwrap_or(0).min(512);
         self.socks5
             .and_then(|proxy| {
                 proxy.with_packet(|packet| packet.get(..length).unwrap_or_default().to_vec())
@@ -443,15 +444,15 @@ impl Connecting for Live<'_> {
         let Some(owner) = self.socks5 else {
             return Vec::new();
         };
-        let length = pack_negotiate_request(&Socks5Proxy::new(owner));
+        let length = usize::try_from(pack_negotiate_request(&Socks5Proxy::new(owner))).ok();
         owner.update(|fields| fields.state = SOCKS5_HANDSHAKE);
         self.socks5_packet(length)
     }
 
     fn socks5_step(&mut self, reply: &[u8]) -> Option<bool> {
         let owner = self.socks5?;
-        let n = swoole_rs_protocols_ffi::socks5_step(&Socks5Proxy::new(owner), reply);
-        if n < 0 || (n > 0 && self.send(&self.socks5_packet(n)) != usize::try_from(n).ok()) {
+        let n = swoole_rs_protocols_ffi::socks5_step(&Socks5Proxy::new(owner), reply)?;
+        if n > 0 && self.send(&self.socks5_packet(Some(n))) != Some(n) {
             return None;
         }
         Some(owner.fields().state == SOCKS5_READY)
@@ -475,7 +476,7 @@ impl Connecting for Live<'_> {
         })
     }
 
-    fn http_response(&mut self) -> (isize, bool) {
+    fn http_response(&mut self) -> (bool, bool) {
         let scope = ProtocolScope::new(self.socket);
         self.socket.set_open_eof_check(true);
         self.socket.set_open_length_check(false);
@@ -483,13 +484,13 @@ impl Connecting for Live<'_> {
         protocol.package_eof_len = 4;
         protocol.package_eof = *b"\r\n\r\n\0\0\0\0";
         self.socket.set_protocol(protocol);
-        let n = recv_packet(self.socket, 0.0);
-        let accepted = n > 0
+        let received = recv_packet(self.socket, 0.0) > Some(0);
+        let accepted = received
             && self
                 .socket
                 .with_buffer(false, |read| proxy_accept(read.view()));
         drop(scope);
-        (n, accepted)
+        (received, accepted)
     }
 
     fn http_done(&mut self, received: bool) {
@@ -799,9 +800,9 @@ mod tests {
             take("request", 7);
             b"CONNECT".to_vec()
         }
-        fn http_response(&mut self) -> (isize, bool) {
+        fn http_response(&mut self) -> (bool, bool) {
             let accepted = take("accepted", 1) != 0;
-            (take("response", 10), accepted)
+            (take("response", 10) > 0, accepted)
         }
         fn http_done(&mut self, received: bool) {
             log(format!("done {received}"));

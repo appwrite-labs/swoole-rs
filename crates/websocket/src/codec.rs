@@ -9,12 +9,56 @@ const RSV1: u8 = 4;
 const MASK: u8 = 32;
 const HEADER_ONLY: u8 = 64;
 const MASK_KEY: [u8; 4] = *b"258E";
+/// Frame flags in the pinned protocol's bit positions, including reserved bits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FrameFlags(u8);
+
+impl FrameFlags {
+    #[must_use]
+    pub const fn from_bits(bits: u8) -> Self {
+        Self(bits)
+    }
+
+    #[must_use]
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
+    #[must_use]
+    pub const fn is_final(self) -> bool {
+        self.0 & FIN != 0
+    }
+
+    #[must_use]
+    pub const fn is_compressed(self) -> bool {
+        self.0 & RSV1 != 0
+    }
+
+    #[must_use]
+    pub const fn is_masked(self) -> bool {
+        self.0 & MASK != 0
+    }
+
+    /// Finish a fragmented message without changing its other flags.
+    #[must_use]
+    pub const fn with_final(self) -> Self {
+        Self(self.0 | FIN)
+    }
+}
+
+/// The initial frame's facts retained across message fragments.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FrameMetadata {
+    pub opcode: Opcode,
+    pub flags: FrameFlags,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DecodedFrame {
     pub payload_length: usize,
     pub header_length: usize,
-    pub opcode: u8,
-    pub flags: u8,
+    pub opcode: Opcode,
+    pub flags: FrameFlags,
     pub length_code: u8,
     pub mask_key: [u8; 4],
 }
@@ -34,12 +78,14 @@ pub struct DecodeError {
     pub frame: DecodedFrame,
 }
 
-fn flags(first: u8, second: u8) -> u8 {
-    ((first >> 7) & FIN)
-        | ((first >> 4) & 4)
-        | ((first >> 2) & 8)
-        | (first & 16)
-        | ((second >> 2) & MASK)
+fn flags(first: u8, second: u8) -> FrameFlags {
+    FrameFlags::from_bits(
+        ((first >> 7) & FIN)
+            | ((first >> 4) & 4)
+            | ((first >> 2) & 8)
+            | (first & 16)
+            | ((second >> 2) & MASK),
+    )
 }
 
 /// Decode one frame, unmasking only a complete payload. Trailing bytes are left
@@ -61,7 +107,7 @@ pub fn decode_in_place(data: &mut [u8]) -> Result<DecodedFrame, DecodeError> {
         ..DecodedFrame::default()
     };
     if let [first, second, ..] = *data {
-        frame.opcode = first & 15;
+        frame.opcode = Opcode::from_code(first & 15);
         frame.flags = flags(first, second);
         frame.length_code = second & 127;
     }
@@ -81,7 +127,7 @@ pub fn decode_in_place(data: &mut [u8]) -> Result<DecodedFrame, DecodeError> {
             frame,
         });
     }
-    if is_control(frame.opcode) && frame.flags & RSV1 != 0 {
+    if frame.opcode.is_control() && frame.flags.is_compressed() {
         return Err(DecodeError {
             kind: DecodeErrorKind::CompressedControl,
             frame,
@@ -89,7 +135,7 @@ pub fn decode_in_place(data: &mut [u8]) -> Result<DecodedFrame, DecodeError> {
     }
     let at = frame.header_length;
     if frame.payload_length != 0
-        && frame.flags & MASK != 0
+        && frame.flags.is_masked()
         && let Some(key) = data.get(at.wrapping_sub(4)..at)
         && let Ok(key) = <[u8; 4]>::try_from(key)
         && let Some(payload) = data.get_mut(at..size)
@@ -100,14 +146,10 @@ pub fn decode_in_place(data: &mut [u8]) -> Result<DecodedFrame, DecodeError> {
     Ok(frame)
 }
 
-fn is_control(opcode: u8) -> bool {
-    Opcode::from_code(opcode).is_some_and(Opcode::is_control)
-}
-
 /// Close, ping and pong frames must be final and carry at most 125 bytes.
 #[must_use]
 pub fn control_invalid(opcode: u8, flags: u8, length: usize) -> bool {
-    is_control(opcode) && (flags & FIN == 0 || length > 125)
+    Opcode::from_code(opcode).is_control() && (flags & FIN == 0 || length > 125)
 }
 
 /// Why a frame could not be encoded. Rejected inputs leave the output untouched.
@@ -230,7 +272,7 @@ pub fn encode_close_into(
 pub struct Context {
     pub fragment_length: usize,
     pub package_max_length: usize,
-    pub fragment_flags: u16,
+    pub fragment: FrameMetadata,
     pub has_fragment: bool,
     pub closing: bool,
 }
@@ -268,7 +310,7 @@ pub struct Decision {
     pub length: usize,
     pub action: Action,
     pub error: PolicyError,
-    pub ext_flags: u16,
+    pub metadata: FrameMetadata,
 }
 
 #[inline]
@@ -276,19 +318,22 @@ fn decide(frame: DecodedFrame, wire: usize, context: Context) -> Decision {
     use Action::{
         Append, ClientClose, Control, Dispatch, Finish, Reject, ServerClose, Start, Unknown,
     };
-    use Opcode::{Binary, Close, Continuation, Ping, Pong, Text};
+    use Opcode::{Binary, Close, Continuation, Ping, Pong, Reserved, Text};
     use PolicyError as Error;
     let mut result = Decision {
         offset: wire - frame.payload_length,
         length: frame.payload_length,
-        ext_flags: (u16::from(frame.opcode) << 8) | u16::from(frame.flags),
+        metadata: FrameMetadata {
+            opcode: frame.opcode,
+            flags: frame.flags,
+        },
         ..Decision::default()
     };
     // Keep upstream's wire-size limits and unusual control offsets verbatim.
     // These are compatibility policy, not RFC validation.
-    let (action, error) = match Opcode::from_code(frame.opcode) {
-        Some(Continuation) if !context.has_fragment => (Reject, Error::Orphan),
-        Some(Continuation)
+    let (action, error) = match frame.opcode {
+        Continuation if !context.has_fragment => (Reject, Error::Orphan),
+        Continuation
             if context
                 .fragment_length
                 .checked_add(frame.payload_length)
@@ -296,21 +341,24 @@ fn decide(frame: DecodedFrame, wire: usize, context: Context) -> Decision {
         {
             (Reject, Error::TooBig)
         }
-        Some(Continuation) if frame.flags & FIN != 0 => {
-            result.ext_flags = context.fragment_flags | u16::from(FIN);
+        Continuation if frame.flags.is_final() => {
+            result.metadata = FrameMetadata {
+                flags: context.fragment.flags.with_final(),
+                ..context.fragment
+            };
             (Finish, Error::None)
         }
-        Some(Continuation) => (Append, Error::None),
-        Some(Text | Binary) if frame.flags & FIN == 0 && context.has_fragment => {
+        Continuation => (Append, Error::None),
+        Text | Binary if !frame.flags.is_final() && context.has_fragment => {
             (Reject, Error::Overlap)
         }
-        Some(Text | Binary) if frame.flags & FIN == 0 => (Start, Error::None),
-        Some(Text | Binary) => (Dispatch, Error::None),
-        Some(Ping | Pong) if wire >= 127 => (Reject, Error::ControlTooBig),
-        Some(Ping | Pong) => {
+        Text | Binary if !frame.flags.is_final() => (Start, Error::None),
+        Text | Binary => (Dispatch, Error::None),
+        Ping | Pong if wire >= 127 => (Reject, Error::ControlTooBig),
+        Ping | Pong => {
             result.offset = if wire == 2 {
                 2
-            } else if frame.flags & MASK != 0 {
+            } else if frame.flags.is_masked() {
                 6
             } else {
                 2
@@ -318,10 +366,10 @@ fn decide(frame: DecodedFrame, wire: usize, context: Context) -> Decision {
             result.length = wire - result.offset;
             (Control, Error::None)
         }
-        Some(Close) if wire - 2 > 125 => (Reject, Error::CloseTooBig),
-        Some(Close) if context.closing => (ServerClose, Error::None),
-        Some(Close) => (ClientClose, Error::None),
-        None => (Unknown, Error::None),
+        Close if wire - 2 > 125 => (Reject, Error::CloseTooBig),
+        Close if context.closing => (ServerClose, Error::None),
+        Close => (ClientClose, Error::None),
+        Reserved(_) => (Unknown, Error::None),
     };
     result.action = action;
     result.error = error;
@@ -333,7 +381,7 @@ fn decide(frame: DecodedFrame, wire: usize, context: Context) -> Decision {
 #[inline]
 #[must_use]
 pub fn decide_frame(frame: &DecodedFrame, wire: usize, context: &Context) -> Option<Decision> {
-    if frame.header_length < if frame.flags & MASK != 0 { 6 } else { 2 }
+    if frame.header_length < if frame.flags.is_masked() { 6 } else { 2 }
         || frame.header_length > wire
         || frame.payload_length > wire - frame.header_length
     {
@@ -351,8 +399,8 @@ pub fn pack_policy(opcode: u8, flags: u8, length: usize) -> (u8, bool) {
     match Opcode::from_code(opcode) {
         // The pinned sw_unset_bit macro lacks parentheses: its compound
         // COMPRESS | RSV1 argument clears only COMPRESS. Preserve RSV1.
-        Some(opcode) if opcode.is_control() => ((flags & !COMPRESS) | FIN, false),
-        Some(Opcode::Continuation) => (flags, false),
+        opcode if opcode.is_control() => ((flags & !COMPRESS) | FIN, false),
+        Opcode::Continuation => (flags, false),
         _ => (
             flags,
             flags & (COMPRESS | FIN) == (COMPRESS | FIN) && length != 0,
@@ -375,9 +423,9 @@ pub enum Delivery {
 #[must_use]
 pub fn message_policy(opcode: u8, settings: u8) -> Delivery {
     match Opcode::from_code(opcode) {
-        Some(Opcode::Close) if settings & 1 == 0 => Delivery::Discard,
-        Some(Opcode::Ping) if settings & 2 == 0 => Delivery::Pong,
-        Some(Opcode::Pong) if settings & 4 == 0 => Delivery::Discard,
+        Opcode::Close if settings & 1 == 0 => Delivery::Discard,
+        Opcode::Ping if settings & 2 == 0 => Delivery::Pong,
+        Opcode::Pong if settings & 4 == 0 => Delivery::Discard,
         _ => Delivery::Deliver,
     }
 }

@@ -466,9 +466,7 @@ pub(crate) fn fd(socket: Co) -> c_int {
     socket.with_net(|net| net.fd()).unwrap_or(-1)
 }
 
-pub(crate) fn errno() -> c_int {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+pub(crate) use swoole_rs_corebase::sys::errno;
 
 pub(crate) use swoole_rs_corebase::sys::getsockopt;
 use swoole_rs_corebase::sys::{setsockopt, setsockopt_bytes};
@@ -711,7 +709,10 @@ fn domain(fd: c_int) -> Option<c_int> {
         }
     }
     let mut address = SocketAddress::default();
-    (address.local_name(fd) == 0).then(|| c_int::from(address.addr.family()))
+    address
+        .local_name(fd)
+        .is_ok()
+        .then(|| c_int::from(address.addr.family()))
 }
 
 /// `swoole_coroutine_socketpair(int $domain, int $type, int $protocol): array|false`.

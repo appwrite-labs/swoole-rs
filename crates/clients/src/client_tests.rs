@@ -119,19 +119,27 @@ pub(super) unsafe fn socket_free(_: *mut SocketRecord) {
 /// crates/tls's slice-taking transfers.
 pub(super) mod net {
     use super::{SocketAddress, io};
+
+    fn count(n: isize) -> Option<usize> {
+        usize::try_from(n).ok()
+    }
     use core::ffi::c_int;
     use swoole_rs_corebase::sys::ReadSlot;
     use swoole_rs_reactor::Socket;
 
-    pub(in super::super) fn recv(_: Socket<'_>, buffer: &mut [impl ReadSlot], _: c_int) -> isize {
-        io("recv", buffer.len())
+    pub(in super::super) fn recv(
+        _: Socket<'_>,
+        buffer: &mut [impl ReadSlot],
+        _: c_int,
+    ) -> Option<usize> {
+        count(io("recv", buffer.len()))
     }
     pub(in super::super) fn recv_append(
         _: Socket<'_>,
         buffer: &mut swoole_rs_buffer::string::CppString,
-    ) -> isize {
-        let n = io("recv", buffer.spare().len());
-        if let Ok(count) = usize::try_from(n) {
+    ) -> Option<usize> {
+        let n = count(io("recv", buffer.spare().len()));
+        if let Some(count) = n {
             unsafe { buffer.set_len(buffer.len() + count) };
         }
         n
@@ -140,19 +148,19 @@ pub(super) mod net {
         _: Socket<'_>,
         buffer: &mut [impl ReadSlot],
         _: c_int,
-    ) -> isize {
-        io("recv_sync", buffer.len())
+    ) -> Option<usize> {
+        count(io("recv_sync", buffer.len()))
     }
-    pub(in super::super) fn send_sync(_: Socket<'_>, data: &[u8], _: c_int) -> isize {
-        io("send_sync", data.len())
+    pub(in super::super) fn send_sync(_: Socket<'_>, data: &[u8], _: c_int) -> Option<usize> {
+        count(io("send_sync", data.len()))
     }
     pub(in super::super) fn recvfrom_sync(
         _: Socket<'_>,
         buffer: &mut [impl ReadSlot],
         _: c_int,
         _: &mut SocketAddress,
-    ) -> isize {
-        io("recvfrom_sync", buffer.len())
+    ) -> Option<usize> {
+        count(io("recvfrom_sync", buffer.len()))
     }
 }
 pub(super) fn sendfile_sync(_: Socket<'_>, _: &CStr, _: i64, _: usize) -> bool {
@@ -501,9 +509,10 @@ fn sync_connect_through_socks5_routes_and_handshakes() {
         .unwrap();
     assert_eq!(target, b"example.test");
     assert_eq!(target_port, 80);
+    let host = Handle(client).get().server_host.take();
     assert_eq!(
-        Handle(client).get().server_host.borrow().to_bytes(),
-        b"proxy.test"
+        host.as_deref().map(CStr::to_bytes),
+        Some(&b"proxy.test"[..])
     );
     free(client);
 }

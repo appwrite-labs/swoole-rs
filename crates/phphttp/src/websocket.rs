@@ -26,7 +26,7 @@ use swoole_rs_phpstubs::websocket as stubs;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_server::{server_methods, view};
 use swoole_rs_websocket::{
-    DecodeErrorKind, DecodedFrame, Delivery, EncodeError, Opcode, control_invalid,
+    DecodeErrorKind, DecodedFrame, Delivery, EncodeError, FrameMetadata, Opcode, control_invalid,
     encode_close_into, encode_into, encoded_size, header, message_policy, pack_policy,
 };
 use swoole_rs_zend::{
@@ -659,7 +659,7 @@ fn decode(data: &mut [u8]) -> Option<DecodedFrame> {
                 func,
                 &format!(
                     "invalid compressed websocket control frame received: opcode={}",
-                    frame.opcode
+                    frame.opcode.code()
                 ),
             );
             return None;
@@ -701,7 +701,7 @@ fn unpack(call: &Call) {
     };
     let payload = data.get(frame.header_length..frame.header_length + frame.payload_length);
     let payload = payload.unwrap_or_default();
-    let zpayload = if frame.flags & FLAG_RSV1 != 0 {
+    let zpayload = if frame.flags.is_compressed() {
         let Some(plain) = uncompress(payload) else {
             host::set_last_error(PROTOCOL_ERROR);
             call.set_bool(false);
@@ -712,7 +712,11 @@ fn unpack(call: &Call) {
         Owned::string(ZString::new(payload))
     };
     // The Frame takes its own reference to the payload.
-    call.set_owned(construct(i64::from(frame.opcode), &zpayload, frame.flags));
+    call.set_owned(construct(
+        i64::from(frame.opcode.code()),
+        &zpayload,
+        frame.flags.bits(),
+    ));
 }
 
 /// `php_swoole_server_get_and_check_server(ZEND_THIS)` and the running check.
@@ -1262,9 +1266,9 @@ const DEFAULT_BUFFER: usize = 4096;
 
 /// `sock->recv_packet(timeout)` on a coroutine socket, with the packet: its
 /// read buffer's bytes.
-fn sock_recv(socket: co::Co, timeout: f64) -> (isize, *mut u8, usize) {
+fn sock_recv(socket: co::Co, timeout: f64) -> (Option<usize>, *mut u8, usize) {
     let received = co::recv_packet(socket, timeout);
-    if received <= 0 {
+    if received <= Some(0) {
         return (received, ptr::null_mut(), 0);
     }
     // A packet read leaves it in the socket's read buffer.
@@ -1273,10 +1277,10 @@ fn sock_recv(socket: co::Co, timeout: f64) -> (isize, *mut u8, usize) {
 }
 
 /// A message being assembled from fragments: its payload so far, and the
-/// first frame's opcode and flags (`(opcode << 8) | flags`).
+/// first frame's opcode and flags.
 pub(crate) struct Message {
     data: Vec<u8>,
-    ext_flags: u16,
+    metadata: FrameMetadata,
 }
 
 /// Where a message being assembled lives: a context's `ws_buffer`, or a
@@ -1326,10 +1330,10 @@ pub(crate) fn recv(settings: u8, slot: &mut Assembly, socket: co::Co, timeout: f
     let func = c"websocket::recv_frame";
     loop {
         let (received, data, length) = sock_recv(socket, timeout);
-        if received < 0 {
+        if received.is_none() {
             return Owned::bool(false);
         }
-        if received == 0 {
+        if received == Some(0) {
             return Owned::string(ZString::empty());
         }
         if length < 2 {
@@ -1346,24 +1350,23 @@ pub(crate) fn recv(settings: u8, slot: &mut Assembly, socket: co::Co, timeout: f
             .and_then(|rest| rest.get(..frame.payload_length))
             .unwrap_or_default();
         let opcode = frame.opcode;
-        let respond = match Opcode::from_code(opcode) {
-            Some(Opcode::Ping) if settings & OPEN_PING_FRAME == 0 => {
+        let respond = match opcode {
+            Opcode::Ping if settings & OPEN_PING_FRAME == 0 => {
                 reply(settings, socket, Opcode::Pong.code(), payload);
                 continue;
             }
-            Some(Opcode::Pong) if settings & OPEN_PONG_FRAME == 0 => continue,
-            Some(Opcode::Close) if settings & OPEN_CLOSE_FRAME == 0 => {
+            Opcode::Pong if settings & OPEN_PONG_FRAME == 0 => continue,
+            Opcode::Close if settings & OPEN_CLOSE_FRAME == 0 => {
                 reply(settings, socket, Opcode::Close.code(), payload);
                 continue;
             }
-            Some(opcode) => opcode.is_control(),
-            None => false,
+            opcode => opcode.is_control(),
         };
         if respond {
             let payload = Owned::string(ZString::new(payload));
-            return deliver(socket, opcode, &payload, FLAG_FIN);
+            return deliver(socket, opcode.code(), &payload, FLAG_FIN);
         }
-        if opcode == Opcode::Continuation.code() {
+        if opcode == Opcode::Continuation {
             let Some(message) = slot.as_mut() else {
                 warning(
                     func,
@@ -1373,19 +1376,24 @@ pub(crate) fn recv(settings: u8, slot: &mut Assembly, socket: co::Co, timeout: f
                 return Owned::null();
             };
             message.data.extend_from_slice(payload);
-            if frame.flags & FLAG_FIN == 0 {
+            if !frame.flags.is_final() {
                 continue;
             }
             // The whole message is assembled: release its memory once delivered.
             let Some(message) = slot.take() else {
                 return Owned::null();
             };
-            let [complete_opcode, complete_flags] = message.ext_flags.to_be_bytes();
-            let Some(payload) = payload_string(&message.data, complete_flags & FLAG_RSV1 != 0)
+            let complete = message.metadata;
+            let Some(payload) = payload_string(&message.data, complete.flags.is_compressed())
             else {
                 return protocol_error();
             };
-            return deliver(socket, complete_opcode, &payload, complete_flags | FLAG_FIN);
+            return deliver(
+                socket,
+                complete.opcode.code(),
+                &payload,
+                complete.flags.with_final().bits(),
+            );
         }
         if slot.is_some() {
             warning(
@@ -1395,11 +1403,11 @@ pub(crate) fn recv(settings: u8, slot: &mut Assembly, socket: co::Co, timeout: f
             );
             return Owned::null();
         }
-        if frame.flags & FLAG_FIN != 0 {
-            let Some(payload) = payload_string(payload, frame.flags & FLAG_RSV1 != 0) else {
+        if frame.flags.is_final() {
+            let Some(payload) = payload_string(payload, frame.flags.is_compressed()) else {
                 return protocol_error();
             };
-            return deliver(socket, opcode, &payload, frame.flags);
+            return deliver(socket, opcode.code(), &payload, frame.flags.bits());
         }
         let size = if payload.is_empty() {
             DEFAULT_BUFFER
@@ -1410,7 +1418,10 @@ pub(crate) fn recv(settings: u8, slot: &mut Assembly, socket: co::Co, timeout: f
         data.extend_from_slice(payload);
         *slot = Some(Box::new(Message {
             data,
-            ext_flags: u16::from_be_bytes([opcode, frame.flags]),
+            metadata: FrameMetadata {
+                opcode,
+                flags: frame.flags,
+            },
         }));
     }
 }

@@ -230,9 +230,8 @@ fn effect<K: Packages>(r: &Recv<'_>, op: Op, arg: u64) -> i64 {
             let size = usize::try_from(arg).unwrap_or(usize::MAX);
             // The loop asks for at most the buffer's free tail.
             let tail = b.spare().get_mut(..size).unwrap_or_default();
-            let n = swoole_rs_tls::upstream::recv(s, tail, 0);
-            if n >= 0 {
-                return n as i64;
+            if let Some(n) = swoole_rs_tls::upstream::recv(s, tail, 0) {
+                return n.cast_signed() as i64;
             }
             rare(r, b, s, op, arg)
         }

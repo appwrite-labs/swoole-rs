@@ -75,16 +75,18 @@ impl HttpStaticContext {
     fn effect_path(&self) -> Option<&[u8]> {
         Some(self.filename()).filter(|path| path.len() < PATH_MAX)
     }
-    /// `lstat` the filename, admitting the facts on success: 1, else 0, or negative.
-    pub fn stat(&mut self, effects: &impl StaticEffects) -> i32 {
-        let Some(path) = self.effect_path() else {
-            return INVALID;
-        };
+    /// `lstat` the filename, admitting the facts on success: whether it exists, or
+    /// the error when the path is too long to ask about.
+    ///
+    /// # Errors
+    /// `INVALID` when the filename doesn't fit upstream's `PATH_MAX` copy.
+    pub fn stat(&mut self, effects: &impl StaticEffects) -> Result<bool, i32> {
+        let path = self.effect_path().ok_or(INVALID)?;
         let Some(facts) = effects.stat(path) else {
-            return 0;
+            return Ok(false);
         };
         self.observed(&facts);
-        1
+        Ok(true)
     }
     /// Upstream's `try_serve`: whether the URL names a file under `root` to serve,
     /// within one of `locations` when there are any.
@@ -114,11 +116,10 @@ impl HttpStaticContext {
                     self.serve_step(root, &Event::Locations)
                 }
                 Ok(Action::Lstat) => {
-                    let result = self.stat(effects);
-                    if result < 0 {
+                    let Ok(exists) = self.stat(effects) else {
                         return false;
-                    }
-                    self.serve_step(root, &Event::Stat(result == 1))
+                    };
+                    self.serve_step(root, &Event::Stat(exists))
                 }
                 Ok(Action::Realpath) => {
                     let Some(path) = self.effect_path() else {
@@ -189,18 +190,18 @@ mod tests {
         std::os::unix::fs::symlink("index.html", root.join("link")).unwrap();
         let mut owner = HttpStaticContext::new(b"", PATH_MAX).unwrap();
         let set = |owner: &mut HttpStaticContext, path: &std::path::Path| {
-            assert_eq!(owner.publish(Filename, path.as_os_str().as_bytes()), 0);
+            assert_eq!(owner.publish(Filename, path.as_os_str().as_bytes()), Ok(()));
         };
         set(&mut owner, &root.join("index.html"));
-        assert_eq!(owner.stat(&Native), 1);
+        assert_eq!(owner.stat(&Native), Ok(true));
         assert_eq!(owner.facts.filesize, 7);
         assert_eq!(owner.facts.kind as u32, crate::static_path::FILE);
         let mtime = owner.facts.mtime;
         set(&mut owner, &root.join("absent"));
-        assert_eq!(owner.stat(&Native), 0);
+        assert_eq!(owner.stat(&Native), Ok(false));
         assert_eq!(owner.facts.mtime, mtime);
         set(&mut owner, &root.join("link"));
-        assert_eq!(owner.stat(&Native), 1);
+        assert_eq!(owner.stat(&Native), Ok(true));
         assert_eq!(owner.facts.kind as u32, crate::static_path::LINK);
         assert_eq!(
             Native.canonical(owner.effect_path().unwrap()).unwrap(),
@@ -210,7 +211,7 @@ mod tests {
                 .as_bytes()
         );
         set(&mut owner, &root);
-        assert_eq!(owner.stat(&Native), 1);
+        assert_eq!(owner.stat(&Native), Ok(true));
         assert!(owner.get_dir_files(&Native));
         for name in [b".".as_slice(), b"..", b"index.html", b"link"] {
             assert!(owner.directory.contains(name).unwrap());

@@ -161,25 +161,24 @@ pub(crate) fn child_enter(worker: Worker<'_>) {
 /// Read up to `buffer`'s length from the pipe: the length read, or `None`.
 pub(crate) fn pipe_read(worker: Worker<'_>, buffer: &mut [u8], blocking: bool) -> Option<usize> {
     let socket = pipe(worker)?;
-    let read = if blocking {
+    if blocking {
         read_sync(socket, buffer)
     } else {
-        swoole_rs_corebase::sys::read(socket.fd(), buffer)
-    };
-    usize::try_from(read).ok()
+        usize::try_from(swoole_rs_corebase::sys::read(socket.fd(), buffer)).ok()
+    }
 }
 
 /// Write `data` to the pipe: the length written, or `None`.
 pub(crate) fn pipe_write(worker: Worker<'_>, data: &[u8], blocking: bool) -> Option<usize> {
     let socket = pipe(worker)?;
     let (bytes, length) = (data.as_ptr().cast(), data.len());
-    let written = if !blocking && event_api::swoole_event_is_available() {
+    if !blocking && event_api::swoole_event_is_available() {
         // SAFETY: a live socket and `length` readable bytes.
-        unsafe { event_api::swoole_event_write(socket.as_ptr(), bytes, length) }
+        usize::try_from(unsafe { event_api::swoole_event_write(socket.as_ptr(), bytes, length) })
+            .ok()
     } else {
         send_sync(socket, data, 0)
-    };
-    usize::try_from(written).ok()
+    }
 }
 
 /// Shut one direction of the pipe, or close the pair's `which` end (0: both,
@@ -191,8 +190,8 @@ pub(crate) fn pipe_close(worker: Worker<'_>, which: i64) -> bool {
         return false;
     }
     match which {
-        CLOSE_READ => swoole_rs_corebase::sys::shutdown(fd, libc::SHUT_RD) == 0,
-        CLOSE_WRITE => swoole_rs_corebase::sys::shutdown(fd, libc::SHUT_WR) == 0,
+        CLOSE_READ => swoole_rs_corebase::sys::shutdown(fd, libc::SHUT_RD).is_ok(),
+        CLOSE_WRITE => swoole_rs_corebase::sys::shutdown(fd, libc::SHUT_WR).is_ok(),
         _ => {
             // SAFETY: the worker's live pair, boxed as [`open_pipe`] and crates/server's
             // pools make them; the record keeps it unless it is deleted below, and

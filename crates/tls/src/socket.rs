@@ -27,9 +27,7 @@ const RESET: c_int = ErrorCode::SW_ERROR_SSL_RESET as c_int;
 const HANDSHAKE_FAILED: c_int = ErrorCode::SW_ERROR_SSL_HANDSHAKE_FAILED as c_int;
 use SslState::{SW_SSL_STATE_READY as STATE_READY, SW_SSL_STATE_WAIT_STREAM as STATE_WAIT_STREAM};
 
-fn errno() -> c_int {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+use swoole_rs_corebase::sys::errno;
 
 /// `network::Socket`'s TLS state group (`ssl_state`, `ssl_want_read`,
 /// `ssl_want_write`): the record's own field.

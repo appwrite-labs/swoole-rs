@@ -35,9 +35,7 @@ pub struct Stream {
     pub err_code: c_int,
 }
 
-fn errno() -> c_int {
-    io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+use swoole_rs_corebase::sys::errno;
 
 /// `Stream_onError`'s warning.
 fn connect_failed(code: c_int) {

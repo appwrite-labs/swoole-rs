@@ -44,9 +44,7 @@ pub struct Tls<'a, S> {
     pub write_timeout: f64,
 }
 
-fn errno() -> c_int {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+use swoole_rs_corebase::sys::errno;
 
 impl<'a, S> Tls<'a, S> {
     /// The view with `ssl` as its session, over the session's own BIOs while they are

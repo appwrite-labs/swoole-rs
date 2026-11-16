@@ -62,9 +62,7 @@ fn clear_mask() {
     }
 }
 
-fn errno() -> i32 {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+use swoole_rs_corebase::sys::errno;
 
 fn slot(signo: c_int) -> Option<&'static Slot> {
     SIGNALS.get(usize::try_from(signo).ok()?)
@@ -142,7 +140,7 @@ pub fn signalfd_create() -> Result<c_int, CreateError> {
     let fd = signalfd(-1, &mask).map_err(CreateError::Signalfd)?;
     if let Err(error) = sigprocmask(libc::SIG_BLOCK, &mask) {
         // `fd` was just opened here.
-        sys::close(fd);
+        _ = sys::close(fd);
         return Err(CreateError::Mask(error));
     }
     FD.store(fd, Relaxed);
@@ -155,7 +153,7 @@ pub fn signalfd_close() {
     let fd = FD.swap(-1, Relaxed);
     if fd != -1 {
         // `fd` was this module's signalfd.
-        sys::close(fd);
+        _ = sys::close(fd);
     }
 }
 

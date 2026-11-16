@@ -6,9 +6,22 @@ use std::mem::MaybeUninit;
 
 use swoole_rs_oracle::websocket as reference;
 use swoole_rs_websocket::{
-    Action, Context, Decision, DecodeErrorKind, DecodedFrame, Delivery, PolicyError,
-    control_invalid, decide_frame, message_policy, pack_policy,
+    Action, Context, Decision, DecodeErrorKind, DecodedFrame, Delivery, FrameFlags, FrameMetadata,
+    Opcode, PolicyError, control_invalid, decide_frame, message_policy, pack_policy,
 };
+
+// The original policy assertions observe the native packed representation.
+fn packed(metadata: FrameMetadata) -> u16 {
+    u16::from_be_bytes([metadata.opcode.code(), metadata.flags.bits()])
+}
+
+fn unpacked(bits: u16) -> FrameMetadata {
+    let [opcode, flags] = bits.to_be_bytes();
+    FrameMetadata {
+        opcode: Opcode::from_code(opcode),
+        flags: FrameFlags::from_bits(flags),
+    }
+}
 
 // Preserve the original oracle's zero-sentinel assertions at the test boundary.
 fn encoded_size(length: usize, flags: u8) -> usize {
@@ -202,8 +215,8 @@ fn encode_and_decode_prefixes() {
                         success,
                         total > 0 && usize::try_from(total).is_ok_and(|total| total <= prefix)
                     );
-                    assert_eq!(actual.opcode, expected.opcode);
-                    assert_eq!(actual.flags, expected.flags);
+                    assert_eq!(actual.opcode.code(), expected.opcode);
+                    assert_eq!(actual.flags.bits(), expected.flags);
                     assert_eq!(actual.length_code, expected.length_code);
                     assert_eq!(native, rust);
                     if success {
@@ -278,7 +291,9 @@ fn decoder_reads_every_first_byte() {
             let (total, actual) = decode_in_place(&mut rust[..length]);
             assert_eq!(total, if invalid { INVALID_CONTROL } else { complete });
             assert_eq!(native, rust);
-            assert!(actual.flags == expected.flags && actual.opcode == expected.opcode);
+            assert!(
+                actual.flags.bits() == expected.flags && actual.opcode.code() == expected.opcode
+            );
         }
     }
 }
@@ -298,8 +313,8 @@ fn decision_policy() {
         error: PolicyError,
     ) {
         let frame = DecodedFrame {
-            opcode,
-            flags,
+            opcode: Opcode::from_code(opcode),
+            flags: FrameFlags::from_bits(flags),
             payload_length: payload,
             header_length: if flags & 32 != 0 { 6 } else { 2 },
             ..DecodedFrame::default()
@@ -307,7 +322,7 @@ fn decision_policy() {
         let result = decide_frame(&frame, wire, &context).expect("a frame within the wire");
         assert!(result.action == action && result.error == error);
         if action == Action::Finish {
-            assert_eq!(result.ext_flags, context.fragment_flags | 1);
+            assert_eq!(packed(result.metadata), packed(context.fragment) | 1);
         }
     }
     use Action::{
@@ -322,7 +337,7 @@ fn decision_policy() {
         let mut active = Context {
             fragment_length: 65535,
             package_max_length: 65536,
-            fragment_flags: 0x021c,
+            fragment: unpacked(0x021c),
             has_fragment: true,
             closing: false,
         };
@@ -417,7 +432,7 @@ fn rejected_arguments() {
     assert_eq!(decode_in_place(&mut []).0, 0);
     let context = Context::default();
     let empty = DecodedFrame {
-        flags: 32,
+        flags: FrameFlags::from_bits(32),
         header_length: 2,
         ..DecodedFrame::default()
     };
@@ -429,7 +444,7 @@ fn rejected_arguments() {
 #[test]
 fn extended_ping_dispatches_from_offset_two() {
     let extended = DecodedFrame {
-        opcode: 9,
+        opcode: Opcode::Ping,
         header_length: 4,
         payload_length: 1,
         ..DecodedFrame::default()

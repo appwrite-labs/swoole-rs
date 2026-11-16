@@ -15,6 +15,7 @@ use io_uring::{IoUring, Probe, opcode, squeue};
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::ffi::{CStr, c_int, c_uint, c_void};
+use std::io;
 use std::os::fd::AsRawFd;
 use std::ptr;
 use std::rc::Rc;
@@ -105,9 +106,7 @@ pub struct Uring {
     ready: Cell<Vec<(*mut Event, isize)>>,
 }
 
-fn errno() -> c_int {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+use swoole_rs_corebase::sys::errno;
 
 /// Upstream's `DOUBLE_TO_TIMESPEC`.
 fn timespec(seconds: f64) -> libc::timespec {
@@ -343,7 +342,7 @@ impl Submitter for &Uring {
     }
 
     fn sleep(&mut self) {
-        os::usleep(10_000);
+        _ = os::usleep(10_000);
     }
 
     fn failed(&mut self) {
@@ -547,6 +546,18 @@ fn int(result: isize) -> c_int {
     result.c_cast::<c_int>()
 }
 
+fn count_result(result: isize) -> io::Result<c_int> {
+    if result < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(int(result))
+    }
+}
+
+fn file_status(result: isize) -> io::Result<()> {
+    count_result(result).map(|_| ())
+}
+
 /// One request per operation, whose entries carry no pointer but their borrowed
 /// arguments'.
 macro_rules! safe_operations {
@@ -555,7 +566,10 @@ macro_rules! safe_operations {
         $vis:vis fn $name:ident($($arg:ident: $ty:ty),*) -> $ret:ty, timeout $timeout:expr, $entry:expr, $convert:expr;
     )*) => {$(
         $(#[$doc])*
-        #[must_use]
+        ///
+        /// # Errors
+        /// Failure sets errno; typed operations also retain it in their Result.
+        #[must_use = "check the operation result"]
         $vis fn $name(host: &Host, $($arg: $ty),*) -> $ret {
             let entry = $entry.build();
             // SAFETY: the entry's only pointers are the borrowed arguments', which
@@ -571,25 +585,25 @@ safe_operations! {
         timeout timeout, opcode::Recv::new(Fd(fd), buf.as_mut_ptr().cast(), buf.len().c_cast::<u32>()).flags(flags), std::convert::identity;
     pub fn send(fd: c_int, buf: &[u8], flags: c_int, timeout: f64) -> isize,
         timeout timeout, opcode::Send::new(Fd(fd), buf.as_ptr(), buf.len().c_cast::<u32>()).flags(flags), std::convert::identity;
-    pub fn close_fd(fd: c_int) -> c_int,
-        timeout -1.0, opcode::Close::new(Fd(fd)), int;
+    pub fn close_fd(fd: c_int) -> io::Result<()>,
+        timeout -1.0, opcode::Close::new(Fd(fd)), file_status;
     pub fn read(fd: c_int, buf: &mut [impl ReadSlot], timeout: f64) -> isize,
         timeout timeout, opcode::Read::new(Fd(fd), buf.as_mut_ptr().cast(), buf.len().c_cast::<c_uint>()).offset(u64::MAX), std::convert::identity;
     pub fn write(fd: c_int, buf: &[u8], timeout: f64) -> isize,
         timeout timeout, opcode::Write::new(Fd(fd), buf.as_ptr(), buf.len().c_cast::<c_uint>()).offset(u64::MAX), std::convert::identity;
-    pub fn futex_wait(futex: &AtomicU32) -> c_int,
-        timeout -1.0, opcode::FutexWait::new(futex.as_ptr(), 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32), int;
-    pub fn futex_wakeup(futex: &AtomicU32) -> c_int,
-        timeout -1.0, opcode::FutexWake::new(futex.as_ptr(), 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32), int;
+    pub fn futex_wait(futex: &AtomicU32) -> io::Result<c_int>,
+        timeout -1.0, opcode::FutexWait::new(futex.as_ptr(), 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32), count_result;
+    pub fn futex_wakeup(futex: &AtomicU32) -> io::Result<c_int>,
+        timeout -1.0, opcode::FutexWake::new(futex.as_ptr(), 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32), count_result;
     /// `IORING_OP_TIMEOUT` for `ts`.
     fn timer(ts: &Timespec) -> isize,
         timeout -1.0, opcode::Timeout::new(ts), std::convert::identity;
     /// `IORING_OP_STATX` of `path` under `dfd` into `buf`.
-    fn statx_into(dfd: c_int, path: &CStr, flags: c_int, buf: &mut libc::statx) -> isize,
-        timeout -1.0, opcode::Statx::new(Fd(dfd), path.as_ptr(), ptr::from_mut(buf).cast()).flags(flags).mask(libc::STATX_BASIC_STATS | libc::STATX_BTIME), std::convert::identity;
+    fn statx_into(dfd: c_int, path: &CStr, flags: c_int, buf: &mut libc::statx) -> io::Result<()>,
+        timeout -1.0, opcode::Statx::new(Fd(dfd), path.as_ptr(), ptr::from_mut(buf).cast()).flags(flags).mask(libc::STATX_BASIC_STATS | libc::STATX_BTIME), file_status;
     /// `IORING_OP_WAITID` into `info`.
-    fn waitid(idtype: libc::idtype_t, id: libc::id_t, options: c_int, info: &mut ChildInfo, timeout: f64) -> c_int,
-        timeout timeout, opcode::WaitId::new(idtype, id, options).infop(ptr::from_mut(info).cast()), int;
+    fn waitid(idtype: libc::idtype_t, id: libc::id_t, options: c_int, info: &mut ChildInfo, timeout: f64) -> io::Result<()>,
+        timeout timeout, opcode::WaitId::new(idtype, id, options).infop(ptr::from_mut(info).cast()), file_status;
     /// `IORING_OP_ACCEPT` on `fd`: the peer's address into `address`'s storage, at most
     /// `address.len` bytes of it (and no more than it holds), and its length into `address.len`.
     pub fn accept(fd: c_int, address: &mut SocketAddress, flags: c_int, timeout: f64) -> c_int,
@@ -616,24 +630,24 @@ safe_operations! {
     pub fn sendmsg(fd: c_int, message: &SendMessage<'_>, flags: c_int, timeout: f64) -> isize,
         timeout timeout, opcode::SendMsg::new(Fd(fd), message.as_ptr()).flags(flags.cast_unsigned()), std::convert::identity;
     /// `IORING_OP_POLL_ADD` of `fd`, which carries no pointer.
-    fn poll_add(fd: c_int, events: u32, timeout: f64) -> c_int,
-        timeout timeout, opcode::PollAdd::new(Fd(fd), events), int;
-    pub fn open_file(pathname: &CStr, flags: c_int, mode: libc::mode_t) -> c_int,
-        timeout -1.0, opcode::OpenAt::new(Fd(libc::AT_FDCWD), pathname.as_ptr()).flags(flags | libc::O_CLOEXEC).mode(mode), int;
-    pub fn rename(oldpath: &CStr, newpath: &CStr) -> c_int,
-        timeout -1.0, opcode::RenameAt::new(Fd(libc::AT_FDCWD), oldpath.as_ptr(), Fd(libc::AT_FDCWD), newpath.as_ptr()), int;
-    pub fn mkdir(pathname: &CStr, mode: libc::mode_t) -> c_int,
-        timeout -1.0, opcode::MkDirAt::new(Fd(libc::AT_FDCWD), pathname.as_ptr()).mode(mode), int;
-    pub fn unlink(pathname: &CStr) -> c_int,
-        timeout -1.0, opcode::UnlinkAt::new(Fd(libc::AT_FDCWD), pathname.as_ptr()), int;
-    pub fn rmdir(pathname: &CStr) -> c_int,
-        timeout -1.0, opcode::UnlinkAt::new(Fd(libc::AT_FDCWD), pathname.as_ptr()).flags(libc::AT_REMOVEDIR), int;
-    pub fn fsync(fd: c_int) -> c_int,
-        timeout -1.0, opcode::Fsync::new(Fd(fd)), int;
-    pub fn fdatasync(fd: c_int) -> c_int,
-        timeout -1.0, opcode::Fsync::new(Fd(fd)).flags(FsyncFlags::DATASYNC), int;
-    pub fn ftruncate(fd: c_int, length: libc::off_t) -> c_int,
-        timeout -1.0, opcode::Ftruncate::new(Fd(fd), length.cast_unsigned()), int;
+    fn poll_add(fd: c_int, events: u32, timeout: f64) -> io::Result<c_int>,
+        timeout timeout, opcode::PollAdd::new(Fd(fd), events), count_result;
+    pub fn open_file(pathname: &CStr, flags: c_int, mode: libc::mode_t) -> io::Result<c_int>,
+        timeout -1.0, opcode::OpenAt::new(Fd(libc::AT_FDCWD), pathname.as_ptr()).flags(flags | libc::O_CLOEXEC).mode(mode), count_result;
+    pub fn rename(oldpath: &CStr, newpath: &CStr) -> io::Result<()>,
+        timeout -1.0, opcode::RenameAt::new(Fd(libc::AT_FDCWD), oldpath.as_ptr(), Fd(libc::AT_FDCWD), newpath.as_ptr()), file_status;
+    pub fn mkdir(pathname: &CStr, mode: libc::mode_t) -> io::Result<()>,
+        timeout -1.0, opcode::MkDirAt::new(Fd(libc::AT_FDCWD), pathname.as_ptr()).mode(mode), file_status;
+    pub fn unlink(pathname: &CStr) -> io::Result<()>,
+        timeout -1.0, opcode::UnlinkAt::new(Fd(libc::AT_FDCWD), pathname.as_ptr()), file_status;
+    pub fn rmdir(pathname: &CStr) -> io::Result<()>,
+        timeout -1.0, opcode::UnlinkAt::new(Fd(libc::AT_FDCWD), pathname.as_ptr()).flags(libc::AT_REMOVEDIR), file_status;
+    pub fn fsync(fd: c_int) -> io::Result<()>,
+        timeout -1.0, opcode::Fsync::new(Fd(fd)), file_status;
+    pub fn fdatasync(fd: c_int) -> io::Result<()>,
+        timeout -1.0, opcode::Fsync::new(Fd(fd)).flags(FsyncFlags::DATASYNC), file_status;
+    pub fn ftruncate(fd: c_int, length: libc::off_t) -> io::Result<()>,
+        timeout -1.0, opcode::Ftruncate::new(Fd(fd), length.cast_unsigned()), file_status;
 }
 
 /// `IORING_OP_READV` into `vector`'s remaining buffers, or `IORING_OP_WRITEV` from
@@ -692,8 +706,8 @@ pub fn sendfile(
     let pipe_size = os::fcntl(read_end, libc::F_GETPIPE_SZ, 0);
     let pipe_size = usize::try_from(pipe_size).unwrap_or(65536);
     let close_pipe = || {
-        os::close(read_end);
-        os::close(write_end);
+        _ = os::close(read_end);
+        _ = os::close(write_end);
     };
     let start = offset.as_deref().copied();
     let mut total_sent = 0_usize;
@@ -778,36 +792,45 @@ fn statx_to_stat(statx: &libc::statx, stat: &mut libc::stat) {
     stat.st_ctime_nsec = statx.stx_ctime.tv_nsec.into();
 }
 
-fn statx(host: &Host, dfd: c_int, path: &CStr, flags: c_int, stat: &mut libc::stat) -> c_int {
+fn statx(
+    host: &Host,
+    dfd: c_int,
+    path: &CStr,
+    flags: c_int,
+    stat: &mut libc::stat,
+) -> io::Result<()> {
     let mut buf: libc::statx = swoole_rs_corebase::sys::zeroed();
-    let ret = statx_into(host, dfd, path, flags, &mut buf);
-    if ret == 0 {
-        statx_to_stat(&buf, stat);
-    }
-    int(ret)
+    statx_into(host, dfd, path, flags, &mut buf)?;
+    statx_to_stat(&buf, stat);
+    Ok(())
 }
 
 /// `fstat(2)` of `fd` into `stat`.
-pub fn fstat(host: &Host, fd: c_int, stat: &mut libc::stat) -> c_int {
+/// # Errors
+/// The ring could not read the file metadata; `stat` is unchanged.
+pub fn fstat(host: &Host, fd: c_int, stat: &mut libc::stat) -> io::Result<()> {
     statx(host, fd, c"", libc::AT_EMPTY_PATH, stat)
 }
 
 /// `stat(2)` of `path` into `stat`; upstream's ring `lstat` is this too.
-pub fn stat(host: &Host, path: &CStr, stat: &mut libc::stat) -> c_int {
+/// # Errors
+/// The ring could not read the file metadata; `stat` is unchanged.
+pub fn stat(host: &Host, path: &CStr, stat: &mut libc::stat) -> io::Result<()> {
     statx(host, libc::AT_FDCWD, path, libc::AT_SYMLINK_NOFOLLOW, stat)
 }
 
 /// `waitpid` through `IORING_OP_WAITID`; `WNOHANG` stays a plain waitpid(2).
-#[must_use]
+/// # Errors
+/// The wait failed; the status word is unchanged.
 pub fn waitpid(
     host: &Host,
     pid: libc::pid_t,
     stat_loc: Option<&mut c_int>,
     options: c_int,
     timeout: f64,
-) -> libc::pid_t {
+) -> io::Result<libc::pid_t> {
     if options & libc::WNOHANG != 0 {
-        return os::waitpid(pid, stat_loc, options);
+        return count_result(os::waitpid(pid, stat_loc, options).c_cast::<isize>());
     }
     let mut info = ChildInfo::default();
     let (idtype, id) = if pid > 0 {
@@ -816,22 +839,21 @@ pub fn waitpid(
         (libc::P_ALL, 0)
     };
     let options = if options == 0 { libc::WEXITED } else { options };
-    let rc = waitid(host, idtype, id, options, &mut info, timeout);
-    if rc == -1 {
-        return rc;
-    }
+    waitid(host, idtype, id, options, &mut info, timeout)?;
     // The kernel filled `info` for a waited child.
     let [_, _, code] = info.head;
     if let Some(stat_loc) = stat_loc {
         *stat_loc = wait_status(code, info.child.status);
     }
-    info.child.pid
+    Ok(info.child.pid)
 }
 
 /// poll(2) of one descriptor; `timeout` 0 polls without the ring.
-pub fn poll(host: &Host, pollfd: &mut libc::pollfd, timeout: c_int) -> c_int {
+/// # Errors
+/// The poll failed, including a linked timeout expiring.
+pub fn poll(host: &Host, pollfd: &mut libc::pollfd, timeout: c_int) -> io::Result<c_int> {
     if timeout == 0 {
-        return os::poll(core::slice::from_mut(pollfd), timeout);
+        return count_result(os::poll(core::slice::from_mut(pollfd), timeout).c_cast::<isize>());
     }
     let (descriptor, events) = (pollfd.fd, pollfd.events);
     let rc = poll_add(
@@ -839,13 +861,13 @@ pub fn poll(host: &Host, pollfd: &mut libc::pollfd, timeout: c_int) -> c_int {
         descriptor,
         events.cast_unsigned().into(),
         f64::from(timeout) / 1000.0,
-    );
+    )?;
     if rc > 0 {
         let revents = rc.c_cast::<libc::c_short>();
         pollfd.revents = revents;
-        return 1;
+        return Ok(1);
     }
-    rc
+    Ok(rc)
 }
 
 #[cfg(test)]
@@ -1043,6 +1065,98 @@ mod tests {
             libc::WIFCONTINUED(wait_status(libc::CLD_CONTINUED, 0)),
             "continued"
         );
+    }
+
+    #[test]
+    fn wait_creation_failure_retains_error_and_outputs() {
+        let host = Host {
+            instance: || None,
+            ..testing::HOST
+        };
+        let mut status = 123;
+        let mut fd = libc::pollfd {
+            fd: -1,
+            events: libc::POLLIN,
+            revents: libc::POLLOUT,
+        };
+        let word = AtomicU32::new(1);
+        set_errno(libc::EPERM);
+        let errors = [
+            waitpid(&host, -1, Some(&mut status), 0, 1.0).unwrap_err(),
+            poll(&host, &mut fd, 1000).unwrap_err(),
+            futex_wait(&host, &word).unwrap_err(),
+            futex_wakeup(&host, &word).unwrap_err(),
+        ];
+        set_errno(libc::EINTR);
+        for error in errors {
+            assert_eq!(error.raw_os_error(), Some(libc::EPERM));
+        }
+        assert_eq!(status, 123);
+        assert_eq!(fd.revents, libc::POLLOUT);
+        assert_eq!(word.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn immediate_waits_bypass_the_ring_and_retain_results() {
+        let host = Host {
+            instance: || panic!("immediate waits must not create a ring"),
+            ..testing::HOST
+        };
+        let mut fd = libc::pollfd {
+            fd: -1,
+            events: libc::POLLIN,
+            revents: libc::POLLOUT,
+        };
+        assert_eq!(poll(&host, &mut fd, 0).unwrap(), 0);
+        assert_eq!(fd.revents, 0);
+        let mut status = 123;
+        let error = waitpid(
+            &host,
+            libc::pid_t::MAX,
+            Some(&mut status),
+            libc::WNOHANG,
+            -1.0,
+        )
+        .unwrap_err();
+        assert_eq!(status, 123);
+        set_errno(libc::EINTR);
+        assert_eq!(error.raw_os_error(), Some(libc::ECHILD));
+    }
+
+    #[test]
+    fn filesystem_creation_failure_retains_error() {
+        let host = Host {
+            instance: || None,
+            ..testing::HOST
+        };
+        set_errno(libc::EPERM);
+        let error = open_file(&host, c"unused", libc::O_RDONLY, 0).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::EPERM));
+        let mut metadata: libc::stat = os::zeroed();
+        metadata.st_size = 123;
+        let error = fstat(&host, -1, &mut metadata).unwrap_err();
+        assert_eq!(metadata.st_size, 123);
+        set_errno(libc::EINTR);
+        assert_eq!(error.raw_os_error(), Some(libc::EPERM));
+    }
+
+    #[test]
+    fn filesystem_errors_retain_errno_and_leave_stat_untouched() {
+        testing::with_engine(|| {
+            set_errno(0);
+            let error = fsync(&testing::HOST, -1).unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(libc::EBADF));
+            assert_eq!(errno(), libc::EBADF);
+            let mut metadata: libc::stat = os::zeroed();
+            metadata.st_size = 123;
+            metadata.st_mode = 0o640;
+            let error = fstat(&testing::HOST, -1, &mut metadata).unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(libc::EBADF));
+            assert_eq!(metadata.st_size, 123);
+            assert_eq!(metadata.st_mode, 0o640);
+            set_errno(libc::EINTR);
+            assert_eq!(error.raw_os_error(), Some(libc::EBADF));
+        });
     }
 
     #[test]

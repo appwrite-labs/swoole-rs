@@ -152,7 +152,9 @@ pub fn connect(fd: c_int, address: &SocketAddress) -> c_int {
 #[must_use]
 pub fn accept(fd: c_int, peer: &mut SocketAddress) -> c_int {
     let Some((_, socket)) = hooked(fd) else {
-        return peer.accept(fd);
+        return peer
+            .accept(fd)
+            .map_or(-1, std::os::fd::IntoRawFd::into_raw_fd);
     };
     let Some(conn) = socket.accept_owned(0.0) else {
         return -1;
@@ -213,7 +215,7 @@ pub unsafe extern "C" fn swoole_coroutine_poll(
     if let Some(ring) = crate::stdio::host().and_then(ring)
         && let [fd] = fds
     {
-        return crate::uring::poll(ring, fd, timeout);
+        return crate::uring::poll(ring, fd, timeout).unwrap_or(-1);
     }
     crate::poll::poll(fds, timeout, &crate::poll::NATIVE).map_or(-1, CCast::c_cast::<c_int>)
 }
@@ -316,7 +318,7 @@ pub extern "C" fn swoole_coroutine_socket_wait_event(
 #[unsafe(no_mangle)]
 pub extern "C" fn swoole_coroutine_close(fd: c_int) -> c_int {
     if coroutine().is_none() {
-        return sys::close(fd);
+        return sys::close(fd).map_or(-1, |()| 0);
     }
     let result = socket_map::close(fd, Co::close);
     if result <= 0 {
@@ -324,7 +326,7 @@ pub extern "C" fn swoole_coroutine_close(fd: c_int) -> c_int {
     }
     #[cfg(feature = "iouring")]
     if let Some(ring) = crate::stdio::host().and_then(ring) {
-        return crate::uring::close_fd(ring, fd);
+        return crate::uring::close_fd(ring, fd).map_or(-1, |()| 0);
     }
     swr_v1_hook_close_fd(fd, Some(crate::stdio::runtime().offload))
 }
@@ -365,6 +367,7 @@ pub fn read(fd: c_int, buf: &mut [MaybeUninit<u8>]) -> ssize_t {
     on_pool(Some(crate::stdio::runtime().offload), -1, || {
         let mut socket = blocking(fd, false);
         swoole_rs_tls::upstream::read_sync(Socket::new(&mut socket), buf)
+            .map_or(-1, usize::cast_signed)
     })
 }
 
@@ -403,6 +406,7 @@ pub fn write(fd: c_int, buf: &[u8]) -> ssize_t {
     on_pool(Some(crate::stdio::runtime().offload), -1, || {
         let mut socket = blocking(fd, true);
         swoole_rs_tls::upstream::write_sync(Socket::new(&mut socket), buf)
+            .map_or(-1, usize::cast_signed)
     })
 }
 
