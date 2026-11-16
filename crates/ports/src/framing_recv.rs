@@ -2,7 +2,7 @@
 // Compatibility derived from Swoole v6.2.4 src/protocol/base.cc (Swoole contributors).
 //! `Protocol::recv_with_length_protocol`, `recv_with_eof_protocol` and
 //! `recv_split_by_eof`: [`swoole_rs_framing::recv::recv`] with each effect on the socket,
-//! the buffer and the protocol's callbacks; `default_length_func`; and `swoole_unpack` and `swoole_hton64`/`swoole_ntoh64`. Logs name the
+//! the buffer and the protocol's callbacks; `default_length_func`; and `swoole_hton64`/`swoole_ntoh64`. Logs name the
 //! upstream function that wrote them.
 use core::ffi::{CStr, c_int, c_void};
 use core::marker::PhantomData;
@@ -18,7 +18,7 @@ use swoole_rs_framing::recv::{self, Buffer, Effects, Received, Status, recv};
 use swoole_rs_framing::recv::{
     FLAG_DYNAMIC, FLAG_PAUSED, FLAG_REMOVED, FLAG_SKIP, FLAG_TLS, FLAG_WAIT, Mode, Op,
 };
-use swoole_rs_framing::{DefaultLength, UnpackError, default_length, unpack};
+use swoole_rs_framing::{DefaultLength, default_length};
 use swoole_rs_reactor::{Caught, Socket, SocketFields, swr_v1_socket_reset_on_close};
 
 const SW_ERR: isize = swoole_rs_corebase::constants::ResultCode::SW_ERR as isize;
@@ -382,12 +382,11 @@ fn split(r: &mut Recv<'_>) -> Option<usize> {
     let eof = eof.get(..usize::from(eof_len))?;
     // SAFETY: the receive's live buffer; the parts the split lends are its only use.
     let b = unsafe { &mut *r.buffer };
-    usize::try_from(b.split(eof, |data, length| {
+    b.split(eof, |data, length| {
         // SAFETY: the part, inside the buffer, which the split lends.
         let part = unsafe { Package::from_raw(data, length) };
         protocol_dispatch(r, &part) && !s.read(|s| s.removed)
-    }))
-    .ok()
+    })
 }
 
 /// The effects a frame rarely needs.
@@ -548,20 +547,6 @@ fn invalid_format(format: u8) {
     );
 }
 
-/// `int64_t swoole_unpack(char, const void *)` over `data`'s first bytes: -1 for too few
-/// and -1 (logged) for an unknown format.
-#[must_use]
-pub fn swoole_unpack(format: u8, data: &[u8]) -> i64 {
-    match unpack(format, data) {
-        Ok(value) => value,
-        Err(UnpackError::Format) => {
-            invalid_format(format);
-            -1
-        }
-        Err(UnpackError::Short) => -1,
-    }
-}
-
 /// `uint64_t swoole_hton64(uint64_t)`.
 #[must_use]
 pub const fn swoole_hton64(value: u64) -> u64 {
@@ -580,6 +565,12 @@ mod tests {
     use std::cell::RefCell;
     use swoole_rs_corebase::CCast;
     use swoole_rs_reactor::SocketRecord;
+
+    /// Upstream's `int64_t swoole_unpack(char, const void *)`: -1 for too few bytes or
+    /// an unknown format.
+    fn swoole_unpack(format: u8, data: &[u8]) -> i64 {
+        swoole_rs_framing::unpack(format, data).unwrap_or(-1)
+    }
 
     thread_local! {
         static PACKAGES: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };

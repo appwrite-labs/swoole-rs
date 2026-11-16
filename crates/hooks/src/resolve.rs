@@ -8,7 +8,6 @@
 use crate::offload::{AsyncEvent, AsyncOps, Handler, swr_v1_hook_async};
 use crate::wait_event::native::current;
 use core::ffi::{CStr, c_int};
-use std::ffi::CString;
 use swoole_rs_clients::dns::{DnsSocket, RecvError, received};
 use swoole_rs_clients::resolver::{self, Request};
 use swoole_rs_corebase::{
@@ -198,7 +197,7 @@ impl DnsSocket for DnsUdp {
 /// `domain` (up to its first NUL, as C reads it), up to its own first NUL; none on a
 /// failure, which is the last error.
 #[must_use]
-pub fn dns_lookup(domain: &[u8], family: c_int, timeout: f64) -> Vec<CString> {
+pub fn dns_lookup(domain: &[u8], family: c_int, timeout: f64) -> Vec<Vec<u8>> {
     // Only IPv4 and IPv6.
     let family = if family == libc::AF_INET6 {
         libc::AF_INET6
@@ -206,10 +205,11 @@ pub fn dns_lookup(domain: &[u8], family: c_int, timeout: f64) -> Vec<CString> {
         libc::AF_INET
     };
     let name = resolver::c_name(domain);
-    let addresses = swoole_rs_clients::cares_lookup(&name, family, timeout)
+    let mut addresses = swoole_rs_clients::cares_lookup(&name, family, timeout)
         .unwrap_or_else(|| swoole_rs_clients::dns::lookup(&name, family, || DnsUdp::open(timeout)));
+    for address in &mut addresses {
+        let end = address.iter().position(|&byte| byte == 0);
+        address.truncate(end.unwrap_or(address.len()));
+    }
     addresses
-        .iter()
-        .map(|address| resolver::c_name(address))
-        .collect()
 }
