@@ -72,8 +72,7 @@ impl Running<'_> {
     }
 
     /// The handle of a reactor just made from `owner`, on this thread: live until
-    /// `swr_v1_reactor_delete`, whose caller promises nothing uses it afterwards, and
-    /// borrowed by no reference.
+    /// `swr_v1_reactor_delete` of its one owner, and borrowed by no reference.
     #[cfg(unix)]
     pub(crate) fn leak(owner: Box<crate::ReactorState>) -> Running<'static> {
         Running {

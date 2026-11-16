@@ -351,20 +351,34 @@ unsafe extern "C" {
     ) -> c_int;
 }
 
+/// A reactor [`swr_v1_reactor_new`] made, held by the one owner that deletes it
+/// ([`swr_v1_reactor_delete`]); one never deleted stays allocated, as a C++ `Reactor *`
+/// never deleted does. It is neither `Copy` nor `Clone`, so a reactor is deleted once.
+#[must_use]
+pub struct OwnedReactor(crate::Running<'static>);
+
+impl OwnedReactor {
+    /// The `Reactor *`, live until the owner deletes it.
+    #[must_use]
+    pub fn as_ptr(&self) -> *mut c_void {
+        self.0.as_ptr()
+    }
+
+    /// The reactor's handle, for as long as the owner is borrowed.
+    #[must_use]
+    pub fn running(&self) -> crate::Running<'_> {
+        self.0
+    }
+}
+
 /// `new Reactor(max_event, type)`: the state `ReactorState::open` makes and, once
 /// ready, upstream's write, writev, close and default write handler, the create hook
 /// and then the built-in end callbacks and exit conditions. The write functions are
 /// crates/tls's, so only the hybrid (`upstream-symbols`) sets them.
-#[must_use]
-pub fn swr_v1_reactor_new(max_event: c_int, kind: c_int) -> *mut c_void {
-    create(max_event, kind).as_ptr()
-}
-
-/// [`swr_v1_reactor_new`]'s reactor, as its handle.
-fn create(max_event: c_int, kind: c_int) -> crate::Running<'static> {
+pub fn swr_v1_reactor_new(max_event: c_int, kind: c_int) -> OwnedReactor {
     let mut owner = ReactorState::open(kind, max_event);
     if !owner.fields.ready {
-        return crate::Running::leak(owner);
+        return OwnedReactor(crate::Running::leak(owner));
     }
     owner.fields.timeout_msec = -1;
     #[cfg(feature = "upstream-symbols")]
@@ -378,7 +392,7 @@ fn create(max_event: c_int, kind: c_int) -> crate::Running<'static> {
     reactor_hook(HookType::ON_REACTOR_CREATE, reactor);
     // The hook has returned.
     reactor.with(|state| crate::callbacks::install_builtins(&mut state.callbacks));
-    reactor
+    OwnedReactor(reactor)
 }
 
 /// The `kind` hooks (`ON_REACTOR_CREATE` or `ON_REACTOR_DESTROY`) over `reactor`, if
@@ -391,12 +405,9 @@ fn reactor_hook(kind: HookType, reactor: crate::Running<'_>) {
 }
 
 /// `delete reactor`: marks it destroyed, runs its destroy callbacks, closes its
-/// backend, calls the destroy hook and frees it.
-///
-/// # Safety
-/// `handle` is a reactor from [`swr_v1_reactor_new`], and nothing uses it afterwards.
-/// Each borrow below ends before a callback, hook or disposer runs.
-pub unsafe fn swr_v1_reactor_delete(handle: crate::Running<'_>) {
+/// backend, calls the destroy hook and frees it. Each borrow below ends before a
+/// callback, hook or disposer runs.
+pub fn swr_v1_reactor_delete(OwnedReactor(handle): OwnedReactor) {
     let state = handle.state();
     let cycle_tasks = handle.with(|state| {
         state.fields.destroyed = true;
@@ -420,7 +431,8 @@ pub unsafe fn swr_v1_reactor_delete(handle: crate::Running<'_>) {
             crate::deferred::deferred_free(&mut Some(queue));
         }
     }
-    // SAFETY: as the caller promises: `ReactorState::open`'s allocation, used no more.
+    // SAFETY: the owner's reactor, `ReactorState::open`'s allocation, which the owner
+    // gave up by value: deleted once, and used no more.
     drop(unsafe { Box::from_raw(state) });
 }
 
@@ -433,21 +445,34 @@ pub unsafe fn swr_v1_reactor_delete(handle: crate::Running<'_>) {
 pub extern "C-unwind" fn swoole_event_init(flags: c_int) -> c_int {
     const SW_REACTOR_MAXEVENTS: c_int = 4096;
     const SW_EVENTLOOP_WAIT_EXIT: c_int = 1;
-    let handle = create(SW_REACTOR_MAXEVENTS, 0);
+    let reactor = swr_v1_reactor_new(SW_REACTOR_MAXEVENTS, 0);
+    let handle = reactor.running();
     if !handle.with(|state| state.fields.ready) {
-        // SAFETY: the reactor just made, which nothing else holds or uses again.
-        unsafe { swr_v1_reactor_delete(handle) };
+        swr_v1_reactor_delete(reactor);
         return -1;
     }
     handle.with(|state| state.fields.wait_exit = flags & SW_EVENTLOOP_WAIT_EXIT != 0);
     system_init_reactor(handle);
     swr_v1_clients_init_reactor(handle);
     swoole_rs_corebase::set_thread_reactor(handle.as_ptr());
+    // A reactor this replaces stays allocated, as upstream's overwritten pointer did.
+    EVENT_REACTOR.set(Some(reactor));
     0
 }
 
+#[cfg(feature = "upstream-symbols")]
+thread_local! {
+    /// The reactor `swoole_event_init` made on this thread, which `swoole_event_free`
+    /// deletes.
+    static EVENT_REACTOR: std::cell::Cell<Option<OwnedReactor>> = const {
+        std::cell::Cell::new(None)
+    };
+}
+
 /// `int swoole_event_free()`: deletes the thread's `Reactor`, then clears it; `SW_ERR`
-/// without one.
+/// without one. Only `swoole_event_init` sets a thread's reactor, so it is the one that
+/// call made here; a reactor another thread made and shares (a coroutine thread's) is
+/// cleared but left to the thread that owns it.
 #[cfg(feature = "upstream-symbols")]
 #[expect(
     clippy::must_use_candidate,
@@ -457,8 +482,10 @@ pub fn swoole_event_free() -> c_int {
     let Some(reactor) = crate::event_api::running() else {
         return -1;
     };
-    // SAFETY: the thread's reactor, which `swoole_event_init` made; it is cleared below.
-    unsafe { swr_v1_reactor_delete(reactor) };
+    match EVENT_REACTOR.take() {
+        Some(owned) if owned.as_ptr() == reactor.as_ptr() => swr_v1_reactor_delete(owned),
+        other => EVENT_REACTOR.set(other),
+    }
     swoole_rs_corebase::set_thread_reactor(ptr::null_mut());
     0
 }
@@ -641,7 +668,7 @@ pub(crate) mod tests {
         unsafe { (*owner).record(Socket::from_ptr(socket).unwrap(), op, events) }
     }
     pub(crate) unsafe fn free(owner: *mut ReactorState) {
-        unsafe { swr_v1_reactor_delete(running(owner)) };
+        swr_v1_reactor_delete(OwnedReactor(running(owner)));
     }
     /// The test's state as the handle its operations take.
     pub(crate) fn running(owner: *mut ReactorState) -> crate::Running<'static> {
