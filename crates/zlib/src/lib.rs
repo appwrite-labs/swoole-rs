@@ -32,8 +32,17 @@ struct Z(z_stream);
 #[repr(transparent)]
 struct Version(*const c_char);
 
+#[expect(
+    suspicious_runtime_symbol_definitions,
+    reason = "`malloc` keeps its C signature; it is declared safe because it takes a size \
+              and touches no caller memory"
+)]
 unsafe extern "C" {
-    fn malloc(size: usize) -> *mut c_void;
+    /// A fresh block, or null.
+    safe fn malloc(size: usize) -> *mut c_void;
+}
+
+unsafe extern "C" {
     fn free(ptr: *mut c_void);
     /// The running library's static version string.
     safe fn zlibVersion() -> Version;
@@ -64,8 +73,8 @@ extern "C" fn c_alloc(_: *mut c_void, items: uInt, size: uInt) -> *mut c_void {
     let bytes = usize::try_from(items)
         .unwrap_or(0)
         .saturating_mul(usize::try_from(size).unwrap_or(0));
-    // SAFETY: malloc has no preconditions; a null return signals failure to zlib.
-    unsafe { malloc(bytes) }
+    // A null return signals failure to zlib.
+    malloc(bytes)
 }
 
 unsafe extern "C" fn c_free(_: *mut c_void, address: *mut c_void) {

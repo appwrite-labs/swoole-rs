@@ -769,6 +769,39 @@ pub extern "C" fn swr_v1_locks_wait(word: Option<&AtomicU32>, timeout: f64) -> i
     }
 }
 
+/// The two futex operations the words use.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+enum Futex {
+    /// Park while the word holds `value`, until woken or the timeout passes.
+    Wait,
+    /// Wake up to `value` waiters; the timeout is ignored.
+    Wake,
+}
+
+/// `syscall(SYS_futex, word, op, value, timeout, NULL, 0)`.
+#[cfg(target_os = "linux")]
+fn futex(word: &AtomicU32, op: Futex, value: c_int, timeout: Option<&timespec>) -> c_long {
+    let timeout = timeout.map_or(std::ptr::null(), std::ptr::from_ref);
+    let op = match op {
+        Futex::Wait => FUTEX_WAIT,
+        Futex::Wake => FUTEX_WAKE,
+    };
+    // SAFETY: a live futex word, and null or a live timeout: neither operation reads
+    // any other pointer.
+    unsafe {
+        syscall(
+            SYS_futex,
+            word.as_ptr(),
+            op,
+            value,
+            timeout,
+            std::ptr::null::<c_void>(),
+            0,
+        )
+    }
+}
+
 /// [`swr_v1_locks_wait`] on a word: whether it took the word's token.
 #[cfg(target_os = "linux")]
 #[must_use]
@@ -785,22 +818,7 @@ pub fn wait(a: &AtomicU32, timeout: f64) -> bool {
     };
     // A wakeup between the check above and the syscall makes FUTEX_WAIT fail with
     // EAGAIN; its token is still in the word, so the result alone doesn't decide.
-    // SAFETY: `a` is a live futex word; the timeout is null or the live `duration`.
-    unsafe {
-        syscall(
-            SYS_futex,
-            a.as_ptr(),
-            FUTEX_WAIT,
-            0,
-            if timeout > 0.0 {
-                &raw const duration
-            } else {
-                std::ptr::null()
-            },
-            std::ptr::null::<c_void>(),
-            0,
-        )
-    };
+    futex(a, Futex::Wait, 0, (timeout > 0.0).then_some(&duration));
     a.compare_exchange(1, 0, Ordering::SeqCst, Ordering::SeqCst)
         .is_ok()
 }
@@ -819,18 +837,7 @@ pub fn wakeup(a: &AtomicU32, n: i32) -> Option<u32> {
     if a.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
         .is_ok()
     {
-        // SAFETY: `a` is a live futex word; FUTEX_WAKE reads no other pointer.
-        let woken = unsafe {
-            syscall(
-                SYS_futex,
-                a.as_ptr(),
-                FUTEX_WAKE,
-                n,
-                std::ptr::null::<c_void>(),
-                std::ptr::null::<c_void>(),
-                0,
-            )
-        };
+        let woken = futex(a, Futex::Wake, n, None);
         // FUTEX_WAKE returns -1 or at most `n` woken waiters.
         u32::try_from(woken).ok()
     } else {

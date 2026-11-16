@@ -483,50 +483,6 @@ pub extern "C" fn swoole_pgsql_finish(conn: OwnedConn) {
     PQfinish(conn);
 }
 
-/// `swoole_pgsql_prepare`: `PQsendPrepare`, then its result.
-/// # Safety
-/// As `PQprepare`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_pgsql_prepare(
-    conn: Conn,
-    stmt_name: *const c_char,
-    query: *const c_char,
-    n_params: c_int,
-    param_types: *const Oid,
-) -> *mut PGresult {
-    // SAFETY: per the caller.
-    let sent = unsafe { PQsendPrepare(conn.0, stmt_name, query, n_params, param_types) };
-    finish(conn, sent)
-}
-
-/// `swoole_pgsql_exec_prepared`: `PQsendQueryPrepared`, then its result.
-/// # Safety
-/// As `PQexecPrepared`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_pgsql_exec_prepared(
-    conn: Conn,
-    stmt_name: *const c_char,
-    n_params: c_int,
-    param_values: *const *const c_char,
-    param_lengths: *const c_int,
-    param_formats: *const c_int,
-    result_format: c_int,
-) -> *mut PGresult {
-    // SAFETY: per the caller.
-    let sent = unsafe {
-        PQsendQueryPrepared(
-            conn.0,
-            stmt_name,
-            n_params,
-            param_values,
-            param_lengths,
-            param_formats,
-            result_format,
-        )
-    };
-    finish(conn, sent)
-}
-
 /// `swoole_pgsql_exec`: `PQsendQuery`, then its result. `PQexec`'s whole contract is
 /// the live connection and the query's string, which the types carry.
 #[unsafe(no_mangle)]
@@ -534,34 +490,32 @@ pub extern "C" fn swoole_pgsql_exec(conn: Conn, query: Text<'_>) -> *mut PGresul
     finish(conn, PQsendQuery(conn, query))
 }
 
-/// `swoole_pgsql_exec_params`: `PQsendQueryParams`, then its result.
-/// # Safety
-/// As `PQexecParams`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_pgsql_exec_params(
-    conn: Conn,
-    command: *const c_char,
-    n_params: c_int,
-    param_types: *const Oid,
-    param_values: *const *const c_char,
-    param_lengths: *const c_int,
-    param_formats: *const c_int,
-    result_format: c_int,
-) -> *mut PGresult {
-    // SAFETY: per the caller.
-    let sent = unsafe {
-        PQsendQueryParams(
-            conn.0,
-            command,
-            n_params,
-            param_types,
-            param_values,
-            param_lengths,
-            param_formats,
-            result_format,
-        )
-    };
-    finish(conn, sent)
+/// Each `swoole_pgsql_<call>` sends `<send>` on the connection, then waits for its
+/// result, as libpq's blocking call would.
+macro_rules! sent {
+    ($($name:ident => $send:ident, like $blocking:literal ($($arg:ident: $ty:ty),*);)*) => {$(
+        #[doc = concat!("`", stringify!($name), "`: `", stringify!($send), "`, then its result.")]
+        /// # Safety
+        #[doc = concat!("As `", $blocking, "`.")]
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn $name(conn: Conn, $($arg: $ty),*) -> *mut PGresult {
+            // SAFETY: per the caller.
+            let sent = unsafe { $send(conn.0, $($arg),*) };
+            finish(conn, sent)
+        }
+    )*};
+}
+
+sent! {
+    swoole_pgsql_prepare => PQsendPrepare, like "PQprepare" (
+        stmt_name: *const c_char, query: *const c_char, n_params: c_int, param_types: *const Oid);
+    swoole_pgsql_exec_prepared => PQsendQueryPrepared, like "PQexecPrepared" (
+        stmt_name: *const c_char, n_params: c_int, param_values: *const *const c_char,
+        param_lengths: *const c_int, param_formats: *const c_int, result_format: c_int);
+    swoole_pgsql_exec_params => PQsendQueryParams, like "PQexecParams" (
+        command: *const c_char, n_params: c_int, param_types: *const Oid,
+        param_values: *const *const c_char, param_lengths: *const c_int,
+        param_formats: *const c_int, result_format: c_int);
 }
 
 #[cfg(test)]
