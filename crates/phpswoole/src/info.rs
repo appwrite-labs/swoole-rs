@@ -1,10 +1,10 @@
 //! PHP information output and conditional row ordering owned by the module.
-use std::ffi::{CStr, CString, c_int, c_void};
+use std::ffi::{CStr, CString, c_int};
 use swoole_rs_corebase::{Switch as C, built_with, switches::SWITCHES, sys::Text};
 use swoole_rs_zend::{
+    Minfo,
     bailout::{self, Bailout},
     contain_with,
-    sys::{swr_zend_try_info_ini, zend_module_entry},
 };
 
 /// The headers' and libraries' versions (native/phphelpers/host.c), with no
@@ -57,7 +57,7 @@ impl Info {
         }
         Ok(())
     }
-    fn output(&self, module: *mut c_void) -> Result<(), Bailout> {
+    fn output(&self, module: Minfo<'_>) -> Result<(), Bailout> {
         contained(swr_zend_try_info_start())?;
         contained(swr_zend_try_info_header(
             c"Swoole".into(),
@@ -122,17 +122,14 @@ impl Info {
         // ssh2's MINFO, whose bailout the trap catches below every Rust frame.
         contain_with(crate::optional::client_minfo)?;
         contained(swr_zend_try_info_end())?;
-        // SAFETY: the live module entry selects its registered INI entries; guarded below Rust.
-        contained(unsafe { swr_zend_try_info_ini(module) })
+        module.ini_entries()
     }
 }
 /// `PHP_MINFO_FUNCTION(swoole)`: the module's complete PHP information table
 /// and INI entries, with the headers' and libraries' versions.
-/// # Safety
-/// Zend's MINFO, with the module's live entry.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpswoole_minfo(module: *mut zend_module_entry) {
+pub extern "C" fn swr_v1_phpswoole_minfo(module: Minfo<'_>) {
     let mut info = Info::default();
     swr_phpswoole_versions(&mut info);
-    bailout::raise(info.output(module.cast()));
+    bailout::raise(info.output(module));
 }

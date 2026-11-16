@@ -11,14 +11,14 @@ use crate::{
     sys::{
         HashTable, IS_STRING, ZEND_ACC_NOT_SERIALIZABLE, swr_zend_try_facade_register_functions,
         zend_class_entry, zend_function, zend_function_entry, zend_internal_arg_info, zend_long,
-        zend_object_handlers, zend_string,
+        zend_module_entry, zend_object_handlers, zend_string,
     },
 };
 use std::{
     ffi::{CStr, CString, c_int, c_void},
     io::IoSlice,
     marker::PhantomData,
-    ptr,
+    ptr::{self, NonNull},
 };
 
 // MINIT's registrations (shim_minit.h), each over NUL-terminated names, a
@@ -106,7 +106,8 @@ unsafe extern "C" {
 }
 
 /// This module's MINIT, running on this thread: what makes registration safe.
-/// It is neither `Send` nor `Clone`, and a family only borrows it.
+/// It is neither `Send` nor `Clone`, and a family only borrows it: only
+/// [`Startup::with`] lends one, for the MINIT call Zend made.
 pub struct Minit {
     module: c_int,
     _thread: PhantomData<*mut ()>,
@@ -114,20 +115,121 @@ pub struct Minit {
 
 /// This module's MSHUTDOWN, running on the main thread after every PHP thread
 /// has ended: what makes undoing MINIT's process-wide registrations safe.
-/// Neither `Send` nor `Clone`, as [`Minit`].
+/// Neither `Send` nor `Clone`, as [`Minit`]: only [`Shutdown::with`] lends one.
 pub struct Mshutdown {
     _thread: PhantomData<*mut ()>,
 }
 
-impl Mshutdown {
-    /// # Safety
-    /// Zend is running this module's MSHUTDOWN on this thread, and the token
-    /// is dropped before it returns.
-    #[must_use]
-    pub unsafe fn new() -> Self {
-        Self {
+/// Zend's call of one module lifecycle phase, for `'a`: the module number
+/// Zend passes the phase's function (`int module_number`), branded with the
+/// call. Only Zend makes one, by calling a function [`Lifecycle::install`]
+/// put in a module entry's slot for the phase; safe Rust can neither build
+/// one nor keep it past the call, which the function takes for any `'a`.
+macro_rules! phase {
+    ($($(#[$doc:meta])* $name:ident;)*) => {$(
+        $(#[$doc])*
+        #[repr(transparent)]
+        pub struct $name<'a>(c_int, PhantomData<&'a *mut ()>);
+
+        impl Phase for $name<'static> {}
+
+        const _: () = assert!(size_of::<$name<'static>>() == size_of::<c_int>());
+    )*};
+}
+
+/// The phase tokens, each a transparent `c_int`: what makes a phase function
+/// one Zend's slot for it may call ([`hook`]).
+trait Phase {}
+
+phase! {
+    /// Zend's MINIT call of this module ([`Startup::with`] lends its [`Minit`]).
+    Startup;
+    /// Zend's MSHUTDOWN call ([`Shutdown::with`] lends its [`Mshutdown`]).
+    Shutdown;
+    /// Zend's RINIT or RSHUTDOWN call, on the thread starting or ending a request.
+    Request;
+}
+
+impl Startup<'_> {
+    /// `f` with this MINIT's token, which lives only as long as `f` runs.
+    pub fn with<R>(self, f: impl FnOnce(&Minit) -> R) -> R {
+        f(&Minit {
+            module: self.0,
             _thread: PhantomData,
-        }
+        })
+    }
+}
+
+impl Shutdown<'_> {
+    /// `f` with this MSHUTDOWN's token, which lives only as long as `f` runs.
+    pub fn with<R>(self, f: impl FnOnce(&Mshutdown) -> R) -> R {
+        f(&Mshutdown {
+            _thread: PhantomData,
+        })
+    }
+}
+
+/// Zend's MINFO call of this module, for `'a`: the live entry Zend passes the
+/// module's info function. Only Zend makes one, as [`Startup`].
+#[repr(transparent)]
+pub struct Minfo<'a>(
+    NonNull<zend_module_entry>,
+    PhantomData<&'a zend_module_entry>,
+);
+
+unsafe extern "C" {
+    /// `display_ini_entries(module)` inside `zend_try` (nonzero for a
+    /// bailout): MINFO's table of the module's registered INI entries.
+    safe fn swr_zend_try_info_ini(module: Minfo<'_>) -> c_int;
+}
+
+impl Minfo<'_> {
+    /// `DISPLAY_INI_ENTRIES()`: the module's INI entries.
+    /// # Errors
+    /// The output bailed out.
+    pub fn ini_entries(self) -> Result<(), Bailout> {
+        crate::bailout::trapped(swr_zend_try_info_ini(self))
+    }
+}
+
+/// A module phase function as Zend's entry stores it.
+type Hook = unsafe extern "C" fn(c_int, c_int) -> c_int;
+
+/// `f` as Zend's slot for phase `P` stores it.
+fn hook<P: Phase>(f: extern "C" fn(c_int, P) -> c_int) -> Hook {
+    // SAFETY: `P` is a transparent `c_int` (`phase!`), so the two function
+    // pointer types share one ABI; calling the result is unsafe, and Zend calls
+    // it only as the phase whose slot `Lifecycle::install` put it in, which is
+    // what `P` stands for.
+    unsafe { std::mem::transmute::<extern "C" fn(c_int, P) -> c_int, Hook>(f) }
+}
+
+/// A module's phase functions, each taking the token of Zend's call of it.
+pub struct Lifecycle {
+    pub startup: extern "C" fn(c_int, Startup<'_>) -> c_int,
+    pub shutdown: extern "C" fn(c_int, Shutdown<'_>) -> c_int,
+    pub request_startup: extern "C" fn(c_int, Request<'_>) -> c_int,
+    pub request_shutdown: extern "C" fn(c_int, Request<'_>) -> c_int,
+    pub info: extern "C" fn(Minfo<'_>),
+}
+
+impl Lifecycle {
+    /// Put each function in `entry`'s slot for its phase.
+    pub fn install(self, entry: &mut zend_module_entry) {
+        entry.module_startup_func = Some(hook::<Startup<'static>>(self.startup));
+        entry.module_shutdown_func = Some(hook::<Shutdown<'static>>(self.shutdown));
+        entry.request_startup_func = Some(hook::<Request<'static>>(self.request_startup));
+        entry.request_shutdown_func = Some(hook::<Request<'static>>(self.request_shutdown));
+        let info: extern "C" fn(Minfo<'static>) = self.info;
+        // SAFETY: `Minfo` is a transparent non-null entry pointer, so the two
+        // function pointer types share one ABI; Zend calls the slot only as
+        // the module's MINFO, with its live entry, which `Minfo` stands for.
+        entry.info_func = Some(unsafe {
+            std::mem::transmute::<
+                extern "C" fn(Minfo<'static>),
+                unsafe extern "C" fn(*mut zend_module_entry),
+            >(info)
+        });
     }
 }
 
@@ -144,17 +246,6 @@ impl Parent {
 }
 
 impl Minit {
-    /// # Safety
-    /// Zend is running the MINIT of the module numbered `module` on this thread,
-    /// and the token is dropped before that MINIT returns.
-    #[must_use]
-    pub unsafe fn new(module: c_int) -> Self {
-        Self {
-            module,
-            _thread: PhantomData,
-        }
-    }
-
     /// `SW_REGISTER_LONG_CONSTANT`: Zend warns when a constant has the name already.
     pub fn long_constant(&self, name: &CStr, value: zend_long) {
         swr_zend_minit_long_constant(name.into(), value, self.module);
