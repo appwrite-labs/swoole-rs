@@ -12,15 +12,14 @@ use std::{
     sync::OnceLock,
 };
 use swoole_rs_zend::{
-    Call, ClassEntry, Owned, UNDEF, Value, ZString,
+    Call, ClassEntry, Owned, Php, UNDEF, Value, ZString,
     bailout::Bailout,
     handlers,
     opcode::Handler,
     sys::{
         _zend_hash_init, _zval_struct__bindgen_ty_2, HashTable, IS_ARRAY, IS_ARRAY_EX, IS_DOUBLE,
         IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT, IS_RESOURCE, IS_STRING, IS_TRUE, IS_UNDEF,
-        swr_zend_efree, zend_class_entry, zend_internal_function, zend_long, zend_value,
-        zif_handler, zval_ptr_dtor,
+        swr_zend_efree, zend_internal_function, zend_long, zend_value, zif_handler, zval_ptr_dtor,
     },
     throw_error, type_error, value,
 };
@@ -48,11 +47,13 @@ struct TypeValue {
 }
 
 /// Upstream's `ArrayTypeInfo`, followed by `len` bytes of definition and a NUL.
+/// Its `ce` is the class of an object value type, which outlives the request's
+/// arrays: borrowed for `'a`, as long as the array it describes.
 #[repr(C)]
-struct TypeInfo {
+struct TypeInfo<'a> {
     this: TypeValue,
     element: TypeValue,
-    ce: *mut zend_class_entry,
+    ce: Option<ClassEntry<'a>>,
     len: u16,
     text: [u8; 0],
 }
@@ -81,13 +82,13 @@ const _: () = assert!(
 );
 
 /// `get_type_info`: the definition behind a typed array's table.
-fn info_of(ht: *mut HashTable) -> *mut TypeInfo {
+fn info_of<'a>(ht: *mut HashTable) -> *mut TypeInfo<'a> {
     ht.wrapping_byte_add(size_of::<HashTable>()).cast()
 }
 
 /// Bytes a `TypeInfo` with `len` bytes of text takes.
 fn info_size(len: usize) -> usize {
-    size_of::<TypeInfo>() + len + 1
+    size_of::<TypeInfo<'static>>() + len + 1
 }
 
 /// The value part of a definition's text.
@@ -144,8 +145,9 @@ impl<'a> Typed<'a> {
         flags.set(flags.get() | TYPED);
     }
 
-    fn header(self) -> &'a TypeInfo {
-        // SAFETY: a typed table carries a parsed definition right after it.
+    fn header(self) -> &'a TypeInfo<'a> {
+        // SAFETY: a typed table carries a parsed definition right after it,
+        // whose class (one `Php::lookup_class` found) outlives the table.
         unsafe { &*info_of(self.ht) }
     }
 
@@ -193,15 +195,15 @@ impl<'a> Typed<'a> {
 
 /// A definition parsed from a `swoole_typed_array` or `swoole_array_is_typed`
 /// argument.
-struct Parsed {
+struct Parsed<'a> {
     this: TypeValue,
     element: TypeValue,
-    ce: *mut zend_class_entry,
+    ce: Option<ClassEntry<'a>>,
     /// Lowercase, without spaces, then a NUL.
     text: Vec<u8>,
 }
 
-impl Parsed {
+impl Parsed<'_> {
     /// The text without its NUL.
     fn text(&self) -> &[u8] {
         self.text.split_last().map_or(&[], |(_, text)| text)
@@ -327,7 +329,7 @@ fn split_value(text: &[u8], start: usize, len: usize) -> Result<TypeValue, usize
 }
 
 /// `ArrayTypeInfo::parse`.
-fn parse(source: &[u8]) -> Result<Parsed, Failure> {
+fn parse<'a>(php: Php<'a>, source: &[u8]) -> Result<Parsed<'a>, Failure> {
     if u16::try_from(source.len()).is_err() || source.len() == usize::from(u16::MAX) {
         throw_error(c"The type definition string is too long (must be less than 65535 characters)");
         return Err(Failure::Thrown);
@@ -348,23 +350,18 @@ fn parse(source: &[u8]) -> Result<Parsed, Failure> {
     let mut parsed = Parsed {
         this,
         element: TypeValue::default(),
-        ce: ptr::null_mut(),
+        ce: None,
         text,
     };
     if u32::from(this.value) == IS_OBJECT {
-        parsed.ce = lookup_class(&ZString::new(value_part(parsed.text(), this)))?;
+        let name = ZString::new(value_part(parsed.text(), this));
+        let Some(ce) = php.lookup_class(&name).map_err(Failure::Bailout)? else {
+            throw_error(&message(&[b"Class '", name.bytes(), b"' not found"]));
+            return Err(Failure::Thrown);
+        };
+        parsed.ce = Some(ce);
     }
     Ok(parsed)
-}
-
-/// `zend_lookup_class(name)`, throwing "Class '%s' not found".
-fn lookup_class(name: &ZString) -> Result<*mut zend_class_entry, Failure> {
-    let ce = swoole_rs_zend::lookup_class(name).map_err(Failure::Bailout)?;
-    if ce.is_null() {
-        throw_error(&message(&[b"Class '", name.bytes(), b"' not found"]));
-        return Err(Failure::Thrown);
-    }
-    Ok(ce)
 }
 
 /// The parts in a row, each as printf's `%s` (or `%.*s`) prints it: up to its
@@ -471,9 +468,8 @@ fn check_key(typed: Typed, this: TypeValue, key: KeyType) -> bool {
 /// Whether `value`, an object of class `actual`, is of the class `typed`'s
 /// values have.
 fn check_object(typed: Typed, value: &Value, actual: ClassEntry<'_>) -> bool {
-    // SAFETY: the class the definition's parse looked up for its object values,
-    // and so never null; classes outlive the request's arrays.
-    let expected = unsafe { ClassEntry::from_ptr(typed.header().ce) };
+    // The class the definition's parse looked up for its object values.
+    let expected = typed.header().ce;
     if expected.is_some_and(|expected| actual.instance_of(expected)) {
         return true;
     }
@@ -631,7 +627,7 @@ fn typed_array(call: &Call) {
         return;
     };
     let init = call.value(2);
-    let outcome = parse(definition.bytes()).and_then(|parsed| match init {
+    let outcome = parse(call.php(), definition.bytes()).and_then(|parsed| match init {
         Some(init) => from_array(call, &parsed, init),
         None => fill(call, &parsed, None),
     });
@@ -745,7 +741,7 @@ fn array_is_typed(call: &Call) {
         call.set_bool(true);
         return;
     };
-    match parse(definition.bytes()) {
+    match parse(call.php(), definition.bytes()) {
         Ok(parsed) => call.set_bool(parsed.equals(typed)),
         Err(failure) => {
             call.set_bool(false);
@@ -876,10 +872,10 @@ mod tests {
     #[test]
     fn layout_matches_upstream() {
         assert_eq!(size_of::<TypeValue>(), 6);
-        assert_eq!(offset_of!(TypeInfo, ce), 16);
-        assert_eq!(offset_of!(TypeInfo, len), 24);
-        assert_eq!(offset_of!(TypeInfo, text), 26);
-        assert_eq!(size_of::<TypeInfo>(), 32);
+        assert_eq!(offset_of!(TypeInfo<'static>, ce), 16);
+        assert_eq!(offset_of!(TypeInfo<'static>, len), 24);
+        assert_eq!(offset_of!(TypeInfo<'static>, text), 26);
+        assert_eq!(size_of::<TypeInfo<'static>>(), 32);
     }
 
     #[test]
@@ -926,7 +922,7 @@ mod tests {
         let parsed = Parsed {
             this: TypeValue::default(),
             element: TypeValue::default(),
-            ce: ptr::null_mut(),
+            ce: None,
             text: b"<string,int>\0".to_vec(),
         };
         let mut buffer = vec![u64::MAX; info_size(12).div_ceil(8)];
