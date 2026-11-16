@@ -291,7 +291,6 @@ pub enum RespState {
     String = 2,
 }
 
-#[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RespRequest {
     pub state: RespState,
