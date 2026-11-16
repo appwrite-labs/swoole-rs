@@ -327,17 +327,17 @@ impl CppString {
     }
 
     /// `String::split`: each `delimiter`-terminated chunk from `offset` to `handler`,
-    /// as its start in the buffer and its length, until `handler` returns false. An
-    /// empty `delimiter` matches everywhere, so only `handler` ends that loop.
+    /// as its start in the buffer and its length, until `handler` returns false
+    /// (`None`); otherwise where the unsplit tail starts. An empty `delimiter`
+    /// matches everywhere, so only `handler` ends that loop.
     pub fn split(
         &mut self,
         delimiter: &[u8],
         mut handler: impl FnMut(*const u8, usize) -> bool,
-    ) -> isize {
+    ) -> Option<usize> {
         self.split_with(delimiter, |s, start, length| {
             handler(s.str.wrapping_add(start), length)
         })
-        .map_or(-1, usize::cast_signed)
     }
 
     /// [`split`](Self::split), each chunk to `handler` as the string, lent back, with
@@ -747,9 +747,9 @@ mod tests {
             true
         });
         assert_eq!(chunks, [b"a\r\n".to_vec(), b"bc\r\n".to_vec()]);
-        assert_eq!((ret, s.offset), (7, 7));
+        assert_eq!((ret, s.offset), (Some(7), 7));
         // No delimiter after the offset: it moves to the last place one could start.
-        assert_eq!(s.split(b"\r\n", |_, _| false), 0);
+        assert_eq!(s.split(b"\r\n", |_, _| false), Some(0));
         assert_eq!(s.offset, 7);
         s.dispose();
     }

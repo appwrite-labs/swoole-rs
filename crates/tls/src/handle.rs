@@ -214,9 +214,12 @@ pub struct SslFailure {
     pub code: c_int,
 }
 
-/// Clears this thread's OpenSSL error queue.
+/// Clears this thread's OpenSSL error queue. Usually it is already empty, and the peek
+/// is a quarter of the clear, which frees and zeroes all sixteen slots (#4283).
 pub fn clear_errors() {
-    ERR_clear_error();
+    if ERR_peek_error() != 0 {
+        ERR_clear_error();
+    }
 }
 
 /// This thread's oldest queued OpenSSL error, left queued.
@@ -822,5 +825,27 @@ mod tests {
         pub(crate) unsafe fn new(ssl: *mut SSL) -> Option<Self> {
             NonNull::new(ssl).map(|ssl| Self(ssl, PhantomData))
         }
+    }
+
+    #[test]
+    fn clear_errors_empties_the_queue() {
+        // A length of -1 reads to the NUL.
+        let text = c"not a certificate";
+        unsafe {
+            let bio = openssl_sys::BIO_new_mem_buf(text.as_ptr().cast(), -1);
+            let cert = openssl_sys::PEM_read_bio_X509(
+                bio,
+                std::ptr::null_mut(),
+                None,
+                std::ptr::null_mut(),
+            );
+            assert!(cert.is_null());
+            openssl_sys::BIO_free_all(bio);
+        }
+        assert_ne!(super::peek_error(), 0, "the failed read queued an error");
+        super::clear_errors();
+        assert_eq!(super::peek_error(), 0);
+        super::clear_errors();
+        assert_eq!(super::peek_error(), 0);
     }
 }
