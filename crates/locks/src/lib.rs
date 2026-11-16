@@ -823,12 +823,8 @@ pub fn wakeup(a: &AtomicU32, n: i32) -> i32 {
     if a.compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
         .is_ok()
     {
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "FUTEX_WAKE returns -1 or at most `n` woken waiters"
-        )]
         // SAFETY: `a` is a live futex word; FUTEX_WAKE reads no other pointer.
-        unsafe {
+        let woken = unsafe {
             syscall(
                 SYS_futex,
                 a.as_ptr(),
@@ -837,8 +833,10 @@ pub fn wakeup(a: &AtomicU32, n: i32) -> i32 {
                 std::ptr::null::<c_void>(),
                 std::ptr::null::<c_void>(),
                 0,
-            ) as i32
-        }
+            )
+        };
+        // FUTEX_WAKE returns -1 or at most `n` woken waiters.
+        woken.c_cast::<i32>()
     } else {
         0
     }

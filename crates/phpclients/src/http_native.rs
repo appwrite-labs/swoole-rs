@@ -69,6 +69,7 @@ pub(crate) fn websocket() -> Option<Box<dyn WebSocket>> {
     WEBSOCKET.get().map(|new| new())
 }
 
+use swoole_rs_corebase::CCast;
 use swoole_rs_reactor::{Events, TimeoutKind};
 /// `SW_WEBSOCKET_HEADER_LEN`.
 const WEBSOCKET_HEADER_LEN: u8 = 2;
@@ -77,8 +78,7 @@ const WEBSOCKET_HEADER_LEN: u8 = 2;
 /// `errno`.
 pub(crate) fn swoole_http_client_coro_create_socket(kind: i64) -> Result<Owned, c_int> {
     swoole_rs_phpruntime::check_reactor();
-    #[expect(clippy::cast_possible_truncation, reason = "a swSocketType")]
-    match crate::socket::owner::create_kind(kind as i32) {
+    match crate::socket::owner::create_kind(kind.c_cast::<i32>()) {
         Ok(Some(object)) => Ok(object),
         Ok(None) => Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0)),
         Err(bailout) => {

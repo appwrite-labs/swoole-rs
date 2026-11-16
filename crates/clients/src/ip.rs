@@ -88,8 +88,7 @@ pub fn swr_v1_clients_ip_text(version: u8, address: &[u8]) -> ClientsIpText {
         _ => None,
     };
     let written = written.unwrap_or_default();
-    #[expect(clippy::cast_possible_truncation, reason = "written fits output.bytes")]
-    let length = written.len() as u32;
+    let length = u32::try_from(written.len()).unwrap_or(u32::MAX);
     output.length = length;
     output.bytes = text;
     output

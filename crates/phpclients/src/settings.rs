@@ -116,14 +116,9 @@ fn edit<R>(cli: Cli, edit: impl FnOnce(&mut ClientRecord) -> R) -> R {
 
 /// `socket_buffer_size` (`socket->set_buffer_size(size)`, then
 /// `socket->buffer_size = size`) and the output buffer's watermarks.
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "clamped"
-)]
 fn buffers(cli: Cli, options: &Options) {
     if let Some(size) = options.size("socket_buffer_size") {
-        let size = clamp(size, 1, i32::MAX.into()) as u32;
+        let size = u32::try_from(clamp(size, 1, i32::MAX.into())).unwrap_or(1);
         if let Some(socket) = cli.net() {
             swoole_rs_reactor::swr_v1_socket_buffer_size(socket.fd(), true, true, size);
             socket.edit(|record| record.output.buffer_size = size);
@@ -134,8 +129,10 @@ fn buffers(cli: Cli, options: &Options) {
         ("buffer_low_watermark", false),
     ] {
         if let Some(mark) = options.size(key) {
-            cli.get()
-                .set_watermark(high, clamp(mark, 0, u32::MAX.into()) as u32);
+            cli.get().set_watermark(
+                high,
+                u32::try_from(clamp(mark, 0, u32::MAX.into())).unwrap_or(0),
+            );
         }
     }
 }
@@ -155,8 +152,7 @@ fn length_check(cli: Cli, on: bool, mqtt: bool) {
 
 /// `bind(address, port)`, which logs a failed `SO_REUSEADDR` itself.
 fn bind(cli: Cli, address: &[u8], port: i64) -> bool {
-    #[expect(clippy::cast_possible_truncation, reason = "clamped to a port")]
-    let port = port as c_int;
+    let port = c_int::try_from(port).unwrap_or_default();
     cli.handle().bind(&crate::native::c_text(address), port)
 }
 
@@ -209,13 +205,9 @@ pub(crate) fn apply(cli: Cli, settings: &Array) -> Option<bool> {
     if let Some(kind) = options.string("package_length_type") {
         let kind = kind.bytes().first().copied().unwrap_or(0);
         edit(cli, |record| record.protocol.package_length_type = kind);
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "sizes up to 8"
-        )]
-        let size =
-            swoole_rs_corebase::swoole_type_size(std::ffi::c_char::from_ne_bytes([kind])) as u8;
+        let size = swoole_rs_corebase::swoole_type_size(std::ffi::c_char::from_ne_bytes([kind]));
+        // Sizes are up to 8; anything else is the unknown type's 0.
+        let size = u8::try_from(size).unwrap_or_default();
         edit(cli, |record| record.protocol.package_length_size = size);
         if size == 0 {
             let name = c_text(&[kind]);
@@ -229,22 +221,12 @@ pub(crate) fn apply(cli: Cli, settings: &Array) -> Option<bool> {
             return Some(false);
         }
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "clamped"
-    )]
     if let Some(offset) = options.long("package_length_offset") {
-        let offset = clamp(offset, 0, u16::MAX.into()) as u16;
+        let offset = u16::try_from(clamp(offset, 0, u16::MAX.into())).unwrap_or(0);
         edit(cli, |record| record.protocol.package_length_offset = offset);
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "clamped"
-    )]
     if let Some(offset) = options.long("package_body_offset") {
-        let offset = clamp(offset, 0, u16::MAX.into()) as u16;
+        let offset = u16::try_from(clamp(offset, 0, u16::MAX.into())).unwrap_or(0);
         edit(cli, |record| record.protocol.package_body_offset = offset);
     }
     if let Some(function) = options.get("package_length_func") {
@@ -261,12 +243,7 @@ pub(crate) fn apply(cli: Cli, settings: &Array) -> Option<bool> {
     let max_length = options
         .size("package_max_length")
         .unwrap_or(INPUT_BUFFER_SIZE);
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "clamped"
-    )]
-    let max = clamp(max_length, 0, u32::MAX.into()) as u32;
+    let max = u32::try_from(clamp(max_length, 0, u32::MAX.into())).unwrap_or(0);
     edit(cli, |record| record.protocol.package_max_length = max);
     buffers(cli, &options);
     if bailout::pending() {

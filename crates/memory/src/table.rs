@@ -174,8 +174,8 @@ impl Live {
         for (at, to) in row.key.iter().enumerate() {
             to.store(key.get(at).copied().unwrap_or(0), Ordering::Relaxed);
         }
-        #[expect(clippy::cast_possible_truncation, reason = "at most 63 bytes")]
-        row.key_len.store(key.len() as u8, Ordering::Relaxed);
+        let key_len = u8::try_from(key.len()).unwrap_or(u8::MAX);
+        row.key_len.store(key_len, Ordering::Relaxed);
         row.active.store(active, Ordering::Relaxed);
     }
 
@@ -739,11 +739,8 @@ impl Table {
     fn bucket<'k>(&self, key: &'k [u8]) -> (Live, &'k [u8]) {
         let compared = clamp(key);
         let hash = (self.hash)(key, compared.len());
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "masked below the row count"
-        )]
-        let row = self.bucket_row((hash & (self.size as u64 - 1)) as usize);
+        // Masked below the row count, a usize.
+        let row = self.bucket_row((hash & (self.size as u64 - 1)).c_cast::<usize>());
         (row, compared)
     }
 

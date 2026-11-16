@@ -549,7 +549,7 @@ fn recv(call: &Call) {
         let timeout = call.arity(0, 1).and_then(|()| call.double(1, 0.0)).ok()?;
         let state = ctx.state();
         // `websocket` checked the context is bound to a coroutine socket.
-        let (settings, socket) = (u32::from(state.websocket_settings), context::socket(state)?);
+        let (settings, socket) = (state.websocket_settings, context::socket(state)?);
         let frame = websocket::recv(settings, &mut state.ws_buffer, socket, timeout);
         match frame.kind() {
             // `""`: the peer closed.

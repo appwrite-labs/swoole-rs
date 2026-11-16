@@ -1172,7 +1172,7 @@ pub(crate) fn upgrade(context: Ctx) -> Result<bool, bailout::Bailout> {
 /// settings meanwhile.
 struct ClientWebSocket {
     /// `OPEN_*_FRAME` bits for [`recv`].
-    frames: Cell<u32>,
+    frames: Cell<u8>,
     mask: Cell<bool>,
     compression: Cell<bool>,
     /// Out of the cell while a `recv` assembles it.
@@ -1253,10 +1253,10 @@ impl swoole_rs_phpclients::WebSocket for ClientWebSocket {
 
 /// `WebSocketSettings`' bits for [`recv`], and with `compression` a
 /// coroutine server's `websocket_settings`.
-pub(crate) const IN_SERVER: u32 = 1;
-pub(crate) const OPEN_PING_FRAME: u32 = 1 << 1;
-pub(crate) const OPEN_PONG_FRAME: u32 = 1 << 2;
-pub(crate) const OPEN_CLOSE_FRAME: u32 = 1 << 3;
+pub(crate) const IN_SERVER: u8 = 1;
+pub(crate) const OPEN_PING_FRAME: u8 = 1 << 1;
+pub(crate) const OPEN_PONG_FRAME: u8 = 1 << 2;
+pub(crate) const OPEN_CLOSE_FRAME: u8 = 1 << 3;
 pub(crate) const SETTING_COMPRESSION: u8 = 1 << 4;
 /// `SW_WEBSOCKET_DEFAULT_BUFFER`.
 const DEFAULT_BUFFER: usize = 4096;
@@ -1285,7 +1285,7 @@ pub(crate) struct Message {
 pub(crate) type Assembly = Option<Box<Message>>;
 
 /// `websocket::send_frame`: answer a control frame the user did not ask for.
-fn reply(settings: u32, socket: co::Co, opcode: u8, payload: &[u8]) {
+fn reply(settings: u8, socket: co::Co, opcode: u8, payload: &[u8]) {
     let flags = if settings & IN_SERVER != 0 {
         FLAG_FIN
     } else {
@@ -1323,7 +1323,7 @@ fn payload_string(payload: &[u8], compressed: bool) -> Option<Owned> {
 /// a frame object, answering pings and closes the settings leave to it.
 /// `false` when the socket read failed, `""` when it closed, `null` on any
 /// other error.
-pub(crate) fn recv(settings: u32, slot: &mut Assembly, socket: co::Co, timeout: f64) -> Owned {
+pub(crate) fn recv(settings: u8, slot: &mut Assembly, socket: co::Co, timeout: f64) -> Owned {
     let func = c"websocket::recv_frame";
     loop {
         let (received, data, length) = sock_recv(socket, timeout);
