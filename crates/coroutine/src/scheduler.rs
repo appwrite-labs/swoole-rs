@@ -275,6 +275,7 @@ pub fn suspend(co: *mut c_void) {
 
 /// [`suspend`], handing `arm` the [`Waker`](crate::Waker) that ends this park before
 /// `co` switches out.
+#[inline]
 pub fn park(co: *mut c_void, arm: impl FnOnce(crate::Waker)) {
     let s = Sched::this();
     ops::yield_armed(s, Co::running(s, co.cast()), arm);
@@ -292,6 +293,7 @@ pub fn yield_with_cancel<F: FnOnce(*mut c_void) -> bool + Copy>(co: *mut c_void,
 
 /// [`yield_with_cancel`], handing `arm` the [`Waker`](crate::Waker) that ends this
 /// park before `co` switches out.
+#[inline]
 pub fn yield_with_cancel_armed<F: FnOnce(*mut c_void) -> bool + Copy>(
     co: *mut c_void,
     cancel: F,
