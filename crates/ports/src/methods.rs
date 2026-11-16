@@ -133,8 +133,8 @@ fn set_option(fd: c_int, level: c_int, option: c_int) -> std::io::Result<()> {
 /// `ListenPort::create_socket()`: keeps the port's socket unless the server
 /// reuses ports (Linux), else makes one, sets its options, binds it to the
 /// port's host and port, and takes the bound port. On failure it sets the last
-/// error to errno and frees the new socket, which the port still points at,
-/// and returns false.
+/// error to errno, frees the new socket, leaving the port without one, and
+/// returns false.
 pub(crate) fn create_socket(config: &PortConfig, reuse_port: bool) -> bool {
     let reuse_port = cfg!(target_os = "linux") && reuse_port;
     if !config.socket_ptr().is_null() {
@@ -420,10 +420,7 @@ pub fn set_stream_protocol(config: &mut PortConfig) {
 
 /// `ListenPort::destroy_http_request(conn)`: frees the connection's request, if any.
 pub(crate) fn destroy_http_request(conn: swoole_rs_server::Connection<'_>) {
-    let request = conn.take_http_request();
-    // SAFETY: the box the session's reactor, this one, gave the connection; the slot
-    // no longer names it.
-    request_free(request.map(|request| unsafe { Box::from_raw(request) }));
+    request_free(conn.take_http_request());
 }
 
 use crate::read_native::on_read;
@@ -1118,18 +1115,18 @@ mod tests {
     fn destroy_http_request_frees_and_clears() {
         // SAFETY: an all-zero record is a closed connection with no object.
         let mut conn: ConnectionRecord = unsafe { std::mem::zeroed() };
-        // `request_new`'s boxed request.
-        let request = swoole_rs_http_ffi::HttpRequest::default();
         let slot = swoole_rs_server::Connection::from(&mut conn);
-        let held = slot.set_http_request(Box::new(request));
-        assert_eq!(slot.http_request(), Some(held));
+        slot.hold_http_request(swoole_rs_http_ffi::request_new());
         destroy_http_request(slot);
         assert!(
-            slot.http_request().is_none(),
+            slot.take_http_request().is_none(),
             "the request is freed and cleared"
         );
         destroy_http_request(slot);
-        assert!(slot.http_request().is_none(), "no request: nothing to do");
+        assert!(
+            slot.take_http_request().is_none(),
+            "no request: nothing to do"
+        );
     }
 
     /// Upstream's `server_port.import`. Linux, as core-tests: macOS answers

@@ -15,6 +15,7 @@ if [ "$(uname)" = Linux ] && command -v php-config >/dev/null; then
             if grep -qs '^\[features\]' "crates/$crate/Cargo.toml"; then echo "-p swoole-rs-$crate"; fi
         done)
     [ -z "$staged" ] || cargo clippy --locked $staged --all-targets --all-features -q -- -D warnings
+    git diff --cached --quiet -- crates || python3 tools/externs.py > /dev/null
 fi
 python3 tools/check_migration.py > /dev/null
 git diff --cached --quiet -- native crates || tools/headers.sh --check

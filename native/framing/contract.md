@@ -45,15 +45,14 @@ it through crates/ports' upstream symbols below. Feature bit 4096; graduated.
 
 ## Deliberate differences from upstream
 
-These differ only where upstream has undefined or unsafe behavior:
+Rust's own checks:
 
-- A format wider than the reported packet bytes is rejected instead of read past
-  the end. A declared dynamic size smaller than its format can trigger this.
-- An overflowing signed total length is rejected (signed overflow is UB natively).
+- A format wider than the reported packet bytes is rejected. A declared dynamic
+  size smaller than its format can trigger this.
+- An overflowing signed total length is rejected.
 - A receive request larger than the buffer's remaining allocation is rejected.
 - MIME suffixes lowercase only ASCII letters. Upstream's `tolower` also maps
   bytes 0x80-0xff after a script's `setlocale(LC_CTYPE, ...)` to a single-byte
-  locale, and is UB for negative signed `char` values other than EOF. PHP 8.2's
-  `strtolower` made the same change.
+  locale. PHP 8.2's `strtolower` made the same change.
 
 Tests: `tests/modules/framing/`.

@@ -6,6 +6,7 @@ name = "swoole-rs-hooks-system-tests"
 version = "0.0.0"
 edition = "2024"
 publish = false
+license.workspace = true
 build = "build.rs"
 
 [[bin]]
@@ -14,6 +15,7 @@ path = "src/main.rs"
 test = false
 
 [dependencies]
+libc = "=0.2.191"
 swoole-rs-buffer = { path = "../../../../crates/buffer" }
 swoole-rs-clients = { path = "../../../../crates/clients" }
 swoole-rs-corebase = { path = "../../../../crates/corebase" }
@@ -21,7 +23,7 @@ swoole-rs-coroutine = { path = "../../../../crates/coroutine", features = ["upst
 swoole-rs-ffi = { path = "../../../../crates/ffi" }
 swoole-rs-hooks = { path = "../../../../crates/hooks" }
 swoole-rs-memory = { path = "../../../../crates/memory" }
-swoole-rs-ossupport = { path = "../../../../crates/ossupport" }
+swoole-rs-ossupport = { path = "../../../../crates/ossupport", features = ["upstream-symbols"] }
 swoole-rs-process = { path = "../../../../crates/process" }
 swoole-rs-reactor = { path = "../../../../crates/reactor" }
 # The original pool cases now pass the real server effects explicitly.

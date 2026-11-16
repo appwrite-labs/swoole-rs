@@ -1,4 +1,5 @@
-//! The hybrid's Rust archive: every module crate, and `swoole_init` (src/init.rs).
+//! Every module crate, and `swoole_init` (src/init.rs): crates/ext links this into
+//! `swoole.so`, and its Zend-free staticlib is what the native gates link.
 //! The C ABI queries are crates/error-ffi's.
 #![cfg_attr(
     not(test),
@@ -14,7 +15,6 @@ pub use swoole_rs_error::*;
 pub use swoole_rs_error_ffi::*;
 
 pub use swoole_rs_websocket::*;
-pub use swoole_rs_websocket_ffi::*;
 
 pub use swoole_rs_buffer::*;
 

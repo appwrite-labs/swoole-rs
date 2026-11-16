@@ -3,7 +3,7 @@ name = "swoole-rs-phphttp2"
 version = "0.1.0"
 edition = "2024"
 publish = false
-license = "Apache-2.0"
+license.workspace = true
 description = "PHP HTTP/2 client classes (Swoole\\Coroutine\\Http2\\Client, Swoole\\Http2\\Request, Swoole\\Http2\\Response) over the zend crate"
 
 [features]

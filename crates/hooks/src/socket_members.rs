@@ -610,24 +610,24 @@ impl Co {
         false
     }
 
-    /// `Socket::recvfrom(buf, n, addr, addrlen)` into `buf` and the caller's `peer`,
-    /// retrying `EINTR` at once: the bytes received and the length of the peer's address.
+    /// `Socket::recvfrom(buf, n, addr, addrlen)` into `buf`, the sender into the caller's
+    /// `peer` and its length into `peer.len` (the storage's capacity when nothing came),
+    /// retrying `EINTR` at once: the bytes received.
     pub fn recvfrom_into(
         self,
         buf: &mut [impl ReadSlot],
-        peer: &mut libc::sockaddr_storage,
-    ) -> (isize, libc::socklen_t) {
+        peer: &mut SocketAddress,
+    ) -> Option<usize> {
+        peer.len = SocketAddress::CAPACITY;
         #[cfg(feature = "iouring")]
-        if let Some((n, size)) = ring::with(self, |ops| ring::recvfrom_into(ops, buf, peer)) {
-            return (n.map_or(-1, usize::cast_signed), size);
+        if let Some(n) = ring::with(self, |ops| ring::recvfrom_into(ops, buf, peer)) {
+            return n;
         }
-        let mut size = swoole_rs_corebase::sys::socklen::<libc::sockaddr_storage>();
-        let (addr, addrlen) = (core::ptr::from_mut(peer).cast(), &raw mut size);
+        let (addr, addrlen) = ((&raw mut peer.addr).cast(), &raw mut peer.len);
         let fd = self.sock_fd();
-        // The borrowed storage and the size of it above, both live across the transfer.
+        // The borrowed storage and its capacity above, both live across the transfer.
         let call = call!(|_, at, len| count(libc::recvfrom(fd, at.cast(), len, 0, addr, addrlen)));
-        let received = self.transfer(RETRY_INTERRUPTED, Buffer::read(buf), call);
-        (received.map_or(-1, usize::cast_signed), size)
+        self.transfer(RETRY_INTERRUPTED, Buffer::read(buf), call)
     }
 
     /// `Socket::recvfrom(buf, n)`: into the `network::Socket`'s peer address, retrying

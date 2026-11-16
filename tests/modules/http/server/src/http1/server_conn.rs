@@ -1162,7 +1162,6 @@ const SIGKILL: c_int = 9;
 const EAGAIN: c_int = 11;
 
 unsafe extern "C" {
-    fn free(ptr: *mut c_void);
     fn __errno_location() -> *mut c_int;
 }
 
@@ -1592,7 +1591,7 @@ fn abnormal_send(serv: Server, flags: u8, msg_id: u64) {
     // SAFETY: `server->get_worker_pipe_master(0)`: worker 0's pipe to the master, whose
     // first member is its fd.
     let fd = unsafe {
-        *swoole_rs_process::worker_record::Worker::new(serv.view().worker(0))
+        *swoole_rs_process::worker_record::Worker::from(&*(serv.view().worker(0)))
             .pipe_master()
             .cast::<c_int>()
     };
@@ -1791,9 +1790,11 @@ fn pipe_writable_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
 
     // `serv->get_worker_message_bus()->move_packet()`: the packet's block, now ours to free.
     let data = serv.view().move_worker_packet();
-    check(!data.is_null(), "data != nullptr");
-    // SAFETY: `sw_free(data)`: the block, from the libc allocator.
-    unsafe { free(data.cast()) };
+    check(
+        data.as_ref().is_some_and(|data| !data.as_ptr().is_null()),
+        "data != nullptr",
+    );
+    drop(data);
 
     SW_OK
 }

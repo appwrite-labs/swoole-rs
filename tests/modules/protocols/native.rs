@@ -457,8 +457,7 @@ fn parse_replies() {
             for suffix in ["\r\n", "x\r\n"] {
                 let command = format!("{prefix}{digits}{suffix}");
                 for initial in [0, libc::EDOM, libc::ERANGE] {
-                    // The pinned parse dereferences nullptr after a malformed numeric
-                    // delimiter; compare its defined get_number helper instead.
+                    // A malformed numeric delimiter: compare the get_number helper.
                     if suffix.starts_with('x') {
                         let line = terminated(command.as_bytes());
                         let mut before = 0;

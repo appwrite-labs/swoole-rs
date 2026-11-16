@@ -32,7 +32,6 @@ on:
       - crates/server/**
       - crates/timer/**
       - crates/utilities/**
-      - crates/websocket-ffi/**
       - tests/modules/buffer/recycling.rs
       - tests/modules/coroutine/channel.rs
       - tests/modules/memory/**
@@ -63,7 +62,6 @@ jobs:
             packages: >-
               -p swoole-rs-buffer -p swoole-rs-bus -p swoole-rs-corebase -p swoole-rs-coroutine
               -p swoole-rs-locks -p swoole-rs-process -p swoole-rs-reactor -p swoole-rs-utilities
-              -p swoole-rs-websocket-ffi
           - name: memory
             flags: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations
             packages: -p swoole-rs-memory -p swoole-rs-ossupport

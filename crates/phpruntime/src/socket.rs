@@ -1,6 +1,6 @@
 //! The coroutine socket (`SocketImpl`), which crates/hooks makes, runs and
 //! frees, and what the streams need of Swoole's PHP side.
-use libc::{c_int, sockaddr_storage, socklen_t};
+use libc::c_int;
 use std::{
     borrow::Cow,
     ffi::{CStr, CString},
@@ -8,7 +8,7 @@ use std::{
 };
 use swoole_rs_corebase::log::set_last_error;
 use swoole_rs_hooks::co_socket::{Co, OwnedCo};
-use swoole_rs_reactor::{SocketFields, TimeoutKind};
+use swoole_rs_reactor::{SocketAddress, SocketFields, TimeoutKind};
 use swoole_rs_tls::upstream::{recv_sync, send_sync, socket_ssl_close};
 use swoole_rs_zend::{
     E_ERROR, Owned, Value, ZString,
@@ -211,13 +211,13 @@ impl Socket {
         self.co().net(|record| record.catch_error(code))
     }
 
-    /// `recvfrom(buf, n, addr, addrlen)` into `buf` and `peer`: the bytes received
-    /// and the length of the peer's address.
+    /// `recvfrom(buf, n, addr, addrlen)` into `buf`, and `peer` with its length: the
+    /// bytes received.
     pub(crate) fn recvfrom(
         &self,
         buf: &mut [MaybeUninit<u8>],
-        peer: &mut sockaddr_storage,
-    ) -> (isize, socklen_t) {
+        peer: &mut SocketAddress,
+    ) -> Option<usize> {
         self.co().recvfrom_into(buf, peer)
     }
 

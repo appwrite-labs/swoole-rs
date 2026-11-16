@@ -366,10 +366,82 @@ unsafe extern "C" {
 
 /// An item size of one byte, so a [`Count`] of bytes counts items: the only value.
 #[repr(transparent)]
-pub(crate) struct OneByte(usize);
+pub struct OneByte(usize);
 
 impl OneByte {
-    pub(crate) const SIZE: Self = Self(1);
+    pub const SIZE: Self = Self(1);
+}
+
+/// The size of each item of a buffer C lends as `size` × its [`Count`] bytes (`fread`,
+/// `fwrite`). Only C mints one, as an export's parameter, with the buffer's [`Out`] or
+/// [`In`] and its count of items.
+#[repr(transparent)]
+pub struct ItemSize<'id>(usize, Brand<'id>);
+
+impl ItemSize<'_> {
+    /// The size in bytes.
+    #[inline]
+    #[must_use]
+    pub const fn get(&self) -> usize {
+        self.0
+    }
+}
+
+/// The bytes `size` × `count` items take, none when that overflows: no buffer is
+/// that large.
+fn item_bytes(size: &ItemSize<'_>, Count(count, _): Count<'_>) -> usize {
+    size.0.checked_mul(count).unwrap_or(0)
+}
+
+impl<'id, S: ReadSlot> Out<'id, S> {
+    /// The slots of `count` items of `size` bytes each, as the [`Fill`] they are.
+    #[inline]
+    #[must_use]
+    pub fn fill_items(self, size: &ItemSize<'id>, count: Count<'id>) -> Fill<'id, S> {
+        Fill {
+            at: self.0,
+            len: item_bytes(size, count),
+            lent: PhantomData,
+        }
+    }
+}
+
+impl<'id> In<'id, u8> {
+    /// The bytes of `count` items of `size` bytes each, as the [`Drain`] they are.
+    #[inline]
+    #[must_use]
+    pub fn drain_items(self, size: &ItemSize<'id>, count: Count<'id>) -> Drain<'id> {
+        Drain {
+            at: self.0,
+            len: item_bytes(size, count),
+            lent: PhantomData,
+        }
+    }
+}
+
+/// Items C lends for a call that reads them and writes them back (`poll`'s
+/// `pollfd`s): null, or as many initialized `T`s as its [`Count`] says, reached through
+/// nothing else for `'id`. Only C mints one, as an export's parameter, with its count.
+#[repr(transparent)]
+pub struct InOut<'id, T>(*mut T, Brand<'id>);
+
+impl<'id, T> InOut<'id, T> {
+    /// The `count` items (a negative count is none), or `None` for a null address
+    /// with a nonzero count.
+    #[inline]
+    #[must_use]
+    pub fn items<N: TryInto<usize>>(self, count: Count<'id, N>) -> Option<&'id mut [T]> {
+        let len = count.0.try_into().unwrap_or(0);
+        if len == 0 {
+            return Some(&mut []);
+        }
+        if self.0.is_null() {
+            return None;
+        }
+        // SAFETY: the type's invariant: `len` initialized items, lent to this handle
+        // alone for `'id`.
+        Some(unsafe { std::slice::from_raw_parts_mut(self.0, len) })
+    }
 }
 
 /// `len` bytes at `at` that a read may overwrite, lent for `'a`: null, or writable
@@ -468,8 +540,9 @@ impl<'a, S: ReadSlot> Fill<'a, S> {
         count(self.lend(|buf, n| pread(fd, buf, n, offset)))
     }
 
-    /// recvfrom(2) into the bytes, the sender into `address`'s storage, and its length,
-    /// given the room `address` has, into `address.len`.
+    /// recvfrom(2) into the bytes, the sender into `address`'s whole storage, and its
+    /// length into `address.len`. The room is the whole storage whatever `len` held: a
+    /// zero `len` would otherwise leave the sender unwritten.
     /// How many bytes it wrote, or None with errno set.
     #[inline]
     pub fn recvfrom_one(
@@ -478,7 +551,7 @@ impl<'a, S: ReadSlot> Fill<'a, S> {
         flags: c_int,
         address: &mut SocketAddress,
     ) -> Option<usize> {
-        let mut room = address.room();
+        let mut room = Room::FULL;
         let storage = &mut address.addr;
         let received = self.lend(|buf, n| recvfrom(fd, buf, n, flags, storage, &mut room));
         address.len = room.length();

@@ -80,13 +80,13 @@ extern "C" fn swr_v1_coroutine_scheduler_get() -> *mut Scheduler {
     scheduler()
 }
 
-/// `Coroutine::count()` on this thread.
+/// `Coroutine::count()` (`swoole_coroutine_count()`) on this thread.
 #[must_use]
 pub fn coroutine_count() -> usize {
     with_scheduler(|s| s.count())
 }
 
-/// `Coroutine::get_by_cid` on this thread: the facade, or null.
+/// `Coroutine::get_by_cid` (`swoole_coroutine_get`) on this thread: the facade, or null.
 #[must_use]
 pub fn coroutine_get(cid: c_long) -> *mut c_void {
     with_scheduler(|s| s.get(cid))
@@ -96,6 +96,12 @@ pub fn coroutine_get(cid: c_long) -> *mut c_void {
 #[must_use]
 pub fn coroutine_state(cid: c_long) -> Option<crate::State> {
     with_scheduler(|s| s.state(cid))
+}
+
+/// [`Scheduler::cid_of`] on this thread.
+#[must_use]
+pub fn coroutine_cid_of(co: *const c_void) -> Option<c_long> {
+    with_scheduler(|s| s.cid_of(co.cast()))
 }
 
 /// [`Scheduler::older_native`] on this thread.

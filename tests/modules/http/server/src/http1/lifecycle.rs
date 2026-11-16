@@ -7,7 +7,7 @@ use super::*;
 use crate::TEST_STR;
 use case::TimerNode;
 use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicU16, AtomicU64};
-use swoole_rs_clients::client::{self as native, Client, ClientEvent, Handle, listen};
+use swoole_rs_clients::client::{self as native, ClientEvent, Handle, listen};
 use swoole_rs_process::methods::{ExitStatus, send_pipe_message, swoole_get_worker_type};
 use swoole_rs_process::worker_record::{Worker, WorkerRecord};
 use swoole_rs_server::{event_worker, manager, task_worker, worker_methods};
@@ -55,8 +55,6 @@ unsafe extern "C" {
 unsafe extern "C-unwind" {
     #[link_name = "_Z17swoole_timer_ticklPFvPN6swoole5TimerEPNS_9TimerNodeEEPv"]
     fn swoole_timer_tick(ms: c_long, callback: TimerFn, data: *mut c_void) -> c_long;
-    #[link_name = "_Z18swoole_timer_clearl"]
-    fn swoole_timer_clear(timer_id: c_long) -> bool;
     fn swr_v1_core_set_last_error(code: c_int);
 }
 
@@ -131,7 +129,7 @@ fn assert_no_failure() {
 
 fn worker_id(worker: *mut WorkerRecord) -> u32 {
     // SAFETY: the worker the server passed the callback.
-    unsafe { Worker::new(worker) }.id()
+    unsafe { Worker::from(&*worker) }.id()
 }
 
 fn manager_pid(serv: Server) -> c_int {
@@ -752,8 +750,8 @@ fn restart_worker_process() {
     // workers by pid in the server's own arrays, so that pool is not read here.
     // SAFETY: the created server's task worker, and the task pool it joins.
     unsafe {
-        Worker::new(worker).set_pid(pid());
-        swoole_rs_process::methods::add_worker(&*pool, Worker::new(worker));
+        Worker::from(&*worker).set_pid(pid());
+        swoole_rs_process::methods::add_worker(&*pool, Worker::from(&*worker));
     }
     manager::native::restart_worker_process(serv.view(), &fake_exit);
 
@@ -789,7 +787,7 @@ unsafe extern "C" fn reload_watchdog_tick(_: *mut c_void, tnode: *mut TimerNode)
         for i in 0..config.worker_num.get() + config.task_worker_num.get() {
             let worker = serv.view().worker(u16::try_from(i).unwrap());
             // SAFETY: one of the server's workers.
-            let worker_pid = unsafe { Worker::new(worker) }.pid();
+            let worker_pid = unsafe { Worker::from(&*worker) }.pid();
             eprintln!(
                 "worker#{i} pid={worker_pid} starts={}",
                 counter_get(i as usize)
@@ -995,7 +993,7 @@ fn kill_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
         // SAFETY: worker 1 of the running server; the event's head.
         let (dst, head) = unsafe {
             (
-                swoole_rs_process::worker_record::Worker::new(dst),
+                swoole_rs_process::worker_record::Worker::from(&*dst),
                 std::slice::from_raw_parts((&raw const ev).cast::<u8>(), size_of::<DataHead>()),
             )
         };
@@ -1013,8 +1011,7 @@ fn kill_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
 }
 
 fn kill_on_worker_exit(_: view::Server<'_>, _: Worker<'_>) {
-    // SAFETY: clears this worker's timer by its id.
-    unsafe { swoole_timer_clear(TEST_TIMER.load(Ordering::SeqCst)) };
+    _ = swoole_rs_timer::swoole_timer_clear(TEST_TIMER.load(Ordering::SeqCst));
     counter_incr(6, 1);
 }
 
@@ -1313,7 +1310,9 @@ fn base_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
 
     let packet = serv.view().move_worker_packet();
     expect(
-        packet.is_null(),
+        packet
+            .as_ref()
+            .is_none_or(|packet| packet.as_ptr().is_null()),
         "get_worker_message_bus()->move_packet() == nullptr",
     );
 
@@ -1456,7 +1455,7 @@ fn process_on_start(serv: view::Server<'_>) {
         unsafe { read(fd, (&raw mut byte).cast(), 1) };
 
         // SAFETY: worker 0 of the running server.
-        let pid = unsafe { Worker::new(serv.view().worker(0)) }.pid();
+        let pid = unsafe { Worker::from(&*(serv.view().worker(0))) }.pid();
         // SAFETY: __libc_current_sigrtmin(3).
         signal(pid, unsafe { __libc_current_sigrtmin() });
 
@@ -1566,13 +1565,21 @@ fn process_single_thread() {
 
 /// `test_clean_worker`'s `AsyncClient ac(SW_SOCK_TCP)`, made before the server forks, so
 /// a worker's `ac.get_client()` is the master's client, over the same socket.
-static CLEAN_CLIENT: AtomicPtr<Client> = AtomicPtr::new(ptr::null_mut());
+static CLEAN_CLIENT: Mutex<Option<CleanClient>> = Mutex::new(None);
+
+/// The client's handle, which the server's threads share as upstream's test does.
+#[derive(Clone, Copy)]
+struct CleanClient(Handle);
+
+// SAFETY: one thread at a time drives the client: the timer connects it, and the
+// test frees it once the server stopped.
+unsafe impl Send for CleanClient {}
 static CLEAN_PORT: AtomicU16 = AtomicU16::new(0);
 
 /// `ac.get_client()`.
 fn clean_client() -> Handle {
-    // SAFETY: the client `test_clean_worker` made, live until it frees it.
-    unsafe { Handle::new(CLEAN_CLIENT.load(Ordering::SeqCst)) }
+    let client = *CLEAN_CLIENT.lock().unwrap();
+    client.expect("test_clean_worker made the client").0
 }
 
 /// The client's `on_connect`, `on_close`, `on_error` and `on_receive`.
@@ -1598,9 +1605,11 @@ unsafe extern "C" fn clean_connect_timer(_: *mut c_void, _: *mut TimerNode) {
     ]
     .iter()
     .fold(0, |events, kind| events | kind.bit());
-    // SAFETY: the live client.
-    let client = unsafe { &*CLEAN_CLIENT.load(Ordering::SeqCst) };
-    listen(client, events, std::rc::Rc::new(clean_client_event));
+    listen(
+        clean_client().client(),
+        events,
+        std::rc::Rc::new(clean_client_event),
+    );
     let host = CString::new(TEST_HOST).unwrap();
     let port = CLEAN_PORT.load(Ordering::SeqCst).into();
     let connected = native::connect(clean_client(), &host, port, -1.0, 0);
@@ -1625,7 +1634,7 @@ impl swoole_rs_ffi::event_api::Deferred for CleanDeferred {
 fn clean_deferred(serv: *mut c_void) {
     let serv = Server(serv).view();
     // SAFETY: this process's worker.
-    let worker = unsafe { Worker::new(current_worker()) };
+    let worker = unsafe { Worker::from(&*(current_worker())) };
     event_worker::native::clean_worker_connections(serv, worker);
     _ = native::shutdown(clean_client(), SHUT_RDWR);
     event_worker::native::stop_async_worker(serv, worker);
@@ -1656,12 +1665,9 @@ fn test_clean_worker(mode: c_int) {
 
     counter_init();
 
-    let client = native::create(SW_SOCK_TCP, true).map_or(std::ptr::null_mut(), Handle::as_ptr);
-    assert!(
-        !client.is_null(),
-        "AsyncClient ac(SW_SOCK_TCP) has a socket"
-    );
-    CLEAN_CLIENT.store(client, Ordering::SeqCst);
+    let client =
+        native::create(SW_SOCK_TCP, true).expect("AsyncClient ac(SW_SOCK_TCP) has a socket");
+    *CLEAN_CLIENT.lock().unwrap() = Some(CleanClient(client));
 
     let port = serv.add_port(SW_SOCK_TCP, TEST_HOST, 0);
     assert!(port.is_some());

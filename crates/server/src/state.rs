@@ -49,14 +49,11 @@ pub struct ServerState {
     )]
     pub(crate) msg_ids: std::sync::OnceLock<&'static core::sync::atomic::AtomicU64>,
     /// `Server::task_notify_pipes`: a blocking `Pipe` per event worker, which
-    /// `task_sync` waits on; the last `SharedServer` drop closes them, as `~Server` did.
-    #[expect(
-        clippy::vec_box,
-        reason = "`task_pipe` hands out addresses that outlive the lock"
-    )]
-    task_pipes: std::sync::Mutex<Vec<Box<SocketPair>>>,
+    /// `task_sync` waits on. Set once, so a pipe lent out stays put; the state's drop
+    /// closes them, as `~Server` did.
+    task_pipes: OnceLock<Box<[SocketPair]>>,
     /// `Server::worker_pipes`: each event worker's `UnixSocket`, which
-    /// the last `SharedServer` drop closes, as `~Server` did.
+    /// the state's drop closes, as `~Server` did.
     #[cfg_attr(
         not(feature = "upstream-symbols"),
         expect(dead_code, reason = "only the hybrid makes pipes")
@@ -288,7 +285,7 @@ impl ServerState {
             threads: std::sync::Mutex::new(Vec::new()),
             local_addrs: std::sync::OnceLock::new(),
             msg_ids: std::sync::OnceLock::new(),
-            task_pipes: std::sync::Mutex::new(Vec::new()),
+            task_pipes: OnceLock::new(),
             worker_pipes: std::sync::Mutex::new(Vec::new()),
             stopping: AtomicBool::new(false),
             thread_manager: std::sync::Mutex::new(None),
@@ -324,35 +321,32 @@ impl ServerState {
         true
     }
 
-    /// `task_notify_pipes.emplace_back(new Pipe(true))`: false, closing it, when
-    /// the pipe isn't ready.
-    pub(crate) fn push_task_pipe(&self) -> bool {
-        let mut pair = Box::new(swoole_rs_tls::socket_pair::pipe(true));
-        let ready = pair.master_end().is_some() && pair.worker_end().is_some();
-        if !ready {
-            swoole_rs_tls::socket_pair::drop(&mut pair);
-            return false;
+    /// `task_notify_pipes.emplace_back(new Pipe(true))` for each of `count` workers:
+    /// false, closing those it opened, when a pipe isn't ready. Pipes already set stay.
+    pub(crate) fn open_task_pipes(&self, count: u32) -> bool {
+        let mut pipes = Vec::new();
+        for _ in 0..count {
+            let pair = swoole_rs_tls::socket_pair::pipe(true);
+            let ready = pair.master_end().is_some() && pair.worker_end().is_some();
+            pipes.push(pair);
+            if !ready {
+                for pipe in &mut pipes {
+                    swoole_rs_tls::socket_pair::drop(pipe);
+                }
+                return false;
+            }
         }
-        lock(&self.task_pipes).push(pair);
+        if let Err(mut pipes) = self.task_pipes.set(pipes.into_boxed_slice()) {
+            for pipe in &mut pipes {
+                swoole_rs_tls::socket_pair::drop(pipe);
+            }
+        }
         true
     }
 
-    /// `~Server`'s close of `task_notify_pipes` and `worker_pipes`. Not the state's
-    /// drop: an archive user that never runs a server links no C++ for `Socket::free`.
-    #[cfg(feature = "upstream-symbols")]
-    pub(crate) fn close_pipes(&self) {
-        let task = core::mem::take(&mut *lock(&self.task_pipes));
-        let worker = core::mem::take(&mut *lock(&self.worker_pipes));
-        for mut pipe in task.into_iter().chain(worker) {
-            swoole_rs_tls::socket_pair::drop(&mut pipe);
-        }
-    }
-
-    /// `task_notify_pipes.at(index)`, or null past the end.
-    pub(crate) fn task_pipe(&self, index: usize) -> *mut SocketPair {
-        lock(&self.task_pipes)
-            .get_mut(index)
-            .map_or(core::ptr::null_mut(), |pipe| &raw mut **pipe)
+    /// `task_notify_pipes.at(index)`, or `None` past the end.
+    pub(crate) fn task_pipe(&self, index: usize) -> Option<&SocketPair> {
+        self.task_pipes.get()?.get(index)
     }
 
     fn slot(&self, kind: ServerText) -> &std::sync::Mutex<std::sync::Arc<[u8]>> {
@@ -566,6 +560,21 @@ fn lock<T>(list: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 impl Drop for ServerState {
     fn drop(&mut self) {
+        // `~Server`'s close of `task_notify_pipes` and `worker_pipes`; an archive user
+        // that never runs a server links no C++ for `Socket::free`.
+        #[cfg(feature = "upstream-symbols")]
+        {
+            let worker = self.worker_pipes.get_mut();
+            let worker = worker.unwrap_or_else(std::sync::PoisonError::into_inner);
+            let task = self
+                .task_pipes
+                .get_mut()
+                .into_iter()
+                .flat_map(|pipes| pipes.iter_mut());
+            for pipe in task.chain(worker.iter_mut().map(|pipe| &mut **pipe)) {
+                swoole_rs_tls::socket_pair::drop(pipe);
+            }
+        }
         for port in self.ports.drain() {
             port.delete();
         }
@@ -575,9 +584,10 @@ impl Drop for ServerState {
             &mut self.tables,
             std::rc::Rc::new(crate::records::ServerTables::default()),
         ));
-        self.config
-            .gs
-            .replace(swoole_rs_memory::members::Shm::empty());
+        // The state's own configuration, so nothing borrows its shared record.
+        if let Some(config) = std::rc::Rc::get_mut(&mut self.config) {
+            config.gs.free();
+        }
     }
 }
 

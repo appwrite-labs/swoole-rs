@@ -41,12 +41,15 @@ callback that can bail out runs beneath a Rust frame.
   the packet allocator's `free`, and the write calls native `send`, neither of
   which bails out. `cargo test -p swoole-rs-bus` round-trips packets over
   real socketpairs, upstream's `message_bus` TESTs among them (see below).
+  Packet storage reuses buffer's `OwnedString`; `move_packet` hands that owner to
+  its consumer. The moved packet no longer contributes to the bus's retained-memory
+  count. `moved_packets_are_not_freed_and_memory_counts_reassembly` checks the same
+  allocation address across transfer and that the bus cannot free the new owner's
+  payload. Allocation and resizing run outside the packet-table borrow.
 
-Undefined legacy overreads/overflows are not replayed: empty MQTT asks for more,
-invalid/truncated RESP fails, oversized SOCKS output is rejected before overflow.
-Original malformed RESP parsing dereferences nullptr under UBSan; numeric error
-cases compare the defined `get_number` helper instead. Invalid non-array PHP
-SET/MAP is excluded because the original throws then dereferences invalid memory.
+Rust's own bounds: empty MQTT asks for more, invalid/truncated RESP fails, and
+oversized SOCKS output is rejected. Numeric error cases compare the `get_number`
+helper. Invalid non-array PHP SET/MAP is excluded.
 
 ## Rust and native differential
 

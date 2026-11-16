@@ -15,7 +15,6 @@ EXEMPT = {
                      'curl', 'firebird', 'oci', 'odbc', 'pgsql', 'sqlite', 'ssh2'], FOREIGN),
     'tls': 'OpenSSL (SSL_select_next_proto and the rest)',
     'locale': "libc's setlocale",
-    'http-ffi': "locale's strncasecmp",
     'ports': 'datagram sockets: Miri opens SOCK_STREAM only',
     'oracle': 'the pinned upstream C++, for differential tests',
     **dict.fromkeys(['zend', 'phpclients', 'phpcoroutines', 'phphttp', 'phpprocess', 'phpruntime',

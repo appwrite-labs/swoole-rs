@@ -133,12 +133,12 @@ impl PoolBus {
 }
 
 /// `pool->message_bus->move_packet()`: the bus's current packet block, now the
-/// caller's; null for a pool without a bus or a packet.
+/// caller's; none for a pool without a bus or a packet.
 #[must_use]
 pub fn pool_bus_move_packet(
     pool: swoole_rs_process::process_pool::PoolRef<'_>,
-) -> *mut core::ffi::c_char {
-    PoolBus::with_pool(pool, |bus| bus.bus.move_packet()).unwrap_or(core::ptr::null_mut())
+) -> Option<swoole_rs_buffer::string::OwnedString> {
+    PoolBus::with_pool(pool, |bus| bus.bus.move_packet()).flatten()
 }
 
 /// `pool->message_bus->set_allocator(allocator)`, when the pool has a bus: its

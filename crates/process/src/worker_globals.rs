@@ -83,7 +83,7 @@ pub fn with_current<R>(f: impl FnOnce(&crate::worker_record::Worker<'_>) -> R) -
     // its workers after the loop ends. `worker_global_stopped` frees only
     // the detached flag, so stopping during `f` leaves the
     // lent record live. The loop orders the field writes made through the handle.
-    let worker = unsafe { crate::worker_record::Worker::new(raw) };
+    let worker = unsafe { crate::worker_record::Worker::from(&*raw) };
     Some(f(&worker))
 }
 
@@ -173,25 +173,25 @@ mod tests {
     fn lifecycle_limit_and_detach_keep_the_record_and_clear_the_slot() {
         let mut worker: WorkerRecord = unsafe { core::mem::zeroed() };
         unsafe {
-            Worker::new(&raw mut worker).set_id(11);
-            Worker::new(&raw mut worker).set_pid(1234);
-            swr_v1_worker_init(Worker::new(&raw mut worker));
-            assert!(Worker::new(&raw const worker).is_idle());
+            Worker::from(&worker).set_id(11);
+            Worker::from(&worker).set_pid(1234);
+            swr_v1_worker_init(Worker::from(&worker));
+            assert!(Worker::from(&worker).is_idle());
             assert!(worker_is_running());
             assert!(!worker_is_shutdown());
             worker_global_max_requests(2, 0, maximum);
-            Worker::new(&raw mut worker).add_request_count();
-            assert!(!Worker::new(&raw const worker).exceeded_max_request());
-            Worker::new(&raw mut worker).add_request_count();
-            assert!(Worker::new(&raw const worker).exceeded_max_request());
+            Worker::from(&worker).add_request_count();
+            assert!(!Worker::from(&worker).exceeded_max_request());
+            Worker::from(&worker).add_request_count();
+            assert!(Worker::from(&worker).exceeded_max_request());
             set_current_worker(&raw mut worker);
-            worker_global_detach(Worker::new(&raw mut worker));
+            worker_global_detach(Worker::from(&worker));
             assert!(with_globals(|globals| globals.detached.load(Relaxed)));
-            assert_eq!(Worker::new(&raw const worker).id(), 11);
-            assert_eq!(Worker::new(&raw const worker).pid(), 1234);
-            swr_v1_worker_shutdown(Worker::new(&raw mut worker));
+            assert_eq!(Worker::from(&worker).id(), 11);
+            assert_eq!(Worker::from(&worker).pid(), 1234);
+            swr_v1_worker_shutdown(Worker::from(&worker));
             assert_eq!(
-                Worker::new(&raw const worker).status(),
+                Worker::from(&worker).status(),
                 Some(crate::worker_record::WorkerStatus::Exit)
             );
             assert!(worker_is_shutdown());
@@ -205,9 +205,9 @@ mod tests {
     #[test]
     fn a_worker_stopped_during_with_current_stays_readable() {
         let mut worker: WorkerRecord = unsafe { std::mem::zeroed() };
-        unsafe { Worker::new(&raw mut worker).set_id(7) };
+        Worker::from(&worker).set_id(7);
         unsafe { set_current_worker(&raw mut worker) };
-        worker_global_detach(unsafe { Worker::new(&raw mut worker) });
+        worker_global_detach(Worker::from(&worker));
         let id = with_current(|current| {
             // Clears the slot, not the lent record.
             worker_global_stopped();

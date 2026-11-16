@@ -162,12 +162,15 @@ pub(crate) fn start(entry: Entry) -> Result<Box<Started>, c_int> {
     }))
 }
 
+// Only the running thread runs a switch, as only it runs any coroutine code (the
+// invariant every scheduler access rests on). A switch posts one baton, then waits
+// on one, so whatever thread it is called on, at most one thread runs after it: a
+// wrong one can leave threads waiting for good, never run two at once. Neither
+// asks anything more of its caller.
 impl Started {
-    /// Switches onto the thread, returning when it switches back: whether it ended.
-    ///
-    /// # Safety
-    /// The thread has not ended and is not running; the caller holds the baton.
-    pub(crate) unsafe fn swap_in(&self) -> bool {
+    /// Switches onto the thread, which has not ended and is not running, returning
+    /// when it switches back: whether it ended.
+    pub(crate) fn swap_in(&self) -> bool {
         *self
             .thread
             .swap
@@ -178,11 +181,9 @@ impl Started {
         self.thread.end.load(Ordering::Acquire)
     }
 
-    /// Switches back to the thread that last switched this one in.
-    ///
-    /// # Safety
-    /// This is the running thread, called on it.
-    pub(crate) unsafe fn swap_out(&self) {
+    /// Switches back to the thread that last switched this one in, called on the
+    /// running thread.
+    pub(crate) fn swap_out(&self) {
         self.thread.hand_back();
         self.thread.baton.wait();
     }

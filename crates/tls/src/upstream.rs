@@ -1120,14 +1120,26 @@ pub extern "C-unwind" fn make_server_socket(
     port: c_int,
     backlog: c_int,
 ) -> *mut SocketRecord {
+    server_socket(kind, address.get(), port, backlog)
+        .map_or(std::ptr::null_mut(), |owned| owned.leak().as_ptr())
+}
+
+/// [`make_server_socket`]'s socket, owned: `None` after a warning.
+#[must_use]
+pub fn server_socket(
+    kind: c_int,
+    address: &CStr,
+    port: c_int,
+    backlog: c_int,
+) -> Option<swoole_rs_reactor::OwnedSocket> {
     const ORIGIN: &CStr = c"make_server_socket";
     // The new record, which only this function holds.
     let Some(record) = make_typed(kind, FD_STREAM_SERVER, SocketFlag::SW_SOCK_CLOEXEC.bits())
     else {
         log::sys_warning(ORIGIN, format_args!("socket() failed"));
-        return std::ptr::null_mut();
+        return None;
     };
-    let owned = crate::event_socket::EventSocket::adopt(record);
+    let owned = swoole_rs_reactor::OwnedSocket::new(record);
     let record = owned.socket();
     let fd = record.fd();
     // Only TCP sockets need to rebind addresses held by TIME_WAIT. Enabling reuse for
@@ -1144,7 +1156,6 @@ pub extern "C-unwind" fn make_server_socket(
             );
         }
     }
-    let address = address.get();
     let host = address.to_string_lossy();
     // Bound, listening when a stream, and named; else the warning for what failed.
     let served = if !bind_host(record, address, port) {
@@ -1168,10 +1179,10 @@ pub extern "C-unwind" fn make_server_socket(
         true
     };
     if served {
-        return owned.into_raw();
+        return Some(owned);
     }
-    owned.free(false);
-    std::ptr::null_mut()
+    socket_free(Some(owned));
+    None
 }
 
 #[cfg(test)]

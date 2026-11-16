@@ -381,6 +381,7 @@ name = "swoole-rs-bus"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "swoole-rs-buffer",
  "swoole-rs-corebase",
  "swoole-rs-reactor",
  "swoole-rs-tls",
@@ -540,7 +541,6 @@ dependencies = [
  "swoole-rs-tls",
  "swoole-rs-utilities",
  "swoole-rs-websocket",
- "swoole-rs-websocket-ffi",
 ]
 
 [[package]]
@@ -586,6 +586,7 @@ dependencies = [
 name = "swoole-rs-hooks-system-tests"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "swoole-rs-buffer",
  "swoole-rs-clients",
  "swoole-rs-corebase",
@@ -638,6 +639,7 @@ dependencies = [
  "swoole-rs-ports",
  "swoole-rs-process",
  "swoole-rs-server",
+ "swoole-rs-timer",
  "swoole-rs-tls",
  "swoole-rs-utilities",
 ]
@@ -995,6 +997,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "swoole-rs-brotli",
+ "swoole-rs-buffer",
  "swoole-rs-clients",
  "swoole-rs-corebase",
  "swoole-rs-coroutine",
@@ -1068,7 +1071,6 @@ dependencies = [
  "swoole-rs-tls",
  "swoole-rs-utilities",
  "swoole-rs-websocket",
- "swoole-rs-websocket-ffi",
 ]
 
 [[package]]
@@ -1208,18 +1210,7 @@ version = "0.1.0"
 dependencies = [
  "swoole-rs-base64",
  "swoole-rs-corebase",
-]
-
-[[package]]
-name = "swoole-rs-websocket-ffi"
-version = "0.1.0"
-dependencies = [
- "libc",
- "swoole-rs-buffer",
- "swoole-rs-corebase",
- "swoole-rs-error",
  "swoole-rs-oracle",
- "swoole-rs-websocket",
 ]
 
 [[package]]

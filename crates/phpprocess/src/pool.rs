@@ -24,12 +24,12 @@ use swoole_rs_process::{
     signal::swoole_signal_isset,
     worker_record,
 };
+use swoole_rs_reactor::Socket;
 use swoole_rs_reactor::signal_upstream::Handler as SignalHandler;
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_zend::{
     Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Owned, Value, ZString, handlers,
     message,
-    string::{self, ZBuf},
     sys::{ZEND_ACC_PUBLIC, zval},
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -124,19 +124,12 @@ fn worker_busy(busy: bool) {
 /// The message's payload as a string: the bus's packet itself when it holds one.
 fn message_data(pool: PoolRef<'_>, message: &RecvData<'_>) -> Owned {
     let length = message.data().len();
-    let moved = if length != 0 && message.info().flags & EVENT_DATA_OBJ_PTR != 0 {
-        // An OBJ_PTR message comes from the pool's message bus: its packet, the
-        // message's bytes, is now the caller's.
-        swoole_rs_server::pool_bus_move_packet(pool).cast::<u8>()
-    } else {
-        std::ptr::null_mut()
-    };
-    let string = if length == 0 {
-        ZString::new(b"")
-    } else if !moved.is_null() {
-        // SAFETY: the bus allocates its packets as unshared zend strings of at
-        // least `length` written bytes, and this one is now ours.
-        unsafe { ZBuf::from_raw(string::from_val(moved), length) }.into_zstring()
+    let moved = (length != 0 && message.info().flags & EVENT_DATA_OBJ_PTR != 0)
+        .then(|| swoole_rs_server::pool_bus_move_packet(pool))
+        .flatten();
+    let string = if let Some(mut buffer) = moved {
+        buffer.truncate(length);
+        swoole_rs_phpswoole::received_string(buffer)
     } else {
         ZString::new(message.data())
     };
@@ -733,8 +726,10 @@ fn listen(call: &Call) {
         port.c_cast::<c_int>(),
         backlog.c_cast::<c_int>(),
     );
-    if let Some(socket) = swoole_rs_server::view::pool_ipc_listener(view) {
-        _ = socket.edit(|record| socket_set_fd_option(record, 0, 1));
+    if let Some(listener) = swoole_rs_server::view::pool_ipc_listener(view) {
+        _ = listener
+            .socket()
+            .edit(|record| socket_set_fd_option(record, 0, 1));
     }
     call.set_bool(listened);
 }
@@ -963,7 +958,10 @@ fn get_process(call: &Call) {
                     props.long(c"id", current_id);
                     props.long(c"pid", i64::from(copy.pid()));
                     if view.ipc_mode() == IpcMode::UnixSock {
-                        props.long(c"pipe", pipe.map_or(-1, i64::from));
+                        props.long(
+                            c"pipe",
+                            pipe.map_or(-1, |pipe| i64::from(Socket::lent(pipe).fd())),
+                        );
                     }
                 }
                 // Upstream passes PIPE_TYPE_STREAM as enable_coroutine and async as the pipe

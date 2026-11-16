@@ -1,7 +1,12 @@
-"""tools/headers.py fails a hand-written prototype that drifts from cbindgen's."""
+"""tools/headers.py fails a hand-written prototype that drifts from cbindgen's, and
+tools/externs.py a hand-written extern declaration that drifts from the C header."""
+import shutil
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 
-from tools import headers
+from tools import externs, headers
 
 GENERATED = """
 typedef struct WaitOps WaitOps;
@@ -52,6 +57,73 @@ class Headers(unittest.TestCase):
     def test_a_macro_generated_export_is_only_named(self):
         generated = GENERATED.replace('intptr_t swr_v1_read(uint8_t *out, uintptr_t length);', '')
         self.assertEqual(run(HEADER, generated, ['export!(swr_v1_read, u8);']), [])
+
+
+C_HEADER = """
+#include <stddef.h>
+typedef struct table table;
+typedef struct { const char *ptr; size_t len; } bytes;
+#ifdef __cplusplus
+extern "C" {
+#endif
+long demo_add(table *t, const char *key, unsigned flags);
+void demo_log(const char *format, ...);
+bytes demo_slice(bytes in, double scale);
+#ifdef __cplusplus
+}
+#endif
+"""
+
+RUST = """
+use std::ffi::{c_char, c_uint};
+#[repr(transparent)]
+struct Table<'a>(&'a Opaque, PhantomData<&'a ()>);
+#[repr(transparent)]
+struct Flags<T = c_uint>(T);
+#[repr(C)]
+struct Bytes { ptr: *const u8, len: usize }
+unsafe extern "C" {
+    /// Documented.
+    safe fn demo_add(table: Table<'_>, key: *const c_char, flags: Flags) -> i64;
+    fn demo_log(format: *const c_char, ...);
+    safe fn demo_slice(input: Bytes, scale: f64) -> Bytes;
+    #[cfg(target_os = "macos")]
+    safe fn demo_add(table: Table<'_>) -> i64;
+    safe fn not_in_c(x: u8);
+}
+"""
+
+
+# macOS's g++ is clang, which rejects -fmax-errors and words a failed static assertion differently.
+@unittest.skipUnless(shutil.which('g++') and 'Free Software Foundation' in subprocess.run(
+    ['g++', '--version'], capture_output=True, text=True).stdout, 'GNU g++ required')
+class Externs(unittest.TestCase):
+    def check(self, rust):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, 'demo.h').write_text(C_HEADER)
+            return externs.check({externs.ROOT / 'crates/demo/src/lib.rs': rust}, '#include "demo.h"\n', [f'-I{tmp}'])
+
+    def test_matching_declarations_pass(self):
+        self.assertEqual(self.check(RUST), ([], ['crates/demo/src/lib.rs:16: not_in_c']))
+
+    def test_a_wrong_width_fails(self):
+        problems, _ = self.check(RUST.replace('flags: Flags)', 'flags: Flags<u64>)'))
+        self.assertEqual(problems, ['crates/demo/src/lib.rs:11: demo_add: the C prototype is not 8pp8'])
+
+    def test_a_wrong_float_width_fails(self):
+        problems, _ = self.check(RUST.replace('scale: f64', 'scale: f32'))
+        self.assertEqual(problems, ['crates/demo/src/lib.rs:13: demo_slice: the C prototype is not aaf'])
+
+    def test_an_integer_for_a_pointer_a_missing_parameter_and_a_lost_variadic_fail(self):
+        rust = RUST.replace('key: *const c_char', 'key: usize').replace(', ...)', ')')
+        problems, _ = self.check(rust.replace('input: Bytes, ', ''))
+        self.assertEqual(problems, ['crates/demo/src/lib.rs:11: demo_add: the C prototype is not 8p84',
+                                    'crates/demo/src/lib.rs:12: demo_log: the C prototype is not vp',
+                                    'crates/demo/src/lib.rs:13: demo_slice: the C prototype is not ad'])
+
+    def test_an_unknown_type_fails(self):
+        problems, _ = self.check(RUST.replace('flags: Flags)', 'flags: Mystery)'))
+        self.assertEqual(problems, ['crates/demo/src/lib.rs:11: demo_add: no shape for Mystery'])
 
 
 if __name__ == '__main__':

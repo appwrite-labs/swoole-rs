@@ -23,7 +23,8 @@ pub mod native;
 pub fn result_slot(serv: crate::view::Server<'_>, worker_id: u16) -> Option<ResultSlot<'_>> {
     const WORDS: usize = swoole_rs_corebase::constants::SW_IPC_MAX_SIZE as usize / 4;
     let start = usize::from(worker_id) * WORDS;
-    let words = crate::shared::words(&serv.config().task_results).get(start..start + WORDS)?;
+    let words =
+        crate::shared::words(&serv.state().tables_ref().task_results).get(start..start + WORDS)?;
     words.try_into().ok().map(ResultSlot::of)
 }
 

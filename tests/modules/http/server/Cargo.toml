@@ -6,6 +6,7 @@ name = "swoole-rs-http-server-tests"
 version = "0.0.0"
 edition = "2024"
 publish = false
+license.workspace = true
 build = "../../hooks/system/build.rs"
 
 [[bin]]
@@ -24,6 +25,7 @@ swoole-rs-ports = { path = "../../../../crates/ports" }
 # workers are threads with their own `SwooleWG`.
 swoole-rs-process = { path = "../../../../crates/process", features = ["thread"] }
 swoole-rs-server = { path = "../../../../crates/server" }
+swoole-rs-timer = { path = "../../../../crates/timer", features = ["upstream-symbols"] }
 swoole-rs-tls = { path = "../../../../crates/tls" }
 swoole-rs-utilities = { path = "../../../../crates/utilities" }
 

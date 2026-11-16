@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/wrapper/timer.cc (Swoole contributors).
-//! The `swoole_timer_*` C API (upstream `src/wrapper/timer.cc`, which the timer
-//! patch deletes) under its upstream symbols: this thread's `SwooleTG.timer`, its
-//! lazy creation, unit conversion and warnings, over the Rust-owned timer
-//! (`owner.rs`).
+//! The `swoole_timer_*` API (upstream `src/wrapper/timer.cc`, which the timer
+//! patch deletes): this thread's `SwooleTG.timer`, its lazy creation, unit
+//! conversion and warnings, over the Rust-owned timer (`owner.rs`). Only the
+//! raw-callback adds and the node-pointer `del` and `delay` keep upstream symbols.
 use crate::owner::{Callback, Closure, Owner as Timer, TimerNode};
 use std::ffi::{CStr, c_long, c_void};
 use swoole_rs_corebase::CCast;
@@ -39,9 +39,8 @@ fn available<'a>(origin: &CStr) -> Option<&'a Timer> {
 }
 
 /// `bool swoole_timer_is_available()`.
-#[unsafe(export_name = "_Z25swoole_timer_is_availablev")]
 #[must_use]
-pub extern "C" fn swoole_timer_is_available() -> bool {
+pub fn swoole_timer_is_available() -> bool {
     !timer().is_null()
 }
 
@@ -121,8 +120,21 @@ extern "C-unwind" fn swoole_timer_add(
 /// `swoole_timer_add(ms, persistent, ...)` of `f`, held by id, or none.
 #[must_use]
 pub fn add_fn(ms: c_long, persistent: bool, f: impl Fn() + Copy + 'static) -> Option<Held> {
+    held(ms, persistent, TimerNode::closure(Closure::new(f)))
+}
+
+/// [`add_fn`] of a callback that owns what it captures, a `Weak` say: it is dropped
+/// once the timer fires for the last time, is deleted, or this thread's timer is freed.
+#[must_use]
+pub fn add_owned(ms: c_long, persistent: bool, f: impl Fn() + 'static) -> Option<Held> {
+    held(ms, persistent, TimerNode::owning(std::rc::Rc::new(f)))
+}
+
+/// Adds `node` to this thread's timer, held by id, or none.
+#[inline]
+fn held(ms: c_long, persistent: bool, node: TimerNode) -> Option<Held> {
     let timer = created()?;
-    let (_, id) = timer.add(ms, persistent, TimerNode::closure(Closure::new(f)))?;
+    let (_, id) = timer.add(ms, persistent, node)?;
     let held = Held::new(timer.generation(), id);
     if held.is_none() {
         // An id past what a `Held` packs: as if the add had failed.
@@ -254,29 +266,27 @@ pub extern "C-unwind" fn swoole_timer_delay(node: Option<HeldNode>, delay_ms: c_
 }
 
 /// `bool swoole_timer_exists(long timer_id)`: a node that isn't removed.
-#[unsafe(export_name = "_Z19swoole_timer_existsl")]
-extern "C" fn swoole_timer_exists(timer_id: c_long) -> bool {
+#[must_use]
+pub fn swoole_timer_exists(timer_id: c_long) -> bool {
     available(c"swoole_timer_exists")
         .and_then(|timer| timer.get(timer_id))
         .is_some_and(|node| !node.removed)
 }
 
 /// `bool swoole_timer_clear(long timer_id)`: `Timer::remove(id)`.
-#[unsafe(export_name = "_Z18swoole_timer_clearl")]
 #[must_use]
-pub extern "C-unwind" fn swoole_timer_clear(timer_id: c_long) -> bool {
+pub fn swoole_timer_clear(timer_id: c_long) -> bool {
     available(c"swoole_timer_clear").is_some_and(|timer| timer.remove(timer_id))
 }
 
 /// `TimerNode *swoole_timer_get(long timer_id)`.
-#[unsafe(export_name = "_Z16swoole_timer_getl")]
-pub(crate) extern "C" fn swoole_timer_get(timer_id: c_long) -> *mut TimerNode {
+#[must_use]
+pub fn swoole_timer_get(timer_id: c_long) -> *mut TimerNode {
     available(c"swoole_timer_get").map_or(std::ptr::null_mut(), |timer| timer.token(timer_id))
 }
 
 /// `void swoole_timer_free()`: `delete SwooleTG.timer`, then clear the slot.
-#[unsafe(export_name = "_Z17swoole_timer_freev")]
-pub extern "C-unwind" fn swoole_timer_free() {
+pub fn swoole_timer_free() {
     let timer = timer();
     let Some(live) = current() else {
         swoole_print_backtrace();
@@ -290,8 +300,8 @@ pub extern "C-unwind" fn swoole_timer_free() {
     publish(std::ptr::null_mut());
 }
 
-/// `void swoole_timer_select()`: runs due timers, if there is a timer.
-#[unsafe(export_name = "_Z19swoole_timer_selectv")]
+/// `void swoole_timer_select()`: runs due timers, if there is a timer. A reactor end
+/// callback (`EndFn`), so it keeps the C-unwind ABI.
 pub extern "C-unwind" fn swoole_timer_select() {
     if let Some(timer) = current() {
         timer.select();

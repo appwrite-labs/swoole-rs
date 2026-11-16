@@ -9,17 +9,18 @@
 //! notifier, `openssl_x509_read`) traps a bailout and reports it through its
 //! `bailout` flag; the C++ entry re-raises it once these frames are gone.
 use crate::socket::{RecvOp, Report, SendOp, Socket, check_reactor, kind, report, x509_read};
-use libc::{c_int, sockaddr_storage, socklen_t};
+use libc::{c_int, socklen_t};
 use std::{
     ffi::{CStr, CString},
     io::IoSlice,
     marker::PhantomData,
-    mem::{self, MaybeUninit, size_of},
+    mem::{self, MaybeUninit},
     ptr::{self, NonNull},
     rc::Rc,
 };
 use swoole_rs_corebase::{
     CCast,
+    net_types::{AddressStorage, SocketAddress},
     sys::{Text, errno},
 };
 use swoole_rs_reactor::{Caught, TimeoutKind};
@@ -90,10 +91,10 @@ unsafe extern "C" {
         stream: &mut Option<Fresh>,
     ) -> c_int;
     /// `php_network_populate_name_from_sockaddr` of the first `size` bytes of
-    /// `peer`, at most all of it, into the slots given, as
+    /// `peer`, which holds them, into the slots given, as
     /// [`php_network_get_sock_name`] writes them.
     safe fn swr_zend_stream_populate_name(
-        peer: &sockaddr_storage,
+        peer: &AddressStorage,
         size: socklen_t,
         textaddr: Option<&mut *mut zend_string>,
         addr: Option<&mut *mut sockaddr>,
@@ -517,6 +518,8 @@ struct Xport<'a> {
     send: Option<&'a [u8]>,
     /// `inputs.buf`'s `buflen` bytes, for `STREAM_XPORT_OP_RECV`.
     recv: Option<&'a mut Lent<'a>>,
+    /// `inputs.addr`'s `addrlen` bytes, if set.
+    to: Option<&'a [u8]>,
 }
 
 /// The stream's `set_option` of `PHP_STREAM_OPTION_XPORT_API`, its parameter's
@@ -529,6 +532,7 @@ extern "C" fn swr_v1_phpruntime_socket_xport<'a>(
     name: Option<&'a IoSlice<'a>>,
     send: Option<&'a IoSlice<'a>>,
     recv: Option<&'a mut Lent<'a>>,
+    to: Option<&'a IoSlice<'a>>,
 ) -> bool {
     let xport = Xport {
         param,
@@ -536,6 +540,7 @@ extern "C" fn swr_v1_phpruntime_socket_xport<'a>(
         name: name.map(|name| &**name),
         send: send.map(|send| &**send),
         recv,
+        to: to.map(|to| &**to),
     };
     let result = stream.net().map_or(Ok(false), |net| {
         let socket = Rc::clone(&net.socket);
@@ -624,6 +629,7 @@ fn xport_api(stream: Stream<'_>, socket: &Socket, xport: Xport<'_>) -> Result<()
         name,
         send,
         recv,
+        to,
     } = xport;
     match p.op {
         xport::LISTEN => {
@@ -672,24 +678,11 @@ fn xport_api(stream: Stream<'_>, socket: &Socket, xport: Xport<'_>) -> Result<()
                 return oob(p);
             }
             let data = send.unwrap_or_default();
-            let sent = if p.inputs.addr.is_null() {
-                socket
-                    .send(SendOp::Send, data)
-                    .map_or(-1, usize::cast_signed)
-            } else {
-                // SAFETY: `data` is readable for its length, and Zend lends
-                // `addrlen` bytes at `addr` for the call.
-                unsafe {
-                    libc::sendto(
-                        socket.fd(),
-                        data.as_ptr().cast(),
-                        data.len(),
-                        0,
-                        p.inputs.addr.cast(),
-                        p.inputs.addrlen,
-                    )
-                }
+            let sent = match to {
+                None => socket.send(SendOp::Send, data),
+                Some(to) => SocketAddress::from_bytes(to).sendto(socket.fd(), data, 0),
             };
+            let sent = sent.map_or(-1, usize::cast_signed);
             p.outputs.returncode = returncode(sent);
             if p.outputs.returncode == -1 {
                 // `php_socket_strerror`: `strerror` of the code.
@@ -850,8 +843,8 @@ fn accept(
         return Ok(false);
     };
     // The peer's name, as upstream reports it: from an empty address.
-    let peer: sockaddr_storage = swoole_rs_corebase::sys::zeroed();
-    populate_name(param, &peer, STORAGE_SIZE);
+    let peer = SocketAddress::default();
+    populate_name(param, &peer.addr, SocketAddress::CAPACITY);
     if nodelay {
         client.set_nodelay(1);
     }
@@ -889,15 +882,12 @@ fn name_slots<'a>(
     }
 }
 
-/// `sizeof(sockaddr_storage)`.
-#[expect(clippy::cast_possible_truncation, reason = "sizeof(sockaddr_storage)")]
-const STORAGE_SIZE: socklen_t = size_of::<sockaddr_storage>() as socklen_t;
-
 /// `php_network_populate_name_from_sockaddr` of the first `size` bytes of `peer`
 /// (at most all of it) into the names the transport parameter wants.
-fn populate_name(param: &mut php_stream_xport_param, peer: &sockaddr_storage, size: socklen_t) {
+fn populate_name(param: &mut php_stream_xport_param, peer: &AddressStorage, size: socklen_t) {
     let mut unwanted = 0;
     let (textaddr, addr, addrlen) = name_slots(param, &mut unwanted);
+    let size = size.min(SocketAddress::CAPACITY);
     swr_zend_stream_populate_name(peer, size, textaddr, addr, addrlen);
 }
 
@@ -915,10 +905,10 @@ fn recvfrom(
                 .map_or(-1, usize::cast_signed),
         );
     }
-    let mut peer: sockaddr_storage = swoole_rs_corebase::sys::zeroed();
-    let (received, size) = socket.recvfrom(buffer, &mut peer);
-    if size != 0 {
-        populate_name(param, &peer, size);
+    let mut peer = SocketAddress::default();
+    let received = socket.recvfrom(buffer, &mut peer);
+    if peer.len != 0 {
+        populate_name(param, &peer.addr, peer.len);
     } else {
         if want_textaddr {
             // The empty string is interned.
@@ -929,7 +919,7 @@ fn recvfrom(
             param.outputs.addrlen = 0;
         }
     }
-    returncode(received)
+    returncode(received.map_or(-1, usize::cast_signed))
 }
 
 /// `socket_enable_crypto`: whether it succeeded (upstream's 1, else -1).
@@ -1019,40 +1009,34 @@ fn ssl_set_options(socket: &Socket, context: Option<StreamContext<'_>>) -> Resul
 /// [`transport_factory_body`]'s type, as zend-sys's `swr_zend_stream_factory`
 /// calls it with `php_stream_xport_create`'s arguments: the protocol's
 /// `protolen` bytes start a NUL-terminated string (the whole resource name),
-/// the `namelen`-byte name is NUL-terminated, the persistent id is a string or
-/// null, the timeout and context are null or live, and the flag is its own.
+/// the name is NUL-terminated, the persistent id is a string or null, the
+/// context is null or live, and the flag and the factory slot are its own.
 pub(crate) type FactoryBody = extern "C" fn(
     proto: Text<'_>,
     protolen: usize,
     name: Text<'_>,
-    namelen: usize,
     persistent: Option<Text<'_>>,
-    options: c_int,
-    flags: c_int,
-    time: Option<&mut timeval>,
     context: Option<StreamContext<'_>>,
     bailed: &mut bool,
+    original: &mut Option<crate::transport::Factory>,
 ) -> *mut php_stream;
 
-/// The complete factory: PHP's original transport outside a coroutine, otherwise
-/// Rust's coroutine socket construction and stream ownership. zend-sys's
-/// `swr_zend_stream_factory` is the registered factory and raises the bailout.
+/// The complete factory: Rust's coroutine socket construction and stream
+/// ownership in a coroutine, otherwise PHP's original transport, which it names
+/// in `original` for zend-sys's `swr_zend_stream_factory`, the registered
+/// factory, to call with its own arguments once it has raised any bailout.
 pub(crate) extern "C" fn transport_factory_body(
     proto: Text<'_>,
     protolen: usize,
     name: Text<'_>,
-    namelen: usize,
     persistent: Option<Text<'_>>,
-    options: c_int,
-    flags: c_int,
-    time: Option<&mut timeval>,
     context: Option<StreamContext<'_>>,
     flag: &mut bool,
+    original: &mut Option<crate::transport::Factory>,
 ) -> *mut php_stream {
-    let time = time.map_or(ptr::null_mut(), ptr::from_mut);
     let spelling = proto.get().to_bytes();
     let protocol = spelling.get(..protolen).unwrap_or(spelling);
-    let factory = || {
+    let mut factory = || {
         if crate::in_coroutine() {
             // The coroutine branch: Rust's coroutine socket and its stream.
             let proto = protocol.strip_prefix(b"async.").unwrap_or(protocol);
@@ -1100,35 +1084,16 @@ pub(crate) extern "C" fn transport_factory_body(
             report(Report::Fatal, E_WARNING, &message)?;
             return Ok(ptr::null_mut());
         };
-        let mut bailed = false;
-        // SAFETY: the original process-lived PHP callback runs below Rust in a C Zend trap,
-        // with the compiler supplying its exact STREAMS_CC debug arguments.
-        let stream = unsafe {
-            swoole_rs_zend::sys::swr_zend_try_stream_factory(
-                factory.as_ptr(),
-                proto.get().as_ptr(),
-                protolen,
-                name.get().as_ptr(),
-                namelen,
-                persistent.map_or(ptr::null(), |id| id.get().as_ptr()),
-                options,
-                flags,
-                time,
-                context.map_or(ptr::null_mut(), StreamContext::as_ptr),
-                &raw mut bailed,
-            )
-        };
-        if bailed { Err(Bailout) } else { Ok(stream) }
+        *original = Some(factory);
+        Ok(ptr::null_mut())
     };
     reraise(flag, factory(), ptr::null_mut())
 }
 
 /// `php_swoole_create_stream_from_socket`: a coroutine stream over `fd`,
-/// with the default socket timeout.
-/// # Safety
-/// Called while PHP runs; the stream takes `fd`.
+/// with the default socket timeout. The stream takes `fd`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swr_v1_phpruntime_stream_from_socket(
+pub extern "C" fn swr_v1_phpruntime_stream_from_socket(
     fd: c_int,
     domain: c_int,
     kind: c_int,

@@ -897,7 +897,7 @@ fn former_conditional_gate() {
             compare_conditional(&old, &server, 784_111_777, &date, kind);
         }
     }
-    // The original dereferences gmtime's null for an unrepresentable mtime.
+    // An mtime gmtime can't represent.
     conditional_script(i64::MAX);
     let mut handler = server.handler(b"/file.txt");
     assert!(handler.try_serve(), "file selection");
@@ -910,7 +910,7 @@ fn former_conditional_gate() {
         events.len() == 2 && events[1].windows(6).any(|w| w == b":null:"),
         "one parse, then gmtime's null"
     );
-    // The original's timezone subtraction overflows.
+    // A timezone whose subtraction overflows.
     conditional_script(0);
     let server = Server::new(&Config {
         timezone: c_long::MIN,

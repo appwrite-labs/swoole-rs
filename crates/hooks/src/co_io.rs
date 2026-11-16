@@ -219,45 +219,41 @@ mod native {
         // The receive owns its allocation while parked. A PHP bailout abandons
         // this frame without dropping it, so teardown cannot free bytes a pending
         // io_uring request may still write. No socket metadata loan spans a yield.
-        let mut string = socket.take_buffer(false)?;
-        let result = if at <= string.len() {
-            string.truncate(at);
-            string
-                .fill_within(length, |spare| {
-                    socket.recv_spare(if all { Receive::All } else { Receive::Recv }, spare)
-                })
-                .map(|_| string.len() - at)
-        } else {
-            None
-        };
-        socket.put_read_buffer(string);
-        result
+        let mut string = socket.own_read_buffer();
+        if at > string.len() {
+            return None;
+        }
+        string.truncate(at);
+        string
+            .fill_within(length, |spare| {
+                socket.recv_spare(if all { Receive::All } else { Receive::Recv }, spare)
+            })
+            .map(|_| string.len() - at)
     }
 
     fn package_length(socket: Co, size: u32, header: &mut u32) -> crate::packet::Length {
-        let (data, length) = socket.with_buffer(false, |string| {
-            (string.as_ptr(), string.len().min(size as usize))
-        });
-        // The protocol callback may bail out, so it must not own a metadata loan.
-        let bytes = if length == 0 {
-            &[][..]
-        } else {
-            // SAFETY: the socket's initialized prefix, kept live by its current packet
-            // receive until the callback returns; the callback only reads these bytes.
-            unsafe { std::slice::from_raw_parts(data, length) }
-        };
-        let mut packet = PacketLength::new(bytes);
         // A copy: the callback may run PHP that rewrites the protocol.
         let protocol = socket.protocol();
         let Some(call) = protocol.get_package_length else {
             return crate::packet::Length::NotFound;
         };
+        // The callback may bail out or reach the socket again, so it reads a read
+        // buffer this frame owns: taken from the record meanwhile, as a receive takes
+        // it, and leaked by a bailout.
+        let taken = socket.own_read_buffer();
+        let view = taken.view();
+        let mut packet = PacketLength::new(view.get(..size as usize).unwrap_or(view));
         let mut measure =
             |net: Option<swoole_rs_reactor::Socket<'_>>| call(&protocol, net, &mut packet);
         let length = socket
             .with_network(|net| measure(Some(net)))
             .unwrap_or_else(|| measure(None));
         *header = packet.header_len;
+        // One a nested receive made goes; the guard restores the packet's buffer.
+        if let Some(mut nested) = socket.take_buffer(false) {
+            nested.dispose();
+        }
+        drop(taken);
         crate::packet::Length::of(length)
     }
 
@@ -305,10 +301,9 @@ mod native {
         if co.is_null() {
             return 0;
         }
-        // SAFETY: a bound coroutine is suspended in its operation on this socket,
-        // which unbinds it before it returns (`SocketState::bind`), so it is live;
-        // its record starts with its Rust state.
-        unsafe { (*co.cast::<swoole_rs_coroutine::Coroutine>()).cid }
+        // Looked up by address among the live coroutines: a bound one is live, as its
+        // operation unbinds it before it returns (`SocketState::bind`).
+        swoole_rs_coroutine::coroutine_cid_of(co).unwrap_or(0)
     }
 
     /// [`super::Ops::resume`].
@@ -1136,6 +1131,49 @@ mod tests {
             unsafe { core::slice::from_raw_parts(co.err_msg().cast::<u8>(), 3) },
             b"a\0b"
         );
+    }
+
+    thread_local! {
+        static MEASURED: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+        static NESTED: std::cell::Cell<Option<Co>> = const { std::cell::Cell::new(None) };
+    }
+
+    /// A length function that records the bytes it measures and, given a socket in
+    /// `NESTED`, writes into that socket's read buffer meanwhile.
+    fn record_length(
+        _: &crate::co_socket::Protocol,
+        _: Option<swoole_rs_reactor::Socket<'_>>,
+        packet: &mut swoole_rs_corebase::net_types::PacketLength,
+    ) -> isize {
+        MEASURED.set(packet.bytes().to_vec());
+        if let Some(socket) = NESTED.get() {
+            socket.with_buffer(false, |buffer| buffer.append(b"nested"));
+        }
+        packet.header_len = 4;
+        7
+    }
+
+    /// The native length step hands the protocol's function the buffered prefix it
+    /// asks for, then the packet's buffer is the socket's again, whatever the
+    /// function did to the socket's read buffer meanwhile.
+    #[test]
+    fn package_length_measures_the_prefix_and_restores_the_buffer() {
+        let mut socket = TestSocket::new();
+        let co = socket.co();
+        co.with_buffer(false, |buffer| buffer.append(b"abcdef"));
+        co.set_protocol(crate::co_socket::Protocol {
+            get_package_length: Some(record_length),
+            ..crate::co_socket::Protocol::EMPTY
+        });
+        for nested in [None, Some(co)] {
+            NESTED.set(nested);
+            let mut header = 0;
+            let length = (native::HOST.package_length)(co, 4, &mut header);
+            assert_eq!((length, header), (crate::packet::Length::Packet(7), 4));
+            assert_eq!(MEASURED.take(), b"abcd");
+            co.with_buffer(false, |buffer| assert_eq!(buffer.view(), b"abcdef"));
+        }
+        NESTED.set(None);
     }
 }
 

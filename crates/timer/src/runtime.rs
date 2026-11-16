@@ -57,15 +57,7 @@ pub fn swr_v1_timer_system_set(milliseconds: i64) -> std::io::Result<()> {
 
 /// Upstream `swoole::realtime_add(timespec *, int64_t)`: adds milliseconds to a
 /// realtime deadline, carrying whole seconds out of `tv_nsec`.
-#[cfg_attr(
-    target_os = "macos",
-    unsafe(export_name = "_ZN6swoole12realtime_addEP8timespecx")
-)]
-#[cfg_attr(
-    not(target_os = "macos"),
-    unsafe(export_name = "_ZN6swoole12realtime_addEP8timespecl")
-)]
-pub extern "C" fn realtime_add(time: &mut libc::timespec, milliseconds: i64) {
+pub fn realtime_add(time: &mut libc::timespec, milliseconds: i64) {
     time.tv_sec += milliseconds / 1000;
     time.tv_nsec += milliseconds % 1000 * 1_000_000;
     if time.tv_nsec >= 1_000_000_000 {

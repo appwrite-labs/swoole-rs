@@ -57,15 +57,14 @@ fn native_async_datagram_receive_records_the_sender_for_both_buffer_kinds() {
     let mut initialized = [0xa5; 6];
     assert_eq!(recv(this, &mut initialized, 0), Some(3));
     assert_eq!(initialized, [b'A', 0, b'B', 0xa5, 0xa5, 0xa5]);
+    let sender = |this: Handle| u16::from_be(this.record().remote_addr.addr.v4().sin_port);
+    assert_eq!(sender(this), peer.local_addr().unwrap().port());
     peer.send_to(b"C\0D", (std::net::Ipv4Addr::LOCALHOST, port))
         .unwrap();
     let mut spare = [core::mem::MaybeUninit::uninit(); 3];
     assert_eq!(recv(this, &mut spare, 0), Some(3));
     assert_eq!(spare.map(|byte| unsafe { byte.assume_init() }), *b"C\0D");
-    assert_eq!(
-        u16::from_be(this.record().remote_addr.addr.v4().sin_port),
-        peer.local_addr().unwrap().port()
-    );
+    assert_eq!(sender(this), peer.local_addr().unwrap().port());
 }
 
 /// The native socket-control table is compiled in this test binary too. Its

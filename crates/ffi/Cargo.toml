@@ -3,6 +3,7 @@ name = "swoole-rs-ffi"
 version = "0.1.0"
 edition = "2024"
 publish = false
+license.workspace = true
 
 [lib]
 name = "swoole_rs_ffi"
@@ -15,7 +16,7 @@ default = []
 # references (docs/zend.md).
 php = ["dep:swoole-rs-phptimer", "swoole-rs-phptimer/php", "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php", "dep:swoole-rs-phpredis", "swoole-rs-phpredis/php",
        "dep:swoole-rs-phplocks", "swoole-rs-phplocks/php", "swoole-rs-phpruntime/php", "dep:swoole-rs-phpserver", "swoole-rs-phpserver/php", "dep:swoole-rs-phpprocess", "swoole-rs-phpprocess/php", "dep:swoole-rs-phpthread", "swoole-rs-phpthread/php", "dep:swoole-rs-phpclients", "swoole-rs-phpclients/php", "dep:swoole-rs-phphttp", "swoole-rs-phphttp/php", "dep:swoole-rs-phphttp2", "swoole-rs-phphttp2/php", "swoole-rs-phpstdext/php", "swoole-rs-phpcollections/php", "swoole-rs-phpevents/php", "swoole-rs-phpcoroutines/php", "swoole-rs-pgsql?/php", "swoole-rs-odbc?/php", "swoole-rs-firebird?/php", "swoole-rs-sqlite?/php", "swoole-rs-oci?/php", "swoole-rs-curl?/php"]
-# Not modules: the hybrid adds each when configured with its switch (--enable-iouring,
+# Not modules: tools/build_ext.py adds each when given its switch (--enable-iouring,
 # --enable-cares, --enable-swoole-stdext, --enable-swoole-pgsql, --with-swoole-odbc,
 # --with-swoole-firebird, --enable-swoole-sqlite, --with-swoole-oracle, --enable-swoole-curl,
 # --with-swoole-ssh2, --enable-sockets).
@@ -35,7 +36,6 @@ sockets = ["swoole-rs-phpswoole?/sockets"]
 
 [dependencies]
 swoole-rs-websocket = { path = "../websocket" }
-swoole-rs-websocket-ffi = { path = "../websocket-ffi", features = ["upstream-symbols"] }
 swoole-rs-buffer = { path = "../buffer", features = ["upstream-symbols"] }
 swoole-rs-timer = { path = "../timer", features = ["upstream-symbols"] }
 swoole-rs-error = { path = "../error" }

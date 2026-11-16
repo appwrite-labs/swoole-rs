@@ -71,9 +71,9 @@ fn instance() -> Option<Rc<Uring>> {
 
 /// `co->yield(&cancel_fn)` of the running coroutine `co`, where cancelling cancels
 /// `event`'s request.
-fn suspend(co: *mut c_void, event: *mut c_void, waker: &Cell<Option<swoole_rs_coroutine::Waker>>) {
+fn suspend(co: *mut c_void, event: u64, arm: &mut dyn FnMut(swoole_rs_coroutine::Waker)) {
     let cancel = move |_| uring::cancel(&HOST, event);
-    swoole_rs_coroutine::yield_with_cancel_armed(co, cancel, |park| waker.set(Some(park)));
+    swoole_rs_coroutine::yield_with_cancel_armed(co, cancel, arm);
 }
 
 fn submit_failed() {

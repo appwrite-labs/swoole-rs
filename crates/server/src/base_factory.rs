@@ -231,22 +231,19 @@ pub(crate) fn create(serv: view::Server<'_>) -> *mut c_void {
         }
         (!cells.is_null()).then_some(cells)
     };
-    // The server's counters, which `swr_v1_server_new` mapped, and each port's, in the
-    // `port_gs_list` `Server::create` mapped; no other process shares them yet.
+    // The server's, and each port's that has counters; no other process shares them yet.
     let Some(cells) = counts("gs") else {
         return core::ptr::null_mut();
     };
-    if let Some(gs) = crate::shared::server_counters(state) {
-        gs.connection_nums.replace(cells);
-    }
+    state.tables_ref().connection_nums.fill(cells);
     for port in &state.ports {
-        let Some(gs) = port.config().counters() else {
+        if port.config().counters().is_none() {
             continue;
-        };
+        }
         let Some(cells) = counts("port") else {
             return core::ptr::null_mut();
         };
-        gs.connection_nums.replace(cells);
+        port.config().connection_nums.fill(cells);
     }
     hybrid().factory_new(serv)
 }
@@ -609,8 +606,7 @@ mod tests {
         let mut task = send(c_long::from(conn.fd()), ServerEvent::RecvData, 5);
         task.info.time = 1.5;
         assert!(dispatch(serv, &mut task, true));
-        // SAFETY: as above.
-        assert!(unsafe { Worker::new(&raw const worker).is_idle() });
+        assert!(Worker::from(&worker).is_idle());
         assert_eq!(
             conn.recv_queued_bytes().load(Ordering::Relaxed),
             0,

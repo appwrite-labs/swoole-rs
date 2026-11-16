@@ -54,14 +54,14 @@ extern "C" fn handler_gethostbyname(event: &mut AsyncEvent) {
 }
 
 /// Dispatches a client's DNS lookup, retaining the request in the pool's copy.
-pub fn dispatch_client(client: swoole_rs_clients::client::Handle, request: &Request) -> bool {
+pub fn dispatch_client(lookup: swoole_rs_clients::client::Lookup, request: &Request) -> bool {
     let mut event = AsyncEvent::new(
-        client.as_ptr().cast(),
+        std::ptr::without_provenance_mut(lookup.id()),
         Some(handler_gethostbyname),
         Some(client_completed),
         std::ptr::null_mut(),
     );
-    event.data = request.as_ptr();
+    event.data = Some(request.reference());
     !crate::async_threads::dispatch(&event).is_null()
 }
 
@@ -69,10 +69,9 @@ extern "C" fn client_completed(event: &AsyncEvent) {
     let Some(request) = event.record() else {
         return;
     };
-    // SAFETY: only dispatch_client installs this completion with the client awaiting
-    // this DNS result; the pool calls it on that client's reactor thread.
-    let client = unsafe { swoole_rs_clients::client::Handle::new(event.object().cast()) };
-    swoole_rs_clients::client::resolve_completed(client, request, event.result().1);
+    // `dispatch_client`'s lookup, back on the client's reactor thread.
+    let lookup = swoole_rs_clients::client::Lookup::from_id(event.object().addr());
+    swoole_rs_clients::client::resolve_completed(lookup, request, event.result().1);
 }
 
 /// `async::handler_getaddrinfo`: the request's addresses, on a pool thread.
@@ -93,7 +92,7 @@ fn run(
     request_error: bool,
 ) -> Option<c_int> {
     let mut event = AsyncEvent::empty();
-    event.data = request.as_ptr();
+    event.data = Some(request.reference());
     event.set_result(retval, 0);
     swr_v1_hook_async(&mut event, handler, timeout, &COROUTINE_ASYNC);
     let (retval, error) = event.result();

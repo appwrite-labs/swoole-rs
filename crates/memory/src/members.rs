@@ -233,8 +233,10 @@ fn alloc(pages: &mut Global, size: u32) -> *mut c_void {
 /// Mapping invariant: a shared mapping is `total` bytes, 8-aligned, whose first 8
 /// bytes hold `total`; its payload follows.
 /// A field holding a mapping `map` made (`sw_shm_malloc`'s, or a private one), or
-/// null. Only its constructors fill it, so [`Shm::free`] unmaps exactly what they
-/// mapped, once. Native code reads it as the payload pointer.
+/// null. Only its constructors and [`Shm::fill`] fill it, so [`Shm::free`] unmaps
+/// exactly what they mapped, once. Only `free`, through `&mut`, unmaps it: a mapping
+/// stays while the field is borrowed, so references into it may borrow the field.
+/// Native code reads it as the payload pointer.
 #[repr(transparent)]
 #[derive(Debug)]
 pub struct Shm(Cell<*mut c_void>);
@@ -324,10 +326,17 @@ impl Shm {
         self.0.into_inner()
     }
 
-    /// Takes `mapping`, unmapping the previous allocation and invalidating its
-    /// raw pointers. `Shm` lends no references into the mapping.
-    pub fn replace(&self, mapping: Self) {
-        Self(Cell::new(self.0.replace(mapping.into_raw()))).free();
+    /// `field = mapping` for an empty field, which takes `mapping`: whether it did.
+    /// A field already mapped keeps its mapping, which a reference may borrow, and
+    /// `mapping` is unmapped instead.
+    pub fn fill(&self, mut mapping: Self) -> bool {
+        let empty = self.is_null();
+        if empty {
+            self.0.set(mapping.into_raw());
+        } else {
+            mapping.free();
+        }
+        empty
     }
 
     /// `SharedMemory::free`: unmaps the mapping, if any, and leaves the field null.

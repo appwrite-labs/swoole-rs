@@ -171,15 +171,14 @@ pub(crate) fn timer_available() -> bool {
     swoole_rs_timer::swoole_timer_is_available()
 }
 
-/// A one-shot timer of `ms` that reaches `multi`, which deletes it, unless it
-/// fired, before it is freed: its id, or none.
+/// A one-shot timer of `ms` that reaches `multi` through its own `Weak`: its id, or none.
 pub(crate) fn timer_add(ms: c_long, multi: &Multi) -> Option<swoole_rs_timer::Held> {
-    let multi = ptr::from_ref(multi);
-    swoole_rs_timer::add_fn(ms, false, move || {
-        // SAFETY: the multi deletes its timer before it is freed.
-        let multi = unsafe { &*multi };
-        multi.timer.set(None);
-        multi.callback(None);
+    let multi = multi.this.clone();
+    swoole_rs_timer::add_owned(ms, false, move || {
+        if let Some(multi) = multi.upgrade() {
+            multi.timer.set(None);
+            multi.callback(None);
+        }
     })
 }
 
@@ -252,32 +251,46 @@ pub extern "C" fn swoole_curl_multi_new() -> *mut Multi {
     Rc::into_raw(Multi::create()).cast_mut()
 }
 
+/// The fatal error a coroutine may not operate a multi with: its code and message.
+pub(crate) type Unbound<'b> = (c_int, &'b CStr);
+
+/// The coroutine that may operate `multi`: the current one, unless none runs or
+/// another one waits on the multi. The error's message is NUL-terminated in
+/// `buffer`, on the caller's stack: the fatal error may longjmp past that frame.
+pub(crate) fn bound_co<'b>(
+    multi: &Multi,
+    buffer: &'b mut [u8; 128],
+) -> Result<*mut c_void, Unbound<'b>> {
+    let Some(waiter) = multi.co.get() else {
+        let co = (multi.host.current)();
+        if co.is_null() {
+            return Err((CO_OUT_OF_COROUTINE, c"API must be called in the coroutine"));
+        }
+        return Ok(co);
+    };
+    swoole_rs_coroutine::set_socket_bound_cid(waiter.cid);
+    let (mut text, _) = buffer.split_at_mut(127);
+    // A longer message is cut short.
+    write!(
+        text,
+        "This cURL handle is currently executing in coroutine#{}, cannot be operated",
+        waiter.cid
+    )
+    .unwrap_or_default();
+    let message = CStr::from_bytes_until_nul(buffer).unwrap_or(c"");
+    Err((CO_HAS_BEEN_BOUND, message))
+}
+
 /// `swoole_curl_check_bound_co`: the current coroutine, or null after the
 /// fatal error of a multi another coroutine waits on.
 /// # Safety
 /// The fatal error may longjmp: the caller's frames own nothing that needs a drop.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swoole_curl_check_bound_co(multi: &Multi) -> *mut c_void {
-    // On the stack, NUL-terminated: the fatal error may longjmp past this frame.
-    let mut buffer = [0u8; 128];
-    let (code, message) = if let Some(waiter) = multi.co.get() {
-        swoole_rs_coroutine::set_socket_bound_cid(waiter.cid);
-        let (mut text, _) = buffer.split_at_mut(127);
-        // A longer message is cut short.
-        write!(
-            text,
-            "This cURL handle is currently executing in coroutine#{}, cannot be operated",
-            waiter.cid
-        )
-        .unwrap_or_default();
-        let message = CStr::from_bytes_until_nul(&buffer).unwrap_or(c"");
-        (CO_HAS_BEEN_BOUND, message)
-    } else {
-        let co = (multi.host.current)();
-        if !co.is_null() {
-            return co;
-        }
-        (CO_OUT_OF_COROUTINE, c"API must be called in the coroutine")
+    let mut buffer = [0; 128];
+    let (code, message) = match bound_co(multi, &mut buffer) {
+        Ok(co) => return co,
+        Err(unbound) => unbound,
     };
     // SAFETY: Swoole's fatal error hook; nothing here needs a drop.
     unsafe { swoole_rs_corebase::fatal_error(code, message) };
@@ -295,15 +308,17 @@ pub extern "C" fn swoole_curl_easy_perform(cp: Idle<'_>) -> CURLcode {
     let multi = handle.easy_multi.take().unwrap_or_else(Multi::create);
     handle.easy_multi.set(Some(Rc::clone(&multi)));
     let result = multi.exec(handle);
-    if result == EXEC_NEEDS_COROUTINE {
-        // The fatal error may longjmp past this frame, so it gives up its `Rc` first:
-        // the handle's `easy_multi` holds another, which keeps the multi live.
-        let at = Rc::as_ptr(&multi);
-        drop(multi);
-        // SAFETY: the multi the handle's own `Rc` keeps live through the check.
-        let multi = unsafe { &*at };
-        // SAFETY: this frame now owns nothing that needs a drop.
-        unsafe { swoole_curl_check_bound_co(multi) };
+    let mut buffer = [0; 128];
+    let unbound = if result == EXEC_NEEDS_COROUTINE {
+        bound_co(&multi, &mut buffer).err()
+    } else {
+        None
+    };
+    // The fatal error may longjmp past this frame, so it gives up its `Rc` first.
+    drop(multi);
+    if let Some((code, message)) = unbound {
+        // SAFETY: Swoole's fatal error hook; this frame now owns nothing that needs a drop.
+        unsafe { swoole_rs_corebase::fatal_error(code, message) };
     }
     result
 }

@@ -3,7 +3,7 @@ name = "swoole-rs-ports"
 version = "0.1.0"
 edition = "2024"
 publish = false
-license = "Apache-2.0"
+license.workspace = true
 
 [lib]
 name = "swoole_rs_ports"
@@ -19,7 +19,6 @@ swoole-rs-error = { path = "../error" }
 swoole-rs-clients = { path = "../clients" }
 swoole-rs-tls = { path = "../tls" }
 swoole-rs-websocket = { path = "../websocket" }
-swoole-rs-websocket-ffi = { path = "../websocket-ffi" }
 swoole-rs-buffer = { path = "../buffer" }
 swoole-rs-utilities = { path = "../utilities" }
 swoole-rs-locale = { path = "../locale" }

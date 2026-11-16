@@ -69,7 +69,8 @@ pub(crate) extern "C-unwind" fn swoole_init() {
         socket_free: |socket| swoole_rs_tls::upstream::socket_free(Some(socket)),
     });
     swoole_rs_process::methods::set_listener(|kind, host, port, backlog| {
-        swoole_rs_tls::upstream::make_server_socket(kind, host.into(), port, backlog).cast()
+        let listener = swoole_rs_tls::upstream::server_socket(kind, host, port, backlog)?;
+        Some(std::rc::Rc::new(listener))
     });
     swoole_rs_clients::client::set_host(
         swoole_rs_ports::framing_recv::FRAMING,

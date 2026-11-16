@@ -22,7 +22,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::StringSlot;
-use swoole_rs_corebase::lent::{Count, In};
+use swoole_rs_corebase::lent::{Count, In, Out};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::sys::Text;
 
@@ -411,12 +411,12 @@ pub struct TlsConfig<'a> {
 
 /// OpenSSL's `pem_password_cb`: the buffer and its capacity, whether to verify, and
 /// the userdata it was installed with.
-type PasswordCallback = extern "C" fn(PasswordBuffer, c_int, c_int, &TlsStr<'_>) -> c_int;
-
-/// The buffer OpenSSL lends a `pem_password_cb`, writable for the capacity it passes
-/// with it. Only OpenSSL makes one, for that call.
-#[repr(transparent)]
-struct PasswordBuffer(*mut c_char);
+type PasswordCallback = for<'id> extern "C" fn(
+    Out<'id, MaybeUninit<u8>>,
+    Count<'id, c_int>,
+    c_int,
+    &TlsStr<'_>,
+) -> c_int;
 
 /// One upstream method: its log name and the configuration it reads.
 struct Method<'a> {
@@ -704,16 +704,16 @@ fn with_password<R>(ctx: &SslCtx, passphrase: &TlsStr<'_>, f: impl FnOnce() -> R
 }
 
 /// `pem_password_cb`: copies the passphrase into the buffer OpenSSL lends.
-extern "C" fn password(
-    buffer: PasswordBuffer,
-    capacity: c_int,
+extern "C" fn password<'id>(
+    buffer: Out<'id, MaybeUninit<u8>>,
+    capacity: Count<'id, c_int>,
     _verify: c_int,
     passphrase: &TlsStr<'_>,
 ) -> c_int {
-    let capacity = usize::try_from(capacity).unwrap_or(0);
-    // SAFETY: OpenSSL lends `capacity` writable bytes at the buffer for this call.
-    let mut buffer = unsafe { swoole_rs_corebase::lent::Fill::from_raw(buffer.0.cast(), capacity) };
-    copy_password(buffer.slots(), passphrase.terminated.unwrap_or_default())
+    copy_password(
+        buffer.fill(capacity).slots(),
+        passphrase.terminated.unwrap_or_default(),
+    )
 }
 
 fn quoted(prefix: &[u8], value: TlsStr<'_>, suffix: &[u8]) -> Vec<u8> {
@@ -950,11 +950,7 @@ fn new_ssl_index() -> c_int {
 
 /// `void swoole_ssl_init()`: once until `swoole_ssl_destroy`. A failure logs at
 /// error level and exits the process, as upstream's `swoole_error` does.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z15swoole_ssl_initv")
-)]
-pub extern "C" fn swoole_ssl_init() {
+pub fn swoole_ssl_init() {
     let failed = match swr_v1_tls_init() {
         Ok(()) => return,
         Err(TlsInitError::Init) => "OPENSSL_init_ssl",
@@ -997,11 +993,7 @@ pub fn swr_v1_tls_init() -> Result<(), TlsInitError> {
 }
 
 /// `void swoole_ssl_destroy()`: the next init allocates fresh indexes.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z18swoole_ssl_destroyv")
-)]
-pub extern "C" fn swr_v1_tls_destroy() {
+pub fn swr_v1_tls_destroy() {
     INITIALIZED.store(false, Ordering::Release);
 }
 
@@ -1048,12 +1040,8 @@ extern "C" fn keep_last_line(
 
 /// `swoole_ssl_get_error`: pops this thread's oldest queued error and returns its line
 /// ("" when none is queued), valid until the thread's next call.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z20swoole_ssl_get_errorv")
-)]
 #[must_use]
-pub extern "C" fn swr_v1_tls_error() -> *const c_char {
+pub fn swr_v1_tls_error() -> *const c_char {
     drain_errors();
     with_error_text(|text| text.as_ptr().cast())
 }
@@ -1104,6 +1092,7 @@ pub(crate) fn create_context(config: &mut TlsConfig<'_>) -> Option<SslContext> {
 mod tests {
     use super::*;
     use openssl_sys::ERR_clear_error;
+    use swoole_rs_corebase::lent::lend_out;
 
     macro_rules! method {
         ($name:ident, $function:literal, $body:ident) => {
@@ -1303,7 +1292,8 @@ mod tests {
             let mut slot = StringSlot::new();
             assert!(slot.set(value));
             let passphrase = TlsStr::from(&slot);
-            for capacity in [c_int::MIN, -8, -1, 0, 1, 2, 3, 4, 7, 8, 15, 16] {
+            // OpenSSL's negative capacity lends no bytes, as 0 does (`Out::fill`).
+            for capacity in [0, 1, 2, 3, 4, 7, 8, 15, 16] {
                 let mut bytes = [0x55u8; 16];
                 let mut expected = bytes;
                 // Upstream copies when `length < size - 1`, NUL included.
@@ -1317,11 +1307,14 @@ mod tests {
                     expected[..length].copy_from_slice(value);
                     expected[length] = 0;
                 }
-                let buffer = PasswordBuffer(bytes.as_mut_ptr().cast());
-                assert_eq!(
-                    password(buffer, capacity, 0, &passphrase),
-                    c_int::try_from(length).unwrap()
-                );
+                let mut slots = bytes.map(MaybeUninit::new);
+                let lent = &mut slots[..usize::try_from(capacity).unwrap()];
+                let written = lend_out(lent, |buffer, count| {
+                    password(buffer, count, 0, &passphrase)
+                });
+                assert_eq!(written, c_int::try_from(length).unwrap());
+                // Every slot started initialised, and the callback writes only bytes.
+                bytes = slots.map(|slot| unsafe { slot.assume_init() });
                 assert_eq!(bytes, expected, "{value:?} in {capacity}");
             }
         }

@@ -6,7 +6,7 @@
 use crate::{
     context::{self, CompressionTypes, Ctx, Hold},
     host,
-    parse::{Key, add_protocol, add_server, parse_request},
+    parse::{self, Key, Property, add_field, add_protocol, parse_request},
     server::{Callable, NO_THEN, call_handler},
     websocket,
 };
@@ -19,7 +19,7 @@ use std::{
 use swoole_rs_buffer::string::CppString as Buffer;
 use swoole_rs_clients::address::{address_port, with_host};
 use swoole_rs_corebase::CCast;
-use swoole_rs_hooks::{co_socket::Co, packet::recv_packet};
+use swoole_rs_hooks::{co_socket::Co, packet::recv_packet, socket_members::Receive};
 use swoole_rs_httpbindings::Setting;
 use swoole_rs_phpclients::{NewSocket, get_socket, is_socket_closed, socket_settings};
 use swoole_rs_phpstubs::http_server_coro;
@@ -822,20 +822,9 @@ struct Connection<'a> {
     socket: Co,
     /// The connection object, held for the loop.
     zconn: &'a Value,
-    buffer: *mut Buffer,
 }
 
 impl Connection<'_> {
-    fn buffer(&mut self) -> &mut Buffer {
-        // SAFETY: the connection socket's read buffer, live for the loop and
-        // only touched by the socket through calls that take it.
-        unsafe { &mut *self.buffer }
-    }
-
-    fn data(&mut self, from: usize, to: usize) -> &[u8] {
-        self.buffer().view().get(from..to).unwrap_or_default()
-    }
-
     fn package_max_length(&self) -> usize {
         self.socket.protocol().package_max_length as usize
     }
@@ -870,7 +859,6 @@ fn on_accept(call: &Call) {
     // The request allocator first.
     socket.use_zend_strings();
     let socket = socket.handle();
-    let buffer = socket.buffer(false);
     let handshake = !socket.tls_owner().is_null() && !socket.ssl_handshake();
     if handshake {
         call.set_null();
@@ -895,7 +883,6 @@ fn on_accept(call: &Call) {
         server,
         socket,
         zconn,
-        buffer,
     };
     let result = serve(&mut conn, &peer);
     drop(peer);
@@ -909,12 +896,28 @@ fn on_accept(call: &Call) {
 fn add_peer(mut context: Ctx, peer: &Peer) {
     let state = context.state();
     // The array takes a reference of its own to each of the loop's strings.
-    let remote_addr = Owned::string(peer.remote_addr.clone());
-    add_server(state, Key::RemoteAddr, remote_addr);
-    add_server(state, Key::RemotePort, Owned::long(peer.remote_port.into()));
-    let server_addr = Owned::string(peer.server_addr.clone());
-    add_server(state, Key::ServerAddr, server_addr);
-    add_server(state, Key::ServerPort, Owned::long(peer.server_port.into()));
+    parse::edit_server(state, |server| {
+        add_field(
+            server,
+            Key::RemoteAddr,
+            Owned::string(peer.remote_addr.clone()),
+        );
+        add_field(
+            server,
+            Key::RemotePort,
+            Owned::long(peer.remote_port.into()),
+        );
+        add_field(
+            server,
+            Key::ServerAddr,
+            Owned::string(peer.server_addr.clone()),
+        );
+        add_field(
+            server,
+            Key::ServerPort,
+            Owned::long(peer.server_port.into()),
+        );
+    });
 }
 
 /// The request loop: parse each request on the connection and run its handler.
@@ -925,16 +928,16 @@ fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
     let mut total = 0;
     let mut step = Step::Recv;
     loop {
-        if matches!(step, Step::Recv) {
+        // The loop owns the read buffer, across its receive too, and hands it back
+        // to the socket before a send or a PHP call, either of which may use it.
+        let mut buffer = conn.socket.own_read_buffer();
+        if matches!(step, Step::Recv) || buffer.is_empty() {
             let socket = conn.socket;
             set_recv_wait(socket, true);
-            let buffer = conn.buffer();
-            let length = buffer.len();
-            let Some(received) = socket.recv(buffer.spare()).filter(|&n| n > 0) else {
+            let received = buffer.fill(|spare| socket.recv_spare(Receive::Recv, spare));
+            if received.is_none_or(|n| n == 0) {
                 break;
-            };
-            // SAFETY: the receive wrote `received` bytes into the free space.
-            unsafe { buffer.set_len(length + received) };
+            }
         }
         step = Step::Recv;
         let mut context = current
@@ -942,10 +945,10 @@ fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
             .ctx();
         let max = conn.package_max_length();
         if !header_completed {
-            let length = conn.buffer().len();
-            let found = find_crlf2(conn.data(crlf_offset, length));
+            let length = buffer.len();
+            let found = find_crlf2(data(&buffer, crlf_offset, length));
             let Some(pos) = found else {
-                if length == conn.buffer().size() {
+                if length == buffer.size() {
                     context.state().response.status = ENTITY_TOO_LARGE;
                     break;
                 }
@@ -961,44 +964,46 @@ fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
                 break;
             }
             // The parser `context` initialised.
-            let parsed = parse_request(context.state(), conn.data(0, header_length));
+            let parsed = parse_request(context.state(), data(&buffer, 0, header_length));
             if parsed != header_length {
                 context.state().response.status = BAD_REQUEST;
                 break;
             }
-            let buffer = conn.buffer();
-            buffer.set_offset(buffer.offset() + i64::try_from(header_length).unwrap_or(i64::MAX));
+            let next = buffer.offset() + i64::try_from(header_length).unwrap_or(i64::MAX);
+            buffer.set_offset(next);
             let content_length = context.state().parser.content_length;
             if content_length > (max - header_length) as u64 {
                 context.state().response.status = ENTITY_TOO_LARGE;
                 break;
             }
             total = header_length + usize::try_from(content_length).unwrap_or(usize::MAX);
-            if total > conn.buffer().size() {
-                conn.buffer().extend(total);
+            if total > buffer.size() {
+                buffer.extend(total);
             }
             // Once per request, so the interim response is not repeated.
             let state = context.state();
             if !state.completed && state.request.version == 101 && expects_continue(context) {
                 const CONTINUE: &[u8] = b"HTTP/1.1 100 Continue\r\n\r\n";
+                drop(buffer);
                 let _sent = conn.socket.send_all(CONTINUE);
+                buffer = conn.socket.own_read_buffer();
             }
         }
         if !context.state().completed {
             let chunked = context.state().recv_chunked;
-            if !chunked && conn.buffer().len() < total {
+            if !chunked && buffer.len() < total {
                 continue;
             }
-            let offset = usize::try_from(conn.buffer().offset()).unwrap_or(0);
-            let mut length = conn.buffer().len() - offset;
+            let offset = usize::try_from(buffer.offset()).unwrap_or(0);
+            let mut length = buffer.len() - offset;
             if chunked {
                 // Body callbacks never see bytes the request limit rejects.
                 length = length.min(max - offset);
             }
             // `offset + length` lies within the buffer.
-            let parsed = parse_request(context.state(), conn.data(offset, offset + length));
-            let buffer = conn.buffer();
-            buffer.set_offset(buffer.offset() + i64::try_from(parsed).unwrap_or(i64::MAX));
+            let parsed = parse_request(context.state(), data(&buffer, offset, offset + length));
+            let next = buffer.offset() + i64::try_from(parsed).unwrap_or(i64::MAX);
+            buffer.set_offset(next);
             let error = context.state().parser.error;
             if error != HPE_OK && error != HPE_PAUSED_H2_UPGRADE {
                 context.state().response.status = BAD_REQUEST;
@@ -1006,30 +1011,31 @@ fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
             }
             if chunked {
                 if !context.state().completed {
-                    if conn.buffer().len() >= max {
+                    if buffer.len() >= max {
                         context.state().response.status = ENTITY_TOO_LARGE;
                         break;
                     }
-                    if conn.buffer().len() == conn.buffer().size() {
-                        let size = (conn.buffer().size() + BUFFER_SIZE_BIG).min(max);
-                        conn.buffer().extend(size);
+                    if buffer.len() == buffer.size() {
+                        let size = (buffer.size() + BUFFER_SIZE_BIG).min(max);
+                        buffer.extend(size);
                     }
                     continue;
                 }
                 // llhttp pauses at the end of this request, before pipelined bytes.
-                total = usize::try_from(conn.buffer().offset()).unwrap_or(0);
+                total = usize::try_from(buffer.offset()).unwrap_or(0);
             }
         }
         add_peer(context, peer);
         if context.state().parser.error == HPE_PAUSED_H2_UPGRADE
-            && conn.buffer().len() >= HTTP2_PRI.len()
-            && conn.data(0, HTTP2_PRI.len()) == HTTP2_PRI
+            && buffer.len() >= HTTP2_PRI.len()
+            && data(&buffer, 0, HTTP2_PRI.len()) == HTTP2_PRI
         {
-            conn.buffer()
-                .set_offset(i64::try_from(HTTP2_PRI.len()).unwrap_or(0));
+            buffer.set_offset(i64::try_from(HTTP2_PRI.len()).unwrap_or(0));
+            drop(buffer);
             return http2(conn, context);
         }
-        request_data(context, conn.buffer(), total);
+        request_data(context, &mut buffer, total);
+        drop(buffer);
         let callable = conn.server.handler(context);
         let mut args = objects(context);
         let state = context.state();
@@ -1050,14 +1056,17 @@ fn serve(conn: &mut Connection, peer: &Peer) -> Result<(), bailout::Bailout> {
             break;
         }
         header_completed = false;
-        if !conn.buffer().is_empty() {
-            step = Step::Parse;
-        }
+        // Pipelined bytes are parsed before the next receive.
+        step = Step::Parse;
     }
     current.map_or(Ok(()), |hold| context::release_objects(hold.ctx()))
 }
 
-/// `swoole_strnpos(.., "\r\n\r\n")`.
+/// The buffer's bytes `from..to`, or none past its content.
+fn data(buffer: &Buffer, from: usize, to: usize) -> &[u8] {
+    buffer.view().get(from..to).unwrap_or_default()
+}
+
 /// `recv_http2_frame`: the connection speaks HTTP/2 from here on. Its session
 /// takes the HTTP/1 request's context as its default and handles each frame
 /// until the peer goes or a frame fails (or a handler bailed out, which
@@ -1082,8 +1091,12 @@ fn http2(conn: &mut Connection, mut context: Ctx) -> Result<(), bailout::Bailout
         );
         loop {
             // The frame stays in the read buffer.
-            let retval = recv_packet(conn.socket, 0.0);
-            if retval <= Some(0) || !(server.session_receive)(fd, conn.buffer().view()) {
+            if recv_packet(conn.socket, 0.0) <= Some(0) {
+                break;
+            }
+            // Owned, not lent: handling the frame may send, or call PHP that bails out.
+            let frame = conn.socket.own_read_buffer();
+            if !(server.session_receive)(fd, frame.view()) {
                 break;
             }
             if bailout::pending() {
@@ -1096,14 +1109,14 @@ fn http2(conn: &mut Connection, mut context: Ctx) -> Result<(), bailout::Bailout
     context::release_objects(context)
 }
 
+/// `swoole_strnpos(.., "\r\n\r\n")`.
 fn find_crlf2(data: &[u8]) -> Option<usize> {
     data.windows(4).position(|window| window == b"\r\n\r\n")
 }
 
 /// `Expect: 100-continue` (case-insensitive) among the request headers.
 fn expects_continue(mut context: Ctx) -> bool {
-    let header = context.state().request.zheader.get();
-    header
+    parse::made(&context.state().request, Property::Header)
         .and_then(Value::array)
         .and_then(|header| header.find(b"expect"))
         .and_then(Value::bytes)
@@ -1126,14 +1139,16 @@ fn http2_request(
     mut http1: Ctx,
     server: &HttpServer,
 ) -> Result<(), bailout::Bailout> {
-    let source = http1.state().request.zserver.get().and_then(Value::array);
-    if let (Some(source), Some(target)) = (source, context.state().request.zserver.array_mut()) {
+    let source = parse::made(&http1.state().request, Property::Server);
+    if let Some(source) = source.and_then(Value::array) {
         // `http_server_add_server_array(ht, key, value)`: each entry with a
         // reference of its own.
-        source.for_each(|key, entry| {
-            if let ArrayKey::Name(key) = key {
-                target.add_new(&ZString::new(key), entry.copy());
-            }
+        parse::edit(&mut context.state().request, Property::Server, |target| {
+            source.for_each(|key, entry| {
+                if let ArrayKey::Name(key) = key {
+                    target.add_new(&ZString::new(key), entry.copy());
+                }
+            });
         });
     }
     add_protocol(context.state(), Key::Http2);
