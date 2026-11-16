@@ -15,3 +15,11 @@ workspace = true
 [dependencies]
 swoole-rs-base64 = { path = "../base64" }
 swoole-rs-corebase = { path = "../corebase" }
+
+[dev-dependencies]
+swoole-rs-oracle = { path = "../oracle" }
+
+# The codec against the pinned C++ bodies (tests/modules/websocket/README.md).
+[[test]]
+name = "codec"
+path = "../../tests/modules/websocket/codec.rs"

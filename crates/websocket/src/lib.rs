@@ -1,6 +1,6 @@
 //! Allocation-free WebSocket codec and message/control policy. Native callers
-//! retain storage, connection ownership, PHP dispatch and socket I/O; their C
-//! ABI is crates/websocket-ffi.
+//! retain storage, connection ownership, PHP dispatch and socket I/O; crates/ports'
+//! `frame_api` adapts it to upstream's records.
 #![forbid(unsafe_code)]
 // The fuzz image's nightly predates `MaybeUninit::write_copy_of_slice` going stable.
 #![cfg_attr(fuzzing, feature(maybe_uninit_write_slice))]

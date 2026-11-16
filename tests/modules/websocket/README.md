@@ -1,11 +1,10 @@
 # WebSocket tests
 
-The frame codec is `crates/websocket`, which forbids `unsafe`. `crates/websocket-ffi`
-(`frame_api`) is `websocket.cc`'s entry points over `swoole::String` and
-`websocket::Frame`: safe functions over slices, and `get_package_length`, the one a
-protocol table holds, also under its C++ symbol. `encode`, `decode`, `mask`,
-`pack_close_frame` and `print_frame` had C++ symbols too, which only Rust tests linked;
-those call the functions by path now. The safe decoder returns `Result<DecodedFrame,
+The frame codec is `crates/websocket`, which forbids `unsafe`. `crates/ports`'
+`frame_api`, its only caller with upstream's records, is `websocket.cc`'s entry points
+over `swoole::String` and `websocket::Frame`, as safe functions over slices;
+`websocket::get_package_length` is its sibling `http_routes::websocket_length`. They had C++
+symbols, which only Rust linked; Rust calls them by path now. The safe decoder returns `Result<DecodedFrame,
 DecodeError>`; its error preserves the partial header and distinguishes incomplete
 input, length overflow, and compressed control frames. `DecodedFrame`, `Context`
 and `Decision` are plain Rust records. Decoded opcodes use `Opcode`, including
@@ -14,7 +13,7 @@ PHP and native frame adapters convert them back to bytes. Decoded flags use
 `FrameFlags` with named final/masked/compressed queries, and `FrameMetadata` keeps
 fragment opcode and flags together without packing them. Only native/test
 boundaries pack dispatch metadata; outgoing encoder arguments still use raw bits; the native `websocket::Frame` layout stays
-in `websocket-ffi`. Frame measurement returns `Result<FrameLength, LengthError>`
+in `frame_api`. Frame measurement returns `Result<FrameLength, LengthError>`
 with `usize` sizes; incomplete and overflowing headers retain their incremental
 header length. Only the native framing adapters convert those outcomes to zero
 or -1. The kernel, codec and fuzz tests adapt typed outcomes to the former integer
@@ -23,18 +22,18 @@ writers return `Result<usize, EncodeError>`; success reports initialized bytes,
 while overflow, invalid control frames, mismatched payload lengths and short
 output leave the output untouched. `encoding_errors_leave_output_untouched`
 checks those errors directly, including declared/supplied payload mismatches. `mask`'s null-pointer and oversized-length
-refusals went with its export, and their test (`tests/kernel.rs`'s
+refusals went with its export, and their test (`tests/mask.rs`'s
 `invalid_mask_pointers_and_lengths_do_not_write`) with them: a slice and a key by value
 cannot carry those arguments. The PHP side is `crates/phphttp/src/websocket.rs`.
 
 ## Codec
 
-`cargo test -p swoole-rs-websocket -p swoole-rs-websocket-ffi` (`websocket-unit`) covers
-the codec at every opcode/flags combination and length boundary, and the mask kernel
-(`tests/kernel.rs`). The `fuzz/` targets `ws_frame_length`, `ws_decode` and
+`cargo test -p swoole-rs-websocket` (`websocket-unit`) covers
+the codec at every opcode/flags combination and length boundary (`tests/kernel.rs`), and
+the mask kernel (`tests/mask.rs`). The `fuzz/` targets `ws_frame_length`, `ws_decode` and
 `ws_mask` compare the codec with the pinned C++ bodies.
 
-`codec.rs` (the `codec` test of `swoole-rs-websocket-ffi`) compares the codec with the
+`codec.rs` (the `codec` test of `swoole-rs-websocket`) compares the codec with the
 pinned codec function bodies and PHP policy snippets, which `crates/oracle` compiles
 unchanged, exhaustively over opcode, flag and length inputs. It is the former C++
 gate `codec.cc`, one Rust test per block of checks, each C export replaced by the
