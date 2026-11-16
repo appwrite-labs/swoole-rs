@@ -45,8 +45,6 @@ unsafe extern "C" {
     pub(super) fn swoole_timer_del(tnode: *mut TimerNode) -> bool;
     #[link_name = "_Z18swoole_timer_delayPN6swoole9TimerNodeEl"]
     fn swoole_timer_delay(tnode: *mut TimerNode, delay_ms: c_long);
-    #[link_name = "_Z22swoole_signal_dispatchv"]
-    fn swoole_signal_dispatch();
     #[link_name = "_Z17swoole_event_initi"]
     fn swoole_event_init(flags: c_int) -> c_int;
     #[link_name = "_Z17swoole_event_waitv"]
@@ -177,11 +175,10 @@ fn sys() {
     });
 
     while swoole_rs_timer::php::stats().is_some_and(|(count, _)| count > 0) {
-        // SAFETY: SwooleTG.timer is set; the signal-driven timer's select loop, as upstream's.
-        unsafe {
-            sleep(10);
-            swoole_signal_dispatch();
-        }
+        // The signal-driven timer's select loop, as upstream's.
+        // SAFETY: sleep(3).
+        unsafe { sleep(10) };
+        swoole_rs_process::signal::swoole_signal_dispatch();
         if swoole_rs_corebase::swr_v1_core_signal_alarm() {
             swoole_timer_select();
         }

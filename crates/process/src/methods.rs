@@ -426,12 +426,8 @@ pub fn swoole_get_worker_pid() -> c_int {
 }
 
 /// `swoole_get_worker_type()`: upstream's core-tests (`log.cpp`'s `log_level`) call it.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z22swoole_get_worker_typev")
-)]
 #[must_use]
-pub extern "C" fn swoole_get_worker_type() -> c_int {
+pub fn swoole_get_worker_type() -> c_int {
     c_int::from(with_globals(|globals| globals.kind.load(Relaxed)))
 }
 
@@ -457,22 +453,14 @@ pub fn swoole_set_worker_pid(pid: c_int) {
 }
 
 /// `swoole_set_worker_type(type)`, narrowed to the record's `uint8_t`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z22swoole_set_worker_typei")
-)]
-pub extern "C" fn swoole_set_worker_type(kind: c_int) {
+pub fn swoole_set_worker_type(kind: c_int) {
     let kind = u8::try_from(kind & 0xFF).unwrap_or_default();
     with_globals(|globals| globals.kind.store(kind, Relaxed));
 }
 
 /// `swoole_get_worker_symbol()`: the log's mark for the current worker's type.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z24swoole_get_worker_symbolv")
-)]
 #[must_use]
-pub extern "C" fn swoole_get_worker_symbol() -> std::ffi::c_char {
+pub fn swoole_get_worker_symbol() -> std::ffi::c_char {
     swr_v1_worker_symbol(swoole_get_worker_type())
 }
 

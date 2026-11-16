@@ -266,8 +266,7 @@ pub extern "C" fn swoole_signal_get_listener_num() -> u32 {
     signal_loop::listener_num()
 }
 
-/// `void swoole_signal_clear()`.
-#[unsafe(export_name = "_Z19swoole_signal_clearv")]
+/// `void swoole_signal_clear()`, with the C ABI that `NativeHost::signal_clear` takes.
 pub extern "C" fn swoole_signal_clear() {
     clear();
 }

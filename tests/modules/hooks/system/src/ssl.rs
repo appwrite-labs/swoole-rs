@@ -1,12 +1,14 @@
 //! Upstream's `core-tests/src/protocol/ssl.cpp`, one function per TEST with the same
-//! inputs and expected values, over crates/tls: `swoole_ssl_*` under their upstream
-//! symbols, `SSLContext::create` as crates/tls's `ssl_context_create` by path, and [`SslContext`]
+//! inputs and expected values, over crates/tls: `swoole_ssl_init`, `swoole_ssl_destroy`
+//! (`swr_v1_tls_destroy`) and `swoole_ssl_get_error` (`swr_v1_tls_error`) by path,
+//! `SSLContext::create` as crates/tls's `ssl_context_create` by path, and [`SslContext`]
 //! holding an owner from `tls_owner_new` and setting it with `string_set`.
 
 use std::ffi::{CStr, c_char, c_int, c_ulong, c_void};
 
 use super::network_socket::err_put_error;
 use super::socket::{TlsPrepared, get_ssl_dir, string_set, tls_owner_new};
+use swoole_rs_tls::{swoole_ssl_init, swr_v1_tls_destroy, swr_v1_tls_error};
 
 // OpenSSL's codes (the SSL_F_* function codes are 0 in OpenSSL 3).
 const ERR_LIB_SSL: c_int = 20;
@@ -18,18 +20,6 @@ const KEY_FILE: usize = 5;
 const PASSPHRASE: usize = 6;
 /// `offsetof(swr_v1_tls_owner_fields, context)`.
 const CONTEXT: usize = 24;
-
-unsafe extern "C" {
-    #[link_name = "_Z18swoole_ssl_destroyv"]
-    fn swoole_ssl_destroy();
-    #[link_name = "_Z20swoole_ssl_get_errorv"]
-    fn swoole_ssl_get_error() -> *const c_char;
-}
-
-unsafe extern "C-unwind" {
-    #[link_name = "_Z15swoole_ssl_initv"]
-    fn swoole_ssl_init();
-}
 
 #[link(name = "crypto")]
 unsafe extern "C" {
@@ -85,30 +75,26 @@ impl Drop for SslContext {
 }
 
 fn get_error() -> *const c_char {
-    // SAFETY: drains this thread's OpenSSL error queue.
-    unsafe { swoole_ssl_get_error() }
+    swr_v1_tls_error()
 }
 
 /// `String(error_str).contains(needle)` over a non-null string.
 fn contains(error_str: *const c_char, needle: &str) -> bool {
-    // SAFETY: a terminated string from `swoole_ssl_get_error`.
+    // SAFETY: a terminated string from `swr_v1_tls_error`.
     unsafe { CStr::from_ptr(error_str) }
         .to_string_lossy()
         .contains(needle)
 }
 
 fn destroy() {
-    // SAFETY: OpenSSL's process-wide init and teardown, then this thread's queue.
-    unsafe {
-        swoole_ssl_init();
-        swoole_ssl_destroy();
-        assert_eq!(ERR_peek_error(), 0);
-    }
+    swoole_ssl_init();
+    swr_v1_tls_destroy();
+    // SAFETY: this thread's OpenSSL error queue.
+    assert_eq!(unsafe { ERR_peek_error() }, 0);
 }
 
 fn get_error_() {
-    // SAFETY: OpenSSL's process-wide init.
-    unsafe { swoole_ssl_init() };
+    swoole_ssl_init();
     {
         // SAFETY: this thread's OpenSSL error queue.
         unsafe { ERR_clear_error() };

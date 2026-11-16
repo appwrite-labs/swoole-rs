@@ -152,11 +152,7 @@ pub extern "C-unwind" fn swoole_thread_init(main_thread: bool) {
 }
 
 /// `void swoole_thread_clean(bool main_thread)`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z19swoole_thread_cleanb")
-)]
-pub extern "C-unwind" fn swoole_thread_clean(_main_thread: bool) {
+pub fn swoole_thread_clean(_main_thread: bool) {
     let Some(host) = native::host() else { return };
     if with(|thread| !thread.timer.get().is_null()) {
         (host.timer_free)();

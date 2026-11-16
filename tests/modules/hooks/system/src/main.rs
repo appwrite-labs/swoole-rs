@@ -146,8 +146,6 @@ unsafe extern "C-unwind" {
 
     fn swoole_coroutine_create(routine: Routine, arg: *mut c_void) -> c_long;
     fn swoole_coroutine_get_id() -> c_long;
-    #[link_name = "_Z20swoole_coroutine_getl"]
-    fn swoole_coroutine_get(cid: c_long) -> *mut c_void;
     #[link_name = "_ZN6swoole9Coroutine6cancelEv"]
     fn coroutine_cancel(co: *mut c_void) -> bool;
 
@@ -219,8 +217,9 @@ fn run<'a>(body: impl FnOnce() + 'a) {
 }
 
 fn current() -> *mut c_void {
-    // SAFETY: the running coroutine's id and native object.
-    unsafe { swoole_coroutine_get(swoole_coroutine_get_id()) }
+    // SAFETY: no preconditions.
+    let cid = unsafe { swoole_coroutine_get_id() };
+    swoole_rs_coroutine::coroutine_get(cid)
 }
 
 fn co_sleep(sec: f64) -> c_int {

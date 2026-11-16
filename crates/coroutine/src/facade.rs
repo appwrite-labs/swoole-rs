@@ -261,8 +261,7 @@ pub fn yield_timed_armed(co: *mut c_void, timeout: f64, arm: impl FnOnce(crate::
 }
 
 /// `static void Coroutine::print_list()`.
-#[unsafe(export_name = "_ZN6swoole9Coroutine10print_listEv")]
-extern "C-unwind" fn print_list() {
+pub fn print_list() {
     sw_print(with_scheduler(|s| s.list_text()).as_bytes());
 }
 
@@ -341,27 +340,13 @@ extern "C" fn swoole_coroutine_get_id() -> c_long {
     crate::current_cid()
 }
 
-/// `swoole::Coroutine *swoole_coroutine_get(long cid)`, for gdb.
-#[unsafe(export_name = "_Z20swoole_coroutine_getl")]
-extern "C" fn swoole_coroutine_get(cid: c_long) -> *mut c_void {
-    with_scheduler(|s| s.get(cid))
-}
-
-/// `size_t swoole_coroutine_count()`, for gdb.
-#[unsafe(export_name = "_Z22swoole_coroutine_countv")]
-#[must_use]
-pub extern "C" fn swoole_coroutine_count() -> usize {
-    with_scheduler(|s| s.count())
-}
-
 /// `void swoole_coroutine_iterator_reset()`, for gdb.
-#[unsafe(export_name = "_Z31swoole_coroutine_iterator_resetv")]
-extern "C" fn swoole_coroutine_iterator_reset() {
+pub fn swoole_coroutine_iterator_reset() {
     with_scheduler(Scheduler::iterator_reset);
 }
 
 /// `swoole::Coroutine *swoole_coroutine_iterator_each()`, for gdb.
-#[unsafe(export_name = "_Z30swoole_coroutine_iterator_eachv")]
-extern "C" fn swoole_coroutine_iterator_each() -> *mut c_void {
+#[must_use]
+pub fn swoole_coroutine_iterator_each() -> *mut c_void {
     with_scheduler(Scheduler::iterator_each)
 }

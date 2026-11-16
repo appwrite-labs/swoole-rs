@@ -17,9 +17,10 @@ use std::ptr::{self, null_mut};
 use std::sync::atomic::{AtomicI32, AtomicPtr, Ordering::SeqCst};
 use std::time::{SystemTime, UNIX_EPOCH};
 use swoole_rs_corebase::constants::SW_IPC_MAX_SIZE;
+use swoole_rs_corebase::swoole_thread_clean;
 use swoole_rs_memory::members::pool as mem_pool;
 use swoole_rs_process::methods as pm;
-use swoole_rs_process::methods::ExitStatus;
+use swoole_rs_process::methods::{ExitStatus, swoole_get_worker_symbol, swoole_set_worker_type};
 use swoole_rs_process::process_pool::{
     ErrorFn, EventFn, Hooks, MainLoopFn, MessageFn, NotFoundFn, PoolFn, PoolRef, Protocol,
     RecvData, TaskFn, WorkerFn,
@@ -31,6 +32,7 @@ use swoole_rs_process::worker_record::{
 
 use super::timer::{TimerNode, after, swoole_timer_del, tick};
 use super::{SIGKILL, TEST_STR, last_error, random_bytes};
+use swoole_rs_reactor::signal_upstream::swoole_signal_clear;
 use swoole_rs_timer::{swoole_timer_clear, swoole_timer_free, swoole_timer_is_available};
 
 const SW_OK: c_int = 0;
@@ -228,15 +230,8 @@ struct Worker {
 unsafe extern "C" {
     static swr_case_process_layout: [usize; 6];
 
-    #[link_name = "_Z22swoole_set_worker_typei"]
-    fn swoole_set_worker_type(kind: c_int);
-    #[link_name = "_Z24swoole_get_worker_symbolv"]
-    fn swoole_get_worker_symbol() -> c_char;
-
     #[link_name = "_Z17swoole_signal_setiPFviEb"]
     fn swoole_signal_set(signo: c_int, handler: Handler, safety: bool) -> *mut c_void;
-    #[link_name = "_Z19swoole_signal_clearv"]
-    fn swoole_signal_clear();
     #[link_name = "_Z23swoole_signal_block_allv"]
     fn swoole_signal_block_all();
     #[link_name = "_Z20swoole_system_randomii"]
@@ -245,8 +240,6 @@ unsafe extern "C" {
     fn swoole_random_int() -> u64;
     #[link_name = "_Z18swoole_thread_initb"]
     fn swoole_thread_init(main_thread: bool);
-    #[link_name = "_Z19swoole_thread_cleanb"]
-    fn swoole_thread_clean(main_thread: bool);
 
     fn fork() -> c_int;
     fn kill(pid: c_int, sig: c_int) -> c_int;
@@ -1275,8 +1268,7 @@ fn async_() {
 
     assert_eq!(counter_get(0), MAGIC_NUMBER + 2);
 
-    // SAFETY: the process's signal table.
-    unsafe { swoole_signal_clear() };
+    swoole_signal_clear();
     sysv(SIGTERM, SIG_DFL);
 }
 
@@ -1369,8 +1361,7 @@ fn async_mb() {
     if swoole_timer_is_available() {
         swoole_timer_free();
     }
-    // SAFETY: the process's signal table.
-    unsafe { swoole_signal_clear() };
+    swoole_signal_clear();
 
     // init
     set_protocol(pool, Protocol::Task);
@@ -1400,8 +1391,7 @@ fn async_mb() {
 
     assert!(counter_get(0) >= 8);
 
-    // SAFETY: the process's signal table.
-    unsafe { swoole_signal_clear() };
+    swoole_signal_clear();
     sysv(SIGTERM, SIG_DFL);
     sysv(SIGIO, SIG_DFL);
 }
@@ -1796,8 +1786,7 @@ fn task_protocol_rejects_malformed_socket_packet() {
                 shutdown(listener_fd(listener), SHUT_RDWR);
             }
         }
-        // SAFETY: as above.
-        unsafe { swoole_thread_clean(false) };
+        swoole_thread_clean(false);
         (acknowledgment_received, acknowledgment, valid_packet_sent)
     });
 
@@ -1981,11 +1970,8 @@ fn worker_status(worker: &Worker) -> u8 {
 }
 
 fn set_worker_type(kind: c_int) -> u8 {
-    // SAFETY: this process's worker type, then its log symbol.
-    unsafe {
-        swoole_set_worker_type(kind);
-        u8::from_ne_bytes(swoole_get_worker_symbol().to_ne_bytes())
-    }
+    swoole_set_worker_type(kind);
+    u8::from_ne_bytes(swoole_get_worker_symbol().to_ne_bytes())
 }
 
 fn worker() {
@@ -2145,12 +2131,10 @@ fn reload_from_child_exit_callback() {
     assert_eq!(counter_get(27), 1);
     assert_eq!(counter_get(0), 2);
     assert_eq!(counter_get(1), 2);
-    // SAFETY: once; then the signal table.
-    unsafe {
-        pool_destroy(pool);
-        swoole_timer_free();
-        swoole_signal_clear();
-    }
+    // SAFETY: once.
+    unsafe { pool_destroy(pool) };
+    swoole_timer_free();
+    swoole_signal_clear();
 }
 
 /// `SwooleWG.worker`, as the mirror.
