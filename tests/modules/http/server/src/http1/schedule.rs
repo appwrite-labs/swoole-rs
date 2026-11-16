@@ -328,7 +328,7 @@ fn schedule_10() {
     );
 }
 
-pub const CASES: &[(&str, fn())] = &[
+pub(crate) const CASES: &[(&str, fn())] = &[
     ("schedule", schedule),
     ("schedule_1", schedule_1),
     ("schedule_4", schedule_4),

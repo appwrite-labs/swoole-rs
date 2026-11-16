@@ -9,6 +9,8 @@ use crate::{
     socket_options::{Stop, checked, errno, fd, long, string, text},
 };
 use libc::{c_int, c_uint, in_addr, in6_addr, sockaddr_in, sockaddr_in6};
+#[cfg(not(target_vendor = "apple"))]
+use std::ptr;
 use std::{
     ffi::CStr,
     net::{Ipv4Addr, Ipv6Addr},

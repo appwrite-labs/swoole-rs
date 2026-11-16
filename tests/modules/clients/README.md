@@ -54,6 +54,7 @@ Proxy handshakes receive the scratch-buffer loan through the same table. The
 native entry uses the real thread buffer; recording tests keep their 64-byte
 fixture and original traces. The synchronous receive loops stay inside the loan,
 and async HTTP requests are still copied before a send can invoke callbacks.
+The SOCKS5 handshake is handed the bytes the read wrote.
 
 ## network/client.cpp in Rust
 
@@ -176,3 +177,9 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
 - `network::Client` itself (crates/clients/src/client.rs) is covered by its Rust
   unit tests with explicit socket, reactor, framing, DNS and SOCKS5 operations,
   the original client cases and the PHPTs.
+
+The HTTP connection fixture also splits response headers across writes, receives a
+128 KiB body across multiple reads, and reuses the same connection for a second
+response. Existing callback-close and callback-throw cases cover response-buffer
+ownership while the parser invokes PHP. A local WebSocket handshake includes its
+first frame in the same write, checking that upgrade retains the received tail.

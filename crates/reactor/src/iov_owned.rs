@@ -5,8 +5,6 @@ use crate::socket_rw::IovState;
 use crate::{IovStep, ReactorIovProgress};
 use std::io::IoSlice;
 use std::marker::PhantomData;
-use std::mem::MaybeUninit;
-use swoole_rs_corebase::sys::ReadSlot;
 
 /// An `IOVector` over buffers lent for `'a` in one direction: writable and reached
 /// through nothing else for a read ([`Self::reading`]), readable for a write
@@ -20,27 +18,7 @@ pub struct ReactorIov<'a> {
     lent: PhantomData<&'a mut [u8]>,
 }
 
-/// One buffer a vectored read fills, as an `iovec`: slots that may not be written
-/// yet, lent for `'b`.
-#[repr(transparent)]
-pub struct ReadVec<'b> {
-    iov: libc::iovec,
-    lent: PhantomData<&'b mut [MaybeUninit<u8>]>,
-}
-
-impl<'b> ReadVec<'b> {
-    /// The vector over `slots`.
-    #[must_use]
-    pub fn new(slots: &'b mut [impl ReadSlot]) -> Self {
-        Self {
-            iov: libc::iovec {
-                iov_base: slots.as_mut_ptr().cast(),
-                iov_len: slots.len(),
-            },
-            lent: PhantomData,
-        }
-    }
-}
+pub use swoole_rs_corebase::lent::ReadVec;
 
 /// Stable public slots borrowed by the native facade. Payload and descriptor
 /// replacement obey the same live-span requirements as the original interface.
@@ -93,7 +71,7 @@ impl<'a> ReactorIov<'a> {
     /// their descriptors; none when it can't allocate.
     #[must_use]
     pub fn reading(vectors: &'a mut [ReadVec<'_>]) -> Option<Box<Self>> {
-        owned_new(vectors.iter().map(|vector| vector.iov), false).ok()
+        owned_new(vectors.iter().map(ReadVec::descriptor), false).ok()
     }
 
     /// `IOVector(iov, count)` to write `vectors`' bytes: a cursor over a copy of their

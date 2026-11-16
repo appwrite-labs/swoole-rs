@@ -252,11 +252,6 @@ unsafe extern "C" {
     /// live for whoever else holds it.
     #[link_name = "swr_phpstdext_separate"]
     safe fn separate_array(array: &Value, info: IoSlice<'_>);
-    /// `FE_RESET_RW`'s failure at `frame`'s instruction: `ZVAL_UNDEF` of its
-    /// result, then `Z_FE_ITER_P(result) = -1`; nothing for any other
-    /// instruction or an unused result.
-    #[link_name = "swr_phpstdext_foreach_undef"]
-    safe fn foreach_undef(frame: Frame<'_>);
     /// `ZVAL_ARR(made, ...)` of a new table of `size` elements with a copy of
     /// `header` behind it, then `header.len` bytes of the lent `text` (zeros past
     /// its end) and a NUL: the table. What `made` held is not released.
@@ -596,7 +591,10 @@ impl Handler for ForeachBegin {
         throw_error(
             c"The type array do not support using references for element value during iteration",
         );
-        foreach_undef(frame);
+        // The instruction's failure: an undefined result, if it is used.
+        if let Some(result) = op.result() {
+            result.undef_iteration();
+        }
         Next::Continue
     }
 }

@@ -5,7 +5,7 @@
 //! handlers and port callbacks run through `swoole_rs_zend::host::function_call`,
 //! which traps a bailout before it reaches a Rust frame.
 use crate::{
-    context::{self, Ctx},
+    context::{self, Ctx, Hold},
     host,
     parse::{Key, add_protocol, add_server, key, parse_request, request_times},
     state::State,
@@ -123,7 +123,7 @@ use swoole_rs_clients::address::{address_port, is_loopback, with_host};
 /// releases them; a thread's exit, after the request heap is gone, must not.
 type Addresses = ManuallyDrop<Table<(i64, [ZString; 2])>>;
 /// Requests waiting for the worker's concurrency to drop, oldest first.
-type Queue = VecDeque<Ctx>;
+type Queue = VecDeque<Hold>;
 
 php_local! {
     /// Taken out and put back around each lookup, which runs no PHP code; an
@@ -142,12 +142,12 @@ fn take_addresses() -> Addresses {
 /// Queue `ctx` behind the waiting requests.
 fn enqueue(ctx: Ctx) {
     let mut queued = QUEUED.take();
-    queued.push_back(ctx);
+    queued.push_back(ctx.hold());
     QUEUED.set(queued);
 }
 
 /// The oldest waiting request, out of the queue before the caller acts on it.
-fn dequeue() -> Option<Ctx> {
+fn dequeue() -> Option<Hold> {
     let mut queued = QUEUED.take();
     let ctx = queued.pop_front();
     QUEUED.set(queued);
@@ -298,7 +298,8 @@ fn receive(server: view::Server<'_>, request: &RecvData) -> Route {
         .then(|| usize::try_from(conn.fd()).ok())
         .flatten();
     facts.coroutine = enable_coroutine(server);
-    let mut ctx = context::context_new(session);
+    let hold = context::context_new(session);
+    let mut ctx = hold.ctx();
     context::init(ctx.state(), server);
     let state = ctx.state();
     state.before_request = true;
@@ -414,13 +415,12 @@ fn call(mut ctx: Ctx, coroutine: bool) -> Result<(), bailout::Bailout> {
 }
 
 /// A queued request's turn (`swoole_event_defer`): run its handler, then
-/// release its objects. The context is a queued server request's, alive until
-/// its deferred request ends.
-struct Turn(Ctx);
+/// release its objects. The context is a queued server request's.
+struct Turn(Hold);
 
 impl swoole_rs_reactor::event_api::Deferred for Turn {
     fn run(self) {
-        let mut ctx = self.0;
+        let mut ctx = self.0.ctx();
         bailout::raise(call(ctx, enable_coroutine(context::server(ctx.state()))));
     }
     fn dispose(self) {}
@@ -713,7 +713,8 @@ pub(crate) fn release_request(server: view::Server<'_>) {
         return;
     };
     if worker.shutdown {
-        while let Some(ctx) = dequeue() {
+        while let Some(hold) = dequeue() {
+            let ctx = hold.ctx();
             context::send(ctx, SERVICE_UNAVAILABLE);
             context::close(ctx);
             abandon(ctx);
@@ -722,9 +723,9 @@ pub(crate) fn release_request(server: view::Server<'_>) {
     }
     worker.server_concurrency.fetch_sub(1, SeqCst);
     with_current(|current| current.sub_concurrency());
-    if let Some(ctx) = dequeue() {
+    if let Some(hold) = dequeue() {
         // Upstream dereferences `sw_reactor()` here unchecked.
-        if swoole_rs_reactor::event_api::swoole_event_defer_value(Turn(ctx)).is_err() {
+        if swoole_rs_reactor::event_api::swoole_event_defer_value(Turn(hold)).is_err() {
             swoole_rs_corebase::fatal("no reactor to defer the queued request to");
         }
     }
@@ -742,8 +743,8 @@ pub extern "C" fn server_rinit() {
 pub extern "C" fn server_rshutdown() {
     swr_zend_http_uploads_rshutdown();
     drop(ManuallyDrop::into_inner(take_addresses()));
-    while let Some(ctx) = dequeue() {
-        abandon(ctx);
+    while let Some(hold) = dequeue() {
+        abandon(hold.ctx());
     }
     bailout::finish();
 }

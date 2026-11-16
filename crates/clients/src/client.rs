@@ -500,18 +500,6 @@ impl Handle {
         result
     }
 
-    /// `read` over the input buffer, which exists, and `arg`. `read` is a plain fn,
-    /// which cannot reach the client to borrow the buffer again.
-    fn read_input<A, R>(self, arg: A, read: fn(&CppString, A) -> R) -> R {
-        if self.input().is_null() {
-            swoole_rs_corebase::fatal("client input buffer is not available");
-        }
-        let buffer = self.get().input.replace(CppString::EMPTY);
-        let result = read(&buffer, arg);
-        self.get().input.set(buffer);
-        result
-    }
-
     /// `new String(SW_CLIENT_BUFFER_SIZE)`, once.
     fn input_init(self) {
         if self.input().is_null() {
@@ -574,11 +562,6 @@ impl Handle {
                 (native_host().socks5.handshake)(proxy, reply)
             })
             .flatten();
-        self.socks5_answer(n)
-    }
-
-    /// Sends the `n`-byte answer a handshake step packed: whether it went (0, none).
-    fn socks5_answer(self, n: Option<usize>) -> bool {
         n.is_some_and(|n| n == 0 || self.socks5_send(n) == Some(n))
     }
 
@@ -1264,11 +1247,9 @@ fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblo
         // Each answer lands at the start of the emptied buffer.
         let ready = this.with_buffer(|shared| {
             loop {
-                shared.clear();
-                let size = shared.size();
-                shared.read_zeroed(size, |bytes| recv(this, bytes, 0).unwrap_or(0));
-                let reply = shared.view();
-                if reply.is_empty() || !this.socks5_handshake(reply) {
+                // Zeroed first, so the reply is the bytes read.
+                shared.read_zeroed(shared.size(), |bytes| recv(this, bytes, 0).unwrap_or(0));
+                if shared.is_empty() || !this.socks5_handshake(shared.view()) {
                     return false;
                 }
                 if this.proxy_state(Proxy::Socks5) == Some(SOCKS5_READY) {
@@ -1725,6 +1706,18 @@ pub fn recv(this: Handle, buffer: &mut [impl ReadSlot], flags: c_int) -> Option<
     }
 }
 
+/// [`recv`] into lent room, counting the prefix that the receive initialized.
+#[inline]
+pub fn recv_spare(
+    this: Handle,
+    out: &mut swoole_rs_corebase::lent::Spare<'_>,
+    flags: c_int,
+) -> Option<usize> {
+    // SAFETY: all recv paths initialize the reported prefix, bounded by the room
+    // when MSG_TRUNC reports the full length of a datagram.
+    unsafe { out.read(|room| recv(this, room, flags)) }
+}
+
 /// A handshake in the read or write handler failed: close and report.
 fn connect_failed(this: Handle) -> bool {
     this.set(Flag::Active, false);
@@ -1759,23 +1752,17 @@ fn on_read(this: Handle) -> bool {
     }
     let socks5 = this.proxy_state(Proxy::Socks5);
     if socks5.is_some_and(|state| state != SOCKS5_READY) {
-        let n = this.edit_input(|input, socket, ops| (ops.recv_append)(socket, input));
-        let Some(n) = n.filter(|&n| n > 0) else {
+        // What this read appended, copied: the handshake's send may reach the client.
+        let reply = this.edit_input(|input, socket, ops| {
+            let start = input.len();
+            (ops.recv_append)(socket, input)?;
+            Some(input.view().get(start..).unwrap_or_default().to_vec())
+        });
+        let Some(reply) = reply.filter(|reply| !reply.is_empty()) else {
             log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
             return connect_failed(this);
         };
-        // The step reads the bytes this read appended. (Upstream passes the whole
-        // free size, which runs past them into bytes no read wrote.)
-        let step = this.with_proxy(Proxy::Socks5, |proxy| {
-            this.read_input((proxy, n), |input, (proxy, n)| {
-                let bytes = input.view();
-                let reply = bytes
-                    .get(bytes.len().saturating_sub(n)..)
-                    .unwrap_or_default();
-                (native_host().socks5.handshake)(proxy, reply)
-            })
-        });
-        if !this.socks5_answer(step.flatten()) {
+        if !this.socks5_handshake(&reply) {
             log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
             return connect_failed(this);
         }

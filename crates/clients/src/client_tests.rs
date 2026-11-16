@@ -161,9 +161,10 @@ pub(super) mod net {
         buffer: &mut swoole_rs_buffer::string::CppString,
     ) -> Option<usize> {
         let n = count(io("recv", buffer.spare().len()));
-        if let Some(count) = n {
-            unsafe { buffer.set_len(buffer.len() + count) };
-        }
+        // Zeros, as many as the read reports.
+        buffer.fill_within(n.unwrap_or(0), |spare| {
+            _ = spare.put(&vec![0; spare.room()]);
+        });
         n
     }
     pub(in super::super) fn recv_sync(

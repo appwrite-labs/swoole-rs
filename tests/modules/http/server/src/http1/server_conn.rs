@@ -1954,7 +1954,7 @@ fn send_timeout() {
     serv.delete();
 }
 
-pub const CASES: &[(&str, fn())] = &[
+pub(crate) const CASES: &[(&str, fn())] = &[
     ("sendwait", sendwait),
     ("system", system),
     ("reopen_log", reopen_log),

@@ -7,6 +7,19 @@
 //! does (`swoole_init`, the case, `swoole_clean`), and exits 0 when every assertion held.
 //! A failed ASSERT panics (inside a handler called from the loop that aborts); a failed EXPECT
 //! is printed and fails the case at exit, as GoogleTest's nonfatal assertions do.
+#![expect(
+    clippy::borrow_as_ptr,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::doc_markdown,
+    clippy::fn_to_numeric_cast_any,
+    clippy::let_underscore_must_use,
+    clippy::print_stdout,
+    clippy::semicolon_if_nothing_returned,
+    clippy::unnecessary_box_returns,
+    clippy::unreadable_literal,
+    reason = "existing uses from before this port inherited [workspace.lints] (#4377); count them down"
+)]
 
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::io::IoSlice;
@@ -816,7 +829,7 @@ unsafe fn poll_readiness_after_fd_reuse() {
         assert!(ready(&sockets[0]));
         assert!(ready(&sockets[1]));
 
-        let mut pipe_fds = [0 as c_int; 2];
+        let mut pipe_fds: [c_int; 2] = [0; 2];
         assert_eq!(pipe(pipe_fds.as_mut_ptr()), 0);
 
         let reactor = reactor_new(32, TYPE_POLL);
@@ -959,12 +972,8 @@ unsafe fn poll_extra2() {
         set_end_callback(reactor, PRIORITY_DEFER_TASK, Some(end_timed_out));
         assert_eq!(swoole_rs_ffi::reactor_wait(reactor), SW_OK);
 
-        let _ = swoole_rs_ffi::signal::swoole_signal_set_action(
-            SIGIO,
-            on_sigio as extern "C" fn(c_int) as usize,
-            0,
-            0,
-        );
+        let handler: extern "C" fn(c_int) = on_sigio;
+        let _ = swoole_rs_ffi::signal::swoole_signal_set_action(SIGIO, handler as usize, 0, 0);
 
         set_end_callback(reactor, PRIORITY_DEFER_TASK, None);
         reactor.set_timeout_msec(1000);

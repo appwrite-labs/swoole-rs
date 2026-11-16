@@ -11,7 +11,7 @@ use std::os::fd::AsRawFd;
 use std::time::Duration;
 
 /// `httplib::USER_AGENT`.
-pub const USER_AGENT: &str = "cpp-httplib/0.7";
+pub(crate) const USER_AGENT: &str = "cpp-httplib/0.7";
 
 #[repr(C)]
 struct PollFd {
@@ -26,7 +26,7 @@ unsafe extern "C" {
     fn poll(fds: *mut PollFd, count: u64, timeout: i32) -> i32;
 }
 
-pub struct Response {
+pub(crate) struct Response {
     pub status: i32,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
@@ -41,7 +41,7 @@ impl Response {
     }
 }
 
-pub struct Client {
+pub(crate) struct Client {
     host: String,
     port: u16,
     keep_alive: bool,
@@ -50,7 +50,7 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn new(host: &str, port: u16) -> Self {
+    pub(crate) fn new(host: &str, port: u16) -> Self {
         Self {
             host: host.to_owned(),
             port,
@@ -61,25 +61,25 @@ impl Client {
         }
     }
 
-    pub fn set_keep_alive(&mut self, on: bool) {
+    pub(crate) fn set_keep_alive(&mut self, on: bool) {
         self.keep_alive = on;
     }
 
-    pub fn set_read_timeout(&mut self, sec: u64, usec: u64) {
+    pub(crate) fn set_read_timeout(&mut self, sec: u64, usec: u64) {
         self.read_timeout = Duration::from_secs(sec) + Duration::from_micros(usec);
     }
 
-    pub fn get(&mut self, path: &str) -> Option<Response> {
+    pub(crate) fn get(&mut self, path: &str) -> Option<Response> {
         self.get_with(path, &[])
     }
 
-    pub fn get_with(&mut self, path: &str, headers: &[(&str, &str)]) -> Option<Response> {
+    pub(crate) fn get_with(&mut self, path: &str, headers: &[(&str, &str)]) -> Option<Response> {
         self.send("GET", path, headers, None)
     }
 
     /// `Post(path, params)`: the parameters in key order, as `httplib::Params` (a
     /// multimap) holds them.
-    pub fn post(&mut self, path: &str, params: &[(&str, &str)]) -> Option<Response> {
+    pub(crate) fn post(&mut self, path: &str, params: &[(&str, &str)]) -> Option<Response> {
         let mut params = params.to_vec();
         params.sort_by_key(|(key, _)| *key);
         let body = params

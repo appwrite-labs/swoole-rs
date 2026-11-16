@@ -148,18 +148,6 @@ HashTable *swr_phpstdext_typed_new(zval *made, uint32_t size, const swr_type_inf
     return ht;
 }
 
-/* FE_RESET_RW's failure: ZVAL_UNDEF of its result, then Z_FE_ITER_P(result) = -1;
- * nothing for any other instruction or an unused result. */
-void swr_phpstdext_foreach_undef(zend_execute_data *execute_data) {
-    const zend_op *opline = EX(opline);
-    if (opline->opcode != ZEND_FE_RESET_RW || opline->result_type == IS_UNUSED) {
-        return;
-    }
-    zval *result = EX_VAR(opline->result.var);
-    ZVAL_UNDEF(result);
-    Z_FE_ITER_P(result) = (uint32_t) -1;
-}
-
 uint8_t swr_phpstdext_pcre_match(void *entry, zend_string *subject, zval *count, zval *result, bool global,
                                  bool flags_passed, int64_t flags, int64_t offset) {
     volatile uint8_t bailed = 0;

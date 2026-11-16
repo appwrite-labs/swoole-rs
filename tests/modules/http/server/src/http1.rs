@@ -1249,7 +1249,7 @@ fn fail() {
 }
 
 /// `http_server.<name>`, in upstream's order.
-pub const CASES: &[(&str, fn())] = &[
+pub(crate) const CASES: &[(&str, fn())] = &[
     ("get", get),
     ("reset_connection", reset_connection),
     ("heartbeat_check_interval", heartbeat_check_interval),
