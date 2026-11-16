@@ -490,30 +490,6 @@ pub extern "C" fn swoole_rand_any() -> c_int {
     swoole_rand(0, c_int::MAX)
 }
 
-/// `void *sw_malloc(size_t)`. Upstream calls through `SwooleG.std_allocator`,
-/// which only ever holds libc's allocator.
-#[must_use]
-#[cfg_attr(feature = "upstream-symbols", unsafe(export_name = "_Z9sw_mallocm"))]
-pub extern "C" fn sw_malloc(size: usize) -> *mut c_void {
-    crate::sys::malloc(size)
-}
-
-/// `void sw_free(void *)`.
-/// # Safety
-/// `pointer` is null or a live allocation from this allocator.
-#[cfg_attr(feature = "upstream-symbols", unsafe(export_name = "_Z7sw_freePv"))]
-pub unsafe extern "C" fn sw_free(pointer: *mut c_void) {
-    // SAFETY: the caller passes null or a live allocation.
-    unsafe { libc::free(pointer) }
-}
-
-/// `void *sw_calloc(size_t, size_t)`.
-#[must_use]
-#[cfg_attr(feature = "upstream-symbols", unsafe(export_name = "_Z9sw_callocmm"))]
-pub extern "C" fn sw_calloc(count: usize, size: usize) -> *mut c_void {
-    crate::sys::calloc(count, size)
-}
-
 /// `swoole_rand(min, max)`: uniform over the closed range; `min` when it is empty.
 #[must_use]
 #[cfg_attr(

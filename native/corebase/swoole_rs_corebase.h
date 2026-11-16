@@ -9,11 +9,10 @@ extern "C" {
 /* Rust also defines swoole_init, swoole_fork, swoole_waitpid, swoole_clean,
  * swoole_thread_init/_clean and swoole_is_main_thread. */
 /* Rust defines these upstream functions under their C++ symbols, so swoole.h and
- * native/framing/swoole_protocol.h stay their declarations: sw_free/sw_calloc
- * (libc's allocator), swoole_common_divisor/_multiple, swoole_version_compare,
+ * native/framing/swoole_protocol.h stay their declarations: swoole_common_divisor/_multiple, swoole_version_compare,
  * swoole_dec2hex, swoole_type_size, swoole_rand (both overloads),
- * swoole_random_int and swoole::DataHead::dump. sw_malloc and swoole::microtime
- * are Rust's too; no C++ calls them. */
+ * swoole_random_int and swoole::DataHead::dump. swoole::microtime is Rust's too;
+ * no C++ calls it. */
 /* Also Rust's, from base.cc: swoole_shell_exec, swoole_system_random, both
  * swoole_redirect_stdout overloads, swoole_print_backtrace(_on_error),
  * swoole_exit, swoole_set_log_level, swoole_set/get_stdout_stream and sw_printf
