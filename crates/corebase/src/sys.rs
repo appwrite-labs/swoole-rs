@@ -1080,6 +1080,11 @@ mod tests {
         // Each returns instead of running the program.
         execv(c"/bin/true", &[Some(c"true".into())]);
         execv(c"/bin/true", &[]);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri can't call execv")]
+    fn execv_returns_its_failure() {
         // A path that doesn't exist fails in execv itself.
         execv(c"/nonexistent/swoole-rs", &[None]);
         assert_eq!(

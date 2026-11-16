@@ -328,7 +328,7 @@ impl Co {
     pub(crate) fn set_owned_err_msg(self, message: &[u8]) -> bool {
         // The metadata's first slot owns the error string.
         let Some((stored, view)) = self.with_extra(|extra| {
-            let slot = &mut extra.strings[0];
+            let slot = &mut extra.strings.as_mut()[0];
             (slot.set(message), slot.view())
         }) else {
             return false;
