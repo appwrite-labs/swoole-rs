@@ -152,7 +152,10 @@ pub fn system_sleep(sec: f64) -> bool {
     {
         /// `SW_ERROR_CO_CANCELED`: what `yield_ex` sets when the coroutine was canceled.
         const CANCELED: i32 = 10017;
-        let resumed = crate::resolve::park_for(crate::sleep_timeout(sec, 0.001));
+        let resumed = crate::resolve::park_for_armed(
+            crate::sleep_timeout(sec, 0.001),
+            &crate::resolve::WakerSlot::new(None),
+        );
         resumed || swoole_rs_corebase::log::last_error() != CANCELED
     }
 }

@@ -5,12 +5,14 @@ use crate::{TlsConfig, Warn};
 use openssl_sys::SSL_CTX;
 use std::{
     cell::Cell,
-    ffi::{CStr, c_char, c_int},
+    ffi::{CStr, c_int},
+    mem::MaybeUninit,
     rc::Rc,
     sync::Arc,
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::StringSlot;
+use swoole_rs_corebase::lent::{Count, Out};
 
 const STRING_COUNT: usize = 11;
 const PASSPHRASE: usize = 6;
@@ -373,21 +375,15 @@ fn configuration<'a>(owner: &'a OwnedTlsContext, fields: &OwnedTlsFields) -> Tls
         warn: owner.warn,
     }
 }
-/// # Safety
-/// `buffer` holds `capacity` writable bytes, as OpenSSL's password callback lends
-/// them; `slot` is the owner's passphrase slot (the binding's userdata).
-unsafe extern "C" fn slot_password(
-    buffer: *mut c_char,
-    capacity: c_int,
+/// The password callback: the passphrase in `slot`, the owner's passphrase slot (the
+/// binding's userdata), into the `capacity` bytes OpenSSL lends at `buffer`.
+extern "C" fn slot_password<'id>(
+    buffer: Out<'id, MaybeUninit<u8>>,
+    capacity: Count<'id, c_int>,
     _verify: c_int,
     slot: &StringSlot,
 ) -> c_int {
-    let passphrase = slot.bytes_with_nul();
-    let capacity = usize::try_from(capacity).unwrap_or(0);
-    // SAFETY: per the caller: `capacity` writable bytes, lent for this call.
-    let mut buffer = unsafe { swoole_rs_reactor::Fill::from_raw(buffer.cast(), capacity) };
-    let buffer = buffer.slots();
-    copy_password(buffer, passphrase)
+    copy_password(buffer.fill(capacity).slots(), slot.bytes_with_nul())
 }
 /// A new `SSL_CTX` from the lent owner's configuration, which replaces the one it
 /// held: false when OpenSSL makes none. The owner's logger does not throw.
@@ -684,8 +680,18 @@ impl OwnedTlsContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::c_void;
+    use std::ffi::{c_char, c_void};
     use std::ptr;
+
+    /// The password callback as OpenSSL calls it: `capacity` (any value C may pass, at
+    /// most `bytes`' length) at `bytes`.
+    fn call_password(bytes: &mut [u8], capacity: c_int, slot: &StringSlot) -> c_int {
+        let slots = unsafe { &mut *(ptr::from_mut(bytes) as *mut [MaybeUninit<u8>]) };
+        swoole_rs_corebase::lent::lend_out(slots, |at, _: Count<'_, c_int>| {
+            let capacity = unsafe { core::mem::transmute::<c_int, Count<'_, c_int>>(capacity) };
+            slot_password(at, capacity, 0, slot)
+        })
+    }
 
     #[test]
     fn configuration_loans_reject_aliases_and_hostname_copies_survive_changes() {
@@ -903,7 +909,7 @@ mod tests {
             let password = (*destination.owner).context_password.as_ptr();
             let slot = Arc::as_ptr((&*password).as_ref().unwrap());
             let mut output = [0u8; 16];
-            assert_eq!(slot_password(output.as_mut_ptr().cast(), 16, 0, &*slot), 6);
+            assert_eq!(call_password(&mut output, 16, &*slot), 6);
             assert_eq!(&output[..7], b"source\0");
             assert_eq!(
                 openssl_sys::SSL_CTX_get_options(context),
@@ -941,7 +947,7 @@ mod tests {
                         expected[length] = 0;
                     }
                     assert_eq!(
-                        slot_password(bytes.as_mut_ptr().cast(), capacity, 0, slot),
+                        call_password(&mut bytes, capacity, slot),
                         c_int::try_from(length).unwrap()
                     );
                     assert_eq!(bytes, expected);
@@ -953,7 +959,7 @@ mod tests {
             drop(Rc::from_raw(owner));
             assert!((*prepared.strings[PASSPHRASE]).set_shared(b"retained"));
             let mut bytes = [0u8; 16];
-            assert_eq!(slot_password(bytes.as_mut_ptr().cast(), 16, 0, slot), 8);
+            assert_eq!(call_password(&mut bytes, 16, slot), 8);
             assert_eq!(&bytes[..9], b"retained\0");
             drop(Rc::from_raw(retained));
         }
