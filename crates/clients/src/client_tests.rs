@@ -241,14 +241,14 @@ pub(super) fn del_id(_: swoole_rs_timer::Held) {
     log("timer del");
 }
 /// crates/hooks' `async::dispatch`: logs the request; nothing completes it.
-pub(super) extern "C" fn async_dispatch(event: &AsyncEvent<'_>) -> *mut c_void {
+fn async_dispatch(event: &AsyncEvent<'_>) -> bool {
     let view = swoole_rs_corebase::swr_v1_core_resolver_view(event.request().unwrap());
     // SAFETY: the request's name, live with it.
     let name = unsafe { &*view.name }.bytes();
     // SAFETY: the request's fields, live with it.
     let family = unsafe { (*view.fields).family };
     log(format!("dns {} {family}", String::from_utf8_lossy(name)));
-    core::ptr::without_provenance_mut(8)
+    true
 }
 // crates/tls's TLS operations, over its own context.
 fn tls_freeze(owner: &TlsContext) -> Option<TlsSettings> {
@@ -341,7 +341,7 @@ fn new_client(kind: c_int, is_async: bool) -> *mut Client {
 /// with `callbacks`.
 fn client(kind: c_int, is_async: bool, callbacks: bool) -> *mut Client {
     mock(|m| *m = Mock::default());
-    set_framing(FRAMING);
+    set_host(FRAMING, async_dispatch);
     log::set_last_error(0);
     let client = new_client(kind, is_async);
     if callbacks {

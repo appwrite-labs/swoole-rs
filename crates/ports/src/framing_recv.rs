@@ -536,7 +536,7 @@ fn client_recv<const LENGTH: bool>(client: Handle) -> c_int {
 }
 
 /// The framed receives a client's reads use, which `swoole_init` registers
-/// (`swoole_rs_clients::client::set_framing`).
+/// (`swoole_rs_clients::client::set_host`).
 pub const FRAMING: Framing = Framing::new(client_recv::<true>, client_recv::<false>);
 
 /// `static ssize_t Protocol::default_length_func(const Protocol *, Socket *, PacketLength *)`.
