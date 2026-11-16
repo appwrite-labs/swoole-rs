@@ -263,7 +263,7 @@ static ON_START: Mutex<Option<fn(Server)>> = Mutex::new(None);
 
 /// `serv.onStart = [](Server *serv) { t1 = thread(...); }`: the client in a master thread,
 /// which SIGTERMs the master if it fails; `join_client` joins it.
-extern "C" fn start_client(_: Ctx, serv: view::Server<'_>) {
+fn start_client(serv: view::Server<'_>) {
     let body = ON_START.lock().unwrap().expect("a client");
     let serv = Server(serv.raw());
     client_thread(
@@ -292,18 +292,18 @@ fn thread_client(body: impl FnOnce() + Send + 'static) {
     );
 }
 
-extern "C" fn unlock_on_worker_start(_: Ctx, _: view::Server<'_>, _: Worker<'_>) {
+fn unlock_on_worker_start(_: view::Server<'_>, _: Worker<'_>) {
     unlock();
 }
 
 /// `onWorkerStart`: `lock.unlock(); test::counter_incr(0);`.
-extern "C" fn unlock_and_count(_: Ctx, _: view::Server<'_>, _: Worker<'_>) {
+fn unlock_and_count(_: view::Server<'_>, _: Worker<'_>) {
     unlock();
     counter_incr(0, 1);
 }
 
 /// `onReceive` of `sendwait` and `system`: the packet, answered with `sendwait`.
-extern "C" fn sendwait_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn sendwait_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let (session, data) = request(req);
     check(data == PACKET, "string(req->data, req->info.len) == packet");
     let _ = server_methods::sendwait(Server(serv.raw()).view(), session, &reply());
@@ -330,7 +330,7 @@ fn packet_client(port: impl FnOnce() -> u16 + Send + 'static) {
 /// `TEST(server, sendwait)`.
 fn sendwait() {
     let serv = new_server(MODE_BASE);
-    serv.config().worker_num = 1;
+    serv.config().worker_num.set(1);
     set_log_warning();
 
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
@@ -356,7 +356,7 @@ fn system() {
     use std::os::fd::IntoRawFd;
 
     let serv = new_server(MODE_BASE);
-    serv.config().worker_num = 1;
+    serv.config().worker_num.set(1);
     set_log_warning();
 
     new_lock();
@@ -387,7 +387,7 @@ fn system() {
 }
 
 /// `TEST(server, udp_packet)`'s `onPacket`: the datagram, echoed with `sendto`.
-extern "C" fn udp_on_packet(_: Ctx, _: view::Server<'_>, req: &RecvData) -> c_int {
+fn udp_on_packet(_: view::Server<'_>, req: &RecvData) -> c_int {
     // SAFETY: a datagram's RecvData points at its `DgramPacket`: `socket_type`, the
     // 120-byte `Address` (its length at 112), `length`, then the data.
     let (packet, fd) = (req.data().cast::<u8>(), c_int::from(req.info().server_fd));
@@ -424,7 +424,7 @@ extern "C" fn udp_on_packet(_: Ctx, _: view::Server<'_>, req: &RecvData) -> c_in
 /// upstream's went unseen.
 fn udp_packet() {
     let server = new_server(MODE_PROCESS);
-    server.config().worker_num = 2;
+    server.config().worker_num.set(2);
     server.add_port(SW_SOCK_UDP, TEST_HOST, 0);
 
     server.create();
@@ -461,7 +461,7 @@ fn udp_packet() {
 }
 
 /// `TEST(server, pipe_message)`'s `onPipeMessage`.
-extern "C" fn pipe_message_check(_: Ctx, _: view::Server<'_>, req: Packed<'_>) {
+fn pipe_message_check(_: view::Server<'_>, req: Packed<'_>) {
     check(
         &req.bytes()[size_of::<DataHead>()..] == PACKET,
         "string(req->data, req->info.len) == packet",
@@ -469,7 +469,7 @@ extern "C" fn pipe_message_check(_: Ctx, _: view::Server<'_>, req: Packed<'_>) {
 }
 
 /// `TEST(server, pipe_message)`'s `onWorkerStart`: worker 1 writes to worker 0.
-extern "C" fn pipe_message_worker_start(_: Ctx, serv: view::Server<'_>, _: Worker<'_>) {
+fn pipe_message_worker_start(serv: view::Server<'_>, _: Worker<'_>) {
     if worker_id() == 1 {
         let serv = Server(serv.raw());
         let mut buf = TaskBuffer::default();
@@ -487,7 +487,7 @@ extern "C" fn pipe_message_worker_start(_: Ctx, serv: view::Server<'_>, _: Worke
 /// `TEST(server, pipe_message)`.
 fn pipe_message() {
     let server = new_server(MODE_PROCESS);
-    server.config().worker_num = 2;
+    server.config().worker_num.set(2);
     server.add_port(SW_SOCK_TCP, TEST_HOST, 0);
 
     server.create();
@@ -500,7 +500,7 @@ fn pipe_message() {
 }
 
 /// `TEST(server, forward_message)`'s `onPipeMessage`: the session it names gets the reply.
-extern "C" fn forward_pipe_message(_: Ctx, serv: view::Server<'_>, req: Packed<'_>) {
+fn forward_pipe_message(serv: view::Server<'_>, req: Packed<'_>) {
     // The message holds the session id `onReceive` packed.
     let id = &req.bytes()[size_of::<DataHead>()..][..size_of::<c_long>()];
     let client_fd = c_long::from_ne_bytes(id.try_into().unwrap());
@@ -508,7 +508,7 @@ extern "C" fn forward_pipe_message(_: Ctx, serv: view::Server<'_>, req: Packed<'
 }
 
 /// `TEST(server, forward_message)`'s `onReceive`: the session, to the other worker.
-extern "C" fn forward_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn forward_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let mut msg = TaskBuffer::default();
     let (client_fd, _) = request(req);
     pack(&mut msg, &client_fd.to_ne_bytes());
@@ -522,7 +522,7 @@ extern "C" fn forward_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) ->
 /// `TEST(server, forward_message)`.
 fn forward_message() {
     let serv = new_server(MODE_BASE);
-    serv.config().worker_num = 2;
+    serv.config().worker_num.set(2);
 
     set_log_warning();
 
@@ -546,7 +546,7 @@ fn forward_message() {
 
 /// `TEST(server, reopen_log)`'s `onWorkerStart`: worker 0 deletes the log, and SIGRTMIN
 /// to the master brings it back.
-extern "C" fn reopen_log_worker_start(_: Ctx, serv: view::Server<'_>, _: Worker<'_>) {
+fn reopen_log_worker_start(serv: view::Server<'_>, _: Worker<'_>) {
     if worker_id() != 0 {
         return;
     }
@@ -570,7 +570,7 @@ extern "C" fn reopen_log_worker_start(_: Ctx, serv: view::Server<'_>, _: Worker<
 /// `TEST(server, reopen_log)`.
 fn reopen_log() {
     let serv = new_server(MODE_PROCESS);
-    serv.config().worker_num = 2;
+    serv.config().worker_num.set(2);
     set_log_warning();
     set_log_file(TEST_LOG_FILE);
 
@@ -588,7 +588,7 @@ fn reopen_log() {
 
 /// `TEST(server, reopen_log2)`'s `onStart`. `signal_handler_reopen_logger` has no entry
 /// of its own: `master_signal_handler(SIGWINCH)` runs its body over `SwooleG.server`.
-extern "C" fn reopen_log2_start(_: Ctx, serv: view::Server<'_>) {
+fn reopen_log2_start(serv: view::Server<'_>) {
     let serv = Server(serv.raw());
     timer_after(50, move || {
         // In the running master, whose server `SwooleG.server` is.
@@ -599,14 +599,14 @@ extern "C" fn reopen_log2_start(_: Ctx, serv: view::Server<'_>) {
     });
 }
 
-extern "C" fn count_worker_start(_: Ctx, _: view::Server<'_>, _: Worker<'_>) {
+fn count_worker_start(_: view::Server<'_>, _: Worker<'_>) {
     counter_incr(0, 1);
 }
 
 /// `TEST(server, reopen_log2)`.
 fn reopen_log2() {
     let serv = new_server(MODE_PROCESS);
-    serv.config().worker_num = 2;
+    serv.config().worker_num.set(2);
     set_log_level(SW_LOG_DEBUG);
     set_log_file(TEST_LOG_FILE);
 
@@ -637,17 +637,17 @@ fn overflow_client(serv: Server) {
     kill_pid(serv.get_master_pid());
 }
 
-extern "C" fn overflow_worker_start(_: Ctx, _: view::Server<'_>, _: Worker<'_>) {
+fn overflow_worker_start(_: view::Server<'_>, _: Worker<'_>) {
     if worker_id() == 0 {
         unlock();
     }
     counter_incr(3, 1);
 }
 
-extern "C" fn overflow_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn overflow_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let serv = Server(serv.raw());
     let (sid, _) = request(req);
-    serv.get_connection_by_session_id(sid).overflow = 1;
+    serv.get_connection_by_session_id(sid).set_overflow(true);
 
     check(
         !serv.send(sid, TEST_STR.as_bytes()),
@@ -675,8 +675,8 @@ extern "C" fn overflow_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -
 /// `test_conn_overflow(mode, send_yield)`.
 fn test_conn_overflow(mode: c_int, send_yield: bool) {
     let serv = new_server(mode);
-    serv.config().worker_num = 1;
-    serv.config().send_yield = send_yield;
+    serv.config().worker_num.set(1);
+    serv.config().send_yield.set(send_yield);
     SEND_YIELD.store(send_yield, Ordering::SeqCst);
     set_log_warning();
 
@@ -748,7 +748,7 @@ fn no_idle_worker_client(serv: Server) {
 }
 
 /// `onReceive`: `usleep(10000); return SW_OK;`.
-extern "C" fn slow_receive(_: Ctx, _: view::Server<'_>, _: &RecvData) -> c_int {
+fn slow_receive(_: view::Server<'_>, _: &RecvData) -> c_int {
     micro_sleep(10000);
     SW_OK
 }
@@ -756,8 +756,8 @@ extern "C" fn slow_receive(_: Ctx, _: view::Server<'_>, _: &RecvData) -> c_int {
 /// `TEST(server, no_idle_worker)`.
 fn no_idle_worker() {
     let serv = new_server(MODE_PROCESS);
-    serv.config().worker_num = 4;
-    serv.config().dispatch_mode = DISPATCH_IDLE_WORKER;
+    serv.config().worker_num.set(4);
+    serv.config().dispatch_mode.set(DISPATCH_IDLE_WORKER);
 
     set_log_file(TEST_LOG_FILE);
     set_log_warning();
@@ -825,7 +825,7 @@ fn max_request_client(serv: Server) {
 
 /// Acknowledge receipt through the case's process-shared counter, keeping the
 /// original no-response callback and packet bytes.
-extern "C" fn max_request_receive(_: Ctx, _: view::Server<'_>, _: &RecvData) -> c_int {
+fn max_request_receive(_: view::Server<'_>, _: &RecvData) -> c_int {
     counter_incr(1, 1);
     SW_OK
 }
@@ -833,8 +833,8 @@ extern "C" fn max_request_receive(_: Ctx, _: view::Server<'_>, _: &RecvData) -> 
 /// `test_max_request(mode)`.
 fn test_max_request(mode: c_int) {
     let serv = new_server(mode);
-    serv.config().worker_num = 2;
-    serv.config().max_request = 128;
+    serv.config().worker_num.set(2);
+    serv.config().max_request.set(128);
 
     new_lock();
 
@@ -892,7 +892,7 @@ fn watermark_client(serv: Server) {
     shutdown(serv);
 }
 
-extern "C" fn watermark_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn watermark_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let (session, _) = request(req);
     check(
         Server(serv.raw()).send(session, WBUF.get().unwrap()),
@@ -901,18 +901,18 @@ extern "C" fn watermark_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) 
     SW_OK
 }
 
-extern "C" fn count_buffer_empty(_: Ctx, _: view::Server<'_>, _: &DataHead) {
+fn count_buffer_empty(_: view::Server<'_>, _: &DataHead) {
     counter_incr(1, 1);
 }
 
-extern "C" fn count_buffer_full(_: Ctx, _: view::Server<'_>, _: &DataHead) {
+fn count_buffer_full(_: view::Server<'_>, _: &DataHead) {
     counter_incr(2, 1);
 }
 
 /// `TEST(server, watermark)`.
 fn watermark() {
     let serv = new_server(MODE_PROCESS);
-    serv.config().worker_num = 2;
+    serv.config().worker_num.set(2);
 
     new_lock();
 
@@ -922,11 +922,9 @@ fn watermark() {
     let port = port.expect("port != nullptr");
     assert_eq!(serv.create(), SW_OK);
 
-    // SAFETY: `port->get_socket()`: the listening socket, whose first member is its fd.
-    let fd = unsafe { *port.config().socket.cast::<c_int>() };
-    set_buffer_size(fd, 65536);
-    port.config().buffer_high_watermark = 1024 * 1024;
-    port.config().buffer_low_watermark = 65536;
+    set_buffer_size(port.get_fd(), 65536);
+    port.config().buffer_high_watermark.set(1024 * 1024);
+    port.config().buffer_low_watermark.set(65536);
 
     set_start_client(serv, watermark_client);
     serv.set_callback(Callback::WorkerStart(unlock_and_count));
@@ -962,7 +960,7 @@ fn discard_data_client(serv: Server) {
     kill_pid(serv.get_master_pid());
 }
 
-extern "C" fn discard_data_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn discard_data_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     micro_sleep(10000);
     let (session, _) = request(req);
     close(Server(serv.raw()), session);
@@ -972,10 +970,10 @@ extern "C" fn discard_data_receive(_: Ctx, serv: view::Server<'_>, req: &RecvDat
 /// `TEST(server, discard_data)`.
 fn discard_data() {
     let serv = new_server(MODE_PROCESS);
-    serv.config().worker_num = 2;
-    serv.config().dispatch_mode = DISPATCH_IDLE_WORKER;
-    serv.config().discard_timeout_request = true;
-    serv.config().disable_notify = true;
+    serv.config().worker_num.set(2);
+    serv.config().dispatch_mode.set(DISPATCH_IDLE_WORKER);
+    serv.config().discard_timeout_request.set(true);
+    serv.config().disable_notify.set(true);
 
     set_log_file(TEST_LOG_FILE);
     set_log_warning();
@@ -1006,7 +1004,7 @@ fn discard_data() {
 }
 
 /// `pause_and_resume`'s `onConnect`: receiving pauses, and resumes 50 ms later.
-extern "C" fn pause_connect(_: Ctx, serv: view::Server<'_>, ev: &DataHead) {
+fn pause_connect(serv: view::Server<'_>, ev: &DataHead) {
     let serv = Server(serv.raw());
     let session_id = ev.fd;
     check(
@@ -1028,7 +1026,7 @@ extern "C" fn pause_connect(_: Ctx, serv: view::Server<'_>, ev: &DataHead) {
 }
 
 /// `onReceive`: the packet, answered with `Server: ` and the packet.
-extern "C" fn reply_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn reply_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let (session, data) = request(req);
     check(data == PACKET, "string(req->data, req->info.len) == packet");
     Server(serv.raw()).send(session, &reply());
@@ -1038,7 +1036,7 @@ extern "C" fn reply_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c
 /// `TEST(server, pause_and_resume)`.
 fn pause_and_resume() {
     let serv = new_server(MODE_BASE);
-    serv.config().worker_num = 2;
+    serv.config().worker_num.set(2);
 
     set_log_level(SW_LOG_TRACE);
 
@@ -1085,11 +1083,11 @@ fn pause_and_resume() {
 const BUFFER_SIZE: c_int = 65536;
 const SEND_COUNT: c_int = 256;
 
-extern "C" fn slow_connect(_: Ctx, _: view::Server<'_>, _: &DataHead) {
+fn slow_connect(_: view::Server<'_>, _: &DataHead) {
     micro_sleep(100_000);
 }
 
-extern "C" fn max_queued_bytes_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn max_queued_bytes_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let (session, data) = request(req);
     if counter_incr(0, data.len() as c_int) == SEND_COUNT * BUFFER_SIZE {
         Server(serv.raw()).send(session, TEST_STR.as_bytes());
@@ -1100,8 +1098,8 @@ extern "C" fn max_queued_bytes_receive(_: Ctx, serv: view::Server<'_>, req: &Rec
 /// `TEST(server, max_queued_bytes)`.
 fn max_queued_bytes() {
     let serv = new_server(MODE_PROCESS);
-    serv.config().worker_num = 2;
-    serv.config().max_queued_bytes = 65536;
+    serv.config().worker_num.set(2);
+    serv.config().max_queued_bytes.set(65536);
 
     counter_init();
     set_log_level(SW_LOG_TRACE);
@@ -1157,19 +1155,11 @@ const COMMAND_ALL_PROCESS: c_int = COMMAND_MASTER
 const SW_EVENT_DATA_CHUNK: u8 = 1 << 2;
 const SW_EVENT_DATA_BEGIN: u8 = 1 << 3;
 const SW_EVENT_DATA_OBJ_PTR: u8 = 1 << 5;
-const SW_SESSION_LIST_SIZE: usize = 1 << 20;
+const SW_SESSION_LIST_SIZE: c_long = 1 << 20;
 /// `offsetof(swr_v1_socket, recv_timer)` (native/reactor/swoole_rs_socket.h asserts it).
 const SOCKET_RECV_TIMER: usize = 152;
 const SIGKILL: c_int = 9;
 const EAGAIN: c_int = 11;
-
-/// `Session` (crates/server/src/records.rs's `SessionRecord`).
-#[repr(C)]
-struct Session {
-    id: c_long,
-    fd: c_int,
-    reactor_id: u32,
-}
 
 unsafe extern "C" {
     fn free(ptr: *mut c_void);
@@ -1250,9 +1240,9 @@ fn heartbeat_client(serv: Server) {
 /// `test_heartbeat_check(mode, single_thread)`.
 fn test_heartbeat_check(mode: c_int, single_thread: bool) {
     let serv = new_server(mode);
-    serv.config().worker_num = 1;
-    serv.config().heartbeat_check_interval = 1;
-    serv.config().single_thread = single_thread;
+    serv.config().worker_num.set(1);
+    serv.config().heartbeat_check_interval.set(1);
+    serv.config().single_thread.set(single_thread);
 
     swoole_rs_corebase::swoole_set_print_backtrace_on_error(true);
 
@@ -1303,11 +1293,11 @@ fn close_in_client() -> bool {
     CLOSE_IN_CLIENT.load(Ordering::SeqCst)
 }
 
-extern "C" fn close_on_connect(_: Ctx, _: view::Server<'_>, _: &DataHead) {
+fn close_on_connect(_: view::Server<'_>, _: &DataHead) {
     set_flag(SERVER_ON_CONNECT);
 }
 
-extern "C" fn close_on_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn close_on_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let serv = Server(serv.raw());
     let (session, data) = request(req);
     serv.send(session, data);
@@ -1318,14 +1308,14 @@ extern "C" fn close_on_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -
     SW_OK
 }
 
-extern "C" fn close_on_close(_: Ctx, _: view::Server<'_>, ev: &DataHead) {
+fn close_on_close(_: view::Server<'_>, ev: &DataHead) {
     if !close_in_client() {
         check(ev.reactor_id < 0, "ev->reactor_id < 0");
     }
     set_flag(SERVER_ON_CLOSE);
 }
 
-extern "C" fn close_on_worker_stop(_: Ctx, _: view::Server<'_>, _: Worker<'_>) {
+fn close_on_worker_stop(_: view::Server<'_>, _: Worker<'_>) {
     check(flag(SERVER_ON_CONNECT), "flags[\"server_on_connect\"]");
     check(flag(SERVER_ON_RECEIVE), "flags[\"server_on_receive\"]");
     check(flag(SERVER_ON_CLOSE), "flags[\"server_on_close\"]");
@@ -1358,8 +1348,8 @@ fn close_client(serv: Server) {
 /// `test_close(mode, close_in_client, single_thread)`.
 fn test_close(mode: c_int, close_in_client: bool, single_thread: bool) {
     let serv = new_server(mode);
-    serv.config().worker_num = 1;
-    serv.config().single_thread = single_thread;
+    serv.config().worker_num.set(1);
+    serv.config().single_thread.set(single_thread);
     CLOSE_IN_CLIENT.store(close_in_client, Ordering::SeqCst);
 
     counter_init();
@@ -1450,39 +1440,41 @@ fn eof_check_client(serv: Server) {
     shutdown(serv);
 }
 
-extern "C" fn eof_check_worker_start(_: Ctx, serv: view::Server<'_>, _: Worker<'_>) {
+fn eof_check_worker_start(serv: view::Server<'_>, _: Worker<'_>) {
     let serv = Server(serv.raw());
     // SAFETY: getpid(2).
     client_thread(|| unsafe { getpid() }, move || eof_check_client(serv));
 }
 
-extern "C" fn eof_check_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn eof_check_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let (session, _) = request(req);
     Server(serv.raw()).send(session, b"OK");
     counter_incr(RECV_COUNT, 1);
     SW_OK
 }
 
-extern "C" fn eof_check_connect(_: Ctx, serv: view::Server<'_>, ev: &DataHead) {
+fn eof_check_connect(serv: view::Server<'_>, ev: &DataHead) {
     Server(serv.raw()).send(ev.fd, b"OK");
 }
 
 /// `TEST(server, eof_check)`.
 fn eof_check() {
     let serv = new_server(MODE_BASE);
-    serv.config().worker_num = 1;
+    serv.config().worker_num.set(1);
 
     let port = serv.add_port(SW_SOCK_TCP, TEST_HOST, 0);
     let port = port.expect("port");
     // `port->is_stream()`: SW_SOCK_TCP, SW_SOCK_TCP6 or SW_SOCK_UNIX_STREAM.
-    assert!(matches!(port.config().type_, 1 | 3 | 5));
+    assert!(matches!(port.config().r#type, 1 | 3 | 5));
 
     // `port->set_eof_protocol("\r\n", true)`.
     let config = port.config();
-    config.open_eof_check = true;
-    config.protocol.split_by_eof = false;
-    config.protocol.package_eof_len = 2;
-    config.protocol.package_eof[..2].copy_from_slice(b"\r\n");
+    config.open_eof_check.set(true);
+    config.protocol.update(|protocol| {
+        protocol.split_by_eof = false;
+        protocol.package_eof_len = 2;
+        protocol.package_eof[..2].copy_from_slice(b"\r\n");
+    });
     assert_eq!(serv.create(), SW_OK);
 
     counter_init();
@@ -1546,18 +1538,18 @@ fn command_callback(serv: Server, msg: &[u8]) {
     }
 }
 
-extern "C" fn command_start(_: Ctx, serv: view::Server<'_>) {
+fn command_start(serv: view::Server<'_>) {
     command(Server(serv.raw()), COMMAND_MASTER, "hello world [0]");
 }
 
-extern "C" fn ignore_worker_start(_: Ctx, _: view::Server<'_>, _: Worker<'_>) {}
+fn ignore_worker_start(_: view::Server<'_>, _: Worker<'_>) {}
 
 /// `test_command(mode)`.
 fn test_command(mode: c_int) {
     let serv = new_server(mode);
-    serv.config().worker_num = 4;
-    serv.config().task_worker_num = 4;
-    serv.config().reactor_num = 2;
+    serv.config().worker_num.set(4);
+    serv.config().task_worker_num.set(4);
+    serv.config().reactor_num.set(2);
     COMMAND_BASE_MODE.store(mode == MODE_BASE, Ordering::SeqCst);
     set_log_warning();
 
@@ -1623,7 +1615,7 @@ fn abnormal_send(serv: Server, flags: u8, msg_id: u64) {
     }
 }
 
-extern "C" fn abnormal_worker_start(_: Ctx, serv: view::Server<'_>, _: Worker<'_>) {
+fn abnormal_worker_start(serv: view::Server<'_>, _: Worker<'_>) {
     if worker_id() == 1 {
         let serv = Server(serv.raw());
         let msg_id = MSG_ID.load(Ordering::SeqCst);
@@ -1638,7 +1630,7 @@ extern "C" fn abnormal_worker_start(_: Ctx, serv: view::Server<'_>, _: Worker<'_
 /// `TEST(server, abnormal_pipeline_data)`.
 fn abnormal_pipeline_data() {
     let server = new_server(MODE_PROCESS);
-    server.config().worker_num = 2;
+    server.config().worker_num.set(2);
     server.add_port(SW_SOCK_TCP, TEST_HOST, 0);
 
     let msg_id = u64::from(rand_between(1, i32::MAX as u32));
@@ -1658,7 +1650,7 @@ fn abnormal_pipeline_data() {
     let _ = std::fs::remove_file(TEST_LOG_FILE);
 }
 
-extern "C" fn shutdown_after_manager_start(_: Ctx, serv: view::Server<'_>) {
+fn shutdown_after_manager_start(serv: view::Server<'_>) {
     let serv = Server(serv.raw());
     timer_after(50, move || {
         shutdown(serv);
@@ -1669,7 +1661,7 @@ extern "C" fn shutdown_after_manager_start(_: Ctx, serv: view::Server<'_>) {
 /// its `registry` in crates/process.
 fn base_event_worker_pool_cleanup() {
     let server = new_server(MODE_BASE);
-    server.config().worker_num = 2;
+    server.config().worker_num.set(2);
     assert!(server.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
     assert_eq!(server.create(), SW_OK);
 
@@ -1686,7 +1678,7 @@ fn base_event_worker_pool_cleanup() {
 }
 
 /// `abort_worker`'s `onConnect`: the worker holding session 1 kills itself 100 ms later.
-extern "C" fn abort_worker_connect(_: Ctx, _: view::Server<'_>, ev: &DataHead) {
+fn abort_worker_connect(_: view::Server<'_>, ev: &DataHead) {
     if ev.fd == 1 {
         timer_after(100, || {
             // SAFETY: this process.
@@ -1696,16 +1688,12 @@ extern "C" fn abort_worker_connect(_: Ctx, _: view::Server<'_>, ev: &DataHead) {
 }
 
 /// `abort_worker`'s `onReceive`: only the live session is left in the session list.
-extern "C" fn abort_worker_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn abort_worker_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let serv = Server(serv.raw());
-    // SAFETY: the shared session list, SW_SESSION_LIST_SIZE of them.
-    let sessions = unsafe {
-        std::slice::from_raw_parts(
-            (*serv.head().tables).session_list.cast::<Session>(),
-            SW_SESSION_LIST_SIZE,
-        )
-    };
-    let count = sessions.iter().filter(|s| s.fd != 0 && s.id != 0).count();
+    let count = (0..SW_SESSION_LIST_SIZE)
+        .filter_map(|id| serv.view().session(id))
+        .filter(|s| s.fd() != 0 && s.id() != 0)
+        .count();
     check(count == 1, "count == 1");
     let (session, _) = request(req);
     serv.send(session, if count == 1 { b"OK" } else { b"ERR" });
@@ -1713,7 +1701,7 @@ extern "C" fn abort_worker_receive(_: Ctx, serv: view::Server<'_>, req: &RecvDat
 }
 
 /// `abort_worker`'s `onWorkerStart`, which also counts the starts in counter 0.
-extern "C" fn abort_worker_start(_: Ctx, _: view::Server<'_>, _: Worker<'_>) {
+fn abort_worker_start(_: view::Server<'_>, _: Worker<'_>) {
     counter_incr(0, 1);
     if worker_id() == 0 {
         unlock();
@@ -1728,7 +1716,7 @@ extern "C" fn abort_worker_start(_: Ctx, _: view::Server<'_>, _: Worker<'_>) {
 /// c2 waits for that third worker start, for up to 10 s.
 fn abort_worker() {
     let server = new_server(MODE_BASE);
-    server.config().worker_num = 2;
+    server.config().worker_num.set(2);
 
     server.add_port(SW_SOCK_TCP, TEST_HOST, 0);
     assert_eq!(server.create(), 0);
@@ -1776,12 +1764,12 @@ fn abort_worker() {
 /// `reactor_thread_pipe_writable`'s 4 MiB packet.
 static RDATA_4M: OnceLock<Vec<u8>> = OnceLock::new();
 
-extern "C" fn pipe_writable_worker_start(_: Ctx, _: view::Server<'_>, _: Worker<'_>) {
+fn pipe_writable_worker_start(_: view::Server<'_>, _: Worker<'_>) {
     unlock();
     micro_sleep(300_000);
 }
 
-extern "C" fn pipe_writable_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn pipe_writable_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let serv = Server(serv.raw());
     let rdata = RDATA_4M.get().unwrap();
     let len = (rdata.len() as u32).to_be_bytes();
@@ -1813,7 +1801,7 @@ extern "C" fn pipe_writable_receive(_: Ctx, serv: view::Server<'_>, req: &RecvDa
 /// `TEST(server, reactor_thread_pipe_writable)`.
 fn reactor_thread_pipe_writable() {
     let serv = new_server(MODE_PROCESS);
-    serv.config().worker_num = 1;
+    serv.config().worker_num.set(1);
 
     RDATA_4M.set(random_bytes(4 * 1024 * 1024)).unwrap();
 
@@ -1822,14 +1810,16 @@ fn reactor_thread_pipe_writable() {
     let port = serv.add_port(SW_SOCK_TCP, TEST_HOST, 0);
     let port = port.expect("port");
     let config = port.config();
-    config.open_length_check = true;
-    config.protocol.package_max_length = 8 * 1024 * 1024;
+    config.open_length_check.set(true);
     // `network::Stream::set_protocol(&port->protocol)`: a 4-byte big-endian length, then
     // the body (`init_protocol` gives a length check its default length function).
-    config.protocol.package_length_type = b'N';
-    config.protocol.package_length_size = 4;
-    config.protocol.package_body_offset = 4;
-    config.protocol.package_length_offset = 0;
+    config.protocol.update(|protocol| {
+        protocol.package_max_length = 8 * 1024 * 1024;
+        protocol.package_length_type = b'N';
+        protocol.package_length_size = 4;
+        protocol.package_body_offset = 4;
+        protocol.package_length_offset = 0;
+    });
 
     new_lock();
 
@@ -1899,15 +1889,18 @@ fn send_timeout_client(serv: Server) {
     kill_pid(serv.get_master_pid());
 }
 
-extern "C" fn send_timeout_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn send_timeout_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let serv = Server(serv.raw());
     let (sid, _) = request(req);
-    let conn = serv.get_connection_by_session_id(sid);
+    let socket = serv
+        .get_connection_by_session_id(sid)
+        .socket()
+        .expect("a live socket");
 
     // SAFETY: the connection's live socket, whose `recv_timer` is at SOCKET_RECV_TIMER.
     let recv_timer = unsafe {
-        &mut *conn
-            .socket
+        &mut *socket
+            .as_ptr()
             .cast::<u8>()
             .add(SOCKET_RECV_TIMER)
             .cast::<Option<swoole_rs_corebase::timer_key::Held>>()
@@ -1915,8 +1908,7 @@ extern "C" fn send_timeout_receive(_: Ctx, serv: view::Server<'_>, req: &RecvDat
     if let Some(timer) = recv_timer.take() {
         swoole_rs_ffi::del_id(timer);
     }
-    // SAFETY: the socket's first member is its fd.
-    set_buffer_size(unsafe { *conn.socket.cast::<c_int>() }, 65536);
+    set_buffer_size(socket.fd(), 65536);
 
     check(
         serv.send(sid, WBUF.get().unwrap()),
@@ -1931,7 +1923,7 @@ extern "C" fn send_timeout_receive(_: Ctx, serv: view::Server<'_>, req: &RecvDat
 /// `TEST(server, send_timeout)`.
 fn send_timeout() {
     let serv = new_server(MODE_BASE);
-    serv.config().worker_num = 1;
+    serv.config().worker_num.set(1);
     set_log_warning();
 
     counter_init();
@@ -1943,7 +1935,7 @@ fn send_timeout() {
         std::process::exit(2);
     };
 
-    port.config().max_idle_time = 1.0;
+    port.config().max_idle_time.set(1.0);
 
     WBUF.set(random_bytes(2 * 1024 * 1024)).unwrap();
 

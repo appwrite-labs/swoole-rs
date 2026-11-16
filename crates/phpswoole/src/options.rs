@@ -15,10 +15,7 @@ use swoole_rs_corebase::{
     swr_v1_core_set_enable_signalfd, swr_v1_core_set_print_backtrace_on_error,
     swr_v1_core_set_trace_flags,
 };
-use swoole_rs_utilities::{
-    LoggerSetting, process_logger, set_log_file, swoole_set_log_level, swr_v1_logger_set,
-    swr_v1_logger_set_date_format,
-};
+use swoole_rs_utilities::{process_logger, set_log_file, swoole_set_log_level};
 use swoole_rs_zend::{
     Array, E_ERROR, Value, ZStr, ZString, bailout, report, sys::ZEND_ACC_NOT_SERIALIZABLE,
 };
@@ -170,17 +167,17 @@ fn apply(options: &Array) -> Result<(), (&ZStr, ZString)> {
     number(c"log_level", &|level| swoole_set_log_level(int(level)));
     text_option(options, c"log_date_format", |format| {
         if let Some(logger) = process_logger() {
-            swr_v1_logger_set_date_format(logger, format.c_str().into());
+            logger.set_date_format(format.c_str());
         }
     });
     flag(c"log_date_with_microseconds", &|on| {
         if let Some(logger) = process_logger() {
-            swr_v1_logger_set(logger, LoggerSetting::Microseconds, c_int::from(on));
+            logger.set_date_with_microseconds(on);
         }
     });
     number(c"log_rotation", &|rotation| {
         if let Some(logger) = process_logger() {
-            swr_v1_logger_set(logger, LoggerSetting::Rotation, int(rotation));
+            logger.set_rotation(int(rotation));
         }
     });
     if let Some(value) = get(options, c"display_errors") {

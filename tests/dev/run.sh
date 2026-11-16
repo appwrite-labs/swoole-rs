@@ -16,7 +16,6 @@ for test in \
     tests/modules/hooks/test_system_runner.py \
     tests/modules/phpcollections/test_runtime.py \
     tests/modules/phphelpers/test_runtime.py \
-    tests/modules/utilities/test_storage_summary.py \
     tests/modules/websocket/test_autobahn_verdict.py
 do
     name=$(echo "$test" | tr / _)

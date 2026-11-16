@@ -1,8 +1,7 @@
 //! A native `Server`'s Rust-owned records, read straight from its pointer by
 //! the crates that bind it (phpserver), without a native call.
 //!
-//! A `Server *` is `object.rs`'s record, which starts `{ state, config, tables,
-//! callbacks }`, and a `ListenPort *` is the box of the port's settings.
+//! A `Server *` is `object.rs`'s record, which starts `{ state, config, tables }`, and a `ListenPort *` is the box of the port's settings.
 //! `ServerGS` is `shared::ServerShared`.
 use crate::Mode;
 use crate::port_config::PortConfig;
@@ -38,7 +37,6 @@ pub(crate) struct Fields {
 pub(crate) struct ServerObject {
     head: Fields,
     tables: *mut crate::ServerTables,
-    callbacks: *mut c_void,
     /// The state `head` names, freed with the object.
     state: Arc<ServerState>,
 }
@@ -58,7 +56,6 @@ impl ServerObject {
                 config,
             },
             tables,
-            callbacks: ServerState::callbacks_ptr(Arc::as_ptr(&state).cast_mut()),
             state,
         }
     }
@@ -78,10 +75,7 @@ impl Fields {
 /// A live `Server`, borrowed for `'a`. [`Server::from_raw`] is the one unsafe
 /// step; the reads it then allows are safe, and only the methods that hand out
 /// `&mut` to state other threads share, or take another raw pointer, stay unsafe.
-/// It is laid out as the `Server *` it views, so a slot fn
-/// ([`Server::set_callback`]) takes one where native code passes its server.
 #[derive(Clone, Copy)]
-#[repr(transparent)]
 pub struct Server<'a> {
     raw: *mut c_void,
     live: PhantomData<&'a Fields>,
@@ -397,6 +391,12 @@ impl<'a> Server<'a> {
     #[must_use]
     pub fn by_session(self, session_id: i64) -> Option<Connection<'a>> {
         self.state().connection(session_id, Lookup::BySession)
+    }
+
+    /// `session_list`'s slot for session `id`, or `None` before the list is mapped.
+    #[must_use]
+    pub fn session(self, id: c_long) -> Option<crate::Session<'a>> {
+        self.state().session(id)
     }
 
     /// `Server::get_connection_for_iterator(fd)`.

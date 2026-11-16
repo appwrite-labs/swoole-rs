@@ -83,19 +83,16 @@ fn slot(fd: c_int) -> Option<usize> {
 }
 
 /// `Reactor::get_socket`: the socket registered for `fd`, or null.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_reactor_registry_get(
-    registry: Option<&Registry>,
-    fd: c_int,
-) -> *mut c_void {
+#[must_use]
+pub fn swr_v1_reactor_registry_get(registry: Option<&Registry>, fd: c_int) -> *mut c_void {
     registry
         .and_then(|registry| registry.get(fd))
         .map_or(std::ptr::null_mut(), |socket| socket.as_ptr().cast())
 }
 
 /// `Reactor::get_event_num`: how many fds are registered.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_reactor_registry_count(registry: Option<&Registry>) -> usize {
+#[must_use]
+pub fn swr_v1_reactor_registry_count(registry: Option<&Registry>) -> usize {
     registry.map_or(0, Registry::count)
 }
 

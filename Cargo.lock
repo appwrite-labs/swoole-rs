@@ -1006,7 +1006,6 @@ dependencies = [
  "swoole-rs-framing",
  "swoole-rs-hooks",
  "swoole-rs-http2",
- "swoole-rs-memory",
  "swoole-rs-oci",
  "swoole-rs-odbc",
  "swoole-rs-pgsql",

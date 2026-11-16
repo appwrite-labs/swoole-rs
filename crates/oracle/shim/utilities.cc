@@ -1,4 +1,4 @@
-// Upstream's hashes, pretty-name slicing and logger formatting behind C entry points:
+// Upstream's hashes and logger formatting behind C entry points:
 // build.rs copies the pinned bodies into utilities.inc unchanged. Compiled once per
 // `char` signedness (SWR_UTILS_ENGINE), since the hashes promote `char`.
 #include <cerrno>
@@ -40,13 +40,6 @@ extern "C" const char *SWR_EXPORT(log_label)(int level) {
 
 extern "C" const char *SWR_EXPORT(log_rotation)(int rotation) {
     return log_rotation(rotation);
-}
-
-// `pretty` copied into `output` (capacity `length`); returns its length.
-extern "C" size_t SWR_EXPORT(pretty)(const char *name, size_t length, bool strip, char *output) {
-    const std::string result = pretty(std::string(name, length), strip);
-    memcpy(output, result.data(), result.size());
-    return result.size();
 }
 
 // `log_line` with errno set to EINTR first; `error` is errno after it.
