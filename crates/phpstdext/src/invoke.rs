@@ -83,19 +83,13 @@ impl Handler for MethodCall {
             IS_RESOURCE => Receiver::Stream,
             _ => return DISPATCH,
         };
-        // Zend's request allocator, freed by the method call.
-        let info = value::emalloc(size_of::<CallInfo>()).cast::<CallInfo>();
-        // A plain copy of the literal, as upstream's.
-        let func = name.copy_value();
-        let this = object.copy_value();
-        // SAFETY: a fresh allocation of a `CallInfo`.
-        unsafe {
-            info.write(CallInfo {
-                func,
-                this,
-                op1_type: op.op1_type,
-            });
-        }
+        // Zend's request allocator, freed by the method call. The literal is
+        // a plain copy, as upstream's.
+        let info = value::enew(CallInfo {
+            func: name.copy_value(),
+            this: object.copy_value(),
+            op1_type: op.op1_type,
+        });
         let method = match receiver {
             Receiver::Array => &METHODS[0],
             Receiver::String => &METHODS[1],
