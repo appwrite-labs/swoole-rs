@@ -3,7 +3,7 @@
 use crate::{
     Call, Invalid,
     bailout::{self, Bailout},
-    sys::{IS_LONG, swr_zend_callable, zend_fcall_info_cache, zend_value, zval},
+    sys::{IS_LONG, swr_zend_callable, zend_value, zval},
     value::{emalloc, enew},
 };
 use std::{
@@ -91,12 +91,13 @@ impl Callable {
     /// The kept callable's cache, bound arguments and callable zval, for a call:
     /// the record keeps them while borrowed, and nothing changes the cache.
     #[must_use]
-    pub fn parts(&self) -> (&zend_fcall_info_cache, u32, *mut zval, *mut zval) {
+    pub fn parts(&self) -> (crate::Fcc<'_>, u32, *mut zval, *mut zval) {
         // SAFETY: a parsed callable; the shared borrow of its cache is the only
         // one that lasts, and nothing writes the record while `self` is lent.
         let callable = unsafe { &mut *self.0 };
         (
-            &callable.fcc,
+            // A kept callable holds its function's object and closure.
+            crate::Fcc(&callable.fcc),
             callable.fci.param_count,
             callable.fci.params,
             &raw mut callable.fci.function_name,

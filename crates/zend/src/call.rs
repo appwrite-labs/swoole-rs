@@ -5,8 +5,8 @@ use crate::{
     Array, Class, Value, ZStr,
     helpers::CText,
     sys::{
-        self, IS_FALSE, IS_NULL, IS_OBJ_DESTRUCTOR_CALLED, IS_RESOURCE, IS_TRUE, zend_execute_data,
-        zend_long, zend_object, zend_string, zval,
+        self, IS_FALSE, IS_NULL, IS_RESOURCE, IS_TRUE, zend_execute_data, zend_long, zend_object,
+        zend_string, zval,
     },
 };
 use std::{
@@ -20,6 +20,9 @@ use std::{
 // Zend passed that frame. The parsers' coercions run inside `zend_try`
 // (nonzero for a bailout), since a deprecation runs the user error handler.
 unsafe extern "C" {
+    /// `GC_FLAGS(object) & IS_OBJ_DESTRUCTOR_CALLED`: it reads the live
+    /// object's header only.
+    safe fn swr_zend_object_destructor_called(object: crate::ObjectRef<'_>) -> bool;
     /// `zend_parse_arg_long_slow` of the live argument into `out`; `parsed`
     /// says whether it converted. A coerced argument is replaced in its slot.
     safe fn swr_zend_try_parse_long(
@@ -235,13 +238,9 @@ impl Call {
     #[must_use]
     #[inline]
     pub fn destructor_called(&self) -> bool {
-        let Some(this) = self.this_object() else {
-            return false;
-        };
-        // SAFETY: the frame's live `$this`, which begins with its refcounted
-        // header's two `u32`s: the refcount, then `gc.u.type_info`.
-        let [_, type_info] = unsafe { this.cast::<[u32; 2]>().read() };
-        type_info & IS_OBJ_DESTRUCTOR_CALLED != 0
+        self.this_value()
+            .and_then(Value::object_ref)
+            .is_some_and(|this| swr_zend_object_destructor_called(this))
     }
 
     /// `ZVAL_COPY(&value, ZEND_THIS)`: `$this` with a reference of its own,

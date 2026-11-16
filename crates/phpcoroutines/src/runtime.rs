@@ -16,11 +16,11 @@ use std::{
     time::Duration,
 };
 use swoole_rs_zend::{
-    E_ERROR, E_WARNING, Php, Zvals,
+    E_ERROR, E_WARNING, Fcc, Function, Php, Zvals,
     bailout::{self, Bailout},
     host::{Creator, NO_THEN, Trap, function_call},
     message,
-    sys::{zend_atomic_bool, zend_execute_data, zend_fcall_info_cache, zval},
+    sys::{zend_atomic_bool, zend_execute_data, zval},
 };
 
 /// `SW_DEFAULT_MAX_CORO_NUM`.
@@ -132,7 +132,7 @@ pub fn get_cid() -> c_long {
 /// owns nothing to drop.
 pub(crate) fn create(
     php: Php<'_>,
-    fcc: Option<&zend_fcall_info_cache>,
+    fcc: Option<Fcc<'_>>,
     argc: u32,
     argv: *mut zval,
     callable: *mut zval,
@@ -145,15 +145,12 @@ pub(crate) fn create(
         );
         return Ok(ERR_LIMIT);
     }
-    let Some(fcc) = fcc.filter(|fcc| !fcc.function_handler.is_null()) else {
+    let Some((fcc, function)) = fcc.and_then(|fcc| Some((fcc, fcc.function()?))) else {
         host::fatal_error(E_ERROR, c"invalid function call info cache");
         return Ok(ERR_INVALID);
     };
-    let handler = fcc.function_handler;
-    // SAFETY: a resolved callable's handler; every zend_function starts with
-    // its type, a byte.
-    let kind = unsafe { handler.cast::<u8>().read() };
-    if kind != context::USER_FUNCTION && kind != context::INTERNAL_FUNCTION {
+    let kind = function.kind();
+    if kind != Function::USER && kind != Function::INTERNAL {
         host::fatal_error(E_ERROR, message!("invalid function type {kind}").as_cstr());
         return Ok(ERR_INVALID);
     }
@@ -161,7 +158,9 @@ pub(crate) fn create(
         activate(php)?;
     }
     let args = Args {
-        fcc: *fcc,
+        fcc: *fcc.get(),
+        // A user function's first instruction, for a fiber's switch notification.
+        opcodes: function.opcodes().filter(|_| kind == Function::USER),
         argv,
         argc,
         callable,
@@ -355,7 +354,7 @@ pub(crate) fn set_preemptive(enable: bool) {
 /// only a shim makes its [`Trap`], so only a shim calls it, with the call's
 /// cache and arguments.
 pub extern "C" fn create_coroutine(
-    fcc: Option<&zend_fcall_info_cache>,
+    fcc: Option<Fcc<'_>>,
     argc: u32,
     argv: *mut zval,
     callable: *mut zval,
