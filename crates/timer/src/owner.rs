@@ -468,16 +468,19 @@ impl Owner {
         callable: swoole_rs_zend::Parsed,
     ) -> Result<i64, swoole_rs_zend::Parsed> {
         let (run, free) = swoole_rs_zend::Callable::callbacks::<H>();
-        let mut node = TimerNode::new(None, callable.as_raw());
+        let mut node = TimerNode::new(None, std::ptr::null_mut());
         node.php = true;
         node.plain = Some(run);
         node.plain_drop = Some(free);
-        let Some((_, id)) = self.add(ms, persistent, node) else {
+        let Some((node, id)) = self.add(ms, persistent, node) else {
             return Err(callable);
         };
         // No user callback runs between adding the node and retaining its callable.
         // The node now owns it; its matching destructor releases it exactly once.
-        let _owned = callable.keep(persistent.then_some(id)).into_raw();
+        let owned = callable.keep(persistent.then_some(id)).into_raw();
+        // SAFETY: the node was just added; no callback runs before its data is
+        // installed, and the pointer is obtained after Rust relinquishes the box.
+        unsafe { (*node).data = owned };
         Ok(id)
     }
 

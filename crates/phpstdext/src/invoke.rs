@@ -13,7 +13,7 @@ use std::{
     sync::atomic::{AtomicPtr, Ordering},
 };
 use swoole_rs_zend::{
-    Call, Value,
+    Call, Emalloc, Value,
     bailout::Bailout,
     opcode::Handler,
     sys::{
@@ -84,13 +84,17 @@ impl Handler for MethodCall {
             IS_RESOURCE => Receiver::Stream,
             _ => return Next::Dispatch,
         };
-        // Boxed, and taken back by the method call. The literal is a plain
-        // copy, as upstream's.
-        let info = Box::into_raw(Box::new(CallInfo {
-            func: name.copy_value(),
-            this: object.copy_value(),
-            op1_type: op.op1_type,
-        }));
+        // Zend's request allocator, freed by the method call. The literal is
+        // a plain copy, as upstream's.
+        let info = Box::into_raw_with_allocator(Box::new_in(
+            CallInfo {
+                func: name.copy_value(),
+                this: object.copy_value(),
+                op1_type: op.op1_type,
+            },
+            Emalloc::default(),
+        ))
+        .0;
         let method = match receiver {
             Receiver::Array => &METHODS[0],
             Receiver::String => &METHODS[1],
@@ -126,9 +130,11 @@ fn arguments(prefix: &[zval], frame: &Call) -> Vec<zval> {
 /// `$this` first, in the dispatcher's frame, which the `INIT_METHOD_CALL`
 /// handler pushed with its `CallInfo`.
 fn call_method(receiver: Receiver, frame: &Call) {
-    // SAFETY: the handler's `Box`, which the frame's `run_time_cache` alone
-    // pointed to, until the take, so it is taken back once.
-    let mut info = unsafe { Box::from_raw(frame.take_run_time_cache().cast::<CallInfo>()) };
+    let allocation = frame.take_run_time_cache().cast::<CallInfo>();
+    // SAFETY: the handler's initialized allocation, which the frame's
+    // `run_time_cache` alone pointed to, until the take above, and which is
+    // freed below.
+    let mut info = unsafe { Box::from_raw_in(allocation, Emalloc::default()) };
     // op2 of INIT_METHOD_CALL is the method name, a string literal.
     let name = Value::of(&mut info.func).str();
     let alias = name.and_then(|name| aliases::find(receiver, name.bytes()));
