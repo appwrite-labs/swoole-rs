@@ -734,6 +734,36 @@ pub(crate) fn worker_pipe(worker: Worker<'_>, master: bool) -> Option<Socket<'_>
     )
 }
 
+/// A pipe end the server writes messages to: a worker's (its pair kept by the server's
+/// or its pool's list until they shut down, after the event loops) or a message bus's
+/// own record of one (kept by the bus, which outlives its loop). Either outlives any
+/// event loop that watches it, so a write that queues on it may register it.
+#[derive(Clone, Copy)]
+pub(crate) struct PipeSocket<'a>(Socket<'a>);
+
+#[cfg_attr(
+    not(feature = "upstream-symbols"),
+    expect(dead_code, reason = "only the hybrid's factories write to a pipe")
+)]
+impl<'a> PipeSocket<'a> {
+    /// The master end (`master`) or the worker end of `worker`'s pipe.
+    #[inline]
+    pub(crate) fn of_worker(worker: Worker<'a>, master: bool) -> Option<Self> {
+        worker_pipe(worker, master).map(Self)
+    }
+
+    /// `bus`'s own record of the pipe `end`, if it has one.
+    #[inline]
+    pub(crate) fn of_bus(bus: &'a swoole_rs_bus::MessageBus, end: Self) -> Option<Self> {
+        bus.pipe(end.0.fd()).map(Self)
+    }
+
+    #[inline]
+    pub(crate) fn socket(self) -> Socket<'a> {
+        self.0
+    }
+}
+
 /// The listening socket of `pool`'s stream IPC, or `None` without one.
 #[must_use]
 pub fn pool_ipc_listener(pool: PoolRef<'_>) -> Option<Socket<'_>> {

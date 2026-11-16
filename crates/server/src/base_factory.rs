@@ -133,22 +133,20 @@ impl<'a> SendData<'a> {
         self.info.flags = flags;
     }
 
-    /// [`swoole_rs_bus::Bus::send_raw`] of the head and payload to `socket`.
-    ///
-    /// # Safety
-    /// `socket` outlives any registration the write makes, as `send_raw` requires.
+    /// [`swoole_rs_bus::Bus::send_raw`] of the head and payload to `pipe`.
     #[cfg_attr(
         not(feature = "upstream-symbols"),
         expect(dead_code, reason = "only the hybrid's factories write to a pipe")
     )]
-    pub(crate) unsafe fn send_raw(
+    pub(crate) fn send(
         &mut self,
         bus: &swoole_rs_bus::Bus,
-        socket: swoole_rs_reactor::Socket<'_>,
+        pipe: crate::view::PipeSocket<'_>,
     ) -> bool {
         // SAFETY: `data` covers `info.len` bytes or is null (the fields' invariant;
-        // the write only ever lowers `len`), and `socket` is as the caller promises.
-        unsafe { bus.send_raw(socket, &mut self.info, self.data.cast()) }
+        // the write only ever lowers `len`), and a pipe socket outlives any event loop
+        // that could register it.
+        unsafe { bus.send_raw(pipe.socket(), &mut self.info, self.data.cast()) }
     }
 }
 
