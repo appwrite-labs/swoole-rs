@@ -1,14 +1,14 @@
 # Unsafe code by crate
 
-`unsafe` blocks, fns and impls in non-test code of each crate under `crates/`, counted by `tools/budget.py` on `d577a1d`. ✅ marks a crate whose `lib.rs` has `#![forbid(unsafe_code)]`. The PR tier fails a pull request that raises a crate's count or drops its `forbid`.
+`unsafe` blocks, fns and impls in non-test code of each crate under `crates/`, counted by `tools/budget.py` on `4b4ed85`. ✅ marks a crate whose `lib.rs` has `#![forbid(unsafe_code)]`. The PR tier fails a pull request that raises a crate's count or drops its `forbid`.
 
 | crate | unsafe | forbids |
 | --- | ---: | :---: |
 | `zend` | 78 |  |
-| `server` | 54 |  |
+| `server` | 53 |  |
 | `corebase` | 41 |  |
 | `coroutine` | 39 |  |
-| `hooks` | 35 |  |
+| `hooks` | 34 |  |
 | `phphttp` | 16 |  |
 | `reactor` | 16 |  |
 | `curl` | 15 |  |
@@ -69,7 +69,6 @@
 | `protocols` | 0 | ✅ |
 | `protocols-ffi` | 0 |  |
 | `websocket` | 0 | ✅ |
-| `websocket-ffi` | 0 |  |
 | `zend-sys` | 0 |  |
 
-Total 476. Goal: the hardened runtime ([#1893](https://github.com/appwrite-labs/swoole-rs/issues/1893), [#1902](https://github.com/appwrite-labs/swoole-rs/issues/1902)).
+Total 474. Goal: the hardened runtime ([#1893](https://github.com/appwrite-labs/swoole-rs/issues/1893), [#1902](https://github.com/appwrite-labs/swoole-rs/issues/1902)).
