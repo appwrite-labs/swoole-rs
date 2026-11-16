@@ -121,6 +121,7 @@ impl Ports {
 
     /// `ports[index]`, or `None` past the last.
     #[must_use]
+    #[inline]
     pub fn get(&self, index: usize) -> Option<Port<'_>> {
         if index >= self.len() {
             return None;

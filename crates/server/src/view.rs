@@ -610,6 +610,7 @@ impl<'a> Server<'a> {
     /// `serv->ports[index]`: the `ListenPort`s in listen order, `None` past the last
     /// (index 0 is `Server::get_primary_port()`).
     #[must_use]
+    #[inline]
     pub fn port_at(self, index: usize) -> Option<Port<'a>> {
         self.ports().get(index)
     }
