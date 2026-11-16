@@ -433,7 +433,7 @@ use crate::read_native::on_read;
 macro_rules! readable_callbacks {
     ($(fn $name:ident = $kind:ident;)*) => {$(
         /// One readable callback kind.
-        fn $name(reactor: Running<'_>, port: view::Port<'_>, read: ReadEvent<'_>) -> c_int {
+        fn $name(reactor: Running<'_>, port: view::Port<'_>, read: ReadEvent<'_>) -> bool {
             on_read(reactor, port, read, Readable::$kind)
         }
     )*};

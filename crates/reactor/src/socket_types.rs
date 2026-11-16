@@ -8,8 +8,8 @@ use swoole_rs_corebase::constants::SocketType::{
 };
 
 /// `Socket::convert_to_type(domain, type)`: anything unknown is `SW_SOCK_RAW`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_socket_type(domain: c_int, kind: c_int) -> c_int {
+#[must_use]
+pub fn socket_type(domain: c_int, kind: c_int) -> SocketType {
     match (domain, kind) {
         (libc::AF_INET, libc::SOCK_STREAM) => TCP,
         (libc::AF_INET6, libc::SOCK_STREAM) => TCP6,
@@ -20,20 +20,12 @@ pub extern "C" fn swr_v1_socket_type(domain: c_int, kind: c_int) -> c_int {
         (libc::AF_INET6, libc::SOCK_RAW) => RAW6,
         _ => RAW,
     }
-    .raw()
 }
 
-/// `Socket::get_domain_and_type`: false for a type with no socket(2) arguments.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_socket_domain_and_type(
-    socket_type: c_int,
-    domain: &mut c_int,
-    kind: &mut c_int,
-) -> bool {
-    let Some(socket_type) = SocketType::from_raw(socket_type) else {
-        return false;
-    };
-    let (d, k) = match socket_type {
+/// `Socket::get_domain_and_type`: socket(2)'s domain and type, none for an unknown type.
+#[must_use]
+pub fn socket_domain_and_type(socket_type: c_int) -> Option<(c_int, c_int)> {
+    Some(match SocketType::from_raw(socket_type)? {
         TCP6 => (libc::AF_INET6, libc::SOCK_STREAM),
         UNIX_STREAM => (libc::AF_UNIX, libc::SOCK_STREAM),
         UDP => (libc::AF_INET, libc::SOCK_DGRAM),
@@ -42,18 +34,14 @@ pub extern "C" fn swr_v1_socket_domain_and_type(
         TCP => (libc::AF_INET, libc::SOCK_STREAM),
         RAW => (libc::AF_INET, libc::SOCK_RAW),
         RAW6 => (libc::AF_INET6, libc::SOCK_RAW),
-    };
-    *domain = d;
-    *kind = k;
-    true
+    })
 }
 
 /// The type a host string names, and how many leading bytes `convert_to_type`
 /// erases from it.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HostType {
-    pub socket_type: c_int,
+    pub socket_type: SocketType,
     pub erase: usize,
 }
 
@@ -68,12 +56,12 @@ pub fn host_type(host: &[u8]) -> HostType {
             .position(|&b| b != b'/')
             .map_or(host.len(), |first| 5 + first - 1);
         return HostType {
-            socket_type: UNIX_STREAM.raw(),
+            socket_type: UNIX_STREAM,
             erase,
         };
     }
     HostType {
-        socket_type: if host.contains(&b':') { TCP6 } else { TCP }.raw(),
+        socket_type: if host.contains(&b':') { TCP6 } else { TCP },
         erase: 0,
     }
 }
@@ -126,18 +114,12 @@ mod tests {
 
     #[test]
     fn domain_and_type_round_trip() {
-        for socket_type in TCP.raw()..=RAW6.raw() {
-            let (mut domain, mut kind) = (0, 0);
-            assert!(swr_v1_socket_domain_and_type(
-                socket_type,
-                &mut domain,
-                &mut kind
-            ));
-            assert_eq!(swr_v1_socket_type(domain, kind), socket_type);
+        for raw in TCP.raw()..=RAW6.raw() {
+            let (domain, kind) = socket_domain_and_type(raw).expect("a known type");
+            assert_eq!(socket_type(domain, kind).raw(), raw);
         }
-        let (mut domain, mut kind) = (0, 0);
-        assert!(!swr_v1_socket_domain_and_type(0, &mut domain, &mut kind));
-        assert_eq!(swr_v1_socket_type(libc::AF_UNIX, libc::SOCK_RAW), RAW.raw());
+        assert_eq!(socket_domain_and_type(0), None);
+        assert_eq!(socket_type(libc::AF_UNIX, libc::SOCK_RAW), RAW);
     }
 
     #[test]
@@ -169,10 +151,7 @@ mod tests {
     fn hosts_name_their_type() {
         fn erased(host: &[u8]) -> (Option<SocketType>, &[u8]) {
             let plan = host_type(host);
-            (
-                SocketType::from_raw(plan.socket_type),
-                &host[plan.erase.min(host.len())..],
-            )
+            (Some(plan.socket_type), &host[plan.erase.min(host.len())..])
         }
         assert_eq!(erased(b"unix:/tmp/s"), (Some(UNIX_STREAM), &b"/tmp/s"[..]));
         assert_eq!(

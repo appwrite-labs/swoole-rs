@@ -8,7 +8,6 @@ use std::{
 };
 
 /// Borrowed terminated bytes; embedded NULs are included in length.
-#[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct CoreStringView {
     pub data: *const c_char,

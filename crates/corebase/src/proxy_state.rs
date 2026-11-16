@@ -3,7 +3,6 @@
 use crate::StringSlot;
 use std::cell::Cell;
 
-#[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct ProxyFields {
     pub state: u8,
@@ -16,16 +15,6 @@ pub struct ProxyFields {
     pub socket_type: i32,
 }
 
-const _: () = {
-    assert!(
-        size_of::<ProxyFields>() == 20,
-        "native proxy scalar size changed"
-    );
-    assert!(
-        std::mem::offset_of!(ProxyFields, port) == 8,
-        "native proxy port offset changed"
-    );
-};
 /// An HTTP or SOCKS5 proxy's values: its scalars, four strings (0 host, 1 username,
 /// 2 password, 3 target host) and, for SOCKS5, its packet. A string or the packet is
 /// taken out and put back around plain Rust work, never around a call that yields or
@@ -58,7 +47,7 @@ impl ProxyState {
         change(&mut fields);
         self.fields.set(fields);
     }
-    /// The scalars, for a native view.
+    /// The scalars, for a caller that writes them in place.
     pub fn fields_ptr(&self) -> *mut ProxyFields {
         self.fields.as_ptr()
     }

@@ -116,7 +116,7 @@ fn sleep(call: &Call) {
         call.set_bool(false);
         return;
     }
-    call.set_bool(system_sleep(seconds) == 0);
+    call.set_bool(system_sleep(seconds));
 }
 
 /// `zend_value_error(message)`, then false.
