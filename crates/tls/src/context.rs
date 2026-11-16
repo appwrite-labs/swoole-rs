@@ -13,7 +13,7 @@ use openssl_sys::{
     SSL_OP_NO_TLSv1_3, SSL_SESS_CACHE_SERVER, SSL_TLSEXT_ERR_NOACK, SSL_TLSEXT_ERR_OK,
     SSL_VERIFY_NONE, SSL_VERIFY_PEER, SSL_select_next_proto, X509_STORE_CTX,
 };
-use std::cell::RefCell;
+use std::cell::Cell;
 use std::ffi::{CStr, c_char, c_int, c_long, c_uchar, c_uint, c_void};
 use std::marker::{PhantomData, PhantomPinned};
 use std::mem::MaybeUninit;
@@ -993,7 +993,18 @@ pub extern "C" fn swr_v1_tls_port_index() -> c_int {
 }
 
 thread_local! {
-    static ERROR_TEXT: RefCell<Vec<u8>> = RefCell::new(vec![0]);
+    /// The thread's last error line and its NUL. It is taken out and put back around
+    /// each edit or read, so its heap bytes, which `swr_v1_tls_error` lends, stay put.
+    /// Empty until the first `drain_errors`, which every reader runs first.
+    static ERROR_TEXT: Cell<Vec<u8>> = const { Cell::new(Vec::new()) };
+}
+
+/// `edit` over the thread's error line, taken out and put back.
+fn with_error_text<R>(edit: impl FnOnce(&mut Vec<u8>) -> R) -> R {
+    let mut text = ERROR_TEXT.take();
+    let result = edit(&mut text);
+    ERROR_TEXT.set(text);
+    result
 }
 
 /// `ERR_print_errors_cb`'s callback: keeps `line` as the thread's error line. It returns
@@ -1004,7 +1015,7 @@ extern "C" fn keep_last_line(
     _user: Option<&'static c_void>,
 ) -> c_int {
     let line = line.get().to_bytes();
-    ERROR_TEXT.with_borrow_mut(|text| {
+    with_error_text(|text| {
         text.clear();
         text.extend_from_slice(line);
         text.push(0);
@@ -1021,21 +1032,21 @@ extern "C" fn keep_last_line(
 #[must_use]
 pub extern "C" fn swr_v1_tls_error() -> *const c_char {
     drain_errors();
-    ERROR_TEXT.with_borrow(|text| text.as_ptr().cast())
+    with_error_text(|text| text.as_ptr().cast())
 }
 
 /// `swoole_ssl_get_error()`'s line, copied.
 #[must_use]
 pub fn error_line() -> String {
     drain_errors();
-    ERROR_TEXT.with_borrow(|text| {
+    with_error_text(|text| {
         String::from_utf8_lossy(text.split_last().map_or(&[], |(_, line)| line)).into_owned()
     })
 }
 
 /// Pops this thread's oldest queued error, keeping its line (none when the queue is empty).
 fn drain_errors() {
-    ERROR_TEXT.with_borrow_mut(|text| {
+    with_error_text(|text| {
         text.clear();
         text.push(0);
     });
@@ -1346,5 +1357,14 @@ mod tests {
             assert!(line.to_lowercase().contains("no such file"), "{line}");
         }
         assert_eq!(error_line(), "");
+        // The C entry lends the same line, NUL-terminated, until the thread's next call.
+        assert!(crate::OwnedBio::open(c"/nonexistent/swoole-rs-tls.pem").is_none());
+        let line = unsafe { core::ffi::CStr::from_ptr(swr_v1_tls_error()) };
+        assert!(line.to_string_lossy().contains(":error:"), "{line:?}");
+        unsafe { ERR_clear_error() };
+        assert_eq!(
+            unsafe { core::ffi::CStr::from_ptr(swr_v1_tls_error()) },
+            c""
+        );
     }
 }

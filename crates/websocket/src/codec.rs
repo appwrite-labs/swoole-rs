@@ -2,7 +2,7 @@
 //! Allocation, connection state, PHP and callbacks stay with the native caller.
 use std::mem::MaybeUninit;
 
-use crate::{Opcode, frame_length, header, mask};
+use crate::{LengthError, Opcode, frame_length, header, mask};
 
 const FIN: u8 = 1;
 const RSV1: u8 = 4;
@@ -51,10 +51,13 @@ fn flags(first: u8, second: u8) -> u8 {
 #[inline]
 pub fn decode_in_place(data: &mut [u8]) -> Result<DecodedFrame, DecodeError> {
     let length = data.len();
-    let (total, header) = frame_length(data);
-    let header = header.unwrap_or(0);
+    let measured = frame_length(data);
+    let header = measured.map_or_else(
+        |error| error.header_length().unwrap_or(0),
+        |frame| frame.header_length,
+    );
     let mut frame = DecodedFrame {
-        header_length: header as usize,
+        header_length: header,
         ..DecodedFrame::default()
     };
     if let [first, second, ..] = *data {
@@ -62,16 +65,15 @@ pub fn decode_in_place(data: &mut [u8]) -> Result<DecodedFrame, DecodeError> {
         frame.flags = flags(first, second);
         frame.length_code = second & 127;
     }
-    let size = usize::try_from(total).map_err(|_| DecodeError {
-        kind: DecodeErrorKind::LengthOverflow,
-        frame,
-    })?;
-    if size == 0 {
-        return Err(DecodeError {
-            kind: DecodeErrorKind::IncompleteHeader,
+    let size = measured
+        .map_err(|error| DecodeError {
+            kind: match error {
+                LengthError::IncompleteHeader { .. } => DecodeErrorKind::IncompleteHeader,
+                LengthError::Overflow { .. } => DecodeErrorKind::LengthOverflow,
+            },
             frame,
-        });
-    }
+        })?
+        .total;
     frame.payload_length = size - frame.header_length;
     if length < size {
         return Err(DecodeError {
