@@ -18,7 +18,7 @@ use swoole_rs_utilities::swoole_hash;
 const USERFUNC_FALLBACK: c_int = -3;
 
 /// `SW_SOCK_SSL`, `SW_MAX_LISTEN_PORT`, `SW_SYSTEMD_FDS_START`.
-const SOCK_SSL: c_int = 1 << 9;
+const SOCK_SSL: c_int = swoole_rs_corebase::constants::SocketFlag::SW_SOCK_SSL.bits();
 const MAX_LISTEN_PORT: usize = 60000;
 const SYSTEMD_FDS_START: c_int = 3;
 

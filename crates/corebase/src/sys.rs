@@ -670,6 +670,22 @@ pub fn poll(fds: &mut [libc::pollfd], timeout: c_int) -> std::io::Result<c_int> 
     }))
 }
 
+/// `epoll_wait(2)` into `events`, at most all of them: the number ready, or zero on
+/// timeout.
+/// # Errors
+/// The syscall's captured errno (`EINVAL` for no room).
+#[cfg(any(target_os = "linux", target_os = "android"))]
+#[inline]
+pub fn epoll_wait(
+    epfd: c_int,
+    events: &mut [libc::epoll_event],
+    timeout: c_int,
+) -> std::io::Result<c_int> {
+    nonnegative_result(lent::lend_out(events, |events, count| {
+        lent::epoll_wait(epfd, events, count, timeout)
+    }))
+}
+
 /// `pipe(2)`: the read and write ends, or `None` with errno set.
 #[must_use]
 pub fn pipe() -> Option<[c_int; 2]> {
@@ -836,43 +852,53 @@ pub fn print(bytes: &[u8]) {
 /// `kevent(2)`'s errno.
 #[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
 pub fn kevent_change(kq: c_int, change: &libc::kevent) -> std::io::Result<()> {
-    nonnegative_result(kevent::kevent(
-        kq,
-        change,
-        kevent::Count::One,
-        None,
-        kevent::Count::Zero,
-        None,
-    ))
+    nonnegative_result(lent::lend_out(&mut [], |events, count| {
+        kevent::kevent(kq, change, kevent::Changes::One, events, count, None)
+    }))
     .map(drop)
 }
 
-/// `kevent(2)` declared for one change and no events out.
+/// No change to the kqueue `kq`, and its ready events into `events`, at most all of
+/// them, waiting up to `timeout` (`None`: until one comes): the number ready.
+///
+/// # Errors
+/// `kevent(2)`'s errno.
+#[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
+#[inline]
+pub fn kevent_wait(
+    kq: c_int,
+    events: &mut [libc::kevent],
+    timeout: Option<&libc::timespec>,
+) -> std::io::Result<c_int> {
+    nonnegative_result(lent::lend_out(events, |events, count| {
+        kevent::kevent(kq, &zeroed(), kevent::Changes::Zero, events, count, timeout)
+    }))
+}
+
+/// `kevent(2)` declared for at most one change.
 #[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
 mod kevent {
+    use crate::lent::{Count, Out};
     use libc::c_int;
 
-    /// A count of `kevent` records: each value is the length of the one record, or
-    /// of none, that its parameter is given.
+    /// How many `kevent` records the change parameter is given: none, or the one.
     #[repr(i32)]
-    pub(super) enum Count {
+    pub(super) enum Changes {
         Zero = 0,
         One = 1,
     }
 
-    /// No value: a null-only event list.
-    pub(super) enum Nothing {}
-
-    // libc's. It reads the `changes` count of records at `change`, which is one, and
-    // writes at most the `count` given for `events`, which is none; a null timeout
-    // returns at once. It keeps nothing, so it is declared `safe`.
+    // libc's. It reads the `changes` count of records at `change`, and writes at most
+    // the lending's `count` events into `events`; with no room it returns once the
+    // change is made, else it waits up to `timeout` (null: until an event comes). It
+    // keeps nothing, so it is declared `safe`.
     unsafe extern "C" {
-        pub(super) safe fn kevent(
+        pub(super) safe fn kevent<'id>(
             kq: c_int,
             change: &libc::kevent,
-            changes: Count,
-            events: Option<&'static mut Nothing>,
-            count: Count,
+            changes: Changes,
+            events: Out<'id, libc::kevent>,
+            count: Count<'id, c_int>,
             timeout: Option<&libc::timespec>,
         ) -> c_int;
     }

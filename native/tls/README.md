@@ -25,8 +25,10 @@ SNI and DTLS handshakes. Clients and coroutine sockets freeze configuration befo
 creating a session; accepted sockets retain their listener's snapshot. Handshake
 retries and verification read the snapshot, so later builder edits cannot change
 an active session. Rebuilding a context creates a fresh snapshot. The raw owner
-exports remain for the original-test adapters. OpenSSL's password callback reads the slot its context
-retains; `owner_assign` copies configuration and retains that password.
+exports remain for the original-test adapters. The password callback reads the
+configuration's passphrase only while `create` loads the certificate and key files,
+then goes: upstream leaves it installed, but nothing reads a key through the context
+afterwards. `owner_assign` copies configuration and takes a context reference.
 Warnings keep upstream's text and the method name
 upstream's `__SW_FUNC__` printed. Upstream's renegotiation `swoole_debug` exists only
 in `SW_DEBUG` builds and is not reproduced.

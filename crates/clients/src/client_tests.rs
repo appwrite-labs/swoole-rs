@@ -249,12 +249,12 @@ pub(super) fn del_id(_: swoole_rs_timer::Held) {
 }
 /// crates/hooks' `async::dispatch`: logs the request; nothing completes it.
 fn async_dispatch(_: Handle, request: &crate::resolver::Request) -> bool {
-    let view = swoole_rs_corebase::swr_v1_core_resolver_view(request.get());
-    // SAFETY: the request's name, live with it.
-    let name = unsafe { &*view.name }.bytes();
-    // SAFETY: the request's fields, live with it.
-    let family = unsafe { (*view.fields).family };
-    log(format!("dns {} {family}", String::from_utf8_lossy(name)));
+    let request = request.get();
+    let family = request.fields().family;
+    log(format!(
+        "dns {} {family}",
+        String::from_utf8_lossy(&request.name())
+    ));
     true
 }
 // crates/tls's TLS operations, over its own context.
@@ -611,6 +611,23 @@ fn writable_after_connect_starts_the_socks5_handshake() {
 }
 
 #[test]
+fn stream_read_hands_the_socks5_handshake_the_bytes_received() {
+    let client = client(1, true, true);
+    set_proxy(client, false);
+    assert!(writable(client));
+    Handle(client).input_init();
+    taken();
+    mock(|m| m.io = vec![2]);
+    assert!(on_read(Handle(client)));
+    assert_eq!(taken()[..2], ["recv 65536", "socks5 2"]);
+    assert_eq!(
+        Handle(client).proxy_state(Proxy::Socks5),
+        Some(SOCKS5_READY)
+    );
+    free(client);
+}
+
+#[test]
 fn writable_after_a_failed_connect_reports_the_error() {
     let client = client(1, true, true);
     mock(|m| m.socket_error = libc::ECONNREFUSED);
@@ -858,6 +875,22 @@ fn pending_handshake_keeps_its_hostname_and_verification_snapshot() {
             "ssl verify true",
             "ssl host"
         ]
+    );
+    free(client);
+}
+
+#[test]
+fn the_framed_receive_buffer_stays_usable_across_input_edits() {
+    let client = client(1, true, true);
+    Handle(client).input_init();
+    Handle(client).input_clear();
+    // crates/ports' framed receive reads the buffer through the record's pointer.
+    let size = Handle(client).with_framed(|_, _, buffer| unsafe { (*buffer).size() });
+    assert!(size >= CLIENT_BUFFER_SIZE);
+    Handle(client).input_clear();
+    assert_eq!(
+        Handle(client).with_framed(|_, _, buffer| unsafe { (*buffer).len() }),
+        0
     );
     free(client);
 }

@@ -38,7 +38,7 @@ const HEAD_LEN: usize = 16;
 const HEAD_SERVER_FD: usize = 24;
 const HEAD_EXT_FLAGS: usize = 26;
 /// `SW_TASK_TMPFILE`: the task's data is a `PacketTask` naming a temporary file.
-const TASK_TMPFILE: u16 = 1;
+const TASK_TMPFILE: u16 = swoole_rs_corebase::constants::TaskFlag::SW_TASK_TMPFILE.bits();
 /// `sizeof(PacketTask)`: its `size_t` length and `SW_TASK_TMP_PATH_SIZE` path.
 const PACKET_TASK: u32 = 8 + 256;
 /// `sizeof(long)`, `QueueNode::mtype`.
@@ -570,11 +570,7 @@ impl<'a> Worker<'a> {
                 )?;
                 if let Some(stream) = self.connection() {
                     let socket = std::mem::replace(&mut stream.connection, ptr::null_mut());
-                    let response = stream
-                        .response
-                        .as_mut()
-                        .map(std::mem::take)
-                        .unwrap_or_default();
+                    let response = stream.response.as_mut().map_or_default(std::mem::take);
                     if !response.is_empty() {
                         let head = response.len().c_cast::<u32>().to_be_bytes();
                         self.send(socket, &head)?;

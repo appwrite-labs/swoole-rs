@@ -308,11 +308,13 @@ pub(crate) fn minit(minit: &Minit, codecs: u32) {
     REQUEST_FD.resolve(&crate::request::REQUEST, c"fd");
 }
 
-/// `Swoole\Http\Request`'s declared `tmpfiles` slot.
-pub(crate) fn tmpfiles_offset() -> u32 {
-    PROPERTIES
-        .get(Property::TmpFiles as usize)
-        .map_or(0, Declared::offset)
+/// Unlink the uploads `request`'s `tmpfiles` property lists now (user code may
+/// have replaced the array), and forget them in `SG(rfc1867_uploaded_files)`.
+pub(crate) fn release_uploads(request: &Value) {
+    let tmpfiles = PROPERTIES.get(Property::TmpFiles as usize);
+    if let Some(tmpfiles) = tmpfiles.and_then(|property| property.get(request)) {
+        swr_zend_http_uploads_release(tmpfiles);
+    }
 }
 
 /// `swoole_http_init_and_read_property`: the array behind a property slot,
@@ -421,6 +423,10 @@ unsafe extern "C" {
     /// `$request->tmpfiles[] = path` into the array the zval holds, which it does
     /// not replace, and the upload `is_uploaded_file` knows; it copies the bytes.
     safe fn swr_zend_http_upload(tmpfiles: &Value, path: IoSlice<'_>);
+    /// Unlink each string the array the zval holds (or references) lists, and
+    /// forget it in `SG(rfc1867_uploaded_files)`; nothing for anything else.
+    /// No PHP code runs.
+    safe fn swr_zend_http_uploads_release(tmpfiles: &Value);
 }
 
 /// `$request->tmpfiles[] = path`, and the upload `is_uploaded_file` knows;
@@ -894,11 +900,7 @@ fn trimmed(text: &[u8], length: usize) -> Box<[u8]> {
     for (slot, byte) in buffer.iter_mut().zip(text).take(FORM_KEYLEN - 1) {
         *slot = *byte;
     }
-    buffer
-        .get(..length)
-        .map(trim_quotes)
-        .unwrap_or_default()
-        .into()
+    buffer.get(..length).map_or_default(trim_quotes).into()
 }
 
 /// A NUL-terminated copy (`estrndup`).

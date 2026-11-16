@@ -3,8 +3,10 @@
 //! the reactor as an `EventWaiter`, whose reactor socket and coroutine `EventWaitOps`
 //! drive (the reactor's [`Watch`] and the coroutine's under `System::wait_event`, fakes
 //! in tests).
+use crate::resolve::WakerSlot;
 use core::cell::Cell;
 use core::ffi::c_void;
+use swoole_rs_coroutine::Waker;
 pub use swoole_rs_reactor::Events;
 
 pub use native::Watch;
@@ -17,32 +19,33 @@ pub struct EventWaitOps<S> {
     /// `make_socket(fd, SW_FD_CO_EVENT)` carrying `waiter`, added to the reactor for
     /// `events`; the last error if the reactor refuses it.
     pub(crate) add: fn(fd: i32, events: Events, waiter: Registered) -> Result<S, i32>,
-    /// `co->yield_ex(timeout)`: the last error if it timed out or was cancelled.
-    pub(crate) park: fn(timeout: f64) -> Result<(), i32>,
+    /// `co->yield_ex(timeout)`, its waker stored first: the last error if it timed
+    /// out or was cancelled.
+    pub(crate) park: fn(timeout: f64, waker: &WakerSlot) -> Result<(), i32>,
 }
 
-/// A parked `wait_event` (the object of its reactor socket): its coroutine and the
-/// events fired so far.
+/// A parked `wait_event` (the object of its reactor socket): its coroutine's waker
+/// and the events fired so far.
 pub(crate) struct Waiter {
-    co: *mut c_void,
+    waker: WakerSlot,
     revents: Cell<Events>,
 }
 
-/// A waiter's coroutine, which stays parked until this resumes it: `park` takes
-/// a resume still queued when the wait ends otherwise.
-pub(crate) struct Parked(*mut c_void);
+/// A waiter's park, which this ends once the deferred wake runs. A wake still queued
+/// when the wait ended otherwise (a timeout or a cancel in the same loop pass) names
+/// a park that is over, so it does nothing.
+pub(crate) struct Parked(Waker);
 
 impl Parked {
     #[cfg(test)]
-    pub(crate) fn co(&self) -> *mut c_void {
+    pub(crate) const fn waker(&self) -> Waker {
         self.0
     }
 }
 
 impl swoole_rs_reactor::event_api::Deferred for Parked {
     fn run(self) {
-        // SAFETY: the waiter's coroutine, parked until this deferred resume runs.
-        unsafe { swoole_rs_coroutine::resume(self.0) };
+        self.0.wake();
     }
 
     fn dispose(self) {}
@@ -65,15 +68,20 @@ impl Registered {
 pub(crate) fn event_ready(waiter: &Waiter, event: Events) -> Option<Parked> {
     let received = waiter.revents.get();
     waiter.revents.set(received | event);
-    received.is_empty().then_some(Parked(waiter.co))
+    waiter
+        .waker
+        .get()
+        .filter(|_| received.is_empty())
+        .map(Parked)
 }
 
 /// Park the current coroutine until `events` fire on `fd` or `timeout` passes: the
 /// fired events, or the error.
 fn park<S>(fd: i32, events: Events, timeout: f64, ops: &EventWaitOps<S>) -> Result<Events, i32> {
-    let co = (ops.current)();
+    // Fatal outside a coroutine.
+    (ops.current)();
     let waiter = Waiter {
-        co,
+        waker: WakerSlot::new(None),
         revents: Cell::new(Events::NONE),
     };
     // `waiter` outlives the socket, dropped (off the reactor) below.
@@ -82,14 +90,7 @@ fn park<S>(fd: i32, events: Events, timeout: f64, ops: &EventWaitOps<S>) -> Resu
         events,
         Registered((&raw const waiter).cast_mut().cast()),
     )?;
-    let park = ops.park;
-    let parked = park(timeout);
-    if parked.is_err() && !waiter.revents.get().is_empty() {
-        // An event fired in the loop pass that timed out or cancelled the
-        // wait, and its deferred resume is still queued: take it here, or it
-        // resumes this coroutine wherever it next waits, or after it ends.
-        _ = park(0.0);
-    }
+    let parked = (ops.park)(timeout, &waiter.waker);
     drop(socket);
     parked.map(|()| waiter.revents.get())
 }
@@ -232,8 +233,8 @@ pub(crate) mod native {
         }
     }
 
-    pub(super) fn park(timeout: f64) -> Result<(), i32> {
-        if crate::resolve::park_for(timeout) {
+    pub(super) fn park(timeout: f64, waker: &super::WakerSlot) -> Result<(), i32> {
+        if crate::resolve::park_for_armed(timeout, waker) {
             Ok(())
         } else {
             Err(log::last_error())
@@ -340,46 +341,52 @@ mod tests {
         Ok(Socket)
     }
     /// The reactor fires an error then a read before the deferred resume runs.
-    fn fires_error(_: f64) -> Result<(), i32> {
+    fn fires_error(_: f64, waker: &WakerSlot) -> Result<(), i32> {
+        waker.set(Some(Waker::NONE));
         assert_eq!(
-            event_ready(waiter(), Events::ERROR).map(|co| co.0),
-            Some(CO)
+            event_ready(waiter(), Events::ERROR).map(|co| co.waker()),
+            Some(Waker::NONE)
         );
         assert!(event_ready(waiter(), Events::READ).is_none());
         Ok(())
     }
-    fn times_out(_: f64) -> Result<(), i32> {
+    fn times_out(_: f64, _: &WakerSlot) -> Result<(), i32> {
         Err(libc::ETIMEDOUT)
     }
-    fn unused(_: f64) -> Result<(), i32> {
+    fn unused(_: f64, _: &WakerSlot) -> Result<(), i32> {
         unreachable!()
     }
     thread_local! {
         static PARKS: Cell<i32> = const { Cell::new(0) };
     }
     /// A read fires, then the timer times the wait out before the deferred
-    /// resume runs; the second park takes that resume.
-    fn fires_then_times_out(timeout: f64) -> Result<(), i32> {
+    /// resume runs: that resume names the park the timeout ended.
+    fn fires_then_times_out(_: f64, waker: &WakerSlot) -> Result<(), i32> {
         PARKS.set(PARKS.get() + 1);
-        if PARKS.get() == 2 {
-            assert_eq!(timeout, 0.0);
-            return Ok(());
-        }
-        assert_eq!(event_ready(waiter(), Events::READ).map(|co| co.0), Some(CO));
+        waker.set(Some(Waker::NONE));
+        assert_eq!(
+            event_ready(waiter(), Events::READ).map(|co| co.waker()),
+            Some(Waker::NONE)
+        );
         Err(libc::ETIMEDOUT)
     }
 
     #[test]
-    fn a_timeout_after_an_event_takes_its_queued_resume() {
+    fn a_timeout_after_an_event_parks_once() {
         assert_eq!(
             wait(7, Events::READ, 1.0, fires_then_times_out),
             failed(0, libc::ETIMEDOUT)
         );
-        assert_eq!(PARKS.get(), 2);
+        assert_eq!(PARKS.get(), 1);
         assert_eq!(ADDED.get(), 0);
     }
 
-    fn wait(fd: i32, events: Events, timeout: f64, park: fn(f64) -> Result<(), i32>) -> WaitEvent {
+    fn wait(
+        fd: i32,
+        events: Events,
+        timeout: f64,
+        park: fn(f64, &WakerSlot) -> Result<(), i32>,
+    ) -> WaitEvent {
         let ops = EventWaitOps { current, add, park };
         match wait_with(fd, events, timeout, &ops) {
             Ok(events) => WaitEvent {
@@ -458,13 +465,13 @@ mod tests {
         for held in masks {
             for event in masks {
                 let waiter = Waiter {
-                    co: CO,
+                    waker: WakerSlot::new(Some(Waker::NONE)),
                     revents: Cell::new(held),
                 };
                 let mut wakes = 0;
                 for fired in [event, Events::WRITE] {
                     if let Some(co) = event_ready(&waiter, fired) {
-                        assert_eq!(co.0, CO);
+                        assert_eq!(co.waker(), Waker::NONE);
                         wakes += 1;
                     }
                 }

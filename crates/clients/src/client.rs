@@ -196,13 +196,6 @@ pub struct Socks5 {
     pub handshake: fn(&ProxyState, &[u8]) -> Option<usize>,
 }
 
-/// A `String`'s free tail: where the next read lands and how much fits.
-#[derive(Clone, Copy)]
-struct Tail {
-    str: *mut c_char,
-    size: usize,
-}
-
 /// The public, trivially copyable fields of `network::Client`.
 #[derive(Clone, Copy)]
 pub struct ClientRecord {
@@ -223,8 +216,9 @@ pub struct ClientRecord {
 pub struct Client {
     record: Cell<ClientRecord>,
     socket_ops: &'static SocketOps,
-    /// Owns the allocation exposed through the public record's buffer pointer.
-    input_owner: Cell<Option<Box<CppString>>>,
+    /// The input buffer, whose address the public record's buffer pointer names
+    /// once it is allocated: a pointer derived from the cell outlives its edits.
+    input: Cell<CppString>,
     flags: Cell<u32>,
     domain: c_int,
     sock_flags: Cell<c_int>,
@@ -506,44 +500,38 @@ impl Handle {
     fn edit_input<R>(self, edit: fn(&mut CppString, Socket<'static>, &SocketOps) -> R) -> R {
         let socket = self.socket();
         let ops = self.get().socket_ops;
-        let mut buffer =
-            self.get().input_owner.take().unwrap_or_else(|| {
-                swoole_rs_corebase::fatal("client input buffer is not available")
-            });
+        if self.input().is_null() {
+            swoole_rs_corebase::fatal("client input buffer is not available");
+        }
+        let mut buffer = self.get().input.replace(CppString::EMPTY);
         let result = edit(&mut buffer, socket, ops);
-        self.get().input_owner.set(Some(buffer));
+        self.get().input.set(buffer);
         result
     }
 
     /// `new String(SW_CLIENT_BUFFER_SIZE)`, once.
     fn input_init(self) {
         if self.input().is_null() {
-            let mut buffer = Box::new(CppString::EMPTY);
+            let mut buffer = CppString::EMPTY;
             buffer.alloc(CLIENT_BUFFER_SIZE, None);
-            self.get()
-                .edit_record(|record| record.buffer = core::ptr::from_mut(&mut *buffer).cast());
-            self.get().input_owner.set(Some(buffer));
+            self.get().input.set(buffer);
+            let input = self.get().input.as_ptr().cast();
+            self.get().edit_record(|record| record.buffer = input);
         }
     }
 
     /// `delete buffer`.
     fn input_free(self) {
-        if let Some(mut buffer) = self.get().input_owner.take() {
+        if !self.input().is_null() {
             self.get()
                 .edit_record(|record| record.buffer = core::ptr::null_mut());
-            buffer.dispose();
+            self.get().input.replace(CppString::EMPTY).dispose();
         }
     }
 
-    /// The input buffer's free tail; the buffer exists.
-    fn input_tail(self) -> Tail {
-        self.edit_input(|buffer, _, _| {
-            let length = buffer.len();
-            Tail {
-                str: buffer.as_mut_ptr().wrapping_add(length).cast(),
-                size: buffer.size() - length,
-            }
-        })
+    /// Where the input buffer's next read lands; the buffer exists.
+    fn input_tail(self) -> *const c_char {
+        self.edit_input(|buffer, _, _| buffer.as_mut_ptr().wrapping_add(buffer.len()).cast())
     }
 
     /// One read into the input buffer's free tail; the buffer exists.
@@ -578,7 +566,8 @@ impl Handle {
     /// `Client::socks5_handshake`: applies `length` received bytes at `data` and
     /// sends the answer the proxy packed.
     fn socks5_handshake(self, data: *const c_char, length: usize) -> bool {
-        // SAFETY: the received buffer lends `length` initialized bytes at `data`.
+        // SAFETY: `data` is where the last receive wrote `length` bytes, in the live
+        // input buffer.
         let reply = unsafe { std::slice::from_raw_parts(data.cast(), length) };
         let n = self
             .with_proxy(Proxy::Socks5, |proxy| {
@@ -749,7 +738,7 @@ fn create_with(kind: c_int, is_async: bool, socket_ops: &'static SocketOps) -> O
     };
     let mut client = Box::new(Client {
         socket_ops,
-        input_owner: Cell::new(None),
+        input: Cell::new(CppString::EMPTY),
         record: Cell::new(ClientRecord {
             http2: false,
             open_length_check: false,
@@ -1160,10 +1149,7 @@ pub fn ssl_verify(this: Handle, allow_self_signed: bool) -> bool {
         return false;
     }
     let name = this.tls_host_name();
-    if !name.is_empty() && !(this.get().socket_ops.tls_check_host)(this.socket(), &name) {
-        return false;
-    }
-    true
+    name.is_empty() || (this.get().socket_ops.tls_check_host)(this.socket(), &name)
 }
 
 /// `Client_inet_addr`: the first call routes through the proxies and records the
@@ -1709,10 +1695,7 @@ pub fn sendfile(this: Handle, file: &CStr, offset: i64, length: usize) -> bool {
         log::set_last_error(errno());
         return false;
     }
-    if is_async && !this.event(EventOp::AddOrUpdate, Events::WRITE) {
-        return false;
-    }
-    true
+    !is_async || this.event(EventOp::AddOrUpdate, Events::WRITE)
 }
 
 /// `Client::recv(data, length, flags)`: the bytes read, or none (`SW_ERR`).
@@ -1745,7 +1728,7 @@ fn connect_failed(this: Handle) -> bool {
 /// `Client_onStreamRead`: the proxy and TLS handshakes that finish a connect,
 /// then framed or plain reads, on a live async stream client with its input buffer.
 fn on_read(this: Handle) -> bool {
-    let Tail { str: buf, size } = this.input_tail();
+    let buf = this.input_tail();
     let do_ssl_handshake = this.flag(Flag::OpenSsl);
     let http = this.proxy_state(Proxy::Http);
     if http.is_some_and(|state| state != HTTP_PROXY_READY) {
@@ -1767,12 +1750,11 @@ fn on_read(this: Handle) -> bool {
     let socks5 = this.proxy_state(Proxy::Socks5);
     if socks5.is_some_and(|state| state != SOCKS5_READY) {
         let n = this.edit_input(|input, socket, ops| (ops.recv_append)(socket, input));
-        if n <= Some(0) {
+        let Some(n) = n.filter(|&n| n > 0) else {
             log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
             return connect_failed(this);
-        }
-        // Upstream hands the handshake the buffer's free size, not what was read.
-        if !this.socks5_handshake(buf, size) {
+        };
+        if !this.socks5_handshake(buf, n) {
             log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
             return connect_failed(this);
         }

@@ -82,7 +82,8 @@ pub struct Server<'a> {
     live: PhantomData<&'a Fields>,
 }
 
-/// The global hooks whose callbacks take the server alone.
+/// The global hooks of a server: those whose callbacks take the server alone, and
+/// the worker hooks, whose take `{ server, worker id }`.
 #[derive(Clone, Copy)]
 pub enum ServerHook {
     BeforeStart,
@@ -90,23 +91,40 @@ pub enum ServerHook {
     AfterShutdown,
     BeforeCreate,
     AfterCreate,
+    /// Worker `id`'s start.
+    BeforeWorkerStart(u32),
+    /// Worker `id`'s stop.
+    BeforeWorkerStop(u32),
 }
 
 impl<'a> Server<'a> {
-    /// `if (swoole_isset_hook(hook)) swoole_call_hook(hook, serv)`.
+    /// `if (swoole_isset_hook(hook)) swoole_call_hook(hook, arg)`, `arg` the server or,
+    /// for a worker hook, `Worker_global_hook`'s `{ server, worker id }`.
     pub fn call_hook(self, hook: ServerHook) {
         use swoole_rs_corebase::HookType;
-        let kind = match hook {
-            ServerHook::BeforeStart => HookType::BEFORE_SERVER_START,
-            ServerHook::BeforeShutdown => HookType::BEFORE_SERVER_SHUTDOWN,
-            ServerHook::AfterShutdown => HookType::AFTER_SERVER_SHUTDOWN,
-            ServerHook::BeforeCreate => HookType::BEFORE_SERVER_CREATE,
-            ServerHook::AfterCreate => HookType::AFTER_SERVER_CREATE,
+        let (kind, worker) = match hook {
+            ServerHook::BeforeStart => (HookType::BEFORE_SERVER_START, None),
+            ServerHook::BeforeShutdown => (HookType::BEFORE_SERVER_SHUTDOWN, None),
+            ServerHook::AfterShutdown => (HookType::AFTER_SERVER_SHUTDOWN, None),
+            ServerHook::BeforeCreate => (HookType::BEFORE_SERVER_CREATE, None),
+            ServerHook::AfterCreate => (HookType::AFTER_SERVER_CREATE, None),
+            ServerHook::BeforeWorkerStart(id) => (HookType::BEFORE_WORKER_START, Some(id)),
+            ServerHook::BeforeWorkerStop(id) => (HookType::BEFORE_WORKER_STOP, Some(id)),
         };
-        if swoole_rs_corebase::swoole_isset_hook(kind) {
-            // SAFETY: every `ServerHook`'s callbacks take the server, which is live.
-            unsafe { swoole_rs_corebase::swoole_call_hook(kind, self.raw) };
+        if !swoole_rs_corebase::swoole_isset_hook(kind) {
+            return;
         }
+        let mut args: [*mut c_void; 2] = [self.raw, core::ptr::null_mut()];
+        let arg = match worker {
+            None => self.raw,
+            Some(id) => {
+                args[1] = core::ptr::without_provenance_mut(id as usize);
+                args.as_mut_ptr().cast()
+            }
+        };
+        // SAFETY: the server hooks' callbacks take the server, which is live, and the
+        // worker hooks' `{ server, worker id }`, which lives for the call.
+        unsafe { swoole_rs_corebase::swoole_call_hook(kind, arg) };
     }
 
     /// The server at `serv`.
@@ -812,7 +830,6 @@ mod tests {
     /// one, or one with a manager or a task worker. Unit tests link no
     /// `swr_v1_server_new`, so the test lends the server its shared record.
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
     fn only_a_single_base_worker_that_ran_here_and_was_not_destroyed_counts() {
         let mut server = crate::TestServer::new();
         let config = server.config_mut();
@@ -854,7 +871,6 @@ mod tests {
     /// A port counts its connections in the per-worker cells when it has them, one
     /// per event worker, and in its one shared count otherwise.
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
     fn port_counts_use_the_shared_worker_cells_when_present() {
         use crate::PortCounters;
         let server = crate::TestServer::new();
@@ -875,5 +891,39 @@ mod tests {
         port.gs.set(core::ptr::null_mut());
         assert_eq!(serv.port_connections(&port), 0, "no counters yet");
         counters.connection_nums.free();
+    }
+
+    /// A worker hook gets `{ server, worker id }`; a server hook, the server.
+    #[test]
+    fn worker_hooks_get_the_server_and_the_workers_id() {
+        use std::sync::Mutex;
+        use swoole_rs_corebase::{HookType, swoole_add_hook};
+        // Other tests' servers may run these hooks too: each call notes its server.
+        static SEEN: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new());
+        unsafe extern "C" fn worker(arg: *mut c_void) {
+            // SAFETY: a worker hook's `{ server, worker id }`.
+            let [serv, id] = unsafe { arg.cast::<[*mut c_void; 2]>().read() };
+            SEEN.lock().unwrap().push((serv.addr(), id.addr()));
+        }
+        unsafe extern "C" fn server(arg: *mut c_void) {
+            SEEN.lock().unwrap().push((arg.addr(), usize::MAX));
+        }
+        swoole_add_hook(HookType::BEFORE_WORKER_START, worker, 1);
+        swoole_add_hook(HookType::BEFORE_WORKER_STOP, worker, 1);
+        swoole_add_hook(HookType::AFTER_SERVER_CREATE, server, 1);
+        let test = crate::TestServer::new();
+        let serv = test.serv();
+        serv.call_hook(ServerHook::BeforeWorkerStart(3));
+        serv.call_hook(ServerHook::BeforeWorkerStop(4));
+        serv.call_hook(ServerHook::AfterCreate);
+        let raw = serv.raw().addr();
+        let seen: Vec<_> = SEEN
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|&&(serv, _)| serv == raw)
+            .map(|&(_, id)| id)
+            .collect();
+        assert_eq!(seen, [3, 4, usize::MAX]);
     }
 }

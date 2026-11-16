@@ -95,8 +95,9 @@ went with the exports: a null pointer with a nonzero length (`swr_v1_mqtt_frame_
 non-null output of capacity 0, and `swr_v1_resp_receive_range`'s -1 for a length past
 its capacity. Slices cannot carry the first four, and the receive loop, the codec's
 one caller, never passes more bytes than its buffer holds.
-The one export left that takes a pointer and a length, `Socks5Proxy::handshake_step`,
-refuses a null reply in its own test.
+`Socks5Proxy::handshake_step`, `admit` and `pack_negotiate_request` lost their exports
+once crates/clients reached them through a registered host (#4371), since no native
+code calls them; the null-reply assertions went with `handshake_step`'s pointer.
 
 The pinned side of `receive_states` is `crates/oracle`'s `resp_stream::UPSTREAM_TRACE`:
 the unchanged `recv_packet` over the oracle's socket model, which logs each call's
