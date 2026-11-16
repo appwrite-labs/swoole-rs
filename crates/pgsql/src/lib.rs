@@ -25,7 +25,7 @@ use pq_sys::{
     PostgresPollingStatusType,
 };
 use std::{
-    cell::RefCell,
+    cell::Cell,
     ffi::{c_char, c_int, c_void},
     ptr::{self, NonNull},
     sync::atomic::{AtomicBool, Ordering},
@@ -203,14 +203,25 @@ thread_local! {
     /// error and whether PDO has shut it down for it. Only interrupted I/O is
     /// recorded; PDO owns the connection's disposal and its eviction from the
     /// persistent pool. A thread holds few connections, so a list will do.
-    static IO_ERRORS: RefCell<Vec<(Conn, c_int, bool)>> = const { RefCell::new(Vec::new()) };
+    static IO_ERRORS: Cell<Vec<(Conn, c_int, bool)>> = const { Cell::new(Vec::new()) };
+}
+
+/// `f` of the interrupted I/O list, taken out and put back after: `f` only
+/// searches and edits the list, calling neither libpq nor PHP.
+fn with_io_errors<R>(f: impl FnOnce(&mut Vec<(Conn, c_int, bool)>) -> R) -> R {
+    IO_ERRORS.with(|errors| {
+        let mut list = errors.take();
+        let result = f(&mut list);
+        errors.set(list);
+        result
+    })
 }
 
 /// The connection's interrupted I/O, if any: its error, and whether this is
 /// the first time it is asked for (the caller then shuts the connection down).
 #[cfg(feature = "php")]
 fn take_io_error(conn: Conn) -> Option<(c_int, bool)> {
-    IO_ERRORS.with_borrow_mut(|errors| {
+    with_io_errors(|errors| {
         let (_, code, handled) = errors.iter_mut().find(|(c, _, _)| *c == conn)?;
         Some((*code, !std::mem::replace(handled, true)))
     })
@@ -218,7 +229,7 @@ fn take_io_error(conn: Conn) -> Option<(c_int, bool)> {
 
 #[cfg(feature = "php")]
 fn has_io_error(conn: Conn) -> bool {
-    IO_ERRORS.with_borrow(|errors| errors.iter().any(|(c, _, _)| *c == conn))
+    with_io_errors(|errors| errors.iter().any(|(c, _, _)| *c == conn))
 }
 
 /// `swoole_pgsql_set_blocking`: the runtime hook flag.
@@ -273,7 +284,7 @@ fn socket_poll(conn: Conn, event: Events) -> c_int {
     if code == CO_TIMEDOUT {
         return 0;
     }
-    IO_ERRORS.with_borrow_mut(|errors| {
+    with_io_errors(|errors| {
         if !errors.iter().any(|(c, _, _)| *c == conn) {
             errors.push((conn, if code == 0 { libc::EIO } else { code }, false));
         }
@@ -468,7 +479,7 @@ pub extern "C" fn swoole_pgsql_connectdb(conninfo: Text<'_>) -> *mut PGconn {
 #[unsafe(no_mangle)]
 pub extern "C" fn swoole_pgsql_finish(conn: OwnedConn) {
     let finished = conn.conn();
-    IO_ERRORS.with_borrow_mut(|errors| errors.retain(|(c, _, _)| *c != finished));
+    with_io_errors(|errors| errors.retain(|(c, _, _)| *c != finished));
     PQfinish(conn);
 }
 

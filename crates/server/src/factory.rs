@@ -151,7 +151,7 @@ extern "C" fn accept_command_result(
     let Some(sock) = event.socket() else {
         return 0;
     };
-    if bus.read(sock) <= 0 {
+    if bus.read(sock) <= Some(0) {
         return 0;
     }
     let request_id = bus.head().fd;

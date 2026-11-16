@@ -4,7 +4,7 @@
 //! body, so zlib's 268 KiB of state is allocated once, with malloc.
 #![forbid(unsafe_code)]
 
-use std::cell::RefCell;
+use std::cell::Cell;
 use std::ffi::c_int;
 
 use swoole_rs_zlib::{
@@ -42,7 +42,9 @@ pub fn bound(length: usize) -> usize {
 thread_local! {
     /// The thread's last stream with its level and window bits, which the next
     /// body or message of the same kind resets instead of allocating its own.
-    static KEPT: RefCell<Option<(c_int, c_int, Stream)>> = const { RefCell::new(None) };
+    /// Taken out and set back, never borrowed; zlib's state is boxed inside
+    /// `Stream`, so moving one keeps its pointers good.
+    static KEPT: Cell<Option<(c_int, c_int, Stream)>> = const { Cell::new(None) };
 }
 
 /// A fresh deflate stream at `level` with `window_bits`: the thread's kept one

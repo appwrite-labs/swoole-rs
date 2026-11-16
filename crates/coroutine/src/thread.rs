@@ -5,7 +5,7 @@
 //! Upstream hands off with `std::mutex`es unlocked by threads that didn't lock
 //! them; a baton is a binary semaphore, which any thread may post.
 use crate::Routine;
-use core::cell::RefCell;
+use core::cell::Cell;
 use core::ffi::{c_int, c_void};
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
@@ -51,8 +51,18 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 static SHARED: Mutex<Option<SharedThread>> = Mutex::new(None);
 
 thread_local! {
-    /// A coroutine thread's own record; none on the activating thread.
-    static ME: RefCell<Option<Arc<Thread>>> = const { RefCell::new(None) };
+    /// A coroutine thread's own record; none on the activating thread. Read
+    /// by cloning it out ([`me`]), never borrowed.
+    static ME: Cell<Option<Arc<Thread>>> = const { Cell::new(None) };
+}
+
+/// The calling thread's record, cloned out of [`ME`], which is put back.
+fn me() -> Option<Arc<Thread>> {
+    ME.with(|me| {
+        let mine = me.take();
+        me.set(mine.clone());
+        mine
+    })
 }
 
 /// One coroutine's thread, shared by the thread and its context.
@@ -79,7 +89,7 @@ impl Thread {
 
 /// Waits for the calling thread's baton.
 fn wait_mine() {
-    ME.with_borrow(|me| me.as_deref().map_or(&MAIN, |me| &me.baton).wait());
+    me().as_deref().map_or(&MAIN, |me| &me.baton).wait();
 }
 
 /// A [`THREAD`] context's thread, which `Context` owns; dropping it joins the
@@ -162,7 +172,7 @@ impl Started {
             .thread
             .swap
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) = ME.with_borrow(Clone::clone);
+            .unwrap_or_else(PoisonError::into_inner) = me();
         self.thread.baton.post();
         wait_mine();
         self.thread.end.load(Ordering::Acquire)
