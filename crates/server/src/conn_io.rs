@@ -630,7 +630,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn close_releases_counts_and_moves_the_max_fd() {
         let (live, _clients) = accepted();
         let (serv, reactor) = (live.server(), live.reactor());
@@ -667,7 +666,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn peer_close_notifies_once() {
         let (live, _clients) = accepted();
         let (serv, reactor) = (live.server(), live.reactor());
@@ -690,7 +688,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn peer_close_closes_when_nobody_is_told() {
         let (live, _clients) = accepted();
         live.server().config().disable_notify.set(true);
@@ -702,7 +699,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn prequeue_keeps_a_synchronous_process_response() {
         let (mut live, _clients) = accepted();
         let (state, conn) = (live.state(), session(&live, 1));
@@ -742,7 +738,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn write_flushes_the_output_then_reads_again() {
         use std::io::Read;
         let (live, [mut client, _]) = accepted();
@@ -769,7 +764,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn write_notifies_or_closes_a_pending_close() {
         let (live, _clients) = accepted();
         let (serv, reactor) = (live.server(), live.reactor());
@@ -821,7 +815,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn read_lets_the_port_read() {
         let (live, _clients) = reading();
         let (serv, reactor) = (live.server(), live.reactor());
@@ -841,7 +834,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn read_fails_on_a_port_without_on_read() {
         let (live, _clients) = reading();
         live.port().on_read.set(None);
@@ -853,7 +845,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn read_pauses_a_process_connection_over_its_queue() {
         let (mut live, _clients) = reading();
         let (serv, reactor) = (live.server(), live.reactor());
@@ -882,7 +873,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn read_aborts_a_failed_dtls_handshake() {
         let (live, _clients) = reading();
         let conn = session(&live, 1);
@@ -898,7 +888,6 @@ pub(crate) mod tests {
 
     // tests/modules/halfclose: a read event cached across a queued close.
     #[test]
-    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn prequeue_reads_stop_at_a_queued_or_notified_close() {
         let (live, _clients) = reading();
         let (serv, reactor) = (live.server(), live.reactor());
@@ -959,7 +948,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn a_plain_connection_needs_no_handshake() {
         let (live, _clients) = accepted();
         let sock = session(&live, 1).socket().unwrap();
