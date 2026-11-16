@@ -490,9 +490,10 @@ pub fn listen(fd: c_int, backlog: c_int) -> std::io::Result<()> {
 }
 
 /// `socket(2)`.
-#[must_use]
-pub fn socket(domain: c_int, kind: c_int, protocol: c_int) -> c_int {
-    c::socket(domain, kind, protocol)
+/// # Errors
+/// The syscall's errno.
+pub fn socket(domain: c_int, kind: c_int, protocol: c_int) -> std::io::Result<c_int> {
+    descriptor_result(c::socket(domain, kind, protocol))
 }
 
 /// `shutdown(2)`.
@@ -543,6 +544,15 @@ pub fn setsockopt_bytes(fd: c_int, level: c_int, name: c_int, value: &[u8]) -> s
     status_result(status)
 }
 
+/// Capture a descriptor-producing syscall's errno before another operation.
+fn descriptor_result(fd: c_int) -> std::io::Result<c_int> {
+    if fd < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(fd)
+    }
+}
+
 /// Capture a status syscall's errno before another operation can overwrite it.
 fn status_result(status: c_int) -> std::io::Result<()> {
     if status == 0 {
@@ -572,14 +582,17 @@ pub fn send(fd: c_int, buf: &[u8], flags: c_int) -> Option<usize> {
 }
 
 /// `dup(2)`.
-#[must_use]
-pub fn dup(fd: c_int) -> c_int {
-    c::dup(fd)
+/// # Errors
+/// The syscall's errno.
+pub fn dup(fd: c_int) -> std::io::Result<c_int> {
+    descriptor_result(c::dup(fd))
 }
 
 /// `dup2(2)`.
-pub fn dup2(from: c_int, to: c_int) -> c_int {
-    c::dup2(from, to)
+/// # Errors
+/// The syscall's errno.
+pub fn dup2(from: c_int, to: c_int) -> std::io::Result<c_int> {
+    descriptor_result(c::dup2(from, to))
 }
 
 /// `fcntl(2)` with an integer argument (`F_GETFL`, `F_SETFL`, `F_GETFD`,
@@ -1213,13 +1226,31 @@ mod tests {
     }
 
     #[test]
+    fn descriptor_errors_survive_errno_changes() {
+        let copy_error = dup(-1).unwrap_err();
+        let [reader, writer] = pipe().unwrap();
+        let replace_error = dup2(-1, writer).unwrap_err();
+        set_errno(libc::EINTR);
+        assert_eq!(copy_error.raw_os_error(), Some(libc::EBADF));
+        assert_eq!(replace_error.raw_os_error(), Some(libc::EBADF));
+        // A failed dup2 leaves the target open, including when source is invalid.
+        assert_eq!(write(writer, b"x"), Some(1));
+        let mut byte = [0];
+        assert_eq!(read(reader, &mut byte), Some(1));
+        assert_eq!(byte, *b"x");
+        assert_eq!(dup2(writer, writer).unwrap(), writer);
+        close(reader).unwrap();
+        close(writer).unwrap();
+    }
+
+    #[test]
     fn descriptor_calls_round_trip_through_a_pipe() {
         let mut fds = [0; 2];
         // SAFETY: `fds` holds two descriptors.
         assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
         let [reader, writer] = fds;
         assert_eq!(write(writer, b"abc"), Some(3));
-        let copy = dup(reader);
+        let copy = dup(reader).unwrap_or(-1);
         assert!(copy >= 0);
         assert_eq!(fcntl(copy, libc::F_SETFL, libc::O_NONBLOCK), 0);
         assert_ne!(fcntl(copy, libc::F_GETFL, 0) & libc::O_NONBLOCK, 0);
@@ -1251,6 +1282,13 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no socket options")]
     fn socket_option_errors_keep_errno_and_failed_output() {
+        let socket_error = socket(-1, libc::SOCK_STREAM, 0).unwrap_err();
+        let socket_errno = errno();
+        let descriptor = socket(libc::AF_UNIX, libc::SOCK_STREAM, 0).unwrap();
+        close(descriptor).unwrap();
+        set_errno(libc::EINTR);
+        assert_eq!(socket_error.raw_os_error(), Some(socket_errno));
+        assert_ne!(socket_errno, 0);
         let mut value: c_int = 73;
         let read = getsockopt(-1, libc::SOL_SOCKET, libc::SO_TYPE, &mut value).unwrap_err();
         let write = setsockopt(-1, libc::SOL_SOCKET, libc::SO_KEEPALIVE, &1_i32).unwrap_err();

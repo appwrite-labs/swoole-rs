@@ -231,7 +231,7 @@ pub(crate) fn pipe_blocking(worker: Worker<'_>, blocking: bool) -> bool {
 
 /// `daemon(pipes:)`: `dup2(from, to)`, warning on failure.
 pub(crate) fn dup(from: c_int, to: c_int) {
-    if swoole_rs_corebase::sys::dup2(from, to) < 0 {
+    if swoole_rs_corebase::sys::dup2(from, to).is_err() {
         swoole_rs_corebase::log::sys_warning(
             c"zim_swoole_process_daemon",
             format_args!("dup2({from}, {to}) failed"),

@@ -133,10 +133,9 @@ pub(crate) static PORT: CustomClass<PortData> = CustomClass::new();
 /// Swoole was built with ext/sockets. `port` is a live `ListenPort`.
 pub(crate) fn socket(port: swoole_rs_server::view::Port<'_>, call: &Call) {
     let fd = port.fd();
-    let fd = swoole_rs_corebase::sys::dup(fd);
-    if fd < 0 {
+    let Ok(fd) = swoole_rs_corebase::sys::dup(fd) else {
         return call.set_bool(false);
-    }
+    };
     let socket = swoole_rs_phpswoole::socket_create(fd).0;
     // The reference upstream's `sw_zval_dup` leaks.
     #[expect(

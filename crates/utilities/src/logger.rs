@@ -183,12 +183,12 @@ impl State {
             effects.push(Effect::Warning("has been redirected"));
             return false;
         }
-        self.stdout_fd = sys::dup(libc::STDOUT_FILENO);
+        self.stdout_fd = sys::dup(libc::STDOUT_FILENO).unwrap_or(-1);
         if self.stdout_fd < 0 {
             effects.push(Effect::SysWarning("dup(STDOUT_FILENO) failed", errno()));
             return false;
         }
-        self.stderr_fd = sys::dup(libc::STDERR_FILENO);
+        self.stderr_fd = sys::dup(libc::STDERR_FILENO).unwrap_or(-1);
         if self.stderr_fd < 0 {
             effects.push(Effect::SysWarning("dup(STDERR_FILENO) failed", errno()));
             return false;
@@ -203,10 +203,10 @@ impl State {
             effects.push(Effect::Warning("no redirected"));
             return false;
         }
-        if sys::dup2(self.stdout_fd, libc::STDOUT_FILENO) < 0 {
+        if sys::dup2(self.stdout_fd, libc::STDOUT_FILENO).is_err() {
             effects.push(Effect::SysWarning("dup2(STDOUT_FILENO) failed", errno()));
         }
-        if sys::dup2(self.stderr_fd, libc::STDERR_FILENO) < 0 {
+        if sys::dup2(self.stderr_fd, libc::STDERR_FILENO).is_err() {
             effects.push(Effect::SysWarning("dup2(STDERR_FILENO) failed", errno()));
         }
         // The descriptors `redirect` duplicated, closed once.
