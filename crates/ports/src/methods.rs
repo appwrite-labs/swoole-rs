@@ -12,11 +12,7 @@ use swoole_rs_corebase::log;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_reactor::socket_upstream::make_typed;
 use swoole_rs_reactor::{Running, SocketRecord};
-#[cfg(not(test))]
 pub(crate) use swoole_rs_tls::upstream::socket_free;
-
-#[cfg(test)]
-pub(crate) use tests::socket_free;
 
 /// `SW_FD_STREAM_SERVER` and `SW_FD_DGRAM_SERVER`.
 pub(crate) const FD_STREAM_SERVER: c_int = 1;
@@ -299,7 +295,6 @@ struct Callbacks {
     websocket_length: GetPackageLength,
 }
 
-#[cfg(not(test))]
 const CALLBACKS: Callbacks = {
     use crate::http_routes::exports as http;
     Callbacks {
@@ -311,22 +306,6 @@ const CALLBACKS: Callbacks = {
         http_length_size: http::get_package_length_size,
         http2_length: http::http2_length,
         websocket_length: crate::http_routes::websocket_length,
-    }
-};
-
-/// Tests link no C++: each callback is a distinct stub.
-#[cfg(test)]
-const CALLBACKS: Callbacks = {
-    use tests::{length, package};
-    Callbacks {
-        dispatch_task: package::<0>,
-        http_dispatch_frame: package::<1>,
-        websocket_dispatch_frame: package::<2>,
-        default_length: length::<0>,
-        http_length: length::<1>,
-        http_length_size: tests::length_size,
-        http2_length: length::<2>,
-        websocket_length: length::<3>,
     }
 };
 
@@ -453,11 +432,7 @@ pub(crate) fn destroy_http_request(conn: swoole_rs_server::Connection<'_>) {
     request_free(request.map(|request| unsafe { Box::from_raw(request) }));
 }
 
-#[cfg(not(test))]
 use crate::read_native::on_read;
-
-#[cfg(test)]
-use tests::on_read;
 
 /// Each static `readable_callback_*`: its Rust name and readable kind.
 macro_rules! readable_callbacks {
@@ -539,48 +514,18 @@ mod tests {
     use swoole_rs_clients::protocol::Protocol;
     use swoole_rs_corebase::net_types::PacketLength;
 
-    /// `Socket::free()` for a socket no loop, timer or buffer has seen: tests link no
-    /// C++, which `socket_free` reaches under `upstream-symbols`.
-    pub(crate) unsafe fn socket_free(socket: *mut SocketRecord) {
-        // SAFETY: the caller's live record.
-        let fd = unsafe { (*socket).fields.fd };
-        swoole_rs_corebase::sys::close(fd);
-        // SAFETY: Rust allocated the record and nothing uses it after.
-        unsafe { SocketRecord::free(socket) };
-    }
-
     /// A readable callback's address.
     fn reader(function: Reader) -> *mut c_void {
         function as *mut c_void
     }
 
-    /// Tests link no C++: the readable kind stands in for the read.
-    pub(super) fn on_read(
-        _: Running<'_>,
-        _: view::Port<'_>,
-        _: ReadEvent<'_>,
-        kind: Readable,
-    ) -> c_int {
-        kind as c_int
-    }
-
-    /// Stub callbacks, each body distinct so that no two share an address.
-    pub(super) unsafe extern "C-unwind" fn package<const N: u8>(
-        _: *const Protocol,
-        _: swoole_rs_reactor::Socket<'_>,
-        _: &swoole_rs_corebase::net_types::RecvData,
-    ) -> c_int {
-        N.into()
-    }
+    /// A stub length function, each `N` a distinct body and address.
     pub(super) unsafe extern "C" fn length<const N: u8>(
         _: *const Protocol,
         _: *mut c_void,
         _: &mut PacketLength,
     ) -> isize {
         N.into()
-    }
-    pub(super) unsafe extern "C" fn length_size(_: *mut c_void) -> u8 {
-        0
     }
 
     /// A length function's address, 0 for none.
