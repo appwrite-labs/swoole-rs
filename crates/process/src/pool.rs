@@ -570,11 +570,7 @@ impl<'a> Worker<'a> {
                 )?;
                 if let Some(stream) = self.connection() {
                     let socket = std::mem::replace(&mut stream.connection, ptr::null_mut());
-                    let response = stream
-                        .response
-                        .as_mut()
-                        .map(std::mem::take)
-                        .unwrap_or_default();
+                    let response = stream.response.as_mut().map_or_default(std::mem::take);
                     if !response.is_empty() {
                         let head = response.len().c_cast::<u32>().to_be_bytes();
                         self.send(socket, &head)?;

@@ -519,10 +519,7 @@ impl Co {
     pub fn connect_host(self, host: &[u8], port: c_int) -> bool {
         // The shared context, taken for the connect and put back after it.
         let shared = self.resolve_context();
-        let mut resolve = shared
-            .as_deref()
-            .map(core::cell::Cell::take)
-            .unwrap_or_default();
+        let mut resolve = shared.as_deref().map_or_default(core::cell::Cell::take);
         let proxies = self.with_extra(|extra| extra.proxies.clone());
         let [socks5, http] = proxies.unwrap_or_default();
         let mut live = Live {
