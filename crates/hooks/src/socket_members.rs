@@ -592,7 +592,7 @@ impl Co {
             #[cfg(feature = "iouring")]
             // The ring's path fills the same record's peer address itself.
             if let Some(n) = ring::with(self, |ops| ring::recvfrom_peer(ops, buf)) {
-                return count(n);
+                return n;
             }
             let fd = self.sock_fd();
             // The record's peer address and its length, as `recvfrom_peer` lends them.
