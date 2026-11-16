@@ -611,6 +611,23 @@ fn writable_after_connect_starts_the_socks5_handshake() {
 }
 
 #[test]
+fn stream_read_hands_the_socks5_handshake_the_bytes_received() {
+    let client = client(1, true, true);
+    set_proxy(client, false);
+    assert!(writable(client));
+    Handle(client).input_init();
+    taken();
+    mock(|m| m.io = vec![2]);
+    assert!(on_read(Handle(client)));
+    assert_eq!(taken()[..2], ["recv 65536", "socks5 2"]);
+    assert_eq!(
+        Handle(client).proxy_state(Proxy::Socks5),
+        Some(SOCKS5_READY)
+    );
+    free(client);
+}
+
+#[test]
 fn writable_after_a_failed_connect_reports_the_error() {
     let client = client(1, true, true);
     mock(|m| m.socket_error = libc::ECONNREFUSED);

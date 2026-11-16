@@ -430,7 +430,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
     fn kernel_nobufs_takes_the_sockets_flag_or_in_process_mode_the_reactor_pipes() {
         use crate::records::ConnectionRecord;
         use crate::records::tests::naming;

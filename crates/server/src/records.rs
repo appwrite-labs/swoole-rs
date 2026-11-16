@@ -176,15 +176,6 @@ impl Session<'_> {
     field!(reactor_bits, set_reactor_bits: u32);
 }
 
-/// What [`ServerTables::reset_connection`] clears of a slot.
-#[derive(Clone, Copy)]
-pub(crate) enum Zeroed {
-    /// From `socket_type` up to `closed`, before an accept reuses the slot.
-    Reused,
-    /// The whole slot.
-    Whole,
-}
-
 impl<'a> Connection<'a> {
     field!(socket_type, set_socket_type: c_int);
     field!(fd, set_fd: c_int);
@@ -457,30 +448,37 @@ impl ServerTables {
         Some(self.connections().get(usize::try_from(fd).ok()?)?.into())
     }
 
-    /// Zeroes the bytes of `fd`'s slot that `extent` names, as upstream's `memset`s
-    /// do; an all-zero record is an empty slot, and what the cleared fields held is
-    /// forgotten, not freed. It writes through the table's own pointer: the padding
-    /// between the cells is no cell, so a slot's shared borrow can't write it. Borrow
-    /// the slot again afterwards.
-    pub(crate) fn reset_connection(&self, fd: c_int, extent: Zeroed) {
+    /// Zeroes `fd`'s slot from after `active` up to `closed`, as upstream does on
+    /// reuse. Borrow the slot again afterwards.
+    pub(crate) fn reset_connection(&self, fd: c_int) {
+        let start = core::mem::offset_of!(ConnectionRecord, socket_type);
+        self.zero_connection(fd, start..core::mem::offset_of!(ConnectionRecord, closed));
+    }
+
+    /// Zeroes all of `fd`'s slot, as a DTLS session that fails its setup leaves it.
+    /// Borrow the slot again afterwards.
+    pub(crate) fn clear_connection(&self, fd: c_int) {
+        self.zero_connection(fd, 0..size_of::<ConnectionRecord>());
+    }
+
+    /// Zeroes `bytes` of `fd`'s slot, a range within a record. It writes through the
+    /// table's own pointer: the padding between the cells is no cell, so a slot's
+    /// shared borrow can't write it.
+    fn zero_connection(&self, fd: c_int, bytes: core::ops::Range<usize>) {
         let Some(index) = usize::try_from(fd)
             .ok()
             .filter(|&i| i < self.connections().len())
         else {
             return;
         };
-        let (start, end) = match extent {
-            Zeroed::Reused => (
-                core::mem::offset_of!(ConnectionRecord, socket_type),
-                core::mem::offset_of!(ConnectionRecord, closed),
-            ),
-            Zeroed::Whole => (0, size_of::<ConnectionRecord>()),
-        };
         let record = self.connection_list.as_ptr().cast::<ConnectionRecord>();
-        let bytes = record.wrapping_add(index).cast::<u8>().wrapping_add(start);
-        // SAFETY: a slot of the mapped table, which `connections` bounds, written
-        // through the mapping's own pointer.
-        unsafe { bytes.write_bytes(0, end - start) };
+        let start = record
+            .wrapping_add(index)
+            .cast::<u8>()
+            .wrapping_add(bytes.start);
+        // SAFETY: bytes of a slot of the mapped table, which `connections` bounds,
+        // written through the mapping's own pointer.
+        unsafe { start.write_bytes(0, bytes.len()) };
     }
 
     /// Session slot `index` (below `SW_SESSION_LIST_SIZE`), or none before the table is
@@ -806,5 +804,46 @@ pub(crate) mod tests {
                     .is_null()
             );
         }
+    }
+
+    /// A reset keeps a slot's `active` and `closed` and zeroes what lies between; a
+    /// clear zeroes all of it; neither reaches outside the table.
+    #[test]
+    fn reset_and_clear_zero_their_part_of_one_slot() {
+        let mut server = TestServer::new();
+        // SAFETY: a connection record is plain data; zero is a closed one.
+        let mut connections: [ConnectionRecord; 3] = unsafe { core::mem::zeroed() };
+        let at = (&raw mut connections).cast::<ConnectionRecord>();
+        server.tables_mut().connection_list = naming_at(at);
+        let tables = server.state().tables_ref();
+        // SAFETY: the table above holds 3 records.
+        unsafe { tables.set_max_connection_unchecked(3) };
+        let fill = |slot: &ConnectionRecord| {
+            slot.active.store(1, Relaxed);
+            slot.fd.set(7);
+            slot.reactor_id.set(2);
+            slot.closed.store(1, Relaxed);
+        };
+        let read = |index: usize| {
+            // SAFETY: a record of the table, read afresh after each write.
+            let slot = unsafe { &*at.add(index) };
+            (
+                slot.active.load(Relaxed),
+                slot.fd.get(),
+                slot.reactor_id.get(),
+                slot.closed.load(Relaxed),
+            )
+        };
+        for index in 0..3 {
+            // SAFETY: as above.
+            fill(unsafe { &*at.add(index) });
+        }
+        tables.reset_connection(1);
+        tables.clear_connection(2);
+        tables.reset_connection(3);
+        tables.clear_connection(-1);
+        assert_eq!(read(0), (1, 7, 2, 1), "untouched");
+        assert_eq!(read(1), (1, 0, 0, 1), "reset");
+        assert_eq!(read(2), (0, 0, 0, 0), "cleared");
     }
 }

@@ -88,7 +88,7 @@ fn accept(
         swoole_rs_corebase::fatal("OpenSSL internal error: assertion failed: 0");
     }
     let origin = c"Server::accept_dtls_connection";
-    let mut conn = None;
+    let mut added = false;
     'setup: {
         if !bind(socket, kind, &host, number) {
             log::sys_warning(origin, format_args!("bind() failed"));
@@ -106,8 +106,8 @@ fn accept(
             socket.info = *sa;
             socket.chunk_size = SW_SSL_BUFFER_SIZE;
         });
-        conn = crate::connection::add(serv, listen, socket, server_fd);
-        if conn.is_none() {
+        added = crate::connection::add(serv, listen, socket, server_fd).is_some();
+        if !added {
             break 'setup;
         }
         // `ListenPort::create_dtls_session(sock)`, over the port's context.
@@ -116,10 +116,8 @@ fn accept(
             return Some(socket);
         }
     }
-    if let Some(conn) = conn {
-        serv.state()
-            .tables_ref()
-            .reset_connection(conn.fd(), crate::records::Zeroed::Whole);
+    if added {
+        serv.state().tables_ref().clear_connection(fd);
     }
     // SAFETY: the heap record made above, which nothing uses afterwards.
     let socket = unsafe { swoole_rs_reactor::OwnedSocket::from_socket(socket) };

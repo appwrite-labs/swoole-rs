@@ -135,9 +135,7 @@ pub fn add<'a>(
     conn.closed().load(Acquire);
     // Upstream zeroes the slot up to `closed`; other reactor threads read `active`.
     conn.active().store(0, Relaxed);
-    state
-        .tables_ref()
-        .reset_connection(fd, crate::records::Zeroed::Reused);
+    state.tables_ref().reset_connection(fd);
     let conn = state.tables_ref().connection_at(fd)?;
 
     // `sw_spinlock`, with `SW_SPINLOCK_LOOP_N`.

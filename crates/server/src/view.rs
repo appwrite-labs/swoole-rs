@@ -818,7 +818,6 @@ mod tests {
     /// one, or one with a manager or a task worker. Unit tests link no
     /// `swr_v1_server_new`, so the test lends the server its shared record.
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
     fn only_a_single_base_worker_that_ran_here_and_was_not_destroyed_counts() {
         let mut server = crate::TestServer::new();
         let config = server.config_mut();
@@ -860,7 +859,6 @@ mod tests {
     /// A port counts its connections in the per-worker cells when it has them, one
     /// per event worker, and in its one shared count otherwise.
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
     fn port_counts_use_the_shared_worker_cells_when_present() {
         use crate::PortCounters;
         let server = crate::TestServer::new();

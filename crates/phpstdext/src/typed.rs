@@ -775,8 +775,8 @@ fn check_appended(typed: Typed, call: &Call) -> bool {
 
 /// An override: unless the first argument names a typed array that `allowed`
 /// refuses (Zend has thrown), run the `original` handler, then, with `remark`,
-/// flag the table it rebuilt in place typed again. The original may bail out
-/// through this frame and its handler's, which own nothing to drop.
+/// flag the table it rebuilt in place typed again. A bailout in the original
+/// is trapped and deferred to the handler's end, with no table flagged.
 fn guarded(
     call: &Call,
     original: fn(&Originals) -> zif_handler,
@@ -789,19 +789,21 @@ fn guarded(
     {
         return;
     }
-    if let Some(handler) = ORIGINALS.get().and_then(original) {
-        // SAFETY: a core function's handler, whose whole contract is a live
-        // handler frame and return slot: `call`'s. It parses its own arguments.
-        unsafe { handler(call.frame(), call.return_value()) };
+    if let Some(handler) = ORIGINALS.get().map(original)
+        && handler.is_some()
+        && let Err(bailout) = call.forward(handler)
+    {
+        bailout.defer();
+        return;
     }
     if remark && let Some(typed) = target {
         typed.mark();
     }
 }
 
-// Upstream's `PHP_FUNCTION` names; `install` puts them in the core functions' slots.
+// Upstream's `PHP_FUNCTION` names; `install` puts them in the core functions'
+// slots. Each ends by raising the bailout `guarded` deferred.
 swoole_rs_zend::handlers! {
-    leaf:
     zif_swoole_array_push => push;
     zif_swoole_array_unshift => unshift;
     zif_swoole_array_splice => splice;
