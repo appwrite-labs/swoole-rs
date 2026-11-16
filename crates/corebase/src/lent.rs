@@ -49,8 +49,14 @@ impl<'id> In<'id, u8> {
     }
 }
 
-impl<'id> Out<'id, u8> {
-    /// The same bytes, as the `char`s a call takes.
+impl<'id, S: ReadSlot> Out<'id, S> {
+    /// The same one-byte slots, as the untyped address a call takes.
+    #[inline]
+    pub(crate) fn bytes(self) -> Out<'id> {
+        Out(self.0.cast(), PhantomData)
+    }
+
+    /// The same one-byte slots, as the `char`s a call takes.
     #[inline]
     pub(crate) fn chars(self) -> Out<'id, c_char> {
         Out(self.0.cast(), PhantomData)
@@ -203,6 +209,33 @@ unsafe extern "C" {
         size: Count<'id>,
         found: &mut *mut libc::passwd,
     ) -> c_int;
+    /// Writes `count` items of `size` bytes from `items` to an open stream.
+    pub(crate) safe fn fwrite<'id>(
+        items: In<'id>,
+        size: OneByte,
+        count: Count<'id>,
+        stream: crate::Stream,
+    ) -> usize;
+    /// Flushes an open stream.
+    pub(crate) safe fn fflush(stream: crate::Stream) -> c_int;
+    /// Fills at most `count` bytes of `buf` from the kernel's CSPRNG.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    pub(crate) safe fn getrandom<'id>(
+        buf: Out<'id>,
+        count: Count<'id>,
+        flags: std::ffi::c_uint,
+    ) -> isize;
+    /// Fills `count` bytes of `buf` from the CSPRNG.
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    pub(crate) safe fn arc4random_buf<'id>(buf: Out<'id>, count: Count<'id>);
+}
+
+/// An item size of one byte, so a [`Count`] of bytes counts items: the only value.
+#[repr(transparent)]
+pub(crate) struct OneByte(usize);
+
+impl OneByte {
+    pub(crate) const SIZE: Self = Self(1);
 }
 
 /// `len` bytes at `at` that a read may overwrite, lent for `'a`: null, or writable
