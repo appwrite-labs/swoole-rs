@@ -459,7 +459,7 @@ fn head_field<const N: usize>(msg: &[u8; EVENT_DATA_SIZE], offset: usize) -> [u8
 
 /// `pool->onWorkerMessage`: `Server::read_worker_message` over the pool's server
 /// and the message it popped: a command request from a worker.
-extern "C-unwind" fn read_worker_message(pool: PoolRef<'_>, msg: &[u8; EVENT_DATA_SIZE]) {
+fn read_worker_message(pool: PoolRef<'_>, msg: &[u8; EVENT_DATA_SIZE]) {
     use core::mem::offset_of;
     let Some(serv) = crate::shared::pool_server(pool) else {
         return;

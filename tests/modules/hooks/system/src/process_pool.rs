@@ -748,11 +748,7 @@ fn test_func(pool: *mut Pool) {
     destroy(pool);
 }
 
-extern "C-unwind" fn task_protocol_on_task(
-    pool: PoolRef<'_>,
-    _: WorkerHandle<'_>,
-    task: Packed<'_>,
-) -> c_int {
+fn task_protocol_on_task(pool: PoolRef<'_>, _: WorkerHandle<'_>, task: Packed<'_>) -> c_int {
     let pool = pool.raw().cast::<Pool>();
     // SAFETY: the running pool.
     unsafe { (*pool).running = false };
@@ -774,7 +770,7 @@ fn test_func_task_protocol(pool: *mut Pool) {
     test_func(pool);
 }
 
-extern "C-unwind" fn message_protocol_on_message(pool: PoolRef<'_>, rdata: &RecvData<'_>) {
+fn message_protocol_on_message(pool: PoolRef<'_>, rdata: &RecvData<'_>) {
     let pool = pool.raw().cast::<Pool>();
     // SAFETY: the running pool.
     unsafe { (*pool).running = false };
@@ -796,7 +792,7 @@ fn test_func_message_protocol(pool: *mut Pool) {
     test_func(pool);
 }
 
-extern "C-unwind" fn stream_protocol_on_message(pool: PoolRef<'_>, rdata: &RecvData<'_>) {
+fn stream_protocol_on_message(pool: PoolRef<'_>, rdata: &RecvData<'_>) {
     let pool = pool.raw().cast::<Pool>();
     // SAFETY: the running pool.
     unsafe { (*pool).running = false };
@@ -841,7 +837,7 @@ fn unix_sock() {
     test_func_task_protocol(pool);
 }
 
-extern "C-unwind" fn tcp_raw_on_message(pool: PoolRef<'_>, rdata: &RecvData<'_>) {
+fn tcp_raw_on_message(pool: PoolRef<'_>, rdata: &RecvData<'_>) {
     let pool = pool.raw().cast::<Pool>();
     // SAFETY: the running pool.
     unsafe { (*pool).running = false };
@@ -951,7 +947,7 @@ extern "C" fn stop_current_pool(_: c_int) {
     unsafe { (*current_pool()).running = false };
 }
 
-extern "C-unwind" fn with_timer_on_worker_start(pool: PoolRef<'_>, _: WorkerHandle<'_>) {
+fn with_timer_on_worker_start(pool: PoolRef<'_>, _: WorkerHandle<'_>) {
     let pool = pool.raw().cast::<Pool>();
     CURRENT_POOL.store(pool, SeqCst);
     after(50, |_| {
@@ -960,7 +956,7 @@ extern "C-unwind" fn with_timer_on_worker_start(pool: PoolRef<'_>, _: WorkerHand
     });
 }
 
-extern "C-unwind" fn with_timer_on_message(pool: PoolRef<'_>, rdata: &RecvData<'_>) {
+fn with_timer_on_message(pool: PoolRef<'_>, rdata: &RecvData<'_>) {
     let pool = pool.raw().cast::<Pool>();
     ms_sleep(10000);
     // SAFETY: the pool's message.
@@ -1002,18 +998,14 @@ fn stream_protocol_with_msgq() {
     test_func_stream_protocol(pool);
 }
 
-extern "C-unwind" fn shutdown_on_worker_start(pool: PoolRef<'_>, _: WorkerHandle<'_>) {
+fn shutdown_on_worker_start(pool: PoolRef<'_>, _: WorkerHandle<'_>) {
     let pool = pool.raw().cast::<Pool>();
     // SAFETY: the case's shared int.
     unsafe { *(*pool).ptr.cast::<c_int>() = MAGIC_NUMBER };
     ms_sleep(1);
 }
 
-extern "C-unwind" fn shutdown_on_task(
-    pool: PoolRef<'_>,
-    _: WorkerHandle<'_>,
-    _: Packed<'_>,
-) -> c_int {
+fn shutdown_on_task(pool: PoolRef<'_>, _: WorkerHandle<'_>, _: Packed<'_>) -> c_int {
     let pool = pool.raw().cast::<Pool>();
     ms_sleep(1000);
     // SAFETY: kill(2) on the master.
@@ -1021,7 +1013,7 @@ extern "C-unwind" fn shutdown_on_task(
     0
 }
 
-extern "C-unwind" fn dispatch_random_128(pool: PoolRef<'_>) {
+fn dispatch_random_128(pool: PoolRef<'_>) {
     let pool = pool.raw().cast::<Pool>();
     let mut msg = EventData::new();
     msg.info.len = 128;
@@ -1071,7 +1063,7 @@ extern "C" fn reopen_current_logger(_: c_int) {
     unsafe { pool_reopen_logger(current_pool()) };
 }
 
-extern "C-unwind" fn reload_on_worker_start(pool: PoolRef<'_>, _: WorkerHandle<'_>) {
+fn reload_on_worker_start(pool: PoolRef<'_>, _: WorkerHandle<'_>) {
     let pool = pool.raw().cast::<Pool>();
     counter_incr(0);
     CURRENT_POOL.store(pool, SeqCst);
@@ -1090,7 +1082,7 @@ extern "C-unwind" fn reload_on_worker_start(pool: PoolRef<'_>, _: WorkerHandle<'
     }
 }
 
-extern "C-unwind" fn reload_on_start(pool: PoolRef<'_>) {
+fn reload_on_start(pool: PoolRef<'_>) {
     let pool = pool.raw().cast::<Pool>();
     // SAFETY: the started pool.
     unsafe { pool_reopen_logger(pool) };
@@ -1104,9 +1096,9 @@ extern "C-unwind" fn reload_on_start(pool: PoolRef<'_>) {
     });
 }
 
-extern "C-unwind" fn reload_on_before_reload(_: PoolRef<'_>) {}
+fn reload_on_before_reload(_: PoolRef<'_>) {}
 
-extern "C-unwind" fn reload_on_after_reload(pool: PoolRef<'_>) {
+fn reload_on_after_reload(pool: PoolRef<'_>) {
     let pool = pool.raw().cast::<Pool>();
     after(100, move |_| {
         // SAFETY: the started pool.
@@ -1114,15 +1106,11 @@ extern "C-unwind" fn reload_on_after_reload(pool: PoolRef<'_>) {
     });
 }
 
-extern "C-unwind" fn reload_on_worker_error(
-    _: PoolRef<'_>,
-    _: WorkerHandle<'_>,
-    exit_status: &ExitStatus,
-) {
+fn reload_on_worker_error(_: PoolRef<'_>, _: WorkerHandle<'_>, exit_status: &ExitStatus) {
     assert_eq!(term_signal(exit_status), SIGKILL);
 }
 
-extern "C-unwind" fn reload_on_worker_message(_: PoolRef<'_>, msg: &Message) {
+fn reload_on_worker_message(_: PoolRef<'_>, msg: &Message) {
     // SAFETY: the bytes of an EventData.
     let msg = unsafe { ptr::from_ref(msg).cast::<EventData>().read_unaligned() };
     assert_eq!(msg.info.kind, SW_WORKER_MESSAGE_STOP + 1);
@@ -1130,7 +1118,7 @@ extern "C-unwind" fn reload_on_worker_message(_: PoolRef<'_>, msg: &Message) {
     assert_eq!(msg.payload(), &TEST_STR[..len]);
 }
 
-extern "C-unwind" fn reload_on_worker_not_found(pool: PoolRef<'_>, exit_status: &ExitStatus) {
+fn reload_on_worker_not_found(pool: PoolRef<'_>, exit_status: &ExitStatus) {
     let pool = pool.raw().cast::<Pool>();
     assert_eq!(exit_status.pid(), counter_get(20));
     assert_eq!(exit_code(exit_status), 123);
@@ -1209,13 +1197,13 @@ extern "C" fn async_stop_current_worker(_: c_int) {
     unsafe { pool_stop(current_pool(), CURRENT_WORKER.load(SeqCst)) };
 }
 
-extern "C-unwind" fn async_on_start(pool: PoolRef<'_>) {
+fn async_on_start(pool: PoolRef<'_>) {
     let pool = pool.raw().cast::<Pool>();
     CURRENT_POOL.store(pool, SeqCst);
     sysv(SIGTERM, handler(stop_current_pool));
 }
 
-extern "C-unwind" fn async_on_worker_start(pool: PoolRef<'_>, worker: WorkerHandle<'_>) {
+fn async_on_worker_start(pool: PoolRef<'_>, worker: WorkerHandle<'_>) {
     let pool = pool.raw().cast::<Pool>();
     let worker = worker.raw().cast::<Worker>();
     counter_set(0, MAGIC_NUMBER);
@@ -1229,7 +1217,7 @@ extern "C-unwind" fn async_on_worker_start(pool: PoolRef<'_>, worker: WorkerHand
     ms_sleep(10);
 }
 
-extern "C-unwind" fn async_on_message(pool: PoolRef<'_>, _: &RecvData<'_>) {
+fn async_on_message(pool: PoolRef<'_>, _: &RecvData<'_>) {
     let pool = pool.raw().cast::<Pool>();
     counter_incr(0);
     // SAFETY: kill(2) on the master.
@@ -1288,7 +1276,7 @@ extern "C" fn async_mb_stop_worker(_: c_int) {
     unsafe { pool_stop(current_pool(), current_worker()) };
 }
 
-extern "C-unwind" fn async_mb_on_worker_start(pool: PoolRef<'_>, worker: WorkerHandle<'_>) {
+fn async_mb_on_worker_start(pool: PoolRef<'_>, worker: WorkerHandle<'_>) {
     let pool = pool.raw().cast::<Pool>();
     let worker = worker.raw().cast::<Worker>();
     CURRENT_WORKER.store(worker, SeqCst);
@@ -1302,7 +1290,7 @@ extern "C-unwind" fn async_mb_on_worker_start(pool: PoolRef<'_>, worker: WorkerH
     ms_sleep(10);
 }
 
-extern "C-unwind" fn async_mb_on_worker_stop(pool: PoolRef<'_>, worker: WorkerHandle<'_>) {
+fn async_mb_on_worker_stop(pool: PoolRef<'_>, worker: WorkerHandle<'_>) {
     let pool = pool.raw().cast::<Pool>();
     let worker = worker.raw().cast::<Worker>();
     CURRENT_WORKER.store(worker, SeqCst);
@@ -1311,7 +1299,7 @@ extern "C-unwind" fn async_mb_on_worker_stop(pool: PoolRef<'_>, worker: WorkerHa
     counter_incr_and_put_log();
 }
 
-extern "C-unwind" fn async_mb_on_worker_exit(_: PoolRef<'_>, _: WorkerHandle<'_>) {
+fn async_mb_on_worker_exit(_: PoolRef<'_>, _: WorkerHandle<'_>) {
     counter_incr_and_put_log();
 }
 
@@ -1320,7 +1308,7 @@ fn send_message(pool: *mut Pool, message: &[u8]) {
     unsafe { pool_send_message(pool, 0, message.as_ptr().cast(), message.len()) };
 }
 
-extern "C-unwind" fn async_mb_on_start(pool: PoolRef<'_>) {
+fn async_mb_on_start(pool: PoolRef<'_>) {
     let pool = pool.raw().cast::<Pool>();
     CURRENT_POOL.store(pool, SeqCst);
     // SAFETY: extern "C" handlers.
@@ -1338,11 +1326,11 @@ extern "C-unwind" fn async_mb_on_start(pool: PoolRef<'_>) {
     });
 }
 
-extern "C-unwind" fn async_mb_on_shutdown(_: PoolRef<'_>) {
+fn async_mb_on_shutdown(_: PoolRef<'_>) {
     counter_incr_and_put_log();
 }
 
-extern "C-unwind" fn async_mb_on_message(pool: PoolRef<'_>, msg: &RecvData<'_>) {
+fn async_mb_on_message(pool: PoolRef<'_>, msg: &RecvData<'_>) {
     let pool = pool.raw().cast::<Pool>();
     // SAFETY: the pool's message.
     let req = msg.data();
@@ -1433,7 +1421,7 @@ fn socket() {
     destroy(pool);
 }
 
-extern "C-unwind" fn listen_on_message(pool: PoolRef<'_>, _: &RecvData<'_>) {
+fn listen_on_message(pool: PoolRef<'_>, _: &RecvData<'_>) {
     let pool = pool.raw().cast::<Pool>();
     let wmem = pool_data(pool);
     assert_eq!(response(pool, wmem.as_ptr(), wmem.len() as u32), SW_OK);
@@ -1516,7 +1504,7 @@ fn listen() {
     t1.join().unwrap();
 }
 
-extern "C-unwind" fn truncated_stream_on_message(pool: PoolRef<'_>, msg: &RecvData<'_>) {
+fn truncated_stream_on_message(pool: PoolRef<'_>, msg: &RecvData<'_>) {
     let pool = pool.raw().cast::<Pool>();
     let messages = messages(pool);
     // SAFETY: the pool's message.
@@ -1596,11 +1584,7 @@ fn listen_rejects_truncated_stream_packet() {
     assert_eq!(messages[1], b"sentinel");
 }
 
-extern "C-unwind" fn truncated_task_on_task(
-    pool: PoolRef<'_>,
-    _: WorkerHandle<'_>,
-    task: Packed<'_>,
-) -> c_int {
+fn truncated_task_on_task(pool: PoolRef<'_>, _: WorkerHandle<'_>, task: Packed<'_>) -> c_int {
     let pool = pool.raw().cast::<Pool>();
     let messages = messages(pool);
     messages.push(payload(task).to_vec());
@@ -1662,11 +1646,7 @@ fn listen_rejects_truncated_task_packet() {
     assert_eq!(messages[1], b"sentinel");
 }
 
-extern "C-unwind" fn malformed_on_task(
-    pool: PoolRef<'_>,
-    _: WorkerHandle<'_>,
-    task: Packed<'_>,
-) -> c_int {
+fn malformed_on_task(pool: PoolRef<'_>, _: WorkerHandle<'_>, task: Packed<'_>) -> c_int {
     let pool = pool.raw().cast::<Pool>();
     // SAFETY: the case's counter.
     unsafe { *(*pool).ptr.cast::<usize>() += 1 };
@@ -1830,7 +1810,7 @@ fn set_max_packet_size(pool: *mut Pool, size: u32) {
     };
 }
 
-extern "C-unwind" fn small_packet_on_message(pool: PoolRef<'_>, rdata: &RecvData<'_>) {
+fn small_packet_on_message(pool: PoolRef<'_>, rdata: &RecvData<'_>) {
     let pool = pool.raw().cast::<Pool>();
     assert_eq!(rdata.info().len, 1);
     assert_eq!(rdata.data()[0], b'x');
@@ -1867,7 +1847,7 @@ fn stream_protocol_small_packet() {
     destroy(pool);
 }
 
-extern "C-unwind" fn msgqueue_package_size_on_message(pool: PoolRef<'_>, rdata: &RecvData<'_>) {
+fn msgqueue_package_size_on_message(pool: PoolRef<'_>, rdata: &RecvData<'_>) {
     let pool = pool.raw().cast::<Pool>();
     messages(pool).push(rdata.data().to_vec());
     if rdata.info().len == 0 {
@@ -1928,7 +1908,7 @@ fn stream_protocol_msgqueue_ignores_package_size() {
 
 const TEST_SOCK: &CStr = c"/tmp/swoole_process_pool.sock";
 
-extern "C-unwind" fn listen_unixsock_on_message(pool: PoolRef<'_>, _: &RecvData<'_>) {
+fn listen_unixsock_on_message(pool: PoolRef<'_>, _: &RecvData<'_>) {
     let pool = pool.raw().cast::<Pool>();
     let wmem = pool_data(pool);
     response(pool, wmem.as_ptr(), wmem.len() as u32);
@@ -2059,7 +2039,7 @@ extern "C" fn shutdown_current_worker(_: c_int) {
     unsafe { worker_shutdown(current_worker()) };
 }
 
-extern "C-unwind" fn child_exit_on_worker_start(_: PoolRef<'_>, worker: WorkerHandle<'_>) {
+fn child_exit_on_worker_start(_: PoolRef<'_>, worker: WorkerHandle<'_>) {
     let worker = worker.raw().cast::<Worker>();
     // SAFETY: an extern "C" handler.
     unsafe { swoole_signal_set(SIGTERM, shutdown_current_worker, false) };
@@ -2070,7 +2050,7 @@ extern "C-unwind" fn child_exit_on_worker_start(_: PoolRef<'_>, worker: WorkerHa
     }
 }
 
-extern "C-unwind" fn child_exit_on_worker_not_found(pool: PoolRef<'_>, status: &ExitStatus) {
+fn child_exit_on_worker_not_found(pool: PoolRef<'_>, status: &ExitStatus) {
     let pool = pool.raw().cast::<Pool>();
     // SAFETY: the started pool.
     if status.pid() != counter_get(6) || counter_incr(27) != 1 || !unsafe { pool_reload(pool) } {
@@ -2078,11 +2058,11 @@ extern "C-unwind" fn child_exit_on_worker_not_found(pool: PoolRef<'_>, status: &
     }
 }
 
-extern "C-unwind" fn child_exit_on_before_reload(_: PoolRef<'_>) {
+fn child_exit_on_before_reload(_: PoolRef<'_>) {
     counter_incr(24);
 }
 
-extern "C-unwind" fn child_exit_on_after_reload(pool: PoolRef<'_>) {
+fn child_exit_on_after_reload(pool: PoolRef<'_>) {
     let pool = pool.raw().cast::<Pool>();
     // SAFETY: the started pool's worker 1.
     if unsafe { (*get_worker(pool, 1)).pid } == counter_get(5) {

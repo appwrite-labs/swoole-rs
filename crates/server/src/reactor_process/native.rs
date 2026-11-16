@@ -55,7 +55,7 @@ pub(crate) fn create_pool(serv: view::Server<'_>) -> bool {
 }
 
 /// `pool->main_loop`: `Server::reactor_process_main_loop` over the pool's worker.
-extern "C-unwind" fn main_loop(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int {
+fn main_loop(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int {
     let Some(serv) = crate::shared::pool_server(pool) else {
         return -1;
     };
@@ -68,7 +68,7 @@ extern "C-unwind" fn main_loop(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int {
 
 /// `pool->onWorkerNotFound`: restart the event worker that exited. The pool lends
 /// itself and the exit status for the call.
-extern "C-unwind" fn worker_not_found(pool: PoolRef<'_>, status: &ExitStatus) {
+fn worker_not_found(pool: PoolRef<'_>, status: &ExitStatus) {
     if let Some(serv) = crate::shared::pool_server(pool) {
         crate::manager::native::restart_worker_process(serv, status);
     }
