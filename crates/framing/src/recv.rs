@@ -313,7 +313,6 @@ impl<E: Effects> Recv<'_, E> {
     #[inline(always)]
     fn get_length(&mut self, head: u32, drained: bool) -> Step {
         let packet = self.effects.length(self.start, &mut self.flags);
-        let header = self.header(head);
         let max = self.max() as usize;
         if packet.is_none_or(|packet| packet == 0 || packet > max) {
             // Failures and a short header report the buffer as upstream holds it.
@@ -321,19 +320,19 @@ impl<E: Effects> Recv<'_, E> {
         }
         let Some(packet) = packet else {
             self.op(Op::LogMalformed, 0);
-            return self.fail(header);
+            return self.fail(head);
         };
         if packet == 0 {
             // The whole length header is here and holds no length.
-            if self.pending() >= header {
+            if self.pending() >= self.header(head) {
                 self.op(Op::LogNoLength, 0);
-                return self.fail(header);
+                return self.fail(head);
             }
             return self.more(drained);
         }
         if packet > max {
             self.op(Op::LogTooLarge, packet);
-            return self.fail(header);
+            return self.fail(head);
         }
         if self.size() - self.start < packet {
             self.settle();
@@ -350,10 +349,11 @@ impl<E: Effects> Recv<'_, E> {
         }
     }
 
-    /// A bad package closes the connection; with bytes past its `header` buffered,
-    /// the close resets, as upstream's does over the bytes it never read.
-    fn fail(&mut self, header: usize) -> Step {
-        if self.length() > header {
+    /// A bad package closes the connection; with bytes past its length header
+    /// buffered, the close resets, as upstream's does over the bytes it never read.
+    /// Only a failure reads the header's size, which the protocol holds.
+    fn fail(&mut self, head: u32) -> Step {
+        if self.length() > self.header(head) {
             self.op(Op::Reset, 0);
         }
         Step::Fail

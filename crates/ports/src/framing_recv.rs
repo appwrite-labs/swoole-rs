@@ -191,6 +191,7 @@ fn proto_error(socket: Socket<'_>, code: ErrorCode, origin: &CStr, message: &str
 }
 
 impl<K: Packages> Effects for With<'_, K> {
+    #[inline(always)]
     fn effect(&mut self, op: Op, arg: usize, flags: &mut u32) {
         self.around(flags, |r| rare(r, op, arg));
     }
