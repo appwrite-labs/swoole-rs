@@ -7,14 +7,17 @@ use std::{
     ptr::NonNull,
 };
 use swoole_rs_zend::{
-    Call, ReturnSlot, UNDEF, ZStr, handlers,
-    sys::{swr_zend_treat_string, zend_long, zval},
+    Call, OwnedArray, ReturnSlot, UNDEF, ZStr, handlers,
+    sys::{zend_long, zval},
 };
 
 unsafe extern "C" {
     /// `estrndup`: it reads the lent bytes (an `IoSlice` is an iovec) and returns
     /// an emalloc'd NUL-terminated copy.
-    safe fn swr_bytes_estrndup(bytes: IoSlice<'_>) -> *mut c_char;
+    safe fn swr_bytes_estrndup(bytes: IoSlice<'_>) -> Copied;
+    /// The SAPI's `treat_data(PARSE_STRING, text, array)`: it parses the query
+    /// string into the array, then frees the copy, which it takes.
+    safe fn swr_zend_treat_string(text: Copied, array: &mut OwnedArray);
     /// `pcre_get_compiled_regex_cache` of a live string inside `zend_try`,
     /// retaining what it returns: nonzero for a bailout, else `result` holds the
     /// retained entry, or none after the warning of a pattern that failed.
@@ -36,6 +39,10 @@ unsafe extern "C" {
         offset: i64,
     ) -> u8;
 }
+
+/// An emalloc'd NUL-terminated copy, which only `swr_bytes_estrndup` makes.
+#[repr(transparent)]
+struct Copied(*mut c_char);
 
 /// A retained PHP PCRE cache entry, which only `swr_phpstdext_pcre_cache`
 /// makes, holding one reference until `swr_phpstdext_pcre_release` takes it: it is
@@ -106,11 +113,9 @@ fn parse_str(call: &Call) {
     let Ok(text) = call.arity(1, 1).and_then(|()| call.string(1, b"")) else {
         return;
     };
-    call.set_array();
-    // `estrndup`: the SAPI frees it.
-    let copy = swr_bytes_estrndup(IoSlice::new(text));
-    // SAFETY: an emalloc'd NUL-terminated copy and the array just made.
-    unsafe { swr_zend_treat_string(copy, call.return_value()) };
+    let mut array = OwnedArray::default();
+    swr_zend_treat_string(swr_bytes_estrndup(IoSlice::new(text)), &mut array);
+    call.set_owned(array.into_owned());
 }
 
 fn str_is_empty(call: &Call) {
