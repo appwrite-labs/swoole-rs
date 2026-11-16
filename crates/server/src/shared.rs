@@ -265,8 +265,8 @@ mod tests {
         let mut server = TestServer::new();
         server.config_mut().gs = core::mem::replace(&mut gs, Shm::empty());
         let tables = server.tables_mut();
-        tables.connection_list = crate::records::tests::naming(&mut connections);
-        tables.session_list = crate::records::tests::naming(&mut sessions);
+        *tables.connection_list_mut() = crate::records::tests::naming(&mut connections);
+        *tables.session_list_mut() = crate::records::tests::naming(&mut sessions);
         let state = server.state();
         // SAFETY: the tables just named hold 3 records.
         unsafe { state.tables_ref().set_max_connection_unchecked(3) };

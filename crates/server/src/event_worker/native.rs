@@ -219,11 +219,7 @@ pub(crate) fn worker_start_callback(serv: view::Server<'_>, worker: Worker<'_>) 
     worker.set_status(WorkerStatus::Idle);
     if config.mode_ == Mode::Process {
         // Upstream ignores whether the session list became read-only.
-        _ = serv
-            .state()
-            .tables_ref()
-            .session_list
-            .protect(libc::PROT_READ);
+        _ = serv.state().tables_ref().protect_sessions(libc::PROT_READ);
     }
     call_worker_start_callback(serv, worker);
 }
