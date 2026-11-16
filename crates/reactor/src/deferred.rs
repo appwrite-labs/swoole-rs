@@ -8,9 +8,6 @@ use crate::event_api::Deferred;
 use crate::reactor_state::ReactorFields;
 use std::collections::VecDeque;
 
-/// A native `(callback, data)` task: the reactor's `future_task` and `idle_task`.
-pub type DeferCall = unsafe extern "C-unwind" fn(*mut std::ffi::c_void);
-
 enum Task {
     /// A destroy callback that takes nothing ([`crate::event_api::on_destroy`]).
     Call(fn()),

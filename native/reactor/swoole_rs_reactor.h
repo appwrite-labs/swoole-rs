@@ -55,8 +55,6 @@ typedef struct {
  * a Reactor is that state. swoole_event_init/free and the Reactor's constructor and destructor
  * are Rust's; nothing in C or C++ allocates one. */
 typedef struct swr_v1_reactor_state swr_v1_reactor_state;
-/* Reactor's idle and future tasks (Swoole\Event::cycle): null until set. */
-typedef struct { void (*callback)(void *); void *data; } swr_v1_reactor_task;
 /* The state's own views of itself; fields points at the head's type_. */
 typedef struct {
     swr_v1_reactor_state *owner; void *fields;
@@ -69,12 +67,11 @@ typedef struct {
     bool ready_, running, start, once, wait_exit, destroyed, bailout, timed_out;
     int32_t timeout_msec; uint16_t id; uint32_t max_socket; time_t last_malloc_trim_time;
     swr_v1_reactor_close_fn close;
-    swr_v1_reactor_task idle_task, future_task;
 } swr_v1_reactor_head;
 #ifdef __cplusplus
 }
 static_assert(offsetof(swr_v1_reactor_head, type_) == sizeof(swr_v1_reactor_prepared) &&
-                  (sizeof(void *) != 8 || (sizeof(swr_v1_reactor_prepared) == 32 && sizeof(swr_v1_reactor_head) == 128)),
+                  (sizeof(void *) != 8 || (sizeof(swr_v1_reactor_prepared) == 32 && sizeof(swr_v1_reactor_head) == 96)),
               "crates/reactor's ReactorState layout");
 #endif
 #endif

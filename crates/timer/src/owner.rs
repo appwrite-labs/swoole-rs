@@ -49,7 +49,7 @@ impl Lent<'_> {
     }
 }
 /// A callback of the node's data alone.
-type Plain = swoole_rs_reactor::DeferCall;
+type Plain = unsafe extern "C-unwind" fn(*mut c_void);
 /// `abandon_selection`'s pending Zend bailout, raised once the node is gone.
 pub type Bailout = extern "C-unwind" fn();
 
