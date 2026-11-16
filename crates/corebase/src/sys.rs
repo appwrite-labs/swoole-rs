@@ -628,24 +628,26 @@ pub fn nanosleep(request: &libc::timespec, remaining: &mut libc::timespec) -> c_
 #[must_use]
 pub fn map_anonymous(len: usize, shared: bool, stack: bool) -> *mut libc::c_void {
     use anonymous::Flags;
+    // Miri maps only private memory, and with no fork a shared mapping is no different.
+    let shared = shared && !cfg!(miri);
     #[cfg(target_os = "openbsd")]
     let flags = match (shared, stack) {
-        (true, false) => Flags::Shared,
-        (false, false) => Flags::Private,
-        (true, true) => Flags::SharedStack,
-        (false, true) => Flags::PrivateStack,
+        (true, false) => Flags::SHARED,
+        (false, false) => Flags::PRIVATE,
+        (true, true) => Flags::SHARED_STACK,
+        (false, true) => Flags::PRIVATE_STACK,
     };
     #[cfg(not(target_os = "openbsd"))]
     let flags = {
         _ = stack;
         if shared {
-            Flags::Shared
+            Flags::SHARED
         } else {
-            Flags::Private
+            Flags::PRIVATE
         }
     };
-    let protection = anonymous::Protection::ReadWrite;
-    let mapped = anonymous::mmap(None, len, protection, flags, anonymous::NoFile::Fd, 0);
+    let protection = anonymous::Protection::READ_WRITE;
+    let mapped = anonymous::mmap(None, len, protection, flags, anonymous::NoFile::FD, 0);
     if mapped == libc::MAP_FAILED {
         std::ptr::null_mut()
     } else {
@@ -658,27 +660,38 @@ mod anonymous {
     /// No value: a null-only address hint.
     pub(super) enum Nothing {}
 
+    // Transparent over `c_int` (an enum's ABI is not guaranteed to match), with the
+    // field private so only the constants below exist.
+
     /// `PROT_READ | PROT_WRITE`.
-    #[repr(i32)]
-    pub(super) enum Protection {
-        ReadWrite = libc::PROT_READ | libc::PROT_WRITE,
+    #[repr(transparent)]
+    pub(super) struct Protection(libc::c_int);
+
+    impl Protection {
+        pub(super) const READ_WRITE: Self = Self(libc::PROT_READ | libc::PROT_WRITE);
     }
 
     /// An anonymous mapping's flags, never `MAP_FIXED`.
-    #[repr(i32)]
-    pub(super) enum Flags {
-        Private = libc::MAP_PRIVATE | libc::MAP_ANON,
-        Shared = libc::MAP_SHARED | libc::MAP_ANON,
+    #[repr(transparent)]
+    pub(super) struct Flags(libc::c_int);
+
+    impl Flags {
+        pub(super) const PRIVATE: Self = Self(libc::MAP_PRIVATE | libc::MAP_ANON);
+        pub(super) const SHARED: Self = Self(libc::MAP_SHARED | libc::MAP_ANON);
         #[cfg(target_os = "openbsd")]
-        PrivateStack = libc::MAP_PRIVATE | libc::MAP_ANON | libc::MAP_STACK,
+        pub(super) const PRIVATE_STACK: Self =
+            Self(libc::MAP_PRIVATE | libc::MAP_ANON | libc::MAP_STACK);
         #[cfg(target_os = "openbsd")]
-        SharedStack = libc::MAP_SHARED | libc::MAP_ANON | libc::MAP_STACK,
+        pub(super) const SHARED_STACK: Self =
+            Self(libc::MAP_SHARED | libc::MAP_ANON | libc::MAP_STACK);
     }
 
     /// The descriptor an anonymous mapping takes: none.
-    #[repr(i32)]
-    pub(super) enum NoFile {
-        Fd = -1,
+    #[repr(transparent)]
+    pub(super) struct NoFile(libc::c_int);
+
+    impl NoFile {
+        pub(super) const FD: Self = Self(-1);
     }
 
     // libc's. With no address and no `MAP_FIXED` the kernel places the mapping where
