@@ -5,6 +5,9 @@ puts a PR in main's merge queue once its PR tier passes.
   ci.py wait [--commit SHA]  wait for a workflow run (default: the merge tier on main, which runs
                              hourly); a run replaced by a newer one on main follows the newer run
   ci.py status [--commit SHA]  the same, without waiting
+  ci.py history --workflow pr.yml --workflow merge.yml [--limit 30] [--since T]
+                             bounded run history across branches, including earlier failed
+                             attempts and active reruns, as JSON; oldest selected run first
   ci.py timings [--since T]  latest successful PR runs with PHPT (created at or after T): time to
                              required and job/step timestamps, as JSON (default: 20 qualifying
                              runs among the latest 100)
@@ -121,6 +124,26 @@ def seconds(job):
     started, completed = (datetime.fromisoformat(job[key].replace('Z', '+00:00')) if job.get(key) and not job[key].startswith('0001')
                           else None for key in ('startedAt', 'completedAt'))
     return int((completed - started).total_seconds()) if started and completed else None
+
+
+def history(workflows, limit, since=None):
+    """The newest bounded window per workflow, with every attempt, not just its final outcome."""
+    fields = {'databaseId': 'id', 'headSha': 'head_sha', 'headBranch': 'head_branch', 'url': 'html_url',
+              'event': 'event', 'attempt': 'run_attempt', 'createdAt': 'created_at',
+              'startedAt': 'run_started_at', 'updatedAt': 'updated_at', 'status': 'status', 'conclusion': 'conclusion'}
+    rows, full = [], []
+    for workflow in dict.fromkeys(workflows):
+        runs = json.loads(gh('run', 'list', '--workflow', workflow, '--limit', str(limit),
+                            *(('--created', f'>={since}') if since else ()), '--json', ','.join(fields)))
+        if len(runs) == limit:
+            full.append(workflow)
+        for run in runs:
+            for attempt in range(1, run['attempt']):
+                prior = json.loads(gh('api', f'repos/{{owner}}/{{repo}}/actions/runs/{run["databaseId"]}/attempts/{attempt}'))
+                rows.append({'workflow': workflow, **{name: prior[key] for name, key in fields.items()}})
+            rows.append({'workflow': workflow, **run})
+    return {'limit_per_workflow': limit, 'since': since, 'limit_reached': full,
+            'runs': sorted(rows, key=lambda row: (row['createdAt'], row['databaseId'], row['attempt']))}
 
 
 def timings(count, scan, since=None):
@@ -625,6 +648,10 @@ def main(argv=None):
         command.add_argument('--json', action='store_true')
     for name in ['next', 'stuck']:
         commands.add_parser(name).add_argument('--json', action='store_true')
+    past = commands.add_parser('history')
+    past.add_argument('--workflow', action='append', required=True, help='workflow filename; repeatable')
+    past.add_argument('--limit', type=int, default=30, help='newest runs per workflow, 1–1000 (includes active runs)')
+    past.add_argument('--since', help='only runs created at or after this UTC time')
     timing = commands.add_parser('timings')
     timing.add_argument('--count', type=int, default=20, help='qualifying runs to collect')
     timing.add_argument('--scan', type=int, default=100, help='maximum successful PR runs to inspect')
@@ -637,6 +664,15 @@ def main(argv=None):
                           "call, when it has a meta.json")
     args = parser.parse_args(argv)
     global RETRY_DEADLINE, RETRY_BASE
+    if args.command == 'history':
+        if not 1 <= args.limit <= 1000:
+            parser.error('history requires 1 <= --limit <= 1000')
+        try:
+            result = history(args.workflow, args.limit, args.since)
+        except subprocess.CalledProcessError as failure:
+            sys.exit(f"gh {' '.join(failure.cmd[1:])}: {failure.stderr.strip()}")
+        print(json.dumps(result, indent=1))
+        return 0 if result['runs'] else 2
     if args.command == 'timings':
         if not 0 < args.count <= args.scan:
             parser.error('timings requires 0 < --count <= --scan')
