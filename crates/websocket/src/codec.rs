@@ -9,12 +9,56 @@ const RSV1: u8 = 4;
 const MASK: u8 = 32;
 const HEADER_ONLY: u8 = 64;
 const MASK_KEY: [u8; 4] = *b"258E";
+/// Frame flags in the pinned protocol's bit positions, including reserved bits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FrameFlags(u8);
+
+impl FrameFlags {
+    #[must_use]
+    pub const fn from_bits(bits: u8) -> Self {
+        Self(bits)
+    }
+
+    #[must_use]
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
+    #[must_use]
+    pub const fn is_final(self) -> bool {
+        self.0 & FIN != 0
+    }
+
+    #[must_use]
+    pub const fn is_compressed(self) -> bool {
+        self.0 & RSV1 != 0
+    }
+
+    #[must_use]
+    pub const fn is_masked(self) -> bool {
+        self.0 & MASK != 0
+    }
+
+    /// Finish a fragmented message without changing its other flags.
+    #[must_use]
+    pub const fn with_final(self) -> Self {
+        Self(self.0 | FIN)
+    }
+}
+
+/// The initial frame's facts retained across message fragments.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FrameMetadata {
+    pub opcode: Opcode,
+    pub flags: FrameFlags,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DecodedFrame {
     pub payload_length: usize,
     pub header_length: usize,
     pub opcode: Opcode,
-    pub flags: u8,
+    pub flags: FrameFlags,
     pub length_code: u8,
     pub mask_key: [u8; 4],
 }
@@ -34,12 +78,14 @@ pub struct DecodeError {
     pub frame: DecodedFrame,
 }
 
-fn flags(first: u8, second: u8) -> u8 {
-    ((first >> 7) & FIN)
-        | ((first >> 4) & 4)
-        | ((first >> 2) & 8)
-        | (first & 16)
-        | ((second >> 2) & MASK)
+fn flags(first: u8, second: u8) -> FrameFlags {
+    FrameFlags::from_bits(
+        ((first >> 7) & FIN)
+            | ((first >> 4) & 4)
+            | ((first >> 2) & 8)
+            | (first & 16)
+            | ((second >> 2) & MASK),
+    )
 }
 
 /// Decode one frame, unmasking only a complete payload. Trailing bytes are left
@@ -81,7 +127,7 @@ pub fn decode_in_place(data: &mut [u8]) -> Result<DecodedFrame, DecodeError> {
             frame,
         });
     }
-    if frame.opcode.is_control() && frame.flags & RSV1 != 0 {
+    if frame.opcode.is_control() && frame.flags.is_compressed() {
         return Err(DecodeError {
             kind: DecodeErrorKind::CompressedControl,
             frame,
@@ -89,7 +135,7 @@ pub fn decode_in_place(data: &mut [u8]) -> Result<DecodedFrame, DecodeError> {
     }
     let at = frame.header_length;
     if frame.payload_length != 0
-        && frame.flags & MASK != 0
+        && frame.flags.is_masked()
         && let Some(key) = data.get(at.wrapping_sub(4)..at)
         && let Ok(key) = <[u8; 4]>::try_from(key)
         && let Some(payload) = data.get_mut(at..size)
@@ -226,7 +272,7 @@ pub fn encode_close_into(
 pub struct Context {
     pub fragment_length: usize,
     pub package_max_length: usize,
-    pub fragment_flags: u16,
+    pub fragment: FrameMetadata,
     pub has_fragment: bool,
     pub closing: bool,
 }
@@ -264,7 +310,7 @@ pub struct Decision {
     pub length: usize,
     pub action: Action,
     pub error: PolicyError,
-    pub ext_flags: u16,
+    pub metadata: FrameMetadata,
 }
 
 #[inline]
@@ -277,7 +323,10 @@ fn decide(frame: DecodedFrame, wire: usize, context: Context) -> Decision {
     let mut result = Decision {
         offset: wire - frame.payload_length,
         length: frame.payload_length,
-        ext_flags: (u16::from(frame.opcode.code()) << 8) | u16::from(frame.flags),
+        metadata: FrameMetadata {
+            opcode: frame.opcode,
+            flags: frame.flags,
+        },
         ..Decision::default()
     };
     // Keep upstream's wire-size limits and unusual control offsets verbatim.
@@ -292,19 +341,24 @@ fn decide(frame: DecodedFrame, wire: usize, context: Context) -> Decision {
         {
             (Reject, Error::TooBig)
         }
-        Continuation if frame.flags & FIN != 0 => {
-            result.ext_flags = context.fragment_flags | u16::from(FIN);
+        Continuation if frame.flags.is_final() => {
+            result.metadata = FrameMetadata {
+                flags: context.fragment.flags.with_final(),
+                ..context.fragment
+            };
             (Finish, Error::None)
         }
         Continuation => (Append, Error::None),
-        Text | Binary if frame.flags & FIN == 0 && context.has_fragment => (Reject, Error::Overlap),
-        Text | Binary if frame.flags & FIN == 0 => (Start, Error::None),
+        Text | Binary if !frame.flags.is_final() && context.has_fragment => {
+            (Reject, Error::Overlap)
+        }
+        Text | Binary if !frame.flags.is_final() => (Start, Error::None),
         Text | Binary => (Dispatch, Error::None),
         Ping | Pong if wire >= 127 => (Reject, Error::ControlTooBig),
         Ping | Pong => {
             result.offset = if wire == 2 {
                 2
-            } else if frame.flags & MASK != 0 {
+            } else if frame.flags.is_masked() {
                 6
             } else {
                 2
@@ -327,7 +381,7 @@ fn decide(frame: DecodedFrame, wire: usize, context: Context) -> Decision {
 #[inline]
 #[must_use]
 pub fn decide_frame(frame: &DecodedFrame, wire: usize, context: &Context) -> Option<Decision> {
-    if frame.header_length < if frame.flags & MASK != 0 { 6 } else { 2 }
+    if frame.header_length < if frame.flags.is_masked() { 6 } else { 2 }
         || frame.header_length > wire
         || frame.payload_length > wire - frame.header_length
     {

@@ -61,7 +61,7 @@ impl Packet {
     fn sync(&mut self, sync: BufferSync) {
         (crate::co_io::host().read_buffer)(self.socket, &mut self.view, sync);
     }
-    fn receive(&mut self, at: usize, length: usize, all: bool) -> isize {
+    fn receive(&mut self, at: usize, length: usize, all: bool) -> Option<usize> {
         self.sync(BufferSync::Store);
         let free = self
             .view
@@ -73,7 +73,7 @@ impl Packet {
         let buf = unsafe { core::slice::from_raw_parts_mut(free, length) };
         (crate::co_io::host().recv)(self.socket, buf, all)
     }
-    fn recv(&mut self, at: usize, length: usize) -> isize {
+    fn recv(&mut self, at: usize, length: usize) -> Option<usize> {
         self.receive(at, length, false)
     }
     fn fail(&mut self, kind: Failure, length: isize) {
@@ -88,7 +88,7 @@ impl Packet {
     }
 
     /// `recv_packet_with_length_protocol`.
-    fn length_protocol(&mut self) -> isize {
+    fn length_protocol(&mut self) -> Option<usize> {
         let protocol = self.protocol;
         let mut header_len =
             u32::from(protocol.package_length_offset) + u32::from(protocol.package_length_size);
@@ -103,11 +103,11 @@ impl Packet {
                 let received = self.recv(
                     buffer.length,
                     (header_len as usize).wrapping_sub(buffer.length),
-                );
-                if received <= 0 {
-                    return received;
+                )?;
+                if received == 0 {
+                    return Some(0);
                 }
-                self.set_length(buffer.length + received.unsigned_abs());
+                self.set_length(buffer.length + received);
             }
             known = false;
             let buffer = self.buffer();
@@ -120,7 +120,7 @@ impl Packet {
             );
             if packet < 0 {
                 self.fail(Failure::LengthNotFound, packet);
-                return 0;
+                return Some(0);
             }
             if packet == 0 {
                 if header != 0 {
@@ -131,33 +131,33 @@ impl Packet {
             if packet.unsigned_abs() > protocol.package_max_length as usize {
                 self.clear();
                 self.fail(Failure::TooLarge, packet);
-                return -1;
+                return None;
             }
             let wanted = packet.unsigned_abs();
             if wanted <= buffer.length {
                 self.set_offset(wanted);
-                return packet;
+                return Some(wanted);
             }
             if wanted > buffer.size {
                 self.extend(wanted);
             }
             let buffer = self.buffer();
-            let mut received = self.receive(buffer.length, wanted - buffer.length, true);
-            if received > 0 {
-                let length = buffer.length + received.unsigned_abs();
-                self.set_length(length);
-                if length == wanted {
-                    self.set_offset(wanted);
-                    return packet;
-                }
-                received = if self.timed_out() { -1 } else { 0 };
+            let received = self.receive(buffer.length, wanted - buffer.length, true)?;
+            if received == 0 {
+                return Some(0);
             }
-            return received;
+            let length = buffer.length + received;
+            self.set_length(length);
+            if length == wanted {
+                self.set_offset(wanted);
+                return Some(wanted);
+            }
+            return (!self.timed_out()).then_some(0);
         }
     }
 
     /// `recv_packet_with_eof_protocol`.
-    fn eof_protocol(&mut self) -> isize {
+    fn eof_protocol(&mut self) -> Option<usize> {
         let protocol = self.protocol;
         let eof = protocol
             .package_eof
@@ -172,11 +172,11 @@ impl Packet {
                     buffer.length,
                     buffer.size.wrapping_sub(buffer.length).min(BIG),
                 );
-                if received <= 0 {
+                let Some(received @ 1..) = received else {
                     self.clear();
                     return received;
-                }
-                let length = buffer.length + received.unsigned_abs();
+                };
+                let length = buffer.length + received;
                 self.set_length(length);
                 if length < eof.len() {
                     continue;
@@ -187,12 +187,12 @@ impl Packet {
             if let Some(found) = find(&buffer, eof) {
                 let offset = found + eof.len();
                 self.set_offset(offset);
-                return offset.cast_signed();
+                return Some(offset);
             }
             if buffer.length == maximum {
                 self.clear();
                 self.fail(Failure::NoEof, 0);
-                return -1;
+                return None;
             }
             if buffer.length == buffer.size && buffer.size < maximum {
                 self.extend((buffer.size * 2).min(maximum));
@@ -216,10 +216,10 @@ fn find(buffer: &ReadBuffer, needle: &[u8]) -> Option<usize> {
 
 /// `Socket::recv_packet`, including availability, timer and buffer allocation.
 #[must_use]
-pub fn recv_packet(socket: crate::co_socket::Co, timeout: f64) -> isize {
+pub fn recv_packet(socket: crate::co_socket::Co, timeout: f64) -> Option<usize> {
     use crate::co_io::{Timer, available};
     if !available(socket, Events::READ) {
-        return -1;
+        return None;
     }
     let timeout = if timeout == 0.0 {
         socket.timeout(crate::transfer::timeout_kind(Events::READ))
@@ -228,7 +228,7 @@ pub fn recv_packet(socket: crate::co_socket::Co, timeout: f64) -> isize {
     };
     let mut timer = Timer::new(socket, Events::READ, timeout);
     if !timer.start() {
-        return 0;
+        return Some(0);
     }
     // The settings, read before any native effect may yield.
     let mut packet = Packet {
@@ -254,13 +254,13 @@ pub fn recv_packet(socket: crate::co_socket::Co, timeout: f64) -> isize {
         packet.eof_protocol()
     } else {
         let received = packet.recv(0, packet.buffer().size);
-        if received > 0 {
-            packet.set_length(received.unsigned_abs());
-            packet.set_offset(received.unsigned_abs());
+        if let Some(n @ 1..) = received {
+            packet.set_length(n);
+            packet.set_offset(n);
         }
         received
     };
-    if received <= 0 && !(packet.length_check && received < 0 && packet.timed_out()) {
+    if received <= Some(0) && !(packet.length_check && received.is_none() && packet.timed_out()) {
         packet.clear();
     }
     packet.sync(BufferSync::Store);
@@ -396,14 +396,15 @@ pub(crate) mod tests {
         socket: crate::co_socket::Co,
         buf: &mut [core::mem::MaybeUninit<u8>],
         all: bool,
-    ) -> isize {
+    ) -> Option<usize> {
         let ctx = socket.resolve_context();
         let (at, size) = (buf.as_mut_ptr().cast::<u8>(), buf.len());
-        if all {
+        usize::try_from(if all {
             unsafe { recv_all(ctx, at, size) }
         } else {
             unsafe { recv(ctx, at, size) }
-        }
+        })
+        .ok()
     }
     pub(crate) fn get_length(socket: crate::co_socket::Co, size: u32, header: &mut u32) -> isize {
         let ctx = socket.resolve_context();
@@ -421,7 +422,7 @@ pub(crate) mod tests {
         length_check: bool,
         eof: &[u8],
         max_length: u32,
-    ) -> (Vec<isize>, Box<Fake>) {
+    ) -> (Vec<Option<usize>>, Box<Fake>) {
         let mut fake = Box::new(Fake {
             storage: vec![0; size],
             buffer: ReadBuffer {
@@ -442,7 +443,7 @@ pub(crate) mod tests {
         loop {
             let result = recv_packet(socket.co(), 0.0);
             results.push(result);
-            if result <= 0 {
+            if result <= Some(0) {
                 break;
             }
         }
@@ -455,14 +456,14 @@ pub(crate) mod tests {
         let second = [&b"cd"[..], &[0, 0, 0, 1], b"q"].concat();
         let wire = [first.clone(), second.clone()].concat();
         let (results, _) = run(&[&wire[..4], &wire[4..12], &wire[12..]], 8, true, b"", 1024);
-        assert_eq!(results, [9, 7, 0]);
+        assert_eq!(results, [Some(9), Some(7), Some(0)]);
     }
 
     #[test]
     fn length_protocol_rejects_oversized_packets() {
         let wire = [&b"ab"[..], &[0, 0, 4, 0]].concat();
         let (results, fake) = run(&[&wire], 64, true, b"", 1024);
-        assert_eq!(results, [-1]);
+        assert_eq!(results, [None]);
         assert_eq!(fake.failures, [super::Failure::TooLarge]);
         assert_eq!(fake.buffer.length, 0);
     }
@@ -470,14 +471,14 @@ pub(crate) mod tests {
     #[test]
     fn eof_protocol_splits_on_the_delimiter_and_grows_the_buffer() {
         let (results, fake) = run(&[b"hello\r\nwor", b"ld\r\n"], 4, false, b"\r\n", 1024);
-        assert_eq!(results, [7, 7, 0]);
+        assert_eq!(results, [Some(7), Some(7), Some(0)]);
         assert!(fake.buffer.size > 4);
     }
 
     #[test]
     fn eof_protocol_fails_at_the_maximum_without_a_delimiter() {
         let (results, fake) = run(&[b"0123456789abcdef"], 16, false, b"\r\n", 16);
-        assert_eq!(results, [-1]);
+        assert_eq!(results, [None]);
         assert_eq!(fake.failures, [super::Failure::NoEof]);
     }
 
@@ -485,7 +486,7 @@ pub(crate) mod tests {
     fn partial_length_body_keeps_its_bytes_only_after_a_timeout() {
         // Upstream 0f96dc478: -1 after a timeout keeps the partial packet; 0 clears it.
         let wire = [&b"ab"[..], &[0, 0, 0, 8], b"part"].concat();
-        for (timed_out, expected, kept) in [(true, -1, 10), (false, 0, 0)] {
+        for (timed_out, expected, kept) in [(true, None, 10), (false, Some(0), 0)] {
             let mut fake = Box::new(Fake {
                 storage: vec![0; 64],
                 buffer: ReadBuffer {
@@ -510,7 +511,7 @@ pub(crate) mod tests {
     #[test]
     fn raw_receive_returns_each_read() {
         let (results, fake) = run(&[b"abc", b"de"], 16, false, b"", 1024);
-        assert_eq!(results, [3, 2, 0]);
+        assert_eq!(results, [Some(3), Some(2), Some(0)]);
         assert_eq!(fake.buffer.length, 0);
     }
     /// The socket points at the fake, so the caller makes it once the box has stopped
@@ -542,7 +543,7 @@ pub(crate) mod tests {
         for (length, expected) in [(3, &b"abc"[..]), (4, &b"defg"[..]), (4, &b"hij"[..])] {
             assert_eq!(
                 recv_buffered(socket.co(), &mut out[..length]),
-                expected.len().c_cast::<isize>()
+                Some(expected.len())
             );
             assert_eq!(&out[..expected.len()], expected);
         }
@@ -563,8 +564,8 @@ pub(crate) mod tests {
         let mut socket = socket_for(&mut fake, false, b"", 1024);
         socket.0.sock_fd.set(-1);
         let mut out = [0; 1];
-        assert_eq!(recv_buffered(socket.co(), &mut out), -1);
-        assert_eq!(recv_packet(socket.co(), 0.0), -1);
+        assert_eq!(recv_buffered(socket.co(), &mut out), None);
+        assert_eq!(recv_packet(socket.co(), 0.0), None);
         assert_eq!(socket.0.err_code.get(), libc::EBADF);
         assert_eq!((fake.gets, fake.receives), (0, 0));
     }
@@ -574,10 +575,10 @@ pub(crate) mod tests {
         let mut fake = buffered_fake();
         let mut socket = socket_for(&mut fake, false, b"", 1024);
         crate::co_io::test_host::TIMER_OK.set(false);
-        assert_eq!(recv_packet(socket.co(), 1.0), 0);
+        assert_eq!(recv_packet(socket.co(), 1.0), Some(0));
         assert_eq!((fake.gets, fake.receives), (0, 0));
         crate::co_io::test_host::TIMER_OK.set(true);
-        assert_eq!(recv_packet(socket.co(), 1.0), 8);
+        assert_eq!(recv_packet(socket.co(), 1.0), Some(8));
         assert_eq!(
             (
                 fake.gets,
@@ -587,7 +588,7 @@ pub(crate) mod tests {
             ),
             (1, 1, 8, 8)
         );
-        assert_eq!(recv_packet(socket.co(), 1.0), 2);
+        assert_eq!(recv_packet(socket.co(), 1.0), Some(2));
         assert_eq!(
             (&fake.storage[..2], fake.buffer.length, fake.buffer.offset),
             (&b"ij"[..], 2, 2)

@@ -213,7 +213,7 @@ pub unsafe extern "C" fn swoole_coroutine_poll(
     if let Some(ring) = crate::stdio::host().and_then(ring)
         && let [fd] = fds
     {
-        return crate::uring::poll(ring, fd, timeout);
+        return crate::uring::poll(ring, fd, timeout).unwrap_or(-1);
     }
     crate::poll::poll(fds, timeout, &crate::poll::NATIVE).map_or(-1, CCast::c_cast::<c_int>)
 }
@@ -316,7 +316,7 @@ pub extern "C" fn swoole_coroutine_socket_wait_event(
 #[unsafe(no_mangle)]
 pub extern "C" fn swoole_coroutine_close(fd: c_int) -> c_int {
     if coroutine().is_none() {
-        return sys::close(fd);
+        return sys::close(fd).map_or(-1, |()| 0);
     }
     let result = socket_map::close(fd, Co::close);
     if result <= 0 {

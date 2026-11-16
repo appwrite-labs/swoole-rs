@@ -66,7 +66,7 @@ pub fn swr_v1_hooks_usleep(
             yielded(sleep, microseconds.c_cast::<f64>() / 1_000_000.0);
         }
         None => {
-            swoole_rs_corebase::sys::usleep(microseconds.cast_unsigned().c_cast::<u32>());
+            _ = swoole_rs_corebase::sys::usleep(microseconds.cast_unsigned().c_cast::<u32>());
         }
     }
     DONE
@@ -100,7 +100,7 @@ pub fn swr_v1_hooks_nanosleep(
         tv_sec: 0,
         tv_nsec: 0,
     };
-    if swoole_rs_corebase::sys::nanosleep(&request, &mut remaining) == 0 {
+    if swoole_rs_corebase::sys::nanosleep(&request, &mut remaining).is_ok() {
         return DONE;
     }
     match std::io::Error::last_os_error().raw_os_error() {

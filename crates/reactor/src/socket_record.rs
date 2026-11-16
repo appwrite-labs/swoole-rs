@@ -469,7 +469,7 @@ impl SocketFields {
                 _ = sys::unlink(path);
             }
         }
-        self.fd == -1 || sys::close(self.fd) == 0
+        self.fd == -1 || sys::close(self.fd).is_ok()
     }
 
     /// `Socket::dup`: a copy of every field but the buffers, which stay this record's

@@ -10,7 +10,10 @@ DecodeError>`; its error preserves the partial header and distinguishes incomple
 input, length overflow, and compressed control frames. `DecodedFrame`, `Context`
 and `Decision` are plain Rust records. Decoded opcodes use `Opcode`, including
 `Reserved(u8)` so unknown wire codes retain their original policy and diagnostics;
-PHP and native frame adapters convert them back to bytes. Flags remain raw bits; the native `websocket::Frame` layout stays
+PHP and native frame adapters convert them back to bytes. Decoded flags use
+`FrameFlags` with named final/masked/compressed queries, and `FrameMetadata` keeps
+fragment opcode and flags together without packing them. Only native/test
+boundaries pack dispatch metadata; outgoing encoder arguments still use raw bits; the native `websocket::Frame` layout stays
 in `websocket-ffi`. Frame measurement returns `Result<FrameLength, LengthError>`
 with `usize` sizes; incomplete and overflowing headers retain their incremental
 header length. Only the native framing adapters convert those outcomes to zero

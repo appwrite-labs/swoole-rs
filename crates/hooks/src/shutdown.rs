@@ -114,7 +114,7 @@ impl SocketState {
 
 /// `shutdown(2)`, which reports failure through errno.
 pub(crate) fn sys_shutdown(fd: i32, how: i32) -> i32 {
-    swoole_rs_corebase::sys::shutdown(fd, how)
+    swoole_rs_corebase::sys::shutdown(fd, how).map_or(-1, |()| 0)
 }
 
 /// `Socket::shutdown(how)` after `set_err(0)`: 0 on success, otherwise the error

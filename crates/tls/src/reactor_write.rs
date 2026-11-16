@@ -50,7 +50,9 @@ impl WriteEffects for Write<'_> {
     fn send(&self) -> Option<usize> {
         match self.payload {
             // `socket->send(buf, n, 0)`.
-            WritePayload::Bytes(data) => send_drain(self.socket, data, 0),
+            WritePayload::Bytes(data) => {
+                send_drain(self.socket, data, 0).map_or(-1, usize::cast_signed)
+            }
             // `socket->writev(iov, iovcnt)`.
             WritePayload::Vectors(vectors) => {
                 usize::try_from(writev(self.socket.fd(), vectors)).ok()

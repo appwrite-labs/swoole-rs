@@ -108,7 +108,7 @@ pub fn swr_v1_socket_open(domain: c_int, kind: c_int, protocol: c_int, flags: c_
             )
             .ok
         {
-            swoole_rs_corebase::sys::close(fd);
+            _ = swoole_rs_corebase::sys::close(fd);
         }
         fd
     }

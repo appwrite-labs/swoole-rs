@@ -232,7 +232,7 @@ fn poll(mut timeout: i32, mut attempt: impl FnMut() -> i32) -> Result<(), i32> {
         if attempt() == 0 {
             return Ok(());
         }
-        sys::usleep(sleep.wrapping_mul(1000).cast_unsigned());
+        _ = sys::usleep(sleep.wrapping_mul(1000).cast_unsigned());
         sleep = sleep.wrapping_mul(2);
         if timeout > 0 && timeout.wrapping_sub(sleep) < 0 {
             sleep = timeout;
@@ -737,7 +737,7 @@ pub fn barrier_wait(barrier: &Barrier) {
     {
         barrier.arrived.fetch_add(1, Ordering::SeqCst);
         while barrier.arrived.load(Ordering::Relaxed) != barrier.count.load(Ordering::Relaxed) {
-            sys::usleep(10_000);
+            _ = sys::usleep(10_000);
             std::sync::atomic::fence(Ordering::SeqCst);
         }
     }

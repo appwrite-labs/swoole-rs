@@ -56,7 +56,7 @@ impl SocketFields {
     /// listening.
     pub fn listen(&mut self, backlog: c_int) -> bool {
         let backlog = if backlog <= 0 { BACKLOG } else { backlog };
-        if swoole_rs_corebase::sys::listen(self.fd, backlog) != 0 {
+        if swoole_rs_corebase::sys::listen(self.fd, backlog).is_err() {
             return false;
         }
         self.listened = true;
