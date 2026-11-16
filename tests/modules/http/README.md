@@ -290,6 +290,13 @@ crates/ports' `methods::tests::server_protocols` (tests/modules/ports/README.md)
 | `abort_worker`, `reactor_thread_pipe_writable`, `send_timeout` | same names | `get_session(i)` reads the shared session list; `move_packet()` is `view::Server::move_worker_packet`; `conn->socket->recv_timer` is the socket record's, at the offset swoole_rs_socket.h asserts, a timer held by id that `swoole_timer_del` becomes `del_id` of; `abort_worker`'s c2 waits (up to 10 s) for the third `onWorkerStart`, the replacement's, because the manager retires the dead worker's sessions only after reaping it, so upstream's c2 can reach `onReceive` first (arm64 timing, #2834) |
 | `heartbeat_check_1` .. `heartbeat_check_4`, `close_1` .. `close_8`, `eof_check` | same names | the `AsyncClient` is a blocking client in a thread of the process whose reactor upstream's ran in, with the same callbacks in order (`connected`, `on_connect` or `on_error`, `on_receive` per read, `on_close`); its `flags` are shared counters, since the server's callbacks may run in a worker |
 
+The `max_request_1` and `max_request_2` clients wait for each packet's receive
+callback through a process-shared counter before sending another. TCP may combine
+writes when the reader is delayed; the request limit counts callbacks, so a 1 ms
+sleep alone does not establish 128 requests. The eight connections, packet bytes,
+128-write limit, original sleeps and `WorkerStart >= 8` assertion stay unchanged.
+A missing receive fails after a bounded wait instead of waiting indefinitely.
+
 The MODE_THREAD TESTs (`max_request_2`, `heartbeat_check_3`, `close_3`, `close_7`,
 `task_ipc_queue_5`, `thread`, `task_thread`, `reload_thread*`, `kill_worker_3`,
 `kill_worker_6`, `clean_worker_2`, `ssl_client_cert_3`) need upstream's `enable_thread` build (`SW_THREAD`),
