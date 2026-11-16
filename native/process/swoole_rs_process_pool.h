@@ -14,7 +14,6 @@
 namespace swoole {
 // The record's protocol_type, a c_int (crates/process's Protocol codes).
 typedef int ProtocolType;
-class ExitStatus;
 struct ProcessPool;
 
 struct Worker {

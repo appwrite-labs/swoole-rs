@@ -334,7 +334,6 @@ pub fn worker_set_max_request(max_request: u32, grace: u32) {
 }
 
 /// `swoole::ExitStatus`: a child's pid and `waitpid` status.
-#[repr(C)]
 pub struct ExitStatus {
     pid: c_int,
     status: c_int,

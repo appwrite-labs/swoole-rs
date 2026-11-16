@@ -51,19 +51,19 @@
     uint32_t max_request_grace; \
     bool scheduler_warning; \
     time_t warning_time; \
-    void (*onStart)(ProcessPool *); \
-    void (*onShutdown)(ProcessPool *); \
-    void (*onBeforeReload)(ProcessPool *); \
-    void (*onAfterReload)(ProcessPool *); \
-    int (*onTask)(ProcessPool *, Worker *, EventData *); \
-    void (*onWorkerStart)(ProcessPool *, Worker *); \
-    void (*onMessage)(ProcessPool *, RecvData *); \
-    void (*onWorkerExit)(ProcessPool *, Worker *); \
-    void (*onWorkerStop)(ProcessPool *, Worker *); \
-    void (*onWorkerError)(ProcessPool *, Worker *, const ExitStatus &); \
-    void (*onWorkerMessage)(ProcessPool *, EventData *); \
-    int (*onWorkerNotFound)(ProcessPool *, const ExitStatus &); \
-    int (*main_loop)(ProcessPool *, Worker *); \
+    void * onStart; \
+    void * onShutdown; \
+    void * onBeforeReload; \
+    void * onAfterReload; \
+    void * onTask; \
+    void * onWorkerStart; \
+    void * onMessage; \
+    void * onWorkerExit; \
+    void * onWorkerStop; \
+    void * onWorkerError; \
+    void * onWorkerMessage; \
+    void * onWorkerNotFound; \
+    void * main_loop; \
     sw_atomic_t round_id; \
     Worker * workers; \
     void * pipes; \
