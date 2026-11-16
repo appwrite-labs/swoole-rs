@@ -186,6 +186,8 @@ struct Client {
 struct Hooks<'a> {
     parser: &'a mut Parser,
     client: &'a Client,
+    /// The client object's properties, found once for the response.
+    props: Props<'a>,
 }
 
 /// One parse call's callbacks: the response's hooks and the header name they
@@ -289,6 +291,20 @@ mod props {
     }
 }
 
+/// The property `name`, which the client class declares.
+fn property<'a>(props: Props<'a>, name: &CStr) -> &'a Value {
+    let slot = props.slot(name);
+    slot.unwrap_or_else(|| swoole_rs_corebase::fatal("an undeclared client property"))
+}
+
+/// `sw_zend_read_property_not_null_ex`: the declared property `name` unless it
+/// is null (or undefined), read from its slot as [`property`] reads the others.
+fn not_null<'a>(props: Props<'a>, name: &CStr) -> Option<&'a Value> {
+    props
+        .slot(name)
+        .filter(|value| !matches!(value.kind(), z::IS_NULL | z::IS_UNDEF))
+}
+
 /// `php_swoole_socket_set_error_properties(zobject, code, message)`.
 fn set_error_properties(props: Props, code: c_int, message: &CStr) {
     swoole_rs_corebase::log::set_last_error(code);
@@ -370,17 +386,7 @@ impl Client {
 
     /// The property `name`, which the client class declares.
     fn property(&self, name: &CStr) -> &Value {
-        let slot = self.props().slot(name);
-        slot.unwrap_or_else(|| swoole_rs_corebase::fatal("an undeclared client property"))
-    }
-
-    /// `sw_zend_read_property_not_null_ex`: the declared property `name`
-    /// unless it is null (or undefined), read from its slot as
-    /// [`Client::property`] reads the others.
-    fn not_null(&self, name: &CStr) -> Option<&Value> {
-        self.props()
-            .slot(name)
-            .filter(|value| !matches!(value.kind(), z::IS_NULL | z::IS_UNDEF))
+        property(self.props(), name)
     }
 
     /// `callable($client, $data)` inside `zend_try`: whether the call succeeded, or
@@ -649,15 +655,16 @@ impl Client {
             set_error_properties(self.props(), INVALID_PARAMS, &strerror(INVALID_PARAMS));
             return false;
         }
-        self.props().null(c"headers");
-        self.props().null(c"set_cookie_headers");
-        self.props().bytes(c"body", b"");
+        let props = self.props();
+        props.null(c"headers");
+        props.null(c"set_cookie_headers");
+        props.bytes(c"body", b"");
         if !self.keep_liveness() {
             return false;
         }
-        self.props().long(c"errCode", 0);
-        self.props().bytes(c"errMsg", b"");
-        self.props().long(c"statusCode", 0);
+        props.long(c"errCode", 0);
+        props.bytes(c"errMsg", b"");
+        props.long(c"statusCode", 0);
         let Some(socket) = self.co() else {
             return false;
         };
@@ -665,23 +672,24 @@ impl Client {
         swoole_rs_corebase::log::set_last_error(0);
         self.with_body(Vec::clear);
 
-        let method = self.not_null(c"requestMethod");
-        let headers = self.property(c"requestHeaders").array();
+        let method = not_null(props, c"requestMethod");
+        let headers = property(props, c"requestHeaders").array();
         // The body and files with references of their own: a multipart send yields
         // between its writes, and `setData()` or `addFile()` may replace or add to
         // them meanwhile (an add separates the shared array).
-        let body = self.not_null(c"requestBody").map(Value::copy);
-        let files = self.property(c"uploadFiles").copy();
+        let body = not_null(props, c"requestBody").map(Value::copy);
+        let files = property(props, c"uploadFiles").copy();
         let body = body.as_deref();
-        let cookies = self.property(c"cookies").array();
-        let download = self.not_null(c"downloadFile");
+        let cookies = property(props, c"cookies").array();
+        let download = not_null(props, c"downloadFile");
 
         let host_header = headers
             .and_then(|headers| headers.find(b"Host").or_else(|| headers.find(b"host")))
             .map(Value::string);
         if let Some(download) = download {
             self.download_name.set(Some(download.string()));
-            self.download_offset.set(self.get_long(c"downloadOffset"));
+            self.download_offset
+                .set(property(props, c"downloadOffset").long());
         }
 
         let mut out = Vec::with_capacity(256);
@@ -987,6 +995,7 @@ impl Client {
         let mut hooks = Hooks {
             parser,
             client: self,
+            props: self.props(),
         };
         let timeout = if timeout == 0.0 {
             self.response_timeout.get()
@@ -1340,12 +1349,6 @@ impl Client {
             }
         }
     }
-
-    fn add_header(&self, key: &[u8], data: &[u8]) {
-        self.props().edit_array(c"headers", |headers| {
-            headers.merge(key, Owned::from(ZString::new(data)));
-        });
-    }
 }
 
 /// A response's decoder, made on its first compressed chunk.
@@ -1461,7 +1464,9 @@ fn on_header_value(hooks: &Hooks, name: &[u8], data: &[u8]) -> Flow {
     } else {
         name
     };
-    client.add_header(name, data);
+    hooks.props.edit_array(c"headers", |headers| {
+        headers.merge(name, Owned::from(ZString::new(data)));
+    });
     let status = hooks.parser.status_code;
     if status == SWITCHING_PROTOCOLS && name == b"upgrade" {
         if request::token_list_contains(data, b"websocket") {
@@ -1476,7 +1481,7 @@ fn on_header_value(hooks: &Hooks, name: &[u8], data: &[u8]) -> Flow {
             client.accept_websocket_compression.set(true);
         }
     } else if name == b"set-cookie" {
-        let props = client.props();
+        let props = hooks.props;
         props.edit_array(c"cookies", |cookies| {
             props.edit_array(c"set_cookie_headers", |headers| {
                 parse_set_cookies(data, cookies, headers);
@@ -1589,12 +1594,11 @@ fn on_message_complete(hooks: &mut Hooks) -> Flow {
         hooks.parser.upgrade = false;
         return Flow::Pause;
     }
-    client
-        .props()
-        .long(c"statusCode", i64::from(hooks.parser.status_code));
+    let props = hooks.props;
+    props.long(c"statusCode", i64::from(hooks.parser.status_code));
     if client.download_file.get().is_none() {
         // Out of the client while the write can run PHP code.
-        client.with_body(|body| client.props().bytes(c"body", body));
+        client.with_body(|body| props.bytes(c"body", body));
     } else {
         drop(client.download_name.take());
     }
