@@ -180,3 +180,6 @@ The constants probes print every named flag's bits and compare them with the
 pinned headers, alongside the exhaustive enum tables. Socket options, task-file
 flags, event payload selection and TLS protocol options retain their existing
 runtime tests; conversion to integers happens at the native fields and calls.
+
+`spare.rs` verifies scalar receive appends, zero/error results, datagram truncation,
+and a real short `readv` spanning an empty room without exposing unwritten bytes.

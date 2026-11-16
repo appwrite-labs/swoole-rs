@@ -8,7 +8,7 @@ description = "PHP coroutines: each coroutine's PHP context and VM swap, activat
 
 [features]
 # Needs PHP headers (swoole-rs-zend-sys); without it the crate is empty.
-php = ["dep:libc", "dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php",
+php = ["dep:swoole-rs-error", "dep:libc", "dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-phpstubs", "swoole-rs-phpstubs/php",
        "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php", "dep:swoole-rs-phpruntime", "swoole-rs-phpruntime/php",
        "dep:swoole-rs-coroutine", "swoole-rs-coroutine/upstream-symbols", "dep:swoole-rs-corebase", "dep:swoole-rs-hooks", "swoole-rs-hooks/upstream-symbols",
        "dep:swoole-rs-reactor", "dep:swoole-rs-server", "swoole-rs-server/upstream-symbols", "dep:swoole-rs-timer", "swoole-rs-timer/upstream-symbols"]
@@ -16,7 +16,7 @@ php = ["dep:libc", "dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-ph
 iouring = ["swoole-rs-hooks?/iouring", "swoole-rs-hooks?/upstream-symbols"]
 
 [dependencies]
-swoole-rs-error = { path = "../error" }
+swoole-rs-error = { path = "../error", optional = true }
 libc = { version = "=0.2.191", optional = true }
 swoole-rs-zend = { path = "../zend", optional = true }
 swoole-rs-phpstubs = { path = "../phpstubs", optional = true }

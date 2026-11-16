@@ -705,32 +705,18 @@ fn read_vector(call: &Call, socket: Co, op: c_int, array: &Array, timeout: f64) 
         buffers.push(ZBuf::with_capacity(length));
     }
     let total: usize = buffers.iter().map(ZBuf::capacity).sum();
-    let mut vectors: Vec<_> = buffers
-        .iter_mut()
-        .map(|buffer| swoole_rs_hooks::vector::ReadVec::new(buffer.spare_capacity_mut()))
-        .collect();
-    let (read, stopped, offset) =
-        socket.vector(co::Vectors::Read(&mut vectors), op & 1 == 1, timeout);
-    drop(vectors);
-    let read = match usize::try_from(read) {
-        Ok(0) => return call.set_empty_array(),
-        Err(_) => return call.set_bool(false),
-        Ok(read) => read,
+    let (read, stopped, _) = match socket.read_vector(&mut buffers, op & 1 == 1, timeout) {
+        Some((0, _, _)) => return call.set_empty_array(),
+        None => return call.set_bool(false),
+        Some(result) => result,
     };
-    // A short read stopped `offset` bytes into vector `stopped`: keep that much
-    // of it and drop the vectors after it.
+    // The buffers already count the initialized prefix; retain the vector where
+    // a short read stopped (including an empty boundary vector), and none after it.
     let stopped = usize::try_from(stopped).unwrap_or(0);
     let stopped = (read < total && stopped < buffers.len()).then_some(stopped);
     buffers.truncate(stopped.map_or(buffers.len(), |stopped| stopped + 1));
     let mut result = OwnedArray::default();
-    for (index, mut buffer) in buffers.into_iter().enumerate() {
-        let len = if stopped == Some(index) {
-            offset.min(buffer.capacity())
-        } else {
-            buffer.capacity()
-        };
-        // SAFETY: the read filled each vector before the one it stopped in.
-        unsafe { buffer.set_len(len) };
+    for buffer in buffers {
         result.push(recycle(buffer).into());
     }
     call.set_owned(result.into_owned());

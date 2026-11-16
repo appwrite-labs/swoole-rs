@@ -31,14 +31,13 @@ jobs:
         run: cargo check --locked --manifest-path fuzz/Cargo.toml --all-targets
       - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2
         with:
-          tool: cbindgen@0.29.4,cargo-deny@0.18.9,cargo-machete@0.9.1
+          tool: cbindgen@0.29.4,cargo-deny@0.18.9
       - name: Check licence headers
         run: tools/headers.sh --check
-      # Dependencies: advisories, licences, bans (no async runtime) and sources (deny.toml); unused ones.
+      # Dependencies: advisories, licences, bans (no async runtime) and sources (deny.toml).
+      # Unused ones fail clippy above: Cargo's unused_dependencies lint (root Cargo.toml).
       - name: Check dependencies
         run: cargo deny check
-      - name: Find unused dependencies
-        run: cargo machete
 
   tooling:
     runs-on: gcrunner=${{ github.run_id }}/runner=standard

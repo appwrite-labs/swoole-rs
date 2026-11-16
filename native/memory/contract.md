@@ -18,19 +18,21 @@ upstream symbols below. Supported hosts are 64-bit macOS and Linux.
 
 Rust only (`crates/memory/src/fixed.rs`): the table's row pool. `FixedPool`, the
 owner of an arena of its own, is test support (`tests/modules/memory/members.rs`).
-The 48-byte header and 24-byte slice headers keep the pinned layout and live in
-the arena, so a shared pool stays visible across fork. Callers serialize.
+The pool's state (`Fixed`) is a Rust value the table keeps in its shared header, so
+a shared pool stays visible across fork; the arena reserves upstream's 48-byte
+header ahead of its 24-byte slice headers, so slice counts and accounting stay
+upstream's. Callers serialize.
 
-- `Layout::new` plans an owned arena (at least two slices, width rounded to 8) or
-  a pool over borrowed bytes (width kept, odd included, complete slices floored).
-  Invalid or overflowing plans are `None`.
-- `construct` zeroes the header, padding included, and links the slices; payload
-  and trailing bytes are untouched. A misaligned arena is refused untouched.
+- `Layout::new` plans an owned arena (at least two slices) or a pool over borrowed
+  bytes (complete slices floored), widths rounded up to 8. Invalid or overflowing
+  plans are `None`.
+- `construct` zeroes each slice header and links the slices; the reserved header,
+  payload and trailing bytes are untouched. A misaligned arena is refused untouched.
 - alloc returns the last idle slice's payload, NULL when exhausted; free returns
   false without mutation for a bad range or stride, a duplicate free or empty
   accounting. The `FixedPool` members keep upstream's assertions and last error.
-- Slice headers may be unaligned (odd table widths): raw unaligned access only.
-  alloc/free publish only head/tail/slice_use through raw field addresses.
+- Slice headers are aligned `Slice` values of cells, reached only through
+  `Fixed::slice`, which refuses an address that is not a slice's.
 - `debug_step` (test support, with `FixedPool`) walks the live links for
   `FixedPool::debug`: negative max prints 1 row, max 0 prints 2, larger limits stop
   after max+2 or list end.
