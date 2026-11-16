@@ -348,6 +348,21 @@ class Lanes(unittest.TestCase):
         self.assertIn('dev.py docker [--iouring] [-- dev.py arguments | -- SCRIPT.py arguments | -- cargo arguments]',
                       ' '.join(result.stdout.split()))
 
+    def test_docker_runs_as_the_linux_user(self):
+        # A container's root would own what it writes to the mounts, so a Linux host's user
+        # couldn't remove the worktree (#4303); Docker Desktop maps ownership itself.
+        def environment(platform, uid):
+            run = patch.object(dev.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout=''))
+            with run as mock, patch.object(dev.subprocess, 'check_output', return_value=f'{ROOT}/.git\n'), \
+                    patch.object(dev.Path, 'mkdir'), patch.object(dev.sys, 'platform', platform), \
+                    patch.object(dev.os, 'getuid', return_value=uid), patch.object(dev.os, 'getgid', return_value=7):
+                self.assertEqual(dev.docker(['--', 'cargo', 'test']), 0)
+            return [part for part in mock.call_args.args[0] if part.startswith('SWR_USER=')]
+        self.assertEqual(environment('linux', 1000), ['SWR_USER=1000:7'])
+        self.assertEqual(environment('linux', 0), [])
+        self.assertEqual(environment('darwin', 501), [])
+        self.assertIn('setpriv --reuid', dev.DOCKER_SCRIPT)
+
     def test_docker_iouring_adds_the_io_uring_profile_and_sys_resource(self):
         # Docker's default seccomp profile answers io_uring_setup with EPERM (#4167); --iouring
         # swaps in that profile plus the three io_uring syscalls, and adds CAP_SYS_RESOURCE
@@ -364,7 +379,7 @@ class Lanes(unittest.TestCase):
         self.assertFalse([part for part in plain if 'seccomp' in part or 'privileged' in part or part.startswith('--cap')])
         self.assertEqual([part for part in opted if part not in plain],
                          ['--security-opt', f'seccomp={ROOT}/tools/docker-seccomp-iouring.json',
-                          '--cap-add', 'SYS_RESOURCE'])
+                          '--cap-add', 'SYS_RESOURCE', 'SWR_CAPS=+sys_resource'])
         profile = json.loads((ROOT / 'tools/docker-seccomp-iouring.json').read_text())
         self.assertEqual(profile['defaultAction'], 'SCMP_ACT_ERRNO')
         self.assertEqual(profile['syscalls'][-1], {'names': ['io_uring_enter', 'io_uring_register', 'io_uring_setup'],
