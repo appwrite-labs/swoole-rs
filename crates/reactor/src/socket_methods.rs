@@ -30,7 +30,7 @@ pub extern "C" fn steady_ms() -> f64 {
 impl SocketFields {
     /// `Socket::get_name`: getsockname(2) into `info`, which takes the socket's type.
     pub fn get_name(&mut self) -> bool {
-        if self.info.local_name(self.fd) != 0 {
+        if self.info.local_name(self.fd).is_err() {
             return false;
         }
         self.info.kind = self.socket_type;
@@ -40,7 +40,7 @@ impl SocketFields {
     /// `Socket::get_peer_name`: getpeername(2) into `address`, typed as the socket.
     pub fn get_peer_name(&self, address: &mut SocketAddress) -> bool {
         address.kind = self.socket_type;
-        address.peer_name(self.fd) == 0
+        address.peer_name(self.fd).is_ok()
     }
 
     /// `Socket::bind(address)`: bind(2), marking the socket bound.

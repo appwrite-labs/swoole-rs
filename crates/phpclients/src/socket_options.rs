@@ -709,7 +709,10 @@ fn domain(fd: c_int) -> Option<c_int> {
         }
     }
     let mut address = SocketAddress::default();
-    (address.local_name(fd) == 0).then(|| c_int::from(address.addr.family()))
+    address
+        .local_name(fd)
+        .is_ok()
+        .then(|| c_int::from(address.addr.family()))
 }
 
 /// `swoole_coroutine_socketpair(int $domain, int $type, int $protocol): array|false`.

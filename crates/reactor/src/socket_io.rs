@@ -101,7 +101,9 @@ pub fn fd_accept(fd: c_int, address: &mut SocketAddress, nonblock: bool) -> (c_i
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let accepted = address.accept(fd);
+        let accepted = address
+            .accept(fd)
+            .map_or(-1, std::os::fd::IntoRawFd::into_raw_fd);
         let cloexec =
             accepted >= 0 && crate::swr_v1_socket_fd_option(fd, Some(nonblock), Some(true)).ok;
         (accepted, cloexec)

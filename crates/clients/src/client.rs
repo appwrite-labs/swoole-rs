@@ -505,7 +505,7 @@ impl Handle {
     /// `Socket::sendto(server_addr, data, length)`: one sendto(2).
     fn sendto(self, data: &[u8]) -> Option<usize> {
         let fd = self.socket().fd();
-        usize::try_from(self.record().server_addr.sendto(fd, data, 0)).ok()
+        self.record().server_addr.sendto(fd, data, 0)
     }
 
     /// `Socket::recvfrom(data, length, flags, &remote_addr)`: recvfrom(2),
@@ -514,9 +514,9 @@ impl Handle {
         let fd = self.socket().fd();
         self.get().edit_record(|record| {
             for _ in 0..SOCKET_RETRY_COUNT {
-                let n = usize::try_from(record.remote_addr.recvfrom(fd, &mut *buffer, flags));
-                if n.is_ok() || errno() != libc::EINTR {
-                    return n.ok();
+                let n = record.remote_addr.recvfrom(fd, &mut *buffer, flags);
+                if n.is_some() || errno() != libc::EINTR {
+                    return n;
                 }
             }
             None
@@ -1658,7 +1658,7 @@ pub fn sendto(this: Handle, host: &CStr, port: c_int, data: &[u8]) -> bool {
         return false;
     };
     let fd = this.socket().fd();
-    if address.sendto(fd, data, 0) < 0 {
+    if address.sendto(fd, data, 0).is_none() {
         log::set_last_error(errno());
         return false;
     }

@@ -239,7 +239,10 @@ pub(crate) fn recvfrom_peer(ops: &UringSocketOps<'_>, buf: &mut [impl ReadSlot])
         }
         let receive =
             |record: &mut SocketFields| record.info.recvfrom(tls.fd, buf, libc::MSG_DONTWAIT);
-        ops.socket.net(receive).unwrap_or(-1)
+        ops.socket
+            .net(receive)
+            .flatten()
+            .map_or(-1, usize::cast_signed)
     })
 }
 
