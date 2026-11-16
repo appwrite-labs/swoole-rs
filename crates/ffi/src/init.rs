@@ -23,6 +23,21 @@ thread_local! {
     static BUFFER: Cell<CppString> = const { Cell::new(CppString::EMPTY) };
 }
 
+// The pool's existing ABI adapter. Only crates/clients constructs this event;
+// its borrowed request remains live while dispatch copies and retains it.
+unsafe extern "C" {
+    /// `async::dispatch`: queues a copy of the event, holding its own reference
+    /// to the request; null without a pool.
+    #[link_name = "_ZN6swoole5async8dispatchEPKNS_10AsyncEventE"]
+    #[expect(
+        improper_ctypes,
+        reason = "the request record is opaque behind its pointer; Rust defines both sides"
+    )]
+    safe fn async_dispatch(
+        event: &swoole_rs_clients::client::AsyncEvent<'_>,
+    ) -> *mut core::ffi::c_void;
+}
+
 /// `void swoole_init()`.
 #[unsafe(export_name = "_Z11swoole_initv")]
 extern "C-unwind" fn swoole_init() {
@@ -47,7 +62,9 @@ extern "C-unwind" fn swoole_init() {
         coroutine_is_in: || !swoole_rs_coroutine::current().is_null(),
     });
     swoole_rs_reactor::event_api::set_writers(swoole_rs_tls::reactor_write::WRITERS);
-    swoole_rs_clients::client::set_framing(swoole_rs_ports::framing_recv::FRAMING);
+    swoole_rs_clients::client::set_host(swoole_rs_ports::framing_recv::FRAMING, |event| {
+        !async_dispatch(event).is_null()
+    });
     swoole_rs_ports::register_methods();
     swoole_rs_hooks::stdio::swr_v1_hook_install();
     swoole_rs_corebase::swr_v1_core_swoole_init();

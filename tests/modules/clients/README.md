@@ -30,7 +30,11 @@ both builds. Recording clients explicitly supply timer creation/cancellation
 effects and retain their cancellation-before-free and timeout traces. Original
 async client cases exercise timeout delivery; the native-table test verifies real
 timer creation and idempotent cancellation with a manually driven thread timer.
-Remaining I/O, TLS close/free and host stand-ins are tracked by #4093.
+The client host registers the DNS pool dispatcher alongside framed receives.
+Unit fixtures register their recording dispatcher and retain the original DNS
+success/error traces; the composition root adapts the existing pool ABI, which
+still copies and retains each resolver request until completion.
+Remaining I/O and TLS close/free stand-ins are tracked by #4093.
 
 ## network/client.cpp in Rust
 
