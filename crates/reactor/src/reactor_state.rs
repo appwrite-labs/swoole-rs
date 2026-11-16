@@ -240,8 +240,13 @@ impl ReactorState {
     fn open_backend(&mut self, kind: BackendKind, count: c_int) -> bool {
         #[cfg(target_os = "linux")]
         if kind == BackendKind::Epoll {
-            // Upstream's `epoll_create(512)`: the kernel ignores the size hint.
-            self.backend_fd = swoole_rs_corebase::sys::epoll_create1(0);
+            // Upstream's fixed size hint; Miri has only `epoll_create1`, the same call
+            // without it.
+            #[cfg(not(miri))]
+            let fd = swoole_rs_corebase::sys::epoll_create(512);
+            #[cfg(miri)]
+            let fd = swoole_rs_corebase::sys::epoll_create1(0);
+            self.backend_fd = fd;
         }
         #[cfg(any(
             target_os = "macos",
