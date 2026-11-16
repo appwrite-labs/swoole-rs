@@ -423,6 +423,11 @@ impl SocketFields {
         std::mem::forget(std::mem::replace(&mut self.ssl, ssl));
     }
 
+    /// Release the record's SSL reference; pending operations retain theirs.
+    pub fn close_ssl(&mut self) {
+        self.ssl = None;
+    }
+
     /// The record's `SSL` out of it, or none: freed when the owner drops.
     /// # Safety
     /// No handle to the `SSL` or its BIOs is used once the owner drops, and no other

@@ -318,7 +318,7 @@ mod tests {
     }
 
     /// The view over the session `network` holds.
-    fn tls(fd: c_int, network: Socket<'_>) -> Tls<'_, Recorder> {
+    fn tls<'a>(fd: c_int, held: &'a swoole_rs_tls::HeldSsl<'_>) -> Tls<'a, Recorder> {
         let tls = Tls {
             uring: &HOST,
             socket: Recorder,
@@ -329,7 +329,7 @@ mod tests {
             read_timeout: 1.0,
             write_timeout: 1.0,
         };
-        tls.with_session(Ssl::of(network))
+        tls.with_session(Some(held.get()))
     }
 
     #[test]
@@ -398,7 +398,10 @@ mod tests {
                 100,
                 "queued"
             );
-            assert!(tls(fds[0], network).prepare(), "prepare sends");
+            assert!(
+                tls(fds[0], &Ssl::of(network).unwrap()).prepare(),
+                "prepare sends"
+            );
             let mut received = [0_u8; 128];
             assert_eq!(
                 libc::read(fds[1], received.as_mut_ptr().cast(), 128),
@@ -411,7 +414,7 @@ mod tests {
                 3,
                 "peer writes"
             );
-            assert!(tls(fds[0], network).bio_read(), "read");
+            assert!(tls(fds[0], &Ssl::of(network).unwrap()).bio_read(), "read");
             let mut out = [0_u8; 8];
             assert_eq!(
                 ssl::BIO_read(rbio, out.as_mut_ptr().cast(), 8),
@@ -420,7 +423,10 @@ mod tests {
             );
             // The peer closing is a TLS reset.
             libc::close(fds[1]);
-            assert!(!tls(fds[0], network).bio_read(), "closed");
+            assert!(
+                !tls(fds[0], &Ssl::of(network).unwrap()).bio_read(),
+                "closed"
+            );
             assert_eq!(
                 ERRORS.with(|errors| errors.borrow().clone()),
                 vec![SSL_RESET],
@@ -493,7 +499,8 @@ mod tests {
             ssl::SSL_set_bio(session, rbio, wbio);
             ssl::SSL_set_connect_state(session);
             let mut record = holding(session);
-            let tls = tls(stream.as_raw_fd(), Socket::new(&mut record));
+            let held = Ssl::of(Socket::new(&mut record)).unwrap();
+            let tls = tls(stream.as_raw_fd(), &held);
             loop {
                 let rc = ssl::SSL_do_handshake(session);
                 if rc == 1 {
@@ -525,6 +532,7 @@ mod tests {
             );
 
             client_done.store(true, Ordering::SeqCst);
+            drop(held);
             drop(record);
             ssl::SSL_CTX_free(ctx);
         });

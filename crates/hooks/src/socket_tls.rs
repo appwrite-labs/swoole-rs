@@ -366,6 +366,6 @@ mod tests {
         assert_eq!(client.co().tls_host_name(), b"first.test");
         client
             .co()
-            .with_network(|socket| unsafe { swoole_rs_tls::upstream::socket_ssl_close(socket) });
+            .with_network(swoole_rs_tls::upstream::socket_ssl_close);
     }
 }

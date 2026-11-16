@@ -68,8 +68,8 @@ What is not:
 - **One upstream version.** It tracks v6.2.5 (pinned at `76c657d8`) and reports itself as
   that version.
 - **Linux is what CI tests.** Every merge runs Ubuntu 24.04 on x86-64 with PHP 8.3, plus
-  Alpine (musl) and a thread-safe PHP. PHP 8.2, 8.4 and 8.5 run nightly. The build
-  scripts handle macOS and arm64 Linux, and CI runs neither.
+  Alpine (musl) and a thread-safe PHP. PHP 8.2, 8.4 and 8.5 run nightly, as does
+  arm64 with PHP 8.3. The build scripts handle macOS, which CI doesn't run.
 - **No release, no packages.** There is no tag and no PECL or PIE package; you build it
   from source.
 - **Coding agents wrote it.** About 2,100 commits since 2026-10-25 came from AI coding

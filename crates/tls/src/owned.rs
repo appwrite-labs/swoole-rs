@@ -536,7 +536,7 @@ pub fn socket_session(
         None
     };
     if let (Some(name), Some(ssl)) = (selected, ssl) {
-        _ = ssl.set_host_name(name);
+        _ = ssl.get().set_host_name(name);
     }
     Ok(())
 }

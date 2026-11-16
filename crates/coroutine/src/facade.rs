@@ -138,7 +138,6 @@ pub unsafe fn swr_v1_coroutine_create(routine: Routine, arg: *mut c_void) -> c_l
 fn keep_alive(_: c_long) {}
 
 /// `static void Coroutine::activate()`.
-#[unsafe(export_name = "_ZN6swoole9Coroutine8activateEv")]
 pub extern "C-unwind" fn activate() {
     if build() & THREAD != 0 {
         // Coroutine threads share this thread's timer and async threads.
@@ -162,7 +161,6 @@ pub extern "C-unwind" fn activate() {
 }
 
 /// `static void Coroutine::deactivate()`.
-#[unsafe(export_name = "_ZN6swoole9Coroutine10deactivateEv")]
 pub extern "C-unwind" fn deactivate() {
     if build() & THREAD != 0 {
         swr_v1_thread_context_clean();
