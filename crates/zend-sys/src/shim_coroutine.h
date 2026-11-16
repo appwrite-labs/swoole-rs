@@ -59,8 +59,9 @@ void swr_zend_coroutine_start(swr_zend_coroutine_vm *vm, void *stack, size_t sta
 /* destroy_context's output reset: end and restart output buffering without
  * sending headers, when output is active. */
 void swr_zend_coroutine_output_reset(void);
-/* zend_vm_stack_destroy. */
-void swr_zend_coroutine_vm_destroy(void);
+/* destroy_context's end: zend_vm_stack_destroy of the running coroutine's
+ * VM stack, then restore_context of `origin`. */
+void swr_zend_coroutine_finish(swr_zend_coroutine_vm *origin);
 /* init_main_context: EG(main_fiber_context), then save_context into `vm`. */
 zend_fiber_context *swr_zend_coroutine_main(swr_zend_coroutine_vm *vm);
 /* A coroutine's body (main_func) inside zend_first_try: call the function

@@ -19,13 +19,12 @@ use swoole_rs_coroutine::{CoroutineTask, State};
 use swoole_rs_timer::Held;
 use swoole_rs_zend::sys::{
     IS_NULL, IS_UNDEF, swr_zend_callable, swr_zend_callable_hold, swr_zend_coroutine_fcc_discard,
-    swr_zend_coroutine_output_reset, swr_zend_coroutine_restore, swr_zend_coroutine_set_frame,
-    swr_zend_coroutine_start, swr_zend_coroutine_switch, swr_zend_coroutine_vm,
-    swr_zend_coroutine_vm_destroy, swr_zend_efree, zend_class_entry, zend_execute_data,
-    zend_fcall_info, zend_fcall_info_cache, zend_fiber_context, zend_fiber_status,
-    zend_fiber_status_ZEND_FIBER_STATUS_DEAD, zend_fiber_status_ZEND_FIBER_STATUS_INIT,
-    zend_fiber_status_ZEND_FIBER_STATUS_RUNNING, zend_fiber_status_ZEND_FIBER_STATUS_SUSPENDED,
-    zend_object, zval,
+    swr_zend_coroutine_finish, swr_zend_coroutine_output_reset, swr_zend_coroutine_set_frame,
+    swr_zend_coroutine_start, swr_zend_coroutine_switch, swr_zend_coroutine_vm, swr_zend_efree,
+    zend_class_entry, zend_execute_data, zend_fcall_info, zend_fcall_info_cache,
+    zend_fiber_context, zend_fiber_status, zend_fiber_status_ZEND_FIBER_STATUS_DEAD,
+    zend_fiber_status_ZEND_FIBER_STATUS_INIT, zend_fiber_status_ZEND_FIBER_STATUS_RUNNING,
+    zend_fiber_status_ZEND_FIBER_STATUS_SUSPENDED, zend_object, zval,
 };
 use swoole_rs_zend::{Callable, Function, Owned, Value, bailout};
 
@@ -597,10 +596,8 @@ pub(crate) fn close(ctx: Ctx) {
     {
         swoole_rs_timer::del_id(timer);
     }
-    // SAFETY: the coroutine's own VM stack.
-    unsafe { swr_zend_coroutine_vm_destroy() };
-    // SAFETY: the origin's live context.
-    unsafe { swr_zend_coroutine_restore(origin(ctx).vm()) };
+    // SAFETY: the finishing coroutine's own VM stack, then the origin's live context.
+    unsafe { swr_zend_coroutine_finish(origin(ctx).vm()) };
 }
 
 /// `init_main_context`, at RINIT.
