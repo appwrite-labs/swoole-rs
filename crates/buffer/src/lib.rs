@@ -80,12 +80,7 @@ impl Buffer {
     /// # Errors
     /// `NoMem` when the allocation fails.
     pub fn create(chunk_size: u32) -> Result<Box<Self>, Error> {
-        try_box(|| Self::new(chunk_size)).ok_or(Error::NoMem)
-    }
-
-    /// A new queue by value; chunk size 0 means `INT32_MAX`.
-    pub(crate) fn new(chunk_size: u32) -> Self {
-        Self {
+        try_box(|| Self {
             entries: VecDeque::new(),
             recycled: Vec::new(),
             recycled_bytes: 0,
@@ -96,7 +91,8 @@ impl Buffer {
             },
             length: 0,
             cursor: typed::Cursor::default(),
-        }
+        })
+        .ok_or(Error::NoMem)
     }
 
     // Limit idle retention to 64 KiB and 64 descriptors per queue. Recycling is
@@ -145,17 +141,14 @@ impl Buffer {
     /// # Errors
     /// The queue itself, unchanged, while it still holds a native token.
     pub fn release(self: Box<Self>) -> Result<(), Box<Self>> {
-        if self.holds_token() {
+        if self
+            .entries
+            .iter()
+            .any(|e| matches!(e, Entry::TypedToken(_)))
+        {
             return Err(self);
         }
         Ok(())
-    }
-
-    /// Whether it still holds a native token, which it may not be dropped with.
-    fn holds_token(&self) -> bool {
-        self.entries
-            .iter()
-            .any(|e| matches!(e, Entry::TypedToken(_)))
     }
 
     // Expose the contiguous append's single part to the optimizer.

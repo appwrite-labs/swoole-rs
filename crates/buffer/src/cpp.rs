@@ -10,10 +10,12 @@
 //! exception can unwind into these frames.
 use crate::typed::Front;
 
-/// `swoole::Buffer`: its only member is the queue. Only Rust reaches it, through the
-/// box [`new_buffer`] returns.
+/// `swoole::Buffer`: its only member is the queue handle, a boxed [`crate::Buffer`]
+/// held as C++ sees it (an opaque pointer, so a record that embeds a `Buffer *` stays
+/// a C type).
+#[repr(C)]
 pub struct CppBuffer {
-    queue: std::cell::UnsafeCell<crate::Buffer>,
+    queue: *mut std::ffi::c_void,
 }
 
 fn check(status: Result<(), crate::Error>) {
@@ -23,17 +25,28 @@ fn check(status: Result<(), crate::Error>) {
 }
 
 impl CppBuffer {
+    /// `Buffer(chunk_size)`.
+    fn new(chunk_size: u32) -> Self {
+        let Ok(queue) = crate::Buffer::create(chunk_size) else {
+            swoole_rs_corebase::fatal("a buffer queue can't be created");
+        };
+        Self {
+            queue: Box::into_raw(queue).cast(),
+        }
+    }
+
     /// The queue's address, for a caller that reaches it between the borrows of the
     /// record that owns this `Buffer` (crates/tls's send path).
     #[must_use]
     pub const fn queue(&self) -> *mut crate::Buffer {
-        self.queue.get()
+        self.queue.cast()
     }
 
-    /// Runs `body` over the queue, which this holds by value.
+    /// Runs `body` over the queue. A `CppBuffer` reachable by reference was built by
+    /// [`Self::new`] (its field is private) and not yet dropped, so its queue is live.
     fn with<R>(&self, body: impl FnOnce(&mut crate::Buffer) -> R) -> R {
-        // SAFETY: the cell is not `Sync`, nothing in `body` reaches this queue another
-        // way, and the borrow ends with it.
+        // SAFETY: as above; nothing in `body` reaches this queue another way, and the
+        // borrow ends with it.
         body(unsafe { &mut *self.queue() })
     }
 
@@ -60,11 +73,12 @@ impl CppBuffer {
     }
 }
 
-/// `~Buffer()`: pops every entry, then the queue drops with this.
+/// `~Buffer()`: pops every entry, then releases the queue.
 impl Drop for CppBuffer {
     fn drop(&mut self) {
         while self.pop() {}
-        if self.queue.get_mut().holds_token() {
+        // SAFETY: the handle `new` boxed, released once: a dropped value is not used again.
+        if unsafe { Box::from_raw(self.queue()) }.release().is_err() {
             swoole_rs_corebase::fatal("a buffer queue still in use when dropped");
         }
     }
@@ -113,9 +127,7 @@ pub fn swr_cpp_buffer_empty(this: &CppBuffer) -> bool {
 /// `new Buffer(chunk_size)`; dropping the box is `delete buffer`.
 #[must_use]
 pub fn new_buffer(chunk_size: u32) -> Box<CppBuffer> {
-    Box::new(CppBuffer {
-        queue: std::cell::UnsafeCell::new(crate::Buffer::new(chunk_size)),
-    })
+    Box::new(CppBuffer::new(chunk_size))
 }
 
 #[cfg(test)]
