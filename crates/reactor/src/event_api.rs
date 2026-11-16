@@ -124,13 +124,18 @@ pub fn add_or_update(socket: crate::Socket<'static>, event: Events) -> bool {
     crate::reactor_upstream::interest(reactor, socket, kind, Events::NONE)
 }
 
-/// `Reactor::write` and `Reactor::writev`: send what the socket takes now, copy the
-/// rest into its output buffer and register the socket, never freed while registered,
-/// for writing. The bytes taken, or `None` when it failed.
+/// crates/tls's reactor I/O, which depends on this crate: `swoole_init` registers it.
 #[derive(Clone, Copy)]
 pub struct Writers {
+    /// `Reactor::write` and `Reactor::writev`: send what the socket takes now, copy
+    /// the rest into its output buffer and register the socket, never freed while
+    /// registered, for writing. The bytes taken, or `None` when it failed.
     pub write: fn(crate::Running<'_>, crate::Socket<'static>, &[u8]) -> Option<usize>,
     pub writev: fn(crate::Running<'_>, crate::Socket<'static>, &[IoSlice<'_>]) -> Option<usize>,
+    /// `Reactor::_close` and `Reactor::_writable_callback`: a new reactor's close and
+    /// default write handler.
+    pub close: crate::ReactorClose,
+    pub writable: Handler,
 }
 
 /// crates/tls's [`Writers`], which depends on this crate: `swoole_init` registers them.
@@ -145,6 +150,24 @@ pub fn set_writers(writers: Writers) {
 #[must_use]
 pub fn registered_writers() -> Option<Writers> {
     WRITERS.get().copied()
+}
+
+/// The handlers crates/hooks (`System::init_reactor`) and crates/clients
+/// (`Client::init_reactor`) set on an event loop's reactor, in that order. Both depend
+/// on this crate: `swoole_init` registers them.
+static INIT_REACTOR: OnceLock<[fn(crate::Running<'_>); 2]> = OnceLock::new();
+
+/// Registers the event loop's handler setup; later registrations are ignored.
+pub fn set_init_reactor(init: [fn(crate::Running<'_>); 2]) {
+    INIT_REACTOR.get_or_init(|| init);
+}
+
+/// The registered handler setup over `reactor`, if any is registered.
+#[cfg(feature = "upstream-symbols")]
+pub(crate) fn init_reactor(reactor: crate::Running<'_>) {
+    for init in INIT_REACTOR.get().into_iter().flatten() {
+        init(reactor);
+    }
 }
 
 /// The thread's reactor and the registered writers. Upstream calls `reactor->write`

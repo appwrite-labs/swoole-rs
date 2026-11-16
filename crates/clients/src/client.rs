@@ -737,8 +737,7 @@ fn on_failure(reactor: Running<'_>, event: &mut Event) -> c_int {
 }
 
 /// `Client::init_reactor`: the client sockets' handlers.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_clients_init_reactor(reactor: Running<'_>) {
+pub fn init_reactor(reactor: Running<'_>) {
     let handlers: [(c_int, Events, swoole_rs_reactor::Handler); 4] = [
         (FD_STREAM_CLIENT, Events::READ, on_stream_read),
         (FD_DGRAM_CLIENT, Events::READ, on_dgram_read),
