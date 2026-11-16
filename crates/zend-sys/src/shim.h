@@ -45,8 +45,10 @@ void swr_zval_str(zval *value, zend_string *string);
  * never longjmp over a Rust frame. Rust reports the bailout to its C/C++ caller,
  * which re-raises it with zend_bailout() once the Rust frames have returned. */
 int swr_zend_try(void (*body)(void *), void *arg);
-/* zend_call_function(fci, fcc) inside zend_try: *result is 1 on SUCCESS. */
-int swr_zend_try_call(zend_fcall_info *fci, zend_fcall_info_cache *fcc, int *result);
+/* zend_call_function inside zend_try over `fcc` (a callable's resolved cache,
+ * or an empty one, which resolves `name` when it is given), `args` and `retval`:
+ * *result is 1 on SUCCESS. */
+int swr_zend_try_call(zend_fcall_info_cache *fcc, swr_zvals args, zval *name, zval *retval, int *result);
 
 /* Z_PARAM_FUNC of argument `number` (not nullable): 1, or 0 after raising
  * Zend's own parameter error. */

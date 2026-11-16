@@ -251,6 +251,13 @@ impl<'a> Zvals<'a> {
         Self::lend(args.as_ptr().cast_mut().cast(), args.len())
     }
 
+    /// One value, which the callee only reads.
+    #[must_use]
+    #[inline]
+    pub fn one(value: &'a Value) -> Self {
+        Self::lend(value.as_ptr(), 1)
+    }
+
     pub(crate) fn argv(&self) -> *mut zval {
         self.argv
     }

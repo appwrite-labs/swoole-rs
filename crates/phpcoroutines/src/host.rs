@@ -10,7 +10,7 @@ use std::{
 use swoole_rs_corebase::CCast;
 use swoole_rs_coroutine::Resume;
 use swoole_rs_zend::{
-    E_ERROR, bailout,
+    E_ERROR, Value, Zvals, bailout,
     sys::{swr_zend_callable, zend_execute_data, zval},
 };
 
@@ -528,21 +528,15 @@ extern "C" fn defers(_context: *mut c_void) {
         return;
     };
     while let Some((task, returned)) = crate::context::defer_next(ctx) {
-        let (fcc, mut argc, mut argv, _) = task.parts();
-        if let Some(returned) = returned {
-            (argc, argv) = (1, returned);
+        let (callee, mut args) = task.call_parts();
+        // SAFETY: the context's live return value, which it keeps through the call.
+        if let Some(returned) = returned.and_then(|value| unsafe { Value::from_ptr(value) }) {
+            args = Zvals::one(returned);
         }
         // The call's own frame: the task keeps its arguments, which its release
         // drops, and its result goes to a temporary destroyed after the call.
         let temporary = swoole_rs_zend::Owned::default();
-        let mut fci = swoole_rs_zend::EMPTY_FCI;
-        fci.size = size_of::<swoole_rs_zend::sys::zend_fcall_info>();
-        fci.retval = temporary.as_ptr();
-        fci.param_count = argc;
-        fci.params = argv;
-        // SAFETY: a kept callable's resolved cache, over its kept arguments or the
-        // context's live return value, and a return slot live through the call.
-        let called = unsafe { bailout::call(&raw mut fci, fcc) };
+        let called = bailout::call(callee, args, None, &temporary);
         let failed = !matches!(called, Ok(true));
         bailout::defer(called.map(drop));
         if bailout::pending() {

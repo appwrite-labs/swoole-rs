@@ -55,11 +55,15 @@ int swr_zend_try(void (*body)(void *), void *arg) {
     return bailed ? (SWR_ZEND_EXIT_PENDING() ? SWR_ZEND_THREAD_EXIT : SWR_ZEND_BAILOUT) : SWR_ZEND_RETURN;
 }
 
-int swr_zend_try_call(zend_fcall_info *fci, zend_fcall_info_cache *fcc, int *result) {
+int swr_zend_try_call(zend_fcall_info_cache *fcc, swr_zvals args, zval *name, zval *retval, int *result) {
+    zend_fcall_info fci = {.size = sizeof(fci), .retval = retval, .params = args.argv, .param_count = args.argc};
+    if (name) {
+        ZVAL_COPY_VALUE(&fci.function_name, name);
+    }
     volatile int bailed = 0;
     *result = 0;
     SWR_ZEND_TRY {
-        *result = zend_call_function(fci, fcc) == SUCCESS;
+        *result = zend_call_function(&fci, fcc) == SUCCESS;
     }
     SWR_ZEND_CATCH {
         bailed = 1;
