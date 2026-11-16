@@ -514,20 +514,19 @@ fn check_array(typed: Typed, element: Option<Typed>) -> bool {
     false
 }
 
-/// `SEPARATE_ARRAY(container)`, then `copy_array_type_info`: a copy the
-/// separation made gets `source`'s definition, in a fresh allocation that has
-/// room for it behind the table. The typed table `container` holds afterwards.
-/// # Safety
-/// `container` holds `source`, which nothing uses afterwards.
-pub(crate) unsafe fn separate<'a>(value: &'a Value, source: Typed<'a>) -> Typed<'a> {
+/// `SEPARATE_ARRAY(container)`, then `copy_array_type_info`: the typed array
+/// `value` holds, unshared. A copy the separation made gets the definition, in
+/// a fresh allocation that has room for it behind the table; the shared
+/// original stays with its other holders. None unless `value` holds a typed
+/// array.
+pub(crate) fn separate(value: &Value) -> Option<Typed<'_>> {
+    let source = Typed::of(value)?;
     let container = value.as_ptr();
     separate_array(value);
     // Separation leaves the container holding an array: `source`'s, or its copy.
-    let Some(ht) = value.array_ptr() else {
-        return source;
-    };
+    let ht = value.array_ptr()?;
     if source.ht == ht {
-        return source;
+        return Some(source);
     }
     // `source` remains shared or immutable; `ht` is the fresh unshared copy.
     let source_info = info_of(source.ht);
@@ -547,9 +546,9 @@ pub(crate) unsafe fn separate<'a>(value: &'a Value, source: Typed<'a>) -> Typed<
     own.mark();
     // SAFETY: an array zval, which now holds the copy.
     unsafe { (*container).value = zend_value { arr: copy } };
-    // SAFETY: the old allocation, which nothing references now.
+    // SAFETY: the copy separation made, which nothing references now.
     unsafe { swr_zend_efree(ht.cast()) };
-    own
+    Some(own)
 }
 
 /// The `ASSIGN_DIM_OP` restriction: concatenation needs string values,

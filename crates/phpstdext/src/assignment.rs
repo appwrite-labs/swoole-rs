@@ -1,6 +1,6 @@
 //! Complete typed-array assignment opcode operations over Zend's actual frame.
 use crate::{
-    CONTINUE, DISPATCH, Frame, Op, offset,
+    CONTINUE, DISPATCH, Frame, Op,
     typed::{self, KeyType, Typed},
 };
 use std::{borrow::Cow, ffi::c_int};
@@ -8,20 +8,26 @@ use swoole_rs_zend::{
     Owned, Value,
     bailout::{self, Bailout},
     opcode::Handler,
-    sys::{self as z, zend_execute_data, zend_op, zend_reference, zval},
+    sys::{self as z, zval},
 };
 
+// stdext.c's VM primitives. The `Frame` ones read what they need of the
+// frame's current instruction and do nothing (0) unless it is an `ASSIGN_DIM`
+// or `ASSIGN_DIM_OP` (`binary` and `typed_ref`: only the latter), whose
+// `OP_DATA` follows it, so a live frame and live zvals are all they trust. A
+// bailout inside any of them is trapped (nonzero).
 unsafe extern "C" {
-    fn swr_phpstdext_undefined_cv(frame: *mut zend_execute_data, var: u32) -> u8;
-    /// The table's writable element for `key` into `result`, left alone on a
-    /// bailout: none when the lookup failed, else a slot of the table that lives
-    /// while nothing else changes it.
-    fn swr_phpstdext_dimension(
-        frame: *mut zend_execute_data,
-        table: *mut z::HashTable,
-        key: *const zval,
-        constant: bool,
-        result: &mut Option<&Value>,
+    /// Zend's "Undefined variable" warning for the assignment's `OP_DATA`
+    /// operand, when it is a CV.
+    safe fn swr_phpstdext_undefined_cv(frame: Frame<'_>) -> u8;
+    /// The writable element of the array `container` holds (separated first)
+    /// for the instruction's key, into `result`, left alone on a bailout: none
+    /// when the lookup failed, else a slot of the table that lives while
+    /// nothing else changes it.
+    safe fn swr_phpstdext_dimension<'a>(
+        frame: Frame<'_>,
+        container: &'a Value,
+        result: &mut Option<&'a Value>,
     ) -> u8;
     /// `zend_assign_to_variable` into `result`, left alone on a bailout: the
     /// assigned slot, none when the assignment failed.
@@ -32,13 +38,11 @@ unsafe extern "C" {
         strict: bool,
         result: &mut Option<&Value>,
     ) -> u8;
-    fn swr_phpstdext_binary(slot: *mut zval, value: *mut zval, op: *const zend_op) -> u8;
-    fn swr_phpstdext_typed_ref(
-        frame: *mut zend_execute_data,
-        reference: *mut zend_reference,
-        value: *mut zval,
-        op: *const zend_op,
-    ) -> u8;
+    /// The instruction's binary operation on `slot` and `value`, into `slot`.
+    safe fn swr_phpstdext_binary(frame: Frame<'_>, slot: &Value, value: &Value) -> u8;
+    /// The same on the reference `element` holds, verified against the types
+    /// of the properties it is a source of: nothing unless it has any.
+    safe fn swr_phpstdext_typed_ref(frame: Frame<'_>, element: &Value, value: &Value) -> u8;
     /// The new element's slot, none when the next index is taken.
     #[link_name = "zend_hash_next_index_insert"]
     fn next_index_insert<'a>(table: *mut z::HashTable, value: *mut zval) -> Option<&'a Value>;
@@ -124,8 +128,8 @@ fn operand(data: Op<'_>) -> Result<Option<Cow<'_, Value>>, Bailout> {
     if u32::from(data.op1_type) != z::IS_CV || value.kind() != z::IS_UNDEF {
         return Ok(Some(Cow::Borrowed(value)));
     }
-    // SAFETY: Zend reads its own CV name and invokes any warning handler under a native trap.
-    leaf(unsafe { swr_phpstdext_undefined_cv(data.frame.as_ptr(), offset(data.op1)) })?;
+    // Zend reads its own CV name and runs any warning handler under a native trap.
+    leaf(swr_phpstdext_undefined_cv(data.frame))?;
     Ok(Some(Cow::Owned(Owned::null())))
 }
 
@@ -134,8 +138,8 @@ fn strict(frame: Frame) -> bool {
     frame.function().flags() & z::ZEND_ACC_STRICT_TYPES != 0
 }
 
-/// `ASSIGN_DIM` into `own`, the typed table the container holds unshared.
-fn assign(op: Op, data: Data, own: Typed, key: &Value) -> Result<(), Bailout> {
+/// `ASSIGN_DIM` into `own`, the typed table `container` holds unshared.
+fn assign(op: Op, data: Data, own: Typed, container: &Value, key: &Value) -> Result<(), Bailout> {
     let value = data.value();
     let ht = own.table();
     let slot = if key.kind() == z::IS_NULL {
@@ -152,16 +156,8 @@ fn assign(op: Op, data: Data, own: Typed, key: &Value) -> Result<(), Bailout> {
         slot
     } else {
         let mut variable = None;
-        // SAFETY: lookup uses this assignment's original constant-key distinction.
-        leaf(unsafe {
-            swr_phpstdext_dimension(
-                op.frame.as_ptr(),
-                ht,
-                key.as_ptr(),
-                u32::from(op.op2_type) == z::IS_CONST,
-                &mut variable,
-            )
-        })?;
+        // The lookup keeps this assignment's original constant-key distinction.
+        leaf(swr_phpstdext_dimension(op.frame, container, &mut variable))?;
         let Some(variable) = variable else {
             // The native dimension lookup failed before assignment.
             return data.abandon(op);
@@ -196,22 +192,13 @@ fn assign(op: Op, data: Data, own: Typed, key: &Value) -> Result<(), Bailout> {
     data.free()
 }
 
-/// `ASSIGN_DIM_OP` on `own`, as [`assign`].
-fn assign_op(op: Op, data: Data, own: Typed, key: &Value) -> Result<(), Bailout> {
+/// `ASSIGN_DIM_OP` on `own`, the typed table `container` holds unshared.
+fn assign_op(op: Op, data: Data, own: Typed, container: &Value) -> Result<(), Bailout> {
     let value = data.value();
-    let ht = own.table();
     let mut slot = None;
-    // Upstream selects W_CONST from the value's OP_DATA type here, unlike ASSIGN_DIM.
-    // SAFETY: retain that exact distinction when invoking the native VM primitive.
-    leaf(unsafe {
-        swr_phpstdext_dimension(
-            op.frame.as_ptr(),
-            ht,
-            key.as_ptr(),
-            u32::from(data.kind()) == z::IS_CONST,
-            &mut slot,
-        )
-    })?;
+    // Upstream selects W_CONST from the value's OP_DATA type here, unlike
+    // ASSIGN_DIM; the primitive keeps that distinction.
+    leaf(swr_phpstdext_dimension(op.frame, container, &mut slot))?;
     let Some(element) = slot else {
         // Dimension lookup failed before the operation's result exists.
         return data.abandon(op);
@@ -219,19 +206,17 @@ fn assign_op(op: Op, data: Data, own: Typed, key: &Value) -> Result<(), Bailout>
     // The element's slot, or its reference's, which the element keeps alive.
     let target = element.referred();
     // The reference whose typed property sources Zend must verify, if any.
-    if let Some(typed_reference) = element.typed_reference() {
-        // SAFETY: the native typed-reference operation preserves PHP source
+    if element.typed_reference().is_some() {
+        // The native typed-reference operation preserves PHP source
         // verification and strict types.
-        leaf(unsafe {
-            swr_phpstdext_typed_ref(op.frame.as_ptr(), typed_reference, value.as_ptr(), op.at)
-        })?;
+        leaf(swr_phpstdext_typed_ref(op.frame, element, value))?;
     } else {
         if !typed::operation(own, op.extended_value == z::ZEND_CONCAT) {
             // A rejected operation follows the original temporary/result cleanup path.
             return data.abandon(op);
         }
-        // SAFETY: Zend applies the exact current opcode to the live element and value.
-        leaf(unsafe { swr_phpstdext_binary(target.as_ptr(), value.as_ptr(), op.at) })?;
+        // Zend applies the exact current opcode to the live element and value.
+        leaf(swr_phpstdext_binary(op.frame, target, value))?;
     }
     data.publish(op, target)
 }
@@ -272,13 +257,16 @@ fn dispatch(frame: Frame, operation: bool) -> Result<c_int, Bailout> {
         data.free()?;
         return Ok(CONTINUE);
     }
-    // SAFETY: `array` holds `typed`, read from it above and not used after this.
-    let own = unsafe { typed::separate(array, typed) };
+    // `array` holds `typed`, read from it above: its own, unshared.
+    let Some(own) = typed::separate(array) else {
+        return data.free().map(|()| CONTINUE);
+    };
     if operation {
-        assign_op(op, data, own, key)?;
+        assign_op(op, data, own, array)?;
     } else {
-        assign(op, data, own, key)?;
+        assign(op, data, own, array, key)?;
     }
+
     // Reload the current frame opline after reentry, as EX(opline) += 2 did.
     frame.skip(2);
     Ok(CONTINUE)
