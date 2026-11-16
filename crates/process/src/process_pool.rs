@@ -780,12 +780,43 @@ impl PoolRef<'_> {
     }
 }
 
+/// Failure of a pool's pipe or message-bus operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PipeError {
+    MissingWorker,
+    Open,
+    Closed,
+    Buffer,
+    Register,
+    StopMessage,
+}
+
 /// What every export runs over (`crates/server/src/pool_native.rs`): the pool's
 /// native objects, which this crate can't depend on, and its callbacks. Each takes
 /// a [`PoolCall`] this crate filled over live objects.
 pub trait PoolNative: Sync {
     /// One effect on the call's pool and worker.
     fn call(&self, call: &PoolCall, op: Op, arg: u64) -> i64;
+    /// Create and retain the worker's datagram pipe.
+    /// # Errors
+    /// Missing worker, pipe creation failure, or closed pool ownership.
+    fn new_pipe(&self, call: &PoolCall) -> Result<(), PipeError>;
+    /// The master pipe's kernel send-buffer size, retaining getsockopt's errno.
+    /// # Errors
+    /// The descriptor or getsockopt failure, with its captured errno.
+    fn send_buffer_size(&self, call: &PoolCall) -> std::io::Result<c_int>;
+    /// Allocate the pool's message-bus buffer.
+    /// # Errors
+    /// Missing message bus or failed allocation.
+    fn bus_buffer(&self, call: &PoolCall, size: usize) -> Result<(), PipeError>;
+    /// Register the worker pipe for reads.
+    /// # Errors
+    /// Missing pipe or failed reactor registration.
+    fn add_pipe(&self, call: &PoolCall) -> Result<(), PipeError>;
+    /// Publish the worker's stop message to the pool.
+    /// # Errors
+    /// The stop message could not be queued.
+    fn push_stop(&self, call: &PoolCall) -> Result<(), PipeError>;
     /// `count` workers from the global memory pool, or null.
     fn alloc_workers(&self, count: u32) -> *mut WorkerRecord;
     /// A new native message bus, owned by the pool, or None on allocation failure.
@@ -977,10 +1008,13 @@ pub enum Op {
     HaveMsgqueue,
     AllocWorkers,
     NewMessageBox,
+    #[cfg(test)]
     NewPipe,
     MainLoop,
     NewMessageBus,
+    #[cfg(test)]
     Sndbuf,
+    #[cfg(test)]
     BusBuffer,
     WorkerType,
     UnlimitPipes,
@@ -995,10 +1029,12 @@ pub enum Op {
     DontRestart,
     TimerInit,
     TimerFree,
+    #[cfg(test)]
     AddPipe,
     PipeHandler,
     EventWait,
     CurrentWorker,
+    #[cfg(test)]
     PushStop,
     SignalDispatch,
     TimerSelect,
@@ -1044,6 +1080,12 @@ pub enum Callback {
 /// What a pool operation asks of native code.
 pub(crate) trait PoolHost {
     fn op(&mut self, worker: *mut c_void, op: Op, arg: u64) -> i64;
+    fn new_pipe(&mut self, worker: *mut WorkerRecord) -> Result<(), PipeError>;
+    #[cfg(target_os = "linux")]
+    fn send_buffer_size(&mut self, worker: *mut WorkerRecord) -> std::io::Result<c_int>;
+    fn bus_buffer(&mut self, size: usize) -> Result<(), PipeError>;
+    fn add_pipe(&mut self, worker: *mut WorkerRecord) -> Result<(), PipeError>;
+    fn push_stop(&mut self, worker: *mut WorkerRecord) -> Result<(), PipeError>;
     /// Run `callback` inside the trap: its result, or [`Bailed`].
     fn callback(&mut self, callback: Callback, worker: *mut c_void) -> Result<isize, Bailed>;
     /// Run the protocol's worker loop: `DONE` or `BAILED`.
@@ -1086,6 +1128,32 @@ impl PoolHost for Native<'_> {
         }
         // A native effect on the live pool this export runs over.
         self.native.call(&PoolCall::new(self.pool, worker), op, arg)
+    }
+
+    fn new_pipe(&mut self, worker: *mut WorkerRecord) -> Result<(), PipeError> {
+        self.native
+            .new_pipe(&PoolCall::new(self.pool, worker.cast()))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn send_buffer_size(&mut self, worker: *mut WorkerRecord) -> std::io::Result<c_int> {
+        self.native
+            .send_buffer_size(&PoolCall::new(self.pool, worker.cast()))
+    }
+
+    fn bus_buffer(&mut self, size: usize) -> Result<(), PipeError> {
+        self.native
+            .bus_buffer(&PoolCall::new(self.pool, ptr::null_mut()), size)
+    }
+
+    fn add_pipe(&mut self, worker: *mut WorkerRecord) -> Result<(), PipeError> {
+        self.native
+            .add_pipe(&PoolCall::new(self.pool, worker.cast()))
+    }
+
+    fn push_stop(&mut self, worker: *mut WorkerRecord) -> Result<(), PipeError> {
+        self.native
+            .push_stop(&PoolCall::new(self.pool, worker.cast()))
     }
 
     fn callback(&mut self, callback: Callback, worker: *mut c_void) -> Result<isize, Bailed> {
@@ -1477,7 +1545,7 @@ impl<H: PoolHost> Pool<'_, H> {
             IpcMode::UnixSock => {
                 self.p.set_pipes(Some(Box::default()));
                 for index in 0..worker_num {
-                    if self.on(self.worker(index), Op::NewPipe, 0) == 0 {
+                    if self.h.new_pipe(self.worker(index)).is_err() {
                         // Forget the workers' views before dropping their pipe owners.
                         for made in 0..index {
                             self.worker_at(made).clear_pipes();
@@ -1530,7 +1598,11 @@ impl<H: PoolHost> Pool<'_, H> {
         #[cfg(target_os = "linux")]
         let size = {
             // The largest unix dgram the pipes carry.
-            let sndbuf = self.on(self.worker(0), Op::Sndbuf, 0);
+            let sndbuf = self
+                .h
+                .send_buffer_size(self.worker(0))
+                .map_or(SW_IPC_MAX_SIZE.cast_signed(), i64::from);
+            // Negative sizes retain the same fallback as a failed getsockopt.
             let sndbuf = if sndbuf < 0 {
                 SW_IPC_MAX_SIZE.cast_signed()
             } else {
@@ -1540,7 +1612,7 @@ impl<H: PoolHost> Pool<'_, H> {
         };
         #[cfg(not(target_os = "linux"))]
         let size = SW_IPC_MAX_SIZE;
-        self.op(Op::BusBuffer, size) != 0
+        self.h.bus_buffer(size.c_cast::<usize>()).is_ok()
     }
 
     /// `ProcessPool::set_protocol`: how the workers receive (`crate::pool`'s loops).
@@ -1672,7 +1744,7 @@ impl<H: PoolHost> Pool<'_, H> {
         if self.is_async() {
             self.on(worker, Op::RemovePipe, 0);
         }
-        if self.on(worker, Op::PushStop, 0) < 0 {
+        if self.h.push_stop(worker).is_err() {
             return false;
         }
         self.set_running(false);
@@ -1810,7 +1882,7 @@ impl<H: PoolHost> Pool<'_, H> {
     /// `ProcessPool::run_async`.
     fn run_async(&mut self, worker: *mut WorkerRecord) -> i64 {
         if self.ipc_mode() == IpcMode::UnixSock && self.on_message().is_some() {
-            self.on(worker, Op::AddPipe, 0);
+            let _registered = self.h.add_pipe(worker);
             if self.p.has_message_bus() {
                 self.op(Op::PipeHandler, 1);
             } else {
@@ -2278,6 +2350,35 @@ mod tests {
             }
             self.answers.get(&op).copied().unwrap_or(1)
         }
+        fn new_pipe(&mut self, worker: *mut WorkerRecord) -> Result<(), PipeError> {
+            (self.op(worker.cast(), Op::NewPipe, 0) != 0)
+                .then_some(())
+                .ok_or(PipeError::Open)
+        }
+        #[cfg(target_os = "linux")]
+        fn send_buffer_size(&mut self, worker: *mut WorkerRecord) -> std::io::Result<c_int> {
+            let size = self.op(worker.cast(), Op::Sndbuf, 0);
+            if size < 0 {
+                Err(std::io::Error::from_raw_os_error(libc::EBADF))
+            } else {
+                Ok(size.c_cast::<c_int>())
+            }
+        }
+        fn bus_buffer(&mut self, size: usize) -> Result<(), PipeError> {
+            (self.op(ptr::null_mut(), Op::BusBuffer, size as u64) != 0)
+                .then_some(())
+                .ok_or(PipeError::Buffer)
+        }
+        fn add_pipe(&mut self, worker: *mut WorkerRecord) -> Result<(), PipeError> {
+            (self.op(worker.cast(), Op::AddPipe, 0) >= 0)
+                .then_some(())
+                .ok_or(PipeError::Register)
+        }
+        fn push_stop(&mut self, worker: *mut WorkerRecord) -> Result<(), PipeError> {
+            (self.op(worker.cast(), Op::PushStop, 0) >= 0)
+                .then_some(())
+                .ok_or(PipeError::StopMessage)
+        }
         fn callback(&mut self, cb: Callback, _: *mut c_void) -> Result<isize, Bailed> {
             self.callbacks.push(cb);
             if self.bail == Some(cb) {
@@ -2595,6 +2696,78 @@ mod tests {
                 Op::PushStop
             ]
         );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn message_bus_keeps_send_buffer_fallback_and_allocation_failure() {
+        for (size, expected) in [
+            (-1, SW_IPC_MAX_SIZE),
+            (0, 0),
+            (8192, 8192),
+            (131_072, 65536),
+        ] {
+            for allocated in [0, 1] {
+                let mut fixture = Fixture::new(1);
+                let mut script = Script::default();
+                script.answers.insert(Op::Sndbuf, size);
+                script.answers.insert(Op::BusBuffer, allocated);
+                let mut pool = fixture.pool(script);
+                pool.set_ipc_mode(IpcMode::UnixSock);
+                assert_eq!(pool.create_message_bus(), allocated != 0);
+                assert_eq!(
+                    pool.h.log,
+                    [
+                        (Op::NewMessageBus, 0),
+                        (Op::Sndbuf, 0),
+                        (Op::BusBuffer, expected)
+                    ]
+                );
+                assert!(
+                    pool.p.has_message_bus(),
+                    "the bus remains owned if its buffer fails"
+                );
+                pool.destroy();
+            }
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no mmap")]
+    fn failed_stop_message_keeps_the_pool_running() {
+        let mut fixture = Fixture::new(1);
+        let mut script = Script::default();
+        script.answers.insert(Op::PushStop, -1);
+        let mut pool = fixture.pool(script);
+        pool.set_running(true);
+        pool.set_message_box(SharedChannel::make(64, 16, 0).expect("a box"));
+        assert!(!pool.detach());
+        assert!(pool.running());
+        assert_eq!(
+            ops(&pool),
+            [Op::CurrentWorker, Op::WorkerShutdown, Op::PushStop]
+        );
+        pool.set_running(false);
+        pool.destroy();
+    }
+
+    #[test]
+    fn async_loop_still_waits_after_pipe_registration_failure() {
+        extern "C-unwind" fn on_message(_: PoolRef<'_>, _: &RecvData<'_>) {}
+        let mut fixture = Fixture::new(1);
+        let mut script = Script::default();
+        script.answers.insert(Op::AddPipe, -1);
+        script.answers.insert(Op::EventWait, 7);
+        let mut pool = fixture.pool(script);
+        pool.set_ipc_mode(IpcMode::UnixSock);
+        record(&mut pool).on_message = Some(on_message);
+        pool.p.set_message_bus(Some(Box::new(())));
+        assert_eq!(pool.run_async(pool.worker(0)), 7);
+        assert_eq!(
+            pool.h.log,
+            [(Op::AddPipe, 0), (Op::PipeHandler, 1), (Op::EventWait, 0)]
+        );
+        pool.destroy();
     }
 
     #[test]

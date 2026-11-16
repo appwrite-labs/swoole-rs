@@ -31,7 +31,8 @@ use swoole_rs_process::methods::{
 };
 use swoole_rs_process::pool::{PoolCall, Warning};
 use swoole_rs_process::process_pool::{
-    Callback, Hooks, MainLoopFn, Op, PoolNative, PoolRef, Protocol, RecvData, pool_run_main,
+    Callback, Hooks, MainLoopFn, Op, PipeError, PoolNative, PoolRef, Protocol, RecvData,
+    pool_run_main,
 };
 use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_init, swr_v1_worker_shutdown};
@@ -116,10 +117,6 @@ pub(crate) fn new_bus(counter: &'static AtomicU64) -> PoolBus {
     PoolBus::std(bus)
 }
 
-fn bus_buffer(pool: Pool<'_>, size: u64) -> i64 {
-    i64::from(with_bus(pool, |bus| bus.alloc_buffer(size.c_cast::<usize>())).unwrap_or(false))
-}
-
 // ---------------------------------------------------------------- pipes and box
 
 /// A worker's pipe, boxed in the pool's owner list so its address stays put.
@@ -131,22 +128,22 @@ impl Drop for Pipe {
     }
 }
 
-/// `new UnixSocket(true, SOCK_DGRAM)` for `worker`: 0 (and no pipes) when it fails.
-fn new_pipe(pool: Pool<'_>, worker: Record<'_>) -> i64 {
+/// Create a datagram pair and retain it before publishing the worker's pipe views.
+fn new_pipe(pool: Pool<'_>, worker: Record<'_>) -> Result<(), PipeError> {
     let mut built = Box::new(Pipe(unix_socket(true, libc::SOCK_DGRAM)));
     let (master, end) = built.0.raw_ends();
     if master.is_null() || end.is_null() {
-        return 0;
+        return Err(PipeError::Open);
     }
     // The box keeps the pair at this address while the list owns it.
     let pair = &raw mut built.0;
     if !pool.keep_pipe(built) {
-        return 0;
+        return Err(PipeError::Closed);
     }
     // SAFETY: the two ends of the pair the pool's list now owns until it drops,
     // in the pool's `destroy`, after which this process sends to its workers no more.
     unsafe { worker.set_pipes(pair.cast(), master.cast(), end.cast()) };
-    1
+    Ok(())
 }
 
 // ---------------------------------------------------------------- timers and loop
@@ -312,7 +309,6 @@ fn objects(pool: Pool<'_>, op: Op, arg: u64) -> Option<i64> {
             pool.install(&hooks);
             0
         }
-        Op::BusBuffer => bus_buffer(pool, arg),
         // The global pool's `free` is a no-op.
         Op::FreeWorkers => 0,
         _ => return None,
@@ -322,18 +318,6 @@ fn objects(pool: Pool<'_>, op: Op, arg: u64) -> Option<i64> {
 /// `pool_call`'s effects on its worker: its pipes, globals and callbacks.
 fn worker_ops(pool: Pool<'_>, worker: Record<'_>, op: Op, arg: u64) -> Option<i64> {
     Some(match op {
-        Op::NewPipe => new_pipe(pool, worker),
-        Op::Sndbuf => {
-            let mut size: c_int = 0;
-            let fd = fd(worker_pipe(worker, true));
-            let failed = swoole_rs_corebase::sys::getsockopt(
-                fd,
-                libc::SOL_SOCKET,
-                libc::SO_SNDBUF,
-                &mut size,
-            );
-            failed.map_or(-1, |_| i64::from(size))
-        }
         Op::UnlimitPipes => {
             for master in [false, true] {
                 if let Some(end) = worker_pipe(worker, master) {
@@ -380,18 +364,6 @@ fn worker_ops(pool: Pool<'_>, worker: Record<'_>, op: Op, arg: u64) -> Option<i6
                 pipe.edit(|pipe| pipe.dont_restart = true);
             }
             0
-        }
-        Op::AddPipe => {
-            let added = worker_pipe(worker, false)
-                .is_some_and(|pipe| Reactor::thread().add(pipe, Events::READ));
-            if added { 0 } else { -1 }
-        }
-        Op::PushStop => {
-            if push_stop(pool, worker.pid(), worker.id().c_cast::<u16>()) {
-                0
-            } else {
-                -1
-            }
         }
         Op::WorkerError => {
             let status = exit_status(arg);
@@ -500,6 +472,51 @@ impl PoolNative for Native {
                     .and_then(|worker| worker_ops(pool, worker, op, arg))
             })
             .unwrap_or_else(|| master_ops(pool, op, arg))
+    }
+
+    fn new_pipe(&self, call: &PoolCall) -> Result<(), PipeError> {
+        new_pipe(call.pool(), call.worker().ok_or(PipeError::MissingWorker)?)
+    }
+
+    fn send_buffer_size(&self, call: &PoolCall) -> std::io::Result<c_int> {
+        let mut size = 0;
+        let Some(worker) = call.worker() else {
+            return Ok(0);
+        };
+        let socket = worker_pipe(worker, true);
+        swoole_rs_corebase::sys::getsockopt(
+            fd(socket),
+            libc::SOL_SOCKET,
+            libc::SO_SNDBUF,
+            &mut size,
+        )?;
+        Ok(size)
+    }
+
+    fn bus_buffer(&self, call: &PoolCall, size: usize) -> Result<(), PipeError> {
+        with_bus(call.pool(), |bus| bus.alloc_buffer(size))
+            .unwrap_or(false)
+            .then_some(())
+            .ok_or(PipeError::Buffer)
+    }
+
+    fn add_pipe(&self, call: &PoolCall) -> Result<(), PipeError> {
+        let Some(worker) = call.worker() else {
+            return Ok(());
+        };
+        worker_pipe(worker, false)
+            .is_some_and(|pipe| Reactor::thread().add(pipe, Events::READ))
+            .then_some(())
+            .ok_or(PipeError::Register)
+    }
+
+    fn push_stop(&self, call: &PoolCall) -> Result<(), PipeError> {
+        let Some(worker) = call.worker() else {
+            return Ok(());
+        };
+        push_stop(call.pool(), worker.pid(), worker.id().c_cast::<u16>())
+            .then_some(())
+            .ok_or(PipeError::StopMessage)
     }
 
     /// The pool's callbacks, inside the bailout trap.
