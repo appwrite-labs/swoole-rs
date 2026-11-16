@@ -84,13 +84,14 @@ impl SocketAddress {
     /// The storage's size, the most a call reads or writes of it.
     pub const CAPACITY: libc::socklen_t = crate::sys::socklen::<AddressStorage>();
 
-    fn storage(&self) -> (*const libc::sockaddr, libc::socklen_t) {
-        ((&raw const self.addr).cast(), self.stored().0)
+    /// The length a call reads of the storage: `len`, at most the storage's size.
+    pub(crate) fn stored(&self) -> StoredLength {
+        StoredLength(self.len.min(Self::CAPACITY))
     }
 
-    /// The length a call reads of the storage: `len`, at most the storage's size.
-    fn stored(&self) -> StoredLength {
-        StoredLength(self.len.min(Self::CAPACITY))
+    /// The room a call that writes an address is given: `len`, at most the storage's size.
+    pub(crate) fn room(&self) -> Room {
+        Room(self.stored().0)
     }
 
     /// `connect(2)` of `fd` to this address: whether it connected, else errno says why
@@ -110,11 +111,7 @@ impl SocketAddress {
     /// errno set.
     #[must_use]
     pub fn sendto(&self, fd: c_int, data: &[u8], flags: c_int) -> Option<usize> {
-        let (storage, length) = self.storage();
-        // SAFETY: `data` is readable for its length, the storage for `length` bytes.
-        let sent =
-            unsafe { libc::sendto(fd, data.as_ptr().cast(), data.len(), flags, storage, length) };
-        usize::try_from(sent).ok()
+        crate::lent::Drain::new(data).sendto(fd, flags, self)
     }
 
     /// `recvfrom(2)` into `buffer`, the sender's address and its length into this one:
@@ -126,11 +123,7 @@ impl SocketAddress {
         flags: c_int,
     ) -> Option<usize> {
         self.len = Self::CAPACITY;
-        let (data, size) = (buffer.as_mut_ptr().cast(), buffer.len());
-        let storage = (&raw mut self.addr).cast();
-        // SAFETY: `buffer` is writable for its length, the storage for the `len` given.
-        let received = unsafe { libc::recvfrom(fd, data, size, flags, storage, &raw mut self.len) };
-        usize::try_from(received).ok()
+        crate::lent::Fill::new(buffer).recvfrom_one(fd, flags, self)
     }
 
     /// `getsockname(2)` of `fd` into this address and its length.
@@ -182,7 +175,7 @@ impl SocketAddress {
 /// [`SocketAddress::stored`] makes one.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
-struct StoredLength(libc::socklen_t);
+pub(crate) struct StoredLength(libc::socklen_t);
 
 // libc's. Each reads the first `length` bytes of `address`, which `StoredLength`
 // keeps within it, and its integers, and keeps nothing, so they are declared `safe`.
@@ -191,14 +184,20 @@ unsafe extern "C" {
     safe fn bind(fd: c_int, address: &AddressStorage, length: StoredLength) -> c_int;
 }
 
-/// The room `getsockname`/`getpeername` are given, in and out: the storage's whole size
-/// going in (only [`Room::FULL`] makes one), the address's length coming out. Each value
-/// goes to one call and is then read, never passed again.
+/// The room `getsockname`, `getpeername`, `accept` and `recvfrom` are given, in and
+/// out: at most the storage's size going in (only [`Room::FULL`] and
+/// [`SocketAddress::room`] make one), the address's length coming out. Each value goes
+/// to one call and is then read, never passed again.
 #[repr(transparent)]
-struct Room(libc::socklen_t);
+pub(crate) struct Room(libc::socklen_t);
 
 impl Room {
     const FULL: Self = Self(SocketAddress::CAPACITY);
+
+    /// The length the call stored.
+    pub(crate) fn length(self) -> libc::socklen_t {
+        self.0
+    }
 }
 
 /// `getsockname` or `getpeername`.

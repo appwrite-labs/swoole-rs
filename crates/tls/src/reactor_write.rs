@@ -33,11 +33,11 @@ struct Write<'a> {
     payload: WritePayload<'a>,
 }
 
-/// One flush or drain: the reactor, the socket and its event, which the close
-/// handler may change and the caller then sees.
+/// One flush or drain: the reactor, the socket, never freed while registered, and its
+/// event, which the close handler may change and the caller then sees.
 struct Flush<'a> {
     reactor: Running<'a>,
-    socket: Socket<'a>,
+    socket: Socket<'static>,
     event: &'a Cell<Event>,
 }
 
@@ -222,10 +222,13 @@ impl FlushEffects for Flush<'_> {
     }
 
     fn remove_write_event(&self) {
-        // SAFETY: the flushed record, which C++ keeps live while it is registered.
-        let socket = unsafe { Socket::from_ptr(self.socket.as_ptr()) };
         // `reactor->remove_write_event(socket)` on the flush's live reactor.
-        _ = reactor_interest(self.reactor, socket, Interest::RemoveWrite.code(), 0);
+        _ = reactor_interest(
+            self.reactor,
+            Some(self.socket),
+            Interest::RemoveWrite.code(),
+            0,
+        );
     }
 
     fn wait_writable(&self) -> bool {
@@ -260,9 +263,8 @@ pub extern "C-unwind" fn reactor_writable_callback(
 }
 
 /// `void Reactor::drain_write_buffer(Socket *socket)`.
-pub fn reactor_drain_write_buffer(reactor: Running<'_>, record: Socket<'_>) {
-    // SAFETY: a live socket, and the event lives for this call.
-    let event = Cell::new(unsafe { Event::new(record.fd(), 0, 0, record.as_ptr().cast()) });
+pub fn reactor_drain_write_buffer(reactor: Running<'_>, record: Socket<'static>) {
+    let event = Cell::new(Event::of(record.fd(), 0, 0, Some(record)));
     let flush = Flush {
         reactor,
         socket: record,
@@ -280,8 +282,11 @@ pub fn reactor_drain_write_buffer(reactor: Running<'_>, record: Socket<'_>) {
     unsafe(export_name = "_ZN6swoole7Reactor6_closeEPS0_PNS_7network6SocketE")
 )]
 #[must_use]
-pub unsafe extern "C-unwind" fn reactor_close(_reactor: Running<'_>, socket: Socket<'_>) -> c_int {
+pub unsafe extern "C-unwind" fn reactor_close(
+    _reactor: Running<'_>,
+    socket: Socket<'static>,
+) -> c_int {
     // SAFETY: as the caller promises.
-    unsafe { socket_free(socket.as_ptr()) };
+    unsafe { socket_free(Some(socket)) };
     0
 }

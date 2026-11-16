@@ -178,15 +178,15 @@ impl Stream {
 
     /// `fwrite` of `bytes`, buffered as the stream is.
     pub fn write(self, bytes: &[u8]) {
-        // SAFETY: an open stream (the type's invariant); fwrite reads `bytes.len()`
-        // bytes of `bytes`.
-        unsafe { libc::fwrite(bytes.as_ptr().cast(), 1, bytes.len(), self.as_ptr()) };
+        use crate::lent::{OneByte, fwrite, lend_in};
+        lend_in(bytes, |at, count| {
+            fwrite(at.bytes(), OneByte::SIZE, count, self)
+        });
     }
 
     /// `fflush`.
     pub fn flush(self) {
-        // SAFETY: an open stream (the type's invariant).
-        unsafe { libc::fflush(self.as_ptr()) };
+        crate::lent::fflush(self);
     }
 }
 

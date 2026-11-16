@@ -94,7 +94,7 @@ impl Reactor {
         let _ = self.interest(sock, Interest::RemoveRead);
     }
     /// The reactor's own `close` of `sock`, when it has one: whether it succeeded.
-    pub(crate) fn close(self, sock: Socket<'_>) -> bool {
+    pub(crate) fn close(self, sock: Socket<'static>) -> bool {
         self.handle().close().is_none_or(|close| {
             // SAFETY: the reactor's close on one of its live sockets.
             unsafe { close(self.handle(), sock) >= 0 }
@@ -114,10 +114,11 @@ impl Reactor {
     }
 }
 
-/// `sock` as the reactor holds it while registered: the server registers only its own
-/// sockets (sessions, listeners and pipes), each freed only after its removal (an unsafe
-/// free whose caller answers for the reactor), so it stays live while registered.
-fn registered(sock: Socket<'_>) -> Option<Socket<'static>> {
-    // SAFETY: a live socket, which stays live while it is registered.
+/// `sock` as a record live until an unsafe free whose caller answers for the handles
+/// left, as the reactor holds it while registered: the server's sockets (sessions,
+/// listeners, pipes and its pool's connections) are heap records freed only by such a
+/// free, after their removal from any reactor.
+pub(crate) fn registered(sock: Socket<'_>) -> Option<Socket<'static>> {
+    // SAFETY: a live socket, which stays live until its unsafe free.
     unsafe { Socket::from_ptr(sock.as_ptr()) }
 }

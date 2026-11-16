@@ -140,10 +140,25 @@ pub struct AsyncOps {
 }
 
 /// The waiting coroutine, on its stack; the event's `object` while the job runs.
+/// The completion copies the pool's result here before it resumes the coroutine, so
+/// the coroutine reads it from its own frame, never from the pool's copy.
 struct Task<'a> {
     co: *mut c_void,
     ops: &'a AsyncOps,
     job: Option<&'a mut (dyn FnMut() + Send)>,
+    /// `(retval, error)` of the completed event.
+    result: core::cell::Cell<(isize, c_int)>,
+}
+
+impl<'a> Task<'a> {
+    fn new(ops: &'a AsyncOps, job: Option<&'a mut (dyn FnMut() + Send)>) -> Self {
+        Self {
+            co: (ops.current)(),
+            ops,
+            job,
+            result: core::cell::Cell::new((0, 0)),
+        }
+    }
 }
 
 /// The pool thread's handler for a job: runs it, then records its errno.
@@ -166,6 +181,7 @@ extern "C" fn completed(event: &AsyncEvent) {
     // SAFETY: only this module dispatches this completion, its task the object; not
     // canceled, so the task's coroutine is still parked on it.
     let task = unsafe { &*event.object.cast::<Task<'_>>() };
+    task.result.set(event.result());
     // SAFETY: `co` is the parked coroutine.
     unsafe { (task.ops.resume)(task.co) };
 }
@@ -182,8 +198,7 @@ pub fn swr_v1_hook_async(
     timeout: f64,
     ops: &AsyncOps,
 ) -> bool {
-    let co = (ops.current)();
-    let mut task = Task { co, ops, job: None };
+    let mut task = Task::new(ops, None);
     event.object = (&raw mut task).cast();
     event.handler = Some(handler);
     event.callback = Some(completed);
@@ -222,12 +237,7 @@ pub fn async_job(job: &mut (dyn FnMut() + Send)) -> bool {
 /// `coroutine::async(fn)`, inside a coroutine: runs `job` on the pool and waits for
 /// it, then sets errno to the job's. False if the pool refused it.
 pub fn swr_v1_hook_async_job(job: &mut (dyn FnMut() + Send), ops: &AsyncOps) -> bool {
-    let co = (ops.current)();
-    let mut task = Task {
-        co,
-        ops,
-        job: Some(job),
-    };
+    let mut task = Task::new(ops, Some(job));
     let event = AsyncEvent::new(
         (&raw mut task).cast(),
         Some(run_job),
@@ -240,8 +250,7 @@ pub fn swr_v1_hook_async_job(job: &mut (dyn FnMut() + Send), ops: &AsyncOps) -> 
     }
     // Parks this coroutine until `completed` resumes it.
     (ops.park)();
-    // SAFETY: the pool's copy lives until `completed` returns, which resumed us.
-    set_errno(unsafe { &*dispatched }.result().1);
+    set_errno(task.result.get().1);
     true
 }
 

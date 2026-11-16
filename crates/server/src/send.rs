@@ -413,10 +413,7 @@ mod tests {
         fn new() -> Self {
             let live = LiveServer::new();
             let client = live.connect();
-            // SAFETY: the fixture's listener, live for the event.
-            let event = unsafe {
-                swoole_rs_reactor::Event::new(live.listener_fd, 0, 1, live.listener().cast())
-            };
+            let event = live.accept_event();
             crate::connection::accept(live.server(), live.reactor(), &event);
             client
                 .set_read_timeout(Some(std::time::Duration::from_secs(5)))

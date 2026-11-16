@@ -9,13 +9,13 @@
 //! `Ssl::set_bio` and `upstream::socket_ssl_close`.
 use crate::context::SslCtx;
 use openssl_sys::{
-    BIO, BIO_read, BIO_write, OPENSSL_STACK, SSL, SSL_CIPHER, SSL_CTRL_MODE,
-    SSL_CTRL_SET_TLSEXT_HOSTNAME, SSL_CTX, SSL_peek, SSL_read, SSL_set_bio, SSL_write,
-    TLSEXT_NAMETYPE_host_name, X509, stack_st_X509,
+    BIO, OPENSSL_STACK, SSL, SSL_CIPHER, SSL_CTRL_MODE, SSL_CTRL_SET_TLSEXT_HOSTNAME, SSL_CTX,
+    SSL_set_bio, TLSEXT_NAMETYPE_host_name, X509, stack_st_X509,
 };
 use std::ffi::{CStr, c_char, c_int, c_long, c_uint, c_ulong, c_void};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
+use swoole_rs_corebase::lent::{Count, In, Out, lend_in, lend_out};
 use swoole_rs_corebase::sys::{ReadSlot, Text};
 use swoole_rs_reactor::{Socket, SocketFields};
 
@@ -56,6 +56,16 @@ unsafe extern "C" {
     safe fn BIO_method_type(bio: Bio<'_>) -> c_int;
     safe fn PEM_write_bio_X509(bio: Bio<'_>, cert: CertRef<'_>) -> c_int;
     safe fn SSL_get_error(ssl: Ssl<'_>, result: c_int) -> c_int;
+    /// Writes at most `length` bytes of `buffer`, the count its lending gives.
+    safe fn SSL_read<'id>(ssl: Ssl<'_>, buffer: Out<'id>, length: Count<'id, c_int>) -> c_int;
+    /// As `SSL_read`, leaving the bytes queued.
+    safe fn SSL_peek<'id>(ssl: Ssl<'_>, buffer: Out<'id>, length: Count<'id, c_int>) -> c_int;
+    /// Reads at most `length` bytes of `data`, the count its lending gives.
+    safe fn SSL_write<'id>(ssl: Ssl<'_>, data: In<'id>, length: Count<'id, c_int>) -> c_int;
+    /// As `SSL_read`, from the BIO.
+    safe fn BIO_read<'id>(bio: Bio<'_>, buffer: Out<'id>, length: Count<'id, c_int>) -> c_int;
+    /// As `SSL_write`, to the BIO.
+    safe fn BIO_write<'id>(bio: Bio<'_>, data: In<'id>, length: Count<'id, c_int>) -> c_int;
     safe fn SSL_accept(ssl: Ssl<'_>) -> c_int;
     safe fn SSL_connect(ssl: Ssl<'_>) -> c_int;
     safe fn SSL_do_handshake(ssl: Ssl<'_>) -> c_int;
@@ -186,12 +196,6 @@ enum BioIntCtrl {
 enum SslCtrl {
     Mode = SSL_CTRL_MODE,
     HostName = SSL_CTRL_SET_TLSEXT_HOSTNAME,
-}
-
-/// The int OpenSSL's I/O calls take for a buffer's length: at most `INT_MAX`, where
-/// upstream's `(int)` cast would wrap a buffer over 2 GiB.
-fn int(length: usize) -> c_int {
-    c_int::try_from(length).unwrap_or(c_int::MAX)
 }
 
 /// An OpenSSL I/O or handshake call that made no progress: what it returned (0 or
@@ -328,9 +332,9 @@ impl<'a> Ssl<'a> {
     /// # Errors
     /// Nothing was read.
     pub fn read(self, buffer: &mut [impl ReadSlot]) -> Result<usize, SslFailure> {
-        let length = int(buffer.len());
-        // SAFETY: a live SSL, into the buffer's writable bytes.
-        self.count(unsafe { SSL_read(self.as_ptr(), buffer.as_mut_ptr().cast(), length) })
+        self.count(lend_out(buffer, |at, length| {
+            SSL_read(self, at.bytes(), length)
+        }))
     }
 
     /// `SSL_write` of `data`.
@@ -338,8 +342,9 @@ impl<'a> Ssl<'a> {
     /// # Errors
     /// Nothing was written.
     pub fn write(self, data: &[u8]) -> Result<usize, SslFailure> {
-        // SAFETY: a live SSL, from the data's readable bytes.
-        self.count(unsafe { SSL_write(self.as_ptr(), data.as_ptr().cast(), int(data.len())) })
+        self.count(lend_in(data, |at, length| {
+            SSL_write(self, at.bytes(), length)
+        }))
     }
 
     /// `SSL_peek` into `buffer`.
@@ -347,9 +352,9 @@ impl<'a> Ssl<'a> {
     /// # Errors
     /// Nothing was peeked.
     pub fn peek(self, buffer: &mut [impl ReadSlot]) -> Result<usize, SslFailure> {
-        let length = int(buffer.len());
-        // SAFETY: a live SSL, into the buffer's writable bytes.
-        self.count(unsafe { SSL_peek(self.as_ptr(), buffer.as_mut_ptr().cast(), length) })
+        self.count(lend_out(buffer, |at, length| {
+            SSL_peek(self, at.bytes(), length)
+        }))
     }
 
     /// One `SSL_accept` step.
@@ -587,17 +592,14 @@ impl Bio<'_> {
     /// `BIO_read` into `buffer`: the bytes read, or None for none.
     #[must_use]
     pub fn read(self, buffer: &mut [impl ReadSlot]) -> Option<usize> {
-        let length = int(buffer.len());
-        // SAFETY: a live BIO, into the buffer's writable bytes.
-        let n = unsafe { BIO_read(self.as_ptr(), buffer.as_mut_ptr().cast(), length) };
+        let n = lend_out(buffer, |at, length| BIO_read(self, at.bytes(), length));
         usize::try_from(n).ok().filter(|&n| n > 0)
     }
 
     /// `BIO_write` of `data`: the bytes written, or None for none.
     #[must_use]
     pub fn write(self, data: &[u8]) -> Option<usize> {
-        // SAFETY: a live BIO, from the data's readable bytes.
-        let n = unsafe { BIO_write(self.as_ptr(), data.as_ptr().cast(), int(data.len())) };
+        let n = lend_in(data, |at, length| BIO_write(self, at.bytes(), length));
         usize::try_from(n).ok().filter(|&n| n > 0)
     }
 

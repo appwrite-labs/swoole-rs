@@ -6,8 +6,6 @@
 //! exit condition and destroy callback, and the warnings. The process patch deletes
 //! `src/os/signal.cc`.
 use crate::ReactorPrepared;
-#[cfg(target_os = "linux")]
-use crate::SocketRecord;
 use crate::socket_sync::set_errno;
 use std::ffi::c_int;
 #[cfg(target_os = "linux")]
@@ -30,7 +28,7 @@ use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 #[cfg(target_os = "linux")]
 unsafe extern "C-unwind" {
     #[link_name = "_ZN6swoole7network6Socket4freeEv"]
-    fn socket_free(socket: *mut SocketRecord);
+    fn socket_free(socket: Option<crate::Socket<'static>>);
 }
 
 /// The fields of the thread's event loop, available or not (`sw_reactor()`).
@@ -156,7 +154,7 @@ mod descriptor {
         SOCKET.store(ptr::null_mut(), Relaxed);
         socket.edit(|record| record.fd = -1);
         // SAFETY: SOCKET's wrapper, which nothing uses once taken out of it.
-        unsafe { socket_free(socket.as_ptr()) };
+        unsafe { socket_free(Some(socket)) };
     }
 
     pub(super) fn events() -> i32 {

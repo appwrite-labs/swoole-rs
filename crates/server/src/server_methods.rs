@@ -377,9 +377,9 @@ mod tests {
 
         // SAFETY: a zeroed record is a valid connection.
         let mut conn: ConnectionRecord = unsafe { core::mem::zeroed() };
-        conn.fd = 22;
-        conn.reactor_id = 3;
-        conn.server_fd = 0x1_0005;
+        conn.fd.set(22);
+        conn.reactor_id.set(3);
+        conn.server_fd.set(0x1_0005);
         assert!(
             notify(serv, (&mut conn).into(), ServerEvent::Close),
             "notify result"
@@ -416,8 +416,10 @@ mod tests {
         // SAFETY: as above.
         let mut connections: [ConnectionRecord; 4] = unsafe { core::mem::zeroed() };
         // SAFETY: the record above, which outlives the connections that point to it.
-        connections[3].socket = unsafe { swoole_rs_reactor::Socket::from_ptr(&raw mut sock) };
-        connections[3].reactor_id = 1;
+        connections[3]
+            .socket
+            .set(unsafe { swoole_rs_reactor::Socket::from_ptr(&raw mut sock) });
+        connections[3].reactor_id.set(1);
         // SAFETY: as above.
         let mut workers: [WorkerRecord; 4] = unsafe { core::mem::zeroed() };
         // Session 3 on reactor 1 of 2, over 2 pipes: worker 1 + (3 % 2) * 2.

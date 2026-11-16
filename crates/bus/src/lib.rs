@@ -200,7 +200,7 @@ impl Drop for Bus {
             record.edit(|record| record.fd = -1);
             // SAFETY: a record `init_pipe_socket` made, used by nothing else now and
             // freed once: the bus is dropping.
-            unsafe { free_socket(record.as_ptr()) };
+            unsafe { free_socket(Some(record)) };
         }
     }
 }
@@ -912,23 +912,24 @@ impl Bus {
     /// failed.
     ///
     /// # Safety
-    /// `data` covers `head.len` bytes or is null, and `socket` outlives any
-    /// registration the write makes: what the event loop cannot send at once it
-    /// queues, and watches `socket` until it drains.
-    pub unsafe fn send_raw(&self, socket: Socket<'_>, head: &mut BusHead, data: *const u8) -> bool {
+    /// `data` covers `head.len` bytes or is null. (What the event loop cannot send at
+    /// once it queues, and watches `socket` until it drains: a `Socket<'static>` may be.)
+    pub unsafe fn send_raw(
+        &self,
+        socket: Socket<'static>,
+        head: &mut BusHead,
+        data: *const u8,
+    ) -> bool {
         use swoole_rs_reactor::event_api;
         // `write` passes iovecs over `head` and the caller's bytes.
         let send = |iov: &[libc::iovec]| {
             // SAFETY: `write`'s iovecs, an `IoSlice`'s layout: the head's bytes and a
             // chunk inside the caller's `data`, each readable for the call.
             let vectors = unsafe { std::slice::from_raw_parts(iov.as_ptr().cast(), iov.len()) };
-            // SAFETY: the same (non-null) record, which the caller keeps alive while
-            // the loop has it registered.
-            match unsafe { Socket::from_ptr(socket.as_ptr()) } {
-                Some(registered) if event_api::swoole_event_is_available() => {
-                    event_api::swoole_event_writev(registered, vectors)
-                }
-                _ => writev_sync(socket, vectors).map_or(-1, usize::cast_signed),
+            if event_api::swoole_event_is_available() {
+                event_api::swoole_event_writev(socket, vectors)
+            } else {
+                writev_sync(socket, vectors).map_or(-1, usize::cast_signed)
             }
         };
         let reduce = || {
@@ -1011,7 +1012,7 @@ mod tests {
         static COUNTER: AtomicU64 = AtomicU64::new(1);
         let mut pipe = Pipe::new(libc::SOCK_STREAM, 64, false);
         pipe.bus.count_ids(&COUNTER);
-        let mut socket = SocketRecord::with_fd(pipe.fds[0], /* SW_FD_PIPE */ 3);
+        let socket = Box::new(SocketRecord::with_fd(pipe.fds[0], /* SW_FD_PIPE */ 3)).into_socket();
         for (expected, payload) in [(1, b"one".as_slice()), (2, b"two".as_slice())] {
             let mut head = BusHead {
                 msg_id: 99,
@@ -1019,12 +1020,12 @@ mod tests {
                 fd: 7,
                 ..BusHead::default()
             };
-            let socket = Socket::new(&mut socket);
             assert!(unsafe { pipe.bus.send_raw(socket, &mut head, payload.as_ptr()) });
             assert_eq!(head.msg_id, expected);
             assert_eq!(pipe.read(false).as_deref(), Some(payload));
         }
         assert_eq!(COUNTER.load(Ordering::Relaxed), 3);
+        unsafe { SocketRecord::free(Some(socket)) };
     }
     /// libc's allocator, as `SwooleG.std_allocator`.
     static ALLOCATOR: CoreAllocator = CoreAllocator {

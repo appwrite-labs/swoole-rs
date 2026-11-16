@@ -1,5 +1,5 @@
 //! Response header policy; crates/phphttp builds the header and runs the codecs.
-use crate::request::case_equal;
+use crate::{Compression, request::case_equal};
 
 /// `swHttpHeaderFlag`: the known response headers' flags.
 pub const SERVER: i32 = 2;
@@ -29,43 +29,45 @@ pub fn response_header(name: &[u8]) -> i32 {
 }
 
 /// Native codec selection before any allocation/backend call. Capabilities are
-/// zlib/Brotli/Zstd bits; unsupported methods retain the native warning path.
-#[must_use]
-pub fn swr_v1_httpbindings_codec(
-    method: i32,
+/// zlib/Brotli/Zstd bits. `None` skips compression before consulting the method.
+///
+/// # Errors
+/// The requested method is unavailable, retaining the caller's warning path.
+pub fn codec(
+    method: Compression,
     capabilities: u32,
-    accepted: u32,
+    accepted: bool,
     length: usize,
     minimum: u32,
-) -> i32 {
-    if accepted == 0 || length < minimum as usize {
-        return 0;
+) -> Result<Option<Compression>, Compression> {
+    if !accepted || length < minimum as usize {
+        return Ok(None);
     }
     let required = match method {
-        1 | 2 => 1,
-        3 => 2,
-        4 => 4,
-        _ => return -1,
+        Compression::Gzip | Compression::Deflate => 1,
+        Compression::Brotli => 2,
+        Compression::Zstd => 4,
+        Compression::None => return Err(method),
     };
     if capabilities & required != 0 {
-        method
+        Ok(Some(method))
     } else {
-        -1
+        Err(method)
     }
 }
 
 /// Preserve codec-specific native level policy. Zstd normalizes a captured local
 /// level; Brotli/zlib native callers publish the result to their original field.
-/// Brotli retains min-first and Zstd max-first order, with no clamp panic across C ABI.
+/// Brotli retains min-first and Zstd max-first order even when the bounds are inverted.
 #[must_use]
-pub fn swr_v1_httpbindings_codec_level(method: i32, level: i32, minimum: i32, maximum: i32) -> i32 {
+pub fn codec_level(method: Compression, level: i32, minimum: i32, maximum: i32) -> i32 {
     match method {
-        1 | 2 => match level {
+        Compression::Gzip | Compression::Deflate => match level {
             i32::MIN..=-1 => -1,
             0 => 1,
             value => value.min(9),
         },
-        3 => {
+        Compression::Brotli => {
             if level < minimum {
                 minimum
             } else if level > maximum {
@@ -74,7 +76,7 @@ pub fn swr_v1_httpbindings_codec_level(method: i32, level: i32, minimum: i32, ma
                 level
             }
         }
-        4 => {
+        Compression::Zstd => {
             if level > maximum {
                 maximum
             } else if level < minimum {
@@ -83,6 +85,59 @@ pub fn swr_v1_httpbindings_codec_level(method: i32, level: i32, minimum: i32, ma
                 level
             }
         }
-        _ => level,
+        Compression::None => level,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selection_skips_before_checking_availability() {
+        for (method, required) in [
+            (Compression::None, 0),
+            (Compression::Gzip, 1),
+            (Compression::Deflate, 1),
+            (Compression::Brotli, 2),
+            (Compression::Zstd, 4),
+        ] {
+            for capabilities in 0..8 {
+                assert_eq!(codec(method, capabilities, false, 100, 10), Ok(None));
+                assert_eq!(codec(method, capabilities, true, 9, 10), Ok(None));
+                let expected = if capabilities & required == 0 {
+                    Err(method)
+                } else {
+                    Ok(Some(method))
+                };
+                assert_eq!(codec(method, capabilities, true, 10, 10), expected);
+                assert_eq!(
+                    crate::encoding(method, capabilities).is_some(),
+                    expected.is_ok()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn levels_keep_defaults_and_inverted_bound_order() {
+        for method in [Compression::Gzip, Compression::Deflate] {
+            for (input, expected) in [
+                (i32::MIN, -1),
+                (-2, -1),
+                (-1, -1),
+                (0, 1),
+                (1, 1),
+                (9, 9),
+                (10, 9),
+                (i32::MAX, 9),
+            ] {
+                assert_eq!(codec_level(method, input, 0, 0), expected);
+            }
+        }
+        assert_eq!(codec_level(Compression::Brotli, 3, 11, 0), 11);
+        assert_eq!(codec_level(Compression::Zstd, 3, 11, 0), 0);
+        assert_eq!(codec_level(Compression::Zstd, -3, -7, 22), -3);
+        assert_eq!(codec_level(Compression::None, -17, 0, 9), -17);
     }
 }

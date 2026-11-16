@@ -75,7 +75,7 @@ pub(crate) fn valid(conn: Option<Connection<'_>>) -> bool {
 #[repr(C)]
 pub(crate) struct ThreadRecord {
     pub(crate) id: Cell<c_int>,
-    pub(crate) notify_pipe: Cell<*mut SocketRecord>,
+    pub(crate) notify_pipe: Cell<Option<swoole_rs_reactor::Socket<'static>>>,
     pub(crate) dispatch_count: Cell<u64>,
     pub(crate) pipe_command: Cell<*mut SocketRecord>,
     pub(crate) heartbeat_timer: Cell<Option<swoole_rs_corebase::timer_key::Held>>,
@@ -179,7 +179,7 @@ impl ThreadRecord {
         (0..count)
             .map(|_| Self {
                 id: Cell::new(0),
-                notify_pipe: Cell::new(core::ptr::null_mut()),
+                notify_pipe: Cell::new(None),
                 dispatch_count: Cell::new(0),
                 pipe_command: Cell::new(core::ptr::null_mut()),
                 heartbeat_timer: Cell::new(None),

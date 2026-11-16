@@ -21,7 +21,7 @@ pub struct SocketExtra {
     /// record doesn't move them.
     pub(crate) strings: Box<[StringSlot; 3]>,
     /// `set_dtor`'s callback.
-    close_hook: Option<CloseHook>,
+    pub(crate) close_hook: Option<CloseHook>,
     /// The owner of the callable `protocol.private_data_1` names, when the
     /// socket has a `package_length_func`.
     length_owner: Option<Rc<dyn Any>>,
