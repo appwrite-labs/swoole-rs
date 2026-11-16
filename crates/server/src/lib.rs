@@ -49,6 +49,7 @@ mod master_ops;
 mod objects;
 #[cfg(feature = "upstream-symbols")]
 mod pool_native;
+pub mod process_worker;
 #[cfg(feature = "upstream-symbols")]
 pub use pool_native::process_pool_native;
 pub mod port_config;

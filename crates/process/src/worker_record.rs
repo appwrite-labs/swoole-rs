@@ -1000,7 +1000,7 @@ mod public_pid_array_tests {
             (task_pool, 0),
             (&[], 0),
         );
-        crate::server_workers::swr_v1_process_server_worker_by_pid(&view, None, pid)
+        crate::server_workers::swr_v1_process_server_worker_by_pid::<()>(&view, None, pid)
     }
 
     #[test]

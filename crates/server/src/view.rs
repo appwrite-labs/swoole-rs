@@ -465,7 +465,7 @@ impl<'a> Server<'a> {
 
     /// The server's worker registry, which its configuration owns for the server's life.
     #[must_use]
-    pub fn registry(self) -> &'a WorkerRegistry {
+    pub fn registry(self) -> &'a WorkerRegistry<crate::process_worker::ProcessWorker> {
         // A server's state gives its config the registry before any op runs.
         self.config()
             .worker_registry
@@ -558,16 +558,20 @@ impl<'a> Server<'a> {
         true
     }
 
+    /// Retain the native resources of a user worker for its thread's Process copy.
+    #[must_use]
+    pub fn user_worker_owner(self, index: usize) -> Option<crate::process_worker::ProcessWorker> {
+        self.registry().pending().get(index).cloned()
+    }
+
     /// The `index`th user worker `worker_methods::add_worker` added, or `None` past the
     /// last.
     pub(crate) fn pending_worker(self, index: usize) -> Option<Worker<'a>> {
-        let &worker = self.registry().pending().get(index)?;
-        if worker.is_null() {
-            return None;
-        }
-        // SAFETY: a live worker `add_worker` added, which outlives the server
-        // (its contract; nothing else adds to the server's pending workers).
-        Some(unsafe { Worker::from(&*worker.cast::<WorkerRecord>()) })
+        let pending = self.registry().pending();
+        let worker = pending.get(index)?.get().raw();
+        // SAFETY: the append-only registry owns a share of this worker and its
+        // resources until the server drops. Releasing the read lock cannot remove it.
+        Some(unsafe { Worker::from(&*worker) })
     }
 
     /// Worker `id`'s pipe socket, its master end or its worker end, or `None` while it has none.

@@ -24,9 +24,13 @@ pub fn get_worker_by_pid(serv: view::Server<'_>, pid: c_int) -> *mut WorkerRecor
 }
 
 /// `Server::add_worker(worker)`: a user worker, added before the server is created.
-/// Its id, or none (`SW_ERR`) once the server is created.
+/// The server retains the worker and its pipe and queue. Its id, or none
+/// (`SW_ERR`) once the server is created.
 #[must_use]
-pub fn add_worker(serv: view::Server<'_>, worker: Worker<'static>) -> Option<u32> {
+pub fn add_worker(
+    serv: view::Server<'_>,
+    owner: crate::process_worker::ProcessWorker,
+) -> Option<u32> {
     let config = serv.config();
     if !config.factory_.get().is_null() {
         let m = format_args!("must add worker before server is created");
@@ -38,7 +42,8 @@ pub fn add_worker(serv: view::Server<'_>, worker: Worker<'static>) -> Option<u32
         );
         return None;
     }
-    let index = serv.registry().pending_add(worker.raw().cast());
+    let index = serv.registry().pending_add(owner);
+    let worker = serv.pending_worker(index)?;
     // `user_worker_list.size() - 1`, as a `WorkerId`.
     let id = u32::try_from(index & u32::MAX as usize).unwrap_or_default();
     worker.set_id(id);

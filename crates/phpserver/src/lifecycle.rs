@@ -17,7 +17,6 @@ use std::{
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_phpcoroutines::{Coroutine, Waiter};
-use swoole_rs_process::worker_record::Worker;
 use swoole_rs_server::{server_methods, swr_v1_server_add_command, swr_v1_server_command, view};
 use swoole_rs_zend::host::callable::Callable as Kept;
 use swoole_rs_zend::{
@@ -152,7 +151,7 @@ impl PortInfo {
 // `Swoole\Process` (crates/phpprocess) and its object's `Worker`, an `E_ERROR` for an
 // unconstructed one; and a copy of `sw_error`.
 use swoole_rs_error::last_error_message;
-use swoole_rs_phpprocess::checked_worker;
+use swoole_rs_phpprocess::retained_worker;
 use swoole_rs_server::{Mode, SharedServer, admin_register};
 
 /// What kind of Server `object` is.
@@ -205,10 +204,7 @@ fn add_worker(serv: view::Server<'_>, process: &Value) -> Result<i64, AddFailed>
             - i64::from(config.worker_num.get())
             - i64::from(config.task_worker_num.get()));
     }
-    let worker = checked_worker(process).ok_or(AddFailed::Bailed)?;
-    // SAFETY: the process's live worker, which the server's copy of the
-    // Process object keeps for the server's life.
-    let worker = unsafe { Worker::from(&*worker.raw()) };
+    let worker = retained_worker(process).ok_or(AddFailed::Bailed)?;
     swoole_rs_server::worker_methods::add_worker(serv, worker)
         .map(i64::from)
         .ok_or(AddFailed::Refused)
