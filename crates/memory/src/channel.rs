@@ -1,3 +1,4 @@
+use crate::members::Shm;
 use std::cell::UnsafeCell;
 use std::ffi::c_int;
 use swoole_rs_corebase::CCast;
@@ -8,7 +9,7 @@ use swoole_rs_locks::SharedMutex;
 /// `swr_v1_memory_channel_bytes`) outside the header, which only the holder of the
 /// queue's `&mut` touches, so a 4-byte length header plus up to `maxlen` record bytes
 /// starting at any cursor below `size` stays inside it. `valid` checks every cursor
-/// and bound this relies on. Only `swr_v1_memory_channel_init` (and this module's
+/// and bound this relies on. Only [`SharedChannel::make`] (and this module's
 /// tests, over their own buffers) make one.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -200,9 +201,8 @@ const LOCK: i32 = 2;
 const NOTIFY: i32 = 4;
 
 /// `swoole::Channel`: the queue state, its process-shared mutex and its notification
-/// pipe (read end first). Native allocates `swr_v1_memory_channel_bytes` bytes for it
-/// (heap or shared mapping) and frees them after `close`; the queue storage follows
-/// the record. Not `Sync`: threads (and processes) that share one serialize the queue
+/// pipe (read end first), which a [`SharedChannel`] holds in its mapping, the queue
+/// storage following the record. Not `Sync`: threads (and processes) that share one serialize the queue
 /// with its `SW_CHAN_LOCK` mutex, which [`Record::push`] and [`Record::pop`] take.
 #[repr(C)]
 pub struct Record {
@@ -229,83 +229,123 @@ pub fn swr_v1_memory_channel_bytes(size: usize, maxlen: usize) -> usize {
         .unwrap_or(0)
 }
 
-/// Why [`swr_v1_memory_channel_init`] made no channel.
+/// Why [`SharedChannel::make`] made no channel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChannelInitError {
-    /// A null record or a size the record can't hold.
+    /// A size the record can't hold.
     Invalid,
+    /// The shared mapping failed.
+    NoMemory,
     /// `pipe()` failed, with errno intact.
     Pipe,
     /// The mutex failed.
     Mutex,
 }
 
-/// Initialize a fresh record and create its mutex (`SW_CHAN_LOCK`) and pipe
-/// (`SW_CHAN_NOTIFY`). Nothing is left to release on failure.
-/// # Errors
-/// Which step failed.
-/// # Safety
-/// `record` is exclusively lent, aligned, and `swr_v1_memory_channel_bytes(size, maxlen)`
-/// bytes long.
-pub unsafe fn swr_v1_memory_channel_init(
-    record: *mut Record,
-    size: usize,
-    maxlen: usize,
-    flags: i32,
-) -> Result<(), ChannelInitError> {
-    let Ok(length) = i32::try_from(maxlen) else {
-        return Err(ChannelInitError::Invalid);
-    };
-    if record.is_null() || swr_v1_memory_channel_bytes(size, maxlen) == 0 {
-        return Err(ChannelInitError::Invalid);
-    }
-    let queue = Channel {
-        head: 0,
-        tail: 0,
-        size,
-        head_tag: 0,
-        tail_tag: 0,
-        num: 0,
-        max_num: 0,
-        bytes: 0,
-        flags,
-        maxlen: length,
-        mem: record.wrapping_add(1).cast(),
-    };
-    let fresh = Record {
-        queue: UnsafeCell::new(queue),
-        lock: SharedMutex::new(),
-        notify: [-1, -1],
-        flags,
-    };
-    // SAFETY: the caller lends the record exclusively, aligned and long enough; it
-    // may be uninitialised.
-    let record = unsafe { &mut *record.cast::<std::mem::MaybeUninit<Record>>() }.write(fresh);
-    if flags & NOTIFY != 0 {
-        let Some(notify) = sys::pipe() else {
-            return Err(ChannelInitError::Pipe);
-        };
-        record.notify = notify;
-    }
-    if flags & LOCK != 0 && record.lock.init().is_err() {
-        record.close_pipe();
-        return Err(ChannelInitError::Mutex);
-    }
-    Ok(())
-}
+/// `Channel::make(size, maxlen, flags | SW_CHAN_SHM)`: a channel in a shared mapping
+/// of its own, which a fork shares. Only [`SharedChannel::make`] fills it, so a mapping
+/// it holds starts with a [`Record`] `make` initialised (its mutex with
+/// `SW_CHAN_LOCK`, its pipe with `SW_CHAN_NOTIFY`), followed by the queue's storage,
+/// until [`SharedChannel::free`]. Native code reads it as the record's address, null
+/// for none.
+#[repr(transparent)]
+#[derive(Debug, Default)]
+pub struct SharedChannel(Shm);
 
-/// `Channel::destroy` before native frees the memory: the mutex and the pipe.
-/// # Safety
-/// `record` came from `swr_v1_memory_channel_init` and has no other user, now or later.
-pub unsafe fn swr_v1_memory_channel_close(record: *mut Record) {
-    // SAFETY: as the caller promises.
-    let record = unsafe { &mut *record };
-    if record.flags & LOCK != 0 {
-        // The mutex `init` made, which nobody holds or uses again.
-        record.lock.destroy();
+const _: () = assert!(
+    align_of::<Record>() <= 8,
+    "a shared mapping's payload is 8-aligned"
+);
+
+impl SharedChannel {
+    /// No channel.
+    #[must_use]
+    pub const fn none() -> Self {
+        Self(Shm::empty())
     }
-    if record.flags & NOTIFY != 0 {
-        record.close_pipe();
+
+    /// A channel of `size` bytes and `maxlen`-byte records, with `flags`' mutex
+    /// (`SW_CHAN_LOCK`) and pipe (`SW_CHAN_NOTIFY`). Nothing is left to release on
+    /// failure.
+    /// # Errors
+    /// Which step failed.
+    pub fn make(size: usize, maxlen: usize, flags: i32) -> Result<Self, ChannelInitError> {
+        let total = swr_v1_memory_channel_bytes(size, maxlen);
+        let Ok(length) = i32::try_from(maxlen) else {
+            return Err(ChannelInitError::Invalid);
+        };
+        if total == 0 {
+            return Err(ChannelInitError::Invalid);
+        }
+        let mut memory = Shm::malloc(total);
+        let address = memory.as_ptr().cast::<std::mem::MaybeUninit<Record>>();
+        if address.is_null() {
+            return Err(ChannelInitError::NoMemory);
+        }
+        let queue = Channel {
+            head: 0,
+            tail: 0,
+            size,
+            head_tag: 0,
+            tail_tag: 0,
+            num: 0,
+            max_num: 0,
+            bytes: 0,
+            flags,
+            maxlen: length,
+            mem: address.wrapping_add(1).cast(),
+        };
+        let fresh = Record {
+            queue: UnsafeCell::new(queue),
+            lock: SharedMutex::new(),
+            notify: [-1, -1],
+            flags,
+        };
+        // SAFETY: a fresh mapping of `total` bytes, the record's and its storage's,
+        // 8-aligned (asserted enough for the record), which only `memory` holds.
+        let record = unsafe { &mut *address }.write(fresh);
+        if let Err(error) = record.open(flags) {
+            memory.free();
+            return Err(error);
+        }
+        Ok(Self(memory))
+    }
+
+    /// The channel, if there is one.
+    #[must_use]
+    pub fn get(&self) -> Option<&Record> {
+        // SAFETY: null, or the record `make` initialised, live until `free`, which
+        // takes `&mut self`. Its mutex serializes the processes that share it.
+        unsafe { self.0.as_ptr().cast::<Record>().as_ref() }
+    }
+
+    /// Whether there is no channel.
+    #[must_use]
+    pub fn is_none(&self) -> bool {
+        self.0.is_null()
+    }
+
+    /// The record's address, null for none, for native code.
+    #[must_use]
+    pub fn as_ptr(&self) -> *mut std::ffi::c_void {
+        self.0.as_ptr()
+    }
+
+    /// `Channel::destroy`: the mutex, the pipe and the mapping, leaving no channel.
+    pub fn free(&mut self) {
+        // SAFETY: null, or the record `make` initialised, which `&mut self` holds
+        // alone: no `get` borrow is live.
+        let Some(record) = (unsafe { self.0.as_ptr().cast::<Record>().as_mut() }) else {
+            return;
+        };
+        if record.flags & LOCK != 0 {
+            // The mutex `make` made, which nobody holds or uses again.
+            record.lock.destroy();
+        }
+        if record.flags & NOTIFY != 0 {
+            record.close_pipe();
+        }
+        self.0.free();
     }
 }
 
@@ -322,6 +362,19 @@ impl Drop for Held<'_> {
 }
 
 impl Record {
+    /// A fresh record's pipe (`SW_CHAN_NOTIFY`) and then its mutex (`SW_CHAN_LOCK`);
+    /// neither is left open on failure.
+    fn open(&mut self, flags: i32) -> Result<(), ChannelInitError> {
+        if flags & NOTIFY != 0 {
+            self.notify = sys::pipe().ok_or(ChannelInitError::Pipe)?;
+        }
+        if flags & LOCK != 0 && self.lock.init().is_err() {
+            self.close_pipe();
+            return Err(ChannelInitError::Mutex);
+        }
+        Ok(())
+    }
+
     fn close_pipe(&mut self) {
         for fd in std::mem::replace(&mut self.notify, [-1, -1]) {
             if fd >= 0 {

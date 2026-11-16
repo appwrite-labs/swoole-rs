@@ -18,7 +18,7 @@ use std::{
     mem::ManuallyDrop,
     sync::atomic::{AtomicU32, Ordering::SeqCst},
 };
-use swoole_rs_corebase::{CCast, HookType, swoole_call_hook, swoole_isset_hook};
+use swoole_rs_corebase::{CCast, HookType, swoole_isset_hook};
 use swoole_rs_corebase::{DataHead, WebSocketStatus, log};
 use swoole_rs_memory::flat::Table;
 use swoole_rs_phpserver::PortCallback;
@@ -30,11 +30,19 @@ use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_process::worker_globals::with_current;
 use swoole_rs_process::worker_record::WorkerType;
 use swoole_rs_server::{Connection, DispatchMode, Mode, view};
-use swoole_rs_zend::sys::{
-    ZEND_ACC_NOT_SERIALIZABLE, swr_zend_http_uploads_rinit, swr_zend_http_uploads_rshutdown,
-    zend_long, zval,
-};
+use swoole_rs_zend::sys::{ZEND_ACC_NOT_SERIALIZABLE, zend_long, zval};
 use swoole_rs_zend::{Class, Owned, ZStr, ZString, bailout};
+
+unsafe extern "C" {
+    /// `SG(rfc1867_uploaded_files)`, made when the request has none: SAPI
+    /// globals of this thread only, and no PHP code runs.
+    safe fn swr_zend_http_uploads_rinit();
+    /// `SG(rfc1867_uploaded_files)`'s files unlinked and the table freed and
+    /// nulled, when there is one: SAPI globals of this thread only, which no
+    /// Rust borrows (an upload into the table finds none and skips it), and no
+    /// PHP code runs.
+    safe fn swr_zend_http_uploads_rshutdown();
+}
 
 /// `Swoole\Http\Server`: `Swoole\Server` with no methods of its own.
 pub(crate) static SERVER: Class = Class::new();
@@ -348,20 +356,14 @@ pub(crate) fn call_handler(
     coroutine: bool,
     then: Then,
 ) -> Result<bool, bailout::Bailout> {
-    // SAFETY: the resolved cache of a callable the caller holds through the
-    // call, and the arguments; the coroutine leaf, `then` and the reporter run
-    // inside C traps.
-    let called = unsafe {
-        swoole_rs_zend::host::function_call(
-            callable.cache_ptr(),
-            u32::try_from(args.len()).unwrap_or(0),
-            args.as_mut_ptr(),
-            std::ptr::null_mut(),
-            coroutine,
-            swoole_rs_phpcoroutines::create_coroutine,
-            then,
-        )
-    };
+    let called = swoole_rs_zend::host::function_call(
+        callable.cache(),
+        swoole_rs_zend::Zvals::of(args),
+        None,
+        coroutine,
+        swoole_rs_phpcoroutines::CREATOR,
+        then,
+    );
     called.map_err(|bailout| {
         let _relayed = bailout::relay_to_c(Err(bailout));
         bailout::Bailout
@@ -492,8 +494,7 @@ fn handle(
     add_server(state, Key::MasterTime, master_time);
     // The hooks may reach the context: no borrow of it is held across them.
     if swoole_isset_hook(HookType::BEFORE_REQUEST) {
-        // SAFETY: the hook's context argument.
-        unsafe { swoole_call_hook(HookType::BEFORE_REQUEST, ctx.raw()) };
+        ctx.call_hook(context::Hook::BeforeRequest);
     }
     // Parsing an upgrade request sets the connection's status.
     let handshake = server
@@ -735,16 +736,14 @@ pub(crate) fn release_request() {
 /// `php_swoole_http_server_rinit`: the uploaded files `is_uploaded_file`
 /// and `move_uploaded_file` know.
 pub extern "C" fn server_rinit() {
-    // SAFETY: RINIT, on the request's thread.
-    unsafe { swr_zend_http_uploads_rinit() };
+    swr_zend_http_uploads_rinit();
 }
 
 /// `php_swoole_http_server_rshutdown`: forget the uploaded files, then drop
 /// the cached addresses and the queued requests. A bailout their release
 /// deferred is raised last, into the hook's `zend_try`.
 pub extern "C" fn server_rshutdown() {
-    // SAFETY: RSHUTDOWN, on the request's thread.
-    unsafe { swr_zend_http_uploads_rshutdown() };
+    swr_zend_http_uploads_rshutdown();
     drop(ManuallyDrop::into_inner(take_addresses()));
     while let Some(ctx) = dequeue() {
         abandon(ctx);

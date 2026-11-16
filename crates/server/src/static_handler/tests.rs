@@ -355,7 +355,11 @@ impl Server {
     /// `operation` on a static collection.
     fn strings(&self, collection: crate::StaticCollection, operation: Op<'_>) {
         // SAFETY: the live state.
-        crate::static_config::config(unsafe { &*self.0.state }, collection, operation);
+        crate::static_config::config(
+            &unsafe { &*self.0.state }.static_config,
+            collection,
+            operation,
+        );
     }
     fn rules(&self, rules: &[Rule]) {
         for &(pattern, replacement, regex) in rules {
@@ -367,7 +371,7 @@ impl Server {
             };
             // SAFETY: the live state.
             crate::static_config::add_rewrite_rule(
-                unsafe { &*self.0.state },
+                &unsafe { &*self.0.state }.static_config,
                 &pattern,
                 replacement,
             );

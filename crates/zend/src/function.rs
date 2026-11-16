@@ -23,6 +23,7 @@ unsafe extern "C" {
 /// cache) while PHP runs, so each read copies the header every kind of function
 /// starts with and no reference to the function is ever made.
 #[derive(Clone, Copy)]
+#[repr(transparent)]
 pub struct Function<'a>(
     pub(crate) *mut zend_function,
     pub(crate) PhantomData<&'a zend_function>,

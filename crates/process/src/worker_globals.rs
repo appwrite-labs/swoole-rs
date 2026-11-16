@@ -4,8 +4,8 @@ use core::ffi::c_int;
 use core::sync::atomic::Ordering::Relaxed;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU8, AtomicU32};
 
-/// The compatibility view of the current worker; pointer fields are native loans,
-/// except `worker_copy`, whose local record allocation is owned here. Each field is
+/// The compatibility view of the current worker; its pointer is a native loan. Each
+/// field is
 /// an atomic of its C type's layout, read and written one at a time (`Relaxed`,
 /// plain loads and stores), as native code, signal handlers and, without ZTS, the
 /// process's other threads read and write single fields of the same record.
@@ -18,7 +18,9 @@ pub struct WorkerGlobalRecord {
     pub running: AtomicBool,
     pub max_request: AtomicU32,
     worker: AtomicPtr<WorkerRecord>,
-    worker_copy: AtomicPtr<WorkerRecord>,
+    /// Upstream's `worker_copy != nullptr`: the worker was separated from its pool. The
+    /// copy itself is never read, so only the fact is kept.
+    detached: AtomicBool,
     pub exit_time: AtomicI64,
 }
 
@@ -37,7 +39,7 @@ const fn init() -> WorkerGlobalRecord {
         running: AtomicBool::new(false),
         max_request: AtomicU32::new(0),
         worker: AtomicPtr::new(core::ptr::null_mut()),
-        worker_copy: AtomicPtr::new(core::ptr::null_mut()),
+        detached: AtomicBool::new(false),
         exit_time: AtomicI64::new(0),
     }
 }
@@ -89,7 +91,7 @@ pub fn with_current<R>(f: impl FnOnce(&crate::worker_record::Worker<'_>) -> R) -
     // SAFETY: the slot holds a loan of the record the worker loop this thread runs
     // was given by the pool or server that owns it, which keeps it until it frees
     // its workers after the loop ends. `worker_global_stopped` frees only
-    // `worker_copy`, a separate allocation, so stopping during `f` leaves the
+    // the detached flag, so stopping during `f` leaves the
     // lent record live. The loop orders the field writes made through the handle.
     let worker = unsafe { crate::worker_record::Worker::from_raw(current_worker()) };
     worker.as_ref().map(f)
@@ -154,32 +156,23 @@ pub fn worker_global_max_requests(
     swr_v1_worker_global_set(5, i64::from(limit));
 }
 
-/// Retains a local copy of the exiting worker, this thread's current one, without
-/// relying on C++ copying the reserved private field bytes. Shared/native resource
-/// pointers remain loans. Upstream also sets `SwooleWG.worker = worker`, which the
-/// slot already holds: every caller stops the worker whose loop set it current.
-pub fn worker_global_detach(worker: crate::worker_record::Worker<'_>) {
-    let copy = Box::into_raw(Box::new(worker.get()));
-    with_globals(|globals| globals.worker_copy.store(copy, Relaxed));
+/// Separates this thread's current worker from its pool, as upstream's copy into
+/// `worker_copy` does; nothing reads that copy, so only the separation is kept.
+/// Upstream also sets `SwooleWG.worker = worker`, which the slot already holds: every
+/// caller stops the worker whose loop set it current.
+pub fn worker_global_detach(_worker: crate::worker_record::Worker<'_>) {
+    with_globals(|globals| globals.detached.store(true, Relaxed));
 }
 
-/// Stops the current worker and releases its local detached copy.
+/// Stops the current worker; a detached one is no longer current.
 pub fn worker_global_stopped() {
-    let copy = with_globals(|globals| {
+    with_globals(|globals| {
         globals.running.store(false, Relaxed);
-        // The owning slot is cleared before its allocation is released.
-        let copy = globals.worker_copy.swap(core::ptr::null_mut(), Relaxed);
-        if !copy.is_null() {
-            // The shared worker is a loan, no longer current once this copy is released.
+        if globals.detached.swap(false, Relaxed) {
+            // The shared worker is a loan, no longer current once detached.
             globals.worker.store(core::ptr::null_mut(), Relaxed);
         }
-        copy
     });
-    if !copy.is_null() {
-        // SAFETY: detach transferred this unique local record box into the slot just
-        // cleared.
-        drop(unsafe { Box::from_raw(copy) });
-    }
 }
 
 #[cfg(test)]
@@ -217,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn lifecycle_limit_and_detached_copy_preserve_private_record_fields() {
+    fn lifecycle_limit_and_detach_keep_the_record_and_clear_the_slot() {
         let mut worker: WorkerRecord = unsafe { core::mem::zeroed() };
         unsafe {
             Worker::new(&raw mut worker).set_id(11);
@@ -233,10 +226,9 @@ mod tests {
             assert!(Worker::new(&raw const worker).exceeded_max_request());
             set_current_worker(&raw mut worker);
             worker_global_detach(Worker::new(&raw mut worker));
-            let copy = (*thread_globals()).worker_copy.load(Relaxed);
-            assert_ne!(copy, &raw mut worker);
-            assert_eq!(Worker::new(copy).id(), 11);
-            assert_eq!(Worker::new(copy).pid(), 1234);
+            assert!((*thread_globals()).detached.load(Relaxed));
+            assert_eq!(Worker::new(&raw const worker).id(), 11);
+            assert_eq!(Worker::new(&raw const worker).pid(), 1234);
             swr_v1_worker_shutdown(Worker::new(&raw mut worker));
             assert_eq!(
                 Worker::new(&raw const worker).status(),
@@ -245,7 +237,7 @@ mod tests {
             assert_eq!(swr_v1_worker_global_get(4), 1);
             worker_global_stopped();
             assert_eq!(swr_v1_worker_global_get(3), 0);
-            assert!((*thread_globals()).worker_copy.load(Relaxed).is_null());
+            assert!(!(*thread_globals()).detached.load(Relaxed));
             assert!((*thread_globals()).worker.load(Relaxed).is_null());
         }
     }
@@ -257,7 +249,7 @@ mod tests {
         unsafe { set_current_worker(&raw mut worker) };
         worker_global_detach(unsafe { Worker::new(&raw mut worker) });
         let id = with_current(|current| {
-            // Frees the detached copy and clears the slot, not the lent record.
+            // Clears the slot, not the lent record.
             worker_global_stopped();
             current.id()
         });

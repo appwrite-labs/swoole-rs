@@ -25,7 +25,9 @@ zend_string *swr_zend_serialize(zval *value, bool *bailed) {
     return buffer.s;
 }
 
-bool swr_zend_unserialize(zval *out, const char *data, size_t length, size_t *offset, bool *bailed) {
+bool swr_zend_unserialize(zval *out, struct iovec bytes, size_t *offset, bool *bailed) {
+    const char *data = bytes.iov_base;
+    size_t length = bytes.iov_len;
     const unsigned char *cursor = (const unsigned char *) data;
     bool done = false;
     SWR_ZEND_TRY {

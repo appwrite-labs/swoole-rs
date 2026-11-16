@@ -478,7 +478,7 @@ mod tests {
 
     /// The port at `at`, as the server passes one of its own.
     fn port_at<'a>(at: *mut c_void) -> view::Port<'a> {
-        unsafe { view::Port::from_raw(at) }.expect("a port")
+        view::Port::from(&*unsafe { port_config::of(at) })
     }
     // The `ListenPort` methods over a port's address, as the tests name one.
     fn listen(at: *mut c_void) -> c_int {
@@ -661,7 +661,7 @@ mod tests {
         config.open_tcp_keepalive.set(true);
         config.tcp_user_timeout.set(5);
         assert_eq!(listen(at), 0, "listened");
-        let fd = unsafe { view::Port::from_raw(at) }.map_or(-1, view::Port::fd);
+        let fd = port_at(at).fd();
         assert!(config.listening.get(), "published");
         assert!(
             unsafe {

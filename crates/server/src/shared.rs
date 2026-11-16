@@ -232,7 +232,6 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
     fn a_send_counts_on_the_server_and_its_sessions_port() {
-        use crate::port_config::swr_v1_port_config_new;
         use crate::records::{ConnectionRecord, SessionRecord};
         let mut gs = swoole_rs_memory::members::Shm::calloc(1, size_of::<ServerCounters>());
         let counters = gs.as_ptr().cast::<ServerCounters>();
@@ -242,9 +241,8 @@ mod tests {
         let counted = unsafe { &*counters };
         let mut port = PortCounters::default();
         // A `ListenPort` is its settings.
-        let config = swr_v1_port_config_new(0);
-        // SAFETY: the settings were just allocated.
-        unsafe { (*config).gs.set((&raw mut port).cast()) };
+        let config = crate::port_config::PortConfig::boxed(0);
+        config.gs.set((&raw mut port).cast());
         // SAFETY: a connection record is plain data; zero is a closed one.
         let mut connections: Vec<ConnectionRecord> =
             (0..3).map(|_| unsafe { core::mem::zeroed() }).collect();
@@ -263,13 +261,10 @@ mod tests {
         tables.connection_list = crate::records::tests::naming(&mut connections);
         tables.session_list = crate::records::tests::naming(&mut sessions);
         let state = server.state();
-        // SAFETY: the tables just named hold 3 records; the server's port, which the
-        // test still frees, outlives it.
-        unsafe {
-            state.tables_ref().set_max_connection_unchecked(3);
-            let _ = state.push_port(Box::from_raw(config));
-        }
-        state.tables_ref().hold_port(0, 1).unwrap();
+        // SAFETY: the tables just named hold 3 records.
+        unsafe { state.tables_ref().set_max_connection_unchecked(3) };
+        let _ = state.ports.push(config);
+        state.hold_port(0, 1).unwrap();
         count_send(state, 1, 4);
         count_send(state, 0, 3);
         let totals =
@@ -284,8 +279,6 @@ mod tests {
             "session 0 has no port"
         );
         drop(server);
-        // SAFETY: allocated above and not used again.
-        unsafe { drop(Box::from_raw(config)) };
     }
 
     #[test]

@@ -12,7 +12,6 @@ use swoole_rs_reactor::Events;
 use swoole_rs_reactor::wait_upstream::{system_wait, system_waitpid};
 use swoole_rs_zend::{
     Call, Class, E_WARNING, Minit, Owned, OwnedArray, Value, ZString, bailout::Bailout,
-    sys::zend_value_error,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -122,8 +121,7 @@ fn sleep(call: &Call) {
 
 /// `zend_value_error(message)`, then false.
 fn value_error(call: &Call, message: &CStr) {
-    // SAFETY: a NUL-terminated message without format directives.
-    unsafe { zend_value_error(message.as_ptr()) };
+    swoole_rs_zend::value_error(message);
     call.set_bool(false);
 }
 

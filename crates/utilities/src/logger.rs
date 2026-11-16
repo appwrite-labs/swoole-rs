@@ -7,7 +7,7 @@
 use crate::{log_level, log_line, log_micros, log_rotation};
 use libc::{FILE, c_char, c_int};
 use std::ffi::{CStr, CString};
-use std::sync::atomic::{AtomicI32, Ordering::Relaxed};
+use std::sync::atomic::{AtomicI32, AtomicPtr, Ordering::Relaxed};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 use swoole_rs_corebase::CCast;
@@ -70,16 +70,14 @@ struct State {
     rotation: c_int,
     stdout_fd: c_int,
     stderr_fd: c_int,
-    /// `stdout`, or the stream `set_stream` gave.
-    stream: *mut FILE,
-    stdout: *mut FILE,
+    /// `stdout`, or the stream `set_stream` gave: addresses, which only the writes
+    /// under the logger's lock pass to stdio.
+    stream: AtomicPtr<FILE>,
+    stdout: AtomicPtr<FILE>,
     date_format: CString,
     file: CString,
     real_file: CString,
 }
-
-// SAFETY: the streams are only used under the logger's lock.
-unsafe impl Send for State {}
 
 pub struct Logger {
     host: LoggerHost,
@@ -135,7 +133,7 @@ impl State {
     fn close(&mut self) {
         if let Some(fd) = self.file_fd.take() {
             sys::close(fd);
-            self.stream = self.stdout;
+            *self.stream.get_mut() = *self.stdout.get_mut();
             self.file = CString::default();
         }
     }
@@ -249,9 +247,9 @@ impl State {
             write_all(fd, line);
         } else {
             // SAFETY: `line` is readable for its length; the stream is the caller's live one.
-            unsafe { libc::fwrite(line.as_ptr().cast(), line.len(), 1, self.stream) };
+            unsafe { libc::fwrite(line.as_ptr().cast(), line.len(), 1, *self.stream.get_mut()) };
             // SAFETY: as above.
-            unsafe { libc::fflush(self.stream) };
+            unsafe { libc::fflush(*self.stream.get_mut()) };
         }
         if self.backtrace {
             effects.push(Effect::Backtrace);
@@ -332,8 +330,8 @@ impl Logger {
                 rotation: 0,
                 stdout_fd: -1,
                 stderr_fd: -1,
-                stream: stdout_stream,
-                stdout: stdout_stream,
+                stream: AtomicPtr::new(stdout_stream),
+                stdout: AtomicPtr::new(stdout_stream),
                 date_format: SW_LOG_DEFAULT_DATE_FORMAT.into(),
                 file: CString::default(),
                 real_file: CString::default(),
@@ -402,7 +400,7 @@ pub extern "C" fn swr_v1_logger_close(logger: &Logger) {
 pub unsafe extern "C" fn swr_v1_logger_set_stream(logger: &Logger, stream: *mut FILE) {
     let mut state = logger.lock();
     state.close();
-    state.stream = stream;
+    *state.stream.get_mut() = stream;
 }
 
 /// [`Logger::put`].
@@ -533,11 +531,10 @@ pub extern "C" fn swr_v1_logger_rotation_date(logger: &Logger, date: &mut [u8; 1
 /// this crate's `Logger`, or null before `swoole_init`.
 #[must_use]
 pub fn process_logger() -> Option<&'static Logger> {
-    let cpp = swoole_rs_corebase::swr_v1_core_logger().cast::<*const Logger>();
-    // SAFETY: a live `swoole::Logger` whenever set.
-    let member = unsafe { cpp.as_ref() }?;
-    // SAFETY: its only member is a live Logger.
-    Some(unsafe { &**member })
+    let cpp = swoole_rs_corebase::swr_v1_core_logger().cast::<&'static Logger>();
+    // SAFETY: null, or a live `swoole::Logger` whose only member is a non-null pointer
+    // to a live Logger (`swr_v1_logger_new`'s, freed only with the object).
+    unsafe { cpp.as_ref() }.copied()
 }
 
 /// `void swoole_set_log_level(int level)` (upstream `src/core/base.cc`).

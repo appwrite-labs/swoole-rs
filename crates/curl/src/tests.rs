@@ -81,6 +81,9 @@ pub(crate) mod host {
     pub(crate) fn current() -> *mut c_void {
         ptr::null_mut()
     }
+    pub(crate) fn current_cid() -> c_long {
+        -1
+    }
     pub(crate) fn yield_(_co: *mut c_void, _timeout: f64) -> bool {
         false
     }
@@ -101,13 +104,16 @@ fn easy(url: &str) -> *mut CURL {
     let cp = unsafe { curl_easy_init() };
     let url = CString::new(url).unwrap();
     unsafe { curl_easy_setopt(cp, CURLOPT_URL, url.as_ptr()) };
-    swr_v1_curl_create_handle(Easy(cp));
+    swr_v1_curl_create_handle(Easy(cp, PhantomData));
     cp
 }
 
 fn close(cp: *mut CURL) {
-    unsafe { swr_v1_curl_destroy_handle(Easy(cp)) };
-    assert!(swr_v1_curl_get_handle(Easy(cp)).is_null(), "destroyed");
+    swr_v1_curl_destroy_handle(Retired(Easy(cp, PhantomData)));
+    assert!(
+        swr_v1_curl_get_handle(Easy(cp, PhantomData)).is_null(),
+        "destroyed"
+    );
     unsafe { curl_easy_cleanup(cp) };
 }
 
@@ -116,7 +122,7 @@ fn new_multi() -> &'static Multi {
 }
 
 fn free(multi: &Multi) {
-    unsafe { swr_v1_curl_multi_free(ptr::from_ref(multi).cast_mut()) };
+    swr_v1_curl_multi_free(Some(Released(ptr::NonNull::from(multi))));
 }
 
 fn raw(multi: &Multi) -> *mut Multi {
@@ -149,11 +155,11 @@ fn poll_actions_map_to_reactor_events() {
 #[test]
 fn a_handle_survives_reset_and_is_destroyed() {
     let cp = easy("http://127.0.0.1/");
-    let handle = swr_v1_curl_get_handle(Easy(cp));
+    let handle = swr_v1_curl_get_handle(Easy(cp, PhantomData));
     assert!(!handle.is_null(), "created");
-    unsafe { swoole_curl_easy_reset(Easy(cp)) };
+    swoole_curl_easy_reset(Idle(Easy(cp, PhantomData)));
     assert_eq!(
-        swr_v1_curl_get_handle(Easy(cp)),
+        swr_v1_curl_get_handle(Easy(cp, PhantomData)),
         handle,
         "kept across reset"
     );
@@ -165,25 +171,21 @@ fn exec_without_a_coroutine_asks_cxx_for_the_fatal_error() {
     LOOP.with(|on| on.set(true));
     take();
     let cp = easy("http://127.0.0.1:1/");
-    let handle = swr_v1_curl_get_handle(Easy(cp));
+    let handle = Easy(cp, PhantomData).handle().unwrap();
     let multi = new_multi();
     assert_eq!(
-        swr_v1_curl_multi_exec(multi, unsafe { &mut *handle }),
+        swr_v1_curl_multi_exec(multi, handle),
         EXEC_NEEDS_COROUTINE,
         "needs one"
     );
-    assert_eq!(unsafe { (*handle).multi }, raw(multi), "left in the multi");
+    assert_eq!(handle.multi.get(), raw(multi), "left in the multi");
     assert_eq!(
         take().first().map(String::as_str),
         Some("timer 1"),
         "curl's immediate timeout"
     );
-    assert_eq!(
-        multi.remove_handle(unsafe { &mut *handle }),
-        CURLM_OK,
-        "removed"
-    );
-    assert!(unsafe { (*handle).multi }.is_null(), "detached");
+    assert_eq!(multi.remove_handle(handle), CURLM_OK, "removed");
+    assert!(handle.multi.get().is_null(), "detached");
     free(multi);
     close(cp);
 }
@@ -202,9 +204,9 @@ fn transfer() -> Transfer {
     take();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let cp = easy(&format!("http://{}/", listener.local_addr().unwrap()));
-    let handle = swr_v1_curl_get_handle(Easy(cp));
+    let handle = swr_v1_curl_get_handle(Easy(cp, PhantomData));
     let multi = new_multi();
-    assert_eq!(multi.add_handle(unsafe { &mut *handle }), CURLM_OK, "added");
+    assert_eq!(multi.add_handle(unsafe { &*handle }), CURLM_OK, "added");
     for _ in 0..100 {
         assert_eq!(multi.perform(), CURLM_OK, "performed");
         if !multi.sockets.borrow().is_empty() {
@@ -230,7 +232,7 @@ fn transfer() -> Transfer {
 impl Transfer {
     fn finish(self) {
         assert_eq!(
-            self.multi.remove_handle(unsafe { &mut *self.handle }),
+            self.multi.remove_handle(unsafe { &*self.handle }),
             CURLM_OK,
             "removed"
         );
@@ -259,7 +261,14 @@ fn a_waiterless_socket_event_leaves_the_reactor() {
     assert_eq!(take(), ["del"], "no waiter: out of the reactor");
     multi.selector_prepare();
     assert_eq!(take().len(), 1, "back in before waiting");
-    multi.co.set(ptr::dangling_mut::<u8>().cast());
+    multi
+        .co
+        .set(Waiter::running(ptr::dangling_mut::<u8>().cast()));
+    assert_eq!(
+        multi.co.get().map(|waiter| waiter.cid),
+        Some(-1),
+        "the waiter's id"
+    );
     socket_event(unsafe { &*socket }, CURL_CSELECT_IN);
     socket_event(unsafe { &*socket }, CURL_CSELECT_OUT);
     assert_eq!(take(), ["defer"], "one deferred wake-up");
@@ -269,7 +278,7 @@ fn a_waiterless_socket_event_leaves_the_reactor() {
         CURL_CSELECT_IN | CURL_CSELECT_OUT,
         "both events"
     );
-    multi.co.set(ptr::null_mut());
+    multi.co.set(None);
     assert!(!multi_deferred(multi), "not released");
     assert!(!multi.defer_callback.get(), "wake-up done");
     transfer.finish();
@@ -280,9 +289,11 @@ fn a_multi_freed_with_a_queued_wake_up_is_freed_by_the_wake_up() {
     LOOP.with(|on| on.set(true));
     let multi = new_multi();
     assert_eq!(multi.on_timeout(0), 0, "a timer");
-    multi.co.set(ptr::dangling_mut::<u8>().cast());
+    multi
+        .co
+        .set(Waiter::running(ptr::dangling_mut::<u8>().cast()));
     multi.callback(None);
-    multi.co.set(ptr::null_mut());
+    multi.co.set(None);
     assert_eq!(take(), ["timer 1", "defer"], "a queued wake-up");
     free(multi);
     assert!(multi.released.get(), "released, not freed");

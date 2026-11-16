@@ -97,6 +97,11 @@ impl<const N: usize> Methods<N> {
     }
 }
 
+/// A [`Table`] lent to C: its static rows, `PHP_FE_END` last, or null for none.
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub(crate) struct Rows(*const zend_function_entry);
+
 /// A method table as Zend registers it: a [`Methods`]' rows (or some of them,
 /// or several joined), `PHP_FE_END` last, or none.
 #[derive(Clone, Copy)]
@@ -127,6 +132,11 @@ impl Table {
         } else {
             self.0.as_ptr()
         }
+    }
+
+    /// The table lent to C, as [`Table::as_ptr`].
+    pub(crate) const fn rows(self) -> Rows {
+        Rows(self.as_ptr())
     }
 
     /// The row named `method`, with its arginfo.

@@ -49,7 +49,7 @@ pub struct ConnectionRecord {
     pub local_addr_index: u16,
     pub timer: Option<swoole_rs_corebase::timer_key::Held>,
     pub info: SocketAddress,
-    /// Null, a listening slot's port ([`ServerTables::hold_port`]) as its plain
+    /// Null, a listening slot's port ([`ServerState::hold_port`]) as its plain
     /// address, or anything else (a session's protocol state, a pipe) [`encode`]d
     /// negative. Private: only this module's typed setters write it.
     object: *mut c_void,
@@ -259,7 +259,7 @@ impl<'a> Connection<'a> {
     field!(server_fd, set_server_fd: c_int);
 
     /// `(ListenPort *) conn->object`: the port a listening slot holds
-    /// ([`ServerTables::hold_port`]), or `None` on any other slot.
+    /// ([`ServerState::hold_port`]), or `None` on any other slot.
     #[must_use]
     #[inline]
     pub fn port(self) -> Option<crate::view::Port<'a>> {
@@ -272,7 +272,8 @@ impl<'a> Connection<'a> {
         // whose table holds the slot. The server frees its ports only with that table, so
         // the port lives as long as the slot's borrow (or, for a `from_ptr` handle, as its
         // caller guarantees).
-        unsafe { crate::view::Port::from_raw(raw) }
+        unsafe { raw.cast::<crate::port_config::PortConfig>().as_ref() }
+            .map(crate::view::Port::from)
     }
 
     /// The HTTP request a session holds, or `None`: an HTTP port's session holds
@@ -414,19 +415,9 @@ pub struct ServerTables {
     reactor_thread_num: Cell<u16>,
     /// `ReactorThread[]`: null, or the array `install_reactor_threads` leaked.
     reactor_threads: Cell<*mut c_void>,
-    /// `Server::ports`.
-    pub(crate) ports: Cell<PortList>,
     /// `&Server::message_bus`, whose `MessageBus` starts with its Rust bus: the
     /// one `swr_v1_server_new` made, which the tables own.
     pub(crate) message_bus: Option<Box<crate::reactor_ops::PoolBus>>,
-}
-
-/// The `ListenPort`s in listen order: a loan of `ServerState`'s list.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub(crate) struct PortList {
-    pub(crate) items: *const *mut c_void,
-    pub(crate) count: u32,
 }
 
 impl ServerTables {
@@ -480,30 +471,6 @@ impl ServerTables {
         // modulo keeps `index` within, and frees it only by nulling `session_list`;
         // `UnsafeCell` has the record's layout.
         Some(unsafe { &*base.wrapping_add(index) })
-    }
-
-    /// `connection_list[fd].object = ports[index]`: the listening slot of `fd` holds
-    /// the table's own port `index`, the one kind of slot object [`Connection::port`]
-    /// reads. The slot, or `None` when either is out of range.
-    pub(crate) fn hold_port(&self, index: usize, fd: c_int) -> Option<Connection<'_>> {
-        let port = self.ports().get(index)?.raw();
-        if port.addr().cast_signed() < 0 {
-            swoole_rs_corebase::fatal("a port above the user address range");
-        }
-        let slot = self.connection_at(fd)?;
-        slot.set_object(port);
-        Some(slot)
-    }
-
-    /// The listen ports.
-    pub(crate) fn ports(&self) -> &[crate::view::Port<'_>] {
-        let PortList { items, count } = self.ports.get();
-        if items.is_null() {
-            return &[];
-        }
-        // SAFETY: the live buffer `ServerState::push_port` published with this length;
-        // each item is a live, non-null port of the server (`Port` has a pointer's layout).
-        unsafe { core::slice::from_raw_parts(items.cast(), count as usize) }
     }
 }
 
@@ -578,10 +545,6 @@ impl Default for ServerTables {
             reactor_pipe_num: Cell::new(0),
             reactor_thread_num: Cell::new(0),
             reactor_threads: Cell::new(core::ptr::null_mut()),
-            ports: Cell::new(PortList {
-                items: core::ptr::null(),
-                count: 0,
-            }),
             message_bus: None,
         }
     }
@@ -603,6 +566,19 @@ pub(crate) enum Lookup {
 }
 
 impl crate::ServerState {
+    /// `connection_list[fd].object = ports[index]`: the listening slot of `fd` holds
+    /// the server's own port `index`, the one kind of slot object [`Connection::port`]
+    /// reads. The slot, or `None` when either is out of range.
+    pub(crate) fn hold_port(&self, index: usize, fd: c_int) -> Option<Connection<'_>> {
+        let port = self.ports.get(index)?.raw();
+        if port.addr().cast_signed() < 0 {
+            swoole_rs_corebase::fatal("a port above the user address range");
+        }
+        let slot = self.tables_ref().connection_at(fd)?;
+        slot.set_object(port);
+        Some(slot)
+    }
+
     /// The session-table slot of `id`, by the original shared-table modulo rule,
     /// or `None` before the table is mapped.
     pub(crate) fn session(&self, id: libc::c_long) -> Option<Session<'_>> {

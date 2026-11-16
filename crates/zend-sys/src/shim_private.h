@@ -3,13 +3,16 @@
 #include "php.h"
 #include "zend_closures.h"
 #include "zend_exceptions.h"
+#include "shim_values.h"
 /* Individual Zend property effects, each containing possible PHP magic-method bailouts. */
 zend_object *swr_zend_facade_exception(void);
 void swr_zend_facade_exception_error(void *);
 /* zend_exception_error(EG(exception), E_ERROR) inside zend_try, as swr_zend_try returns;
  * nothing without an exception. */
 int swr_zend_try_uncaught_exception(void);
-int swr_zend_try_facade_user_call(zval *, uint32_t, zval *, zval *, int *);
+/* call_user_function(EG(function_table), NULL, name, retval, args) inside zend_try:
+ * 1 if it bailed out, else *result is its result. */
+int swr_zend_try_facade_user_call(zval *name, swr_zvals args, zval *retval, int *result);
 /* Work after a coroutine call, inside its zend_try (zend::host::Then). */
 typedef void (*swr_zend_then)(void *);
 int swr_zend_try_facade_coroutine(long (*)(zend_fcall_info_cache *, uint32_t, zval *, zval *, uint8_t *),

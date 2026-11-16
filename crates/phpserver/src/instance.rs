@@ -94,6 +94,7 @@ fn port_callback(port: Option<view::Port<'_>>, kind: PortCallback) -> Option<Cal
 
 /// `php_swoole_server_isset_callback`: the port, or the primary port, has callback `kind`.
 #[must_use]
+#[inline]
 pub fn php_swoole_server_isset_callback(
     serv: view::Server<'_>,
     port: Option<view::Port<'_>>,

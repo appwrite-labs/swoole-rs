@@ -50,6 +50,14 @@ fn coerce<T>(
     }
 }
 
+/// A call's return slot, lent to C for the call: it holds a valid zval the call
+/// owns (Zend's null, or what a `set_*` put there), which nothing outside this
+/// crate can borrow, so C may write, release or replace it, as a handler's
+/// `return_value` is used. One pointer wide, as C takes a `zval *`.
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub struct ReturnSlot<'a>(&'a Value);
+
 /// One call of an internal function or method: what Zend passes a handler
 /// (`INTERNAL_FUNCTION_PARAMETERS`).
 pub struct Call {
@@ -402,13 +410,13 @@ impl Call {
 
     /// Make by-reference argument `n` (1-based), which must be passed, hold
     /// `value`: `zval_ptr_dtor` of what it referred to, then `ZVAL_COPY_VALUE`.
-    /// # Safety
-    /// Nothing borrowed from argument `n` ([`Call::value`], [`Call::zstr`],
-    /// [`Call::array_ref`], ...) is used afterwards: what it held is released.
+    /// The exclusive borrow means nothing borrowed from an argument
+    /// ([`Call::value`], [`Call::zstr`], [`Call::array_ref`], ...) is still
+    /// used: what it held is released.
     #[inline]
-    pub unsafe fn assign(&self, n: u32, value: crate::Owned) {
-        // Per the caller, nothing borrows what the slot holds: it reads null
-        // while that is released, then takes over the value.
+    pub fn assign(&mut self, n: u32, value: crate::Owned) {
+        // Nothing borrows what the slot holds (above): it reads null while
+        // that is released, then takes over the value.
         self.arg_value(n).referred().lend(|old| *old = value);
     }
 
@@ -469,6 +477,13 @@ impl Call {
     #[inline]
     pub fn return_value(&self) -> *mut zval {
         self.value
+    }
+
+    /// The return slot, lent to C for the call.
+    #[must_use]
+    #[inline]
+    pub fn return_slot(&self) -> ReturnSlot<'_> {
+        ReturnSlot(self.ret())
     }
 
     /// `RETVAL_ZVAL(value, 0, 0)`: the return slot takes over `value`.

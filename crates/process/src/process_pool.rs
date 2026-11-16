@@ -17,7 +17,7 @@ use std::ptr;
 use std::sync::atomic::AtomicU32;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::DataHead;
-use swoole_rs_memory::ChannelInitError;
+use swoole_rs_memory::{ChannelInitError, SharedChannel};
 
 use crate::armed_timer::ArmedTimer;
 use crate::os::{getpid, kill};
@@ -98,7 +98,7 @@ pub struct PoolRecord {
     /// A message-queue pool's queue, which goes as the registry does.
     pub(crate) queue: Option<Box<swoole_rs_ossupport::QueueRecord>>,
     pub(crate) ipc: *mut PoolIpc,
-    pub(crate) message_box: *mut c_void,
+    pub(crate) message_box: SharedChannel,
     message_bus: Owner<Box<dyn std::any::Any>>,
     reload_task: Owner<std::cell::RefCell<ReloadTask>>,
     pub(crate) ptr: *mut c_void,
@@ -188,7 +188,7 @@ impl PoolRecord {
             registry: None,
             queue: None,
             ipc: ptr::null_mut(),
-            message_box: ptr::null_mut(),
+            message_box: SharedChannel::none(),
             message_bus: Owner::new(None),
             reload_task: Owner::new(None),
             ptr: ptr::null_mut(),
@@ -226,19 +226,12 @@ impl PoolRecord {
     /// The pool's message box (a shared-memory channel), or null.
     #[must_use]
     pub fn message_box(&self) -> *mut c_void {
-        self.message_box
+        self.message_box.as_ptr()
     }
 
     /// The pool's message box, which the workers push to and the master pops from.
     pub(crate) fn message_box_channel(&self) -> Option<&swoole_rs_memory::channel::Record> {
-        // SAFETY: `message_box` is crate-private: null, or the channel `new_box` made
-        // in shared memory until `free_box` forgets and frees it. Its SW_CHAN_LOCK
-        // mutex serializes the processes that use it.
-        unsafe {
-            self.message_box
-                .cast::<swoole_rs_memory::channel::Record>()
-                .as_ref()
-        }
+        self.message_box.get()
     }
 
     /// The pool's worker at `index`, or `None` past `worker_num`.
@@ -444,6 +437,18 @@ impl<'a> PoolRef<'a> {
 }
 
 impl<'a> PoolRef<'a> {
+    /// The pool's message box (a shared-memory channel), or null.
+    #[must_use]
+    pub fn message_box(self) -> *mut c_void {
+        self.record().message_box()
+    }
+
+    /// Takes the pool's message box out, leaving none.
+    pub(crate) fn take_message_box(self) -> SharedChannel {
+        // SAFETY: a live pool (the handle's contract); only the field is replaced.
+        unsafe { core::mem::take(&mut (*self.raw).message_box) }
+    }
+
     /// The record, for this crate's operations, which read it in place.
     pub(crate) fn record(self) -> &'a PoolRecord {
         // SAFETY: `new`'s contract: a live pool for `'a`.
@@ -1048,7 +1053,7 @@ pub(crate) trait PoolHost {
     fn close(&self, socket: *mut c_void);
     /// `Channel::make(size, sizeof(EventData), SW_CHAN_LOCK | SW_CHAN_SHM)`: the
     /// pool's new message box, or null.
-    fn new_box(&mut self, size: u64) -> *mut c_void;
+    fn new_box(&mut self, size: u64) -> SharedChannel;
     /// `message_box->push(message)`, under the box's lock: false when it fails.
     fn push_box(&mut self, message: &[u8]) -> bool;
     /// Frees the pool's message box, if it has one, and forgets it.
@@ -1108,7 +1113,7 @@ impl PoolHost for Native<'_> {
         self.native.close(&call);
     }
 
-    fn new_box(&mut self, size: u64) -> *mut c_void {
+    fn new_box(&mut self, size: u64) -> SharedChannel {
         let size = usize::try_from(size).unwrap_or(usize::MAX);
         new_message_box(size, self.native.event_size())
     }
@@ -1121,20 +1126,7 @@ impl PoolHost for Native<'_> {
     }
 
     fn free_box(&mut self) {
-        let channel = self
-            .pool
-            .message_box()
-            .cast::<swoole_rs_memory::channel::Record>();
-        if channel.is_null() {
-            return;
-        }
-        // The field is null from here on, so nothing in this process reaches the box again.
-        self.pool.set_message_box(ptr::null_mut());
-        // SAFETY: the box `new_box` made (the field is crate-private), which the pool
-        // has just forgotten.
-        unsafe { swoole_rs_memory::swr_v1_memory_channel_close(channel) };
-        // SAFETY: the mapping `new_box` made it in, freed once.
-        unsafe { swoole_rs_memory::members::sw_shm_free(channel.cast()) };
+        self.pool.take_message_box().free();
     }
 
     fn alloc_workers(&mut self, count: u32) -> *mut WorkerRecord {
@@ -1151,25 +1143,16 @@ impl PoolHost for Native<'_> {
 }
 
 /// `Channel::make(size, maxlen, SW_CHAN_LOCK | SW_CHAN_SHM)`: a channel in fresh
-/// shared memory, or null.
-fn new_message_box(size: usize, maxlen: usize) -> *mut c_void {
+/// shared memory, or none.
+fn new_message_box(size: usize, maxlen: usize) -> SharedChannel {
     use swoole_rs_corebase::log;
-    use swoole_rs_memory::members::Shm;
-    /// `SW_CHAN_LOCK | SW_CHAN_SHM`.
-    const FLAGS: c_int = 2 | 8;
-    let total = swoole_rs_memory::swr_v1_memory_channel_bytes(size, maxlen);
-    if total == 0 {
-        return ptr::null_mut();
-    }
-    let mut memory = Shm::malloc(total);
-    if memory.is_null() {
-        log::warning(c"Channel::make", format_args!("alloc({size}) failed"));
-        return ptr::null_mut();
-    }
-    let record = memory.as_ptr().cast();
-    // SAFETY: fresh shared memory of the size the record needs.
-    match unsafe { swoole_rs_memory::swr_v1_memory_channel_init(record, size, maxlen, FLAGS) } {
-        Ok(()) => return memory.into_raw(),
+    /// `SW_CHAN_LOCK`.
+    const LOCK: c_int = 2;
+    match SharedChannel::make(size, maxlen, LOCK) {
+        Ok(channel) => return channel,
+        Err(ChannelInitError::NoMemory) => {
+            log::warning(c"Channel::make", format_args!("alloc({size}) failed"));
+        }
         Err(ChannelInitError::Pipe) => {
             log::sys_warning(c"Channel::make", format_args!("pipe() failed"));
             log::warning(c"Channel::make", format_args!("notify_fd init failed"));
@@ -1180,8 +1163,7 @@ fn new_message_box(size: usize, maxlen: usize) -> *mut c_void {
         ),
         Err(ChannelInitError::Invalid) => {}
     }
-    memory.free();
-    ptr::null_mut()
+    SharedChannel::none()
 }
 
 /// The `OP_*` effects that are calls into the process-wide worker and signal state:
@@ -1278,8 +1260,7 @@ macro_rules! getters {
         #[doc = concat!("The record's `", stringify!($field), "`.")]
         #[must_use]
         $vis fn $field(self) -> $ty {
-            // SAFETY: a live pool (the handle's contract); only the field is read.
-            unsafe { (*self.raw).$field }
+            self.record().$field
         }
     };
     (
@@ -1357,7 +1338,6 @@ getters!(
     pub(crate) on_message: Option<MessageFn>,
     pub workers: *mut WorkerRecord,
     pub ipc: *mut PoolIpc,
-    pub message_box: *mut c_void,
     ;
     ptr: *mut c_void,
     ptr_key: *const PoolObjectKey,
@@ -1398,7 +1378,7 @@ setters!(
     pub(crate) registry / set_registry: Option<Box<WorkerRegistry>>,
     pub(crate) queue / set_queue: Option<Box<swoole_rs_ossupport::QueueRecord>>,
     pub(crate) ipc / set_ipc: *mut PoolIpc,
-    pub(crate) message_box / set_message_box: *mut c_void,
+    pub(crate) message_box / set_message_box: SharedChannel,
     pub kill_timer / set_kill_timer: Option<ArmedTimer>
     ;
     pub is_async / set_is_async: bool,
@@ -1523,7 +1503,7 @@ impl<H: PoolHost> Pool<'_, H> {
     /// `ProcessPool::create_message_box`.
     pub(crate) fn create_message_box(&mut self, size: u64) -> bool {
         let message_box = self.h.new_box(size);
-        if message_box.is_null() {
+        if message_box.is_none() {
             return false;
         }
         self.set_message_box(message_box);
@@ -1682,7 +1662,7 @@ impl<H: PoolHost> Pool<'_, H> {
 
     /// `ProcessPool::detach`.
     pub(crate) fn detach(&mut self) -> bool {
-        if !self.running() || self.message_box().is_null() {
+        if !self.running() || self.p.message_box().is_null() {
             return false;
         }
         let worker = self.h.current_worker();
@@ -1933,7 +1913,7 @@ impl<H: PoolHost> Pool<'_, H> {
     /// `ProcessPool::push_message(msg)`: the `EventData` with `head` and `data` into
     /// the message box, then wake the master.
     fn push_event(&mut self, head: &DataHead, data: &[u8]) -> bool {
-        if self.message_box().is_null() || data.len() > self.h.event_size() - EVENT_DATA {
+        if self.p.message_box().is_null() || data.len() > self.h.event_size() - EVENT_DATA {
             return false;
         }
         let head = DataHead {
@@ -1946,7 +1926,7 @@ impl<H: PoolHost> Pool<'_, H> {
 
     /// `ProcessPool::push_message(type, data, length)`.
     fn push(&mut self, kind: u8, data: &[u8]) -> bool {
-        if self.message_box().is_null() {
+        if self.p.message_box().is_null() {
             return false;
         }
         assert!(
@@ -2317,8 +2297,11 @@ mod tests {
             8192
         }
         fn close(&self, _: *mut c_void) {}
-        fn new_box(&mut self, size: u64) -> *mut c_void {
-            pointer(self.op(ptr::null_mut(), Op::NewMessageBox, size))
+        fn new_box(&mut self, size: u64) -> SharedChannel {
+            if self.op(ptr::null_mut(), Op::NewMessageBox, size) == 0 {
+                return SharedChannel::none();
+            }
+            SharedChannel::make(64, 16, 0).unwrap_or_default()
         }
         fn push_box(&mut self, message: &[u8]) -> bool {
             self.op(ptr::null_mut(), Op::BoxPush, message.len() as u64) >= 0
@@ -2326,11 +2309,11 @@ mod tests {
         fn free_box(&mut self) {
             if let Some(mut record) = self.record
                 // SAFETY: the fixture's record, which outlives its pool.
-                && !unsafe { record.as_ref() }.message_box.is_null()
+                && !unsafe { record.as_ref() }.message_box.is_none()
             {
                 self.op(ptr::null_mut(), Op::FreeMessageBox, 0);
                 // SAFETY: as above.
-                unsafe { record.as_mut() }.message_box = ptr::null_mut();
+                unsafe { record.as_mut() }.message_box.free();
             }
         }
         fn alloc_workers(&mut self, count: u32) -> *mut WorkerRecord {
@@ -2593,7 +2576,7 @@ mod tests {
         let mut pool = fixture.pool(Script::default());
         assert!(!pool.detach());
         pool.set_running(true);
-        pool.set_message_box(ptr::dangling_mut());
+        pool.set_message_box(SharedChannel::make(64, 16, 0).expect("a box"));
         record(&mut pool).is_async = true;
         assert!(pool.detach());
         assert!(!pool.running());
@@ -2645,7 +2628,7 @@ mod tests {
         let mut fixture = Fixture::new(0);
         let mut pool = fixture.pool(Script::default());
         assert!(!pool.push(1, b"ab"));
-        record(&mut pool).message_box = ptr::dangling_mut();
+        record(&mut pool).message_box = SharedChannel::make(64, 16, 0).expect("a box");
         pool.h.answers.insert(Op::BoxPush, -1);
         assert!(!pool.push(1, b"ab"));
         assert_eq!(ops(&pool), [Op::BoxPush]);

@@ -2,10 +2,7 @@
 //! `php_swoole_sqlite_minit`): PDO's `SQLITE_*` constants unless `pdo_sqlite`
 //! declared them, and the driver.
 use std::ffi::CStr;
-use swoole_rs_zend::{
-    Minit, Mshutdown,
-    pdo::{Driver, php_pdo_register_driver},
-};
+use swoole_rs_zend::{Minit, Mshutdown, pdo::Driver};
 
 unsafe extern "C" {
     /// The bundled driver (`thirdparty/pdo_sqlite/sqlite_driver.c`).
@@ -46,9 +43,9 @@ pub fn minit(minit: &Minit) {
     }
     // Registering replaces pdo_sqlite's own.
     pdo.unregister(&swoole_pdo_sqlite_driver);
-    // SAFETY: MINIT, with PDO loaded. PDO raises `E_ERROR` for a driver built
-    // against another PDO API: no frame up to the step's `zend_try` owns a drop.
-    unsafe { php_pdo_register_driver(&swoole_pdo_sqlite_driver) };
+    // A bailout (`E_ERROR` for a driver built against another PDO API) is raised
+    // from this outermost Rust frame.
+    swoole_rs_zend::bailout::raise(pdo.register(&swoole_pdo_sqlite_driver));
 }
 
 /// `php_swoole_sqlite_mshutdown`.

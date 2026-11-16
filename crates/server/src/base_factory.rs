@@ -248,7 +248,7 @@ pub(crate) fn create(serv: view::Server<'_>) -> *mut c_void {
     if let Some(gs) = crate::shared::server_counters(state) {
         gs.connection_nums.replace(cells);
     }
-    for port in state.tables_ref().ports() {
+    for port in &state.ports {
         let Some(gs) = port.config().counters() else {
             continue;
         };
