@@ -248,8 +248,8 @@ pub(super) fn del_id(_: swoole_rs_timer::Held) {
     log("timer del");
 }
 /// crates/hooks' `async::dispatch`: logs the request; nothing completes it.
-fn async_dispatch(event: &AsyncEvent<'_>) -> bool {
-    let view = swoole_rs_corebase::swr_v1_core_resolver_view(event.request().unwrap());
+fn async_dispatch(_: Handle, request: &crate::resolver::Request) -> bool {
+    let view = swoole_rs_corebase::swr_v1_core_resolver_view(request.get());
     // SAFETY: the request's name, live with it.
     let name = unsafe { &*view.name }.bytes();
     // SAFETY: the request's fields, live with it.
@@ -290,25 +290,21 @@ pub(super) fn socket_ssl_set_host_name(_: Socket<'_>, _: &CStr) -> bool {
     true
 }
 // crates/protocols-ffi's, which the hybrid links.
-#[unsafe(export_name = "_ZN6swoole11Socks5Proxy5admitEmm")]
-extern "C" fn socks5_admit(user: usize, password: usize) -> c_int {
+fn socks5_admit(user: usize, password: usize) -> c_int {
     if user != 0 && password != 0 { 2 } else { 1 }
 }
-#[unsafe(export_name = "_ZN6swoole11Socks5Proxy22pack_negotiate_requestEv")]
-extern "C" fn socks5_pack_negotiate(_: *const *mut c_void) -> isize {
+fn socks5_pack_negotiate(_: &ProxyState) -> isize {
     3
 }
 /// Any reply makes the proxy ready, with nothing more to send.
-#[unsafe(export_name = "_ZN6swoole11Socks5Proxy14handshake_stepEPKcm")]
-extern "C" fn socks5_handshake_step(
-    proxy: *const *mut c_void,
-    _: *const c_char,
-    length: usize,
-) -> isize {
-    log(format!("socks5 {length}"));
-    // SAFETY: the client's live SOCKS5 owner.
-    unsafe { &*(*proxy).cast::<ProxyState>() }.update(|fields| fields.state = 4);
-    0
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the host's fallible handshake signature"
+)]
+fn socks5_handshake_step(proxy: &ProxyState, reply: &[u8]) -> Option<usize> {
+    log(format!("socks5 {}", reply.len()));
+    proxy.update(|fields| fields.state = 4);
+    Some(0)
 }
 
 /// Gives the client a proxy at proxy.test:1080.
@@ -353,7 +349,15 @@ fn new_client(kind: c_int, is_async: bool) -> *mut Client {
 /// with `callbacks`.
 fn client(kind: c_int, is_async: bool, callbacks: bool) -> *mut Client {
     mock(|m| *m = Mock::default());
-    set_host(FRAMING, async_dispatch);
+    set_host(
+        FRAMING,
+        async_dispatch,
+        Socks5 {
+            admit: socks5_admit,
+            negotiate: socks5_pack_negotiate,
+            handshake: socks5_handshake_step,
+        },
+    );
     log::set_last_error(0);
     let client = new_client(kind, is_async);
     if callbacks {

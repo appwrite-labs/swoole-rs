@@ -257,7 +257,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
+    #[cfg_attr(miri, ignore = "Miri has no datagram sockets")]
     fn datagrams_until_eagain() {
         use crate::hybrid::tests::{Call, calls};
         let live = crate::fixture::LiveServer::new();
