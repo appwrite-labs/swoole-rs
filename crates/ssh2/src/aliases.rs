@@ -2,14 +2,14 @@
 use super::{
     CStr, Channel, KbdintResponse, LIBSSH2_CHANNEL, LIBSSH2_SESSION, LIBSSH2_SFTP,
     LIBSSH2_SFTP_ATTRIBUTES, LIBSSH2_SFTP_HANDLE, Narrow, Ops, Session, Sftp, SftpHandle, Text,
-    Wait, c_char, c_int, c_long, c_ulong, direct_tcpip, disconnect, fstat, length, ptr,
-    swoole_libssh2_sftp_mkdir_ex, swoole_libssh2_sftp_rename_ex, swoole_libssh2_sftp_rmdir_ex,
+    Wait, c_char, c_int, c_long, c_ulong, direct_tcpip, disconnect, fstat, length, open_session,
+    ptr, swoole_libssh2_sftp_mkdir_ex, swoole_libssh2_sftp_rename_ex, swoole_libssh2_sftp_rmdir_ex,
     swoole_libssh2_sftp_unlink_ex, swoole_libssh2_userauth_publickey_fromfile_ex,
 };
 use swoole_rs_ssh2_sys::{
-    libssh2_channel_open_ex, libssh2_channel_process_startup, libssh2_channel_read_ex,
-    libssh2_channel_write_ex, libssh2_sftp_close_handle, libssh2_sftp_open_ex,
-    libssh2_sftp_readdir_ex, libssh2_userauth_keyboard_interactive_ex,
+    libssh2_channel_process_startup, libssh2_channel_read_ex, libssh2_channel_write_ex,
+    libssh2_sftp_close_handle, libssh2_sftp_open_ex, libssh2_sftp_readdir_ex,
+    libssh2_userauth_keyboard_interactive_ex,
 };
 
 macro_rules! aliases {
@@ -68,9 +68,8 @@ aliases! {
     libssh2_session_disconnect => swoole_libssh2_session_disconnect(ops, wait_on; session: Session, description: Text<'_>) -> c_int {
         Wait { ops, session: wait_on }.call(|| disconnect(session, 11, description, c"".into()))
     }
-    libssh2_channel_open_session => swoole_libssh2_channel_open_session(ops, wait_on; session: *mut LIBSSH2_SESSION) -> *mut LIBSSH2_CHANNEL {
-        // SAFETY: the caller's live session.
-        Wait { ops, session: wait_on }.call_pointer(|| unsafe { libssh2_channel_open_ex(session, c"session".as_ptr(), 7, 2 * 1024 * 1024, 32768, ptr::null(), 0) })
+    libssh2_channel_open_session => swoole_libssh2_channel_open_session(ops, wait_on; session: Session) -> *mut LIBSSH2_CHANNEL {
+        Wait { ops, session: wait_on }.call_pointer(|| open_session(session))
     }
     libssh2_channel_shell => swoole_libssh2_channel_shell(ops, wait_on; channel: Channel) -> c_int {
         process_startup(&Wait { ops, session: wait_on }, channel, c"shell", None)

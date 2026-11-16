@@ -118,6 +118,46 @@ unsafe extern "C" {
     #[link_name = "libssh2_sftp_fstat_ex"]
     safe fn fstat(handle: SftpHandle, attrs: &mut LIBSSH2_SFTP_ATTRIBUTES, setstat: c_int)
     -> c_int;
+    /// Opens a channel of the type `kind` names, which libssh2 reads for the length
+    /// [`KindLength`] gives it, with no message ([`NoMessage`]).
+    #[link_name = "libssh2_channel_open_ex"]
+    safe fn channel_open(
+        session: Session,
+        kind: &[u8; 7],
+        kind_length: KindLength,
+        window_size: c_uint,
+        packet_size: c_uint,
+        message: Option<&c_char>,
+        message_length: NoMessage,
+    ) -> *mut LIBSSH2_CHANNEL;
+}
+
+/// The length of `channel_open`'s type: its array's.
+#[derive(Clone, Copy)]
+#[repr(u32)]
+enum KindLength {
+    Session = 7,
+}
+
+/// `channel_open`'s message length: none.
+#[derive(Clone, Copy)]
+#[repr(u32)]
+enum NoMessage {
+    Empty = 0,
+}
+
+/// `libssh2_channel_open_session(session)`: a session channel with libssh2's default
+/// window and packet sizes.
+fn open_session(session: Session) -> *mut LIBSSH2_CHANNEL {
+    channel_open(
+        session,
+        b"session",
+        KindLength::Session,
+        2 * 1024 * 1024,
+        32768,
+        None,
+        NoMessage::Empty,
+    )
 }
 
 /// The lent wait and the session it can wait on, as an export received them.
