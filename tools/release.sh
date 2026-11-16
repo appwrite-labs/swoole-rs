@@ -10,8 +10,13 @@ if command -v apk >/dev/null; then
     libc=musl
     # shellcheck disable=SC2086 # the image's word list
     apk add --no-cache $PHPIZE_DEPS git python3 openssl-dev pcre2-dev zlib-dev brotli-dev zstd-dev linux-headers clang-dev
+    # Rust's std links the unwinder as -lgcc_s, and the php image on arm64 has no libgcc_s.so.1.
+    # A directory that offers it only as an archive (gcc's static unwinder) wins the linker's
+    # search, and --exclude-libs keeps its _Unwind_* symbols out of the dynamic symbol table.
+    mkdir -p /tmp/unwind
+    ln -sf "$(cc -print-file-name=libgcc_eh.a)" /tmp/unwind/libgcc_s.a
     # musl build scripts link statically and cannot dlopen libclang (zend-sys's bindgen).
-    export RUSTFLAGS='-C target-feature=-crt-static'
+    export RUSTFLAGS='-C target-feature=-crt-static -L native=/tmp/unwind -C link-arg=-Wl,--exclude-libs,libgcc_s.a'
 else
     libc=gnu
     apt-get update -q
@@ -33,9 +38,5 @@ shift
 python3 tools/build_ext.py --profile release-lto "$@"
 mkdir -p dist
 cp target/ext/swoole.so "dist/swoole-rs-$version-php$(php -r 'echo PHP_MAJOR_VERSION, ".", PHP_MINOR_VERSION;')-$threads-linux-$libc-$(uname -m).so"
+# The shared libraries a PHP must have beside it, for the log.
 readelf -d dist/*.so | grep NEEDED
-# DEBUG: what the binary takes from libgcc_s
-if [ -e /usr/lib/libgcc_s.so.1 ]; then
-    nm -D --defined-only /usr/lib/libgcc_s.so.1 | awk '{print $3}' | sed 's/@.*//' | sort -u > /tmp/gcc_s
-    nm -D --undefined-only dist/*.so | awk '{print $2}' | sed 's/@.*//' | sort -u | comm -12 - /tmp/gcc_s
-fi
