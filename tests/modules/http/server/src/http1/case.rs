@@ -27,7 +27,7 @@ pub(super) const KEY_FILE: u32 = 5;
 pub(super) const CLIENT_CERT_FILE: u32 = 7;
 const CAFILE: u32 = 9;
 
-/// `swr_v1_tls_owner_fields`.
+/// `OwnedTlsFields` (crates/tls/src/owned.rs), up to `context`.
 #[repr(C)]
 pub(super) struct TlsFields {
     http: u8,
@@ -53,12 +53,10 @@ const _: () = assert!(
         && offset_of!(TlsFields, context) == 24
 );
 
-/// `swr_v1_tls_owner_prepared`.
-#[repr(C)]
-struct TlsView {
-    owner: *const c_void,
-    fields: *mut TlsFields,
-    strings: [*const c_void; 11],
+/// crates/tls's view of a live `SSLContext` owner.
+fn tls_view(context: *const c_void) -> swoole_rs_tls::OwnedTlsPrepared {
+    // SAFETY: a live context.
+    swoole_rs_tls::owner_view(unsafe { &*context.cast::<swoole_rs_tls::OwnedTlsContext>() })
 }
 
 /// The head of `TimerNode`, through `destructor` (crates/timer/src/owner.rs).
@@ -116,7 +114,6 @@ struct Tick {
 }
 
 unsafe extern "C-unwind" {
-    fn swr_v1_tls_owner_view(owner: *const c_void) -> TlsView;
     fn swr_v1_core_thread_global() -> *mut c_void;
     #[link_name = "_Z25swoole_get_last_error_msgv"]
     fn swoole_get_last_error_msg() -> *const c_char;
@@ -212,7 +209,7 @@ impl Port {
 /// `SSLContext::fields()`.
 pub(super) fn tls_fields(context: *const c_void) -> &'static mut TlsFields {
     // SAFETY: a live context, whose fields live as long as it.
-    unsafe { &mut *swr_v1_tls_owner_view(context).fields }
+    unsafe { &mut *tls_view(context).fields.cast::<TlsFields>() }
 }
 
 /// `SSLContext::set_cert_file` (`CERT_FILE`), `set_key_file` and `set_client_cert_file`,
@@ -730,8 +727,8 @@ pub(crate) unsafe fn swr_case_ssl_client_ca(serv: *mut c_void, cafile: *const c_
     // SAFETY: a live context's slot; a NUL-terminated path.
     let status = unsafe {
         let path = CStr::from_ptr(cafile);
-        let slot = swr_v1_tls_owner_view(context).strings[CAFILE as usize];
-        (*slot.cast::<swoole_rs_corebase::StringSlot>()).set_shared(path.to_bytes())
+        let slot = tls_view(context).strings[CAFILE as usize];
+        (*slot).set_shared(path.to_bytes())
     };
     assert!(status, "bad_alloc");
 }

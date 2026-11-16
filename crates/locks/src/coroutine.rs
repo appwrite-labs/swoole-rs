@@ -116,7 +116,7 @@ impl CoroutineLock {
                 if !sleep(second) {
                     return Err(ErrorCode::SW_ERROR_CO_CANCELED as i32);
                 }
-                second = super::swr_v1_locks_coroutine_backoff(
+                second = super::coroutine_backoff(
                     second,
                     SW_FILE_LOCK_DEFAULT_SECOND,
                     SW_FILE_LOCK_MAX_SECOND,

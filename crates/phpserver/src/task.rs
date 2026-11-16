@@ -87,7 +87,13 @@ struct Host<'a> {
 
 impl TaskHost for Host<'_> {
     fn dispatch(&mut self, task: Packed<'_>, worker: Option<u32>, blocking: bool) -> bool {
-        methods::dispatch(self.pool, task, worker, blocking)
+        methods::dispatch(
+            swoole_rs_server::process_pool_native(),
+            self.pool,
+            task,
+            worker,
+            blocking,
+        )
     }
 
     fn pipe_clean(&mut self) {

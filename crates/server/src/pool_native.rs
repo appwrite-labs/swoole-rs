@@ -1,7 +1,7 @@
 //! The objects `ProcessPool` runs over (once `src/os/process_pool.cc`): its worker pipes, message bus,
 //! timers, event loop and callbacks. crates/process decides every step
 //! (`process_pool.rs`, `pool.rs`) and asks for each effect through the
-//! [`PoolNative`] side [`swr_v1_process_pool_native`] returns. It lives here because these objects are
+//! [`PoolNative`] side [`process_pool_native`] returns. It lives here because these objects are
 //! crates/reactor's, crates/tls's and crates/memory's, which crates/process can't
 //! depend on.
 //!
@@ -175,7 +175,7 @@ fn arm(pool: Pool<'_>, which: PoolTimer) {
             PoolTimer::Reload => {
                 pool.with_reload_task(|task| task.kill_all(libc::SIGKILL, reload_warn));
             }
-            PoolTimer::Kill => kill_all_workers(pool, libc::SIGKILL),
+            PoolTimer::Kill => kill_all_workers(crate::process_pool_native(), pool, libc::SIGKILL),
         }
     };
     let armed = || {
@@ -515,7 +515,7 @@ impl PoolNative for Native {
         let Some(worker) = call.worker() else {
             return Ok(());
         };
-        push_stop(call.pool(), worker.pid(), worker.id().c_cast::<u16>())
+        push_stop(self, call.pool(), worker.pid(), worker.id().c_cast::<u16>())
             .then_some(())
             .ok_or(PipeError::StopMessage)
     }
@@ -726,13 +726,8 @@ impl PoolNative for Native {
     }
 }
 
-/// What every `ProcessPool` method crates/process defines runs over, which it
-/// declares and links by name since this crate depends on it.
-#[unsafe(no_mangle)]
-#[expect(
-    clippy::no_mangle_with_rust_abi,
-    reason = "crates/process declares it `extern \"Rust\"`: both sides are Rust, and the result is a trait object"
-)]
-pub(crate) fn swr_v1_process_pool_native() -> &'static dyn PoolNative {
+/// The server's process-pool effects, passed to the methods in crates/process.
+#[must_use]
+pub fn process_pool_native() -> &'static dyn PoolNative {
     &NATIVE
 }

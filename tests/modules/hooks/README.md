@@ -99,7 +99,7 @@ and expected values), run by `hooks-system-rust`. A `Socket` is the hooks crate'
 `swr_v1_hook_co_socket_free`, the vectored members over an `IOVector` owner
 `swoole_rs_reactor::ReactorIov::new` makes, and its fields
 through the record layout (`swoole_rs_co_socket.h`). `enable_ssl_encrypt` and the
-`set_ssl_*` setters write the `SSLContext` owner (`swr_v1_tls_owner_new`,
+`set_ssl_*` setters write the `SSLContext` owner (`owner_new`,
 `_set_path` and its string slots and fields); `TimeoutSetter` and
 `TimeoutController` are the crate's `TimeoutScope` and its `timed_out` (the `rust_socket_scopes.selected_timeout_restore_and_copy`
 witness, whose `TimeoutSetter` left the hybrid header, is a Rust case there too); `pop_read_buffer`/`pop_write_buffer`
@@ -298,7 +298,7 @@ node's data; `SwooleTG.timer` is crates/corebase's `thread_timer`. Upstream's sh
 counters become `Cell`s (the callbacks run in the case's process), and its
 `uint64_t` elapsed-time subtractions wrap as they do in C++. The ssl cases call
 `swoole_ssl_*` and `SSLContext::create` under their upstream symbols and build the
-context through `swr_v1_tls_owner_new` and its string slots' `set_shared`;
+context through `owner_new` and its string slots' `set_shared`;
 `ERR_put_error` is network_socket.rs's.
 
 | Upstream TEST | Rust case |

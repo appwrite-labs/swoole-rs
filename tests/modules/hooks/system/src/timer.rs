@@ -59,7 +59,6 @@ unsafe extern "C" {
     fn swoole_event_wait() -> c_int;
     #[link_name = "_ZN6swoole12realtime_addEP8timespecl"]
     fn realtime_add(time: *mut [i64; 2], add_msec: i64);
-    fn swr_v1_core_signal_alarm() -> bool;
 }
 
 unsafe extern "C-unwind" {
@@ -190,7 +189,7 @@ fn sys() {
         unsafe {
             sleep(10);
             swoole_signal_dispatch();
-            if swr_v1_core_signal_alarm() {
+            if swoole_rs_corebase::swr_v1_core_signal_alarm() {
                 swoole_timer_select();
             }
         }

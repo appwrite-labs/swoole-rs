@@ -81,7 +81,10 @@ pub(crate) fn destroy(serv: view::Server<'_>) {
     let pool = crate::shared::ServerShared::of(serv).event_pool();
     if !pool.message_box().is_null() {
         // The event pool's box, which the pool forgets as it frees it.
-        swoole_rs_process::methods::free_message_box(serv.event_pool_ref());
+        swoole_rs_process::methods::free_message_box(
+            crate::process_pool_native(),
+            serv.event_pool_ref(),
+        );
     }
 }
 
@@ -128,7 +131,11 @@ pub(crate) fn kill_task_workers(serv: view::Server<'_>) {
     if count == 0 {
         return;
     }
-    kill_all_workers(serv.task_pool_ref(), libc::SIGTERM);
+    kill_all_workers(
+        crate::process_pool_native(),
+        serv.task_pool_ref(),
+        libc::SIGTERM,
+    );
     let pool = crate::shared::ServerShared::of(serv).task_pool();
     for index in 0..count as usize {
         let pid = pool.worker(index).map_or(0, Worker::pid);
@@ -253,7 +260,12 @@ pub(crate) fn send(serv: view::Server<'_>, to: Pipe, send: &mut SendData) -> boo
                 return false;
             };
             let head = swoole_rs_process::process_pool::head_view(send.info());
-            let sent = swoole_rs_process::methods::send_pipe_message(target, head, PIPE_MASTER);
+            let sent = swoole_rs_process::methods::send_pipe_message(
+                crate::process_pool_native(),
+                target,
+                head,
+                PIPE_MASTER,
+            );
             sent.is_some_and(|sent| sent > 0)
         }
     }
