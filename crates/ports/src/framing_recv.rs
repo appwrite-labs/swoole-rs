@@ -42,6 +42,10 @@ impl Recv<'_> {
         // SAFETY: the receive's live buffer, changed only inside an effect.
         unsafe { &*self.buffer }
     }
+    fn string_mut(&mut self) -> &mut CppString {
+        // SAFETY: the receive's live buffer; no other reference to it is live.
+        unsafe { &mut *self.buffer }
+    }
 }
 
 /// How a length receive measures and hands on each package.
@@ -103,9 +107,9 @@ impl<K> With<'_, K> {
 
     /// Runs `f` between applying `flags`' wait and refreshing them.
     #[inline(always)]
-    fn around<T>(&mut self, flags: &mut u32, f: impl FnOnce(&Recv<'_>) -> T) -> T {
+    fn around<T>(&mut self, flags: &mut u32, f: impl FnOnce(&mut Recv<'_>) -> T) -> T {
         self.apply_wait(*flags);
-        let result = f(&self.0);
+        let result = f(&mut self.0);
         self.refresh(flags);
         result
     }
@@ -194,11 +198,11 @@ impl<K: Packages> Effects for With<'_, K> {
     #[inline(always)]
     fn recv(&mut self, size: usize, flags: &mut u32) -> Received {
         self.apply_wait(*flags);
-        // SAFETY: the receive's live buffer; no other reference to it is live.
-        let b = unsafe { &mut *self.0.buffer };
+        let socket = self.0.socket;
+        let b = self.0.string_mut();
         // The loop asks for at most the buffer's free tail.
         let tail = b.spare().get_mut(..size).unwrap_or_default();
-        if let Some(n) = swoole_rs_tls::upstream::recv(self.0.socket, tail, 0) {
+        if let Some(n) = swoole_rs_tls::upstream::recv(socket, tail, 0) {
             return Received::Bytes(n);
         }
         let received = failed_recv(&self.0, size);
@@ -250,8 +254,7 @@ impl<K: Packages> Effects for With<'_, K> {
     }
     #[inline(always)]
     fn set_buffer(&mut self, length: usize, offset: i64) {
-        // SAFETY: the receive's live buffer; no other reference to it is live.
-        let b = unsafe { &mut *self.0.buffer };
+        let b = self.0.string_mut();
         // SAFETY: framing::recv counts only the bytes its receives wrote.
         unsafe { b.set_len(length) };
         b.set_offset(offset);
@@ -314,10 +317,8 @@ fn failed_recv(r: &Recv<'_>, size: usize) -> Received {
 /// `buffer->split` on the EOF, each part to `onPackage` while the socket stays.
 #[cold]
 #[inline(never)]
-fn split(r: &Recv<'_>) -> Option<usize> {
-    // SAFETY: the receive's live buffer; no other reference to it is live.
-    let b = unsafe { &mut *r.buffer };
-    let s = r.socket;
+fn split(r: &mut Recv<'_>) -> Option<usize> {
+    let (protocol, s) = (r.protocol, r.socket);
     // A copy: `onPackage` may run PHP whose `set()` rewrites the protocol.
     let (eof, eof_len) = {
         let p = r.protocol();
@@ -325,9 +326,9 @@ fn split(r: &Recv<'_>) -> Option<usize> {
     };
     // The protocol's settings bound the length by the array.
     let eof = eof.get(..usize::from(eof_len))?;
-    usize::try_from(b.split(eof, |data, length| {
+    usize::try_from(r.string_mut().split(eof, |data, length| {
         // SAFETY: the live protocol and socket, and the part inside the buffer.
-        let handled = unsafe { dispatch(r.protocol, s, data, length as u64) };
+        let handled = unsafe { dispatch(protocol, s, data, length as u64) };
         handled && !s.read(|s| s.removed)
     }))
     .ok()
@@ -336,12 +337,11 @@ fn split(r: &Recv<'_>) -> Option<usize> {
 /// The effects a frame rarely needs.
 #[cold]
 #[inline(never)]
-fn rare(r: &Recv<'_>, op: Op, arg: usize) {
-    // SAFETY: the receive's live buffer; no other reference to it is live.
-    let b = unsafe { &mut *r.buffer };
+fn rare(r: &mut Recv<'_>, op: Op, arg: usize) {
     let s = r.socket;
     let length_mode = r.mode == Mode::Length;
     let origin = origin(r);
+    let b = r.string_mut();
     match op {
         Op::Extend => b.extend(arg),
         Op::Reduce => b.reduce(i64::try_from(arg).unwrap_or(i64::MAX)),
