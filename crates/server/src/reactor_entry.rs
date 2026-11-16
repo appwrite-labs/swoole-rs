@@ -2,11 +2,11 @@
 //! (`ReactorThread_on*`) and the `Server` and `ReactorThread` methods that build a
 //! context and run one operation over it. With `upstream-symbols`, `dispatch_task`
 //! is the `onPackage` crates/ports' protocols hold. Every op they make is Rust's.
-use core::ffi::{c_int, c_long, c_void};
+use core::ffi::{c_int, c_long};
 
 use swoole_rs_corebase::constants::SocketType;
 use swoole_rs_corebase::net_types::SocketAddress;
-use swoole_rs_reactor::{Event, Running, SocketRecord};
+use swoole_rs_reactor::{Event, Running};
 
 use crate::base_factory::SendData;
 use crate::reactor_handle::Reactor;
@@ -127,18 +127,21 @@ pub extern "C" fn on_write(reactor: Running<'_>, event: &mut Event) -> c_int {
 /// `static int Server::close_connection(Reactor *, Socket *)`.
 ///
 /// # Safety
-/// `reactor` is a live server `Reactor` and `socket` a live session socket of it.
+/// `reactor` holds a live server and `socket` is a session socket of it, which nothing
+/// uses afterwards.
+#[must_use]
 pub unsafe extern "C-unwind" fn close_connection(
-    reactor: *mut c_void,
-    socket: *mut SocketRecord,
+    reactor: Running<'_>,
+    socket: swoole_rs_reactor::Socket<'_>,
 ) -> c_int {
-    // SAFETY: per the caller.
-    let reactor = unsafe { Reactor::of(reactor) };
+    let reactor = Reactor::running(reactor);
     // SAFETY: per the caller.
     let serv = unsafe { server(reactor) };
-    // SAFETY: per the caller.
-    let sock = unsafe { swoole_rs_reactor::Socket::from_ptr(socket) };
-    crate::conn_io::status(crate::conn_io::close_connection(serv, reactor, sock))
+    crate::conn_io::status(crate::conn_io::close_connection(
+        serv,
+        reactor,
+        Some(socket),
+    ))
 }
 
 /// `void ReactorThread::shutdown(Reactor *)`, over `serv`'s reactor thread `id` and

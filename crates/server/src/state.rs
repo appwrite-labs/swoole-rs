@@ -687,6 +687,13 @@ pub(crate) mod tests {
         }
     }
 
+    impl Drop for TestServer {
+        /// As a server's owner does: this thread's reactor holds it no more.
+        fn drop(&mut self) {
+            crate::reactor_handle::release_server(self.serv());
+        }
+    }
+
     #[test]
     fn document_root_is_the_real_path() {
         let state = ServerState::new();

@@ -60,9 +60,7 @@ fn heartbeat_timer(state: &ServerState, reactor: Reactor) -> Option<swoole_rs_ti
 fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Option<c_int> {
     let (server, handle) = (ctx.serv, ctx.reactor?);
     let (config, tables) = (state.config_ref(), state.tables_ref());
-    // SAFETY: the thread's own reactor, which only this thread runs, and the server joins
-    // its reactor and worker threads before it goes.
-    unsafe { handle.hold_server(server) };
+    handle.hold_server(server);
     let reactor = handle.handle();
     reactor.set_id(id);
     reactor.set_wait_exit(false);

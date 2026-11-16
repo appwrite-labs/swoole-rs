@@ -208,9 +208,7 @@ extern "C-unwind" fn loop_async(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int 
     in_worker_bus(state, config, worker_pipe(worker, false), |pipe| {
         set_nonblock(pipe);
         let reactor = Reactor::thread();
-        // SAFETY: this task worker's reactor, which the loop's `swoole_event_wait` frees
-        // while the server lives.
-        unsafe { reactor.hold_server(serv) };
+        reactor.hold_server(serv);
         reactor.add(pipe, Events::READ);
         reactor.set_handler(FD_PIPE, Events::READ, on_pipe_receive);
     });

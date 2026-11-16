@@ -15,8 +15,8 @@ use swoole_rs_corebase::log;
 use swoole_rs_reactor::reactor_upstream::{interest, reactor_interest, trigger_close_event};
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_reactor::{
-    Drain, Event, FlushEffects, Interest, Running, SOCKET_DEFAULTS, Socket, SocketRecord,
-    WriteEffects, WriteError, WritePayload,
+    Drain, Event, FlushEffects, Interest, Running, SOCKET_DEFAULTS, Socket, WriteEffects,
+    WriteError, WritePayload,
 };
 
 const SW_ERROR_OPERATION_NOT_SUPPORT: c_int =
@@ -205,7 +205,7 @@ impl FlushEffects for Flush<'_> {
             return -1;
         };
         // SAFETY: `reactor->close(reactor, socket)`.
-        unsafe { close(self.reactor.as_ptr(), self.socket.as_ptr()) }
+        unsafe { close(self.reactor, self.socket) }
     }
 
     fn trigger_close(&self) -> c_int {
@@ -272,16 +272,14 @@ pub fn reactor_drain_write_buffer(reactor: Running<'_>, record: Socket<'_>) {
 /// `int Reactor::_close(Reactor *reactor, Socket *socket)`: frees the socket.
 ///
 /// # Safety
-/// `socket` is a live record nothing uses afterwards.
+/// Nothing uses `socket` afterwards.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7Reactor6_closeEPS0_PNS_7network6SocketE")
 )]
-pub unsafe extern "C-unwind" fn reactor_close(
-    _reactor: *mut c_void,
-    socket: *mut SocketRecord,
-) -> c_int {
+#[must_use]
+pub unsafe extern "C-unwind" fn reactor_close(_reactor: Running<'_>, socket: Socket<'_>) -> c_int {
     // SAFETY: as the caller promises.
-    unsafe { socket_free(socket) };
+    unsafe { socket_free(socket.as_ptr()) };
     0
 }

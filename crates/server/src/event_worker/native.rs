@@ -591,9 +591,7 @@ pub(crate) fn start_event_worker(serv: view::Server<'_>, worker: Worker<'_>) -> 
     let reactor = Reactor::thread();
     if let Some(pipe) = worker_pipe(worker, false) {
         set_nonblock(pipe);
-        // SAFETY: this worker's reactor, freed after its loop below, before the worker
-        // stops and while the server lives.
-        unsafe { reactor.hold_server(serv) };
+        reactor.hold_server(serv);
         reactor.add(pipe, Events::READ);
         reactor.set_handler(FD_PIPE, Events::READ, on_pipe_receive);
     }
