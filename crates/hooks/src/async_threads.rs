@@ -330,19 +330,13 @@ pub extern "C" fn callback(_: Running<'_>, event: &mut Event) -> c_int {
 }
 
 /// `Co::stats()`'s AIO counts for this thread: events in flight, the pool's
-/// workers and its queue; left as they are when the thread has no pool.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_async_threads_stats(
-    task_num: &mut i64,
-    worker_num: &mut i64,
-    queue_size: &mut i64,
-) {
+/// workers and its queue; none when the thread has no async threads.
+#[must_use]
+pub fn stats() -> Option<(usize, usize, usize)> {
     with_current(|threads| {
-        *task_num = i64::try_from(threads.task_num).unwrap_or(i64::MAX);
         let (workers, queued) = threads
             .pool
             .map_or((0, 0), |pool| (pool.worker_num(), pool.queue_size()));
-        *worker_num = i64::try_from(workers).unwrap_or(i64::MAX);
-        *queue_size = i64::try_from(queued).unwrap_or(i64::MAX);
-    });
+        (threads.task_num, workers, queued)
+    })
 }
