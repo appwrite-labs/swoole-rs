@@ -129,8 +129,9 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
             return Some(-1);
         }
         // Only synchronous sends go to the notify pipe: thread-safe, no separate memory.
-        if thread.notify_pipe.get().is_null() {
-            thread.notify_pipe.set(worker.pipe_worker().cast());
+        if thread.notify_pipe.get().is_none() {
+            let pipe = worker_pipe(worker, false).and_then(crate::reactor_handle::registered);
+            thread.notify_pipe.set(pipe);
         }
     }
     Some(0)
@@ -303,8 +304,10 @@ fn send_close_force(serv: view::Server<'_>, conn: Connection<'_>, session: c_lon
 /// `ReactorThread_onPipeRead`: a worker's message.
 extern "C" fn on_pipe_read(reactor: Running<'_>, event: &mut Event) -> c_int {
     let reactor = Reactor::running(reactor);
-    // SAFETY: the handler is registered only on reactors that hold a server.
-    let serv = unsafe { entry::server(reactor) };
+    // The handler is registered only on reactors that hold a server.
+    let Some(serv) = reactor.server() else {
+        return -1;
+    };
     let mut ctx = ReactorContext::new(serv, Some(reactor));
     ctx.thread = serv
         .state()

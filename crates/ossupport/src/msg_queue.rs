@@ -2,7 +2,8 @@
 //! open, blocking flag, push, pop, stat, capacity and removal over a `SysV` message
 //! queue, with upstream's warnings. Rust allocates and frees the queue; native code
 //! holds only its pointer.
-use libc::{IPC_CREAT, IPC_NOWAIT, c_int, c_long, c_void};
+use libc::{IPC_CREAT, IPC_NOWAIT, c_int, c_long};
+use swoole_rs_corebase::lent::{Count, HeadedIn, HeadedOut, lend_headed_in, lend_headed_out};
 use swoole_rs_corebase::{log, sys::Pod};
 
 // the XSI message queue calls, declared here because libc omits them on
@@ -12,8 +13,23 @@ use swoole_rs_corebase::{log, sys::Pod};
 // rejects a command that needs the one it wasn't given.
 unsafe extern "C" {
     safe fn msgget(key: libc::key_t, flags: c_int) -> c_int;
-    fn msgsnd(id: c_int, msg: *const c_void, size: usize, flags: c_int) -> c_int;
-    fn msgrcv(id: c_int, msg: *mut c_void, size: usize, kind: c_long, flags: c_int) -> isize;
+    /// Reads the node's `long` type and `size` payload bytes after it, at most the
+    /// count its lending gives.
+    safe fn msgsnd<'id>(
+        id: c_int,
+        msg: HeadedIn<'id, c_long>,
+        size: Count<'id>,
+        flags: c_int,
+    ) -> c_int;
+    /// Writes the node's `long` type and at most `size` payload bytes after it, at
+    /// most the count its lending gives.
+    safe fn msgrcv<'id>(
+        id: c_int,
+        msg: HeadedOut<'id, c_long>,
+        size: Count<'id>,
+        kind: c_long,
+        flags: c_int,
+    ) -> isize;
     safe fn msgctl(id: c_int, cmd: c_int, stat: Option<&mut MsqidDs>) -> c_int;
 }
 
@@ -143,9 +159,10 @@ impl QueueRecord {
             return false;
         }
         loop {
-            // SAFETY: `node` holds a `long` type and at least `length` payload bytes,
-            // checked above, read for the call.
-            if unsafe { msgsnd(self.id, node.as_ptr().cast(), length, self.flags) } == 0 {
+            let sent = lend_headed_in(node, |msg, room| {
+                msgsnd(self.id, msg, room.at_most(length), self.flags)
+            });
+            if sent == Some(0) {
                 return true;
             }
             match errno() {
@@ -189,10 +206,10 @@ impl QueueRecord {
             invalid();
             return None;
         }
-        // SAFETY: `node` is writable for a `long` type and at least `size` payload
-        // bytes, checked above, and any bytes are a value of its plain elements.
-        let result = unsafe { msgrcv(self.id, node.as_mut_ptr().cast(), size, kind, self.flags) };
-        if let Ok(length) = usize::try_from(result) {
+        let result = lend_headed_out(node, |msg, room| {
+            msgrcv(self.id, msg, room.at_most(size), kind, self.flags)
+        });
+        if let Some(Ok(length)) = result.map(usize::try_from) {
             return Some(length);
         }
         let error = errno();

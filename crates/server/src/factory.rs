@@ -407,7 +407,8 @@ impl crate::hybrid::Hybrid for Linked {
             ..DataHead::default()
         });
         // `serv->get_reactor_pipe_socket(0, 0)`.
-        let Some(pipe) = serv.worker_pipe(0, false) else {
+        let pipe = serv.worker_pipe(0, false);
+        let Some(pipe) = pipe.and_then(crate::reactor_handle::registered) else {
             return false;
         };
         let data = (&raw const send).cast();

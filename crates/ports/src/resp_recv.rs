@@ -2,30 +2,38 @@
 //! [`recv_packet`] loop over the connection's own records.
 use core::ffi::c_int;
 use swoole_rs_buffer::string::CppString;
-use swoole_rs_clients::protocol::Protocol;
-use swoole_rs_corebase::net_types::RecvData;
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_protocols_ffi::{Dispatched, ORIGIN, Received, RespConnection, RespRequest};
 use swoole_rs_reactor::{Caught, Socket};
+use swoole_rs_server::reactor_entry::RecvData;
 
-/// The connection's protocol, socket, receive buffer and request. The buffer and
-/// request stay raw: `onPackage` may free both.
-struct Connection<'a> {
-    protocol: &'a Protocol,
+/// The connection's socket, receive buffer and request, and where a whole command
+/// goes. The buffer and request stay raw: the dispatch may free both.
+struct Connection<'a, D> {
     socket: Socket<'a>,
-    buffer: *mut CppString,
+    buffer: Buffer,
     request: *mut RespRequest,
     fd: c_int,
+    dispatch: D,
 }
 
-impl Connection<'_> {
+/// The live receive buffer.
+struct Buffer(*mut CppString);
+
+impl Buffer {
     fn string(&mut self) -> &mut CppString {
-        // SAFETY: the live receive buffer; this borrow is not held across `onPackage`.
-        unsafe { &mut *self.buffer }
+        // SAFETY: the live receive buffer; this borrow is not held across the dispatch.
+        unsafe { &mut *self.0 }
     }
 }
 
-impl RespConnection for Connection<'_> {
+impl<D> Connection<'_, D> {
+    fn string(&mut self) -> &mut CppString {
+        self.buffer.string()
+    }
+}
+
+impl<D: FnMut(RecvData<'_>) -> bool> RespConnection for Connection<'_, D> {
     fn recv(&mut self) -> Received {
         let socket = self.socket;
         let buffer = self.string();
@@ -60,19 +68,8 @@ impl RespConnection for Connection<'_> {
     }
 
     fn dispatch(&mut self) -> Dispatched {
-        let buffer = self.string();
-        let data = RecvData {
-            info: DataHead {
-                len: u32::try_from(buffer.len()).unwrap_or(u32::MAX),
-                ..DataHead::default()
-            },
-            data: buffer.as_mut_ptr(),
-        };
-        let Some(on_package) = self.protocol.on_package else {
-            return Dispatched::Failed;
-        };
-        // SAFETY: upstream's call, over the live protocol, socket and packet.
-        if unsafe { on_package(self.protocol, self.socket, &data) } < 0 {
+        let buffer = self.buffer.string();
+        if !(self.dispatch)(RecvData::new(DataHead::default(), buffer.view())) {
             return Dispatched::Failed;
         }
         if self.socket.read(|s| s.removed) {
@@ -88,16 +85,19 @@ impl RespConnection for Connection<'_> {
 }
 
 /// `int redis::recv_packet(Protocol *, Connection *, String *)` over the connection's
-/// protocol, record and `socket`: whether the connection stays open.
+/// record and `socket`, up to the protocol's `max_length`, each whole command to
+/// `dispatch` (the port's `onPackage`, which `init_protocol` set to
+/// `Server::dispatch_task`'s): whether the connection stays open.
 ///
 /// # Safety
 /// `buffer` is live, and `conn` is a session of this reactor's redis port, whose
 /// request state, if any, this reactor made.
 pub(crate) unsafe fn recv_packet(
-    protocol: &Protocol,
+    max_length: u32,
     conn: swoole_rs_server::Connection<'_>,
     socket: Socket<'_>,
     buffer: *mut CppString,
+    dispatch: impl FnMut(RecvData<'_>) -> bool,
 ) -> bool {
     // Zeroed, which every field of a RespRequest takes (`RespState::TotalLine`).
     let request = match conn.resp_request() {
@@ -105,19 +105,20 @@ pub(crate) unsafe fn recv_packet(
         None => conn.set_resp_request(Box::default()),
     };
     let mut connection = Connection {
-        protocol,
         socket,
-        buffer,
+        buffer: Buffer(buffer),
         request,
         fd: conn.fd(),
+        dispatch,
     };
     let page = swoole_rs_corebase::swr_v1_core_pagesize() as usize;
-    swoole_rs_protocols_ffi::recv_packet(&mut connection, protocol.package_max_length, page)
+    swoole_rs_protocols_ffi::recv_packet(&mut connection, max_length, page)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use swoole_rs_clients::protocol::Protocol;
     use swoole_rs_reactor::SocketRecord;
     use swoole_rs_server::ConnectionRecord;
 
@@ -139,16 +140,26 @@ mod tests {
         socket.fd = pairs[1];
         socket.socket_type = 5; // SW_SOCK_UNIX_STREAM
         let mut conn: ConnectionRecord = unsafe { core::mem::zeroed() };
-        conn.fd = pairs[1];
+        conn.fd.set(pairs[1]);
         let handle = unsafe { Socket::from_ptr(&raw mut socket) }.unwrap();
-        conn.socket = Some(handle);
+        conn.socket.set(Some(handle));
         let mut protocol = Protocol::EMPTY;
         protocol.package_max_length = 65536 * 2;
         let mut buffer = CppString::EMPTY;
         buffer.alloc(65536, None);
         let buffer_size = buffer.size();
 
-        assert!(!unsafe { recv_packet(&protocol, (&mut conn).into(), handle, &raw mut buffer) });
+        let max_length = protocol.package_max_length;
+        let dispatch = |_: RecvData<'_>| unreachable!("a partial command");
+        assert!(!unsafe {
+            recv_packet(
+                max_length,
+                (&mut conn).into(),
+                handle,
+                &raw mut buffer,
+                dispatch,
+            )
+        });
         assert_eq!(buffer.len(), 1);
         assert_eq!(buffer.size(), buffer_size);
 

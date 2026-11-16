@@ -46,7 +46,7 @@ impl PollSnapshot {
                 events: swr_v1_reactor_poll_events_to(events),
                 revents: 0,
             });
-            self.sockets.push(socket);
+            self.sockets.push(socket.as_ptr().cast());
         }
         self.entries.len()
     }
@@ -88,7 +88,7 @@ mod tests {
     #[test]
     fn fills_within_its_room_and_stays_put() {
         let mut registry = Registry::default();
-        let socket = |n: usize| n as *mut c_void;
+        let socket = crate::registry::tests::fake;
         assert!(registry.put(3, socket(30), SW_EVENT_READ));
         assert!(registry.put(4, socket(40), SW_EVENT_WRITE));
         let mut snapshot = PollSnapshot::new(1);
@@ -101,6 +101,6 @@ mod tests {
             (entry.fd, entry.events, entry.revents),
             (3, libc::POLLIN, 0)
         );
-        assert_eq!(held, socket(30));
+        assert_eq!(held, socket(30).as_ptr().cast());
     }
 }

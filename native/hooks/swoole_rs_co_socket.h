@@ -7,6 +7,7 @@
 #include "swoole_socket.h"
 #include "swoole_protocol.h"
 #include <stddef.h>
+#include <sys/uio.h>
 
 // Rust owns the connection state; C++ only keeps its opaque pointer.
 struct swr_v1_hook_socket_state;
@@ -57,7 +58,7 @@ void swr_v1_hook_co_socket_created(swr_v1_co socket, uint32_t result);
  * members through the ring (crates/hooks/src/uring_socket.rs). */
 void swr_v1_hook_co_socket_uring(swr_v1_co socket);
 /* Socket::connect(host, port) (crates/hooks/src/connect.rs), through the socket's proxies. */
-bool swr_v1_hook_co_socket_connect_host(swr_v1_co socket,const char *host, size_t length, int port);
+bool swr_v1_hook_co_socket_connect_host(swr_v1_co socket, struct iovec host, int port);
 }
 
 static_assert(sizeof(swoole::Protocol) == 64 && offsetof(swoole::Protocol, package_max_length) == 16 &&

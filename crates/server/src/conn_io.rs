@@ -17,7 +17,6 @@ use swoole_rs_buffer::cpp::{
     new_buffer, swr_cpp_buffer_empty, swr_cpp_buffer_length, swr_cpp_buffer_typed_close,
     swr_cpp_buffer_typed_front,
 };
-use swoole_rs_buffer::string::delete_string;
 use swoole_rs_buffer::string::with_thread_buffer;
 use swoole_rs_corebase::constants::{SW_SEND_BUFFER_SIZE, SocketType};
 use swoole_rs_corebase::{CCast, DataHead, microtime};
@@ -81,8 +80,6 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
             };
         }
     }
-    // The port reads the event through its pointer while the socket is borrowed.
-    let raw = core::ptr::from_mut(event);
     let Some(sock) = event.socket() else {
         return OK;
     };
@@ -111,10 +108,8 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
     let Some(on_read) = port.config().on_read.get() else {
         return ERR;
     };
-    // SAFETY: the reactor's event, which no reference is used through during the read.
-    let event = unsafe { &mut *raw };
     // A readable event on the live connection of `fd`, of this server's port `port`.
-    let retval = on_read(reactor.handle(), port, ReadEvent::new(serv, event));
+    let retval = on_read(reactor.handle(), port, ReadEvent::new(serv, event, conn));
     // Upstream reads the socket after the read too.
     let (total_recv_bytes, notified) = sock.read(|s| (s.total_recv_bytes, s.close_notified));
     let received = total_recv_bytes.wrapping_sub(last_recv_bytes);
@@ -453,7 +448,7 @@ fn fin_ends(prequeue: bool, state: &crate::ServerState, conn: Connection<'_>) ->
 pub(crate) fn close_connection(
     serv: view::Server<'_>,
     reactor: Reactor,
-    sock: Option<Socket<'_>>,
+    sock: Option<Socket<'static>>,
 ) -> bool {
     let state = serv.state();
     let Some(sock) = sock else {
@@ -485,27 +480,22 @@ pub(crate) fn close_connection(
             return true;
         }
     }
-    let websocket = conn.websocket_buffer();
-    if !websocket.is_null() {
-        // SAFETY: the connection's `new String`, not used again.
-        unsafe { delete_string(websocket.cast()) };
-        conn.set_websocket_buffer(core::ptr::null_mut());
+    if let Some(mut websocket) = conn.take_websocket_buffer() {
+        websocket.dispose();
     }
     if !removed && !reactor.del(sock) {
         return false;
     }
     count_close(state, port, reactor);
-    let (ssl, recv_buffer) = sock.read(|s| (!s.ssl().is_null(), s.recv_buffer));
+    let ssl = sock.read(|s| !s.ssl().is_null());
     if ssl {
         sock.edit(|s| s.ssl_quiet_shutdown = conn.peer_closed());
         // SAFETY: handles to a session live only for the operation that took them,
         // and native code closes it between operations.
         unsafe { tls::socket_ssl_close(sock) };
     }
-    if !recv_buffer.is_null() {
-        // SAFETY: the socket's `new String`, not used again.
-        unsafe { delete_string(recv_buffer.cast()) };
-        sock.edit(|s| s.recv_buffer = core::ptr::null_mut());
+    if let Some(mut recv_buffer) = sock.edit(|s| s.recv_buffer.take()) {
+        recv_buffer.dispose();
     }
     if let Some(port) = port {
         if port.open_http_protocol.get() && conn.http_request().is_some() {
@@ -609,8 +599,7 @@ pub(crate) mod tests {
         let live = LiveServer::new();
         let clients = [(); 2].map(|()| {
             let client = live.connect();
-            // SAFETY: the fixture's listener, live for the event.
-            let event = unsafe { Event::new(live.listener_fd, 0, 1, live.listener().cast()) };
+            let event = live.accept_event();
             crate::connection::accept(live.server(), live.reactor(), &event);
             client
         });
@@ -806,7 +795,7 @@ pub(crate) mod tests {
 
     /// The port's `onRead`: receives 5 bytes and returns 42.
     fn on_read(_: swoole_rs_reactor::Running<'_>, _: view::Port<'_>, read: ReadEvent<'_>) -> c_int {
-        let (_, event) = read.into_parts();
+        let (_, event, _) = read.into_parts();
         READS.with_borrow_mut(|reads| reads.push(event.fd()));
         let sock = event.socket().unwrap();
         sock.edit(|s| s.total_recv_bytes += 5);

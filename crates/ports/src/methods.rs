@@ -227,13 +227,12 @@ use swoole_rs_corebase::sys::errno;
 /// `ListenPort::close_socket()`: closes and frees the port's socket.
 pub(crate) fn close_socket(config: &PortConfig) {
     // Taken first, so nothing finds the record once it is freed.
-    let socket = config.take_socket_ptr();
-    if socket.is_null() {
+    let Some(socket) = config.take_socket() else {
         return;
-    }
+    };
     // SAFETY: `delete socket`: the port's live socket, which Rust boxed
     // (`SocketRecord::into_raw`) and nothing else uses, taken back to drop.
-    let socket = unsafe { Box::from_raw(socket) };
+    let socket = unsafe { Box::from_raw(socket.as_ptr()) };
     let fd = socket.fd;
     if swoole_rs_corebase::sys::close(fd).is_err() {
         log::sys_warning(
@@ -296,9 +295,9 @@ struct Callbacks {
 const CALLBACKS: Callbacks = {
     use crate::http_routes::exports as http;
     Callbacks {
-        dispatch_task: http::dispatch_task,
-        http_dispatch_frame: http::dispatch_frame,
-        websocket_dispatch_frame: http::websocket_dispatch_frame,
+        dispatch_task: http::on_package::<http::Task>,
+        http_dispatch_frame: http::on_package::<http::HttpFrame>,
+        websocket_dispatch_frame: http::on_package::<http::WebSocketFrame>,
         default_length: crate::framing_recv::default_length_func,
         http_length: http::get_package_length,
         http_length_size: http::get_package_length_size,

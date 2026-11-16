@@ -352,20 +352,18 @@ pub(crate) fn set_preemptive(enable: bool) {
 /// `PHPCoroutine::create`, the coroutine leaf the callers of
 /// `swoole_rs_zend::host::function_call` and the zend-sys shims pass (C ABI).
 /// # Safety
-/// As `zend_call_function`'s callable, on the thread that runs PHP; `bailout`
-/// is writable.
+/// As `zend_call_function`'s callable, on the thread that runs PHP.
 pub unsafe extern "C" fn create_coroutine(
     fcc: *mut zend_fcall_info_cache,
     argc: u32,
     argv: *mut zval,
     callable: *mut zval,
-    bailout: *mut u8,
+    bailout: &mut u8,
 ) -> c_long {
     // SAFETY: per the caller, for this call.
     let php = unsafe { Php::assume() };
     let created = create(php, fcc, argc, argv, callable);
-    // SAFETY: per the caller.
-    unsafe { bailout.write(u8::from(created.is_err())) };
+    *bailout = u8::from(created.is_err());
     created.unwrap_or(ERR_INVALID)
 }
 

@@ -40,8 +40,9 @@ pub fn random_bytes(buf: &mut [impl crate::sys::ReadSlot]) -> usize {
     {
         let mut done = 0;
         while let Some(rest) = buf.get_mut(done..).filter(|rest| !rest.is_empty()) {
-            // SAFETY: `rest` is writable for its length.
-            let n = unsafe { libc::getrandom(rest.as_mut_ptr().cast(), rest.len(), 0) };
+            let n = crate::lent::lend_out(rest, |at, count| {
+                crate::lent::getrandom(at.bytes(), count, 0)
+            });
             if n == -1 {
                 if matches!(
                     std::io::Error::last_os_error().raw_os_error().unwrap_or(0),
@@ -57,8 +58,9 @@ pub fn random_bytes(buf: &mut [impl crate::sys::ReadSlot]) -> usize {
     }
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
     {
-        // SAFETY: `buf` is writable for its length.
-        unsafe { libc::arc4random_buf(buf.as_mut_ptr().cast(), buf.len()) };
+        crate::lent::lend_out(buf, |at, count| {
+            crate::lent::arc4random_buf(at.bytes(), count);
+        });
         buf.len()
     }
 }

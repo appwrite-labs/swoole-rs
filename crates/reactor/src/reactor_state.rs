@@ -16,7 +16,7 @@ pub type ReactorWrite =
 pub type ReactorWritev =
     unsafe extern "C-unwind" fn(*mut c_void, *mut SocketRecord, *const libc::iovec, usize) -> isize;
 /// `Reactor::close`: frees `socket`, one of the reactor's.
-pub type ReactorClose = unsafe extern "C-unwind" fn(crate::Running<'_>, Socket<'_>) -> c_int;
+pub type ReactorClose = unsafe extern "C-unwind" fn(crate::Running<'_>, Socket<'static>) -> c_int;
 
 /// `Reactor::idle_task` and `future_task` (`Swoole\Event::cycle`): unset until set.
 #[repr(C)]
@@ -335,7 +335,7 @@ unsafe extern "C-unwind" {
         count: usize,
     ) -> isize;
     #[link_name = "_ZN6swoole7Reactor6_closeEPS0_PNS_7network6SocketE"]
-    fn reactor_close(reactor: crate::Running<'_>, socket: Socket<'_>) -> c_int;
+    fn reactor_close(reactor: crate::Running<'_>, socket: Socket<'static>) -> c_int;
     #[link_name = "_ZN6swoole9coroutine6System12init_reactorEPNS_7ReactorE"]
     safe fn system_init_reactor(reactor: crate::Running<'_>);
 }
@@ -621,24 +621,25 @@ impl ReactorState {
     /// together. False when add cannot allocate, leaving the flags alone.
     pub(crate) fn record(
         &mut self,
-        socket: Socket<'_>,
-        op: crate::ChangeOp,
+        request: crate::change::Request<'_>,
         events: crate::Events,
     ) -> bool {
+        use crate::change::Request;
+        let (Request::Add(socket) | Request::Set(socket) | Request::Del(socket)) = request;
         socket.edit(|record| {
-            match op {
-                crate::ChangeOp::Add => {
-                    if !self.registry.put(record.fd, socket.as_ptr().cast(), events) {
+            match request {
+                Request::Add(added) => {
+                    if !self.registry.put(record.fd, added, events) {
                         return false;
                     }
                     record.events = events;
                     record.removed = false;
                 }
-                crate::ChangeOp::Set => {
+                Request::Set(_) => {
                     record.events = events;
                     self.registry.set(record.fd, events);
                 }
-                crate::ChangeOp::Del => {
+                Request::Del(_) => {
                     record.events = crate::Events::NONE;
                     record.removed = true;
                     self.registry.remove(record.fd);
@@ -673,7 +674,8 @@ pub(crate) mod tests {
         op: crate::ChangeOp,
         events: crate::Events,
     ) -> bool {
-        unsafe { (*owner).record(Socket::from_ptr(socket).unwrap(), op, events) }
+        let socket = unsafe { Socket::from_ptr(socket) }.unwrap();
+        unsafe { (*owner).record(crate::change::Request::new(socket, op), events) }
     }
     pub(crate) unsafe fn free(owner: *mut ReactorState) {
         swr_v1_reactor_delete(OwnedReactor(running(owner)));

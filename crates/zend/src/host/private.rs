@@ -28,6 +28,20 @@ unsafe extern "C" {
     /// bailout): it records the error and raises the warning, whose user
     /// handler runs PHP code.
     safe fn swr_zend_try_callable_warning(message: crate::helpers::CText<'_>) -> c_int;
+    /// `*result = create(cache, argc, argv, callable, &raised)` inside
+    /// `zend_try`, then `then(arg)` unless an exception is pending (`*ran`
+    /// set): nonzero for a bailout. `raised` is the shim's own local.
+    pub fn swr_zend_try_facade_coroutine(
+        create: Option<Create>,
+        cache: *mut zend_fcall_info_cache,
+        argc: u32,
+        argv: *mut zval,
+        callable: *mut zval,
+        result: *mut c_long,
+        then: sys::swr_zend_then,
+        arg: *mut c_void,
+        ran: *mut bool,
+    ) -> c_int;
 }
 
 fn bailed(code: c_int) -> bool {
@@ -142,7 +156,7 @@ pub(super) fn direct_call(
 /// crates/phpcoroutines' `create_coroutine`: the new cid, with 1 in its last
 /// argument when activation bailed out.
 pub type Create =
-    unsafe extern "C" fn(*mut zend_fcall_info_cache, u32, *mut zval, *mut zval, *mut u8) -> c_long;
+    unsafe extern "C" fn(*mut zend_fcall_info_cache, u32, *mut zval, *mut zval, &mut u8) -> c_long;
 
 /// The coroutine leaf of [`function_call`], which only [`Creator::new`] makes.
 #[derive(Clone, Copy)]
@@ -217,7 +231,7 @@ pub fn function_call(
         // vouched, with a callable's cache and lent arguments; they run inside
         // the C trap, and no Rust borrow spans a switch.
         bailed(unsafe {
-            sys::swr_zend_try_facade_coroutine(
+            swr_zend_try_facade_coroutine(
                 Some(create),
                 cache.0,
                 args.argc(),

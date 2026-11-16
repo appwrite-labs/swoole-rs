@@ -92,7 +92,10 @@ pub struct SocketFields {
     pub last_sent_time: f64,
     /// `Buffer *in_buffer`: owned as `output.out_buffer` is.
     pub in_buffer: Option<Box<swoole_rs_buffer::cpp::CppBuffer>>,
-    pub recv_buffer: *mut c_void,
+    /// `String *recv_buffer`: the server session's receive buffer, which the socket
+    /// owns. Its address is read through `Box::as_mut_ptr`, which a reader holding it
+    /// across a callback and a worker taking the buffer's bytes share.
+    pub recv_buffer: Option<Box<swoole_rs_buffer::string::CppString>>,
     /// `TimerNode *recv_timer`, held by id.
     pub recv_timer: Option<swoole_rs_corebase::timer_key::Held>,
     pub total_recv_bytes: usize,
@@ -270,7 +273,7 @@ impl SocketRecord {
                 last_received_time: 0.0,
                 last_sent_time: 0.0,
                 in_buffer: None,
-                recv_buffer: ptr::null_mut(),
+                recv_buffer: None,
                 recv_timer: None,
                 total_recv_bytes: 0,
                 total_send_bytes: 0,
@@ -306,12 +309,12 @@ impl SocketRecord {
     /// `Socket::operator delete`.
     ///
     /// # Safety
-    /// `socket` is null or came from [`Self::into_raw`] (or a call here that returns
-    /// a record) and is not used again.
-    pub unsafe fn free(socket: *mut Self) {
-        if !socket.is_null() {
+    /// `socket` is none or came from [`Self::into_raw`] (or a call here that returns
+    /// a record, or [`Self::into_socket`]) and is not used again.
+    pub unsafe fn free(socket: Option<crate::Socket<'_>>) {
+        if let Some(socket) = socket {
             // SAFETY: as the caller promises.
-            drop(unsafe { Box::from_raw(socket) });
+            drop(unsafe { Box::from_raw(socket.as_ptr()) });
         }
     }
 
@@ -485,6 +488,7 @@ impl SocketFields {
             fields: Self {
                 output,
                 in_buffer: None,
+                recv_buffer: None,
                 ..*self
             },
             borrows: AtomicU32::new(0),
@@ -584,7 +588,7 @@ mod tests {
         let record = unsafe { &*socket };
         assert_eq!((record.fd, record.fd_type, record.removed), (7, 3, true));
         // SAFETY: as above, not used again.
-        unsafe { SocketRecord::free(socket) };
+        unsafe { SocketRecord::free(crate::Socket::from_ptr(socket)) };
     }
 
     #[test]
@@ -613,7 +617,7 @@ mod tests {
         // SAFETY: the socket's own fd.
         unsafe { libc::close(record.fd) };
         // SAFETY: not used again.
-        unsafe { SocketRecord::free(socket) };
+        unsafe { SocketRecord::free(crate::Socket::from_ptr(socket)) };
     }
 
     #[test]
@@ -633,7 +637,7 @@ mod tests {
             unsafe { libc::close(fd) };
         }
         // SAFETY: not used again.
-        unsafe { SocketRecord::free(copy) };
+        unsafe { SocketRecord::free(crate::Socket::from_ptr(copy)) };
     }
 
     #[test]
@@ -649,6 +653,6 @@ mod tests {
         // SAFETY: the listener's own fd.
         unsafe { libc::close(record.fd) };
         // SAFETY: not used again.
-        unsafe { SocketRecord::free(listener) };
+        unsafe { SocketRecord::free(crate::Socket::from_ptr(listener)) };
     }
 }
