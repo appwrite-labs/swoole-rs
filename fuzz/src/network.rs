@@ -176,13 +176,14 @@ pub fn multipart(bytes: &[u8]) {
     for chunk in body.chunks(step) {
         let start = chunk.as_ptr() as usize;
         CHUNK.set((start, start + chunk.len()));
-        let processed = parser.execute(&mut parts, chunk);
+        let result = parser.execute(&mut parts, chunk);
+        let processed = result.map_or(-1, usize::cast_signed);
         assert!(
             usize::try_from(processed).map_or(processed == -1, |n| n <= chunk.len()),
             "processed {processed} of {}",
             chunk.len()
         );
-        if swoole_rs_http::multipart_result(processed as i64, chunk.len(), 0).is_err() {
+        if swoole_rs_http::multipart_result(result, chunk.len(), false).is_err() {
             break;
         }
     }

@@ -1,4 +1,5 @@
-//! Multipart upload accounting and result policy; native retains parser/stdio.
+//! Multipart upload accounting and result policy.
+use crate::multipart_parser::ParseError;
 /// How a multipart parse fell short.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MultipartError {
@@ -8,24 +9,19 @@ pub enum MultipartError {
     Short { excepted: bool },
 }
 
-/// Classify the mature parser's return after its native execution has ended: the
-/// whole input processed clears it. The unsigned cast matches the pinned
-/// `ssize_t/size_t` check.
+/// Classify the parser result: processing the whole input clears the buffer.
 /// # Errors
 /// What to log, and for a short parse whether the request is still taken.
 pub fn multipart_result(
-    processed: i64,
+    processed: Result<usize, ParseError>,
     length: usize,
-    excepted: u32,
+    excepted: bool,
 ) -> Result<(), MultipartError> {
-    if processed < 0 {
-        Err(MultipartError::Parser)
-    } else if usize::try_from(processed) != Ok(length) {
-        Err(MultipartError::Short {
-            excepted: excepted != 0,
-        })
-    } else {
+    let processed = processed.map_err(|_| MultipartError::Parser)?;
+    if processed == length {
         Ok(())
+    } else {
+        Err(MultipartError::Short { excepted })
     }
 }
 /// Whether a part's header `name` is `Content-Disposition`.
@@ -95,17 +91,17 @@ mod tests {
     #[test]
     fn parser_results() {
         assert_eq!(
-            multipart_result(-1, usize::MAX, 1),
+            multipart_result(Err(ParseError::Callback), usize::MAX, true),
             Err(MultipartError::Parser)
         );
         assert_eq!(
-            multipart_result(1, 2, 0),
+            multipart_result(Ok(1), 2, false),
             Err(MultipartError::Short { excepted: false })
         );
         assert_eq!(
-            multipart_result(1, 2, 1),
+            multipart_result(Ok(1), 2, true),
             Err(MultipartError::Short { excepted: true })
         );
-        assert_eq!(multipart_result(2, 2, 0), Ok(()));
+        assert_eq!(multipart_result(Ok(2), 2, false), Ok(()));
     }
 }

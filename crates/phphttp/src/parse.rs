@@ -849,14 +849,14 @@ pub(crate) fn multipart_parse(state: &mut State, data: &[u8]) -> bool {
     let mut reason = parser.error_message();
     state.mt_parser = Some(multipart);
     let func = c"Context::parse_multipart_data";
-    if parsed < 0 {
+    let Ok(parsed) = parsed else {
         reason.truncate(STACK_BUFFER_SIZE);
         let mut message = b"parse multipart body failed, reason: ".to_vec();
         message.extend_from_slice(&reason);
         host::log(LOG_NOTICE, SERVER_INVALID_REQUEST, func, message);
         return false;
-    }
-    if parsed.unsigned_abs() != length {
+    };
+    if parsed != length {
         let message = format!("parse multipart body failed, {parsed}/{length} bytes processed");
         host::log(LOG_NOTICE, SERVER_INVALID_REQUEST, func, message);
         return false;
