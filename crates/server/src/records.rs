@@ -12,7 +12,6 @@ use swoole_rs_memory::members::Shm;
 use crate::reactor_ops::ThreadRecord;
 
 /// A shared session-table slot; reactor bits preserve the native reserved bits.
-#[repr(C)]
 pub struct SessionRecord {
     pub id: Cell<libc::c_long>,
     pub fd: Cell<c_int>,
@@ -85,9 +84,6 @@ impl ConnectionRecord {
         self.active.load(Acquire) != 0
     }
 }
-
-/// `offsetof(Connection, object)`, for `layout`.
-pub(crate) const OBJECT_OFFSET: usize = core::mem::offset_of!(ConnectionRecord, object);
 
 /// The top address bit: set on every slot object but a port.
 const NOT_PORT: usize = 1 << (usize::BITS - 1);
@@ -395,7 +391,6 @@ impl<'a> Connection<'a> {
 ///
 /// Setup and teardown write the tables through `&`: every field they write is a cell
 /// (a [`Shm`] is one), written while the master is the server's only thread.
-#[repr(C)]
 pub struct ServerTables {
     /// `ConnectionRecord`s, `max_connection` of them.
     pub connection_list: Shm,
@@ -409,8 +404,7 @@ pub struct ServerTables {
     /// Armed when accepting runs out of fds and cleared by its callback, at runtime.
     pub enable_accept_timer: swoole_rs_corebase::timer_key::AtomicHeld,
     pub reactor_pipe_num: Cell<u16>,
-    /// How many records `reactor_threads` holds, in the padding native code's view
-    /// leaves before it. Private with it: only [`Self::install_reactor_threads`] and
+    /// How many records `reactor_threads` holds. Private with it: only [`Self::install_reactor_threads`] and
     /// [`Self::take_reactor_threads`] write the pair.
     reactor_thread_num: Cell<u16>,
     /// `ReactorThread[]`: null, or the array `install_reactor_threads` leaked.
@@ -469,12 +463,6 @@ impl ServerTables {
         Some(unsafe { &*base.wrapping_add(index) })
     }
 }
-
-/// `offsetof(Server, reactor_threads)` in native code's view, for `layout`.
-pub(crate) const REACTOR_THREADS_OFFSET: usize =
-    core::mem::offset_of!(ServerTables, reactor_threads);
-/// `offsetof(Server, max_connection)` in native code's view, for `layout`.
-pub(crate) const MAX_CONNECTION_OFFSET: usize = core::mem::offset_of!(ServerTables, max_connection);
 
 #[cfg_attr(
     not(feature = "upstream-symbols"),

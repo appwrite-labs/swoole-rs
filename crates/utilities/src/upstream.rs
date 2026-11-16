@@ -1,6 +1,6 @@
 //! Differential tests against the pinned upstream C++ (`swoole-rs-oracle`), ported
 //! from tests/modules/utilities/gate.cc with its inputs: the hashes for both `char`
-//! signednesses, pretty names, the logger's level clamp, labels and rotation formats,
+//! signednesses, the logger's level clamp, labels and rotation formats,
 //! and its line and microsecond formatting with truncation and errno.
 use super::*;
 use std::ffi::{CStr, c_char};
@@ -21,9 +21,6 @@ impl Random {
     }
     fn byte(&mut self) -> u8 {
         self.next().to_ne_bytes()[0]
-    }
-    fn below(&mut self, n: usize) -> usize {
-        usize::try_from(self.next() % n as u64).unwrap()
     }
 }
 
@@ -78,46 +75,6 @@ fn hashes() {
         for (signed, oracle) in oracles {
             let want = unsafe { oracle(2, bytes.as_ptr(), size) };
             assert_eq!(swoole_hash(&bytes, 2, signed), want, "austin {bytes:?}");
-        }
-    }
-}
-
-#[test]
-fn pretty_names() {
-    let mut random = Random(982_341);
-    let mut names: Vec<Vec<u8>> = [
-        "void ns::Class::method(int)",
-        "int x()",
-        "::f()",
-        "aa::bb()",
-        "no bracket",
-        "()",
-        "a::::b()",
-    ]
-    .map(|name| name.as_bytes().to_vec())
-    .into();
-    for colons in 0..65 {
-        for prefix in 0..8 {
-            let (a, c) = ("a".repeat(prefix), ":".repeat(colons));
-            names.push(format!("{a}{c}f()").into_bytes());
-            names.push(format!("void {a}{c}f(int)").into_bytes());
-        }
-    }
-    for _ in 0..20000 {
-        let length = random.below(80);
-        names.push((0..length).map(|_| b"ab :()_\0"[random.below(8)]).collect());
-    }
-    for name in &names {
-        for strip in [false, true] {
-            let mut want = vec![0u8; name.len()];
-            let length =
-                unsafe { upstream::pretty(name.as_ptr(), name.len(), strip, want.as_mut_ptr()) };
-            let (begin, count) = pretty_range(name, strip);
-            assert_eq!(
-                &name[begin..begin + count],
-                &want[..length],
-                "{name:?} {strip}"
-            );
         }
     }
 }

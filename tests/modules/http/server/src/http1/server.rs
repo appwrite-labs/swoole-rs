@@ -7,7 +7,7 @@ use std::io::{Read, Write};
 const PACKET: &[u8] = b"hello world\n";
 
 /// `send_buffer`'s `onReceive`: the packet, answered with 16 MiB of `A` and a close.
-extern "C" fn send_buffer_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn send_buffer_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let serv = Server(serv.raw());
     let (session, data) = request(req);
     expect(data == PACKET, "string(req->data, req->info.len) == packet");
@@ -28,7 +28,7 @@ extern "C" fn send_buffer_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData
 
 /// `send_buffer`'s `onWorkerStart`, where upstream unlocks the mutex its client thread
 /// waits on: the client starts here.
-extern "C" fn send_buffer_worker_start(_: Ctx, serv: view::Server<'_>, _: Worker<'_>) {
+fn send_buffer_worker_start(serv: view::Server<'_>, _: Worker<'_>) {
     let port = Server(serv.raw()).get_primary_port().port();
     // SAFETY: getpid(2).
     client_thread(
@@ -50,7 +50,7 @@ extern "C" fn send_buffer_worker_start(_: Ctx, serv: view::Server<'_>, _: Worker
 /// `TEST(server, send_buffer)`.
 fn send_buffer() {
     let serv = Server::new(MODE_BASE);
-    serv.config().worker_num = 1;
+    serv.config().worker_num.set(1);
 
     set_log_warning();
 

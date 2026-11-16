@@ -257,7 +257,7 @@ fn recv_message(_: Running<'_>, event: &mut Event) -> c_int {
 /// `ProcessPool::run_with_*_protocol` and `run_async`: the worker loop.
 macro_rules! main_loops {
     ($($name:ident = $protocol:expr;)*) => {$(
-        extern "C-unwind" fn $name(pool: PoolRef<'_>, worker: Record<'_>) -> c_int {
+        fn $name(pool: PoolRef<'_>, worker: Record<'_>) -> c_int {
             // A callback's bailout is raised once the export's frames are gone.
             raised(pool_run_main(&NATIVE, pool, worker, $protocol).map(crate::conn_io::status))
         }

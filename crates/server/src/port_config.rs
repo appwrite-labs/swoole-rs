@@ -123,7 +123,8 @@ pub(crate) fn methods() -> &'static PortMethods {
         .get()
         .unwrap_or_else(|| swoole_rs_corebase::fatal("port methods are not registered"))
 }
-#[repr(C)]
+
+/// A `ListenPort`'s settings: a `ListenPort *` is the box of them.
 pub struct PortConfig {
     pub object_id: u16,
     pub backlog: Setting<u16>,
@@ -169,20 +170,17 @@ pub struct PortConfig {
     pub websocket_protocol: Published<Vec<u8>>,
     /// `ListenPort::host`.
     pub host: Box<StringSlot>,
-    /// `ListenPort::protocol`, which native code reads and writes by reference.
+    /// `ListenPort::protocol`, which native framing reads and writes by reference.
     pub protocol: Shared<Protocol>,
     /// `ListenPort::onRead`, the readable callback `init_protocol` picks.
     pub on_read: ReaderSlot,
     /// The port's TLS context, published so a reader keeps it alive across close.
-    /// A thin box, opaque to the native layout mirror.
     pub ssl_context: Published<TlsContext>,
     /// The SNI contexts crates/ports keeps; `ListenPort`'s
-    /// destructor releases them with the context. A thin box, as native code's
-    /// mirror holds a `void *` here.
+    /// destructor releases them with the context.
     pub tls: Box<TlsState>,
     /// The owner of the callable `protocol.private_data_1` names, when the port
-    /// has a `package_length_func`. A thin box: native code's mirror holds a
-    /// `void *` here.
+    /// has a `package_length_func`.
     pub length_owner: Shared<Option<LengthOwner>>,
 }
 

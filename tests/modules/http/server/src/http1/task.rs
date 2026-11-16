@@ -411,6 +411,7 @@ impl TaskServer for Server {
         let id = pool::swoole_get_worker_id() as usize;
         self.config()
             .task_results
+            .as_ptr()
             .cast::<u8>()
             .wrapping_add(id * IPC_MAX_SIZE)
             .cast()
@@ -418,7 +419,7 @@ impl TaskServer for Server {
 }
 
 /// `onTask` that only returns 0.
-extern "C" fn task_zero(_: Ctx, _: view::Server<'_>, _: Packed<'_>) -> c_int {
+fn task_zero(_: view::Server<'_>, _: Packed<'_>) -> c_int {
     0
 }
 
@@ -434,7 +435,7 @@ fn listen(serv: Server) {
 /// worker's own count comes after that check rather than racing it.
 static TASK_COUNTED: AtomicBool = AtomicBool::new(false);
 
-extern "C" fn task_worker_on_task(_: Ctx, serv: view::Server<'_>, task: Packed<'_>) -> c_int {
+fn task_worker_on_task(serv: view::Server<'_>, task: Packed<'_>) -> c_int {
     let serv = Server(serv.raw());
     while !TASK_COUNTED.load(Ordering::SeqCst) {
         sleep_us(1000);
@@ -458,8 +459,8 @@ extern "C" fn task_worker_on_task(_: Ctx, serv: view::Server<'_>, task: Packed<'
 fn task_worker() {
     counter_init();
     let serv = Server::new(MODE_BASE);
-    serv.config().worker_num = 1;
-    serv.config().task_worker_num = 1;
+    serv.config().worker_num.set(1);
+    serv.config().task_worker_num.set(1);
 
     listen(serv);
 
@@ -480,7 +481,7 @@ fn task_worker() {
         serv.tasking_num().fetch_sub(1, Ordering::SeqCst);
         check(serv.get_tasking_num() == 0, "serv.get_tasking_num() == 0");
         check(
-            serv.get_idle_task_worker_num() == serv.config().task_worker_num,
+            serv.get_idle_task_worker_num() == serv.config().task_worker_num.get(),
             "serv.get_idle_task_worker_num() == serv.task_worker_num",
         );
     });
@@ -506,7 +507,7 @@ fn task_worker() {
     serv.delete();
 }
 
-extern "C" fn task_worker2_on_pipe_message(_: Ctx, _: view::Server<'_>, task: Packed<'_>) {
+fn task_worker2_on_pipe_message(_: view::Server<'_>, task: Packed<'_>) {
     check(
         data(task).data.starts_with(TEST_STR),
         "EXPECT_MEMEQ(task->data, TEST_STR, strlen(TEST_STR))",
@@ -514,7 +515,7 @@ extern "C" fn task_worker2_on_pipe_message(_: Ctx, _: view::Server<'_>, task: Pa
     counter_incr(7);
 }
 
-extern "C" fn task_worker2_on_worker_start(_: Ctx, serv: view::Server<'_>, worker: Worker<'_>) {
+fn task_worker2_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
     let serv = Server(serv.raw());
     super::timeline::mark(["start 0", "start 1", "start 2"][worker.id() as usize]);
     if worker.id() == 0 {
@@ -561,8 +562,8 @@ extern "C" fn task_worker2_on_worker_start(_: Ctx, serv: view::Server<'_>, worke
 /// `TEST(server, task_worker2)`.
 fn task_worker2() {
     let serv = Server::new(MODE_PROCESS);
-    serv.config().worker_num = 1;
-    serv.config().task_worker_num = 2;
+    serv.config().worker_num.set(1);
+    serv.config().task_worker_num.set(2);
     counter_init();
 
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
@@ -602,14 +603,14 @@ fn sigrtmin() -> c_int {
     unreachable!("the case binary is Linux's")
 }
 
-extern "C" fn task_worker_3_on_manager_start(_: Ctx, serv: view::Server<'_>) {
+fn task_worker_3_on_manager_start(serv: view::Server<'_>) {
     let serv = Server(serv.raw());
     after(5000, move || {
         serv.shutdown();
     });
 }
 
-extern "C" fn task_worker_3_on_worker_start(_: Ctx, serv: view::Server<'_>, worker: Worker<'_>) {
+fn task_worker_3_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
     let serv = Server(serv.raw());
     let id = worker.id();
     counter_incr(2 + id as usize);
@@ -642,8 +643,8 @@ extern "C" fn task_worker_3_on_worker_start(_: Ctx, serv: view::Server<'_>, work
 /// `TEST(server, task_worker_3)`.
 fn task_worker_3() {
     let serv = Server::new(MODE_BASE);
-    serv.config().worker_num = 1;
-    serv.config().task_worker_num = 2;
+    serv.config().worker_num.set(1);
+    serv.config().task_worker_num.set(2);
     counter_init();
 
     // A missed worker restart must fail the test instead of leaving the server running
@@ -670,7 +671,7 @@ fn task_worker_3() {
 
 /// `onTask` of `test_task`, `task_worker3`, `task_worker4` and `test_task_ipc`: the
 /// packet, finished with itself.
-extern "C" fn finish_packet(_: Ctx, serv: view::Server<'_>, task: Packed<'_>) -> c_int {
+fn finish_packet(serv: view::Server<'_>, task: Packed<'_>) -> c_int {
     let serv = Server(serv.raw());
     let payload = data(task).payload();
     check(
@@ -685,7 +686,7 @@ extern "C" fn finish_packet(_: Ctx, serv: view::Server<'_>, task: Packed<'_>) ->
 }
 
 /// `onFinish` of `test_task`, `task_worker3` and `task_worker4`: the packet back.
-extern "C" fn finished_packet(_: Ctx, _: view::Server<'_>, task: Packed<'_>) -> c_int {
+fn finished_packet(_: view::Server<'_>, task: Packed<'_>) -> c_int {
     check(
         data(task).payload() == PACKET,
         "string(task->data, task->info.len) == packet",
@@ -693,7 +694,7 @@ extern "C" fn finished_packet(_: Ctx, _: view::Server<'_>, task: Packed<'_>) -> 
     0
 }
 
-extern "C" fn test_task_on_worker_start(_: Ctx, serv: view::Server<'_>, worker: Worker<'_>) {
+fn test_task_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
     let serv = Server(serv.raw());
     let id = worker.id();
     if id == 1 {
@@ -716,9 +717,9 @@ extern "C" fn test_task_on_worker_start(_: Ctx, serv: view::Server<'_>, worker: 
 fn test_task(mode: c_int, task_ipc_mode: u8) {
     counter_init();
     let serv = Server::new(mode);
-    serv.config().worker_num = 2;
-    serv.config().task_ipc_mode = task_ipc_mode;
-    serv.config().task_worker_num = 3;
+    serv.config().worker_num.set(2);
+    serv.config().task_ipc_mode.set(task_ipc_mode);
+    serv.config().task_worker_num.set(3);
 
     listen(serv);
 
@@ -755,9 +756,9 @@ fn task_ipc_stream() {
 fn coroutine_task_server(on_worker_start: swoole_rs_server::callbacks::WorkerFn) -> Server {
     counter_init();
     let serv = Server::new(MODE_PROCESS);
-    serv.config().worker_num = 2;
-    serv.config().task_worker_num = 3;
-    serv.config().task_enable_coroutine = true;
+    serv.config().worker_num.set(2);
+    serv.config().task_worker_num.set(3);
+    serv.config().task_enable_coroutine.set(true);
 
     listen(serv);
 
@@ -771,7 +772,7 @@ fn coroutine_task_server(on_worker_start: swoole_rs_server::callbacks::WorkerFn)
     serv
 }
 
-extern "C" fn task_worker3_on_worker_start(_: Ctx, serv: view::Server<'_>, worker: Worker<'_>) {
+fn task_worker3_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
     let serv = Server(serv.raw());
     let id = worker.id();
     if id == 1 {
@@ -795,7 +796,7 @@ fn task_worker3() {
     serv.delete();
 }
 
-extern "C" fn task_worker4_on_worker_start(_: Ctx, serv: view::Server<'_>, worker: Worker<'_>) {
+fn task_worker4_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
     let serv = Server(serv.raw());
     let id = worker.id();
     if id == 1 {
@@ -832,7 +833,7 @@ fn unpack(task: Packed<'_>) -> Option<Vec<u8>> {
     bytes
 }
 
-extern "C" fn task_sync_multi_on_task(_: Ctx, serv: view::Server<'_>, task: Packed<'_>) -> c_int {
+fn task_sync_multi_on_task(serv: view::Server<'_>, task: Packed<'_>) -> c_int {
     let Some(packet) = unpack(unsafe { Packed::from_raw(task.as_ptr()) }) else {
         return -1;
     };
@@ -885,7 +886,7 @@ impl MultiTask for Multi<'_> {
     }
 }
 
-extern "C" fn task_sync_multi_on_worker_start(_: Ctx, serv: view::Server<'_>, worker: Worker<'_>) {
+fn task_sync_multi_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
     let serv = Server(serv.raw());
     if worker.id() == 1 {
         let mut guard = MULTI.lock().unwrap();
@@ -915,8 +916,8 @@ extern "C" fn task_sync_multi_on_worker_start(_: Ctx, serv: view::Server<'_>, wo
 fn task_sync_multi_task() {
     counter_init();
     let serv = Server::new(MODE_PROCESS);
-    serv.config().worker_num = 2;
-    serv.config().task_worker_num = 3;
+    serv.config().worker_num.set(2);
+    serv.config().task_worker_num.set(3);
 
     let n_task = 16;
     let len_task = IPC_MAX_SIZE * 2;
@@ -949,7 +950,7 @@ fn task_sync_multi_task() {
     serv.delete();
 }
 
-extern "C" fn task_sync_on_task(_: Ctx, serv: view::Server<'_>, task: Packed<'_>) -> c_int {
+fn task_sync_on_task(serv: view::Server<'_>, task: Packed<'_>) -> c_int {
     let payload = data(task).payload();
     check(
         payload == PACKET,
@@ -964,7 +965,7 @@ extern "C" fn task_sync_on_task(_: Ctx, serv: view::Server<'_>, task: Packed<'_>
     0
 }
 
-extern "C" fn task_sync_on_worker_start(_: Ctx, serv: view::Server<'_>, worker: Worker<'_>) {
+fn task_sync_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
     let serv = Server(serv.raw());
     if worker.id() == 1 {
         let dst_worker_id = -1;
@@ -989,8 +990,8 @@ extern "C" fn task_sync_on_worker_start(_: Ctx, serv: view::Server<'_>, worker: 
 fn task_sync() {
     counter_init();
     let serv = Server::new(MODE_PROCESS);
-    serv.config().worker_num = 2;
-    serv.config().task_worker_num = 2;
+    serv.config().worker_num.set(2);
+    serv.config().task_worker_num.set(2);
 
     listen(serv);
 
@@ -1007,7 +1008,7 @@ fn task_sync() {
 }
 
 /// `test_task_ipc`'s `onFinish`: the packet back, then a shutdown.
-extern "C" fn task_ipc_on_finish(_: Ctx, serv: view::Server<'_>, task: Packed<'_>) -> c_int {
+fn task_ipc_on_finish(serv: view::Server<'_>, task: Packed<'_>) -> c_int {
     check(
         data(task).payload() == PACKET,
         "string(task->data, task->info.len) == packet",
@@ -1017,7 +1018,7 @@ extern "C" fn task_ipc_on_finish(_: Ctx, serv: view::Server<'_>, task: Packed<'_
     0
 }
 
-extern "C" fn task_ipc_on_worker_start(_: Ctx, serv: view::Server<'_>, worker: Worker<'_>) {
+fn task_ipc_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
     let serv = Server(serv.raw());
     if worker.id() == 1 {
         let mut dst_worker_id = -1;
@@ -1052,9 +1053,9 @@ fn test_task_ipc(serv: Server) {
 fn task_ipc_server(mode: c_int, task_ipc_mode: u8) -> Server {
     counter_init();
     let serv = Server::new(mode);
-    serv.config().worker_num = 2;
-    serv.config().task_worker_num = 2;
-    serv.config().task_ipc_mode = task_ipc_mode;
+    serv.config().worker_num.set(2);
+    serv.config().task_worker_num.set(2);
+    serv.config().task_ipc_mode.set(task_ipc_mode);
     serv
 }
 
@@ -1112,7 +1113,7 @@ fn wait_for(done: impl Fn() -> bool) {
 }
 
 /// `onStart` of `thread` and `task_thread`: unlocks the client thread's `lock`.
-extern "C" fn unlock_on_start(_: Ctx, _: view::Server<'_>) {
+fn unlock_on_start(_: view::Server<'_>) {
     shared().unlocked.store(true, Ordering::SeqCst);
 }
 
@@ -1128,11 +1129,11 @@ fn server_response() -> Vec<u8> {
     [b"Server: ".as_slice(), PACKET].concat()
 }
 
-extern "C" fn thread_on_worker_start(_: Ctx, serv: view::Server<'_>, worker: Worker<'_>) {
+fn thread_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
     Server(serv.raw()).send_pipe_message(1 - worker.id(), TEST_STR);
 }
 
-extern "C" fn thread_on_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn thread_on_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let serv = Server(serv.raw());
     let (session, data) = request(req);
     check(data == PACKET, "string(req->data, req->info.len) == packet");
@@ -1150,7 +1151,7 @@ extern "C" fn thread_on_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) 
     SW_OK
 }
 
-extern "C" fn thread_on_pipe_message(_: Ctx, _: view::Server<'_>, _: Packed<'_>) {
+fn thread_on_pipe_message(_: view::Server<'_>, _: Packed<'_>) {
     counter_incr(4);
 }
 
@@ -1159,7 +1160,7 @@ extern "C" fn thread_on_pipe_message(_: Ctx, _: view::Server<'_>, _: Packed<'_>)
 /// Its trace logging is left out.
 fn thread() {
     let serv = Server::new(MODE_THREAD);
-    serv.config().worker_num = 2;
+    serv.config().worker_num.set(2);
 
     counter_init();
 
@@ -1222,11 +1223,11 @@ fn thread() {
 }
 
 /// `task_thread`'s `onWorkerStart`: its `std::atomic<int> count` is counter 1.
-extern "C" fn task_thread_on_worker_start(_: Ctx, _: view::Server<'_>, _: Worker<'_>) {
+fn task_thread_on_worker_start(_: view::Server<'_>, _: Worker<'_>) {
     counter_incr(1);
 }
 
-extern "C" fn task_thread_on_finish(_: Ctx, serv: view::Server<'_>, task: Packed<'_>) -> c_int {
+fn task_thread_on_finish(serv: view::Server<'_>, task: Packed<'_>) -> c_int {
     let payload = data(task).payload();
     let client_fd = c_long::from_ne_bytes(payload[..size_of::<c_long>()].try_into().unwrap());
     check(
@@ -1236,7 +1237,7 @@ extern "C" fn task_thread_on_finish(_: Ctx, serv: view::Server<'_>, task: Packed
     0
 }
 
-extern "C" fn task_thread_on_task(_: Ctx, serv: view::Server<'_>, task: Packed<'_>) -> c_int {
+fn task_thread_on_task(serv: view::Server<'_>, task: Packed<'_>) -> c_int {
     check(
         Server(serv.raw()).finish(data(task).payload(), task),
         "serv->finish(task->data, task->info.len, 0, task)",
@@ -1244,7 +1245,7 @@ extern "C" fn task_thread_on_task(_: Ctx, serv: view::Server<'_>, task: Packed<'
     0
 }
 
-extern "C" fn task_thread_on_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn task_thread_on_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let (client_fd, data) = request(req);
     check(data == PACKET, "string(req->data, req->info.len) == packet");
 
@@ -1263,8 +1264,8 @@ extern "C" fn task_thread_on_receive(_: Ctx, serv: view::Server<'_>, req: &RecvD
 /// thread, and the worker's `onFinish` answers the client.
 fn task_thread() {
     let serv = Server::new(MODE_THREAD);
-    serv.config().worker_num = 2;
-    serv.config().task_worker_num = 2;
+    serv.config().worker_num.set(2);
+    serv.config().task_worker_num.set(2);
 
     counter_init();
     case::log_level(case::SW_LOG_INFO);
@@ -1303,7 +1304,7 @@ fn task_thread() {
     join_client();
 
     // `serv.get_core_worker_num()`: the workers and the task workers.
-    let core_worker_num = serv.config().worker_num + serv.config().task_worker_num;
+    let core_worker_num = serv.config().worker_num.get() + serv.config().task_worker_num.get();
     assert_eq!(counter_get(1), i32::try_from(core_worker_num).unwrap());
     wait_all_child_processes();
     assert_no_failure();
@@ -1314,7 +1315,7 @@ static NO_IDLE_CLIENT: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
 
 /// `no_idle_task_worker`'s `onStart`: the client thread, once a worker has unlocked
 /// the gate (upstream's process-shared mutex).
-extern "C" fn no_idle_on_start(_: Ctx, serv: view::Server<'_>) {
+fn no_idle_on_start(serv: view::Server<'_>) {
     let serv = Server(serv.raw());
     let t1 = std::thread::spawn(move || {
         block_all_signals();
@@ -1347,11 +1348,11 @@ extern "C" fn no_idle_on_start(_: Ctx, serv: view::Server<'_>) {
     *NO_IDLE_CLIENT.lock().unwrap() = Some(t1);
 }
 
-extern "C" fn no_idle_on_worker_start(_: Ctx, _: view::Server<'_>, _: Worker<'_>) {
+fn no_idle_on_worker_start(_: view::Server<'_>, _: Worker<'_>) {
     shared().unlocked.store(true, Ordering::SeqCst);
 }
 
-extern "C" fn no_idle_on_receive(_: Ctx, serv: view::Server<'_>, _: &RecvData) -> c_int {
+fn no_idle_on_receive(serv: view::Server<'_>, _: &RecvData) -> c_int {
     let serv = Server(serv.raw());
     for _ in 0..1024 {
         let mut dst_worker_id = -1;
@@ -1365,7 +1366,7 @@ extern "C" fn no_idle_on_receive(_: Ctx, serv: view::Server<'_>, _: &RecvData) -
     SW_OK
 }
 
-extern "C" fn no_idle_on_task(_: Ctx, _: view::Server<'_>, task: Packed<'_>) -> c_int {
+fn no_idle_on_task(_: view::Server<'_>, task: Packed<'_>) -> c_int {
     check(
         data(task).payload() == PACKET,
         "string(task->data, task->info.len) == packet",
@@ -1378,9 +1379,9 @@ extern "C" fn no_idle_on_task(_: Ctx, _: view::Server<'_>, task: Packed<'_>) -> 
 fn no_idle_task_worker() {
     counter_init();
     let serv = Server::new(MODE_PROCESS);
-    serv.config().worker_num = 1;
-    serv.config().task_worker_num = 4;
-    serv.config().dispatch_mode = DISPATCH_IDLE_WORKER;
+    serv.config().worker_num.set(1);
+    serv.config().task_worker_num.set(4);
+    serv.config().dispatch_mode.set(DISPATCH_IDLE_WORKER);
 
     let log_file = CString::new(TEST_LOG_FILE).unwrap();
     set_log_file(&log_file);

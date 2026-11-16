@@ -211,12 +211,7 @@ pub(crate) fn if_exit(reactor: Running<'_>) -> bool {
 }
 
 /// `Reactor::set_end_callback(id, callback)`, or `erase_end_callback(id)` without one.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_reactor_set_end(
-    owner: &mut ReactorState,
-    id: c_int,
-    callback: Option<EndFn>,
-) {
+pub fn swr_v1_reactor_set_end(owner: &mut ReactorState, id: c_int, callback: Option<EndFn>) {
     let priority = Priority::from_code(id);
     debug_assert!(priority.is_some(), "end callback {id}");
     if let Some(priority) = priority {

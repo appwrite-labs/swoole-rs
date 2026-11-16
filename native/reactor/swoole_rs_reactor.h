@@ -41,10 +41,8 @@ typedef struct {
 /* Reactor handler tables (read/write/error per fd type, write and error defaults), which
  * only Rust reads, of Rust handlers. */
 typedef struct swr_v1_reactor_handlers swr_v1_reactor_handlers;
-/* The fd -> socket registry (Reactor::sockets_); null reads as empty. */
+/* The fd -> socket registry (Reactor::sockets_), which only Rust reads. */
 typedef struct swr_v1_reactor_registry swr_v1_reactor_registry;
-void *swr_v1_reactor_registry_get(const swr_v1_reactor_registry *, int fd);
-size_t swr_v1_reactor_registry_count(const swr_v1_reactor_registry *);
 /* network::Socket's timeout group (dns_timeout, connect_timeout, read_timeout,
  * write_timeout), embedded in this order (Socket static_asserts it). */
 typedef struct { double dns, connect, read, write; } swr_v1_socket_timeouts;
@@ -78,8 +76,6 @@ typedef struct {
     swr_v1_reactor_deferred *defer_tasks, *destroy_callbacks;
     swr_v1_reactor_task idle_task, future_task;
 } swr_v1_reactor_head;
-/* Reactor's end callbacks (set_end_callback, or erase_end_callback without fn). */
-void swr_v1_reactor_set_end(swr_v1_reactor_state *, int id, void (*callback)(void));
 #ifdef __cplusplus
 }
 static_assert(offsetof(swr_v1_reactor_head, type_) == sizeof(swr_v1_reactor_prepared) &&

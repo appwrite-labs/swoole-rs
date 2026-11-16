@@ -1,9 +1,10 @@
 //! Upstream's `core-tests/src/os/process_pool.cpp`, one function per TEST with the same inputs
 //! and expected values, over the Rust ProcessPool and Worker (crates/process) under their
 //! upstream symbols. `ProcessPool pool{}` and `Worker worker{}` are zeroed mirrors of the
-//! records Rust owns, checked against the fixture's sizes; the callbacks are `extern "C"`
-//! functions, as upstream's are captureless lambdas, so a failed assertion inside one aborts
-//! the process it runs in. `SwooleWG` is crates/process's `worker_globals`;
+//! records Rust owns, checked against the fixture's sizes. The callbacks are fns of
+//! crates/process's hook types, as upstream's are captureless lambdas, set with
+//! `PoolRef::install`; a failed assertion inside one aborts the process it runs in (the
+//! build's panics abort). `SwooleWG` is crates/process's `worker_globals`;
 //! `swoole_set_isolation` is crates/ossupport's `set_isolation`. core-tests' shared counters are `sw_mem_pool()` memory
 //! (crates/memory's `members::pool::alloc`), so workers' increments reach the master, as
 //! upstream's do.
@@ -15,9 +16,15 @@ use std::os::unix::net::UnixStream;
 use std::ptr::{self, null_mut};
 use std::sync::atomic::{AtomicI32, AtomicPtr, Ordering::SeqCst};
 use std::time::{SystemTime, UNIX_EPOCH};
+use swoole_rs_corebase::constants::SW_IPC_MAX_SIZE;
 use swoole_rs_memory::members::pool as mem_pool;
 use swoole_rs_process::methods as pm;
-use swoole_rs_process::process_pool::Protocol;
+use swoole_rs_process::methods::ExitStatus;
+use swoole_rs_process::process_pool::{
+    ErrorFn, EventFn, Hooks, MainLoopFn, MessageFn, NotFoundFn, PoolFn, PoolRef, Protocol,
+    RecvData, TaskFn, WorkerFn,
+};
+use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::{
     Worker as WorkerHandle, swr_v1_worker_init, swr_v1_worker_shutdown,
 };
@@ -114,45 +121,23 @@ impl EventData {
     }
 }
 
-/// `swoole::RecvData`.
-#[repr(C)]
-struct RecvData {
-    info: DataHead,
-    data: *const u8,
+/// `WEXITSTATUS` of a worker's exit status.
+fn exit_code(status: &ExitStatus) -> c_int {
+    (status.status() >> 8) & 0xff
 }
 
-impl RecvData {
-    fn bytes(&self) -> &[u8] {
-        // SAFETY: the pool lends `info.len` bytes at `data` for the callback.
-        unsafe { std::slice::from_raw_parts(self.data, self.info.len as usize) }
-    }
+/// `WTERMSIG` of a worker's exit status.
+fn term_signal(status: &ExitStatus) -> c_int {
+    status.status() & 0x7f
 }
 
-/// `swoole::ExitStatus`.
-#[repr(C)]
-struct ExitStatus {
-    pid: c_int,
-    status: c_int,
+/// A task's payload: the bytes after its head.
+fn payload(task: Packed<'_>) -> &[u8] {
+    &task.bytes()[size_of::<DataHead>()..]
 }
 
-impl ExitStatus {
-    fn code(&self) -> c_int {
-        (self.status >> 8) & 0xff
-    }
-
-    fn signal(&self) -> c_int {
-        self.status & 0x7f
-    }
-}
-
-type PoolFn = extern "C" fn(*mut Pool);
-type WorkerFn = extern "C" fn(*mut Pool, *mut Worker);
-type TaskFn = extern "C" fn(*mut Pool, *mut Worker, *mut EventData) -> c_int;
-type MessageFn = extern "C" fn(*mut Pool, *mut RecvData);
-type ErrorFn = extern "C" fn(*mut Pool, *mut Worker, *const ExitStatus);
-type WorkerMessageFn = extern "C" fn(*mut Pool, *mut EventData);
-type NotFoundFn = extern "C" fn(*mut Pool, *const ExitStatus) -> c_int;
-type MainLoop = unsafe extern "C" fn(*mut Pool, *mut Worker) -> c_int;
+/// An `onWorkerMessage`'s bytes.
+type Message = [u8; SW_IPC_MAX_SIZE as usize];
 type Handler = extern "C" fn(c_int);
 
 /// `swoole::ProcessPool`'s fields (crates/process's PoolRecord).
@@ -191,9 +176,9 @@ struct Pool {
     on_worker_exit: Option<WorkerFn>,
     on_worker_stop: Option<WorkerFn>,
     on_worker_error: Option<ErrorFn>,
-    on_worker_message: Option<WorkerMessageFn>,
+    on_worker_message: Option<EventFn>,
     on_worker_not_found: Option<NotFoundFn>,
-    main_loop: Option<MainLoop>,
+    main_loop: Option<MainLoopFn>,
     round_id: u32,
     workers: *mut Worker,
     pipes: *mut c_void,
@@ -639,8 +624,15 @@ fn response(pool: *mut Pool, data: *const u8, length: u32) -> c_int {
 }
 
 fn main_loop(pool: *mut Pool, worker: *mut Worker) -> c_int {
-    // SAFETY: `create` set the loop.
-    unsafe { ((*pool).main_loop.unwrap())(pool, worker) }
+    // SAFETY: a created pool, which set the loop, and one of its workers.
+    let (pool, worker) = unsafe { (PoolRef::new(pool.cast()), WorkerHandle::new(worker.cast())) };
+    pool.call_main_loop(worker).unwrap()
+}
+
+/// `pool.onX = fn` for each hook `hooks` names.
+fn install(pool: *mut Pool, hooks: Hooks) {
+    // SAFETY: the case's pool.
+    unsafe { PoolRef::new(pool.cast()) }.install(&hooks);
 }
 
 fn sysv(signo: c_int, handler: usize) {
@@ -750,54 +742,63 @@ fn test_func(pool: *mut Pool) {
         worker_init(get_worker(pool, 0));
         (*pool).running = true;
         (*pool).ptr = (&raw mut rmem).cast();
-        if let Some(on_worker_start) = (*pool).on_worker_start {
-            on_worker_start(pool, get_worker(pool, 0));
-        }
+        PoolRef::new(pool.cast())
+            .call_on_worker_start(WorkerHandle::new(get_worker(pool, 0).cast()));
     }
     main_loop(pool, get_worker(pool, 0));
     destroy(pool);
 }
 
-extern "C" fn task_protocol_on_task(
-    pool: *mut Pool,
-    _: *mut Worker,
-    task: *mut EventData,
-) -> c_int {
+fn task_protocol_on_task(pool: PoolRef<'_>, _: WorkerHandle<'_>, task: Packed<'_>) -> c_int {
+    let pool = pool.raw().cast::<Pool>();
     // SAFETY: the running pool.
     unsafe { (*pool).running = false };
     ms_sleep(10000);
-    // SAFETY: the pool's task.
-    assert_eq!(pool_data(pool), unsafe { (*task).payload() });
+    assert_eq!(pool_data(pool), payload(task));
     0
 }
 
 fn test_func_task_protocol(pool: *mut Pool) {
     set_protocol(pool, Protocol::Task);
     // SAFETY: the case's pool.
-    unsafe { (*pool).on_task = Some(task_protocol_on_task) };
+    install(
+        pool,
+        Hooks {
+            on_task: Some(task_protocol_on_task),
+            ..Hooks::default()
+        },
+    );
     test_func(pool);
 }
 
-extern "C" fn message_protocol_on_message(pool: *mut Pool, rdata: *mut RecvData) {
+fn message_protocol_on_message(pool: PoolRef<'_>, rdata: &RecvData<'_>) {
+    let pool = pool.raw().cast::<Pool>();
     // SAFETY: the running pool.
     unsafe { (*pool).running = false };
     ms_sleep(10000);
     // SAFETY: the pool's message.
-    assert_eq!(pool_data(pool), unsafe { (*rdata).bytes() });
+    assert_eq!(pool_data(pool), rdata.data());
 }
 
 fn test_func_message_protocol(pool: *mut Pool) {
     set_protocol(pool, Protocol::Message);
     // SAFETY: the case's pool.
-    unsafe { (*pool).on_message = Some(message_protocol_on_message) };
+    install(
+        pool,
+        Hooks {
+            on_message: Some(message_protocol_on_message),
+            ..Hooks::default()
+        },
+    );
     test_func(pool);
 }
 
-extern "C" fn stream_protocol_on_message(pool: *mut Pool, rdata: *mut RecvData) {
+fn stream_protocol_on_message(pool: PoolRef<'_>, rdata: &RecvData<'_>) {
+    let pool = pool.raw().cast::<Pool>();
     // SAFETY: the running pool.
     unsafe { (*pool).running = false };
-    // SAFETY: the message is an EventData.
-    let msg = unsafe { &*(*rdata).data.cast::<EventData>() };
+    // SAFETY: the message is an EventData's bytes, which it lends for the call.
+    let msg = unsafe { rdata.data().as_ptr().cast::<EventData>().read_unaligned() };
     ms_sleep(10000);
     assert_eq!(pool_data(pool), msg.payload());
 }
@@ -805,7 +806,13 @@ extern "C" fn stream_protocol_on_message(pool: *mut Pool, rdata: *mut RecvData) 
 fn test_func_stream_protocol(pool: *mut Pool) {
     set_protocol(pool, Protocol::Stream);
     // SAFETY: the case's pool.
-    unsafe { (*pool).on_message = Some(stream_protocol_on_message) };
+    install(
+        pool,
+        Hooks {
+            on_message: Some(stream_protocol_on_message),
+            ..Hooks::default()
+        },
+    );
     test_func(pool);
 }
 
@@ -831,14 +838,13 @@ fn unix_sock() {
     test_func_task_protocol(pool);
 }
 
-extern "C" fn tcp_raw_on_message(pool: *mut Pool, rdata: *mut RecvData) {
+fn tcp_raw_on_message(pool: PoolRef<'_>, rdata: &RecvData<'_>) {
+    let pool = pool.raw().cast::<Pool>();
     // SAFETY: the running pool.
     unsafe { (*pool).running = false };
     let data = pool_data(pool);
-    // SAFETY: the pool's message.
-    let rdata = unsafe { &*rdata };
-    assert_eq!(rdata.info.len as usize, data.len());
-    assert_eq!(data, rdata.bytes());
+    assert_eq!(rdata.info().len as usize, data.len());
+    assert_eq!(data, rdata.data());
 }
 
 fn tcp_raw() {
@@ -855,7 +861,13 @@ fn tcp_raw() {
         (*pool).max_packet_size = SIZE;
         (*pool).running = true;
         (*pool).ptr = (&raw mut data).cast();
-        (*pool).on_message = Some(tcp_raw_on_message);
+        install(
+            pool,
+            Hooks {
+                on_message: Some(tcp_raw_on_message),
+                ..Hooks::default()
+            },
+        );
     }
 
     // The sender must run alongside the receive loop because the frame may exceed the
@@ -936,7 +948,8 @@ extern "C" fn stop_current_pool(_: c_int) {
     unsafe { (*current_pool()).running = false };
 }
 
-extern "C" fn with_timer_on_worker_start(pool: *mut Pool, _: *mut Worker) {
+fn with_timer_on_worker_start(pool: PoolRef<'_>, _: WorkerHandle<'_>) {
+    let pool = pool.raw().cast::<Pool>();
     CURRENT_POOL.store(pool, SeqCst);
     after(50, |_| {
         // SAFETY: kill(2) on this process.
@@ -944,10 +957,11 @@ extern "C" fn with_timer_on_worker_start(pool: *mut Pool, _: *mut Worker) {
     });
 }
 
-extern "C" fn with_timer_on_message(pool: *mut Pool, rdata: *mut RecvData) {
+fn with_timer_on_message(pool: PoolRef<'_>, rdata: &RecvData<'_>) {
+    let pool = pool.raw().cast::<Pool>();
     ms_sleep(10000);
     // SAFETY: the pool's message.
-    assert_eq!(pool_data(pool), unsafe { (*rdata).bytes() });
+    assert_eq!(pool_data(pool), rdata.data());
 }
 
 fn message_protocol_with_timer() {
@@ -959,11 +973,14 @@ fn message_protocol_with_timer() {
     // SAFETY: an extern "C" handler.
     unsafe { swoole_signal_set(SIGTERM, stop_current_pool, false) };
 
-    // SAFETY: the case's pool.
-    unsafe {
-        (*pool).on_worker_start = Some(with_timer_on_worker_start);
-        (*pool).on_message = Some(with_timer_on_message);
-    }
+    install(
+        pool,
+        Hooks {
+            on_worker_start: Some(with_timer_on_worker_start),
+            on_message: Some(with_timer_on_message),
+            ..Hooks::default()
+        },
+    );
 
     test_func(pool);
 }
@@ -982,20 +999,23 @@ fn stream_protocol_with_msgq() {
     test_func_stream_protocol(pool);
 }
 
-extern "C" fn shutdown_on_worker_start(pool: *mut Pool, _: *mut Worker) {
+fn shutdown_on_worker_start(pool: PoolRef<'_>, _: WorkerHandle<'_>) {
+    let pool = pool.raw().cast::<Pool>();
     // SAFETY: the case's shared int.
     unsafe { *(*pool).ptr.cast::<c_int>() = MAGIC_NUMBER };
     ms_sleep(1);
 }
 
-extern "C" fn shutdown_on_task(pool: *mut Pool, _: *mut Worker, _: *mut EventData) -> c_int {
+fn shutdown_on_task(pool: PoolRef<'_>, _: WorkerHandle<'_>, _: Packed<'_>) -> c_int {
+    let pool = pool.raw().cast::<Pool>();
     ms_sleep(1000);
     // SAFETY: kill(2) on the master.
     unsafe { kill((*pool).master_pid, SIGTERM) };
     0
 }
 
-extern "C" fn dispatch_random_128(pool: *mut Pool) {
+fn dispatch_random_128(pool: PoolRef<'_>) {
+    let pool = pool.raw().cast::<Pool>();
     let mut msg = EventData::new();
     msg.info.len = 128;
     // `swoole_random_string(msg.data, msg.info.len)`: 128 characters and a NUL.
@@ -1014,9 +1034,15 @@ fn shutdown_() {
     unsafe {
         (*pool).max_packet_size = 8192;
         (*pool).ptr = shm_value.cast();
-        (*pool).on_worker_start = Some(shutdown_on_worker_start);
-        (*pool).on_task = Some(shutdown_on_task);
-        (*pool).on_start = Some(dispatch_random_128);
+        install(
+            pool,
+            Hooks {
+                on_worker_start: Some(shutdown_on_worker_start),
+                on_task: Some(shutdown_on_task),
+                on_start: Some(dispatch_random_128),
+                ..Hooks::default()
+            },
+        );
     }
 
     CURRENT_POOL.store(pool, SeqCst);
@@ -1038,7 +1064,8 @@ extern "C" fn reopen_current_logger(_: c_int) {
     unsafe { pool_reopen_logger(current_pool()) };
 }
 
-extern "C" fn reload_on_worker_start(pool: *mut Pool, _: *mut Worker) {
+fn reload_on_worker_start(pool: PoolRef<'_>, _: WorkerHandle<'_>) {
+    let pool = pool.raw().cast::<Pool>();
     counter_incr(0);
     CURRENT_POOL.store(pool, SeqCst);
 
@@ -1056,7 +1083,8 @@ extern "C" fn reload_on_worker_start(pool: *mut Pool, _: *mut Worker) {
     }
 }
 
-extern "C" fn reload_on_start(pool: *mut Pool) {
+fn reload_on_start(pool: PoolRef<'_>) {
+    let pool = pool.raw().cast::<Pool>();
     // SAFETY: the started pool.
     unsafe { pool_reopen_logger(pool) };
     after(50, move |_| {
@@ -1069,33 +1097,32 @@ extern "C" fn reload_on_start(pool: *mut Pool) {
     });
 }
 
-extern "C" fn reload_on_before_reload(_: *mut Pool) {}
+fn reload_on_before_reload(_: PoolRef<'_>) {}
 
-extern "C" fn reload_on_after_reload(pool: *mut Pool) {
+fn reload_on_after_reload(pool: PoolRef<'_>) {
+    let pool = pool.raw().cast::<Pool>();
     after(100, move |_| {
         // SAFETY: the started pool.
         unsafe { pool_shutdown(pool) };
     });
 }
 
-extern "C" fn reload_on_worker_error(_: *mut Pool, _: *mut Worker, exit_status: *const ExitStatus) {
-    // SAFETY: the pool's status.
-    assert_eq!(unsafe { (*exit_status).signal() }, SIGKILL);
+fn reload_on_worker_error(_: PoolRef<'_>, _: WorkerHandle<'_>, exit_status: &ExitStatus) {
+    assert_eq!(term_signal(exit_status), SIGKILL);
 }
 
-extern "C" fn reload_on_worker_message(_: *mut Pool, msg: *mut EventData) {
-    // SAFETY: the pool's message.
-    let msg = unsafe { &*msg };
+fn reload_on_worker_message(_: PoolRef<'_>, msg: &Message) {
+    // SAFETY: the bytes of an EventData.
+    let msg = unsafe { ptr::from_ref(msg).cast::<EventData>().read_unaligned() };
     assert_eq!(msg.info.kind, SW_WORKER_MESSAGE_STOP + 1);
     let len = msg.info.len as usize;
     assert_eq!(msg.payload(), &TEST_STR[..len]);
 }
 
-extern "C" fn reload_on_worker_not_found(pool: *mut Pool, exit_status: *const ExitStatus) -> c_int {
-    // SAFETY: the pool's status.
-    let exit_status = unsafe { &*exit_status };
-    assert_eq!(exit_status.pid, counter_get(20));
-    assert_eq!(exit_status.code(), 123);
+fn reload_on_worker_not_found(pool: PoolRef<'_>, exit_status: &ExitStatus) {
+    let pool = pool.raw().cast::<Pool>();
+    assert_eq!(exit_status.pid(), counter_get(20));
+    assert_eq!(exit_code(exit_status), 123);
     // SAFETY: TEST_STR's bytes.
     let pushed = unsafe {
         pool_push_message(
@@ -1106,7 +1133,6 @@ extern "C" fn reload_on_worker_not_found(pool: *mut Pool, exit_status: *const Ex
         )
     };
     assert_eq!(pushed, SW_OK);
-    SW_OK
 }
 
 extern "C" fn read_current_message(_: c_int) {
@@ -1123,10 +1149,16 @@ fn reload() {
     unsafe {
         (*pool).max_packet_size = 8192;
         (*pool).max_wait_time = 1;
-        (*pool).on_worker_start = Some(reload_on_worker_start);
-        (*pool).on_start = Some(reload_on_start);
-        (*pool).on_before_reload = Some(reload_on_before_reload);
-        (*pool).on_after_reload = Some(reload_on_after_reload);
+        install(
+            pool,
+            Hooks {
+                on_worker_start: Some(reload_on_worker_start),
+                on_start: Some(reload_on_start),
+                on_before_reload: Some(reload_on_before_reload),
+                on_after_reload: Some(reload_on_after_reload),
+                ..Hooks::default()
+            },
+        );
     }
 
     let other_child_pid = spawn_exec(|| {
@@ -1136,12 +1168,15 @@ fn reload() {
     });
     counter_set(20, other_child_pid);
 
-    // SAFETY: the case's pool.
-    unsafe {
-        (*pool).on_worker_error = Some(reload_on_worker_error);
-        (*pool).on_worker_message = Some(reload_on_worker_message);
-        (*pool).on_worker_not_found = Some(reload_on_worker_not_found);
-    }
+    install(
+        pool,
+        Hooks {
+            on_worker_error: Some(reload_on_worker_error),
+            on_worker_message: Some(reload_on_worker_message),
+            on_worker_not_found: Some(reload_on_worker_not_found),
+            ..Hooks::default()
+        },
+    );
 
     CURRENT_POOL.store(pool, SeqCst);
     sysv(SIGTERM, handler(stop_current_pool));
@@ -1163,12 +1198,15 @@ extern "C" fn async_stop_current_worker(_: c_int) {
     unsafe { pool_stop(current_pool(), CURRENT_WORKER.load(SeqCst)) };
 }
 
-extern "C" fn async_on_start(pool: *mut Pool) {
+fn async_on_start(pool: PoolRef<'_>) {
+    let pool = pool.raw().cast::<Pool>();
     CURRENT_POOL.store(pool, SeqCst);
     sysv(SIGTERM, handler(stop_current_pool));
 }
 
-extern "C" fn async_on_worker_start(pool: *mut Pool, worker: *mut Worker) {
+fn async_on_worker_start(pool: PoolRef<'_>, worker: WorkerHandle<'_>) {
+    let pool = pool.raw().cast::<Pool>();
+    let worker = worker.raw().cast::<Worker>();
     counter_set(0, MAGIC_NUMBER);
     CURRENT_WORKER.store(worker, SeqCst);
     CURRENT_POOL.store(pool, SeqCst);
@@ -1180,7 +1218,8 @@ extern "C" fn async_on_worker_start(pool: *mut Pool, worker: *mut Worker) {
     ms_sleep(10);
 }
 
-extern "C" fn async_on_message(pool: *mut Pool, _: *mut RecvData) {
+fn async_on_message(pool: PoolRef<'_>, _: &RecvData<'_>) {
+    let pool = pool.raw().cast::<Pool>();
     counter_incr(0);
     // SAFETY: kill(2) on the master.
     unsafe { kill((*pool).master_pid, SIGTERM) };
@@ -1197,9 +1236,15 @@ fn async_() {
     unsafe {
         (*pool).max_packet_size = 8192;
         (*pool).is_async = true;
-        (*pool).on_start = Some(async_on_start);
-        (*pool).on_worker_start = Some(async_on_worker_start);
-        (*pool).on_message = Some(async_on_message);
+        install(
+            pool,
+            Hooks {
+                on_start: Some(async_on_start),
+                on_worker_start: Some(async_on_worker_start),
+                on_message: Some(async_on_message),
+                ..Hooks::default()
+            },
+        );
     }
 
     assert_eq!(start(pool), SW_OK);
@@ -1232,7 +1277,9 @@ extern "C" fn async_mb_stop_worker(_: c_int) {
     unsafe { pool_stop(current_pool(), current_worker()) };
 }
 
-extern "C" fn async_mb_on_worker_start(pool: *mut Pool, worker: *mut Worker) {
+fn async_mb_on_worker_start(pool: PoolRef<'_>, worker: WorkerHandle<'_>) {
+    let pool = pool.raw().cast::<Pool>();
+    let worker = worker.raw().cast::<Worker>();
     CURRENT_WORKER.store(worker, SeqCst);
     CURRENT_POOL.store(pool, SeqCst);
 
@@ -1244,14 +1291,16 @@ extern "C" fn async_mb_on_worker_start(pool: *mut Pool, worker: *mut Worker) {
     ms_sleep(10);
 }
 
-extern "C" fn async_mb_on_worker_stop(pool: *mut Pool, worker: *mut Worker) {
+fn async_mb_on_worker_stop(pool: PoolRef<'_>, worker: WorkerHandle<'_>) {
+    let pool = pool.raw().cast::<Pool>();
+    let worker = worker.raw().cast::<Worker>();
     CURRENT_WORKER.store(worker, SeqCst);
     CURRENT_POOL.store(pool, SeqCst);
 
     counter_incr_and_put_log();
 }
 
-extern "C" fn async_mb_on_worker_exit(_: *mut Pool, _: *mut Worker) {
+fn async_mb_on_worker_exit(_: PoolRef<'_>, _: WorkerHandle<'_>) {
     counter_incr_and_put_log();
 }
 
@@ -1260,7 +1309,8 @@ fn send_message(pool: *mut Pool, message: &[u8]) {
     unsafe { pool_send_message(pool, 0, message.as_ptr().cast(), message.len()) };
 }
 
-extern "C" fn async_mb_on_start(pool: *mut Pool) {
+fn async_mb_on_start(pool: PoolRef<'_>) {
+    let pool = pool.raw().cast::<Pool>();
     CURRENT_POOL.store(pool, SeqCst);
     // SAFETY: extern "C" handlers.
     unsafe {
@@ -1277,13 +1327,14 @@ extern "C" fn async_mb_on_start(pool: *mut Pool) {
     });
 }
 
-extern "C" fn async_mb_on_shutdown(_: *mut Pool) {
+fn async_mb_on_shutdown(_: PoolRef<'_>) {
     counter_incr_and_put_log();
 }
 
-extern "C" fn async_mb_on_message(pool: *mut Pool, msg: *mut RecvData) {
+fn async_mb_on_message(pool: PoolRef<'_>, msg: &RecvData<'_>) {
+    let pool = pool.raw().cast::<Pool>();
     // SAFETY: the pool's message.
-    let req = unsafe { (*msg).bytes() };
+    let req = msg.data();
 
     if req == b"detach" {
         counter_incr_and_put_log();
@@ -1316,12 +1367,18 @@ fn async_mb() {
     unsafe {
         (*pool).max_packet_size = 8192;
         (*pool).is_async = true;
-        (*pool).on_worker_start = Some(async_mb_on_worker_start);
-        (*pool).on_worker_stop = Some(async_mb_on_worker_stop);
-        (*pool).on_worker_exit = Some(async_mb_on_worker_exit);
-        (*pool).on_start = Some(async_mb_on_start);
-        (*pool).on_shutdown = Some(async_mb_on_shutdown);
-        (*pool).on_message = Some(async_mb_on_message);
+        install(
+            pool,
+            Hooks {
+                on_worker_start: Some(async_mb_on_worker_start),
+                on_worker_stop: Some(async_mb_on_worker_stop),
+                on_worker_exit: Some(async_mb_on_worker_exit),
+                on_start: Some(async_mb_on_start),
+                on_shutdown: Some(async_mb_on_shutdown),
+                on_message: Some(async_mb_on_message),
+                ..Hooks::default()
+            },
+        );
     }
 
     assert_eq!(start(pool), SW_OK);
@@ -1365,7 +1422,8 @@ fn socket() {
     destroy(pool);
 }
 
-extern "C" fn listen_on_message(pool: *mut Pool, _: *mut RecvData) {
+fn listen_on_message(pool: PoolRef<'_>, _: &RecvData<'_>) {
+    let pool = pool.raw().cast::<Pool>();
     let wmem = pool_data(pool);
     assert_eq!(response(pool, wmem.as_ptr(), wmem.len() as u32), SW_OK);
     assert_eq!(response(pool, ptr::null(), 999), SW_ERR);
@@ -1403,7 +1461,13 @@ fn listen() {
     // SAFETY: the case's pool; `wmem` outlives it.
     unsafe {
         (*pool).ptr = (&raw mut wmem).cast();
-        (*pool).on_message = Some(listen_on_message);
+        install(
+            pool,
+            Hooks {
+                on_message: Some(listen_on_message),
+                ..Hooks::default()
+            },
+        );
     }
 
     CURRENT_POOL.store(pool, SeqCst);
@@ -1441,10 +1505,11 @@ fn listen() {
     t1.join().unwrap();
 }
 
-extern "C" fn truncated_stream_on_message(pool: *mut Pool, msg: *mut RecvData) {
+fn truncated_stream_on_message(pool: PoolRef<'_>, msg: &RecvData<'_>) {
+    let pool = pool.raw().cast::<Pool>();
     let messages = messages(pool);
     // SAFETY: the pool's message.
-    messages.push(unsafe { (*msg).bytes() }.to_vec());
+    messages.push(msg.data().to_vec());
     if messages.last().unwrap() == b"sentinel" {
         // SAFETY: the running pool.
         unsafe { (*pool).running = false };
@@ -1491,7 +1556,13 @@ fn listen_rejects_truncated_stream_packet() {
     unsafe {
         (*pool).max_packet_size = 64;
         (*pool).ptr = (&raw mut messages).cast();
-        (*pool).on_message = Some(truncated_stream_on_message);
+        install(
+            pool,
+            Hooks {
+                on_message: Some(truncated_stream_on_message),
+                ..Hooks::default()
+            },
+        );
     }
 
     let mut c1 = connect(port);
@@ -1514,14 +1585,10 @@ fn listen_rejects_truncated_stream_packet() {
     assert_eq!(messages[1], b"sentinel");
 }
 
-extern "C" fn truncated_task_on_task(
-    pool: *mut Pool,
-    _: *mut Worker,
-    task: *mut EventData,
-) -> c_int {
+fn truncated_task_on_task(pool: PoolRef<'_>, _: WorkerHandle<'_>, task: Packed<'_>) -> c_int {
+    let pool = pool.raw().cast::<Pool>();
     let messages = messages(pool);
-    // SAFETY: the pool's task.
-    messages.push(unsafe { (*task).payload() }.to_vec());
+    messages.push(payload(task).to_vec());
     if messages.last().unwrap() == b"sentinel" {
         // SAFETY: the running pool.
         unsafe { (*pool).running = false };
@@ -1540,7 +1607,13 @@ fn listen_rejects_truncated_task_packet() {
     // SAFETY: the case's pool; `messages` outlives it.
     unsafe {
         (*pool).ptr = (&raw mut messages).cast();
-        (*pool).on_task = Some(truncated_task_on_task);
+        install(
+            pool,
+            Hooks {
+                on_task: Some(truncated_task_on_task),
+                ..Hooks::default()
+            },
+        );
     }
 
     let (mut event1, mut event2, mut event3) =
@@ -1574,11 +1647,11 @@ fn listen_rejects_truncated_task_packet() {
     assert_eq!(messages[1], b"sentinel");
 }
 
-extern "C" fn malformed_on_task(pool: *mut Pool, _: *mut Worker, task: *mut EventData) -> c_int {
+fn malformed_on_task(pool: PoolRef<'_>, _: WorkerHandle<'_>, task: Packed<'_>) -> c_int {
+    let pool = pool.raw().cast::<Pool>();
     // SAFETY: the case's counter.
     unsafe { *(*pool).ptr.cast::<usize>() += 1 };
-    // SAFETY: the pool's task.
-    if unsafe { (*task).payload() } == b"x" {
+    if payload(task) == b"x" {
         // SAFETY: the running pool.
         unsafe { (*pool).running = false };
     }
@@ -1608,7 +1681,13 @@ fn task_protocol_rejects_malformed_packets() {
         worker_init(get_worker(pool, 0));
         (*pool).running = true;
         (*pool).ptr = (&raw mut dispatched).cast();
-        (*pool).on_task = Some(malformed_on_task);
+        install(
+            pool,
+            Hooks {
+                on_task: Some(malformed_on_task),
+                ..Hooks::default()
+            },
+        );
     }
     let head = size_of::<DataHead>();
 
@@ -1654,7 +1733,13 @@ fn task_protocol_rejects_malformed_socket_packet() {
         worker_init(get_worker(pool, 0));
         (*pool).running = true;
         (*pool).ptr = (&raw mut dispatched).cast();
-        (*pool).on_task = Some(malformed_on_task);
+        install(
+            pool,
+            Hooks {
+                on_task: Some(malformed_on_task),
+                ..Hooks::default()
+            },
+        );
     }
 
     let address = pool as usize;
@@ -1726,11 +1811,10 @@ fn set_max_packet_size(pool: *mut Pool, size: u32) {
     };
 }
 
-extern "C" fn small_packet_on_message(pool: *mut Pool, rdata: *mut RecvData) {
-    // SAFETY: the pool's message.
-    let rdata = unsafe { &*rdata };
-    assert_eq!(rdata.info.len, 1);
-    assert_eq!(rdata.bytes()[0], b'x');
+fn small_packet_on_message(pool: PoolRef<'_>, rdata: &RecvData<'_>) {
+    let pool = pool.raw().cast::<Pool>();
+    assert_eq!(rdata.info().len, 1);
+    assert_eq!(rdata.data()[0], b'x');
     // SAFETY: the running pool.
     unsafe { (*pool).running = false };
 }
@@ -1745,7 +1829,13 @@ fn stream_protocol_small_packet() {
     unsafe {
         worker_init(get_worker(pool, 0));
         (*pool).running = true;
-        (*pool).on_message = Some(small_packet_on_message);
+        install(
+            pool,
+            Hooks {
+                on_message: Some(small_packet_on_message),
+                ..Hooks::default()
+            },
+        );
     }
 
     // SAFETY: the created pool's worker and one byte.
@@ -1758,11 +1848,10 @@ fn stream_protocol_small_packet() {
     destroy(pool);
 }
 
-extern "C" fn msgqueue_package_size_on_message(pool: *mut Pool, rdata: *mut RecvData) {
-    // SAFETY: the pool's message.
-    let rdata = unsafe { &*rdata };
-    messages(pool).push(rdata.bytes().to_vec());
-    if rdata.info.len == 0 {
+fn msgqueue_package_size_on_message(pool: PoolRef<'_>, rdata: &RecvData<'_>) {
+    let pool = pool.raw().cast::<Pool>();
+    messages(pool).push(rdata.data().to_vec());
+    if rdata.info().len == 0 {
         // SAFETY: the running pool.
         unsafe { (*pool).running = false };
     }
@@ -1790,7 +1879,13 @@ fn stream_protocol_msgqueue_ignores_package_size() {
             worker_init(get_worker(pool, 0));
             (*pool).running = true;
             (*pool).ptr = (&raw mut received).cast();
-            (*pool).on_message = Some(msgqueue_package_size_on_message);
+            install(
+                pool,
+                Hooks {
+                    on_message: Some(msgqueue_package_size_on_message),
+                    ..Hooks::default()
+                },
+            );
         }
 
         // `QueueNode message{}`: its mtype, then SW_MSGMAX bytes.
@@ -1814,7 +1909,8 @@ fn stream_protocol_msgqueue_ignores_package_size() {
 
 const TEST_SOCK: &CStr = c"/tmp/swoole_process_pool.sock";
 
-extern "C" fn listen_unixsock_on_message(pool: *mut Pool, _: *mut RecvData) {
+fn listen_unixsock_on_message(pool: PoolRef<'_>, _: &RecvData<'_>) {
+    let pool = pool.raw().cast::<Pool>();
     let wmem = pool_data(pool);
     response(pool, wmem.as_ptr(), wmem.len() as u32);
 }
@@ -1832,7 +1928,13 @@ fn listen_unixsock() {
     // SAFETY: the case's pool; `wmem` outlives it.
     unsafe {
         (*pool).ptr = (&raw mut wmem).cast();
-        (*pool).on_message = Some(listen_unixsock_on_message);
+        install(
+            pool,
+            Hooks {
+                on_message: Some(listen_unixsock_on_message),
+                ..Hooks::default()
+            },
+        );
     }
 
     CURRENT_POOL.store(pool, SeqCst);
@@ -1938,7 +2040,8 @@ extern "C" fn shutdown_current_worker(_: c_int) {
     unsafe { worker_shutdown(current_worker()) };
 }
 
-extern "C" fn child_exit_on_worker_start(_: *mut Pool, worker: *mut Worker) {
+fn child_exit_on_worker_start(_: PoolRef<'_>, worker: WorkerHandle<'_>) {
+    let worker = worker.raw().cast::<Worker>();
     // SAFETY: an extern "C" handler.
     unsafe { swoole_signal_set(SIGTERM, shutdown_current_worker, false) };
     // SAFETY: the worker's record.
@@ -1948,22 +2051,20 @@ extern "C" fn child_exit_on_worker_start(_: *mut Pool, worker: *mut Worker) {
     }
 }
 
-extern "C" fn child_exit_on_worker_not_found(pool: *mut Pool, status: *const ExitStatus) -> c_int {
-    // SAFETY: the pool's status; the started pool.
-    if unsafe { (*status).pid } != counter_get(6)
-        || counter_incr(27) != 1
-        || !unsafe { pool_reload(pool) }
-    {
+fn child_exit_on_worker_not_found(pool: PoolRef<'_>, status: &ExitStatus) {
+    let pool = pool.raw().cast::<Pool>();
+    // SAFETY: the started pool.
+    if status.pid() != counter_get(6) || counter_incr(27) != 1 || !unsafe { pool_reload(pool) } {
         counter_incr(26);
     }
-    SW_OK
 }
 
-extern "C" fn child_exit_on_before_reload(_: *mut Pool) {
+fn child_exit_on_before_reload(_: PoolRef<'_>) {
     counter_incr(24);
 }
 
-extern "C" fn child_exit_on_after_reload(pool: *mut Pool) {
+fn child_exit_on_after_reload(pool: PoolRef<'_>) {
+    let pool = pool.raw().cast::<Pool>();
     // SAFETY: the started pool's worker 1.
     if unsafe { (*get_worker(pool, 1)).pid } == counter_get(5) {
         counter_incr(26);
@@ -1976,14 +2077,19 @@ fn reload_from_child_exit_callback() {
     counter_init();
     assert_eq!(create(pool, 2, 0, SW_IPC_NONE), SW_OK);
     // SAFETY: the case's pool.
-    unsafe {
-        (*pool).max_wait_time = 1;
-        (*pool).main_loop = None;
-        (*pool).on_worker_start = Some(child_exit_on_worker_start);
-        (*pool).on_worker_not_found = Some(child_exit_on_worker_not_found);
-        (*pool).on_before_reload = Some(child_exit_on_before_reload);
-        (*pool).on_after_reload = Some(child_exit_on_after_reload);
-    }
+    unsafe { (*pool).max_wait_time = 1 };
+    // SAFETY: the case's pool.
+    unsafe { PoolRef::new(pool.cast()) }.clear_main_loop();
+    install(
+        pool,
+        Hooks {
+            on_worker_start: Some(child_exit_on_worker_start),
+            on_worker_not_found: Some(child_exit_on_worker_not_found),
+            on_before_reload: Some(child_exit_on_before_reload),
+            on_after_reload: Some(child_exit_on_after_reload),
+            ..Hooks::default()
+        },
+    );
     let watchdog = after(5000, move |_| {
         counter_set(31, 1);
         // SAFETY: the case's pool.

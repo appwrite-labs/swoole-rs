@@ -501,8 +501,7 @@ fn corebase() {
     fs::write(out("corebase.inc"), text).unwrap();
 }
 
-/// The hashes from the pinned misc.cc, and from log.cc `get_pretty_name` (as `pretty`)
-/// and the level clamp, rotation format, level label, line and microsecond formatting
+/// The hashes from the pinned misc.cc, and from log.cc the level clamp, rotation format, level label, line and microsecond formatting
 /// out of `set_level`, `gen_real_file` and `put` wrapped as functions, with base.cc's
 /// `sw_snprintf` and `swoole_log.h`'s enums, each copied unchanged for `shim/utilities.cc`.
 fn utilities() {
@@ -514,8 +513,6 @@ fn utilities() {
     let after = |anchor: &str| &log[log.find(anchor).expect(anchor)..];
     let text = [
         misc[misc.find("uint64_t swoole_hash_php").expect("hashes")..].to_string(),
-        slice(&log, "std::string Logger::get_pretty_name", "bool Logger::open")
-            .replace("Logger::get_pretty_name", "pretty"),
         slice(&header, "enum swLogLevel", "namespace swoole"),
         "\nint log_level(int level) { int log_level;\n".into(),
         slice(after("void Logger::set_level"), "    if (level < SW_LOG_DEBUG)", "\n}"),
