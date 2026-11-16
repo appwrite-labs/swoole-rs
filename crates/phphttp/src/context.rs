@@ -409,10 +409,15 @@ impl Release {
     /// The releases, as a coroutine call's [`Then`], for as long as `self`
     /// is not moved.
     pub(crate) fn then(&mut self) -> Then {
-        (
-            Some(swr_zend_http_release_objects),
-            ptr::from_mut(self).cast(),
-        )
+        // SAFETY: the C body over this record's live objects, which reads and
+        // writes only the record; the caller keeps `self` in place through the
+        // call it is given to.
+        unsafe {
+            Then::new(
+                Some(swr_zend_http_release_objects),
+                ptr::from_mut(self).cast(),
+            )
+        }
     }
 
     /// What has not been released, inside `zend_try`, with a bailout of the

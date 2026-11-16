@@ -17,8 +17,8 @@ use swoole_rs_zend::{
     bailout::Bailout,
     opcode::{DISPATCH, Frame, Handler, handler},
     sys::{
-        ZEND_ACC_FINAL, ZEND_ACC_PRIVATE, swr_zend_autoload_handler, swr_zend_autoload_try,
-        swr_zend_exit_status, user_opcode_handler_t, zend_class_entry, zend_execute_data,
+        ZEND_ACC_FINAL, ZEND_ACC_PRIVATE, user_opcode_handler_t, zend_class_entry,
+        zend_execute_data, zval,
     },
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -28,6 +28,19 @@ unsafe extern "C" {
     /// table: it reads the name, and the table holds no values to release, so
     /// no PHP code runs.
     safe fn swr_zend_autoload_forget(lc_name: &ZStr);
+    /// `handler(name, lc_name)` inside `zend_try`: nonzero for a bailout, else
+    /// `result` holds the class it found (null for none).
+    safe fn swr_zend_autoload_try(
+        handler: Autoload,
+        name: &ZStr,
+        lc_name: &ZStr,
+        result: &mut *mut zend_class_entry,
+    ) -> c_int;
+    /// The exit operand's value (`exit`'s status, null without one) of the
+    /// frame's instruction, duplicated into `status`, which it writes without
+    /// reading: an operand of a live instruction is a literal of its script or a
+    /// slot of its frame.
+    safe fn swr_zend_exit_status(frame: Frame<'_>, status: &mut zval);
 }
 
 /// `zend_autoload`'s type: Zend passes the class's name and its lowercase
@@ -202,10 +215,9 @@ fn hook_zend(_minit: &Minit) {
             begin_silence: user_opcode_handler_t,
             end_silence: user_opcode_handler_t,
         );
-        /// `zend_autoload = handler`; returns the previous one.
-        safe fn swr_zend_coroutine_set_autoload(
-            handler: Option<Autoload>,
-        ) -> swr_zend_autoload_handler;
+        /// `zend_autoload = handler`; returns the previous one, Zend's (SPL's
+        /// `spl_perform_autoload` once registered), which takes two live names.
+        safe fn swr_zend_coroutine_set_autoload(handler: Option<Autoload>) -> Option<Autoload>;
     }
     if host::flag(host::CLI) {
         swr_zend_coroutine_opcodes(
@@ -266,8 +278,7 @@ impl Handler for Exit {
         let flags = exit_flags();
         if flags != 0 {
             let mut status = swoole_rs_zend::UNDEF;
-            // SAFETY: the exit opcode's frame: installed for `ZEND_EXIT` only.
-            unsafe { swr_zend_exit_status(frame.as_ptr(), &raw mut status) };
+            swr_zend_exit_status(frame, &mut status);
             let status = Value::of(&mut status);
             // Upstream's extra reference, kept (never released) as it was.
             #[expect(
@@ -355,7 +366,7 @@ extern "C" fn end_silence(_: *mut zend_execute_data) -> c_int {
 }
 
 /// The autoloader Zend had (`original_zend_autoload`).
-static ORIGINAL_AUTOLOAD: OnceLock<swr_zend_autoload_handler> = OnceLock::new();
+static ORIGINAL_AUTOLOAD: OnceLock<Option<Autoload>> = OnceLock::new();
 
 /// A coroutine waiting for another's autoload of the same class, and where
 /// the loader leaves the class for it.
@@ -378,12 +389,12 @@ per_thread! {
 
 /// Run Zend's autoloader, trapping its bailouts.
 fn load(name: &ZStr, lc_name: &ZStr) -> Result<*mut zend_class_entry, ()> {
-    let handler = ORIGINAL_AUTOLOAD.get().copied().flatten();
     let mut result = ptr::null_mut();
-    // SAFETY: Zend's autoloader of two live names, trapped in C.
-    if unsafe { swr_zend_autoload_try(handler, name.as_ptr(), lc_name.as_ptr(), &raw mut result) }
-        != 0
-    {
+    // Without an autoloader Zend looks no further (`zend_lookup_class_ex`).
+    let Some(handler) = ORIGINAL_AUTOLOAD.get().copied().flatten() else {
+        return Ok(result);
+    };
+    if swr_zend_autoload_try(handler, name, lc_name, &mut result) != 0 {
         return Err(());
     }
     Ok(result)

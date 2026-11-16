@@ -4,9 +4,16 @@
 //! falls back to outside a coroutine.
 use std::{
     ffi::{CStr, c_void},
+    io::IoSlice,
     sync::atomic::{AtomicPtr, Ordering},
 };
-use swoole_rs_zend::sys::{swr_zend_runtime_set_transport, swr_zend_runtime_transport};
+use swoole_rs_zend::sys::swr_zend_runtime_set_transport;
+
+unsafe extern "C" {
+    /// The stream transport factory registered as `name`, read from the lent
+    /// bytes (an `IoSlice` is an iovec), or null: a lookup in PHP's table.
+    safe fn swr_zend_runtime_transport(name: IoSlice<'_>) -> *mut c_void;
+}
 
 /// The transports, in `HOOK_TCP` .. `HOOK_TLS` order.
 pub(crate) const NAMES: [&CStr; 6] = [c"tcp", c"udp", c"unix", c"udg", c"ssl", c"tls"];
@@ -41,8 +48,7 @@ fn set(name: &CStr, factory: *mut c_void, remove: bool) -> i32 {
 /// RINIT, on the main thread: remember what PHP registered.
 pub(crate) fn remember() {
     for (slot, name) in ORIGINAL.iter().zip(NAMES) {
-        // SAFETY: a name and its length.
-        let factory = unsafe { swr_zend_runtime_transport(name.as_ptr(), name.count_bytes()) };
+        let factory = swr_zend_runtime_transport(IoSlice::new(name.to_bytes()));
         slot.store(factory, Ordering::Relaxed);
     }
 }

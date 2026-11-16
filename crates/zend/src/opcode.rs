@@ -33,6 +33,7 @@ impl Executing<'_> {
 /// A live frame at the instruction of the user opcode handler Zend passed it
 /// to, for `'a`: it is running a function's instruction, so it has a function. Only [`handler`] makes one.
 #[derive(Clone, Copy)]
+#[repr(transparent)]
 pub struct Frame<'a> {
     ptr: *mut zend_execute_data,
     live: PhantomData<&'a zend_execute_data>,

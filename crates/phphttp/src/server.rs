@@ -327,20 +327,14 @@ pub(crate) fn call_handler(
     coroutine: bool,
     then: Then,
 ) -> Result<bool, bailout::Bailout> {
-    // SAFETY: the resolved cache of a callable the caller holds through the
-    // call, and the arguments; the coroutine leaf, `then` and the reporter run
-    // inside C traps.
-    let called = unsafe {
-        swoole_rs_zend::host::function_call(
-            callable.cache_ptr(),
-            u32::try_from(args.len()).unwrap_or(0),
-            args.as_mut_ptr(),
-            std::ptr::null_mut(),
-            coroutine,
-            swoole_rs_phpcoroutines::create_coroutine,
-            then,
-        )
-    };
+    let called = swoole_rs_zend::host::function_call(
+        callable.cache(),
+        swoole_rs_zend::Zvals::of(args),
+        None,
+        coroutine,
+        swoole_rs_phpcoroutines::CREATOR,
+        then,
+    );
     called.map_err(|bailout| {
         let _relayed = bailout::relay_to_c(Err(bailout));
         bailout::Bailout
