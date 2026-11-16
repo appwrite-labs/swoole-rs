@@ -3,10 +3,7 @@
 use crate::{
     Call, Invalid,
     bailout::{self, Bailout},
-    sys::{
-        IS_LONG, swr_zend_callable, swr_zend_callable_release, zend_fcall_info_cache, zend_value,
-        zval,
-    },
+    sys::{IS_LONG, swr_zend_callable, zend_fcall_info_cache, zend_value, zval},
     value::{emalloc, enew},
 };
 use std::{
@@ -29,6 +26,9 @@ unsafe extern "C" {
     /// the record keeps everything. The handle is spent either way: `release`
     /// finishes with the record, as `keep` does with a `Parsed` one.
     safe fn swr_zend_callable_release_quiet(callable: Callable) -> c_int;
+    /// The release `swr_zend_callable_release_quiet` declined, inside
+    /// `zend_try`, as `swr_zend_try` returns. The handle is spent, as there.
+    safe fn swr_zend_try_callable_release(callable: Callable) -> c_int;
     /// `efree` of the record of a callable that holds nothing.
     #[link_name = "swr_zend_efree"]
     safe fn discard(parsed: Parsed);
@@ -129,8 +129,8 @@ impl Callable {
         let released = if swr_zend_callable_release_quiet(self) != 0 {
             Ok(())
         } else {
-            // SAFETY: the release body is C; the callable is still kept.
-            unsafe { bailout::trap(swr_zend_callable_release, record.cast()) }
+            // The callable, still kept: the quiet release touched nothing.
+            bailout::trapped(swr_zend_try_callable_release(Callable(record)))
         };
         // Emalloc'd by `parse`, and released above.
         free_released(Callable(record));
