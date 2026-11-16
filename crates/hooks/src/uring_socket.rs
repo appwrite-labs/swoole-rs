@@ -557,8 +557,8 @@ mod tests {
         log(format!("available {event}"));
         AVAILABLE.with(|a| *a.borrow())
     }
-    fn check(_: Co, result: isize) {
-        log(format!("check {result}"));
+    fn check(_: Co, result: Option<usize>) {
+        log(format!("check {}", result.map_or(-1, usize::cast_signed)));
     }
     fn set_err(_: Co, code: c_int) {
         log(format!("err {code}"));
