@@ -516,6 +516,14 @@ impl<'a> Server<'a> {
     /// [`Server::worker`]'s record, or `None` past the last.
     #[must_use]
     pub fn worker_record(self, id: u16) -> Option<Worker<'a>> {
+        // An event worker once its pool holds the array, as `get` finds it, without
+        // lending the other arrays: a task's reply looks its sender up so.
+        if u32::from(id) < self.config().worker_num.get() {
+            let pool = self.event_pool_ref();
+            if !pool.workers().is_null() {
+                return pool.worker(usize::from(id));
+            }
+        }
         self.workers().get(id)
     }
 
