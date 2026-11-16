@@ -246,15 +246,15 @@ mod tests {
         // SAFETY: a connection record is plain data; zero is a closed one.
         let mut connections: Vec<ConnectionRecord> =
             (0..3).map(|_| unsafe { core::mem::zeroed() }).collect();
-        connections[2].server_fd = 1;
+        connections[2].server_fd.set(1);
         let mut sessions: Vec<SessionRecord> = (0..3)
             .map(|id| SessionRecord {
-                id,
-                fd: 0,
-                reactor_bits: 0,
+                id: core::cell::Cell::new(id),
+                fd: core::cell::Cell::new(0),
+                reactor_bits: core::cell::Cell::new(0),
             })
             .collect();
-        sessions[1].fd = 2;
+        sessions[1].fd.set(2);
         let mut server = TestServer::new();
         server.config_mut().gs = core::mem::replace(&mut gs, Shm::empty());
         let tables = server.tables_mut();

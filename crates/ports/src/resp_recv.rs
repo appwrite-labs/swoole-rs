@@ -140,9 +140,9 @@ mod tests {
         socket.fd = pairs[1];
         socket.socket_type = 5; // SW_SOCK_UNIX_STREAM
         let mut conn: ConnectionRecord = unsafe { core::mem::zeroed() };
-        conn.fd = pairs[1];
+        conn.fd.set(pairs[1]);
         let handle = unsafe { Socket::from_ptr(&raw mut socket) }.unwrap();
-        conn.socket = Some(handle);
+        conn.socket.set(Some(handle));
         let mut protocol = Protocol::EMPTY;
         protocol.package_max_length = 65536 * 2;
         let mut buffer = CppString::EMPTY;

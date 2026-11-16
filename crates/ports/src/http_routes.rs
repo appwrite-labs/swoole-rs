@@ -110,8 +110,8 @@ pub mod exports {
         // SAFETY: as the caller guarantees.
         let conn = unsafe { (*socket).fields.object };
         // SAFETY: a connection socket's object is its live connection slot, shared
-        // through the slot's field-wise handle; `UnsafeCell` has the record's layout.
-        Connection::from(unsafe { &*conn.cast::<core::cell::UnsafeCell<ConnectionRecord>>() })
+        // through the slot's handle, as its fields are cells and atomics.
+        Connection::from(unsafe { &*conn.cast::<ConnectionRecord>() })
     }
 
     /// `SW_WEBSOCKET_HEADER_LEN + SW_WEBSOCKET_CLOSE_CODE_LEN + SW_WEBSOCKET_CLOSE_REASON_MAX_LEN`.
@@ -373,9 +373,9 @@ mod tests {
             for http2_stream in [false, true] {
                 // SAFETY: the record is plain integers, pointers and atomics.
                 let mut conn: ConnectionRecord = unsafe { std::mem::zeroed() };
-                conn.websocket_status = websocket_status;
-                conn.http2_stream = http2_stream;
-                conn.info.kind = 1;
+                conn.websocket_status.set(websocket_status);
+                conn.http2_stream.set(http2_stream);
+                conn.info.get_mut().kind = 1;
                 let expected = pinned(websocket_status, http2_stream);
                 let mut calls = (0, 0);
                 let conn = Connection::from(&mut conn);
