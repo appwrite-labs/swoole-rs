@@ -36,7 +36,7 @@ impl Slot {
         object: &Self,
         property: &Declared,
         size: u32,
-    ) -> *mut zval {
+    ) -> Option<&Value> {
         if self.get().is_none()
             && let Some(array) = object
                 .get()
@@ -46,7 +46,7 @@ impl Slot {
             // upstream's copy relies on.
             unsafe { self.0.keep(array) };
         }
-        self.as_ptr()
+        self.get()
     }
 
     /// `ZVAL_COPY_VALUE`: the zval's bits without a reference of their own

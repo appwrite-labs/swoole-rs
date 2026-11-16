@@ -153,8 +153,8 @@ fn create_request(call: &Call) {
             }
         });
     }
-    parse::property(ctx.state(), Property::Server);
-    parse::property(ctx.state(), Property::Header);
+    parse::property(&mut ctx.state().request, Property::Server);
+    parse::property(&mut ctx.state().request, Property::Header);
 }
 
 /// One of `Request::create`'s options (a bailout in a conversion is deferred).
