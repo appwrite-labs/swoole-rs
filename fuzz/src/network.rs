@@ -5,7 +5,7 @@ use std::cell::Cell;
 use std::ffi::{c_char, c_int};
 use std::net::IpAddr;
 use swoole_rs_clients::dns::{DnsExchange, RecvError, query};
-use swoole_rs_http::llhttp::{self, Callbacks, Parser};
+use swoole_rs_http::llhttp::{self, Callbacks, Flow as Step, Parser};
 use swoole_rs_http::multipart_parser::{Flow, MultipartParser};
 use swoole_rs_http2::{
     frame_length, sw_rs_http2_decode_frame, sw_rs_http2_inflate_step, sw_rs_http2_unpack_setting,
@@ -199,10 +199,10 @@ impl Callbacks<'_> for Chunked {
         &mut self.parser
     }
 
-    fn on_body(&mut self, data: &[u8]) -> c_int {
+    fn on_body(&mut self, data: &[u8]) -> Step {
         in_chunk(data.as_ptr().cast(), data.len());
         self.body += data.len();
-        0
+        Step::Go
     }
 }
 
