@@ -42,6 +42,34 @@ const _: () = assert!(
     "swoole::String's layout"
 );
 
+/// A Rust-owned string allocation, disposed when it leaves scope.
+pub struct OwnedString(CppString);
+
+impl Default for OwnedString {
+    fn default() -> Self {
+        Self(CppString::EMPTY)
+    }
+}
+
+impl core::ops::Deref for OwnedString {
+    type Target = CppString;
+    fn deref(&self) -> &CppString {
+        &self.0
+    }
+}
+
+impl core::ops::DerefMut for OwnedString {
+    fn deref_mut(&mut self) -> &mut CppString {
+        &mut self.0
+    }
+}
+
+impl Drop for OwnedString {
+    fn drop(&mut self) {
+        self.0.dispose();
+    }
+}
+
 /// `(size_t) off_t`.
 fn unsigned(value: i64) -> usize {
     value.c_cast::<usize>()
@@ -195,8 +223,12 @@ impl CppString {
 
     /// `String::alloc`: a fresh buffer, from the standard allocator when `with` is `None`.
     pub fn alloc(&mut self, size: usize, with: Option<TrustedAllocator>) {
+        self.alloc_exact(aligned(size), with);
+    }
+
+    /// A fresh allocation of exactly `size` bytes, without String's alignment.
+    pub fn alloc_exact(&mut self, size: usize, with: Option<TrustedAllocator>) {
         let with = with.unwrap_or(TrustedAllocator::STD);
-        let size = aligned(size);
         self.length = 0;
         self.size = size;
         self.offset = 0;
@@ -266,11 +298,16 @@ impl CppString {
 
     /// `String::reserve`, never below the content's length.
     pub fn reserve(&mut self, new_size: usize) {
-        let Some(with) = self.allocator.filter(|_| self.size != 0) else {
-            self.alloc(new_size, None);
+        self.reserve_exact(aligned(new_size.max(self.length)));
+    }
+
+    /// Resize to exactly `new_size` bytes, never discarding initialized content.
+    pub fn reserve_exact(&mut self, new_size: usize) {
+        let Some(with) = self.allocator.filter(|_| !self.str.is_null()) else {
+            self.alloc_exact(new_size, None);
             return;
         };
-        let new_size = aligned(new_size.max(self.length));
+        let new_size = new_size.max(self.length);
         self.str = checked(with.get().realloc.map_or(ptr::null_mut(), |realloc| {
             // SAFETY: `str` is this allocator's live allocation.
             unsafe { realloc(self.str.cast(), new_size) }
@@ -471,6 +508,13 @@ impl CppString {
     }
 
     pub fn pop(&mut self, init_size: usize) -> *mut u8 {
+        self.pop_owned(init_size)
+            .map_or(ptr::null_mut(), |mut buffer| buffer.release())
+    }
+
+    /// Give up this allocation while preserving the unread tail in a fresh one.
+    /// A failed allocation leaves this string unchanged.
+    pub fn pop_owned(&mut self, init_size: usize) -> Option<OwnedString> {
         debug_assert!(
             self.length >= unsigned(self.offset),
             "String::pop's offset is inside"
@@ -488,7 +532,7 @@ impl CppString {
         let with = self.allocator.unwrap_or(TrustedAllocator::STD);
         let new_value: *mut u8 = with.allocate(size).cast();
         if new_value.is_null() {
-            return ptr::null_mut();
+            return None;
         }
         // The new buffer, that allocator's `size >= length` bytes, empty until the copy.
         let mut kept = Self {
@@ -502,7 +546,7 @@ impl CppString {
             to.write_copy_of_slice(tail);
             kept.length = length;
         }
-        std::mem::replace(self, kept).str
+        Some(OwnedString(std::mem::replace(self, kept)))
     }
 
     pub fn reduce(&mut self, offset: i64) {
@@ -848,3 +892,7 @@ mod originals;
 #[cfg(test)]
 #[path = "../../../tests/modules/buffer/thread_buffer.rs"]
 mod thread_buffer;
+
+#[cfg(test)]
+#[path = "../../../tests/modules/buffer/owned_string.rs"]
+mod owned_tests;

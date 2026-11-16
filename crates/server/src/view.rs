@@ -203,14 +203,10 @@ impl<'a> Server<'a> {
         self.state().config_ref()
     }
 
-    /// `serv->get_worker_message_bus()->move_packet()`: the bus no longer frees
-    /// the packet it holds; its new owner, given its block (null for none), does.
+    /// Take ownership of the worker message bus's current packet.
     #[cfg(feature = "upstream-symbols")]
-    #[expect(
-        clippy::must_use_candidate,
-        reason = "a caller that read the message already holds the block it returns"
-    )]
-    pub fn move_worker_packet(self) -> *mut core::ffi::c_char {
+    #[must_use]
+    pub fn move_worker_packet(self) -> Option<swoole_rs_buffer::string::OwnedString> {
         crate::master_ops::worker_message_bus(self.state())
             .rust()
             .move_packet()
@@ -835,11 +831,11 @@ pub(crate) fn set_nonblock(sock: Socket<'_>) {
 /// buffer's bytes, now the caller's, while the buffer takes a fresh one as large;
 /// `None` without a socket or buffer.
 #[must_use]
-pub fn pop_recv_buffer(conn: Connection<'_>) -> Option<*mut u8> {
+pub fn pop_recv_buffer(conn: Connection<'_>) -> Option<swoole_rs_buffer::string::OwnedString> {
     conn.socket()?.edit(|s| {
         s.recv_buffer
             .as_mut()
-            .map(|buffer| buffer.pop(buffer.size()))
+            .and_then(|buffer| buffer.pop_owned(buffer.size()))
     })
 }
 

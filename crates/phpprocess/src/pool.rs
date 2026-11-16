@@ -30,7 +30,6 @@ use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_zend::{
     Call, Class, Custom, CustomClass, E_ERROR, E_WARNING, Minit, Owned, Value, ZString, handlers,
     message,
-    string::{self, ZBuf},
     sys::{ZEND_ACC_PUBLIC, zval},
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -125,19 +124,12 @@ fn worker_busy(busy: bool) {
 /// The message's payload as a string: the bus's packet itself when it holds one.
 fn message_data(pool: PoolRef<'_>, message: &RecvData<'_>) -> Owned {
     let length = message.data().len();
-    let moved = if length != 0 && message.info().flags & EVENT_DATA_OBJ_PTR != 0 {
-        // An OBJ_PTR message comes from the pool's message bus: its packet, the
-        // message's bytes, is now the caller's.
-        swoole_rs_server::pool_bus_move_packet(pool).cast::<u8>()
-    } else {
-        std::ptr::null_mut()
-    };
-    let string = if length == 0 {
-        ZString::new(b"")
-    } else if !moved.is_null() {
-        // SAFETY: the bus allocates its packets as unshared zend strings of at
-        // least `length` written bytes, and this one is now ours.
-        unsafe { ZBuf::from_raw(string::from_val(moved), length) }.into_zstring()
+    let moved = (length != 0 && message.info().flags & EVENT_DATA_OBJ_PTR != 0)
+        .then(|| swoole_rs_server::pool_bus_move_packet(pool))
+        .flatten();
+    let string = if let Some(mut buffer) = moved {
+        buffer.truncate(length);
+        swoole_rs_phpswoole::received_string(buffer)
     } else {
         ZString::new(message.data())
     };

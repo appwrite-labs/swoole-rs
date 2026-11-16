@@ -1310,7 +1310,9 @@ fn base_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
 
     let packet = serv.view().move_worker_packet();
     expect(
-        packet.is_null(),
+        packet
+            .as_ref()
+            .is_none_or(|packet| packet.as_ptr().is_null()),
         "get_worker_message_bus()->move_packet() == nullptr",
     );
 

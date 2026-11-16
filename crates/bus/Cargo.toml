@@ -17,6 +17,7 @@ upstream-symbols = ["dep:swoole-rs-tls"]
 workspace = true
 
 [dependencies]
+swoole-rs-buffer = { path = "../buffer" }
 libc = "=0.2.191"
 swoole-rs-corebase = { path = "../corebase" }
 swoole-rs-reactor = { path = "../reactor" }
