@@ -184,7 +184,9 @@ def status(workflow, sha, run=None):
     GraphQL query over the commit's check suites, where REST took a run list, a job list and a call
     per failed job's annotations."""
     commit = graphql(RUNS_QUERY, rev=sha)[0]['object'] or {'checkSuites': {'nodes': []}}
-    suites = [suite for suite in commit['checkSuites']['nodes'] if suite['workflowRun']
+    # GraphQL returns null for a node (or its run's workflow) it could not resolve yet: skip it.
+    suites = [suite for suite in commit['checkSuites']['nodes'] if suite and suite['workflowRun']
+              and suite['workflowRun']['workflow']
               and suite['workflowRun']['workflow']['resourcePath'].endswith('/' + workflow)
               and run in (None, suite['workflowRun']['databaseId'])]
     if not suites:
