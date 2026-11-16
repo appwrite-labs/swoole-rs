@@ -60,15 +60,13 @@ fn receive_packets(
     };
     let dtls = port.config().ssl && port.config().is_dtls();
     let head = size_of::<DgramPacket>();
-    let info = DataHead {
+    let mut info = DataHead {
         server_fd: crate::base_factory::low16(fd),
         reactor_id: swoole_rs_corebase::thread_id().cast_signed(),
         kind: swoole_rs_corebase::ServerEvent::RecvDgram.code(),
         time: microtime(),
         ..DataHead::default()
     };
-    // SAFETY: no payload yet (`len` 0); each packet's length is set below.
-    let mut task = unsafe { SendData::from_raw(info, buffer.cast_const().cast()) };
     let base = state.config_ref().mode_ == Mode::Base;
     loop {
         // SAFETY: the caller's buffer, which holds a packet head and its datagram.
@@ -103,10 +101,11 @@ fn receive_packets(
             return false;
         };
         pkt.length = length;
-        task.set_fd(pkt.sender());
+        info.fd = pkt.sender();
+        info.len = u32::try_from(head).unwrap_or(0).saturating_add(length);
         // SAFETY: the packet head and the `length` bytes just received behind it, in the
         // caller's buffer, which nothing writes until the dispatch returns.
-        unsafe { task.set_len(u32::try_from(head).unwrap_or(0).saturating_add(length)) };
+        let mut task = unsafe { SendData::from_raw(info, buffer.cast_const().cast()) };
         let dispatched = if base {
             // Base mode hands it to this process's worker as it does a connection's data.
             crate::base_factory::dispatch(serv, &mut task, true)

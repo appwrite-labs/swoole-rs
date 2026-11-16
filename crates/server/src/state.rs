@@ -78,6 +78,10 @@ pub struct ServerState {
         expect(dead_code, reason = "only the hybrid's reactor threads wait on it")
     )]
     pub(crate) reactor_thread_barrier: swoole_rs_locks::Barrier,
+    /// `Server::user_worker_list`: the user workers `add_worker` added, in order.
+    pending_users: std::sync::RwLock<Vec<swoole_rs_process::worker_record::Worker<'static>>>,
+    /// How many `pending_users` holds, which every worker lookup reads.
+    pending_count: AtomicUsize,
 }
 
 /// A native thread entry: `void (*)(void *serv, uint64_t arg)`.
@@ -260,6 +264,39 @@ impl Default for ServerState {
 }
 
 impl ServerState {
+    /// Appends a user worker before the server's creation: its index, which is its
+    /// pre-start worker id.
+    pub(crate) fn add_pending(
+        &self,
+        worker: swoole_rs_process::worker_record::Worker<'static>,
+    ) -> usize {
+        let mut pending = self
+            .pending_users
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        pending.push(worker);
+        self.pending_count.store(pending.len(), Ordering::Release);
+        pending.len() - 1
+    }
+
+    /// How many user workers `add_pending` added, without the lock.
+    #[inline]
+    pub(crate) fn pending_count(&self) -> usize {
+        self.pending_count.load(Ordering::Acquire)
+    }
+
+    /// The `index`th user worker `add_pending` added, or `None` past the last.
+    pub(crate) fn pending(
+        &self,
+        index: usize,
+    ) -> Option<swoole_rs_process::worker_record::Worker<'static>> {
+        let pending = self
+            .pending_users
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        pending.get(index).copied()
+    }
+
     pub(crate) fn new() -> Self {
         Self::with(
             crate::config::ServerConfig::default(),
@@ -293,6 +330,8 @@ impl ServerState {
             stopping: AtomicBool::new(false),
             thread_manager: std::sync::Mutex::new(None),
             reactor_thread_barrier: swoole_rs_locks::Barrier::new(),
+            pending_users: std::sync::RwLock::default(),
+            pending_count: AtomicUsize::new(0),
         }
     }
 

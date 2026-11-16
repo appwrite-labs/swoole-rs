@@ -24,7 +24,7 @@ mod registry {
     use crate::signal_upstream::{self, Handler};
     use std::ptr;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use swoole_rs_process::wait::{Coroutines, wait_reap};
+    use swoole_rs_process::wait::{Coroutines, Wake, wait_reap};
 
     /// SIGCHLD's handler, exit condition and destroy callback are installed.
     static SIGNAL_READY: AtomicBool = AtomicBool::new(false);
@@ -85,11 +85,14 @@ mod registry {
         swoole_rs_coroutine::current().cast()
     }
 
-    fn yield_for(timeout: f64) {
+    fn yield_for(timeout: f64, arm: &dyn Fn(Wake)) {
         let co = swoole_rs_coroutine::current();
         if !co.is_null() {
-            // `co->yield_ex(timeout)` of the running coroutine.
-            let code = swoole_rs_coroutine::yield_timed(co.cast(), timeout);
+            // `co->yield_ex(timeout)` of the running coroutine, its waker armed first.
+            let code = swoole_rs_coroutine::yield_timed_armed(co.cast(), timeout, |waker| {
+                let (cid, park) = waker.parts();
+                arm(Wake { cid, park });
+            });
             _ = swoole_rs_coroutine::yield_resumed(code);
         }
     }
@@ -98,17 +101,17 @@ mod registry {
         swoole_rs_coroutine::current_resume_code() == Some(swoole_rs_coroutine::Resume::TimedOut)
     }
 
-    // SAFETY: `yield_for` is `yield_ex` of the running coroutine, which `current`
-    // returns, and returns once the timeout or `resume` (`co->resume()`, on the loop's
-    // thread, where the signal dispatch reaps) wakes it.
-    pub(super) static COROUTINES: Coroutines = unsafe {
-        Coroutines::new(
-            current,
-            signal_init,
-            yield_for,
-            timed_out,
-            swoole_rs_coroutine::resume,
-        )
+    /// `co->resume()` on the loop's thread, where the signal dispatch reaps.
+    fn wake(wake: Wake) {
+        swoole_rs_coroutine::Waker::of_parts((wake.cid, wake.park)).wake();
+    }
+
+    pub(super) static COROUTINES: Coroutines = Coroutines {
+        current,
+        signal_init,
+        yield_for,
+        timed_out,
+        wake,
     };
 }
 

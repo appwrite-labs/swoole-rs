@@ -81,7 +81,8 @@ pub struct Server<'a> {
     live: PhantomData<&'a Fields>,
 }
 
-/// The global hooks whose callbacks take the server alone.
+/// The server's global hooks: those taking the server alone, and the worker hooks,
+/// which take `{ server, worker id }`.
 #[derive(Clone, Copy)]
 pub enum ServerHook {
     BeforeStart,
@@ -89,6 +90,8 @@ pub enum ServerHook {
     AfterShutdown,
     BeforeCreate,
     AfterCreate,
+    BeforeWorkerStart(u32),
+    BeforeWorkerStop(u32),
 }
 
 impl<'a> Server<'a> {
@@ -101,11 +104,23 @@ impl<'a> Server<'a> {
             ServerHook::AfterShutdown => HookType::AFTER_SERVER_SHUTDOWN,
             ServerHook::BeforeCreate => HookType::BEFORE_SERVER_CREATE,
             ServerHook::AfterCreate => HookType::AFTER_SERVER_CREATE,
+            ServerHook::BeforeWorkerStart(_) => HookType::BEFORE_WORKER_START,
+            ServerHook::BeforeWorkerStop(_) => HookType::BEFORE_WORKER_STOP,
         };
-        if swoole_rs_corebase::swoole_isset_hook(kind) {
-            // SAFETY: every `ServerHook`'s callbacks take the server, which is live.
-            unsafe { swoole_rs_corebase::swoole_call_hook(kind, self.raw) };
+        if !swoole_rs_corebase::swoole_isset_hook(kind) {
+            return;
         }
+        let mut args: [*mut c_void; 2] = [self.raw, core::ptr::null_mut()];
+        let arg = match hook {
+            ServerHook::BeforeWorkerStart(id) | ServerHook::BeforeWorkerStop(id) => {
+                args[1] = core::ptr::without_provenance_mut(id as usize);
+                args.as_mut_ptr().cast()
+            }
+            _ => self.raw,
+        };
+        // SAFETY: each hook's callbacks take what `arg` is for it: the live server, or
+        // `{ server, worker id }` for the worker hooks, both outliving the call.
+        unsafe { swoole_rs_corebase::swoole_call_hook(kind, arg) };
     }
 
     /// The server at `serv`.
@@ -138,20 +153,6 @@ impl<'a> Server<'a> {
             raw: core::ptr::from_ref(object).cast_mut().cast(),
             live: PhantomData,
         }
-    }
-
-    /// `sw_server()`: the process's server (`SwooleG.server`), or `None` while it has
-    /// none.
-    ///
-    /// # Safety
-    /// The server is not deleted during `'a`: the last `SharedServer` drop frees it before
-    /// it clears `SwooleG.server`, so a view kept past that dangles.
-    #[must_use]
-    pub unsafe fn current() -> Option<Self> {
-        let serv = swoole_rs_corebase::swr_v1_core_server();
-        // SAFETY: null, or the process's server (only `swr_v1_server_new` sets it),
-        // live for `'a` per the caller.
-        (!serv.is_null()).then(|| unsafe { Server::from_raw(serv) })
     }
 
     fn fields(self) -> &'a Fields {
@@ -471,26 +472,34 @@ impl<'a> Server<'a> {
     /// `Server::get_user_worker_num()`: the user workers added so far.
     #[must_use]
     pub fn user_worker_num(self) -> usize {
-        self.registry().pending_count()
+        self.state().pending_count()
     }
 
     /// The server's worker arrays and counts.
     #[must_use]
     pub fn workers(self) -> ServerWorkers<'a> {
         let config = self.config();
-        let events = (
-            self.event_pool_ref(),
-            config.workers.as_ptr().cast(),
-            config.worker_num.get(),
-        );
-        let tasks = (self.task_pool_ref(), config.task_worker_num.get());
-        let users = (config.user_workers.as_ptr().cast(), self.user_worker_num());
-        // SAFETY: `create` maps `workers` with `worker_num` records, the task pool's
-        // create its array with `task_worker_num`, and the factory's start
-        // `user_workers` with one per added user worker (`add_worker` refuses once the
-        // factory exists); each stays mapped, as the counts stay, until the server is
-        // destroyed after its pools stop.
-        unsafe { ServerWorkers::new(events, tasks, users) }
+        let array = |records: &swoole_rs_memory::members::Shm, count: usize| {
+            let base = records.as_ptr().cast::<WorkerRecord>();
+            if base.is_null() {
+                return &[][..];
+            }
+            // SAFETY: `create` maps `workers` with `worker_num` records, and the
+            // factory's start `user_workers` with one per added user worker
+            // (`add_worker` refuses once the factory exists); each stays mapped, as the
+            // counts stay, until the server is destroyed after its pools stop.
+            unsafe { core::slice::from_raw_parts::<'a, WorkerRecord>(base, count) }
+        };
+        let (events, users) = (config.worker_num.get(), self.user_worker_num());
+        ServerWorkers::new(
+            (
+                self.event_pool_ref(),
+                array(&config.workers, events as usize),
+                events,
+            ),
+            (self.task_pool_ref(), config.task_worker_num.get()),
+            (array(&config.user_workers, users), users),
+        )
     }
 
     /// `Server::get_worker(id)`: event workers, then task workers, then user
@@ -522,13 +531,7 @@ impl<'a> Server<'a> {
     /// The `index`th user worker `worker_methods::add_worker` added, or `None` past the
     /// last.
     pub(crate) fn pending_worker(self, index: usize) -> Option<Worker<'a>> {
-        let &worker = self.registry().pending().get(index)?;
-        if worker.is_null() {
-            return None;
-        }
-        // SAFETY: a live worker `add_worker` added, which outlives the server
-        // (its contract; nothing else adds to the server's pending workers).
-        Some(unsafe { Worker::new(worker.cast()) })
+        self.state().pending(index)
     }
 
     /// Worker `id`'s pipe socket, its master end or its worker end, or `None` while it has none.

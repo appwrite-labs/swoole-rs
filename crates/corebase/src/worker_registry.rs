@@ -4,7 +4,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::{c_int, c_void};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 // `category` is an opaque tag the registry only groups by: event workers (1) and
@@ -25,9 +24,6 @@ struct Entry {
 pub struct WorkerRegistry {
     workers: RwLock<HashMap<c_int, Entry>>,
     detached: RwLock<HashSet<c_int>>,
-    pending_users: RwLock<Vec<*mut c_void>>,
-    /// How many `pending_users` holds, which every worker lookup reads.
-    pending_count: AtomicUsize,
 }
 
 /// A read of `lock`; a panic while it was held leaves the data whole.
@@ -94,27 +90,6 @@ impl WorkerRegistry {
     /// Reap a detached worker's exit. Returns false when `pid` was never detached.
     pub fn reap_detached(&self, pid: c_int) -> bool {
         write(&self.detached).remove(&pid)
-    }
-
-    /// Append one pending user worker before Server creation, preserving insertion
-    /// order. The returned index is its original pre-start worker ID.
-    pub fn pending_add(&self, worker: *mut c_void) -> usize {
-        let mut pending = write(&self.pending_users);
-        pending.push(worker);
-        self.pending_count.store(pending.len(), Ordering::Release);
-        pending.len() - 1
-    }
-
-    /// How many pending user workers were added, without the lock.
-    #[must_use]
-    #[inline]
-    pub fn pending_count(&self) -> usize {
-        self.pending_count.load(Ordering::Acquire)
-    }
-
-    /// The pending user workers, in the order they were added.
-    pub fn pending(&self) -> RwLockReadGuard<'_, Vec<*mut c_void>> {
-        read(&self.pending_users)
     }
 
     /// Terminate every worker of `category`: send `signo` to each, then wait for each.
@@ -237,19 +212,6 @@ mod tests {
         assert!(!reg.reap_detached(41));
         assert!(reg.reap_detached(40));
         assert!(!reg.reap_detached(40));
-    }
-
-    #[test]
-    fn pending_workers_keep_their_order_and_indexes() {
-        let reg = WorkerRegistry::default();
-        let (a, b) = (
-            core::ptr::without_provenance_mut(1),
-            core::ptr::without_provenance_mut(2),
-        );
-        assert_eq!(reg.pending_add(a), 0);
-        assert_eq!(reg.pending_add(b), 1);
-        assert_eq!(*reg.pending(), [a, b]);
-        assert_eq!(reg.pending_count(), 2);
     }
 
     #[test]

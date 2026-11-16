@@ -2,7 +2,6 @@
 //! and the datagram and read steps over them. crates/tls owns each session's queue
 //! and handshake, in its connection's SSL.
 use core::ffi::{CStr, c_int};
-use core::ptr;
 use std::ffi::CString;
 use swoole_rs_corebase::ServerEvent;
 
@@ -16,7 +15,6 @@ use swoole_rs_tls::{
 };
 
 use crate::reactor_entry::DgramPacket;
-use crate::records::ConnectionRecord;
 
 /// `SW_FD_SESSION`, `SW_SOCK_NONBLOCK` and `SW_SOCK_CLOEXEC`.
 const FD_SESSION: c_int = 0;
@@ -86,7 +84,7 @@ fn accept(
         swoole_rs_corebase::fatal("OpenSSL internal error: assertion failed: 0");
     }
     let origin = c"Server::accept_dtls_connection";
-    let mut conn: *mut ConnectionRecord = ptr::null_mut();
+    let mut conn = None;
     'setup: {
         if !bind(socket, kind, &host, number) {
             log::sys_warning(origin, format_args!("bind() failed"));
@@ -104,9 +102,8 @@ fn accept(
             socket.info = *sa;
             socket.chunk_size = SW_SSL_BUFFER_SIZE;
         });
-        conn = crate::connection::add(serv, listen, socket, server_fd)
-            .map_or(ptr::null_mut(), crate::Connection::as_ptr);
-        if conn.is_null() {
+        conn = crate::connection::add(serv, listen, socket, server_fd);
+        if conn.is_none() {
             break 'setup;
         }
         // `ListenPort::create_dtls_session(sock)`, over the port's context.
@@ -115,9 +112,8 @@ fn accept(
             return Some(socket);
         }
     }
-    if !conn.is_null() {
-        // SAFETY: the connection added above, which nothing else uses yet.
-        unsafe { ptr::write_bytes(conn, 0, 1) };
+    if let Some(conn) = conn {
+        conn.zero(crate::records::Zeroed::Whole);
     }
     // SAFETY: the heap record made above, which nothing uses afterwards.
     let socket = unsafe { swoole_rs_reactor::OwnedSocket::from_socket(socket) };

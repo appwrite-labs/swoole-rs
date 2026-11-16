@@ -103,19 +103,6 @@ impl<'a> SendData<'a> {
         unsafe { core::slice::from_raw_parts(self.data.cast(), self.info.len as usize) }
     }
 
-    /// The head's fd.
-    pub(crate) fn set_fd(&mut self, fd: c_long) {
-        self.info.fd = fd;
-    }
-
-    /// The head's payload length.
-    ///
-    /// # Safety
-    /// `data` points at `len` bytes that are readable, and not written, for `'a`.
-    pub(crate) unsafe fn set_len(&mut self, len: u32) {
-        self.info.len = len;
-    }
-
     /// The head's session, and the listening fd it arrived on.
     pub(crate) fn set_session(&mut self, fd: c_long, server_fd: u16) {
         self.info.fd = fd;

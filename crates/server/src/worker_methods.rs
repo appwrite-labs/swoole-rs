@@ -38,7 +38,7 @@ pub fn add_worker(serv: view::Server<'_>, worker: Worker<'static>) -> Option<u32
         );
         return None;
     }
-    let index = serv.registry().pending_add(worker.raw().cast());
+    let index = serv.state().add_pending(worker);
     // `user_worker_list.size() - 1`, as a `WorkerId`.
     let id = u32::try_from(index & u32::MAX as usize).unwrap_or_default();
     worker.set_id(id);
@@ -115,7 +115,7 @@ pub fn create_event_workers(serv: view::Server<'_>) -> bool {
 #[must_use]
 pub fn create_user_workers(serv: view::Server<'_>) -> bool {
     let size = size_of::<WorkerRecord>();
-    let count = serv.registry().pending().len();
+    let count = serv.state().pending_count();
     let workers = swoole_rs_memory::members::Shm::calloc(count, size);
     let mapped = !workers.is_null();
     // A zeroed record is an empty worker, so the array is `count` records from now on.
