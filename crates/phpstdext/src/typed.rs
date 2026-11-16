@@ -18,11 +18,11 @@ use swoole_rs_zend::{
     handlers,
     opcode::Handler,
     sys::{
-        _zend_hash_init, _zval_struct__bindgen_ty_2, HashTable, IS_ARRAY, IS_ARRAY_EX, IS_DOUBLE,
-        IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT, IS_RESOURCE, IS_STRING, IS_TRUE, IS_UNDEF,
-        swr_zend_efree, zend_internal_function, zend_long, zend_value, zif_handler, zval_ptr_dtor,
+        _zval_struct__bindgen_ty_2, HashTable, IS_ARRAY, IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL,
+        IS_OBJECT, IS_RESOURCE, IS_STRING, IS_TRUE, IS_UNDEF, zend_internal_function, zend_long,
+        zif_handler,
     },
-    throw_error, type_error, value,
+    throw_error, type_error,
 };
 
 /// `HASH_FLAG_TYPED_ARRAY`, a `HashTable` flag bit Zend leaves unused.
@@ -268,6 +268,11 @@ unsafe extern "C" {
     /// live for whoever else holds it.
     #[link_name = "swr_phpstdext_separate"]
     safe fn separate_array(array: &Value, info: IoSlice<'_>);
+    /// `ZVAL_ARR(made, ...)` of a new table of `size` elements with `extra`
+    /// uninitialised bytes behind it, which it returns; what `made` held is
+    /// not released.
+    #[link_name = "swr_phpstdext_typed_new"]
+    safe fn typed_new(made: &Owned, size: u32, extra: usize) -> *mut HashTable;
 }
 
 /// `get_type`.
@@ -651,15 +656,6 @@ fn from_array(call: &Call, parsed: &Parsed, init: &Value) -> Result<(), Failure>
     Ok(())
 }
 
-/// `make_typed_array`: a table with room for `len` bytes of definition.
-fn make_typed_array(size: u32, len: usize) -> *mut HashTable {
-    // Zend's request allocator.
-    let ht = value::emalloc(size_of::<HashTable>() + info_size(len)).cast();
-    // SAFETY: room for a table.
-    unsafe { _zend_hash_init(ht, size, Some(zval_ptr_dtor), false) };
-    ht
-}
-
 /// A new typed array of `parsed`'s definition, holding `init`'s entries.
 fn fill(call: &Call, parsed: &Parsed, init: Option<&Value>) -> Result<(), Failure> {
     let init = init.and_then(Value::array);
@@ -676,25 +672,24 @@ fn fill(call: &Call, parsed: &Parsed, init: Option<&Value>) -> Result<(), Failur
             parse_value(&parsed.text, start, usize::from(this.len)).ok_or(Failure::Thrown)?;
     }
     let len = parsed.text().len();
-    let array = make_typed_array(init.map_or(0, swoole_rs_zend::Array::count), len);
+    // `made` takes the new table's reference.
+    let mut made = Owned::default();
+    let array = typed_new(
+        &made,
+        init.map_or(0, swoole_rs_zend::Array::count),
+        info_size(len),
+    );
     // SAFETY: the table just made has `info_size(len)` bytes behind it, which
     // nothing else references yet.
     let room = unsafe { slice::from_raw_parts_mut(info_of(array).cast(), info_size(len)) };
     definition.write(room);
-    // The table just made, with its definition, which `made` holds below and
-    // this frame keeps until it returns it.
+    // The table just made, with its definition, which `made` holds and this
+    // frame keeps until it returns it.
     let typed = Typed {
         ht: array,
         live: PhantomData,
     };
     typed.mark();
-    let mut made = Owned::default();
-    let mut zval = UNDEF;
-    zval.value = zend_value { arr: array };
-    zval.u1.type_info = IS_ARRAY_EX;
-    // SAFETY: `ZVAL_ARR(made, array)`: `made`, undefined, takes the new
-    // table's reference.
-    unsafe { made.as_ptr().write(zval) };
     if let Some(init) = init
         && let Some(target) = made.array_mut()
     {

@@ -114,6 +114,16 @@ void swr_phpstdext_separate(zval *array, struct iovec info) {
     efree(plain);
 }
 
+/* make_typed_array: ZVAL_ARR(made, a new table of `size` elements with `extra`
+ * uninitialised bytes behind it), the table returned. `made`'s old value is
+ * not released. */
+HashTable *swr_phpstdext_typed_new(zval *made, uint32_t size, size_t extra) {
+    HashTable *ht = emalloc(sizeof(HashTable) + extra);
+    zend_hash_init(ht, size, NULL, ZVAL_PTR_DTOR, 0);
+    ZVAL_ARR(made, ht);
+    return ht;
+}
+
 void swr_phpstdext_pcre_release(void *entry) {
     php_pcre_pce_decref(entry);
 }
