@@ -264,7 +264,7 @@ trait Answer: Sized {
 
 impl<N: Narrow> Answer for N {
     type Result = c_int;
-    fn retried(wait: &Wait<'_>, mut call: impl FnMut() -> Self) -> c_int {
+    fn retried(wait: &Wait<'_>, mut call: impl FnMut() -> Self) -> Self::Result {
         wait.call(|| call().narrow())
     }
 }
