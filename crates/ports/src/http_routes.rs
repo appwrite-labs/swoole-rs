@@ -120,18 +120,6 @@ pub mod exports {
         swoole_rs_http2::frame_length(pl.bytes()).map_or(0, usize::cast_signed)
     }
 
-    /// The connection a server socket's `object` holds.
-    ///
-    /// # Safety
-    /// `socket` is a live server connection socket for `'a`.
-    unsafe fn connection<'a>(socket: *mut SocketRecord) -> Connection<'a> {
-        // SAFETY: as the caller guarantees.
-        let conn = unsafe { (*socket).fields.object };
-        // SAFETY: a connection socket's object is its live connection slot, shared
-        // through the slot's handle, as its fields are cells and atomics.
-        Connection::from(unsafe { &*conn.cast::<swoole_rs_server::ConnectionRecord>() })
-    }
-
     /// `SW_WEBSOCKET_HEADER_LEN + SW_WEBSOCKET_CLOSE_CODE_LEN + SW_WEBSOCKET_CLOSE_REASON_MAX_LEN`.
     const CLOSE_REPLY_MAX: usize = 2 + 2 + 125;
 
@@ -421,12 +409,13 @@ pub mod exports {
         socket: *mut c_void,
         pl: &mut PacketLength,
     ) -> isize {
+        // The header size names the connection's route: WebSocket's, HTTP/2's, or
+        // none (warned).
         // SAFETY: as the caller guarantees.
-        let conn = unsafe { connection(socket.cast()) };
-        match route(conn, || Some(true), || Some(false), None) {
-            Some(true) => super::websocket_length(proto, socket, pl),
-            Some(false) => http2_length(proto, socket, pl),
-            None => -1,
+        match unsafe { get_package_length_size(socket) } {
+            WEBSOCKET_FRAME_HEADER_SIZE => super::websocket_length(proto, socket, pl),
+            super::HTTP2_FRAME_HEADER_SIZE => http2_length(proto, socket, pl),
+            _ => -1,
         }
     }
 
@@ -436,7 +425,12 @@ pub mod exports {
     /// `socket` is a connection socket.
     pub unsafe extern "C" fn get_package_length_size(socket: *mut c_void) -> u8 {
         // SAFETY: as the caller guarantees.
-        length_size(unsafe { connection(socket.cast()) })
+        let conn = unsafe { (*socket.cast::<SocketRecord>()).fields.object };
+        // SAFETY: a connection socket's object is its live connection slot, shared
+        // through the slot's handle, as its fields are cells and atomics.
+        length_size(Connection::from(unsafe {
+            &*conn.cast::<swoole_rs_server::ConnectionRecord>()
+        }))
     }
 }
 

@@ -114,13 +114,10 @@ pub extern "C" fn on_write(reactor: Running<'_>, event: &mut Event) -> c_int {
     })
 }
 
-/// `static int Server::close_connection(Reactor *, Socket *)`.
-///
-/// # Safety
-/// `socket` is a session socket of the server `reactor` holds, which nothing uses
-/// afterwards.
+/// `static int Server::close_connection(Reactor *, Socket *)`: the reactor's close of
+/// one of its server's session sockets.
 #[must_use]
-pub unsafe extern "C-unwind" fn close_connection(
+pub extern "C-unwind" fn close_connection(
     reactor: Running<'_>,
     socket: swoole_rs_reactor::Socket<'static>,
 ) -> c_int {
