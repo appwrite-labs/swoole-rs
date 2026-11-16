@@ -75,17 +75,18 @@ pub(crate) fn set_pipe_handler() {
 /// `ReactorProcess_onPipeRead`: a message from another worker or a task worker.
 extern "C" fn on_pipe_read(reactor: Running<'_>, event: &mut Event) -> c_int {
     let reactor = Reactor::running(reactor);
-    super::with_server(reactor, |serv| {
-        let bus = serv.state().message_bus();
-        if event
-            .socket()
-            .is_some_and(|socket| bus.read(socket) > Some(0))
-            && dispatch(serv, reactor, bus)
-        {
-            bus.pop();
-        }
-        0
-    })
+    let Some(serv) = reactor.server() else {
+        return -1;
+    };
+    let bus = serv.state().message_bus();
+    if event
+        .socket()
+        .is_some_and(|socket| bus.read(socket) > Some(0))
+        && dispatch(serv, reactor, bus)
+    {
+        bus.pop();
+    }
+    0
 }
 
 /// The message the bus just read, by its kind; false, leaving it on the bus, when
