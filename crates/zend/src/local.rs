@@ -247,7 +247,9 @@ impl<T> PhpLocal<T> {
         Self(value)
     }
 
-    fn with<R>(&'static self, _php: Php<'_>, f: impl FnOnce(&T) -> R) -> R {
+    /// Borrow this executor's value for `f` while `php` leases running PHP.
+    /// The borrow cannot escape `f`; reentrant access requires interior mutability.
+    pub fn with<R>(&'static self, _php: Php<'_>, f: impl FnOnce(&T) -> R) -> R {
         #[cfg(any(zts, panic = "unwind"))]
         return self.0.with(f);
         #[cfg(not(any(zts, panic = "unwind")))]

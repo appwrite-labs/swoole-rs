@@ -5,7 +5,7 @@ use crate::{
     report::{OPERATION_NOT_SUPPORT, cli, fatal, notice, set_last_error},
 };
 use std::{ffi::c_int, mem::ManuallyDrop};
-use swoole_rs_zend::{Call, E_ERROR, E_WARNING, Owned, bailout, message};
+use swoole_rs_zend::{Call, E_ERROR, E_WARNING, Owned, Php, bailout, message};
 
 use swoole_rs_reactor::signal_upstream::{self, Handler};
 
@@ -24,26 +24,29 @@ const SLOTS: usize = 128;
 /// `(zend_long) SIG_IGN`.
 pub(crate) const SIG_IGN: i64 = 1;
 
-thread_local! {
-    /// `signal_fci_caches`: the callable per signal, which only `signal()`'s thread, the
-    /// main one, stores and calls. Never dropped: a thread's exit runs no PHP.
+swoole_rs_zend::php_local! {
+    /// `signal_fci_caches`: shared by the NTS request and its thread-context
+    /// event loop; per PHP thread on ZTS. Never dropped at OS-thread exit.
     static CALLABLES: ManuallyDrop<[Slot; SLOTS]> =
         const { ManuallyDrop::new([const { Slot::empty() }; SLOTS]) };
 }
 
 /// A signal number with a slot: one in `0..SW_SIGNO_MAX`.
 #[derive(Clone, Copy)]
-struct Signo(usize);
+struct Signo<'a>(usize, Php<'a>);
 
-impl Signo {
+impl<'a> Signo<'a> {
     /// `signo`, or `None` outside `0..SW_SIGNO_MAX`.
-    fn new(signo: i64) -> Option<Self> {
-        usize::try_from(signo).ok().filter(|&i| i < SLOTS).map(Self)
+    fn new(signo: i64, php: Php<'a>) -> Option<Self> {
+        usize::try_from(signo)
+            .ok()
+            .filter(|&i| i < SLOTS)
+            .map(|i| Self(i, php))
     }
 
     /// `f` over the signal's slot.
     fn with<R>(self, f: impl FnOnce(&Slot) -> R) -> Option<R> {
-        CALLABLES.with(|slots| slots.get(self.0).map(f))
+        CALLABLES.with(self.1, |slots| slots.get(self.0).map(f))
     }
 
     fn is_set(self) -> bool {
@@ -57,7 +60,10 @@ impl Signo {
 
 /// `php_swoole_onSignal`: call the signal's callable with its number.
 extern "C" fn on_signal(signo: c_int) {
-    let Some(slot) = Signo::new(i64::from(signo)) else {
+    // SAFETY: the PHP event loop dispatches this handler with the execution baton;
+    // thread-context coroutines run only when that loop hands it over.
+    let php = unsafe { Php::assume() };
+    let Some(slot) = Signo::new(i64::from(signo), php) else {
         return;
     };
     if !slot.is_set() {
@@ -98,7 +104,7 @@ pub(crate) fn signal(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let Some(slot) = Signo::new(signo) else {
+    let Some(slot) = Signo::new(signo, call.php()) else {
         fatal(E_WARNING, &message!("invalid signal number [{signo}]"));
         call.set_bool(false);
         return;
@@ -180,7 +186,9 @@ pub(crate) fn signal(call: &Call) {
 /// SIGCHLD (`php_swoole_private.h` declares it inside `BEGIN_EXTERN_C`).
 #[unsafe(no_mangle)]
 pub extern "C" fn php_swoole_signal_isset_handler(signo: c_int) -> bool {
-    let Some(slot) = Signo::new(i64::from(signo)) else {
+    // SAFETY: proc_open calls this while its PHP executor owns the execution baton.
+    let php = unsafe { Php::assume() };
+    let Some(slot) = Signo::new(i64::from(signo), php) else {
         fatal(E_WARNING, &message!("invalid signal number [{signo}]"));
         return false;
     };
@@ -198,8 +206,11 @@ pub extern "C" fn php_swoole_process_signal_clean() {
 /// [`php_swoole_process_signal_clean`]'s body, which frees every callable and
 /// leaves a destructor's bailout pending.
 fn signal_clean() {
+    // SAFETY: cleanup runs in PHP request shutdown or its post-fork child setup,
+    // with no other thread executing PHP.
+    let php = unsafe { Php::assume() };
     for signo in 0..SLOTS {
-        drop(Signo(signo).replace(None));
+        drop(Signo(signo, php).replace(None));
     }
     swoole_rs_corebase::swr_v1_core_set_signal_listener_num(0);
 }
