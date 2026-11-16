@@ -71,7 +71,6 @@ fn length_size(conn: Connection<'_>) -> u8 {
     )
 }
 
-#[cfg(not(test))]
 pub mod exports {
     use std::ffi::{c_int, c_void};
     use std::mem::MaybeUninit;
