@@ -25,6 +25,22 @@ native-TU gates.
   (`corebase-startup`): PHP startup through `sys_temp_dir` (create, repeated
   slashes, file parent), comparing warnings and `swoole_last_error`. The Cargo
   engine must be the one `tools/build_ext.py` recorded in `M` (`tools/ext_identity.py`).
+## The record views record
+
+`record_views.py` (`corebase-record-views`) compiled a C++ probe against `swoole.h` and
+read `SwooleG` and `SwooleTG` through their C++ views. No compiled C++ reads either, so the
+`SwooleTG` macro and `swoole::Global`'s `running`, `enable_coroutine` and `pagesize` views
+left the header, and its checks are Rust tests (`cargo test -p swoole-rs-corebase`, in
+`corebase-unit`):
+
+| Probe check | Rust test or reason |
+| --- | --- |
+| init's libc allocator (callable), `max_sockets > 0`; clean nulls the allocator and zeroes `max_sockets` | `config_state::tests::storage_init_task_directory_and_reset` |
+| `dns_cache_refresh_time` written in place, zeroed by clean | the same test: 2.5's bits stored, 0 after the reset |
+| `running`, `enable_coroutine` and `pagesize > 0` after init, `running` false after clean | `global::tests::record_lifecycle` |
+| `SwooleTG.main_thread`, and each thread's own record: zero on a new thread, set there without touching the main thread's `id` 19 and `type` 3 | `lifecycle::tests::thread_records_are_per_thread` |
+| `SwooleG.max_sockets = 91` written and read back in place, and `SwooleG`'s and `SwooleTG`'s addresses stable across clean | none: no compiled C++ reads `SwooleG`, whose `swoole::Global` layout both sides assert, and `SwooleTG` is Rust's alone |
+
 ## The number helpers record
 
 `numbers.rs` (`cargo test -p swoole-rs-corebase --test numbers`, in `corebase-unit`) holds

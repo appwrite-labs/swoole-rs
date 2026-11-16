@@ -26,13 +26,6 @@ pub fn set_last_error(code: c_int) {
     LAST_ERROR.set(code);
 }
 
-/// `swoole_get_last_error()` for native code.
-#[must_use]
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_core_last_error() -> c_int {
-    last_error()
-}
-
 /// `swoole_set_last_error(code)` for native code.
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_core_set_last_error(code: c_int) {
@@ -202,7 +195,7 @@ mod tests {
     fn last_error_is_per_thread() {
         set_last_error(1005);
         std::thread::spawn(|| {
-            assert_eq!(swr_v1_core_last_error(), 0);
+            assert_eq!(last_error(), 0);
             swr_v1_core_set_last_error(7);
         })
         .join()

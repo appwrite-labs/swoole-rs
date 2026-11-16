@@ -79,8 +79,11 @@ jobs:
           - name: hooks
             flags: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations
             packages: -p swoole-rs-hooks
+          # The live-server fixture drops its tables without closing what a test accepted:
+          # a test may already have freed a socket its slot still names, so the fixture
+          # can't tell what is left. Its leaks are ignored, not its UB.
           - name: server
-            flags: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations
+            flags: -Zmiri-disable-isolation -Zmiri-no-short-fd-operations -Zmiri-ignore-leaks
             packages: -p swoole-rs-server
     env:
       TOOLCHAIN: nightly-2026-10-24

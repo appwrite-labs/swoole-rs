@@ -143,7 +143,7 @@ pub(crate) fn accept_connection(
 #[must_use]
 pub fn get_startup_error_message() -> CString {
     let message = swoole_rs_error::last_error_message();
-    crate::state::startup_error(message, log::swr_v1_core_last_error())
+    crate::state::startup_error(message, log::last_error())
 }
 
 pub use crate::connection::{add as add_connection, set_max_connection};
@@ -465,7 +465,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn pipe_fds_map_to_the_pipe_and_raise_the_highest_fd() {
         use core::sync::atomic::Ordering::Relaxed;
         use swoole_rs_process::worker_record::{Worker, WorkerRecord};
