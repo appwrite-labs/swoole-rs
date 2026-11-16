@@ -93,7 +93,7 @@ Tooling tests: `tests/dev/run.sh` (parallel; prints only failing files), or `pyt
 ### One command: `dev.py docker`
 
 ```sh
-python3 tools/dev.py docker -- integrate --module utilities --phase utilities-logger-originals
+python3 tools/dev.py docker -- integrate --module utilities --phase utilities-hash-originals
 ```
 
 Runs any `dev.py` command in the dev image for this host's architecture, with no
@@ -121,6 +121,11 @@ manual setup:
 It warns when the disk has less than 20 GB free. `dev.py prune` also removes
 `target/worktrees/*` older than its window. It keeps Docker images shared with
 other worktrees.
+
+To reproduce an x86 CI failure on an ARM host, add `--platform linux/amd64`
+before `--`. `linux/arm64` is also supported. The selected architecture has its
+own image, toolchain volumes and `target/docker/<arch>/` output. Docker must
+support running that architecture; emulated timing is not native CI timing.
 
 #### io_uring: `dev.py docker --iouring`
 

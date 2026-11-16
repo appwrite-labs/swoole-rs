@@ -9,13 +9,6 @@ use swoole_rs_corebase::{log, sys};
 use swoole_rs_process::signal::swoole_signal_dispatch;
 use swoole_rs_process::wait::wait_count;
 
-// crates/timer's, a safe function there. A declaration, since crates/timer
-// depends on this crate.
-unsafe extern "C-unwind" {
-    #[link_name = "_Z19swoole_timer_selectv"]
-    safe fn swoole_timer_select();
-}
-
 use swoole_rs_corebase::sys::errno;
 
 /// The SIGCHLD registry: the coroutine effects crates/process's wait loop asks for.
@@ -24,7 +17,7 @@ mod registry {
     use crate::signal_upstream::{self, Handler};
     use std::ptr;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use swoole_rs_process::wait::{Coroutines, wait_reap};
+    use swoole_rs_process::wait::{Coroutines, Wake, wait_reap};
 
     /// SIGCHLD's handler, exit condition and destroy callback are installed.
     static SIGNAL_READY: AtomicBool = AtomicBool::new(false);
@@ -85,11 +78,14 @@ mod registry {
         swoole_rs_coroutine::current().cast()
     }
 
-    fn yield_for(timeout: f64) {
+    fn yield_for(timeout: f64, arm: &dyn Fn(Wake)) {
         let co = swoole_rs_coroutine::current();
         if !co.is_null() {
-            // `co->yield_ex(timeout)` of the running coroutine.
-            let code = swoole_rs_coroutine::yield_timed(co.cast(), timeout);
+            // `co->yield_ex(timeout)` of the running coroutine, its waker armed first.
+            let code = swoole_rs_coroutine::yield_timed_armed(co.cast(), timeout, |waker| {
+                let (cid, park) = waker.parts();
+                arm(Wake { cid, park });
+            });
             _ = swoole_rs_coroutine::yield_resumed(code);
         }
     }
@@ -98,17 +94,17 @@ mod registry {
         swoole_rs_coroutine::current_resume_code() == Some(swoole_rs_coroutine::Resume::TimedOut)
     }
 
-    // SAFETY: `yield_for` is `yield_ex` of the running coroutine, which `current`
-    // returns, and returns once the timeout or `resume` (`co->resume()`, on the loop's
-    // thread, where the signal dispatch reaps) wakes it.
-    pub(super) static COROUTINES: Coroutines = unsafe {
-        Coroutines::new(
-            current,
-            signal_init,
-            yield_for,
-            timed_out,
-            swoole_rs_coroutine::resume,
-        )
+    /// `co->resume()` on the loop's thread, where the signal dispatch reaps.
+    fn wake(wake: Wake) {
+        swoole_rs_coroutine::Waker::of_parts((wake.cid, wake.park)).wake();
+    }
+
+    pub(super) static COROUTINES: Coroutines = Coroutines {
+        current,
+        signal_init,
+        yield_for,
+        timed_out,
+        wake,
     };
 }
 
@@ -164,16 +160,9 @@ pub extern "C" fn system_waitpid_safe(
     status: Option<&mut c_int>,
     options: c_int,
 ) -> libc::pid_t {
-    /// `SW_OK`, `SW_FILE_LOCK_DEFAULT_SECOND` and `SW_FILE_LOCK_MAX_SECOND`.
-    const OK: c_int = swoole_rs_corebase::constants::ResultCode::SW_OK as c_int;
+    /// `SW_FILE_LOCK_DEFAULT_SECOND` and `SW_FILE_LOCK_MAX_SECOND`.
     const LOCK_DEFAULT_SECOND: f64 = 0.001;
     const LOCK_MAX_SECOND: f64 = 0.1;
-    // crates/hooks's, a safe function there; declared, since crates/hooks
-    // depends on this crate.
-    unsafe extern "C-unwind" {
-        #[link_name = "_ZN6swoole9coroutine6System5sleepEd"]
-        safe fn system_sleep(seconds: f64) -> c_int;
-    }
     let mut status = status;
     let outside = crate::event_api::swr_v1_event_current().is_null()
         || swoole_rs_coroutine::current().is_null();
@@ -190,7 +179,7 @@ pub extern "C" fn system_waitpid_safe(
             Err(_) => return -1,
             // In a coroutine, checked above. A failed sleep keeps its errno and
             // returns the wait's no-child result, as upstream does.
-            Ok(None) if system_sleep(second) != OK => return 0,
+            Ok(None) if !(crate::host::get().sleep)(second) => return 0,
             Ok(None) => {}
         }
         second = crate::backoff(second, LOCK_DEFAULT_SECOND, LOCK_MAX_SECOND);
@@ -238,6 +227,6 @@ pub extern "C" fn swoole_waitpid(
         }
         swoole_signal_dispatch();
         // The thread's timer, if any.
-        swoole_timer_select();
+        (crate::host::get().timer_select)();
     }
 }

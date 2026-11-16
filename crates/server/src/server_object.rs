@@ -20,7 +20,7 @@ fn swr_v1_server_new(mode: c_int) -> ServerObject {
     config.init_defaults(
         u32::from(swoole_rs_corebase::swr_v1_core_cpu_num()),
         swoole_rs_utilities::timezone(),
-        (&raw const crate::pool_native::STD_ALLOCATOR).cast(),
+        Some(crate::reactor_ops::STD),
     );
     tables.set_max_connection(swoole_rs_corebase::max_sockets().min(100_000));
     config.gs = swoole_rs_memory::members::Shm::calloc(1, size_of::<ServerShared>());

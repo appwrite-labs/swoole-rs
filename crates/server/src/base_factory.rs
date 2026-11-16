@@ -24,7 +24,7 @@ use swoole_rs_corebase::log::LogLevel::{SW_LOG_NOTICE as LOG_NOTICE, SW_LOG_TRAC
 use swoole_rs_corebase::{CCast, log};
 use swoole_rs_memory::members::Shm;
 use swoole_rs_process::methods::swoole_get_worker_id;
-use swoole_rs_process::worker_globals::with_globals;
+use swoole_rs_process::worker_globals::{with_current, with_globals};
 use swoole_rs_process::worker_record::{Worker, WorkerStatus};
 
 /// `swoole::SendData`, and the `swoole::RecvData` a receive callback reads (the same
@@ -103,19 +103,6 @@ impl<'a> SendData<'a> {
         unsafe { core::slice::from_raw_parts(self.data.cast(), self.info.len as usize) }
     }
 
-    /// The head's fd.
-    pub(crate) fn set_fd(&mut self, fd: c_long) {
-        self.info.fd = fd;
-    }
-
-    /// The head's payload length.
-    ///
-    /// # Safety
-    /// `data` points at `len` bytes that are readable, and not written, for `'a`.
-    pub(crate) unsafe fn set_len(&mut self, len: u32) {
-        self.info.len = len;
-    }
-
     /// The head's session, and the listening fd it arrived on.
     pub(crate) fn set_session(&mut self, fd: c_long, server_fd: u16) {
         self.info.fd = fd;
@@ -129,6 +116,7 @@ impl<'a> SendData<'a> {
     }
 
     /// The payload under the head `info`, whose `len` stays the payload's.
+    #[cfg(feature = "upstream-symbols")]
     #[must_use]
     pub(crate) fn rehead(self, info: DataHead) -> Self {
         let len = self.info.len;
@@ -149,7 +137,7 @@ impl<'a> SendData<'a> {
         expect(dead_code, reason = "only the hybrid's factories write to a pipe")
     )]
     pub(crate) fn send(&mut self, bus: &swoole_rs_bus::Bus, pipe: crate::view::PipeSocket) -> bool {
-        // The payload is lent for `'a`, so it outlives the write that lowers `len`.
+        // The write only ever lowers `len`, so the payload stays within `data`'s bytes.
         let data = (!self.data.is_null()).then(|| self.payload());
         bus.send(pipe.socket(), &mut self.info, data)
     }
@@ -316,11 +304,16 @@ fn receive_now(serv: view::Server<'_>, task: &SendData) -> bool {
     if !dgram && task.info.event() != Some(ServerEvent::RecvData) {
         return false;
     }
-    let (worker, max_request) =
-        with_globals(|g| (g.worker(), g.max_request.load(Ordering::Relaxed)));
-    if worker.is_null() || max_request != 0 {
+    if with_globals(|g| g.max_request.load(Ordering::Relaxed)) != 0 {
         return false;
     }
+    // The current worker's record, which this worker loop owns.
+    with_current(|&worker| receive_as(serv, task, dgram, worker)).unwrap_or(false)
+}
+
+/// [`receive_now`] for the worker this loop runs.
+#[inline(always)]
+fn receive_as(serv: view::Server<'_>, task: &SendData, dgram: bool, worker: Worker<'_>) -> bool {
     let state = serv.state();
     let conn = if dgram {
         None
@@ -331,8 +324,6 @@ fn receive_now(serv: view::Server<'_>, task: &SendData) -> bool {
         };
         Some(c)
     };
-    // SAFETY: the current worker's record, which this worker loop owns.
-    let worker = unsafe { Worker::new(worker) };
     worker.set_status(WorkerStatus::Busy);
     if let Some(c) = conn {
         if task.info.len > 0 {
@@ -527,7 +518,7 @@ pub(crate) fn finish(serv: view::Server<'_>, send: &SendData) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::callbacks::{Callback, Ctx};
+    use crate::callbacks::Callback;
     use crate::conn_io::tests::{accepted, closed, queue, session};
     use crate::hybrid::tests::{Call, calls};
     use crate::reactor_entry::RecvData;
@@ -547,13 +538,13 @@ mod tests {
         HEARD.with_borrow_mut(core::mem::take)
     }
 
-    extern "C" fn on_receive(_: Ctx, _: view::Server<'_>, data: &RecvData) -> c_int {
+    fn on_receive(_: view::Server<'_>, data: &RecvData) -> c_int {
         let i = data.info;
         HEARD.with_borrow_mut(|h| h.push((i.kind, i.fd, i.reactor_id, i.flags, i.len)));
         0
     }
 
-    extern "C" fn closing(_: Ctx, _: view::Server<'_>, i: &DataHead) {
+    fn closing(_: view::Server<'_>, i: &DataHead) {
         HEARD.with_borrow_mut(|h| h.push((4, i.fd, i.reactor_id, i.flags, i.len)));
     }
 
@@ -567,7 +558,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn dispatch_converts_stream_events_to_their_session() {
         let (live, _clients) = accepted();
         let (serv, conn) = (live.server(), session(&live, 1));
@@ -605,7 +595,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn base_mode_receives_without_the_bus() {
         use swoole_rs_process::worker_record::WorkerRecord;
         let (live, _clients) = accepted();
@@ -662,7 +651,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn notify_converts_to_the_session() {
         let (live, _clients) = accepted();
         let (serv, conn) = (live.server(), session(&live, 1));
@@ -679,7 +667,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn end_forwards_foreign_sessions() {
         let (live, _clients) = accepted();
         let (serv, conn) = (live.server(), session(&live, 1));
@@ -694,7 +681,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn end_closes_once_with_the_callback() {
         let (live, _clients) = accepted();
         let serv = live.server();
@@ -716,7 +702,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn end_queues_the_close_behind_output() {
         let (live, _clients) = accepted();
         let (serv, conn) = (live.server(), session(&live, 1));
@@ -738,7 +723,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn finish_sends_here_or_forwards() {
         use std::io::Read;
         let (live, [mut client, _]) = accepted();
@@ -762,7 +746,6 @@ mod tests {
     /// `$server->exist()` and `close()` use, and writes through its own
     /// reference to the slot; the caller's write after it is still valid.
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn on_close_reaches_the_record_by_session() {
         let (live, _clients) = accepted();
         let (state, conn) = (live.state(), session(&live, 1));

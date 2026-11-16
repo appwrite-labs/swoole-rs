@@ -517,21 +517,24 @@ impl Co {
     /// the socket's `NameResolver::Context`, or a fresh one. In a coroutine.
     #[must_use]
     pub fn connect_host(self, host: &[u8], port: c_int) -> bool {
-        let mut fallback = NameResolverContext::default();
-        let context = self.resolve_context().cast::<NameResolverContext>();
-        // SAFETY: null or the context its owner set, which outlives the socket's connect.
-        let resolve = unsafe { context.as_mut() }.unwrap_or(&mut fallback);
+        // The shared context, taken for the connect and put back after it.
+        let shared = self.resolve_context();
+        let mut resolve = shared.as_deref().map_or_default(core::cell::Cell::take);
         let proxies = self.with_extra(|extra| extra.proxies.clone());
         let [socks5, http] = proxies.unwrap_or_default();
         let mut live = Live {
             socket: self,
-            resolve,
+            resolve: &mut resolve,
             socks5: socks5.as_deref(),
             http: http.as_deref(),
             address: SocketAddress::default(),
             resolved: false,
         };
-        connect_host(&mut live, host, port)
+        let connected = connect_host(&mut live, host, port);
+        if let Some(shared) = shared {
+            shared.set(resolve);
+        }
+        connected
     }
 
     /// `set_http_proxy` (`http`) or `set_socks5_proxy`: a new proxy, which replaces
@@ -917,7 +920,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no inet_pton")]
     fn tls_host_name_and_proxy_family_switch() {
         // An IPv4 socket whose proxy (::1) is IPv6 reopens as TCP6.
         let mut ops = connect_ops(Some(Proxy::Socks5), true, libc::AF_INET);
@@ -1127,7 +1129,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no inet_pton")]
     fn ip_checks_match_inet_pton() {
         assert!(is_ip(libc::AF_INET, b"127.0.0.1"));
         assert!(!is_ip(libc::AF_INET, b"localhost"));

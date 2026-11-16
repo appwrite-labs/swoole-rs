@@ -273,9 +273,7 @@ impl WorkerRecord {
 /// A live worker record: the only way to reach one's fields. Every field is a
 /// `Cell` or an atomic, so the shared borrow [`Worker::record`] lends lets other
 /// handles, and other processes in shared memory, write the record meanwhile.
-/// Native code passes one as a `Worker *`.
 #[derive(Clone, Copy)]
-#[repr(transparent)]
 pub struct Worker<'a> {
     raw: *mut WorkerRecord,
     life: core::marker::PhantomData<&'a WorkerRecord>,
@@ -344,18 +342,6 @@ impl<'a> Worker<'a> {
             raw: raw.cast_mut(),
             life: core::marker::PhantomData,
         }
-    }
-
-    /// The record at `raw`, or `None` when it is null.
-    ///
-    /// # Safety
-    /// As [`Worker::new`], when `raw` is not null.
-    #[must_use]
-    pub unsafe fn from_raw(raw: *const WorkerRecord) -> Option<Self> {
-        (!raw.is_null()).then_some(Self {
-            raw: raw.cast_mut(),
-            life: core::marker::PhantomData,
-        })
     }
 
     /// The record's address.
@@ -704,20 +690,26 @@ impl<'a> Worker<'a> {
         self.set_start_time(swoole_rs_corebase::time_now());
         self.set_request_count(0);
         self.set_status(WorkerStatus::Idle);
-        crate::worker_globals::swr_v1_worker_global_set(3, 1);
-        crate::worker_globals::swr_v1_worker_global_set(4, 0);
+        crate::worker_globals::with_globals(|globals| {
+            globals.running.store(true, Ordering::Relaxed);
+            globals.shutdown.store(false, Ordering::Relaxed);
+        });
     }
 
     /// `Worker::shutdown()`: marks the current worker exited.
     pub fn shutdown(self) {
         self.set_status(WorkerStatus::Exit);
-        crate::worker_globals::swr_v1_worker_global_set(4, 1);
+        crate::worker_globals::with_globals(|globals| {
+            globals.shutdown.store(true, Ordering::Relaxed);
+        });
     }
 
     /// `has_exceeded_max_request()`: this thread's request limit against the count.
     #[must_use]
     pub fn exceeded_max_request(self) -> bool {
-        let limit = crate::worker_globals::swr_v1_worker_global_get(5).cast_unsigned();
+        let limit = crate::worker_globals::with_globals(|globals| {
+            u64::from(globals.max_request.load(Ordering::Relaxed))
+        });
         limit != 0 && self.request_count().cast_unsigned() >= limit
     }
 
@@ -852,11 +844,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no msgget")]
     fn a_queue_pools_process_balances_over_the_pools_queue() {
-        extern "C-unwind" fn on_message(
-            _: crate::process_pool::PoolRef<'_>,
-            _: &crate::process_pool::RecvData<'_>,
-        ) {
-        }
+        fn on_message(_: crate::process_pool::PoolRef<'_>, _: &crate::process_pool::RecvData<'_>) {}
         let mut workers: [WorkerRecord; 2] = unsafe { core::mem::zeroed() };
         let mut pool: crate::process_pool::PoolRecord = unsafe { core::mem::zeroed() };
         pool.workers = workers.as_mut_ptr();
@@ -1033,13 +1021,16 @@ mod public_pid_array_tests {
         use crate::process_pool::{PoolRecord, PoolRef};
         let mut pools = [PoolRecord::empty(), PoolRecord::empty()];
         let [event_pool, task_pool] = pools.each_mut().map(|pool| unsafe { PoolRef::new(pool) });
-        let view = unsafe {
-            crate::server_workers::ServerWorkers::new(
-                (event_pool, workers, count),
-                (task_pool, 0),
-                (core::ptr::null_mut(), 0),
-            )
+        let events = if workers.is_null() {
+            &[][..]
+        } else {
+            unsafe { core::slice::from_raw_parts(workers, count as usize) }
         };
+        let view = crate::server_workers::ServerWorkers::new(
+            (event_pool, events, count),
+            (task_pool, 0),
+            (&[], 0),
+        );
         crate::server_workers::swr_v1_process_server_worker_by_pid(&view, None, pid)
     }
 

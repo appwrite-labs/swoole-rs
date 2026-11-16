@@ -7,6 +7,7 @@
 
 use std::ffi::{CStr, c_char, c_int, c_ulong};
 use std::mem::MaybeUninit;
+use swoole_rs_corebase::lent::{Spare, lend_spare};
 use swoole_rs_corebase::set_errno;
 use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_tls::{Bio, Ssl, SslFailure};
@@ -75,27 +76,32 @@ impl<S: TlsSocket> Tls<'_, S> {
             // SAFETY: `buf` holds `size` bytes, which the BIO may only write.
             let slots =
                 unsafe { core::slice::from_raw_parts_mut(buf.cast::<MaybeUninit<u8>>(), size) };
-            let Some(nread) = wbio.read(slots) else {
-                self.socket.set_err(SSL_BAD_PROTOCOL);
+            if !lend_spare(slots, |spare| self.send_bio(wbio, spare)).0 {
                 return false;
-            };
-            let mut written = 0;
-            while written < nread {
-                let rest = buf.wrapping_add(written);
-                // SAFETY: the first `nread` bytes of `buf` are filled.
-                let rest =
-                    unsafe { core::slice::from_raw_parts(rest.cast::<u8>(), nread - written) };
-                match uring::send(self.uring, self.fd, rest, 0, self.write_timeout) {
-                    Ok(0) => {
-                        set_errno(SSL_RESET);
-                        return false;
-                    }
-                    Ok(n) => written += n,
-                    Err(error) if error.raw_os_error() == Some(libc::EINTR) => {}
-                    Err(error) => {
-                        self.socket.set_err(error.raw_os_error().unwrap_or(0));
-                        return false;
-                    }
+            }
+        }
+        true
+    }
+
+    /// One `BIO_read` of what OpenSSL queued into `spare`, sent whole.
+    fn send_bio(&self, wbio: Bio<'_>, spare: &mut Spare<'_>) -> bool {
+        if wbio.read(spare).is_none() {
+            self.socket.set_err(SSL_BAD_PROTOCOL);
+            return false;
+        }
+        let read = spare.written();
+        let mut written = 0;
+        while let Some(rest @ [_, ..]) = read.get(written..) {
+            match uring::send(self.uring, self.fd, rest, 0, self.write_timeout) {
+                Ok(0) => {
+                    set_errno(SSL_RESET);
+                    return false;
+                }
+                Ok(n) => written += n,
+                Err(error) if error.raw_os_error() == Some(libc::EINTR) => {}
+                Err(error) => {
+                    self.socket.set_err(error.raw_os_error().unwrap_or(0));
+                    return false;
                 }
             }
         }
@@ -302,10 +308,12 @@ mod tests {
         fn ssl_error(self, _function: &CStr, _error: c_int, _code: c_ulong) {}
     }
 
-    /// A socket record holding `session`, as a socket's does.
+    /// A socket record holding `session`, as a socket's does: it frees it when dropped.
     fn holding(session: *mut ssl::SSL) -> SocketRecord {
         let mut record = SocketRecord::with_fd(-1, 0);
-        unsafe { record.set_ssl(session.cast()) };
+        record.set_ssl(Some(unsafe {
+            crate::co_socket::record_ssl(session.cast())
+        }));
         record
     }
 
@@ -418,7 +426,7 @@ mod tests {
                 vec![SSL_RESET],
                 "reset"
             );
-            ssl::SSL_free(session);
+            drop(record);
             ssl::SSL_CTX_free(ctx);
             libc::close(fds[0]);
         });
@@ -517,7 +525,7 @@ mod tests {
             );
 
             client_done.store(true, Ordering::SeqCst);
-            ssl::SSL_free(session);
+            drop(record);
             ssl::SSL_CTX_free(ctx);
         });
         client_done.store(true, Ordering::SeqCst);

@@ -97,7 +97,7 @@ fn lock() {
 }
 
 /// `onWorkerStart`'s `lock->unlock()`.
-extern "C" fn unlock(_: Ctx, _: view::Server<'_>, _: Worker<'_>) {
+fn unlock(_: view::Server<'_>, _: Worker<'_>) {
     (&gate().1).write_all(b"x").unwrap();
 }
 
@@ -237,7 +237,7 @@ fn reply(serv: Server, req: &RecvData) -> c_long {
     session
 }
 
-extern "C" fn echo_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn echo_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     reply(Server(serv.raw()), req);
     SW_OK
 }
@@ -276,7 +276,7 @@ fn tls_server(mode: c_int, level: c_int, cert: &str, key: &str) -> (Server, Port
     (serv, port)
 }
 
-extern "C" fn ssl_start(_: Ctx, serv: view::Server<'_>) {
+fn ssl_start(serv: view::Server<'_>) {
     start_client(Server(serv.raw()), |serv| {
         let port = serv.get_primary_port();
         check(port.config().ssl, "port->ssl == 1");
@@ -312,7 +312,7 @@ fn ssl() {
     serv.delete();
 }
 
-extern "C" fn ssl_error_start(_: Ctx, serv: view::Server<'_>) {
+fn ssl_error_start(serv: view::Server<'_>) {
     start_client(Server(serv.raw()), |serv| {
         let port = serv.get_primary_port();
         check(port.config().ssl, "port->ssl == 1");
@@ -329,11 +329,11 @@ extern "C" fn ssl_error_start(_: Ctx, serv: view::Server<'_>) {
     });
 }
 
-extern "C" fn ignore_receive(_: Ctx, _: view::Server<'_>, _: &RecvData) -> c_int {
+fn ignore_receive(_: view::Server<'_>, _: &RecvData) -> c_int {
     SW_OK
 }
 
-extern "C" fn count_connect(_: Ctx, _: view::Server<'_>, _: &DataHead) {
+fn count_connect(_: view::Server<'_>, _: &DataHead) {
     shared().counter.fetch_add(1, Ordering::SeqCst);
 }
 
@@ -370,7 +370,7 @@ fn wbuf() -> &'static [u8] {
     })
 }
 
-extern "C" fn ssl_write_start(_: Ctx, serv: view::Server<'_>) {
+fn ssl_write_start(serv: view::Server<'_>) {
     start_client(Server(serv.raw()), |serv| {
         let port = serv.get_primary_port();
         check(port.config().ssl, "port->ssl == 1");
@@ -401,7 +401,7 @@ extern "C" fn ssl_write_start(_: Ctx, serv: view::Server<'_>) {
     });
 }
 
-extern "C" fn ssl_write_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn ssl_write_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let (session, _) = request(req);
     check(
         Server(serv.raw()).send(session, wbuf()),
@@ -434,7 +434,7 @@ fn dtls_client(c: &mut SyncClient) {
     c.close();
 }
 
-extern "C" fn dtls_start(_: Ctx, serv: view::Server<'_>) {
+fn dtls_start(serv: view::Server<'_>) {
     let serv = Server(serv.raw());
     // SAFETY: getpid(2).
     client_thread(
@@ -596,7 +596,7 @@ unsafe fn print_all_subject_entries(name: *const c_void, out: &mut String) {
     }
 }
 
-extern "C" fn client_cert_start(_: Ctx, serv: view::Server<'_>) {
+fn client_cert_start(serv: view::Server<'_>) {
     start_client(Server(serv.raw()), |serv| {
         let port = serv.get_primary_port();
         check(port.config().ssl, "port->ssl == 1");
@@ -619,7 +619,7 @@ extern "C" fn client_cert_start(_: Ctx, serv: view::Server<'_>) {
     });
 }
 
-extern "C" fn client_cert_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn client_cert_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let serv = Server(serv.raw());
     let session = reply(serv, req);
 
@@ -671,7 +671,7 @@ fn ssl_client_cert_3() {
     test_ssl_client_cert(MODE_THREAD);
 }
 
-pub const CASES: &[(&str, fn())] = &[
+pub(crate) const CASES: &[(&str, fn())] = &[
     ("ssl", ssl),
     ("ssl_error", ssl_error),
     ("ssl_write", ssl_write),

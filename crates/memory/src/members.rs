@@ -12,8 +12,9 @@
 //! carries.
 
 use crate::global::{self, Global};
-use crate::table::Table;
+use crate::table::{Handle, Table};
 use core::cell::Cell;
+use core::marker::PhantomData;
 use std::ffi::{c_int, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
@@ -23,8 +24,6 @@ use swoole_rs_corebase::sys;
 
 const INVALID: i32 = -1;
 const NO_MEMORY: i32 = -2;
-/// `SW_ERROR_MALLOC_FAIL`.
-const MALLOC_FAIL: c_int = swoole_rs_error::ErrorCode::SW_ERROR_MALLOC_FAIL as c_int;
 /// `SW_MIN_PAGE_SIZE`.
 const MIN_PAGE_SIZE: u32 = 4096;
 
@@ -277,13 +276,14 @@ impl Shm {
     }
 
     /// The mapping's base and total, if there is one.
-    fn extent(&self) -> Option<(*mut c_void, usize)> {
+    fn extent(&self) -> Option<(Region<'_>, usize)> {
         if self.0.get().is_null() {
             return None;
         }
         let base = self.0.get().cast::<usize>().wrapping_sub(1);
         // SAFETY: only `map` filled the field, so its header precedes the payload.
-        Some((base.cast(), unsafe { base.read() }))
+        let total = unsafe { base.read() };
+        Some((Region(base.cast(), PhantomData), total))
     }
 
     /// The payload's bytes, 0 without a mapping.
@@ -308,11 +308,10 @@ impl Shm {
     /// # Errors
     /// `mprotect`'s errno, or `EINVAL` without a mapping.
     pub fn protect(&self, flags: c_int) -> std::io::Result<()> {
-        let Some((base, total)) = self.extent() else {
+        let Some((region, total)) = self.extent() else {
             return Err(std::io::Error::from_raw_os_error(libc::EINVAL));
         };
-        // SAFETY: the mapping its header describes.
-        if unsafe { libc::mprotect(base, total, flags) } == 0 {
+        if mprotect(region, total, flags) == 0 {
             Ok(())
         } else {
             Err(std::io::Error::last_os_error())
@@ -333,18 +332,37 @@ impl Shm {
 
     /// `SharedMemory::free`: unmaps the mapping, if any, and leaves the field null.
     pub fn free(&mut self) {
-        let Some((base, total)) = self.extent() else {
+        let Some((Region(base, _), total)) = self.extent() else {
             return;
         };
+        // The field goes null with the one `Mapping` made of it.
         self.0.set(ptr::null_mut());
-        // SAFETY: the mapping its header describes, unmapped once: the field is null now.
-        if unsafe { libc::munmap(base, total) } < 0 {
+        if munmap(Mapping(base), total) < 0 {
             log::sys_warning(
                 c"SharedMemory::free",
                 format_args!("munmap({base:p}, {total}) failed"),
             );
         }
     }
+}
+
+/// A [`Shm`]'s mapping, as its base, for as long as the field is borrowed: one `map`
+/// made, whose header holds the total. Only [`Shm::extent`] makes one.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct Region<'a>(*mut c_void, PhantomData<&'a Shm>);
+
+/// A mapping `map` made, as its base, which [`Shm::free`] makes once, from the field it
+/// empties: so each mapping has one, and `munmap` takes it by value.
+#[repr(transparent)]
+struct Mapping(*mut c_void);
+
+// libc's. Each takes a whole mapping this module made, as its header's total says, of
+// which `Shm` lends no reference; `munmap` takes the one owner of a mapping no field
+// names any more. They keep nothing, so they are declared `safe`.
+unsafe extern "C" {
+    safe fn mprotect(region: Region<'_>, len: usize, protection: c_int) -> c_int;
+    safe fn munmap(mapping: Mapping, len: usize) -> c_int;
 }
 
 /// An anonymous mapping (`sharing`: `MAP_SHARED` or `MAP_PRIVATE`) of `size` bytes,
@@ -381,12 +399,11 @@ upstream! {
         count.checked_mul(size).map_or(ptr::null_mut(), |size| sw_shm_malloc(size))
     }
     "_Z11sw_shm_freePv", "_Z11sw_shm_freePv" =>
-    /// `void sw_shm_free(void *ptr)`, for native code: Rust holds a mapping as [`Shm`].
-    ///
-    /// # Safety
-    /// `payload` is null or a live `sw_shm_malloc` payload, freed once.
-    pub unsafe extern "C" fn sw_shm_free(payload: *mut c_void) {
-        Shm(Cell::new(payload)).free();
+    /// `void sw_shm_free(void *ptr)`, for native code, whose payload pointer is the
+    /// [`Shm`] it gives up, as the C caller's contract (null or a live `sw_shm_malloc`
+    /// payload, freed once) makes it.
+    pub extern "C" fn sw_shm_free(mut payload: Shm) {
+        payload.free();
     }
 }
 
@@ -435,9 +452,7 @@ pub mod pool {
         let adopted = words::<AtomicU64>(count)
             .is_some_and(swoole_rs_utilities::swr_v1_utils_wait_registry_init);
         if !adopted {
-            let message = c"failed to allocate atomic wait registry";
-            // SAFETY: `swoole_init`'s hook exits; no frame here owns anything.
-            unsafe { swoole_rs_corebase::fatal_error(super::MALLOC_FAIL, message) };
+            swoole_rs_corebase::fatal("failed to allocate atomic wait registry");
         }
     }
 
@@ -456,19 +471,21 @@ pub mod pool {
         POOL.memory_size()
     }
 
-    /// An atomic that is valid zeroed and needs no more than the pool's alignment:
-    /// a process-shared mutex's storage is such words, zeroed until `init`.
+    /// A type that is valid zeroed: an atomic (a process-shared mutex's storage is
+    /// such words, zeroed until `init`), or room for a value not yet written.
     pub trait Word: sealed::Sealed {}
     impl Word for AtomicU32 {}
     impl Word for AtomicI64 {}
     impl Word for AtomicU64 {}
     impl Word for swoole_rs_locks::SharedMutex {}
+    impl<T> Word for MaybeUninit<T> {}
     mod sealed {
         pub trait Sealed {}
         impl Sealed for std::sync::atomic::AtomicU32 {}
         impl Sealed for std::sync::atomic::AtomicI64 {}
         impl Sealed for std::sync::atomic::AtomicU64 {}
         impl Sealed for swoole_rs_locks::SharedMutex {}
+        impl<T> Sealed for std::mem::MaybeUninit<T> {}
     }
 
     /// A block of `size` bytes from [`alloc`], for the process's life, or null. The pool
@@ -483,25 +500,20 @@ pub mod pool {
     }
 
     /// `count` zero words from [`alloc`], for the process's life: `Swoole\Atomic`'s
-    /// and `Swoole\Lock`'s.
+    /// and `Swoole\Lock`'s, or a shared table's header, which forked workers reach at
+    /// the same address.
     #[must_use]
     pub fn words<W: Word>(count: usize) -> Option<&'static mut [W]> {
+        const { assert!(align_of::<W>() <= 8, "the pool's blocks are 8-aligned") };
         let size = u32::try_from(count.checked_mul(size_of::<W>())?).ok()?;
         let block = pinned(size).cast::<W>();
         if block.is_null() {
             return None;
         }
-        // SAFETY: `count` zeroed (so valid) words, 8-aligned (enough for each
-        // `Word`), which the pool gives no one else and keeps for the process's life.
+        // SAFETY: `count` zeroed (so valid) words, 8-aligned (enough for each `Word`,
+        // asserted above), which the pool gives no one else and keeps for the process's
+        // life.
         Some(unsafe { slice::from_raw_parts_mut(block, count) })
-    }
-
-    /// Room for one `T` from [`alloc`], for the process's life, or null: a shared
-    /// table's header, which forked workers reach at the same address. The block is
-    /// 8-aligned, `size_of::<T>()` writable bytes the pool gives no one else.
-    pub(crate) fn header<T>() -> *mut MaybeUninit<T> {
-        const { assert!(align_of::<T>() <= 8, "the pool's blocks are 8-aligned") };
-        u32::try_from(size_of::<T>()).map_or(std::ptr::null_mut(), |size| pinned(size).cast())
     }
 }
 
@@ -527,7 +539,7 @@ fn php_hash(key: &[u8], compared: usize) -> u64 {
 
 /// `Table::create()`: lays the table out in a fresh shared arena.
 #[must_use]
-pub fn swr_table_create(table: &mut Table) -> bool {
+pub fn swr_table_create(table: &mut Handle) -> bool {
     let size = table.arena_size();
     if size == 0 {
         return false;
@@ -548,7 +560,7 @@ pub fn swr_table_create(table: &mut Table) -> bool {
 /// Dropping it leaves the table to the processes that share it (forked workers
 /// may still use it), as upstream's objects do.
 pub struct SharedTable {
-    table: &'static mut Table,
+    table: Handle,
     destroyed: std::cell::Cell<bool>,
 }
 
@@ -558,13 +570,13 @@ impl SharedTable {
     /// so forked workers share it.
     #[must_use]
     pub fn make(rows: u32, conflict: f32, hash: crate::table::Hash) -> Option<Self> {
-        // SAFETY: null, or a fresh block for one `Table` nothing else references, kept
-        // for the process's life; any bytes are a `MaybeUninit`.
-        let slot = unsafe { pool::header::<Table>().as_mut() }?;
+        let [slot] = pool::words::<std::mem::MaybeUninit<Table>>(1)? else {
+            return None;
+        };
         let table = Table::init(slot, rows, conflict, php_hash, table_warning, table_error)?;
         table.set_hash(hash);
         Some(Self {
-            table,
+            table: Handle::new(table),
             destroyed: std::cell::Cell::new(false),
         })
     }
@@ -576,7 +588,7 @@ impl SharedTable {
 
     /// `Table::create()` ([`swr_table_create`]).
     pub fn create(&mut self) -> bool {
-        swr_table_create(self.table)
+        swr_table_create(&mut self.table)
     }
 
     /// `Table::destroy()`, once this is dropped.
@@ -586,20 +598,18 @@ impl SharedTable {
 }
 
 impl std::ops::Deref for SharedTable {
-    type Target = Table;
+    type Target = Handle;
 
-    fn deref(&self) -> &Table {
-        self.table
+    fn deref(&self) -> &Handle {
+        &self.table
     }
 }
 
 impl Drop for SharedTable {
     fn drop(&mut self) {
         if self.destroyed.get() {
-            // `Table::destroy()`: frees the arena, then the header.
-            // SAFETY: a made table, destroyed once: nothing uses it any more.
-            let arena = unsafe { self.table.destroy() };
-            Shm(Cell::new(arena.cast())).free();
+            // `Table::destroy()`: frees the arena; the pool keeps the header.
+            self.table.destroy().free();
         }
     }
 }

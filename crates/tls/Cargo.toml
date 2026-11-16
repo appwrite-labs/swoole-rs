@@ -27,5 +27,10 @@ openssl-sys = "=0.9.117"
 name = "swoole_rs_tls"
 crate-type = ["rlib"]
 
+# The identifiers no C header exports, for tests/modules/corebase/constants.py.
+[[example]]
+name = "constants"
+path = "../../tests/modules/corebase/tls_enums.rs"
+
 [lints]
 workspace = true

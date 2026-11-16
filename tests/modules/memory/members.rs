@@ -1,20 +1,21 @@
 use super::*;
 use crate::fixed::tests::{DebugCursor, debug_step};
 use crate::fixed::{self, Fixed, Layout};
-use std::mem;
-use std::ptr::NonNull;
+
+/// `SW_ERROR_MALLOC_FAIL`.
+const MALLOC_FAIL: c_int = swoole_rs_error::ErrorCode::SW_ERROR_MALLOC_FAIL as c_int;
 use swoole_rs_corebase::log::last_error;
-use swoole_rs_corebase::{sw_free, sw_malloc};
+use swoole_rs_corebase::sys::malloc;
 
 // `swoole::FixedPool`, as upstream's fixed_pool TESTs use it: nothing else constructs a
 // pool over an arena of its own (the table lays its collision pool out in its own).
 
-/// An arena of `size` bytes from `sw_shm_malloc` (`shared`) or `sw_malloc`.
+/// An arena of `size` bytes from `sw_shm_malloc` (`shared`) or libc's `malloc`.
 fn arena(shared: bool, size: usize) -> *mut c_void {
     if shared {
         sw_shm_malloc(size)
     } else {
-        sw_malloc(size)
+        malloc(size)
     }
 }
 
@@ -27,13 +28,17 @@ unsafe fn release(shared: bool, memory: *mut c_void) {
         Shm(Cell::new(memory)).free();
     } else {
         // SAFETY: as the caller promises.
-        unsafe { sw_free(memory) };
+        unsafe { libc::free(memory) };
     }
 }
 
-/// `swoole::FixedPool` over an owned arena: its header, then its slices, in
-/// memory from `arena(shared, ..)`. `&mut self` serializes allocation and release.
-struct FixedPool(NonNull<Fixed>);
+/// `swoole::FixedPool` over an owned arena: upstream's header room, then its slices,
+/// in memory from `arena(shared, ..)`. `&mut self` serializes allocation and release.
+struct FixedPool {
+    arena: *mut c_void,
+    shared: bool,
+    pool: Fixed,
+}
 
 impl FixedPool {
     /// `FixedPool(slice_num, slice_size, shared)`: `INVALID` for upstream's
@@ -43,22 +48,25 @@ impl FixedPool {
     /// As above.
     fn new(slices: u32, width: u32, shared: bool) -> Result<Self, i32> {
         let plan = Layout::new(slices, width, 0, true).ok_or(INVALID)?;
-        let memory = NonNull::new(arena(shared, plan.total).cast::<mem::MaybeUninit<u8>>())
-            .ok_or(NO_MEMORY)?;
-        // The arena's own pointer, which `drop` frees: the header's borrow can't.
-        let base = memory.cast::<Fixed>();
-        // SAFETY: a fresh, malloc-aligned arena of `plan.total` bytes.
-        let memory = unsafe { std::slice::from_raw_parts_mut(memory.as_ptr(), plan.total) };
-        let pool = fixed::construct(memory, plan, shared, true).ok_or(INVALID)?;
-        if !core::ptr::eq(pool, base.as_ptr()) {
-            return Err(INVALID);
+        let arena = arena(shared, plan.total);
+        if arena.is_null() {
+            return Err(NO_MEMORY);
         }
-        Ok(Self(base))
+        // SAFETY: a fresh, malloc-aligned arena of `plan.total` bytes.
+        let memory = unsafe { std::slice::from_raw_parts_mut(arena.cast(), plan.total) };
+        let Some(pool) = fixed::construct(memory, plan) else {
+            unsafe { release(shared, arena) };
+            return Err(INVALID);
+        };
+        Ok(Self {
+            arena,
+            shared,
+            pool,
+        })
     }
 
     fn header(&self) -> &Fixed {
-        // SAFETY: the pool's constructed header, live until drop.
-        unsafe { self.0.as_ref() }
+        &self.pool
     }
 
     /// `void *FixedPool::alloc(uint32_t size)`: the slice width was fixed at construction.
@@ -81,7 +89,8 @@ impl FixedPool {
     /// # Panics
     /// Upstream's assertions: `data` is an allocated slice of the pool.
     fn free(&mut self, data: *mut c_void) {
-        let (memory, size) = (self.header().memory, self.header().size);
+        let memory = self.header().memory;
+        let size = self.total() as usize * self.header().stride();
         // assert(ptr > impl->memory && static_cast<char *>(ptr) < static_cast<char *>(impl->memory) + impl->size);
         assert!(
             data.addr() > memory.addr() && data.addr() < memory.addr() + size,
@@ -142,9 +151,8 @@ impl FixedPool {
 impl Drop for FixedPool {
     /// `FixedPool::~FixedPool()`.
     fn drop(&mut self) {
-        let shared = self.header().shared;
         // SAFETY: the arena came from `arena(shared, ..)` in `new`, freed once.
-        unsafe { release(shared, self.0.as_ptr().cast()) };
+        unsafe { release(self.shared, self.arena) };
     }
 }
 
@@ -173,7 +181,7 @@ fn shared_mappings_are_zeroed_protected_and_freed() {
             .read();
         assert_eq!(total, 112);
     }
-    unsafe { sw_shm_free(memory.cast()) };
+    sw_shm_free(Shm(Cell::new(memory.cast())));
     assert!(sw_shm_malloc(usize::MAX).is_null());
     assert!(sw_shm_calloc(usize::MAX, 2).is_null());
 }

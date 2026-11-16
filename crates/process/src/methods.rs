@@ -21,10 +21,9 @@ use crate::process_pool::{
     swr_v1_worker_symbol, with,
 };
 use crate::reload_task::KillWarning;
-use crate::worker_globals::{
-    swr_v1_worker_global_get, swr_v1_worker_global_set, worker_global_max_requests,
-};
+use crate::worker_globals::{with_globals, worker_global_max_requests};
 use crate::worker_record::WorkerRecord;
+use std::sync::atomic::Ordering::Relaxed;
 
 /// A method's result; a callback's bailout is raised once the method's frames are
 /// gone. This frame holds nothing, so the `longjmp` may cross it.
@@ -166,7 +165,7 @@ pub fn get_worker_by_pid(pool: &PoolRecord, pid: c_int) -> *mut WorkerRecord {
 /// `ProcessPool::is_worker_running(worker)`.
 #[must_use]
 pub fn is_worker_running(pool: PoolRef<'_>, worker: Worker<'_>) -> bool {
-    pool.running() && swr_v1_worker_global_get(4) == 0 && !worker.exceeded_max_request()
+    pool.running() && !worker_is_shutdown() && !worker.exceeded_max_request()
 }
 
 /// `Worker::send_pipe_message(buf, n, flags)` of `data`: through its pool's queue or
@@ -192,19 +191,16 @@ pub fn send_pipe_message(
     swr_v1_process_worker_send(native, pool, pipe, queue, id, data, flags)
 }
 
+/// Creates a listener owned by the process pool; supplied by crates/tls at startup.
 #[cfg(feature = "upstream-symbols")]
-// crates/tls defines it under its upstream symbol, as a safe Rust fn taking
-// plain values and a `Text`; declared, since
-// crates/tls (through crates/reactor) depends on this crate. It returns a native
-// socket the caller owns, or null.
-unsafe extern "C-unwind" {
-    #[link_name = "_ZN6swoole18make_server_socketE12swSocketTypePKcii"]
-    safe fn make_server_socket(
-        kind: c_int,
-        host: swoole_rs_corebase::sys::Text<'_>,
-        port: c_int,
-        backlog: c_int,
-    ) -> *mut c_void;
+pub type Listener = fn(c_int, &CStr, c_int, c_int) -> *mut c_void;
+#[cfg(feature = "upstream-symbols")]
+static LISTENER: std::sync::OnceLock<Listener> = std::sync::OnceLock::new();
+
+/// Registers the listener factory once, before any pool listens.
+#[cfg(feature = "upstream-symbols")]
+pub fn set_listener(listener: Listener) {
+    LISTENER.get_or_init(|| listener);
 }
 
 /// `ProcessPool::listen(socket_file, backlog)`: a unix stream listener.
@@ -228,7 +224,11 @@ pub fn listen_socket(
     backlog: c_int,
 ) -> bool {
     listen(pool.record(), host, port, || {
-        make_server_socket(kind, host.into(), port, backlog)
+        LISTENER
+            .get()
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("pool listener is not registered"))(
+            kind, host, port, backlog,
+        )
     })
 }
 
@@ -334,7 +334,6 @@ pub fn worker_set_max_request(max_request: u32, grace: u32) {
 }
 
 /// `swoole::ExitStatus`: a child's pid and `waitpid` status.
-#[repr(C)]
 pub struct ExitStatus {
     pid: c_int,
     status: c_int,
@@ -401,25 +400,25 @@ pub fn reload_warn(kind: KillWarning, pid: c_int, worker_id: u32) {
 /// `Worker::is_shutdown()`: the current worker's.
 #[must_use]
 pub fn worker_is_shutdown() -> bool {
-    swr_v1_worker_global_get(4) != 0
+    with_globals(|globals| globals.shutdown.load(Relaxed))
 }
 
 /// `Worker::is_running()`.
 #[must_use]
 pub fn worker_is_running() -> bool {
-    swr_v1_worker_global_get(3) != 0
+    with_globals(|globals| globals.running.load(Relaxed))
 }
 
 /// `swoole_get_worker_id()`.
 #[must_use]
 pub fn swoole_get_worker_id() -> u32 {
-    u32::try_from(swr_v1_worker_global_get(0)).unwrap_or_default()
+    with_globals(|globals| globals.id.load(Relaxed))
 }
 
 /// `swoole_get_worker_pid()`.
 #[must_use]
 pub fn swoole_get_worker_pid() -> c_int {
-    c_int::try_from(swr_v1_worker_global_get(1)).unwrap_or_default()
+    with_globals(|globals| globals.pid.load(Relaxed))
 }
 
 /// `swoole_get_worker_type()`: upstream's core-tests (`log.cpp`'s `log_level`) call it.
@@ -429,37 +428,38 @@ pub fn swoole_get_worker_pid() -> c_int {
 )]
 #[must_use]
 pub extern "C" fn swoole_get_worker_type() -> c_int {
-    c_int::try_from(swr_v1_worker_global_get(2)).unwrap_or_default()
+    c_int::from(with_globals(|globals| globals.kind.load(Relaxed)))
 }
 
 /// `swoole_get_worker_type()`, `None` before the process has a type.
 #[must_use]
 pub fn worker_type() -> Option<WorkerType> {
-    WorkerType::from_code(swr_v1_worker_global_get(2))
+    WorkerType::from_code(swoole_get_worker_type().into())
 }
 
 /// `swoole_set_worker_type(type)`.
 pub fn set_worker_type(kind: WorkerType) {
-    swr_v1_worker_global_set(2, kind.code().into());
+    with_globals(|globals| globals.kind.store(kind.code(), Relaxed));
 }
 
 /// `swoole_set_worker_id(worker_id)`.
 pub fn swoole_set_worker_id(id: u32) {
-    swr_v1_worker_global_set(0, i64::from(id));
+    with_globals(|globals| globals.id.store(id, Relaxed));
 }
 
 /// `swoole_set_worker_pid(pid)`.
 pub fn swoole_set_worker_pid(pid: c_int) {
-    swr_v1_worker_global_set(1, i64::from(pid));
+    with_globals(|globals| globals.pid.store(pid, Relaxed));
 }
 
-/// `swoole_set_worker_type(type)`.
+/// `swoole_set_worker_type(type)`, narrowed to the record's `uint8_t`.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_Z22swoole_set_worker_typei")
 )]
 pub extern "C" fn swoole_set_worker_type(kind: c_int) {
-    swr_v1_worker_global_set(2, i64::from(kind));
+    let kind = u8::try_from(kind & 0xFF).unwrap_or_default();
+    with_globals(|globals| globals.kind.store(kind, Relaxed));
 }
 
 /// `swoole_get_worker_symbol()`: the log's mark for the current worker's type.
@@ -472,18 +472,15 @@ pub extern "C" fn swoole_get_worker_symbol() -> std::ffi::c_char {
     swr_v1_worker_symbol(swoole_get_worker_type())
 }
 
-/// The logger's native effects, the table `swoole::Logger` hands
-/// `swr_v1_logger_new` (once `src/core/log.cc`).
+/// The process logger's native effects.
 #[cfg(feature = "upstream-symbols")]
-#[unsafe(no_mangle)]
-pub static swr_logger_host: swoole_rs_utilities::LoggerHost = swoole_rs_utilities::LoggerHost {
+const LOGGER_HOST: swoole_rs_utilities::LoggerHost = swoole_rs_utilities::LoggerHost {
     redirect: swoole_rs_corebase::swoole_redirect_stdout,
-    backtrace: swoole_rs_corebase::swoole_print_backtrace,
     identity: logger_identity,
 };
 
 #[cfg(feature = "upstream-symbols")]
-extern "C" fn logger_identity() -> swoole_rs_utilities::LoggerIdentity {
+fn logger_identity() -> swoole_rs_utilities::LoggerIdentity {
     swoole_rs_utilities::LoggerIdentity {
         worker_id: swoole_get_worker_id().cast_signed(),
         worker_pid: swoole_get_worker_pid(),
@@ -517,7 +514,7 @@ pub fn logger_op(op: swoole_rs_corebase::native::LoggerOp) {
     match op {
         LoggerOp::New => {
             let stdout = swoole_rs_corebase::swr_v1_core_stdout();
-            let logger = std::sync::Arc::new(Logger::new(stdout, swr_logger_host));
+            let logger = std::sync::Arc::new(Logger::new(stdout, LOGGER_HOST));
             LOGGER.store(std::sync::Arc::as_ptr(&logger).cast_mut(), Relaxed);
             // A logger `new` replaces is leaked, as upstream's pointer overwrite does.
             _ = owner().replace(logger).map(std::sync::Arc::into_raw);
@@ -570,18 +567,13 @@ pub(crate) mod tests {
 
     /// What `origin` logged on this thread: (kind, level, code, message).
     pub(crate) fn logged(origin: &str) -> Vec<(c_int, c_int, c_int, String)> {
-        LOGGED
-            .lock()
-            .map(|logged| {
-                logged
-                    .iter()
-                    .filter(|entry| entry.3 == origin && entry.5 == thread::current().id())
-                    .map(|(kind, level, code, _, message, _)| {
-                        (*kind, *level, *code, message.clone())
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+        LOGGED.lock().map_or_default(|logged| {
+            logged
+                .iter()
+                .filter(|entry| entry.3 == origin && entry.5 == thread::current().id())
+                .map(|(kind, level, code, _, message, _)| (*kind, *level, *code, message.clone()))
+                .collect()
+        })
     }
 
     /// Route this binary's logs to [`record`].

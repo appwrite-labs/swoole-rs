@@ -29,10 +29,10 @@ case at exit, as GoogleTest's nonfatal assertions do.
 | `reactor->set_end_callback`, `erase_end_callback` | `swr_v1_reactor_set_end` |
 | the `Reactor`'s fields (`max_event_num`, `once`, `ptr`, `future_task`, ...) | `ReactorFields` through `ReactorPrepared::of`, and `Running`'s setters |
 | `reactor->drain_write_buffer` | crates/tls's `reactor_write::reactor_drain_write_buffer` |
-| `swoole_event_init`, `free`, `wait`, `add`, `add_or_update`, `del`, `write`, `writev`, `defer`, `set_handler`, `get_socket`, `is_available` | `swoole_event_init`, `swoole_event_free`, `event_api::swoole_event_wait`, `event_add`, `add_or_update`, `event_del`, `event_write` (bytes of upstream's over-long length for `write_2m`), `swoole_event_writev`, `defer` (`Reactor::defer`'s body), `set_handler`, `swoole_event_get_socket`, `swoole_event_is_available` |
+| `swoole_event_init`, `free`, `wait`, `add`, `add_or_update`, `del`, `write`, `writev`, `defer`, `set_handler`, `get_socket`, `is_available` | `swoole_event_init`, `swoole_event_free`, `event_api::swoole_event_wait`, `event_add`, `add_or_update`, `event_del`, `event_write` (bytes of upstream's over-long length for `write_2m`), `swoole_event_writev`, `swoole_event_defer_value` (`Reactor::defer` of a Rust value), `set_handler`, `swoole_event_get_socket`, `swoole_event_is_available` |
 | `new UnixSocket`/`Pipe`, `delete`, `ready`, `get_socket`, `set_blocking`, `set_buffer_size`, `write`, `close` | crates/tls's `socket_pair::unix_socket`, `pipe`, `drop`, both ends set, `raw_ends`, `set_blocking`, `unix_socket_set_buffer_size`, `write_from`, `close` |
 | `make_socket(fd, type)`, `socket->free()`, `move_fd()`, `wait_event`, `get_out_buffer_length()` | `socket_upstream::make_socket_fd`, crates/tls's `upstream::socket_free`, `fd = -1`, `Socket::wait_event`, `swr_cpp_buffer_length` of the output buffer |
-| `swoole_add_hook`, `swoole_clear_last_error`, `swoole_set_print_backtrace_on_error`, `swoole_signal_set`, `swoole_signal_block_all`, `swoole_random_bytes`, `swoole_timer_add`, `sw_tg_buffer()` | `swoole_add_hook`, `log::set_last_error(0)`, `swoole_set_print_backtrace_on_error`, `signal::swoole_signal_set_action`, `signal_block_all`, `random_bytes`, `swr_v1_timer_add_plain`, `thread_buffer` |
+| `swoole_add_hook`, `swoole_clear_last_error`, `swoole_set_print_backtrace_on_error`, `swoole_signal_set`, `swoole_signal_block_all`, `swoole_random_bytes`, `swoole_timer_add`, `sw_tg_buffer()` | `swoole_add_hook`, `log::set_last_error(0)`, `swoole_set_print_backtrace_on_error`, `signal::swoole_signal_set_action`, `signal_block_all`, `random_bytes`, `swoole_rs_timer::add_fn`, `thread_buffer` |
 
 `network/stream.cpp`'s TESTs are Rust tests of `network::Stream`, which is Rust
 (`crates/process/src/stream.rs`: `cargo test -p swoole-rs-process stream::`). A
@@ -47,3 +47,7 @@ the TESTs left the build (#1674).
 The server in `send` is a plain TCP listener replying as upstream's `Server`
 `onReceive` does (`"Server: "` + body, framed, then a zero-length frame). The
 Rust test also checks that each response callback runs exactly once.
+
+Deferred-queue Rust regressions also check callbacks appended during destruction
+retain FIFO order, and a caught nested escape leaves its unrun tasks to the
+reactor while the outer pass completes.

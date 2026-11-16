@@ -1,7 +1,7 @@
 //! `Swoole\Http\Response`.
 use crate::cookie::{header_line, object_header_line};
 use crate::{
-    context::{self, Ctx, Holder},
+    context::{self, Ctx, Hold, Holder},
     host::{
         self, CO_SOCKET, DETACHED, END, HEADER_KEY_SIZE, HTTP_CONTEXT_UNAVAILABLE, HTTP2, Property,
         SEND_CHUNKED, SERVER_IS_NOT_REGULAR_FILE, SESSION_CLOSED, UPGRADE, WEBSOCKET,
@@ -18,8 +18,7 @@ use swoole_rs_phpstubs::http_response;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_zend::bailout::Bailout;
 use swoole_rs_zend::{
-    Call, Custom, CustomClass, Invalid, Owned, Value, ZStr, ZString, handlers, push_string,
-    set_key,
+    Call, Custom, CustomClass, Invalid, Owned, Separated, Value, ZStr, ZString, bailout, handlers,
     sys::{IS_NULL, IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, zend_long},
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -43,7 +42,7 @@ impl Custom for Data {
     }
 
     fn new() -> Self {
-        Self(Holder::new(None))
+        Self(Holder::new())
     }
 }
 
@@ -51,15 +50,15 @@ impl Custom for Data {
 /// freed.
 impl Drop for Data {
     fn drop(&mut self) {
-        if self.0.get().is_some_and(release) {
+        if self.0.take().is_some_and(|hold| release(hold.ctx())) {
             Bailout.defer();
         }
     }
 }
 
 /// The method's `$this` context.
-fn this(call: &Call) -> Option<Ctx> {
-    call.custom::<Data>().and_then(|data| data.0.get())
+fn this(call: &Call) -> Option<Ctx<'_>> {
+    call.custom::<Data>()?.0.get().map(Hold::ctx)
 }
 
 /// The response object is going: finish what the handler left unanswered
@@ -83,8 +82,6 @@ fn release(mut ctx: Ctx) -> bool {
         }
     }
     ctx.state().response.zobject.clear();
-    // SAFETY: a live context, which the response no longer holds.
-    unsafe { context::free(ctx) };
     bailed
 }
 
@@ -134,7 +131,7 @@ pub fn response_minit(args: &MinitArgs) {
 }
 
 /// `http_response_get_and_check_context`: a context that can still respond.
-fn checked(call: &Call) -> Option<Ctx> {
+fn checked(call: &Call) -> Option<Ctx<'_>> {
     let ctx = this(call).filter(|ctx| ctx.flags() & (END | DETACHED) == 0);
     if ctx.is_none() {
         host::set_last_error(HTTP_CONTEXT_UNAVAILABLE);
@@ -144,7 +141,7 @@ fn checked(call: &Call) -> Option<Ctx> {
 
 /// `php_swoole_http_response_get_context`, setting `SW_ERROR_SESSION_CLOSED`
 /// when there is none.
-fn open(call: &Call) -> Option<Ctx> {
+fn open(call: &Call) -> Option<Ctx<'_>> {
     let ctx = this(call);
     if ctx.is_none() {
         host::set_last_error(SESSION_CLOSED);
@@ -153,7 +150,7 @@ fn open(call: &Call) -> Option<Ctx> {
 }
 
 /// The coroutine WebSocket checks `push`, `recv` and `disconnect` share.
-fn websocket(call: &Call) -> Option<Ctx> {
+fn websocket(call: &Call) -> Option<Ctx<'_>> {
     let ctx = open(call)?;
     let flags = ctx.flags();
     if flags & CO_SOCKET == 0 || flags & UPGRADE == 0 {
@@ -170,16 +167,16 @@ fn or_false(call: &Call, done: Option<()>) {
     }
 }
 
-fn property(mut ctx: Ctx, which: Property) -> *mut swoole_rs_zend::sys::zval {
+fn property<'a>(ctx: &'a mut Ctx, which: Property) -> Option<Separated<'a>> {
     crate::header::response_property(ctx.state(), which)
 }
 
 fn init_header(call: &Call) {
     or_false(
         call,
-        checked(call).map(|ctx| {
+        checked(call).map(|mut ctx| {
             for which in [Property::Header, Property::Cookie, Property::Trailer] {
-                property(ctx, which);
+                property(&mut ctx, which);
             }
             call.set_bool(true);
         }),
@@ -356,11 +353,12 @@ fn set_cookie(call: &Call, encode: bool) {
     let Some(cookie) = cookie else {
         return call.set_bool(false);
     };
-    let Some(ctx) = checked(call) else {
+    let Some(mut ctx) = checked(call) else {
         return call.set_bool(false);
     };
-    // SAFETY: the cookie property is a live array; it takes over the string.
-    unsafe { push_string(property(ctx, Property::Cookie), cookie.into_raw()) };
+    if let Some(cookies) = property(&mut ctx, Property::Cookie) {
+        cookies.push(cookie.into());
+    }
     call.set_bool(true);
 }
 
@@ -435,8 +433,14 @@ fn trailer(call: &Call) {
             return None;
         }
         let key = key.to_ascii_lowercase();
-        // SAFETY: the trailer property is a live array.
-        unsafe { set_key(property(ctx, Property::Trailer), &key, value) };
+        if !bailout::pending()
+            && let Some(trailer) = property(&mut ctx, Property::Trailer)
+        {
+            trailer.update(
+                &key,
+                value.map_or_else(Owned::null, |value| ZString::new(value).into()),
+            );
+        }
         ctx.state().send_trailer = true;
         call.set_bool(true);
         Some(())
@@ -589,7 +593,7 @@ fn create_response(call: &Call) {
 
 /// `Context::set_header`: `$response->header[key] = value`, the key in
 /// canonical case when `format` (lower case over HTTP/2).
-pub(crate) fn set_header(ctx: Ctx, key: &[u8], value: &Value, format: bool) -> bool {
+pub(crate) fn set_header(mut ctx: Ctx, key: &[u8], value: &Value, format: bool) -> bool {
     if key.len() > HEADER_KEY_SIZE - 1 {
         host::notice("header key is too long");
         return false;
@@ -597,7 +601,6 @@ pub(crate) fn set_header(ctx: Ctx, key: &[u8], value: &Value, format: bool) -> b
     if crate::header::has_crlf(key) {
         return false;
     }
-    let header = property(ctx, Property::Header);
     let mut buffer = [0; HEADER_KEY_SIZE];
     // Formatted in a stack copy, as upstream does in its thread buffer.
     let name = match buffer.get_mut(..key.len()) {
@@ -612,10 +615,10 @@ pub(crate) fn set_header(ctx: Ctx, key: &[u8], value: &Value, format: bool) -> b
         }
         _ => key,
     };
-    // The array takes this copy's reference.
-    let mut value = value.copy().into_zval();
-    // SAFETY: the live header array and the name's bytes, which Zend copies.
-    unsafe { z::add_assoc_zval_ex(header, name.as_ptr().cast(), name.len(), &raw mut value) };
+    if let Some(header) = property(&mut ctx, Property::Header) {
+        // The array takes this copy's reference.
+        header.update(name, value.copy());
+    }
     true
 }
 
@@ -659,7 +662,7 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
         };
         object = first;
         paired = true;
-        ctx = request.0.get();
+        ctx = request.0.get().cloned();
     }
     if object.object().is_some() {
         if object.instance_of(swoole_rs_phpserver::server_class_ref()) {
@@ -698,8 +701,9 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
         call.set_bool(false);
         return;
     }
-    let mut ctx = ctx.unwrap_or_else(|| {
-        let mut ctx = context::alloc();
+    let hold = ctx.unwrap_or_else(|| {
+        let hold = context::alloc();
+        let mut ctx = hold.ctx();
         ctx.state().keepalive = true;
         if let Some(server) = server {
             context::init(ctx.state(), server);
@@ -715,18 +719,18 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
                 state.compression_level = 1;
             }
         }
-        ctx
+        hold
     });
+    let mut ctx = hold.ctx();
     if let Some(server) = server {
         context::bind_server(ctx.state(), server);
     } else if let Some(socket) = socket {
         context::bind(ctx.state(), socket);
     }
-    let held = ctx;
     let state = ctx.state();
     state.fd = fd;
     let slot = &mut state.response.zobject;
-    context::lend_object(call, slot, context::Kind::Response, held);
+    context::lend_object(call, slot, context::Kind::Response, hold.clone());
     let Some(props) = slot.get().and_then(|value| value.props(Some(&RESPONSE))) else {
         return;
     };

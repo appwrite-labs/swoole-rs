@@ -25,7 +25,7 @@ thread_local! {
 
 /// `void swoole_init()`.
 #[unsafe(export_name = "_Z11swoole_initv")]
-extern "C-unwind" fn swoole_init() {
+pub(crate) extern "C-unwind" fn swoole_init() {
     swoole_rs_corebase::log::swr_v1_core_set_log_host(swoole_rs_utilities::swr_v1_utils_log);
     native::set_native_host(NativeHost {
         init,
@@ -46,8 +46,49 @@ extern "C-unwind" fn swoole_init() {
         event_free: || _ = swoole_rs_reactor::swoole_event_free(),
         coroutine_is_in: || !swoole_rs_coroutine::current().is_null(),
     });
+    swoole_rs_coroutine::set_host(swoole_rs_coroutine::Host {
+        timer_after: |timeout, f, arg| {
+            swoole_rs_timer::add_fn_sec(timeout, false, move || f(arg))
+                .map_or(0, swoole_rs_timer::Held::id)
+        },
+        timer_is_available: || swoole_rs_timer::swoole_timer_is_available(),
+        timer_clear: |id| _ = swoole_rs_timer::swoole_timer_clear(id),
+        async_threads_ensure: || _ = swoole_rs_hooks::async_threads::ensure(),
+        event_init: |flags| swoole_rs_reactor::swoole_event_init(flags),
+        event_wait: || swoole_rs_reactor::event_api::swoole_event_wait(),
+        event_is_available: || swoole_rs_reactor::event_api::swoole_event_is_available(),
+    });
     swoole_rs_reactor::event_api::set_writers(swoole_rs_tls::reactor_write::WRITERS);
-    swoole_rs_clients::client::set_framing(swoole_rs_ports::framing_recv::FRAMING);
+    swoole_rs_reactor::event_api::set_init_reactor([
+        |reactor| swoole_rs_hooks::reactor_handlers::system_init_reactor(reactor),
+        swoole_rs_clients::client::init_reactor,
+    ]);
+    swoole_rs_reactor::host::set_host(swoole_rs_reactor::host::Host {
+        sleep: swoole_rs_hooks::sleep::system_sleep,
+        timer_select: || swoole_rs_timer::swoole_timer_select(),
+        socket_free: |socket| swoole_rs_tls::upstream::socket_free(Some(socket)),
+    });
+    swoole_rs_process::methods::set_listener(|kind, host, port, backlog| {
+        swoole_rs_tls::upstream::make_server_socket(kind, host.into(), port, backlog).cast()
+    });
+    swoole_rs_clients::client::set_host(
+        swoole_rs_ports::framing_recv::FRAMING,
+        swoole_rs_hooks::resolve::dispatch_client,
+        swoole_rs_clients::client::Socks5 {
+            admit: |user, password| swoole_rs_protocols_ffi::admit(user, password),
+            negotiate: |proxy| {
+                swoole_rs_protocols_ffi::pack_negotiate_request(
+                    &swoole_rs_protocols_ffi::Socks5Proxy::new(proxy),
+                )
+            },
+            handshake: |proxy, reply| {
+                swoole_rs_protocols_ffi::socks5_step(
+                    &swoole_rs_protocols_ffi::Socks5Proxy::new(proxy),
+                    reply,
+                )
+            },
+        },
+    );
     swoole_rs_ports::register_methods();
     swoole_rs_hooks::stdio::swr_v1_hook_install();
     swoole_rs_corebase::swr_v1_core_swoole_init();

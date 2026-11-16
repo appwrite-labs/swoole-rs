@@ -16,7 +16,29 @@
 //! core-tests' main does (`swoole_init`, the case, `swoole_clean`). It exits 0 when
 //! every assertion held. A failed assertion panics; inside a coroutine the panic
 //! cannot unwind through the context switch, so the trampoline `_exit(1)`s instead.
-
+#![expect(
+    clippy::assert_is_empty,
+    clippy::borrow_as_ptr,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_ptr_alignment,
+    clippy::cast_sign_loss,
+    clippy::doc_markdown,
+    clippy::duration_suboptimal_units,
+    clippy::fn_to_numeric_cast_any,
+    clippy::items_after_statements,
+    clippy::large_stack_arrays,
+    clippy::let_underscore_must_use,
+    clippy::manual_assert_eq,
+    clippy::print_stderr,
+    clippy::print_stdout,
+    clippy::semicolon_if_nothing_returned,
+    clippy::trivially_copy_pass_by_ref,
+    clippy::unnecessary_box_returns,
+    clippy::unnecessary_safety_comment,
+    clippy::unreadable_literal,
+    reason = "existing uses from before this port inherited [workspace.lints] (#4377); count them down"
+)]
 #![expect(
     clippy::mut_from_ref,
     reason = "the records' views lend what the native pointer they wrap owns, as the C++ cases' pointers do"
@@ -24,6 +46,7 @@
 
 use std::ffi::{CStr, c_char, c_int, c_long, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use swoole_rs_corebase::log::last_error;
 // The crates, once: the C++ in libswoole.a and the cases call them by symbol.
 use swoole_rs_ffi as _;
 use swoole_rs_hooks::poll::PollFd;
@@ -120,7 +143,6 @@ unsafe extern "C-unwind" {
     fn swoole_random_bytes(buf: *mut c_char, size: usize) -> usize;
     #[link_name = "_ZN6swoole6StringC1EmPKNS_9AllocatorE"]
     fn string_new(this: *mut CppString, size: usize, allocator: *const c_void);
-    fn swr_v1_core_last_error() -> c_int;
 
     fn swoole_coroutine_create(routine: Routine, arg: *mut c_void) -> c_long;
     fn swoole_coroutine_get_id() -> c_long;
@@ -160,11 +182,6 @@ unsafe extern "C" {
 
 fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
-
-fn last_error() -> c_int {
-    // SAFETY: reads this thread's last error.
-    unsafe { swr_v1_core_last_error() }
 }
 
 /// The bytes before the first NUL, as `ASSERT_STREQ` compares.

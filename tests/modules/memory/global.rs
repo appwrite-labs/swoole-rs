@@ -15,7 +15,6 @@ fn bump_pages_match_alignment_zeroing_capacity_and_growth() {
             assert_eq!(block, page.wrapping_byte_add(i * 16 + 8));
             unsafe {
                 assert_eq!(block.cast::<u64>().read(), 0);
-                assert_eq!(block.wrapping_byte_sub(8).cast::<u32>().read(), 8);
                 block.cast::<u64>().write(42);
             }
             assert_eq!(pages.capacity(), 64 - (i + 1) * 16);

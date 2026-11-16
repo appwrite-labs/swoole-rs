@@ -16,8 +16,8 @@ use swoole_rs_reactor::event_api::Writers;
 use swoole_rs_reactor::reactor_upstream::{interest, reactor_interest, trigger_close_event};
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_reactor::{
-    Drain, Event, FlushEffects, Interest, Running, SOCKET_DEFAULTS, Socket, WriteEffects,
-    WriteError, WritePayload,
+    Drain, Event, FlushEffects, Interest, OwnedSocket, Running, SOCKET_DEFAULTS, Socket,
+    WriteEffects, WriteError, WritePayload,
 };
 
 const SW_ERROR_OPERATION_NOT_SUPPORT: c_int =
@@ -151,6 +151,8 @@ pub fn reactor_writev(
 pub const WRITERS: Writers = Writers {
     write: reactor_write,
     writev: reactor_writev,
+    close: reactor_close,
+    writable: |reactor, event| reactor_writable_callback(reactor, event),
 };
 
 impl FlushEffects for Flush<'_> {
@@ -167,8 +169,11 @@ impl FlushEffects for Flush<'_> {
         let Some(close) = self.reactor.close() else {
             return false;
         };
-        // SAFETY: `reactor->close(reactor, socket)`.
-        unsafe { close(self.reactor, self.socket) >= 0 }
+        // SAFETY: `reactor->close(reactor, socket)`: the queued close of the flushed
+        // socket, a heap record of the reactor's, which nothing uses after it.
+        close(self.reactor, unsafe {
+            OwnedSocket::from_socket(self.socket)
+        }) >= 0
     }
 
     fn trigger_close(&self) -> bool {
@@ -235,19 +240,12 @@ pub fn reactor_drain_write_buffer(reactor: Running<'_>, record: Socket<'static>)
 }
 
 /// `int Reactor::_close(Reactor *reactor, Socket *socket)`: frees the socket.
-///
-/// # Safety
-/// Nothing uses `socket` afterwards.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7Reactor6_closeEPS0_PNS_7network6SocketE")
 )]
 #[must_use]
-pub unsafe extern "C-unwind" fn reactor_close(
-    _reactor: Running<'_>,
-    socket: Socket<'static>,
-) -> c_int {
-    // SAFETY: as the caller promises.
-    unsafe { socket_free(Some(socket)) };
+pub extern "C-unwind" fn reactor_close(_reactor: Running<'_>, socket: OwnedSocket) -> c_int {
+    socket_free(Some(socket));
     0
 }

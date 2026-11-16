@@ -23,6 +23,7 @@ import tempfile
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from benchmarks.branch_probe import probe
 from benchmarks.callgrind import WORKLOADS, send, wait_for_port
 from tools.harness import ROOT, parse_engines
 from corpus.run import WebSocket
@@ -208,11 +209,17 @@ def main():
             failed |= over
             print(f'ratio {engines[0].name}/{engines[1].name} {workload} {args.counter}/request: {ratio:.4f}'
                   + (f' exceeds {args.max_ratio}' if over else ''))
+    # Whether this runner could record a sample-PGO profile (#4465), after the load so it
+    # can't disturb it.
+    with tempfile.TemporaryDirectory() as directory:
+        branch_sampling = probe(directory)
+    print('branch sampling: ' + ('verified' if branch_sampling['verified'] else
+                                 f'unavailable at {branch_sampling["failed"]}'))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps({'seconds': args.seconds, 'connections': args.connections,
                                        'websocket_pipeline': args.websocket_pipeline,
                                        'counter': args.counter, 'max_ratio': args.max_ratio,
-                                       'workloads': results}, indent=2) + '\n')
+                                       'workloads': results, 'branch_sampling': branch_sampling}, indent=2) + '\n')
     print('results: ' + str(args.output))
     return 1 if failed else 0
 

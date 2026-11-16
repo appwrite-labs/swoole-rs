@@ -234,7 +234,6 @@ mod tests {
     use swoole_rs_memory::members::Shm;
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no shared mappings")]
     fn a_send_counts_on_the_server_and_its_sessions_port() {
         use crate::records::{ConnectionRecord, SessionRecord};
         let mut gs = swoole_rs_memory::members::Shm::calloc(1, size_of::<ServerShared>());

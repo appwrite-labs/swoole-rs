@@ -1163,7 +1163,7 @@ pub mod locks {
     }
 }
 
-/// Upstream's hashes (misc.cc), `Logger::get_pretty_name` and the logger's level,
+/// Upstream's hashes (misc.cc) and the logger's level,
 /// label, rotation, line and microsecond formatting (log.cc), built with
 /// `-fsigned-char`; the hashes promote `char`, so they come `-funsigned-char` too.
 pub mod utilities {
@@ -1184,9 +1184,6 @@ pub mod utilities {
         /// `Logger::gen_real_file`'s date format.
         #[link_name = "swr_oracle_utils_signed_char_log_rotation"]
         pub fn log_rotation(rotation: c_int) -> *const c_char;
-        /// `Logger::get_pretty_name` copied into `output` (capacity `length`); returns its length.
-        #[link_name = "swr_oracle_utils_signed_char_pretty"]
-        pub fn pretty(name: *const u8, length: usize, strip: bool, output: *mut u8) -> usize;
         /// `Logger::put`'s line into `capacity` bytes of `output` (null only at zero);
         /// `error` is errno after it, EINTR before.
         #[link_name = "swr_oracle_utils_signed_char_log_line"]

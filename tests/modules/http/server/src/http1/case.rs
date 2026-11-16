@@ -11,9 +11,9 @@ use std::ptr;
 use std::sync::Mutex;
 
 use super::{
-    Address, COMPRESSION_TYPES, Callback, Connection, Ctx, DataHead, LOCATIONS, MODE_BASE,
-    MODE_PROCESS, Port, Protocol, RecvData, SW_LOG_WARNING, SW_SOCK_TCP, Server, Slot, TEST_HOST,
-    TEXT_CHROOT, TEXT_GROUP, TEXT_USER, Worker, ignore_event, ignore_server, last_error, microtime,
+    Address, COMPRESSION_TYPES, Callback, Connection, DataHead, LOCATIONS, MODE_BASE, MODE_PROCESS,
+    Port, Protocol, RecvData, SW_LOG_WARNING, SW_SOCK_TCP, Server, Slot, TEST_HOST, TEXT_CHROOT,
+    TEXT_GROUP, TEXT_USER, Worker, ignore_event, ignore_server, last_error, microtime,
     swoole_set_log_level,
 };
 use crate::{CppString, Event, Hook, Receive};
@@ -105,8 +105,10 @@ const _: () = assert!(
     offset_of!(SocketHead, removed) == 18
         && offset_of!(SocketHead, chunk_size) == 36
         && offset_of!(SocketHead, object) == 64
-        && size_of::<Address>() == 120
 );
+// `sockaddr_un` is shorter on the BSDs, so the address is Linux's size only there.
+#[cfg(target_os = "linux")]
+const _: () = assert!(size_of::<Address>() == 120);
 pub(super) const SOCKET_INFO: usize = 176;
 
 /// A timer's data: what upstream's lambdas capture.
@@ -117,7 +119,6 @@ struct Tick {
 }
 
 unsafe extern "C-unwind" {
-    fn swr_v1_core_thread_global() -> *mut c_void;
     #[link_name = "_Z25swoole_get_last_error_msgv"]
     fn swoole_get_last_error_msg() -> *const c_char;
     #[link_name = "_ZN6swoole11make_socketEi8swFdType"]
@@ -157,19 +158,19 @@ fn case<F: Copy>(slot: &Mutex<Option<F>>) -> F {
     slot.lock().unwrap().expect("the case set it")
 }
 
-extern "C" fn on_hook(_: Ctx, serv: view::Server<'_>) {
+fn on_hook(serv: view::Server<'_>) {
     case(&START)(serv.raw());
 }
-extern "C" fn on_worker_hook(_: Ctx, serv: view::Server<'_>, _: Worker<'_>) {
+fn on_worker_hook(serv: view::Server<'_>, _: Worker<'_>) {
     case(&WORKER_START)(serv.raw());
 }
-extern "C" fn on_connect(_: Ctx, serv: view::Server<'_>, info: &DataHead) {
+fn on_connect(serv: view::Server<'_>, info: &DataHead) {
     case(&CONNECT)(serv.raw(), ptr::from_ref(info).cast());
 }
-extern "C" fn on_close(_: Ctx, serv: view::Server<'_>, info: &DataHead) {
+fn on_close(serv: view::Server<'_>, info: &DataHead) {
     case(&CLOSE)(serv.raw(), ptr::from_ref(info).cast());
 }
-extern "C" fn on_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn on_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     case(&RECEIVE)(serv.raw(), ptr::from_ref(req).cast())
 }
 
@@ -266,7 +267,7 @@ pub(crate) unsafe fn swr_case_protocol_server(
     let port = serv.listen_port(SW_SOCK_TCP, 0).settings();
     match framing {
         0 => methods::set_stream_protocol(port),
-        1 => methods::set_length_protocol(port, 0, b'l' as c_char, 4),
+        1 => methods::set_length_protocol(port, 0, c_char::from_ne_bytes(*b"l"), 4),
         _ => methods::set_eof_protocol(port, b"\r\n", false),
     }
     serv.create();
@@ -613,10 +614,9 @@ pub(crate) unsafe fn swr_case_sendfile(
     Server(serv).sendfile(session_id, str_of(file))
 }
 
-/// `sw_tg_buffer()`: `SwooleTG.buffer_stack`, the thread global's second pointer.
-pub(crate) unsafe fn swr_case_tg_buffer() -> *mut CppString {
-    // SAFETY: this thread's live global.
-    unsafe { *swr_v1_core_thread_global().cast::<*mut CppString>().add(1) }
+/// `sw_tg_buffer()`: `SwooleTG.buffer_stack`.
+pub(crate) fn swr_case_tg_buffer() -> *mut CppString {
+    swoole_rs_corebase::thread_buffer().cast()
 }
 
 /// The request header fields a callback reads.
@@ -742,11 +742,13 @@ pub(crate) unsafe fn swr_case_ssl_client_ca(serv: *mut c_void, cafile: *const c_
     let fields = tls_fields(context);
     fields.verify_peer = 1;
     fields.allow_self_signed = 1;
-    // SAFETY: a live context's slot; a NUL-terminated path.
+    // SAFETY: a live context; a NUL-terminated path.
     let status = unsafe {
         let path = CStr::from_ptr(cafile);
-        let slot = tls_view(context).strings[CAFILE as usize];
-        (*slot).set_shared(path.to_bytes())
+        let owner = &*context.cast::<swoole_rs_tls::OwnedTlsContext>();
+        owner
+            .borrow_configuration()
+            .set_string(CAFILE as usize, path.to_bytes())
     };
     assert!(status, "bad_alloc");
 }

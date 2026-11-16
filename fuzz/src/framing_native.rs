@@ -113,12 +113,23 @@ impl Effects for NativeEffects {
             _ = self.call(op, arg, flags);
         }
     }
+    /// Native code reads into the buffer's tail; the bytes count once they fit.
     fn recv(&mut self, size: usize, flags: &mut u32) -> Received {
-        match self.call(RECV, size, flags) {
-            Some(RECV_DONE) => Received::Done,
-            Some(n) => usize::try_from(n).map_or(Received::Close, Received::Bytes),
-            None => Received::Close,
+        let n = match self.call(RECV, size, flags) {
+            Some(RECV_DONE) => return Received::Done,
+            Some(n) => match usize::try_from(n) {
+                Ok(n) => n,
+                Err(_) => return Received::Close,
+            },
+            None => return Received::Close,
+        };
+        // SAFETY: as in `buffer`.
+        let b = unsafe { &mut *self.buffer };
+        if n > b.size - b.length {
+            return Received::Close;
         }
+        b.length += n;
+        Received::Bytes(n)
     }
     fn length(&mut self, from: usize, flags: &mut u32) -> Option<usize> {
         self.count(GET_LENGTH, from, flags)
@@ -135,7 +146,7 @@ impl Effects for NativeEffects {
     fn page(&mut self, flags: &mut u32) -> usize {
         self.count(PAGE, 0, flags).unwrap_or(0)
     }
-    fn buffer(&self) -> Buffer {
+    fn buffer(&mut self) -> Buffer {
         // SAFETY: the caller's live String, changed only inside `call`.
         let b = unsafe { &*self.buffer };
         Buffer {
@@ -147,10 +158,10 @@ impl Effects for NativeEffects {
     fn set_buffer(&mut self, length: usize, offset: i64) {
         // SAFETY: as in `buffer`.
         let b = unsafe { &mut *self.buffer };
-        b.length = length;
+        b.length = b.length.min(length);
         b.offset = offset;
     }
-    fn data(&self) -> &[u8] {
+    fn data(&mut self) -> &[u8] {
         // SAFETY: as in `buffer`.
         let b = unsafe { &*self.buffer };
         if b.length == 0 {

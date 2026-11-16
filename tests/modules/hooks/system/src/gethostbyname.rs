@@ -107,7 +107,7 @@ fn dns_expire() {
     });
 }
 
-pub const CASES: super::Cases = &[
+pub(crate) const CASES: super::Cases = &[
     ("resolve_cache", resolve_cache),
     (
         "resolve_cache_inet4_and_inet6",

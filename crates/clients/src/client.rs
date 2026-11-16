@@ -10,7 +10,7 @@
 //! reference to the state lives across one: operations work on a raw [`Handle`]
 //! and borrow the state only between effects. A PHP bailout in a callback
 //! longjmps out, so nothing that needs dropping is held across one.
-use crate::protocol::Protocol;
+use crate::protocol::{Package, Protocol};
 use core::cell::{Cell, OnceCell};
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr::NonNull;
@@ -18,35 +18,24 @@ use std::ffi::{CStr, CString};
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 use swoole_rs_buffer::string::CppString;
-#[cfg(not(test))]
-use swoole_rs_buffer::string::with_thread_buffer;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::constants::{
     FdType, ResultCode, SW_BUFFER_SIZE_UDP, SW_CLIENT_BUFFER_SIZE, SW_SEND_BUFFER_SIZE,
     SW_SOCKET_RETRY_COUNT, SW_SSL_BUFFER_SIZE, SocketFlag, SocketType,
 };
-use swoole_rs_corebase::net_types::{PacketLength, RecvData, SocketAddress};
-use swoole_rs_corebase::sys::ReadSlot;
+use swoole_rs_corebase::net_types::{PacketLength, SocketAddress};
+use swoole_rs_corebase::sys::{ReadBuffer, ReadSlot};
 use swoole_rs_corebase::{ProxyState, ResolverRequest, log};
 use swoole_rs_error::ErrorCode;
 use swoole_rs_reactor::reactor_upstream::set_handler;
 use swoole_rs_reactor::socket_upstream::Connect;
 use swoole_rs_reactor::{
-    Caught, SOCKET_DEFAULTS, Socket, SocketRecord, fd_clean, set_socket_buffer_size,
+    Caught, OwnedSocket, SOCKET_DEFAULTS, Socket, fd_clean, set_socket_buffer_size,
     socket_domain_and_type,
 };
 use swoole_rs_reactor::{Event, Events, Running};
-#[cfg(not(test))]
-use swoole_rs_tls::upstream::{
-    self as net, sendfile_sync, socket_free, socket_sendfile_async, socket_ssl_close,
-};
 use swoole_rs_tls::{
     OwnedTlsContext, OwnedTlsFields, SslCreateFlag, SslState, SslVersion, TlsContext, TlsSettings,
-};
-#[cfg(test)]
-use tests::{
-    async_dispatch, net, sendfile_sync, socket_free, socket_sendfile_async, socket_ssl_close,
-    with_thread_buffer,
 };
 
 /// The flags [`Client::flag`] reads.
@@ -125,8 +114,6 @@ const ERR: c_int = ResultCode::SW_ERR as c_int;
 const SOCK_UNIX_DGRAM: c_int = SocketType::SW_SOCK_UNIX_DGRAM as c_int;
 const FD_STREAM_CLIENT: c_int = FdType::SW_FD_STREAM_CLIENT as c_int;
 const FD_DGRAM_CLIENT: c_int = FdType::SW_FD_DGRAM_CLIENT as c_int;
-const SOCK_NONBLOCK: c_int = SocketFlag::SW_SOCK_NONBLOCK as c_int;
-const SOCK_CLOEXEC: c_int = SocketFlag::SW_SOCK_CLOEXEC as c_int;
 const SEND_BUFFER_SIZE: u32 = SW_SEND_BUFFER_SIZE;
 const SSL_BUFFER_SIZE: u32 = SW_SSL_BUFFER_SIZE;
 const BUFFER_SIZE_UDP: usize = SW_BUFFER_SIZE_UDP as usize;
@@ -138,7 +125,7 @@ pub use SslState::{
     SW_SSL_STATE_READY as SSL_STATE_READY, SW_SSL_STATE_WAIT_STREAM as SSL_STATE_WAIT_STREAM,
 };
 pub const SSL_CLIENT: c_int = SslCreateFlag::SW_SSL_CLIENT as c_int;
-pub const SSL_DTLS: u32 = SslVersion::SW_SSL_DTLS as u32;
+pub const SSL_DTLS: u32 = SslVersion::SW_SSL_DTLS.bits();
 /// The proxy states of upstream's `include/swoole_proxy.h`.
 pub const SOCKS5_WAIT: u8 = 0;
 pub const SOCKS5_HANDSHAKE: u8 = 1;
@@ -158,11 +145,11 @@ const ERROR_HTTP_PROXY_HANDSHAKE_ERROR: c_int =
     ErrorCode::SW_ERROR_HTTP_PROXY_HANDSHAKE_ERROR as c_int;
 
 /// One of `Protocol::recv_with_length_protocol` and `recv_with_eof_protocol` over a
-/// live protocol, socket and input buffer.
-pub type Framed = fn(*const Protocol, Socket<'_>, *mut CppString) -> c_int;
+/// live client's protocol, socket and input buffer ([`Handle::with_framed`]).
+pub type Framed = fn(Handle) -> c_int;
 
 /// The framed receives crates/ports defines; ports depends on this crate, so
-/// `swoole_init` (crates/ffi) registers them with [`set_framing`]. Only a
+/// `swoole_init` (crates/ffi) registers them with [`set_host`]. Only a
 /// client's `on_read` calls them, so the fields stay private.
 pub struct Framing {
     length: Framed,
@@ -170,109 +157,43 @@ pub struct Framing {
 }
 
 impl Framing {
-    /// # Safety
-    /// `length` and `eof` must be sound for any live protocol, socket and input
-    /// buffer of a client, which is all a client's `on_read` passes them.
-    pub const unsafe fn new(length: Framed, eof: Framed) -> Self {
+    pub const fn new(length: Framed, eof: Framed) -> Self {
         Self { length, eof }
     }
 }
 
-static FRAMING: OnceLock<Framing> = OnceLock::new();
-
-/// Registers crates/ports' framed receives; later registrations are ignored.
-pub fn set_framing(framing: Framing) {
-    FRAMING.get_or_init(|| framing);
+struct Host {
+    framing: Framing,
+    dispatch_dns: fn(Handle, &crate::resolver::Request) -> bool,
+    socks5: Socks5,
 }
 
-// crates/protocols-ffi's definitions (the SOCKS5 codec), which the hybrid links (the
-// unit tests define doubles). crates/protocols-ffi sits above this one, so it reaches
-// them by symbol.
-unsafe extern "C" {
-    /// `Socks5Proxy::admit`: 0 (logged) when a credential is too long, 2 when
-    /// both are set, else 1. A length check over two scalars, which
-    /// crates/protocols-ffi defines as a safe fn.
-    #[link_name = "_ZN6swoole11Socks5Proxy5admitEmm"]
-    safe fn socks5_admit(user_length: usize, password_length: usize) -> c_int;
-    /// `Socks5Proxy::pack_negotiate_request()` into the proxy's buffer. A
-    /// `Socks5Proxy` is its owner's reference, and crates/protocols-ffi defines this
-    /// as a safe fn over one.
-    #[link_name = "_ZN6swoole11Socks5Proxy22pack_negotiate_requestEv"]
-    #[expect(
-        improper_ctypes,
-        reason = "the proxy state is opaque behind its reference; Rust defines both sides"
-    )]
-    safe fn socks5_pack_negotiate(proxy: &&ProxyState) -> isize;
-    /// `Socks5Proxy::handshake_step(data, length)`: the size of the answer it
-    /// packed, 0 when none is due, -1 on failure.
-    #[link_name = "_ZN6swoole11Socks5Proxy14handshake_stepEPKcm"]
-    fn socks5_handshake_step(
-        proxy: *const *mut c_void,
-        data: *const c_char,
-        length: usize,
-    ) -> isize;
+static HOST: OnceLock<Host> = OnceLock::new();
+
+/// Registers framing, DNS dispatch and SOCKS5 operations; later registrations are
+/// ignored. A successful dispatch holds the request until its completion returns.
+pub fn set_host(
+    framing: Framing,
+    dispatch_dns: fn(Handle, &crate::resolver::Request) -> bool,
+    socks5: Socks5,
+) {
+    HOST.get_or_init(|| Host {
+        framing,
+        dispatch_dns,
+        socks5,
+    });
 }
 
-/// A `String`'s free tail: where the next read lands and how much fits.
-#[derive(Clone, Copy)]
-struct Tail {
-    str: *mut c_char,
-    size: usize,
+fn native_host() -> &'static Host {
+    HOST.get()
+        .unwrap_or_else(|| swoole_rs_corebase::fatal("client host is not registered"))
 }
 
-/// `async::Handler`: runs on a pool thread over its own copy of the event, of which
-/// the pool keeps `error` and `retval`.
-type AsyncHandler = extern "C" fn(&mut AsyncEvent<'_>);
-
-/// The completion, on the dispatching thread.
-type AsyncCallback = extern "C" fn(&AsyncEvent<'_>);
-
-/// Upstream's `AsyncEvent` as crates/hooks' pool takes it, its request a counted
-/// DNS record: the event [`dns_lookup`] builds borrows its request, and each copy the
-/// pool makes holds a reference of its own, so the record outlives every borrow of
-/// an event.
-#[repr(C)]
-struct AsyncEvent<'a> {
-    task_id: usize,
-    canceled: u8,
-    error: c_int,
-    data: Option<&'a ResolverRequest>,
-    retval: isize,
-    pipe_socket: *mut c_void,
-    timestamp: f64,
-    object: *mut c_void,
-    handler: Option<AsyncHandler>,
-    callback: Option<AsyncCallback>,
-}
-
-impl AsyncEvent<'_> {
-    /// The event's request; none on an event built without one.
-    fn request(&self) -> Option<&ResolverRequest> {
-        self.data
-    }
-}
-
-#[cfg(target_pointer_width = "64")]
-const _: () = assert!(
-    size_of::<AsyncEvent>() == 72
-        && core::mem::offset_of!(AsyncEvent, data) == 16
-        && core::mem::offset_of!(AsyncEvent, object) == 48,
-    "crates/hooks' AsyncEvent layout moved"
-);
-
-// crates/hooks' pool (async_threads.rs), which the hybrid links; it sits
-// above this crate. Its `dispatch` is a safe fn over this layout: only this module
-// builds an event, whose request is null or live.
-#[cfg(not(test))]
-unsafe extern "C" {
-    /// `async::dispatch`: queues a copy of the event, holding its own reference
-    /// to the request; null without a pool.
-    #[link_name = "_ZN6swoole5async8dispatchEPKNS_10AsyncEventE"]
-    #[expect(
-        improper_ctypes,
-        reason = "the request record is opaque behind its pointer; Rust defines both sides"
-    )]
-    safe fn async_dispatch(event: &AsyncEvent<'_>) -> *mut c_void;
+/// SOCKS5 operations over the client's owned proxy state.
+pub struct Socks5 {
+    pub admit: fn(usize, usize) -> c_int,
+    pub negotiate: fn(&ProxyState) -> isize,
+    pub handshake: fn(&ProxyState, &[u8]) -> Option<usize>,
 }
 
 /// The public, trivially copyable fields of `network::Client`.
@@ -284,9 +205,6 @@ pub struct ClientRecord {
     pub protocol: Protocol,
     pub server_addr: SocketAddress,
     pub remote_addr: SocketAddress,
-    /// `socket`: the record the constructor made, live until the client is destroyed
-    /// (an async one's free is deferred past its callbacks). Only the constructor sets it.
-    pub(crate) socket: Option<Socket<'static>>,
     pub object: *mut c_void,
     pub buffer: *mut c_void,
 }
@@ -294,7 +212,13 @@ pub struct ClientRecord {
 /// One client's state: `network::Client`.
 pub struct Client {
     record: Cell<ClientRecord>,
+    /// `socket`: the record the constructor made, freed with the client (an async
+    /// one's free is deferred past its callbacks).
+    socket: OwnedSocket,
     socket_ops: &'static SocketOps,
+    /// The input buffer, whose address the public record's buffer pointer names
+    /// once it is allocated: a pointer derived from the cell outlives its edits.
+    input: Cell<CppString>,
     flags: Cell<u32>,
     domain: c_int,
     sock_flags: Cell<c_int>,
@@ -312,8 +236,7 @@ pub struct Client {
     tls: OnceCell<TlsContext>,
     /// The immutable configuration kept from the first handshake through close.
     tls_settings: OnceCell<Arc<TlsSettings>>,
-    /// The proxies, which the client owns: each a nullable pointer, as C++'s
-    /// `Socks5Proxy` reads the slot.
+    /// The proxy states owned by the client.
     socks5: Cell<Option<Box<ProxyState>>>,
     http_proxy: Cell<Option<Box<ProxyState>>>,
     /// The owner of the callable `protocol.private_data_1` names, when the
@@ -351,11 +274,10 @@ impl Client {
         self.record.get()
     }
 
-    /// `cli->socket`, while the client has one: a constructed client's socket
-    /// record, live until the client is destroyed (an async one's free is
-    /// deferred past its callbacks).
+    /// `cli->socket`: a constructed client's socket record, live until the client is
+    /// destroyed (an async one's free is deferred past its callbacks).
     pub fn socket(&self) -> Option<Socket<'_>> {
-        self.record().socket
+        Some(self.socket.socket())
     }
 
     /// The client's TLS context, which `set()` configures; none while TLS is off.
@@ -429,16 +351,8 @@ impl Handle {
             .cast()
     }
 
-    fn socket_ptr(self) -> *mut SocketRecord {
-        self.record()
-            .socket
-            .map_or(core::ptr::null_mut(), Socket::as_ptr)
-    }
-
     fn socket(self) -> Socket<'static> {
-        self.get()
-            .socket()
-            .unwrap_or_else(|| swoole_rs_corebase::fatal("a connected client has no socket"))
+        self.get().socket.socket()
     }
 
     fn socket_type(self) -> c_int {
@@ -503,8 +417,14 @@ impl Handle {
     /// `Socket::recvfrom_sync(data, length, flags, &remote_addr)`.
     fn recvfrom_sync(self, buffer: &mut [impl ReadSlot], flags: c_int) -> Option<usize> {
         let socket = self.socket();
+        let receive = self.get().socket_ops.recvfrom_sync;
         self.get().edit_record(|record| {
-            net::recvfrom_sync(socket, buffer, flags, &mut record.remote_addr)
+            receive(
+                socket,
+                ReadSlot::buffer(buffer),
+                flags,
+                &mut record.remote_addr,
+            )
         })
     }
 
@@ -566,62 +486,60 @@ impl Handle {
         self.record().buffer.cast()
     }
 
-    /// `edit` over the input buffer, which exists, and the client's socket.
+    /// `edit` over the input buffer, which exists, the socket and its operations.
     /// `edit` is a plain fn, which cannot reach the client to borrow the buffer again.
-    fn edit_input<R>(self, edit: fn(&mut CppString, Socket<'static>) -> R) -> R {
+    fn edit_input<R>(self, edit: fn(&mut CppString, Socket<'static>, &SocketOps) -> R) -> R {
         let socket = self.socket();
-        // SAFETY: the Box `input_init` made, live until `input_free`, which only
-        // `edit` reaches meanwhile.
-        edit(unsafe { &mut *self.input() }, socket)
+        let ops = self.get().socket_ops;
+        if self.input().is_null() {
+            swoole_rs_corebase::fatal("client input buffer is not available");
+        }
+        let mut buffer = self.get().input.replace(CppString::EMPTY);
+        let result = edit(&mut buffer, socket, ops);
+        self.get().input.set(buffer);
+        result
     }
 
     /// `new String(SW_CLIENT_BUFFER_SIZE)`, once.
     fn input_init(self) {
         if self.input().is_null() {
-            let mut buffer = Box::new(CppString::EMPTY);
+            let mut buffer = CppString::EMPTY;
             buffer.alloc(CLIENT_BUFFER_SIZE, None);
-            let buffer = Box::into_raw(buffer).cast();
-            self.get().edit_record(|record| record.buffer = buffer);
+            self.get().input.set(buffer);
+            let input = self.get().input.as_ptr().cast();
+            self.get().edit_record(|record| record.buffer = input);
         }
     }
 
     /// `delete buffer`.
     fn input_free(self) {
-        let buffer = self.input();
-        if !buffer.is_null() {
+        if !self.input().is_null() {
             self.get()
                 .edit_record(|record| record.buffer = core::ptr::null_mut());
-            // SAFETY: the Box `input_init` made, released once.
-            unsafe { Box::from_raw(buffer) }.dispose();
+            self.get().input.replace(CppString::EMPTY).dispose();
         }
     }
 
-    /// The input buffer's free tail; the buffer exists.
-    fn input_tail(self) -> Tail {
-        self.edit_input(|buffer, _| {
-            let length = buffer.len();
-            Tail {
-                str: buffer.as_mut_ptr().wrapping_add(length).cast(),
-                size: buffer.size() - length,
-            }
-        })
+    /// Where the input buffer's next read lands; the buffer exists.
+    fn input_tail(self) -> *const c_char {
+        self.edit_input(|buffer, _, _| buffer.as_mut_ptr().wrapping_add(buffer.len()).cast())
     }
 
     /// One read into the input buffer's free tail; the buffer exists.
     fn input_recv(self) -> Option<usize> {
-        self.edit_input(|buffer, socket| net::recv(socket, buffer.spare(), 0))
+        self.edit_input(|buffer, socket, ops| (ops.recv)(socket, buffer.spare(), 0))
     }
 
     /// `buffer->clear()`.
     fn input_clear(self) {
-        self.edit_input(|buffer, _| buffer.clear());
+        self.edit_input(|buffer, _, _| buffer.clear());
     }
 
     /// The SOCKS5 negotiation request's length in [`Self::socks5_packet`].
     fn socks5_negotiate(self) -> usize {
         // The SOCKS5 proxy, whose buffer the request is packed into.
         self.with_proxy(Proxy::Socks5, |proxy| {
-            socks5_pack_negotiate(&proxy).cast_unsigned()
+            (native_host().socks5.negotiate)(proxy).cast_unsigned()
         })
         .unwrap_or(0)
     }
@@ -636,13 +554,26 @@ impl Handle {
         send(self, packet.get(..length).unwrap_or_default(), 0)
     }
 
-    /// `Client::socks5_handshake`: applies `length` received bytes at `data` and
-    /// sends the answer the proxy packed.
-    fn socks5_handshake(self, data: *const c_char, length: usize) -> bool {
-        let owner = self.get().socks5.as_ptr().cast();
-        // SAFETY: the live SOCKS5 proxy; `length` bytes at `data`.
-        let n = unsafe { socks5_handshake_step(owner, data, length) };
-        n == 0 || n > 0 && self.socks5_send(n.cast_unsigned()) == Some(n.cast_unsigned())
+    /// `Client::socks5_handshake`: applies the received `reply` and sends the answer
+    /// the proxy packed.
+    fn socks5_handshake(self, reply: &[u8]) -> bool {
+        let n = self
+            .with_proxy(Proxy::Socks5, |proxy| {
+                (native_host().socks5.handshake)(proxy, reply)
+            })
+            .flatten();
+        n.is_some_and(|n| n == 0 || self.socks5_send(n) == Some(n))
+    }
+
+    /// A result from the scratch buffer, without holding a client borrow across
+    /// the loan or letting the buffer escape it.
+    fn with_buffer<R>(self, mut f: impl FnMut(&mut CppString) -> R) -> R {
+        let mut result = None;
+        (self.get().socket_ops.with_buffer)(&mut |buffer| {
+            result = Some(f(buffer));
+        });
+        result
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("the scratch-buffer callback did not run"))
     }
 
     /// The HTTP proxy's CONNECT request, packed into `shared`.
@@ -688,18 +619,18 @@ impl Handle {
 
 /// `Client_onPackage`: a framed package for `onReceive`; the receive loop stops
 /// once the callback left the socket waiting to close. Only a client's protocol
-/// holds it, and [`OnPackage`](crate::protocol::OnPackage)'s contract has a caller pass that protocol's socket,
-/// a client's, whose free is deferred past the call: as for the reactor handlers
-/// below, the socket's kind is what makes its object a client.
-extern "C-unwind" fn on_package(
-    _: *const Protocol,
-    socket: Socket<'_>,
-    package: &RecvData,
-) -> c_int {
+/// holds it, and a client's framed receive calls it with that client's socket, whose
+/// free is deferred past the call: as for the reactor handlers below, the socket's
+/// kind is what makes its object a client.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`OnPackage` lends the package by value"
+)]
+fn on_package(_: *const Protocol, socket: Socket<'_>, package: Package<'_>) -> c_int {
     Handle(socket.read(|socket| socket.object).cast()).call(
         ClientEvent::Receive,
-        package.data.cast(),
-        package.info.len as usize,
+        package.as_ptr().cast(),
+        package.len(),
     );
     if socket.read(|socket| socket.output.close_wait) {
         ERR
@@ -736,8 +667,7 @@ fn on_failure(reactor: Running<'_>, event: &mut Event) -> c_int {
 }
 
 /// `Client::init_reactor`: the client sockets' handlers.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_clients_init_reactor(reactor: Running<'_>) {
+pub fn init_reactor(reactor: Running<'_>) {
     let handlers: [(c_int, Events, swoole_rs_reactor::Handler); 4] = [
         (FD_STREAM_CLIENT, Events::READ, on_stream_read),
         (FD_DGRAM_CLIENT, Events::READ, on_dgram_read),
@@ -782,16 +712,26 @@ fn create_with(kind: c_int, is_async: bool, socket_ops: &'static SocketOps) -> O
     } else {
         FD_DGRAM_CLIENT
     };
-    let flags = if is_async { SOCK_NONBLOCK } else { 0 } | SOCK_CLOEXEC;
+    let flags = if is_async {
+        SocketFlag::SW_SOCK_NONBLOCK
+    } else {
+        SocketFlag::NONE
+    } | SocketFlag::SW_SOCK_CLOEXEC;
     // The new socket record, which nothing else holds yet.
-    let Some(record) = (socket_ops.make_socket)(kind, fd_type, flags) else {
+    let Some(socket) = (socket_ops.make_socket)(kind, fd_type, flags.bits()) else {
         let error = errno();
         log::sys_warning(c"Client", format_args!("socket() failed"));
         set_errno(error);
         return None;
     };
+    let socket_type = socket.socket().edit(|record| {
+        record.chunk_size = SEND_BUFFER_SIZE;
+        record.socket_type
+    });
     let mut client = Box::new(Client {
+        socket,
         socket_ops,
+        input: Cell::new(CppString::EMPTY),
         record: Cell::new(ClientRecord {
             http2: false,
             open_length_check: false,
@@ -799,7 +739,6 @@ fn create_with(kind: c_int, is_async: bool, socket_ops: &'static SocketOps) -> O
             protocol: Protocol::EMPTY,
             server_addr: swoole_rs_corebase::sys::zeroed(),
             remote_addr: swoole_rs_corebase::sys::zeroed(),
-            socket: None,
             object: core::ptr::null_mut(),
             buffer: core::ptr::null_mut(),
         }),
@@ -821,26 +760,33 @@ fn create_with(kind: c_int, is_async: bool, socket_ops: &'static SocketOps) -> O
     });
     client.set(Flag::Async, is_async);
     let fields = client.record.get_mut();
-    fields.socket = Some(record);
     fields.remote_addr.kind = kind;
     fields.protocol.package_length_type = b'N';
     fields.protocol.package_length_size = 4;
     fields.protocol.package_max_length = 2 * 1024 * 1024;
     fields.protocol.on_package = Some(on_package);
-    let socket_type = record.edit(|record| {
-        record.chunk_size = SEND_BUFFER_SIZE;
-        record.socket_type
-    });
     client.set(Flag::Stream, is_stream(socket_type));
     if let Some((domain, _)) = socket_domain_and_type(kind) {
         client.domain = domain;
     }
-    let client = Box::into_raw(client);
-    record.edit(|record| record.object = client.cast());
-    Some(Handle(client))
+    let client = Handle(Box::into_raw(client));
+    client
+        .socket()
+        .edit(|record| record.object = client.0.cast());
+    Some(client)
 }
 
 impl Handle {
+    /// `f` over the protocol, socket and input buffer a framed receive acts on, live
+    /// while the client is (per [`Handle::new`]): the record's protocol in place, as
+    /// its callbacks take it by address, and the input buffer an async connect made.
+    pub fn with_framed<R>(
+        self,
+        f: impl FnOnce(*const Protocol, Socket<'_>, *mut CppString) -> R,
+    ) -> R {
+        f(self.protocol(), self.socket(), self.input())
+    }
+
     /// A handle on `client`.
     ///
     /// # Safety
@@ -898,22 +844,30 @@ impl Handle {
         self.input_free();
         // A pending connect timer would fire on a freed client.
         self.timer_clear();
-        if self.flag(Flag::Async) {
+        let is_async = self.flag(Flag::Async);
+        if is_async {
             // A cleared object tells a close in progress that the client is gone.
             self.socket()
                 .edit(|socket| socket.object = core::ptr::null_mut());
-            // SAFETY: the live client's socket, released once.
-            unsafe { socket_free(self.record().socket) };
-        } else {
-            // SAFETY: `delete socket`: the record make_socket allocated, released once.
-            unsafe { SocketRecord::free(self.record().socket) };
         }
         // SAFETY: a Box from `create`, released once (per the caller).
         let client = unsafe { Box::from_raw(self.0) };
-        // The proxies first, then the rest of the state.
-        for proxy in [&client.socks5, &client.http_proxy] {
-            drop(proxy.take());
+        let Client {
+            socket,
+            socket_ops,
+            socks5,
+            http_proxy,
+            ..
+        } = *client;
+        if is_async {
+            (socket_ops.free_socket)(Some(socket));
+        } else {
+            // `delete socket`.
+            socket.free();
         }
+        // The proxies first, then the rest of the state.
+        drop(socks5);
+        drop(http_proxy);
     }
 
     /// `Client::get_peer_name`: datagram peers are value snapshots of the last
@@ -961,17 +915,17 @@ pub fn package_length(this: Handle, data: &[u8]) -> isize {
     };
     let mut packet = PacketLength::new(data);
     // SAFETY: the live client's protocol and socket, and the packet's bytes.
-    unsafe { get(this.protocol(), this.socket_ptr().cast(), &mut packet) }
+    unsafe { get(this.protocol(), Some(this.socket()), &mut packet) }
 }
 
-/// `Client::close()`: false without a socket, when already closed or when `close(2)`
-/// fails; true when it closed or `onClose` released the client.
+/// `Client::close()`: false when already closed or when `close(2)` fails; true when
+/// it closed or `onClose` released the client.
 #[expect(
     clippy::must_use_candidate,
     reason = "most callers close for the effect"
 )]
 pub fn close(this: Handle) -> bool {
-    if this.socket_ptr().is_null() || this.flag(Flag::Closed) {
+    if this.flag(Flag::Closed) {
         return false;
     }
     this.set(Flag::Closed, true);
@@ -980,9 +934,7 @@ pub fn close(this: Handle) -> bool {
         && this.get().tls.get().is_some()
         && !saved.read(|socket| socket.ssl().is_null())
     {
-        // SAFETY: handles to a session live only for the operation that took them,
-        // and none is running on the closing client.
-        unsafe { socket_ssl_close(saved) };
+        (this.get().socket_ops.close_tls)(saved);
     }
     if this.socket_type() == SOCK_UNIX_DGRAM {
         let path = saved.read(|socket| socket.info.addr.unix().sun_path);
@@ -1017,7 +969,7 @@ pub fn close(this: Handle) -> bool {
 /// `Client::shutdown(how)`. Upstream's `SHUT_RDWR` records only a read shutdown.
 #[must_use]
 pub fn shutdown(this: Handle, how: c_int) -> bool {
-    if this.socket_ptr().is_null() || this.flag(Flag::Closed) {
+    if this.flag(Flag::Closed) {
         return false;
     }
     let fd = this.socket().fd();
@@ -1108,7 +1060,7 @@ pub fn set_proxy(
     let proxy = if http {
         Some(swoole_rs_http_ffi::http_proxy(host, port, user, password))
     } else {
-        match socks5_admit(user.len(), password.len()) {
+        match (native_host().socks5.admit)(user.len(), password.len()) {
             0 => None,
             config => {
                 let owner = ProxyState::new(true);
@@ -1191,10 +1143,7 @@ pub fn ssl_verify(this: Handle, allow_self_signed: bool) -> bool {
         return false;
     }
     let name = this.tls_host_name();
-    if !name.is_empty() && !(this.get().socket_ops.tls_check_host)(this.socket(), &name) {
-        return false;
-    }
-    true
+    name.is_empty() || (this.get().socket_ops.tls_check_host)(this.socket(), &name)
 }
 
 /// `Client_inet_addr`: the first call routes through the proxies and records the
@@ -1241,44 +1190,15 @@ fn dns_lookup(this: Handle) -> bool {
     let name = host.as_deref().map_or(&b""[..], CStr::to_bytes);
     let request = crate::resolver::Request::new(this.get().domain, 0, 0, name, b"");
     this.get().server_host.set(host);
-    let event = AsyncEvent {
-        task_id: 0,
-        canceled: 0,
-        error: 0,
-        data: Some(request.get()),
-        retval: 0,
-        pipe_socket: core::ptr::null_mut(),
-        timestamp: 0.0,
-        object: this.0.cast(),
-        handler: Some(resolve),
-        callback: Some(resolve_completed),
-    };
     // The pool's copy holds its own reference to the request.
-    !async_dispatch(&event).is_null()
+    (native_host().dispatch_dns)(this, &request)
 }
 
-/// `async::handler_gethostbyname`, on a pool thread, over a copy of the event
-/// [`dns_lookup`] dispatched.
-extern "C" fn resolve(event: &mut AsyncEvent<'_>) {
-    // Its request record, held by the copy.
-    if let Some(request) = event.request() {
-        (event.retval, event.error) = crate::resolver::host(request);
-    }
-}
-
-/// `Client_onResolveCompleted`, on the client's thread, over the completed copy
-/// of the event [`dns_lookup`] dispatched.
-extern "C" fn resolve_completed(event: &AsyncEvent<'_>) {
-    // Its request record, held by the copy.
-    let Some(request) = event.request() else {
-        return;
-    };
+/// Completes the client's DNS request on its reactor thread, while the pool still
+/// owns the request and the client awaits its result.
+pub fn resolve_completed(this: Handle, request: &ResolverRequest, error: c_int) {
     let address = crate::resolver::address(request);
-    resolved(
-        Handle(event.object.cast()),
-        event.error,
-        &crate::resolver::c_name(&address),
-    );
+    resolved(this, error, &crate::resolver::c_name(&address));
 }
 
 /// `Client::connect(host, port, timeout, flags)`: `host` is NUL-terminated.
@@ -1325,12 +1245,11 @@ fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblo
         }
         this.set_proxy_state(Proxy::Socks5, SOCKS5_HANDSHAKE);
         // Each answer lands at the start of the emptied buffer.
-        let ready = with_thread_buffer(|shared| {
+        let ready = this.with_buffer(|shared| {
             loop {
-                shared.clear();
-                let spare = shared.spare();
-                let n = recv(this, spare, 0).unwrap_or(0);
-                if n == 0 || !this.socks5_handshake(spare.as_ptr().cast(), n) {
+                // Zeroed first, so the reply is the bytes read.
+                shared.read_zeroed(shared.size(), |bytes| recv(this, bytes, 0).unwrap_or(0));
+                if shared.is_empty() || !this.socks5_handshake(shared.view()) {
                     return false;
                 }
                 if this.proxy_state(Proxy::Socks5) == Some(SOCKS5_READY) {
@@ -1342,7 +1261,7 @@ fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblo
             return false;
         }
     } else if this.proxy_state(Proxy::Http).is_some()
-        && !with_thread_buffer(|shared| {
+        && !this.with_buffer(|shared| {
             if send(this, this.http_pack(shared), 0).is_none() {
                 return false;
             }
@@ -1516,13 +1435,25 @@ fn bind_unix(this: Handle) -> bool {
     bound_ok
 }
 
-/// Socket control effects, selected when the client is constructed. Keeping the
-/// table outside the record preserves its C layout; callbacks copy the function
-/// pointer before an effect can release the client.
+type BufferLoan = fn(&mut dyn FnMut(&mut CppString));
+
+/// Host effects selected at construction; callbacks copy the function pointer
+/// before an effect can release the client.
 struct SocketOps {
+    /// Lends the scratch buffer to the callback exactly once, synchronously.
+    with_buffer: BufferLoan,
+    recv: fn(Socket<'_>, &mut [core::mem::MaybeUninit<u8>], c_int) -> Option<usize>,
+    recv_append: fn(Socket<'_>, &mut CppString) -> Option<usize>,
+    recv_sync: fn(Socket<'_>, ReadBuffer<'_>, c_int) -> Option<usize>,
+    recvfrom_sync: fn(Socket<'_>, ReadBuffer<'_>, c_int, &mut SocketAddress) -> Option<usize>,
+    send_sync: fn(Socket<'_>, &[u8], c_int) -> Option<usize>,
+    sendfile_sync: fn(Socket<'_>, &CStr, i64, usize) -> bool,
+    sendfile_async: fn(Socket<'_>, &CStr, i64, usize) -> bool,
+    free_socket: fn(Option<OwnedSocket>),
+    close_tls: fn(Socket<'_>),
     write: fn(Socket<'static>, &[u8]) -> Option<usize>,
     writable: extern "C-unwind" fn(Running<'_>, &mut Event) -> c_int,
-    make_socket: fn(c_int, c_int, c_int) -> Option<Socket<'static>>,
+    make_socket: fn(c_int, c_int, c_int) -> Option<OwnedSocket>,
     kernel_timeout: fn(Handle, f64),
     assign: fn(Handle, &CStr, c_int, bool) -> bool,
     connect_async: fn(Handle) -> Connect,
@@ -1541,6 +1472,32 @@ struct SocketOps {
 
 impl SocketOps {
     const NATIVE: Self = Self {
+        with_buffer: |f| swoole_rs_buffer::string::with_thread_buffer(f),
+        recv: swoole_rs_tls::upstream::recv,
+        recv_append: swoole_rs_tls::upstream::recv_append,
+        recv_sync: |socket, buffer, flags| match buffer {
+            ReadBuffer::Initialized(buffer) => {
+                swoole_rs_tls::upstream::recv_sync(socket, buffer, flags)
+            }
+            ReadBuffer::Spare(buffer) => swoole_rs_tls::upstream::recv_sync(socket, buffer, flags),
+        },
+        recvfrom_sync: |socket, buffer, flags, address| match buffer {
+            ReadBuffer::Initialized(buffer) => {
+                swoole_rs_tls::upstream::recvfrom_sync(socket, buffer, flags, address)
+            }
+            ReadBuffer::Spare(buffer) => {
+                swoole_rs_tls::upstream::recvfrom_sync(socket, buffer, flags, address)
+            }
+        },
+        send_sync: swoole_rs_tls::upstream::send_sync,
+        sendfile_sync: swoole_rs_tls::upstream::sendfile_sync,
+        sendfile_async: swoole_rs_tls::upstream::socket_sendfile_async,
+        free_socket: |socket| swoole_rs_tls::upstream::socket_free(socket),
+        close_tls: |socket| {
+            // SAFETY: only close calls this; session handles live only for their
+            // operation, and none is running on the closing client.
+            unsafe { swoole_rs_tls::upstream::socket_ssl_close(socket) };
+        },
         write: swoole_rs_reactor::event_api::event_write,
         writable: swoole_rs_tls::reactor_write::reactor_writable_callback,
         make_socket: ops::make_socket,
@@ -1565,17 +1522,17 @@ impl SocketOps {
 
 /// The reactor and socket operations used by production clients.
 mod ops {
-    use super::{Connect, ConnectMode, EventOp, Handle, SocketRecord, address_of};
+    use super::{Connect, ConnectMode, EventOp, Handle, address_of};
     use core::ffi::{CStr, c_int};
     use swoole_rs_reactor::{event_api, socket_upstream};
 
-    /// `make_socket(type, fd_type, flags)`: the new record's socket, or none.
+    /// `make_socket(type, fd_type, flags)`: the new record, or none.
     pub(super) fn make_socket(
         kind: c_int,
         fd_type: c_int,
         flags: c_int,
-    ) -> Option<swoole_rs_reactor::Socket<'static>> {
-        socket_upstream::make_typed(kind, fd_type, flags).map(SocketRecord::into_socket)
+    ) -> Option<swoole_rs_reactor::OwnedSocket> {
+        socket_upstream::make_typed(kind, fd_type, flags).map(swoole_rs_reactor::OwnedSocket::new)
     }
 
     /// `socket->set_kernel_timeout(timeout)`, the write timeout only once the
@@ -1617,12 +1574,10 @@ mod ops {
     }
 
     /// The reactor's `swoole_event_*` on the socket: whether it worked, false without a
-    /// socket or a reactor. The client's socket stays live while it is registered:
-    /// `close` deletes it from the reactor before the record is freed.
+    /// reactor. The client's socket stays live while it is registered: `close` deletes
+    /// it from the reactor before the record is freed.
     pub(super) fn event(this: Handle, op: EventOp, events: swoole_rs_reactor::Events) -> bool {
-        let Some(socket) = this.get().socket() else {
-            return false;
-        };
+        let socket = this.socket();
         match op {
             EventOp::Add => event_api::event_add(socket, events),
             EventOp::Set => event_api::event_set(socket, events),
@@ -1684,7 +1639,7 @@ pub fn sendto(this: Handle, host: &CStr, port: c_int, data: &[u8]) -> bool {
 #[must_use]
 pub fn send(this: Handle, data: &[u8], flags: c_int) -> Option<usize> {
     if this.flag(Flag::Dtls) || this.flag(Flag::Stream) && !this.flag(Flag::Async) {
-        net::send_sync(this.socket(), data, flags)
+        (this.get().socket_ops.send_sync)(this.socket(), data, flags)
     } else if this.flag(Flag::Stream) {
         send_async(this, data)
     } else {
@@ -1723,25 +1678,22 @@ pub fn sendfile(this: Handle, file: &CStr, offset: i64, length: usize) -> bool {
     let is_async = this.flag(Flag::Async);
     let socket = this.socket();
     let sent = if is_async {
-        socket_sendfile_async(socket, file, offset, length)
+        (this.get().socket_ops.sendfile_async)(socket, file, offset, length)
     } else {
-        sendfile_sync(socket, file, offset, length)
+        (this.get().socket_ops.sendfile_sync)(socket, file, offset, length)
     };
     if !sent {
         log::set_last_error(errno());
         return false;
     }
-    if is_async && !this.event(EventOp::AddOrUpdate, Events::WRITE) {
-        return false;
-    }
-    true
+    !is_async || this.event(EventOp::AddOrUpdate, Events::WRITE)
 }
 
 /// `Client::recv(data, length, flags)`: the bytes read, or none (`SW_ERR`).
 #[must_use]
 pub fn recv(this: Handle, buffer: &mut [impl ReadSlot], flags: c_int) -> Option<usize> {
     if this.flag(Flag::Stream) || this.flag(Flag::Dtls) {
-        let n = net::recv_sync(this.socket(), buffer, flags);
+        let n = (this.get().socket_ops.recv_sync)(this.socket(), ReadSlot::buffer(buffer), flags);
         // A poll timeout reads as recv(2)'s EAGAIN, as it did before poll.
         if n.is_none() && log::last_error() == ERROR_SOCKET_POLL_TIMEOUT {
             set_errno(libc::EAGAIN);
@@ -1752,6 +1704,18 @@ pub fn recv(this: Handle, buffer: &mut [impl ReadSlot], flags: c_int) -> Option<
     } else {
         this.recvfrom(buffer, flags)
     }
+}
+
+/// [`recv`] into lent room, counting the prefix that the receive initialized.
+#[inline]
+pub fn recv_spare(
+    this: Handle,
+    out: &mut swoole_rs_corebase::lent::Spare<'_>,
+    flags: c_int,
+) -> Option<usize> {
+    // SAFETY: all recv paths initialize the reported prefix, bounded by the room
+    // when MSG_TRUNC reports the full length of a datagram.
+    unsafe { out.read(|room| recv(this, room, flags)) }
 }
 
 /// A handshake in the read or write handler failed: close and report.
@@ -1767,12 +1731,12 @@ fn connect_failed(this: Handle) -> bool {
 /// `Client_onStreamRead`: the proxy and TLS handshakes that finish a connect,
 /// then framed or plain reads, on a live async stream client with its input buffer.
 fn on_read(this: Handle) -> bool {
-    let Tail { str: buf, size } = this.input_tail();
+    let buf = this.input_tail();
     let do_ssl_handshake = this.flag(Flag::OpenSsl);
     let http = this.proxy_state(Proxy::Http);
     if http.is_some_and(|state| state != HTTP_PROXY_READY) {
-        let accepted = this.edit_input(|input, socket| {
-            net::recv_append(socket, input) > Some(0)
+        let accepted = this.edit_input(|input, socket, ops| {
+            (ops.recv_append)(socket, input) > Some(0)
                 && swoole_rs_http_ffi::proxy_accept(input.view())
         });
         if !accepted {
@@ -1788,13 +1752,17 @@ fn on_read(this: Handle) -> bool {
     }
     let socks5 = this.proxy_state(Proxy::Socks5);
     if socks5.is_some_and(|state| state != SOCKS5_READY) {
-        let n = this.edit_input(|input, socket| net::recv_append(socket, input));
-        if n <= Some(0) {
+        // What this read appended, copied: the handshake's send may reach the client.
+        let reply = this.edit_input(|input, socket, ops| {
+            let start = input.len();
+            (ops.recv_append)(socket, input)?;
+            Some(input.view().get(start..).unwrap_or_default().to_vec())
+        });
+        let Some(reply) = reply.filter(|reply| !reply.is_empty()) else {
             log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
             return connect_failed(this);
-        }
-        // Upstream hands the handshake the buffer's free size, not what was read.
-        if !this.socks5_handshake(buf, size) {
+        };
+        if !this.socks5_handshake(&reply) {
             log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
             return connect_failed(this);
         }
@@ -1822,15 +1790,11 @@ fn on_read(this: Handle) -> bool {
     let (eof, length) = (record.open_eof_check, record.open_length_check);
     if eof || length {
         // `swoole_init` registered them before any client existed.
-        let framing = FRAMING
-            .get()
-            .unwrap_or_else(|| swoole_rs_corebase::fatal("client framing is not registered"));
+        let framing = &native_host().framing;
         let framed = if eof { framing.eof } else { framing.length };
         let socket = this.socket();
-        let protocol = this.protocol();
-        // The live protocol, socket and input buffer `Framing::new` asks for. A
-        // package callback may destroy the client; its socket outlives this handler.
-        let n = framed(protocol, socket, this.input());
+        // A package callback may destroy the client; its socket outlives this handler.
+        let n = framed(this);
         // A destroyed client cleared its object.
         let released = socket.read(|socket| socket.object.is_null());
         if n < 0 && !released && !this.flag(Flag::Closed) {
@@ -1931,7 +1895,7 @@ fn on_write(this: Handle, reactor: Running<'_>, event: &mut Event) -> bool {
     if this.proxy_state(Proxy::Http) == Some(HTTP_PROXY_WAIT) {
         // A copy: the async send may raise `onBufferFull`, whose callback may
         // reuse the shared buffer the request was packed into.
-        let request = with_thread_buffer(|shared| this.http_pack(shared).to_vec());
+        let request = this.with_buffer(|shared| this.http_pack(shared).to_vec());
         return send(this, &request, 0).is_some();
     }
     if this.flag(Flag::OpenSsl) {

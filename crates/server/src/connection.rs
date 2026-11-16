@@ -60,9 +60,7 @@ pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) {
                 return;
             }
         } else {
-            sock.edit(|s| {
-                s.take_ssl();
-            });
+            sock.edit(|s| s.set_ssl(None));
         }
         let Some(conn) = add(serv, port, sock, server_fd) else {
             abort(serv, reactor, Some(port), sock);
@@ -135,7 +133,8 @@ pub fn add<'a>(
     conn.closed().load(Acquire);
     // Upstream zeroes the slot up to `closed`; other reactor threads read `active`.
     conn.active().store(0, Relaxed);
-    conn.clear();
+    state.tables_ref().reset_connection(fd);
+    let conn = state.tables_ref().connection_at(fd)?;
 
     // `sw_spinlock`, with `SW_SPINLOCK_LOOP_N`.
     let cpus = u32::from(swoole_rs_corebase::swr_v1_core_cpu_num());
@@ -310,8 +309,10 @@ pub(crate) fn abort(
     if sock.read(|s| !s.object.is_null()) {
         reactor.close(sock);
     } else {
-        // SAFETY: an accepted socket no connection took, which nothing uses afterwards.
-        unsafe { swoole_rs_tls::upstream::socket_free(Some(sock)) };
+        // SAFETY: an accepted heap record no connection took, which nothing uses
+        // afterwards.
+        let sock = unsafe { swoole_rs_reactor::OwnedSocket::from_socket(sock) };
+        swoole_rs_tls::upstream::socket_free(Some(sock));
     }
 }
 
@@ -381,8 +382,7 @@ pub(crate) fn idle_timeout(serv: view::Server<'_>, reactor: Reactor, conn: Conne
     let now = swoole_rs_reactor::steady_ms();
     let (received, sent) = conn
         .socket()
-        .map(|s| s.read(|s| (s.last_received_time, s.last_sent_time)))
-        .unwrap_or_default();
+        .map_or_default(|s| s.read(|s| (s.last_received_time, s.last_sent_time)));
     if now - received < idle && now - sent < idle {
         return;
     }
@@ -477,7 +477,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn eagain_ends_an_empty_batch() {
         let live = LiveServer::new();
         assert_eq!(accept_on(&live), OK, "nothing to accept");
@@ -485,7 +484,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn too_many_connections_aborts_and_disables_accept() {
         let live = LiveServer::new();
         set_tables_max(&live, 1);
@@ -507,7 +505,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn a_full_session_list_aborts() {
         let live = LiveServer::new();
         // Every session `max_connection` tries after the round is taken.
@@ -525,7 +522,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn session_ids_continue_from_the_round_and_skip_taken_slots() {
         let live = LiveServer::new();
         live.counters().session_round.store(41, Relaxed);
@@ -559,7 +555,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn single_thread_reads_inline_and_counts_the_fd_range() {
         let live = LiveServer::new();
         live.server().config().single_thread.set(true);
@@ -582,7 +577,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn abort_closes_a_connection_through_the_reactor() {
         let live = LiveServer::new();
         live.server().config().single_thread.set(true);
@@ -608,7 +602,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn delayed_receive_waits_for_the_resume() {
         let live = LiveServer::new();
         live.server().config().single_thread.set(true);
@@ -627,10 +620,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn idle_timeout_closes_only_idle_connections() {
         let live = LiveServer::new();
-        live.port().max_idle_time.set(5.0);
+        // `idle_timeout` compares it with milliseconds; a second outlasts Miri's slowdown.
+        live.port().max_idle_time.set(1000.0);
         let _client = live.connect();
         live.server().config().single_thread.set(true);
         accept_on(&live);
@@ -660,7 +653,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn accept_retry_reenables_stream_ports() {
         let live = LiveServer::new();
         let listener = live.port_socket();
@@ -675,7 +667,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn eintr_retries_and_running_out_of_descriptors_disables_accept() {
         let live = LiveServer::new();
         let listener = live.port_socket();
@@ -701,7 +692,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn max_connection_bounds() {
         let live = LiveServer::new();
         let before = live.server().max_connection();

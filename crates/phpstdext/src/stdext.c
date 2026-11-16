@@ -115,30 +115,37 @@ void swr_phpstdext_separate(zval *array, struct iovec info) {
     efree(plain);
 }
 
-/* make_typed_array: ZVAL_ARR(made, a new table of `size` elements with `extra`
- * uninitialised bytes behind it), the table returned. `made`'s old value is
- * not released. */
-HashTable *swr_phpstdext_typed_new(zval *made, uint32_t size, size_t extra) {
-    HashTable *ht = emalloc(sizeof(HashTable) + extra);
+/* Upstream's ArrayTypeValue and ArrayTypeInfo, as typed.rs lays them out. */
+typedef struct {
+    uint8_t value;
+    uint8_t key;
+    uint16_t offset;
+    uint16_t len;
+} swr_type_value;
+
+typedef struct {
+    swr_type_value this;
+    swr_type_value element;
+    zend_class_entry *ce;
+    uint16_t len;
+    char text[];
+} swr_type_info;
+_Static_assert(sizeof(swr_type_info) == 32 && offsetof(swr_type_info, text) == 26, "typed.rs's TypeInfo");
+
+/* make_typed_array: ZVAL_ARR(made, a new table of `size` elements), with a copy
+ * of `header` behind it, then `header->len` bytes of `text` (zeros past its end)
+ * and a NUL; the table returned. `made`'s old value is not released. */
+HashTable *swr_phpstdext_typed_new(zval *made, uint32_t size, const swr_type_info *header, struct iovec text) {
+    size_t len = header->len;
+    HashTable *ht = emalloc(sizeof(HashTable) + sizeof(swr_type_info) + len + 1);
     zend_hash_init(ht, size, NULL, ZVAL_PTR_DTOR, 0);
+    swr_type_info *info = (swr_type_info *) (ht + 1);
+    memcpy(info, header, sizeof(swr_type_info));
+    size_t copied = MIN(len, text.iov_len);
+    memcpy(info->text, text.iov_base, copied);
+    memset(info->text + copied, 0, len + 1 - copied);
     ZVAL_ARR(made, ht);
     return ht;
-}
-
-/* FE_RESET_RW's failure: ZVAL_UNDEF of its result, then Z_FE_ITER_P(result) = -1;
- * nothing for any other instruction or an unused result. */
-void swr_phpstdext_foreach_undef(zend_execute_data *execute_data) {
-    const zend_op *opline = EX(opline);
-    if (opline->opcode != ZEND_FE_RESET_RW || opline->result_type == IS_UNUSED) {
-        return;
-    }
-    zval *result = EX_VAR(opline->result.var);
-    ZVAL_UNDEF(result);
-    Z_FE_ITER_P(result) = (uint32_t) -1;
-}
-
-void swr_phpstdext_pcre_release(void *entry) {
-    php_pcre_pce_decref(entry);
 }
 
 uint8_t swr_phpstdext_pcre_match(void *entry, zend_string *subject, zval *count, zval *result, bool global,

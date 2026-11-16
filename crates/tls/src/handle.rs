@@ -15,9 +15,9 @@ use openssl_sys::{
 use std::ffi::{CStr, c_char, c_int, c_long, c_uint, c_ulong, c_void};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
-use swoole_rs_corebase::lent::{Count, In, Out, lend_in, lend_out};
+use swoole_rs_corebase::lent::{Count, In, Out, Spare, Wrote, lend_in, lend_out, lend_spare};
 use swoole_rs_corebase::sys::{ReadSlot, Text};
-use swoole_rs_reactor::{Socket, SocketFields};
+use swoole_rs_reactor::{Socket, SocketFields, SocketSsl};
 
 // libssl's and libcrypto's own declarations, with each pointer typed as the
 // handle it is: `Ssl`, `Bio` and `CertRef` are live for their lifetime, `CipherRef` is
@@ -57,13 +57,21 @@ unsafe extern "C" {
     safe fn PEM_write_bio_X509(bio: Bio<'_>, cert: CertRef<'_>) -> c_int;
     safe fn SSL_get_error(ssl: Ssl<'_>, result: c_int) -> c_int;
     /// Writes at most `length` bytes of `buffer`, the count its lending gives.
-    safe fn SSL_read<'id>(ssl: Ssl<'_>, buffer: Out<'id>, length: Count<'id, c_int>) -> c_int;
+    safe fn SSL_read<'id>(
+        ssl: Ssl<'_>,
+        buffer: Out<'id>,
+        length: Count<'id, c_int>,
+    ) -> Wrote<'id, c_int>;
     /// As `SSL_read`, leaving the bytes queued.
     safe fn SSL_peek<'id>(ssl: Ssl<'_>, buffer: Out<'id>, length: Count<'id, c_int>) -> c_int;
     /// Reads at most `length` bytes of `data`, the count its lending gives.
     safe fn SSL_write<'id>(ssl: Ssl<'_>, data: In<'id>, length: Count<'id, c_int>) -> c_int;
     /// As `SSL_read`, from the BIO.
-    safe fn BIO_read<'id>(bio: Bio<'_>, buffer: Out<'id>, length: Count<'id, c_int>) -> c_int;
+    safe fn BIO_read<'id>(
+        bio: Bio<'_>,
+        buffer: Out<'id>,
+        length: Count<'id, c_int>,
+    ) -> Wrote<'id, c_int>;
     /// As `SSL_write`, to the BIO.
     safe fn BIO_write<'id>(bio: Bio<'_>, data: In<'id>, length: Count<'id, c_int>) -> c_int;
     safe fn SSL_accept(ssl: Ssl<'_>) -> c_int;
@@ -154,7 +162,8 @@ impl ConnectionIndex {
 // libssl's ex data calls at the connection's index, typed as what it holds.
 #[expect(
     clashing_extern_declarations,
-    reason = "the ex data calls, typed for the connection's index"
+    improper_ctypes,
+    reason = "the ex data calls, typed for the connection's index; libssl keeps the socket as an opaque `void *`"
 )]
 unsafe extern "C" {
     #[link_name = "SSL_get_ex_data"]
@@ -206,9 +215,12 @@ pub struct SslFailure {
     pub code: c_int,
 }
 
-/// Clears this thread's OpenSSL error queue.
+/// Clears this thread's OpenSSL error queue. Usually it is already empty, and the peek
+/// is a quarter of the clear, which frees and zeroes all sixteen slots (#4283).
 pub fn clear_errors() {
-    ERR_clear_error();
+    if ERR_peek_error() != 0 {
+        ERR_clear_error();
+    }
 }
 
 /// This thread's oldest queued OpenSSL error, left queued.
@@ -250,9 +262,10 @@ pub fn error_string(error: c_ulong) -> String {
         .map_or_else(|_| String::new(), |text| text.to_string_lossy().into())
 }
 
-/// A live SSL on this thread for `'a`. A socket record's is live while it is set:
-/// `Socket::ssl_create` sets it, and the unsafe `socket_ssl_close` frees it and clears
-/// it, its caller promising that no handle to the SSL or its BIOs is used afterwards.
+/// A live SSL on this thread for `'a`. A socket record's is live while the record
+/// holds it: `Socket::ssl_create` gives it one, and the unsafe `socket_ssl_close`
+/// takes it and frees it, its caller promising that no handle to the SSL or its BIOs
+/// is used afterwards.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ssl<'a>(NonNull<SSL>, PhantomData<&'a SSL>);
@@ -284,10 +297,9 @@ impl<'a> Ssl<'a> {
         read: impl FnOnce(&SocketFields) -> T,
     ) -> (Option<Self>, T) {
         let (ssl, value) = socket.read(|record| (record.ssl(), read(record)));
-        // The record's `ssl` is null or a live SSL it owns for as long as the record:
-        // only the unsafe `set_ssl` (whose caller promises that) and native code
-        // (`Socket::from_ptr`'s contract) set it, and only the unsafe `socket_ssl_close`
-        // frees it, its caller promising that no handle to it is used afterwards.
+        // The record's `ssl` is null or the live SSL its `SocketSsl` owns, freed with
+        // the record or by the unsafe `take_ssl`, whose caller promises that no handle
+        // to it is used afterwards; `set_ssl` leaves one it replaces unfreed.
         (
             NonNull::new(ssl.cast()).map(|ssl| Self(ssl, PhantomData)),
             value,
@@ -332,9 +344,16 @@ impl<'a> Ssl<'a> {
     /// # Errors
     /// Nothing was read.
     pub fn read(self, buffer: &mut [impl ReadSlot]) -> Result<usize, SslFailure> {
-        self.count(lend_out(buffer, |at, length| {
-            SSL_read(self, at.bytes(), length)
-        }))
+        lend_spare(buffer, |spare| self.read_into(spare)).0
+    }
+
+    /// `SSL_read` into `spare`'s room.
+    ///
+    /// # Errors
+    /// Nothing was read.
+    #[inline]
+    pub fn read_into(self, spare: &mut Spare<'_>) -> Result<usize, SslFailure> {
+        self.count(spare.lend(|at, length| SSL_read(self, at, length)))
     }
 
     /// `SSL_write` of `data`.
@@ -589,10 +608,9 @@ impl Bio<'_> {
         BIO_method_type(self) == BIO_TYPE_MEM
     }
 
-    /// `BIO_read` into `buffer`: the bytes read, or None for none.
-    #[must_use]
-    pub fn read(self, buffer: &mut [impl ReadSlot]) -> Option<usize> {
-        let n = lend_out(buffer, |at, length| BIO_read(self, at.bytes(), length));
+    /// `BIO_read` into `spare`'s room: the bytes read, or None for none.
+    pub fn read(self, spare: &mut Spare<'_>) -> Option<usize> {
+        let n = spare.lend(|at, length| BIO_read(self, at, length));
         usize::try_from(n).ok().filter(|&n| n > 0)
     }
 
@@ -674,16 +692,23 @@ impl CertRef<'_> {
     /// # Errors
     /// The [`PemError`] step that failed.
     pub fn pem(self, buffer: &mut [impl ReadSlot]) -> Result<usize, PemError> {
+        lend_spare(buffer, |spare| self.pem_into(spare)).0
+    }
+
+    /// [`CertRef::pem`] into `spare`'s room.
+    ///
+    /// # Errors
+    /// The [`PemError`] step that failed.
+    pub fn pem_into(self, spare: &mut Spare<'_>) -> Result<usize, PemError> {
         let bio = OwnedBio::memory().ok_or(PemError::Bio)?;
         if PEM_write_bio_X509(bio.bio(), self) == 0 {
             return Err(PemError::Write);
         }
-        let count = bio.bio().pending().min(buffer.len());
-        if count == 0 {
+        // A memory BIO reads at most what it holds.
+        if bio.bio().pending().min(spare.room()) == 0 {
             return Ok(0);
         }
-        let read = bio.bio().read(buffer.get_mut(..count).unwrap_or_default());
-        read.ok_or(PemError::Read)
+        bio.bio().read(spare).ok_or(PemError::Read)
     }
 }
 
@@ -730,10 +755,10 @@ impl Drop for Cert {
 }
 
 /// A new SSL whose one reference this side owns, freed when dropped unless a socket
-/// record takes it ([`OwnedSsl::into_raw`]).
+/// record takes it ([`OwnedSsl::into_socket_ssl`]).
 #[repr(transparent)]
 #[derive(Debug)]
-pub(crate) struct OwnedSsl(NonNull<SSL>);
+pub(crate) struct OwnedSsl(SocketSsl);
 
 /// The one reference to a BIO an [`OwnedBio`] gave up, passed as both of
 /// `SSL_set_bio`'s BIOs, which then takes that one reference: only
@@ -747,46 +772,41 @@ struct Given(NonNull<BIO>);
 struct Fresh<'a>(NonNull<SSL>, PhantomData<&'a mut OwnedSsl>);
 
 impl OwnedSsl {
+    fn ptr(&self) -> NonNull<SSL> {
+        self.0.as_non_null()
+    }
+
     /// The SSL, borrowed while this side owns it.
     pub(crate) fn get(&self) -> Ssl<'_> {
-        Ssl(self.0, PhantomData)
+        Ssl(self.ptr(), PhantomData)
     }
 
     /// `SSL_set_fd`: false when OpenSSL fails. The BIOs it frees are reachable only
     /// through borrows of `self`, which `&mut` excludes.
     pub(crate) fn set_fd(&mut self, fd: c_int) -> bool {
-        SSL_set_fd(Fresh(self.0, PhantomData), fd) != 0
+        SSL_set_fd(Fresh(self.ptr(), PhantomData), fd) != 0
     }
 
     /// `SSL_set_bio(ssl, bio, bio)`: the SSL takes `bio` for both directions and frees
     /// it with itself. The BIOs it frees are reachable only through borrows of `self`.
     pub(crate) fn set_bio(&mut self, bio: OwnedBio) {
         let bio = Given(bio.into_raw());
-        set_bios(Fresh(self.0, PhantomData), bio, bio);
+        set_bios(Fresh(self.ptr(), PhantomData), bio, bio);
     }
 
     /// Records `socket`, which takes the SSL next, as its connection's ex data, which
     /// [`Ssl::socket`] reads: false when OpenSSL fails.
     pub(crate) fn set_connection(&mut self, socket: Socket<'_>) -> bool {
-        set_connection(Fresh(self.0, PhantomData), ConnectionIndex::get(), socket) != 0
+        set_connection(
+            Fresh(self.ptr(), PhantomData),
+            ConnectionIndex::get(),
+            socket,
+        ) != 0
     }
 
-    /// The SSL, whose reference the caller hands on.
-    pub(crate) fn into_raw(self) -> *mut SSL {
-        std::mem::ManuallyDrop::new(self).0.as_ptr()
-    }
-}
-
-impl Drop for OwnedSsl {
-    fn drop(&mut self) {
-        /// The reference a dropped `OwnedSsl` held: only this drop makes one, once per
-        /// handle, so `SSL_free` releases each SSL once.
-        #[repr(transparent)]
-        struct Released(NonNull<SSL>);
-        unsafe extern "C" {
-            safe fn SSL_free(ssl: Released);
-        }
-        SSL_free(Released(self.0));
+    /// The owner a socket record holds the SSL by.
+    pub(crate) fn into_socket_ssl(self) -> SocketSsl {
+        self.0
     }
 }
 
@@ -801,5 +821,27 @@ mod tests {
         pub(crate) unsafe fn new(ssl: *mut SSL) -> Option<Self> {
             NonNull::new(ssl).map(|ssl| Self(ssl, PhantomData))
         }
+    }
+
+    #[test]
+    fn clear_errors_empties_the_queue() {
+        // A length of -1 reads to the NUL.
+        let text = c"not a certificate";
+        unsafe {
+            let bio = openssl_sys::BIO_new_mem_buf(text.as_ptr().cast(), -1);
+            let cert = openssl_sys::PEM_read_bio_X509(
+                bio,
+                std::ptr::null_mut(),
+                None,
+                std::ptr::null_mut(),
+            );
+            assert!(cert.is_null());
+            openssl_sys::BIO_free_all(bio);
+        }
+        assert_ne!(super::peek_error(), 0, "the failed read queued an error");
+        super::clear_errors();
+        assert_eq!(super::peek_error(), 0);
+        super::clear_errors();
+        assert_eq!(super::peek_error(), 0);
     }
 }

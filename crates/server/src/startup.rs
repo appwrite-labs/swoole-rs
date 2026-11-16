@@ -567,7 +567,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn start_runs_the_factory_protocols_then_the_mode() {
         let live = LiveServer::new();
         on(&live, CallbackKind::Receive);
@@ -604,7 +603,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn start_failures_return_before_later_steps() {
         let live = LiveServer::new();
         calls();
@@ -676,7 +674,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn max_connection_raised_to_the_minimum() {
         let live = LiveServer::new();
         let state = live.state();
@@ -699,7 +696,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
+    #[cfg_attr(miri, ignore = "Miri has no getifaddrs")]
     fn create_makes_the_mode_factory_and_its_tables() {
         let mut live = LiveServer::new();
         live.forget_tables(true);
@@ -749,7 +746,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn task_workers_by_ipc_mode() {
         let live = LiveServer::new();
         config(&live).worker_num.set(2);
@@ -777,7 +773,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn start_check_drops_callbacks_unsafe_for_the_dispatch_mode() {
         const UNSAFE: [CallbackKind; 4] = [
             CallbackKind::Connect,
@@ -828,7 +823,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn start_check_ports() {
         let live = LiveServer::new();
         let port = live.port();
@@ -864,7 +858,9 @@ mod tests {
         );
 
         // A UDP port.
-        unsafe { (*(&raw const *port).cast_mut()).r#type = 2 };
+        let mut udp = crate::port_config::PortConfig::boxed(c_int::MAX);
+        udp.r#type = 2;
+        let _ = live.state().ports.push(udp);
         assert!(!start_check(live.server()), "UDP needs onPacket");
         on(&live, CallbackKind::Packet);
         assert!(start_check(live.server()), "onPacket set");
@@ -875,7 +871,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
+    #[cfg_attr(miri, ignore = "Miri has no gethostbyname2_r")]
     fn listen_sockets_fill_their_slots_and_the_fd_bounds() {
         let live = LiveServer::new();
         let fd = live.listener_fd;
@@ -902,7 +898,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn master_thread_by_mode() {
         let live = LiveServer::new();
         config(&live).reactor_num.set(4);
@@ -968,7 +963,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
+    #[cfg_attr(miri, ignore = "Miri has no getifaddrs")]
     fn destroy_joins_the_reactors_before_the_factory_stops() {
         for mode in [Mode::Base, Mode::Process] {
             let mut live = LiveServer::new();
@@ -1017,7 +1012,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
+    #[cfg_attr(miri, ignore = "Miri has no getifaddrs")]
     fn an_abandoned_base_server_frees_its_tables_and_factory_only() {
         let mut live = LiveServer::new();
         live.forget_tables(true);

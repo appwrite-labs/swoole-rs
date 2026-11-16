@@ -19,9 +19,9 @@ use crate::lent::{self, Drain, Fill};
 /// either side of the boundary.
 ///
 /// Invariant: it points at a NUL-terminated string live for `'a`. Rust makes one only
-/// from a `&'a CStr`. The other source is a parameter (or declared static) of this type
-/// on the C boundary, where the C caller's `const char *` contract stands for the
-/// constructor, as it does for a `&T` parameter there.
+/// from a `&'a CStr`. The other source is a parameter, declared static or declared
+/// return value of this type on the C boundary, where the C side's `const char *`
+/// contract stands for the constructor, as it does for a `&T` there.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct Text<'a>(NonNull<libc::c_char>, PhantomData<&'a CStr>);
@@ -205,6 +205,9 @@ mod c {
         /// `epoll_create(2)`.
         #[cfg(any(target_os = "linux", target_os = "android"))]
         pub safe fn epoll_create(size: c_int) -> c_int;
+        /// `epoll_create1(2)`: the call Miri implements.
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        pub safe fn epoll_create1(flags: c_int) -> c_int;
         /// `epoll_ctl(2)`: `event` is the interest and token to keep, none for
         /// `EPOLL_CTL_DEL`.
         #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -251,20 +254,36 @@ pub use c::kqueue;
 pub use c::malloc_trim;
 pub use c::{calloc, malloc};
 #[cfg(any(target_os = "linux", target_os = "android"))]
-pub use c::{epoll_create, epoll_ctl, signalfd};
+pub use c::{epoll_create, epoll_create1, epoll_ctl, signalfd};
 pub(crate) use c::{fork, getrlimit, srandom, uname};
 pub use c::{
     pthread_sigmask, sigaddset, sigdelset, sigemptyset, sigfillset, sigismember, sigprocmask,
 };
 
+/// A receive buffer crossing a callback boundary, retaining whether its bytes
+/// must stay initialized. Neither variant permits uninitializing a `u8` buffer.
+pub enum ReadBuffer<'a> {
+    /// Bytes that remain initialized after the receive.
+    Initialized(&'a mut [u8]),
+    /// Spare capacity that the receive may initialize.
+    Spare(&'a mut [MaybeUninit<u8>]),
+}
+
 /// A byte a read may overwrite with any value: `u8`, or one not yet written
 /// (`CppString::spare`). Readers only write their buffer, so they take either.
 pub trait ReadSlot: sealed::Sealed + Sized {
+    /// Lend `slots` to a callback without erasing its initialization guarantee.
+    fn buffer(slots: &mut [Self]) -> ReadBuffer<'_>;
     /// Copy what fits of `bytes` to the start of `slots`: the count copied.
     fn copy_in(slots: &mut [Self], bytes: &[u8]) -> usize;
 }
 
 impl ReadSlot for u8 {
+    #[inline]
+    fn buffer(slots: &mut [Self]) -> ReadBuffer<'_> {
+        ReadBuffer::Initialized(slots)
+    }
+
     #[inline]
     fn copy_in(slots: &mut [Self], bytes: &[u8]) -> usize {
         let n = slots.len().min(bytes.len());
@@ -276,6 +295,11 @@ impl ReadSlot for u8 {
 }
 
 impl ReadSlot for MaybeUninit<u8> {
+    #[inline]
+    fn buffer(slots: &mut [Self]) -> ReadBuffer<'_> {
+        ReadBuffer::Spare(slots)
+    }
+
     #[inline]
     fn copy_in(slots: &mut [Self], bytes: &[u8]) -> usize {
         let n = slots.len().min(bytes.len());
@@ -340,7 +364,6 @@ plain!(
     libc::group_req,
     libc::group_source_req,
     libc::hostent,
-    libc::ifreq,
     libc::in_addr,
     libc::in6_addr,
     libc::in6_pktinfo,
@@ -371,6 +394,8 @@ plain!(
     libc::ifconf,
     #[cfg(any(target_os = "linux", target_os = "android"))]
     libc::signalfd_siginfo,
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    libc::epoll_event,
     #[cfg(any(target_os = "linux", target_os = "android"))]
     libc::statx,
     #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -435,9 +460,7 @@ pub fn set_h_errno(value: c_int) {
 pub fn strerror(code: c_int) -> String {
     let mut text = std::io::Error::from_raw_os_error(code).to_string();
     // std appends the code; strip that, leaving libc's message.
-    let message = text
-        .strip_suffix(&format!(" (os error {code})"))
-        .map_or(text.len(), str::len);
+    let message = text.trim_suffix(&format!(" (os error {code})")).len();
     text.truncate(message);
     text
 }
@@ -513,10 +536,9 @@ pub fn getsockopt<T: Pod>(
     name: c_int,
     value: &mut T,
 ) -> std::io::Result<libc::socklen_t> {
-    let mut length = socklen::<T>();
-    // SAFETY: `value` holds the `length` writable bytes given, and any bytes are a `T`.
-    let status =
-        unsafe { libc::getsockopt(fd, level, name, (&raw mut *value).cast(), &raw mut length) };
+    let (status, length) = lent::lend_value_out(value, |at, length| {
+        lent::getsockopt(fd, level, name, at, length)
+    });
     status_result(status)?;
     Ok(length)
 }
@@ -621,12 +643,19 @@ const INTEGER_COMMANDS: [c_int; 8] = [
 /// # Errors
 /// The syscall's captured errno, or `EINVAL` for a command outside the integer list.
 pub fn fcntl(fd: c_int, cmd: c_int, arg: c_int) -> std::io::Result<c_int> {
+    /// A command from `INTEGER_COMMANDS`, made only after the check below.
+    #[repr(transparent)]
+    struct IntegerCommand(c_int);
+    // An integer command reads its argument as an int, or not at all, and
+    // dereferences nothing.
+    unsafe extern "C" {
+        #[link_name = "fcntl"]
+        safe fn integer_fcntl(fd: c_int, cmd: IntegerCommand, ...) -> c_int;
+    }
     if !INTEGER_COMMANDS.contains(&cmd) {
         return Err(std::io::Error::from_raw_os_error(libc::EINVAL));
     }
-    // SAFETY: `cmd` takes an integer argument or none, so nothing is dereferenced.
-    let result = unsafe { libc::fcntl(fd, cmd, arg) };
-    nonnegative_result(result)
+    nonnegative_result(integer_fcntl(fd, IntegerCommand(cmd), arg))
 }
 
 /// `flock(2)`.
@@ -643,6 +672,22 @@ pub fn flock(fd: c_int, operation: c_int) -> std::io::Result<()> {
 pub fn poll(fds: &mut [libc::pollfd], timeout: c_int) -> std::io::Result<c_int> {
     nonnegative_result(lent::lend_out(fds, |fds, count| {
         lent::poll(fds, count, timeout)
+    }))
+}
+
+/// `epoll_wait(2)` into `events`, at most all of them: the number ready, or zero on
+/// timeout.
+/// # Errors
+/// The syscall's captured errno (`EINVAL` for no room).
+#[cfg(any(target_os = "linux", target_os = "android"))]
+#[inline]
+pub fn epoll_wait(
+    epfd: c_int,
+    events: &mut [libc::epoll_event],
+    timeout: c_int,
+) -> std::io::Result<c_int> {
+    nonnegative_result(lent::lend_out(events, |events, count| {
+        lent::epoll_wait(epfd, events, count, timeout)
     }))
 }
 
@@ -774,8 +819,17 @@ mod anonymous {
 /// # Errors
 /// The syscall's errno.
 pub fn open(path: &CStr, flags: c_int, mode: libc::mode_t) -> std::io::Result<c_int> {
-    // SAFETY: `path` is NUL-terminated; the mode is promoted as C does.
-    nonnegative_result(unsafe { libc::open(path.as_ptr(), flags, libc::c_uint::from(mode)) })
+    // `open(2)` reads only the path, and its one optional argument as a mode.
+    #[expect(
+        suspicious_runtime_symbol_definitions,
+        reason = "`Text` is a transparent `const char *` that is never null"
+    )]
+    unsafe extern "C" {
+        #[link_name = "open"]
+        safe fn libc_open(path: Text<'_>, flags: c_int, ...) -> c_int;
+    }
+    // The mode is promoted as C does.
+    nonnegative_result(libc_open(path.into(), flags, libc::c_uint::from(mode)))
 }
 
 /// `execv(3)`: runs `path` in place of this process, with `argv` as its arguments,
@@ -812,43 +866,53 @@ pub fn print(bytes: &[u8]) {
 /// `kevent(2)`'s errno.
 #[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
 pub fn kevent_change(kq: c_int, change: &libc::kevent) -> std::io::Result<()> {
-    nonnegative_result(kevent::kevent(
-        kq,
-        change,
-        kevent::Count::One,
-        None,
-        kevent::Count::Zero,
-        None,
-    ))
+    nonnegative_result(lent::lend_out(&mut [], |events, count| {
+        kevent::kevent(kq, change, kevent::Changes::One, events, count, None)
+    }))
     .map(drop)
 }
 
-/// `kevent(2)` declared for one change and no events out.
+/// No change to the kqueue `kq`, and its ready events into `events`, at most all of
+/// them, waiting up to `timeout` (`None`: until one comes): the number ready.
+///
+/// # Errors
+/// `kevent(2)`'s errno.
+#[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
+#[inline]
+pub fn kevent_wait(
+    kq: c_int,
+    events: &mut [libc::kevent],
+    timeout: Option<&libc::timespec>,
+) -> std::io::Result<c_int> {
+    nonnegative_result(lent::lend_out(events, |events, count| {
+        kevent::kevent(kq, &zeroed(), kevent::Changes::Zero, events, count, timeout)
+    }))
+}
+
+/// `kevent(2)` declared for at most one change.
 #[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
 mod kevent {
+    use crate::lent::{Count, Out};
     use libc::c_int;
 
-    /// A count of `kevent` records: each value is the length of the one record, or
-    /// of none, that its parameter is given.
+    /// How many `kevent` records the change parameter is given: none, or the one.
     #[repr(i32)]
-    pub(super) enum Count {
+    pub(super) enum Changes {
         Zero = 0,
         One = 1,
     }
 
-    /// No value: a null-only event list.
-    pub(super) enum Nothing {}
-
-    // libc's. It reads the `changes` count of records at `change`, which is one, and
-    // writes at most the `count` given for `events`, which is none; a null timeout
-    // returns at once. It keeps nothing, so it is declared `safe`.
+    // libc's. It reads the `changes` count of records at `change`, and writes at most
+    // the lending's `count` events into `events`; with no room it returns once the
+    // change is made, else it waits up to `timeout` (null: until an event comes). It
+    // keeps nothing, so it is declared `safe`.
     unsafe extern "C" {
-        pub(super) safe fn kevent(
+        pub(super) safe fn kevent<'id>(
             kq: c_int,
             change: &libc::kevent,
-            changes: Count,
-            events: Option<&'static mut Nothing>,
-            count: Count,
+            changes: Changes,
+            events: Out<'id, libc::kevent>,
+            count: Count<'id, c_int>,
             timeout: Option<&libc::timespec>,
         ) -> c_int;
     }
@@ -877,6 +941,70 @@ pub enum InterfaceRequest {
     Name,
 }
 
+/// A `struct ifreq` as its bytes, which the kernel copies in and out whole:
+/// the interface's name, then the `ifr_ifru` union a request reads or fills,
+/// whose fields are read from the bytes rather than through the union.
+#[derive(Clone, Copy)]
+pub struct Ifreq([u8; size_of::<libc::ifreq>()]);
+
+impl Default for Ifreq {
+    fn default() -> Self {
+        Self([0; size_of::<libc::ifreq>()])
+    }
+}
+
+impl Ifreq {
+    /// A request on the interface `name`: its first `IFNAMSIZ - 1` bytes,
+    /// NUL-terminated.
+    #[must_use]
+    pub fn named(name: &[u8]) -> Self {
+        let mut request = Self::default();
+        for (slot, &byte) in request.0.iter_mut().zip(name).take(libc::IFNAMSIZ - 1) {
+            *slot = byte;
+        }
+        request
+    }
+
+    /// `ifr_name`, up to its NUL within `IFNAMSIZ`.
+    #[must_use]
+    pub fn name(&self) -> &CStr {
+        let name = self.0.get(..libc::IFNAMSIZ).unwrap_or_default();
+        CStr::from_bytes_until_nul(name).unwrap_or_default()
+    }
+
+    /// `ifr_ifru`'s bytes.
+    fn value(&self) -> &[u8] {
+        self.0.get(libc::IFNAMSIZ..).unwrap_or_default()
+    }
+
+    /// Sets `ifru_ifindex`, the interface `SIOCGIFNAME` names.
+    pub fn set_index(&mut self, index: c_int) {
+        let value = self.0.get_mut(libc::IFNAMSIZ..).unwrap_or_default();
+        if let Some(slot) = value.first_chunk_mut() {
+            *slot = index.to_ne_bytes();
+        }
+    }
+
+    /// `((struct sockaddr_in *) &ifru_addr)->sin_addr`, as `SIOCGIFADDR`
+    /// fills it: the four bytes after the family and port on every platform.
+    #[must_use]
+    pub fn ipv4(&self) -> libc::in_addr {
+        let s_addr = match *self.value() {
+            [_, _, _, _, a, b, c, d, ..] => u32::from_ne_bytes([a, b, c, d]),
+            _ => 0,
+        };
+        libc::in_addr { s_addr }
+    }
+
+    /// `ifru_hwaddr.sa_data`, as `SIOCGIFHWADDR` fills it: the fourteen bytes
+    /// after the two of the family.
+    #[must_use]
+    pub fn sa_data(&self) -> [u8; 14] {
+        let data = self.value().get(2..).unwrap_or_default();
+        data.first_chunk().copied().unwrap_or_default()
+    }
+}
+
 /// `ioctl(fd, request, value)`.
 ///
 /// # Errors
@@ -884,7 +1012,7 @@ pub enum InterfaceRequest {
 pub fn interface_ioctl(
     fd: c_int,
     request: InterfaceRequest,
-    value: &mut libc::ifreq,
+    value: &mut Ifreq,
 ) -> std::io::Result<()> {
     // The request numbers as `ioctl` takes them (an int on musl).
     #[cfg(target_os = "linux")]
@@ -898,8 +1026,9 @@ pub fn interface_ioctl(
     let request = match request {
         InterfaceRequest::Address => libc::SIOCGIFADDR,
     };
-    // SAFETY: each request reads and writes only the one live ifreq.
-    nonnegative_result(unsafe { libc::ioctl(fd, request, std::ptr::from_mut(value)) }).map(drop)
+    // SAFETY: each request copies in and out only the one ifreq's bytes,
+    // which `value` holds, at any alignment.
+    nonnegative_result(unsafe { libc::ioctl(fd, request, value.0.as_mut_ptr()) }).map(drop)
 }
 
 /// The head of a list `getifaddrs` stored, not yet freed. Only `getifaddrs` makes one
@@ -1320,7 +1449,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no fcntl for these flags")]
     fn fcntl_errors_keep_errno_and_success_keeps_flags() {
         let error = fcntl(-1, libc::F_GETFL, 0).unwrap_err();
         set_errno(libc::EINTR);
@@ -1354,7 +1482,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no poll")]
     fn poll_distinguishes_timeout_readiness_and_invalid_descriptors() {
         let [reader, writer] = pipe().unwrap();
         let mut event = libc::pollfd {

@@ -8,6 +8,7 @@
 use crate::TaskIpcMode;
 use swoole_rs_corebase::DataHead;
 use swoole_rs_corebase::ServerEvent;
+use swoole_rs_corebase::constants::TaskFlag;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING;
 use swoole_rs_process::task_sync::ResultSlot;
@@ -26,10 +27,6 @@ pub fn result_slot(serv: crate::view::Server<'_>, worker_id: u16) -> Option<Resu
     words.try_into().ok().map(ResultSlot::of)
 }
 
-/// `swoole::TaskFlag` bits.
-const TASK_CALLBACK: u16 = 1 << 3;
-const TASK_COROUTINE: u16 = 1 << 5;
-const TASK_NOREPLY: u16 = 1 << 7;
 /// `SW_LOG_WARNING`, `SW_ERROR_WRONG_OPERATION`.
 const WRONG_OPERATION: i32 = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATION as i32;
 
@@ -63,7 +60,7 @@ fn answerable(task_workers: u32, task: Option<&DataHead>) -> Option<&DataHead> {
         let task = task?;
         if task.event() == Some(ServerEvent::PipeMessage) {
             "Server::task()/Server::finish() is not supported in onPipeMessage callback"
-        } else if task.ext_flags & TASK_NOREPLY != 0 {
+        } else if TaskFlag::from_bits(task.ext_flags).contains(TaskFlag::SW_TASK_NOREPLY) {
             "Server::finish() can only be used in the worker process"
         } else {
             return Some(task);
@@ -77,10 +74,10 @@ fn answerable(task_workers: u32, task: Option<&DataHead>) -> Option<&DataHead> {
 /// coroutine flag.
 fn nonblocking_flags(flags: u16, task_flags: u16) -> u16 {
     flags
-        | if task_flags & TASK_CALLBACK != 0 {
-            TASK_CALLBACK
+        | if TaskFlag::from_bits(task_flags).contains(TaskFlag::SW_TASK_CALLBACK) {
+            TaskFlag::SW_TASK_CALLBACK.bits()
         } else {
-            task_flags & TASK_COROUTINE
+            task_flags & TaskFlag::SW_TASK_COROUTINE.bits()
         }
 }
 
@@ -103,8 +100,6 @@ fn notify(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const TASK_NONBLOCK: u16 = 1 << 2;
 
     #[test]
     fn init_rejects_coroutines_over_message_queues() {
@@ -131,7 +126,7 @@ mod tests {
         };
         assert!(answerable(1, Some(&pipe)).is_none());
         let noreply = DataHead {
-            ext_flags: TASK_NOREPLY,
+            ext_flags: TaskFlag::SW_TASK_NOREPLY.bits(),
             ..DataHead::default()
         };
         assert!(answerable(1, Some(&noreply)).is_none());
@@ -141,11 +136,16 @@ mod tests {
     #[test]
     fn finish_nonblocking_adds_the_callback_or_coroutine_flag() {
         for (task_flags, added) in [
-            (TASK_NONBLOCK, 0),
-            (TASK_NONBLOCK | TASK_COROUTINE, TASK_COROUTINE),
+            (TaskFlag::SW_TASK_NONBLOCK.bits(), 0),
             (
-                TASK_NONBLOCK | TASK_CALLBACK | TASK_COROUTINE,
-                TASK_CALLBACK,
+                TaskFlag::SW_TASK_NONBLOCK.bits() | TaskFlag::SW_TASK_COROUTINE.bits(),
+                TaskFlag::SW_TASK_COROUTINE.bits(),
+            ),
+            (
+                TaskFlag::SW_TASK_NONBLOCK.bits()
+                    | TaskFlag::SW_TASK_CALLBACK.bits()
+                    | TaskFlag::SW_TASK_COROUTINE.bits(),
+                TaskFlag::SW_TASK_CALLBACK.bits(),
             ),
         ] {
             assert_eq!(nonblocking_flags(1, task_flags), 1 | added);

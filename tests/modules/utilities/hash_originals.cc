@@ -1,4 +1,4 @@
-// Original GoogleTest assertions call actual loaded public utility methods.
+// Upstream's hash GoogleTests, unchanged, call the loaded engine's hashes.
 #include <php.h>
 #include <cstdio>
 #include <cerrno>
@@ -7,11 +7,10 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include <unistd.h>
 #include <gtest/gtest.h>
-#include "swoole_log.h"
-using namespace swoole;
-#include "logger-originals-config.h"
-#include "pretty_originals.inc"
+#include "originals-config.h"
+#include "hash_originals.inc"
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_m14_storage, 0, 0, 1)
     ZEND_ARG_TYPE_INFO(0, directory, IS_STRING, 0)
@@ -29,15 +28,7 @@ PHP_FUNCTION(m14_storage) {
     char *arguments[] = {program.data(), filter.data(), output.data(), nullptr};
     int count = 3;
     ::testing::InitGoogleTest(&count, arguments);
-#ifdef M14_PRIVATE_LOG_FILE
-    const char *previous = file;
-    std::string private_file = std::string(directory, length) + "/original.log";
-    file = private_file.c_str();
-#endif
     int status = RUN_ALL_TESTS();
-#ifdef M14_PRIVATE_LOG_FILE
-    file = previous;
-#endif
     fflush(stdout);
     array_init(return_value);
     add_assoc_long(return_value, "gtest_exit", status);

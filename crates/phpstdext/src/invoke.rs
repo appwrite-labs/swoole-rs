@@ -4,35 +4,36 @@
 //! `swoole_*` wrappers that move that first argument where the function
 //! expects it.
 use crate::{
-    CONTINUE, DISPATCH, Frame, Op,
+    Frame, Next, Op,
     aliases::{self, Receiver},
 };
 use std::{
-    ffi::{CStr, c_int, c_void},
+    ffi::{CStr, c_void},
     ptr, slice,
     sync::atomic::{AtomicPtr, Ordering},
 };
 use swoole_rs_zend::{
-    Call, Value,
-    bailout::{Bailout, trap},
+    Call, Emalloc, Value,
+    bailout::Bailout,
     opcode::Handler,
     sys::{
-        IS_ARRAY, IS_CONST, IS_RESOURCE, IS_STRING, IS_VAR, swr_zend_efree, swr_zend_zval_release,
-        zend_execute_data, zend_function, zval,
+        IS_ARRAY, IS_CONST, IS_RESOURCE, IS_STRING, IS_VAR, swr_zend_zval_release, zend_function,
+        zval,
     },
-    value,
 };
 
 unsafe extern "C" {
     /// `zend_vm_stack_push_call_frame(ZEND_CALL_NESTED_FUNCTION, function,
-    /// num_args, object)`: the new frame on the VM stack, which Zend always
-    /// pushes, for as long as the caller says it lives.
+    /// num_args, object)`, which Zend always pushes, given `run_time_cache`
+    /// and linked as `frame`'s next call (`EX(call)`).
     #[link_name = "swr_zend_push_nested_call"]
-    fn push_nested_call<'a>(
+    fn push_nested_call(
+        frame: Frame<'_>,
         function: *mut zend_function,
         num_args: u32,
         object: *mut c_void,
-    ) -> &'a mut zend_execute_data;
+        run_time_cache: *mut c_void,
+    );
 }
 
 /// Upstream's `CallInfo`: what the handler hands the method call's frame in
@@ -62,51 +63,57 @@ pub(crate) fn install(minit: &swoole_rs_zend::Minit) {
 pub(crate) struct MethodCall;
 
 impl Handler for MethodCall {
-    fn run(frame: Frame<'_>) -> c_int {
+    const OPCODE: u32 = swoole_rs_zend::sys::ZEND_INIT_METHOD_CALL;
+    fn run(frame: Frame<'_>) -> Next {
         let op = Op::current(frame);
         let Some(object) = op.op1() else {
-            return DISPATCH;
+            return Next::Dispatch;
         };
         // The method name: op2's literal, `RT_CONSTANT(opline, opline->op2)`,
         // which lives as long as the script. A name computed at run time is
         // left to Zend.
         if u32::from(op.op2_type) != IS_CONST {
-            return DISPATCH;
+            return Next::Dispatch;
         }
         let Some(name) = op.op2() else {
-            return DISPATCH;
+            return Next::Dispatch;
         };
         let receiver = match object.dereferenced().kind() {
             IS_ARRAY => Receiver::Array,
             IS_STRING => Receiver::String,
             IS_RESOURCE => Receiver::Stream,
-            _ => return DISPATCH,
+            _ => return Next::Dispatch,
         };
         // Zend's request allocator, freed by the method call. The literal is
         // a plain copy, as upstream's.
-        let info = value::enew(CallInfo {
-            func: name.copy_value(),
-            this: object.copy_value(),
-            op1_type: op.op1_type,
-        });
+        let info = Box::into_raw_with_allocator(Box::new_in(
+            CallInfo {
+                func: name.copy_value(),
+                this: object.copy_value(),
+                op1_type: op.op1_type,
+            },
+            Emalloc::default(),
+        ))
+        .0;
         let method = match receiver {
             Receiver::Array => &METHODS[0],
             Receiver::String => &METHODS[1],
             Receiver::Stream => &METHODS[2],
         }
         .load(Ordering::Relaxed);
-        // SAFETY: a registered function; the frame passes `object` as upstream
-        // does. The frame just pushed lives until its call ends, and nothing
-        // else reaches it until this frame's `call` names it below.
-        let pushed = unsafe { push_nested_call(method, op.extended_value, object.as_ptr().cast()) };
-        pushed.run_time_cache = info.cast();
-        // SAFETY: this live frame's header; the operands borrowed above are slots
-        // after it, and no Zend code runs while it is borrowed.
-        let current = unsafe { &mut *frame.as_ptr() };
-        pushed.prev_execute_data = current.call;
-        current.call = ptr::from_mut(pushed);
+        // SAFETY: a registered function; the new frame passes `object` as
+        // upstream does, and Zend runs it as this live frame's next call.
+        unsafe {
+            push_nested_call(
+                frame,
+                method,
+                op.extended_value,
+                object.as_ptr().cast(),
+                info.cast(),
+            );
+        };
         frame.skip(1);
-        CONTINUE
+        Next::Continue
     }
 }
 
@@ -127,7 +134,7 @@ fn call_method(receiver: Receiver, frame: &Call) {
     // SAFETY: the handler's initialized allocation, which the frame's
     // `run_time_cache` alone pointed to, until the take above, and which is
     // freed below.
-    let info = unsafe { &mut *allocation };
+    let mut info = unsafe { Box::from_raw_in(allocation, Emalloc::default()) };
     // op2 of INIT_METHOD_CALL is the method name, a string literal.
     let name = Value::of(&mut info.func).str();
     let alias = name.and_then(|name| aliases::find(receiver, name.bytes()));
@@ -144,10 +151,9 @@ fn call_method(receiver: Receiver, frame: &Call) {
             ]));
             Ok(())
         }
-        Some(alias) => call_alias(alias, info, frame),
+        Some(alias) => call_alias(alias, &mut info, frame),
     };
-    // SAFETY: the handler's allocation; nothing else holds it.
-    unsafe { swr_zend_efree(allocation.cast()) };
+    drop(info);
     swoole_rs_zend::bailout::raise(outcome);
 }
 
@@ -168,9 +174,10 @@ fn call_alias(alias: &CStr, info: &mut CallInfo, frame: &Call) -> Result<(), Bai
     let mut argv = arguments(slice::from_ref(&this), frame);
     frame.call_known(function, &mut argv)?;
     if u32::from(info.op1_type) == IS_VAR {
-        // SAFETY: a C body releasing the receiver (`CallInfo::this`), which
-        // may run destructors.
-        unsafe { trap(swr_zend_zval_release, (&raw mut info.this).cast()) }?;
+        let receiver = (&raw mut info.this).cast();
+        // SAFETY: the receiver's reference (`CallInfo::this`), released once,
+        // inside the trap: its destructors may bail out.
+        swoole_rs_zend::contain_with(|| unsafe { swr_zend_zval_release(receiver) })?;
     }
     Ok(())
 }

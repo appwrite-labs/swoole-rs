@@ -32,6 +32,21 @@ class Exclusive(unittest.TestCase):
                         self.fail('Concurrent writer acquired lock')
 
 
+class ReservedPort(unittest.TestCase):
+    def test_server_listens_while_allocators_skip_the_port(self):
+        import socket
+        with harness.reserved_port() as port:
+            # A plain bind is what bind(0) and connect() would need; the server binds as Swoole does.
+            with socket.socket() as other, self.assertRaises(OSError):
+                other.bind(('127.0.0.1', port))
+            with socket.socket() as listener:
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                listener.bind(('127.0.0.1', port))
+                listener.listen()
+                with socket.create_connection(('127.0.0.1', port)), listener.accept()[0]:
+                    pass
+
+
 class Overlays(unittest.TestCase):
     def test_only_selected_contracts_are_staged_and_collisions_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -283,6 +298,31 @@ class Phpt(unittest.TestCase):
 
 
 class Cleanup(unittest.TestCase):
+    def test_server_cleanup_preserves_only_existing_failures_with_exited_leaders(self):
+        from unittest.mock import Mock
+        cases = [
+            ('assertion', 7, AssertionError, 'original failure'),
+            ('startup', 7, RuntimeError, 'PHP exited during startup'),
+            ('success', 0, PermissionError, 'denied'),
+            ('assertion', None, PermissionError, 'denied'),
+        ]
+        for phase, exited, error, message in cases:
+            with self.subTest(phase=phase, exited=exited):
+                process = Mock(pid=12345, returncode=exited)
+                process.poll.side_effect = [exited if phase == 'startup' else None, exited]
+                with patch.object(harness.subprocess, 'Popen', return_value=process), \
+                     patch.object(harness.socket, 'create_connection', return_value=harness.contextlib.nullcontext()), \
+                     patch.object(harness, 'stop_process_group', side_effect=PermissionError('denied')), \
+                     patch.object(harness.sys, 'stderr'), \
+                     self.assertRaisesRegex(error, message):
+                    try:
+                        raise LookupError('already handled by the caller')
+                    except LookupError:
+                        with harness.server(Engine('test', Path('/unused')), Path('/unused.php')):
+                            if phase == 'assertion':
+                                raise AssertionError('original failure')
+                self.assertEqual(process.poll.call_count, 2)
+
     def test_permission_error_preserves_exited_failure_and_output(self):
         from tools import harness
         from unittest.mock import Mock
@@ -320,11 +360,48 @@ class Cleanup(unittest.TestCase):
 
 
 class Lanes(unittest.TestCase):
+    def test_docker_platform_separates_image_builds_and_volumes(self):
+        for platform, arch in [('linux/amd64', 'x86_64'), ('linux/arm64', 'arm64')]:
+            with self.subTest(platform=platform), \
+                    patch.object(dev.subprocess, 'run') as run, \
+                    patch.object(dev.subprocess, 'check_output', return_value=f'{ROOT}/.git\n'), \
+                    patch.object(dev.Path, 'mkdir'):
+                # A missing image must be built for the same platform it runs on.
+                run.side_effect = [SimpleNamespace(returncode=1), SimpleNamespace(returncode=0),
+                                   SimpleNamespace(stdout=''), SimpleNamespace(stdout=''),
+                                   SimpleNamespace(returncode=0)]
+                self.assertEqual(dev.docker(['--platform', platform, '--', 'cargo', 'test']), 0)
+            build, command = run.call_args_list[1].args[0], run.call_args.args[0]
+            self.assertEqual(build[:4], ['docker', 'build', '--platform', platform])
+            self.assertEqual(command[:4], ['docker', 'run', '--platform', platform])
+            self.assertIn(dev.docker_image(arch), build)
+            self.assertIn(dev.docker_image(arch), command)
+            self.assertIn(f'swr-rustup-{arch}:/usr/local/rustup', command)
+            self.assertIn(f'swr-cargo-{arch}:/usr/local/cargo/registry', command)
+            self.assertIn(f'SWR_TARGET=target/docker/{arch}/cargo', command)
+            for name in ['upstream', 'upstream-builds', 'ext']:
+                self.assertIn(f'{ROOT}/target/docker/{arch}/{name}:{ROOT}/target/{name}', command)
+
     def test_help_names_the_docker_wrapper(self):
         # AGENTS.md sends Linux-only phases through `dev.py docker`; argparse never sees it.
         result = subprocess.run([sys.executable, ROOT / 'tools/dev.py', '--help'], capture_output=True, text=True)
         self.assertIn('dev.py docker [--iouring] [-- dev.py arguments | -- SCRIPT.py arguments | -- cargo arguments]',
                       ' '.join(result.stdout.split()))
+
+    def test_docker_runs_as_the_linux_user(self):
+        # A container's root would own what it writes to the mounts, so a Linux host's user
+        # couldn't remove the worktree (#4303); Docker Desktop maps ownership itself.
+        def environment(platform, uid):
+            run = patch.object(dev.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout=''))
+            with run as mock, patch.object(dev.subprocess, 'check_output', return_value=f'{ROOT}/.git\n'), \
+                    patch.object(dev.Path, 'mkdir'), patch.object(dev.sys, 'platform', platform), \
+                    patch.object(dev.os, 'getuid', return_value=uid), patch.object(dev.os, 'getgid', return_value=7):
+                self.assertEqual(dev.docker(['--', 'cargo', 'test']), 0)
+            return [part for part in mock.call_args.args[0] if part.startswith('SWR_USER=')]
+        self.assertEqual(environment('linux', 1000), ['SWR_USER=1000:7'])
+        self.assertEqual(environment('linux', 0), [])
+        self.assertEqual(environment('darwin', 501), [])
+        self.assertIn('setpriv --reuid', dev.DOCKER_SCRIPT)
 
     def test_docker_iouring_adds_the_io_uring_profile_and_sys_resource(self):
         # Docker's default seccomp profile answers io_uring_setup with EPERM (#4167); --iouring
@@ -342,7 +419,7 @@ class Lanes(unittest.TestCase):
         self.assertFalse([part for part in plain if 'seccomp' in part or 'privileged' in part or part.startswith('--cap')])
         self.assertEqual([part for part in opted if part not in plain],
                          ['--security-opt', f'seccomp={ROOT}/tools/docker-seccomp-iouring.json',
-                          '--cap-add', 'SYS_RESOURCE'])
+                          '--cap-add', 'SYS_RESOURCE', 'SWR_CAPS=+sys_resource'])
         profile = json.loads((ROOT / 'tools/docker-seccomp-iouring.json').read_text())
         self.assertEqual(profile['defaultAction'], 'SCMP_ACT_ERRNO')
         self.assertEqual(profile['syscalls'][-1], {'names': ['io_uring_enter', 'io_uring_register', 'io_uring_setup'],
@@ -398,7 +475,7 @@ class Lanes(unittest.TestCase):
         self.assertFalse(any(name.startswith('coroutine-registry') for name in commands))
         for name in ['reference-identity','base64-consumers-upstream','base64-consumers-cargo',
                      'crc32-consumers-upstream','crc32-consumers-cargo',
-                     'corebase-startup','corebase-record-views']:
+                     'corebase-startup']:
             self.assertIn(name,commands)
         self.assertIn('--build-manifest', commands['corebase-startup'])
         self.assertNotIn('coroutine-native-originals', commands)
@@ -415,21 +492,17 @@ class Lanes(unittest.TestCase):
         self.assertNotIn('core_check', ' '.join(commands['error-native']))
         # An -ffi crate's tests run with its module's (#2996 moved error's there).
         self.assertIn('swoole-rs-error-ffi', commands['error-unit'])
-        for family in ['logger', 'hash']:
-            command = commands['utilities-' + family + '-originals']
-            self.assertIn('--' + family + '-originals', command)
-            self.assertIn('cargo=' + str(ROOT / 'target/ext/swoole.so'), command)
-            self.assertTrue(command[command.index('--build-manifest') + 1].endswith('target/ext/build-manifest.json'))
-            self.assertEqual(command.count('--engine'), 2)
+        command = commands['utilities-hash-originals']
+        self.assertIn('--archive', command)
+        self.assertIn('cargo=' + str(ROOT / 'target/ext/swoole.so'), command)
+        self.assertTrue(command[command.index('--build-manifest') + 1].endswith('target/ext/build-manifest.json'))
+        self.assertEqual(command.count('--engine'), 2)
         self.assertIn('--require-same-api', commands['api-surface'])
         self.assertEqual(commands['api-surface'].count('--engine'), 2)
         self.assertLess(list(commands).index('cargo-build'), list(commands).index('api-surface'))
         self.assertIn('tests/modules/buffer/string/test_gate.py', commands['string-originals'])
         self.assertIn('column-bytes', commands['phpcollections-column-bytes'])
         self.assertEqual(commands['phpcollections-column-bytes'].count('--engine'), 2)
-        self.assertIn('--build-manifest', commands['utilities-public-storage'])
-        self.assertIn('--archive', commands['utilities-public-storage'])
-        self.assertEqual(commands['utilities-public-storage'].count('--engine'), 2)
         self.assertIn('utilities-php-logger',commands)
         # Attested gates check the Cargo build's manifest, not the hybrid's (#2199).
         for name in ['utilities-php-logger', 'phpcollections-runtime', 'ports-configuration', 'clients-php-http']:

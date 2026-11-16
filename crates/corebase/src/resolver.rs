@@ -5,18 +5,6 @@ use std::ffi::{CStr, c_char, c_int};
 /// `SW_DNS_LOOKUP_RANDOM`, masked out of `gethostbyname`'s flags.
 const LOOKUP_RANDOM: c_int = 1 << 11;
 
-#[cfg(target_os = "linux")]
-unsafe extern "C" {
-    fn gethostbyname2_r(
-        name: *const c_char,
-        family: c_int,
-        entry: *mut libc::hostent,
-        buffer: *mut c_char,
-        length: usize,
-        result: *mut *mut libc::hostent,
-        error: *mut c_int,
-    ) -> c_int;
-}
 #[cfg(not(target_os = "linux"))]
 unsafe extern "C" {
     fn gethostbyname2(name: *const c_char, family: c_int) -> *mut libc::hostent;
@@ -75,18 +63,17 @@ fn lookup(flags: c_int, name: &CStr) -> Option<([c_char; 46], usize)> {
         let mut result = std::ptr::null_mut();
         let mut error = 0;
         loop {
-            // SAFETY: a terminated name; every out-parameter is valid for the call.
-            let rc = unsafe {
-                gethostbyname2_r(
-                    name.as_ptr(),
+            let rc = crate::lent::lend_out(&mut buffer, |at, length| {
+                crate::lent::gethostbyname2_r(
+                    name.into(),
                     family,
-                    &raw mut entry,
-                    buffer.as_mut_ptr(),
-                    buffer.len(),
-                    &raw mut result,
-                    &raw mut error,
+                    &mut entry,
+                    at,
+                    length,
+                    &mut result,
+                    &mut error,
                 )
-            };
+            });
             if rc == libc::ERANGE {
                 buffer.resize(buffer.len() * 2, 0);
                 continue;
@@ -135,11 +122,12 @@ pub struct Resolved {
 pub(crate) const DIAGNOSTIC_FAILED: c_int = c_int::MIN;
 /// `network::getaddrinfo`: resolves `host` (and `service`, none for none) into at
 /// most `results.len()` socket addresses; `unknown` reports an entry of another
-/// family, which keeps its slot, and false from it stops the walk.
-pub(crate) fn resolve_addresses(
+/// family, which keeps its slot, and false from it stops the walk. `hints` are the
+/// family, socket type, protocol and flags.
+pub fn resolve_addresses(
     host: &CStr,
     service: Option<&CStr>,
-    hints: (c_int, c_int, c_int),
+    hints: (c_int, c_int, c_int, c_int),
     results: &mut [libc::sockaddr_in6],
     mut unknown: impl FnMut(c_int) -> bool,
 ) -> Resolved {
@@ -215,11 +203,15 @@ enum TextRoom {
 struct Hints(libc::addrinfo);
 
 impl Hints {
-    /// The family, socket type and protocol, flags zero.
-    fn new((family, socktype, protocol): (c_int, c_int, c_int)) -> Self {
+    /// The family, socket type, protocol and flags.
+    fn new((family, socktype, protocol, flags): (c_int, c_int, c_int, c_int)) -> Self {
         let mut request: libc::addrinfo = crate::sys::zeroed();
-        (request.ai_family, request.ai_socktype, request.ai_protocol) =
-            (family, socktype, protocol);
+        (
+            request.ai_family,
+            request.ai_socktype,
+            request.ai_protocol,
+            request.ai_flags,
+        ) = (family, socktype, protocol, flags);
         Self(request)
     }
 }
@@ -270,7 +262,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri has no getaddrinfo")]
     fn resolves_addresses_through_libc() {
         let mut results: [libc::sockaddr_in6; 16] = unsafe { std::mem::zeroed() };
-        let hints = (libc::AF_INET, libc::SOCK_STREAM, 0);
+        let hints = (libc::AF_INET, libc::SOCK_STREAM, 0, 0);
         let found = resolve_addresses(c"127.0.0.1", Some(c"80"), hints, &mut results, |_| true);
         assert_eq!(found, Resolved { error: 0, count: 1 });
         let v4 = unsafe { &*results.as_ptr().cast::<libc::sockaddr_in>() };
@@ -278,7 +270,7 @@ mod tests {
             (u16::from_be(v4.sin_port), v4.sin_addr.s_addr.to_ne_bytes()),
             (80, [127, 0, 0, 1])
         );
-        let hints = (libc::AF_INET, 0, 0);
+        let hints = (libc::AF_INET, 0, 0, 0);
         let service = Some(c"no-such-service-swr");
         let failed = resolve_addresses(c"127.0.0.1", service, hints, &mut results, |_| true);
         assert_ne!(failed.error, 0);

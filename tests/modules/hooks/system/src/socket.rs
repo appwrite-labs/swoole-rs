@@ -19,7 +19,7 @@ use std::ffi::{CStr, c_char, c_int, c_void};
 use std::io::{Read, Write};
 use std::mem::ManuallyDrop;
 use std::ptr;
-use swoole_rs_hooks::co_socket::{self, Co};
+use swoole_rs_hooks::co_socket::{self, Co, OwnedCo};
 use swoole_rs_hooks::vector::{IoVector, RecvMessage, SendMessage, Vectors};
 use swoole_rs_hooks::{TimeoutScope, co_io, packet};
 use swoole_rs_reactor::{Events, TimeoutKind};
@@ -148,13 +148,14 @@ struct CppString {
     allocator: *const c_void,
 }
 
-/// `RustStringView::operator=`: copies `value` into a TLS owner's string slot.
+/// `RustStringView::operator=`: copies `value` into a TLS owner's string slot `index`.
 ///
 /// # Safety
-/// `slot` is a live owner's slot that nothing else reads or sets meanwhile.
-pub(super) unsafe fn string_set(slot: *const c_void, value: &[u8]) -> c_int {
-    // SAFETY: the caller's slot, held exclusively for the call.
-    if unsafe { (*slot.cast::<swoole_rs_corebase::StringSlot>()).set_shared(value) } {
+/// `owner` is a live owner that nothing else configures meanwhile.
+pub(super) unsafe fn string_set(owner: *const c_void, index: usize, value: &[u8]) -> c_int {
+    // SAFETY: the caller's live owner.
+    let owner = unsafe { &*owner.cast::<swoole_rs_tls::OwnedTlsContext>() };
+    if owner.borrow_configuration().set_string(index, value) {
         0
     } else {
         -2
@@ -166,7 +167,6 @@ pub(super) unsafe fn string_set(slot: *const c_void, value: &[u8]) -> c_int {
 pub(super) struct TlsPrepared {
     pub(super) owner: *const c_void,
     pub(super) fields: *mut TlsFields,
-    pub(super) strings: [*const c_void; 11],
 }
 
 impl From<swoole_rs_tls::OwnedTlsPrepared> for TlsPrepared {
@@ -174,7 +174,6 @@ impl From<swoole_rs_tls::OwnedTlsPrepared> for TlsPrepared {
         Self {
             owner: view.owner.cast(),
             fields: view.fields.cast(),
-            strings: view.strings.map(<*const _>::cast),
         }
     }
 }
@@ -283,20 +282,25 @@ fn size(n: isize) -> usize {
 /// A coroutine `Socket`, deleted on drop as a C++ scope would.
 struct Sock {
     ptr: *mut c_void,
+    /// The socket's owner, none for a failed accept.
+    owner: Option<OwnedCo>,
     /// The `SSLContext` `enable_ssl_encrypt` made: its fields and string slots.
     tls: Cell<Option<TlsPrepared>>,
 }
 
 impl Sock {
     fn make(fd: c_int, domain: c_int, kind: c_int, protocol: c_int, family: bool) -> Self {
-        let socket = co_socket::make(fd, domain, kind, protocol, family).this();
-        assert!(!socket.is_null());
-        Self::wrap(socket)
+        let (socket, created) = co_socket::make_quiet(fd, domain, kind, protocol, family);
+        co_socket::warn_created(socket.co(), created);
+        Self::own(Some(socket))
     }
 
-    fn wrap(ptr: *mut c_void) -> Self {
+    fn own(owner: Option<OwnedCo>) -> Self {
         Self {
-            ptr,
+            ptr: owner
+                .as_ref()
+                .map_or(ptr::null_mut(), |owner| owner.co().this()),
+            owner,
             tls: Cell::new(None),
         }
     }
@@ -322,8 +326,7 @@ impl Sock {
 
     /// The crate's handle on this socket.
     fn co(&self) -> Co {
-        // SAFETY: the live socket `make` or `accept` made, which outlives the handle's use.
-        unsafe { Co::new(self.ptr.cast()) }
+        self.owner.as_ref().expect("a socket").co()
     }
 
     fn record(&self) -> &mut Record {
@@ -362,8 +365,7 @@ impl Sock {
 
     /// `accept()`: the connection, which a C++ caller deletes or leaks.
     fn accept(&self) -> ManuallyDrop<Sock> {
-        let conn = self.co().accept(0.0).map_or(ptr::null_mut(), Co::this);
-        ManuallyDrop::new(Sock::wrap(conn))
+        ManuallyDrop::new(Sock::own(self.co().accept(0.0)))
     }
 
     fn send(&self, buf: &[u8]) -> isize {
@@ -492,7 +494,7 @@ impl Sock {
         record.protocol.package_length_type = kind;
         // SAFETY: a pure function of the type character.
         record.protocol.package_length_size =
-            u8::try_from(unsafe { swoole_type_size(kind as c_char) }).unwrap();
+            u8::try_from(unsafe { swoole_type_size(c_char::from_ne_bytes([kind])) }).unwrap();
         record.protocol.package_body_offset = body_offset;
         record.protocol.get_package_length =
             swoole_rs_ffi::ports::framing_recv::default_length_func as *const c_void;
@@ -564,13 +566,6 @@ impl Sock {
     }
 }
 
-impl Drop for Sock {
-    fn drop(&mut self) {
-        // SAFETY: the socket `make` or `accept` made, deleted once.
-        unsafe { co_socket::swr_v1_hook_co_socket_free(self.ptr) };
-    }
-}
-
 /// A socket's `SSLContext`, through the view its owner was made with.
 struct Tls(TlsPrepared);
 
@@ -581,9 +576,11 @@ impl Tls {
     }
 
     fn set_string(&self, index: usize, value: &str) {
-        let slot = self.0.strings[index];
-        // SAFETY: the owner's live slot and `value`'s bytes.
-        assert_eq!(unsafe { string_set(slot, value.as_bytes()) }, 0);
+        // SAFETY: the live owner, which only the case's thread configures.
+        assert_eq!(
+            unsafe { string_set(self.0.owner, index, value.as_bytes()) },
+            0
+        );
     }
 
     /// `SSLContext::set_cert_file` or `set_key_file`: false, warned, when the file

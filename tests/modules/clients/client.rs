@@ -8,7 +8,7 @@
 //! `SyncClient` and `AsyncClient` are the `created`/`connected` bookkeeping their
 //! header gives `Client`. The `Server` fixtures are forked std servers bound before
 //! the fork: the cases assert only on the client. [`timer_after`] schedules a
-//! Rust closure through crates/timer's `swr_v1_timer_add_plain`.
+//! Rust closure through crates/timer's `add_fn`.
 
 use super::socket::{
     EADDRNOTAVAIL, ECONNREFUSED, IoVec, SHUT_RD, SHUT_RDWR, SHUT_WR, SIGTERM, SW_SOCK_TCP,
@@ -72,12 +72,6 @@ unsafe extern "C" {
     fn swoole_event_init(flags: c_int) -> c_int;
     #[link_name = "_Z17swoole_event_waitv"]
     fn swoole_event_wait() -> c_int;
-    fn swr_v1_timer_add_plain(
-        ms: c_long,
-        persistent: bool,
-        callback: unsafe extern "C" fn(*mut c_void),
-        data: *mut c_void,
-    ) -> *mut c_void;
     #[link_name = "_Z17swoole_signal_setiPFviEii"]
     fn swoole_signal_set(
         signo: c_int,
@@ -111,7 +105,7 @@ fn event_wait() {
     unsafe { swoole_event_wait() };
 }
 
-unsafe extern "C" fn closure_invoker<F: FnMut()>(data: *mut c_void) {
+unsafe fn closure_invoker<F: FnMut()>(data: *mut c_void) {
     // SAFETY: `timer_after` leaked an `F` as the timer's data.
     let body = unsafe { &mut *data.cast::<F>() };
     body();
@@ -119,9 +113,11 @@ unsafe extern "C" fn closure_invoker<F: FnMut()>(data: *mut c_void) {
 
 /// `swoole_timer_after(ms, fn)` of the leaked closure.
 fn timer_after<F: FnMut()>(ms: c_long, body: F) {
-    let data = Box::into_raw(Box::new(body)).cast();
-    // SAFETY: the invoker takes the closure leaked as `data`.
-    assert!(!unsafe { swr_v1_timer_add_plain(ms, false, closure_invoker::<F>, data) }.is_null());
+    let data: *mut c_void = Box::into_raw(Box::new(body)).cast();
+    let invoke: unsafe fn(*mut c_void) = closure_invoker::<F>;
+    // SAFETY: the invoker takes the closure leaked as `data`, which lives for good.
+    let fire = move || unsafe { invoke(data) };
+    assert!(swoole_rs_timer::add_fn(ms, false, fire).is_some());
 }
 
 /// A boxed callback slot, called reentrantly with the others.
@@ -379,7 +375,7 @@ impl<'a> Client<'a> {
         unsafe {
             (*prepared.fields).disable_tls_host_name = u8::from(name.is_empty());
             assert_eq!(
-                string_set(prepared.strings[TLS_HOST_NAME], name.as_bytes()),
+                string_set(prepared.owner, TLS_HOST_NAME, name.as_bytes()),
                 0
             );
             let owner = |context: *const c_void| {

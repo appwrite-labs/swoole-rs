@@ -139,6 +139,5 @@ pub fn gethostbyname(kind: c_int, name: &[u8]) -> Vec<u8> {
         return Vec::new();
     };
     CStr::from_bytes_until_nul(&text.map(|byte| u8::from_ne_bytes(byte.to_ne_bytes())))
-        .map(|text| text.to_bytes().to_vec())
-        .unwrap_or_default()
+        .map_or_default(|text| text.to_bytes().to_vec())
 }

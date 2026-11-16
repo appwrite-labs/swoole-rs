@@ -187,14 +187,14 @@ impl<V> Table<V> {
         self.next_free = self.next_free.wrapping_sub(1);
     }
 
-    /// `zend_hash_sort(ht, compare, renumber)`: `sort` orders the entries
-    /// (Zend's own `zend_sort`); `renumber` rekeys them `0..n` as a list.
-    pub(crate) fn sort(&mut self, renumber: bool, sort: impl FnOnce(&mut [(Key, V)])) {
+    /// `zend_hash_sort(ht, compare, renumber)`, where `gt` is `compare(a, b) > 0`:
+    /// [`zend_sort`] orders the entries by value; `renumber` rekeys them `0..n` as a list.
+    pub(crate) fn sort(&mut self, renumber: bool, gt: impl Fn(&V, &V) -> bool) {
         if !(self.len() > 1 || renumber && self.len() > 0) {
             return;
         }
         let mut entries: Vec<(Key, V)> = self.slots.drain(..).flatten().collect();
-        sort(&mut entries);
+        zend_sort(&mut entries, &|a: &(Key, V), b: &(Key, V)| gt(&a.1, &b.1));
         if renumber {
             for (position, entry) in entries.iter_mut().enumerate() {
                 entry.0 = Key::Int(i64::try_from(position).unwrap_or(i64::MAX));
@@ -203,6 +203,153 @@ impl<V> Table<V> {
         }
         self.slots = entries.into_iter().map(Some).collect();
         self.reindex();
+    }
+}
+
+/// Zend's `zend_sort` (libc++'s introsort without the heap fallback: insertion
+/// sort up to 16 items, else a median-of-3 or of-5 quicksort step), with `gt` as
+/// its `cmp(a, b) > 0`. `gt` need not be a total order, and items it doesn't
+/// order land where Zend's would.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "Zend's index steps, kept as written; its bounds checks (`i == j`, `j == 0`) hold whatever `gt` answers"
+)]
+pub(crate) fn zend_sort<T>(mut items: &mut [T], gt: &impl Fn(&T, &T) -> bool) {
+    while items.len() > 16 {
+        let n = items.len();
+        let pivot = n >> 1;
+        if n >> 10 == 0 {
+            sort_few(items, &[0, pivot, n - 1], gt);
+        } else {
+            let delta = pivot >> 1;
+            sort_few(items, &[0, delta, pivot, pivot + delta, n - 1], gt);
+        }
+        items.swap(1, pivot);
+        let (mut i, mut j) = (2, n - 1);
+        'done: loop {
+            while gt(&items[1], &items[i]) {
+                i += 1;
+                if i == j {
+                    break 'done;
+                }
+            }
+            j -= 1;
+            if j == i {
+                break;
+            }
+            while gt(&items[j], &items[1]) {
+                j -= 1;
+                if j == i {
+                    break 'done;
+                }
+            }
+            items.swap(i, j);
+            i += 1;
+            if i == j {
+                break;
+            }
+        }
+        items.swap(1, i - 1);
+        // Recurse into the shorter side; loop on the longer.
+        let (left, right) = std::mem::take(&mut items).split_at_mut(i);
+        let left = &mut left[..i - 1];
+        if left.len() < right.len() {
+            zend_sort(left, gt);
+            items = right;
+        } else {
+            zend_sort(right, gt);
+            items = left;
+        }
+    }
+    insert_sort(items, gt);
+}
+
+/// `zend_insert_sort`: sorting networks up to 5 items, else insertion sort,
+/// which past the sixth item probes two back at a time.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "Zend's index steps, kept as written; its bounds checks (`i == j`, `j == 0`) hold whatever `gt` answers"
+)]
+fn insert_sort<T>(items: &mut [T], gt: &impl Fn(&T, &T) -> bool) {
+    let n = items.len();
+    match n {
+        0 | 1 => {}
+        2 => {
+            if gt(&items[0], &items[1]) {
+                items.swap(0, 1);
+            }
+        }
+        3..=5 => sort_few(items, &[0, 1, 2, 3, 4][..n], gt),
+        _ => {
+            for i in 1..n {
+                let mut j = i - 1;
+                if !gt(&items[j], &items[i]) {
+                    continue;
+                }
+                if i < 6 {
+                    while j != 0 {
+                        j -= 1;
+                        if !gt(&items[j], &items[i]) {
+                            j += 1;
+                            break;
+                        }
+                    }
+                } else {
+                    loop {
+                        j -= 2;
+                        if !gt(&items[j], &items[i]) {
+                            j += 1;
+                            if !gt(&items[j], &items[i]) {
+                                j += 1;
+                            }
+                            break;
+                        }
+                        if j == 0 {
+                            break;
+                        }
+                        if j == 1 {
+                            j = usize::from(gt(&items[i], &items[0]));
+                            break;
+                        }
+                    }
+                }
+                // Zend's adjacent swaps from `i` down to `j`.
+                items[j..=i].rotate_right(1);
+            }
+        }
+    }
+}
+
+/// `zend_sort_3`, then (`zend_sort_4`, `zend_sort_5`) each further item sunk
+/// into place, over the items at the positions `at`.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "Zend's index steps, kept as written; its bounds checks (`i == j`, `j == 0`) hold whatever `gt` answers"
+)]
+fn sort_few<T>(items: &mut [T], at: &[usize], gt: &impl Fn(&T, &T) -> bool) {
+    let [a, b, c] = [at[0], at[1], at[2]];
+    if !gt(&items[a], &items[b]) {
+        if gt(&items[b], &items[c]) {
+            items.swap(b, c);
+            if gt(&items[a], &items[b]) {
+                items.swap(a, b);
+            }
+        }
+    } else if !gt(&items[c], &items[b]) {
+        items.swap(a, c);
+    } else {
+        items.swap(a, b);
+        if gt(&items[b], &items[c]) {
+            items.swap(b, c);
+        }
+    }
+    for k in 3..at.len() {
+        for w in (1..=k).rev() {
+            if !gt(&items[at[w - 1]], &items[at[w]]) {
+                break;
+            }
+            items.swap(at[w - 1], at[w]);
+        }
     }
 }
 
@@ -292,7 +439,7 @@ mod tests {
         let mut table = Table::default();
         table.update(Key::Str(b"x".as_slice().into()), 3);
         table.update(Key::Str(b"y".as_slice().into()), 1);
-        table.sort(false, |entries| entries.sort_by_key(|entry| entry.1));
+        table.sort(false, |a, b| a > b);
         assert_eq!(
             keys(&table),
             [
@@ -301,8 +448,60 @@ mod tests {
             ],
             "keys move with their values"
         );
-        table.sort(true, |entries| entries.sort_by_key(|entry| entry.1));
+        table.sort(true, |a, b| a > b);
         assert_eq!(keys(&table), [Key::Int(0), Key::Int(1)], "renumbered");
         assert_eq!(table.get(&Key::Int(1)), Some(&3));
+    }
+
+    /// Keys with ties (an LCG modulo `n / 3 + 1`), sorted by `gt`: the original
+    /// positions, in the order PHP 8.3's `zend_sort` leaves them.
+    fn zend_sorted(n: u64, gt: fn(u64, u64) -> bool) -> Vec<u64> {
+        let mut state = 1000 + n;
+        let mut items: Vec<(u64, u64)> = (0..n)
+            .map(|id| {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                ((state >> 33) % (n / 3 + 1), id)
+            })
+            .collect();
+        zend_sort(&mut items, &|a: &(u64, u64), b: &(u64, u64)| gt(a.0, b.0));
+        items.into_iter().map(|(_, id)| id).collect()
+    }
+
+    #[test]
+    fn zend_sort_places_ties_as_zend_does() {
+        let gt = |a, b| a > b;
+        assert_eq!(zend_sorted(12, gt), [3, 2, 5, 9, 11, 4, 6, 10, 7, 8, 0, 1]);
+        assert_eq!(
+            zend_sorted(40, gt),
+            [
+                3, 4, 26, 9, 39, 15, 38, 30, 29, 25, 12, 14, 24, 19, 18, 20, 2, 0, 1, 5, 32, 35,
+                10, 33, 31, 13, 23, 27, 36, 16, 17, 7, 28, 11, 6, 34, 8, 22, 21, 37
+            ]
+        );
+    }
+
+    #[test]
+    fn zend_sort_follows_zend_through_an_inconsistent_order() {
+        // Rock-paper-scissors: no total order, so only Zend's steps decide.
+        let gt = |a: u64, b: u64| (a + 3 - b % 3) % 3 == 1;
+        assert_eq!(zend_sorted(12, gt), [3, 0, 1, 2, 5, 4, 6, 7, 8, 9, 11, 10]);
+        assert_eq!(
+            zend_sorted(40, gt),
+            [
+                39, 12, 21, 25, 29, 30, 17, 16, 15, 14, 11, 32, 8, 7, 5, 36, 37, 38, 22, 24, 31,
+                33, 35, 20, 18, 19, 10, 6, 2, 23, 1, 26, 27, 28, 13, 9, 34, 4, 3, 0
+            ]
+        );
+    }
+
+    #[test]
+    fn zend_sort_orders_every_length() {
+        for n in 0..1100_u64 {
+            let mut items: Vec<u64> = (0..n).map(|i| i.wrapping_mul(7919) % (n / 2 + 1)).collect();
+            zend_sort(&mut items, &|a: &u64, b: &u64| a > b);
+            assert!(items.is_sorted(), "length {n}");
+        }
     }
 }

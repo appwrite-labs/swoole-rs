@@ -1,5 +1,5 @@
 //! `Server`'s callbacks: upstream's on* `std::function` members and `dispatch_func`.
-//! Rust owns the slots, each typed by its signature. A slot holds `invoke(ctx, ...)`.
+//! Rust owns the slots, each typed by its signature: a slot holds a Rust fn.
 use crate::reactor_entry::RecvData;
 use crate::view::Server;
 use core::ffi::{c_int, c_void};
@@ -40,35 +40,28 @@ pub enum CallbackKind {
     DispatchFunc,
 }
 
-/// The number of slots.
-const SLOTS: usize = CallbackKind::DispatchFunc as usize + 1;
-
-/// The context every slot fn takes first, which a Rust fn ignores: null, or
-/// what native code boxed for the fn this one replaced.
-pub type Ctx = *mut c_void;
 /// `void (Server *)`.
-pub type ServerFn = extern "C" fn(Ctx, Server<'_>);
+pub type ServerFn = fn(Server<'_>);
 /// `void (Server *, DataInfo *)`.
-pub type EventFn = extern "C" fn(Ctx, Server<'_>, &DataHead);
+pub type EventFn = fn(Server<'_>, &DataHead);
 /// `int (Server *, RecvData *)`.
-pub type ReceiveFn = extern "C" fn(Ctx, Server<'_>, &RecvData) -> c_int;
+pub type ReceiveFn = fn(Server<'_>, &RecvData) -> c_int;
 /// `int (Server *, EventData *)`.
-pub type TaskFn = extern "C" fn(Ctx, Server<'_>, Packed<'_>) -> c_int;
+pub type TaskFn = fn(Server<'_>, Packed<'_>) -> c_int;
 /// `void (Server *, EventData *)`.
-pub type MessageFn = extern "C" fn(Ctx, Server<'_>, Packed<'_>);
+pub type MessageFn = fn(Server<'_>, Packed<'_>);
 /// `void (Server *, Worker *)`, of a worker this thread or process runs.
-pub type WorkerFn = extern "C" fn(Ctx, Server<'_>, Worker<'_>);
+pub type WorkerFn = fn(Server<'_>, Worker<'_>);
 /// `void (Server *, Worker *, const ExitStatus &)`.
-pub type WorkerErrorFn = extern "C" fn(Ctx, Server<'_>, Worker<'_>, &ExitStatus);
+pub type WorkerErrorFn = fn(Server<'_>, Worker<'_>, &ExitStatus);
 /// `void (Server *, Worker *)`, of a user worker about to start.
-pub type UserWorkerFn = extern "C" fn(Ctx, Server<'_>, Worker<'_>);
+pub type UserWorkerFn = fn(Server<'_>, Worker<'_>);
 /// `int (Server *, Connection *, SendData *)`.
-pub type DispatchFn =
-    extern "C" fn(Ctx, Server<'_>, Option<crate::Connection<'_>>, Option<&RecvData>) -> c_int;
+pub type DispatchFn = fn(Server<'_>, Option<crate::Connection<'_>>, Option<&RecvData>) -> c_int;
 
 /// A Rust fn for one of a server's slots, of that slot's own signature
-/// ([`Server::set_callback`]). The server calls it with a [`Ctx`] it ignores
-/// and the objects of the event, lent for the call.
+/// ([`Server::set_callback`]). The server calls it with the objects of the event,
+/// lent for the call.
 #[derive(Clone, Copy)]
 pub enum Callback {
     Connect(EventFn),
@@ -126,24 +119,16 @@ impl Callback {
     }
 }
 
-/// `swr_v1_server_callback`: a slot as native code's view lays it out. `invoke` is
-/// null or a fn of the signature the [`Slot`] holding this record names, and `ctx`
-/// the context it takes first. `drop` is the native closure's destructor, which no
-/// writer sets any more (Rust fns own no context, and the test fixtures' closures
-/// own theirs); it stays for the layout.
-#[repr(C)]
+/// A slot, whatever its signature: null or a fn of the signature the [`Slot`]
+/// holding it names. Threads read it while the server runs, so it is atomic.
 pub(crate) struct CallbackSlot {
     invoke: AtomicPtr<c_void>,
-    ctx: AtomicPtr<c_void>,
-    drop: AtomicPtr<c_void>,
 }
 
 impl CallbackSlot {
     const fn new() -> Self {
         Self {
             invoke: AtomicPtr::new(core::ptr::null_mut()),
-            ctx: AtomicPtr::new(core::ptr::null_mut()),
-            drop: AtomicPtr::new(core::ptr::null_mut()),
         }
     }
 
@@ -155,13 +140,12 @@ impl CallbackSlot {
     /// `serv->onX = nullptr`: empties the slot.
     pub(crate) fn clear(&self) {
         self.invoke.store(core::ptr::null_mut(), Relaxed);
-        self.ctx.store(core::ptr::null_mut(), Relaxed);
     }
 }
 
-/// The fn types a [`Slot`] may hold: the signatures above, each an `extern "C"` fn
-/// pointer. Only this module names the trait, and it implements it for those types
-/// alone, so a `Slot<F>` holds a fn pointer of type `F`.
+/// The fn types a [`Slot`] may hold: the signatures above, each a fn pointer. Only
+/// this module names the trait, and it implements it for those types alone, so a
+/// `Slot<F>` holds a fn pointer of type `F`.
 pub(crate) trait Signature: Copy {
     /// The fn's address, as the slot stores it.
     fn address(self) -> *mut c_void;
@@ -208,9 +192,7 @@ impl Signature for DispatchFn {
     }
 }
 
-/// One of a server's slots, of signature `F`: [`Slot::set`] stores only an `F`, and
-/// native code's view assigns the slot its member of that signature.
-#[repr(transparent)]
+/// One of a server's slots, of signature `F`: [`Slot::set`] stores only an `F`.
 pub(crate) struct Slot<F> {
     raw: CallbackSlot,
     signature: PhantomData<F>,
@@ -224,16 +206,14 @@ impl<F: Signature> Slot<F> {
         }
     }
 
-    /// `serv->onX = f` for a Rust `f`, which ignores its `ctx`. Only the fn changes:
-    /// a context a native closure set stays, so a thread calling the slot meanwhile
-    /// runs the old fn or the new one over a context that is live.
+    /// `serv->onX = f`: a thread calling the slot meanwhile runs the old fn or the new one.
     fn set(&self, f: F) {
         self.raw.invoke.store(f.address(), Relaxed);
     }
 
-    /// The fn the slot holds and the context it takes first, or `None` when empty.
+    /// The fn the slot holds, or `None` when empty.
     #[inline(always)]
-    fn get(&self) -> Option<(F, Ctx)> {
+    fn get(&self) -> Option<F> {
         const {
             assert!(
                 size_of::<F>() == size_of::<*mut c_void>(),
@@ -245,16 +225,12 @@ impl<F: Signature> Slot<F> {
             return None;
         }
         // SAFETY: a `Slot<F>` holds null or an `F`: `set` stores only an `F`'s address,
-        // native code's view assigns the slot its member of `F`'s signature, and
-        // `Signature` is implemented only for fn pointer types, of a pointer's size.
-        let invoke = unsafe { core::mem::transmute_copy::<*mut c_void, F>(&invoke) };
-        Some((invoke, self.raw.ctx.load(Relaxed)))
+        // and `Signature` is implemented only for fn pointer types, of a pointer's size.
+        Some(unsafe { core::mem::transmute_copy::<*mut c_void, F>(&invoke) })
     }
 }
 
-/// Every slot of one server, in [`CallbackKind`] order: native code's view indexes
-/// them by kind.
-#[repr(C)]
+/// Every slot of one server.
 pub(crate) struct ServerCallbacks {
     connect: Slot<EventFn>,
     close: Slot<EventFn>,
@@ -279,15 +255,6 @@ pub(crate) struct ServerCallbacks {
     finish: Slot<TaskFn>,
     dispatch_func: Slot<DispatchFn>,
 }
-
-const _: () = assert!(
-    size_of::<ServerCallbacks>() == SLOTS * size_of::<CallbackSlot>()
-        && core::mem::offset_of!(ServerCallbacks, dispatch_func)
-            == CallbackKind::DispatchFunc as usize * size_of::<CallbackSlot>()
-        && core::mem::offset_of!(ServerCallbacks, pipe_message)
-            == CallbackKind::PipeMessage as usize * size_of::<CallbackSlot>(),
-    "the slots are laid out in kind order"
-);
 
 impl ServerCallbacks {
     pub(crate) const fn new() -> Self {
@@ -383,7 +350,7 @@ impl ServerCallbacks {
     ) -> c_int {
         self.dispatch_func
             .get()
-            .map_or(0, |(invoke, ctx)| invoke(ctx, serv, conn, send))
+            .map_or(0, |invoke| invoke(serv, conn, send))
     }
 
     /// `serv->onX(serv)` for a `(Server *)` slot; nothing when it is empty.
@@ -397,8 +364,8 @@ impl ServerCallbacks {
             ServerSlot::BeforeReload => &self.before_reload,
             ServerSlot::AfterReload => &self.after_reload,
         };
-        if let Some((invoke, ctx)) = slot.get() {
-            invoke(ctx, serv);
+        if let Some(invoke) = slot.get() {
+            invoke(serv);
         }
     }
 }
@@ -454,8 +421,8 @@ impl ServerCallbacks {
             EventSlot::BufferFull => &self.buffer_full,
             EventSlot::BufferEmpty => &self.buffer_empty,
         };
-        if let Some((invoke, ctx)) = slot.get() {
-            invoke(ctx, serv, info);
+        if let Some(invoke) = slot.get() {
+            invoke(serv, info);
         }
     }
 
@@ -467,8 +434,7 @@ impl ServerCallbacks {
             ReceiveSlot::Receive => &self.receive,
             ReceiveSlot::Packet => &self.packet,
         };
-        slot.get()
-            .map_or(-1, |(invoke, ctx)| invoke(ctx, serv, data))
+        slot.get().map_or(-1, |invoke| invoke(serv, data))
     }
 }
 
@@ -502,14 +468,13 @@ impl ServerCallbacks {
             TaskSlot::Task => &self.task,
             TaskSlot::Finish => &self.finish,
         };
-        slot.get()
-            .map_or(-1, |(invoke, ctx)| invoke(ctx, serv, task))
+        slot.get().map_or(-1, |invoke| invoke(serv, task))
     }
 
     /// `serv->onPipeMessage(serv, message)`; nothing when the slot is empty.
     pub(crate) fn pipe_message(&self, serv: Server<'_>, message: Packed<'_>) {
-        if let Some((invoke, ctx)) = self.pipe_message.get() {
-            invoke(ctx, serv, message);
+        if let Some(invoke) = self.pipe_message.get() {
+            invoke(serv, message);
         }
     }
 
@@ -520,37 +485,23 @@ impl ServerCallbacks {
             WorkerSlot::Stop => &self.worker_stop,
             WorkerSlot::Exit => &self.worker_exit,
         };
-        if let Some((invoke, ctx)) = slot.get() {
-            invoke(ctx, serv, worker);
+        if let Some(invoke) = slot.get() {
+            invoke(serv, worker);
         }
     }
 
     /// `serv->onUserWorkerStart(serv, worker)`; nothing when the slot is empty.
     pub(crate) fn user_worker_start(&self, serv: Server<'_>, worker: Worker<'_>) {
-        if let Some((invoke, ctx)) = self.user_worker_start.get() {
-            invoke(ctx, serv, worker);
+        if let Some(invoke) = self.user_worker_start.get() {
+            invoke(serv, worker);
         }
     }
 
     /// `serv->onWorkerError(serv, worker, status)`; nothing when the slot is empty.
     pub(crate) fn worker_error(&self, serv: Server<'_>, worker: Worker<'_>, status: &ExitStatus) {
-        if let Some((invoke, ctx)) = self.worker_error.get() {
-            invoke(ctx, serv, worker, status);
+        if let Some(invoke) = self.worker_error.get() {
+            invoke(serv, worker, status);
         }
-    }
-}
-
-#[cfg_attr(
-    not(feature = "upstream-symbols"),
-    expect(dead_code, reason = "only `SharedServer` makes a server object")
-)]
-impl crate::ServerState {
-    /// The first of the slots of the state at `state`, which `Server`'s callbacks
-    /// pointer heads: an address within the state, read through no reference.
-    pub(crate) fn callbacks_ptr(state: *mut Self) -> *mut c_void {
-        state
-            .wrapping_byte_add(core::mem::offset_of!(Self, callbacks))
-            .cast()
     }
 }
 
@@ -559,52 +510,40 @@ pub(crate) mod tests {
     use super::*;
     use core::sync::atomic::AtomicU32;
 
-    unsafe extern "C" fn invoke() {}
+    fn start(_: Server<'_>) {}
 
-    /// Sets `slot` to a fn that owns no context, as a callback the script set.
+    /// Sets `slot` to a fn, as a callback the script set.
     pub(crate) fn on(slot: &CallbackSlot) {
-        slot.invoke.store(invoke as *mut c_void, Relaxed);
-    }
-
-    fn fill(slot: &CallbackSlot) {
-        on(slot);
-        slot.ctx
-            .store(core::ptr::without_provenance_mut(0x55), Relaxed);
+        let start: ServerFn = start;
+        slot.invoke.store(start.address(), Relaxed);
     }
 
     #[test]
-    fn a_rust_fn_replaces_the_fn_and_keeps_the_context() {
+    fn a_rust_fn_replaces_the_fn() {
         static CALLED: AtomicU32 = AtomicU32::new(0);
-        // Records that the slot ran it, with the slot's context; it ignores the server.
-        extern "C" fn start(ctx: Ctx, _: Server<'_>) {
-            assert_eq!(ctx.addr(), 0x55, "the slot's ctx");
+        // Records that the slot ran it; it ignores the server.
+        fn counted(_: Server<'_>) {
             CALLED.fetch_add(1, Relaxed);
         }
-        // The fn the slot holds before replacement, of `start`'s signature.
-        extern "C" fn before(_: Ctx, _: Server<'_>) {}
 
         let callbacks = ServerCallbacks::new();
-        let slot = callbacks.slot(CallbackKind::Start);
-        fill(slot);
-        callbacks.start.set(before);
-        callbacks.set(Callback::Start(start));
+        callbacks.start.set(start);
+        callbacks.set(Callback::Start(counted));
 
-        // SAFETY: `start` ignores its server, so a null one is never dereferenced.
+        // SAFETY: `counted` ignores its server, so a null one is never dereferenced.
         let serv = unsafe { Server::from_raw(core::ptr::null_mut()) };
         callbacks.call_server(ServerSlot::Start, serv);
-        assert_eq!(CALLED.load(Relaxed), 1, "the slot calls start");
-        assert_eq!(slot.ctx.load(Relaxed).addr(), 0x55, "the context stays");
+        assert_eq!(CALLED.load(Relaxed), 1, "the slot calls counted");
     }
 
     #[test]
     fn clearing_a_slot_empties_it_alone() {
         let state = crate::ServerState::new();
-        fill(state.callbacks.slot(CallbackKind::Connect));
-        fill(state.callbacks.slot(CallbackKind::Task));
+        on(state.callbacks.slot(CallbackKind::Connect));
+        on(state.callbacks.slot(CallbackKind::Task));
         let connect = state.callbacks.slot(CallbackKind::Connect);
         connect.clear();
         assert!(!connect.is_set(), "onConnect cleared");
-        assert!(connect.ctx.load(Relaxed).is_null(), "and its context");
         assert!(
             state.callbacks.slot(CallbackKind::Task).is_set(),
             "onTask stays"

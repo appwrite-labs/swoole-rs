@@ -230,7 +230,7 @@ mod tests {
     /// The server replies as upstream's test server does: `"Server: " + body`, framed, then a
     /// zero-length frame. Upstream's serves it with a length-checked `Server` port.
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no network sockets")]
+    #[cfg_attr(miri, ignore = "Miri has no Unix sockets")]
     fn send() {
         let buf: Vec<u8> = (0..65536u32)
             .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)

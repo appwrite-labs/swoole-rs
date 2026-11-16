@@ -188,7 +188,7 @@ mod tests {
     const NO_TLS: Option<&(Read, Write)> = None;
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no datagram socketpair")]
+    #[cfg_attr(miri, ignore = "Miri's socketpair can't peek")]
     fn plain_send_recv_and_peek() {
         use crate::lent::raw::{socket_record_peek, socket_record_recv, socket_record_send};
         use crate::{Socket, SocketRecord, steady_ms};
@@ -222,8 +222,8 @@ mod tests {
         let mut buffer = [0_u8; 8];
         LEFT.set(7);
         let mut record = SocketRecord::with_fd(-1, 0);
-        // SAFETY: the stub never reads the `SSL`; the record is forgotten, not freed.
-        unsafe { record.set_ssl(std::ptr::dangling_mut()) };
+        // The stub never reads the `SSL`.
+        record.set_ssl(Some(crate::SocketSsl::stub()));
         let socket = Socket::new(&mut record);
         let mut recv = |nonblock: bool| {
             socket.edit(|record| record.output.nonblock = nonblock);
@@ -234,8 +234,8 @@ mod tests {
         assert_eq!(recv(false), 2);
         assert_eq!(recv(true), 5);
         assert_eq!(recv(true), 0);
-        // SAFETY: the dangling `SSL` goes before anything could free it.
-        socket.edit(|record| unsafe { record.set_ssl(std::ptr::null_mut()) });
+        // The dangling `SSL` goes unfreed.
+        socket.edit(|record| record.set_ssl(None));
     }
 
     #[test]

@@ -3,23 +3,15 @@
 //! request's payload (were ext-src/swoole_server.cc's `php_swoole_server_*`),
 //! for crates/phphttp, crates/phphttp2 and crates/phpredis too.
 use crate::RecvData;
-use crate::callable::Callable;
 use crate::lifecycle::ServerObject;
-use crate::port::PortProperty;
 use std::os::unix::ffi::OsStrExt;
 use std::{
     cell::Cell,
     ffi::{CString, c_int, c_long},
-    ptr,
     rc::Rc,
 };
-use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR as LOG_ERROR, SW_LOG_NOTICE as LOG_NOTICE};
-use swoole_rs_corebase::{
-    constants::EventDataFlag::{SW_EVENT_DATA_OBJ_PTR, SW_EVENT_DATA_POP_PTR},
-    log,
-    sys::Text,
-};
+use swoole_rs_corebase::{constants::EventDataFlag, log, sys::Text};
 pub use swoole_rs_ports::PortCallback;
 use swoole_rs_process::{methods::worker_is_running, worker_globals, worker_record};
 use swoole_rs_server::{SharedServer, event_worker, server_methods, view};
@@ -79,20 +71,6 @@ pub fn php_swoole_server_of(value: &Value) -> Option<view::Server<'_>> {
     ServerObject::server_of(value)
 }
 
-/// `php_swoole_server_get_port_property`: the port's `ServerPortProperty`, or null.
-fn port_property<'a>(port: Option<view::Port<'_>>) -> Option<&'a PortProperty> {
-    let config = port?.config();
-    let property =
-        crate::server::port_property(config.object_id, &config.ptr, ptr::null_mut(), false);
-    // SAFETY: null, or the property its Port object holds while the port lives.
-    unsafe { property.cast::<PortProperty>().as_ref() }
-}
-
-/// The port's callback `kind`, or none.
-fn port_callback(port: Option<view::Port<'_>>, kind: PortCallback) -> Option<Callable> {
-    port_property(port)?.callback(kind)
-}
-
 /// `php_swoole_server_isset_callback`: the port, or the primary port, has callback `kind`.
 #[must_use]
 #[inline]
@@ -101,8 +79,8 @@ pub fn php_swoole_server_isset_callback(
     port: Option<view::Port<'_>>,
     kind: PortCallback,
 ) -> bool {
-    let primary = serv.port_at(0);
-    port_callback(port, kind).is_some() || port_callback(primary, kind).is_some()
+    let has = |port| crate::port::has_callback(port, kind);
+    port.is_some_and(has) || serv.port_at(0).is_some_and(has)
 }
 
 /// `php_swoole_server_get_callback`: callback `kind` of the port listening on
@@ -110,39 +88,44 @@ pub fn php_swoole_server_isset_callback(
 /// holds the reference through its call, so an `on()` during it drops only the
 /// port's.
 #[must_use]
+#[inline(always)]
 pub fn php_swoole_server_get_callback(
     serv: view::Server<'_>,
     server_fd: c_int,
     kind: PortCallback,
 ) -> Option<Rc<Kept>> {
     let port = serv.port_by_server_fd(server_fd)?;
-    port_callback(Some(port), kind).or_else(|| port_callback(serv.port_at(0), kind))
+    if let Some(callback) = crate::port::callback(port, kind) {
+        return Some(callback);
+    }
+    crate::port::callback(serv.port_at(0)?, kind)
 }
 
 /// `php_swoole_get_recv_data`: a request's payload, taking the message bus's
 /// packet or the connection's receive buffer when it holds them.
 #[must_use]
 pub fn php_swoole_get_recv_data(serv: view::Server<'_>, req: &RecvData) -> Owned {
-    let (flags, length) = (req.info().flags, req.info().len as usize);
+    let (flags, length) = (
+        EventDataFlag::from_bits(req.info().flags),
+        req.info().len as usize,
+    );
     if length == 0 {
         return Owned::string(ZString::empty());
     }
-    let data: *mut u8 = if flags & SW_EVENT_DATA_OBJ_PTR as u8 != 0 {
+    let data: *mut u8 = if flags.contains(EventDataFlag::SW_EVENT_DATA_OBJ_PTR) {
         // An OBJ_PTR payload is the bus's packet, a zend string, which the bus hands over.
         let data = req.data().cast_mut().cast();
         serv.move_worker_packet();
         data
-    } else if let Some(buffer) = (flags & SW_EVENT_DATA_POP_PTR as u8 != 0)
+    } else if let Some(data) = flags
+        .contains(EventDataFlag::SW_EVENT_DATA_POP_PTR)
         .then(|| serv.by_session(req.info().fd))
         .flatten()
-        .map(|conn| view::recv_buffer(conn))
-        .filter(|buffer| !buffer.is_null())
+        .and_then(view::pop_recv_buffer)
     {
-        // SAFETY: the connection's receive buffer, which holds the payload; nothing else borrows it.
-        let buffer = unsafe { &mut *buffer.cast::<CppString>() };
         // The reader gets a buffer as large as the one it gives up: how much a buffer
         // holds decides how the connection's next request is read.
-        buffer.pop(buffer.size())
+        data
     } else {
         return Owned::string(ZString::new(req.payload()));
     };
