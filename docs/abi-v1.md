@@ -1,7 +1,12 @@
 # Rust bridge ABI v1
 
-Rust is statically linked into the existing Swoole PHP extension. No second
-extension, scheduler, worker pool or reactor is introduced.
+Cargo builds `swoole.so` from the crates (`crates/ext`, through
+`tools/build_ext.py`); no upstream source is compiled. The C ABI described here
+and in the module contracts is what the C left in the build calls: the
+third-party C that swoole-src bundles (`native/swoole-src/thirdparty`), the
+first-party glue (`native/corebase/switches.cc`, `native/phphelpers/host.c`,
+`crates/ffi/src/fatal.c`, `crates/corebase/src/format.c`), and the native gates,
+which link `libswoole_rs_ffi.a` into fixtures outside PHP.
 
 ## Base contract (`native/include/swoole_rs.h`)
 
@@ -15,8 +20,9 @@ or throw. Module startup (crates/phpswoole) publishes them as the
 
 ## Rules for all module contracts
 
-- No C++ layouts, Zend values, Rust references, exceptions or panics cross the
-  seam.
+- No Zend values, Rust references, exceptions or panics cross the ABI. A C++
+  layout C still reads (`swoole::String`, `swoole::Global`) is asserted in its
+  header and mirrored in Rust.
 - Buffers are released by the side that allocated them. Borrowed pointers are
   valid only for the call. Writable ranges must not alias each other or Rust
   state unless a contract says otherwise.
@@ -24,7 +30,6 @@ or throw. Module startup (crates/phpswoole) publishes them as the
   pointer-size limits (`isize::MAX` for slices).
 - An owned handle needs an explicit release function, thread affinity, fork
   behavior and cancellation rules.
-- No process-global mutable Rust state or background executor.
 - Native callbacks, allocation through native allocators, Zend calls and C++
   exceptions run only after the Rust call returns. No Rust borrow or frame spans
   them.

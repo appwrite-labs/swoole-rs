@@ -32,10 +32,11 @@ What is done:
 - **No upstream source is compiled.** Nothing from swoole-src's `src/`, `ext-src/` or
   `include/` is in the build, and the build needs no swoole-src checkout. 67 crates hold
   about 209,000 lines of Rust.
-- **Some C remains, on purpose.** 38,000 lines of C that swoole-src itself bundles from
-  elsewhere (PHP's PDO drivers and PECL ssh2, adapted to coroutine hooks) live in
-  `native/swoole-src/thirdparty`, plus 216 lines of our own glue. TLS is OpenSSL, as it is
-  upstream.
+- **Some C remains, on purpose.** 38,000 lines of C and C++ that swoole-src itself bundles
+  from elsewhere (PHP's PDO drivers, curl and `proc_open`, and PECL ssh2, adapted to
+  coroutine hooks) live in `native/swoole-src/thirdparty`, plus about 450 lines of our own
+  glue (`native/corebase/switches.cc`, `native/phphelpers/host.c` and three C shims in
+  `crates/`). TLS is OpenSSL, as it is upstream.
 - **Upstream's PHP tests pass wherever upstream passes them.** Of 1,866 pinned PHPTs, 55
   can't run here: upstream skips them unconditionally, or they need an older PHP or an
   outside network ([the list, with reasons](corpus/upstream/not_applicable.json)). Of the
@@ -136,7 +137,7 @@ Optional parts are build switches. Each of upstream's `configure` switches goes 
 
 | | Upstream Swoole v6.2.5 | swoole-rs |
 | --- | --- | --- |
-| Language | C and C++ | Rust, plus the 38,000 lines of C that upstream bundles |
+| Language | C and C++ | Rust, plus the 38,000 lines of C and C++ that upstream bundles |
 | Build | `phpize`, `configure`, `make` | Cargo, through `tools/build_ext.py` |
 | PHP API | the reference | the same, generated from upstream's stubs (`tools/arginfo.py`) |
 | Upstream PHPTs passing, of 1,811 | 1,742 | 1,745 |

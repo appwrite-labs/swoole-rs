@@ -102,17 +102,13 @@ def census(source, php='php', root=ROOT, php_extensions=()):
     if token_run.returncode:
         raise ValueError('PHP tokenizer failed (load tokenizer via --php-extension if dynamic): ' + token_run.stdout + token_run.stderr)
     tokens = json.loads(token_run.stdout)
-    modules = json.loads((root/'migration/modules.json').read_text())['modules']
-    def owner(path):
-        owners = [m['id'] for m in modules if any(path == t.rstrip('/') or path.startswith(t.rstrip('/') + '/') for t in m['upstream_patch_targets'])]
-        return owners[0] if owners else None
     rows = []
     for path in sorted(stubs):
         native = 'ext-src/' + Path(path).name.replace('php_', '').replace('.stub.php', '.cc')
         for row in declarations(tokens[path]):
             rows.append({**row, 'source': path, 'candidate_native_source': native if native in names else None,
-                         'module': owner(native), 'human_assignee': '@loks0n', 'behavior_status': 'unvalidated',
-                         'evidence_target': 'original PHPT plus API/feature-specific actual configured checks; allocation pending where module is null'})
+                         'human_assignee': '@loks0n', 'behavior_status': 'unvalidated',
+                         'evidence_target': 'original PHPT plus API/feature-specific actual configured checks'})
     config = values['config.m4'].decode()
     switches = [{'kind': k.lower(), 'name': name, 'line': config[:match.start()].count('\n') + 1,
                  'human_assignee': '@loks0n', 'owner': 'M00', 'status': 'unvalidated'}
@@ -134,7 +130,7 @@ def census(source, php='php', root=ROOT, php_extensions=()):
                 or p == 'config.m4' and re.search(r'SW_OS=|SW_PHP_VERSION.*-(?:ge|lt)|PHP_ZTS|ZEND_THREAD_SAFE', line)],
             'limitations': ['Source census does not execute tests or prove Rust conversion/parity/performance.',
                 'Stub declarations omit inherited APIs, aliases, native C/Zend constant registration, dynamic registration and embedded companion library; use configured reflection too.',
-                'Candidate native filename is naming evidence only; null module means unallocated, not unsupported or excluded.',
+                'Candidate native filename is naming evidence only.',
                 'Raw source conditions and CI hashes remain part of the denominator; no optional build, PHP version or OS is waived.',
                 'External dependencies/minimal PHP ABI retention policy and unobserved configuration matrix remain open.']}
 
