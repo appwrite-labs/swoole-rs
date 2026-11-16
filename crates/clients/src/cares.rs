@@ -5,7 +5,7 @@
 use crate::ip::swr_v1_clients_ip_text;
 use std::{
     cell::{Cell, OnceCell},
-    ffi::{CStr, c_int, c_long, c_void},
+    ffi::{CStr, c_int, c_long},
     ptr,
     sync::{
         Arc,
@@ -146,7 +146,7 @@ fn process(event: &Event, write: bool) -> bool {
     true
 }
 /// Reactor destruction: no query still uses the library after its channel was destroyed.
-extern "C-unwind" fn cleanup(_: *mut c_void) {
+fn cleanup() {
     // SAFETY: the reactor runs this once, after its c-ares handlers retire. It takes
     // nothing, and c-ares counts its initialisations: a call without one does nothing.
     unsafe { sdk::ares_library_cleanup() };

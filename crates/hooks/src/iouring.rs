@@ -162,7 +162,7 @@ fn create() -> Iouring {
 }
 
 /// The exit condition: requests in flight or waiting keep the loop running.
-extern "C-unwind" fn idle(event_num: &mut usize) -> bool {
+fn idle(event_num: &mut usize) -> bool {
     if with_instance(|instance| instance.is_some())
         && with_engine(|engine| engine.task_num() == 0 && engine.waiting_num() == 0).unwrap_or(true)
     {
@@ -177,7 +177,7 @@ extern "C-unwind" fn submit() {
 }
 
 /// The reactor's destroy callback: `delete SwooleTG.iouring`.
-extern "C-unwind" fn destroyed(_data: *mut c_void) {
+fn destroyed() {
     let Some(iouring) = INSTANCE.take() else {
         return;
     };
