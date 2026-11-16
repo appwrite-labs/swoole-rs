@@ -697,8 +697,10 @@ mod tests {
 
     #[test]
     fn field_pointers_match_the_fields() {
-        let mut context = Context::empty();
-        let ctx = &raw mut context;
+        // Built at compile time and never dropped: releasing its zvals is Zend's,
+        // which unit tests do not load.
+        let mut context = mem::ManuallyDrop::new(const { Context::empty() });
+        let ctx = &raw mut *context;
         let handle = Ctx(NonNull::new(ctx).unwrap());
         assert_eq!(handle.vm(), unsafe { &raw mut (*ctx).vm });
         assert_eq!(handle.call(), unsafe { &raw mut (*ctx).call });
@@ -711,7 +713,7 @@ mod tests {
 
     #[test]
     fn a_new_context_has_no_pending_state() {
-        let context = Context::empty();
+        let context = mem::ManuallyDrop::new(const { Context::empty() });
         assert!(context.defer.is_none());
         assert!(context.join.is_none() && !context.time_limited);
         assert_eq!(context.context.kind(), IS_UNDEF);
