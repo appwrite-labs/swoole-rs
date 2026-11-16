@@ -305,10 +305,9 @@ mod native {
         if co.is_null() {
             return 0;
         }
-        // SAFETY: a bound coroutine is suspended in its operation on this socket,
-        // which unbinds it before it returns (`SocketState::bind`), so it is live;
-        // its record starts with its Rust state.
-        unsafe { (*co.cast::<swoole_rs_coroutine::Coroutine>()).cid }
+        // Looked up by address among the live coroutines: a bound one is live, as its
+        // operation unbinds it before it returns (`SocketState::bind`).
+        swoole_rs_coroutine::coroutine_cid_of(co).unwrap_or(0)
     }
 
     /// [`super::Ops::resume`].
