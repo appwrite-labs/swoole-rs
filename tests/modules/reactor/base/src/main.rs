@@ -1030,18 +1030,25 @@ unsafe fn defer_task() {
 
 static EVENT_LOOP_COUNT: AtomicI32 = AtomicI32::new(0);
 
-extern "C-unwind" fn future_task(data: *mut c_void) {
-    // SAFETY: the task's data is the case's C string.
-    assert_eq!(unsafe { CStr::from_ptr(data.cast()) }, c"hello world");
+fn future_task(data: &CStr) {
+    assert_eq!(data, c"hello world");
     EVENT_LOOP_COUNT.fetch_add(1, Relaxed);
 }
 
-/// `reactor->future_task` (`before`) or `idle_task` = `{callback, data}`.
-unsafe fn set_task(reactor: Running<'_>, before: bool, callback: swoole_rs_ffi::DeferCall) {
-    let task = swoole_rs_ffi::ReactorTask {
-        callback: Some(callback),
-        data: c"hello world".as_ptr().cast_mut().cast(),
-    };
+/// A task's `{callback, data}`.
+struct Task(fn(&CStr), &'static CStr);
+
+impl event_api::CycleTask for Task {
+    fn run(self: std::rc::Rc<Self>) {
+        (self.0)(self.1);
+    }
+
+    fn retire(self: std::rc::Rc<Self>) {}
+}
+
+/// `reactor->future_task` (`before`) or `idle_task` = `{callback, "hello world"}`.
+unsafe fn set_task(reactor: Running<'_>, before: bool, callback: fn(&CStr)) {
+    let task = Some(std::rc::Rc::new(Task(callback, c"hello world")) as _);
     // SAFETY: the live reactor's fields, which nothing else borrows meanwhile.
     let fields = unsafe { &mut *fields(reactor) };
     if before {
@@ -1061,9 +1068,8 @@ unsafe fn cycle() {
     }
 }
 
-extern "C-unwind" fn event_idle_callback(data: *mut c_void) {
-    // SAFETY: the task's data is the case's C string.
-    assert_eq!(unsafe { CStr::from_ptr(data.cast()) }, c"hello world");
+fn event_idle_callback(data: &CStr) {
+    assert_eq!(data, c"hello world");
 }
 
 unsafe fn priority_idle_task() {
