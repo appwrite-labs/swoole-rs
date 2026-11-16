@@ -57,15 +57,6 @@ impl<'a> From<&'a Shared<Protocol>> for Proto<'a> {
 }
 
 impl Proto<'_> {
-    /// # Safety
-    /// `protocol` is live for `'_`, and only a dispatch rewrites it meanwhile.
-    unsafe fn from_raw(protocol: *const Protocol) -> Self {
-        Self {
-            protocol,
-            live: PhantomData,
-        }
-    }
-
     /// The protocol now, read before the next dispatch.
     fn get(&self) -> &Protocol {
         // SAFETY: live for the receive (the type's invariant), and the receive holds
@@ -529,8 +520,12 @@ fn client_recv<const LENGTH: bool>(client: Handle) -> c_int {
         let Some(buffer) = (unsafe { buffer.as_mut() }) else {
             return Status::Err as c_int;
         };
-        // SAFETY: a live client's protocol, which only its package callback rewrites.
-        let protocol = unsafe { Proto::from_raw(protocol) };
+        // The client's protocol in place, live while the client is, which its handle
+        // vouches for through this receive; only its package callback rewrites it.
+        let protocol = Proto {
+            protocol,
+            live: PhantomData,
+        };
         receive(protocol, socket, Lent::new(buffer), mode, Callbacks) as c_int
     })
 }
@@ -635,7 +630,11 @@ mod tests {
         buffer: *mut CppString,
     ) -> c_int {
         let mode = if LENGTH { Mode::Length } else { Mode::Eof };
-        let (protocol, buffer) = unsafe { (Proto::from_raw(protocol), &mut *buffer) };
+        let protocol = Proto {
+            protocol,
+            live: PhantomData,
+        };
+        let buffer = unsafe { &mut *buffer };
         receive(protocol, socket, Lent::new(buffer), mode, Callbacks) as c_int
     }
 

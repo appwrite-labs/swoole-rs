@@ -151,6 +151,21 @@ impl<'a> PoolCall<'a> {
         unsafe { std::slice::from_raw_parts(self.data.cast(), self.length) }
     }
 
+    /// [`PoolCall::lent_socket`] and the [`PoolCall::length`] bytes at
+    /// [`PoolCall::data`], lent to a read that fills them, for this borrow of the call.
+    pub fn socket_fill(
+        &mut self,
+    ) -> (
+        Option<crate::worker_record::NativeSocket<'_>>,
+        swoole_rs_corebase::lent::Fill<'_>,
+    ) {
+        // SAFETY: only this crate makes a call: `data` is null or a buffer of at least
+        // `length` writable bytes that outlives the hook, which nothing else reaches
+        // while this borrow of its call lasts.
+        let fill = unsafe { swoole_rs_corebase::lent::Fill::from_raw(self.data, self.length) };
+        (crate::worker_record::NativeSocket::lend(self.socket), fill)
+    }
+
     #[must_use]
     pub fn flags(&self) -> c_int {
         self.flags
