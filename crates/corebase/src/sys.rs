@@ -582,10 +582,38 @@ pub fn dup2(from: c_int, to: c_int) -> c_int {
     c::dup2(from, to)
 }
 
+/// Commands whose argument is an integer or absent: the only ones [`fcntl`] passes on.
+#[cfg(not(target_os = "linux"))]
+const INTEGER_COMMANDS: [c_int; 6] = [
+    libc::F_GETFL,
+    libc::F_SETFL,
+    libc::F_GETFD,
+    libc::F_SETFD,
+    libc::F_DUPFD,
+    libc::F_DUPFD_CLOEXEC,
+];
+#[cfg(target_os = "linux")]
+const INTEGER_COMMANDS: [c_int; 8] = [
+    libc::F_GETFL,
+    libc::F_SETFL,
+    libc::F_GETFD,
+    libc::F_SETFD,
+    libc::F_DUPFD,
+    libc::F_DUPFD_CLOEXEC,
+    libc::F_GETPIPE_SZ,
+    libc::F_SETPIPE_SZ,
+];
+
 /// `fcntl(2)` with an integer argument (`F_GETFL`, `F_SETFL`, `F_GETFD`,
-/// `F_SETFD`, `F_DUPFD`, ...); commands that take no argument ignore it.
+/// `F_SETFD`, `F_DUPFD`, ...); commands that take no argument ignore it. Any other
+/// command (one whose argument is a pointer, such as `F_GETLK`) fails with `EINVAL`
+/// without calling libc.
 pub fn fcntl(fd: c_int, cmd: c_int, arg: c_int) -> c_int {
-    // SAFETY: an integer argument has no memory preconditions.
+    if !INTEGER_COMMANDS.contains(&cmd) {
+        set_errno(libc::EINVAL);
+        return -1;
+    }
+    // SAFETY: `cmd` takes an integer argument or none, so nothing is dereferenced.
     unsafe { libc::fcntl(fd, cmd, arg) }
 }
 
@@ -1223,6 +1251,8 @@ mod tests {
         assert!(copy >= 0);
         assert_eq!(fcntl(copy, libc::F_SETFL, libc::O_NONBLOCK), 0);
         assert_ne!(fcntl(copy, libc::F_GETFL, 0) & libc::O_NONBLOCK, 0);
+        assert_eq!(fcntl(copy, libc::F_GETLK, 0), -1);
+        assert_eq!(errno(), libc::EINVAL);
         let mut buf = [0; 8];
         assert_eq!(read(copy, &mut buf), 3);
         assert_eq!(&buf[..3], b"abc");
