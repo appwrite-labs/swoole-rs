@@ -43,16 +43,44 @@ fn waits<T>(f: impl FnOnce(&mut Waits) -> T) -> T {
     f(&mut WAITS.lock().unwrap_or_else(PoisonError::into_inner))
 }
 
-/// The native coroutine operations a wait needs.
+/// The native coroutine operations a wait needs. Made only by [`Coroutines::new`],
+/// whose caller vouches that they suspend and resume as a wait expects, so
+/// [`wait_pid`] and [`wait_reap`] ask nothing more of theirs.
 pub struct Coroutines {
     /// The current coroutine if this thread has a reactor, else null.
-    pub current: fn() -> *mut c_void,
+    current: fn() -> *mut c_void,
     /// Registers the SIGCHLD reaper and the reactor callbacks, once.
-    pub signal_init: fn(),
+    signal_init: fn(),
     /// `co->yield_ex(timeout)` of the current coroutine, if any.
-    pub yield_for: fn(f64),
+    yield_for: fn(f64),
     /// `co->is_timedout()` of the current coroutine, if any.
-    pub timed_out: fn() -> bool,
+    timed_out: fn() -> bool,
+    /// `co->resume()`.
+    resume: unsafe extern "C-unwind" fn(*mut c_void),
+}
+
+impl Coroutines {
+    /// The operations, in their fields' order.
+    ///
+    /// # Safety
+    /// `yield_for` suspends the coroutine `current` returns (when not null) until
+    /// `resume` of it or the timeout, and `resume` resumes a coroutine suspended so.
+    #[must_use]
+    pub const unsafe fn new(
+        current: fn() -> *mut c_void,
+        signal_init: fn(),
+        yield_for: fn(f64),
+        timed_out: fn() -> bool,
+        resume: unsafe extern "C-unwind" fn(*mut c_void),
+    ) -> Self {
+        Self {
+            current,
+            signal_init,
+            yield_for,
+            timed_out,
+            resume,
+        }
+    }
 }
 
 /// What `System::waitpid` returns.
@@ -71,11 +99,7 @@ fn waitpid(pid: libc::pid_t, status: &mut c_int, options: c_int) -> libc::pid_t 
 /// `System::waitpid(pid, status, options, timeout)`: an already reaped child first;
 /// outside a coroutine, or with `WNOHANG`, plain waitpid; otherwise the coroutine
 /// yields until the reaper hands it a child or `timeout` passes.
-///
-/// # Safety
-/// `ops.yield_for` suspends the current coroutine until [`wait_reap`] resumes it or
-/// the timeout passes.
-pub unsafe fn wait_pid(
+pub fn wait_pid(
     pid: libc::pid_t,
     status: &mut c_int,
     options: c_int,
@@ -148,10 +172,7 @@ pub unsafe fn wait_pid(
 
 /// The SIGCHLD reaper: hands each exited child to the coroutine waiting for its PID,
 /// else to the first coroutine waiting for any child, else keeps it for a later wait.
-///
-/// # Safety
-/// `resume` is `co->resume()`.
-pub unsafe fn wait_reap(signo: c_int, resume: unsafe extern "C-unwind" fn(*mut c_void)) {
+pub fn wait_reap(signo: c_int, ops: &Coroutines) {
     if signo != libc::SIGCHLD {
         return;
     }
@@ -176,8 +197,9 @@ pub unsafe fn wait_reap(signo: c_int, resume: unsafe extern "C-unwind" fn(*mut c
             task.status.store(code, Relaxed);
             task.pid.store(child, Relaxed);
             let co = task.co.load(Relaxed);
-            // SAFETY: `co` is suspended in `wait_pid`.
-            unsafe { resume(co) };
+            // SAFETY: `co` is suspended in `wait_pid`'s `yield_for` (only it registers
+            // a task), which `Coroutines::new`'s caller vouched `resume` resumes.
+            unsafe { (ops.resume)(co) };
         }
     }
 }
@@ -208,6 +230,15 @@ pub(crate) mod tests {
     }
     fn nothing() {}
     unsafe extern "C-unwind" fn resume(_: *mut c_void) {}
+    static PLAIN: Coroutines = unsafe {
+        Coroutines::new(
+            no_coroutine,
+            nothing,
+            reap_while_yielded,
+            not_timed_out,
+            resume,
+        )
+    };
     fn not_timed_out() -> bool {
         false
     }
@@ -215,7 +246,7 @@ pub(crate) mod tests {
     fn reap_while_yielded(_: f64) {
         YIELDED.set(true);
         while wait_count() > 0 {
-            unsafe { wait_reap(libc::SIGCHLD, resume) };
+            wait_reap(libc::SIGCHLD, &PLAIN);
             let handed = waits(|waits| waits.any.front().is_some_and(|task| task.pid() > 0));
             if handed {
                 break;
@@ -236,31 +267,30 @@ pub(crate) mod tests {
     #[cfg_attr(miri, ignore = "Miri can't spawn a process")]
     fn plain_and_coroutine_waits() {
         let _children = CHILDREN.lock().unwrap_or_else(PoisonError::into_inner);
-        let plain = Coroutines {
-            current: no_coroutine,
-            signal_init: nothing,
-            yield_for: reap_while_yielded,
-            timed_out: not_timed_out,
-        };
         let child = spawn(3);
         let mut status = 0;
-        let waited = unsafe { wait_pid(child, &mut status, 0, -1.0, &plain) };
+        let waited = wait_pid(child, &mut status, 0, -1.0, &PLAIN);
         assert_eq!((waited.pid, libc::WEXITSTATUS(status)), (child, 3));
 
-        let coroutine = Coroutines {
-            current: a_coroutine,
-            ..plain
+        let coroutine = unsafe {
+            Coroutines::new(
+                a_coroutine,
+                nothing,
+                reap_while_yielded,
+                not_timed_out,
+                resume,
+            )
         };
         let child = spawn(5);
-        let waited = unsafe { wait_pid(-1, &mut status, 0, -1.0, &coroutine) };
+        let waited = wait_pid(-1, &mut status, 0, -1.0, &coroutine);
         assert_eq!((waited.pid, waited.timed_out), (child, false));
         assert_eq!(libc::WEXITSTATUS(status), 5);
         assert_eq!(wait_count(), 0);
 
         let child = spawn(7);
         unsafe { libc::usleep(50_000) };
-        unsafe { wait_reap(libc::SIGCHLD, resume) };
-        let waited = unsafe { wait_pid(child, &mut status, 0, -1.0, &coroutine) };
+        wait_reap(libc::SIGCHLD, &coroutine);
+        let waited = wait_pid(child, &mut status, 0, -1.0, &coroutine);
         assert_eq!((waited.pid, libc::WEXITSTATUS(status)), (child, 7));
     }
 }

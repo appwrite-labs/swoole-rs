@@ -32,9 +32,7 @@ mod registry {
     static SIGNAL_READY: AtomicBool = AtomicBool::new(false);
 
     extern "C" fn signal_handler(signo: c_int) {
-        // SAFETY: the signal dispatch runs on the loop's thread; the registry hands
-        // `resume` the coroutines it holds suspended.
-        unsafe { wait_reap(signo, swoole_rs_coroutine::resume) };
+        wait_reap(signo, &COROUTINES);
     }
 
     extern "C-unwind" fn no_waiters(_event_num: &mut usize) -> bool {
@@ -102,11 +100,17 @@ mod registry {
         swoole_rs_coroutine::current_resume_code() == Some(swoole_rs_coroutine::Resume::TimedOut)
     }
 
-    pub(super) static COROUTINES: Coroutines = Coroutines {
-        current,
-        signal_init,
-        yield_for,
-        timed_out,
+    // SAFETY: `yield_for` is `yield_ex` of the running coroutine, which `current`
+    // returns, and returns once the timeout or `resume` (`co->resume()`, on the loop's
+    // thread, where the signal dispatch reaps) wakes it.
+    pub(super) static COROUTINES: Coroutines = unsafe {
+        Coroutines::new(
+            current,
+            signal_init,
+            yield_for,
+            timed_out,
+            swoole_rs_coroutine::resume,
+        )
     };
 }
 
@@ -137,10 +141,8 @@ pub extern "C" fn system_waitpid(
     if let Some(uring) = crate::wait_loop::uring() {
         return iouring_waitpid(uring, pid, Some(status), options, timeout);
     }
-    // SAFETY: the static table of native coroutine operations.
-    let waited = unsafe {
-        swoole_rs_process::wait::wait_pid(pid, status, options, timeout, &registry::COROUTINES)
-    };
+    let waited =
+        swoole_rs_process::wait::wait_pid(pid, status, options, timeout, &registry::COROUTINES);
     if waited.timed_out {
         crate::socket_sync::set_errno(libc::ETIMEDOUT);
         log::set_last_error(libc::ETIMEDOUT);
