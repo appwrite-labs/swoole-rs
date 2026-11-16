@@ -810,15 +810,6 @@ fn multipart_free(state: &mut State) {
     state.mt_parser = None;
 }
 
-/// `Context::free`'s share: what the parser still holds.
-pub(crate) fn parse_free(state: &mut State) {
-    multipart_free(state);
-    state.parse.form_data = None;
-    state.parse.chunked_body = None;
-    state.parse.form_data_name = None;
-    state.parse.input_name = None;
-}
-
 /// `Context::get_multipart_boundary` of a `multipart/form-data` content
 /// type, then `Context::init_multipart_parser`; false when it has no boundary.
 pub(crate) fn multipart_start(state: &mut State, content_type: &[u8]) -> bool {

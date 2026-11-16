@@ -1,7 +1,7 @@
 //! `Swoole\Http\Response`.
 use crate::cookie::{header_line, object_header_line};
 use crate::{
-    context::{self, Ctx, Holder},
+    context::{self, Ctx, Hold, Holder},
     host::{
         self, CO_SOCKET, DETACHED, END, HEADER_KEY_SIZE, HTTP_CONTEXT_UNAVAILABLE, HTTP2, Property,
         SEND_CHUNKED, SERVER_IS_NOT_REGULAR_FILE, SESSION_CLOSED, UPGRADE, WEBSOCKET,
@@ -42,7 +42,7 @@ impl Custom for Data {
     }
 
     fn new() -> Self {
-        Self(Holder::new(None))
+        Self(Holder::new())
     }
 }
 
@@ -50,15 +50,15 @@ impl Custom for Data {
 /// freed.
 impl Drop for Data {
     fn drop(&mut self) {
-        if self.0.get().is_some_and(release) {
+        if self.0.take().is_some_and(|hold| release(hold.ctx())) {
             Bailout.defer();
         }
     }
 }
 
 /// The method's `$this` context.
-fn this(call: &Call) -> Option<Ctx> {
-    call.custom::<Data>().and_then(|data| data.0.get())
+fn this(call: &Call) -> Option<Ctx<'_>> {
+    call.custom::<Data>()?.0.get().map(Hold::ctx)
 }
 
 /// The response object is going: finish what the handler left unanswered
@@ -82,8 +82,6 @@ fn release(mut ctx: Ctx) -> bool {
         }
     }
     ctx.state().response.zobject.clear();
-    // SAFETY: a live context, which the response no longer holds.
-    unsafe { context::free(ctx) };
     bailed
 }
 
@@ -133,7 +131,7 @@ pub fn response_minit(args: &MinitArgs) {
 }
 
 /// `http_response_get_and_check_context`: a context that can still respond.
-fn checked(call: &Call) -> Option<Ctx> {
+fn checked(call: &Call) -> Option<Ctx<'_>> {
     let ctx = this(call).filter(|ctx| ctx.flags() & (END | DETACHED) == 0);
     if ctx.is_none() {
         host::set_last_error(HTTP_CONTEXT_UNAVAILABLE);
@@ -143,7 +141,7 @@ fn checked(call: &Call) -> Option<Ctx> {
 
 /// `php_swoole_http_response_get_context`, setting `SW_ERROR_SESSION_CLOSED`
 /// when there is none.
-fn open(call: &Call) -> Option<Ctx> {
+fn open(call: &Call) -> Option<Ctx<'_>> {
     let ctx = this(call);
     if ctx.is_none() {
         host::set_last_error(SESSION_CLOSED);
@@ -152,7 +150,7 @@ fn open(call: &Call) -> Option<Ctx> {
 }
 
 /// The coroutine WebSocket checks `push`, `recv` and `disconnect` share.
-fn websocket(call: &Call) -> Option<Ctx> {
+fn websocket(call: &Call) -> Option<Ctx<'_>> {
     let ctx = open(call)?;
     let flags = ctx.flags();
     if flags & CO_SOCKET == 0 || flags & UPGRADE == 0 {
@@ -169,7 +167,7 @@ fn or_false(call: &Call, done: Option<()>) {
     }
 }
 
-fn property(ctx: &mut Ctx, which: Property) -> Option<Separated<'_>> {
+fn property<'a>(ctx: &'a mut Ctx, which: Property) -> Option<Separated<'a>> {
     crate::header::response_property(ctx.state(), which)
 }
 
@@ -664,7 +662,7 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
         };
         object = first;
         paired = true;
-        ctx = request.0.get();
+        ctx = request.0.get().cloned();
     }
     if object.object().is_some() {
         if object.instance_of(swoole_rs_phpserver::server_class_ref()) {
@@ -703,8 +701,9 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
         call.set_bool(false);
         return;
     }
-    let mut ctx = ctx.unwrap_or_else(|| {
-        let mut ctx = context::alloc();
+    let hold = ctx.unwrap_or_else(|| {
+        let hold = context::alloc();
+        let mut ctx = hold.ctx();
         ctx.state().keepalive = true;
         if let Some(server) = server {
             context::init(ctx.state(), server);
@@ -720,18 +719,18 @@ fn respond_on(call: &Call, mut object: &Value, mut fd: zend_long) {
                 state.compression_level = 1;
             }
         }
-        ctx
+        hold
     });
+    let mut ctx = hold.ctx();
     if let Some(server) = server {
         context::bind_server(ctx.state(), server);
     } else if let Some(socket) = socket {
         context::bind(ctx.state(), socket);
     }
-    let held = ctx;
     let state = ctx.state();
     state.fd = fd;
     let slot = &mut state.response.zobject;
-    context::lend_object(call, slot, context::Kind::Response, held);
+    context::lend_object(call, slot, context::Kind::Response, hold.clone());
     let Some(props) = slot.get().and_then(|value| value.props(Some(&RESPONSE))) else {
         return;
     };

@@ -125,7 +125,7 @@ pub(crate) fn current(session: &Session, stream: &Stream) -> bool {
     {
         return true;
     }
-    set(stream.ctx, Field::End, 1);
+    set(stream.ctx(), Field::End, 1);
     false
 }
 
@@ -855,7 +855,7 @@ fn on_receive(view: view::Server<'_>, conn: Connection<'_>, request: &RecvData) 
             session_id,
             default_ctx,
             max_body_size,
-            Box::new(|ctx, _| swoole_rs_phphttp::http2_request(ctx)),
+            Box::new(|ctx: Ctx<'_>, _: Ctx<'_>| swoole_rs_phphttp::http2_request(ctx)),
         );
         SessionState::find(session_id)
     });
@@ -953,7 +953,7 @@ fn parse(session: &Session, frame: &[u8]) -> bool {
                 stream_id,
             ));
             ack[FRAME_HEADER..].copy_from_slice(&echo);
-            send(session.default_ctx, &ack);
+            send(session.default_ctx(), &ack);
         }
         FrameAction::WindowUpdate => {
             // RFC 9113 6.9: the increment's four bytes; any other length is a
@@ -1050,7 +1050,7 @@ fn content_length_valid(session: &Session, value: &[u8]) -> bool {
 /// `http2_server_on_headers_complete`: the request's Content-Length, body
 /// parser and compression, from its whole initial header block.
 fn headers_complete(stream: &Stream) -> bool {
-    let ctx = stream.ctx;
+    let ctx = stream.ctx();
     if stream.bad_length.get() {
         send_status_code(ctx, ENTITY_TOO_LARGE);
         return false;
@@ -1084,7 +1084,7 @@ fn complete(session: &Session, stream: &Stream) -> bool {
     if stream.request_received.replace(true) {
         return false;
     }
-    let ctx = stream.ctx;
+    let ctx = stream.ctx();
     if ctx.has_body() {
         if get(ctx, Field::ParseBody) != 0 && get(ctx, Field::Form) != 0 {
             ctx.treat_post();
@@ -1147,7 +1147,7 @@ fn settings(session: &Session, payload: &[u8]) -> bool {
     }
     // The client assumes the server has not applied its settings until it acknowledges them.
     send(
-        session.default_ctx,
+        session.default_ctx(),
         &frame_header(FrameType::Settings, 0, FLAG_ACK, 0),
     );
     true
@@ -1168,7 +1168,7 @@ fn data(session: &Session, stream_id: u32, flags: u32, payload: &[u8]) -> bool {
     if !stream.headers_received.get() || stream.request_received.get() {
         return false;
     }
-    let ctx = stream.ctx;
+    let ctx = stream.ctx();
     let length = payload.len();
     if length > 0 {
         let buffered = ctx.data_start();
@@ -1221,7 +1221,7 @@ fn parse_header(
         };
         input = block;
     }
-    stream.ctx.header_arrays();
+    stream.ctx().header_arrays();
     let mut field = session.field.take().unwrap_or_default();
     let parsed = loop {
         let step = match session
@@ -1266,7 +1266,7 @@ fn add_string(ctx: Ctx, array: Value, key: &[u8], value: &[u8]) {
 /// into `$cookie` and never kept in `$header`, or a Content-Length, checked
 /// here and judged once the block is complete).
 fn request_header(session: &Session, stream: &Stream, name: &[u8], value: &[u8]) -> bool {
-    let ctx = stream.ctx;
+    let ctx = stream.ctx();
     let kind = header_plan(HeaderRole::Request, name, false).kind;
     if name.first() == Some(&b':') {
         match kind {
