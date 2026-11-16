@@ -663,16 +663,11 @@ impl Value {
     /// # Errors
     /// The callable bailed out.
     pub fn call(&self) -> Result<Owned, bailout::Bailout> {
-        let mut callable = self.copy();
+        // Nothing is called while a bailout is pending: upstream never ran past it.
+        bailout::outcome(())?;
+        let callable = self.copy();
         let result = Owned::default();
-        let mut fci = crate::EMPTY_FCI;
-        fci.size = size_of::<crate::sys::zend_fcall_info>();
-        // ZVAL_COPY_VALUE of the reference `callable` holds through the call.
-        fci.function_name = *callable.0.0.get_mut();
-        fci.retval = result.as_ptr();
-        // SAFETY: a live callable and a return slot this owns; no Rust borrow
-        // spans the call.
-        let called = unsafe { bailout::call(&raw mut fci, ptr::null_mut()) };
+        let called = crate::host::user_call(&callable, Zvals::owned(&[]), &result);
         drop(callable);
         called?;
         Ok(result)
