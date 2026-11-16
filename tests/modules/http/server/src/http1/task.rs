@@ -106,7 +106,13 @@ impl TaskHost for TaskPool {
     fn dispatch(&mut self, task: Packed<'_>, worker: Option<u32>, blocking: bool) -> bool {
         // SAFETY: the live task pool.
         let pool = unsafe { swoole_rs_process::process_pool::PoolRef::new(self.pool) };
-        pool::dispatch(pool, task, worker, blocking)
+        pool::dispatch(
+            swoole_rs_server::process_pool_native(),
+            pool,
+            task,
+            worker,
+            blocking,
+        )
     }
 
     fn pipe_clean(&mut self) {
@@ -339,6 +345,7 @@ impl TaskServer for Server {
         // SAFETY: the created server's task pool and a packed EventData.
         let sent = unsafe {
             pool::dispatch(
+                swoole_rs_server::process_pool_native(),
                 swoole_rs_process::process_pool::PoolRef::new(self.task_pool()),
                 swoole_rs_process::task_file::Packed::from_raw(buf.head().cast()),
                 u32::try_from(*dst_worker_id).ok(),
@@ -396,7 +403,12 @@ impl TaskServer for Server {
                 std::slice::from_raw_parts(ptr::from_ref(ev).cast::<u8>(), ev.size()),
             )
         };
-        pool::send_pipe_message(worker, bytes, flags)
+        pool::send_pipe_message(
+            swoole_rs_server::process_pool_native(),
+            worker,
+            bytes,
+            flags,
+        )
     }
 
     fn send_pipe_message(self, worker_id: u32, data: &[u8]) -> bool {
@@ -502,7 +514,10 @@ fn task_worker() {
 
     t1.join().unwrap();
     // The task pool, whose worker loop has ended.
-    pool::destroy(serv.view().task_pool_ref());
+    pool::destroy(
+        swoole_rs_server::process_pool_native(),
+        serv.view().task_pool_ref(),
+    );
 
     assert_eq!(serv.task_count(), 2);
     assert_no_failure();

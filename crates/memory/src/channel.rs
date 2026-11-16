@@ -11,7 +11,6 @@ use swoole_rs_locks::SharedMutex;
 /// starting at any cursor below `size` stays inside it. `valid` checks every cursor
 /// and bound this relies on. Only [`SharedChannel::make`] (and this module's
 /// tests, over their own buffers) make one.
-#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Channel {
     head: i64,
@@ -20,7 +19,6 @@ pub struct Channel {
     head_tag: u8,
     tail_tag: u8,
     num: i32,
-    max_num: i32,
     bytes: usize,
     flags: i32,
     maxlen: i32,
@@ -204,7 +202,6 @@ const NOTIFY: i32 = 4;
 /// pipe (read end first), which a [`SharedChannel`] holds in its mapping, the queue
 /// storage following the record. Not `Sync`: threads (and processes) that share one serialize the queue
 /// with its `SW_CHAN_LOCK` mutex, which [`Record::push`] and [`Record::pop`] take.
-#[repr(C)]
 pub struct Record {
     queue: UnsafeCell<Channel>,
     /// Initialized when `flags` has `SW_CHAN_LOCK`.
@@ -289,7 +286,6 @@ impl SharedChannel {
             head_tag: 0,
             tail_tag: 0,
             num: 0,
-            max_num: 0,
             bytes: 0,
             flags,
             maxlen: length,
@@ -458,8 +454,7 @@ impl Record {
     }
 }
 
-/// Only the initialized scalar fields read by public `Channel::full` cross ABI.
-#[repr(C)]
+/// The initialized scalar fields public `Channel::full` reads.
 pub struct CapacityState {
     head: i64,
     tail: i64,

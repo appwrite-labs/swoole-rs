@@ -319,7 +319,13 @@ pub fn kill_worker(serv: view::Server<'_>, worker_id: c_int) -> bool {
         ..DataHead::default()
     };
     let data = swoole_rs_process::process_pool::head_view(&head);
-    swoole_rs_process::methods::send_pipe_message(worker, data, PIPE_MASTER).is_some()
+    swoole_rs_process::methods::send_pipe_message(
+        crate::process_pool_native(),
+        worker,
+        data,
+        PIPE_MASTER,
+    )
+    .is_some()
 }
 
 /// `Server::stop_async_worker(worker)`: stop reading, leave the pool and wait for the
@@ -370,7 +376,7 @@ pub fn stop_async_worker(serv: view::Server<'_>, worker: Worker<'_>) {
         Mode::Process => {
             let pid = std::process::id().cast_signed();
             let id = u16::try_from(worker.id()).unwrap_or(u16::MAX);
-            if !push_stop(serv.event_pool_ref(), pid, id) {
+            if !push_stop(crate::process_pool_native(), serv.event_pool_ref(), pid, id) {
                 let m = format_args!("failed to push WORKER_STOP message");
                 log::sys_warning(c"Server::stop_async_worker", m);
             }
@@ -455,7 +461,7 @@ fn try_exit(serv: view::Server<'_>, reactor: Reactor) {
 }
 
 /// `Worker_onPipeReceive`: a message from a reactor thread or the master (process mode).
-extern "C" fn on_pipe_receive(reactor: Running<'_>, event: &mut Event) -> c_int {
+fn on_pipe_receive(reactor: Running<'_>, event: &mut Event) -> c_int {
     // Registered only on a worker's reactor, which holds its server.
     let Some(serv) = Reactor::running(reactor).server() else {
         return -1;

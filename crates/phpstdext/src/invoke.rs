@@ -38,7 +38,6 @@ unsafe extern "C" {
 /// Upstream's `CallInfo`: what the handler hands the method call's frame in
 /// `run_time_cache`. `this` is the receiver's live zval, which the method call
 /// releases once when it was a `VAR` operand.
-#[repr(C)]
 struct CallInfo {
     func: zval,
     this: zval,

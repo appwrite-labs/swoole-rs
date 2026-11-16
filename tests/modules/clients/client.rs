@@ -14,7 +14,7 @@ use super::socket::{
     EADDRNOTAVAIL, ECONNREFUSED, IoVec, SHUT_RD, SHUT_RDWR, SHUT_WR, SIGTERM, SW_SOCK_TCP,
     SW_SOCK_TCP6, SW_SOCK_UDP, SW_SOCK_UDP6, SW_SOCK_UNIX_DGRAM, TEST_HOST, TEST_HTTP_EXPECT,
     TEST_HTTPS_EXPECT, TEST_PORT, TEST_REQUEST_BAIDU, TLS_HOST_NAME, TlsPrepared, contains,
-    get_random_port, http_get_request, is_github_ci, string_set, swr_v1_tls_owner_new,
+    get_random_port, http_get_request, is_github_ci, string_set, tls_owner_new,
 };
 use super::{
     _exit, AF_INET, CppString, EINVAL, ENOENT, ETIMEDOUT, SW_ERR, TEST_HTTP_DOMAIN, TEST_STR,
@@ -86,8 +86,6 @@ const _: () = assert!(
 );
 
 unsafe extern "C" {
-    fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut c_void;
-
     #[link_name = "_ZNK6swoole7network6Socket12has_timedoutEv"]
     fn socket_has_timedout(socket: *const c_void) -> bool;
     #[link_name = "_Z17swoole_event_initi"]
@@ -191,8 +189,8 @@ unsafe extern "C" fn listener(
 impl<'a> Client<'a> {
     /// `Client cli(type, async)`; None when it has no socket (`!cli.ready()`).
     pub(super) fn new(kind: c_int, is_async: bool) -> Option<Box<Self>> {
-        // SAFETY: no preconditions.
-        let state = unsafe { swr_v1_clients_new(kind, is_async) };
+        let state: *mut c_void = native::create(kind, is_async)
+            .map_or(std::ptr::null_mut(), |client| client.as_ptr().cast());
         if state.is_null() {
             return None;
         }
@@ -399,7 +397,7 @@ impl<'a> Client<'a> {
     /// `set_tls_host_name(name)`: a fresh `SSLContext`'s view with the name set, assigned
     /// to the client's (whose other values are still a fresh one's).
     fn set_tls_host_name(&self, name: &str) {
-        let prepared: TlsPrepared = swr_v1_tls_owner_new();
+        let prepared: TlsPrepared = tls_owner_new();
         // SAFETY: the fresh owner's live fields and slot, then the client's live owner.
         unsafe {
             (*prepared.fields).disable_tls_host_name = u8::from(name.is_empty());

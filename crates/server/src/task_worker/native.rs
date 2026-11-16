@@ -50,7 +50,7 @@ const SEND_TO_WORKER_TIMEOUT: c_int = 9014;
 const EVENT_DATA_SIZE: usize = SW_IPC_MAX_SIZE as usize;
 
 /// `swoole::EventData`, aligned for its head, to read a task into.
-#[repr(C, align(8))]
+#[repr(align(8))]
 struct EventData([u8; EVENT_DATA_SIZE]);
 
 thread_local! {
@@ -225,7 +225,7 @@ extern "C-unwind" fn loop_async(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int 
 }
 
 /// `TaskWorker_onPipeReceive`: a task from a worker, in the coroutine loop.
-extern "C" fn on_pipe_receive(reactor: Running<'_>, event: &mut Event) -> c_int {
+fn on_pipe_receive(reactor: Running<'_>, event: &mut Event) -> c_int {
     let Some(serv) = Reactor::running(reactor).server() else {
         return ERR;
     };
@@ -290,7 +290,12 @@ pub fn finish(
         reply(&mut buf, super::nonblocking_flags(flags, task.ext_flags));
         match stream_connection(worker) {
             Some(socket) => send_stream(socket, data),
-            None => send_pipe_message(worker, buf.bytes(), PIPE_MASTER),
+            None => send_pipe_message(
+                crate::process_pool_native(),
+                worker,
+                buf.bytes(),
+                PIPE_MASTER,
+            ),
         }
     } else {
         let Some(slot) = super::result_slot(serv, source) else {

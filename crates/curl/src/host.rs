@@ -25,7 +25,7 @@ const CO_HAS_BEEN_BOUND: c_int = 10002;
 
 /// The reactor's handler for the cURL fd type: `BITMASK` happened on the
 /// socket whose object is a [`crate::Socket`].
-extern "C" fn on_event<const BITMASK: c_int>(
+fn on_event<const BITMASK: c_int>(
     _: swoole_rs_reactor::Running<'_>,
     event: &mut swoole_rs_reactor::Event,
 ) -> c_int {

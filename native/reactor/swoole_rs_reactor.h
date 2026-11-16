@@ -44,7 +44,7 @@ typedef struct {
     bool send_wait;
 } swr_v1_socket_output;
 /* Reactor handler tables (read/write/error per fd type, write and error defaults), which
- * only Rust reads. Handlers are ReactorHandler: int (*)(Reactor *, Event *). */
+ * only Rust reads, of Rust handlers. */
 typedef struct swr_v1_reactor_handlers swr_v1_reactor_handlers;
 /* The fd -> socket registry (Reactor::sockets_); null reads as empty. */
 typedef struct swr_v1_reactor_registry swr_v1_reactor_registry;

@@ -50,6 +50,8 @@ mod master_ops;
 mod objects;
 #[cfg(feature = "upstream-symbols")]
 mod pool_native;
+#[cfg(feature = "upstream-symbols")]
+pub use pool_native::process_pool_native;
 pub mod port_config;
 mod process_factory;
 pub mod reactor_entry;
@@ -78,10 +80,7 @@ pub mod view;
 pub mod worker_methods;
 pub use static_config::Collection as StaticCollection;
 
-pub use records::{
-    Connection, ConnectionRecord, ServerTables, Session, SessionRecord, Slot,
-    swr_v1_server_connection, swr_v1_server_session,
-};
+pub use records::{Connection, ConnectionRecord, ServerTables, Session, SessionRecord, Slot};
 
 pub use shared::{PortCounters, ServerCounters, swr_v1_server_shared_init};
 

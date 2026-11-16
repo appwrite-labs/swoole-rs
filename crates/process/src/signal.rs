@@ -14,7 +14,6 @@ const SIG_IGN: usize = 1;
 
 /// `swoole::Signal`: the handler (a `SignalHandler`, `SIG_IGN` or `SIG_DFL`), its
 /// signal number and whether it is registered.
-#[repr(C)]
 pub struct Slot {
     pub(crate) handler: AtomicUsize,
     pub(crate) signo: AtomicU16,

@@ -30,5 +30,7 @@ swoole-rs-memory = { path = "../../../../crates/memory" }
 swoole-rs-ossupport = { path = "../../../../crates/ossupport" }
 swoole-rs-process = { path = "../../../../crates/process" }
 swoole-rs-reactor = { path = "../../../../crates/reactor" }
+# The original pool cases now pass the real server effects explicitly.
+swoole-rs-server = { path = "../../../../crates/server" }
 swoole-rs-timer = { path = "../../../../crates/timer", features = ["upstream-symbols"] }
 swoole-rs-tls = { path = "../../../../crates/tls" }

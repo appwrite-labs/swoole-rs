@@ -549,7 +549,7 @@ mod tests {
         }
     }
 
-    extern "C" fn read(_: crate::Running<'_>, event: &mut Event) -> c_int {
+    fn read(_: crate::Running<'_>, event: &mut Event) -> c_int {
         effect("read");
         let mut byte = 0u8;
         assert_eq!(

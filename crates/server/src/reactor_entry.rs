@@ -80,35 +80,35 @@ fn handler(reactor: Running<'_>, f: impl FnOnce(view::Server<'_>, Reactor) -> bo
 // The handlers below are registered only on reactors that hold a server.
 
 /// `ReactorThread_onPacketReceived`: a UDP port's datagram.
-pub extern "C" fn on_packet_received(reactor: Running<'_>, event: &mut Event) -> c_int {
+pub fn on_packet_received(reactor: Running<'_>, event: &mut Event) -> c_int {
     handler(reactor, |serv, reactor| {
         crate::reactor_thread::packet_received(serv, reactor, event)
     })
 }
 
 /// `ReactorThread_onClose`: the peer closed.
-pub extern "C" fn on_close(reactor: Running<'_>, event: &mut Event) -> c_int {
+pub fn on_close(reactor: Running<'_>, event: &mut Event) -> c_int {
     handler(reactor, |serv, reactor| {
         crate::conn_io::peer_close(serv, reactor, event)
     })
 }
 
 /// `ReactorThread_onPipeWrite`: a worker pipe can be written.
-pub extern "C" fn on_pipe_write(reactor: Running<'_>, event: &mut Event) -> c_int {
+pub fn on_pipe_write(reactor: Running<'_>, event: &mut Event) -> c_int {
     handler(reactor, |serv, reactor| {
         crate::reactor_io::pipe_write(serv, reactor, event)
     })
 }
 
 /// `ReactorThread_onRead`: a connection is readable.
-pub extern "C" fn on_read(reactor: Running<'_>, event: &mut Event) -> c_int {
+pub fn on_read(reactor: Running<'_>, event: &mut Event) -> c_int {
     handler(reactor, |serv, reactor| {
         crate::conn_io::read(serv, reactor, event)
     })
 }
 
 /// `ReactorThread_onWrite`: a connection is writable.
-pub extern "C" fn on_write(reactor: Running<'_>, event: &mut Event) -> c_int {
+pub fn on_write(reactor: Running<'_>, event: &mut Event) -> c_int {
     handler(reactor, |serv, reactor| {
         crate::conn_io::write(serv, reactor, event)
     })
