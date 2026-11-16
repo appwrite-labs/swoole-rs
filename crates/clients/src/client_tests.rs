@@ -1,7 +1,7 @@
 //! The operations against a recording double of the C++ client.
 use super::*;
 use std::cell::RefCell;
-use swoole_rs_reactor::{Socket, SocketFields};
+use swoole_rs_reactor::{Socket, SocketFields, SocketRecord};
 
 #[derive(Default)]
 struct Mock {
@@ -56,7 +56,7 @@ pub(super) mod ops {
         kind: c_int,
         fd_type: c_int,
         flags: c_int,
-    ) -> Option<Socket<'static>> {
+    ) -> Option<swoole_rs_reactor::OwnedSocket> {
         log(format!("make {kind} {fd_type} {flags}"));
         if mock(|m| m.fail_socket) {
             set_errno(libc::EMFILE);
@@ -65,8 +65,8 @@ pub(super) mod ops {
         let mut record = SocketRecord::new();
         record.socket_type = kind;
         record.fd = -1;
-        let socket = Box::new(record).into_socket();
-        mock(|m| m.socket = core::ptr::NonNull::new(socket.as_ptr()));
+        let socket = swoole_rs_reactor::OwnedSocket::new(Box::new(record));
+        mock(|m| m.socket = core::ptr::NonNull::new(socket.socket().as_ptr()));
         Some(socket)
     }
 
@@ -727,13 +727,9 @@ fn public_record_defaults_and_direct_framing_writes_drive_reads() {
                 Some(on_package as *const ())
             );
         }
-        // Read first: the handle borrows the whole record, which would end a reference
-        // assert_eq! had already taken to the field.
-        let socket = Handle(client).socket_ptr();
-        let field = (*fields)
-            .socket
-            .map_or(core::ptr::null_mut(), swoole_rs_reactor::Socket::as_ptr);
-        assert_eq!(field, socket);
+        // The client owns the record make_socket made.
+        let made = mock(|m| m.socket).map(core::ptr::NonNull::as_ptr);
+        assert_eq!(Some(Handle(client).socket().as_ptr()), made);
         assert!((*fields).object.is_null() && (*fields).buffer.is_null());
         Handle(client).input_init();
         (*fields).open_length_check = true;

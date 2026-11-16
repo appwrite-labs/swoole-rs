@@ -36,6 +36,14 @@ static zend_object *objects_find(uint32_t handle, const zend_object_handlers *ha
     return obj;
 }
 
+zend_object *swr_zend_objects_lookup(uint32_t handle, const zend_object_handlers *handlers) {
+    if (handle >= EG(objects_store).top) {
+        return NULL;
+    }
+    zend_object *obj = EG(objects_store).object_buckets[handle];
+    return obj && IS_OBJ_VALID(obj) && obj->handlers == handlers ? obj : NULL;
+}
+
 bool swr_zend_objects_hold(uint32_t handle, const zend_object_handlers *handlers, zval *out) {
     zend_object *obj = objects_find(handle, handlers);
     if (!obj) {
