@@ -829,3 +829,7 @@ mod tests {
 #[cfg(test)]
 #[path = "../../../tests/modules/buffer/string/originals.rs"]
 mod originals;
+
+#[cfg(test)]
+#[path = "../../../tests/modules/buffer/thread_buffer.rs"]
+mod thread_buffer;
