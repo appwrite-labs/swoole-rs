@@ -440,7 +440,10 @@ pub(crate) fn receive<'a, K: Packages>(
         flags |= if skip { FLAG_SKIP } else { 0 };
     } else if mode == Mode::Length {
         let size = p.get_package_length_size;
-        head = u32::from(size.map_or(p.package_length_size, |size| size(socket)));
+        head = u32::from(size.map_or(p.package_length_size, |size| {
+            // SAFETY: upstream's call over the socket the protocol was set up for.
+            unsafe { size(socket) }
+        }));
         flags |=
             (if skip { FLAG_SKIP } else { 0 }) | (if size.is_some() { FLAG_DYNAMIC } else { 0 });
     }
@@ -484,7 +487,8 @@ pub unsafe extern "C" fn default_length_func(
     // SAFETY: as the caller promises.
     let p = unsafe { &*p };
     let size = match (p.get_package_length_size, socket) {
-        (Some(size), Some(socket)) => size(socket),
+        // SAFETY: upstream's call over the socket the protocol was set up for.
+        (Some(size), Some(socket)) => unsafe { size(socket) },
         _ => p.package_length_size,
     };
     let bytes = pl.bytes();

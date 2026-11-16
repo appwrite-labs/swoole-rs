@@ -20,8 +20,9 @@ pub type OnPackage = fn(*const Protocol, Socket<'_>, Package<'_>) -> c_int;
 pub type GetPackageLength =
     unsafe extern "C" fn(*const Protocol, Option<Socket<'_>>, &mut PacketLength) -> isize;
 
-/// `Protocol::get_package_length_size`: a socket's length-header size.
-pub type GetPackageLengthSize = extern "C" fn(Socket<'_>) -> u8;
+/// `Protocol::get_package_length_size`: a socket's length-header size, which may rely
+/// on the socket being of the kind the protocol was set up for.
+pub type GetPackageLengthSize = unsafe extern "C" fn(Socket<'_>) -> u8;
 
 /// A whole package in a receive buffer, lent to its handler: `len` bytes at `data`
 /// (null for none), readable and writable for `'a`. It stays a pointer: the handler

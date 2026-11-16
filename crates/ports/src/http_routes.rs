@@ -426,7 +426,10 @@ pub mod exports {
     }
 
     /// `ssize_t get_package_length(const Protocol *, Socket *, PacketLength *)`.
-    pub extern "C" fn get_package_length(
+    ///
+    /// # Safety
+    /// Upstream's: the port's protocol, a connection socket and its packet length.
+    pub unsafe extern "C" fn get_package_length(
         proto: *const Protocol,
         socket: Option<Socket<'_>>,
         pl: &mut PacketLength,
@@ -436,19 +439,26 @@ pub mod exports {
         let Some(conn) = socket else {
             return -1;
         };
-        match get_package_length_size(conn) {
+        // SAFETY: as the caller guarantees.
+        match unsafe { get_package_length_size(conn) } {
             WEBSOCKET_FRAME_HEADER_SIZE => super::websocket_length(proto, socket, pl),
             super::HTTP2_FRAME_HEADER_SIZE => http2_length(proto, socket, pl),
             _ => -1,
         }
     }
 
-    /// `uint8_t get_package_length_size(Socket *)`: 0 for a socket that is no
-    /// session of the server this thread's reactor serves.
+    /// `uint8_t get_package_length_size(Socket *)`.
+    ///
+    /// # Safety
+    /// `socket` is a connection socket.
     #[must_use]
-    pub extern "C" fn get_package_length_size(socket: Socket<'_>) -> u8 {
-        view::Server::with_reactor(|server| server.at(socket.fd()).map_or(0, length_size))
-            .unwrap_or(0)
+    pub unsafe extern "C" fn get_package_length_size(socket: Socket<'_>) -> u8 {
+        let conn = socket.read(|s| s.object);
+        // SAFETY: a connection socket's object is its live connection slot, shared
+        // through the slot's handle, as its fields are cells and atomics.
+        length_size(Connection::from(unsafe {
+            &*conn.cast::<swoole_rs_server::ConnectionRecord>()
+        }))
     }
 }
 
