@@ -61,7 +61,7 @@ pub fn dispatch_client(client: swoole_rs_clients::client::Handle, request: &Requ
         Some(client_completed),
         std::ptr::null_mut(),
     );
-    event.data = request.as_ptr();
+    event.data = Some(request.reference());
     !crate::async_threads::dispatch(&event).is_null()
 }
 
@@ -93,7 +93,7 @@ fn run(
     request_error: bool,
 ) -> Option<c_int> {
     let mut event = AsyncEvent::empty();
-    event.data = request.as_ptr();
+    event.data = Some(request.reference());
     event.set_result(retval, 0);
     swr_v1_hook_async(&mut event, handler, timeout, &COROUTINE_ASYNC);
     let (retval, error) = event.result();

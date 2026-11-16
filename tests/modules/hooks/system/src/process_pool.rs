@@ -494,14 +494,14 @@ unsafe fn pool_response(pool: *const Pool, data: *const c_char, length: u32) -> 
 unsafe fn pool_add_worker(pool: *const Pool, worker: *mut Worker) {
     // SAFETY: as the caller guarantees: a live pool and worker.
     pm::add_worker(unsafe { &*pool.cast() }, unsafe {
-        WorkerHandle::new(worker.cast())
+        WorkerHandle::from(&*(worker.cast()))
     });
 }
 
 unsafe fn pool_del_worker(pool: *const Pool, worker: *const Worker) -> bool {
     // SAFETY: as the caller guarantees: a live pool and worker.
     pm::del_worker(unsafe { &*pool.cast() }, unsafe {
-        WorkerHandle::new(worker.cast())
+        WorkerHandle::from(&*(worker.cast()))
     })
 }
 
@@ -512,7 +512,7 @@ unsafe fn pool_get_worker_by_pid(pool: *const Pool, pid: c_int) -> *mut Worker {
 
 unsafe fn worker_init(worker: *mut Worker) {
     // SAFETY: as the caller guarantees: a live worker.
-    swr_v1_worker_init(unsafe { WorkerHandle::new(worker.cast()) });
+    swr_v1_worker_init(unsafe { WorkerHandle::from(&*(worker.cast())) });
 }
 
 unsafe fn worker_send_pipe_message(
@@ -524,7 +524,7 @@ unsafe fn worker_send_pipe_message(
     // SAFETY: as the caller guarantees: a live worker and `n` bytes at `data`.
     let (worker, data) = unsafe {
         (
-            WorkerHandle::new(worker.cast()),
+            WorkerHandle::from(&*(worker.cast())),
             std::slice::from_raw_parts(data, n),
         )
     };
@@ -533,7 +533,7 @@ unsafe fn worker_send_pipe_message(
 
 unsafe fn worker_shutdown(worker: *mut Worker) {
     // SAFETY: as the caller guarantees: a live worker.
-    swr_v1_worker_shutdown(unsafe { WorkerHandle::new(worker.cast()) });
+    swr_v1_worker_shutdown(unsafe { WorkerHandle::from(&*(worker.cast())) });
 }
 
 static CURRENT_POOL: AtomicPtr<Pool> = AtomicPtr::new(null_mut());
@@ -630,7 +630,12 @@ fn response(pool: *mut Pool, data: *const u8, length: u32) -> c_int {
 
 fn main_loop(pool: *mut Pool, worker: *mut Worker) -> c_int {
     // SAFETY: a created pool, which set the loop, and one of its workers.
-    let (pool, worker) = unsafe { (PoolRef::new(pool.cast()), WorkerHandle::new(worker.cast())) };
+    let (pool, worker) = unsafe {
+        (
+            PoolRef::new(pool.cast()),
+            WorkerHandle::from(&*(worker.cast())),
+        )
+    };
     pool.call_main_loop(worker).unwrap()
 }
 
@@ -748,7 +753,7 @@ fn test_func(pool: *mut Pool) {
         (*pool).running = true;
         (*pool).ptr = (&raw mut rmem).cast();
         PoolRef::new(pool.cast())
-            .call_on_worker_start(WorkerHandle::new(get_worker(pool, 0).cast()));
+            .call_on_worker_start(WorkerHandle::from(&*(get_worker(pool, 0).cast())));
     }
     main_loop(pool, get_worker(pool, 0));
     destroy(pool);
