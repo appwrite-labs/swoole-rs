@@ -12,7 +12,7 @@ use crate::co_socket::{Co, OwnedCo};
 use crate::uring::{self, Host};
 use crate::uring_tls::{SSL_BAD_PROTOCOL, Tls, TlsSocket};
 use crate::vector::{IoVector, IovBuffer, RecvMessage, SendMessage};
-use core::ffi::{CStr, c_char, c_int, c_ulong};
+use core::ffi::{CStr, c_int, c_ulong};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::net_types::SocketAddress;
@@ -44,8 +44,8 @@ impl TlsSocket for Co {
         check(self, None);
     }
 
-    fn buffer(self, write: bool) -> (*mut c_char, usize) {
-        self.tls_buffer(write)
+    fn with_scratch<T>(self, write: bool, f: impl FnOnce(&mut [u8]) -> T) -> T {
+        self.with_tls_buffer(write, f)
     }
 
     /// `ssl_bio_perform`'s failure: OpenSSL's text for `code`, logged with the
