@@ -263,10 +263,10 @@ pub(crate) trait Hybrid: Sync {
         missing()
     }
 
-    /// `serv->send_to_reactor_thread(head)`: 0, the reactor threads keeping it, without
-    /// the event workers.
-    fn to_reactor_thread(&self, _serv: Server<'_>, _head: &DataHead) -> isize {
-        0
+    /// `serv->send_to_reactor_thread(head)`: nothing sent, the reactor threads keeping
+    /// it, without the event workers.
+    fn to_reactor_thread(&self, _serv: Server<'_>, _head: &DataHead) -> Option<usize> {
+        Some(0)
     }
 }
 
@@ -426,9 +426,9 @@ pub(crate) mod tests {
             hear(Call::Reload(all_workers))
         }
 
-        fn to_reactor_thread(&self, _: Server<'_>, head: &DataHead) -> isize {
+        fn to_reactor_thread(&self, _: Server<'_>, head: &DataHead) -> Option<usize> {
             hear(Call::ToReactorThread(head.fd, head.reactor_id, head.kind));
-            size_of::<DataHead>().cast_signed()
+            Some(size_of::<DataHead>())
         }
 
         fn factory_dispatch(

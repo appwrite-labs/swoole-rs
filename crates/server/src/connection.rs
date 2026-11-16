@@ -73,7 +73,7 @@ pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) {
         let started = if serv.config().single_thread.get() {
             incoming(serv, reactor, port, conn)
         } else {
-            to_reactor_thread(serv, conn) >= 0
+            to_reactor_thread(serv, conn).is_some()
         };
         if !started {
             abort(serv, reactor, Some(port), sock);
@@ -99,7 +99,7 @@ fn accept_failed(serv: view::Server<'_>, errno: c_int) -> bool {
 }
 
 /// `serv->send_to_reactor_thread()` of the connection's `SW_SERVER_EVENT_INCOMING`.
-fn to_reactor_thread(serv: view::Server<'_>, conn: Connection<'_>) -> isize {
+fn to_reactor_thread(serv: view::Server<'_>, conn: Connection<'_>) -> Option<usize> {
     let head = swoole_rs_corebase::DataHead {
         fd: conn.session_id(),
         reactor_id: conn.reactor_id().into(),
