@@ -82,7 +82,7 @@ fn copied(input: &[u8]) -> Result<Vec<u8>, i32> {
     Ok(result)
 }
 impl HttpStaticContext {
-    /// A context for `url` whose filename holds `capacity` bytes, the native
+    /// A context for `url` whose filename may hold `capacity` bytes, the native
     /// `PATH_MAX`. None for a zero or oversized capacity, or when allocation fails.
     #[must_use]
     pub fn new(url: &[u8], capacity: usize) -> Option<Self> {
@@ -90,14 +90,12 @@ impl HttpStaticContext {
             return None;
         }
         let original = copied(url).ok()?;
-        let mut filename = Vec::new();
-        filename.try_reserve_exact(capacity).ok()?;
         Some(Self {
             original,
             rewritten: None,
             directory_path: Vec::new(),
             index: Vec::new(),
-            filename,
+            filename: Vec::new(),
             capacity,
             boundary: Vec::new(),
             content: Vec::new(),
