@@ -89,13 +89,17 @@ pub fn php_swoole_server_isset_callback(
 /// holds the reference through its call, so an `on()` during it drops only the
 /// port's.
 #[must_use]
+#[inline(always)]
 pub fn php_swoole_server_get_callback(
     serv: view::Server<'_>,
     server_fd: c_int,
     kind: PortCallback,
 ) -> Option<Rc<Kept>> {
     let port = serv.port_by_server_fd(server_fd)?;
-    crate::port::callback(port, kind).or_else(|| crate::port::callback(serv.port_at(0)?, kind))
+    if let Some(callback) = crate::port::callback(port, kind) {
+        return Some(callback);
+    }
+    crate::port::callback(serv.port_at(0)?, kind)
 }
 
 /// `php_swoole_get_recv_data`: a request's payload, taking the message bus's
