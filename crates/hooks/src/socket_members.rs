@@ -387,7 +387,7 @@ impl Co {
         let to = (&raw mut address.addr).cast::<libc::sockaddr>();
         #[cfg(feature = "iouring")]
         if let Some(n) = ring::with(self, |ops| ring::sendto(ops, buf, &address)) {
-            return count(n);
+            return n;
         }
         let length = address.len;
         let call = call!(|s, at, len| count(libc::sendto(s.fd(), at.cast(), len, 0, to, length)));
@@ -412,7 +412,7 @@ impl Co {
     pub fn recv(self, buf: &mut [impl ReadSlot]) -> Option<usize> {
         #[cfg(feature = "iouring")]
         if let Some(n) = ring::with(self, |ops| ring::recv(ops, buf)) {
-            return count(n);
+            return n;
         }
         let call = call!(|s, at, len| recv_fill(s, Fill::from_raw(at.cast(), len), 0));
         self.transfer(0, Buffer::read(buf), call)
@@ -423,7 +423,7 @@ impl Co {
     pub fn send(self, buf: &[u8]) -> Option<usize> {
         #[cfg(feature = "iouring")]
         if let Some(n) = ring::with(self, |ops| ring::send(ops, ring::SEND, buf)) {
-            return count(n);
+            return n;
         }
         let call = call!(|s, at, len| send_drain(s, Drain::from_raw(at.cast(), len), 0));
         self.transfer(0, Buffer::write(buf), call)
@@ -433,7 +433,7 @@ impl Co {
     pub fn recv_all(self, buf: &mut [impl ReadSlot]) -> Option<usize> {
         #[cfg(feature = "iouring")]
         if let Some(n) = ring::with(self, |ops| ring::recv_all(ops, buf)) {
-            return count(n);
+            return n;
         }
         let call = call!(|s, at, len| recv_fill(s, Fill::from_raw(at.cast(), len), 0));
         self.transfer(ALL, Buffer::read(buf), call)
@@ -444,7 +444,7 @@ impl Co {
     pub fn send_all(self, buf: &[u8]) -> Option<usize> {
         #[cfg(feature = "iouring")]
         if let Some(n) = ring::with(self, |ops| ring::send_all(ops, buf)) {
-            return count(n);
+            return n;
         }
         let call = call!(|s, at, len| send_drain(s, Drain::from_raw(at.cast(), len), 0));
         self.transfer(ALL, Buffer::write(buf), call)
@@ -454,7 +454,7 @@ impl Co {
     pub fn read(self, buf: &mut [impl ReadSlot]) -> Option<usize> {
         #[cfg(feature = "iouring")]
         if let Some(n) = ring::with(self, |ops| ring::read(ops, buf)) {
-            return count(n);
+            return n;
         }
         let call = call!(|s, at, len| count(libc::read(s.fd(), at.cast(), len)));
         self.transfer(0, Buffer::read(buf), call)
@@ -465,7 +465,7 @@ impl Co {
     pub fn write(self, buf: &[u8]) -> Option<usize> {
         #[cfg(feature = "iouring")]
         if let Some(n) = ring::with(self, |ops| ring::send(ops, ring::WRITE, buf)) {
-            return count(n);
+            return n;
         }
         let call = call!(|s, at, len| count(libc::write(s.fd(), at.cast(), len)));
         self.transfer(0, Buffer::write(buf), call)
@@ -477,7 +477,7 @@ impl Co {
     pub fn vector(self, vector: &mut IoVector<'_>, all: bool) -> Option<usize> {
         #[cfg(feature = "iouring")]
         if let Some(n) = ring::with(self, |ops| ring::swr_v1_hook_uring_vector(ops, vector, all)) {
-            return count(n);
+            return n;
         }
         let event = if vector.write() {
             Events::WRITE
@@ -573,8 +573,8 @@ impl Co {
         peer: &mut libc::sockaddr_storage,
     ) -> (isize, libc::socklen_t) {
         #[cfg(feature = "iouring")]
-        if let Some(n) = ring::with(self, |ops| ring::recvfrom_into(ops, buf, peer)) {
-            return n;
+        if let Some((n, size)) = ring::with(self, |ops| ring::recvfrom_into(ops, buf, peer)) {
+            return (n.map_or(-1, usize::cast_signed), size);
         }
         let mut size = swoole_rs_corebase::sys::socklen::<libc::sockaddr_storage>();
         let (addr, addrlen) = (core::ptr::from_mut(peer).cast(), &raw mut size);
@@ -592,7 +592,7 @@ impl Co {
             #[cfg(feature = "iouring")]
             // The ring's path fills the same record's peer address itself.
             if let Some(n) = ring::with(self, |ops| ring::recvfrom_peer(ops, buf)) {
-                return count(n);
+                return n;
             }
             let fd = self.sock_fd();
             // The record's peer address and its length, as `recvfrom_peer` lends them.
@@ -607,7 +607,7 @@ impl Co {
     pub fn recvmsg(self, msg: &mut RecvMessage<'_>, flags: c_int) -> Option<usize> {
         #[cfg(feature = "iouring")]
         if let Some(n) = ring::with(self, |ops| ops.recvmsg(msg, flags)) {
-            return count(n);
+            return n;
         }
         let fd = self.sock_fd();
         let call = |_: Socket<'_>, _: *mut u8, _: usize| msg.recv(fd, flags);
@@ -619,7 +619,7 @@ impl Co {
     pub fn sendmsg(self, msg: &SendMessage<'_>, flags: c_int) -> Option<usize> {
         #[cfg(feature = "iouring")]
         if let Some(n) = ring::with(self, |ops| ops.sendmsg(msg, flags)) {
-            return count(n);
+            return n;
         }
         let fd = self.sock_fd();
         let call = |_: Socket<'_>, _: *mut u8, _: usize| msg.send(fd, flags);
@@ -629,32 +629,24 @@ impl Co {
     /// `Socket::recv_once(buf, n)`: one `network::Socket` receive, no wait; the count
     /// of `buf`'s first slots it wrote, or -1. The socket is open.
     pub fn recv_once(self, buf: &mut [impl ReadSlot]) -> Option<usize> {
-        let mut io = || {
-            self.with_network(|socket| recv(socket, buf, 0))
-                .flatten()
-                .map_or(-1, usize::cast_signed)
-        };
+        let mut io = || self.with_network(|socket| recv(socket, buf, 0)).flatten();
         #[cfg(feature = "iouring")]
         if let Some(n) = ring::with(self, |ops| ring::once(ops, &mut io)) {
-            return count(n);
+            return n;
         }
-        count(io())
+        io()
     }
 
     /// `Socket::send_once(buf, n)`: one `network::Socket` send, no wait. The socket
     /// is open.
     #[must_use]
     pub fn send_once(self, buf: &[u8]) -> Option<usize> {
-        let io = || {
-            self.with_network(|socket| send(socket, buf, 0))
-                .flatten()
-                .map_or(-1, usize::cast_signed)
-        };
+        let io = || self.with_network(|socket| send(socket, buf, 0)).flatten();
         #[cfg(feature = "iouring")]
         if let Some(n) = ring::with(self, |ops| ring::once(ops, io)) {
-            return count(n);
+            return n;
         }
-        count(io())
+        io()
     }
 
     /// `Socket::peek(buf, n)`: one `network::Socket` peek, then `check_return_value`;

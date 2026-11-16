@@ -85,6 +85,12 @@ impl Scheduler {
         self.live().map_or(0, |live| live.count)
     }
 
+    /// The state of live coroutine `cid`, `None` once it ended.
+    #[must_use]
+    pub fn state(&self, cid: c_long) -> Option<State> {
+        self.live()?.get(cid).map(|co| co.with(|co| co.state))
+    }
+
     /// The newest live coroutine older than `before`, with its id.
     fn older(&self, before: c_long) -> Option<(c_long, Co)> {
         let live = self.live()?;
@@ -118,14 +124,6 @@ impl Scheduler {
         self.live()
             .and_then(|live| live.get(cid))
             .map_or(ptr::null_mut(), native)
-    }
-
-    /// Whether coroutine `cid` is live and parked in a yield.
-    #[must_use]
-    pub fn waiting(&self, cid: c_long) -> bool {
-        self.live()
-            .and_then(|live| live.get(cid))
-            .is_some_and(|co| co.with(|co| co.state == State::Waiting))
     }
 
     /// The newest live coroutine older than `before` (`LONG_MAX` starts a walk):
@@ -204,6 +202,9 @@ mod tests {
             assert_eq!((*sp).count(), 3);
             assert_eq!((*sp).get(2) as usize, 0xb0);
             assert!((*sp).get(4).is_null());
+            assert_eq!((*sp).state(2), Some(State::Waiting));
+            assert_eq!((*sp).state(1), Some(State::Running));
+            assert_eq!((*sp).state(4), None);
 
             let (cid, first) = (*sp).older_native(c_long::MAX).unwrap();
             assert_eq!((first as usize, cid), (0xc0, 3));
@@ -211,6 +212,7 @@ mod tests {
             assert_eq!((next as usize, cid), (0xb0, 2));
 
             (*sp).remove(2);
+            assert_eq!((*sp).state(2), None, "an ended coroutine has no state");
             (*sp).iterator_reset();
             assert_eq!((*sp).iterator_each() as usize, 0xc0);
             assert_eq!((*sp).iterator_each() as usize, 0xa0);

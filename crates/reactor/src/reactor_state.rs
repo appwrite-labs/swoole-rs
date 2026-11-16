@@ -554,7 +554,7 @@ fn backend_wait(owner: &mut ReactorState, deferred: bool, entries: &mut c_int) -
             } else {
                 owner.fields.timeout_msec
             };
-            swoole_rs_corebase::sys::poll(snapshot.filled(), timeout)
+            swoole_rs_corebase::sys::poll(snapshot.filled(), timeout).unwrap_or(-1)
         }
         #[cfg(target_os = "linux")]
         Backend::Epoll(array) => {

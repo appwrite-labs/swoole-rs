@@ -62,7 +62,7 @@ pub fn tls_sendfile(
     size: usize,
     offset: &mut libc::off_t,
     mut pread: impl FnMut(&mut [u8], libc::off_t) -> Option<usize>,
-    mut send: impl FnMut(&[u8]) -> isize,
+    mut send: impl FnMut(&[u8]) -> Option<usize>,
     mut catch: impl FnMut() -> Option<Caught>,
 ) -> (usize, c_int) {
     let mut buf = vec![0_u8; size.min(TLS_CHUNK)];
@@ -71,18 +71,17 @@ pub fn tls_sendfile(
         let Some(n @ 1..) = pread(&mut buf, *offset) else {
             return (total, TLS_WARN_PREAD);
         };
-        let sent = send(buf.get(..n).unwrap_or(&buf));
-        if let Ok(sent @ 1..) = usize::try_from(sent) {
-            *offset += libc::off_t::try_from(sent).unwrap_or(libc::off_t::MAX);
-            total += sent;
-        } else if sent == 0 {
-            return (total, 0);
-        } else {
-            match catch() {
+        match send(buf.get(..n).unwrap_or(&buf)) {
+            Some(0) => return (total, 0),
+            Some(sent) => {
+                *offset += libc::off_t::try_from(sent).unwrap_or(libc::off_t::MAX);
+                total += sent;
+            }
+            None => match catch() {
                 Some(Caught::Error) => return (total, TLS_WARN_WRITE),
                 Some(Caught::Close) => return (total, 0),
                 _ => {}
-            }
+            },
         }
     }
     (total, 0)
@@ -180,11 +179,12 @@ mod tests {
                 Some(n)
             },
             |data| {
-                script
+                let sent = script
                     .next()
                     .copied()
                     .flatten()
-                    .unwrap_or(data.len().cast_signed())
+                    .unwrap_or(data.len().cast_signed());
+                usize::try_from(sent).ok()
             },
             || class,
         );

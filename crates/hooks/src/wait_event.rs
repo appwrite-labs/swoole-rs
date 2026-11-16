@@ -259,17 +259,15 @@ pub(crate) fn wait_with<S>(
             revents: 0,
         };
         let ready = swoole_rs_corebase::sys::poll(core::slice::from_mut(&mut pfd), 0);
-        if ready == 1 {
+        if matches!(ready, Ok(1)) {
             if pfd.revents & libc::POLLNVAL != 0 {
                 return Err(WaitError::Poll(libc::EBADF));
             }
             return Ok(from_poll(pfd.revents));
         }
-        let error = if ready < 0 {
-            std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-        } else {
-            libc::ETIMEDOUT
-        };
+        let error = ready
+            .err()
+            .map_or(libc::ETIMEDOUT, |error| error.raw_os_error().unwrap_or(0));
         return Err(WaitError::Poll(error));
     }
     let fired = park(fd, events, timeout, ops).map_err(WaitError::Coroutine)?;

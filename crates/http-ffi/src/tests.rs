@@ -114,5 +114,5 @@ fn multipart_exports_refuse_nulls_and_unterminated_scratch() {
     );
     let mut scratch = *b"name=x; filename=y\0";
     assert_eq!(swoole_rs_http::multipart_filename(&mut scratch), Ok(true));
-    assert_eq!(swoole_rs_http::multipart_result(2, 2, 0), Ok(()));
+    assert_eq!(swoole_rs_http::multipart_result(Ok(2), 2, false), Ok(()));
 }

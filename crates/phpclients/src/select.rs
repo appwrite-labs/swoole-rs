@@ -2,7 +2,7 @@
 //! arrays of clients, sockets and streams, which it narrows to the ready ones.
 use crate::{
     native::ErrorKind,
-    net::{CONNECT_TIMEOUT, bailed, errno, warn, warn_sys},
+    net::{CONNECT_TIMEOUT, bailed, warn, warn_sys},
 };
 use libc::{POLLHUP, POLLIN, POLLOUT, c_int, c_short, pollfd};
 use swoole_rs_corebase::CCast;
@@ -130,14 +130,15 @@ fn select(call: &mut Call) {
     let ready = loop {
         let polled = fds.get_mut(..count).unwrap_or_default();
         let ready = swoole_rs_corebase::sys::poll(polled, wait);
-        if !(ready < 0 && errno() == libc::EINTR) {
-            break ready;
+        match ready {
+            Ok(ready) => break ready,
+            Err(error) if error.raw_os_error() == Some(libc::EINTR) => {}
+            Err(error) => {
+                warn_sys("unable to poll()", error.raw_os_error().unwrap_or(0));
+                return call.set_bool(false);
+            }
         }
     };
-    if ready == -1 {
-        warn_sys("unable to poll()", errno());
-        return call.set_bool(false);
-    }
     for (n, event) in SETS {
         let Some(set) = set(call, n) else {
             continue;

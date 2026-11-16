@@ -567,12 +567,12 @@ impl HttpRequest {
         // The callbacks append to the saved buffer, never to this one.
         let (buffer, data) = r.input();
         let length = buffer.length;
-        let processed = parser.execute(r, data) as i64;
+        let processed = parser.execute(r, data);
         let reason = parser.error_message();
         if let Some(form) = r.form.as_deref_mut() {
             form.parser = Some(parser);
         }
-        match swoole_rs_http::multipart_result(processed, length, r.excepted.into()) {
+        match swoole_rs_http::multipart_result(processed, length, r.excepted) {
             Err(MultipartError::Parser) => {
                 // Upstream formats it into 256 bytes, its NUL included.
                 let reason = reason.get(..255).unwrap_or(&reason);
@@ -593,13 +593,14 @@ impl HttpRequest {
                 true
             }
             Err(MultipartError::Short { excepted }) => {
+                // The policy reports Short only for a successful byte count.
                 log::error_log(
                     NOTICE,
                     INVALID_REQUEST,
                     c"Request::parse_multipart_data",
                     format_args!(
                         "parse multipart body failed, {}/{length} bytes processed",
-                        processed.cast_unsigned()
+                        processed.unwrap_or_default()
                     ),
                 );
                 excepted

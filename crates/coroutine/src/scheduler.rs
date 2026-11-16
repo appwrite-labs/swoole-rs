@@ -92,10 +92,10 @@ pub fn coroutine_get(cid: c_long) -> *mut c_void {
     with_scheduler(|s| s.get(cid))
 }
 
-/// [`Scheduler::waiting`] on this thread.
+/// [`Scheduler::state`] on this thread.
 #[must_use]
-pub fn coroutine_waiting(cid: c_long) -> bool {
-    with_scheduler(|s| s.waiting(cid))
+pub fn coroutine_state(cid: c_long) -> Option<crate::State> {
+    with_scheduler(|s| s.state(cid))
 }
 
 /// [`Scheduler::older_native`] on this thread.

@@ -116,8 +116,8 @@ impl UringSocketOps<'_> {
         (self.available)(self.socket, event)
     }
 
-    fn check(&self, result: isize) {
-        (self.check)(self.socket, usize::try_from(result).ok());
+    fn check(&self, result: Option<usize>) {
+        (self.check)(self.socket, result);
     }
 
     /// `call` with the current coroutine bound to `event`.
@@ -132,9 +132,14 @@ impl UringSocketOps<'_> {
 
     /// `request` for `event`: the availability check (unless `checked` before),
     /// the current coroutine bound to `event`, then the result check.
-    fn transfer(&self, event: Events, checked: bool, request: impl FnOnce() -> isize) -> isize {
+    fn transfer(
+        &self,
+        event: Events,
+        checked: bool,
+        request: impl FnOnce() -> Option<usize>,
+    ) -> Option<usize> {
         if !checked && !self.available(event) {
-            return -1;
+            return None;
         }
         let result = self.bound(event, request);
         self.check(result);
@@ -142,26 +147,24 @@ impl UringSocketOps<'_> {
     }
 
     /// `recvmsg` into `message` with `flags`.
-    pub(crate) fn recvmsg(&self, message: &mut RecvMessage<'_>, flags: c_int) -> isize {
+    pub(crate) fn recvmsg(&self, message: &mut RecvMessage<'_>, flags: c_int) -> Option<usize> {
         let (host, tls) = (self.host(), self.tls);
         self.transfer(Events::READ, false, || {
-            uring::recvmsg(host, tls.fd, message, flags, tls.read_timeout)
-                .map_or(-1, usize::cast_signed)
+            uring::recvmsg(host, tls.fd, message, flags, tls.read_timeout).ok()
         })
     }
 
     /// `sendmsg` of `message` with `flags`.
-    pub(crate) fn sendmsg(&self, message: &SendMessage<'_>, flags: c_int) -> isize {
+    pub(crate) fn sendmsg(&self, message: &SendMessage<'_>, flags: c_int) -> Option<usize> {
         let (host, tls) = (self.host(), self.tls);
         self.transfer(Events::WRITE, false, || {
-            uring::sendmsg(host, tls.fd, message, flags, tls.write_timeout)
-                .map_or(-1, usize::cast_signed)
+            uring::sendmsg(host, tls.fd, message, flags, tls.write_timeout).ok()
         })
     }
 
     /// `readv`/`writev`. The transfer borrows the vector, so it advances here, once
     /// per transfer, after that borrow ends.
-    fn vector(&self, vector: &mut IoVector<'_>) -> isize {
+    fn vector(&self, vector: &mut IoVector<'_>) -> Option<usize> {
         let write = vector.write();
         let event = if write { Events::WRITE } else { Events::READ };
         let (host, tls) = (self.host(), self.tls);
@@ -178,10 +181,10 @@ impl UringSocketOps<'_> {
                         Lent::Read(slots) => tls.recv(slots),
                     })
                 } else {
-                    uring::vector(host, tls.fd, vector, timeout).map_or(-1, usize::cast_signed)
+                    uring::vector(host, tls.fd, vector, timeout).ok()
                 };
                 vector.update(result);
-                if !(result < 0 && errno() == libc::EINTR) {
+                if !(result.is_none() && errno() == libc::EINTR) {
                     break result;
                 }
             }
@@ -190,21 +193,21 @@ impl UringSocketOps<'_> {
 }
 
 /// `read` into `buf`, which may be uninitialized: the ring writes it.
-pub(crate) fn read(ops: &UringSocketOps<'_>, buf: &mut [impl ReadSlot]) -> isize {
+pub(crate) fn read(ops: &UringSocketOps<'_>, buf: &mut [impl ReadSlot]) -> Option<usize> {
     let (host, tls) = (ops.host(), ops.tls);
     ops.transfer(Events::READ, false, || {
-        uring::read(host, tls.fd, buf, tls.read_timeout).map_or(-1, usize::cast_signed)
+        uring::read(host, tls.fd, buf, tls.read_timeout).ok()
     })
 }
 
 /// `recv` into `buf`, which may be uninitialized: the ring or `SSL_read` writes it.
-pub(crate) fn recv(ops: &UringSocketOps<'_>, buf: &mut [impl ReadSlot]) -> isize {
+pub(crate) fn recv(ops: &UringSocketOps<'_>, buf: &mut [impl ReadSlot]) -> Option<usize> {
     let (host, tls) = (ops.host(), ops.tls);
     ops.transfer(Events::READ, false, || {
         if ops.ssl() {
             return tls.recv(buf);
         }
-        uring::recv(host, tls.fd, buf, 0, tls.read_timeout).map_or(-1, usize::cast_signed)
+        uring::recv(host, tls.fd, buf, 0, tls.read_timeout).ok()
     })
 }
 
@@ -214,84 +217,87 @@ pub(crate) fn recvfrom_into(
     ops: &UringSocketOps<'_>,
     buf: &mut [impl ReadSlot],
     peer: &mut libc::sockaddr_storage,
-) -> (isize, libc::socklen_t) {
+) -> (Option<usize>, libc::socklen_t) {
     let (host, tls) = (ops.host(), ops.tls);
     let mut size = swoole_rs_corebase::sys::socklen::<libc::sockaddr_storage>();
     let received = ops.transfer(Events::READ, false, || {
-        let peeked = uring::recv(host, tls.fd, buf, libc::MSG_PEEK, tls.read_timeout)
-            .map_or(-1, usize::cast_signed);
-        if peeked <= 0 {
+        let peeked = uring::recv(host, tls.fd, buf, libc::MSG_PEEK, tls.read_timeout).ok();
+        if peeked <= Some(0) {
             return peeked;
         }
         let (at, n) = (buf.as_mut_ptr().cast(), buf.len());
         let (addr, flags) = (core::ptr::from_mut(peer).cast(), libc::MSG_DONTWAIT);
         // SAFETY: `buf`'s writable bytes, and the borrowed storage with its own size.
-        unsafe { libc::recvfrom(tls.fd, at, n, flags, addr, &raw mut size) }
+        usize::try_from(unsafe { libc::recvfrom(tls.fd, at, n, flags, addr, &raw mut size) }).ok()
     });
     (received, size)
 }
 
 /// `recvfrom` into `buf`, the sender into the socket's own peer address: a peek
 /// through the ring, then the datagram itself without blocking.
-pub(crate) fn recvfrom_peer(ops: &UringSocketOps<'_>, buf: &mut [impl ReadSlot]) -> isize {
+pub(crate) fn recvfrom_peer(ops: &UringSocketOps<'_>, buf: &mut [impl ReadSlot]) -> Option<usize> {
     let (host, tls) = (ops.host(), ops.tls);
     ops.transfer(Events::READ, false, || {
-        let peeked = uring::recv(host, tls.fd, buf, libc::MSG_PEEK, tls.read_timeout)
-            .map_or(-1, usize::cast_signed);
-        if peeked <= 0 {
+        let peeked = uring::recv(host, tls.fd, buf, libc::MSG_PEEK, tls.read_timeout).ok();
+        if peeked <= Some(0) {
             return peeked;
         }
         let receive =
             |record: &mut SocketFields| record.info.recvfrom(tls.fd, buf, libc::MSG_DONTWAIT);
-        ops.socket
-            .net(receive)
-            .flatten()
-            .map_or(-1, usize::cast_signed)
+        ops.socket.net(receive).flatten()
     })
 }
 
 /// `sendto` of `buf` to `address`. The caller checked availability, before resolving
 /// the host.
-pub(crate) fn sendto(ops: &UringSocketOps<'_>, buf: &[u8], address: &SocketAddress) -> isize {
+pub(crate) fn sendto(
+    ops: &UringSocketOps<'_>,
+    buf: &[u8],
+    address: &SocketAddress,
+) -> Option<usize> {
     let (host, tls) = (ops.host(), ops.tls);
     ops.transfer(Events::WRITE, true, || {
-        uring::sendto(host, tls.fd, buf, address, tls.write_timeout).map_or(-1, usize::cast_signed)
+        uring::sendto(host, tls.fd, buf, address, tls.write_timeout).ok()
     })
 }
 
 /// `write` (`op` [`WRITE`]) or `send` ([`SEND`], through TLS when the socket has
 /// it) from `buf`.
-pub(crate) fn send(ops: &UringSocketOps<'_>, op: c_int, buf: &[u8]) -> isize {
+pub(crate) fn send(ops: &UringSocketOps<'_>, op: c_int, buf: &[u8]) -> Option<usize> {
     let (host, tls) = (ops.host(), ops.tls);
     let wt = tls.write_timeout;
     ops.transfer(Events::WRITE, false, || match op {
-        WRITE => uring::write(host, tls.fd, buf, wt).map_or(-1, usize::cast_signed),
+        WRITE => uring::write(host, tls.fd, buf, wt).ok(),
         _ if ops.ssl() => tls.send(buf),
-        _ => uring::send(host, tls.fd, buf, 0, wt).map_or(-1, usize::cast_signed),
+        _ => uring::send(host, tls.fd, buf, 0, wt).ok(),
     })
 }
 
 /// `recv_all` into `buf`: recv until it is full, it failed, or the peer closed.
-pub(crate) fn recv_all(ops: &UringSocketOps<'_>, buf: &mut [impl ReadSlot]) -> isize {
+pub(crate) fn recv_all(ops: &UringSocketOps<'_>, buf: &mut [impl ReadSlot]) -> Option<usize> {
     all(ops, buf.len(), |at| {
         recv(ops, buf.get_mut(at..).unwrap_or_default())
     })
 }
 
 /// `send_all` of `buf`: send until all of it went or it failed.
-pub(crate) fn send_all(ops: &UringSocketOps<'_>, buf: &[u8]) -> isize {
+pub(crate) fn send_all(ops: &UringSocketOps<'_>, buf: &[u8]) -> Option<usize> {
     all(ops, buf.len(), |at| {
         send(ops, SEND, buf.get(at..).unwrap_or_default())
     })
 }
 
 /// `step(moved)` again while it moves bytes and fewer than `n` moved.
-fn all(ops: &UringSocketOps<'_>, n: usize, mut step: impl FnMut(usize) -> isize) -> isize {
+fn all(
+    ops: &UringSocketOps<'_>,
+    n: usize,
+    mut step: impl FnMut(usize) -> Option<usize>,
+) -> Option<usize> {
     let mut total = 0usize;
     let result = loop {
         let result = step(total);
-        total += result.max(0).unsigned_abs();
-        if !(result > 0 && total < n) {
+        total += result.unwrap_or(0);
+        if !(result > Some(0) && total < n) {
             break result;
         }
     };
@@ -299,13 +305,9 @@ fn all(ops: &UringSocketOps<'_>, n: usize, mut step: impl FnMut(usize) -> isize)
     transfer_result(result, total)
 }
 
-/// -1 when it failed before moving anything, else the bytes moved.
-fn transfer_result(result: isize, total: usize) -> isize {
-    if result < 0 && total == 0 {
-        -1
-    } else {
-        total.cast_signed()
-    }
+/// `None` when it failed before moving anything, else the bytes moved.
+fn transfer_result(result: Option<usize>, total: usize) -> Option<usize> {
+    (result.is_some() || total > 0).then_some(total)
 }
 
 /// `readv`/`writev`, or with `all` their `_all` forms: again while each moves data
@@ -314,17 +316,17 @@ pub(crate) fn swr_v1_hook_uring_vector(
     ops: &UringSocketOps<'_>,
     vector: &mut IoVector<'_>,
     all: bool,
-) -> isize {
+) -> Option<usize> {
     if !all {
         return ops.vector(vector);
     }
     let mut total = 0usize;
     let result = loop {
         let result = ops.vector(vector);
-        if result <= 0 {
+        let Some(moved @ 1..) = result else {
             break result;
-        }
-        total += result.unsigned_abs();
+        };
+        total += moved;
         if vector.iovecs().is_empty() {
             break result;
         }
@@ -468,7 +470,7 @@ fn want(socket: Co) -> c_int {
 /// `UringSocket::send_once` or `recv_once`: `io`, the open socket's one attempt on
 /// its `network::Socket`, with the TLS BIOs pumped through the ring until it moves
 /// bytes.
-pub(crate) fn once(ops: &UringSocketOps<'_>, io: impl FnMut() -> isize) -> isize {
+pub(crate) fn once(ops: &UringSocketOps<'_>, io: impl FnMut() -> Option<usize>) -> Option<usize> {
     ops.tls.once(io, || want(ops.socket))
 }
 
@@ -614,10 +616,13 @@ mod tests {
                     panic!("a vector to read into");
                 };
                 calls.push((slots.as_ptr().addr() - base.addr(), slots.len()));
-                results.next().unwrap()
+                usize::try_from(results.next().unwrap()).ok()
             });
             vector.update(result);
-            (result, core::mem::take(&mut calls))
+            (
+                result.map_or(-1, usize::cast_signed),
+                core::mem::take(&mut calls),
+            )
         };
         // 3 then 1 fill the first iovec, 2 lands in the second, then it would block.
         let (moved, made) = transfer(&mut vector, &[3, 1, 2, -1]);
@@ -631,7 +636,7 @@ mod tests {
         // SAFETY: as above.
         let lent = unsafe { core::slice::from_raw_parts_mut(source.as_mut_ptr().cast(), 2) };
         let mut fresh = IoVector::new(Vectors::Read(lent)).unwrap();
-        assert_eq!(fresh.transfer_each(|_| -1), -1);
+        assert_eq!(fresh.transfer_each(|_| None), None);
     }
 
     /// `with` lends a `UringSocket`'s view whose BIOs are its live session's memory
@@ -689,8 +694,8 @@ mod tests {
             let (a, b) = (ops(fds[0], socket.co()), ops(fds[1], socket.co()));
             let mut message = *b"hello world";
             let mut received = [0u8; 11];
-            assert_eq!(send_all(&a, &message), 11);
-            assert_eq!(recv_all(&b, &mut received), 11);
+            assert_eq!(send_all(&a, &message), Some(11));
+            assert_eq!(recv_all(&b, &mut received), Some(11));
             assert_eq!(&received, b"hello world");
             let bound = socket.co().with_state(|state| state.bound_co(Events::READ));
             assert!(bound.is_null(), "unbound after the call");
@@ -706,7 +711,7 @@ mod tests {
             AVAILABLE.with(|v| *v.borrow_mut() = false);
             let result = super::read(&a, &mut message[..1]);
             AVAILABLE.with(|v| *v.borrow_mut() = true);
-            assert_eq!(result, -1);
+            assert_eq!(result, None);
             assert_eq!(logged(), std::slice::from_ref(&read));
             // A poll with nothing to read times out.
             let polled = swr_v1_hook_uring_poll(&a, Events::READ, libc::POLLIN, 0.01);
@@ -763,7 +768,7 @@ mod tests {
             };
             to_address.addr.inet_v4 = target;
             let sent = sendto(&to, b"ping", &to_address);
-            assert_eq!(sent, 4);
+            assert_eq!(sent, Some(4));
             let mut received = [0u8; 4];
             assert_eq!(receiver.recv(&mut received).unwrap(), 4);
             assert_eq!(&received, b"ping");

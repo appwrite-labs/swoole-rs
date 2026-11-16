@@ -492,7 +492,7 @@ pub fn listen(fd: c_int, backlog: c_int) -> std::io::Result<()> {
 /// # Errors
 /// The syscall's errno.
 pub fn socket(domain: c_int, kind: c_int, protocol: c_int) -> std::io::Result<c_int> {
-    descriptor_result(c::socket(domain, kind, protocol))
+    nonnegative_result(c::socket(domain, kind, protocol))
 }
 
 /// `shutdown(2)`.
@@ -543,8 +543,8 @@ pub fn setsockopt_bytes(fd: c_int, level: c_int, name: c_int, value: &[u8]) -> s
     status_result(status)
 }
 
-/// Capture a descriptor-producing syscall's errno before another operation.
-fn descriptor_result(fd: c_int) -> std::io::Result<c_int> {
+/// Capture a syscall's errno, retaining its nonnegative descriptor, flags or count.
+fn nonnegative_result(fd: c_int) -> std::io::Result<c_int> {
     if fd < 0 {
         Err(std::io::Error::last_os_error())
     } else {
@@ -582,14 +582,14 @@ pub fn send(fd: c_int, buf: &[u8], flags: c_int) -> Option<usize> {
 /// # Errors
 /// The syscall's errno.
 pub fn dup(fd: c_int) -> std::io::Result<c_int> {
-    descriptor_result(c::dup(fd))
+    nonnegative_result(c::dup(fd))
 }
 
 /// `dup2(2)`.
 /// # Errors
 /// The syscall's errno.
 pub fn dup2(from: c_int, to: c_int) -> std::io::Result<c_int> {
-    descriptor_result(c::dup2(from, to))
+    nonnegative_result(c::dup2(from, to))
 }
 
 /// Commands whose argument is an integer or absent: the only ones [`fcntl`] passes on.
@@ -618,13 +618,15 @@ const INTEGER_COMMANDS: [c_int; 8] = [
 /// `F_SETFD`, `F_DUPFD`, ...); commands that take no argument ignore it. Any other
 /// command (one whose argument is a pointer, such as `F_GETLK`) fails with `EINVAL`
 /// without calling libc.
-pub fn fcntl(fd: c_int, cmd: c_int, arg: c_int) -> c_int {
+/// # Errors
+/// The syscall's captured errno, or `EINVAL` for a command outside the integer list.
+pub fn fcntl(fd: c_int, cmd: c_int, arg: c_int) -> std::io::Result<c_int> {
     if !INTEGER_COMMANDS.contains(&cmd) {
-        set_errno(libc::EINVAL);
-        return -1;
+        return Err(std::io::Error::from_raw_os_error(libc::EINVAL));
     }
     // SAFETY: `cmd` takes an integer argument or none, so nothing is dereferenced.
-    unsafe { libc::fcntl(fd, cmd, arg) }
+    let result = unsafe { libc::fcntl(fd, cmd, arg) };
+    nonnegative_result(result)
 }
 
 /// `flock(2)`.
@@ -635,9 +637,13 @@ pub fn flock(fd: c_int, operation: c_int) -> std::io::Result<()> {
     status_result(c::flock(fd, operation))
 }
 
-/// `poll(2)` of `fds`.
-pub fn poll(fds: &mut [libc::pollfd], timeout: c_int) -> c_int {
-    lent::lend_out(fds, |fds, count| lent::poll(fds, count, timeout))
+/// `poll(2)` of `fds`: the number ready, or zero on timeout.
+/// # Errors
+/// The syscall's captured errno.
+pub fn poll(fds: &mut [libc::pollfd], timeout: c_int) -> std::io::Result<c_int> {
+    nonnegative_result(lent::lend_out(fds, |fds, count| {
+        lent::poll(fds, count, timeout)
+    }))
 }
 
 /// `pipe(2)`: the read and write ends, or `None` with errno set.
@@ -1253,6 +1259,77 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no fcntl for these flags")]
+    fn fcntl_errors_keep_errno_and_success_keeps_flags() {
+        let error = fcntl(-1, libc::F_GETFL, 0).unwrap_err();
+        set_errno(libc::EINTR);
+        assert_eq!(error.raw_os_error(), Some(libc::EBADF));
+        let [reader, writer] = pipe().unwrap();
+        let flags = fcntl(reader, libc::F_GETFL, 0).unwrap();
+        assert_eq!(
+            fcntl(reader, libc::F_SETFL, flags | libc::O_NONBLOCK).unwrap(),
+            0
+        );
+        assert_eq!(
+            fcntl(reader, libc::F_GETFL, 0).unwrap(),
+            flags | libc::O_NONBLOCK
+        );
+        let copy = fcntl(reader, libc::F_DUPFD, 0).unwrap();
+        assert_ne!(copy, reader);
+        assert_eq!(
+            fcntl(copy, libc::F_GETFL, 0).unwrap(),
+            flags | libc::O_NONBLOCK
+        );
+        let failed = fcntl(reader, -1, 0).unwrap_err();
+        set_errno(libc::ENOENT);
+        assert_eq!(failed.raw_os_error(), Some(libc::EINVAL));
+        assert_eq!(
+            fcntl(reader, libc::F_GETFL, 0).unwrap(),
+            flags | libc::O_NONBLOCK
+        );
+        for fd in [reader, writer, copy] {
+            close(fd).unwrap();
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no poll")]
+    fn poll_distinguishes_timeout_readiness_and_invalid_descriptors() {
+        let [reader, writer] = pipe().unwrap();
+        let mut event = libc::pollfd {
+            fd: reader,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        assert_eq!(poll(std::slice::from_mut(&mut event), 0).unwrap(), 0);
+        assert_eq!(event.revents, 0);
+        assert_eq!(write(writer, b"x"), Some(1));
+        assert_eq!(poll(std::slice::from_mut(&mut event), 0).unwrap(), 1);
+        assert_ne!(event.revents & libc::POLLIN, 0);
+        assert_eq!((event.fd, event.events), (reader, libc::POLLIN));
+        let mut invalid = [
+            libc::pollfd {
+                fd: c_int::MAX,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: -1,
+                events: libc::POLLIN,
+                revents: libc::POLLIN,
+            },
+        ];
+        // An invalid descriptor is reported in revents, not as a syscall error;
+        // negative descriptors are ignored and their revents cleared.
+        assert_eq!(poll(&mut invalid, 0).unwrap(), 1);
+        assert_eq!(invalid[0].revents, libc::POLLNVAL);
+        assert_eq!(invalid[1].revents, 0);
+        assert_eq!(poll(&mut [], 0).unwrap(), 0);
+        close(reader).unwrap();
+        close(writer).unwrap();
+    }
+
+    #[test]
     fn descriptor_calls_round_trip_through_a_pipe() {
         let mut fds = [0; 2];
         // SAFETY: `fds` holds two descriptors.
@@ -1261,10 +1338,18 @@ mod tests {
         assert_eq!(write(writer, b"abc"), Some(3));
         let copy = dup(reader).unwrap_or(-1);
         assert!(copy >= 0);
-        assert_eq!(fcntl(copy, libc::F_SETFL, libc::O_NONBLOCK), 0);
-        assert_ne!(fcntl(copy, libc::F_GETFL, 0) & libc::O_NONBLOCK, 0);
-        assert_eq!(fcntl(copy, libc::F_GETLK, 0), -1);
-        assert_eq!(errno(), libc::EINVAL);
+        assert_eq!(
+            fcntl(copy, libc::F_SETFL, libc::O_NONBLOCK).unwrap_or(-1),
+            0
+        );
+        assert_ne!(
+            fcntl(copy, libc::F_GETFL, 0).unwrap_or(-1) & libc::O_NONBLOCK,
+            0
+        );
+        assert_eq!(
+            fcntl(copy, libc::F_GETLK, 0).map_err(|e| e.raw_os_error()),
+            Err(Some(libc::EINVAL))
+        );
         let mut buf = [0; 8];
         assert_eq!(read(copy, &mut buf), Some(3));
         assert_eq!(&buf[..3], b"abc");
