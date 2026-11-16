@@ -746,18 +746,27 @@ impl Table {
         _ = self.mutex.unlock();
     }
 
-    /// Copy `row_size` bytes of `row` (zeros for `None`) to the cursor's row,
-    /// which holds `stride >= row_size` bytes.
-    fn copy(cursor: &mut Cursor, row: Option<Live>, row_size: usize) {
+    /// Copy `row`'s key and column data (zeros for `None`) to the cursor's row,
+    /// which holds `stride >= row_size` bytes, where [`Current`] reads them.
+    fn copy(cursor: &mut Cursor, row: Option<&Locked<'_>>, row_size: usize) {
         let Some(current) = cursor.current.get_mut(..row_size) else {
             return;
         };
-        let Some(row) = row else {
-            current.fill(0);
+        current.fill(0);
+        let Some((row, data)) = row.and_then(|locked| locked.row.as_ref()) else {
             return;
         };
-        // SAFETY: a locked row's bytes, into the cursor's row.
-        unsafe { ptr::copy_nonoverlapping(row.0.cast::<u8>(), current.as_mut_ptr(), row_size) };
+        if let Some(length) = current.get_mut(offset_of!(Row, key_len)) {
+            *length = row.key_len();
+        }
+        let key = current.iter_mut().skip(offset_of!(Row, key));
+        for (to, byte) in key.zip(row.key_bytes()) {
+            *to = byte.load(Ordering::Relaxed);
+        }
+        let columns = current.iter_mut().skip(ROW);
+        for (to, &byte) in columns.zip(data.iter()) {
+            *to = byte;
+        }
     }
 
     /// `Table::forward` of `cursor`: copies the next row to it, or an empty
@@ -770,14 +779,14 @@ impl Table {
                 continue;
             }
             bucket.lock(self.warning);
-            let found = Self::visit(cursor, bucket);
-            if found.is_some() {
-                Self::copy(cursor, found, row_size);
-            }
-            bucket.unlock();
-            if found.is_some() {
+            let found = Self::visit(cursor, bucket).map_or(ptr::null_mut(), |row| row.0);
+            // Unlocked when the guard drops.
+            let locked = self.locked(bucket.0, found, 0);
+            if locked.as_ref().is_some_and(Locked::found) {
+                Self::copy(cursor, locked.as_ref(), row_size);
                 return;
             }
+            drop(locked);
             cursor.absolute += 1;
         }
         Self::copy(cursor, None, ROW);
