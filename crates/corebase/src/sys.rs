@@ -19,9 +19,9 @@ use crate::lent::{self, Drain, Fill};
 /// either side of the boundary.
 ///
 /// Invariant: it points at a NUL-terminated string live for `'a`. Rust makes one only
-/// from a `&'a CStr`. The other source is a parameter (or declared static) of this type
-/// on the C boundary, where the C caller's `const char *` contract stands for the
-/// constructor, as it does for a `&T` parameter there.
+/// from a `&'a CStr`. The other source is a parameter, declared static or declared
+/// return value of this type on the C boundary, where the C side's `const char *`
+/// contract stands for the constructor, as it does for a `&T` there.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct Text<'a>(NonNull<libc::c_char>, PhantomData<&'a CStr>);
