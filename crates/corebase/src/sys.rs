@@ -494,38 +494,53 @@ pub fn shutdown(fd: c_int, how: c_int) -> c_int {
     c::shutdown(fd, how)
 }
 
-/// `getsockopt(2)` of an int option into `value`, which keeps what it held when
-/// the call fails.
-pub fn getsockopt_int(fd: c_int, level: c_int, name: c_int, value: &mut c_int) -> c_int {
-    getsockopt(fd, level, name, value).map_or(-1, |_| 0)
-}
-
-/// `getsockopt(2)` into `value`: the length the kernel stored, or `None` with
-/// errno set.
+/// `getsockopt(2)` into `value`: the length the kernel stored.
+///
+/// # Errors
+/// The syscall's errno; `value` keeps what it held when the call fails.
 pub fn getsockopt<T: Pod>(
     fd: c_int,
     level: c_int,
     name: c_int,
     value: &mut T,
-) -> Option<libc::socklen_t> {
+) -> std::io::Result<libc::socklen_t> {
     let mut length = socklen::<T>();
     // SAFETY: `value` holds the `length` writable bytes given, and any bytes are a `T`.
     let status =
         unsafe { libc::getsockopt(fd, level, name, (&raw mut *value).cast(), &raw mut length) };
-    (status == 0).then_some(length)
+    status_result(status)?;
+    Ok(length)
 }
 
 /// `setsockopt(2)` of `value`.
-pub fn setsockopt<T: Pod>(fd: c_int, level: c_int, name: c_int, value: &T) -> c_int {
+///
+/// # Errors
+/// The syscall's errno.
+pub fn setsockopt<T: Pod>(fd: c_int, level: c_int, name: c_int, value: &T) -> std::io::Result<()> {
     // SAFETY: `value` holds the readable bytes whose count is given.
-    unsafe { libc::setsockopt(fd, level, name, (&raw const *value).cast(), socklen::<T>()) }
+    let status =
+        unsafe { libc::setsockopt(fd, level, name, (&raw const *value).cast(), socklen::<T>()) };
+    status_result(status)
 }
 
 /// `setsockopt(2)` of an option given as bytes.
-pub fn setsockopt_bytes(fd: c_int, level: c_int, name: c_int, value: &[u8]) -> c_int {
+///
+/// # Errors
+/// The syscall's errno.
+pub fn setsockopt_bytes(fd: c_int, level: c_int, name: c_int, value: &[u8]) -> std::io::Result<()> {
     let length = libc::socklen_t::try_from(value.len()).unwrap_or(libc::socklen_t::MAX);
     // SAFETY: `value` is readable for its length, which `length` does not exceed.
-    unsafe { libc::setsockopt(fd, level, name, value.as_ptr().cast(), length) }
+    let status = unsafe { libc::setsockopt(fd, level, name, value.as_ptr().cast(), length) };
+    status_result(status)
+}
+
+/// Capture a status syscall's errno before another operation can overwrite it.
+fn status_result(status: c_int) -> std::io::Result<()> {
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
 }
 
 /// `socketpair(2)`: both ends, or `None` with errno set.
@@ -1110,15 +1125,47 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no socket options")]
+    fn socket_option_errors_keep_errno_and_failed_output() {
+        let mut value: c_int = 73;
+        let read = getsockopt(-1, libc::SOL_SOCKET, libc::SO_TYPE, &mut value).unwrap_err();
+        let write = setsockopt(-1, libc::SOL_SOCKET, libc::SO_KEEPALIVE, &1_i32).unwrap_err();
+        let bytes = setsockopt_bytes(
+            -1,
+            libc::SOL_SOCKET,
+            libc::SO_KEEPALIVE,
+            &1_i32.to_ne_bytes(),
+        )
+        .unwrap_err();
+        set_errno(libc::ENOENT);
+        assert_eq!(value, 73);
+        for error in [read, write, bytes] {
+            assert_eq!(error.raw_os_error(), Some(libc::EBADF));
+        }
+        let [left, right] = socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0).unwrap();
+        setsockopt_bytes(
+            left,
+            libc::SOL_SOCKET,
+            libc::SO_KEEPALIVE,
+            &1_i32.to_ne_bytes(),
+        )
+        .unwrap();
+        let length = getsockopt(left, libc::SOL_SOCKET, libc::SO_KEEPALIVE, &mut value).unwrap();
+        assert_eq!((length, value), (socklen::<c_int>(), 1));
+        assert_eq!(close(left), 0);
+        assert_eq!(close(right), 0);
+    }
+
+    #[test]
     #[cfg_attr(miri, ignore = "Miri has no socket options or MSG_PEEK")]
     fn socket_calls_round_trip_through_a_pair() {
         let [left, right] = socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0).unwrap();
         assert_eq!(
-            setsockopt::<c_int>(left, libc::SOL_SOCKET, libc::SO_KEEPALIVE, &1),
+            setsockopt::<c_int>(left, libc::SOL_SOCKET, libc::SO_KEEPALIVE, &1).map_or(-1, |()| 0),
             0
         );
         let mut kind: c_int = 0;
-        let length = getsockopt(left, libc::SOL_SOCKET, libc::SO_TYPE, &mut kind);
+        let length = getsockopt(left, libc::SOL_SOCKET, libc::SO_TYPE, &mut kind).ok();
         assert_eq!(
             (length, kind),
             (Some(socklen::<c_int>()), libc::SOCK_STREAM)
@@ -1131,7 +1178,11 @@ mod tests {
         assert_eq!(close(left), 0);
         assert_eq!(close(right), 0);
         assert!(socketpair(-1, 0, 0).is_none());
-        assert!(getsockopt(-1, libc::SOL_SOCKET, libc::SO_TYPE, &mut kind).is_none());
+        assert!(
+            getsockopt(-1, libc::SOL_SOCKET, libc::SO_TYPE, &mut kind)
+                .ok()
+                .is_none()
+        );
     }
 
     #[test]

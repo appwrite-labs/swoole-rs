@@ -131,3 +131,8 @@ that took their callers, same inputs and expected values (`cargo test`):
 - Its corpus targets LP64 macOS/Linux only.
 - Not covered: Rust-side sanitizers, malloc/system OOM, PHP init with the Rust
   init path, `SW_THREAD` runtime, and performance.
+
+`sys::tests::socket_option_errors_keep_errno_and_failed_output` checks that socket-option
+Results retain the failing syscall errno after another operation changes it, leave the
+output untouched on failure, and round-trip byte-valued options. Existing socket-call
+assertions retain their original integer/optional observations through local adapters.

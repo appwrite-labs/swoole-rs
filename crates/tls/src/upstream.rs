@@ -1204,7 +1204,7 @@ pub extern "C-unwind" fn make_server_socket(
         let enable: c_int = 1;
         let set =
             swoole_rs_corebase::sys::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, &enable);
-        if set < 0 {
+        if set.is_err() {
             log::sys_warning(
                 ORIGIN,
                 format_args!("setsockopt({fd}, SO_REUSEADDR) failed"),

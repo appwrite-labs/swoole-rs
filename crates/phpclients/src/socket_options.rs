@@ -487,7 +487,7 @@ fn get_option(call: &Call) {
     };
     if level == i64::from(libc::IPPROTO_IP) && name == i64::from(libc::IP_MULTICAST_IF) {
         let mut address = libc::in_addr { s_addr: 0 };
-        if getsockopt(fd, level_int, name_int, &mut address).is_none() {
+        if getsockopt(fd, level_int, name_int, &mut address).is_err() {
             return failed();
         }
         return match multicast::interface_index(address) {
@@ -507,7 +507,7 @@ fn get_option(call: &Call) {
             l_onoff: 0,
             l_linger: 0,
         };
-        if getsockopt(fd, level_int, name_int, &mut linger).is_none() {
+        if getsockopt(fd, level_int, name_int, &mut linger).is_err() {
             return failed();
         }
         call.set_array();
@@ -534,7 +534,7 @@ fn get_option(call: &Call) {
     #[cfg(target_os = "linux")]
     if name_int == libc::TCP_INFO {
         let mut info: libc::tcp_info = swoole_rs_corebase::sys::zeroed();
-        if getsockopt(fd, libc::SOL_TCP, libc::TCP_INFO, &mut info).is_none() {
+        if getsockopt(fd, libc::SOL_TCP, libc::TCP_INFO, &mut info).is_err() {
             return warn_sys(&format!("getsockopt({fd}, SOL_TCP, TCP_INFO)"), errno());
         }
         call.set_array();
@@ -544,7 +544,7 @@ fn get_option(call: &Call) {
         return;
     }
     let mut other: c_int = 0;
-    let Some(length) = getsockopt(fd, level_int, name_int, &mut other) else {
+    let Ok(length) = getsockopt(fd, level_int, name_int, &mut other) else {
         return failed();
     };
     if length == 1 {
@@ -616,7 +616,8 @@ fn set_option(call: &Call) {
         }
     }
     // The option, set once every argument is read.
-    let set: &dyn Fn(c_int) -> c_int = if !plain && name == i64::from(libc::SO_LINGER) {
+    let set: &dyn Fn(c_int) -> std::io::Result<()> = if !plain && name == i64::from(libc::SO_LINGER)
+    {
         let Some(table) = option_table(call, value, "SO_LINGER") else {
             return;
         };
@@ -669,7 +670,7 @@ fn set_option(call: &Call) {
         &move |fd| setsockopt(fd, level_int, name_int, &int)
     };
     let fd = fd(socket);
-    if set(fd) != 0 {
+    if set(fd).is_err() {
         warn_sys(&format!("setsockopt({fd}) failed"), errno());
         return call.set_bool(false);
     }
@@ -704,7 +705,7 @@ fn domain(fd: c_int) -> Option<c_int> {
     #[cfg(target_os = "linux")]
     {
         let mut domain: c_int = libc::AF_INET;
-        if getsockopt(fd, libc::SOL_SOCKET, libc::SO_DOMAIN, &mut domain).is_some() {
+        if getsockopt(fd, libc::SOL_SOCKET, libc::SO_DOMAIN, &mut domain).is_ok() {
             return Some(domain);
         }
     }
@@ -778,7 +779,7 @@ fn import(call: &Call) {
         return call.set_bool(false);
     };
     let mut kind: c_int = libc::SOCK_STREAM;
-    if getsockopt(fd, libc::SOL_SOCKET, libc::SO_TYPE, &mut kind).is_none() {
+    if getsockopt(fd, libc::SOL_SOCKET, libc::SO_TYPE, &mut kind).is_err() {
         warn_sys("getsockopt(SOL_SOCKET, SO_TYPE) failed", errno());
         return call.set_bool(false);
     }

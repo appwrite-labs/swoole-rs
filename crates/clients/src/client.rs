@@ -957,7 +957,7 @@ impl Handle {
         let fd = self.socket().fd();
         let enable: c_int = 1;
         if swoole_rs_corebase::sys::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, &enable)
-            < 0
+            .is_err()
         {
             log::sys_warning(
                 c"bind",
@@ -1619,7 +1619,7 @@ mod ops {
     /// `getsockopt(SOL_SOCKET, SO_ERROR)` into `error`: whether it succeeded.
     pub(super) fn socket_error(this: Handle, error: &mut c_int) -> bool {
         let fd = this.socket().fd();
-        swoole_rs_corebase::sys::getsockopt_int(fd, libc::SOL_SOCKET, libc::SO_ERROR, error) == 0
+        swoole_rs_corebase::sys::getsockopt(fd, libc::SOL_SOCKET, libc::SO_ERROR, error).is_ok()
     }
 }
 

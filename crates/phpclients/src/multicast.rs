@@ -156,7 +156,7 @@ fn apply<T: swoole_rs_corebase::sys::Pod>(
     name: c_int,
     value: &T,
 ) -> Handled {
-    if setsockopt(s.fd, level, name, value) != 0 {
+    if setsockopt(s.fd, level, name, value).is_err() {
         socket_error(s.socket, "unable to set socket option", errno())?;
         return Ok(Some(false));
     }
@@ -392,7 +392,7 @@ fn change(
         request.gr_group = stored(group);
         setsockopt(s.fd, level, name, &request)
     };
-    Ok(Some(result == 0))
+    Ok(Some(result.is_ok()))
 }
 
 /// `IP_ADD_MEMBERSHIP` and `IP_DROP_MEMBERSHIP`; upstream picks the request
@@ -428,7 +428,7 @@ fn change(
         } else {
             libc::IP_DROP_MEMBERSHIP
         };
-        Ok(Some(setsockopt(s.fd, level, name, &request) == 0))
+        Ok(Some(setsockopt(s.fd, level, name, &request).is_ok()))
     } else if s.kind == libc::AF_INET6 {
         let request = libc::ipv6_mreq {
             // As above, as a sockaddr_in6.
@@ -440,7 +440,7 @@ fn change(
         } else {
             libc::IPV6_LEAVE_GROUP
         };
-        Ok(Some(setsockopt(s.fd, level, name, &request) == 0))
+        Ok(Some(setsockopt(s.fd, level, name, &request).is_ok()))
     } else {
         let option = if join {
             "MCAST_JOIN_GROUP"
@@ -675,7 +675,7 @@ pub(crate) fn get_ipv6(call: &Call, socket: Co, level: c_int, name: c_int) -> Ha
         return Ok(None);
     }
     let mut info: libc::in6_pktinfo = zeroed();
-    if crate::socket_options::getsockopt(fd(socket), level, name, &mut info).is_none() {
+    if crate::socket_options::getsockopt(fd(socket), level, name, &mut info).is_err() {
         socket_error(socket, "unable to get socket option", errno())?;
         return Ok(Some(false));
     }

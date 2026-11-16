@@ -25,7 +25,9 @@ const SOCK_CLOEXEC: c_int = swoole_rs_corebase::constants::SocketFlag::SW_SOCK_C
 
 /// `setsockopt(fd, level, option, value)` for an int option.
 fn set_option(fd: c_int, level: c_int, option: c_int, value: c_int) {
-    swoole_rs_corebase::sys::setsockopt(fd, level, option, &value);
+    drop(swoole_rs_corebase::sys::setsockopt(
+        fd, level, option, &value,
+    ));
 }
 
 /// `Socket::bind(host, port)`: the port's literal address, unresolved.

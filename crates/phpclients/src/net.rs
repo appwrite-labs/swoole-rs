@@ -501,12 +501,13 @@ pub(crate) fn connected(call: &Call) -> Option<Rc<Conn>> {
         if conn.flag(state::Flag::AsyncConnect) {
             conn.set_flag(state::Flag::AsyncConnect, false);
             let mut error: c_int = -1;
-            if swoole_rs_corebase::sys::getsockopt_int(
+            if swoole_rs_corebase::sys::getsockopt(
                 conn.fd(),
                 libc::SOL_SOCKET,
                 libc::SO_ERROR,
                 &mut error,
-            ) == 0
+            )
+            .is_ok()
                 && error == 0
             {
                 conn.set_flag(state::Flag::Active, true);

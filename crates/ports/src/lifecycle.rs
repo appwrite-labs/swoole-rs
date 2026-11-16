@@ -218,8 +218,8 @@ extern "C" fn sni_callback(ssl: Ssl<'_>, _al: *mut c_int, _arg: *mut c_void) -> 
 /// `getsockopt(fd, SOL_SOCKET, option)`: the value, or `None` (errno set).
 fn get_option(fd: c_int, option: c_int) -> Option<c_int> {
     let mut value: c_int = 0;
-    let got = swoole_rs_corebase::sys::getsockopt_int(fd, libc::SOL_SOCKET, option, &mut value);
-    (got == 0).then_some(value)
+    swoole_rs_corebase::sys::getsockopt(fd, libc::SOL_SOCKET, option, &mut value).ok()?;
+    Some(value)
 }
 
 /// `ListenPort::import(fd)`: adopts a listening socket; the fd stays the

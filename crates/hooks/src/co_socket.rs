@@ -640,7 +640,7 @@ impl CoSocket {
             let on: c_int = 1;
             let set =
                 swoole_rs_corebase::sys::setsockopt(fd, libc::IPPROTO_TCP, libc::TCP_NODELAY, &on);
-            if set < 0 {
+            if set.is_err() {
                 result |= NODELAY_FAILED;
             }
         }
