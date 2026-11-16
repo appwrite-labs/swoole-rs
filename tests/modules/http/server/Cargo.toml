@@ -25,6 +25,7 @@ swoole-rs-ports = { path = "../../../../crates/ports" }
 # workers are threads with their own `SwooleWG`.
 swoole-rs-process = { path = "../../../../crates/process", features = ["thread"] }
 swoole-rs-server = { path = "../../../../crates/server" }
+swoole-rs-timer = { path = "../../../../crates/timer", features = ["upstream-symbols"] }
 swoole-rs-tls = { path = "../../../../crates/tls" }
 swoole-rs-utilities = { path = "../../../../crates/utilities" }
 

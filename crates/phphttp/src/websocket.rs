@@ -977,7 +977,7 @@ fn set_header(context: Ctx, key: &[u8], value: &[u8]) -> Result<(), bailout::Bai
 }
 
 fn handshake(mut context: Ctx) -> Result<bool, bailout::Bailout> {
-    let header = context.state().request.zheader.get();
+    let header = crate::parse::made(&context.state().request, crate::parse::Property::Header);
     let key = header
         .and_then(Value::array)
         .and_then(|header| header.find(b"sec-websocket-key"));
@@ -1128,10 +1128,7 @@ pub(crate) fn accept(mut context: Ctx) {
     };
     let mut accepted = false;
     if offered && state.request.zobject.get().is_some() {
-        let text = state
-            .request
-            .zheader
-            .get()
+        let text = crate::parse::made(&state.request, crate::parse::Property::Header)
             .and_then(Value::array)
             .and_then(|header| header.find(b"sec-websocket-extensions"))
             .and_then(Value::bytes);

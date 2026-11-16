@@ -9,18 +9,18 @@
 //! notifier, `openssl_x509_read`) traps a bailout and reports it through its
 //! `bailout` flag; the C++ entry re-raises it once these frames are gone.
 use crate::socket::{RecvOp, Report, SendOp, Socket, check_reactor, kind, report, x509_read};
-use libc::{c_int, sockaddr_storage, socklen_t};
+use libc::{c_int, socklen_t};
 use std::{
     ffi::{CStr, CString},
     io::IoSlice,
     marker::PhantomData,
-    mem::{self, MaybeUninit, size_of},
+    mem::{self, MaybeUninit},
     ptr::{self, NonNull},
     rc::Rc,
 };
 use swoole_rs_corebase::{
     CCast,
-    net_types::SocketAddress,
+    net_types::{AddressStorage, SocketAddress},
     sys::{Text, errno},
 };
 use swoole_rs_reactor::{Caught, TimeoutKind};
@@ -91,10 +91,10 @@ unsafe extern "C" {
         stream: &mut Option<Fresh>,
     ) -> c_int;
     /// `php_network_populate_name_from_sockaddr` of the first `size` bytes of
-    /// `peer`, at most all of it, into the slots given, as
+    /// `peer`, which holds them, into the slots given, as
     /// [`php_network_get_sock_name`] writes them.
     safe fn swr_zend_stream_populate_name(
-        peer: &sockaddr_storage,
+        peer: &AddressStorage,
         size: socklen_t,
         textaddr: Option<&mut *mut zend_string>,
         addr: Option<&mut *mut sockaddr>,
@@ -843,8 +843,8 @@ fn accept(
         return Ok(false);
     };
     // The peer's name, as upstream reports it: from an empty address.
-    let peer: sockaddr_storage = swoole_rs_corebase::sys::zeroed();
-    populate_name(param, &peer, STORAGE_SIZE);
+    let peer = SocketAddress::default();
+    populate_name(param, &peer.addr, SocketAddress::CAPACITY);
     if nodelay {
         client.set_nodelay(1);
     }
@@ -882,15 +882,12 @@ fn name_slots<'a>(
     }
 }
 
-/// `sizeof(sockaddr_storage)`.
-#[expect(clippy::cast_possible_truncation, reason = "sizeof(sockaddr_storage)")]
-const STORAGE_SIZE: socklen_t = size_of::<sockaddr_storage>() as socklen_t;
-
 /// `php_network_populate_name_from_sockaddr` of the first `size` bytes of `peer`
 /// (at most all of it) into the names the transport parameter wants.
-fn populate_name(param: &mut php_stream_xport_param, peer: &sockaddr_storage, size: socklen_t) {
+fn populate_name(param: &mut php_stream_xport_param, peer: &AddressStorage, size: socklen_t) {
     let mut unwanted = 0;
     let (textaddr, addr, addrlen) = name_slots(param, &mut unwanted);
+    let size = size.min(SocketAddress::CAPACITY);
     swr_zend_stream_populate_name(peer, size, textaddr, addr, addrlen);
 }
 
@@ -908,10 +905,10 @@ fn recvfrom(
                 .map_or(-1, usize::cast_signed),
         );
     }
-    let mut peer: sockaddr_storage = swoole_rs_corebase::sys::zeroed();
-    let (received, size) = socket.recvfrom(buffer, &mut peer);
-    if size != 0 {
-        populate_name(param, &peer, size);
+    let mut peer = SocketAddress::default();
+    let received = socket.recvfrom(buffer, &mut peer);
+    if peer.len != 0 {
+        populate_name(param, &peer.addr, peer.len);
     } else {
         if want_textaddr {
             // The empty string is interned.
@@ -922,7 +919,7 @@ fn recvfrom(
             param.outputs.addrlen = 0;
         }
     }
-    returncode(received)
+    returncode(received.map_or(-1, usize::cast_signed))
 }
 
 /// `socket_enable_crypto`: whether it succeeded (upstream's 1, else -1).
