@@ -7,7 +7,7 @@ use crate::{
 };
 use std::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::CCast;
-use swoole_rs_httpbindings::request_option;
+use swoole_rs_httpbindings::{RequestOption, request_option};
 use swoole_rs_phpstubs::http_request;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_zend::{
@@ -164,17 +164,19 @@ fn option(state: &mut State, name: &[u8], value: &Value) {
     let option = request_option(name, wanted);
     let truth = || value.truthy();
     match option {
-        1 => state.parse_cookie = truth(),
-        2 => state.parse_body = truth(),
-        3 => state.parse_files = truth(),
-        4 => state.enable_compression = truth(),
-        5 => {
+        Some(RequestOption::ParseCookie) => state.parse_cookie = truth(),
+        Some(RequestOption::ParseBody) => state.parse_body = truth(),
+        Some(RequestOption::ParseFiles) => state.parse_files = truth(),
+        Some(RequestOption::EnableCompression) => state.enable_compression = truth(),
+        Some(RequestOption::CompressionLevel) => {
             let level = value.long().c_cast::<i8>();
             state.compression_level = level;
         }
-        6 => state.websocket_compression = truth(),
-        7 => state.upload_tmp_dir = Some(crate::context::directory(value.string().bytes())),
-        _ => {}
+        Some(RequestOption::WebsocketCompression) => state.websocket_compression = truth(),
+        Some(RequestOption::UploadTmpDir) => {
+            state.upload_tmp_dir = Some(crate::context::directory(value.string().bytes()));
+        }
+        None => {}
     }
 }
 

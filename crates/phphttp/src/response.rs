@@ -13,7 +13,7 @@ use std::{
     sync::atomic::Ordering::Relaxed,
 };
 use swoole_rs_corebase::{CCast, HookType, swoole_isset_hook};
-use swoole_rs_httpbindings::{canonical_case, swr_v1_httpbindings_file_range};
+use swoole_rs_httpbindings::{RangeError, canonical_case, file_range};
 use swoole_rs_phpstubs::http_response;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_zend::bailout::Bailout;
@@ -276,23 +276,21 @@ fn send_file(call: &Call) {
             host::report(SERVER_IS_NOT_REGULAR_FILE, false, message);
             return None;
         }
-        let mut length = 0;
-        match swr_v1_httpbindings_file_range(stat.st_size, offset, requested, Some(&mut length)) {
-            0 => {}
-            1 | 3 => {
+        let length = match file_range(stat.st_size, offset, requested) {
+            Ok(length) => length,
+            Err(RangeError::OffsetPastEnd | RangeError::OffsetOverflow) => {
                 host::notice(&format!(
                     "parameter $offset[{offset}] exceeds the file size"
                 ));
                 return None;
             }
-            2 => {
+            Err(RangeError::LengthPastEnd) => {
                 host::notice(&format!(
                     "parameter $length[{requested}] exceeds the file size"
                 ));
                 return None;
             }
-            _ => return None,
-        }
+        };
         let length = usize::try_from(length).unwrap_or_default();
         Some(after(ctx).and_then(|()| send::send_file(ctx, file, offset, length)))
     };
