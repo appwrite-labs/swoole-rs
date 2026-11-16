@@ -37,7 +37,7 @@ def main():
                     observation=json.loads(result.stdout)
                     # Build timestamps and the explicitly added bridge identity
                     # describe different binaries; every upstream row stays exact.
-                    observation['info']=re.sub(r'^(Built|Rust migration bridge) => .*\n','',observation['info'],flags=re.M)
+                    observation['info']=re.sub(r'^(Built|Rust migration bridge|swoole-rs) => .*\n','',observation['info'],flags=re.M)
                     outputs.append(observation)
         if len({json.dumps(row,sort_keys=True) for row in outputs})!=1:raise ValueError('Native/selected module behavior differs')
         report.update(passed=True,execution_status='complete')

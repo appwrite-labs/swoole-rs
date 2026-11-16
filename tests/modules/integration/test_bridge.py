@@ -5,6 +5,7 @@ Build the reference and the Cargo extension (tools/build_ext.py) first, then run
 All compilations write only to a temporary directory.
 """
 import argparse
+import json
 import os
 import re
 from pathlib import Path
@@ -12,14 +13,17 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 from tools.build_ext import headers_for  # noqa: E402
+from tools.build_upstream import VERSION  # noqa: E402
 from tools.check_migration import MODULES  # noqa: E402
 
 OWNED = ROOT / 'native/swoole-src'
+UPSTREAM = VERSION.removeprefix('v')
 
 
 def run(command, *, cwd=ROOT, check=True):
@@ -129,6 +133,14 @@ int main(void) {
         info = self.php(ARGS.extension, '--ri', 'swoole')
         self.assertEqual(info.returncode, 0, info.stdout + info.stderr)
         self.assertIn(f'Rust migration bridge => ABI 1, features {ARGS.feature_bits}', info.stdout)
+        # Upstream's version stays what applications check; swoole-rs's own sits beside it.
+        self.assertEqual(self.php(ARGS.extension, '-r', 'echo SWOOLE_VERSION, " ", phpversion("swoole");').stdout,
+                         f'{UPSTREAM} {UPSTREAM}')
+        self.assertIn(f'\nVersion => {UPSTREAM}\n', info.stdout)
+        manifest = json.loads((ARGS.extension.parent / 'build-manifest.json').read_text())
+        version = tomllib.loads((ROOT / 'Cargo.toml').read_text())['workspace']['package']['version']
+        self.assertEqual(manifest['swoole_rs_version'], version)
+        self.assertIn(f"\nswoole-rs => {version} ({manifest['source_ref'][:12]})\n", info.stdout)
 
 
 
