@@ -166,17 +166,23 @@ impl Framing {
 
 struct Host {
     framing: Framing,
-    dispatch_dns: fn(&AsyncEvent<'_>) -> bool,
+    dispatch_dns: fn(Handle, &crate::resolver::Request) -> bool,
+    socks5: Socks5,
 }
 
 static HOST: OnceLock<Host> = OnceLock::new();
 
-/// Registers framed receives and the DNS pool dispatch; later registrations are
+/// Registers framing, DNS dispatch and SOCKS5 operations; later registrations are
 /// ignored. A successful dispatch holds the request until its completion returns.
-pub fn set_host(framing: Framing, dispatch_dns: fn(&AsyncEvent<'_>) -> bool) {
+pub fn set_host(
+    framing: Framing,
+    dispatch_dns: fn(Handle, &crate::resolver::Request) -> bool,
+    socks5: Socks5,
+) {
     HOST.get_or_init(|| Host {
         framing,
         dispatch_dns,
+        socks5,
     });
 }
 
@@ -185,32 +191,11 @@ fn native_host() -> &'static Host {
         .unwrap_or_else(|| swoole_rs_corebase::fatal("client host is not registered"))
 }
 
-// crates/protocols-ffi's definitions (the SOCKS5 codec), which the hybrid links (the
-// unit tests define doubles). crates/protocols-ffi sits above this one, so it reaches
-// them by symbol.
-unsafe extern "C" {
-    /// `Socks5Proxy::admit`: 0 (logged) when a credential is too long, 2 when
-    /// both are set, else 1. A length check over two scalars, which
-    /// crates/protocols-ffi defines as a safe fn.
-    #[link_name = "_ZN6swoole11Socks5Proxy5admitEmm"]
-    safe fn socks5_admit(user_length: usize, password_length: usize) -> c_int;
-    /// `Socks5Proxy::pack_negotiate_request()` into the proxy's buffer. A
-    /// `Socks5Proxy` is its owner's reference, and crates/protocols-ffi defines this
-    /// as a safe fn over one.
-    #[link_name = "_ZN6swoole11Socks5Proxy22pack_negotiate_requestEv"]
-    #[expect(
-        improper_ctypes,
-        reason = "the proxy state is opaque behind its reference; Rust defines both sides"
-    )]
-    safe fn socks5_pack_negotiate(proxy: &&ProxyState) -> isize;
-    /// `Socks5Proxy::handshake_step(data, length)`: the size of the answer it
-    /// packed, 0 when none is due, -1 on failure.
-    #[link_name = "_ZN6swoole11Socks5Proxy14handshake_stepEPKcm"]
-    fn socks5_handshake_step(
-        proxy: *const *mut c_void,
-        data: *const c_char,
-        length: usize,
-    ) -> isize;
+/// SOCKS5 operations over the client's owned proxy state.
+pub struct Socks5 {
+    pub admit: fn(usize, usize) -> c_int,
+    pub negotiate: fn(&ProxyState) -> isize,
+    pub handshake: fn(&ProxyState, &[u8]) -> Option<usize>,
 }
 
 /// A `String`'s free tail: where the next read lands and how much fits.
@@ -219,46 +204,6 @@ struct Tail {
     str: *mut c_char,
     size: usize,
 }
-
-/// `async::Handler`: runs on a pool thread over its own copy of the event, of which
-/// the pool keeps `error` and `retval`.
-type AsyncHandler = extern "C" fn(&mut AsyncEvent<'_>);
-
-/// The completion, on the dispatching thread.
-type AsyncCallback = extern "C" fn(&AsyncEvent<'_>);
-
-/// Upstream's `AsyncEvent` as crates/hooks' pool takes it, its request a counted
-/// DNS record: the event [`dns_lookup`] builds borrows its request, and each copy the
-/// pool makes holds a reference of its own, so the record outlives every borrow of
-/// an event.
-#[repr(C)]
-pub struct AsyncEvent<'a> {
-    task_id: usize,
-    canceled: u8,
-    error: c_int,
-    data: Option<&'a ResolverRequest>,
-    retval: isize,
-    pipe_socket: *mut c_void,
-    timestamp: f64,
-    object: *mut c_void,
-    handler: Option<AsyncHandler>,
-    callback: Option<AsyncCallback>,
-}
-
-impl AsyncEvent<'_> {
-    /// The event's request; none on an event built without one.
-    fn request(&self) -> Option<&ResolverRequest> {
-        self.data
-    }
-}
-
-#[cfg(target_pointer_width = "64")]
-const _: () = assert!(
-    size_of::<AsyncEvent>() == 72
-        && core::mem::offset_of!(AsyncEvent, data) == 16
-        && core::mem::offset_of!(AsyncEvent, object) == 48,
-    "crates/hooks' AsyncEvent layout moved"
-);
 
 /// The public, trivially copyable fields of `network::Client`.
 #[derive(Clone, Copy)]
@@ -280,6 +225,8 @@ pub struct ClientRecord {
 pub struct Client {
     record: Cell<ClientRecord>,
     socket_ops: &'static SocketOps,
+    /// Owns the allocation exposed through the public record's buffer pointer.
+    input_owner: Cell<Option<Box<CppString>>>,
     flags: Cell<u32>,
     domain: c_int,
     sock_flags: Cell<c_int>,
@@ -297,8 +244,7 @@ pub struct Client {
     tls: OnceCell<TlsContext>,
     /// The immutable configuration kept from the first handshake through close.
     tls_settings: OnceCell<Arc<TlsSettings>>,
-    /// The proxies, which the client owns: each a nullable pointer, as C++'s
-    /// `Socks5Proxy` reads the slot.
+    /// The proxy states owned by the client.
     socks5: Cell<Option<Box<ProxyState>>>,
     http_proxy: Cell<Option<Box<ProxyState>>>,
     /// The owner of the callable `protocol.private_data_1` names, when the
@@ -562,9 +508,13 @@ impl Handle {
     fn edit_input<R>(self, edit: fn(&mut CppString, Socket<'static>, &SocketOps) -> R) -> R {
         let socket = self.socket();
         let ops = self.get().socket_ops;
-        // SAFETY: the Box `input_init` made, live until `input_free`, which only
-        // `edit` reaches meanwhile.
-        edit(unsafe { &mut *self.input() }, socket, ops)
+        let mut buffer =
+            self.get().input_owner.take().unwrap_or_else(|| {
+                swoole_rs_corebase::fatal("client input buffer is not available")
+            });
+        let result = edit(&mut buffer, socket, ops);
+        self.get().input_owner.set(Some(buffer));
+        result
     }
 
     /// `new String(SW_CLIENT_BUFFER_SIZE)`, once.
@@ -572,19 +522,18 @@ impl Handle {
         if self.input().is_null() {
             let mut buffer = Box::new(CppString::EMPTY);
             buffer.alloc(CLIENT_BUFFER_SIZE, None);
-            let buffer = Box::into_raw(buffer).cast();
-            self.get().edit_record(|record| record.buffer = buffer);
+            self.get()
+                .edit_record(|record| record.buffer = core::ptr::from_mut(&mut *buffer).cast());
+            self.get().input_owner.set(Some(buffer));
         }
     }
 
     /// `delete buffer`.
     fn input_free(self) {
-        let buffer = self.input();
-        if !buffer.is_null() {
+        if let Some(mut buffer) = self.get().input_owner.take() {
             self.get()
                 .edit_record(|record| record.buffer = core::ptr::null_mut());
-            // SAFETY: the Box `input_init` made, released once.
-            unsafe { Box::from_raw(buffer) }.dispose();
+            buffer.dispose();
         }
     }
 
@@ -613,7 +562,7 @@ impl Handle {
     fn socks5_negotiate(self) -> usize {
         // The SOCKS5 proxy, whose buffer the request is packed into.
         self.with_proxy(Proxy::Socks5, |proxy| {
-            socks5_pack_negotiate(&proxy).cast_unsigned()
+            (native_host().socks5.negotiate)(proxy).cast_unsigned()
         })
         .unwrap_or(0)
     }
@@ -631,10 +580,14 @@ impl Handle {
     /// `Client::socks5_handshake`: applies `length` received bytes at `data` and
     /// sends the answer the proxy packed.
     fn socks5_handshake(self, data: *const c_char, length: usize) -> bool {
-        let owner = self.get().socks5.as_ptr().cast();
-        // SAFETY: the live SOCKS5 proxy; `length` bytes at `data`.
-        let n = unsafe { socks5_handshake_step(owner, data, length) };
-        n == 0 || n > 0 && self.socks5_send(n.cast_unsigned()) == Some(n.cast_unsigned())
+        // SAFETY: the received buffer lends `length` initialized bytes at `data`.
+        let reply = unsafe { std::slice::from_raw_parts(data.cast(), length) };
+        let n = self
+            .with_proxy(Proxy::Socks5, |proxy| {
+                (native_host().socks5.handshake)(proxy, reply)
+            })
+            .flatten();
+        n.is_some_and(|n| n == 0 || self.socks5_send(n) == Some(n))
     }
 
     /// A result from the scratch buffer, without holding a client borrow across
@@ -795,6 +748,7 @@ fn create_with(kind: c_int, is_async: bool, socket_ops: &'static SocketOps) -> O
     };
     let mut client = Box::new(Client {
         socket_ops,
+        input_owner: Cell::new(None),
         record: Cell::new(ClientRecord {
             http2: false,
             open_length_check: false,
@@ -1122,7 +1076,7 @@ pub fn set_proxy(
     let proxy = if http {
         Some(swoole_rs_http_ffi::http_proxy(host, port, user, password))
     } else {
-        match socks5_admit(user.len(), password.len()) {
+        match (native_host().socks5.admit)(user.len(), password.len()) {
             0 => None,
             config => {
                 let owner = ProxyState::new(true);
@@ -1255,44 +1209,15 @@ fn dns_lookup(this: Handle) -> bool {
     let name = host.as_deref().map_or(&b""[..], CStr::to_bytes);
     let request = crate::resolver::Request::new(this.get().domain, 0, 0, name, b"");
     this.get().server_host.set(host);
-    let event = AsyncEvent {
-        task_id: 0,
-        canceled: 0,
-        error: 0,
-        data: Some(request.get()),
-        retval: 0,
-        pipe_socket: core::ptr::null_mut(),
-        timestamp: 0.0,
-        object: this.0.cast(),
-        handler: Some(resolve),
-        callback: Some(resolve_completed),
-    };
     // The pool's copy holds its own reference to the request.
-    (native_host().dispatch_dns)(&event)
+    (native_host().dispatch_dns)(this, &request)
 }
 
-/// `async::handler_gethostbyname`, on a pool thread, over a copy of the event
-/// [`dns_lookup`] dispatched.
-extern "C" fn resolve(event: &mut AsyncEvent<'_>) {
-    // Its request record, held by the copy.
-    if let Some(request) = event.request() {
-        (event.retval, event.error) = crate::resolver::host(request);
-    }
-}
-
-/// `Client_onResolveCompleted`, on the client's thread, over the completed copy
-/// of the event [`dns_lookup`] dispatched.
-extern "C" fn resolve_completed(event: &AsyncEvent<'_>) {
-    // Its request record, held by the copy.
-    let Some(request) = event.request() else {
-        return;
-    };
+/// Completes the client's DNS request on its reactor thread, while the pool still
+/// owns the request and the client awaits its result.
+pub fn resolve_completed(this: Handle, request: &ResolverRequest, error: c_int) {
     let address = crate::resolver::address(request);
-    resolved(
-        Handle(event.object.cast()),
-        event.error,
-        &crate::resolver::c_name(&address),
-    );
+    resolved(this, error, &crate::resolver::c_name(&address));
 }
 
 /// `Client::connect(host, port, timeout, flags)`: `host` is NUL-terminated.

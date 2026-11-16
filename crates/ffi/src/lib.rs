@@ -181,6 +181,7 @@ static FAMILIES: swoole_rs_phpswoole::Families = {
     use swoole_rs_phphttp as http;
     use swoole_rs_phpthread as thread;
     swoole_rs_phpswoole::Families {
+        core_startup: || init::swoole_init(),
         coroutine_minit: [
             co::php_swoole_coroutine_minit,
             co::php_swoole_coroutine_system_minit,
