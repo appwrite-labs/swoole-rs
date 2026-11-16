@@ -245,54 +245,27 @@ main_loops! {
 
 // ---------------------------------------------------------------- the table
 
-/// The effects on the thread's timer and event loop, and the blocking wait.
-fn loop_ops(pool: Pool<'_>, op: Op, arg: u64) -> Option<i64> {
-    Some(match op {
-        Op::EventInit => {
-            // This thread has no event loop yet.
-            if swoole_rs_reactor::swoole_event_init(EVENTLOOP_WAIT_EXIT) < 0 {
-                return Some(-1);
-            }
-            // The loop just made.
-            crate::objects::Reactor::thread()
-                .handle()
-                .set_object(pool.raw().cast());
-            // SAFETY: the pool outlives the loop its worker runs on this thread, and
-            // only that loop's handlers read the handle.
-            LOOP_POOL.set(Some(unsafe { PoolRef::new(pool.raw()) }));
-            0
-        }
+/// The effects on the thread's timer and event loop: whether `op` was one.
+fn loop_ops(op: Op, arg: u64) -> bool {
+    match op {
         Op::PipeHandler => {
             let handler = if arg == 0 { recv_packet } else { recv_message };
             set_handler(FD_PIPE, Events::READ, Some(handler));
-            0
         }
-        Op::TimerSelect => {
-            swoole_timer_select();
-            0
-        }
+        Op::TimerSelect => swoole_timer_select(),
         Op::TimerFree => {
             if swoole_timer_is_available() {
                 swoole_timer_free();
             }
-            0
         }
-        Op::EventWait => i64::from(swoole_rs_reactor::event_api::swoole_event_wait()),
-        Op::EventAvailable => i64::from(swoole_event_is_available()),
-        Op::Waitpid => i64::from(swoole_rs_reactor::wait_upstream::swoole_waitpid(
-            arg.c_cast::<c_int>(),
-            Some(&mut 0),
-            0,
-        )),
-        _ => return None,
-    })
+        _ => return false,
+    }
+    true
 }
 
-/// `pool_call`'s lifecycle effects: the pool's objects.
-fn objects(pool: Pool<'_>, op: Op, arg: u64) -> Option<i64> {
-    Some(match op {
-        // The message queue is Rust's on every platform (crates/ossupport).
-        Op::HaveMsgqueue => 1,
+/// `pool_call`'s lifecycle effects on the pool's objects: whether `op` was one.
+fn objects(pool: Pool<'_>, op: Op, arg: u64) -> bool {
+    match op {
         Op::MainLoop => {
             let main_loop: MainLoopFn = match Protocol::from_code(arg.c_cast::<c_int>()) {
                 Some(Protocol::Task) => run_task,
@@ -305,24 +278,24 @@ fn objects(pool: Pool<'_>, op: Op, arg: u64) -> Option<i64> {
                 ..Hooks::default()
             };
             pool.install(&hooks);
-            0
         }
         // The global pool's `free` is a no-op.
-        Op::FreeWorkers => 0,
-        _ => return None,
-    })
+        Op::FreeWorkers => {}
+        _ => return false,
+    }
+    true
 }
 
-/// `pool_call`'s effects on its worker: its pipes, globals and callbacks.
-fn worker_ops(pool: Pool<'_>, worker: Record<'_>, op: Op, arg: u64) -> Option<i64> {
-    Some(match op {
+/// `pool_call`'s effects on its worker (its pipes, globals and callbacks): whether
+/// `op` was one.
+fn worker_ops(pool: Pool<'_>, worker: Record<'_>, op: Op, arg: u64) -> bool {
+    match op {
         Op::UnlimitPipes => {
             for master in [false, true] {
                 if let Some(end) = worker_pipe(worker, master) {
                     end.edit(|end| end.output.buffer_size = u32::MAX);
                 }
             }
-            0
         }
         Op::WorkerInit => {
             swr_v1_worker_init(worker);
@@ -333,11 +306,9 @@ fn worker_ops(pool: Pool<'_>, worker: Record<'_>, op: Op, arg: u64) -> Option<i6
             // SAFETY: the pool's worker this process now runs, which the pool keeps
             // until the worker loop ends.
             unsafe { swoole_rs_process::worker_globals::set_current_worker(worker.raw()) };
-            0
         }
         Op::WorkerShutdown => {
             swr_v1_worker_shutdown(worker);
-            0
         }
         Op::RemovePipe => {
             // arg: only when the pipe is still in the reactor.
@@ -346,7 +317,6 @@ fn worker_ops(pool: Pool<'_>, worker: Record<'_>, op: Op, arg: u64) -> Option<i6
             {
                 Reactor::thread().del(pipe);
             }
-            0
         }
         Op::ExitCallback => {
             // The worker of the loop this thread runs, as one of its pool's.
@@ -355,26 +325,24 @@ fn worker_ops(pool: Pool<'_>, worker: Record<'_>, op: Op, arg: u64) -> Option<i6
                 swoole_rs_reactor::Priority::TryExit,
                 worker_exit,
             );
-            0
         }
         Op::DontRestart => {
             if let Some(pipe) = worker_pipe(worker, false) {
                 pipe.edit(|pipe| pipe.dont_restart = true);
             }
-            0
         }
         Op::WorkerError => {
             let status = exit_status(arg);
             worker_report_error(worker, &status);
             pool.call_on_worker_error(worker, &status);
-            0
         }
-        _ => return None,
-    })
+        _ => return false,
+    }
+    true
 }
 
 /// `pool_call`'s timers, messages and callbacks.
-fn master_ops(pool: Pool<'_>, op: Op, arg: u64) -> i64 {
+fn master_ops(pool: Pool<'_>, op: Op, arg: u64) {
     match op {
         Op::ReopenLogger => {
             swoole_rs_utilities::process_logger()
@@ -417,7 +385,6 @@ fn master_ops(pool: Pool<'_>, op: Op, arg: u64) -> i64 {
         }
         _ => {}
     }
-    0
 }
 
 /// Runs `io` and records its result and errno in the call.
@@ -461,15 +428,43 @@ impl PoolNative for Native {
         new_message_bus()
     }
 
-    fn call(&self, c: &PoolCall, op: Op, arg: u64) -> i64 {
+    fn call(&self, c: &PoolCall, op: Op, arg: u64) {
         let pool = c.pool();
-        objects(pool, op, arg)
-            .or_else(|| loop_ops(pool, op, arg))
-            .or_else(|| {
-                c.worker()
-                    .and_then(|worker| worker_ops(pool, worker, op, arg))
-            })
-            .unwrap_or_else(|| master_ops(pool, op, arg))
+        let done = objects(pool, op, arg)
+            || loop_ops(op, arg)
+            || c.worker()
+                .is_some_and(|worker| worker_ops(pool, worker, op, arg));
+        if !done {
+            master_ops(pool, op, arg);
+        }
+    }
+
+    fn event_init(&self, c: &PoolCall) -> bool {
+        // This thread has no event loop yet.
+        if swoole_rs_reactor::swoole_event_init(EVENTLOOP_WAIT_EXIT) < 0 {
+            return false;
+        }
+        let pool = c.pool();
+        // The loop just made.
+        crate::objects::Reactor::thread()
+            .handle()
+            .set_object(pool.raw().cast());
+        // SAFETY: the pool outlives the loop its worker runs on this thread, and
+        // only that loop's handlers read the handle.
+        LOOP_POOL.set(Some(unsafe { PoolRef::new(pool.raw()) }));
+        true
+    }
+
+    fn event_available(&self) -> bool {
+        swoole_event_is_available()
+    }
+
+    fn event_wait(&self) -> c_int {
+        swoole_rs_reactor::event_api::swoole_event_wait()
+    }
+
+    fn waitpid(&self, pid: c_int) -> bool {
+        swoole_rs_reactor::wait_upstream::swoole_waitpid(pid, Some(&mut 0), 0) >= 0
     }
 
     fn new_pipe(&self, call: &PoolCall) -> Result<(), PipeError> {
