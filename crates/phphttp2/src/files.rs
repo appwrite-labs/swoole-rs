@@ -226,7 +226,7 @@ pub(crate) fn send_file(ctx: Ctx, path: &[u8], offset: i64, length: usize) -> bo
 fn content(path: &[u8]) -> Option<Vec<u8>> {
     let path = CString::new(c_text(path)).ok()?;
     if swoole_rs_phpcoroutines::in_coroutine() {
-        return swoole_rs_hooks::file_io::read_file(&path, false);
+        return swoole_rs_hooks::file_io::read_file(&path, false).ok();
     }
     let mut content = Vec::new();
     let file = File::open(path.as_bytes())?;

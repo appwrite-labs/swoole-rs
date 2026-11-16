@@ -140,13 +140,14 @@ aliases are never uninstalled.
   whole read or write (`File::read_all`, `write_all`, `read_content` semantics),
   fsync and unlock on the async pool, into a `Vec`, logging each warning on the pool
   thread as upstream named it (`System::read_file`, `File::read_all`, ...).
-  `write_file` keeps its upstream symbol; `read_file` is a plain Rust function.
+  Both are plain Rust functions returning `Result`; errors distinguish pool
+  refusal from the worker's open/lock I/O error.
 - `System::wait_signal` is Rust (`wait_signal.rs`): the listener table, the
   EBUSY/EINVAL checks, registering through the signal table (deferred to the loop's
   thread while thread contexts are active), the reactor exit condition and
   `signal_async_listener_num`, the park, the wake-up handler `hook_signal_wake`
   (clears the slot, records the signal, resumes) and the unregistering after it.
-  It is the plain Rust `system_wait_signal`.
+  It is the plain Rust `system_wait_signal`, returning a signal or a named error.
 - The hooked stdio, directory and file-system functions (`fopen`, `fdopen`,
   `freopen`, `fread`, `fwrite`, `fgets`, `fputs`, `feof`, `fflush`, `fclose`,
   `opendir`, `readdir`, `closedir`, `open`, `fstat`, `stat`, `lstat`, `unlink`,
