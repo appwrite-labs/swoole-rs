@@ -7,7 +7,9 @@
 use crate::{
     context::{self, Ctx, Hold},
     host,
-    parse::{Key, add_protocol, add_server, key, parse_request, request_times},
+    parse::{
+        self, Key, Property, add_field, add_protocol, add_server, key, parse_request, request_times,
+    },
     state::State,
     websocket,
 };
@@ -192,25 +194,14 @@ fn addresses(
                 .unwrap_or_else(|| [address(server, conn, true), address(server, conn, false)]),
         )
     };
-    if let Some([local, remote]) = names {
-        add_server(
-            state,
-            [
-                (Key::ServerPort, Owned::long(local_port)),
-                (Key::RemotePort, Owned::long(remote_port)),
-                (Key::ServerAddr, Owned::string(local)),
-                (Key::RemoteAddr, Owned::string(remote)),
-            ],
-        );
-    } else {
-        add_server(
-            state,
-            [
-                (Key::ServerPort, Owned::long(local_port)),
-                (Key::RemotePort, Owned::long(remote_port)),
-            ],
-        );
-    }
+    parse::edit(&mut state.request, Property::Server, |server| {
+        add_field(server, Key::ServerPort, Owned::long(local_port));
+        add_field(server, Key::RemotePort, Owned::long(remote_port));
+        if let Some([local, remote]) = names {
+            add_field(server, Key::ServerAddr, Owned::string(local));
+            add_field(server, Key::RemoteAddr, Owned::string(remote));
+        }
+    });
 }
 
 /// The session's cached addresses, each referenced once more for the caller;
@@ -503,7 +494,7 @@ fn handle(
         );
     }
     let master_time = Owned::long(facts.last_recv_time.c_cast::<zend_long>());
-    add_server(state, [(Key::MasterTime, master_time)]);
+    add_server(state, Key::MasterTime, master_time);
     // The hooks may reach the context: no borrow of it is held across them.
     if swoole_isset_hook(HookType::BEFORE_REQUEST) {
         ctx.call_hook(context::Hook::BeforeRequest);
@@ -618,7 +609,7 @@ pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
     );
     request_times(state);
     let master_time = Owned::long(facts.last_recv_time.c_cast::<zend_long>());
-    add_server(state, [(Key::MasterTime, master_time)]);
+    add_server(state, Key::MasterTime, master_time);
     add_protocol(state, Key::Http2);
     state.callback = php_swoole_server_get_callback(server, facts.server_fd, PortCallback::Request);
     if state.before_request {

@@ -363,14 +363,18 @@ fn raw_property(state: &mut State, which: Property) -> *mut zval {
 
 /// `http_server_add_server_array`: `$request->server[key] = value`.
 #[inline(always)]
-pub(crate) fn add_server<const N: usize>(state: &mut State, entries: [(Key, Owned); N]) {
+pub(crate) fn add_server(state: &mut State, name: Key, value: Owned) {
     edit(&mut state.request, Property::Server, |server| {
-        for (name, value) in entries {
-            if let Some(key) = key(name) {
-                server.add_new(key, value);
-            }
-        }
+        add_field(server, name, value);
     });
+}
+
+/// One known key in a batch whose server array is already lent.
+#[inline(always)]
+pub(crate) fn add_field(server: &mut ArrayMut, name: Key, value: Owned) {
+    if let Some(key) = key(name) {
+        server.add_new(key, value);
+    }
 }
 
 /// A new string of the bytes.
@@ -531,7 +535,7 @@ fn url(state: &mut State, span: &[u8]) -> Step {
     if query.is_empty() {
         return Step::Go;
     }
-    add_server(state, [(Key::QueryString, stringl(query))]);
+    add_server(state, Key::QueryString, stringl(query));
     treat_data(
         PARSE_STRING,
         Copied::of(query),
@@ -706,17 +710,11 @@ fn on_headers_complete(state: &mut State) -> Step {
         Key::Http10
     };
     edit(&mut state.request, Property::Server, |server| {
-        for (name, value) in [
-            (Key::RequestMethod, method),
-            (Key::RequestUri, Owned::string(uri)),
-            (Key::PathInfo, Owned::string(decoded)),
-            (Key::RequestTime, Owned::long(now)),
-            (Key::RequestTimeFloat, Owned::double(float)),
-        ] {
-            if let Some(key) = key(name) {
-                server.add_new(key, value);
-            }
-        }
+        add_field(server, Key::RequestMethod, method);
+        add_field(server, Key::RequestUri, Owned::string(uri));
+        add_field(server, Key::PathInfo, Owned::string(decoded));
+        add_field(server, Key::RequestTime, Owned::long(now));
+        add_field(server, Key::RequestTimeFloat, Owned::double(float));
         if let (Some(name), Some(protocol)) = (key(Key::ServerProtocol), key(protocol)) {
             server.add_new(name, Owned::string(protocol.to_owned()));
         }
@@ -732,13 +730,10 @@ fn on_headers_complete(state: &mut State) -> Step {
 pub(crate) fn request_times(state: &mut State) {
     let now = swoole_rs_corebase::time_now();
     let float = swoole_rs_corebase::microtime();
-    add_server(
-        state,
-        [
-            (Key::RequestTime, Owned::long(now)),
-            (Key::RequestTimeFloat, Owned::double(float)),
-        ],
-    );
+    edit(&mut state.request, Property::Server, |server| {
+        add_field(server, Key::RequestTime, Owned::long(now));
+        add_field(server, Key::RequestTimeFloat, Owned::double(float));
+    });
 }
 
 /// `$request->server['server_protocol']`, an interned protocol name.
@@ -746,7 +741,8 @@ pub(crate) fn add_protocol(state: &mut State, protocol: Key) {
     if let Some(protocol) = key(protocol) {
         add_server(
             state,
-            [(Key::ServerProtocol, Owned::string(protocol.to_owned()))],
+            Key::ServerProtocol,
+            Owned::string(protocol.to_owned()),
         );
     }
 }

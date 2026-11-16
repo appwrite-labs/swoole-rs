@@ -6,7 +6,7 @@
 use crate::{
     context::{self, CompressionTypes, Ctx, Hold},
     host,
-    parse::{self, Key, Property, add_protocol, add_server, parse_request},
+    parse::{self, Key, Property, add_field, add_protocol, parse_request},
     server::{Callable, NO_THEN, call_handler},
     websocket,
 };
@@ -909,15 +909,28 @@ fn on_accept(call: &Call) {
 fn add_peer(mut context: Ctx, peer: &Peer) {
     let state = context.state();
     // The array takes a reference of its own to each of the loop's strings.
-    add_server(
-        state,
-        [
-            (Key::RemoteAddr, Owned::string(peer.remote_addr.clone())),
-            (Key::RemotePort, Owned::long(peer.remote_port.into())),
-            (Key::ServerAddr, Owned::string(peer.server_addr.clone())),
-            (Key::ServerPort, Owned::long(peer.server_port.into())),
-        ],
-    );
+    parse::edit(&mut state.request, Property::Server, |server| {
+        add_field(
+            server,
+            Key::RemoteAddr,
+            Owned::string(peer.remote_addr.clone()),
+        );
+        add_field(
+            server,
+            Key::RemotePort,
+            Owned::long(peer.remote_port.into()),
+        );
+        add_field(
+            server,
+            Key::ServerAddr,
+            Owned::string(peer.server_addr.clone()),
+        );
+        add_field(
+            server,
+            Key::ServerPort,
+            Owned::long(peer.server_port.into()),
+        );
+    });
 }
 
 /// The request loop: parse each request on the connection and run its handler.

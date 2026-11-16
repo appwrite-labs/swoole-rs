@@ -60,6 +60,7 @@ pub(crate) fn minit(class: &Class) {
 /// `swoole_http_init_and_read_property`: the response object's `header`,
 /// `cookie` or `trailer` property slot, its array made on first use; none
 /// without a response object.
+#[inline]
 pub(crate) fn response_property(state: &mut State, which: Property) -> Option<&Value> {
     let response = &mut state.response;
     let property = PROPERTIES.get(which as usize)?;
