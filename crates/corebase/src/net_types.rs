@@ -9,6 +9,8 @@ pub union AddressStorage {
     pub inet_v4: libc::sockaddr_in,
     pub inet_v6: libc::sockaddr_in6,
     pub un: libc::sockaddr_un,
+    /// The largest member's bytes, as C lends an address of any family.
+    pub bytes: [u8; size_of::<libc::sockaddr_un>()],
 }
 
 /// `network::Address`: the storage, its length and its `swSocketType`.
@@ -81,6 +83,22 @@ impl Member for libc::sockaddr_un {}
 impl SocketAddress {
     /// The storage's size, the most a call reads or writes of it.
     pub const CAPACITY: libc::socklen_t = crate::sys::socklen::<AddressStorage>();
+
+    /// The address a C caller lends as a `sockaddr` and its length: as many of its
+    /// bytes as the storage holds.
+    #[must_use]
+    pub fn from_bytes(address: &[u8]) -> Self {
+        let mut bytes = [0; size_of::<libc::sockaddr_un>()];
+        for (slot, byte) in bytes.iter_mut().zip(address) {
+            *slot = *byte;
+        }
+        Self {
+            addr: AddressStorage { bytes },
+            len: crate::sys::socklen::<libc::sockaddr_un>()
+                .min(libc::socklen_t::try_from(address.len()).unwrap_or(Self::CAPACITY)),
+            kind: 0,
+        }
+    }
 
     /// The length a call reads of the storage: `len`, at most the storage's size.
     pub(crate) fn stored(&self) -> StoredLength {
