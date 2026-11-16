@@ -272,9 +272,11 @@ fn socket_poll(conn: Conn, event: Events) -> c_int {
         };
         let timeout = (POLL_TIMEOUT * 1000.0).c_cast::<c_int>();
         let result = swoole_rs_corebase::sys::poll(core::slice::from_mut(&mut poll), timeout);
-        let interrupted =
-            result < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR);
-        return if interrupted { 0 } else { result };
+        return match result {
+            Ok(ready) => ready,
+            Err(error) if error.raw_os_error() == Some(libc::EINTR) => 0,
+            Err(_) => -1,
+        };
     }
     // The hook is on, so a coroutine runs the request, as upstream requires.
     if wait_event(fd, event, POLL_TIMEOUT).is_ok() {

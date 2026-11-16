@@ -2,7 +2,6 @@
 //! `O_NONBLOCK`/`FD_CLOEXEC`, `TCP_CORK`, `TCP_NODELAY`, buffer sizes, kernel
 //! timeouts and `listen`. Native code keeps the `Socket` fields (bitfields, which it
 //! copies in and out) and the warning text.
-use std::io::Error;
 use std::os::raw::c_int;
 use swoole_rs_corebase::CCast;
 
@@ -30,11 +29,11 @@ pub fn swr_v1_socket_reset_on_close(fd: c_int) -> bool {
 }
 
 /// `fcntl(fd, command[, argument])`, retried on `EINTR`.
-fn fcntl(fd: c_int, command: c_int, argument: Option<c_int>) -> c_int {
+fn fcntl(fd: c_int, command: c_int, argument: Option<c_int>) -> std::io::Result<c_int> {
     loop {
         // F_GETFL/F_GETFD ignore the argument.
         let result = swoole_rs_corebase::sys::fcntl(fd, command, argument.unwrap_or(0));
-        if result >= 0 || Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+        if !matches!(&result, Err(error) if error.raw_os_error() == Some(libc::EINTR)) {
             return result;
         }
     }
@@ -44,12 +43,12 @@ fn fcntl(fd: c_int, command: c_int, argument: Option<c_int>) -> c_int {
 /// warnings is the read failing (upstream warns and continues with -1), bit 1 the write.
 fn update(fd: c_int, get: c_int, set: c_int, bit: c_int, on: bool) -> (bool, u32) {
     let mut warnings = 0;
-    let mut flags = fcntl(fd, get, None);
-    if flags < 0 {
+    let mut flags = fcntl(fd, get, None).unwrap_or_else(|_| {
         warnings |= 1;
-    }
+        -1
+    });
     flags = if on { flags | bit } else { flags & !bit };
-    if fcntl(fd, set, Some(flags)) < 0 {
+    if fcntl(fd, set, Some(flags)).is_err() {
         return (false, warnings | 2);
     }
     (true, warnings)
@@ -221,7 +220,7 @@ mod tests {
     }
 
     fn flags(fd: c_int, get: c_int) -> c_int {
-        fcntl(fd, get, None)
+        fcntl(fd, get, None).unwrap_or(-1)
     }
 
     #[test]

@@ -51,12 +51,9 @@ fn connect_failed(code: c_int) {
 }
 
 fn set_flags(fd: c_int, get: c_int, set: c_int, flag: c_int, on: bool) -> io::Result<()> {
-    let flags = sys::fcntl(fd, get, 0);
+    let flags = sys::fcntl(fd, get, 0)?;
     let flags = if on { flags | flag } else { flags & !flag };
-    if flags < 0 || sys::fcntl(fd, set, flags) < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
+    sys::fcntl(fd, set, flags).map(|_| ())
 }
 
 unsafe extern "C" {
@@ -147,7 +144,10 @@ impl Stream {
             events: libc::POLLOUT,
             revents: 0,
         };
-        while sys::poll(std::slice::from_mut(&mut poll), -1) < 0 && errno() == libc::EINTR {}
+        while matches!(
+            sys::poll(std::slice::from_mut(&mut poll), -1),
+            Err(error) if error.raw_os_error() == Some(libc::EINTR)
+        ) {}
         let mut error: c_int = 0;
         let got = sys::getsockopt(fd, libc::SOL_SOCKET, libc::SO_ERROR, &mut error);
         self.err_code = got.map_or_else(|error| error.raw_os_error().unwrap_or(0), |_| error);
