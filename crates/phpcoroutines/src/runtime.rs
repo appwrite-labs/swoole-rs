@@ -16,7 +16,7 @@ use std::{
     time::Duration,
 };
 use swoole_rs_zend::{
-    E_ERROR, E_WARNING, Php, Zvals,
+    E_ERROR, E_WARNING, Function, Php, Value, Zvals,
     bailout::{self, Bailout},
     host::{Creator, NO_THEN, function_call},
     message,
@@ -141,29 +141,31 @@ pub(crate) fn create(
         return Ok(ERR_LIMIT);
     }
     // SAFETY: null or a resolved callable.
-    let Some(fcc) = (unsafe { fcc.as_ref() }).filter(|fcc| !fcc.function_handler.is_null()) else {
+    let fcc = unsafe { fcc.as_ref() };
+    // SAFETY: null, or a resolved callable's handler, which it keeps live.
+    let function = fcc.and_then(|fcc| unsafe { Function::from_ptr(fcc.function_handler) });
+    let (Some(fcc), Some(function)) = (fcc, function) else {
         host::fatal_error(E_ERROR, c"invalid function call info cache");
         return Ok(ERR_INVALID);
     };
-    let handler = fcc.function_handler;
-    // SAFETY: a resolved callable's handler; every zend_function starts with
-    // its type, a byte.
-    let kind = unsafe { handler.cast::<u8>().read() };
-    if kind != context::USER_FUNCTION && kind != context::INTERNAL_FUNCTION {
+    let kind = function.kind();
+    if kind != Function::USER && kind != Function::INTERNAL {
         host::fatal_error(E_ERROR, message!("invalid function type {kind}").as_cstr());
         return Ok(ERR_INVALID);
     }
     if !activated() {
         activate(php)?;
     }
-    let mut args = Args {
-        fcc,
+    let args = Args {
+        fcc: *fcc,
+        opcodes: function.opcodes().filter(|_| kind == Function::USER),
         argv,
         argc,
-        callable,
+        // SAFETY: null, or the caller's live callable zval; the copy takes a reference.
+        callable: unsafe { Value::from_ptr(callable) }.map(Value::copy),
     };
     context::save_current();
-    let cid = host::create((&raw mut args).cast());
+    let cid = context::create(args);
     bailout::trapped(0)?;
     Ok(cid)
 }

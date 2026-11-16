@@ -26,9 +26,9 @@ use swoole_rs_zend::sys::{
     zend_fiber_status, zend_fiber_status_ZEND_FIBER_STATUS_DEAD,
     zend_fiber_status_ZEND_FIBER_STATUS_INIT, zend_fiber_status_ZEND_FIBER_STATUS_RUNNING,
     zend_fiber_status_ZEND_FIBER_STATUS_SUSPENDED, zend_object, zend_observer_fiber_destroy_notify,
-    zval, zval_ptr_dtor,
+    zend_op, zval, zval_ptr_dtor,
 };
-use swoole_rs_zend::{Callable, Function, Value, bailout};
+use swoole_rs_zend::{Callable, Owned, Value, bailout};
 
 unsafe extern "C" {
     /// `save_context`: this PHP thread's executor, output and serializer state,
@@ -65,18 +65,18 @@ impl Fiber {
 /// field.
 pub(crate) const INVALID: usize = usize::MAX;
 
-/// `zend_function.type`: `ZEND_INTERNAL_FUNCTION` and `ZEND_USER_FUNCTION`.
-pub(crate) const INTERNAL_FUNCTION: u8 = 1;
-pub(crate) const USER_FUNCTION: u8 = 2;
-
-/// `PHPCoroutine::Args`, built by `create` for the new coroutine's entry, which
-/// reads them before its first switch, while `create`'s frame still lends them.
-pub(crate) struct Args<'a> {
+/// `PHPCoroutine::Args`, which [`create`] hands the new coroutine's entry by
+/// value through [`NEXT`]: plain copies of the creator's, whose frame keeps the
+/// arguments until the coroutine's call has taken them, and the callable zval's
+/// own reference.
+pub(crate) struct Args {
     /// The resolved callable.
-    pub(crate) fcc: &'a zend_fcall_info_cache,
+    pub(crate) fcc: zend_fcall_info_cache,
+    /// A user function's first opline, for the fiber notification [`enter`] sends.
+    pub(crate) opcodes: Option<*mut zend_op>,
     pub(crate) argv: *mut zval,
     pub(crate) argc: u32,
-    pub(crate) callable: *mut zval,
+    pub(crate) callable: Option<Owned>,
 }
 
 /// One coroutine's PHP context; the main context is a thread-local one.
@@ -84,6 +84,8 @@ pub(crate) struct Context {
     vm: swr_zend_coroutine_vm,
     /// The coroutine's callable, laid out as `zend::Function`.
     call: swr_zend_callable,
+    /// Its user function's first opline; null for an internal function.
+    opcodes: *mut zend_op,
     return_value: zval,
     /// The coroutine, which outlives its context; none for the main context.
     co: Option<host::Co>,
@@ -114,6 +116,7 @@ impl Context {
     const EMPTY: Self = Self {
         vm: swoole_rs_zend::zeroed(),
         call: swoole_rs_zend::zeroed(),
+        opcodes: ptr::null_mut(),
         return_value: swoole_rs_zend::UNDEF,
         co: None,
         fiber: None,
@@ -305,6 +308,8 @@ impl Ctx {
 
 per_thread! {
     static MAIN: UnsafeCell<Context> = UnsafeCell::new(Context::EMPTY);
+    /// The arguments of the coroutine [`create`] starts, until its entry takes them.
+    static NEXT: Cell<Option<Args>> = Cell::new(None);
     /// The armed `Co::setTimeLimit` timers, by coroutine id: few at a time, so a
     /// list. Taken out and put back around one swap, which releases nothing.
     static TIME_LIMITS: Cell<Vec<(c_long, Held)>> = Cell::new(Vec::new());
@@ -427,12 +432,27 @@ pub(crate) extern "C" fn on_close(task: CoroutineTask) {
     unsafe { swr_zend_efree(ctx.ptr().cast()) };
 }
 
-/// `create_context`, on the new coroutine: its context, live until [`on_close`].
-/// # Safety
-/// `args` is the creator's live `Args`, and this runs on the new coroutine.
-pub(crate) unsafe fn open(args: *mut c_void) -> Option<Ctx> {
-    // SAFETY: per the caller.
-    let args = unsafe { &*args.cast::<Args<'_>>() };
+/// `PHPCoroutine::create`'s `Coroutine::create(main_func, args)`: the new
+/// coroutine's id. As for [`host::spawn`], the caller's frames own nothing that
+/// needs a drop.
+pub(crate) fn create(args: Args) -> c_long {
+    NEXT.with(|next| next.set(Some(args)));
+    let cid = host::spawn(host::main);
+    // What a coroutine that never started left: its callable's reference.
+    drop(NEXT.with(Cell::take));
+    cid
+}
+
+/// `create_context`, on the new coroutine [`create`] started: its context, live
+/// until [`on_close`].
+pub(crate) fn open() -> Option<Ctx> {
+    let Args {
+        fcc,
+        opcodes,
+        argv,
+        argc,
+        callable,
+    } = NEXT.with(Cell::take)?;
     let co = host::current()?;
     let pcid = host::origin_cid(co);
     let ctx = swoole_rs_zend::value::emalloc(size_of::<Context>()).cast::<Context>();
@@ -457,18 +477,18 @@ pub(crate) unsafe fn open(args: *mut c_void) -> Option<Ctx> {
     record_last_msec(this);
     let retval = this.return_value();
     this.with(|context| {
-        context.call.fcc = *args.fcc;
+        context.call.fcc = fcc;
+        context.opcodes = opcodes.unwrap_or_else(ptr::null_mut);
         let fci = &mut context.call.fci;
         fci.size = size_of::<zend_fcall_info>();
         fci.object = ptr::null_mut();
-        fci.param_count = args.argc;
-        fci.params = args.argv;
+        fci.param_count = argc;
+        fci.params = argv;
         fci.named_params = ptr::null_mut();
         fci.retval = retval;
-        // SAFETY: null, or the creator's live callable zval.
-        if let Some(callable) = unsafe { Value::from_ptr(args.callable) } {
-            // The copy takes a reference.
-            fci.function_name = callable.copy().into_zval();
+        if let Some(callable) = callable {
+            // The context keeps the creator's copy's reference.
+            fci.function_name = callable.into_zval();
         }
     });
     // SAFETY: a resolved callable (sw_zend_fci_cache_persist).
@@ -480,14 +500,9 @@ pub(crate) unsafe fn open(args: *mut c_void) -> Option<Ctx> {
 /// its callable, to call (`zend::Function *`).
 pub(crate) fn enter(ctx: Ctx) -> *mut swr_zend_callable {
     host::coro_hook(false, ctx.ptr().cast());
-    let fiber = ctx.fiber();
-    let handler = ctx.with(|context| context.call.fcc.function_handler);
-    // SAFETY: a resolved callable's handler, which the context's call holds.
-    let function = unsafe { Function::from_ptr(handler) };
-    if fiber.is_some()
-        && let Some(function) = function.filter(|function| function.kind() == Function::USER)
-        && let Some(opcodes) = function.opcodes()
-    {
+    let (handler, opcodes) =
+        ctx.with(|context| (context.call.fcc.function_handler, context.opcodes));
+    if ctx.fiber().is_some() && !opcodes.is_null() {
         let mut frame: zend_execute_data = swoole_rs_zend::zeroed();
         // A user function is its op array.
         frame.opline = opcodes;
