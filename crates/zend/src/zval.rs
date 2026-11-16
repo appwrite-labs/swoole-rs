@@ -46,6 +46,10 @@ unsafe extern "C" {
         object: crate::ObjectRef<'_>,
         out: &Owned,
     ) -> std::ffi::c_int;
+    /// `convert_to_array` of the zval in place, inside `zend_try` (nonzero for
+    /// a bailout): the reference it held goes into the new array, or (an
+    /// object's) is released, which can run `__destruct`.
+    safe fn swr_zend_try_convert_to_array(value: &Owned) -> std::ffi::c_int;
     /// `zend_hash_next_index_insert`: the table takes `value` under its next
     /// index, or (null, at `ZEND_LONG_MAX`) leaves it to the caller. No PHP
     /// code runs.
@@ -1510,6 +1514,15 @@ impl Owned {
     #[inline]
     pub fn into_zval(self) -> zval {
         *std::mem::ManuallyDrop::new(self).0.0.get_mut()
+    }
+
+    /// `convert_to_array`, as PHP's `(array)` cast: this then holds an array,
+    /// unless the conversion bailed out.
+    /// # Errors
+    /// Releasing an object ran PHP code that bailed out.
+    #[inline]
+    pub fn convert_to_array(&mut self) -> Result<(), bailout::Bailout> {
+        bailout::trapped(swr_zend_try_convert_to_array(self))
     }
 
     /// The zval a [`Given`] left to its giver, with the reference it holds.
