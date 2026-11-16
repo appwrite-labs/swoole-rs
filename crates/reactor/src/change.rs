@@ -6,7 +6,7 @@ use crate::reactor_state::{Backend, ReactorState};
 use crate::registration;
 use crate::socket_sync::set_errno;
 use crate::{Events, Socket};
-use std::ffi::{CStr, c_int, c_void};
+use std::ffi::{CStr, c_int};
 
 /// Logs `message` as from `origin`: `code` 0 is `swoole_sys_warning`, with errno as the
 /// kernel left it; any other is `swoole_error_log(SW_LOG_WARNING, code, ...)`. Then
@@ -128,7 +128,7 @@ impl Change {
 
     /// `ReactorEpoll::add`, `set` and `del` before the registry update.
     #[cfg(target_os = "linux")]
-    fn epoll(&self, epfd: c_int, token: *mut c_void) -> bool {
+    fn epoll(&self, epfd: c_int) -> bool {
         let (socket, id) = (&self.socket, self.id);
         let (fd, fd_type) = (socket.fd, socket.fd_type);
         if self.op == ChangeOp::Del && socket.removed {
@@ -142,7 +142,7 @@ impl Change {
             );
             return false;
         }
-        if registration::epoll_ctl(epfd, self.op, fd, token, self.events).is_ok() {
+        if registration::epoll_ctl(epfd, self.op, fd, self.events).is_ok() {
             return true;
         }
         let error = errno();
@@ -191,12 +191,12 @@ impl Change {
         target_os = "netbsd",
         target_os = "dragonfly"
     ))]
-    fn kqueue(&self, kq: c_int, token: *mut c_void) -> bool {
+    fn kqueue(&self, kq: c_int) -> bool {
         let (socket, id) = (&self.socket, self.id);
         let fd = socket.fd;
         match self.op {
             ChangeOp::Add => {
-                let result = registration::kqueue_add(kq, fd, token, self.events);
+                let result = registration::kqueue_add(kq, fd, self.events);
                 if let Err(failed) = &result {
                     let filter = if failed.write { "write" } else { "read" };
                     self.warn(
@@ -212,7 +212,7 @@ impl Change {
                 result.is_ok()
             }
             ChangeOp::Set => {
-                let result = registration::kqueue_set(kq, fd, token, self.events);
+                let result = registration::kqueue_set(kq, fd, self.events);
                 if let Err(failed) = &result {
                     let added = failed.add;
                     self.warn(
@@ -243,7 +243,7 @@ impl Change {
                     return false;
                 }
                 let mut errors = [0; 2];
-                let result = registration::kqueue_del(kq, fd, token, socket.events, &mut errors);
+                let result = registration::kqueue_del(kq, fd, socket.events, &mut errors);
                 for error in errors.into_iter().filter(|error| *error != 0) {
                     self.removal_failed(error);
                 }
@@ -354,12 +354,11 @@ pub(crate) fn apply(
         op,
         events,
     };
-    let token = socket.as_ptr().cast::<c_void>();
     let done = match state.backend {
         Backend::None => false,
         Backend::Poll(_) => change.poll(state),
         #[cfg(target_os = "linux")]
-        Backend::Epoll(_) => change.epoll(state.backend_fd, token),
+        Backend::Epoll(_) => change.epoll(state.backend_fd),
         #[cfg(any(
             target_os = "macos",
             target_os = "freebsd",
@@ -367,7 +366,7 @@ pub(crate) fn apply(
             target_os = "netbsd",
             target_os = "dragonfly"
         ))]
-        Backend::Kqueue(..) => change.kqueue(state.backend_fd, token),
+        Backend::Kqueue(..) => change.kqueue(state.backend_fd),
     };
     if done && !state.record(request, events) {
         std::alloc::handle_alloc_error(std::alloc::Layout::new::<crate::SocketRecord>());
