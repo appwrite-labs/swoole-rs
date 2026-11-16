@@ -17,7 +17,6 @@ use swoole_rs_corebase::lent::{Spare, lend_spare};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_error::ErrorCode;
-use swoole_rs_reactor::SocketFields;
 
 /// `SW_SSL_SERVER` and `SW_SSL_CLIENT`.
 const SERVER: c_int = 1;
@@ -438,7 +437,7 @@ pub(crate) fn socket_ssl_new_over(
     clear_errors();
     let Some(mut made) = crate::handle::SSL_new(context) else {
         // The record's SSL becomes the null `SSL_new` returned, as upstream's.
-        socket.edit(SocketFields::take_ssl);
+        socket.edit(|record| record.set_ssl(None));
         return Err(SslNewError::New);
     };
     made.get().set_mode(SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
@@ -464,12 +463,10 @@ pub(crate) fn socket_ssl_new_over(
     } else {
         Err(SslNewError::SetFd(peek_error()))
     };
-    let made = made.into_raw();
+    let made = made.into_socket_ssl();
     socket.edit(|record| {
-        // SAFETY: the new SSL, which nothing else holds and whose connection ex data
-        // is null or this record: the record owns it from now on and frees it only in
-        // `ssl_close`.
-        unsafe { record.set_ssl(made.cast()) };
+        // The new SSL, whose connection ex data is null or this record.
+        record.set_ssl(Some(made));
         if made_up.is_ok() {
             record.tls.state = SslState::SW_SSL_STATE_HANDSHAKE;
         }
@@ -720,18 +717,19 @@ mod tests {
                 SocketTls::default(),
                 "a fresh SSL clears the state group"
             );
-            let made = record.take_ssl().cast::<SSL>();
+            let owner = record.take_ssl().unwrap();
+            let made = owner.as_non_null().as_ptr();
             assert_eq!(SSL_is_server(made), 0, "connect state");
             assert_eq!(SSL_get_ex_data(made, index), (&raw mut record).cast());
-            SSL_free(made);
+            drop(owner);
             let socket = swoole_rs_reactor::Socket::from_ptr(&raw mut record).unwrap();
             assert_eq!(
                 socket_ssl_new(socket, context.cast::<crate::SslCtx>().as_ref(), SERVER),
                 Ok(())
             );
-            let ssl = record.take_ssl();
-            assert_eq!(SSL_is_server(ssl.cast()), 1, "accept state");
-            SSL_free(ssl.cast());
+            let ssl = record.take_ssl().unwrap();
+            assert_eq!(SSL_is_server(ssl.as_non_null().as_ptr()), 1, "accept state");
+            drop(ssl);
             SSL_CTX_free(context);
 
             assert_eq!(swr_v1_socket_ssl_peek_reason(), 0, "empty queue");
@@ -945,7 +943,10 @@ mod shutdown_tests {
                     let made =
                         socket_ssl_new(socket, server_ctx.cast::<crate::SslCtx>().as_ref(), SERVER);
                     assert_eq!(made, Ok(()));
-                    record.take_ssl().cast()
+                    // Freed below, by hand.
+                    std::mem::ManuallyDrop::new(record.take_ssl().unwrap())
+                        .as_non_null()
+                        .as_ptr()
                 } else {
                     let server = SSL_new(server_ctx);
                     let (mut left, mut right) = (ptr::null_mut(), ptr::null_mut());

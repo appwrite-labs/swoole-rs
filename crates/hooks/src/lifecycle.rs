@@ -510,10 +510,7 @@ mod tests {
                 set_flags(s, (k / 4) % 2 == 1, (k / 16) % 2 == 1, (k / 32) % 2 == 1);
                 s.0.sock_fd.set(if (k / 8) % 2 == 1 { -1 } else { 77 });
                 if (k / 64) % 2 == 1 {
-                    unsafe {
-                        s.0.record()
-                            .set_ssl(core::ptr::NonNull::<u8>::dangling().as_ptr().cast());
-                    }
+                    unsafe { s.0.record() }.set_ssl(Some(crate::co_socket::stub_ssl()));
                 }
             };
             let hooks = move || {

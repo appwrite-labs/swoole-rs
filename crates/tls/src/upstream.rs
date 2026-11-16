@@ -1065,10 +1065,9 @@ pub unsafe fn socket_ssl_close(socket: Socket<'_>) {
     if !socket.read(|record| record.ssl_closed) {
         socket_ssl_shutdown(socket);
     }
-    let ssl = socket.edit(swoole_rs_reactor::SocketFields::take_ssl);
-    // SAFETY: the record's SSL (or null), now released; the caller promises no handle
-    // to it or its BIOs is used afterwards.
-    unsafe { openssl_sys::SSL_free(ssl.cast()) };
+    // SAFETY: the record's SSL, freed as it drops here; the caller promises no handle to
+    // it or its BIOs is used afterwards.
+    drop(socket.edit(|record| unsafe { record.take_ssl() }));
 }
 
 /// `int Socket::ssl_create(SSLContext *ssl_context, int flags)`: whether it made the

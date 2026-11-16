@@ -308,10 +308,12 @@ mod tests {
         fn ssl_error(self, _function: &CStr, _error: c_int, _code: c_ulong) {}
     }
 
-    /// A socket record holding `session`, as a socket's does.
+    /// A socket record holding `session`, as a socket's does: it frees it when dropped.
     fn holding(session: *mut ssl::SSL) -> SocketRecord {
         let mut record = SocketRecord::with_fd(-1, 0);
-        unsafe { record.set_ssl(session.cast()) };
+        record.set_ssl(Some(unsafe {
+            crate::co_socket::record_ssl(session.cast())
+        }));
         record
     }
 
@@ -424,7 +426,7 @@ mod tests {
                 vec![SSL_RESET],
                 "reset"
             );
-            ssl::SSL_free(session);
+            drop(record);
             ssl::SSL_CTX_free(ctx);
             libc::close(fds[0]);
         });
@@ -523,7 +525,7 @@ mod tests {
             );
 
             client_done.store(true, Ordering::SeqCst);
-            ssl::SSL_free(session);
+            drop(record);
             ssl::SSL_CTX_free(ctx);
         });
         client_done.store(true, Ordering::SeqCst);

@@ -547,7 +547,8 @@ unsafe fn writev() {
         assert_eq!(&buf[..12], b"hello world\n");
 
         // `fake_sock.ssl = (SSL *) -1`: a non-null SSL the write refuses before using.
-        (*fake_sock).fields.set_ssl(usize::MAX as *mut c_void);
+        let stub = std::mem::transmute::<usize, swoole_rs_ffi::SocketSsl>(usize::MAX);
+        (*fake_sock).fields.set_ssl(Some(stub));
         assert_eq!(
             event_api::swoole_event_writev(handle(fake_sock), &iov),
             None

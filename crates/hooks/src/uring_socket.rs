@@ -667,7 +667,7 @@ mod tests {
             let made = ssl::SSL_new(context);
             let own = ssl::BIO_new_socket(0, 0);
             ssl::SSL_set_bio(made, own, own);
-            co.net(|record| record.set_ssl(made.cast()));
+            co.net(|record| record.set_ssl(Some(crate::co_socket::record_ssl(made.cast()))));
             assert_eq!(bios(), (made, null(), null()), "the socket's own BIO");
             let (read, write) = (OwnedBio::memory().unwrap(), OwnedBio::memory());
             let pair = with(co, |ops| {
@@ -676,7 +676,8 @@ mod tests {
             });
             let (read, write) = pair.unwrap();
             assert_eq!(bios(), (made, read, write), "the memory pair");
-            co.net(swoole_rs_reactor::SocketFields::take_ssl);
+            // Freed below.
+            co.net(|record| record.set_ssl(None));
             assert_eq!(bios(), (null(), null(), null()), "closed");
             ssl::SSL_free(made);
             ssl::SSL_CTX_free(context);
