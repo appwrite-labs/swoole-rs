@@ -643,7 +643,7 @@ pub fn socket_ssl_check_host(socket: Socket<'_>, name: &CStr) -> bool {
     let Some(cert) = ssl_get_peer_certificate(socket) else {
         return false;
     };
-    if cert.get().matches_host(name.to_bytes()) {
+    if cert.get().matches_host(name) {
         return true;
     }
     log::warning(

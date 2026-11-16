@@ -578,7 +578,10 @@ mod tests {
         unsafe {
             let check = |cert, name: &str| {
                 let cert = Cert(std::ptr::NonNull::new(cert).unwrap());
-                if cert.get().matches_host(name.as_bytes()) {
+                if cert
+                    .get()
+                    .matches_host(&std::ffi::CString::new(name).unwrap())
+                {
                     1
                 } else {
                     2

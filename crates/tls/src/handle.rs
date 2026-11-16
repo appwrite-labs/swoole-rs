@@ -11,9 +11,9 @@ use crate::context::SslCtx;
 use openssl_sys::{
     BIO, BIO_read, BIO_write, OPENSSL_STACK, SSL, SSL_CIPHER, SSL_CTRL_MODE,
     SSL_CTRL_SET_TLSEXT_HOSTNAME, SSL_CTX, SSL_peek, SSL_read, SSL_set_bio, SSL_write,
-    TLSEXT_NAMETYPE_host_name, X509, X509_check_host, stack_st_X509,
+    TLSEXT_NAMETYPE_host_name, X509, stack_st_X509,
 };
-use std::ffi::{CStr, c_int, c_long, c_ulong, c_void};
+use std::ffi::{CStr, c_char, c_int, c_long, c_uint, c_ulong, c_void};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 use swoole_rs_corebase::sys::{ReadSlot, Text};
@@ -35,6 +35,15 @@ unsafe extern "C" {
     /// Writes at most `length` bytes, NUL-terminated, into `buffer`: the length is the
     /// buffer's own, the one value [`ErrorLength`] has.
     safe fn ERR_error_string_n(error: c_ulong, buffer: &mut [u8; 512], length: ErrorLength);
+    /// Whether the certificate matches the host `name`, which OpenSSL measures up to
+    /// its NUL (the length [`Measured`] gives), storing the matched name where told to.
+    safe fn X509_check_host(
+        cert: CertRef<'_>,
+        name: Text<'_>,
+        length: Measured,
+        flags: c_uint,
+        peername: Option<&mut *mut c_char>,
+    ) -> c_int;
     safe fn BIO_s_mem() -> &'static BioMethod;
     /// A new BIO of `method`, its one reference the caller's; null on failure. The
     /// table lives for the process: OpenSSL's own, or `dtls.rs`'s, never freed once made,
@@ -212,6 +221,12 @@ pub fn reason_string(error: c_ulong) -> Option<&'static CStr> {
 #[repr(usize)]
 enum ErrorLength {
     Buffer = 512,
+}
+
+/// `X509_check_host`'s zero length: OpenSSL measures the name itself.
+#[repr(usize)]
+enum Measured {
+    UpToNul = 0,
 }
 
 /// `ERR_error_string_n` of `error` into a 512-byte buffer, as upstream's logs print it.
@@ -594,11 +609,8 @@ impl CertRef<'_> {
     /// `Socket::ssl_check_host`'s test: whether the certificate matches the host
     /// `name` under `X509_check_host`.
     #[must_use]
-    pub fn matches_host(self, name: &[u8]) -> bool {
-        let (at, length, none) = (name.as_ptr().cast(), name.len(), std::ptr::null_mut());
-        // SAFETY: the live certificate and the name's bytes.
-        let matched = unsafe { X509_check_host(self.as_ptr(), at, length, 0, none) };
-        matched == 1
+    pub fn matches_host(self, name: &CStr) -> bool {
+        X509_check_host(self, name.into(), Measured::UpToNul, 0, None) == 1
     }
 
     /// `_ssl_read_x509_file`: the certificate as PEM into at most `buffer`'s length.
