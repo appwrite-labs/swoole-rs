@@ -64,6 +64,10 @@ int swr_zend_try(void (*body)(void *), void *arg) {
     return bailed ? (SWR_ZEND_EXIT_PENDING() ? SWR_ZEND_THREAD_EXIT : SWR_ZEND_BAILOUT) : SWR_ZEND_RETURN;
 }
 
+bool swr_zend_fcc_resolved(const zend_fcall_info_cache *fcc) {
+    return fcc && fcc->function_handler;
+}
+
 int swr_zend_try_call(zend_fcall_info_cache *fcc, swr_zvals args, zval *name, zval *retval, int *result) {
     zend_fcall_info fci = {.size = sizeof(fci), .retval = retval, .params = args.argv, .param_count = args.argc};
     if (name) {

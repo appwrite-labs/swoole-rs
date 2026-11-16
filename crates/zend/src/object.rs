@@ -4,7 +4,7 @@ use crate::{
     ArrayMut, Class, ClassEntry, Owned, OwnedArray, Value, ZString, bailout,
     sys::{
         IS_OBJECT, zend_class_entry, zend_long, zend_object, zend_object_handlers,
-        zend_object_std_dtor, zend_objects_destroy_object, zend_update_property,
+        zend_objects_destroy_object, zend_update_property,
     },
 };
 use std::{
@@ -345,20 +345,35 @@ extern "C" fn create<T: Custom>(ce: ClassEntry<'_>) -> *mut zend_object {
         .into_ptr()
 }
 
-/// The object Zend passes a `free_obj` or `dtor_obj` handler [`install_custom`]
-/// installed for `T`'s class: one of `T`'s objects, which Zend frees, or
-/// destructs, once. Rust never makes one: it is the handlers' parameter, which
-/// Zend's call stands for, as [`crate::Minfo`] is MINFO's.
+/// The object Zend passes a `dtor_obj` handler [`install_custom`] installed for
+/// `T`'s class: one of `T`'s live objects, which Zend destructs once. Rust never
+/// makes one: it is the handler's parameter, which Zend's call stands for, as
+/// [`crate::Minfo`] is MINFO's.
 #[repr(transparent)]
 pub(crate) struct Handled(NonNull<zend_object>);
+
+/// The object Zend passes a `free_obj` handler [`install_custom`] installed for
+/// `T`'s class: one of `T`'s objects whose last reference went, which Zend frees
+/// once. Rust never makes one: it is the handler's parameter, which Zend's call
+/// stands for, and [`std_dtor`] spends it.
+#[repr(transparent)]
+pub(crate) struct Freed(NonNull<zend_object>);
+
+unsafe extern "C" {
+    /// `zend_object_std_dtor`: releases the standard object's properties, guards
+    /// and weak references, as a `free_obj` handler does once; Zend frees the
+    /// allocation after the handler returns.
+    #[link_name = "zend_object_std_dtor"]
+    safe fn std_dtor(object: Freed);
+}
 
 /// `T`'s `free_obj` handler: [`Custom::free`], drop the data, then free the
 /// standard object.
 /// A bailout the drop defers (releasing a callable can run PHP code) is
 /// raised last, unless one was already pending. Zend calls it once, with one of
 /// `T`'s objects whose last reference went.
-extern "C" fn free<T: Custom>(object: Handled) {
-    let std = object.0.as_ptr();
+extern "C" fn free<T: Custom>(freed: Freed) {
+    let std = freed.0.as_ptr();
     bailout::finish_after(|| {
         // Per Zend, a live object of `T`'s class until the drop below.
         let object = ObjectRef(std, PhantomData);
@@ -368,8 +383,7 @@ extern "C" fn free<T: Custom>(object: Handled) {
         }
         // SAFETY: per Zend; nothing borrows the data any more.
         unsafe { Object::<T>::data_ptr(std).drop_in_place() };
-        // SAFETY: as above.
-        unsafe { zend_object_std_dtor(std) };
+        std_dtor(freed);
     });
 }
 
@@ -402,7 +416,7 @@ unsafe extern "C" {
     /// with an object whose class has these handlers.
     safe fn swr_slot_object_free(
         handlers: &mut zend_object_handlers,
-        free: extern "C" fn(Handled),
+        free: extern "C" fn(Freed),
         destruct: Option<extern "C" fn(Handled)>,
     );
 }

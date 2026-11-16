@@ -3,10 +3,7 @@ use crate::{
     Minit, Parent, Value, ZStr,
     arginfo::{Rows, Table},
     helpers::CText,
-    sys::{
-        ZEND_ACC_RESOLVED_PARENT, zend_class_entry, zend_long, zend_object, zend_object_handlers,
-        zend_result, zval,
-    },
+    sys::{zend_class_entry, zend_long, zend_object, zend_object_handlers, zend_result, zval},
 };
 use std::{
     ffi::{CStr, CString, c_int, c_void},
@@ -33,6 +30,10 @@ unsafe extern "C" {
     /// Whether the live class's `properties_info` names `member`: it reads the
     /// table, which no PHP code changes.
     safe fn swr_zend_class_declares(class: ClassEntry<'_>, member: &ZStr) -> bool;
+    /// The live class's last resolved ancestor (`ce->parent` while
+    /// `ZEND_ACC_RESOLVED_PARENT` says it holds the entry, not its name), or the
+    /// class itself: classes keep their parents alive, and it runs no PHP code.
+    safe fn swr_zend_class_root(class: ClassEntry<'_>) -> ClassEntry<'_>;
     /// `zend_property_info::offset` of the property the live class declares as
     /// `name`, or 0 for none or a typed or static one: it reads the class's
     /// property table, which no PHP code changes, and `name`.
@@ -120,23 +121,6 @@ impl<'a> ClassEntry<'a> {
     #[inline]
     pub fn flags(self) -> u32 {
         self.read(|ce| ce.ce_flags)
-    }
-
-    /// `ce->parent`: the class this one extends, once Zend resolved it
-    /// (`ZEND_ACC_RESOLVED_PARENT`: every internal class and every linked user
-    /// class, so the class of any object); None for no parent, or one still
-    /// held by name.
-    #[must_use]
-    #[inline]
-    pub fn parent(self) -> Option<Self> {
-        if self.flags() & ZEND_ACC_RESOLVED_PARENT == 0 {
-            return None;
-        }
-        // SAFETY: the union of the parent's entry and, until it is resolved,
-        // its name; the flag says it holds the entry.
-        let parent = self.read(|ce| unsafe { ce.__bindgen_anon_1.parent });
-        // A class keeps its parent alive.
-        Self::live(parent)
     }
 }
 
@@ -372,11 +356,7 @@ pub fn deny_unset(handlers: &mut zend_object_handlers) {
 extern "C" fn unset_property_deny(object: crate::ObjectRef<'_>, name: &ZStr, cache_slot: Hint) {
     let own = object.class_entry();
     // The class the object's own inherits its declared properties from.
-    let mut root = own;
-    while let Some(parent) = root.parent() {
-        root = parent;
-    }
-    if swr_zend_class_declares(root, name) {
+    if swr_zend_class_declares(swr_zend_class_root(own), name) {
         // Each name up to its NUL, as upstream's `%s` prints it.
         let message = [
             &b"Property "[..],
