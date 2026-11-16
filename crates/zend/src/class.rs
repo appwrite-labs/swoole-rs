@@ -355,6 +355,10 @@ unsafe extern "C" {
         handlers: &mut zend_object_handlers,
         unset: extern "C" fn(crate::ObjectRef<'_>, &ZStr, Hint),
     );
+    /// `std_object_handlers.unset_property`: Zend's own handler, given a live
+    /// object and member name, and the cache slot Zend's call passed with
+    /// them, which only [`unset_property_deny`] holds (a [`Hint`]).
+    safe fn zend_std_unset_property(object: crate::ObjectRef<'_>, name: &ZStr, cache_slot: Hint);
 }
 
 /// `SW_SET_CLASS_UNSET_PROPERTY_HANDLER(.., sw_zend_class_unset_property_deny)`.
@@ -365,11 +369,7 @@ pub fn deny_unset(handlers: &mut zend_object_handlers) {
 /// Swoole's `sw_zend_class_unset_property_deny`: declared properties of an
 /// internal class cannot be unset; anything else unsets as usual. Installed as
 /// `unset_property` ([`deny_unset`]), so Zend passes a live object and member name.
-extern "C" fn unset_property_deny(
-    object: crate::ObjectRef<'_>,
-    name: &ZStr,
-    Hint(cache_slot): Hint,
-) {
+extern "C" fn unset_property_deny(object: crate::ObjectRef<'_>, name: &ZStr, cache_slot: Hint) {
     let own = object.class_entry();
     // The class the object's own inherits its declared properties from.
     let mut root = own;
@@ -389,10 +389,7 @@ extern "C" fn unset_property_deny(
         crate::throw_error(&CString::new(message).unwrap_or_default());
         return;
     }
-    if let Some(unset) = std_object_handlers.unset_property {
-        // SAFETY: forwarding Zend's own arguments.
-        unsafe { unset(object.as_ptr(), name.as_ptr(), cache_slot) };
-    }
+    zend_std_unset_property(object, name, cache_slot);
 }
 
 /// An untyped instance property a registered class declares, as the offset of

@@ -332,7 +332,7 @@ fn exit(call: &Call) {
         }
         return;
     }
-    if host::exit_original(call.frame(), call.return_value()) {
+    if host::exit_original(call) {
         return;
     }
     host::exit_fallback(message.map(ZStr::bytes), code);
