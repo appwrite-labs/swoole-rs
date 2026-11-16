@@ -479,7 +479,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn eagain_ends_an_empty_batch() {
         let live = LiveServer::new();
         assert_eq!(accept_on(&live), OK, "nothing to accept");
@@ -487,7 +486,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn too_many_connections_aborts_and_disables_accept() {
         let live = LiveServer::new();
         set_tables_max(&live, 1);
@@ -509,7 +507,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn a_full_session_list_aborts() {
         let live = LiveServer::new();
         // Every session `max_connection` tries after the round is taken.
@@ -527,7 +524,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn session_ids_continue_from_the_round_and_skip_taken_slots() {
         let live = LiveServer::new();
         live.counters().session_round.store(41, Relaxed);
@@ -561,7 +557,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn single_thread_reads_inline_and_counts_the_fd_range() {
         let live = LiveServer::new();
         live.server().config().single_thread.set(true);
@@ -584,7 +579,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn abort_closes_a_connection_through_the_reactor() {
         let live = LiveServer::new();
         live.server().config().single_thread.set(true);
@@ -610,7 +604,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn delayed_receive_waits_for_the_resume() {
         let live = LiveServer::new();
         live.server().config().single_thread.set(true);
@@ -629,10 +622,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn idle_timeout_closes_only_idle_connections() {
         let live = LiveServer::new();
-        live.port().max_idle_time.set(5.0);
+        // `idle_timeout` compares it with milliseconds; a second outlasts Miri's slowdown.
+        live.port().max_idle_time.set(1000.0);
         let _client = live.connect();
         live.server().config().single_thread.set(true);
         accept_on(&live);
@@ -662,7 +655,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn accept_retry_reenables_stream_ports() {
         let live = LiveServer::new();
         let listener = live.port_socket();
@@ -677,7 +669,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn eintr_retries_and_running_out_of_descriptors_disables_accept() {
         let live = LiveServer::new();
         let listener = live.port_socket();

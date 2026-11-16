@@ -21,14 +21,6 @@ const UNREGISTERED_SIGNAL: c_int =
 
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 
-// crates/tls's `Socket::free`, the same archive; declared, since crates/tls
-// depends on this crate.
-#[cfg(target_os = "linux")]
-unsafe extern "C-unwind" {
-    #[link_name = "_ZN6swoole7network6Socket4freeEv"]
-    safe fn socket_free(socket: Option<crate::OwnedSocket>);
-}
-
 /// The fields of the thread's event loop, available or not (`sw_reactor()`).
 fn current() -> Option<ReactorPrepared> {
     crate::event_api::current_prepared()
@@ -118,7 +110,7 @@ fn report(report: Report) {
 
 #[cfg(target_os = "linux")]
 mod descriptor {
-    use super::{FD_SIGNAL, OPS, c_int, socket_free};
+    use super::{FD_SIGNAL, OPS, c_int};
     use crate::event_api::{
         FdHandler, event_add, event_del, isset_handler, swoole_event_set_fd_handler,
     };
@@ -153,7 +145,7 @@ mod descriptor {
         socket.edit(|record| record.fd = -1);
         // SAFETY: SOCKET's wrapper, `make`'s heap record, which nothing uses once taken
         // out of it.
-        socket_free(Some(unsafe { crate::OwnedSocket::from_socket(socket) }));
+        (crate::host::get().socket_free)(unsafe { crate::OwnedSocket::from_socket(socket) });
     }
 
     pub(super) fn events() -> i32 {

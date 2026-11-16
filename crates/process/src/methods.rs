@@ -192,19 +192,16 @@ pub fn send_pipe_message(
     swr_v1_process_worker_send(native, pool, pipe, queue, id, data, flags)
 }
 
+/// Creates a listener owned by the process pool; supplied by crates/tls at startup.
 #[cfg(feature = "upstream-symbols")]
-// crates/tls defines it under its upstream symbol, as a safe Rust fn taking
-// plain values and a `Text`; declared, since
-// crates/tls (through crates/reactor) depends on this crate. It returns a native
-// socket the caller owns, or null.
-unsafe extern "C-unwind" {
-    #[link_name = "_ZN6swoole18make_server_socketE12swSocketTypePKcii"]
-    safe fn make_server_socket(
-        kind: c_int,
-        host: swoole_rs_corebase::sys::Text<'_>,
-        port: c_int,
-        backlog: c_int,
-    ) -> *mut c_void;
+pub type Listener = fn(c_int, &CStr, c_int, c_int) -> *mut c_void;
+#[cfg(feature = "upstream-symbols")]
+static LISTENER: std::sync::OnceLock<Listener> = std::sync::OnceLock::new();
+
+/// Registers the listener factory once, before any pool listens.
+#[cfg(feature = "upstream-symbols")]
+pub fn set_listener(listener: Listener) {
+    LISTENER.get_or_init(|| listener);
 }
 
 /// `ProcessPool::listen(socket_file, backlog)`: a unix stream listener.
@@ -228,7 +225,11 @@ pub fn listen_socket(
     backlog: c_int,
 ) -> bool {
     listen(pool.record(), host, port, || {
-        make_server_socket(kind, host.into(), port, backlog)
+        LISTENER
+            .get()
+            .unwrap_or_else(|| swoole_rs_corebase::fatal("pool listener is not registered"))(
+            kind, host, port, backlog,
+        )
     })
 }
 

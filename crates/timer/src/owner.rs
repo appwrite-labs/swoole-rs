@@ -49,7 +49,7 @@ impl Lent<'_> {
     }
 }
 /// A callback of the node's data alone.
-pub type Plain = swoole_rs_reactor::DeferCall;
+type Plain = swoole_rs_reactor::DeferCall;
 /// `abandon_selection`'s pending Zend bailout, raised once the node is gone.
 pub type Bailout = extern "C-unwind" fn();
 
@@ -69,7 +69,7 @@ pub struct Info {
 #[repr(C)]
 pub struct TimerNode {
     pub(crate) id: c_long,
-    /// Upstream's `type == TYPE_PHP`: a [`TimerNode::php`] node.
+    /// Upstream's `type == TYPE_PHP`: a PHP callable node.
     php: bool,
     pub(crate) exec_msec: i64,
     interval: i64,
@@ -80,7 +80,7 @@ pub struct TimerNode {
     data: *mut c_void,
     destructor: Option<Destructor>,
     plain: Option<Plain>,
-    /// A `TimerNode::php` node's destructor of its data.
+    /// A PHP callable node's destructor of its data.
     plain_drop: Option<Plain>,
     /// A [`TimerNode::closure`] node's callback.
     closure: Option<Closure>,
@@ -180,22 +180,6 @@ impl TimerNode {
     pub(crate) fn closure(f: Closure) -> Self {
         let mut node = Self::new(None, std::ptr::null_mut());
         node.closure = Some(f);
-        node
-    }
-
-    /// A node whose callback is `plain(data)`, which `Owner::select` calls directly.
-    pub(crate) fn plain(plain: Plain, data: *mut c_void) -> Self {
-        let mut node = Self::new(None, data);
-        node.plain = Some(plain);
-        node
-    }
-
-    /// A PHP node: `callback(data)` on each run, `destructor(data)` once
-    /// it is removed.
-    pub(crate) fn php(callback: Plain, destructor: Plain, data: *mut c_void) -> Self {
-        let mut node = Self::plain(callback, data);
-        node.php = true;
-        node.plain_drop = Some(destructor);
         node
     }
 
@@ -462,6 +446,29 @@ impl Owner {
             self.next_msec.set(next);
         }
         Some((node, view.id))
+    }
+
+    /// Own a parsed PHP callable: only the matching Zend callbacks can reach it.
+    /// A rejected add returns it unkept; success keeps it before any selection.
+    #[cfg(feature = "php")]
+    pub(crate) fn add_php<H: swoole_rs_zend::Holder>(
+        &self,
+        ms: i64,
+        persistent: bool,
+        callable: swoole_rs_zend::Parsed,
+    ) -> Result<i64, swoole_rs_zend::Parsed> {
+        let (run, free) = swoole_rs_zend::Callable::callbacks::<H>();
+        let mut node = TimerNode::new(None, callable.as_raw());
+        node.php = true;
+        node.plain = Some(run);
+        node.plain_drop = Some(free);
+        let Some((_, id)) = self.add(ms, persistent, node) else {
+            return Err(callable);
+        };
+        // No user callback runs between adding the node and retaining its callable.
+        // The node now owns it; its matching destructor releases it exactly once.
+        let _owned = callable.keep(persistent.then_some(id)).into_raw();
+        Ok(id)
     }
 
     /// Whether `id` was removed.

@@ -23,24 +23,9 @@ thread_local! {
     static BUFFER: Cell<CppString> = const { Cell::new(CppString::EMPTY) };
 }
 
-// The pool's existing ABI adapter. Only crates/clients constructs this event;
-// its borrowed request remains live while dispatch copies and retains it.
-unsafe extern "C" {
-    /// `async::dispatch`: queues a copy of the event, holding its own reference
-    /// to the request; null without a pool.
-    #[link_name = "_ZN6swoole5async8dispatchEPKNS_10AsyncEventE"]
-    #[expect(
-        improper_ctypes,
-        reason = "the request record is opaque behind its pointer; Rust defines both sides"
-    )]
-    safe fn async_dispatch(
-        event: &swoole_rs_clients::client::AsyncEvent<'_>,
-    ) -> *mut core::ffi::c_void;
-}
-
 /// `void swoole_init()`.
 #[unsafe(export_name = "_Z11swoole_initv")]
-extern "C-unwind" fn swoole_init() {
+pub(crate) extern "C-unwind" fn swoole_init() {
     swoole_rs_corebase::log::swr_v1_core_set_log_host(swoole_rs_utilities::swr_v1_utils_log);
     native::set_native_host(NativeHost {
         init,
@@ -78,9 +63,32 @@ extern "C-unwind" fn swoole_init() {
         |reactor| swoole_rs_hooks::reactor_handlers::system_init_reactor(reactor),
         swoole_rs_clients::client::init_reactor,
     ]);
-    swoole_rs_clients::client::set_host(swoole_rs_ports::framing_recv::FRAMING, |event| {
-        !async_dispatch(event).is_null()
+    swoole_rs_reactor::host::set_host(swoole_rs_reactor::host::Host {
+        sleep: swoole_rs_hooks::sleep::system_sleep,
+        timer_select: || swoole_rs_timer::swoole_timer_select(),
+        socket_free: |socket| swoole_rs_tls::upstream::socket_free(Some(socket)),
     });
+    swoole_rs_process::methods::set_listener(|kind, host, port, backlog| {
+        swoole_rs_tls::upstream::make_server_socket(kind, host.into(), port, backlog).cast()
+    });
+    swoole_rs_clients::client::set_host(
+        swoole_rs_ports::framing_recv::FRAMING,
+        swoole_rs_hooks::resolve::dispatch_client,
+        swoole_rs_clients::client::Socks5 {
+            admit: |user, password| swoole_rs_protocols_ffi::admit(user, password),
+            negotiate: |proxy| {
+                swoole_rs_protocols_ffi::pack_negotiate_request(
+                    &swoole_rs_protocols_ffi::Socks5Proxy::new(proxy),
+                )
+            },
+            handshake: |proxy, reply| {
+                swoole_rs_protocols_ffi::socks5_step(
+                    &swoole_rs_protocols_ffi::Socks5Proxy::new(proxy),
+                    reply,
+                )
+            },
+        },
+    );
     swoole_rs_ports::register_methods();
     swoole_rs_hooks::stdio::swr_v1_hook_install();
     swoole_rs_corebase::swr_v1_core_swoole_init();
