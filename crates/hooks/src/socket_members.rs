@@ -308,9 +308,9 @@ impl Co {
         self,
         flags: u32,
         buffer: Buffer<'_>,
-        mut call: impl FnMut(Socket<'_>, *mut u8, usize) -> isize,
-    ) -> isize {
-        let mut each = |at, length| self.with_network(|s| call(s, at, length)).unwrap_or(-1);
+        mut call: impl FnMut(Socket<'_>, *mut u8, usize) -> Option<usize>,
+    ) -> Option<usize> {
+        let mut each = |at, length| self.with_network(|s| call(s, at, length)).flatten();
         transfer(self, flags, buffer, &mut each)
     }
 
@@ -390,9 +390,9 @@ impl Co {
             return count(n);
         }
         let length = address.len;
-        let call = call!(|s, at, len| libc::sendto(s.fd(), at.cast(), len, 0, to, length));
+        let call = call!(|s, at, len| count(libc::sendto(s.fd(), at.cast(), len, 0, to, length)));
         // Availability was checked above.
-        count(self.transfer(RETRY_INTERRUPTED | CHECKED, Buffer::write(buf), call))
+        self.transfer(RETRY_INTERRUPTED | CHECKED, Buffer::write(buf), call)
     }
 
     /// The peer certificate's PEM, or empty with the error set when there is none.
@@ -414,9 +414,8 @@ impl Co {
         if let Some(n) = ring::with(self, |ops| ring::recv(ops, buf)) {
             return count(n);
         }
-        let call = call!(|s, at, len| recv_fill(s, Fill::from_raw(at.cast(), len), 0)
-            .map_or(-1, usize::cast_signed));
-        count(self.transfer(0, Buffer::read(buf), call))
+        let call = call!(|s, at, len| recv_fill(s, Fill::from_raw(at.cast(), len), 0));
+        self.transfer(0, Buffer::read(buf), call)
     }
 
     /// `Socket::send(buf, n)`.
@@ -426,11 +425,8 @@ impl Co {
         if let Some(n) = ring::with(self, |ops| ring::send(ops, ring::SEND, buf)) {
             return count(n);
         }
-        let call = call!(
-            |s, at, len| send_drain(s, Drain::from_raw(at.cast(), len), 0)
-                .map_or(-1, usize::cast_signed)
-        );
-        count(self.transfer(0, Buffer::write(buf), call))
+        let call = call!(|s, at, len| send_drain(s, Drain::from_raw(at.cast(), len), 0));
+        self.transfer(0, Buffer::write(buf), call)
     }
 
     /// `Socket::recv_all(buf, n)`: the count of `buf`'s first slots it wrote, or -1.
@@ -439,9 +435,8 @@ impl Co {
         if let Some(n) = ring::with(self, |ops| ring::recv_all(ops, buf)) {
             return count(n);
         }
-        let call = call!(|s, at, len| recv_fill(s, Fill::from_raw(at.cast(), len), 0)
-            .map_or(-1, usize::cast_signed));
-        count(self.transfer(ALL, Buffer::read(buf), call))
+        let call = call!(|s, at, len| recv_fill(s, Fill::from_raw(at.cast(), len), 0));
+        self.transfer(ALL, Buffer::read(buf), call)
     }
 
     /// `Socket::send_all(buf, n)`.
@@ -451,11 +446,8 @@ impl Co {
         if let Some(n) = ring::with(self, |ops| ring::send_all(ops, buf)) {
             return count(n);
         }
-        let call = call!(
-            |s, at, len| send_drain(s, Drain::from_raw(at.cast(), len), 0)
-                .map_or(-1, usize::cast_signed)
-        );
-        count(self.transfer(ALL, Buffer::write(buf), call))
+        let call = call!(|s, at, len| send_drain(s, Drain::from_raw(at.cast(), len), 0));
+        self.transfer(ALL, Buffer::write(buf), call)
     }
 
     /// `Socket::read(buf, n)`.
@@ -464,8 +456,8 @@ impl Co {
         if let Some(n) = ring::with(self, |ops| ring::read(ops, buf)) {
             return count(n);
         }
-        let call = call!(|s, at, len| libc::read(s.fd(), at.cast(), len));
-        count(self.transfer(0, Buffer::read(buf), call))
+        let call = call!(|s, at, len| count(libc::read(s.fd(), at.cast(), len)));
+        self.transfer(0, Buffer::read(buf), call)
     }
 
     /// `Socket::write(buf, n)`.
@@ -475,8 +467,8 @@ impl Co {
         if let Some(n) = ring::with(self, |ops| ring::send(ops, ring::WRITE, buf)) {
             return count(n);
         }
-        let call = call!(|s, at, len| libc::write(s.fd(), at.cast(), len));
-        count(self.transfer(0, Buffer::write(buf), call))
+        let call = call!(|s, at, len| count(libc::write(s.fd(), at.cast(), len)));
+        self.transfer(0, Buffer::write(buf), call)
     }
 
     /// `Socket::readv(io_vector)` or `writev`, in the direction the vector was made
@@ -494,12 +486,12 @@ impl Co {
         };
         if all {
             let call =
-                |vector: &mut IoVector<'_>| self.with_network(|s| vector.transfer(s)).unwrap_or(-1);
-            return count(vector_all(self, event, vector, call, IoVector::remaining));
+                |vector: &mut IoVector<'_>| self.with_network(|s| vector.transfer(s)).flatten();
+            return vector_all(self, event, vector, call, IoVector::remaining);
         }
         // The vector carries its own buffers.
         let each = |s: Socket<'_>, _: *mut u8, _: usize| vector.transfer(s);
-        count(self.transfer(0, Buffer::none(event), each))
+        self.transfer(0, Buffer::none(event), each)
     }
 
     /// `set_err(error, message)` with owned text. A failed copy (allocation) leaves
@@ -588,9 +580,9 @@ impl Co {
         let (addr, addrlen) = (core::ptr::from_mut(peer).cast(), &raw mut size);
         let fd = self.sock_fd();
         // The borrowed storage and the size of it above, both live across the transfer.
-        let call = call!(|_, at, len| libc::recvfrom(fd, at.cast(), len, 0, addr, addrlen));
+        let call = call!(|_, at, len| count(libc::recvfrom(fd, at.cast(), len, 0, addr, addrlen)));
         let received = self.transfer(RETRY_INTERRUPTED, Buffer::read(buf), call);
-        (received, size)
+        (received.map_or(-1, usize::cast_signed), size)
     }
 
     /// `Socket::recvfrom(buf, n)`: into the `network::Socket`'s peer address, retrying
@@ -600,14 +592,15 @@ impl Co {
             #[cfg(feature = "iouring")]
             // The ring's path fills the same record's peer address itself.
             if let Some(n) = ring::with(self, |ops| ring::recvfrom_peer(ops, buf)) {
-                return n;
+                return count(n);
             }
             let fd = self.sock_fd();
             // The record's peer address and its length, as `recvfrom_peer` lends them.
-            let call = call!(|_, at, len| libc::recvfrom(fd, at.cast(), len, 0, addr, addrlen));
+            let call =
+                call!(|_, at, len| count(libc::recvfrom(fd, at.cast(), len, 0, addr, addrlen)));
             self.transfer(RETRY_INTERRUPTED, Buffer::read(buf), call)
         };
-        count(crate::transfer::recvfrom_peer(self, receive))
+        crate::transfer::recvfrom_peer(self, receive)
     }
 
     /// `Socket::recvmsg(msg, flags)`.
@@ -618,7 +611,7 @@ impl Co {
         }
         let fd = self.sock_fd();
         let call = |_: Socket<'_>, _: *mut u8, _: usize| msg.recv(fd, flags);
-        count(self.transfer(0, Buffer::none(Events::READ), call))
+        self.transfer(0, Buffer::none(Events::READ), call)
     }
 
     /// `Socket::sendmsg(msg, flags)`.
@@ -630,7 +623,7 @@ impl Co {
         }
         let fd = self.sock_fd();
         let call = |_: Socket<'_>, _: *mut u8, _: usize| msg.send(fd, flags);
-        count(self.transfer(0, Buffer::none(Events::WRITE), call))
+        self.transfer(0, Buffer::none(Events::WRITE), call)
     }
 
     /// `Socket::recv_once(buf, n)`: one `network::Socket` receive, no wait; the count
@@ -668,7 +661,7 @@ impl Co {
     /// the count of `buf`'s first slots it wrote, or -1. The socket is open.
     pub fn peek(self, buf: &mut [impl ReadSlot]) -> Option<usize> {
         let result = self.with_network(|socket| peek(socket, buf, 0)).flatten();
-        check(self, result.map_or(-1, usize::cast_signed));
+        check(self, result);
         result
     }
 

@@ -54,8 +54,8 @@ impl<'a> SendMessage<'a> {
     }
 
     /// `sendmsg(2)` of the message on `fd`.
-    pub(crate) fn send(&self, fd: c_int, flags: c_int) -> isize {
-        sendmsg(fd, self, flags)
+    pub(crate) fn send(&self, fd: c_int, flags: c_int) -> Option<usize> {
+        usize::try_from(sendmsg(fd, self, flags)).ok()
     }
 }
 
@@ -92,8 +92,8 @@ impl<'a> RecvMessage<'a> {
     }
 
     /// `recvmsg(2)` into the message on `fd`.
-    pub(crate) fn recv(&mut self, fd: c_int, flags: c_int) -> isize {
-        recvmsg(fd, self, flags)
+    pub(crate) fn recv(&mut self, fd: c_int, flags: c_int) -> Option<usize> {
+        usize::try_from(recvmsg(fd, self, flags)).ok()
     }
 }
 
@@ -212,14 +212,14 @@ impl<'a> IoVector<'a> {
     /// was made for: readv(2) or writev(2) over the iovecs left, or OpenSSL one buffer
     /// at a time when the socket holds an SSL (upstream's `ssl_readv` and `ssl_writev`),
     /// advancing the vector past what moved.
-    pub fn transfer(&mut self, socket: Socket<'_>) -> isize {
+    pub fn transfer(&mut self, socket: Socket<'_>) -> Option<usize> {
         let (fd, ssl) = socket.read(|record| (record.fd, record.ssl()));
         let calls = (
             |buffer: Fill<'_>| ssl_recv_fill(socket, buffer),
             |data: Drain<'_>| ssl_send_drain(socket, data),
         );
         let tls = (!ssl.is_null()).then_some(&calls);
-        swr_v1_socket_iov_owned(fd, &mut self.owner, tls).map_or(-1, usize::cast_signed)
+        swr_v1_socket_iov_owned(fd, &mut self.owner, tls)
     }
 }
 
@@ -232,15 +232,15 @@ struct Transfer<'a, V, T, R> {
     vector: &'a mut V,
     transfer: T,
     remaining: R,
-    result: isize,
-    total: isize,
+    result: Option<usize>,
+    total: usize,
 }
 
-impl<V, T: FnMut(&mut V) -> isize, R: FnMut(&V) -> usize> Transfer<'_, V, T, R> {
+impl<V, T: FnMut(&mut V) -> Option<usize>, R: FnMut(&V) -> usize> Transfer<'_, V, T, R> {
     fn transfer(&mut self) {
         self.result = (self.transfer)(self.vector);
-        if self.result > 0 {
-            self.total = self.total.wrapping_add(self.result);
+        if let Some(n) = self.result {
+            self.total = self.total.wrapping_add(n);
         }
     }
 
@@ -255,17 +255,17 @@ impl<V, T: FnMut(&mut V) -> isize, R: FnMut(&V) -> usize> Transfer<'_, V, T, R> 
 
 /// `readv_all`/`writev_all` in `event`'s direction, timed by the socket's read or
 /// write timeout: the bytes transferred, the first call's result when it finished
-/// or failed, or -1 when the socket is not available. `transfer` is one
+/// or failed, or `None` when the socket is not available. `transfer` is one
 /// `network::Socket` call over `vector` and `remaining` its remaining count.
 pub(crate) fn vector_all<V>(
     socket: Co,
     event: Events,
     vector: &mut V,
-    transfer: impl FnMut(&mut V) -> isize,
+    transfer: impl FnMut(&mut V) -> Option<usize>,
     remaining: impl FnMut(&V) -> usize,
-) -> isize {
+) -> Option<usize> {
     if !available(socket, event) {
-        return -1;
+        return None;
     }
     let timeout = socket.timeout(crate::transfer::timeout_kind(event));
     let mut timer = Timer::new(socket, event, timeout);
@@ -274,16 +274,16 @@ pub(crate) fn vector_all<V>(
         vector,
         transfer,
         remaining,
-        result: 0,
+        result: Some(0),
         total: 0,
     };
     state.transfer();
     let first = state.result;
-    let result = if first < 0 && !state.would_block() {
+    let result = if first.is_none() && !state.would_block() {
         set_err(socket, errno());
         first
     // The iov must not be touched again once complete.
-    } else if first == 0 || state.remaining() == 0 {
+    } else if first == Some(0) || state.remaining() == 0 {
         first
     } else {
         // The barrier's retry: transfer until the vector is done or a call returns
@@ -291,16 +291,16 @@ pub(crate) fn vector_all<V>(
         let mut retry = || {
             loop {
                 state.transfer();
-                if state.result <= 0 || state.remaining() == 0 {
+                if state.result <= Some(0) || state.remaining() == 0 {
                     break;
                 }
             }
-            state.result < 0 && state.would_block()
+            state.result.is_none() && state.would_block()
         };
         if timer.start() && wait_barrier(socket, event, &mut retry) {
             check(socket, state.result);
         }
-        state.total
+        Some(state.total)
     };
     timer.stop();
     result
@@ -406,7 +406,7 @@ mod tests {
             let (result, error) = vector.borrow_mut().io(&mut effects);
             effects.into_iter().for_each(log);
             set_errno(error);
-            result
+            usize::try_from(result).ok()
         };
         let remaining = || {
             let mut effects = Vec::new();
@@ -420,7 +420,8 @@ mod tests {
             &mut (),
             |()| transfer(),
             |()| remaining(),
-        );
+        )
+        .map_or(-1, usize::cast_signed);
         let error = socket.0.err_code.get();
         socket.0.sock_fd.set(100);
         ON_SUSPEND.set(None);

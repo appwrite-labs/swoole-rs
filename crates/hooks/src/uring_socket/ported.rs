@@ -33,7 +33,7 @@ const TEST_JPG_SIZE: usize = 218_787;
 fn always_available(_: Co, _: Events) -> bool {
     true
 }
-fn no_check(_: Co, _: isize) {}
+fn no_check(_: Co, _: Option<usize>) {}
 
 /// A `UringSocket` over `fd`, which it closes when dropped (`sock.close()`).
 struct Sock {
