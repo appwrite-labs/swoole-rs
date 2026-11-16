@@ -649,7 +649,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn a_full_buffer_overflows_and_the_watermark_notifies() {
-        extern "C" fn full(_: crate::callbacks::Ctx, _: Server<'_>, _: &DataHead) {}
+        fn full(_: Server<'_>, _: &DataHead) {}
         let a = Accepted::new();
         a.sock().edit(|s| {
             s.direct_send = false;

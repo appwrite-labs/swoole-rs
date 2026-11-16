@@ -263,7 +263,7 @@ static ON_START: Mutex<Option<fn(Server)>> = Mutex::new(None);
 
 /// `serv.onStart = [](Server *serv) { t1 = thread(...); }`: the client in a master thread,
 /// which SIGTERMs the master if it fails; `join_client` joins it.
-extern "C" fn start_client(_: Ctx, serv: view::Server<'_>) {
+fn start_client(serv: view::Server<'_>) {
     let body = ON_START.lock().unwrap().expect("a client");
     let serv = Server(serv.raw());
     client_thread(
@@ -292,18 +292,18 @@ fn thread_client(body: impl FnOnce() + Send + 'static) {
     );
 }
 
-extern "C" fn unlock_on_worker_start(_: Ctx, _: view::Server<'_>, _: Worker<'_>) {
+fn unlock_on_worker_start(_: view::Server<'_>, _: Worker<'_>) {
     unlock();
 }
 
 /// `onWorkerStart`: `lock.unlock(); test::counter_incr(0);`.
-extern "C" fn unlock_and_count(_: Ctx, _: view::Server<'_>, _: Worker<'_>) {
+fn unlock_and_count(_: view::Server<'_>, _: Worker<'_>) {
     unlock();
     counter_incr(0, 1);
 }
 
 /// `onReceive` of `sendwait` and `system`: the packet, answered with `sendwait`.
-extern "C" fn sendwait_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn sendwait_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let (session, data) = request(req);
     check(data == PACKET, "string(req->data, req->info.len) == packet");
     let _ = server_methods::sendwait(Server(serv.raw()).view(), session, &reply());
@@ -387,7 +387,7 @@ fn system() {
 }
 
 /// `TEST(server, udp_packet)`'s `onPacket`: the datagram, echoed with `sendto`.
-extern "C" fn udp_on_packet(_: Ctx, _: view::Server<'_>, req: &RecvData) -> c_int {
+fn udp_on_packet(_: view::Server<'_>, req: &RecvData) -> c_int {
     // SAFETY: a datagram's RecvData points at its `DgramPacket`: `socket_type`, the
     // 120-byte `Address` (its length at 112), `length`, then the data.
     let (packet, fd) = (req.data().cast::<u8>(), c_int::from(req.info().server_fd));
@@ -461,7 +461,7 @@ fn udp_packet() {
 }
 
 /// `TEST(server, pipe_message)`'s `onPipeMessage`.
-extern "C" fn pipe_message_check(_: Ctx, _: view::Server<'_>, req: Packed<'_>) {
+fn pipe_message_check(_: view::Server<'_>, req: Packed<'_>) {
     check(
         &req.bytes()[size_of::<DataHead>()..] == PACKET,
         "string(req->data, req->info.len) == packet",
@@ -469,7 +469,7 @@ extern "C" fn pipe_message_check(_: Ctx, _: view::Server<'_>, req: Packed<'_>) {
 }
 
 /// `TEST(server, pipe_message)`'s `onWorkerStart`: worker 1 writes to worker 0.
-extern "C" fn pipe_message_worker_start(_: Ctx, serv: view::Server<'_>, _: Worker<'_>) {
+fn pipe_message_worker_start(serv: view::Server<'_>, _: Worker<'_>) {
     if worker_id() == 1 {
         let serv = Server(serv.raw());
         let mut buf = TaskBuffer::default();
@@ -500,7 +500,7 @@ fn pipe_message() {
 }
 
 /// `TEST(server, forward_message)`'s `onPipeMessage`: the session it names gets the reply.
-extern "C" fn forward_pipe_message(_: Ctx, serv: view::Server<'_>, req: Packed<'_>) {
+fn forward_pipe_message(serv: view::Server<'_>, req: Packed<'_>) {
     // The message holds the session id `onReceive` packed.
     let id = &req.bytes()[size_of::<DataHead>()..][..size_of::<c_long>()];
     let client_fd = c_long::from_ne_bytes(id.try_into().unwrap());
@@ -508,7 +508,7 @@ extern "C" fn forward_pipe_message(_: Ctx, serv: view::Server<'_>, req: Packed<'
 }
 
 /// `TEST(server, forward_message)`'s `onReceive`: the session, to the other worker.
-extern "C" fn forward_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn forward_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let mut msg = TaskBuffer::default();
     let (client_fd, _) = request(req);
     pack(&mut msg, &client_fd.to_ne_bytes());
@@ -546,7 +546,7 @@ fn forward_message() {
 
 /// `TEST(server, reopen_log)`'s `onWorkerStart`: worker 0 deletes the log, and SIGRTMIN
 /// to the master brings it back.
-extern "C" fn reopen_log_worker_start(_: Ctx, serv: view::Server<'_>, _: Worker<'_>) {
+fn reopen_log_worker_start(serv: view::Server<'_>, _: Worker<'_>) {
     if worker_id() != 0 {
         return;
     }
@@ -588,7 +588,7 @@ fn reopen_log() {
 
 /// `TEST(server, reopen_log2)`'s `onStart`. `signal_handler_reopen_logger` has no entry
 /// of its own: `master_signal_handler(SIGWINCH)` runs its body over `SwooleG.server`.
-extern "C" fn reopen_log2_start(_: Ctx, serv: view::Server<'_>) {
+fn reopen_log2_start(serv: view::Server<'_>) {
     let serv = Server(serv.raw());
     timer_after(50, move || {
         // In the running master, whose server `SwooleG.server` is.
@@ -599,7 +599,7 @@ extern "C" fn reopen_log2_start(_: Ctx, serv: view::Server<'_>) {
     });
 }
 
-extern "C" fn count_worker_start(_: Ctx, _: view::Server<'_>, _: Worker<'_>) {
+fn count_worker_start(_: view::Server<'_>, _: Worker<'_>) {
     counter_incr(0, 1);
 }
 
@@ -637,14 +637,14 @@ fn overflow_client(serv: Server) {
     kill_pid(serv.get_master_pid());
 }
 
-extern "C" fn overflow_worker_start(_: Ctx, _: view::Server<'_>, _: Worker<'_>) {
+fn overflow_worker_start(_: view::Server<'_>, _: Worker<'_>) {
     if worker_id() == 0 {
         unlock();
     }
     counter_incr(3, 1);
 }
 
-extern "C" fn overflow_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn overflow_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let serv = Server(serv.raw());
     let (sid, _) = request(req);
     serv.get_connection_by_session_id(sid).set_overflow(true);
@@ -748,7 +748,7 @@ fn no_idle_worker_client(serv: Server) {
 }
 
 /// `onReceive`: `usleep(10000); return SW_OK;`.
-extern "C" fn slow_receive(_: Ctx, _: view::Server<'_>, _: &RecvData) -> c_int {
+fn slow_receive(_: view::Server<'_>, _: &RecvData) -> c_int {
     micro_sleep(10000);
     SW_OK
 }
@@ -825,7 +825,7 @@ fn max_request_client(serv: Server) {
 
 /// Acknowledge receipt through the case's process-shared counter, keeping the
 /// original no-response callback and packet bytes.
-extern "C" fn max_request_receive(_: Ctx, _: view::Server<'_>, _: &RecvData) -> c_int {
+fn max_request_receive(_: view::Server<'_>, _: &RecvData) -> c_int {
     counter_incr(1, 1);
     SW_OK
 }
@@ -892,7 +892,7 @@ fn watermark_client(serv: Server) {
     shutdown(serv);
 }
 
-extern "C" fn watermark_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn watermark_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let (session, _) = request(req);
     check(
         Server(serv.raw()).send(session, WBUF.get().unwrap()),
@@ -901,11 +901,11 @@ extern "C" fn watermark_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) 
     SW_OK
 }
 
-extern "C" fn count_buffer_empty(_: Ctx, _: view::Server<'_>, _: &DataHead) {
+fn count_buffer_empty(_: view::Server<'_>, _: &DataHead) {
     counter_incr(1, 1);
 }
 
-extern "C" fn count_buffer_full(_: Ctx, _: view::Server<'_>, _: &DataHead) {
+fn count_buffer_full(_: view::Server<'_>, _: &DataHead) {
     counter_incr(2, 1);
 }
 
@@ -960,7 +960,7 @@ fn discard_data_client(serv: Server) {
     kill_pid(serv.get_master_pid());
 }
 
-extern "C" fn discard_data_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn discard_data_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     micro_sleep(10000);
     let (session, _) = request(req);
     close(Server(serv.raw()), session);
@@ -1004,7 +1004,7 @@ fn discard_data() {
 }
 
 /// `pause_and_resume`'s `onConnect`: receiving pauses, and resumes 50 ms later.
-extern "C" fn pause_connect(_: Ctx, serv: view::Server<'_>, ev: &DataHead) {
+fn pause_connect(serv: view::Server<'_>, ev: &DataHead) {
     let serv = Server(serv.raw());
     let session_id = ev.fd;
     check(
@@ -1026,7 +1026,7 @@ extern "C" fn pause_connect(_: Ctx, serv: view::Server<'_>, ev: &DataHead) {
 }
 
 /// `onReceive`: the packet, answered with `Server: ` and the packet.
-extern "C" fn reply_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn reply_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let (session, data) = request(req);
     check(data == PACKET, "string(req->data, req->info.len) == packet");
     Server(serv.raw()).send(session, &reply());
@@ -1083,11 +1083,11 @@ fn pause_and_resume() {
 const BUFFER_SIZE: c_int = 65536;
 const SEND_COUNT: c_int = 256;
 
-extern "C" fn slow_connect(_: Ctx, _: view::Server<'_>, _: &DataHead) {
+fn slow_connect(_: view::Server<'_>, _: &DataHead) {
     micro_sleep(100_000);
 }
 
-extern "C" fn max_queued_bytes_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn max_queued_bytes_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let (session, data) = request(req);
     if counter_incr(0, data.len() as c_int) == SEND_COUNT * BUFFER_SIZE {
         Server(serv.raw()).send(session, TEST_STR.as_bytes());
@@ -1293,11 +1293,11 @@ fn close_in_client() -> bool {
     CLOSE_IN_CLIENT.load(Ordering::SeqCst)
 }
 
-extern "C" fn close_on_connect(_: Ctx, _: view::Server<'_>, _: &DataHead) {
+fn close_on_connect(_: view::Server<'_>, _: &DataHead) {
     set_flag(SERVER_ON_CONNECT);
 }
 
-extern "C" fn close_on_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn close_on_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let serv = Server(serv.raw());
     let (session, data) = request(req);
     serv.send(session, data);
@@ -1308,14 +1308,14 @@ extern "C" fn close_on_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -
     SW_OK
 }
 
-extern "C" fn close_on_close(_: Ctx, _: view::Server<'_>, ev: &DataHead) {
+fn close_on_close(_: view::Server<'_>, ev: &DataHead) {
     if !close_in_client() {
         check(ev.reactor_id < 0, "ev->reactor_id < 0");
     }
     set_flag(SERVER_ON_CLOSE);
 }
 
-extern "C" fn close_on_worker_stop(_: Ctx, _: view::Server<'_>, _: Worker<'_>) {
+fn close_on_worker_stop(_: view::Server<'_>, _: Worker<'_>) {
     check(flag(SERVER_ON_CONNECT), "flags[\"server_on_connect\"]");
     check(flag(SERVER_ON_RECEIVE), "flags[\"server_on_receive\"]");
     check(flag(SERVER_ON_CLOSE), "flags[\"server_on_close\"]");
@@ -1440,20 +1440,20 @@ fn eof_check_client(serv: Server) {
     shutdown(serv);
 }
 
-extern "C" fn eof_check_worker_start(_: Ctx, serv: view::Server<'_>, _: Worker<'_>) {
+fn eof_check_worker_start(serv: view::Server<'_>, _: Worker<'_>) {
     let serv = Server(serv.raw());
     // SAFETY: getpid(2).
     client_thread(|| unsafe { getpid() }, move || eof_check_client(serv));
 }
 
-extern "C" fn eof_check_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn eof_check_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let (session, _) = request(req);
     Server(serv.raw()).send(session, b"OK");
     counter_incr(RECV_COUNT, 1);
     SW_OK
 }
 
-extern "C" fn eof_check_connect(_: Ctx, serv: view::Server<'_>, ev: &DataHead) {
+fn eof_check_connect(serv: view::Server<'_>, ev: &DataHead) {
     Server(serv.raw()).send(ev.fd, b"OK");
 }
 
@@ -1538,11 +1538,11 @@ fn command_callback(serv: Server, msg: &[u8]) {
     }
 }
 
-extern "C" fn command_start(_: Ctx, serv: view::Server<'_>) {
+fn command_start(serv: view::Server<'_>) {
     command(Server(serv.raw()), COMMAND_MASTER, "hello world [0]");
 }
 
-extern "C" fn ignore_worker_start(_: Ctx, _: view::Server<'_>, _: Worker<'_>) {}
+fn ignore_worker_start(_: view::Server<'_>, _: Worker<'_>) {}
 
 /// `test_command(mode)`.
 fn test_command(mode: c_int) {
@@ -1615,7 +1615,7 @@ fn abnormal_send(serv: Server, flags: u8, msg_id: u64) {
     }
 }
 
-extern "C" fn abnormal_worker_start(_: Ctx, serv: view::Server<'_>, _: Worker<'_>) {
+fn abnormal_worker_start(serv: view::Server<'_>, _: Worker<'_>) {
     if worker_id() == 1 {
         let serv = Server(serv.raw());
         let msg_id = MSG_ID.load(Ordering::SeqCst);
@@ -1650,7 +1650,7 @@ fn abnormal_pipeline_data() {
     let _ = std::fs::remove_file(TEST_LOG_FILE);
 }
 
-extern "C" fn shutdown_after_manager_start(_: Ctx, serv: view::Server<'_>) {
+fn shutdown_after_manager_start(serv: view::Server<'_>) {
     let serv = Server(serv.raw());
     timer_after(50, move || {
         shutdown(serv);
@@ -1678,7 +1678,7 @@ fn base_event_worker_pool_cleanup() {
 }
 
 /// `abort_worker`'s `onConnect`: the worker holding session 1 kills itself 100 ms later.
-extern "C" fn abort_worker_connect(_: Ctx, _: view::Server<'_>, ev: &DataHead) {
+fn abort_worker_connect(_: view::Server<'_>, ev: &DataHead) {
     if ev.fd == 1 {
         timer_after(100, || {
             // SAFETY: this process.
@@ -1688,7 +1688,7 @@ extern "C" fn abort_worker_connect(_: Ctx, _: view::Server<'_>, ev: &DataHead) {
 }
 
 /// `abort_worker`'s `onReceive`: only the live session is left in the session list.
-extern "C" fn abort_worker_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn abort_worker_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let serv = Server(serv.raw());
     let count = (0..SW_SESSION_LIST_SIZE)
         .filter_map(|id| serv.view().session(id))
@@ -1701,7 +1701,7 @@ extern "C" fn abort_worker_receive(_: Ctx, serv: view::Server<'_>, req: &RecvDat
 }
 
 /// `abort_worker`'s `onWorkerStart`, which also counts the starts in counter 0.
-extern "C" fn abort_worker_start(_: Ctx, _: view::Server<'_>, _: Worker<'_>) {
+fn abort_worker_start(_: view::Server<'_>, _: Worker<'_>) {
     counter_incr(0, 1);
     if worker_id() == 0 {
         unlock();
@@ -1764,12 +1764,12 @@ fn abort_worker() {
 /// `reactor_thread_pipe_writable`'s 4 MiB packet.
 static RDATA_4M: OnceLock<Vec<u8>> = OnceLock::new();
 
-extern "C" fn pipe_writable_worker_start(_: Ctx, _: view::Server<'_>, _: Worker<'_>) {
+fn pipe_writable_worker_start(_: view::Server<'_>, _: Worker<'_>) {
     unlock();
     micro_sleep(300_000);
 }
 
-extern "C" fn pipe_writable_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn pipe_writable_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let serv = Server(serv.raw());
     let rdata = RDATA_4M.get().unwrap();
     let len = (rdata.len() as u32).to_be_bytes();
@@ -1889,7 +1889,7 @@ fn send_timeout_client(serv: Server) {
     kill_pid(serv.get_master_pid());
 }
 
-extern "C" fn send_timeout_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn send_timeout_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let serv = Server(serv.raw());
     let (sid, _) = request(req);
     let socket = serv

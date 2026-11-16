@@ -11,9 +11,9 @@ use std::ptr;
 use std::sync::Mutex;
 
 use super::{
-    Address, COMPRESSION_TYPES, Callback, Connection, Ctx, DataHead, LOCATIONS, MODE_BASE,
-    MODE_PROCESS, Port, Protocol, RecvData, SW_LOG_WARNING, SW_SOCK_TCP, Server, Slot, TEST_HOST,
-    TEXT_CHROOT, TEXT_GROUP, TEXT_USER, Worker, ignore_event, ignore_server, last_error, microtime,
+    Address, COMPRESSION_TYPES, Callback, Connection, DataHead, LOCATIONS, MODE_BASE, MODE_PROCESS,
+    Port, Protocol, RecvData, SW_LOG_WARNING, SW_SOCK_TCP, Server, Slot, TEST_HOST, TEXT_CHROOT,
+    TEXT_GROUP, TEXT_USER, Worker, ignore_event, ignore_server, last_error, microtime,
     swoole_set_log_level,
 };
 use crate::{CppString, Event, Hook, Receive};
@@ -157,19 +157,19 @@ fn case<F: Copy>(slot: &Mutex<Option<F>>) -> F {
     slot.lock().unwrap().expect("the case set it")
 }
 
-extern "C" fn on_hook(_: Ctx, serv: view::Server<'_>) {
+fn on_hook(serv: view::Server<'_>) {
     case(&START)(serv.raw());
 }
-extern "C" fn on_worker_hook(_: Ctx, serv: view::Server<'_>, _: Worker<'_>) {
+fn on_worker_hook(serv: view::Server<'_>, _: Worker<'_>) {
     case(&WORKER_START)(serv.raw());
 }
-extern "C" fn on_connect(_: Ctx, serv: view::Server<'_>, info: &DataHead) {
+fn on_connect(serv: view::Server<'_>, info: &DataHead) {
     case(&CONNECT)(serv.raw(), ptr::from_ref(info).cast());
 }
-extern "C" fn on_close(_: Ctx, serv: view::Server<'_>, info: &DataHead) {
+fn on_close(serv: view::Server<'_>, info: &DataHead) {
     case(&CLOSE)(serv.raw(), ptr::from_ref(info).cast());
 }
-extern "C" fn on_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn on_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     case(&RECEIVE)(serv.raw(), ptr::from_ref(req).cast())
 }
 

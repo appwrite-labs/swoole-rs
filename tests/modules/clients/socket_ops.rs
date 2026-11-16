@@ -4,11 +4,6 @@ struct NativeClient(Handle);
 
 impl Drop for NativeClient {
     fn drop(&mut self) {
-        // Other client-test effects still substitute TLS close. This owner made
-        // a native session, so release it before freeing the client and socket.
-        if !self.0.socket().read(|record| record.ssl().is_null()) {
-            unsafe { swoole_rs_tls::upstream::socket_ssl_close(self.0.socket()) };
-        }
         unsafe { self.0.free() };
     }
 }
@@ -156,4 +151,7 @@ fn native_tls_effects_keep_the_session_and_settings_while_the_peer_is_pending() 
         c"first.test"
     );
     assert_eq!(this.tls_state(), SSL_STATE_WAIT_STREAM);
+    assert!(close(this));
+    assert!(this.socket().read(|record| record.ssl().is_null()));
+    assert!(!close(this));
 }

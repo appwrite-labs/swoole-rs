@@ -27,7 +27,7 @@ use swoole_rs_corebase::net_types::SocketAddress as Address;
 use swoole_rs_corebase::{DataHead, ServerEvent};
 use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::Worker;
-use swoole_rs_server::callbacks::{Callback, CallbackKind as Slot, Ctx};
+use swoole_rs_server::callbacks::{Callback, CallbackKind as Slot};
 use swoole_rs_server::reactor_entry::RecvData;
 use swoole_rs_server::{
     Connection, ServerConfig, ServerText, SharedServer, StaticCollection, server_methods, view,
@@ -430,7 +430,7 @@ fn request<'a>(req: &RecvData<'a>) -> (c_long, &'a [u8]) {
 }
 
 /// `onClose` in both fixtures: an active close has no reactor.
-extern "C" fn on_close(_: Ctx, serv: view::Server<'_>, info: &DataHead) {
+fn on_close(serv: view::Server<'_>, info: &DataHead) {
     let conn = Server(serv.raw()).get_connection_by_session_id(info.fd);
     if conn.close_actively() {
         expect(info.reactor_id == -1, "info->reactor_id == -1");
@@ -441,7 +441,7 @@ extern "C" fn on_close(_: Ctx, serv: view::Server<'_>, info: &DataHead) {
 
 /// `test_base_server`'s `onReceive`. The WebSocket frames its `websocket_*` TESTs send
 /// are #1842's.
-extern "C" fn base_on_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn base_on_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let serv = Server(serv.raw());
     let (session, data) = request(req);
     COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -489,7 +489,7 @@ fn join_client() {
 }
 
 /// `test_base_server`'s `onWorkerStart`: the case's client runs in its own thread.
-extern "C" fn base_on_worker_start(_: Ctx, serv: view::Server<'_>, _: Worker<'_>) {
+fn base_on_worker_start(serv: view::Server<'_>, _: Worker<'_>) {
     let test = TEST.lock().unwrap().expect("a case");
     let serv = Server(serv.raw());
     // SAFETY: getpid(2).
@@ -533,22 +533,22 @@ fn test_base_server(test: fn(Server)) {
     serv.delete();
 }
 
-extern "C" fn ignore_server(_: Ctx, _: view::Server<'_>) {}
+fn ignore_server(_: view::Server<'_>) {}
 
-extern "C" fn ignore_event(_: Ctx, _: view::Server<'_>, _: &DataHead) {}
+fn ignore_event(_: view::Server<'_>, _: &DataHead) {}
 
 /// `serv.onReceive = [](Server *, RecvData *) -> int { return SW_OK; }`.
-extern "C" fn receive_ok(_: Ctx, _: view::Server<'_>, _: &RecvData) -> c_int {
+fn receive_ok(_: view::Server<'_>, _: &RecvData) -> c_int {
     SW_OK
 }
 
 /// `serv.onTask = [](Server *, EventData *) -> int { return SW_OK; }`.
-extern "C" fn task_ok(_: Ctx, _: view::Server<'_>, _: Packed<'_>) -> c_int {
+fn task_ok(_: view::Server<'_>, _: Packed<'_>) -> c_int {
     SW_OK
 }
 
 /// `test_http_server`'s `onReceive`.
-extern "C" fn http_on_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn http_on_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let serv = Server(serv.raw());
     let (session, data) = request(req);
     let conn = serv.get_connection_by_session_id(session);
@@ -623,7 +623,7 @@ fn default_http_server() -> Server {
 }
 
 /// `test_proxy_server`'s `onReceive`.
-extern "C" fn proxy_on_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn proxy_on_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let server = Server(serv.raw());
     let (session, data) = request(req);
 
@@ -985,7 +985,7 @@ fn process1() {
     assert_eq!(resp.status, 200);
 }
 
-extern "C" fn return_zero(_: Ctx, _: view::Server<'_>, _: &DataHead) {}
+fn return_zero(_: view::Server<'_>, _: &DataHead) {}
 
 fn redundant_callback() {
     let server = test_http_server(DISPATCH_IDLE_WORKER, 2, MODE_PROCESS);
@@ -1069,7 +1069,7 @@ fn chunked_upload_command(port: u16) -> String {
 
 static CHUNKED_SERVER: Mutex<Option<Server>> = Mutex::new(None);
 
-extern "C" fn chunked_on_start(_: Ctx, _: view::Server<'_>) {
+fn chunked_on_start(_: view::Server<'_>) {
     let server = CHUNKED_SERVER.lock().unwrap().expect("the case's server");
     client_thread(
         move || server.get_master_pid(),
@@ -1130,8 +1130,7 @@ fn max_queued_bytes() {
     wait_all_child_processes();
 }
 
-extern "C" fn dispatch_error(
-    _: Ctx,
+fn dispatch_error(
     _: view::Server<'_>,
     _: Option<swoole_rs_server::Connection<'_>>,
     data: Option<&RecvData>,
