@@ -17,9 +17,23 @@ extern "C" {
 #else
 #include "thirdparty/php/curl/curl_private.h"
 #endif
-/* The handle ch on behalf of the current coroutine, or null after the error of
- * a missing coroutine handle or of a multi bound to another coroutine. */
-php_curl *swoole_curl_get_handle(zval *zid, bool exclusive = true, bool required = true);
+#endif
+/* A live easy handle (a CURL *), as Rust's Easy takes it. */
+typedef void *swr_v1_curl_easy;
+#ifdef __cplusplus
+/* Whether the current coroutine may use the php_curl whose easy handle is cp:
+ * false after the error of a missing coroutine handle or of a multi bound to
+ * another coroutine. */
+bool swr_v1_curl_check_handle(swr_v1_curl_easy cp, bool exclusive, bool required);
+/* The handle ch of zid, a CurlHandle, on behalf of the current coroutine, or null
+ * after that check's error. */
+static inline php_curl *swoole_curl_get_handle(zval *zid, bool exclusive = true, bool required = true) {
+    if (!zid || Z_TYPE_P(zid) != IS_OBJECT) {
+        return nullptr;
+    }
+    php_curl *ch = Z_CURL_P(zid);
+    return swr_v1_curl_check_handle(ch->cp, exclusive, required) ? ch : nullptr;
+}
 #endif
 struct swr_v1_curl_multi;
 /* Rust's: the easy handle's multi while it is in one, and the multi curl_exec
@@ -39,8 +53,6 @@ int swr_v1_curl_multi_remove_handle(const struct swr_v1_curl_multi *multi, struc
 /* After swoole_curl_check_bound_co. */
 int swr_v1_curl_multi_perform(const struct swr_v1_curl_multi *multi);
 long swr_v1_curl_multi_select(const struct swr_v1_curl_multi *multi, void *co, double timeout);
-/* A live easy handle (a CURL *), as Rust's Easy takes it. */
-typedef void *swr_v1_curl_easy;
 struct swr_v1_curl_handle *swr_v1_curl_get_handle(swr_v1_curl_easy cp);
 struct swr_v1_curl_handle *swr_v1_curl_create_handle(swr_v1_curl_easy cp);
 /* No transfer of cp runs, and nothing uses its handle afterwards. */

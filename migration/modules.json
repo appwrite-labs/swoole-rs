@@ -26,16 +26,6 @@
         "Cargo.toml",
         "Cargo.lock",
         ".github/workflows/"
-      ],
-      "upstream_patch_targets": [
-        "config.m4",
-        "CMakeLists.txt",
-        "ext-src/php_swoole.cc",
-        "include/swoole_server.h",
-        "src/server/master.cc",
-        "ext-src/stubs/php_swoole_stdext_arginfo.h",
-        "ext-src/stubs/php_swoole_ftp_arginfo.h",
-        "ext-src/stubs/php_swoole_ssh2_arginfo.h"
       ]
     },
     {
@@ -54,12 +44,6 @@
         "swoole_socket_coro",
         "swoole_server_port"
       ],
-      "upstream_patch_targets": [
-        "src/core/buffer.cc",
-        "include/swoole_buffer.h",
-        "src/core/string.cc",
-        "include/swoole_string.h"
-      ],
       "abi_contract": "docs/buffer-abi-v1.md"
     },
     {
@@ -77,10 +61,6 @@
       ],
       "phpt_families": [
         "swoole_websocket_server"
-      ],
-      "upstream_patch_targets": [
-        "src/protocol/websocket.cc",
-        "include/swoole_websocket.h"
       ]
     },
     {
@@ -98,13 +78,6 @@
       ],
       "phpt_families": [
         "swoole_timer"
-      ],
-      "upstream_patch_targets": [
-        "src/core/timer.cc",
-        "include/swoole_timer.h",
-        "ext-src/swoole_timer.cc",
-        "src/wrapper/timer.cc",
-        "src/os/timer.cc"
       ],
       "abi_contract": "docs/timer-abi-v1.md"
     },
@@ -130,11 +103,6 @@
       ],
       "phpt_families": [
         "swoole_http_server"
-      ],
-      "upstream_patch_targets": [
-        "src/protocol/http.cc",
-        "src/server/static_handler.cc",
-        "include/swoole_static_handler.h"
       ]
     },
     {
@@ -156,16 +124,6 @@
         "swoole_event",
         "swoole_socket_coro"
       ],
-      "upstream_patch_targets": [
-        "src/reactor/",
-        "ext-src/swoole_admin_server.cc",
-        "include/swoole_reactor.h",
-        "src/network/socket.cc",
-        "include/swoole_socket.h",
-        "src/server/base.cc",
-        "src/server/reactor_process.cc",
-        "src/server/reactor_thread.cc"
-      ],
       "abi_contract": "native/reactor/README.md",
       "feature_bit_reserved": 16384
     },
@@ -186,15 +144,6 @@
       "phpt_families": [
         "swoole_coroutine",
         "swoole_channel_coro"
-      ],
-      "upstream_patch_targets": [
-        "src/coroutine/base.cc",
-        "src/coroutine/context.cc",
-        "src/coroutine/thread_context.cc",
-        "src/coroutine/channel.cc",
-        "include/swoole_coroutine_channel.h",
-        "include/swoole_coroutine.h",
-        "include/swoole_coroutine_context.h"
       ],
       "abi_contract": "native/coroutine/contract.md",
       "feature_bit_reserved": 32768
@@ -238,27 +187,6 @@
         "swoole_pdo_pgsql",
         "swoole_pdo_sqlite"
       ],
-      "upstream_patch_targets": [
-        "src/coroutine/hook.cc",
-        "src/coroutine/socket.cc",
-        "src/coroutine/system.cc",
-        "src/coroutine/file_lock.cc",
-        "src/coroutine/iouring.cc",
-        "src/coroutine/uring_socket.cc",
-        "ext-src/swoole_runtime.cc",
-        "include/swoole_coroutine_socket.h",
-        "include/swoole_iouring.h",
-        "include/swoole_uring_socket.h",
-        "ext-src/swoole_pgsql.cc",
-        "ext-src/swoole_odbc.cc",
-        "ext-src/swoole_firebird.cc",
-        "ext-src/swoole_curl.cc",
-        "ext-src/php_swoole_curl.h",
-        "thirdparty/php/curl/multi.cc",
-        "thirdparty/php84/curl/multi.cc",
-        "ext-src/php_swoole_ssh2.h",
-        "ext-src/php_swoole_ssh2_hook.h"
-      ],
       "abi_contract": "native/hooks/contract.md",
       "feature_bit_reserved": 65536
     },
@@ -288,33 +216,6 @@
         "swoole_process_pool",
         "swoole_server"
       ],
-      "upstream_patch_targets": [
-        "src/server/worker.cc",
-        "src/server/task_worker.cc",
-        "src/server/process.cc",
-        "src/server/manager.cc",
-        "src/server/reactor_process.cc",
-        "src/os/process_pool.cc",
-        "src/os/pipe.cc",
-        "src/os/signal.cc",
-        "src/os/wait.cc",
-        "include/swoole_process_pool.h",
-        "src/server/thread.cc",
-        "ext-src/swoole_server.cc",
-        "src/server/master.cc",
-        "ext-src/swoole_process_pool.cc",
-        "include/swoole_server.h",
-        "ext-src/swoole_process.cc",
-        "ext-src/swoole_admin_server.cc",
-        "ext-src/php_swoole_thread.h",
-        "ext-src/swoole_thread.cc",
-        "ext-src/swoole_thread_arraylist.cc",
-        "ext-src/swoole_thread_barrier.cc",
-        "ext-src/swoole_thread_map.cc",
-        "ext-src/swoole_thread_queue.cc",
-        "include/swoole_pipe.h",
-        "src/os/unix_socket.cc"
-      ],
       "abi_contract": "native/process/contract.md",
       "feature_bit_reserved": 524288
     },
@@ -332,9 +233,6 @@
       "phpt_families": [
         "swoole_websocket_server"
       ],
-      "upstream_patch_targets": [
-        "src/core/base64.cc"
-      ],
       "abi_contract": "docs/core-abi-v1.md"
     },
     {
@@ -350,9 +248,6 @@
       ],
       "phpt_families": [
         "swoole_thread"
-      ],
-      "upstream_patch_targets": [
-        "src/core/crc32.cc"
       ],
       "abi_contract": "docs/core-abi-v1.md"
     },
@@ -372,10 +267,6 @@
       "phpt_families": [
         "swoole_http2_server"
       ],
-      "upstream_patch_targets": [
-        "src/core/error.cc",
-        "include/swoole_error.h"
-      ],
       "abi_contract": "docs/core-abi-v1.md"
     },
     {
@@ -392,15 +283,6 @@
       ],
       "phpt_families": [
         "swoole_table"
-      ],
-      "upstream_patch_targets": [
-        "src/memory/",
-        "src/core/heap.cc",
-        "src/core/channel.cc",
-        "include/swoole_memory.h",
-        "include/swoole_table.h",
-        "include/swoole_heap.h",
-        "include/swoole_channel.h"
       ],
       "abi_contract": "native/memory/contract.md"
     },
@@ -422,18 +304,6 @@
         "swoole_redis_server",
         "swoole_client_sync"
       ],
-      "upstream_patch_targets": [
-        "src/protocol/mqtt.cc",
-        "src/protocol/redis.cc",
-        "src/protocol/socks5.cc",
-        "src/protocol/message_bus.cc",
-        "include/swoole_mqtt.h",
-        "include/swoole_redis.h",
-        "include/swoole_proxy.h",
-        "include/swoole_message_bus.h",
-        "ext-src/swoole_redis_server.cc",
-        "ext-src/stubs/php_swoole_redis_server_arginfo.h"
-      ],
       "abi_contract": "crates/protocols-ffi/src/lib.rs"
     },
     {
@@ -453,13 +323,6 @@
         "swoole_global",
         "swoole_function"
       ],
-      "upstream_patch_targets": [
-        "src/core/misc.cc",
-        "src/core/log.cc",
-        "include/swoole_log.h",
-        "include/swoole_util.h",
-        "include/swoole.h"
-      ],
       "abi_contract": "native/utilities/contract.md"
     },
     {
@@ -475,8 +338,7 @@
       ],
       "phpt_families": [
         "swoole_server_port"
-      ],
-      "upstream_patch_targets": []
+      ]
     },
     {
       "id": "M16",
@@ -496,21 +358,6 @@
         "swoole_atomic",
         "swoole_coroutine_lock"
       ],
-      "upstream_patch_targets": [
-        "src/lock/mutex.cc",
-        "src/lock/rw_lock.cc",
-        "src/lock/spin_lock.cc",
-        "src/lock/barrier.cc",
-        "include/swoole_lock.h",
-        "include/swoole_atomic.h",
-        "ext-src/swoole_lock.cc",
-        "ext-src/swoole_atomic.cc",
-        "ext-src/swoole_thread_lock.cc",
-        "ext-src/swoole_thread_atomic.cc",
-        "src/lock/coroutine_lock.cc",
-        "ext-src/swoole_coroutine_lock.cc",
-        "ext-src/stubs/php_swoole_coroutine_lock_arginfo.h"
-      ],
       "abi_contract": "native/locks/contract.md"
     },
     {
@@ -522,19 +369,12 @@
         "M03",
         "M04"
       ],
-      "owned_paths": [
-        "native/wrappers/"
-      ],
+      "owned_paths": [],
       "phpt_families": [
         "swoole_event",
         "swoole_timer"
       ],
-      "upstream_patch_targets": [
-        "src/wrapper/event.cc",
-        "src/wrapper/http.cc"
-      ],
-      "feature_bit_reserved": 2048,
-      "abi_contract": "native/wrappers/contract.md"
+      "feature_bit_reserved": 2048
     },
     {
       "id": "M18",
@@ -553,10 +393,6 @@
       ],
       "phpt_families": [
         "swoole_client_coro"
-      ],
-      "upstream_patch_targets": [
-        "src/protocol/base.cc",
-        "src/protocol/mime_type.cc"
       ],
       "abi_contract": "native/framing/contract.md",
       "feature_bit_reserved": 4096
@@ -579,15 +415,6 @@
       "phpt_families": [
         "swoole_global",
         "swoole_function"
-      ],
-      "upstream_patch_targets": [
-        "include/swoole.h",
-        "include/swoole_config.h",
-        "include/swoole_thread.h",
-        "src/core/base.cc",
-        "include/swoole_async.h",
-        "src/os/base.cc",
-        "src/network/dns.cc"
       ],
       "abi_contract": "native/corebase/contract.md",
       "feature_bit_reserved": 8192
@@ -612,16 +439,6 @@
       "phpt_families": [
         "swoole_coroutine_system"
       ],
-      "upstream_patch_targets": [
-        "include/swoole_file.h",
-        "src/os/async_thread.cc",
-        "src/os/base.cc",
-        "src/os/file.cc",
-        "src/os/msg_queue.cc",
-        "src/os/sendfile.cc",
-        "src/os/unix_socket.cc",
-        "src/coroutine/file.cc"
-      ],
       "abi_contract": "native/ossupport/contract.md",
       "feature_bit_reserved": 131072
     },
@@ -640,11 +457,6 @@
       ],
       "phpt_families": [
         "swoole_socket_coro"
-      ],
-      "upstream_patch_targets": [
-        "src/protocol/ssl.cc",
-        "src/protocol/dtls.cc",
-        "include/swoole_dtls.h"
       ],
       "abi_contract": "native/tls/README.md",
       "feature_bit_reserved": 262144
@@ -681,20 +493,6 @@
         "swoole_socket_coro",
         "swoole_server_coro"
       ],
-      "upstream_patch_targets": [
-        "src/network/address.cc",
-        "src/network/client.cc",
-        "src/network/dns.cc",
-        "src/network/stream.cc",
-        "ext-src/swoole_client.cc",
-        "ext-src/swoole_client_async.cc",
-        "ext-src/swoole_client_coro.cc",
-        "ext-src/swoole_name_resolver.cc",
-        "ext-src/stubs/php_swoole_name_resolver_arginfo.h",
-        "ext-src/swoole_http_client_coro.cc",
-        "ext-src/swoole_socket_coro.cc",
-        "include/swoole_client.h"
-      ],
       "abi_contract": "native/clients/contract.md",
       "feature_bit_reserved": 1048576
     },
@@ -719,14 +517,6 @@
         "swoole_http_server",
         "swoole_http_server_coro",
         "swoole_websocket_server"
-      ],
-      "upstream_patch_targets": [
-        "ext-src/swoole_http_cookie.cc",
-        "ext-src/swoole_http_request.cc",
-        "ext-src/swoole_http_response.cc",
-        "ext-src/swoole_http_server_coro.cc",
-        "ext-src/swoole_http_server.cc",
-        "ext-src/swoole_websocket_server.cc"
       ],
       "abi_contract": "native/httpbindings/contract.md",
       "feature_bit_reserved": 2097152
@@ -756,11 +546,6 @@
         "swoole_http2_server",
         "swoole_http2_client_coro",
         "swoole_http2_server_coro"
-      ],
-      "upstream_patch_targets": [
-        "src/protocol/http2.cc",
-        "ext-src/swoole_http2_server.cc",
-        "ext-src/swoole_http2_client_coro.cc"
       ],
       "abi_contract": "crates/http2/src/lib.rs",
       "feature_bit_reserved": 4194304
@@ -798,10 +583,6 @@
         "swoole_server_port",
         "swoole_server"
       ],
-      "upstream_patch_targets": [
-        "src/server/port.cc",
-        "ext-src/swoole_server_port.cc"
-      ],
       "abi_contract": "native/ports/contract.md",
       "feature_bit_reserved": 8388608
     },
@@ -824,12 +605,6 @@
         "swoole_library",
         "swoole_stdext"
       ],
-      "upstream_patch_targets": [
-        "ext-src/php_swoole_cxx.cc",
-        "ext-src/swoole_stdext.cc",
-        "ext-src/php_swoole_cxx.h",
-        "ext-src/php_swoole_private.h"
-      ],
       "abi_contract": "native/phphelpers/swoole_rs_phphelpers.h",
       "feature_bit_reserved": 16777216
     },
@@ -851,10 +626,6 @@
         "swoole_table",
         "swoole_channel_coro"
       ],
-      "upstream_patch_targets": [
-        "ext-src/swoole_table.cc",
-        "ext-src/swoole_channel_coro.cc"
-      ],
       "abi_contract": "crates/phpcollections/src/lib.rs"
     },
     {
@@ -875,10 +646,6 @@
       ],
       "phpt_families": [
         "swoole_event"
-      ],
-      "upstream_patch_targets": [
-        "ext-src/swoole_event.cc",
-        "ext-src/php_swoole_private.h"
       ]
     },
     {
@@ -906,13 +673,6 @@
         "swoole_coroutine_scheduler",
         "swoole_coroutine_util",
         "swoole_coroutine_wait_group"
-      ],
-      "upstream_patch_targets": [
-        "ext-src/swoole_coroutine.cc",
-        "ext-src/swoole_coroutine_system.cc",
-        "ext-src/swoole_coroutine_scheduler.cc",
-        "ext-src/php_swoole_coroutine.h",
-        "ext-src/swoole_tracer.cc"
       ],
       "abi_contract": "docs/phpcoroutines-boundary.md"
     }

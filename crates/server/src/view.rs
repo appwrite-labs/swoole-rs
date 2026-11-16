@@ -587,9 +587,9 @@ impl<'a> Server<'a> {
         self.port_at(index)?.config().listening_socket()
     }
 
-    /// `Server::task_notify_pipe(worker_id)`, or null.
+    /// `Server::task_notify_pipe(worker_id)`, or `None`.
     #[must_use]
-    pub fn task_notify_pipe(self, worker_id: u16) -> *mut SocketPair {
+    pub fn task_notify_pipe(self, worker_id: u16) -> Option<&'a SocketPair> {
         self.state().task_pipe(worker_id.into())
     }
 

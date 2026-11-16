@@ -230,7 +230,7 @@ pub fn php_swoole_http_cookie_minit(args: &MinitArgs) {
 }
 
 /// `php_swoole_http_get_cooke_safety`: a constructed cookie's object, or
-/// Swoole's `SW_ERROR_HTTP_COOKIE_UNAVAILABLE` (upstream then dereferences null).
+/// Swoole's `SW_ERROR_HTTP_COOKIE_UNAVAILABLE`.
 fn constructed(held: Option<&Held>) -> Option<&Held> {
     let held = held.filter(|held| held.with(|_| ()).is_some());
     if held.is_none() {

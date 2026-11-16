@@ -274,11 +274,9 @@ fn create_task_workers(serv: view::Server<'_>) -> Option<Shm> {
         log::warning(c"Server::create_task_workers", m);
         return None;
     }
-    for _ in 0..workers {
-        if !state.push_task_pipe() {
-            results.free();
-            return None;
-        }
+    if !state.open_task_pipes(workers) {
+        results.free();
+        return None;
     }
     Some(results)
 }
@@ -747,7 +745,7 @@ mod tests {
             );
             assert!(!results.is_null(), "results");
             assert!(
-                !live.server().task_notify_pipe(1).is_null(),
+                live.server().task_notify_pipe(1).is_some(),
                 "a pipe per worker"
             );
             results.free();

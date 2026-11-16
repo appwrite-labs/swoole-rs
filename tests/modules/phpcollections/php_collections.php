@@ -246,7 +246,7 @@ Swoole\Coroutine\run(function (): void {
     check_collection($values->stats(), ['consumer_num'=>0,'producer_num'=>0,'queue_num'=>0], 'all ordinary waits drained');
 });
 // Exact representable signed-long endpoints only: none of these operations
-// enters the original undefined native overflow fallback.
+// overflows.
 $bounds = new Swoole\Table(16);
 check_collection($bounds->column('n', Swoole\Table::TYPE_INT, 8), true, 'defined boundary column');
 check_collection($bounds->create(), true, 'defined boundary create');

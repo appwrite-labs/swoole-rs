@@ -7,6 +7,7 @@
 //! the process patch deletes `pipe.cc` and `unix_socket.cc`.
 use crate::event_socket::EventSocket;
 use crate::upstream::{read_sync, write_sync};
+use std::cell::Cell;
 use std::ffi::{CStr, c_int};
 use std::mem::MaybeUninit;
 use std::ptr;
@@ -30,7 +31,7 @@ const CLOSE_WORKER: c_int = 2;
 #[repr(C)]
 pub struct SocketPair {
     pub blocking: bool,
-    pub timeout: f64,
+    pub timeout: Cell<f64>,
     pub socks: [c_int; 2],
     master_socket: Option<EventSocket>,
     worker_socket: Option<EventSocket>,
@@ -48,7 +49,7 @@ fn open(blocking: bool, unix: Option<c_int>, origin: &CStr) -> (SocketPair, bool
     let timeout = SOCKET_DEFAULTS.read.get();
     let mut pair = SocketPair {
         blocking,
-        timeout,
+        timeout: Cell::new(timeout),
         socks: [0; 2],
         master_socket: None,
         worker_socket: None,
@@ -165,8 +166,8 @@ pub extern "C" fn unix_socket_set_buffer_size(this: &SocketPair, size: usize) ->
 }
 
 /// `void SocketPair::set_timeout(double)`: the pair's, then each end's every timeout.
-pub fn set_timeout(this: &mut SocketPair, timeout: f64) {
-    this.timeout = timeout;
+pub fn set_timeout(this: &SocketPair, timeout: f64) {
+    this.timeout.set(timeout);
     for socket in ends(this).into_iter().flatten() {
         socket.edit(|record| record.timeouts.set(timeout, TimeoutKind::ALL));
     }
@@ -287,8 +288,8 @@ mod tests {
         set_blocking(unsafe { &mut *this }, false);
         clean(unsafe { &*this });
         assert!(read(unsafe { &*this }, &mut received).is_none());
-        set_timeout(unsafe { &mut *this }, 2.5);
-        assert_eq!(pair.timeout, 2.5);
+        set_timeout(unsafe { &*this }, 2.5);
+        assert_eq!(pair.timeout.get(), 2.5);
         assert_eq!(unsafe { (*pair.raw_ends().1).fields.timeouts.read }, 2.5);
         assert!(close(unsafe { &mut *this }, CLOSE_MASTER));
         assert!(!close(unsafe { &mut *this }, CLOSE_MASTER));
@@ -303,7 +304,7 @@ mod tests {
             pipe_new(this, true);
         });
         assert!(pair.blocking);
-        assert_eq!(pair.timeout, SOCKET_DEFAULTS.read.get());
+        assert_eq!(pair.timeout.get(), SOCKET_DEFAULTS.read.get());
         round_trip(pair);
     }
 

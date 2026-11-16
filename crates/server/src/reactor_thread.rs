@@ -5,7 +5,6 @@ use core::ffi::{c_int, c_long};
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_reactor::Events;
 
-use swoole_rs_corebase::net_types::AddressStorage;
 use swoole_rs_corebase::{DataHead, log, microtime};
 #[cfg(any(test, feature = "upstream-symbols"))]
 use swoole_rs_error::ErrorCode;
@@ -93,9 +92,7 @@ fn receive_packets(
         // SAFETY: the checked, aligned head is initialized; every field is plain data.
         let pkt = unsafe { &mut *header.as_mut_ptr().cast::<DgramPacket>() };
         pkt.socket_type = kind;
-        let address = &mut pkt.socket_addr;
-        address.kind = kind;
-        address.len = libc::socklen_t::try_from(size_of::<AddressStorage>()).unwrap_or(0);
+        pkt.socket_addr.kind = kind;
         let mut room = swoole_rs_reactor::Fill::new(payload);
         // A DTLS datagram goes to the handshake, as the bytes it received.
         let received = room.spare(|spare| match spare.recvfrom(fd, 0, &mut pkt.socket_addr) {

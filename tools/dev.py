@@ -283,8 +283,8 @@ def plan(args, reports):
                '--fixture', ROOT / 'tests/modules/hooks/system/fixture.cc',
                '--build-root', ROOT / 'target/native-originals/hooks-system', '--jobs', args.jobs,
                '--exclude', 'coroutine_system.getaddrinfo=' + NETWORK, '--exclude', 'coroutine_system.getaddrinfo_timeout=' + UNCACHED,
-               '--exclude', "coroutine_hook.sendmsg_and_recvmsg=its child reads the parent's freed stack when the parent's close "
-                            'completes first (SIGSEGV in ~15% of runs upstream)',
+               '--exclude', 'coroutine_hook.sendmsg_and_recvmsg=flaky: its outcome depends on which close completes first '
+                            '(~15% of runs fail)',
                '--exclude', 'coroutine_socket.tcp6=needs IPv6',
                '--exclude', 'coroutine_async.gethostbyname=' + NETWORK,
                *[arg for name, reason in [('lookup1', NETWORK), ('lookup_ipv6', NETWORK), ('bad_family', NETWORK), ('cancel', UNCACHED)]
@@ -301,7 +301,7 @@ def plan(args, reports):
                '--exclude', 'client.async_tcp_ssl_handshake_fail=' + NETWORK + ': its TLS handshake with www.baidu.com:80 '
                             'has a 1 s timeout the round trip sometimes exceeds',
                '--exclude', "client.sync_ssl_sendfile=each recv lands at the buffer's start, so past the largest TLS record "
-                            "it reads bytes no recv wrote (uninitialised upstream, zeroed here); www.baidu.com's ~730 KB "
+                            "it reads bytes no recv wrote; www.baidu.com's ~730 KB "
                             'page leaves "baidu.com" only in overwritten bytes',
                *[arg for name in CLIENT_PROXY for arg in ['--exclude', f'client.{name}={PROXY}']],
                # core-tests/src/network/socket.cpp (system/src/network_socket.rs).

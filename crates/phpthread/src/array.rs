@@ -190,7 +190,7 @@ impl Array {
         } else if let Some(item) = table.get_mut(&Key::Int(index)) {
             item.add(delta, call);
         } else {
-            // Upstream dereferences a missing item here (a negative index).
+            // A missing item (a negative index) starts as a new counter.
             let item = Item::counter(delta, call);
             if bailout::pending() {
                 return false;

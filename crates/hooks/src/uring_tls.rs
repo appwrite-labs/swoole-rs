@@ -5,8 +5,7 @@
 //! socket through [`TlsSocket`], in upstream's order (`set_err`, then
 //! `check_return_value(-1)` where upstream calls it).
 
-use std::ffi::{CStr, c_char, c_int, c_ulong};
-use std::mem::MaybeUninit;
+use std::ffi::{CStr, c_int, c_ulong};
 use swoole_rs_corebase::lent::{Spare, lend_spare};
 use swoole_rs_corebase::set_errno;
 use swoole_rs_corebase::sys::ReadSlot;
@@ -26,8 +25,9 @@ pub trait TlsSocket: Copy {
     fn set_err(self, code: c_int);
     /// `check_return_value(-1)`.
     fn check_failure(self);
-    /// The socket's read (`write` false) or write buffer, and its size.
-    fn buffer(self, write: bool) -> (*mut c_char, usize);
+    /// `f` over the socket's read (`write` false) or write BIO scratch, which `f`
+    /// owns, so it may park on the ring meanwhile.
+    fn with_scratch<T>(self, write: bool, f: impl FnOnce(&mut [u8]) -> T) -> T;
     /// Logs and sets a TLS failure that OpenSSL's error queue explains.
     fn ssl_error(self, function: &CStr, error: c_int, code: c_ulong);
 }
@@ -68,19 +68,17 @@ impl<S: TlsSocket> Tls<'_, S> {
 
     /// Upstream's `ssl_bio_write`: send everything OpenSSL queued.
     pub(crate) fn bio_write(&self) -> bool {
-        let (buf, size) = self.socket.buffer(true);
         let Some(wbio) = self.wbio else {
             return true;
         };
-        while self.pending() != 0 {
-            // SAFETY: `buf` holds `size` bytes, which the BIO may only write.
-            let slots =
-                unsafe { core::slice::from_raw_parts_mut(buf.cast::<MaybeUninit<u8>>(), size) };
-            if !lend_spare(slots, |spare| self.send_bio(wbio, spare)).0 {
-                return false;
+        self.socket.with_scratch(true, |buf| {
+            while self.pending() != 0 {
+                if !lend_spare(buf, |spare| self.send_bio(wbio, spare)).0 {
+                    return false;
+                }
             }
-        }
-        true
+            true
+        })
     }
 
     /// One `BIO_read` of what OpenSSL queued into `spare`, sent whole.
@@ -110,32 +108,31 @@ impl<S: TlsSocket> Tls<'_, S> {
 
     /// Upstream's `ssl_bio_read`: feed OpenSSL one receive.
     pub(crate) fn bio_read(&self) -> bool {
-        let (buf, size) = self.socket.buffer(false);
-        loop {
-            // SAFETY: `buf` holds `size` writable bytes, which the receive may only write.
-            let slots =
-                unsafe { core::slice::from_raw_parts_mut(buf.cast::<MaybeUninit<u8>>(), size) };
-            match uring::recv(self.uring, self.fd, slots, 0, self.read_timeout) {
-                Ok(0) => {
-                    self.socket.set_err(SSL_RESET);
-                    return false;
-                }
-                Ok(length) => {
-                    // SAFETY: the first `length` bytes of `buf` were received.
-                    let received = unsafe { core::slice::from_raw_parts(buf.cast::<u8>(), length) };
-                    if self.rbio.and_then(|rbio| rbio.write(received)) != Some(length) {
-                        self.socket.set_err(SSL_BAD_PROTOCOL);
+        self.socket.with_scratch(false, |buf| {
+            loop {
+                match uring::recv(self.uring, self.fd, buf, 0, self.read_timeout) {
+                    Ok(0) => {
+                        self.socket.set_err(SSL_RESET);
                         return false;
                     }
-                    return true;
-                }
-                Err(error) if error.raw_os_error() == Some(libc::EINTR) => {}
-                Err(error) => {
-                    self.socket.set_err(error.raw_os_error().unwrap_or(0));
-                    return false;
+                    Ok(length) => {
+                        let fed = buf
+                            .get(..length)
+                            .and_then(|received| self.rbio.and_then(|rbio| rbio.write(received)));
+                        if fed != Some(length) {
+                            self.socket.set_err(SSL_BAD_PROTOCOL);
+                            return false;
+                        }
+                        return true;
+                    }
+                    Err(error) if error.raw_os_error() == Some(libc::EINTR) => {}
+                    Err(error) => {
+                        self.socket.set_err(error.raw_os_error().unwrap_or(0));
+                        return false;
+                    }
                 }
             }
-        }
+        })
     }
 
     /// Upstream's `ssl_bio_prepare`.
@@ -299,11 +296,8 @@ mod tests {
         fn check_failure(self) {
             ERRORS.with(|errors| errors.borrow_mut().push(-1));
         }
-        fn buffer(self, _write: bool) -> (*mut c_char, usize) {
-            BUFFER.with(|buffer| {
-                let mut buffer = buffer.borrow_mut();
-                (buffer.as_mut_ptr().cast(), buffer.len())
-            })
+        fn with_scratch<T>(self, _write: bool, f: impl FnOnce(&mut [u8]) -> T) -> T {
+            BUFFER.with(|buffer| f(&mut buffer.borrow_mut()))
         }
         fn ssl_error(self, _function: &CStr, _error: c_int, _code: c_ulong) {}
     }

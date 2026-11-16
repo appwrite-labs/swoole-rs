@@ -38,9 +38,9 @@ once views are no longer used. A quiescent fork gives parent and child
 independent copy-on-write queues; each releases its own. No Rust threads, locks
 or global state exist.
 
-Pinned upstream underflows: six bytes, chunk size 4, vector offset 3 creates a
-chunk of capacity 4 and length 3; pop then reports length `UINT32_MAX`. Rust
-reports 0. Exact vector-boundary offsets also select the correct suffix.
+Six bytes, chunk size 4, vector offset 3 make a chunk of capacity 4 and length
+3; after pop the length is 0. Exact vector-boundary offsets select the suffix
+that starts there.
 
 ## String
 

@@ -72,7 +72,7 @@ fn implicit_fn(call: &Call) {
         ));
     } else if is(b"func_handler") {
         let lookup = arg.map_or_else(|| ZString::new(b""), Value::string);
-        // Upstream reads any function as internal; one PHP code defines has no handler.
+        // A function PHP code defines has no internal handler.
         let Some(handler) = call.php().internal_handler(lookup.bytes()) else {
             call.set_bool(false);
             return;

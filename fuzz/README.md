@@ -26,8 +26,7 @@ not compared; Rust's result is still checked.
 For HTTP, `http_url_decode`, `http_url_encode` and `http_cookies` (keys and
 values in order) compare with upstream's `url_decode`, `url_encode` and
 `parse_cookie` (`url_decode` over a slice, with the terminator upstream writes added
-before the buffers are compared). The shim gives each upstream `sw_malloc` one spare byte, so
-upstream runs to completion on every input.
+before the buffers are compared).
 
 
 For HTTP request framing, `http_frame` runs `get_protocol`, `get_header_length`
@@ -50,8 +49,8 @@ part header, and the closing boundary must match.
 For MQTT and RESP, `mqtt_length` compares `mqtt::get_package_length` over any
 received bytes and `resp_parse` compares `redis::parse` (every string and, on
 glibc, `ERANGE`), each against the hybrid's body over Rust's codec
-(`src/protocols_native.rs`). Outside the compared domain only Rust runs; `resp_parse` models upstream's walk
-without reading memory to find those inputs. `resp_stream` runs `redis::recv_packet`
+(`src/protocols_native.rs`). Outside the compared domain only Rust runs; `resp_parse` finds those inputs with
+a model of upstream's walk. `resp_stream` runs `redis::recv_packet`
 over a chunked stream and `socks5` drives `Socks5Proxy` from `create` through
 arbitrary server replies, each against Rust's (`recv_packet`, and the SOCKS5 codec
 behind the hybrid's `Socks5Proxy` methods).
@@ -76,8 +75,8 @@ throw), on URLs up to 256 bytes because libstdc++'s
 `std::regex` recurses per character. `clients_cookie` compares
 `swoole_rs_clients::cookie` with the Set-Cookie split in
 `php_swoole_http_parse_set_cookies`, and `clients_domain_decode` compares
-`swoole_rs_clients::domain_decode` with dns.cc's `domain_decode` wherever Rust stays
-in bounds; other inputs are outside the compared domain and aren't run.
+`swoole_rs_clients::domain_decode` with dns.cc's `domain_decode` wherever Rust decodes
+the name; other inputs are outside the compared domain and aren't run.
 
 The targets in `src/network.rs` but `http2_hpack` have no oracle side; each checks a parser that
 reads untrusted bytes against the wire format or against invariants of its output.
