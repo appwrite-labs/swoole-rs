@@ -88,8 +88,36 @@ class Budget(unittest.TestCase):
                 'casts': {'one': 2},
                 # STATE and queue; the import and the constructors name no type.
                 'cells': {'one': 2},
-                'statuses': {'one': 0}, 'reprs': {'one': 0},
+                'statuses': {'one': 0}, 'reprs': {'one': 0}, 'derefs': {'one': 0},
             })
+
+    def test_safe_fns_whose_unsafe_blocks_use_a_raw_pointer_parameter(self):
+        source = '''\
+fn read(p: *mut u8) -> u8 { unsafe { *p } }
+pub(crate) extern "C" fn callback(data: *mut c_void) { unsafe { run(data.cast()) } }
+fn split(
+    cb: fn(*mut u8) -> i32,
+    mut at: Option<*const Record>,
+) {
+    if let Some(at) = at { unsafe { (*at).go() } }
+}
+unsafe fn contract(p: *mut u8) -> u8 { unsafe { *p } }
+unsafe extern "C" fn native(p: *mut u8) -> u8 { unsafe { *p } }
+fn compared(slot: &AtomicPtr<u8>, ours: *mut u8) -> bool { let t = slot.swap(ours); unsafe { drop_raw(t) } }
+fn stored(&mut self, p: *mut u8) { self.p = p; }
+fn callback_type(cb: extern "C" fn(*mut u8), n: usize) { unsafe { cb(n) } }
+fn declared(p: *mut u8);
+#[cfg(test)]
+mod tests {
+    fn helper(p: *mut u8) -> u8 { unsafe { *p } }
+}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'lib.rs'
+            path.write_text(source)
+            # read, callback and split; the unsafe fns state a contract, compared's and
+            # stored's blocks don't use the pointer, and callback_type's is a parameter type.
+            self.assertEqual(budget.count_file(path, set())['derefs'], 3)
 
     def test_status_bodies_and_c_layouts_exclude_test_modules(self):
         source = '''\
