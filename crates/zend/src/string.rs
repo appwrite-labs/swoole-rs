@@ -38,16 +38,11 @@ pub fn from_val(val: *mut u8) -> *mut zend_string {
 }
 
 /// `zend_string_alloc(length, 0)`: room for `length` bytes and a NUL.
-/// # Panics
-/// `length` exceeds `isize::MAX`, past which Zend's size sum wraps to a small
-/// allocation.
+/// The shim aborts if the length plus the string header and NUL exceeds
+/// `PTRDIFF_MAX`, before doing the allocation.
 #[must_use]
 #[inline]
 pub fn alloc(length: usize) -> *mut zend_string {
-    assert!(
-        isize::try_from(length).is_ok(),
-        "string length {length} overflows"
-    );
     swr_zend_string_alloc(length)
 }
 
