@@ -514,8 +514,8 @@ mod tests {
     }
 
     /// A stub length function, each `N` a distinct body and address.
-    pub(super) unsafe extern "C" fn length<const N: u8>(
-        _: *const Protocol,
+    pub(super) fn length<const N: u8>(
+        _: &Protocol,
         _: Option<swoole_rs_reactor::Socket<'_>>,
         _: &mut PacketLength,
     ) -> isize {

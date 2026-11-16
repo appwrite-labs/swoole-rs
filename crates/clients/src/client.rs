@@ -914,8 +914,7 @@ pub fn package_length(this: Handle, data: &[u8]) -> isize {
         return -1;
     };
     let mut packet = PacketLength::new(data);
-    // SAFETY: the live client's protocol and socket, and the packet's bytes.
-    unsafe { get(this.protocol(), Some(this.socket()), &mut packet) }
+    get(&record.protocol, Some(this.socket()), &mut packet)
 }
 
 /// `Client::close()`: false when already closed or when `close(2)` fails; true when
