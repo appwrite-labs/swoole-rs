@@ -97,7 +97,9 @@ impl LiveServer {
         slot.set_socket(Some(socket));
         slot.set_socket_type(SOCK_TCP);
 
-        // The thread's reactor, without `swoole_event_init`'s coroutine and client handlers.
+        // The thread's reactor, without `swoole_event_init`'s coroutine and client handlers,
+        // over crates/tls's writes and close, which `swoole_init` registers.
+        swoole_rs_reactor::event_api::set_writers(swoole_rs_tls::reactor_write::WRITERS);
         let reactor = swoole_rs_reactor::swr_v1_reactor_new(4096, 0);
         swoole_rs_corebase::set_thread_reactor(reactor.as_ptr());
         Self {
