@@ -102,8 +102,7 @@ pub(crate) fn recv_packet<'a>(
     let request = slot
         .and_then(|slot| requests(|all| all.get(slot).copied()))
         .filter(|&(owner, _)| owner == session)
-        .map(|(_, request)| request)
-        .unwrap_or_default();
+        .map_or_default(|(_, request)| request);
     let mut connection = Connection {
         socket,
         buffer,
