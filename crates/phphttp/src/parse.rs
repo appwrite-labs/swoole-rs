@@ -268,6 +268,8 @@ const HEADER_KEYS: [Key; 8] = [
 ];
 
 static KEYS: [Interned; 25] = [const { Interned::new() }; 25];
+static METHODS: [Interned; llhttp::METHODS.len()] =
+    [const { Interned::new() }; llhttp::METHODS.len()];
 /// `Swoole\Http\Request`'s `get`, `post`, `cookie`, `files` and `tmpfiles` slots.
 /// ... and `server` and `header`.
 static PROPERTIES: [Declared; 7] = [const { Declared::new() }; 7];
@@ -298,6 +300,9 @@ pub(crate) fn minit(minit: &Minit, codecs: u32) {
     CAPABILITIES.store(codecs, Relaxed);
     for (slot, name) in KEYS.iter().zip(KEY_NAMES) {
         minit.intern(slot, name);
+    }
+    for (slot, name) in METHODS.iter().zip(llhttp::METHODS) {
+        minit.intern(slot, name.as_bytes());
     }
     for (property, name) in PROPERTIES.iter().zip([
         c"get",
@@ -709,8 +714,14 @@ fn on_headers_complete(state: &mut State) -> Step {
     // The URI, and path_info, which is decoded.
     let (uri, decoded) = (ZString::new(path), ZString::url_decode(path));
 
-    let method = method_name(state);
-    let method = Owned::string(ZString::new(method.as_bytes()));
+    let method = METHODS
+        .get(usize::from(state.parser.method))
+        .and_then(Interned::get)
+        .map_or_else(
+            || ZString::new(method_name(state).as_bytes()),
+            ZStr::to_owned,
+        );
+    let method = Owned::string(method);
     let now = swoole_rs_corebase::time_now();
     let float = swoole_rs_corebase::microtime();
     let protocol = if state.request.version == 101 {
