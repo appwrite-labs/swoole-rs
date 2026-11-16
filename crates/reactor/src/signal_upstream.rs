@@ -249,14 +249,12 @@ pub fn clear() {
 }
 
 /// `SignalHandler swoole_signal_set(int signo, SignalHandler handler, bool safety)`.
-///
-/// # Safety
-/// `handler` is as [`Handler::from_raw`] requires.
+/// A [`Handler`] is what C++ passes: 0, `SIG_IGN`, or a handler sound to call with any
+/// signal number.
 #[must_use]
 #[unsafe(export_name = "_Z17swoole_signal_setiPFviEb")]
-pub unsafe extern "C" fn swoole_signal_set(signo: c_int, handler: usize, safety: bool) -> usize {
-    // SAFETY: as the caller promises.
-    set(signo, unsafe { Handler::from_raw(handler) }, safety).raw()
+pub extern "C" fn swoole_signal_set(signo: c_int, handler: Handler, safety: bool) -> Handler {
+    set(signo, handler, safety)
 }
 
 /// `void swoole_signal_callback(int signo)`: runs the handler registered for `signo`,

@@ -15,7 +15,7 @@ use swoole_rs_process::signal::{
     swoole_signal_set_action, swoole_signal_unblock_all,
 };
 use swoole_rs_reactor::signal_upstream::{
-    swoole_signal_callback, swoole_signal_clear, swoole_signal_get_handler,
+    Handler, swoole_signal_callback, swoole_signal_clear, swoole_signal_get_handler,
     swoole_signal_get_listener_num, swoole_signal_set,
 };
 
@@ -57,7 +57,8 @@ fn set(signo: c_int, handler: Option<SignalHandler>) -> usize {
 fn set_safe(signo: c_int, handler: Option<SignalHandler>, safety: bool) -> usize {
     let handler = handler.map_or(0, |handler| handler as usize);
     // SAFETY: null or one of this binary's handlers.
-    unsafe { swoole_signal_set(signo, handler, safety) }
+    let handler = unsafe { Handler::from_raw(handler) };
+    swoole_signal_set(signo, handler, safety).raw()
 }
 
 fn clear() {

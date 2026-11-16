@@ -269,30 +269,41 @@ extern "C-unwind" fn swoole_timer_tick(
     schedule(c"swoole_timer_tick", ms, true, callback, data)
 }
 
+/// A `TimerNode *` C++ hands back: one of this thread's live nodes, as
+/// `swoole_timer_add` returned it, live when the call that takes it starts. Only an
+/// export's argument is one; Rust makes none.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct HeldNode(std::ptr::NonNull<TimerNode>);
+
+impl HeldNode {
+    /// The node's id and deadline, read on entry, before anything can free it.
+    fn fields(self) -> (c_long, i64) {
+        // SAFETY: the type's invariant: a live node, which no `&mut` borrows between
+        // the queue's calls.
+        let node = unsafe { self.0.as_ref() };
+        (node.id, node.exec_msec)
+    }
+}
+
 /// `bool swoole_timer_del(TimerNode *)`: `Timer::remove(tnode)`.
-/// # Safety
-/// `node` is null or one of this thread's live nodes.
+#[must_use]
 #[unsafe(export_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE")]
-pub unsafe extern "C-unwind" fn swoole_timer_del(node: *mut TimerNode) -> bool {
+pub extern "C-unwind" fn swoole_timer_del(node: Option<HeldNode>) -> bool {
     let Some(timer) = available(c"swoole_timer_del") else {
         return false;
     };
-    // SAFETY: null or a live node, as the caller promises.
-    unsafe { node.as_ref() }.is_some_and(|node| timer.remove(node.id))
+    node.is_some_and(|node| timer.remove(node.fields().0))
 }
 
 /// `void swoole_timer_delay(TimerNode *, long delay_ms)`: `Timer::delay`, which
 /// moves the deadline to `delay_ms` from now.
-/// # Safety
-/// `node` is null or one of this thread's live nodes.
 #[unsafe(export_name = "_Z18swoole_timer_delayPN6swoole9TimerNodeEl")]
-pub unsafe extern "C-unwind" fn swoole_timer_delay(node: *mut TimerNode, delay_ms: c_long) {
+pub extern "C-unwind" fn swoole_timer_delay(node: Option<HeldNode>, delay_ms: c_long) {
     let Some(timer) = available(c"swoole_timer_delay") else {
         return;
     };
-    // SAFETY: null or a live node, as the caller promises.
-    let fields = unsafe { node.as_ref() }.map(|node| (node.id, node.exec_msec));
-    if let Some((id, exec_msec)) = fields {
+    if let Some((id, exec_msec)) = node.map(HeldNode::fields) {
         timer.delay(id, Some(exec_msec), delay_ms);
     }
 }
