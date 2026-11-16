@@ -2,7 +2,7 @@
 //! and flagged [`TYPED`]. Writes check keys and values against the definition:
 //! `swoole_typed_array`, the `array_push`/`array_unshift`/`array_splice`
 //! overrides, and the `ASSIGN_DIM`/`UNSET_DIM`/`FE_RESET_RW` opcode handlers.
-use crate::{CONTINUE, DISPATCH, Frame, Op};
+use crate::{Frame, Next, Op};
 use std::{
     cell::Cell,
     ffi::{CStr, CString, c_int},
@@ -577,17 +577,17 @@ pub(crate) struct Unset;
 
 impl Handler for Unset {
     const OPCODE: u32 = swoole_rs_zend::sys::ZEND_UNSET_DIM;
-    fn run(frame: Frame<'_>) -> c_int {
+    fn run(frame: Frame<'_>) -> Next {
         // `get_array_on_opline`: op1's slot.
         let Some(array) = Op::current(frame).op1_container() else {
-            return DISPATCH;
+            return Next::Dispatch;
         };
         match Typed::of(array) {
             Some(typed) if typed.this().key == 0 => {
                 throw_error(c"The typed array list do not support random deletion of elements");
-                CONTINUE
+                Next::Continue
             }
-            _ => DISPATCH,
+            _ => Next::Dispatch,
         }
     }
 }
@@ -598,16 +598,16 @@ pub(crate) struct ForeachBegin;
 
 impl Handler for ForeachBegin {
     const OPCODE: u32 = swoole_rs_zend::sys::ZEND_FE_RESET_RW;
-    fn run(frame: Frame<'_>) -> c_int {
+    fn run(frame: Frame<'_>) -> Next {
         let op = Op::current(frame);
         if op.op1_container().and_then(Typed::of).is_none() {
-            return DISPATCH;
+            return Next::Dispatch;
         }
         throw_error(
             c"The type array do not support using references for element value during iteration",
         );
         foreach_undef(frame);
-        CONTINUE
+        Next::Continue
     }
 }
 
@@ -789,8 +789,8 @@ fn check_appended(typed: Typed, call: &Call) -> bool {
 
 /// An override: unless the first argument names a typed array that `allowed`
 /// refuses (Zend has thrown), run the `original` handler, then, with `remark`,
-/// flag the table it rebuilt in place typed again. The original may bail out
-/// through this frame and its handler's, which own nothing to drop.
+/// flag the table it rebuilt in place typed again. A bailout in the original
+/// is trapped and deferred to the handler's end, with no table flagged.
 fn guarded(
     call: &Call,
     original: fn(&Originals) -> zif_handler,
@@ -803,19 +803,21 @@ fn guarded(
     {
         return;
     }
-    if let Some(handler) = ORIGINALS.get().and_then(original) {
-        // SAFETY: a core function's handler, whose whole contract is a live
-        // handler frame and return slot: `call`'s. It parses its own arguments.
-        unsafe { handler(call.frame(), call.return_value()) };
+    if let Some(handler) = ORIGINALS.get().map(original)
+        && handler.is_some()
+        && let Err(bailout) = call.forward(handler)
+    {
+        bailout.defer();
+        return;
     }
     if remark && let Some(typed) = target {
         typed.mark();
     }
 }
 
-// Upstream's `PHP_FUNCTION` names; `install` puts them in the core functions' slots.
+// Upstream's `PHP_FUNCTION` names; `install` puts them in the core functions'
+// slots. Each ends by raising the bailout `guarded` deferred.
 swoole_rs_zend::handlers! {
-    leaf:
     zif_swoole_array_push => push;
     zif_swoole_array_unshift => unshift;
     zif_swoole_array_splice => splice;

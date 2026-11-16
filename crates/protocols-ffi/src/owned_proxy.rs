@@ -1,6 +1,6 @@
 //! `swoole::Socks5Proxy`'s methods over the Rust proxy owner and its packet buffer.
-//! `admit`, `pack_negotiate_request` and `handshake_step` keep their upstream symbols
-//! for native callers; crates/clients uses the registered typed host.
+//! No native code calls them: crates/hooks calls them by path and crates/clients
+//! through the host crates/ffi registers.
 use std::ffi::{CStr, c_int};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as NOTICE;
@@ -21,7 +21,6 @@ const HANDSHAKE_FAILED: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_SOCKS5_HANDSHAKE_FAILED as c_int;
 
 /// A `swoole::Socks5Proxy`: a borrow of its Rust proxy state.
-#[repr(C)]
 pub struct Socks5Proxy<'a> {
     owner: &'a ProxyState,
 }
@@ -130,9 +129,8 @@ fn pack(owner: &ProxyState, request: Request, buffer: &mut [u8]) -> Packet {
 }
 
 /// `ssize_t Socks5Proxy::pack_negotiate_request()`.
-#[unsafe(export_name = "_ZN6swoole11Socks5Proxy22pack_negotiate_requestEv")]
 #[must_use]
-pub extern "C" fn pack_negotiate_request(proxy: &Socks5Proxy<'_>) -> isize {
+pub fn pack_negotiate_request(proxy: &Socks5Proxy<'_>) -> isize {
     ssize(packet(proxy, Request::Negotiate).size)
 }
 
@@ -161,34 +159,10 @@ pub fn pack_connect_request(proxy: &Socks5Proxy<'_>) -> Option<usize> {
     result.size
 }
 
-/// `ssize_t Socks5Proxy::handshake_step(const char *, size_t)`: applies a server
-/// reply (the state advances unless it is an error), logs a failure as upstream's
-/// `handshake` did, and packs the request that answers it. Returns its size, 0 when
-/// none is due, -1 on failure.
-/// A null `data` is an empty reply at zero length and a failure otherwise.
-/// # Safety
-/// A non-null `data` lends `length` readable bytes.
-#[unsafe(export_name = "_ZN6swoole11Socks5Proxy14handshake_stepEPKcm")]
-#[must_use]
-pub unsafe extern "C" fn handshake_step(
-    proxy: &Socks5Proxy<'_>,
-    data: *const u8,
-    length: usize,
-) -> isize {
-    if length == 0 {
-        return ssize(socks5_step(proxy, &[]));
-    }
-    if data.is_null() || length > isize::MAX as usize {
-        return -1;
-    }
-    // SAFETY: non-null, `length <= isize::MAX`; the caller lends `length` readable bytes.
-    ssize(socks5_step(proxy, unsafe {
-        std::slice::from_raw_parts(data, length)
-    }))
-}
-
-/// [`handshake_step`] over a borrowed reply: the answering packet's size, 0 when none
-/// is due, `None` on failure.
+/// `Socks5Proxy::handshake_step(data, length)` over a borrowed reply: applies it (the
+/// state advances unless it is an error), logs a failure as upstream's `handshake`
+/// did, and packs the request that answers it. The answering packet's size, 0 when
+/// none is due, `None` on failure.
 #[must_use]
 pub fn socks5_step(proxy: &Socks5Proxy<'_>, reply: &[u8]) -> Option<usize> {
     let owner = proxy.owner;
@@ -244,9 +218,8 @@ pub fn strerror(code: c_int) -> &'static CStr {
 
 /// `int Socks5Proxy::admit(size_t, size_t)`: `create`'s credential check, with
 /// upstream's notice when one is too long.
-#[unsafe(export_name = "_ZN6swoole11Socks5Proxy5admitEmm")]
 #[must_use]
-pub extern "C" fn admit(user_length: usize, password_length: usize) -> c_int {
+pub fn admit(user_length: usize, password_length: usize) -> c_int {
     let config = socks_config(user_length, password_length);
     if config == SocksConfig::Refused {
         log::error_log(
@@ -328,28 +301,27 @@ mod tests {
         assert_eq!(pack_negotiate_request(p), 3);
         assert_eq!(owner.fields().method, 2);
         owner.update(|fields| fields.state = 1);
-        let buffer = |n: isize| {
+        let buffer = |n: Option<usize>| {
             owner
-                .with_packet(|packet| packet[..usize::try_from(n).unwrap()].to_vec())
+                .with_packet(|packet| packet[..n.unwrap()].to_vec())
                 .unwrap()
         };
         // Too short, then the wrong method: failures that leave the state alone.
-        assert_eq!(unsafe { handshake_step(p, [5u8].as_ptr(), 1) }, -1);
-        assert_eq!(unsafe { handshake_step(p, [5u8, 0].as_ptr(), 2) }, -1);
-        // A null reply is refused at any length but zero, where it is empty (too short).
-        assert_eq!(unsafe { handshake_step(p, std::ptr::null(), 2) }, -1);
-        assert_eq!(unsafe { handshake_step(p, std::ptr::null(), 0) }, -1);
+        assert_eq!(socks5_step(p, &[5]), None);
+        assert_eq!(socks5_step(p, &[5, 0]), None);
+        // An empty reply is too short.
+        assert_eq!(socks5_step(p, &[]), None);
         assert_eq!(owner.fields().state, 1);
         // Username/password chosen: the auth request follows.
-        let n = unsafe { handshake_step(p, [5u8, 2].as_ptr(), 2) };
+        let n = socks5_step(p, &[5, 2]);
         assert_eq!(buffer(n), b"\x01\x04user\x04pass");
         assert_eq!(owner.fields().state, 2);
         // Authenticated: the connect request names the target through the tunnel.
         owner.update(|fields| fields.target_port = 80);
-        let n = unsafe { handshake_step(p, [1u8, 0].as_ptr(), 2) };
+        let n = socks5_step(p, &[1, 0]);
         assert_eq!(buffer(n), b"\x05\x01\x00\x03\x00\x00\x50");
         // Connected: ready, nothing to send.
-        assert_eq!(unsafe { handshake_step(p, [5u8, 0].as_ptr(), 2) }, 0);
+        assert_eq!(socks5_step(p, &[5, 0]), Some(0));
         assert_eq!(owner.fields().state, 4);
         assert_eq!(strerror(5), c"Connection refused by destination host");
     }

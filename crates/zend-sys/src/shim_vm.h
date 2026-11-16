@@ -16,6 +16,10 @@ bool swr_zend_objects_copy(uint32_t handle, zval *out);
  * holds an object there with these handlers whose free_obj has not begun;
  * false, with `out` untouched, otherwise. */
 bool swr_zend_objects_hold(uint32_t handle, const zend_object_handlers *handlers, zval *out);
+/* EG(objects_store).object_buckets[handle] when the store holds an object there
+ * with these handlers (free_obj may have begun at shutdown, which frees objects
+ * in place); NULL otherwise. No reference is taken. */
+zend_object *swr_zend_objects_lookup(uint32_t handle, const zend_object_handlers *handlers);
 /* zend_array_count(&EG(regular_list)). */
 uint32_t swr_zend_resource_count(void);
 #endif

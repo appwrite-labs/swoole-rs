@@ -519,10 +519,7 @@ impl Co {
     pub fn connect_host(self, host: &[u8], port: c_int) -> bool {
         // The shared context, taken for the connect and put back after it.
         let shared = self.resolve_context();
-        let mut resolve = shared
-            .as_deref()
-            .map(core::cell::Cell::take)
-            .unwrap_or_default();
+        let mut resolve = shared.as_deref().map_or_default(core::cell::Cell::take);
         let proxies = self.with_extra(|extra| extra.proxies.clone());
         let [socks5, http] = proxies.unwrap_or_default();
         let mut live = Live {
@@ -923,7 +920,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no inet_pton")]
     fn tls_host_name_and_proxy_family_switch() {
         // An IPv4 socket whose proxy (::1) is IPv6 reopens as TCP6.
         let mut ops = connect_ops(Some(Proxy::Socks5), true, libc::AF_INET);
@@ -1133,7 +1129,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no inet_pton")]
     fn ip_checks_match_inet_pton() {
         assert!(is_ip(libc::AF_INET, b"127.0.0.1"));
         assert!(!is_ip(libc::AF_INET, b"localhost"));
