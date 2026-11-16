@@ -81,7 +81,8 @@ impl WriteEffects for Write<'_> {
     }
 }
 
-/// `Reactor::write_func`.
+/// `Reactor::write_func`: the bytes written or queued, or `None` once the failure is
+/// logged or set as the last error.
 fn write(
     reactor: Running<'_>,
     socket: Socket<'static>,

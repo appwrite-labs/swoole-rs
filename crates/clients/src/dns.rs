@@ -286,7 +286,9 @@ impl<S: DnsSocket> DnsExchange for Exchange<S> {
 #[must_use]
 pub fn server() -> (Vec<u8>, c_int) {
     let config = config();
-    let mut host = config.host.clone();
+    // Sized for the NUL, so the push doesn't reallocate.
+    let mut host = Vec::with_capacity(config.host.len() + 1);
+    host.extend_from_slice(&config.host);
     host.push(0);
     (host, config.port)
 }
