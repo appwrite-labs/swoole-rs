@@ -118,15 +118,16 @@ impl event_api::Deferred for Completion {
 }
 /// The `SW_FD_CARES` read and write handlers: the wrapper's object is its query.
 extern "C" fn readable(_: Running<'_>, event: &mut Event) -> i32 {
-    process(event, false)
+    if process(event, false) { 0 } else { -1 }
 }
 extern "C" fn writable(_: Running<'_>, event: &mut Event) -> i32 {
-    process(event, true)
+    if process(event, true) { 0 } else { -1 }
 }
-fn process(event: &Event, write: bool) -> i32 {
+/// Hands the ready descriptor to its query's channel: false for an event that has none.
+fn process(event: &Event, write: bool) -> bool {
     let fd = event.fd();
     let Some(socket) = event.socket() else {
-        return -1;
+        return false;
     };
     let data = socket.read(|socket| socket.object).cast::<Query>();
     // SAFETY: a registered wrapper's object is its query (`socket_state` sets it), which
@@ -135,11 +136,11 @@ fn process(event: &Event, write: bool) -> i32 {
     let query = unsafe { &*data };
     // A wrapper is registered only by the channel's callback, so the channel is set.
     let Some(channel) = query.channel.get() else {
-        return -1;
+        return false;
     };
     let (read, write) = if write { (-1, fd) } else { (fd, -1) };
     sdk::ares_process_fd(channel, read, write);
-    0
+    true
 }
 /// Reactor destruction: no query still uses the library after its channel was destroyed.
 extern "C-unwind" fn cleanup(_: *mut c_void) {

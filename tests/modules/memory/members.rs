@@ -155,10 +155,15 @@ fn shared_mappings_are_zeroed_protected_and_freed() {
     assert!(!memory.is_null());
     unsafe {
         assert!((0..100).all(|i| memory.add(i).read() == 0));
-        assert_eq!(Shm(Cell::new(memory.cast())).protect(libc::PROT_READ), 0);
-        assert_eq!(
-            Shm(Cell::new(memory.cast())).protect(libc::PROT_READ | libc::PROT_WRITE),
-            0
+        assert!(
+            Shm(Cell::new(memory.cast()))
+                .protect(libc::PROT_READ)
+                .is_ok()
+        );
+        assert!(
+            Shm(Cell::new(memory.cast()))
+                .protect(libc::PROT_READ | libc::PROT_WRITE)
+                .is_ok()
         );
         memory.write_bytes(7, 100);
         let total = memory
