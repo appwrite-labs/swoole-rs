@@ -622,9 +622,9 @@ pub(crate) fn send_to_reactor_thread(serv: view::Server<'_>, head: &DataHead) ->
     };
     let info = swoole_rs_process::process_pool::head_view(head);
     if swoole_rs_reactor::event_api::swoole_event_is_available() {
-        let write = swoole_rs_reactor::event_api::swoole_event_write;
-        // SAFETY: the live pipe, and the event's bytes.
-        unsafe { write(pipe.as_ptr().cast(), info.as_ptr().cast(), info.len()) }
+        crate::reactor_handle::registered(pipe).map_or(-1, |pipe| {
+            swoole_rs_reactor::event_api::event_write(pipe, info)
+        })
     } else {
         let event = swoole_rs_reactor::Drain::new(info);
         swoole_rs_tls::upstream::send_sync_drain(pipe, event, 0).map_or(-1, usize::cast_signed)

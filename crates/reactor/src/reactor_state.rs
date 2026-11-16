@@ -335,7 +335,7 @@ unsafe extern "C-unwind" {
         count: usize,
     ) -> isize;
     #[link_name = "_ZN6swoole7Reactor6_closeEPS0_PNS_7network6SocketE"]
-    fn reactor_close(reactor: crate::Running<'_>, socket: Socket<'_>) -> c_int;
+    fn reactor_close(reactor: crate::Running<'_>, socket: Socket<'static>) -> c_int;
     #[link_name = "_ZN6swoole9coroutine6System12init_reactorEPNS_7ReactorE"]
     safe fn system_init_reactor(reactor: crate::Running<'_>);
 }
