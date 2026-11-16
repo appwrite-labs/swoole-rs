@@ -87,14 +87,19 @@ pub fn current_worker() -> *mut WorkerRecord {
 
 /// `f` over `SwooleWG.worker`, or `None` while this thread runs no worker. The
 /// handle lives only for the call: `f` can't keep it.
+#[inline(always)]
 pub fn with_current<R>(f: impl FnOnce(&crate::worker_record::Worker<'_>) -> R) -> Option<R> {
-    // SAFETY: the slot holds a loan of the record the worker loop this thread runs
+    let raw = current_worker();
+    if raw.is_null() {
+        return None;
+    }
+    // SAFETY: not null, so the slot holds a loan of the record the worker loop this thread runs
     // was given by the pool or server that owns it, which keeps it until it frees
     // its workers after the loop ends. `worker_global_stopped` frees only
     // the detached flag, so stopping during `f` leaves the
     // lent record live. The loop orders the field writes made through the handle.
-    let worker = unsafe { crate::worker_record::Worker::from_raw(current_worker()) };
-    worker.as_ref().map(f)
+    let worker = unsafe { crate::worker_record::Worker::new(raw) };
+    Some(f(&worker))
 }
 
 /// `SwooleWG.worker = worker`.

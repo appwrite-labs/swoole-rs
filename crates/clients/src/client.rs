@@ -30,7 +30,7 @@ use swoole_rs_error::ErrorCode;
 use swoole_rs_reactor::reactor_upstream::set_handler;
 use swoole_rs_reactor::socket_upstream::Connect;
 use swoole_rs_reactor::{
-    Caught, SOCKET_DEFAULTS, Socket, SocketRecord, fd_clean, set_socket_buffer_size,
+    Caught, OwnedSocket, SOCKET_DEFAULTS, Socket, SocketRecord, fd_clean, set_socket_buffer_size,
     socket_domain_and_type,
 };
 use swoole_rs_reactor::{Event, Events, Running};
@@ -151,8 +151,8 @@ const ERROR_HTTP_PROXY_HANDSHAKE_ERROR: c_int =
     ErrorCode::SW_ERROR_HTTP_PROXY_HANDSHAKE_ERROR as c_int;
 
 /// One of `Protocol::recv_with_length_protocol` and `recv_with_eof_protocol` over a
-/// live protocol, socket and input buffer.
-pub type Framed = fn(*const Protocol, Socket<'_>, *mut CppString) -> c_int;
+/// live client's protocol, socket and input buffer ([`Handle::with_framed`]).
+pub type Framed = fn(Handle) -> c_int;
 
 /// The framed receives crates/ports defines; ports depends on this crate, so
 /// `swoole_init` (crates/ffi) registers them with [`set_host`]. Only a
@@ -163,10 +163,7 @@ pub struct Framing {
 }
 
 impl Framing {
-    /// # Safety
-    /// `length` and `eof` must be sound for any live protocol, socket and input
-    /// buffer of a client, which is all a client's `on_read` passes them.
-    pub const unsafe fn new(length: Framed, eof: Framed) -> Self {
+    pub const fn new(length: Framed, eof: Framed) -> Self {
         Self { length, eof }
     }
 }
@@ -844,6 +841,16 @@ fn create_with(kind: c_int, is_async: bool, socket_ops: &'static SocketOps) -> O
 }
 
 impl Handle {
+    /// `f` over the protocol, socket and input buffer a framed receive acts on, live
+    /// while the client is (per [`Handle::new`]): the record's protocol in place, as
+    /// its callbacks take it by address, and the input buffer an async connect made.
+    pub fn with_framed<R>(
+        self,
+        f: impl FnOnce(*const Protocol, Socket<'_>, *mut CppString) -> R,
+    ) -> R {
+        f(self.protocol(), self.socket(), self.input())
+    }
+
     /// A handle on `client`.
     ///
     /// # Safety
@@ -901,14 +908,18 @@ impl Handle {
         self.input_free();
         // A pending connect timer would fire on a freed client.
         self.timer_clear();
+        // SAFETY: the heap record make_socket allocated, which the client owned and,
+        // freed (per the caller), never uses again.
+        let socket =
+            (self.record().socket).map(|socket| unsafe { OwnedSocket::from_socket(socket) });
         if self.flag(Flag::Async) {
             // A cleared object tells a close in progress that the client is gone.
             self.socket()
                 .edit(|socket| socket.object = core::ptr::null_mut());
-            (self.get().socket_ops.free_socket)(self);
-        } else {
-            // SAFETY: `delete socket`: the record make_socket allocated, released once.
-            unsafe { SocketRecord::free(self.record().socket) };
+            (self.get().socket_ops.free_socket)(socket);
+        } else if let Some(socket) = socket {
+            // `delete socket`.
+            socket.free();
         }
         // SAFETY: a Box from `create`, released once (per the caller).
         let client = unsafe { Box::from_raw(self.0) };
@@ -963,7 +974,7 @@ pub fn package_length(this: Handle, data: &[u8]) -> isize {
     };
     let mut packet = PacketLength::new(data);
     // SAFETY: the live client's protocol and socket, and the packet's bytes.
-    unsafe { get(this.protocol(), this.socket_ptr().cast(), &mut packet) }
+    unsafe { get(this.protocol(), record.socket, &mut packet) }
 }
 
 /// `Client::close()`: false without a socket, when already closed or when `close(2)`
@@ -1526,7 +1537,7 @@ struct SocketOps {
     send_sync: fn(Socket<'_>, &[u8], c_int) -> Option<usize>,
     sendfile_sync: fn(Socket<'_>, &CStr, i64, usize) -> bool,
     sendfile_async: fn(Socket<'_>, &CStr, i64, usize) -> bool,
-    free_socket: fn(Handle),
+    free_socket: fn(Option<OwnedSocket>),
     close_tls: fn(Socket<'_>),
     write: fn(Socket<'static>, &[u8]) -> Option<usize>,
     writable: extern "C-unwind" fn(Running<'_>, &mut Event) -> c_int,
@@ -1553,10 +1564,7 @@ impl SocketOps {
         send_sync: swoole_rs_tls::upstream::send_sync,
         sendfile_sync: swoole_rs_tls::upstream::sendfile_sync,
         sendfile_async: swoole_rs_tls::upstream::socket_sendfile_async,
-        free_socket: |this| {
-            // SAFETY: only Handle::free calls this, once, for its still-owned socket.
-            unsafe { swoole_rs_tls::upstream::socket_free(this.record().socket) };
-        },
+        free_socket: |socket| swoole_rs_tls::upstream::socket_free(socket),
         close_tls: |socket| {
             // SAFETY: only close calls this; session handles live only for their
             // operation, and none is running on the closing client.
@@ -1846,10 +1854,8 @@ fn on_read(this: Handle) -> bool {
         let framing = &native_host().framing;
         let framed = if eof { framing.eof } else { framing.length };
         let socket = this.socket();
-        let protocol = this.protocol();
-        // The live protocol, socket and input buffer `Framing::new` asks for. A
-        // package callback may destroy the client; its socket outlives this handler.
-        let n = framed(protocol, socket, this.input());
+        // A package callback may destroy the client; its socket outlives this handler.
+        let n = framed(this);
         // A destroyed client cleared its object.
         let released = socket.read(|socket| socket.object.is_null());
         if n < 0 && !released && !this.flag(Flag::Closed) {

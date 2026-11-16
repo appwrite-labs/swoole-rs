@@ -155,7 +155,7 @@ mod tests {
 
     impl Drop for Socket {
         fn drop(&mut self) {
-            unsafe { SocketRecord::free(swoole_rs_reactor::Socket::from_ptr(self.0)) };
+            drop(unsafe { Box::from_raw(self.0) });
         }
     }
 

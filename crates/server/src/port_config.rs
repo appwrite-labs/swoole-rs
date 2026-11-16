@@ -282,16 +282,20 @@ impl PortConfig {
             .map_or(core::ptr::null_mut(), |socket| socket.as_ptr().cast())
     }
 
-    /// Make `socket` the port's listening socket, which the port frees as it closes.
-    pub fn set_listening_socket(&self, socket: Socket<'static>) {
-        self.socket.set(Some(socket));
+    /// Make `socket` the port's listening socket, which the port owns until
+    /// [`Self::take_socket`] gives it back.
+    pub fn set_listening_socket(&self, socket: swoole_rs_reactor::OwnedSocket) {
+        self.socket.set(Some(socket.leak()));
     }
 
-    /// The listening socket, taken from the port so nothing finds it once the caller
-    /// frees it.
+    /// The listening socket's owner, taken from the port so nothing finds the record
+    /// once the caller frees it.
     #[must_use]
-    pub fn take_socket(&self) -> Option<Socket<'static>> {
-        self.socket.replace(None)
+    pub fn take_socket(&self) -> Option<swoole_rs_reactor::OwnedSocket> {
+        let socket = self.socket.replace(None)?;
+        // SAFETY: only `set_listening_socket` stores a socket, an owner it leaked, and
+        // the port no longer names it: this is its only owner.
+        Some(unsafe { swoole_rs_reactor::OwnedSocket::from_socket(socket) })
     }
 
     /// The port's listening socket, or `None` before it has one or after it closes
@@ -372,8 +376,10 @@ impl PortConfig {
             reason = "a port kept past this owns the callable to the exit"
         )]
         std::mem::forget(self.length_owner.replace(None));
-        // SAFETY: the record of a port `destroy` never closed (a server never started),
-        // which nothing else holds. Its descriptor stays open to the exit, as upstream's.
-        unsafe { swoole_rs_reactor::SocketRecord::free(self.take_socket()) };
+        // The record of a port `destroy` never closed (a server never started). Its
+        // descriptor stays open to the exit, as upstream's.
+        if let Some(socket) = self.take_socket() {
+            socket.free();
+        }
     }
 }

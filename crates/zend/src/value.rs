@@ -56,7 +56,5 @@ pub fn empty_array() -> *mut HashTable {
     (&raw const zend_empty_array).cast_mut()
 }
 
-/// `add_next_index_str(array, string)`: the array takes over the reference.
-pub use crate::sys::add_next_index_str as push_str;
 /// `array_init(target)`.
 pub use crate::sys::swr_zend_array_init as array_init;

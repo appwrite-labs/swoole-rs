@@ -26,7 +26,7 @@ use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 #[cfg(target_os = "linux")]
 unsafe extern "C-unwind" {
     #[link_name = "_ZN6swoole7network6Socket4freeEv"]
-    fn socket_free(socket: Option<crate::Socket<'static>>);
+    safe fn socket_free(socket: Option<crate::OwnedSocket>);
 }
 
 /// The fields of the thread's event loop, available or not (`sw_reactor()`).
@@ -151,8 +151,9 @@ mod descriptor {
         };
         SOCKET.store(ptr::null_mut(), Relaxed);
         socket.edit(|record| record.fd = -1);
-        // SAFETY: SOCKET's wrapper, which nothing uses once taken out of it.
-        unsafe { socket_free(Some(socket)) };
+        // SAFETY: SOCKET's wrapper, `make`'s heap record, which nothing uses once taken
+        // out of it.
+        socket_free(Some(unsafe { crate::OwnedSocket::from_socket(socket) }));
     }
 
     pub(super) fn events() -> i32 {

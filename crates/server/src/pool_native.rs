@@ -16,7 +16,7 @@ use swoole_rs_process::worker_record::WorkerType;
 use swoole_rs_reactor::Events;
 
 use crate::objects::{Reactor, worker_pipe};
-pub(crate) use crate::reactor_ops::{PoolBus, STD_ALLOCATOR};
+pub(crate) use crate::reactor_ops::PoolBus;
 use core::sync::atomic::AtomicU64;
 use swoole_rs_bus::MessageBus;
 use swoole_rs_corebase::DataHead;
@@ -405,7 +405,7 @@ fn lent_socket<'c>(c: &'c PoolCall<'_>) -> Option<Socket<'c>> {
     c.lent_socket().map(Socket::lent)
 }
 
-fn io(c: &mut PoolCall, io: impl FnOnce(&PoolCall) -> isize) {
+fn io(c: &mut PoolCall, io: impl FnOnce(&mut PoolCall) -> isize) {
     let result = io(c);
     c.set_result(result);
     c.set_error(errno());
@@ -563,11 +563,10 @@ impl PoolNative for Native {
 
     fn recv(&self, c: &mut PoolCall) {
         io(c, |c| {
-            let (socket, data, length, flags) = (lent_socket(c), c.data(), c.length(), c.flags());
-            // SAFETY: the call's buffer.
-            let buffer = unsafe { swoole_rs_reactor::Fill::from_raw(data, length) };
+            let flags = c.flags();
+            let (socket, buffer) = c.socket_fill();
             socket
-                .and_then(|socket| recv_sync_fill(socket, buffer, flags))
+                .and_then(|socket| recv_sync_fill(Socket::lent(socket), buffer, flags))
                 .map_or(-1, usize::cast_signed)
         });
     }
@@ -581,9 +580,12 @@ impl PoolNative for Native {
     }
 
     fn close(&self, c: &PoolCall) {
-        let socket = c.lent_socket().map(Socket::lent);
-        // SAFETY: a connection the loop is done with.
-        unsafe { socket_free(socket.and_then(crate::reactor_handle::registered)) };
+        let socket = c.lent_socket().map(|socket| {
+            // SAFETY: the connection `accept` gave the call, a heap record the loop is
+            // done with.
+            unsafe { swoole_rs_reactor::OwnedSocket::from_socket(Socket::lent(socket)) }
+        });
+        socket_free(socket);
     }
 
     fn pipe_read(&self, c: &mut PoolCall) {
@@ -597,9 +599,7 @@ impl PoolNative for Native {
                 pipe.timeouts
                     .set(timeout, swoole_rs_reactor::TimeoutKind::READ);
             });
-            // SAFETY: the call's buffer.
-            let buffer = unsafe { swoole_rs_reactor::Fill::from_raw(c.data(), c.length()) };
-            read_sync_fill(pipe, buffer).map_or(-1, usize::cast_signed)
+            read_sync_fill(pipe, c.socket_fill().1).map_or(-1, usize::cast_signed)
         });
     }
 

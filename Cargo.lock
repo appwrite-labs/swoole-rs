@@ -1006,7 +1006,6 @@ dependencies = [
  "swoole-rs-framing",
  "swoole-rs-hooks",
  "swoole-rs-http2",
- "swoole-rs-memory",
  "swoole-rs-oci",
  "swoole-rs-odbc",
  "swoole-rs-pgsql",
@@ -1223,6 +1222,7 @@ name = "swoole-rs-websocket"
 version = "0.1.0"
 dependencies = [
  "swoole-rs-base64",
+ "swoole-rs-corebase",
 ]
 
 [[package]]
@@ -1241,6 +1241,7 @@ dependencies = [
 name = "swoole-rs-zend"
 version = "0.1.0"
 dependencies = [
+ "swoole-rs-corebase",
  "swoole-rs-zend-sys",
 ]
 

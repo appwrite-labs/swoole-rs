@@ -11,7 +11,7 @@ use swoole_rs_corebase::constants::SW_DATA_EOF_MAXLEN;
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_reactor::socket_upstream::make_typed;
-use swoole_rs_reactor::{Running, SocketRecord};
+use swoole_rs_reactor::{OwnedSocket, Running, SocketRecord};
 pub(crate) use swoole_rs_tls::upstream::socket_free;
 
 /// `SW_FD_STREAM_SERVER` and `SW_FD_DGRAM_SERVER`.
@@ -218,7 +218,7 @@ pub(crate) fn create_socket(config: &PortConfig, reuse_port: bool) -> bool {
     config.port.set(address_port(&info).into());
     // Only a bound record: each failure above frees its own, which the port's
     // delete would otherwise free again.
-    config.set_listening_socket(made.into_socket());
+    config.set_listening_socket(OwnedSocket::new(made));
     true
 }
 
@@ -230,9 +230,8 @@ pub(crate) fn close_socket(config: &PortConfig) {
     let Some(socket) = config.take_socket() else {
         return;
     };
-    // SAFETY: `delete socket`: the port's live socket, which Rust boxed
-    // (`SocketRecord::into_raw`) and nothing else uses, taken back to drop.
-    let socket = unsafe { Box::from_raw(socket.as_ptr()) };
+    // `delete socket`.
+    let socket = socket.into_box();
     let fd = socket.fd;
     if swoole_rs_corebase::sys::close(fd).is_err() {
         log::sys_warning(
@@ -517,7 +516,7 @@ mod tests {
     /// A stub length function, each `N` a distinct body and address.
     pub(super) unsafe extern "C" fn length<const N: u8>(
         _: *const Protocol,
-        _: *mut c_void,
+        _: Option<swoole_rs_reactor::Socket<'_>>,
         _: &mut PacketLength,
     ) -> isize {
         N.into()
@@ -626,7 +625,8 @@ mod tests {
                     "bind(2)"
                 );
             }
-            (*config).set_listening_socket(swoole_rs_reactor::Socket::from_ptr(socket).unwrap());
+            (*config)
+                .set_listening_socket(swoole_rs_reactor::OwnedSocket::new(Box::from_raw(socket)));
         }
         config
     }

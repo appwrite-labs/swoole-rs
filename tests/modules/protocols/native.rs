@@ -702,7 +702,7 @@ fn parse_integer_reply() {
 fn mqtt_candidate(packet: &[u8]) -> (isize, u32) {
     let mut pl = PacketLength::new(packet);
     pl.header_len = 99;
-    let length = ffi::get_package_length(std::ptr::null(), std::ptr::null_mut(), &mut pl);
+    let length = ffi::get_package_length(std::ptr::null(), None, &mut pl);
     (length, pl.header_len)
 }
 

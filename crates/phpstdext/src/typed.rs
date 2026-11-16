@@ -9,7 +9,7 @@ use std::{
     io::IoSlice,
     marker::PhantomData,
     mem::{MaybeUninit, offset_of},
-    ptr, slice,
+    slice,
     sync::OnceLock,
 };
 use swoole_rs_zend::{
@@ -19,7 +19,7 @@ use swoole_rs_zend::{
     opcode::Handler,
     sys::{
         HashTable, IS_ARRAY, IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT, IS_RESOURCE,
-        IS_STRING, IS_TRUE, IS_UNDEF, zend_internal_function, zend_long, zif_handler,
+        IS_STRING, IS_TRUE, IS_UNDEF, zend_long, zif_handler,
     },
     throw_error, type_error,
 };
@@ -576,6 +576,7 @@ pub(crate) fn operation(typed: Typed, concat: bool) -> bool {
 pub(crate) struct Unset;
 
 impl Handler for Unset {
+    const OPCODE: u32 = swoole_rs_zend::sys::ZEND_UNSET_DIM;
     fn run(frame: Frame<'_>) -> c_int {
         // `get_array_on_opline`: op1's slot.
         let Some(array) = Op::current(frame).op1_container() else {
@@ -596,6 +597,7 @@ impl Handler for Unset {
 pub(crate) struct ForeachBegin;
 
 impl Handler for ForeachBegin {
+    const OPCODE: u32 = swoole_rs_zend::sys::ZEND_FE_RESET_RW;
     fn run(frame: Frame<'_>) -> c_int {
         let op = Op::current(frame);
         if op.op1_container().and_then(Typed::of).is_none() {
@@ -759,15 +761,8 @@ pub(crate) fn install(minit: &swoole_rs_zend::Minit) {
         (c"array_unshift", zif_swoole_array_unshift),
         (c"array_splice", zif_swoole_array_splice),
     ];
-    let [push, unshift, splice] = handlers.map(|(name, handler)| {
-        // `internal_function` starts the `zend_function` union.
-        let slot = minit
-            .compiled_function(name)
-            .wrapping_byte_add(offset_of!(zend_internal_function, handler))
-            .cast::<zif_handler>();
-        // SAFETY: a core internal function's handler slot, at MINIT.
-        unsafe { ptr::replace(slot, Some(handler)) }
-    });
+    let [push, unshift, splice] =
+        handlers.map(|(name, handler)| minit.replace_handler(name, handler));
     let originals = Originals {
         push,
         unshift,

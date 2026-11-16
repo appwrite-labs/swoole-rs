@@ -18,11 +18,7 @@ use swoole_rs_zend::{
     Call, Class, E_WARNING, Request, Shutdown,
     bailout::{self, Bailout},
     contain_with, report,
-    sys::{
-        HashTable, swr_zend_after_fork, swr_zend_fatal_error, swr_zend_leak_check,
-        swr_zend_print_stack_trace, swr_zend_runtime_call_handler, swr_zend_try_hook,
-        zend_class_entry,
-    },
+    sys::{HashTable, swr_zend_after_fork, swr_zend_fatal_error, zend_class_entry},
 };
 
 unsafe extern "C" {
@@ -150,8 +146,9 @@ pub fn enable_library() -> bool {
 
 /// A family's MINIT step, which runs inside `zend_try`; the phase raises the bailout it returns.
 pub type Minit = fn(&swoole_rs_zend::Minit) -> Result<(), Bailout>;
-/// Any other phase hook, likewise.
-pub type Hook = unsafe extern "C" fn();
+/// Any other phase hook, likewise: Zend may run each at its phase, inside
+/// `zend_try`.
+pub type Hook = extern "C" fn();
 /// An HTTP MINIT step, called once at MINIT with what it reads of Swoole's.
 pub type HttpMinit = fn(&MinitArgs<'_>);
 
@@ -312,9 +309,15 @@ pub fn families() -> Option<&'static Families> {
     FAMILIES.get().copied()
 }
 
+// Phase bodies, private so only the phase lists below hold them: each runs at
+// its phase, inside `zend_try`.
 unsafe extern "C" {
-    /// `thirdparty/php/streams/plain_wrapper.c`'s RINIT, a `zend_try` body.
-    fn php_swoole_runtime_rinit();
+    /// `thirdparty/php/streams/plain_wrapper.c`'s RINIT: the plain wrapper's
+    /// and stdio's original operations, saved.
+    safe fn php_swoole_runtime_rinit();
+    /// MSHUTDOWN's leak check: `LeakSanitizer`'s recoverable check, when it is
+    /// loaded, in the process that loaded the module.
+    safe fn swr_zend_leak_check();
 }
 
 /// A `zend_try` shim's result.
@@ -368,9 +371,8 @@ fn run(steps: Vec<Step>, phase: Phase<'_>) -> Result<(), Bailout> {
             (Step::Typed(step), Phase::Minit(minit)) => contain_with(|| step(minit)),
             (Step::Shutdown(step), Phase::Mshutdown(mshutdown)) => contain_with(|| step(mshutdown)),
             (Step::Request(step), Phase::Request(request)) => contain_with(|| step(request)),
-            // SAFETY: a C or C++ hook that Zend may run at this phase; the shim's
-            // setjmp sits between this frame and the hook.
-            (Step::Hook(hook), _) => flag(unsafe { swr_zend_try_hook(Some(hook)) }),
+            // The shim's setjmp sits between this frame and the hook.
+            (Step::Hook(hook), _) => flag(try_body(hook)),
             (Step::Minit(_) | Step::Typed(_) | Step::Shutdown(_) | Step::Request(_), _) => Ok(()),
         }?;
     }
@@ -482,9 +484,12 @@ extern "C" fn php_hooks() {
 
 /// PHP's stack trace, for `SwooleG.print_backtrace`.
 extern "C" fn print_stack_trace() {
-    // SAFETY: installed at MINIT's end, so it runs in a PHP process whose engine
-    // has started; the shim fetches and frees its own backtrace.
-    unsafe { swr_zend_print_stack_trace() };
+    unsafe extern "C" {
+        /// PHP's backtrace, fetched, printed and freed. Only this hook calls
+        /// it, which MINIT's end installs, so the engine has started.
+        safe fn swr_zend_print_stack_trace();
+    }
+    swr_zend_print_stack_trace();
 }
 
 // Declared: crates/ffi depends on this crate, and the rest is C.
@@ -593,12 +598,7 @@ pub(crate) extern "C" fn swr_v1_phpswoole_mshutdown(_kind: c_int, shutdown: Shut
     steps.extend(optional::mshutdown());
     steps.extend(optional::client_mshutdown());
     steps.extend(families().map(|families| Step::Hook(families.server_mshutdown)));
-    steps.extend([
-        // The tables' process-private parts, which upstream leaves to the exit.
-        Step::Hook(swoole_rs_memory::table::release),
-        Step::Hook(clean),
-        Step::Hook(swr_zend_leak_check),
-    ]);
+    steps.extend([Step::Hook(clean), Step::Hook(swr_zend_leak_check)]);
     bailout::raise(shutdown.with(|mshutdown| run(steps, Phase::Mshutdown(mshutdown))));
     SUCCESS
 }
@@ -711,12 +711,7 @@ swoole_rs_zend::handlers! {
 fn set_process_name(call: &Call) {
     // The CLI SAPI's; a function PHP code gave the name has no handler to call.
     if let Some(handler) = call.php().internal_handler(b"cli_set_process_title") {
-        // SAFETY: its handler, with this call's frame and return slot; the
-        // shim traps a bailout.
-        if unsafe { swr_zend_runtime_call_handler(handler, call.frame(), call.return_value()) } != 0
-        {
-            Bailout.defer();
-        }
+        bailout::defer(call.forward(handler));
     } else {
         set_last_error(PHP_FATAL_ERROR);
         bailout::defer(report(

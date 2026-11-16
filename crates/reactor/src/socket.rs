@@ -290,6 +290,61 @@ impl<'a> Socket<'a> {
     }
 }
 
+/// A heap record and the one right to free it (`delete socket`): neither `Copy` nor
+/// `Clone`, so a record is freed once, and it lends [`Socket`] only for a borrow of
+/// itself. Transparent over the record's address, so a C++ `Socket *` whose owner
+/// gives it up (`Socket::free`, `Reactor::close`) passes as one. Dropping one leaks the
+/// record, as a C++ pointer never deleted does.
+#[repr(transparent)]
+pub struct OwnedSocket(Socket<'static>);
+
+impl OwnedSocket {
+    /// `record`, which this owns from here.
+    #[must_use]
+    pub fn new(record: Box<SocketRecord>) -> Self {
+        Self(record.into_socket())
+    }
+
+    /// The owner of `socket`'s record, which its handles give up.
+    /// # Safety
+    /// `socket` is a heap record ([`SocketRecord::into_raw`], [`SocketRecord::into_socket`]
+    /// or a call that returns one) that no other owner holds, and no handle to it is used
+    /// once this owner frees it.
+    #[must_use]
+    pub unsafe fn from_socket(socket: Socket<'_>) -> Self {
+        Self(Socket {
+            record: socket.record,
+            _live: PhantomData,
+        })
+    }
+
+    /// The record, for as long as this is borrowed.
+    #[must_use]
+    pub const fn socket(&self) -> Socket<'_> {
+        self.0
+    }
+
+    /// The record, which nothing frees from here but an owner taken back with
+    /// [`Self::from_socket`].
+    #[must_use]
+    pub const fn leak(self) -> Socket<'static> {
+        self.0
+    }
+
+    /// The record's box.
+    #[must_use]
+    pub fn into_box(self) -> Box<SocketRecord> {
+        // SAFETY: the box `new` leaked, or the heap record `from_socket` took back; this
+        // owner is its only one and goes here.
+        unsafe { Box::from_raw(self.0.as_ptr()) }
+    }
+
+    /// `Socket::operator delete`: the record goes, its descriptor stays open.
+    pub fn free(self) {
+        drop(self.into_box());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

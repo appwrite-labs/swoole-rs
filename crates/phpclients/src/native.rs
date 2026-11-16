@@ -9,6 +9,7 @@ use std::{
     ptr,
     rc::Rc,
 };
+use swoole_rs_buffer::string::CppString;
 use swoole_rs_clients::{
     address::{address_port, with_host},
     client::{self, Client},
@@ -99,6 +100,27 @@ impl NewSocket {
 /// Starting the reactor bailed out.
 pub(crate) fn check_reactor() -> Result<(), Bailout> {
     swoole_rs_zend::contain(swoole_rs_phpruntime::check_reactor)
+}
+
+/// `zend::assign_zend_string_by_val(buffer->pop(init_size), length)`: the
+/// buffer's first `length` bytes as the zend string whose value they are, the
+/// buffer starting a new allocation. None, the buffer untouched, unless the
+/// Zend string allocator made it and it holds `length` bytes; none too when the
+/// new allocation fails.
+pub fn pop_string(buffer: &mut CppString, init_size: usize, length: usize) -> Option<ZString> {
+    let zend = swoole_rs_phpswoole::zend_string_allocator().get();
+    let ours = buffer
+        .allocator()
+        .is_some_and(|with| ptr::eq(with.get(), zend));
+    if !ours || buffer.view().len() < length {
+        return None;
+    }
+    let value = buffer.pop(init_size);
+    // SAFETY: a value the Zend string allocator made (checked), so of an
+    // unshared zend string with room for the `length` bytes it holds
+    // (checked), whose one reference the pop handed over.
+    (!value.is_null())
+        .then(|| unsafe { ZBuf::from_raw(string::from_val(value), length) }.into_zstring())
 }
 
 /// A live coroutine socket (`SocketImpl *`) over crates/hooks' record handle.
@@ -302,24 +324,19 @@ impl Co {
     /// or None after `set_err(ENOMEM)`.
     pub(crate) fn pop_packet(self, length: usize) -> Option<ZString> {
         let init_size = self.0.buffer_init_size();
-        let packet = if self.0.read_buffer().is_null() {
-            ptr::null_mut()
-        } else {
-            self.0.with_buffer(false, |buffer| {
-                if buffer.offset() == 0 {
-                    ptr::null_mut()
-                } else {
-                    buffer.pop(init_size)
-                }
+        let packet = (!self.0.read_buffer().is_null())
+            .then(|| {
+                self.0.with_buffer(false, |buffer| {
+                    (buffer.offset() != 0)
+                        .then(|| pop_string(buffer, init_size, length))
+                        .flatten()
+                })
             })
-        };
-        if packet.is_null() {
+            .flatten();
+        if packet.is_none() {
             self.set_err(libc::ENOMEM);
-            return None;
         }
-        // SAFETY: `zend::assign_zend_string_by_val`: the packet is the value of
-        // an unshared zend string holding its `length` bytes, now ours.
-        Some(unsafe { ZBuf::from_raw(string::from_val(packet), length) }.into_zstring())
+        packet
     }
 
     /// `readv`/`writev` over `vectors` (with `all`, `readv_all`/`writev_all`)

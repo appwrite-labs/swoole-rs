@@ -22,8 +22,7 @@ use swoole_rs_zend::{
     Call, E_WARNING, Owned, ZStr, ZString, bailout,
     host::{Callee, callable::Callable},
     sys::{
-        PHP_VERSION_ID, ZEND_ACC_FAKE_CLOSURE, swr_zend_runtime_call_handler,
-        swr_zend_runtime_copy_arginfo, swr_zend_runtime_disabled, swr_zend_runtime_free_arginfo,
+        PHP_VERSION_ID, ZEND_ACC_FAKE_CLOSURE, swr_zend_runtime_disabled,
         swr_zend_runtime_unsupported, zend_class_entry, zend_execute_data, zend_internal_arg_info,
         zend_internal_function, zif_handler, zval,
     },
@@ -42,12 +41,33 @@ unsafe extern "C" {
     /// read from the lent bytes (an `IoSlice` is an iovec): null for none or a
     /// user function.
     safe fn swr_zend_runtime_internal_function(name: IoSlice<'_>) -> *mut zend_internal_function;
+    /// `copy_arginfo`: a new persistent copy of `function`'s rows of `from`'s
+    /// arginfo, its class names duplicated, or none when `from` has no arginfo
+    /// or fewer rows. Both are live internal functions, which it only reads.
+    #[link_name = "swr_zend_runtime_copy_arginfo"]
+    safe fn copy_arginfo(function: Entry, from: Entry) -> Option<ArgInfoCopy>;
+    /// `free_arg_info` of a copy, which it takes.
+    #[link_name = "swr_zend_runtime_free_arginfo"]
+    safe fn free_arginfo(copy: ArgInfoCopy);
+}
+
+/// A persistent arginfo copy [`copy_arginfo`] made: only it makes one, and only
+/// [`free_arginfo`] takes one, by value, so each is freed at most once.
+#[repr(transparent)]
+struct ArgInfoCopy(NonNull<zend_internal_arg_info>);
+
+impl ArgInfoCopy {
+    /// The copy's argument rows, where a function's `arg_info` points.
+    fn as_ptr(&self) -> *mut zend_internal_arg_info {
+        self.0.as_ptr()
+    }
 }
 
 /// An internal function the running request's function table holds. Only
 /// [`Entry::find`] makes one, from that table: Zend removes none during a
 /// request, and RSHUTDOWN ([`finish`]) drops every record holding one.
 #[derive(Clone, Copy)]
+#[repr(transparent)]
 struct Entry(NonNull<zend_internal_function>);
 
 impl Entry {
@@ -94,7 +114,7 @@ struct Hooked {
     ori_arg_info: *mut zend_internal_arg_info,
     ori_fn_flags: u32,
     /// The arginfo copy installed with the handler, freed at RSHUTDOWN.
-    arg_info_copy: *mut zend_internal_arg_info,
+    arg_info_copy: Option<ArgInfoCopy>,
     /// The library replacement's callable (`sw_callable_create`), released
     /// (`sw_callable_free`) with the record. Never cloned: only its cache is lent.
     callable: Option<Rc<Callable>>,
@@ -133,9 +153,10 @@ fn same(a: zif_handler, b: zif_handler) -> bool {
     a.map(|f| f as *const ()) == b.map(|f| f as *const ())
 }
 
-/// `hook_func(name, handler, arg_info)`: `None` runs the PHP library's
-/// `swoole_<name>` through the trampoline.
-fn hook(name: &CStr, handler: zif_handler, arg_info: *mut zend_internal_arg_info) {
+/// `hook_func(name, handler, arg_info)`, with the arginfo of `from` when given:
+/// a `handler` of `None` runs the PHP library's `swoole_<name>` through the
+/// trampoline.
+fn hook(name: &CStr, handler: zif_handler, from: Option<Entry>) {
     let library = handler.is_none();
     let handler = handler.or(Some(crate::zif_swoole_user_func_handler));
     let key = name.to_bytes();
@@ -147,6 +168,7 @@ fn hook(name: &CStr, handler: zif_handler, arg_info: *mut zend_internal_arg_info
         return;
     };
     if let Some(existing) = hooked.get(key) {
+        let arg_info = from.map_or(ptr::null_mut(), |from| from.handler().1);
         existing.function.with(|function| {
             function.handler = handler;
             if !arg_info.is_null() {
@@ -163,25 +185,23 @@ fn hook(name: &CStr, handler: zif_handler, arg_info: *mut zend_internal_arg_info
             log_warning(message.as_cstr());
             return;
         };
+        let arg_info_copy = from.and_then(|from| copy_arginfo(function, from));
         let record = function.with(|entry| {
             let (ori_handler, ori_arg_info) = *originals
                 .entry(key.into())
                 .or_insert((entry.handler, entry.arg_info));
-            let mut record = Hooked {
+            entry.handler = handler;
+            if let Some(copy) = &arg_info_copy {
+                entry.arg_info = copy.as_ptr();
+            }
+            Hooked {
                 function,
                 ori_handler,
                 ori_arg_info,
                 ori_fn_flags: 0,
-                arg_info_copy: ptr::null_mut(),
+                arg_info_copy,
                 callable: None,
-            };
-            entry.handler = handler;
-            if !arg_info.is_null() {
-                // SAFETY: the function's own entry, and arginfo of the same shape.
-                entry.arg_info = unsafe { swr_zend_runtime_copy_arginfo(entry, arg_info) };
-                record.arg_info_copy = entry.arg_info;
             }
-            record
         });
         hooked.insert(key.into(), record);
     }
@@ -248,7 +268,7 @@ fn disable(name: &CStr, handler: zif_handler) {
             ori_handler: entry.handler,
             ori_arg_info: entry.arg_info,
             ori_fn_flags: entry.fn_flags,
-            arg_info_copy: ptr::null_mut(),
+            arg_info_copy: None,
             callable: None,
         };
         entry.handler = handler;
@@ -308,14 +328,10 @@ pub(crate) fn unsafe_functions(disable: bool) {
 pub(crate) fn start() {
     table().hooked = Some(HashMap::new());
     if built_with(Switch::Thread) {
-        hook(
-            c"putenv",
-            Some(crate::putenv::zif_swoole_putenv),
-            ptr::null_mut(),
-        );
+        hook(c"putenv", Some(crate::putenv::zif_swoole_putenv), None);
     }
     if PHP_VERSION_ID >= 80400 {
-        hook(c"exit", Some(zif_swoole_exit), ptr::null_mut());
+        hook(c"exit", Some(zif_swoole_exit), None);
     }
 }
 
@@ -338,15 +354,15 @@ pub(crate) fn copy_to_thread() {
         let Some(local) = Entry::find(key) else {
             continue;
         };
-        // This thread's own copy: never the main thread's entry, read above.
-        let copy = (arg_info != record.ori_arg_info && !arg_info.is_null()).then(|| {
-            // SAFETY: the main thread's entry and its installed arginfo.
-            unsafe { swr_zend_runtime_copy_arginfo(main.0.as_ptr(), arg_info) }
-        });
+        // This thread's own copy of the main thread's installed arginfo, kept
+        // for the thread's life.
+        let copy = (arg_info != record.ori_arg_info)
+            .then(|| copy_arginfo(main, main))
+            .flatten();
         local.with(|local| {
             local.handler = handler;
             if let Some(copy) = copy {
-                local.arg_info = copy;
+                local.arg_info = copy.as_ptr();
             }
         });
     }
@@ -364,11 +380,10 @@ pub(crate) fn finish() {
     for (_, record) in hooked.unwrap_or_default() {
         // `sw_callable_free`: a destructor's bailout stays pending.
         drop(record.callable);
+        if let Some(copy) = record.arg_info_copy {
+            free_arginfo(copy);
+        }
         record.function.with(|function| {
-            if !record.arg_info_copy.is_null() {
-                // SAFETY: the copy made for this function, freed once.
-                unsafe { swr_zend_runtime_free_arginfo(function, record.arg_info_copy) };
-            }
             function.handler = record.ori_handler;
             function.arg_info = record.ori_arg_info;
         });
@@ -394,7 +409,6 @@ pub(crate) fn original_handler(name: &[u8]) -> zif_handler {
 /// `swoole_user_func_handler`: outside a coroutine the original handler,
 /// inside one the library's `swoole_<name>` with the same arguments.
 pub(crate) fn user_func(call: &Call) -> Result<(), Bailout> {
-    let (frame, value) = (call.frame(), call.return_value());
     let name = call.function().name().map_or(&[][..], ZStr::bytes);
     if !in_coroutine() {
         let original = table()
@@ -404,12 +418,7 @@ pub(crate) fn user_func(call: &Call) -> Result<(), Bailout> {
         if original.is_none() {
             return Ok(());
         }
-        // SAFETY: the function's own frame and return slot, handed on as Zend
-        // passed them; the shim traps a bailout.
-        if unsafe { swr_zend_runtime_call_handler(original, frame, value) } != 0 {
-            return Err(Bailout);
-        }
-        return Ok(());
+        return call.forward(original);
     }
     let fcc = table()
         .hooked
@@ -588,7 +597,7 @@ fn family(
     let change = transition(requested, installed, bit);
     for &(name, handler) in hooks {
         match change {
-            Some(true) => hook(name, handler, ptr::null_mut()),
+            Some(true) => hook(name, handler, None),
             Some(false) => unhook(name),
             None => {}
         }
@@ -683,8 +692,7 @@ fn native_curl(requested: &mut u32, installed: u32) {
                 let Some(replacement) = Entry::find(native.to_bytes()) else {
                     continue;
                 };
-                let (handler, arg_info) = replacement.handler();
-                hook(name, handler, arg_info);
+                hook(name, replacement.handler().0, Some(replacement));
             }
             Some(false) => unhook(name),
             None => {}

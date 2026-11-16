@@ -150,9 +150,15 @@ pub(super) fn direct_call(
 }
 
 /// crates/phpcoroutines' `create_coroutine`: the new cid, with 1 in its last
-/// argument when activation bailed out.
-pub type Create =
-    unsafe extern "C" fn(*mut zend_fcall_info_cache, u32, *mut zval, *mut zval, &mut u8) -> c_long;
+/// argument when activation bailed out. The shim passes the call's cache, which
+/// Zend leaves alone while it runs.
+pub type Create = unsafe extern "C" fn(
+    Option<&zend_fcall_info_cache>,
+    u32,
+    *mut zval,
+    *mut zval,
+    &mut u8,
+) -> c_long;
 
 /// The coroutine leaf of [`function_call`], which only [`Creator::new`] makes.
 #[derive(Clone, Copy)]

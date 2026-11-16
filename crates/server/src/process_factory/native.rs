@@ -263,7 +263,7 @@ pub(crate) fn send(serv: view::Server<'_>, to: Pipe, send: &mut SendData) -> boo
             let sent = swoole_rs_process::methods::send_pipe_message(
                 crate::process_pool_native(),
                 target,
-                head,
+                &head,
                 PIPE_MASTER,
             );
             sent.is_some_and(|sent| sent > 0)

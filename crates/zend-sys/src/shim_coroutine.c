@@ -110,7 +110,9 @@ void swr_zend_coroutine_switch(swr_zend_coroutine_vm *from, swr_zend_coroutine_v
 /* The function of each coroutine's first frame (swoole_coroutine_internal_function). */
 static zend_function frame_function = {ZEND_INTERNAL_FUNCTION};
 
-void swr_zend_coroutine_start(swr_zend_coroutine_vm *vm, void *stack, size_t stack_size) {
+void swr_zend_coroutine_start(swr_zend_coroutine_vm *from, swr_zend_coroutine_vm *vm, void *stack,
+                              size_t stack_size) {
+    swr_zend_coroutine_save(from);
     EG(vm_stack) = zend_vm_stack_new_page(SWR_COROUTINE_PAGE_SIZE, NULL);
     EG(vm_stack_top) = EG(vm_stack)->top + ZEND_CALL_FRAME_SLOT;
     EG(vm_stack_end) = EG(vm_stack)->end;
@@ -164,8 +166,10 @@ void swr_zend_coroutine_output_reset(void) {
     }
 }
 
-void swr_zend_coroutine_finish(swr_zend_coroutine_vm *origin) {
+void swr_zend_coroutine_finish(swr_zend_coroutine_vm *finished, swr_zend_coroutine_vm *origin) {
     zend_vm_stack_destroy();
+    finished->vm_stack = NULL;
+    finished->execute_data = NULL;
     swr_zend_coroutine_restore(origin);
 }
 
@@ -202,10 +206,8 @@ int swr_zend_coroutine_run(swr_zend_callable *(*enter)(void *context), void (*de
     return caught;
 }
 
-size_t swr_zend_coroutine_stack_usage(zend_vm_stack stack, bool running) {
-    if (running) {
-        stack = EG(vm_stack);
-    }
+size_t swr_zend_coroutine_stack_usage(const swr_zend_coroutine_vm *vm) {
+    zend_vm_stack stack = vm ? vm->vm_stack : EG(vm_stack);
     size_t usage = 0;
     while (stack) {
         usage += (stack->end - stack->top) * sizeof(zval);
@@ -260,6 +262,7 @@ int swr_zend_autoload_try(swr_zend_autoload_handler handler, zend_string *name, 
 void swr_zend_coroutine_opcodes(user_opcode_handler_t exit_handler, user_opcode_handler_t begin_silence,
                                 user_opcode_handler_t end_silence) {
 #if PHP_VERSION_ID < 80400
+    _Static_assert(ZEND_EXIT == 79, "crates/phpcoroutines' Exit::OPCODE");
     zend_set_user_opcode_handler(ZEND_EXIT, exit_handler);
 #else
     (void) exit_handler;
@@ -306,6 +309,12 @@ zend_execute_data *swr_zend_coroutine_set_frame(zend_execute_data *frame) {
     return previous;
 }
 
+zend_execute_data *swr_zend_coroutine_show(swr_zend_coroutine_vm *vm) {
+    zend_execute_data *previous = EG(current_execute_data);
+    EG(current_execute_data) = vm->execute_data;
+    return previous;
+}
+
 bool swr_zend_coroutine_called_by_destructor(void) {
     const zend_execute_data *frame = EG(current_execute_data);
     const zend_execute_data *caller = frame ? frame->prev_execute_data : NULL;
@@ -346,6 +355,12 @@ int swr_zend_coroutine_print_trace(int skip_last, int options, int limit) {
     return bailed;
 }
 
+zend_object *swr_zend_coroutine_exception(zend_class_entry *ce) {
+    zend_object *exception = zend_objects_new(ce);
+    object_properties_init(exception, ce);
+    return exception;
+}
+
 void swr_zend_coroutine_locate(zend_object *exception) {
     zend_string *filename = zend_get_executed_filename_ex();
     if (filename) {
@@ -359,7 +374,7 @@ void swr_zend_coroutine_locate(zend_object *exception) {
 
 void swr_zend_coroutine_redirect(swr_zend_coroutine_vm *vm) {
     zend_execute_data *frame = vm->execute_data;
-    if (frame->func && ZEND_USER_CODE(frame->func->type) && frame->opline->opcode != ZEND_HANDLE_EXCEPTION) {
+    if (frame && frame->func && ZEND_USER_CODE(frame->func->type) && frame->opline->opcode != ZEND_HANDLE_EXCEPTION) {
         vm->opline_before_exception = frame->opline;
         frame->opline = EG(exception_op);
     }

@@ -313,8 +313,10 @@ pub(crate) fn abort(
     if sock.read(|s| !s.object.is_null()) {
         reactor.close(sock);
     } else {
-        // SAFETY: an accepted socket no connection took, which nothing uses afterwards.
-        unsafe { swoole_rs_tls::upstream::socket_free(Some(sock)) };
+        // SAFETY: an accepted heap record no connection took, which nothing uses
+        // afterwards.
+        let sock = unsafe { swoole_rs_reactor::OwnedSocket::from_socket(sock) };
+        swoole_rs_tls::upstream::socket_free(Some(sock));
     }
 }
 

@@ -18,8 +18,7 @@ use swoole_rs_phpstubs::http_response;
 use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_zend::bailout::Bailout;
 use swoole_rs_zend::{
-    Call, Custom, CustomClass, Invalid, Owned, Value, ZStr, ZString, handlers, push_string,
-    set_key,
+    Call, Custom, CustomClass, Invalid, Owned, Separated, Value, ZStr, ZString, bailout, handlers,
     sys::{IS_NULL, IS_OBJECT, IS_STRING, ZEND_ACC_PUBLIC, zend_long},
 };
 use swoole_rs_zend::{method_table, sys as z};
@@ -170,16 +169,16 @@ fn or_false(call: &Call, done: Option<()>) {
     }
 }
 
-fn property(mut ctx: Ctx, which: Property) -> *mut swoole_rs_zend::sys::zval {
+fn property(ctx: &mut Ctx, which: Property) -> Option<Separated<'_>> {
     crate::header::response_property(ctx.state(), which)
 }
 
 fn init_header(call: &Call) {
     or_false(
         call,
-        checked(call).map(|ctx| {
+        checked(call).map(|mut ctx| {
             for which in [Property::Header, Property::Cookie, Property::Trailer] {
-                property(ctx, which);
+                property(&mut ctx, which);
             }
             call.set_bool(true);
         }),
@@ -356,11 +355,12 @@ fn set_cookie(call: &Call, encode: bool) {
     let Some(cookie) = cookie else {
         return call.set_bool(false);
     };
-    let Some(ctx) = checked(call) else {
+    let Some(mut ctx) = checked(call) else {
         return call.set_bool(false);
     };
-    // SAFETY: the cookie property is a live array; it takes over the string.
-    unsafe { push_string(property(ctx, Property::Cookie), cookie.into_raw()) };
+    if let Some(cookies) = property(&mut ctx, Property::Cookie) {
+        cookies.push(cookie.into());
+    }
     call.set_bool(true);
 }
 
@@ -435,8 +435,14 @@ fn trailer(call: &Call) {
             return None;
         }
         let key = key.to_ascii_lowercase();
-        // SAFETY: the trailer property is a live array.
-        unsafe { set_key(property(ctx, Property::Trailer), &key, value) };
+        if !bailout::pending()
+            && let Some(trailer) = property(&mut ctx, Property::Trailer)
+        {
+            trailer.update(
+                &key,
+                value.map_or_else(Owned::null, |value| ZString::new(value).into()),
+            );
+        }
         ctx.state().send_trailer = true;
         call.set_bool(true);
         Some(())
@@ -589,7 +595,7 @@ fn create_response(call: &Call) {
 
 /// `Context::set_header`: `$response->header[key] = value`, the key in
 /// canonical case when `format` (lower case over HTTP/2).
-pub(crate) fn set_header(ctx: Ctx, key: &[u8], value: &Value, format: bool) -> bool {
+pub(crate) fn set_header(mut ctx: Ctx, key: &[u8], value: &Value, format: bool) -> bool {
     if key.len() > HEADER_KEY_SIZE - 1 {
         host::notice("header key is too long");
         return false;
@@ -597,7 +603,6 @@ pub(crate) fn set_header(ctx: Ctx, key: &[u8], value: &Value, format: bool) -> b
     if crate::header::has_crlf(key) {
         return false;
     }
-    let header = property(ctx, Property::Header);
     let mut buffer = [0; HEADER_KEY_SIZE];
     // Formatted in a stack copy, as upstream does in its thread buffer.
     let name = match buffer.get_mut(..key.len()) {
@@ -612,10 +617,10 @@ pub(crate) fn set_header(ctx: Ctx, key: &[u8], value: &Value, format: bool) -> b
         }
         _ => key,
     };
-    // The array takes this copy's reference.
-    let mut value = value.copy().into_zval();
-    // SAFETY: the live header array and the name's bytes, which Zend copies.
-    unsafe { z::add_assoc_zval_ex(header, name.as_ptr().cast(), name.len(), &raw mut value) };
+    if let Some(header) = property(&mut ctx, Property::Header) {
+        // The array takes this copy's reference.
+        header.update(name, value.copy());
+    }
     true
 }
 

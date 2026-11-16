@@ -3,28 +3,29 @@ use crate::{constants::VERSION, log_put, module::ReqStatus};
 use std::{
     borrow::Cow,
     ffi::{CStr, CString, c_char, c_int},
-    ptr,
 };
 use swoole_rs_corebase::{
     CCast,
+    lent::{Count, In, lend_in},
     sys::{self, Text},
 };
 
 use swoole_rs_corebase::log::{last_error as swoole_last_error, set_last_error};
 use swoole_rs_framing::mime;
 use swoole_rs_zend::{
-    Array, Call, E_WARNING, Invalid, OwnedArray, ZStr, handlers, report,
-    sys::{zend_array, zval},
+    Array, Call, E_WARNING, Invalid, OwnedArray, ReturnSlot, ZStr, handlers, report,
 };
 
 unsafe extern "C" {
-    /// PHP's `unserialize()`, as Swoole's `zend::unserialize` called it.
-    fn php_unserialize_with_options(
-        value: *mut zval,
-        buf: *const c_char,
-        length: usize,
-        options: *mut zend_array,
-        function: *const c_char,
+    /// PHP's `unserialize()`, as Swoole's `zend::unserialize` called it: it
+    /// decodes the lent bytes into the call's return slot, with the options
+    /// array (read only) and the function name its notices give.
+    safe fn php_unserialize_with_options(
+        value: ReturnSlot<'_>,
+        buf: In<'_, u8>,
+        length: Count<'_>,
+        options: Option<&Array>,
+        function: Text<'_>,
     );
 }
 
@@ -322,17 +323,17 @@ fn substr_unserialize(call: &Call) {
         call.set_bool(false);
         return;
     };
-    let options = options.map_or(ptr::null_mut(), Array::as_ptr);
-    // SAFETY: PHP's decoder over the argument's live bytes.
-    unsafe {
+    let bytes = buf.get(offset..).unwrap_or_default();
+    let bytes = bytes.get(..length).unwrap_or_default();
+    lend_in(bytes, |at, count| {
         php_unserialize_with_options(
-            call.return_value(),
-            buf.as_ptr().wrapping_add(offset).cast(),
-            length,
+            call.return_slot(),
+            at,
+            count,
             options,
-            c"swoole_ext_unserialize".as_ptr(),
+            c"swoole_ext_unserialize".into(),
         );
-    }
+    });
 }
 
 fn substr_json_decode(call: &Call) {

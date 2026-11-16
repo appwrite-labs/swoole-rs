@@ -5,18 +5,6 @@ use std::ffi::{CStr, c_char, c_int};
 /// `SW_DNS_LOOKUP_RANDOM`, masked out of `gethostbyname`'s flags.
 const LOOKUP_RANDOM: c_int = 1 << 11;
 
-#[cfg(target_os = "linux")]
-unsafe extern "C" {
-    fn gethostbyname2_r(
-        name: *const c_char,
-        family: c_int,
-        entry: *mut libc::hostent,
-        buffer: *mut c_char,
-        length: usize,
-        result: *mut *mut libc::hostent,
-        error: *mut c_int,
-    ) -> c_int;
-}
 #[cfg(not(target_os = "linux"))]
 unsafe extern "C" {
     fn gethostbyname2(name: *const c_char, family: c_int) -> *mut libc::hostent;
@@ -75,18 +63,17 @@ fn lookup(flags: c_int, name: &CStr) -> Option<([c_char; 46], usize)> {
         let mut result = std::ptr::null_mut();
         let mut error = 0;
         loop {
-            // SAFETY: a terminated name; every out-parameter is valid for the call.
-            let rc = unsafe {
-                gethostbyname2_r(
-                    name.as_ptr(),
+            let rc = crate::lent::lend_out(&mut buffer, |at, length| {
+                crate::lent::gethostbyname2_r(
+                    name.into(),
                     family,
-                    &raw mut entry,
-                    buffer.as_mut_ptr(),
-                    buffer.len(),
-                    &raw mut result,
-                    &raw mut error,
+                    &mut entry,
+                    at,
+                    length,
+                    &mut result,
+                    &mut error,
                 )
-            };
+            });
             if rc == libc::ERANGE {
                 buffer.resize(buffer.len() * 2, 0);
                 continue;

@@ -174,9 +174,7 @@ pub fn accept(fd: c_int, peer: &mut SocketAddress) -> io::Result<c_int> {
             .map(std::os::fd::IntoRawFd::into_raw_fd)
             .ok_or_else(io::Error::last_os_error);
     };
-    let conn = socket
-        .accept_owned(0.0)
-        .ok_or_else(io::Error::last_os_error)?;
+    let conn = socket.accept(0.0).ok_or_else(io::Error::last_os_error)?;
     conn.co().net(|accepted| {
         peer.addr = accepted.info.addr;
         peer.len = accepted.info.len;

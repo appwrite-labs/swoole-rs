@@ -7,7 +7,6 @@ use crate::state::{Slot, State};
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::ffi::{CStr, c_int};
-use std::ptr;
 use std::sync::atomic::Ordering::Relaxed;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 use swoole_rs_deflate::{DEFLATE, Failure, GZIP, bound, compress as deflate};
@@ -17,9 +16,8 @@ use swoole_rs_httpbindings::{
 };
 use swoole_rs_inflate::brotli::{self, MAX_QUALITY, MIN_QUALITY};
 use swoole_rs_inflate::zstd;
-use swoole_rs_zend::sys::zval;
 use swoole_rs_zend::{
-    Array, Class, Declared, HeldArray, Key, Value, ZStr, ZString, bailout, string,
+    Array, Class, Declared, HeldArray, Key, Separated, Value, ZStr, ZString, bailout,
 };
 
 /// llhttp's `HTTP_HEAD`.
@@ -62,8 +60,9 @@ pub(crate) fn minit(class: &Class) {
 }
 
 /// `swoole_http_init_and_read_property`: the response's `header`, `cookie`
-/// or `trailer` array, made on first use.
-pub(crate) fn response_property(state: &mut State, which: Property) -> *mut zval {
+/// or `trailer` array, made on first use, to write in place as upstream does;
+/// none without a response object.
+pub(crate) fn response_property(state: &mut State, which: Property) -> Option<Separated<'_>> {
     let response = &mut state.response;
     let [header, cookie, trailer] = &PROPERTIES;
     let (slot, property) = match which {
@@ -71,8 +70,11 @@ pub(crate) fn response_property(state: &mut State, which: Property) -> *mut zval
         Property::Cookie => (&mut response.zcookie, cookie),
         Property::Trailer => (&mut response.ztrailer, trailer),
     };
-    slot.init_array(&response.zobject, property, 8)
-        .map_or(ptr::null_mut(), Value::as_ptr)
+    let array = slot.init_array(&response.zobject, property, 8)?;
+    // SAFETY: the array `init_array` made for the response's property, a table
+    // of its own, which the object holds and the slot keeps uncounted; the
+    // borrow of the state ends the write before anything reaches it again.
+    Some(unsafe { Separated::in_place(array.as_ptr()) })
 }
 
 /// `sw_zend_read_property_ex(swoole_http_response_ce, response.zobject, name)`, when it
@@ -194,11 +196,9 @@ fn add_custom_header(
         .rposition(|byte| !byte.is_ascii_whitespace_c())
         .map_or(0, |last| last + 1);
     if trimmed != length {
-        let val = string::val(text.as_ptr());
-        // SAFETY: the string holds `length` bytes; `swoole::rtrim` zeroes the trimmed ones.
-        unsafe { ptr::write_bytes(val.wrapping_add(trimmed), 0, length - trimmed) };
-        // SAFETY: as above: `ZSTR_LEN(str) = swoole::rtrim(...)`.
-        unsafe { (*text.as_ptr()).len = trimmed };
+        // SAFETY: the live string, which no borrow reads across the write
+        // (`bytes` is read again below); `swoole::rtrim` writes it in place.
+        unsafe { swoole_rs_zend::sys::swr_zend_http_rtrim(text.as_ptr(), trimmed) };
     }
     let bytes = text.bytes();
     if !has_crlf(bytes) {
