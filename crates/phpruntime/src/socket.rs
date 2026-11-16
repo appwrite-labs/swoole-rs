@@ -95,7 +95,9 @@ impl Drop for Socket {
 
 /// `delete socket` inside `zend_try`: `~Socket` may run a close hook that bails out.
 fn free(socket: OwnedCo) -> Result<(), Bailout> {
-    swoole_rs_zend::contain_with(move || drop(socket))
+    // The body holds only the slot, whose socket it takes before freeing it.
+    let mut slot = Some(socket);
+    swoole_rs_zend::contain_with(|| drop(slot.take()))
 }
 
 impl Socket {
