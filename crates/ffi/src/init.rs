@@ -46,6 +46,7 @@ extern "C-unwind" fn swoole_init() {
         event_free: || _ = swoole_rs_reactor::swoole_event_free(),
         coroutine_is_in: || !swoole_rs_coroutine::current().is_null(),
     });
+    swoole_rs_reactor::event_api::set_writers(swoole_rs_tls::reactor_write::WRITERS);
     swoole_rs_clients::client::set_framing(swoole_rs_ports::framing_recv::FRAMING);
     swoole_rs_ports::register_methods();
     swoole_rs_hooks::stdio::swr_v1_hook_install();

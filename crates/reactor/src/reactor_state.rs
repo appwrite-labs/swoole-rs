@@ -5,16 +5,12 @@
 //! lifetime, from its constructor and `swoole_event_init` to its destructor and
 //! `swoole_event_free`. The C++ class is methods over this state (`swoole_reactor.h`).
 use crate::wait_loop::BackendKind;
-use crate::{PollSnapshot, Socket, SocketRecord, handlers::Handlers, registry::Registry};
+use crate::{PollSnapshot, Socket, handlers::Handlers, registry::Registry};
 use libc::{c_int, c_void};
 use std::mem::MaybeUninit;
 use std::ptr;
 use swoole_rs_corebase::HookType;
 
-pub type ReactorWrite =
-    unsafe extern "C-unwind" fn(*mut c_void, *mut SocketRecord, *const c_void, usize) -> isize;
-pub type ReactorWritev =
-    unsafe extern "C-unwind" fn(*mut c_void, *mut SocketRecord, *const libc::iovec, usize) -> isize;
 /// `Reactor::close`: frees `socket`, one of the reactor's.
 pub type ReactorClose = unsafe extern "C-unwind" fn(crate::Running<'_>, Socket<'static>) -> c_int;
 
@@ -44,8 +40,6 @@ pub struct ReactorFields {
     pub id: u16,
     pub max_socket: u32,
     pub last_malloc_trim_time: libc::time_t,
-    pub write: Option<ReactorWrite>,
-    pub writev: Option<ReactorWritev>,
     pub close: Option<ReactorClose>,
     /// `Reactor::defer_tasks`: null (`None`) until a task is deferred.
     pub defer_tasks: Option<Box<crate::ReactorDeferred>>,
@@ -84,7 +78,7 @@ const _: () = assert!(
 );
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(
-    size_of::<ReactorPrepared>() == 32 && size_of::<ReactorFields>() == 128,
+    size_of::<ReactorPrepared>() == 32 && size_of::<ReactorFields>() == 112,
     "swr_v1_reactor_head's layout"
 );
 
@@ -210,8 +204,6 @@ impl ReactorState {
                 id: 0,
                 max_socket: 0,
                 last_malloc_trim_time: 0,
-                write: None,
-                writev: None,
                 close: None,
                 defer_tasks: None,
                 destroy_callbacks: None,
@@ -317,23 +309,9 @@ fn output<T>(count: usize) -> Vec<MaybeUninit<T>> {
 }
 
 #[cfg(feature = "upstream-symbols")]
-// crates/tls's `Reactor` statics and crates/hooks's `System::init_reactor`,
+// crates/tls's `Reactor::_close` and crates/hooks's `System::init_reactor`,
 // under their upstream symbols; declared, since both depend on this crate.
 unsafe extern "C-unwind" {
-    #[link_name = "_ZN6swoole7Reactor6_writeEPS0_PNS_7network6SocketEPKvm"]
-    fn reactor_write(
-        reactor: *mut c_void,
-        socket: *mut SocketRecord,
-        data: *const c_void,
-        length: usize,
-    ) -> isize;
-    #[link_name = "_ZN6swoole7Reactor7_writevEPS0_PNS_7network6SocketEPK5iovecm"]
-    fn reactor_writev(
-        reactor: *mut c_void,
-        socket: *mut SocketRecord,
-        iov: *const libc::iovec,
-        count: usize,
-    ) -> isize;
     #[link_name = "_ZN6swoole7Reactor6_closeEPS0_PNS_7network6SocketE"]
     fn reactor_close(reactor: crate::Running<'_>, socket: Socket<'static>) -> c_int;
     #[link_name = "_ZN6swoole9coroutine6System12init_reactorEPNS_7ReactorE"]
@@ -373,9 +351,10 @@ impl OwnedReactor {
 }
 
 /// `new Reactor(max_event, type)`: the state `ReactorState::open` makes and, once
-/// ready, upstream's write, writev, close and default write handler, the create hook
-/// and then the built-in end callbacks and exit conditions. The write functions are
-/// crates/tls's, so only the hybrid (`upstream-symbols`) sets them.
+/// ready, upstream's close and default write handler, the create hook and then the
+/// built-in end callbacks and exit conditions. Those two are crates/tls's, so only the
+/// hybrid (`upstream-symbols`) sets them; its writes, `swoole_init` registers
+/// ([`crate::event_api::set_writers`]).
 pub fn swr_v1_reactor_new(max_event: c_int, kind: c_int) -> OwnedReactor {
     let mut owner = ReactorState::open(kind, max_event);
     if !owner.fields.ready {
@@ -384,8 +363,6 @@ pub fn swr_v1_reactor_new(max_event: c_int, kind: c_int) -> OwnedReactor {
     owner.fields.timeout_msec = -1;
     #[cfg(feature = "upstream-symbols")]
     {
-        owner.fields.write = Some(reactor_write);
-        owner.fields.writev = Some(reactor_writev);
         owner.fields.close = Some(reactor_close);
         owner.handlers.defaults[0].set(Some(|reactor, event| {
             reactor_writable_callback(reactor, event)
@@ -664,6 +641,7 @@ impl ReactorState {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::SocketRecord;
     /// A state with backend `kind` open for `count` events: `new Reactor` without its
     /// native effects.
     pub(crate) fn state(kind: c_int, count: c_int) -> ReactorPrepared {
