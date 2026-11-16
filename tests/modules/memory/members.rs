@@ -181,7 +181,7 @@ fn shared_mappings_are_zeroed_protected_and_freed() {
             .read();
         assert_eq!(total, 112);
     }
-    sw_shm_free(Shm(Cell::new(memory.cast())));
+    Shm(Cell::new(memory.cast())).free();
     assert!(sw_shm_malloc(usize::MAX).is_null());
     assert!(sw_shm_calloc(usize::MAX, 2).is_null());
 }
