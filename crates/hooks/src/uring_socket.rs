@@ -30,7 +30,7 @@ pub struct UringSocketOps<'a> {
     /// `is_available(event)`.
     pub available: fn(Co, Events) -> bool,
     /// `check_return_value(retval)`.
-    pub check: fn(Co, isize),
+    pub check: fn(Co, Option<usize>),
     /// `set_err(code)`.
     pub set_err: fn(Co, c_int),
 }
@@ -117,7 +117,7 @@ impl UringSocketOps<'_> {
     }
 
     fn check(&self, result: isize) {
-        (self.check)(self.socket, result);
+        (self.check)(self.socket, usize::try_from(result).ok());
     }
 
     /// `call` with the current coroutine bound to `event`.
