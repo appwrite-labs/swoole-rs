@@ -62,3 +62,7 @@ HTTP/2 code.
 python3 tests/modules/http2/h2spec.py --engine upstream=target/upstream/src/modules/swoole.so \
   --engine cargo=target/ext/swoole.so
 ```
+
+`frame_length` returns `Option<usize>`: a complete nine-byte header yields the
+24-bit payload size plus nine, otherwise None. The ports callback restores the
+native zero/count convention; original unit and fuzz expectations are unchanged.
