@@ -488,9 +488,7 @@ pub(crate) fn close_connection(
     let ssl = sock.read(|s| !s.ssl().is_null());
     if ssl {
         sock.edit(|s| s.ssl_quiet_shutdown = conn.peer_closed());
-        // SAFETY: handles to a session live only for the operation that took them,
-        // and native code closes it between operations.
-        unsafe { tls::socket_ssl_close(sock) };
+        tls::socket_ssl_close(sock);
     }
     if let Some(mut recv_buffer) = sock.edit(|s| s.recv_buffer.take()) {
         recv_buffer.dispose();

@@ -110,7 +110,8 @@ fn with_tls<P, R>(
     step: impl FnOnce(&mut SocketTls, Ssl, P) -> R,
 ) -> Option<R> {
     let (ssl, (before, picked)) = Ssl::of_reading(socket, |record| (record.tls, pick(record)));
-    let ssl = ssl?;
+    let held = ssl?;
+    let ssl = held.get();
     let mut tls = before;
     let result = step(&mut tls, ssl, picked);
     // Most transfers leave the group as it was, and then the record needs no edit.
@@ -143,7 +144,7 @@ pub extern "C" fn socket_ssl_get_error_reason(reason: Option<&mut c_int>) -> *co
 pub extern "C" fn socket_ssl_get_peer_cert_chain(
     socket: Socket<'_>,
 ) -> *mut openssl_sys::stack_st_X509 {
-    Ssl::of(socket).map_or(std::ptr::null_mut(), Ssl::peer_cert_chain)
+    Ssl::of(socket).map_or(std::ptr::null_mut(), |held| held.get().peer_cert_chain())
 }
 
 /// The peer's certificate chain, each certificate as PEM (at most
@@ -151,10 +152,11 @@ pub extern "C" fn socket_ssl_get_peer_cert_chain(
 #[must_use]
 pub fn socket_ssl_peer_chain_pem(socket: Socket<'_>) -> Vec<Vec<u8>> {
     let mut chain = Vec::new();
-    let Some(ssl) = Ssl::of(socket) else {
+    let Some(held) = Ssl::of(socket) else {
         return chain;
     };
     let mut pem = vec![0_u8; swoole_rs_corebase::constants::SW_STACK_BUFFER_SIZE as usize];
+    let ssl = held.get();
     ssl.each_peer_cert(|cert| {
         let read = lend_spare(pem.as_mut_slice(), |spare| read_x509(cert, spare)).0;
         if let Some(bytes) = read.filter(|&n| n > 0) {
@@ -178,7 +180,8 @@ pub struct Session {
 /// The session of `socket`'s SSL, or None without one.
 #[must_use]
 pub fn socket_ssl_session(socket: Socket<'_>) -> Option<Session> {
-    let ssl = Ssl::of(socket)?;
+    let held = Ssl::of(socket)?;
+    let ssl = held.get();
     let cipher = ssl.cipher();
     Some(Session {
         version: ssl.version(),
@@ -191,10 +194,10 @@ pub fn socket_ssl_session(socket: Socket<'_>) -> Option<Session> {
 /// `bool Socket::ssl_verify(bool allow_self_signed) const`: false without an SSL.
 #[must_use]
 pub fn socket_ssl_verify(socket: Socket<'_>, allow_self_signed: bool) -> bool {
-    let Some(ssl) = Ssl::of(socket) else {
+    let Some(held) = Ssl::of(socket) else {
         return false;
     };
-    let error = swr_v1_socket_ssl_verify(ssl, allow_self_signed);
+    let error = swr_v1_socket_ssl_verify(held.get(), allow_self_signed);
     if error == c_long::from(X509_V_OK) {
         return true;
     }
@@ -371,7 +374,7 @@ pub fn socket_ssl_connect(socket: Socket<'_>) -> bool {
 
 /// `SSL_peek` on the record into `buffer`; None on error or without an SSL.
 fn tls_peek<S: ReadSlot>(socket: Socket<'_>, mut buffer: Fill<'_, S>) -> Option<usize> {
-    match Ssl::of(socket)?.peek(buffer.slots()) {
+    match Ssl::of(socket)?.get().peek(buffer.slots()) {
         Ok(count) => Some(count),
         Err(failure) => usize::try_from(failure.returned).ok(),
     }
@@ -640,7 +643,7 @@ pub fn writev_sync(socket: Socket<'_>, vectors: &[IoSlice<'_>]) -> Option<usize>
 /// `X509 *Socket::ssl_get_peer_certificate() const`.
 #[must_use]
 pub fn ssl_get_peer_certificate(socket: Socket<'_>) -> Option<Cert> {
-    Ssl::of(socket)?.peer_certificate()
+    Ssl::of(socket)?.get().peer_certificate()
 }
 
 /// `bool Socket::ssl_check_host(const char *tls_host_name) const`.
@@ -1052,22 +1055,17 @@ pub fn socket_ssl_shutdown(socket: Socket<'_>) -> bool {
     reason = "a client's handshake ignores the result, as upstream does"
 )]
 pub fn socket_ssl_set_host_name(socket: Socket<'_>, name: &CStr) -> bool {
-    Ssl::of(socket).is_some_and(|ssl| ssl.set_host_name(name))
+    Ssl::of(socket).is_some_and(|held| held.get().set_host_name(name))
 }
 
 /// `void Socket::ssl_close()`: shuts down unless already closed (OpenSSL 1.0.2f
 /// complains about `SSL_shutdown` during a handshake), then frees the SSL.
-///
-/// # Safety
-/// No [`Ssl`] or [`crate::Bio`] handle to the record's SSL or its BIOs is used
-/// afterwards: they are freed.
-pub unsafe fn socket_ssl_close(socket: Socket<'_>) {
+/// Pending operations retain their own SSL references until their handles expire.
+pub fn socket_ssl_close(socket: Socket<'_>) {
     if !socket.read(|record| record.ssl_closed) {
         socket_ssl_shutdown(socket);
     }
-    // SAFETY: the record's SSL, freed as it drops here; the caller promises no handle to
-    // it or its BIOs is used afterwards.
-    drop(socket.edit(|record| unsafe { record.take_ssl() }));
+    socket.edit(SocketFields::close_ssl);
 }
 
 /// `int Socket::ssl_create(SSLContext *ssl_context, int flags)`: whether it made the
