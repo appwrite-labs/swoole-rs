@@ -147,6 +147,20 @@ pub fn lend_in<T, N: Narrow, R>(
     )
 }
 
+/// Lends `value`'s bytes to `call` as an [`Out`] and its [`Count`]. Any bytes are a `T`.
+#[inline]
+pub(crate) fn lend_value_out<T: crate::sys::Pod, N: Narrow, R>(
+    value: &mut T,
+    call: impl for<'id> FnOnce(Out<'id>, &mut Count<'id, N>) -> R,
+) -> (R, N) {
+    let mut count = Count(N::narrow(size_of::<T>()), PhantomData);
+    let out = call(
+        Out(std::ptr::from_mut(value).cast(), PhantomData),
+        &mut count,
+    );
+    (out, count.0)
+}
+
 /// Lends `value`'s bytes to `call` as an [`In`] and its [`Count`].
 #[inline]
 pub(crate) fn lend_value<T, N: Narrow, R>(
@@ -263,6 +277,15 @@ unsafe extern "C" {
         count: Count<'id, libc::nfds_t>,
         timeout: c_int,
     ) -> c_int;
+    /// Writes at most `length`'s bytes of `value`, and how many it stored into
+    /// `length`, which is never more than the count it read there.
+    pub(crate) safe fn getsockopt<'id>(
+        fd: c_int,
+        level: c_int,
+        name: c_int,
+        value: Out<'id>,
+        length: &mut Count<'id, libc::socklen_t>,
+    ) -> c_int;
     pub(crate) safe fn setsockopt<'id>(
         fd: c_int,
         level: c_int,
@@ -277,6 +300,18 @@ unsafe extern "C" {
         format: crate::sys::Text<'_>,
         tm: &libc::tm,
     ) -> usize;
+    /// Fills `entry`, its lists in `buffer`, stores it (or null) in `found` and the
+    /// resolver's error in `error`.
+    #[cfg(target_os = "linux")]
+    pub(crate) safe fn gethostbyname2_r<'id>(
+        name: crate::sys::Text<'_>,
+        family: c_int,
+        entry: &mut libc::hostent,
+        buffer: Out<'id, c_char>,
+        length: Count<'id>,
+        found: &mut *mut libc::hostent,
+        error: &mut c_int,
+    ) -> c_int;
     /// Fills `entry`, its strings in `strings`, and stores it (or null) in `found`.
     pub(crate) safe fn getgrnam_r<'id>(
         name: crate::sys::Text<'_>,

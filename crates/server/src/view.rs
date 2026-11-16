@@ -517,9 +517,12 @@ impl<'a> Server<'a> {
     /// last.
     pub(crate) fn pending_worker(self, index: usize) -> Option<Worker<'a>> {
         let &worker = self.registry().pending().get(index)?;
-        // SAFETY: null, or a live worker `add_worker` added, which outlives the server
+        if worker.is_null() {
+            return None;
+        }
+        // SAFETY: a live worker `add_worker` added, which outlives the server
         // (its contract; nothing else adds to the server's pending workers).
-        unsafe { Worker::from_raw(worker.cast()) }
+        Some(unsafe { Worker::new(worker.cast()) })
     }
 
     /// Worker `id`'s pipe socket, its master end or its worker end, or `None` while it has none.

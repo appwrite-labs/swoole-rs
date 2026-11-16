@@ -513,10 +513,9 @@ pub fn getsockopt<T: Pod>(
     name: c_int,
     value: &mut T,
 ) -> std::io::Result<libc::socklen_t> {
-    let mut length = socklen::<T>();
-    // SAFETY: `value` holds the `length` writable bytes given, and any bytes are a `T`.
-    let status =
-        unsafe { libc::getsockopt(fd, level, name, (&raw mut *value).cast(), &raw mut length) };
+    let (status, length) = lent::lend_value_out(value, |at, length| {
+        lent::getsockopt(fd, level, name, at, length)
+    });
     status_result(status)?;
     Ok(length)
 }

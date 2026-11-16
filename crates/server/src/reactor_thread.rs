@@ -234,7 +234,7 @@ pub(crate) fn send_event(sock: Option<Socket<'_>>, fd: c_long, kind: ServerEvent
     };
     if let Some(sock) = sock {
         let data = swoole_rs_process::process_pool::head_view(&head);
-        let data = swoole_rs_reactor::Drain::new(data);
+        let data = swoole_rs_reactor::Drain::new(&data);
         _ = swoole_rs_tls::upstream::send_sync_drain(sock, data, 0);
     }
 }

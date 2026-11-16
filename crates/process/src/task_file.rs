@@ -222,7 +222,7 @@ pub struct TaskBuffer {
 
 const _: () = assert!(
     size_of::<DataHead>() == 40,
-    "`TaskBuffer::bytes` reads the head as bytes, so it has no padding"
+    "`Packed::bytes` reads the head as bytes, so it has no padding"
 );
 
 impl Default for TaskBuffer {
@@ -279,10 +279,7 @@ impl TaskBuffer {
     /// `EventData::size()` bytes: the head, then the payload it counts.
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
-        let size = size_of::<DataHead>() + self.head.len as usize;
-        // SAFETY: the head has no padding, and `pack`, the one writer of `len`,
-        // wrote the `len` payload bytes after it, within the buffer.
-        unsafe { std::slice::from_raw_parts(std::ptr::from_ref(self).cast::<u8>(), size) }
+        self.packed().bytes()
     }
 
     /// `Server::task_pack`: a task header from this worker, with `data` inline or

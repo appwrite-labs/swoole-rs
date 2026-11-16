@@ -24,7 +24,7 @@ use swoole_rs_corebase::log::LogLevel::{SW_LOG_NOTICE as LOG_NOTICE, SW_LOG_TRAC
 use swoole_rs_corebase::{CCast, log};
 use swoole_rs_memory::members::Shm;
 use swoole_rs_process::methods::swoole_get_worker_id;
-use swoole_rs_process::worker_globals::with_globals;
+use swoole_rs_process::worker_globals::{with_current, with_globals};
 use swoole_rs_process::worker_record::{Worker, WorkerStatus};
 
 /// `swoole::SendData`, and the `swoole::RecvData` a receive callback reads (the same
@@ -316,11 +316,16 @@ fn receive_now(serv: view::Server<'_>, task: &SendData) -> bool {
     if !dgram && task.info.event() != Some(ServerEvent::RecvData) {
         return false;
     }
-    let (worker, max_request) =
-        with_globals(|g| (g.worker(), g.max_request.load(Ordering::Relaxed)));
-    if worker.is_null() || max_request != 0 {
+    if with_globals(|g| g.max_request.load(Ordering::Relaxed)) != 0 {
         return false;
     }
+    // The current worker's record, which this worker loop owns.
+    with_current(|&worker| receive_as(serv, task, dgram, worker)).unwrap_or(false)
+}
+
+/// [`receive_now`] for the worker this loop runs.
+#[inline(always)]
+fn receive_as(serv: view::Server<'_>, task: &SendData, dgram: bool, worker: Worker<'_>) -> bool {
     let state = serv.state();
     let conn = if dgram {
         None
@@ -331,8 +336,6 @@ fn receive_now(serv: view::Server<'_>, task: &SendData) -> bool {
         };
         Some(c)
     };
-    // SAFETY: the current worker's record, which this worker loop owns.
-    let worker = unsafe { Worker::new(worker) };
     worker.set_status(WorkerStatus::Busy);
     if let Some(c) = conn {
         if task.info.len > 0 {
