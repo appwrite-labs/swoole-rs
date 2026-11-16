@@ -669,26 +669,23 @@ mod tests {
     /// Port methods whose `create_socket` fails for port 1, and whose `import` takes
     /// fd 3 as TCP, fd 4 as UDP and refuses the rest, keeping the fd as the port.
     fn fake_port_methods() {
-        // SAFETY: the fakes touch only the settings they are given.
-        unsafe {
-            crate::port_config::set_methods(crate::port_config::PortMethods {
-                ssl_context_init: |_| true,
-                ssl_create: |_, _| unreachable!(),
-                import: |config, fd| {
-                    config.r#type = if fd == 4 { SOCK_UDP } else { 1 };
-                    config.port.set(fd);
-                    fd < 5
-                },
-                close: |_| unreachable!(),
-                listen: |_| unreachable!(),
-                create_socket: |config, _| config.port.get() != 1,
-                close_socket: |_| unreachable!(),
-                get_protocols: |_| unreachable!(),
-                init_protocol: |_| unreachable!(),
-                destroy_http_request: |_| unreachable!(),
-                tls_free: |_| {},
-            });
-        }
+        crate::port_config::set_methods(crate::port_config::PortMethods {
+            ssl_context_init: |_| true,
+            ssl_create: |_, _| unreachable!(),
+            import: |config, fd| {
+                config.r#type = if fd == 4 { SOCK_UDP } else { 1 };
+                config.port.set(fd);
+                fd < 5
+            },
+            close: |_| unreachable!(),
+            listen: |_| unreachable!(),
+            create_socket: |config, _| config.port.get() != 1,
+            close_socket: |_| unreachable!(),
+            get_protocols: |_| unreachable!(),
+            init_protocol: |_| unreachable!(),
+            destroy_http_request: |_| unreachable!(),
+            tls_free: |_| {},
+        });
     }
 
     #[test]
