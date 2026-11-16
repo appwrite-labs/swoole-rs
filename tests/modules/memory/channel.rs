@@ -286,17 +286,13 @@ fn public_capacity_predicate_preserves_defined_modular_scalar_domain() {
                             };
                             let expected =
                                 (head == tail && head_tag != tail_tag) || modular == size;
-                            assert_eq!(
-                                swr_v1_memory_channel_full(Some(&state)),
-                                i32::from(expected)
-                            );
+                            assert_eq!(swr_v1_memory_channel_full(&state), expected);
                         }
                     }
                 }
             }
         }
     }
-    assert_eq!(swr_v1_memory_channel_full(None), -1);
 }
 
 /// `swoole::Channel` as upstream's `include/swoole_channel.h` drove the record: `make`, the

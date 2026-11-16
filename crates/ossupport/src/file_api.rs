@@ -46,13 +46,13 @@ pub fn fd_write_all(fd: c_int, append: bool, data: &[u8]) -> usize {
     io.done
 }
 
-/// `file_get_size(int)`: a regular file's size, or -1 with the last error set.
-fn size_of_fd(fd: c_int) -> isize {
+/// `file_get_size(int)`: a regular file's size, or `None` with the last error set.
+fn size_of_fd(fd: c_int) -> Option<usize> {
     let size = file_size(fd);
     if size.error != 0 {
         log::set_last_error(size.error);
     }
-    isize::try_from(size.size).unwrap_or(-1)
+    usize::try_from(size.size).ok()
 }
 
 /// `swoole_tmpfile`: creates the file named by the `XXXXXX` template in `template`
@@ -77,10 +77,9 @@ pub fn file_get_contents(path: &CStr, content: &mut CppString) -> bool {
         return false;
     };
     let record = FileRecord::adopt(fd, libc::O_RDONLY);
-    let size = size_of_fd(fd);
-    if size < 0 {
+    let Some(size) = size_of_fd(fd) else {
         return false;
-    }
+    };
     if size == 0 {
         log::error_log(
             LOG_TRACE,
@@ -90,7 +89,7 @@ pub fn file_get_contents(path: &CStr, content: &mut CppString) -> bool {
         );
         return false;
     }
-    if size.unsigned_abs() > swoole_rs_corebase::swr_v1_core_max_file_content() as usize {
+    if size > swoole_rs_corebase::swr_v1_core_max_file_content() as usize {
         log::error_log(
             LOG_WARNING,
             FILE_TOO_LARGE,
@@ -99,7 +98,6 @@ pub fn file_get_contents(path: &CStr, content: &mut CppString) -> bool {
         );
         return false;
     }
-    let size = size.unsigned_abs();
     content.alloc(size + 1, None);
     content.read_zeroed(size, |buf| {
         let io = record.read_all(buf);
