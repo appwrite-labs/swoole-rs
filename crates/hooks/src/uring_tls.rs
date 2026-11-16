@@ -9,7 +9,7 @@ use std::ffi::{CStr, c_char, c_int, c_ulong};
 use std::mem::MaybeUninit;
 use swoole_rs_corebase::set_errno;
 use swoole_rs_corebase::sys::ReadSlot;
-use swoole_rs_tls::{Bio, Ssl};
+use swoole_rs_tls::{Bio, Ssl, SslFailure};
 
 use openssl_sys as ssl;
 
@@ -77,12 +77,10 @@ impl<S: TlsSocket> Tls<'_, S> {
             // SAFETY: `buf` holds `size` bytes, which the BIO may only write.
             let slots =
                 unsafe { core::slice::from_raw_parts_mut(buf.cast::<MaybeUninit<u8>>(), size) };
-            let nread = wbio.read(slots);
-            if nread <= 0 {
+            let Some(nread) = wbio.read(slots) else {
                 self.socket.set_err(SSL_BAD_PROTOCOL);
                 return false;
-            }
-            let nread = nread.unsigned_abs() as usize;
+            };
             let mut written = 0;
             while written < nread {
                 let rest = buf.wrapping_add(written);
@@ -116,8 +114,7 @@ impl<S: TlsSocket> Tls<'_, S> {
                 let length = rv.unsigned_abs();
                 // SAFETY: the first `rv` bytes of `buf` were received.
                 let received = unsafe { core::slice::from_raw_parts(buf.cast::<u8>(), length) };
-                let rv = c_int::try_from(rv).unwrap_or(c_int::MAX);
-                if self.rbio.map_or(-1, |rbio| rbio.write(received)) != rv {
+                if self.rbio.and_then(|rbio| rbio.write(received)) != Some(length) {
                     self.socket.set_err(SSL_BAD_PROTOCOL);
                     return false;
                 }
@@ -141,13 +138,13 @@ impl<S: TlsSocket> Tls<'_, S> {
         true
     }
 
-    /// Upstream's `ssl_bio_perform` for `rc` from the OpenSSL call named
+    /// Upstream's `ssl_bio_perform` for the `failure` of the OpenSSL call named
     /// `function`: move bytes for what OpenSSL waits on.
-    pub(crate) fn perform(&self, rc: c_int, function: &CStr) -> bool {
+    pub(crate) fn perform(&self, failure: SslFailure, function: &CStr) -> bool {
         if !self.prepare() {
             return false;
         }
-        let error = self.ssl.map_or(ssl::SSL_ERROR_SSL, |ssl| ssl.error(rc));
+        let error = failure.code;
         let moved = match error {
             ssl::SSL_ERROR_WANT_WRITE => self.bio_write(),
             ssl::SSL_ERROR_WANT_READ => self.bio_read(),
@@ -173,17 +170,23 @@ impl<S: TlsSocket> Tls<'_, S> {
     }
 
     /// Upstream's `ssl_recv` / `ssl_send` loop around `SSL_read` / `SSL_write`.
-    fn transfer(&self, function: &CStr, mut io: impl FnMut() -> c_int) -> isize {
+    fn transfer(
+        &self,
+        function: &CStr,
+        mut io: impl FnMut() -> Result<usize, SslFailure>,
+    ) -> isize {
         loop {
-            let n = io();
+            let moved = io();
             if !self.prepare() {
                 return -1;
             }
-            if n > 0 {
-                return isize::try_from(n).unwrap_or(-1);
-            }
-            if !self.perform(n, function) {
-                return -1;
+            match moved {
+                Ok(count) => return isize::try_from(count).unwrap_or(-1),
+                Err(failure) => {
+                    if !self.perform(failure, function) {
+                        return -1;
+                    }
+                }
             }
         }
     }
@@ -488,7 +491,11 @@ mod tests {
                 if rc == 1 {
                     break;
                 }
-                assert!(tls.perform(rc, c"ssl_connect"), "connect");
+                let failure = SslFailure {
+                    returned: rc,
+                    code: ssl::SSL_get_error(session, rc),
+                };
+                assert!(tls.perform(failure, c"ssl_connect"), "connect");
             }
             assert_eq!(
                 ERRORS.with(|errors| errors.borrow().clone()),
