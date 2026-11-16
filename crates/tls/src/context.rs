@@ -19,6 +19,7 @@ use std::marker::{PhantomData, PhantomPinned};
 use std::mem::MaybeUninit;
 use std::ops::Deref;
 use std::ptr;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::StringSlot;
@@ -117,6 +118,65 @@ type ExCallback = extern "C" fn(*mut c_void, *mut c_void, *mut c_void, c_int, c_
 /// `CRYPTO_EX_dup`: `(to, from, from_d, idx, argl, argp)`.
 type ExDup =
     extern "C" fn(*mut c_void, *const c_void, *mut c_void, c_int, c_long, *mut c_void) -> c_int;
+
+/// A context's reference to the passphrase slot its password callback reads, which
+/// the context's ex data holds while the context lives.
+type KeptPassword = Box<Arc<StringSlot>>;
+/// [`ExCallback`] for the password index: the context's data there, null or a
+/// [`KeptPassword`].
+type FreePassword =
+    extern "C" fn(*mut c_void, Option<KeptPassword>, *mut c_void, c_int, c_long, *mut c_void);
+
+/// The `SSL_CTX` ex data index of a [`KeptPassword`], registered with
+/// [`free_password`]: only [`PasswordIndex::get`] makes one, so ex data at it is null
+/// or a box [`keep_password`] stored, which only OpenSSL's free of the context drops.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct PasswordIndex(c_int);
+
+static PASSWORD_INDEX: AtomicI32 = AtomicI32::new(-1);
+
+impl PasswordIndex {
+    fn get() -> Option<Self> {
+        let index = PASSWORD_INDEX.load(Ordering::Acquire);
+        (index >= 0).then_some(Self(index))
+    }
+}
+
+// libcrypto's and libssl's ex data calls, typed for the password index.
+#[expect(
+    clashing_extern_declarations,
+    improper_ctypes,
+    reason = "the ex data calls, typed for the password index; OpenSSL keeps the box as an opaque `void *`"
+)]
+unsafe extern "C" {
+    /// `SSL_CTX_get_ex_new_index` whose free callback is `free`, or -1.
+    #[link_name = "CRYPTO_get_ex_new_index"]
+    safe fn new_password_index(
+        class: c_int,
+        argl: c_long,
+        argp: Option<&'static c_void>,
+        new: Option<ExCallback>,
+        dup: Option<ExDup>,
+        free: Option<FreePassword>,
+    ) -> c_int;
+    /// The context takes `kept` as its data at the index (leaking what it held), or
+    /// fails (0) and leaks it.
+    #[link_name = "SSL_CTX_set_ex_data"]
+    safe fn keep_password(ctx: &SslCtx, index: PasswordIndex, kept: KeptPassword) -> c_int;
+}
+
+/// The password index's free callback: drops the context's reference to its slot.
+extern "C" fn free_password(
+    _ctx: *mut c_void,
+    kept: Option<KeptPassword>,
+    _data: *mut c_void,
+    _index: c_int,
+    _argl: c_long,
+    _argp: *mut c_void,
+) {
+    drop(kept);
+}
 
 /// An `OPENSSL_INIT_SETTINGS`, which this side never makes.
 #[repr(C)]
@@ -418,19 +478,13 @@ pub(crate) type PasswordCallback = for<'id> extern "C" fn(
     &StringSlot,
 ) -> c_int;
 
-/// One upstream method: its log name and the configuration it reads.
-#[derive(Clone, Copy)]
-pub(crate) struct PasswordBinding {
-    /// What OpenSSL hands the callback: a slot that outlives the context.
-    pub userdata: *const StringSlot,
-    pub callback: PasswordCallback,
-}
-
+/// One upstream method: its log name, the configuration it reads and the passphrase
+/// slot its context's password callback reads.
 struct Method<'a> {
     config: &'a TlsConfig<'a>,
     ctx: &'a SslCtx,
     function: &'static CStr,
-    password: Option<PasswordBinding>,
+    password: Option<&'a Arc<StringSlot>>,
 }
 
 /// `SSL_OP_*`'s type: `uint64_t` since OpenSSL 3.
@@ -623,16 +677,22 @@ impl Method<'_> {
         );
         ctx.ctrl(Ctrl::ReadAhead, 1);
 
-        // The owner's binding reads its live passphrase slot (crates/tls's owned.rs).
+        // The callback reads the owner's live passphrase slot (crates/tls's owned.rs),
+        // which the context holds from here: freed with it, or leaked.
         if !config.passphrase.is_empty()
-            && let Some(binding) = self.password
+            && let Some(slot) = self.password
         {
-            let userdata = binding.userdata.cast_mut().cast();
-            // SAFETY: a live context; the binding's owner outlives the borrowed context.
+            let userdata = Arc::as_ptr(slot).cast_mut().cast();
+            let kept = Box::new(Arc::clone(slot));
+            match PasswordIndex::get() {
+                Some(index) => _ = keep_password(ctx, index, kept),
+                None => _ = Box::leak(kept),
+            }
+            // SAFETY: a live context; the slot lives as long as it (held above).
             unsafe { SSL_CTX_set_default_passwd_cb_userdata(raw, userdata) };
             // SAFETY: a live context; OpenSSL calls the callback with the buffer it
-            // lends and the userdata set above, the binding's slot.
-            unsafe { SSL_CTX_set_default_passwd_cb(raw, binding.callback) };
+            // lends and the userdata set above, the slot.
+            unsafe { SSL_CTX_set_default_passwd_cb(raw, slot_password) };
         }
         if let Some(path) = config.cert_file.path() {
             let file = config.cert_file;
@@ -798,6 +858,17 @@ type VerifyCallback = extern "C" fn(c_int, *mut X509_STORE_CTX) -> c_int;
 /// Peer certificates are checked later by the callers; the chain walk always continues.
 extern "C" fn verify_callback(_ok: c_int, _store: *mut X509_STORE_CTX) -> c_int {
     1
+}
+
+/// The password callback: the passphrase in `slot`, the context's passphrase slot
+/// (its userdata), into the `capacity` bytes OpenSSL lends at `buffer`.
+pub(crate) extern "C" fn slot_password<'id>(
+    buffer: Out<'id, MaybeUninit<u8>>,
+    capacity: Count<'id, c_int>,
+    _verify: c_int,
+    slot: &StringSlot,
+) -> c_int {
+    copy_password(buffer.fill(capacity).slots(), slot.bytes_with_nul())
 }
 
 /// Copies the passphrase and the NUL after it (`terminated` is both) into `buffer`
@@ -975,6 +1046,12 @@ pub fn swr_v1_tls_init() -> Result<(), TlsInitError> {
         return Err(TlsInitError::Index);
     }
     PORT_INDEX.store(port, Ordering::Release);
+    let class = openssl_sys::CRYPTO_EX_INDEX_SSL_CTX;
+    let password = new_password_index(class, 0, None, None, None, Some(free_password));
+    if password < 0 {
+        return Err(TlsInitError::Index);
+    }
+    PASSWORD_INDEX.store(password, Ordering::Release);
     INITIALIZED.store(true, Ordering::Release);
     Ok(())
 }
@@ -1059,11 +1136,11 @@ fn drain_errors() {
     ERR_print_errors_cb(keep_last_line, None);
 }
 
-/// # Safety
-/// Any password binding remains live throughout the borrowed context.
-pub(crate) unsafe fn create_context(
+/// A new context of `config`, whose password callback reads `password`, the
+/// passphrase slot, once `config.passphrase` names one.
+pub(crate) fn create_context(
     config: &mut TlsConfig<'_>,
-    password: Option<PasswordBinding>,
+    password: Option<&Arc<StringSlot>>,
 ) -> Option<SslContext> {
     let method = if crate::SslVersion::from_bits(config.protocols).contains(DTLS) {
         DTLS_method()
@@ -1098,8 +1175,7 @@ mod tests {
     /// # Safety
     /// `config`'s strings are NUL-terminated and outlive the call.
     unsafe fn swr_v1_tls_context_create(config: &mut TlsConfig<'_>) -> Option<SslContext> {
-        // SAFETY: forwards the caller's live configuration view.
-        unsafe { create_context(config, None) }
+        create_context(config, None)
     }
 
     macro_rules! method {

@@ -1,18 +1,16 @@
 //! Thread-local TLS configuration builders and immutable runtime snapshots.
 //! [`TlsContext`] retains a builder; sessions use independent [`TlsSettings`].
-use crate::context::{PasswordBinding, copy_password, create_context};
+use crate::context::create_context;
 use crate::{TlsConfig, Warn};
 use openssl_sys::SSL_CTX;
 use std::{
     cell::Cell,
     ffi::{CStr, c_int},
-    mem::MaybeUninit,
     rc::Rc,
     sync::Arc,
 };
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::StringSlot;
-use swoole_rs_corebase::lent::{Count, Out};
 
 const STRING_COUNT: usize = 11;
 const PASSPHRASE: usize = 6;
@@ -57,9 +55,6 @@ impl OwnedTlsFields {
 pub struct OwnedTlsContext {
     fields: Cell<Option<Box<OwnedTlsFields>>>,
     strings: [Arc<StringSlot>; STRING_COUNT],
-    /// The passphrase slot the context's password callback reads, kept while it may.
-    /// Only a [`Lent`] reaches it.
-    context_password: Cell<Option<Arc<StringSlot>>>,
     warn: Warn,
 }
 
@@ -175,7 +170,6 @@ fn fresh(warn: Warn) -> Rc<OwnedTlsContext> {
     Rc::new(OwnedTlsContext {
         fields: Cell::new(Some(Box::default())),
         strings: std::array::from_fn(|_| StringSlot::empty()),
-        context_password: Cell::new(None),
         warn,
     })
 }
@@ -323,7 +317,6 @@ impl Lent<'_> {
                 }
                 Arc::new(slot)
             }),
-            context_password: Cell::new(None),
             warn: self.owner.warn,
         };
         crate::swoole_ssl_init();
@@ -338,18 +331,6 @@ impl Lent<'_> {
             fields: *fields,
             strings: owner.strings,
         })
-    }
-
-    /// Another reference to the retained password.
-    fn password(&mut self) -> Option<Arc<StringSlot>> {
-        let held = self.owner.context_password.take();
-        let shared = held.clone();
-        self.owner.context_password.set(held);
-        shared
-    }
-    /// Retains `password` in place of the one held, which goes.
-    fn retain(&mut self, password: Option<Arc<StringSlot>>) {
-        drop(self.owner.context_password.replace(password));
     }
 }
 /// The owner's strings, as views, and the scalar `fields` copied from it.
@@ -375,16 +356,6 @@ fn configuration<'a>(owner: &'a OwnedTlsContext, fields: &OwnedTlsFields) -> Tls
         warn: owner.warn,
     }
 }
-/// The password callback: the passphrase in `slot`, the owner's passphrase slot (the
-/// binding's userdata), into the `capacity` bytes OpenSSL lends at `buffer`.
-extern "C" fn slot_password<'id>(
-    buffer: Out<'id, MaybeUninit<u8>>,
-    capacity: Count<'id, c_int>,
-    _verify: c_int,
-    slot: &StringSlot,
-) -> c_int {
-    copy_password(buffer.fill(capacity).slots(), slot.bytes_with_nul())
-}
 /// A new `SSL_CTX` from the lent owner's configuration, which replaces the one it
 /// held: false when OpenSSL makes none. The owner's logger does not throw.
 fn create(owner: &mut Lent<'_>) -> bool {
@@ -392,18 +363,8 @@ fn create(owner: &mut Lent<'_>) -> bool {
     // `configuration` copies the fields, so no borrow of them is kept across
     // OpenSSL/log callbacks.
     let mut config = owner.edit(|fields| configuration(state, fields));
-    let slot = Arc::as_ptr(&state.strings[PASSPHRASE]);
-    let retained_password = if config.passphrase.is_empty() {
-        None
-    } else {
-        Some(Arc::clone(&state.strings[PASSPHRASE]))
-    };
-    let password = PasswordBinding {
-        userdata: slot,
-        callback: slot_password,
-    };
-    // SAFETY: a live password binding: the owner keeps the slot (`retained_password`).
-    let ctx = unsafe { create_context(&mut config, Some(password)) };
+    // The context keeps its own reference to the passphrase slot.
+    let ctx = create_context(&mut config, Some(&state.strings[PASSPHRASE]));
     if let Some(ctx) = &ctx {
         crate::info::SSL_CTX_set_info_callback(ctx, Some(crate::info::info));
     }
@@ -414,8 +375,6 @@ fn create(owner: &mut Lent<'_>) -> bool {
         fields.context = ctx;
         fields.protocols = config.protocols;
     });
-    // The new context's live password data is retained independently of native views.
-    owner.retain(retained_password);
     created
 }
 /// `bool SSLContext::create()` of the lent owner, which initializes OpenSSL first.
@@ -454,13 +413,9 @@ pub fn owner_assign(destination: &mut Lent<'_>, source: &mut Lent<'_>) -> Result
     let Some(fields) = source.edit(|fields| fields.try_clone()) else {
         return Err(CopyError::Fields);
     };
-    // Independent retention of the context's actual live password value.
-    let password = source.password();
     // Publish the copied scalar values and reference, releasing the destination's
-    // previous one.
+    // previous one: a context holds its own password slot.
     destination.edit(|to| *to = fields);
-    // Release old password ownership only after releasing its OpenSSL reference.
-    destination.retain(password);
     Ok(())
 }
 
@@ -680,8 +635,11 @@ impl OwnedTlsContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::slot_password;
     use std::ffi::{c_char, c_void};
+    use std::mem::MaybeUninit;
     use std::ptr;
+    use swoole_rs_corebase::lent::Count;
 
     /// The password callback as OpenSSL calls it: `capacity` (any value C may pass, at
     /// most `bytes`' length) at `bytes`.
@@ -906,8 +864,8 @@ mod tests {
                 b"source"
             );
             drop(Rc::from_raw(source.owner));
-            let password = (*destination.owner).context_password.as_ptr();
-            let slot = Arc::as_ptr((&*password).as_ref().unwrap());
+            let ctx = (*destination.fields).context_ptr();
+            let slot = SSL_CTX_get_default_passwd_cb_userdata(ctx).cast::<StringSlot>();
             let mut output = [0u8; 16];
             assert_eq!(call_password(&mut output, 16, &*slot), 6);
             assert_eq!(&output[..7], b"source\0");
