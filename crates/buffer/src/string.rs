@@ -702,12 +702,26 @@ pub unsafe fn delete_string(string: *mut CppString) {
     unsafe { Box::from_raw(string) }.dispose();
 }
 
-/// `f` over this thread's String (`sw_tg_buffer()`), lent to `f` alone.
+/// `f` over this thread's String (`sw_tg_buffer()`), lent to `f` alone. A thread
+/// `swoole_thread_init` didn't set up has none, which aborts.
+#[inline]
 pub fn with_thread_buffer<R>(f: impl FnOnce(&mut CppString) -> R) -> R {
+    try_with_thread_buffer(f)
+        .unwrap_or_else(|| swoole_rs_corebase::fatal("a thread without its buffer"))
+}
+
+/// [`with_thread_buffer`], or `None` on a thread without a buffer.
+#[inline]
+pub fn try_with_thread_buffer<R>(f: impl FnOnce(&mut CppString) -> R) -> Option<R> {
     swoole_rs_corebase::lend_thread_buffer(|| {
-        // SAFETY: the calling thread's live buffer, which `swoole_thread_init` set
-        // up, lent to `f` alone.
-        f(unsafe { &mut *swoole_rs_corebase::thread_buffer().cast::<CppString>() })
+        // SAFETY: null, or the calling thread's live buffer, which
+        // `swoole_thread_init` set up, lent to `f` alone.
+        unsafe {
+            swoole_rs_corebase::thread_buffer()
+                .cast::<CppString>()
+                .as_mut()
+        }
+        .map(f)
     })
 }
 

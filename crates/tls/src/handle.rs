@@ -164,7 +164,8 @@ impl ConnectionIndex {
 // libssl's ex data calls at the connection's index, typed as what it holds.
 #[expect(
     clashing_extern_declarations,
-    reason = "the ex data calls, typed for the connection's index"
+    improper_ctypes,
+    reason = "the ex data calls, typed for the connection's index; libssl keeps the socket as an opaque `void *`"
 )]
 unsafe extern "C" {
     #[link_name = "SSL_get_ex_data"]

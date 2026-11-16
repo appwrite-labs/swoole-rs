@@ -4,8 +4,9 @@
 //! root check, daemonizing, user/group/chroot isolation, parent-death signal, CPU
 //! affinity, native thread id and thread names. Logs name the function as
 //! upstream's `__SW_FUNC__` did.
-use libc::{c_char, c_int, c_long};
+use libc::{c_int, c_long};
 use std::ffi::CStr;
+use swoole_rs_corebase::lent::{Count, Out};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::sys::Text;
 
@@ -216,22 +217,44 @@ pub fn set_isolation(group: &CStr, user: &CStr, root: &CStr) {
 )]
 pub extern "C" fn swr_v1_os_set_process_death_signal(signal: c_int) {
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    // SAFETY: PR_SET_PDEATHSIG takes the signal number by value.
-    unsafe {
-        libc::prctl(libc::PR_SET_PDEATHSIG, signal.unsigned_abs());
+    {
+        /// `PR_SET_PDEATHSIG`, the only option this `prctl` takes.
+        #[repr(transparent)]
+        struct DeathSignal(c_int);
+        // `prctl(PR_SET_PDEATHSIG, signal)` reads the signal number by value and
+        // no other argument.
+        unsafe extern "C" {
+            #[link_name = "prctl"]
+            safe fn set_death_signal(option: DeathSignal, ...) -> c_int;
+        }
+        set_death_signal(
+            DeathSignal(libc::PR_SET_PDEATHSIG),
+            libc::c_ulong::from(signal.unsigned_abs()),
+        );
     }
     #[cfg(target_os = "freebsd")]
     {
-        let mut signal = signal;
-        // SAFETY: PROC_PDEATHSIG_CTL reads one int through the pointer.
-        unsafe {
-            libc::procctl(
-                libc::P_PID,
-                0,
-                libc::PROC_PDEATHSIG_CTL,
-                (&raw mut signal).cast(),
-            );
+        /// `PROC_PDEATHSIG_CTL`, the only command this `procctl` takes.
+        #[repr(transparent)]
+        struct DeathSignal(c_int);
+        // `procctl(P_PID, id, PROC_PDEATHSIG_CTL, &signal)` reads one int through
+        // the pointer.
+        unsafe extern "C" {
+            #[link_name = "procctl"]
+            safe fn set_death_signal(
+                kind: libc::idtype_t,
+                id: libc::id_t,
+                command: DeathSignal,
+                signal: &mut c_int,
+            ) -> c_int;
         }
+        let mut signal = signal;
+        set_death_signal(
+            libc::P_PID,
+            0,
+            DeathSignal(libc::PROC_PDEATHSIG_CTL),
+            &mut signal,
+        );
     }
     #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "freebsd")))]
     let _ = signal;
@@ -315,18 +338,15 @@ fn pthread_ok(rc: c_int) -> bool {
     rc == 0
 }
 
-/// `size_t swoole_random_bytes(char *buf, size_t size)`, over corebase's.
-/// # Safety
-/// `buf` points to `size` writable bytes.
+/// `size_t swoole_random_bytes(char *buf, size_t size)`, over corebase's: fills
+/// the `size` bytes lent at `buf`.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_Z19swoole_random_bytesPcm")
 )]
-pub unsafe extern "C" fn swoole_random_bytes(buf: *mut c_char, size: usize) -> usize {
-    // SAFETY: as the caller promises.
-    swoole_rs_corebase::random_bytes(unsafe {
-        std::slice::from_raw_parts_mut(buf.cast::<u8>(), size)
-    })
+#[must_use]
+pub extern "C" fn swoole_random_bytes<'id>(buf: Out<'id, u8>, size: Count<'id>) -> usize {
+    swoole_rs_corebase::random_bytes(buf.fill(size).slots())
 }
 
 #[cfg(test)]
