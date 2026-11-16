@@ -4,7 +4,7 @@
 //! `swoole_http_request.cc` did. Both parsers are crates/http's; what Swoole
 //! itself owns goes through `host`.
 use crate::host;
-use crate::state::{Request, Slot, State};
+use crate::state::{Request, State};
 use std::ffi::{CStr, c_char, c_int};
 use std::fs::File;
 use std::io::{BufWriter, IoSlice, Write};
@@ -17,11 +17,14 @@ use swoole_rs_corebase::{WebSocketStatus, log};
 use swoole_rs_http::llhttp::{self, Callbacks, Flow as Step, Parser};
 use swoole_rs_http::multipart_parser::{Flow, MultipartParser};
 use swoole_rs_httpbindings::{
-    FormSource, RequestHeader, body_prefix, compression, form_source, request_header, request_key,
-    request_url, token_list_contains, token_list_fast, trim_quotes,
+    FormSource, RequestHeader, body_prefix, compression, form_source, request_header, request_url,
+    token_list_contains, token_list_fast, trim_quotes,
 };
 use swoole_rs_zend::sys::zval;
-use swoole_rs_zend::{Declared, Interned, Minit, Owned, OwnedArray, Value, ZStr, ZString};
+use swoole_rs_zend::{
+    ArrayMut, Declared, Insertions, Interned, Minit, Owned, OwnedArray, Separated, Value, ZStr,
+    ZString,
+};
 
 /// A request's multipart parser and the upload it is writing.
 pub(crate) struct Multipart {
@@ -319,25 +322,39 @@ pub(crate) fn release_uploads(request: &Value) {
     }
 }
 
-/// `swoole_http_init_and_read_property`: the array behind a property slot,
-/// creating it on first use. Like upstream, the slot keeps an uncounted copy.
+/// `swoole_http_init_and_read_property`: the request object's `which`
+/// property slot, its array made on first use.
+#[inline]
 pub(crate) fn property(request: &mut Request, which: Property) -> Option<&Value> {
-    let slot: &mut Slot = match which {
-        Property::Get => &mut request.zget,
-        Property::Post => &mut request.zpost,
-        Property::Cookie => &mut request.zcookie,
-        Property::Files => &mut request.zfiles,
-        Property::TmpFiles => &mut request.ztmpfiles,
-        Property::Server => &mut request.zserver,
-        Property::Header => &mut request.zheader,
-    };
     let property = PROPERTIES.get(which as usize)?;
     let size = if matches!(which, Property::Server) {
         HT_MIN_SIZE << 1
     } else {
         HT_MIN_SIZE
     };
-    slot.init_array(&request.zobject, property, size)
+    request
+        .zobject
+        .array(&mut request.arrays, which as usize, property, size)
+}
+
+/// The request object's `which` property slot, once [`property`] has made
+/// its array.
+#[inline]
+pub(crate) fn made(request: &Request, which: Property) -> Option<&Value> {
+    if request.arrays & (1 << which as u8) == 0 {
+        return None;
+    }
+    PROPERTIES.get(which as usize)?.get(request.zobject.get()?)
+}
+
+/// [`property`]'s array, lent to `edit`; None without one.
+#[inline(always)]
+pub(crate) fn edit<R>(
+    request: &mut Request,
+    which: Property,
+    edit: impl FnOnce(&mut ArrayMut) -> R,
+) -> Option<R> {
+    property(request, which)?.edit_array(edit)
 }
 
 /// [`property`]'s array zval, for a C writer; null without one.
@@ -345,13 +362,29 @@ fn raw_property(state: &mut State, which: Property) -> *mut zval {
     property(&mut state.request, which).map_or(ptr::null_mut(), Value::as_ptr)
 }
 
+/// New server keys share one separation as well as the property loan.
+#[inline(always)]
+pub(crate) fn edit_server(state: &mut State, edit: impl FnOnce(&mut Insertions<'_>)) {
+    self::edit(&mut state.request, Property::Server, |server| {
+        if let Some(mut server) = server.separate().and_then(Separated::insertions) {
+            edit(&mut server);
+        }
+    });
+}
+
 /// `http_server_add_server_array`: `$request->server[key] = value`.
 #[inline(always)]
-pub(crate) fn add_server(state: &mut State, key_: Key, value_: Owned) {
-    if let Some(server) = state.request.zserver.array_mut()
-        && let Some(key) = key(key_)
-    {
-        server.add_new(key, value_);
+pub(crate) fn add_server(state: &mut State, name: Key, value: Owned) {
+    edit_server(state, |server| {
+        add_field(server, name, value);
+    });
+}
+
+/// One known key in a batch whose server array is already lent.
+#[inline(always)]
+pub(crate) fn add_field(server: &mut Insertions<'_>, name: Key, value: Owned) {
+    if let Some(key) = key(name) {
+        server.add_new(key, value);
     }
 }
 
@@ -607,14 +640,8 @@ fn websocket_connection(state: &State) -> bool {
 
 fn header_value(state: &mut State, name: &[u8], value_: &[u8]) -> Step {
     let length = value_.len();
-    let compression = CAPABILITIES.load(Relaxed) & COMPRESSION != 0 && state.enable_compression;
-    let action = request_header(
-        name,
-        value_,
-        state.parser.method,
-        state.parse_cookie,
-        compression,
-    );
+    let (action, known) =
+        request_header(name, value_, state.parser.method, state.parse_cookie, true);
     match action {
         RequestHeader::Cookie => {
             parse_cookie(property(&mut state.request, Property::Cookie), value_);
@@ -655,19 +682,22 @@ fn header_value(state: &mut State, name: &[u8], value_: &[u8]) -> Step {
                 return Step::Fail;
             }
         }
-        RequestHeader::Compression => compression_method(state, value_),
+        RequestHeader::Compression => {
+            if state.enable_compression && CAPABILITIES.load(Relaxed) & COMPRESSION != 0 {
+                compression_method(state, value_);
+            }
+        }
         RequestHeader::Append => {}
     }
     let value_ = stringl(value_);
+    let known = known.and_then(|index| HEADER_KEYS.get(index));
     // The request's `header` array, created with the request.
-    let Some(header) = state.request.zheader.array_mut() else {
-        return Step::Go;
-    };
-    let known = request_key(name).and_then(|index| HEADER_KEYS.get(index));
-    match known.and_then(|&known| key(known)) {
-        Some(known) => header.update(known, value_),
-        None => header.merge(&name.to_ascii_lowercase(), value_),
-    }
+    edit(&mut state.request, Property::Header, |header| {
+        match known.and_then(|&known| key(known)) {
+            Some(known) => header.update(known, value_),
+            None => header.merge(&name.to_ascii_lowercase(), value_),
+        }
+    });
     Step::Go
 }
 
@@ -681,17 +711,23 @@ fn on_headers_complete(state: &mut State) -> Step {
 
     let method = method_name(state);
     let method = Owned::string(ZString::new(method.as_bytes()));
-    add_server(state, Key::RequestMethod, method);
-    add_server(state, Key::RequestUri, Owned::string(uri));
-
-    add_server(state, Key::PathInfo, Owned::string(decoded));
-    request_times(state);
+    let now = swoole_rs_corebase::time_now();
+    let float = swoole_rs_corebase::microtime();
     let protocol = if state.request.version == 101 {
         Key::Http11
     } else {
         Key::Http10
     };
-    add_protocol(state, protocol);
+    edit_server(state, |server| {
+        add_field(server, Key::RequestMethod, method);
+        add_field(server, Key::RequestUri, Owned::string(uri));
+        add_field(server, Key::PathInfo, Owned::string(decoded));
+        add_field(server, Key::RequestTime, Owned::long(now));
+        add_field(server, Key::RequestTimeFloat, Owned::double(float));
+        if let (Some(name), Some(protocol)) = (key(Key::ServerProtocol), key(protocol)) {
+            server.add_new(name, Owned::string(protocol.to_owned()));
+        }
+    });
 
     state.keepalive = state.parser.should_keep_alive();
     state.recv_chunked = state.parser.flags & CHUNKED != 0;
@@ -702,9 +738,11 @@ fn on_headers_complete(state: &mut State) -> Step {
 /// (`swoole::microtime()`).
 pub(crate) fn request_times(state: &mut State) {
     let now = swoole_rs_corebase::time_now();
-    add_server(state, Key::RequestTime, Owned::long(now));
     let float = swoole_rs_corebase::microtime();
-    add_server(state, Key::RequestTimeFloat, Owned::double(float));
+    edit_server(state, |server| {
+        add_field(server, Key::RequestTime, Owned::long(now));
+        add_field(server, Key::RequestTimeFloat, Owned::double(float));
+    });
 }
 
 /// `$request->server['server_protocol']`, an interned protocol name.
@@ -1215,7 +1253,7 @@ mod tests {
     fn form_bodies_follow_upstreams_methods() {
         // request_header takes llhttp's method numbers.
         for method in 0..=u8::MAX {
-            let action = request_header(
+            let (action, _) = request_header(
                 b"Content-Type",
                 b"multipart/form-data",
                 method,
