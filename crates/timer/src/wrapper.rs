@@ -47,7 +47,6 @@ pub extern "C" fn swoole_timer_is_available() -> bool {
 
 /// `Timer *swoole_timer_create(bool manually_trigger)`: a new timer, published
 /// as this thread's.
-#[unsafe(export_name = "_Z19swoole_timer_createb")]
 #[expect(
     clippy::must_use_candidate,
     reason = "a caller that only wants the thread's timer created ignores it"
@@ -78,7 +77,6 @@ pub fn thread_timer_reinit(manually_trigger: bool) {
 }
 
 /// `int64_t swoole_timer_get_next_msec()`: -1 without a timer.
-#[unsafe(export_name = "_Z26swoole_timer_get_next_msecv")]
 pub extern "C" fn swoole_timer_get_next_msec() -> i64 {
     current().map_or(-1, Timer::next_msec)
 }
@@ -106,22 +104,6 @@ fn created<'a>() -> Option<&'a Timer> {
 /// The node [`add`] added, or null.
 fn node(added: Option<(*mut TimerNode, c_long)>) -> *mut TimerNode {
     added.map_or(std::ptr::null_mut(), |(node, _)| node)
-}
-
-/// `TimerNode *swoole_timer_add(double timeout, ...)`: seconds, at least
-/// `SW_TIMER_MIN_SEC`.
-#[unsafe(export_name = "_Z16swoole_timer_adddbPFvPN6swoole5TimerEPNS_9TimerNodeEEPv")]
-extern "C-unwind" fn swoole_timer_add_sec(
-    timeout: f64,
-    persistent: bool,
-    callback: Option<Callback>,
-    data: *mut c_void,
-) -> *mut TimerNode {
-    node(add(
-        sec2msec(timeout),
-        persistent,
-        TimerNode::new(callback, data),
-    ))
 }
 
 /// `TimerNode *swoole_timer_add(long ms, ...)`: creates this thread's timer on

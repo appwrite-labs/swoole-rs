@@ -50,8 +50,7 @@ tests/modules/http/server/src/http1/case.rs. Options are those the platform defi
 hosts (`SO_ACCEPTFILTER` is BSD-only). `host` is a Rust string slot in the
 settings, which C++ reads through a `RustStringView`.
 `create_socket` receives the server's `enable_reuse_port` (Linux) and reads `is_dtls()`
-(kqueue hosts). On failure the port keeps pointing at the freed socket, as
-upstream's does. Known: on macOS, querying `SO_ACCEPTCONN` returns `ENOPROTOOPT`
+(kqueue hosts). On failure the port is left without a socket. Known: on macOS, querying `SO_ACCEPTCONN` returns `ENOPROTOOPT`
 for both native and Rust, so `import` refuses every descriptor there.
 
 ## TLS, SNI, import and close

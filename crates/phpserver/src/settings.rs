@@ -753,7 +753,7 @@ fn rewrite_rules(s: &Settings) -> Step {
             fatal(E_ERROR, c"The `replacement` must be string");
             return Err(Stop);
         };
-        // An integer key has no pattern; upstream reads a null string there.
+        // An integer key has no pattern: an empty one.
         let pattern = key.unwrap_or_default();
         s.server().add_rewrite_rule(pattern, replacement);
     }

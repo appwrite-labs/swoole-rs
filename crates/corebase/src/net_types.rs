@@ -87,11 +87,6 @@ impl SocketAddress {
         StoredLength(self.len.min(Self::CAPACITY))
     }
 
-    /// The room a call that writes an address is given: `len`, at most the storage's size.
-    pub(crate) fn room(&self) -> Room {
-        Room(self.stored().0)
-    }
-
     /// `connect(2)` of `fd` to this address: whether it connected, else errno says why
     /// not.
     #[must_use]
@@ -120,7 +115,6 @@ impl SocketAddress {
         buffer: &mut [impl crate::sys::ReadSlot],
         flags: c_int,
     ) -> Option<usize> {
-        self.len = Self::CAPACITY;
         crate::lent::Fill::new(buffer).recvfrom_one(fd, flags, self)
     }
 
@@ -183,14 +177,13 @@ unsafe extern "C" {
 }
 
 /// The room `getsockname`, `getpeername`, `accept` and `recvfrom` are given, in and
-/// out: at most the storage's size going in (only [`Room::FULL`] and
-/// [`SocketAddress::room`] make one), the address's length coming out. Each value goes
-/// to one call and is then read, never passed again.
+/// out: the whole storage going in (only [`Room::FULL`] makes one), the address's
+/// length coming out. Each value goes to one call and is then read, never passed again.
 #[repr(transparent)]
 pub(crate) struct Room(libc::socklen_t);
 
 impl Room {
-    const FULL: Self = Self(SocketAddress::CAPACITY);
+    pub(crate) const FULL: Self = Self(SocketAddress::CAPACITY);
 
     /// The length the call stored.
     pub(crate) fn length(self) -> libc::socklen_t {

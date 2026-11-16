@@ -103,7 +103,7 @@ impl EventData {
 /// The server's task pool, and this worker's notify pipe and lock.
 struct TaskPool {
     pool: *mut PoolRecord,
-    pipe: *mut SocketPair,
+    pipe: Option<&'static SocketPair>,
     lock: Option<&'static SharedMutex>,
 }
 
@@ -121,18 +121,15 @@ impl TaskHost for TaskPool {
     }
 
     fn pipe_clean(&mut self) {
-        // SAFETY: this worker's live notify pipe.
-        socket_pair::clean(unsafe { &*self.pipe });
+        socket_pair::clean(self.pipe.unwrap());
     }
 
     fn set_timeout(&mut self, timeout: f64) {
-        // SAFETY: as above.
-        socket_pair::set_timeout(unsafe { &mut *self.pipe }, timeout);
+        socket_pair::set_timeout(self.pipe.unwrap(), timeout);
     }
 
     fn read_notify(&mut self) -> Option<usize> {
-        // SAFETY: this worker's live notify pipe.
-        let pipe = unsafe { &*self.pipe };
+        let pipe = self.pipe?;
         let mut notify = [std::mem::MaybeUninit::new(0u8); size_of::<u64>()];
         socket_pair::read_into(pipe, &mut notify)
     }
@@ -151,7 +148,7 @@ fn tasks(serv: Server) -> Tasks<'static, TaskPool> {
     Tasks {
         host: TaskPool {
             pool: view.task_pool(),
-            pipe: ptr::null_mut(),
+            pipe: None,
             lock: None,
         },
         tasking: &counters.tasking_num,
@@ -396,7 +393,7 @@ impl TaskServer for Server {
         // SAFETY: one of the server's workers, and the event's bytes.
         let (worker, bytes) = unsafe {
             (
-                Worker::new(self.get_worker(id)),
+                Worker::from(&*(self.get_worker(id))),
                 std::slice::from_raw_parts(ptr::from_ref(ev).cast::<u8>(), ev.size()),
             )
         };
@@ -480,7 +477,7 @@ fn task_worker() {
         unsafe {
             (*pool).running.set(true);
             PoolRef::new(pool)
-                .call_main_loop(Worker::new((*pool).workers()))
+                .call_main_loop(Worker::from(&*((*pool).workers())))
                 .unwrap();
         }
         check(serv.get_tasking_num() == 0, "serv.get_tasking_num() == 0");

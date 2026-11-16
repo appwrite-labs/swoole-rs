@@ -223,8 +223,7 @@ fn get_option(fd: c_int, option: c_int) -> Option<c_int> {
 }
 
 /// `ListenPort::import(fd)`: adopts a listening socket; the fd stays the
-/// caller's when it isn't one. Upstream's port keeps pointing at the freed
-/// record on failure; this one never takes it.
+/// caller's when it isn't one. On failure the port takes no record.
 pub(crate) fn import(config: &mut PortConfig, fd: c_int) -> bool {
     let origin = c"ListenPort::import";
     let mut socket = SocketRecord::with_fd(fd, 0);

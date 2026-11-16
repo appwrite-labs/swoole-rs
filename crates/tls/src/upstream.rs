@@ -223,13 +223,6 @@ pub fn socket_ssl_verify(socket: Socket<'_>, allow_self_signed: bool) -> bool {
     false
 }
 
-/// [`socket_ssl_verify`] for upstream's core tests.
-#[cfg(feature = "upstream-symbols")]
-#[unsafe(export_name = "_ZNK6swoole7network6Socket10ssl_verifyEb")]
-extern "C" fn native_ssl_verify(socket: Socket<'_>, allow_self_signed: bool) -> bool {
-    socket_ssl_verify(socket, allow_self_signed)
-}
-
 /// `void Socket::ssl_catch_error() const`, out of line so that `ssl_io`, on every
 /// TLS read and write, stays small enough to inline.
 #[cold]

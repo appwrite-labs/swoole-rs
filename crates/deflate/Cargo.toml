@@ -3,7 +3,7 @@ name = "swoole-rs-deflate"
 version = "0.1.0"
 edition = "2024"
 publish = false
-license = "Apache-2.0"
+license.workspace = true
 description = "HTTP response body compression (gzip/deflate) over the system zlib"
 
 # Its own crate so only the code that compresses links zlib (#439 decision 2).

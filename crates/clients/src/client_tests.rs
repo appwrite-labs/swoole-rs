@@ -16,6 +16,8 @@ struct Mock {
     /// The record `make_socket` allocated; the client releases it.
     socket: Option<core::ptr::NonNull<SocketRecord>>,
     fail_socket: bool,
+    /// The last lookup `async_dispatch` took.
+    lookup: Option<Lookup>,
     /// The records `free_socket` released, which tests still read: freed with the test.
     freed: Freed,
 }
@@ -249,7 +251,8 @@ pub(super) fn del_id(_: swoole_rs_timer::Held) {
     log("timer del");
 }
 /// crates/hooks' `async::dispatch`: logs the request; nothing completes it.
-fn async_dispatch(_: Handle, request: &crate::resolver::Request) -> bool {
+fn async_dispatch(lookup: Lookup, request: &crate::resolver::Request) -> bool {
+    mock(|m| m.lookup = Some(lookup));
     let request = request.get();
     let family = request.fields().family;
     log(format!(
@@ -510,6 +513,40 @@ fn async_connect_waits_for_dns_then_connects_the_resolved_address() {
         ["assign 192.0.2.1:80 false", "connect Raw", "event Add 1024"]
     );
     free(client);
+}
+
+#[test]
+fn a_lookup_completes_its_awaiting_client_once() {
+    let client = client(1, true, true);
+    connect(client, c"dns.test", 1.0, 0);
+    taken();
+    let lookup = mock(|m| m.lookup).unwrap();
+    let request = crate::resolver::Request::new(2, 0, 0, b"dns.test", b"");
+    resolve_completed(lookup, request.get(), 1);
+    assert!(!flag(client, Flag::WaitDns) && flag(client, Flag::Closed));
+    assert_eq!(
+        taken(),
+        [format!("call Error {ERROR_DNSLOOKUP_RESOLVE_FAILED}")]
+    );
+    resolve_completed(lookup, request.get(), 1);
+    assert_eq!(
+        taken(),
+        Vec::<String>::new(),
+        "a completed lookup reaches no client"
+    );
+    free(client);
+}
+
+#[test]
+fn a_freed_client_misses_its_lookup() {
+    let client = client(1, true, true);
+    connect(client, c"dns.test", 1.0, 0);
+    let lookup = mock(|m| m.lookup).unwrap();
+    free(client);
+    taken();
+    let request = crate::resolver::Request::new(2, 0, 0, b"dns.test", b"");
+    resolve_completed(lookup, request.get(), 1);
+    assert_eq!(taken(), Vec::<String>::new());
 }
 
 #[test]
