@@ -755,47 +755,37 @@ pub fn barrier_destroy(barrier: &Barrier) {
     let _ = barrier;
 }
 
-/// The two futex operations the words use, as `syscall` takes them.
+/// The two futex operations the words use.
 #[cfg(target_os = "linux")]
 #[derive(Clone, Copy)]
-#[repr(i32)]
 enum Futex {
     /// Park while the word holds `value`, until woken or the timeout passes.
-    Wait = FUTEX_WAIT,
+    Wait,
     /// Wake up to `value` waiters; the timeout is ignored.
-    Wake = FUTEX_WAKE,
+    Wake,
 }
-
-/// `SYS_futex`, the only call this `syscall` makes.
-#[cfg(target_os = "linux")]
-#[repr(transparent)]
-struct FutexCall(c_long);
 
 /// `syscall(SYS_futex, word, op, value, timeout, NULL, 0)`.
 #[cfg(target_os = "linux")]
 fn futex(word: &AtomicU32, op: Futex, value: c_int, timeout: Option<&timespec>) -> c_long {
-    // A wait or wake reads the live word and, for a wait, null or a live timeout;
-    // neither reads the later arguments, which are passed as upstream passes them.
-    unsafe extern "C" {
-        #[link_name = "syscall"]
-        safe fn futex_call(
-            call: FutexCall,
-            word: &AtomicU32,
-            op: Futex,
-            value: c_int,
-            timeout: Option<&timespec>,
-            ...
-        ) -> c_long;
+    let timeout = timeout.map_or(std::ptr::null(), std::ptr::from_ref);
+    let op = match op {
+        Futex::Wait => FUTEX_WAIT,
+        Futex::Wake => FUTEX_WAKE,
+    };
+    // SAFETY: a live futex word, and null or a live timeout: neither operation reads
+    // any other pointer.
+    unsafe {
+        syscall(
+            SYS_futex,
+            word.as_ptr(),
+            op,
+            value,
+            timeout,
+            std::ptr::null::<c_void>(),
+            0,
+        )
     }
-    futex_call(
-        FutexCall(SYS_futex),
-        word,
-        op,
-        value,
-        timeout,
-        std::ptr::null::<c_void>(),
-        0,
-    )
 }
 
 /// Futex wait on an atomic word (process-shared for a forked waiter): consume a ready
