@@ -415,13 +415,13 @@ fn master_ops(pool: Pool<'_>, op: Op, arg: u64) -> i64 {
                 .for_each(swoole_rs_utilities::Logger::reopen);
         }
         Op::ReloadTimer => {
-            pool.arm_reload_timer(|task| {
-                let task = ptr::from_ref(task);
+            let raw = pool.raw();
+            pool.arm_reload_timer(|| {
                 armed(pool, move || {
-                    // SAFETY: the boxed task owns this timer and deletes it on drop;
-                    // its cell stays at this address even if the pool record moves.
-                    let task = unsafe { &*task };
-                    task.borrow_mut().kill_all(libc::SIGKILL, reload_warn);
+                    // SAFETY: the pool whose reload task owns the timer and deletes
+                    // it on drop, so it is live while the timer can fire.
+                    let pool = unsafe { PoolRef::new(raw) };
+                    pool.with_reload_task(|task| task.kill_all(libc::SIGKILL, reload_warn));
                 })
             });
         }
