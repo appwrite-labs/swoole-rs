@@ -8,7 +8,6 @@ use std::io;
 use swoole_rs_reactor::Events;
 
 /// Whether the socket is connected and which directions are shut.
-#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SocketFlags {
     pub connected: bool,

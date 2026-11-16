@@ -734,7 +734,7 @@ fn socketpair(call: &Call) {
         return call.set_bool(false);
     };
     swoole_rs_phpruntime::check_reactor();
-    let kind = swoole_rs_reactor::swr_v1_socket_type(domain, kind);
+    let kind = swoole_rs_reactor::socket_type(domain, kind).raw();
     let mut sockets = OwnedArray::default();
     for fd in pair {
         // The new descriptor, which the object takes over.
@@ -786,7 +786,7 @@ fn import(call: &Call) {
         warn_sys("getsockopt(SOL_SOCKET, SO_TYPE) failed", errno());
         return call.set_bool(false);
     }
-    let kind = swoole_rs_reactor::swr_v1_socket_type(domain, kind);
+    let kind = swoole_rs_reactor::socket_type(domain, kind).raw();
     let flags = match swoole_rs_corebase::sys::fcntl(fd, libc::F_GETFL, 0) {
         Ok(flags) => flags,
         Err(error) => {

@@ -392,7 +392,7 @@ fn keep_port(serv: Server<'_>, port: Box<PortConfig>) -> Port<'_> {
             .listening_socket()
             .map_or(-1, swoole_rs_reactor::Socket::fd);
         let size = port.socket_buffer_size.get().cast_unsigned();
-        swoole_rs_reactor::swr_v1_socket_buffer_size(fd, true, true, size);
+        _ = swoole_rs_reactor::set_socket_buffer_size(fd, true, true, size);
         config.have_dgram_sock.set(true);
         let ports = config.dgram_port_num.get();
         config.dgram_port_num.set(ports.wrapping_add(1));
