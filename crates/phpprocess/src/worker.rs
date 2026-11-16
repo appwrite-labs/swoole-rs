@@ -1,11 +1,7 @@
 //! A Process object's `Worker` and its pipe (were the host table's worker and
 //! pipe entries in ext-src/swoole_server.cc): the record crates/process lays
 //! out, the `UnixSocket` crates/tls defines, and the pipe's `network::Socket`.
-use std::{
-    cell::{OnceCell, UnsafeCell},
-    ffi::c_int,
-    mem::ManuallyDrop,
-};
+use std::{cell::OnceCell, ffi::c_int, mem::ManuallyDrop};
 use swoole_rs_corebase::CCast;
 use swoole_rs_process::{
     methods::{swoole_set_worker_id, swoole_set_worker_pid},
@@ -44,21 +40,20 @@ pub(crate) struct WorkerView {
 /// the same record until the object is freed. It is set once and never moved
 /// or replaced, so a handle borrowed from the slot names a live record.
 #[derive(Default)]
-pub(crate) struct Slot(OnceCell<Box<UnsafeCell<WorkerRecord>>>);
+pub(crate) struct Slot(OnceCell<Box<WorkerRecord>>);
 
 impl Slot {
     /// The object's worker, once it has one.
     pub(crate) fn get(&self) -> Option<Worker<'_>> {
         // The slot's own boxed record, which lives until the slot drops, so for
-        // longer than the borrow; only the thread that runs the object's methods
-        // reads or writes it, through handles, one field at a time.
+        // longer than the borrow.
         Some(Worker::from(&**self.0.get()?))
     }
 
     /// Take `record` as the object's worker; false, with `record` dropped,
     /// when the object has one already.
     pub(crate) fn set(&self, record: WorkerRecord) -> bool {
-        self.0.set(Box::new(UnsafeCell::new(record))).is_ok()
+        self.0.set(Box::new(record)).is_ok()
     }
 }
 
@@ -69,8 +64,7 @@ impl Drop for Slot {
         let Some(record) = self.0.get_mut() else {
             return;
         };
-        let record = record.get_mut();
-        if !record.pipe_object().is_null() && !record.shared {
+        if !record.pipe_object().is_null() && !record.shared.get() {
             // SAFETY: the worker's own `new UnixSocket`, a boxed pair ([`open_pipe`]) that
             // nothing uses afterwards.
             delete_pair(unsafe { Box::from_raw(record.pipe_object().cast()) });

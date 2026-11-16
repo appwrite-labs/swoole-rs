@@ -14,6 +14,7 @@ for record,file,view in [('WorkerRecord','process/src/worker_record','SWR_WORKER
  fields=re.findall(r'^    (?:pub(?:\(crate\))? )?(\w+): ([^,]+),',s,re.M)
  text+='#define '+view+' '+chr(92)+chr(10)
  for name,ty in fields:
+  ty=re.sub(r'^Cell<(.*)>$',r'\1',ty)
   if ty == '[c_int; 2]':decl='int '+name+'[2]'
   elif name in callbacks:decl=callbacks[name]
   else:decl=refinements.get(name,types.get(ty,ty))+' '+renames.get(name,name)

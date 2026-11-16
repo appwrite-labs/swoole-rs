@@ -563,8 +563,10 @@ thread_local! {
 /// `worker->coroutine_num = Coroutine::count()`, after each round of the loop.
 extern "C-unwind" fn count_coroutines() {
     // SAFETY: the worker `start_event_worker` named, live while its loop runs.
-    if let Some(worker) = unsafe { COUNTED.get().as_mut() } {
-        worker.coroutine_num = swoole_rs_coroutine::swoole_coroutine_count();
+    if let Some(worker) = unsafe { COUNTED.get().as_ref() } {
+        worker
+            .coroutine_num
+            .set(swoole_rs_coroutine::swoole_coroutine_count());
     }
 }
 

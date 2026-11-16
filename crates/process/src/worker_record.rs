@@ -6,6 +6,7 @@
 //! fails when that header is stale. See #629.
 
 use crate::process_pool::IpcMode;
+use core::cell::Cell;
 use core::sync::atomic::{AtomicI64, AtomicU8, AtomicU32, Ordering};
 use std::ffi::{c_int, c_void};
 use swoole_rs_locks::SharedMutex;
@@ -85,32 +86,32 @@ impl WorkerType {
 /// to the others, and sends through the record no more.
 #[repr(C)]
 pub struct WorkerRecord {
-    pub(crate) pid: c_int,
-    id: u32,
-    pool: *mut c_void,
-    queue: *mut c_void,
-    pub shared: bool,
-    pub redirect_stdout: bool,
-    pub redirect_stdin: bool,
-    pub redirect_stderr: bool,
+    pub(crate) pid: Cell<c_int>,
+    id: Cell<u32>,
+    pool: Cell<*mut c_void>,
+    queue: Cell<*mut c_void>,
+    pub shared: Cell<bool>,
+    pub redirect_stdout: Cell<bool>,
+    pub redirect_stdin: Cell<bool>,
+    pub redirect_stderr: Cell<bool>,
     /// Written by the worker (busy, idle) while its dispatcher reads it.
     status: AtomicU8,
-    kind: u8,
-    msgqueue_mode: u8,
-    pub child_process: bool,
+    kind: Cell<u8>,
+    msgqueue_mode: Cell<u8>,
+    pub child_process: Cell<bool>,
     /// Its worker's requests in flight, which the master's retirement resets.
     pub concurrency: AtomicU32,
-    start_time: i64,
-    pub dispatch_count: i64,
-    pub request_count: i64,
-    pub response_count: i64,
-    pub coroutine_num: usize,
-    pub lock: Option<&'static SharedMutex>,
-    pipe_object: *mut c_void,
-    pipe_master: *mut c_void,
-    pipe_worker: *mut c_void,
-    pipe_current: *mut c_void,
-    ptr: *mut c_void,
+    start_time: Cell<i64>,
+    pub dispatch_count: AtomicI64,
+    pub request_count: Cell<i64>,
+    pub response_count: Cell<i64>,
+    pub coroutine_num: Cell<usize>,
+    pub lock: Cell<Option<&'static SharedMutex>>,
+    pipe_object: Cell<*mut c_void>,
+    pipe_master: Cell<*mut c_void>,
+    pipe_worker: Cell<*mut c_void>,
+    pipe_current: Cell<*mut c_void>,
+    ptr: Cell<*mut c_void>,
 }
 
 impl WorkerRecord {
@@ -123,84 +124,84 @@ impl WorkerRecord {
     /// `Worker()` by value, for an owner that boxes it itself: a zeroed record.
     #[must_use]
     pub fn empty() -> Self {
-        let null = core::ptr::null_mut();
+        let null = || Cell::new(core::ptr::null_mut());
         Self {
-            pid: 0,
-            id: 0,
-            pool: null,
-            queue: null,
-            shared: false,
-            redirect_stdout: false,
-            redirect_stdin: false,
-            redirect_stderr: false,
+            pid: Cell::new(0),
+            id: Cell::new(0),
+            pool: null(),
+            queue: null(),
+            shared: Cell::new(false),
+            redirect_stdout: Cell::new(false),
+            redirect_stdin: Cell::new(false),
+            redirect_stderr: Cell::new(false),
             status: AtomicU8::new(0),
-            kind: 0,
-            msgqueue_mode: 0,
-            child_process: false,
+            kind: Cell::new(0),
+            msgqueue_mode: Cell::new(0),
+            child_process: Cell::new(false),
             concurrency: AtomicU32::new(0),
-            start_time: 0,
-            dispatch_count: 0,
-            request_count: 0,
-            response_count: 0,
-            coroutine_num: 0,
-            lock: None,
-            pipe_object: null,
-            pipe_master: null,
-            pipe_worker: null,
-            pipe_current: null,
-            ptr: null,
+            start_time: Cell::new(0),
+            dispatch_count: AtomicI64::new(0),
+            request_count: Cell::new(0),
+            response_count: Cell::new(0),
+            coroutine_num: Cell::new(0),
+            lock: Cell::new(None),
+            pipe_object: null(),
+            pipe_master: null(),
+            pipe_worker: null(),
+            pipe_current: null(),
+            ptr: null(),
         }
     }
 
     /// The native pipe object that owns the worker's two ends, or null.
     #[must_use]
     pub fn pipe_object(&self) -> *mut c_void {
-        self.pipe_object
+        self.pipe_object.get()
     }
 
     /// The worker's id (its slot in the worker pool).
     #[must_use]
     pub fn id(&self) -> u32 {
-        self.id
+        self.id.get()
     }
 
     /// The worker's kind (C++ `type`), `None` while unset.
     #[must_use]
     pub fn kind(&self) -> Option<WorkerType> {
-        WorkerType::from_code(self.kind.into())
+        WorkerType::from_code(self.kind.get().into())
     }
 
     /// The worker's process (or thread) id.
     #[must_use]
     pub fn pid(&self) -> c_int {
-        self.pid
+        self.pid.get()
     }
 
     /// Sets the worker's process (or thread) id.
     pub fn set_pid(&mut self, pid: c_int) {
-        self.pid = pid;
+        self.pid.set(pid);
     }
 
     pub fn set_id(&mut self, id: u32) {
-        self.id = id;
+        self.id.set(id);
     }
 
     #[must_use]
     pub fn queue(&self) -> *mut c_void {
-        self.queue
+        self.queue.get()
     }
 
     pub fn set_queue(&mut self, queue: *mut c_void) {
-        self.queue = queue;
+        self.queue.set(queue);
     }
 
     #[must_use]
     pub fn msgqueue_mode(&self) -> u8 {
-        self.msgqueue_mode
+        self.msgqueue_mode.get()
     }
 
     pub fn set_msgqueue_mode(&mut self, mode: u8) {
-        self.msgqueue_mode = mode;
+        self.msgqueue_mode.set(mode);
     }
 
     pub fn set_status(&mut self, status: WorkerStatus) {
@@ -209,31 +210,40 @@ impl WorkerRecord {
 
     /// `worker->ptr = data`: what its owner keeps there.
     pub fn set_user_data(&mut self, data: *mut c_void) {
-        self.ptr = data;
+        self.ptr.set(data);
     }
 
     /// `worker->request_count++`, with the native unsigned wrapping.
     pub fn add_request_count(&mut self) {
-        self.request_count = self.request_count.wrapping_add(1);
+        Worker::from(&*self).add_request_count();
     }
 
     /// `has_exceeded_max_request()`: this thread's request limit against the count.
     #[must_use]
     pub fn exceeded_max_request(&self) -> bool {
-        let limit = crate::worker_globals::swr_v1_worker_global_get(5).cast_unsigned();
-        limit != 0 && self.request_count.cast_unsigned() >= limit
+        Worker::from(self).exceeded_max_request()
     }
 }
 
-/// A live worker record: the only way to reach one's fields. Each read and write
-/// goes through the pointer to that one field and makes no reference to the whole
-/// record, which other processes write in shared memory. Native code passes one
-/// as a `Worker *`.
+/// A live worker record: the only way to reach one's fields. Every field is a
+/// `Cell` or an atomic, so the shared borrow [`Worker::record`] lends lets other
+/// handles, and other processes in shared memory, write the record meanwhile.
+/// Native code passes one as a `Worker *`.
 #[derive(Clone, Copy)]
 #[repr(transparent)]
 pub struct Worker<'a> {
     raw: *mut WorkerRecord,
     life: core::marker::PhantomData<&'a WorkerRecord>,
+}
+
+impl<'a> From<&'a WorkerRecord> for Worker<'a> {
+    /// The record a borrow keeps live for `'a`.
+    fn from(record: &'a WorkerRecord) -> Self {
+        Self {
+            raw: core::ptr::from_ref(record).cast_mut(),
+            life: core::marker::PhantomData,
+        }
+    }
 }
 
 impl<'a> From<&'a mut WorkerRecord> for Worker<'a> {
@@ -246,24 +256,12 @@ impl<'a> From<&'a mut WorkerRecord> for Worker<'a> {
     }
 }
 
-impl<'a> From<&'a core::cell::UnsafeCell<WorkerRecord>> for Worker<'a> {
-    /// The record a cell keeps live for `'a`: its owner reaches it only through
-    /// handles like this one, which read and write a field at a time.
-    fn from(record: &'a core::cell::UnsafeCell<WorkerRecord>) -> Self {
-        Self {
-            raw: record.get(),
-            life: core::marker::PhantomData,
-        }
-    }
-}
-
 macro_rules! field {
     ($(#[$doc:meta])* $get:ident, $field:ident: $ty:ty) => {
         $(#[$doc])*
         #[must_use]
         pub fn $get(self) -> $ty {
-            // SAFETY: `new`'s contract: a live record; only the field is read.
-            unsafe { (*self.raw).$field }
+            self.record().$field.get()
         }
     };
     ($(#[$doc:meta])* $get:ident, $vis:vis $set:ident, $field:ident: $ty:ty) => {
@@ -271,9 +269,19 @@ macro_rules! field {
 
         $(#[$doc])*
         $vis fn $set(self, value: $ty) {
-            // SAFETY: `new`'s contract: a live record whose owner orders this write;
-            // only the field is written.
-            unsafe { (*self.raw).$field = value };
+            self.record().$field.set(value);
+        }
+    };
+    ($(#[$doc:meta])* $get:ident, $vis:vis $set:ident, atomic $field:ident: $ty:ty) => {
+        $(#[$doc])*
+        #[must_use]
+        pub fn $get(self) -> $ty {
+            self.record().$field.load(Ordering::Relaxed)
+        }
+
+        $(#[$doc])*
+        $vis fn $set(self, value: $ty) {
+            self.record().$field.store(value, Ordering::Relaxed);
         }
     };
 }
@@ -311,35 +319,44 @@ impl<'a> Worker<'a> {
         self.raw
     }
 
+    /// The record, for `'a`: its fields are cells and atomics, read and written
+    /// one at a time.
+    fn record(self) -> &'a WorkerRecord {
+        // SAFETY: `new`'s contract (or the borrow `from` took): a live record for
+        // `'a`, whose owner orders the writes made through its cells.
+        unsafe { &*self.raw }
+    }
+
     /// A copy of the whole record, a field at a time: the status, which its worker
     /// may be storing meanwhile, and the concurrency are loaded atomically.
     #[must_use]
     pub fn get(self) -> WorkerRecord {
+        let r = self.record();
         WorkerRecord {
-            pid: self.pid(),
-            id: self.id(),
-            pool: self.pool(),
-            queue: self.queue(),
-            shared: self.shared(),
-            redirect_stdout: self.redirect_stdout(),
-            redirect_stdin: self.redirect_stdin(),
-            redirect_stderr: self.redirect_stderr(),
-            status: AtomicU8::new(self.status_slot().load(Ordering::Relaxed)),
-            kind: self.kind_code(),
-            msgqueue_mode: self.msgqueue_mode(),
-            child_process: self.child_process(),
-            concurrency: AtomicU32::new(self.concurrency().load(Ordering::Relaxed)),
-            start_time: self.start_time(),
-            dispatch_count: self.dispatch_count(),
-            request_count: self.request_count(),
-            response_count: self.response_count(),
-            coroutine_num: self.coroutine_num(),
-            lock: self.lock(),
-            pipe_object: self.pipe_object(),
-            pipe_master: self.pipe_master(),
-            pipe_worker: self.pipe_worker(),
-            pipe_current: self.pipe_current(),
-            ptr: self.user_data(),
+            pid: r.pid.clone(),
+            id: r.id.clone(),
+            pool: r.pool.clone(),
+            queue: r.queue.clone(),
+            shared: r.shared.clone(),
+            redirect_stdout: r.redirect_stdout.clone(),
+            redirect_stdin: r.redirect_stdin.clone(),
+            redirect_stderr: r.redirect_stderr.clone(),
+            status: AtomicU8::new(r.status.load(Ordering::Relaxed)),
+            kind: r.kind.clone(),
+            msgqueue_mode: r.msgqueue_mode.clone(),
+            child_process: r.child_process.clone(),
+            concurrency: AtomicU32::new(r.concurrency.load(Ordering::Relaxed)),
+            start_time: r.start_time.clone(),
+            dispatch_count: AtomicI64::new(r.dispatch_count.load(Ordering::Relaxed)),
+            request_count: r.request_count.clone(),
+            response_count: r.response_count.clone(),
+            coroutine_num: r.coroutine_num.clone(),
+            lock: r.lock.clone(),
+            pipe_object: r.pipe_object.clone(),
+            pipe_master: r.pipe_master.clone(),
+            pipe_worker: r.pipe_worker.clone(),
+            pipe_current: r.pipe_current.clone(),
+            ptr: r.ptr.clone(),
         }
     }
 
@@ -373,32 +390,33 @@ impl<'a> Worker<'a> {
             pipe_current,
             ptr,
         } = record;
-        self.set_pid(pid);
-        self.set_id(id);
-        self.write_pool(pool);
-        self.set_queue(queue);
-        self.set_shared(shared);
-        self.set_redirect_stdout(redirect_stdout);
-        self.set_redirect_stdin(redirect_stdin);
-        self.set_redirect_stderr(redirect_stderr);
-        self.status_slot()
-            .store(status.into_inner(), Ordering::Relaxed);
-        self.set_kind_code(kind);
-        self.set_msgqueue_mode(msgqueue_mode);
-        self.set_child_process(child_process);
-        self.concurrency()
+        let r = self.record();
+        r.pid.set(pid.into_inner());
+        r.id.set(id.into_inner());
+        r.pool.set(pool.into_inner());
+        r.queue.set(queue.into_inner());
+        r.shared.set(shared.into_inner());
+        r.redirect_stdout.set(redirect_stdout.into_inner());
+        r.redirect_stdin.set(redirect_stdin.into_inner());
+        r.redirect_stderr.set(redirect_stderr.into_inner());
+        r.status.store(status.into_inner(), Ordering::Relaxed);
+        r.kind.set(kind.into_inner());
+        r.msgqueue_mode.set(msgqueue_mode.into_inner());
+        r.child_process.set(child_process.into_inner());
+        r.concurrency
             .store(concurrency.into_inner(), Ordering::Relaxed);
-        self.set_start_time(start_time);
-        self.set_dispatch_count(dispatch_count);
-        self.set_request_count(request_count);
-        self.set_response_count(response_count);
-        self.write_coroutine_num(coroutine_num);
-        self.set_lock(lock);
-        self.write_pipe_object(pipe_object);
-        self.write_pipe_master(pipe_master);
-        self.write_pipe_worker(pipe_worker);
-        self.write_pipe_current(pipe_current);
-        self.set_user_data(ptr);
+        r.start_time.set(start_time.into_inner());
+        r.dispatch_count
+            .store(dispatch_count.into_inner(), Ordering::Relaxed);
+        r.request_count.set(request_count.into_inner());
+        r.response_count.set(response_count.into_inner());
+        r.coroutine_num.set(coroutine_num.into_inner());
+        r.lock.set(lock.into_inner());
+        r.pipe_object.set(pipe_object.into_inner());
+        r.pipe_master.set(pipe_master.into_inner());
+        r.pipe_worker.set(pipe_worker.into_inner());
+        r.pipe_current.set(pipe_current.into_inner());
+        r.ptr.set(ptr.into_inner());
     }
 
     field!(
@@ -541,8 +559,8 @@ impl<'a> Worker<'a> {
         response_count, pub set_response_count, response_count: i64
     );
     field!(
-        /// `worker->dispatch_count`.
-        dispatch_count, pub set_dispatch_count, dispatch_count: i64
+        /// `worker->dispatch_count`, which dispatchers add to atomically.
+        dispatch_count, pub set_dispatch_count, atomic dispatch_count: i64
     );
     field!(
         /// `worker->start_time`.
@@ -579,15 +597,13 @@ impl<'a> Worker<'a> {
         self.status_slot().store(status as u8, Ordering::Relaxed);
     }
 
-    fn status_slot(&self) -> &AtomicU8 {
-        // SAFETY: `new`'s contract: a live record, for longer than this borrow; the
-        // reference covers only the atomic field.
-        unsafe { &(*self.raw).status }
+    fn status_slot(self) -> &'a AtomicU8 {
+        &self.record().status
     }
 
     field!(
         /// `worker->coroutine_num`.
-        coroutine_num, write_coroutine_num, coroutine_num: usize
+        coroutine_num, coroutine_num: usize
     );
 
     /// `worker->concurrency`, now.
@@ -608,10 +624,8 @@ impl<'a> Worker<'a> {
     }
 
     /// `worker->concurrency`.
-    fn concurrency(&self) -> &AtomicU32 {
-        // SAFETY: `new`'s contract: a live record, for longer than this borrow; the
-        // reference covers only the atomic field.
-        unsafe { &(*self.raw).concurrency }
+    fn concurrency(self) -> &'a AtomicU32 {
+        &self.record().concurrency
     }
 
     /// `worker->request_count++`, with the native unsigned wrapping.
@@ -649,13 +663,7 @@ impl<'a> Worker<'a> {
 
     /// `sw_atomic_fetch_add(&worker->dispatch_count, 1)`: one more dispatch to this worker.
     pub fn count_dispatch(self) {
-        let count = self
-            .raw
-            .wrapping_byte_add(core::mem::offset_of!(WorkerRecord, dispatch_count))
-            .cast::<i64>();
-        // SAFETY: `new`'s contract: a live record, whose dispatch counter is shared
-        // and updated only atomically.
-        unsafe { AtomicI64::from_ptr(count) }.fetch_add(1, Ordering::SeqCst);
+        self.record().dispatch_count.fetch_add(1, Ordering::SeqCst);
     }
 
     /// Resets one retired worker's counters and removes its concurrency from the
@@ -695,28 +703,31 @@ pub fn copy_for_process(
     const MSGQUEUE_BALANCE: u8 = 2;
     let pool = pool.record();
     // Copied by value, as upstream's `new Worker(...)` does.
-    let Some(mut worker) = pool.worker(id).map(Worker::get) else {
+    let Some(worker) = pool.worker(id).map(Worker::get) else {
         return -1;
     };
+    let null = core::ptr::null_mut();
     let mut pipe = -1;
     if pool.ipc_mode == IpcMode::UnixSock {
-        worker.pipe_current = if worker.id == crate::methods::swoole_get_worker_id() {
-            worker.pipe_worker
-        } else {
-            worker.pipe_master
-        };
-        worker.pipe_object = core::ptr::null_mut();
+        worker
+            .pipe_current
+            .set(if worker.id() == crate::methods::swoole_get_worker_id() {
+                worker.pipe_worker.get()
+            } else {
+                worker.pipe_master.get()
+            });
+        worker.pipe_object.set(null);
         // SAFETY: a unix-socket pool's worker pipes are live sockets, and
         // `network::Socket` begins with its fd.
-        pipe = unsafe { worker.pipe_current.cast::<c_int>().read() };
+        pipe = unsafe { worker.pipe_current.get().cast::<c_int>().read() };
     }
     if pool.has_message_bus() {
-        worker.pipe_current = core::ptr::null_mut();
-        worker.pipe_object = core::ptr::null_mut();
+        worker.pipe_current.set(null);
+        worker.pipe_object.set(null);
     }
     if pool.ipc_mode == IpcMode::MsgQueue && pool.on_message.is_none() {
-        worker.queue = pool.queue();
-        worker.msgqueue_mode = MSGQUEUE_BALANCE;
+        worker.queue.set(pool.queue());
+        worker.msgqueue_mode.set(MSGQUEUE_BALANCE);
     }
     *copy = worker;
     pipe
@@ -744,11 +755,11 @@ mod tests {
     fn a_pool_process_copies_the_worker_without_the_pipes_it_may_not_close() {
         let mut fds: [c_int; 2] = [7, 9];
         let mut workers: [WorkerRecord; 2] = unsafe { core::mem::zeroed() };
-        workers[1].id = u32::MAX;
-        workers[1].pid = 41;
-        workers[1].pipe_master = (&raw mut fds[0]).cast();
-        workers[1].pipe_worker = (&raw mut fds[1]).cast();
-        workers[1].pipe_object = core::ptr::dangling_mut();
+        workers[1].id.set(u32::MAX);
+        workers[1].pid.set(41);
+        workers[1].pipe_master.set((&raw mut fds[0]).cast());
+        workers[1].pipe_worker.set((&raw mut fds[1]).cast());
+        workers[1].pipe_object.set(core::ptr::dangling_mut());
         let mut pool: crate::process_pool::PoolRecord = unsafe { core::mem::zeroed() };
         pool.workers = workers.as_mut_ptr();
         pool.worker_num = 2;
@@ -759,15 +770,19 @@ mod tests {
             copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 2, &mut copy),
             -1
         );
-        assert_eq!(copy.pid, 0);
+        assert_eq!(copy.pid.get(), 0);
         // Another process's worker: the master's end of its pipe.
         assert_eq!(
             copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 1, &mut copy),
             7
         );
         assert_eq!(
-            (copy.pid, copy.pipe_current, copy.pipe_object),
-            (41, workers[1].pipe_master, core::ptr::null_mut())
+            (
+                copy.pid.get(),
+                copy.pipe_current.get(),
+                copy.pipe_object.get()
+            ),
+            (41, workers[1].pipe_master.get(), core::ptr::null_mut())
         );
         // The message bus owns the pipe.
         crate::process_pool::PoolRef::from(&mut pool).set_message_bus(Some(Box::new(())));
@@ -775,7 +790,7 @@ mod tests {
             copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 1, &mut copy),
             7
         );
-        assert!(copy.pipe_current.is_null());
+        assert!(copy.pipe_current.get().is_null());
     }
 
     #[test]
@@ -802,7 +817,10 @@ mod tests {
             copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 1, &mut copy),
             -1
         );
-        assert_eq!((copy.queue, copy.msgqueue_mode), (pool.queue(), 2));
+        assert_eq!(
+            (copy.queue.get(), copy.msgqueue_mode.get()),
+            (pool.queue(), 2)
+        );
         if let Some(queue) = pool.queue.as_deref_mut() {
             queue.destroy();
         }
@@ -811,26 +829,26 @@ mod tests {
             copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 1, &mut copy),
             -1
         );
-        assert!(copy.queue.is_null());
+        assert!(copy.queue.get().is_null());
     }
 
     #[test]
     fn retirement_resets_counters_preserving_identity_and_clamps_underflow() {
         let mut record: WorkerRecord = unsafe { core::mem::zeroed() };
-        record.pid = 17;
-        record.id = 29;
+        record.pid.set(17);
+        record.id.set(29);
         record.concurrency = AtomicU32::new(3);
-        record.request_count = 7;
-        record.response_count = 8;
-        record.dispatch_count = 8;
+        record.request_count.set(7);
+        record.response_count.set(8);
+        *record.dispatch_count.get_mut() = 8;
         unsafe { Worker::new(&raw mut record) }.count_dispatch();
-        assert_eq!(record.dispatch_count, 9);
+        assert_eq!(record.dispatch_count.load(Ordering::Relaxed), 9);
         let total = core::sync::atomic::AtomicU32::new(7);
         unsafe { Worker::new(&raw mut record) }.reset_counters(&total);
         assert_eq!(
             (
-                record.pid,
-                record.id,
+                record.pid.get(),
+                record.id.get(),
                 total.load(core::sync::atomic::Ordering::SeqCst),
                 *record.concurrency.get_mut()
             ),
@@ -838,9 +856,9 @@ mod tests {
         );
         assert_eq!(
             (
-                record.request_count,
-                record.response_count,
-                record.dispatch_count
+                record.request_count.get(),
+                record.response_count.get(),
+                record.dispatch_count.load(Ordering::Relaxed)
             ),
             (0, 0, 0)
         );
@@ -881,24 +899,24 @@ mod tests {
     #[test]
     fn get_copies_every_field_around_the_status() {
         let mut record: WorkerRecord = unsafe { std::mem::zeroed() };
-        record.pid = 41;
-        record.id = 7;
-        record.kind = 3;
-        record.msgqueue_mode = 2;
-        record.ptr = core::ptr::dangling_mut();
+        record.pid.set(41);
+        record.id.set(7);
+        record.kind.set(3);
+        record.msgqueue_mode.set(2);
+        record.ptr.set(core::ptr::dangling_mut());
         let worker = unsafe { Worker::new(&raw mut record) };
         worker.set_status(WorkerStatus::Busy);
         let copy = worker.get();
         assert_eq!(
             (
-                copy.pid,
-                copy.id,
+                copy.pid.get(),
+                copy.id.get(),
                 copy.status.into_inner(),
-                copy.kind,
-                copy.msgqueue_mode,
-                copy.ptr
+                copy.kind.get(),
+                copy.msgqueue_mode.get(),
+                copy.ptr.get()
             ),
-            (41, 7, 1, 3, 2, record.ptr)
+            (41, 7, 1, 3, 2, record.ptr.get())
         );
     }
 

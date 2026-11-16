@@ -518,19 +518,19 @@ mod tests {
         connect(&uid, 10, 5, -1);
         assert_eq!(uid.schedule(10), 1, "uid");
 
-        let mut co = Workers::new(4, DispatchMode::CoConnLb);
+        let co = Workers::new(4, DispatchMode::CoConnLb);
         assert_eq!(co.schedule(UNLISTED), 0, "no connection: fd");
-        co.records[0].coroutine_num = 5;
+        co.records[0].coroutine_num.set(5);
         connect(&co, 10, 0, -1);
         assert_eq!(co.schedule(10), 1, "pinned to the lowest load");
         let conn = co.live.state().tables_ref().connection_at(10).unwrap();
         assert_eq!(conn.worker_id(), 1, "and stays there");
-        co.records[1].coroutine_num = 9;
+        co.records[1].coroutine_num.set(9);
         assert_eq!(co.schedule(10), 1, "pinned");
 
         let mut req = Workers::new(4, DispatchMode::CoReqLb);
         for (record, load) in req.records.iter_mut().zip([5, 3, 3, 9]) {
-            record.coroutine_num = load;
+            record.coroutine_num.set(load);
         }
         assert_eq!(req.schedule(10), 1, "the first lowest load");
         let concurrent = Workers::new(3, DispatchMode::ConcurrentLb);
