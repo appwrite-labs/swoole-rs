@@ -127,11 +127,9 @@ fn repeat() {
         true
     });
 
-    assert_eq!(offset.cast_unsigned(), s1.length - end_str.len());
-    assert_eq!(
-        &s1.view()[offset.cast_unsigned()..][..end_str.len()],
-        end_str
-    );
+    let offset = offset.unwrap();
+    assert_eq!(offset, s1.length - end_str.len());
+    assert_eq!(&s1.view()[offset..][..end_str.len()], end_str);
 
     assert_eq!(count, 5);
     s1.dispose();
@@ -199,7 +197,7 @@ fn explode_2() {
             count += 1;
             true
         })
-        .cast_unsigned();
+        .unwrap();
 
     assert_eq!(list[0], b"hello");
     assert_eq!(list[1], b"world");

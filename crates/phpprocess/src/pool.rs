@@ -962,7 +962,7 @@ fn get_process(call: &Call) {
                     props.long(c"id", current_id);
                     props.long(c"pid", i64::from(copy.pid()));
                     if view.ipc_mode() == IpcMode::UnixSock {
-                        props.long(c"pipe", i64::from(pipe));
+                        props.long(c"pipe", pipe.map_or(-1, i64::from));
                     }
                 }
                 // Upstream passes PIPE_TYPE_STREAM as enable_coroutine and async as the pipe

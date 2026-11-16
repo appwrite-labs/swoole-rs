@@ -59,12 +59,10 @@ struct Address {
 
 namespace swoole {
 namespace network {
-// The fields are Rust's record (swoole_rs_socket.h); Rust allocates and frees it.
+// The fields are Rust's record (swoole_rs_socket.h); Rust allocates and frees it, so
+// C++ never makes one (SocketRecord::new: zeroed, with the default timeouts).
 struct Socket : swr_v1_socket {
-    // SocketRecord::new: zeroed, with the default timeouts. Records Rust frees come from Rust.
-    Socket() : swr_v1_socket{} {
-        *timeouts() = swr_v1_socket_default_timeouts();
-    }
+    Socket() = delete;
 
     int move_fd() {
         int sock_fd = fd;

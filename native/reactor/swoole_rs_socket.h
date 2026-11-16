@@ -84,11 +84,6 @@ struct swr_v1_socket {
     }
 };
 
-/* Socket::default_*_timeout, which every new record copies. */
-extern "C" {
-swr_v1_socket_timeouts swr_v1_socket_default_timeouts(void);
-}
-
 static_assert(sizeof(void *) == 8, "the socket record's offsets are LP64's");
 #ifdef __linux__
 static_assert(sizeof(swoole::network::Address) == 120, "network::Address is Rust's SocketAddress");

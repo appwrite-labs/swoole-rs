@@ -2,8 +2,8 @@
 //! function per TEST with the same inputs and expected values.
 //!
 //! The `Server` is a `SharedServer` (crates/server/src/server_object.rs) held in `SHARES`
-//! until `delete` drops it, and
-//! its configuration, callback slots, tables and static-handler sets are the Rust records
+//! until `delete` drops it. Its callback slots are set with `view::Server::set_callback`, and
+//! its configuration, tables and static-handler sets are the Rust records
 //! whose pointers head the object (crates/server/src/state.rs), as the
 //! `swr_v1_port_config` is a `ListenPort`. Each new server
 //! checks this file's copies of those layouts with `server_record_layout`. The methods the
@@ -24,8 +24,11 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
-use swoole_rs_corebase::ServerEvent;
-use swoole_rs_server::callbacks::CallbackKind as Slot;
+use swoole_rs_corebase::{DataHead, ServerEvent};
+use swoole_rs_process::task_file::Packed;
+use swoole_rs_process::worker_record::Worker;
+use swoole_rs_server::callbacks::{Callback, CallbackKind as Slot};
+use swoole_rs_server::reactor_entry::RecvData;
 use swoole_rs_server::{
     ConnectionRecord, ServerText, SharedServer, StaticCollection, server_methods, view,
 };
@@ -362,44 +365,6 @@ const PORT_OFFSETS: &[usize] = &[
     offset_of!(PortConfig, length_owner),
 ];
 
-/// `swr_v1_server_callback`.
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Callback {
-    invoke: *const c_void,
-    ctx: *mut c_void,
-    drop: Option<unsafe extern "C" fn(*mut c_void)>,
-}
-
-/// `DataHead`.
-#[repr(C)]
-struct DataHead {
-    fd: c_long,
-    msg_id: u64,
-    len: u32,
-    reactor_id: i16,
-    type_: u8,
-    flags: u8,
-    server_fd: u16,
-    ext_flags: u16,
-    reserved: u32,
-    time: f64,
-}
-
-/// `RecvData`.
-#[repr(C)]
-struct RecvData {
-    info: DataHead,
-    data: *const c_char,
-}
-
-/// `SendData`: its head, then the payload.
-#[repr(C)]
-struct SendData {
-    info: DataHead,
-    data: *const c_char,
-}
-
 /// `network::Address` (Linux): the storage, its length and its `swSocketType`.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -510,7 +475,6 @@ struct Head {
     state: *mut c_void,
     config: *mut ServerConfig,
     tables: *mut ServerTables,
-    callbacks: *mut Callback,
 }
 
 unsafe extern "C-unwind" {
@@ -632,28 +596,14 @@ impl Server {
         unsafe { &mut *self.head().config }
     }
 
-    fn slot(self, slot: Slot) -> &'static mut Callback {
-        // SAFETY: the server's slots, one per `Slot`.
-        unsafe { &mut *self.head().callbacks.add(slot as usize) }
-    }
-
-    /// `serv.onX = fn`, for a slot that holds no closure to drop.
-    fn set_callback(self, slot: Slot, invoke: *const c_void) {
-        self.set_closure(slot, invoke, std::ptr::null_mut());
-    }
-
-    /// `serv.onX = [ctx](...) {...}`: `invoke(ctx, ...)`, with nothing to drop.
-    fn set_closure(self, slot: Slot, invoke: *const c_void, ctx: *mut c_void) {
-        *self.slot(slot) = Callback {
-            invoke,
-            ctx,
-            drop: None,
-        };
+    /// `serv.onX = fn`.
+    fn set_callback(self, callback: Callback) {
+        self.view().set_callback(callback);
     }
 
     /// `serv.onX == nullptr`.
     fn callback_is_empty(self, slot: Slot) -> bool {
-        self.slot(slot).invoke.is_null()
+        !self.view().has_callback(slot)
     }
 
     fn insert(self, collection: StaticCollection, value: &str) {
@@ -886,22 +836,13 @@ fn respond(serv: Server, session: c_long, body: &str) {
 }
 
 /// The request a callback receives, and its bytes.
-fn request<'a>(req: *mut RecvData) -> (c_long, &'a [u8]) {
-    // SAFETY: the server passes a live request of `len` bytes.
-    unsafe {
-        let req = &*req;
-        (
-            req.info.fd,
-            std::slice::from_raw_parts(req.data.cast::<u8>(), req.info.len as usize),
-        )
-    }
+fn request<'a>(req: &RecvData<'a>) -> (c_long, &'a [u8]) {
+    (req.info().fd, req.payload())
 }
 
 /// `onClose` in both fixtures: an active close has no reactor.
-unsafe extern "C" fn on_close(_: *mut c_void, serv: *mut c_void, info: *mut DataHead) {
-    // SAFETY: the server passes a live event head.
-    let info = unsafe { &*info };
-    let conn = Server(serv).get_connection_by_session_id(info.fd);
+fn on_close(serv: view::Server<'_>, info: &DataHead) {
+    let conn = Server(serv.raw()).get_connection_by_session_id(info.fd);
     if conn.close_actively != 0 {
         expect(info.reactor_id == -1, "info->reactor_id == -1");
     } else {
@@ -911,12 +852,8 @@ unsafe extern "C" fn on_close(_: *mut c_void, serv: *mut c_void, info: *mut Data
 
 /// `test_base_server`'s `onReceive`. The WebSocket frames its `websocket_*` TESTs send
 /// are #1842's.
-unsafe extern "C" fn base_on_receive(
-    _: *mut c_void,
-    serv: *mut c_void,
-    req: *mut RecvData,
-) -> c_int {
-    let serv = Server(serv);
+fn base_on_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+    let serv = Server(serv.raw());
     let (session, data) = request(req);
     COUNTER.fetch_add(1, Ordering::SeqCst);
     let Some((url, headers)) = parse_request(data) else {
@@ -963,9 +900,9 @@ fn join_client() {
 }
 
 /// `test_base_server`'s `onWorkerStart`: the case's client runs in its own thread.
-unsafe extern "C" fn base_on_worker_start(_: *mut c_void, serv: *mut c_void, _: *mut c_void) {
+fn base_on_worker_start(serv: view::Server<'_>, _: Worker<'_>) {
     let test = TEST.lock().unwrap().expect("a case");
-    let serv = Server(serv);
+    let serv = Server(serv.raw());
     // SAFETY: getpid(2).
     client_thread(|| unsafe { getpid() }, move || test(serv));
 }
@@ -998,26 +935,32 @@ fn test_base_server(test: fn(Server)) {
 
     serv.create();
 
-    serv.set_callback(Slot::WorkerStart, base_on_worker_start as *const c_void);
-    serv.set_callback(Slot::Close, on_close as *const c_void);
-    serv.set_callback(Slot::Receive, base_on_receive as *const c_void);
+    serv.set_callback(Callback::WorkerStart(base_on_worker_start));
+    serv.set_callback(Callback::Close(on_close));
+    serv.set_callback(Callback::Receive(base_on_receive));
 
     serv.start();
     join_client();
     serv.delete();
 }
 
-unsafe extern "C" fn ignore_server(_: *mut c_void, _: *mut c_void) {}
+fn ignore_server(_: view::Server<'_>) {}
 
-unsafe extern "C" fn ignore_event(_: *mut c_void, _: *mut c_void, _: *mut DataHead) {}
+fn ignore_event(_: view::Server<'_>, _: &DataHead) {}
+
+/// `serv.onReceive = [](Server *, RecvData *) -> int { return SW_OK; }`.
+fn receive_ok(_: view::Server<'_>, _: &RecvData) -> c_int {
+    SW_OK
+}
+
+/// `serv.onTask = [](Server *, EventData *) -> int { return SW_OK; }`.
+fn task_ok(_: view::Server<'_>, _: Packed<'_>) -> c_int {
+    SW_OK
+}
 
 /// `test_http_server`'s `onReceive`.
-unsafe extern "C" fn http_on_receive(
-    _: *mut c_void,
-    serv: *mut c_void,
-    req: *mut RecvData,
-) -> c_int {
-    let serv = Server(serv);
+fn http_on_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+    let serv = Server(serv.raw());
     let (session, data) = request(req);
     let conn = serv.get_connection_by_session_id(session);
 
@@ -1077,10 +1020,10 @@ fn test_http_server(dispatch_mode: u8, worker_num: u32, mode: c_int) -> Server {
 
     server.create();
 
-    server.set_callback(Slot::Start, ignore_server as *const c_void);
-    server.set_callback(Slot::Close, on_close as *const c_void);
-    server.set_callback(Slot::Connect, ignore_event as *const c_void);
-    server.set_callback(Slot::Receive, http_on_receive as *const c_void);
+    server.set_callback(Callback::Start(ignore_server));
+    server.set_callback(Callback::Close(on_close));
+    server.set_callback(Callback::Connect(ignore_event));
+    server.set_callback(Callback::Receive(http_on_receive));
 
     server
 }
@@ -1091,12 +1034,8 @@ fn default_http_server() -> Server {
 }
 
 /// `test_proxy_server`'s `onReceive`.
-unsafe extern "C" fn proxy_on_receive(
-    _: *mut c_void,
-    serv: *mut c_void,
-    req: *mut RecvData,
-) -> c_int {
-    let server = Server(serv);
+fn proxy_on_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+    let server = Server(serv.raw());
     let (session, data) = request(req);
 
     swoole_rs_process::methods::swoole_set_worker_id(server.config().worker_num);
@@ -1143,7 +1082,7 @@ fn test_proxy_server() -> Server {
 
     server.create();
 
-    server.set_callback(Slot::Receive, proxy_on_receive as *const c_void);
+    server.set_callback(Callback::Receive(proxy_on_receive));
 
     server
 }
@@ -1457,9 +1396,7 @@ fn process1() {
     assert_eq!(resp.status, 200);
 }
 
-unsafe extern "C" fn return_zero(_: *mut c_void, _: *mut c_void, _: *mut DataHead) -> c_int {
-    0
-}
+fn return_zero(_: view::Server<'_>, _: &DataHead) {}
 
 fn redundant_callback() {
     let server = test_http_server(DISPATCH_IDLE_WORKER, 2, MODE_PROCESS);
@@ -1469,7 +1406,12 @@ fn redundant_callback() {
         Slot::BufferFull,
         Slot::BufferEmpty,
     ] {
-        server.set_callback(slot, return_zero as *const c_void);
+        server.set_callback(match slot {
+            Slot::Connect => Callback::Connect(return_zero),
+            Slot::Close => Callback::Close(return_zero),
+            Slot::BufferFull => Callback::BufferFull(return_zero),
+            _ => Callback::BufferEmpty(return_zero),
+        });
     }
 
     fork_with(|| {
@@ -1538,7 +1480,7 @@ fn chunked_upload_command(port: u16) -> String {
 
 static CHUNKED_SERVER: Mutex<Option<Server>> = Mutex::new(None);
 
-unsafe extern "C" fn chunked_on_start(_: *mut c_void, _: *mut c_void) {
+fn chunked_on_start(_: view::Server<'_>) {
     let server = CHUNKED_SERVER.lock().unwrap().expect("the case's server");
     client_thread(
         move || server.get_master_pid(),
@@ -1561,7 +1503,7 @@ fn chunked() {
     let server = test_http_server(DISPATCH_FDMOD, 1, MODE_BASE);
     *CHUNKED_SERVER.lock().unwrap() = Some(server);
 
-    server.set_callback(Slot::Start, chunked_on_start as *const c_void);
+    server.set_callback(Callback::Start(chunked_on_start));
 
     server.start();
     join_client();
@@ -1599,14 +1541,12 @@ fn max_queued_bytes() {
     wait_all_child_processes();
 }
 
-unsafe extern "C" fn dispatch_error(
-    _: *mut c_void,
-    _: *mut c_void,
-    _: *mut c_void,
-    data: *mut SendData,
+fn dispatch_error(
+    _: view::Server<'_>,
+    _: Option<swoole_rs_server::Connection<'_>>,
+    data: Option<&RecvData>,
 ) -> c_int {
-    // SAFETY: the server passes the packet it dispatches.
-    let fd = unsafe { (*data).info.fd };
+    let fd = data.expect("the packet it dispatches").info().fd;
     if fd % 2 == 0 {
         DISPATCH_RESULT_DISCARD_PACKET
     } else {
@@ -1616,7 +1556,7 @@ unsafe extern "C" fn dispatch_error(
 
 fn dispatch_func_return_error_worker_id() {
     let server = default_http_server();
-    server.set_callback(Slot::DispatchFunc, dispatch_error as *const c_void);
+    server.set_callback(Callback::DispatchFunc(dispatch_error));
     fork_with(|| {
         server.start();
     });

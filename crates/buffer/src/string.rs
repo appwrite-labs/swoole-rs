@@ -278,13 +278,14 @@ impl CppString {
     }
 
     /// `String::split`: each `delimiter`-terminated chunk from `offset` to `handler`,
-    /// as its start in the buffer and its length, until `handler` returns false. An
-    /// empty `delimiter` matches everywhere, so only `handler` ends that loop.
+    /// as its start in the buffer and its length, until `handler` returns false
+    /// (`None`); otherwise where the unsplit tail starts. An empty `delimiter`
+    /// matches everywhere, so only `handler` ends that loop.
     pub fn split(
         &mut self,
         delimiter: &[u8],
         mut handler: impl FnMut(*const u8, usize) -> bool,
-    ) -> isize {
+    ) -> Option<usize> {
         let delimiter_length = delimiter.len();
         let mut start = unsigned(self.offset);
         let mut first = self.offset;
@@ -293,7 +294,7 @@ impl CppString {
             let length = position + delimiter_length;
             let chunk = self.str.wrapping_add(start.wrapping_sub(unsigned(first)));
             if !handler(chunk, length.wrapping_add(unsigned(first))) {
-                return -1;
+                return None;
             }
             self.offset = self.offset.wrapping_add(signed(length));
             start = unsigned(self.offset);
@@ -304,7 +305,7 @@ impl CppString {
         if first == self.offset {
             self.offset = signed(self.length.wrapping_sub(delimiter_length));
         }
-        start.wrapping_sub(unsigned(first)).cast_signed()
+        Some(start.wrapping_sub(unsigned(first)))
     }
 
     /// The whole allocation, its first `length` bytes the content. Only the content is
@@ -685,9 +686,9 @@ mod tests {
             true
         });
         assert_eq!(chunks, [b"a\r\n".to_vec(), b"bc\r\n".to_vec()]);
-        assert_eq!((ret, s.offset), (7, 7));
+        assert_eq!((ret, s.offset), (Some(7), 7));
         // No delimiter after the offset: it moves to the last place one could start.
-        assert_eq!(s.split(b"\r\n", |_, _| false), 0);
+        assert_eq!(s.split(b"\r\n", |_, _| false), Some(0));
         assert_eq!(s.offset, 7);
         s.dispose();
     }

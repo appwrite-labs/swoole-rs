@@ -165,12 +165,6 @@ pub static SOCKET_DEFAULTS: SocketDefaults = SocketDefaults {
     buffer_size: AtomicU32::new(SW_SOCKET_BUFFER_SIZE),
 };
 
-/// The default timeouts, for native `Socket`'s constructor.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_socket_default_timeouts() -> SocketTimeouts {
-    SOCKET_DEFAULTS.timeouts()
-}
-
 /// Field offsets native code asserts too (`swoole_rs_socket.h`).
 #[cfg(target_pointer_width = "64")]
 const OFFSETS: [(usize, usize); 15] = [
