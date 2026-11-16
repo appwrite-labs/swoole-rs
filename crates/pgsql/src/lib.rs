@@ -418,14 +418,25 @@ fn wait_connect(conn: Conn, poll_connection: fn(Conn) -> PostgresPollingStatusTy
 /// which the types carry.
 #[unsafe(no_mangle)]
 pub extern "C" fn swoole_pgsql_close_prepared(conn: Conn, stmt_name: Text<'_>) -> *mut PGresult {
+    /// `RTLD_DEFAULT`, a handle `dlsym` always takes.
+    #[repr(transparent)]
+    struct Global(*mut c_void);
+    /// The NUL-terminated name `PQsendClosePrepared`: the only value made below.
+    #[repr(transparent)]
+    struct Name(*const c_char);
+    /// As `PQsendQuery`, it asks for a live connection and a string, queues the
+    /// request and runs no callback, so it is safe to call with both.
     type Send = extern "C" fn(Conn, Text<'_>) -> c_int;
-    // SAFETY: a NUL-terminated name.
-    let send = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"PQsendClosePrepared".as_ptr()) };
-    // SAFETY: null or libpq's `PQsendClosePrepared`, of this type. As `PQsendQuery`, it
-    // asks for a live connection and a string, queues the request and runs no callback,
-    // so it is safe to call with both.
-    let send = unsafe { std::mem::transmute::<*mut c_void, Option<Send>>(send) };
-    let Some(send) = send else {
+    unsafe extern "C" {
+        /// libc's lookup, which reads the name up to its NUL: libpq's
+        /// `PQsendClosePrepared`, the function `Send` declares, or null.
+        #[link_name = "dlsym"]
+        safe fn lookup(handle: Global, name: Name) -> Option<Send>;
+    }
+    let Some(send) = lookup(
+        Global(libc::RTLD_DEFAULT),
+        Name(c"PQsendClosePrepared".as_ptr()),
+    ) else {
         return ptr::null_mut();
     };
     if send(conn, stmt_name) == 0 {
