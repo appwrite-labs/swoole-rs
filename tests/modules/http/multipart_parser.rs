@@ -128,7 +128,9 @@ fn header_field() {
     let header = header(true);
     let mut result = MppResult::default();
     assert_eq!(
-        parser.execute(&mut result, &header),
+        parser
+            .execute(&mut result, &header)
+            .map_or(-1, usize::cast_signed),
         len(&header),
         "header parsed"
     );
@@ -138,14 +140,24 @@ fn header_field() {
         "value names test"
     );
     let boundary = parser.boundary().to_vec();
-    assert_eq!(parser.execute(&mut result, b"\r\n"), 2, "CRLF");
     assert_eq!(
-        parser.execute(&mut result, &boundary),
+        parser
+            .execute(&mut result, b"\r\n")
+            .map_or(-1, usize::cast_signed),
+        2,
+        "CRLF"
+    );
+    assert_eq!(
+        parser
+            .execute(&mut result, &boundary)
+            .map_or(-1, usize::cast_signed),
         len(&boundary),
         "boundary"
     );
     assert_eq!(
-        parser.execute(&mut result, b"--\r\n\r\n"),
+        parser
+            .execute(&mut result, b"--\r\n\r\n")
+            .map_or(-1, usize::cast_signed),
         6,
         "final hyphens"
     );
@@ -157,7 +169,9 @@ fn header_error() {
     let header = header(false);
     let mut result = MppResult::default();
     assert_eq!(
-        parser.execute(&mut result, &header),
+        parser
+            .execute(&mut result, &header)
+            .map_or(-1, usize::cast_signed),
         -1,
         "incomplete header"
     );
@@ -190,7 +204,11 @@ fn append_data(parser: &mut MultipartParser, result: &mut MppResult, data: &mut 
     let offset = data.len();
     append_random_bytes(data);
     let part = &data[offset..];
-    assert_eq!(parser.execute(result, part), len(part), "appended data");
+    assert_eq!(
+        parser.execute(result, part).map_or(-1, usize::cast_signed),
+        len(part),
+        "appended data"
+    );
 }
 
 #[test]
@@ -199,7 +217,9 @@ fn data() {
     let header = header(true);
     let mut result = MppResult::default();
     assert_eq!(
-        parser.execute(&mut result, &header),
+        parser
+            .execute(&mut result, &header)
+            .map_or(-1, usize::cast_signed),
         len(&header),
         "header parsed"
     );
@@ -216,32 +236,62 @@ fn data() {
     data.extend_from_slice(b"\r\n");
     data.extend_from_slice(&prefix(&boundary));
     append_random_bytes(&mut data);
-    assert_eq!(parser.execute(&mut result, &data), len(&data), "first data");
+    assert_eq!(
+        parser
+            .execute(&mut result, &data)
+            .map_or(-1, usize::cast_signed),
+        len(&data),
+        "first data"
+    );
 
     append_data(&mut parser, &mut result, &mut data);
     data.push(b'\r');
-    assert_eq!(parser.execute(&mut result, b"\r"), 1, "CR");
+    assert_eq!(
+        parser
+            .execute(&mut result, b"\r")
+            .map_or(-1, usize::cast_signed),
+        1,
+        "CR"
+    );
     append_data(&mut parser, &mut result, &mut data);
     data.extend_from_slice(b"\r\n");
-    assert_eq!(parser.execute(&mut result, b"\r\n"), 2, "CRLF");
+    assert_eq!(
+        parser
+            .execute(&mut result, b"\r\n")
+            .map_or(-1, usize::cast_signed),
+        2,
+        "CRLF"
+    );
     append_data(&mut parser, &mut result, &mut data);
 
     let offset = data.len();
     data.extend_from_slice(&prefix(&boundary));
     assert_eq!(
-        parser.execute(&mut result, &data[offset..]),
+        parser
+            .execute(&mut result, &data[offset..])
+            .map_or(-1, usize::cast_signed),
         len(&data[offset..]),
         "boundary prefix"
     );
 
-    assert_eq!(parser.execute(&mut result, b"\r\n"), 2, "CRLF");
     assert_eq!(
-        parser.execute(&mut result, &boundary),
+        parser
+            .execute(&mut result, b"\r\n")
+            .map_or(-1, usize::cast_signed),
+        2,
+        "CRLF"
+    );
+    assert_eq!(
+        parser
+            .execute(&mut result, &boundary)
+            .map_or(-1, usize::cast_signed),
         len(&boundary),
         "boundary"
     );
     assert_eq!(
-        parser.execute(&mut result, b"--\r\n\r\n"),
+        parser
+            .execute(&mut result, b"--\r\n\r\n")
+            .map_or(-1, usize::cast_signed),
         6,
         "final hyphens"
     );
