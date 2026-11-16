@@ -603,11 +603,14 @@ pub type NotFoundFn = extern "C-unwind" fn(PoolRef<'_>, &crate::methods::ExitSta
 pub struct Hooks {
     pub on_start: Option<PoolFn>,
     pub on_shutdown: Option<PoolFn>,
+    pub on_before_reload: Option<PoolFn>,
+    pub on_after_reload: Option<PoolFn>,
     pub on_task: Option<TaskFn>,
     pub on_worker_start: Option<WorkerFn>,
     pub on_message: Option<MessageFn>,
     pub on_worker_exit: Option<WorkerFn>,
     pub on_worker_stop: Option<WorkerFn>,
+    pub on_worker_error: Option<ErrorFn>,
     pub on_worker_message: Option<EventFn>,
     pub on_worker_not_found: Option<NotFoundFn>,
     pub main_loop: Option<MainLoopFn>,
@@ -625,6 +628,12 @@ impl PoolRef<'_> {
         if hooks.on_shutdown.is_some() {
             self.set_on_shutdown(hooks.on_shutdown);
         }
+        if hooks.on_before_reload.is_some() {
+            self.set_on_before_reload(hooks.on_before_reload);
+        }
+        if hooks.on_after_reload.is_some() {
+            self.set_on_after_reload(hooks.on_after_reload);
+        }
         if hooks.on_task.is_some() {
             self.set_on_task(hooks.on_task);
         }
@@ -639,6 +648,9 @@ impl PoolRef<'_> {
         }
         if hooks.on_worker_stop.is_some() {
             self.set_on_worker_stop(hooks.on_worker_stop);
+        }
+        if hooks.on_worker_error.is_some() {
+            self.set_on_worker_error(hooks.on_worker_error);
         }
         if hooks.on_worker_message.is_some() {
             self.set_on_worker_message(hooks.on_worker_message);
@@ -1518,6 +1530,9 @@ setters!(
     ptr_key / set_ptr_key: *const PoolObjectKey,
     on_start / set_on_start: Option<PoolFn>,
     on_shutdown / set_on_shutdown: Option<PoolFn>,
+    on_before_reload / set_on_before_reload: Option<PoolFn>,
+    on_after_reload / set_on_after_reload: Option<PoolFn>,
+    on_worker_error / set_on_worker_error: Option<ErrorFn>,
     on_message / set_on_message: Option<MessageFn>,
     on_worker_exit / set_on_worker_exit: Option<WorkerFn>,
     on_task / set_on_task: Option<TaskFn>,
