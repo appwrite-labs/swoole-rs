@@ -12,6 +12,9 @@ zend_internal_arg_info *swr_zend_runtime_copy_arginfo(const zend_internal_functi
                                                       zend_internal_arg_info *arg_info);
 /* Swoole's free_arg_info of such a copy. */
 void swr_zend_runtime_free_arginfo(const zend_internal_function *function, zend_internal_arg_info *copy);
+/* The running request's internal function name (EG(function_table)), or NULL
+ * for none or a user function. */
+zend_internal_function *swr_zend_runtime_internal_function(struct iovec name);
 /* The lowercased name in EG(class_table), without autoloading. */
 zend_class_entry *swr_zend_runtime_find_class(const char *name, size_t length);
 /* ce->parent, a member of an anonymous union. */
