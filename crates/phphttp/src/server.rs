@@ -178,25 +178,39 @@ fn addresses(
     loopback: c_int,
     cache: Option<usize>,
 ) {
-    add_server(state, Key::ServerPort, Owned::long(local_port));
-    add_server(state, Key::RemotePort, Owned::long(remote_port));
-    if loopback != 0 {
+    let names = if loopback != 0 {
         let name = if loopback == 6 {
             Key::LoopbackV6
         } else {
             Key::LoopbackV4
         };
-        if let Some(name) = key(name) {
-            add_server(state, Key::ServerAddr, Owned::string(name.to_owned()));
-            add_server(state, Key::RemoteAddr, Owned::string(name.to_owned()));
-        }
-        return;
+        key(name).map(|name| [name.to_owned(), name.to_owned()])
+    } else {
+        Some(
+            cache
+                .and_then(|fd| cached(server, conn, fd, session))
+                .unwrap_or_else(|| [address(server, conn, true), address(server, conn, false)]),
+        )
+    };
+    if let Some([local, remote]) = names {
+        add_server(
+            state,
+            [
+                (Key::ServerPort, Owned::long(local_port)),
+                (Key::RemotePort, Owned::long(remote_port)),
+                (Key::ServerAddr, Owned::string(local)),
+                (Key::RemoteAddr, Owned::string(remote)),
+            ],
+        );
+    } else {
+        add_server(
+            state,
+            [
+                (Key::ServerPort, Owned::long(local_port)),
+                (Key::RemotePort, Owned::long(remote_port)),
+            ],
+        );
     }
-    let cached = cache.and_then(|fd| cached(server, conn, fd, session));
-    let [local, remote] =
-        cached.unwrap_or_else(|| [address(server, conn, true), address(server, conn, false)]);
-    add_server(state, Key::ServerAddr, Owned::string(local));
-    add_server(state, Key::RemoteAddr, Owned::string(remote));
 }
 
 /// The session's cached addresses, each referenced once more for the caller;
@@ -489,7 +503,7 @@ fn handle(
         );
     }
     let master_time = Owned::long(facts.last_recv_time.c_cast::<zend_long>());
-    add_server(state, Key::MasterTime, master_time);
+    add_server(state, [(Key::MasterTime, master_time)]);
     // The hooks may reach the context: no borrow of it is held across them.
     if swoole_isset_hook(HookType::BEFORE_REQUEST) {
         ctx.call_hook(context::Hook::BeforeRequest);
@@ -604,7 +618,7 @@ pub fn http2_request(mut ctx: Ctx) -> Result<(), bailout::Bailout> {
     );
     request_times(state);
     let master_time = Owned::long(facts.last_recv_time.c_cast::<zend_long>());
-    add_server(state, Key::MasterTime, master_time);
+    add_server(state, [(Key::MasterTime, master_time)]);
     add_protocol(state, Key::Http2);
     state.callback = php_swoole_server_get_callback(server, facts.server_fd, PortCallback::Request);
     if state.before_request {

@@ -323,6 +323,7 @@ pub(crate) fn release_uploads(request: &Value) {
 
 /// `swoole_http_init_and_read_property`: the request object's `which`
 /// property slot, its array made on first use.
+#[inline]
 pub(crate) fn property(request: &mut Request, which: Property) -> Option<&Value> {
     let property = PROPERTIES.get(which as usize)?;
     let size = if matches!(which, Property::Server) {
@@ -337,6 +338,7 @@ pub(crate) fn property(request: &mut Request, which: Property) -> Option<&Value>
 
 /// The request object's `which` property slot, once [`property`] has made
 /// its array.
+#[inline]
 pub(crate) fn made(request: &Request, which: Property) -> Option<&Value> {
     if request.arrays & (1 << which as u8) == 0 {
         return None;
@@ -345,6 +347,7 @@ pub(crate) fn made(request: &Request, which: Property) -> Option<&Value> {
 }
 
 /// [`property`]'s array, lent to `edit`; None without one.
+#[inline]
 pub(crate) fn edit<R>(
     request: &mut Request,
     which: Property,
@@ -360,12 +363,14 @@ fn raw_property(state: &mut State, which: Property) -> *mut zval {
 
 /// `http_server_add_server_array`: `$request->server[key] = value`.
 #[inline(always)]
-pub(crate) fn add_server(state: &mut State, key_: Key, value_: Owned) {
-    if let Some(key) = key(key_) {
-        edit(&mut state.request, Property::Server, |server| {
-            server.add_new(key, value_);
-        });
-    }
+pub(crate) fn add_server<const N: usize>(state: &mut State, entries: [(Key, Owned); N]) {
+    edit(&mut state.request, Property::Server, |server| {
+        for (name, value) in entries {
+            if let Some(key) = key(name) {
+                server.add_new(key, value);
+            }
+        }
+    });
 }
 
 /// A new string of the bytes.
@@ -526,7 +531,7 @@ fn url(state: &mut State, span: &[u8]) -> Step {
     if query.is_empty() {
         return Step::Go;
     }
-    add_server(state, Key::QueryString, stringl(query));
+    add_server(state, [(Key::QueryString, stringl(query))]);
     treat_data(
         PARSE_STRING,
         Copied::of(query),
@@ -693,10 +698,14 @@ fn on_headers_complete(state: &mut State) -> Step {
 
     let method = method_name(state);
     let method = Owned::string(ZString::new(method.as_bytes()));
-    add_server(state, Key::RequestMethod, method);
-    add_server(state, Key::RequestUri, Owned::string(uri));
-
-    add_server(state, Key::PathInfo, Owned::string(decoded));
+    add_server(
+        state,
+        [
+            (Key::RequestMethod, method),
+            (Key::RequestUri, Owned::string(uri)),
+            (Key::PathInfo, Owned::string(decoded)),
+        ],
+    );
     request_times(state);
     let protocol = if state.request.version == 101 {
         Key::Http11
@@ -714,9 +723,14 @@ fn on_headers_complete(state: &mut State) -> Step {
 /// (`swoole::microtime()`).
 pub(crate) fn request_times(state: &mut State) {
     let now = swoole_rs_corebase::time_now();
-    add_server(state, Key::RequestTime, Owned::long(now));
     let float = swoole_rs_corebase::microtime();
-    add_server(state, Key::RequestTimeFloat, Owned::double(float));
+    add_server(
+        state,
+        [
+            (Key::RequestTime, Owned::long(now)),
+            (Key::RequestTimeFloat, Owned::double(float)),
+        ],
+    );
 }
 
 /// `$request->server['server_protocol']`, an interned protocol name.
@@ -724,8 +738,7 @@ pub(crate) fn add_protocol(state: &mut State, protocol: Key) {
     if let Some(protocol) = key(protocol) {
         add_server(
             state,
-            Key::ServerProtocol,
-            Owned::string(protocol.to_owned()),
+            [(Key::ServerProtocol, Owned::string(protocol.to_owned()))],
         );
     }
 }

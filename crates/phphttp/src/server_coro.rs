@@ -909,12 +909,15 @@ fn on_accept(call: &Call) {
 fn add_peer(mut context: Ctx, peer: &Peer) {
     let state = context.state();
     // The array takes a reference of its own to each of the loop's strings.
-    let remote_addr = Owned::string(peer.remote_addr.clone());
-    add_server(state, Key::RemoteAddr, remote_addr);
-    add_server(state, Key::RemotePort, Owned::long(peer.remote_port.into()));
-    let server_addr = Owned::string(peer.server_addr.clone());
-    add_server(state, Key::ServerAddr, server_addr);
-    add_server(state, Key::ServerPort, Owned::long(peer.server_port.into()));
+    add_server(
+        state,
+        [
+            (Key::RemoteAddr, Owned::string(peer.remote_addr.clone())),
+            (Key::RemotePort, Owned::long(peer.remote_port.into())),
+            (Key::ServerAddr, Owned::string(peer.server_addr.clone())),
+            (Key::ServerPort, Owned::long(peer.server_port.into())),
+        ],
+    );
 }
 
 /// The request loop: parse each request on the connection and run its handler.
