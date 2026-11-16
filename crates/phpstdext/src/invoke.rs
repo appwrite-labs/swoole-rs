@@ -18,7 +18,7 @@ use swoole_rs_zend::{
     opcode::Handler,
     sys::{
         IS_ARRAY, IS_CONST, IS_RESOURCE, IS_STRING, IS_VAR, swr_zend_efree, swr_zend_zval_release,
-        zend_execute_data, zend_function, zval,
+        zend_function, zval,
     },
     value,
 };

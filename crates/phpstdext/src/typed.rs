@@ -9,7 +9,7 @@ use std::{
     io::IoSlice,
     marker::PhantomData,
     mem::{MaybeUninit, offset_of},
-    ptr, slice,
+    slice,
     sync::OnceLock,
 };
 use swoole_rs_zend::{
@@ -19,7 +19,7 @@ use swoole_rs_zend::{
     opcode::Handler,
     sys::{
         HashTable, IS_ARRAY, IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT, IS_RESOURCE,
-        IS_STRING, IS_TRUE, IS_UNDEF, zend_internal_function, zend_long, zif_handler,
+        IS_STRING, IS_TRUE, IS_UNDEF, zend_long, zif_handler,
     },
     throw_error, type_error,
 };

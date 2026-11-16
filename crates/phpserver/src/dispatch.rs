@@ -11,7 +11,7 @@ use std::{
     any::Any,
     ffi::{CStr, c_int},
     mem::ManuallyDrop,
-    sync::{Arc, OnceLock, atomic::Ordering::Relaxed},
+    sync::{Arc, OnceLock},
 };
 use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
 use swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE;

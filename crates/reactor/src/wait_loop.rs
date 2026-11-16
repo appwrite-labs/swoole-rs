@@ -4,7 +4,7 @@
 //! upstream reaches through `Reactor`'s callbacks.
 use crate::Socket;
 use crate::handlers::{self, Table};
-use crate::reactor_state::{Entry, before_wait, kernel_wait};
+use crate::reactor_state::{before_wait, kernel_wait};
 use std::ffi::c_int;
 use std::sync::OnceLock;
 use swoole_rs_corebase::CCast;
@@ -206,13 +206,13 @@ fn entry(ops: &Loop<'_>, index: usize) {
     if index >= ops.ready.get() {
         return;
     }
-    // A copy of the entry, read in the backend's own array: the borrow ends before
-    // any handler runs.
-    let Some(entry) = ops.reactor.with(|state| state.entry(index)) else {
-        return;
-    };
-    match entry {
-        Entry::Poll(pollfd, socket) => {
+    // Each entry is a copy, read in the backend's own array: the borrow ends before
+    // any handler runs. None once the backend closed.
+    let (socket, fd, mask) = match ops.backend {
+        BackendKind::Poll => {
+            let Some((pollfd, socket)) = ops.reactor.with(|state| state.poll_entry(index)) else {
+                return;
+            };
             let revents = pollfd.revents;
             if revents == 0 {
                 return;
@@ -222,10 +222,13 @@ fn entry(ops: &Loop<'_>, index: usize) {
                 revents & libc::POLLOUT != 0,
                 revents & (libc::POLLHUP | libc::POLLERR) != 0,
             );
-            ready(ops, socket, pollfd.fd, mask);
+            (socket, pollfd.fd, mask)
         }
         #[cfg(target_os = "linux")]
-        Entry::Epoll(event) => {
+        BackendKind::Epoll => {
+            let Some(event) = ops.reactor.with(|state| state.epoll_entry(index)) else {
+                return;
+            };
             let events = event.events;
             let mask = mask(
                 events & libc::EPOLLIN as u32 != 0,
@@ -236,9 +239,10 @@ fn entry(ops: &Loop<'_>, index: usize) {
             let token = event.u64.c_cast::<usize>() as *mut crate::SocketRecord;
             // SAFETY: epoll's token is a registered socket: live until an unsafe free,
             // which answers for the registration and the events it leaves.
-            if let Some(socket) = unsafe { Socket::from_ptr(token) } {
-                ready(ops, socket, -1, mask);
-            }
+            let Some(socket) = (unsafe { Socket::from_ptr(token) }) else {
+                return;
+            };
+            (socket, -1, mask)
         }
         #[cfg(any(
             target_os = "macos",
@@ -247,8 +251,16 @@ fn entry(ops: &Loop<'_>, index: usize) {
             target_os = "netbsd",
             target_os = "dragonfly"
         ))]
-        Entry::Kqueue(event) => kqueue(ops, &event),
-    }
+        BackendKind::Kqueue => {
+            if let Some(event) = ops.reactor.with(|state| state.kqueue_entry(index)) {
+                kqueue(ops, &event);
+            }
+            return;
+        }
+        _ => return,
+    };
+    // One call site, so `ready` inlines here as on the hot path before.
+    ready(ops, socket, fd, mask);
 }
 
 /// poll and epoll: read, write, error (unless read or write already ran), then a oneshot removal.

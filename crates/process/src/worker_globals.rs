@@ -87,6 +87,7 @@ pub fn current_worker() -> *mut WorkerRecord {
 
 /// `f` over `SwooleWG.worker`, or `None` while this thread runs no worker. The
 /// handle lives only for the call: `f` can't keep it.
+#[inline(always)]
 pub fn with_current<R>(f: impl FnOnce(&crate::worker_record::Worker<'_>) -> R) -> Option<R> {
     let raw = current_worker();
     if raw.is_null() {

@@ -13,7 +13,7 @@ use std::{
 use swoole_rs_corebase::CCast;
 use swoole_rs_memory::{
     members::SharedTable,
-    table::{Column, ColumnType, Current, Locked, TYPE_FLOAT, TYPE_INT, TYPE_STRING, Table},
+    table::{Column, ColumnType, Current, Locked, TYPE_FLOAT, TYPE_INT, TYPE_STRING},
 };
 use swoole_rs_phpstubs::table;
 use swoole_rs_zend::{
@@ -465,7 +465,7 @@ fn read<'a>(row: &'a impl Row, column: &Column) -> Field<'a> {
 }
 
 /// `table_row2array`: every column of a row, as the result.
-fn row_array(call: &Call, table: &Table, row: &impl Row) {
+fn row_array(call: &Call, table: &SharedTable, row: &impl Row) {
     let mut array = OwnedArray::default();
     for column in table.columns() {
         let name = column.name();

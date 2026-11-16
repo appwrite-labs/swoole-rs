@@ -5,7 +5,7 @@
 //! lifetime, from its constructor and `swoole_event_init` to its destructor and
 //! `swoole_event_free`. The C++ class is methods over this state (`swoole_reactor.h`).
 use crate::wait_loop::BackendKind;
-use crate::{PollSnapshot, SocketRecord, handlers::Handlers, registry::Registry};
+use crate::{PollSnapshot, handlers::Handlers, registry::Registry};
 use libc::{c_int, c_void};
 use std::ptr;
 use swoole_rs_corebase::HookType;
@@ -313,14 +313,14 @@ unsafe extern "C-unwind" {
     #[link_name = "_ZN6swoole7Reactor6_writeEPS0_PNS_7network6SocketEPKvm"]
     fn reactor_write(
         reactor: *mut c_void,
-        socket: *mut SocketRecord,
+        socket: *mut crate::SocketRecord,
         data: *const c_void,
         length: usize,
     ) -> isize;
     #[link_name = "_ZN6swoole7Reactor7_writevEPS0_PNS_7network6SocketEPK5iovecm"]
     fn reactor_writev(
         reactor: *mut c_void,
-        socket: *mut SocketRecord,
+        socket: *mut crate::SocketRecord,
         iov: *const libc::iovec,
         count: usize,
     ) -> isize;
@@ -482,22 +482,6 @@ pub fn swoole_event_free() -> c_int {
     swoole_rs_corebase::set_thread_reactor(ptr::null_mut());
     0
 }
-/// One entry of the backend's last wait, copied out of its array.
-pub(crate) enum Entry {
-    /// A pollfd and the socket it was built from.
-    Poll(libc::pollfd, crate::Socket<'static>),
-    #[cfg(target_os = "linux")]
-    Epoll(libc::epoll_event),
-    #[cfg(any(
-        target_os = "macos",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "dragonfly"
-    ))]
-    Kqueue(libc::kevent),
-}
-
 impl ReactorState {
     /// Which kernel wait the backend runs.
     pub(crate) fn backend_kind(&self) -> BackendKind {
@@ -516,26 +500,42 @@ impl ReactorState {
         }
     }
 
-    /// Entry `index` of the backend's output array; none past its end or once the
-    /// backend is closed.
+    /// poll's entry `index` and the socket it was built from; none past its end or
+    /// for another backend.
     #[inline]
-    pub(crate) fn entry(&self, index: usize) -> Option<Entry> {
+    pub(crate) fn poll_entry(
+        &self,
+        index: usize,
+    ) -> Option<(libc::pollfd, crate::Socket<'static>)> {
         match &self.backend {
-            Backend::None => None,
-            Backend::Poll(snapshot) => {
-                let (pollfd, socket) = snapshot.entry(index)?;
-                Some(Entry::Poll(pollfd, socket))
-            }
-            #[cfg(target_os = "linux")]
-            Backend::Epoll(array) => array.get(index).copied().map(Entry::Epoll),
-            #[cfg(any(
-                target_os = "macos",
-                target_os = "freebsd",
-                target_os = "openbsd",
-                target_os = "netbsd",
-                target_os = "dragonfly"
-            ))]
-            Backend::Kqueue(array, _) => array.get(index).copied().map(Entry::Kqueue),
+            Backend::Poll(snapshot) => snapshot.entry(index),
+            _ => None,
+        }
+    }
+
+    /// epoll's entry `index`; none past its end or for another backend.
+    #[cfg(target_os = "linux")]
+    #[inline]
+    pub(crate) fn epoll_entry(&self, index: usize) -> Option<libc::epoll_event> {
+        match &self.backend {
+            Backend::Epoll(array) => array.get(index).copied(),
+            _ => None,
+        }
+    }
+
+    /// kqueue's entry `index`; none past its end or for another backend.
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))]
+    #[inline]
+    pub(crate) fn kqueue_entry(&self, index: usize) -> Option<libc::kevent> {
+        match &self.backend {
+            Backend::Kqueue(array, _) => array.get(index).copied(),
+            _ => None,
         }
     }
 
@@ -691,6 +691,7 @@ impl ReactorState {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::SocketRecord;
     /// A state with backend `kind` open for `count` events: `new Reactor` without its
     /// native effects.
     pub(crate) fn state(kind: c_int, count: c_int) -> ReactorPrepared {
