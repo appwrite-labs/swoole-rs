@@ -124,17 +124,13 @@ pub fn swoole_shell_exec(command: &CStr, get_error_stream: bool) -> Option<(c_in
             dup2(write, libc::STDOUT_FILENO);
             close(write);
         }
-        let end = ptr::null::<c_char>();
-        // SAFETY: the path and argument strings are NUL-terminated and the list ends in null.
-        unsafe {
-            libc::execl(
-                c"/bin/sh".as_ptr(),
-                c"sh".as_ptr(),
-                c"-c".as_ptr(),
-                command.as_ptr(),
-                end,
-            )
-        };
+        let argv = [
+            Some(c"sh".into()),
+            Some(c"-c".into()),
+            Some(command.into()),
+            None,
+        ];
+        crate::sys::execv(c"/bin/sh", &argv);
         // exit(3), which runs the process's exit handlers, as upstream's child did.
         std::process::exit(127);
     }
