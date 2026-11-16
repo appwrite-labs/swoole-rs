@@ -795,17 +795,15 @@ pub(crate) fn set_nonblock(sock: Socket<'_>) {
     let _ = sock.edit(|sock| set(sock, 1, -1));
 }
 
-/// The connection socket's `recv_buffer` (a `swoole::String *`), or null.
+/// `conn->socket->recv_buffer->pop(size)`, its whole size: the block holding the
+/// buffer's bytes, now the caller's, while the buffer takes a fresh one as large;
+/// `None` without a socket or buffer.
 #[must_use]
-pub fn recv_buffer(conn: Connection<'_>) -> *mut c_void {
-    conn.socket().map_or(core::ptr::null_mut(), |socket| {
-        socket.edit(|s| {
-            s.recv_buffer
-                .as_mut()
-                .map_or(core::ptr::null_mut(), |buffer| {
-                    Box::as_mut_ptr(buffer).cast()
-                })
-        })
+pub fn pop_recv_buffer(conn: Connection<'_>) -> Option<*mut u8> {
+    conn.socket()?.edit(|s| {
+        s.recv_buffer
+            .as_mut()
+            .map(|buffer| buffer.pop(buffer.size()))
     })
 }
 

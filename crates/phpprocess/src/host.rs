@@ -1,13 +1,7 @@
 //! What `Process` and `Process\Pool` reach outside the crate: Swoole's globals, the
 //! server, callables, the reactor and signals (was `ext-src/swoole_server.cc`'s
 //! `process_host` table).
-use std::{
-    cell::Cell,
-    ffi::c_int,
-    ptr,
-    rc::Rc,
-    sync::atomic::{AtomicPtr, Ordering},
-};
+use std::{cell::Cell, ffi::c_int, rc::Rc};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{swr_v1_core_signal_listener_num, thread_async_threads};
 use swoole_rs_phpswoole::{Switch, built_with};
@@ -168,43 +162,43 @@ fn call(callable: &callable::Callable, args: &[&Value], coroutine: bool) -> bool
     deferred(called).unwrap_or(false)
 }
 
-/// A callable a static keeps (a signal's): null, or the `Rc` of a [`Callable`]
+/// A callable a thread keeps (a signal's): empty, or the `Rc` of a [`Callable`]
 /// that [`Slot::replace`], the only writer, gave up to it.
-pub(crate) struct Slot(AtomicPtr<callable::Callable>);
+pub(crate) struct Slot(Cell<Option<Rc<callable::Callable>>>);
 
 impl Slot {
     /// A slot with no callable.
     pub(crate) const fn empty() -> Self {
-        Self(AtomicPtr::new(ptr::null_mut()))
+        Self(Cell::new(None))
     }
 
     /// Whether a callable is set.
     pub(crate) fn is_set(&self) -> bool {
-        !self.0.load(Ordering::Acquire).is_null()
+        self.stored().is_some()
     }
 
     /// Store `callable` (`None`: empty the slot), and take what was there.
     pub(crate) fn replace(&self, callable: Option<Callable>) -> Option<Callable> {
-        let new = callable.map_or(ptr::null(), |callable| Rc::into_raw(callable.0));
-        let old = self.0.swap(new.cast_mut(), Ordering::AcqRel);
-        // SAFETY: null or the `Rc` a `replace` gave up, which the swap took out of
-        // the slot, so it is taken back once.
-        (!old.is_null()).then(|| Callable(unsafe { Rc::from_raw(old) }))
+        self.0
+            .replace(callable.map(|callable| callable.0))
+            .map(Callable)
     }
 
     /// [`Callable::call`] of the slot's callable, which the slot keeps: `None`
     /// when it has none.
     pub(crate) fn call(&self, args: &[&Value], coroutine: bool) -> Option<bool> {
-        let stored = self.0.load(Ordering::Acquire);
-        if stored.is_null() {
-            return None;
-        }
-        // SAFETY: the `Rc` `replace` stored, still the slot's, borrowed without
-        // taking it (the slot keeps its reference).
-        let stored = std::mem::ManuallyDrop::new(unsafe { Rc::from_raw(stored) });
         // A reference of its own, so the callable outlives a handler that replaces it.
-        let callable = Rc::clone(&*stored);
+        let callable = self.stored()?;
         Some(call(&callable, args, coroutine))
+    }
+
+    /// A reference to the stored callable, which the slot keeps.
+    fn stored(&self) -> Option<Rc<callable::Callable>> {
+        let stored = self.0.take();
+        let callable = stored.clone();
+        // The slot was emptied just above, so this drops nothing.
+        self.0.set(stored);
+        callable
     }
 }
 

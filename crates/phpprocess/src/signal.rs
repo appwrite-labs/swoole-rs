@@ -4,7 +4,7 @@ use crate::{
     host::{self, Callable, Slot},
     report::{OPERATION_NOT_SUPPORT, cli, fatal, notice, set_last_error},
 };
-use std::ffi::c_int;
+use std::{ffi::c_int, mem::ManuallyDrop};
 use swoole_rs_zend::{Call, E_ERROR, E_WARNING, Owned, bailout, message};
 
 use swoole_rs_reactor::signal_upstream::{self, Handler};
@@ -24,17 +24,40 @@ const SLOTS: usize = 128;
 /// `(zend_long) SIG_IGN`.
 pub(crate) const SIG_IGN: i64 = 1;
 
-/// `signal_fci_caches`: the callable per signal.
-static CALLABLES: [Slot; SLOTS] = [const { Slot::empty() }; SLOTS];
+thread_local! {
+    /// `signal_fci_caches`: the callable per signal, which only `signal()`'s thread, the
+    /// main one, stores and calls. Never dropped: a thread's exit runs no PHP.
+    static CALLABLES: ManuallyDrop<[Slot; SLOTS]> =
+        const { ManuallyDrop::new([const { Slot::empty() }; SLOTS]) };
+}
 
-/// The slot of `signo`, or `None` outside `0..SW_SIGNO_MAX`.
-fn slot(signo: i64) -> Option<&'static Slot> {
-    CALLABLES.get(usize::try_from(signo).ok()?)
+/// A signal number with a slot: one in `0..SW_SIGNO_MAX`.
+#[derive(Clone, Copy)]
+struct Signo(usize);
+
+impl Signo {
+    /// `signo`, or `None` outside `0..SW_SIGNO_MAX`.
+    fn new(signo: i64) -> Option<Self> {
+        usize::try_from(signo).ok().filter(|&i| i < SLOTS).map(Self)
+    }
+
+    /// `f` over the signal's slot.
+    fn with<R>(self, f: impl FnOnce(&Slot) -> R) -> Option<R> {
+        CALLABLES.with(|slots| slots.get(self.0).map(f))
+    }
+
+    fn is_set(self) -> bool {
+        self.with(Slot::is_set).unwrap_or(false)
+    }
+
+    fn replace(self, callable: Option<Callable>) -> Option<Callable> {
+        self.with(|slot| slot.replace(callable)).flatten()
+    }
 }
 
 /// `php_swoole_onSignal`: call the signal's callable with its number.
 extern "C" fn on_signal(signo: c_int) {
-    let Some(slot) = slot(i64::from(signo)) else {
+    let Some(slot) = Signo::new(i64::from(signo)) else {
         return;
     };
     if !slot.is_set() {
@@ -42,7 +65,8 @@ extern "C" fn on_signal(signo: c_int) {
     }
     let coroutine = host::enable_coroutine();
     // The callable `signal()` stored, borrowed from its slot, not taken.
-    let Some(called) = slot.call(&[&Owned::long(i64::from(signo))], coroutine) else {
+    let called = slot.with(|slot| slot.call(&[&Owned::long(i64::from(signo))], coroutine));
+    let Some(called) = called.flatten() else {
         return;
     };
     if !called && !bailout::pending() {
@@ -74,7 +98,7 @@ pub(crate) fn signal(call: &Call) {
         call.set_bool(false);
         return;
     }
-    let Some(slot) = slot(signo) else {
+    let Some(slot) = Signo::new(signo) else {
         fatal(E_WARNING, &message!("invalid signal number [{signo}]"));
         call.set_bool(false);
         return;
@@ -156,7 +180,7 @@ pub(crate) fn signal(call: &Call) {
 /// SIGCHLD (`php_swoole_private.h` declares it inside `BEGIN_EXTERN_C`).
 #[unsafe(no_mangle)]
 pub extern "C" fn php_swoole_signal_isset_handler(signo: c_int) -> bool {
-    let Some(slot) = slot(i64::from(signo)) else {
+    let Some(slot) = Signo::new(i64::from(signo)) else {
         fatal(E_WARNING, &message!("invalid signal number [{signo}]"));
         return false;
     };
@@ -174,8 +198,8 @@ pub extern "C" fn php_swoole_process_signal_clean() {
 /// [`php_swoole_process_signal_clean`]'s body, which frees every callable and
 /// leaves a destructor's bailout pending.
 fn signal_clean() {
-    for slot in &CALLABLES {
-        drop(slot.replace(None));
+    for signo in 0..SLOTS {
+        drop(Signo(signo).replace(None));
     }
     swoole_rs_corebase::swr_v1_core_set_signal_listener_num(0);
 }
