@@ -10,8 +10,8 @@
 _Static_assert(ZEND_USER_OPCODE_CONTINUE == 0, "ZEND_USER_OPCODE_CONTINUE");
 _Static_assert(ZEND_USER_OPCODE_DISPATCH == 2, "ZEND_USER_OPCODE_DISPATCH");
 
-zend_function *swr_zend_function_find(const char *name, size_t length) {
-    return zend_hash_str_find_ptr(EG(function_table), name, length);
+zend_function *swr_zend_function_find(struct iovec name) {
+    return zend_hash_str_find_ptr(EG(function_table), name.iov_base, name.iov_len);
 }
 
 zend_function *swr_zend_compiled_function_find(const char *name) {

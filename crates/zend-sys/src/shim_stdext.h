@@ -3,10 +3,11 @@
 #define SWOOLE_RS_ZEND_SHIM_STDEXT_H
 #include "php.h"
 #include "shim_values.h"
+#include <sys/uio.h>
 
-/* zend_hash_str_find_ptr(EG(function_table), name) and, of the NUL-terminated
- * `name`, of CG(function_table): null for no such function. */
-zend_function *swr_zend_function_find(const char *name, size_t length);
+/* zend_hash_str_find_ptr(EG(function_table), name) of the lent bytes and, of
+ * the NUL-terminated `name`, of CG(function_table): null for no such function. */
+zend_function *swr_zend_function_find(struct iovec name);
 zend_function *swr_zend_compiled_function_find(const char *name);
 
 /* zend_call_known_function(fn, NULL, NULL, retval, argc, argv, NULL) inside

@@ -50,6 +50,14 @@ fn coerce<T>(
     }
 }
 
+/// A call's return slot, lent to C for the call: it holds a valid zval the call
+/// owns (Zend's null, or what a `set_*` put there), which nothing outside this
+/// crate can borrow, so C may write, release or replace it, as a handler's
+/// `return_value` is used. One pointer wide, as C takes a `zval *`.
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub struct ReturnSlot<'a>(&'a Value);
+
 /// One call of an internal function or method: what Zend passes a handler
 /// (`INTERNAL_FUNCTION_PARAMETERS`).
 pub struct Call {
@@ -469,6 +477,13 @@ impl Call {
     #[inline]
     pub fn return_value(&self) -> *mut zval {
         self.value
+    }
+
+    /// The return slot, lent to C for the call.
+    #[must_use]
+    #[inline]
+    pub fn return_slot(&self) -> ReturnSlot<'_> {
+        ReturnSlot(self.ret())
     }
 
     /// `RETVAL_ZVAL(value, 0, 0)`: the return slot takes over `value`.
