@@ -11,7 +11,7 @@ use openssl_sys::{
     SSL_OP_CIPHER_SERVER_PREFERENCE, SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS, SSL_OP_NO_COMPRESSION,
     SSL_OP_NO_SSLv2, SSL_OP_NO_SSLv3, SSL_OP_NO_TLSv1, SSL_OP_NO_TLSv1_1, SSL_OP_NO_TLSv1_2,
     SSL_OP_NO_TLSv1_3, SSL_SESS_CACHE_SERVER, SSL_TLSEXT_ERR_NOACK, SSL_TLSEXT_ERR_OK,
-    SSL_VERIFY_NONE, SSL_VERIFY_PEER, SSL_select_next_proto, X509_STORE_CTX,
+    SSL_VERIFY_NONE, SSL_VERIFY_PEER, X509_STORE_CTX,
 };
 use std::cell::Cell;
 use std::ffi::{CStr, c_char, c_int, c_long, c_uchar, c_uint, c_void};
@@ -22,6 +22,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::StringSlot;
+use swoole_rs_corebase::lent::{Count, In};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::sys::Text;
 
@@ -657,8 +658,7 @@ impl Method<'_> {
         }
         if protocols & DTLS != 0 {
             set_cookie_generate_cb(ctx, Some(generate_cookie));
-            // SAFETY: OpenSSL calls the verifier with the cookie's bytes and their count.
-            unsafe { set_cookie_verify_cb(ctx, Some(verify_cookie)) };
+            set_cookie_verify_cb(ctx, Some(verify_cookie));
         }
         let capath = self.with(c"SSLContext::set_capath").set_capath();
         if config.verify_peer {
@@ -730,21 +730,22 @@ enum AlpnLength {
     H2Http1 = 12,
 }
 
-/// OpenSSL's ALPN selector: the SSL, the output slots, the list the client offered
-/// and its length, and the selector's argument.
-type AlpnSelect = unsafe extern "C" fn(
+/// OpenSSL's ALPN selector: the SSL, the output slots (its locals), the list the client
+/// offered, lent for the call, and the selector's argument.
+type AlpnSelect = for<'id> extern "C" fn(
     *mut SSL,
-    *mut *const c_uchar,
-    *mut c_uchar,
-    *const c_uchar,
-    c_uint,
+    &mut *const c_uchar,
+    &mut c_uchar,
+    In<'id, u8>,
+    Count<'id, c_uint>,
     &Protos,
 ) -> c_int;
 
 // libssl's declarations, typed so that the list is the array its length bounds; the
 // first copies the list into the live context: 0 on success. The second stores the
 // selector and its static argument, which OpenSSL hands it with the slots and the
-// offered list it lends.
+// offered list it lends. The third reads both lists and points `out` into one of
+// them, or at nothing, storing only the address and its length.
 unsafe extern "C" {
     safe fn SSL_CTX_set_alpn_protos(ctx: &SslCtx, protos: &[u8; 12], length: AlpnLength) -> c_int;
     safe fn SSL_CTX_set_alpn_select_cb(
@@ -752,29 +753,34 @@ unsafe extern "C" {
         callback: Option<AlpnSelect>,
         arg: &'static Protos,
     );
+    #[link_name = "SSL_select_next_proto"]
+    safe fn select_next_proto<'id>(
+        out: &mut *const c_uchar,
+        out_length: &mut c_uchar,
+        server: &[u8; 12],
+        server_length: AlpnLength,
+        client: In<'id, u8>,
+        client_length: Count<'id, c_uint>,
+    ) -> c_int;
 }
 
 /// The server's ALPN choice: the first of `protos` the client offers.
-unsafe extern "C" fn select_alpn(
+extern "C" fn select_alpn<'id>(
     _ssl: *mut SSL,
-    out: *mut *const c_uchar,
-    out_length: *mut c_uchar,
-    offered: *const c_uchar,
-    offered_length: c_uint,
+    out: &mut *const c_uchar,
+    out_length: &mut c_uchar,
+    offered: In<'id, u8>,
+    offered_length: Count<'id, c_uint>,
     protos: &Protos,
 ) -> c_int {
-    let length = protos.length as c_uint;
-    // SAFETY: OpenSSL's output slots and offered list; ours is static.
-    let negotiated = unsafe {
-        SSL_select_next_proto(
-            out.cast(),
-            out_length,
-            protos.wire.as_ptr(),
-            length,
-            offered,
-            offered_length,
-        )
-    };
+    let negotiated = select_next_proto(
+        out,
+        out_length,
+        &protos.wire,
+        protos.length,
+        offered,
+        offered_length,
+    );
     if negotiated == OPENSSL_NPN_NEGOTIATED {
         SSL_TLSEXT_ERR_OK
     } else {
@@ -808,18 +814,18 @@ pub(crate) fn copy_password(buffer: &mut [MaybeUninit<u8>], terminated: &[u8]) -
 /// The buffer OpenSSL lends a cookie generator: `DTLS1_COOKIE_LENGTH` bytes.
 type CookieBuffer = [MaybeUninit<u8>; 255];
 type GenerateCookie = extern "C" fn(Ssl<'_>, &mut CookieBuffer, &mut MaybeUninit<c_uint>) -> c_int;
-type VerifyCookie = unsafe extern "C" fn(Ssl<'_>, *const c_uchar, c_uint) -> c_int;
+type VerifyCookie = for<'id> extern "C" fn(Ssl<'_>, In<'id, u8>, Count<'id, c_uint>) -> c_int;
 
 // libssl's declarations, with the callbacks retyped as what OpenSSL calls
 // them with: the live, non-null SSL that is listening or shaking hands and, for the
 // generator, its `DTLS1_COOKIE_LENGTH`-byte cookie buffer and length slot (neither
-// initialized), lent for the call. Storing a generator, which is a safe function of exactly those, is
-// `safe`; a verifier reads the raw cookie it is lent, so storing one is not.
+// initialized), for the verifier the cookie's bytes and their count, lent for the
+// call. Storing either, a safe function of exactly those, runs nothing.
 unsafe extern "C" {
     #[link_name = "SSL_CTX_set_cookie_generate_cb"]
     safe fn set_cookie_generate_cb(ctx: &SslCtx, callback: Option<GenerateCookie>);
     #[link_name = "SSL_CTX_set_cookie_verify_cb"]
-    fn set_cookie_verify_cb(ctx: &SslCtx, callback: Option<VerifyCookie>);
+    safe fn set_cookie_verify_cb(ctx: &SslCtx, callback: Option<VerifyCookie>);
 }
 
 /// Copies `N` bytes of `bytes` at `at`.
@@ -899,21 +905,16 @@ extern "C" fn generate_cookie(
     made
 }
 
-/// # Safety
-/// OpenSSL's cookie callback: `ssl` is live and `cookie` holds `cookie_length` bytes.
-unsafe extern "C" fn verify_cookie(
+/// OpenSSL's cookie verifier: whether the cookie it lends is [`cookie_of`] the SSL.
+extern "C" fn verify_cookie<'id>(
     ssl: Ssl<'_>,
-    cookie: *const c_uchar,
-    cookie_length: c_uint,
+    cookie: In<'id, u8>,
+    cookie_length: Count<'id, c_uint>,
 ) -> c_int {
     let mut expected = [0u8; 255];
     let mut length: c_uint = 0;
     cookie_of(ssl, &mut expected, &mut length);
-    if cookie_length != length {
-        return 0;
-    }
-    // SAFETY: OpenSSL lends `cookie_length` bytes.
-    let cookie = unsafe { std::slice::from_raw_parts(cookie, cookie_length as usize) };
+    let cookie = cookie.drain(cookie_length).bytes();
     c_int::from(expected.get(..length as usize) == Some(cookie))
 }
 
@@ -1314,31 +1315,24 @@ mod tests {
         let offered = b"\x08http/1.1\x02h2";
         let mut out = ptr::null();
         let mut length = 0;
-        let chosen = unsafe {
+        let chosen = swoole_rs_corebase::lent::lend_in(offered, |list, count| {
             select_alpn(
                 ptr::null_mut(),
-                &raw mut out,
-                &raw mut length,
-                offered.as_ptr(),
-                12,
+                &mut out,
+                &mut length,
+                list,
+                count,
                 &H2_HTTP1,
             )
-        };
+        });
         assert_eq!(chosen, SSL_TLSEXT_ERR_OK);
         assert_eq!(
             unsafe { std::slice::from_raw_parts(out, length.into()) },
             b"h2"
         );
-        let chosen = unsafe {
-            select_alpn(
-                ptr::null_mut(),
-                &raw mut out,
-                &raw mut length,
-                b"\x02h2".as_ptr(),
-                3,
-                &HTTP1,
-            )
-        };
+        let chosen = swoole_rs_corebase::lent::lend_in(b"\x02h2", |list, count| {
+            select_alpn(ptr::null_mut(), &mut out, &mut length, list, count, &HTTP1)
+        });
         assert_eq!(chosen, SSL_TLSEXT_ERR_NOACK);
     }
 
