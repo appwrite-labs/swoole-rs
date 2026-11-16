@@ -55,13 +55,18 @@ pub struct CoSocket {
     pub ssl_is_server: Cell<bool>,
     pub ssl_handshaked: Cell<bool>,
     pub zero_copy: Cell<bool>,
-    pub(crate) resolve_context: Cell<*mut c_void>,
+    /// The `NameResolver::Context` the socket's connects resolve with, shared with
+    /// its owner (the HTTP client); none for a fresh one per connect.
+    pub(crate) resolve_context: Cell<Option<SharedResolve>>,
     /// The coroutines, barriers and timers bound to each direction, and the parts
     /// lent out, which `init` makes and `fini` releases.
     pub(crate) state: Option<Box<Bound>>,
     /// The record's metadata, which `init` makes and `fini` releases.
     pub(crate) extra: Cell<Option<Box<SocketExtra>>>,
 }
+
+/// A `NameResolver::Context` an owner shares with its socket.
+pub type SharedResolve = std::rc::Rc<Cell<swoole_rs_corebase::NameResolverContext>>;
 
 /// Field offsets native code asserts too (`swoole_rs_co_socket.h`).
 #[cfg(target_pointer_width = "64")]
@@ -204,21 +209,6 @@ macro_rules! fields {
     )*};
 }
 
-/// The pointer fields, which `Co`'s methods and native code dereference: read freely,
-/// set only by a caller that vouches for the new value.
-macro_rules! pointers {
-    ($($(#[$doc:meta])* $field:ident, $set:ident: $ty:ty;)*) => {$(
-        fields!(get $(#[$doc])* $field: $ty);
-        $(#[$doc])*
-        ///
-        /// # Safety
-        /// `value` is what the field's doc says, for as long as the record holds it.
-        pub unsafe fn $set(self, value: $ty) {
-            self.record().$field.set(value);
-        }
-    )*};
-}
-
 impl Co {
     /// The record at `raw`.
     ///
@@ -272,12 +262,25 @@ impl Co {
         zero_copy, set_zero_copy: bool;
     }
 
-    pointers! {
+    fields!(get
         /// `errMsg`: a NUL-terminated message, static, `swoole_strerror`'s, the thread's
-        /// last error message or the record's own error string.
-        err_msg, set_err_msg: *const c_char;
-        /// Null, or a live `NameResolver::Context` that outlives the record.
-        resolve_context, set_resolve_context: *mut c_void;
+        /// last error message or the record's own error string; only this module's
+        /// setters write it.
+        err_msg: *const c_char);
+
+    /// The `NameResolver::Context` connects resolve with from now on; none for a
+    /// fresh one per connect.
+    pub fn set_resolve_context(self, context: Option<SharedResolve>) {
+        drop(self.record().resolve_context.replace(context));
+    }
+
+    /// The shared `NameResolver::Context`, if any.
+    #[must_use]
+    pub fn resolve_context(self) -> Option<SharedResolve> {
+        let slot = &self.record().resolve_context;
+        let context = slot.take();
+        slot.set(context.clone());
+        context
     }
 
     fields!(get
@@ -347,7 +350,8 @@ impl Co {
         if message.is_null() {
             return f(None);
         }
-        // SAFETY: `set_err_msg`'s contract: a NUL-terminated message the record holds.
+        // SAFETY: `err_msg`'s contract, which its setters keep: a NUL-terminated
+        // message the record holds.
         let message = unsafe { CStr::from_ptr(message) };
         let bytes = message.to_bytes_with_nul();
         let mut inline = [0u8; 128];
@@ -601,7 +605,7 @@ impl CoSocket {
             ssl_is_server: Cell::new(false),
             ssl_handshaked: Cell::new(false),
             zero_copy: Cell::new(false),
-            resolve_context: Cell::new(ptr::null_mut()),
+            resolve_context: Cell::new(None),
             state: Some(Box::new(Bound::new())),
             extra: Cell::new(Some(SocketExtra::boxed())),
         }
@@ -785,6 +789,7 @@ impl CoSocket {
     pub(crate) fn fini(&mut self) {
         self.state = None;
         self.extra.set(None);
+        self.resolve_context.set(None);
     }
 
     /// The public constructors' work over a fresh record (see
@@ -1174,17 +1179,17 @@ mod tests {
         let co = unsafe { Co::new(&raw mut *socket) };
         let long = CString::new([b'x'; 300]).unwrap();
         for message in [c"Success", long.as_c_str()] {
-            unsafe { co.set_err_msg(message.as_ptr()) };
+            co.record().err_msg.set(message.as_ptr());
             assert_eq!(co.err_message().as_deref(), Some(message));
             co.with_err_message(|copy| {
                 // The socket may replace its message while `f` runs.
-                unsafe { co.set_err_msg(c"replaced".as_ptr()) };
+                co.record().err_msg.set(c"replaced".as_ptr());
                 assert_eq!(copy, Some(message));
             });
         }
-        unsafe { co.set_err_msg(ptr::null()) };
+        co.record().err_msg.set(ptr::null());
         assert_eq!(co.err_message(), None);
-        unsafe { co.set_err_msg(c"".as_ptr()) };
+        co.record().err_msg.set(c"".as_ptr());
         release(socket);
     }
 

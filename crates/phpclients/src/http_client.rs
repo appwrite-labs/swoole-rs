@@ -155,9 +155,9 @@ struct Client {
     write_func: Cell<Option<Rc<Callable>>>,
     basic_auth: Cell<Vec<u8>>,
     head: Cell<bool>,
-    /// The socket writes it through a pointer while it connects, so it stays
-    /// in place; only `exec` replaces it, never during a connect.
-    resolve: Cell<swoole_rs_corebase::NameResolverContext>,
+    /// The resolve context, shared with the socket, whose connects take it and put
+    /// it back; `exec` resets it before it connects.
+    resolve: swoole_rs_hooks::co_socket::SharedResolve,
     /// The last response's status, which `exec` and `upgrade` read.
     status: Cell<u16>,
     wait_response: Cell<bool>,
@@ -427,7 +427,7 @@ impl Client {
             write_func: Cell::default(),
             basic_auth: Cell::default(),
             head: Cell::new(false),
-            resolve: Cell::default(),
+            resolve: Rc::default(),
             status: Cell::new(0),
             wait_response: Cell::new(false),
             body: Cell::default(),
@@ -596,13 +596,9 @@ impl Client {
         self.websocket.set(false);
         self.accept_websocket_compression.set(false);
         let conn = Rc::clone(&self.conn);
-        // SAFETY: the client's resolve context outlives its socket, and is never
-        // borrowed: a cell, replaced only by `exec` before it connects.
-        unsafe {
-            socket
-                .handle()
-                .set_resolve_context(self.resolve.as_ptr().cast());
-        }
+        socket
+            .handle()
+            .set_resolve_context(Some(Rc::clone(&self.resolve)));
         socket.configure_http(
             self.connect_timeout.get(),
             Box::new(move |_| socket_closed(&conn, socket)),
