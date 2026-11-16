@@ -185,11 +185,19 @@ pub fn current_native() -> *mut c_void {
 ///
 /// # Safety
 /// `task` is the kind of object this thread's swap callbacks take, and stays live
-/// until the close callback of the running coroutine has run; no other coroutine
-/// has it as its task.
+/// until the running coroutine's task is cleared ([`clear_current_task`]) or its
+/// close callback has run; no other coroutine has it as its task.
 pub unsafe fn set_current_task(task: NonNull<c_void>) {
     if let Some(co) = Co::current(Sched::this()) {
         co.with(|co| co.task = Some(CoroutineTask(task)));
+    }
+}
+
+/// The running coroutine's swap callbacks get no task from here on; nothing
+/// outside one.
+pub fn clear_current_task() {
+    if let Some(co) = Co::current(Sched::this()) {
+        co.with(|co| co.task = None);
     }
 }
 

@@ -52,16 +52,19 @@ void swr_zend_coroutine_restore(swr_zend_coroutine_vm *vm);
 /* save_context(from) then restore_context(to): one coroutine switch. */
 void swr_zend_coroutine_switch(swr_zend_coroutine_vm *from, swr_zend_coroutine_vm *to);
 
-/* create_context's executor setup on a new coroutine: a fresh VM stack whose
- * first frame is an empty internal function, cleared exception state, the C
- * stack bounds of `stack` (null: none), then save_vm_stack into `vm`. */
-void swr_zend_coroutine_start(swr_zend_coroutine_vm *vm, void *stack, size_t stack_size);
+/* save_context(from), the creator's, then create_context's executor setup on a
+ * new coroutine: a fresh VM stack whose first frame is an empty internal
+ * function, cleared exception state, the C stack bounds of `stack` (null:
+ * none), then save_vm_stack into `vm`. */
+void swr_zend_coroutine_start(swr_zend_coroutine_vm *from, swr_zend_coroutine_vm *vm, void *stack,
+                              size_t stack_size);
 /* destroy_context's output reset: end and restart output buffering without
  * sending headers, when output is active. */
 void swr_zend_coroutine_output_reset(void);
 /* destroy_context's end: zend_vm_stack_destroy of the running coroutine's
- * VM stack, then restore_context of `origin`. */
-void swr_zend_coroutine_finish(swr_zend_coroutine_vm *origin);
+ * VM stack, which `finished`, its saved state, no longer names, then
+ * restore_context of `origin`. */
+void swr_zend_coroutine_finish(swr_zend_coroutine_vm *finished, swr_zend_coroutine_vm *origin);
 /* init_main_context: EG(main_fiber_context), then save_context into `vm`. */
 zend_fiber_context *swr_zend_coroutine_main(swr_zend_coroutine_vm *vm);
 /* A coroutine's body (main_func) inside zend_first_try: call the function
@@ -71,9 +74,9 @@ zend_fiber_context *swr_zend_coroutine_main(swr_zend_coroutine_vm *vm);
  * exception or bailout ended it. */
 int swr_zend_coroutine_run(swr_zend_callable *(*enter)(void *context), void (*defers)(void *context),
                            void *context);
-/* The VM stack bytes in use from `stack` (the running one if `running`) down
- * its chain (get_stack_usage). */
-size_t swr_zend_coroutine_stack_usage(zend_vm_stack stack, bool running);
+/* The VM stack bytes in use down the chain of `vm`'s saved VM stack (null: the
+ * running one) (get_stack_usage). */
+size_t swr_zend_coroutine_stack_usage(const swr_zend_coroutine_vm *vm);
 
 /* EG(error_reporting). */
 int swr_zend_error_reporting(void);
@@ -110,6 +113,9 @@ int swr_zend_try_parse_str_or_long(zval *arg, zend_string **string, zend_long *n
 
 /* EG(current_execute_data) = frame; returns the previous one. */
 zend_execute_data *swr_zend_coroutine_set_frame(zend_execute_data *frame);
+/* EG(current_execute_data) = the frame `vm`'s saved state stopped in; returns
+ * the previous one. */
+zend_execute_data *swr_zend_coroutine_show(swr_zend_coroutine_vm *vm);
 /* Whether the function that called the running internal function is named
  * "__destruct" (go() during shutdown functions); false without a current
  * frame, a caller's frame or a function in it. */
@@ -124,10 +130,13 @@ void swr_zend_coroutine_fcc_discard(zend_fcall_info_cache *fcc);
  * (output handlers may run): 1 if it bailed out. */
 int swr_zend_coroutine_print_trace(int skip_last, int options, int limit);
 
+/* A new object of the exception class `ce`, its properties initialised and no
+ * constructor run (zend_objects_new, object_properties_init). */
+zend_object *swr_zend_coroutine_exception(zend_class_entry *ce);
 /* Set an exception's file and line from the current frame, as
  * zend::object_set(ZSTR_KNOWN(ZEND_STR_FILE/LINE)) does. */
 void swr_zend_coroutine_locate(zend_object *exception);
-/* Make the suspended frame in `vm` throw on resume, as
+/* Make the suspended frame in `vm`, if any, throw on resume, as
  * zend_throw_exception_internal() does for a user frame. */
 void swr_zend_coroutine_redirect(swr_zend_coroutine_vm *vm);
 /* PHPCoroutine::deadlock_check's report of `count` sleeping coroutines,

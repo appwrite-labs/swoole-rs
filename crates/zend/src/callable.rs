@@ -88,13 +88,15 @@ impl Callable {
         self.0.cast()
     }
 
-    /// The kept callable's cache, bound arguments and callable zval, for a call.
+    /// The kept callable's cache, bound arguments and callable zval, for a call:
+    /// the record keeps them while borrowed, and nothing changes the cache.
     #[must_use]
-    pub fn parts(&self) -> (*mut zend_fcall_info_cache, u32, *mut zval, *mut zval) {
-        // SAFETY: a parsed callable; the borrow ends here, before PHP runs.
+    pub fn parts(&self) -> (&zend_fcall_info_cache, u32, *mut zval, *mut zval) {
+        // SAFETY: a parsed callable; the shared borrow of its cache is the only
+        // one that lasts, and nothing writes the record while `self` is lent.
         let callable = unsafe { &mut *self.0 };
         (
-            &raw mut callable.fcc,
+            &callable.fcc,
             callable.fci.param_count,
             callable.fci.params,
             &raw mut callable.fci.function_name,
@@ -106,7 +108,12 @@ impl Callable {
     #[must_use]
     #[inline]
     pub fn call_parts(&self) -> (crate::host::Callee<'_>, crate::Zvals<'_>) {
-        let (cache, argc, argv, _) = self.parts();
+        let (_, argc, argv, _) = self.parts();
+        // The record's cache, without a borrow: Zend may write a cache it calls.
+        let cache = self
+            .0
+            .wrapping_byte_add(std::mem::offset_of!(swr_zend_callable, fcc))
+            .cast();
         (
             crate::host::Callee(cache, std::marker::PhantomData),
             crate::Zvals::counted(argv, argc),
