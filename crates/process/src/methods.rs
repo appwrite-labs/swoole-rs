@@ -710,8 +710,7 @@ pub(crate) mod tests {
         install();
         // SAFETY: a zeroed record is a worker before `init`.
         let mut worker: WorkerRecord = unsafe { std::mem::zeroed() };
-        // SAFETY: a live record.
-        unsafe { Worker::new(&raw mut worker).set_id(4) };
+        Worker::from(&worker).set_id(4);
         let status = ExitStatus {
             pid: 321,
             status: 3 << 8,
