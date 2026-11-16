@@ -48,7 +48,7 @@ pub(super) fn verify_ip(family: c_int, ip: &str) -> bool {
 fn lookup(domain: &CStr, family: c_int, timeout: f64) -> Vec<String> {
     swoole_rs_hooks::resolve::dns_lookup(domain.to_bytes(), family, timeout)
         .into_iter()
-        .map(|address| address.into_string().unwrap())
+        .map(|address| String::from_utf8(address).unwrap())
         .collect()
 }
 
