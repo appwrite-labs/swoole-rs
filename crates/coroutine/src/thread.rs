@@ -164,25 +164,36 @@ pub(crate) fn start(entry: Entry) -> Result<Box<Started>, c_int> {
 
 impl Started {
     /// Switches onto the thread, returning when it switches back: whether it ended.
-    ///
-    /// # Safety
-    /// The thread has not ended and is not running; the caller holds the baton.
-    pub(crate) unsafe fn swap_in(&self) -> bool {
-        *self
+    /// Only the thread that holds the baton runs (the others wait for theirs), so the
+    /// caller holds it; a thread that ended or is running is refused (aborting), as
+    /// posting its baton would run two threads at once.
+    pub(crate) fn swap_in(&self) -> bool {
+        let mut swap = self
             .thread
             .swap
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) = me();
+            .unwrap_or_else(PoisonError::into_inner);
+        let caller = me();
+        if self.thread.end.load(Ordering::Acquire)
+            || caller
+                .as_ref()
+                .is_some_and(|caller| Arc::ptr_eq(caller, &self.thread))
+        {
+            swoole_rs_corebase::fatal("a switch into a coroutine thread that ended or runs");
+        }
+        *swap = caller;
+        drop(swap);
         self.thread.baton.post();
         wait_mine();
         self.thread.end.load(Ordering::Acquire)
     }
 
-    /// Switches back to the thread that last switched this one in.
-    ///
-    /// # Safety
-    /// This is the running thread, called on it.
-    pub(crate) unsafe fn swap_out(&self) {
+    /// Switches back to the thread that last switched this one in. Called on any
+    /// other thread, it aborts: only the running thread may hand its baton back.
+    pub(crate) fn swap_out(&self) {
+        if !me().is_some_and(|me| Arc::ptr_eq(&me, &self.thread)) {
+            swoole_rs_corebase::fatal("a switch out of a coroutine thread from another");
+        }
         self.thread.hand_back();
         self.thread.baton.wait();
     }

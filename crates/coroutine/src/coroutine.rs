@@ -39,9 +39,12 @@ const STACK_MIN: usize = 64 * 1024;
 const STACK_MAX: usize = 16 * 1024 * 1024;
 const STACK_ALIGNMENT: usize = 4 * 1024;
 
-/// A C function over its data, `void (*)(void *)`: a coroutine's entry, a
-/// swap callback, a timer's callback or the bailout callback.
+/// A C function over its data, `void (*)(void *)`: a coroutine's entry.
 pub type Routine = unsafe extern "C" fn(*mut c_void);
+
+/// The bailout callback (upstream's `on_bailout`), which runs in the main context
+/// and may longjmp out of it (a PHP bailout) or return (the process exits).
+pub type Bailout = extern "C" fn();
 
 /// A coroutine's task, which only [`set_current_task`](crate::set_current_task) sets:
 /// the one kind of object every swap callback takes (in the extension,
@@ -148,10 +151,8 @@ pub struct Hooks {
     pub(crate) swap_out: fn(Co),
     /// Frees an ended, released coroutine's record (and its stack).
     pub(crate) destroy: fn(Co),
-    /// The bailout callback (upstream's `on_bailout`), which PHP's longjmps out
-    /// of, and its data; set while the scheduler bails out.
-    pub bailout: Option<Routine>,
-    pub bailout_data: *mut c_void,
+    /// The bailout callback, set while the scheduler bails out.
+    pub bailout: Option<Bailout>,
     /// `SW_CORO_TIME`'s clock in microseconds; null without it.
     pub clock: Option<extern "C" fn() -> c_long>,
 }
@@ -443,15 +444,9 @@ fn switch_in(s: Sched, co: Co) {
         return;
     }
     // The hook as it is now: the coroutine that bailed out set it while it ran.
-    let bailout = s.with(|s| {
-        s.hooks
-            .bailout
-            .filter(|_| s.bailout)
-            .map(|f| (f, s.hooks.bailout_data))
-    });
-    if let Some((bailout, data)) = bailout {
-        // SAFETY: the callback longjmps over this frame, which owns nothing.
-        unsafe { bailout(data) };
+    // The callback may longjmp over this frame, which owns nothing.
+    if let Some(bailout) = s.with(|s| s.hooks.bailout.filter(|_| s.bailout)) {
+        bailout();
     }
 }
 
@@ -680,7 +675,7 @@ pub(crate) mod tests {
     fn destroy(co: Co) {
         event(format!("destroy {}", co.with(|co| co.native) as usize));
     }
-    unsafe extern "C" fn bailout(_: *mut c_void) {
+    extern "C" fn bailout() {
         event("bailout".into());
     }
     extern "C" fn clock() -> c_long {
@@ -714,7 +709,6 @@ pub(crate) mod tests {
                 swap_out,
                 destroy,
                 bailout: Some(bailout),
-                bailout_data: ptr::null_mut(),
                 clock: None,
             },
             live: None,
@@ -735,9 +729,9 @@ pub(crate) mod tests {
         // swoole_coroutine.h static_asserts the same sizes on the C++ side.
         assert_eq!(size_of::<Coroutine>(), 104);
         assert_eq!(core::mem::offset_of!(Coroutine, origin), 40);
-        assert_eq!(size_of::<Scheduler>(), 136);
+        assert_eq!(size_of::<Scheduler>(), 128);
         assert_eq!(core::mem::offset_of!(Scheduler, hooks), 64);
-        assert_eq!(core::mem::offset_of!(Scheduler, activated), 128);
+        assert_eq!(core::mem::offset_of!(Scheduler, activated), 120);
     }
 
     #[test]

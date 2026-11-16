@@ -33,8 +33,7 @@ typedef struct {
         bool (*swap_in)(void *); /* returns whether the coroutine ended */
         void (*swap_out)(void *);
         void (*destroy)(void *); /* frees the ended record */
-        void (*bailout)(void *); /* on_bailout(bailout_data), or null */
-        void *bailout_data;
+        void (*bailout)(void); /* on_bailout, or null */
         long (*clock)(void); /* SW_CORO_TIME's clock, or null */
     } hooks;
     void *live; /* Rust's map, null until the first coroutine */

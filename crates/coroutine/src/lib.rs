@@ -39,5 +39,5 @@ mod stack;
 pub use stack::*;
 mod thread;
 pub use thread::{
-    THREAD, swr_v1_thread_context_clean, swr_v1_thread_context_init, thread_context_active,
+    Entry, THREAD, swr_v1_thread_context_clean, swr_v1_thread_context_init, thread_context_active,
 };
