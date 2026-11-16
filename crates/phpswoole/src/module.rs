@@ -479,7 +479,14 @@ pub fn codecs() -> u32 {
 /// backtraces PHP's (`SwooleG.fatal_error` and `SwooleG.print_backtrace`).
 extern "C" fn php_hooks() {
     set_fatal_error(Some(swr_zend_fatal_error));
-    swr_v1_core_set_print_backtrace(swr_zend_print_stack_trace as *const () as *mut c_void);
+    swr_v1_core_set_print_backtrace(Some(print_stack_trace));
+}
+
+/// PHP's stack trace, for `SwooleG.print_backtrace`.
+extern "C" fn print_stack_trace() {
+    // SAFETY: installed at MINIT's end, so it runs in a PHP process whose engine
+    // has started; the shim fetches and frees its own backtrace.
+    unsafe { swr_zend_print_stack_trace() };
 }
 
 // Declared: crates/ffi depends on this crate, and the rest is C.
