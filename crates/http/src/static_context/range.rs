@@ -108,7 +108,7 @@ impl HttpStaticContext {
             let mut random = [0u8; BOUNDARY_SIZE];
             let count = count.min(BOUNDARY_SIZE - 1);
             effects.random(&mut random, count);
-            self.set_boundary(random.get(..count).unwrap_or_default());
+            _ = self.set_boundary(random.get(..count).unwrap_or_default());
         }
     }
     /// The response's `Content-Type`: multipart with several ranges, else the file's.
@@ -117,7 +117,7 @@ impl HttpStaticContext {
             return effects.mime(self.filename());
         }
         self.ensure_boundary(effects);
-        self.format_content();
+        _ = self.format_content();
         self.content.clone()
     }
     /// Begin one invocation; previous committed tasks persist, scratch resets.
@@ -198,10 +198,7 @@ impl HttpStaticContext {
     fn full_task(&mut self) -> Result<(), i32> {
         self.range.last_length = self.facts.filesize;
         self.tasks.prepare_full(0, self.range.last_length);
-        match self.tasks.push() {
-            error if error < 0 => Err(error),
-            _ => Ok(()),
-        }
+        self.tasks.push()
     }
     /// Resume the parsing, accounting and commit work until an effect is needed. An
     /// error stops the invocation. Header accounting and push wait for the call
@@ -240,10 +237,9 @@ impl HttpStaticContext {
                         .content_length
                         .wrapping_add(self.range.written)
                         .wrapping_add(self.range.last_length);
-                    let result = self.tasks.push();
-                    if result < 0 {
+                    if let Err(error) = self.tasks.push() {
                         self.range.stage = Stage::Done;
-                        return Err(result);
+                        return Err(error);
                     }
                     self.range.stage = Stage::Parsing;
                 }
@@ -274,23 +270,17 @@ impl HttpStaticContext {
                     part: 0,
                     separator: self.tasks.count() != 0,
                 };
-                let result = self.tasks.prepare_range(
+                let overflow = self.tasks.prepare_range(
                     i64::try_from(offset).unwrap_or(i64::MAX),
                     length,
                     &format,
                     &mut self.range.written,
-                );
-                if result < 0 {
-                    return Err(result);
-                }
+                )?;
                 self.range.stage = Stage::CommitHeader;
-                Ok(result == 1)
+                Ok(overflow)
             }
             Stage::End => {
-                let result = self.format_end();
-                if result < 0 {
-                    return Err(result);
-                }
+                self.format_end()?;
                 self.range.stage = Stage::CommitEnd;
                 Ok(false)
             }
@@ -336,7 +326,7 @@ mod tests {
         });
         assert_eq!(
             owner.publish(super::super::StaticText::Boundary, b"boundary"),
-            0
+            Ok(())
         );
         owner
     }
@@ -360,8 +350,8 @@ mod tests {
         owner.range.if_range = true;
         owner.boundary = b"b".to_vec();
         owner.tasks.prepare_full(0, 2);
-        assert_eq!(owner.tasks.push(), 0);
-        assert_eq!(owner.tasks.push(), 0);
+        assert_eq!(owner.tasks.push(), Ok(()));
+        assert_eq!(owner.tasks.push(), Ok(()));
         assert_eq!(
             owner.finish_step(),
             Ok(FinishAction::Yield(Effect::Boundary))

@@ -162,14 +162,12 @@ impl HttpStaticContext {
         let url = self.rewritten.as_ref().unwrap_or(&self.original);
         crate::static_path::location_match(url, location, &mut self.path)
     }
-    fn ensure_directory_slash(&mut self) -> i32 {
+    fn ensure_directory_slash(&mut self) -> Result<(), i32> {
         if self.directory_path.last() != Some(&b'/') {
-            if self.directory_path.try_reserve(1).is_err() {
-                return ALLOCATION;
-            }
+            self.directory_path.try_reserve(1).map_err(|_| ALLOCATION)?;
             self.directory_path.push(b'/');
         }
-        0
+        Ok(())
     }
     fn url(&self) -> &[u8] {
         self.rewritten.as_deref().unwrap_or(&self.original)
@@ -203,61 +201,48 @@ impl HttpStaticContext {
             End => &self.end,
         }
     }
-    fn publish(&mut self, kind: StaticText, text: &[u8]) -> i32 {
+    fn publish(&mut self, kind: StaticText, text: &[u8]) -> Result<(), i32> {
         if kind == Filename {
-            let Some((nul, head)) =
+            let (nul, head) =
                 crate::static_path::span(&mut self.filename, self.capacity, 0, text.len() + 1)
                     .and_then(<[u8]>::split_last_mut)
-            else {
-                return OVERFLOW;
-            };
+                    .ok_or(OVERFLOW)?;
             head.copy_from_slice(text);
             *nul = 0;
             self.path.filename_length = text.len();
-            return 0;
+            return Ok(());
         }
         let target = match kind {
             Url => {
-                let value = match copied(text) {
-                    Ok(value) => value,
-                    Err(error) => return error,
-                };
-                self.rewritten = Some(value);
-                return 0;
+                self.rewritten = Some(copied(text)?);
+                return Ok(());
             }
             Directory => &mut self.directory_path,
             Index => &mut self.index,
             Boundary => &mut self.boundary,
-            Original | Filename | Content | End => return INVALID,
+            Original | Filename | Content | End => return Err(INVALID),
         };
-        let value = match copied(text) {
-            Ok(value) => value,
-            Err(error) => return error,
-        };
-        *target = value;
-        0
+        *target = copied(text)?;
+        Ok(())
     }
     /// Admit the random bytes `static_boundary` asked for into an empty boundary,
     /// after the fixed prefix.
-    fn set_boundary(&mut self, random: &[u8]) -> i32 {
+    fn set_boundary(&mut self, random: &[u8]) -> Result<(), i32> {
         if !self.boundary.is_empty() {
-            return 0;
+            return Ok(());
         }
         let prefix = crate::static_meta::BOUNDARY;
         if random.len() != BOUNDARY_SIZE - prefix.len() {
-            return INVALID;
+            return Err(INVALID);
         }
         let mut boundary = Vec::new();
-        if boundary
+        boundary
             .try_reserve_exact(prefix.len() - 1 + random.len())
-            .is_err()
-        {
-            return ALLOCATION;
-        }
+            .map_err(|_| ALLOCATION)?;
         boundary.extend_from_slice(crate::c_text(prefix));
         boundary.extend_from_slice(random);
         self.boundary = boundary;
-        0
+        Ok(())
     }
     /// Admit a stat's facts.
     fn observed(&mut self, input: &HttpStaticObservation) {
@@ -267,17 +252,12 @@ impl HttpStaticContext {
         self.facts.file_ready = true;
     }
     /// The multipart content type over the boundary.
-    fn format_content(&mut self) -> i32 {
-        match crate::static_meta::static_content_type(&self.boundary) {
-            Ok(value) => {
-                self.content = value;
-                0
-            }
-            Err(error) => error,
-        }
+    fn format_content(&mut self) -> Result<(), i32> {
+        self.content = crate::static_meta::static_content_type(&self.boundary)?;
+        Ok(())
     }
     /// The multipart body's closing boundary.
-    fn format_end(&mut self) -> i32 {
+    fn format_end(&mut self) -> Result<(), i32> {
         let range = HttpRangeFormat {
             boundary: &self.boundary,
             mime: &[],
@@ -288,28 +268,18 @@ impl HttpStaticContext {
             separator: false,
         };
         let mut length = 0;
-        let status = range_format(&range, &mut [], &mut length);
-        if status < 0 {
-            return status;
-        }
-        let Some(capacity) = length
+        range_format(&range, &mut [], &mut length)?;
+        let capacity = length
             .checked_add(1)
             .filter(|&value| isize::try_from(value).is_ok())
-        else {
-            return OVERFLOW;
-        };
+            .ok_or(OVERFLOW)?;
         let mut value = Vec::new();
-        if value.try_reserve_exact(capacity).is_err() {
-            return ALLOCATION;
-        }
+        value.try_reserve_exact(capacity).map_err(|_| ALLOCATION)?;
         value.resize(capacity, 0);
-        let status = range_format(&range, &mut value, &mut length);
-        if status < 0 {
-            return status;
-        }
+        range_format(&range, &mut value, &mut length)?;
         value.truncate(length);
         self.end = value;
-        0
+        Ok(())
     }
 }
 
@@ -338,10 +308,10 @@ mod tests {
     fn content_and_end_render_from_the_owned_binary_boundary() {
         let mut owner = make();
         let mut boundary = b"one\0two".to_vec();
-        assert_eq!(owner.publish(Boundary, &boundary), 0);
+        assert_eq!(owner.publish(Boundary, &boundary), Ok(()));
         boundary.fill(b'x');
-        assert_eq!(owner.format_content(), 0);
-        assert_eq!(owner.format_end(), 0);
+        assert_eq!(owner.format_content(), Ok(()));
+        assert_eq!(owner.format_end(), Ok(()));
         assert_eq!(
             owner.text(Content),
             b"multipart/byteranges; boundary=one\0two"
@@ -354,7 +324,7 @@ mod tests {
         let mut owner = HttpStaticContext::new(&input, 128).unwrap();
         input.fill(b'x');
         assert_eq!(owner.text(Url), b"/first");
-        assert_eq!(owner.publish(Url, b"/second\0tail"), 0);
+        assert_eq!(owner.publish(Url, b"/second\0tail"), Ok(()));
         assert_eq!(owner.text(Url), b"/second\0tail");
         assert_eq!(owner.text(Original), b"/first");
         assert!(HttpStaticContext::new(b"/", 0).is_none());
@@ -367,7 +337,7 @@ mod tests {
         assert_eq!(owner.path_step(root, 0), Ok(Action::Directory));
         assert_eq!(owner.text(Directory), b"/files");
         assert_eq!(owner.path_step(root, 0), Ok(Action::Lstat));
-        assert_eq!(owner.publish(Index, b"index.html"), 0);
+        assert_eq!(owner.publish(Index, b"index.html"), Ok(()));
         let base = owner.path.filename_length;
         let index_path = |owner: &mut HttpStaticContext| {
             crate::static_path::static_index_path(
@@ -377,11 +347,11 @@ mod tests {
                 &owner.index,
             )
         };
-        assert_eq!(index_path(&mut owner), 0);
+        assert_eq!(index_path(&mut owner), Ok(()));
         assert_eq!(owner.path.filename_length, base);
         assert_eq!(owner.text(Filename), b"/root/files/index.html");
-        assert_eq!(owner.publish(Index, b"other.html"), 0);
-        assert_eq!(index_path(&mut owner), 0);
+        assert_eq!(owner.publish(Index, b"other.html"), Ok(()));
+        assert_eq!(index_path(&mut owner), Ok(()));
         // The pinned helper observes slash at the unchanged base offset,
         // then overwrites from that offset on a repeated append.
         assert_eq!(owner.text(Filename), b"/root/filesother.html");
@@ -398,7 +368,7 @@ mod tests {
         owner.directory.scan_finish();
         owner.tasks.begin();
         owner.tasks.prepare_full(17, 23);
-        assert_eq!(owner.tasks.push(), 0);
+        assert_eq!(owner.tasks.push(), Ok(()));
         let facts = owner.observe();
         assert_eq!(facts.directory_count, 2);
         assert_eq!(facts.task_count, 1);
@@ -411,14 +381,14 @@ mod tests {
     fn lazy_boundary_assembly_owns_prefix_and_positive_rng_bytes_once() {
         let mut owner = make();
         let mut random = b"ABCDEFGHIJKLMNOPQRSTUVWX".to_vec();
-        assert_eq!(owner.set_boundary(&random[..23]), INVALID);
-        assert_eq!(owner.set_boundary(&random), 0);
+        assert_eq!(owner.set_boundary(&random[..23]), Err(INVALID));
+        assert_eq!(owner.set_boundary(&random), Ok(()));
         random.fill(b'x');
         assert_eq!(
             owner.text(Boundary),
             b"SwooleBoundaryABCDEFGHIJKLMNOPQRSTUVWX"
         );
-        assert_eq!(owner.set_boundary(&random), 0);
+        assert_eq!(owner.set_boundary(&random), Ok(()));
         assert_eq!(
             owner.text(Boundary),
             b"SwooleBoundaryABCDEFGHIJKLMNOPQRSTUVWX"

@@ -855,7 +855,7 @@ fn range_candidate(
         modified: flags & 2 != 0,
     };
     let mut context = HttpStaticContext::new(b"/file", 4096).expect("a static context");
-    context.stat(&facade);
+    _ = context.stat(&facade);
     context.parse_range(Some(range), (flags & 1 != 0).then_some(b""), &facade);
     let facts = context.observe();
     let end = context.end_part();

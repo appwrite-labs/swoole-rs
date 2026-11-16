@@ -84,12 +84,12 @@ pub(crate) fn range_format(
     input: &HttpRangeFormat<'_>,
     output: &mut [u8],
     written: &mut usize,
-) -> i32 {
+) -> Result<bool, i32> {
     if input.part > 1 {
-        return INVALID;
+        return Err(INVALID);
     }
     if input.part == 0 && output.len() > i32::MAX as usize {
-        return OVERFLOW;
+        return Err(OVERFLOW);
     }
     let (boundary, mime) = if input.part == 0 {
         (c_text(input.boundary), c_text(input.mime))
@@ -99,7 +99,7 @@ pub(crate) fn range_format(
     let Some(required) =
         rendered_length(input, boundary, mime).filter(|&length| isize::try_from(length).is_ok())
     else {
-        return OVERFLOW;
+        return Err(OVERFLOW);
     };
     let libc_overflow = input.part == 0 && required > i32::MAX as usize;
     let count = if let Some((_, room)) = output.split_last_mut() {
@@ -108,7 +108,7 @@ pub(crate) fn range_format(
             length: 0,
         };
         if render(input, boundary, mime, &mut sink).is_err() {
-            return OVERFLOW;
+            return Err(OVERFLOW);
         }
         let count = sink.length.min(output.len() - 1);
         if let Some(nul) = output.get_mut(count) {
@@ -128,7 +128,7 @@ pub(crate) fn range_format(
         required
     };
     *written = count;
-    i32::from(libc_overflow)
+    Ok(libc_overflow)
 }
 
 #[cfg(test)]
@@ -147,13 +147,13 @@ mod tests {
         };
         let mut output = [0xa5; 128];
         let mut n = 0;
-        assert_eq!(range_format(&input, &mut output, &mut n), 0);
+        assert_eq!(range_format(&input, &mut output, &mut n), Ok(false));
         assert_eq!(
             &output[..n],
             b"\r\n--ab\r\nContent-Type: type\r\nContent-Range: bytes 3-7/10\r\n\r\n"
         );
         input.part = 1;
-        assert_eq!(range_format(&input, &mut output, &mut n), 0);
+        assert_eq!(range_format(&input, &mut output, &mut n), Ok(false));
         assert_eq!(&output[..n], b"\r\n--ab\0cd--\r\n");
     }
     #[test]
@@ -184,13 +184,13 @@ mod tests {
                                 )
                             };
                             let mut written = usize::MAX;
-                            assert_eq!(range_format(&input, &mut [], &mut written), 0);
+                            assert_eq!(range_format(&input, &mut [], &mut written), Ok(false));
                             assert_eq!(written, expected.len());
                             for capacity in 1..=expected.len() + 2 {
                                 let mut output = vec![0xa5; capacity + 2];
                                 assert_eq!(
                                     range_format(&input, &mut output[..capacity], &mut written),
-                                    0
+                                    Ok(false)
                                 );
                                 let take = expected.len().min(capacity - 1);
                                 assert_eq!(written, take);
@@ -217,7 +217,10 @@ mod tests {
         };
         let mut storage = [0xa5; 16];
         let mut written = 99;
-        assert_eq!(range_format(&input, &mut storage, &mut written), INVALID);
+        assert_eq!(
+            range_format(&input, &mut storage, &mut written),
+            Err(INVALID)
+        );
         assert_eq!(storage, [0xa5; 16]);
         assert_eq!(written, 99);
     }
