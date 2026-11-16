@@ -74,9 +74,9 @@ record! {
     current_task_id: AtomicI64, c_long = 0, swr_v1_core_current_task_id, swr_v1_core_set_current_task_id;
     signal_fd: AtomicI32, c_int = 0, swr_v1_core_signal_fd, swr_v1_core_set_signal_fd;
     signal_alarm: AtomicBool, bool = false,
-        #[unsafe(no_mangle)] swr_v1_core_signal_alarm, swr_v1_core_set_signal_alarm;
+        swr_v1_core_signal_alarm, swr_v1_core_set_signal_alarm;
     signal_listener_num: AtomicU32, u32 = 0,
-        swr_v1_core_signal_listener_num, #[unsafe(no_mangle)] swr_v1_core_set_signal_listener_num;
+        swr_v1_core_signal_listener_num, swr_v1_core_set_signal_listener_num;
     signal_async_listener_num: AtomicU32, u32 = 0,
         swr_v1_core_signal_async_listener_num, swr_v1_core_set_signal_async_listener_num;
     trace_flags: AtomicI64, c_long = 0, #[unsafe(no_mangle)] swr_v1_core_trace_flags, swr_v1_core_set_trace_flags;
@@ -324,8 +324,8 @@ pub fn swr_v1_core_initialized() -> bool {
     RECORD.init.load(Ordering::Relaxed)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_core_cpu_num() -> u16 {
+#[must_use]
+pub fn swr_v1_core_cpu_num() -> u16 {
     RECORD.cpu_num.load(Ordering::Relaxed)
 }
 

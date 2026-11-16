@@ -755,20 +755,6 @@ pub fn barrier_destroy(barrier: &Barrier) {
     let _ = barrier;
 }
 
-// The word functions below take null or a pointer to live, aligned u32 storage that is
-// only accessed atomically (process-shared for the futex pair).
-/// Futex wait on a native atomic word: consume a ready token, otherwise one
-/// `FUTEX_WAIT` syscall. Non-futex builds use upstream's C++ wait registry.
-#[cfg(target_os = "linux")]
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_locks_wait(word: Option<&AtomicU32>, timeout: f64) -> i32 {
-    if word.is_some_and(|word| wait(word, timeout)) {
-        0
-    } else {
-        -1
-    }
-}
-
 /// The two futex operations the words use.
 #[cfg(target_os = "linux")]
 #[derive(Clone, Copy)]
@@ -802,7 +788,8 @@ fn futex(word: &AtomicU32, op: Futex, value: c_int, timeout: Option<&timespec>) 
     }
 }
 
-/// [`swr_v1_locks_wait`] on a word: whether it took the word's token.
+/// Futex wait on an atomic word (process-shared for a forked waiter): consume a ready
+/// token, otherwise one `FUTEX_WAIT` syscall. Whether it took the word's token.
 #[cfg(target_os = "linux")]
 #[must_use]
 pub fn wait(a: &AtomicU32, timeout: f64) -> bool {
@@ -822,15 +809,7 @@ pub fn wait(a: &AtomicU32, timeout: f64) -> bool {
     a.compare_exchange(1, 0, Ordering::SeqCst, Ordering::SeqCst)
         .is_ok()
 }
-/// Futex wake on a native atomic word.
-#[cfg(target_os = "linux")]
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_locks_wakeup(word: Option<&AtomicU32>, n: i32) -> i32 {
-    word.and_then(|word| wakeup(word, n))
-        .map_or(-1, |woken| i32::try_from(woken).unwrap_or(i32::MAX))
-}
-
-/// [`swr_v1_locks_wakeup`] on a word: the waiters woken, or none when the wake failed.
+/// Futex wake on an atomic word: the waiters woken, or none when the wake failed.
 #[cfg(target_os = "linux")]
 #[must_use]
 pub fn wakeup(a: &AtomicU32, n: i32) -> Option<u32> {
@@ -845,8 +824,9 @@ pub fn wakeup(a: &AtomicU32, n: i32) -> Option<u32> {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_locks_coroutine_backoff(second: f64, initial: f64, maximum: f64) -> f64 {
+/// A coroutine lock's next sleep: `second` doubled up to `maximum`, then `initial` again.
+#[must_use]
+pub fn coroutine_backoff(second: f64, initial: f64, maximum: f64) -> f64 {
     if second >= maximum {
         initial
     } else if second * 2.0 < maximum {

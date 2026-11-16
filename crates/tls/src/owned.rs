@@ -147,7 +147,7 @@ impl TlsSettings {
         ssl.set_context(self.fields.context.as_deref());
     }
 }
-#[repr(C)]
+/// An owner's pointer, scalar fields and string slots.
 pub struct OwnedTlsPrepared {
     pub owner: *const OwnedTlsContext,
     pub fields: *mut OwnedTlsFields,
@@ -157,18 +157,16 @@ pub struct OwnedTlsPrepared {
 pub fn tls_warning(function: &CStr, message: &str) {
     swoole_rs_corebase::log::warning(function, format_args!("{message}"));
 }
-fn prepared(owner: &OwnedTlsContext) -> OwnedTlsPrepared {
+/// `owner`'s scalar fields and string slots, valid while a reference is held. A write
+/// through them holds the owner as a [`Lent`] does.
+#[must_use]
+pub fn owner_view(owner: &OwnedTlsContext) -> OwnedTlsPrepared {
     let mut loan = owner.borrow_configuration();
     OwnedTlsPrepared {
         owner,
         fields: loan.edit(std::ptr::from_mut),
         strings: owner.strings.each_ref().map(Arc::as_ptr),
     }
-}
-/// A new owner that warns through [`tls_warning`], holding one reference, and its view.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_tls_owner_new() -> OwnedTlsPrepared {
-    owner_new(tls_warning)
 }
 /// A new owner that warns through `warn`, with fresh string slots of its own.
 fn fresh(warn: Warn) -> Rc<OwnedTlsContext> {
@@ -183,19 +181,13 @@ fn fresh(warn: Warn) -> Rc<OwnedTlsContext> {
 #[must_use]
 pub fn owner_new(warn: Warn) -> OwnedTlsPrepared {
     let owner = fresh(warn);
-    let view = prepared(&owner);
+    let view = owner_view(&owner);
     OwnedTlsPrepared {
-        // The Rc's own pointer, which `swr_v1_tls_owner_free` can turn back into the
-        // Rc: one taken from a reference covers only the context, not its counts.
+        // The Rc's own pointer, which `Rc::from_raw` can turn back into the Rc: one
+        // taken from a reference covers only the context, not its counts.
         owner: Rc::into_raw(owner),
         ..view
     }
-}
-/// `owner`'s scalar fields and string slots, valid while a reference is held. A write
-/// through them holds the owner as a [`Lent`] does.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_tls_owner_view(owner: &OwnedTlsContext) -> OwnedTlsPrepared {
-    prepared(owner)
 }
 /// One counted reference to an owner. Cloning takes another reference and dropping
 /// releases this one.
