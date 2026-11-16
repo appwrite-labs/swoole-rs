@@ -87,17 +87,11 @@ impl Entry {
         thread_local! {
             static BORROWED: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
         }
-        struct Lent;
-        impl Drop for Lent {
-            fn drop(&mut self) {
-                BORROWED.set(false);
-            }
-        }
         assert!(
             !BORROWED.replace(true),
             "an internal function borrowed twice"
         );
-        let _lent = Lent;
+        let _lent = core::mem::DropGuard::new((), |()| BORROWED.set(false));
         // SAFETY: a live internal function (`find`), borrowed by no other `with` on
         // this thread; the borrow ends with `f`, which takes no `Entry`'s `&mut` again.
         f(unsafe { &mut *self.0.as_ptr() })

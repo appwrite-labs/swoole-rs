@@ -248,7 +248,7 @@ impl Logger {
                 // strerror's text: std's, without the code it appends.
                 let reason = std::io::Error::from_raw_os_error(code).to_string();
                 let suffix = format!(" (os error {code})");
-                let reason = reason.strip_suffix(&suffix).unwrap_or(&reason);
+                let reason = reason.trim_suffix(&suffix);
                 log::error_log(
                     log::LogLevel::SW_LOG_WARNING,
                     SYSTEM_CALL_FAIL,
