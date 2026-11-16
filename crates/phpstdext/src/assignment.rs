@@ -42,7 +42,13 @@ unsafe extern "C" {
     safe fn swr_phpstdext_binary(frame: Frame<'_>, slot: &Value, value: &Value) -> u8;
     /// The same on the reference `element` holds, verified against the types
     /// of the properties it is a source of: nothing unless it has any.
-    safe fn swr_phpstdext_typed_ref(frame: Frame<'_>, element: &Value, value: &Value) -> u8;
+    /// `typed` says whether it had (`ZEND_REF_HAS_TYPE_SOURCES`).
+    safe fn swr_phpstdext_typed_ref(
+        frame: Frame<'_>,
+        element: &Value,
+        value: &Value,
+        typed: &mut bool,
+    ) -> u8;
     /// The new element's slot, none when the next index is taken.
     #[link_name = "zend_hash_next_index_insert"]
     fn next_index_insert<'a>(table: *mut z::HashTable, value: *mut zval) -> Option<&'a Value>;
@@ -205,12 +211,14 @@ fn assign_op(op: Op, data: Data, own: Typed, container: &Value) -> Result<(), Ba
     };
     // The element's slot, or its reference's, which the element keeps alive.
     let target = element.referred();
-    // The reference whose typed property sources Zend must verify, if any.
-    if element.typed_reference().is_some() {
-        // The native typed-reference operation preserves PHP source
-        // verification and strict types.
-        leaf(swr_phpstdext_typed_ref(op.frame, element, value))?;
-    } else {
+    // On a reference whose typed property sources Zend must verify, the
+    // native typed-reference operation preserves PHP source verification and
+    // strict types.
+    let mut typed = false;
+    leaf(swr_phpstdext_typed_ref(
+        op.frame, element, value, &mut typed,
+    ))?;
+    if !typed {
         if !typed::operation(own, op.extended_value == z::ZEND_CONCAT) {
             // A rejected operation follows the original temporary/result cleanup path.
             return data.abandon(op);

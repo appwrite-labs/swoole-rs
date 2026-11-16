@@ -13,14 +13,13 @@ use std::{
     sync::OnceLock,
 };
 use swoole_rs_zend::{
-    Call, ClassEntry, Owned, Php, UNDEF, Value, ZString,
+    Call, ClassEntry, Owned, Php, Value, ZString,
     bailout::Bailout,
     handlers,
     opcode::Handler,
     sys::{
-        _zval_struct__bindgen_ty_2, HashTable, IS_ARRAY, IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL,
-        IS_OBJECT, IS_RESOURCE, IS_STRING, IS_TRUE, IS_UNDEF, zend_internal_function, zend_long,
-        zif_handler,
+        HashTable, IS_ARRAY, IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT, IS_RESOURCE,
+        IS_STRING, IS_TRUE, IS_UNDEF, zend_internal_function, zend_long, zif_handler,
     },
     throw_error, type_error,
 };
@@ -271,6 +270,11 @@ unsafe extern "C" {
     /// `ZVAL_ARR(made, ...)` of a new table of `size` elements with `extra`
     /// uninitialised bytes behind it, which it returns; what `made` held is
     /// not released.
+    /// `FE_RESET_RW`'s failure at `frame`'s instruction: `ZVAL_UNDEF` of its
+    /// result, then `Z_FE_ITER_P(result) = -1`; nothing for any other
+    /// instruction or an unused result.
+    #[link_name = "swr_phpstdext_foreach_undef"]
+    safe fn foreach_undef(frame: Frame<'_>);
     #[link_name = "swr_phpstdext_typed_new"]
     safe fn typed_new(made: &Owned, size: u32, extra: usize) -> *mut HashTable;
 }
@@ -600,14 +604,7 @@ impl Handler for ForeachBegin {
         throw_error(
             c"The type array do not support using references for element value during iteration",
         );
-        if let Some(result) = op.result() {
-            let mut undefined = UNDEF;
-            undefined.u2 = _zval_struct__bindgen_ty_2 {
-                fe_iter_idx: u32::MAX,
-            };
-            // SAFETY: the result slot: `ZVAL_UNDEF`, then `Z_FE_ITER_P(result) = -1`.
-            unsafe { result.as_ptr().write(undefined) };
-        }
+        foreach_undef(frame);
         CONTINUE
     }
 }

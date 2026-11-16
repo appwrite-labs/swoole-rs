@@ -432,23 +432,6 @@ impl Value {
         (self.kind() == IS_INDIRECT).then(|| self.payload::<zval>())
     }
 
-    /// `ZEND_REF_HAS_TYPE_SOURCES`: a reference that typed properties point at,
-    /// whose assignments Zend must verify against their types.
-    #[must_use]
-    pub fn typed_reference(&self) -> Option<*mut zend_reference> {
-        if self.kind() != IS_REFERENCE {
-            return None;
-        }
-        // A reference zval holds `ref`.
-        let reference = self.payload::<zend_reference>();
-        let sources = reference
-            .wrapping_byte_add(std::mem::offset_of!(zend_reference, sources))
-            .cast::<*const std::ffi::c_void>();
-        // SAFETY: the live reference this zval keeps alive; its source list's
-        // union is pointer-sized, and Zend tests it through its pointer member too.
-        (!unsafe { sources.read() }.is_null()).then_some(reference)
-    }
-
     /// `Z_LVAL_P` of an int, with no conversion.
     #[must_use]
     #[inline]
