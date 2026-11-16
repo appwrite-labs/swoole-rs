@@ -186,24 +186,34 @@ pub fn accept(fd: c_int, peer: &mut SocketAddress) -> io::Result<c_int> {
     Ok(conn_fd)
 }
 
+/// Why the single-descriptor poll could not report readiness.
+#[derive(Debug)]
+pub enum FakePollError {
+    /// The call did not contain exactly one descriptor.
+    InvalidDescriptorCount,
+    /// The fallback poll syscall failed.
+    Io(io::Error),
+}
+
 /// Hooked `poll(2)` of one fd that only reports it ready, after making `timeout`
-/// its socket's timeout; libc's `poll` without a socket or a timeout. -1, with the
-/// last error, for any other number of fds.
-#[must_use]
-pub fn poll_fake(fds: &mut [pollfd], timeout: c_int) -> c_int {
+/// its socket's timeout; libc's `poll` without a socket or a timeout.
+///
+/// # Errors
+/// Invalid descriptor counts set Swoole's last error; syscall errors leave errno.
+pub fn poll_fake(fds: &mut [pollfd], timeout: c_int) -> Result<c_int, FakePollError> {
     let [fd] = fds else {
         (crate::stdio::runtime().set_last_error)(INVALID_PARAMS);
         log::warning(
             c"swoole_coroutine_poll_fake",
             format_args!("fake poll() implementation, only supports one fd"),
         );
-        return -1;
+        return Err(FakePollError::InvalidDescriptorCount);
     };
     let socket = hooked(fd.fd).map(|(_, socket)| socket);
     if fd_poll_fake(fd, timeout, socket) {
-        1
+        Ok(1)
     } else {
-        sys::poll(core::slice::from_mut(fd), timeout).unwrap_or(-1)
+        sys::poll(core::slice::from_mut(fd), timeout).map_err(FakePollError::Io)
     }
 }
 
@@ -703,10 +713,15 @@ pub(crate) mod tests {
                 revents: 0,
             }; 2];
             with(Mode::Pool, || {
-                assert_eq!(poll_fake(&mut fds, 10), -1);
+                let invalid = poll_fake(&mut fds, 10);
+                assert!(matches!(
+                    &invalid,
+                    Err(FakePollError::InvalidDescriptorCount)
+                ));
+                assert_eq!(invalid.unwrap_or(-1), -1);
                 assert_eq!(LAST_ERROR.get(), INVALID_PARAMS);
                 // No socket: libc's poll.
-                assert_eq!(poll_fake(&mut fds[..1], 10), 1);
+                assert_eq!(poll_fake(&mut fds[..1], 10).unwrap_or(-1), 1);
                 assert_eq!(fds[0].revents, libc::POLLOUT);
                 // Without a timeout, poll is libc's even in a coroutine.
                 assert_eq!(swoole_coroutine_poll(fds.as_mut_ptr(), 1, 0), 1);
