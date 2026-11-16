@@ -25,11 +25,11 @@ use swoole_rs_phpstubs::http_client_coro;
 use swoole_rs_reactor::Events;
 use swoole_rs_websocket::Opcode;
 use swoole_rs_zend::{
-    Array, ArrayMut, Call, Class, Custom, CustomClass, Minit, ObjectRef, Owned, OwnedArray, Props,
-    Value, ZStr, ZString,
+    Array, ArrayMut, Call, Class, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Value,
+    Weak, ZStr, ZString,
     bailout::{self, Bailout},
     host::callable::Callable,
-    sys::{ZEND_ACC_PUBLIC, zend_object},
+    sys::ZEND_ACC_PUBLIC,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -123,7 +123,8 @@ impl Custom for Data {
 /// What the socket's close hook changes, shared with the hook apart from the
 /// client so the hook never writes through a live `&mut Client`.
 struct Conn {
-    object: *mut zend_object,
+    /// The client object, which a conn must not keep alive.
+    object: Weak<Data>,
     socket: Cell<Option<Co>>,
     zsocket: Cell<Owned>,
     /// The write buffer the closed socket left (`tmp_write_buffer`).
@@ -316,8 +317,13 @@ fn socket_closed(conn: &Conn, socket: Co) {
     // The buffer the conn took from its last socket goes.
     drop(conn.written.replace(socket.take_write_buffer()));
     conn.socket.set(None);
-    conn.props().bool(c"connected", false);
-    conn.props().null(c"socket");
+    // Nothing to say once the object is gone, or while it is freed.
+    if let Some(this) = conn.this()
+        && let Some(props) = this.props(Some(&CLIENT))
+    {
+        props.bool(c"connected", false);
+        props.null(c"socket");
+    }
     // Emptied before the socket object's reference goes.
     let zsocket = conn.zsocket.take();
     drop(zsocket);
@@ -343,21 +349,23 @@ pub fn parse_set_cookies(bytes: &[u8], cookies: &mut ArrayMut, set_cookie_header
 }
 
 impl Conn {
-    /// Writes on the client object, which owns the client and so this conn.
-    fn props(&self) -> Props<'_> {
-        // SAFETY: the object outlives its client's conn; the class declares every name written.
-        let object = unsafe { ObjectRef::from_ptr(self.object) };
-        // Never null: `Client::new` takes a constructor's `$this`.
-        let object =
-            object.unwrap_or_else(|| swoole_rs_corebase::fatal("a client without its object"));
-        Props::of(Some(&*CLIENT), object)
+    /// The client object, while it lives and this is its client's conn.
+    fn this(&self) -> Option<Owned> {
+        let this = self.object.get()?;
+        let conn = &this.custom::<Data>()?.client.get()?.conn;
+        std::ptr::eq(Rc::as_ptr(conn), self).then_some(this)
     }
 }
 
 impl Client {
-    /// Writes on the client object, which owns this client.
+    /// Writes on the client object, whose data holds this client.
     fn props(&self) -> Props<'_> {
-        self.conn.props()
+        // Never none: `Client::new` takes a constructor's `$this`, and the client
+        // is in its data.
+        let object = self.conn.object.owner(self);
+        let object =
+            object.unwrap_or_else(|| swoole_rs_corebase::fatal("a client without its object"));
+        Props::of(Some(&*CLIENT), object)
     }
 
     /// The property `name`, which the client class declares.
@@ -392,7 +400,7 @@ impl Client {
         self.property(name).long()
     }
 
-    fn new(object: *mut zend_object, host: &[u8], port: i64, ssl: bool) -> Self {
+    fn new(object: Weak<Data>, host: &[u8], port: i64, ssl: bool) -> Self {
         let use_default_port = port == 0;
         let port = if use_default_port {
             if ssl { 443 } else { 80 }
@@ -1351,7 +1359,15 @@ impl Drop for Client {
     /// Runs to the end even when a destructor the callable's release runs
     /// bails out; that bailout stays pending for the `free` handler to raise.
     fn drop(&mut self) {
-        self.close(true);
+        // `close(true)` without its property writes: Zend frees the object, which
+        // no longer finds it (`Weak::owner`), and nothing reads them again.
+        if let Some(socket) = self.co() {
+            if self.in_callback.get() {
+                socket.with_net(|net| net.edit(|record| record.output.close_wait = true));
+            } else {
+                socket.close();
+            }
+        }
         drop(self.write_func.take());
         if let Some(fd) = self.download_file.take() {
             native::swoole_http_client_coro_file_close(fd);
@@ -1691,8 +1707,8 @@ fn construct(call: &Call) {
     let Ok((host, port, ssl)) = parsed else {
         return call.set_bool(false);
     };
-    let object = call.this();
-    let Some(data) = call.custom::<Data>() else {
+    let object = call.this_value().and_then(Weak::of);
+    let (Some(data), Some(object)) = (call.custom::<Data>(), object) else {
         return call.set_bool(false);
     };
     if data.client.get().is_some() {

@@ -43,6 +43,13 @@ unsafe extern "C" {
         handlers: *const zend_object_handlers,
         found: &Owned,
     ) -> bool;
+    /// The object the executor's store holds at `handle`, if its handlers are
+    /// `handlers` (compared, never read), or null. No reference is taken and no
+    /// PHP code runs.
+    safe fn swr_zend_objects_lookup(
+        handle: u32,
+        handlers: *const zend_object_handlers,
+    ) -> *mut zend_object;
 }
 
 /// A live object, borrowed for `'a`: one a zval or frame holds, or one Zend
@@ -264,6 +271,27 @@ impl<T: Custom> Weak<T> {
     pub fn get(&self) -> Option<Owned> {
         let found = Owned::default();
         swr_zend_objects_hold(self.0, T::class().handlers(), &found).then_some(found)
+    }
+
+    /// The object, borrowed as long as `part` is, when `part` lies in its data:
+    /// for a holder inside the object, which finds the object it is part of.
+    /// None once Zend took the object out of its store to free it (shutdown
+    /// frees objects in place, so it finds them then). A zero-sized `part` is
+    /// in no object.
+    #[must_use]
+    pub fn owner<'a, P>(&self, part: &'a P) -> Option<ObjectRef<'a>> {
+        let std = swr_zend_objects_lookup(self.0, T::class().handlers());
+        if std.is_null() || size_of::<P>() == 0 {
+            return None;
+        }
+        let data = Object::<T>::data_ptr(std).addr();
+        let at = std::ptr::from_ref(part).addr();
+        let inside = data <= at && at + size_of::<P>() <= data + size_of::<T>();
+        // A live object of `T`'s class, so an `Object<T>` (as `custom` reads it):
+        // `part` borrows bytes of its data for `'a`, and the data lives until
+        // `free::<T>` drops it, which needs nothing to borrow it, so the object
+        // outlives `'a`.
+        inside.then_some(ObjectRef(std, PhantomData))
     }
 }
 
