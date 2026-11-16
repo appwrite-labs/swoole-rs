@@ -177,7 +177,7 @@ pub(crate) fn ssl_create(config: &PortConfig, sock: Option<Socket<'_>>) -> bool 
     };
     // The port outlives its connections; the SNI callback only reads it.
     let port = ptr::from_ref(config).cast_mut().cast();
-    if !Ssl::of(sock).is_some_and(|ssl| ssl.set_ex_data(swr_v1_tls_port_index(), port)) {
+    if !Ssl::of(sock).is_some_and(|ssl| ssl.get().set_ex_data(swr_v1_tls_port_index(), port)) {
         log::warning(
             c"ListenPort::ssl_create",
             format_args!("SSL_set_ex_data() failed"),

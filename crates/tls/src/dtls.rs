@@ -66,12 +66,12 @@ impl DtlsSession {
         }
     }
 
-    /// The session `dtls_open` made for `socket`, borrowed as its SSL is; none without
-    /// one.
+    /// The session `dtls_open` made, borrowed from the SSL lease that keeps its
+    /// BIO and session alive.
     #[must_use]
-    pub fn of(socket: Socket<'_>) -> Option<&DtlsSession> {
+    pub fn of(ssl: crate::Ssl<'_>) -> Option<&DtlsSession> {
         let kind = SESSION_TYPE.load(Ordering::Acquire);
-        let bio = crate::Ssl::of(socket)?.read_bio()?;
+        let bio = ssl.read_bio()?;
         BIO_get_data(BIO_find_type(
             bio,
             (kind != 0).then_some(SessionType(kind))?,
@@ -443,16 +443,17 @@ pub fn dtls_open(socket: Socket<'_>, context: &std::sync::Arc<crate::TlsSettings
 /// session.
 #[must_use]
 pub fn dtls_session_listen(socket: Socket<'_>) -> bool {
-    let Some(owner) = DtlsSession::of(socket) else {
+    let Some(held) = crate::Ssl::of(socket) else {
+        return false;
+    };
+    let ssl = held.get();
+    let Some(owner) = DtlsSession::of(ssl) else {
         return false;
     };
     if owner.listened() {
         return false;
     }
     crate::clear_errors();
-    let Some(ssl) = crate::Ssl::of(socket) else {
-        return false;
-    };
     let result = ssl.dtls_listen();
     if swr_v1_tls_dtls_listen(owner, result) {
         return true;
@@ -624,14 +625,24 @@ mod tests {
         let (_peer, stream) = std::os::unix::net::UnixDatagram::pair().unwrap();
         let raw = swoole_rs_reactor::SocketRecord::with_fd(stream.as_raw_fd(), 6).into_raw();
         let socket = unsafe { Socket::from_ptr(raw) }.unwrap();
-        assert!(DtlsSession::of(socket).is_none());
+        assert!(crate::Ssl::of(socket).is_none());
         assert!(dtls_open(socket, &context));
         assert!(!dtls_open(socket, &context), "one session per socket");
-        let session = DtlsSession::of(socket).unwrap();
+        let held = crate::Ssl::of(socket).unwrap();
+        let session = DtlsSession::of(held.get()).unwrap();
         assert!(swr_v1_tls_dtls_append(session, b"abc"));
-        assert_eq!(swr_v1_tls_dtls_length(DtlsSession::of(socket).unwrap()), 3);
-        unsafe { crate::upstream::socket_ssl_close(socket) };
-        assert!(DtlsSession::of(socket).is_none());
+        assert_eq!(
+            swr_v1_tls_dtls_length(DtlsSession::of(held.get()).unwrap()),
+            3
+        );
+        crate::upstream::socket_ssl_close(socket);
+        assert!(crate::Ssl::of(socket).is_none());
+        assert_eq!(
+            swr_v1_tls_dtls_length(session),
+            3,
+            "pending lease retains the BIO session"
+        );
+        drop(held);
         drop(unsafe { Box::from_raw(raw) });
     }
 }

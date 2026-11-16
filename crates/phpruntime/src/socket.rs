@@ -310,11 +310,7 @@ impl Socket {
 
     /// `ssl_close()`; the socket holds an SSL.
     pub(crate) fn ssl_close(&self) {
-        self.co().with_network(|network| {
-            // SAFETY: handles to a session live only for the operation that took them,
-            // and closing runs none.
-            unsafe { socket_ssl_close(network) };
-        });
+        self.co().with_network(socket_ssl_close);
     }
 
     /// The peer certificate's PEM, empty without one.

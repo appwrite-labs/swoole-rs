@@ -69,8 +69,8 @@ What is not:
 - **One upstream version.** It tracks v6.2.5 (pinned at `76c657d8`) and reports itself as
   that version.
 - **Linux is what CI tests.** Every merge runs Ubuntu 24.04 on x86-64 with PHP 8.3, plus
-  Alpine (musl) and a thread-safe PHP. PHP 8.2, 8.4 and 8.5 run nightly. The build
-  scripts handle macOS and arm64 Linux, and CI runs neither.
+  Alpine (musl) and a thread-safe PHP. PHP 8.2, 8.4 and 8.5 run nightly, as does
+  arm64 with PHP 8.3. The build scripts handle macOS, which CI doesn't run.
 - **Pre-releases only, and no packages.** [Releases](#install) are prebuilt binaries for
   Linux. There is no PECL or PIE package and no Docker image, and nothing for macOS: build
   from source there.

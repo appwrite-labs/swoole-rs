@@ -11,12 +11,13 @@ if command -v apk >/dev/null; then
     # shellcheck disable=SC2086 # the image's word list
     apk add --no-cache $PHPIZE_DEPS git python3 openssl-dev pcre2-dev zlib-dev brotli-dev zstd-dev linux-headers clang-dev
     # Rust's std links the unwinder as -lgcc_s, and the php image on arm64 has no libgcc_s.so.1.
-    # A directory that offers it only as an archive (gcc's static unwinder) wins the linker's
-    # search, and --exclude-libs keeps its _Unwind_* symbols out of the dynamic symbol table.
+    # A directory that offers that name only as a linker script for gcc's static unwinder
+    # (and libgcc, whose atomics it calls on arm64) wins the linker's search; --exclude-libs
+    # keeps its _Unwind_* symbols out of the dynamic symbol table.
     mkdir -p /tmp/unwind
-    ln -sf "$(cc -print-file-name=libgcc_eh.a)" /tmp/unwind/libgcc_s.a
+    echo "GROUP ( $(cc -print-file-name=libgcc_eh.a) $(cc -print-file-name=libgcc.a) )" > /tmp/unwind/libgcc_s.a
     # musl build scripts link statically and cannot dlopen libclang (zend-sys's bindgen).
-    export RUSTFLAGS='-C target-feature=-crt-static -L native=/tmp/unwind -C link-arg=-Wl,--exclude-libs,libgcc_s.a'
+    export RUSTFLAGS='-C target-feature=-crt-static -L native=/tmp/unwind -C link-arg=-Wl,--exclude-libs,libgcc_eh.a'
 else
     libc=gnu
     apt-get update -q

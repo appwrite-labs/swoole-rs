@@ -290,7 +290,6 @@ fn set_hook_flags(call: &Call, min: u32) -> Result<(), Bailout> {
 }
 
 /// `PHPCoroutine::enable_hook(flags)`; a trapped bailout is raised last.
-#[unsafe(export_name = "swr_v1_phpruntime_enable_hook")]
 #[must_use]
 pub extern "C" fn php_coroutine_enable_hook(flags: u32) -> bool {
     let enabled = enable_hook(flags);
