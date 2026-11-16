@@ -55,8 +55,8 @@ impl LiveServer {
         let mut sessions: Vec<SessionRecord> = free_slots(SESSIONS);
         let mut connections: Vec<ConnectionRecord> = free_slots(CONNECTIONS);
         let mut tables = ServerTables::default();
-        tables.session_list = naming_at(sessions.as_mut_ptr());
-        tables.connection_list = naming_at(connections.as_mut_ptr());
+        *tables.session_list_mut() = naming_at(sessions.as_mut_ptr());
+        *tables.connection_list_mut() = naming_at(connections.as_mut_ptr());
         // SAFETY: the table just named holds `CONNECTIONS` records.
         unsafe {
             tables.set_max_connection_unchecked(u32::try_from(CONNECTIONS).unwrap_or(u32::MAX));
@@ -127,9 +127,9 @@ impl LiveServer {
     pub(crate) fn forget_tables(&mut self, connections: bool) {
         // A `Shm` unmaps only when told to: overwriting one forgets it.
         let tables = self.server.tables_mut();
-        tables.session_list = swoole_rs_memory::members::Shm::empty();
+        *tables.session_list_mut() = swoole_rs_memory::members::Shm::empty();
         if connections {
-            tables.connection_list = swoole_rs_memory::members::Shm::empty();
+            *tables.connection_list_mut() = swoole_rs_memory::members::Shm::empty();
         }
     }
 

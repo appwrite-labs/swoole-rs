@@ -195,7 +195,7 @@ mod tests {
             .collect();
         sessions[0].reactor_bits.set(0x5a12_3400 | 1);
         sessions[last].reactor_bits.set(0x5a12_3400 | 1);
-        server.tables_mut().session_list = crate::records::tests::naming(&mut sessions);
+        *server.tables_mut().session_list_mut() = crate::records::tests::naming(&mut sessions);
         let serv = server.serv();
         abort_worker(serv, worker);
         assert_eq!(worker.counters(), [0, 0, 0, 0]);
@@ -213,7 +213,7 @@ mod tests {
         assert_eq!(worker.counters()[3], 0);
         assert_eq!(serv.counters().concurrency.load(SeqCst), 0);
 
-        server.tables_mut().session_list = swoole_rs_memory::members::Shm::empty();
+        *server.tables_mut().session_list_mut() = swoole_rs_memory::members::Shm::empty();
         server.config_mut().workers.free();
         server.config_mut().gs.free();
     }
