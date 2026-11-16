@@ -434,7 +434,7 @@ impl Multi {
                     return EXEC_NEEDS_COROUTINE;
                 };
                 self.co.set(Some(waiter));
-                canceled = host::yield_(co, -1.0);
+                canceled = host::yield_(co, -1.0, |waker| self.co.set(Some(waiter.parked(waker))));
                 self.co.set(None);
                 if canceled {
                     set_last_error(CO_CANCELED);
@@ -582,8 +582,10 @@ impl Multi {
         if !self.wait_event() {
             return 0;
         }
-        self.co.set(Waiter::running(co));
-        host::yield_(co, timeout);
+        let waiter = Waiter::running(co);
+        self.co.set(waiter);
+        let arm = |waker| self.co.set(waiter.map(|waiter| waiter.parked(waker)));
+        host::yield_(co, timeout, arm);
         self.co.set(None);
         self.ready()
     }
@@ -621,18 +623,26 @@ impl Multi {
 }
 
 /// The coroutine waiting on a multi, which is the running one as it starts to wait:
-/// its record and its id.
+/// its id, and its park's waker once it parks.
 #[derive(Clone, Copy)]
 struct Waiter {
-    co: ptr::NonNull<c_void>,
     cid: c_long,
+    waker: Option<swoole_rs_coroutine::Waker>,
 }
 
 impl Waiter {
     /// `co`, the running coroutine, or none outside one.
     fn running(co: *mut c_void) -> Option<Self> {
         let cid = host::current_cid();
-        ptr::NonNull::new(co).map(|co| Self { co, cid })
+        (!co.is_null()).then_some(Self { cid, waker: None })
+    }
+
+    /// The waiter, parked: `waker` wakes it.
+    const fn parked(self, waker: swoole_rs_coroutine::Waker) -> Self {
+        Self {
+            waker: Some(waker),
+            ..self
+        }
     }
 }
 
@@ -759,9 +769,8 @@ fn multi_deferred(this: &Multi) -> bool {
     if this.released.get() {
         return true;
     }
-    if let Some(waiter) = this.co.get() {
-        // SAFETY: the coroutine waiting on this multi.
-        unsafe { host::resume(waiter.co.as_ptr()) };
+    if let Some(waker) = this.co.get().and_then(|waiter| waiter.waker) {
+        host::wake(waker);
     }
     false
 }

@@ -163,7 +163,8 @@ mod native {
         } else {
             Events::WRITE
         };
-        swoole_rs_coroutine::yield_with_cancel(co, move |_| socket.cancel(event));
+        let arm = |waker| socket.with_state(|state| state.park(event, waker));
+        swoole_rs_coroutine::yield_with_cancel_armed(co, move |_| socket.cancel(event), arm);
     }
 
     /// `get_write_buffer()`, cleared and holding the write's bytes.
@@ -281,18 +282,16 @@ mod native {
         if co.is_null() {
             return 0;
         }
-        // SAFETY: a bound coroutine is suspended in its operation on this socket,
-        // which unbinds it before it returns (`SocketState::bind`), so it is live;
-        // its record starts with its Rust state.
-        unsafe { (*co.cast::<swoole_rs_coroutine::Coroutine>()).cid }
+        // A bound coroutine is suspended in its operation on this socket, which
+        // unbinds it before it returns (`SocketState::bind`), so it is live.
+        swoole_rs_coroutine::live_cid(co).unwrap_or(0)
     }
 
-    /// [`super::Ops::resume`].
+    /// [`super::Ops::resume`]: the coroutine parked for `event`, if one is.
     pub(super) fn resume(socket: Co, event: Events) {
-        let co = socket.with_state(|state| state.co(event));
-        // SAFETY: null, which resumes nothing, or the coroutine bound for `event`,
-        // suspended in its operation on this socket until it unbinds itself.
-        unsafe { swoole_rs_coroutine::resume(co) };
+        if let Some(waker) = socket.with_state(|state| state.waker(event)) {
+            waker.wake();
+        }
     }
 
     pub(super) fn bound_error(fd: c_int, event: &CStr, cid: c_long) {

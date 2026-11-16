@@ -21,6 +21,8 @@ pub struct SocketState {
     /// The native `Coroutine` waiting to read and to write, or null.
     read_co: *mut c_void,
     write_co: *mut c_void,
+    /// The read and the write wait's waker, which its park stores.
+    wakers: [Option<swoole_rs_coroutine::Waker>; 2],
     /// `want_event`: the direction a TLS wait added instead of its own, or none.
     pub(crate) want: Events,
     /// The barriers installed for the read and the write wait.
@@ -50,6 +52,7 @@ impl SocketState {
             },
             read_co: core::ptr::null_mut(),
             write_co: core::ptr::null_mut(),
+            wakers: [None; 2],
             want: Events::NONE,
             barriers: [None; 2],
             timers: [WaitTimer::None; 2],
@@ -74,10 +77,29 @@ impl SocketState {
     pub(crate) fn bind(&mut self, event: Events, co: *mut c_void) {
         if event.intersects(Events::READ) {
             self.read_co = co;
+            *self.waker_slot(Events::READ) = None;
         }
         if event.intersects(Events::WRITE) {
             self.write_co = co;
+            *self.waker_slot(Events::WRITE) = None;
         }
+    }
+
+    /// The waker slot of the wait for `event` (`SW_EVENT_READ`, else writing).
+    fn waker_slot(&mut self, event: Events) -> &mut Option<swoole_rs_coroutine::Waker> {
+        let [read, write] = &mut self.wakers;
+        if event == Events::READ { read } else { write }
+    }
+
+    /// The waker of the coroutine parked for `event` (`SW_EVENT_READ`, else writing).
+    #[must_use]
+    pub(crate) fn waker(&mut self, event: Events) -> Option<swoole_rs_coroutine::Waker> {
+        *self.waker_slot(event)
+    }
+
+    /// Stores the park's waker for `event`, as [`SocketState::waker`] reads it.
+    pub(crate) fn park(&mut self, event: Events, waker: swoole_rs_coroutine::Waker) {
+        *self.waker_slot(event) = Some(waker);
     }
 
     /// `get_bound_co(event)`: the reader if `event` includes reading and one is bound,

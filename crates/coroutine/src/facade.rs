@@ -9,7 +9,7 @@
 //! The build's switches are `swoole_rs_corebase::built_with`'s (`build`).
 use crate::context::{Context, Native, Unmade};
 use crate::coroutine::{self, Co, Sched, run};
-use crate::scheduler::{bailed_out, current, with_scheduler, yield_with_cancel};
+use crate::scheduler::{bailed_out, current, with_scheduler, yield_with_cancel_armed};
 use crate::thread::{Entry, THREAD, swr_v1_thread_context_clean, swr_v1_thread_context_init};
 use crate::{Canceler, Coroutine, Resume, Routine, STACK_MARK, STACK_PROTECT, Scheduler};
 use core::ffi::{c_int, c_long, c_void};
@@ -234,6 +234,13 @@ pub fn yield_resumed(code: Resume) -> bool {
 /// (this aborts otherwise); as [`suspend`](crate::suspend), it asks nothing more.
 #[must_use]
 pub fn yield_timed(co: *mut c_void, timeout: f64) -> Resume {
+    yield_timed_armed(co, timeout, |_| ())
+}
+
+/// [`yield_timed`], handing `arm` the [`Waker`](crate::Waker) that ends this park
+/// before `co` switches out.
+#[must_use]
+pub fn yield_timed_armed(co: *mut c_void, timeout: f64, arm: impl FnOnce(crate::Waker)) -> Resume {
     let running = Co::running(Sched::this(), co.cast());
     let timer = if timeout > 0.0 {
         // SAFETY: the timer fires only while `co` waits below, or is deleted first,
@@ -247,7 +254,7 @@ pub fn yield_timed(co: *mut c_void, timeout: f64) -> Resume {
         coroutine::resume(Sched::this(), running);
         true
     };
-    yield_with_cancel(co, resume_canceled);
+    yield_with_cancel_armed(co, resume_canceled, arm);
     // `co` runs again.
     let code = running.with(|co| co.resume_code);
     if code != Resume::TimedOut && timer != 0 {
