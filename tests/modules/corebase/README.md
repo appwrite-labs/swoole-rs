@@ -158,3 +158,9 @@ zero timeout counts remain distinct from errors. Unit tests cover descriptor
 flag/duplication behavior, failed flag operations, pipe readiness, ignored negative
 descriptors and `POLLNVAL` as a successful readiness result. Native poll adapters
 retain their integer ABI, and caller EINTR retries use the captured error.
+
+The socket, event-data, task and TLS protocol flags are integer-backed Rust types.
+The constants probes print every named flag's bits and compare them with the
+pinned headers, alongside the exhaustive enum tables. Socket options, task-file
+flags, event payload selection and TLS protocol options retain their existing
+runtime tests; conversion to integers happens at the native fields and calls.

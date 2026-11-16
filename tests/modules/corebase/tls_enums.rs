@@ -9,10 +9,6 @@ include!("enum_table.rs");
 fn main() {
     enum_table! {
         SslCreateFlag { SW_SSL_SERVER, SW_SSL_CLIENT }
-        SslVersion {
-            SW_SSL_SSLv2, SW_SSL_SSLv3, SW_SSL_TLSv1, SW_SSL_TLSv1_1, SW_SSL_TLSv1_2,
-            SW_SSL_TLSv1_3, SW_SSL_DTLS,
-        }
         SslMethod {
             SW_SSLv23_METHOD, SW_SSLv3_METHOD, SW_SSLv3_SERVER_METHOD, SW_SSLv3_CLIENT_METHOD,
             SW_SSLv23_SERVER_METHOD, SW_SSLv23_CLIENT_METHOD, SW_TLSv1_METHOD,
@@ -22,5 +18,11 @@ fn main() {
             SW_DTLS_SERVER_METHOD,
         }
     }
-    println!("SW_SSL_ALL {SW_SSL_ALL}");
+    flag_table! {
+        SslVersion {
+            SW_SSL_SSLv2, SW_SSL_SSLv3, SW_SSL_TLSv1, SW_SSL_TLSv1_1, SW_SSL_TLSv1_2,
+            SW_SSL_TLSv1_3, SW_SSL_DTLS,
+        }
+    }
+    println!("SW_SSL_ALL {}", SW_SSL_ALL.bits());
 }

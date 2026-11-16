@@ -3,11 +3,10 @@
 //! in [`crate::read_native`].
 
 use std::ffi::{CStr, c_char, c_int};
-use swoole_rs_corebase::CCast;
-
 use swoole_rs_clients::address::{address_port, assign, type_name};
 use swoole_rs_clients::protocol::{GetPackageLength, GetPackageLengthSize, OnPackage};
-use swoole_rs_corebase::constants::SW_DATA_EOF_MAXLEN;
+use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::constants::{SW_DATA_EOF_MAXLEN, SocketFlag};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_reactor::socket_upstream::make_typed;
@@ -17,9 +16,6 @@ pub(crate) use swoole_rs_tls::upstream::socket_free;
 /// `SW_FD_STREAM_SERVER` and `SW_FD_DGRAM_SERVER`.
 pub(crate) const FD_STREAM_SERVER: c_int = 1;
 pub(crate) const FD_DGRAM_SERVER: c_int = 2;
-/// `SW_SOCK_NONBLOCK` and `SW_SOCK_CLOEXEC`.
-const SOCK_NONBLOCK: c_int = swoole_rs_corebase::constants::SocketFlag::SW_SOCK_NONBLOCK as c_int;
-const SOCK_CLOEXEC: c_int = swoole_rs_corebase::constants::SocketFlag::SW_SOCK_CLOEXEC as c_int;
 use swoole_rs_server::port_config::{PortConfig, ReadEvent, Reader};
 use swoole_rs_server::view;
 
@@ -154,7 +150,11 @@ pub(crate) fn create_socket(config: &PortConfig, reuse_port: bool) -> bool {
         FD_STREAM_SERVER
     };
     // The record just made, which only this function owns until the port takes it.
-    let Some(mut made) = make_typed(kind, fd_type, SOCK_NONBLOCK | SOCK_CLOEXEC) else {
+    let Some(mut made) = make_typed(
+        kind,
+        fd_type,
+        (SocketFlag::SW_SOCK_NONBLOCK | SocketFlag::SW_SOCK_CLOEXEC).bits(),
+    ) else {
         log::set_last_error(errno());
         return false;
     };

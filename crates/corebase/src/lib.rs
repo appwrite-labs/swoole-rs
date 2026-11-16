@@ -13,6 +13,7 @@
     )
 )]
 mod c_cast;
+mod flags;
 pub use c_cast::{CCast, CastFrom};
 pub mod constants;
 mod global;

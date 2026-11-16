@@ -306,14 +306,11 @@ impl TaskBuffer {
         let len = packed.info_len.c_cast::<u32>();
         self.head.len = len;
         if packed.tmpfile {
-            self.head.ext_flags |= TMPFILE;
+            self.head.ext_flags |= TaskFlag::SW_TASK_TMPFILE.bits();
         }
         true
     }
 }
-
-const TMPFILE: u16 = TaskFlag::SW_TASK_TMPFILE as u16;
-const PEEK: u16 = TaskFlag::SW_TASK_PEEK as u16;
 
 impl EventData {
     /// `Server::task_dump`: the header, and the temporary file's name if it has one.
@@ -322,7 +319,7 @@ impl EventData {
         datahead_dump(&self.head, &mut buf);
         let text = CStr::from_bytes_until_nul(&buf).unwrap_or_default();
         swoole_rs_corebase::sys::print(text.to_bytes());
-        if self.head.ext_flags & TMPFILE != 0 {
+        if TaskFlag::from_bits(self.head.ext_flags).contains(TaskFlag::SW_TASK_TMPFILE) {
             let pkg = PacketTask::read(&self.data);
             // Upstream prints the payload's length in bytes of the file's name; a
             // negative `(int)` precision prints all of it.
@@ -412,7 +409,7 @@ impl<'a> Packed<'a> {
         'a: 'b,
     {
         let (payload, flags) = (self.payload(), self.head().ext_flags);
-        if flags & TMPFILE == 0 {
+        if !TaskFlag::from_bits(flags).contains(TaskFlag::SW_TASK_TMPFILE) {
             return Some((payload, flags));
         }
         let pkg = PacketTask::read(payload);
@@ -426,7 +423,11 @@ impl<'a> Packed<'a> {
         let kept = buffer.len();
         let mut read = Ok(());
         buffer.read_zeroed(pkg.length, |target| {
-            read = read_file(pkg.path(), target, flags & PEEK != 0);
+            read = read_file(
+                pkg.path(),
+                target,
+                TaskFlag::from_bits(flags).contains(TaskFlag::SW_TASK_PEEK),
+            );
             if read.is_ok() { target.len() } else { kept }
         });
         match read {
@@ -708,7 +709,7 @@ mod tests {
             let head = unsafe { &*task };
             assert_eq!(
                 (head.len as usize, head.ext_flags),
-                (size_of::<PacketTask>(), TMPFILE)
+                (size_of::<PacketTask>(), TaskFlag::SW_TASK_TMPFILE.bits())
             );
             let pkg = PacketTask::read(unsafe { &(*event).data });
             let path = pkg.path().to_str().unwrap().to_owned();

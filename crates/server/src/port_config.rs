@@ -216,10 +216,12 @@ impl PortConfig {
     #[must_use]
     pub fn is_dtls(&self) -> bool {
         if let Some(settings) = self.tls.settings.get() {
-            return settings.protocols() & SslVersion::SW_SSL_DTLS as u32 != 0;
+            return SslVersion::from_bits(settings.protocols()).contains(SslVersion::SW_SSL_DTLS);
         }
-        self.with_ssl_fields(|_, fields| fields.protocols & SslVersion::SW_SSL_DTLS as u32 != 0)
-            .unwrap_or(false)
+        self.with_ssl_fields(|_, fields| {
+            SslVersion::from_bits(fields.protocols).contains(SslVersion::SW_SSL_DTLS)
+        })
+        .unwrap_or(false)
     }
 
     /// `verify_peer` with no client certificate file, cafile or capath.

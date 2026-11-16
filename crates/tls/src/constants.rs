@@ -8,17 +8,21 @@ pub enum SslCreateFlag {
     SW_SSL_CLIENT = 2,
 }
 pub use swoole_rs_corebase::constants::SslState;
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[expect(non_camel_case_types, reason = "upstream's identifiers")]
-pub enum SslVersion {
-    SW_SSL_SSLv2 = 1 << 1,
-    SW_SSL_SSLv3 = 1 << 2,
-    SW_SSL_TLSv1 = 1 << 3,
-    SW_SSL_TLSv1_1 = 1 << 4,
-    SW_SSL_TLSv1_2 = 1 << 5,
-    SW_SSL_TLSv1_3 = 1 << 6,
-    SW_SSL_DTLS = 1 << 7,
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SslVersion(u32);
+
+#[expect(non_upper_case_globals, reason = "upstream protocol identifiers")]
+impl SslVersion {
+    pub const SW_SSL_SSLv2: Self = Self(1 << 1);
+    pub const SW_SSL_SSLv3: Self = Self(1 << 2);
+    pub const SW_SSL_TLSv1: Self = Self(1 << 3);
+    pub const SW_SSL_TLSv1_1: Self = Self(1 << 4);
+    pub const SW_SSL_TLSv1_2: Self = Self(1 << 5);
+    pub const SW_SSL_TLSv1_3: Self = Self(1 << 6);
+    pub const SW_SSL_DTLS: Self = Self(1 << 7);
 }
+
+swoole_rs_corebase::impl_flags!(SslVersion, u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(non_camel_case_types, reason = "upstream's identifiers")]
 pub enum SslMethod {
@@ -40,9 +44,9 @@ pub enum SslMethod {
     SW_DTLS_CLIENT_METHOD = 15,
     SW_DTLS_SERVER_METHOD = 16,
 }
-pub const SW_SSL_ALL: i32 = SslVersion::SW_SSL_SSLv2 as i32
-    | SslVersion::SW_SSL_SSLv3 as i32
-    | SslVersion::SW_SSL_TLSv1 as i32
-    | SslVersion::SW_SSL_TLSv1_1 as i32
-    | SslVersion::SW_SSL_TLSv1_2 as i32
-    | SslVersion::SW_SSL_TLSv1_3 as i32;
+pub const SW_SSL_ALL: SslVersion = SslVersion::SW_SSL_SSLv2
+    .union(SslVersion::SW_SSL_SSLv3)
+    .union(SslVersion::SW_SSL_TLSv1)
+    .union(SslVersion::SW_SSL_TLSv1_1)
+    .union(SslVersion::SW_SSL_TLSv1_2)
+    .union(SslVersion::SW_SSL_TLSv1_3);

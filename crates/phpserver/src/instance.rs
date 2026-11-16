@@ -15,11 +15,7 @@ use std::{
 };
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR as LOG_ERROR, SW_LOG_NOTICE as LOG_NOTICE};
-use swoole_rs_corebase::{
-    constants::EventDataFlag::{SW_EVENT_DATA_OBJ_PTR, SW_EVENT_DATA_POP_PTR},
-    log,
-    sys::Text,
-};
+use swoole_rs_corebase::{constants::EventDataFlag, log, sys::Text};
 pub use swoole_rs_ports::PortCallback;
 use swoole_rs_process::{methods::worker_is_running, worker_globals, worker_record};
 use swoole_rs_server::{SharedServer, event_worker, server_methods, view};
@@ -123,16 +119,20 @@ pub fn php_swoole_server_get_callback(
 /// packet or the connection's receive buffer when it holds them.
 #[must_use]
 pub fn php_swoole_get_recv_data(serv: view::Server<'_>, req: &RecvData) -> Owned {
-    let (flags, length) = (req.info().flags, req.info().len as usize);
+    let (flags, length) = (
+        EventDataFlag::from_bits(req.info().flags),
+        req.info().len as usize,
+    );
     if length == 0 {
         return Owned::string(ZString::empty());
     }
-    let data: *mut u8 = if flags & SW_EVENT_DATA_OBJ_PTR as u8 != 0 {
+    let data: *mut u8 = if flags.contains(EventDataFlag::SW_EVENT_DATA_OBJ_PTR) {
         // An OBJ_PTR payload is the bus's packet, a zend string, which the bus hands over.
         let data = req.data().cast_mut().cast();
         serv.move_worker_packet();
         data
-    } else if let Some(buffer) = (flags & SW_EVENT_DATA_POP_PTR as u8 != 0)
+    } else if let Some(buffer) = flags
+        .contains(EventDataFlag::SW_EVENT_DATA_POP_PTR)
         .then(|| serv.by_session(req.info().fd))
         .flatten()
         .map(|conn| view::recv_buffer(conn))
