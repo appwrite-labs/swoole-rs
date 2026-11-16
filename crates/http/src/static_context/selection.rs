@@ -37,7 +37,7 @@ impl HttpStaticContext {
         }
         match found {
             Some(name) => {
-                if self.publish(Index, name) < 0 {
+                if self.publish(Index, name).is_err() {
                     return false;
                 }
             }
@@ -57,11 +57,12 @@ impl HttpStaticContext {
             self.capacity,
             self.path.filename_length,
             &self.index,
-        ) != 0
+        )
+        .is_err()
         {
             return false;
         }
-        self.stat(effects) == 1 && self.facts.kind == StaticFileKind::File
+        self.stat(effects) == Ok(true) && self.facts.kind == StaticFileKind::File
     }
     /// Upstream's `make_index_page`: the directory's listing, `css` in its head and
     /// `powered` in its foot.
@@ -74,7 +75,7 @@ impl HttpStaticContext {
         // Upstream pages whatever the listing's outcome.
         self.get_dir_files(effects);
         let mut page = Vec::new();
-        if self.ensure_directory_slash() < 0 {
+        if self.ensure_directory_slash().is_err() {
             return page;
         }
         let names = (0..self.directory.len()).filter_map(|index| self.directory.name(index));
@@ -143,9 +144,9 @@ mod tests {
         let mut owner = HttpStaticContext::new(b"/files", 4096).unwrap();
         assert_eq!(
             owner.publish(super::super::StaticText::Filename, b"/root/files"),
-            0
+            Ok(())
         );
-        assert_eq!(owner.stat(effects), 1);
+        assert_eq!(owner.stat(effects), Ok(true));
         owner
     }
     fn files(names: &[&[u8]]) -> Vec<Vec<u8>> {

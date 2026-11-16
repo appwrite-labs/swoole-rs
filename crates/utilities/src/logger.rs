@@ -132,7 +132,7 @@ fn write_all(fd: c_int, mut bytes: &[u8]) {
 impl State {
     fn close(&mut self) {
         if let Some(fd) = self.file_fd.take() {
-            sys::close(fd);
+            _ = sys::close(fd);
             self.stream = self.stdout;
             self.file = CString::default();
         }
@@ -213,8 +213,8 @@ impl State {
             effects.push(Effect::SysWarning("dup2(STDERR_FILENO) failed", errno()));
         }
         // The descriptors `redirect` duplicated, closed once.
-        sys::close(self.stdout_fd);
-        sys::close(self.stderr_fd);
+        _ = sys::close(self.stdout_fd);
+        _ = sys::close(self.stderr_fd);
         self.stdout_fd = -1;
         self.stderr_fd = -1;
         self.redirected = false;

@@ -345,11 +345,11 @@ fn direct_send(
     }
     loop {
         let sent = swoole_rs_tls::upstream::send(sock, data, 0);
-        if sent >= 0 && sent.cast_unsigned() == data.len() {
+        if sent == Some(data.len()) {
             conn.set_last_send_time(microtime());
             return true;
         }
-        if sent > 0 {
+        if let Some(sent @ 1..) = sent {
             advance(data, i64::try_from(sent).unwrap_or(0));
             return false;
         }

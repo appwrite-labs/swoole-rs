@@ -49,9 +49,7 @@ const SOCK_CLOEXEC: c_int = SocketFlag::SW_SOCK_CLOEXEC as c_int;
 const VERIFY_FAILED: c_int = ErrorCode::SW_ERROR_SSL_VERIFY_FAILED as c_int;
 const BAD_PROTOCOL: c_int = ErrorCode::SW_ERROR_SSL_BAD_PROTOCOL as c_int;
 
-fn errno() -> c_int {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+use swoole_rs_corebase::sys::errno;
 
 /// `Address::get_addr()` and `get_port()` of the socket's own address, as its logs print them.
 #[must_use]
@@ -243,6 +241,11 @@ fn ssl_catch_error(socket: Socket<'_>) {
     );
 }
 
+/// A transfer's byte count, or `None` for its -1.
+fn count(n: isize) -> Option<usize> {
+    usize::try_from(n).ok()
+}
+
 /// `ssl_io`: the protocol error's log, then errno; -1 without an SSL.
 #[inline(always)]
 fn ssl_io(socket: Socket<'_>, result: Option<SslIoResult>) -> isize {
@@ -291,14 +294,14 @@ pub fn ssl_send_drain(socket: Socket<'_>, data: Drain<'_>) -> isize {
 }
 
 /// `ssize_t Socket::ssl_recv(void *buf, size_t n)` into `buffer`.
-pub fn ssl_recv(socket: Socket<'_>, buffer: &mut [impl ReadSlot]) -> isize {
-    ssl_recv_fill(socket, Fill::new(buffer))
+pub fn ssl_recv(socket: Socket<'_>, buffer: &mut [impl ReadSlot]) -> Option<usize> {
+    count(ssl_recv_fill(socket, Fill::new(buffer)))
 }
 
 /// `ssize_t Socket::ssl_send(const void *buf, size_t n)` of `data`.
 #[must_use]
-pub fn ssl_send(socket: Socket<'_>, data: &[u8]) -> isize {
-    ssl_send_drain(socket, Drain::new(data))
+pub fn ssl_send(socket: Socket<'_>, data: &[u8]) -> Option<usize> {
+    count(ssl_send_drain(socket, Drain::new(data)))
 }
 
 fn handshake(last_error: c_int) {
@@ -387,16 +390,22 @@ pub fn send_drain(socket: Socket<'_>, data: Drain<'_>, flags: c_int) -> isize {
 }
 
 /// [`recv_fill`] into `buffer`.
-pub fn recv(socket: Socket<'_>, buffer: &mut [impl ReadSlot], flags: c_int) -> isize {
-    record_recv(socket, Fill::new(buffer), flags, ssl_recv_fill, steady_ms)
+pub fn recv(socket: Socket<'_>, buffer: &mut [impl ReadSlot], flags: c_int) -> Option<usize> {
+    count(record_recv(
+        socket,
+        Fill::new(buffer),
+        flags,
+        ssl_recv_fill,
+        steady_ms,
+    ))
 }
 
 /// One [`recv`] into `buffer`'s room past its content, which then counts what it
 /// wrote: what `recv` returned.
 #[inline]
-pub fn recv_append(socket: Socket<'_>, buffer: &mut CppString) -> isize {
+pub fn recv_append(socket: Socket<'_>, buffer: &mut CppString) -> Option<usize> {
     let received = recv(socket, buffer.spare(), 0);
-    if let Ok(count) = usize::try_from(received) {
+    if let Some(count) = received {
         // SAFETY: without flags (no `MSG_TRUNC`), `recv` returns how many of the
         // room's first slots it wrote, at most the room, which ends at `size()`.
         unsafe { buffer.set_len(buffer.len() + count) };
@@ -406,30 +415,36 @@ pub fn recv_append(socket: Socket<'_>, buffer: &mut CppString) -> isize {
 
 /// [`send_drain`] of `data`.
 #[must_use]
-pub fn send(socket: Socket<'_>, data: &[u8], flags: c_int) -> isize {
-    record_send(socket, Drain::new(data), flags, ssl_send_drain, steady_ms)
+pub fn send(socket: Socket<'_>, data: &[u8], flags: c_int) -> Option<usize> {
+    count(record_send(
+        socket,
+        Drain::new(data),
+        flags,
+        ssl_send_drain,
+        steady_ms,
+    ))
 }
 
 /// [`recv_sync_fill`] into `buffer`.
-pub fn recv_sync(socket: Socket<'_>, buffer: &mut [impl ReadSlot], flags: c_int) -> isize {
-    sync(socket, Io::Recv(Fill::new(buffer)), flags)
+pub fn recv_sync(socket: Socket<'_>, buffer: &mut [impl ReadSlot], flags: c_int) -> Option<usize> {
+    count(sync(socket, Io::Recv(Fill::new(buffer)), flags))
 }
 
 /// [`send_sync_drain`] of `data`.
 #[must_use]
-pub fn send_sync(socket: Socket<'_>, data: &[u8], flags: c_int) -> isize {
-    sync_out(socket, Io::Send(Drain::new(data)), flags)
+pub fn send_sync(socket: Socket<'_>, data: &[u8], flags: c_int) -> Option<usize> {
+    count(sync_out(socket, Io::Send(Drain::new(data)), flags))
 }
 
 /// [`read_sync_fill`] into `buffer`.
-pub fn read_sync(socket: Socket<'_>, buffer: &mut [impl ReadSlot]) -> isize {
-    sync(socket, Io::Read(Fill::new(buffer)), 0)
+pub fn read_sync(socket: Socket<'_>, buffer: &mut [impl ReadSlot]) -> Option<usize> {
+    count(sync(socket, Io::Read(Fill::new(buffer)), 0))
 }
 
 /// `ssize_t Socket::write_sync(const void *, size_t)` of `data`.
 #[must_use]
-pub fn write_sync(socket: Socket<'_>, data: &[u8]) -> isize {
-    sync_out(socket, Io::Write(Drain::new(data)), 0)
+pub fn write_sync(socket: Socket<'_>, data: &[u8]) -> Option<usize> {
+    count(sync_out(socket, Io::Write(Drain::new(data)), 0))
 }
 
 /// `ssize_t Socket::sendto_sync(const Address &, const void *, size_t, int)` of `data`.
@@ -439,9 +454,9 @@ pub fn sendto_sync(
     address: &SocketAddress,
     data: &[u8],
     flags: c_int,
-) -> isize {
+) -> Option<usize> {
     let io = Io::SendTo(address, Drain::new(data));
-    sync_out(socket, io, flags)
+    count(sync_out(socket, io, flags))
 }
 
 /// `ssize_t Socket::recvfrom_sync(char *, size_t, int, Address *)` into `buffer`, and
@@ -451,14 +466,14 @@ pub fn recvfrom_sync(
     buffer: &mut [impl ReadSlot],
     flags: c_int,
     address: &mut SocketAddress,
-) -> isize {
+) -> Option<usize> {
     let io = Io::RecvFrom(address, Fill::new(buffer));
-    sync(socket, io, flags)
+    count(sync(socket, io, flags))
 }
 
 /// `ssize_t Socket::peek(void *, size_t, int) const` into `buffer`.
-pub fn peek(socket: Socket<'_>, buffer: &mut [impl ReadSlot], flags: c_int) -> isize {
-    record_peek(socket, Fill::new(buffer), flags, tls_peek)
+pub fn peek(socket: Socket<'_>, buffer: &mut [impl ReadSlot], flags: c_int) -> Option<usize> {
+    count(record_peek(socket, Fill::new(buffer), flags, tls_peek))
 }
 
 /// `bool Socket::check_liveness()`.
@@ -475,8 +490,8 @@ pub fn check_liveness(socket: Socket<'_>) -> bool {
     let mut byte = [0u8];
     set_errno(0);
     let peeked = peek(socket, &mut byte, libc::MSG_DONTWAIT);
-    !(peeked == 0
-        || (peeked < 0 && socket.catch_error(errno()) == swoole_rs_reactor::Caught::Close))
+    !(peeked == Some(0)
+        || (peeked.is_none() && socket.catch_error(errno()) == swoole_rs_reactor::Caught::Close))
 }
 
 /// One blocking call: the socket, and its I/O with the bytes it has left.
@@ -859,7 +874,7 @@ struct Output<'a>(Socket<'a>);
 
 impl OutputEffects for Output<'_> {
     fn send(&self, data: &[u8]) -> isize {
-        send(self.0, data, 0)
+        send(self.0, data, 0).map_or(-1, usize::cast_signed)
     }
 
     fn cork(&self) -> bool {
@@ -1490,7 +1505,7 @@ mod tests {
             b"ping",
             0,
         );
-        assert_eq!(sent, 4);
+        assert_eq!(sent, Some(4));
         assert!(check_liveness(
             unsafe { Socket::from_ptr(&raw mut right) }.unwrap()
         ));
@@ -1500,7 +1515,7 @@ mod tests {
             &mut buffer,
             libc::MSG_WAITALL,
         );
-        assert_eq!((received, &buffer), (4, b"ping"));
+        assert_eq!((received, &buffer), (Some(4), b"ping"));
         assert_eq!(right.total_recv_bytes, 4);
         assert!(right.output.nonblock);
         unsafe { libc::close(fds[0]) };

@@ -15,10 +15,10 @@ pub struct CoroutineHost {
     pub alloc_shared: fn() -> Option<&'static AtomicU32>,
     /// `System::sleep`: false when cancelled.
     pub sleep: Option<fn(f64) -> bool>,
-    /// The futex wait: 0, or nonzero with errno set.
-    pub wait: Option<fn(&AtomicU32) -> i32>,
-    /// The futex wake: negative with errno set on failure.
-    pub wake: Option<fn(&AtomicU32) -> i32>,
+    /// The futex wait: false with errno set on failure.
+    pub wait: Option<fn(&AtomicU32) -> bool>,
+    /// The futex wake: false with errno set on failure.
+    pub wake: Option<fn(&AtomicU32) -> bool>,
     /// Warns that the lock was used outside a coroutine.
     pub warning: fn(),
 }
@@ -44,9 +44,7 @@ fn outside(host: &CoroutineHost) -> Result<(), i32> {
     Err(ErrorCode::SW_ERROR_CO_OUT_OF_COROUTINE as i32)
 }
 
-fn last_errno() -> i32 {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+use swoole_rs_corebase::sys::errno as last_errno;
 
 impl CoroutineLock {
     /// A new unlocked lock; aborts when the host is inconsistent or has no storage.
@@ -108,7 +106,7 @@ impl CoroutineLock {
                 return Err(libc::EBUSY);
             }
             if let Some(wait) = host.wait {
-                if wait(word) != 0 {
+                if !wait(word) {
                     return Err(last_errno());
                 }
             } else {
@@ -148,7 +146,7 @@ impl CoroutineLock {
         // Release clears ownership before waking a waiter.
         self.cid.set(0);
         match host.wake {
-            Some(wake) if wake(word) < 0 => Err(last_errno()),
+            Some(wake) if !wake(word) => Err(last_errno()),
             _ => Ok(()),
         }
     }
@@ -189,11 +187,8 @@ mod tests {
         STATE.with(|state| state.borrow_mut().allocated += 1);
         WORDS.get(NEXT.fetch_add(1, Ordering::Relaxed))
     }
-    fn sleep(second: f64) -> bool {
-        pause(second) == 0
-    }
-    /// A sleep, or a futex wait: the state's result.
-    fn pause(second: f64) -> i32 {
+    /// A sleep, or a futex wait: whether the state's result is 0.
+    fn pause(second: f64) -> bool {
         let (lock, releases, result) = STATE.with(|state| {
             let mut state = state.borrow_mut();
             state.sleeps.push(second);
@@ -208,16 +203,16 @@ mod tests {
             others();
             switch(current, cid);
         }
-        result
+        result == 0
     }
-    fn wait(_: &AtomicU32) -> i32 {
+    fn wait(_: &AtomicU32) -> bool {
         pause(0.0)
     }
-    fn wake(_: &AtomicU32) -> i32 {
+    fn wake(_: &AtomicU32) -> bool {
         STATE.with(|state| {
             let mut state = state.borrow_mut();
             state.wakes += 1;
-            state.result
+            state.result >= 0
         })
     }
     fn warning() {
@@ -226,7 +221,7 @@ mod tests {
     static SLEEP: CoroutineHost = CoroutineHost {
         current,
         alloc_shared: allocate,
-        sleep: Some(sleep),
+        sleep: Some(pause),
         wait: None,
         wake: None,
         warning,

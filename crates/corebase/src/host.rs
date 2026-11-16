@@ -102,14 +102,14 @@ pub fn swoole_shell_exec(command: &CStr, get_error_stream: bool) -> Option<(c_in
     let child = crate::sys::fork();
     if child == -1 {
         let error = errno();
-        close(read);
-        close(write);
+        _ = close(read);
+        _ = close(write);
         set_errno(error);
         crate::log::sys_warning(c"swoole_shell_exec", format_args!("fork() failed"));
         return None;
     }
     if child == 0 {
-        close(read);
+        _ = close(read);
         if get_error_stream {
             if write == libc::STDOUT_FILENO {
                 dup2(write, libc::STDERR_FILENO);
@@ -118,11 +118,11 @@ pub fn swoole_shell_exec(command: &CStr, get_error_stream: bool) -> Option<(c_in
             } else {
                 dup2(write, libc::STDOUT_FILENO);
                 dup2(write, libc::STDERR_FILENO);
-                close(write);
+                _ = close(write);
             }
         } else if write != libc::STDOUT_FILENO {
             dup2(write, libc::STDOUT_FILENO);
-            close(write);
+            _ = close(write);
         }
         let argv = [
             Some(c"sh".into()),
@@ -134,7 +134,7 @@ pub fn swoole_shell_exec(command: &CStr, get_error_stream: bool) -> Option<(c_in
         // exit(3), which runs the process's exit handlers, as upstream's child did.
         std::process::exit(127);
     }
-    close(write);
+    _ = close(write);
     Some((read, child))
 }
 
@@ -587,7 +587,7 @@ pub fn swoole_redirect_stdout_file(file: &CStr) {
     let fd = crate::sys::open(file, libc::O_WRONLY | libc::O_APPEND | libc::O_CREAT, 0o644);
     if fd >= 0 {
         swoole_redirect_stdout(fd);
-        close(fd);
+        _ = close(fd);
     } else {
         let file = file.to_string_lossy();
         crate::log::sys_warning(
@@ -810,7 +810,7 @@ mod tests {
             }
             output.extend_from_slice(&chunk[..usize::try_from(n).unwrap()]);
         }
-        close(fd);
+        _ = close(fd);
         let mut status = 0;
         unsafe { libc::waitpid(pid, &raw mut status, 0) };
         assert_eq!(output, b"out\nerr\n");

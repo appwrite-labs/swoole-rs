@@ -466,9 +466,7 @@ pub(crate) fn fd(socket: Co) -> c_int {
     socket.with_net(|net| net.fd()).unwrap_or(-1)
 }
 
-pub(crate) fn errno() -> c_int {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+pub(crate) use swoole_rs_corebase::sys::errno;
 
 pub(crate) use swoole_rs_corebase::sys::getsockopt;
 use swoole_rs_corebase::sys::{setsockopt, setsockopt_bytes};

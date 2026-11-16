@@ -16,9 +16,7 @@ unsafe extern "C-unwind" {
     safe fn swoole_timer_select();
 }
 
-fn errno() -> c_int {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+use swoole_rs_corebase::sys::errno;
 
 /// The SIGCHLD registry: the coroutine effects crates/process's wait loop asks for.
 mod registry {

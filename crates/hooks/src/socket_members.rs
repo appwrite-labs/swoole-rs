@@ -145,7 +145,7 @@ struct OpenFile(c_int);
 impl Drop for OpenFile {
     fn drop(&mut self) {
         if self.0 != -1 {
-            sys::close(self.0);
+            _ = sys::close(self.0);
         }
     }
 }
@@ -629,7 +629,8 @@ impl Co {
     pub fn recv_once(self, buf: &mut [impl ReadSlot]) -> Option<usize> {
         let mut io = || {
             self.with_network(|socket| recv(socket, buf, 0))
-                .unwrap_or(-1)
+                .flatten()
+                .map_or(-1, usize::cast_signed)
         };
         #[cfg(feature = "iouring")]
         if let Some(n) = ring::with(self, |ops| ring::once(ops, &mut io)) {
@@ -644,7 +645,8 @@ impl Co {
     pub fn send_once(self, buf: &[u8]) -> Option<usize> {
         let io = || {
             self.with_network(|socket| send(socket, buf, 0))
-                .unwrap_or(-1)
+                .flatten()
+                .map_or(-1, usize::cast_signed)
         };
         #[cfg(feature = "iouring")]
         if let Some(n) = ring::with(self, |ops| ring::once(ops, io)) {
@@ -656,11 +658,9 @@ impl Co {
     /// `Socket::peek(buf, n)`: one `network::Socket` peek, then `check_return_value`;
     /// the count of `buf`'s first slots it wrote, or -1. The socket is open.
     pub fn peek(self, buf: &mut [impl ReadSlot]) -> Option<usize> {
-        let result = self
-            .with_network(|socket| peek(socket, buf, 0))
-            .unwrap_or(-1);
-        check(self, result);
-        count(result)
+        let result = self.with_network(|socket| peek(socket, buf, 0)).flatten();
+        check(self, result.map_or(-1, usize::cast_signed));
+        result
     }
 
     /// `Socket::poll(event, timeout)`.

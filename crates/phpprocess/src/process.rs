@@ -658,8 +658,7 @@ fn alarm(call: &Call) {
         it_interval: interval,
         it_value: interval,
     };
-    let set = swoole_rs_corebase::sys::setitimer(kind.c_cast::<c_int>(), &timer);
-    if set < 0 {
+    if swoole_rs_corebase::sys::setitimer(kind.c_cast::<c_int>(), &timer).is_err() {
         sys(E_WARNING, &message!("setitimer() failed"));
         call.set_bool(false);
         return;
@@ -1046,7 +1045,8 @@ fn set_priority(call: &Call) {
         which.c_cast::<c_int>(),
         who,
         priority.c_cast::<c_int>(),
-    ) < 0
+    )
+    .is_err()
     {
         set_last_error(errno());
         call.set_bool(false);

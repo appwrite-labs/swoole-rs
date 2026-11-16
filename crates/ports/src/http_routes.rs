@@ -182,7 +182,7 @@ pub mod exports {
             context.fragment_length = fragment.len();
             let flags = fragment.offset().c_cast::<u16>();
             context.fragment_flags = flags;
-            if frame.opcode == swoole_rs_websocket::Opcode::Continuation.code() {
+            if frame.opcode == swoole_rs_websocket::Opcode::Continuation {
                 // SAFETY: the port's live server, as the caller guarantees.
                 let serv = unsafe { view::Server::from_raw(serv) };
                 let max = swoole_rs_server::server_methods::package_max_length(serv, conn.fd());
@@ -193,7 +193,7 @@ pub mod exports {
             return -1;
         };
         if decision.error != PolicyError::None {
-            policy_warning(conn, decision.error, frame.opcode);
+            policy_warning(conn, decision.error, frame.opcode.code());
         }
         let mut dispatch = RecvData {
             info: DataHead {
@@ -260,7 +260,7 @@ pub mod exports {
             Action::Unknown => {
                 log::warning(
                     c"websocket::dispatch_frame",
-                    format_args!("unknown opcode [{}]", frame.opcode),
+                    format_args!("unknown opcode [{}]", frame.opcode.code()),
                 );
             }
         }

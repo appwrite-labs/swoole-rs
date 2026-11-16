@@ -101,9 +101,7 @@ pub const WRITE: c_int = 1;
 pub const RECV: c_int = 2;
 pub const SEND: c_int = 3;
 
-fn errno() -> c_int {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+use swoole_rs_corebase::sys::errno;
 
 impl UringSocketOps<'_> {
     fn host(&self) -> &'static Host {

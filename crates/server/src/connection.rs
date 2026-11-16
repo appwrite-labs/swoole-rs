@@ -19,9 +19,7 @@ const ACCEPT_MAX_COUNT: u32 = 64;
 const MAX_CONNECTION: u32 = 100_000;
 const SESSION_LIST_SIZE: u32 = 1024 * 1024;
 
-fn errno() -> c_int {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+use swoole_rs_corebase::sys::errno;
 
 /// `Server::accept_connection`: up to `SW_ACCEPT_MAX_COUNT` sockets per readable
 /// event on `reactor`, this thread's.

@@ -441,9 +441,7 @@ pub(crate) fn set_err_code(object: Obj, code: c_int) {
     object.props().long(c"errCode", i64::from(code));
 }
 
-pub(crate) fn errno() -> c_int {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+pub(crate) use swoole_rs_corebase::sys::errno;
 
 /// `swoole_strerror(code)`.
 pub(crate) fn strerror(code: c_int) -> String {

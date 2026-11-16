@@ -2,13 +2,9 @@
 //! `wait_event`'s poll, `clean`, `recvfrom`, `accept` and `connect`. Callers keep
 //! the `Socket` fields, the last-error slot and signal dispatch, which they pass in.
 use crate::SocketAddress;
-use std::io::Error;
 use std::os::raw::c_int;
 use swoole_rs_corebase::CCast;
-
-fn errno() -> c_int {
-    Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+use swoole_rs_corebase::sys::errno;
 
 /// Why a wait or connect is not ready.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

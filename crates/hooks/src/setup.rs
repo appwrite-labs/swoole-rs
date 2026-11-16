@@ -15,9 +15,7 @@ pub trait Setup {
     fn call(&mut self, argument: c_int) -> c_int;
 }
 
-fn errno() -> c_int {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+use swoole_rs_corebase::sys::errno;
 
 /// `Socket::accept(timeout)` after its availability and TLS context checks: accept,
 /// and when that would block, wait for the socket and accept once more.

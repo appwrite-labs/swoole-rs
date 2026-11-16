@@ -94,7 +94,7 @@ impl Drop for FileRecord {
     fn drop(&mut self) {
         if self.fd >= 0 {
             // This record owns the descriptor until close/release.
-            sys::close(self.fd);
+            _ = sys::close(self.fd);
         }
     }
 }

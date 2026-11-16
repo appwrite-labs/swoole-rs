@@ -378,7 +378,7 @@ impl Record {
         for fd in self.notify {
             if fd >= 0 {
                 // The record owns this descriptor.
-                sys::close(fd);
+                _ = sys::close(fd);
             }
         }
     }

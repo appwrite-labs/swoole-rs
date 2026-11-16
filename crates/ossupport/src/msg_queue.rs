@@ -17,9 +17,7 @@ unsafe extern "C" {
     safe fn msgctl(id: c_int, cmd: c_int, stat: Option<&mut MsqidDs>) -> c_int;
 }
 
-fn errno() -> c_int {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
+use swoole_rs_corebase::sys::errno;
 
 /// `swoole_sys_warning`, which sets the last error to errno first.
 fn sys_warning(origin: &std::ffi::CStr, message: std::fmt::Arguments<'_>) {

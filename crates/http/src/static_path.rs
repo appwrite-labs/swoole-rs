@@ -267,17 +267,17 @@ pub(crate) fn static_index_path(
     capacity: usize,
     logical_length: usize,
     name: &[u8],
-) -> i32 {
+) -> Result<(), i32> {
     let Some(room) = capacity
         .checked_sub(logical_length)
         .filter(|&room| room > 0)
     else {
-        return INVALID;
+        return Err(INVALID);
     };
     let slash = output.get(logical_length) != Some(&b'/');
     let length = usize::from(slash) + name.len();
     if length >= room {
-        return OVERFLOW;
+        return Err(OVERFLOW);
     }
     let Some(rest) = span(
         output,
@@ -285,7 +285,7 @@ pub(crate) fn static_index_path(
         logical_length,
         logical_length + length + 1,
     ) else {
-        return OVERFLOW;
+        return Err(OVERFLOW);
     };
     let tail = slash
         .then_some(b'/')
@@ -295,7 +295,7 @@ pub(crate) fn static_index_path(
     for (slot, byte) in rest.iter_mut().zip(tail) {
         *slot = byte;
     }
-    0
+    Ok(())
 }
 
 #[cfg(test)]
@@ -304,15 +304,15 @@ mod tests {
     #[test]
     fn index_path_appends_after_one_slash() {
         let mut out = b"/a\0\0\0\0\0\0".to_vec();
-        assert_eq!(static_index_path(&mut out, 8, 2, b"ix"), 0);
+        assert_eq!(static_index_path(&mut out, 8, 2, b"ix"), Ok(()));
         assert_eq!(out, b"/a/ix\0\0\0");
         let mut out = b"/a/\0\0\0".to_vec();
-        assert_eq!(static_index_path(&mut out, 6, 2, b"ix"), 0);
+        assert_eq!(static_index_path(&mut out, 6, 2, b"ix"), Ok(()));
         assert_eq!(out, b"/aix\0\0");
-        assert_eq!(static_index_path(&mut out, 6, 2, b"ixxx"), OVERFLOW);
-        assert_eq!(static_index_path(&mut out, 6, 6, b""), INVALID);
+        assert_eq!(static_index_path(&mut out, 6, 2, b"ixxx"), Err(OVERFLOW));
+        assert_eq!(static_index_path(&mut out, 6, 6, b""), Err(INVALID));
         let mut out = b"/a".to_vec();
-        assert_eq!(static_index_path(&mut out, 8, 2, b"ix"), 0);
+        assert_eq!(static_index_path(&mut out, 8, 2, b"ix"), Ok(()));
         assert_eq!(out, b"/a/ix\0");
     }
     #[test]

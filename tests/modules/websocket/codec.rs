@@ -6,7 +6,7 @@ use std::mem::MaybeUninit;
 
 use swoole_rs_oracle::websocket as reference;
 use swoole_rs_websocket::{
-    Action, Context, Decision, DecodeErrorKind, DecodedFrame, Delivery, PolicyError,
+    Action, Context, Decision, DecodeErrorKind, DecodedFrame, Delivery, Opcode, PolicyError,
     control_invalid, decide_frame, message_policy, pack_policy,
 };
 
@@ -202,7 +202,7 @@ fn encode_and_decode_prefixes() {
                         success,
                         total > 0 && usize::try_from(total).is_ok_and(|total| total <= prefix)
                     );
-                    assert_eq!(actual.opcode, expected.opcode);
+                    assert_eq!(actual.opcode.code(), expected.opcode);
                     assert_eq!(actual.flags, expected.flags);
                     assert_eq!(actual.length_code, expected.length_code);
                     assert_eq!(native, rust);
@@ -278,7 +278,7 @@ fn decoder_reads_every_first_byte() {
             let (total, actual) = decode_in_place(&mut rust[..length]);
             assert_eq!(total, if invalid { INVALID_CONTROL } else { complete });
             assert_eq!(native, rust);
-            assert!(actual.flags == expected.flags && actual.opcode == expected.opcode);
+            assert!(actual.flags == expected.flags && actual.opcode.code() == expected.opcode);
         }
     }
 }
@@ -298,7 +298,7 @@ fn decision_policy() {
         error: PolicyError,
     ) {
         let frame = DecodedFrame {
-            opcode,
+            opcode: Opcode::from_code(opcode),
             flags,
             payload_length: payload,
             header_length: if flags & 32 != 0 { 6 } else { 2 },
@@ -429,7 +429,7 @@ fn rejected_arguments() {
 #[test]
 fn extended_ping_dispatches_from_offset_two() {
     let extended = DecodedFrame {
-        opcode: 9,
+        opcode: Opcode::Ping,
         header_length: 4,
         payload_length: 1,
         ..DecodedFrame::default()

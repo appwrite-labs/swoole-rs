@@ -526,13 +526,7 @@ impl Handle {
     fn recvfrom_sync(self, buffer: &mut [impl ReadSlot], flags: c_int) -> Option<usize> {
         let socket = self.socket();
         self.get().edit_record(|record| {
-            usize::try_from(net::recvfrom_sync(
-                socket,
-                buffer,
-                flags,
-                &mut record.remote_addr,
-            ))
-            .ok()
+            net::recvfrom_sync(socket, buffer, flags, &mut record.remote_addr)
         })
     }
 
@@ -637,7 +631,7 @@ impl Handle {
 
     /// One read into the input buffer's free tail; the buffer exists.
     fn input_recv(self) -> Option<usize> {
-        self.edit_input(|buffer, socket| usize::try_from(net::recv(socket, buffer.spare(), 0)).ok())
+        self.edit_input(|buffer, socket| net::recv(socket, buffer.spare(), 0))
     }
 
     /// `buffer->clear()`.
@@ -1039,7 +1033,7 @@ pub fn close(this: Handle) -> bool {
         return true;
     };
     // Once: -1 marks the client's descriptor closed.
-    swoole_rs_corebase::sys::close(fd) == 0
+    swoole_rs_corebase::sys::close(fd).is_ok()
 }
 
 /// `Client::shutdown(how)`. Upstream's `SHUT_RDWR` records only a read shutdown.
@@ -1051,9 +1045,9 @@ pub fn shutdown(this: Handle, how: c_int) -> bool {
     let fd = this.socket().fd();
     let call = |how| swoole_rs_corebase::sys::shutdown(fd, how);
     match how {
-        libc::SHUT_RD if this.flag(Flag::ShutdownRead) || call(how) != 0 => false,
-        libc::SHUT_WR if this.flag(Flag::ShutdownWrite) || call(how) < 0 => false,
-        libc::SHUT_RDWR if call(how) < 0 => false,
+        libc::SHUT_RD if this.flag(Flag::ShutdownRead) || call(how).is_err() => false,
+        libc::SHUT_WR if this.flag(Flag::ShutdownWrite) || call(how).is_err() => false,
+        libc::SHUT_RDWR if call(how).is_err() => false,
         libc::SHUT_RD | libc::SHUT_RDWR => {
             this.set(Flag::ShutdownRead, true);
             true
@@ -1673,7 +1667,7 @@ pub fn sendto(this: Handle, host: &CStr, port: c_int, data: &[u8]) -> bool {
 #[must_use]
 pub fn send(this: Handle, data: &[u8], flags: c_int) -> Option<usize> {
     if this.flag(Flag::Dtls) || this.flag(Flag::Stream) && !this.flag(Flag::Async) {
-        usize::try_from(net::send_sync(this.socket(), data, flags)).ok()
+        net::send_sync(this.socket(), data, flags)
     } else if this.flag(Flag::Stream) {
         send_async(this, data)
     } else {
@@ -1730,7 +1724,7 @@ pub fn sendfile(this: Handle, file: &CStr, offset: i64, length: usize) -> bool {
 #[must_use]
 pub fn recv(this: Handle, buffer: &mut [impl ReadSlot], flags: c_int) -> Option<usize> {
     if this.flag(Flag::Stream) || this.flag(Flag::Dtls) {
-        let n = usize::try_from(net::recv_sync(this.socket(), buffer, flags)).ok();
+        let n = net::recv_sync(this.socket(), buffer, flags);
         // A poll timeout reads as recv(2)'s EAGAIN, as it did before poll.
         if n.is_none() && log::last_error() == ERROR_SOCKET_POLL_TIMEOUT {
             set_errno(libc::EAGAIN);
@@ -1761,7 +1755,8 @@ fn on_read(this: Handle) -> bool {
     let http = this.proxy_state(Proxy::Http);
     if http.is_some_and(|state| state != HTTP_PROXY_READY) {
         let accepted = this.edit_input(|input, socket| {
-            net::recv_append(socket, input) > 0 && swoole_rs_http_ffi::proxy_accept(input.view())
+            net::recv_append(socket, input) > Some(0)
+                && swoole_rs_http_ffi::proxy_accept(input.view())
         });
         if !accepted {
             log::set_last_error(ERROR_HTTP_PROXY_HANDSHAKE_ERROR);
@@ -1777,7 +1772,7 @@ fn on_read(this: Handle) -> bool {
     let socks5 = this.proxy_state(Proxy::Socks5);
     if socks5.is_some_and(|state| state != SOCKS5_READY) {
         let n = this.edit_input(|input, socket| net::recv_append(socket, input));
-        if n <= 0 {
+        if n <= Some(0) {
             log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
             return connect_failed(this);
         }
