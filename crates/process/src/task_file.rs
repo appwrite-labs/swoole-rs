@@ -338,10 +338,8 @@ impl EventData {
 
 /// A packed task lent for `'a`: its `DataHead`, at any alignment, then the `len`
 /// bytes it counts (the payload, or a temporary file's `PacketTask`).
-/// [`Packed::from_raw`] is the one unsafe step. It is laid out as the pointer, so a
-/// server slot fn takes one where native code passes its `EventData *`.
+/// [`Packed::from_raw`] is the one unsafe step.
 #[derive(Clone, Copy)]
-#[repr(transparent)]
 pub struct Packed<'a> {
     raw: *const u8,
     life: PhantomData<&'a [u8]>,
