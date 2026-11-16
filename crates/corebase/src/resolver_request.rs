@@ -7,7 +7,7 @@ use core::cell::Cell;
 use core::ffi::{c_char, c_int};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::ffi::CString;
-use std::ptr::{self, NonNull};
+use std::ptr::NonNull;
 
 #[derive(Clone, Copy)]
 pub struct ResolverFields {
@@ -28,29 +28,22 @@ pub enum ResolveError {
     Unknown,
 }
 
-/// Its owner writes `fields` and the strings through `PreparedResolver`'s views,
-/// never while a method runs.
+/// The name and service are set once, by `create`; `host` replaces the address and
+/// `lookup` the results whole, and readers take them out and put them back around a
+/// copy.
 pub struct ResolverRequest {
     refs: AtomicUsize,
     fields: Cell<ResolverFields>,
-    strings: [StringSlot; 3],
-    /// Set whole by `lookup`; readers take it out and put it back around a copy.
+    strings: [StringSlot; 2],
+    address: Cell<StringSlot>,
     results: Cell<Vec<libc::sockaddr_in6>>,
-}
-pub struct PreparedResolver {
-    pub owner: *mut ResolverRequest,
-    pub fields: *mut ResolverFields,
-    pub name: *const StringSlot,
-    pub service: *const StringSlot,
-    pub address: *const StringSlot,
 }
 
 fn zero_address() -> libc::sockaddr_in6 {
     crate::sys::zeroed()
 }
 
-/// The slot's bytes. The record's slots change only in `host` and under native
-/// code's own synchronization, never while this copies.
+/// The slot's bytes.
 fn copy(slot: &StringSlot) -> Vec<u8> {
     slot.bytes().to_vec()
 }
@@ -95,6 +88,7 @@ impl ResolverRequest {
                 count: 0,
             }),
             strings: std::array::from_fn(|_| StringSlot::default()),
+            address: Cell::default(),
             results: Cell::new(Vec::new()),
         })
     }
@@ -110,7 +104,7 @@ impl ResolverRequest {
         service: &[u8],
     ) -> Option<ResolverRef> {
         let mut record = Self::boxed(family, socktype, protocol);
-        let [name_slot, service_slot, _] = &mut record.strings;
+        let [name_slot, service_slot] = &mut record.strings;
         if !name_slot.set(name) || !service_slot.set(service) {
             return None;
         }
@@ -123,7 +117,8 @@ impl ResolverRequest {
         self.fields.get()
     }
 
-    fn update(&self, change: impl FnOnce(&mut ResolverFields)) {
+    /// Changes the hints and results.
+    pub fn update(&self, change: impl FnOnce(&mut ResolverFields)) {
         let mut fields = self.fields.get();
         change(&mut fields);
         self.fields.set(fields);
@@ -138,7 +133,10 @@ impl ResolverRequest {
     /// The text address `host` wrote.
     #[must_use]
     pub fn address(&self) -> Vec<u8> {
-        copy(&self.strings[2])
+        let address = self.address.take();
+        let copy = copy(&address);
+        self.address.set(address);
+        copy
     }
 
     /// `async::handler_getaddrinfo`'s body: resolves the hints and replaces the
@@ -150,7 +148,7 @@ impl ResolverRequest {
     /// allocation refusal, [`ResolveError::Unknown`] when `unknown` returned false.
     pub fn lookup(&self, unknown: impl FnMut(c_int) -> bool) -> Result<(), ResolveError> {
         let hints = self.fields();
-        let [name, service, _] = &self.strings;
+        let [name, service] = &self.strings;
         let name = c_string(copy(name));
         let service = copy(service);
         let service = (!service.is_empty()).then(|| c_string(service));
@@ -190,13 +188,12 @@ impl ResolverRequest {
         let Some(text) = text else {
             return Err(ResolveError::Failed);
         };
-        let text = terminated(&text);
-        // SAFETY: a slot that nothing reads while this sets it (see `copy`).
-        if unsafe { self.strings[2].set_shared(&text) } {
-            Ok(())
-        } else {
-            Err(ResolveError::Alloc)
+        let mut address = StringSlot::new();
+        if !address.set(&terminated(&text)) {
+            return Err(ResolveError::Alloc);
         }
+        self.address.set(address);
+        Ok(())
     }
 
     /// `address` as text; `valid` false if it does not format.
@@ -240,18 +237,6 @@ impl ResolverRequest {
         let copy = results.clone();
         self.results.set(results);
         copy
-    }
-}
-
-/// The record's fields and string slots, from its handle.
-pub fn swr_v1_core_resolver_view(owner: &ResolverRequest) -> PreparedResolver {
-    let [name, service, address] = &owner.strings;
-    PreparedResolver {
-        owner: ptr::from_ref(owner).cast_mut(),
-        fields: owner.fields.as_ptr(),
-        name,
-        service,
-        address,
     }
 }
 
@@ -349,15 +334,6 @@ mod completion_tests {
     fn the_last_reference_frees_the_record() {
         let request = ResolverRequest::create(libc::AF_INET, 0, 0, b"", b"").unwrap();
         let owner = request.as_ptr();
-        let view = swr_v1_core_resolver_view(&request);
-        assert_eq!(
-            (view.owner, view.fields, view.address),
-            (
-                owner,
-                request.fields.as_ptr(),
-                &raw const request.strings[2]
-            )
-        );
         swr_v1_core_resolver_retain(&request);
         drop(request);
         // The pool copy's reference keeps the record after its request went.
