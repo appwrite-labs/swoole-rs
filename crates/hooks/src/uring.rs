@@ -100,11 +100,15 @@ struct Request {
 }
 
 /// A request in flight: the suspended operation's waker, which the completion takes,
-/// and the completion's result, which the operation takes when it resumes.
+/// and the completion's result, which the operation takes when it resumes. A request
+/// whose operation stopped waiting first keeps its number until its completion
+/// arrives, so that completion reaches no later request.
 #[derive(Default)]
 struct Slot {
     waker: Option<Waker>,
     result: Option<io::Result<isize>>,
+    /// The operation resumed before the completion and no longer waits for it.
+    abandoned: bool,
 }
 
 /// The requests in flight, each numbered by its index, and the numbers free again.
@@ -127,21 +131,32 @@ impl Slots {
         self.slots.get_mut(usize::try_from(id).ok()?)
     }
 
-    /// Stores the completion's `result`: the waker to resume, if one is parked.
+    /// Stores the completion's `result`: the waker to resume, if one is parked. An
+    /// abandoned request's number is free again instead.
     fn complete(&mut self, id: u64, result: io::Result<isize>) -> Option<Waker> {
-        let slot = self.slot(id)?;
+        let index = usize::try_from(id).ok()?;
+        let slot = self.slots.get_mut(index)?;
+        if slot.abandoned {
+            *slot = Slot::default();
+            self.free.push(index);
+            return None;
+        }
         slot.result = Some(result);
         slot.waker.take()
     }
 
-    /// The completed request's result, its number free again.
+    /// The operation's end: the completed request's result, its number free again,
+    /// or none, the request abandoned, when it has not completed.
     fn close(&mut self, id: u64) -> Option<io::Result<isize>> {
         let index = usize::try_from(id).ok()?;
         let slot = self.slots.get_mut(index)?;
-        let result = slot.result.take();
         slot.waker = None;
+        let Some(result) = slot.result.take() else {
+            slot.abandoned = true;
+            return None;
+        };
         self.free.push(index);
-        result
+        Some(result)
     }
 }
 
@@ -1327,8 +1342,9 @@ mod tests {
     }
 
     /// A completion reaches its request's slot by number: it takes the parked waker
-    /// and leaves the result, which closing takes and frees the number for reuse.
-    /// An unknown number reaches nothing.
+    /// and leaves the result, which closing takes and frees the number for reuse. A
+    /// number closed before its completion stays taken until that arrives. An unknown
+    /// number reaches nothing.
     #[test]
     fn slots_number_requests_until_closed() {
         let mut slots = Slots::default();
@@ -1342,7 +1358,21 @@ mod tests {
         assert_eq!(slots.complete(99, Ok(1)), None, "an unknown number");
         assert_eq!(slots.close(second).and_then(Result::ok), Some(7));
         assert_eq!(slots.open() as u64, second, "a closed number is reused");
-        assert!(slots.close(second).is_none(), "a reused slot starts empty");
+        assert!(
+            slots.close(second).is_none(),
+            "closed before its completion"
+        );
+        let third = slots.open() as u64;
+        assert!(
+            third != first && third != second,
+            "an abandoned number stays taken"
+        );
+        assert_eq!(
+            slots.complete(second, Ok(9)),
+            None,
+            "its completion wakes nothing"
+        );
+        assert_eq!(slots.open() as u64, second, "then the number is free");
         assert_eq!(slots.close(first).and_then(Result::ok), Some(3));
     }
 
