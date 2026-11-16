@@ -205,6 +205,9 @@ mod c {
         /// `epoll_create(2)`.
         #[cfg(any(target_os = "linux", target_os = "android"))]
         pub safe fn epoll_create(size: c_int) -> c_int;
+        /// `epoll_create1(2)`: the call Miri implements.
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        pub safe fn epoll_create1(flags: c_int) -> c_int;
         /// `epoll_ctl(2)`: `event` is the interest and token to keep, none for
         /// `EPOLL_CTL_DEL`.
         #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -251,7 +254,7 @@ pub use c::kqueue;
 pub use c::malloc_trim;
 pub use c::{calloc, malloc};
 #[cfg(any(target_os = "linux", target_os = "android"))]
-pub use c::{epoll_create, epoll_ctl, signalfd};
+pub use c::{epoll_create, epoll_create1, epoll_ctl, signalfd};
 pub(crate) use c::{fork, getrlimit, srandom, uname};
 pub use c::{
     pthread_sigmask, sigaddset, sigdelset, sigemptyset, sigfillset, sigismember, sigprocmask,
