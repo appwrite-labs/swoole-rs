@@ -270,11 +270,8 @@ fn entry(ops: &Loop<'_>, index: usize) {
                 events & libc::EPOLLOUT as u32 != 0,
                 events & (libc::EPOLLRDHUP | libc::EPOLLERR | libc::EPOLLHUP) as u32 != 0,
             );
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "the token is a pointer stored in u64"
-            )]
-            (event.u64 as usize as *mut c_void, -1, mask)
+            // The token is a pointer stored in a u64.
+            (event.u64.c_cast::<usize>() as *mut c_void, -1, mask)
         }
         #[cfg(any(
             target_os = "macos",

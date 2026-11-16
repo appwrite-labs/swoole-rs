@@ -225,11 +225,7 @@ pub mod exports {
                 };
                 buffer.append(payload.unwrap_or_default());
                 if decision.action == Action::Finish {
-                    #[expect(
-                        clippy::cast_possible_truncation,
-                        reason = "bounded by package_max_length"
-                    )]
-                    let whole = buffer.len() as u32;
+                    let whole = u32::try_from(buffer.len()).unwrap_or(u32::MAX);
                     dispatch.info.len = whole;
                     dispatch.data = buffer.as_mut_ptr();
                     dispatch_task(&dispatch);

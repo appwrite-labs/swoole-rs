@@ -18,6 +18,7 @@
 
 use std::ffi::{CStr, c_char, c_int, c_long, c_uint, c_ulong};
 use std::ptr;
+use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::sys::Text;
 use swoole_rs_ssh2_sys::{
     KbdintResponse, LIBSSH2_AGENT, LIBSSH2_CHANNEL, LIBSSH2_ERROR_EAGAIN,
@@ -82,12 +83,9 @@ pub struct Sftp(*mut LIBSSH2_SFTP);
 pub struct SftpHandle(*mut LIBSSH2_SFTP_HANDLE);
 
 /// `(unsigned int) strlen(text)`, as the upstream aliases measure their strings.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "the upstream alias casts strlen to unsigned int"
-)]
+/// The upstream alias casts strlen to unsigned int.
 fn length(text: &CStr) -> c_uint {
-    text.count_bytes() as c_uint
+    text.count_bytes().c_cast::<c_uint>()
 }
 
 // libssh2's own declarations, with each handle typed as the live one it is. The
@@ -240,23 +238,14 @@ impl Narrow for c_int {
 }
 
 impl Narrow for isize {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "upstream's std::function<int(void)>"
-    )]
     fn narrow(self) -> c_int {
-        self as c_int
+        self.c_cast::<c_int>()
     }
 }
 
 impl Narrow for usize {
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_possible_wrap,
-        reason = "upstream's std::function<int(void)>"
-    )]
     fn narrow(self) -> c_int {
-        self as c_int
+        self.c_cast::<c_int>()
     }
 }
 

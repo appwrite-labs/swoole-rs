@@ -36,12 +36,9 @@ fn starts(input: &[u8], needle: &[u8]) -> bool {
     super::case_prefix(input, needle)
 }
 /// A request-buffer position stored in one of upstream's `uint32_t` Request fields.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "request buffers are capped by package_max_length, a uint32_t"
-)]
+/// Request buffers are capped by `package_max_length`, a `uint32_t`.
 fn field(position: usize) -> u32 {
-    position as u32
+    u32::try_from(position).unwrap_or(u32::MAX)
 }
 fn request_line(input: &[u8], frame: &mut HttpFrame) -> bool {
     if input.len() < 16 {

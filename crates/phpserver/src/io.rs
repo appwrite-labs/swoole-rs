@@ -316,12 +316,7 @@ fn send_message(call: &Call) {
     {
         return call.set_bool(false);
     }
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "checked against the core worker count above"
-    )]
-    let worker_id = worker_id as u32;
+    let worker_id = u32::try_from(worker_id).unwrap_or(u32::MAX);
     call.set_bool(server_methods::send_pipe_message(serv, worker_id, &mut buf));
 }
 

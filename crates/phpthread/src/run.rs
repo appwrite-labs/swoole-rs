@@ -426,7 +426,7 @@ pub(crate) fn info() -> Owned {
     let mut info = OwnedArray::default();
     info.insert_bool(b"is_main_thread", main_thread());
     info.insert_bool(b"is_shutdown", swr_zend_tsrm_is_shutdown());
-    #[expect(clippy::cast_possible_wrap, reason = "a thread count")]
-    info.insert_long(b"thread_num", sw_active_thread_count() as i64);
+    let threads = i64::try_from(sw_active_thread_count()).unwrap_or(i64::MAX);
+    info.insert_long(b"thread_num", threads);
     info.into_owned()
 }

@@ -867,8 +867,7 @@ pub(crate) fn compression_method(state: &mut State, value: &[u8]) {
     let method = compression(value.get(..length).unwrap_or(value), codecs);
     state.accept_compression = method > 0;
     if method > 0 {
-        #[expect(clippy::cast_possible_truncation, reason = "methods are 1 to 4")]
-        let method = method as i8;
+        let method = i8::try_from(method).unwrap_or(i8::MAX);
         state.compression_method = method;
     }
 }

@@ -105,8 +105,8 @@ fn report(code: c_int, always: bool, message: &[u8]) {
 
 /// A frame's nine header bytes.
 fn frame_header(kind: FrameType, length: usize, flags: u32, stream_id: u32) -> [u8; FRAME_HEADER] {
-    #[expect(clippy::cast_possible_truncation, reason = "frame lengths are 24-bit")]
-    sw_rs_http2_pack_frame_header(kind, length as u32, flags, stream_id)
+    // Frame lengths are 24-bit.
+    sw_rs_http2_pack_frame_header(kind, length.c_cast::<u32>(), flags, stream_id)
 }
 
 /// The session and stream of a response's context.

@@ -370,11 +370,8 @@ pub fn radix(mut value: c_ulong, radix: u32, output: &mut [u8]) -> usize {
     loop {
         // At least `c_ulong::BITS` digit slots precede the NUL, enough for radix 2.
         index -= 1;
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "a digit is below the radix, at most 36"
-        )]
-        let digit = (value % c_ulong::from(radix)) as usize;
+        // A digit is below the radix, at most 36.
+        let digit = usize::try_from(value % c_ulong::from(radix)).unwrap_or(usize::MAX);
         put(index, DIGITS.get(digit).copied().unwrap_or(b'0'));
         value /= c_ulong::from(radix);
         if value == 0 {

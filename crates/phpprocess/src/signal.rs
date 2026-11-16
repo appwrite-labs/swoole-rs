@@ -79,8 +79,7 @@ pub(crate) fn signal(call: &Call) {
         call.set_bool(false);
         return;
     };
-    #[expect(clippy::cast_possible_truncation, reason = "0 <= signo < 128")]
-    let number = signo as c_int;
+    let number = c_int::try_from(signo).unwrap_or_default();
     let current = signal_upstream::get(number);
     let ours = Handler::new(on_signal);
     if current != Handler::NONE && current != ours && current != Handler::IGNORE {

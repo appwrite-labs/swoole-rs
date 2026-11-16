@@ -10,10 +10,6 @@ mod epoll {
     use super::{Events, c_int, c_void};
 
     /// `ReactorEpoll::get_events`.
-    #[expect(
-        clippy::cast_sign_loss,
-        reason = "the EPOLL* flags are non-negative bit masks"
-    )]
     fn interest(events: Events) -> u32 {
         let mut interest = 0;
         if events.reads() {
@@ -28,7 +24,7 @@ mod epoll {
         if events.intersects(Events::ERROR) {
             interest |= libc::EPOLLRDHUP | libc::EPOLLHUP | libc::EPOLLERR;
         }
-        interest as u32
+        interest.cast_unsigned()
     }
 
     /// `epoll_ctl` for `op` of `fd` with `socket` as its token,

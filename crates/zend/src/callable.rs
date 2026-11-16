@@ -183,11 +183,7 @@ impl Parsed {
                 slot.write(value.copy().into_zval());
             }
             callable.fci.params = params;
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "a frame's argument count plus one"
-            )]
-            let total = (count + lead) as u32;
+            let total = u32::try_from(count + lead).unwrap_or(u32::MAX);
             callable.fci.param_count = total;
         }
         let record = self.0;

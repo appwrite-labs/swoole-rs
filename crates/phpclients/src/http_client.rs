@@ -1052,8 +1052,7 @@ impl Client {
             if self.completed.get() {
                 if hooks.parser.upgrade && count > parsed + WEBSOCKET_HEADER {
                     // Keep the bytes past the handshake (`reduce`).
-                    #[expect(clippy::cast_possible_wrap, reason = "a buffer offset")]
-                    let parsed = parsed as i64;
+                    let parsed = i64::try_from(parsed).unwrap_or(i64::MAX);
                     socket.with_input(|input| {
                         // SAFETY: the buffer's first `count` bytes are this response's data.
                         unsafe { input.set_len(count) };
@@ -1922,8 +1921,7 @@ fn add_data(call: &Call) {
         kind
     };
     let filename = if filename.is_empty() { name } else { filename };
-    #[expect(clippy::cast_possible_wrap, reason = "a string length")]
-    let size = data.len() as i64;
+    let size = i64::try_from(data.len()).unwrap_or(i64::MAX);
     add_upload(
         call,
         &[

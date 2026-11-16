@@ -100,12 +100,7 @@ fn local_mac(call: &Call) {
     }
     let mut buffer: [libc::ifreq; REQUESTS] = zeroed();
     let mut conf: libc::ifconf = zeroed();
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_possible_wrap,
-        reason = "under 4096 bytes"
-    )]
-    let length = size_of_val(&buffer) as c_int;
+    let length = c_int::try_from(size_of_val(&buffer)).unwrap_or(c_int::MAX);
     conf.ifc_len = length;
     conf.ifc_ifcu.ifcu_req = buffer.as_mut_ptr();
     // SAFETY: a socket and an ifconf over a live buffer.

@@ -1535,8 +1535,7 @@ fn bind_unix(this: Handle) -> bool {
         for (slot, byte) in address.sun_path.iter_mut().zip(path.bytes().chain([0])) {
             *slot = c_char::from_ne_bytes([byte]);
         }
-        #[expect(clippy::cast_possible_truncation, reason = "AF_UNIX fits sa_family_t")]
-        let family = libc::AF_UNIX as libc::sa_family_t;
+        let family = libc::AF_UNIX.c_cast::<libc::sa_family_t>();
         address.sun_family = family;
         _ = swoole_rs_corebase::sys::unlink(&bound);
         // The address just written, bound at `sizeof(sockaddr_un)`; the record keeps

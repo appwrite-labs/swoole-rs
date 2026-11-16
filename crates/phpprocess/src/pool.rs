@@ -927,12 +927,8 @@ fn get_process(call: &Call) {
                 let object = class.create_object();
                 // A worker C++ allocates, as the Process object frees it.
                 let mut copy = WorkerRecord::empty();
-                #[expect(
-                    clippy::cast_sign_loss,
-                    clippy::cast_possible_truncation,
-                    reason = "a checked worker id"
-                )]
-                let pipe = worker_record::copy_for_process(view, id as usize, &mut copy);
+                let index = usize::try_from(id).unwrap_or(usize::MAX);
+                let pipe = worker_record::copy_for_process(view, index, &mut copy);
                 if let Some(props) = object.props(Some(class)) {
                     props.long(c"id", current_id);
                     props.long(c"pid", i64::from(copy.pid()));
@@ -949,12 +945,8 @@ fn get_process(call: &Call) {
             }
             Some(found) => {
                 if let Some(worker) = crate::process::worker_of(found) {
-                    #[expect(
-                        clippy::cast_sign_loss,
-                        clippy::cast_possible_truncation,
-                        reason = "a checked worker id"
-                    )]
-                    let pid = view.worker(id as usize).map_or(0, Worker::pid);
+                    let index = usize::try_from(id).unwrap_or(usize::MAX);
+                    let pid = view.worker(index).map_or(0, Worker::pid);
                     if worker.pid() != pid {
                         worker.set_pid(pid);
                         if let Some(props) = found.props(Some(class)) {
