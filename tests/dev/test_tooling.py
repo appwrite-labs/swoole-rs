@@ -362,6 +362,17 @@ class Lanes(unittest.TestCase):
         self.assertEqual(environment('linux', 0), [])
         self.assertEqual(environment('darwin', 501), [])
         self.assertIn('setpriv --reuid', dev.DOCKER_SCRIPT)
+        # The caller's job limit reaches the upstream prep's make (#4477), only when set.
+        with patch.dict(dev.os.environ, {'SWR_JOBS': '2'}, clear=False):
+            with patch.object(dev.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout='')) as run, \
+                    patch.object(dev.subprocess, 'check_output', return_value=f'{ROOT}/.git\n'), \
+                    patch.object(dev.Path, 'mkdir'):
+                dev.docker(['--', 'cargo', 'test'])
+            command = run.call_args.args[0]
+            self.assertIn('SWR_JOBS', command[:command.index('bash')])
+            self.assertEqual(dev.default_jobs(), 2)
+        with patch.dict(dev.os.environ, {'SWR_JOBS': '', 'CARGO_BUILD_JOBS': '-1'}, clear=False):
+            self.assertEqual(dev.default_jobs(), min(dev.os.cpu_count() or 2, 4))
 
     def test_docker_iouring_adds_the_io_uring_profile_and_sys_resource(self):
         # Docker's default seccomp profile answers io_uring_setup with EPERM (#4167); --iouring

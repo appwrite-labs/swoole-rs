@@ -35,8 +35,22 @@ def require_build_space(path):
     return free
 
 
+JOBS_VARIABLES = ('SWR_JOBS', 'CARGO_BUILD_JOBS')
+
+
+def default_jobs():
+    """make's -j: `SWR_JOBS`, else a positive `CARGO_BUILD_JOBS`, else up to four. A caller
+    sharing the machine can lower it, which `-j` on make's command line otherwise
+    overrides even through MAKEFLAGS (#4477)."""
+    for name in JOBS_VARIABLES:
+        value = os.environ.get(name, '')
+        if value.isdigit() and int(value) > 0:
+            return int(value)
+    return min(os.cpu_count() or 2, 4)
+
+
 def add_build_arguments(parser):
-    parser.add_argument('--jobs', type=int, default=min(os.cpu_count() or 2, 4))
+    parser.add_argument('--jobs', type=int, default=default_jobs())
     parser.add_argument('--php-config', default='php-config')
     parser.add_argument('--phpize', default='phpize')
     parser.add_argument('--stdext', action='store_true', help='Explicit experimental upstream stdext profile; separate runtime qualification required')
