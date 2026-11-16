@@ -30,6 +30,12 @@ overflow-checks = true
 debug-assertions = true
 
 # Lint levels live here only; see AGENTS.md "Rust lints".
+[workspace.lints.cargo]
+# A dependency rustc never resolves in a build configuration (#4377): make it
+# optional and pull it in from the feature that uses it.
+unused_dependencies = "deny"
+missing_lints_inheritance = "deny"
+
 [workspace.lints.rust]
 # `pub` only where another crate uses it, so dead_code sees the rest (#159).
 unreachable_pub = "deny"

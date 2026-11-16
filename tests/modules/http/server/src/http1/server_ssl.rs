@@ -671,7 +671,7 @@ fn ssl_client_cert_3() {
     test_ssl_client_cert(MODE_THREAD);
 }
 
-pub const CASES: &[(&str, fn())] = &[
+pub(crate) const CASES: &[(&str, fn())] = &[
     ("ssl", ssl),
     ("ssl_error", ssl_error),
     ("ssl_write", ssl_write),

@@ -1696,7 +1696,7 @@ fn clean_worker_2() {
     test_clean_worker(MODE_THREAD);
 }
 
-pub const CASES: &[(&str, fn())] = &[
+pub(crate) const CASES: &[(&str, fn())] = &[
     ("base", base),
     ("process", process),
     ("process_single_thread", process_single_thread),
