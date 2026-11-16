@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
-//! OpenSSL 3 compatibility identifiers shared by Rust operations and native SDK.
-#[repr(C)]
+//! Upstream's TLS identifiers. No C header exports them; the `tls-constants` gate
+//! compares them with the pinned `swoole_ssl.h`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[expect(non_camel_case_types, reason = "preserve the native SDK names")]
+#[expect(non_camel_case_types, reason = "upstream's identifiers")]
 pub enum SslCreateFlag {
     SW_SSL_SERVER = 1,
     SW_SSL_CLIENT = 2,
 }
 pub use swoole_rs_corebase::constants::SslState;
-#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[expect(non_camel_case_types, reason = "preserve the native SDK names")]
+#[expect(non_camel_case_types, reason = "upstream's identifiers")]
 pub enum SslVersion {
     SW_SSL_SSLv2 = 1 << 1,
     SW_SSL_SSLv3 = 1 << 2,
@@ -20,9 +19,8 @@ pub enum SslVersion {
     SW_SSL_TLSv1_3 = 1 << 6,
     SW_SSL_DTLS = 1 << 7,
 }
-#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[expect(non_camel_case_types, reason = "preserve the native SDK names")]
+#[expect(non_camel_case_types, reason = "upstream's identifiers")]
 pub enum SslMethod {
     SW_SSLv23_METHOD = 0,
     SW_SSLv3_METHOD = 1,
