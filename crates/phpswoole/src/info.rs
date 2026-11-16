@@ -65,6 +65,15 @@ impl Info {
         ))?;
         row(c"Author", Text::from(c"Swoole Team <team@swoole.com>"))?;
         row(c"Version", Text::from(crate::constants::VERSION))?;
+        // The workspace version and the commit tools/build_ext.py builds from.
+        text(
+            c"swoole-rs",
+            &format!(
+                "{} ({})",
+                env!("CARGO_PKG_VERSION"),
+                option_env!("SWOOLE_RS_COMMIT").unwrap_or("unknown")
+            ),
+        )?;
         let abi = swoole_rs_error::swr_v1_abi_version();
         let features = swoole_rs_error::swr_v1_feature_bits();
         text(
