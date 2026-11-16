@@ -44,6 +44,15 @@ void swr_phpswoole_versions(struct swr_phpswoole_versions *info) {
 #endif
 }
 
+// SWOOLE_G's storage: this thread's module globals.
+zend_swoole_globals *swr_phpswoole_globals(void) {
+#ifdef ZTS
+    return TSRMG_BULK(swoole_globals_id, zend_swoole_globals *);
+#else
+    return &swoole_globals;
+#endif
+}
+
 // MINIT: pcre.jit with swoole on macOS dumps core; upstream turns it off there.
 void swr_phpswoole_pcre_jit_off(void) {
 #if defined(PHP_PCRE_VERSION) && defined(HAVE_PCRE_JIT_SUPPORT) && __MACH__ && !defined(SW_DEBUG)

@@ -389,23 +389,6 @@ impl Coroutine {
         self.live()
             .map(|co| state_of(co) == swoole_rs_coroutine::State::Waiting)
     }
-
-    /// Wake it from a wait: `Coroutine::resume()`, or `cancel()` so its yield
-    /// fails; nothing once it ended. As [`resume`], the caller's frames must
-    /// own nothing that needs a drop.
-    /// # Safety
-    /// While it lives, it waits in a suspension of the caller's, which
-    /// nothing else wakes. Every main-stack frame up to the bailout trap
-    /// must own nothing that needs dropping; abandoned coroutine stacks remain
-    /// allocated.
-    pub unsafe fn wake(self, cancel: bool) {
-        let Some(co) = self.live() else { return };
-        if cancel {
-            let _canceled = self::cancel(co);
-        } else {
-            resume(co);
-        }
-    }
 }
 
 /// `co->yield()` of the running coroutine, until it is woken; nothing outside
@@ -423,8 +406,9 @@ pub fn suspend_for(timeout: f64) -> bool {
     current().is_some_and(|co| yield_ex(co, timeout))
 }
 
-/// One wait that someone else ends: [`Waiter::wait`] suspends the running
-/// coroutine, published here while it waits, and [`Waiter::wake`] resumes it.
+/// One wait that someone else ends: [`Waiter::wait`] (or [`Waiter::wait_for`])
+/// suspends the running coroutine, published here while it waits, and
+/// [`Waiter::wake`] resumes it, or [`Waiter::cancel`] cancels its wait.
 #[derive(Default)]
 pub struct Waiter(std::cell::Cell<Option<Coroutine>>);
 
@@ -436,18 +420,44 @@ impl Waiter {
         self.0.set(None);
     }
 
-    /// Resume the coroutine in [`Waiter::wait`]; nothing when none waits.
+    /// [`suspend_for`] `timeout` while published: false when it timed out or
+    /// was canceled, or outside a coroutine.
+    #[must_use]
+    pub fn wait_for(&self, timeout: f64) -> bool {
+        self.0.set(Coroutine::current());
+        let done = suspend_for(timeout);
+        self.0.set(None);
+        done
+    }
+
+    /// Resume the coroutine waiting here; nothing when none waits.
     ///
     /// # Errors
     /// The resumed coroutine bailed out. The trap protects the caller's
     /// main-stack frames; abandoned coroutine stacks remain allocated.
     pub fn wake(&self) -> Result<(), bailout::Bailout> {
+        self.end(resume)
+    }
+
+    /// Cancel the wait of the coroutine waiting here, so it ends false;
+    /// nothing when none waits.
+    ///
+    /// # Errors
+    /// As [`Waiter::wake`].
+    pub fn cancel(&self) -> Result<(), bailout::Bailout> {
+        self.end(|co| {
+            let _canceled = cancel(co);
+        })
+    }
+
+    /// `end` of the coroutine waiting here, inside a trap.
+    fn end(&self, end: fn(Co)) -> Result<(), bailout::Bailout> {
         swoole_rs_zend::contain_with(|| {
-            // Published only while suspended in `wait`, which clears it as soon
-            // as anything resumes it. The trap encloses only this closure and
-            // the drop-free resume frames.
+            // Published only while suspended in a wait here, which clears it as
+            // soon as anything resumes it. The trap encloses only this closure
+            // and the drop-free resume frames.
             if let Some(co) = self.0.get().and_then(Coroutine::live) {
-                resume(co);
+                end(co);
             }
         })
     }

@@ -25,8 +25,7 @@ use swoole_rs_zend::sys::{
     zend_execute_data, zend_fcall_info, zend_fcall_info_cache, zend_fiber_context,
     zend_fiber_status, zend_fiber_status_ZEND_FIBER_STATUS_DEAD,
     zend_fiber_status_ZEND_FIBER_STATUS_INIT, zend_fiber_status_ZEND_FIBER_STATUS_RUNNING,
-    zend_fiber_status_ZEND_FIBER_STATUS_SUSPENDED, zend_object, zend_observer_fiber_destroy_notify,
-    zval, zval_ptr_dtor,
+    zend_fiber_status_ZEND_FIBER_STATUS_SUSPENDED, zend_object, zval, zval_ptr_dtor,
 };
 use swoole_rs_zend::{Callable, Function, Value, bailout};
 
@@ -44,6 +43,8 @@ unsafe extern "C" {
     safe fn zend_observer_fiber_init_notify(fiber: Fiber);
     /// The fiber observers' notice of a switch from one live fiber to another.
     safe fn zend_observer_fiber_switch_notify(from: Fiber, to: Fiber);
+    /// The fiber observers' notice that a live fiber goes; it stays allocated.
+    safe fn zend_observer_fiber_destroy_notify(fiber: Fiber);
 }
 
 /// A live fiber context: the main context's `EG(main_fiber_context)`, or a
@@ -587,17 +588,14 @@ pub(crate) fn defer(task: Callable) {
 }
 
 fn fiber_init(ctx: Ctx) {
-    let fiber = swoole_rs_zend::value::emalloc(size_of::<zend_fiber_context>())
-        .cast::<zend_fiber_context>();
     let invalid = ptr::without_provenance_mut::<c_void>(INVALID);
-    {
-        // SAFETY: fresh storage; these fields are never used for a mock fiber.
-        let this = unsafe { &mut *fiber };
-        this.handle = invalid;
-        this.kind = invalid;
-        this.function = Some(never_switched);
-        this.stack = invalid.cast();
-    }
+    // These fields are never used for a mock fiber.
+    let mut this: zend_fiber_context = swoole_rs_zend::zeroed();
+    this.handle = invalid;
+    this.kind = invalid;
+    this.function = Some(never_switched);
+    this.stack = invalid.cast();
+    let fiber = swoole_rs_zend::value::enew(this);
     // A new fiber context, which lives until `fiber_try_destroy`.
     let Some(fiber) = NonNull::new(fiber).map(Fiber) else {
         return;
@@ -618,11 +616,9 @@ fn fiber_try_destroy(ctx: Ctx, origin: Ctx) {
     fiber.set_status(zend_fiber_status_ZEND_FIBER_STATUS_DEAD);
     fiber_switch_try_notify(ctx, origin);
     ctx.set_fiber(None);
-    let fiber = fiber.0.as_ptr();
-    // SAFETY: the coroutine's live mock fiber, which no one uses after this.
-    unsafe { zend_observer_fiber_destroy_notify(fiber) };
-    // SAFETY: emalloc'd by `fiber_init`.
-    unsafe { swr_zend_efree(fiber.cast()) };
+    zend_observer_fiber_destroy_notify(fiber);
+    // SAFETY: emalloc'd by `fiber_init`, and no one uses it after this.
+    unsafe { swr_zend_efree(fiber.0.as_ptr().cast()) };
 }
 
 fn fiber_status(ctx: Ctx) -> zend_fiber_status {

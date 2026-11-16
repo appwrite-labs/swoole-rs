@@ -20,8 +20,8 @@ use swoole_rs_zend::{
     contain_with, report,
     sys::{
         HashTable, swr_zend_after_fork, swr_zend_fatal_error, swr_zend_leak_check,
-        swr_zend_module_globals, swr_zend_print_stack_trace, swr_zend_runtime_call_handler,
-        swr_zend_try_hook, zend_class_entry,
+        swr_zend_print_stack_trace, swr_zend_runtime_call_handler, swr_zend_try_hook,
+        zend_class_entry,
     },
 };
 
@@ -120,11 +120,7 @@ static mut swoole_globals: Globals = Globals {
 /// (`Globals` is not `Sync`, so the reference stays on this thread).
 #[must_use]
 pub fn globals() -> &'static Globals {
-    // SAFETY: `ZEND_MODULE_GLOBALS_BULK(swoole)`, with the NTS storage.
-    let globals = unsafe { swr_zend_module_globals((&raw mut swoole_globals).cast()) };
-    // SAFETY: this thread's globals, which Zend allocated at MINIT (or at the
-    // thread's start under ZTS) and initialised with `init_globals`.
-    unsafe { &*globals.cast::<Globals>() }
+    swr_phpswoole_globals()
 }
 
 /// `ZEND_INIT_MODULE_GLOBALS(swoole, init_globals, nullptr)`: what the ini
@@ -489,6 +485,10 @@ unsafe extern "C" {
     safe fn swoole_init();
     /// native/phphelpers/host.c.
     safe fn swr_phpswoole_pcre_jit_off();
+    /// `SWOOLE_G`'s storage (native/phphelpers/host.c): this thread's
+    /// globals, which Zend allocated at MINIT (or at the thread's start under ZTS)
+    /// and initialised with `init_globals`.
+    safe fn swr_phpswoole_globals() -> &'static Globals;
     /// The generated `php_swoole_library.h`'s, declared `void php_swoole_load_library()`:
     /// unprototyped C, so it is called directly and never through a `void (*)(void)`,
     /// which the undefined-behavior sanitizer's function-type check rejects.

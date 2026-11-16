@@ -26,12 +26,12 @@ free its non-owning handles. Thread contexts likewise stay parked: deactivation
 clears shared runtime state, and only a completed context is joined. Yielding is
 safe because those frames and their values remain allocated.
 
-The main stack can be reused after a bailout. Raw `coroutine::resume`, `cancel`
-and `phpcoroutines::Coroutine::wake` therefore require their callers to keep no
+The main stack can be reused after a bailout. Raw `coroutine::resume` and `cancel`
+therefore require their callers to keep no
 pending drops between the call and its bailout trap. PHP handlers release their
 owners before resuming; deferred join callbacks release their `Rc` before the
 switch, and the reactor unboxes deferred values before calling them.
-`Waiter::wake` and `channel::Queue::close` instead contain the resumed coroutine's
+`Waiter::wake`, `Waiter::cancel` and `channel::Queue::close` instead contain the resumed coroutine's
 bailout and return `Result`: their callers may own values. HTTP/2 stops frame
 processing and defers the error until the receiving frame releases its stream
 and response owners. Channel close returns its error to the PHP handler's

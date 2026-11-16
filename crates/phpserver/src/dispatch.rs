@@ -755,15 +755,22 @@ extern "C" fn on_connect(_: Ctx, server: view::Server<'_>, info: &DataHead) {
 /// its output drained, or cancel them when it closed (each leaves the queue
 /// as it wakes).
 fn send_wake(session_id: i64, cancel: bool) {
-    // Nothing to drop: a woken coroutine may bail out across this frame.
     let Some(waiters) = crate::lifecycle::send_waiters(session_id) else {
         return;
     };
-    while let Some(co) = crate::lifecycle::send_next(&waiters, !cancel) {
-        // SAFETY: a coroutine parked in `send_yield`, until it wakes.
-        unsafe { co.wake(cancel) };
+    let mut woken = Ok(());
+    while woken.is_ok()
+        && let Some(waiter) = crate::lifecycle::send_next(&waiters, !cancel)
+    {
+        woken = if cancel {
+            waiter.cancel()
+        } else {
+            waiter.wake()
+        };
     }
-    drop(ManuallyDrop::into_inner(waiters));
+    drop(waiters);
+    // A woken coroutine's bailout, raised once this frame owns nothing.
+    bailout::raise(woken);
 }
 
 /// `php_swoole_server_onClose` (crates/phphttp's fallback).

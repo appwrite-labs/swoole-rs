@@ -214,15 +214,15 @@ fn add_worker(serv: view::Server<'_>, process: &Value) -> Result<i64, AddFailed>
         .ok_or(AddFailed::Refused)
 }
 
-/// `send_yield`'s coroutines waiting on one session, each with its token.
-type Queue = VecDeque<(u64, Coroutine)>;
+/// `send_yield`'s coroutines waiting on one session, each in its own wait.
+type Queue = VecDeque<Rc<Waiter>>;
 
 /// A session's [`Queue`], shared by its waiters and whoever wakes them; taken
 /// out and put back with nothing in between that yields or runs PHP code.
 pub(crate) type Waiters = Rc<Cell<Queue>>;
 
 /// `f` over the waiters' queue, taken out and put back: `f` only moves
-/// coroutine handles, which neither yields nor runs PHP code.
+/// waits, which neither yields nor runs PHP code.
 fn with_queue<R>(waiters: &Waiters, f: impl FnOnce(&mut Queue) -> R) -> R {
     let mut queue = waiters.take();
     let result = f(&mut queue);
@@ -248,8 +248,6 @@ pub(crate) struct Property {
     /// `addCommand`'s callables.
     commands: Vec<Callable>,
     send_waiters: SendWaiters,
-    /// The next waiter's token.
-    send_token: u64,
     /// `addProcess`'s processes, copies holding a reference. User worker `id`
     /// runs the one at `id - worker_num - task_worker_num`: the server numbers
     /// the workers it adds in order and refuses every add once it is created,
@@ -264,7 +262,6 @@ impl Default for Property {
     fn default() -> Self {
         Self {
             send_waiters: SendWaiters::default(),
-            send_token: 0,
             ports: const { Vec::new() },
             commands: const { Vec::new() },
             user_processes: const { Vec::new() },
@@ -1415,31 +1412,23 @@ pub fn php_swoole_server_send_yield(
     data: &[u8],
 ) -> Result<bool, bailout::Bailout> {
     swoole_rs_phpruntime::coroutine_check()?;
-    let Some(co) = Coroutine::current() else {
-        return Ok(false);
-    };
-    if data.is_empty() {
+    if Coroutine::current().is_none() || data.is_empty() {
         return Ok(false);
     }
     loop {
         let queued = ServerObject::with_running(|object| {
-            object.property(|p| {
-                p.send_token += 1;
-                (
-                    Rc::clone(p.send_waiters.entry(session_id).or_default()),
-                    p.send_token,
-                )
-            })
+            object.property(|p| Rc::clone(p.send_waiters.entry(session_id).or_default()))
         });
-        let Some((waiters, token)) = queued else {
+        let Some(waiters) = queued else {
             return Ok(false);
         };
-        with_queue(&waiters, |queue| queue.push_back((token, co)));
+        let waiter = Rc::new(Waiter::default());
+        with_queue(&waiters, |queue| queue.push_back(Rc::clone(&waiter)));
         let timeout = server.config().send_timeout.get();
         // `onBufferEmpty` or `onClose` wakes it.
-        if !swoole_rs_phpcoroutines::suspend_for(timeout) {
+        if !waiter.wait_for(timeout) {
             with_queue(&waiters, |queue| {
-                queue.retain(|&(waiter, _)| waiter != token);
+                queue.retain(|queued| !Rc::ptr_eq(queued, &waiter));
             });
             return Ok(false);
         }
@@ -1454,9 +1443,8 @@ pub fn php_swoole_server_send_yield(
 
 /// Take the session's waiting coroutines out of the running server to wake
 /// (`onBufferEmpty` resumes each, `onClose` cancels each), none when none
-/// wait; never dropped implicitly, so a frame that holds them owns nothing a
-/// bailout would skip.
-pub(crate) fn send_waiters(session_id: i64) -> Option<std::mem::ManuallyDrop<Waiters>> {
+/// wait.
+pub(crate) fn send_waiters(session_id: i64) -> Option<Waiters> {
     ServerObject::with_running(|object| {
         // Without waiters, skip hashing the key: SipHash is most of an onClose (#2964).
         object.property(|p| {
@@ -1465,20 +1453,18 @@ pub(crate) fn send_waiters(session_id: i64) -> Option<std::mem::ManuallyDrop<Wai
         })
     })
     .flatten()
-    .map(std::mem::ManuallyDrop::new)
 }
 
 /// The next coroutine to wake: `pop` takes it off the queue (a resume), else
 /// it stays first until its `send_yield` leaves (a cancel).
-pub(crate) fn send_next(waiters: &Waiters, pop: bool) -> Option<Coroutine> {
-    let next = with_queue(waiters, |queue| {
+pub(crate) fn send_next(waiters: &Waiters, pop: bool) -> Option<Rc<Waiter>> {
+    with_queue(waiters, |queue| {
         if pop {
             queue.pop_front()
         } else {
-            queue.front().copied()
+            queue.front().cloned()
         }
-    });
-    next.map(|(_, co)| co)
+    })
 }
 
 fn nothing(_: &Call) {}

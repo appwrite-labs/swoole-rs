@@ -10,6 +10,8 @@ module host. Each item stays C for a reason Rust can't remove:
 - **`swr_phpswoole_pcre_jit_off()`**. `PCRE_G(jit)` is ext/pcre's module global,
   whose layout and TSRM accessor change with PHP's build. Its guard
   (`HAVE_PCRE_JIT_SUPPORT`, `SW_DEBUG`) comes from the same headers.
+- **`swr_phpswoole_globals()`**. `SWOOLE_G`'s storage is the NTS globals or
+  this thread's TSRM block, as PHP's build decides.
 - **`php_swoole_load_library()`**. The generated `php_swoole_library.h` (the pin's,
   owned in native/swoole-src) defines it, with the PHP sources it evaluates as C string literals and a
   `zend_compile_string` swap built from Zend's macros. This file includes the
