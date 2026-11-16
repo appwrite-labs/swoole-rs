@@ -1148,6 +1148,13 @@ pub(crate) struct Native<'a> {
     pool: PoolRef<'a>,
 }
 
+impl<'a> Native<'a> {
+    /// A call over the pool and `worker`, when it is one of the pool's records.
+    fn call(&self, worker: *const c_void) -> PoolCall<'a> {
+        PoolCall::new(self.pool, self.pool.worker_of(worker.cast()))
+    }
+}
+
 impl PoolHost for Native<'_> {
     fn op(&mut self, worker: *mut c_void, op: Op, arg: u64) {
         if let Op::Log(kind) = op {
@@ -1159,7 +1166,7 @@ impl PoolHost for Native<'_> {
             return;
         }
         // A native effect on the live pool this export runs over.
-        self.native.call(&PoolCall::new(self.pool, worker), op, arg);
+        self.native.call(&self.call(worker), op, arg);
     }
 
     /// The message queue is Rust's on every platform (crates/ossupport).
@@ -1168,8 +1175,7 @@ impl PoolHost for Native<'_> {
     }
 
     fn event_init(&mut self) -> bool {
-        self.native
-            .event_init(&PoolCall::new(self.pool, ptr::null_mut()))
+        self.native.event_init(&PoolCall::new(self.pool, None))
     }
 
     fn event_available(&mut self) -> bool {
@@ -1199,33 +1205,29 @@ impl PoolHost for Native<'_> {
     }
 
     fn new_pipe(&mut self, worker: *mut WorkerRecord) -> Result<(), PipeError> {
-        self.native
-            .new_pipe(&PoolCall::new(self.pool, worker.cast()))
+        self.native.new_pipe(&self.call(worker.cast()))
     }
 
     #[cfg(target_os = "linux")]
     fn send_buffer_size(&mut self, worker: *mut WorkerRecord) -> std::io::Result<c_int> {
-        self.native
-            .send_buffer_size(&PoolCall::new(self.pool, worker.cast()))
+        self.native.send_buffer_size(&self.call(worker.cast()))
     }
 
     fn bus_buffer(&mut self, size: usize) -> Result<(), PipeError> {
         self.native
-            .bus_buffer(&PoolCall::new(self.pool, ptr::null_mut()), size)
+            .bus_buffer(&PoolCall::new(self.pool, None), size)
     }
 
     fn add_pipe(&mut self, worker: *mut WorkerRecord) -> Result<(), PipeError> {
-        self.native
-            .add_pipe(&PoolCall::new(self.pool, worker.cast()))
+        self.native.add_pipe(&self.call(worker.cast()))
     }
 
     fn push_stop(&mut self, worker: *mut WorkerRecord) -> Result<(), PipeError> {
-        self.native
-            .push_stop(&PoolCall::new(self.pool, worker.cast()))
+        self.native.push_stop(&self.call(worker.cast()))
     }
 
     fn callback(&mut self, callback: Callback, worker: *mut c_void) -> Result<isize, Bailed> {
-        let mut call = PoolCall::new(self.pool, worker);
+        let mut call = self.call(worker);
         crate::pool::trapped(|| self.native.callback(&mut call, callback))?;
         Ok(call.result)
     }
@@ -1247,7 +1249,7 @@ impl PoolHost for Native<'_> {
     }
 
     fn close(&self, socket: *mut c_void) {
-        let mut call = PoolCall::new(self.pool, ptr::null_mut());
+        let mut call = PoolCall::new(self.pool, None);
         call.socket = socket;
         self.native.close(&call);
     }
