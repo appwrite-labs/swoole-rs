@@ -146,7 +146,7 @@ pub(super) mod net {
         usize::try_from(n).ok()
     }
     use core::ffi::c_int;
-    use swoole_rs_corebase::sys::ReadSlot;
+    use swoole_rs_corebase::sys::{ReadBuffer, ReadSlot};
     use swoole_rs_reactor::Socket;
 
     pub(in super::super) fn recv(
@@ -168,21 +168,28 @@ pub(super) mod net {
     }
     pub(in super::super) fn recv_sync(
         _: Socket<'_>,
-        buffer: &mut [impl ReadSlot],
+        buffer: ReadBuffer<'_>,
         _: c_int,
     ) -> Option<usize> {
-        count(io("recv_sync", buffer.len()))
+        receive("recv_sync", buffer)
     }
     pub(in super::super) fn send_sync(_: Socket<'_>, data: &[u8], _: c_int) -> Option<usize> {
         count(io("send_sync", data.len()))
     }
     pub(in super::super) fn recvfrom_sync(
         _: Socket<'_>,
-        buffer: &mut [impl ReadSlot],
+        buffer: ReadBuffer<'_>,
         _: c_int,
         _: &mut SocketAddress,
     ) -> Option<usize> {
-        count(io("recvfrom_sync", buffer.len()))
+        receive("recvfrom_sync", buffer)
+    }
+
+    fn receive(name: &str, buffer: ReadBuffer<'_>) -> Option<usize> {
+        match buffer {
+            ReadBuffer::Initialized(buffer) => count(io(name, buffer.len())),
+            ReadBuffer::Spare(buffer) => count(io(name, buffer.len())),
+        }
     }
 }
 pub(super) fn sendfile_sync(_: Socket<'_>, _: &CStr, _: i64, _: usize) -> bool {
@@ -312,6 +319,10 @@ fn set_proxy(client: *mut Client, http: bool) {
 fn new_client(kind: c_int, is_async: bool) -> *mut Client {
     const OPS: SocketOps = SocketOps {
         with_buffer: with_thread_buffer,
+        recv: net::recv,
+        recv_append: net::recv_append,
+        recv_sync: net::recv_sync,
+        recvfrom_sync: net::recvfrom_sync,
         send_sync: net::send_sync,
         sendfile_sync,
         sendfile_async: socket_sendfile_async,

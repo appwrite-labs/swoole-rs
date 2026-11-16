@@ -40,7 +40,11 @@ The client host registers the DNS pool dispatcher alongside framed receives.
 Unit fixtures register their recording dispatcher and retain the original DNS
 success/error traces; the composition root adapts the existing pool ABI, which
 still copies and retains each resolver request until completion.
-Remaining receive and host stand-ins are tracked by #4093.
+Receive, append, synchronous receive and datagram receive use the same operation
+table in production and tests. `ReadBuffer` retains initialized bytes versus spare
+capacity across the callback boundary. Real TCP and async UDP tests check binary
+payloads, initialized tails, EOF and sender addresses for both buffer types.
+No `cfg(not(test))` stand-ins remain in this crate; #4093 tracks the remaining curl host.
 
 Proxy handshakes receive the scratch-buffer loan through the same table. The
 native entry uses the real thread buffer; recording tests keep their 64-byte

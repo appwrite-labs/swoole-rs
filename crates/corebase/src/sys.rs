@@ -257,14 +257,30 @@ pub use c::{
     pthread_sigmask, sigaddset, sigdelset, sigemptyset, sigfillset, sigismember, sigprocmask,
 };
 
+/// A receive buffer crossing a callback boundary, retaining whether its bytes
+/// must stay initialized. Neither variant permits uninitializing a `u8` buffer.
+pub enum ReadBuffer<'a> {
+    /// Bytes that remain initialized after the receive.
+    Initialized(&'a mut [u8]),
+    /// Spare capacity that the receive may initialize.
+    Spare(&'a mut [MaybeUninit<u8>]),
+}
+
 /// A byte a read may overwrite with any value: `u8`, or one not yet written
 /// (`CppString::spare`). Readers only write their buffer, so they take either.
 pub trait ReadSlot: sealed::Sealed + Sized {
+    /// Lend `slots` to a callback without erasing its initialization guarantee.
+    fn buffer(slots: &mut [Self]) -> ReadBuffer<'_>;
     /// Copy what fits of `bytes` to the start of `slots`: the count copied.
     fn copy_in(slots: &mut [Self], bytes: &[u8]) -> usize;
 }
 
 impl ReadSlot for u8 {
+    #[inline]
+    fn buffer(slots: &mut [Self]) -> ReadBuffer<'_> {
+        ReadBuffer::Initialized(slots)
+    }
+
     #[inline]
     fn copy_in(slots: &mut [Self], bytes: &[u8]) -> usize {
         let n = slots.len().min(bytes.len());
@@ -276,6 +292,11 @@ impl ReadSlot for u8 {
 }
 
 impl ReadSlot for MaybeUninit<u8> {
+    #[inline]
+    fn buffer(slots: &mut [Self]) -> ReadBuffer<'_> {
+        ReadBuffer::Spare(slots)
+    }
+
     #[inline]
     fn copy_in(slots: &mut [Self], bytes: &[u8]) -> usize {
         let n = slots.len().min(bytes.len());
