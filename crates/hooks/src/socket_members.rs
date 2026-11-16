@@ -547,7 +547,8 @@ impl Co {
         let mut offset = offset;
         let send = |offset: &mut libc::off_t, length| {
             self.with_network(|socket| socket_sendfile_fd(socket, file.0, offset, length))
-                .unwrap_or(-1)
+                .flatten()
+                .map_or(-1, usize::cast_signed)
         };
         let ready = || timer.start() && wait_for(self, Events::WRITE);
         let outcome = send_range(&mut offset, end, send, ready);
