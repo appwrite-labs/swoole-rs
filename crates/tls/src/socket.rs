@@ -393,6 +393,20 @@ pub fn socket_ssl_new(
     context: Option<&crate::SslCtx>,
     flags: c_int,
 ) -> Result<(), SslNewError> {
+    socket_ssl_new_over(socket, context, flags, None)
+}
+
+/// [`socket_ssl_new`] whose SSL reads and writes through `bio`, when given, in place
+/// of the descriptor (`bio` goes with the SSL, or here when `SSL_new` fails).
+///
+/// # Errors
+/// As [`socket_ssl_new`].
+pub(crate) fn socket_ssl_new_over(
+    socket: swoole_rs_reactor::Socket<'_>,
+    context: Option<&crate::SslCtx>,
+    flags: c_int,
+    bio: Option<crate::OwnedBio>,
+) -> Result<(), SslNewError> {
     socket.edit(|record| want(&mut record.tls, false, false));
     clear_errors();
     let Some(mut made) = crate::handle::SSL_new(context) else {
@@ -401,7 +415,14 @@ pub fn socket_ssl_new(
         return Err(SslNewError::New);
     };
     made.get().set_mode(SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
-    let made_up = if made.set_fd(socket.fd()) {
+    let attached = match bio {
+        Some(bio) => {
+            made.set_bio(bio);
+            true
+        }
+        None => made.set_fd(socket.fd()),
+    };
+    let made_up = if attached {
         if flags & CLIENT != 0 {
             made.get().set_connect_state();
         } else if flags & SERVER != 0 {

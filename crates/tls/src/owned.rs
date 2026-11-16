@@ -114,6 +114,20 @@ impl TlsSettings {
             crate::SslCreateFlag::SW_SSL_SERVER as c_int,
         )
     }
+    /// Creates an independent server session on `socket` that reads and writes through
+    /// `bio`, which it takes (the bio goes when no session is made).
+    #[must_use]
+    pub(crate) fn create_dtls_session(
+        &self,
+        socket: swoole_rs_reactor::Socket<'_>,
+        bio: crate::OwnedBio,
+    ) -> bool {
+        let context = self.fields.context.as_deref();
+        let server = crate::SslCreateFlag::SW_SSL_SERVER as c_int;
+        crate::socket::socket_ssl_new_over(socket, context, server, Some(bio))
+            .inspect_err(|error| error.warn())
+            .is_ok()
+    }
     /// Creates an independent client session on `socket`.
     #[must_use]
     pub fn create_client_session(&self, socket: swoole_rs_reactor::Socket<'_>) -> bool {

@@ -406,22 +406,14 @@ fn methods() -> Option<&'static BioMethod> {
 /// `new dtls::Session(socket, ctx)` and `bool dtls::Session::init()`: a session over
 /// `socket`, sharing `context`, whose server SSL reads and writes through a BIO that
 /// writes to the socket and reads the session's datagram queue; false when `init`
-/// fails. The session goes with the SSL.
+/// fails. The session goes with the SSL. The BIO is made first and the new SSL takes
+/// it in place of upstream's descriptor BIOs, which it would replace at once: only an
+/// allocation failure tells the two orders apart.
 #[must_use]
 pub fn dtls_open(socket: Socket<'_>, context: &std::sync::Arc<crate::TlsSettings>) -> bool {
     if !socket.read(swoole_rs_reactor::SocketFields::ssl).is_null() {
         return false;
     }
-    if !context.create_session(socket) {
-        log::set_last_error(SSL_CREATE_SESSION_FAILED);
-        return false;
-    }
-    let size = swoole_rs_reactor::SOCKET_DEFAULTS.buffer_size();
-    swoole_rs_reactor::swr_v1_socket_buffer_size(socket.fd(), true, true, size);
-    socket.edit(|record| record.dtls = true);
-    let Some(ssl) = crate::Ssl::of(socket) else {
-        return false;
-    };
     let Some(bio) = methods().and_then(|table| crate::handle::BIO_new(table)) else {
         return false;
     };
@@ -429,9 +421,13 @@ pub fn dtls_open(socket: Socket<'_>, context: &std::sync::Arc<crate::TlsSettings
     let session = Box::new(DtlsSession::new(fd, peer, Some(context.clone())));
     // The fresh BIO of the table takes the session: its destroy hook frees it.
     BIO_set_data(FreshBio(bio.bio()), session);
-    // SAFETY: the SSL ssl_create just made takes the BIO for both directions and frees
-    // the descriptor BIOs `SSL_set_fd` gave it, which no handle borrows.
-    _ = unsafe { ssl.set_bio(bio, None) };
+    if !context.create_dtls_session(socket, bio) {
+        log::set_last_error(SSL_CREATE_SESSION_FAILED);
+        return false;
+    }
+    let size = swoole_rs_reactor::SOCKET_DEFAULTS.buffer_size();
+    swoole_rs_reactor::swr_v1_socket_buffer_size(socket.fd(), true, true, size);
+    socket.edit(|record| record.dtls = true);
     true
 }
 

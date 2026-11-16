@@ -96,6 +96,10 @@ unsafe extern "C" {
     /// Gives the fresh SSL socket BIOs over `fd`, freeing the ones it had, which only
     /// a borrow of the [`OwnedSsl`] the exclusive `Fresh` was taken from could reach.
     safe fn SSL_set_fd(ssl: Fresh<'_>, fd: c_int) -> c_int;
+    /// Gives the fresh SSL `bio` for both directions, taking the one reference
+    /// [`Given`] carries, and frees the BIOs it had, as `SSL_set_fd` does.
+    #[link_name = "SSL_set_bio"]
+    safe fn set_bios(ssl: Fresh<'_>, read: Given, write: Given);
     /// A new SSL of `ctx`, which it references; null on failure, or without a context.
     pub(crate) safe fn SSL_new(ctx: Option<&SslCtx>) -> Option<OwnedSsl>;
     /// `SSL_get_peer_certificate`, a macro over `SSL_get1_peer_certificate` since
@@ -660,6 +664,13 @@ impl Drop for Cert {
 #[derive(Debug)]
 pub(crate) struct OwnedSsl(NonNull<SSL>);
 
+/// The one reference to a BIO an [`OwnedBio`] gave up, passed as both of
+/// `SSL_set_bio`'s BIOs, which then takes that one reference: only
+/// [`OwnedSsl::set_bio`] makes one.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct Given(NonNull<BIO>);
+
 /// An [`OwnedSsl`], lent exclusively for a call that may replace its BIOs.
 #[repr(transparent)]
 struct Fresh<'a>(NonNull<SSL>, PhantomData<&'a mut OwnedSsl>);
@@ -674,6 +685,13 @@ impl OwnedSsl {
     /// through borrows of `self`, which `&mut` excludes.
     pub(crate) fn set_fd(&mut self, fd: c_int) -> bool {
         SSL_set_fd(Fresh(self.0, PhantomData), fd) != 0
+    }
+
+    /// `SSL_set_bio(ssl, bio, bio)`: the SSL takes `bio` for both directions and frees
+    /// it with itself. The BIOs it frees are reachable only through borrows of `self`.
+    pub(crate) fn set_bio(&mut self, bio: OwnedBio) {
+        let bio = Given(bio.into_raw());
+        set_bios(Fresh(self.0, PhantomData), bio, bio);
     }
 
     /// Records `socket`, which takes the SSL next, as its connection's ex data, which
