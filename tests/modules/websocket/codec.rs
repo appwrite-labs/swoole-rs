@@ -7,9 +7,27 @@ use std::mem::MaybeUninit;
 use swoole_rs_oracle::websocket as reference;
 use swoole_rs_websocket::{
     Action, Context, Decision, DecodeErrorKind, DecodedFrame, Delivery, PolicyError,
-    control_invalid, decide_frame, encode_close_into, encode_parts, encoded_size, message_policy,
-    pack_policy,
+    control_invalid, decide_frame, message_policy, pack_policy,
 };
+
+// Preserve the original oracle's zero-sentinel assertions at the test boundary.
+fn encoded_size(length: usize, flags: u8) -> usize {
+    swoole_rs_websocket::encoded_size(length, flags).unwrap_or(0)
+}
+
+fn encode_parts(
+    length: usize,
+    data: &[u8],
+    opcode: u8,
+    flags: u8,
+    out: &mut [MaybeUninit<u8>],
+) -> usize {
+    swoole_rs_websocket::encode_parts(length, data, opcode, flags, out).unwrap_or(0)
+}
+
+fn encode_close_into(code: i32, reason: &[u8], flags: u8, out: &mut [MaybeUninit<u8>]) -> usize {
+    swoole_rs_websocket::encode_close_into(code, reason, flags, out).unwrap_or(0)
+}
 
 const FILL: u8 = 0xa5;
 const INVALID_CONTROL: i64 = -2;
@@ -418,4 +436,35 @@ fn extended_ping_dispatches_from_offset_two() {
     };
     let decision = decide_frame(&extended, 5, &Context::default()).expect("a complete frame");
     assert!(decision.action == Action::Control && decision.offset == 2 && decision.length == 3);
+}
+
+#[test]
+fn encoding_errors_leave_output_untouched() {
+    use swoole_rs_websocket::{EncodeError, encode_parts};
+    let mut output = filled(16);
+    for (length, data, opcode, flags, error) in [
+        (
+            usize::MAX,
+            b"x".as_slice(),
+            1,
+            1,
+            EncodeError::LengthOverflow,
+        ),
+        (1, b"x".as_slice(), 8, 0, EncodeError::InvalidControl),
+        (2, b"x".as_slice(), 1, 1, EncodeError::PayloadLength),
+        (0, b"x".as_slice(), 1, 33, EncodeError::PayloadLength),
+        (
+            15,
+            b"abcdefghijklmno".as_slice(),
+            1,
+            1,
+            EncodeError::OutputTooSmall,
+        ),
+    ] {
+        assert_eq!(
+            encode_parts(length, data, opcode, flags, &mut output),
+            Err(error)
+        );
+        assert_eq!(bytes(&output), vec![FILL; 16]);
+    }
 }

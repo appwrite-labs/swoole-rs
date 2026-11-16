@@ -247,10 +247,10 @@ pub mod exports {
             Action::ClientClose => {
                 dispatch_task(&dispatch);
                 let mut reply = [MaybeUninit::<u8>::uninit(); CLOSE_REPLY_MAX];
-                let size = payload.map_or(0, |payload| {
-                    encode_parts(payload.len(), payload, 8, 1, &mut reply)
+                let size = payload.and_then(|payload| {
+                    encode_parts(payload.len(), payload, 8, 1, &mut reply).ok()
                 });
-                if size != 0 {
+                if let Some(size) = size {
                     // SAFETY: the encoded reply's `size` bytes.
                     let reply = unsafe { Drain::from_raw(reply.as_ptr().cast(), size) };
                     _ = swoole_rs_tls::upstream::send_drain(socket, reply, 0);

@@ -455,7 +455,7 @@ fn wait_event(call: &Call) {
         return;
     }
     match swoole_rs_hooks::wait_event::wait_event(fd, Events::from_bits(int(events)), timeout) {
-        Some(fired) => call.set_long(fired.bits().into()),
-        None => call.set_bool(false),
+        Ok(fired) => call.set_long(fired.bits().into()),
+        Err(_) => call.set_bool(false),
     }
 }

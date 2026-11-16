@@ -13,7 +13,11 @@ in `websocket-ffi`. Frame measurement returns `Result<FrameLength, LengthError>`
 with `usize` sizes; incomplete and overflowing headers retain their incremental
 header length. Only the native framing adapters convert those outcomes to zero
 or -1. The kernel, codec and fuzz tests adapt typed outcomes to the former integer
-protocol so their original assertions remain unchanged. `mask`'s null-pointer and oversized-length
+protocol so their original assertions remain unchanged. Encoded sizes and frame
+writers return `Result<usize, EncodeError>`; success reports initialized bytes,
+while overflow, invalid control frames, mismatched payload lengths and short
+output leave the output untouched. `encoding_errors_leave_output_untouched`
+checks those errors directly, including declared/supplied payload mismatches. `mask`'s null-pointer and oversized-length
 refusals went with its export, and their test (`tests/kernel.rs`'s
 `invalid_mask_pointers_and_lengths_do_not_write`) with them: a slice and a key by value
 cannot carry those arguments. The PHP side is `crates/phphttp/src/websocket.rs`.
