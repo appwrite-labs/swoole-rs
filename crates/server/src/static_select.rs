@@ -265,13 +265,23 @@ impl Wire<'_> {
         // which runs only inside one of this thread's sends, not during this read.
         unsafe { request.as_ref() }
     }
+
+    /// `read` over the request and its receive buffer's bytes (the socket's); `None`
+    /// once a send closed the connection.
+    fn read<R>(
+        &self,
+        read: impl FnOnce(&swoole_rs_http_ffi::HttpRequest, &[u8]) -> R,
+    ) -> Option<R> {
+        let request = self.request()?;
+        (self.socket).read(|s| Some(read(request, s.recv_buffer.as_ref()?.view())))
+    }
 }
 
 impl Exchange for Wire<'_> {
     fn header(&self, name: &[u8]) -> Vec<u8> {
-        self.request()
-            .and_then(|request| request.header_bytes(name))
-            .map_or_else(Vec::new, <[u8]>::to_vec)
+        self.read(|request, input| request.header_bytes(input, name).map(<[u8]>::to_vec))
+            .flatten()
+            .unwrap_or_default()
     }
     fn keep_alive(&self) -> bool {
         self.request().is_some_and(|request| request.keep_alive)
@@ -312,7 +322,7 @@ pub fn static_select(
         session_id,
         socket,
     };
-    let Some(url) = wire.request().map(|request| request.url_bytes().to_vec()) else {
+    let Some(url) = wire.read(|request, input| request.url_bytes(input).to_vec()) else {
         return false;
     };
     let Some(mut handler) = StaticHandler::new(wire.server, &url) else {

@@ -103,17 +103,6 @@ int swr_zend_try_stream_free(php_stream *stream) {
     return bailed;
 }
 
-php_stream *swr_zend_try_stream_factory(void *factory, const char *proto, size_t protolen,
-    const char *name, size_t namelen, const char *persistent, int options, int flags,
-    struct timeval *timeout, php_stream_context *context, bool *bailed) {
-    php_stream *stream = NULL;
-    SWR_ZEND_TRY {
-        stream = ((php_stream_transport_factory) factory)(proto, protolen, name, namelen,
-            persistent, options, flags, timeout, context STREAMS_CC);
-    } SWR_ZEND_CATCH { *bailed = true; } SWR_ZEND_END_TRY();
-    return stream;
-}
-
 /* Set at MINIT, before any PHP thread starts. */
 static swr_zend_stream_factory_body factory_body;
 
@@ -125,10 +114,14 @@ php_stream *swr_zend_stream_factory(const char *proto, size_t protolen, const ch
     size_t namelen, const char *persistent, int options, int flags, struct timeval *timeout,
     php_stream_context *context STREAMS_DC) {
     bool bailed = false;
-    php_stream *stream = factory_body(proto, protolen, name, namelen, persistent, options, flags,
-        timeout, context, &bailed);
+    php_stream_transport_factory original = NULL;
+    php_stream *stream = factory_body(proto, protolen, name, persistent, context, &bailed, &original);
     if (bailed) {
         zend_bailout();
+    }
+    if (original) {
+        stream = original(proto, protolen, name, namelen, persistent, options, flags, timeout,
+            context STREAMS_CC);
     }
     return stream;
 }
@@ -143,7 +136,7 @@ bool swr_v1_phpruntime_socket_cast(php_stream *stream, int castas, FILE **file, 
 bool swr_v1_phpruntime_socket_stat(php_stream *stream, zend_stat_t *sb);
 bool swr_v1_phpruntime_socket_xport(php_stream *stream, php_stream_xport_param *param,
     const struct timeval *timeout, const struct iovec *name, const struct iovec *send,
-    struct iovec *recv);
+    struct iovec *recv, const struct iovec *to);
 bool swr_v1_phpruntime_socket_option(php_stream *stream, int option, int value, zval *data,
     const struct timeval *timeout, php_stream_xport_crypto_param *crypto);
 
@@ -190,9 +183,10 @@ static int socket_set_option(php_stream *stream, int option, int value, void *pt
         php_stream_xport_param *param = ptrparam;
         struct iovec name = lend(param->inputs.name, param->inputs.namelen);
         struct iovec buf = lend(param->inputs.buf, param->inputs.buflen);
+        struct iovec to = lend(param->inputs.addr, param->inputs.addrlen);
         done = swr_v1_phpruntime_socket_xport(stream, param, param->inputs.timeout,
             param->inputs.name ? &name : NULL, param->op == STREAM_XPORT_OP_SEND ? &buf : NULL,
-            param->op == STREAM_XPORT_OP_RECV ? &buf : NULL);
+            param->op == STREAM_XPORT_OP_RECV ? &buf : NULL, param->inputs.addr ? &to : NULL);
     } else {
         done = swr_v1_phpruntime_socket_option(stream, option, value,
             option == PHP_STREAM_OPTION_META_DATA_API ? ptrparam : NULL,

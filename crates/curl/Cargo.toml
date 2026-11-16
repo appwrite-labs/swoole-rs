@@ -7,8 +7,8 @@ license.workspace = true
 description = "Swoole's coroutine cURL multi engine (--enable-swoole-curl)"
 
 [features]
-# swoole_curl_get_handle, which reads the bundled ext/curl's objects and the
-# module globals; needs PHP headers (swoole-rs-zend-sys).
+# swr_v1_curl_check_handle, which reads the module globals and reports PHP
+# errors; needs PHP headers (swoole-rs-zend-sys).
 php = ["dep:swoole-rs-zend", "swoole-rs-zend/php", "dep:swoole-rs-phpswoole", "swoole-rs-phpswoole/php"]
 
 [dependencies]

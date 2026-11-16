@@ -7,8 +7,8 @@
 //!
 //! The bundled `ext/curl` calls these exports directly (`swoole_rs_curl.h`).
 //! Each multi carries its reactor, timer and coroutine operations; tests inject
-//! recording callbacks into the same engine. `swoole_curl_get_handle` reads the
-//! PHP objects (the `php` feature).
+//! recording callbacks into the same engine. `swr_v1_curl_check_handle` reads
+//! the request state and reports PHP errors (the `php` feature).
 #![expect(
     clippy::disallowed_types,
     reason = "existing uses; tools/budget.py counts them down (docs/migration.md#data-layout)"
@@ -51,8 +51,7 @@ const CO_CANCELED: c_int = 10017;
 pub const EXEC_NEEDS_COROUTINE: CURLcode = -1;
 
 /// A live easy handle for `'a`, as the bundled `ext/curl` hands over its `ch->cp`.
-/// Only an export's parameter makes one (and `php.rs`, reading a live `php_curl`'s),
-/// where the C caller's contract stands for the constructor, as it does for a `&T`
+/// Only an export's parameter makes one, where the C caller's contract stands for the constructor, as it does for a `&T`
 /// parameter there. A `CURL *`'s layout, and neither `Send` nor `Sync`.
 #[repr(transparent)]
 #[derive(Clone, Copy)]
@@ -879,7 +878,7 @@ pub use host::{swoole_curl_check_bound_co, swoole_curl_easy_perform, swoole_curl
 #[cfg(feature = "php")]
 mod php;
 #[cfg(feature = "php")]
-pub use php::swoole_curl_get_handle;
+pub use php::swr_v1_curl_check_handle;
 #[cfg(test)]
 #[path = "../../../tests/modules/hooks/curl.rs"]
 mod tests;

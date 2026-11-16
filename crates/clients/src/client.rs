@@ -164,7 +164,7 @@ impl Framing {
 
 struct Host {
     framing: Framing,
-    dispatch_dns: fn(Handle, &crate::resolver::Request) -> bool,
+    dispatch_dns: fn(Lookup, &crate::resolver::Request) -> bool,
     socks5: Socks5,
 }
 
@@ -174,7 +174,7 @@ static HOST: OnceLock<Host> = OnceLock::new();
 /// ignored. A successful dispatch holds the request until its completion returns.
 pub fn set_host(
     framing: Framing,
-    dispatch_dns: fn(Handle, &crate::resolver::Request) -> bool,
+    dispatch_dns: fn(Lookup, &crate::resolver::Request) -> bool,
     socks5: Socks5,
 ) {
     HOST.get_or_init(|| Host {
@@ -778,7 +778,7 @@ fn create_with(kind: c_int, is_async: bool, socket_ops: &'static SocketOps) -> O
 
 impl Handle {
     /// `f` over the protocol, socket and input buffer a framed receive acts on, live
-    /// while the client is (per [`Handle::new`]): the record's protocol in place, as
+    /// while the client is (until [`Handle::free`]): the record's protocol in place, as
     /// its callbacks take it by address, and the input buffer an async connect made.
     pub fn with_framed<R>(
         self,
@@ -787,23 +787,7 @@ impl Handle {
         f(self.protocol(), self.socket(), self.input())
     }
 
-    /// A handle on `client`.
-    ///
-    /// # Safety
-    /// `client` came from [`create`] ([`Handle::as_ptr`]) and stays live while this
-    /// handle or a copy of it is used.
-    #[must_use]
-    pub const unsafe fn new(client: *mut Client) -> Self {
-        Self(client)
-    }
-
-    /// The client's pointer, which [`Handle::new`] takes back.
-    #[must_use]
-    pub const fn as_ptr(self) -> *mut Client {
-        self.0
-    }
-
-    /// The client, borrowed while this handle is: live per [`Handle::new`].
+    /// The client, borrowed while this handle is: live until [`Handle::free`].
     #[must_use]
     pub fn client(&self) -> &Client {
         self.get()
@@ -844,6 +828,10 @@ impl Handle {
         self.input_free();
         // A pending connect timer would fire on a freed client.
         self.timer_clear();
+        if self.flag(Flag::WaitDns) {
+            // A lookup still in the pool finds no client when it completes.
+            with_awaiting(|awaiting| awaiting.retain(|&(_, client)| client.0 != self.0));
+        }
         let is_async = self.flag(Flag::Async);
         if is_async {
             // A cleared object tells a close in progress that the client is gone.
@@ -1189,13 +1177,67 @@ fn dns_lookup(this: Handle) -> bool {
     let name = host.as_deref().map_or(&b""[..], CStr::to_bytes);
     let request = crate::resolver::Request::new(this.get().domain, 0, 0, name, b"");
     this.get().server_host.set(host);
+    let id = LAST_LOOKUP.get() + 1;
+    LAST_LOOKUP.set(id);
+    with_awaiting(|awaiting| awaiting.push((id, this)));
+    let lookup = Lookup(id);
     // The pool's copy holds its own reference to the request.
-    (native_host().dispatch_dns)(this, &request)
+    let dispatched = (native_host().dispatch_dns)(lookup, &request);
+    if !dispatched {
+        _ = awaiting(lookup);
+    }
+    dispatched
 }
 
-/// Completes the client's DNS request on its reactor thread, while the pool still
-/// owns the request and the client awaits its result.
-pub fn resolve_completed(this: Handle, request: &ResolverRequest, error: c_int) {
+/// A client's DNS lookup in the async pool: what its event carries back to
+/// [`resolve_completed`] on the client's thread.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Lookup(usize);
+
+impl Lookup {
+    /// The id the pool's event carries.
+    #[must_use]
+    pub const fn id(self) -> usize {
+        self.0
+    }
+
+    /// The lookup [`Lookup::id`] named.
+    #[must_use]
+    pub const fn from_id(id: usize) -> Self {
+        Self(id)
+    }
+}
+
+thread_local! {
+    /// The last lookup's id on this thread.
+    static LAST_LOOKUP: Cell<usize> = const { Cell::new(0) };
+    /// The clients awaiting a lookup on this thread, each with its lookup's id;
+    /// [`Handle::free`] drops a client's entry.
+    static AWAITING: Cell<Vec<(usize, Handle)>> = const { Cell::new(Vec::new()) };
+}
+
+/// `f` over the clients awaiting a lookup, taken out and put back.
+fn with_awaiting<R>(f: impl FnOnce(&mut Vec<(usize, Handle)>) -> R) -> R {
+    let mut awaiting = AWAITING.take();
+    let result = f(&mut awaiting);
+    AWAITING.set(awaiting);
+    result
+}
+
+/// The client awaiting `lookup`, now no longer: none once it was freed.
+fn awaiting(lookup: Lookup) -> Option<Handle> {
+    with_awaiting(|awaiting| {
+        let at = awaiting.iter().position(|&(id, _)| id == lookup.0)?;
+        Some(awaiting.swap_remove(at).1)
+    })
+}
+
+/// Completes a client's DNS lookup on its reactor thread, while the pool still
+/// owns the request. A client freed meanwhile is not reached.
+pub fn resolve_completed(lookup: Lookup, request: &ResolverRequest, error: c_int) {
+    let Some(this) = awaiting(lookup) else {
+        return;
+    };
     let address = crate::resolver::address(request);
     resolved(this, error, &crate::resolver::c_name(&address));
 }

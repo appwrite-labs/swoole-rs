@@ -112,14 +112,14 @@ callbacks skip fields under `F_TRAILING`) is checked by the pinned PHPTs
 
 The 11 TESTs that start no server call the helpers, the request-line reader and the
 WebSocket codec directly. Their ports sit beside the Rust each one calls, with the
-same inputs and expected values: `cargo test -p swoole-rs-http -p swoole-rs-http-ffi -p swoole-rs-websocket-ffi --lib`.
+same inputs and expected values: `cargo test -p swoole-rs-http -p swoole-rs-http-ffi -p swoole-rs-ports --lib`.
 
 | Upstream TEST | Rust test |
 | --- | --- |
 | `EncodeDecodeBasic`, `EncodeDecodeWithSpecialChars` | `crates/http-ffi/src/http_server.rs`: `encode_decode_basic`, `encode_decode_with_special_chars` |
 | `get_method`, `get_method_str`, `get_status_message`, `parse_multipart_boundary` | `crates/http-ffi/src/http_server.rs`: `get_method_cases`, `get_method_str`, `get_status_message_cases`, `parse_multipart_boundary_cases` |
 | `has_expect_header`, `get_protocol`, `all_method` | `crates/http-ffi/src/request.rs`: same names |
-| `websocket_encode`, `websocket_compressed_control_frame` | `crates/websocket-ffi/src/frame_api.rs`: same names (`print_frame` to a temp file instead of `/tmp/swoole.log`) |
+| `websocket_encode`, `websocket_compressed_control_frame` | `crates/ports/src/frame_api.rs`: same names (`print_frame` to a temp file instead of `/tmp/swoole.log`) |
 | `http_upload_provenance.cpp`: `reject_client_upload_marker`, `header_name_split_across_reads_is_assembled`, `overwritten_read_buffer_cannot_forge_upload_marker` | `crates/http-ffi/src/request.rs`: same names, over the multipart parser (#1938) |
 
 The TESTs that start a server run in `server/` (the merge tier's `http-server-rust`
@@ -350,6 +350,9 @@ header array) while the response is being built. Each response must carry the
 headers as they were when sending began, and the server must answer the next
 request (#3263). The fixture also speaks h2c for the HTTP/2 module's
 `test_header_reentry.py`.
+The request metadata case replaces `server` between partial parses, keeps a copy,
+and checks that completing the headers adds the fields in order without changing
+the copy, including when the replacement was the immutable empty array.
 
 The merge tier's `api-surface` phase (`tools/capability_inventory.py
 --require-same-api`) compares every Swoole class's reflected metadata,

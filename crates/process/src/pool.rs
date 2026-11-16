@@ -15,10 +15,12 @@
 //! `longjmp` never crosses a Rust frame.
 use crate::process_pool::{IpcMode, Protocol};
 use crate::worker_record::Worker as Record;
+use std::any::Any;
 #[cfg(any(feature = "upstream-symbols", test))]
 use std::ffi::CStr;
 use std::ffi::{CString, c_char, c_int, c_long, c_void};
 use std::ptr;
+use std::rc::Rc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 use swoole_rs_corebase::CCast;
@@ -72,13 +74,20 @@ fn head_bytes<const N: usize>(out: &[u64], at: usize) -> [u8; N] {
     })
 }
 
+/// A stream socket's native owner, which this crate keeps and hands back to the
+/// hooks without knowing its type: the listener `listen` makes, or a connection
+/// `accept` makes.
+pub type Connection = Rc<dyn Any>;
+
 /// One hook's arguments and results. Only this crate makes and fills one, over
 /// objects live for the hook: its pool and worker (null when none), its socket
-/// (null or a live native socket) and `data`, which holds `length` bytes.
+/// (null or a live native socket: a worker's pipe end), the stream connection it
+/// serves (or the listener `close` frees), and `data`, which holds `length` bytes.
 pub struct PoolCall<'a> {
     pub(crate) pool: crate::process_pool::PoolRef<'a>,
     pub(crate) worker: Option<Record<'a>>,
     pub(crate) socket: *mut c_void,
+    pub(crate) connection: Option<Connection>,
     pub(crate) data: *mut c_void,
     pub(crate) length: usize,
     pub(crate) flags: c_int,
@@ -94,6 +103,7 @@ impl<'a> PoolCall<'a> {
             pool,
             worker,
             socket: ptr::null_mut(),
+            connection: None,
             data: ptr::null_mut(),
             length: 0,
             flags: 0,
@@ -114,13 +124,8 @@ impl<'a> PoolCall<'a> {
         self.worker
     }
 
-    /// The live native socket the hook works on, or null.
-    #[must_use]
-    pub fn socket(&self) -> *mut c_void {
-        self.socket
-    }
-
-    /// [`PoolCall::socket`], lent for this borrow of the call; `None` without one.
+    /// The worker's pipe end the hook works on, lent for this borrow of the call;
+    /// `None` without one.
     #[must_use]
     pub fn lent_socket(&self) -> Option<crate::worker_record::NativeSocket<'_>> {
         crate::worker_record::NativeSocket::lend(self.socket)
@@ -151,19 +156,20 @@ impl<'a> PoolCall<'a> {
         unsafe { std::slice::from_raw_parts(self.data.cast(), self.length) }
     }
 
-    /// [`PoolCall::lent_socket`] and the [`PoolCall::length`] bytes at
+    /// The stream connection the hook serves, if any.
+    #[must_use]
+    pub fn connection(&self) -> Option<&dyn Any> {
+        self.connection.as_deref()
+    }
+
+    /// [`PoolCall::connection`] and the [`PoolCall::length`] bytes at
     /// [`PoolCall::data`], lent to a read that fills them, for this borrow of the call.
-    pub fn socket_fill(
-        &mut self,
-    ) -> (
-        Option<crate::worker_record::NativeSocket<'_>>,
-        swoole_rs_corebase::lent::Fill<'_>,
-    ) {
+    pub fn connection_fill(&mut self) -> (Option<&dyn Any>, swoole_rs_corebase::lent::Fill<'_>) {
         // SAFETY: only this crate makes a call: `data` is null or a buffer of at least
         // `length` writable bytes that outlives the hook, which nothing else reaches
         // while this borrow of its call lasts.
         let fill = unsafe { swoole_rs_corebase::lent::Fill::from_raw(self.data, self.length) };
-        (crate::worker_record::NativeSocket::lend(self.socket), fill)
+        (self.connection.as_deref(), fill)
     }
 
     #[must_use]
@@ -181,12 +187,14 @@ impl<'a> PoolCall<'a> {
         self.error = error;
     }
 
-    /// The connection `accept` made: null, or a live native socket the pool now owns.
-    ///
-    /// # Safety
-    /// `socket` is null or a live native socket, which the pool frees once.
-    pub unsafe fn set_socket(&mut self, socket: *mut c_void) {
-        self.socket = socket;
+    /// The connection `accept` made, which the pool keeps until `close` takes it.
+    pub fn set_connection(&mut self, connection: Connection) {
+        self.connection = Some(connection);
+    }
+
+    /// The connection `close` frees.
+    pub fn take_connection(&mut self) -> Option<Connection> {
+        self.connection.take()
     }
 }
 
@@ -201,10 +209,10 @@ pub struct PoolIpc {
 }
 
 struct Stream {
-    socket: *mut c_void,
+    listener: Option<Connection>,
     file: Option<CString>,
     port: c_int,
-    connection: *mut c_void,
+    connection: Option<Connection>,
     response: Option<Vec<u8>>,
 }
 
@@ -281,13 +289,13 @@ impl<'a> Worker<'a> {
     fn io(
         &self,
         hook: Hook,
-        socket: *mut c_void,
+        connection: Option<&Connection>,
         data: *mut u8,
         length: usize,
         flags: c_int,
     ) -> Result<PoolCall<'a>, Bailed> {
         let mut call = self.call();
-        call.socket = socket;
+        call.connection = connection.cloned();
         call.data = data.cast();
         call.length = length;
         call.flags = flags;
@@ -295,29 +303,25 @@ impl<'a> Worker<'a> {
         Ok(call)
     }
 
-    fn close(&self, socket: *mut c_void) {
+    fn close(&self, connection: Connection) {
         let mut call = self.call();
-        call.socket = socket;
-        self.native.close(&call);
+        call.connection = Some(connection);
+        self.native.close(&mut call);
     }
 
     /// Accept a connection: the connection, or the accept's `errno`.
-    fn accept(&self) -> Result<Result<*mut c_void, c_int>, Bailed> {
+    fn accept(&self) -> Result<Result<Connection, c_int>, Bailed> {
         let mut call = self.call();
         run(self.native, |native, call| native.accept(call), &mut call)?;
-        Ok(if call.socket.is_null() {
-            Err(call.error)
-        } else {
-            Ok(call.socket)
-        })
+        Ok(call.connection.take().ok_or(call.error))
     }
 
     /// `socket->recv_sync(data, length, MSG_WAITALL)`.
-    fn recv_all(&self, socket: *mut c_void, data: *mut u8, length: usize) -> Result<isize, Bailed> {
+    fn recv_all(&self, socket: &Connection, data: *mut u8, length: usize) -> Result<isize, Bailed> {
         Ok(self
             .io(
                 |native, call| native.recv(call),
-                socket,
+                Some(socket),
                 data,
                 length,
                 libc::MSG_WAITALL,
@@ -325,11 +329,11 @@ impl<'a> Worker<'a> {
             .result)
     }
 
-    fn send(&self, socket: *mut c_void, data: &[u8]) -> Result<isize, Bailed> {
+    fn send(&self, socket: &Connection, data: &[u8]) -> Result<isize, Bailed> {
         Ok(self
             .io(
                 |native, call| native.send(call),
-                socket,
+                Some(socket),
                 data.as_ptr().cast_mut(),
                 data.len(),
                 0,
@@ -340,7 +344,7 @@ impl<'a> Worker<'a> {
     /// `Stream::recv_sync`: a length-prefixed frame of at most `length` bytes.
     fn recv_frame(
         &self,
-        socket: *mut c_void,
+        socket: &Connection,
         data: *mut u8,
         length: usize,
     ) -> Result<isize, Bailed> {
@@ -359,24 +363,20 @@ impl<'a> Worker<'a> {
 
     /// Whether a stream connection is being served.
     fn connected(&self) -> bool {
-        self.with_ipc(|ipc| !pool_ipc_connection(ipc).is_null()) == Some(true)
+        self.with_ipc(|ipc| pool_ipc_connection(ipc).is_some()) == Some(true)
     }
 
-    fn set_connection(&self, socket: *mut c_void) {
+    fn set_connection(&self, socket: Connection) {
         self.with_ipc(|ipc| {
             if let Some(stream) = ipc.stream.as_mut() {
-                stream.connection = socket;
+                stream.connection = Some(socket);
             }
         });
     }
 
     /// The connection being served, which the stream forgets; `None` without one.
-    fn take_connection(&self) -> Option<*mut c_void> {
-        self.with_ipc(|ipc| {
-            let stream = ipc.stream.as_mut()?;
-            let socket = std::mem::replace(&mut stream.connection, ptr::null_mut());
-            (!socket.is_null()).then_some(socket)
-        })?
+    fn take_connection(&self) -> Option<Connection> {
+        self.with_ipc(|ipc| ipc.stream.as_mut()?.connection.take())?
     }
 
     /// The reply written to the connection, taken.
@@ -448,7 +448,7 @@ impl<'a> Worker<'a> {
                             continue;
                         }
                     };
-                    let n = self.recv_frame(socket, buf, event_size)?;
+                    let n = self.recv_frame(&socket, buf, event_size)?;
                     if n <= 0 {
                         self.close(socket);
                         self.end()?;
@@ -460,7 +460,7 @@ impl<'a> Worker<'a> {
                 Mode::Pipe => {
                     let call = self.io(
                         |native, call| native.pipe_read(call),
-                        ptr::null_mut(),
+                        None,
                         buf,
                         event_size,
                         0,
@@ -508,7 +508,7 @@ impl<'a> Worker<'a> {
                     }
                 }
                 if let Some(socket) = self.take_connection() {
-                    self.send(socket, &0i32.to_ne_bytes())?;
+                    self.send(&socket, &0i32.to_ne_bytes())?;
                     self.close(socket);
                 }
             }
@@ -559,12 +559,12 @@ impl<'a> Worker<'a> {
                         }
                     };
                     let mut head = [0u8; 4];
-                    let mut received = self.recv_all(socket, head.as_mut_ptr(), head.len())? == 4;
+                    let mut received = self.recv_all(&socket, head.as_mut_ptr(), head.len())? == 4;
                     let n = u32::from_be_bytes(head);
                     // Errors on one connection close it and carry on with the next.
                     received = received && n != 0 && n <= max_packet_size;
                     if !received
-                        || self.recv_all(socket, packet, n as usize)? != n.c_cast::<isize>()
+                        || self.recv_all(&socket, packet, n as usize)? != n.c_cast::<isize>()
                     {
                         self.close(socket);
                         self.end()?;
@@ -576,7 +576,7 @@ impl<'a> Worker<'a> {
                 Mode::Pipe => {
                     let call = self.io(
                         |native, call| native.pipe_read(call),
-                        ptr::null_mut(),
+                        None,
                         packet,
                         max_packet_size as usize,
                         0,
@@ -590,19 +590,13 @@ impl<'a> Worker<'a> {
             };
             if n >= 0 {
                 let length = n.c_cast::<u32>() as usize;
-                self.io(
-                    |native, call| native.message(call),
-                    ptr::null_mut(),
-                    data,
-                    length,
-                    0,
-                )?;
+                self.io(|native, call| native.message(call), None, data, length, 0)?;
                 if let Some(socket) = self.take_connection() {
                     let response = self.take_response();
                     if !response.is_empty() {
                         let head = response.len().c_cast::<u32>().to_be_bytes();
-                        self.send(socket, &head)?;
-                        self.send(socket, &response)?;
+                        self.send(&socket, &head)?;
+                        self.send(&socket, &response)?;
                     }
                     self.restore_response(response);
                     self.close(socket);
@@ -711,10 +705,10 @@ pub fn raise_bailout() {
 #[must_use]
 pub fn pool_ipc_new(listener: bool) -> *mut PoolIpc {
     let stream = listener.then_some(Stream {
-        socket: ptr::null_mut(),
+        listener: None,
         file: None,
         port: 0,
-        connection: ptr::null_mut(),
+        connection: None,
         response: None,
     });
     Box::into_raw(Box::new(PoolIpc {
@@ -726,15 +720,14 @@ pub fn pool_ipc_new(listener: bool) -> *mut PoolIpc {
 /// Free the state, which the caller takes back from the handle [`pool_ipc_new`]
 /// leaked; `close` frees the listener. A listener's address is a socket file,
 /// unlinked as upstream does (a TCP host is unlinked too, harmlessly).
-pub fn pool_ipc_free(ipc: PoolIpc, close: impl FnOnce(*mut c_void)) {
+pub fn pool_ipc_free(ipc: PoolIpc, close: impl FnOnce(Connection)) {
     if let Some(stream) = ipc.stream
-        && !stream.socket.is_null()
+        && let Some(listener) = stream.listener
     {
         if let Some(file) = &stream.file {
             _ = swoole_rs_corebase::sys::unlink(file);
         }
-        // The listener, freed once.
-        close(stream.socket);
+        close(listener);
     }
 }
 
@@ -807,20 +800,18 @@ pub fn swr_v1_process_pool_ipc_send_sync(ipc: Option<&PoolIpc>, data: &[u8]) -> 
     swr_v1_process_pool_ipc_send(ipc, data, true)
 }
 
-/// Keep the listener the native side created; `socket` is a native socket it now owns.
+/// Keep the listener the native side created.
 #[cfg(any(feature = "upstream-symbols", test))]
-pub(crate) fn swr_v1_process_pool_ipc_set_listener(ipc: &mut PoolIpc, socket: *mut c_void) {
+pub(crate) fn swr_v1_process_pool_ipc_set_listener(ipc: &mut PoolIpc, listener: Connection) {
     if let Some(stream) = ipc.stream.as_mut() {
-        stream.socket = socket;
+        stream.listener = Some(listener);
     }
 }
 
-/// The stream listener, or null.
+/// The stream listener, if any.
 #[must_use]
-pub fn swr_v1_process_pool_ipc_listener(ipc: &PoolIpc) -> *mut c_void {
-    ipc.stream
-        .as_ref()
-        .map_or(ptr::null_mut(), |stream| stream.socket)
+pub fn swr_v1_process_pool_ipc_listener(ipc: &PoolIpc) -> Option<&Connection> {
+    ipc.stream.as_ref()?.listener.as_ref()
 }
 
 /// The listener's address and port, none without one.
@@ -830,12 +821,10 @@ pub(crate) fn pool_ipc_address(ipc: &PoolIpc) -> Option<(&CStr, c_int)> {
     Some((stream.file.as_deref()?, stream.port))
 }
 
-/// The connection being served (`stream_info_->last_connection`), or null.
+/// The connection being served (`stream_info_->last_connection`), if any.
 #[must_use]
-pub fn pool_ipc_connection(ipc: &PoolIpc) -> *mut c_void {
-    ipc.stream
-        .as_ref()
-        .map_or(ptr::null_mut(), |stream| stream.connection)
+pub fn pool_ipc_connection(ipc: &PoolIpc) -> Option<Connection> {
+    ipc.stream.as_ref()?.connection.clone()
 }
 
 /// `ProcessPool::response`: append to the reply; false (`SW_ERROR_INVALID_PARAMS`
@@ -844,7 +833,7 @@ pub(crate) fn swr_v1_process_pool_ipc_respond(ipc: &mut PoolIpc, data: &[u8]) ->
     let Some(stream) = ipc.stream.as_mut() else {
         return false;
     };
-    if data.is_empty() || stream.connection.is_null() {
+    if data.is_empty() || stream.connection.is_none() {
         return false;
     }
     let Some(response) = stream.response.as_mut() else {
@@ -1052,14 +1041,14 @@ mod tests {
             assert!(!swr_v1_process_pool_ipc_respond(&mut *ipc, b"x"));
             pool_ipc_prepare(&mut *ipc, 16);
             assert!(!swr_v1_process_pool_ipc_respond(&mut *ipc, b"x"));
-            (*ipc).stream.as_mut().unwrap().connection = ptr::dangling_mut();
+            (*ipc).stream.as_mut().unwrap().connection = Some(Rc::new(()));
             assert!(!swr_v1_process_pool_ipc_respond(&mut *ipc, b""));
             assert!(swr_v1_process_pool_ipc_respond(&mut *ipc, b"ab"));
             assert_eq!(
                 (*ipc).stream.as_ref().unwrap().response.as_deref(),
                 Some(&b"ab"[..])
             );
-            (*ipc).stream.as_mut().unwrap().connection = ptr::null_mut();
+            (*ipc).stream.as_mut().unwrap().connection = None;
             pool_ipc_free(*Box::from_raw(ipc), |_| {});
         }
     }
@@ -1071,7 +1060,7 @@ mod tests {
         unsafe {
             assert!(!swr_v1_process_pool_ipc_address(&mut *ipc, c"/tmp/x", 1));
             assert!(pool_ipc_address(&*ipc).is_none());
-            assert!(swr_v1_process_pool_ipc_listener(&*ipc).is_null());
+            assert!(swr_v1_process_pool_ipc_listener(&*ipc).is_none());
             pool_ipc_free(*Box::from_raw(ipc), |_| {});
         }
     }
@@ -1227,7 +1216,9 @@ mod tests {
         }
         fn accept(&self, c: &mut PoolCall) {
             let next = with(|s| s.accepts.pop());
-            c.socket = next.map_or(ptr::null_mut(), |id| id as *mut c_void);
+            if let Some(id) = next {
+                c.set_connection(Rc::new(id));
+            }
             c.error = libc::EAGAIN;
         }
         fn recv(&self, c: &mut PoolCall) {
@@ -1239,8 +1230,11 @@ mod tests {
             c.result = bytes.len().c_cast::<isize>();
             with(|s| s.sent.push(bytes));
         }
-        fn close(&self, c: &PoolCall) {
-            with(|s| s.closed.push(c.socket as usize));
+        fn close(&self, c: &mut PoolCall) {
+            let id = c
+                .take_connection()
+                .and_then(|c| c.downcast_ref::<usize>().copied());
+            with(|s| s.closed.extend(id));
         }
         fn pipe_read(&self, c: &mut PoolCall) {
             let (bytes, error) = with(|s| s.reads.remove(0));

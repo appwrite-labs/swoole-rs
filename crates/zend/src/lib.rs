@@ -61,8 +61,8 @@ pub use object::{Custom, CustomClass, Object, ObjectRef, Props, Weak, new_object
 pub use swoole_rs_zend_sys as sys;
 pub use sys::add_next_index_long;
 pub use zval::{
-    Array, ArrayMut, Entries, HeldArray, Interned, Kept, Key, Owned, OwnedArray, Separated, UNDEF,
-    Value, ZStr, ZString, Zvals,
+    Array, ArrayMut, Entries, HeldArray, Insertions, Interned, Kept, Key, Owned, OwnedArray,
+    Separated, UNDEF, Value, ZStr, ZString, Zvals,
 };
 
 /// Export Zend handlers under Zend's own names (`zim_<class>_<method>` for

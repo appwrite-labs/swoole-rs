@@ -734,8 +734,10 @@ fn listen(call: &Call) {
         port.c_cast::<c_int>(),
         backlog.c_cast::<c_int>(),
     );
-    if let Some(socket) = swoole_rs_server::view::pool_ipc_listener(view) {
-        _ = socket.edit(|record| socket_set_fd_option(record, 0, 1));
+    if let Some(listener) = swoole_rs_server::view::pool_ipc_listener(view) {
+        _ = listener
+            .socket()
+            .edit(|record| socket_set_fd_option(record, 0, 1));
     }
     call.set_bool(listened);
 }

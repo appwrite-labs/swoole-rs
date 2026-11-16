@@ -583,9 +583,9 @@ impl<'a> Server<'a> {
         self.port_at(index)?.config().listening_socket()
     }
 
-    /// `Server::task_notify_pipe(worker_id)`, or null.
+    /// `Server::task_notify_pipe(worker_id)`, or `None`.
     #[must_use]
-    pub fn task_notify_pipe(self, worker_id: u16) -> *mut SocketPair {
+    pub fn task_notify_pipe(self, worker_id: u16) -> Option<&'a SocketPair> {
         self.state().task_pipe(worker_id.into())
     }
 
@@ -817,8 +817,8 @@ impl PipeSocket {
 
 /// The listening socket of `pool`'s stream IPC, or `None` without one.
 #[must_use]
-pub fn pool_ipc_listener(pool: PoolRef<'_>) -> Option<Socket<'_>> {
-    pool.ipc_listener().map(Socket::lent)
+pub fn pool_ipc_listener(pool: PoolRef<'_>) -> Option<std::rc::Rc<swoole_rs_reactor::OwnedSocket>> {
+    pool.ipc_listener()?.downcast().ok()
 }
 
 /// `sock->set_nonblock()`.

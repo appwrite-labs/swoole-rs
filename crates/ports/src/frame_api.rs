@@ -1,21 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 src/protocol/websocket.cc (Swoole contributors).
 //! `src/protocol/websocket.cc`'s codec entry points over `swoole::String` and
-//! `websocket::Frame`, as safe functions over slices. [`get_package_length`], whose
-//! measure protocol tables hold through crates/ports' `websocket_length`,
-//! `upstream-symbols` also defines under its upstream (Itanium) symbol.
+//! `websocket::Frame`, as safe functions over slices. `websocket::get_package_length`
+//! is [`crate::http_routes::websocket_length`].
 use std::ffi::{CStr, c_char, c_int};
 use swoole_rs_corebase::CCast;
 
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::lent::Spare;
 use swoole_rs_corebase::log;
-use swoole_rs_corebase::net_types::PacketLength;
 
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 use swoole_rs_websocket::{
     DecodeErrorKind, DecodedFrame, EncodeError, FrameFlags, Opcode, control_invalid,
-    decode_in_place, encode_close, encode_frame, encoded_size, frame_length,
+    decode_in_place, encode_close, encode_frame, encoded_size,
 };
 
 /// `SW_ERROR_WEBSOCKET_INCOMPLETE_PACKET`.
@@ -106,40 +104,6 @@ pub fn decode_frame(data: &mut [u8]) -> Result<DecodedFrame, (DecodedFrame, bool
         format_args!("incomplete packet, expected length is {expected}, actual length is {length}"),
     );
     Err((decoded, false))
-}
-
-/// `ssize_t get_package_length(const Protocol *, Socket *, PacketLength *)`.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(
-        export_name = "_ZN6swoole9websocket18get_package_lengthEPKNS_8ProtocolEPNS_7network6SocketEPNS_12PacketLengthE"
-    )
-)]
-pub extern "C" fn get_package_length(
-    _protocol: *const std::ffi::c_void,
-    _socket: *mut std::ffi::c_void,
-    pl: &mut PacketLength,
-) -> isize {
-    package_length(pl)
-}
-
-/// [`get_package_length`]'s measure: it reads only `pl`.
-#[inline]
-pub fn package_length(pl: &mut PacketLength) -> isize {
-    let (length, header) = match frame_length(pl.bytes()) {
-        Ok(frame) => (frame.total.c_cast::<isize>(), Some(frame.header_length)),
-        Err(error) => (
-            match error {
-                swoole_rs_websocket::LengthError::IncompleteHeader { .. } => 0,
-                swoole_rs_websocket::LengthError::Overflow { .. } => -1,
-            },
-            error.header_length(),
-        ),
-    };
-    if let Some(header) = header {
-        pl.header_len = header.c_cast::<u32>();
-    }
-    length
 }
 
 /// `bool encode(String *buffer, const char *data, size_t length, uint8_t opcode, uint8_t flags)`
@@ -387,9 +351,10 @@ mod tests {
     #[test]
     fn package_length_reports_the_header() {
         let data = *b"\x82\x7e\x01\x00";
-        let mut pl = PacketLength::new(&data);
+        let mut pl = swoole_rs_corebase::net_types::PacketLength::new(&data);
+        let protocol = swoole_rs_clients::protocol::Protocol::EMPTY;
         assert_eq!(
-            get_package_length(std::ptr::null(), std::ptr::null_mut(), &mut pl),
+            crate::http_routes::websocket_length(&protocol, None, &mut pl),
             260
         );
         assert_eq!(pl.header_len, 4);
