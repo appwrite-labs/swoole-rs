@@ -303,13 +303,20 @@ impl Shm {
         self.0.get().is_null()
     }
 
-    /// `SharedMemory::protect`: `mprotect`s the whole mapping; -1 without one.
-    pub fn protect(&self, flags: c_int) -> c_int {
+    /// `SharedMemory::protect`: `mprotect`s the whole mapping.
+    ///
+    /// # Errors
+    /// `mprotect`'s errno, or `EINVAL` without a mapping.
+    pub fn protect(&self, flags: c_int) -> std::io::Result<()> {
         let Some((base, total)) = self.extent() else {
-            return -1;
+            return Err(std::io::Error::from_raw_os_error(libc::EINVAL));
         };
         // SAFETY: the mapping its header describes.
-        unsafe { libc::mprotect(base, total, flags) }
+        if unsafe { libc::mprotect(base, total, flags) } == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
     }
 
     /// The payload, for an owner that frees it with `sw_shm_free`.

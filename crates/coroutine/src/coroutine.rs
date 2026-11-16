@@ -518,10 +518,12 @@ impl Waker {
 
     /// `co->resume()` of the coroutine while it is still parked in the yield that
     /// made this; nothing otherwise.
+    #[inline]
     pub fn wake(self) {
         self.wake_in(Sched::this());
     }
 
+    #[inline]
     fn wake_in(self, s: Sched) {
         let Some(co) = s.with(|s| s.live_co(self.cid)) else {
             return;

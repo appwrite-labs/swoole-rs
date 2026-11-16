@@ -278,7 +278,7 @@ pub(crate) fn swoole_http_client_coro_file_open(name: &CStr, offset: i64) -> Opt
 
 /// `AsyncFile::write()`: whether all of `data` was written.
 pub(crate) fn swoole_http_client_coro_file_write(fd: c_int, data: &[u8]) -> bool {
-    write(fd, data).cast_unsigned() == data.len()
+    write(fd, data).is_ok_and(|written| written == data.len())
 }
 
 /// `AsyncFile::close()`. It can yield, so a caller lets go of the descriptor

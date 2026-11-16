@@ -322,7 +322,7 @@ impl Uring {
 trait Submitter {
     fn event_running(&mut self) -> bool;
     fn sq_used(&mut self) -> usize;
-    fn submit(&mut self) -> c_int;
+    fn submit(&mut self) -> io::Result<()>;
     fn sleep(&mut self);
     fn failed(&mut self);
 }
@@ -336,21 +336,18 @@ impl Submitter for &Uring {
         self.sq().0
     }
 
-    fn submit(&mut self) -> c_int {
+    fn submit(&mut self) -> io::Result<()> {
         self.with_ring(|ring| {
             let queue = ring.submission();
             // As liburing's io_uring_submit: nothing to submit or flush, no system call.
             let idle = queue.is_empty() && !queue.cq_overflow();
             drop(queue);
             if idle {
-                return 0;
+                return Ok(());
             }
-            match ring.submit() {
-                Ok(submitted) => c_int::try_from(submitted).unwrap_or(c_int::MAX),
-                Err(error) => -error.raw_os_error().unwrap_or(0),
-            }
+            ring.submit().map(|_| ())
         })
-        .unwrap_or(0)
+        .unwrap_or(Ok(()))
     }
 
     fn sleep(&mut self) {
@@ -368,15 +365,14 @@ fn submit(ring: &mut impl Submitter, immediately: bool) {
         return;
     }
     loop {
-        let ret = ring.submit();
-        if ret >= 0 {
+        let Err(error) = ring.submit() else {
             return;
-        }
-        match -ret {
+        };
+        match error.raw_os_error() {
             // Retried on the next submit.
-            libc::EAGAIN => return,
-            libc::EBUSY => ring.sleep(),
-            libc::EINTR => {}
+            Some(libc::EAGAIN) => return,
+            Some(libc::EBUSY) => ring.sleep(),
+            Some(libc::EINTR) => {}
             _ => {
                 ring.failed();
                 return;
@@ -977,9 +973,14 @@ mod tests {
             self.trace.push("sq:used".into());
             self.used
         }
-        fn submit(&mut self) -> c_int {
+        fn submit(&mut self) -> io::Result<()> {
             self.trace.push("submit".into());
-            self.results.remove(0)
+            let result = self.results.remove(0);
+            if result < 0 {
+                Err(io::Error::from_raw_os_error(-result))
+            } else {
+                Ok(())
+            }
         }
         fn sleep(&mut self) {
             self.trace.push("usleep:10000".into());

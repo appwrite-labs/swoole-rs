@@ -92,12 +92,6 @@ pub fn coroutine_get(cid: c_long) -> *mut c_void {
     with_scheduler(|s| s.get(cid))
 }
 
-/// [`Scheduler::cid_of`] on this thread: the id of the live coroutine at `co`.
-#[must_use]
-pub fn live_cid(co: *const c_void) -> Option<c_long> {
-    with_scheduler(|s| s.cid_of(co))
-}
-
 /// [`Scheduler::state`] on this thread.
 #[must_use]
 pub fn coroutine_state(cid: c_long) -> Option<crate::State> {
@@ -275,6 +269,7 @@ pub fn suspend(co: *mut c_void) {
 
 /// [`suspend`], handing `arm` the [`Waker`](crate::Waker) that ends this park before
 /// `co` switches out.
+#[inline]
 pub fn park(co: *mut c_void, arm: impl FnOnce(crate::Waker)) {
     let s = Sched::this();
     ops::yield_armed(s, Co::running(s, co.cast()), arm);
@@ -292,6 +287,7 @@ pub fn yield_with_cancel<F: FnOnce(*mut c_void) -> bool + Copy>(co: *mut c_void,
 
 /// [`yield_with_cancel`], handing `arm` the [`Waker`](crate::Waker) that ends this
 /// park before `co` switches out.
+#[inline]
 pub fn yield_with_cancel_armed<F: FnOnce(*mut c_void) -> bool + Copy>(
     co: *mut c_void,
     cancel: F,

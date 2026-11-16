@@ -394,7 +394,8 @@ impl Owner {
             // callback frees this timer before the thread's reactor is cleared.
             REACTOR => event_api::swoole_event_set_timeout_msec(msec.c_cast::<i32>()),
             _ => {
-                swr_v1_timer_system_set(msec);
+                // Upstream's set() callers ignore its status too.
+                _ = swr_v1_timer_system_set(msec);
             }
         }
     }

@@ -18,13 +18,14 @@ use std::{
 use swoole_rs_coroutine::{CoroutineTask, State};
 use swoole_rs_timer::Held;
 use swoole_rs_zend::sys::{
-    IS_NULL, IS_UNDEF, swr_zend_callable, swr_zend_callable_hold, swr_zend_coroutine_fcc_discard,
-    swr_zend_coroutine_finish, swr_zend_coroutine_output_reset, swr_zend_coroutine_set_frame,
-    swr_zend_coroutine_start, swr_zend_coroutine_switch, swr_zend_coroutine_vm, swr_zend_efree,
-    zend_class_entry, zend_execute_data, zend_fcall_info, zend_fcall_info_cache,
-    zend_fiber_context, zend_fiber_status, zend_fiber_status_ZEND_FIBER_STATUS_DEAD,
-    zend_fiber_status_ZEND_FIBER_STATUS_INIT, zend_fiber_status_ZEND_FIBER_STATUS_RUNNING,
-    zend_fiber_status_ZEND_FIBER_STATUS_SUSPENDED, zend_object, zval,
+    IS_NULL, IS_STRING, IS_UNDEF, swr_zend_callable, swr_zend_callable_hold,
+    swr_zend_coroutine_fcc_discard, swr_zend_coroutine_finish, swr_zend_coroutine_output_reset,
+    swr_zend_coroutine_set_frame, swr_zend_coroutine_start, swr_zend_coroutine_switch,
+    swr_zend_coroutine_vm, swr_zend_efree, zend_class_entry, zend_execute_data, zend_fcall_info,
+    zend_fcall_info_cache, zend_fiber_context, zend_fiber_status,
+    zend_fiber_status_ZEND_FIBER_STATUS_DEAD, zend_fiber_status_ZEND_FIBER_STATUS_INIT,
+    zend_fiber_status_ZEND_FIBER_STATUS_RUNNING, zend_fiber_status_ZEND_FIBER_STATUS_SUSPENDED,
+    zend_object, zval,
 };
 use swoole_rs_zend::{Callable, Function, Owned, Value, bailout};
 
@@ -556,6 +557,14 @@ pub(crate) fn save_current() {
     current().with_vm(|vm| swr_zend_coroutine_save(vm));
 }
 
+/// Drops `value`, raising a destructor's bailout at once. Only an object, array,
+/// reference or resource (above a string) can run one, so only those are guarded.
+fn release(value: Owned) {
+    if value.kind() > IS_STRING {
+        bailout::finish_after(|| drop(value));
+    }
+}
+
 /// `destroy_context`, on the running, finishing coroutine. Its bailout
 /// address is null here, so a bailout in a destructor ends the process rather
 /// than longjmp.
@@ -577,19 +586,18 @@ pub(crate) fn close(ctx: Ctx) {
     // origin is looked up again before each use.
     // Each release below is the coroutine's last, and a destructor's bailout
     // raised at once, as an unguarded `zval_ptr_dtor` would.
-    let object = ctx.with(|context| {
+    if let Some(object) = ctx.with(|context| {
         (context.context.kind() != IS_UNDEF)
             .then(|| mem::replace(&mut context.context, Owned::null()))
-    });
-    bailout::finish_after(|| drop(object));
+    }) {
+        release(object);
+    }
     // Upstream only drops the references (Z_TRY_DELREF), leaking a callable or
     // return value the coroutine held last, such as `go([new Foo, 'bar'])`'s array.
-    let callable = ctx.with(|context| mem::take(&mut context.callable));
-    bailout::finish_after(|| drop(callable));
+    release(ctx.with(|context| mem::take(&mut context.callable)));
     // SAFETY: a live context's callable, whose object and closure `open` held.
     unsafe { swr_zend_coroutine_fcc_discard(fcc(ctx.call())) };
-    let returned = ctx.with(|context| mem::take(&mut context.return_value));
-    bailout::finish_after(|| drop(returned));
+    release(ctx.with(|context| mem::take(&mut context.return_value)));
     fiber_try_destroy(ctx, origin(ctx));
     // A context-owned __destruct() may have rearmed the time limit.
     if ctx.time_limited()

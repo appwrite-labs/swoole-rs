@@ -90,15 +90,6 @@ impl Scheduler {
         self.live()?.get(cid)
     }
 
-    /// The id of the live coroutine whose record is at `co`, by address.
-    #[must_use]
-    pub fn cid_of(&self, co: *const c_void) -> Option<c_long> {
-        let live = self.live()?;
-        live.entries
-            .iter()
-            .find_map(|&(cid, entry)| (entry?.ptr().cast_const().cast() == co).then_some(cid))
-    }
-
     /// The state of live coroutine `cid`, `None` once it ended.
     #[must_use]
     pub fn state(&self, cid: c_long) -> Option<State> {

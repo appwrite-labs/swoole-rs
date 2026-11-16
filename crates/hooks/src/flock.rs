@@ -9,32 +9,40 @@ use swoole_rs_reactor::backoff;
 
 use swoole_rs_corebase::sys::flock;
 
+/// Why a hooked lock did not complete.
+#[derive(Debug)]
+enum FlockError {
+    InvalidOperation,
+    Io(std::io::Error),
+    Cancelled,
+}
+
 /// Locks `fd` like `flock(fd, operation)`, yielding through `coroutine_sleep` (none
-/// outside a coroutine) while another holder has it. `Err` for an operation that is
-/// none of `LOCK_EX`, `LOCK_SH`, `LOCK_UN`.
+/// outside a coroutine) while another holder has it. Invalid operations, syscall
+/// failures and cancelled sleeps remain distinct until the exported boundary.
 fn coroutine_flock(
     fd: i32,
     operation: i32,
-    coroutine_sleep: Option<fn(f64) -> i32>,
-) -> Result<i32, ()> {
+    coroutine_sleep: Option<fn(f64) -> bool>,
+) -> Result<(), FlockError> {
     let Some(sleep) = coroutine_sleep.filter(|_| operation & libc::LOCK_NB == 0) else {
-        return Ok(flock(fd, operation).map_or(-1, |()| 0));
+        return flock(fd, operation).map_err(FlockError::Io);
     };
     if operation == libc::LOCK_UN {
-        return Ok(flock(fd, libc::LOCK_UN).map_or(-1, |()| 0));
+        return flock(fd, libc::LOCK_UN).map_err(FlockError::Io);
     }
     if operation != libc::LOCK_EX && operation != libc::LOCK_SH {
-        return Err(());
+        return Err(FlockError::InvalidOperation);
     }
     let mut delay = SW_FILE_LOCK_DEFAULT_SECOND;
     loop {
         match flock(fd, operation | libc::LOCK_NB) {
-            Ok(()) => return Ok(0),
+            Ok(()) => return Ok(()),
             Err(error) if error.raw_os_error() == Some(libc::EWOULDBLOCK) => {}
-            Err(_) => return Ok(-1),
+            Err(error) => return Err(FlockError::Io(error)),
         }
-        if sleep(delay) != 0 {
-            return Ok(-1);
+        if !sleep(delay) {
+            return Err(FlockError::Cancelled);
         }
         delay = backoff(delay, SW_FILE_LOCK_DEFAULT_SECOND, SW_FILE_LOCK_MAX_SECOND);
     }
@@ -46,16 +54,24 @@ fn coroutine_flock(
 pub extern "C" fn swoole_coroutine_flock(fd: i32, operation: i32) -> i32 {
     let runtime = runtime();
     let sleep = (runtime.in_coroutine)().then_some(runtime.sleep);
-    coroutine_flock(fd, operation, sleep).unwrap_or_else(|()| {
-        set_errno(libc::EINVAL);
-        (runtime.set_last_error)(libc::EINVAL);
-        -1
-    })
+    match coroutine_flock(fd, operation, sleep) {
+        Ok(()) => 0,
+        Err(FlockError::InvalidOperation) => {
+            set_errno(libc::EINVAL);
+            (runtime.set_last_error)(libc::EINVAL);
+            -1
+        }
+        Err(FlockError::Io(error)) => {
+            set_errno(error.raw_os_error().unwrap_or(0));
+            -1
+        }
+        Err(FlockError::Cancelled) => -1,
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::coroutine_flock;
+    use super::{FlockError, coroutine_flock};
     use std::cell::RefCell;
     use std::os::fd::AsRawFd;
 
@@ -63,21 +79,25 @@ mod tests {
         /// The delays slept, and the descriptor to unlock on the second sleep.
         static SLEPT: RefCell<(Vec<f64>, i32)> = const { RefCell::new((Vec::new(), -1)) };
     }
-    fn release_on_second(seconds: f64) -> i32 {
+    fn release_on_second(seconds: f64) -> bool {
         SLEPT.with_borrow_mut(|(slept, holder)| {
             slept.push(seconds);
             if slept.len() == 2 {
                 unsafe { libc::flock(*holder, libc::LOCK_UN) };
             }
         });
-        0
+        true
     }
-    fn cancelled(_: f64) -> i32 {
-        -1
+    fn cancelled(_: f64) -> bool {
+        false
     }
 
-    fn lock(fd: i32, operation: i32, sleep: Option<fn(f64) -> i32>) -> Result<i32, ()> {
-        coroutine_flock(fd, operation, sleep)
+    fn lock(fd: i32, operation: i32, sleep: Option<fn(f64) -> bool>) -> Result<i32, ()> {
+        match coroutine_flock(fd, operation, sleep) {
+            Ok(()) => Ok(0),
+            Err(FlockError::InvalidOperation) => Err(()),
+            Err(FlockError::Io(_) | FlockError::Cancelled) => Ok(-1),
+        }
     }
 
     #[test]
@@ -150,7 +170,14 @@ mod tests {
             };
             assert_eq!(lock(holder, libc::LOCK_EX, None), Ok(0));
             MATRIX.set((Vec::new(), holder, end));
-            assert_eq!(lock(waiter, libc::LOCK_EX, Some(matrix_sleep)), result);
+            assert_eq!(
+                lock(
+                    waiter,
+                    libc::LOCK_EX,
+                    Some(|seconds| matrix_sleep(seconds) == 0)
+                ),
+                result
+            );
             let sleeps = match end {
                 Ok(n) | Err(n) => n,
             };

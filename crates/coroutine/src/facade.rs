@@ -295,19 +295,16 @@ pub unsafe fn print_socket_bound_error(fd: c_int, event: &CStr, bound_cid: c_lon
 #[must_use]
 pub fn spawn<F: FnOnce() + Copy + 'static>(entry: F) -> c_long {
     /// # Safety
-    /// `slot` is a live `Option<F>` nothing else reaches until this takes it.
-    unsafe extern "C" fn take<F: FnOnce()>(slot: *mut c_void) {
-        // SAFETY: per the caller; the borrow ends before the entry runs.
-        let entry = unsafe { &mut *slot.cast::<Option<F>>() }.take();
-        if let Some(entry) = entry {
-            entry();
-        }
+    /// `slot` is a live `F`.
+    unsafe extern "C" fn take<F: FnOnce() + Copy>(slot: *mut c_void) {
+        // SAFETY: per the caller; a `Copy` value is read out before the entry runs.
+        let entry = unsafe { slot.cast::<F>().read() };
+        entry();
     }
-    let mut slot = Some(entry);
-    // SAFETY: `take::<F>` takes the `Option<F>` at its data, this frame's `slot`,
-    // which lives until the coroutine first switches back: creation runs it until
-    // then, and it takes the slot first.
-    unsafe { swr_v1_coroutine_create(take::<F>, (&raw mut slot).cast()) }
+    // SAFETY: `take::<F>` copies the `F` at its data, `entry` on this frame, which
+    // lives until the coroutine first switches back: creation runs it until then,
+    // and it copies the entry first.
+    unsafe { swr_v1_coroutine_create(take::<F>, (&raw const entry).cast_mut().cast()) }
 }
 
 /// `long swoole_coroutine_create(void (*)(void *), void *)`: in the running
