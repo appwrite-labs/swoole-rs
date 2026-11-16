@@ -34,6 +34,7 @@ pub struct PortProperty {
 
 impl PortProperty {
     /// Select a callable while its slot is temporarily taken, without running PHP.
+    #[inline]
     fn select<R>(
         &self,
         kind: swoole_rs_ports::PortCallback,
@@ -87,18 +88,27 @@ pub(crate) fn has_callback(port: view::Port<'_>, kind: swoole_rs_ports::PortCall
 }
 
 /// Borrow the callback storage just long enough to select a slot; no PHP runs here.
-#[inline]
+#[inline(always)]
 fn property<R>(port: view::Port<'_>, select: impl FnOnce(&PortProperty) -> R) -> Option<R> {
     let config = port.config();
     if crate::server::THREAD.load(Ordering::Relaxed) {
-        let index = usize::from(config.object_id);
-        let property = with_properties(|properties| properties.get(index).and_then(Weak::upgrade))?;
+        let property = thread_property(config.object_id)?;
         Some(select(&property))
     } else {
         Some(select(
             config.property.get()?.downcast_ref::<PortProperty>()?,
         ))
     }
+}
+
+/// Keep the TLS table and temporary owner out of the shared-port lookup.
+#[inline(never)]
+fn thread_property(object_id: u16) -> Option<Rc<PortProperty>> {
+    with_properties(|properties| {
+        properties
+            .get(usize::from(object_id))
+            .and_then(Weak::upgrade)
+    })
 }
 
 /// `ServerPortObject` without its `zend_object`: the `ListenPort` and property.
