@@ -223,7 +223,7 @@ const IPC_BUFFER_SIZE: usize = swoole_rs_corebase::constants::SW_IPC_BUFFER_SIZE
 const SENDFILE_TASK_SIZE: usize = 16;
 
 /// `Server::sendfile`'s buffer, aligned for the `SendfileTask` it starts with.
-#[repr(C, align(8))]
+#[repr(align(8))]
 struct SendfileBuffer([u8; IPC_BUFFER_SIZE]);
 
 fn log_error(
