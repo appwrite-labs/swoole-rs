@@ -36,8 +36,15 @@ def require_build_space(path):
     return free
 
 
+def default_jobs():
+    """CARGO_BUILD_JOBS when it is a positive count, so one setting caps cargo and make
+    alike; otherwise the CPU count, at most 4."""
+    jobs = os.environ.get('CARGO_BUILD_JOBS', '')
+    return int(jobs) if jobs.isdigit() and int(jobs) > 0 else min(os.cpu_count() or 2, 4)
+
+
 def add_build_arguments(parser):
-    parser.add_argument('--jobs', type=int, default=min(os.cpu_count() or 2, 4))
+    parser.add_argument('--jobs', type=int, default=default_jobs())
     parser.add_argument('--php-config', default='php-config')
     parser.add_argument('--phpize', default='phpize')
     parser.add_argument('--stdext', action='store_true', help='Explicit experimental upstream stdext profile; separate runtime qualification required')

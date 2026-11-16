@@ -357,6 +357,20 @@ class Lanes(unittest.TestCase):
             for name in ['upstream', 'upstream-builds', 'ext']:
                 self.assertIn(f'{ROOT}/target/docker/{arch}/{name}:{ROOT}/target/{name}', command)
 
+    def test_docker_job_limit_reaches_the_upstream_make(self):
+        # The prep's make ran at -j4 whatever cargo's limit, and was OOM-killed on a
+        # shared VM (#4476): the host's CARGO_BUILD_JOBS crosses into the container ...
+        with patch.object(dev.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout='')) as run, \
+                patch.object(dev.subprocess, 'check_output', return_value=f'{ROOT}/.git\n'), \
+                patch.object(dev.Path, 'mkdir'):
+            dev.docker(['--', 'cargo', 'test'])
+        command = run.call_args.args[0]
+        self.assertEqual(command[command.index('CARGO_BUILD_JOBS') - 1], '-e')
+        # ... where build_upstream.py takes it as its default --jobs.
+        for value, expected in [('2', 2), ('0', min(os.cpu_count() or 2, 4)), ('-1', min(os.cpu_count() or 2, 4))]:
+            with self.subTest(value=value), patch.dict(os.environ, {'CARGO_BUILD_JOBS': value}):
+                self.assertEqual(build_upstream.default_jobs(), expected)
+
     def test_help_names_the_docker_wrapper(self):
         # AGENTS.md sends Linux-only phases through `dev.py docker`; argparse never sees it.
         result = subprocess.run([sys.executable, ROOT / 'tools/dev.py', '--help'], capture_output=True, text=True)

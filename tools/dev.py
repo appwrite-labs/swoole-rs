@@ -648,6 +648,8 @@ def docker(arguments):
                '-v', f'swr-rustup-{architecture}:/usr/local/rustup',
                '-v', f'swr-cargo-{architecture}:/usr/local/cargo/registry',
                '-e', f'SWR_TARGET={(private / "cargo").relative_to(ROOT)}',
+               # The host's job limit, if set, caps the upstream prep's make as well as cargo.
+               '-e', 'CARGO_BUILD_JOBS',
                # Docker Desktop (macOS) already gives the host user what a container writes.
                *(['-e', f'SWR_USER={os.getuid()}:{os.getgid()}'] if sys.platform == 'linux' and os.getuid() else []),
                *[part for variable in git_config for part in ('-e', variable)],

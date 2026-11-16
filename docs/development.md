@@ -118,6 +118,11 @@ manual setup:
   (the image has valgrind), and a `cargo` command as itself, building into the same
   `target/docker/` dir
 
+`CARGO_BUILD_JOBS`, when set on the host, reaches the container and caps both cargo
+and the upstream prep's `make` (otherwise `-j` is the CPU count, at most 4); on a
+Docker VM shared by several worktrees, `CARGO_BUILD_JOBS=2 python3 tools/dev.py docker -- …`
+keeps the compilers from being OOM-killed.
+
 It warns when the disk has less than 20 GB free. `dev.py prune` also removes
 `target/worktrees/*` older than its window. It keeps Docker images shared with
 other worktrees.
