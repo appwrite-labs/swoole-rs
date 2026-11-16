@@ -4,12 +4,10 @@ use core::ffi::c_int;
 use core::sync::atomic::Ordering::Relaxed;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU8, AtomicU32};
 
-/// The compatibility view of the current worker; its pointer is a native loan. Each
-/// field is
-/// an atomic of its C type's layout, read and written one at a time (`Relaxed`,
-/// plain loads and stores), as native code, signal handlers and, without ZTS, the
-/// process's other threads read and write single fields of the same record.
-#[repr(C)]
+/// `SwooleWG`: the current worker's identity and state. Each field is an atomic,
+/// read and written one at a time (`Relaxed`, plain loads and stores), as signal
+/// handlers and, without ZTS, the process's other threads read and write single
+/// fields of the same record.
 pub struct WorkerGlobalRecord {
     pub id: AtomicU32,
     pub kind: AtomicU8,
@@ -46,16 +44,9 @@ const fn init() -> WorkerGlobalRecord {
 
 // `SwooleWG` is `SW_THREAD_LOCAL`: thread-local on a thread-safe PHP, one process
 // record otherwise, which saves a TLS lookup per access on the request path.
-// Tests (which unwind) keep it per thread, as they run in parallel.
-impl WorkerGlobalRecord {
-    /// `worker`: the current worker, or null. Only [`set_current_worker`] and the
-    /// stop below write it, so [`with_current`] can trust it.
-    #[must_use]
-    pub fn worker(&self) -> *mut WorkerRecord {
-        self.worker.load(Relaxed)
-    }
-}
-
+// Tests (which unwind) keep it per thread, as they run in parallel. Only
+// [`set_current_worker`] and [`worker_global_stopped`] write `worker`, so
+// [`with_current`] can trust it.
 #[cfg(any(zts, panic = "unwind"))]
 std::thread_local! {
     static GLOBAL: WorkerGlobalRecord = const { init() };
@@ -71,12 +62,6 @@ pub fn with_globals<R>(f: impl FnOnce(&WorkerGlobalRecord) -> R) -> R {
     return GLOBAL.with(f);
     #[cfg(not(any(zts, panic = "unwind")))]
     f(&GLOBAL)
-}
-
-/// This thread's record, as a pointer.
-#[must_use]
-pub fn thread_globals() -> *mut WorkerGlobalRecord {
-    with_globals(|globals| core::ptr::from_ref(globals).cast_mut())
 }
 
 /// `SwooleWG.worker`: this thread's current worker, or null.
@@ -168,12 +153,11 @@ mod tests {
     }
 
     #[test]
-    fn native_views_and_worker_identity_are_thread_local() {
+    fn worker_identity_is_thread_local() {
         swoole_set_worker_id(7);
         swoole_set_worker_type(-1);
         assert_eq!(swoole_get_worker_type(), 255);
-        let native_view = thread_globals();
-        unsafe { (*native_view).pid.store(123, Relaxed) };
+        with_globals(|globals| globals.pid.store(123, Relaxed));
         assert_eq!(swoole_get_worker_pid(), 123);
         std::thread::spawn(|| {
             assert_eq!(swoole_get_worker_id(), 0);
@@ -183,10 +167,6 @@ mod tests {
         .join()
         .unwrap();
         assert_eq!(swoole_get_worker_id(), 7);
-        assert_eq!(core::mem::size_of::<WorkerGlobalRecord>(), 48);
-        assert_eq!(core::mem::offset_of!(WorkerGlobalRecord, max_request), 16);
-        assert_eq!(core::mem::offset_of!(WorkerGlobalRecord, worker), 24);
-        assert_eq!(core::mem::offset_of!(WorkerGlobalRecord, exit_time), 40);
     }
 
     #[test]
@@ -206,7 +186,7 @@ mod tests {
             assert!(Worker::new(&raw const worker).exceeded_max_request());
             set_current_worker(&raw mut worker);
             worker_global_detach(Worker::new(&raw mut worker));
-            assert!((*thread_globals()).detached.load(Relaxed));
+            assert!(with_globals(|globals| globals.detached.load(Relaxed)));
             assert_eq!(Worker::new(&raw const worker).id(), 11);
             assert_eq!(Worker::new(&raw const worker).pid(), 1234);
             swr_v1_worker_shutdown(Worker::new(&raw mut worker));
@@ -217,8 +197,8 @@ mod tests {
             assert!(worker_is_shutdown());
             worker_global_stopped();
             assert!(!worker_is_running());
-            assert!(!(*thread_globals()).detached.load(Relaxed));
-            assert!((*thread_globals()).worker.load(Relaxed).is_null());
+            assert!(!with_globals(|globals| globals.detached.load(Relaxed)));
+            assert!(current_worker().is_null());
         }
     }
 
