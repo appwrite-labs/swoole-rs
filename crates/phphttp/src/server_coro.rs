@@ -13,7 +13,6 @@ use crate::{
 use std::{
     cell::{Cell, OnceCell},
     ffi::{CString, c_int},
-    ptr,
     rc::Rc,
     sync::atomic::Ordering::Relaxed,
 };
@@ -28,8 +27,8 @@ use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_phpswoole::SocketSettings;
 use swoole_rs_reactor::Events;
 use swoole_rs_zend::{
-    Array, ArrayMut, Call, Custom, CustomClass, Key as ArrayKey, Minit, Owned, OwnedArray, Props,
-    Value, ZString, bailout, handlers, method_table, string,
+    Array, ArrayMut, Call, CallFrame, Custom, CustomClass, Key as ArrayKey, Minit, Owned,
+    OwnedArray, Props, Value, ZString, bailout, handlers, method_table, string,
     sys::{self as z, ZEND_ACC_FINAL, ZEND_ACC_PUBLIC, zend_long, zval},
 };
 
@@ -475,6 +474,19 @@ struct Accept {
     cache: z::zend_fcall_info_cache,
 }
 
+unsafe extern "C" {
+    /// `zend_is_callable_at_frame(name, $this, frame, 0, cache, NULL)` inside
+    /// `zend_try` (nonzero for a bailout): it reads the name and the call's
+    /// frame, and fills the cache and whether the name is callable there.
+    #[link_name = "swr_zend_try_facade_callable_frame"]
+    safe fn callable_at_frame(
+        name: &Owned,
+        frame: CallFrame<'_>,
+        cache: &mut z::zend_fcall_info_cache,
+        callable: &mut bool,
+    ) -> c_int;
+}
+
 /// `sw_zend_is_callable_at_frame("onAccept")` on `$this` at `start`'s frame;
 /// an `E_CORE_ERROR` when it is not.
 fn accept_callable(call: &Call) -> Result<Option<Box<Accept>>, bailout::Bailout> {
@@ -483,19 +495,12 @@ fn accept_callable(call: &Call) -> Result<Option<Box<Accept>>, bailout::Bailout>
         cache: swoole_rs_zend::zeroed(),
     });
     let mut callable = false;
-    // SAFETY: the name, `$this`, this method's frame and local outputs; the
-    // shim traps what Zend raises.
-    bailout::trapped(unsafe {
-        z::swr_zend_try_facade_callable_frame(
-            accept.callback.as_ptr(),
-            call.this(),
-            call.frame(),
-            0,
-            &raw mut accept.cache,
-            ptr::null_mut(),
-            &raw mut callable,
-        )
-    })?;
+    bailout::trapped(callable_at_frame(
+        &accept.callback,
+        call.call_frame(),
+        &mut accept.cache,
+        &mut callable,
+    ))?;
     if callable {
         return Ok(Some(accept));
     }

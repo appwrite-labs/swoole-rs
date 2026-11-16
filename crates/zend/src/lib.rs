@@ -35,7 +35,7 @@ pub mod string;
 pub mod value;
 mod zval;
 
-pub use call::{Call, Invalid, ReturnSlot};
+pub use call::{Call, CallFrame, Invalid, ReturnSlot};
 pub use callable::{Callable, Callback, Holder, Parsed};
 pub use class::{Class, ClassEntry, Declared, lookup_class, unset_property_deny};
 pub use descriptor::{
