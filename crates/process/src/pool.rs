@@ -901,7 +901,7 @@ pub fn pool_run(
     pool_loop: &PoolLoop<'_>,
     protocol: Protocol,
 ) -> Result<(), Bailed> {
-    if pool_loop.pool.record().ipc.is_null() {
+    if pool_loop.pool.ipc().is_null() {
         return Ok(());
     }
     let worker = Worker {
@@ -1304,8 +1304,8 @@ mod tests {
             *s = script;
             s.ipc = ipc as usize;
         });
-        let mut pool = crate::process_pool::PoolRecord::empty();
-        pool.ipc = ipc;
+        let pool = crate::process_pool::PoolRecord::empty();
+        pool.ipc.set(ipc);
         let pool = std::cell::UnsafeCell::new(pool);
         let mut worker = crate::worker_record::WorkerRecord::empty();
         let pool_loop = PoolLoop {
