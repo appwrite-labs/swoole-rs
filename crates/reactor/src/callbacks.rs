@@ -296,7 +296,6 @@ mod tests {
     use super::*;
     use crate::reactor_state::tests::running;
     use std::cell::{Cell, RefCell};
-    use std::ffi::c_void;
 
     thread_local! {
         static TRACE: RefCell<Vec<i32>> = const { RefCell::new(Vec::new()) };
@@ -482,9 +481,6 @@ mod tests {
     /// only under `wait_exit` once every condition agrees.
     #[test]
     fn builtins_defer_idle_and_exit() {
-        unsafe extern "C-unwind" fn record(data: *mut c_void) {
-            push(data as i32);
-        }
         with_state(|owner| unsafe {
             install_builtins(callbacks());
             let fields = &raw mut (*owner).fields;
