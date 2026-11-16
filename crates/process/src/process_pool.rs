@@ -100,7 +100,7 @@ pub struct PoolRecord {
     pub(crate) ipc: *mut PoolIpc,
     pub(crate) message_box: SharedChannel,
     message_bus: Owner<Box<dyn std::any::Any>>,
-    reload_task: Owner<std::cell::RefCell<ReloadTask>>,
+    reload_task: Owner<ReloadTask>,
     pub(crate) ptr: *mut c_void,
     /// The `max_wait_time` timer `wait` arms to SIGKILL the workers still
     /// running. It stays armed after `wait` returns, which reaps only the first,
@@ -373,24 +373,21 @@ impl<'a> PoolRef<'a> {
         drop(self.record().message_bus.replace(bus.map(Box::new)));
     }
 
-    /// One operation on the reload in progress, with no borrow across callbacks.
+    /// One operation on the reload in progress, with no borrow across callbacks:
+    /// the task is out of the pool until `f` returns, so nothing else reaches it.
     pub fn with_reload_task<R>(self, f: impl FnOnce(&mut ReloadTask) -> R) -> Option<R> {
-        lend(&self.record().reload_task, |task| f(&mut task.borrow_mut()))
+        lend(&self.record().reload_task, f)
     }
 
-    /// Arms a timer against the boxed task's stable cell, then gives it to the
-    /// task to cancel on drop. The task is out of the pool while `arm` runs.
-    pub fn arm_reload_timer(
-        self,
-        arm: impl FnOnce(&std::cell::RefCell<ReloadTask>) -> Option<ArmedTimer>,
-    ) {
-        lend(&self.record().reload_task, |task| {
-            let timer = arm(task);
-            task.borrow_mut().set_timer(timer);
-        });
+    /// Arms the reload's timeout timer, then gives it to the task to cancel on
+    /// drop; nothing while no reload is in progress. The task is out of the pool
+    /// while `arm` runs. The timer keeps no pointer into the task: when it fires,
+    /// it reaches the task through the pool ([`Self::with_reload_task`]).
+    pub fn arm_reload_timer(self, arm: impl FnOnce() -> Option<ArmedTimer>) {
+        lend(&self.record().reload_task, |task| task.set_timer(arm()));
     }
 
-    fn set_reload_task(self, task: Option<Box<std::cell::RefCell<ReloadTask>>>) {
+    fn set_reload_task(self, task: Option<Box<ReloadTask>>) {
         drop(self.record().reload_task.replace(task));
     }
 
