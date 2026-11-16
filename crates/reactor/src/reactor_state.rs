@@ -553,12 +553,9 @@ fn backend_wait(
             let epfd = owner.backend_fd;
             // `max_event_num` records, which a caller may lower (to 0: EINVAL), never
             // past the array.
-            let limit = array
-                .len()
-                .min(usize::try_from(owner.fields.max_event_num).unwrap_or(usize::MAX));
-            let (array, _) = array.split_at_mut(limit);
+            let limit = usize::try_from(owner.fields.max_event_num).unwrap_or(usize::MAX);
             swoole_rs_corebase::lent::lend_out(array, |events, count| {
-                wait::epoll_wait(epfd, events, count, timeout)
+                wait::epoll_wait(epfd, events, count.at_most(limit), timeout)
             })
         }
         #[cfg(any(

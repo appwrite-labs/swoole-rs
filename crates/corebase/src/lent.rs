@@ -185,12 +185,12 @@ pub struct HeadedOut<'id, H>(*mut H, Brand<'id>);
 #[repr(transparent)]
 pub struct HeadedIn<'id, H>(*const H, Brand<'id>);
 
-impl Count<'_> {
+impl<N: Narrow + Ord> Count<'_, N> {
     /// At most `limit` of the same lending's items.
     #[inline]
     #[must_use]
     pub fn at_most(self, limit: usize) -> Self {
-        Self(self.0.min(limit), PhantomData)
+        Self(self.0.min(N::narrow(limit)), PhantomData)
     }
 }
 
@@ -773,3 +773,7 @@ impl<'a> Drain<'a> {
         count(self.lend(|buf, n| sendto(fd, buf, n, flags, &address.addr, length)))
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/modules/corebase/lent.rs"]
+mod tests;
