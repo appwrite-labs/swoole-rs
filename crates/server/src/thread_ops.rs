@@ -322,7 +322,7 @@ fn pipe_read(ctx: &ReactorContext<'_>, event: &Event) -> Option<c_int> {
     let bus = thread.message_bus();
     let sock = event.socket()?;
     loop {
-        if bus.read_dgram(sock) <= 0 {
+        if bus.read_dgram(sock) <= Some(0) {
             return Some(0);
         }
         let head = bus.head();

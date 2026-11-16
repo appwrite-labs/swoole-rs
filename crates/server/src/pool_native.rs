@@ -81,10 +81,9 @@ fn with_bus<R>(pool: Pool<'_>, f: impl FnOnce(crate::objects::Bus<'_>) -> R) -> 
     PoolBus::with_pool(pool, |bus| f(crate::objects::Bus::over(bus)))
 }
 
-/// `MessageBus::read(sock)`; -1 without a socket or a bus.
-fn bus_read(pool: Pool<'_>, sock: Option<Socket<'_>>) -> isize {
-    sock.and_then(|sock| with_bus(pool, |bus| bus.read(sock)))
-        .unwrap_or(-1)
+/// `MessageBus::read(sock)`; `None` (upstream's -1) without a socket or a bus too.
+fn bus_read(pool: Pool<'_>, sock: Option<Socket<'_>>) -> Option<usize> {
+    sock.and_then(|sock| with_bus(pool, |bus| bus.read(sock)).flatten())
 }
 
 /// `onMessage` with the bus's packet, then `message_bus->pop()`.
@@ -227,7 +226,7 @@ extern "C" fn recv_packet(_: Running<'_>, event: &mut Event) -> c_int {
 /// `ProcessPool::recv_message`: the event loop's pipe handler under the message protocol.
 extern "C" fn recv_message(_: Running<'_>, event: &mut Event) -> c_int {
     if let Some(pool) = LOOP_POOL.get()
-        && bus_read(pool, event.socket()) > 0
+        && bus_read(pool, event.socket()) > Some(0)
     {
         bus_deliver(pool);
     }
@@ -597,7 +596,8 @@ impl PoolNative for Native {
     fn bus_read(&self, c: &mut PoolCall) {
         io(c, |c| {
             c.worker()
-                .map_or(-1, |worker| bus_read(c.pool(), worker_pipe(worker, false)))
+                .and_then(|worker| bus_read(c.pool(), worker_pipe(worker, false)))
+                .map_or(-1, usize::cast_signed)
         });
     }
 

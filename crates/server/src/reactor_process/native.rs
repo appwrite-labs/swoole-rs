@@ -77,7 +77,10 @@ extern "C" fn on_pipe_read(reactor: Running<'_>, event: &mut Event) -> c_int {
     let reactor = Reactor::running(reactor);
     super::with_server(reactor, |serv| {
         let bus = serv.state().message_bus();
-        if event.socket().is_some_and(|socket| bus.read(socket) > 0) && dispatch(serv, reactor, bus)
+        if event
+            .socket()
+            .is_some_and(|socket| bus.read(socket) > Some(0))
+            && dispatch(serv, reactor, bus)
         {
             bus.pop();
         }

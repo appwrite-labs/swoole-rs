@@ -28,7 +28,8 @@ use std::hash::{BuildHasherDefault, Hasher};
 use std::mem::MaybeUninit;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use swoole_rs_corebase::{DataHead as BusHead, TrustedAllocator, log, sys};
+use swoole_rs_corebase::sys::{self, errno};
+use swoole_rs_corebase::{DataHead as BusHead, TrustedAllocator, log};
 use swoole_rs_reactor::{Caught, Socket, SocketRecord};
 
 pub use Bus as MessageBus;
@@ -89,7 +90,7 @@ const _: () = assert!(size_of::<Front>() == BUFFER_MIN, "a header and a PacketPt
 /// One read's progress across the allocations it asks for.
 struct BusRead {
     /// Buffered reads: the datagram's length, kept across an allocation.
-    received: isize,
+    received: usize,
     /// `Event::Allocate`: the bytes to allocate.
     size: usize,
     /// `Event::Allocate`: the block to reallocate, or null to allocate a new one.
@@ -253,10 +254,6 @@ fn aligned(size: usize) -> usize {
     size.wrapping_add(ALIGNMENT - 1) & !(ALIGNMENT - 1)
 }
 
-fn errno() -> c_int {
-    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-}
-
 /// `Socket::catch_read_error(errno) == SW_WAIT`.
 fn waits(nobufs: &mut bool) -> bool {
     swoole_rs_reactor::catch_error(errno(), nobufs) == Caught::Wait
@@ -323,16 +320,23 @@ impl Bus {
 
     /// `fill` over the first `length` bytes of the set buffer (at most all of it);
     /// empty while no buffer is set. `fill` reads into them and leaves the bus alone.
-    fn fill(&self, length: usize, fill: impl FnOnce(&mut [MaybeUninit<u8>]) -> isize) -> isize {
+    /// The bytes it read, or `None` when it failed (returned less than 0).
+    fn fill(
+        &self,
+        length: usize,
+        fill: impl FnOnce(&mut [MaybeUninit<u8>]) -> isize,
+    ) -> Option<usize> {
         let buffer = self.buffer.get();
-        if buffer.is_null() {
-            return fill(&mut []);
-        }
-        let length = length.min(self.buffer_size.get());
-        // SAFETY: `alloc_buffer` made a set buffer of `buffer_size` writable bytes,
-        // live until `free_buffer`; `fill` doesn't touch the bus, so nothing else
-        // reaches them meanwhile.
-        fill(unsafe { std::slice::from_raw_parts_mut(buffer.cast(), length) })
+        let n = if buffer.is_null() {
+            fill(&mut [])
+        } else {
+            let length = length.min(self.buffer_size.get());
+            // SAFETY: `alloc_buffer` made a set buffer of `buffer_size` writable bytes,
+            // live until `free_buffer`; `fill` doesn't touch the bus, so nothing else
+            // reaches them meanwhile.
+            fill(unsafe { std::slice::from_raw_parts_mut(buffer.cast(), length) })
+        };
+        usize::try_from(n).ok()
     }
 
     #[must_use]
@@ -449,12 +453,19 @@ impl Bus {
     }
 
     /// `MessageBus::read` (stream pipes, `dgram == false`) and
-    /// `MessageBus::read_with_buffer` (datagram pipes): >0 a whole packet, 0 wait
-    /// (or allocate, see `state.event`), -1 an error or no buffer set.
-    fn read(&self, fd: c_int, dgram: bool, state: &mut BusRead, nobufs: &mut bool) -> isize {
+    /// `MessageBus::read_with_buffer` (datagram pipes): a whole packet's length,
+    /// `Some(0)` to wait (or allocate, see `state.event`), `None` (upstream's -1) on
+    /// an error or with no buffer set.
+    fn read(
+        &self,
+        fd: c_int,
+        dgram: bool,
+        state: &mut BusRead,
+        nobufs: &mut bool,
+    ) -> Option<usize> {
         state.event = None;
         if self.buffer.get().is_null() {
-            return -1;
+            return None;
         }
         loop {
             if state.resume {
@@ -465,12 +476,12 @@ impl Bus {
                 } else {
                     self.fill(HEAD, |slots| sys::recv(fd, slots, libc::MSG_PEEK))
                 };
-                if n < 0 {
-                    return if waits(nobufs) { 0 } else { -1 };
-                }
+                let Some(n) = n else {
+                    return waits(nobufs).then_some(0);
+                };
                 if n == 0 {
                     state.event = Some(Event::Closed);
-                    return -1;
+                    return None;
                 }
                 let head = self.head();
                 if dgram {
@@ -479,7 +490,7 @@ impl Bus {
                 }
                 if head.flags & CHUNK == 0 {
                     if dgram {
-                        return n;
+                        return Some(n);
                     }
                     return self.fill(HEAD + head.len as usize, |slots| sys::read(fd, slots));
                 }
@@ -493,22 +504,18 @@ impl Bus {
                 let packet = packets.get_mut(&head.msg_id)?;
                 Some('chunk: {
                     Ok(if dgram {
-                        let count = state.received.cast_unsigned().saturating_sub(HEAD);
+                        let count = state.received.saturating_sub(HEAD);
                         let length = packet.length + count;
                         if length > packet.size || packet.data.is_null() {
-                            break 'chunk Err(Self::allocate(
-                                state,
-                                packet.data,
-                                Some(packet.allocator),
-                                length,
-                            ));
+                            Self::allocate(state, packet.data, Some(packet.allocator), length);
+                            break 'chunk Err(Some(0));
                         }
                         let tail = packet.data.wrapping_add(packet.length);
                         // SAFETY: the datagram's payload follows the header in the buffer, and
                         // the packet's tail has room for it (checked above); they never overlap.
                         unsafe { ptr::copy_nonoverlapping(payload, tail, count) };
                         packet.length = length;
-                        state.received
+                        Some(state.received)
                     } else {
                         let remain = (head.len as usize).wrapping_sub(packet.length);
                         let iov = [
@@ -526,15 +533,14 @@ impl Bus {
                         let n = unsafe { libc::readv(fd, iov.as_ptr(), 2) };
                         if n == 0 {
                             state.event = Some(Event::ReadvClosed);
-                            break 'chunk Err(-1);
+                            break 'chunk Err(None);
                         }
-                        if n < 0 && waits(nobufs) {
-                            break 'chunk Err(0);
+                        let n = usize::try_from(n).ok();
+                        if n.is_none() && waits(nobufs) {
+                            break 'chunk Err(Some(0));
                         }
-                        if n > 0 {
-                            packet.length = packet
-                                .length
-                                .wrapping_add(n.cast_unsigned().wrapping_sub(HEAD));
+                        if let Some(n) = n {
+                            packet.length = packet.length.wrapping_add(n.wrapping_sub(HEAD));
                         }
                         n
                     })
@@ -545,16 +551,17 @@ impl Bus {
                 Some(Ok(n)) => n,
                 Some(Err(n)) => return n,
                 None if head.flags & BEGIN != 0 => {
-                    return Self::allocate(state, ptr::null_mut(), None, head.len as usize);
+                    Self::allocate(state, ptr::null_mut(), None, head.len as usize);
+                    return Some(0);
                 }
                 None => {
                     state.event = Some(Event::Abnormal);
                     if dgram {
-                        return -1;
+                        return None;
                     }
                     // Read the chunk's header from the pipe and discard it.
-                    self.fill(HEAD, |slots| sys::recv(fd, slots, 0));
-                    return 0;
+                    _ = self.fill(HEAD, |slots| sys::recv(fd, slots, 0));
+                    return Some(0);
                 }
             };
             state.chunks = state.chunks.wrapping_add(1);
@@ -564,7 +571,7 @@ impl Bus {
                 return n;
             }
             if state.chunks >= MAX_RECV_CHUNKS {
-                return 0;
+                return Some(0);
             }
         }
     }
@@ -576,7 +583,7 @@ impl Bus {
         data: *mut u8,
         allocator: Option<TrustedAllocator>,
         size: usize,
-    ) -> isize {
+    ) {
         state.event = Some(Event::Allocate);
         state.resume = true;
         state.data = data;
@@ -584,7 +591,6 @@ impl Bus {
             state.allocator = allocator;
         }
         state.size = aligned(size);
-        0
     }
 
     /// `MessageBus::write`: one direct write, or chunks of at most the buffer's
@@ -825,8 +831,14 @@ impl Bus {
     }
 
     /// `MessageBus::read(sock)` (`read_with_buffer` when `dgram`): allocates each
-    /// packet block the read asks for, a new one from `allocator`.
-    pub fn read_from(&self, allocator: TrustedAllocator, sock: Socket<'_>, dgram: bool) -> isize {
+    /// packet block the read asks for, a new one from `allocator`. A whole packet's
+    /// length, `Some(0)` to wait, `None` (upstream's -1) on an error.
+    pub fn read_from(
+        &self,
+        allocator: TrustedAllocator,
+        sock: Socket<'_>,
+        dgram: bool,
+    ) -> Option<usize> {
         let mut state = BusRead::new(allocator);
         loop {
             // The receive only ever sets `kernel_nobufs`, so it edits the record only then:
@@ -846,7 +858,13 @@ impl Bus {
     /// Reads from the pipe `fd`; see `Bus::read`. On `Event::Allocate` the caller
     /// allocates `state.size` bytes ([`Bus::grow`]) and calls this again with the
     /// same `state`.
-    fn receive(&self, fd: c_int, dgram: bool, nobufs: &mut bool, state: &mut BusRead) -> isize {
+    fn receive(
+        &self,
+        fd: c_int,
+        dgram: bool,
+        nobufs: &mut bool,
+        state: &mut BusRead,
+    ) -> Option<usize> {
         let n = self.read(fd, dgram, state, nobufs);
         let origin = if dgram {
             c"MessageBus::read_with_buffer"
@@ -977,7 +995,7 @@ mod tests {
         let bus = Bus::new(64);
         let mut state = BusRead::new(allocator());
         let mut nobufs = false;
-        assert_eq!(bus.receive(-1, false, &mut nobufs, &mut state), -1);
+        assert_eq!(bus.receive(-1, false, &mut nobufs, &mut state), None);
         assert_eq!(state.event, None, "no event");
         bus.pass(&BusHead::default(), ptr::null());
         assert_eq!(bus.packet().length, 0);
@@ -1080,10 +1098,7 @@ mod tests {
                     self.bus.grow(&state, allocator());
                     continue;
                 }
-                if n < 0 {
-                    return None;
-                }
-                if n == 0 {
+                if n? == 0 {
                     state.chunks = 0;
                     continue;
                 }
@@ -1145,7 +1160,7 @@ mod tests {
         let mut nobufs = false;
         assert_eq!(
             pipe.bus.read(pipe.fds[1], false, &mut state, &mut nobufs),
-            0
+            Some(0)
         );
         assert_eq!((state.event, state.size), (Some(Event::Allocate), 5000));
         pipe.bus.grow(&state, allocator());
@@ -1153,7 +1168,7 @@ mod tests {
             .unwrap()
             .cast::<c_void>();
         assert_eq!(pipe.bus.memory_size(), 4096 + 5000);
-        assert!(pipe.bus.read(pipe.fds[1], false, &mut state, &mut nobufs) > 0);
+        assert!(pipe.bus.read(pipe.fds[1], false, &mut state, &mut nobufs) > Some(0));
         assert_eq!(pipe.bus.packet().length, 5000);
         let moved = pipe.bus.move_packet();
         assert_eq!(moved.cast::<c_void>(), data);
@@ -1271,7 +1286,7 @@ mod tests {
 
     /// `MessageBus::read` (`dgram == false`) or `read_with_buffer`: one read,
     /// allocating as the native facade's `receive` does.
-    fn mb_read(bus: &mut Bus, fd: RawFd, dgram: bool) -> isize {
+    fn mb_read(bus: &mut Bus, fd: RawFd, dgram: bool) -> Option<usize> {
         let mut state = BusRead::new(allocator());
         let mut nobufs = false;
         loop {
@@ -1311,8 +1326,8 @@ mod tests {
                 return sent;
             }
             let n = mb_read(&mut pipe.bus, pipe.fds[1], pipe.dgram);
-            assert!(n >= 0);
-            if n > 0 {
+            assert!(n.is_some());
+            if n > Some(0) {
                 let packet = pipe.bus.packet();
                 let data = if packet.length == 0 {
                     Vec::new()

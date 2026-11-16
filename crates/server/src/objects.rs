@@ -150,12 +150,13 @@ impl<'a> Bus<'a> {
     pub(crate) fn clear(self) {
         self.rust().clear();
     }
-    /// `MessageBus::read(sock)`.
-    pub(crate) fn read(self, sock: Socket<'_>) -> isize {
+    /// `MessageBus::read(sock)`: a whole packet's length, `Some(0)` to wait, `None`
+    /// (upstream's -1) on an error.
+    pub(crate) fn read(self, sock: Socket<'_>) -> Option<usize> {
         self.rust().read_from(self.allocator, sock, false)
     }
     /// `MessageBus::read_with_buffer(sock)`, of a datagram pipe.
-    pub(crate) fn read_dgram(self, sock: Socket<'_>) -> isize {
+    pub(crate) fn read_dgram(self, sock: Socket<'_>) -> Option<usize> {
         self.rust().read_from(self.allocator, sock, true)
     }
     /// `MessageBus::write(sock, {head, data})`, `head.len` set to the data's length:
