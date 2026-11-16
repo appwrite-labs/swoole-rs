@@ -584,10 +584,10 @@ impl Spare<'_> {
     /// The room to `call`, as an address and its count, and counts what its declared
     /// result says it wrote: that result.
     #[inline]
-    pub fn lend<N: Narrow + TryInto<usize>>(
+    pub fn lend<N: Narrow, R: Copy + TryInto<usize>>(
         &mut self,
-        call: impl for<'id> FnOnce(Out<'id>, Count<'id, N>) -> Wrote<'id, N>,
-    ) -> N {
+        call: impl for<'id> FnOnce(Out<'id>, Count<'id, N>) -> Wrote<'id, R>,
+    ) -> R {
         let at = self.at.wrapping_add(self.filled).cast();
         let Wrote(n, _) = call(
             Out(at, PhantomData),

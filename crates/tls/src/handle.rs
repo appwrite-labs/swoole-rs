@@ -57,7 +57,11 @@ unsafe extern "C" {
     safe fn PEM_write_bio_X509(bio: Bio<'_>, cert: CertRef<'_>) -> c_int;
     safe fn SSL_get_error(ssl: Ssl<'_>, result: c_int) -> c_int;
     /// Writes at most `length` bytes of `buffer`, the count its lending gives.
-    safe fn SSL_read<'id>(ssl: Ssl<'_>, buffer: Out<'id>, length: Count<'id, c_int>) -> c_int;
+    safe fn SSL_read<'id>(
+        ssl: Ssl<'_>,
+        buffer: Out<'id>,
+        length: Count<'id, c_int>,
+    ) -> Wrote<'id, c_int>;
     /// As `SSL_read`, leaving the bytes queued.
     safe fn SSL_peek<'id>(ssl: Ssl<'_>, buffer: Out<'id>, length: Count<'id, c_int>) -> c_int;
     /// Reads at most `length` bytes of `data`, the count its lending gives.
@@ -336,9 +340,16 @@ impl<'a> Ssl<'a> {
     /// # Errors
     /// Nothing was read.
     pub fn read(self, buffer: &mut [impl ReadSlot]) -> Result<usize, SslFailure> {
-        self.count(lend_out(buffer, |at, length| {
-            SSL_read(self, at.bytes(), length)
-        }))
+        lend_spare(buffer, |spare| self.read_into(spare)).0
+    }
+
+    /// `SSL_read` into `spare`'s room.
+    ///
+    /// # Errors
+    /// Nothing was read.
+    #[inline]
+    pub fn read_into(self, spare: &mut Spare<'_>) -> Result<usize, SslFailure> {
+        self.count(spare.lend(|at, length| SSL_read(self, at, length)))
     }
 
     /// `SSL_write` of `data`.

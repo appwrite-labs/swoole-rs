@@ -7,6 +7,7 @@ pub(crate) mod raw {
     use crate::{Drain, Fill};
     use crate::{Socket, SteadyMs, record_peek, record_recv, record_send};
     use std::ffi::{c_int, c_void};
+    use swoole_rs_corebase::lent::{Count, Out, Spare, Wrote};
 
     fn count(n: isize) -> Option<usize> {
         usize::try_from(n).ok()
@@ -53,8 +54,16 @@ pub(crate) mod raw {
         tls: TlsIo,
         now: SteadyMs,
     ) -> isize {
-        let buffer = unsafe { Fill::from_raw(buffer, length) };
-        record_recv(socket, buffer, flags, fills(tls), now).map_or(-1, usize::cast_signed)
+        // The stubs write what they return, as the C TLS reads do: the same call,
+        // with the tokens' layout and its result as what it wrote.
+        let tls: for<'id> unsafe extern "C" fn(*mut c_void, Out<'id>, Count<'id>) -> Wrote<'id> =
+            unsafe { std::mem::transmute(tls) };
+        let tls = |socket: Socket<'_>, spare: &mut Spare<'_>| {
+            count(spare.lend(|at, n| unsafe { tls(socket.as_ptr().cast(), at, n) }))
+        };
+        let mut buffer = unsafe { Fill::from_raw(buffer, length) };
+        let received = buffer.spare(|spare| record_recv(socket, spare, flags, tls, now));
+        received.map_or(-1, usize::cast_signed)
     }
 
     pub(crate) unsafe fn socket_record_peek(

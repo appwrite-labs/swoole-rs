@@ -5,10 +5,10 @@
 //! build) they are defined under their upstream (Itanium) symbols and
 //! `socket.cc` no longer defines them.
 use crate::{
-    Accept, Cert, CertRef, HandshakeLog, SocketTls, Ssl, SslIoResult, ssl_shutdown,
+    Accept, Cert, CertRef, HandshakeLog, SocketTls, Ssl, SslIoResult, ssl_recv_into, ssl_shutdown,
     swr_v1_socket_ssl_accept, swr_v1_socket_ssl_clear, swr_v1_socket_ssl_connect,
-    swr_v1_socket_ssl_error_reason, swr_v1_socket_ssl_peek_reason, swr_v1_socket_ssl_recv,
-    swr_v1_socket_ssl_send, swr_v1_socket_ssl_verify,
+    swr_v1_socket_ssl_error_reason, swr_v1_socket_ssl_peek_reason, swr_v1_socket_ssl_send,
+    swr_v1_socket_ssl_verify,
 };
 use openssl_sys::{X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK};
 use std::ffi::{CStr, c_char, c_int, c_long};
@@ -265,11 +265,16 @@ fn ssl_io(socket: Socket<'_>, result: Option<SslIoResult>) -> Option<usize> {
 /// error or without an SSL.
 #[must_use]
 pub fn ssl_recv_fill<S: ReadSlot>(socket: Socket<'_>, mut buffer: Fill<'_, S>) -> Option<usize> {
-    let buffer = buffer.slots();
+    buffer.spare(|spare| ssl_recv_spare(socket, spare))
+}
+
+/// [`ssl_recv_fill`] into `spare`'s room.
+#[inline]
+pub fn ssl_recv_spare(socket: Socket<'_>, spare: &mut Spare<'_>) -> Option<usize> {
     let result = with_tls(
         socket,
         |_| (),
-        |tls, ssl, ()| swr_v1_socket_ssl_recv(tls, ssl, buffer),
+        |tls, ssl, ()| ssl_recv_into(tls, ssl, spare),
     );
     ssl_io(socket, result)
 }
@@ -375,8 +380,15 @@ fn tls_peek<S: ReadSlot>(socket: Socket<'_>, mut buffer: Fill<'_, S>) -> Option<
 
 /// `ssize_t Socket::recv(void *, size_t, int)` into the bytes `buffer` lends: a slice's
 /// ([`recv`]), or the address and length C handed its holder.
-pub fn recv_fill(socket: Socket<'_>, buffer: Fill<'_>, flags: c_int) -> Option<usize> {
-    record_recv(socket, buffer, flags, ssl_recv_fill, steady_ms)
+#[must_use]
+pub fn recv_fill(socket: Socket<'_>, mut buffer: Fill<'_>, flags: c_int) -> Option<usize> {
+    buffer.spare(|spare| recv_spare(socket, spare, flags))
+}
+
+/// [`recv_fill`] into `spare`'s room.
+#[inline]
+pub fn recv_spare(socket: Socket<'_>, spare: &mut Spare<'_>, flags: c_int) -> Option<usize> {
+    record_recv(socket, spare, flags, ssl_recv_spare, steady_ms)
 }
 
 /// `ssize_t Socket::send(const void *, size_t, int)` of the bytes `data` lends, as
@@ -388,20 +400,14 @@ pub fn send_drain(socket: Socket<'_>, data: Drain<'_>, flags: c_int) -> Option<u
 
 /// [`recv_fill`] into `buffer`.
 pub fn recv(socket: Socket<'_>, buffer: &mut [impl ReadSlot], flags: c_int) -> Option<usize> {
-    record_recv(socket, Fill::new(buffer), flags, ssl_recv_fill, steady_ms)
+    lend_spare(buffer, |spare| recv_spare(socket, spare, flags)).0
 }
 
 /// One [`recv`] into `buffer`'s room past its content, which then counts what it
 /// wrote: what `recv` returned.
 #[inline]
 pub fn recv_append(socket: Socket<'_>, buffer: &mut CppString) -> Option<usize> {
-    let received = recv(socket, buffer.spare(), 0);
-    if let Some(count) = received {
-        // SAFETY: without flags (no `MSG_TRUNC`), `recv` returns how many of the
-        // room's first slots it wrote, at most the room, which ends at `size()`.
-        unsafe { buffer.set_len(buffer.len() + count) };
-    }
-    received
+    buffer.fill(|spare| recv_spare(socket, spare, 0))
 }
 
 /// [`send_drain`] of `data`.
@@ -538,9 +544,7 @@ impl<S: ReadSlot> SyncEffects for Call<'_, S> {
         let fd = socket.fd();
         match &mut self.io {
             Io::Send(data) => record_send(socket, *data, flags, ssl_send_drain, steady_ms),
-            Io::Recv(buffer) => {
-                record_recv(socket, buffer.reborrow(), flags, ssl_recv_fill, steady_ms)
-            }
+            Io::Recv(buffer) => buffer.spare(|spare| recv_spare(socket, spare, flags)),
             Io::Read(buffer) => buffer.read(fd),
             Io::Write(data) => data.write(fd),
             Io::SendTo(address, data) => data.sendto(fd, flags, address),

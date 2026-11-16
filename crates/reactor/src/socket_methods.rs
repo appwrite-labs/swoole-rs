@@ -6,6 +6,7 @@ use crate::socket_rw::interrupted;
 use crate::{Drain, Fill, Socket, SocketAddress, SocketFields};
 use std::ffi::c_int;
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::lent::Spare;
 use swoole_rs_corebase::sys::ReadSlot;
 
 /// `SW_OK`, `SW_ERR` and `SW_BACKLOG`.
@@ -125,20 +126,20 @@ fn io_of(socket: Socket<'_>) -> (c_int, bool, bool, bool) {
 /// into `total_recv_bytes` and, with a receive timer, `last_received_time`. A read that
 /// would block after `POLLHUP` reads as end of stream. `tls` runs only for a record
 /// that holds an `SSL`.
-pub fn record_recv<S: ReadSlot>(
+pub fn record_recv(
     socket: Socket<'_>,
-    mut buffer: Fill<'_, S>,
+    buffer: &mut Spare<'_>,
     flags: c_int,
-    tls: impl Fn(Socket<'_>, Fill<'_, S>) -> Option<usize>,
+    tls: impl Fn(Socket<'_>, &mut Spare<'_>) -> Option<usize>,
     now: SteadyMs,
 ) -> Option<usize> {
     let (fd, nonblock, dont_restart, secure) = io_of(socket);
     let total = loop {
         let total = if secure {
-            let mut rest = buffer.reborrow();
             let (mut sum, mut total) = (0, Some(0));
-            while !rest.is_empty() {
-                let read = tls(socket, rest.reborrow());
+            // Each read fills the room after the one before.
+            while buffer.room() != 0 {
+                let read = tls(socket, buffer);
                 let Some(read @ 1..) = read else {
                     if sum == 0 {
                         total = read;
@@ -148,7 +149,7 @@ pub fn record_recv<S: ReadSlot>(
                 sum += read;
                 total = Some(sum);
                 // A full buffer ends the loop, as does a blocking read without `MSG_WAITALL`.
-                if !(nonblock || flags & libc::MSG_WAITALL != 0) || !rest.advance(read) {
+                if !(nonblock || flags & libc::MSG_WAITALL != 0) || buffer.room() == 0 {
                     break;
                 }
             }
