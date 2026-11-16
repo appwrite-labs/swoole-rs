@@ -69,8 +69,9 @@ unsafe extern "C" {
     safe fn SSL_get_wbio<'a>(ssl: Ssl<'a>) -> Option<Bio<'a>>;
     safe fn SSL_get_ex_data(ssl: Ssl<'_>, index: c_int) -> *mut c_void;
     /// OpenSSL keeps `data` as opaque ex data: the indices this side makes register
-    /// no callbacks that would read it.
-    pub(crate) safe fn SSL_set_ex_data(ssl: Ssl<'_>, index: c_int, data: *mut c_void) -> c_int;
+    /// no callbacks that would read it. Only [`Ssl::set_ex_data`] calls it, which
+    /// refuses the connection's index.
+    safe fn SSL_set_ex_data(ssl: Ssl<'_>, index: c_int, data: *mut c_void) -> c_int;
     /// The host name the client sent, null without one: the SSL's own copy.
     safe fn SSL_get_servername<'a>(ssl: Ssl<'a>, kind: c_int) -> Option<Text<'a>>;
     /// Null before the handshake, else an entry of OpenSSL's static cipher table.
@@ -110,6 +111,33 @@ unsafe extern "C" {
         large: c_long,
         integer: c_int,
     ) -> c_long;
+}
+
+/// The SSL `ex_data` index of its socket record, `swr_v1_tls_connection_index`: only
+/// [`ConnectionIndex::get`] makes one. Ex data at it is null or the record that owns
+/// the SSL: only [`OwnedSsl::set_connection`] stores there, before the record takes
+/// the SSL ([`Ssl::set_ex_data`] refuses the index), and a record frees its SSL
+/// before itself.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct ConnectionIndex(c_int);
+
+impl ConnectionIndex {
+    fn get() -> Self {
+        Self(crate::swr_v1_tls_connection_index())
+    }
+}
+
+// libssl's ex data calls at the connection's index, typed as what it holds.
+#[expect(
+    clashing_extern_declarations,
+    reason = "the ex data calls, typed for the connection's index"
+)]
+unsafe extern "C" {
+    #[link_name = "SSL_get_ex_data"]
+    safe fn connection<'a>(ssl: Ssl<'a>, index: ConnectionIndex) -> Option<Socket<'a>>;
+    #[link_name = "SSL_set_ex_data"]
+    safe fn set_connection(ssl: Fresh<'_>, index: ConnectionIndex, socket: Socket<'_>) -> c_int;
 }
 
 /// A `BIO_METHOD` table. It is zero-sized, so a reference to it claims none of the
@@ -418,6 +446,12 @@ impl<'a> Ssl<'a> {
         SSL_get_ex_data(self, index)
     }
 
+    /// The socket record that owns the SSL, None while none has taken it.
+    #[must_use]
+    pub fn socket(self) -> Option<Socket<'a>> {
+        connection(self, ConnectionIndex::get())
+    }
+
     /// `SSL_set_ex_data` at `index`: false when OpenSSL fails. Also false, setting
     /// nothing, at the connection's index: the info callback reads that entry as the
     /// SSL's socket record, so only [`crate::socket_ssl_new`] sets it.
@@ -640,6 +674,12 @@ impl OwnedSsl {
     /// through borrows of `self`, which `&mut` excludes.
     pub(crate) fn set_fd(&mut self, fd: c_int) -> bool {
         SSL_set_fd(Fresh(self.0, PhantomData), fd) != 0
+    }
+
+    /// Records `socket`, which takes the SSL next, as its connection's ex data, which
+    /// [`Ssl::socket`] reads: false when OpenSSL fails.
+    pub(crate) fn set_connection(&mut self, socket: Socket<'_>) -> bool {
+        set_connection(Fresh(self.0, PhantomData), ConnectionIndex::get(), socket) != 0
     }
 
     /// The SSL, whose reference the caller hands on.

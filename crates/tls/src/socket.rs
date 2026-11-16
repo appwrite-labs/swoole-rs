@@ -407,21 +407,20 @@ pub fn socket_ssl_new(
         } else if flags & SERVER != 0 {
             made.get().set_accept_state();
         }
-        // The record that will own the SSL, and so outlives it: the one ex data the
-        // info callback reads at the connection's index, which only this sets.
-        let (index, this) = (crate::swr_v1_tls_connection_index(), socket.as_ptr().cast());
-        if crate::handle::SSL_set_ex_data(made.get(), index, this) == 0 {
-            Err(SslNewError::ExData)
-        } else {
+        // The record that takes the SSL below, and so outlives it.
+        if made.set_connection(socket) {
             Ok(())
+        } else {
+            Err(SslNewError::ExData)
         }
     } else {
         Err(SslNewError::SetFd(peek_error()))
     };
     let made = made.into_raw();
     socket.edit(|record| {
-        // SAFETY: the new SSL, which nothing else holds: the record owns it from now
-        // on and frees it only in `ssl_close`.
+        // SAFETY: the new SSL, which nothing else holds and whose connection ex data
+        // is null or this record: the record owns it from now on and frees it only in
+        // `ssl_close`.
         unsafe { record.set_ssl(made.cast()) };
         if made_up.is_ok() {
             record.tls.state = SslState::SW_SSL_STATE_HANDSHAKE;
