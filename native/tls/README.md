@@ -3,7 +3,8 @@
 Feature bit 262144 (`tls`). `crates/tls` defines `swoole_ssl_init`/`destroy`/`get_error`
 under their upstream symbols, and `dtls::Session` is a Rust
 record. No C or C++ reads `SSLContext`; [swoole_ssl.h](swoole_ssl.h) keeps the OpenSSL
-switches and TLS constants C++ still reads.
+switches C++ still reads. The TLS constants stay in Rust (`crates/tls/src/constants.rs`);
+the `tls-constants` gate compares them with the pinned `swoole_ssl.h`.
 Tests: `crates/tls` unit tests, upstream's `protocol/ssl.cpp` TESTs ported to Rust
 (`ssl.*` in `hooks-system-rust`, tests/modules/hooks/README.md) and the ssl/dtls PHPT families. Requires OpenSSL 3 (rejected at compile
 time otherwise).

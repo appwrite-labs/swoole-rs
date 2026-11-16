@@ -13,9 +13,13 @@ native-TU gates.
 
 ## Registered gates
 
-- `constants.py --source PINNED --output R` (`corebase-constants`): compares 326
-  core/error identifiers and defaults against the clean pin, including C++ types,
-  sizes, signedness and string bytes in Apple and non-Apple configuration branches.
+- `constants.py --source PINNED --output R` (`corebase-constants`): compares 327
+  core/error identifiers and defaults against the clean pin in Apple and non-Apple
+  configuration branches. Those the C headers export compare by C++ type, size,
+  signedness and string bytes; the enums no header exports (and `SW_PIPE_READ`/`WRITE`)
+  compare by the values `cargo run -p swoole-rs-corebase --example constants`
+  (`corebase_enums.rs`) prints. `tls-constants` (`--include-tls`) adds the pinned
+  `swoole_ssl.h` and the TLS crate's example (`tls_enums.rs`).
 
 - `mkdir_startup.py --engine native=... --engine cargo=... --build-manifest M --output R`
   (`corebase-startup`): PHP startup through `sys_temp_dir` (create, repeated
