@@ -29,6 +29,7 @@ it. PCRE's JIT is off, its SIMD scans read past the subject.
 import argparse
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -38,6 +39,27 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / 'target/asan'
 # vptr checks need the C++ UBSan runtime, which a C program like PHP doesn't link.
 SANITIZE = '-fsanitize=address,undefined -fno-sanitize=vptr -fno-omit-frame-pointer'
+
+
+def compilers(shims):
+    """One runtime and locale-correct, instrumented case comparisons at every link."""
+    shims.mkdir(parents=True, exist_ok=True)
+    case = shims / 'case.o'
+    subprocess.run(['clang', *SANITIZE.split(), '-fPIC', '-fno-builtin', '-c',
+                    ROOT / 'tools/asan_case.c', '-o', case], check=True)
+    for name, compiler in [('cc', 'clang'), ('c++', 'clang++')]:
+        command = f'{compiler} {SANITIZE} "$@" -fno-sanitize=vptr'
+        # Compiler probes and compile/preprocess-only invocations must not link.
+        (shims / name).write_text(f'''#!/bin/sh
+case "$*" in --version|-v|-V|-dump*|-print*) exec {command};; esac
+for arg; do
+    case "$arg" in -c|-E|-S) exec {command};; esac
+done
+exec {command} {shlex.quote(str(case))}
+''')
+        (shims / name).chmod(0o755)
+    return {**os.environ, 'CC': str(shims / 'cc'), 'CXX': str(shims / 'c++'),
+            'PATH': f"{shims}{os.pathsep}{os.environ['PATH']}"}
 
 
 def main():
@@ -51,18 +73,13 @@ def main():
     # One link recipe for every executable the run builds, whatever compiler name it calls.
     # A gate's own flags follow, so its -fno-sanitize= choices hold (the WebSocket codec's
     # pinned C++ reads unaligned); vptr stays off whatever it asks.
-    shims = OUT / 'bin'
-    shims.mkdir(parents=True, exist_ok=True)
-    for name, compiler in [('cc', 'clang'), ('c++', 'clang++')]:
-        (shims / name).write_text(f'#!/bin/sh\nexec {compiler} {SANITIZE} "$@" -fno-sanitize=vptr\n')
-        (shims / name).chmod(0o755)
-    compilers = {**os.environ, 'CC': 'clang', 'CXX': 'clang++', 'PATH': f"{shims}{os.pathsep}{os.environ['PATH']}"}
+    compiler_env = compilers(OUT / 'bin')
     subprocess.run([ROOT / '.devcontainer/php.sh', php, '--enable-address-sanitizer', '--enable-undefined-sanitizer',
                     '--without-pcre-jit', '--with-pdo-sqlite', '--with-ffi'],
-                   env=compilers, check=True)
+                   env=compiler_env, check=True)
     host = next(line.split()[1] for line in subprocess.check_output(['rustc', '-vV'], text=True).splitlines()
                 if line.startswith('host:'))
-    build = {**compilers, 'CFLAGS': SANITIZE, 'CXXFLAGS': SANITIZE, 'LDFLAGS': SANITIZE, 'RUSTC_BOOTSTRAP': '1',
+    build = {**compiler_env, 'CFLAGS': SANITIZE, 'CXXFLAGS': SANITIZE, 'LDFLAGS': SANITIZE, 'RUSTC_BOOTSTRAP': '1',
              'RUSTFLAGS': '-Zsanitizer=address -Zexternal-clangrt=yes -Cforce-frame-pointers=yes -Cllvm-args=-asan-globals=0',
              # As `cargo --target`: build scripts and proc macros, which rustc loads, stay uninstrumented.
              'CARGO_BUILD_TARGET': host}
@@ -71,7 +88,7 @@ def main():
     reports.mkdir(parents=True)
     options = f'log_path={reports}/report:print_stacktrace=1'
     leaks = f':leak_check_at_exit=0:suppressions={ROOT}/tools/lsan.supp:print_suppressions=0'
-    run = {**build, 'CC': str(shims / 'cc'), 'CXX': str(shims / 'c++'),
+    run = {**build,
            'PATH': f"{php / 'bin'}{os.pathsep}{build['PATH']}", 'USE_ZEND_ALLOC': '0',
            'USE_TRACKED_ALLOC': '1', 'ASAN_OPTIONS': options, 'LSAN_OPTIONS': options + leaks,
            'UBSAN_OPTIONS': options}

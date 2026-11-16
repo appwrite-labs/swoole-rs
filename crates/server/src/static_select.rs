@@ -7,27 +7,27 @@ use swoole_rs_http::{HttpStaticHeaders, HttpStaticTask, StaticHead, StaticRange}
 
 /// What [`select`] asks of a static handler, in upstream `select_static_handler`'s order.
 pub trait Handler {
-    fn try_serve(&self) -> bool;
+    fn try_serve(&mut self) -> bool;
     fn status(&self) -> i32;
     fn date(&self) -> Vec<u8>;
     fn date_last_modified(&self) -> Vec<u8>;
     fn is_modified(&self, date: &[u8]) -> bool;
-    fn try_serve_index_file(&self) -> bool;
+    fn try_serve_index_file(&mut self) -> bool;
     fn lists_directory(&self) -> bool;
-    fn index_page(&self) -> Vec<u8>;
+    fn index_page(&mut self) -> Vec<u8>;
     /// `parse_range(range.c_str(), if_range.c_str())`: both always present.
-    fn parse_range(&self, range: &[u8], if_range: &[u8]);
+    fn parse_range(&mut self, range: &[u8], if_range: &[u8]);
     fn tasks(&self) -> Vec<HttpStaticTask>;
     fn content_length(&self) -> usize;
     fn mimetype(&self) -> Vec<u8>;
-    fn content_type(&self) -> Vec<u8>;
+    fn content_type(&mut self) -> Vec<u8>;
     fn filesize(&self) -> usize;
     fn filename(&self) -> Vec<u8>;
     fn end_part(&self) -> Vec<u8>;
 }
 
 impl<E: Effects> Handler for StaticHandler<'_, E> {
-    fn try_serve(&self) -> bool {
+    fn try_serve(&mut self) -> bool {
         Self::try_serve(self)
     }
     fn status(&self) -> i32 {
@@ -42,16 +42,16 @@ impl<E: Effects> Handler for StaticHandler<'_, E> {
     fn is_modified(&self, date: &[u8]) -> bool {
         Self::is_modified(self, date)
     }
-    fn try_serve_index_file(&self) -> bool {
+    fn try_serve_index_file(&mut self) -> bool {
         Self::try_serve_index_file(self)
     }
     fn lists_directory(&self) -> bool {
         Self::lists_directory(self)
     }
-    fn index_page(&self) -> Vec<u8> {
+    fn index_page(&mut self) -> Vec<u8> {
         Self::index_page(self)
     }
-    fn parse_range(&self, range: &[u8], if_range: &[u8]) {
+    fn parse_range(&mut self, range: &[u8], if_range: &[u8]) {
         Self::parse_range(self, Some(range), Some(if_range));
     }
     fn tasks(&self) -> Vec<HttpStaticTask> {
@@ -63,7 +63,7 @@ impl<E: Effects> Handler for StaticHandler<'_, E> {
     fn mimetype(&self) -> Vec<u8> {
         Self::mimetype(self)
     }
-    fn content_type(&self) -> Vec<u8> {
+    fn content_type(&mut self) -> Vec<u8> {
         Self::content_type(self)
     }
     fn filesize(&self) -> usize {
@@ -117,7 +117,7 @@ fn signed(length: usize) -> i64 {
 
 /// `Server::select_static_handler`: answer an HTTP/1 request from the
 /// document root; false when the static handler does not serve it.
-pub fn select(handler: &impl Handler, exchange: &impl Exchange) -> bool {
+pub fn select(handler: &mut impl Handler, exchange: &impl Exchange) -> bool {
     if !handler.try_serve() {
         return false;
     }
@@ -312,10 +312,10 @@ pub unsafe fn static_select(
         socket,
     };
     let url = wire.request().url_bytes().to_vec();
-    let Some(handler) = StaticHandler::new(wire.server, &url) else {
+    let Some(mut handler) = StaticHandler::new(wire.server, &url) else {
         return false;
     };
-    select(&handler, &wire)
+    select(&mut handler, &wire)
 }
 
 /// The cases of the retired `tests/modules/http/static_gate.py`: [`select`] over
@@ -420,8 +420,8 @@ mod tests {
         }
     }
 
-    impl Handler for Script<'_> {
-        fn try_serve(&self) -> bool {
+    impl Handler for &Script<'_> {
+        fn try_serve(&mut self) -> bool {
             self.note("serve");
             self.case.serve
         }
@@ -440,18 +440,18 @@ mod tests {
             self.note("is-modified");
             self.case.modified
         }
-        fn try_serve_index_file(&self) -> bool {
+        fn try_serve_index_file(&mut self) -> bool {
             self.note("index");
             self.case.index_ok
         }
         fn lists_directory(&self) -> bool {
             !self.case.index && self.case.autoindex && self.case.directory
         }
-        fn index_page(&self) -> Vec<u8> {
+        fn index_page(&mut self) -> Vec<u8> {
             self.note("index-page");
             self.case.body.clone()
         }
-        fn parse_range(&self, _: &[u8], _: &[u8]) {
+        fn parse_range(&mut self, _: &[u8], _: &[u8]) {
             self.note("range");
         }
         fn tasks(&self) -> Vec<HttpStaticTask> {
@@ -464,7 +464,7 @@ mod tests {
             self.note("mime");
             self.case.mime.clone()
         }
-        fn content_type(&self) -> Vec<u8> {
+        fn content_type(&mut self) -> Vec<u8> {
             self.note("content-type");
             self.case.content_type.clone()
         }
@@ -553,7 +553,7 @@ mod tests {
         };
         set_errno(libc::EINTR);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            i32::from(select(&script, &script))
+            i32::from(select(&mut &script, &script))
         }))
         .unwrap_or(2);
         let error = errno();
