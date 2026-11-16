@@ -20,7 +20,7 @@ name codec, the DNS address text and the socket DNS lookup
 `socket_ops.rs` runs the production client's socket-control table in the Rust
 unit-test binary: descriptor flags, successful and failed address assignment,
 both kernel timeouts, raw/synchronous/nonblocking TCP connects, `SO_ERROR`, and
-an event with no socket. A real OpenSSL session on a loopback connection also
+an event with no reactor. A real OpenSSL session on a loopback connection also
 checks that a pending handshake requests input and reuses its original session
 and frozen hostname after the mutable context changes. It releases the native
 session through production client close before its owner frees the client. The

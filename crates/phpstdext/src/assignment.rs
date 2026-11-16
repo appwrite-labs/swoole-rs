@@ -1,6 +1,6 @@
 //! Complete typed-array assignment opcode operations over Zend's actual frame.
 use crate::{
-    CONTINUE, DISPATCH, Frame, Op,
+    Frame, Next, Op,
     typed::{self, KeyType, Typed},
 };
 use std::{borrow::Cow, ffi::c_int};
@@ -59,9 +59,6 @@ unsafe extern "C" {
     /// `source` holds; what `target` held is left alone, never released.
     #[link_name = "swr_zval_copy"]
     safe fn copy_into(target: &Value, source: &Value);
-    /// Zend's "Cannot add element" error, thrown inside `zend_try`: nonzero
-    /// for a bailout.
-    safe fn swr_zend_try_stdext_cannot_add() -> c_int;
 }
 
 fn leaf(code: impl Into<c_int>) -> Result<(), Bailout> {
@@ -153,9 +150,11 @@ fn assign(op: Op, data: Data, own: Typed, container: &Value, key: &Value) -> Res
         // successful insertion.
         let slot = unsafe { next_index_insert(ht, value.as_ptr()) };
         if slot.is_none() {
-            // Zend's exact occupied-next-index error, below a native trap.
-            leaf(swr_zend_try_stdext_cannot_add())?;
-
+            // Zend's exact occupied-next-index error; this handler's frame is
+            // executing, so Zend only sets the exception.
+            swoole_rs_zend::throw_error(
+                c"Cannot add element to the array as the next element is already occupied",
+            );
             // This assignment failed before publishing its result.
             return data.abandon(op);
         }
@@ -231,43 +230,43 @@ fn assign_op(op: Op, data: Data, own: Typed, container: &Value) -> Result<(), Ba
 
 /// `ASSIGN_DIM` (or, for `operation`, `ASSIGN_DIM_OP`) at `frame`'s instruction; an
 /// instruction of any other opcode is left to Zend.
-fn dispatch(frame: Frame, operation: bool) -> Result<c_int, Bailout> {
+fn dispatch(frame: Frame, operation: bool) -> Result<Next, Bailout> {
     let opcode = if operation {
         z::ZEND_ASSIGN_DIM_OP
     } else {
         z::ZEND_ASSIGN_DIM
     };
     if u32::from(frame.instruction().opcode) != opcode {
-        return Ok(DISPATCH);
+        return Ok(Next::Dispatch);
     }
     let op = Op::current(frame);
     let Some(array) = op.op1_container() else {
-        return Ok(DISPATCH);
+        return Ok(Next::Dispatch);
     };
     let Some(typed) = Typed::of(array) else {
-        return Ok(DISPATCH);
+        return Ok(Next::Dispatch);
     };
     // An append's key is null (`&EG(uninitialized_zval)`).
     let null = Owned::null();
     let key = op.op2().unwrap_or(&null);
     // An assignment, which its `OP_DATA` instruction follows.
     let Some(data) = frame.next_instruction() else {
-        return Ok(DISPATCH);
+        return Ok(Next::Dispatch);
     };
     let data = Op::at(frame, data);
     // `get_op_data_zval_ptr_r`: None for an unused operand. Only `data` frees it.
     let Some(value) = operand(data)? else {
-        return Ok(DISPATCH);
+        return Ok(Next::Dispatch);
     };
     let data = Data { op: data, value };
     if !typed::check(typed, KeyType::of(key), data.value()) {
         // Rejection frees OP_DATA and intentionally does not advance the opline.
         data.free()?;
-        return Ok(CONTINUE);
+        return Ok(Next::Continue);
     }
     // `array` holds `typed`, read from it above: its own, unshared.
     let Some(own) = typed::separate(array) else {
-        return data.free().map(|()| CONTINUE);
+        return data.free().map(|()| Next::Continue);
     };
     if operation {
         assign_op(op, data, own, array)?;
@@ -277,7 +276,7 @@ fn dispatch(frame: Frame, operation: bool) -> Result<c_int, Bailout> {
 
     // Reload the current frame opline after reentry, as EX(opline) += 2 did.
     frame.skip(2);
-    Ok(CONTINUE)
+    Ok(Next::Continue)
 }
 
 /// `ASSIGN_DIM`'s complete typed-array opcode handler.
@@ -287,24 +286,24 @@ pub(crate) struct AssignOp;
 
 impl Handler for Assign {
     const OPCODE: u32 = swoole_rs_zend::sys::ZEND_ASSIGN_DIM;
-    fn run(frame: Frame<'_>) -> c_int {
+    fn run(frame: Frame<'_>) -> Next {
         finish(dispatch(frame, false))
     }
 }
 
 impl Handler for AssignOp {
     const OPCODE: u32 = swoole_rs_zend::sys::ZEND_ASSIGN_DIM_OP;
-    fn run(frame: Frame<'_>) -> c_int {
+    fn run(frame: Frame<'_>) -> Next {
         finish(dispatch(frame, true))
     }
 }
 
-fn finish(result: Result<c_int, Bailout>) -> c_int {
+fn finish(result: Result<Next, Bailout>) -> Next {
     let code = match result {
         Ok(code) => code,
         Err(error) => {
             error.defer();
-            CONTINUE
+            Next::Continue
         }
     };
     bailout::finish();

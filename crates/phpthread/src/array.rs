@@ -4,46 +4,12 @@ use crate::{
     item::Item,
     table::{Key, Table},
 };
-use std::{
-    cell::Cell,
-    ffi::c_int,
-    sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard},
-};
+use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use swoole_rs_corebase::CCast;
 use swoole_rs_zend::{
     Array as ZArray, Call, Key as ZKey, Owned, OwnedArray, Value as ZValue, ZString, bailout,
     sys::zend_ulong,
 };
-
-/// A table entry, as [`Array::sort`] hands them to Zend.
-type Entry = (Key, Item);
-
-// Zend's `zend_sort`, with its element and callback types as `sort` passes them: the
-// callbacks receive pointers to elements of the array, which they read as references.
-#[expect(
-    improper_ctypes,
-    reason = "Zend only passes the elements' addresses on to the callbacks, as `void *`"
-)]
-unsafe extern "C" {
-    #[link_name = "zend_sort"]
-    fn sort_entries(
-        base: *const Cell<Entry>,
-        nmemb: usize,
-        size: usize,
-        cmp: extern "C" fn(&Entry, &Entry) -> c_int,
-        swp: extern "C" fn(&Cell<Entry>, &Cell<Entry>),
-    );
-}
-
-/// `zend_sort`'s comparison: `ArrayItem::compare` of the two entries' items.
-extern "C" fn compare(a: &Entry, b: &Entry) -> c_int {
-    a.1.compare(&b.1) as c_int
-}
-
-/// `zend_sort`'s swap of two entries (the same one is left as it is).
-extern "C" fn swap(a: &Cell<Entry>, b: &Cell<Entry>) {
-    a.swap(b);
-}
 
 #[derive(Debug, Default)]
 pub(crate) struct Array {
@@ -287,24 +253,10 @@ impl Array {
         }
     }
 
-    /// `sort`: `zend_hash_sort` with `ArrayItem::compare` (Zend's own hybrid
-    /// insertion sort, so ties land where upstream's do).
+    /// `sort`: `zend_hash_sort` with `ArrayItem::compare`.
     pub(crate) fn sort(&self, renumber: bool) {
-        self.write().sort(renumber, |entries| {
-            let entries = Cell::from_mut(entries).as_slice_of_cells();
-            // SAFETY: the live elements of `entries`, each `size_of::<Entry>()` bytes;
-            // Zend passes the callbacks pointers to them alone, and swaps only through
-            // the cells.
-            unsafe {
-                sort_entries(
-                    entries.as_ptr(),
-                    entries.len(),
-                    size_of::<Entry>(),
-                    compare,
-                    swap,
-                );
-            }
-        });
+        self.write()
+            .sort(renumber, |a, b| a.compare(b) == std::cmp::Ordering::Greater);
     }
 }
 

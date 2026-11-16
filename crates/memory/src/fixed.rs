@@ -48,49 +48,62 @@ struct Slices {
     count: usize,
 }
 
+/// A slice header of one pool, rebuilt from its arena: only [`Slices::at`] makes one.
+#[derive(Clone, Copy)]
+struct Node(*mut Slice);
+
+impl Node {
+    fn as_ptr(self) -> *mut Slice {
+        self.0
+    }
+
+    fn get(self) -> Slice {
+        // SAFETY: a slice header of the pool (`at`), read unaligned; access to headers is
+        // serialized (see `Fixed`).
+        unsafe { self.0.read_unaligned() }
+    }
+
+    /// Writes one header field (`T` at `offset`).
+    fn set<T>(self, offset: usize, value: T) {
+        debug_assert!(
+            offset + mem::size_of::<T>() <= mem::size_of::<Slice>(),
+            "a field of the slice header"
+        );
+        // SAFETY: a field inside a slice header of the pool (`at`; callers pass a
+        // field's offset and type), written unaligned; access to headers is
+        // serialized (see `Fixed`).
+        unsafe { field::<_, T>(self.0, offset).write_unaligned(value) };
+    }
+
+    fn set_lock(self, lock: bool) {
+        self.set(offset_of!(Slice, lock), lock);
+    }
+}
+
 impl Slices {
     /// The slice at `node`'s address, rebuilt from the arena, if it is one.
-    fn at(&self, node: *mut Slice) -> Option<*mut Slice> {
+    fn at(&self, node: *mut Slice) -> Option<Node> {
         let offset = node.addr().checked_sub(self.memory.addr())?;
         #[expect(
             clippy::cast_ptr_alignment,
             reason = "slice headers are only accessed unaligned (see the slice invariant)"
         )]
         (offset % self.stride == 0 && offset / self.stride < self.count)
-            .then(|| self.memory.wrapping_add(offset).cast::<Slice>())
+            .then(|| Node(self.memory.wrapping_add(offset).cast::<Slice>()))
     }
 
-    fn get(&self, node: *mut Slice) -> Option<Slice> {
-        let node = self.at(node)?;
-        // SAFETY: a slice header of the pool (`at`), read unaligned; access to headers is
-        // serialized (see `Fixed`).
-        Some(unsafe { node.read_unaligned() })
-    }
-
-    /// Writes one header field (`T` at `offset`) of the slice at `node`, if it is one.
-    fn set<T>(&self, node: *mut Slice, offset: usize, value: T) {
-        debug_assert!(
-            offset + mem::size_of::<T>() <= mem::size_of::<Slice>(),
-            "a field of the slice header"
-        );
+    /// Sets the `next` link of the slice at `node`, if it is one.
+    fn set_next(&self, node: *mut Slice, next: *mut Slice) {
         if let Some(node) = self.at(node) {
-            // SAFETY: a field inside a slice header of the pool (`at`; callers pass a
-            // field's offset and type), written unaligned; access to headers is
-            // serialized (see `Fixed`).
-            unsafe { field::<_, T>(node, offset).write_unaligned(value) };
+            node.set(offset_of!(Slice, next), next);
         }
     }
 
-    fn set_next(&self, node: *mut Slice, next: *mut Slice) {
-        self.set(node, offset_of!(Slice, next), next);
-    }
-
+    /// Sets the `prev` link of the slice at `node`, if it is one.
     fn set_prev(&self, node: *mut Slice, prev: *mut Slice) {
-        self.set(node, offset_of!(Slice, prev), prev);
-    }
-
-    fn set_lock(&self, node: *mut Slice, lock: bool) {
-        self.set(node, offset_of!(Slice, lock), lock);
+        if let Some(node) = self.at(node) {
+            node.set(offset_of!(Slice, prev), prev);
+        }
     }
 }
 
@@ -221,20 +234,23 @@ pub(crate) fn alloc(pool: &Fixed) -> *mut c_void {
     let Some(node) = nodes.at(pool.head.get()) else {
         return ptr::null_mut();
     };
-    let Some(value) = nodes.get(node).filter(|value| !value.lock) else {
+    let value = node.get();
+    if value.lock {
         return ptr::null_mut();
-    };
+    }
+    let slice = node.as_ptr();
     // At least two nodes always remain in the combined idle/busy list.
     let tail = pool.tail.get();
     pool.slice_use.set(pool.slice_use.get() + 1);
     pool.head.set(value.next);
     nodes.set_prev(value.next, ptr::null_mut());
-    nodes.set_next(tail, node);
-    nodes.set_lock(node, true);
-    nodes.set_next(node, ptr::null_mut());
-    nodes.set_prev(node, tail);
-    pool.tail.set(node);
-    node.cast::<u8>()
+    nodes.set_next(tail, slice);
+    node.set_lock(true);
+    nodes.set_next(slice, ptr::null_mut());
+    nodes.set_prev(slice, tail);
+    pool.tail.set(slice);
+    slice
+        .cast::<u8>()
         .wrapping_add(mem::size_of::<Slice>())
         .cast()
 }
@@ -254,15 +270,14 @@ pub(crate) fn free(pool: &Fixed, data: *mut c_void) -> bool {
     let Some(node) = nodes.at(slice) else {
         return false;
     };
-    let Some(value) = nodes.get(node) else {
-        return false;
-    };
+    let value = node.get();
     if !value.lock || pool.slice_use.get() == 0 {
         return false;
     }
-    nodes.set_lock(node, false);
+    node.set_lock(false);
     pool.slice_use.set(pool.slice_use.get() - 1);
     let head = pool.head.get();
+    let node = node.as_ptr();
     if node != head {
         if node == pool.tail.get() {
             nodes.set_next(value.prev, ptr::null_mut());

@@ -27,7 +27,7 @@ mod typed;
 
 use swoole_rs_zend::{
     Value,
-    opcode::{CONTINUE, DISPATCH, Frame},
+    opcode::{Frame, Next},
     sys::{IS_CONST, IS_CV, IS_UNUSED, IS_VAR, zend_op, znode_op},
 };
 

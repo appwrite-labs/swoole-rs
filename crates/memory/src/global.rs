@@ -4,7 +4,6 @@
 use crate::members::Shm;
 use std::ffi::c_void;
 use std::ptr;
-use swoole_rs_corebase::CCast;
 
 /// Page invariant: every entry of `pages` is a live mapping whose payload is 8-aligned
 /// and `page_size` bytes, which this registry made and unmaps on drop, and
@@ -26,10 +25,10 @@ pub(crate) fn page_size(requested: u32, system: u32) -> Option<u32> {
     requested.checked_add(system - 1).map(|n| n & !(system - 1))
 }
 
-/// A block's payload, 8-aligned, and with its 8-byte header.
-fn block(requested: u32) -> Option<(usize, usize)> {
+/// A block's bytes: its 8-byte header and its payload, 8-aligned.
+fn block(requested: u32) -> Option<usize> {
     let size = (requested as usize).checked_add(7)? & !7;
-    Some((size, size.checked_add(8)?))
+    size.checked_add(8)
 }
 
 impl Global {
@@ -64,13 +63,13 @@ impl Global {
 
     /// Whether a block of `requested` bytes fits in a page.
     pub(crate) fn fits(&self, requested: u32) -> bool {
-        block(requested).is_some_and(|(_, total)| total <= self.page_size as usize)
+        block(requested).is_some_and(|total| total <= self.page_size as usize)
     }
 
     /// A zeroed block of `requested` bytes, which `fits`, from the last page or a new
     /// one; null if a new page can't be had.
     pub(crate) fn alloc(&mut self, requested: u32) -> *mut c_void {
-        let Some((size, total)) = block(requested) else {
+        let Some(total) = block(requested) else {
             return ptr::null_mut();
         };
         if (self.pages.is_empty() || self.offset + total > self.page_size as usize)
@@ -82,19 +81,13 @@ impl Global {
             return ptr::null_mut();
         };
         // `offset + total <= page_size` (`fits`, and checked above), so the 8-byte header
-        // and `size` payload bytes lie in the last page (see `Global`); `offset` stays
+        // and the payload lie in the last page (see `Global`); `offset` stays
         // 8-aligned. The payload is zero already: the mapping's own, never handed out.
-        let block = page.as_ptr().cast::<u8>().wrapping_add(self.offset);
-        #[expect(
-            clippy::cast_ptr_alignment,
-            reason = "an 8-aligned native block header storing a sub-page uint32_t size"
-        )]
-        // SAFETY: as above.
-        unsafe {
-            block.cast::<u32>().write(size.c_cast::<u32>());
-        };
+        // The header stays unwritten room: upstream's `MemoryBlock::size`, which nothing
+        // reads (`free` is a no-op), so blocks and capacity stay upstream's.
+        let block = page.as_ptr().cast::<u8>().wrapping_add(self.offset + 8);
         self.offset += total;
-        block.wrapping_add(8).cast()
+        block.cast()
     }
 
     /// `GlobalMemory::capacity()`.

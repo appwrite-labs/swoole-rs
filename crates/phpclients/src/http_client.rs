@@ -25,11 +25,11 @@ use swoole_rs_phpstubs::http_client_coro;
 use swoole_rs_reactor::Events;
 use swoole_rs_websocket::Opcode;
 use swoole_rs_zend::{
-    Array, ArrayMut, Call, Class, Custom, CustomClass, Minit, ObjectRef, Owned, OwnedArray, Props,
-    Value, ZStr, ZString,
+    Array, ArrayMut, Call, Class, Custom, CustomClass, Minit, Owned, OwnedArray, Props, Value,
+    Weak, ZStr, ZString,
     bailout::{self, Bailout},
     host::callable::Callable,
-    sys::{ZEND_ACC_PUBLIC, zend_object},
+    sys::ZEND_ACC_PUBLIC,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -123,7 +123,8 @@ impl Custom for Data {
 /// What the socket's close hook changes, shared with the hook apart from the
 /// client so the hook never writes through a live `&mut Client`.
 struct Conn {
-    object: *mut zend_object,
+    /// The client object, which a conn must not keep alive.
+    object: Weak<Data>,
     socket: Cell<Option<Co>>,
     zsocket: Cell<Owned>,
     /// The write buffer the closed socket left (`tmp_write_buffer`).
@@ -187,6 +188,8 @@ struct Client {
 struct Hooks<'a> {
     parser: &'a mut Parser,
     client: &'a Client,
+    /// The client object's properties, found once for the response.
+    props: Props<'a>,
 }
 
 /// One parse call's callbacks: the response's hooks and the header name they
@@ -290,6 +293,20 @@ mod props {
     }
 }
 
+/// The property `name`, which the client class declares.
+fn property<'a>(props: Props<'a>, name: &CStr) -> &'a Value {
+    let slot = props.slot(name);
+    slot.unwrap_or_else(|| swoole_rs_corebase::fatal("an undeclared client property"))
+}
+
+/// `sw_zend_read_property_not_null_ex`: the declared property `name` unless it
+/// is null (or undefined), read from its slot as [`property`] reads the others.
+fn not_null<'a>(props: Props<'a>, name: &CStr) -> Option<&'a Value> {
+    props
+        .slot(name)
+        .filter(|value| !matches!(value.kind(), z::IS_NULL | z::IS_UNDEF))
+}
+
 /// `php_swoole_socket_set_error_properties(zobject, code, message)`.
 fn set_error_properties(props: Props, code: c_int, message: &CStr) {
     swoole_rs_corebase::log::set_last_error(code);
@@ -319,8 +336,13 @@ fn socket_closed(conn: &Conn, socket: Co) {
     drop(conn.written.replace(socket.take_write_buffer()));
     conn.socket.set(None);
     drop(conn.input.take());
-    conn.props().bool(c"connected", false);
-    conn.props().null(c"socket");
+    // Nothing to say once the object is gone, or while it is freed.
+    if let Some(this) = conn.this()
+        && let Some(props) = this.props(Some(&CLIENT))
+    {
+        props.bool(c"connected", false);
+        props.null(c"socket");
+    }
     // Emptied before the socket object's reference goes.
     let zsocket = conn.zsocket.take();
     drop(zsocket);
@@ -346,36 +368,28 @@ pub fn parse_set_cookies(bytes: &[u8], cookies: &mut ArrayMut, set_cookie_header
 }
 
 impl Conn {
-    /// Writes on the client object, which owns the client and so this conn.
-    fn props(&self) -> Props<'_> {
-        // SAFETY: the object outlives its client's conn; the class declares every name written.
-        let object = unsafe { ObjectRef::from_ptr(self.object) };
-        // Never null: `Client::new` takes a constructor's `$this`.
-        let object =
-            object.unwrap_or_else(|| swoole_rs_corebase::fatal("a client without its object"));
-        Props::of(Some(&*CLIENT), object)
+    /// The client object, while it lives and this is its client's conn.
+    fn this(&self) -> Option<Owned> {
+        let this = self.object.get()?;
+        let conn = &this.custom::<Data>()?.client.get()?.conn;
+        std::ptr::eq(Rc::as_ptr(conn), self).then_some(this)
     }
 }
 
 impl Client {
-    /// Writes on the client object, which owns this client.
+    /// Writes on the client object, whose data holds this client.
     fn props(&self) -> Props<'_> {
-        self.conn.props()
+        // Never none: `Client::new` takes a constructor's `$this`, and the client
+        // is in its data.
+        let object = self.conn.object.owner(self);
+        let object =
+            object.unwrap_or_else(|| swoole_rs_corebase::fatal("a client without its object"));
+        Props::of(Some(&*CLIENT), object)
     }
 
     /// The property `name`, which the client class declares.
     fn property(&self, name: &CStr) -> &Value {
-        let slot = self.props().slot(name);
-        slot.unwrap_or_else(|| swoole_rs_corebase::fatal("an undeclared client property"))
-    }
-
-    /// `sw_zend_read_property_not_null_ex`: the declared property `name`
-    /// unless it is null (or undefined), read from its slot as
-    /// [`Client::property`] reads the others.
-    fn not_null(&self, name: &CStr) -> Option<&Value> {
-        self.props()
-            .slot(name)
-            .filter(|value| !matches!(value.kind(), z::IS_NULL | z::IS_UNDEF))
+        property(self.props(), name)
     }
 
     /// `callable($client, $data)` inside `zend_try`: whether the call succeeded, or
@@ -395,7 +409,7 @@ impl Client {
         self.property(name).long()
     }
 
-    fn new(object: *mut zend_object, host: &[u8], port: i64, ssl: bool) -> Self {
+    fn new(object: Weak<Data>, host: &[u8], port: i64, ssl: bool) -> Self {
         let use_default_port = port == 0;
         let port = if use_default_port {
             if ssl { 443 } else { 80 }
@@ -645,15 +659,16 @@ impl Client {
             set_error_properties(self.props(), INVALID_PARAMS, &strerror(INVALID_PARAMS));
             return false;
         }
-        self.props().null(c"headers");
-        self.props().null(c"set_cookie_headers");
-        self.props().bytes(c"body", b"");
+        let props = self.props();
+        props.null(c"headers");
+        props.null(c"set_cookie_headers");
+        props.bytes(c"body", b"");
         if !self.keep_liveness() {
             return false;
         }
-        self.props().long(c"errCode", 0);
-        self.props().bytes(c"errMsg", b"");
-        self.props().long(c"statusCode", 0);
+        props.long(c"errCode", 0);
+        props.bytes(c"errMsg", b"");
+        props.long(c"statusCode", 0);
         let Some(socket) = self.co() else {
             return false;
         };
@@ -661,23 +676,24 @@ impl Client {
         swoole_rs_corebase::log::set_last_error(0);
         self.with_body(Vec::clear);
 
-        let method = self.not_null(c"requestMethod");
-        let headers = self.property(c"requestHeaders").array();
+        let method = not_null(props, c"requestMethod");
+        let headers = property(props, c"requestHeaders").array();
         // The body and files with references of their own: a multipart send yields
         // between its writes, and `setData()` or `addFile()` may replace or add to
         // them meanwhile (an add separates the shared array).
-        let body = self.not_null(c"requestBody").map(Value::copy);
-        let files = self.property(c"uploadFiles").copy();
+        let body = not_null(props, c"requestBody").map(Value::copy);
+        let files = property(props, c"uploadFiles").copy();
         let body = body.as_deref();
-        let cookies = self.property(c"cookies").array();
-        let download = self.not_null(c"downloadFile");
+        let cookies = property(props, c"cookies").array();
+        let download = not_null(props, c"downloadFile");
 
         let host_header = headers
             .and_then(|headers| headers.find(b"Host").or_else(|| headers.find(b"host")))
             .map(Value::string);
         if let Some(download) = download {
             self.download_name.set(Some(download.string()));
-            self.download_offset.set(self.get_long(c"downloadOffset"));
+            self.download_offset
+                .set(property(props, c"downloadOffset").long());
         }
 
         let mut out = Vec::with_capacity(256);
@@ -998,6 +1014,7 @@ impl Client {
         let mut hooks = Hooks {
             parser,
             client: self,
+            props: self.props(),
         };
         let timeout = if timeout == 0.0 {
             self.response_timeout.get()
@@ -1341,12 +1358,6 @@ impl Client {
             }
         }
     }
-
-    fn add_header(&self, key: &[u8], data: &[u8]) {
-        self.props().edit_array(c"headers", |headers| {
-            headers.merge(key, Owned::from(ZString::new(data)));
-        });
-    }
 }
 
 /// A response's decoder, made on its first compressed chunk.
@@ -1360,7 +1371,15 @@ impl Drop for Client {
     /// Runs to the end even when a destructor the callable's release runs
     /// bails out; that bailout stays pending for the `free` handler to raise.
     fn drop(&mut self) {
-        self.close(true);
+        // `close(true)` without its property writes: Zend frees the object, which
+        // no longer finds it (`Weak::owner`), and nothing reads them again.
+        if let Some(socket) = self.co() {
+            if self.in_callback.get() {
+                socket.with_net(|net| net.edit(|record| record.output.close_wait = true));
+            } else {
+                socket.close();
+            }
+        }
         drop(self.write_func.take());
         if let Some(fd) = self.download_file.take() {
             native::swoole_http_client_coro_file_close(fd);
@@ -1454,7 +1473,9 @@ fn on_header_value(hooks: &Hooks, name: &[u8], data: &[u8]) -> Flow {
     } else {
         name
     };
-    client.add_header(name, data);
+    hooks.props.edit_array(c"headers", |headers| {
+        headers.merge(name, Owned::from(ZString::new(data)));
+    });
     let status = hooks.parser.status_code;
     if status == SWITCHING_PROTOCOLS && name == b"upgrade" {
         if request::token_list_contains(data, b"websocket") {
@@ -1469,7 +1490,7 @@ fn on_header_value(hooks: &Hooks, name: &[u8], data: &[u8]) -> Flow {
             client.accept_websocket_compression.set(true);
         }
     } else if name == b"set-cookie" {
-        let props = client.props();
+        let props = hooks.props;
         props.edit_array(c"cookies", |cookies| {
             props.edit_array(c"set_cookie_headers", |headers| {
                 parse_set_cookies(data, cookies, headers);
@@ -1582,12 +1603,11 @@ fn on_message_complete(hooks: &mut Hooks) -> Flow {
         hooks.parser.upgrade = false;
         return Flow::Pause;
     }
-    client
-        .props()
-        .long(c"statusCode", i64::from(hooks.parser.status_code));
+    let props = hooks.props;
+    props.long(c"statusCode", i64::from(hooks.parser.status_code));
     if client.download_file.get().is_none() {
         // Out of the client while the write can run PHP code.
-        client.with_body(|body| client.props().bytes(c"body", body));
+        client.with_body(|body| props.bytes(c"body", body));
     } else {
         drop(client.download_name.take());
     }
@@ -1700,8 +1720,8 @@ fn construct(call: &Call) {
     let Ok((host, port, ssl)) = parsed else {
         return call.set_bool(false);
     };
-    let object = call.this();
-    let Some(data) = call.custom::<Data>() else {
+    let object = call.this_value().and_then(Weak::of);
+    let (Some(data), Some(object)) = (call.custom::<Data>(), object) else {
         return call.set_bool(false);
     };
     if data.client.get().is_some() {
