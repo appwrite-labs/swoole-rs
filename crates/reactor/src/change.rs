@@ -383,28 +383,30 @@ pub(crate) fn interest_change(
     event: Events,
 ) -> Option<(ChangeOp, Events)> {
     use Interest::{AddEvent, AddRead, AddWrite, DelEvent, RemoveRead, RemoveWrite};
-    let events = record.read(|record| record.events);
     let (other, own) = if matches!(kind, AddRead | RemoveRead) {
         (Events::WRITE, Events::READ)
     } else {
         (Events::READ, Events::WRITE)
     };
-    let (op, events) = match kind {
-        AddEvent if !events.intersects(event) => (ChangeOp::Set, events | event),
-        DelEvent if events.intersects(event) => (ChangeOp::Set, events.without(event)),
-        AddEvent | DelEvent => return None,
-        AddRead | AddWrite if events.intersects(other) => (ChangeOp::Set, events | own),
-        AddRead | AddWrite => (ChangeOp::Add, own),
-        RemoveRead | RemoveWrite if events.intersects(other) => {
-            (ChangeOp::Set, events.without(own))
+    record.edit(|record| {
+        let events = record.events;
+        let (op, events) = match kind {
+            AddEvent if !events.intersects(event) => (ChangeOp::Set, events | event),
+            DelEvent if events.intersects(event) => (ChangeOp::Set, events.without(event)),
+            AddEvent | DelEvent => return None,
+            AddRead | AddWrite if events.intersects(other) => (ChangeOp::Set, events | own),
+            AddRead | AddWrite => (ChangeOp::Add, own),
+            RemoveRead | RemoveWrite if events.intersects(other) => {
+                (ChangeOp::Set, events.without(own))
+            }
+            RemoveRead | RemoveWrite => (ChangeOp::Del, Events::NONE),
+        };
+        if op == ChangeOp::Set && !matches!(kind, AddEvent | DelEvent) {
+            // Upstream writes the socket's events before the set, so they stay when it fails.
+            record.events = events;
         }
-        RemoveRead | RemoveWrite => (ChangeOp::Del, Events::NONE),
-    };
-    if op == ChangeOp::Set && !matches!(kind, AddEvent | DelEvent) {
-        // Upstream writes the socket's events before the set, so they stay when it fails.
-        record.edit(|record| record.events = events);
-    }
-    Some((op, events))
+        Some((op, events))
+    })
 }
 
 #[cfg(test)]

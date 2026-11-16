@@ -286,7 +286,7 @@ fn ready(ops: &Loop<'_>, socket: Socket<'static>, fd: c_int, mask: u32) {
             handler_failed(ops, Table::Error);
         }
     }
-    oneshot(ops, socket, live);
+    oneshot(ops, socket);
 }
 
 /// kqueue: one socket entry per filter, or a signal, as upstream's `ReactorKqueue::wait`.
@@ -324,7 +324,7 @@ fn kqueue(ops: &Loop<'_>, event: &libc::kevent) {
         if !handle(ops, kind, fd_type) {
             handler_failed(ops, kind);
         }
-        oneshot(ops, socket, live);
+        oneshot(ops, socket);
     } else if filter == c_int::from(libc::EVFILT_SIGNAL) {
         // A signal entry's ident is its signal number, whose table slot is its udata.
         dispatch_signal(c_int::try_from(event.ident).unwrap_or(0));
@@ -495,12 +495,8 @@ fn registered(socket: Socket<'_>) -> bool {
     socket.read(|record| !record.removed)
 }
 
-fn oneshot(ops: &Loop<'_>, socket: Socket<'_>, live: impl Fn() -> bool) {
-    if live()
-        && socket
-            .read(|record| record.events)
-            .intersects(crate::Events::ONCE)
-    {
+fn oneshot(ops: &Loop<'_>, socket: Socket<'_>) {
+    if socket.read(|record| !record.removed && record.events.intersects(crate::Events::ONCE)) {
         if ops.backend == BackendKind::Epoll {
             // epoll's oneshot entry is already disarmed, so only the registry forgets it.
             ops.reactor.with(|state| {
