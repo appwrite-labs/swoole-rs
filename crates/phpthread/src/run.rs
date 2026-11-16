@@ -5,7 +5,7 @@
 //! request macros are zend-sys shims.
 use crate::{Arguments, request, thread};
 use std::{
-    cell::{Cell, RefCell},
+    cell::Cell,
     ffi::{CStr, CString, c_int, c_void},
     marker::PhantomData,
     ptr::{self, NonNull},
@@ -96,8 +96,9 @@ static THREADS: AtomicUsize = AtomicUsize::new(1);
 
 thread_local! {
     /// The thread's arguments (`Thread::getArguments()`), if any, released by
-    /// its RSHUTDOWN.
-    static ARGV: RefCell<Option<Owned>> = const { RefCell::new(None) };
+    /// its RSHUTDOWN. Taken out and put back, never borrowed; a value it lets go
+    /// of, which may run a destructor, drops once the cell holds its successor.
+    static ARGV: Cell<Option<Owned>> = const { Cell::new(None) };
     /// The jump buffer of the thread's `zend_first_try` while its script runs.
     static BAILOUT: Cell<*mut c_void> = const { Cell::new(ptr::null_mut()) };
 }
@@ -414,11 +415,13 @@ pub extern "C" fn thread_rshutdown() {
 
 /// `Thread::getArguments()`: the thread's arguments, if it has any.
 pub(crate) fn arguments(call: &Call) {
-    ARGV.with_borrow(|argv| {
-        if let Some(argv) = argv {
-            call.set_owned(argv.copy());
-        }
-    });
+    // `ZVAL_COPY` only adds a reference; the copy is returned once the arguments are back.
+    let argv = ARGV.take();
+    let copy = argv.as_deref().map(Value::copy);
+    ARGV.set(argv);
+    if let Some(copy) = copy {
+        call.set_owned(copy);
+    }
 }
 
 /// `Thread::getInfo()`.

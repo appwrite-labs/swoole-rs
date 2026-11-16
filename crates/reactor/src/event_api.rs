@@ -404,8 +404,9 @@ pub fn swoole_event_cycle(before: bool, task: Option<Box<dyn CycleTask>>) {
 thread_local! {
     /// The slots [`swoole_event_cycle`] put in this thread's reactors and that are
     /// still there. Native code may set a cycle task of its own, so a slot's data is
-    /// an `Rc<Slot>` only when it is listed here.
-    static GIVEN: std::cell::RefCell<Vec<*const Slot>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// an `Rc<Slot>` only when it is listed here. Taken out and put back around a
+    /// search and edit that calls nothing else, never across a reactor call or a task.
+    static GIVEN: Cell<Vec<*const Slot>> = const { Cell::new(Vec::new()) };
 }
 
 /// Put `data` (or nothing) in a cycle slot, and hand back the task it held if
@@ -419,10 +420,13 @@ fn replace_slot(task: &mut crate::ReactorTask, data: Option<*mut Slot>) -> Optio
         },
     );
     let old = replaced.data.cast::<Slot>().cast_const();
-    let ours = GIVEN.with_borrow_mut(|given| {
+    let ours = GIVEN.with(|cell| {
+        let mut given = cell.take();
         given.extend(data.map(<*mut Slot>::cast_const));
-        let at = given.iter().position(|&slot| slot == old)?;
-        Some(given.swap_remove(at))
+        let at = given.iter().position(|&slot| slot == old);
+        let ours = at.map(|at| given.swap_remove(at));
+        cell.set(given);
+        ours
     })?;
     // SAFETY: a listed slot is the `Rc<Slot>` `swoole_event_cycle` gave up, which
     // the reactor no longer names and the list no longer holds.

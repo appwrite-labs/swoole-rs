@@ -198,7 +198,23 @@ struct Buffers {
 thread_local! {
     /// Buffers no header block is using. A block being built can outlive a
     /// coroutine switch (`__toString`), so each takes its own.
-    static POOL: std::cell::RefCell<Vec<Buffers>> = const { std::cell::RefCell::new(Vec::new()) };
+    static POOL: std::cell::Cell<Vec<Buffers>> = const { std::cell::Cell::new(Vec::new()) };
+}
+
+/// `f` on the pool, taken out and put back: `f` only pops or pushes, and what it
+/// pops it returns.
+fn with_pool<R>(f: impl FnOnce(&mut Vec<Buffers>) -> R) -> R {
+    POOL.with(|cell| {
+        let mut pool = cell.take();
+        let result = f(&mut pool);
+        // `f` can't reach the cell, which still holds the empty vector `take` left.
+        #[expect(
+            clippy::mem_forget,
+            reason = "an empty vector owns no allocation: dropping it frees nothing"
+        )]
+        std::mem::forget(cell.replace(pool));
+        result
+    })
 }
 
 /// Upstream's `HeaderSet`: at most `size` headers, names lowercased, in one
@@ -210,7 +226,7 @@ struct Headers {
 
 impl Headers {
     fn new(size: usize) -> Self {
-        let buffers = POOL.with_borrow_mut(Vec::pop).unwrap_or_default();
+        let buffers = with_pool(Vec::pop).unwrap_or_default();
         Self { size, buffers }
     }
 
@@ -279,7 +295,7 @@ impl Drop for Headers {
         buffers.bytes.clear();
         buffers.slots.clear();
         buffers.frame.clear();
-        POOL.with_borrow_mut(|pool| pool.push(buffers));
+        with_pool(|pool| pool.push(buffers));
     }
 }
 
