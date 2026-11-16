@@ -36,13 +36,13 @@ const CORO_TIME: u32 = 8;
 // Declarations, since each of those crates depends on this one.
 unsafe extern "C-unwind" {
     /// `f(co)` when the timer fires: its data is a coroutine's handle, which the
-    /// timer hands back as it got it.
+    /// timer hands back as it got it. The timer's id, or 0.
     fn swr_v1_timer_add_plain_sec(
         timeout: f64,
         persistent: bool,
         f: extern "C" fn(Co),
         co: Co,
-    ) -> *mut c_void;
+    ) -> c_long;
     /// `f(data)` when the timer fires: `f` is a safe function, sound for any
     /// `data`. The node, or null; nothing here reads it.
     safe fn swr_v1_timer_add_plain(
@@ -53,8 +53,10 @@ unsafe extern "C-unwind" {
     ) -> *mut c_void;
     #[link_name = "_Z25swoole_timer_is_availablev"]
     safe fn swoole_timer_is_available() -> bool;
-    #[link_name = "_Z16swoole_timer_delPN6swoole9TimerNodeE"]
-    fn swoole_timer_del(node: *mut c_void) -> bool;
+    /// Removes the timer `timer_id` names, if it is pending: a timer never reuses an
+    /// id, so any id is sound.
+    #[link_name = "_Z18swoole_timer_clearl"]
+    safe fn swoole_timer_clear(timer_id: c_long) -> bool;
     safe fn swr_v1_async_threads_ensure() -> *mut c_void;
     #[link_name = "_Z17swoole_event_initi"]
     safe fn swoole_event_init(flags: c_int) -> c_int;
@@ -238,7 +240,7 @@ pub fn yield_timed(co: *mut c_void, timeout: f64) -> Resume {
         // and hands `timed_out` the live handle it is given here.
         unsafe { swr_v1_timer_add_plain_sec(timeout, false, timed_out, running) }
     } else {
-        ptr::null_mut()
+        0
     };
     // The canceled coroutine is `running`, which waits below while its canceler is set.
     let resume_canceled = move |_| {
@@ -248,9 +250,8 @@ pub fn yield_timed(co: *mut c_void, timeout: f64) -> Resume {
     yield_with_cancel(co, resume_canceled);
     // `co` runs again.
     let code = running.with(|co| co.resume_code);
-    if code != Resume::TimedOut && !timer.is_null() {
-        // SAFETY: the pending timer added above.
-        unsafe { swoole_timer_del(timer) };
+    if code != Resume::TimedOut && timer != 0 {
+        swoole_timer_clear(timer);
     }
     code
 }

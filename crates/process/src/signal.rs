@@ -317,6 +317,14 @@ pub fn signal_lookup(signo: c_int) -> Lookup {
     }
 }
 
+/// The kqueue path's registration of `signo`: its handler while it is activated, else
+/// none (and none out of range).
+#[must_use]
+pub fn signal_activated(signo: c_int) -> Option<Handler> {
+    let slot = slot(signo).filter(|slot| slot.activated.load(Relaxed))?;
+    Some(Handler(slot.handler.load(Relaxed)))
+}
+
 /// `bool swoole_signal_isset(int)`: a handler is registered and active.
 #[must_use]
 pub fn swoole_signal_isset(signo: c_int) -> bool {
