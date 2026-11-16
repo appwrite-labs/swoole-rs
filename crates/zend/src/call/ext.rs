@@ -33,6 +33,20 @@ impl Call {
             Ok(())
         }
     }
+
+    /// `handler(INTERNAL_FUNCTION_PARAM_PASSTHRU)` under `zend_try`: an internal
+    /// function's handler runs over this call's frame and return slot, as
+    /// upstream hands a call on to the handler it replaced.
+    /// # Errors
+    /// The handler bailed out.
+    pub fn forward(&self, handler: crate::sys::zif_handler) -> Result<(), Bailout> {
+        // SAFETY: a zif handler takes a live frame and its return slot, which
+        // this call holds for as long as it runs; the shim traps a bailout.
+        let bailed =
+            unsafe { crate::sys::swr_zend_runtime_call_handler(handler, self.frame, self.value) };
+        if bailed != 0 { Err(Bailout) } else { Ok(()) }
+    }
+
     /// `Z_PARAM_STR_OR_NULL`: as `str`, but a passed null is `None`.
     /// # Errors
     /// The argument is not a string or null under the caller's typing mode;

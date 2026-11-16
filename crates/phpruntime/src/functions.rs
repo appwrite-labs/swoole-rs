@@ -22,9 +22,9 @@ use swoole_rs_zend::{
     Call, E_WARNING, Owned, ZStr, ZString, bailout,
     host::{Callee, callable::Callable},
     sys::{
-        PHP_VERSION_ID, ZEND_ACC_FAKE_CLOSURE, swr_zend_runtime_call_handler,
-        swr_zend_runtime_disabled, swr_zend_runtime_unsupported, zend_class_entry,
-        zend_execute_data, zend_internal_arg_info, zend_internal_function, zif_handler, zval,
+        PHP_VERSION_ID, ZEND_ACC_FAKE_CLOSURE, swr_zend_runtime_disabled,
+        swr_zend_runtime_unsupported, zend_class_entry, zend_execute_data, zend_internal_arg_info,
+        zend_internal_function, zif_handler, zval,
     },
 };
 
@@ -409,7 +409,6 @@ pub(crate) fn original_handler(name: &[u8]) -> zif_handler {
 /// `swoole_user_func_handler`: outside a coroutine the original handler,
 /// inside one the library's `swoole_<name>` with the same arguments.
 pub(crate) fn user_func(call: &Call) -> Result<(), Bailout> {
-    let (frame, value) = (call.frame(), call.return_value());
     let name = call.function().name().map_or(&[][..], ZStr::bytes);
     if !in_coroutine() {
         let original = table()
@@ -419,12 +418,7 @@ pub(crate) fn user_func(call: &Call) -> Result<(), Bailout> {
         if original.is_none() {
             return Ok(());
         }
-        // SAFETY: the function's own frame and return slot, handed on as Zend
-        // passed them; the shim traps a bailout.
-        if unsafe { swr_zend_runtime_call_handler(original, frame, value) } != 0 {
-            return Err(Bailout);
-        }
-        return Ok(());
+        return call.forward(original);
     }
     let fcc = table()
         .hooked
