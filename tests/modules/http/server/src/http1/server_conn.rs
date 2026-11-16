@@ -330,7 +330,7 @@ fn packet_client(port: impl FnOnce() -> u16 + Send + 'static) {
 /// `TEST(server, sendwait)`.
 fn sendwait() {
     let serv = new_server(MODE_BASE);
-    serv.config().worker_num = 1;
+    serv.config().worker_num.set(1);
     set_log_warning();
 
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
@@ -356,7 +356,7 @@ fn system() {
     use std::os::fd::IntoRawFd;
 
     let serv = new_server(MODE_BASE);
-    serv.config().worker_num = 1;
+    serv.config().worker_num.set(1);
     set_log_warning();
 
     new_lock();
@@ -424,7 +424,7 @@ fn udp_on_packet(_: view::Server<'_>, req: &RecvData) -> c_int {
 /// upstream's went unseen.
 fn udp_packet() {
     let server = new_server(MODE_PROCESS);
-    server.config().worker_num = 2;
+    server.config().worker_num.set(2);
     server.add_port(SW_SOCK_UDP, TEST_HOST, 0);
 
     server.create();
@@ -487,7 +487,7 @@ fn pipe_message_worker_start(serv: view::Server<'_>, _: Worker<'_>) {
 /// `TEST(server, pipe_message)`.
 fn pipe_message() {
     let server = new_server(MODE_PROCESS);
-    server.config().worker_num = 2;
+    server.config().worker_num.set(2);
     server.add_port(SW_SOCK_TCP, TEST_HOST, 0);
 
     server.create();
@@ -522,7 +522,7 @@ fn forward_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
 /// `TEST(server, forward_message)`.
 fn forward_message() {
     let serv = new_server(MODE_BASE);
-    serv.config().worker_num = 2;
+    serv.config().worker_num.set(2);
 
     set_log_warning();
 
@@ -570,7 +570,7 @@ fn reopen_log_worker_start(serv: view::Server<'_>, _: Worker<'_>) {
 /// `TEST(server, reopen_log)`.
 fn reopen_log() {
     let serv = new_server(MODE_PROCESS);
-    serv.config().worker_num = 2;
+    serv.config().worker_num.set(2);
     set_log_warning();
     set_log_file(TEST_LOG_FILE);
 
@@ -606,7 +606,7 @@ fn count_worker_start(_: view::Server<'_>, _: Worker<'_>) {
 /// `TEST(server, reopen_log2)`.
 fn reopen_log2() {
     let serv = new_server(MODE_PROCESS);
-    serv.config().worker_num = 2;
+    serv.config().worker_num.set(2);
     set_log_level(SW_LOG_DEBUG);
     set_log_file(TEST_LOG_FILE);
 
@@ -647,7 +647,7 @@ fn overflow_worker_start(_: view::Server<'_>, _: Worker<'_>) {
 fn overflow_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let serv = Server(serv.raw());
     let (sid, _) = request(req);
-    serv.get_connection_by_session_id(sid).overflow = 1;
+    serv.get_connection_by_session_id(sid).set_overflow(true);
 
     check(
         !serv.send(sid, TEST_STR.as_bytes()),
@@ -675,8 +675,8 @@ fn overflow_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
 /// `test_conn_overflow(mode, send_yield)`.
 fn test_conn_overflow(mode: c_int, send_yield: bool) {
     let serv = new_server(mode);
-    serv.config().worker_num = 1;
-    serv.config().send_yield = send_yield;
+    serv.config().worker_num.set(1);
+    serv.config().send_yield.set(send_yield);
     SEND_YIELD.store(send_yield, Ordering::SeqCst);
     set_log_warning();
 
@@ -756,8 +756,8 @@ fn slow_receive(_: view::Server<'_>, _: &RecvData) -> c_int {
 /// `TEST(server, no_idle_worker)`.
 fn no_idle_worker() {
     let serv = new_server(MODE_PROCESS);
-    serv.config().worker_num = 4;
-    serv.config().dispatch_mode = DISPATCH_IDLE_WORKER;
+    serv.config().worker_num.set(4);
+    serv.config().dispatch_mode.set(DISPATCH_IDLE_WORKER);
 
     set_log_file(TEST_LOG_FILE);
     set_log_warning();
@@ -833,8 +833,8 @@ fn max_request_receive(_: view::Server<'_>, _: &RecvData) -> c_int {
 /// `test_max_request(mode)`.
 fn test_max_request(mode: c_int) {
     let serv = new_server(mode);
-    serv.config().worker_num = 2;
-    serv.config().max_request = 128;
+    serv.config().worker_num.set(2);
+    serv.config().max_request.set(128);
 
     new_lock();
 
@@ -912,7 +912,7 @@ fn count_buffer_full(_: view::Server<'_>, _: &DataHead) {
 /// `TEST(server, watermark)`.
 fn watermark() {
     let serv = new_server(MODE_PROCESS);
-    serv.config().worker_num = 2;
+    serv.config().worker_num.set(2);
 
     new_lock();
 
@@ -922,11 +922,9 @@ fn watermark() {
     let port = port.expect("port != nullptr");
     assert_eq!(serv.create(), SW_OK);
 
-    // SAFETY: `port->get_socket()`: the listening socket, whose first member is its fd.
-    let fd = unsafe { *port.config().socket.cast::<c_int>() };
-    set_buffer_size(fd, 65536);
-    port.config().buffer_high_watermark = 1024 * 1024;
-    port.config().buffer_low_watermark = 65536;
+    set_buffer_size(port.get_fd(), 65536);
+    port.config().buffer_high_watermark.set(1024 * 1024);
+    port.config().buffer_low_watermark.set(65536);
 
     set_start_client(serv, watermark_client);
     serv.set_callback(Callback::WorkerStart(unlock_and_count));
@@ -972,10 +970,10 @@ fn discard_data_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
 /// `TEST(server, discard_data)`.
 fn discard_data() {
     let serv = new_server(MODE_PROCESS);
-    serv.config().worker_num = 2;
-    serv.config().dispatch_mode = DISPATCH_IDLE_WORKER;
-    serv.config().discard_timeout_request = true;
-    serv.config().disable_notify = true;
+    serv.config().worker_num.set(2);
+    serv.config().dispatch_mode.set(DISPATCH_IDLE_WORKER);
+    serv.config().discard_timeout_request.set(true);
+    serv.config().disable_notify.set(true);
 
     set_log_file(TEST_LOG_FILE);
     set_log_warning();
@@ -1038,7 +1036,7 @@ fn reply_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
 /// `TEST(server, pause_and_resume)`.
 fn pause_and_resume() {
     let serv = new_server(MODE_BASE);
-    serv.config().worker_num = 2;
+    serv.config().worker_num.set(2);
 
     set_log_level(SW_LOG_TRACE);
 
@@ -1100,8 +1098,8 @@ fn max_queued_bytes_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
 /// `TEST(server, max_queued_bytes)`.
 fn max_queued_bytes() {
     let serv = new_server(MODE_PROCESS);
-    serv.config().worker_num = 2;
-    serv.config().max_queued_bytes = 65536;
+    serv.config().worker_num.set(2);
+    serv.config().max_queued_bytes.set(65536);
 
     counter_init();
     set_log_level(SW_LOG_TRACE);
@@ -1157,19 +1155,11 @@ const COMMAND_ALL_PROCESS: c_int = COMMAND_MASTER
 const SW_EVENT_DATA_CHUNK: u8 = 1 << 2;
 const SW_EVENT_DATA_BEGIN: u8 = 1 << 3;
 const SW_EVENT_DATA_OBJ_PTR: u8 = 1 << 5;
-const SW_SESSION_LIST_SIZE: usize = 1 << 20;
+const SW_SESSION_LIST_SIZE: c_long = 1 << 20;
 /// `offsetof(swr_v1_socket, recv_timer)` (native/reactor/swoole_rs_socket.h asserts it).
 const SOCKET_RECV_TIMER: usize = 152;
 const SIGKILL: c_int = 9;
 const EAGAIN: c_int = 11;
-
-/// `Session` (crates/server/src/records.rs's `SessionRecord`).
-#[repr(C)]
-struct Session {
-    id: c_long,
-    fd: c_int,
-    reactor_id: u32,
-}
 
 unsafe extern "C" {
     fn free(ptr: *mut c_void);
@@ -1250,9 +1240,9 @@ fn heartbeat_client(serv: Server) {
 /// `test_heartbeat_check(mode, single_thread)`.
 fn test_heartbeat_check(mode: c_int, single_thread: bool) {
     let serv = new_server(mode);
-    serv.config().worker_num = 1;
-    serv.config().heartbeat_check_interval = 1;
-    serv.config().single_thread = single_thread;
+    serv.config().worker_num.set(1);
+    serv.config().heartbeat_check_interval.set(1);
+    serv.config().single_thread.set(single_thread);
 
     swoole_rs_corebase::swoole_set_print_backtrace_on_error(true);
 
@@ -1358,8 +1348,8 @@ fn close_client(serv: Server) {
 /// `test_close(mode, close_in_client, single_thread)`.
 fn test_close(mode: c_int, close_in_client: bool, single_thread: bool) {
     let serv = new_server(mode);
-    serv.config().worker_num = 1;
-    serv.config().single_thread = single_thread;
+    serv.config().worker_num.set(1);
+    serv.config().single_thread.set(single_thread);
     CLOSE_IN_CLIENT.store(close_in_client, Ordering::SeqCst);
 
     counter_init();
@@ -1470,19 +1460,21 @@ fn eof_check_connect(serv: view::Server<'_>, ev: &DataHead) {
 /// `TEST(server, eof_check)`.
 fn eof_check() {
     let serv = new_server(MODE_BASE);
-    serv.config().worker_num = 1;
+    serv.config().worker_num.set(1);
 
     let port = serv.add_port(SW_SOCK_TCP, TEST_HOST, 0);
     let port = port.expect("port");
     // `port->is_stream()`: SW_SOCK_TCP, SW_SOCK_TCP6 or SW_SOCK_UNIX_STREAM.
-    assert!(matches!(port.config().type_, 1 | 3 | 5));
+    assert!(matches!(port.config().r#type, 1 | 3 | 5));
 
     // `port->set_eof_protocol("\r\n", true)`.
     let config = port.config();
-    config.open_eof_check = true;
-    config.protocol.split_by_eof = false;
-    config.protocol.package_eof_len = 2;
-    config.protocol.package_eof[..2].copy_from_slice(b"\r\n");
+    config.open_eof_check.set(true);
+    config.protocol.update(|protocol| {
+        protocol.split_by_eof = false;
+        protocol.package_eof_len = 2;
+        protocol.package_eof[..2].copy_from_slice(b"\r\n");
+    });
     assert_eq!(serv.create(), SW_OK);
 
     counter_init();
@@ -1555,9 +1547,9 @@ fn ignore_worker_start(_: view::Server<'_>, _: Worker<'_>) {}
 /// `test_command(mode)`.
 fn test_command(mode: c_int) {
     let serv = new_server(mode);
-    serv.config().worker_num = 4;
-    serv.config().task_worker_num = 4;
-    serv.config().reactor_num = 2;
+    serv.config().worker_num.set(4);
+    serv.config().task_worker_num.set(4);
+    serv.config().reactor_num.set(2);
     COMMAND_BASE_MODE.store(mode == MODE_BASE, Ordering::SeqCst);
     set_log_warning();
 
@@ -1638,7 +1630,7 @@ fn abnormal_worker_start(serv: view::Server<'_>, _: Worker<'_>) {
 /// `TEST(server, abnormal_pipeline_data)`.
 fn abnormal_pipeline_data() {
     let server = new_server(MODE_PROCESS);
-    server.config().worker_num = 2;
+    server.config().worker_num.set(2);
     server.add_port(SW_SOCK_TCP, TEST_HOST, 0);
 
     let msg_id = u64::from(rand_between(1, i32::MAX as u32));
@@ -1669,7 +1661,7 @@ fn shutdown_after_manager_start(serv: view::Server<'_>) {
 /// its `registry` in crates/process.
 fn base_event_worker_pool_cleanup() {
     let server = new_server(MODE_BASE);
-    server.config().worker_num = 2;
+    server.config().worker_num.set(2);
     assert!(server.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
     assert_eq!(server.create(), SW_OK);
 
@@ -1698,14 +1690,10 @@ fn abort_worker_connect(_: view::Server<'_>, ev: &DataHead) {
 /// `abort_worker`'s `onReceive`: only the live session is left in the session list.
 fn abort_worker_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let serv = Server(serv.raw());
-    // SAFETY: the shared session list, SW_SESSION_LIST_SIZE of them.
-    let sessions = unsafe {
-        std::slice::from_raw_parts(
-            (*serv.head().tables).session_list.cast::<Session>(),
-            SW_SESSION_LIST_SIZE,
-        )
-    };
-    let count = sessions.iter().filter(|s| s.fd != 0 && s.id != 0).count();
+    let count = (0..SW_SESSION_LIST_SIZE)
+        .filter_map(|id| serv.view().session(id))
+        .filter(|s| s.fd() != 0 && s.id() != 0)
+        .count();
     check(count == 1, "count == 1");
     let (session, _) = request(req);
     serv.send(session, if count == 1 { b"OK" } else { b"ERR" });
@@ -1728,7 +1716,7 @@ fn abort_worker_start(_: view::Server<'_>, _: Worker<'_>) {
 /// c2 waits for that third worker start, for up to 10 s.
 fn abort_worker() {
     let server = new_server(MODE_BASE);
-    server.config().worker_num = 2;
+    server.config().worker_num.set(2);
 
     server.add_port(SW_SOCK_TCP, TEST_HOST, 0);
     assert_eq!(server.create(), 0);
@@ -1813,7 +1801,7 @@ fn pipe_writable_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
 /// `TEST(server, reactor_thread_pipe_writable)`.
 fn reactor_thread_pipe_writable() {
     let serv = new_server(MODE_PROCESS);
-    serv.config().worker_num = 1;
+    serv.config().worker_num.set(1);
 
     RDATA_4M.set(random_bytes(4 * 1024 * 1024)).unwrap();
 
@@ -1822,14 +1810,16 @@ fn reactor_thread_pipe_writable() {
     let port = serv.add_port(SW_SOCK_TCP, TEST_HOST, 0);
     let port = port.expect("port");
     let config = port.config();
-    config.open_length_check = true;
-    config.protocol.package_max_length = 8 * 1024 * 1024;
+    config.open_length_check.set(true);
     // `network::Stream::set_protocol(&port->protocol)`: a 4-byte big-endian length, then
     // the body (`init_protocol` gives a length check its default length function).
-    config.protocol.package_length_type = b'N';
-    config.protocol.package_length_size = 4;
-    config.protocol.package_body_offset = 4;
-    config.protocol.package_length_offset = 0;
+    config.protocol.update(|protocol| {
+        protocol.package_max_length = 8 * 1024 * 1024;
+        protocol.package_length_type = b'N';
+        protocol.package_length_size = 4;
+        protocol.package_body_offset = 4;
+        protocol.package_length_offset = 0;
+    });
 
     new_lock();
 
@@ -1902,12 +1892,15 @@ fn send_timeout_client(serv: Server) {
 fn send_timeout_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let serv = Server(serv.raw());
     let (sid, _) = request(req);
-    let conn = serv.get_connection_by_session_id(sid);
+    let socket = serv
+        .get_connection_by_session_id(sid)
+        .socket()
+        .expect("a live socket");
 
     // SAFETY: the connection's live socket, whose `recv_timer` is at SOCKET_RECV_TIMER.
     let recv_timer = unsafe {
-        &mut *conn
-            .socket
+        &mut *socket
+            .as_ptr()
             .cast::<u8>()
             .add(SOCKET_RECV_TIMER)
             .cast::<Option<swoole_rs_corebase::timer_key::Held>>()
@@ -1915,8 +1908,7 @@ fn send_timeout_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     if let Some(timer) = recv_timer.take() {
         swoole_rs_ffi::del_id(timer);
     }
-    // SAFETY: the socket's first member is its fd.
-    set_buffer_size(unsafe { *conn.socket.cast::<c_int>() }, 65536);
+    set_buffer_size(socket.fd(), 65536);
 
     check(
         serv.send(sid, WBUF.get().unwrap()),
@@ -1931,7 +1923,7 @@ fn send_timeout_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
 /// `TEST(server, send_timeout)`.
 fn send_timeout() {
     let serv = new_server(MODE_BASE);
-    serv.config().worker_num = 1;
+    serv.config().worker_num.set(1);
     set_log_warning();
 
     counter_init();
@@ -1943,7 +1935,7 @@ fn send_timeout() {
         std::process::exit(2);
     };
 
-    port.config().max_idle_time = 1.0;
+    port.config().max_idle_time.set(1.0);
 
     WBUF.set(random_bytes(2 * 1024 * 1024)).unwrap();
 
