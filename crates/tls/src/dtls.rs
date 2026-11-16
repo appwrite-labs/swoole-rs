@@ -444,7 +444,7 @@ pub fn dtls_open(socket: Socket<'_>, context: &std::sync::Arc<crate::TlsSettings
         return false;
     }
     let size = swoole_rs_reactor::SOCKET_DEFAULTS.buffer_size();
-    swoole_rs_reactor::swr_v1_socket_buffer_size(socket.fd(), true, true, size);
+    _ = swoole_rs_reactor::set_socket_buffer_size(socket.fd(), true, true, size);
     socket.edit(|record| record.dtls = true);
     true
 }

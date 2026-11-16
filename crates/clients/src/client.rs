@@ -34,8 +34,8 @@ use swoole_rs_reactor::event_api::event_write;
 use swoole_rs_reactor::reactor_upstream::set_handler;
 use swoole_rs_reactor::socket_upstream::Connect;
 use swoole_rs_reactor::{
-    Caught, SOCKET_DEFAULTS, Socket, SocketRecord, fd_clean, swr_v1_socket_buffer_size,
-    swr_v1_socket_domain_and_type,
+    Caught, SOCKET_DEFAULTS, Socket, SocketRecord, fd_clean, set_socket_buffer_size,
+    socket_domain_and_type,
 };
 use swoole_rs_reactor::{Event, Events, Running};
 #[cfg(not(test))]
@@ -862,8 +862,9 @@ pub fn create(kind: c_int, is_async: bool) -> Option<Handle> {
         record.socket_type
     });
     client.set(Flag::Stream, is_stream(socket_type));
-    let mut kind_out = 0;
-    swr_v1_socket_domain_and_type(kind, &mut client.domain, &mut kind_out);
+    if let Some((domain, _)) = socket_domain_and_type(kind) {
+        client.domain = domain;
+    }
     let client = Box::into_raw(client);
     record.edit(|record| record.object = client.cast());
     Some(Handle(client))
@@ -1484,7 +1485,7 @@ fn udp_connect(this: Handle, host: &CStr, port: c_int, timeout: f64, udp_connect
     this.set(Flag::Active, true);
     let fd = this.socket().fd();
     let default_size = SOCKET_DEFAULTS.buffer_size();
-    swr_v1_socket_buffer_size(fd, true, true, default_size);
+    _ = set_socket_buffer_size(fd, true, true, default_size);
     if timeout > 0.0 {
         this.set_timeout(timeout);
     }

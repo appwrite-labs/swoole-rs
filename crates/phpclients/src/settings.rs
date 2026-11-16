@@ -120,7 +120,7 @@ fn buffers(cli: Cli, options: &Options) {
     if let Some(size) = options.size("socket_buffer_size") {
         let size = u32::try_from(clamp(size, 1, i32::MAX.into())).unwrap_or(1);
         if let Some(socket) = cli.net() {
-            swoole_rs_reactor::swr_v1_socket_buffer_size(socket.fd(), true, true, size);
+            _ = swoole_rs_reactor::set_socket_buffer_size(socket.fd(), true, true, size);
             socket.edit(|record| record.output.buffer_size = size);
         }
     }
