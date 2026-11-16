@@ -14,7 +14,7 @@ shared options in `tests/conftest.py` and read sources from `target/upstream/src
 
 | Command | Checks |
 | --- | --- |
-| `baseline.py --sanitize` | Pinned upstream only: original `core-tests/src/memory/buffer.cpp` assertions (64 seeded runs) plus a scatter/gather matrix that records upstream defects. |
+| `baseline.py --sanitize` | Pinned upstream only: original `core-tests/src/memory/buffer.cpp` assertions (64 seeded runs) plus a scatter/gather matrix. |
 
 `swoole::Buffer`'s methods are Rust (`crates/buffer/src/cpp.rs`); no C++ calls them, so
 none has a symbol, and `src/core/buffer.cc` is not built. Upstream's
@@ -94,12 +94,8 @@ checkout (`target/upstream/src`).
 
 ## Known failures and intentional differences
 
-- Upstream `Buffer::append(iovec)` defects, reproduced by `baseline.py`: chunk
-  size 4 at offset 3 into a six-byte vector leaves length `4294967295` after pop
-  (sixteen matrix cases have accounting mismatches); offset exactly at a vector
-  boundary copies the wrong vector (four cases). Empty vectors and offsets at or
-  beyond the total length are not executed against upstream because it can loop
-  or read out of bounds. Rust rejects or handles these explicitly.
+- Rust handles empty `Buffer::append(iovec)` vectors and offsets at or beyond
+  the total length explicitly; those are not run against upstream.
 - `Buffer` has no `front()`, `alloc()` or `BufferChunk` objects: callers read the
   first entry with `typed_front()`, commit partial sends with `typed_consume()` and
   queue a close with `typed_close()`. Nothing in the build set a chunk's `destroy`.

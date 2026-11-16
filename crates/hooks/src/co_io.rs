@@ -232,29 +232,33 @@ mod native {
     }
 
     fn package_length(socket: Co, size: u32, header: &mut u32) -> crate::packet::Length {
-        let (data, length) = socket.with_buffer(false, |string| {
-            (string.as_ptr(), string.len().min(size as usize))
-        });
-        // The protocol callback may bail out, so it must not own a metadata loan.
-        let bytes = if length == 0 {
-            &[][..]
-        } else {
-            // SAFETY: the socket's initialized prefix, kept live by its current packet
-            // receive until the callback returns; the callback only reads these bytes.
-            unsafe { std::slice::from_raw_parts(data, length) }
-        };
-        let mut packet = PacketLength::new(bytes);
         // A copy: the callback may run PHP that rewrites the protocol.
         let protocol = socket.protocol();
         let Some(call) = protocol.get_package_length else {
             return crate::packet::Length::NotFound;
         };
-        let mut measure =
-            |net: Option<swoole_rs_reactor::Socket<'_>>| call(&protocol, net, &mut packet);
-        let length = socket
-            .with_network(|net| measure(Some(net)))
-            .unwrap_or_else(|| measure(None));
-        *header = packet.header_len;
+        // The callback may bail out or reach the socket again, so it reads a read
+        // buffer this frame owns: taken from the record meanwhile, as a receive takes
+        // it, and leaked by a bailout.
+        let taken = socket.take_buffer(false);
+        let length = {
+            let view = taken.as_deref().map_or(&[][..], |string| string.view());
+            let mut packet = PacketLength::new(view.get(..size as usize).unwrap_or(view));
+            let mut measure =
+                |net: Option<swoole_rs_reactor::Socket<'_>>| call(&protocol, net, &mut packet);
+            let length = socket
+                .with_network(|net| measure(Some(net)))
+                .unwrap_or_else(|| measure(None));
+            *header = packet.header_len;
+            length
+        };
+        if let Some(string) = taken {
+            // One a nested receive made goes; the packet's comes back.
+            if let Some(mut nested) = socket.take_buffer(false) {
+                nested.dispose();
+            }
+            socket.put_read_buffer(string);
+        }
         crate::packet::Length::of(length)
     }
 
@@ -1133,6 +1137,49 @@ mod tests {
             unsafe { core::slice::from_raw_parts(co.err_msg().cast::<u8>(), 3) },
             b"a\0b"
         );
+    }
+
+    thread_local! {
+        static MEASURED: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+        static NESTED: std::cell::Cell<Option<Co>> = const { std::cell::Cell::new(None) };
+    }
+
+    /// A length function that records the bytes it measures and, given a socket in
+    /// `NESTED`, writes into that socket's read buffer meanwhile.
+    fn record_length(
+        _: &crate::co_socket::Protocol,
+        _: Option<swoole_rs_reactor::Socket<'_>>,
+        packet: &mut swoole_rs_corebase::net_types::PacketLength,
+    ) -> isize {
+        MEASURED.set(packet.bytes().to_vec());
+        if let Some(socket) = NESTED.get() {
+            socket.with_buffer(false, |buffer| buffer.append(b"nested"));
+        }
+        packet.header_len = 4;
+        7
+    }
+
+    /// The native length step hands the protocol's function the buffered prefix it
+    /// asks for, then the packet's buffer is the socket's again, whatever the
+    /// function did to the socket's read buffer meanwhile.
+    #[test]
+    fn package_length_measures_the_prefix_and_restores_the_buffer() {
+        let mut socket = TestSocket::new();
+        let co = socket.co();
+        co.with_buffer(false, |buffer| buffer.append(b"abcdef"));
+        co.set_protocol(crate::co_socket::Protocol {
+            get_package_length: Some(record_length),
+            ..crate::co_socket::Protocol::EMPTY
+        });
+        for nested in [None, Some(co)] {
+            NESTED.set(nested);
+            let mut header = 0;
+            let length = (native::HOST.package_length)(co, 4, &mut header);
+            assert_eq!((length, header), (crate::packet::Length::Packet(7), 4));
+            assert_eq!(MEASURED.take(), b"abcd");
+            co.with_buffer(false, |buffer| assert_eq!(buffer.view(), b"abcdef"));
+        }
+        NESTED.set(None);
     }
 }
 

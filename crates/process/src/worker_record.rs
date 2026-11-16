@@ -79,9 +79,8 @@ impl WorkerType {
 
 /// A native socket record this crate keeps for its owner, lent for `'a`. Only the
 /// fields whose writers vouch for them are lent as one: a worker's pipe ends (the
-/// unsafe [`Worker::set_pipes`], or copies of them), a hook's socket (the unsafe
-/// [`crate::pool::PoolCall::set_socket`], or one of the former), and the stream
-/// listener and connection the pool makes and frees itself. So the record is live
+/// unsafe [`Worker::set_pipes`], or copies of them), a hook's socket (one of
+/// these), and the stream listener the pool makes and frees itself. So the record is live
 /// for `'a`, and crates/reactor takes one as its `Socket`.
 #[derive(Clone, Copy)]
 pub struct NativeSocket<'a> {
@@ -274,28 +273,19 @@ impl WorkerRecord {
 /// `Cell` or an atomic, so the shared borrow [`Worker::record`] lends lets other
 /// handles, and other processes in shared memory, write the record meanwhile.
 #[derive(Clone, Copy)]
-pub struct Worker<'a> {
-    raw: *mut WorkerRecord,
-    life: core::marker::PhantomData<&'a WorkerRecord>,
-}
+pub struct Worker<'a>(&'a WorkerRecord);
 
 impl<'a> From<&'a WorkerRecord> for Worker<'a> {
     /// The record a borrow keeps live for `'a`.
     fn from(record: &'a WorkerRecord) -> Self {
-        Self {
-            raw: core::ptr::from_ref(record).cast_mut(),
-            life: core::marker::PhantomData,
-        }
+        Self(record)
     }
 }
 
 impl<'a> From<&'a mut WorkerRecord> for Worker<'a> {
     /// The record a unique borrow keeps live for `'a`.
     fn from(record: &'a mut WorkerRecord) -> Self {
-        Self {
-            raw: record,
-            life: core::marker::PhantomData,
-        }
+        Self(record)
     }
 }
 
@@ -330,32 +320,16 @@ macro_rules! field {
 }
 
 impl<'a> Worker<'a> {
-    /// The record at `raw`.
-    ///
-    /// # Safety
-    /// `raw` points to a live `Worker`/`WorkerRecord` for `'a`, and the process
-    /// protocol that owns it orders the field writes made through the handle
-    /// (a worker loop owns its counters; the master owns pid and status).
-    #[must_use]
-    pub unsafe fn new(raw: *const WorkerRecord) -> Self {
-        Self {
-            raw: raw.cast_mut(),
-            life: core::marker::PhantomData,
-        }
-    }
-
     /// The record's address.
     #[must_use]
     pub fn raw(self) -> *mut WorkerRecord {
-        self.raw
+        core::ptr::from_ref(self.0).cast_mut()
     }
 
     /// The record, for `'a`: its fields are cells and atomics, read and written
     /// one at a time.
     fn record(self) -> &'a WorkerRecord {
-        // SAFETY: `new`'s contract (or the borrow `from` took): a live record for
-        // `'a`, whose owner orders the writes made through its cells.
-        unsafe { &*self.raw }
+        self.0
     }
 
     /// A copy of the whole record, a field at a time: the status, which its worker
@@ -744,13 +718,13 @@ impl<'a> Worker<'a> {
 /// pool's worker `id`, separated from shared memory. PHP may not close a pipe
 /// it shares with the pool, nor touch one the message bus owns; without
 /// `onMessage`, a message-queue pool's process pushes and pops the pool's
-/// queue. Returns the copy's pipe fd when the pool talks over unix sockets and
-/// has a worker `id`.
-pub fn copy_for_process(
-    pool: crate::process_pool::PoolRef<'_>,
+/// queue. Returns the copy's pipe end, whose fd the process shows, when the pool
+/// talks over unix sockets and has a worker `id`.
+pub fn copy_for_process<'a>(
+    pool: crate::process_pool::PoolRef<'a>,
     id: usize,
     copy: &mut WorkerRecord,
-) -> Option<c_int> {
+) -> Option<NativeSocket<'a>> {
     const MSGQUEUE_BALANCE: u8 = 2;
     let pool = pool.record();
     // Copied by value, as upstream's `new Worker(...)` does.
@@ -765,9 +739,8 @@ pub fn copy_for_process(
         };
         *worker.pipe_current.get_mut() = current;
         worker.pipe_object.set(null);
-        // SAFETY: a unix-socket pool's worker pipes are live sockets, and
-        // `network::Socket` begins with its fd.
-        pipe = Some(unsafe { current.cast::<c_int>().read() });
+        // A unix-socket pool's worker pipes are live sockets (the record's invariant).
+        pipe = NativeSocket::lend(current);
     }
     if pool.has_message_bus() {
         *worker.pipe_current.get_mut() = null;
@@ -796,6 +769,12 @@ mod tests {
     use super::*;
     use std::mem::align_of;
 
+    /// The fd a test's pipe end points at.
+    fn fd(pipe: NativeSocket<'_>) -> c_int {
+        // SAFETY: the tests' pipe ends point at their fd array.
+        unsafe { pipe.as_non_null().cast::<c_int>().read() }
+    }
+
     // The C++ view takes its fields from this struct (tools/process_records.py). Here
     // just sanity-check the Rust record's alignment and that the accessors read/write
     // the right field.
@@ -815,13 +794,13 @@ mod tests {
         let mut copy: WorkerRecord = unsafe { core::mem::zeroed() };
         // A worker the pool doesn't have: no copy.
         assert_eq!(
-            copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 2, &mut copy),
+            copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 2, &mut copy).map(fd),
             None
         );
         assert_eq!(*copy.pid.get_mut(), 0);
         // Another process's worker: the master's end of its pipe.
         assert_eq!(
-            copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 1, &mut copy),
+            copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 1, &mut copy).map(fd),
             Some(7)
         );
         assert_eq!(
@@ -835,7 +814,7 @@ mod tests {
         // The message bus owns the pipe.
         crate::process_pool::PoolRef::from(&mut pool).set_message_bus(Some(Box::new(())));
         assert_eq!(
-            copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 1, &mut copy),
+            copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 1, &mut copy).map(fd),
             Some(7)
         );
         assert!(copy.pipe_current.get_mut().is_null());
@@ -858,7 +837,7 @@ mod tests {
             0,
         )));
         assert_eq!(
-            copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 1, &mut copy),
+            copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 1, &mut copy).map(fd),
             None
         );
         assert_eq!(
@@ -870,7 +849,7 @@ mod tests {
         }
         pool.on_message.set(Some(on_message));
         assert_eq!(
-            copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 1, &mut copy),
+            copy_for_process(crate::process_pool::PoolRef::from(&mut pool), 1, &mut copy).map(fd),
             None
         );
         assert!(copy.queue.get().is_null());
@@ -885,10 +864,10 @@ mod tests {
         record.request_count.set(7);
         record.response_count.set(8);
         *record.dispatch_count.get_mut() = 8;
-        unsafe { Worker::new(&raw mut record) }.count_dispatch();
+        Worker::from(&record).count_dispatch();
         assert_eq!(record.dispatch_count.load(Ordering::Relaxed), 9);
         let total = core::sync::atomic::AtomicU32::new(7);
-        unsafe { Worker::new(&raw mut record) }.reset_counters(&total);
+        Worker::from(&record).reset_counters(&total);
         assert_eq!(
             (
                 *record.pid.get_mut(),
@@ -908,7 +887,7 @@ mod tests {
         );
         record.concurrency = AtomicU32::new(9);
         total.store(3, core::sync::atomic::Ordering::SeqCst);
-        unsafe { Worker::new(&raw mut record) }.reset_counters(&total);
+        Worker::from(&record).reset_counters(&total);
         assert_eq!(
             (
                 *record.concurrency.get_mut(),
@@ -917,7 +896,7 @@ mod tests {
             (0, 0)
         );
         total.store(13, core::sync::atomic::Ordering::SeqCst);
-        unsafe { Worker::new(&raw mut record) }.reset_counters(&total);
+        Worker::from(&record).reset_counters(&total);
         assert_eq!(total.load(core::sync::atomic::Ordering::SeqCst), 13);
     }
 
@@ -928,15 +907,12 @@ mod tests {
 
     #[test]
     fn status_accessors_round_trip() {
-        let mut record: WorkerRecord = unsafe { std::mem::zeroed() };
-        unsafe {
-            assert_eq!(Worker::new(&raw const record).status(), None, "new");
-            Worker::new(&raw mut record).set_status(WorkerStatus::Idle);
-            assert_eq!(
-                Worker::new(&raw const record).status(),
-                Some(WorkerStatus::Idle)
-            );
-            assert!(Worker::new(&raw const record).is_idle());
+        let record: WorkerRecord = unsafe { std::mem::zeroed() };
+        {
+            assert_eq!(Worker::from(&record).status(), None, "new");
+            Worker::from(&record).set_status(WorkerStatus::Idle);
+            assert_eq!(Worker::from(&record).status(), Some(WorkerStatus::Idle));
+            assert!(Worker::from(&record).is_idle());
         }
     }
 
@@ -948,7 +924,7 @@ mod tests {
         record.kind.set(3);
         record.msgqueue_mode.set(2);
         record.ptr.set(core::ptr::dangling_mut());
-        let worker = unsafe { Worker::new(&raw mut record) };
+        let worker = Worker::from(&record);
         worker.set_status(WorkerStatus::Busy);
         let copy = worker.get();
         assert_eq!(
@@ -966,44 +942,38 @@ mod tests {
 
     #[test]
     fn type_accessors_round_trip() {
-        let mut record: WorkerRecord = unsafe { std::mem::zeroed() };
-        unsafe {
-            Worker::new(&raw mut record).set_kind(WorkerType::Manager);
-            assert_eq!(
-                Worker::new(&raw const record).kind(),
-                Some(WorkerType::Manager)
-            );
+        let record: WorkerRecord = unsafe { std::mem::zeroed() };
+        {
+            Worker::from(&record).set_kind(WorkerType::Manager);
+            assert_eq!(Worker::from(&record).kind(), Some(WorkerType::Manager));
             // independent of status
-            Worker::new(&raw mut record).set_status(WorkerStatus::Busy);
-            assert_eq!(
-                Worker::new(&raw const record).kind(),
-                Some(WorkerType::Manager)
-            );
+            Worker::from(&record).set_status(WorkerStatus::Busy);
+            assert_eq!(Worker::from(&record).kind(), Some(WorkerType::Manager));
         }
     }
 
     #[test]
     fn pid_accessors_round_trip() {
-        let mut record: WorkerRecord = unsafe { std::mem::zeroed() };
-        unsafe {
-            Worker::new(&raw mut record).set_pid(4242);
-            assert_eq!(Worker::new(&raw const record).pid(), 4242);
+        let record: WorkerRecord = unsafe { std::mem::zeroed() };
+        {
+            Worker::from(&record).set_pid(4242);
+            assert_eq!(Worker::from(&record).pid(), 4242);
             // independent of the one-byte fields that follow it
-            Worker::new(&raw mut record).set_kind(WorkerType::Event);
-            Worker::new(&raw mut record).set_status(WorkerStatus::Busy);
-            assert_eq!(Worker::new(&raw const record).pid(), 4242);
+            Worker::from(&record).set_kind(WorkerType::Event);
+            Worker::from(&record).set_status(WorkerStatus::Busy);
+            assert_eq!(Worker::from(&record).pid(), 4242);
         }
     }
 
     #[test]
     fn id_accessors_round_trip() {
-        let mut record: WorkerRecord = unsafe { std::mem::zeroed() };
-        unsafe {
-            Worker::new(&raw mut record).set_id(7);
-            Worker::new(&raw mut record).set_pid(4242);
-            assert_eq!(Worker::new(&raw const record).id(), 7);
+        let record: WorkerRecord = unsafe { std::mem::zeroed() };
+        {
+            Worker::from(&record).set_id(7);
+            Worker::from(&record).set_pid(4242);
+            assert_eq!(Worker::from(&record).id(), 7);
             // id and pid are adjacent words; neither disturbs the other
-            assert_eq!(Worker::new(&raw const record).pid(), 4242);
+            assert_eq!(Worker::from(&record).pid(), 4242);
         }
     }
 }

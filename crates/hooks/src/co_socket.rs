@@ -148,7 +148,7 @@ pub struct Bound {
     state: UnsafeCell<SocketState>,
     lent: Cell<u8>,
     #[cfg(any(test, feature = "iouring"))]
-    tls_buffers: [std::cell::OnceCell<TlsBuffer>; 2],
+    tls_buffers: [Cell<Option<TlsBuffer>>; 2],
 }
 
 impl Bound {
@@ -158,7 +158,7 @@ impl Bound {
             state: UnsafeCell::new(SocketState::new()),
             lent: Cell::new(0),
             #[cfg(any(test, feature = "iouring"))]
-            tls_buffers: std::array::from_fn(|_| std::cell::OnceCell::new()),
+            tls_buffers: [const { Cell::new(None) }; 2],
         }
     }
 
@@ -169,9 +169,20 @@ impl Bound {
 }
 
 /// BIO scratch belongs to TLS, independently of the application buffers lent
-/// throughout a receive. Its bytes use the socket's allocator, as those do.
+/// throughout a receive. Its bytes use the socket's allocator, as those do, and are
+/// zeroed once when made, so all of them are content a receive may overwrite.
 #[cfg(any(test, feature = "iouring"))]
 struct TlsBuffer(CppString);
+
+#[cfg(any(test, feature = "iouring"))]
+impl TlsBuffer {
+    fn new(allocator: Option<swoole_rs_corebase::TrustedAllocator>) -> Self {
+        let mut string = CppString::EMPTY;
+        string.alloc(BUFFER_SIZE_BIG, allocator);
+        string.read_zeroed(string.size(), |bytes| bytes.len());
+        Self(string)
+    }
+}
 
 #[cfg(any(test, feature = "iouring"))]
 impl Drop for TlsBuffer {
@@ -410,22 +421,32 @@ impl Co {
         made
     }
 
-    /// TLS's read/write BIO scratch, allocated once and held until the socket
-    /// closes. No application buffer loan reaches these bytes.
+    /// `f` over TLS's read (`write` false) or write BIO scratch, which it owns
+    /// meanwhile, as a receive owns the read buffer: taken from the record, or made
+    /// when the record has none (another operation holds it), and given back after.
+    /// So a receive parked in `f` reaches nothing the record frees, and a bailout
+    /// that abandons the frame leaks the bytes. No application buffer loan reaches them.
     #[cfg(any(test, feature = "iouring"))]
-    pub(crate) fn tls_buffer(self, write: bool) -> (*mut c_char, usize) {
+    pub(crate) fn with_tls_buffer<T>(self, write: bool, f: impl FnOnce(&mut [u8]) -> T) -> T {
+        let mut buffer = self
+            .tls_buffer_slot(write)
+            .take()
+            .unwrap_or_else(|| TlsBuffer::new(self.buffer_allocator()));
+        let result = f(buffer.0.view_mut());
+        // Reached again, as `f` may have parked; one given back meanwhile is freed.
+        self.tls_buffer_slot(write).set(Some(buffer));
+        result
+    }
+
+    #[cfg(any(test, feature = "iouring"))]
+    fn tls_buffer_slot(&self, write: bool) -> &Cell<Option<TlsBuffer>> {
         let bound = self
             .record()
             .state
             .as_ref()
             .unwrap_or_else(|| swoole_rs_corebase::fatal("a hooked socket without its state"));
         let [read, send] = &bound.tls_buffers;
-        let buffer = if write { send } else { read }.get_or_init(|| {
-            let mut string = CppString::EMPTY;
-            string.alloc(BUFFER_SIZE_BIG, self.buffer_allocator());
-            TlsBuffer(string)
-        });
-        (buffer.0.as_ptr().cast_mut().cast(), buffer.0.size())
+        if write { send } else { read }
     }
 
     /// The record's read or write buffer slot.
@@ -1569,18 +1590,40 @@ mod tests {
     fn tls_scratch_is_stable_and_independent_of_application_loans() {
         let mut socket = TestSocket::new();
         let co = socket.co();
+        let scratch = |write| co.with_tls_buffer(write, |bytes| (bytes.as_mut_ptr(), bytes.len()));
         co.with_buffer(false, |read| {
             co.with_buffer(true, |write| {
-                let inbound = co.tls_buffer(false);
-                let outbound = co.tls_buffer(true);
+                let inbound = scratch(false);
+                let outbound = scratch(true);
                 assert_eq!(inbound.1, BUFFER_SIZE_BIG);
                 assert_eq!(outbound.1, BUFFER_SIZE_BIG);
                 assert_ne!(inbound.0, outbound.0);
-                assert_ne!(inbound.0.cast::<u8>(), read.as_mut_ptr());
-                assert_ne!(outbound.0.cast::<u8>(), write.as_mut_ptr());
-                assert_eq!(co.tls_buffer(false), inbound);
-                assert_eq!(co.tls_buffer(true), outbound);
+                assert_ne!(inbound.0, read.as_mut_ptr());
+                assert_ne!(outbound.0, write.as_mut_ptr());
+                assert_eq!(scratch(false), inbound);
+                assert_eq!(scratch(true), outbound);
             });
+        });
+    }
+
+    /// An operation holding the scratch doesn't share it: a second one gets its own,
+    /// zeroed, and the record keeps the first's after.
+    #[test]
+    fn tls_scratch_is_owned_by_one_operation() {
+        let mut socket = TestSocket::new();
+        let co = socket.co();
+        let (outer, inner) = co.with_tls_buffer(false, |held| {
+            held.fill(7);
+            let inner = co.with_tls_buffer(false, |other| {
+                assert!(other.iter().all(|&byte| byte == 0));
+                other.as_mut_ptr()
+            });
+            (held.as_mut_ptr(), inner)
+        });
+        assert_ne!(outer, inner);
+        co.with_tls_buffer(false, |kept| {
+            assert_eq!(kept.as_mut_ptr(), outer);
+            assert!(kept.iter().all(|&byte| byte == 7));
         });
     }
 

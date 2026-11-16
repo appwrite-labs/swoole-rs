@@ -38,19 +38,19 @@ const CANDIDATE: Engine = Engine {
 
 mod request {
     use std::ffi::{CStr, c_char};
-    use swoole_rs_buffer::string::boxed_string;
+    use swoole_rs_buffer::string::{CppString, boxed_string};
     use swoole_rs_corebase::{set_errno, sys::errno};
     use swoole_rs_http::ChunkState;
     use swoole_rs_http_ffi::HttpRequest as Request;
 
-    /// `parse` over a request whose buffer is a received `swoole::String`: a copy of
-    /// the `length` bytes at `data`, with the spare NUL after them, at `offset`. What
+    /// `parse` over a request and its received `swoole::String`: a copy of the
+    /// `length` bytes at `data`, with the spare NUL after them, at `offset`. What
     /// `parse` returned, and the buffer's offset after.
     fn on<T>(
         data: *mut c_char,
         length: usize,
         offset: usize,
-        parse: impl FnOnce(&mut Request) -> T,
+        parse: impl FnOnce(&mut Request, &mut CppString) -> T,
     ) -> (T, usize) {
         let bytes = if data.is_null() {
             &[]
@@ -60,11 +60,7 @@ mod request {
         };
         let mut buffer = boxed_string(bytes);
         buffer.set_offset(offset as i64);
-        let mut r = Request {
-            buffer: &raw mut *buffer,
-            ..Request::default()
-        };
-        let parsed = parse(&mut r);
+        let parsed = parse(&mut Request::default(), &mut buffer);
         let offset = buffer.offset() as usize;
         buffer.dispose();
         (parsed, offset)
@@ -78,7 +74,7 @@ mod request {
     ) -> i32 {
         // SAFETY: the caller's state.
         let s = unsafe { &mut *state };
-        let (done, offset) = on(data, length, s.offset, |r| {
+        let (done, offset) = on(data, length, s.offset, |r, buffer| {
             (r.method, r.version) = (s.method as u8, s.version as u8);
             (r.excepted, r.known_length) = (s.excepted != 0, s.known_length != 0);
             (r.url_offset, r.url_length) = (s.url_offset, s.url_length);
@@ -93,9 +89,9 @@ mod request {
             (r.chunk_length, r.chunk_offset, r.chunk_scan_offset) =
                 (s.chunk_length, s.chunk_offset, s.chunk_scan_offset);
             let done = match operation {
-                0 => r.get_protocol(),
-                1 => r.get_header_length(),
-                _ => r.get_chunked_body_length(),
+                0 => r.get_protocol(buffer),
+                1 => r.get_header_length(buffer),
+                _ => r.get_chunked_body_length(buffer.view()),
             };
             *s = http_frame::State {
                 offset: s.offset,
@@ -129,10 +125,10 @@ mod request {
         header_length: u32,
         out: *mut http_frame::HeaderInfo,
     ) {
-        let (info, _) = on(data, length, 0, |r| {
+        let (info, _) = on(data, length, 0, |r, buffer| {
             (r.request_line_length, r.header_length) = (line_length, header_length);
             set_errno(0);
-            r.parse_header_info();
+            r.parse_header_info(buffer.view());
             let (offset, boundary) = r.form.as_deref().map_or((-1, 0), |form| {
                 let boundary = form.boundary();
                 (boundary.offset as i64, boundary.length as i64)
@@ -154,7 +150,7 @@ mod request {
     }
 
     pub unsafe extern "C" fn expect(data: *mut c_char, length: usize) -> bool {
-        on(data, length, 0, |r| r.has_expect_header()).0
+        on(data, length, 0, |r, b| r.has_expect_header(b.view())).0
     }
 
     pub unsafe extern "C" fn header(
@@ -168,9 +164,9 @@ mod request {
     ) -> usize {
         // SAFETY: a NUL-terminated name.
         let name = unsafe { CStr::from_ptr(name) }.to_bytes();
-        let (value, _) = on(data, length, 0, |r| {
+        let (value, _) = on(data, length, 0, |r, buffer| {
             (r.url_offset, r.url_length, r.header_length) = (url_offset, url_length, header_length);
-            r.get_header(name)
+            r.get_header(buffer.view(), name)
         });
         let Some(value) = value else {
             return 0;
@@ -245,8 +241,7 @@ pub fn ws_frame_length(bytes: &[u8]) {
 
 /// Any bytes as one frame: the same verdict, fields and in-place unmasking.
 pub fn ws_decode(bytes: &[u8]) {
-    // Upstream reads the first two bytes unconditionally; servers only decode
-    // frames whose length check has passed.
+    // Servers only decode frames whose length check has passed.
     if bytes.len() < 2 {
         return;
     }
@@ -702,7 +697,7 @@ pub fn clients_cookie(bytes: &[u8]) {
     );
 }
 
-/// Any bytes as a received DNS name buffer: where Rust decodes in bounds, upstream
+/// Any bytes as a received DNS name buffer: where Rust decodes it, upstream
 /// decodes to the same bytes. Other inputs are outside the compared domain: Rust
 /// reports 0 and upstream isn't run.
 pub fn clients_domain_decode(bytes: &[u8]) {
@@ -710,7 +705,7 @@ pub fn clients_domain_decode(bytes: &[u8]) {
     if !domain_decode(&mut ours, c_char::MIN != 0) {
         return;
     }
-    // SAFETY: Rust decoded the same bytes in bounds, so upstream's identical walk does too.
+    // SAFETY: `theirs` is a NUL-terminated name in the compared domain, decoded within its bytes.
     unsafe { clients::domain_decode(theirs.as_mut_ptr().cast()) };
     assert_eq!(theirs, ours, "domain {bytes:?}");
 }

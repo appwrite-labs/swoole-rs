@@ -133,8 +133,8 @@ fn set_option(fd: c_int, level: c_int, option: c_int) -> std::io::Result<()> {
 /// `ListenPort::create_socket()`: keeps the port's socket unless the server
 /// reuses ports (Linux), else makes one, sets its options, binds it to the
 /// port's host and port, and takes the bound port. On failure it sets the last
-/// error to errno and frees the new socket, which the port still points at,
-/// and returns false.
+/// error to errno, frees the new socket, leaving the port without one, and
+/// returns false.
 pub(crate) fn create_socket(config: &PortConfig, reuse_port: bool) -> bool {
     let reuse_port = cfg!(target_os = "linux") && reuse_port;
     if !config.socket_ptr().is_null() {

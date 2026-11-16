@@ -88,7 +88,7 @@ fn worker(serv: Server, id: usize) -> Worker {
     assert!(id < serv.config().worker_num.get() as usize);
     let workers = serv.config().workers.as_ptr().cast::<WorkerRecord>();
     // SAFETY: the created server's `worker_num` event workers.
-    unsafe { Worker::new(workers.add(id)) }
+    unsafe { Worker::from(&*(workers.add(id))) }
 }
 
 /// A process-mode Server of `worker_num` workers and `dispatch_mode`, listening on

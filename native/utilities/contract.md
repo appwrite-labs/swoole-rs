@@ -1,8 +1,7 @@
 # Utilities ABI
 
-Feature bit 512 (`utilities`). Patches `include/swoole.h`; this directory's
-`swoole_log.h`, `swoole_hash.h` and `swoole_version.h` replace
-upstream's and keep what C++ and the utilities gates use; nothing built includes upstream's
+Feature bit 512 (`utilities`). This directory's `swoole_log.h`, `swoole_hash.h`
+and `swoole_version.h` replace upstream's and keep what C++ and the utilities gates use; nothing built includes upstream's
 `swoole_util.h`. `swoole_log.h` keeps the levels, the fatal-error forwarder and the
 compiled-off trace macro: no C++ left logs through `swoole::Logger` or the other log macros. Nothing
 C++ calls is declared here: the spinlock and the futex wait/wake are Rust's, called by path. Tests:

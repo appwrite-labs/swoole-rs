@@ -32,10 +32,11 @@ What is done:
 - **No upstream source is compiled.** Nothing from swoole-src's `src/`, `ext-src/` or
   `include/` is in the build, and the build needs no swoole-src checkout. 67 crates hold
   about 209,000 lines of Rust.
-- **Some C remains, on purpose.** 38,000 lines of C that swoole-src itself bundles from
-  elsewhere (PHP's PDO drivers and PECL ssh2, adapted to coroutine hooks) live in
-  `native/swoole-src/thirdparty`, plus 216 lines of our own glue. TLS is OpenSSL, as it is
-  upstream.
+- **Some C remains, on purpose.** 38,000 lines of C and C++ that swoole-src itself bundles
+  from elsewhere (PHP's PDO drivers, curl and `proc_open`, and PECL ssh2, adapted to
+  coroutine hooks) live in `native/swoole-src/thirdparty`, plus about 450 lines of our own
+  glue (`native/corebase/switches.cc`, `native/phphelpers/host.c` and three C shims in
+  `crates/`). TLS is OpenSSL, as it is upstream.
 - **Upstream's PHP tests pass wherever upstream passes them.** Of 1,866 pinned PHPTs, 55
   can't run here: upstream skips them unconditionally, or they need an older PHP or an
   outside network ([the list, with reasons](corpus/upstream/not_applicable.json)). Of the
@@ -57,10 +58,11 @@ What is not:
   impls, and 17 of 67 crates forbid `unsafe`
   ([per crate](https://github.com/appwrite-labs/swoole-rs/blob/badges/unsafe.md)). Much of
   it is a close port of C++ that still passes raw pointers between crates. The
-  AddressSanitizer run fails on `main`, and ThreadSanitizer has open reports in thread
-  mode ([#3342](https://github.com/appwrite-labs/swoole-rs/issues/3342),
-  [#3343](https://github.com/appwrite-labs/swoole-rs/issues/3343)). Miri, the fuzzers
-  and the soak run pass.
+  nightly AddressSanitizer run failed on three of the five nights to 2026-11-16, and
+  ThreadSanitizer on one; its thread-mode reports
+  ([#3342](https://github.com/appwrite-labs/swoole-rs/issues/3342),
+  [#3343](https://github.com/appwrite-labs/swoole-rs/issues/3343)) were fixed on
+  2026-11-12. Miri, the API fuzzer and the soak run passed all five.
 - **The tests reach 74% of the Rust.** That is line coverage of `crates/` under the PHPTs,
   the corpus apps and swoole/library's suite. The coverage build has no thread support, so
   `Swoole\Thread`'s code counts as unreached; its own PHPTs run in a separate job
@@ -70,9 +72,9 @@ What is not:
 - **Linux is what CI tests.** Every merge runs Ubuntu 24.04 on x86-64 with PHP 8.3, plus
   Alpine (musl) and a thread-safe PHP. PHP 8.2, 8.4 and 8.5 run nightly, as does
   arm64 with PHP 8.3. The build scripts handle macOS, which CI doesn't run.
-- **No release, no packages, no licence file.** There is no tag and no PECL or PIE
-  package; you build it from source. The repository root has no `LICENSE` yet. Upstream
-  Swoole is Apache-2.0 and the bundled PHP code is under the PHP License 3.01.
+- **Pre-releases only, and no packages.** [Releases](#install) are prebuilt binaries for
+  Linux. There is no PECL or PIE package and no Docker image, and nothing for macOS: build
+  from source there.
 - **Coding agents wrote it.** About 2,100 commits since 2026-10-25 came from AI coding
   agents working through GitHub issues under one maintainer's direction
   ([AGENTS.md](AGENTS.md)). CI is the reviewer: a change lands when its gates pass,
@@ -136,12 +138,12 @@ Optional parts are build switches. Each of upstream's `configure` switches goes 
 
 | | Upstream Swoole v6.2.5 | swoole-rs |
 | --- | --- | --- |
-| Language | C and C++ | Rust, plus the 38,000 lines of C that upstream bundles |
+| Language | C and C++ | Rust, plus the 38,000 lines of C and C++ that upstream bundles |
 | Build | `phpize`, `configure`, `make` | Cargo, through `tools/build_ext.py` |
 | PHP API | the reference | the same, generated from upstream's stubs (`tools/arginfo.py`) |
 | Upstream PHPTs passing, of 1,811 | 1,742 | 1,745 |
 | Instructions per request | 1.00× | 0.90× geometric mean over 34 workloads |
-| Releases and packages | yes | none |
+| Releases and packages | yes | prebuilt Linux binaries, as pre-releases; no packages |
 | Production use | years | none |
 
 **Speed.** The merge tier counts instructions per request under Callgrind on 34 workloads
@@ -163,6 +165,41 @@ still truncate ([open problem](docs/http-response-lifetime.md)).
 Autobahn and swoole/library's suite. Nightly runs add Miri, the sanitizers, fuzzing, a
 soak run, other PHP versions and a debug PHP. See the
 [validation layers](docs/validation-suite.md).
+
+## Install
+
+Each [release](https://github.com/appwrite-labs/swoole-rs/releases) has a `swoole.so` for
+PHP 8.2 to 8.5 on Linux, named
+`swoole-rs-<version>-php<series>-<nts|zts>-linux-<gnu|musl>-<x86_64|aarch64>.so`:
+
+- `nts` or `zts`: what `php -i | grep 'Thread Safety'` says (`disabled` is `nts`).
+- `gnu` is glibc 2.36 or newer (Debian 12 and later) and `musl` is Alpine. Both are
+  built and load-tested in the official `php` Docker images.
+- PHP needs OpenSSL 3, Brotli, zstd and zlib beside it as shared libraries. The official
+  images have them.
+
+```sh
+file=swoole-rs-v0.1.0-php8.3-nts-linux-gnu-x86_64.so
+url=https://github.com/appwrite-labs/swoole-rs/releases/download/v0.1.0
+curl -fsSL -O "$url/$file" -O "$url/SHA256SUMS"
+grep " $file\$" SHA256SUMS | sha256sum -c -
+cp "$file" "$(php -r 'echo ini_get("extension_dir");')/swoole.so"
+echo extension=swoole > "$(php --ini | sed -n 's/^Scan for additional .ini files in: //p')/swoole.ini"
+php --ri swoole
+```
+
+The last command prints `Version => 6.2.5`, the upstream version this build stands in
+for, and `swoole-rs => 0.1.0 (<commit>)`. `gh attestation verify "$file" --repo
+appwrite-labs/swoole-rs` checks that the file was built by this repository's release
+workflow.
+
+A release binary is the default build: TLS, HTTP/2, Brotli and zstd are in, `zts` files
+add `Swoole\Thread`, and the switches in the [table above](#features) are not. Build from
+source for those.
+
+Versions are swoole-rs's own (`0.1.0`), separate from the upstream version it reports. A
+`0.x` release is a pre-release: the PHP API is upstream's and stays, but which targets and
+switches a release has, and how its files are named, can change between any two of them.
 
 ## Build
 
@@ -224,6 +261,12 @@ before a change lands.
 - [`corpus/`](corpus/README.md): the applications and the
   [upstream PHPT selection](corpus/upstream/README.md).
 - [`benchmarks/`](benchmarks/README.md): the Callgrind workloads and their limits.
+
+## Licence
+
+[Apache-2.0](LICENSE), as upstream Swoole. Bundled PHP code retains the
+[PHP License 3.01](native/swoole-src/thirdparty/LICENSE), and the Zend Engine file retains
+[Zend License 2.00](native/swoole-src/thirdparty/LICENSE-ZEND). [`NOTICE`](NOTICE) lists the attributions.
 
 ## Badges
 
