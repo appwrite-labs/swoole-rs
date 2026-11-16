@@ -80,7 +80,8 @@ impl LiveServer {
         settings.r#type = SOCK_TCP;
         // SAFETY: the record just boxed, which the port frees with the state.
         let socket = unsafe { Socket::from_ptr(listener) }.unwrap();
-        settings.set_listening_socket(socket);
+        settings
+            .set_listening_socket(unsafe { swoole_rs_reactor::OwnedSocket::from_socket(socket) });
         settings.gs.set((&raw mut *port_counters).cast());
         let state = server.state();
         let _ = state.ports.push(settings);

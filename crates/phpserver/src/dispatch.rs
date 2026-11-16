@@ -172,13 +172,12 @@ fn coroutine_enabled(server: view::Server<'_>) -> bool {
 /// `SWR_PHPSERVER_INSTALL_ALLOCATORS`: the server's message bus, and its receive
 /// buffers in base and thread mode, allocate Zend strings.
 pub(crate) fn use_zend_strings(server: view::Server<'_>) {
-    let allocator = swoole_rs_phpswoole::sw_zend_string_allocator();
     server.set_bus_allocator(false, swoole_rs_phpswoole::zend_string_allocator());
     let config = server.config();
     if config.mode_ != Mode::Process {
         config
             .recv_buffer_allocator
-            .store(allocator.cast_mut(), Relaxed);
+            .set(Some(swoole_rs_phpswoole::zend_string_allocator()));
     }
 }
 

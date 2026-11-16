@@ -14,8 +14,8 @@
 pub trait Effects {
     /// Performs `op`, which reports nothing.
     fn effect(&mut self, op: Op, arg: usize, flags: &mut u32);
-    /// `socket->recv` of at most `size` bytes into the buffer's tail, with upstream's
-    /// read-error handling and warning.
+    /// `socket->recv` of at most `size` bytes onto the buffer, which then counts them,
+    /// with upstream's read-error handling and warning.
     fn recv(&mut self, size: usize, flags: &mut u32) -> Received;
     /// `get_package_length` over the buffered bytes from byte `from`: `None` for
     /// malformed bytes, `Some(0)` while the length header is incomplete.
@@ -31,11 +31,12 @@ pub trait Effects {
     /// `swoole_pagesize()`.
     fn page(&mut self, flags: &mut u32) -> usize;
     /// The buffer's `length`, `size` and `offset` now.
-    fn buffer(&self) -> Buffer;
-    /// Sets the buffer's `length` and `offset`.
+    fn buffer(&mut self) -> Buffer;
+    /// Sets the buffer's `offset`, and its `length` when no longer: the loop only
+    /// keeps or drops bytes ([`Effects::recv`] adds them).
     fn set_buffer(&mut self, length: usize, offset: i64);
     /// The buffer's `length` received bytes.
-    fn data(&self) -> &[u8];
+    fn data(&mut self) -> &[u8];
     /// The protocol's settings now.
     fn protocol(&self) -> Protocol;
 }
@@ -154,18 +155,14 @@ impl<E: Effects> Recv<'_, E> {
             self.flags &= !FLAG_WAIT;
         }
     }
-    fn length(&self) -> usize {
+    fn length(&mut self) -> usize {
         self.effects.buffer().length
     }
-    fn size(&self) -> usize {
+    fn size(&mut self) -> usize {
         self.effects.buffer().size
     }
-    fn offset(&self) -> i64 {
+    fn offset(&mut self) -> i64 {
         self.effects.buffer().offset
-    }
-    fn set_length(&mut self, length: usize) {
-        let offset = self.offset();
-        self.effects.set_buffer(length, offset);
     }
     fn set_offset(&mut self, offset: i64) {
         let length = self.length();
@@ -177,7 +174,7 @@ impl<E: Effects> Recv<'_, E> {
         self.effects.set_buffer(0, 0);
     }
     /// Bytes buffered past the dispatched ones.
-    fn pending(&self) -> usize {
+    fn pending(&mut self) -> usize {
         self.length() - self.start
     }
     /// Removes the dispatched bytes, so the buffer starts at the next package, as
@@ -201,23 +198,17 @@ impl<E: Effects> Recv<'_, E> {
         self.effects.protocol().package_max_length
     }
     /// Reads at most `size` bytes onto the buffer: the count, or the receive's end
-    /// when the read ends it (the peer closed, or bytes overran the allocation).
+    /// when the read ends it (the peer closed).
     #[inline(always)]
     fn read(&mut self, size: usize) -> Result<usize, Status> {
-        let n = match self.effects.recv(size, &mut self.flags) {
-            Received::Done => return Err(Status::Ok),
-            Received::Close | Received::Bytes(0) => return Err(Status::Err),
-            Received::Bytes(n) => n,
-        };
-        let length = self.length();
-        if n > self.size() - length {
-            return Err(Status::Err);
+        match self.effects.recv(size, &mut self.flags) {
+            Received::Done => Err(Status::Ok),
+            Received::Close | Received::Bytes(0) => Err(Status::Err),
+            Received::Bytes(n) => Ok(n),
         }
-        self.set_length(length + n);
-        Ok(n)
     }
     /// The buffer ends with the protocol's EOF (`length >= eof_len`).
-    fn ends_with_eof(&self) -> bool {
+    fn ends_with_eof(&mut self) -> bool {
         let protocol = self.effects.protocol();
         protocol
             .package_eof
@@ -304,7 +295,7 @@ impl<E: Effects> Recv<'_, E> {
     }
 
     /// Bytes up to and including the length field: `package_length_offset` plus `head`.
-    fn header(&self, head: u32) -> usize {
+    fn header(&mut self, head: u32) -> usize {
         (u32::from(self.effects.protocol().package_length_offset) + head) as usize
     }
 
@@ -360,7 +351,7 @@ impl<E: Effects> Recv<'_, E> {
 
     /// Read more for a partial package, unless the socket left the reactor (a pause
     /// mid-buffer) or the last read drained it (TLS may still hold decrypted bytes).
-    fn more(&self, drained: bool) -> Step {
+    fn more(&mut self, drained: bool) -> Step {
         if self.flag(FLAG_REMOVED) || (drained && !self.flag(FLAG_TLS)) {
             Step::Wait
         } else {
@@ -369,7 +360,7 @@ impl<E: Effects> Recv<'_, E> {
     }
 
     /// The buffer holds the whole awaited package (`length >= offset` past `start`).
-    fn complete(&self) -> bool {
+    fn complete(&mut self) -> bool {
         usize::try_from(self.offset()).is_ok_and(|offset| self.pending() >= offset)
     }
 
@@ -576,6 +567,7 @@ mod tests {
                 let chunk = n.chunks[0];
                 let read = chunk.len().min(size);
                 n.storage[length..length + read].copy_from_slice(&chunk[..read]);
+                n.buffer.length += read;
                 if read == chunk.len() {
                     n.chunks.remove(0);
                 } else {
@@ -622,14 +614,14 @@ mod tests {
         fn page(&mut self, flags: &mut u32) -> usize {
             self.sync(flags, |_| 4096)
         }
-        fn buffer(&self) -> Buffer {
+        fn buffer(&mut self) -> Buffer {
             self.buffer
         }
         fn set_buffer(&mut self, length: usize, offset: i64) {
-            self.buffer.length = length;
+            self.buffer.length = self.buffer.length.min(length);
             self.buffer.offset = offset;
         }
-        fn data(&self) -> &[u8] {
+        fn data(&mut self) -> &[u8] {
             Native::data(self)
         }
         fn protocol(&self) -> Protocol {

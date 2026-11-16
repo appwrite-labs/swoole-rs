@@ -187,11 +187,11 @@ pub(super) fn writable_callback(
 }
 /// The framed receives, as crates/ports registers them.
 const FRAMING: Framing = Framing {
-    length: |_, _, _| {
+    length: |_| {
         log("framed false");
         0
     },
-    eof: |_, _, _| {
+    eof: |_| {
         log("framed true");
         0
     },
@@ -370,7 +370,7 @@ fn construction_makes_a_cloexec_socket_nonblocking_when_async() {
 fn a_call_measures_with_the_protocol_and_frees_the_client() {
     unsafe extern "C" fn twice(
         _: *const Protocol,
-        _: *mut c_void,
+        _: Option<swoole_rs_reactor::Socket<'_>>,
         packet: &mut PacketLength,
     ) -> isize {
         2 * isize::try_from(packet.bytes().len()).unwrap()

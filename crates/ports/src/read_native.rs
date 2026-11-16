@@ -13,7 +13,7 @@ use swoole_rs_corebase::constants::{
     SW_HTTP_BAD_REQUEST_PACKET, SW_HTTP_REQUEST_ENTITY_TOO_LARGE_PACKET,
     SW_HTTP_SERVICE_UNAVAILABLE_PACKET,
 };
-use swoole_rs_corebase::{DataHead, TrustedAllocator, WebSocketStatus, log};
+use swoole_rs_corebase::{DataHead, WebSocketStatus, log};
 use swoole_rs_framing::recv::{Mode, Status};
 use swoole_rs_http_ffi::{HttpRequest, HttpString};
 use swoole_rs_reactor::reactor_upstream::trigger_close_event;
@@ -23,9 +23,9 @@ use swoole_rs_server::static_select::static_select;
 use swoole_rs_server::{Connection as Slot, ServerConfig, view};
 use swoole_rs_tls::upstream::{recv_fill, send};
 
-use crate::framing_recv::{self, Packages};
+use crate::framing_recv::{self, Lent, Packages, Proto};
 use crate::http_routes::Session;
-use crate::http_routes::exports::{Frames, Port, Tasks};
+use crate::http_routes::exports::{Frames, Port, Route, Tasks};
 use crate::read::{Connection, Dispatch, Framing, Readable, Reply, Upgrade, readable};
 
 /// `http_server::SW_HTTP_EXT_FLAG_UPLOAD_PREPROCESSED`.
@@ -141,13 +141,7 @@ impl<'a> Read<'a> {
         if let Some(held) = held {
             return held;
         }
-        let allocator = self.config().recv_buffer_allocator.load(Ordering::Relaxed);
-        // SAFETY: the server's allocator, null or a `swoole::Allocator` that lives for
-        // the process and keeps the allocator contract (Zend strings'); a
-        // `TrustedAllocator` is such a pointer, so the option is the nullable one.
-        let allocator = unsafe {
-            std::mem::transmute::<*mut core::ffi::c_void, Option<TrustedAllocator>>(allocator)
-        };
+        let allocator = self.config().recv_buffer_allocator.get();
         let made = boxed_sized_string(SW_BUFFER_SIZE_BIG as usize, allocator);
         self.socket
             .edit(|s| Box::as_mut_ptr(s.recv_buffer.insert(made)))
@@ -160,12 +154,10 @@ impl<'a> Read<'a> {
     /// One receive of `mode` through the port's protocol, its packages handled by
     /// `packages`.
     #[inline(always)]
-    fn framed(&self, mode: Mode, packages: impl Packages) -> bool {
-        let protocol = self.port.protocol.as_ptr().cast_const();
-        // SAFETY: the port's protocol and the current buffer.
-        let status =
-            unsafe { framing_recv::receive(protocol, self.socket, self.buffer, mode, packages) };
-        status != Status::Err
+    fn framed(&mut self, mode: Mode, packages: impl Packages) -> bool {
+        let (protocol, socket) = (Proto::from(&self.port.protocol), self.socket);
+        let buffer = Lent::new(self.string());
+        framing_recv::receive(protocol, socket, buffer, mode, packages) != Status::Err
     }
 }
 
@@ -236,14 +228,20 @@ impl Connection for Read<'_> {
             Framing::Length if self.frames => self.framed(Mode::Length, Frames(self.session())),
             // An HTTP/2 stream's frames, through the port's own callbacks.
             Framing::Length if self.kind == Readable::Http => {
-                self.framed(Mode::Length, Port(self.session()))
+                let port = self.port;
+                let route = Route::of(
+                    port.open_http2_protocol.get(),
+                    port.open_websocket_protocol.get(),
+                );
+                self.framed(Mode::Length, Port(self.session(), route))
             }
             // A length or EOF port's packages, whose `onPackage` is `dispatch_task`.
             Framing::Length => self.framed(Mode::Length, Tasks(self.session())),
             Framing::Eof => self.framed(Mode::Eof, Tasks(self.session())),
             Framing::Redis => {
-                let (session, buffer) = (self.session(), self.buffer);
+                let session = self.session();
                 let max_length = self.port.protocol.get().package_max_length;
+                let buffer = Lent::new(self.string());
                 // A redis port's `onPackage` is `dispatch_task`.
                 let dispatch =
                     |data: swoole_rs_server::reactor_entry::RecvData<'_>| session.task(data);

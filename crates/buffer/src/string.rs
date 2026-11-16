@@ -154,9 +154,29 @@ impl CppString {
     /// Appends what `fill` writes into the room past the content: what it returned.
     #[inline]
     pub fn fill<R>(&mut self, fill: impl for<'s> FnOnce(&mut Spare<'s>) -> R) -> R {
-        let (result, filled) = lend_spare(self.spare(), fill);
+        self.fill_within(usize::MAX, fill)
+    }
+
+    /// [`fill`](Self::fill) of at most `limit` bytes.
+    #[inline]
+    pub fn fill_within<R>(
+        &mut self,
+        limit: usize,
+        fill: impl for<'s> FnOnce(&mut Spare<'s>) -> R,
+    ) -> R {
+        let spare = self.spare();
+        let room = limit.min(spare.len());
+        let (result, filled) = lend_spare(spare.get_mut(..room).unwrap_or_default(), fill);
         self.length += filled;
         result
+    }
+
+    /// Counts no more than the first `length` bytes as the content.
+    #[inline]
+    pub const fn truncate(&mut self, length: usize) {
+        if length < self.length {
+            self.length = length;
+        }
     }
 
     /// Replaces the content with what `fill` writes from the start of the allocation,
@@ -314,15 +334,28 @@ impl CppString {
         delimiter: &[u8],
         mut handler: impl FnMut(*const u8, usize) -> bool,
     ) -> isize {
+        self.split_with(delimiter, |s, start, length| {
+            handler(s.str.wrapping_add(start), length)
+        })
+        .map_or(-1, usize::cast_signed)
+    }
+
+    /// [`split`](Self::split), each chunk to `handler` as the string, lent back, with
+    /// the chunk's start in it and its length: `None` once `handler` returned false.
+    pub fn split_with(
+        &mut self,
+        delimiter: &[u8],
+        mut handler: impl FnMut(&mut Self, usize, usize) -> bool,
+    ) -> Option<usize> {
         let delimiter_length = delimiter.len();
         let mut start = unsigned(self.offset);
         let mut first = self.offset;
         let mut found = self.find(start, delimiter);
         while let Some(position) = found {
             let length = position + delimiter_length;
-            let chunk = self.str.wrapping_add(start.wrapping_sub(unsigned(first)));
-            if !handler(chunk, length.wrapping_add(unsigned(first))) {
-                return -1;
+            let chunk = start.wrapping_sub(unsigned(first));
+            if !handler(self, chunk, length.wrapping_add(unsigned(first))) {
+                return None;
             }
             self.offset = self.offset.wrapping_add(signed(length));
             start = unsigned(self.offset);
@@ -333,7 +366,7 @@ impl CppString {
         if first == self.offset {
             self.offset = signed(self.length.wrapping_sub(delimiter_length));
         }
-        start.wrapping_sub(unsigned(first)).cast_signed()
+        Some(start.wrapping_sub(unsigned(first)))
     }
 
     /// The whole allocation, its first `length` bytes the content. Only the content is

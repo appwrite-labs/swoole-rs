@@ -36,6 +36,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use swoole_rs_ffi::frame_api::Frame;
 // The crates, once: the C++ in libswoole.a and the cases call them by symbol.
+use swoole_rs_clients::protocol::Socket;
 use swoole_rs_ffi as _;
 use swoole_rs_ports::http_routes::exports as http;
 
@@ -147,7 +148,13 @@ unsafe fn http_get_package_length(
     pl: *mut PacketLength,
 ) -> isize {
     // SAFETY: per the caller.
-    unsafe { http::get_package_length(protocol.cast(), socket.cast(), &mut *pl.cast()) }
+    unsafe {
+        http::get_package_length(
+            protocol.cast(),
+            Socket::from_ptr(socket.cast()),
+            &mut *pl.cast(),
+        )
+    }
 }
 
 /// `http_server::get_package_length_size`.
@@ -156,7 +163,7 @@ unsafe fn http_get_package_length(
 /// `socket` is a connection socket.
 unsafe fn http_get_package_length_size(socket: *mut c_void) -> u8 {
     // SAFETY: per the caller.
-    unsafe { http::get_package_length_size(socket.cast()) }
+    unsafe { http::get_package_length_size(Socket::from_ptr(socket.cast()).expect("a socket")) }
 }
 
 // The handshake's `Sec-WebSocket-Accept`, as upstream's `http_context` computes it.

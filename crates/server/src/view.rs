@@ -128,6 +128,12 @@ impl<'a> Server<'a> {
         }
     }
 
+    /// `f` over the server this thread's reactor serves, or `None` when it serves
+    /// none: a reactor holds its server while it runs it.
+    pub fn with_reactor<R>(f: impl FnOnce(Server<'_>) -> R) -> Option<R> {
+        crate::reactor_handle::Reactor::current()?.server().map(f)
+    }
+
     /// The server `object` is, live as long as the borrow.
     #[cfg_attr(
         not(feature = "upstream-symbols"),

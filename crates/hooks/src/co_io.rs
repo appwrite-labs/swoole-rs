@@ -230,8 +230,14 @@ mod native {
         let Some(call) = callback else {
             return crate::packet::Length::NotFound;
         };
-        // SAFETY: the record's protocol and network socket, and `size` bytes at `buf`.
-        let length = unsafe { call(protocol, socket.socket().cast(), &mut packet) };
+        // SAFETY: the record's protocol and network socket, if open, and `size` bytes
+        // at `buf`.
+        let mut measure = |net: Option<swoole_rs_reactor::Socket<'_>>| unsafe {
+            call(protocol, net, &mut packet)
+        };
+        let length = socket
+            .with_network(|net| measure(Some(net)))
+            .unwrap_or_else(|| measure(None));
         *header = packet.header_len;
         crate::packet::Length::of(length)
     }

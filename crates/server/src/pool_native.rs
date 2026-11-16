@@ -16,7 +16,7 @@ use swoole_rs_process::worker_record::WorkerType;
 use swoole_rs_reactor::Events;
 
 use crate::objects::{Reactor, worker_pipe};
-pub(crate) use crate::reactor_ops::{PoolBus, STD_ALLOCATOR};
+pub(crate) use crate::reactor_ops::PoolBus;
 use core::sync::atomic::AtomicU64;
 use swoole_rs_bus::MessageBus;
 use swoole_rs_corebase::DataHead;

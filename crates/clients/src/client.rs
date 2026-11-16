@@ -164,8 +164,8 @@ const ERROR_HTTP_PROXY_HANDSHAKE_ERROR: c_int =
 use swoole_rs_tls::reactor_write::reactor_writable_callback as writable_callback;
 
 /// One of `Protocol::recv_with_length_protocol` and `recv_with_eof_protocol` over a
-/// live protocol, socket and input buffer.
-pub type Framed = fn(*const Protocol, Socket<'_>, *mut CppString) -> c_int;
+/// live client's protocol, socket and input buffer ([`Handle::with_framed`]).
+pub type Framed = fn(Handle) -> c_int;
 
 /// The framed receives crates/ports defines; ports depends on this crate, so
 /// `swoole_init` (crates/ffi) registers them with [`set_framing`]. Only a
@@ -176,10 +176,7 @@ pub struct Framing {
 }
 
 impl Framing {
-    /// # Safety
-    /// `length` and `eof` must be sound for any live protocol, socket and input
-    /// buffer of a client, which is all a client's `on_read` passes them.
-    pub const unsafe fn new(length: Framed, eof: Framed) -> Self {
+    pub const fn new(length: Framed, eof: Framed) -> Self {
         Self { length, eof }
     }
 }
@@ -869,6 +866,16 @@ fn create_with(kind: c_int, is_async: bool, socket_ops: &'static SocketOps) -> O
 }
 
 impl Handle {
+    /// `f` over the protocol, socket and input buffer a framed receive acts on, live
+    /// while the client is (per [`Handle::new`]): the record's protocol in place, as
+    /// its callbacks take it by address, and the input buffer an async connect made.
+    pub fn with_framed<R>(
+        self,
+        f: impl FnOnce(*const Protocol, Socket<'_>, *mut CppString) -> R,
+    ) -> R {
+        f(self.protocol(), self.socket(), self.input())
+    }
+
     /// A handle on `client`.
     ///
     /// # Safety
@@ -992,7 +999,7 @@ pub fn package_length(this: Handle, data: &[u8]) -> isize {
     };
     let mut packet = PacketLength::new(data);
     // SAFETY: the live client's protocol and socket, and the packet's bytes.
-    unsafe { get(this.protocol(), this.socket_ptr().cast(), &mut packet) }
+    unsafe { get(this.protocol(), record.socket, &mut packet) }
 }
 
 /// `Client::close()`: false without a socket, when already closed or when `close(2)`
@@ -1848,10 +1855,8 @@ fn on_read(this: Handle) -> bool {
             .unwrap_or_else(|| swoole_rs_corebase::fatal("client framing is not registered"));
         let framed = if eof { framing.eof } else { framing.length };
         let socket = this.socket();
-        let protocol = this.protocol();
-        // The live protocol, socket and input buffer `Framing::new` asks for. A
-        // package callback may destroy the client; its socket outlives this handler.
-        let n = framed(protocol, socket, this.input());
+        // A package callback may destroy the client; its socket outlives this handler.
+        let n = framed(this);
         // A destroyed client cleared its object.
         let released = socket.read(|socket| socket.object.is_null());
         if n < 0 && !released && !this.flag(Flag::Closed) {

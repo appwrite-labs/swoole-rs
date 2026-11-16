@@ -258,7 +258,7 @@ pub(crate) fn import(config: &mut PortConfig, fd: c_int) -> bool {
     };
     socket.removed = true;
     let info = socket.info;
-    config.set_listening_socket(Box::new(socket).into_socket());
+    config.set_listening_socket(OwnedSocket::new(Box::new(socket)));
     config.r#type = kind.raw();
     if !with_host(&info, |host| config.host.set(host.to_bytes())) {
         swoole_rs_corebase::fatal("out of memory storing a port's host");
@@ -276,9 +276,7 @@ pub(crate) fn close(config: &PortConfig) {
         drop(config.tls.settings.replace(None));
     }
     // Taken first, so nothing finds the record once it is freed.
-    let socket = config.take_socket();
-    // SAFETY: none, or the port's live heap record, which nothing uses after.
-    socket_free(socket.map(|socket| unsafe { OwnedSocket::from_socket(socket) }));
+    socket_free(config.take_socket());
     if matches!(config.r#type, 5 | 6) {
         let mut path = config.host_bytes().to_vec();
         path.push(0);
