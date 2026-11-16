@@ -7,13 +7,12 @@ use crate::host;
 use std::{
     cell::Cell,
     ffi::{CStr, CString, c_int},
-    ptr::NonNull,
     sync::Mutex,
 };
-use swoole_rs_corebase::sys::{self, Text};
+use swoole_rs_corebase::sys;
 use swoole_rs_zend::{
     Class, Minit, Owned, Value,
-    sys::{ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, php_stream},
+    sys::{ZEND_ACC_PUBLIC, ZEND_ACC_READONLY},
 };
 
 static ERROR: Class = Class::new();
@@ -61,25 +60,7 @@ pub(crate) fn stream_cast(value: &Value) -> c_int {
 /// `php_swoole_thread_stream_create`: `php://fd/<fd>` (which duplicates the
 /// descriptor again), or a Thread\Error. In a request.
 pub(crate) fn stream_create(fd: c_int) -> Owned {
-    /// A stream just opened, whose resource no zval holds yet: only the open
-    /// below makes one, and handing it to a zval takes it.
-    #[repr(transparent)]
-    struct Opened(NonNull<php_stream>);
-    unsafe extern "C" {
-        /// `php_stream_open_wrapper_ex(path, mode, 0, NULL, NULL)` in the
-        /// request, or none.
-        safe fn swr_zend_stream_open(path: Text<'_>, mode: Text<'_>) -> Option<Opened>;
-        /// The stream's resource into `value`, in place of what it held, which
-        /// is not released: the zval takes the stream's one reference.
-        safe fn swr_zend_stream_to_zval(stream: Opened, value: &Owned);
-    }
-    let path = CString::new(format!("php://fd/{fd}")).unwrap_or_default();
-    let Some(stream) = swr_zend_stream_open(path.as_c_str().into(), c"".into()) else {
-        return error(errno());
-    };
-    let out = Owned::default();
-    swr_zend_stream_to_zval(stream, &out);
-    out
+    swoole_rs_zend::thread::fd_stream(fd).unwrap_or_else(|| error(errno()))
 }
 
 /// A duplicate of `fd` handed to `create`, which makes the object over it

@@ -28,10 +28,12 @@ pub mod local;
 mod minit;
 mod object;
 pub mod observer;
+mod offset;
 pub mod opcode;
 pub mod pdo;
 pub mod registration;
 pub mod string;
+pub mod thread;
 pub mod value;
 mod zval;
 

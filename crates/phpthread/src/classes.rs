@@ -17,19 +17,10 @@ use swoole_rs_zend::{
     Call, Custom, CustomClass, Invalid, Minit, Owned, Value as ZValue, bailout, new_object,
     sys::{
         IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL, IS_RESOURCE, IS_STRING, IS_TRUE, ZEND_ACC_FINAL,
-        ZEND_ACC_PUBLIC, ZEND_ACC_READONLY, zend_long, zend_ulong,
+        ZEND_ACC_PUBLIC, ZEND_ACC_READONLY,
     },
 };
 
-unsafe extern "C" {
-    /// `_zend_handle_numeric_str`: whether a live string is a canonical integer,
-    /// which `index` then holds. It reads the string only.
-    safe fn swr_zend_handle_numeric_str(key: &swoole_rs_zend::ZStr, index: &mut zend_ulong)
-    -> bool;
-    /// `Z_RES_HANDLE_P`: the handle of the resource a live zval holds, read
-    /// only; 0 for any other value.
-    safe fn swr_zend_resource_handle(value: &ZValue) -> zend_long;
-}
 use swoole_rs_zend::{method_table, sys as z};
 
 /// An object's reference to its shared table or queue, unset until
@@ -255,36 +246,23 @@ fn construct_array<T: Shared<Target = Array>>(call: &Call, list: bool) {
 /// `handle_array_key` and `ZEND_ARRAY_CALL_METHOD`'s dispatch: the key, or
 /// `None` after Zend's errors.
 fn map_key(call: &Call, key: &swoole_rs_zend::Value) -> Option<Key> {
-    // Zend's conversions of an odd key, which may warn and so run the user's error
-    // handler: declared here, where the method's `call` proves this thread runs PHP.
-    unsafe extern "C" {
-        /// `zend_dval_to_lval_safe`, which may raise `E_DEPRECATED`.
-        safe fn swr_zend_dval_to_lval_safe(value: f64) -> zend_long;
-        /// Zend's warning for a resource used as an offset; it reads the live zval.
-        safe fn zend_use_resource_as_offset(dim: &swoole_rs_zend::Value);
-    }
     match key.kind() {
         IS_STRING => {
             let text = key.str()?;
-            let mut index: zend_ulong = 0;
-            if swr_zend_handle_numeric_str(text, &mut index) {
-                Some(Key::Int(index.c_cast::<i64>()))
-            } else {
-                Some(Key::Str(text.bytes().into()))
+            match text.numeric_index() {
+                Some(index) => Some(Key::Int(index.c_cast::<i64>())),
+                None => Some(Key::Str(text.bytes().into())),
             }
         }
         IS_LONG => key.as_long().map(Key::Int),
         IS_NULL => Some(Key::Str(Box::default())),
         IS_DOUBLE => {
             let number = key.as_double()?;
-            Some(Key::Int(swr_zend_dval_to_lval_safe(number)))
+            Some(Key::Int(call.double_offset(number)))
         }
         IS_FALSE => Some(Key::Int(0)),
         IS_TRUE => Some(Key::Int(1)),
-        IS_RESOURCE => {
-            zend_use_resource_as_offset(key);
-            Some(Key::Int(swr_zend_resource_handle(key)))
-        }
+        IS_RESOURCE => Some(Key::Int(call.resource_offset(key))),
         _ => {
             // Both of upstream's errors, in its order.
             call.argument_type_error(1, c"Illegal offset type");
