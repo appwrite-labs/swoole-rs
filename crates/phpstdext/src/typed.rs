@@ -2,7 +2,7 @@
 //! and flagged [`TYPED`]. Writes check keys and values against the definition:
 //! `swoole_typed_array`, the `array_push`/`array_unshift`/`array_splice`
 //! overrides, and the `ASSIGN_DIM`/`UNSET_DIM`/`FE_RESET_RW` opcode handlers.
-use crate::{CONTINUE, DISPATCH, Frame, Op};
+use crate::{Frame, Next, Op};
 use std::{
     cell::Cell,
     ffi::{CStr, CString, c_int},
@@ -567,17 +567,17 @@ pub(crate) struct Unset;
 
 impl Handler for Unset {
     const OPCODE: u32 = swoole_rs_zend::sys::ZEND_UNSET_DIM;
-    fn run(frame: Frame<'_>) -> c_int {
+    fn run(frame: Frame<'_>) -> Next {
         // `get_array_on_opline`: op1's slot.
         let Some(array) = Op::current(frame).op1_container() else {
-            return DISPATCH;
+            return Next::Dispatch;
         };
         match Typed::of(array) {
             Some(typed) if typed.this().key == 0 => {
                 throw_error(c"The typed array list do not support random deletion of elements");
-                CONTINUE
+                Next::Continue
             }
-            _ => DISPATCH,
+            _ => Next::Dispatch,
         }
     }
 }
@@ -588,16 +588,16 @@ pub(crate) struct ForeachBegin;
 
 impl Handler for ForeachBegin {
     const OPCODE: u32 = swoole_rs_zend::sys::ZEND_FE_RESET_RW;
-    fn run(frame: Frame<'_>) -> c_int {
+    fn run(frame: Frame<'_>) -> Next {
         let op = Op::current(frame);
         if op.op1_container().and_then(Typed::of).is_none() {
-            return DISPATCH;
+            return Next::Dispatch;
         }
         throw_error(
             c"The type array do not support using references for element value during iteration",
         );
         foreach_undef(frame);
-        CONTINUE
+        Next::Continue
     }
 }
 

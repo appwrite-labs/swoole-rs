@@ -249,12 +249,12 @@ pub(super) fn del_id(_: swoole_rs_timer::Held) {
 }
 /// crates/hooks' `async::dispatch`: logs the request; nothing completes it.
 fn async_dispatch(_: Handle, request: &crate::resolver::Request) -> bool {
-    let view = swoole_rs_corebase::swr_v1_core_resolver_view(request.get());
-    // SAFETY: the request's name, live with it.
-    let name = unsafe { &*view.name }.bytes();
-    // SAFETY: the request's fields, live with it.
-    let family = unsafe { (*view.fields).family };
-    log(format!("dns {} {family}", String::from_utf8_lossy(name)));
+    let request = request.get();
+    let family = request.fields().family;
+    log(format!(
+        "dns {} {family}",
+        String::from_utf8_lossy(&request.name())
+    ));
     true
 }
 // crates/tls's TLS operations, over its own context.
