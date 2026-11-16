@@ -307,7 +307,7 @@ unsafe fn create() {
         let view = &*fields(reactor);
         assert_eq!(view.max_event_num, SW_REACTOR_MAXEVENTS);
         assert!(view.ready);
-        assert!(view.write.is_some());
+        assert!(!view.write.is_null());
         assert!(view.close.is_some());
         assert!(view.defer_tasks.is_none());
         assert!(reactor_upstream::reactor_default_write_handler(reactor).is_some());
@@ -633,7 +633,7 @@ unsafe fn write_2m() {
         // Past the data's end, as upstream's length: the write refuses it unread.
         assert_eq!(
             event_api::swoole_event_write(
-                socket,
+                handle(socket),
                 data.as_ptr().cast(),
                 (*socket).fields.output.buffer_size as usize + 8192
             ),

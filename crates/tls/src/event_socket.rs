@@ -97,9 +97,13 @@ impl EventSocket {
     /// and defers the close to it; otherwise closes its fd (`-1` for none) and frees
     /// it at once. Outside the hybrid there are no timers, buffers or loop.
     pub fn release(self) {
+        // SAFETY: the record this owns, the leaked box `adopt` (or the caller of
+        // `socket_free`) gave it: no other owner holds it, and nothing uses a handle to
+        // it once it is freed below or by the reactor's deferred task.
+        let owned = unsafe { OwnedSocket::from_socket(self.0) };
         #[cfg(feature = "upstream-symbols")]
-        {
-            let record = self.0;
+        let owned = {
+            let record = owned.socket();
             // The buffers leave the record here and go below, after the timers and
             // outside the record's borrow: an entry's disposer runs as its buffer goes.
             let (timers, buffers) = record.edit(|record| {
@@ -119,38 +123,18 @@ impl EventSocket {
                     // failure.
                     _ = event_api::event_del(record);
                 }
-                // `swoole_event_defer(socket_free_defer, this)`: the loop may still read
-                // the record through an event of this pass. A reactor freed before it
-                // runs frees it all the same.
-                match event_api::swoole_event_defer_value(FreeDeferred(self)) {
+                // `swoole_event_defer(socket_free_defer, this)`; a reactor freed before
+                // it runs closes the socket all the same.
+                match swoole_rs_reactor::defer_free(owned) {
                     Ok(()) => return,
-                    Err(FreeDeferred(this)) => return this.close_and_free(),
+                    Err(owned) => owned,
                 }
+            } else {
+                owned
             }
-        }
-        self.close_and_free();
-    }
-
-    /// base.cc's `socket_free_defer`: closes the descriptor and frees the record.
-    fn close_and_free(self) {
-        // SAFETY: the record this owns, the leaked box `adopt` (or the caller of
-        // `socket_free`) gave it, which nothing uses afterwards.
-        unsafe { Box::from_raw(self.0.as_ptr()) }.close_and_free();
-    }
-}
-
-/// The record [`EventSocket::release`] leaves the loop to free.
-#[cfg(feature = "upstream-symbols")]
-struct FreeDeferred(EventSocket);
-
-#[cfg(feature = "upstream-symbols")]
-impl event_api::Deferred for FreeDeferred {
-    fn run(self) {
-        self.0.close_and_free();
-    }
-
-    fn dispose(self) {
-        self.0.close_and_free();
+        };
+        // base.cc's `socket_free_defer`, at once.
+        owned.into_box().close_and_free();
     }
 }
 

@@ -1,7 +1,6 @@
 //! The poll backend's bounded snapshot: a pollfd and socket per registered fd,
 //! rebuilt from the registry before each `poll()`.
 use crate::registry::Registry;
-use std::ffi::c_void;
 
 /// `translate_events_to_poll`: the poll bits for swoole `events`.
 #[must_use]
@@ -16,11 +15,11 @@ pub fn swr_v1_reactor_poll_events_to(events: crate::Events) -> i16 {
     poll_events
 }
 
-/// Room for a fixed number of entries, allocated once, so the arrays never move:
-/// the wait loop keeps pointers to them across waits.
+/// Room for a fixed number of entries, allocated once: the registry's sockets as it
+/// held them before the wait, so an entry's socket is one never freed while registered.
 pub struct PollSnapshot {
     entries: Vec<libc::pollfd>,
-    sockets: Vec<*mut c_void>,
+    sockets: Vec<crate::Socket<'static>>,
 }
 
 impl PollSnapshot {
@@ -46,14 +45,9 @@ impl PollSnapshot {
                 events: swr_v1_reactor_poll_events_to(events),
                 revents: 0,
             });
-            self.sockets.push(socket.as_ptr().cast());
+            self.sockets.push(socket);
         }
         self.entries.len()
-    }
-
-    /// The pollfd array, which `poll()` fills in.
-    pub(crate) fn entries(&mut self) -> *mut libc::pollfd {
-        self.entries.as_mut_ptr()
     }
 
     /// The filled pollfd entries, for `poll()`.
@@ -61,9 +55,16 @@ impl PollSnapshot {
         &mut self.entries
     }
 
-    /// The socket of each pollfd entry.
-    pub(crate) fn sockets(&mut self) -> *mut *mut c_void {
-        self.sockets.as_mut_ptr()
+    /// Entry `index` as `poll()` left it, and the socket it was built from.
+    #[inline]
+    pub(crate) fn entry(&self, index: usize) -> Option<(libc::pollfd, crate::Socket<'static>)> {
+        Some((*self.entries.get(index)?, *self.sockets.get(index)?))
+    }
+
+    /// Where the pollfd array is, which never moves.
+    #[cfg(test)]
+    pub(crate) fn entries(&self) -> *const libc::pollfd {
+        self.entries.as_ptr()
     }
 }
 
@@ -95,12 +96,11 @@ mod tests {
         let entries = snapshot.entries();
         assert_eq!(snapshot.fill(&registry), 1);
         assert_eq!(snapshot.entries(), entries, "the array does not move");
-        // SAFETY: `fill` wrote the first entry.
-        let (entry, held) = unsafe { (entries.read(), snapshot.sockets().read()) };
+        let (entry, held) = snapshot.entry(0).unwrap();
         assert_eq!(
             (entry.fd, entry.events, entry.revents),
             (3, libc::POLLIN, 0)
         );
-        assert_eq!(held, socket(30).as_ptr().cast());
+        assert_eq!(held.as_ptr(), socket(30).as_ptr());
     }
 }

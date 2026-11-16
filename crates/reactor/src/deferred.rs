@@ -21,6 +21,9 @@ enum Task {
     },
     /// A destroy callback that takes nothing ([`crate::event_api::on_destroy`]).
     Call(fn()),
+    /// base.cc's `socket_free_defer` of a record the task owns: closed and freed when
+    /// it runs, or when the queue is freed unrun.
+    Free(crate::OwnedSocket),
     Value(Box<dyn Erased>),
 }
 
@@ -57,6 +60,7 @@ impl Task {
             // SAFETY: the task's own contract, from whoever queued it.
             Self::Native { call, data, .. } => unsafe { call(data) },
             Self::Call(call) => call(),
+            Self::Free(socket) => socket.into_box().close_and_free(),
             Self::Value(value) => value.run(),
         }
     }
@@ -73,6 +77,7 @@ impl Task {
                 unsafe { dispose(data) };
             }
             Self::Native { .. } | Self::Call(_) => {}
+            Self::Free(socket) => socket.into_box().close_and_free(),
             Self::Value(value) => value.dispose(),
         }
     }
@@ -134,6 +139,20 @@ fn queue(task: Task) -> bool {
     crate::event_api::field_mut(|fields| push(&mut fields.defer_tasks, task)).is_some()
 }
 
+/// `swoole_event_defer(socket_free_defer, socket)`: the thread's reactor closes and
+/// frees `socket`'s record after the current pass, or as the reactor is freed first.
+/// The loop may still meet the record through an event of this pass, so it stays
+/// until then.
+/// # Errors
+/// There is no reactor: `socket` comes back.
+pub fn defer_free(socket: crate::OwnedSocket) -> Result<(), crate::OwnedSocket> {
+    let Some(reactor) = crate::event_api::running() else {
+        return Err(socket);
+    };
+    reactor.with(|state| push(&mut state.fields.defer_tasks, Task::Free(socket)));
+    Ok(())
+}
+
 /// `reactor->add_destroy_callback(...)` of `value`: [`Deferred::run`] as the reactor
 /// is destroyed, or [`Deferred::dispose`] if it is queued after that pass.
 pub fn defer_destroy_value(reactor: crate::Running<'_>, value: impl Deferred) {
@@ -152,25 +171,19 @@ pub(crate) fn defer_destroy_call(fields: &mut ReactorFields, call: fn()) {
 /// runs, the reactor's `running_defer` holds it: a task that bails out of the loop jumps
 /// over this frame, and the reactor's drop frees the queue instead.
 pub(crate) fn run_defer(reactor: Running<'_>) {
-    // The borrow ends before a task runs. The queue's address is taken where it stays:
-    // in the box `running_defer` now owns.
-    let queue = reactor.with(|state| {
+    // The borrow ends before a task runs. The queue stays at its place in
+    // `running_defer`: a nested pass pushes its own after it and pops it again.
+    let at = reactor.with(|state| {
         let queue = state.fields.defer_tasks.take()?;
         state.running_defer.push(queue);
-        let queue = state.running_defer.last_mut()?;
-        Some(&raw mut **queue)
+        Some(state.running_defer.len() - 1)
     });
-    let Some(queue) = queue else {
+    let Some(at) = at else {
         return;
     };
     // Each task is popped before it is called, and no borrow of the queue spans a call.
-    loop {
-        // SAFETY: the detached queue, which only `running_defer` names: nothing frees
-        // it or borrows it there while this pass runs (a task defers onto the
-        // reactor's `defer_tasks`, another queue, and a nested pass pops only its own).
-        let Some(task) = (unsafe { (*queue).tasks.pop_front() }) else {
-            break;
-        };
+    let next = |state: &mut crate::ReactorState| state.running_defer.get_mut(at)?.tasks.pop_front();
+    while let Some(task) = reactor.with(next) {
         task.run();
     }
     // Every task ran, and a nested pass popped its own.

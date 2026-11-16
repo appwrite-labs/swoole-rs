@@ -171,11 +171,12 @@ pub(crate) fn pipe_read(worker: Worker<'_>, buffer: &mut [u8], blocking: bool) -
 /// Write `data` to the pipe: the length written, or `None`.
 pub(crate) fn pipe_write(worker: Worker<'_>, data: &[u8], blocking: bool) -> Option<usize> {
     let socket = pipe(worker)?;
-    let (bytes, length) = (data.as_ptr().cast(), data.len());
     if !blocking && event_api::swoole_event_is_available() {
-        // SAFETY: a live socket and `length` readable bytes.
-        usize::try_from(unsafe { event_api::swoole_event_write(socket.as_ptr(), bytes, length) })
-            .ok()
+        // SAFETY: the worker's pipe end, a heap record that only `pipe_close` or the
+        // worker's drop frees, whose caller answers for a registration the write
+        // leaves, as upstream's `swoole_event_write` did.
+        let socket = unsafe { Socket::from_ptr(socket.as_ptr()) }?;
+        event_api::event_write(socket, data)
     } else {
         send_sync(socket, data, 0)
     }
