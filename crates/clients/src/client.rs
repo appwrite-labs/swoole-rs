@@ -1760,9 +1760,6 @@ fn on_read(this: Handle) -> bool {
             log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
             return connect_failed(this);
         };
-        // Upstream hands the handshake the buffer's free size, past what was read. The
-        // handshake reads only a reply's first two bytes, so the two differ only when a
-        // byte arrives alone, which upstream pairs with whatever the buffer held next.
         if !this.socks5_handshake(&reply) {
             log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
             return connect_failed(this);
