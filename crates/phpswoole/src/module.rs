@@ -181,6 +181,8 @@ pub enum SocketSettings {
 /// them, read too. crates/ffi, which links them all, registers them with
 /// [`crate::module_entry`] when Zend asks for the module entry, before any phase.
 pub struct Families {
+    /// Core startup, registered before Zend runs MINIT.
+    pub core_startup: fn(),
     /// `php_swoole_coroutine_minit`, `_system_minit` and `_scheduler_minit`.
     pub coroutine_minit: [Minit; 3],
     /// `php_swoole_server_minit`.
@@ -506,11 +508,8 @@ extern "C" fn print_stack_trace() {
     swr_zend_print_stack_trace();
 }
 
-// Declared: crates/ffi depends on this crate, and the rest is C.
+// Native PHP helpers and Zend shims.
 unsafe extern "C" {
-    /// `void swoole_init()`, crates/ffi's.
-    #[link_name = "_Z11swoole_initv"]
-    safe fn swoole_init();
     /// native/phphelpers/host.c.
     safe fn swr_phpswoole_pcre_jit_off();
     /// `SWOOLE_G`'s storage (native/phphelpers/host.c): this thread's
@@ -537,7 +536,9 @@ extern "C" fn load_library_body() {
 /// MINIT's first step: Swoole's core, its after-fork hook, and the bug
 /// report's PHP version.
 extern "C" fn core_startup() {
-    swoole_init();
+    (families()
+        .unwrap_or_else(|| swoole_rs_corebase::fatal("module families not registered before MINIT"))
+        .core_startup)();
     swoole_rs_corebase::swoole_add_hook(
         swoole_rs_corebase::HookType::AFTER_FORK,
         swr_zend_after_fork,

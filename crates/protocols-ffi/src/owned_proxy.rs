@@ -1,6 +1,6 @@
 //! `swoole::Socks5Proxy`'s methods over the Rust proxy owner and its packet buffer.
 //! `admit`, `pack_negotiate_request` and `handshake_step` keep their upstream symbols
-//! for crates/clients, which links them by name.
+//! for native callers; crates/clients uses the registered typed host.
 use std::ffi::{CStr, c_int};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log::LogLevel::SW_LOG_NOTICE as NOTICE;

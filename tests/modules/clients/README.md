@@ -38,13 +38,16 @@ TLS test closes a pending session through the production client and checks that 
 second close does nothing.
 The client host registers the DNS pool dispatcher alongside framed receives.
 Unit fixtures register their recording dispatcher and retain the original DNS
-success/error traces; the composition root adapts the existing pool ABI, which
-still copies and retains each resolver request until completion.
+success/error traces. The hooks crate constructs its own pool event and retains
+its resolver request until completion; clients no longer mirrors the event layout.
+SOCKS5 admit, negotiation and handshake operations use the same registered host,
+with typed proxy references and reply slices. The input buffer keeps its Box owner
+while the public record exposes its pointer to framing code.
 Receive, append, synchronous receive and datagram receive use the same operation
 table in production and tests. `ReadBuffer` retains initialized bytes versus spare
 capacity across the callback boundary. Real TCP and async UDP tests check binary
 payloads, initialized tails, EOF and sender addresses for both buffer types.
-No `cfg(not(test))` stand-ins remain in this crate; #4093 tracks the remaining curl host.
+No `cfg(not(test))` stand-ins remain in this crate.
 
 Proxy handshakes receive the scratch-buffer loan through the same table. The
 native entry uses the real thread buffer; recording tests keep their 64-byte
@@ -170,5 +173,5 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
 - Async gate locale coverage is the C locale only.
 - The pinned `SHUT_RDWR` branch sets only `shutdown_read`; this is preserved.
 - `network::Client` itself (crates/clients/src/client.rs) is covered by its Rust
-  unit tests against recording doubles of the C++ half and of the socket, reactor
-  and framing symbols it calls, and by the PHPTs.
+  unit tests with explicit socket, reactor, framing, DNS and SOCKS5 operations,
+  the original client cases and the PHPTs.
