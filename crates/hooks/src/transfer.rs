@@ -303,10 +303,16 @@ mod tests {
         } else {
             core::ptr::null_mut()
         };
+        let written = if buffered && event == Events::WRITE {
+            // SAFETY: the 8 bytes of `buffer` at `at`, which the write only reads.
+            unsafe { core::slice::from_raw_parts(at, 8) }
+        } else {
+            &[]
+        };
         let result = transfer(
             socket.co(),
             flags,
-            Buffer::new(at, 8, event, &[]),
+            Buffer::new(at, 8, event, written),
             &mut call,
         );
         let error = socket.0.err_code.get();
