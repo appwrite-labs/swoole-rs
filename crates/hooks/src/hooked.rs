@@ -7,7 +7,7 @@
 //! its Rust members; any other call goes to libc, the async pool or `io_uring`, as
 //! upstream routes it.
 use crate::co_io::set_errno;
-use crate::co_socket::Co;
+use crate::co_socket::{Co, OwnedCo};
 use crate::fd_control::{fd_poll_fake, fd_timeout, fd_wait, swr_v1_hook_fd_poll};
 use crate::socket_map;
 use crate::stdio::{Host, coroutine, on_pool, swr_v1_hook_close_fd};
@@ -25,16 +25,14 @@ use swoole_rs_reactor::{Socket, SocketRecord};
 const INVALID_PARAMS: c_int = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as c_int;
 
 /// How the hooked fds' sockets (`SocketImpl`: `coroutine::Socket`, or `UringSocket`
-/// with `--enable-uring-socket`) are made and deleted: Rust's own (`co_socket`), or
-/// the unit tests' recording fakes. Their members are Rust (`socket_members`,
-/// `lifecycle`) and pick the ring themselves.
-pub struct SocketOps {
+/// with `--enable-uring-socket`) are made: Rust's own (`co_socket`), or the unit
+/// tests' recording ones. Each is the result's, deleted as it drops. Their members
+/// are Rust (`socket_members`, `lifecycle`) and pick the ring themselves.
+pub(crate) struct SocketOps {
     /// `new SocketImpl(domain, type, protocol)`.
-    pub open: fn(c_int, c_int, c_int) -> Co,
+    pub open: fn(c_int, c_int, c_int) -> OwnedCo,
     /// `new SocketImpl(fd, SW_SOCK_RAW)`.
-    pub wrap: fn(c_int) -> Co,
-    /// `delete`.
-    pub free: unsafe extern "C" fn(*mut c_void),
+    pub wrap: fn(c_int) -> OwnedCo,
 }
 
 /// `SW_SOCK_RAW`.
@@ -42,9 +40,8 @@ const SOCK_RAW: c_int = 7;
 
 /// The sockets the hooks make.
 const SOCKETS: SocketOps = SocketOps {
-    open: |domain, kind, protocol| crate::co_socket::make(-1, domain, kind, protocol, true),
-    wrap: |fd| crate::co_socket::make(fd, 0, SOCK_RAW, 0, false),
-    free: crate::co_socket::swr_v1_hook_co_socket_free,
+    open: |domain, kind, protocol| crate::co_socket::owned(-1, domain, kind, protocol, true),
+    wrap: |fd| crate::co_socket::owned(fd, 0, SOCK_RAW, 0, false),
 };
 
 /// [`SOCKETS`], or the unit tests' recording fakes.
@@ -66,39 +63,20 @@ fn hooked(fd: c_int) -> Option<(&'static Host, Co)> {
     socket_map::get(fd).map(|socket| (host, socket))
 }
 
-/// A socket this module made or the map let go of, which nothing else holds:
-/// dropping it deletes it.
-pub(crate) struct Owned(Co);
-
-impl Owned {
-    /// `new SocketImpl(domain, type, protocol)`, which only the result holds.
-    pub(crate) fn open(domain: c_int, kind: c_int, protocol: c_int) -> Self {
-        Self((sockets().open)(domain, kind, protocol))
-    }
-
-    /// The socket, live while this is.
-    pub(crate) const fn socket(&self) -> Co {
-        self.0
-    }
-}
-
-impl Drop for Owned {
-    fn drop(&mut self) {
-        // SAFETY: only this module makes an `Owned`, of a socket nothing else holds.
-        unsafe { (sockets().free)(self.0.this()) };
-    }
+/// `new SocketImpl(domain, type, protocol)`, which only the result holds.
+pub(crate) fn open(domain: c_int, kind: c_int, protocol: c_int) -> OwnedCo {
+    (sockets().open)(domain, kind, protocol)
 }
 
 /// Map `fd` to `socket`, deleting the socket the map lets go.
-fn keep(fd: c_int, socket: Co, replace: bool) {
-    drop(socket_map::insert(fd, socket, replace).map(Owned));
+fn keep(fd: c_int, socket: OwnedCo, replace: bool) {
+    drop(socket_map::insert(fd, socket, replace));
 }
 
 /// A new native socket's fd once the map holds it, or none (deleting it) if it has none.
-fn adopt(socket: Co) -> Option<c_int> {
-    let fd = socket.sock_fd();
+fn adopt(socket: OwnedCo) -> Option<c_int> {
+    let fd = socket.co().sock_fd();
     if fd < 0 {
-        drop(Owned(socket));
         return None;
     }
     keep(fd, socket, true);
@@ -175,14 +153,14 @@ pub fn accept(fd: c_int, peer: &mut SocketAddress) -> c_int {
     let Some((_, socket)) = hooked(fd) else {
         return peer.accept(fd);
     };
-    let Some(conn) = socket.accept(0.0) else {
+    let Some(conn) = socket.accept_owned(0.0) else {
         return -1;
     };
-    conn.net(|accepted| {
+    conn.co().net(|accepted| {
         peer.addr = accepted.info.addr;
         peer.len = accepted.info.len;
     });
-    let conn_fd = conn.sock_fd();
+    let conn_fd = conn.co().sock_fd();
     keep(conn_fd, conn, false);
     conn_fd
 }
@@ -246,8 +224,10 @@ pub extern "C" fn swoole_coroutine_socket_create(fd: c_int) -> c_int {
     if coroutine().is_none() {
         return -1;
     }
-    let socket = (sockets().wrap)(fd);
-    if adopt(socket).is_none() {
+    let owned = (sockets().wrap)(fd);
+    // Live once mapped: the map holds it.
+    let socket = owned.co();
+    if adopt(owned).is_none() {
         return -1;
     }
     socket.net(|wrapped| wrapped.set_fd_option(1, -1));
@@ -264,9 +244,9 @@ pub extern "C" fn swoole_coroutine_socket_unwrap(fd: c_int) -> c_int {
         return -1;
     };
     // `move_fd`, so its deletion leaves the fd open.
-    unwrapped.set_sock_fd(-1);
-    unwrapped.net(|record| record.fd = -1);
-    drop(Owned(unwrapped));
+    unwrapped.co().set_sock_fd(-1);
+    unwrapped.co().net(|record| record.fd = -1);
+    drop(unwrapped);
     0
 }
 
@@ -337,12 +317,7 @@ pub extern "C" fn swoole_coroutine_close(fd: c_int) -> c_int {
     if coroutine().is_none() {
         return sys::close(fd);
     }
-    let result = socket_map::close(
-        fd,
-        Co::close,
-        // A socket removed from the map, which nothing uses any more.
-        |socket| drop(Owned(socket)),
-    );
+    let result = socket_map::close(fd, Co::close);
     if result <= 0 {
         return result;
     }
@@ -459,16 +434,8 @@ pub fn swoole_coroutine_get_socket_object_ex(fd: c_int) -> *mut c_void {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::co_socket::CoSocket;
     use crate::stdio::tests::{LAST_ERROR, Mode, with};
     use std::cell::RefCell;
-
-    /// A native socket (its record), and the network record it owns.
-    #[repr(C)]
-    struct Fake {
-        record: CoSocket,
-        network: SocketRecord,
-    }
 
     thread_local! {
         static CALLS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
@@ -482,47 +449,31 @@ pub(crate) mod tests {
         CALLS.with_borrow_mut(std::mem::take)
     }
 
-    fn fake(fd: c_int) -> Co {
-        // Every field is a scalar, raw pointer or Protocol of those; zero is valid.
-        let mut socket: Box<Fake> = Box::new(unsafe { core::mem::zeroed() });
-        unsafe { crate::co_socket::init(&raw mut socket.record) };
-        socket.network = SocketRecord::new();
-        socket.network.fd = fd;
-        socket.record.sock_fd.set(fd);
-        // The record's pointer comes from the raw one `free` reclaims, so it outlives
-        // the box giving the allocation up.
-        let socket = Box::into_raw(socket);
-        unsafe {
-            (*socket)
-                .record
-                .socket
-                .set(swoole_rs_reactor::Socket::from_ptr(
-                    &raw mut (*socket).network,
-                ));
-        }
-        unsafe { Co::new(socket.cast()) }
+    /// A socket over `fd` that logs `free <sock_fd> <network fd>` as it is deleted.
+    fn fake(fd: c_int) -> OwnedCo {
+        let socket = crate::co_socket::over(fd);
+        crate::socket_extra::set_close_hook(
+            socket.co(),
+            Box::new(|this| {
+                let socket = unsafe { Co::new(this.cast()) };
+                let net = socket.net(|record| record.fd).unwrap();
+                call(format!("free {} {net}", socket.sock_fd()));
+            }),
+        );
+        socket
     }
 
-    fn open(domain: c_int, kind: c_int, _: c_int) -> Co {
+    fn open(domain: c_int, kind: c_int, _: c_int) -> OwnedCo {
         call(format!("open {domain} {kind}"));
         fake(if kind < 0 { -1 } else { 9000 + kind })
     }
-    fn wrap(fd: c_int) -> Co {
+    fn wrap(fd: c_int) -> OwnedCo {
         call(format!("wrap {fd}"));
         fake(fd)
     }
-    unsafe extern "C" fn free(socket: *mut c_void) {
-        let mut socket = unsafe { Box::from_raw(socket.cast::<Fake>()) };
-        socket.record.fini();
-        call(format!(
-            "free {} {}",
-            socket.record.sock_fd.get(),
-            socket.network.fd
-        ));
-    }
 
     /// The test host's sockets, in place of the native ones.
-    pub(crate) const SOCKETS: Option<&SocketOps> = Some(&SocketOps { open, wrap, free });
+    pub(crate) const SOCKETS: Option<&SocketOps> = Some(&SocketOps { open, wrap });
 
     fn err_code(fd: c_int) -> c_int {
         socket_map::get(fd).unwrap().err_code()

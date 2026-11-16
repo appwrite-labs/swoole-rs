@@ -21,7 +21,7 @@ struct MppResult {
     body_end: bool,
 }
 
-impl Parts for MppResult {
+impl Parts<'_> for MppResult {
     fn on_header_field(&mut self, data: &[u8]) -> Flow {
         self.header_field = data.to_vec();
         Flow::Go

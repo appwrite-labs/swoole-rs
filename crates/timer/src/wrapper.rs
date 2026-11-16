@@ -154,7 +154,7 @@ pub unsafe extern "C-unwind" fn swr_v1_timer_add_plain(
 }
 
 /// `swoole_timer_add(timeout, persistent, ...)`, in seconds, of a callback of
-/// `data` alone: the node, or null.
+/// `data` alone: the timer's id, which its timer never reuses, or 0.
 ///
 /// # Safety
 /// As `swr_v1_timer_add_plain`.
@@ -164,13 +164,9 @@ pub unsafe extern "C-unwind" fn swr_v1_timer_add_plain_sec(
     persistent: bool,
     callback: Plain,
     data: *mut c_void,
-) -> *mut c_void {
-    node(add(
-        sec2msec(timeout),
-        persistent,
-        TimerNode::plain(callback, data),
-    ))
-    .cast()
+) -> c_long {
+    let node = TimerNode::plain(callback, data);
+    add(sec2msec(timeout), persistent, node).map_or(0, |(_, id)| id)
 }
 
 /// `swoole_timer_add(ms, persistent, ...)` of `f`, held by id, or none.

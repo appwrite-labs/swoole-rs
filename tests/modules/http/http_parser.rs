@@ -31,7 +31,7 @@ struct Http {
     ctx: HttpContext,
 }
 
-impl Callbacks for Http {
+impl Callbacks<'_> for Http {
     fn parser(&mut self) -> &mut Parser {
         &mut self.parser
     }

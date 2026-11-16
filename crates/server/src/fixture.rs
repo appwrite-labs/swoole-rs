@@ -29,7 +29,7 @@ pub(crate) struct LiveServer {
     port_counters: Box<PortCounters>,
     listener: *mut SocketRecord,
     /// This thread's reactor, which the fixture made.
-    reactor: *mut core::ffi::c_void,
+    reactor: Option<swoole_rs_reactor::OwnedReactor>,
     /// The listening socket's fd.
     pub listener_fd: c_int,
     /// The port's address.
@@ -92,13 +92,13 @@ impl LiveServer {
 
         // The thread's reactor, without `swoole_event_init`'s coroutine and client handlers.
         let reactor = swoole_rs_reactor::swr_v1_reactor_new(4096, 0);
-        swoole_rs_corebase::set_thread_reactor(reactor);
+        swoole_rs_corebase::set_thread_reactor(reactor.as_ptr());
         Self {
             server,
             shared,
             port_counters,
             listener,
-            reactor,
+            reactor: Some(reactor),
             listener_fd: fd,
             address,
             _sessions: sessions,
@@ -179,18 +179,18 @@ impl LiveServer {
 
     /// This thread's reactor, which the fixture made.
     pub(crate) fn reactor(&self) -> crate::reactor_handle::Reactor {
-        // SAFETY: the reactor this fixture made, live until it drops, on this thread.
-        unsafe { crate::reactor_handle::Reactor::of(self.reactor) }
+        let made = self.reactor.as_ref();
+        let made = made.unwrap_or_else(|| panic!("the fixture holds its reactor until it drops"));
+        crate::reactor_handle::Reactor::running(made.running())
     }
 }
 
 impl Drop for LiveServer {
     fn drop(&mut self) {
         swoole_rs_corebase::set_thread_reactor(core::ptr::null_mut());
-        // SAFETY: the reactor `new` made, live on this thread.
-        let reactor = unsafe { swoole_rs_reactor::Running::new(self.reactor) };
-        // SAFETY: the reactor `new` made, which nothing uses afterwards.
-        unsafe { swoole_rs_reactor::swr_v1_reactor_delete(reactor) };
+        if let Some(reactor) = self.reactor.take() {
+            swoole_rs_reactor::swr_v1_reactor_delete(reactor);
+        }
         // SAFETY: the listener this fixture opened; its record goes with its port.
         unsafe { libc::close(self.listener_fd) };
         // The configuration's `gs` names the fixture's own record, which the state's drop

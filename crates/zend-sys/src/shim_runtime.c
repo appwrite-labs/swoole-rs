@@ -57,6 +57,11 @@ void swr_zend_runtime_free_arginfo(const zend_internal_function *function, zend_
     pefree(arg_info, 1);
 }
 
+zend_internal_function *swr_zend_runtime_internal_function(struct iovec name) {
+    zend_function *function = zend_hash_str_find_ptr(EG(function_table), name.iov_base, name.iov_len);
+    return function && function->type == ZEND_INTERNAL_FUNCTION ? &function->internal_function : NULL;
+}
+
 zend_class_entry *swr_zend_runtime_find_class(const char *name, size_t length) {
     zend_string *class_name = zend_string_init(name, length, 0);
     zend_string *lcname = zend_string_tolower(class_name);

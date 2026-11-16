@@ -115,12 +115,27 @@ impl Drop for Context {
     }
 }
 
+/// A stack's fake stack as `AddressSanitizer` set it aside: none, or what a
+/// [`StartSwitch`] saved into it, which only a [`FinishSwitch`] takes back. It is
+/// neither `Copy` nor `Clone`, so each one saved is handed back once, after the switch
+/// back that its start announced.
+#[repr(transparent)]
+struct FakeStack(*mut c_void);
+
+impl FakeStack {
+    const NONE: Self = Self(ptr::null_mut());
+}
+
 /// `__sanitizer_start_switch_fiber(fake_stack_save, bottom, size)`: records the stack
 /// the next switch lands on and, given somewhere to save it, sets the current fake
 /// stack aside there. It only writes through `fake_stack_save` and dereferences
 /// neither the stack nor its bottom, so it is safe to call.
-type StartSwitch = extern "C" fn(Option<&mut *mut c_void>, *const c_void, usize);
-type FinishSwitch = unsafe extern "C" fn(*mut c_void, *mut *const c_void, *mut usize);
+type StartSwitch = extern "C" fn(Option<&mut FakeStack>, *const c_void, usize);
+/// `__sanitizer_finish_switch_fiber(fake_stack_save, bottom_old, size_old)`: restores
+/// the fake stack a start saved (none: keeps the current one) and, given somewhere to
+/// write them, reports the stack that switched in. A [`FakeStack`] is none or a start's
+/// save, and the out-parameters are only written, so it is safe to call.
+type FinishSwitch = extern "C" fn(FakeStack, Option<&mut *const c_void>, Option<&mut usize>);
 
 // ThreadSanitizer's fiber calls. Each coroutine runs as its own fiber: TSan keeps a
 // thread's setjmp buffers in one list and, on each setjmp, drops those taken below its
@@ -161,8 +176,8 @@ fn asan() -> Option<(StartSwitch, FinishSwitch)> {
             return None;
         }
         // SAFETY: two non-null addresses of functions the sanitizer interface declares
-        // with these signatures (a nullable `void **` is an `Option<&mut>`), in the
-        // order of `Fibers`' fields.
+        // with these signatures (a nullable `T *` is an `Option<&mut T>`, and a
+        // `FakeStack` a `void *`), in the order of `Fibers`' fields.
         let Fibers(start, finish) =
             unsafe { std::mem::transmute::<[*mut c_void; 2], Fibers>([start, finish]) };
         Some((start, finish))
@@ -202,7 +217,7 @@ impl Co {
 /// running, whose context stays put from here on.
 pub(crate) fn swap_in(co: Co) -> bool {
     let asan = asan();
-    let mut fake_stack = ptr::null_mut();
+    let mut fake_stack = FakeStack::NONE;
     let fctx = co.read_context(|ctx| {
         if let Some(thread) = &ctx.thread {
             // SAFETY: as the scheduler passes it; this thread holds the baton.
@@ -236,8 +251,8 @@ pub(crate) fn swap_in(co: Co) -> bool {
     co.with_context(|ctx| {
         ctx.fctx = transfer.fctx;
         if let Some((_, finish)) = asan {
-            // SAFETY: completes the switch back that `swap_out` started.
-            unsafe { finish(fake_stack, ptr::null_mut(), ptr::null_mut()) };
+            // Completes the switch back that `swap_out` started.
+            finish(fake_stack, None, None);
         }
         ctx.end.get()
     })
@@ -247,7 +262,7 @@ pub(crate) fn swap_in(co: Co) -> bool {
 /// last switched it in. The scheduler passes the running coroutine.
 pub(crate) fn swap_out(co: Co) {
     let asan = asan();
-    let mut fake_stack = ptr::null_mut();
+    let mut fake_stack = FakeStack::NONE;
     let swap_fctx = co.read_context(|ctx| {
         if let Some(thread) = &ctx.thread {
             // SAFETY: the running thread, as the scheduler passes it.
@@ -281,13 +296,16 @@ fn switched_in(
     ctx: &mut Context,
     swap_fctx: *mut c_void,
     asan: Option<(StartSwitch, FinishSwitch)>,
-    fake_stack: *mut c_void,
+    fake_stack: FakeStack,
 ) {
     ctx.swap_fctx = swap_fctx;
     if let Some((_, finish)) = asan {
-        // SAFETY: `fake_stack` is what this stack's last start saved (null on a
-        // first switch), and the record's fields are live out-pointers.
-        unsafe { finish(fake_stack, &raw mut ctx.asan_bottom, &raw mut ctx.asan_size) };
+        // `fake_stack` is what this stack's last start saved (none on a first switch).
+        finish(
+            fake_stack,
+            Some(&mut ctx.asan_bottom),
+            Some(&mut ctx.asan_size),
+        );
     }
 }
 
@@ -296,7 +314,7 @@ fn switched_in(
 extern "C" fn first_frame(transfer: Transfer) {
     let co = transfer.data;
     let entry = co.with_context(|record| {
-        switched_in(record, transfer.fctx, asan(), ptr::null_mut());
+        switched_in(record, transfer.fctx, asan(), FakeStack::NONE);
         record.entry.take()
     });
     if let Some(entry) = entry {

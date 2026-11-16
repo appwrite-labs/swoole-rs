@@ -16,7 +16,6 @@ use swoole_rs_server::{Connection, view};
 use swoole_rs_zend::{
     HeldArray, Owned, ZString,
     bailout::{self, Bailout},
-    sys::{swr_zend_treat_string, zval},
 };
 
 /// The HTTP/2 server's contexts: a connection's settings context
@@ -187,9 +186,9 @@ impl Ctx {
     /// `$request->header` and `$request->server`, made unless they exist: a
     /// header block makes both, whatever it holds.
     pub fn header_arrays(mut self) {
-        let state = self.state();
-        parse::property(state, parse::Property::Header);
-        parse::property(state, parse::Property::Server);
+        let request = &mut self.state().request;
+        parse::property(request, parse::Property::Header);
+        parse::property(request, parse::Property::Server);
     }
 
     /// `add_assoc_str_ex` on `$request->server` or `header` (made on first
@@ -201,8 +200,8 @@ impl Ctx {
             Value::Header => parse::Property::Header,
             _ => return,
         };
-        parse::property(state, property);
         let request = &mut state.request;
+        parse::property(request, property);
         let slot = if matches!(which, Value::Server) {
             &mut request.zserver
         } else {
@@ -215,17 +214,16 @@ impl Ctx {
 
     /// `$request->server`, `header`, `get`, `post` or `cookie` (made on first
     /// use), or the response object.
-    fn value(mut self, which: Value) -> *mut zval {
-        let state = self.state();
+    fn value(state: &mut crate::state::State, which: Value) -> Option<&swoole_rs_zend::Value> {
         let property = match which {
-            Value::Response => return state.response.zobject.as_ptr(),
+            Value::Response => return state.response.zobject.get(),
             Value::Server => parse::Property::Server,
             Value::Header => parse::Property::Header,
             Value::Get => parse::Property::Get,
             Value::Post => parse::Property::Post,
             Value::Cookie => parse::Property::Cookie,
         };
-        parse::property(state, property)
+        parse::property(&mut state.request, property)
     }
 
     /// The response's `header`, `cookie` or `trailer` array, with a reference
@@ -382,8 +380,8 @@ impl Ctx {
 
     /// `swoole_http_parse_cookie`: a `cookie` header's pairs into the request's
     /// `$cookie`.
-    pub fn cookie(self, value: &[u8]) {
-        parse::parse_cookie(self.value(Value::Cookie), value);
+    pub fn cookie(mut self, value: &[u8]) {
+        parse::parse_cookie(Self::value(self.state(), Value::Cookie), value);
     }
 
     /// A server connection's settings context (`default_ctx`): the server's
@@ -441,13 +439,13 @@ impl Ctx {
     /// `PARSE_STRING` of `query`, or of the request body for `None`, into the
     /// request's `which` array.
     fn treat(mut self, which: Value, query: Option<&[u8]>) {
-        let array = self.value(which);
-        let body = self.state().request.h2_data.as_deref();
-        // The bytes, copied into request memory the SAPI frees.
-        let text = parse::estrndup(query.unwrap_or_else(|| body.map_or(&[], Vec::as_slice)));
-        // SAFETY: a fresh copy and the request's live array. Neither the state
-        // nor anything this frame owns is held while PHP parses it, which may
-        // bail out.
-        unsafe { swr_zend_treat_string(text, array) };
+        let state = self.state();
+        let body = state.request.h2_data.as_deref();
+        // The bytes, copied into request memory the SAPI frees. Nothing this
+        // frame owns is held while PHP parses them, which may bail out.
+        let text = parse::Copied::of(query.unwrap_or_else(|| body.map_or(&[], Vec::as_slice)));
+        if let Some(array) = Self::value(state, which) {
+            parse::swr_zend_treat_string(text, array);
+        }
     }
 }

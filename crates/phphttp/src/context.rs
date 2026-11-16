@@ -151,8 +151,8 @@ pub(crate) fn context_new(fd: i64) -> Ctx {
         &RESPONSE_FD,
         fd,
     );
-    parse::property(state, Property::Server);
-    parse::property(state, Property::Header);
+    parse::property(&mut state.request, Property::Server);
+    parse::property(&mut state.request, Property::Header);
     state.fd = fd;
     ctx
 }

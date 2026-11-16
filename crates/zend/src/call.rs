@@ -3,19 +3,94 @@ mod ext;
 
 use crate::{
     Array, Class, Value, ZStr,
+    helpers::CText,
     sys::{
-        _zend_expected_type_Z_EXPECTED_ARRAY, _zend_expected_type_Z_EXPECTED_BOOL,
-        _zend_expected_type_Z_EXPECTED_BOOL_OR_NULL, _zend_expected_type_Z_EXPECTED_DOUBLE,
-        _zend_expected_type_Z_EXPECTED_LONG, _zend_expected_type_Z_EXPECTED_RESOURCE,
-        _zend_expected_type_Z_EXPECTED_STRING, IS_FALSE, IS_NULL, IS_OBJ_DESTRUCTOR_CALLED,
-        IS_RESOURCE, IS_TRUE, ZPP_ERROR_WRONG_ARG, swr_zend_try_parse_bool,
-        swr_zend_try_parse_double, swr_zend_try_parse_long, swr_zend_try_parse_str,
-        zend_argument_type_error, zend_argument_value_error, zend_execute_data, zend_expected_type,
-        zend_object, zend_string, zend_wrong_parameter_class_error, zend_wrong_parameter_error,
-        zend_wrong_parameters_count_error, zval,
+        self, IS_FALSE, IS_NULL, IS_OBJ_DESTRUCTOR_CALLED, IS_RESOURCE, IS_TRUE, zend_execute_data,
+        zend_long, zend_object, zend_string, zval,
     },
 };
-use std::{ffi::CStr, ptr};
+use std::{
+    ffi::{CStr, c_int},
+    ptr,
+};
+
+// Zend's parameter parsing and its errors. Each reads the executing frame
+// (`EG(current_execute_data)`) for the function it names or for its typing
+// mode, so they are private: only `Call`'s methods call them, from the handler
+// Zend passed that frame. The parsers' coercions run inside `zend_try`
+// (nonzero for a bailout), since a deprecation runs the user error handler.
+unsafe extern "C" {
+    /// `zend_parse_arg_long_slow` of the live argument into `out`; `parsed`
+    /// says whether it converted. A coerced argument is replaced in its slot.
+    safe fn swr_zend_try_parse_long(
+        arg: &Value,
+        out: &mut zend_long,
+        n: u32,
+        parsed: &mut bool,
+    ) -> c_int;
+    /// `zend_parse_arg_bool_slow`, as [`swr_zend_try_parse_long`].
+    safe fn swr_zend_try_parse_bool(
+        arg: &Value,
+        out: &mut bool,
+        n: u32,
+        parsed: &mut bool,
+    ) -> c_int;
+    /// `zend_parse_arg_double_slow`, as [`swr_zend_try_parse_long`].
+    safe fn swr_zend_try_parse_double(
+        arg: &Value,
+        out: &mut f64,
+        n: u32,
+        parsed: &mut bool,
+    ) -> c_int;
+    /// `zend_parse_arg_str_slow`, as [`swr_zend_try_parse_long`]: `out` names
+    /// the converted string, which the argument's slot keeps.
+    safe fn swr_zend_try_parse_str(
+        arg: &Value,
+        out: &mut *mut zend_string,
+        n: u32,
+        parsed: &mut bool,
+    ) -> c_int;
+    /// `zend_parse_arg_str_or_long_slow`, as [`swr_zend_try_parse_str`], with
+    /// `long` written for an int.
+    safe fn swr_zend_try_parse_str_or_long(
+        arg: &Value,
+        string: &mut *mut zend_string,
+        long: &mut zend_long,
+        n: u32,
+        parsed: &mut bool,
+    ) -> c_int;
+    /// `zend_wrong_parameters_count_error`: an `ArgumentCountError`.
+    safe fn zend_wrong_parameters_count_error(min: u32, max: u32);
+    /// `zend_wrong_parameter_type_error`: the `TypeError` naming the live
+    /// argument and what was expected, which indexes Zend's table of names.
+    safe fn zend_wrong_parameter_type_error(n: u32, expected: Expected, arg: &Value);
+    /// `zend_wrong_parameter_class_error`: the `TypeError` naming the class
+    /// and the live argument; Zend copies both names.
+    safe fn zend_wrong_parameter_class_error(n: u32, name: CText<'_>, arg: &Value);
+    /// `zend_argument_type_error(n, format, ...)`: called only with `"%s"`
+    /// and the message, which Zend copies.
+    safe fn zend_argument_type_error(n: u32, format: CText<'_>, ...);
+    /// `zend_argument_value_error`, as [`zend_argument_type_error`].
+    safe fn zend_argument_value_error(n: u32, format: CText<'_>, ...);
+}
+
+/// Zend's `zend_expected_type`: what a parameter takes, for its error.
+#[derive(Clone, Copy)]
+#[repr(u32)]
+pub(crate) enum Expected {
+    Long = sys::_zend_expected_type_Z_EXPECTED_LONG,
+    Bool = sys::_zend_expected_type_Z_EXPECTED_BOOL,
+    BoolOrNull = sys::_zend_expected_type_Z_EXPECTED_BOOL_OR_NULL,
+    String = sys::_zend_expected_type_Z_EXPECTED_STRING,
+    StringOrNull = sys::_zend_expected_type_Z_EXPECTED_STRING_OR_NULL,
+    StringOrLong = sys::_zend_expected_type_Z_EXPECTED_STRING_OR_LONG,
+    Path = sys::_zend_expected_type_Z_EXPECTED_PATH,
+    Double = sys::_zend_expected_type_Z_EXPECTED_DOUBLE,
+    Array = sys::_zend_expected_type_Z_EXPECTED_ARRAY,
+    ArrayOrNull = sys::_zend_expected_type_Z_EXPECTED_ARRAY_OR_NULL,
+    Resource = sys::_zend_expected_type_Z_EXPECTED_RESOURCE,
+    Object = sys::_zend_expected_type_Z_EXPECTED_OBJECT,
+}
 
 /// Zval slots `zend_execute_data` occupies before the first argument
 /// (`ZEND_CALL_FRAME_SLOT`).
@@ -33,14 +108,13 @@ pub struct Invalid;
 /// That handler bailed out; the bailout is deferred and nothing more is raised.
 #[cold]
 fn coerce<T>(
-    parse: unsafe extern "C" fn(*mut zval, *mut T, u32, *mut bool) -> std::ffi::c_int,
+    parse: extern "C" fn(&Value, &mut T, u32, &mut bool) -> c_int,
     arg: &Value,
     out: &mut T,
     n: u32,
 ) -> Result<bool, Invalid> {
     let mut parsed = false;
-    // SAFETY: a live argument, a writable `T` (per `parse`) and a writable local.
-    let bailed = unsafe { parse(arg.as_ptr(), out, n, &raw mut parsed) };
+    let bailed = parse(arg, out, n, &mut parsed);
     match crate::bailout::trapped(bailed) {
         Ok(()) => Ok(parsed),
         Err(bailout) => {
@@ -217,8 +291,7 @@ impl Call {
         if (min..=max).contains(&count) {
             return Ok(());
         }
-        // SAFETY: called from a handler, as Zend's own macro is.
-        unsafe { zend_wrong_parameters_count_error(min, max) };
+        zend_wrong_parameters_count_error(min, max);
         Err(Invalid)
     }
 
@@ -239,7 +312,7 @@ impl Call {
         if coerce(swr_zend_try_parse_long, arg, &mut out, n)? {
             return Ok(out);
         }
-        Err(Self::wrong(n, arg, _zend_expected_type_Z_EXPECTED_LONG))
+        Err(Self::wrong(n, arg, Expected::Long))
     }
 
     /// `Z_PARAM_BOOL` of argument `n` (1-based), or `default` when an optional
@@ -283,9 +356,9 @@ impl Call {
             return Ok(Some(out));
         }
         let expected = if nullable {
-            _zend_expected_type_Z_EXPECTED_BOOL_OR_NULL
+            Expected::BoolOrNull
         } else {
-            _zend_expected_type_Z_EXPECTED_BOOL
+            Expected::Bool
         };
         Err(Self::wrong(n, arg, expected))
     }
@@ -308,13 +381,12 @@ impl Call {
         if !self.passed_arg(n) {
             return Ok(None);
         }
-        self.parse_str(n, _zend_expected_type_Z_EXPECTED_STRING)
-            .map(Some)
+        self.parse_str(n, Expected::String).map(Some)
     }
 
     /// Passed argument `n` as a string, reporting `expected` if it is none.
     #[inline]
-    pub(crate) fn parse_str(&self, n: u32, expected: zend_expected_type) -> Result<&ZStr, Invalid> {
+    pub(crate) fn parse_str(&self, n: u32, expected: Expected) -> Result<&ZStr, Invalid> {
         self.arg_value(n)
             .str()
             .map_or_else(|| self.coerce_str(n, expected), Ok)
@@ -322,7 +394,7 @@ impl Call {
 
     /// [`Self::parse_str`] of an argument that is no string.
     #[cold]
-    fn coerce_str(&self, n: u32, expected: zend_expected_type) -> Result<&ZStr, Invalid> {
+    fn coerce_str(&self, n: u32, expected: Expected) -> Result<&ZStr, Invalid> {
         let arg = self.arg_value(n);
         let mut out = ptr::null_mut();
         if coerce(swr_zend_try_parse_str, arg, &mut out, n)? {
@@ -352,7 +424,7 @@ impl Call {
         if coerce(swr_zend_try_parse_double, arg, &mut out, n)? {
             return Ok(out);
         }
-        Err(Self::wrong(n, arg, _zend_expected_type_Z_EXPECTED_DOUBLE))
+        Err(Self::wrong(n, arg, Expected::Double))
     }
 
     /// `Z_PARAM_STRING` of argument `n` (1-based), or `default` when an optional
@@ -379,7 +451,7 @@ impl Call {
     pub fn array_ref(&self, n: u32) -> Result<&Array, Invalid> {
         let arg = self.arg_value(n);
         arg.array()
-            .ok_or_else(|| Self::wrong(n, arg, _zend_expected_type_Z_EXPECTED_ARRAY))
+            .ok_or_else(|| Self::wrong(n, arg, Expected::Array))
     }
 
     /// `Z_PARAM_RESOURCE` of argument `n` (1-based), which must be passed.
@@ -391,21 +463,19 @@ impl Call {
         if arg.kind() == IS_RESOURCE {
             return Ok(arg);
         }
-        Err(Self::wrong(n, arg, _zend_expected_type_Z_EXPECTED_RESOURCE))
+        Err(Self::wrong(n, arg, Expected::Resource))
     }
 
     /// `zend_argument_type_error(n, "%s", message)`: a `TypeError` naming argument `n`.
     #[inline]
     pub fn argument_type_error(&self, n: u32, message: &CStr) {
-        // SAFETY: from a handler; "%s" takes the message.
-        unsafe { zend_argument_type_error(n, c"%s".as_ptr(), message.as_ptr()) };
+        zend_argument_type_error(n, c"%s".into(), CText::from(message));
     }
 
     /// `zend_argument_value_error(n, "%s", message)`: a `ValueError` naming argument `n`.
     #[inline]
     pub fn argument_value_error(&self, n: u32, message: &CStr) {
-        // SAFETY: from a handler; "%s" takes the message.
-        unsafe { zend_argument_value_error(n, c"%s".as_ptr(), message.as_ptr()) };
+        zend_argument_value_error(n, c"%s".into(), CText::from(message));
     }
 
     /// Make by-reference argument `n` (1-based), which must be passed, hold
@@ -424,19 +494,14 @@ impl Call {
     /// no instance of the class registered as `name`.
     #[cold]
     pub fn wrong_class(&self, n: u32, name: &CStr, arg: &Value) {
-        // SAFETY: from a handler, as Zend's macro reports it.
-        unsafe { zend_wrong_parameter_class_error(n, name.as_ptr(), arg.as_ptr()) };
+        zend_wrong_parameter_class_error(n, name.into(), arg);
     }
 
     /// `ZEND_PARSE_PARAMETERS_END`'s report of a wrong argument.
     #[cold]
-    fn wrong(n: u32, arg: &Value, expected: zend_expected_type) -> Invalid {
-        // ZPP error codes are small; Zend's macro passes the same int.
-        let code = i32::try_from(ZPP_ERROR_WRONG_ARG).unwrap_or_default();
-        // SAFETY: as Zend's macro does, with the argument that failed to parse.
-        unsafe {
-            zend_wrong_parameter_error(code, n, ptr::null_mut(), expected, arg.as_ptr());
-        }
+    fn wrong(n: u32, arg: &Value, expected: Expected) -> Invalid {
+        // What `zend_wrong_parameter_error` does for `ZPP_ERROR_WRONG_ARG`.
+        zend_wrong_parameter_type_error(n, expected, arg);
         Invalid
     }
 

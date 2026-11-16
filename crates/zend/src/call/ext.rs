@@ -1,14 +1,10 @@
 //! More of the call frame: optional and nullable parameters as `Option`s, and
 //! byte-slice and copied return values.
-use super::{Call, Invalid};
+use super::{Call, Expected, Invalid, swr_zend_try_parse_str_or_long};
 use crate::{
     Function, ZStr,
     bailout::Bailout,
-    sys::{
-        _zend_expected_type_Z_EXPECTED_PATH, _zend_expected_type_Z_EXPECTED_STRING_OR_LONG,
-        _zend_expected_type_Z_EXPECTED_STRING_OR_NULL, swr_zend_try_parse_str_or_long, zend_string,
-        zval,
-    },
+    sys::{zend_string, zval},
     zval::Zvals,
 };
 use std::ptr;
@@ -54,8 +50,7 @@ impl Call {
         if self.value(n).is_none_or(crate::Value::is_null) {
             return Ok(None);
         }
-        self.parse_str(n, _zend_expected_type_Z_EXPECTED_STRING_OR_NULL)
-            .map(Some)
+        self.parse_str(n, Expected::StringOrNull).map(Some)
     }
 
     /// `Z_PARAM_PATH` of argument `n`: as [`Call::string`], refusing NUL bytes.
@@ -65,11 +60,7 @@ impl Call {
     pub fn path<'a>(&'a self, n: u32, default: &'a [u8]) -> Result<&'a [u8], Invalid> {
         let path = self.string(n, default)?;
         if path.contains(&0) {
-            return Err(Self::wrong(
-                n,
-                self.arg_value(n),
-                _zend_expected_type_Z_EXPECTED_PATH,
-            ));
+            return Err(Self::wrong(n, self.arg_value(n), Expected::Path));
         }
         Ok(path)
     }
@@ -110,16 +101,7 @@ impl Call {
             return Ok(Some(Ok(long)));
         }
         let (mut string, mut long, mut parsed) = (ptr::null_mut(), 0, false);
-        // SAFETY: `arg` is live and the outputs are writable locals.
-        let bailed = unsafe {
-            swr_zend_try_parse_str_or_long(
-                arg.as_ptr(),
-                &raw mut string,
-                &raw mut long,
-                n,
-                &raw mut parsed,
-            )
-        };
+        let bailed = swr_zend_try_parse_str_or_long(arg, &mut string, &mut long, n, &mut parsed);
         if let Err(bailout) = crate::bailout::trapped(bailed) {
             bailout.defer();
             return Err(Invalid);
@@ -134,11 +116,7 @@ impl Call {
                 return Ok(Some(Err(string)));
             }
         }
-        Err(Self::wrong(
-            n,
-            arg,
-            _zend_expected_type_Z_EXPECTED_STRING_OR_LONG,
-        ))
+        Err(Self::wrong(n, arg, Expected::StringOrLong))
     }
 
     /// `Z_PARAM_STRING` of argument `n`: the bytes, or `None` when not passed.
@@ -182,11 +160,7 @@ impl Call {
         if arg.array().is_some() {
             return Ok(Some(arg.into_owned()));
         }
-        Err(Self::wrong(
-            n,
-            &arg,
-            crate::sys::_zend_expected_type_Z_EXPECTED_ARRAY_OR_NULL,
-        ))
+        Err(Self::wrong(n, &arg, Expected::ArrayOrNull))
     }
 
     /// `Z_PARAM_OBJECT` of passed argument `n`.
@@ -198,10 +172,6 @@ impl Call {
         if arg.dereferenced().object().is_some() {
             return Ok(arg.referent());
         }
-        Err(Self::wrong(
-            n,
-            &arg.dereferenced(),
-            crate::sys::_zend_expected_type_Z_EXPECTED_OBJECT,
-        ))
+        Err(Self::wrong(n, &arg.dereferenced(), Expected::Object))
     }
 }

@@ -15,9 +15,7 @@ use std::ptr::null_mut;
 pub use libz_sys::{
     Z_BUF_ERROR, Z_DATA_ERROR, Z_FINISH, Z_NO_FLUSH, Z_OK, Z_STREAM_END, Z_SYNC_FLUSH,
 };
-use libz_sys::{
-    Z_DEFAULT_STRATEGY, Z_DEFLATED, deflate, inflate, uInt, uLong, z_stream, z_streamp,
-};
+use libz_sys::{Z_DEFAULT_STRATEGY, Z_DEFLATED, deflate, inflate, uInt, uLong, z_stream};
 
 /// The most input or output one [`Stream::run`] hands zlib (its `uInt`).
 pub const CHUNK: usize = uInt::MAX as usize;
@@ -171,8 +169,7 @@ impl Stream {
         z.next_out = out;
         z.avail_out = uInt::try_from(room).unwrap_or(uInt::MAX);
         let (avail_in, avail_out) = (z.avail_in, z.avail_out);
-        let call: unsafe extern "C" fn(z_streamp, c_int) -> c_int =
-            if self.deflate { deflate } else { inflate };
+        let call = if self.deflate { deflate } else { inflate };
         // SAFETY: an initialised stream over the live input, which zlib only reads,
         // and `room` writable output bytes.
         let status = unsafe { call(&raw mut self.z.0, flush) };

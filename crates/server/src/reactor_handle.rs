@@ -34,11 +34,6 @@ pub(crate) fn release_server(serv: crate::view::Server<'_>) {
 pub(crate) struct Reactor(*mut c_void);
 
 impl Reactor {
-    /// # Safety
-    /// `reactor` is a live `Reactor` while the handle is used, on its own thread.
-    pub(crate) unsafe fn of(reactor: *mut c_void) -> Self {
-        Self(reactor)
-    }
     /// The reactor a handler runs under.
     pub(crate) fn running(reactor: Running<'_>) -> Self {
         Self(reactor.as_ptr())
@@ -52,25 +47,24 @@ impl Reactor {
         let reactor = swoole_rs_corebase::thread_reactor();
         (!reactor.is_null()).then_some(Self(reactor))
     }
-    /// `reactor->ptr = serv`: the reactor serves `serv`, which [`Self::server`] reads
-    /// back.
-    ///
-    /// # Safety
-    /// `serv` stays live while the reactor holds it, and through every handler, timer
-    /// and callback that read it from the reactor: until the reactor is freed, another
-    /// object replaces it, or the server's teardown releases it ([`release_server`]).
-    pub(crate) unsafe fn hold_server(self, serv: crate::view::Server<'_>) {
+    /// `reactor->ptr = serv`: the reactor, which must be this thread's, serves `serv`,
+    /// which [`Self::server`] reads back until the reactor is freed, another object
+    /// replaces it, or the server's deletion releases it ([`release_server`]).
+    pub(crate) fn hold_server(self, serv: crate::view::Server<'_>) {
+        if self.0 != swoole_rs_corebase::thread_reactor() {
+            swoole_rs_corebase::fatal("a server held by another thread's reactor");
+        }
         self.handle().hold(&SERVER, serv.raw());
     }
     /// `reactor->ptr`, while it is the server [`Self::hold_server`] gave it.
     pub(crate) fn server(self) -> Option<crate::view::Server<'static>> {
         let serv = self.handle().object_of(&SERVER)?;
-        // SAFETY: only `hold_server` holds an object under the private `SERVER` key, and
-        // its caller keeps that server live while the reactor holds it.
+        // SAFETY: only `hold_server` holds an object under the private `SERVER` key, on
+        // the holding thread's own reactor. A server is deleted only by its owner's drop
+        // (a test server's too), which first releases it from the deleting thread's
+        // reactor; any other thread whose reactor holds it is one of the server's own
+        // reactor or worker threads, which it joins before that. So a held server is live.
         Some(unsafe { crate::view::Server::from_raw(serv) })
-    }
-    pub(crate) fn ptr(self) -> *mut c_void {
-        self.0
     }
     /// The handle the reactor's own operations take.
     pub(crate) fn handle(self) -> Running<'static> {
@@ -103,7 +97,7 @@ impl Reactor {
     pub(crate) fn close(self, sock: Socket<'_>) -> c_int {
         self.handle().close().map_or(0, |close| {
             // SAFETY: the reactor's close on one of its live sockets.
-            unsafe { close(self.0, sock.as_ptr().cast()) }
+            unsafe { close(self.handle(), sock) }
         })
     }
     /// `reactor->trigger_close_event(event)`: the default error handler, or `-1` with none.

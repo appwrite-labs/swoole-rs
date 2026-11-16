@@ -17,7 +17,7 @@ use std::{
 use swoole_rs_corebase::sys::Text;
 use swoole_rs_zend::{
     Call, Minit, Owned, OwnedArray, Value, bailout,
-    sys::{PHP_STREAM_FLAG_NO_CLOSE, php_stream, swr_zend_bailout_to},
+    sys::{php_stream, swr_zend_bailout_to},
 };
 
 /// A `php://stdin`, `stdout` or `stderr` stream a thread's prologue opened,
@@ -32,12 +32,8 @@ struct Stdio(NonNull<php_stream>);
 struct Lent<'a>(NonNull<php_stream>, PhantomData<&'a mut Stdio>);
 
 impl Stdio {
-    /// `PHP_STREAM_FLAG_NO_CLOSE`, so the stream outlives its resource, then
-    /// its descriptor in `fd`: whether the cast succeeded.
-    fn keep_open(&mut self, fd: &mut c_int) -> bool {
-        // SAFETY: a live stream, per the type, borrowed through its one handle
-        // for this statement.
-        unsafe { self.0.as_mut() }.flags |= PHP_STREAM_FLAG_NO_CLOSE;
+    /// The stream's descriptor in `fd`: whether the cast succeeded.
+    fn fd(&mut self, fd: &mut c_int) -> bool {
         stdio_fd(Lent(self.0, PhantomData), fd)
     }
 }
@@ -60,6 +56,9 @@ unsafe extern "C" {
     /// Register the stream's resource as the constant `name`, which takes it.
     #[link_name = "swr_zend_register_stream_constant"]
     safe fn stdio_constant(name: swoole_rs_corebase::sys::Text<'_>, stream: Stdio);
+    /// `PHP_STREAM_FLAG_NO_CLOSE` on the stream of the constant `name`, when it
+    /// names a file stream: it outlives its resource.
+    safe fn swr_zend_stream_constant_no_close(name: Text<'_>);
 }
 
 unsafe extern "C" {
@@ -268,7 +267,7 @@ extern "C" fn prologue(start: &mut Start) {
     let mut fds = [-1; 3];
     let mut casted = true;
     for (stream, fd) in streams.iter_mut().zip(&mut fds) {
-        casted &= stream.keep_open(fd);
+        casted &= stream.fd(fd);
     }
     request::keep_stdio(fds);
     if !casted {
@@ -277,8 +276,11 @@ extern "C" fn prologue(start: &mut Start) {
             format_args!("failed to cast the stdio streams to fd, the file descriptors may leak"),
         );
     }
+    // No such constant exists yet, so each registers, and its stream then
+    // outlives its resource.
     for (stream, (_, _, name)) in streams.into_iter().zip(names) {
         stdio_constant(name.into(), stream);
+        swr_zend_stream_constant_no_close(name.into());
     }
 }
 

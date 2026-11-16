@@ -395,9 +395,7 @@ pub(crate) fn start_master_thread(serv: view::Server<'_>, reactor: Reactor) -> b
     } else if mode == Mode::Process {
         swoole_rs_process::methods::swoole_set_worker_pid(std::process::id().cast_signed());
     }
-    // SAFETY: the master's reactor, which its loop's `swoole_event_wait` (or `EventFree`
-    // on a failed start) frees while the server lives.
-    unsafe { reactor.hold_server(serv) };
+    reactor.hold_server(serv);
     let accept: swoole_rs_reactor::Handler = crate::server_methods::accept_connection;
     reactor.set_handler(FD_STREAM_SERVER, Events::READ, accept);
     if let Some(pipe) = config.command_pipe() {

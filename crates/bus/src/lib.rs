@@ -188,7 +188,7 @@ impl Drop for Bus {
         // Outside the hybrid a record has no timers, buffers or loop: `Socket::free`
         // is the record's deallocation.
         #[cfg(not(feature = "upstream-symbols"))]
-        let free_socket: unsafe fn(*mut SocketRecord) = SocketRecord::free;
+        let free_socket = SocketRecord::free;
         // By descriptor, as `init_pipe_socket` recorded them.
         let records = self
             .pipe_sockets

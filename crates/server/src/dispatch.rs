@@ -518,19 +518,19 @@ mod tests {
         connect(&uid, 10, 5, -1);
         assert_eq!(uid.schedule(10), 1, "uid");
 
-        let mut co = Workers::new(4, DispatchMode::CoConnLb);
+        let co = Workers::new(4, DispatchMode::CoConnLb);
         assert_eq!(co.schedule(UNLISTED), 0, "no connection: fd");
-        co.records[0].coroutine_num = 5;
+        co.records[0].coroutine_num.set(5);
         connect(&co, 10, 0, -1);
         assert_eq!(co.schedule(10), 1, "pinned to the lowest load");
         let conn = co.live.state().tables_ref().connection_at(10).unwrap();
         assert_eq!(conn.worker_id(), 1, "and stays there");
-        co.records[1].coroutine_num = 9;
+        co.records[1].coroutine_num.set(9);
         assert_eq!(co.schedule(10), 1, "pinned");
 
         let mut req = Workers::new(4, DispatchMode::CoReqLb);
         for (record, load) in req.records.iter_mut().zip([5, 3, 3, 9]) {
-            record.coroutine_num = load;
+            record.coroutine_num.set(load);
         }
         assert_eq!(req.schedule(10), 1, "the first lowest load");
         let concurrent = Workers::new(3, DispatchMode::ConcurrentLb);
@@ -669,26 +669,23 @@ mod tests {
     /// Port methods whose `create_socket` fails for port 1, and whose `import` takes
     /// fd 3 as TCP, fd 4 as UDP and refuses the rest, keeping the fd as the port.
     fn fake_port_methods() {
-        // SAFETY: the fakes touch only the settings they are given.
-        unsafe {
-            crate::port_config::set_methods(crate::port_config::PortMethods {
-                ssl_context_init: |_| true,
-                ssl_create: |_, _| unreachable!(),
-                import: |config, fd| {
-                    config.r#type = if fd == 4 { SOCK_UDP } else { 1 };
-                    config.port.set(fd);
-                    fd < 5
-                },
-                close: |_| unreachable!(),
-                listen: |_| unreachable!(),
-                create_socket: |config, _| config.port.get() != 1,
-                close_socket: |_| unreachable!(),
-                get_protocols: |_| unreachable!(),
-                init_protocol: |_| unreachable!(),
-                destroy_http_request: |_| unreachable!(),
-                tls_free: |_| {},
-            });
-        }
+        crate::port_config::set_methods(crate::port_config::PortMethods {
+            ssl_context_init: |_| true,
+            ssl_create: |_, _| unreachable!(),
+            import: |config, fd| {
+                config.r#type = if fd == 4 { SOCK_UDP } else { 1 };
+                config.port.set(fd);
+                fd < 5
+            },
+            close: |_| unreachable!(),
+            listen: |_| unreachable!(),
+            create_socket: |config, _| config.port.get() != 1,
+            close_socket: |_| unreachable!(),
+            get_protocols: |_| unreachable!(),
+            init_protocol: |_| unreachable!(),
+            destroy_http_request: |_| unreachable!(),
+            tls_free: |_| {},
+        });
     }
 
     #[test]

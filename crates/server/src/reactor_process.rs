@@ -116,9 +116,7 @@ pub(crate) fn main_loop(serv: view::Server<'_>, worker: Worker<'_>) -> bool {
     }
     let running = reactor.handle();
     running.set_id(u16::try_from(id).unwrap_or(u16::MAX));
-    // SAFETY: this process's reactor, which `EventFree` frees after the loop below while
-    // the server lives; a failed start returns to the pool, which ends the process.
-    unsafe { reactor.hold_server(serv) };
+    reactor.hold_server(serv);
     running.set_max_socket(serv.state().tables_ref().max_connection());
     running.set_close(Some(crate::reactor_entry::close_connection));
     reactor.set_handler(

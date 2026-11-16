@@ -226,6 +226,11 @@ impl Co {
     /// In a coroutine.
     #[must_use]
     pub fn accept(self, timeout: f64) -> Option<Self> {
+        self.accept_owned(timeout).map(OwnedCo::into_co)
+    }
+
+    /// [`Self::accept`]'s connection, which only the result holds.
+    pub(crate) fn accept_owned(self, timeout: f64) -> Option<OwnedCo> {
         if !available(self, Events::READ) {
             return None;
         }
@@ -241,7 +246,7 @@ impl Co {
             // The new native socket goes as it drops.
             return None;
         }
-        Some(client.into_co())
+        Some(client)
     }
 
     /// `accept`'s connection as a new native socket. The socket is available.

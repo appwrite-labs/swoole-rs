@@ -44,6 +44,32 @@ pub struct Sqlite3Stmt {
 #[repr(transparent)]
 pub struct OwnedDb(*mut Sqlite3);
 
+// The driver's other arguments, each typed as what SQLite requires of it. As with
+// [`OwnedDb`], only the exports' parameters make one, and none is `Send`, so they
+// reach the pool only through [`offload`].
+
+/// A connection the driver handed over: open and live for as long as the value is used.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Db(*mut Sqlite3);
+
+/// A statement the driver handed over: null, which `sqlite3_step` refuses with
+/// `SQLITE_MISUSE`, or prepared and live for as long as the value is used.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Stmt(*mut Sqlite3Stmt);
+
+/// SQL `sqlite3_prepare_v2` compiles: readable for the byte count passed beside it
+/// when that is not negative, else up to its NUL.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Sql(*const c_char);
+
+/// What `sqlite3_exec` hands the row callback passed beside it, which accepts it.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Argument(*mut c_void);
+
 /// The close a pool thread may run: the owner moves into it, and is closed at most once.
 fn close(close: impl FnOnce(OwnedDb) -> c_int, db: OwnedDb) -> c_int {
     let mut call = Some((close, db));
@@ -65,26 +91,30 @@ unsafe extern "C" {
         flags: c_int,
         vfs: Option<Text<'_>>,
     ) -> c_int;
-    fn sqlite3_prepare_v2(
-        db: *mut Sqlite3,
-        sql: *const c_char,
+    /// Compiles the SQL, writing the statement (or null) to `stmt` and where it
+    /// stopped to `tail`.
+    safe fn sqlite3_prepare_v2(
+        db: Db,
+        sql: Sql,
         bytes: c_int,
-        stmt: *mut *mut Sqlite3Stmt,
-        tail: *mut *const c_char,
+        stmt: &mut *mut Sqlite3Stmt,
+        tail: Option<&mut *const c_char>,
     ) -> c_int;
-    fn sqlite3_exec(
-        db: *mut Sqlite3,
-        sql: *const c_char,
+    /// Runs the SQL (none for a null one) up to its NUL, handing each row to `callback` with `argument`,
+    /// and writes a message from `sqlite3_malloc` (or null) to `errmsg`.
+    safe fn sqlite3_exec(
+        db: Db,
+        sql: Option<Text<'_>>,
         callback: ExecCallback,
-        argument: *mut c_void,
-        errmsg: *mut *mut c_char,
+        argument: Argument,
+        errmsg: Option<&mut *mut c_char>,
     ) -> c_int;
     /// Closes the connection (nothing for a null one), or, while statements remain,
     /// refuses with `SQLITE_BUSY` and leaves it open: it takes the owner either way.
     safe fn sqlite3_close(db: OwnedDb) -> c_int;
     /// As `sqlite3_close`, deferring the close to the last statement's finalize.
     safe fn sqlite3_close_v2(db: OwnedDb) -> c_int;
-    fn sqlite3_step(stmt: *mut Sqlite3Stmt) -> c_int;
+    safe fn sqlite3_step(stmt: Stmt) -> c_int;
 }
 
 /// `SQLITE_OPEN_FULLMUTEX`.
@@ -139,34 +169,29 @@ pub extern "C" fn swoole_sqlite3_open_v2(
     offload(|| sqlite3_open_v2(filename, db, flags, vfs))
 }
 
-/// `swoole_sqlite3_prepare_v2`.
-/// # Safety
-/// As `sqlite3_prepare_v2`.
+/// `swoole_sqlite3_prepare_v2`: `sqlite3_prepare_v2`, whose whole contract the
+/// arguments' types carry.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_sqlite3_prepare_v2(
-    db: *mut Sqlite3,
-    sql: *const c_char,
+pub extern "C" fn swoole_sqlite3_prepare_v2(
+    db: Db,
+    sql: Sql,
     bytes: c_int,
-    stmt: *mut *mut Sqlite3Stmt,
-    tail: *mut *const c_char,
+    stmt: &mut *mut Sqlite3Stmt,
+    mut tail: Option<&mut *const c_char>,
 ) -> c_int {
-    // SAFETY: per the caller.
-    offload(|| unsafe { sqlite3_prepare_v2(db, sql, bytes, stmt, tail) })
+    offload(|| sqlite3_prepare_v2(db, sql, bytes, stmt, tail.as_deref_mut()))
 }
 
-/// `swoole_sqlite3_exec`.
-/// # Safety
-/// As `sqlite3_exec`.
+/// `swoole_sqlite3_exec`: `sqlite3_exec`, whose whole contract the arguments' types carry.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_sqlite3_exec(
-    db: *mut Sqlite3,
-    sql: *const c_char,
+pub extern "C" fn swoole_sqlite3_exec(
+    db: Db,
+    sql: Option<Text<'_>>,
     callback: ExecCallback,
-    argument: *mut c_void,
-    errmsg: *mut *mut c_char,
+    argument: Argument,
+    mut errmsg: Option<&mut *mut c_char>,
 ) -> c_int {
-    // SAFETY: per the caller.
-    offload(|| unsafe { sqlite3_exec(db, sql, callback, argument, errmsg) })
+    offload(|| sqlite3_exec(db, sql, callback, argument, errmsg.as_deref_mut()))
 }
 
 /// `swoole_sqlite3_close`. `sqlite3_close`'s whole contract is the owned connection
@@ -182,13 +207,10 @@ pub extern "C" fn swoole_sqlite3_close_v2(db: OwnedDb) -> c_int {
     close(|db| sqlite3_close_v2(db), db)
 }
 
-/// `swoole_sqlite3_step`.
-/// # Safety
-/// As `sqlite3_step`.
+/// `swoole_sqlite3_step`: `sqlite3_step`, whose whole contract the statement's type carries.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_sqlite3_step(stmt: *mut Sqlite3Stmt) -> c_int {
-    // SAFETY: per the caller.
-    offload(|| unsafe { sqlite3_step(stmt) })
+pub extern "C" fn swoole_sqlite3_step(stmt: Stmt) -> c_int {
+    offload(|| sqlite3_step(stmt))
 }
 
 #[cfg(test)]

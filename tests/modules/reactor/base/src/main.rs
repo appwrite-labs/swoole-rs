@@ -146,16 +146,31 @@ fn tg() -> Running<'static> {
     unsafe { Running::new(reactor) }
 }
 
+thread_local! {
+    /// The reactors `reactor_new` made and `reactor_delete` has not deleted.
+    static OWNED: std::cell::RefCell<Vec<swoole_rs_ffi::OwnedReactor>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// `new Reactor(max_event, type)`.
 fn reactor_new(max_event: c_int, kind: c_int) -> Running<'static> {
+    let owned = swoole_rs_ffi::swr_v1_reactor_new(max_event, kind);
+    let reactor = owned.as_ptr();
+    OWNED.with_borrow_mut(|owned_list| owned_list.push(owned));
     // SAFETY: the new reactor, on this thread, live until `reactor_delete`.
-    unsafe { Running::new(swoole_rs_ffi::swr_v1_reactor_new(max_event, kind)) }
+    unsafe { Running::new(reactor) }
 }
 
 /// `delete reactor`.
 unsafe fn reactor_delete(reactor: Running<'_>) {
-    // SAFETY: as the caller guarantees: a reactor from `reactor_new`, used no more.
-    unsafe { swoole_rs_ffi::swr_v1_reactor_delete(reactor) }
+    let owned = OWNED.with_borrow_mut(|owned_list| {
+        let at = owned_list
+            .iter()
+            .position(|owned| owned.as_ptr() == reactor.as_ptr())
+            .expect("a reactor from reactor_new");
+        owned_list.swap_remove(at)
+    });
+    swoole_rs_ffi::swr_v1_reactor_delete(owned);
 }
 
 /// The reactor's public fields.

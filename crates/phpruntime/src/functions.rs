@@ -19,13 +19,13 @@ use std::{
 };
 use swoole_rs_corebase::{Switch, built_with};
 use swoole_rs_zend::{
-    Call, E_WARNING, Function, Owned, ZStr, ZString, bailout,
+    Call, E_WARNING, Owned, ZStr, ZString, bailout,
     host::callable::Callable,
     sys::{
         PHP_VERSION_ID, ZEND_ACC_FAKE_CLOSURE, swr_zend_runtime_call_handler,
         swr_zend_runtime_copy_arginfo, swr_zend_runtime_disabled, swr_zend_runtime_free_arginfo,
         swr_zend_runtime_unsupported, zend_class_entry, zend_execute_data, zend_fcall_info,
-        zend_function, zend_internal_arg_info, zend_internal_function, zif_handler, zval,
+        zend_internal_arg_info, zend_internal_function, zif_handler, zval,
     },
 };
 
@@ -38,9 +38,10 @@ unsafe extern "C" {
     fn zif_swoole_proc_terminate(frame: *mut zend_execute_data, value: *mut zval);
     fn zif_swoole_coroutine_gethostbyname(frame: *mut zend_execute_data, value: *mut zval);
     fn zif_swoole_exit(frame: *mut zend_execute_data, value: *mut zval);
-    /// The running request's function `name` (`EG(function_table)`), which it
-    /// reads from the lent bytes (an `IoSlice` is an iovec): null for none.
-    safe fn swr_zend_function_find(name: IoSlice<'_>) -> *mut zend_function;
+    /// The running request's internal function `name` (`EG(function_table)`),
+    /// read from the lent bytes (an `IoSlice` is an iovec): null for none or a
+    /// user function.
+    safe fn swr_zend_runtime_internal_function(name: IoSlice<'_>) -> *mut zend_internal_function;
 }
 
 /// An internal function the running request's function table holds. Only
@@ -53,14 +54,7 @@ impl Entry {
     /// `zend::get_function(name)`: the table's function `name`, if it is an
     /// internal one (one PHP code declared has no handler to swap).
     fn find(name: &[u8]) -> Option<Self> {
-        let found = swr_zend_function_find(IoSlice::new(name));
-        // SAFETY: null, or a function the table holds for the request.
-        let function = unsafe { Function::from_ptr(found) }?;
-        if function.kind() != Function::INTERNAL {
-            return None;
-        }
-        // An internal function's record is a `zend_internal_function`.
-        NonNull::new(found.cast()).map(Self)
+        NonNull::new(swr_zend_runtime_internal_function(IoSlice::new(name))).map(Self)
     }
 
     /// The function, borrowed for `f`.
@@ -87,10 +81,9 @@ impl Entry {
         f(unsafe { &mut *self.0.as_ptr() })
     }
 
-    /// A copy of the function's record, for its handler and arginfo: no borrow.
-    fn read(self) -> zend_internal_function {
-        // SAFETY: a live internal function (`find`), copied whole; nothing is borrowed.
-        unsafe { self.0.as_ptr().read() }
+    /// The function's handler and arginfo.
+    fn handler(self) -> (zif_handler, *mut zend_internal_arg_info) {
+        self.with(|function| (function.handler, function.arg_info))
     }
 }
 
@@ -338,8 +331,7 @@ pub(crate) fn copy_to_thread() {
     };
     for (key, record) in hooked {
         let main = record.function;
-        let main_record = main.read();
-        let (handler, arg_info) = (main_record.handler, main_record.arg_info);
+        let (handler, arg_info) = main.handler();
         if same(handler, record.ori_handler) {
             continue;
         }
@@ -695,8 +687,7 @@ fn native_curl(requested: &mut u32, installed: u32) {
                 let Some(replacement) = Entry::find(native.to_bytes()) else {
                     continue;
                 };
-                let replaced = replacement.read();
-                let (handler, arg_info) = (replaced.handler, replaced.arg_info);
+                let (handler, arg_info) = replacement.handler();
                 hook(name, handler, arg_info);
             }
             Some(false) => unhook(name),

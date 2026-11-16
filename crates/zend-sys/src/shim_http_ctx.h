@@ -3,6 +3,7 @@
 #define SWOOLE_RS_ZEND_SHIM_HTTP_CTX_H
 
 #include "shim.h"
+#include <sys/uio.h>
 
 /* The slot offset of the untyped instance property `ce` declares as the
  * NUL-terminated `name` (0 if it has none). */
@@ -11,10 +12,10 @@ uint32_t swr_zend_http_property_offset(zend_class_entry *ce, const char *name);
 void swr_zend_array_init_size(zval *target, uint32_t size);
 /* PG(max_input_vars). */
 zend_long swr_zend_http_max_input_vars(void);
-/* Append `file` to the request's `tmpfiles` and register it in
- * SG(rfc1867_uploaded_files), when there is one, for
+/* Append `file`'s bytes, which it copies, to the request's `tmpfiles` and
+ * register them in SG(rfc1867_uploaded_files), when there is one, for
  * is_uploaded_file()/move_uploaded_file(). */
-void swr_zend_http_upload(zval *tmpfiles, const char *file, size_t length);
+void swr_zend_http_upload(zval *tmpfiles, struct iovec file);
 /* Swoole's copy of php_default_treat_data for PARSE_STRING and PARSE_COOKIE:
  * the variables in `str` (an emalloc'd string it frees) into `array`. False
  * when it stopped at PG(max_input_vars), for the caller's warning. */

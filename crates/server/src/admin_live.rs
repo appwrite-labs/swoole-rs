@@ -14,7 +14,7 @@ use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
 use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_process::worker_record::WorkerRecord;
-use swoole_rs_reactor::{ReactorPrepared, Registry, Socket as Handle, SocketFields, SocketRecord};
+use swoole_rs_reactor::{Socket as Handle, SocketFields, SocketRecord};
 
 /// `zend_memory_usage(true)`, from the PHP binding.
 static PHP_MEMORY: OnceLock<extern "C" fn() -> usize> = OnceLock::new();
@@ -99,18 +99,6 @@ fn live<'a>(socket: *mut c_void) -> Handle<'a> {
         .unwrap_or_else(|| swoole_rs_corebase::fatal("an admin command on a dead socket"))
 }
 
-/// This thread's reactor's sockets, if it has a reactor.
-fn registry<'a>() -> Option<&'a Registry> {
-    let reactor = swoole_rs_corebase::thread_reactor();
-    if reactor.is_null() {
-        return None;
-    }
-    // This thread's live reactor.
-    let registry = ReactorPrepared::of(reactor).registry;
-    // SAFETY: its live registry, which only this thread changes.
-    unsafe { registry.as_ref() }
-}
-
 struct Live<'a> {
     serv: view::Server<'a>,
     state: &'a ServerState,
@@ -178,7 +166,7 @@ impl Facts for Live<'_> {
     }
 
     fn sockets(&mut self) -> u64 {
-        self.sockets = registry().map(Registry::sockets).unwrap_or_default();
+        self.sockets = swoole_rs_reactor::event_api::swoole_event_sockets();
         self.sockets.len() as u64
     }
 
@@ -278,7 +266,7 @@ impl Facts for Live<'_> {
         Thread {
             id: thread.id.get().into(),
             dispatch_count: thread.dispatch_count.get(),
-            event_num: registry().map_or(0, Registry::count) as u64,
+            event_num: swoole_rs_reactor::event_api::swoole_event_num().unwrap_or(0) as u64,
             timer_num: swoole_rs_timer::thread_timer_count() as u64,
         }
     }
@@ -309,7 +297,7 @@ impl Facts for Live<'_> {
         // SAFETY: null, or this thread's live buffer.
         let thread_buffer =
             unsafe { buffer.as_ref() }.map_or(0, swoole_rs_buffer::string::CppString::size);
-        let sockets = registry().map(Registry::sockets).unwrap_or_default();
+        let sockets = swoole_rs_reactor::event_api::swoole_event_sockets();
         let out_buffers = sockets
             .iter()
             .map(|&s| live(s).read(out_buffer_length))

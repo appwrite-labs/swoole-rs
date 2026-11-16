@@ -14,9 +14,10 @@ use swoole_rs_process::worker_record::{Worker, WorkerType};
 use swoole_rs_reactor::wait_upstream::swoole_waitpid;
 
 use super::{Pipe, worker_id};
+use crate::ConnectionRecord;
 use crate::base_factory::SendData;
 use crate::reactor_ops::ThreadRecord;
-use crate::{ConnectionRecord, view};
+use crate::view::{self, PipeSocket};
 
 /// `SWR_WORKER_EVENT`, `SWR_WORKER_USER`: the registry's categories.
 const REGISTRY_EVENT: c_int = 1;
@@ -223,8 +224,7 @@ pub(crate) fn send(serv: view::Server<'_>, to: Pipe, send: &mut SendData) -> boo
     match to {
         Pipe::Worker(id) => {
             let pipe = serv.worker_record(id);
-            let Some(pipe) = pipe.and_then(|worker| crate::objects::worker_pipe(worker, true))
-            else {
+            let Some(pipe) = pipe.and_then(|worker| PipeSocket::of_worker(worker, true)) else {
                 return false;
             };
             // This reactor thread's bus, and its copy of the worker's pipe.
@@ -235,22 +235,20 @@ pub(crate) fn send(serv: view::Server<'_>, to: Pipe, send: &mut SendData) -> boo
                 .wrapping_add(usize::from(swoole_rs_corebase::thread_id()));
             // SAFETY: this reactor thread's live record.
             let bus = unsafe { &*thread }.message_bus();
-            let Some(socket) = bus.pipe_socket(pipe) else {
+            let Some(pipe) = PipeSocket::of_bus(bus.rust(), pipe) else {
                 return false;
             };
-            // SAFETY: the live pipe.
-            unsafe { send.send_raw(bus.rust(), socket) }
+            send.send(bus.rust(), pipe)
         }
         Pipe::Reactor(id) => {
             let Some(worker) = serv.worker_record(id) else {
                 return false;
             };
             let bus = state.message_bus();
-            let Some(pipe) = crate::view::worker_pipe(worker, false) else {
+            let Some(pipe) = PipeSocket::of_worker(worker, false) else {
                 return false;
             };
-            // SAFETY: the worker's live pipe.
-            unsafe { send.send_raw(bus.rust(), pipe) }
+            send.send(bus.rust(), pipe)
         }
         Pipe::Close(id) => {
             let Some(target) = serv.worker_record(id) else {
