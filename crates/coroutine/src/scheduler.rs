@@ -92,6 +92,12 @@ pub fn coroutine_get(cid: c_long) -> *mut c_void {
     with_scheduler(|s| s.get(cid))
 }
 
+/// [`Scheduler::cid_of`] on this thread: the id of the live coroutine at `co`.
+#[must_use]
+pub fn live_cid(co: *const c_void) -> Option<c_long> {
+    with_scheduler(|s| s.cid_of(co))
+}
+
 /// [`Scheduler::state`] on this thread.
 #[must_use]
 pub fn coroutine_state(cid: c_long) -> Option<crate::State> {
@@ -264,8 +270,14 @@ unsafe fn run_canceler<F: FnOnce(*mut c_void) -> bool + Copy>(
 /// leaked, as by a thread that never wakes, and never freed under them. Freeing a
 /// suspended coroutine anywhere (at shutdown, say) would make this `unsafe` again.
 pub fn suspend(co: *mut c_void) {
+    park(co, |_| ());
+}
+
+/// [`suspend`], handing `arm` the [`Waker`](crate::Waker) that ends this park before
+/// `co` switches out.
+pub fn park(co: *mut c_void, arm: impl FnOnce(crate::Waker)) {
     let s = Sched::this();
-    ops::yield_(s, Co::running(s, co.cast()));
+    ops::yield_armed(s, Co::running(s, co.cast()), arm);
 }
 
 /// `co->yield(&cancel_fn)` of `co`, the running coroutine (aborting
@@ -275,6 +287,16 @@ pub fn suspend(co: *mut c_void) {
 /// this frame, which stays in place while the coroutine is parked, and the
 /// coroutine's cancel function is cleared before this returns.
 pub fn yield_with_cancel<F: FnOnce(*mut c_void) -> bool + Copy>(co: *mut c_void, cancel: F) {
+    yield_with_cancel_armed(co, cancel, |_| ());
+}
+
+/// [`yield_with_cancel`], handing `arm` the [`Waker`](crate::Waker) that ends this
+/// park before `co` switches out.
+pub fn yield_with_cancel_armed<F: FnOnce(*mut c_void) -> bool + Copy>(
+    co: *mut c_void,
+    cancel: F,
+    arm: impl FnOnce(crate::Waker),
+) {
     let s = Sched::this();
     let co = Co::running(s, co.cast());
     let canceler = Canceler {
@@ -282,7 +304,7 @@ pub fn yield_with_cancel<F: FnOnce(*mut c_void) -> bool + Copy>(co: *mut c_void,
         data: (&raw const cancel).cast(),
     };
     // The canceler outlives the yield.
-    ops::yield_cancelable(s, co, (&raw const canceler).cast_mut().cast());
+    ops::yield_cancelable(s, co, (&raw const canceler).cast_mut().cast(), arm);
 }
 
 /// `static void Coroutine::bailout(callback)`: inside a coroutine the
