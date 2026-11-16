@@ -122,7 +122,6 @@ fn lookup(flags: c_int, name: &CStr) -> Option<([c_char; 46], usize)> {
 }
 
 /// What `getaddrinfo` found.
-#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Resolved {
     /// getaddrinfo's error, or 0.
