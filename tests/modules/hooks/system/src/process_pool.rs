@@ -1972,7 +1972,7 @@ fn set_worker_type(kind: c_int) -> u8 {
     // SAFETY: this process's worker type, then its log symbol.
     unsafe {
         swoole_set_worker_type(kind);
-        swoole_get_worker_symbol() as u8
+        u8::from_ne_bytes(swoole_get_worker_symbol().to_ne_bytes())
     }
 }
 
