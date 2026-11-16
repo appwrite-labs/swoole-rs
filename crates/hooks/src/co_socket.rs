@@ -55,13 +55,18 @@ pub struct CoSocket {
     pub ssl_is_server: Cell<bool>,
     pub ssl_handshaked: Cell<bool>,
     pub zero_copy: Cell<bool>,
-    pub(crate) resolve_context: Cell<*mut c_void>,
+    /// The `NameResolver::Context` the socket's connects resolve with, shared with
+    /// its owner (the HTTP client); none for a fresh one per connect.
+    pub(crate) resolve_context: Cell<Option<SharedResolve>>,
     /// The coroutines, barriers and timers bound to each direction, and the parts
     /// lent out, which `init` makes and `fini` releases.
     pub(crate) state: Option<Box<Bound>>,
     /// The record's metadata, which `init` makes and `fini` releases.
     pub(crate) extra: Cell<Option<Box<SocketExtra>>>,
 }
+
+/// A `NameResolver::Context` an owner shares with its socket.
+pub type SharedResolve = std::rc::Rc<Cell<swoole_rs_corebase::NameResolverContext>>;
 
 /// Field offsets native code asserts too (`swoole_rs_co_socket.h`).
 #[cfg(target_pointer_width = "64")]
@@ -204,21 +209,6 @@ macro_rules! fields {
     )*};
 }
 
-/// The pointer fields, which `Co`'s methods and native code dereference: read freely,
-/// set only by a caller that vouches for the new value.
-macro_rules! pointers {
-    ($($(#[$doc:meta])* $field:ident, $set:ident: $ty:ty;)*) => {$(
-        fields!(get $(#[$doc])* $field: $ty);
-        $(#[$doc])*
-        ///
-        /// # Safety
-        /// `value` is what the field's doc says, for as long as the record holds it.
-        pub unsafe fn $set(self, value: $ty) {
-            self.record().$field.set(value);
-        }
-    )*};
-}
-
 impl Co {
     /// The record at `raw`.
     ///
@@ -272,12 +262,25 @@ impl Co {
         zero_copy, set_zero_copy: bool;
     }
 
-    pointers! {
+    fields!(get
         /// `errMsg`: a NUL-terminated message, static, `swoole_strerror`'s, the thread's
-        /// last error message or the record's own error string.
-        err_msg, set_err_msg: *const c_char;
-        /// Null, or a live `NameResolver::Context` that outlives the record.
-        resolve_context, set_resolve_context: *mut c_void;
+        /// last error message or the record's own error string; only this module's
+        /// setters write it.
+        err_msg: *const c_char);
+
+    /// The `NameResolver::Context` connects resolve with from now on; none for a
+    /// fresh one per connect.
+    pub fn set_resolve_context(self, context: Option<SharedResolve>) {
+        drop(self.record().resolve_context.replace(context));
+    }
+
+    /// The shared `NameResolver::Context`, if any.
+    #[must_use]
+    pub fn resolve_context(self) -> Option<SharedResolve> {
+        let slot = &self.record().resolve_context;
+        let context = slot.take();
+        slot.set(context.clone());
+        context
     }
 
     fields!(get
@@ -347,7 +350,8 @@ impl Co {
         if message.is_null() {
             return f(None);
         }
-        // SAFETY: `set_err_msg`'s contract: a NUL-terminated message the record holds.
+        // SAFETY: `err_msg`'s contract, which its setters keep: a NUL-terminated
+        // message the record holds.
         let message = unsafe { CStr::from_ptr(message) };
         let bytes = message.to_bytes_with_nul();
         let mut inline = [0u8; 128];
@@ -572,12 +576,10 @@ impl CoSocket {
         self.socket.get().map_or(ptr::null_mut(), Socket::as_ptr)
     }
 
-    /// The handle of a record this module boxed, which the caller owns from here:
-    /// [`swr_v1_hook_co_socket_free`] releases it.
-    fn into_co(self: Box<Self>) -> Co {
-        // SAFETY: a live record until it is freed, with the state and metadata `new`
-        // made; its `socket` is null or the network::Socket this module attached.
-        unsafe { Co::new(Box::into_raw(self)) }
+    /// The owner of a record this module boxed, with the state and metadata `new`
+    /// made: its handle reaches a live record until the owner drops it.
+    fn into_owned(self: Box<Self>) -> OwnedCo {
+        OwnedCo(Co(Box::into_raw(self)))
     }
 
     fn new() -> Self {
@@ -603,7 +605,7 @@ impl CoSocket {
             ssl_is_server: Cell::new(false),
             ssl_handshaked: Cell::new(false),
             zero_copy: Cell::new(false),
-            resolve_context: Cell::new(ptr::null_mut()),
+            resolve_context: Cell::new(None),
             state: Some(Box::new(Bound::new())),
             extra: Cell::new(Some(SocketExtra::boxed())),
         }
@@ -726,19 +728,11 @@ pub extern "C" fn swr_v1_hook_co_socket_release(socket: &mut CoSocket) {
     socket.fini();
 }
 
-/// `new SocketImpl(...)` for the sockets Rust hands out: by `domain`, `kind` and
-/// `protocol` with `family`, else by the `swSocketType` `kind`; over `fd` unless it is
-/// negative. A `UringSocket` when the build says so. Never null; a failed socket(2)
-/// leaves it without an fd.
-#[must_use]
-pub fn make(fd: c_int, domain: c_int, kind: c_int, protocol: c_int, family: bool) -> Co {
-    let (socket, result) = make_quiet(fd, domain, kind, protocol, family);
-    warn_created(socket, result);
-    socket
-}
-
-/// [`make`] before its warnings, whose PHP error handler may bail out: the socket
-/// and the bits [`warn_created`] reports, so the caller can own the socket first.
+/// `new SocketImpl(...)` for the sockets Rust hands out, before its warnings, whose
+/// PHP error handler may bail out: the socket, which only the result holds, and the
+/// bits [`warn_created`] reports. By `domain`, `kind` and `protocol` with `family`,
+/// else by the `swSocketType` `kind`; over `fd` unless it is negative. A
+/// `UringSocket` when the build says so. A failed socket(2) leaves it without an fd.
 #[must_use]
 pub fn make_quiet(
     fd: c_int,
@@ -746,7 +740,7 @@ pub fn make_quiet(
     kind: c_int,
     protocol: c_int,
     family: bool,
-) -> (Co, u32) {
+) -> (OwnedCo, u32) {
     let how = match (family, fd < 0) {
         (true, true) => New::ByFamily,
         (true, false) => New::FdByFamily,
@@ -756,9 +750,9 @@ pub fn make_quiet(
     let mut socket = Box::new(CoSocket::new());
     let owner = ptr::from_mut(&mut *socket).cast();
     let result = socket.construct(owner, how, fd, kind, domain, kind, protocol);
-    let socket = socket.into_co();
+    let socket = socket.into_owned();
     if crate::stdio::host().is_some_and(|host| host.uring_socket) {
-        crate::socket_extra::swr_v1_hook_co_socket_uring(socket);
+        crate::socket_extra::swr_v1_hook_co_socket_uring(socket.co());
     }
     (socket, result)
 }
@@ -766,19 +760,6 @@ pub fn make_quiet(
 /// The warnings [`make_quiet`]'s `result` holds, over its socket.
 pub fn warn_created(socket: Co, result: u32) {
     swr_v1_hook_co_socket_created(socket, result);
-}
-
-/// `delete socket` of a socket Rust made or accepted: `~Socket`, then its storage.
-///
-/// # Safety
-/// `socket` came from [`make`] or `accept` and is not used
-/// afterwards.
-pub unsafe extern "C" fn swr_v1_hook_co_socket_free(socket: *mut c_void) {
-    let socket = socket.cast::<CoSocket>();
-    // SAFETY: as the caller promises: a live record, which nothing else borrows now.
-    swr_v1_hook_co_socket_release(unsafe { &mut *socket });
-    // SAFETY: the record `make` or `accept` boxed, released once.
-    drop(unsafe { Box::from_raw(socket) });
 }
 
 /// The public constructors, which initialise the record first, by the [`New`] whose
@@ -810,6 +791,7 @@ impl CoSocket {
     pub(crate) fn fini(&mut self) {
         self.state = None;
         self.extra.set(None);
+        self.resolve_context.set(None);
     }
 
     /// The public constructors' work over a fresh record (see
@@ -917,29 +899,26 @@ impl CoSocket {
 }
 
 /// A socket Rust made or accepted, which only this holds: dropping it deletes it
-/// ([`swr_v1_hook_co_socket_free`]). Only [`owned`] and [`accepted`] make one.
-pub(crate) struct OwnedCo(Co);
+/// (`~Socket`, then its storage). Only [`make_quiet`] and [`accepted`] make one.
+pub struct OwnedCo(Co);
 
 impl OwnedCo {
     /// The socket, live while this is.
-    pub(crate) const fn co(&self) -> Co {
+    #[must_use]
+    pub const fn co(&self) -> Co {
         self.0
-    }
-
-    /// The socket, handed on to whoever deletes it next.
-    pub(crate) fn into_co(self) -> Co {
-        core::mem::ManuallyDrop::new(self).0
     }
 }
 
 impl Drop for OwnedCo {
     fn drop(&mut self) {
-        // SAFETY: `make` or `accepted` made it, and nothing else holds it.
-        unsafe { swr_v1_hook_co_socket_free(self.0.this()) };
+        // SAFETY: the record `into_owned` boxed, which only this owner frees.
+        let mut record = unsafe { Box::from_raw(self.0.raw()) };
+        swr_v1_hook_co_socket_release(&mut record);
     }
 }
 
-/// [`make`]'s socket, which only the result holds.
+/// [`make_quiet`]'s socket, its warnings reported.
 pub(crate) fn owned(
     fd: c_int,
     domain: c_int,
@@ -947,7 +926,9 @@ pub(crate) fn owned(
     protocol: c_int,
     family: bool,
 ) -> OwnedCo {
-    OwnedCo(make(fd, domain, kind, protocol, family))
+    let (socket, result) = make_quiet(fd, domain, kind, protocol, family);
+    warn_created(socket.co(), result);
+    socket
 }
 
 /// `new Socket(conn, server)`, the accepting constructor: `conn`, accepted on
@@ -977,7 +958,7 @@ pub(crate) fn accepted(server: Co, mut conn: Box<SocketRecord>) -> OwnedCo {
     socket.http2.set(server.http2());
     socket.protocol.set(server.protocol());
     socket.ssl_is_server.set(server.ssl_is_server());
-    let socket = OwnedCo(socket.into_co());
+    let socket = socket.into_owned();
     swr_v1_hook_co_socket_created(socket.co(), result);
     socket.co().with_state(|state| state.flags.connected = true);
     socket
@@ -1048,6 +1029,13 @@ mod test_support {
         }
     }
 
+    impl OwnedCo {
+        /// The socket, which the caller frees from here.
+        pub(crate) fn into_co(self) -> Co {
+            core::mem::ManuallyDrop::new(self).0
+        }
+    }
+
     /// Writes a fresh record (not open, nothing bound) into `socket`'s storage.
     pub(crate) unsafe fn init(socket: *mut CoSocket) {
         unsafe { socket.write(CoSocket::new()) };
@@ -1055,7 +1043,7 @@ mod test_support {
 
     /// A record never opened, which the result owns.
     pub(crate) fn unopened() -> OwnedCo {
-        OwnedCo(Box::new(CoSocket::new()).into_co())
+        Box::new(CoSocket::new()).into_owned()
     }
 
     /// A record over a `network::Socket` record with `fd`, which the result owns.
@@ -1193,17 +1181,17 @@ mod tests {
         let co = unsafe { Co::new(&raw mut *socket) };
         let long = CString::new([b'x'; 300]).unwrap();
         for message in [c"Success", long.as_c_str()] {
-            unsafe { co.set_err_msg(message.as_ptr()) };
+            co.record().err_msg.set(message.as_ptr());
             assert_eq!(co.err_message().as_deref(), Some(message));
             co.with_err_message(|copy| {
                 // The socket may replace its message while `f` runs.
-                unsafe { co.set_err_msg(c"replaced".as_ptr()) };
+                co.record().err_msg.set(c"replaced".as_ptr());
                 assert_eq!(copy, Some(message));
             });
         }
-        unsafe { co.set_err_msg(ptr::null()) };
+        co.record().err_msg.set(ptr::null());
         assert_eq!(co.err_message(), None);
-        unsafe { co.set_err_msg(c"".as_ptr()) };
+        co.record().err_msg.set(c"".as_ptr());
         release(socket);
     }
 

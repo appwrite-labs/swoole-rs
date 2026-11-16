@@ -19,7 +19,7 @@ use std::ffi::{CStr, c_char, c_int, c_void};
 use std::io::{Read, Write};
 use std::mem::ManuallyDrop;
 use std::ptr;
-use swoole_rs_hooks::co_socket::{self, Co};
+use swoole_rs_hooks::co_socket::{self, Co, OwnedCo};
 use swoole_rs_hooks::vector::{IoVector, RecvMessage, SendMessage, Vectors};
 use swoole_rs_hooks::{TimeoutScope, co_io, packet};
 use swoole_rs_reactor::{Events, TimeoutKind};
@@ -271,20 +271,25 @@ fn size(n: isize) -> usize {
 /// A coroutine `Socket`, deleted on drop as a C++ scope would.
 struct Sock {
     ptr: *mut c_void,
+    /// The socket's owner, none for a failed accept.
+    owner: Option<OwnedCo>,
     /// The `SSLContext` `enable_ssl_encrypt` made: its fields and string slots.
     tls: Cell<Option<TlsPrepared>>,
 }
 
 impl Sock {
     fn make(fd: c_int, domain: c_int, kind: c_int, protocol: c_int, family: bool) -> Self {
-        let socket = co_socket::make(fd, domain, kind, protocol, family).this();
-        assert!(!socket.is_null());
-        Self::wrap(socket)
+        let (socket, created) = co_socket::make_quiet(fd, domain, kind, protocol, family);
+        co_socket::warn_created(socket.co(), created);
+        Self::own(Some(socket))
     }
 
-    fn wrap(ptr: *mut c_void) -> Self {
+    fn own(owner: Option<OwnedCo>) -> Self {
         Self {
-            ptr,
+            ptr: owner
+                .as_ref()
+                .map_or(ptr::null_mut(), |owner| owner.co().this()),
+            owner,
             tls: Cell::new(None),
         }
     }
@@ -310,8 +315,7 @@ impl Sock {
 
     /// The crate's handle on this socket.
     fn co(&self) -> Co {
-        // SAFETY: the live socket `make` or `accept` made, which outlives the handle's use.
-        unsafe { Co::new(self.ptr.cast()) }
+        self.owner.as_ref().expect("a socket").co()
     }
 
     fn record(&self) -> &mut Record {
@@ -350,8 +354,7 @@ impl Sock {
 
     /// `accept()`: the connection, which a C++ caller deletes or leaks.
     fn accept(&self) -> ManuallyDrop<Sock> {
-        let conn = self.co().accept(0.0).map_or(ptr::null_mut(), Co::this);
-        ManuallyDrop::new(Sock::wrap(conn))
+        ManuallyDrop::new(Sock::own(self.co().accept(0.0)))
     }
 
     fn send(&self, buf: &[u8]) -> isize {
@@ -554,13 +557,6 @@ impl Sock {
         self.co()
             .vector(&mut vector, matches!(op, READV_ALL | WRITEV_ALL))
             .map_or(-1, usize::cast_signed)
-    }
-}
-
-impl Drop for Sock {
-    fn drop(&mut self) {
-        // SAFETY: the socket `make` or `accept` made, deleted once.
-        unsafe { co_socket::swr_v1_hook_co_socket_free(self.ptr) };
     }
 }
 
