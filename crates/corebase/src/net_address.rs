@@ -152,12 +152,14 @@ pub fn assign(
                 return Err(NAME_TOO_LONG);
             }
             address.un.sun_family = libc::sa_family_t::try_from(libc::AF_UNIX).unwrap_or(0);
-            let path = &mut address.unix_mut().sun_path;
-            // `swoole_strlcpy` and the forced final NUL; the bytes after are kept.
-            for (slot, byte) in path.iter_mut().zip(text.iter().copied().chain([0])) {
-                *slot = libc::c_char::from_ne_bytes([byte]);
-            }
-            *path.last_mut().unwrap_or(&mut 0) = 0;
+            address.edit_unix(|un| {
+                let path = &mut un.sun_path;
+                // `swoole_strlcpy` and the forced final NUL; the bytes after are kept.
+                for (slot, byte) in path.iter_mut().zip(text.iter().copied().chain([0])) {
+                    *slot = libc::c_char::from_ne_bytes([byte]);
+                }
+                *path.last_mut().unwrap_or(&mut 0) = 0;
+            });
             *length = size(SUN_PATH);
             Ok(())
         }

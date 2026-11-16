@@ -1,128 +1,174 @@
-//! Owned POSIX descriptor spans and their cursor. The allocation header owns the
-//! complete `IOVector`; native callers borrow views instead of mirroring counters.
+//! An `IOVector`: a copy of the caller's descriptors, typed by the direction their
+//! buffers are lent in, and its cursor. Payload bytes are neither read nor copied.
 use crate::iov_progress::progress;
 use crate::socket_rw::IovState;
-use crate::{IovStep, ReactorIovProgress};
+use crate::{Drain, Fill, IovStep};
 use std::io::IoSlice;
-use std::marker::PhantomData;
-
-/// An `IOVector` over buffers lent for `'a` in one direction: writable and reached
-/// through nothing else for a read ([`Self::reading`]), readable for a write
-/// ([`Self::writing`]). Only those make one, so its descriptors always name them.
-pub struct ReactorIov<'a> {
-    fields: ReactorIovFields,
-    /// The two spans `fields` points into: the original descriptors, then the
-    /// iterator's copy, whose last `remain_count` are the ones left.
-    descriptors: Vec<libc::iovec>,
-    write: bool,
-    lent: PhantomData<&'a mut [u8]>,
-}
+use swoole_rs_corebase::sys;
 
 pub use swoole_rs_corebase::lent::ReadVec;
 
-/// Stable public slots borrowed by the native facade. Payload and descriptor
-/// replacement obey the same live-span requirements as the original interface.
-pub struct ReactorIovFields {
-    pub original: *mut libc::iovec,
-    pub count: i32,
-    pub state: IovState,
+/// The descriptors of buffers lent for `'a`: writable and reached through nothing else
+/// for a read, readable for a write.
+enum Descriptors<'a> {
+    Read(Vec<ReadVec<'a>>),
+    Write(Vec<IoSlice<'a>>),
 }
-/// Construct both descriptor spans from `source`, in `write`'s direction. Payload
-/// bytes are neither read nor owned. Refused with -2 when it can't allocate.
-fn owned_new<'a>(
-    source: impl IntoIterator<Item = libc::iovec, IntoIter: ExactSizeIterator + Clone>,
-    write: bool,
-) -> Result<Box<ReactorIov<'a>>, i32> {
-    let source = source.into_iter();
+
+/// An `IOVector` over buffers lent for `'a` in one direction ([`Self::reading`] or
+/// [`Self::writing`]). The cursor moves the last `remain_count` descriptors, which are
+/// the ones left.
+pub struct ReactorIov<'a> {
+    descriptors: Descriptors<'a>,
+    state: IovState,
+}
+
+/// What is left of one of a [`ReactorIov`]'s buffers, lent in its direction: slots
+/// to read into, or bytes to write.
+pub enum IovBuffer<'a> {
+    Read(Fill<'a>),
+    Write(Drain<'a>),
+}
+
+impl IovBuffer<'_> {
+    /// Whether nothing is left of it.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Self::Read(fill) => fill.is_empty(),
+            Self::Write(data) => data.is_empty(),
+        }
+    }
+
+    /// The same buffer, lent again for a call that may be repeated.
+    pub fn reborrow(&mut self) -> IovBuffer<'_> {
+        match self {
+            Self::Read(fill) => IovBuffer::Read(fill.reborrow()),
+            Self::Write(data) => IovBuffer::Write(*data),
+        }
+    }
+
+    /// Steps past the `moved` bytes a call transferred: whether any are left.
+    pub fn advance(&mut self, moved: usize) -> bool {
+        match self {
+            Self::Read(fill) => fill.advance(moved),
+            Self::Write(data) => data.advance(moved),
+        }
+    }
+}
+
+/// A copy of `source` and a cursor at its start; none where `IOVector`'s constructor
+/// throws: it can't allocate, or the pin's `count + count` would overflow its `int`.
+fn copy<T>(source: impl ExactSizeIterator<Item = T>) -> Option<(Vec<T>, IovState)> {
     let count = source.len();
-    // The pinned Native expression count+count has no defined signed-overflow
-    // behavior. This explicit refusal does not establish parity in that domain.
-    let signed_count = i32::try_from(count)
+    let remain_count = i32::try_from(count)
         .ok()
-        .filter(|&count| count <= i32::MAX / 2)
-        .ok_or(-2)?;
-    let mut descriptors = Vec::new();
-    descriptors.try_reserve_exact(count * 2).map_err(|_| -2)?;
-    descriptors.extend(source.clone());
-    descriptors.extend(source);
-    // Moving the vector into the owner leaves its buffer, and these pointers, in place.
-    let original = descriptors.as_mut_ptr();
-    let iterator = original.wrapping_add(count);
-    swoole_rs_buffer::try_box(|| ReactorIov {
-        fields: ReactorIovFields {
-            original,
-            count: signed_count,
-            state: IovState {
-                iterator,
-                remain_count: signed_count,
-                index: 0,
-                offset_bytes: 0,
-            },
-        },
-        descriptors,
-        write,
-        lent: PhantomData,
-    })
-    .ok_or(-2)
+        .filter(|&count| count <= i32::MAX / 2)?;
+    let mut copy = Vec::new();
+    copy.try_reserve_exact(count).ok()?;
+    copy.extend(source);
+    let state = IovState {
+        remain_count,
+        index: 0,
+        offset_bytes: 0,
+    };
+    Some((copy, state))
 }
 
 impl<'a> ReactorIov<'a> {
     /// `IOVector(iov, count)` to read into `vectors`' buffers: a cursor over a copy of
     /// their descriptors; none when it can't allocate.
     #[must_use]
-    pub fn reading(vectors: &'a mut [ReadVec<'_>]) -> Option<Box<Self>> {
-        owned_new(vectors.iter().map(ReadVec::descriptor), false).ok()
+    pub fn reading(vectors: &'a mut [ReadVec<'_>]) -> Option<Self> {
+        let (copy, state) = copy(vectors.iter_mut().map(ReadVec::reborrow))?;
+        Some(Self {
+            descriptors: Descriptors::Read(copy),
+            state,
+        })
     }
 
     /// `IOVector(iov, count)` to write `vectors`' bytes: a cursor over a copy of their
     /// descriptors; none when it can't allocate.
     #[must_use]
-    pub fn writing(vectors: &'a [IoSlice<'_>]) -> Option<Box<Self>> {
-        let iovecs = vectors.iter().map(|bytes| libc::iovec {
-            iov_base: bytes.as_ptr().cast_mut().cast(),
-            iov_len: bytes.len(),
-        });
-        owned_new(iovecs, true).ok()
+    pub fn writing(vectors: &'a [IoSlice<'_>]) -> Option<Self> {
+        let (copy, state) = copy(vectors.iter().copied())?;
+        Some(Self {
+            descriptors: Descriptors::Write(copy),
+            state,
+        })
     }
 
     /// Whether it was made to write from.
     #[must_use]
     pub const fn write(&self) -> bool {
-        self.write
+        matches!(self.descriptors, Descriptors::Write(_))
     }
 
-    /// Where the descriptors left start: the iterator, which only `advance` moves,
-    /// together with `remain_count`, so it stays `remain_count` from the end.
+    /// Where the descriptors left start: `remain_count` from the end.
     fn left(&self) -> usize {
-        let left = usize::try_from(self.fields.state.remain_count).unwrap_or(0);
-        self.descriptors.len().saturating_sub(left)
+        let count = match &self.descriptors {
+            Descriptors::Read(vectors) => vectors.len(),
+            Descriptors::Write(vectors) => vectors.len(),
+        };
+        let left = usize::try_from(self.state.remain_count).unwrap_or(0);
+        count.saturating_sub(left)
     }
 
-    /// The descriptors the cursor has left.
-    fn remaining(&mut self) -> &mut [libc::iovec] {
-        let start = self.left();
-        self.descriptors.get_mut(start..).unwrap_or_default()
-    }
-
-    /// The descriptors the cursor has left, the current one trimmed to where the
-    /// transfers stopped.
+    /// The descriptors left, the current one trimmed to where the transfers stopped,
+    /// as the `iovec` array a ring request names: where it starts and how many. Both
+    /// descriptor types are ABI-compatible with an `iovec`.
     #[must_use]
-    pub fn remaining_iovecs(&self) -> &[libc::iovec] {
-        self.descriptors.get(self.left()..).unwrap_or_default()
+    pub fn remaining_iovecs(&self) -> (*const libc::iovec, usize) {
+        let left = self.left();
+        match &self.descriptors {
+            Descriptors::Read(vectors) => {
+                let rest = vectors.get(left..).unwrap_or_default();
+                (rest.as_ptr().cast(), rest.len())
+            }
+            Descriptors::Write(vectors) => {
+                let rest = vectors.get(left..).unwrap_or_default();
+                (rest.as_ptr().cast(), rest.len())
+            }
+        }
+    }
+
+    /// The buffers left, in order, each lent in the vector's direction, the current
+    /// one trimmed to where the transfers stopped.
+    pub fn buffers(&mut self) -> impl Iterator<Item = IovBuffer<'_>> {
+        let left = self.left();
+        let (read, write): (&mut [ReadVec<'a>], &[IoSlice<'a>]) = match &mut self.descriptors {
+            Descriptors::Read(vectors) => (
+                vectors.get_mut(left..).unwrap_or_default(),
+                Default::default(),
+            ),
+            Descriptors::Write(vectors) => {
+                (Default::default(), vectors.get(left..).unwrap_or_default())
+            }
+        };
+        let read = read.iter_mut().map(|vector| IovBuffer::Read(vector.fill()));
+        read.chain(
+            write
+                .iter()
+                .map(|bytes| IovBuffer::Write(Drain::new(bytes))),
+        )
     }
 
     /// `IOVector::update_iterator(n)`: advance the descriptors and counters together.
     /// # Panics
     /// When `n` is more than the remaining descriptors hold.
     pub fn advance(&mut self, n: isize) {
-        let state = self.fields.state;
-        let reply = owned_progress(
-            self.remaining(),
-            n,
-            state.remain_count,
-            state.index,
-            state.offset_bytes,
-        );
+        let (left, state) = (self.left(), self.state);
+        let (remain, index, offset) = (state.remain_count, state.index, state.offset_bytes);
+        let reply = match &self.descriptors {
+            Descriptors::Read(vectors) => {
+                let lengths = vectors.get(left..).unwrap_or_default().iter();
+                progress(lengths.map(ReadVec::len), n, remain, index, offset)
+            }
+            Descriptors::Write(vectors) => {
+                let lengths = vectors.get(left..).unwrap_or_default().iter();
+                progress(lengths.map(|bytes| bytes.len()), n, remain, index, offset)
+            }
+        };
         if reply.action == IovStep::Unchanged {
             return;
         }
@@ -130,12 +176,26 @@ impl<'a> ReactorIov<'a> {
             reply.action != IovStep::Overrun,
             "iovec progress outside the original domain"
         );
-        let state = &mut self.fields.state;
-        state.remain_count = reply.remain_count;
-        state.index = reply.index;
-        state.offset_bytes = reply.offset_bytes;
+        self.state = IovState {
+            remain_count: reply.remain_count,
+            index: reply.index,
+            offset_bytes: reply.offset_bytes,
+        };
+        // The final completion never touches a descriptor.
         if reply.action == IovStep::Advanced {
-            state.iterator = state.iterator.wrapping_add(reply.advance);
+            let current = left + reply.advance;
+            match &mut self.descriptors {
+                Descriptors::Read(vectors) => {
+                    if let Some(vector) = vectors.get_mut(current) {
+                        vector.advance(reply.consumed);
+                    }
+                }
+                Descriptors::Write(vectors) => {
+                    if let Some(bytes) = vectors.get_mut(current) {
+                        bytes.advance(reply.consumed);
+                    }
+                }
+            }
         }
     }
 }
@@ -143,7 +203,7 @@ impl<'a> ReactorIov<'a> {
 /// Observe the cursor. No reference to the owner escapes the call.
 #[must_use]
 pub fn swr_v1_reactor_iov_view(owner: &ReactorIov<'_>) -> IovState {
-    owner.fields.state
+    owner.state
 }
 
 /// `Socket::readv`/`writev` through an owned `IOVector`, in the direction it was made
@@ -154,99 +214,92 @@ pub fn swr_v1_socket_iov_owned(
     fd: i32,
     owner: &mut ReactorIov<'_>,
     tls: Option<&(
-        impl Fn(crate::Fill<'_>) -> Option<usize>,
-        impl Fn(crate::Drain<'_>) -> Option<usize>,
+        impl Fn(Fill<'_>) -> Option<usize>,
+        impl Fn(Drain<'_>) -> Option<usize>,
     )>,
 ) -> Option<usize> {
-    let write = owner.write;
     loop {
         let result = if let Some((read, send)) = tls {
             let mut total = 0;
             loop {
-                let Some(current) = owner.remaining().first().copied() else {
-                    break Some(total);
-                };
-                let done = if write {
-                    // SAFETY: the type's invariant: a remaining iovec of a writing
-                    // vector names bytes readable while it lives.
-                    send(unsafe { crate::Drain::from_raw(current.iov_base, current.iov_len) })
-                } else {
-                    // SAFETY: the type's invariant: a remaining iovec of a reading
-                    // vector names writable bytes nothing else reaches while it lives.
-                    read(unsafe { crate::Fill::from_raw(current.iov_base, current.iov_len) })
+                let done = match owner.buffers().next() {
+                    None => break Some(total),
+                    Some(IovBuffer::Read(fill)) => read(fill),
+                    Some(IovBuffer::Write(data)) => send(data),
                 };
                 total += done.unwrap_or(0);
                 owner.advance(done.map_or(-1, usize::cast_signed));
-                if !(done > Some(0) && owner.fields.state.remain_count > 0) {
+                if !(done > Some(0) && owner.state.remain_count > 0) {
                     break if total > 0 { Some(total) } else { done };
                 }
             }
         } else {
-            let count = owner.fields.state.remain_count;
-            let left = owner.remaining().as_ptr();
-            let done = if write {
-                // SAFETY: the `remain_count` iovecs left name buffers readable while
-                // the vector lives (the type's invariant).
-                unsafe { libc::writev(fd, left, count) }
-            } else {
-                // SAFETY: as above, writable and reached through nothing else.
-                unsafe { libc::readv(fd, left, count) }
+            let left = owner.left();
+            let done = match &mut owner.descriptors {
+                Descriptors::Read(vectors) => {
+                    sys::readv(fd, vectors.get_mut(left..).unwrap_or_default())
+                }
+                Descriptors::Write(vectors) => {
+                    sys::writev(fd, vectors.get(left..).unwrap_or_default())
+                }
             };
-            owner.advance(done);
-            usize::try_from(done).ok()
+            owner.advance(done.map_or(-1, usize::cast_signed));
+            done
         };
         if !(result.is_none() && crate::socket_rw::interrupted()) {
             return result;
         }
     }
 }
-/// Sum the descriptors' lengths with C `size_t` wrapping semantics.
-#[cfg(test)]
-fn owned_length(descriptors: &[libc::iovec]) -> usize {
-    descriptors
-        .iter()
-        .fold(0usize, |total, iov| total.wrapping_add(iov.iov_len))
-}
 
-/// Compute the progress policy over the `remaining` descriptors at `iterator` and
-/// move the one it stops inside. The final completion path never touches them.
-pub(crate) fn owned_progress(
-    iterator: &mut [libc::iovec],
-    n: isize,
-    remaining: i32,
-    index: i32,
-    offset: usize,
-) -> ReactorIovProgress {
-    let reply = progress(
-        iterator.iter().map(|iov| iov.iov_len),
-        n,
-        remaining,
-        index,
-        offset,
-    );
-    if reply.action == IovStep::Advanced
-        && let Some(current) = iterator.get_mut(reply.advance)
-    {
-        current.iov_base = current
-            .iov_base
-            .cast::<u8>()
-            .wrapping_add(reply.consumed)
-            .cast();
-        current.iov_len = current.iov_len.wrapping_sub(reply.consumed);
-    }
-    reply
-}
 #[cfg(test)]
 mod tests {
     use super::*;
     use swoole_rs_corebase::CCast;
 
-    /// The `count` descriptors at `base`, none when `count` isn't positive.
-    unsafe fn span<'a>(base: *mut libc::iovec, count: i32) -> &'a mut [libc::iovec] {
-        match usize::try_from(count) {
-            Ok(count) if count > 0 => unsafe { std::slice::from_raw_parts_mut(base, count) },
-            _ => &mut [],
+    /// Sum the descriptors' lengths with C `size_t` wrapping semantics.
+    fn owned_length(descriptors: &[libc::iovec]) -> usize {
+        descriptors
+            .iter()
+            .fold(0usize, |total, iov| total.wrapping_add(iov.iov_len))
+    }
+
+    /// The descriptors `owner` holds now, the ones done included.
+    fn descriptors(owner: &ReactorIov<'_>) -> Vec<libc::iovec> {
+        match &owner.descriptors {
+            Descriptors::Read(vectors) => vectors.iter().map(ReadVec::descriptor).collect(),
+            Descriptors::Write(vectors) => vectors
+                .iter()
+                .map(|bytes| libc::iovec {
+                    iov_base: bytes.as_ptr().cast_mut().cast(),
+                    iov_len: bytes.len(),
+                })
+                .collect(),
         }
+    }
+
+    /// Vectors to read into the buffers `input` names, which outlive them.
+    fn reading<'a>(input: &[libc::iovec]) -> Vec<ReadVec<'a>> {
+        let slots = |iov: &libc::iovec| unsafe {
+            std::slice::from_raw_parts_mut(iov.iov_base.cast::<u8>(), iov.iov_len)
+        };
+        input.iter().map(|iov| ReadVec::new(slots(iov))).collect()
+    }
+
+    /// Vectors to write the buffers `input` names, which outlive them.
+    fn writing<'a>(input: &[libc::iovec]) -> Vec<IoSlice<'a>> {
+        let bytes = |iov: &libc::iovec| unsafe {
+            std::slice::from_raw_parts(iov.iov_base.cast::<u8>(), iov.iov_len)
+        };
+        input.iter().map(|iov| IoSlice::new(bytes(iov))).collect()
+    }
+
+    fn same(a: libc::iovec, b: libc::iovec) -> bool {
+        a.iov_base == b.iov_base && a.iov_len == b.iov_len
+    }
+
+    fn all_same(a: &[libc::iovec], b: &[libc::iovec]) -> bool {
+        a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same(*a, *b))
     }
 
     #[test]
@@ -259,32 +312,33 @@ mod tests {
                     iov_len: 1,
                 })
                 .collect();
-            unsafe {
-                let length = |owner: &ReactorIov<'_>| {
-                    owned_length(span(owner.fields.original, owner.fields.count))
-                };
-                let owner = owned_new(source.iter().copied(), false).map(Box::into_raw);
-                assert!(owner.is_ok_and(|owner| !owner.is_null()));
-                let owner = owner.unwrap();
-                let initial = swr_v1_reactor_iov_view(&*owner);
-                assert_eq!(initial.remain_count, count.c_cast::<i32>());
-                assert_eq!(initial.index, 0);
-                assert_eq!(initial.offset_bytes, 0);
-                assert_eq!(length(&*owner), count);
-                if count > 0 {
-                    (*owner).advance(1);
-                    let next = swr_v1_reactor_iov_view(&*owner);
-                    assert_eq!(next.remain_count, count.c_cast::<i32>() - 1);
-                    assert_eq!(next.index, 1);
-                    assert_eq!(next.offset_bytes, 0);
-                    assert_eq!(length(&*owner), count);
-                    assert_eq!(source[0].iov_len, 1);
-                    assert_eq!(source[0].iov_base, bytes.as_mut_ptr().cast());
-                }
-                drop(Box::from_raw(owner));
+            let mut vectors = reading(&source);
+            let mut owner = ReactorIov::reading(&mut vectors).unwrap();
+            let initial = swr_v1_reactor_iov_view(&owner);
+            assert_eq!(initial.remain_count, count.c_cast::<i32>());
+            assert_eq!(initial.index, 0);
+            assert_eq!(initial.offset_bytes, 0);
+            assert_eq!(owned_length(&descriptors(&owner)), count);
+            if count > 0 {
+                owner.advance(1);
+                let next = swr_v1_reactor_iov_view(&owner);
+                assert_eq!(next.remain_count, count.c_cast::<i32>() - 1);
+                assert_eq!(next.index, 1);
+                assert_eq!(next.offset_bytes, 0);
+                assert_eq!(owned_length(&descriptors(&owner)), count);
+            }
+            drop(owner);
+            assert!(all_same(
+                &vectors.iter().map(ReadVec::descriptor).collect::<Vec<_>>(),
+                &source
+            ));
+            if count > 0 {
+                assert_eq!(source[0].iov_len, 1);
+                assert_eq!(source[0].iov_base, bytes.as_mut_ptr().cast());
             }
         }
     }
+
     #[test]
     fn iov_owned_positive_construct_copy_length_cursor_and_release() {
         for count in [1, 3, 17, 65] {
@@ -295,217 +349,173 @@ mod tests {
                     iov_len: 1,
                 })
                 .collect();
-            unsafe {
-                let owner = owned_new(source.iter().copied(), false)
-                    .map(Box::into_raw)
-                    .unwrap();
-                let (original, iterator) =
-                    ((*owner).fields.original, (*owner).fields.state.iterator);
-                assert_eq!(original.add(count), iterator);
-                assert_eq!(original as usize % std::mem::align_of::<libc::iovec>(), 0);
-                assert_eq!(owned_length(span(original, count.c_cast::<i32>())), count);
-                for (i, expected) in source.iter().enumerate() {
-                    for span in [original, iterator] {
-                        assert_eq!((*span.add(i)).iov_base, expected.iov_base);
-                        assert_eq!((*span.add(i)).iov_len, expected.iov_len);
-                    }
-                }
-                let reply = owned_progress(
-                    span(iterator, count.c_cast::<i32>()),
-                    1,
-                    count.c_cast::<i32>(),
-                    0,
-                    0,
-                );
-                assert_eq!(reply.remain_count, count.c_cast::<i32>() - 1);
-                assert_eq!(reply.index, 1);
-                assert_eq!(
-                    reply.action,
-                    if count == 1 {
-                        IovStep::Finished
-                    } else {
-                        IovStep::Advanced
-                    }
-                );
-                assert_eq!(owned_length(span(original, count.c_cast::<i32>())), count);
-                drop(Box::from_raw(owner));
-            }
+            let mut vectors = reading(&source);
+            let mut owner = ReactorIov::reading(&mut vectors).unwrap();
+            assert_eq!(owned_length(&descriptors(&owner)), count);
+            assert!(all_same(&descriptors(&owner), &source));
+            owner.advance(1);
+            let state = swr_v1_reactor_iov_view(&owner);
+            assert_eq!(state.remain_count, count.c_cast::<i32>() - 1);
+            assert_eq!(state.index, 1);
+            assert_eq!(owned_length(&descriptors(&owner)), count);
+            drop(owner);
+            assert!(all_same(
+                &vectors.iter().map(ReadVec::descriptor).collect::<Vec<_>>(),
+                &source
+            ));
         }
-        // Normal positive partial consumption mutates only the iterator span;
-        // final completion must not touch that descriptor again.
+        // Normal positive partial consumption moves only the vector's copy; final
+        // completion must not touch that descriptor again.
         let mut bytes = [0u8; 7];
         let source = libc::iovec {
             iov_base: bytes.as_mut_ptr().cast(),
             iov_len: 7,
         };
-        unsafe {
-            let owner = owned_new([source], false).map(Box::into_raw).unwrap();
-            let (original, iterator) = ((*owner).fields.original, (*owner).fields.state.iterator);
-            let partial = owned_progress(span(iterator, 1), 2, 1, 0, 0);
-            assert_eq!(
-                (partial.action, partial.offset_bytes, partial.remain_count),
-                (IovStep::Advanced, 2, 1)
-            );
-            assert_eq!((*iterator).iov_base, bytes.as_mut_ptr().add(2).cast());
-            assert_eq!((*iterator).iov_len, 5);
-            assert_eq!(owned_length(span(original, 1)), 7);
-            let final_piece = owned_progress(span(iterator, 1), 5, 1, 0, 2);
-            assert_eq!(
-                (
-                    final_piece.action,
-                    final_piece.index,
-                    final_piece.remain_count
-                ),
-                (IovStep::Finished, 1, 0)
-            );
-            assert_eq!((*iterator).iov_len, 5);
-            assert_eq!((*iterator).iov_base, bytes.as_mut_ptr().add(2).cast());
-            drop(Box::from_raw(owner));
-        }
+        let mut vectors = reading(&[source]);
+        let mut owner = ReactorIov::reading(&mut vectors).unwrap();
+        owner.advance(2);
+        let partial = swr_v1_reactor_iov_view(&owner);
+        assert_eq!((partial.offset_bytes, partial.remain_count), (2, 1));
+        let current = descriptors(&owner)[0];
+        assert_eq!(current.iov_base, bytes.as_mut_ptr().wrapping_add(2).cast());
+        assert_eq!(current.iov_len, 5);
+        owner.advance(5);
+        let last = swr_v1_reactor_iov_view(&owner);
+        assert_eq!((last.index, last.remain_count), (1, 0));
+        assert!(same(descriptors(&owner)[0], current));
+        drop(owner);
+        assert!(same(vectors[0].descriptor(), source));
     }
 
-    /// Upstream's `IOVector` as the hybrid's C++ facade drives these exports
-    /// (socket.cc: the constructor, destructor and `update_iterator`).
-    struct IoVector {
-        owner: *mut ReactorIov<'static>,
-        iov: *mut libc::iovec,
-        iterator: *mut libc::iovec,
+    /// Upstream's `IOVector` as the native facade drove it: the constructor over a
+    /// copy, `update_iterator` and the counters.
+    struct IoVector<'a> {
+        owner: ReactorIov<'a>,
         count: i32,
-        remain_count: i32,
-        index: i32,
-        offset_bytes: usize,
     }
-    impl IoVector {
-        fn new(input: &[libc::iovec]) -> Self {
-            let count = input.len().c_cast::<i32>();
-            let owner = owned_new(input.iter().copied(), false)
-                .map(Box::into_raw)
-                .unwrap();
-            let fields = unsafe { &(*owner).fields };
-            Self {
-                owner,
-                iov: fields.original,
-                iterator: fields.state.iterator,
-                count,
-                remain_count: count,
-                index: 0,
-                offset_bytes: 0,
-            }
+    impl IoVector<'_> {
+        fn state(&self) -> IovState {
+            swr_v1_reactor_iov_view(&self.owner)
         }
         fn update_iterator(&mut self, n: isize) {
-            let reply = unsafe {
-                owned_progress(
-                    span(self.iterator, self.remain_count),
-                    n,
-                    self.remain_count,
-                    self.index,
-                    self.offset_bytes,
-                )
-            };
-            assert_ne!(reply.action, IovStep::Overrun);
-            if reply.action == IovStep::Unchanged {
-                return;
-            }
-            self.remain_count = reply.remain_count;
-            self.index = reply.index;
-            self.offset_bytes = reply.offset_bytes;
-            if reply.action == IovStep::Advanced {
-                self.iterator = self.iterator.wrapping_add(reply.advance);
-            }
+            self.owner.advance(n);
         }
-        fn length(&self) -> usize {
-            unsafe { owned_length(span(self.iov, self.count)) }
-        }
-        fn original(&self, i: usize) -> libc::iovec {
-            unsafe { *self.iov.add(i) }
+        /// The iterator's distance from the copy's start.
+        fn iterator(&self) -> usize {
+            self.owner.left()
         }
         fn remainder(&self) -> Vec<u8> {
-            (0..self.remain_count.c_cast::<usize>())
-                .flat_map(|i| unsafe {
-                    let iov = *self.iterator.add(i);
+            descriptors(&self.owner)[self.iterator()..]
+                .iter()
+                .flat_map(|iov| unsafe {
                     std::slice::from_raw_parts(iov.iov_base.cast::<u8>(), iov.iov_len).to_vec()
                 })
                 .collect()
         }
     }
-    impl Drop for IoVector {
-        fn drop(&mut self) {
-            drop(unsafe { Box::from_raw(self.owner) });
-        }
-    }
-    fn same(a: libc::iovec, b: libc::iovec) -> bool {
-        a.iov_base == b.iov_base && a.iov_len == b.iov_len
+
+    /// `run` over an `IoVector` of `input` made in each direction.
+    fn both(input: &[libc::iovec], mut run: impl FnMut(IoVector<'_>)) {
+        let count = input.len().c_cast::<i32>();
+        let mut read = reading(input);
+        run(IoVector {
+            owner: ReactorIov::reading(&mut read).unwrap(),
+            count,
+        });
+        assert!(all_same(
+            &read.iter().map(ReadVec::descriptor).collect::<Vec<_>>(),
+            input
+        ));
+        let write = writing(input);
+        run(IoVector {
+            owner: ReactorIov::writing(&write).unwrap(),
+            count,
+        });
+        assert!(write.iter().zip(input).all(
+            |(bytes, iov)| bytes.as_ptr() == iov.iov_base.cast() && bytes.len() == iov.iov_len
+        ));
     }
 
     // The cases of the retired `iov_owned` gate, which ran them on the pinned `IOVector`
-    // and on this one: 47 cases, 42 of them summing the cursor to the pin's 483.
+    // and on this one: 47 cases, 42 of them summing the cursor to the pin's 483. Each
+    // direction runs them all.
     #[test]
     fn iov_vector_cursor_matches_the_pin() {
-        let (mut cases, mut metadata) = (0, 0usize);
-        for lengths in [&[1][..], &[2, 3], &[1, 3, 7], &[4, 1, 2, 9], &[0, 1, 0, 3]] {
-            let total: usize = lengths.iter().sum();
-            let mut bytes: Vec<u8> = (0..total).map(CCast::c_cast::<u8>).collect();
-            let mut start = 0;
-            let input: Vec<_> = lengths
-                .iter()
-                .map(|&length| {
-                    let iov = libc::iovec {
-                        iov_base: bytes.as_mut_ptr().wrapping_add(start).cast(),
-                        iov_len: length,
-                    };
-                    start += length;
-                    iov
-                })
-                .collect();
-            let snapshot = input.clone();
-            let unchanged = |v: &IoVector| {
-                assert_eq!(v.length(), total);
-                assert_eq!(v.count, input.len().c_cast::<i32>());
-                for (i, expected) in snapshot.iter().enumerate() {
-                    assert!(same(v.original(i), *expected) && same(input[i], *expected));
-                }
-            };
-            for sent in 1..=total {
-                let mut v = IoVector::new(&input);
-                let initial = v.iterator;
-                v.update_iterator(sent.c_cast::<isize>());
-                let expected = if sent == total {
-                    0
-                } else {
-                    input.len().c_cast::<i32>() - v.index
+        for direction in 0..2 {
+            let (mut cases, mut metadata) = (0, 0usize);
+            for lengths in [&[1][..], &[2, 3], &[1, 3, 7], &[4, 1, 2, 9], &[0, 1, 0, 3]] {
+                let total: usize = lengths.iter().sum();
+                let mut bytes: Vec<u8> = (0..total).map(CCast::c_cast::<u8>).collect();
+                let mut start = 0;
+                let input: Vec<_> = lengths
+                    .iter()
+                    .map(|&length| {
+                        let iov = libc::iovec {
+                            iov_base: bytes.as_mut_ptr().wrapping_add(start).cast(),
+                            iov_len: length,
+                        };
+                        start += length;
+                        iov
+                    })
+                    .collect();
+                let snapshot = input.clone();
+                let run = |run: &mut dyn FnMut(IoVector<'_>)| {
+                    let mut runs = 0;
+                    both(&input, |v| {
+                        if runs == direction {
+                            run(v);
+                        }
+                        runs += 1;
+                    });
                 };
-                assert_eq!(v.remain_count, expected);
-                if sent == total {
-                    assert_eq!(v.iterator, initial);
-                } else {
-                    assert_eq!(v.remainder(), bytes[sent..]);
-                    assert_eq!(v.iterator, initial.wrapping_add(v.index.c_cast::<usize>()));
+                for sent in 1..=total {
+                    run(&mut |mut v| {
+                        let before = descriptors(&v.owner);
+                        v.update_iterator(sent.c_cast::<isize>());
+                        let state = v.state();
+                        let expected = if sent == total {
+                            0
+                        } else {
+                            input.len().c_cast::<i32>() - state.index
+                        };
+                        assert_eq!(state.remain_count, expected);
+                        if sent == total {
+                            assert!(all_same(&descriptors(&v.owner), &before));
+                        } else {
+                            assert_eq!(v.remainder(), bytes[sent..]);
+                            assert_eq!(v.iterator(), state.index.c_cast::<usize>());
+                        }
+                        assert_eq!(v.count, input.len().c_cast::<i32>());
+                        metadata += state.offset_bytes
+                            + state.index.c_cast::<usize>()
+                            + state.remain_count.c_cast::<usize>();
+                        cases += 1;
+                    });
                 }
-                unchanged(&v);
-                metadata +=
-                    v.offset_bytes + v.index.c_cast::<usize>() + v.remain_count.c_cast::<usize>();
-                cases += 1;
+                run(&mut |mut v| {
+                    for sent in 1..=total {
+                        let before = descriptors(&v.owner);
+                        v.update_iterator(1);
+                        let state = v.state();
+                        if sent == total {
+                            assert_eq!(state.remain_count, 0);
+                            assert!(all_same(&descriptors(&v.owner), &before));
+                        } else {
+                            assert_eq!(v.remainder(), bytes[sent..]);
+                        }
+                        metadata += state.offset_bytes
+                            + state.index.c_cast::<usize>()
+                            + state.remain_count.c_cast::<usize>();
+                    }
+                    cases += 1;
+                });
+                assert!(all_same(&input, &snapshot));
             }
-            let mut v = IoVector::new(&input);
-            for sent in 1..=total {
-                let previous = v.iterator;
-                v.update_iterator(1);
-                if sent == total {
-                    assert_eq!(v.remain_count, 0);
-                    assert_eq!(v.iterator, previous);
-                } else {
-                    assert_eq!(v.remainder(), bytes[sent..]);
-                }
-                unchanged(&v);
-                metadata +=
-                    v.offset_bytes + v.index.c_cast::<usize>() + v.remain_count.c_cast::<usize>();
-            }
-            cases += 1;
+            assert_eq!((cases, metadata), (42, 483));
         }
-        assert_eq!((cases, metadata), (42, 483));
     }
 
-    /// Construction copies the descriptors; updating moves only the iterator copy.
+    /// Construction copies the descriptors; updating moves only the copy.
     #[test]
     fn iov_vector_copies_and_moves_only_the_iterator() {
         for count in [1, 3, 17, 65] {
@@ -517,31 +527,26 @@ mod tests {
                 })
                 .collect();
             let before = input.clone();
-            let mut v = IoVector::new(&input);
-            assert_ne!(v.iov.cast_const(), input.as_ptr());
-            assert_eq!(v.iterator, v.iov.wrapping_add(count));
-            assert_eq!(
-                (v.count, v.remain_count, v.index, v.offset_bytes),
-                (count.c_cast::<i32>(), count.c_cast::<i32>(), 0, 0)
-            );
-            assert_eq!(v.iov as usize % std::mem::align_of::<libc::iovec>(), 0);
-            assert_eq!(v.length(), count * 3);
-            for (i, expected) in before.iter().enumerate() {
-                assert!(same(v.original(i), *expected));
-                assert!(same(unsafe { *v.iterator.add(i) }, *expected));
-            }
-            v.update_iterator(1);
-            assert_eq!(
-                (v.index, v.remain_count, v.offset_bytes),
-                (0, count.c_cast::<i32>(), 1)
-            );
-            let current = unsafe { *v.iterator };
-            assert_eq!(current.iov_base, before[0].iov_base.wrapping_byte_add(1));
-            assert_eq!(current.iov_len, 2);
-            assert_eq!(v.length(), count * 3);
-            for (i, expected) in before.iter().enumerate() {
-                assert!(same(v.original(i), *expected) && same(input[i], *expected));
-            }
+            both(&input, |mut v| {
+                let state = v.state();
+                assert_eq!(v.iterator(), 0);
+                assert_eq!(
+                    (v.count, state.remain_count, state.index, state.offset_bytes),
+                    (count.c_cast::<i32>(), count.c_cast::<i32>(), 0, 0)
+                );
+                assert_eq!(owned_length(&descriptors(&v.owner)), count * 3);
+                assert!(all_same(&descriptors(&v.owner), &before));
+                v.update_iterator(1);
+                let state = v.state();
+                assert_eq!(
+                    (state.index, state.remain_count, state.offset_bytes),
+                    (0, count.c_cast::<i32>(), 1)
+                );
+                let current = descriptors(&v.owner)[0];
+                assert_eq!(current.iov_base, before[0].iov_base.wrapping_byte_add(1));
+                assert_eq!(current.iov_len, 2);
+            });
+            assert!(all_same(&input, &before));
         }
     }
 
@@ -559,12 +564,17 @@ mod tests {
                 iov_len: 3,
             },
         ];
-        let mut v = IoVector::new(&input);
-        v.update_iterator(1);
-        assert_eq!(v.offset_bytes, 1);
-        v.update_iterator(1);
-        assert_eq!((v.index, v.remain_count, v.offset_bytes), (1, 1, 1));
-        let current = unsafe { *v.iterator };
-        assert!(current.iov_base == input[1].iov_base && current.iov_len == 3);
+        both(&input, |mut v| {
+            v.update_iterator(1);
+            assert_eq!(v.state().offset_bytes, 1);
+            v.update_iterator(1);
+            let state = v.state();
+            assert_eq!(
+                (state.index, state.remain_count, state.offset_bytes),
+                (1, 1, 1)
+            );
+            let current = descriptors(&v.owner)[v.iterator()];
+            assert!(same(current, input[1]));
+        });
     }
 }

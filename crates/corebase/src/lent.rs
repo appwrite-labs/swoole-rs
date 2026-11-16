@@ -272,6 +272,12 @@ unsafe extern "C" {
         vectors: In<'id, libc::iovec>,
         count: Count<'id, c_int>,
     ) -> isize;
+    /// Fills the buffers that the count's vectors name, in order.
+    pub(crate) safe fn readv<'id>(
+        fd: c_int,
+        vectors: Out<'id, ReadVec<'_>>,
+        count: Count<'id, c_int>,
+    ) -> isize;
     pub(crate) safe fn poll<'id>(
         fds: Out<'id, libc::pollfd>,
         count: Count<'id, libc::nfds_t>,
@@ -818,6 +824,42 @@ impl<'b> ReadVec<'b> {
     #[must_use]
     pub fn descriptor(&self) -> libc::iovec {
         self.iov
+    }
+
+    /// How many slots are left to fill.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.iov.iov_len
+    }
+
+    /// Whether no slots are left to fill.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.iov.iov_len == 0
+    }
+
+    /// The same slots, lent again while this is borrowed.
+    pub fn reborrow(&mut self) -> ReadVec<'_> {
+        ReadVec {
+            iov: self.iov,
+            lent: PhantomData,
+        }
+    }
+
+    /// The slots as a [`Fill`], for a read while this is borrowed.
+    pub fn fill(&mut self) -> Fill<'_> {
+        Fill {
+            at: self.iov.iov_base.cast(),
+            len: self.iov.iov_len,
+            lent: PhantomData,
+        }
+    }
+
+    /// Steps past the first `n` slots, at most all of them.
+    pub fn advance(&mut self, n: usize) {
+        let n = n.min(self.iov.iov_len);
+        self.iov.iov_base = self.iov.iov_base.wrapping_byte_add(n);
+        self.iov.iov_len -= n;
     }
 
     /// The vector over `slots`.

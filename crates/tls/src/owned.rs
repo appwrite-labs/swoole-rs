@@ -121,7 +121,7 @@ impl TlsSettings {
     ) -> bool {
         let context = self.fields.context.as_deref();
         let server = crate::SslCreateFlag::SW_SSL_SERVER as c_int;
-        crate::socket::socket_ssl_new_over(socket, context, server, Some(bio))
+        crate::socket::socket_ssl_new_over(socket, context, server, Some((bio, None)))
             .inspect_err(|error| error.warn())
             .is_ok()
     }
@@ -500,11 +500,15 @@ pub fn freeze_socket_context(
 /// # Errors
 /// As [`crate::socket_ssl_new`].
 ///
-/// `hostname` is the automatic host name, none when it is empty.
+/// `hostname` is the automatic host name, none when it is empty. A `UringSocket`'s
+/// session gives `ring` the `SW_SSL_CLIENT` or `SW_SSL_SERVER` flag: it runs in that
+/// state over a pair of memory BIOs, which the ring pumps (failing as `SSL_new` does
+/// when OpenSSL can't make them).
 pub fn socket_session(
     owner: Option<&TlsSettings>,
     record: swoole_rs_reactor::Socket<'_>,
     hostname: Option<&CStr>,
+    ring: Option<c_int>,
 ) -> Result<(), crate::SslNewError> {
     if !record.read(swoole_rs_reactor::SocketFields::ssl).is_null() {
         return Ok(());
@@ -514,7 +518,13 @@ pub fn socket_session(
         return Err(crate::SslNewError::New);
     };
     let fields = &owner.fields;
-    crate::socket_ssl_new(record, fields.context.as_deref(), 0)?;
+    let bios = match ring.map(|_| (crate::OwnedBio::memory(), crate::OwnedBio::memory())) {
+        None => None,
+        Some((Some(read), Some(write))) => Some((read, Some(write))),
+        Some(_) => return Err(crate::SslNewError::New),
+    };
+    let flags = ring.unwrap_or(0);
+    crate::socket::socket_ssl_new_over(record, fields.context.as_deref(), flags, bios)?;
     let disable_tls_host_name = fields.disable_tls_host_name;
     let ssl = crate::Ssl::of(record);
     let explicit = &owner.strings[TLS_HOST_NAME];
@@ -814,6 +824,7 @@ mod tests {
                     Some(&settings),
                     handle,
                     (!automatic.is_empty()).then(|| hostname.c_str()),
+                    None,
                 );
                 assert_eq!(result, Ok(()));
                 let ssl = (*socket).fields.ssl().cast::<openssl_sys::SSL>();
@@ -833,7 +844,7 @@ mod tests {
                         & openssl_sys::SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER,
                     0
                 );
-                assert_eq!(socket_session(None, handle, None), Ok(()));
+                assert_eq!(socket_session(None, handle, None, None), Ok(()));
                 // The record frees its SSL.
                 drop(Box::from_raw(socket));
             }
