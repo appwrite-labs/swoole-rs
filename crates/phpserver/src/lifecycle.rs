@@ -275,7 +275,7 @@ fn fact(serv: view::Server<'_>, id: Fact) -> bool {
     match id {
         Fact::WorkerThread => serv.is_worker_thread(),
         Fact::Started => serv.is_started(),
-        Fact::Shutdown => serv.counters().shutdown.load(Ordering::Relaxed) != 0,
+        Fact::Shutdown => serv.counters().shutdown.load(Ordering::Relaxed),
         Fact::Master => crate::server::worker_type() == Some(crate::server::WorkerType::Master),
         Fact::ThreadMode => c.mode_ == Mode::Thread,
         Fact::EnableCoroutine => c.enable_coroutine.get(),

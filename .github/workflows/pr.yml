@@ -49,8 +49,11 @@ jobs:
           fetch-depth: 2
       - name: Check migration ledger
         run: python3 tools/check_migration.py
-      # No crate's unsafe or slow-layout count may rise above main's.
+      # No crate's unsafe or slow-layout count may rise above main's; C lines may when the
+      # body has a `Stays C: <reason>` line (an env var, never interpolated into the script).
       - name: Check unsafe budget
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
         run: python3 tools/budget.py --base HEAD^1
       - name: Test tooling
         run: tests/dev/run.sh

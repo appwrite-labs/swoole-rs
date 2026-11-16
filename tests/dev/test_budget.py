@@ -75,6 +75,9 @@ class Budget(unittest.TestCase):
             (src / 'loaded_tests.rs').write_text(test_source)
             (root / 'crates/one/tests').mkdir()
             (root / 'crates/one/tests/it.rs').write_text(test_source)
+            (src / 'shim.c').write_text('#include "shim.h"\n\nint one(void) { return 1; }\n')
+            (src / 'shim.h').write_text('int one(void);\n')
+            (root / 'crates/one/tests/stub.c').write_text('int stub(void);\n')
             # a, its block, c, the impl, the cfg(test) helper's block, imp's block.
             self.assertEqual(budget.counts(root), {
                 'unsafe': {'one': 6}, 'maps': {'one': 1}, 'lists': {'one': 1},
@@ -89,6 +92,8 @@ class Budget(unittest.TestCase):
                 # STATE and queue; the import and the constructors name no type.
                 'cells': {'one': 2},
                 'statuses': {'one': 0}, 'reprs': {'one': 0}, 'derefs': {'one': 0},
+                # shim.c's three and shim.h's one; tests/ isn't src/.
+                'clines': {'one': 4},
             })
 
     def test_safe_fns_whose_unsafe_blocks_use_a_raw_pointer_parameter(self):
@@ -169,6 +174,16 @@ mod tests {
             (root / 'crates/one/Cargo.toml').write_text('')
             (root / 'crates/one/src/lib.rs').write_text('//! Docs.\n#![forbid(unsafe_code)]\n')
             self.assertEqual(budget.counts(root)['unforbidden'], {'one': 0})
+
+    def test_a_c_rise_names_reasons_what_stays_c_lists(self):
+        with tempfile.TemporaryDirectory() as directory:
+            zend = Path(directory) / 'zend.md'
+            zend.write_text('## What stays C\n\n- **bailout**: setjmp.\n- **globals**: EG.\n\n## Next\n- **other**: no.\n')
+            self.assertEqual(budget.stays_c('Closes #1.\nStays C: bailout, globals\n', zend), ['bailout', 'globals'])
+            self.assertEqual(budget.stays_c('Stays C: bailout\nStays C: other\n', zend), [], 'other is not a reason')
+            self.assertEqual(budget.stays_c('It stays C: bailout', zend), [], 'only a line of its own')
+            self.assertEqual(budget.stays_c('', zend), [])
+        self.assertTrue(budget.stays_c('Stays C: variadic'), "docs/zend.md's own list")
 
     def test_only_a_rise_over_the_base_fails(self):
         rises = budget.above({'a': 3, 'b': 1, 'c': 2, 'new': 1}, {'a': 2, 'b': 2, 'c': 2})

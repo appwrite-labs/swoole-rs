@@ -28,6 +28,11 @@
            `unsafe` block in the body names: safe code can pass any pointer. Clippy's
            `not_unsafe_ptr_arg_deref` checks only exported fns (#4275). Make the fn
            `unsafe` with the pointer's contract in `# Safety`, or take a reference
+  clines   lines of C (`.c`, `.h`) under the crate's src/, which crates/oracle/upstream
+           isn't in. A shim that fits no reason in docs/zend.md's "What stays C" is a port
+           waiting to happen, so a rise passes only when the PR body has a line
+           `Stays C: <reason>` naming those reasons (the PR tier reads the body it had when
+           it ran: push again after editing; locally, set PR_BODY)
   unforbidden  1 unless the crate's lib.rs has `#![forbid(unsafe_code)]`, so a crate
                the compiler verifies safe stays that way
 
@@ -46,6 +51,7 @@ Test code is not counted: a `#[cfg(test)]` inline module, a file a `#[cfg(test)]
 loads, and anything under a tests/ or benches/ directory.
 """
 import argparse
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -117,6 +123,7 @@ UNCOUNTED = re.compile(r'\bunsafe\s+extern\b|#\[unsafe\(')
 FORBID = re.compile(r'^#!\[forbid\([^)]*\bunsafe_code\b', re.M)
 TEST_MOD = re.compile(r'^(\s*)(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*([;{])')
 PATH_ATTR = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
+C_SUFFIXES = ('.c', '.h')
 
 
 def count_file(path, test_files):
@@ -165,7 +172,7 @@ def count_file(path, test_files):
 
 def counts(root=ROOT):
     """{kind: {crate: matches}} over crates/*/ non-test Rust sources."""
-    result = {kind: {} for kind in [*KINDS, 'unforbidden']}
+    result = {kind: {} for kind in [*KINDS, 'clines', 'unforbidden']}
     for crate in sorted(p for p in (root / 'crates').iterdir() if (p / 'Cargo.toml').exists()):
         files = sorted(p for p in crate.rglob('*.rs')
                        if not {'tests', 'benches', 'target'} & set(p.relative_to(crate).parts[:-1]))
@@ -174,6 +181,8 @@ def counts(root=ROOT):
             per_file[path.resolve()] = count_file(path, test_files)
         for kind in KINDS:
             result[kind][crate.name] = sum(n[kind] for path, n in per_file.items() if path not in test_files)
+        result['clines'][crate.name] = sum(len(p.read_text(errors='replace').splitlines())
+                                           for p in (crate / 'src').rglob('*') if p.suffix in C_SUFFIXES)
         result['unforbidden'][crate.name] = 0 if FORBID.search((crate / 'src/lib.rs').read_text()) else 1
     return result
 
@@ -228,6 +237,15 @@ def must_forbid(current, base, root=ROOT):
                         for line in p.read_text(errors='replace').splitlines())}
 
 
+def stays_c(body, zend=ROOT / 'docs/zend.md'):
+    """The reasons `body`'s `Stays C:` lines name, when each is one docs/zend.md's "What
+    stays C" lists; else none."""
+    section = zend.read_text().split('## What stays C', 1)[1].split('\n## ', 1)[0]
+    known = set(re.findall(r'^- \*\*(\w+)\*\*:', section, re.M))
+    named = [word for line in re.findall(r'^Stays C:(.*)$', body, re.M) for word in re.findall(r'\w+', line)]
+    return named if named and set(named) <= known else []
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--base', help='Commit to compare against (default: merge base with origin/main)')
@@ -244,6 +262,9 @@ def main():
             rises |= must_forbid(current, base[kind])
         else:
             rises |= arrivals(crates, base[kind])
+        if kind == 'clines' and rises and (reasons := stays_c(os.environ.get('PR_BODY', ''))):
+            print(f'clines may rise: the PR says it stays C ({", ".join(reasons)})', file=sys.stderr)
+            rises = {}
         failed = failed or bool(rises)
         for crate, (n, was) in sorted(rises.items()):
             print(f'{crate}: {n} {kind}, up from {was} at {base_ref[:12]}', file=sys.stderr)
