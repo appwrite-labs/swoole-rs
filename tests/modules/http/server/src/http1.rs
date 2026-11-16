@@ -42,6 +42,8 @@ pub(super) mod server_config;
 pub(super) mod server_conn;
 pub(super) mod server_ssl;
 pub(super) mod task;
+/// timeline.rs: the worker-replacement cases' cross-process event log.
+mod timeline;
 
 const TEST_HOST: &str = "127.0.0.1";
 const MODE_BASE: c_int = 1;
