@@ -253,7 +253,7 @@ unsafe extern "C" fn reload_single_timer(_: *mut c_void, tnode: *mut TimerNode) 
     timer_after(80, shutdown_timer, serv);
 }
 
-extern "C" fn reload_single_worker_start(_: Ctx, serv: view::Server<'_>, worker: Worker<'_>) {
+fn reload_single_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
     if worker.id() == 0 {
         timer_after(50, reload_single_timer, Server(serv.raw()));
     }
@@ -288,7 +288,7 @@ unsafe extern "C" fn reload_no_task_timer(_: *mut c_void, tnode: *mut TimerNode)
     timer_after(80, shutdown_timer, serv);
 }
 
-extern "C" fn reload_no_task_worker_start(_: Ctx, serv: view::Server<'_>, worker: Worker<'_>) {
+fn reload_no_task_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
     if worker.id() == 0 {
         timer_after(50, reload_no_task_timer, Server(serv.raw()));
     }
@@ -315,11 +315,11 @@ fn reload_no_task_worker() {
     serv.delete();
 }
 
-extern "C" fn before_reload(_: Ctx, _: view::Server<'_>) {
+fn before_reload(_: view::Server<'_>) {
     counter_incr(10, 1);
 }
 
-extern "C" fn after_reload(_: Ctx, _: view::Server<'_>) {
+fn after_reload(_: view::Server<'_>) {
     counter_incr(11, 1);
 }
 
@@ -360,12 +360,12 @@ fn reload_on_worker_start(
     }
 }
 
-extern "C" fn reload_all_workers_start(_: Ctx, serv: view::Server<'_>, worker: Worker<'_>) {
+fn reload_all_workers_start(serv: view::Server<'_>, worker: Worker<'_>) {
     let serv = Server(serv.raw());
     reload_on_worker_start(serv, worker.raw(), "/tmp/worker_1.pid", manager_pid);
 }
 
-extern "C" fn reload_all_workers2_start(_: Ctx, serv: view::Server<'_>, worker: Worker<'_>) {
+fn reload_all_workers2_start(serv: view::Server<'_>, worker: Worker<'_>) {
     let serv = Server(serv.raw());
     reload_on_worker_start(serv, worker.raw(), "/tmp/worker_2.pid", master_pid);
 }
@@ -416,16 +416,16 @@ fn reload_all_workers2() {
     serv.delete();
 }
 
-extern "C" fn kill_user_workers_user_start(_: Ctx, _: view::Server<'_>, worker: Worker<'_>) {
+fn kill_user_workers_user_start(_: view::Server<'_>, worker: Worker<'_>) {
     expect(worker.id() > 0, "worker->id > 0");
     sleep_forever();
 }
 
-extern "C" fn sleeping_task(_: Ctx, _: view::Server<'_>, _: Packed<'_>) -> c_int {
+fn sleeping_task(_: view::Server<'_>, _: Packed<'_>) -> c_int {
     sleep_forever();
 }
 
-extern "C" fn kill_user_workers_start(_: Ctx, serv: view::Server<'_>, worker: Worker<'_>) {
+fn kill_user_workers_start(serv: view::Server<'_>, worker: Worker<'_>) {
     if worker.id() == 1 {
         sleep(1.0);
         signal(manager_pid(Server(serv.raw())), SIGTERM);
@@ -459,12 +459,12 @@ fn kill_user_workers() {
     serv.delete();
 }
 
-extern "C" fn force_kill_user_start(_: Ctx, _: view::Server<'_>, _: Worker<'_>) {
+fn force_kill_user_start(_: view::Server<'_>, _: Worker<'_>) {
     counter_incr(1, 1);
     sleep_forever();
 }
 
-extern "C" fn force_kill_worker_start(_: Ctx, serv: view::Server<'_>, _: Worker<'_>) {
+fn force_kill_worker_start(serv: view::Server<'_>, _: Worker<'_>) {
     counter_incr(1, 1);
     if is_task_worker() {
         sleep_forever();
@@ -472,7 +472,7 @@ extern "C" fn force_kill_worker_start(_: Ctx, serv: view::Server<'_>, _: Worker<
     timer_tick(10000, idle_timer, Server(serv.raw()));
 }
 
-extern "C" fn force_kill_manager_start(_: Ctx, serv: view::Server<'_>) {
+fn force_kill_manager_start(serv: view::Server<'_>) {
     timer_after(200, shutdown_timer, Server(serv.raw()));
 }
 
@@ -506,17 +506,17 @@ fn force_kill_all_workers() {
     serv.delete();
 }
 
-extern "C" fn kill_user_workers1_user_start(_: Ctx, _: view::Server<'_>, worker: Worker<'_>) {
+fn kill_user_workers1_user_start(_: view::Server<'_>, worker: Worker<'_>) {
     expect(worker.id() > 0, "worker->id > 0");
 }
 
-extern "C" fn spinning_task(_: Ctx, _: view::Server<'_>, _: Packed<'_>) -> c_int {
+fn spinning_task(_: view::Server<'_>, _: Packed<'_>) -> c_int {
     loop {
         std::hint::spin_loop();
     }
 }
 
-extern "C" fn kill_user_workers1_start(_: Ctx, serv: view::Server<'_>, worker: Worker<'_>) {
+fn kill_user_workers1_start(serv: view::Server<'_>, worker: Worker<'_>) {
     if worker.id() == 1 {
         sleep(1.0);
         signal(master_pid(Server(serv.raw())), SIGTERM);
@@ -549,7 +549,7 @@ fn kill_user_workers1() {
     serv.delete();
 }
 
-extern "C" fn count_worker_start(_: Ctx, _: view::Server<'_>, _: Worker<'_>) {
+fn count_worker_start(_: view::Server<'_>, _: Worker<'_>) {
     counter_incr(1, 1);
 }
 
@@ -568,7 +568,7 @@ unsafe extern "C" fn reload_thread_timer(_: *mut c_void, tnode: *mut TimerNode) 
 }
 
 /// `onManagerStart`: reload every worker after 500 ms.
-extern "C" fn reload_thread_manager_start(_: Ctx, serv: view::Server<'_>) {
+fn reload_thread_manager_start(serv: view::Server<'_>) {
     timer_after(500, reload_thread_timer, Server(serv.raw()));
 }
 
@@ -577,25 +577,25 @@ unsafe extern "C" fn reload_thread_shutdown(_: *mut c_void, tnode: *mut TimerNod
     shutdown(timer_server(tnode));
 }
 
-extern "C" fn reload_thread_manager_stop(_: Ctx, _: view::Server<'_>) {
+fn reload_thread_manager_stop(_: view::Server<'_>) {
     counter_set(ON_MANAGER_STOP, 1);
 }
 
-extern "C" fn reload_thread_before_reload(_: Ctx, _: view::Server<'_>) {
+fn reload_thread_before_reload(_: view::Server<'_>) {
     counter_set(ON_BEFORE_RELOAD, 1);
 }
 
-extern "C" fn count_thread_worker_start(_: Ctx, _: view::Server<'_>, _: Worker<'_>) {
+fn count_thread_worker_start(_: view::Server<'_>, _: Worker<'_>) {
     counter_incr(WORKER_STARTS, 1);
 }
 
 /// `reload_thread_2`'s `onAfterReload`: shut down 500 ms later.
-extern "C" fn reload_thread_2_after_reload(_: Ctx, serv: view::Server<'_>) {
+fn reload_thread_2_after_reload(serv: view::Server<'_>) {
     counter_set(ON_AFTER_RELOAD, 1);
     timer_after(500, reload_thread_shutdown, Server(serv.raw()));
 }
 
-extern "C" fn reload_thread_2_user_start(_: Ctx, _: view::Server<'_>, _: Worker<'_>) {
+fn reload_thread_2_user_start(_: view::Server<'_>, _: Worker<'_>) {
     std::thread::sleep(Duration::from_millis(500));
     counter_incr(USER_WORKER_STARTS, 1);
 }
@@ -646,7 +646,7 @@ fn reload_thread_2() {
 }
 
 /// `reload_thread`'s `onUserWorkerStart`: until the server stops.
-extern "C" fn reload_thread_user_start(_: Ctx, serv: view::Server<'_>, _: Worker<'_>) {
+fn reload_thread_user_start(serv: view::Server<'_>, _: Worker<'_>) {
     let config = Server(serv.raw()).config();
     // SAFETY: the running server's flag, which shutdown clears from another thread; read
     // anew each time, as upstream's loop reads `serv->running`.
@@ -655,7 +655,7 @@ extern "C" fn reload_thread_user_start(_: Ctx, serv: view::Server<'_>, _: Worker
     }
 }
 
-extern "C" fn unlock_on_manager_start(_: Ctx, _: view::Server<'_>) {
+fn unlock_on_manager_start(_: view::Server<'_>) {
     unlock();
 }
 
@@ -703,7 +703,7 @@ fn reload_thread() {
 
 /// `reload_thread_3`'s `onAfterReload`: a task-worker reload is refused (there are none),
 /// then the server shuts down 500 ms later.
-extern "C" fn reload_thread_3_after_reload(_: Ctx, serv: view::Server<'_>) {
+fn reload_thread_3_after_reload(serv: view::Server<'_>) {
     counter_set(ON_AFTER_RELOAD, 1);
     let serv = Server(serv.raw());
     expect(!reload(serv, false), "!serv->reload(false)");
@@ -806,7 +806,7 @@ fn reload_watchdog(serv: Server) {
     timer_tick(10, reload_watchdog_tick, serv);
 }
 
-extern "C" fn worker_error_start(_: Ctx, _: view::Server<'_>, worker: Worker<'_>) {
+fn worker_error_start(_: view::Server<'_>, worker: Worker<'_>) {
     let id = worker.id();
     if counter_incr(id as usize, 1) == 1 && id == 0 {
         while counter_get(8) == 0 {
@@ -817,16 +817,11 @@ extern "C" fn worker_error_start(_: Ctx, _: view::Server<'_>, worker: Worker<'_>
     }
 }
 
-extern "C" fn worker_error_manager_start(_: Ctx, _: view::Server<'_>) {
+fn worker_error_manager_start(_: view::Server<'_>) {
     counter_set(8, 1);
 }
 
-extern "C" fn worker_error_on_error(
-    _: Ctx,
-    serv: view::Server<'_>,
-    _: Worker<'_>,
-    status: &ExitStatus,
-) {
+fn worker_error_on_error(serv: view::Server<'_>, _: Worker<'_>, status: &ExitStatus) {
     let code = (status.status() >> 8) & 0xff;
     if code != 42
         || counter_incr(27, 1) != 1
@@ -836,7 +831,7 @@ extern "C" fn worker_error_on_error(
     }
 }
 
-extern "C" fn worker_error_before_reload(_: Ctx, _: view::Server<'_>) {
+fn worker_error_before_reload(_: view::Server<'_>) {
     // The error callback requests reload before its crashed worker is respawned.
     // Wait until the replacement and task worker have installed their signal handlers.
     let deadline = now() + 3.0;
@@ -846,14 +841,14 @@ extern "C" fn worker_error_before_reload(_: Ctx, _: view::Server<'_>) {
     counter_incr(24, 1);
 }
 
-extern "C" fn worker_error_after_reload(_: Ctx, _: view::Server<'_>) {
+fn worker_error_after_reload(_: view::Server<'_>) {
     if counter_get(24) != 1 {
         counter_incr(26, 1);
     }
     counter_incr(25, 1);
 }
 
-extern "C" fn worker_error_start_server(_: Ctx, serv: view::Server<'_>) {
+fn worker_error_start_server(serv: view::Server<'_>) {
     reload_watchdog(Server(serv.raw()));
 }
 
@@ -944,19 +939,19 @@ fn kill_options() -> Options {
     *KILL_OPTIONS.lock().unwrap()
 }
 
-extern "C" fn kill_on_connect(_: Ctx, _: view::Server<'_>, ev: &DataHead) {
+fn kill_on_connect(_: view::Server<'_>, ev: &DataHead) {
     counter_set(4, ev.fd as i32);
     counter_set(5, worker_id(current_worker()).cast_signed());
 }
 
-extern "C" fn kill_on_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn kill_on_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let (session, _) = request(req);
     Server(serv.raw()).send(session, b"OK");
     counter_incr(0, 1);
     SW_OK
 }
 
-extern "C" fn kill_on_worker_stop(_: Ctx, serv: view::Server<'_>, _: Worker<'_>) {
+fn kill_on_worker_stop(serv: view::Server<'_>, _: Worker<'_>) {
     super::timeline::mark("worker stop");
     server_methods::close(
         Server(serv.raw()).view(),
@@ -966,7 +961,7 @@ extern "C" fn kill_on_worker_stop(_: Ctx, serv: view::Server<'_>, _: Worker<'_>)
     event_worker::native::drain_worker_pipe(Server(serv.raw()).view());
 }
 
-extern "C" fn kill_self_on_worker_stop(_: Ctx, serv: view::Server<'_>, _: Worker<'_>) {
+fn kill_self_on_worker_stop(serv: view::Server<'_>, _: Worker<'_>) {
     server_methods::close(
         Server(serv.raw()).view(),
         c_long::from(counter_get(4)),
@@ -974,11 +969,11 @@ extern "C" fn kill_self_on_worker_stop(_: Ctx, serv: view::Server<'_>, _: Worker
     );
 }
 
-extern "C" fn kill_on_close(_: Ctx, _: view::Server<'_>, _: &DataHead) {
+fn kill_on_close(_: view::Server<'_>, _: &DataHead) {
     counter_incr(2, 1);
 }
 
-extern "C" fn kill_on_worker_start(_: Ctx, serv: view::Server<'_>, worker: Worker<'_>) {
+fn kill_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
     super::timeline::mark("worker start");
     let options = kill_options();
     let c = counter_incr(1, 1) - 1;
@@ -1015,13 +1010,13 @@ extern "C" fn kill_on_worker_start(_: Ctx, serv: view::Server<'_>, worker: Worke
     }
 }
 
-extern "C" fn kill_on_worker_exit(_: Ctx, _: view::Server<'_>, _: Worker<'_>) {
+fn kill_on_worker_exit(_: view::Server<'_>, _: Worker<'_>) {
     // SAFETY: clears this worker's timer by its id.
     unsafe { swoole_timer_clear(TEST_TIMER.load(Ordering::SeqCst)) };
     counter_incr(6, 1);
 }
 
-extern "C" fn kill_on_start(_: Ctx, serv: view::Server<'_>) {
+fn kill_on_start(serv: view::Server<'_>) {
     if current_worker().is_null()
         && !check(!kill_worker(Server(serv.raw()), -1), "!kill_worker(-1)")
     {
@@ -1030,7 +1025,7 @@ extern "C" fn kill_on_start(_: Ctx, serv: view::Server<'_>) {
     unlock();
 }
 
-extern "C" fn kill_self_on_worker_start(_: Ctx, _: view::Server<'_>, _: Worker<'_>) {
+fn kill_self_on_worker_start(_: view::Server<'_>, _: Worker<'_>) {
     counter_incr(1, 1);
 }
 
@@ -1283,15 +1278,15 @@ fn send_packet(port: u16) {
     }
 }
 
-extern "C" fn before_shutdown(_: Ctx, _: view::Server<'_>) {
+fn before_shutdown(_: view::Server<'_>) {
     counter_incr(10, 1);
 }
 
-extern "C" fn base_worker_start(_: Ctx, _: view::Server<'_>, _: Worker<'_>) {
+fn base_worker_start(_: view::Server<'_>, _: Worker<'_>) {
     unlock();
 }
 
-extern "C" fn base_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn base_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let serv = Server(serv.raw());
     let (session, data) = request(req);
     expect(data == PACKET, "string(req->data, req->info.len) == packet");
@@ -1362,7 +1357,7 @@ extern "C" fn base_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_
     SW_OK
 }
 
-extern "C" fn base_on_start(_: Ctx, _: view::Server<'_>) {
+fn base_on_start(_: view::Server<'_>) {
     check(
         std::fs::File::open(PID_FILE).is_ok(),
         "access(serv->pid_file, R_OK) == 0",
@@ -1430,7 +1425,7 @@ unsafe extern "C" fn process_kill_timer(_: *mut c_void, tnode: *mut TimerNode) {
     kill_worker(timer_server(tnode), id as c_int);
 }
 
-extern "C" fn process_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+fn process_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let serv = Server(serv.raw());
     let (session, data) = request(req);
     expect(data == PACKET, "string(req->data, req->info.len) == packet");
@@ -1451,7 +1446,7 @@ extern "C" fn process_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) ->
     SW_OK
 }
 
-extern "C" fn process_on_start(_: Ctx, serv: view::Server<'_>) {
+fn process_on_start(serv: view::Server<'_>) {
     let serv = Server(serv.raw());
     let t1 = std::thread::spawn(move || {
         block_all_signals();
@@ -1484,7 +1479,7 @@ extern "C" fn process_on_start(_: Ctx, serv: view::Server<'_>) {
     );
 }
 
-extern "C" fn process_worker_start(_: Ctx, _: view::Server<'_>, worker: Worker<'_>) {
+fn process_worker_start(_: view::Server<'_>, worker: Worker<'_>) {
     if worker.id() == 0 {
         let fd = PROCESS_LOCK.lock().unwrap()[1];
         // SAFETY: the lock's write end; one byte.
@@ -1493,11 +1488,11 @@ extern "C" fn process_worker_start(_: Ctx, _: view::Server<'_>, worker: Worker<'
     counter_incr(3, 1);
 }
 
-extern "C" fn manager_start_stop(_: Ctx, _: view::Server<'_>) {
+fn manager_start_stop(_: view::Server<'_>) {
     counter_incr(1, 1);
 }
 
-extern "C" fn on_shutdown(_: Ctx, _: view::Server<'_>) {
+fn on_shutdown(_: view::Server<'_>) {
     counter_incr(9, 1);
 }
 
@@ -1613,7 +1608,7 @@ unsafe extern "C" fn clean_connect_timer(_: *mut c_void, _: *mut TimerNode) {
     expect(connected, "ac.connect(TEST_HOST, port->get_port())");
 }
 
-extern "C" fn clean_on_start(_: Ctx, serv: view::Server<'_>) {
+fn clean_on_start(serv: view::Server<'_>) {
     timer_after(100, clean_connect_timer, Server(serv.raw()));
 }
 
@@ -1637,11 +1632,11 @@ fn clean_deferred(serv: *mut c_void) {
     event_worker::native::stop_async_worker(serv, worker);
 }
 
-extern "C" fn clean_on_connect(_: Ctx, serv: view::Server<'_>, _: &DataHead) {
+fn clean_on_connect(serv: view::Server<'_>, _: &DataHead) {
     _ = swoole_rs_ffi::event_api::swoole_event_defer_value(CleanDeferred(serv.raw()));
 }
 
-extern "C" fn clean_worker_start(_: Ctx, serv: view::Server<'_>, _: Worker<'_>) {
+fn clean_worker_start(serv: view::Server<'_>, _: Worker<'_>) {
     if !check(
         Server(serv.raw()).view().connection_num() == 0,
         "serv->get_connection_num() == 0",
@@ -1653,7 +1648,7 @@ extern "C" fn clean_worker_start(_: Ctx, serv: view::Server<'_>, _: Worker<'_>) 
     }
 }
 
-extern "C" fn ignore_worker(_: Ctx, _: view::Server<'_>, _: Worker<'_>) {}
+fn ignore_worker(_: view::Server<'_>, _: Worker<'_>) {}
 
 /// `test_clean_worker(mode)`.
 fn test_clean_worker(mode: c_int) {
