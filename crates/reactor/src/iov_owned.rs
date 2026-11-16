@@ -177,17 +177,17 @@ pub fn swr_v1_socket_iov_owned(
     fd: i32,
     owner: &mut ReactorIov<'_>,
     tls: Option<&(
-        impl Fn(crate::Fill<'_>) -> isize,
-        impl Fn(crate::Drain<'_>) -> isize,
+        impl Fn(crate::Fill<'_>) -> Option<usize>,
+        impl Fn(crate::Drain<'_>) -> Option<usize>,
     )>,
-) -> isize {
+) -> Option<usize> {
     let write = owner.write;
     loop {
         let result = if let Some((read, send)) = tls {
-            let mut total: isize = 0;
+            let mut total = 0;
             loop {
                 let Some(current) = owner.remaining().first().copied() else {
-                    break total;
+                    break Some(total);
                 };
                 let done = if write {
                     // SAFETY: the type's invariant: a remaining iovec of a writing
@@ -198,10 +198,10 @@ pub fn swr_v1_socket_iov_owned(
                     // vector names writable bytes nothing else reaches while it lives.
                     read(unsafe { crate::Fill::from_raw(current.iov_base, current.iov_len) })
                 };
-                total += done.max(0);
-                owner.advance(done);
-                if !(done > 0 && owner.fields.state.remain_count > 0) {
-                    break if total > 0 { total } else { done };
+                total += done.unwrap_or(0);
+                owner.advance(done.map_or(-1, usize::cast_signed));
+                if !(done > Some(0) && owner.fields.state.remain_count > 0) {
+                    break if total > 0 { Some(total) } else { done };
                 }
             }
         } else {
@@ -216,9 +216,9 @@ pub fn swr_v1_socket_iov_owned(
                 unsafe { libc::readv(fd, left, count) }
             };
             owner.advance(done);
-            done
+            usize::try_from(done).ok()
         };
-        if !(result < 0 && crate::socket_rw::interrupted()) {
+        if !(result.is_none() && crate::socket_rw::interrupted()) {
             return result;
         }
     }

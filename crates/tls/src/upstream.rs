@@ -543,7 +543,7 @@ impl<S: ReadSlot> SyncEffects for Call<'_, S> {
             Io::Write(data) => data.write(fd),
             Io::SendTo(address, data) => data.sendto(fd, flags, address),
             Io::RecvFrom(address, buffer) => buffer.recvfrom(fd, flags, address),
-            Io::Sendfile(request, _) => count(send_chunk(socket, request).0),
+            Io::Sendfile(request, _) => send_chunk(socket, request).0,
             Io::Writev(vectors) => count(writev(fd, vectors)),
         }
     }
@@ -695,10 +695,14 @@ pub fn socket_ssl_peer_certificate_string(socket: Socket<'_>, buffer: &mut CppSt
 }
 
 /// `Socket::ssl_sendfile` over a descriptor.
-fn ssl_sendfile(socket: Socket<'_>, fd: c_int, offset: &mut libc::off_t, size: usize) -> isize {
+fn ssl_sendfile(
+    socket: Socket<'_>,
+    fd: c_int,
+    offset: &mut libc::off_t,
+    size: usize,
+) -> Option<usize> {
     let mut nobufs = false;
-    let send =
-        |data: &[u8]| ssl_send_drain(socket, Drain::new(data)).map_or(-1, usize::cast_signed);
+    let send = |data: &[u8]| ssl_send_drain(socket, Drain::new(data));
     let result = ssl_sendfile_fd(fd, offset, size, send, &mut nobufs);
     if nobufs {
         socket.edit(|record| record.kernel_nobufs = true);
@@ -714,8 +718,13 @@ fn ssl_sendfile(socket: Socket<'_>, fd: c_int, offset: &mut libc::off_t, size: u
 }
 
 /// `Socket::sendfile` over a descriptor: through OpenSSL when the socket holds an
-/// SSL, else the platform's sendfile.
-pub fn sendfile(socket: Socket<'_>, fd: c_int, offset: &mut libc::off_t, length: usize) -> isize {
+/// SSL, else the platform's sendfile: how many bytes it sent, or None with errno set.
+pub fn sendfile(
+    socket: Socket<'_>,
+    fd: c_int,
+    offset: &mut libc::off_t,
+    length: usize,
+) -> Option<usize> {
     let (out, ssl) = socket.read(|record| (record.fd, record.ssl()));
     if !ssl.is_null() {
         return ssl_sendfile(socket, fd, offset, length);
@@ -725,12 +734,12 @@ pub fn sendfile(socket: Socket<'_>, fd: c_int, offset: &mut libc::off_t, length:
     if cfg!(not(target_os = "linux")) && sent.warn {
         log::sys_warning(c"swoole_sendfile", format_args!("sendfile failed"));
     }
-    sent.result
+    count(sent.result)
 }
 
 /// One chunk of `request`'s remaining range through `sendfile`, advancing its
 /// offset: what `sendfile` returned and the chunk's size.
-fn send_chunk(socket: Socket<'_>, request: &mut SocketFileRequest) -> (isize, usize) {
+fn send_chunk(socket: Socket<'_>, request: &mut SocketFileRequest) -> (Option<usize>, usize) {
     let fd = request.descriptor();
     let fields = request.fields();
     let chunk = sendfile_chunk(fields.begin, fields.end);
@@ -857,8 +866,8 @@ pub(crate) fn with_queue<R>(
 struct Output<'a>(Socket<'a>);
 
 impl OutputEffects for Output<'_> {
-    fn send(&self, data: &[u8]) -> isize {
-        send(self.0, data, 0).map_or(-1, usize::cast_signed)
+    fn send(&self, data: &[u8]) -> Option<usize> {
+        send(self.0, data, 0)
     }
 
     fn cork(&self) -> bool {
@@ -931,7 +940,7 @@ pub fn socket_handle_sendfile(socket: Socket<'_>) -> bool {
         };
         request.cork(&hooks);
         let (rv, requested) = send_chunk(socket, request);
-        if rv < 0 && errno() == libc::EINTR && HALFCLOSE_REPAIRS {
+        if rv.is_none() && errno() == libc::EINTR && HALFCLOSE_REPAIRS {
             return (false, None);
         }
         let result = request.sent(&hooks, rv, requested);
