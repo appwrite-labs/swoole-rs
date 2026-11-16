@@ -15,8 +15,8 @@ use swoole_rs_corebase::{WebSocketStatus, log};
 use swoole_rs_http::llhttp::{self, Callbacks, Flow as Step, Parser};
 use swoole_rs_http::multipart_parser::{Flow, MultipartParser};
 use swoole_rs_httpbindings::{
-    RequestHeader, body_prefix, compression, request_header, request_key, request_url,
-    swr_v1_httpbindings_form_source, token_list_contains, token_list_fast, trim_quotes,
+    FormSource, RequestHeader, body_prefix, compression, form_source, request_header, request_key,
+    request_url, token_list_contains, token_list_fast, trim_quotes,
 };
 use swoole_rs_zend::sys::zval;
 use swoole_rs_zend::{Declared, Interned, Minit, Owned, OwnedArray, Value, ZStr, ZString};
@@ -754,15 +754,15 @@ fn on_message_complete(state: &mut State) -> Step {
             return Step::Fail;
         }
     }
-    let form_source = swr_v1_httpbindings_form_source(
+    let source = form_source(
         u32::from(chunked)
             | (u32::from(state.parse_body) << 1)
             | (u32::from(state.request.post_form_urlencoded) << 2)
             | (u32::from(state.recv_chunked) << 3)
             | (u32::from(!state.request.body_at.is_null()) << 4),
     );
-    match (form_source, chunked) {
-        (1, true) => {
+    match source {
+        Some(FormSource::Chunked) => {
             let body = state.parse.chunked_body.as_deref();
             let text = Copied::of(body.map_or(&[], Vec::as_slice));
             treat_data(
@@ -771,7 +771,7 @@ fn on_message_complete(state: &mut State) -> Step {
                 property(&mut state.request, Property::Post),
             );
         }
-        (2, _) => {
+        Some(FormSource::Body) => {
             let body = state.request.body_at.cast();
             // SAFETY: the body's span of the input, which is live until the request completes.
             let body = unsafe { std::slice::from_raw_parts(body, state.request.body_length) };
@@ -782,7 +782,7 @@ fn on_message_complete(state: &mut State) -> Step {
                 property(&mut state.request, Property::Post),
             );
         }
-        _ => {}
+        None => {}
     }
     multipart_free(state);
     state.parse.form_data = None;

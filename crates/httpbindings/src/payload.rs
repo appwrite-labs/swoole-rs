@@ -15,24 +15,40 @@ pub enum Compression {
     Zstd = 4,
 }
 
-/// Native compiled capabilities: bit0 compression options, bit1 zlib options.
-/// Returns 0 for an unknown key, 1..7 for the original native option assignments.
+/// A `Request::create` option.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequestOption {
+    ParseCookie,
+    ParseBody,
+    ParseFiles,
+    EnableCompression,
+    CompressionLevel,
+    WebsocketCompression,
+    UploadTmpDir,
+}
+
+/// The option `key` names (case-insensitively), `None` for an unknown key or one the
+/// build lacks. Native compiled capabilities: bit0 compression options, bit1 zlib
+/// options.
 #[must_use]
-pub fn request_option(key: &[u8], capabilities: u32) -> i32 {
-    const OPTIONS: [(&[u8], u32); 7] = [
-        (b"parse_cookie", 0),
-        (b"parse_body", 0),
-        (b"parse_files", 0),
-        (b"enable_compression", 1),
-        (b"compression_level", 1),
-        (b"websocket_compression", 2),
-        (b"upload_tmp_dir", 0),
+pub fn request_option(key: &[u8], capabilities: u32) -> Option<RequestOption> {
+    const OPTIONS: [(&[u8], u32, RequestOption); 7] = [
+        (b"parse_cookie", 0, RequestOption::ParseCookie),
+        (b"parse_body", 0, RequestOption::ParseBody),
+        (b"parse_files", 0, RequestOption::ParseFiles),
+        (b"enable_compression", 1, RequestOption::EnableCompression),
+        (b"compression_level", 1, RequestOption::CompressionLevel),
+        (
+            b"websocket_compression",
+            2,
+            RequestOption::WebsocketCompression,
+        ),
+        (b"upload_tmp_dir", 0, RequestOption::UploadTmpDir),
     ];
     OPTIONS
         .iter()
-        .position(|&(name, required)| capabilities & required == required && case_equal(key, name))
-        .and_then(|index| i32::try_from(index + 1).ok())
-        .unwrap_or(0)
+        .find(|&&(name, required, _)| capabilities & required == required && case_equal(key, name))
+        .map(|&(_, _, option)| option)
 }
 
 /// Exact case-sensitive native substring preference, including matches inside
@@ -83,18 +99,27 @@ pub fn encoding(method: Compression, capabilities: u32) -> Option<&'static CStr>
     (capabilities & required != 0).then_some(text)
 }
 
-/// Which native form parser effect follows completion. Flags are chunked buffer,
+/// The body a completed urlencoded form is parsed from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FormSource {
+    /// The chunked body the parser buffered.
+    Chunked,
+    /// The request's own body span.
+    Body,
+}
+
+/// Which body, if any, a completed request parses as a form. Flags are chunked buffer,
 /// parse-body, form-urlencoded, receive-chunked and body pointer, respectively.
 #[must_use]
-pub fn swr_v1_httpbindings_form_source(flags: u32) -> i32 {
+pub const fn form_source(flags: u32) -> Option<FormSource> {
     if flags & 6 != 6 {
-        0
+        None
     } else if flags & 1 != 0 {
-        1
+        Some(FormSource::Chunked)
     } else if flags & 24 == 16 {
-        2
+        Some(FormSource::Body)
     } else {
-        0
+        None
     }
 }
 
