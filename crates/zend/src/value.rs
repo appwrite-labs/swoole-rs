@@ -18,6 +18,22 @@ pub fn emalloc(size: usize) -> *mut std::ffi::c_void {
     swr_zend_emalloc(size)
 }
 
+/// [`emalloc`] of one `T` holding `value`, which is never dropped: the
+/// storage is the caller's to `efree` (or the request's end frees it).
+#[must_use]
+pub fn enew<T>(value: T) -> *mut T {
+    const {
+        assert!(
+            align_of::<T>() <= align_of::<zval>(),
+            "emalloc aligns for a zval"
+        );
+    }
+    let at = emalloc(size_of::<T>()).cast::<T>();
+    // SAFETY: fresh, aligned (checked above) storage for one `T`, never null.
+    unsafe { at.write(value) };
+    at
+}
+
 /// Every `zend_value` field sits at the zval's first byte, so one read takes it.
 const _: () = assert!(
     std::mem::offset_of!(zval, value) == 0,
