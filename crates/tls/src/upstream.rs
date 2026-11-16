@@ -109,8 +109,8 @@ fn with_tls<P, R>(
     pick: impl FnOnce(&SocketFields) -> P,
     step: impl FnOnce(&mut SocketTls, Ssl, P) -> R,
 ) -> Option<R> {
-    let (before, picked) = socket.read(|record| (record.tls, pick(record)));
-    let ssl = Ssl::of(socket)?;
+    let (ssl, (before, picked)) = Ssl::of_reading(socket, |record| (record.tls, pick(record)));
+    let ssl = ssl?;
     let mut tls = before;
     let result = step(&mut tls, ssl, picked);
     // Most transfers leave the group as it was, and then the record needs no edit.
