@@ -127,7 +127,7 @@ pub fn get_cid() -> c_long {
 /// owns nothing to drop.
 pub(crate) fn create(
     php: Php<'_>,
-    fcc: *mut zend_fcall_info_cache,
+    fcc: Option<&zend_fcall_info_cache>,
     argc: u32,
     argv: *mut zval,
     callable: *mut zval,
@@ -140,8 +140,7 @@ pub(crate) fn create(
         );
         return Ok(ERR_LIMIT);
     }
-    // SAFETY: null or a resolved callable.
-    let Some(fcc) = (unsafe { fcc.as_ref() }).filter(|fcc| !fcc.function_handler.is_null()) else {
+    let Some(fcc) = fcc.filter(|fcc| !fcc.function_handler.is_null()) else {
         host::fatal_error(E_ERROR, c"invalid function call info cache");
         return Ok(ERR_INVALID);
     };
@@ -162,7 +161,6 @@ pub(crate) fn create(
         argc,
         callable,
     };
-    context::save_current();
     let cid = host::create(args);
     bailout::trapped(0)?;
     Ok(cid)
@@ -182,7 +180,7 @@ fn activate(php: Php<'_>) -> Result<(), Bailout> {
         let flags = CONFIG.with(|c| c.hook_flags.get());
         host::hook(flags);
     }
-    host::attach(context::on_yield, context::on_resume, context::on_close);
+    host::attach(context::on_yield, context::on_resume);
     ACTIVATED.with(|a| a.set(true));
     Ok(())
 }
@@ -354,7 +352,7 @@ pub(crate) fn set_preemptive(enable: bool) {
 /// # Safety
 /// As `zend_call_function`'s callable, on the thread that runs PHP.
 pub unsafe extern "C" fn create_coroutine(
-    fcc: *mut zend_fcall_info_cache,
+    fcc: Option<&zend_fcall_info_cache>,
     argc: u32,
     argv: *mut zval,
     callable: *mut zval,

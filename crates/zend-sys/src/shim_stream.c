@@ -92,7 +92,11 @@ zend_long swr_zend_stream_default_timeout(void) {
     return FG(default_socket_timeout);
 }
 
-int swr_zend_try_stream_free(php_stream *stream, int flags) {
+int swr_zend_try_stream_free(php_stream *stream) {
+    int flags = PHP_STREAM_FREE_KEEP_RSRC | PHP_STREAM_FREE_CLOSE;
+    if (stream->is_persistent) {
+        flags |= PHP_STREAM_FREE_CLOSE_PERSISTENT;
+    }
     volatile int bailed = 0;
     SWR_ZEND_TRY { php_stream_free(stream, flags); }
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();

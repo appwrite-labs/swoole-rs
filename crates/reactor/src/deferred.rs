@@ -21,6 +21,9 @@ enum Task {
     },
     /// A destroy callback that takes nothing ([`crate::event_api::on_destroy`]).
     Call(fn()),
+    /// base.cc's `socket_free_defer` of a record the task owns: closed and freed when
+    /// it runs, or when the queue is freed unrun.
+    Free(crate::OwnedSocket),
     Value(Box<dyn Erased>),
 }
 
@@ -57,6 +60,7 @@ impl Task {
             // SAFETY: the task's own contract, from whoever queued it.
             Self::Native { call, data, .. } => unsafe { call(data) },
             Self::Call(call) => call(),
+            Self::Free(socket) => socket.into_box().close_and_free(),
             Self::Value(value) => value.run(),
         }
     }
@@ -73,6 +77,7 @@ impl Task {
                 unsafe { dispose(data) };
             }
             Self::Native { .. } | Self::Call(_) => {}
+            Self::Free(socket) => socket.into_box().close_and_free(),
             Self::Value(value) => value.dispose(),
         }
     }
@@ -164,6 +169,20 @@ pub unsafe fn defer(call: DeferCall, data: *mut c_void, dispose: Option<DeferDis
 /// Appends `task` to the thread reactor's `defer_tasks`: false without a reactor.
 fn queue(task: Task) -> bool {
     crate::event_api::field_mut(|fields| push(&mut fields.defer_tasks, task)).is_some()
+}
+
+/// `swoole_event_defer(socket_free_defer, socket)`: the thread's reactor closes and
+/// frees `socket`'s record after the current pass, or as the reactor is freed first.
+/// The loop may still meet the record through an event of this pass, so it stays
+/// until then.
+/// # Errors
+/// There is no reactor: `socket` comes back.
+pub fn defer_free(socket: crate::OwnedSocket) -> Result<(), crate::OwnedSocket> {
+    let Some(reactor) = crate::event_api::running() else {
+        return Err(socket);
+    };
+    reactor.with(|state| push(&mut state.fields.defer_tasks, Task::Free(socket)));
+    Ok(())
 }
 
 /// `reactor->add_destroy_callback(...)` of `value`: [`Deferred::run`] as the reactor

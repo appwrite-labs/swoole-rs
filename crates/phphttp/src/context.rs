@@ -398,6 +398,14 @@ pub(crate) fn available(mut ctx: Ctx) -> bool {
         .is_some_and(|conn| conn.closed().load(Relaxed) == 0 && !conn.peer_closed())
 }
 
+unsafe extern "C" {
+    /// `swr_zend_http_release_objects` inside `zend_try` (nonzero for a
+    /// bailout): the record's objects, which only [`Release::new`] reads from
+    /// a live context's slots, released in turn as its count says.
+    #[link_name = "swr_zend_http_try_release_objects"]
+    safe fn try_release_objects(release: &mut Release) -> c_int;
+}
+
 /// The context's own references to its request and response objects,
 /// released once it is handled (`swr_zend_http_release`, which the C body
 /// `swr_zend_http_release_objects` releases). A property's `__destruct` can
@@ -452,14 +460,7 @@ impl Release {
     pub(crate) fn finish(mut self) -> Result<(), Bailout> {
         // Twice at most: a bailout in the request's release leaves the response's.
         while self.begun < 2 {
-            // SAFETY: the C body over this record's live objects; the shim's
-            // setjmp sits between this frame and their destructors.
-            bailout::defer(unsafe {
-                bailout::trap(
-                    swr_zend_http_release_objects,
-                    ptr::from_mut(&mut self).cast(),
-                )
-            });
+            bailout::defer(bailout::trapped(try_release_objects(&mut self)));
         }
         bailout::outcome(())
     }

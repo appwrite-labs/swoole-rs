@@ -122,6 +122,11 @@ It warns when the disk has less than 20 GB free. `dev.py prune` also removes
 `target/worktrees/*` older than its window. It keeps Docker images shared with
 other worktrees.
 
+To reproduce an x86 CI failure on an ARM host, add `--platform linux/amd64`
+before `--`. `linux/arm64` is also supported. The selected architecture has its
+own image, toolchain volumes and `target/docker/<arch>/` output. Docker must
+support running that architecture; emulated timing is not native CI timing.
+
 #### io_uring: `dev.py docker --iouring`
 
 Docker's default seccomp profile answers `io_uring_setup` with EPERM, so in a default

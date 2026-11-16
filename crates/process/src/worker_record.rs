@@ -346,18 +346,6 @@ impl<'a> Worker<'a> {
         }
     }
 
-    /// The record at `raw`, or `None` when it is null.
-    ///
-    /// # Safety
-    /// As [`Worker::new`], when `raw` is not null.
-    #[must_use]
-    pub unsafe fn from_raw(raw: *const WorkerRecord) -> Option<Self> {
-        (!raw.is_null()).then_some(Self {
-            raw: raw.cast_mut(),
-            life: core::marker::PhantomData,
-        })
-    }
-
     /// The record's address.
     #[must_use]
     pub fn raw(self) -> *mut WorkerRecord {

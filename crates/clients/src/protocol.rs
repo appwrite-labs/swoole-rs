@@ -2,7 +2,7 @@
 //! callbacks that measure and hand on each one. Upstream's layout, which C++ shares.
 use core::ffi::{c_int, c_void};
 use swoole_rs_corebase::net_types::{PacketLength, RecvData};
-use swoole_rs_reactor::Socket;
+pub use swoole_rs_reactor::Socket;
 
 /// `Protocol::onPackage`: hands on one whole package read from the socket. A caller
 /// passes the live protocol the socket reads with and a package of it; the callback
@@ -14,12 +14,14 @@ pub type OnPackage = unsafe extern "C-unwind" fn(*const Protocol, Socket<'_>, &R
 
 /// `Protocol::get_package_length`: the length of the package in the packet's
 /// `buf_size` readable bytes at `buf`, 0 while incomplete, -1 when bad. The protocol,
-/// socket and private data are as for [`OnPackage`].
+/// socket and private data are as for [`OnPackage`]; the socket is `None` (null) where
+/// a measure has none.
 pub type GetPackageLength =
-    unsafe extern "C" fn(*const Protocol, *mut c_void, &mut PacketLength) -> isize;
+    unsafe extern "C" fn(*const Protocol, Option<Socket<'_>>, &mut PacketLength) -> isize;
 
-/// `Protocol::get_package_length_size`: a live socket's length-header size.
-pub type GetPackageLengthSize = unsafe extern "C" fn(*mut c_void) -> u8;
+/// `Protocol::get_package_length_size`: a socket's length-header size, which may rely
+/// on the socket being of the kind the protocol was set up for.
+pub type GetPackageLengthSize = unsafe extern "C" fn(Socket<'_>) -> u8;
 
 /// `swoole::Protocol`, whole (`split_by_eof` is a C++ `bool`). The callbacks are
 /// nullable function pointers, upstream's layout.

@@ -122,6 +122,12 @@ impl<'a> Server<'a> {
         }
     }
 
+    /// `f` over the server this thread's reactor serves, or `None` when it serves
+    /// none: a reactor holds its server while it runs it.
+    pub fn with_reactor<R>(f: impl FnOnce(Server<'_>) -> R) -> Option<R> {
+        crate::reactor_handle::Reactor::current()?.server().map(f)
+    }
+
     /// The server `object` is, live as long as the borrow.
     #[cfg_attr(
         not(feature = "upstream-symbols"),
@@ -517,9 +523,12 @@ impl<'a> Server<'a> {
     /// last.
     pub(crate) fn pending_worker(self, index: usize) -> Option<Worker<'a>> {
         let &worker = self.registry().pending().get(index)?;
-        // SAFETY: null, or a live worker `add_worker` added, which outlives the server
+        if worker.is_null() {
+            return None;
+        }
+        // SAFETY: a live worker `add_worker` added, which outlives the server
         // (its contract; nothing else adds to the server's pending workers).
-        unsafe { Worker::from_raw(worker.cast()) }
+        Some(unsafe { Worker::new(worker.cast()) })
     }
 
     /// Worker `id`'s pipe socket, its master end or its worker end, or `None` while it has none.

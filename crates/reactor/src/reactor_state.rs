@@ -5,14 +5,13 @@
 //! lifetime, from its constructor and `swoole_event_init` to its destructor and
 //! `swoole_event_free`. The C++ class is methods over this state (`swoole_reactor.h`).
 use crate::wait_loop::BackendKind;
-use crate::{PollSnapshot, Socket, handlers::Handlers, registry::Registry};
+use crate::{PollSnapshot, handlers::Handlers, registry::Registry};
 use libc::{c_int, c_void};
-use std::mem::MaybeUninit;
 use std::ptr;
 use swoole_rs_corebase::HookType;
 
 /// `Reactor::close`: frees `socket`, one of the reactor's.
-pub type ReactorClose = unsafe extern "C-unwind" fn(crate::Running<'_>, Socket<'static>) -> c_int;
+pub type ReactorClose = extern "C-unwind" fn(crate::Running<'_>, crate::OwnedSocket) -> c_int;
 
 /// `Reactor::idle_task` and `future_task` (`Swoole\Event::cycle`): unset until set.
 #[repr(C)]
@@ -79,13 +78,13 @@ const _: () = assert!(
     "swr_v1_reactor_head's layout"
 );
 
-/// The backend's output arrays, allocated once, so the wait loop's pointers to them
-/// stay valid until the backend closes.
+/// The backend's output arrays, allocated once and zeroed, so each entry is a value
+/// the wait loop reads in place.
 pub(crate) enum Backend {
     None,
     Poll(PollSnapshot),
     #[cfg(target_os = "linux")]
-    Epoll(Vec<MaybeUninit<libc::epoll_event>>),
+    Epoll(Vec<libc::epoll_event>),
     #[cfg(any(
         target_os = "macos",
         target_os = "freebsd",
@@ -93,7 +92,7 @@ pub(crate) enum Backend {
         target_os = "netbsd",
         target_os = "dragonfly"
     ))]
-    Kqueue(Vec<MaybeUninit<libc::kevent>>, c_int),
+    Kqueue(Vec<libc::kevent>, c_int),
 }
 impl Drop for ReactorState {
     fn drop(&mut self) {
@@ -172,7 +171,7 @@ impl ReactorState {
     /// the backend `requested` selects open for `count` events, or not ready after
     /// logging the kernel's refusal. Allocation failure aborts (upstream's `bad_alloc`),
     /// as does a negative `count` (`bad_array_new_length`).
-    /// The head is set by [`ReactorState::into_raw`], once the caller is done with the
+    /// The head is set by [`crate::Running::leak`], once the caller is done with the
     /// box.
     pub(crate) fn open(requested: c_int, count: c_int) -> Box<Self> {
         let (kind, opened) = select(requested);
@@ -232,22 +231,6 @@ impl ReactorState {
         owner
     }
 
-    /// The state as the pointer its head and callers keep, the head set. Nothing goes
-    /// through `owner` afterwards: a write or reborrow through it would end them.
-    pub(crate) fn into_raw(owner: Box<Self>) -> *mut Self {
-        let owner = Box::leak(owner);
-        let state = &raw mut *owner;
-        let head = ReactorPrepared {
-            owner: state,
-            fields: &raw mut owner.fields,
-            registry: &raw mut owner.registry,
-            handlers: &raw mut owner.handlers,
-        };
-        // SAFETY: `state` is the live allocation; a raw write leaves the head's pointers.
-        unsafe { (*state).head = head };
-        state
-    }
-
     /// Opens backend `kind` for `count` events: false when the kernel refuses its
     /// descriptor, errno being the kernel's.
     fn open_backend(&mut self, kind: BackendKind, count: c_int) -> bool {
@@ -293,14 +276,22 @@ impl ReactorState {
     }
 }
 
-/// `count` records for the kernel to fill, aborting as upstream's `bad_alloc` when
-/// they could not be allocated.
-fn output<T>(count: usize) -> Vec<MaybeUninit<T>> {
+/// `count` zeroed records for the kernel to fill, aborting as upstream's `bad_alloc`
+/// when they could not be allocated.
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+fn output<T: swoole_rs_corebase::sys::Zeroed>(count: usize) -> Vec<T> {
     let mut entries = Vec::new();
     if entries.try_reserve_exact(count).is_err() {
         std::alloc::handle_alloc_error(std::alloc::Layout::new::<T>());
     }
-    entries.resize_with(count, MaybeUninit::uninit);
+    entries.resize_with(count, swoole_rs_corebase::sys::zeroed);
     entries
 }
 
@@ -309,7 +300,7 @@ fn output<T>(count: usize) -> Vec<MaybeUninit<T>> {
 // under their upstream symbols; declared, since both depend on this crate.
 unsafe extern "C-unwind" {
     #[link_name = "_ZN6swoole7Reactor6_closeEPS0_PNS_7network6SocketE"]
-    fn reactor_close(reactor: crate::Running<'_>, socket: Socket<'static>) -> c_int;
+    safe fn reactor_close(reactor: crate::Running<'_>, socket: crate::OwnedSocket) -> c_int;
     #[link_name = "_ZN6swoole9coroutine6System12init_reactorEPNS_7ReactorE"]
     safe fn system_init_reactor(reactor: crate::Running<'_>);
 }
@@ -465,30 +456,13 @@ pub fn swoole_event_free() -> bool {
     swoole_rs_corebase::set_thread_reactor(ptr::null_mut());
     true
 }
-pub(crate) struct ReactorBackendView {
-    pub(crate) events: *mut c_void,
-    pub(crate) sockets: *mut *mut c_void,
-    pub(crate) backend: BackendKind,
-}
 impl ReactorState {
-    /// The backend's arrays, which stay owned until the state is freed.
-    pub(crate) fn backend_view(&mut self) -> ReactorBackendView {
-        let mut view = ReactorBackendView {
-            events: ptr::null_mut(),
-            sockets: ptr::null_mut(),
-            backend: BackendKind::Poll,
-        };
-        match &mut self.backend {
-            Backend::None => (),
-            Backend::Poll(snapshot) => {
-                view.events = snapshot.entries().cast();
-                view.sockets = snapshot.sockets();
-            }
+    /// Which kernel wait the backend runs.
+    pub(crate) fn backend_kind(&self) -> BackendKind {
+        match self.backend {
+            Backend::None | Backend::Poll(_) => BackendKind::Poll,
             #[cfg(target_os = "linux")]
-            Backend::Epoll(array) => {
-                view.events = array.as_mut_ptr().cast();
-                view.backend = BackendKind::Epoll;
-            }
+            Backend::Epoll(_) => BackendKind::Epoll,
             #[cfg(any(
                 target_os = "macos",
                 target_os = "freebsd",
@@ -496,12 +470,66 @@ impl ReactorState {
                 target_os = "netbsd",
                 target_os = "dragonfly"
             ))]
-            Backend::Kqueue(array, _) => {
-                view.events = array.as_mut_ptr().cast();
-                view.backend = BackendKind::Kqueue;
-            }
+            Backend::Kqueue(..) => BackendKind::Kqueue,
         }
-        view
+    }
+
+    /// poll's entry `index` and the socket it was built from; none past its end or
+    /// for another backend.
+    #[inline]
+    pub(crate) fn poll_entry(
+        &self,
+        index: usize,
+    ) -> Option<(libc::pollfd, crate::Socket<'static>)> {
+        match &self.backend {
+            Backend::Poll(snapshot) => snapshot.entry(index),
+            _ => None,
+        }
+    }
+
+    /// epoll's entry `index`; none past its end or for another backend.
+    #[cfg(target_os = "linux")]
+    #[inline]
+    pub(crate) fn epoll_entry(&self, index: usize) -> Option<libc::epoll_event> {
+        match &self.backend {
+            Backend::Epoll(array) => array.get(index).copied(),
+            _ => None,
+        }
+    }
+
+    /// kqueue's entry `index`; none past its end or for another backend.
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))]
+    #[inline]
+    pub(crate) fn kqueue_entry(&self, index: usize) -> Option<libc::kevent> {
+        match &self.backend {
+            Backend::Kqueue(array, _) => array.get(index).copied(),
+            _ => None,
+        }
+    }
+
+    /// Where the backend's output array is, which stays put until the backend closes.
+    #[cfg(test)]
+    fn output_array(&self) -> *const c_void {
+        match &self.backend {
+            Backend::None => ptr::null(),
+            Backend::Poll(snapshot) => snapshot.entries().cast(),
+            #[cfg(target_os = "linux")]
+            Backend::Epoll(array) => array.as_ptr().cast(),
+            #[cfg(any(
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd",
+                target_os = "dragonfly"
+            ))]
+            Backend::Kqueue(array, _) => array.as_ptr().cast(),
+        }
     }
 }
 /// Actual kernel wait over the owner's stable arrays: the ready count, or the
@@ -641,7 +669,8 @@ pub(crate) mod tests {
     /// A state with backend `kind` open for `count` events: `new Reactor` without its
     /// native effects.
     pub(crate) fn state(kind: c_int, count: c_int) -> ReactorPrepared {
-        unsafe { (*ReactorState::into_raw(ReactorState::open(kind, count))).head }
+        let reactor = crate::Running::leak(ReactorState::open(kind, count));
+        reactor.with(|state| state.head)
     }
     /// [`ReactorState::record`] with the test's socket.
     pub(crate) unsafe fn record(
@@ -650,7 +679,7 @@ pub(crate) mod tests {
         op: crate::ChangeOp,
         events: crate::Events,
     ) -> bool {
-        let socket = unsafe { Socket::from_ptr(socket) }.unwrap();
+        let socket = unsafe { crate::Socket::from_ptr(socket) }.unwrap();
         unsafe { (*owner).record(crate::change::Request::new(socket, op), events) }
     }
     pub(crate) unsafe fn free(owner: *mut ReactorState) {
@@ -764,13 +793,13 @@ pub(crate) mod tests {
                 }
                 assert_eq!(libc::write(fds[1], b"a".as_ptr().cast(), 1), 1);
                 (*state.fields).timeout_msec = 0;
-                let view = (*state.owner).backend_view();
+                let events = (*state.owner).output_array();
                 let mut entries = 0;
                 assert_eq!(
                     kernel_wait(running(state.owner), false, &mut entries).ok(),
                     Some(1)
                 );
-                assert_eq!(view.events, (*state.owner).backend_view().events);
+                assert_eq!(events, (*state.owner).output_array());
                 if kind == 3 {
                     assert_eq!(entries, 1);
                 }

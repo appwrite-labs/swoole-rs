@@ -2,6 +2,7 @@
 //! value or an array, or freed.
 use crate::sys::{swr_zend_string_alloc, zend_string, zend_ulong};
 use std::{io::IoSlice, mem::offset_of};
+use swoole_rs_corebase::lent::{Spare, lend_spare};
 
 unsafe extern "C" {
     /// `zend_hash_func`: it reads the lent bytes (an `IoSlice` is an iovec) only.
@@ -142,6 +143,15 @@ impl ZBuf {
     #[inline]
     pub unsafe fn set_len(&mut self, len: usize) {
         self.len = len;
+    }
+
+    /// Appends what `fill` writes into the room past the written bytes: what it
+    /// returned.
+    #[inline]
+    pub fn fill<R>(&mut self, fill: impl for<'s> FnOnce(&mut Spare<'s>) -> R) -> R {
+        let (result, filled) = lend_spare(self.spare_capacity_mut(), fill);
+        self.len += filled;
+        result
     }
 
     /// Count only the first `len` bytes as written; nothing when fewer are.

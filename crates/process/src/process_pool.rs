@@ -994,9 +994,11 @@ const _: () = assert!(
     "DataHead heads an EventData"
 );
 
-/// `head`'s bytes, in its C layout.
+/// `head`'s bytes, in its C layout: each field's native bytes at its offset.
 #[must_use]
-pub fn head_view(head: &DataHead) -> &[u8; EVENT_DATA] {
+#[inline]
+pub fn head_view(head: &DataHead) -> [u8; EVENT_DATA] {
+    use core::mem::offset_of;
     // Every byte of a `DataHead` is a field's: its fields end where the next begins.
     const _: () = assert!(
         core::mem::offset_of!(DataHead, time) + size_of::<f64>() == EVENT_DATA
@@ -1011,9 +1013,34 @@ pub fn head_view(head: &DataHead) -> &[u8; EVENT_DATA] {
             && core::mem::offset_of!(DataHead, time) == 32,
         "DataHead has no padding"
     );
-    // SAFETY: a live head of `EVENT_DATA` initialized bytes (no padding, checked
-    // above), borrowed as long as the head; bytes have no alignment.
-    unsafe { &*ptr::from_ref(head).cast() }
+    let fields: [(usize, &[u8]); 10] = [
+        (offset_of!(DataHead, fd), &head.fd.to_ne_bytes()),
+        (offset_of!(DataHead, msg_id), &head.msg_id.to_ne_bytes()),
+        (offset_of!(DataHead, len), &head.len.to_ne_bytes()),
+        (
+            offset_of!(DataHead, reactor_id),
+            &head.reactor_id.to_ne_bytes(),
+        ),
+        (offset_of!(DataHead, kind), &[head.kind]),
+        (offset_of!(DataHead, flags), &[head.flags]),
+        (
+            offset_of!(DataHead, server_fd),
+            &head.server_fd.to_ne_bytes(),
+        ),
+        (
+            offset_of!(DataHead, ext_flags),
+            &head.ext_flags.to_ne_bytes(),
+        ),
+        (offset_of!(DataHead, reserved), &head.reserved.to_ne_bytes()),
+        (offset_of!(DataHead, time), &head.time.to_ne_bytes()),
+    ];
+    let mut bytes = [0; EVENT_DATA];
+    for (at, field) in fields {
+        if let Some(to) = bytes.get_mut(at..at + field.len()) {
+            to.copy_from_slice(field);
+        }
+    }
+    bytes
 }
 
 /// A pool effect, which `crates/server/src/pool_native.rs` answers; the process-wide
@@ -1152,6 +1179,13 @@ pub(crate) struct Native<'a> {
     pool: PoolRef<'a>,
 }
 
+impl<'a> Native<'a> {
+    /// A call over the pool and `worker`, when it is one of the pool's records.
+    fn call(&self, worker: *const c_void) -> PoolCall<'a> {
+        PoolCall::new(self.pool, self.pool.worker_of(worker.cast()))
+    }
+}
+
 impl PoolHost for Native<'_> {
     fn op(&mut self, worker: *mut c_void, op: Op, arg: u64) {
         if let Op::Log(kind) = op {
@@ -1163,7 +1197,7 @@ impl PoolHost for Native<'_> {
             return;
         }
         // A native effect on the live pool this export runs over.
-        self.native.call(&PoolCall::new(self.pool, worker), op, arg);
+        self.native.call(&self.call(worker), op, arg);
     }
 
     /// The message queue is Rust's on every platform (crates/ossupport).
@@ -1172,8 +1206,7 @@ impl PoolHost for Native<'_> {
     }
 
     fn event_init(&mut self) -> bool {
-        self.native
-            .event_init(&PoolCall::new(self.pool, ptr::null_mut()))
+        self.native.event_init(&PoolCall::new(self.pool, None))
     }
 
     fn event_available(&mut self) -> bool {
@@ -1203,33 +1236,29 @@ impl PoolHost for Native<'_> {
     }
 
     fn new_pipe(&mut self, worker: *mut WorkerRecord) -> Result<(), PipeError> {
-        self.native
-            .new_pipe(&PoolCall::new(self.pool, worker.cast()))
+        self.native.new_pipe(&self.call(worker.cast()))
     }
 
     #[cfg(target_os = "linux")]
     fn send_buffer_size(&mut self, worker: *mut WorkerRecord) -> std::io::Result<c_int> {
-        self.native
-            .send_buffer_size(&PoolCall::new(self.pool, worker.cast()))
+        self.native.send_buffer_size(&self.call(worker.cast()))
     }
 
     fn bus_buffer(&mut self, size: usize) -> Result<(), PipeError> {
         self.native
-            .bus_buffer(&PoolCall::new(self.pool, ptr::null_mut()), size)
+            .bus_buffer(&PoolCall::new(self.pool, None), size)
     }
 
     fn add_pipe(&mut self, worker: *mut WorkerRecord) -> Result<(), PipeError> {
-        self.native
-            .add_pipe(&PoolCall::new(self.pool, worker.cast()))
+        self.native.add_pipe(&self.call(worker.cast()))
     }
 
     fn push_stop(&mut self, worker: *mut WorkerRecord) -> Result<(), PipeError> {
-        self.native
-            .push_stop(&PoolCall::new(self.pool, worker.cast()))
+        self.native.push_stop(&self.call(worker.cast()))
     }
 
     fn callback(&mut self, callback: Callback, worker: *mut c_void) -> Result<isize, Bailed> {
-        let mut call = PoolCall::new(self.pool, worker);
+        let mut call = self.call(worker);
         crate::pool::trapped(|| self.native.callback(&mut call, callback))?;
         Ok(call.result)
     }
@@ -1251,7 +1280,7 @@ impl PoolHost for Native<'_> {
     }
 
     fn close(&self, socket: *mut c_void) {
-        let mut call = PoolCall::new(self.pool, ptr::null_mut());
+        let mut call = PoolCall::new(self.pool, None);
         call.socket = socket;
         self.native.close(&call);
     }
