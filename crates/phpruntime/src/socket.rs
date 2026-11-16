@@ -1,6 +1,6 @@
 //! The coroutine socket (`SocketImpl`), which crates/hooks makes, runs and
 //! frees, and what the streams need of Swoole's PHP side.
-use libc::{c_int, c_void, sockaddr_storage, socklen_t};
+use libc::{c_int, sockaddr_storage, socklen_t};
 use std::{
     borrow::Cow,
     ffi::{CStr, CString},
@@ -78,11 +78,18 @@ pub(crate) struct Socket {
 
 impl Drop for Socket {
     fn drop(&mut self) {
-        // SAFETY: the socket is owned and live; `free` is native.
-        if unsafe { bailout::trap(swr_v1_hook_co_socket_free, self.raw()) }.is_err() {
+        if free(self.socket).is_err() {
             Bailout.defer();
         }
     }
+}
+
+/// `delete socket` inside `zend_try`, of a socket that only the caller holds: a
+/// [`Socket`] or a [`co::Fresh`], each given up to this.
+fn free(socket: Co) -> Result<(), Bailout> {
+    // SAFETY: a live socket that only the caller held, which this frees; the
+    // body is native, and the socket is gone after the call.
+    unsafe { bailout::trap(swr_v1_hook_co_socket_free, socket.this()) }
 }
 
 impl Socket {
@@ -116,10 +123,6 @@ impl Socket {
     /// The owner of `socket`, which `make` made and nothing else holds.
     fn owning(socket: Co) -> Self {
         Self { socket }
-    }
-
-    fn raw(&self) -> *mut c_void {
-        self.socket.this()
     }
 
     /// The socket's handle.
@@ -414,10 +417,10 @@ pub fn convert_to_fd(value: &Value) -> Result<i32, Bailout> {
 /// need of a `SocketImpl *` beyond [`Co`]'s own members.
 pub mod co {
     use libc::{c_int, c_void};
+    use swoole_rs_hooks::TimeoutScope;
     pub use swoole_rs_hooks::co_socket::{Co, CoSocket};
     pub use swoole_rs_hooks::packet::recv_packet;
     use swoole_rs_hooks::vector::IoVector;
-    use swoole_rs_hooks::{TimeoutScope, co_socket::swr_v1_hook_co_socket_free};
     use swoole_rs_reactor::TimeoutKind;
     use swoole_rs_zend::bailout::Bailout;
 
@@ -432,25 +435,39 @@ pub mod co {
         kind: c_int,
         protocol: c_int,
         family: bool,
-    ) -> Result<Co, Bailout> {
+    ) -> Result<Fresh, Bailout> {
         let mut made = None;
         if super::make_trapped(fd, domain, kind, protocol, family, &mut made).is_err() {
             // Frees the socket `make` wrote before the bailout, if any.
             drop(made.map(super::Socket::owning));
             return Err(Bailout);
         }
-        // The socket just made, which the caller holds until it frees it.
-        made.ok_or(Bailout)
+        made.map(Fresh).ok_or(Bailout)
     }
 
-    /// `delete socket`.
-    /// # Errors
-    /// A close hook bailed out.
-    /// # Safety
-    /// `socket` is live and owned; it is gone after the call.
-    pub unsafe fn free(socket: Socket) -> Result<(), Bailout> {
-        // SAFETY: per the caller; `free` takes the socket.
-        unsafe { swoole_rs_zend::bailout::trap(swr_v1_hook_co_socket_free, socket) }
+    /// `accept(timeout)` on `server`: the new connection, which only the result holds.
+    #[must_use]
+    pub fn accept(server: Co, timeout: f64) -> Option<Fresh> {
+        server.accept(timeout).map(Fresh)
+    }
+
+    /// A socket [`make`] or [`accept`] just created, which nothing else holds:
+    /// its holder frees it, or gives it to an object, which a dropped one is.
+    #[must_use]
+    pub struct Fresh(Co);
+
+    impl Fresh {
+        #[must_use]
+        pub fn co(&self) -> Co {
+            self.0
+        }
+
+        /// `delete socket`.
+        /// # Errors
+        /// A close hook bailed out.
+        pub fn free(self) -> Result<(), Bailout> {
+            super::free(self.0)
+        }
     }
 
     /// `close()` inside `zend_try`.
