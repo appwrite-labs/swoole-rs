@@ -907,24 +907,22 @@ impl Bus {
     }
 
     /// `MessageBus::write` of a message its caller holds as a `SendData`: a head and
-    /// the pointer its `len` counts from. Numbers the message, then writes it through
-    /// the event loop while one is available, else synchronously. False if the pipe
-    /// failed.
-    ///
-    /// # Safety
-    /// `data` covers `head.len` bytes or is null. (What the event loop cannot send at
-    /// once it queues, and watches `socket` until it drains: a `Socket<'static>` may be.)
-    pub unsafe fn send_raw(
-        &self,
-        socket: Socket<'static>,
-        head: &mut BusHead,
-        data: *const u8,
-    ) -> bool {
+    /// its payload (`None`: none), whose first `head.len` bytes go. Numbers the
+    /// message, then writes it through the event loop while one is available, else
+    /// synchronously. False if the pipe failed, or the payload is shorter than
+    /// `head.len`. (What the event loop cannot send at once it queues, and watches
+    /// `socket` until it drains: a `Socket<'static>` may be.)
+    pub fn send(&self, socket: Socket<'static>, head: &mut BusHead, data: Option<&[u8]>) -> bool {
         use swoole_rs_reactor::event_api;
+        if data.is_some_and(|data| data.len() < head.len as usize) {
+            return false;
+        }
+        let data = data.map_or(ptr::null(), <[u8]>::as_ptr);
         // `write` passes iovecs over `head` and the caller's bytes.
         let send = |iov: &[libc::iovec]| {
             // SAFETY: `write`'s iovecs, an `IoSlice`'s layout: the head's bytes and a
-            // chunk inside the caller's `data`, each readable for the call.
+            // chunk inside the payload's first `head.len` bytes, which the check above
+            // keeps within the slice, each readable for the call.
             let vectors = unsafe { std::slice::from_raw_parts(iov.as_ptr().cast(), iov.len()) };
             if event_api::swoole_event_is_available() {
                 event_api::swoole_event_writev(socket, vectors)
@@ -1020,7 +1018,7 @@ mod tests {
                 fd: 7,
                 ..BusHead::default()
             };
-            assert!(unsafe { pipe.bus.send_raw(socket, &mut head, payload.as_ptr()) });
+            assert!(pipe.bus.send(socket, &mut head, Some(payload)));
             assert_eq!(head.msg_id, expected);
             assert_eq!(pipe.read(false).as_deref(), Some(payload));
         }
