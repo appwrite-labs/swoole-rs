@@ -503,6 +503,16 @@ pub fn writev(fd: c_int, vectors: &[std::io::IoSlice<'_>]) -> Option<usize> {
     .ok()
 }
 
+/// `readv(2)` into `vectors`' buffers, in order.
+#[must_use]
+#[inline]
+pub fn readv(fd: c_int, vectors: &mut [lent::ReadVec<'_>]) -> Option<usize> {
+    usize::try_from(lent::lend_out(vectors, |iov, count| {
+        lent::readv(fd, iov, count)
+    }))
+    .ok()
+}
+
 /// `listen(2)`.
 ///
 /// # Errors

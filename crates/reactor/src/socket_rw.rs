@@ -71,10 +71,10 @@ pub fn catch_pipe_error(error: c_int, kernel_nobufs: &mut bool) -> Caught {
     }
 }
 
-/// An `IOVector`'s cursor, owned with its descriptor allocation.
+/// An `IOVector`'s cursor: how many descriptors are left (the last ones), and the
+/// descriptor index and byte offset where the transfers stopped.
 #[derive(Clone, Copy)]
 pub struct IovState {
-    pub iterator: *mut libc::iovec,
     pub remain_count: c_int,
     pub index: c_int,
     pub offset_bytes: usize,

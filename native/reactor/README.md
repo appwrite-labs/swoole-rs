@@ -10,7 +10,8 @@ under the same names, each keeping only the members the build's C uses. `Reactor
 class over `swr_v1_reactor_head`, which Rust's reactor state begins with, so a
 `Reactor *` is that state; `reactor_state.rs` constructs and frees it
 (`swoole_event_init`, `swoole_event_free`). An `IOVector` is a Rust owner
-(`iov_owned.rs`) holding both `iovec` spans; payload bytes are not copied.
+(`iov_owned.rs`) holding a typed copy of the caller's descriptors; payload bytes are not
+copied.
 
 ## Contents
 
