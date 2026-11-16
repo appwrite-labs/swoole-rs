@@ -226,6 +226,12 @@ Three upstream assertions have no code left to test, so the cases leave them out
   `Server::command`, which looks the command up first, so nothing can call it with an
   unknown id.
 
+`task_worker2` and `test_kill_worker` give their server 50 ms to replace a worker before it
+shuts down. Each one logs every fork, process exit and its own marks, with the thread's
+schedstat, to a shared log (`server/src/http1/timeline.rs`) and prints the log when its
+worker-start count fails. Under CPU contention, a process in the replacement chain can sit
+runnable past that window. That happens in upstream's build as well as this one (#4046).
+
 `core-tests/src/server/server.cpp`'s task-worker TESTs are `server/src/http1/task.rs`, suite
 `server`, in the same binary and phase, one function per TEST under its own name with the
 same Servers, inputs and expected values: `task_worker`, `task_worker2`, `task_worker_3`,

@@ -12,7 +12,6 @@
 
 use super::*;
 use std::sync::atomic::{AtomicBool, AtomicU32};
-use std::time::Instant;
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::{swoole_random_string, swr_v1_core_set_current_task_id};
 use swoole_rs_locks::SharedMutex;
@@ -536,28 +535,16 @@ unsafe extern "C" fn task_worker2_on_pipe_message(
     counter_incr(7);
 }
 
-/// Microseconds since the parent initialized this clock before forking. Store
-/// only in shared counters; printing in a worker would perturb its scheduling.
-fn task_worker2_mark(index: usize) {
-    static START: OnceLock<Instant> = OnceLock::new();
-    let elapsed = START.get_or_init(Instant::now).elapsed().as_micros() + 1;
-    counter_set(index, i32::try_from(elapsed).unwrap_or(i32::MAX));
-}
-
 unsafe extern "C" fn task_worker2_on_worker_start(
     _: *mut c_void,
     serv: *mut c_void,
     worker: *mut c_void,
 ) {
     let serv = Server(serv);
-    let id = worker_id(worker) as usize;
-    if counter_get(2 + id) == 0 {
-        task_worker2_mark(12 + id);
-    }
-    task_worker2_mark(15 + id);
+    super::timeline::mark(["start 0", "start 1", "start 2"][worker_id(worker) as usize]);
     if worker_id(worker) == 0 {
         after(50, move || {
-            task_worker2_mark(9);
+            super::timeline::mark("stop timer");
             let mut ev = EventData::new();
             ev.info.type_ = SW_SERVER_EVENT_SHUTDOWN;
             ev.info.len = 0;
@@ -566,7 +553,7 @@ unsafe extern "C" fn task_worker2_on_worker_start(
                     .is_some_and(|sent| sent > 0),
                 "serv->send_to_worker_from_worker(1, &ev, ..) > 0",
             );
-            task_worker2_mark(10);
+            super::timeline::mark("stop sent");
         });
 
         after(60, move || {
@@ -588,7 +575,7 @@ unsafe extern "C" fn task_worker2_on_worker_start(
         });
 
         after(100, move || {
-            task_worker2_mark(11);
+            super::timeline::mark("shutdown timer");
             serv.shutdown();
         });
     }
@@ -617,18 +604,17 @@ fn task_worker2() {
     serv.set_callback(Slot::Receive, receive_ok as *const c_void);
 
     assert_eq!(serv.create(), SW_OK);
-    task_worker2_mark(8);
+    super::timeline::arm();
     assert_eq!(serv.start(), SW_OK);
 
     assert_eq!(
         counter_get(1),
         4,
-        "onWorkerStart counts for workers 0/1/2: {:?}; pipe messages: {}; callback failure: {}; \
-         microseconds [start, stop timer, stop sent, shutdown timer, first starts 0/1/2, last starts 0/1/2]: {:?}",
+        "onWorkerStart counts for workers 0/1/2: {:?}; pipe messages: {}; callback failure: {}; {}",
         [counter_get(2), counter_get(3), counter_get(4)],
         counter_get(7),
         shared().failed.load(Ordering::SeqCst),
-        (8..18).map(counter_get).collect::<Vec<_>>(),
+        super::timeline::render(),
     );
     assert_eq!(counter_get(7), 1); // onPipeMessage
     assert_no_failure();
