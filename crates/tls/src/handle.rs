@@ -13,16 +13,16 @@ use openssl_sys::{
     SSL_CTRL_SET_TLSEXT_HOSTNAME, SSL_CTX, SSL_peek, SSL_read, SSL_set_bio, SSL_write,
     TLSEXT_NAMETYPE_host_name, X509, X509_check_host, stack_st_X509,
 };
-use std::ffi::{CStr, c_char, c_int, c_long, c_ulong, c_void};
+use std::ffi::{CStr, c_int, c_long, c_ulong, c_void};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
-use swoole_rs_corebase::sys::ReadSlot;
+use swoole_rs_corebase::sys::{ReadSlot, Text};
 use swoole_rs_reactor::{Socket, SocketFields};
 
 // libssl's and libcrypto's own declarations, with each pointer typed as the
 // handle it is: `Ssl`, `Bio` and `CertRef` are live for their lifetime, `CipherRef` is
 // an entry of OpenSSL's static cipher table, `Cert` and `OwnedBio` take the reference
-// OpenSSL returns, a `CText<'static>` is one of OpenSSL's static strings, and an
+// OpenSSL returns, a `Text<'static>` is one of OpenSSL's static strings, and an
 // `SslCtx` reference is a live context.
 // The `safe` ones take only such handles and plain values, read or change only the
 // object behind the handle or this thread's error queue, and return raw pointers the
@@ -31,7 +31,7 @@ unsafe extern "C" {
     safe fn ERR_clear_error();
     safe fn ERR_peek_error() -> c_ulong;
     safe fn ERR_get_error() -> c_ulong;
-    safe fn ERR_reason_error_string(error: c_ulong) -> Option<CText<'static>>;
+    safe fn ERR_reason_error_string(error: c_ulong) -> Option<Text<'static>>;
     /// Writes at most `length` bytes, NUL-terminated, into `buffer`: the length is the
     /// buffer's own, the one value [`ErrorLength`] has.
     safe fn ERR_error_string_n(error: c_ulong, buffer: &mut [u8; 512], length: ErrorLength);
@@ -41,7 +41,7 @@ unsafe extern "C" {
     /// whose methods take a BIO without data as none of its session's.
     pub(crate) safe fn BIO_new(method: &'static BioMethod) -> Option<OwnedBio>;
     /// `fopen`s `filename` with `mode`; null on failure.
-    safe fn BIO_new_file(filename: CText<'_>, mode: CText<'_>) -> Option<OwnedBio>;
+    safe fn BIO_new_file(filename: Text<'_>, mode: Text<'_>) -> Option<OwnedBio>;
     /// `BIO_pending` as a function: the bytes queued to read.
     safe fn BIO_ctrl_pending(bio: Bio<'_>) -> usize;
     safe fn BIO_method_type(bio: Bio<'_>) -> c_int;
@@ -72,20 +72,20 @@ unsafe extern "C" {
     /// no callbacks that would read it.
     pub(crate) safe fn SSL_set_ex_data(ssl: Ssl<'_>, index: c_int, data: *mut c_void) -> c_int;
     /// The host name the client sent, null without one: the SSL's own copy.
-    safe fn SSL_get_servername<'a>(ssl: Ssl<'a>, kind: c_int) -> Option<CText<'a>>;
+    safe fn SSL_get_servername<'a>(ssl: Ssl<'a>, kind: c_int) -> Option<Text<'a>>;
     /// Null before the handshake, else an entry of OpenSSL's static cipher table.
     safe fn SSL_get_current_cipher(ssl: Ssl<'_>) -> Option<CipherRef>;
     /// Null names the `(NONE)` cipher, whose bits are 0.
     safe fn SSL_CIPHER_get_bits(cipher: Option<CipherRef>, algorithm: Option<&mut c_int>) -> c_int;
-    safe fn SSL_CIPHER_get_name(cipher: Option<CipherRef>) -> Option<CText<'static>>;
-    safe fn SSL_CIPHER_get_version(cipher: Option<CipherRef>) -> Option<CText<'static>>;
+    safe fn SSL_CIPHER_get_name(cipher: Option<CipherRef>) -> Option<Text<'static>>;
+    safe fn SSL_CIPHER_get_version(cipher: Option<CipherRef>) -> Option<Text<'static>>;
     /// `SslCtrl`'s commands: `Mode` reads no pointer, and `HostName` copies `text`
     /// (null clears the name).
     safe fn SSL_ctrl(
         ssl: Ssl<'_>,
         command: SslCtrl,
         value: c_long,
-        text: Option<CText<'_>>,
+        text: Option<Text<'_>>,
     ) -> c_long;
     /// The SSL takes its own reference to `context` (null: its session's context)
     /// and releases the one it held.
@@ -147,26 +147,6 @@ enum SslCtrl {
     HostName = SSL_CTRL_SET_TLSEXT_HOSTNAME,
 }
 
-/// A NUL-terminated string that stays live and unchanged for `'a`, as thin as the
-/// `const char *` it is: what a declaration takes or returns in place of the raw pointer.
-/// Safe code makes one only from a `&CStr`.
-#[repr(transparent)]
-#[derive(Clone, Copy)]
-pub struct CText<'a>(NonNull<c_char>, PhantomData<&'a CStr>);
-
-impl<'a> From<&'a CStr> for CText<'a> {
-    fn from(text: &'a CStr) -> Self {
-        Self(NonNull::from(text).cast(), PhantomData)
-    }
-}
-
-impl<'a> CText<'a> {
-    pub(crate) fn get(self) -> &'a CStr {
-        // SAFETY: the type's invariant: a NUL-terminated string live for `'a`.
-        unsafe { CStr::from_ptr(self.0.as_ptr()) }
-    }
-}
-
 /// The int OpenSSL's I/O calls take for a buffer's length: at most `INT_MAX`, where
 /// upstream's `(int)` cast would wrap a buffer over 2 GiB.
 fn int(length: usize) -> c_int {
@@ -193,7 +173,7 @@ pub fn pop_error() -> c_ulong {
 /// OpenSSL's reason string for `error`, None for an unknown code.
 #[must_use]
 pub fn reason_string(error: c_ulong) -> Option<&'static CStr> {
-    ERR_reason_error_string(error).map(CText::get)
+    ERR_reason_error_string(error).map(Text::get)
 }
 
 /// `ERR_error_string_n`'s length: that of its 512-byte buffer, as a `size_t`.
@@ -385,8 +365,8 @@ impl<'a> Ssl<'a> {
         Cipher {
             bits: SSL_CIPHER_get_bits(cipher, None),
             // The table's name and version; OpenSSL itself answers `(NONE)` without a cipher.
-            name: name.map_or(c"(NONE)", CText::get),
-            version: version.map_or(c"(NONE)", CText::get),
+            name: name.map_or(c"(NONE)", Text::get),
+            version: version.map_or(c"(NONE)", Text::get),
         }
     }
 

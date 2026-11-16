@@ -1,7 +1,7 @@
 //! `dtls::Session`: its datagram queue, the BIO OpenSSL reads it through, and
 //! `init`/`listen`. The BIO owns its session: the socket's SSL holds the BIO, and the
 //! session goes when OpenSSL destroys it, so a session is reached through its socket.
-use crate::handle::{BioMethod, CText};
+use crate::handle::BioMethod;
 use core::cell::{Cell, RefCell};
 use core::ffi::{c_char, c_int, c_long, c_void};
 use core::marker::{PhantomData, PhantomPinned};
@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Mutex, PoisonError};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log;
+use swoole_rs_corebase::sys::Text;
 use swoole_rs_reactor::{AddressStorage, Fill, Socket};
 
 /// One queued datagram, upstream's `dtls::Buffer`: the bytes it was received or copied
@@ -227,7 +228,7 @@ enum Never {}
 )]
 unsafe extern "C" {
     safe fn BIO_get_new_index() -> c_int;
-    safe fn BIO_meth_new(kind: c_int, name: CText<'_>) -> Option<&'static mut BioMethod>;
+    safe fn BIO_meth_new(kind: c_int, name: Text<'_>) -> Option<&'static mut BioMethod>;
     safe fn BIO_meth_set_create(table: &mut BioMethod, create: Option<Hook>) -> c_int;
     safe fn BIO_meth_set_destroy(table: &mut BioMethod, destroy: Option<Hook>) -> c_int;
     safe fn BIO_meth_set_write(table: &mut BioMethod, write: Option<Write>) -> c_int;

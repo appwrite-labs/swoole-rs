@@ -13,12 +13,11 @@ use swoole_rs_corebase::net_address::{BAD_HOST_ADDR, DNSLOOKUP_RESOLVE_FAILED, p
 use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
 use swoole_rs_corebase::ntop;
 use swoole_rs_corebase::sys::Text;
-use swoole_rs_tls::CText;
 
 // libc's own declaration. `inet_pton` reads the NUL-terminated source and
 // writes at most an IPv6 address's 16 bytes (nothing for a family it doesn't know).
 unsafe extern "C" {
-    safe fn inet_pton(family: c_int, source: CText<'_>, destination: &mut [u8; 16]) -> c_int;
+    safe fn inet_pton(family: c_int, source: Text<'_>, destination: &mut [u8; 16]) -> c_int;
 }
 
 /// `clients_parse_ip`: the host as an IP literal of `family` into `destination`,

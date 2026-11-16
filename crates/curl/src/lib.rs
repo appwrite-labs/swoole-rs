@@ -35,9 +35,8 @@ use swoole_rs_curl_sys::{
     CURLE_FAILED_INIT, CURLE_OK, CURLINFO_PRIVATE, CURLM, CURLM_INTERNAL_ERROR, CURLM_OK,
     CURLMOPT_SOCKETDATA, CURLMOPT_SOCKETFUNCTION, CURLMOPT_TIMERDATA, CURLMOPT_TIMERFUNCTION,
     CURLMSG_DONE, CURLMcode, CURLOPT_PRIVATE, CURLcode, LiveMulti, MultiHandle, curl_easy_getinfo,
-    curl_easy_setopt, curl_multi_add_handle, curl_multi_cleanup, curl_multi_info_read,
-    curl_multi_init, curl_multi_remove_handle, curl_multi_setopt, curl_multi_socket_action,
-    curl_multi_timeout, curl_socket_t,
+    curl_easy_setopt, curl_multi_cleanup, curl_multi_info_read, curl_multi_init, curl_multi_setopt,
+    curl_multi_socket_action, curl_multi_timeout, curl_socket_t,
 };
 use swoole_rs_reactor::Events;
 
@@ -101,6 +100,22 @@ const _: () = assert!(
     size_of::<Cell<Option<Rc<Multi>>>>() == size_of::<*mut Multi>(),
     "C's `struct swr_v1_curl_multi *easy_multi`"
 );
+
+impl Handle {
+    /// The easy handle it was made for, which outlives it: ext/curl destroys the
+    /// handle before it cleans the easy handle up.
+    fn easy(&self) -> Easy<'_> {
+        Easy(self.cp, PhantomData)
+    }
+}
+
+// libcurl's declarations, with the handles typed as live. Each adds or removes the
+// easy handle, which may run the multi's socket and timer callbacks: they take the
+// multi by shared reference. Without a multi handle libcurl answers `CURLM_BAD_HANDLE`.
+unsafe extern "C" {
+    safe fn curl_multi_add_handle(multi: Option<LiveMulti<'_>>, easy: Easy<'_>) -> CURLMcode;
+    safe fn curl_multi_remove_handle(multi: Option<LiveMulti<'_>>, easy: Easy<'_>) -> CURLMcode;
+}
 
 /// `swoole::curl::Socket`: one socket curl asked to watch. The multi's map
 /// owns it, and the selector's copies keep one it removes while curl runs;
@@ -329,8 +344,7 @@ impl Multi {
     }
 
     fn add_handle(&self, handle: &Handle) -> CURLMcode {
-        // SAFETY: this multi's handle and the handle's live easy handle.
-        let result = unsafe { curl_multi_add_handle(self.raw(), handle.cp) };
+        let result = curl_multi_add_handle(self.live(), handle.easy());
         if result == CURLM_OK {
             handle.multi.set(ptr::from_ref(self).cast_mut());
         }
@@ -338,8 +352,7 @@ impl Multi {
     }
 
     fn remove_handle(&self, handle: &Handle) -> CURLMcode {
-        // SAFETY: this multi's handle and the handle's live easy handle.
-        let result = unsafe { curl_multi_remove_handle(self.raw(), handle.cp) };
+        let result = curl_multi_remove_handle(self.live(), handle.easy());
         handle.multi.set(ptr::null_mut());
         if result == CURLM_OK {
             // Refresh the running count even if no socket event follows.
