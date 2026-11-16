@@ -49,28 +49,26 @@ pub(crate) fn uring() -> Option<&'static UringOps> {
     URING.get().copied()
 }
 
-/// Upstream's `swoole::Event`: what a handler is called with. Its socket is null or a
-/// live socket record for as long as the event is, so only the wait loop and
-/// [`Event::new`]'s callers, who promise that, make one.
+/// Upstream's `swoole::Event`: what a handler is called with. Its socket is a record
+/// live until an unsafe free whose caller answers for the events left, as any
+/// `Socket<'static>` is: C++ that hands one over vouches for it by the field's type.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Event {
     fd: c_int,
     reactor_id: i16,
     fd_type: c_int,
-    socket: *mut c_void,
+    socket: Option<Socket<'static>>,
 }
 
 impl Event {
     /// An event over `socket`.
-    /// # Safety
-    /// `socket` is null or a live socket record for as long as the event is used.
     #[must_use]
-    pub const unsafe fn new(
+    pub const fn of(
         fd: c_int,
         reactor_id: i16,
         fd_type: c_int,
-        socket: *mut c_void,
+        socket: Option<Socket<'static>>,
     ) -> Self {
         Self {
             fd,
@@ -80,26 +78,9 @@ impl Event {
         }
     }
 
-    /// An event over `socket`, a record live until an unsafe free whose caller answers
-    /// for the events left.
-    #[must_use]
-    pub fn of(fd: c_int, reactor_id: i16, fd_type: c_int, socket: Option<Socket<'static>>) -> Self {
-        Self {
-            fd,
-            reactor_id,
-            fd_type,
-            socket: socket.map_or(std::ptr::null_mut(), |socket| socket.as_ptr().cast()),
-        }
-    }
-
     /// An event with no socket, which the wait loop fills.
     pub(crate) const fn empty() -> Self {
-        Self {
-            fd: 0,
-            reactor_id: 0,
-            fd_type: 0,
-            socket: std::ptr::null_mut(),
-        }
+        Self::of(0, 0, 0, None)
     }
 
     #[must_use]
@@ -119,14 +100,7 @@ impl Event {
 
     /// The event's socket, if it has one.
     #[must_use]
-    pub fn socket(&self) -> Option<Socket<'_>> {
-        // SAFETY: null or a live record while the event is (the type's invariant).
-        unsafe { Socket::from_ptr(self.socket.cast()) }
-    }
-
-    /// The socket pointer, for callers that pass it on.
-    #[must_use]
-    pub const fn socket_ptr(&self) -> *mut c_void {
+    pub const fn socket(&self) -> Option<Socket<'static>> {
         self.socket
     }
 }
@@ -191,13 +165,12 @@ pub(crate) fn wait<'a>(ops: &'a WaitOps<'a>) -> bool {
     };
     while reactor.with(|state| state.fields.running) {
         (ops.begin)(reactor);
-        let mut entries: c_int = 0;
+        let mut entries = 0;
         // Deferred work waits without blocking.
-        let ready = kernel_wait(reactor, reactor.has_deferred(), &mut entries);
-        match ready.cmp(&0) {
-            core::cmp::Ordering::Less => {
+        match kernel_wait(reactor, reactor.has_deferred(), &mut entries) {
+            Err(error) => {
                 // upstream's Reactor::catch_error()
-                if std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+                if error.raw_os_error() != Some(libc::EINTR) {
                     wait_failed(&run, entries);
                     return run.backend == BackendKind::Poll;
                 }
@@ -208,21 +181,21 @@ pub(crate) fn wait<'a>(ops: &'a WaitOps<'a>) -> bool {
                     (uring.interrupt)();
                 }
             }
-            core::cmp::Ordering::Equal => {
+            Ok(0) => {
                 (ops.end)(reactor, true);
                 if once() {
                     break;
                 }
                 continue;
             }
-            core::cmp::Ordering::Greater => {
+            Ok(ready) => {
                 let count = if run.backend == BackendKind::Poll {
                     entries
                 } else {
                     ready
                 };
                 // The kernel filled the first `count` entries of `events`.
-                run.ready.set(count.unsigned_abs() as usize);
+                run.ready.set(count);
                 for index in 0..run.ready.get() {
                     entry(&run, index);
                 }
@@ -288,19 +261,19 @@ fn entry(ops: &Loop<'_>, index: usize) {
         }
         _ => return,
     };
-    // SAFETY: a registered socket (poll's array entry or epoll's token), live while its
-    // handlers run.
+    // SAFETY: a registered socket (poll's array entry or epoll's token): live until an
+    // unsafe free, which answers for the registration and the events it leaves.
     if let Some(socket) = unsafe { Socket::from_ptr(socket.cast()) } {
         ready(ops, socket, fd, mask);
     }
 }
 
 /// poll and epoll: read, write, error (unless read or write already ran), then a oneshot removal.
-fn ready(ops: &Loop<'_>, socket: Socket<'_>, fd: c_int, mask: u32) {
+fn ready(ops: &Loop<'_>, socket: Socket<'static>, fd: c_int, mask: u32) {
     let fd_type = prepare(ops, socket, fd, mask & HANGUP != 0);
     let live = || registered(socket);
     for (kind, bit) in [(Table::Read, READ), (Table::Write, WRITE)] {
-        if mask & bit != 0 && live() && handle(ops, kind, fd_type) < 0 {
+        if mask & bit != 0 && live() && !handle(ops, kind, fd_type) {
             handler_failed(ops, kind);
         }
     }
@@ -309,7 +282,7 @@ fn ready(ops: &Loop<'_>, socket: Socket<'_>, fd: c_int, mask: u32) {
         if mask & (READ | WRITE) != 0 {
             return;
         }
-        if handle(ops, Table::Error, fd_type) < 0 {
+        if !handle(ops, Table::Error, fd_type) {
             handler_failed(ops, Table::Error);
         }
     }
@@ -333,8 +306,8 @@ fn kqueue(ops: &Loop<'_>, event: &libc::kevent) {
         return;
     }
     if filter == c_int::from(libc::EVFILT_READ) || filter == c_int::from(libc::EVFILT_WRITE) {
-        // SAFETY: a read or write entry's udata is its registered socket, live while its
-        // handlers run.
+        // SAFETY: a read or write entry's udata is its registered socket: live until an
+        // unsafe free, which answers for the registration and the events it leaves.
         let Some(socket) = (unsafe { Socket::from_ptr(udata) }) else {
             return;
         };
@@ -348,7 +321,7 @@ fn kqueue(ops: &Loop<'_>, event: &libc::kevent) {
         } else {
             Table::Write
         };
-        if handle(ops, kind, fd_type) < 0 {
+        if !handle(ops, kind, fd_type) {
             handler_failed(ops, kind);
         }
         oneshot(ops, socket, live);
@@ -423,7 +396,7 @@ mod kqueue_signal {
 use kqueue_signal::{EVENT_UNKNOWN_DATA, LOG_WARNING, dispatch_signal};
 
 /// Warns about an uncaught kernel wait failure (errno is the kernel's); `entries` is poll's.
-fn wait_failed(ops: &Loop<'_>, entries: c_int) {
+fn wait_failed(ops: &Loop<'_>, entries: usize) {
     let (id, epfd, max_event_num, timeout) = ops.reactor.with(|state| {
         let fields = &state.fields;
         // `Reactor::get_timeout_msec()`.
@@ -485,31 +458,31 @@ fn handler_failed(ops: &Loop<'_>, kind: Table) {
 }
 
 /// Runs the prepared event's read, write or error handler, as upstream's
-/// `get_handler`/`get_error_handler`; a missing handler fails like one returning
-/// `SW_ERR` rather than calling null.
-fn handle(ops: &Loop<'_>, kind: Table, fd_type: c_int) -> c_int {
+/// `get_handler`/`get_error_handler`: false when it failed. A missing handler fails
+/// like one returning `SW_ERR` rather than calling null.
+fn handle(ops: &Loop<'_>, kind: Table, fd_type: c_int) -> bool {
     // The lookup's borrow of the tables ends here, before the handler runs.
     let Some(handler) = ops.reactor.handlers().dispatch(kind, fd_type) else {
-        return -1;
+        return false;
     };
     // The handler may change the event, which the next handler of this socket sees; a
     // nested wait prepares its own.
     let mut event = ops.event.get();
     let result = handler(ops.reactor, &mut event);
     ops.event.set(event);
-    result
+    result >= 0
 }
 
 /// Fills the event for a ready socket, as each upstream backend did: `fd` is poll's entry
 /// fd (-1: the socket's own), and `hangup` marks `event_hup`. Returns the fd type.
-fn prepare(ops: &Loop<'_>, socket: Socket<'_>, fd: c_int, hangup: bool) -> c_int {
+fn prepare(ops: &Loop<'_>, socket: Socket<'static>, fd: c_int, hangup: bool) -> c_int {
     let (fd_type, own) = socket.read(|record| (record.fd_type, record.fd));
-    let event = Event {
-        fd: if fd < 0 { own } else { fd },
-        reactor_id: ops.reactor_id,
+    let event = Event::of(
+        if fd < 0 { own } else { fd },
+        ops.reactor_id,
         fd_type,
-        socket: socket.as_ptr().cast(),
-    };
+        Some(socket),
+    );
     ops.event.set(event);
     if hangup {
         socket.edit(|record| record.event_hup = true);
@@ -530,8 +503,9 @@ fn oneshot(ops: &Loop<'_>, socket: Socket<'_>, live: impl Fn() -> bool) {
     {
         if ops.backend == BackendKind::Epoll {
             // epoll's oneshot entry is already disarmed, so only the registry forgets it.
-            ops.reactor
-                .with(|state| state.record(socket, crate::ChangeOp::Del, crate::Events::NONE));
+            ops.reactor.with(|state| {
+                state.record(crate::change::Request::Del(socket), crate::Events::NONE)
+            });
         } else {
             // poll and kqueue run `Reactor::del`, which logs a failure.
             _ = crate::reactor_upstream::reactor_del(ops.reactor, socket);
@@ -651,8 +625,9 @@ mod tests {
                         fds[0],
                         token,
                         events
-                    ),
-                    0
+                    )
+                    .ok(),
+                    Some(())
                 );
             }
             #[cfg(not(target_os = "linux"))]

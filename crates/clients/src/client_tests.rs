@@ -113,7 +113,7 @@ pub(super) fn with_thread_buffer<R>(f: impl FnOnce(&mut CppString) -> R) -> R {
 }
 
 // crates/tls's socket operations.
-pub(super) unsafe fn socket_free(_: *mut SocketRecord) {
+pub(super) unsafe fn socket_free(_: Option<Socket<'static>>) {
     log("free");
 }
 /// crates/tls's slice-taking transfers.
@@ -313,7 +313,7 @@ fn free(client: *mut Client) {
 
 /// `Client_onWrite` with a reactor and event the mocks ignore.
 fn writable(client: *mut Client) -> bool {
-    let mut event = unsafe { swoole_rs_reactor::Event::new(0, 0, 0, core::ptr::null_mut()) };
+    let mut event = swoole_rs_reactor::Event::of(0, 0, 0, None);
     // SAFETY: the mocked effects never touch the reactor.
     let reactor = unsafe { Running::new(core::ptr::null_mut()) };
     on_write(Handle(client), reactor, &mut event)

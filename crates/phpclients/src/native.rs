@@ -72,29 +72,25 @@ pub fn make(
     protocol: c_int,
     family: bool,
 ) -> Result<NewSocket, Bailout> {
-    // The new socket, which nothing else holds.
-    Ok(NewSocket(Co::from(co::make(
-        fd, domain, kind, protocol, family,
-    )?)))
+    Ok(NewSocket(co::make(fd, domain, kind, protocol, family)?))
 }
 
 /// A coroutine socket that nothing else holds: its holder frees it or gives it
 /// to an object. Dropped, it leaks.
 #[must_use]
-pub struct NewSocket(Co);
+pub struct NewSocket(co::Fresh);
 
 impl NewSocket {
     #[must_use]
     pub fn co(&self) -> Co {
-        self.0
+        Co(self.0.co())
     }
 
     /// `delete socket`.
     /// # Errors
     /// A close hook bailed out.
     pub fn free(self) -> Result<(), Bailout> {
-        // SAFETY: an owned socket, which nothing else holds; gone after the call.
-        unsafe { co::free(self.0.as_ptr()) }
+        self.0.free()
     }
 }
 
@@ -239,7 +235,7 @@ impl Co {
     /// it leaves the listener's.
     #[must_use]
     pub fn accept(self, timeout: f64) -> Option<NewSocket> {
-        let conn = NewSocket(Self(self.0.accept(timeout)?));
+        let conn = NewSocket(co::accept(self.0, timeout)?);
         if let Some(owner) = socket_extra::length_owner(self.handle()) {
             // A new socket, which has none to drop.
             drop(socket_extra::replace_length_owner(

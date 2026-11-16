@@ -292,15 +292,27 @@ macro_rules! hooks {
                 stringify!($export), "(ssh2_bound(session), session", $(", ", stringify!($arg),)* ")\n")
     };
     (@export $export:ident($($arg:ident: $ty:ty),*) -> $ret:ty => $function:ident) => {
-        #[doc = concat!("`", stringify!($function), "`, retried while it fails with `EAGAIN`.")]
+        hooks!(@define concat!("`", stringify!($function), "`, retried while it fails with `EAGAIN`."),
+            ops, wait_on, $export($($arg: $ty),*) -> $ret = [$function($($arg),*)]);
+    };
+    // One export, its body a block over the safe helpers or, in brackets, the libssh2
+    // call, retried as the hooked calls are.
+    (@define $doc:expr, $ops:ident, $wait:ident, $export:ident($($arg:ident: $ty:ty),*) -> $ret:ty = $body:tt) => {
+        #[doc = $doc]
         /// # Safety
         /// `ops` is the lent table, `wait_on` a live session it can wait on, and
         /// the rest are the libssh2 function's arguments.
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn $export(ops: &Ops, wait_on: Session, $($arg: $ty),*) -> $ret {
-            // SAFETY: the caller's arguments, as libssh2 takes them.
-            Wait { ops, session: wait_on }.run(|| unsafe { $function($($arg),*) })
+        pub unsafe extern "C" fn $export($ops: &Ops, $wait: Session, $($arg: $ty),*) -> $ret {
+            hooks!(@body $ops, $wait, $body)
         }
+    };
+    (@body $ops:ident, $wait:ident, { $($body:tt)* }) => {{ $($body)* }};
+    (@body $ops:ident, $wait:ident, [ $function:ident($($call:expr),*) ]) => {
+        // SAFETY: the caller's live handles and buffers, as libssh2 takes them; each
+        // string libssh2 reads for its measured length, and each default a plain value
+        // or a static string.
+        Wait { ops: $ops, session: $wait }.run(|| unsafe { $function($($call),*) })
     };
 }
 

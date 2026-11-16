@@ -11,3 +11,10 @@ walks the coroutine accept loop's branches. The pinned `swoole_http_server`,
 `swoole_http_server_coro`, `swoole_http_cookie`, `swoole_http_response`,
 `swoole_http2_server` and `swoole_websocket_server` PHPTs in the PHPT gate cover
 the PHP behaviour.
+
+Compression negotiation, the PHP context's stored method, codec eligibility and
+level selection share `httpbindings::Compression`. Its byte-sized zero variant
+keeps the context's zero initialization valid. Tests retain the native numeric
+substring-preference oracle and cover all capability masks, skip-before-error
+ordering, negative codec defaults and inverted bound ordering. Codec levels remain
+numeric values; unavailable codecs are typed errors, not negative method codes.

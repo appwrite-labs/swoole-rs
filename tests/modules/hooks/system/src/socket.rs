@@ -202,8 +202,7 @@ pub(super) struct IoVec {
 unsafe extern "C" {
     fn swr_v1_hook_co_socket_connect_host(
         socket: *mut Record,
-        host: *const c_char,
-        length: usize,
+        host: std::io::IoSlice<'_>,
         port: c_int,
     ) -> bool;
 
@@ -333,7 +332,11 @@ impl Sock {
         let _ = flags;
         // SAFETY: the live socket and `host`'s bytes.
         unsafe {
-            swr_v1_hook_co_socket_connect_host(self.rec(), host.as_ptr().cast(), host.len(), port)
+            swr_v1_hook_co_socket_connect_host(
+                self.rec(),
+                std::io::IoSlice::new(host.as_bytes()),
+                port,
+            )
         }
     }
 

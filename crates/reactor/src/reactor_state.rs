@@ -16,7 +16,7 @@ pub type ReactorWrite =
 pub type ReactorWritev =
     unsafe extern "C-unwind" fn(*mut c_void, *mut SocketRecord, *const libc::iovec, usize) -> isize;
 /// `Reactor::close`: frees `socket`, one of the reactor's.
-pub type ReactorClose = unsafe extern "C-unwind" fn(crate::Running<'_>, Socket<'_>) -> c_int;
+pub type ReactorClose = unsafe extern "C-unwind" fn(crate::Running<'_>, Socket<'static>) -> c_int;
 
 /// `Reactor::idle_task` and `future_task` (`Swoole\Event::cycle`): unset until set.
 #[repr(C)]
@@ -335,7 +335,7 @@ unsafe extern "C-unwind" {
         count: usize,
     ) -> isize;
     #[link_name = "_ZN6swoole7Reactor6_closeEPS0_PNS_7network6SocketE"]
-    fn reactor_close(reactor: crate::Running<'_>, socket: Socket<'_>) -> c_int;
+    fn reactor_close(reactor: crate::Running<'_>, socket: Socket<'static>) -> c_int;
     #[link_name = "_ZN6swoole9coroutine6System12init_reactorEPNS_7ReactorE"]
     safe fn system_init_reactor(reactor: crate::Running<'_>);
 }
@@ -529,22 +529,27 @@ impl ReactorState {
         view
     }
 }
-/// Actual kernel wait over the owner's stable arrays. No native callbacks run.
+/// Actual kernel wait over the owner's stable arrays: the ready count, or the
+/// wait's error, errno still set for the warning. No native callbacks run.
 // Its one caller, the wait loop, runs it once per iteration (#1435).
 #[inline(always)]
 pub(crate) fn kernel_wait(
     reactor: crate::Running<'_>,
     deferred: bool,
-    entries: &mut c_int,
-) -> c_int {
+    entries: &mut usize,
+) -> std::io::Result<usize> {
     // The kernel wait runs no native callback, so the borrow reaches no reactor.
     reactor.with(|owner| backend_wait(owner, deferred, entries))
 }
 
 /// [`kernel_wait`] over the borrowed state.
 #[inline(always)]
-fn backend_wait(owner: &mut ReactorState, deferred: bool, entries: &mut c_int) -> c_int {
-    match &mut owner.backend {
+fn backend_wait(
+    owner: &mut ReactorState,
+    deferred: bool,
+    entries: &mut usize,
+) -> std::io::Result<usize> {
+    let ready = match &mut owner.backend {
         Backend::None => -1,
         Backend::Poll(snapshot) => {
             let count = snapshot.fill(&owner.registry);
@@ -554,7 +559,8 @@ fn backend_wait(owner: &mut ReactorState, deferred: bool, entries: &mut c_int) -
             } else {
                 owner.fields.timeout_msec
             };
-            swoole_rs_corebase::sys::poll(snapshot.filled(), timeout).unwrap_or(-1)
+            return swoole_rs_corebase::sys::poll(snapshot.filled(), timeout)
+                .map(|ready| ready.unsigned_abs() as usize);
         }
         #[cfg(target_os = "linux")]
         Backend::Epoll(array) => {
@@ -598,7 +604,8 @@ fn backend_wait(owner: &mut ReactorState, deferred: bool, entries: &mut c_int) -
                 )
             }
         }
-    }
+    };
+    usize::try_from(ready).map_err(|_| std::io::Error::last_os_error())
 }
 /// The wait loop's initial state transition, over the actual borrowed slots.
 pub(crate) const fn before_wait(fields: &mut ReactorFields) {
@@ -614,24 +621,25 @@ impl ReactorState {
     /// together. False when add cannot allocate, leaving the flags alone.
     pub(crate) fn record(
         &mut self,
-        socket: Socket<'_>,
-        op: crate::ChangeOp,
+        request: crate::change::Request<'_>,
         events: crate::Events,
     ) -> bool {
+        use crate::change::Request;
+        let (Request::Add(socket) | Request::Set(socket) | Request::Del(socket)) = request;
         socket.edit(|record| {
-            match op {
-                crate::ChangeOp::Add => {
-                    if !self.registry.put(record.fd, socket.as_ptr().cast(), events) {
+            match request {
+                Request::Add(added) => {
+                    if !self.registry.put(record.fd, added, events) {
                         return false;
                     }
                     record.events = events;
                     record.removed = false;
                 }
-                crate::ChangeOp::Set => {
+                Request::Set(_) => {
                     record.events = events;
                     self.registry.set(record.fd, events);
                 }
-                crate::ChangeOp::Del => {
+                Request::Del(_) => {
                     record.events = crate::Events::NONE;
                     record.removed = true;
                     self.registry.remove(record.fd);
@@ -666,7 +674,8 @@ pub(crate) mod tests {
         op: crate::ChangeOp,
         events: crate::Events,
     ) -> bool {
-        unsafe { (*owner).record(Socket::from_ptr(socket).unwrap(), op, events) }
+        let socket = unsafe { Socket::from_ptr(socket) }.unwrap();
+        unsafe { (*owner).record(crate::change::Request::new(socket, op), events) }
     }
     pub(crate) unsafe fn free(owner: *mut ReactorState) {
         swr_v1_reactor_delete(OwnedReactor(running(owner)));
@@ -760,8 +769,9 @@ pub(crate) mod tests {
                             fds[0],
                             ptr::from_mut(&mut socket).cast(),
                             crate::Events::from_bits(512)
-                        ),
-                        0
+                        )
+                        .ok(),
+                        Some(())
                     );
                 }
                 #[cfg(not(target_os = "linux"))]
@@ -780,7 +790,10 @@ pub(crate) mod tests {
                 (*state.fields).timeout_msec = 0;
                 let view = (*state.owner).backend_view();
                 let mut entries = 0;
-                assert_eq!(kernel_wait(running(state.owner), false, &mut entries), 1);
+                assert_eq!(
+                    kernel_wait(running(state.owner), false, &mut entries).ok(),
+                    Some(1)
+                );
                 assert_eq!(view.events, (*state.owner).backend_view().events);
                 if kind == 3 {
                     assert_eq!(entries, 1);

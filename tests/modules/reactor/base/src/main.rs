@@ -666,7 +666,7 @@ unsafe fn bad_fd() {
         let _ = swoole_rs_ffi::swoole_event_free();
         // `socket->move_fd()`.
         (*socket).fields.fd = -1;
-        swoole_rs_ffi::upstream::socket_free(socket);
+        swoole_rs_ffi::upstream::socket_free(Some(handle(socket)));
     }
 }
 
@@ -854,7 +854,7 @@ unsafe fn poll_readiness_after_fd_reuse() {
         // A local Reactor does not defer Socket::free(), so release sockets after the batch.
         assert_eq!(del(reactor, (*state).dispatched_socket), SW_OK);
         assert_eq!(del(reactor, (*state).replacement_socket), SW_OK);
-        swoole_rs_ffi::upstream::socket_free((*state).replacement_socket);
+        swoole_rs_ffi::upstream::socket_free(Some(handle((*state).replacement_socket)));
         assert_eq!(close(pipe_fds[0]), 0);
         assert_eq!(close(pipe_fds[1]), 0);
 

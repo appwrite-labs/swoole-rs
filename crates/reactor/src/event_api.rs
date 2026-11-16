@@ -252,7 +252,7 @@ pub fn swoole_event_num() -> Option<usize> {
 
 /// The sockets the thread's `Reactor` holds, in fd order; none without one.
 #[must_use]
-pub fn swoole_event_sockets() -> Vec<*mut c_void> {
+pub fn swoole_event_sockets() -> Vec<crate::Socket<'static>> {
     with_registry(|registry| registry.map(crate::Registry::sockets))
         .flatten()
         .unwrap_or_default()

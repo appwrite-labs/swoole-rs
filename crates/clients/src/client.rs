@@ -926,10 +926,10 @@ impl Handle {
             self.socket()
                 .edit(|socket| socket.object = core::ptr::null_mut());
             // SAFETY: the live client's socket, released once.
-            unsafe { socket_free(self.socket_ptr()) };
+            unsafe { socket_free(self.record().socket) };
         } else {
             // SAFETY: `delete socket`: the record make_socket allocated, released once.
-            unsafe { SocketRecord::free(self.socket_ptr()) };
+            unsafe { SocketRecord::free(self.record().socket) };
         }
         // SAFETY: a Box from swr_v1_clients_new, released once (per the caller).
         let client = unsafe { Box::from_raw(self.0) };

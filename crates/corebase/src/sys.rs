@@ -12,6 +12,8 @@ use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 use std::ptr::NonNull;
 
+use crate::lent::{self, Drain, Fill};
+
 /// A NUL-terminated string that stays live and unchanged for `'a`, as thin as the
 /// `const char *` it is, so a C function's string parameter can be declared as one on
 /// either side of the boundary.
@@ -442,26 +444,22 @@ pub fn strerror(code: c_int) -> String {
 
 /// `read(2)` into `buf`: the bytes read, or `None` with errno set.
 pub fn read(fd: c_int, buf: &mut [impl ReadSlot]) -> Option<usize> {
-    // SAFETY: `buf` is writable for its length.
-    usize::try_from(unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) }).ok()
+    Fill::new(buf).read(fd)
 }
 
 /// `write(2)` of `buf`: the bytes written, or `None` with errno set.
 pub fn write(fd: c_int, buf: &[u8]) -> Option<usize> {
-    // SAFETY: `buf` is readable for its length.
-    usize::try_from(unsafe { libc::write(fd, buf.as_ptr().cast(), buf.len()) }).ok()
+    Drain::new(buf).write(fd)
 }
 
 /// `pread(2)` into `buf` at `offset`.
 pub fn pread(fd: c_int, buf: &mut [impl ReadSlot], offset: off_t) -> Option<usize> {
-    // SAFETY: `buf` is writable for its length.
-    usize::try_from(unsafe { libc::pread(fd, buf.as_mut_ptr().cast(), buf.len(), offset) }).ok()
+    Fill::new(buf).pread(fd, offset)
 }
 
 /// `pwrite(2)` of `buf` at `offset`.
 pub fn pwrite(fd: c_int, buf: &[u8], offset: off_t) -> Option<usize> {
-    // SAFETY: `buf` is readable for its length.
-    usize::try_from(unsafe { libc::pwrite(fd, buf.as_ptr().cast(), buf.len(), offset) }).ok()
+    Drain::new(buf).pwrite(fd, offset)
 }
 
 /// `close(2)`.
@@ -476,9 +474,10 @@ pub fn close(fd: c_int) -> std::io::Result<()> {
 #[must_use]
 #[inline]
 pub fn writev(fd: c_int, vectors: &[std::io::IoSlice<'_>]) -> Option<usize> {
-    let count = c_int::try_from(vectors.len()).unwrap_or(c_int::MAX);
-    // SAFETY: an `IoSlice` is ABI-compatible with an iovec, of readable bytes.
-    usize::try_from(unsafe { libc::writev(fd, vectors.as_ptr().cast(), count) }).ok()
+    usize::try_from(lent::lend_vectors(vectors, |iov, count| {
+        lent::writev(fd, iov, count)
+    }))
+    .ok()
 }
 
 /// `listen(2)`.
@@ -527,9 +526,9 @@ pub fn getsockopt<T: Pod>(
 /// # Errors
 /// The syscall's errno.
 pub fn setsockopt<T: Pod>(fd: c_int, level: c_int, name: c_int, value: &T) -> std::io::Result<()> {
-    // SAFETY: `value` holds the readable bytes whose count is given.
-    let status =
-        unsafe { libc::setsockopt(fd, level, name, (&raw const *value).cast(), socklen::<T>()) };
+    let status = lent::lend_value(value, |at, length| {
+        lent::setsockopt(fd, level, name, at, length)
+    });
     status_result(status)
 }
 
@@ -538,9 +537,9 @@ pub fn setsockopt<T: Pod>(fd: c_int, level: c_int, name: c_int, value: &T) -> st
 /// # Errors
 /// The syscall's errno.
 pub fn setsockopt_bytes(fd: c_int, level: c_int, name: c_int, value: &[u8]) -> std::io::Result<()> {
-    let length = libc::socklen_t::try_from(value.len()).unwrap_or(libc::socklen_t::MAX);
-    // SAFETY: `value` is readable for its length, which `length` does not exceed.
-    let status = unsafe { libc::setsockopt(fd, level, name, value.as_ptr().cast(), length) };
+    let status = lent::lend_in(value, |at, length| {
+        lent::setsockopt(fd, level, name, at.bytes(), length)
+    });
     status_result(status)
 }
 
@@ -571,14 +570,12 @@ pub fn socketpair(domain: c_int, kind: c_int, protocol: c_int) -> Option<[c_int;
 
 /// `recv(2)` into `buf`.
 pub fn recv(fd: c_int, buf: &mut [impl ReadSlot], flags: c_int) -> Option<usize> {
-    // SAFETY: `buf` is writable for its length.
-    usize::try_from(unsafe { libc::recv(fd, buf.as_mut_ptr().cast(), buf.len(), flags) }).ok()
+    Fill::new(buf).recv(fd, flags)
 }
 
 /// `send(2)` of `buf`.
 pub fn send(fd: c_int, buf: &[u8], flags: c_int) -> Option<usize> {
-    // SAFETY: `buf` is readable for its length.
-    usize::try_from(unsafe { libc::send(fd, buf.as_ptr().cast(), buf.len(), flags) }).ok()
+    Drain::new(buf).send(fd, flags)
 }
 
 /// `dup(2)`.
@@ -595,12 +592,39 @@ pub fn dup2(from: c_int, to: c_int) -> std::io::Result<c_int> {
     nonnegative_result(c::dup2(from, to))
 }
 
+/// Commands whose argument is an integer or absent: the only ones [`fcntl`] passes on.
+#[cfg(not(target_os = "linux"))]
+const INTEGER_COMMANDS: [c_int; 6] = [
+    libc::F_GETFL,
+    libc::F_SETFL,
+    libc::F_GETFD,
+    libc::F_SETFD,
+    libc::F_DUPFD,
+    libc::F_DUPFD_CLOEXEC,
+];
+#[cfg(target_os = "linux")]
+const INTEGER_COMMANDS: [c_int; 8] = [
+    libc::F_GETFL,
+    libc::F_SETFL,
+    libc::F_GETFD,
+    libc::F_SETFD,
+    libc::F_DUPFD,
+    libc::F_DUPFD_CLOEXEC,
+    libc::F_GETPIPE_SZ,
+    libc::F_SETPIPE_SZ,
+];
+
 /// `fcntl(2)` with an integer argument (`F_GETFL`, `F_SETFL`, `F_GETFD`,
-/// `F_SETFD`, `F_DUPFD`, ...); commands that take no argument ignore it.
+/// `F_SETFD`, `F_DUPFD`, ...); commands that take no argument ignore it. Any other
+/// command (one whose argument is a pointer, such as `F_GETLK`) fails with `EINVAL`
+/// without calling libc.
 /// # Errors
-/// The syscall's captured errno.
+/// The syscall's captured errno, or `EINVAL` for a command outside the integer list.
 pub fn fcntl(fd: c_int, cmd: c_int, arg: c_int) -> std::io::Result<c_int> {
-    // SAFETY: an integer argument has no memory preconditions.
+    if !INTEGER_COMMANDS.contains(&cmd) {
+        return Err(std::io::Error::from_raw_os_error(libc::EINVAL));
+    }
+    // SAFETY: `cmd` takes an integer argument or none, so nothing is dereferenced.
     let result = unsafe { libc::fcntl(fd, cmd, arg) };
     nonnegative_result(result)
 }
@@ -617,10 +641,9 @@ pub fn flock(fd: c_int, operation: c_int) -> std::io::Result<()> {
 /// # Errors
 /// The syscall's captured errno.
 pub fn poll(fds: &mut [libc::pollfd], timeout: c_int) -> std::io::Result<c_int> {
-    let count = libc::nfds_t::try_from(fds.len()).unwrap_or(libc::nfds_t::MAX);
-    // SAFETY: `fds` holds `count` writable pollfds.
-    let result = unsafe { libc::poll(fds.as_mut_ptr(), count, timeout) };
-    nonnegative_result(result)
+    nonnegative_result(lent::lend_out(fds, |fds, count| {
+        lent::poll(fds, count, timeout)
+    }))
 }
 
 /// `pipe(2)`: the read and write ends, or `None` with errno set.
@@ -773,10 +796,10 @@ pub fn unlink(path: &CStr) -> std::io::Result<()> {
 /// `bytes` to C's `stdout`, which native code's own `printf` shares, so the two
 /// keep their order.
 pub fn print(bytes: &[u8]) {
+    let stdout = crate::Stream::stdout();
     for chunk in bytes.chunks(c_int::MAX.unsigned_abs() as usize) {
-        let length = c_int::try_from(chunk.len()).unwrap_or(c_int::MAX);
-        // SAFETY: "%.*s" reads at most `length` bytes of `chunk`.
-        unsafe { libc::printf(c"%.*s".as_ptr(), length, chunk.as_ptr()) };
+        // What `printf("%.*s", length, chunk)` writes: the chunk up to its first NUL.
+        stdout.write(chunk.split(|&byte| byte == 0).next().unwrap_or_default());
     }
 }
 
@@ -1015,17 +1038,9 @@ pub fn chroot(path: &CStr) -> std::io::Result<()> {
 pub fn group_id(name: &CStr) -> Option<libc::gid_t> {
     let mut entry: libc::group = zeroed();
     lookup_id(|strings, found| {
-        // SAFETY: a terminated name, an entry and `strings.len()` writable bytes for
-        // its strings, and the slot for the result, all live for the call.
-        unsafe {
-            libc::getgrnam_r(
-                name.as_ptr(),
-                &raw mut entry,
-                strings.as_mut_ptr(),
-                strings.len(),
-                found,
-            )
-        }
+        lent::lend_out(strings, |at, size| {
+            lent::getgrnam_r(name.into(), &mut entry, at, size, found)
+        })
     })
     .then_some(entry.gr_gid)
 }
@@ -1035,16 +1050,9 @@ pub fn group_id(name: &CStr) -> Option<libc::gid_t> {
 pub fn user_id(name: &CStr) -> Option<libc::uid_t> {
     let mut entry: libc::passwd = zeroed();
     lookup_id(|strings, found| {
-        // SAFETY: as `group_id`'s.
-        unsafe {
-            libc::getpwnam_r(
-                name.as_ptr(),
-                &raw mut entry,
-                strings.as_mut_ptr(),
-                strings.len(),
-                found,
-            )
-        }
+        lent::lend_out(strings, |at, size| {
+            lent::getpwnam_r(name.into(), &mut entry, at, size, found)
+        })
     })
     .then_some(entry.pw_uid)
 }
@@ -1153,8 +1161,9 @@ pub fn localtime_r(time: libc::time_t) -> Option<libc::tm> {
 
 /// `strftime(3)` of `tm` into `out`: the bytes written, 0 when they don't fit.
 pub fn strftime(out: &mut [u8], format: &CStr, tm: &libc::tm) -> usize {
-    // SAFETY: `out` is writable for its length, `format` is NUL-terminated and `tm` is live.
-    unsafe { libc::strftime(out.as_mut_ptr().cast(), out.len(), format.as_ptr(), tm) }
+    lent::lend_out(out, |at, max| {
+        lent::strftime(at.chars(), max, format.into(), tm)
+    })
 }
 
 /// `waitpid(2)`, storing the status in `status` when given. `None` means
@@ -1384,6 +1393,10 @@ mod tests {
         assert_ne!(
             fcntl(copy, libc::F_GETFL, 0).unwrap_or(-1) & libc::O_NONBLOCK,
             0
+        );
+        assert_eq!(
+            fcntl(copy, libc::F_GETLK, 0).map_err(|e| e.raw_os_error()),
+            Err(Some(libc::EINVAL))
         );
         let mut buf = [0; 8];
         assert_eq!(read(copy, &mut buf), Some(3));

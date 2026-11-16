@@ -390,8 +390,7 @@ fn stream_connection(worker: Worker<'_>) -> Option<Socket<'_>> {
     if !pool.use_socket() {
         return None;
     }
-    // SAFETY: null, or the stream pool's live connection for this task.
-    unsafe { Socket::from_ptr(pool.ipc_connection().cast()) }
+    pool.ipc_connection().map(Socket::lent)
 }
 
 /// The result over a stream: its length, big-endian, then its bytes.

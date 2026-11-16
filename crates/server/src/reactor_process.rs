@@ -185,18 +185,13 @@ fn add_pipes(reactor: Reactor, worker: Worker<'_>) -> bool {
     reactor.add(pipe_worker, Events::READ) && reactor.add(pipe_master, Events::READ)
 }
 
-/// `run` over the server of `reactor`, a reactor process's reactor: the one
-/// [`main_loop`] runs, whose handlers and heartbeat timer are this module's.
-pub(crate) fn with_server(reactor: Reactor, run: impl FnOnce(view::Server<'_>) -> c_int) -> c_int {
-    reactor.server().map_or(-1, run)
-}
-
 /// `ReactorProcess_onClose`: the reactor's default error handler.
 extern "C" fn on_close(reactor: Running<'_>, event: &mut Event) -> c_int {
     let reactor = Reactor::running(reactor);
-    with_server(reactor, |serv| {
-        crate::conn_io::status(close(serv, reactor, event))
-    })
+    let closed = reactor
+        .server()
+        .is_some_and(|serv| close(serv, reactor, event));
+    crate::conn_io::status(closed)
 }
 
 /// The peer closed (or errored) the connection of `event`: closed now when it already

@@ -454,8 +454,10 @@ fn try_exit(serv: view::Server<'_>, reactor: Reactor) {
 
 /// `Worker_onPipeReceive`: a message from a reactor thread or the master (process mode).
 extern "C" fn on_pipe_receive(reactor: Running<'_>, event: &mut Event) -> c_int {
-    // SAFETY: registered only on a worker's reactor, which holds its server.
-    let serv = unsafe { crate::reactor_entry::server(Reactor::running(reactor)) };
+    // Registered only on a worker's reactor, which holds its server.
+    let Some(serv) = Reactor::running(reactor).server() else {
+        return -1;
+    };
     let bus = bus(serv);
     if event
         .socket()
@@ -561,14 +563,15 @@ extern "C-unwind" fn count_coroutines() {
     _ = with_current(|worker| worker.write_coroutine_num(count));
 }
 
-/// `Server::start_event_worker(worker)`: the process-mode worker's main loop.
-pub(crate) fn start_event_worker(serv: view::Server<'_>, worker: Worker<'_>) -> c_int {
+/// `Server::start_event_worker(worker)`: the process-mode worker's main loop; whether
+/// it ran and ended without an error.
+pub(crate) fn start_event_worker(serv: view::Server<'_>, worker: Worker<'_>) -> bool {
     let config = serv.config();
     swoole_set_worker_id(worker.id());
     set_worker_type(WorkerType::Event);
     crate::worker_methods::init_event_worker(serv, worker);
     if swoole_rs_reactor::swoole_event_init(0) < 0 {
-        return -1;
+        return false;
     }
     worker_signal_init(serv);
     for id in 0..all_core_workers(config) {
@@ -621,10 +624,8 @@ pub(crate) fn send_to_reactor_thread(serv: view::Server<'_>, head: &DataHead) ->
     let pipe = pipe?;
     let info = swoole_rs_process::process_pool::head_view(head);
     if swoole_rs_reactor::event_api::swoole_event_is_available() {
-        let write = swoole_rs_reactor::event_api::swoole_event_write;
-        // SAFETY: the live pipe, and the event's bytes.
-        let written = unsafe { write(pipe.as_ptr().cast(), info.as_ptr().cast(), info.len()) };
-        usize::try_from(written).ok()
+        crate::reactor_handle::registered(pipe)
+            .and_then(|pipe| swoole_rs_reactor::event_api::event_write(pipe, info))
     } else {
         let event = swoole_rs_reactor::Drain::new(info);
         swoole_rs_tls::upstream::send_sync_drain(pipe, event, 0)

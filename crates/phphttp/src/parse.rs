@@ -869,9 +869,8 @@ pub(crate) fn compression_method(state: &mut State, value: &[u8]) {
     let length = value.len().c_cast::<u32>() as usize;
     let codecs = CAPABILITIES.load(Relaxed) & CODECS;
     let method = compression(value.get(..length).unwrap_or(value), codecs);
-    state.accept_compression = method > 0;
-    if method > 0 {
-        let method = i8::try_from(method).unwrap_or(i8::MAX);
+    state.accept_compression = method != swoole_rs_httpbindings::Compression::None;
+    if state.accept_compression {
         state.compression_method = method;
     }
 }

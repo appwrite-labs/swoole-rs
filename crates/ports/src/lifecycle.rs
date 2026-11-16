@@ -276,11 +276,9 @@ pub(crate) fn close(config: &PortConfig) {
         drop(config.tls.settings.replace(None));
     }
     // Taken first, so nothing finds the record once it is freed.
-    let socket = config.take_socket_ptr();
-    if !socket.is_null() {
-        // SAFETY: the port's live socket, which nothing uses after.
-        unsafe { socket_free(socket.cast()) };
-    }
+    let socket = config.take_socket();
+    // SAFETY: none, or the port's live socket, which nothing uses after.
+    unsafe { socket_free(socket) };
     if matches!(config.r#type, 5 | 6) {
         let mut path = config.host_bytes().to_vec();
         path.push(0);

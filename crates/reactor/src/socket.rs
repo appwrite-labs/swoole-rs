@@ -185,6 +185,17 @@ impl<'a> Socket<'a> {
         })
     }
 
+    /// The native socket crates/process lends for `'a`, whose writers vouched for it
+    /// (a pipe end, a hook's socket, or a stream listener or connection): a live
+    /// record of this crate's, with its `ssl` null or owned.
+    #[must_use]
+    pub fn lent(native: swoole_rs_process::worker_record::NativeSocket<'a>) -> Self {
+        Self {
+            record: native.as_non_null().cast(),
+            _live: PhantomData,
+        }
+    }
+
     /// The socket of a record this side holds alone for `'a` (one on the caller's
     /// frame, say). Its `ssl` is null or owned, which only the unsafe
     /// [`SocketFields::set_ssl`] can change.

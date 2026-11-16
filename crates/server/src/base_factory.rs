@@ -128,6 +128,16 @@ impl<'a> SendData<'a> {
         self.info.server_fd = server_fd;
     }
 
+    /// The payload under the head `info`, whose `len` stays the payload's.
+    #[must_use]
+    pub(crate) fn rehead(self, info: DataHead) -> Self {
+        let len = self.info.len;
+        Self {
+            info: DataHead { len, ..info },
+            ..self
+        }
+    }
+
     /// The head's flags.
     pub(crate) fn set_flags(&mut self, flags: u8) {
         self.info.flags = flags;
@@ -138,14 +148,9 @@ impl<'a> SendData<'a> {
         not(feature = "upstream-symbols"),
         expect(dead_code, reason = "only the hybrid's factories write to a pipe")
     )]
-    pub(crate) fn send(
-        &mut self,
-        bus: &swoole_rs_bus::Bus,
-        pipe: crate::view::PipeSocket<'_>,
-    ) -> bool {
+    pub(crate) fn send(&mut self, bus: &swoole_rs_bus::Bus, pipe: crate::view::PipeSocket) -> bool {
         // SAFETY: `data` covers `info.len` bytes or is null (the fields' invariant;
-        // the write only ever lowers `len`), and a pipe socket outlives any event loop
-        // that could register it.
+        // the write only ever lowers `len`).
         unsafe { bus.send_raw(pipe.socket(), &mut self.info, self.data.cast()) }
     }
 }

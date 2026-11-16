@@ -142,7 +142,7 @@ impl Change {
             );
             return false;
         }
-        if registration::epoll_ctl(epfd, self.op, fd, token, self.events) >= 0 {
+        if registration::epoll_ctl(epfd, self.op, fd, token, self.events).is_ok() {
             return true;
         }
         let error = errno();
@@ -256,7 +256,7 @@ impl Change {
     fn poll(&self, state: &ReactorState) -> bool {
         let (socket, id, events) = (&self.socket, self.id, self.events);
         let (fd, fd_type) = (socket.fd, socket.fd_type);
-        let exists = !state.registry.get(fd).is_null();
+        let exists = state.registry.get(fd).is_some();
         let (origin, code, message) = match self.op {
             ChangeOp::Add if exists => (
                 c"ReactorPoll::add",
@@ -369,7 +369,7 @@ pub(crate) fn apply(
         ))]
         Backend::Kqueue(..) => change.kqueue(state.backend_fd, token),
     };
-    if done && !state.record(socket, change.op, events) {
+    if done && !state.record(request, events) {
         std::alloc::handle_alloc_error(std::alloc::Layout::new::<crate::SocketRecord>());
     }
     done

@@ -36,7 +36,7 @@ use swoole_rs_process::process_pool::{
 };
 use swoole_rs_process::task_file::Packed;
 use swoole_rs_process::worker_record::{WorkerRecord, swr_v1_worker_init, swr_v1_worker_shutdown};
-use swoole_rs_reactor::event_api::{set_handler, swoole_event_is_available, swoole_event_write};
+use swoole_rs_reactor::event_api::{event_write, set_handler, swoole_event_is_available};
 use swoole_rs_reactor::{Event, Running, Socket};
 use swoole_rs_timer::{
     swoole_timer_create, swoole_timer_free, swoole_timer_get_next_msec, swoole_timer_is_available,
@@ -392,9 +392,7 @@ fn master_ops(pool: Pool<'_>, op: Op, arg: u64) {
 /// hook, as every `PoolCall` crates/process makes holds.
 #[inline]
 fn lent_socket<'c>(c: &'c PoolCall<'_>) -> Option<Socket<'c>> {
-    // SAFETY: a call's socket is null or a live native socket lent for the hook,
-    // so for this borrow of the call.
-    unsafe { Socket::from_ptr(c.socket().cast()) }
+    c.lent_socket().map(Socket::lent)
 }
 
 fn io(c: &mut PoolCall, io: impl FnOnce(&PoolCall) -> isize) {
@@ -573,8 +571,9 @@ impl PoolNative for Native {
     }
 
     fn close(&self, c: &PoolCall) {
+        let socket = c.lent_socket().map(Socket::lent);
         // SAFETY: a connection the loop is done with.
-        unsafe { socket_free(c.socket().cast()) };
+        unsafe { socket_free(socket.and_then(crate::reactor_handle::registered)) };
     }
 
     fn pipe_read(&self, c: &mut PoolCall) {
@@ -657,8 +656,11 @@ impl PoolNative for Native {
     fn pipe_write(&self, c: &mut PoolCall) {
         if c.flags() != 0 && swoole_event_is_available() {
             io(c, |c| {
-                // SAFETY: the worker's pipe, in this thread's loop.
-                unsafe { swoole_event_write(c.socket().cast(), c.data(), c.length()) }
+                // The worker's pipe, in this thread's loop.
+                let pipe = c.lent_socket().map(Socket::lent);
+                pipe.and_then(crate::reactor_handle::registered)
+                    .and_then(|pipe| event_write(pipe, c.bytes()))
+                    .map_or(-1, usize::cast_signed)
             });
         } else {
             self.send(c);

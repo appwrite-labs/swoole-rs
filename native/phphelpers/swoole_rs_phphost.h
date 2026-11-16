@@ -56,7 +56,7 @@ zend_bool php_swoole_signal_isset_handler(int signo);
         INIT_CLASS_ENTRY(_##module##_ce, namespace_name, methods);                                                     \
         module##_ce = zend_register_internal_class_ex(&_##module##_ce, parent_module##_ce);                            \
         if (short_name && SWOOLE_G(use_shortname)) {                                                                   \
-            swr_v1_phphelpers_class_alias(ZEND_STRL(short_name), module##_ce);                                         \
+            swr_v1_phphelpers_class_alias({(void *) (short_name), sizeof(short_name) - 1}, module##_ce);               \
         }                                                                                                              \
     } while (0);                                                                                                       \
     memcpy(&module##_handlers, &parent_module##_handlers, sizeof(zend_object_handlers))

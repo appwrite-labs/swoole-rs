@@ -122,6 +122,12 @@ impl<'a> PoolCall<'a> {
         self.socket
     }
 
+    /// [`PoolCall::socket`], lent for this borrow of the call; `None` without one.
+    #[must_use]
+    pub fn lent_socket(&self) -> Option<crate::worker_record::NativeSocket<'_>> {
+        crate::worker_record::NativeSocket::lend(self.socket)
+    }
+
     /// The buffer of [`PoolCall::length`] bytes the hook reads or fills.
     #[must_use]
     pub fn data(&self) -> *mut c_void {
