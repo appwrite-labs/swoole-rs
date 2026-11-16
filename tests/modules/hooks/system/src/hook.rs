@@ -1035,7 +1035,7 @@ fn poll_fake() {
             events: POLLIN,
             revents: 0,
         };
-        assert_eq!(hooked::poll_fake(&mut fds[..1], 1000), 1);
+        assert_eq!(hooked::poll_fake(&mut fds[..1], 1000).unwrap_or(-1), 1);
         assert!(fds[0].revents & POLLIN != 0);
 
         assert!(read_fd(fd1, &mut buf) > 1024);
@@ -1046,7 +1046,7 @@ fn poll_fake() {
             events: 0,
             revents: 0,
         };
-        assert_eq!(hooked::poll_fake(&mut fds, 1000), -1);
+        assert_eq!(hooked::poll_fake(&mut fds, 1000).unwrap_or(-1), -1);
         assert_eq!(last_error(), SW_ERROR_INVALID_PARAMS);
 
         co_sleep(0.02);
@@ -1056,7 +1056,7 @@ fn poll_fake() {
             events: POLLIN | POLLOUT,
             revents: 0,
         };
-        assert_eq!(hooked::poll_fake(&mut fds[..1], 1000), 1);
+        assert_eq!(hooked::poll_fake(&mut fds[..1], 1000).unwrap_or(-1), 1);
         assert!(fds[0].revents & POLLIN != 0);
         assert!(fds[0].revents & POLLOUT != 0);
     });

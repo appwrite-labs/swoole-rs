@@ -89,7 +89,7 @@ pub extern "C" fn system_init_reactor(reactor: Running<'_>) {
 /// `Iouring::callback`.
 #[cfg(all(feature = "upstream-symbols", feature = "iouring"))]
 extern "C" fn iouring_ready(_: Running<'_>, _: &mut Event) -> c_int {
-    crate::iouring::ready()
+    if crate::iouring::ready() { 0 } else { -1 }
 }
 
 /// `sw_reactor()->defer([co] { co->resume(); })`, or the unit tests' recorder.
