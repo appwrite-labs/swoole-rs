@@ -80,7 +80,7 @@ fn serve(server: view::Server<'_>, ctx: Ctx) -> bool {
     let Some(uri) = entry(ctx, Value::Server, b"request_uri") else {
         return false;
     };
-    let Some(handler) = StaticHandler::new(server, &uri) else {
+    let Some(mut handler) = StaticHandler::new(server, &uri) else {
         return false;
     };
     if !handler.try_serve() {
@@ -138,7 +138,7 @@ fn serve(server: view::Server<'_>, ctx: Ctx) -> bool {
         respond(ctx, &[]);
         return true;
     }
-    send_ranges(ctx, &handler)
+    send_ranges(ctx, &mut handler)
 }
 
 /// The single range's `Content-Range`, as upstream's stringstream writes it
@@ -152,7 +152,7 @@ fn content_range(offset: i64, length: usize, size: usize) -> String {
 
 /// `http2_server_send_range_file`: the file's ranges, the stream (and so the
 /// context) held while a coroutine reads it.
-fn send_ranges(ctx: Ctx, handler: &StaticHandler<'_>) -> bool {
+fn send_ranges(ctx: Ctx, handler: &mut StaticHandler<'_>) -> bool {
     let _held = of(ctx);
     let trailer = begin_file(ctx, &handler.content_type(), handler.content_length());
     if trailer < 0 {

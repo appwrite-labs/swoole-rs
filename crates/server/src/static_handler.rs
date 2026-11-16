@@ -4,7 +4,6 @@
 //! ranges. The state is crates/http's static context; this drives it with
 //! the server's configuration.
 use crate::view;
-use core::cell::RefCell;
 use swoole_rs_http::{
     BOUNDARY_SIZE, Calendar, HttpStaticContext, HttpStaticTask, StaticEffects, StaticFileKind,
     http_date,
@@ -60,8 +59,8 @@ impl Effects for Native {}
 /// A `StaticHandler` for one request URI on one server.
 pub struct StaticHandler<'a, E: Effects = Native> {
     server: view::Server<'a>,
-    /// Borrowed for one call at a time; no effect calls back into the handler.
-    context: RefCell<HttpStaticContext>,
+    /// Owned: the methods that change it take the handler as `&mut`.
+    context: HttpStaticContext,
     effects: E,
 }
 
@@ -78,7 +77,7 @@ impl<'a, E: Effects> StaticHandler<'a, E> {
     #[must_use]
     pub fn with_effects(server: view::Server<'a>, url: &[u8], effects: E) -> Option<Self> {
         Some(Self {
-            context: RefCell::new(HttpStaticContext::new(url, PATH_MAX)?),
+            context: HttpStaticContext::new(url, PATH_MAX)?,
             server,
             effects,
         })
@@ -90,35 +89,34 @@ impl<'a, E: Effects> StaticHandler<'a, E> {
 
     #[must_use]
     pub fn status(&self) -> i32 {
-        self.context.borrow().observe().status
+        self.context.observe().status
     }
 
     #[must_use]
     pub fn filesize(&self) -> usize {
-        self.context.borrow().observe().filesize
+        self.context.observe().filesize
     }
 
     #[must_use]
     pub fn content_length(&self) -> usize {
-        self.context.borrow().observe().content_length
+        self.context.observe().content_length
     }
 
     #[must_use]
     pub fn filename(&self) -> Vec<u8> {
-        self.context.borrow().filename().to_vec()
+        self.context.filename().to_vec()
     }
 
     #[must_use]
     pub fn end_part(&self) -> Vec<u8> {
-        self.context.borrow().end_part().to_vec()
+        self.context.end_part().to_vec()
     }
 
     /// No index file was found, `http_autoindex` is on and the path is a directory.
     #[must_use]
     pub fn lists_directory(&self) -> bool {
-        let context = self.context.borrow();
-        let value = context.observe();
-        context.index_file().is_empty()
+        let value = self.context.observe();
+        self.context.index_file().is_empty()
             && self.autoindex()
             && value.file_ready
             && value.kind == StaticFileKind::Directory
@@ -137,14 +135,14 @@ impl<'a, E: Effects> StaticHandler<'a, E> {
 
     #[must_use]
     pub fn date_last_modified(&self) -> Vec<u8> {
-        http_date(Some(self.context.borrow().mtime()))
+        http_date(Some(self.context.mtime()))
     }
 
     /// The file changed since `date` (an `If-Modified-Since`).
     #[must_use]
     pub fn is_modified(&self, date: &[u8]) -> bool {
         let timezone = self.server.config().timezone_;
-        let mtime = self.context.borrow().mtime();
+        let mtime = self.context.mtime();
         swoole_rs_http::conditional(
             date,
             swoole_rs_http::Conditional::ModifiedSince,
@@ -156,9 +154,8 @@ impl<'a, E: Effects> StaticHandler<'a, E> {
 
     /// Whether the static handler answers the request.
     #[must_use]
-    pub fn try_serve(&self) -> bool {
-        let mut context = self.context.borrow_mut();
-        self.server.static_rewrite(&mut context);
+    pub fn try_serve(&mut self) -> bool {
+        self.server.static_rewrite(&mut self.context);
         let root = self.server.document_root();
         let has_index = self
             .server
@@ -168,18 +165,19 @@ impl<'a, E: Effects> StaticHandler<'a, E> {
         let autoindex = self.autoindex();
         self.server
             .static_strings(crate::StaticCollection::Locations, |_, locations| {
-                context.try_serve(&root, locations, has_index, autoindex, &self.effects)
+                self.context
+                    .try_serve(&root, locations, has_index, autoindex, &self.effects)
             })
     }
 
     /// With `http_index_files`, the directory's first index file becomes the
     /// file. False to stop serving.
     #[must_use]
-    pub fn try_serve_index_file(&self) -> bool {
+    pub fn try_serve_index_file(&mut self) -> bool {
         let autoindex = self.autoindex();
         self.server
             .static_strings(crate::StaticCollection::IndexFiles, |enabled, files| {
-                self.context.borrow_mut().try_serve_index_file(
+                self.context.try_serve_index_file(
                     if enabled { files } else { &[] },
                     autoindex,
                     &self.effects,
@@ -189,29 +187,25 @@ impl<'a, E: Effects> StaticHandler<'a, E> {
 
     /// The directory's listing page.
     #[must_use]
-    pub fn index_page(&self) -> Vec<u8> {
-        self.context
-            .borrow_mut()
-            .index_page(CSS, POWER_BY, &self.effects)
+    pub fn index_page(&mut self) -> Vec<u8> {
+        self.context.index_page(CSS, POWER_BY, &self.effects)
     }
 
     /// The `Range` and `If-Range` headers into the response's status and tasks.
-    pub fn parse_range(&self, range: Option<&[u8]>, if_range: Option<&[u8]>) {
-        self.context
-            .borrow_mut()
-            .parse_range(range, if_range, &self.effects);
+    pub fn parse_range(&mut self, range: Option<&[u8]>, if_range: Option<&[u8]>) {
+        self.context.parse_range(range, if_range, &self.effects);
     }
 
     /// The response's byte ranges.
     #[must_use]
     pub fn tasks(&self) -> Vec<HttpStaticTask> {
-        self.context.borrow().tasks().to_vec()
+        self.context.tasks().to_vec()
     }
 
     /// The response's `Content-Type`: multipart with several ranges, else the file's.
     #[must_use]
-    pub fn content_type(&self) -> Vec<u8> {
-        self.context.borrow_mut().content_type(&self.effects)
+    pub fn content_type(&mut self) -> Vec<u8> {
+        self.context.content_type(&self.effects)
     }
 }
 

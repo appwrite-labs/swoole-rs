@@ -496,7 +496,7 @@ impl FileCase<'_> {
             location: self.locations,
             ..Config::default()
         });
-        let handler = server.handler(self.url);
+        let mut handler = server.handler(self.url);
         // Rules set after the handler is made are still its server's.
         server.rules(&rules(self.rewrite));
         assert!(handler.try_serve(), "selected normal file selection");
@@ -675,7 +675,7 @@ fn former_context_gate_directories() {
                     });
                     let old = Upstream::new(&config, path.as_bytes());
                     let server = Server::new(&config);
-                    let selected = server.handler(path.as_bytes());
+                    let mut selected = server.handler(path.as_bytes());
                     assert_eq!(
                         old.try_serve(),
                         selected.try_serve(),
@@ -688,18 +688,12 @@ fn former_context_gate_directories() {
                     );
                     assert_eq!(
                         old.get_dir_files(),
-                        selected
-                            .context
-                            .borrow_mut()
-                            .get_dir_files(&selected.effects),
+                        selected.context.get_dir_files(&selected.effects),
                         "directory context scan"
                     );
                     assert_eq!(
                         old.get_dir_files(),
-                        selected
-                            .context
-                            .borrow_mut()
-                            .get_dir_files(&selected.effects),
+                        selected.context.get_dir_files(&selected.effects),
                         "directory context cache"
                     );
                     // SAFETY: freed below.
@@ -783,12 +777,12 @@ fn compare_conditional(old: &Upstream, server: &Server, file: i64, date: &[u8], 
         observed(|| old.is_modified_range(date))
     };
     let candidate = if kind == 0 {
-        let handler = server.handler(b"/file.txt");
+        let mut handler = server.handler(b"/file.txt");
         assert!(handler.try_serve(), "file selection");
         observed(|| handler.is_modified(date))
     } else {
         conditional_script(file);
-        let handler = server.handler(b"/file.txt");
+        let mut handler = server.handler(b"/file.txt");
         assert!(handler.try_serve(), "file selection");
         observed(|| {
             handler.parse_range(Some(b"bytes=0-0"), Some(date));
@@ -905,7 +899,7 @@ fn former_conditional_gate() {
     }
     // The original dereferences gmtime's null for an unrepresentable mtime.
     conditional_script(i64::MAX);
-    let handler = server.handler(b"/file.txt");
+    let mut handler = server.handler(b"/file.txt");
     assert!(handler.try_serve(), "file selection");
     let (modified, _, events) = observed(|| {
         handler.parse_range(Some(b"bytes=0-0"), Some(b"Sun, 06 Nov 1994 08:49:37 GMT"));
@@ -922,7 +916,7 @@ fn former_conditional_gate() {
         timezone: c_long::MIN,
         ..Config::default()
     });
-    let handler = server.handler(b"/file.txt");
+    let mut handler = server.handler(b"/file.txt");
     assert!(handler.try_serve(), "file selection");
     assert!(
         !handler.is_modified(b"Sun, 06 Nov 1994 08:49:37 GMT"),
