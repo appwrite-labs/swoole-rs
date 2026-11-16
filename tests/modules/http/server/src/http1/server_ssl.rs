@@ -207,11 +207,11 @@ impl SyncClient {
     }
 
     fn send(&self, data: &[u8]) -> i64 {
-        native::send(self.handle(), data, 0) as i64
+        native::send(self.handle(), data, 0).map_or(-1, |n| i64::try_from(n).unwrap_or(i64::MAX))
     }
 
     fn recv(&self, buf: &mut [u8]) -> i64 {
-        native::recv(self.handle(), buf, 0) as i64
+        native::recv(self.handle(), buf, 0).map_or(-1, |n| i64::try_from(n).unwrap_or(i64::MAX))
     }
 
     fn close(&mut self) -> bool {

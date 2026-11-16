@@ -518,13 +518,13 @@ fn async_send_raises_buffer_full_at_the_high_watermark() {
     sock().output.out_buffer = Some(queue);
     // SAFETY: a live state.
     unsafe { &*client }.set_watermark(true, 8);
-    assert_eq!(send(Handle(client), b"data", 0), 4);
+    assert_eq!(send(Handle(client), b"data", 0), Some(4));
     assert_eq!(taken(), ["write 4", "call BufferFull 0"]);
     // Already high: no second call.
     _ = send(Handle(client), b"data", 0);
     assert_eq!(taken(), ["write 4"]);
     log::set_last_error(ERROR_OUTPUT_BUFFER_OVERFLOW);
-    assert_eq!(send(Handle(client), b"data", 0), -1);
+    assert_eq!(send(Handle(client), b"data", 0), None);
     free(client);
 }
 
@@ -615,12 +615,12 @@ fn stream_read_delivers_data_and_closes_at_eof() {
 fn datagram_sends_fail_with_sendto_and_dtls_sends_as_a_stream() {
     let client = client(2, false, false);
     // The record's descriptor is -1, so sendto(2) fails.
-    assert_eq!(send(Handle(client), b"data", 0), -1);
+    assert_eq!(send(Handle(client), b"data", 0), None);
     assert_eq!(errno(), libc::EBADF);
     assert!(enable_ssl(Handle(client)).is_some());
     assert_eq!(sock().chunk_size, SSL_BUFFER_SIZE);
     taken();
-    assert_eq!(send(Handle(client), b"data", 0), 4);
+    assert_eq!(send(Handle(client), b"data", 0), Some(4));
     assert_eq!(taken(), ["send_sync 4"]);
     free(client);
 }

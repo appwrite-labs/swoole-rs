@@ -329,7 +329,9 @@ impl<'a> Client<'a> {
     }
 
     fn send(&self, data: &[u8], flags: c_int) -> isize {
+        // Upstream's ssize_t: -1 for SW_ERR.
         native::send(self.handle(), data, flags)
+            .map_or(-1, |n| isize::try_from(n).unwrap_or(isize::MAX))
     }
 
     fn sendfile(&self, file: &str, offset: i64, length: usize) -> c_int {
@@ -343,6 +345,7 @@ impl<'a> Client<'a> {
 
     fn recv(&self, buf: &mut [u8], flags: c_int) -> isize {
         native::recv(self.handle(), buf, flags)
+            .map_or(-1, |n| isize::try_from(n).unwrap_or(isize::MAX))
     }
 
     fn close(&self) -> c_int {
