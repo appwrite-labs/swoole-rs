@@ -11,7 +11,7 @@
 //! and borrow the state only between effects. A PHP bailout in a callback
 //! longjmps out, so nothing that needs dropping is held across one.
 use crate::protocol::Protocol;
-use core::cell::{Cell, OnceCell, RefCell};
+use core::cell::{Cell, OnceCell};
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr::NonNull;
 use std::ffi::{CStr, CString};
@@ -321,7 +321,8 @@ pub struct Client {
     flags: Cell<u32>,
     domain: c_int,
     sock_flags: Cell<c_int>,
-    server_host: RefCell<CString>,
+    /// Set once, by the first `inet_addr`; read by taking it out and putting it back.
+    server_host: Cell<Option<CString>>,
     server_port: Cell<c_int>,
     /// The id of the pending connect timer.
     timer: Cell<Option<swoole_rs_timer::Held>>,
@@ -835,7 +836,7 @@ pub fn create(kind: c_int, is_async: bool) -> Option<Handle> {
         flags: Cell::new(0),
         domain: 0,
         sock_flags: Cell::new(0),
-        server_host: RefCell::new(CString::default()),
+        server_host: Cell::new(None),
         server_port: Cell::new(0),
         timer: Cell::new(None),
         high_watermark: Cell::new(0),
@@ -1246,7 +1247,7 @@ fn inet_addr(this: Handle, host: &CStr, port: c_int) -> bool {
             proxy_host.push(0);
             host = CStr::from_bytes_until_nul(&proxy_host).unwrap_or_default();
         }
-        host.clone_into(&mut this.get().server_host.borrow_mut());
+        this.get().server_host.set(Some(host.to_owned()));
         this.get().server_port.set(port);
         this.set(Flag::HostPreset, true);
     }
@@ -1265,10 +1266,11 @@ fn inet_addr(this: Handle, host: &CStr, port: c_int) -> bool {
 /// completing in [`resolved`].
 /// Whether the pool took the lookup.
 fn dns_lookup(this: Handle) -> bool {
-    let request = {
-        let host = this.get().server_host.borrow();
-        crate::resolver::Request::new(this.get().domain, 0, 0, host.to_bytes(), b"")
-    };
+    // The request copies the host's bytes, so nothing points into it once it is back.
+    let host = this.get().server_host.take();
+    let name = host.as_deref().map_or(&b""[..], CStr::to_bytes);
+    let request = crate::resolver::Request::new(this.get().domain, 0, 0, name, b"");
+    this.get().server_host.set(host);
     let event = AsyncEvent {
         task_id: 0,
         canceled: 0,

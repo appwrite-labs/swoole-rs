@@ -510,9 +510,10 @@ fn sync_connect_through_socks5_routes_and_handshakes() {
         .unwrap();
     assert_eq!(target, b"example.test");
     assert_eq!(target_port, 80);
+    let host = Handle(client).get().server_host.take();
     assert_eq!(
-        Handle(client).get().server_host.borrow().to_bytes(),
-        b"proxy.test"
+        host.as_deref().map(CStr::to_bytes),
+        Some(&b"proxy.test"[..])
     );
     free(client);
 }
