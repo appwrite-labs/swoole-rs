@@ -328,8 +328,7 @@ fn websocket_accept(key: &str) -> String {
 
 /// `sw_tg_buffer()`, cleared.
 fn tg_buffer() -> *mut CppString {
-    // SAFETY: the thread's buffer.
-    let buffer = unsafe { swr_case_tg_buffer() };
+    let buffer = swr_case_tg_buffer();
     // SAFETY: as String::clear.
     unsafe { ((*buffer).length, (*buffer).offset) = (0, 0) };
     buffer
