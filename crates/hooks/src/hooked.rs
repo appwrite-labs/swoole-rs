@@ -152,7 +152,9 @@ pub fn connect(fd: c_int, address: &SocketAddress) -> c_int {
 #[must_use]
 pub fn accept(fd: c_int, peer: &mut SocketAddress) -> c_int {
     let Some((_, socket)) = hooked(fd) else {
-        return peer.accept(fd);
+        return peer
+            .accept(fd)
+            .map_or(-1, std::os::fd::IntoRawFd::into_raw_fd);
     };
     let Some(conn) = socket.accept_owned(0.0) else {
         return -1;
