@@ -814,10 +814,21 @@ fn max_request_client(serv: Server) {
     let client_fn = || {
         let mut c = TcpStream::connect((TEST_HOST, port)).unwrap();
         for _ in 0..128 {
+            let received = counter_get(1);
             if c.write_all(PACKET).is_err() {
                 break;
             }
             micro_sleep(1000);
+            // max_request counts receive callbacks, not TCP writes. Wait for this
+            // packet so a delayed reader cannot coalesce the next one with it.
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while counter_get(1) == received {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "request was not received"
+                );
+                micro_sleep(1000);
+            }
         }
         drop(c);
     };
@@ -830,6 +841,13 @@ fn max_request_client(serv: Server) {
     sleep(1.0);
 
     shutdown(serv);
+}
+
+/// Acknowledge receipt through the case's process-shared counter, keeping the
+/// original no-response callback and packet bytes.
+unsafe extern "C" fn max_request_receive(_: *mut c_void, _: *mut c_void, _: *mut c_void) -> c_int {
+    counter_incr(1, 1);
+    SW_OK
 }
 
 /// `test_max_request(mode)`.
@@ -845,7 +863,7 @@ fn test_max_request(mode: c_int) {
 
     set_start_client(serv, max_request_client);
     serv.set_callback(Slot::WorkerStart, unlock_and_count as *const c_void);
-    serv.set_callback(Slot::Receive, return_ok as *const c_void);
+    serv.set_callback(Slot::Receive, max_request_receive as *const c_void);
 
     assert_eq!(serv.start(), 0);
 

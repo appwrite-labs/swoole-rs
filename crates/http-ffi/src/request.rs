@@ -322,9 +322,8 @@ impl HttpRequest {
             number_errors: 0,
         };
         loop {
-            let mut boundary = HttpSpan::default();
             let end = self.header_length.wrapping_sub(4) as usize;
-            let status = swoole_rs_http::header_info(input, end, &mut state, &mut boundary);
+            let status = swoole_rs_http::header_info(input, end, &mut state);
             self.content_length = state.content_length;
             self.known_length = state.flags & 1 != 0;
             self.keep_alive = state.flags & 2 != 0;
@@ -333,13 +332,13 @@ impl HttpRequest {
             if state.number_errors != 0 {
                 self.number_errors(state.number_errors.into());
             }
-            if status < 0 {
+            let Ok(boundary) = status else {
                 self.excepted = true;
                 return;
-            }
-            if status == 0 {
+            };
+            let Some(boundary) = boundary else {
                 return;
-            }
+            };
             self.form = Some(Box::new(HttpForm {
                 boundary: HttpSpan {
                     offset: boundary.offset,
