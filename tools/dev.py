@@ -582,6 +582,10 @@ exec python3 tools/dev.py "$@" $extensions
 # plus one rule allowing io_uring_setup, io_uring_enter and io_uring_register, which the
 # default answers with EPERM. Nothing else about the container changes.
 DOCKER_IOURING_SECCOMP = ROOT / 'tools/docker-seccomp-iouring.json'
+# The ring's sendfile splices through a pipe it grows to 1 MiB, as upstream does. A
+# container's root shares the host VM's per-user pipe quota (pipe-user-pages-soft), which
+# a busy host exhausts: pipes then shrink to two pages and the resize fails (#4230).
+DOCKER_IOURING_CAPS = ['--cap-add', 'SYS_RESOURCE']
 
 
 def docker(arguments):
@@ -627,7 +631,7 @@ def docker(arguments):
         (private / name).mkdir(parents=True, exist_ok=True)
         builds += ['-v', f'{private / name}:{ROOT / "target" / name}']
     command = ['docker', 'run', '--rm', '--init', '-w', str(ROOT),
-               *(['--security-opt', f'seccomp={DOCKER_IOURING_SECCOMP}'] if iouring else []),
+               *(['--security-opt', f'seccomp={DOCKER_IOURING_SECCOMP}', *DOCKER_IOURING_CAPS] if iouring else []),
                *[part for mount in mounts for part in ('-v', f'{mount}:{mount}')], *builds,
                '-v', f'swr-rustup-{architecture}:/usr/local/rustup',
                '-v', f'swr-cargo-{architecture}:/usr/local/cargo/registry',
