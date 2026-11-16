@@ -281,7 +281,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
     fn start_listens_then_the_manager_runs_the_workers() {
         let mut live = LiveServer::new();
         live.config_mut().mode_ = crate::Mode::Base;
@@ -329,7 +328,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no sockets")]
+    #[cfg_attr(miri, ignore = "Miri has no gethostbyname2_r")]
     fn main_loop_order_and_cleanup() {
         let live = LiveServer::new();
         // SAFETY: a plain record, for which zero is valid.

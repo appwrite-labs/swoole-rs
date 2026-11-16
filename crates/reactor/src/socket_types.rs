@@ -127,7 +127,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no network sockets")]
+    #[cfg_attr(miri, ignore = "Miri aborts on an unsupported socket domain")]
     fn open_applies_the_flags() {
         let fd = swr_v1_socket_open(libc::AF_INET, libc::SOCK_STREAM, 0, NONBLOCK | CLOEXEC)
             .expect("a socket");
