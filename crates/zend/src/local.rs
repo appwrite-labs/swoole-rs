@@ -54,27 +54,6 @@ impl Php<'_> {
     }
 }
 
-/// The code of the error `swr_zend_fatal_error` (`SwooleG.fatal_error`) just
-/// threw and printed, which it lends the exit it calls last, on the thread
-/// running PHP. Rust never makes one: it is that exit's parameter, which the
-/// shim's call stands for, as [`crate::host::Trap`] is a coroutine leaf's.
-#[repr(transparent)]
-pub struct Fatal<'a>(&'a c_int);
-
-impl<'a> Fatal<'a> {
-    /// Whether the error's code is `code`.
-    #[must_use]
-    pub fn is(&self, code: c_int) -> bool {
-        *self.0 == code
-    }
-
-    /// The lease on running PHP the shim's call holds for the exit.
-    #[must_use]
-    pub fn php(&self) -> Php<'a> {
-        Php(PhantomData)
-    }
-}
-
 impl<'a> Php<'a> {
     /// `EG(function_table)`: the functions the running request can call.
     #[must_use]

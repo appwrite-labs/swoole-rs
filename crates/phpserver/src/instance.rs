@@ -13,7 +13,6 @@ use std::{
     ptr,
     rc::Rc,
 };
-use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR as LOG_ERROR, SW_LOG_NOTICE as LOG_NOTICE};
 use swoole_rs_corebase::{constants::EventDataFlag, log, sys::Text};
 pub use swoole_rs_ports::PortCallback;
