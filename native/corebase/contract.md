@@ -61,8 +61,8 @@ string needing an appended slash are undefined upstream; Rust rejects them.
 
 ## Lifecycles (`lifecycle.rs`)
 
-Rust defines `swoole_thread_init`, `swoole_thread_clean`, `swoole_is_main_thread`,
-`swoole_clean` and `swoole_fork` under their C++ symbols, `swoole_init`'s body
+Rust defines `swoole_thread_init`, `swoole_is_main_thread`, `swoole_clean` and
+`swoole_fork` under their C++ symbols, `swoole_thread_clean` (called by path), `swoole_init`'s body
 (`swr_v1_core_swoole_init`, which crates/ffi calls by path) and `swoole_fork_exec` (`fork_exec`, which crates/server's manager calls).
 `swoole_init` itself is crates/ffi's (`src/init.rs`): each leaf in a crate above
 corebase (the stack buffer's and memory pool's `new`/`delete`, `swoole_init`'s

@@ -1,7 +1,7 @@
 # TLS/DTLS boundary
 
 Feature bit 262144 (`tls`). `crates/tls` defines `swoole_ssl_init`/`destroy`/`get_error`
-under their upstream symbols, and `dtls::Session` is a Rust
+(`swoole_ssl_init`, `swr_v1_tls_destroy`, `swr_v1_tls_error`), and `dtls::Session` is a Rust
 record. No C or C++ reads `SSLContext`; [swoole_ssl.h](swoole_ssl.h) keeps the OpenSSL
 switches C++ still reads. The TLS constants stay in Rust (`crates/tls/src/constants.rs`);
 the `tls-constants` gate compares them with the pinned `swoole_ssl.h`.

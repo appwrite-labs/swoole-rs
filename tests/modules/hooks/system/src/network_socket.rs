@@ -151,8 +151,6 @@ unsafe extern "C-unwind" {
     fn socket_check_liveness(socket: *mut Record) -> bool;
     #[link_name = "_ZN6swoole7network6Socket20ssl_get_error_reasonEPi"]
     fn socket_ssl_get_error_reason(reason: *mut c_int) -> *const c_char;
-    #[link_name = "_Z15swoole_ssl_initv"]
-    fn swoole_ssl_init();
     #[link_name = "_ZN6swoole7network6Socket8get_nameEv"]
     fn socket_get_name(socket: *mut Record) -> c_int;
     #[link_name = "_ZN6swoole7network6Socket13get_peer_nameEPNS0_7AddressE"]
@@ -1264,8 +1262,7 @@ fn make_server_socket_rebind_after_time_wait() {
 }
 
 fn ssl_get_error_reason_case() {
-    // SAFETY: no preconditions.
-    unsafe { swoole_ssl_init() };
+    swoole_rs_tls::swoole_ssl_init();
     {
         let mut reason = -1;
         let error_str = ssl_get_error_reason(Some(&mut reason));

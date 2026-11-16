@@ -950,11 +950,7 @@ fn new_ssl_index() -> c_int {
 
 /// `void swoole_ssl_init()`: once until `swoole_ssl_destroy`. A failure logs at
 /// error level and exits the process, as upstream's `swoole_error` does.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z15swoole_ssl_initv")
-)]
-pub extern "C" fn swoole_ssl_init() {
+pub fn swoole_ssl_init() {
     let failed = match swr_v1_tls_init() {
         Ok(()) => return,
         Err(TlsInitError::Init) => "OPENSSL_init_ssl",
@@ -997,11 +993,7 @@ pub fn swr_v1_tls_init() -> Result<(), TlsInitError> {
 }
 
 /// `void swoole_ssl_destroy()`: the next init allocates fresh indexes.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z18swoole_ssl_destroyv")
-)]
-pub extern "C" fn swr_v1_tls_destroy() {
+pub fn swr_v1_tls_destroy() {
     INITIALIZED.store(false, Ordering::Release);
 }
 
@@ -1048,12 +1040,8 @@ extern "C" fn keep_last_line(
 
 /// `swoole_ssl_get_error`: pops this thread's oldest queued error and returns its line
 /// ("" when none is queued), valid until the thread's next call.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_Z20swoole_ssl_get_errorv")
-)]
 #[must_use]
-pub extern "C" fn swr_v1_tls_error() -> *const c_char {
+pub fn swr_v1_tls_error() -> *const c_char {
     drain_errors();
     with_error_text(|text| text.as_ptr().cast())
 }
