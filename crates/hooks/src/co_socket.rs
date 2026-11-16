@@ -506,7 +506,7 @@ impl Co {
     #[track_caller]
     pub fn with_state<T>(self, f: impl FnOnce(&mut SocketState) -> T) -> T {
         // SAFETY: the live state; the loan makes this its only reference.
-        self.lend(STATE, |bound| f(unsafe { &mut *bound.state.get() }))
+        self.lend(STATE, |bound| f(unsafe { bound.state.as_mut_unchecked() }))
     }
 
     /// `errno` classified by the open socket, as `catch_read_error`/`catch_write_error`

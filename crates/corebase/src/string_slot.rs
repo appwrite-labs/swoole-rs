@@ -113,7 +113,7 @@ impl StringSlot {
     pub fn bytes_with_nul(&self) -> &[u8] {
         // SAFETY: a write through a shared slot is `set_shared`, whose caller holds
         // the slot exclusively, so none overlaps this borrow.
-        match unsafe { &*self.bytes.get() } {
+        match unsafe { self.bytes.as_ref_unchecked() } {
             Bytes::Inline { data, length } => data.get(..=*length).unwrap_or_default(),
             Bytes::Heap(data) => data,
         }

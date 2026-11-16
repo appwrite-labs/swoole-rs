@@ -460,9 +460,7 @@ pub fn set_h_errno(value: c_int) {
 pub fn strerror(code: c_int) -> String {
     let mut text = std::io::Error::from_raw_os_error(code).to_string();
     // std appends the code; strip that, leaving libc's message.
-    let message = text
-        .strip_suffix(&format!(" (os error {code})"))
-        .map_or(text.len(), str::len);
+    let message = text.trim_suffix(&format!(" (os error {code})")).len();
     text.truncate(message);
     text
 }
