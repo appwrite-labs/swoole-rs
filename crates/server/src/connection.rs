@@ -265,7 +265,7 @@ fn init(
         conn.set_info(sock.info);
         sock.get_name();
         let info = &sock.info;
-        let port = swoole_rs_clients::address::swr_v1_clients_address_port(info);
+        let port = swoole_rs_clients::address::address_port(info);
         let v6 = info.kind != SocketType::SW_SOCK_TCP.raw();
         // The family's address bytes, as they are stored.
         let (inet_v6, inet_v4) = (
@@ -283,15 +283,17 @@ fn init(
     let now = swoole_rs_corebase::microtime();
     conn.set_last_recv_time(now);
     conn.set_connect_time(now);
-    conn.active().store(1, Relaxed);
     conn.closed().store(0, Relaxed);
     conn.set_worker_id(-1);
     conn.set_socket_type(ls.r#type);
     conn.set_socket(Some(sock));
     conn.set_ssl(ssl);
     conn.info().kind = conn.socket_type();
-    conn.set_local_port(u16::try_from(local_port).unwrap_or_default());
+    conn.set_local_port(local_port);
     conn.set_local_addr_index(local_addr_index);
+    // Last: a reactor thread that sees the slot active (`is_active`) reads the fields
+    // above, which this publishes.
+    conn.active().store(1, Release);
 }
 
 /// `Server::abort_connection(reactor, port, sock)`: counted, then closed through the
@@ -309,8 +311,10 @@ pub(crate) fn abort(
     if sock.read(|s| !s.object.is_null()) {
         reactor.close(sock);
     } else {
-        // SAFETY: an accepted socket no connection took, which nothing uses afterwards.
-        unsafe { swoole_rs_tls::upstream::socket_free(Some(sock)) };
+        // SAFETY: an accepted heap record no connection took, which nothing uses
+        // afterwards.
+        let sock = unsafe { swoole_rs_reactor::OwnedSocket::from_socket(sock) };
+        swoole_rs_tls::upstream::socket_free(Some(sock));
     }
 }
 

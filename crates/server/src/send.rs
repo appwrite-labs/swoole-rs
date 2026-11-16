@@ -479,11 +479,11 @@ mod tests {
         CLOSED.with_borrow_mut(core::mem::take)
     }
 
-    unsafe extern "C-unwind" fn record_close(
+    extern "C-unwind" fn record_close(
         _: swoole_rs_reactor::Running<'_>,
-        socket: Socket<'_>,
+        socket: swoole_rs_reactor::OwnedSocket,
     ) -> c_int {
-        CLOSED.with_borrow_mut(|closed| closed.push(socket.fd()));
+        CLOSED.with_borrow_mut(|closed| closed.push(socket.socket().fd()));
         0
     }
 
@@ -641,7 +641,7 @@ mod tests {
 
     #[test]
     fn a_full_buffer_overflows_and_the_watermark_notifies() {
-        extern "C" fn full(_: crate::callbacks::Ctx, _: Server<'_>, _: &DataHead) {}
+        fn full(_: Server<'_>, _: &DataHead) {}
         let a = Accepted::new();
         a.sock().edit(|s| {
             s.direct_send = false;

@@ -5,8 +5,8 @@
 //!
 //! The header holds what upstream's `Table` held in shared memory: sizes,
 //! counters, the pool mutex and the iterator mutex. Columns and the iterator's
-//! cursor are process-private heap objects, as upstream's maps and
-//! `TableIterator` were. The arena is room for upstream's `size` bucket pointers
+//! cursor are process-private, as upstream's maps and `TableIterator` were: a
+//! [`Handle`] owns them beside its header, and a fork copies them. The arena is room for upstream's `size` bucket pointers
 //! (unused: a bucket's row is found by its index), `size` bucket rows, then a
 //! fixed pool of collision rows. Each row is an 88-byte header
 //! followed by the column data, rounded up to 8
@@ -17,12 +17,12 @@
 //! more than two seconds.
 use crate::fixed::{self, Fixed, Layout, Slice};
 use crate::members::Shm;
+use std::cell::Cell;
 use std::ffi::c_int;
 use std::mem::{MaybeUninit, offset_of, size_of};
 use std::sync::atomic::{
     AtomicI32, AtomicI64, AtomicPtr, AtomicU8, AtomicU32, AtomicUsize, Ordering,
 };
-use std::sync::{Mutex, PoisonError};
 use std::time::Instant;
 use std::{ptr, slice};
 use swoole_rs_corebase::CCast;
@@ -259,11 +259,7 @@ impl Column {
 /// Tables have a handful of columns, so a scan beats hashing the name.
 #[derive(Default)]
 struct Columns {
-    #[expect(
-        clippy::vec_box,
-        reason = "callers keep column pointers across later declarations"
-    )]
-    list: Vec<Box<Column>>,
+    list: Vec<Column>,
     first: Vec<usize>,
 }
 
@@ -272,34 +268,6 @@ struct Cursor {
     absolute: usize,
     collision: usize,
     current: Vec<u8>,
-}
-
-/// The process-private parts of a table this process made and hasn't destroyed, which
-/// its header (at address `header`) points at.
-struct Private {
-    header: usize,
-    columns: Box<Columns>,
-    cursor: Option<Box<Cursor>>,
-}
-
-/// Every table's private parts, owned here, as this process allocated them: a fork
-/// copies them, and a table created after one has another process's cursor. The headers
-/// are in the shared pool, which leak checkers don't scan and `swoole_clean` frees:
-/// `destroy` drops a table's, `release` every one left. Nothing reads a table's parts
-/// through this list (the header's pointers do), so they stay put until they go.
-static PRIVATE: Mutex<Vec<Private>> = Mutex::new(Vec::new());
-
-fn private<T>(f: impl FnOnce(&mut Vec<Private>) -> T) -> T {
-    f(&mut PRIVATE.lock().unwrap_or_else(PoisonError::into_inner))
-}
-
-/// Frees the process-private parts of every table this process hasn't destroyed, before
-/// the pool takes their headers: a step of MSHUTDOWN.
-///
-/// # Safety
-/// No table is used afterwards.
-pub unsafe extern "C" fn release() {
-    drop(private(std::mem::take));
 }
 
 /// The counters `Swoole\Table::stats()` reports.
@@ -314,9 +282,9 @@ pub struct Stats {
 
 /// The table header, in `size_of::<Table>()` bytes of shared memory.
 ///
-/// Invariant: once `created`, `memory` is the arena `create` laid out: bucket
-/// row `i` is at `first + i * stride`, `pool` is a fixed pool of collision rows,
-/// and `cursor` is this process's cursor.
+/// Invariant: while `memory` holds a mapping, it is the arena `create` laid out:
+/// bucket row `i` is at `first + i * stride` and `pool` is a fixed pool of
+/// collision rows.
 #[repr(C)]
 pub struct Table {
     mutex: SharedMutex,
@@ -335,9 +303,7 @@ pub struct Table {
     hash: Hash,
     warning: Warning,
     error: Error,
-    columns: *mut Columns,
-    cursor: *mut Cursor,
-    memory: *mut u8,
+    memory: Shm,
     first: *mut Row,
     stride: usize,
     pool: Option<&'static Fixed>,
@@ -430,9 +396,7 @@ impl Table {
             hash,
             warning,
             error,
-            columns: ptr::null_mut(),
-            cursor: ptr::null_mut(),
-            memory: ptr::null_mut(),
+            memory: Shm::empty(),
             first: ptr::null_mut(),
             stride: 0,
             pool: None,
@@ -445,92 +409,11 @@ impl Table {
             table.mutex.destroy();
             return None;
         }
-        let header = ptr::from_mut(table).addr();
-        table.columns = private(|tables| {
-            tables.push(Private {
-                header,
-                columns: Box::default(),
-                cursor: None,
-            });
-            // The pointer comes from the box where it stays, so nothing invalidates it.
-            tables
-                .last_mut()
-                .map_or(ptr::null_mut(), |own| ptr::from_mut(&mut *own.columns))
-        });
         Some(table)
-    }
-
-    fn column_set(&self) -> &Columns {
-        // SAFETY: `init` made the columns; only `destroy` and `release` free them.
-        unsafe { &*self.columns }
     }
 
     pub fn set_hash(&mut self, hash: Hash) {
         self.hash = hash;
-    }
-
-    /// `Table::add_column`. Refused once the table is created: its rows have no
-    /// room for another column.
-    pub fn add_column(&mut self, name: &[u8], kind: u32, size: usize) -> bool {
-        let Some(kind) = ColumnType::from_code(kind) else {
-            warn(self.warning, b"Table::add_column(): unknown column type");
-            return false;
-        };
-        if self.created {
-            return false;
-        }
-        let width = if kind == ColumnType::String {
-            size.wrapping_add(4).c_cast::<u32>()
-        } else {
-            8
-        };
-        let column = Column {
-            kind,
-            width,
-            index: self.item_size,
-            name: name.into(),
-        };
-        let header = ptr::from_mut(self).addr();
-        // Declared through their owner, this process's parts of the table (`&mut self`
-        // excludes readers), which then lends the header its pointer afresh. None are
-        // left once `release` has run, and then there is no table to declare on.
-        let Some(columns) = private(|tables| {
-            let own = tables.iter_mut().rev().find(|own| own.header == header)?;
-            let columns = &mut *own.columns;
-            if columns.list.iter().all(|column| *column.name != *name) {
-                columns.first.push(columns.list.len());
-            }
-            columns.list.push(Box::new(column));
-            Some(ptr::from_mut(columns))
-        }) else {
-            return false;
-        };
-        self.columns = columns;
-        self.item_size = self.item_size.wrapping_add(width as usize);
-        true
-    }
-
-    /// `Table::get_column`: the first column declared with this name.
-    #[must_use]
-    pub fn column(&self, name: &[u8]) -> Option<&Column> {
-        let columns = self.column_set();
-        columns
-            .first
-            .iter()
-            .filter_map(|&at| columns.list.get(at))
-            .find(|column| *column.name == *name)
-            .map(|column| &**column)
-    }
-
-    /// Every declaration, repeats included (`column_list`).
-    pub fn columns(&self) -> impl ExactSizeIterator<Item = &Column> {
-        self.column_set().list.iter().map(|column| &**column)
-    }
-
-    /// `get_column_size()`: distinct names.
-    #[must_use]
-    pub fn column_size(&self) -> usize {
-        self.column_set().first.len()
     }
 
     fn plan(&self) -> Option<Plan> {
@@ -572,7 +455,7 @@ impl Table {
     /// `Table::create`, in `arena`, a mapping of at least `arena_size()` bytes as
     /// shared as the table should be, which the table takes (leaving `arena` null)
     /// until `destroy` hands it back. False, leaving `arena` to the caller, otherwise.
-    pub fn create(&mut self, arena: &mut Shm) -> bool {
+    fn create(&mut self, arena: &mut Shm) -> bool {
         let Some(plan) = self.plan().filter(|plan| plan.slices >= 2) else {
             return false;
         };
@@ -585,7 +468,7 @@ impl Table {
         }
         // SAFETY: the mapping's payload, `plan.physical` bytes (checked above), which
         // the table alone reaches from here on, until `destroy` hands it back (after
-        // which this process uses the table no more).
+        // which no row operation passes `ready`).
         let bytes: &'static mut [MaybeUninit<u8>] =
             unsafe { slice::from_raw_parts_mut(memory.cast(), plan.physical) };
         // Upstream's bucket pointers come first; a bucket's row is found by its index.
@@ -615,44 +498,13 @@ impl Table {
         let Some(pool) = fixed::construct(pool, layout, true, false) else {
             return false;
         };
-        let header = ptr::from_mut(self).addr();
-        let cursor = Box::new(Cursor {
-            absolute: 0,
-            collision: 0,
-            current: vec![0; plan.stride],
-        });
-        // This process's parts of the table hold its cursor; none are left once
-        // `release` has run, and then there is no table to create.
-        let Some(cursor) = private(|tables| {
-            let own = tables.iter_mut().rev().find(|own| own.header == header)?;
-            Some(ptr::from_mut(&mut **own.cursor.insert(cursor)))
-        }) else {
-            return false;
-        };
-        self.cursor = cursor;
         self.first = first;
         self.stride = plan.stride;
         self.pool = Some(pool);
         self.memory_size = plan.logical - self.size * (plan.row_size + size_of::<*mut Row>());
-        self.memory = std::mem::take(arena).into_raw().cast();
+        self.memory = std::mem::take(arena);
         self.created = true;
         true
-    }
-
-    /// `Table::destroy`: frees the process-private parts and the locks, and
-    /// returns the arena (null if the table was never created) for the host to
-    /// free with the header.
-    /// # Safety
-    /// Nothing uses the table afterwards.
-    pub unsafe fn destroy(&mut self) -> *mut u8 {
-        let header = ptr::from_mut(self).addr();
-        // The columns `init` made and the cursor `create` made, which nothing uses
-        // afterwards (per the caller): this process's, so another's stay as they are.
-        private(|tables| tables.retain(|own| own.header != header));
-        self.iterator_mutex.destroy();
-        self.mutex.destroy();
-        // The header is shared: forked processes see `ready()` turn false, as upstream's do.
-        std::mem::replace(&mut self.memory, ptr::null_mut())
     }
 
     #[must_use]
@@ -660,7 +512,7 @@ impl Table {
         self.created
     }
 
-    /// `ready()`: created and not destroyed.
+    /// `ready()`: created and not destroyed. Every row operation checks it.
     #[must_use]
     pub fn ready(&self) -> bool {
         !self.memory.is_null()
@@ -727,7 +579,7 @@ impl Table {
     /// `get_by_index`: bucket `index`'s row if it is active.
     #[must_use]
     pub fn by_index(&self, index: usize) -> *mut Row {
-        if !self.created || index >= self.size {
+        if !self.ready() || index >= self.size {
             return ptr::null_mut();
         }
         let row = self.bucket_row(index);
@@ -752,7 +604,7 @@ impl Table {
     /// the bucket's row, which stays locked even when no row could be made.
     /// `flags` gets `NEW_ROW` and `CONFLICT` unless that happens.
     pub fn set(&self, key: &[u8], lock: &mut *mut Row, flags: Option<&mut i32>) -> *mut Row {
-        if !self.created {
+        if !self.ready() {
             return ptr::null_mut();
         }
         let (root, key) = self.bucket(key);
@@ -800,7 +652,7 @@ impl Table {
     /// `Table::get`: the active row for `key` or null, with `lock` set to the
     /// bucket's row, which is locked either way.
     pub fn get(&self, key: &[u8], lock: &mut *mut Row) -> *mut Row {
-        if !self.created {
+        if !self.ready() {
             return ptr::null_mut();
         }
         let (mut row, key) = self.bucket(key);
@@ -828,7 +680,7 @@ impl Table {
 
     /// `Table::del`. Deleting a bucket's own row moves its first collision row in.
     pub fn del(&self, key: &[u8]) -> bool {
-        if !self.created {
+        if !self.ready() {
             return false;
         }
         let (root, key) = self.bucket(key);
@@ -894,63 +746,50 @@ impl Table {
         _ = self.mutex.unlock();
     }
 
-    fn cursor<T>(&self, step: impl FnOnce(&mut Cursor, usize) -> T) -> Option<T> {
-        if self.cursor.is_null() {
-            return None;
-        }
-        _ = self.iterator_mutex.lock();
-        // SAFETY: this process's cursor (see the invariant), under the iterator mutex.
-        let result = step(unsafe { &mut *self.cursor }, ROW + self.item_size);
-        _ = self.iterator_mutex.unlock();
-        Some(result)
-    }
-
-    /// `Table::rewind`.
-    pub fn rewind(&self) {
-        self.cursor(|cursor, row_size| {
-            cursor.absolute = 0;
-            cursor.collision = 0;
-            Self::copy(cursor, None, row_size);
-        });
-    }
-
-    /// Copy `row_size` bytes of `row` (zeros for `None`) to the cursor's row,
-    /// which holds `stride >= row_size` bytes.
-    fn copy(cursor: &mut Cursor, row: Option<Live>, row_size: usize) {
+    /// Copy `row`'s key and column data (zeros for `None`) to the cursor's row,
+    /// which holds `stride >= row_size` bytes, where [`Current`] reads them.
+    fn copy(cursor: &mut Cursor, row: Option<&Locked<'_>>, row_size: usize) {
         let Some(current) = cursor.current.get_mut(..row_size) else {
             return;
         };
-        let Some(row) = row else {
-            current.fill(0);
+        current.fill(0);
+        let Some((row, data)) = row.and_then(|locked| locked.row.as_ref()) else {
             return;
         };
-        // SAFETY: a locked row's bytes, into the cursor's row.
-        unsafe { ptr::copy_nonoverlapping(row.0.cast::<u8>(), current.as_mut_ptr(), row_size) };
+        if let Some(length) = current.get_mut(offset_of!(Row, key_len)) {
+            *length = row.key_len();
+        }
+        let key = current.iter_mut().skip(offset_of!(Row, key));
+        for (to, byte) in key.zip(row.key_bytes()) {
+            *to = byte.load(Ordering::Relaxed);
+        }
+        let columns = current.iter_mut().skip(ROW);
+        for (to, &byte) in columns.zip(data.iter()) {
+            *to = byte;
+        }
     }
 
-    /// `Table::forward`: copies the next row to `current()`, or an empty
+    /// `Table::forward` of `cursor`: copies the next row to it, or an empty
     /// header past the last.
-    pub fn forward(&self) {
-        self.cursor(|cursor, row_size| {
-            while cursor.absolute < self.size {
-                let bucket = self.bucket_row(cursor.absolute);
-                if !bucket.active() {
-                    cursor.absolute += 1;
-                    continue;
-                }
-                bucket.lock(self.warning);
-                let found = Self::visit(cursor, bucket);
-                if found.is_some() {
-                    Self::copy(cursor, found, row_size);
-                }
-                bucket.unlock();
-                if found.is_some() {
-                    return;
-                }
+    fn forward(&self, cursor: &mut Cursor, row_size: usize) {
+        while self.ready() && cursor.absolute < self.size {
+            let bucket = self.bucket_row(cursor.absolute);
+            if !bucket.active() {
                 cursor.absolute += 1;
+                continue;
             }
-            Self::copy(cursor, None, ROW);
-        });
+            bucket.lock(self.warning);
+            let found = Self::visit(cursor, bucket).map_or(ptr::null_mut(), |row| row.0);
+            // Unlocked when the guard drops.
+            let locked = self.locked(bucket.0, found, 0);
+            if locked.as_ref().is_some_and(Locked::found) {
+                Self::copy(cursor, locked.as_ref(), row_size);
+                return;
+            }
+            drop(locked);
+            cursor.absolute += 1;
+        }
+        Self::copy(cursor, None, ROW);
     }
 
     /// The row of a locked bucket the cursor visits next, or `None` once it
@@ -1006,6 +845,137 @@ impl Table {
             flags,
         })
     }
+}
+
+/// A table as this process uses it: the shared header and what upstream's header
+/// pointed at in each process's own heap, its columns and its iterator. A fork
+/// copies the handle with the rest of the heap, so each process reads its own.
+pub struct Handle {
+    table: &'static mut Table,
+    columns: Columns,
+    /// The iterator, from `create` until `destroy`.
+    cursor: Cell<Option<Cursor>>,
+}
+
+impl Handle {
+    /// The handle of a table [`Table::init`] made, with no columns yet.
+    #[must_use]
+    pub fn new(table: &'static mut Table) -> Self {
+        Self {
+            table,
+            columns: Columns::default(),
+            cursor: Cell::new(None),
+        }
+    }
+
+    pub fn set_hash(&mut self, hash: Hash) {
+        self.table.set_hash(hash);
+    }
+
+    /// `Table::add_column`. Refused once the table is created: its rows have no
+    /// room for another column.
+    pub fn add_column(&mut self, name: &[u8], kind: u32, size: usize) -> bool {
+        let table = &mut *self.table;
+        let Some(kind) = ColumnType::from_code(kind) else {
+            warn(table.warning, b"Table::add_column(): unknown column type");
+            return false;
+        };
+        if table.created {
+            return false;
+        }
+        let width = if kind == ColumnType::String {
+            size.wrapping_add(4).c_cast::<u32>()
+        } else {
+            8
+        };
+        let columns = &mut self.columns;
+        if columns.list.iter().all(|column| *column.name != *name) {
+            columns.first.push(columns.list.len());
+        }
+        columns.list.push(Column {
+            kind,
+            width,
+            index: table.item_size,
+            name: name.into(),
+        });
+        table.item_size = table.item_size.wrapping_add(width as usize);
+        true
+    }
+
+    /// `Table::get_column`: the first column declared with this name.
+    #[must_use]
+    pub fn column(&self, name: &[u8]) -> Option<&Column> {
+        let columns = &self.columns;
+        columns
+            .first
+            .iter()
+            .filter_map(|&at| columns.list.get(at))
+            .find(|column| *column.name == *name)
+    }
+
+    /// Every declaration, repeats included (`column_list`).
+    pub fn columns(&self) -> impl ExactSizeIterator<Item = &Column> {
+        self.columns.list.iter()
+    }
+
+    /// `get_column_size()`: distinct names.
+    #[must_use]
+    pub fn column_size(&self) -> usize {
+        self.columns.first.len()
+    }
+
+    /// `Table::create` in `arena` (see [`Table`]'s), with this process's iterator.
+    pub fn create(&mut self, arena: &mut Shm) -> bool {
+        if !self.table.create(arena) {
+            return false;
+        }
+        self.cursor.set(Some(Cursor {
+            absolute: 0,
+            collision: 0,
+            current: vec![0; self.table.stride],
+        }));
+        true
+    }
+
+    /// `Table::destroy`: the iterator and the locks go, and the arena comes back
+    /// for the caller to free. The header is shared: every process sees `ready()`
+    /// turn false, as upstream's do, and makes no row operation from then on.
+    pub fn destroy(&mut self) -> Shm {
+        self.cursor.set(None);
+        let table = &mut *self.table;
+        table.iterator_mutex.destroy();
+        table.mutex.destroy();
+        table.pool = None;
+        std::mem::take(&mut table.memory)
+    }
+
+    /// `step` over this process's iterator under the iterator mutex, with the
+    /// table's row size: None before `create` or after `destroy`. The iterator is
+    /// taken out while `step` runs, which calls nothing that comes back here.
+    fn cursor<T>(&self, step: impl FnOnce(&mut Cursor, usize) -> T) -> Option<T> {
+        let mut cursor = self.cursor.take()?;
+        let table = &*self.table;
+        _ = table.iterator_mutex.lock();
+        let result = step(&mut cursor, ROW + table.item_size);
+        _ = table.iterator_mutex.unlock();
+        self.cursor.set(Some(cursor));
+        Some(result)
+    }
+
+    /// `Table::rewind`.
+    pub fn rewind(&self) {
+        self.cursor(|cursor, row_size| {
+            cursor.absolute = 0;
+            cursor.collision = 0;
+            Table::copy(cursor, None, row_size);
+        });
+    }
+
+    /// `Table::forward`: copies the next row to `current_row()`, or an empty
+    /// header past the last.
+    pub fn forward(&self) {
+        self.cursor(|cursor, row_size| self.table.forward(cursor, row_size));
+    }
 
     /// A copy of the iterator's current row: None before `create`.
     #[must_use]
@@ -1014,6 +984,14 @@ impl Table {
             row: cursor.current.clone(),
             size: row_size - ROW,
         })
+    }
+}
+
+impl std::ops::Deref for Handle {
+    type Target = Table;
+
+    fn deref(&self) -> &Table {
+        self.table
     }
 }
 
@@ -1154,10 +1132,10 @@ impl Locked<'_> {
         }
     }
 
-    /// `Table::clear_row`: every column empty or zero.
-    pub fn clear_row(&mut self) {
-        let table = self.table;
-        for column in table.columns() {
+    /// `Table::clear_row`: every column of the table's (its [`Handle::columns`])
+    /// empty or zero.
+    pub fn clear_row<'c>(&mut self, columns: impl Iterator<Item = &'c Column>) {
+        for column in columns {
             self.clear(column);
         }
     }

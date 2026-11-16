@@ -7,9 +7,9 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_hooks::poll::socket_poll_rows as poll;
 use swoole_rs_reactor::Events;
 use swoole_rs_zend::{
-    ArrayMut, Call, E_WARNING, Owned, Value, ZStr, ZString,
+    ArrayMut, Call, CallFrame, E_WARNING, Owned, Value, ZStr, ZString,
     bailout::Bailout,
-    sys::{swr_zend_runtime_select_args, zend_long, zend_ulong, zval},
+    sys::{zend_long, zend_ulong, zval},
 };
 
 unsafe extern "C" {
@@ -18,6 +18,19 @@ unsafe extern "C" {
     /// resource. It reads the zval, the resource's type and the stream's two
     /// positions, and runs no PHP code.
     safe fn swr_zend_stream_zval_buffered(value: &Value) -> bool;
+    /// `stream_select`'s `ZEND_PARSE_PARAMETERS` block over the call's frame
+    /// (Zend reports a failure): 1 if the arguments parsed, each output then
+    /// written, the arrays as null or a by-reference argument's array zval.
+    safe fn swr_zend_runtime_select_args(
+        frame: CallFrame<'_>,
+        read: &mut *mut zval,
+        write: &mut *mut zval,
+        except: &mut *mut zval,
+        seconds: &mut zend_long,
+        seconds_null: &mut bool,
+        micros: &mut zend_long,
+        micros_null: &mut bool,
+    ) -> std::ffi::c_int;
 }
 
 /// The event of each array: read, write, except.
@@ -130,19 +143,16 @@ fn select(call: &Call) -> Result<(), Bailout> {
     let (mut read, mut write, mut except) = (ptr::null_mut(), ptr::null_mut(), ptr::null_mut());
     let (mut seconds, mut micros): (zend_long, zend_long) = (0, 0);
     let (mut seconds_null, mut micros_null) = (false, true);
-    // SAFETY: the live frame; each output is a writable local.
-    let parsed = unsafe {
-        swr_zend_runtime_select_args(
-            call.frame(),
-            &raw mut read,
-            &raw mut write,
-            &raw mut except,
-            &raw mut seconds,
-            &raw mut seconds_null,
-            &raw mut micros,
-            &raw mut micros_null,
-        )
-    };
+    let parsed = swr_zend_runtime_select_args(
+        call.call_frame(),
+        &mut read,
+        &mut write,
+        &mut except,
+        &mut seconds,
+        &mut seconds_null,
+        &mut micros,
+        &mut micros_null,
+    );
     if parsed == 0 {
         call.set_bool(false);
         return Ok(());

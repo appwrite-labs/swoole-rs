@@ -24,7 +24,7 @@ use swoole_rs_corebase::log::LogLevel::{SW_LOG_NOTICE as LOG_NOTICE, SW_LOG_TRAC
 use swoole_rs_corebase::{CCast, log};
 use swoole_rs_memory::members::Shm;
 use swoole_rs_process::methods::swoole_get_worker_id;
-use swoole_rs_process::worker_globals::with_globals;
+use swoole_rs_process::worker_globals::{with_current, with_globals};
 use swoole_rs_process::worker_record::{Worker, WorkerStatus};
 
 /// `swoole::SendData`, and the `swoole::RecvData` a receive callback reads (the same
@@ -34,7 +34,7 @@ use swoole_rs_process::worker_record::{Worker, WorkerStatus};
 /// the safe readers ([`SendData::payload`], [`crate::send::send_to_connection`]) rely
 /// on: `data` is null, or points at `info.len` bytes that are readable, and not written,
 /// for `'a`. Only the constructors set `data` and `info.len`; the setters change the
-/// rest of the head, and only the bus's writes ([`SendData::send_raw`]) lower `len`.
+/// rest of the head, and only the bus's writes ([`SendData::send`]) lower `len`.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct SendData<'a> {
@@ -143,15 +143,15 @@ impl<'a> SendData<'a> {
         self.info.flags = flags;
     }
 
-    /// [`swoole_rs_bus::Bus::send_raw`] of the head and payload to `pipe`.
+    /// [`swoole_rs_bus::Bus::send`] of the head and payload to `pipe`.
     #[cfg_attr(
         not(feature = "upstream-symbols"),
         expect(dead_code, reason = "only the hybrid's factories write to a pipe")
     )]
     pub(crate) fn send(&mut self, bus: &swoole_rs_bus::Bus, pipe: crate::view::PipeSocket) -> bool {
-        // SAFETY: `data` covers `info.len` bytes or is null (the fields' invariant;
-        // the write only ever lowers `len`).
-        unsafe { bus.send_raw(pipe.socket(), &mut self.info, self.data.cast()) }
+        // The write only ever lowers `len`, so the payload stays within `data`'s bytes.
+        let data = (!self.data.is_null()).then(|| self.payload());
+        bus.send(pipe.socket(), &mut self.info, data)
     }
 }
 
@@ -316,11 +316,16 @@ fn receive_now(serv: view::Server<'_>, task: &SendData) -> bool {
     if !dgram && task.info.event() != Some(ServerEvent::RecvData) {
         return false;
     }
-    let (worker, max_request) =
-        with_globals(|g| (g.worker(), g.max_request.load(Ordering::Relaxed)));
-    if worker.is_null() || max_request != 0 {
+    if with_globals(|g| g.max_request.load(Ordering::Relaxed)) != 0 {
         return false;
     }
+    // The current worker's record, which this worker loop owns.
+    with_current(|&worker| receive_as(serv, task, dgram, worker)).unwrap_or(false)
+}
+
+/// [`receive_now`] for the worker this loop runs.
+#[inline(always)]
+fn receive_as(serv: view::Server<'_>, task: &SendData, dgram: bool, worker: Worker<'_>) -> bool {
     let state = serv.state();
     let conn = if dgram {
         None
@@ -331,8 +336,6 @@ fn receive_now(serv: view::Server<'_>, task: &SendData) -> bool {
         };
         Some(c)
     };
-    // SAFETY: the current worker's record, which this worker loop owns.
-    let worker = unsafe { Worker::new(worker) };
     worker.set_status(WorkerStatus::Busy);
     if let Some(c) = conn {
         if task.info.len > 0 {
@@ -527,7 +530,7 @@ pub(crate) fn finish(serv: view::Server<'_>, send: &SendData) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::callbacks::{Callback, Ctx};
+    use crate::callbacks::Callback;
     use crate::conn_io::tests::{accepted, closed, queue, session};
     use crate::hybrid::tests::{Call, calls};
     use crate::reactor_entry::RecvData;
@@ -547,13 +550,13 @@ mod tests {
         HEARD.with_borrow_mut(core::mem::take)
     }
 
-    extern "C" fn on_receive(_: Ctx, _: view::Server<'_>, data: &RecvData) -> c_int {
+    fn on_receive(_: view::Server<'_>, data: &RecvData) -> c_int {
         let i = data.info;
         HEARD.with_borrow_mut(|h| h.push((i.kind, i.fd, i.reactor_id, i.flags, i.len)));
         0
     }
 
-    extern "C" fn closing(_: Ctx, _: view::Server<'_>, i: &DataHead) {
+    fn closing(_: view::Server<'_>, i: &DataHead) {
         HEARD.with_borrow_mut(|h| h.push((4, i.fd, i.reactor_id, i.flags, i.len)));
     }
 

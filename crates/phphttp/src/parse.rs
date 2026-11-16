@@ -5,12 +5,14 @@
 //! itself owns goes through `host`.
 use crate::host;
 use crate::state::{Request, Slot, State};
-use std::ffi::{c_char, c_int};
+use std::ffi::{CStr, c_char, c_int};
 use std::fs::File;
 use std::io::{BufWriter, IoSlice, Write};
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use std::{mem::ManuallyDrop, ptr};
 use swoole_rs_corebase::CCast;
+use swoole_rs_corebase::lent::{Count, In, lend_in};
+use swoole_rs_corebase::sys::Text;
 use swoole_rs_corebase::{WebSocketStatus, log};
 use swoole_rs_http::llhttp::{self, Callbacks, Flow as Step, Parser};
 use swoole_rs_http::multipart_parser::{Flow, MultipartParser};
@@ -41,11 +43,14 @@ struct Parts<'a, 'i> {
 }
 
 unsafe extern "C" {
-    fn php_register_variable_safe(
-        var: *const c_char,
-        val: *const c_char,
-        len: usize,
-        track: *mut zval,
+    /// `$track[var] = (string) val`, by PHP's rules for request variable
+    /// names: it copies the name and the lent bytes, and registers nothing
+    /// without an array.
+    safe fn php_register_variable_safe(
+        var: Text<'_>,
+        val: In<'_, u8>,
+        len: Count<'_>,
+        track: Option<&Value>,
     );
     fn php_register_variable_ex(var: *const c_char, val: *mut zval, track: *mut zval);
 }
@@ -1104,17 +1109,13 @@ fn part_headers_complete(state: &mut State, upload: &mut Option<Upload>) {
 
 fn part_data_end(state: &mut State, upload: &mut Option<Upload>) {
     if let Some(name) = state.parse.form_data_name.take() {
-        let post = raw_property(state, Property::Post);
+        let post = property(&mut state.request, Property::Post);
         let data = state.parse.form_data.get_or_insert_with(Default::default);
-        // SAFETY: a NUL-terminated name, the field's bytes and the request's `post` array.
-        unsafe {
-            php_register_variable_safe(
-                name.as_ptr().cast(),
-                data.as_ptr().cast(),
-                data.len(),
-                post,
-            );
-        };
+        // `c_copy`'s name holds its NUL.
+        let name = CStr::from_bytes_until_nul(&name).unwrap_or_default();
+        lend_in(data, |at, count| {
+            php_register_variable_safe(name.into(), at, count, post);
+        });
         data.clear();
         return;
     }

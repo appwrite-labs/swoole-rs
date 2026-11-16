@@ -322,7 +322,7 @@ pub fn kill_worker(serv: view::Server<'_>, worker_id: c_int) -> bool {
     swoole_rs_process::methods::send_pipe_message(
         crate::process_pool_native(),
         worker,
-        data,
+        &data,
         PIPE_MASTER,
     )
     .is_some()
@@ -633,9 +633,9 @@ pub(crate) fn send_to_reactor_thread(serv: view::Server<'_>, head: &DataHead) ->
     let info = swoole_rs_process::process_pool::head_view(head);
     if swoole_rs_reactor::event_api::swoole_event_is_available() {
         crate::reactor_handle::registered(pipe)
-            .and_then(|pipe| swoole_rs_reactor::event_api::event_write(pipe, info))
+            .and_then(|pipe| swoole_rs_reactor::event_api::event_write(pipe, &info))
     } else {
-        let event = swoole_rs_reactor::Drain::new(info);
+        let event = swoole_rs_reactor::Drain::new(&info);
         swoole_rs_tls::upstream::send_sync_drain(pipe, event, 0)
     }
 }

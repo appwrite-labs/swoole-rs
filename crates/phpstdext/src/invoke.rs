@@ -18,21 +18,23 @@ use swoole_rs_zend::{
     opcode::Handler,
     sys::{
         IS_ARRAY, IS_CONST, IS_RESOURCE, IS_STRING, IS_VAR, swr_zend_efree, swr_zend_zval_release,
-        zend_execute_data, zend_function, zval,
+        zend_function, zval,
     },
     value,
 };
 
 unsafe extern "C" {
     /// `zend_vm_stack_push_call_frame(ZEND_CALL_NESTED_FUNCTION, function,
-    /// num_args, object)`: the new frame on the VM stack, which Zend always
-    /// pushes, for as long as the caller says it lives.
+    /// num_args, object)`, which Zend always pushes, given `run_time_cache`
+    /// and linked as `frame`'s next call (`EX(call)`).
     #[link_name = "swr_zend_push_nested_call"]
-    fn push_nested_call<'a>(
+    fn push_nested_call(
+        frame: Frame<'_>,
         function: *mut zend_function,
         num_args: u32,
         object: *mut c_void,
-    ) -> &'a mut zend_execute_data;
+        run_time_cache: *mut c_void,
+    );
 }
 
 /// Upstream's `CallInfo`: what the handler hands the method call's frame in
@@ -62,6 +64,7 @@ pub(crate) fn install(minit: &swoole_rs_zend::Minit) {
 pub(crate) struct MethodCall;
 
 impl Handler for MethodCall {
+    const OPCODE: u32 = swoole_rs_zend::sys::ZEND_INIT_METHOD_CALL;
     fn run(frame: Frame<'_>) -> c_int {
         let op = Op::current(frame);
         let Some(object) = op.op1() else {
@@ -95,16 +98,17 @@ impl Handler for MethodCall {
             Receiver::Stream => &METHODS[2],
         }
         .load(Ordering::Relaxed);
-        // SAFETY: a registered function; the frame passes `object` as upstream
-        // does. The frame just pushed lives until its call ends, and nothing
-        // else reaches it until this frame's `call` names it below.
-        let pushed = unsafe { push_nested_call(method, op.extended_value, object.as_ptr().cast()) };
-        pushed.run_time_cache = info.cast();
-        // SAFETY: this live frame's header; the operands borrowed above are slots
-        // after it, and no Zend code runs while it is borrowed.
-        let current = unsafe { &mut *frame.as_ptr() };
-        pushed.prev_execute_data = current.call;
-        current.call = ptr::from_mut(pushed);
+        // SAFETY: a registered function; the new frame passes `object` as
+        // upstream does, and Zend runs it as this live frame's next call.
+        unsafe {
+            push_nested_call(
+                frame,
+                method,
+                op.extended_value,
+                object.as_ptr().cast(),
+                info.cast(),
+            );
+        };
         frame.skip(1);
         CONTINUE
     }

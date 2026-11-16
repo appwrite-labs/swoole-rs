@@ -15,7 +15,7 @@ use openssl_sys::{
 use std::ffi::{CStr, c_char, c_int, c_long, c_uint, c_ulong, c_void};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
-use swoole_rs_corebase::lent::{Count, In, Out, lend_in, lend_out};
+use swoole_rs_corebase::lent::{Count, In, Out, Spare, Wrote, lend_in, lend_out, lend_spare};
 use swoole_rs_corebase::sys::{ReadSlot, Text};
 use swoole_rs_reactor::{Socket, SocketFields};
 
@@ -57,13 +57,21 @@ unsafe extern "C" {
     safe fn PEM_write_bio_X509(bio: Bio<'_>, cert: CertRef<'_>) -> c_int;
     safe fn SSL_get_error(ssl: Ssl<'_>, result: c_int) -> c_int;
     /// Writes at most `length` bytes of `buffer`, the count its lending gives.
-    safe fn SSL_read<'id>(ssl: Ssl<'_>, buffer: Out<'id>, length: Count<'id, c_int>) -> c_int;
+    safe fn SSL_read<'id>(
+        ssl: Ssl<'_>,
+        buffer: Out<'id>,
+        length: Count<'id, c_int>,
+    ) -> Wrote<'id, c_int>;
     /// As `SSL_read`, leaving the bytes queued.
     safe fn SSL_peek<'id>(ssl: Ssl<'_>, buffer: Out<'id>, length: Count<'id, c_int>) -> c_int;
     /// Reads at most `length` bytes of `data`, the count its lending gives.
     safe fn SSL_write<'id>(ssl: Ssl<'_>, data: In<'id>, length: Count<'id, c_int>) -> c_int;
     /// As `SSL_read`, from the BIO.
-    safe fn BIO_read<'id>(bio: Bio<'_>, buffer: Out<'id>, length: Count<'id, c_int>) -> c_int;
+    safe fn BIO_read<'id>(
+        bio: Bio<'_>,
+        buffer: Out<'id>,
+        length: Count<'id, c_int>,
+    ) -> Wrote<'id, c_int>;
     /// As `SSL_write`, to the BIO.
     safe fn BIO_write<'id>(bio: Bio<'_>, data: In<'id>, length: Count<'id, c_int>) -> c_int;
     safe fn SSL_accept(ssl: Ssl<'_>) -> c_int;
@@ -206,9 +214,12 @@ pub struct SslFailure {
     pub code: c_int,
 }
 
-/// Clears this thread's OpenSSL error queue.
+/// Clears this thread's OpenSSL error queue. Usually it is already empty, and the peek
+/// is a quarter of the clear, which frees and zeroes all sixteen slots (#4283).
 pub fn clear_errors() {
-    ERR_clear_error();
+    if ERR_peek_error() != 0 {
+        ERR_clear_error();
+    }
 }
 
 /// This thread's oldest queued OpenSSL error, left queued.
@@ -332,9 +343,16 @@ impl<'a> Ssl<'a> {
     /// # Errors
     /// Nothing was read.
     pub fn read(self, buffer: &mut [impl ReadSlot]) -> Result<usize, SslFailure> {
-        self.count(lend_out(buffer, |at, length| {
-            SSL_read(self, at.bytes(), length)
-        }))
+        lend_spare(buffer, |spare| self.read_into(spare)).0
+    }
+
+    /// `SSL_read` into `spare`'s room.
+    ///
+    /// # Errors
+    /// Nothing was read.
+    #[inline]
+    pub fn read_into(self, spare: &mut Spare<'_>) -> Result<usize, SslFailure> {
+        self.count(spare.lend(|at, length| SSL_read(self, at, length)))
     }
 
     /// `SSL_write` of `data`.
@@ -589,10 +607,9 @@ impl Bio<'_> {
         BIO_method_type(self) == BIO_TYPE_MEM
     }
 
-    /// `BIO_read` into `buffer`: the bytes read, or None for none.
-    #[must_use]
-    pub fn read(self, buffer: &mut [impl ReadSlot]) -> Option<usize> {
-        let n = lend_out(buffer, |at, length| BIO_read(self, at.bytes(), length));
+    /// `BIO_read` into `spare`'s room: the bytes read, or None for none.
+    pub fn read(self, spare: &mut Spare<'_>) -> Option<usize> {
+        let n = spare.lend(|at, length| BIO_read(self, at, length));
         usize::try_from(n).ok().filter(|&n| n > 0)
     }
 
@@ -674,16 +691,23 @@ impl CertRef<'_> {
     /// # Errors
     /// The [`PemError`] step that failed.
     pub fn pem(self, buffer: &mut [impl ReadSlot]) -> Result<usize, PemError> {
+        lend_spare(buffer, |spare| self.pem_into(spare)).0
+    }
+
+    /// [`CertRef::pem`] into `spare`'s room.
+    ///
+    /// # Errors
+    /// The [`PemError`] step that failed.
+    pub fn pem_into(self, spare: &mut Spare<'_>) -> Result<usize, PemError> {
         let bio = OwnedBio::memory().ok_or(PemError::Bio)?;
         if PEM_write_bio_X509(bio.bio(), self) == 0 {
             return Err(PemError::Write);
         }
-        let count = bio.bio().pending().min(buffer.len());
-        if count == 0 {
+        // A memory BIO reads at most what it holds.
+        if bio.bio().pending().min(spare.room()) == 0 {
             return Ok(0);
         }
-        let read = bio.bio().read(buffer.get_mut(..count).unwrap_or_default());
-        read.ok_or(PemError::Read)
+        bio.bio().read(spare).ok_or(PemError::Read)
     }
 }
 
@@ -801,5 +825,27 @@ mod tests {
         pub(crate) unsafe fn new(ssl: *mut SSL) -> Option<Self> {
             NonNull::new(ssl).map(|ssl| Self(ssl, PhantomData))
         }
+    }
+
+    #[test]
+    fn clear_errors_empties_the_queue() {
+        // A length of -1 reads to the NUL.
+        let text = c"not a certificate";
+        unsafe {
+            let bio = openssl_sys::BIO_new_mem_buf(text.as_ptr().cast(), -1);
+            let cert = openssl_sys::PEM_read_bio_X509(
+                bio,
+                std::ptr::null_mut(),
+                None,
+                std::ptr::null_mut(),
+            );
+            assert!(cert.is_null());
+            openssl_sys::BIO_free_all(bio);
+        }
+        assert_ne!(super::peek_error(), 0, "the failed read queued an error");
+        super::clear_errors();
+        assert_eq!(super::peek_error(), 0);
+        super::clear_errors();
+        assert_eq!(super::peek_error(), 0);
     }
 }

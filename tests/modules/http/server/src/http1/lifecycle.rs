@@ -198,11 +198,6 @@ unsafe extern "C" fn shutdown_timer(_: *mut c_void, tnode: *mut TimerNode) {
 
 unsafe extern "C" fn idle_timer(_: *mut c_void, _: *mut TimerNode) {}
 
-/// `serv.onX = [](Server *, ...) -> int { return 0; }`, for `onTask` and `onReceive`.
-unsafe extern "C" fn return_ok(_: *mut c_void, _: *mut c_void, _: *mut c_void) -> c_int {
-    SW_OK
-}
-
 /// `microtime()`.
 fn now() -> f64 {
     // SAFETY: reads the clock.
@@ -219,7 +214,7 @@ fn sleep_forever() -> ! {
 fn add_user_worker(serv: Server) -> *mut WorkerRecord {
     let worker = Worker::from(Box::leak(WorkerRecord::boxed()));
     let id = worker_methods::add_worker(serv.view(), worker);
-    assert_eq!(id, Some(worker_id(worker.raw())));
+    assert_eq!(id, Some(worker.id()));
     worker.raw()
 }
 
@@ -232,10 +227,10 @@ fn delete_worker(worker: *mut WorkerRecord) {
 /// `TEST(server, create_task_worker_fail)`.
 fn create_task_worker_fail() {
     let serv = Server::new(MODE_PROCESS);
-    serv.config().worker_num = 1;
-    serv.config().task_worker_num = 2;
-    serv.config().task_enable_coroutine = true;
-    serv.config().task_ipc_mode = TASK_IPC_MSGQUEUE;
+    serv.config().worker_num.set(1);
+    serv.config().task_worker_num.set(2);
+    serv.config().task_enable_coroutine.set(true);
+    serv.config().task_ipc_mode.set(TASK_IPC_MSGQUEUE);
     set_log_warning();
 
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
@@ -258,13 +253,9 @@ unsafe extern "C" fn reload_single_timer(_: *mut c_void, tnode: *mut TimerNode) 
     timer_after(80, shutdown_timer, serv);
 }
 
-unsafe extern "C" fn reload_single_worker_start(
-    _: *mut c_void,
-    serv: *mut c_void,
-    worker: *mut WorkerRecord,
-) {
-    if worker_id(worker) == 0 {
-        timer_after(50, reload_single_timer, Server(serv));
+fn reload_single_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
+    if worker.id() == 0 {
+        timer_after(50, reload_single_timer, Server(serv.raw()));
     }
     counter_incr(1, 1);
 }
@@ -272,17 +263,14 @@ unsafe extern "C" fn reload_single_worker_start(
 /// `TEST(server, reload_single_process)`.
 fn reload_single_process() {
     let serv = Server::new(MODE_BASE);
-    serv.config().worker_num = 1;
+    serv.config().worker_num.set(1);
     counter_init();
 
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
 
-    serv.set_callback(Slot::Task, return_ok as *const c_void);
-    serv.set_callback(
-        Slot::WorkerStart,
-        reload_single_worker_start as *const c_void,
-    );
-    serv.set_callback(Slot::Receive, return_ok as *const c_void);
+    serv.set_callback(Callback::Task(task_ok));
+    serv.set_callback(Callback::WorkerStart(reload_single_worker_start));
+    serv.set_callback(Callback::Receive(receive_ok));
 
     assert_eq!(serv.create(), SW_OK);
     assert_eq!(serv.start(), SW_OK);
@@ -300,13 +288,9 @@ unsafe extern "C" fn reload_no_task_timer(_: *mut c_void, tnode: *mut TimerNode)
     timer_after(80, shutdown_timer, serv);
 }
 
-unsafe extern "C" fn reload_no_task_worker_start(
-    _: *mut c_void,
-    serv: *mut c_void,
-    worker: *mut WorkerRecord,
-) {
-    if worker_id(worker) == 0 {
-        timer_after(50, reload_no_task_timer, Server(serv));
+fn reload_no_task_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
+    if worker.id() == 0 {
+        timer_after(50, reload_no_task_timer, Server(serv.raw()));
     }
     counter_incr(1, 1);
 }
@@ -314,17 +298,14 @@ unsafe extern "C" fn reload_no_task_worker_start(
 /// `TEST(server, reload_no_task_worker)`.
 fn reload_no_task_worker() {
     let serv = Server::new(MODE_BASE);
-    serv.config().worker_num = 2;
+    serv.config().worker_num.set(2);
     counter_init();
 
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
 
-    serv.set_callback(Slot::Task, return_ok as *const c_void);
-    serv.set_callback(
-        Slot::WorkerStart,
-        reload_no_task_worker_start as *const c_void,
-    );
-    serv.set_callback(Slot::Receive, return_ok as *const c_void);
+    serv.set_callback(Callback::Task(task_ok));
+    serv.set_callback(Callback::WorkerStart(reload_no_task_worker_start));
+    serv.set_callback(Callback::Receive(receive_ok));
 
     assert_eq!(serv.create(), SW_OK);
     assert_eq!(serv.start(), SW_OK);
@@ -334,11 +315,11 @@ fn reload_no_task_worker() {
     serv.delete();
 }
 
-unsafe extern "C" fn before_reload(_: *mut c_void, _: *mut c_void) {
+fn before_reload(_: view::Server<'_>) {
     counter_incr(10, 1);
 }
 
-unsafe extern "C" fn after_reload(_: *mut c_void, _: *mut c_void) {
+fn after_reload(_: view::Server<'_>) {
     counter_incr(11, 1);
 }
 
@@ -379,50 +360,44 @@ fn reload_on_worker_start(
     }
 }
 
-unsafe extern "C" fn reload_all_workers_start(
-    _: *mut c_void,
-    serv: *mut c_void,
-    worker: *mut WorkerRecord,
-) {
-    let serv = Server(serv);
-    reload_on_worker_start(serv, worker, "/tmp/worker_1.pid", manager_pid);
+fn reload_all_workers_start(serv: view::Server<'_>, worker: Worker<'_>) {
+    let serv = Server(serv.raw());
+    reload_on_worker_start(serv, worker.raw(), "/tmp/worker_1.pid", manager_pid);
 }
 
-unsafe extern "C" fn reload_all_workers2_start(
-    _: *mut c_void,
-    serv: *mut c_void,
-    worker: *mut WorkerRecord,
-) {
-    let serv = Server(serv);
-    reload_on_worker_start(serv, worker, "/tmp/worker_2.pid", master_pid);
+fn reload_all_workers2_start(serv: view::Server<'_>, worker: Worker<'_>) {
+    let serv = Server(serv.raw());
+    reload_on_worker_start(serv, worker.raw(), "/tmp/worker_2.pid", master_pid);
 }
 
 /// `reload_all_workers`' and `reload_all_workers2`'s Server: two workers and two task
 /// workers, created.
 fn reload_server(task_enable_coroutine: bool) -> Server {
     let serv = Server::new(MODE_PROCESS);
-    serv.config().worker_num = 2;
-    serv.config().task_worker_num = 2;
-    serv.config().max_wait_time = 1;
-    serv.config().task_enable_coroutine = task_enable_coroutine;
+    serv.config().worker_num.set(2);
+    serv.config().task_worker_num.set(2);
+    serv.config().max_wait_time.set(1);
+    serv.config()
+        .task_enable_coroutine
+        .set(task_enable_coroutine);
     counter_init();
     set_log_warning();
 
     serv.add_port(SW_SOCK_TCP, TEST_HOST, 0);
-    serv.set_callback(Slot::Task, return_ok as *const c_void);
-    serv.set_callback(Slot::Receive, return_ok as *const c_void);
+    serv.set_callback(Callback::Task(task_ok));
+    serv.set_callback(Callback::Receive(receive_ok));
 
     assert_eq!(serv.create(), SW_OK);
 
-    serv.set_callback(Slot::BeforeReload, before_reload as *const c_void);
-    serv.set_callback(Slot::AfterReload, after_reload as *const c_void);
+    serv.set_callback(Callback::BeforeReload(before_reload));
+    serv.set_callback(Callback::AfterReload(after_reload));
     serv
 }
 
 /// `TEST(server, reload_all_workers)`: the manager is signalled.
 fn reload_all_workers() {
     let serv = reload_server(true);
-    serv.set_callback(Slot::WorkerStart, reload_all_workers_start as *const c_void);
+    serv.set_callback(Callback::WorkerStart(reload_all_workers_start));
 
     assert_eq!(serv.start(), 0);
     assert_eq!(counter_get(10), 2); // onBeforeReload called
@@ -434,10 +409,7 @@ fn reload_all_workers() {
 /// `TEST(server, reload_all_workers2)`: the master is signalled.
 fn reload_all_workers2() {
     let serv = reload_server(false);
-    serv.set_callback(
-        Slot::WorkerStart,
-        reload_all_workers2_start as *const c_void,
-    );
+    serv.set_callback(Callback::WorkerStart(reload_all_workers2_start));
 
     assert_eq!(serv.start(), 0);
     assert_eq!(counter_get(10), 2); // onBeforeReload called
@@ -446,27 +418,19 @@ fn reload_all_workers2() {
     serv.delete();
 }
 
-unsafe extern "C" fn kill_user_workers_user_start(
-    _: *mut c_void,
-    _: *mut c_void,
-    worker: *mut WorkerRecord,
-) {
-    expect(worker_id(worker) > 0, "worker->id > 0");
+fn kill_user_workers_user_start(_: view::Server<'_>, worker: Worker<'_>) {
+    expect(worker.id() > 0, "worker->id > 0");
     sleep_forever();
 }
 
-unsafe extern "C" fn sleeping_task(_: *mut c_void, _: *mut c_void, _: *mut c_void) -> c_int {
+fn sleeping_task(_: view::Server<'_>, _: Packed<'_>) -> c_int {
     sleep_forever();
 }
 
-unsafe extern "C" fn kill_user_workers_start(
-    _: *mut c_void,
-    serv: *mut c_void,
-    worker: *mut WorkerRecord,
-) {
-    if worker_id(worker) == 1 {
+fn kill_user_workers_start(serv: view::Server<'_>, worker: Worker<'_>) {
+    if worker.id() == 1 {
         sleep(1.0);
-        signal(manager_pid(Server(serv)), SIGTERM);
+        signal(manager_pid(Server(serv.raw())), SIGTERM);
     }
 }
 
@@ -474,9 +438,9 @@ unsafe extern "C" fn kill_user_workers_start(
 fn kill_user_workers() {
     counters();
     let serv = Server::new(MODE_BASE);
-    serv.config().worker_num = 1;
-    serv.config().task_worker_num = 2;
-    serv.config().max_wait_time = 1;
+    serv.config().worker_num.set(1);
+    serv.config().task_worker_num.set(2);
+    serv.config().max_wait_time.set(1);
     set_log_warning();
 
     let worker1 = add_user_worker(serv);
@@ -485,13 +449,10 @@ fn kill_user_workers() {
 
     assert_eq!(serv.create(), SW_OK);
 
-    serv.set_callback(
-        Slot::UserWorkerStart,
-        kill_user_workers_user_start as *const c_void,
-    );
-    serv.set_callback(Slot::Task, sleeping_task as *const c_void);
-    serv.set_callback(Slot::WorkerStart, kill_user_workers_start as *const c_void);
-    serv.set_callback(Slot::Receive, return_ok as *const c_void);
+    serv.set_callback(Callback::UserWorkerStart(kill_user_workers_user_start));
+    serv.set_callback(Callback::Task(sleeping_task));
+    serv.set_callback(Callback::WorkerStart(kill_user_workers_start));
+    serv.set_callback(Callback::Receive(receive_ok));
 
     assert_eq!(serv.start(), 0);
     delete_worker(worker1);
@@ -500,34 +461,30 @@ fn kill_user_workers() {
     serv.delete();
 }
 
-unsafe extern "C" fn force_kill_user_start(_: *mut c_void, _: *mut c_void, _: *mut WorkerRecord) {
+fn force_kill_user_start(_: view::Server<'_>, _: Worker<'_>) {
     counter_incr(1, 1);
     sleep_forever();
 }
 
-unsafe extern "C" fn force_kill_worker_start(
-    _: *mut c_void,
-    serv: *mut c_void,
-    _: *mut WorkerRecord,
-) {
+fn force_kill_worker_start(serv: view::Server<'_>, _: Worker<'_>) {
     counter_incr(1, 1);
     if is_task_worker() {
         sleep_forever();
     }
-    timer_tick(10000, idle_timer, Server(serv));
+    timer_tick(10000, idle_timer, Server(serv.raw()));
 }
 
-unsafe extern "C" fn force_kill_manager_start(_: *mut c_void, serv: *mut c_void) {
-    timer_after(200, shutdown_timer, Server(serv));
+fn force_kill_manager_start(serv: view::Server<'_>) {
+    timer_after(200, shutdown_timer, Server(serv.raw()));
 }
 
 /// `TEST(server, force_kill_all_workers)`.
 fn force_kill_all_workers() {
     counters();
     let serv = Server::new(MODE_PROCESS);
-    serv.config().worker_num = 2;
-    serv.config().task_worker_num = 3;
-    serv.config().max_wait_time = 1;
+    serv.config().worker_num.set(2);
+    serv.config().task_worker_num.set(3);
+    serv.config().max_wait_time.set(1);
     set_log_warning();
 
     let worker1 = add_user_worker(serv);
@@ -536,17 +493,11 @@ fn force_kill_all_workers() {
 
     assert_eq!(serv.create(), SW_OK);
 
-    serv.set_callback(
-        Slot::UserWorkerStart,
-        force_kill_user_start as *const c_void,
-    );
-    serv.set_callback(Slot::Task, return_ok as *const c_void);
-    serv.set_callback(Slot::WorkerStart, force_kill_worker_start as *const c_void);
-    serv.set_callback(Slot::Receive, return_ok as *const c_void);
-    serv.set_callback(
-        Slot::ManagerStart,
-        force_kill_manager_start as *const c_void,
-    );
+    serv.set_callback(Callback::UserWorkerStart(force_kill_user_start));
+    serv.set_callback(Callback::Task(task_ok));
+    serv.set_callback(Callback::WorkerStart(force_kill_worker_start));
+    serv.set_callback(Callback::Receive(receive_ok));
+    serv.set_callback(Callback::ManagerStart(force_kill_manager_start));
 
     assert_eq!(serv.start(), 0);
     assert_eq!(counter_get(1), 7);
@@ -557,28 +508,20 @@ fn force_kill_all_workers() {
     serv.delete();
 }
 
-unsafe extern "C" fn kill_user_workers1_user_start(
-    _: *mut c_void,
-    _: *mut c_void,
-    worker: *mut WorkerRecord,
-) {
-    expect(worker_id(worker) > 0, "worker->id > 0");
+fn kill_user_workers1_user_start(_: view::Server<'_>, worker: Worker<'_>) {
+    expect(worker.id() > 0, "worker->id > 0");
 }
 
-unsafe extern "C" fn spinning_task(_: *mut c_void, _: *mut c_void, _: *mut c_void) -> c_int {
+fn spinning_task(_: view::Server<'_>, _: Packed<'_>) -> c_int {
     loop {
         std::hint::spin_loop();
     }
 }
 
-unsafe extern "C" fn kill_user_workers1_start(
-    _: *mut c_void,
-    serv: *mut c_void,
-    worker: *mut WorkerRecord,
-) {
-    if worker_id(worker) == 1 {
+fn kill_user_workers1_start(serv: view::Server<'_>, worker: Worker<'_>) {
+    if worker.id() == 1 {
         sleep(1.0);
-        signal(master_pid(Server(serv)), SIGTERM);
+        signal(master_pid(Server(serv.raw())), SIGTERM);
     }
 }
 
@@ -586,9 +529,9 @@ unsafe extern "C" fn kill_user_workers1_start(
 fn kill_user_workers1() {
     counters();
     let serv = Server::new(MODE_PROCESS);
-    serv.config().worker_num = 1;
-    serv.config().task_worker_num = 2;
-    serv.config().max_wait_time = 1;
+    serv.config().worker_num.set(1);
+    serv.config().task_worker_num.set(2);
+    serv.config().max_wait_time.set(1);
     set_log_warning();
 
     add_user_worker(serv);
@@ -598,20 +541,17 @@ fn kill_user_workers1() {
 
     assert_eq!(serv.create(), SW_OK);
 
-    serv.set_callback(
-        Slot::UserWorkerStart,
-        kill_user_workers1_user_start as *const c_void,
-    );
-    serv.set_callback(Slot::Task, spinning_task as *const c_void);
-    serv.set_callback(Slot::WorkerStart, kill_user_workers1_start as *const c_void);
-    serv.set_callback(Slot::Receive, return_ok as *const c_void);
+    serv.set_callback(Callback::UserWorkerStart(kill_user_workers1_user_start));
+    serv.set_callback(Callback::Task(spinning_task));
+    serv.set_callback(Callback::WorkerStart(kill_user_workers1_start));
+    serv.set_callback(Callback::Receive(receive_ok));
 
     assert_eq!(serv.start(), 0);
     assert_no_failure();
     serv.delete();
 }
 
-unsafe extern "C" fn count_worker_start(_: *mut c_void, _: *mut c_void, _: *mut WorkerRecord) {
+fn count_worker_start(_: view::Server<'_>, _: Worker<'_>) {
     counter_incr(1, 1);
 }
 
@@ -630,8 +570,8 @@ unsafe extern "C" fn reload_thread_timer(_: *mut c_void, tnode: *mut TimerNode) 
 }
 
 /// `onManagerStart`: reload every worker after 500 ms.
-unsafe extern "C" fn reload_thread_manager_start(_: *mut c_void, serv: *mut c_void) {
-    timer_after(500, reload_thread_timer, Server(serv));
+fn reload_thread_manager_start(serv: view::Server<'_>) {
+    timer_after(500, reload_thread_timer, Server(serv.raw()));
 }
 
 unsafe extern "C" fn reload_thread_shutdown(_: *mut c_void, tnode: *mut TimerNode) {
@@ -639,25 +579,25 @@ unsafe extern "C" fn reload_thread_shutdown(_: *mut c_void, tnode: *mut TimerNod
     shutdown(timer_server(tnode));
 }
 
-unsafe extern "C" fn reload_thread_manager_stop(_: *mut c_void, _: *mut c_void) {
+fn reload_thread_manager_stop(_: view::Server<'_>) {
     counter_set(ON_MANAGER_STOP, 1);
 }
 
-unsafe extern "C" fn reload_thread_before_reload(_: *mut c_void, _: *mut c_void) {
+fn reload_thread_before_reload(_: view::Server<'_>) {
     counter_set(ON_BEFORE_RELOAD, 1);
 }
 
-unsafe extern "C" fn count_thread_worker_start(_: *mut c_void, _: *mut c_void, _: *mut c_void) {
+fn count_thread_worker_start(_: view::Server<'_>, _: Worker<'_>) {
     counter_incr(WORKER_STARTS, 1);
 }
 
 /// `reload_thread_2`'s `onAfterReload`: shut down 500 ms later.
-unsafe extern "C" fn reload_thread_2_after_reload(_: *mut c_void, serv: *mut c_void) {
+fn reload_thread_2_after_reload(serv: view::Server<'_>) {
     counter_set(ON_AFTER_RELOAD, 1);
-    timer_after(500, reload_thread_shutdown, Server(serv));
+    timer_after(500, reload_thread_shutdown, Server(serv.raw()));
 }
 
-unsafe extern "C" fn reload_thread_2_user_start(_: *mut c_void, _: *mut c_void, _: *mut c_void) {
+fn reload_thread_2_user_start(_: view::Server<'_>, _: Worker<'_>) {
     std::thread::sleep(Duration::from_millis(500));
     counter_incr(USER_WORKER_STARTS, 1);
 }
@@ -666,7 +606,7 @@ unsafe extern "C" fn reload_thread_2_user_start(_: *mut c_void, _: *mut c_void, 
 /// manager's 500 ms reload; `create` comes after `prepare`.
 fn reload_thread_server(prepare: impl FnOnce(Server)) -> Server {
     let serv = Server::new(MODE_THREAD);
-    serv.config().worker_num = 2;
+    serv.config().worker_num.set(2);
     counter_init();
     case::log_level(case::SW_LOG_INFO);
 
@@ -674,19 +614,10 @@ fn reload_thread_server(prepare: impl FnOnce(Server)) -> Server {
     prepare(serv);
     assert_eq!(serv.create(), SW_OK);
 
-    serv.set_callback(
-        Slot::WorkerStart,
-        count_thread_worker_start as *const c_void,
-    );
-    serv.set_callback(Slot::Receive, return_ok as *const c_void);
-    serv.set_callback(
-        Slot::ManagerStart,
-        reload_thread_manager_start as *const c_void,
-    );
-    serv.set_callback(
-        Slot::ManagerStop,
-        reload_thread_manager_stop as *const c_void,
-    );
+    serv.set_callback(Callback::WorkerStart(count_thread_worker_start));
+    serv.set_callback(Callback::Receive(receive_ok));
+    serv.set_callback(Callback::ManagerStart(reload_thread_manager_start));
+    serv.set_callback(Callback::ManagerStop(reload_thread_manager_stop));
     serv
 }
 
@@ -695,22 +626,13 @@ fn reload_thread_server(prepare: impl FnOnce(Server)) -> Server {
 fn reload_thread_2() {
     let mut user_worker = ptr::null_mut();
     let serv = reload_thread_server(|serv| {
-        serv.config().task_worker_num = 2;
+        serv.config().task_worker_num.set(2);
         user_worker = add_user_worker(serv);
     });
-    serv.set_callback(Slot::Task, return_ok as *const c_void);
-    serv.set_callback(
-        Slot::UserWorkerStart,
-        reload_thread_2_user_start as *const c_void,
-    );
-    serv.set_callback(
-        Slot::BeforeReload,
-        reload_thread_before_reload as *const c_void,
-    );
-    serv.set_callback(
-        Slot::AfterReload,
-        reload_thread_2_after_reload as *const c_void,
-    );
+    serv.set_callback(Callback::Task(task_ok));
+    serv.set_callback(Callback::UserWorkerStart(reload_thread_2_user_start));
+    serv.set_callback(Callback::BeforeReload(reload_thread_before_reload));
+    serv.set_callback(Callback::AfterReload(reload_thread_2_after_reload));
 
     assert_eq!(serv.start(), SW_OK);
 
@@ -726,16 +648,16 @@ fn reload_thread_2() {
 }
 
 /// `reload_thread`'s `onUserWorkerStart`: until the server stops.
-unsafe extern "C" fn reload_thread_user_start(_: *mut c_void, serv: *mut c_void, _: *mut c_void) {
-    let config = Server(serv).config();
-    // SAFETY: the running server's flag, which shutdown clears from another thread; read
-    // anew each time, as upstream's loop reads `serv->running`.
-    while unsafe { ptr::read_volatile(&raw const config.running) } {
+fn reload_thread_user_start(serv: view::Server<'_>, _: Worker<'_>) {
+    let config = Server(serv.raw()).config();
+    // The running server's flag, which shutdown clears from another thread; read anew
+    // each time, as upstream's loop reads `serv->running`.
+    while config.running.load(Ordering::SeqCst) {
         sleep(0.1);
     }
 }
 
-unsafe extern "C" fn unlock_on_manager_start(_: *mut c_void, _: *mut c_void) {
+fn unlock_on_manager_start(_: view::Server<'_>) {
     unlock();
 }
 
@@ -745,7 +667,7 @@ unsafe extern "C" fn unlock_on_manager_start(_: *mut c_void, _: *mut c_void) {
 fn reload_thread() {
     let mut user_worker = ptr::null_mut();
     let serv = reload_thread_server(|serv| {
-        serv.config().task_worker_num = 2;
+        serv.config().task_worker_num.set(2);
         user_worker = add_user_worker(serv);
     });
     client_thread(
@@ -767,12 +689,9 @@ fn reload_thread() {
             swoole_rs_corebase::swoole_thread_clean(false);
         },
     );
-    serv.set_callback(Slot::Task, return_ok as *const c_void);
-    serv.set_callback(
-        Slot::UserWorkerStart,
-        reload_thread_user_start as *const c_void,
-    );
-    serv.set_callback(Slot::ManagerStart, unlock_on_manager_start as *const c_void);
+    serv.set_callback(Callback::Task(task_ok));
+    serv.set_callback(Callback::UserWorkerStart(reload_thread_user_start));
+    serv.set_callback(Callback::ManagerStart(unlock_on_manager_start));
 
     assert_eq!(serv.start(), SW_OK);
     join_client();
@@ -786,9 +705,9 @@ fn reload_thread() {
 
 /// `reload_thread_3`'s `onAfterReload`: a task-worker reload is refused (there are none),
 /// then the server shuts down 500 ms later.
-unsafe extern "C" fn reload_thread_3_after_reload(_: *mut c_void, serv: *mut c_void) {
+fn reload_thread_3_after_reload(serv: view::Server<'_>) {
     counter_set(ON_AFTER_RELOAD, 1);
-    let serv = Server(serv);
+    let serv = Server(serv.raw());
     expect(!reload(serv, false), "!serv->reload(false)");
     expect(
         last_error() == SW_ERROR_OPERATION_NOT_SUPPORT,
@@ -800,10 +719,7 @@ unsafe extern "C" fn reload_thread_3_after_reload(_: *mut c_void, serv: *mut c_v
 /// `TEST(server, reload_thread_3)`.
 fn reload_thread_3() {
     let serv = reload_thread_server(|_| {});
-    serv.set_callback(
-        Slot::AfterReload,
-        reload_thread_3_after_reload as *const c_void,
-    );
+    serv.set_callback(Callback::AfterReload(reload_thread_3_after_reload));
 
     assert_eq!(serv.start(), SW_OK);
 
@@ -819,13 +735,13 @@ fn reload_thread_3() {
 /// `TEST(server, restart_worker_process)`.
 fn restart_worker_process() {
     let serv = Server::new(MODE_BASE);
-    serv.config().worker_num = 1;
-    serv.config().task_worker_num = 2;
+    serv.config().worker_num.set(1);
+    serv.config().task_worker_num.set(2);
     counter_init();
 
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
 
-    serv.set_callback(Slot::WorkerStart, count_worker_start as *const c_void);
+    serv.set_callback(Callback::WorkerStart(count_worker_start));
 
     assert_eq!(serv.create(), SW_OK);
 
@@ -835,7 +751,7 @@ fn restart_worker_process() {
     // SAFETY: the created server's event pool, which follows its task pool, and its
     // event workers; then the task worker, and the task pool it joins.
     unsafe {
-        (*pool.add(1)).set_workers(serv.config().workers.cast());
+        (*pool.add(1)).set_workers(serv.config().workers.as_ptr().cast());
         Worker::new(worker).set_pid(pid());
         swoole_rs_process::methods::add_worker(&*pool, Worker::new(worker));
     }
@@ -870,7 +786,7 @@ unsafe extern "C" fn reload_watchdog_tick(_: *mut c_void, tnode: *mut TimerNode)
             counter_get(25)
         );
         let config = serv.config();
-        for i in 0..config.worker_num + config.task_worker_num {
+        for i in 0..config.worker_num.get() + config.task_worker_num.get() {
             let worker = serv.view().worker(u16::try_from(i).unwrap());
             // SAFETY: one of the server's workers.
             let worker_pid = unsafe { Worker::new(worker) }.pid();
@@ -892,8 +808,8 @@ fn reload_watchdog(serv: Server) {
     timer_tick(10, reload_watchdog_tick, serv);
 }
 
-unsafe extern "C" fn worker_error_start(_: *mut c_void, _: *mut c_void, worker: *mut WorkerRecord) {
-    let id = worker_id(worker);
+fn worker_error_start(_: view::Server<'_>, worker: Worker<'_>) {
+    let id = worker.id();
     if counter_incr(id as usize, 1) == 1 && id == 0 {
         while counter_get(8) == 0 {
             sleep(0.001);
@@ -903,27 +819,21 @@ unsafe extern "C" fn worker_error_start(_: *mut c_void, _: *mut c_void, worker: 
     }
 }
 
-unsafe extern "C" fn worker_error_manager_start(_: *mut c_void, _: *mut c_void) {
+fn worker_error_manager_start(_: view::Server<'_>) {
     counter_set(8, 1);
 }
 
-unsafe extern "C" fn worker_error_on_error(
-    _: *mut c_void,
-    serv: *mut c_void,
-    _: *mut WorkerRecord,
-    status: *const ExitStatus,
-) {
-    // SAFETY: the exit status the server passed the callback.
-    let code = (unsafe { &*status }.status() >> 8) & 0xff;
+fn worker_error_on_error(serv: view::Server<'_>, _: Worker<'_>, status: &ExitStatus) {
+    let code = (status.status() >> 8) & 0xff;
     if code != 42
         || counter_incr(27, 1) != 1
-        || !reload(Server(serv), !TASK_ONLY.load(Ordering::SeqCst))
+        || !reload(Server(serv.raw()), !TASK_ONLY.load(Ordering::SeqCst))
     {
         counter_incr(26, 1);
     }
 }
 
-unsafe extern "C" fn worker_error_before_reload(_: *mut c_void, _: *mut c_void) {
+fn worker_error_before_reload(_: view::Server<'_>) {
     // The error callback requests reload before its crashed worker is respawned.
     // Wait until the replacement and task worker have installed their signal handlers.
     let deadline = now() + 3.0;
@@ -933,15 +843,15 @@ unsafe extern "C" fn worker_error_before_reload(_: *mut c_void, _: *mut c_void) 
     counter_incr(24, 1);
 }
 
-unsafe extern "C" fn worker_error_after_reload(_: *mut c_void, _: *mut c_void) {
+fn worker_error_after_reload(_: view::Server<'_>) {
     if counter_get(24) != 1 {
         counter_incr(26, 1);
     }
     counter_incr(25, 1);
 }
 
-unsafe extern "C" fn worker_error_start_server(_: *mut c_void, serv: *mut c_void) {
-    reload_watchdog(Server(serv));
+fn worker_error_start_server(serv: view::Server<'_>) {
+    reload_watchdog(Server(serv.raw()));
 }
 
 /// `test_reload_from_worker_error(task_only)`: a reload requested by a manager callback
@@ -949,30 +859,21 @@ unsafe extern "C" fn worker_error_start_server(_: *mut c_void, serv: *mut c_void
 fn test_reload_from_worker_error(task_only: bool) {
     TASK_ONLY.store(task_only, Ordering::SeqCst);
     let serv = Server::new(MODE_PROCESS);
-    serv.config().worker_num = 1;
-    serv.config().task_worker_num = 1;
-    serv.config().reload_async = false;
-    serv.config().max_wait_time = 1;
+    serv.config().worker_num.set(1);
+    serv.config().task_worker_num.set(1);
+    serv.config().reload_async.set(false);
+    serv.config().max_wait_time.set(1);
     counter_init();
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
     assert_eq!(serv.create(), SW_OK);
-    serv.set_callback(Slot::Task, return_ok as *const c_void);
-    serv.set_callback(Slot::Receive, return_ok as *const c_void);
-    serv.set_callback(Slot::WorkerStart, worker_error_start as *const c_void);
-    serv.set_callback(
-        Slot::ManagerStart,
-        worker_error_manager_start as *const c_void,
-    );
-    serv.set_callback(Slot::WorkerError, worker_error_on_error as *const c_void);
-    serv.set_callback(
-        Slot::BeforeReload,
-        worker_error_before_reload as *const c_void,
-    );
-    serv.set_callback(
-        Slot::AfterReload,
-        worker_error_after_reload as *const c_void,
-    );
-    serv.set_callback(Slot::Start, worker_error_start_server as *const c_void);
+    serv.set_callback(Callback::Task(task_ok));
+    serv.set_callback(Callback::Receive(receive_ok));
+    serv.set_callback(Callback::WorkerStart(worker_error_start));
+    serv.set_callback(Callback::ManagerStart(worker_error_manager_start));
+    serv.set_callback(Callback::WorkerError(worker_error_on_error));
+    serv.set_callback(Callback::BeforeReload(worker_error_before_reload));
+    serv.set_callback(Callback::AfterReload(worker_error_after_reload));
+    serv.set_callback(Callback::Start(worker_error_start_server));
     assert_eq!(serv.start(), SW_OK);
     assert_eq!(counter_get(31), 0);
     assert_eq!(counter_get(26), 0);
@@ -1040,59 +941,57 @@ fn kill_options() -> Options {
     *KILL_OPTIONS.lock().unwrap()
 }
 
-unsafe extern "C" fn kill_on_connect(_: *mut c_void, _: *mut c_void, ev: *mut DataHead) {
-    // SAFETY: the event head the server passed the callback.
-    counter_set(4, unsafe { (*ev).fd } as i32);
+fn kill_on_connect(_: view::Server<'_>, ev: &DataHead) {
+    counter_set(4, ev.fd as i32);
     counter_set(5, worker_id(current_worker()).cast_signed());
 }
 
-unsafe extern "C" fn kill_on_receive(
-    _: *mut c_void,
-    serv: *mut c_void,
-    req: *mut RecvData,
-) -> c_int {
+fn kill_on_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let (session, _) = request(req);
-    Server(serv).send(session, b"OK");
+    Server(serv.raw()).send(session, b"OK");
     counter_incr(0, 1);
     SW_OK
 }
 
-unsafe extern "C" fn kill_on_worker_stop(_: *mut c_void, serv: *mut c_void, _: *mut WorkerRecord) {
+fn kill_on_worker_stop(serv: view::Server<'_>, _: Worker<'_>) {
     super::timeline::mark("worker stop");
-    server_methods::close(Server(serv).view(), c_long::from(counter_get(4)), false);
-    event_worker::native::drain_worker_pipe(Server(serv).view());
+    server_methods::close(
+        Server(serv.raw()).view(),
+        c_long::from(counter_get(4)),
+        false,
+    );
+    event_worker::native::drain_worker_pipe(Server(serv.raw()).view());
 }
 
-unsafe extern "C" fn kill_self_on_worker_stop(
-    _: *mut c_void,
-    serv: *mut c_void,
-    _: *mut WorkerRecord,
-) {
-    server_methods::close(Server(serv).view(), c_long::from(counter_get(4)), false);
+fn kill_self_on_worker_stop(serv: view::Server<'_>, _: Worker<'_>) {
+    server_methods::close(
+        Server(serv.raw()).view(),
+        c_long::from(counter_get(4)),
+        false,
+    );
 }
 
-unsafe extern "C" fn kill_on_close(_: *mut c_void, _: *mut c_void, _: *mut DataHead) {
+fn kill_on_close(_: view::Server<'_>, _: &DataHead) {
     counter_incr(2, 1);
 }
 
-unsafe extern "C" fn kill_on_worker_start(
-    _: *mut c_void,
-    serv: *mut c_void,
-    worker: *mut WorkerRecord,
-) {
+fn kill_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
     super::timeline::mark("worker start");
     let options = kill_options();
     let c = counter_incr(1, 1) - 1;
     if options.worker_exit_callback {
-        TEST_TIMER.store(timer_tick(5000, idle_timer, Server(serv)), Ordering::SeqCst);
+        TEST_TIMER.store(
+            timer_tick(5000, idle_timer, Server(serv.raw())),
+            Ordering::SeqCst,
+        );
     }
 
-    if c < 2 && options.test_shutdown_event && worker_id(worker) == 0 {
+    if c < 2 && options.test_shutdown_event && worker.id() == 0 {
         // SAFETY: zeroed is `ev.info = {}`.
         let mut ev: DataHead = unsafe { std::mem::zeroed() };
-        ev.type_ = SW_SERVER_EVENT_SHUTDOWN;
+        ev.kind = SW_SERVER_EVENT_SHUTDOWN;
         ev.len = 0;
-        let dst = Server(serv).view().worker(1);
+        let dst = Server(serv.raw()).view().worker(1);
         // SAFETY: worker 1 of the running server; the event's head.
         let (dst, head) = unsafe {
             (
@@ -1113,24 +1012,22 @@ unsafe extern "C" fn kill_on_worker_start(
     }
 }
 
-unsafe extern "C" fn kill_on_worker_exit(_: *mut c_void, _: *mut c_void, _: *mut WorkerRecord) {
+fn kill_on_worker_exit(_: view::Server<'_>, _: Worker<'_>) {
     // SAFETY: clears this worker's timer by its id.
     unsafe { swoole_timer_clear(TEST_TIMER.load(Ordering::SeqCst)) };
     counter_incr(6, 1);
 }
 
-unsafe extern "C" fn kill_on_start(_: *mut c_void, serv: *mut c_void) {
-    if current_worker().is_null() && !check(!kill_worker(Server(serv), -1), "!kill_worker(-1)") {
+fn kill_on_start(serv: view::Server<'_>) {
+    if current_worker().is_null()
+        && !check(!kill_worker(Server(serv.raw()), -1), "!kill_worker(-1)")
+    {
         return;
     }
     unlock();
 }
 
-unsafe extern "C" fn kill_self_on_worker_start(
-    _: *mut c_void,
-    _: *mut c_void,
-    _: *mut WorkerRecord,
-) {
+fn kill_self_on_worker_start(_: view::Server<'_>, _: Worker<'_>) {
     counter_incr(1, 1);
 }
 
@@ -1183,8 +1080,8 @@ fn kill_client(serv: Server, port: u16, victim: fn() -> c_int) -> JoinHandle<()>
 fn test_kill_worker(mode: c_int, options: Options) {
     *KILL_OPTIONS.lock().unwrap() = options;
     let serv = Server::new(mode);
-    serv.config().worker_num = 2;
-    serv.config().reload_async = options.reload_async;
+    serv.config().worker_num.set(2);
+    serv.config().reload_async.set(options.reload_async);
 
     counter_init();
 
@@ -1193,15 +1090,15 @@ fn test_kill_worker(mode: c_int, options: Options) {
 
     assert_eq!(serv.create(), SW_OK);
 
-    serv.set_callback(Slot::Connect, kill_on_connect as *const c_void);
-    serv.set_callback(Slot::Receive, kill_on_receive as *const c_void);
-    serv.set_callback(Slot::WorkerStop, kill_on_worker_stop as *const c_void);
-    serv.set_callback(Slot::Close, kill_on_close as *const c_void);
-    serv.set_callback(Slot::WorkerStart, kill_on_worker_start as *const c_void);
+    serv.set_callback(Callback::Connect(kill_on_connect));
+    serv.set_callback(Callback::Receive(kill_on_receive));
+    serv.set_callback(Callback::WorkerStop(kill_on_worker_stop));
+    serv.set_callback(Callback::Close(kill_on_close));
+    serv.set_callback(Callback::WorkerStart(kill_on_worker_start));
     if options.worker_exit_callback {
-        serv.set_callback(Slot::WorkerExit, kill_on_worker_exit as *const c_void);
+        serv.set_callback(Callback::WorkerExit(kill_on_worker_exit));
     }
-    serv.set_callback(Slot::Start, kill_on_start as *const c_void);
+    serv.set_callback(Callback::Start(kill_on_start));
 
     let t = kill_client(serv, port.unwrap().port(), || 1 - counter_get(5));
 
@@ -1320,7 +1217,7 @@ fn shutdown_event() {
 /// `test_kill_self(mode)`: its counters are `sw_mem_pool()` memory, as `test::counter_*`'s.
 fn test_kill_self(mode: c_int) {
     let serv = Server::new(mode);
-    serv.config().worker_num = 2;
+    serv.config().worker_num.set(2);
 
     counters();
 
@@ -1329,15 +1226,12 @@ fn test_kill_self(mode: c_int) {
 
     assert_eq!(serv.create(), SW_OK);
 
-    serv.set_callback(Slot::Connect, kill_on_connect as *const c_void);
-    serv.set_callback(Slot::Receive, kill_on_receive as *const c_void);
-    serv.set_callback(Slot::WorkerStop, kill_self_on_worker_stop as *const c_void);
-    serv.set_callback(Slot::Close, kill_on_close as *const c_void);
-    serv.set_callback(
-        Slot::WorkerStart,
-        kill_self_on_worker_start as *const c_void,
-    );
-    serv.set_callback(Slot::Start, kill_on_start as *const c_void);
+    serv.set_callback(Callback::Connect(kill_on_connect));
+    serv.set_callback(Callback::Receive(kill_on_receive));
+    serv.set_callback(Callback::WorkerStop(kill_self_on_worker_stop));
+    serv.set_callback(Callback::Close(kill_on_close));
+    serv.set_callback(Callback::WorkerStart(kill_self_on_worker_start));
+    serv.set_callback(Callback::Start(kill_on_start));
 
     let t = kill_client(serv, port.unwrap().port(), || counter_get(5));
 
@@ -1386,22 +1280,19 @@ fn send_packet(port: u16) {
     }
 }
 
-unsafe extern "C" fn before_shutdown(_: *mut c_void, _: *mut c_void) {
+fn before_shutdown(_: view::Server<'_>) {
     counter_incr(10, 1);
 }
 
-unsafe extern "C" fn base_worker_start(_: *mut c_void, _: *mut c_void, _: *mut WorkerRecord) {
+fn base_worker_start(_: view::Server<'_>, _: Worker<'_>) {
     unlock();
 }
 
-unsafe extern "C" fn base_receive(_: *mut c_void, serv: *mut c_void, req: *mut RecvData) -> c_int {
-    let serv = Server(serv);
+fn base_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+    let serv = Server(serv.raw());
     let (session, data) = request(req);
     expect(data == PACKET, "string(req->data, req->info.len) == packet");
     let conn = serv.get_connection_by_session_id(session);
-    // SAFETY: the running server's live connection, laid out as the crate's record.
-    let conn = unsafe { &*ptr::from_ref(conn).cast::<swoole_rs_server::ConnectionRecord>() };
-    let conn = swoole_rs_server::Connection::from(conn);
     let addr = swoole_rs_server::local_addr::get_local_addr(serv.view(), conn);
     expect(addr != c"unknown", "serv->get_local_addr(conn) != unknown");
 
@@ -1465,7 +1356,7 @@ unsafe extern "C" fn base_receive(_: *mut c_void, serv: *mut c_void, req: *mut R
     SW_OK
 }
 
-unsafe extern "C" fn base_on_start(_: *mut c_void, _: *mut c_void) {
+fn base_on_start(_: view::Server<'_>) {
     check(
         std::fs::File::open(PID_FILE).is_ok(),
         "access(serv->pid_file, R_OK) == 0",
@@ -1476,7 +1367,7 @@ unsafe extern "C" fn base_on_start(_: *mut c_void, _: *mut c_void) {
 /// left the build with `Server::add_hook` (#1535).
 fn test_base() {
     let serv = Server::new(MODE_BASE);
-    serv.config().worker_num = 1;
+    serv.config().worker_num.set(1);
     serv.set_text(swoole_rs_server::ServerText::PidFile, PID_FILE);
 
     counter_init();
@@ -1503,10 +1394,10 @@ fn test_base() {
         super::kill_self();
     });
 
-    serv.set_callback(Slot::WorkerStart, base_worker_start as *const c_void);
-    serv.set_callback(Slot::Receive, base_receive as *const c_void);
-    serv.set_callback(Slot::Start, base_on_start as *const c_void);
-    serv.set_callback(Slot::BeforeShutdown, before_shutdown as *const c_void);
+    serv.set_callback(Callback::WorkerStart(base_worker_start));
+    serv.set_callback(Callback::Receive(base_receive));
+    serv.set_callback(Callback::Start(base_on_start));
+    serv.set_callback(Callback::BeforeShutdown(before_shutdown));
 
     serv.start();
     t1.join().unwrap();
@@ -1533,12 +1424,8 @@ unsafe extern "C" fn process_kill_timer(_: *mut c_void, tnode: *mut TimerNode) {
     kill_worker(timer_server(tnode), id as c_int);
 }
 
-unsafe extern "C" fn process_receive(
-    _: *mut c_void,
-    serv: *mut c_void,
-    req: *mut RecvData,
-) -> c_int {
-    let serv = Server(serv);
+fn process_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+    let serv = Server(serv.raw());
     let (session, data) = request(req);
     expect(data == PACKET, "string(req->data, req->info.len) == packet");
 
@@ -1558,8 +1445,8 @@ unsafe extern "C" fn process_receive(
     SW_OK
 }
 
-unsafe extern "C" fn process_on_start(_: *mut c_void, serv: *mut c_void) {
-    let serv = Server(serv);
+fn process_on_start(serv: view::Server<'_>) {
+    let serv = Server(serv.raw());
     let t1 = std::thread::spawn(move || {
         block_all_signals();
 
@@ -1591,12 +1478,8 @@ unsafe extern "C" fn process_on_start(_: *mut c_void, serv: *mut c_void) {
     );
 }
 
-unsafe extern "C" fn process_worker_start(
-    _: *mut c_void,
-    _: *mut c_void,
-    worker: *mut WorkerRecord,
-) {
-    if worker_id(worker) == 0 {
+fn process_worker_start(_: view::Server<'_>, worker: Worker<'_>) {
+    if worker.id() == 0 {
         let fd = PROCESS_LOCK.lock().unwrap()[1];
         // SAFETY: the lock's write end; one byte.
         unsafe { write(fd, b"1".as_ptr().cast(), 1) };
@@ -1604,11 +1487,11 @@ unsafe extern "C" fn process_worker_start(
     counter_incr(3, 1);
 }
 
-unsafe extern "C" fn manager_start_stop(_: *mut c_void, _: *mut c_void) {
+fn manager_start_stop(_: view::Server<'_>) {
     counter_incr(1, 1);
 }
 
-unsafe extern "C" fn on_shutdown(_: *mut c_void, _: *mut c_void) {
+fn on_shutdown(_: view::Server<'_>) {
     counter_incr(9, 1);
 }
 
@@ -1619,9 +1502,9 @@ unsafe extern "C" fn on_shutdown(_: *mut c_void, _: *mut c_void) {
 /// of `Server::command`, which looks the command up before it can be reached.
 fn test_process(single_thread: bool) {
     let serv = Server::new(MODE_PROCESS);
-    serv.config().worker_num = 1;
-    serv.config().single_thread = single_thread;
-    serv.config().task_worker_num = 3;
+    serv.config().worker_num.set(1);
+    serv.config().single_thread.set(single_thread);
+    serv.config().task_worker_num.set(3);
     set_log_warning();
 
     counter_init();
@@ -1648,14 +1531,14 @@ fn test_process(single_thread: bool) {
     assert_eq!(last_error(), SW_ERROR_WRONG_OPERATION);
     delete_worker(fake_worker.raw());
 
-    serv.set_callback(Slot::Start, process_on_start as *const c_void);
-    serv.set_callback(Slot::WorkerStart, process_worker_start as *const c_void);
-    serv.set_callback(Slot::Receive, process_receive as *const c_void);
-    serv.set_callback(Slot::Task, return_ok as *const c_void);
-    serv.set_callback(Slot::ManagerStart, manager_start_stop as *const c_void);
-    serv.set_callback(Slot::ManagerStop, manager_start_stop as *const c_void);
-    serv.set_callback(Slot::BeforeShutdown, before_shutdown as *const c_void);
-    serv.set_callback(Slot::Shutdown, on_shutdown as *const c_void);
+    serv.set_callback(Callback::Start(process_on_start));
+    serv.set_callback(Callback::WorkerStart(process_worker_start));
+    serv.set_callback(Callback::Receive(process_receive));
+    serv.set_callback(Callback::Task(task_ok));
+    serv.set_callback(Callback::ManagerStart(manager_start_stop));
+    serv.set_callback(Callback::ManagerStop(manager_start_stop));
+    serv.set_callback(Callback::BeforeShutdown(before_shutdown));
+    serv.set_callback(Callback::Shutdown(on_shutdown));
 
     assert_eq!(serv.start(), 0);
 
@@ -1724,8 +1607,8 @@ unsafe extern "C" fn clean_connect_timer(_: *mut c_void, _: *mut TimerNode) {
     expect(connected, "ac.connect(TEST_HOST, port->get_port())");
 }
 
-unsafe extern "C" fn clean_on_start(_: *mut c_void, serv: *mut c_void) {
-    timer_after(100, clean_connect_timer, Server(serv));
+fn clean_on_start(serv: view::Server<'_>) {
+    timer_after(100, clean_connect_timer, Server(serv.raw()));
 }
 
 /// The running server, deferred to the end of the reactor's pass.
@@ -1748,28 +1631,28 @@ fn clean_deferred(serv: *mut c_void) {
     event_worker::native::stop_async_worker(serv, worker);
 }
 
-unsafe extern "C" fn clean_on_connect(_: *mut c_void, serv: *mut c_void, _: *mut DataHead) {
-    _ = swoole_rs_ffi::event_api::swoole_event_defer_value(CleanDeferred(serv));
+fn clean_on_connect(serv: view::Server<'_>, _: &DataHead) {
+    _ = swoole_rs_ffi::event_api::swoole_event_defer_value(CleanDeferred(serv.raw()));
 }
 
-unsafe extern "C" fn clean_worker_start(_: *mut c_void, serv: *mut c_void, _: *mut WorkerRecord) {
+fn clean_worker_start(serv: view::Server<'_>, _: Worker<'_>) {
     if !check(
-        Server(serv).view().connection_num() == 0,
+        Server(serv.raw()).view().connection_num() == 0,
         "serv->get_connection_num() == 0",
     ) {
         return;
     }
     if counter_incr(1, 1) == 3 {
-        timer_after(100, shutdown_timer, Server(serv));
+        timer_after(100, shutdown_timer, Server(serv.raw()));
     }
 }
 
-unsafe extern "C" fn ignore_worker(_: *mut c_void, _: *mut c_void, _: *mut WorkerRecord) {}
+fn ignore_worker(_: view::Server<'_>, _: Worker<'_>) {}
 
 /// `test_clean_worker(mode)`.
 fn test_clean_worker(mode: c_int) {
     let serv = Server::new(mode);
-    serv.config().worker_num = 2;
+    serv.config().worker_num.set(2);
 
     counter_init();
 
@@ -1785,12 +1668,12 @@ fn test_clean_worker(mode: c_int) {
     CLEAN_PORT.store(port.unwrap().port(), Ordering::SeqCst);
     assert_eq!(serv.create(), SW_OK);
 
-    serv.set_callback(Slot::Connect, clean_on_connect as *const c_void);
-    serv.set_callback(Slot::Receive, kill_on_receive as *const c_void);
-    serv.set_callback(Slot::Close, kill_on_close as *const c_void);
-    serv.set_callback(Slot::WorkerStart, clean_worker_start as *const c_void);
-    serv.set_callback(Slot::WorkerStop, ignore_worker as *const c_void);
-    serv.set_callback(Slot::Start, clean_on_start as *const c_void);
+    serv.set_callback(Callback::Connect(clean_on_connect));
+    serv.set_callback(Callback::Receive(kill_on_receive));
+    serv.set_callback(Callback::Close(kill_on_close));
+    serv.set_callback(Callback::WorkerStart(clean_worker_start));
+    serv.set_callback(Callback::WorkerStop(ignore_worker));
+    serv.set_callback(Callback::Start(clean_on_start));
 
     assert_eq!(serv.start(), SW_OK);
     assert_eq!(counter_get(0), 0); // Server on_receive

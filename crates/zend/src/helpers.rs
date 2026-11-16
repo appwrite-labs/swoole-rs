@@ -1,33 +1,11 @@
 //! Zvals, arrays and properties for crates/phpprocess: zval construction,
 //! typed property updates.
 use crate::sys::{time_t, zend_fcall_info, zend_fcall_info_cache, zval};
-use std::{
-    ffi::{CStr, c_char},
-    io::IoSlice,
-    marker::PhantomData,
-    ptr::NonNull,
-};
+use std::{ffi::CStr, io::IoSlice};
 
-/// A NUL-terminated C string borrowed for `'a`: a `&CStr` one pointer wide, as
-/// C takes and returns one, for the `safe fn` declarations over such strings.
-#[derive(Clone, Copy)]
-#[repr(transparent)]
-pub(crate) struct CText<'a>(NonNull<c_char>, PhantomData<&'a CStr>);
-
-impl<'a> From<&'a CStr> for CText<'a> {
-    fn from(text: &'a CStr) -> Self {
-        Self(NonNull::from(text).cast(), PhantomData)
-    }
-}
-
-impl<'a> CText<'a> {
-    /// The string.
-    pub(crate) fn get(self) -> &'a CStr {
-        // SAFETY: made from a `&'a CStr`, or returned by a function declared to
-        // return a NUL-terminated string that lives for `'a`.
-        unsafe { CStr::from_ptr(self.0.as_ptr()) }
-    }
-}
+/// A NUL-terminated C string borrowed for `'a`, one pointer wide, for the `safe fn`
+/// declarations over such strings.
+pub(crate) use swoole_rs_corebase::sys::Text as CText;
 
 unsafe extern "C" {
     /// Zend's table of loaded extensions, keyed by lowercase name: filled at

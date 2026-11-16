@@ -41,8 +41,7 @@ impl Server {
     }
 
     fn get_max_connection(self) -> u32 {
-        // SAFETY: the state's tables live as long as the server.
-        unsafe { (*self.head().tables).max_connection }
+        self.view().max_connection()
     }
 
     fn get_startup_error_message(self) -> String {
@@ -50,10 +49,6 @@ impl Server {
             .to_string_lossy()
             .into_owned()
     }
-}
-
-unsafe extern "C" fn return_ok(_: *mut c_void, _: *mut c_void, _: *mut c_void) -> c_int {
-    SW_OK
 }
 
 /// `TEST(server, max_connection)`.
@@ -94,8 +89,8 @@ fn max_connection() {
 fn min_connection() {
     let serv = Server::new(MODE_BASE);
 
-    serv.config().task_worker_num = 14;
-    serv.config().worker_num = 5;
+    serv.config().task_worker_num.set(14);
+    serv.config().worker_num.set(5);
 
     serv.add_port(SW_SOCK_TCP, TEST_HOST, 0);
 
@@ -109,16 +104,23 @@ fn min_connection() {
 fn worker_num() {
     let serv = Server::new(MODE_BASE);
 
-    serv.config().worker_num = cpu_num() * SW_MAX_WORKER_NCPU + 99;
-    serv.config().task_worker_num = cpu_num() * SW_MAX_WORKER_NCPU + 99;
+    serv.config()
+        .worker_num
+        .set(cpu_num() * SW_MAX_WORKER_NCPU + 99);
+    serv.config()
+        .task_worker_num
+        .set(cpu_num() * SW_MAX_WORKER_NCPU + 99);
 
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
 
     serv.create();
 
-    assert_eq!(serv.config().worker_num, cpu_num() * SW_MAX_WORKER_NCPU);
     assert_eq!(
-        serv.config().task_worker_num,
+        serv.config().worker_num.get(),
+        cpu_num() * SW_MAX_WORKER_NCPU
+    );
+    assert_eq!(
+        serv.config().task_worker_num.get(),
         cpu_num() * SW_MAX_WORKER_NCPU
     );
     serv.delete();
@@ -132,13 +134,13 @@ fn too_many_reactors() -> u16 {
 /// `TEST(server, reactor_num_base)`.
 fn reactor_num_base() {
     let serv = Server::new(MODE_BASE);
-    serv.config().reactor_num = too_many_reactors();
+    serv.config().reactor_num.set(too_many_reactors());
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
     serv.create();
 
     assert_eq!(
-        u32::from(serv.config().reactor_num),
-        serv.config().worker_num
+        u32::from(serv.config().reactor_num.get()),
+        serv.config().worker_num.get()
     );
     serv.delete();
 }
@@ -146,13 +148,13 @@ fn reactor_num_base() {
 /// `TEST(server, reactor_num_large)`.
 fn reactor_num_large() {
     let serv = Server::new(MODE_PROCESS);
-    serv.config().worker_num = cpu_num() * SW_MAX_WORKER_NCPU;
-    serv.config().reactor_num = too_many_reactors();
+    serv.config().worker_num.set(cpu_num() * SW_MAX_WORKER_NCPU);
+    serv.config().reactor_num.set(too_many_reactors());
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
     serv.create();
 
     assert_eq!(
-        u32::from(serv.config().reactor_num),
+        u32::from(serv.config().reactor_num.get()),
         cpu_num() * SW_MAX_THREAD_NCPU
     );
     serv.delete();
@@ -161,13 +163,13 @@ fn reactor_num_large() {
 /// `TEST(server, reactor_num_large2)`.
 fn reactor_num_large2() {
     let serv = Server::new(MODE_PROCESS);
-    serv.config().reactor_num = too_many_reactors();
+    serv.config().reactor_num.set(too_many_reactors());
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
     serv.create();
 
     assert_eq!(
-        u32::from(serv.config().reactor_num),
-        serv.config().worker_num
+        u32::from(serv.config().reactor_num.get()),
+        serv.config().worker_num.get()
     );
     serv.delete();
 }
@@ -175,18 +177,18 @@ fn reactor_num_large2() {
 /// `TEST(server, reactor_num_zero)`.
 fn reactor_num_zero() {
     let serv = Server::new(MODE_BASE);
-    serv.config().reactor_num = 0;
+    serv.config().reactor_num.set(0);
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
     serv.create();
 
-    assert_eq!(u32::from(serv.config().reactor_num), cpu_num());
+    assert_eq!(u32::from(serv.config().reactor_num.get()), cpu_num());
     serv.delete();
 }
 
 /// `TEST(server, startup_error)`. The `new` Server leaks, as upstream's.
 fn startup_error() {
     let server = Server::new(MODE_PROCESS);
-    server.config().task_worker_num = 2;
+    server.config().task_worker_num.set(2);
 
     assert!(server.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
     assert!(server.add_port(SW_SOCK_UDP, TEST_HOST, 0).is_some());
@@ -197,7 +199,7 @@ fn startup_error() {
     assert!(startup_error.contains("require 'onTask' callback"));
     assert_eq!(last_error(), SW_ERROR_SERVER_INVALID_CALLBACK);
 
-    server.set_callback(Slot::Task, return_ok as *const c_void);
+    server.set_callback(Callback::Task(task_ok));
 
     assert_eq!(server.start(), -1);
     assert!(
@@ -219,7 +221,7 @@ fn startup_error() {
     // SAFETY: restores it.
     unsafe { swoole_set_log_level(ori_log_level) };
 
-    server.set_callback(Slot::Receive, return_ok as *const c_void);
+    server.set_callback(Callback::Receive(receive_ok));
 
     assert_eq!(server.start(), -1);
     assert!(

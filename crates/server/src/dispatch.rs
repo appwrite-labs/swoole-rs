@@ -586,8 +586,7 @@ mod tests {
         assert_eq!(idle.live.state().next_round(), 6, "four tries after two");
     }
 
-    extern "C" fn to_six(
-        _: crate::callbacks::Ctx,
+    fn to_six(
         _: Server<'_>,
         _: Option<crate::Connection<'_>>,
         _: Option<&crate::reactor_entry::RecvData>,
@@ -595,8 +594,7 @@ mod tests {
         6
     }
 
-    extern "C" fn fall_back(
-        _: crate::callbacks::Ctx,
+    fn fall_back(
         _: Server<'_>,
         _: Option<crate::Connection<'_>>,
         _: Option<&crate::reactor_entry::RecvData>,

@@ -2,21 +2,24 @@
 //! `test_http_server`, `test_ssl_http`, `abort_connection`'s and `get_package_length`'s),
 //! `core-tests/src/protocol/base.cpp` builds, and `protocol/redis.cpp`'s and `server/mqtt.cpp`'s,
 //! for main.rs, tests/modules/framing/protocol.rs and tests/modules/protocols/server.rs. They
-//! were C++ (fixture.cc) and keep its entry points' names and signatures. A callback slot
-//! holds the case's function as its closure context, as fixture.cc's lambdas captured it.
+//! were C++ (fixture.cc) and keep its entry points' names and signatures. Where fixture.cc's
+//! lambdas captured the case's function, the slot's fn reads it from a static the case set.
 
 use std::ffi::{CStr, c_char, c_int, c_long, c_void};
-use std::mem::{offset_of, transmute};
+use std::mem::offset_of;
+use std::ptr;
+use std::sync::Mutex;
 
 use super::{
-    Address, COMPRESSION_TYPES, Connection, DataHead, LOCATIONS, MODE_BASE, MODE_PROCESS, Port,
-    Protocol, RecvData, SW_LOG_WARNING, SW_SOCK_TCP, Server, Slot, TEST_HOST, TEXT_CHROOT,
-    TEXT_GROUP, TEXT_USER, ignore_event, ignore_server, last_error, microtime,
+    Address, COMPRESSION_TYPES, Callback, Connection, DataHead, LOCATIONS, MODE_BASE, MODE_PROCESS,
+    Port, Protocol, RecvData, SW_LOG_WARNING, SW_SOCK_TCP, Server, Slot, TEST_HOST, TEXT_CHROOT,
+    TEXT_GROUP, TEXT_USER, Worker, ignore_event, ignore_server, last_error, microtime,
     swoole_set_log_level,
 };
 use crate::{CppString, Event, Hook, Receive};
+use swoole_rs_corebase::WebSocketStatus;
 use swoole_rs_ports::{lifecycle, methods};
-use swoole_rs_server::server_methods;
+use swoole_rs_server::{ConnectionRecord, server_methods, view};
 
 pub(super) const SW_LOG_INFO: c_int = 2;
 pub(super) const SW_SOCK_SSL: c_int = 512;
@@ -102,8 +105,10 @@ const _: () = assert!(
     offset_of!(SocketHead, removed) == 18
         && offset_of!(SocketHead, chunk_size) == 36
         && offset_of!(SocketHead, object) == 64
-        && size_of::<Address>() == 120
 );
+// `sockaddr_un` is shorter on the BSDs, so the address is Linux's size only there.
+#[cfg(target_os = "linux")]
+const _: () = assert!(size_of::<Address>() == 120);
 pub(super) const SOCKET_INFO: usize = 176;
 
 /// A timer's data: what upstream's lambdas capture.
@@ -143,48 +148,58 @@ unsafe extern "C" {
     fn getsockname(fd: c_int, addr: *mut c_void, len: *mut u32) -> c_int;
 }
 
-// The slots' closures: `ctx` is the case's function.
-unsafe extern "C" fn on_hook(ctx: *mut c_void, serv: *mut c_void) {
-    // SAFETY: the slot's context is a `Hook`.
-    let case = unsafe { transmute::<*mut c_void, Hook>(ctx) };
-    case(serv);
+// The case's functions, which the slots' fns below run: fixture.cc's lambdas captured them.
+static START: Mutex<Option<Hook>> = Mutex::new(None);
+static WORKER_START: Mutex<Option<Hook>> = Mutex::new(None);
+static CONNECT: Mutex<Option<Event>> = Mutex::new(None);
+static CLOSE: Mutex<Option<Event>> = Mutex::new(None);
+static RECEIVE: Mutex<Option<Receive>> = Mutex::new(None);
+
+fn case<F: Copy>(slot: &Mutex<Option<F>>) -> F {
+    slot.lock().unwrap().expect("the case set it")
 }
-unsafe extern "C" fn on_worker_hook(ctx: *mut c_void, serv: *mut c_void, _: *mut c_void) {
-    // SAFETY: as above.
-    let case = unsafe { transmute::<*mut c_void, Hook>(ctx) };
-    case(serv);
+
+fn on_hook(serv: view::Server<'_>) {
+    case(&START)(serv.raw());
 }
-unsafe extern "C" fn on_event(ctx: *mut c_void, serv: *mut c_void, info: *mut c_void) {
-    // SAFETY: the slot's context is an `Event`.
-    let case = unsafe { transmute::<*mut c_void, Event>(ctx) };
-    case(serv, info);
+fn on_worker_hook(serv: view::Server<'_>, _: Worker<'_>) {
+    case(&WORKER_START)(serv.raw());
 }
-unsafe extern "C" fn on_receive(ctx: *mut c_void, serv: *mut c_void, req: *mut c_void) -> c_int {
-    // SAFETY: the slot's context is a `Receive`.
-    let case = unsafe { transmute::<*mut c_void, Receive>(ctx) };
-    case(serv, req)
+fn on_connect(serv: view::Server<'_>, info: &DataHead) {
+    case(&CONNECT)(serv.raw(), ptr::from_ref(info).cast());
+}
+fn on_close(serv: view::Server<'_>, info: &DataHead) {
+    case(&CLOSE)(serv.raw(), ptr::from_ref(info).cast());
+}
+fn on_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+    case(&RECEIVE)(serv.raw(), ptr::from_ref(req).cast())
 }
 
 impl Server {
     fn on_start(self, hook: Hook) {
-        self.set_closure(Slot::Start, on_hook as *const c_void, hook as *mut c_void);
+        *START.lock().unwrap() = Some(hook);
+        self.set_callback(Callback::Start(on_hook));
     }
     fn on_worker_start(self, hook: Hook) {
-        self.set_closure(
-            Slot::WorkerStart,
-            on_worker_hook as *const c_void,
-            hook as *mut c_void,
-        );
+        *WORKER_START.lock().unwrap() = Some(hook);
+        self.set_callback(Callback::WorkerStart(on_worker_hook));
     }
     fn on_event(self, slot: Slot, event: Event) {
-        self.set_closure(slot, on_event as *const c_void, event as *mut c_void);
+        match slot {
+            Slot::Connect => {
+                *CONNECT.lock().unwrap() = Some(event);
+                self.set_callback(Callback::Connect(on_connect));
+            }
+            Slot::Close => {
+                *CLOSE.lock().unwrap() = Some(event);
+                self.set_callback(Callback::Close(on_close));
+            }
+            _ => unreachable!("the cases' events are onConnect and onClose"),
+        }
     }
     fn on_receive(self, receive: Receive) {
-        self.set_closure(
-            Slot::Receive,
-            on_receive as *const c_void,
-            receive as *mut c_void,
-        );
+        *RECEIVE.lock().unwrap() = Some(receive);
+        self.set_callback(Callback::Receive(on_receive));
     }
 
     /// fixture.cc's `listen_port`: the port, or exit 2.
@@ -249,7 +264,7 @@ pub(crate) unsafe fn swr_case_protocol_server(
     on_receive: Receive,
 ) -> *mut c_void {
     let serv = Server::new(MODE_BASE);
-    serv.config().worker_num = 1;
+    serv.config().worker_num.set(1);
     let port = serv.listen_port(SW_SOCK_TCP, 0).settings();
     match framing {
         0 => methods::set_stream_protocol(port),
@@ -269,12 +284,13 @@ pub(crate) unsafe fn swr_case_redis_server(
     on_receive: Receive,
 ) -> *mut c_void {
     let serv = Server::new(MODE_BASE);
-    serv.config().worker_num = 1;
-    serv.config().enable_static_handler = true;
+    serv.config().worker_num.set(1);
+    serv.config().enable_static_handler.set(true);
     log_level(SW_LOG_WARNING);
     serv.listen_port(SW_SOCK_TCP, 0)
         .config()
-        .open_redis_protocol = true;
+        .open_redis_protocol
+        .set(true);
     serv.create();
     serv.on_worker_start(on_worker_start);
     serv.on_receive(on_receive);
@@ -290,12 +306,13 @@ pub(crate) unsafe fn swr_case_mqtt_server(
     on_receive: Receive,
 ) -> *mut c_void {
     let serv = Server::new(MODE_BASE);
-    serv.config().worker_num = 1;
-    serv.config().enable_reuse_port = true;
+    serv.config().worker_num.set(1);
+    serv.config().enable_reuse_port.set(true);
     log_level(SW_LOG_WARNING);
     serv.listen_port(SW_SOCK_TCP, 9501)
         .config()
-        .open_mqtt_protocol = true;
+        .open_mqtt_protocol
+        .set(true);
     serv.create();
     serv.on_worker_start(on_worker_start);
     serv.on_event(Slot::Close, on_close);
@@ -345,10 +362,10 @@ pub(crate) unsafe fn swr_case_base_server(
     on_worker_start: Hook,
 ) -> *mut c_void {
     let serv = Server::new(MODE_BASE);
-    serv.config().worker_num = 1;
-    serv.config().enable_reuse_port = true;
-    serv.config().heartbeat_check_interval = 1;
-    serv.config().enable_static_handler = true;
+    serv.config().worker_num.set(1);
+    serv.config().enable_reuse_port.set(true);
+    serv.config().heartbeat_check_interval.set(1);
+    serv.config().enable_static_handler.set(true);
     // SAFETY: a NUL-terminated root.
     if !serv.set_document_root(unsafe { CStr::from_ptr(root) }.to_bytes()) {
         return std::ptr::null_mut();
@@ -357,8 +374,8 @@ pub(crate) unsafe fn swr_case_base_server(
     serv.insert(COMPRESSION_TYPES, "text/html");
     log_level(SW_LOG_WARNING);
     let port = serv.listen_port(SW_SOCK_TCP, 0);
-    port.config().open_http_protocol = true;
-    port.config().open_websocket_protocol = true;
+    port.config().open_http_protocol.set(true);
+    port.config().open_websocket_protocol.set(true);
     serv.create();
     serv.on_worker_start(on_worker_start);
     serv.on_event(Slot::Close, on_close);
@@ -380,9 +397,13 @@ pub(crate) unsafe fn swr_case_http_server(
     serv.set_text(TEXT_USER, "root");
     serv.set_text(TEXT_GROUP, "root");
     serv.set_text(TEXT_CHROOT, "/");
-    serv.config().worker_num = u32::try_from(worker_num).unwrap();
-    serv.config().dispatch_mode = u8::try_from(dispatch_mode).unwrap();
-    serv.config().open_cpu_affinity = true;
+    serv.config()
+        .worker_num
+        .set(u32::try_from(worker_num).unwrap());
+    serv.config()
+        .dispatch_mode
+        .set(u8::try_from(dispatch_mode).unwrap());
+    serv.config().open_cpu_affinity.set(true);
     log_level(SW_LOG_WARNING);
     let port = serv.listen_port(
         if ssl {
@@ -392,18 +413,18 @@ pub(crate) unsafe fn swr_case_http_server(
         },
         0,
     );
-    port.config().open_http_protocol = true;
-    port.config().open_websocket_protocol = true;
-    port.config().open_tcp_keepalive = true;
-    port.config().tcp_fastopen = 1;
-    port.config().tcp_defer_accept = 1;
-    serv.config().enable_static_handler = true;
+    port.config().open_http_protocol.set(true);
+    port.config().open_websocket_protocol.set(true);
+    port.config().open_tcp_keepalive.set(true);
+    port.config().tcp_fastopen.set(1);
+    port.config().tcp_defer_accept.set(1);
+    serv.config().enable_static_handler.set(true);
     // SAFETY: a NUL-terminated root.
     serv.set_document_root(unsafe { CStr::from_ptr(root) }.to_bytes());
     serv.insert(LOCATIONS, "/examples");
     serv.create();
-    serv.set_callback(Slot::Start, ignore_server as *const c_void);
-    serv.set_callback(Slot::Connect, ignore_event as *const c_void);
+    serv.set_callback(Callback::Start(ignore_server));
+    serv.set_callback(Callback::Connect(ignore_event));
     serv.on_event(Slot::Close, on_close);
     serv.on_receive(on_receive);
     serv.0
@@ -427,10 +448,10 @@ pub(crate) unsafe fn swr_case_ssl_server(
     let serv = Server::new(mode);
     // SAFETY: a writable out-parameter.
     unsafe { *out = serv.0 };
-    serv.config().worker_num = 1;
+    serv.config().worker_num.set(1);
     log_level(SW_LOG_INFO);
     let port = serv.listen_port(SW_SOCK_TCP | SW_SOCK_SSL, port_number);
-    port.config().open_http_protocol = true;
+    port.config().open_http_protocol.set(true);
     set_ssl_path(port.ssl_context(), CERT_FILE, cert);
     set_ssl_path(port.ssl_context(), KEY_FILE, key);
     tls_fields(port.ssl_context()).http = 1;
@@ -453,7 +474,7 @@ pub(crate) unsafe fn swr_case_abort_server(
     on_receive: Receive,
 ) -> *mut c_void {
     let serv = Server::new(MODE_PROCESS);
-    serv.config().worker_num = 2;
+    serv.config().worker_num.set(2);
     // SAFETY: SwooleG, which only this thread uses here; writable out-parameters.
     unsafe {
         *saved = SWOOLE_G_MAX_SOCKETS;
@@ -467,7 +488,7 @@ pub(crate) unsafe fn swr_case_abort_server(
         return serv.0;
     };
     ports[0] = http.0;
-    http.config().open_http_protocol = true;
+    http.config().open_http_protocol.set(true);
     let Some(tcp) = serv.add_port(SW_SOCK_TCP, TEST_HOST, 0) else {
         return serv.0;
     };
@@ -489,11 +510,11 @@ pub(crate) unsafe fn swr_case_length_port(out: *mut *mut c_void) -> *mut c_void 
     let serv = Server::new(MODE_BASE);
     // SAFETY: a writable out-parameter.
     unsafe { *out = serv.0 };
-    serv.config().worker_num = 1;
+    serv.config().worker_num.set(1);
     serv.add_port(SW_SOCK_TCP, TEST_HOST, 0)
         .map_or(std::ptr::null_mut(), |port| {
-            port.config().open_http_protocol = true;
-            port.config().open_http2_protocol = true;
+            port.config().open_http_protocol.set(true);
+            port.config().open_http2_protocol.set(true);
             port.0
         })
 }
@@ -503,33 +524,32 @@ pub(crate) unsafe fn swr_case_length_port(out: *mut *mut c_void) -> *mut c_void 
 pub(crate) unsafe fn swr_case_init_protocol(port: *mut c_void, websocket: bool) -> *const Protocol {
     let port = Port(port);
     if websocket {
-        port.config().open_websocket_protocol = true;
+        port.config().open_websocket_protocol.set(true);
     }
     methods::init_protocol(port.settings());
-    &raw const port.config().protocol
+    (&raw const port.config().protocol).cast()
 }
 
 /// get_package_length's fake connection socket on the port's fd, its object a Connection of
 /// session 2025. Both leak, as upstream's do.
 pub(crate) unsafe fn swr_case_fake_socket(port: *mut c_void, out: *mut *mut c_void) -> *mut c_void {
-    let config = Port(port).config();
-    // SAFETY: `get_fd()`: the port's socket record, if it has one.
-    let fd = unsafe { config.socket.cast::<SocketHead>().as_ref() }.map_or(-1, |socket| socket.fd);
+    let port = Port(port);
+    let (config, fd) = (port.config(), port.get_fd());
     // SAFETY: zeroed is `new Connection()`'s value.
-    let conn = Box::into_raw(Box::new(unsafe { std::mem::zeroed::<Connection>() }));
+    let conn = Box::leak(Box::new(unsafe { std::mem::zeroed::<ConnectionRecord>() }));
     // SAFETY: a new record, as `new network::Socket()`, whose fields this sets.
     unsafe {
         let sock = make_socket(fd, 0);
         (*sock).removed = 0;
-        (*sock).object = conn.cast();
-        (*sock).socket_type = config.type_;
+        (*sock).object = ptr::from_mut(conn).cast();
+        (*sock).socket_type = config.r#type;
         let info = &mut *sock.cast::<u8>().add(SOCKET_INFO).cast::<Address>();
         info.len = size_of_val(&info.addr) as u32;
         getsockname(fd, (&raw mut info.addr).cast(), &raw mut info.len);
-        info.kind = config.type_;
-        (*conn).info = *info;
-        (*conn).session_id = 2025;
-        *out = conn.cast();
+        info.kind = config.r#type;
+        conn.info.set(*info);
+        conn.session_id.set(2025);
+        *out = ptr::from_mut(conn).cast();
         sock.cast()
     }
 }
@@ -540,9 +560,9 @@ pub(crate) unsafe fn swr_case_connection_status(
     http2_stream: u8,
 ) {
     // SAFETY: the fake socket's live Connection.
-    let conn = unsafe { &mut *conn.cast::<Connection>() };
-    conn.websocket_status = websocket_status;
-    conn.http2_stream = http2_stream;
+    let conn = Connection::from(unsafe { &*conn.cast::<ConnectionRecord>() });
+    conn.set_websocket_status(WebSocketStatus::ALL[usize::from(websocket_status)]);
+    conn.set_http2_stream(http2_stream != 0);
 }
 
 pub(crate) unsafe fn swr_case_create(serv: *mut c_void) -> c_int {
@@ -556,7 +576,7 @@ pub(crate) unsafe fn swr_case_last_error(msg: *mut *const c_char) -> c_int {
 }
 
 pub(crate) unsafe fn swr_case_port(serv: *mut c_void) -> c_int {
-    Server(serv).get_primary_port().config().port
+    Server(serv).get_primary_port().config().port.get()
 }
 
 pub(crate) unsafe fn swr_case_start(serv: *mut c_void) -> c_int {
@@ -620,20 +640,20 @@ pub(crate) unsafe fn swr_case_info(
 
 pub(crate) unsafe fn swr_case_data(req: *const c_void) -> *const c_char {
     // SAFETY: a live request.
-    unsafe { (*req.cast::<RecvData>()).data }
+    unsafe { (*req.cast::<RecvData<'_>>()).data() }
 }
 
-pub(crate) unsafe fn swr_case_websocket_status(serv: *mut c_void, session_id: c_long) -> *mut u8 {
-    &raw mut Server(serv)
-        .get_connection_by_session_id(session_id)
-        .websocket_status
+pub(crate) unsafe fn swr_case_connection(
+    serv: *mut c_void,
+    session_id: c_long,
+) -> Connection<'static> {
+    Server(serv).get_connection_by_session_id(session_id)
 }
 
 pub(crate) unsafe fn swr_case_close_actively(serv: *mut c_void, session_id: c_long) -> bool {
     Server(serv)
         .get_connection_by_session_id(session_id)
-        .close_actively
-        != 0
+        .close_actively()
 }
 
 pub(crate) unsafe fn swr_case_healthy(serv: *mut c_void, session_id: c_long) -> bool {
@@ -648,7 +668,7 @@ pub(crate) unsafe fn swr_case_idle_worker_num(serv: *mut c_void) -> u32 {
 }
 
 pub(crate) unsafe fn swr_case_worker_num(serv: *mut c_void) -> u32 {
-    Server(serv).config().worker_num
+    Server(serv).config().worker_num.get()
 }
 
 unsafe extern "C" fn close_timeout(_: *mut c_void, node: *mut TimerNode) {

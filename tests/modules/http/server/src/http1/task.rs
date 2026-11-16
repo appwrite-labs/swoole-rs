@@ -285,15 +285,9 @@ fn sleep_us(usec: u32) {
     unsafe { usleep(usec) };
 }
 
-/// A worker's `id`.
-fn worker_id(worker: *mut c_void) -> u32 {
-    // SAFETY: the live worker the server passed the callback.
-    unsafe { &*worker.cast::<WorkerRecord>() }.id()
-}
-
-fn data<'a>(task: *mut c_void) -> &'a EventData {
+fn data<'a>(task: Packed<'a>) -> &'a EventData {
     // SAFETY: the live EventData the server passed the callback.
-    unsafe { &*task.cast::<EventData>() }
+    unsafe { &*task.as_ptr().cast::<EventData>() }
 }
 
 /// The `Server` methods the task cases call.
@@ -302,7 +296,7 @@ trait TaskServer: Copy {
     /// `serv->task(&buf, &dst_worker_id)`.
     fn task(self, buf: &mut EventData, dst_worker_id: &mut c_int) -> bool;
     /// `serv->finish(data, len, 0, task)`.
-    fn finish(self, data: &[u8], task: *mut c_void) -> bool;
+    fn finish(self, data: &[u8], task: Packed<'_>) -> bool;
     /// `get_task_worker_pool()->dispatch(&buf, &dst_worker_id)`.
     fn dispatch(self, buf: &mut EventData, dst_worker_id: &mut c_int) -> c_int;
     fn get_tasking_num(self) -> u32;
@@ -334,10 +328,8 @@ impl TaskServer for Server {
             .unwrap_or(false)
     }
 
-    fn finish(self, data: &[u8], task: *mut c_void) -> bool {
-        // SAFETY: null, or the task being run, which starts with its head.
-        let task = unsafe { task.cast::<swoole_rs_corebase::DataHead>().as_ref() };
-        swoole_rs_server::task_worker::native::finish(self.view(), data, 0, task)
+    fn finish(self, data: &[u8], task: Packed<'_>) -> bool {
+        swoole_rs_server::task_worker::native::finish(self.view(), data, 0, Some(&task.head()))
     }
 
     fn dispatch(self, buf: &mut EventData, dst_worker_id: &mut c_int) -> c_int {
@@ -419,19 +411,15 @@ impl TaskServer for Server {
         let id = pool::swoole_get_worker_id() as usize;
         self.config()
             .task_results
+            .as_ptr()
             .cast::<u8>()
             .wrapping_add(id * IPC_MAX_SIZE)
             .cast()
     }
 }
 
-/// `onReceive` that only returns `SW_OK`.
-unsafe extern "C" fn receive_ok(_: *mut c_void, _: *mut c_void, _: *mut RecvData) -> c_int {
-    SW_OK
-}
-
 /// `onTask` that only returns 0.
-unsafe extern "C" fn task_zero(_: *mut c_void, _: *mut c_void, _: *mut c_void) -> c_int {
+fn task_zero(_: view::Server<'_>, _: Packed<'_>) -> c_int {
     0
 }
 
@@ -447,12 +435,8 @@ fn listen(serv: Server) {
 /// worker's own count comes after that check rather than racing it.
 static TASK_COUNTED: AtomicBool = AtomicBool::new(false);
 
-unsafe extern "C" fn task_worker_on_task(
-    _: *mut c_void,
-    serv: *mut c_void,
-    task: *mut c_void,
-) -> c_int {
-    let serv = Server(serv);
+fn task_worker_on_task(serv: view::Server<'_>, task: Packed<'_>) -> c_int {
+    let serv = Server(serv.raw());
     while !TASK_COUNTED.load(Ordering::SeqCst) {
         sleep_us(1000);
     }
@@ -475,12 +459,12 @@ unsafe extern "C" fn task_worker_on_task(
 fn task_worker() {
     counter_init();
     let serv = Server::new(MODE_BASE);
-    serv.config().worker_num = 1;
-    serv.config().task_worker_num = 1;
+    serv.config().worker_num.set(1);
+    serv.config().task_worker_num.set(1);
 
     listen(serv);
 
-    serv.set_callback(Slot::Task, task_worker_on_task as *const c_void);
+    serv.set_callback(Callback::Task(task_worker_on_task));
 
     assert_eq!(serv.create(), SW_OK);
 
@@ -497,7 +481,7 @@ fn task_worker() {
         serv.tasking_num().fetch_sub(1, Ordering::SeqCst);
         check(serv.get_tasking_num() == 0, "serv.get_tasking_num() == 0");
         check(
-            serv.get_idle_task_worker_num() == serv.config().task_worker_num,
+            serv.get_idle_task_worker_num() == serv.config().task_worker_num.get(),
             "serv.get_idle_task_worker_num() == serv.task_worker_num",
         );
     });
@@ -523,11 +507,7 @@ fn task_worker() {
     serv.delete();
 }
 
-unsafe extern "C" fn task_worker2_on_pipe_message(
-    _: *mut c_void,
-    _: *mut c_void,
-    task: *mut c_void,
-) {
+fn task_worker2_on_pipe_message(_: view::Server<'_>, task: Packed<'_>) {
     check(
         data(task).data.starts_with(TEST_STR),
         "EXPECT_MEMEQ(task->data, TEST_STR, strlen(TEST_STR))",
@@ -535,18 +515,14 @@ unsafe extern "C" fn task_worker2_on_pipe_message(
     counter_incr(7);
 }
 
-unsafe extern "C" fn task_worker2_on_worker_start(
-    _: *mut c_void,
-    serv: *mut c_void,
-    worker: *mut c_void,
-) {
-    let serv = Server(serv);
-    super::timeline::mark(["start 0", "start 1", "start 2"][worker_id(worker) as usize]);
-    if worker_id(worker) == 0 {
+fn task_worker2_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
+    let serv = Server(serv.raw());
+    super::timeline::mark(["start 0", "start 1", "start 2"][worker.id() as usize]);
+    if worker.id() == 0 {
         after(50, move || {
             super::timeline::mark("stop timer");
             let mut ev = EventData::new();
-            ev.info.type_ = SW_SERVER_EVENT_SHUTDOWN;
+            ev.info.kind = SW_SERVER_EVENT_SHUTDOWN;
             ev.info.len = 0;
             check(
                 serv.send_to_worker_from_worker(1, &ev, PIPE_MASTER | PIPE_NONBLOCK)
@@ -565,7 +541,7 @@ unsafe extern "C" fn task_worker2_on_worker_start(
 
         after(70, move || {
             let mut ev = EventData::new();
-            ev.info.type_ = SW_SERVER_EVENT_SHUTDOWN + 99;
+            ev.info.kind = SW_SERVER_EVENT_SHUTDOWN + 99;
             ev.info.len = 0;
             check(
                 serv.send_to_worker_from_worker(0, &ev, PIPE_MASTER | PIPE_NONBLOCK)
@@ -579,29 +555,23 @@ unsafe extern "C" fn task_worker2_on_worker_start(
             serv.shutdown();
         });
     }
-    counter_incr(2 + worker_id(worker) as usize);
+    counter_incr(2 + worker.id() as usize);
     counter_incr(1);
 }
 
 /// `TEST(server, task_worker2)`.
 fn task_worker2() {
     let serv = Server::new(MODE_PROCESS);
-    serv.config().worker_num = 1;
-    serv.config().task_worker_num = 2;
+    serv.config().worker_num.set(1);
+    serv.config().task_worker_num.set(2);
     counter_init();
 
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
 
-    serv.set_callback(Slot::Task, task_zero as *const c_void);
-    serv.set_callback(
-        Slot::PipeMessage,
-        task_worker2_on_pipe_message as *const c_void,
-    );
-    serv.set_callback(
-        Slot::WorkerStart,
-        task_worker2_on_worker_start as *const c_void,
-    );
-    serv.set_callback(Slot::Receive, receive_ok as *const c_void);
+    serv.set_callback(Callback::Task(task_zero));
+    serv.set_callback(Callback::PipeMessage(task_worker2_on_pipe_message));
+    serv.set_callback(Callback::WorkerStart(task_worker2_on_worker_start));
+    serv.set_callback(Callback::Receive(receive_ok));
 
     assert_eq!(serv.create(), SW_OK);
     super::timeline::arm();
@@ -633,20 +603,16 @@ fn sigrtmin() -> c_int {
     unreachable!("the case binary is Linux's")
 }
 
-unsafe extern "C" fn task_worker_3_on_manager_start(_: *mut c_void, serv: *mut c_void) {
-    let serv = Server(serv);
+fn task_worker_3_on_manager_start(serv: view::Server<'_>) {
+    let serv = Server(serv.raw());
     after(5000, move || {
         serv.shutdown();
     });
 }
 
-unsafe extern "C" fn task_worker_3_on_worker_start(
-    _: *mut c_void,
-    serv: *mut c_void,
-    worker: *mut c_void,
-) {
-    let serv = Server(serv);
-    let id = worker_id(worker);
+fn task_worker_3_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
+    let serv = Server(serv.raw());
+    let id = worker.id();
     counter_incr(2 + id as usize);
     if counter_incr(1) == 5 {
         after(100, move || {
@@ -677,25 +643,19 @@ unsafe extern "C" fn task_worker_3_on_worker_start(
 /// `TEST(server, task_worker_3)`.
 fn task_worker_3() {
     let serv = Server::new(MODE_BASE);
-    serv.config().worker_num = 1;
-    serv.config().task_worker_num = 2;
+    serv.config().worker_num.set(1);
+    serv.config().task_worker_num.set(2);
     counter_init();
 
     // A missed worker restart must fail the test instead of leaving the server running
     // until the CI watchdog fires.
-    serv.set_callback(
-        Slot::ManagerStart,
-        task_worker_3_on_manager_start as *const c_void,
-    );
+    serv.set_callback(Callback::ManagerStart(task_worker_3_on_manager_start));
 
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
 
-    serv.set_callback(Slot::Task, task_zero as *const c_void);
-    serv.set_callback(
-        Slot::WorkerStart,
-        task_worker_3_on_worker_start as *const c_void,
-    );
-    serv.set_callback(Slot::Receive, receive_ok as *const c_void);
+    serv.set_callback(Callback::Task(task_zero));
+    serv.set_callback(Callback::WorkerStart(task_worker_3_on_worker_start));
+    serv.set_callback(Callback::Receive(receive_ok));
 
     assert_eq!(serv.create(), SW_OK);
     assert_eq!(serv.start(), SW_OK);
@@ -711,8 +671,8 @@ fn task_worker_3() {
 
 /// `onTask` of `test_task`, `task_worker3`, `task_worker4` and `test_task_ipc`: the
 /// packet, finished with itself.
-unsafe extern "C" fn finish_packet(_: *mut c_void, serv: *mut c_void, task: *mut c_void) -> c_int {
-    let serv = Server(serv);
+fn finish_packet(serv: view::Server<'_>, task: Packed<'_>) -> c_int {
+    let serv = Server(serv.raw());
     let payload = data(task).payload();
     check(
         payload == PACKET,
@@ -726,7 +686,7 @@ unsafe extern "C" fn finish_packet(_: *mut c_void, serv: *mut c_void, task: *mut
 }
 
 /// `onFinish` of `test_task`, `task_worker3` and `task_worker4`: the packet back.
-unsafe extern "C" fn finished_packet(_: *mut c_void, _: *mut c_void, task: *mut c_void) -> c_int {
+fn finished_packet(_: view::Server<'_>, task: Packed<'_>) -> c_int {
     check(
         data(task).payload() == PACKET,
         "string(task->data, task->info.len) == packet",
@@ -734,13 +694,9 @@ unsafe extern "C" fn finished_packet(_: *mut c_void, _: *mut c_void, task: *mut 
     0
 }
 
-unsafe extern "C" fn test_task_on_worker_start(
-    _: *mut c_void,
-    serv: *mut c_void,
-    worker: *mut c_void,
-) {
-    let serv = Server(serv);
-    let id = worker_id(worker);
+fn test_task_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
+    let serv = Server(serv.raw());
+    let id = worker.id();
     if id == 1 {
         let mut dst_worker_id = 0;
         let mut buf = EventData::raw(
@@ -761,22 +717,19 @@ unsafe extern "C" fn test_task_on_worker_start(
 fn test_task(mode: c_int, task_ipc_mode: u8) {
     counter_init();
     let serv = Server::new(mode);
-    serv.config().worker_num = 2;
-    serv.config().task_ipc_mode = task_ipc_mode;
-    serv.config().task_worker_num = 3;
+    serv.config().worker_num.set(2);
+    serv.config().task_ipc_mode.set(task_ipc_mode);
+    serv.config().task_worker_num.set(3);
 
     listen(serv);
 
-    serv.set_callback(Slot::Receive, receive_ok as *const c_void);
-    serv.set_callback(Slot::Task, finish_packet as *const c_void);
-    serv.set_callback(Slot::Finish, finished_packet as *const c_void);
+    serv.set_callback(Callback::Receive(receive_ok));
+    serv.set_callback(Callback::Task(finish_packet));
+    serv.set_callback(Callback::Finish(finished_packet));
 
     assert_eq!(serv.create(), SW_OK);
 
-    serv.set_callback(
-        Slot::WorkerStart,
-        test_task_on_worker_start as *const c_void,
-    );
+    serv.set_callback(Callback::WorkerStart(test_task_on_worker_start));
 
     assert_eq!(serv.start(), 0);
     assert_no_failure();
@@ -800,32 +753,28 @@ fn task_ipc_stream() {
 
 /// `task_worker3`'s and `task_worker4`'s Server: two workers, three task workers with
 /// `task_enable_coroutine`, created, its `onWorkerStart` set after.
-fn coroutine_task_server(on_worker_start: *const c_void) -> Server {
+fn coroutine_task_server(on_worker_start: swoole_rs_server::callbacks::WorkerFn) -> Server {
     counter_init();
     let serv = Server::new(MODE_PROCESS);
-    serv.config().worker_num = 2;
-    serv.config().task_worker_num = 3;
-    serv.config().task_enable_coroutine = true;
+    serv.config().worker_num.set(2);
+    serv.config().task_worker_num.set(3);
+    serv.config().task_enable_coroutine.set(true);
 
     listen(serv);
 
-    serv.set_callback(Slot::Receive, receive_ok as *const c_void);
-    serv.set_callback(Slot::Task, finish_packet as *const c_void);
-    serv.set_callback(Slot::Finish, finished_packet as *const c_void);
+    serv.set_callback(Callback::Receive(receive_ok));
+    serv.set_callback(Callback::Task(finish_packet));
+    serv.set_callback(Callback::Finish(finished_packet));
 
     assert_eq!(serv.create(), SW_OK);
 
-    serv.set_callback(Slot::WorkerStart, on_worker_start);
+    serv.set_callback(Callback::WorkerStart(on_worker_start));
     serv
 }
 
-unsafe extern "C" fn task_worker3_on_worker_start(
-    _: *mut c_void,
-    serv: *mut c_void,
-    worker: *mut c_void,
-) {
-    let serv = Server(serv);
-    let id = worker_id(worker);
+fn task_worker3_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
+    let serv = Server(serv.raw());
+    let id = worker.id();
     if id == 1 {
         let mut dst_worker_id = 0;
         let mut buf = EventData::raw(
@@ -841,19 +790,15 @@ unsafe extern "C" fn task_worker3_on_worker_start(
 
 /// `TEST(server, task_worker3)`.
 fn task_worker3() {
-    let serv = coroutine_task_server(task_worker3_on_worker_start as *const c_void);
+    let serv = coroutine_task_server(task_worker3_on_worker_start);
     assert_eq!(serv.start(), 0);
     assert_no_failure();
     serv.delete();
 }
 
-unsafe extern "C" fn task_worker4_on_worker_start(
-    _: *mut c_void,
-    serv: *mut c_void,
-    worker: *mut c_void,
-) {
-    let serv = Server(serv);
-    let id = worker_id(worker);
+fn task_worker4_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
+    let serv = Server(serv.raw());
+    let id = worker.id();
     if id == 1 {
         let mut dst_worker_id = 0;
         let reactor_id = i16::try_from(id).unwrap();
@@ -873,7 +818,7 @@ unsafe extern "C" fn task_worker4_on_worker_start(
 
 /// `TEST(server, task_worker4)`.
 fn task_worker4() {
-    let serv = coroutine_task_server(task_worker4_on_worker_start as *const c_void);
+    let serv = coroutine_task_server(task_worker4_on_worker_start);
     assert_eq!(serv.start(), 0);
     assert_no_failure();
     serv.delete();
@@ -888,18 +833,14 @@ fn unpack(task: Packed<'_>) -> Option<Vec<u8>> {
     bytes
 }
 
-unsafe extern "C" fn task_sync_multi_on_task(
-    _: *mut c_void,
-    serv: *mut c_void,
-    task: *mut c_void,
-) -> c_int {
-    let Some(packet) = unpack(unsafe { Packed::from_raw(task) }) else {
+fn task_sync_multi_on_task(serv: view::Server<'_>, task: Packed<'_>) -> c_int {
+    let Some(packet) = unpack(unsafe { Packed::from_raw(task.as_ptr()) }) else {
         return -1;
     };
     // SAFETY: the live task.
-    unsafe { &*task.cast::<task_file::EventData>() }.dump();
+    unsafe { &*task.as_ptr().cast::<task_file::EventData>() }.dump();
     check(
-        Server(serv).finish(&packet, task),
+        Server(serv.raw()).finish(&packet, task),
         "serv->finish(packet.data, packet.length, 0, task)",
     );
     0
@@ -945,13 +886,9 @@ impl MultiTask for Multi<'_> {
     }
 }
 
-unsafe extern "C" fn task_sync_multi_on_worker_start(
-    _: *mut c_void,
-    serv: *mut c_void,
-    worker: *mut c_void,
-) {
-    let serv = Server(serv);
-    if worker_id(worker) == 1 {
+fn task_sync_multi_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
+    let serv = Server(serv.raw());
+    if worker.id() == 1 {
         let mut guard = MULTI.lock().unwrap();
         let MultiTasks {
             tasks: all,
@@ -979,8 +916,8 @@ unsafe extern "C" fn task_sync_multi_on_worker_start(
 fn task_sync_multi_task() {
     counter_init();
     let serv = Server::new(MODE_PROCESS);
-    serv.config().worker_num = 2;
-    serv.config().task_worker_num = 3;
+    serv.config().worker_num.set(2);
+    serv.config().task_worker_num.set(3);
 
     let n_task = 16;
     let len_task = IPC_MAX_SIZE * 2;
@@ -999,49 +936,38 @@ fn task_sync_multi_task() {
 
     listen(serv);
 
-    serv.set_callback(Slot::Receive, receive_ok as *const c_void);
-    serv.set_callback(Slot::Task, task_sync_multi_on_task as *const c_void);
+    serv.set_callback(Callback::Receive(receive_ok));
+    serv.set_callback(Callback::Task(task_sync_multi_on_task));
 
     assert_eq!(serv.create(), SW_OK);
     // `SwooleG.current_task_id = 100`.
     swr_v1_core_set_current_task_id(100);
 
-    serv.set_callback(
-        Slot::WorkerStart,
-        task_sync_multi_on_worker_start as *const c_void,
-    );
+    serv.set_callback(Callback::WorkerStart(task_sync_multi_on_worker_start));
 
     assert_eq!(serv.start(), 0);
     assert_no_failure();
     serv.delete();
 }
 
-unsafe extern "C" fn task_sync_on_task(
-    _: *mut c_void,
-    serv: *mut c_void,
-    task: *mut c_void,
-) -> c_int {
+fn task_sync_on_task(serv: view::Server<'_>, task: Packed<'_>) -> c_int {
     let payload = data(task).payload();
     check(
         payload == PACKET,
         "string(task->data, task->info.len) == packet",
     );
     // SAFETY: the live task.
-    unsafe { &*task.cast::<task_file::EventData>() }.dump();
+    unsafe { &*task.as_ptr().cast::<task_file::EventData>() }.dump();
     check(
-        Server(serv).finish(payload, task),
+        Server(serv.raw()).finish(payload, task),
         "serv->finish(task->data, task->info.len, 0, task)",
     );
     0
 }
 
-unsafe extern "C" fn task_sync_on_worker_start(
-    _: *mut c_void,
-    serv: *mut c_void,
-    worker: *mut c_void,
-) {
-    let serv = Server(serv);
-    if worker_id(worker) == 1 {
+fn task_sync_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
+    let serv = Server(serv.raw());
+    if worker.id() == 1 {
         let dst_worker_id = -1;
         let mut buf = EventData::packed(PACKET);
         check(
@@ -1064,20 +990,17 @@ unsafe extern "C" fn task_sync_on_worker_start(
 fn task_sync() {
     counter_init();
     let serv = Server::new(MODE_PROCESS);
-    serv.config().worker_num = 2;
-    serv.config().task_worker_num = 2;
+    serv.config().worker_num.set(2);
+    serv.config().task_worker_num.set(2);
 
     listen(serv);
 
-    serv.set_callback(Slot::Receive, receive_ok as *const c_void);
-    serv.set_callback(Slot::Task, task_sync_on_task as *const c_void);
+    serv.set_callback(Callback::Receive(receive_ok));
+    serv.set_callback(Callback::Task(task_sync_on_task));
 
     assert_eq!(serv.create(), SW_OK);
 
-    serv.set_callback(
-        Slot::WorkerStart,
-        task_sync_on_worker_start as *const c_void,
-    );
+    serv.set_callback(Callback::WorkerStart(task_sync_on_worker_start));
 
     assert_eq!(serv.start(), 0);
     assert_no_failure();
@@ -1085,27 +1008,19 @@ fn task_sync() {
 }
 
 /// `test_task_ipc`'s `onFinish`: the packet back, then a shutdown.
-unsafe extern "C" fn task_ipc_on_finish(
-    _: *mut c_void,
-    serv: *mut c_void,
-    task: *mut c_void,
-) -> c_int {
+fn task_ipc_on_finish(serv: view::Server<'_>, task: Packed<'_>) -> c_int {
     check(
         data(task).payload() == PACKET,
         "string(task->data, task->info.len) == packet",
     );
     sleep_us(100_000);
-    Server(serv).shutdown();
+    Server(serv.raw()).shutdown();
     0
 }
 
-unsafe extern "C" fn task_ipc_on_worker_start(
-    _: *mut c_void,
-    serv: *mut c_void,
-    worker: *mut c_void,
-) {
-    let serv = Server(serv);
-    if worker_id(worker) == 1 {
+fn task_ipc_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
+    let serv = Server(serv.raw());
+    if worker.id() == 1 {
         let mut dst_worker_id = -1;
         let mut buf = EventData::packed(PACKET);
         buf.info.ext_flags |= TASK_NONBLOCK | TASK_CALLBACK;
@@ -1120,14 +1035,14 @@ unsafe extern "C" fn task_ipc_on_worker_start(
 fn test_task_ipc(serv: Server) {
     listen(serv);
 
-    serv.set_callback(Slot::Receive, receive_ok as *const c_void);
-    serv.set_callback(Slot::Task, finish_packet as *const c_void);
-    serv.set_callback(Slot::Finish, task_ipc_on_finish as *const c_void);
+    serv.set_callback(Callback::Receive(receive_ok));
+    serv.set_callback(Callback::Task(finish_packet));
+    serv.set_callback(Callback::Finish(task_ipc_on_finish));
 
     assert_eq!(serv.create(), SW_OK);
 
-    serv.set_callback(Slot::WorkerStart, task_ipc_on_worker_start as *const c_void);
-    serv.set_callback(Slot::BeforeShutdown, ignore_server as *const c_void);
+    serv.set_callback(Callback::WorkerStart(task_ipc_on_worker_start));
+    serv.set_callback(Callback::BeforeShutdown(ignore_server));
 
     assert_eq!(serv.start(), 0);
     assert_no_failure();
@@ -1138,9 +1053,9 @@ fn test_task_ipc(serv: Server) {
 fn task_ipc_server(mode: c_int, task_ipc_mode: u8) -> Server {
     counter_init();
     let serv = Server::new(mode);
-    serv.config().worker_num = 2;
-    serv.config().task_worker_num = 2;
-    serv.config().task_ipc_mode = task_ipc_mode;
+    serv.config().worker_num.set(2);
+    serv.config().task_worker_num.set(2);
+    serv.config().task_ipc_mode.set(task_ipc_mode);
     serv
 }
 
@@ -1198,7 +1113,7 @@ fn wait_for(done: impl Fn() -> bool) {
 }
 
 /// `onStart` of `thread` and `task_thread`: unlocks the client thread's `lock`.
-unsafe extern "C" fn unlock_on_start(_: *mut c_void, _: *mut c_void) {
+fn unlock_on_start(_: view::Server<'_>) {
     shared().unlocked.store(true, Ordering::SeqCst);
 }
 
@@ -1214,20 +1129,12 @@ fn server_response() -> Vec<u8> {
     [b"Server: ".as_slice(), PACKET].concat()
 }
 
-unsafe extern "C" fn thread_on_worker_start(
-    _: *mut c_void,
-    serv: *mut c_void,
-    worker: *mut c_void,
-) {
-    Server(serv).send_pipe_message(1 - worker_id(worker), TEST_STR);
+fn thread_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
+    Server(serv.raw()).send_pipe_message(1 - worker.id(), TEST_STR);
 }
 
-unsafe extern "C" fn thread_on_receive(
-    _: *mut c_void,
-    serv: *mut c_void,
-    req: *mut RecvData,
-) -> c_int {
-    let serv = Server(serv);
+fn thread_on_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+    let serv = Server(serv.raw());
     let (session, data) = request(req);
     check(data == PACKET, "string(req->data, req->info.len) == packet");
 
@@ -1244,7 +1151,7 @@ unsafe extern "C" fn thread_on_receive(
     SW_OK
 }
 
-unsafe extern "C" fn thread_on_pipe_message(_: *mut c_void, _: *mut c_void, _: *mut c_void) {
+fn thread_on_pipe_message(_: view::Server<'_>, _: Packed<'_>) {
     counter_incr(4);
 }
 
@@ -1253,7 +1160,7 @@ unsafe extern "C" fn thread_on_pipe_message(_: *mut c_void, _: *mut c_void, _: *
 /// Its trace logging is left out.
 fn thread() {
     let serv = Server::new(MODE_THREAD);
-    serv.config().worker_num = 2;
+    serv.config().worker_num.set(2);
 
     counter_init();
 
@@ -1301,10 +1208,10 @@ fn thread() {
         },
     );
 
-    serv.set_callback(Slot::Start, unlock_on_start as *const c_void);
-    serv.set_callback(Slot::WorkerStart, thread_on_worker_start as *const c_void);
-    serv.set_callback(Slot::Receive, thread_on_receive as *const c_void);
-    serv.set_callback(Slot::PipeMessage, thread_on_pipe_message as *const c_void);
+    serv.set_callback(Callback::Start(unlock_on_start));
+    serv.set_callback(Callback::WorkerStart(thread_on_worker_start));
+    serv.set_callback(Callback::Receive(thread_on_receive));
+    serv.set_callback(Callback::PipeMessage(thread_on_pipe_message));
 
     assert_eq!(serv.start(), SW_OK);
     join_client();
@@ -1316,41 +1223,29 @@ fn thread() {
 }
 
 /// `task_thread`'s `onWorkerStart`: its `std::atomic<int> count` is counter 1.
-unsafe extern "C" fn task_thread_on_worker_start(_: *mut c_void, _: *mut c_void, _: *mut c_void) {
+fn task_thread_on_worker_start(_: view::Server<'_>, _: Worker<'_>) {
     counter_incr(1);
 }
 
-unsafe extern "C" fn task_thread_on_finish(
-    _: *mut c_void,
-    serv: *mut c_void,
-    task: *mut c_void,
-) -> c_int {
+fn task_thread_on_finish(serv: view::Server<'_>, task: Packed<'_>) -> c_int {
     let payload = data(task).payload();
     let client_fd = c_long::from_ne_bytes(payload[..size_of::<c_long>()].try_into().unwrap());
     check(
-        Server(serv).send(client_fd, &server_response()),
+        Server(serv.raw()).send(client_fd, &server_response()),
         "serv->send(client_fd, resp)",
     );
     0
 }
 
-unsafe extern "C" fn task_thread_on_task(
-    _: *mut c_void,
-    serv: *mut c_void,
-    task: *mut c_void,
-) -> c_int {
+fn task_thread_on_task(serv: view::Server<'_>, task: Packed<'_>) -> c_int {
     check(
-        Server(serv).finish(data(task).payload(), task),
+        Server(serv.raw()).finish(data(task).payload(), task),
         "serv->finish(task->data, task->info.len, 0, task)",
     );
     0
 }
 
-unsafe extern "C" fn task_thread_on_receive(
-    _: *mut c_void,
-    serv: *mut c_void,
-    req: *mut RecvData,
-) -> c_int {
+fn task_thread_on_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let (client_fd, data) = request(req);
     check(data == PACKET, "string(req->data, req->info.len) == packet");
 
@@ -1359,7 +1254,7 @@ unsafe extern "C" fn task_thread_on_receive(
 
     let mut dst_worker_id = -1;
     check(
-        Server(serv).task(&mut msg, &mut dst_worker_id),
+        Server(serv.raw()).task(&mut msg, &mut dst_worker_id),
         "serv->task(&msg, &dst_worker_id)",
     );
     SW_OK
@@ -1369,8 +1264,8 @@ unsafe extern "C" fn task_thread_on_receive(
 /// thread, and the worker's `onFinish` answers the client.
 fn task_thread() {
     let serv = Server::new(MODE_THREAD);
-    serv.config().worker_num = 2;
-    serv.config().task_worker_num = 2;
+    serv.config().worker_num.set(2);
+    serv.config().task_worker_num.set(2);
 
     counter_init();
     case::log_level(case::SW_LOG_INFO);
@@ -1399,20 +1294,17 @@ fn task_thread() {
         },
     );
 
-    serv.set_callback(Slot::Start, unlock_on_start as *const c_void);
-    serv.set_callback(
-        Slot::WorkerStart,
-        task_thread_on_worker_start as *const c_void,
-    );
-    serv.set_callback(Slot::Finish, task_thread_on_finish as *const c_void);
-    serv.set_callback(Slot::Task, task_thread_on_task as *const c_void);
-    serv.set_callback(Slot::Receive, task_thread_on_receive as *const c_void);
+    serv.set_callback(Callback::Start(unlock_on_start));
+    serv.set_callback(Callback::WorkerStart(task_thread_on_worker_start));
+    serv.set_callback(Callback::Finish(task_thread_on_finish));
+    serv.set_callback(Callback::Task(task_thread_on_task));
+    serv.set_callback(Callback::Receive(task_thread_on_receive));
 
     assert_eq!(serv.start(), SW_OK);
     join_client();
 
     // `serv.get_core_worker_num()`: the workers and the task workers.
-    let core_worker_num = serv.config().worker_num + serv.config().task_worker_num;
+    let core_worker_num = serv.config().worker_num.get() + serv.config().task_worker_num.get();
     assert_eq!(counter_get(1), i32::try_from(core_worker_num).unwrap());
     wait_all_child_processes();
     assert_no_failure();
@@ -1423,8 +1315,8 @@ static NO_IDLE_CLIENT: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
 
 /// `no_idle_task_worker`'s `onStart`: the client thread, once a worker has unlocked
 /// the gate (upstream's process-shared mutex).
-unsafe extern "C" fn no_idle_on_start(_: *mut c_void, serv: *mut c_void) {
-    let serv = Server(serv);
+fn no_idle_on_start(serv: view::Server<'_>) {
+    let serv = Server(serv.raw());
     let t1 = std::thread::spawn(move || {
         block_all_signals();
 
@@ -1456,16 +1348,12 @@ unsafe extern "C" fn no_idle_on_start(_: *mut c_void, serv: *mut c_void) {
     *NO_IDLE_CLIENT.lock().unwrap() = Some(t1);
 }
 
-unsafe extern "C" fn no_idle_on_worker_start(_: *mut c_void, _: *mut c_void, _: *mut c_void) {
+fn no_idle_on_worker_start(_: view::Server<'_>, _: Worker<'_>) {
     shared().unlocked.store(true, Ordering::SeqCst);
 }
 
-unsafe extern "C" fn no_idle_on_receive(
-    _: *mut c_void,
-    serv: *mut c_void,
-    _: *mut RecvData,
-) -> c_int {
-    let serv = Server(serv);
+fn no_idle_on_receive(serv: view::Server<'_>, _: &RecvData) -> c_int {
+    let serv = Server(serv.raw());
     for _ in 0..1024 {
         let mut dst_worker_id = -1;
         let mut buf = EventData::packed(PACKET);
@@ -1478,7 +1366,7 @@ unsafe extern "C" fn no_idle_on_receive(
     SW_OK
 }
 
-unsafe extern "C" fn no_idle_on_task(_: *mut c_void, _: *mut c_void, task: *mut c_void) -> c_int {
+fn no_idle_on_task(_: view::Server<'_>, task: Packed<'_>) -> c_int {
     check(
         data(task).payload() == PACKET,
         "string(task->data, task->info.len) == packet",
@@ -1491,9 +1379,9 @@ unsafe extern "C" fn no_idle_on_task(_: *mut c_void, _: *mut c_void, task: *mut 
 fn no_idle_task_worker() {
     counter_init();
     let serv = Server::new(MODE_PROCESS);
-    serv.config().worker_num = 1;
-    serv.config().task_worker_num = 4;
-    serv.config().dispatch_mode = DISPATCH_IDLE_WORKER;
+    serv.config().worker_num.set(1);
+    serv.config().task_worker_num.set(4);
+    serv.config().dispatch_mode.set(DISPATCH_IDLE_WORKER);
 
     let log_file = CString::new(TEST_LOG_FILE).unwrap();
     set_log_file(&log_file);
@@ -1503,10 +1391,10 @@ fn no_idle_task_worker() {
 
     assert_eq!(serv.create(), SW_OK);
 
-    serv.set_callback(Slot::Start, no_idle_on_start as *const c_void);
-    serv.set_callback(Slot::WorkerStart, no_idle_on_worker_start as *const c_void);
-    serv.set_callback(Slot::Receive, no_idle_on_receive as *const c_void);
-    serv.set_callback(Slot::Task, no_idle_on_task as *const c_void);
+    serv.set_callback(Callback::Start(no_idle_on_start));
+    serv.set_callback(Callback::WorkerStart(no_idle_on_worker_start));
+    serv.set_callback(Callback::Receive(no_idle_on_receive));
+    serv.set_callback(Callback::Task(no_idle_on_task));
 
     assert_eq!(serv.start(), 0);
 

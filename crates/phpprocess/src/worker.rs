@@ -13,6 +13,7 @@ use swoole_rs_reactor::{
         socket_set_fd_option, socket_set_kernel_read_timeout, socket_set_kernel_write_timeout,
     },
 };
+use swoole_rs_server::view;
 use swoole_rs_tls::{
     socket_pair::{self, SocketPair},
     upstream::{read_sync, send_sync},
@@ -118,7 +119,7 @@ pub(crate) fn open_pipe(worker: Worker<'_>, socket_type: c_int) -> Option<c_int>
 
 /// The worker's current pipe end, while it has one.
 fn pipe(worker: Worker<'_>) -> Option<Socket<'_>> {
-    swoole_rs_server::view::worker_pipe_end(worker, swoole_rs_server::view::PipeEnd::Current)
+    view::worker_pipe_end(worker, view::PipeEnd::Current)
 }
 
 pub(crate) fn view(worker: Worker<'_>) -> WorkerView {
@@ -170,14 +171,11 @@ pub(crate) fn pipe_read(worker: Worker<'_>, buffer: &mut [u8], blocking: bool) -
 
 /// Write `data` to the pipe: the length written, or `None`.
 pub(crate) fn pipe_write(worker: Worker<'_>, data: &[u8], blocking: bool) -> Option<usize> {
-    let socket = pipe(worker)?;
-    let (bytes, length) = (data.as_ptr().cast(), data.len());
     if !blocking && event_api::swoole_event_is_available() {
-        // SAFETY: a live socket and `length` readable bytes.
-        usize::try_from(unsafe { event_api::swoole_event_write(socket.as_ptr(), bytes, length) })
-            .ok()
+        let socket = view::registered_pipe_end(worker, view::PipeEnd::Current)?;
+        event_api::event_write(socket, data)
     } else {
-        send_sync(socket, data, 0)
+        send_sync(pipe(worker)?, data, 0)
     }
 }
 

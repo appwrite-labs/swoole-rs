@@ -13,12 +13,11 @@ use crate::{
 use std::{
     cell::{Cell, OnceCell},
     ffi::{CString, c_int},
-    ptr,
     rc::Rc,
     sync::atomic::Ordering::Relaxed,
 };
 use swoole_rs_buffer::string::CppString as Buffer;
-use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
+use swoole_rs_clients::address::{address_port, with_host};
 use swoole_rs_corebase::CCast;
 use swoole_rs_hooks::{co_socket::Co, packet::recv_packet};
 use swoole_rs_httpbindings::Setting;
@@ -28,8 +27,8 @@ use swoole_rs_phpswoole::MinitArgs;
 use swoole_rs_phpswoole::SocketSettings;
 use swoole_rs_reactor::Events;
 use swoole_rs_zend::{
-    Array, ArrayMut, Call, Custom, CustomClass, Key as ArrayKey, Minit, Owned, OwnedArray, Props,
-    Value, ZString, bailout, handlers, method_table, string,
+    Array, ArrayMut, Call, CallFrame, Custom, CustomClass, Key as ArrayKey, Minit, Owned,
+    OwnedArray, Props, Value, ZString, bailout, handlers, method_table,
     sys::{self as z, ZEND_ACC_FINAL, ZEND_ACC_PUBLIC, zend_long, zval},
 };
 
@@ -281,7 +280,7 @@ fn address(socket: Co) -> (ZString, c_int) {
         network.read(|record| {
             let info = &record.info;
             let host = with_host(info, |host| ZString::new(host.to_bytes()));
-            (host, swr_v1_clients_address_port(info))
+            (host, address_port(info).into())
         })
     });
     address.unwrap_or_else(|| (ZString::new(b""), 0))
@@ -294,12 +293,9 @@ const HTTP2_FRAME_HEADER_SIZE: u8 = 9;
 /// the request's `length` bytes, in a zend string the buffer allocated,
 /// become `zdata`; the buffer starts a new allocation.
 fn request_data(mut context: Ctx, buffer: &mut Buffer, length: usize) {
-    let data = buffer.pop(BUFFER_SIZE_BIG);
-    let string = string::from_val(data);
-    // SAFETY: the zend string allocator's unshared string, holding `length`
-    // bytes and room for the NUL; its one reference moves into `zdata`.
-    let string = unsafe { string::ZBuf::from_raw(string, length) };
-    context.state().request.zdata = Owned::string(string.into_zstring());
+    if let Some(data) = swoole_rs_phpclients::pop_string(buffer, BUFFER_SIZE_BIG, length) {
+        context.state().request.zdata = Owned::string(data);
+    }
 }
 
 /// HTTP/2 on the connection: the server's SETTINGS frame, then frames by
@@ -476,6 +472,19 @@ struct Accept {
     cache: z::zend_fcall_info_cache,
 }
 
+unsafe extern "C" {
+    /// `zend_is_callable_at_frame(name, $this, frame, 0, cache, NULL)` inside
+    /// `zend_try` (nonzero for a bailout): it reads the name and the call's
+    /// frame, and fills the cache and whether the name is callable there.
+    #[link_name = "swr_zend_try_facade_callable_frame"]
+    safe fn callable_at_frame(
+        name: &Owned,
+        frame: CallFrame<'_>,
+        cache: &mut z::zend_fcall_info_cache,
+        callable: &mut bool,
+    ) -> c_int;
+}
+
 /// `sw_zend_is_callable_at_frame("onAccept")` on `$this` at `start`'s frame;
 /// an `E_CORE_ERROR` when it is not.
 fn accept_callable(call: &Call) -> Result<Option<Box<Accept>>, bailout::Bailout> {
@@ -484,19 +493,12 @@ fn accept_callable(call: &Call) -> Result<Option<Box<Accept>>, bailout::Bailout>
         cache: swoole_rs_zend::zeroed(),
     });
     let mut callable = false;
-    // SAFETY: the name, `$this`, this method's frame and local outputs; the
-    // shim traps what Zend raises.
-    bailout::trapped(unsafe {
-        z::swr_zend_try_facade_callable_frame(
-            accept.callback.as_ptr(),
-            call.this(),
-            call.frame(),
-            0,
-            &raw mut accept.cache,
-            ptr::null_mut(),
-            &raw mut callable,
-        )
-    })?;
+    bailout::trapped(callable_at_frame(
+        &accept.callback,
+        call.call_frame(),
+        &mut accept.cache,
+        &mut callable,
+    ))?;
     if callable {
         return Ok(Some(accept));
     }

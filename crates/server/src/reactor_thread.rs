@@ -80,8 +80,18 @@ fn receive_packets(
         let data = buffer.wrapping_byte_add(head);
         // SAFETY: the buffer's room after the packet head, which nothing else reaches
         // during the call.
-        let n = unsafe { swoole_rs_reactor::Fill::from_raw(data, size - head) }
-            .recvfrom(fd, 0, address);
+        let mut room = unsafe { swoole_rs_reactor::Fill::from_raw(data, size - head) };
+        // A DTLS datagram goes to the handshake, as the bytes it received.
+        let received = room.spare(|spare| match spare.recvfrom(fd, 0, &mut pkt.socket_addr) {
+            Some(1..) if dtls => {
+                Err(hybrid().dtls_accept(serv, reactor, port, &pkt.socket_addr, spare.written()))
+            }
+            n => Ok(n),
+        });
+        let n = match received {
+            Ok(n) => n,
+            Err(accepted) => return accepted,
+        };
         let Some(length @ 1..) = n.and_then(|n| u32::try_from(n).ok()) else {
             if std::io::Error::last_os_error().raw_os_error() == Some(libc::EAGAIN) {
                 return true;
@@ -92,13 +102,6 @@ fn receive_packets(
             );
             return false;
         };
-        if dtls {
-            let datagram = data.cast::<u8>();
-            // SAFETY: the `length` bytes just received into the buffer's room after the
-            // packet head, which nothing writes during the call.
-            let datagram = unsafe { core::slice::from_raw_parts(datagram, length as usize) };
-            return hybrid().dtls_accept(serv, reactor, port, &pkt.socket_addr, datagram);
-        }
         pkt.length = length;
         task.set_fd(pkt.sender());
         // SAFETY: the packet head and the `length` bytes just received behind it, in the
@@ -231,7 +234,7 @@ pub(crate) fn send_event(sock: Option<Socket<'_>>, fd: c_long, kind: ServerEvent
     };
     if let Some(sock) = sock {
         let data = swoole_rs_process::process_pool::head_view(&head);
-        let data = swoole_rs_reactor::Drain::new(data);
+        let data = swoole_rs_reactor::Drain::new(&data);
         _ = swoole_rs_tls::upstream::send_sync_drain(sock, data, 0);
     }
 }

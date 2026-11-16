@@ -2,7 +2,7 @@
 //! names: an `Rc`'s value, whose reference a [`Named`] owner beside the slot
 //! keeps.
 use std::{ffi::c_void, mem::ManuallyDrop, rc::Rc};
-use swoole_rs_clients::protocol::Protocol;
+use swoole_rs_clients::protocol::{Protocol, Socket};
 use swoole_rs_corebase::net_types::PacketLength;
 use swoole_rs_zend::{bailout, host::callable::Callable};
 
@@ -46,7 +46,7 @@ pub trait PackageLength {
 /// `Rc` whose reference its [`Named`] owner keeps, and a live packet.
 pub unsafe extern "C" fn length<L: PackageLength>(
     protocol: *const Protocol,
-    _socket: *mut c_void,
+    _socket: Option<Socket<'_>>,
     packet: &mut PacketLength,
 ) -> isize {
     // SAFETY: per the caller.

@@ -1,9 +1,9 @@
 //! `swoole::Logger` (upstream `src/core/log.cc`): level, date format, log file,
 //! rotation, stdout redirection and `put`, behind one lock. Diagnostics go out
-//! through corebase's log host; worker identity, `swoole_redirect_stdout` and
-//! backtraces go through `LoggerHost` (`swr_logger_host`, in crates/process). Both run after
-//! the lock is released, so a diagnostic can log through this logger again. The log
-//! macros a Rust log runs (`swr_v1_utils_log`) are here too.
+//! through corebase's log host; worker identity and `swoole_redirect_stdout` go
+//! through `LoggerHost` (crates/process's). Both run after the lock is released, so a
+//! diagnostic can log through this logger again. The log macros a Rust log runs
+//! (`swr_v1_utils_log`) are here too.
 use crate::{log_level, log_line, log_micros, log_rotation};
 use libc::{c_char, c_int};
 use std::ffi::{CStr, CString};
@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicI32, Ordering::Relaxed};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 use swoole_rs_corebase::log;
-use swoole_rs_corebase::sys::{self, Text, errno};
+use swoole_rs_corebase::sys::{self, errno};
 use swoole_rs_corebase::{CCast, Stream};
 
 const SW_LOG_INFO: c_int = 2;
@@ -27,7 +27,6 @@ const SYSTEM_CALL_FAIL: c_int = swoole_rs_error::ErrorCode::SW_ERROR_SYSTEM_CALL
 const INVALID_PARAMS: c_int = swoole_rs_error::ErrorCode::SW_ERROR_INVALID_PARAMS as c_int;
 const REDIRECT_ORIGIN: &CStr = c"Logger::redirect_stdout_and_stderr";
 
-#[repr(C)]
 #[derive(Default)]
 pub struct LoggerIdentity {
     pub worker_id: c_int,
@@ -36,13 +35,11 @@ pub struct LoggerIdentity {
 }
 
 /// The native effects a logger asks for.
-#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct LoggerHost {
     /// `swoole_redirect_stdout(fd)`.
     pub redirect: extern "C" fn(fd: c_int),
-    pub backtrace: extern "C" fn(),
-    pub identity: extern "C" fn() -> LoggerIdentity,
+    pub identity: fn() -> LoggerIdentity,
 }
 
 /// A diagnostic or native effect, run once the lock is released.
@@ -57,7 +54,6 @@ enum Effect {
     /// `Logger::redirect_stdout_and_stderr`'s `swoole_sys_warning`, with errno.
     SysWarning(&'static str, c_int),
     Redirect(c_int),
-    Backtrace,
 }
 
 struct State {
@@ -65,7 +61,6 @@ struct State {
     /// under the lock; lines go to `stream` while there is none.
     file_fd: Option<c_int>,
     redirected: bool,
-    backtrace: bool,
     microseconds: bool,
     rotation: c_int,
     stdout_fd: c_int,
@@ -242,9 +237,6 @@ impl State {
             stream.write(line);
             stream.flush();
         }
-        if self.backtrace {
-            effects.push(Effect::Backtrace);
-        }
     }
 }
 
@@ -281,7 +273,6 @@ impl Logger {
                 log::sys_warning_errno(code, REDIRECT_ORIGIN, format_args!("{message}"));
             }
             Effect::Redirect(fd) => (self.host.redirect)(fd),
-            Effect::Backtrace => (self.host.backtrace)(),
         }
     }
 
@@ -316,7 +307,6 @@ impl Logger {
             state: Mutex::new(State {
                 file_fd: None,
                 redirected: false,
-                backtrace: false,
                 microseconds: false,
                 rotation: 0,
                 stdout_fd: -1,
@@ -340,10 +330,83 @@ impl Logger {
         self.lock().close();
     }
 
+    /// `Logger::set_stream`.
+    pub fn set_stream(&self, stream: Option<Stream>) {
+        let mut state = self.lock();
+        state.close();
+        state.stream = stream;
+    }
+
+    /// `Logger::get_level`.
+    pub fn level(&self) -> c_int {
+        self.level.load(Relaxed)
+    }
+
+    /// `Logger::set_level`, clamped to the defined levels.
+    pub fn set_level(&self, level: c_int) {
+        self.level.store(log_level(level), Relaxed);
+    }
+
+    /// `Logger::set_rotation`.
+    pub fn set_rotation(&self, rotation: c_int) {
+        self.lock().rotation = rotation;
+    }
+
+    /// `Logger::set_date_with_microseconds`.
+    pub fn set_date_with_microseconds(&self, enable: bool) {
+        self.lock().microseconds = enable;
+    }
+
+    /// `Logger::reset`: the date format, microseconds, rotation and level.
+    pub fn reset(&self) {
+        let mut state = self.lock();
+        state.date_format = SW_LOG_DEFAULT_DATE_FORMAT.into();
+        state.microseconds = false;
+        state.rotation = 0;
+        self.level.store(SW_LOG_INFO, Relaxed);
+    }
+
+    /// `Logger::set_date_format`: false, with a warning, if the format renders nothing.
+    /// The format is measured before `strftime` reads it; upstream measured it only to
+    /// keep it or to log its length.
+    pub fn set_date_format(&self, format: &CStr) -> bool {
+        let mut date = [0u8; SW_LOG_DATE_STRLEN];
+        let fits = strftime(&mut date, format, now().0) != 0;
+        if !fits && LOG_WARNING < self.level() {
+            log::set_last_error(INVALID_PARAMS);
+            return false;
+        }
+        self.with(|state, effects| {
+            if !fits {
+                let length = c_int::try_from(format.to_bytes().len()).unwrap_or(c_int::MAX);
+                effects.push(Effect::DateFormatTooLong(length));
+                return false;
+            }
+            format.clone_into(&mut state.date_format);
+            true
+        })
+    }
+
+    /// `Logger::redirect_stdout_and_stderr`.
+    pub fn redirect_stdout_and_stderr(&self, enable: bool) -> bool {
+        self.with(|state, effects| {
+            if enable {
+                state.redirect(effects)
+            } else {
+                state.restore(effects)
+            }
+        })
+    }
+
+    /// `Logger::is_opened`.
+    pub fn is_opened(&self) -> bool {
+        self.lock().file_fd.is_some()
+    }
+
     /// `Logger::put`: `content` through its first NUL, as upstream's `%.*s`
-    /// reads it, then the backtrace if one was asked for.
+    /// reads it.
     pub fn put(&self, level: c_int, content: &[u8]) {
-        if level < self.level.load(Relaxed) {
+        if level < self.level() {
             return;
         }
         let mut identity = (self.host.identity)();
@@ -352,47 +415,6 @@ impl Logger {
         }
         self.with(|state, effects| state.write(level, content, &identity, effects));
     }
-}
-
-/// `new Logger()` writing to `stdout`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_logger_new(
-    stdout_stream: Option<Stream>,
-    host: LoggerHost,
-) -> *mut Logger {
-    Box::into_raw(Box::new(Logger::new(stdout_stream, host)))
-}
-
-/// `delete logger`: native code hands back, once, the box `swr_v1_logger_new` made.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_logger_free(logger: Option<Box<Logger>>) {
-    drop(logger);
-}
-
-/// `Logger::open`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_logger_open(logger: &Logger, file: Text<'_>) -> bool {
-    logger.open(file.get())
-}
-
-/// `Logger::reopen`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_logger_reopen(logger: &Logger) {
-    logger.reopen();
-}
-
-/// `Logger::close`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_logger_close(logger: &Logger) {
-    logger.close();
-}
-
-/// `Logger::set_stream`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_logger_set_stream(logger: &Logger, stream: Option<Stream>) {
-    let mut state = logger.lock();
-    state.close();
-    state.stream = stream;
 }
 
 /// [`Logger::put`].
@@ -423,109 +445,13 @@ pub unsafe extern "C" fn swr_v1_logger_put(
     logger.put(level, content);
 }
 
-/// `Logger::get_level`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_logger_level(logger: &Logger) -> c_int {
-    logger.level.load(Relaxed)
-}
-
-/// `Logger::set_level`, clamped to the defined levels.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_logger_set_level(logger: &Logger, level: c_int) {
-    logger.level.store(log_level(level), Relaxed);
-}
-
-/// Logger settings `swr_v1_logger_set` changes.
-#[repr(C)]
-pub enum LoggerSetting {
-    Rotation = 0,
-    Microseconds = 1,
-    Backtrace = 2,
-    /// `Logger::reset`: the date format, microseconds, rotation and level.
-    Reset = 3,
-}
-
-/// `Logger::set_rotation`, `set_date_with_microseconds`, `display_backtrace` and `reset`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_logger_set(logger: &Logger, setting: LoggerSetting, value: c_int) {
-    let mut state = logger.lock();
-    match setting {
-        LoggerSetting::Rotation => state.rotation = value,
-        LoggerSetting::Microseconds => state.microseconds = value != 0,
-        LoggerSetting::Backtrace => state.backtrace = true,
-        LoggerSetting::Reset => {
-            state.date_format = SW_LOG_DEFAULT_DATE_FORMAT.into();
-            state.microseconds = false;
-            state.rotation = 0;
-            logger.level.store(SW_LOG_INFO, Relaxed);
-        }
-    }
-}
-
-/// `Logger::set_date_format`: false, with a warning, if the format renders nothing.
-/// The format is measured before `strftime` reads it; upstream measured it only to
-/// keep it or to log its length.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_logger_set_date_format(logger: &Logger, format: Text<'_>) -> bool {
-    let format = format.get();
-    let mut date = [0u8; SW_LOG_DATE_STRLEN];
-    let fits = strftime(&mut date, format, now().0) != 0;
-    if !fits && LOG_WARNING < logger.level.load(Relaxed) {
-        log::set_last_error(INVALID_PARAMS);
-        return false;
-    }
-    logger.with(|state, effects| {
-        if !fits {
-            let length = c_int::try_from(format.to_bytes().len()).unwrap_or(c_int::MAX);
-            effects.push(Effect::DateFormatTooLong(length));
-            return false;
-        }
-        format.clone_into(&mut state.date_format);
-        true
-    })
-}
-
-/// `Logger::redirect_stdout_and_stderr`.
-pub fn swr_v1_logger_redirect(logger: &Logger, enable: bool) -> bool {
-    logger.with(|state, effects| {
-        if enable {
-            state.redirect(effects)
-        } else {
-            state.restore(effects)
-        }
-    })
-}
-
-/// `Logger::is_opened`.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_logger_is_opened(logger: &Logger) -> bool {
-    logger.lock().file_fd.is_some()
-}
-
-/// `Logger::get_file` (0) or `get_real_file` (1): valid until the file next changes.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_logger_file(logger: &Logger, real: bool) -> *const c_char {
-    let state = logger.lock();
-    if real {
-        state.real_file.as_ptr()
-    } else {
-        state.file.as_ptr()
-    }
-}
-
-/// `Logger::gen_real_file`'s date suffix, without the dot; returns its length.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_logger_rotation_date(logger: &Logger, date: &mut [u8; 16]) -> usize {
-    rotation_date(logger.lock().rotation, date)
-}
-
 /// The process logger, `sw_logger()`: a `swoole::Logger`, whose only member is
 /// this crate's `Logger`, or null before `swoole_init`.
 #[must_use]
 pub fn process_logger() -> Option<&'static Logger> {
     let cpp = swoole_rs_corebase::swr_v1_core_logger().cast::<&'static Logger>();
     // SAFETY: null, or a live `swoole::Logger` whose only member is a non-null pointer
-    // to a live Logger (`swr_v1_logger_new`'s, freed only with the object).
+    // to a live Logger (crates/process's `LOGGER`, freed only with the object).
     unsafe { cpp.as_ref() }.copied()
 }
 
@@ -536,7 +462,7 @@ pub fn process_logger() -> Option<&'static Logger> {
 )]
 pub extern "C" fn swoole_set_log_level(level: c_int) {
     if let Some(logger) = process_logger() {
-        logger.level.store(log_level(level), Relaxed);
+        logger.set_level(level);
     }
 }
 
@@ -548,7 +474,7 @@ pub extern "C" fn swoole_set_log_level(level: c_int) {
 )]
 pub extern "C" fn swoole_get_log_level() -> c_int {
     const SW_LOG_NONE: c_int = 6;
-    process_logger().map_or(SW_LOG_NONE, |logger| logger.level.load(Relaxed))
+    process_logger().map_or(SW_LOG_NONE, Logger::level)
 }
 
 /// `void swoole_set_log_file(const char *file)`.
@@ -635,9 +561,8 @@ pub(crate) mod tests {
     }
 
     extern "C" fn redirect(_: c_int) {}
-    extern "C" fn backtrace() {}
 
-    extern "C" fn identity() -> LoggerIdentity {
+    fn identity() -> LoggerIdentity {
         LoggerIdentity {
             worker_id: 3,
             worker_pid: 0,
@@ -645,11 +570,7 @@ pub(crate) mod tests {
         }
     }
 
-    const HOST_FAKE: LoggerHost = LoggerHost {
-        redirect,
-        backtrace,
-        identity,
-    };
+    const HOST_FAKE: LoggerHost = LoggerHost { redirect, identity };
 
     fn host() -> Vec<Logged> {
         swoole_rs_corebase::log::swr_v1_core_set_log_host(logged);
@@ -663,8 +584,8 @@ pub(crate) mod tests {
     }
 
     /// `Logger::get_file` (or `get_real_file`), copied.
-    pub(crate) fn file(logger: *const Logger, real: bool) -> String {
-        let state = unsafe { &*logger }.lock();
+    pub(crate) fn file(logger: &Logger, real: bool) -> String {
+        let state = logger.lock();
         let file = if real { &state.real_file } else { &state.file };
         file.to_string_lossy().into_owned()
     }
@@ -672,27 +593,23 @@ pub(crate) mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no fdopen")]
     fn put_writes_the_upstream_line_to_the_log_file_at_or_above_the_level() {
-        let logger = swr_v1_logger_new(None, HOST_FAKE);
+        let logger = &Logger::new(None, HOST_FAKE);
         let (name, file_path) = path("put");
+        assert!(logger.open(&name), "opened");
+        assert!(logger.is_opened(), "is_opened");
+        assert!(logger.set_date_format(c"%Y"), "date format");
         unsafe {
-            assert!(swr_v1_logger_open(&*logger, (&*name).into()), "opened");
-            assert!(swr_v1_logger_is_opened(&*logger), "is_opened");
-            assert!(
-                swr_v1_logger_set_date_format(&*logger, c"%Y".into()),
-                "date format"
-            );
-            swr_v1_logger_put(&*logger, 1, c"hidden".as_ptr(), 6);
-            swr_v1_logger_put(&*logger, 4, c"hello world".as_ptr(), 5);
-            swr_v1_logger_close(&*logger);
-            assert!(!swr_v1_logger_is_opened(&*logger), "closed");
-            assert_eq!(file(logger, false), "", "close clears the file");
-            assert_eq!(
-                file(logger, true),
-                name.to_str().unwrap(),
-                "but not the real file"
-            );
-            swr_v1_logger_free(Some(Box::from_raw(logger)));
+            swr_v1_logger_put(logger, 1, c"hidden".as_ptr(), 6);
+            swr_v1_logger_put(logger, 4, c"hello world".as_ptr(), 5);
         }
+        logger.close();
+        assert!(!logger.is_opened(), "closed");
+        assert_eq!(file(logger, false), "", "close clears the file");
+        assert_eq!(
+            file(logger, true),
+            name.to_str().unwrap(),
+            "but not the real file"
+        );
         let written = std::fs::read_to_string(&file_path).unwrap();
         let (year, rest) = written.strip_prefix('[').unwrap().split_at(4);
         assert!(
@@ -711,13 +628,10 @@ pub(crate) mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no strerror")]
     fn failures_are_logged_after_the_state_changes() {
-        let logger = swr_v1_logger_new(None, HOST_FAKE);
+        let logger = &Logger::new(None, HOST_FAKE);
         host();
         unsafe {
-            assert!(
-                !swr_v1_logger_open(&*logger, c"/nonexistent/dir/log".into()),
-                "open fails"
-            );
+            assert!(!logger.open(c"/nonexistent/dir/log"), "open fails");
             assert_eq!(
                 host(),
                 [(
@@ -733,7 +647,7 @@ pub(crate) mod tests {
                 )],
                 "open diagnostic"
             );
-            assert!(!swr_v1_logger_is_opened(&*logger), "not opened");
+            assert!(!logger.is_opened(), "not opened");
             assert_eq!(
                 (file(logger, false), file(logger, true)),
                 (String::new(), String::new()),
@@ -741,10 +655,7 @@ pub(crate) mod tests {
             );
 
             let long = CString::new("%Y".repeat(100)).unwrap();
-            assert!(
-                !swr_v1_logger_set_date_format(&*logger, (&*long).into()),
-                "too long"
-            );
+            assert!(!logger.set_date_format(&long), "too long");
             assert_eq!(
                 host(),
                 [(
@@ -758,11 +669,11 @@ pub(crate) mod tests {
             );
 
             assert!(
-                !swr_v1_logger_redirect(&*logger, true),
+                !logger.redirect_stdout_and_stderr(true),
                 "nothing to redirect to"
             );
             assert!(
-                !swr_v1_logger_redirect(&*logger, false),
+                !logger.redirect_stdout_and_stderr(false),
                 "nothing to restore"
             );
             assert_eq!(log::last_error(), INVALID_PARAMS, "last error");
@@ -780,54 +691,47 @@ pub(crate) mod tests {
                 [warning("no log file opened"), warning("no redirected")],
                 "redirect diagnostics"
             );
-            swr_v1_logger_free(Some(Box::from_raw(logger)));
         }
     }
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no localtime")]
     fn rotation_names_the_real_file_by_date_and_reset_restores_defaults() {
-        let logger = swr_v1_logger_new(None, HOST_FAKE);
+        let logger = &Logger::new(None, HOST_FAKE);
         let (name, _) = path("rotate");
-        unsafe {
-            swr_v1_logger_set(&*logger, LoggerSetting::Rotation, 2);
-            swr_v1_logger_set_level(&*logger, 99);
-            assert_eq!(swr_v1_logger_level(&*logger), 6, "clamped");
-            assert!(swr_v1_logger_open(&*logger, (&*name).into()), "opened");
-            let mut date = [0u8; 16];
-            let length = swr_v1_logger_rotation_date(&*logger, &mut date);
-            assert_eq!(length, 8, "daily: %Y%m%d");
-            let expected = format!(
-                "{}.{}",
-                name.to_str().unwrap(),
-                std::str::from_utf8(&date[..length]).unwrap()
-            );
-            assert_eq!(file(logger, true), expected, "real file");
-            swr_v1_logger_reopen(&*logger);
-            assert_eq!(file(logger, true), expected, "reopened");
-            swr_v1_logger_set(&*logger, LoggerSetting::Reset, 0);
-            assert_eq!(swr_v1_logger_level(&*logger), SW_LOG_INFO, "reset level");
-            assert_eq!(
-                swr_v1_logger_rotation_date(&*logger, &mut date),
-                8,
-                "reset rotation is daily too"
-            );
-            swr_v1_logger_close(&*logger);
-            swr_v1_logger_free(Some(Box::from_raw(logger)));
-            std::fs::remove_file(expected).unwrap_or_default();
-        }
+        logger.set_rotation(2);
+        logger.set_level(99);
+        assert_eq!(logger.level(), 6, "clamped");
+        assert!(logger.open(&name), "opened");
+        let mut date = [0u8; 16];
+        let length = rotation_date(logger.lock().rotation, &mut date);
+        assert_eq!(length, 8, "daily: %Y%m%d");
+        let expected = format!(
+            "{}.{}",
+            name.to_str().unwrap(),
+            std::str::from_utf8(&date[..length]).unwrap()
+        );
+        assert_eq!(file(logger, true), expected, "real file");
+        logger.reopen();
+        assert_eq!(file(logger, true), expected, "reopened");
+        logger.reset();
+        assert_eq!(logger.level(), SW_LOG_INFO, "reset level");
+        assert_eq!(
+            rotation_date(logger.lock().rotation, &mut date),
+            8,
+            "reset rotation is daily too"
+        );
+        logger.close();
+        std::fs::remove_file(expected).unwrap_or_default();
         assert!(host().is_empty(), "no diagnostics");
     }
 
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no fdopen")]
     fn concurrent_puts_and_reopens_keep_every_line_whole() {
-        struct Shared(*mut Logger);
-        // SAFETY: the logger is thread-safe for put and reopen.
-        unsafe impl Sync for Shared {}
-        let logger = Shared(swr_v1_logger_new(None, HOST_FAKE));
+        let logger = Logger::new(None, HOST_FAKE);
         let (name, file_path) = path("threads");
-        unsafe { assert!(swr_v1_logger_open(&*logger.0, (&*name).into()), "opened") };
+        assert!(logger.open(&name), "opened");
         std::thread::scope(|scope| {
             for thread in 0..4 {
                 let logger = &logger;
@@ -835,18 +739,17 @@ pub(crate) mod tests {
                     for i in 0..1000 {
                         let message = CString::new(format!("t{thread}-{i}")).unwrap();
                         let length = message.as_bytes().len();
-                        unsafe { swr_v1_logger_put(&*logger.0, 4, message.as_ptr(), length) };
+                        unsafe { swr_v1_logger_put(logger, 4, message.as_ptr(), length) };
                     }
                 });
             }
             let logger = &logger;
             scope.spawn(move || {
                 for _ in 0..100 {
-                    unsafe { swr_v1_logger_reopen(&*logger.0) };
+                    logger.reopen();
                 }
             });
         });
-        swr_v1_logger_free(Some(unsafe { Box::from_raw(logger.0) }));
         let written = std::fs::read_to_string(&file_path).unwrap();
         let mut seen: Vec<&str> = written
             .lines()

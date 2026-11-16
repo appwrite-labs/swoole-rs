@@ -8,15 +8,16 @@ use crate::upstream::{
     send_drain, socket_free, socket_handle_send, socket_handle_sendfile, writev,
 };
 use std::cell::Cell;
-use std::ffi::{c_int, c_void};
+use std::ffi::c_int;
 use std::io::IoSlice;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log;
+use swoole_rs_reactor::event_api::Writers;
 use swoole_rs_reactor::reactor_upstream::{interest, reactor_interest, trigger_close_event};
 use swoole_rs_reactor::socket_upstream::socket_set_fd_option;
 use swoole_rs_reactor::{
-    Drain, Event, FlushEffects, Interest, Running, SOCKET_DEFAULTS, Socket, WriteEffects,
-    WriteError, WritePayload,
+    Drain, Event, FlushEffects, Interest, OwnedSocket, Running, SOCKET_DEFAULTS, Socket,
+    WriteEffects, WriteError, WritePayload,
 };
 
 const SW_ERROR_OPERATION_NOT_SUPPORT: c_int =
@@ -80,8 +81,13 @@ impl WriteEffects for Write<'_> {
     }
 }
 
-/// `Reactor::write_func`.
-fn write(reactor: Running<'_>, socket: Socket<'static>, payload: WritePayload<'_>) -> isize {
+/// `Reactor::write_func`: the bytes written or queued, or `None` once the failure is
+/// logged or set as the last error.
+fn write(
+    reactor: Running<'_>,
+    socket: Socket<'static>,
+    payload: WritePayload<'_>,
+) -> Option<usize> {
     let ops = Write {
         reactor,
         socket,
@@ -91,7 +97,7 @@ fn write(reactor: Running<'_>, socket: Socket<'static>, payload: WritePayload<'_
     let result = swoole_rs_reactor::swr_v1_reactor_write(socket, default_size, payload, &ops);
     let origin = c"Reactor::write_func";
     match result {
-        Ok(value) => return value.cast_signed(),
+        Ok(value) => return Some(value),
         Err(WriteError::TooLarge) => log::error_log(
             log::LogLevel::SW_LOG_WARNING,
             SW_ERROR_PACKAGE_LENGTH_TOO_LARGE,
@@ -111,45 +117,23 @@ fn write(reactor: Running<'_>, socket: Socket<'static>, payload: WritePayload<'_
             log::set_last_error(std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
         }
     }
-    -1
+    None
 }
 
 /// `ssize_t Reactor::_write(Reactor *, Socket *, const void *buf, size_t n)`.
-///
-/// # Safety
-/// `reactor` is a live `Reactor`, `socket` stays live while it is registered, and
-/// `data` holds `length` bytes.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole7Reactor6_writeEPS0_PNS_7network6SocketEPKvm")
-)]
 #[must_use]
-pub unsafe extern "C-unwind" fn reactor_write(
-    reactor: Running<'_>,
-    socket: Socket<'static>,
-    data: *const c_void,
-    length: usize,
-) -> isize {
-    // SAFETY: as the caller promises.
-    let data = unsafe { Drain::from_raw(data, length) };
-    write(reactor, socket, WritePayload::Bytes(data))
+pub fn reactor_write(reactor: Running<'_>, socket: Socket<'static>, data: &[u8]) -> Option<usize> {
+    write(reactor, socket, WritePayload::Bytes(Drain::new(data)))
 }
 
 /// `ssize_t Reactor::_writev(Reactor *, Socket *, const iovec *iov, size_t iovcnt)`:
 /// not over TLS.
-///
-/// # Safety
-/// As [`reactor_write`], with `iov` holding `count` entries.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole7Reactor7_writevEPS0_PNS_7network6SocketEPK5iovecm")
-)]
-pub unsafe extern "C-unwind" fn reactor_writev(
+#[must_use]
+pub fn reactor_writev(
     reactor: Running<'_>,
     socket: Socket<'static>,
-    iov: *const libc::iovec,
-    count: usize,
-) -> isize {
+    vectors: &[IoSlice<'_>],
+) -> Option<usize> {
     if !socket.read(swoole_rs_reactor::SocketFields::ssl).is_null() {
         log::error_log(
             log::LogLevel::SW_LOG_WARNING,
@@ -157,40 +141,17 @@ pub unsafe extern "C-unwind" fn reactor_writev(
             c"Reactor::_writev",
             format_args!("does not support SSL"),
         );
-        return -1;
+        return None;
     }
-    if count == 0 {
-        return write(reactor, socket, WritePayload::Vectors(&[]));
-    }
-    // SAFETY: as the caller promises: `count` iovecs.
-    let raw = unsafe { std::slice::from_raw_parts(iov, count) };
-    // SAFETY: the same iovecs, over readable bytes, which an `IoSlice` is laid out as.
-    // One at a null base, which no `IoSlice` has, is never read as a slice: only the
-    // parts `raw` shows at a non-null base are used.
-    let vectors = unsafe { std::slice::from_raw_parts(iov.cast::<IoSlice<'_>>(), count) };
-    if raw.iter().all(|part| !part.iov_base.is_null()) {
-        return write(reactor, socket, WritePayload::Vectors(vectors));
-    }
-    // A `{NULL, 0}` part is empty; a null base with a length is refused.
-    if raw
-        .iter()
-        .any(|part| part.iov_base.is_null() && part.iov_len != 0)
-    {
-        return -1;
-    }
-    let vectors: Vec<IoSlice<'_>> = raw
-        .iter()
-        .zip(vectors)
-        .map(|(part, &vector)| {
-            if part.iov_base.is_null() {
-                IoSlice::new(&[])
-            } else {
-                vector
-            }
-        })
-        .collect();
-    write(reactor, socket, WritePayload::Vectors(&vectors))
+    write(reactor, socket, WritePayload::Vectors(vectors))
 }
+
+/// The reactor's writes, which `swoole_init` registers
+/// (`swoole_rs_reactor::event_api::set_writers`).
+pub const WRITERS: Writers = Writers {
+    write: reactor_write,
+    writev: reactor_writev,
+};
 
 impl FlushEffects for Flush<'_> {
     fn handle_send(&self) -> bool {
@@ -206,8 +167,11 @@ impl FlushEffects for Flush<'_> {
         let Some(close) = self.reactor.close() else {
             return false;
         };
-        // SAFETY: `reactor->close(reactor, socket)`.
-        unsafe { close(self.reactor, self.socket) >= 0 }
+        // SAFETY: `reactor->close(reactor, socket)`: the queued close of the flushed
+        // socket, a heap record of the reactor's, which nothing uses after it.
+        close(self.reactor, unsafe {
+            OwnedSocket::from_socket(self.socket)
+        }) >= 0
     }
 
     fn trigger_close(&self) -> bool {
@@ -274,19 +238,12 @@ pub fn reactor_drain_write_buffer(reactor: Running<'_>, record: Socket<'static>)
 }
 
 /// `int Reactor::_close(Reactor *reactor, Socket *socket)`: frees the socket.
-///
-/// # Safety
-/// Nothing uses `socket` afterwards.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7Reactor6_closeEPS0_PNS_7network6SocketE")
 )]
 #[must_use]
-pub unsafe extern "C-unwind" fn reactor_close(
-    _reactor: Running<'_>,
-    socket: Socket<'static>,
-) -> c_int {
-    // SAFETY: as the caller promises.
-    unsafe { socket_free(Some(socket)) };
+pub extern "C-unwind" fn reactor_close(_reactor: Running<'_>, socket: OwnedSocket) -> c_int {
+    socket_free(Some(socket));
     0
 }

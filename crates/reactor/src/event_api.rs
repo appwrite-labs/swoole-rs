@@ -6,11 +6,12 @@
 //! `swoole_event_init` and `swoole_event_free` are `reactor_state.rs`'s, with the
 //! `Reactor`'s constructor and destructor; deferring is deferred.rs's.
 use crate::handlers::Handler;
-use crate::{Events, ReactorFields, SocketRecord};
+use crate::{Events, ReactorFields};
 use std::cell::Cell;
 use std::ffi::{c_int, c_void};
 use std::io::IoSlice;
 use std::rc::Rc;
+use std::sync::OnceLock;
 
 /// `SwooleTG.reactor`.
 fn current() -> *mut c_void {
@@ -123,38 +124,45 @@ pub fn add_or_update(socket: crate::Socket<'static>, event: Events) -> bool {
     crate::reactor_upstream::interest(reactor, socket, kind, Events::NONE)
 }
 
-/// `ssize_t swoole_event_write(Socket *socket, const void *data, size_t len)`.
-///
-/// # Safety
-/// As `Reactor::write`, with a live `SwooleTG.reactor`.
-pub unsafe extern "C-unwind" fn swoole_event_write(
-    socket: *mut SocketRecord,
-    data: *const c_void,
-    len: usize,
-) -> isize {
-    let reactor = current();
-    // The constructor sets it; upstream calls it unchecked.
-    let Some(write) = field(|fields| fields.write).flatten() else {
-        swoole_rs_corebase::fatal("the reactor has no write function")
-    };
-    // SAFETY: as the caller promises.
-    unsafe { write(reactor, socket, data, len) }
+/// `Reactor::write` and `Reactor::writev`: send what the socket takes now, copy the
+/// rest into its output buffer and register the socket, never freed while registered,
+/// for writing. The bytes taken, or `None` when it failed.
+#[derive(Clone, Copy)]
+pub struct Writers {
+    pub write: fn(crate::Running<'_>, crate::Socket<'static>, &[u8]) -> Option<usize>,
+    pub writev: fn(crate::Running<'_>, crate::Socket<'static>, &[IoSlice<'_>]) -> Option<usize>,
 }
 
-/// [`swoole_event_write`] of `data` on a socket that is never freed while registered
-/// (a write that can't all go out registers it for writing): the bytes taken, `None`
-/// when it failed.
+/// crates/tls's [`Writers`], which depends on this crate: `swoole_init` registers them.
+static WRITERS: OnceLock<Writers> = OnceLock::new();
+
+/// Registers crates/tls's writers; later registrations are ignored.
+pub fn set_writers(writers: Writers) {
+    WRITERS.get_or_init(|| writers);
+}
+
+/// The writers `swoole_init` registered, if it has.
+#[must_use]
+pub fn registered_writers() -> Option<Writers> {
+    WRITERS.get().copied()
+}
+
+/// The thread's reactor and the registered writers. Upstream calls `reactor->write`
+/// unchecked; a reactor with no write function is fatal here.
+fn writers<'a>() -> (crate::Running<'a>, &'static Writers) {
+    match (running(), WRITERS.get()) {
+        (Some(reactor), Some(writers)) => (reactor, writers),
+        _ => swoole_rs_corebase::fatal("the reactor has no write function"),
+    }
+}
+
+/// `ssize_t swoole_event_write(Socket *socket, const void *data, size_t len)` of `data`
+/// on a socket that is never freed while registered (a write that can't all go out
+/// registers it for writing): the bytes taken, `None` when it failed.
 #[must_use]
 pub fn event_write(socket: crate::Socket<'static>, data: &[u8]) -> Option<usize> {
-    let reactor = current();
-    let Some(write) = field(|fields| fields.write).flatten() else {
-        swoole_rs_corebase::fatal("the reactor has no write function")
-    };
-    // SAFETY: `Reactor::write` of the thread's live reactor, which only its
-    // constructor sets (`ReactorFields` is written through nothing public): a live
-    // record that outlives its registration, and the slice's bytes, which it copies.
-    let written = unsafe { write(reactor, socket.as_ptr(), data.as_ptr().cast(), data.len()) };
-    usize::try_from(written).ok()
+    let (reactor, writers) = writers();
+    (writers.write)(reactor, socket, data)
 }
 
 /// `ssize_t swoole_event_writev(Socket *socket, const iovec *iov, size_t iovcnt)` of
@@ -166,22 +174,8 @@ pub fn swoole_event_writev(
     socket: crate::Socket<'static>,
     vectors: &[IoSlice<'_>],
 ) -> Option<usize> {
-    let reactor = current();
-    let Some(writev) = field(|fields| fields.writev).flatten() else {
-        swoole_rs_corebase::fatal("the reactor has no writev function")
-    };
-    // SAFETY: `Reactor::writev` of the thread's live reactor, which only its
-    // constructor sets: a live record that outlives its registration, and iovecs (an
-    // `IoSlice` is one) over readable bytes, which it copies.
-    let written = unsafe {
-        writev(
-            reactor,
-            socket.as_ptr(),
-            vectors.as_ptr().cast(),
-            vectors.len(),
-        )
-    };
-    usize::try_from(written).ok()
+    let (reactor, writers) = writers();
+    (writers.writev)(reactor, socket, vectors)
 }
 
 /// `void swoole_event_set_handler(int fd_type, int event, ReactorHandler handler)`;
@@ -224,7 +218,7 @@ pub extern "C" fn swoole_event_get_socket(fd: c_int) -> *mut c_void {
 /// without a reactor. `f` reaches no reactor: the registry is shared while it runs.
 fn with_registry<T>(f: impl FnOnce(Option<&crate::Registry>) -> T) -> Option<T> {
     let reactor = running()?;
-    Some(f(Some(reactor.registry())))
+    Some(reactor.registry(|registry| f(Some(registry))))
 }
 
 /// The thread's `Reactor`'s prepared views (`SwooleTG.reactor`), or `None` without one.
@@ -265,6 +259,12 @@ pub fn on_destroy(call: fn()) {
 /// `sw_reactor()->running = running`, when there is a reactor.
 pub fn swoole_event_set_running(running: bool) {
     field_mut(|fields| fields.running = running);
+}
+
+/// `sw_reactor()->timeout_msec = msec`, when there is a reactor.
+#[inline]
+pub fn swoole_event_set_timeout_msec(msec: c_int) {
+    field_mut(|fields| fields.timeout_msec = msec);
 }
 
 /// `sw_reactor()->once = once`, when there is a reactor.

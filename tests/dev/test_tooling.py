@@ -320,6 +320,28 @@ class Cleanup(unittest.TestCase):
 
 
 class Lanes(unittest.TestCase):
+    def test_docker_platform_separates_image_builds_and_volumes(self):
+        for platform, arch in [('linux/amd64', 'x86_64'), ('linux/arm64', 'arm64')]:
+            with self.subTest(platform=platform), \
+                    patch.object(dev.subprocess, 'run') as run, \
+                    patch.object(dev.subprocess, 'check_output', return_value=f'{ROOT}/.git\n'), \
+                    patch.object(dev.Path, 'mkdir'):
+                # A missing image must be built for the same platform it runs on.
+                run.side_effect = [SimpleNamespace(returncode=1), SimpleNamespace(returncode=0),
+                                   SimpleNamespace(stdout=''), SimpleNamespace(stdout=''),
+                                   SimpleNamespace(returncode=0)]
+                self.assertEqual(dev.docker(['--platform', platform, '--', 'cargo', 'test']), 0)
+            build, command = run.call_args_list[1].args[0], run.call_args.args[0]
+            self.assertEqual(build[:4], ['docker', 'build', '--platform', platform])
+            self.assertEqual(command[:4], ['docker', 'run', '--platform', platform])
+            self.assertIn(dev.docker_image(arch), build)
+            self.assertIn(dev.docker_image(arch), command)
+            self.assertIn(f'swr-rustup-{arch}:/usr/local/rustup', command)
+            self.assertIn(f'swr-cargo-{arch}:/usr/local/cargo/registry', command)
+            self.assertIn(f'SWR_TARGET=target/docker/{arch}/cargo', command)
+            for name in ['upstream', 'upstream-builds', 'ext']:
+                self.assertIn(f'{ROOT}/target/docker/{arch}/{name}:{ROOT}/target/{name}', command)
+
     def test_help_names_the_docker_wrapper(self):
         # AGENTS.md sends Linux-only phases through `dev.py docker`; argparse never sees it.
         result = subprocess.run([sys.executable, ROOT / 'tools/dev.py', '--help'], capture_output=True, text=True)
@@ -415,21 +437,17 @@ class Lanes(unittest.TestCase):
         self.assertNotIn('core_check', ' '.join(commands['error-native']))
         # An -ffi crate's tests run with its module's (#2996 moved error's there).
         self.assertIn('swoole-rs-error-ffi', commands['error-unit'])
-        for family in ['logger', 'hash']:
-            command = commands['utilities-' + family + '-originals']
-            self.assertIn('--' + family + '-originals', command)
-            self.assertIn('cargo=' + str(ROOT / 'target/ext/swoole.so'), command)
-            self.assertTrue(command[command.index('--build-manifest') + 1].endswith('target/ext/build-manifest.json'))
-            self.assertEqual(command.count('--engine'), 2)
+        command = commands['utilities-hash-originals']
+        self.assertIn('--archive', command)
+        self.assertIn('cargo=' + str(ROOT / 'target/ext/swoole.so'), command)
+        self.assertTrue(command[command.index('--build-manifest') + 1].endswith('target/ext/build-manifest.json'))
+        self.assertEqual(command.count('--engine'), 2)
         self.assertIn('--require-same-api', commands['api-surface'])
         self.assertEqual(commands['api-surface'].count('--engine'), 2)
         self.assertLess(list(commands).index('cargo-build'), list(commands).index('api-surface'))
         self.assertIn('tests/modules/buffer/string/test_gate.py', commands['string-originals'])
         self.assertIn('column-bytes', commands['phpcollections-column-bytes'])
         self.assertEqual(commands['phpcollections-column-bytes'].count('--engine'), 2)
-        self.assertIn('--build-manifest', commands['utilities-public-storage'])
-        self.assertIn('--archive', commands['utilities-public-storage'])
-        self.assertEqual(commands['utilities-public-storage'].count('--engine'), 2)
         self.assertIn('utilities-php-logger',commands)
         # Attested gates check the Cargo build's manifest, not the hybrid's (#2199).
         for name in ['utilities-php-logger', 'phpcollections-runtime', 'ports-configuration', 'clients-php-http']:

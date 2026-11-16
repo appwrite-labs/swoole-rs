@@ -17,7 +17,7 @@ use std::{
     str::FromStr,
 };
 use swoole_rs_corebase::net_types::AddressStorage;
-use swoole_rs_corebase::sys::{InterfaceRequest, Text, interface_ioctl, setsockopt, zeroed};
+use swoole_rs_corebase::sys::{Ifreq, InterfaceRequest, Text, interface_ioctl, setsockopt, zeroed};
 use swoole_rs_zend::{
     Array, Call, E_WARNING, Value, bailout, report,
     sys::{IS_LONG, swr_zend_convert_to_array},
@@ -452,25 +452,25 @@ fn change(
     }
 }
 
-/// `SIOCGIFNAME`: the interface's name into `request`.
+/// `SIOCGIFNAME`: a request on the interface.
 #[cfg(target_os = "linux")]
-fn interface_name(fd: c_int, index: c_uint, request: &mut libc::ifreq) -> bool {
-    request.ifr_ifru.ifru_ifindex = c_int::try_from(index).unwrap_or(-1);
-    interface_ioctl(fd, InterfaceRequest::Name, request).is_ok()
+fn interface_name(fd: c_int, index: c_uint) -> Option<Ifreq> {
+    let mut request = Ifreq::default();
+    request.set_index(c_int::try_from(index).unwrap_or(-1));
+    interface_ioctl(fd, InterfaceRequest::Name, &mut request).ok()?;
+    Some(request)
 }
 
-/// `if_indextoname`: the interface's name into `request`.
+/// `if_indextoname`: a request on the interface.
 #[cfg(not(target_os = "linux"))]
-fn interface_name(_fd: c_int, index: c_uint, request: &mut libc::ifreq) -> bool {
+fn interface_name(_fd: c_int, index: c_uint) -> Option<Ifreq> {
     // libc's own declaration: it writes at most `IF_NAMESIZE` bytes, the
     // name's size, and returns the name or null.
     unsafe extern "C" {
-        safe fn if_indextoname(
-            index: c_uint,
-            name: &mut [libc::c_char; libc::IF_NAMESIZE],
-        ) -> *mut libc::c_char;
+        safe fn if_indextoname(index: c_uint, name: &mut [u8; libc::IF_NAMESIZE]) -> *mut u8;
     }
-    !if_indextoname(index, &mut request.ifr_name).is_null()
+    let mut name = [0; libc::IF_NAMESIZE];
+    (!if_indextoname(index, &mut name).is_null()).then(|| Ifreq::named(&name))
 }
 
 /// `php_if_index_to_addr4`: the interface's IPv4 address (any for 0).
@@ -480,20 +480,16 @@ fn interface_address(s: Sock, index: c_uint) -> Result<Option<in_addr>, Stop> {
             s_addr: libc::INADDR_ANY,
         }));
     }
-    let mut request: libc::ifreq = zeroed();
-    let named = interface_name(s.fd, index, &mut request);
-    if !named || interface_ioctl(s.fd, InterfaceRequest::Address, &mut request).is_err() {
+    let request = interface_name(s.fd, index).and_then(|mut request| {
+        interface_ioctl(s.fd, InterfaceRequest::Address, &mut request).ok()?;
+        Some(request)
+    });
+    let Some(request) = request else {
         let error = errno();
         warn(format!("Failed obtaining address for interface {index}: error {error}").as_bytes())?;
         return Ok(None);
-    }
-    // SAFETY: SIOCGIFADDR wrote an AF_INET sockaddr.
-    let address = unsafe {
-        (&raw const request.ifr_ifru.ifru_addr)
-            .cast::<sockaddr_in>()
-            .read_unaligned()
     };
-    Ok(Some(address.sin_addr))
+    Ok(Some(request.ipv4()))
 }
 
 /// `php_add4_to_if_index`: the index of the interface holding `address` (0

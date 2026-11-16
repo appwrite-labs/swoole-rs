@@ -10,10 +10,10 @@ use core::ffi::{CStr, c_int, c_void};
 use core::ptr;
 use std::sync::{Arc, PoisonError, RwLockReadGuard};
 
-use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
+use swoole_rs_clients::address::{address_port, with_host};
 use swoole_rs_corebase::constants::{SW_SSL_CIPHER_LIST, SW_SSL_ECDH_CURVE};
 use swoole_rs_corebase::{log, sys};
-use swoole_rs_reactor::{Socket, SocketRecord, socket_type};
+use swoole_rs_reactor::{OwnedSocket, Socket, SocketRecord, socket_type};
 use swoole_rs_server::port_config::{PortConfig, TlsState};
 use swoole_rs_server::view;
 use swoole_rs_tls::{
@@ -258,12 +258,12 @@ pub(crate) fn import(config: &mut PortConfig, fd: c_int) -> bool {
     };
     socket.removed = true;
     let info = socket.info;
-    config.set_listening_socket(Box::new(socket).into_socket());
+    config.set_listening_socket(OwnedSocket::new(Box::new(socket)));
     config.r#type = kind.raw();
     if !with_host(&info, |host| config.host.set(host.to_bytes())) {
         swoole_rs_corebase::fatal("out of memory storing a port's host");
     }
-    config.port.set(swr_v1_clients_address_port(&info));
+    config.port.set(address_port(&info).into());
     config.listening.set(true);
     true
 }
@@ -276,9 +276,7 @@ pub(crate) fn close(config: &PortConfig) {
         drop(config.tls.settings.replace(None));
     }
     // Taken first, so nothing finds the record once it is freed.
-    let socket = config.take_socket();
-    // SAFETY: none, or the port's live socket, which nothing uses after.
-    unsafe { socket_free(socket) };
+    socket_free(config.take_socket());
     if matches!(config.r#type, 5 | 6) {
         let mut path = config.host_bytes().to_vec();
         path.push(0);

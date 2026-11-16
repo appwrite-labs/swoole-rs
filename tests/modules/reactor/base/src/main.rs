@@ -15,8 +15,8 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, Ordering::Relaxed};
 use std::time::{SystemTime, UNIX_EPOCH};
 use swoole_rs_ffi::socket_pair::{self, SocketPair};
 use swoole_rs_ffi::{
-    ChangeOp, ErrorCode, Event, Events, Handler, ReactorFields, ReactorPrepared, ReactorState,
-    Running, Socket, SocketRecord, event_api, reactor_upstream,
+    ChangeOp, ErrorCode, Event, Events, Handler, OwnedSocket, ReactorFields, ReactorPrepared,
+    ReactorState, Running, Socket, SocketRecord, event_api, reactor_upstream,
 };
 
 const SW_OK: c_int = 0;
@@ -307,7 +307,8 @@ unsafe fn create() {
         let view = &*fields(reactor);
         assert_eq!(view.max_event_num, SW_REACTOR_MAXEVENTS);
         assert!(view.ready);
-        assert!(view.write.is_some());
+        // `reactor->write`: every reactor writes through the writers `swoole_init` registered.
+        assert!(event_api::registered_writers().is_some());
         assert!(view.close.is_some());
         assert!(view.defer_tasks.is_none());
         assert!(reactor_upstream::reactor_default_write_handler(reactor).is_some());
@@ -365,7 +366,7 @@ unsafe fn create_failure() {
         assert_eq!(REACTOR_DESTROY_COUNT.load(Relaxed), 1);
 
         assert_eq!(swoole_rs_ffi::swoole_event_init(0), SW_OK);
-        assert_eq!(swoole_rs_ffi::swoole_event_free(), SW_OK);
+        assert!(swoole_rs_ffi::swoole_event_free());
         assert_eq!(REACTOR_DESTROY_COUNT.load(Relaxed), 2);
     }
 }
@@ -458,7 +459,7 @@ unsafe fn get_missing_socket() {
         expect_eq!(event_api::event_add(handle(socket), Events::READ), true);
         expect_eq!(event_api::swoole_event_get_socket(fd), socket.cast());
         expect_eq!(event_api::event_del(handle(socket)), true);
-        expect_eq!(swoole_rs_ffi::swoole_event_free(), SW_OK);
+        expect_eq!(swoole_rs_ffi::swoole_event_free(), true);
         pair_delete(p);
     }
 }
@@ -630,15 +631,10 @@ unsafe fn write_2m() {
             error(ErrorCode::SW_ERROR_OUTPUT_BUFFER_OVERFLOW)
         );
 
-        // Past the data's end, as upstream's length: the write refuses it unread.
-        assert_eq!(
-            event_api::swoole_event_write(
-                socket,
-                data.as_ptr().cast(),
-                (*socket).fields.output.buffer_size as usize + 8192
-            ),
-            SW_ERR as isize
-        );
+        // Upstream's length, past its data's end, which the write refuses unread: here
+        // bytes of that length (SW_ERR is `None`).
+        let oversize = vec![0; (*socket).fields.output.buffer_size as usize + 8192];
+        assert_eq!(event_api::event_write(handle(socket), &oversize), None);
         assert_eq!(
             last_error(),
             error(ErrorCode::SW_ERROR_PACKAGE_LENGTH_TOO_LARGE)
@@ -666,7 +662,7 @@ unsafe fn bad_fd() {
         let _ = swoole_rs_ffi::swoole_event_free();
         // `socket->move_fd()`.
         (*socket).fields.fd = -1;
-        swoole_rs_ffi::upstream::socket_free(Some(handle(socket)));
+        swoole_rs_ffi::upstream::socket_free(Some(OwnedSocket::from_socket(handle(socket))));
     }
 }
 
@@ -864,7 +860,9 @@ unsafe fn poll_readiness_after_fd_reuse() {
         // A local Reactor does not defer Socket::free(), so release sockets after the batch.
         assert_eq!(del(reactor, (*state).dispatched_socket), SW_OK);
         assert_eq!(del(reactor, (*state).replacement_socket), SW_OK);
-        swoole_rs_ffi::upstream::socket_free(Some(handle((*state).replacement_socket)));
+        swoole_rs_ffi::upstream::socket_free(Some(OwnedSocket::from_socket(handle(
+            (*state).replacement_socket,
+        ))));
         assert_eq!(close(pipe_fds[0]), 0);
         assert_eq!(close(pipe_fds[1]), 0);
 

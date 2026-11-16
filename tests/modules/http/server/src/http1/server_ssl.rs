@@ -97,7 +97,7 @@ fn lock() {
 }
 
 /// `onWorkerStart`'s `lock->unlock()`.
-unsafe extern "C" fn unlock(_: *mut c_void, _: *mut c_void, _: *mut c_void) {
+fn unlock(_: view::Server<'_>, _: Worker<'_>) {
     (&gate().1).write_all(b"x").unwrap();
 }
 
@@ -113,13 +113,7 @@ fn is_valid_fd(fd: c_int) -> bool {
 
 impl Port {
     fn is_dgram(self) -> bool {
-        [SW_SOCK_UDP, SW_SOCK_UDP6, SW_SOCK_UNIX_DGRAM].contains(&self.config().type_)
-    }
-
-    /// `get_fd()`: its socket's fd, the socket's first member.
-    fn get_fd(self) -> c_int {
-        // SAFETY: a listening port's live socket.
-        unsafe { *self.config().socket.cast::<c_int>() }
+        [SW_SOCK_UDP, SW_SOCK_UDP6, SW_SOCK_UNIX_DGRAM].contains(&self.config().r#type)
     }
 
     /// `set_ssl_cert_file` and `set_ssl_key_file`, under `get_ssl_dir()`.
@@ -236,15 +230,15 @@ impl Drop for SyncClient {
 }
 
 /// The `onReceive` of `ssl`, `dtls`, `dtls2` and `ssl_client_cert`: `Server: ` and the packet.
-fn reply(serv: Server, req: *mut RecvData) -> c_long {
+fn reply(serv: Server, req: &RecvData) -> c_long {
     let (session, data) = request(req);
     check(data == PACKET, "string(req->data, req->info.len) == packet");
     serv.send(session, &[b"Server: ", PACKET].concat());
     session
 }
 
-unsafe extern "C" fn echo_receive(_: *mut c_void, serv: *mut c_void, req: *mut RecvData) -> c_int {
-    reply(Server(serv), req);
+fn echo_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+    reply(Server(serv.raw()), req);
     SW_OK
 }
 
@@ -275,20 +269,20 @@ fn tls_server(mode: c_int, level: c_int, cert: &str, key: &str) -> (Server, Port
     shared();
     gate();
     let serv = Server::new(mode);
-    serv.config().worker_num = 1;
+    serv.config().worker_num.set(1);
     log_level(level);
     let port = serv.listen(SW_SOCK_TCP | SW_SOCK_SSL);
     port.set_ssl_files(cert, key);
     (serv, port)
 }
 
-unsafe extern "C" fn ssl_start(_: *mut c_void, serv: *mut c_void) {
-    start_client(Server(serv), |serv| {
+fn ssl_start(serv: view::Server<'_>) {
+    start_client(Server(serv.raw()), |serv| {
         let port = serv.get_primary_port();
-        check(port.config().ssl == 1, "port->ssl == 1");
+        check(port.config().ssl, "port->ssl == 1");
 
         let mut c = SyncClient::new(SW_SOCK_TCP);
-        c.connect(TEST_HOST, port.config().port);
+        c.connect(TEST_HOST, port.config().port.get());
         c.enable_ssl_encrypt();
         c.send(PACKET);
         let mut buf = [0_u8; 1024];
@@ -297,7 +291,7 @@ unsafe extern "C" fn ssl_start(_: *mut c_void, serv: *mut c_void) {
 
         // bad SSL connection, send plain text packet to SSL server
         let mut c2 = SyncClient::new(SW_SOCK_TCP);
-        c2.connect(TEST_HOST, port.config().port);
+        c2.connect(TEST_HOST, port.config().port.get());
         c2.send(PACKET);
         assert_eq!(c2.recv(&mut buf), 0);
         c2.close();
@@ -311,20 +305,20 @@ fn ssl() {
     let (serv, port) = tls_server(MODE_PROCESS, SW_LOG_WARNING, "server.crt", "server.key");
     port.ssl_init();
     assert_eq!(serv.create(), SW_OK);
-    serv.set_callback(Slot::Start, ssl_start as *const c_void);
-    serv.set_callback(Slot::WorkerStart, unlock as *const c_void);
-    serv.set_callback(Slot::Receive, echo_receive as *const c_void);
+    serv.set_callback(Callback::Start(ssl_start));
+    serv.set_callback(Callback::WorkerStart(unlock));
+    serv.set_callback(Callback::Receive(echo_receive));
     run_server(serv);
     serv.delete();
 }
 
-unsafe extern "C" fn ssl_error_start(_: *mut c_void, serv: *mut c_void) {
-    start_client(Server(serv), |serv| {
+fn ssl_error_start(serv: view::Server<'_>) {
+    start_client(Server(serv.raw()), |serv| {
         let port = serv.get_primary_port();
-        check(port.config().ssl == 1, "port->ssl == 1");
+        check(port.config().ssl, "port->ssl == 1");
 
         let mut c = SyncClient::new(SW_SOCK_TCP);
-        c.connect(TEST_HOST, port.config().port);
+        c.connect(TEST_HOST, port.config().port.get());
         c.enable_ssl_encrypt();
         c.send(PACKET);
         let mut buf = [0_u8; 1024];
@@ -335,11 +329,11 @@ unsafe extern "C" fn ssl_error_start(_: *mut c_void, serv: *mut c_void) {
     });
 }
 
-unsafe extern "C" fn ignore_receive(_: *mut c_void, _: *mut c_void, _: *mut RecvData) -> c_int {
+fn ignore_receive(_: view::Server<'_>, _: &RecvData) -> c_int {
     SW_OK
 }
 
-unsafe extern "C" fn count_connect(_: *mut c_void, _: *mut c_void, _: *mut DataHead) {
+fn count_connect(_: view::Server<'_>, _: &DataHead) {
     shared().counter.fetch_add(1, Ordering::SeqCst);
 }
 
@@ -355,10 +349,10 @@ fn ssl_error() {
     assert_eq!(last_error(), SW_ERROR_WRONG_OPERATION);
 
     assert_eq!(serv.create(), SW_OK);
-    serv.set_callback(Slot::Start, ssl_error_start as *const c_void);
-    serv.set_callback(Slot::WorkerStart, unlock as *const c_void);
-    serv.set_callback(Slot::Receive, ignore_receive as *const c_void);
-    serv.set_callback(Slot::Connect, count_connect as *const c_void);
+    serv.set_callback(Callback::Start(ssl_error_start));
+    serv.set_callback(Callback::WorkerStart(unlock));
+    serv.set_callback(Callback::Receive(ignore_receive));
+    serv.set_callback(Callback::Connect(count_connect));
     run_server(serv);
     assert_eq!(shared().counter.load(Ordering::SeqCst), 0);
     serv.delete();
@@ -376,13 +370,13 @@ fn wbuf() -> &'static [u8] {
     })
 }
 
-unsafe extern "C" fn ssl_write_start(_: *mut c_void, serv: *mut c_void) {
-    start_client(Server(serv), |serv| {
+fn ssl_write_start(serv: view::Server<'_>) {
+    start_client(Server(serv.raw()), |serv| {
         let port = serv.get_primary_port();
-        check(port.config().ssl == 1, "port->ssl == 1");
+        check(port.config().ssl, "port->ssl == 1");
 
         let mut c = SyncClient::new(SW_SOCK_TCP);
-        c.connect(TEST_HOST, port.config().port);
+        c.connect(TEST_HOST, port.config().port.get());
         c.enable_ssl_encrypt();
         c.send(PACKET);
 
@@ -407,14 +401,10 @@ unsafe extern "C" fn ssl_write_start(_: *mut c_void, serv: *mut c_void) {
     });
 }
 
-unsafe extern "C" fn ssl_write_receive(
-    _: *mut c_void,
-    serv: *mut c_void,
-    req: *mut RecvData,
-) -> c_int {
+fn ssl_write_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
     let (session, _) = request(req);
     check(
-        Server(serv).send(session, wbuf()),
+        Server(serv.raw()).send(session, wbuf()),
         "serv->send(req->session_id(), wbuf.str, wbuf.length)",
     );
     shared().counter.fetch_add(1, Ordering::SeqCst);
@@ -427,9 +417,9 @@ fn ssl_write() {
     assert!(port.ssl_init());
     assert_eq!(serv.create(), SW_OK);
     wbuf();
-    serv.set_callback(Slot::Start, ssl_write_start as *const c_void);
-    serv.set_callback(Slot::WorkerStart, unlock as *const c_void);
-    serv.set_callback(Slot::Receive, ssl_write_receive as *const c_void);
+    serv.set_callback(Callback::Start(ssl_write_start));
+    serv.set_callback(Callback::WorkerStart(unlock));
+    serv.set_callback(Callback::Receive(ssl_write_receive));
     run_server(serv);
     assert_eq!(shared().counter.load(Ordering::SeqCst), 1);
     serv.delete();
@@ -444,8 +434,8 @@ fn dtls_client(c: &mut SyncClient) {
     c.close();
 }
 
-unsafe extern "C" fn dtls_start(_: *mut c_void, serv: *mut c_void) {
-    let serv = Server(serv);
+fn dtls_start(serv: view::Server<'_>) {
+    let serv = Server(serv.raw());
     // SAFETY: getpid(2).
     client_thread(
         || unsafe { getpid() },
@@ -454,15 +444,15 @@ unsafe extern "C" fn dtls_start(_: *mut c_void, serv: *mut c_void) {
             lock();
 
             let port = serv.port_at(0);
-            check(port.config().ssl == 1, "port->ssl == 1");
+            check(port.config().ssl, "port->ssl == 1");
             let mut c = SyncClient::new(SW_SOCK_UDP);
-            c.connect(TEST_HOST, port.config().port);
+            c.connect(TEST_HOST, port.config().port.get());
             dtls_client(&mut c);
 
             let port6 = serv.port_at(1);
-            check(port6.config().ssl == 1, "port6->ssl == 1");
+            check(port6.config().ssl, "port6->ssl == 1");
             let mut c2 = SyncClient::new(SW_SOCK_UDP6);
-            c2.connect(TEST_HOST6, port6.config().port);
+            c2.connect(TEST_HOST6, port6.config().port.get());
             dtls_client(&mut c2);
 
             std::thread::sleep(Duration::from_micros(10000));
@@ -476,7 +466,7 @@ fn dtls() {
     shared();
     gate();
     let serv = Server::new(MODE_BASE);
-    serv.config().worker_num = 1;
+    serv.config().worker_num.set(1);
     set_log_warning();
 
     let port = serv.add_port(SW_SOCK_UDP | SW_SOCK_SSL, TEST_HOST, 0);
@@ -498,9 +488,9 @@ fn dtls() {
     port6.ssl_init();
 
     assert_eq!(serv.create(), SW_OK);
-    serv.set_callback(Slot::Start, dtls_start as *const c_void);
-    serv.set_callback(Slot::WorkerStart, unlock as *const c_void);
-    serv.set_callback(Slot::Receive, echo_receive as *const c_void);
+    serv.set_callback(Callback::Start(dtls_start));
+    serv.set_callback(Callback::WorkerStart(unlock));
+    serv.set_callback(Callback::Receive(echo_receive));
     run_server(serv);
     serv.delete();
 }
@@ -509,21 +499,21 @@ fn dtls() {
 fn dtls2() {
     shared();
     let server = Server::new(MODE_PROCESS);
-    server.config().worker_num = 2;
-    server.config().single_thread = false;
+    server.config().worker_num.set(2);
+    server.config().single_thread.set(false);
     let port = server.listen(SW_SOCK_UDP | SW_SOCK_SSL);
     port.set_ssl_files("server.crt", "server.key");
     port.ssl_init();
 
     server.create();
-    server.set_callback(Slot::Receive, echo_receive as *const c_void);
+    server.set_callback(Callback::Receive(echo_receive));
 
     let pid = fork_with(move || {
         sleep(1.0);
         let port = server.get_primary_port();
 
         let mut c = SyncClient::new(SW_SOCK_UDP);
-        c.connect(TEST_HOST, port.config().port);
+        c.connect(TEST_HOST, port.config().port.get());
         c.enable_ssl_encrypt();
         c.send(PACKET);
         let mut buf = [0_u8; 1024];
@@ -606,16 +596,16 @@ unsafe fn print_all_subject_entries(name: *const c_void, out: &mut String) {
     }
 }
 
-unsafe extern "C" fn client_cert_start(_: *mut c_void, serv: *mut c_void) {
-    start_client(Server(serv), |serv| {
+fn client_cert_start(serv: view::Server<'_>) {
+    start_client(Server(serv.raw()), |serv| {
         let port = serv.get_primary_port();
-        check(port.config().ssl == 1, "port->ssl == 1");
+        check(port.config().ssl, "port->ssl == 1");
 
         let mut c = SyncClient::new(SW_SOCK_TCP);
         c.enable_ssl_encrypt();
         c.set_ssl_file(CERT_FILE, "client-cert.pem");
         c.set_ssl_file(KEY_FILE, "client-key.pem");
-        c.connect(TEST_HOST, port.config().port);
+        c.connect(TEST_HOST, port.config().port.get());
         check(
             c.send(PACKET) == PACKET.len() as i64,
             "c.send(packet, strlen(packet)) == strlen(packet)",
@@ -629,26 +619,21 @@ unsafe extern "C" fn client_cert_start(_: *mut c_void, serv: *mut c_void) {
     });
 }
 
-unsafe extern "C" fn client_cert_receive(
-    _: *mut c_void,
-    serv: *mut c_void,
-    req: *mut RecvData,
-) -> c_int {
-    let serv = Server(serv);
+fn client_cert_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
+    let serv = Server(serv.raw());
     let session = reply(serv, req);
 
-    let cert = serv.get_connection_by_session_id(session).ssl_client_cert;
-    check(!cert.is_null(), "conn->ssl_client_cert != nullptr");
-    if cert.is_null() {
+    // The certificate this worker stored for the connection.
+    let cert = serv
+        .get_connection_by_session_id(session)
+        .with_client_cert(<[u8]>::to_vec);
+    check(cert.is_some(), "conn->ssl_client_cert != nullptr");
+    let Some(pem) = cert else {
         return SW_OK;
-    }
-    // SAFETY: the connection's `String *`, live for the callback.
-    let cert = unsafe { &*cert.cast::<crate::CppString>() };
-    check(cert.length > 16, "conn->ssl_client_cert->length > 16");
-    // SAFETY: the String's `length` bytes.
-    let pem = unsafe { std::slice::from_raw_parts(cert.str.cast::<u8>(), cert.length) };
+    };
+    check(pem.len() > 16, "conn->ssl_client_cert->length > 16");
     check(
-        dump_cert_info(pem).contains("organizationName: swoole"),
+        dump_cert_info(&pem).contains("organizationName: swoole"),
         r#"strstr(buffer, "organizationName: swoole") != nullptr"#,
     );
     SW_OK
@@ -664,9 +649,9 @@ fn test_ssl_client_cert(mode: c_int) {
     port.ssl_init();
 
     assert_eq!(serv.create(), SW_OK);
-    serv.set_callback(Slot::Start, client_cert_start as *const c_void);
-    serv.set_callback(Slot::WorkerStart, unlock as *const c_void);
-    serv.set_callback(Slot::Receive, client_cert_receive as *const c_void);
+    serv.set_callback(Callback::Start(client_cert_start));
+    serv.set_callback(Callback::WorkerStart(unlock));
+    serv.set_callback(Callback::Receive(client_cert_receive));
     run_server(serv);
     serv.delete();
 }

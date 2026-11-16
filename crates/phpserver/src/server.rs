@@ -6,7 +6,7 @@ use std::{
     ptr,
     sync::atomic::{AtomicPtr, AtomicU64, Ordering},
 };
-use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
+use swoole_rs_clients::address::{address_port, with_host};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{DataHead, ServerEvent};
 use swoole_rs_phpstubs::server;
@@ -831,13 +831,13 @@ fn get_client_info(call: &Call) {
     }
     conn.with_client_cert(|cert| call.add_assoc_stringl(c"ssl_client_cert", cert));
     if let Some(server_socket) = serv.at(conn.server_fd()) {
-        let port = swr_v1_clients_address_port(&server_socket.info());
+        let port = address_port(&server_socket.info());
         call.add_assoc_long(c"server_port", i64::from(port));
     }
     call.add_assoc_long(c"server_fd", i64::from(conn.server_fd()));
     call.add_assoc_long(c"socket_fd", i64::from(conn.fd()));
     call.add_assoc_long(c"socket_type", i64::from(conn.socket_type()));
-    let remote_port = swr_v1_clients_address_port(&conn.info());
+    let remote_port = address_port(&conn.info());
     call.add_assoc_long(c"remote_port", i64::from(remote_port));
     with_host(&conn.info(), |ip| {
         call.add_assoc_stringl(c"remote_ip", ip.to_bytes());

@@ -223,17 +223,12 @@ impl Co {
         true
     }
 
-    /// `Socket::accept(timeout)`: a connection as a new native socket (the accepting
-    /// constructor, which shares the TLS context), or `None`. A zero timeout waits
-    /// for the socket's read timeout; a TLS context is made before the first accept.
-    /// In a coroutine.
+    /// `Socket::accept(timeout)`: a connection as a new native socket, which only the
+    /// result holds (the accepting constructor, which shares the TLS context), or
+    /// `None`. A zero timeout waits for the socket's read timeout; a TLS context is
+    /// made before the first accept. In a coroutine.
     #[must_use]
-    pub fn accept(self, timeout: f64) -> Option<Self> {
-        self.accept_owned(timeout).map(OwnedCo::into_co)
-    }
-
-    /// [`Self::accept`]'s connection, which only the result holds.
-    pub(crate) fn accept_owned(self, timeout: f64) -> Option<OwnedCo> {
+    pub fn accept(self, timeout: f64) -> Option<OwnedCo> {
         if !available(self, Events::READ) {
             return None;
         }
@@ -716,7 +711,9 @@ mod tests {
     impl Drop for Object {
         fn drop(&mut self) {
             unsafe {
-                SocketRecord::free(Socket::from_ptr(self.record().socket_ptr()));
+                if let Some(s) = Socket::from_ptr(self.record().socket_ptr()) {
+                    swoole_rs_reactor::OwnedSocket::from_socket(s).free();
+                }
                 (*self.0).record.fini();
                 drop(Box::from_raw(self.0));
             }

@@ -61,7 +61,7 @@ pool_methods! {
     fn set_type(kind: WorkerType) -> () = |p| p.set_type(kind);
     fn set_start_id(id: c_int) -> () = |p| p.number_from(id.c_cast::<u16>());
     fn detach() -> bool = |p| p.detach();
-    fn wait() -> c_int = raised |p| p.wait().map(CCast::c_cast::<c_int>);
+    fn wait() -> () = raised |p| p.wait();
     fn destroy() -> () = |p| p.destroy();
     fn free_message_box() -> () = |p| p.free_message_box();
 }
@@ -472,18 +472,15 @@ pub extern "C" fn swoole_get_worker_symbol() -> std::ffi::c_char {
     swr_v1_worker_symbol(swoole_get_worker_type())
 }
 
-/// The logger's native effects, the table `swoole::Logger` hands
-/// `swr_v1_logger_new` (once `src/core/log.cc`).
+/// The process logger's native effects.
 #[cfg(feature = "upstream-symbols")]
-#[unsafe(no_mangle)]
-pub static swr_logger_host: swoole_rs_utilities::LoggerHost = swoole_rs_utilities::LoggerHost {
+const LOGGER_HOST: swoole_rs_utilities::LoggerHost = swoole_rs_utilities::LoggerHost {
     redirect: swoole_rs_corebase::swoole_redirect_stdout,
-    backtrace: swoole_rs_corebase::swoole_print_backtrace,
     identity: logger_identity,
 };
 
 #[cfg(feature = "upstream-symbols")]
-extern "C" fn logger_identity() -> swoole_rs_utilities::LoggerIdentity {
+fn logger_identity() -> swoole_rs_utilities::LoggerIdentity {
     swoole_rs_utilities::LoggerIdentity {
         worker_id: swoole_get_worker_id().cast_signed(),
         worker_pid: swoole_get_worker_pid(),
@@ -517,7 +514,7 @@ pub fn logger_op(op: swoole_rs_corebase::native::LoggerOp) {
     match op {
         LoggerOp::New => {
             let stdout = swoole_rs_corebase::swr_v1_core_stdout();
-            let logger = std::sync::Arc::new(Logger::new(stdout, swr_logger_host));
+            let logger = std::sync::Arc::new(Logger::new(stdout, LOGGER_HOST));
             LOGGER.store(std::sync::Arc::as_ptr(&logger).cast_mut(), Relaxed);
             // A logger `new` replaces is leaked, as upstream's pointer overwrite does.
             _ = owner().replace(logger).map(std::sync::Arc::into_raw);

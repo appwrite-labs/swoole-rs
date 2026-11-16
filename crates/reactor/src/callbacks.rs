@@ -191,7 +191,7 @@ fn malloc_trim(last: &mut libc::time_t) {
 /// `Reactor::if_exit()`: each exit condition in key order over the registered socket
 /// count, until one refuses. A condition may change the reactor, as [`execute_end`]'s.
 pub(crate) fn if_exit(reactor: Running<'_>) -> bool {
-    let mut event_num = reactor.registry().count();
+    let mut event_num = reactor.registry(crate::Registry::count);
     for slot in 0..EXIT_SLOTS {
         // As above: the copy is read before the condition runs.
         let Some(exit) = reactor.with(|state| state.callbacks.exit.get(slot).copied().flatten())
@@ -211,12 +211,7 @@ pub(crate) fn if_exit(reactor: Running<'_>) -> bool {
 }
 
 /// `Reactor::set_end_callback(id, callback)`, or `erase_end_callback(id)` without one.
-#[unsafe(no_mangle)]
-pub extern "C" fn swr_v1_reactor_set_end(
-    owner: &mut ReactorState,
-    id: c_int,
-    callback: Option<EndFn>,
-) {
+pub fn swr_v1_reactor_set_end(owner: &mut ReactorState, id: c_int, callback: Option<EndFn>) {
     let priority = Priority::from_code(id);
     debug_assert!(priority.is_some(), "end callback {id}");
     if let Some(priority) = priority {

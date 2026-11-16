@@ -10,7 +10,7 @@ use crate::{
     net::{self, warn_sys},
     socket::open,
 };
-use libc::{c_char, c_int, c_void};
+use libc::{c_char, c_int};
 use std::{
     ffi::{CStr, CString},
     ptr,
@@ -36,7 +36,7 @@ const OPERATION_NOT_SUPPORT: i64 =
 /// plus its 8-byte header, or -1 past 65535.
 extern "C" fn fastcgi_length(
     _protocol: *const Protocol,
-    _socket: *mut c_void,
+    _socket: Option<swoole_rs_reactor::Socket<'_>>,
     pl: &mut PacketLength,
 ) -> isize {
     pl.bytes()

@@ -230,8 +230,14 @@ mod native {
         let Some(call) = callback else {
             return crate::packet::Length::NotFound;
         };
-        // SAFETY: the record's protocol and network socket, and `size` bytes at `buf`.
-        let length = unsafe { call(protocol, socket.socket().cast(), &mut packet) };
+        // SAFETY: the record's protocol and network socket, if open, and `size` bytes
+        // at `buf`.
+        let mut measure = |net: Option<swoole_rs_reactor::Socket<'_>>| unsafe {
+            call(protocol, net, &mut packet)
+        };
+        let length = socket
+            .with_network(|net| measure(Some(net)))
+            .unwrap_or_else(|| measure(None));
         *header = packet.header_len;
         crate::packet::Length::of(length)
     }
@@ -248,12 +254,12 @@ mod native {
         let (error, message) = match kind {
             Failure::LengthNotFound => (NOT_FOUND, Message::Static(c"get package length failed")),
             Failure::TooLarge(length) => {
-                use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
+                use swoole_rs_clients::address::{address_port, with_host};
                 let (addr, port) = socket
                     .net(|record| {
                         let peer = &record.info;
                         let addr = with_host(peer, |addr| addr.to_string_lossy().into_owned());
-                        (addr, swr_v1_clients_address_port(peer))
+                        (addr, address_port(peer))
                     })
                     .unwrap_or_default();
                 swoole_rs_corebase::log::error_log(

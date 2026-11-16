@@ -327,15 +327,10 @@ def plan(args, reports):
         script('utilities-wait', 'tests/modules/utilities/wait.py', '--source', ROOT / 'target/upstream/src',
                '--archive', archive, '--sanitize', *report('utilities-wait'))
     if 'utilities' in modules and integrate:
-        for family in ['logger', 'hash']:
-            name = 'utilities-' + family + '-originals'
-            script(name, 'tests/modules/utilities/storage.py', '--source', ROOT / 'target/upstream/src',
-                   *php_for('curl'), *engines, '--build-manifest', built, '--archive', archive,
-                   '--' + family + '-originals', *report(name))
+        script('utilities-hash-originals', 'tests/modules/utilities/hash_originals.py', '--source', ROOT / 'target/upstream/src',
+               *php_for('curl'), *engines, '--build-manifest', built, '--archive', archive, *report('utilities-hash-originals'))
         script('utilities-php-logger', 'tests/modules/utilities/php_logger.py', *php, *engines,
                '--build-manifest', built, *report('utilities-php-logger'))
-        script('utilities-public-storage', 'tests/modules/utilities/storage.py', '--source', ROOT / 'target/upstream/src',
-               *php, *engines, '--build-manifest', built, '--archive', archive, *report('utilities-public-storage'))
     if 'memory' in modules:
         script('memory-rust-asan', 'tools/cargo_asan.py', '--package', 'swoole-rs-memory', '--report', reports / 'memory-rust-asan.json')
     if 'memory' in modules and integrate:
@@ -538,13 +533,13 @@ def prune(root, older_than_hours):
 DOCKER_REPOSITORY = 'swoole-rs-dev'
 
 
-def docker_image():
-    """The dev image for this host's architecture and the current .devcontainer contents."""
+def docker_image(architecture):
+    """The dev image for the selected architecture and current .devcontainer contents."""
     digest = hashlib.sha256()
     for path in sorted((ROOT / '.devcontainer').rglob('*')):
         if path.is_file():
             digest.update(path.relative_to(ROOT).as_posix().encode() + b'\0' + path.read_bytes())
-    return f'{DOCKER_REPOSITORY}:{os.uname().machine}-{digest.hexdigest()[:12]}'
+    return f'{DOCKER_REPOSITORY}:{architecture}-{digest.hexdigest()[:12]}'
 
 
 # Inside the container: the pinned toolchain, the locked crates and the pinned upstream
@@ -591,24 +586,29 @@ DOCKER_IOURING_CAPS = ['--cap-add', 'SYS_RESOURCE']
 def docker(arguments):
     """dev.py docker [--iouring] [-- dev.py arguments | -- SCRIPT.py arguments | -- cargo arguments]:
     run a dev.py command, a repository script or a cargo command in the Linux dev image;
-    --iouring lets it create io_uring rings."""
-    iouring = arguments[:1] == ['--iouring']
-    if iouring:
-        arguments = arguments[1:]
+    --iouring lets it create io_uring rings; --platform linux/amd64 or linux/arm64
+    selects another architecture with separate images, volumes and build output."""
+    parser = argparse.ArgumentParser(prog='dev.py docker')
+    parser.add_argument('--iouring', action='store_true')
+    parser.add_argument('--platform', choices=['linux/amd64', 'linux/arm64'])
+    parser.add_argument('command', nargs=argparse.REMAINDER)
+    options = parser.parse_args(arguments)
+    arguments = options.command
+    architecture = {'linux/amd64': 'x86_64', 'linux/arm64': 'arm64'}.get(options.platform, os.uname().machine)
+    platform = ['--platform', options.platform] if options.platform else []
     if arguments[:1] == ['--']:
         arguments = arguments[1:]
     if not arguments:
-        sys.exit('usage: dev.py docker [--iouring] [--] LANE [dev.py options] | [--] SCRIPT.py [arguments]'
-                 ' | [--] cargo [arguments]')
+        parser.error('a lane, repository script or cargo command is required')
     if '--phase' in arguments and '--with-prerequisites' not in arguments:
         arguments = [*arguments, '--with-prerequisites']
     free = shutil.disk_usage(ROOT).free
     if free < DOCKER_MIN_FREE:
         print(f'dev.py docker: only {free / 1e9:.1f} GB free; `python3 tools/dev.py prune` clears old builds',
               file=sys.stderr)
-    image = docker_image()
+    image = docker_image(architecture)
     if subprocess.run(['docker', 'image', 'inspect', image], capture_output=True).returncode:
-        subprocess.run(['docker', 'build', '-t', image, str(ROOT / '.devcontainer')], check=True)
+        subprocess.run(['docker', 'build', *platform, '-t', image, str(ROOT / '.devcontainer')], check=True)
     common = Path(subprocess.check_output(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'],
                                           cwd=ROOT, text=True).strip())
     # A commit made inside runs this worktree's hooks (core.hooksPath may name a host path
@@ -621,7 +621,6 @@ def docker(arguments):
     git_config = [f'GIT_CONFIG_COUNT={len(config)}']
     for index, (key, value) in enumerate(config.items()):
         git_config += [f'GIT_CONFIG_KEY_{index}={key}', f'GIT_CONFIG_VALUE_{index}={value}']
-    architecture = os.uname().machine
     mounts = [ROOT, common] if not common.is_relative_to(ROOT) else [ROOT]
     # Linux builds live in target/docker/<arch>/, seen inside at their usual paths, so
     # the host's own target/upstream and target/ext never hold another platform's.
@@ -630,8 +629,8 @@ def docker(arguments):
     for name in ['upstream', 'upstream-builds', 'ext']:
         (private / name).mkdir(parents=True, exist_ok=True)
         builds += ['-v', f'{private / name}:{ROOT / "target" / name}']
-    command = ['docker', 'run', '--rm', '--init', '-w', str(ROOT),
-               *(['--security-opt', f'seccomp={DOCKER_IOURING_SECCOMP}', *DOCKER_IOURING_CAPS] if iouring else []),
+    command = ['docker', 'run', *platform, '--rm', '--init', '-w', str(ROOT),
+               *(['--security-opt', f'seccomp={DOCKER_IOURING_SECCOMP}', *DOCKER_IOURING_CAPS] if options.iouring else []),
                *[part for mount in mounts for part in ('-v', f'{mount}:{mount}')], *builds,
                '-v', f'swr-rustup-{architecture}:/usr/local/rustup',
                '-v', f'swr-cargo-{architecture}:/usr/local/cargo/registry',

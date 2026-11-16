@@ -3,9 +3,9 @@
 //! HTTP/2, and any other is a protocol error. WebSocket's own length and frame
 //! dispatch from `src/protocol/websocket.cc` live here too.
 
-use std::ffi::{c_int, c_void};
+use std::ffi::c_int;
 
-use swoole_rs_clients::protocol::Protocol;
+use swoole_rs_clients::protocol::{Protocol, Socket};
 use swoole_rs_corebase::log::LogLevel::SW_LOG_WARNING as LOG_WARNING;
 use swoole_rs_corebase::net_types::{PacketLength, SocketAddress};
 use swoole_rs_corebase::{WebSocketStatus, log};
@@ -47,15 +47,15 @@ fn route<T>(
 /// The host and port of an address that holds its socket type's member, as
 /// upstream's warnings print them.
 pub(crate) fn host_port(address: &SocketAddress) -> (String, c_int) {
-    use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
+    use swoole_rs_clients::address::{address_port, with_host};
     let host = with_host(address, |host| host.to_string_lossy().into_owned());
-    (host, swr_v1_clients_address_port(address))
+    (host, address_port(address).into())
 }
 
 /// `websocket::get_package_length` as a protocol's length callback: it reads only `pl`.
 pub extern "C" fn websocket_length(
     _proto: *const Protocol,
-    _socket: *mut c_void,
+    _socket: Option<Socket<'_>>,
     pl: &mut PacketLength,
 ) -> isize {
     swoole_rs_websocket_ffi::frame_api::package_length(pl)
@@ -90,19 +90,20 @@ impl Session<'_> {
 }
 
 pub mod exports {
-    use std::ffi::{c_int, c_void};
+    use std::ffi::c_int;
     use std::mem::MaybeUninit;
     use swoole_rs_corebase::CCast;
 
     use swoole_rs_buffer::string::boxed_string;
     use swoole_rs_clients::protocol::Protocol;
     use swoole_rs_corebase::DataHead;
+    use swoole_rs_corebase::lent::lend_spare;
     use swoole_rs_corebase::net_types::{PacketLength, RecvData};
     use swoole_rs_corebase::{WebSocketStatus, log};
-    use swoole_rs_reactor::{Drain, Socket, SocketRecord};
+    use swoole_rs_reactor::Socket;
     use swoole_rs_server::{Connection, view};
     use swoole_rs_websocket::{
-        Action, Context, FrameFlags, Opcode, PolicyError, decide_frame, encode_parts,
+        Action, Context, FrameFlags, Opcode, PolicyError, decide_frame, encode_frame,
     };
     use swoole_rs_websocket_ffi::frame_api::decode_frame;
 
@@ -114,7 +115,7 @@ pub mod exports {
     /// crates/phphttp's coroutine server.
     pub extern "C" fn http2_length(
         _proto: *const Protocol,
-        _socket: *mut c_void,
+        _socket: Option<Socket<'_>>,
         pl: &mut PacketLength,
     ) -> isize {
         swoole_rs_http2::frame_length(pl.bytes()).map_or(0, usize::cast_signed)
@@ -239,20 +240,13 @@ pub mod exports {
             Action::ClientClose => {
                 task(payload);
                 let mut reply = [MaybeUninit::<u8>::uninit(); CLOSE_REPLY_MAX];
-                let size = payload.and_then(|payload| {
-                    encode_parts(
-                        payload.len(),
-                        payload,
-                        Opcode::Close,
-                        FrameFlags::default().with_final(),
-                        &mut reply,
-                    )
-                    .ok()
-                });
-                if let Some(size) = size {
-                    // SAFETY: the encoded reply's `size` bytes.
-                    let reply = unsafe { Drain::from_raw(reply.as_ptr().cast(), size) };
-                    _ = swoole_rs_tls::upstream::send_drain(s.socket, reply, 0);
+                if let Some(payload) = payload {
+                    lend_spare(&mut reply, |out| {
+                        let close = FrameFlags::default().with_final();
+                        if encode_frame(payload.len(), payload, Opcode::Close, close, out).is_ok() {
+                            _ = swoole_rs_tls::upstream::send(s.socket, out.written(), 0);
+                        }
+                    });
                 }
                 return false;
             }
@@ -311,38 +305,34 @@ pub mod exports {
         }
     }
 
-    /// A server port protocol's `onPackage`: `H` over the session of `socket` and the
-    /// package, -1 for a socket outside the server's connection table.
+    /// A server port protocol's `onPackage`: `H` over the session of `socket` in the
+    /// server this thread's reactor serves, -1 for none. [`OnPackage`]'s contract has
+    /// the caller pass a whole package of a socket the protocol reads: a session's of
+    /// that server, as only a server's ports hold these, and the package `H` may
+    /// change in place. The server's own reader hands its packages to `H` directly
+    /// ([`Port`]).
     ///
-    /// # Safety
-    /// Upstream's: the port's protocol (its `private_data_2` the server), a live
-    /// connection socket of that port, and a whole package of it, which `H` may
-    /// change in place.
+    /// [`OnPackage`]: swoole_rs_clients::protocol::OnPackage
     #[must_use]
-    pub(crate) unsafe extern "C-unwind" fn on_package<H: Handler>(
-        proto: *const Protocol,
+    pub(crate) extern "C-unwind" fn on_package<H: Handler>(
+        _: *const Protocol,
         socket: Socket<'_>,
         rdata: &RecvData,
     ) -> c_int {
-        // SAFETY: as the caller guarantees.
-        let serv = unsafe { (*proto).private_data_2 };
-        // SAFETY: a port's protocol keeps its live server.
-        let server = unsafe { view::Server::from_raw(serv) };
-        let Some(conn) = server.at(socket.fd()) else {
-            return -1;
-        };
-        // SAFETY: the package's `len` bytes, as the caller guarantees.
-        let package = unsafe { Package::from_raw(rdata.data, rdata.info.len as usize) };
-        let s = Session {
-            server,
-            conn,
-            socket,
-        };
-        if H::handle(s, package, rdata.info) {
-            0
-        } else {
-            -1
-        }
+        let handled = view::Server::with_reactor(|server| {
+            let Some(conn) = server.at(socket.fd()) else {
+                return false;
+            };
+            // SAFETY: the package's `len` bytes, as `OnPackage`'s caller guarantees.
+            let package = unsafe { Package::from_raw(rdata.data, rdata.info.len as usize) };
+            let s = Session {
+                server,
+                conn,
+                socket,
+            };
+            H::handle(s, package, rdata.info)
+        });
+        if handled == Some(true) { 0 } else { -1 }
     }
 
     /// A session's packages, all [`Session::task`]'s: an EOF or length port's, whose
@@ -360,15 +350,47 @@ pub mod exports {
         }
     }
 
-    /// A session's packages through its port protocol's own callbacks: an HTTP/2
-    /// stream's.
-    pub(crate) struct Port<'a>(pub(crate) Session<'a>);
+    /// The handler an HTTP port protocol's `onPackage` is (`init_protocol`): `Frame`
+    /// ([`HttpFrame`]) with HTTP/2 and WebSocket, `Task` with HTTP/2 alone, `WebSocket`
+    /// ([`WebSocketFrame`]) with WebSocket alone, and none without either.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum Route {
+        Frame,
+        Task,
+        WebSocket,
+        None,
+    }
+
+    impl Route {
+        /// The route of a port with HTTP/2 (`http2`) and WebSocket (`websocket`).
+        pub(crate) const fn of(http2: bool, websocket: bool) -> Self {
+            match (http2, websocket) {
+                (true, true) => Self::Frame,
+                (true, false) => Self::Task,
+                (false, true) => Self::WebSocket,
+                (false, false) => Self::None,
+            }
+        }
+    }
+
+    /// A session's packages, measured by its port protocol's callbacks and handed to
+    /// the handler its `onPackage` is: an HTTP/2 stream's.
+    pub(crate) struct Port<'a>(pub(crate) Session<'a>, pub(crate) Route);
 
     impl Packages for Port<'_> {
         const HEAD: Option<u32> = None;
         #[inline(always)]
-        fn dispatch(&self, r: &Recv<'_>, package: Package<'_>) -> bool {
-            crate::framing_recv::protocol_dispatch(r, &package)
+        fn dispatch(&self, _: &Recv<'_>, package: Package<'_>) -> bool {
+            let info = DataHead {
+                len: u32::try_from(package.len()).unwrap_or(u32::MAX),
+                ..DataHead::default()
+            };
+            match self.1 {
+                Route::Frame => HttpFrame::handle(self.0, package, info),
+                Route::Task => Task::handle(self.0, package, info),
+                Route::WebSocket => WebSocketFrame::handle(self.0, package, info),
+                Route::None => false,
+            }
         }
         fn paused(&self) -> bool {
             paused(self.0.conn)
@@ -406,13 +428,16 @@ pub mod exports {
     /// Upstream's: the port's protocol, a connection socket and its packet length.
     pub unsafe extern "C" fn get_package_length(
         proto: *const Protocol,
-        socket: *mut c_void,
+        socket: Option<Socket<'_>>,
         pl: &mut PacketLength,
     ) -> isize {
         // The header size names the connection's route: WebSocket's, HTTP/2's, or
         // none (warned).
+        let Some(conn) = socket else {
+            return -1;
+        };
         // SAFETY: as the caller guarantees.
-        match unsafe { get_package_length_size(socket) } {
+        match unsafe { get_package_length_size(conn) } {
             WEBSOCKET_FRAME_HEADER_SIZE => super::websocket_length(proto, socket, pl),
             super::HTTP2_FRAME_HEADER_SIZE => http2_length(proto, socket, pl),
             _ => -1,
@@ -423,9 +448,9 @@ pub mod exports {
     ///
     /// # Safety
     /// `socket` is a connection socket.
-    pub unsafe extern "C" fn get_package_length_size(socket: *mut c_void) -> u8 {
-        // SAFETY: as the caller guarantees.
-        let conn = unsafe { (*socket.cast::<SocketRecord>()).fields.object };
+    #[must_use]
+    pub unsafe extern "C" fn get_package_length_size(socket: Socket<'_>) -> u8 {
+        let conn = socket.read(|s| s.object);
         // SAFETY: a connection socket's object is its live connection slot, shared
         // through the slot's handle, as its fields are cells and atomics.
         length_size(Connection::from(unsafe {

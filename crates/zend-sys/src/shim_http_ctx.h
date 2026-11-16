@@ -31,11 +31,17 @@ void swr_zend_http_uploads_rshutdown(void);
 /* A context's references to its request and response objects, released in
  * that order as a zend::bailout::trap body (a property's __destruct may run):
  * `arg` is a swr_zend_http_release, whose `begun` counts the releases begun,
- * so after a bailout in the request's a second call releases the response. */
+ * so after a bailout in the request's a second call releases the response,
+ * and a call once both have begun does nothing. */
 typedef struct {
     zval *request;
     zval *response;
     uint8_t begun;
 } swr_zend_http_release;
 void swr_zend_http_release_objects(void *arg);
+/* The same inside zend_try: 1 if a destructor bailed out. */
+int swr_zend_http_try_release_objects(swr_zend_http_release *release);
+/* swoole::rtrim's write: `text` ends after its first `length` bytes, the rest
+ * zeroed; nothing when it is no longer. */
+void swr_zend_http_rtrim(zend_string *text, size_t length);
 #endif
