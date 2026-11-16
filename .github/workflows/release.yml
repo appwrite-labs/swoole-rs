@@ -85,6 +85,7 @@ jobs:
         run: |
           cp LICENSE NOTICE dist/
           cp native/swoole-src/thirdparty/LICENSE dist/LICENSE-PHP
+          cp native/swoole-src/thirdparty/LICENSE-ZEND dist/
           cd dist
           set -- ./*.so
           [ $# = 32 ]

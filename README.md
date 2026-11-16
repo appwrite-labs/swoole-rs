@@ -263,8 +263,9 @@ before a change lands.
 
 ## Licence
 
-[Apache-2.0](LICENSE), as upstream Swoole. The bundled PHP code is under the PHP License
-3.01; [`NOTICE`](NOTICE) lists it.
+[Apache-2.0](LICENSE), as upstream Swoole. Bundled PHP code retains the
+[PHP License 3.01](native/swoole-src/thirdparty/LICENSE), and the Zend Engine file retains
+[Zend License 2.00](native/swoole-src/thirdparty/LICENSE-ZEND). [`NOTICE`](NOTICE) lists the attributions.
 
 ## Badges
 
