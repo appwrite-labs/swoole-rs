@@ -30,11 +30,7 @@ pub fn exec(command: &CStr, errors: bool, status: &mut c_int) -> Option<Vec<u8>>
     let socket = owned.co();
     let mut output = Vec::new();
     let mut chunk = vec![0; CHUNK];
-    loop {
-        let read = socket.read(&mut chunk);
-        let Some(filled) = usize::try_from(read).ok().filter(|&n| n > 0) else {
-            break;
-        };
+    while let Some(filled) = socket.read(&mut chunk).filter(|&n| n > 0) {
         output.extend_from_slice(chunk.get(..filled).unwrap_or_default());
     }
     socket.close();

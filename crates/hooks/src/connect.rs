@@ -93,8 +93,8 @@ pub trait Connecting {
     /// `connect(addr)` of the assigned address.
     fn connect(&mut self) -> bool;
     /// The socket's `send` and `recv`.
-    fn send(&mut self, data: &[u8]) -> isize;
-    fn recv(&mut self, into: &mut [u8]) -> isize;
+    fn send(&mut self, data: &[u8]) -> Option<usize>;
+    fn recv(&mut self, into: &mut [u8]) -> Option<usize>;
     /// Packs the SOCKS5 negotiation, moving the proxy to the handshake state.
     fn socks5_negotiate(&mut self) -> Vec<u8>;
     /// `Socks5Proxy::handshake` of a reply (sending what it packs): whether the
@@ -151,13 +151,12 @@ fn resolve(ops: &mut impl Connecting) -> Result<(), ResolveError> {
 /// `socks5_handshake`: the negotiation, then each reply until the proxy is ready.
 fn socks5(ops: &mut impl Connecting) -> bool {
     let request = ops.socks5_negotiate();
-    if ops.send(&request) < 0 {
+    if ops.send(&request).is_none() {
         return false;
     }
     let mut reply = [0u8; 512];
     loop {
-        let n = ops.recv(&mut reply);
-        let Some(received) = usize::try_from(n).ok().filter(|&n| n > 0) else {
+        let Some(received) = ops.recv(&mut reply).filter(|&n| n > 0) else {
             return false;
         };
         match ops.socks5_step(reply.get(..received).unwrap_or_default()) {
@@ -171,7 +170,7 @@ fn socks5(ops: &mut impl Connecting) -> bool {
 /// `http_proxy_handshake`: CONNECT, then the response head.
 fn http(ops: &mut impl Connecting) -> bool {
     let request = ops.http_request();
-    if ops.send(&request) != request.len().cast_signed() {
+    if ops.send(&request) != Some(request.len()) {
         ops.http_done(false);
         return false;
     }
@@ -432,11 +431,11 @@ impl Connecting for Live<'_> {
         self.socket.connect_addr(&self.address)
     }
 
-    fn send(&mut self, data: &[u8]) -> isize {
+    fn send(&mut self, data: &[u8]) -> Option<usize> {
         self.socket.send(data)
     }
 
-    fn recv(&mut self, into: &mut [u8]) -> isize {
+    fn recv(&mut self, into: &mut [u8]) -> Option<usize> {
         self.socket.recv(into)
     }
 
@@ -452,7 +451,7 @@ impl Connecting for Live<'_> {
     fn socks5_step(&mut self, reply: &[u8]) -> Option<bool> {
         let owner = self.socks5?;
         let n = swoole_rs_protocols_ffi::socks5_step(&Socks5Proxy::new(owner), reply);
-        if n < 0 || (n > 0 && self.send(&self.socks5_packet(n)) != n) {
+        if n < 0 || (n > 0 && self.send(&self.socks5_packet(n)) != usize::try_from(n).ok()) {
             return None;
         }
         Some(owner.fields().state == SOCKS5_READY)
@@ -779,11 +778,11 @@ mod tests {
         fn connect(&mut self) -> bool {
             take("connect", 1) != 0
         }
-        fn send(&mut self, data: &[u8]) -> isize {
-            take("send", data.len().cast_signed())
+        fn send(&mut self, data: &[u8]) -> Option<usize> {
+            usize::try_from(take("send", data.len().cast_signed())).ok()
         }
-        fn recv(&mut self, _: &mut [u8]) -> isize {
-            take("recv", 2)
+        fn recv(&mut self, _: &mut [u8]) -> Option<usize> {
+            usize::try_from(take("recv", 2)).ok()
         }
         fn socks5_negotiate(&mut self) -> Vec<u8> {
             let length = take("negotiate", 3);

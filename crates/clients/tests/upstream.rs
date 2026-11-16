@@ -818,7 +818,7 @@ impl DnsExchange for Exchange {
                 data.len(),
             )
         };
-        received(n, self.canceled)
+        received(usize::try_from(n).ok(), self.canceled)
     }
 
     fn push(&mut self, text: &[u8]) {

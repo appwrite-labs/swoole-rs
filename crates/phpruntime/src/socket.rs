@@ -170,13 +170,14 @@ impl Socket {
     }
 
     /// One `op` send of `data`: the socket's Rust member, or its
-    /// `network::Socket`'s for the synchronous one.
-    pub(crate) fn send(&self, op: SendOp, data: &[u8]) -> isize {
+    /// `network::Socket`'s for the synchronous one. The bytes sent, `None` on a
+    /// failure.
+    pub(crate) fn send(&self, op: SendOp, data: &[u8]) -> Option<usize> {
         let socket = self.co();
         match op {
             SendOp::Sync => socket
                 .with_network(|network| send_sync(network, data, 0))
-                .unwrap_or(-1),
+                .and_then(|n| usize::try_from(n).ok()),
             SendOp::All => socket.send_all(data),
             SendOp::Once => socket.send_once(data),
             SendOp::Send => socket.send(data),
@@ -184,12 +185,12 @@ impl Socket {
     }
 
     /// One `op` receive into `out`, as [`Self::send`].
-    pub(crate) fn recv(&self, op: RecvOp, out: &mut [MaybeUninit<u8>]) -> isize {
+    pub(crate) fn recv(&self, op: RecvOp, out: &mut [MaybeUninit<u8>]) -> Option<usize> {
         let socket = self.co();
         match op {
             RecvOp::Sync => socket
                 .with_network(|network| recv_sync(network, out, 0))
-                .unwrap_or(-1),
+                .and_then(|n| usize::try_from(n).ok()),
             RecvOp::Recv => socket.recv(out),
             RecvOp::Once => socket.recv_once(out),
             RecvOp::Peek => socket.peek(out),
@@ -507,7 +508,9 @@ pub mod co {
             // `IOVector`'s constructor throws here, which ended at this Rust frame.
             swoole_rs_corebase::fatal("the I/O vectors can't be built");
         };
-        let result = socket.vector(&mut vector, all);
+        let result = socket
+            .vector(&mut vector, all)
+            .map_or(-1, usize::cast_signed);
         let (index, offset) = vector.stopped();
         (result, index, offset)
     }

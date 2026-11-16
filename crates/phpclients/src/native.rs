@@ -282,7 +282,7 @@ impl Co {
     }
 
     /// One send [`Transfer`] of `data` under `timeout`.
-    pub(crate) fn send(self, op: Transfer, data: &[u8], timeout: f64) -> ssize_t {
+    pub(crate) fn send(self, op: Transfer, data: &[u8], timeout: f64) -> Option<usize> {
         let _timeout = self.timeout(timeout, TimeoutKind::WRITE);
         if matches!(op, Transfer::SendAll) {
             self.0.send_all(data)
@@ -354,13 +354,13 @@ impl Co {
     }
 
     /// `recvfrom` into `buffer`'s room under a read timeout of `timeout`.
-    pub(crate) fn recvfrom(self, buffer: &mut ZBuf, timeout: f64) -> ssize_t {
+    pub(crate) fn recvfrom(self, buffer: &mut ZBuf, timeout: f64) -> Option<usize> {
         let _timeout = self.timeout(timeout, TimeoutKind::READ);
         self.fill(None, buffer)
     }
 
     /// One receiving [`Transfer`] into `buffer`'s room under `timeout`.
-    pub(crate) fn receive(self, op: Transfer, buffer: &mut ZBuf, timeout: f64) -> ssize_t {
+    pub(crate) fn receive(self, op: Transfer, buffer: &mut ZBuf, timeout: f64) -> Option<usize> {
         let _timeout =
             (!matches!(op, Transfer::Peek)).then(|| self.timeout(timeout, TimeoutKind::READ));
         self.fill(Some(op), buffer)
@@ -368,7 +368,7 @@ impl Co {
 
     /// One receiving [`Transfer`] (`recvfrom` for none) into `buffer`'s room,
     /// counting what it wrote there.
-    fn fill(self, op: Option<Transfer>, buffer: &mut ZBuf) -> ssize_t {
+    fn fill(self, op: Option<Transfer>, buffer: &mut ZBuf) -> Option<usize> {
         let out = buffer.spare_capacity_mut();
         let received = match op {
             None => self.0.recvfrom_peer(out),
@@ -378,7 +378,7 @@ impl Co {
             Some(Transfer::RecvWithBuffer) => self.0.recv_with_buffer(out),
             Some(_) => self.0.recv(out),
         };
-        if let Ok(count) = usize::try_from(received) {
+        if let Some(count) = received {
             let len = buffer.capacity().min(buffer.len() + count);
             // SAFETY: each of these receives returns the count of the room's first
             // slots it wrote, and the room ends at the capacity.
@@ -393,7 +393,7 @@ impl Co {
             .unwrap_or_else(|| (CString::default(), 0))
     }
 
-    pub(crate) fn sendto(self, address: &[u8], port: i64, data: &[u8]) -> ssize_t {
+    pub(crate) fn sendto(self, address: &[u8], port: i64, data: &[u8]) -> Option<usize> {
         self.0.sendto(address, port.c_cast::<c_int>(), data)
     }
 

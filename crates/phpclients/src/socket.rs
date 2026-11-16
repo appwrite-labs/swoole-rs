@@ -14,6 +14,7 @@ use std::{
     ffi::{CStr, CString},
     sync::atomic::{AtomicUsize, Ordering},
 };
+use swoole_rs_corebase::CCast;
 use swoole_rs_phpruntime::co;
 use swoole_rs_phpstubs::socket_coro;
 use swoole_rs_phpswoole::{Switch, built_with};
@@ -353,11 +354,11 @@ fn recycle(mut buffer: ZBuf) -> ZString {
 
 /// Return what a transfer of `bytes` wrote into `buffer`: false when
 /// negative, '' when zero.
-fn set_received(call: &Call, buffer: ZBuf, bytes: isize) {
+fn set_received(call: &Call, buffer: ZBuf, bytes: Option<usize>) {
     match bytes {
-        1.. => call.set_zstring(recycle(buffer)),
-        0 => call.set_empty_string(),
-        _ => call.set_bool(false),
+        Some(1..) => call.set_zstring(recycle(buffer)),
+        Some(0) => call.set_empty_string(),
+        None => call.set_bool(false),
     }
 }
 
@@ -583,10 +584,9 @@ fn send_as(call: &Call, op: Transfer) {
     let Some(socket) = open(call) else { return };
     let sent = socket.send(op, data, timeout);
     sync(call, socket);
-    if sent < 0 {
-        call.set_bool(false);
-    } else {
-        call.set_long(sent as i64);
+    match sent {
+        Some(sent) => call.set_long(sent.c_cast()),
+        None => call.set_bool(false),
     }
 }
 
@@ -777,7 +777,7 @@ fn recvfrom(call: &mut Call) {
     let mut buffer = ZBuf::with_capacity(length);
     let bytes = socket.recvfrom(&mut buffer, timeout);
     sync(call, socket);
-    if bytes <= 0 {
+    if bytes <= Some(0) {
         return set_received(call, buffer, bytes);
     }
     call.assign(1, address(socket).into_owned());
@@ -809,10 +809,9 @@ fn sendto(call: &Call) {
     let Some(socket) = open(call) else { return };
     let sent = socket.sendto(address, port, data);
     sync(call, socket);
-    if sent < 0 {
-        call.set_bool(false);
-    } else {
-        call.set_long(sent as i64);
+    match sent {
+        Some(sent) => call.set_long(sent.c_cast()),
+        None => call.set_bool(false),
     }
 }
 
