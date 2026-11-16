@@ -103,42 +103,35 @@ pub(super) fn callable_warning(message: &CStr) {
     bailout::defer(reported);
 }
 
-/// `zend::function::call(cache, argc, argv, retval)`: 0 when the call ran, -1
-/// when it failed or bailed out (the bailout deferred). An unresolved cache is
-/// reported as a bad function.
-/// # Safety
-/// A null or initialised cache, `argc` live arguments, and a writable return
-/// slot or null.
-pub(super) unsafe fn direct_call(
-    cache: *mut zend_fcall_info_cache,
-    argc: u32,
-    argv: *mut zval,
-    retval: *mut zval,
-) -> c_int {
+/// `zend::function::call(cache, argc, argv, retval)` into `retval` (a
+/// private slot for `None`): whether the call ran; false when it failed or
+/// bailed out (the bailout deferred). An unresolved cache is reported as a bad
+/// function.
+pub(super) fn direct_call(
+    Callee(cache, _): Callee<'_>,
+    args: crate::zval::Zvals<'_>,
+    retval: Option<&crate::Value>,
+) -> bool {
     let mut call = crate::EMPTY_FCI;
     // The call's result when the caller wants none; undefined otherwise.
     let temporary = Owned::default();
-    // SAFETY: a non-null cache is initialized by the caller.
+    // SAFETY: a non-null cache is a callable's, which keeps it initialised
+    // (`Callee`).
     if cache.is_null() || unsafe { (*cache).function_handler }.is_null() {
         callable_warning(c"Bad function");
-        return -1;
+        return false;
     }
     call.size = size_of::<zend_fcall_info>();
-    call.retval = if retval.is_null() {
-        temporary.as_ptr()
-    } else {
-        retval
-    };
-    call.param_count = argc;
-    call.params = argv;
+    call.retval = retval.unwrap_or(&temporary).as_ptr();
+    call.param_count = args.argc();
+    call.params = args.argv();
     // SAFETY: initialized frame/cache/arguments; no Rust borrow spans invocation.
     let result = unsafe { bailout::call(&raw mut call, cache) };
     let result = match result {
-        Ok(true) => 0,
-        Ok(false) => -1,
+        Ok(ran) => ran,
         Err(error) => {
             error.defer();
-            -1
+            false
         }
     };
     // Discard the private return slot after invocation, as upstream does.
@@ -210,18 +203,16 @@ pub fn function_call(
     Creator(create): Creator,
     Then(then, arg): Then,
 ) -> Result<bool, bailout::Bailout> {
-    let (cache, argc, argv) = (cache.0, args.argc(), args.argv());
-    let retval = retval.map_or(ptr::null_mut(), crate::Value::as_ptr);
     // Upstream never ran past a pending bailout: no coroutine starts, as no call runs.
     bailout::outcome(())?;
     let mut ran = false;
     let success = if coroutine {
-        if !retval.is_null() {
+        if let Some(retval) = retval {
             // SAFETY: the caller's live return slot, whose type alone this
             // writes: coroutines publish null before creation and have no
             // return value.
             unsafe {
-                (*retval).u1 = sys::_zval_struct__bindgen_ty_1 {
+                (*retval.as_ptr()).u1 = sys::_zval_struct__bindgen_ty_1 {
                     type_info: sys::IS_NULL,
                 }
             };
@@ -233,9 +224,9 @@ pub fn function_call(
         bailed(unsafe {
             sys::swr_zend_try_facade_coroutine(
                 Some(create),
-                cache,
-                argc,
-                argv,
+                cache.0,
+                args.argc(),
+                args.argv(),
                 ptr::null_mut(),
                 &raw mut result,
                 then,
@@ -245,9 +236,7 @@ pub fn function_call(
         });
         result >= 0
     } else {
-        // SAFETY: a callable's cache (`Callee`), lent arguments (`Zvals`) and a
-        // live return slot or null.
-        unsafe { direct_call(cache, argc, argv, retval) == 0 }
+        direct_call(cache, args, retval)
     };
     // `then` ran with no exception pending, as this check would have found it.
     if !ran && !bailout::pending() {
