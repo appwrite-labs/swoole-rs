@@ -8,7 +8,7 @@
         clippy::multiple_unsafe_ops_per_block
     )
 )]
-use std::ffi::{CStr, c_char};
+use std::ffi::{CStr, c_char, c_int};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 
@@ -36,6 +36,12 @@ unsafe extern "C" {
     #[link_name = "mktime"]
     safe fn libc_mktime(tm: &mut Tm) -> i64;
     safe fn gmtime_r(time: &i64, tm: &mut Tm) -> *mut Tm;
+}
+
+// `tolower` reads only the current locale's table, and glibc and musl bound the
+// argument first, so any `int` is defined.
+unsafe extern "C" {
+    safe fn tolower(byte: c_int) -> c_int;
 }
 
 /// An all-zero `tm`, as a native `tm{}`.
@@ -89,13 +95,33 @@ pub fn strftime(output: &mut [u8], format: &CStr, tm: &Tm) -> usize {
         )
     }
 }
+/// `tolower(byte)` in the current locale. Every locale lowers ASCII as
+/// `to_ascii_lowercase` does except Turkish `I` (to `ı`), so only `I` and
+/// non-ASCII bytes ask libc.
+#[inline]
+fn lower(byte: u8) -> c_int {
+    if byte.is_ascii() && byte != b'I' {
+        c_int::from(byte.to_ascii_lowercase())
+    } else {
+        tolower(c_int::from(byte))
+    }
+}
 /// `strncasecmp(left, right, length) == 0` in the current locale, over at most the
-/// shorter slice; a matching NUL ends the comparison as it does in libc.
+/// shorter slice; a matching NUL ends the comparison as it does in libc. Compared
+/// byte by byte as glibc's portable `strncasecmp` does, not through its vectorised
+/// variant, whose instruction count depends on where the operands sit.
+#[inline]
 #[must_use]
 pub fn strncasecmp_equal(left: &[u8], right: &[u8], length: usize) -> bool {
-    let length = length.min(left.len()).min(right.len());
-    // SAFETY: both slices hold at least `length` readable bytes.
-    unsafe { libc::strncasecmp(left.as_ptr().cast(), right.as_ptr().cast(), length) == 0 }
+    for (&left, &right) in left.iter().zip(right).take(length) {
+        if left != right && lower(left) != lower(right) {
+            return false;
+        }
+        if left == 0 {
+            break;
+        }
+    }
+    true
 }
 /// `isspace(byte)` in the current locale, the byte passed as a native `char`, as the
 /// pinned C passes it.
@@ -129,7 +155,7 @@ pub fn case_prefix(input: &[u8], expected: &[u8]) -> bool {
 mod tests {
     use super::*;
     #[test]
-    fn skipped_first_bytes_differ_under_libc_in_each_locale() {
+    fn case_comparison_matches_libc_in_each_locale() {
         let locales = [
             c"C",
             c"C.UTF-8",
@@ -149,6 +175,26 @@ mod tests {
                         assert!(
                             !strncasecmp_equal(&[left], &[right], 1),
                             "{left:#x} {right:#x} in {locale:?}"
+                        );
+                    }
+                    // Alone, then followed by a NUL, an equal or a differing byte on
+                    // either side, so that a matching NUL's end is checked too.
+                    for (next_left, next_right, length) in [
+                        (0, 0, 1),
+                        (0, b'x', 2),
+                        (b'x', 0, 2),
+                        (b'a', b'A', 2),
+                        (b'a', b'b', 2),
+                    ] {
+                        let (left, right) = ([left, next_left], [right, next_right]);
+                        // SAFETY: two readable bytes each.
+                        let libc = unsafe {
+                            libc::strncasecmp(left.as_ptr().cast(), right.as_ptr().cast(), length)
+                        } == 0;
+                        assert_eq!(
+                            strncasecmp_equal(&left, &right, length),
+                            libc,
+                            "{left:x?} {right:x?} {length} in {locale:?}"
                         );
                     }
                 }
