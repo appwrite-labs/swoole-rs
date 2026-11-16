@@ -12,7 +12,7 @@
 use crate::vector::{IoVector, RecvMessage, SendMessage};
 use io_uring::types::{Fd, FsyncFlags, Timespec};
 use io_uring::{IoUring, Probe, opcode, squeue};
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::ffi::{CStr, c_int, c_uint, c_void};
 use std::os::fd::AsRawFd;
@@ -89,14 +89,18 @@ struct Event {
 }
 
 /// The ring and its bookkeeping. Resuming a request's coroutine may start another
-/// request, so the engine is shared and its state sits in cells.
+/// request, so the engine is shared and its state sits in cells, each taken out
+/// and put back with nothing in between that runs a coroutine or calls back.
 pub struct Uring {
-    /// Borrowed within one queue operation, never while a coroutine runs.
-    ring: RefCell<IoUring>,
+    /// Taken out within one queue operation ([`Uring::with_ring`]). Boxed, so a
+    /// take moves a pointer.
+    ring: Cell<Option<Box<IoUring>>>,
+    /// The ring's fd.
+    fd: c_int,
     host: &'static Host,
     task_num: Cell<u32>,
     /// Requests waiting for room in the ring.
-    waiting: RefCell<VecDeque<*mut Event>>,
+    waiting: Cell<VecDeque<*mut Event>>,
     /// Completed events and their results.
     ready: Cell<Vec<(*mut Event, isize)>>,
 }
@@ -240,11 +244,25 @@ impl Event {
 }
 
 impl Uring {
-    /// The submission queue's used slots and its size.
+    /// `f` over the ring, taken out meanwhile; none while a caller up the stack
+    /// has it, which no caller does, as `f` neither runs a coroutine nor calls back.
+    fn with_ring<R>(&self, f: impl FnOnce(&mut IoUring) -> R) -> Option<R> {
+        let mut ring = self.ring.take()?;
+        let result = f(&mut ring);
+        // `set` would call the drop glue for the `None` it replaces.
+        if let Some(nested) = self.ring.replace(Some(ring)) {
+            drop(nested);
+        }
+        Some(result)
+    }
+
+    /// The submission queue's used slots and its size; a ring in use has no room.
     fn sq(&self) -> (usize, usize) {
-        let mut ring = self.ring.borrow_mut();
-        let queue = ring.submission();
-        (queue.len(), queue.capacity())
+        self.with_ring(|ring| {
+            let queue = ring.submission();
+            (queue.len(), queue.capacity())
+        })
+        .unwrap_or_default()
     }
 
     fn sq_space_left(&self) -> usize {
@@ -254,12 +272,16 @@ impl Uring {
 
     /// Queue `entries` together, in the free slots the caller saw there are.
     fn push(&self, entries: &[squeue::Entry]) {
-        let mut ring = self.ring.borrow_mut();
-        // SAFETY: an event's entry points into its operation's arguments and frame
-        // (`request`'s contract), and its timeout into the event itself: all live
-        // until the completion, which the suspended operation waits for.
-        let pushed = unsafe { ring.submission().push_multiple(entries) };
-        debug_assert!(pushed.is_ok(), "the caller saw the free slots");
+        let pushed = self.with_ring(|ring| {
+            // SAFETY: an event's entry points into its operation's arguments and frame
+            // (`request`'s contract), and its timeout into the event itself: all live
+            // until the completion, which the suspended operation waits for.
+            unsafe { ring.submission().push_multiple(entries) }
+        });
+        debug_assert!(
+            matches!(pushed, Some(Ok(()))),
+            "the caller saw the free slots"
+        );
     }
 
     /// Queue `event` in the ring, or in the wait queue when the ring is full. Both
@@ -268,7 +290,9 @@ impl Uring {
     fn dispatch(&self, event: &mut Event) {
         let space = self.sq_space_left();
         if space == 0 {
-            self.waiting.borrow_mut().push_back(event);
+            let mut waiting = self.waiting.take();
+            waiting.push_back(event);
+            self.waiting.set(waiting);
             return;
         }
         if event.timeout.is_some() && space < 2 {
@@ -309,18 +333,20 @@ impl Submitter for &Uring {
     }
 
     fn submit(&mut self) -> c_int {
-        let mut ring = self.ring.borrow_mut();
-        let queue = ring.submission();
-        // As liburing's io_uring_submit: nothing to submit or flush, no system call.
-        let idle = queue.is_empty() && !queue.cq_overflow();
-        drop(queue);
-        if idle {
-            return 0;
-        }
-        match ring.submit() {
-            Ok(submitted) => c_int::try_from(submitted).unwrap_or(c_int::MAX),
-            Err(error) => -error.raw_os_error().unwrap_or(0),
-        }
+        self.with_ring(|ring| {
+            let queue = ring.submission();
+            // As liburing's io_uring_submit: nothing to submit or flush, no system call.
+            let idle = queue.is_empty() && !queue.cq_overflow();
+            drop(queue);
+            if idle {
+                return 0;
+            }
+            match ring.submit() {
+                Ok(submitted) => c_int::try_from(submitted).unwrap_or(c_int::MAX),
+                Err(error) => -error.raw_os_error().unwrap_or(0),
+            }
+        })
+        .unwrap_or(0)
     }
 
     fn sleep(&mut self) {
@@ -386,10 +412,11 @@ pub fn open(config: Config, host: &'static Host) -> Opened {
             })
     });
     let engine = Uring {
-        ring: RefCell::new(ring),
+        fd: ring.as_raw_fd(),
+        ring: Cell::new(Some(Box::new(ring))),
         host,
         task_num: Cell::new(0),
-        waiting: RefCell::new(VecDeque::new()),
+        waiting: Cell::default(),
         ready: Cell::new(Vec::with_capacity(QUEUE_SIZE as usize)),
     };
     Opened {
@@ -422,7 +449,7 @@ fn probe(ring: &IoUring, config: Config) -> Result<(), OpenError> {
 impl Uring {
     #[must_use]
     pub fn fd(&self) -> c_int {
-        self.ring.borrow().as_raw_fd()
+        self.fd
     }
 
     /// Requests in flight.
@@ -434,13 +461,16 @@ impl Uring {
     /// Requests waiting for room in the ring.
     #[must_use]
     pub fn waiting_num(&self) -> usize {
-        self.waiting.borrow().len()
+        let waiting = self.waiting.take();
+        let len = waiting.len();
+        self.waiting.set(waiting);
+        len
     }
 
     #[must_use]
     pub fn sq_usage_percent(&self) -> f32 {
         let (used, capacity) = self.sq();
-        used.c_cast::<f32>() / capacity.c_cast::<f32>() * 100.0
+        used.c_cast::<f32>() / capacity.max(1).c_cast::<f32>() * 100.0
     }
 
     /// Submit everything queued: the reactor's end-of-loop callback.
@@ -457,19 +487,17 @@ pub fn wakeup(engine: &Uring) -> bool {
         // Resuming coroutines may re-enter the engine, so the ready list is taken
         // out of it, and no cell of it is borrowed while they run.
         let mut ready = engine.ready.take();
-        let mut harvested = false;
-        for cqe in engine
-            .ring
-            .borrow_mut()
-            .completion()
-            .take(QUEUE_SIZE as usize)
-        {
-            harvested = true;
-            if cqe.user_data() != TIMEOUT_EVENT {
-                ready.push((cqe.user_data() as *mut Event, cqe.result() as isize));
+        let harvested = engine.with_ring(|ring| {
+            let mut harvested = false;
+            for cqe in ring.completion().take(QUEUE_SIZE as usize) {
+                harvested = true;
+                if cqe.user_data() != TIMEOUT_EVENT {
+                    ready.push((cqe.user_data() as *mut Event, cqe.result() as isize));
+                }
             }
-        }
-        if !harvested {
+            harvested
+        });
+        if harvested != Some(true) {
             engine.ready.set(ready);
             return true;
         }
@@ -477,7 +505,10 @@ pub fn wakeup(engine: &Uring) -> bool {
             if engine.sq_space_left() == 0 {
                 break;
             }
-            let Some(waiting) = engine.waiting.borrow_mut().pop_front() else {
+            let mut queue = engine.waiting.take();
+            let waiting = queue.pop_front();
+            engine.waiting.set(queue);
+            let Some(waiting) = waiting else {
                 break;
             };
             // SAFETY: a queued event is suspended in its operation, and nothing
@@ -832,6 +863,7 @@ mod ported;
 #[cfg(test)]
 pub(crate) mod testing {
     use super::*;
+    use std::cell::RefCell;
 
     // A host without coroutines: "suspending" drives the ring until the event
     // completes, which is what the reactor and the scheduler do together.
@@ -848,7 +880,7 @@ pub(crate) mod testing {
         let engine = instance().expect("a test engine");
         engine.submit_queued();
         while engine.task_num() > 0 {
-            let _waited = engine.ring.borrow().submit_and_wait(1);
+            let _waited = engine.with_ring(|ring| ring.submit_and_wait(1));
             wakeup(&engine);
         }
     }
