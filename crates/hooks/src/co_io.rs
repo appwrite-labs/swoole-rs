@@ -174,10 +174,7 @@ mod native {
         socket.with_buffer(true, |string| {
             if slot.bytes() != string.as_mut_ptr() {
                 string.clear();
-                // SAFETY: the slot's bytes, readable by its constructor's contract and
-                // outside the String.
-                let bytes = unsafe { core::slice::from_raw_parts(slot.bytes(), slot.length()) };
-                string.append(bytes);
+                string.append(slot.written());
                 slot.moved_to(string.as_mut_ptr());
             }
         });
