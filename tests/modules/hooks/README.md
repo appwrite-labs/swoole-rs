@@ -205,7 +205,10 @@ TEST (upstream's names, inputs and expected values), run by `cargo test --all-fe
 drives the ring where a coroutine would suspend. A second coroutine becomes a thread
 with its own ring, and the cases take turns as GoogleTest's did, since they share /tmp
 paths and `wait` collects any child. `Iouring::open` and `close` are `open_file` and
-`close_fd`. `System::sleep` is `uring::sleep`, as it is with io_uring.
+`close_fd`. The ring filesystem APIs return `io::Result`: open carries the
+descriptor and status-only calls carry `()`. The syscall wrappers and original
+test adapters restore the integer protocol; failed stat calls leave output intact.
+`System::sleep` is `uring::sleep`, as it is with io_uring.
 `sleep(tv_sec, tv_nsec)` is `sleep_timespec`, which `sleep(seconds)` converts to.
 Three calls have left the build, and only core-tests called them at the pin.
 `Iouring::socket` is gone, so the cases make their sockets with socket(2).

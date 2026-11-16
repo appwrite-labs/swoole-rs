@@ -324,7 +324,7 @@ pub extern "C" fn swoole_coroutine_close(fd: c_int) -> c_int {
     }
     #[cfg(feature = "iouring")]
     if let Some(ring) = crate::stdio::host().and_then(ring) {
-        return crate::uring::close_fd(ring, fd);
+        return crate::uring::close_fd(ring, fd).map_or(-1, |()| 0);
     }
     swr_v1_hook_close_fd(fd, Some(crate::stdio::runtime().offload))
 }
