@@ -52,12 +52,11 @@ fn putenv(call: &Call) {
 /// `stored` in `environ`. libc holds the pointer it is given, so the name's previous
 /// string is freed only once libc has let go of it.
 fn store(environ: &mut Table, key: &[u8], stored: CString, unset: bool) -> bool {
+    if unset {
+        unsetenv(stored.as_c_str().into());
+    }
     let pointer = stored.as_ptr().cast_mut();
     let previous = environ.insert(key.to_vec(), stored);
-    if unset {
-        // SAFETY: a NUL-terminated name.
-        unsafe { libc::unsetenv(pointer) };
-    }
     // SAFETY: the string stays in `environ` until this name is set again.
     let set = unset || unsafe { libc::putenv(pointer) } == 0;
     if !set {
@@ -73,6 +72,8 @@ fn store(environ: &mut Table, key: &[u8], stored: CString, unset: bool) -> bool 
 unsafe extern "C" {
     /// libc's `tzset`: no arguments, and it only reads the environment.
     safe fn tzset();
+    /// libc's `unsetenv`: it reads the name and keeps nothing.
+    safe fn unsetenv(name: swoole_rs_corebase::sys::Text<'_>) -> std::ffi::c_int;
 }
 
 #[cfg(test)]

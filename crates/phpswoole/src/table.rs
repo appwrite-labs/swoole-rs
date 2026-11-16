@@ -4,29 +4,26 @@ use crate::{
     asynchronous as a, constants::SHORTNAME, functions as f, implicit, interfaces as i, module, vm,
 };
 use swoole_rs_phpstubs::{ex, stdext, swoole as s, tracer};
-use swoole_rs_zend::{
-    arginfo::Table,
-    method_table,
-    sys::{self as z, zend_function_entry},
-};
+use swoole_rs_zend::{Entered, Returned, arginfo::Table, method_table, sys::zend_function_entry};
 
 /// `swr_v1_phpswoole_minit` flag: the build has `SW_STDEXT`.
 pub(crate) const STDEXT: u32 = 1 << 11;
 
-// Handlers other crates or C++ define, whichever the build selects.
+// Handlers other crates or C++ define, whichever the build selects: each takes
+// the frame and return slot only Zend makes, as a `handlers!` one does.
 unsafe extern "C" {
-    fn zif_swoole_coroutine_create(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_coroutine_defer(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_coroutine_socketpair(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_test_kernel_coroutine(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_client_select(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_clear_dns_cache(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_name_resolver_lookup(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_name_resolver_add(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_name_resolver_remove(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_tracer_leak_detect(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_tracer_prof_begin(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_tracer_prof_end(frame: *mut z::zend_execute_data, value: *mut z::zval);
+    safe fn zif_swoole_coroutine_create(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_swoole_coroutine_defer(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_swoole_coroutine_socketpair(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_swoole_test_kernel_coroutine(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_swoole_client_select(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_swoole_clear_dns_cache(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_swoole_name_resolver_lookup(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_swoole_name_resolver_add(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_swoole_name_resolver_remove(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_swoole_tracer_leak_detect(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_swoole_tracer_prof_begin(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_swoole_tracer_prof_end(frame: Entered<'_>, value: Returned<'_>);
 }
 
 method_table! {
@@ -84,69 +81,69 @@ method_table! {
 #[cfg(feature = "stdext")]
 // crates/phpstdext's handlers.
 unsafe extern "C" {
-    fn zif_swoole_call_array_method(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_call_string_method(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_call_stream_method(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_array_search(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_array_contains(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_array_join(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_array_key_exists(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_array_map(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_str_split(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_parse_str(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_hash(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_typed_array(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_array_is_typed(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_str_is_empty(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_array_is_empty(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_str_match(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_str_match_all(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_str_json_decode(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_str_json_decode_to_object(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_str_replace(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_str_ireplace(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_array_replace_str(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_swoole_array_ireplace_str(frame: *mut z::zend_execute_data, value: *mut z::zval);
+    safe fn zif_swoole_call_array_method(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_swoole_call_string_method(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_swoole_call_stream_method(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_swoole_array_search(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_swoole_array_contains(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_swoole_array_join(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_swoole_array_key_exists(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_swoole_array_map(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_swoole_str_split(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_swoole_parse_str(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_swoole_hash(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_swoole_typed_array(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_swoole_array_is_typed(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_swoole_str_is_empty(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_swoole_array_is_empty(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_swoole_str_match(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_swoole_str_match_all(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_swoole_str_json_decode(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_swoole_str_json_decode_to_object(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_swoole_str_replace(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_swoole_str_ireplace(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_swoole_array_replace_str(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_swoole_array_ireplace_str(frame: Entered<'_>, value: Returned<'_>);
 }
 
 #[cfg(feature = "ssh2")]
 // The bundled ext/ssh2's handlers (thirdparty/php/ssh2).
 unsafe extern "C" {
-    fn zif_ssh2_connect(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_disconnect(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_methods_negotiated(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_fingerprint(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_auth_none(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_auth_password(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_auth_pubkey_file(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_auth_pubkey(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_auth_hostbased_file(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_forward_listen(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_forward_accept(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_shell(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_shell_resize(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_exec(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_tunnel(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_scp_recv(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_scp_send(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_fetch_stream(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_send_eof(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_sftp(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_sftp_rename(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_sftp_unlink(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_sftp_mkdir(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_sftp_rmdir(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_sftp_chmod(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_sftp_stat(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_sftp_lstat(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_sftp_symlink(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_sftp_readlink(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_sftp_realpath(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_publickey_init(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_publickey_add(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_publickey_remove(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_publickey_list(frame: *mut z::zend_execute_data, value: *mut z::zval);
-    fn zif_ssh2_auth_agent(frame: *mut z::zend_execute_data, value: *mut z::zval);
+    safe fn zif_ssh2_connect(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_disconnect(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_methods_negotiated(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_fingerprint(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_auth_none(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_auth_password(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_auth_pubkey_file(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_auth_pubkey(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_auth_hostbased_file(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_forward_listen(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_forward_accept(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_shell(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_shell_resize(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_exec(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_tunnel(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_scp_recv(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_scp_send(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_fetch_stream(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_send_eof(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_sftp(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_sftp_rename(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_sftp_unlink(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_sftp_mkdir(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_sftp_rmdir(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_sftp_chmod(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_sftp_stat(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_sftp_lstat(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_sftp_symlink(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_sftp_readlink(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_sftp_realpath(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_publickey_init(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_publickey_add(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_publickey_remove(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_publickey_list(frame: Entered<'_>, value: Returned<'_>);
+    safe fn zif_ssh2_auth_agent(frame: Entered<'_>, value: Returned<'_>);
 }
 
 #[cfg(feature = "stdext")]

@@ -4,7 +4,7 @@ use std::{
     cell::{Cell, OnceCell},
     ffi::{CStr, c_int, c_long, c_void},
     ptr,
-    sync::atomic::{AtomicPtr, AtomicU64, Ordering},
+    sync::atomic::{AtomicU64, Ordering},
 };
 use swoole_rs_clients::address::{address_port, with_host};
 use swoole_rs_corebase::CCast;
@@ -98,46 +98,6 @@ static ITERATOR: CustomClass<Iterator> = CustomClass::new();
 
 /// `SW_THREAD`, as MINIT was told.
 pub(crate) use swoole_rs_server::THREAD_SUPPORTED as THREAD;
-
-thread_local! {
-    /// Each thread's `ServerPortProperty` per port `object_id` (`SW_THREAD`):
-    /// every worker thread has its own port objects for the shared ports.
-    /// Taken out and put back around each access, which runs no PHP code.
-    static PORT_PROPERTIES: Cell<Vec<*mut c_void>> = const { Cell::new(Vec::new()) };
-}
-
-/// `php_swoole_server_{get,set}_port_property`: the port's `ServerPortProperty`,
-/// kept per thread in thread mode and in the port's own `slot` (`port->ptr`)
-/// otherwise. `set` stores `property` first; a get returns null for a port this
-/// thread has none for.
-pub(crate) fn port_property(
-    object_id: u16,
-    slot: &AtomicPtr<c_void>,
-    property: *mut c_void,
-    set: bool,
-) -> *mut c_void {
-    if !THREAD.load(Ordering::Relaxed) {
-        if set {
-            slot.store(property, Ordering::Relaxed);
-        }
-        return slot.load(Ordering::Relaxed);
-    }
-    let index = usize::from(object_id);
-    PORT_PROPERTIES.with(|cell| {
-        let mut properties = cell.take();
-        if set {
-            if properties.len() <= index {
-                properties.resize(index + 1, ptr::null_mut());
-            }
-            if let Some(entry) = properties.get_mut(index) {
-                *entry = property;
-            }
-        }
-        let found = properties.get(index).copied().unwrap_or(ptr::null_mut());
-        cell.set(properties);
-        found
-    })
-}
 
 /// `ConnectionIterator`: a `Connection\Iterator`'s position over its server's
 /// connections, of one port or (null) all of them.

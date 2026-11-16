@@ -5,8 +5,8 @@ use crate::{
     Array, Class, Value, ZStr,
     helpers::CText,
     sys::{
-        self, IS_FALSE, IS_NULL, IS_OBJ_DESTRUCTOR_CALLED, IS_RESOURCE, IS_TRUE, zend_execute_data,
-        zend_long, zend_object, zend_string, zval,
+        self, IS_FALSE, IS_NULL, IS_RESOURCE, IS_TRUE, zend_execute_data, zend_long, zend_object,
+        zend_string, zval,
     },
 };
 use std::{
@@ -20,6 +20,9 @@ use std::{
 // Zend passed that frame. The parsers' coercions run inside `zend_try`
 // (nonzero for a bailout), since a deprecation runs the user error handler.
 unsafe extern "C" {
+    /// `GC_FLAGS(object) & IS_OBJ_DESTRUCTOR_CALLED`: it reads the live
+    /// object's header only.
+    safe fn swr_zend_object_destructor_called(object: crate::ObjectRef<'_>) -> bool;
     /// `zend_parse_arg_long_slow` of the live argument into `out`; `parsed`
     /// says whether it converted. A coerced argument is replaced in its slot.
     safe fn swr_zend_try_parse_long(
@@ -147,14 +150,31 @@ pub struct Call {
     value: *mut zval,
 }
 
+/// The frame Zend passes an internal function's handler (`execute_data`),
+/// live for its call. Rust never makes one: it is a
+/// [`Handler`](crate::arginfo::Handler)'s parameter, which Zend's call stands
+/// for, and [`Call::run`] takes it with the call's [`Returned`].
+#[repr(transparent)]
+pub struct Entered<'a>(
+    *mut zend_execute_data,
+    std::marker::PhantomData<&'a mut zval>,
+);
+
+/// The return slot Zend passes an internal function's handler with its
+/// [`Entered`] frame (`return_value`), live for the call.
+#[repr(transparent)]
+pub struct Returned<'a>(*mut zval, std::marker::PhantomData<&'a mut zval>);
+
 impl Call {
-    /// # Safety
-    /// `frame` and `value` are the live frame and return slot Zend passed this
-    /// handler, and the `Call` does not outlive the handler.
-    #[must_use]
+    /// `body` over the call Zend passed a handler: its frame and return slot,
+    /// which live for the handler, as the `Call` lent to `body` does.
     #[inline]
-    pub unsafe fn new(frame: *mut zend_execute_data, value: *mut zval) -> Self {
-        Self { frame, value }
+    pub fn run(
+        Entered(frame, _): Entered<'_>,
+        Returned(value, _): Returned<'_>,
+        body: impl FnOnce(&mut Self),
+    ) {
+        body(&mut Self { frame, value });
     }
 
     /// This thread runs PHP for as long as the call lasts.
@@ -218,13 +238,9 @@ impl Call {
     #[must_use]
     #[inline]
     pub fn destructor_called(&self) -> bool {
-        let Some(this) = self.this_object() else {
-            return false;
-        };
-        // SAFETY: the frame's live `$this`, which begins with its refcounted
-        // header's two `u32`s: the refcount, then `gc.u.type_info`.
-        let [_, type_info] = unsafe { this.cast::<[u32; 2]>().read() };
-        type_info & IS_OBJ_DESTRUCTOR_CALLED != 0
+        self.this_value()
+            .and_then(Value::object_ref)
+            .is_some_and(|this| swr_zend_object_destructor_called(this))
     }
 
     /// `ZVAL_COPY(&value, ZEND_THIS)`: `$this` with a reference of its own,

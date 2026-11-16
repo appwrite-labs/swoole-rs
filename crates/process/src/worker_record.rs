@@ -1021,13 +1021,16 @@ mod public_pid_array_tests {
         use crate::process_pool::{PoolRecord, PoolRef};
         let mut pools = [PoolRecord::empty(), PoolRecord::empty()];
         let [event_pool, task_pool] = pools.each_mut().map(|pool| unsafe { PoolRef::new(pool) });
-        let view = unsafe {
-            crate::server_workers::ServerWorkers::new(
-                (event_pool, workers, count),
-                (task_pool, 0),
-                (core::ptr::null_mut(), 0),
-            )
+        let events = if workers.is_null() {
+            &[][..]
+        } else {
+            unsafe { core::slice::from_raw_parts(workers, count as usize) }
         };
+        let view = crate::server_workers::ServerWorkers::new(
+            (event_pool, events, count),
+            (task_pool, 0),
+            (&[], 0),
+        );
         crate::server_workers::swr_v1_process_server_worker_by_pid(&view, None, pid)
     }
 

@@ -1,7 +1,6 @@
 //! Rust-owned `ListenPort` settings and native socket/statistic loans.
 use crate::config::{Published, Setting, Shared};
 use core::ffi::{CStr, c_int, c_void};
-use core::sync::atomic::AtomicPtr;
 use std::sync::{OnceLock, RwLock};
 
 use swoole_rs_clients::protocol::Protocol;
@@ -162,8 +161,10 @@ pub struct PortConfig {
     pub kernel_socket_recv_buffer_size: Setting<c_int>,
     pub kernel_socket_send_buffer_size: Setting<c_int>,
     pub gs: Shared<*mut c_void>,
-    /// The Port object's property, which phpserver links and reads through `&`.
-    pub ptr: AtomicPtr<c_void>,
+    /// The non-threaded PHP Port object's property, installed once at bind/listen.
+    /// Shared callback storage only: it must not own the server. The PHP object
+    /// clears its callbacks on release, including when the object is freed first.
+    pub property: std::cell::OnceCell<std::rc::Rc<dyn core::any::Any>>,
     /// `open_websocket_{close,ping,pong}_frame` as bits 0, 1 and 2.
     pub websocket_frames: Setting<u8>,
     /// `websocket_subprotocol`, the handshake's `Sec-WebSocket-Protocol`.
@@ -343,7 +344,7 @@ impl PortConfig {
             kernel_socket_recv_buffer_size: Setting::new(0),
             kernel_socket_send_buffer_size: Setting::new(0),
             gs: Shared::new(core::ptr::null_mut()),
-            ptr: AtomicPtr::new(core::ptr::null_mut()),
+            property: std::cell::OnceCell::new(),
             websocket_frames: Setting::new(0),
             websocket_protocol: Published::default(),
             host: Box::default(),

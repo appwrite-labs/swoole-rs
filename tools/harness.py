@@ -100,14 +100,29 @@ def parse_engines(values, php='php', php_extensions=()):
 
 
 @contextlib.contextmanager
-def server(engine, script, env=None):
-    with socket.socket() as reservation, tempfile.TemporaryFile() as logs, \
-            tempfile.TemporaryDirectory(prefix='swoole-corpus-') as data:
-        # Held, not listening, until the server stops: on Linux no other bind(0) or connect()
-        # can take the port while PHP starts, and PHP's own SO_REUSEADDR bind still succeeds.
+def reserved_port():
+    """A loopback port no other bind(0) or connect() takes while a server starts on it."""
+    with socket.socket() as reservation:
         reservation.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         reservation.bind(('127.0.0.1', 0))
         port = reservation.getsockname()[1]
+        if sys.platform == 'darwin':
+            # BSD refuses the server's SO_REUSEADDR bind while this socket is bound, but allows
+            # it over TIME_WAIT, which bind(0) and connect() skip for 2*MSL (30s by default).
+            # Closing the accepted end first leaves the port itself in TIME_WAIT.
+            reservation.listen()
+            with socket.create_connection(('127.0.0.1', port)), reservation.accept()[0]:
+                pass
+            reservation.close()
+        # On Linux it stays held, not listening, until the server stops, and the server's own
+        # SO_REUSEADDR bind still succeeds.
+        yield port
+
+
+@contextlib.contextmanager
+def server(engine, script, env=None):
+    with reserved_port() as port, tempfile.TemporaryFile() as logs, \
+            tempfile.TemporaryDirectory(prefix='swoole-corpus-') as data:
         proc = subprocess.Popen(engine.command(script),
                                 env={**os.environ, 'TEST_PORT': str(port), 'TEST_DATA': data, **(env or {})},
                                 stdout=logs, stderr=logs, start_new_session=True)

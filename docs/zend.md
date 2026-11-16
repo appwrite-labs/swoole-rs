@@ -130,8 +130,8 @@ calls PHP code directly where it could bail out:
   `zend_try` that lives in the C shim, and returns `Err(Bailout)` if it bailed.
   It (and `call_method`) calls nothing once a bailout is pending: upstream
   never ran a callback past the first bailout.
-- `zend::bailout::trap(body, arg)` does the same for any `body`: C or C++, or
-  a Rust `unsafe extern "C" fn` whose frame owns nothing that needs a drop, so
+- `zend::contain_with(body)` does the same for a Rust closure that needs no
+  drop, whose frames (and those of what it calls) own nothing that needs one, so
   the bailout's jump to the shim's `setjmp` skips no destructor (crates/phpserver
   runs `Server::start` and `addProcess`'s worker this way).
 - `Bailout` is `#[must_use]`: finish the Rust work (release what you hold),
@@ -200,6 +200,14 @@ allocator, over the Rust frames that called it, so zend-sys refuses to build
 against one.
 `tests/modules/zend/memory_limit.php` reaches the limit inside a `ZBuf` and
 compares the outcome with upstream's.
+
+Rust-owned request allocations use `Emalloc` with `Box::new_in` or
+`Vec::with_capacity_in`. The zero-sized allocator is neither Send nor Sync and
+rejects alignment above Zend's eight-byte guarantee. Empty layouts need no Zend
+allocation. Its owners must drop or transfer their storage before request shutdown.
+Callable records and argument slices transfer to their native callback owner;
+custom PHP objects still use `zend_object_alloc`, including their variable property
+tail, and Zend frees them after the Rust data destructor.
 
 ### Native scopes and C++ exceptions
 

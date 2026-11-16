@@ -18,7 +18,8 @@ const BUFFER_SIZE_BIG: usize = 65536;
 /// client sends `request`.
 fn server(request: &[u8], max: u64, uploads: u64) -> Fake {
     let mut f = fake(&request.chunks(BUFFER_SIZE_BIG).collect::<Vec<_>>());
-    (f.bytes, f.max, f.uploads) = (vec![0; BUFFER_SIZE_BIG], max, uploads);
+    f.buf.extend(BUFFER_SIZE_BIG);
+    (f.max, f.uploads) = (max, uploads);
     f
 }
 

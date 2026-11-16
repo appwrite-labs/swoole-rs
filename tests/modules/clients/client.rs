@@ -375,7 +375,7 @@ impl<'a> Client<'a> {
         unsafe {
             (*prepared.fields).disable_tls_host_name = u8::from(name.is_empty());
             assert_eq!(
-                string_set(prepared.strings[TLS_HOST_NAME], name.as_bytes()),
+                string_set(prepared.owner, TLS_HOST_NAME, name.as_bytes()),
                 0
             );
             let owner = |context: *const c_void| {

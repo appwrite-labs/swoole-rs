@@ -1,11 +1,7 @@
 //! Rust string slots for native configuration views. Copies own independent
 //! bytes.
 
-use std::{
-    cell::UnsafeCell,
-    ffi::{CStr, c_char},
-    sync::Arc,
-};
+use std::ffi::{CStr, c_char};
 
 /// Borrowed terminated bytes; embedded NULs are included in length.
 #[derive(Clone, Copy, Debug)]
@@ -36,12 +32,8 @@ impl Bytes {
 }
 #[repr(transparent)]
 pub struct StringSlot {
-    bytes: UnsafeCell<Bytes>,
+    bytes: Bytes,
 }
-// `Send` is the compiler's: the slot owns its bytes.
-// SAFETY: sharing exposes no safe mutation or references; C callers synchronize
-// accesses.
-unsafe impl Sync for StringSlot {}
 impl Default for StringSlot {
     fn default() -> Self {
         Self::new()
@@ -52,38 +44,18 @@ impl StringSlot {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            bytes: UnsafeCell::new(Bytes::Inline {
+            bytes: Bytes::Inline {
                 data: [0; 24],
                 length: 0,
-            }),
+            },
         }
-    }
-    #[must_use]
-    pub fn empty() -> Arc<Self> {
-        Arc::new(Self::default())
     }
     /// Sets the bytes: false when the allocation fails.
     pub fn set(&mut self, value: &[u8]) -> bool {
         Bytes::copy(value).is_some_and(|bytes| {
-            *self.bytes.get_mut() = bytes;
+            self.bytes = bytes;
             true
         })
-    }
-    /// [`Self::set`] through a shared slot, as native configuration views do: false
-    /// when the allocation fails, which leaves the slot as it was.
-    ///
-    /// # Safety
-    /// Nothing else reads or sets the slot meanwhile, no borrow from
-    /// [`Self::bytes`], [`Self::c_str`] or [`Self::view`] outlives the call, and
-    /// `value` is not the slot's own bytes.
-    pub unsafe fn set_shared(&self, value: &[u8]) -> bool {
-        let Some(replacement) = Bytes::copy(value) else {
-            return false;
-        };
-        // SAFETY: the caller holds the slot exclusively; the copy is published only
-        // after its allocation succeeded.
-        unsafe { *self.bytes.get() = replacement };
-        true
     }
     /// The bytes, embedded NULs included; a NUL follows them.
     #[must_use]
@@ -111,9 +83,7 @@ impl StringSlot {
     /// The bytes and their terminating NUL, which C views read as a C string.
     #[must_use]
     pub fn bytes_with_nul(&self) -> &[u8] {
-        // SAFETY: a write through a shared slot is `set_shared`, whose caller holds
-        // the slot exclusively, so none overlaps this borrow.
-        match unsafe { self.bytes.as_ref_unchecked() } {
+        match &self.bytes {
             Bytes::Inline { data, length } => data.get(..=*length).unwrap_or_default(),
             Bytes::Heap(data) => data,
         }

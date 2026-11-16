@@ -245,16 +245,8 @@ impl PoolRecord {
             return None;
         }
         // SAFETY: `workers` holds the pool's `worker_num` records, live as long as the
-        // pool (the field is crate-private; `set_workers` states it).
+        // pool (the field is crate-private, and only `PoolRef::set_workers` publishes it).
         Some(unsafe { Worker::new(self.workers.get().wrapping_add(index)) })
-    }
-
-    /// Sets `workers`.
-    ///
-    /// # Safety
-    /// `workers` holds the pool's `worker_num` records, live as long as the pool.
-    pub unsafe fn set_workers(&mut self, workers: *mut WorkerRecord) {
-        self.workers.set(workers);
     }
 
     /// The pool's worker at `raw`, or `None` when `raw` is none of its records.
@@ -584,22 +576,20 @@ impl<'a> PoolRef<'a> {
 }
 
 /// `swoole::RecvData`: a message's head and its bytes, lent for one `onMessage`.
-#[repr(C)]
 pub struct RecvData<'a> {
     info: DataHead,
-    data: *const u8,
-    borrowed: core::marker::PhantomData<&'a [u8]>,
+    data: &'a [u8],
 }
 
 impl<'a> RecvData<'a> {
-    /// A message of `data`, its head's `len` their length.
+    /// A message of `data` (at most `u32::MAX` bytes of it), its head's `len` their
+    /// length.
     #[must_use]
     pub fn new(info: DataHead, data: &'a [u8]) -> Self {
         let len = u32::try_from(data.len()).unwrap_or(u32::MAX);
         Self {
             info: DataHead { len, ..info },
-            data: data.as_ptr(),
-            borrowed: core::marker::PhantomData,
+            data: data.get(..len as usize).unwrap_or(data),
         }
     }
 
@@ -610,9 +600,7 @@ impl<'a> RecvData<'a> {
 
     #[must_use]
     pub fn data(&self) -> &'a [u8] {
-        // SAFETY: only `new` constructs the private fields from a live slice;
-        // its lifetime is retained and its length cannot be changed by callers.
-        unsafe { core::slice::from_raw_parts(self.data, self.info.len as usize) }
+        self.data
     }
 }
 
