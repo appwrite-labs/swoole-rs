@@ -17,9 +17,8 @@ use swoole_rs_httpbindings::{
 };
 use swoole_rs_inflate::brotli::{self, MAX_QUALITY, MIN_QUALITY};
 use swoole_rs_inflate::zstd;
-use swoole_rs_zend::sys::zval;
 use swoole_rs_zend::{
-    Array, Class, Declared, HeldArray, Key, Value, ZStr, ZString, bailout, string,
+    Array, Class, Declared, HeldArray, Key, Separated, Value, ZStr, ZString, bailout, string,
 };
 
 /// llhttp's `HTTP_HEAD`.
@@ -62,8 +61,9 @@ pub(crate) fn minit(class: &Class) {
 }
 
 /// `swoole_http_init_and_read_property`: the response's `header`, `cookie`
-/// or `trailer` array, made on first use.
-pub(crate) fn response_property(state: &mut State, which: Property) -> *mut zval {
+/// or `trailer` array, made on first use, to write in place as upstream does;
+/// none without a response object.
+pub(crate) fn response_property(state: &mut State, which: Property) -> Option<Separated<'_>> {
     let response = &mut state.response;
     let [header, cookie, trailer] = &PROPERTIES;
     let (slot, property) = match which {
@@ -71,8 +71,11 @@ pub(crate) fn response_property(state: &mut State, which: Property) -> *mut zval
         Property::Cookie => (&mut response.zcookie, cookie),
         Property::Trailer => (&mut response.ztrailer, trailer),
     };
-    slot.init_array(&response.zobject, property, 8)
-        .map_or(ptr::null_mut(), Value::as_ptr)
+    let array = slot.init_array(&response.zobject, property, 8)?;
+    // SAFETY: the array `init_array` made for the response's property, a table
+    // of its own, which the object holds and the slot keeps uncounted; the
+    // borrow of the state ends the write before anything reaches it again.
+    Some(unsafe { Separated::in_place(array.as_ptr()) })
 }
 
 /// `sw_zend_read_property_ex(swoole_http_response_ce, response.zobject, name)`, when it

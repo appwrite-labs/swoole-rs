@@ -55,10 +55,9 @@ pub use minit::{Lifecycle, Minfo, Minit, Mshutdown, Parent, Request, Shutdown, S
 pub use object::{Custom, CustomClass, Object, ObjectRef, Props, Weak, new_object};
 pub use swoole_rs_zend_sys as sys;
 pub use sys::add_next_index_long;
-pub use value::push_str as push_string;
 pub use zval::{
     Array, ArrayMut, Entries, HeldArray, Interned, Kept, Key, Owned, OwnedArray, Separated, UNDEF,
-    Value, ZStr, ZString, Zvals, set_key,
+    Value, ZStr, ZString, Zvals,
 };
 
 /// Export Zend handlers under Zend's own names (`zim_<class>_<method>` for
