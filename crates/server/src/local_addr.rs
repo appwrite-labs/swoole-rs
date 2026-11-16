@@ -60,9 +60,7 @@ fn ntop(v6: bool, bytes: &[u8]) -> CString {
     // `inet_ntop`'s terminated text, empty when it fails.
     let text = swoole_rs_corebase::ntop(family, &binary).unwrap_or([0; 46]);
     let text = text.map(|unit| unit.to_ne_bytes()[0]);
-    CStr::from_bytes_until_nul(&text)
-        .map(CStr::to_owned)
-        .unwrap_or_default()
+    CStr::from_bytes_until_nul(&text).map_or_default(CStr::to_owned)
 }
 
 /// Reads the interfaces that are up. `None` when `getifaddrs` fails, with `errno` set.

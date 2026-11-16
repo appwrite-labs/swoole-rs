@@ -15,10 +15,7 @@ use std::{
     },
 };
 use swoole_rs_corebase::sys::Text;
-use swoole_rs_zend::{
-    Call, Minit, Owned, OwnedArray, Value, bailout,
-    sys::{php_stream, swr_zend_bailout_to},
-};
+use swoole_rs_zend::{Call, Minit, Owned, OwnedArray, Value, bailout, sys::php_stream};
 
 /// A `php://stdin`, `stdout` or `stderr` stream a thread's prologue opened,
 /// before its script runs: no user stream wrapper, error handler or constant
@@ -40,13 +37,6 @@ impl Stdio {
 
 // The prologue's stdio streams (`Stdio`).
 unsafe extern "C" {
-    /// `php_stream_open_wrapper_ex(path, mode, 0, NULL, NULL)`, or none.
-    #[link_name = "swr_zend_stream_open"]
-    #[expect(
-        clashing_extern_declarations,
-        reason = "the same shim, ABI-identical; stream_create declares it safe in its own scope"
-    )]
-    fn stdio_open(path: Text<'_>, mode: Text<'_>) -> Option<Stdio>;
     /// `php_stream_close`.
     #[link_name = "swr_zend_stream_close"]
     safe fn stdio_close(stream: Stdio);
@@ -78,9 +68,14 @@ unsafe extern "C" {
     safe fn swr_zend_guard_mark();
     /// Clears the thread-exit mark.
     safe fn swr_zend_guard_clear();
-    /// The jump buffer of the innermost native scope of the running context
-    /// ([`guard_context`]), or null. Only jumping to it is unsafe.
-    safe fn swr_zend_guard_target() -> *mut c_void;
+    /// `zend_bailout()` to the innermost native scope of the running context
+    /// ([`guard_context`]), if there is one; else nothing.
+    safe fn swr_zend_guard_bailout();
+    /// Whether the thread's script runs, inside its script scope.
+    safe fn swr_zend_thread_script_running() -> bool;
+    /// `zend_bailout()` to the thread's script scope while its script runs, else
+    /// to Zend's current one; this frame owns nothing.
+    safe fn swr_zend_thread_script_bailout();
     /// `tsrm_is_shutdown()`; false on NTS.
     safe fn swr_zend_tsrm_is_shutdown() -> bool;
     /// `tsrm_api_name()`: a NUL-terminated literal (empty on NTS).
@@ -88,8 +83,33 @@ unsafe extern "C" {
 }
 
 /// Opening `php://stdout` and `php://stderr` sets PHP's process-global
-/// `cli_out` and `cli_err`: one thread at a time.
-static OPENING: Mutex<()> = Mutex::new(());
+/// `cli_out` and `cli_err`: one thread at a time, the one holding this lock.
+static OPENING: Mutex<Opening> = Mutex::new(Opening(()));
+
+/// The right to open the stdio streams, which [`OPENING`] holds.
+struct Opening(());
+
+impl Opening {
+    /// `path` opened in `mode` (`php_stream_open_wrapper_ex(path, mode, 0, NULL,
+    /// NULL)`), in a thread's request before its script runs, or none.
+    #[expect(
+        clippy::unused_self,
+        reason = "the receiver proves the caller holds `OPENING`"
+    )]
+    fn open(&mut self, path: &CStr, mode: &CStr) -> Option<Stdio> {
+        unsafe extern "C" {
+            /// Opens a stream in the request; only [`OPENING`]'s holder
+            /// (`&mut Opening`) opens the stdio streams it shares across threads.
+            #[link_name = "swr_zend_stream_open"]
+            #[expect(
+                clashing_extern_declarations,
+                reason = "the same shim, ABI-identical: stream_create's returns its own `NonNull` wrapper"
+            )]
+            safe fn stdio_open(path: Text<'_>, mode: Text<'_>) -> Option<Stdio>;
+        }
+        stdio_open(path.into(), mode.into())
+    }
+}
 
 /// PHP threads running, the main thread included.
 static THREADS: AtomicUsize = AtomicUsize::new(1);
@@ -99,8 +119,6 @@ thread_local! {
     /// its RSHUTDOWN. Taken out and put back, never borrowed; a value it lets go
     /// of, which may run a destructor, drops once the cell holds its successor.
     static ARGV: Cell<Option<Owned>> = const { Cell::new(None) };
-    /// The jump buffer of the thread's `zend_first_try` while its script runs.
-    static BAILOUT: Cell<*mut c_void> = const { Cell::new(ptr::null_mut()) };
 }
 
 /// What the script's `zend_first_try` starts with.
@@ -172,8 +190,8 @@ impl Entered {
     /// The thread's request: `file` as the primary script, with the main
     /// request's script path `path` and `start.argc`, which Zend keeps only
     /// while the request runs, inside this call. The script's `zend_first_try`
-    /// runs [`prologue`] first and [`epilogue`] after, over `start`; its jump
-    /// buffer is the thread's [`BAILOUT`] while the script runs. The exit status.
+    /// (the thread's script scope) runs [`prologue`] first and [`epilogue`]
+    /// after, over `start`. The exit status.
     #[expect(
         clippy::unused_self,
         reason = "the receiver proves the thread entered TSRM"
@@ -194,21 +212,17 @@ impl Entered {
                 prologue: Step,
                 epilogue: Step,
                 context: &mut Start,
-                bailout: &Cell<*mut c_void>,
             ) -> c_int;
         }
         let argc = start.argc;
-        BAILOUT.with(|bailout| {
-            swr_zend_thread_request(
-                file.into(),
-                path.map(Text::from),
-                argc,
-                prologue,
-                epilogue,
-                start,
-                bailout,
-            )
-        })
+        swr_zend_thread_request(
+            file.into(),
+            path.map(Text::from),
+            argc,
+            prologue,
+            epilogue,
+            start,
+        )
     }
 
     /// `ts_free_thread()`, once the thread's request is over.
@@ -252,10 +266,8 @@ extern "C" fn prologue(start: &mut Start) {
         (c"php://stdout", c"wb", c"STDOUT"),
         (c"php://stderr", c"wb", c"STDERR"),
     ];
-    let opening = OPENING.lock().unwrap_or_else(PoisonError::into_inner);
-    // SAFETY: the thread's request, before its script runs, with NUL-terminated
-    // strings: each opens one of PHP's own stdio streams, a `Stdio`.
-    let streams = names.map(|(path, mode, _)| unsafe { stdio_open(path.into(), mode.into()) });
+    let mut opening = OPENING.lock().unwrap_or_else(PoisonError::into_inner);
+    let streams = names.map(|(path, mode, _)| opening.open(path, mode));
     drop(opening);
     let [Some(stdin), Some(stdout), Some(stderr)] = streams else {
         streams
@@ -304,11 +316,8 @@ fn clear_exit() {
 /// thread's script.
 pub extern "C" fn thread_bailout() {
     swr_zend_guard_mark();
-    let target = swr_zend_guard_target();
-    if !target.is_null() {
-        // SAFETY: a live native scope's jump buffer; this frame owns nothing.
-        unsafe { swr_zend_bailout_to(target) };
-    }
+    // This frame owns nothing.
+    swr_zend_guard_bailout();
     if swoole_rs_phpcoroutines::in_coroutine() {
         // Return to the immediate native resumer; Rust owners relay the
         // pending exit after cleanup. This request never resumes an exited
@@ -317,15 +326,12 @@ pub extern "C" fn thread_bailout() {
             swoole_rs_phpcoroutines::suspend();
         }
     }
-    let script = BAILOUT.get();
-    if script.is_null() {
+    if !swr_zend_thread_script_running() {
         // The script is over: the exit ends the request-shutdown step Zend
         // runs it in, and the rest of the shutdown runs as usual.
         clear_exit();
     }
-    // SAFETY: the thread's script scope, or Zend's current one; this frame
-    // owns nothing.
-    unsafe { swr_zend_bailout_to(script) };
+    swr_zend_thread_script_bailout();
 }
 
 /// The running coroutine's id as the scopes' context token, null outside one.

@@ -88,6 +88,9 @@ void swr_zend_register_stream_constant(const char *name, php_stream *stream) {
     zend_register_constant(&constant);
 }
 
+/* The jump buffer of this thread's script scope, while its script runs. */
+ZEND_TLS JMP_BUF *script_bailout;
+
 void swr_zend_thread_enter(void) {
 #ifdef ZTS
     ts_resource(0);
@@ -98,7 +101,7 @@ void swr_zend_thread_enter(void) {
 }
 
 int swr_zend_thread_request(const char *file, const char *path_translated, int argc, void (*prologue)(void *),
-                            void (*epilogue)(void *), void *context, void **bailout) {
+                            void (*epilogue)(void *), void *context) {
 #ifdef ZTS
     if (php_request_startup() != SUCCESS) {
         EG(exit_status) = 1;
@@ -117,12 +120,12 @@ int swr_zend_thread_request(const char *file, const char *path_translated, int a
     zend_stream_init_filename(&file_handle, file);
     file_handle.primary_script = true;
     zend_first_try {
-        *bailout = EG(bailout);
+        script_bailout = EG(bailout);
         prologue(context);
         php_execute_script(&file_handle);
     }
     zend_end_try();
-    *bailout = NULL;
+    script_bailout = NULL;
     epilogue(context);
     zend_destroy_file_handle(&file_handle);
     php_request_shutdown(NULL);
@@ -176,9 +179,11 @@ void swr_zend_thread_set_argv(const zval *argv, zend_long argc) {
     zend_hash_update(&EG(symbol_table), ZSTR_KNOWN(ZEND_STR_ARGC), &count);
 }
 
-void swr_zend_bailout_to(void *target) {
-    if (target) {
-        EG(bailout) = (JMP_BUF *) target;
+bool swr_zend_thread_script_running(void) { return script_bailout != NULL; }
+
+void swr_zend_thread_script_bailout(void) {
+    if (script_bailout) {
+        EG(bailout) = script_bailout;
     }
     zend_bailout();
 }

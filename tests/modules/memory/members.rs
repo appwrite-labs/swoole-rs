@@ -2,17 +2,17 @@ use super::*;
 use crate::fixed::tests::{DebugCursor, debug_step};
 use crate::fixed::{self, Fixed, Layout};
 use swoole_rs_corebase::log::last_error;
-use swoole_rs_corebase::{sw_free, sw_malloc};
+use swoole_rs_corebase::sys::malloc;
 
 // `swoole::FixedPool`, as upstream's fixed_pool TESTs use it: nothing else constructs a
 // pool over an arena of its own (the table lays its collision pool out in its own).
 
-/// An arena of `size` bytes from `sw_shm_malloc` (`shared`) or `sw_malloc`.
+/// An arena of `size` bytes from `sw_shm_malloc` (`shared`) or libc's `malloc`.
 fn arena(shared: bool, size: usize) -> *mut c_void {
     if shared {
         sw_shm_malloc(size)
     } else {
-        sw_malloc(size)
+        malloc(size)
     }
 }
 
@@ -25,7 +25,7 @@ unsafe fn release(shared: bool, memory: *mut c_void) {
         Shm(Cell::new(memory)).free();
     } else {
         // SAFETY: as the caller promises.
-        unsafe { sw_free(memory) };
+        unsafe { libc::free(memory) };
     }
 }
 

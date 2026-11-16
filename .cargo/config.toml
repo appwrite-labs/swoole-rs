@@ -4,3 +4,10 @@ rustflags = ["-C", "link-arg=-Wl,-undefined,dynamic_lookup"]
 # musl targets link the C runtime statically by default, which rules out a cdylib (swoole.so).
 [target.'cfg(target_env = "musl")']
 rustflags = ["-C", "target-feature=-crt-static"]
+
+# Resolve only crates.io versions published at least seven days ago (Cargo 1.100, #4378), so a
+# `cargo update` or Renovate's lock-file maintenance can't pull in a release published minutes
+# earlier. Versions already in Cargo.lock still resolve. Matches the shared Renovate preset's
+# `minimumReleaseAge` (github>appwrite/renovate-config).
+[registry]
+global-min-publish-age = "7 days"

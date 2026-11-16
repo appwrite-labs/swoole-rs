@@ -21,10 +21,9 @@ use crate::process_pool::{
     swr_v1_worker_symbol, with,
 };
 use crate::reload_task::KillWarning;
-use crate::worker_globals::{
-    swr_v1_worker_global_get, swr_v1_worker_global_set, worker_global_max_requests,
-};
+use crate::worker_globals::{with_globals, worker_global_max_requests};
 use crate::worker_record::WorkerRecord;
+use std::sync::atomic::Ordering::Relaxed;
 
 /// A method's result; a callback's bailout is raised once the method's frames are
 /// gone. This frame holds nothing, so the `longjmp` may cross it.
@@ -166,7 +165,7 @@ pub fn get_worker_by_pid(pool: &PoolRecord, pid: c_int) -> *mut WorkerRecord {
 /// `ProcessPool::is_worker_running(worker)`.
 #[must_use]
 pub fn is_worker_running(pool: PoolRef<'_>, worker: Worker<'_>) -> bool {
-    pool.running() && swr_v1_worker_global_get(4) == 0 && !worker.exceeded_max_request()
+    pool.running() && !worker_is_shutdown() && !worker.exceeded_max_request()
 }
 
 /// `Worker::send_pipe_message(buf, n, flags)` of `data`: through its pool's queue or
@@ -401,25 +400,25 @@ pub fn reload_warn(kind: KillWarning, pid: c_int, worker_id: u32) {
 /// `Worker::is_shutdown()`: the current worker's.
 #[must_use]
 pub fn worker_is_shutdown() -> bool {
-    swr_v1_worker_global_get(4) != 0
+    with_globals(|globals| globals.shutdown.load(Relaxed))
 }
 
 /// `Worker::is_running()`.
 #[must_use]
 pub fn worker_is_running() -> bool {
-    swr_v1_worker_global_get(3) != 0
+    with_globals(|globals| globals.running.load(Relaxed))
 }
 
 /// `swoole_get_worker_id()`.
 #[must_use]
 pub fn swoole_get_worker_id() -> u32 {
-    u32::try_from(swr_v1_worker_global_get(0)).unwrap_or_default()
+    with_globals(|globals| globals.id.load(Relaxed))
 }
 
 /// `swoole_get_worker_pid()`.
 #[must_use]
 pub fn swoole_get_worker_pid() -> c_int {
-    c_int::try_from(swr_v1_worker_global_get(1)).unwrap_or_default()
+    with_globals(|globals| globals.pid.load(Relaxed))
 }
 
 /// `swoole_get_worker_type()`: upstream's core-tests (`log.cpp`'s `log_level`) call it.
@@ -429,37 +428,38 @@ pub fn swoole_get_worker_pid() -> c_int {
 )]
 #[must_use]
 pub extern "C" fn swoole_get_worker_type() -> c_int {
-    c_int::try_from(swr_v1_worker_global_get(2)).unwrap_or_default()
+    c_int::from(with_globals(|globals| globals.kind.load(Relaxed)))
 }
 
 /// `swoole_get_worker_type()`, `None` before the process has a type.
 #[must_use]
 pub fn worker_type() -> Option<WorkerType> {
-    WorkerType::from_code(swr_v1_worker_global_get(2))
+    WorkerType::from_code(swoole_get_worker_type().into())
 }
 
 /// `swoole_set_worker_type(type)`.
 pub fn set_worker_type(kind: WorkerType) {
-    swr_v1_worker_global_set(2, kind.code().into());
+    with_globals(|globals| globals.kind.store(kind.code(), Relaxed));
 }
 
 /// `swoole_set_worker_id(worker_id)`.
 pub fn swoole_set_worker_id(id: u32) {
-    swr_v1_worker_global_set(0, i64::from(id));
+    with_globals(|globals| globals.id.store(id, Relaxed));
 }
 
 /// `swoole_set_worker_pid(pid)`.
 pub fn swoole_set_worker_pid(pid: c_int) {
-    swr_v1_worker_global_set(1, i64::from(pid));
+    with_globals(|globals| globals.pid.store(pid, Relaxed));
 }
 
-/// `swoole_set_worker_type(type)`.
+/// `swoole_set_worker_type(type)`, narrowed to the record's `uint8_t`.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_Z22swoole_set_worker_typei")
 )]
 pub extern "C" fn swoole_set_worker_type(kind: c_int) {
-    swr_v1_worker_global_set(2, i64::from(kind));
+    let kind = u8::try_from(kind & 0xFF).unwrap_or_default();
+    with_globals(|globals| globals.kind.store(kind, Relaxed));
 }
 
 /// `swoole_get_worker_symbol()`: the log's mark for the current worker's type.
@@ -567,18 +567,13 @@ pub(crate) mod tests {
 
     /// What `origin` logged on this thread: (kind, level, code, message).
     pub(crate) fn logged(origin: &str) -> Vec<(c_int, c_int, c_int, String)> {
-        LOGGED
-            .lock()
-            .map(|logged| {
-                logged
-                    .iter()
-                    .filter(|entry| entry.3 == origin && entry.5 == thread::current().id())
-                    .map(|(kind, level, code, _, message, _)| {
-                        (*kind, *level, *code, message.clone())
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+        LOGGED.lock().map_or_default(|logged| {
+            logged
+                .iter()
+                .filter(|entry| entry.3 == origin && entry.5 == thread::current().id())
+                .map(|(kind, level, code, _, message, _)| (*kind, *level, *code, message.clone()))
+                .collect()
+        })
     }
 
     /// Route this binary's logs to [`record`].

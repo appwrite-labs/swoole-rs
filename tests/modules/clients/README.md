@@ -20,7 +20,7 @@ name codec, the DNS address text and the socket DNS lookup
 `socket_ops.rs` runs the production client's socket-control table in the Rust
 unit-test binary: descriptor flags, successful and failed address assignment,
 both kernel timeouts, raw/synchronous/nonblocking TCP connects, `SO_ERROR`, and
-an event with no socket. A real OpenSSL session on a loopback connection also
+an event with no reactor. A real OpenSSL session on a loopback connection also
 checks that a pending handshake requests input and reuses its original session
 and frozen hostname after the mutable context changes. It releases the native
 session through production client close before its owner frees the client. The
@@ -41,8 +41,9 @@ Unit fixtures register their recording dispatcher and retain the original DNS
 success/error traces. The hooks crate constructs its own pool event and retains
 its resolver request until completion; clients no longer mirrors the event layout.
 SOCKS5 admit, negotiation and handshake operations use the same registered host,
-with typed proxy references and reply slices. The input buffer keeps its Box owner
-while the public record exposes its pointer to framing code.
+with typed proxy references and reply slices. The input buffer lives in a `Cell`
+in the client, whose address the public record exposes to framing code; Miri runs
+`the_framed_receive_buffer_stays_usable_across_input_edits` over that pointer.
 Receive, append, synchronous receive and datagram receive use the same operation
 table in production and tests. `ReadBuffer` retains initialized bytes versus spare
 capacity across the callback boundary. Real TCP and async UDP tests check binary

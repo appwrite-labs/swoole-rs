@@ -127,9 +127,8 @@ fn native_socket_control_connects_and_keeps_failed_assignment_atomic() {
         let mut error = -1;
         assert!((effects.socket_error)(this, &mut error));
         assert_eq!(error, 0);
-        let saved = this.get().edit_record(|record| record.socket.take());
+        // This thread has no reactor.
         assert!(!(effects.event)(this, EventOp::Add, Events::READ));
-        this.get().edit_record(|record| record.socket = saved);
     }
 }
 
