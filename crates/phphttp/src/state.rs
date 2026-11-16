@@ -2,7 +2,7 @@
 //! `context::alloc` allocates and Request and Response point at.
 use std::{
     collections::HashSet,
-    ffi::{CString, c_char, c_int, c_void},
+    ffi::{CString, c_int, c_void},
     rc::Rc,
 };
 use swoole_rs_zend::{Declared, Kept, Owned, Props, UNDEF, Value, sys::zval};
@@ -70,7 +70,8 @@ pub(crate) struct Request {
     pub(crate) post_form_urlencoded: bool,
     /// The request's bytes, a string once any arrive.
     pub(crate) zdata: Owned,
-    pub(crate) body_at: *const c_char,
+    /// Where the body (unless chunked) starts in the input that holds it.
+    pub(crate) body_at: usize,
     pub(crate) body_length: usize,
     /// An HTTP/2 request's body, as its DATA frames arrive.
     #[expect(
