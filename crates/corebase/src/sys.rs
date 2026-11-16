@@ -371,6 +371,8 @@ plain!(
     #[cfg(any(target_os = "linux", target_os = "android"))]
     libc::signalfd_siginfo,
     #[cfg(any(target_os = "linux", target_os = "android"))]
+    libc::epoll_event,
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     libc::statx,
     #[cfg(any(target_os = "linux", target_os = "android"))]
     libc::tcp_info,

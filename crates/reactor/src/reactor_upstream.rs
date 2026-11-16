@@ -10,9 +10,9 @@ use std::ffi::c_int;
 /// `int Reactor::trigger_close_event(Event *)`: the default error handler, whether
 /// it succeeded; false when none is set.
 pub fn trigger_close_event(reactor: crate::Running<'_>, event: &mut crate::Event) -> bool {
+    // The lookup's borrow ends before the handler runs.
     reactor
-        .handlers()
-        .fallback(1)
+        .handlers(|handlers| handlers.fallback(1))
         .is_some_and(|handler| handler(reactor, event) >= 0)
 }
 
@@ -108,7 +108,7 @@ pub fn set_handler(
     event: crate::Events,
     handler: Option<Handler>,
 ) {
-    let set = reactor.handlers().set(fd_type, event, handler);
+    let set = reactor.handlers(|handlers| handlers.set(fd_type, event, handler));
     debug_assert!(set, "Reactor::set_handler: no table for event {event}");
 }
 
@@ -121,18 +121,20 @@ pub fn reactor_get_handler(
     fd_type: c_int,
     event: crate::Events,
 ) -> Option<Handler> {
-    reactor.handlers().of_event(fd_type, event)
+    reactor.handlers(|handlers| handlers.of_event(fd_type, event))
 }
 
 /// `reactor->set_default_error_handler(handler)`.
 pub fn set_default_error_handler(reactor: crate::Running<'_>, handler: Handler) {
-    crate::swr_v1_reactor_handlers_set_default(reactor.handlers(), 2, Some(handler));
+    reactor.handlers(|handlers| {
+        crate::swr_v1_reactor_handlers_set_default(handlers, 2, Some(handler));
+    });
 }
 
 /// `Reactor::default_write_handler`, which `swoole_event_init` sets.
 #[must_use]
 pub fn reactor_default_write_handler(reactor: crate::Running<'_>) -> Option<Handler> {
-    reactor.handlers().fallback(0)
+    reactor.handlers(|handlers| handlers.fallback(0))
 }
 
 /// `bool Reactor::isset_handler(int fd_type, int event) const`.
@@ -152,5 +154,5 @@ pub extern "C" fn reactor_isset_handler(
 /// [`reactor_isset_handler`] for typed `event`.
 #[must_use]
 pub fn isset_handler(reactor: crate::Running<'_>, fd_type: c_int, event: crate::Events) -> bool {
-    reactor.handlers().isset(fd_type, event)
+    reactor.handlers(|handlers| handlers.isset(fd_type, event))
 }

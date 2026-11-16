@@ -71,14 +71,19 @@ impl Running<'_> {
         }
     }
 
-    /// The handle of a reactor just made from `owner`, on this thread: live until
-    /// `swr_v1_reactor_delete` of its one owner, and borrowed by no reference.
+    /// The handle of a reactor just made from `owner`, on this thread, its head set
+    /// to the views of where it now stays: live until `swr_v1_reactor_delete` of its
+    /// one owner, and borrowed by no reference. The views come from the handle's
+    /// pointer, which every later borrow derives from too.
     #[cfg(unix)]
     pub(crate) fn leak(owner: Box<crate::ReactorState>) -> Running<'static> {
-        Running {
-            raw: crate::ReactorState::into_raw(owner).cast(),
+        let reactor = Running {
+            raw: Box::into_raw(owner).cast(),
             live: PhantomData,
-        }
+        };
+        let head = crate::ReactorPrepared::of(reactor.raw);
+        reactor.with(|state| state.head = head);
+        reactor
     }
 
     #[must_use]
@@ -92,31 +97,20 @@ impl Running<'_> {
         self.raw.cast()
     }
 
-    /// The reactor's handler tables, for one lookup or registration: the borrow of the
-    /// handle ends before any call that takes it.
+    /// `f` over the reactor's handler tables, for one lookup or registration: as
+    /// [`Self::with`], `f` reaches no reactor.
     #[cfg(unix)]
     #[inline]
-    pub(crate) fn handlers(&self) -> &Handlers {
-        let handlers = self
-            .state()
-            .wrapping_byte_add(std::mem::offset_of!(crate::ReactorState, handlers))
-            .cast::<Handlers>();
-        // SAFETY: the handle's live tables, which no mutable reference holds (the
-        // handle's contract); their slots are cells, so sharing them is enough to set one.
-        unsafe { &*handlers }
+    pub(crate) fn handlers<R>(self, f: impl FnOnce(&Handlers) -> R) -> R {
+        self.with(|state| f(&state.handlers))
     }
 
-    /// The reactor's socket registry, for one lookup: the borrow of the handle ends
-    /// before any call that takes it, so before anything registers or removes a socket.
+    /// `f` over the reactor's socket registry, for one lookup: as [`Self::with`], `f`
+    /// reaches no reactor, so nothing registers or removes a socket meanwhile.
     #[cfg(unix)]
-    pub(crate) fn registry(&self) -> &crate::Registry {
-        let registry = self
-            .state()
-            .wrapping_byte_add(std::mem::offset_of!(crate::ReactorState, registry))
-            .cast::<crate::Registry>();
-        // SAFETY: the handle's live registry, which no mutable reference holds (the
-        // handle's contract).
-        unsafe { &*registry }
+    #[inline]
+    pub(crate) fn registry<R>(self, f: impl FnOnce(&crate::Registry) -> R) -> R {
+        self.with(|state| f(&state.registry))
     }
 
     /// The reactor's state, borrowed for `f` alone. `f` reaches no reactor (no handle's

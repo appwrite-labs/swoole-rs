@@ -4,8 +4,8 @@
 //! upstream reaches through `Reactor`'s callbacks.
 use crate::Socket;
 use crate::handlers::{self, Table};
-use crate::reactor_state::{before_wait, kernel_wait};
-use std::ffi::{c_int, c_void};
+use crate::reactor_state::{Entry, before_wait, kernel_wait};
+use std::ffi::c_int;
 use std::sync::OnceLock;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log;
@@ -108,16 +108,12 @@ impl Event {
 /// One `wait()`: its native effects and what it reads from the state.
 struct Loop<'a> {
     backend: BackendKind,
-    /// The backend's result array: `pollfd`, `epoll_event` or `kevent` entries.
-    events: *const c_void,
-    /// poll only: the socket each `pollfd` entry was built from.
-    sockets: *const *mut c_void,
     reactor_id: i16,
     /// The reactor, for its handler tables and the handlers' own argument.
     reactor: handlers::Running<'a>,
     /// The event the loop prepared for the ready socket's handlers.
     event: std::cell::Cell<Event>,
-    /// How many of `events` (and poll's `sockets`) the last kernel wait filled.
+    /// How many of the backend's entries the last kernel wait filled.
     ready: std::cell::Cell<usize>,
 }
 
@@ -146,18 +142,14 @@ fn mask(read: bool, write: bool, hangup: bool) -> u32 {
 pub(crate) fn wait<'a>(ops: &'a WaitOps<'a>) -> bool {
     let reactor = ops.reactor;
     // No native effect is active, and this borrow ends before the first one.
-    let (view, id) = reactor.with(|state| {
-        // The backend's arrays stay put until the state closes it.
-        let view = state.backend_view();
+    let (backend, id) = reactor.with(|state| {
         before_wait(&mut state.fields);
-        (view, state.fields.id)
+        (state.backend_kind(), state.fields.id)
     });
     // Single field reads: effects may change either field between them.
     let once = || reactor.with(|state| state.fields.once);
     let run = Loop {
-        backend: view.backend,
-        events: view.events,
-        sockets: view.sockets,
+        backend,
         reactor_id: id.c_cast::<i16>(),
         reactor,
         event: std::cell::Cell::new(Event::empty()),
@@ -214,29 +206,26 @@ fn entry(ops: &Loop<'_>, index: usize) {
     if index >= ops.ready.get() {
         return;
     }
-    let (socket, fd, mask) = match ops.backend {
-        BackendKind::Poll => {
-            let pollfd = ops.events.cast::<libc::pollfd>().wrapping_add(index);
-            // SAFETY: `index` is below poll's entry count, checked above.
-            let pollfd = unsafe { pollfd.read() };
-            if pollfd.revents == 0 {
+    // A copy of the entry, read in the backend's own array: the borrow ends before
+    // any handler runs.
+    let Some(entry) = ops.reactor.with(|state| state.entry(index)) else {
+        return;
+    };
+    match entry {
+        Entry::Poll(pollfd, socket) => {
+            let revents = pollfd.revents;
+            if revents == 0 {
                 return;
             }
-            let revents = pollfd.revents;
             let mask = mask(
                 revents & libc::POLLIN != 0,
                 revents & libc::POLLOUT != 0,
                 revents & (libc::POLLHUP | libc::POLLERR) != 0,
             );
-            let socket = ops.sockets.wrapping_add(index);
-            // SAFETY: poll's sockets array has an entry for each pollfd entry.
-            (unsafe { socket.read() }, pollfd.fd, mask)
+            ready(ops, socket, pollfd.fd, mask);
         }
         #[cfg(target_os = "linux")]
-        BackendKind::Epoll => {
-            let event = ops.events.cast::<libc::epoll_event>().wrapping_add(index);
-            // SAFETY: `index` is below the kernel's ready count, checked above.
-            let event = unsafe { event.read_unaligned() };
+        Entry::Epoll(event) => {
             let events = event.events;
             let mask = mask(
                 events & libc::EPOLLIN as u32 != 0,
@@ -244,7 +233,12 @@ fn entry(ops: &Loop<'_>, index: usize) {
                 events & (libc::EPOLLRDHUP | libc::EPOLLERR | libc::EPOLLHUP) as u32 != 0,
             );
             // The token is a pointer stored in a u64.
-            (event.u64.c_cast::<usize>() as *mut c_void, -1, mask)
+            let token = event.u64.c_cast::<usize>() as *mut crate::SocketRecord;
+            // SAFETY: epoll's token is a registered socket: live until an unsafe free,
+            // which answers for the registration and the events it leaves.
+            if let Some(socket) = unsafe { Socket::from_ptr(token) } {
+                ready(ops, socket, -1, mask);
+            }
         }
         #[cfg(any(
             target_os = "macos",
@@ -253,18 +247,7 @@ fn entry(ops: &Loop<'_>, index: usize) {
             target_os = "netbsd",
             target_os = "dragonfly"
         ))]
-        BackendKind::Kqueue => {
-            let event = ops.events.cast::<libc::kevent>().wrapping_add(index);
-            // SAFETY: `index` is below the kernel's ready count, checked above.
-            let event = unsafe { event.read() };
-            return kqueue(ops, &event);
-        }
-        _ => return,
-    };
-    // SAFETY: a registered socket (poll's array entry or epoll's token): live until an
-    // unsafe free, which answers for the registration and the events it leaves.
-    if let Some(socket) = unsafe { Socket::from_ptr(socket.cast()) } {
-        ready(ops, socket, fd, mask);
+        Entry::Kqueue(event) => kqueue(ops, &event),
     }
 }
 
@@ -462,7 +445,10 @@ fn handler_failed(ops: &Loop<'_>, kind: Table) {
 /// like one returning `SW_ERR` rather than calling null.
 fn handle(ops: &Loop<'_>, kind: Table, fd_type: c_int) -> bool {
     // The lookup's borrow of the tables ends here, before the handler runs.
-    let Some(handler) = ops.reactor.handlers().dispatch(kind, fd_type) else {
+    let Some(handler) = ops
+        .reactor
+        .handlers(|handlers| handlers.dispatch(kind, fd_type))
+    else {
         return false;
     };
     // The handler may change the event, which the next handler of this socket sees; a
@@ -606,7 +592,7 @@ mod tests {
                 crate::Events::NONE
             };
         let mut socket = crate::SocketRecord::with_fd(fds[0], 5);
-        let token: *mut c_void = (&raw mut socket).cast();
+        let token: *mut std::ffi::c_void = (&raw mut socket).cast();
         unsafe {
             assert!(crate::reactor_state::tests::record(
                 state.owner,

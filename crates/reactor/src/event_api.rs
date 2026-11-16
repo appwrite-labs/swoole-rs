@@ -233,7 +233,7 @@ pub extern "C" fn swoole_event_get_socket(fd: c_int) -> *mut c_void {
 /// without a reactor. `f` reaches no reactor: the registry is shared while it runs.
 fn with_registry<T>(f: impl FnOnce(Option<&crate::Registry>) -> T) -> Option<T> {
     let reactor = running()?;
-    Some(f(Some(reactor.registry())))
+    Some(reactor.registry(|registry| f(Some(registry))))
 }
 
 /// The thread's `Reactor`'s prepared views (`SwooleTG.reactor`), or `None` without one.

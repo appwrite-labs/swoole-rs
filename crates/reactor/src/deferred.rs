@@ -163,25 +163,19 @@ fn push_destroy(fields: &mut ReactorFields, call: DeferCall, data: *mut c_void) 
 /// runs, the reactor's `running_defer` holds it: a task that bails out of the loop jumps
 /// over this frame, and the reactor's drop frees the queue instead.
 pub(crate) fn run_defer(reactor: Running<'_>) {
-    // The borrow ends before a task runs. The queue's address is taken where it stays:
-    // in the box `running_defer` now owns.
-    let queue = reactor.with(|state| {
+    // The borrow ends before a task runs. The queue stays at its place in
+    // `running_defer`: a nested pass pushes its own after it and pops it again.
+    let at = reactor.with(|state| {
         let queue = state.fields.defer_tasks.take()?;
         state.running_defer.push(queue);
-        let queue = state.running_defer.last_mut()?;
-        Some(&raw mut **queue)
+        Some(state.running_defer.len() - 1)
     });
-    let Some(queue) = queue else {
+    let Some(at) = at else {
         return;
     };
     // Each task is popped before it is called, and no borrow of the queue spans a call.
-    loop {
-        // SAFETY: the detached queue, which only `running_defer` names: nothing frees
-        // it or borrows it there while this pass runs (a task defers onto the
-        // reactor's `defer_tasks`, another queue, and a nested pass pops only its own).
-        let Some(task) = (unsafe { (*queue).tasks.pop_front() }) else {
-            break;
-        };
+    let next = |state: &mut crate::ReactorState| state.running_defer.get_mut(at)?.tasks.pop_front();
+    while let Some(task) = reactor.with(next) {
         task.run();
     }
     // Every task ran, and a nested pass popped its own.
