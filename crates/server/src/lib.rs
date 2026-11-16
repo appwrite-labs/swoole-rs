@@ -29,13 +29,16 @@ mod conn_io;
 mod connection;
 mod control;
 mod dispatch;
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 mod dtls;
 pub mod event_worker;
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 pub mod factory;
 #[cfg(test)]
 mod fixture;
+// Linked for the upstream symbols the hybrid's modules call (Cargo.toml).
+#[cfg(test)]
+use {swoole_rs_hooks as _, swoole_rs_protocols_ffi as _};
 mod hybrid;
 #[cfg(any(test, feature = "upstream-symbols"))]
 mod json;
@@ -43,9 +46,9 @@ mod layout;
 pub mod local_addr;
 pub mod manager;
 mod master_ops;
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 mod objects;
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 mod pool_native;
 pub mod port_config;
 mod process_factory;
@@ -58,7 +61,7 @@ mod reactor_thread;
 mod records;
 mod send;
 pub mod server_methods;
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 mod server_object;
 mod shared;
 mod startup;
@@ -69,7 +72,7 @@ pub mod static_select;
 pub mod task_worker;
 mod tcp_info;
 pub mod thread_mode;
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 mod thread_ops;
 pub mod view;
 pub mod worker_methods;
@@ -94,9 +97,9 @@ pub static THREAD_SUPPORTED: core::sync::atomic::AtomicBool =
 pub(crate) use state::TestServer;
 pub use state::{ServerState, ServerText};
 
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 pub use admin::admin_register;
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 pub use server_object::SharedServer;
 #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
 pub use tcp_info::tcp_fields;

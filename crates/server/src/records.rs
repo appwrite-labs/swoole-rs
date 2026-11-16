@@ -514,7 +514,7 @@ pub(crate) const REACTOR_THREADS_OFFSET: usize =
 pub(crate) const MAX_CONNECTION_OFFSET: usize = core::mem::offset_of!(ServerTables, max_connection);
 
 #[cfg_attr(
-    not(all(feature = "upstream-symbols", not(test))),
+    not(feature = "upstream-symbols"),
     expect(dead_code, reason = "only the hybrid's factories make reactor threads")
 )]
 impl ServerTables {

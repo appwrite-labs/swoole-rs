@@ -168,7 +168,7 @@ pub(crate) fn heartbeat_check(serv: view::Server<'_>, reactor: Reactor) {
 /// The destroy callback `ReactorThread::shutdown` adds: close each connection
 /// `reactor` owns.
 #[cfg_attr(
-    not(all(feature = "upstream-symbols", not(test))),
+    not(feature = "upstream-symbols"),
     expect(
         dead_code,
         reason = "its caller is the reactor threads' destroy callback"

@@ -6,11 +6,11 @@ use crate::json::{self, Json};
 use crate::tcp_info::{TCP_INFO, TcpInfo, tcp_fields};
 use core::ffi::c_int;
 
-// The live facts read through `port_config::methods`, which the unit tests don't link.
-#[cfg(not(test))]
+// The live facts read through `port_config::methods`.
+#[cfg(feature = "upstream-symbols")]
 #[path = "admin_live.rs"]
 mod live;
-#[cfg(not(test))]
+#[cfg(feature = "upstream-symbols")]
 pub use live::admin_register;
 
 #[derive(Default)]

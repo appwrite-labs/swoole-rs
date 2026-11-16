@@ -1,6 +1,6 @@
 //! A live `Reactor` handle the server ops act on.
 #![cfg_attr(
-    not(all(feature = "upstream-symbols", not(test))),
+    not(feature = "upstream-symbols"),
     expect(
         dead_code,
         reason = "the worker ops that use the rest link upstream symbols"

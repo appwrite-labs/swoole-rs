@@ -138,7 +138,7 @@ impl<'a> SendData<'a> {
     /// # Safety
     /// `socket` outlives any registration the write makes, as `send_raw` requires.
     #[cfg_attr(
-        not(all(feature = "upstream-symbols", not(test))),
+        not(feature = "upstream-symbols"),
         expect(dead_code, reason = "only the hybrid's factories write to a pipe")
     )]
     pub(crate) unsafe fn send_raw(

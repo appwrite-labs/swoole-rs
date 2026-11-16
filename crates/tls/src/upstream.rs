@@ -1090,8 +1090,7 @@ unsafe extern "C-unwind" fn socket_free_defer(socket: *mut c_void) {
 
 /// `void Socket::free()`: deletes the timers and buffers, then, while the thread's
 /// event loop is available, removes the socket from it and defers the close to it;
-/// otherwise closes at once. Outside the hybrid (and in this crate's tests, which
-/// link no C++) there are no timers, buffers or loop.
+/// otherwise closes at once. Outside the hybrid there are no timers, buffers or loop.
 ///
 /// # Safety
 /// `socket` is null or a live record [`SocketRecord`] allocated, which nothing uses
@@ -1101,7 +1100,7 @@ unsafe extern "C-unwind" fn socket_free_defer(socket: *mut c_void) {
     unsafe(export_name = "_ZN6swoole7network6Socket4freeEv")
 )]
 pub unsafe extern "C-unwind" fn socket_free(socket: *mut SocketRecord) {
-    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    #[cfg(feature = "upstream-symbols")]
     {
         // SAFETY: as the caller promises.
         let Some(record) = (unsafe { Socket::from_ptr(socket) }) else {

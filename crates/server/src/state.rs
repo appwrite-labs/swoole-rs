@@ -41,7 +41,7 @@ pub struct ServerState {
     /// `gs->pipe_packet_msg_id`, which numbers every bus's messages: the shared
     /// counter `swr_v1_server_shared_init` returned, mapped as long as the buses use it.
     #[cfg_attr(
-        not(all(feature = "upstream-symbols", not(test))),
+        not(feature = "upstream-symbols"),
         expect(dead_code, reason = "only the hybrid's threads number their buses")
     )]
     pub(crate) msg_ids: std::sync::OnceLock<&'static core::sync::atomic::AtomicU64>,
@@ -55,7 +55,7 @@ pub struct ServerState {
     /// `Server::worker_pipes`: each event worker's `UnixSocket`, which
     /// the last `SharedServer` drop closes, as `~Server` did.
     #[cfg_attr(
-        not(all(feature = "upstream-symbols", not(test))),
+        not(feature = "upstream-symbols"),
         expect(dead_code, reason = "only the hybrid makes pipes")
     )]
     #[expect(clippy::vec_box, reason = "a worker holds its pair's address")]
@@ -64,14 +64,14 @@ pub struct ServerState {
     pub(crate) stopping: AtomicBool,
     /// Thread mode's factory's manager, from its factory's creation to its deletion.
     #[cfg_attr(
-        not(all(feature = "upstream-symbols", not(test))),
+        not(feature = "upstream-symbols"),
         expect(dead_code, reason = "only the hybrid makes factories")
     )]
     pub(crate) thread_manager:
         std::sync::Mutex<Option<std::sync::Arc<crate::thread_mode::ThreadManager>>>,
     /// `Server::reactor_thread_barrier`.
     #[cfg_attr(
-        not(all(feature = "upstream-symbols", not(test))),
+        not(feature = "upstream-symbols"),
         expect(dead_code, reason = "only the hybrid's reactor threads wait on it")
     )]
     pub(crate) reactor_thread_barrier: swoole_rs_locks::Barrier,
@@ -133,7 +133,7 @@ impl ServerState {
 
     /// `new UnixSocket(true, SOCK_DGRAM)` for `worker`'s pipes: false, closing it,
     /// when the pair isn't ready.
-    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    #[cfg(feature = "upstream-symbols")]
     pub(crate) fn push_worker_pipe(
         &self,
         worker: swoole_rs_process::worker_record::Worker<'_>,
@@ -174,7 +174,7 @@ impl ServerState {
 
     /// `~Server`'s close of `task_notify_pipes` and `worker_pipes`. Not the state's
     /// drop: an archive user that never runs a server links no C++ for `Socket::free`.
-    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    #[cfg(feature = "upstream-symbols")]
     pub(crate) fn close_pipes(&self) {
         let task = core::mem::take(&mut *lock(&self.task_pipes));
         let worker = core::mem::take(&mut *lock(&self.worker_pipes));
@@ -244,7 +244,7 @@ impl ServerState {
 
     /// `swoole_set_isolation(group_, user_, chroot_)`: a worker drops to the
     /// configured group and user, then chroots.
-    #[cfg(all(feature = "upstream-symbols", not(test)))]
+    #[cfg(feature = "upstream-symbols")]
     pub(crate) fn set_isolation(&self) {
         let text = |kind| CString::new(&*self.text(kind)).unwrap_or_default();
         let root = text(ServerText::Chroot);

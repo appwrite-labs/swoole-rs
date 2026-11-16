@@ -455,7 +455,7 @@ pub fn swoole_event_defer_value<T: Deferred>(value: T) -> Result<(), T> {
 }
 
 /// `int swoole_event_wait()`: run the loop unless it may already exit, then free it.
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 #[unsafe(export_name = "_Z17swoole_event_waitv")]
 #[must_use]
 pub extern "C-unwind" fn swoole_event_wait() -> c_int {
