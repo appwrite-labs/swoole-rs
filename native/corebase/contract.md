@@ -129,9 +129,9 @@ Upstream's own C++ symbols defined in Rust (`export_name`): `swoole_common_divis
 `swoole_set_trace_flags`, `swoole_set_print_backtrace_on_error`, `sw_logger`,
 `swoole_set_stdout_stream`/`swoole_get_stdout_stream` (`FILE` mangles as its libc's
 struct tag), `swoole_hex2dec` (in the target's plain-char mode), both `swoole_rand` overloads, `swoole_random_int`, and
-`swoole_version`/`swoole_version_id`/`swoole_api_version_id` (C names), and
-`sw_malloc`/`sw_free`/`sw_calloc`, which call libc's allocator
-directly. `tests/modules/corebase/numbers.rs` compares the number helpers with the pinned
+`swoole_version`/`swoole_version_id`/`swoole_api_version_id` (C names). No compiled
+code calls `sw_malloc`, `sw_free` or `sw_calloc`, so Rust doesn't define them.
+`tests/modules/corebase/numbers.rs` compares the number helpers with the pinned
 `base.cc`; `swoole_itoa`, which no C++ called, is a Rust function over a slice.
 
 Whole operations in Rust (`host.rs`), with native code keeping only their
