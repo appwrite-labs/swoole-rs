@@ -19,19 +19,12 @@ use std::marker::{PhantomData, PhantomPinned};
 use std::mem::MaybeUninit;
 use std::ops::Deref;
 use std::ptr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::StringSlot;
-use swoole_rs_corebase::lent::{Count, In, Out};
+use swoole_rs_corebase::lent::{Count, In};
 use swoole_rs_corebase::log;
 use swoole_rs_corebase::sys::Text;
-
-// libssl's own declarations, which openssl-sys doesn't bind.
-unsafe extern "C" {
-    fn SSL_CTX_set_default_passwd_cb(ctx: *mut SSL_CTX, callback: PasswordCallback);
-    fn SSL_CTX_set_default_passwd_cb_userdata(ctx: *mut SSL_CTX, data: *mut c_void);
-}
 
 // libssl/libcrypto's declarations, typed so that a live context is a
 // reference and a NUL-terminated string a `Text`: each reads only its arguments
@@ -72,6 +65,15 @@ unsafe extern "C" {
     safe fn SSL_CTX_set_verify_depth(ctx: &SslCtx, depth: c_int);
     safe fn SSL_CTX_set_default_verify_paths(ctx: &SslCtx) -> c_int;
     safe fn SSL_CTX_check_private_key(ctx: &SslCtx) -> c_int;
+    /// Only [`with_password`] calls these two: it sets the callback over a passphrase
+    /// that outlives its call and clears both before it returns, so OpenSSL never
+    /// hands the callback a passphrase that has gone.
+    safe fn SSL_CTX_set_default_passwd_cb(ctx: &SslCtx, callback: Option<PasswordCallback>);
+    #[expect(
+        improper_ctypes,
+        reason = "OpenSSL keeps the pointer as opaque userdata, read only by `password`"
+    )]
+    safe fn SSL_CTX_set_default_passwd_cb_userdata(ctx: &SslCtx, data: Option<&TlsStr<'_>>);
     /// libcrypto's static SHA-1 method, null when it has none.
     safe fn EVP_sha1() -> Option<&'static EvpMd>;
     /// HMAC of `md` over the key's and data's lengths' bytes into `out`, whose 255
@@ -118,65 +120,6 @@ type ExCallback = extern "C" fn(*mut c_void, *mut c_void, *mut c_void, c_int, c_
 /// `CRYPTO_EX_dup`: `(to, from, from_d, idx, argl, argp)`.
 type ExDup =
     extern "C" fn(*mut c_void, *const c_void, *mut c_void, c_int, c_long, *mut c_void) -> c_int;
-
-/// A context's reference to the passphrase slot its password callback reads, which
-/// the context's ex data holds while the context lives.
-type KeptPassword = Box<Arc<StringSlot>>;
-/// [`ExCallback`] for the password index: the context's data there, null or a
-/// [`KeptPassword`].
-type FreePassword =
-    extern "C" fn(*mut c_void, Option<KeptPassword>, *mut c_void, c_int, c_long, *mut c_void);
-
-/// The `SSL_CTX` ex data index of a [`KeptPassword`], registered with
-/// [`free_password`]: only [`PasswordIndex::get`] makes one, so ex data at it is null
-/// or a box [`keep_password`] stored, which only OpenSSL's free of the context drops.
-#[repr(transparent)]
-#[derive(Clone, Copy)]
-struct PasswordIndex(c_int);
-
-static PASSWORD_INDEX: AtomicI32 = AtomicI32::new(-1);
-
-impl PasswordIndex {
-    fn get() -> Option<Self> {
-        let index = PASSWORD_INDEX.load(Ordering::Acquire);
-        (index >= 0).then_some(Self(index))
-    }
-}
-
-// libcrypto's and libssl's ex data calls, typed for the password index.
-#[expect(
-    clashing_extern_declarations,
-    improper_ctypes,
-    reason = "the ex data calls, typed for the password index; OpenSSL keeps the box as an opaque `void *`"
-)]
-unsafe extern "C" {
-    /// `SSL_CTX_get_ex_new_index` whose free callback is `free`, or -1.
-    #[link_name = "CRYPTO_get_ex_new_index"]
-    safe fn new_password_index(
-        class: c_int,
-        argl: c_long,
-        argp: Option<&'static c_void>,
-        new: Option<ExCallback>,
-        dup: Option<ExDup>,
-        free: Option<FreePassword>,
-    ) -> c_int;
-    /// The context takes `kept` as its data at the index (leaking what it held), or
-    /// fails (0) and leaks it.
-    #[link_name = "SSL_CTX_set_ex_data"]
-    safe fn keep_password(ctx: &SslCtx, index: PasswordIndex, kept: KeptPassword) -> c_int;
-}
-
-/// The password index's free callback: drops the context's reference to its slot.
-extern "C" fn free_password(
-    _ctx: *mut c_void,
-    kept: Option<KeptPassword>,
-    _data: *mut c_void,
-    _index: c_int,
-    _argl: c_long,
-    _argp: *mut c_void,
-) {
-    drop(kept);
-}
 
 /// An `OPENSSL_INIT_SETTINGS`, which this side never makes.
 #[repr(C)]
@@ -392,38 +335,35 @@ unsafe extern "C" {
     ) -> c_long;
 }
 
-/// A native `std::string`, borrowed: its `c_str()` (none when unset) and `length()`.
+/// A native `std::string`, borrowed: its bytes, embedded NULs included, and the NUL
+/// after them; none when unset.
 #[derive(Clone, Copy, Debug)]
 pub struct TlsStr<'a> {
-    text: Option<&'a CStr>,
-    length: usize,
+    terminated: Option<&'a [u8]>,
 }
 
 impl<'a> From<&'a StringSlot> for TlsStr<'a> {
     fn from(slot: &'a StringSlot) -> Self {
         Self {
-            text: Some(slot.c_str()),
-            length: slot.bytes().len(),
+            terminated: Some(slot.bytes_with_nul()),
         }
     }
 }
 
 impl<'a> TlsStr<'a> {
     /// An unset string.
-    const NONE: Self = Self {
-        text: None,
-        length: 0,
-    };
+    const NONE: Self = Self { terminated: None };
 
     /// `empty()`.
     #[must_use]
     pub const fn is_empty(self) -> bool {
-        self.length == 0
+        matches!(self.terminated, None | Some([] | [_]))
     }
 
     /// The `c_str()`, None when unset.
-    const fn c_str(&self) -> Option<&'a CStr> {
-        self.text
+    fn c_str(&self) -> Option<&'a CStr> {
+        let terminated = self.terminated?;
+        Some(CStr::from_bytes_until_nul(terminated).unwrap_or_default())
     }
 
     /// What `%s` prints: the bytes before the first NUL.
@@ -469,22 +409,20 @@ pub struct TlsConfig<'a> {
     pub warn: Warn,
 }
 
-/// OpenSSL's `pem_password_cb`: the buffer it lends and its capacity, whether to
-/// verify, and the userdata it was installed with.
-pub(crate) type PasswordCallback = for<'id> extern "C" fn(
-    Out<'id, MaybeUninit<u8>>,
-    Count<'id, c_int>,
-    c_int,
-    &StringSlot,
-) -> c_int;
+/// OpenSSL's `pem_password_cb`: the buffer and its capacity, whether to verify, and
+/// the userdata it was installed with.
+type PasswordCallback = extern "C" fn(PasswordBuffer, c_int, c_int, &TlsStr<'_>) -> c_int;
 
-/// One upstream method: its log name, the configuration it reads and the passphrase
-/// slot its context's password callback reads.
+/// The buffer OpenSSL lends a `pem_password_cb`, writable for the capacity it passes
+/// with it. Only OpenSSL makes one, for that call.
+#[repr(transparent)]
+struct PasswordBuffer(*mut c_char);
+
+/// One upstream method: its log name and the configuration it reads.
 struct Method<'a> {
     config: &'a TlsConfig<'a>,
     ctx: &'a SslCtx,
     function: &'static CStr,
-    password: Option<&'a Arc<StringSlot>>,
 }
 
 /// `SSL_OP_*`'s type: `uint64_t` since OpenSSL 3.
@@ -636,7 +574,6 @@ impl Method<'_> {
             config: self.config,
             ctx: self.ctx,
             function,
-            password: self.password,
         }
     }
 
@@ -644,7 +581,6 @@ impl Method<'_> {
     fn configure(&self) -> bool {
         let config = self.config;
         let ctx = self.ctx;
-        let raw = ctx.as_ptr();
         let protocols = crate::SslVersion::from_bits(config.protocols);
         // The other legacy SSL_OP_*_BUG workarounds are 0 in OpenSSL 3.
         SSL_CTX_set_options(ctx, SSL_OP_DONT_INSERT_EMPTY_FRAGMENTS);
@@ -676,49 +612,8 @@ impl Method<'_> {
             SSL_MODE_RELEASE_BUFFERS | SSL_MODE_NO_AUTO_CHAIN,
         );
         ctx.ctrl(Ctrl::ReadAhead, 1);
-
-        // The callback reads the owner's live passphrase slot (crates/tls's owned.rs),
-        // which the context holds from here: freed with it, or leaked.
-        if !config.passphrase.is_empty()
-            && let Some(slot) = self.password
-        {
-            let userdata = Arc::as_ptr(slot).cast_mut().cast();
-            let kept = Box::new(Arc::clone(slot));
-            match PasswordIndex::get() {
-                Some(index) => _ = keep_password(ctx, index, kept),
-                None => _ = Box::leak(kept),
-            }
-            // SAFETY: a live context; the slot lives as long as it (held above).
-            unsafe { SSL_CTX_set_default_passwd_cb_userdata(raw, userdata) };
-            // SAFETY: a live context; OpenSSL calls the callback with the buffer it
-            // lends and the userdata set above, the slot.
-            unsafe { SSL_CTX_set_default_passwd_cb(raw, slot_password) };
-        }
-        if let Some(path) = config.cert_file.path() {
-            let file = config.cert_file;
-            if SSL_CTX_use_certificate_file(ctx, path, SSL_FILETYPE_PEM) <= 0 {
-                self.ssl_error(&quoted(b"SSL_CTX_use_certificate_file(", file, b") failed"));
-                return false;
-            }
-            if SSL_CTX_use_certificate_chain_file(ctx, path) <= 0 {
-                self.ssl_error(&quoted(
-                    b"SSL_CTX_use_certificate_chain_file(",
-                    file,
-                    b") failed",
-                ));
-                return false;
-            }
-        }
-        if let Some(path) = config.key_file.path() {
-            let file = config.key_file;
-            if SSL_CTX_use_PrivateKey_file(ctx, path, SSL_FILETYPE_PEM) <= 0 {
-                self.ssl_error(&quoted(b"SSL_CTX_use_PrivateKey_file(", file, b") failed"));
-                return false;
-            }
-            if SSL_CTX_check_private_key(ctx) == 0 {
-                self.ssl_error(b"SSL_CTX_check_private_key() failed");
-                return false;
-            }
+        if !with_password(ctx, &config.passphrase, || self.use_files()) {
+            return false;
         }
         if protocols.contains(DTLS) {
             set_cookie_generate_cb(ctx, Some(generate_cookie));
@@ -757,6 +652,72 @@ impl Method<'_> {
         }
         true
     }
+
+    /// The certificate and key files, read with the passphrase; false after logging why.
+    fn use_files(&self) -> bool {
+        let (config, ctx) = (self.config, self.ctx);
+        if let Some(path) = config.cert_file.path() {
+            let file = config.cert_file;
+            if SSL_CTX_use_certificate_file(ctx, path, SSL_FILETYPE_PEM) <= 0 {
+                self.ssl_error(&quoted(b"SSL_CTX_use_certificate_file(", file, b") failed"));
+                return false;
+            }
+            if SSL_CTX_use_certificate_chain_file(ctx, path) <= 0 {
+                self.ssl_error(&quoted(
+                    b"SSL_CTX_use_certificate_chain_file(",
+                    file,
+                    b") failed",
+                ));
+                return false;
+            }
+        }
+        if let Some(path) = config.key_file.path() {
+            let file = config.key_file;
+            if SSL_CTX_use_PrivateKey_file(ctx, path, SSL_FILETYPE_PEM) <= 0 {
+                self.ssl_error(&quoted(b"SSL_CTX_use_PrivateKey_file(", file, b") failed"));
+                return false;
+            }
+            if SSL_CTX_check_private_key(ctx) == 0 {
+                self.ssl_error(b"SSL_CTX_check_private_key() failed");
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// `f` with `password` reading `passphrase` for `ctx`, unless it is empty. Upstream
+/// leaves the callback installed for the context's life, but only the certificate
+/// and key files `f` loads read through it, so it goes when `f` returns.
+fn with_password<R>(ctx: &SslCtx, passphrase: &TlsStr<'_>, f: impl FnOnce() -> R) -> R {
+    /// Clears the callback, then its userdata, even when `f` unwinds.
+    struct Installed<'a>(&'a SslCtx);
+    impl Drop for Installed<'_> {
+        fn drop(&mut self) {
+            SSL_CTX_set_default_passwd_cb(self.0, None);
+            SSL_CTX_set_default_passwd_cb_userdata(self.0, None);
+        }
+    }
+    if passphrase.is_empty() {
+        return f();
+    }
+    SSL_CTX_set_default_passwd_cb_userdata(ctx, Some(passphrase));
+    SSL_CTX_set_default_passwd_cb(ctx, Some(password));
+    let _installed = Installed(ctx);
+    f()
+}
+
+/// `pem_password_cb`: copies the passphrase into the buffer OpenSSL lends.
+extern "C" fn password(
+    buffer: PasswordBuffer,
+    capacity: c_int,
+    _verify: c_int,
+    passphrase: &TlsStr<'_>,
+) -> c_int {
+    let capacity = usize::try_from(capacity).unwrap_or(0);
+    // SAFETY: OpenSSL lends `capacity` writable bytes at the buffer for this call.
+    let mut buffer = unsafe { swoole_rs_corebase::lent::Fill::from_raw(buffer.0.cast(), capacity) };
+    copy_password(buffer.slots(), passphrase.terminated.unwrap_or_default())
 }
 
 fn quoted(prefix: &[u8], value: TlsStr<'_>, suffix: &[u8]) -> Vec<u8> {
@@ -860,20 +821,9 @@ extern "C" fn verify_callback(_ok: c_int, _store: *mut X509_STORE_CTX) -> c_int 
     1
 }
 
-/// The password callback: the passphrase in `slot`, the context's passphrase slot
-/// (its userdata), into the `capacity` bytes OpenSSL lends at `buffer`.
-pub(crate) extern "C" fn slot_password<'id>(
-    buffer: Out<'id, MaybeUninit<u8>>,
-    capacity: Count<'id, c_int>,
-    _verify: c_int,
-    slot: &StringSlot,
-) -> c_int {
-    copy_password(buffer.fill(capacity).slots(), slot.bytes_with_nul())
-}
-
 /// Copies the passphrase and the NUL after it (`terminated` is both) into `buffer`
 /// when it fits with a spare byte, else reports none.
-pub(crate) fn copy_password(buffer: &mut [MaybeUninit<u8>], terminated: &[u8]) -> c_int {
+fn copy_password(buffer: &mut [MaybeUninit<u8>], terminated: &[u8]) -> c_int {
     let Ok(length) = c_int::try_from(terminated.len().saturating_sub(1)) else {
         return 0;
     };
@@ -1046,12 +996,6 @@ pub fn swr_v1_tls_init() -> Result<(), TlsInitError> {
         return Err(TlsInitError::Index);
     }
     PORT_INDEX.store(port, Ordering::Release);
-    let class = openssl_sys::CRYPTO_EX_INDEX_SSL_CTX;
-    let password = new_password_index(class, 0, None, None, None, Some(free_password));
-    if password < 0 {
-        return Err(TlsInitError::Index);
-    }
-    PASSWORD_INDEX.store(password, Ordering::Release);
     INITIALIZED.store(true, Ordering::Release);
     Ok(())
 }
@@ -1136,12 +1080,9 @@ fn drain_errors() {
     ERR_print_errors_cb(keep_last_line, None);
 }
 
-/// A new context of `config`, whose password callback reads `password`, the
-/// passphrase slot, once `config.passphrase` names one.
-pub(crate) fn create_context(
-    config: &mut TlsConfig<'_>,
-    password: Option<&Arc<StringSlot>>,
-) -> Option<SslContext> {
+/// `SSLContext::create`: a configured context, or None after logging why. Writes the
+/// normalized protocol mask back to `config.protocols`.
+pub(crate) fn create_context(config: &mut TlsConfig<'_>) -> Option<SslContext> {
     let method = if crate::SslVersion::from_bits(config.protocols).contains(DTLS) {
         DTLS_method()
     } else {
@@ -1159,7 +1100,6 @@ pub(crate) fn create_context(
         config,
         ctx: &ctx,
         function,
-        password,
     };
     create.configure().then_some(ctx)
 }
@@ -1168,15 +1108,6 @@ pub(crate) fn create_context(
 mod tests {
     use super::*;
     use openssl_sys::ERR_clear_error;
-
-    /// `SSLContext::create`: a configured context, or null after logging why. Writes
-    /// the normalized protocol mask back to `config.protocols`.
-    ///
-    /// # Safety
-    /// `config`'s strings are NUL-terminated and outlive the call.
-    unsafe fn swr_v1_tls_context_create(config: &mut TlsConfig<'_>) -> Option<SslContext> {
-        create_context(config, None)
-    }
 
     macro_rules! method {
         ($name:ident, $function:literal, $body:ident) => {
@@ -1190,7 +1121,6 @@ mod tests {
                     config,
                     ctx,
                     function: $function,
-                    password: None,
                 }
                 .$body()
             }
@@ -1237,8 +1167,7 @@ mod tests {
         fn str(value: &str) -> TlsStr<'static> {
             let value: &'static CStr = Box::leak(CString::new(value).unwrap().into_boxed_c_str());
             TlsStr {
-                text: Some(value),
-                length: value.to_bytes().len(),
+                terminated: Some(value.to_bytes_with_nul()),
             }
         }
 
@@ -1275,7 +1204,7 @@ mod tests {
         let _guard = SERIAL.lock().unwrap();
         let mut config = Owned::config();
         unsafe {
-            let ctx = swr_v1_tls_context_create(&mut config).unwrap();
+            let ctx = create_context(&mut config).unwrap();
             assert_eq!(config.protocols, ALL.bits(), "zero means every version");
             let options = SSL_CTX_get_options(ctx.as_ptr());
             assert_eq!(options & (SSL_OP_NO_TLSv1_2 | SSL_OP_NO_TLSv1_3), 0);
@@ -1284,7 +1213,7 @@ mod tests {
 
             config.protocols = (TLSV1_3 | DTLS).bits();
             config.disable_compress = true;
-            let ctx = swr_v1_tls_context_create(&mut config).unwrap();
+            let ctx = create_context(&mut config).unwrap();
             let options = SSL_CTX_get_options(ctx.as_ptr());
             assert_ne!(options & SSL_OP_NO_TLSv1_1, 0);
             assert_eq!(options & SSL_OP_NO_TLSv1_2, 0, "DTLS keeps 1.2");
@@ -1303,7 +1232,7 @@ mod tests {
         let mut config = Owned::config();
         config.cert_file = Owned::str("/nonexistent/m21.pem");
         unsafe { ERR_clear_error() };
-        let ctx = unsafe { swr_v1_tls_context_create(&mut config) };
+        let ctx = create_context(&mut config);
         assert!(ctx.is_none());
         let log = take_log();
         assert_eq!(log.len(), 1);
@@ -1316,7 +1245,7 @@ mod tests {
 
         let mut config = Owned::config();
         config.ciphers = Owned::str("M21-nonexistent-cipher");
-        let ctx = unsafe { swr_v1_tls_context_create(&mut config) };
+        let ctx = create_context(&mut config);
         assert!(ctx.is_none());
         let log = take_log();
         assert_eq!(log.len(), 2, "{log:?}");
@@ -1374,20 +1303,32 @@ mod tests {
 
     #[test]
     fn password_copies_when_it_fits() {
-        let passphrase = CString::new("swoole").unwrap();
-        let mut buffer = [0x55u8; 8];
-        let copy = |buffer: &mut [u8; 8], capacity: c_int, text: &CString| {
-            let capacity = usize::try_from(capacity).unwrap_or(0);
-            let lent =
-                unsafe { std::slice::from_raw_parts_mut(buffer.as_mut_ptr().cast(), capacity) };
-            copy_password(lent, text.as_bytes_with_nul())
-        };
-        assert_eq!(copy(&mut buffer, 8, &passphrase), 6);
-        assert_eq!(&buffer[..7], b"swoole\0");
-        for capacity in [c_int::MIN, -1, 0, 7] {
-            assert_eq!(copy(&mut buffer, capacity, &passphrase), 0);
+        for value in [b"swoole".as_slice(), b"a\0b", b"", b"1234567", b"xy"] {
+            let mut slot = StringSlot::new();
+            assert!(slot.set(value));
+            let passphrase = TlsStr::from(&slot);
+            for capacity in [c_int::MIN, -8, -1, 0, 1, 2, 3, 4, 7, 8, 15, 16] {
+                let mut bytes = [0x55u8; 16];
+                let mut expected = bytes;
+                // Upstream copies when `length < size - 1`, NUL included.
+                let fits = i64::try_from(value.len()).unwrap() < i64::from(capacity) - 1;
+                let length = if value.is_empty() || !fits {
+                    0
+                } else {
+                    value.len()
+                };
+                if length != 0 {
+                    expected[..length].copy_from_slice(value);
+                    expected[length] = 0;
+                }
+                let buffer = PasswordBuffer(bytes.as_mut_ptr().cast());
+                assert_eq!(
+                    password(buffer, capacity, 0, &passphrase),
+                    c_int::try_from(length).unwrap()
+                );
+                assert_eq!(bytes, expected, "{value:?} in {capacity}");
+            }
         }
-        assert_eq!(copy(&mut buffer, 8, &CString::new("xy").unwrap()), 2);
     }
 
     #[test]

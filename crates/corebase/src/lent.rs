@@ -277,6 +277,14 @@ unsafe extern "C" {
         count: Count<'id, libc::nfds_t>,
         timeout: c_int,
     ) -> c_int;
+    /// Writes at most `count` ready events into `events`.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    pub(crate) safe fn epoll_wait<'id>(
+        epfd: c_int,
+        events: Out<'id, libc::epoll_event>,
+        count: Count<'id, c_int>,
+        timeout: c_int,
+    ) -> c_int;
     /// Writes at most `length`'s bytes of `value`, and how many it stored into
     /// `length`, which is never more than the count it read there.
     pub(crate) safe fn getsockopt<'id>(

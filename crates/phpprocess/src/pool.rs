@@ -35,7 +35,8 @@ use swoole_rs_zend::{
 use swoole_rs_zend::{method_table, sys as z};
 
 /// `SW_EVENT_DATA_OBJ_PTR`.
-const EVENT_DATA_OBJ_PTR: u8 = 1 << 5;
+const EVENT_DATA_OBJ_PTR: u8 =
+    swoole_rs_corebase::constants::EventDataFlag::SW_EVENT_DATA_OBJ_PTR.bits();
 
 static POOL: CustomClass<PoolObject> = CustomClass::new();
 /// `current_pool` and `current_worker`.

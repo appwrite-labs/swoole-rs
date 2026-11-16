@@ -531,7 +531,7 @@ fn backend_wait(
     entries: &mut usize,
 ) -> std::io::Result<usize> {
     let ready = match &mut owner.backend {
-        Backend::None => -1,
+        Backend::None => Err(std::io::Error::last_os_error()),
         Backend::Poll(snapshot) => {
             let count = snapshot.fill(&owner.registry);
             *entries = count;
@@ -540,23 +540,22 @@ fn backend_wait(
             } else {
                 owner.fields.timeout_msec
             };
-            return swoole_rs_corebase::sys::poll(snapshot.filled(), timeout)
-                .map(|ready| ready.unsigned_abs() as usize);
+            swoole_rs_corebase::sys::poll(snapshot.filled(), timeout)
         }
         #[cfg(target_os = "linux")]
         Backend::Epoll(array) => {
-            let timeout = if deferred {
-                0
-            } else {
-                owner.fields.timeout_msec
-            };
-            let epfd = owner.backend_fd;
-            // `max_event_num` records, which a caller may lower (to 0: EINVAL), never
-            // past the array.
-            let limit = usize::try_from(owner.fields.max_event_num).unwrap_or(usize::MAX);
-            swoole_rs_corebase::lent::lend_out(array, |events, count| {
-                wait::epoll_wait(epfd, events, count.at_most(limit), timeout)
-            })
+            // Room for `max_event_num` records, which the array holds.
+            let room = usize::try_from(owner.fields.max_event_num)
+                .map_or(array.len(), |max| max.min(array.len()));
+            swoole_rs_corebase::sys::epoll_wait(
+                owner.backend_fd,
+                array.get_mut(..room).unwrap_or_default(),
+                if deferred {
+                    0
+                } else {
+                    owner.fields.timeout_msec
+                },
+            )
         }
         #[cfg(any(
             target_os = "macos",
@@ -570,74 +569,10 @@ fn backend_wait(
                 owner.fields.timeout_msec,
                 owner.fields.timeout_msec <= 0 && deferred,
             );
-            let kq = owner.backend_fd;
-            swoole_rs_corebase::lent::lend_out(array, |events, count| {
-                wait::kevent(
-                    kq,
-                    None,
-                    wait::NoChanges::Zero,
-                    events,
-                    count,
-                    timeout.as_ref(),
-                )
-            })
+            swoole_rs_corebase::sys::kevent_wait(owner.backend_fd, array, timeout.as_ref())
         }
     };
-    usize::try_from(ready).map_err(|_| std::io::Error::last_os_error())
-}
-
-/// The backends' kernel waits, over an output array lent with its length.
-mod wait {
-    #[cfg(any(
-        target_os = "macos",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "dragonfly"
-    ))]
-    /// No value: a null-only change list.
-    pub(super) enum Nothing {}
-
-    /// The length of a null change list.
-    #[cfg(any(
-        target_os = "macos",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "dragonfly"
-    ))]
-    #[repr(i32)]
-    pub(super) enum NoChanges {
-        Zero = 0,
-    }
-
-    // libc's. Each writes at most the lent count of records to the lent array and reads
-    // nothing else but the optional timeout; `kevent` reads no change from its null list.
-    // They keep nothing, so they are declared `safe`.
-    unsafe extern "C" {
-        #[cfg(target_os = "linux")]
-        pub(super) safe fn epoll_wait<'id>(
-            epfd: libc::c_int,
-            events: swoole_rs_corebase::lent::Out<'id, libc::epoll_event>,
-            count: swoole_rs_corebase::lent::Count<'id, libc::c_int>,
-            timeout: libc::c_int,
-        ) -> libc::c_int;
-        #[cfg(any(
-            target_os = "macos",
-            target_os = "freebsd",
-            target_os = "openbsd",
-            target_os = "netbsd",
-            target_os = "dragonfly"
-        ))]
-        pub(super) safe fn kevent<'id>(
-            kq: libc::c_int,
-            changes: Option<&'static Nothing>,
-            change_count: NoChanges,
-            events: swoole_rs_corebase::lent::Out<'id, libc::kevent>,
-            count: swoole_rs_corebase::lent::Count<'id, libc::c_int>,
-            timeout: Option<&libc::timespec>,
-        ) -> libc::c_int;
-    }
+    ready.map(|ready| ready.unsigned_abs() as usize)
 }
 /// The wait loop's initial state transition, over the actual borrowed slots.
 pub(crate) const fn before_wait(fields: &mut ReactorFields) {

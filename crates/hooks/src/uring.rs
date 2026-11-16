@@ -561,7 +561,7 @@ fn file_status(result: io::Result<isize>) -> io::Result<()> {
 }
 
 /// One request per operation, whose entries carry no pointer but their borrowed
-/// arguments'.
+/// arguments' (an [`IoVector`]'s include its buffers, in its direction).
 macro_rules! safe_operations {
     ($(
         $(#[$doc:meta])*
@@ -651,28 +651,33 @@ safe_operations! {
     pub fn ftruncate(fd: c_int, length: libc::off_t) -> io::Result<()>,
         timeout -1.0, opcode::Ftruncate::new(Fd(fd), length.cast_unsigned()), file_status;
     /// `IORING_OP_READV` into `vector`'s remaining buffers, or `IORING_OP_WRITEV` from
-    /// them, as the vector was made for: its iovecs, which only its `&mut` methods
-    /// move, and their buffers, valid in its direction while it lives.
+    /// them, as the vector was made for.
     pub fn vector(fd: c_int, vector: &IoVector<'_>, timeout: f64) -> io::Result<usize>,
-        timeout timeout, {
-            let iovecs = vector.iovecs();
-            let (iov, count) = (iovecs.as_ptr(), c_int::try_from(iovecs.len()).unwrap_or(0).cast_unsigned());
-            if vector.write() {
-                opcode::Writev::new(Fd(fd), iov, count).offset(u64::MAX).build()
-            } else {
-                opcode::Readv::new(Fd(fd), iov, count).offset(u64::MAX).build()
-            }
-        }, byte_count;
+        timeout timeout, Vectored::new(fd, vector), byte_count;
 }
 
-/// An entry built already, which a [`safe_operations!`] entry may be.
-trait Built {
-    fn build(self) -> squeue::Entry;
-}
+/// The `IORING_OP_READV` or `IORING_OP_WRITEV` entry over a vector's remaining
+/// iovecs, which only its `&mut` methods move, in the direction it was made for.
+struct Vectored(squeue::Entry);
 
-impl Built for squeue::Entry {
+impl Vectored {
+    fn new(fd: c_int, vector: &IoVector<'_>) -> Self {
+        let iovecs = vector.iovecs();
+        let count = c_int::try_from(iovecs.len()).unwrap_or(0).cast_unsigned();
+        let iov = iovecs.as_ptr();
+        Self(if vector.write() {
+            opcode::Writev::new(Fd(fd), iov, count)
+                .offset(u64::MAX)
+                .build()
+        } else {
+            opcode::Readv::new(Fd(fd), iov, count)
+                .offset(u64::MAX)
+                .build()
+        })
+    }
+
     fn build(self) -> squeue::Entry {
-        self
+        self.0
     }
 }
 

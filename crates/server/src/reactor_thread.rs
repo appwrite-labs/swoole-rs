@@ -60,7 +60,7 @@ fn receive_packets(
     };
     let dtls = port.config().ssl && port.config().is_dtls();
     let head = size_of::<DgramPacket>();
-    let mut info = DataHead {
+    let info = DataHead {
         server_fd: crate::base_factory::low16(fd),
         reactor_id: swoole_rs_corebase::thread_id().cast_signed(),
         kind: swoole_rs_corebase::ServerEvent::RecvDgram.code(),
@@ -101,8 +101,11 @@ fn receive_packets(
             return false;
         };
         pkt.length = length;
-        info.fd = pkt.sender();
-        info.len = u32::try_from(head).unwrap_or(0).saturating_add(length);
+        let info = DataHead {
+            fd: pkt.sender(),
+            len: u32::try_from(head).unwrap_or(0).saturating_add(length),
+            ..info
+        };
         // SAFETY: the packet head and the `length` bytes just received behind it, in the
         // caller's buffer, which nothing writes until the dispatch returns.
         let mut task = unsafe { SendData::from_raw(info, buffer.cast_const().cast()) };

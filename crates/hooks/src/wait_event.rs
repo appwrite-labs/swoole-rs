@@ -14,7 +14,7 @@ pub use native::Watch;
 /// The reactor's and the coroutine's side of an `EventWaiter`; `S` is its reactor
 /// socket, which dropping takes off the reactor and releases, not its fd.
 pub struct EventWaitOps<S> {
-    /// The current coroutine, called for its fatal error outside one.
+    /// The current coroutine.
     pub(crate) current: extern "C" fn() -> *mut c_void,
     /// `make_socket(fd, SW_FD_CO_EVENT)` carrying `waiter`, added to the reactor for
     /// `events`; the last error if the reactor refuses it.
@@ -24,15 +24,16 @@ pub struct EventWaitOps<S> {
     pub(crate) park: fn(timeout: f64, waker: &WakerSlot) -> Result<(), i32>,
 }
 
-/// A parked `wait_event` (the object of its reactor socket): its park's waker and the
-/// events fired so far.
+/// A parked `wait_event` (the object of its reactor socket): its coroutine's waker
+/// and the events fired so far.
 pub(crate) struct Waiter {
     waker: WakerSlot,
     revents: Cell<Events>,
 }
 
-/// A waiter's park, which this ends: a resume still queued when the wait ended
-/// otherwise wakes nothing.
+/// A waiter's park, which this ends once the deferred wake runs. A wake still queued
+/// when the wait ended otherwise (a timeout or a cancel in the same loop pass) names
+/// a park that is over, so it does nothing.
 pub(crate) struct Parked(Waker);
 
 impl Parked {
@@ -77,6 +78,7 @@ pub(crate) fn event_ready(waiter: &Waiter, event: Events) -> Option<Parked> {
 /// Park the current coroutine until `events` fire on `fd` or `timeout` passes: the
 /// fired events, or the error.
 fn park<S>(fd: i32, events: Events, timeout: f64, ops: &EventWaitOps<S>) -> Result<Events, i32> {
+    // Fatal outside a coroutine.
     (ops.current)();
     let waiter = Waiter {
         waker: WakerSlot::new(None),
@@ -342,7 +344,7 @@ mod tests {
     fn fires_error(_: f64, waker: &WakerSlot) -> Result<(), i32> {
         waker.set(Some(Waker::NONE));
         assert_eq!(
-            event_ready(waiter(), Events::ERROR).map(|co| co.0),
+            event_ready(waiter(), Events::ERROR).map(|co| co.waker()),
             Some(Waker::NONE)
         );
         assert!(event_ready(waiter(), Events::READ).is_none());
@@ -358,12 +360,12 @@ mod tests {
         static PARKS: Cell<i32> = const { Cell::new(0) };
     }
     /// A read fires, then the timer times the wait out before the deferred
-    /// resume runs: that resume names the park that ended, so it wakes nothing.
+    /// resume runs: that resume names the park the timeout ended.
     fn fires_then_times_out(_: f64, waker: &WakerSlot) -> Result<(), i32> {
         PARKS.set(PARKS.get() + 1);
         waker.set(Some(Waker::NONE));
         assert_eq!(
-            event_ready(waiter(), Events::READ).map(|co| co.0),
+            event_ready(waiter(), Events::READ).map(|co| co.waker()),
             Some(Waker::NONE)
         );
         Err(libc::ETIMEDOUT)
@@ -469,7 +471,7 @@ mod tests {
                 let mut wakes = 0;
                 for fired in [event, Events::WRITE] {
                     if let Some(co) = event_ready(&waiter, fired) {
-                        assert_eq!(co.0, Waker::NONE);
+                        assert_eq!(co.waker(), Waker::NONE);
                         wakes += 1;
                     }
                 }

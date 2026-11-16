@@ -62,7 +62,6 @@ pub struct OwnedTlsContext {
 /// builder aliases; readers can create sessions without borrowing a builder.
 pub struct TlsSettings {
     fields: OwnedTlsFields,
-    // Drop the context before these slots, including its password callback's storage.
     strings: [Arc<StringSlot>; STRING_COUNT],
 }
 #[expect(
@@ -363,8 +362,7 @@ fn create(owner: &mut Lent<'_>) -> bool {
     // `configuration` copies the fields, so no borrow of them is kept across
     // OpenSSL/log callbacks.
     let mut config = owner.edit(|fields| configuration(state, fields));
-    // The context keeps its own reference to the passphrase slot.
-    let ctx = create_context(&mut config, Some(&state.strings[PASSPHRASE]));
+    let ctx = create_context(&mut config);
     if let Some(ctx) = &ctx {
         crate::info::SSL_CTX_set_info_callback(ctx, Some(crate::info::info));
     }
@@ -414,7 +412,7 @@ pub fn owner_assign(destination: &mut Lent<'_>, source: &mut Lent<'_>) -> Result
         return Err(CopyError::Fields);
     };
     // Publish the copied scalar values and reference, releasing the destination's
-    // previous one: a context holds its own password slot.
+    // previous one.
     destination.edit(|to| *to = fields);
     Ok(())
 }
@@ -635,21 +633,8 @@ impl OwnedTlsContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::slot_password;
-    use std::ffi::{c_char, c_void};
-    use std::mem::MaybeUninit;
+    use std::ffi::c_void;
     use std::ptr;
-    use swoole_rs_corebase::lent::Count;
-
-    /// The password callback as OpenSSL calls it: `capacity` (any value C may pass, at
-    /// most `bytes`' length) at `bytes`.
-    fn call_password(bytes: &mut [u8], capacity: c_int, slot: &StringSlot) -> c_int {
-        let slots = unsafe { &mut *(ptr::from_mut(bytes) as *mut [MaybeUninit<u8>]) };
-        swoole_rs_corebase::lent::lend_out(slots, |at, _: Count<'_, c_int>| {
-            let capacity = unsafe { core::mem::transmute::<c_int, Count<'_, c_int>>(capacity) };
-            slot_password(at, capacity, 0, slot)
-        })
-    }
 
     #[test]
     fn configuration_loans_reject_aliases_and_hostname_copies_survive_changes() {
@@ -711,20 +696,8 @@ mod tests {
         panic!("unexpected TLS warning");
     }
     unsafe extern "C" {
-        fn SSL_CTX_get_default_passwd_cb(
-            ctx: *mut SSL_CTX,
-        ) -> Option<extern "C" fn(*mut c_char, c_int, c_int, *mut c_void) -> c_int>;
+        fn SSL_CTX_get_default_passwd_cb(ctx: *mut SSL_CTX) -> *mut c_void;
         fn SSL_CTX_get_default_passwd_cb_userdata(ctx: *mut SSL_CTX) -> *mut c_void;
-    }
-    /// Whether `ctx`'s password callback is `callback` with `data`.
-    unsafe fn password_binding_matches(
-        ctx: *mut SSL_CTX,
-        data: *mut c_void,
-        callback: crate::context::PasswordCallback,
-    ) -> bool {
-        let actual = unsafe { SSL_CTX_get_default_passwd_cb(ctx) };
-        let userdata = unsafe { SSL_CTX_get_default_passwd_cb_userdata(ctx) };
-        actual.is_some_and(|actual| std::ptr::fn_addr_eq(actual, callback)) && userdata == data
     }
     #[test]
     fn client_settings_write_the_owner() {
@@ -840,7 +813,7 @@ mod tests {
         }
     }
     #[test]
-    fn copied_ready_context_retains_independent_configuration_and_live_password() {
+    fn copied_ready_context_retains_independent_configuration() {
         unsafe {
             let source = owner_new(warning);
             let destination = owner_new(warning);
@@ -856,19 +829,8 @@ mod tests {
             );
             assert_eq!((*destination.fields).context_ptr(), context);
             assert!((*destination.strings[PASSPHRASE]).set_shared(b"copy"));
-            assert_eq!(
-                std::ffi::CStr::from_ptr(
-                    swoole_rs_corebase::swr_v1_core_string_view(&*source.strings[PASSPHRASE]).data
-                )
-                .to_bytes(),
-                b"source"
-            );
+            assert_eq!((*source.strings[PASSPHRASE]).bytes(), b"source");
             drop(Rc::from_raw(source.owner));
-            let ctx = (*destination.fields).context_ptr();
-            let slot = SSL_CTX_get_default_passwd_cb_userdata(ctx).cast::<StringSlot>();
-            let mut output = [0u8; 16];
-            assert_eq!(call_password(&mut output, 16, &*slot), 6);
-            assert_eq!(&output[..7], b"source\0");
             assert_eq!(
                 openssl_sys::SSL_CTX_get_options(context),
                 openssl_sys::SSL_CTX_get_options((*destination.fields).context_ptr())
@@ -876,50 +838,65 @@ mod tests {
             drop(Rc::from_raw(destination.owner));
         }
     }
-    #[test]
-    fn shared_context_reads_the_live_passphrase_after_the_first_reference_goes() {
+    /// The PEM text `write` puts in a memory BIO.
+    unsafe fn pem(write: impl FnOnce(*mut openssl_sys::BIO) -> c_int) -> Vec<u8> {
         unsafe {
-            let prepared = owner_new(warning);
-            let owner = prepared.owner;
-            let slot = &*prepared.strings[PASSPHRASE];
-            assert!((*prepared.strings[PASSPHRASE]).set_shared(b"initial"));
-            assert!(create(&mut (&*owner).borrow_configuration()));
-            let ctx = (*prepared.fields).context_ptr();
-            assert_eq!((*prepared.fields).protocols, 126);
-            let data = ptr::from_ref(slot).cast_mut().cast();
-            assert!(password_binding_matches(ctx, data, slot_password));
-            for value in [b"swoole".as_slice(), b"a\0b", b"", b"1234567"] {
-                assert!((*prepared.strings[PASSPHRASE]).set_shared(value));
-                for capacity in [-8, -1, 0, 1, 2, 3, 4, 7, 8, 15, 16] {
-                    let mut bytes = [0x55u8; 16];
-                    let mut expected = bytes;
-                    let length = if !value.is_empty()
-                        && c_int::try_from(value.len()).unwrap() < capacity - 1
-                    {
-                        value.len()
-                    } else {
-                        0
-                    };
-                    if length != 0 {
-                        expected[..length].copy_from_slice(value);
-                        expected[length] = 0;
-                    }
-                    assert_eq!(
-                        call_password(&mut bytes, capacity, slot),
-                        c_int::try_from(length).unwrap()
-                    );
-                    assert_eq!(bytes, expected);
-                }
-            }
-            // Another ownership handle, as a `TlsContext` clone takes one.
-            Rc::increment_strong_count(owner);
-            let retained = owner;
-            drop(Rc::from_raw(owner));
-            assert!((*prepared.strings[PASSPHRASE]).set_shared(b"retained"));
-            let mut bytes = [0u8; 16];
-            assert_eq!(call_password(&mut bytes, 16, slot), 8);
-            assert_eq!(&bytes[..9], b"retained\0");
-            drop(Rc::from_raw(retained));
+            let bio = openssl_sys::BIO_new(openssl_sys::BIO_s_mem());
+            assert_eq!(write(bio), 1);
+            let mut data = ptr::null_mut();
+            let length = usize::try_from(openssl_sys::BIO_get_mem_data(bio, &raw mut data));
+            let text = std::slice::from_raw_parts(data.cast::<u8>(), length.unwrap()).to_vec();
+            openssl_sys::BIO_free_all(bio);
+            text
         }
+    }
+    #[test]
+    fn encrypted_key_loads_with_its_passphrase_and_leaves_no_callback() {
+        use openssl_sys::*;
+        fn quiet(_function: &CStr, _message: &str) {}
+        let dir = std::env::temp_dir();
+        let id = std::process::id();
+        let cert_file = dir.join(format!("swr-tls-{id}-passphrase-cert.pem"));
+        let key_file = dir.join(format!("swr-tls-{id}-passphrase-key.pem"));
+        unsafe {
+            let keygen = EVP_PKEY_CTX_new_id(EVP_PKEY_ED25519, ptr::null_mut());
+            let mut key = ptr::null_mut();
+            assert_eq!(EVP_PKEY_keygen_init(keygen), 1);
+            assert_eq!(EVP_PKEY_keygen(keygen, &raw mut key), 1);
+            EVP_PKEY_CTX_free(keygen);
+            let cert = X509_new();
+            assert_eq!(X509_set_version(cert, 2), 1);
+            assert_eq!(ASN1_INTEGER_set(X509_get_serialNumber(cert), 1), 1);
+            assert!(!X509_gmtime_adj(X509_getm_notBefore(cert), 0).is_null());
+            assert!(!X509_gmtime_adj(X509_getm_notAfter(cert), 3600).is_null());
+            assert_eq!(X509_set_pubkey(cert, key), 1);
+            assert!(X509_sign(cert, key, ptr::null()) > 0);
+            std::fs::write(&cert_file, pem(|bio| PEM_write_bio_X509(bio, cert))).unwrap();
+            // Upstream copies the whole `std::string`, an embedded NUL included.
+            let secret = b"a\0b secret";
+            let encrypted = pem(|bio| {
+                let length = c_int::try_from(secret.len()).unwrap();
+                let (cipher, text) = (EVP_aes_128_cbc(), secret.as_ptr().cast());
+                PEM_write_bio_PKCS8PrivateKey(bio, key, cipher, text, length, None, ptr::null_mut())
+            });
+            std::fs::write(&key_file, encrypted).unwrap();
+            X509_free(cert);
+            EVP_PKEY_free(key);
+        }
+        let owner = fresh(quiet);
+        let mut lent = owner.borrow_configuration();
+        assert!(lent.set_text(Text::CertFile, cert_file.to_str().unwrap().as_bytes()));
+        assert!(lent.set_text(Text::KeyFile, key_file.to_str().unwrap().as_bytes()));
+        for (passphrase, loads) in [(b"a".as_slice(), false), (b"a\0b secret", true)] {
+            assert!(lent.set_text(Text::Passphrase, passphrase));
+            assert_eq!(create(&mut lent), loads, "{passphrase:?}");
+        }
+        let ctx = lent.edit(|fields| fields.context_ptr());
+        unsafe {
+            assert!(SSL_CTX_get_default_passwd_cb(ctx).is_null());
+            assert!(SSL_CTX_get_default_passwd_cb_userdata(ctx).is_null());
+        }
+        _ = std::fs::remove_file(cert_file);
+        _ = std::fs::remove_file(key_file);
     }
 }

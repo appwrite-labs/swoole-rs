@@ -152,10 +152,10 @@ pub fn system_sleep(sec: f64) -> bool {
     {
         /// `SW_ERROR_CO_CANCELED`: what `yield_ex` sets when the coroutine was canceled.
         const CANCELED: i32 = 10017;
-        let resumed = crate::resolve::park_for_armed(
-            crate::sleep_timeout(sec, 0.001),
-            &crate::resolve::WakerSlot::new(None),
-        );
+        // `co->yield_ex(timeout)` of the current coroutine (fatal outside one).
+        let co = swoole_rs_coroutine::current_safe();
+        let code = swoole_rs_coroutine::yield_timed(co, crate::sleep_timeout(sec, 0.001));
+        let resumed = swoole_rs_coroutine::yield_resumed(code);
         resumed || swoole_rs_corebase::log::last_error() != CANCELED
     }
 }
