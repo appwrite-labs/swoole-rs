@@ -2,21 +2,23 @@
 //! `test_http_server`, `test_ssl_http`, `abort_connection`'s and `get_package_length`'s),
 //! `core-tests/src/protocol/base.cpp` builds, and `protocol/redis.cpp`'s and `server/mqtt.cpp`'s,
 //! for main.rs, tests/modules/framing/protocol.rs and tests/modules/protocols/server.rs. They
-//! were C++ (fixture.cc) and keep its entry points' names and signatures. A callback slot
-//! holds the case's function as its closure context, as fixture.cc's lambdas captured it.
+//! were C++ (fixture.cc) and keep its entry points' names and signatures. Where fixture.cc's
+//! lambdas captured the case's function, the slot's fn reads it from a static the case set.
 
 use std::ffi::{CStr, c_char, c_int, c_long, c_void};
-use std::mem::{offset_of, transmute};
+use std::mem::offset_of;
+use std::ptr;
+use std::sync::Mutex;
 
 use super::{
-    Address, COMPRESSION_TYPES, Connection, DataHead, LOCATIONS, MODE_BASE, MODE_PROCESS, Port,
-    Protocol, RecvData, SW_LOG_WARNING, SW_SOCK_TCP, Server, Slot, TEST_HOST, TEXT_CHROOT,
-    TEXT_GROUP, TEXT_USER, ignore_event, ignore_server, last_error, microtime,
+    Address, COMPRESSION_TYPES, Callback, Connection, Ctx, DataHead, LOCATIONS, MODE_BASE,
+    MODE_PROCESS, Port, Protocol, RecvData, SW_LOG_WARNING, SW_SOCK_TCP, Server, Slot, TEST_HOST,
+    TEXT_CHROOT, TEXT_GROUP, TEXT_USER, Worker, ignore_event, ignore_server, last_error, microtime,
     swoole_set_log_level,
 };
 use crate::{CppString, Event, Hook, Receive};
 use swoole_rs_ports::{lifecycle, methods};
-use swoole_rs_server::server_methods;
+use swoole_rs_server::{server_methods, view};
 
 pub(super) const SW_LOG_INFO: c_int = 2;
 pub(super) const SW_SOCK_SSL: c_int = 512;
@@ -143,48 +145,58 @@ unsafe extern "C" {
     fn getsockname(fd: c_int, addr: *mut c_void, len: *mut u32) -> c_int;
 }
 
-// The slots' closures: `ctx` is the case's function.
-unsafe extern "C" fn on_hook(ctx: *mut c_void, serv: *mut c_void) {
-    // SAFETY: the slot's context is a `Hook`.
-    let case = unsafe { transmute::<*mut c_void, Hook>(ctx) };
-    case(serv);
+// The case's functions, which the slots' fns below run: fixture.cc's lambdas captured them.
+static START: Mutex<Option<Hook>> = Mutex::new(None);
+static WORKER_START: Mutex<Option<Hook>> = Mutex::new(None);
+static CONNECT: Mutex<Option<Event>> = Mutex::new(None);
+static CLOSE: Mutex<Option<Event>> = Mutex::new(None);
+static RECEIVE: Mutex<Option<Receive>> = Mutex::new(None);
+
+fn case<F: Copy>(slot: &Mutex<Option<F>>) -> F {
+    slot.lock().unwrap().expect("the case set it")
 }
-unsafe extern "C" fn on_worker_hook(ctx: *mut c_void, serv: *mut c_void, _: *mut c_void) {
-    // SAFETY: as above.
-    let case = unsafe { transmute::<*mut c_void, Hook>(ctx) };
-    case(serv);
+
+extern "C" fn on_hook(_: Ctx, serv: view::Server<'_>) {
+    case(&START)(serv.raw());
 }
-unsafe extern "C" fn on_event(ctx: *mut c_void, serv: *mut c_void, info: *mut c_void) {
-    // SAFETY: the slot's context is an `Event`.
-    let case = unsafe { transmute::<*mut c_void, Event>(ctx) };
-    case(serv, info);
+extern "C" fn on_worker_hook(_: Ctx, serv: view::Server<'_>, _: Worker<'_>) {
+    case(&WORKER_START)(serv.raw());
 }
-unsafe extern "C" fn on_receive(ctx: *mut c_void, serv: *mut c_void, req: *mut c_void) -> c_int {
-    // SAFETY: the slot's context is a `Receive`.
-    let case = unsafe { transmute::<*mut c_void, Receive>(ctx) };
-    case(serv, req)
+extern "C" fn on_connect(_: Ctx, serv: view::Server<'_>, info: &DataHead) {
+    case(&CONNECT)(serv.raw(), ptr::from_ref(info).cast());
+}
+extern "C" fn on_close(_: Ctx, serv: view::Server<'_>, info: &DataHead) {
+    case(&CLOSE)(serv.raw(), ptr::from_ref(info).cast());
+}
+extern "C" fn on_receive(_: Ctx, serv: view::Server<'_>, req: &RecvData) -> c_int {
+    case(&RECEIVE)(serv.raw(), ptr::from_ref(req).cast())
 }
 
 impl Server {
     fn on_start(self, hook: Hook) {
-        self.set_closure(Slot::Start, on_hook as *const c_void, hook as *mut c_void);
+        *START.lock().unwrap() = Some(hook);
+        self.set_callback(Callback::Start(on_hook));
     }
     fn on_worker_start(self, hook: Hook) {
-        self.set_closure(
-            Slot::WorkerStart,
-            on_worker_hook as *const c_void,
-            hook as *mut c_void,
-        );
+        *WORKER_START.lock().unwrap() = Some(hook);
+        self.set_callback(Callback::WorkerStart(on_worker_hook));
     }
     fn on_event(self, slot: Slot, event: Event) {
-        self.set_closure(slot, on_event as *const c_void, event as *mut c_void);
+        match slot {
+            Slot::Connect => {
+                *CONNECT.lock().unwrap() = Some(event);
+                self.set_callback(Callback::Connect(on_connect));
+            }
+            Slot::Close => {
+                *CLOSE.lock().unwrap() = Some(event);
+                self.set_callback(Callback::Close(on_close));
+            }
+            _ => unreachable!("the cases' events are onConnect and onClose"),
+        }
     }
     fn on_receive(self, receive: Receive) {
-        self.set_closure(
-            Slot::Receive,
-            on_receive as *const c_void,
-            receive as *mut c_void,
-        );
+        *RECEIVE.lock().unwrap() = Some(receive);
+        self.set_callback(Callback::Receive(on_receive));
     }
 
     /// fixture.cc's `listen_port`: the port, or exit 2.
@@ -402,8 +414,8 @@ pub(crate) unsafe fn swr_case_http_server(
     serv.set_document_root(unsafe { CStr::from_ptr(root) }.to_bytes());
     serv.insert(LOCATIONS, "/examples");
     serv.create();
-    serv.set_callback(Slot::Start, ignore_server as *const c_void);
-    serv.set_callback(Slot::Connect, ignore_event as *const c_void);
+    serv.set_callback(Callback::Start(ignore_server));
+    serv.set_callback(Callback::Connect(ignore_event));
     serv.on_event(Slot::Close, on_close);
     serv.on_receive(on_receive);
     serv.0
@@ -620,7 +632,7 @@ pub(crate) unsafe fn swr_case_info(
 
 pub(crate) unsafe fn swr_case_data(req: *const c_void) -> *const c_char {
     // SAFETY: a live request.
-    unsafe { (*req.cast::<RecvData>()).data }
+    unsafe { (*req.cast::<RecvData<'_>>()).data() }
 }
 
 pub(crate) unsafe fn swr_case_websocket_status(serv: *mut c_void, session_id: c_long) -> *mut u8 {
