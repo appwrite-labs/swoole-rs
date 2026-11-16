@@ -11,6 +11,9 @@ and PECL ssh2, Copyright (c) The PHP Group, under the PHP License 3.01
 (pdo_oci, pdo_sqlite, php*/pdo_firebird, php*/pdo_odbc, php*/pdo_pgsql), the cURL
 extension (php/curl, php84/curl), ssh2 (php/ssh2), proc_open (php/standard) and the
 plain files stream wrapper (php/streams). php/zend/zend_execute.c is from the Zend
-Engine, Copyright (c) Zend Technologies Ltd., under the Zend License 2.00.
+Engine, Copyright (c) Zend Technologies Ltd., under the Zend License 2.00
+(native/swoole-src/thirdparty/LICENSE-ZEND; LICENSE-ZEND in a release).
 
 This product includes PHP software, freely available from <http://www.php.net/software/>.
+
+This product includes the Zend Engine, freely available at http://www.zend.com
