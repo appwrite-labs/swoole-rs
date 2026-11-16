@@ -9,8 +9,18 @@ use std::ffi::c_void;
 use std::ptr::NonNull;
 use swoole_rs_reactor::Events;
 
+/// Why no descriptor became ready.
+#[derive(Debug)]
+pub enum PollError {
+    /// The immediate poll syscall failed.
+    Io(std::io::Error),
+    /// The reactor could not register any of the descriptors.
+    NoDescriptors,
+    /// No event arrived before the wait ended.
+    Timeout,
+}
+
 /// One polled fd in Swoole event bits (upstream's `PollSocket`).
-#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PollFd {
     pub fd: i32,
@@ -140,7 +150,7 @@ pub fn timeout(task: &Task<'_>) -> *mut c_void {
     task.finish()
 }
 
-fn poll_now(fds: &[Cell<PollFd>]) -> bool {
+fn poll_now(fds: &[Cell<PollFd>]) -> Result<(), PollError> {
     let mut list: Vec<libc::pollfd> = fds
         .iter()
         .map(|entry| libc::pollfd {
@@ -150,18 +160,22 @@ fn poll_now(fds: &[Cell<PollFd>]) -> bool {
         })
         .collect();
     let ready = swoole_rs_corebase::sys::poll(&mut list, 0);
-    if ready > 0 {
-        for (entry, polled) in fds.iter().zip(&list) {
-            let mut row = entry.get();
-            row.revents = from_poll(polled.revents);
-            entry.set(row);
-        }
+    if ready < 0 {
+        return Err(PollError::Io(std::io::Error::last_os_error()));
     }
-    ready > 0
+    if ready == 0 {
+        return Err(PollError::Timeout);
+    }
+    for (entry, polled) in fds.iter().zip(&list) {
+        let mut row = entry.get();
+        row.revents = from_poll(polled.revents);
+        entry.set(row);
+    }
+    Ok(())
 }
 
 /// With a nonzero timeout, outside a coroutine `ops.current` fails fatally.
-fn poll_sockets<S>(fds: &[Cell<PollFd>], timeout: f64, ops: &PollOps<S>) -> bool {
+fn poll_sockets<S>(fds: &[Cell<PollFd>], timeout: f64, ops: &PollOps<S>) -> Result<(), PollError> {
     if timeout == 0.0 {
         return poll_now(fds);
     }
@@ -185,7 +199,7 @@ fn poll_sockets<S>(fds: &[Cell<PollFd>], timeout: f64, ops: &PollOps<S>) -> bool
         socket.set(added);
     }
     if !tasked {
-        return false;
+        return Err(PollError::NoDescriptors);
     }
     if timeout > 0.0 {
         // The timer is deleted or fires before the coroutine resumes.
@@ -193,12 +207,19 @@ fn poll_sockets<S>(fds: &[Cell<PollFd>], timeout: f64, ops: &PollOps<S>) -> bool
     }
     // Callbacks reach `task` while `co` is parked.
     (ops.park)();
-    task.success.get()
+    if task.success.get() {
+        Ok(())
+    } else {
+        Err(PollError::Timeout)
+    }
 }
 
 /// `System::socket_poll` over `fds` (distinct fds), storing each one's `revents`: in a
 /// coroutine unless `timeout` is 0.
-pub fn socket_poll<S>(fds: &mut [PollFd], timeout: f64, ops: &PollOps<S>) -> bool {
+///
+/// # Errors
+/// Immediate poll failure, no registered descriptor, or timeout.
+pub fn socket_poll<S>(fds: &mut [PollFd], timeout: f64, ops: &PollOps<S>) -> Result<(), PollError> {
     poll_sockets(Cell::from_mut(fds).as_slice_of_cells(), timeout, ops)
 }
 
@@ -239,10 +260,15 @@ fn unordered_map_order(keys: impl IntoIterator<Item = i32>) -> Vec<i32> {
 }
 
 /// `System::socket_poll` of `(fd, events)` rows merged by fd, in upstream's map
-/// order: each polled fd and its revents, or none on a timeout or when no fd could
-/// be added. Outside a coroutine a nonzero `timeout` is upstream's fatal error.
-#[must_use]
-pub fn socket_poll_rows(rows: &[(i32, Events)], timeout: f64) -> Option<Vec<(i32, Events)>> {
+/// order: each polled fd and its revents. Outside a coroutine a nonzero `timeout`
+/// is upstream's fatal error.
+///
+/// # Errors
+/// As for [`socket_poll`].
+pub fn socket_poll_rows(
+    rows: &[(i32, Events)],
+    timeout: f64,
+) -> Result<Vec<(i32, Events)>, PollError> {
     let mut fds: Vec<PollFd> = unordered_map_order(rows.iter().map(|row| row.0))
         .into_iter()
         .map(|fd| PollFd {
@@ -254,13 +280,20 @@ pub fn socket_poll_rows(rows: &[(i32, Events)], timeout: f64) -> Option<Vec<(i32
             revents: Events::NONE,
         })
         .collect();
-    let polled = socket_poll(&mut fds, timeout, &NATIVE);
-    polled.then(|| fds.iter().map(|fd| (fd.fd, fd.revents)).collect())
+    socket_poll(&mut fds, timeout, &NATIVE)?;
+    Ok(fds.iter().map(|fd| (fd.fd, fd.revents)).collect())
 }
 
 /// The hooked `poll(2)` in a coroutine with a nonzero timeout: a repeated fd counts
 /// once, through its first entry; the others' `revents` stay as they were.
-pub fn swr_v1_hook_poll<S>(fds: &mut [libc::pollfd], timeout: i32, ops: &PollOps<S>) -> i32 {
+///
+/// # Errors
+/// As for [`socket_poll`].
+pub fn poll<S>(
+    fds: &mut [libc::pollfd],
+    timeout: i32,
+    ops: &PollOps<S>,
+) -> Result<usize, PollError> {
     let mut first = Vec::new();
     let mut rows: Vec<PollFd> = Vec::new();
     for (i, polled) in fds.iter().enumerate() {
@@ -275,18 +308,16 @@ pub fn swr_v1_hook_poll<S>(fds: &mut [libc::pollfd], timeout: i32, ops: &PollOps
     }
     let rows = Cell::from_mut(&mut rows[..]).as_slice_of_cells();
     // `rows` has distinct fds.
-    if !poll_sockets(rows, f64::from(timeout) / 1000.0, ops) {
-        return -1;
-    }
+    poll_sockets(rows, f64::from(timeout) / 1000.0, ops)?;
     let mut ready = 0;
     for (row, i) in rows.iter().zip(first) {
         let revents = row.get().revents;
         if let Some(fd) = fds.get_mut(i) {
             fd.revents = to_poll(revents);
         }
-        ready += i32::from(!revents.is_empty());
+        ready += usize::from(!revents.is_empty());
     }
-    ready
+    Ok(ready)
 }
 
 /// System's poll operations: the reactor, the timer and the current coroutine.
@@ -361,6 +392,15 @@ pub(crate) mod native {
 mod tests {
     use super::*;
     use std::cell::RefCell;
+
+    // Keep the original gate's boolean/integer assertions at its boundary.
+    fn socket_poll<S>(fds: &mut [PollFd], timeout: f64, ops: &PollOps<S>) -> bool {
+        super::socket_poll(fds, timeout, ops).is_ok()
+    }
+
+    fn swr_v1_hook_poll<S>(fds: &mut [libc::pollfd], timeout: i32, ops: &PollOps<S>) -> i32 {
+        super::poll(fds, timeout, ops).map_or(-1, |ready| i32::try_from(ready).unwrap_or(-1))
+    }
 
     thread_local! {
         static LOG: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
@@ -438,6 +478,19 @@ mod tests {
         park,
         wake: Wake { timer_del, defer },
     };
+
+    #[test]
+    fn typed_failures_distinguish_registration_from_timeout() {
+        assert!(matches!(
+            super::socket_poll(&mut [], 0.0, &OPS),
+            Err(PollError::Timeout)
+        ));
+        assert!(matches!(
+            super::socket_poll(&mut [], 1.0, &OPS),
+            Err(PollError::NoDescriptors)
+        ));
+        assert_eq!(take(), Vec::<String>::new());
+    }
 
     /// Resuming the coroutine returns from the parked poll and pops the frame that
     /// holds its task (a box here), so no borrow of the task may live across it:
