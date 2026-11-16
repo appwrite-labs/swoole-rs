@@ -40,7 +40,7 @@ use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::HookType;
 
 use std::{
-    ffi::{CStr, c_int, c_void},
+    ffi::{CStr, c_int},
     sync::atomic::{AtomicU32, Ordering},
 };
 use swoole_rs_corebase::{Switch, built_with, sys::Text};
@@ -49,7 +49,7 @@ use swoole_rs_zend::{
     Call, Class, E_WARNING, Message, Minit,
     bailout::{self, Bailout},
     message,
-    sys::{swr_zend_stream_factory, zif_handler},
+    sys::zif_handler,
 };
 use swoole_rs_zend::{method_table, sys as z};
 
@@ -148,12 +148,6 @@ method_table! {
     ];
 }
 
-/// The coroutine transport factory zend-sys registers for PHP, over
-/// [`stream::transport_factory_body`].
-fn factory() -> *mut c_void {
-    swr_zend_stream_factory as *mut c_void
-}
-
 /// MINIT's process-wide registrations, each taking the [`Minit`] that proves Zend
 /// runs this module's MINIT on this thread, before any PHP thread starts. The
 /// declarations are private to this module, so only these calls reach them.
@@ -234,7 +228,7 @@ pub fn php_swoole_runtime_minit(minit: &Minit) {
         minit.long_constant(name, i64::from(value));
     }
     registration::transport_factory(minit);
-    transport::register_async(factory());
+    transport::register_async();
     #[cfg(feature = "curl")]
     registration::curl(minit);
     registration::proc_open(minit);
@@ -468,7 +462,7 @@ struct Php;
 
 impl Host for Php {
     fn register(&mut self, index: usize, hook: bool) -> bool {
-        transport::register(index, hook, factory())
+        transport::register(index, hook)
     }
 
     fn throw(&mut self, message: &Message, code: i64) {

@@ -17,10 +17,9 @@ use swoole_rs_zend::{
     bailout::Bailout,
     opcode::Handler,
     sys::{
-        IS_ARRAY, IS_CONST, IS_RESOURCE, IS_STRING, IS_VAR, swr_zend_efree, swr_zend_zval_release,
-        zend_function, zval,
+        IS_ARRAY, IS_CONST, IS_RESOURCE, IS_STRING, IS_VAR, swr_zend_zval_release, zend_function,
+        zval,
     },
-    value,
 };
 
 unsafe extern "C" {
@@ -85,13 +84,13 @@ impl Handler for MethodCall {
             IS_RESOURCE => Receiver::Stream,
             _ => return DISPATCH,
         };
-        // Zend's request allocator, freed by the method call. The literal is
-        // a plain copy, as upstream's.
-        let info = value::enew(CallInfo {
+        // Boxed, and taken back by the method call. The literal is a plain
+        // copy, as upstream's.
+        let info = Box::into_raw(Box::new(CallInfo {
             func: name.copy_value(),
             this: object.copy_value(),
             op1_type: op.op1_type,
-        });
+        }));
         let method = match receiver {
             Receiver::Array => &METHODS[0],
             Receiver::String => &METHODS[1],
@@ -127,11 +126,9 @@ fn arguments(prefix: &[zval], frame: &Call) -> Vec<zval> {
 /// `$this` first, in the dispatcher's frame, which the `INIT_METHOD_CALL`
 /// handler pushed with its `CallInfo`.
 fn call_method(receiver: Receiver, frame: &Call) {
-    let allocation = frame.take_run_time_cache().cast::<CallInfo>();
-    // SAFETY: the handler's initialized allocation, which the frame's
-    // `run_time_cache` alone pointed to, until the take above, and which is
-    // freed below.
-    let info = unsafe { &mut *allocation };
+    // SAFETY: the handler's `Box`, which the frame's `run_time_cache` alone
+    // pointed to, until the take, so it is taken back once.
+    let mut info = unsafe { Box::from_raw(frame.take_run_time_cache().cast::<CallInfo>()) };
     // op2 of INIT_METHOD_CALL is the method name, a string literal.
     let name = Value::of(&mut info.func).str();
     let alias = name.and_then(|name| aliases::find(receiver, name.bytes()));
@@ -148,10 +145,9 @@ fn call_method(receiver: Receiver, frame: &Call) {
             ]));
             Ok(())
         }
-        Some(alias) => call_alias(alias, info, frame),
+        Some(alias) => call_alias(alias, &mut info, frame),
     };
-    // SAFETY: the handler's allocation; nothing else holds it.
-    unsafe { swr_zend_efree(allocation.cast()) };
+    drop(info);
     swoole_rs_zend::bailout::raise(outcome);
 }
 

@@ -149,29 +149,40 @@ pub(super) fn direct_call(
     result
 }
 
-/// crates/phpcoroutines' `create_coroutine`: the new cid, with 1 in its last
-/// argument when activation bailed out. The shim passes the call's cache, which
-/// Zend leaves alone while it runs.
-pub type Create = unsafe extern "C" fn(
-    Option<&zend_fcall_info_cache>,
-    u32,
-    *mut zval,
-    *mut zval,
-    &mut u8,
-) -> c_long;
+/// crates/phpcoroutines' `create_coroutine`: the new cid, with its [`Trap`] set
+/// when activation bailed out. The shim passes the call's live cache (resolved
+/// or not), which Zend leaves alone while it runs, its arguments and its
+/// callable zval (null from [`function_call`]).
+pub type Create =
+    extern "C" fn(Option<&zend_fcall_info_cache>, u32, *mut zval, *mut zval, Trap<'_>) -> c_long;
 
-/// The coroutine leaf of [`function_call`], which only [`Creator::new`] makes.
+/// The coroutine call's own bailout flag, which the zend-sys shim lends its
+/// [`Create`] leaf inside the call's `zend_try`, on the thread running PHP.
+/// Rust never makes one: it is the leaf's parameter, which the shim's call
+/// stands for, so only the shim calls a leaf.
+#[repr(transparent)]
+pub struct Trap<'a>(&'a mut u8);
+
+impl<'a> Trap<'a> {
+    /// Record whether the leaf's own work bailed out.
+    pub fn set(&mut self, bailed: bool) {
+        *self.0 = u8::from(bailed);
+    }
+
+    /// The lease on running PHP the shim's call holds for the leaf.
+    #[must_use]
+    pub fn php(&self) -> crate::Php<'a> {
+        crate::Php(std::marker::PhantomData)
+    }
+}
+
+/// The coroutine leaf of [`function_call`].
 #[derive(Clone, Copy)]
 pub struct Creator(Create);
 
 impl Creator {
-    /// # Safety
-    /// `create`, called inside the call's `zend_try` on the thread running PHP
-    /// with a live callable cache (resolved or not), its arguments and a null
-    /// callable zval, starts the coroutine as crates/phpcoroutines'
-    /// `create_coroutine` does, and writes only its last argument.
     #[must_use]
-    pub const unsafe fn new(create: Create) -> Self {
+    pub const fn new(create: Create) -> Self {
         Self(create)
     }
 }
