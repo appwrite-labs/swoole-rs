@@ -553,6 +553,13 @@ impl Value {
         result
     }
 
+    /// The array this holds, lent to `edit` as [`Value::lend`] lends it: the
+    /// zval reads null meanwhile, so nothing `edit` does can free or replace
+    /// the array under it. None for anything but an array.
+    pub fn edit_array<R>(&self, edit: impl FnOnce(&mut ArrayMut) -> R) -> Option<R> {
+        self.lend(|held| held.array_mut().map(|array| edit(array)))
+    }
+
     /// Property writes on the object this holds, under `scope` (Zend's view of
     /// its properties; `None` for none), while it is borrowed.
     #[must_use]
@@ -1767,20 +1774,6 @@ impl ArrayMut {
 pub struct Separated<'a>(&'a mut ArrayMut);
 
 impl<'a> Separated<'a> {
-    /// The array zval at `array`, written in place without separating it, as
-    /// upstream writes the arrays an object's properties hold and it keeps.
-    /// # Safety
-    /// `array` is a live array zval that nothing else borrows for `'a`, whose
-    /// table may be written in place: it is not immutable, and no other holder
-    /// may see the write, or the caller writes it there as upstream does.
-    #[must_use]
-    #[inline]
-    pub unsafe fn in_place(array: *mut zval) -> Self {
-        // SAFETY: per the caller, which vouches for the write in place that
-        // `Separated` stands for.
-        Self(unsafe { ArrayMut::from_ptr(array) })
-    }
-
     /// `add_next_index_zval`: the array takes `value`, which is released
     /// instead when the array has no next index (it would pass `ZEND_LONG_MAX`).
     #[inline]

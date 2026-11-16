@@ -4,7 +4,7 @@
 //! `swoole_http_request.cc` did. Both parsers are crates/http's; what Swoole
 //! itself owns goes through `host`.
 use crate::host;
-use crate::state::{Request, Slot, State};
+use crate::state::{Request, State};
 use std::ffi::{CStr, c_char, c_int};
 use std::fs::File;
 use std::io::{BufWriter, IoSlice, Write};
@@ -21,7 +21,9 @@ use swoole_rs_httpbindings::{
     request_url, token_list_contains, token_list_fast, trim_quotes,
 };
 use swoole_rs_zend::sys::zval;
-use swoole_rs_zend::{Declared, Interned, Minit, Owned, OwnedArray, Value, ZStr, ZString};
+use swoole_rs_zend::{
+    ArrayMut, Declared, Interned, Minit, Owned, OwnedArray, Value, ZStr, ZString,
+};
 
 /// A request's multipart parser and the upload it is writing.
 pub(crate) struct Multipart {
@@ -319,25 +321,36 @@ pub(crate) fn release_uploads(request: &Value) {
     }
 }
 
-/// `swoole_http_init_and_read_property`: the array behind a property slot,
-/// creating it on first use. Like upstream, the slot keeps an uncounted copy.
+/// `swoole_http_init_and_read_property`: the request object's `which`
+/// property slot, its array made on first use.
 pub(crate) fn property(request: &mut Request, which: Property) -> Option<&Value> {
-    let slot: &mut Slot = match which {
-        Property::Get => &mut request.zget,
-        Property::Post => &mut request.zpost,
-        Property::Cookie => &mut request.zcookie,
-        Property::Files => &mut request.zfiles,
-        Property::TmpFiles => &mut request.ztmpfiles,
-        Property::Server => &mut request.zserver,
-        Property::Header => &mut request.zheader,
-    };
     let property = PROPERTIES.get(which as usize)?;
     let size = if matches!(which, Property::Server) {
         HT_MIN_SIZE << 1
     } else {
         HT_MIN_SIZE
     };
-    slot.init_array(&request.zobject, property, size)
+    request
+        .zobject
+        .array(&mut request.arrays, which as usize, property, size)
+}
+
+/// The request object's `which` property slot, once [`property`] has made
+/// its array.
+pub(crate) fn made(request: &Request, which: Property) -> Option<&Value> {
+    if request.arrays & (1 << which as u8) == 0 {
+        return None;
+    }
+    PROPERTIES.get(which as usize)?.get(request.zobject.get()?)
+}
+
+/// [`property`]'s array, lent to `edit`; None without one.
+pub(crate) fn edit<R>(
+    request: &mut Request,
+    which: Property,
+    edit: impl FnOnce(&mut ArrayMut) -> R,
+) -> Option<R> {
+    property(request, which)?.edit_array(edit)
 }
 
 /// [`property`]'s array zval, for a C writer; null without one.
@@ -348,10 +361,10 @@ fn raw_property(state: &mut State, which: Property) -> *mut zval {
 /// `http_server_add_server_array`: `$request->server[key] = value`.
 #[inline(always)]
 pub(crate) fn add_server(state: &mut State, key_: Key, value_: Owned) {
-    if let Some(server) = state.request.zserver.array_mut()
-        && let Some(key) = key(key_)
-    {
-        server.add_new(key, value_);
+    if let Some(key) = key(key_) {
+        edit(&mut state.request, Property::Server, |server| {
+            server.add_new(key, value_);
+        });
     }
 }
 
@@ -659,15 +672,14 @@ fn header_value(state: &mut State, name: &[u8], value_: &[u8]) -> Step {
         RequestHeader::Append => {}
     }
     let value_ = stringl(value_);
-    // The request's `header` array, created with the request.
-    let Some(header) = state.request.zheader.array_mut() else {
-        return Step::Go;
-    };
     let known = request_key(name).and_then(|index| HEADER_KEYS.get(index));
-    match known.and_then(|&known| key(known)) {
-        Some(known) => header.update(known, value_),
-        None => header.merge(&name.to_ascii_lowercase(), value_),
-    }
+    // The request's `header` array, created with the request.
+    edit(&mut state.request, Property::Header, |header| {
+        match known.and_then(|&known| key(known)) {
+            Some(known) => header.update(known, value_),
+            None => header.merge(&name.to_ascii_lowercase(), value_),
+        }
+    });
     Step::Go
 }
 

@@ -7,9 +7,7 @@ use std::{
 };
 use swoole_rs_zend::{Declared, Kept, Owned, Props, UNDEF, Value, sys::zval};
 
-/// A context's request or response object, or one of the request's arrays:
-/// empty until the context sets it (`Request`'s pairs of a `zval *` and the
-/// `zval` it points at).
+/// A context's request or response object: empty until the context sets it.
 #[repr(transparent)]
 pub(crate) struct Slot(Kept);
 
@@ -28,25 +26,25 @@ impl std::ops::DerefMut for Slot {
 }
 
 impl Slot {
-    /// `swoole_http_init_and_read_property`: the array in `object`'s declared
-    /// `property`, made on first use. Like upstream, the slot keeps an
-    /// uncounted copy, which the property keeps alive.
-    pub(crate) fn init_array(
-        &mut self,
-        object: &Self,
+    /// `swoole_http_init_and_read_property`: the slot of the object's declared
+    /// `property`, which holds an array made on first use, bit `which` of
+    /// `made`. Read at each use, the slot holds whatever the property now does.
+    #[inline]
+    pub(crate) fn array(
+        &self,
+        made: &mut u8,
+        which: usize,
         property: &Declared,
         size: u32,
     ) -> Option<&Value> {
-        if self.get().is_none()
-            && let Some(array) = object
-                .get()
-                .and_then(|object| property.init_array(object, size))
-        {
-            // SAFETY: the context's object's property holds the array, as
-            // upstream's copy relies on.
-            unsafe { self.0.keep(array) };
+        let object = self.get()?;
+        let bit = 1 << which;
+        if *made & bit != 0 {
+            return property.get(object);
         }
-        self.get()
+        let array = property.init_array(object, size)?;
+        *made |= bit;
+        Some(array)
     }
 
     /// `ZVAL_COPY_VALUE`: the zval's bits without a reference of their own
@@ -80,13 +78,8 @@ pub(crate) struct Request {
     )]
     pub(crate) h2_data: Option<Box<Vec<u8>>>,
     pub(crate) zobject: Slot,
-    pub(crate) zserver: Slot,
-    pub(crate) zheader: Slot,
-    pub(crate) zget: Slot,
-    pub(crate) zpost: Slot,
-    pub(crate) zcookie: Slot,
-    pub(crate) zfiles: Slot,
-    pub(crate) ztmpfiles: Slot,
+    /// The array properties made so far, a bit per `parse::Property`.
+    pub(crate) arrays: u8,
 }
 
 /// The parser's own bookkeeping (`ContextState::parse_`). All zeroes is the
@@ -196,7 +189,6 @@ pub(crate) struct Response {
     /// `status()`'s reason, as `%s` prints it: up to its first NUL.
     pub(crate) reason: Option<Box<CString>>,
     pub(crate) zobject: Slot,
-    pub(crate) zheader: Slot,
-    pub(crate) zcookie: Slot,
-    pub(crate) ztrailer: Slot,
+    /// The array properties made so far, a bit per `host::Property`.
+    pub(crate) arrays: u8,
 }

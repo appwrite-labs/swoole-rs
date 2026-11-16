@@ -30,7 +30,7 @@ impl Custom for Data {
     /// The object goes: the uploads it received are removed.
     fn free(&self, this: &Value) {
         if let Some(mut ctx) = self.0.get().map(Hold::ctx)
-            && ctx.state().request.ztmpfiles.get().is_some()
+            && parse::made(&ctx.state().request, Property::TmpFiles).is_some()
         {
             parse::release_uploads(this);
         }
@@ -191,11 +191,7 @@ fn parse(call: &Call) {
 fn get_method(call: &Call) {
     let Some(mut ctx) = checked(call) else { return };
     if ctx.flags() & HTTP2 != 0 {
-        let method = ctx
-            .state()
-            .request
-            .zserver
-            .get()
+        let method = parse::made(&ctx.state().request, Property::Server)
             .and_then(Value::array)
             .and_then(|server| server.find(b"request_method"));
         return match method {

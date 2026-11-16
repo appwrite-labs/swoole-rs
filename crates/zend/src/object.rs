@@ -510,13 +510,11 @@ impl<'a> Props<'a> {
     }
 
     /// The array [`Props::array_slot`] finds, lent to `edit` out of its
-    /// property: the property reads null while `edit` runs, so nothing `edit`
-    /// does can free or replace the array under it, and takes the array back
-    /// when `edit` returns, in place of whatever was put there meanwhile. None
-    /// as [`Props::array_slot`].
+    /// property ([`Value::edit_array`]), which takes it back when `edit`
+    /// returns, in place of whatever was put there meanwhile. None as
+    /// [`Props::array_slot`].
     pub fn edit_array<R>(self, name: &CStr, edit: impl FnOnce(&mut ArrayMut) -> R) -> Option<R> {
-        self.array_slot(name)?
-            .lend(|held| held.array_mut().map(|array| edit(array)))
+        self.array_slot(name)?.edit_array(edit)
     }
 
     /// `sw_zend_read_and_convert_property_array`: the slot of the declared
