@@ -28,23 +28,24 @@ type Brand<'id> = PhantomData<fn(&'id ()) -> &'id ()>;
 /// null, or writable for that many and reached through nothing else for `'id`. Only a
 /// lending mints one, with its count.
 #[repr(transparent)]
-pub(crate) struct Out<'id, T = c_void>(*mut T, Brand<'id>);
+pub struct Out<'id, T = c_void>(*mut T, Brand<'id>);
 
 /// Where a lent buffer starts, for a call that reads up to its [`Count`]'s `T`s there:
 /// null, or readable for that many and not written for `'id`. Only a lending mints one,
 /// with its count.
 #[repr(transparent)]
-pub(crate) struct In<'id, T = c_void>(*const T, Brand<'id>);
+pub struct In<'id, T = c_void>(*const T, Brand<'id>);
 
 /// How many `T`s the [`Out`] or [`In`] of the same lending holds, as the call's count
 /// type `N`: at most the buffer's length.
 #[repr(transparent)]
-pub(crate) struct Count<'id, N = usize>(N, Brand<'id>);
+pub struct Count<'id, N = usize>(N, Brand<'id>);
 
 impl<'id> In<'id, u8> {
     /// The same bytes, as the untyped address a call takes.
     #[inline]
-    pub(crate) fn bytes(self) -> In<'id> {
+    #[must_use]
+    pub fn bytes(self) -> In<'id> {
         In(self.0.cast(), PhantomData)
     }
 }
@@ -52,20 +53,31 @@ impl<'id> In<'id, u8> {
 impl<'id, S: ReadSlot> Out<'id, S> {
     /// The same one-byte slots, as the untyped address a call takes.
     #[inline]
-    pub(crate) fn bytes(self) -> Out<'id> {
+    #[must_use]
+    pub fn bytes(self) -> Out<'id> {
         Out(self.0.cast(), PhantomData)
     }
 
     /// The same one-byte slots, as the `char`s a call takes.
     #[inline]
-    pub(crate) fn chars(self) -> Out<'id, c_char> {
+    #[must_use]
+    pub fn chars(self) -> Out<'id, c_char> {
         Out(self.0.cast(), PhantomData)
     }
 }
 
 /// A count type a call takes, which a length saturates to: never more than the length.
-pub(crate) trait Narrow: Copy {
+/// Sealed: only the integer types here.
+pub trait Narrow: sealed::Sealed + Copy {
     fn narrow(length: usize) -> Self;
+}
+
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for usize {}
+    impl Sealed for i32 {}
+    impl Sealed for u32 {}
+    impl Sealed for u64 {}
 }
 
 impl Narrow for usize {
@@ -89,7 +101,7 @@ narrow!(i32, u32, u64);
 
 /// Lends `slots` to `call` as an [`Out`] and its [`Count`].
 #[inline]
-pub(crate) fn lend_out<T, N: Narrow, R>(
+pub fn lend_out<T, N: Narrow, R>(
     slots: &mut [T],
     call: impl for<'id> FnOnce(Out<'id, T>, Count<'id, N>) -> R,
 ) -> R {
@@ -101,7 +113,7 @@ pub(crate) fn lend_out<T, N: Narrow, R>(
 
 /// Lends `items` to `call` as an [`In`] and its [`Count`].
 #[inline]
-pub(crate) fn lend_in<T, N: Narrow, R>(
+pub fn lend_in<T, N: Narrow, R>(
     items: &[T],
     call: impl for<'id> FnOnce(In<'id, T>, Count<'id, N>) -> R,
 ) -> R {
