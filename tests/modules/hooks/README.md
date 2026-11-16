@@ -403,7 +403,7 @@ accept with), `coroutine_system.getaddrinfo`, and `coroutine_base.create`.
 `swoole_coroutine_waitpid`, `swoole_coroutine_wait` and `System::waitpid_safe`; their
 children `_exit(0)` where upstream's `exit(0)`, so a forked child skips the parent's
 exit handlers. The async cases call `async::dispatch` and read `sw_async_threads()`'s
-counts through `swr_v1_async_threads_stats`. They set `SwooleG`'s `aio_*` fields through
+counts through `async_threads::stats`. They set `SwooleG`'s `aio_*` fields through
 crates/corebase's setters, by path. `async.misc`'s `sw_async_threads()->notify_one()` has
 no exported counterpart. It wakes a worker with nothing queued, so nothing in the TEST
 observes it, and the case leaves it out. `os.daemon` discards its child's status, as
