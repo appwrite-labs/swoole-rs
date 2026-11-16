@@ -61,8 +61,9 @@ pub struct Upgrade {
 /// The connection a readable event is on: each fact and effect a reader needs, and
 /// its current receive buffer and HTTP request, borrowed until the next call.
 pub(crate) trait Connection {
-    /// `recv` into the buffer, after its contents or (`whole`) over them: the `ssize_t`.
-    fn recv(&mut self, whole: bool) -> i64;
+    /// `recv` into the buffer, after its contents or (`whole`) over them: the bytes
+    /// read, or `None` when it failed.
+    fn recv(&mut self, whole: bool) -> Option<usize>;
     /// `catch_read_error(errno)`.
     fn catch_error(&mut self) -> Caught;
     /// Warns that `recv` failed.
@@ -77,8 +78,8 @@ pub(crate) trait Connection {
     /// Frees the socket's receive buffer when larger than twice `SW_BUFFER_SIZE_BIG`
     /// (`if_empty`: and empty). Whether it did.
     fn release(&mut self, if_empty: bool) -> bool;
-    /// One framed receive into the current buffer: negative closes the connection.
-    fn receive(&mut self, framing: Framing) -> i64;
+    /// One framed receive into the current buffer: false closes the connection.
+    fn receive(&mut self, framing: Framing) -> bool;
     /// Hands on `length` bytes from the buffer's start; the connection's request is
     /// read afresh afterwards. False closes the connection.
     fn dispatch(&mut self, dispatch: Dispatch, length: u64) -> bool;
@@ -146,11 +147,6 @@ const HEADER_MAX_SIZE: u64 = 65536;
 const HTTP2_PREFACE: u64 = 24;
 const BUFFER_SIZE_BIG: u64 = 65536;
 
-/// A byte count a receive returned: a non-negative `ssize_t`.
-fn size(count: i64) -> usize {
-    usize::try_from(count).unwrap_or(usize::MAX)
-}
-
 /// `buffer->clear()`.
 fn clear(n: &mut impl Connection) {
     let buffer = n.buffer();
@@ -197,20 +193,19 @@ fn read_error(n: &mut impl Connection) -> Failure {
 
 fn raw(n: &mut impl Connection) -> bool {
     n.use_recv_buffer();
-    let received = n.recv(true);
-    if received < 0 {
+    let Some(received) = n.recv(true) else {
         if let Failure::Close = read_error(n) {
             n.close();
         }
         return true;
-    }
+    };
     if received == 0 {
         n.close();
         return true;
     }
-    let length = received.cast_unsigned();
+    let length = received as u64;
     set_offset(n, length);
-    n.buffer().length = size(received);
+    n.buffer().length = received;
     n.dispatch(Dispatch::Task, length)
 }
 
@@ -218,7 +213,7 @@ fn raw(n: &mut impl Connection) -> bool {
 #[inline(always)]
 fn framed(n: &mut impl Connection, framing: Framing, release: bool) -> bool {
     n.use_recv_buffer();
-    if n.receive(framing) < 0 {
+    if !n.receive(framing) {
         n.close_errno();
         n.close();
     }
@@ -233,7 +228,7 @@ fn eof(n: &mut impl Connection) -> bool {
         n.close();
         return false;
     }
-    if n.receive(Framing::Eof) < 0 {
+    if !n.receive(Framing::Eof) {
         n.close_errno();
         n.close();
     }
@@ -285,17 +280,16 @@ fn http(n: &mut impl Connection) -> bool {
 }
 
 fn receive(n: &mut impl Connection) -> Step {
-    let received = n.recv(false);
-    if received < 0 {
+    let Some(received) = n.recv(false) else {
         return match read_error(n) {
             Failure::Wait => Step::Done,
             Failure::Close => Step::Close,
         };
-    }
+    };
     if received == 0 {
         return Step::Close;
     }
-    n.buffer().length += size(received);
+    n.buffer().length += received;
     Step::Parse
 }
 
@@ -738,10 +732,8 @@ pub(crate) mod tests {
 
     impl Connection for Fake {
         /// Into the current buffer; what doesn't fit arrives next.
-        fn recv(&mut self, whole: bool) -> i64 {
-            let Some(mut chunk) = self.incoming.pop() else {
-                return -1;
-            };
+        fn recv(&mut self, whole: bool) -> Option<usize> {
+            let mut chunk = self.incoming.pop()?;
             let buffer = unsafe { &mut *self.current };
             let start = if whole { 0 } else { buffer.length };
             let n = chunk.len().min(buffer.size - start);
@@ -749,7 +741,7 @@ pub(crate) mod tests {
             if n < chunk.len() {
                 self.incoming.push(chunk.split_off(n));
             }
-            i64::try_from(n).unwrap()
+            Some(n)
         }
         fn catch_error(&mut self) -> Caught {
             Caught::Wait
@@ -773,9 +765,9 @@ pub(crate) mod tests {
             self.effects.push(Effect::Release);
             false
         }
-        fn receive(&mut self, framing: Framing) -> i64 {
+        fn receive(&mut self, framing: Framing) -> bool {
             self.effects.push(Effect::Receive(framing));
-            0
+            true
         }
         fn dispatch(&mut self, dispatch: Dispatch, length: u64) -> bool {
             if dispatch == Dispatch::Upload {

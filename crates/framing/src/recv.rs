@@ -4,14 +4,32 @@
 //! length header and then exactly the rest of the package, a `recv` each. The caller
 //! holds the receive buffer (`swoole::String`) and the protocol: the loop reads and
 //! sets them through [`Effects`], which performs each socket, callback, allocation or
-//! log effect in [`Effects::effect`].
+//! log effect through its methods.
 
 /// The socket, buffer and protocol of one receive. The loop holds nothing across
 /// an effect: it reads the buffer and protocol again after each one.
+///
+/// Each effect applies [`FLAG_WAIT`] from `flags` to the socket first, and refreshes
+/// `flags` from the socket after, except after a read or a length that succeeded.
 pub trait Effects {
-    /// Performs `op`: applies [`FLAG_WAIT`] from `flags` to the socket first, and
-    /// refreshes `flags` from the socket after.
-    fn effect(&mut self, op: Op, arg: u64, flags: &mut u32) -> i64;
+    /// Performs `op`, which reports nothing.
+    fn effect(&mut self, op: Op, arg: usize, flags: &mut u32);
+    /// `socket->recv` of at most `size` bytes into the buffer's tail, with upstream's
+    /// read-error handling and warning.
+    fn recv(&mut self, size: usize, flags: &mut u32) -> Received;
+    /// `get_package_length` over the buffered bytes from byte `from`: `None` for
+    /// malformed bytes, `Some(0)` while the length header is incomplete.
+    fn length(&mut self, from: usize, flags: &mut u32) -> Option<usize>;
+    /// `onPackage` of the buffer's `offset` bytes (the awaited package) from byte
+    /// `from`: false fails the receive.
+    fn dispatch(&mut self, from: usize, flags: &mut u32) -> bool;
+    /// `buffer->split` on the EOF, each part to `onPackage`: the bytes handed on, or
+    /// `None` when a part failed.
+    fn split(&mut self, flags: &mut u32) -> Option<usize>;
+    /// TLS holds decrypted bytes the kernel no longer reports.
+    fn ssl_pending(&mut self, flags: &mut u32) -> bool;
+    /// `swoole_pagesize()`.
+    fn page(&mut self, flags: &mut u32) -> usize;
     /// The buffer's `length`, `size` and `offset` now.
     fn buffer(&self) -> Buffer;
     /// Sets the buffer's `length` and `offset`.
@@ -33,25 +51,15 @@ pub enum Mode {
     Split,
 }
 
-/// A receive effect, which [`Effects::effect`] performs.
+/// A receive effect that reports nothing, which [`Effects::effect`] performs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
-    /// `socket->recv` of arg bytes into the buffer's tail, with upstream's read-error
-    /// handling and warning: the byte count, or `RECV_CLOSE`/`RECV_DONE`.
-    Recv,
-    /// `get_package_length` over the buffered bytes from byte arg.
-    GetLength,
+    /// arg: the size the buffer grows to.
     Extend,
-    /// `onPackage` of the buffer's `offset` bytes (the awaited package) from byte arg.
-    Dispatch,
+    /// arg: the bytes removed from the buffer's start.
     Reduce,
-    /// `buffer->split` on the EOF, each part to `onPackage`.
-    Split,
-    SslPending,
     /// `socket->skip_recv = 0`.
     ClearSkip,
-    /// `swoole_pagesize()`.
-    Page,
     LogMalformed,
     LogNoLength,
     /// arg: the packet length (length protocol).
@@ -62,10 +70,16 @@ pub enum Op {
     Reset,
 }
 
-/// `Op::Recv`: the connection closes (`SW_ERR`).
-pub const RECV_CLOSE: i64 = -1;
-/// `Op::Recv`: the read ends with `SW_OK` (would block, logged error, removed socket).
-pub const RECV_DONE: i64 = -2;
+/// What [`Effects::recv`] read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Received {
+    /// Bytes appended to the buffer; 0 when the peer closed.
+    Bytes(usize),
+    /// The connection closes (`SW_ERR`).
+    Close,
+    /// The read ends with `SW_OK` (would block, logged error, removed socket).
+    Done,
+}
 /// Receive flag bits: `socket->removed`, `recv_wait`, `ssl != nullptr`, and, at
 /// entry only, `skip_recv` and a dynamic `get_package_length_size`. The loop sets
 /// `recv_wait` here; the caller applies it before each effect and on return.
@@ -126,8 +140,8 @@ struct Recv<'a, E> {
 }
 
 impl<E: Effects> Recv<'_, E> {
-    fn op(&mut self, op: Op, arg: u64) -> i64 {
-        self.effects.effect(op, arg, &mut self.flags)
+    fn op(&mut self, op: Op, arg: usize) {
+        self.effects.effect(op, arg, &mut self.flags);
     }
     fn flag(&self, bit: u32) -> bool {
         self.flags & bit != 0
@@ -176,7 +190,7 @@ impl<E: Effects> Recv<'_, E> {
         } else if self.start > 0 {
             let start = std::mem::take(&mut self.start);
             let offset = self.offset();
-            self.op(Op::Reduce, start as u64);
+            self.op(Op::Reduce, start);
             self.set_offset(offset);
         }
     }
@@ -186,16 +200,21 @@ impl<E: Effects> Recv<'_, E> {
     fn max(&self) -> u32 {
         self.effects.protocol().package_max_length
     }
-    /// Appends `n` received bytes; `false` when they overrun the allocation.
-    fn grow(&mut self, n: i64) -> bool {
-        let (length, size) = (self.length(), self.size());
-        match usize::try_from(n) {
-            Ok(n) if n <= size - length => {
-                self.set_length(length + n);
-                true
-            }
-            _ => false,
+    /// Reads at most `size` bytes onto the buffer: the count, or the receive's end
+    /// when the read ends it (the peer closed, or bytes overran the allocation).
+    #[inline(always)]
+    fn read(&mut self, size: usize) -> Result<usize, Status> {
+        let n = match self.effects.recv(size, &mut self.flags) {
+            Received::Done => return Err(Status::Ok),
+            Received::Close | Received::Bytes(0) => return Err(Status::Err),
+            Received::Bytes(n) => n,
+        };
+        let length = self.length();
+        if n > self.size() - length {
+            return Err(Status::Err);
         }
+        self.set_length(length + n);
+        Ok(n)
     }
     /// The buffer ends with the protocol's EOF (`length >= eof_len`).
     fn ends_with_eof(&self) -> bool {
@@ -234,12 +253,9 @@ impl<E: Effects> Recv<'_, E> {
                     if free == 0 {
                         return Status::Err;
                     }
-                    match self.op(Op::Recv, free as u64) {
-                        RECV_DONE => return Status::Ok,
-                        RECV_CLOSE | 0 => return Status::Err,
-                        n if n < 0 => return Status::Err,
-                        n if !self.grow(n) => return Status::Err,
-                        n => drained = n.unsigned_abs() < free as u64,
+                    match self.read(free) {
+                        Ok(n) => drained = n < free,
+                        Err(status) => return status,
                     }
                     if !self.flag(FLAG_WAIT) {
                         Step::GetLength
@@ -253,7 +269,7 @@ impl<E: Effects> Recv<'_, E> {
                 }
                 Step::GetLength => self.get_length(head, drained),
                 Step::Dispatch => {
-                    if self.op(Op::Dispatch, self.start as u64) < 0 {
+                    if !self.effects.dispatch(self.start, &mut self.flags) {
                         self.settle();
                         return Status::Err;
                     }
@@ -296,16 +312,17 @@ impl<E: Effects> Recv<'_, E> {
     /// here, else read more (unless the socket left the reactor).
     #[inline(always)]
     fn get_length(&mut self, head: u32, drained: bool) -> Step {
-        let packet = self.op(Op::GetLength, self.start as u64);
+        let packet = self.effects.length(self.start, &mut self.flags);
         let header = self.header(head);
-        if packet <= 0 || packet > i64::from(self.max()) {
+        let max = self.max() as usize;
+        if packet.is_none_or(|packet| packet == 0 || packet > max) {
             // Failures and a short header report the buffer as upstream holds it.
             self.settle();
         }
-        if packet < 0 {
+        let Some(packet) = packet else {
             self.op(Op::LogMalformed, 0);
             return self.fail(header);
-        }
+        };
         if packet == 0 {
             // The whole length header is here and holds no length.
             if self.pending() >= header {
@@ -314,18 +331,18 @@ impl<E: Effects> Recv<'_, E> {
             }
             return self.more(drained);
         }
-        if packet > i64::from(self.max()) {
-            self.op(Op::LogTooLarge, packet.unsigned_abs());
+        if packet > max {
+            self.op(Op::LogTooLarge, packet);
             return self.fail(header);
         }
-        if usize::try_from(packet).map_or(true, |packet| self.size() - self.start < packet) {
+        if self.size() - self.start < packet {
             self.settle();
-            if usize::try_from(packet).map_or(true, |packet| self.size() < packet) {
-                self.op(Op::Extend, packet.unsigned_abs());
+            if self.size() < packet {
+                self.op(Op::Extend, packet);
             }
         }
         self.set_wait(true);
-        self.set_offset(packet);
+        self.set_offset(packet.cast_signed() as i64);
         if self.complete() {
             Step::Dispatch
         } else {
@@ -361,12 +378,8 @@ impl<E: Effects> Recv<'_, E> {
         let mut again = false;
         loop {
             let size = self.size() - self.length();
-            match self.op(Op::Recv, size.min(BUFFER_SIZE_STD) as u64) {
-                RECV_DONE => return Status::Ok,
-                RECV_CLOSE | 0 => return Status::Err,
-                n if n < 0 => return Status::Err,
-                n if !self.grow(n) => return Status::Err,
-                _ => {}
+            if let Err(status) = self.read(size.min(BUFFER_SIZE_STD)) {
+                return status;
             }
             if self.length() < self.eof_len() {
                 return Status::Ok;
@@ -380,37 +393,37 @@ impl<E: Effects> Recv<'_, E> {
             } else if self.ends_with_eof() {
                 let length = self.length();
                 self.set_offset(length.cast_signed() as i64);
-                if self.op(Op::Dispatch, 0) < 0 {
+                if !self.effects.dispatch(0, &mut self.flags) {
                     return Status::Err;
                 }
                 if self.flag(FLAG_REMOVED) {
                     return Status::Ok;
                 }
                 self.clear();
-                if self.flag(FLAG_TLS) && self.op(Op::SslPending, 0) > 0 {
+                if self.flag(FLAG_TLS) && self.effects.ssl_pending(&mut self.flags) {
                     continue;
                 }
                 return Status::Ok;
             }
             let (length, size, max) = (self.length(), self.size(), self.max());
             if length == max as usize {
-                self.op(Op::LogTooLarge, length as u64);
+                self.op(Op::LogTooLarge, length);
                 return Status::Err;
             }
             if length == size {
                 again = true;
                 if size < max as usize {
-                    let page = self.op(Op::Page, 0);
-                    let Some(page) = usize::try_from(page).ok().filter(|&page| page > 0) else {
+                    let page = self.effects.page(&mut self.flags);
+                    if page == 0 {
                         return Status::Err;
-                    };
+                    }
                     let double = size.wrapping_mul(2);
                     #[expect(
                         clippy::cast_possible_truncation,
                         reason = "upstream's uint32_t extend_size"
                     )]
                     let extend = double.wrapping_add(page - double % page) as u32;
-                    self.op(Op::Extend, u64::from(extend.min(max)));
+                    self.op(Op::Extend, extend.min(max) as usize);
                 }
             }
             if !again {
@@ -423,15 +436,15 @@ impl<E: Effects> Recv<'_, E> {
         if self.length() < self.eof_len() {
             return Status::Continue;
         }
-        let n = self.op(Op::Split, 0);
-        if self.flag(FLAG_REMOVED) || n < 0 {
+        let n = self.effects.split(&mut self.flags);
+        let Some(n) = n.filter(|_| !self.flag(FLAG_REMOVED)) else {
             return Status::Close;
-        }
+        };
         if n == 0 {
             return Status::Continue;
         }
-        if usize::try_from(n).is_ok_and(|n| n < self.length()) {
-            self.op(Op::Reduce, n.unsigned_abs());
+        if n < self.length() {
+            self.op(Op::Reduce, n);
             let offset = self.length().saturating_sub(self.eof_len());
             self.set_offset(offset.cast_signed() as i64);
         } else {
@@ -523,80 +536,92 @@ mod tests {
         fn data(&self) -> &[u8] {
             &self.storage[..self.buffer.length]
         }
-        fn apply(&mut self, op: Op, arg: u64) -> i64 {
-            let arg = usize::try_from(arg).unwrap();
-            let length = self.buffer.length;
-            match op {
-                Op::Recv => {
-                    self.events.push(format!("recv:{arg}"));
-                    if self.chunks.is_empty() {
-                        return RECV_DONE;
-                    }
-                    let chunk = self.chunks[0];
-                    let n = chunk.len().min(arg);
-                    self.storage[length..length + n].copy_from_slice(&chunk[..n]);
-                    if n == chunk.len() {
-                        self.chunks.remove(0);
-                    } else {
-                        self.chunks[0] = &chunk[n..];
-                    }
-                    i64::try_from(n).unwrap()
-                }
-                Op::GetLength => {
-                    self.events.push(format!("length:{}", length - arg));
-                    self.data()[arg..].first().map_or(0, |&n| i64::from(n) + 1)
-                }
-                Op::Extend => {
-                    self.events.push(format!("extend:{arg}"));
-                    self.storage.resize(arg, 0);
-                    self.buffer.size = arg;
-                    0
-                }
-                Op::Dispatch => {
-                    let end = arg + usize::try_from(self.buffer.offset).unwrap();
-                    let packet = String::from_utf8_lossy(&self.storage[arg..end]).into_owned();
-                    self.events.push(format!("package:{packet}"));
-                    self.dispatches += 1;
-                    if self.dispatches == self.gone_at {
-                        self.gone |= self.gone_on_dispatch;
-                    }
-                    0
-                }
-                Op::Reduce => {
-                    self.events.push(format!("reduce:{arg}"));
-                    self.storage.copy_within(arg..length, 0);
-                    self.buffer.length -= arg;
-                    self.buffer.offset = 0;
-                    0
-                }
-                Op::Split => {
-                    let mut end = 0;
-                    while let Some(at) = self.storage[end..length]
-                        .windows(2)
-                        .position(|w| w == b"\r\n")
-                    {
-                        let packet = String::from_utf8_lossy(&self.storage[end..end + at + 2]);
-                        self.events.push(format!("package:{packet}"));
-                        end += at + 2;
-                    }
-                    i64::try_from(end).unwrap()
-                }
-                Op::Page => 4096,
-                Op::ClearSkip => 0,
-                _ => {
-                    self.events.push(format!("{op:?}:{arg}"));
-                    0
-                }
-            }
+        /// Runs `f` as the socket would: with `recv_wait` from `flags`, and
+        /// `flags` refreshed after.
+        fn sync<T>(&mut self, flags: &mut u32, f: impl FnOnce(&mut Self) -> T) -> T {
+            self.wait = *flags & FLAG_WAIT != 0;
+            let result = f(self);
+            *flags = self.gone | if self.wait { FLAG_WAIT } else { 0 };
+            result
         }
     }
 
     impl Effects for Native {
-        fn effect(&mut self, op: Op, arg: u64, flags: &mut u32) -> i64 {
-            self.wait = *flags & FLAG_WAIT != 0;
-            let result = self.apply(op, arg);
-            *flags = self.gone | if self.wait { FLAG_WAIT } else { 0 };
-            result
+        fn effect(&mut self, op: Op, arg: usize, flags: &mut u32) {
+            self.sync(flags, |n| {
+                let length = n.buffer.length;
+                match op {
+                    Op::Extend => {
+                        n.events.push(format!("extend:{arg}"));
+                        n.storage.resize(arg, 0);
+                        n.buffer.size = arg;
+                    }
+                    Op::Reduce => {
+                        n.events.push(format!("reduce:{arg}"));
+                        n.storage.copy_within(arg..length, 0);
+                        n.buffer.length -= arg;
+                        n.buffer.offset = 0;
+                    }
+                    Op::ClearSkip => {}
+                    _ => n.events.push(format!("{op:?}:{arg}")),
+                }
+            });
+        }
+        fn recv(&mut self, size: usize, flags: &mut u32) -> Received {
+            self.sync(flags, |n| {
+                n.events.push(format!("recv:{size}"));
+                if n.chunks.is_empty() {
+                    return Received::Done;
+                }
+                let length = n.buffer.length;
+                let chunk = n.chunks[0];
+                let read = chunk.len().min(size);
+                n.storage[length..length + read].copy_from_slice(&chunk[..read]);
+                if read == chunk.len() {
+                    n.chunks.remove(0);
+                } else {
+                    n.chunks[0] = &chunk[read..];
+                }
+                Received::Bytes(read)
+            })
+        }
+        fn length(&mut self, from: usize, flags: &mut u32) -> Option<usize> {
+            self.sync(flags, |n| {
+                n.events.push(format!("length:{}", n.buffer.length - from));
+                Some(n.data()[from..].first().map_or(0, |&b| usize::from(b) + 1))
+            })
+        }
+        fn dispatch(&mut self, from: usize, flags: &mut u32) -> bool {
+            self.sync(flags, |n| {
+                let end = from + usize::try_from(n.buffer.offset).unwrap();
+                let packet = String::from_utf8_lossy(&n.storage[from..end]).into_owned();
+                n.events.push(format!("package:{packet}"));
+                n.dispatches += 1;
+                if n.dispatches == n.gone_at {
+                    n.gone |= n.gone_on_dispatch;
+                }
+                true
+            })
+        }
+        fn split(&mut self, flags: &mut u32) -> Option<usize> {
+            self.sync(flags, |n| {
+                let mut end = 0;
+                while let Some(at) = n.storage[end..n.buffer.length]
+                    .windows(2)
+                    .position(|w| w == b"\r\n")
+                {
+                    let packet = String::from_utf8_lossy(&n.storage[end..end + at + 2]);
+                    n.events.push(format!("package:{packet}"));
+                    end += at + 2;
+                }
+                Some(end)
+            })
+        }
+        fn ssl_pending(&mut self, flags: &mut u32) -> bool {
+            self.sync(flags, |_| false)
+        }
+        fn page(&mut self, flags: &mut u32) -> usize {
+            self.sync(flags, |_| 4096)
         }
         fn buffer(&self) -> Buffer {
             self.buffer

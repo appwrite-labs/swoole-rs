@@ -292,15 +292,16 @@ pub mod exports {
     impl Packages for Frames {
         const HEAD: Option<u32> = Some(WEBSOCKET_FRAME_HEADER_SIZE as u32);
         #[inline(always)]
-        fn length(_: &Recv, bytes: &[u8]) -> i64 {
+        fn length(_: &Recv, bytes: &[u8]) -> Option<usize> {
             match swoole_rs_websocket::frame_length(bytes) {
-                Ok(frame) => i64::try_from(frame.total).unwrap_or(-1),
-                Err(swoole_rs_websocket::LengthError::IncompleteHeader { .. }) => 0,
-                Err(swoole_rs_websocket::LengthError::Overflow { .. }) => -1,
+                // A frame longer than `ssize_t` holds is malformed.
+                Ok(frame) => isize::try_from(frame.total).ok().map(isize::cast_unsigned),
+                Err(swoole_rs_websocket::LengthError::IncompleteHeader { .. }) => Some(0),
+                Err(swoole_rs_websocket::LengthError::Overflow { .. }) => None,
             }
         }
         #[inline(always)]
-        fn dispatch(r: &Recv, data: *const u8, offset: i64) -> c_int {
+        fn dispatch(r: &Recv, data: *const u8, offset: i64) -> bool {
             let frame = RecvData {
                 info: DataHead {
                     len: u32::try_from(offset).unwrap_or(u32::MAX),
@@ -309,7 +310,7 @@ pub mod exports {
                 data,
             };
             // SAFETY: the port's protocol, a connection socket and its whole frame.
-            unsafe { websocket_dispatch_frame(r.protocol, r.socket, &frame) }
+            unsafe { websocket_dispatch_frame(r.protocol, r.socket, &frame) >= 0 }
         }
     }
 

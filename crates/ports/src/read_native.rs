@@ -15,7 +15,7 @@ use swoole_rs_corebase::constants::{
 };
 use swoole_rs_corebase::net_types::RecvData;
 use swoole_rs_corebase::{DataHead, TrustedAllocator, WebSocketStatus, log};
-use swoole_rs_framing::recv::Mode;
+use swoole_rs_framing::recv::{Mode, Status};
 use swoole_rs_http_ffi::{HttpRequest, HttpString};
 use swoole_rs_reactor::reactor_upstream::trigger_close_event;
 use swoole_rs_reactor::{Caught, Event, Fill, Running, Socket};
@@ -152,23 +152,24 @@ impl Read<'_> {
 
     /// One receive of `mode` through the port's protocol, its packages handled by `K`.
     #[inline(always)]
-    fn framed<K: Packages>(&self, mode: Mode) -> i64 {
+    fn framed<K: Packages>(&self, mode: Mode) -> bool {
         let protocol = self.port.protocol.as_ptr().cast_const();
         // SAFETY: the port's protocol and the current buffer.
-        i64::from(unsafe { framing_recv::receive::<K>(protocol, self.socket, self.buffer, mode) })
+        let status =
+            unsafe { framing_recv::receive::<K>(protocol, self.socket, self.buffer, mode) };
+        status != Status::Err
     }
 }
 
 impl Connection for Read<'_> {
     #[inline]
-    fn recv(&mut self, whole: bool) -> i64 {
+    fn recv(&mut self, whole: bool) -> Option<usize> {
         if whole {
             // The receive replaces the content, which the caller sets afresh.
             self.buffer().length = 0;
         }
         let socket = self.socket;
         recv_fill(socket, Fill::new(self.string().spare()), 0)
-            .map_or(-1, |n| n.cast_signed() as i64)
     }
 
     fn catch_error(&mut self) -> Caught {
@@ -228,7 +229,7 @@ impl Connection for Read<'_> {
     }
 
     #[inline(always)]
-    fn receive(&mut self, framing: Framing) -> i64 {
+    fn receive(&mut self, framing: Framing) -> bool {
         match framing {
             Framing::Length if self.frames => self.framed::<Frames>(Mode::Length),
             Framing::Length => self.framed::<Callbacks>(Mode::Length),
@@ -236,10 +237,7 @@ impl Connection for Read<'_> {
             Framing::Redis => {
                 let (port, socket, buffer, conn) = (self.port, self.socket, self.buffer, self.conn);
                 // SAFETY: the current buffer; the connection's object is its request.
-                let open = unsafe {
-                    crate::resp_recv::recv_packet(&port.protocol.get(), conn, socket, buffer)
-                };
-                if open { 0 } else { -1 }
+                unsafe { crate::resp_recv::recv_packet(&port.protocol.get(), conn, socket, buffer) }
             }
         }
     }

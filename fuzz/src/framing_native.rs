@@ -4,7 +4,7 @@
 //! the arguments and `call(context, op, arg)` performs each effect and refreshes
 //! `io.flags`. The hybrid runs the loop over crates/ports' effects instead.
 use std::ffi::c_void;
-use swoole_rs_framing::recv::{self, Buffer, Effects, FLAG_REMOVED, Mode, Op, RECV_CLOSE, recv};
+use swoole_rs_framing::recv::{self, Buffer, Effects, FLAG_REMOVED, Mode, Op, Received, recv};
 
 const SW_ERR: i32 = -1;
 
@@ -42,25 +42,30 @@ pub struct SwrFramingIo {
 /// One native effect on the socket, buffer or protocol in `context`.
 pub type FramingCall = unsafe extern "C" fn(context: *mut c_void, op: u32, arg: u64) -> i64;
 
-/// `SWR_FRAMING_OP_*` for `op`. The native effect tables predate the reset, which
-/// only changes how the connection closes: it has none.
+/// `SWR_FRAMING_OP_*`: the effects with a result, then `op`'s code. The native
+/// effect tables predate the reset, which only changes how the connection closes:
+/// it has none.
+const RECV: u32 = 1;
+const GET_LENGTH: u32 = 2;
+const DISPATCH: u32 = 4;
+const SPLIT: u32 = 7;
+const SSL_PENDING: u32 = 8;
+const PAGE: u32 = 10;
 fn code(op: Op) -> Option<u32> {
     Some(match op {
-        Op::Recv => 1,
-        Op::GetLength => 2,
         Op::Extend => 3,
-        Op::Dispatch => 4,
         Op::Reduce => 5,
-        Op::Split => 7,
-        Op::SslPending => 8,
         Op::ClearSkip => 9,
-        Op::Page => 10,
         Op::LogMalformed => 11,
         Op::LogNoLength => 12,
         Op::LogTooLarge => 13,
         Op::Reset => return None,
     })
 }
+
+/// `SWR_FRAMING_OP_RECV`: the read ends with `SW_OK`. Any other negative result
+/// closes the connection.
+const RECV_DONE: i64 = -2;
 
 /// Any op: a native exception was caught; native code rethrows it after return.
 pub const THROWN: i64 = i64::MIN;
@@ -74,27 +79,61 @@ struct NativeEffects {
     thrown: bool,
 }
 
-impl Effects for NativeEffects {
-    /// After a `THROWN` op, no further effect runs: each op fails and the socket
-    /// reads as removed, so the loop returns within a few steps.
-    fn effect(&mut self, op: Op, arg: u64, flags: &mut u32) -> i64 {
-        let Some(op) = code(op) else {
-            return 0;
-        };
+impl NativeEffects {
+    /// The native effect `op`'s result. After a `THROWN` op, no further effect runs:
+    /// each fails (`None`) and the socket reads as removed, so the loop returns within
+    /// a few steps.
+    fn call(&mut self, op: u32, arg: usize, flags: &mut u32) -> Option<i64> {
         if !self.thrown {
             // SAFETY: the caller's live receive; native code reads it only inside `call`.
             unsafe { (*self.io).flags = *flags };
             // SAFETY: `call` and `context` are the native pair lent for this receive.
-            let result = unsafe { (self.call)(self.context, op, arg) };
+            let result = unsafe { (self.call)(self.context, op, arg as u64) };
             // SAFETY: as above; `call` has returned.
             *flags = unsafe { (*self.io).flags };
             self.thrown = result == THROWN;
             if !self.thrown {
-                return result;
+                return Some(result);
             }
         }
         *flags |= FLAG_REMOVED;
-        RECV_CLOSE
+        None
+    }
+
+    /// A byte count `op` returned, `None` when it failed.
+    fn count(&mut self, op: u32, arg: usize, flags: &mut u32) -> Option<usize> {
+        self.call(op, arg, flags)
+            .and_then(|n| usize::try_from(n).ok())
+    }
+}
+
+impl Effects for NativeEffects {
+    fn effect(&mut self, op: Op, arg: usize, flags: &mut u32) {
+        if let Some(op) = code(op) {
+            _ = self.call(op, arg, flags);
+        }
+    }
+    fn recv(&mut self, size: usize, flags: &mut u32) -> Received {
+        match self.call(RECV, size, flags) {
+            Some(RECV_DONE) => Received::Done,
+            Some(n) => usize::try_from(n).map_or(Received::Close, Received::Bytes),
+            None => Received::Close,
+        }
+    }
+    fn length(&mut self, from: usize, flags: &mut u32) -> Option<usize> {
+        self.count(GET_LENGTH, from, flags)
+    }
+    fn dispatch(&mut self, from: usize, flags: &mut u32) -> bool {
+        self.call(DISPATCH, from, flags).is_some_and(|n| n >= 0)
+    }
+    fn split(&mut self, flags: &mut u32) -> Option<usize> {
+        self.count(SPLIT, 0, flags)
+    }
+    fn ssl_pending(&mut self, flags: &mut u32) -> bool {
+        self.call(SSL_PENDING, 0, flags).is_some_and(|n| n > 0)
+    }
+    fn page(&mut self, flags: &mut u32) -> usize {
+        self.count(PAGE, 0, flags).unwrap_or(0)
     }
     fn buffer(&self) -> Buffer {
         // SAFETY: the caller's live String, changed only inside `call`.
@@ -177,8 +216,6 @@ pub unsafe extern "C" fn swr_v1_framing_recv(
 mod tests {
     use super::*;
     use std::ptr;
-    const OP_RECV: u32 = 1;
-    const OP_GET_LENGTH: u32 = 2;
     const OP_EXTEND: u32 = 3;
 
     struct Fake {
@@ -194,11 +231,11 @@ mod tests {
         let fake = unsafe { &mut *context.cast::<Fake>() };
         fake.events.push(op);
         match op {
-            OP_RECV => {
+            RECV => {
                 fake.storage[0] = 5;
                 1
             }
-            OP_GET_LENGTH => 6,
+            GET_LENGTH => 6,
             OP_EXTEND => THROWN,
             _ => 0,
         }
@@ -238,7 +275,7 @@ mod tests {
         };
         let status = unsafe { swr_v1_framing_recv(&raw mut io, raw.cast(), Some(throwing)) };
         assert_eq!(status, SW_ERR);
-        assert_eq!(fake.events, [OP_RECV, OP_GET_LENGTH, OP_EXTEND]);
+        assert_eq!(fake.events, [RECV, GET_LENGTH, OP_EXTEND]);
         let status = unsafe { swr_v1_framing_recv(ptr::null_mut(), raw.cast(), Some(throwing)) };
         assert_eq!(status, SW_ERR);
     }
