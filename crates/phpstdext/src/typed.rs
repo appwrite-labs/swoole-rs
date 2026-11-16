@@ -775,8 +775,9 @@ fn check_appended(typed: Typed, call: &Call) -> bool {
 
 /// An override: unless the first argument names a typed array that `allowed`
 /// refuses (Zend has thrown), run the `original` handler, then, with `remark`,
-/// flag the table it rebuilt in place typed again. The original may bail out
-/// through this frame and its handler's, which own nothing to drop.
+/// flag the table it rebuilt in place typed again. A bailout of the original
+/// is raised at once, through this frame and its handler's, which own nothing
+/// to drop.
 fn guarded(
     call: &Call,
     original: fn(&Originals) -> zif_handler,
@@ -789,10 +790,12 @@ fn guarded(
     {
         return;
     }
-    if let Some(handler) = ORIGINALS.get().and_then(original) {
-        // SAFETY: a core function's handler, whose whole contract is a live
-        // handler frame and return slot: `call`'s. It parses its own arguments.
-        unsafe { handler(call.frame(), call.return_value()) };
+    let handler = ORIGINALS.get().and_then(original);
+    if handler.is_some()
+        && let Err(bailed) = call.forward(handler)
+    {
+        swoole_rs_zend::bailout::raise(Err(bailed));
+        return;
     }
     if remark && let Some(typed) = target {
         typed.mark();

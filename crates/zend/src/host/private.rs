@@ -154,7 +154,7 @@ pub(super) fn direct_call(
 /// or not), which Zend leaves alone while it runs, its arguments and its
 /// callable zval (null from [`function_call`]).
 pub type Create =
-    extern "C" fn(Option<&zend_fcall_info_cache>, u32, *mut zval, *mut zval, Trap<'_>) -> c_long;
+    extern "C" fn(Option<crate::Fcc<'_>>, u32, *mut zval, *mut zval, Trap<'_>) -> c_long;
 
 /// The coroutine call's own bailout flag, which the zend-sys shim lends its
 /// [`Create`] leaf inside the call's `zend_try`, on the thread running PHP.
