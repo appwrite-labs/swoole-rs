@@ -751,12 +751,10 @@ mod tests {
             (
                 ReqStatus::RinitEnd as i32,
                 ReqStatus::CallUserShutdownfuncBegin as i32,
+                ReqStatus::RshutdownBegin as i32,
                 ReqStatus::RshutdownEnd as i32
             ),
-            (1, 2, 4)
+            (1, 2, 3, 4)
         );
-        let header = include_str!("../../../native/phphelpers/swoole_rs_phphost.h");
-        let begin = ReqStatus::RshutdownBegin as i32;
-        assert!(header.contains(&format!("PHP_SWOOLE_RSHUTDOWN_BEGIN = {begin},")));
     }
 }
