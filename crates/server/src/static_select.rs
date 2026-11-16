@@ -256,11 +256,22 @@ struct Wire<'a> {
     socket: swoole_rs_reactor::Socket<'a>,
 }
 
+impl Wire<'_> {
+    /// Read the owned request with its receive buffer's bytes, while the socket
+    /// still holds the buffer.
+    fn read<R>(
+        &self,
+        read: impl FnOnce(&swoole_rs_http_ffi::HttpRequest, &[u8]) -> R,
+    ) -> Option<R> {
+        (self.socket).read(|s| Some(read(self.request, s.recv_buffer.as_ref()?.view())))
+    }
+}
+
 impl Exchange for Wire<'_> {
     fn header(&self, name: &[u8]) -> Vec<u8> {
-        self.request
-            .header_bytes(name)
-            .map_or_else(Vec::new, <[u8]>::to_vec)
+        self.read(|request, input| request.header_bytes(input, name).map(<[u8]>::to_vec))
+            .flatten()
+            .unwrap_or_default()
     }
     fn keep_alive(&self) -> bool {
         self.request.keep_alive
@@ -301,7 +312,9 @@ pub fn static_select(
         session_id,
         socket,
     };
-    let url = wire.request.url_bytes().to_vec();
+    let Some(url) = wire.read(|request, input| request.url_bytes(input).to_vec()) else {
+        return false;
+    };
     let Some(mut handler) = StaticHandler::new(wire.server, &url) else {
         return false;
     };

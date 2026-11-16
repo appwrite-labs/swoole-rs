@@ -273,18 +273,18 @@ impl PoolRecord {
         unsafe { self.ipc.get().as_mut() }.map(f)
     }
 
-    /// The pool's stream listener (a native socket), or null.
+    /// The pool's stream listener, if any.
     #[must_use]
-    pub fn ipc_listener(&self) -> *mut c_void {
-        self.with_ipc(|ipc| swr_v1_process_pool_ipc_listener(ipc))
-            .unwrap_or(ptr::null_mut())
+    pub fn ipc_listener(&self) -> Option<crate::pool::Connection> {
+        self.with_ipc(|ipc| swr_v1_process_pool_ipc_listener(ipc).cloned())
+            .flatten()
     }
 
-    /// The stream connection being served (a native socket), or null.
+    /// The stream connection being served, if any.
     #[must_use]
-    pub fn ipc_connection(&self) -> *mut c_void {
+    pub fn ipc_connection(&self) -> Option<crate::pool::Connection> {
         self.with_ipc(|ipc| crate::pool::pool_ipc_connection(ipc))
-            .unwrap_or(ptr::null_mut())
+            .flatten()
     }
 
     /// The registry `create` made, or null.
@@ -554,15 +554,15 @@ impl<'a> PoolRef<'a> {
     /// The pool's stream listener, which its IPC owns until `destroy` frees it, or
     /// `None` without one.
     #[must_use]
-    pub fn ipc_listener(self) -> Option<crate::worker_record::NativeSocket<'a>> {
-        crate::worker_record::NativeSocket::lend(self.record().ipc_listener())
+    pub fn ipc_listener(self) -> Option<crate::pool::Connection> {
+        self.record().ipc_listener()
     }
 
     /// The stream connection being served, which the worker loop frees once it is
     /// answered, or `None` without one.
     #[must_use]
-    pub fn ipc_connection(self) -> Option<crate::worker_record::NativeSocket<'a>> {
-        crate::worker_record::NativeSocket::lend(self.record().ipc_connection())
+    pub fn ipc_connection(self) -> Option<crate::pool::Connection> {
+        self.record().ipc_connection()
     }
 
     /// The worker loop's receive buffer and its size in bytes; null and 0 before
@@ -882,14 +882,16 @@ pub trait PoolNative: Sync {
     fn running(&self, call: &PoolCall) -> bool;
     /// Run the expired timers and dispatch the pending signals.
     fn end(&self);
-    /// The stream listener's `accept()`: the connection in `socket`.
+    /// The stream listener's `accept()`: the connection, set with
+    /// [`PoolCall::set_connection`].
     fn accept(&self, call: &mut PoolCall);
-    /// `socket->recv_sync(data, length, flags)`.
+    /// `socket->recv_sync(data, length, flags)` on the call's connection.
     fn recv(&self, call: &mut PoolCall);
-    /// `socket->send_sync(data, length)`.
+    /// `socket->send_sync(data, length)` on the call's connection.
     fn send(&self, call: &mut PoolCall);
-    /// `socket->free()` of the call's socket, which is not used again.
-    fn close(&self, call: &PoolCall);
+    /// `socket->free()` of the call's connection (or the listener), which is not
+    /// used again.
+    fn close(&self, call: &mut PoolCall);
     /// The worker's pipe, with the next timer as its read timeout: `read_sync`.
     fn pipe_read(&self, call: &mut PoolCall);
     /// `pipe_worker->wait_event(next timer, SW_EVENT_READ)`.
@@ -1192,8 +1194,8 @@ pub(crate) trait PoolHost {
     fn native(&self) -> Option<&dyn PoolNative>;
     fn warn(&self) -> Warn;
     fn event_size(&self) -> usize;
-    /// The native socket free.
-    fn close(&self, socket: *mut c_void);
+    /// The stream listener's free.
+    fn close(&self, listener: crate::pool::Connection);
     /// `Channel::make(size, sizeof(EventData), SW_CHAN_LOCK | SW_CHAN_SHM)`: the
     /// pool's new message box, or null.
     fn new_box(&mut self, size: u64) -> SharedChannel;
@@ -1314,10 +1316,10 @@ impl PoolHost for Native<'_> {
         self.native.event_size()
     }
 
-    fn close(&self, socket: *mut c_void) {
+    fn close(&self, listener: crate::pool::Connection) {
         let mut call = PoolCall::new(self.pool, None);
-        call.socket = socket;
-        self.native.close(&call);
+        call.connection = Some(listener);
+        self.native.close(&mut call);
     }
 
     fn new_box(&mut self, size: u64) -> SharedChannel {
@@ -1764,7 +1766,7 @@ impl<H: PoolHost> Pool<'_, H> {
     pub(crate) fn start_check(&mut self) -> bool {
         if self.ipc_mode() == IpcMode::Socket
             && self
-                .with_ipc(|ipc| swr_v1_process_pool_ipc_listener(ipc).is_null())
+                .with_ipc(|ipc| swr_v1_process_pool_ipc_listener(ipc).is_none())
                 .unwrap_or(true)
         {
             self.op(Op::Log(Log::MustListen), 0);
@@ -2211,7 +2213,7 @@ impl<H: PoolHost> Pool<'_, H> {
             // crate-private), taken back once: the field is cleared next.
             let ipc = unsafe { Box::from_raw(ipc) };
             // The native close frees its listener.
-            pool_ipc_free(*ipc, |socket| self.h.close(socket));
+            pool_ipc_free(*ipc, |listener| self.h.close(listener));
         }
         self.set_ipc(ptr::null_mut());
         self.p.set_registry(None);
@@ -2555,7 +2557,7 @@ mod tests {
         fn event_size(&self) -> usize {
             8192
         }
-        fn close(&self, _: *mut c_void) {}
+        fn close(&self, _: crate::pool::Connection) {}
         fn new_box(&mut self, size: u64) -> SharedChannel {
             if self.ask(Op::NewMessageBox, size) == 0 {
                 return SharedChannel::none();
@@ -2587,7 +2589,7 @@ mod tests {
         }
     }
 
-    fn close(_: *mut c_void) {}
+    fn close(_: crate::pool::Connection) {}
 
     fn warn(_: crate::reload_task::KillWarning, _: c_int, _: u32) {}
 

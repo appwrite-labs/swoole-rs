@@ -61,13 +61,10 @@ pub struct HttpForm {
     /// The current upload's file, buffered as the `FILE` upstream wrote was; none
     /// between uploads.
     fp: Option<BufWriter<File>>,
-    /// The body's own buffer, which the request parses from `init_multipart_parser`
-    /// until `destroy_multipart_parser` gives it back the receive buffer.
+    /// The body's own buffer, which receives go into and the parser reads from
+    /// `init_multipart_parser` until `destroy_multipart_parser`, while the body is
+    /// rewritten into the receive buffer.
     body: Option<Box<CppString>>,
-    /// The receive buffer, cut back to the header, that the body is rewritten into.
-    saved: *mut CppString,
-    /// The saved buffer's length: only the form's own appends change it.
-    saved_length: usize,
     /// The current upload's file name, NUL-terminated.
     upload: Vec<u8>,
     /// `upload_tmp_dir + "/swoole.upfile.XXXXXX"`.
@@ -109,7 +106,6 @@ pub struct HttpRequest {
     pub header_length: u32,
     pub content_length: u64,
     pub form: Option<Box<HttpForm>>,
-    pub buffer: *mut CppString,
     /// The current chunk's size, where its line or data starts (0 until the body
     /// is first scanned), and how far its size line has been scanned.
     pub chunk_length: usize,
@@ -140,7 +136,6 @@ impl Default for HttpRequest {
             header_length: 0,
             content_length: 0,
             form: None,
-            buffer: ptr::null_mut(),
             chunk_length: 0,
             chunk_offset: 0,
             chunk_scan_offset: 0,
@@ -148,32 +143,25 @@ impl Default for HttpRequest {
     }
 }
 
+/// The parse calls take the receive buffer the request is read into (upstream's
+/// `buffer_`), which the connection owns; the readers take its bytes.
 impl HttpRequest {
-    /// The buffer being parsed.
-    fn input<'a>(&self) -> (&'a mut CppString, &'a [u8]) {
-        // SAFETY: a request is parsed only once native code gave it a live buffer,
-        // which nothing else touches during the call.
-        let buffer = unsafe { &mut *self.buffer };
-        if buffer.is_empty() || buffer.as_ptr().is_null() {
-            return (buffer, &[]);
-        }
-        // SAFETY: the buffer holds `len()` initialized bytes at `as_ptr()`.
-        let bytes = unsafe { core::slice::from_raw_parts(buffer.as_ptr(), buffer.len()) };
-        (buffer, bytes)
-    }
-
-    /// `memset(&method, 0, offsetof(HttpRequest, form_data_))`: the form and buffer stay.
+    /// `memset(&method, 0, offsetof(HttpRequest, form_data_))`: the form stays.
     pub fn clean(&mut self) {
-        let (form, buffer) = (self.form.take(), self.buffer);
+        let form = self.form.take();
         *self = Self {
             form,
-            buffer,
             ..Self::default()
         };
     }
 
-    fn frame(&mut self, parse: fn(&mut HttpFrame, &[u8]) -> bool) -> bool {
-        let (buffer, input) = self.input();
+    /// The multipart body's own buffer, from `init_multipart_parser` until
+    /// `destroy_multipart_parser`: what is received goes into it, not the receive buffer.
+    pub fn body(&mut self) -> Option<&mut CppString> {
+        self.form.as_deref_mut()?.body.as_deref_mut()
+    }
+
+    fn frame(&mut self, buffer: &mut CppString, parse: fn(&mut HttpFrame, &[u8]) -> bool) -> bool {
         let mut frame = HttpFrame {
             offset: usize::try_from(buffer.offset()).unwrap_or(usize::MAX),
             content_length: self.content_length,
@@ -186,7 +174,7 @@ impl HttpRequest {
             header_length: self.header_length,
             known_length: self.known_length.into(),
         };
-        let found = parse(&mut frame, input);
+        let found = parse(&mut frame, buffer.view());
         buffer.set_offset(i64::try_from(frame.offset).unwrap_or(i64::MAX));
         self.content_length = frame.content_length;
         // The native fields are bytes and bits: keep their truncation.
@@ -202,18 +190,17 @@ impl HttpRequest {
     }
 
     /// The method, URL and version from the request line, or an HTTP/2 preface.
-    pub fn get_protocol(&mut self) -> bool {
-        self.frame(HttpFrame::request_line)
+    pub fn get_protocol(&mut self, buffer: &mut CppString) -> bool {
+        self.frame(buffer, HttpFrame::request_line)
     }
 
     /// Finds the `\r\n\r\n` ending the header block.
-    pub fn get_header_length(&mut self) -> bool {
-        self.frame(HttpFrame::header_end)
+    pub fn get_header_length(&mut self, buffer: &mut CppString) -> bool {
+        self.frame(buffer, HttpFrame::header_end)
     }
 
     /// `Content-Length`, `Connection`, `Transfer-Encoding` and a multipart `Content-Type`.
-    pub fn parse_header_info(&mut self) {
-        let (_, input) = self.input();
+    pub fn parse_header_info(&mut self, input: &[u8]) {
         let mut state = HttpHeaderInfo {
             cursor: self.request_line_length as usize + 2,
             content_length: self.content_length,
@@ -250,8 +237,6 @@ impl HttpRequest {
                 parser: None,
                 fp: None,
                 body: None,
-                saved: ptr::null_mut(),
-                saved_length: 0,
                 upload: Vec::new(),
                 template: Vec::new(),
                 header_name: Vec::new(),
@@ -264,8 +249,7 @@ impl HttpRequest {
     /// Scans the chunked body from where the last call stopped: true once its
     /// trailer section ended, with `content_length` up to there; false to wait for
     /// more, or with `excepted` (bad framing) or `too_large` (past `max_length`) set.
-    pub fn get_chunked_body_length(&mut self) -> bool {
-        let (_, input) = self.input();
+    pub fn get_chunked_body_length(&mut self, input: &[u8]) -> bool {
         let mut chunks = HttpChunks {
             state: self.chunk_state,
             length: self.chunk_length,
@@ -292,23 +276,20 @@ impl HttpRequest {
 
     /// An `Expect: 100-continue` header.
     #[must_use]
-    pub fn has_expect_header(&self) -> bool {
-        let (_, input) = self.input();
+    pub fn has_expect_header(&self, input: &[u8]) -> bool {
         swoole_rs_http::has_expect_header(input)
     }
 
     /// The value of header `name`, as a span of the buffer.
     #[must_use]
-    pub fn get_header(&self, name: &[u8]) -> Option<HttpSpan> {
-        let (_, input) = self.input();
+    pub fn get_header(&self, input: &[u8], name: &[u8]) -> Option<HttpSpan> {
         let start = self.url_offset as usize + self.url_length as usize + 10;
         swoole_rs_http::header_value(input, start, self.header_length as usize, name)
     }
 
     /// The request's URL, as the buffer's bytes.
     #[must_use]
-    pub fn url_bytes(&self) -> &[u8] {
-        let (_, input) = self.input();
+    pub fn url_bytes<'a>(&self, input: &'a [u8]) -> &'a [u8] {
         let start = self.url_offset as usize;
         input
             .get(start..start + self.url_length as usize)
@@ -317,9 +298,8 @@ impl HttpRequest {
 
     /// The value of header `name`, as the buffer's bytes.
     #[must_use]
-    pub fn header_bytes(&self, name: &[u8]) -> Option<&[u8]> {
-        let span = self.get_header(name)?;
-        let (_, input) = self.input();
+    pub fn header_bytes<'a>(&self, input: &'a [u8], name: &[u8]) -> Option<&'a [u8]> {
+        let span = self.get_header(input, name)?;
         input.get(span.offset..span.offset.checked_add(span.length)?)
     }
 
@@ -334,29 +314,21 @@ impl HttpRequest {
         }
     }
 
-    /// `append(data)` on the form's saved buffer.
-    fn save(&mut self, data: &[u8]) {
-        let form = form_of(self);
-        // SAFETY: null, or the receive buffer `init_multipart_parser` saved, which
-        // native code keeps live while the form is and nothing else borrows during a
-        // callback. `data` is never its contents.
-        let Some(saved) = (unsafe { form.saved.as_mut() }) else {
-            return;
-        };
-        form.saved_length = form.saved_length.wrapping_add(data.len());
-        saved.append(data);
-    }
-
-    /// `Request::init_multipart_parser`: a parser over the form's boundary, the body moved
-    /// to its own buffer and the receive buffer kept, cut back to the header, to rewrite
-    /// the body into. False without a form.
-    pub fn init_multipart_parser(&mut self, tmp_dir: &[u8], upload_max: usize) -> bool {
-        let r = self;
-        let Some(form) = r.form.as_deref() else {
+    /// `Request::init_multipart_parser`: a parser over the form's boundary in `buffer`,
+    /// the receive buffer, and the body moved to the form's own buffer, `buffer` cut back
+    /// to the header for the body to be rewritten into. False without a form.
+    pub fn init_multipart_parser(
+        &mut self,
+        buffer: &mut CppString,
+        tmp_dir: &[u8],
+        upload_max: usize,
+    ) -> bool {
+        let header = self.header_length as usize;
+        let Some(form) = self.form.as_deref_mut() else {
             return false;
         };
-        // The header buffer the boundary was found in is still the request's.
-        let (buffer, input) = r.input();
+        // The header buffer the boundary was found in.
+        let input = buffer.view();
         let text = input
             .get(form.boundary.offset..)
             .and_then(|text| text.get(..form.boundary.length));
@@ -367,29 +339,22 @@ impl HttpRequest {
             return false;
         };
         let at = boundary.offset..boundary.offset + boundary.length;
-        let parser = MultipartParser::new(text.get(at).unwrap_or_default());
-        let Some(form) = r.form.as_deref_mut() else {
-            return false;
-        };
-        form.parser = Some(parser);
-        let header = r.header_length as usize;
+        form.parser = Some(MultipartParser::new(text.get(at).unwrap_or_default()));
         let mut body = boxed_sized_string(BUFFER_SIZE_BIG, None);
         body.append(input.get(header..).unwrap_or_default());
         buffer.truncate(header);
+        form.body = Some(body);
         let mut template = tmp_dir.to_vec();
         template.extend_from_slice(b"/swoole.upfile.XXXXXX");
-        (form.saved, form.saved_length) = (r.buffer, header);
-        r.buffer = &raw mut **form.body.insert(body);
         form.template = template;
         form.upload_max = upload_max;
         true
     }
 
-    /// `Request::destroy_multipart_parser`: the body buffer freed, the receive buffer back,
-    /// an unfinished upload closed and unlinked, the parser and form gone.
+    /// `Request::destroy_multipart_parser`: the body buffer freed, an unfinished upload
+    /// closed and unlinked, the parser and form gone.
     pub fn destroy_multipart_parser(&mut self) {
-        let r = self;
-        let Some(form) = r.form.take() else {
+        let Some(form) = self.form.take() else {
             return;
         };
         // A form `init_multipart_parser` never ran on has no body buffer.
@@ -397,7 +362,6 @@ impl HttpRequest {
             return;
         };
         body.dispose();
-        r.buffer = form.saved;
         if let Some(fp) = form.fp {
             drop(fp);
             let name = form.upload.split(|&byte| byte == 0).next();
@@ -405,24 +369,34 @@ impl HttpRequest {
         }
     }
 
-    /// `Request::parse_multipart_data(buffer_)`: feeds the request's buffer, the body
-    /// since `init_multipart_parser`, to the parser, whose callbacks rewrite it into the
-    /// saved buffer. False rejects the request.
-    pub fn parse_multipart_data(&mut self) -> bool {
-        let r = self;
-        r.excepted = false;
-        let Some(mut parser) = r.form.as_deref_mut().and_then(|form| form.parser.take()) else {
+    /// `Request::parse_multipart_data(buffer_)`: feeds the body received since
+    /// `init_multipart_parser` to the parser, whose callbacks rewrite it into `saved`,
+    /// the receive buffer. False rejects the request.
+    pub fn parse_multipart_data(&mut self, saved: &mut CppString) -> bool {
+        self.excepted = false;
+        let Some(form) = self.form.as_deref_mut() else {
             return false;
         };
-        // The callbacks append to the saved buffer, never to this one.
-        let (buffer, data) = r.input();
-        let length = buffer.len();
-        let processed = parser.execute(r, data);
+        // `init_multipart_parser` made both; only the form's drop takes them.
+        let (Some(mut parser), Some(mut body)) = (form.parser.take(), form.body.take()) else {
+            return false;
+        };
+        let length = body.len();
+        let processed = parser.execute(
+            &mut Rewrite {
+                request: self,
+                saved,
+            },
+            body.view(),
+        );
         let reason = parser.error_message();
-        if let Some(form) = r.form.as_deref_mut() {
-            form.parser = Some(parser);
+        let result = swoole_rs_http::multipart_result(processed, length, self.excepted);
+        if result.is_ok() {
+            body.clear();
         }
-        match swoole_rs_http::multipart_result(processed, length, r.excepted) {
+        let form = form_of(self);
+        (form.parser, form.body) = (Some(parser), Some(body));
+        match result {
             Err(MultipartError::Parser) => {
                 // Upstream formats it into 256 bytes, its NUL included.
                 let reason = reason.get(..255).unwrap_or(&reason);
@@ -437,10 +411,7 @@ impl HttpRequest {
                 );
                 false
             }
-            Ok(()) => {
-                buffer.clear();
-                true
-            }
+            Ok(()) => true,
             Err(MultipartError::Short { excepted }) => {
                 // The policy reports Short only for a successful byte count.
                 log::error_log(
@@ -465,13 +436,20 @@ fn form_of(request: &mut HttpRequest) -> &mut HttpForm {
     })
 }
 
-/// The multipart parser's callbacks, which rewrite the body into the saved buffer.
-impl Parts<'_> for HttpRequest {
+/// The multipart parser's callbacks over a request, which rewrite its body into the
+/// receive buffer, `saved`.
+struct Rewrite<'a> {
+    request: &'a mut HttpRequest,
+    saved: &'a mut CppString,
+}
+
+impl Parts<'_> for Rewrite<'_> {
     fn on_header_field(&mut self, data: &[u8]) -> Flow {
-        let max_length = self.max_length as usize;
-        let form = form_of(self);
+        let r = &mut *self.request;
+        let max_length = r.max_length as usize;
+        let form = form_of(r);
         if form.header_name.len().saturating_add(data.len()) > max_length {
-            (self.excepted, self.too_large) = (true, true);
+            (r.excepted, r.too_large) = (true, true);
             return Flow::Pause;
         }
         form.header_name.extend_from_slice(data);
@@ -479,7 +457,7 @@ impl Parts<'_> for HttpRequest {
     }
 
     fn on_header_value(&mut self, data: &[u8]) -> Flow {
-        let form = form_of(self);
+        let form = form_of(self.request);
         // The value callback means the name is complete.
         let name = core::mem::take(&mut form.header_name);
         // Only the reactor may write this header; a client never names a part header so.
@@ -494,10 +472,9 @@ impl Parts<'_> for HttpRequest {
             );
             return Flow::Fail;
         }
-        self.save(&name);
-        self.save(b": ");
-        self.save(data);
-        self.save(b"\r\n");
+        for part in [&name[..], b": ", data, b"\r\n"] {
+            self.saved.append(part);
+        }
         if !case_equal(&name, b"content-disposition") {
             return Flow::Go;
         }
@@ -507,13 +484,13 @@ impl Parts<'_> for HttpRequest {
         if swoole_rs_http::multipart_filename(&mut value) != Ok(true) {
             return Flow::Go;
         }
-        let form = form_of(self);
+        let form = form_of(self.request);
         form.upload.clone_from(&form.template);
         form.upload.push(0);
         form.upload_size = 0;
         // `swoole_tmpfile` fills in the template's `XXXXXX`.
         let Some(fd) = create_tmpfile(&mut form.upload) else {
-            self.excepted = true;
+            self.request.excepted = true;
             return Flow::Go;
         };
         form.fp = Some(BufWriter::new(File::from(fd)));
@@ -521,25 +498,26 @@ impl Parts<'_> for HttpRequest {
     }
 
     fn on_part_data(&mut self, data: &[u8]) -> Flow {
-        let max_length = u64::from(self.max_length);
+        let r = &mut *self.request;
+        let max_length = u64::from(r.max_length);
         let length = data.len();
-        let form = form_of(self);
+        let form = form_of(r);
         let Some(fp) = form.fp.as_mut() else {
-            if (form.saved_length as u64).wrapping_add(length as u64) > max_length {
-                (self.excepted, self.unavailable) = (true, true);
+            if (self.saved.len() as u64).wrapping_add(length as u64) > max_length {
+                (r.excepted, r.unavailable) = (true, true);
                 return Flow::Pause;
             }
-            self.save(data);
+            self.saved.append(data);
             return Flow::Go;
         };
         form.upload_size = form.upload_size.wrapping_add(length);
         if form.upload_size > form.upload_max {
-            (self.excepted, self.too_large) = (true, true);
+            (r.excepted, r.too_large) = (true, true);
             return Flow::Pause;
         }
         if fp.write_all(data).is_err() {
             form.fp = None;
-            (self.excepted, self.unavailable) = (true, true);
+            (r.excepted, r.unavailable) = (true, true);
             log::sys_warning(
                 c"http_server::multipart_on_data",
                 format_args!("failed to write upload file"),
@@ -550,44 +528,42 @@ impl Parts<'_> for HttpRequest {
     }
 
     fn on_headers_complete(&mut self) -> Flow {
-        let form = form_of(self);
+        let form = form_of(self.request);
         form.header_name.clear();
         if form.fp.is_some() {
-            let upload = core::mem::take(&mut form.upload);
-            self.save(b"Swoole-Upload-File: ");
+            self.saved.append(b"Swoole-Upload-File: ");
             // The name up to its NUL: `swoole_tmpfile` wrote no other.
-            self.save(upload.split(|&byte| byte == 0).next().unwrap_or_default());
-            form_of(self).upload = upload;
+            let name = form.upload.split(|&byte| byte == 0).next();
+            self.saved.append(name.unwrap_or_default());
         }
-        self.multipart_header_parsed = true;
-        self.save(b"\r\n");
+        self.request.multipart_header_parsed = true;
+        self.saved.append(b"\r\n");
         Flow::Go
     }
 
     fn on_part_data_end(&mut self) -> Flow {
-        self.multipart_header_parsed = false;
-        let form = form_of(self);
+        self.request.multipart_header_parsed = false;
         // Dropping the file writes what is buffered and closes it.
-        if form.fp.take().is_some() {
-            self.save(b"\r\nSwoole-Upload-File");
+        if form_of(self.request).fp.take().is_some() {
+            self.saved.append(b"\r\nSwoole-Upload-File");
         }
-        self.save(b"\r\n");
+        self.saved.append(b"\r\n");
         Flow::Go
     }
 
     fn on_part_data_begin(&mut self, boundary: &[u8]) -> Flow {
-        form_of(self).header_name.clear();
-        self.save(boundary);
-        self.save(b"\r\n");
+        form_of(self.request).header_name.clear();
+        self.saved.append(boundary);
+        self.saved.append(b"\r\n");
         Flow::Go
     }
 
     fn on_body_end(&mut self, boundary: &[u8]) -> Flow {
-        self.save(boundary);
-        self.save(b"--");
-        let length = form_of(self).saved_length;
-        self.content_length = (length as u64).wrapping_sub(u64::from(self.header_length));
-        self.tried_to_dispatch = true;
+        self.saved.append(boundary);
+        self.saved.append(b"--");
+        let r = &mut *self.request;
+        r.content_length = (self.saved.len() as u64).wrapping_sub(u64::from(r.header_length));
+        r.tried_to_dispatch = true;
         Flow::Go
     }
 }
@@ -623,19 +599,16 @@ mod tests {
     fn code(done: bool) -> i32 {
         if done { SW_OK } else { SW_ERR }
     }
-    use swoole_rs_buffer::string::{delete_string, new_sized_string};
-
-    /// A receive buffer holding `text`, with room to grow: a `swoole::String` the
-    /// request points at, read back through the same pointer.
-    struct Input(*mut CppString);
+    /// A receive buffer holding `text`, with room to grow.
+    struct Input(Box<CppString>);
 
     impl Input {
         fn get(&self) -> &CppString {
-            unsafe { &*self.0 }
+            &self.0
         }
 
         fn get_mut(&mut self) -> &mut CppString {
-            unsafe { &mut *self.0 }
+            &mut self.0
         }
 
         fn bytes(&self) -> &[u8] {
@@ -645,21 +618,14 @@ mod tests {
 
     impl Drop for Input {
         fn drop(&mut self) {
-            unsafe { delete_string(self.0) };
+            self.0.dispose();
         }
     }
 
     fn input(text: &[u8]) -> Input {
-        let mut input = Input(new_sized_string(text.len() + 4096, None));
+        let mut input = Input(boxed_sized_string(text.len() + 4096, None));
         input.get_mut().append(text);
         input
-    }
-
-    fn request(input: &mut Input) -> HttpRequest {
-        HttpRequest {
-            buffer: input.0,
-            ..HttpRequest::default()
-        }
     }
 
     fn url(request: &HttpRequest, input: &Input) -> Vec<u8> {
@@ -669,10 +635,14 @@ mod tests {
 
     fn parsed(text: &[u8]) -> (Input, HttpRequest) {
         let mut i = input(text);
-        let mut r = request(&mut i);
-        assert_eq!(code(r.get_protocol()), SW_OK, "request line");
-        assert_eq!(code(r.get_header_length()), SW_OK, "header block");
-        r.parse_header_info();
+        let mut r = HttpRequest::default();
+        assert_eq!(code(r.get_protocol(i.get_mut())), SW_OK, "request line");
+        assert_eq!(
+            code(r.get_header_length(i.get_mut())),
+            SW_OK,
+            "header block"
+        );
+        r.parse_header_info(i.bytes());
         (i, r)
     }
 
@@ -683,8 +653,8 @@ mod tests {
         let (get, post, put, pri, v10, v11) = (2, 4, 5, 27, 1, 2);
         let protocol = |text: &[u8]| {
             let mut i = input(text);
-            let mut r = request(&mut i);
-            let status = code(r.get_protocol());
+            let mut r = HttpRequest::default();
+            let status = code(r.get_protocol(i.get_mut()));
             let url = url(&r, &i);
             (status, r, url, i.get().offset())
         };
@@ -775,15 +745,12 @@ mod tests {
             assert!(i != 0 && i <= pri, "{i}");
             let name = name.to_bytes();
             let mut i_ = input(&[name, b" / HTTP/1.1\r\nHost: example.com\r\n\r\n"].concat());
-            let mut r = request(&mut i_);
+            let mut r = HttpRequest::default();
+            let status = code(r.get_protocol(i_.get_mut()));
             if i == pri {
-                assert_eq!((code(r.get_protocol()), r.excepted), (SW_ERR, true), "PRI");
+                assert_eq!((status, r.excepted), (SW_ERR, true), "PRI");
             } else {
-                assert_eq!(
-                    (code(r.get_protocol()), c_int::from(r.method)),
-                    (SW_OK, i),
-                    "{i}"
-                );
+                assert_eq!((status, c_int::from(r.method)), (SW_OK, i), "{i}");
             }
         }
     }
@@ -791,10 +758,11 @@ mod tests {
     // core-tests/src/server/http_server.cpp: has_expect_header.
     #[test]
     fn has_expect_header() {
-        let mut i = input(b"HTTP/1.1 200 OK\r\nCache-Control: no-cache\r\nConnection: close\r\nContent-Length: 0\r\nContent-Type: text/html\r\nPragma: no-cache\r\n\r\n");
-        assert!(!request(&mut i).has_expect_header(), "no Expect");
-        let mut i = input(b"POST /submit HTTP/1.1\r\nHost: www.example.com\r\nContent-Type: application/json\r\nContent-Length: 1000000\r\nExpect: 100-continue\r\n\r\n");
-        assert!(request(&mut i).has_expect_header(), "Expect: 100-continue");
+        let r = HttpRequest::default();
+        let i = input(b"HTTP/1.1 200 OK\r\nCache-Control: no-cache\r\nConnection: close\r\nContent-Length: 0\r\nContent-Type: text/html\r\nPragma: no-cache\r\n\r\n");
+        assert!(!r.has_expect_header(i.bytes()), "no Expect");
+        let i = input(b"POST /submit HTTP/1.1\r\nHost: www.example.com\r\nContent-Type: application/json\r\nContent-Length: 1000000\r\nExpect: 100-continue\r\n\r\n");
+        assert!(r.has_expect_header(i.bytes()), "Expect: 100-continue");
     }
 
     #[test]
@@ -807,13 +775,16 @@ mod tests {
             "flags"
         );
         assert_eq!(r.content_length, 12, "Content-Length");
-        let host = r.get_header(b"Host").unwrap();
+        let host = r.get_header(i.bytes(), b"Host").unwrap();
         assert_eq!(
             &i.bytes()[host.offset..host.offset + host.length],
             b"a",
             "Host"
         );
-        assert!(r.get_header(b"Missing").is_none(), "absent header");
+        assert!(
+            r.get_header(i.bytes(), b"Missing").is_none(),
+            "absent header"
+        );
 
         let (_, r) =
             parsed(b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\nContent-Length: 0\r\n\r\n");
@@ -857,7 +828,7 @@ mod tests {
         let head = b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n";
         let (i, mut r) = parsed(&[&head[..], body].concat());
         r.max_length = max;
-        (code(r.get_chunked_body_length()), r, i)
+        (code(r.get_chunked_body_length(i.bytes())), r, i)
     }
 
     #[test]
@@ -929,7 +900,11 @@ mod tests {
             (SW_ERR, ChunkState::Data, 3)
         );
         i.get_mut().append(b"c\r\n0\r\n\r\n");
-        assert_eq!(code(r.get_chunked_body_length()), SW_OK, "complete");
+        assert_eq!(
+            code(r.get_chunked_body_length(i.bytes())),
+            SW_OK,
+            "complete"
+        );
         assert_eq!(r.content_length, 13, "the whole body");
     }
 
@@ -959,15 +934,11 @@ mod tests {
     }
 
     #[test]
-    fn clean_keeps_form_and_buffer() {
+    fn clean_keeps_the_form() {
         let (_, mut r) = parsed(b"POST / HTTP/1.1\r\nContent-Type: multipart/form-data; boundary=x\r\nContent-Length: 9\r\n\r\n");
         assert!(r.form.is_some() && r.known_length, "a form");
-        let buffer = r.buffer;
         r.clean();
-        assert!(
-            r.form.is_some() && r.buffer == buffer,
-            "form and buffer kept"
-        );
+        assert!(r.form.is_some(), "form kept");
         assert!(
             !r.known_length && r.content_length == 0 && r.method == 0,
             "facts reset"
@@ -975,15 +946,21 @@ mod tests {
         r.form = None;
     }
 
+    /// One part header through the callbacks.
+    fn field(parts: &mut Rewrite<'_>, name: &[u8], value: &[u8]) {
+        parts.on_header_field(name);
+        parts.on_header_value(value);
+    }
+
     /// Streams a two-part body, one part a file, through the callbacks.
     #[test]
     fn multipart_bodies_are_rewritten_with_uploads_on_disk() {
         let head = b"POST / HTTP/1.1\r\nContent-Type: multipart/form-data; boundary=AB\r\nContent-Length: 999\r\n\r\n";
-        let (i, mut r) = parsed(head);
+        let (mut i, mut r) = parsed(head);
         r.max_length = 1 << 20;
         let dir = std::env::temp_dir();
         assert!(
-            r.init_multipart_parser(dir.as_os_str().as_bytes(), 100),
+            r.init_multipart_parser(i.get_mut(), dir.as_os_str().as_bytes(), 100),
             "initialized"
         );
         assert_eq!(
@@ -991,25 +968,25 @@ mod tests {
             head.len(),
             "the receive buffer keeps the header"
         );
-        let field = |r: &mut HttpRequest, name: &[u8], value: &[u8]| {
-            r.on_header_field(name);
-            r.on_header_value(value);
+        let mut parts = Rewrite {
+            request: &mut r,
+            saved: i.get_mut(),
         };
-        r.on_part_data_begin(b"--AB");
-        field(&mut r, b"Content-Disposition", b"form-data; name=\"a\"");
-        r.on_headers_complete();
-        r.on_part_data(b"1");
-        r.on_part_data_end();
-        r.on_part_data_begin(b"--AB");
+        parts.on_part_data_begin(b"--AB");
+        field(&mut parts, b"Content-Disposition", b"form-data; name=\"a\"");
+        parts.on_headers_complete();
+        parts.on_part_data(b"1");
+        parts.on_part_data_end();
+        parts.on_part_data_begin(b"--AB");
         field(
-            &mut r,
+            &mut parts,
             b"Content-Disposition",
             b"form-data; name=\"f\"; filename=\"x.txt\"",
         );
-        r.on_headers_complete();
-        r.on_part_data(b"file");
-        r.on_part_data_end();
-        r.on_body_end(b"--AB");
+        parts.on_headers_complete();
+        parts.on_part_data(b"file");
+        parts.on_part_data_end();
+        parts.on_body_end(b"--AB");
         let body = &i.bytes()[head.len()..];
         let marker = b"Swoole-Upload-File: ";
         let at = body
@@ -1052,10 +1029,7 @@ mod tests {
             "ready to dispatch"
         );
         r.destroy_multipart_parser();
-        assert!(
-            r.form.is_none() && r.buffer == i.0,
-            "the receive buffer is back"
-        );
+        assert!(r.form.is_none(), "the form is gone");
     }
 
     /// Through `parse_multipart_data`, a body arriving after the header is parsed
@@ -1063,23 +1037,22 @@ mod tests {
     #[test]
     fn parsed_bodies_go_through_the_parser_and_open_uploads_are_removed() {
         let head = b"POST / HTTP/1.1\r\nContent-Type: multipart/form-data; boundary=b\r\n\r\n";
-        let (i, mut r) = parsed(head);
+        let (mut i, mut r) = parsed(head);
         r.max_length = 1 << 20;
         let dir = std::env::temp_dir();
-        assert!(r.init_multipart_parser(dir.as_os_str().as_bytes(), 100));
-        assert_ne!(r.buffer, i.0, "the body has its own buffer");
-        unsafe { &mut *r.buffer }
-            .append(b"--b\r\nContent-Disposition: form-data; name=\"f\"; filename=\"x\"\r\n\r\nfi");
-        assert!(r.parse_multipart_data(), "parsed");
+        assert!(r.init_multipart_parser(i.get_mut(), dir.as_os_str().as_bytes(), 100));
+        let body = r.body().expect("the body has its own buffer");
+        body.append(b"--b\r\nContent-Disposition: form-data; name=\"f\"; filename=\"x\"\r\n\r\nfi");
+        assert!(r.parse_multipart_data(i.get_mut()), "parsed");
         assert!(
-            unsafe { &*r.buffer }.is_empty(),
+            r.body().is_some_and(|body| body.is_empty()),
             "the body buffer is cleared"
         );
         let upload = r.form.as_deref().unwrap().upload.clone();
         let name = OsStr::from_bytes(upload.split(|&b| b == 0).next().unwrap());
         assert!(std::fs::exists(name).unwrap(), "the upload is open");
         r.destroy_multipart_parser();
-        assert_eq!(r.buffer, i.0, "the receive buffer is back");
+        assert!(r.body().is_none(), "the body buffer is gone");
         assert!(
             !std::fs::exists(name).unwrap(),
             "the unfinished upload is gone"
@@ -1090,12 +1063,16 @@ mod tests {
     fn oversize_parts_and_uploads_are_rejected() {
         let (_, mut r) =
             parsed(b"POST / HTTP/1.1\r\nContent-Type: multipart/form-data; boundary=AB\r\n\r\n");
-        let saved = input(b"0123456789");
+        let mut saved = input(b"0123456789");
+        let mut on_part_data = |request: &mut HttpRequest, data: &[u8]| {
+            let saved = saved.get_mut();
+            Rewrite { request, saved }.on_part_data(data)
+        };
         if let Some(form) = r.form.as_deref_mut() {
-            (form.saved, form.saved_length, form.upload_max) = (saved.0, 10, 3);
+            form.upload_max = 3;
         }
         r.max_length = 12;
-        assert_eq!(r.on_part_data(b"abc"), Flow::Pause, "rejected");
+        assert_eq!(on_part_data(&mut r, b"abc"), Flow::Pause, "rejected");
         assert!(
             r.excepted && r.unavailable && !r.too_large,
             "a field past max_length"
@@ -1105,7 +1082,7 @@ mod tests {
             let null = std::fs::OpenOptions::new().write(true).open("/dev/null");
             form.fp = Some(BufWriter::new(null.unwrap()));
         }
-        assert_eq!(r.on_part_data(b"abcd"), Flow::Pause, "rejected");
+        assert_eq!(on_part_data(&mut r, b"abcd"), Flow::Pause, "rejected");
         assert!(
             r.excepted && r.too_large,
             "an upload past upload_max_filesize"
@@ -1125,7 +1102,7 @@ mod tests {
             // The header buffer holds the boundary parameter, as the reactor's does.
             let boundary = b"boundary=b";
             let mut input = input(boundary);
-            let mut request = Box::new(request(&mut input));
+            let mut request = Box::new(HttpRequest::default());
             request.max_length = u32::try_from(BUFFER_SIZE_BIG).unwrap();
             request.header_length = u32::try_from(boundary.len()).unwrap();
             request.form = Some(Box::new(HttpForm {
@@ -1136,22 +1113,20 @@ mod tests {
                 parser: None,
                 fp: None,
                 body: None,
-                saved: ptr::null_mut(),
-                saved_length: 0,
                 upload: Vec::new(),
                 template: Vec::new(),
                 header_name: Vec::new(),
                 upload_size: 0,
                 upload_max: 0,
             }));
-            assert!(request.init_multipart_parser(b"/tmp", 1024 * 1024));
+            assert!(request.init_multipart_parser(input.get_mut(), b"/tmp", 1024 * 1024));
             Self { input, request }
         }
 
         /// Like the reactor, the parse buffer is cleared after every read and refilled from its start.
         fn feed(&mut self, data: &[u8]) -> bool {
-            unsafe { &mut *self.request.buffer }.append(data);
-            self.request.parse_multipart_data()
+            self.request.body().expect("a body buffer").append(data);
+            self.request.parse_multipart_data(self.input.get_mut())
         }
 
         fn forwarded(&self) -> String {

@@ -248,10 +248,7 @@ mod tests {
         let [a, b] = pair();
         write(b, b"hello");
         let mut buffer = [0_u8; 8];
-        let mut address = SocketAddress {
-            len: size_of::<libc::sockaddr_storage>().c_cast(),
-            ..SocketAddress::default()
-        };
+        let mut address = SocketAddress::default();
         let n = crate::Fill::new(&mut buffer).recvfrom(a, 0, &mut address);
         assert_eq!(&buffer[..n.unwrap()], b"hello");
         close(&[a, b]);

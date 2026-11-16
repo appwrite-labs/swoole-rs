@@ -98,6 +98,12 @@ pub fn coroutine_state(cid: c_long) -> Option<crate::State> {
     with_scheduler(|s| s.state(cid))
 }
 
+/// [`Scheduler::cid_of`] on this thread.
+#[must_use]
+pub fn coroutine_cid_of(co: *const c_void) -> Option<c_long> {
+    with_scheduler(|s| s.cid_of(co.cast()))
+}
+
 /// [`Scheduler::older_native`] on this thread.
 #[must_use]
 pub fn coroutine_older(before: c_long) -> Option<(c_long, *mut c_void)> {

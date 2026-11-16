@@ -6,6 +6,7 @@ name = "swoole-rs-http-server-tests"
 version = "0.0.0"
 edition = "2024"
 publish = false
+license.workspace = true
 build = "../../hooks/system/build.rs"
 
 [[bin]]

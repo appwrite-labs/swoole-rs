@@ -41,11 +41,9 @@ callback that can bail out runs beneath a Rust frame.
   which bails out. `cargo test -p swoole-rs-bus` round-trips packets over
   real socketpairs, upstream's `message_bus` TESTs among them (see below).
 
-Undefined legacy overreads/overflows are not replayed: empty MQTT asks for more,
-invalid/truncated RESP fails, oversized SOCKS output is rejected before overflow.
-Original malformed RESP parsing dereferences nullptr under UBSan; numeric error
-cases compare the defined `get_number` helper instead. Invalid non-array PHP
-SET/MAP is excluded because the original throws then dereferences invalid memory.
+Rust's own bounds: empty MQTT asks for more, invalid/truncated RESP fails, and
+oversized SOCKS output is rejected. Numeric error cases compare the `get_number`
+helper. Invalid non-array PHP SET/MAP is excluded.
 
 ## Rust and native differential
 
