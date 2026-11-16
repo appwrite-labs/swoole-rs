@@ -22,7 +22,7 @@ use swoole_rs_httpbindings::{
 };
 use swoole_rs_zend::sys::zval;
 use swoole_rs_zend::{
-    ArrayMut, Declared, Interned, Minit, Owned, OwnedArray, Value, ZStr, ZString,
+    ArrayMut, Declared, Interned, Minit, Owned, OwnedArray, Separated, Value, ZStr, ZString,
 };
 
 /// A request's multipart parser and the upload it is writing.
@@ -361,17 +361,27 @@ fn raw_property(state: &mut State, which: Property) -> *mut zval {
     property(&mut state.request, which).map_or(ptr::null_mut(), Value::as_ptr)
 }
 
+/// New server keys share one separation as well as the property loan.
+#[inline(always)]
+pub(crate) fn edit_server(state: &mut State, edit: impl FnOnce(&mut Separated<'_>)) {
+    self::edit(&mut state.request, Property::Server, |server| {
+        if let Some(mut server) = server.separate() {
+            edit(&mut server);
+        }
+    });
+}
+
 /// `http_server_add_server_array`: `$request->server[key] = value`.
 #[inline(always)]
 pub(crate) fn add_server(state: &mut State, name: Key, value: Owned) {
-    edit(&mut state.request, Property::Server, |server| {
+    edit_server(state, |server| {
         add_field(server, name, value);
     });
 }
 
 /// One known key in a batch whose server array is already lent.
 #[inline(always)]
-pub(crate) fn add_field(server: &mut ArrayMut, name: Key, value: Owned) {
+pub(crate) fn add_field(server: &mut Separated<'_>, name: Key, value: Owned) {
     if let Some(key) = key(name) {
         server.add_new(key, value);
     }
@@ -709,7 +719,7 @@ fn on_headers_complete(state: &mut State) -> Step {
     } else {
         Key::Http10
     };
-    edit(&mut state.request, Property::Server, |server| {
+    edit_server(state, |server| {
         add_field(server, Key::RequestMethod, method);
         add_field(server, Key::RequestUri, Owned::string(uri));
         add_field(server, Key::PathInfo, Owned::string(decoded));
@@ -730,7 +740,7 @@ fn on_headers_complete(state: &mut State) -> Step {
 pub(crate) fn request_times(state: &mut State) {
     let now = swoole_rs_corebase::time_now();
     let float = swoole_rs_corebase::microtime();
-    edit(&mut state.request, Property::Server, |server| {
+    edit_server(state, |server| {
         add_field(server, Key::RequestTime, Owned::long(now));
         add_field(server, Key::RequestTimeFloat, Owned::double(float));
     });

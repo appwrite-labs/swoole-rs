@@ -7,9 +7,7 @@
 use crate::{
     context::{self, Ctx, Hold},
     host,
-    parse::{
-        self, Key, Property, add_field, add_protocol, add_server, key, parse_request, request_times,
-    },
+    parse::{self, Key, add_field, add_protocol, add_server, key, parse_request, request_times},
     state::State,
     websocket,
 };
@@ -195,7 +193,7 @@ fn addresses(
                 .unwrap_or_else(|| [address(server, conn, true), address(server, conn, false)]),
         )
     };
-    parse::edit(&mut state.request, Property::Server, |server| {
+    parse::edit_server(state, |server| {
         add_field(server, Key::ServerPort, Owned::long(local_port));
         add_field(server, Key::RemotePort, Owned::long(remote_port));
         if let Some([local, remote]) = names {

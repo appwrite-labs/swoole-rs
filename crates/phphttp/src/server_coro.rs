@@ -909,7 +909,7 @@ fn on_accept(call: &Call) {
 fn add_peer(mut context: Ctx, peer: &Peer) {
     let state = context.state();
     // The array takes a reference of its own to each of the loop's strings.
-    parse::edit(&mut state.request, Property::Server, |server| {
+    parse::edit_server(state, |server| {
         add_field(
             server,
             Key::RemoteAddr,

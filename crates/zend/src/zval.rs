@@ -1693,11 +1693,9 @@ impl ArrayMut {
     /// caller knows is absent, and references the key itself.
     #[inline]
     pub fn add_new(&mut self, key: &ZStr, value: Owned) {
-        let Some(table) = self.separate().and_then(Separated::table) else {
-            return;
-        };
-        let mut value = value.into_zval();
-        zend_hash_add_new(table, key, Given(&mut value));
+        if let Some(mut array) = self.separate() {
+            array.add_new(key, value);
+        }
     }
 
     /// `zend_hash_update`: the array takes over `value` under `key`, releasing
@@ -1777,6 +1775,21 @@ impl ArrayMut {
 pub struct Separated<'a>(&'a mut ArrayMut);
 
 impl<'a> Separated<'a> {
+    /// `zend_hash_add_new` for a key the caller knows is absent. Unlike an
+    /// update, this releases no value and runs no PHP code, so it keeps the
+    /// exclusive borrow for another insertion without separating again.
+    #[inline]
+    pub fn add_new(&mut self, key: &ZStr, value: Owned) {
+        if bailout::pending() {
+            return;
+        }
+        let Some(table) = self.0.array().map(Table) else {
+            return;
+        };
+        let mut value = value.into_zval();
+        zend_hash_add_new(table, key, Given(&mut value));
+    }
+
     /// `add_next_index_zval`: the array takes `value`, which is released
     /// instead when the array has no next index (it would pass `ZEND_LONG_MAX`).
     #[inline]

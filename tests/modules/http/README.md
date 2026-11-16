@@ -350,6 +350,9 @@ header array) while the response is being built. Each response must carry the
 headers as they were when sending began, and the server must answer the next
 request (#3263). The fixture also speaks h2c for the HTTP/2 module's
 `test_header_reentry.py`.
+The request metadata case replaces `server` between partial parses, keeps a copy,
+and checks that completing the headers adds the fields in order without changing
+the copy, including when the replacement was the immutable empty array.
 
 The merge tier's `api-surface` phase (`tools/capability_inventory.py
 --require-same-api`) compares every Swoole class's reflected metadata,
