@@ -211,6 +211,14 @@ impl<'a> Socket<'a> {
         unsafe { &(*self.record.as_ptr()).borrows }
     }
 
+    /// The serial of the reactor whose registry names the record, or 0. Like the
+    /// count, no closure's reference covers it.
+    pub(crate) fn mark(self) -> &'a AtomicU32 {
+        // SAFETY: live for 'a (from_ptr); the reference covers only the mark, which
+        // `read` and `edit` never hand out, and an atomic may be shared.
+        unsafe { &(*self.record.as_ptr()).reactor }
+    }
+
     /// The record's address, for native calls.
     #[must_use]
     pub fn as_ptr(self) -> *mut SocketRecord {
@@ -328,9 +336,15 @@ impl OwnedSocket {
         self.0
     }
 
-    /// The record's box.
+    /// The record's box, deleted first from the reactor whose registry names it: no
+    /// registry outlives a socket. That reactor must be the thread's; a record freed
+    /// while a reactor it can't reach still names it ends the process.
     #[must_use]
     pub fn into_box(self) -> Box<SocketRecord> {
+        let mark = self.0.mark().load(Ordering::Relaxed);
+        if mark != 0 {
+            deregister(self.0, mark);
+        }
         // SAFETY: the box `new` leaked, or the heap record `from_socket` took back; this
         // owner is its only one and goes here.
         unsafe { Box::from_raw(self.0.as_ptr()) }
@@ -339,6 +353,27 @@ impl OwnedSocket {
     /// `Socket::operator delete`: the record goes, its descriptor stays open.
     pub fn free(self) {
         drop(self.into_box());
+    }
+}
+
+/// Deletes `socket` from the thread's reactor, whose serial is `mark`, as it is freed:
+/// from the kernel too while its descriptor is still the one registered, quietly, since
+/// it may be closed already; then from the registry wherever it names the record.
+fn deregister(socket: Socket<'_>, mark: u32) {
+    let Some(reactor) = crate::event_api::running().filter(|reactor| reactor.serial() == mark)
+    else {
+        swoole_rs_corebase::fatal(
+            "a socket was freed while registered with a reactor other than this thread's",
+        );
+    };
+    let (fd, removed) = socket.read(|record| (record.fd, record.removed));
+    let registered = reactor.registry(|registry| registry.get(fd));
+    if !removed && registered.is_some_and(|entry| entry.as_ptr() == socket.as_ptr()) {
+        socket.edit(|record| record.silent_remove = true);
+        _ = crate::reactor_upstream::reactor_del(reactor, socket);
+    }
+    if socket.mark().load(Ordering::Relaxed) != 0 {
+        reactor.with(|state| state.forget(socket));
     }
 }
 

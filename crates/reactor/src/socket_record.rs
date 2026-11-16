@@ -59,11 +59,15 @@ impl Drop for SocketSsl {
 /// `network::Socket`: its fields, then the borrow count [`crate::Socket`]'s `read`
 /// and `edit` hold while a closure has the fields. The count sits outside them, so
 /// taking it never touches bytes a closure's reference covers. It is atomic because
-/// threads share some records (a pool's pipe socket).
+/// threads share some records (a pool's pipe socket). Then the serial of the reactor
+/// whose registry names the record, or 0: [`crate::OwnedSocket::into_box`] deletes the
+/// record from that reactor before it goes, so no registry outlives its socket. It sits
+/// in what was the record's tail padding, so native code's layout is unchanged.
 #[repr(C)]
 pub struct SocketRecord {
     pub fields: SocketFields,
     pub(crate) borrows: AtomicU32,
+    pub(crate) reactor: AtomicU32,
 }
 
 impl Deref for SocketRecord {
@@ -242,8 +246,10 @@ const _: () = {
         "network::Socket's size moved"
     );
     assert!(
-        offset_of!(SocketRecord, borrows) == 296 && size_of::<SocketRecord>() == 304,
-        "network::Socket's borrow count moved"
+        offset_of!(SocketRecord, borrows) == 296
+            && offset_of!(SocketRecord, reactor) == 300
+            && size_of::<SocketRecord>() == 304,
+        "network::Socket's borrow count or reactor mark moved"
     );
 };
 
@@ -302,6 +308,7 @@ impl SocketRecord {
                 info: sys::zeroed(),
             },
             borrows: AtomicU32::new(0),
+            reactor: AtomicU32::new(0),
         }
     }
 
@@ -511,6 +518,7 @@ impl SocketFields {
                 ..*self
             },
             borrows: AtomicU32::new(0),
+            reactor: AtomicU32::new(0),
         };
         copy.fd = sys::dup(copy.fd).unwrap_or(-1);
         copy.into_raw()

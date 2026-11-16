@@ -16,7 +16,7 @@ pub fn swr_v1_reactor_poll_events_to(events: crate::Events) -> i16 {
 }
 
 /// Room for a fixed number of entries, allocated once: the registry's sockets as it
-/// held them before the wait, so an entry's socket is one never freed while registered.
+/// held them before the wait, so an entry's socket is live: freeing a record deletes it from the registry first.
 pub struct PollSnapshot {
     entries: Vec<libc::pollfd>,
     sockets: Vec<crate::Socket<'static>>,
