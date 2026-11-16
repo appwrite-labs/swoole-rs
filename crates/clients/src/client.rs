@@ -1160,10 +1160,7 @@ pub fn ssl_verify(this: Handle, allow_self_signed: bool) -> bool {
         return false;
     }
     let name = this.tls_host_name();
-    if !name.is_empty() && !(this.get().socket_ops.tls_check_host)(this.socket(), &name) {
-        return false;
-    }
-    true
+    name.is_empty() || (this.get().socket_ops.tls_check_host)(this.socket(), &name)
 }
 
 /// `Client_inet_addr`: the first call routes through the proxies and records the
@@ -1709,10 +1706,7 @@ pub fn sendfile(this: Handle, file: &CStr, offset: i64, length: usize) -> bool {
         log::set_last_error(errno());
         return false;
     }
-    if is_async && !this.event(EventOp::AddOrUpdate, Events::WRITE) {
-        return false;
-    }
-    true
+    !is_async || this.event(EventOp::AddOrUpdate, Events::WRITE)
 }
 
 /// `Client::recv(data, length, flags)`: the bytes read, or none (`SW_ERR`).

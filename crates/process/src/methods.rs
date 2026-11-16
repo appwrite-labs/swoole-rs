@@ -567,18 +567,13 @@ pub(crate) mod tests {
 
     /// What `origin` logged on this thread: (kind, level, code, message).
     pub(crate) fn logged(origin: &str) -> Vec<(c_int, c_int, c_int, String)> {
-        LOGGED
-            .lock()
-            .map(|logged| {
-                logged
-                    .iter()
-                    .filter(|entry| entry.3 == origin && entry.5 == thread::current().id())
-                    .map(|(kind, level, code, _, message, _)| {
-                        (*kind, *level, *code, message.clone())
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+        LOGGED.lock().map_or_default(|logged| {
+            logged
+                .iter()
+                .filter(|entry| entry.3 == origin && entry.5 == thread::current().id())
+                .map(|(kind, level, code, _, message, _)| (*kind, *level, *code, message.clone()))
+                .collect()
+        })
     }
 
     /// Route this binary's logs to [`record`].

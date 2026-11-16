@@ -62,7 +62,7 @@ pub(crate) fn shared(value: &ZValue) -> Option<Item> {
 /// `php_swoole_thread_barrier_create`: an object over `barrier`.
 pub(crate) fn object(barrier: Option<&Arc<Barrier>>) -> Owned {
     new_object(BarrierObject(
-        barrier.cloned().map(OnceCell::from).unwrap_or_default(),
+        barrier.cloned().map_or_default(OnceCell::from),
     ))
 }
 

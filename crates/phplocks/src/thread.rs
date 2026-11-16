@@ -111,9 +111,7 @@ pub fn shared(value: &Value) -> Option<(Shareable, Option<Arc<Resource>>)> {
 #[must_use]
 pub fn shared_object(class: Shareable, resource: Option<&Arc<Resource>>) -> Owned {
     fn object<T: Shared>(resource: Option<&Arc<Resource>>) -> Owned {
-        new_object(T::around(
-            resource.cloned().map(OnceCell::from).unwrap_or_default(),
-        ))
+        new_object(T::around(resource.cloned().map_or_default(OnceCell::from)))
     }
     match class {
         Shareable::Lock => object::<ThreadLock>(resource),
