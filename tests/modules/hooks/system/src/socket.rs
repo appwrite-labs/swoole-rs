@@ -495,7 +495,7 @@ impl Sock {
         record.protocol.package_length_type = kind;
         // SAFETY: a pure function of the type character.
         record.protocol.package_length_size =
-            u8::try_from(unsafe { swoole_type_size(kind as c_char) }).unwrap();
+            u8::try_from(unsafe { swoole_type_size(c_char::from_ne_bytes([kind])) }).unwrap();
         record.protocol.package_body_offset = body_offset;
         record.protocol.get_package_length =
             swoole_rs_ffi::ports::framing_recv::default_length_func as *const c_void;

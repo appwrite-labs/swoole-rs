@@ -267,7 +267,7 @@ pub(crate) unsafe fn swr_case_protocol_server(
     let port = serv.listen_port(SW_SOCK_TCP, 0).settings();
     match framing {
         0 => methods::set_stream_protocol(port),
-        1 => methods::set_length_protocol(port, 0, b'l' as c_char, 4),
+        1 => methods::set_length_protocol(port, 0, c_char::from_ne_bytes(*b"l"), 4),
         _ => methods::set_eof_protocol(port, b"\r\n", false),
     }
     serv.create();
