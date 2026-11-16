@@ -55,8 +55,6 @@ unsafe extern "C" {
 unsafe extern "C-unwind" {
     #[link_name = "_Z17swoole_timer_ticklPFvPN6swoole5TimerEPNS_9TimerNodeEEPv"]
     fn swoole_timer_tick(ms: c_long, callback: TimerFn, data: *mut c_void) -> c_long;
-    #[link_name = "_Z18swoole_timer_clearl"]
-    fn swoole_timer_clear(timer_id: c_long) -> bool;
     fn swr_v1_core_set_last_error(code: c_int);
 }
 
@@ -1013,8 +1011,7 @@ fn kill_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
 }
 
 fn kill_on_worker_exit(_: view::Server<'_>, _: Worker<'_>) {
-    // SAFETY: clears this worker's timer by its id.
-    unsafe { swoole_timer_clear(TEST_TIMER.load(Ordering::SeqCst)) };
+    _ = swoole_rs_timer::swoole_timer_clear(TEST_TIMER.load(Ordering::SeqCst));
     counter_incr(6, 1);
 }
 

@@ -309,7 +309,8 @@ holds. The call returns, and the other variable keeps its elements.
 and `ssl.rs`, one function per TEST (`timer.<name>`, `ssl.<name>`), run by
 `hooks-system-rust`; the `timer-native-originals` and `tls-native-originals` lanes,
 the last two that compiled core-tests files on their own, are gone. The timer cases
-call crates/timer under its upstream symbols, with each lambda's captures as the
+call crates/timer's Rust functions, and its upstream symbols for the raw-callback
+adds and the node-pointer `del` and `delay`, with each lambda's captures as the
 node's data; `SwooleTG.timer` is crates/corebase's `thread_timer`. Upstream's shared-memory
 counters become `Cell`s (the callbacks run in the case's process), and its
 `uint64_t` elapsed-time subtractions wrap as they do in C++. The ssl cases call

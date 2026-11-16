@@ -587,6 +587,7 @@ dependencies = [
 name = "swoole-rs-hooks-system-tests"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "swoole-rs-buffer",
  "swoole-rs-clients",
  "swoole-rs-corebase",
@@ -639,6 +640,7 @@ dependencies = [
  "swoole-rs-ports",
  "swoole-rs-process",
  "swoole-rs-server",
+ "swoole-rs-timer",
  "swoole-rs-tls",
  "swoole-rs-utilities",
 ]
