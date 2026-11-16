@@ -15,13 +15,13 @@ use swoole_rs_corebase::constants::{
 };
 use swoole_rs_corebase::{DataHead, WebSocketStatus, log};
 use swoole_rs_framing::recv::{Mode, Status};
-use swoole_rs_http_ffi::{HttpRequest, HttpString};
+use swoole_rs_http_ffi::HttpRequest;
 use swoole_rs_reactor::reactor_upstream::trigger_close_event;
-use swoole_rs_reactor::{Caught, Event, Fill, Running, Socket};
+use swoole_rs_reactor::{Caught, Event, Running, Socket};
 use swoole_rs_server::port_config::{PortConfig, ReadEvent};
 use swoole_rs_server::static_select::static_select;
 use swoole_rs_server::{Connection as Slot, ServerConfig, view};
-use swoole_rs_tls::upstream::{recv_fill, send};
+use swoole_rs_tls::upstream::{recv_append, send};
 
 use crate::framing_recv::{self, Lent, Packages, Proto};
 use crate::http_routes::Session;
@@ -103,19 +103,12 @@ impl<'a> Read<'a> {
         }
     }
 
-    /// The current buffer, borrowed until the next call on `self`.
-    fn string(&mut self) -> &mut CppString {
-        // SAFETY: the current buffer is live once a receive buffer or request made it
-        // current; only calls on `self`, which the borrow excludes, touch it.
-        unsafe { &mut *self.buffer }
-    }
-
     /// Whether a payload of `length` bytes is all the socket's receive buffer holds and
     /// at least half of what it has room for, so a worker in this thread may take the
     /// buffer for the payload and not copy it (`SW_EVENT_DATA_POP_PTR`). A smaller
     /// payload is cheaper to copy than to keep a whole buffer alive for.
     fn whole_buffer(&mut self, length: u64) -> bool {
-        let string = self.string();
+        let string = self.buffer();
         let (len, size) = (string.len() as u64, string.size() as u64);
         length >= size / 2
             && length == len
@@ -156,7 +149,7 @@ impl<'a> Read<'a> {
     #[inline(always)]
     fn framed(&mut self, mode: Mode, packages: impl Packages) -> bool {
         let (protocol, socket) = (Proto::from(&self.port.protocol), self.socket);
-        let buffer = Lent::new(self.string());
+        let buffer = Lent::new(self.buffer());
         framing_recv::receive(protocol, socket, buffer, mode, packages) != Status::Err
     }
 }
@@ -165,11 +158,11 @@ impl Connection for Read<'_> {
     #[inline]
     fn recv(&mut self, whole: bool) -> Option<usize> {
         if whole {
-            // The receive replaces the content, which the caller sets afresh.
-            self.buffer().length = 0;
+            // The receive replaces the content.
+            self.buffer().truncate(0);
         }
         let socket = self.socket;
-        recv_fill(socket, Fill::new(self.string().spare()), 0)
+        recv_append(socket, self.buffer())
     }
 
     fn catch_error(&mut self) -> Caught {
@@ -241,7 +234,7 @@ impl Connection for Read<'_> {
             Framing::Redis => {
                 let session = self.session();
                 let max_length = self.port.protocol.get().package_max_length;
-                let buffer = Lent::new(self.string());
+                let buffer = Lent::new(self.buffer());
                 // A redis port's `onPackage` is `dispatch_task`.
                 let dispatch =
                     |data: swoole_rs_server::reactor_entry::RecvData<'_>| session.task(data);
@@ -289,7 +282,7 @@ impl Connection for Read<'_> {
             false
         } else {
             let session = self.session();
-            let bytes = self.string().view();
+            let bytes = self.buffer().view();
             let length = usize::try_from(length).unwrap_or(usize::MAX);
             let data = bytes.get(..length).unwrap_or(bytes);
             session.task(swoole_rs_server::reactor_entry::RecvData::new(head, data))
@@ -373,24 +366,23 @@ impl Connection for Read<'_> {
     }
 
     #[inline]
-    fn buffer(&mut self) -> &mut HttpString {
+    fn buffer(&mut self) -> &mut CppString {
         // SAFETY: the current buffer is live once a receive buffer or request made it
-        // current, and starts with `swoole::String`'s head; only calls on `self`, which
-        // the borrow excludes, touch it.
-        unsafe { &mut *self.buffer.cast::<HttpString>() }
+        // current; only calls on `self`, which the borrow excludes, touch it.
+        unsafe { &mut *self.buffer }
     }
 
     fn reduce(&mut self, offset: u64) {
-        self.string().reduce(offset.cast_signed());
+        self.buffer().reduce(offset.cast_signed());
     }
 
     fn extend(&mut self, size: u64) {
-        self.string()
+        self.buffer()
             .extend(usize::try_from(size).unwrap_or(usize::MAX));
     }
 
     fn header_end(&mut self) -> bool {
-        let bytes = self.string().view();
+        let bytes = self.buffer().view();
         bytes.windows(4).any(|w| w == b"\r\n\r\n")
     }
 

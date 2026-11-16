@@ -1,27 +1,74 @@
 //! `swoole::Protocol`: how a stream socket's bytes split into packages, and the
 //! callbacks that measure and hand on each one. Upstream's layout, which C++ shares.
 use core::ffi::{c_int, c_void};
-use swoole_rs_corebase::net_types::{PacketLength, RecvData};
+use core::marker::PhantomData;
+use swoole_rs_buffer::string::CppString;
+use swoole_rs_corebase::net_types::PacketLength;
 pub use swoole_rs_reactor::Socket;
 
 /// `Protocol::onPackage`: hands on one whole package read from the socket. A caller
-/// passes the live protocol the socket reads with and a package of it; the callback
-/// may rely on the private data stored beside it in the protocol and on the socket
-/// being of the kind that protocol was set up for (a port's connection, a client's).
-/// The protocol stays a pointer: the callback may run PHP code, whose `set()` can
-/// rewrite it meanwhile.
-pub type OnPackage = unsafe extern "C-unwind" fn(*const Protocol, Socket<'_>, &RecvData) -> c_int;
+/// passes the protocol the socket reads with, which the callback may ignore. The
+/// protocol stays a pointer: the callback may run PHP code, whose `set()` can rewrite
+/// it meanwhile. Only Rust calls it, so it takes the package as Rust lends it.
+pub type OnPackage = fn(*const Protocol, Socket<'_>, Package<'_>) -> c_int;
 
 /// `Protocol::get_package_length`: the length of the package in the packet's
-/// `buf_size` readable bytes at `buf`, 0 while incomplete, -1 when bad. The protocol,
-/// socket and private data are as for [`OnPackage`]; the socket is `None` (null) where
-/// a measure has none.
+/// `buf_size` readable bytes at `buf`, 0 while incomplete, -1 when bad. A caller
+/// passes the live protocol the socket reads with, and the callback may rely on the
+/// private data stored beside it there; the socket is `None` (null) where a measure
+/// has none.
 pub type GetPackageLength =
     unsafe extern "C" fn(*const Protocol, Option<Socket<'_>>, &mut PacketLength) -> isize;
 
-/// `Protocol::get_package_length_size`: a socket's length-header size, which may rely
-/// on the socket being of the kind the protocol was set up for.
-pub type GetPackageLengthSize = unsafe extern "C" fn(Socket<'_>) -> u8;
+/// `Protocol::get_package_length_size`: a socket's length-header size.
+pub type GetPackageLengthSize = extern "C" fn(Socket<'_>) -> u8;
+
+/// A whole package in a receive buffer, lent to its handler: `len` bytes at `data`
+/// (null for none), readable and writable for `'a`. It stays a pointer: the handler
+/// may run PHP that frees the buffer, after which it reads the package no more.
+pub struct Package<'a> {
+    data: *mut u8,
+    len: usize,
+    lent: PhantomData<&'a mut [u8]>,
+}
+
+impl<'a> Package<'a> {
+    /// `len` bytes of `buffer` from `start`, cut to what it holds.
+    pub fn of(buffer: &'a mut CppString, start: usize, len: usize) -> Self {
+        Self {
+            len: len.min(buffer.len().saturating_sub(start)),
+            data: buffer.as_mut_ptr().wrapping_add(start),
+            lent: PhantomData,
+        }
+    }
+
+    /// Where the package starts, or null for none.
+    #[must_use]
+    pub const fn as_ptr(&self) -> *const u8 {
+        self.data
+    }
+
+    /// The package's length.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether the package is none (null) or holds no bytes.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.data.is_null() || self.len == 0
+    }
+
+    /// The package's bytes, borrowed from it.
+    pub fn bytes(&mut self) -> &mut [u8] {
+        if self.data.is_null() {
+            return &mut [];
+        }
+        // SAFETY: the type's invariant: `len` bytes at `data`, lent to the package.
+        unsafe { core::slice::from_raw_parts_mut(self.data, self.len) }
+    }
+}
 
 /// `swoole::Protocol`, whole (`split_by_eof` is a C++ `bool`). The callbacks are
 /// nullable function pointers, upstream's layout.

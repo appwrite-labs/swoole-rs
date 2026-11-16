@@ -9,9 +9,9 @@ use core::marker::PhantomData;
 use core::sync::atomic::Ordering;
 use swoole_rs_buffer::string::CppString;
 use swoole_rs_clients::client::{Framing, Handle};
-use swoole_rs_clients::protocol::Protocol;
+use swoole_rs_clients::protocol::{Package, Protocol};
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR as LOG_ERROR, SW_LOG_WARNING as LOG_WARNING};
-use swoole_rs_corebase::net_types::{PacketLength, RecvData};
+use swoole_rs_corebase::net_types::PacketLength;
 use swoole_rs_corebase::{DataHead, log, swr_v1_core_pagesize};
 use swoole_rs_error::ErrorCode;
 use swoole_rs_framing::recv::{self, Buffer, Effects, Received, Status, recv};
@@ -87,69 +87,17 @@ impl<'a> Lent<'a> {
     }
 }
 
-/// A whole package in the receive buffer, lent to its handler: `len` bytes at `data`
-/// (null for none), readable and writable for `'a`. It stays a pointer: the handler
-/// may run PHP that frees the buffer, after which it reads the package no more.
-pub(crate) struct Package<'a> {
-    data: *mut u8,
-    len: usize,
-    lent: PhantomData<&'a mut [u8]>,
-}
-
-impl<'a> Package<'a> {
-    /// `len` bytes of `buffer` from `start`, cut to what it holds.
-    fn of(buffer: &'a mut CppString, start: usize, len: usize) -> Self {
-        Self {
-            len: len.min(buffer.len().saturating_sub(start)),
-            data: buffer.as_mut_ptr().wrapping_add(start),
-            lent: PhantomData,
-        }
-    }
-
-    /// The `len` bytes at `data` an `onPackage` caller hands on.
-    ///
-    /// # Safety
-    /// `data` is null, or points at `len` bytes that are readable and writable, and that
-    /// nothing else uses, for `'a`.
-    pub(crate) unsafe fn from_raw(data: *const u8, len: usize) -> Self {
-        Self {
-            data: data.cast_mut(),
-            len: if data.is_null() { 0 } else { len },
-            lent: PhantomData,
-        }
-    }
-
-    /// Where the package starts, or null for none.
-    pub(crate) fn as_ptr(&self) -> *const u8 {
-        self.data
-    }
-
-    /// The package's length.
-    pub(crate) fn len(&self) -> usize {
-        self.len
-    }
-
-    /// The package's bytes, borrowed from it.
-    pub(crate) fn bytes(&mut self) -> &mut [u8] {
-        if self.data.is_null() {
-            return &mut [];
-        }
-        // SAFETY: the type's invariant: `len` bytes at `data`, lent to the package.
-        unsafe { core::slice::from_raw_parts_mut(self.data, self.len) }
-    }
-
-    /// The package as the payload a dispatch with the head `info` sends: none (a null
-    /// one) when the package is.
-    pub(crate) fn send_data(
-        &mut self,
-        info: DataHead,
-    ) -> swoole_rs_server::reactor_entry::RecvData<'_> {
-        use swoole_rs_server::reactor_entry::RecvData as SendData;
-        if self.data.is_null() {
-            SendData::empty(info)
-        } else {
-            SendData::new(info, self.bytes())
-        }
+/// `package` as the payload a dispatch with the head `info` sends: none (a null one)
+/// when the package is.
+pub(crate) fn send_data<'a>(
+    package: &'a mut Package<'_>,
+    info: DataHead,
+) -> swoole_rs_server::reactor_entry::RecvData<'a> {
+    use swoole_rs_server::reactor_entry::RecvData as SendData;
+    if package.as_ptr().is_null() {
+        SendData::empty(info)
+    } else {
+        SendData::new(info, package.bytes())
     }
 }
 
@@ -175,21 +123,12 @@ pub(crate) trait Packages {
 }
 
 /// The protocol's `onPackage` over `package`; false without one.
-pub(crate) fn protocol_dispatch(r: &Recv<'_>, package: &Package<'_>) -> bool {
-    let packet = RecvData {
-        info: DataHead {
-            len: u32::try_from(package.len()).unwrap_or(u32::MAX),
-            ..DataHead::default()
-        },
-        data: package.as_ptr(),
-    };
+pub(crate) fn protocol_dispatch(r: &Recv<'_>, package: Package<'_>) -> bool {
     // Read before the call, which may rewrite the protocol.
     let Some(on_package) = r.protocol().on_package else {
         return false;
     };
-    // SAFETY: upstream's call, over the live protocol, the socket it reads and a whole
-    // package of it, which the package lends.
-    (unsafe { on_package(r.protocol.protocol, r.socket, &packet) }) >= 0
+    on_package(r.protocol.protocol, r.socket, package) >= 0
 }
 
 /// The protocol's own callbacks, as upstream calls them, over a client's socket: never
@@ -200,7 +139,7 @@ impl Packages for Callbacks {
     const HEAD: Option<u32> = None;
     #[inline(always)]
     fn dispatch(&self, r: &Recv<'_>, package: Package<'_>) -> bool {
-        protocol_dispatch(r, &package)
+        protocol_dispatch(r, package)
     }
     fn paused(&self) -> bool {
         false
@@ -421,7 +360,7 @@ fn split(r: Recv<'_>, b: &mut CppString) -> Option<usize> {
     // The protocol's settings bound the length by the array.
     let eof = eof.get(..usize::from(eof_len))?;
     b.split_with(eof, |b, start, length| {
-        protocol_dispatch(&r, &Package::of(b, start, length)) && !s.read(|s| s.removed)
+        protocol_dispatch(&r, Package::of(b, start, length)) && !s.read(|s| s.removed)
     })
 }
 
@@ -501,8 +440,7 @@ pub(crate) fn receive<'a, K: Packages>(
         flags |= if skip { FLAG_SKIP } else { 0 };
     } else if mode == Mode::Length {
         let size = p.get_package_length_size;
-        // SAFETY: upstream's call over the live socket.
-        head = u32::from(size.map_or(p.package_length_size, |size| unsafe { size(socket) }));
+        head = u32::from(size.map_or(p.package_length_size, |size| size(socket)));
         flags |=
             (if skip { FLAG_SKIP } else { 0 }) | (if size.is_some() { FLAG_DYNAMIC } else { 0 });
     }
@@ -546,8 +484,7 @@ pub unsafe extern "C" fn default_length_func(
     // SAFETY: as the caller promises.
     let p = unsafe { &*p };
     let size = match (p.get_package_length_size, socket) {
-        // SAFETY: upstream's call over the socket the protocol was set up for.
-        (Some(size), Some(socket)) => unsafe { size(socket) },
+        (Some(size), Some(socket)) => size(socket),
         _ => p.package_length_size,
     };
     let bytes = pl.bytes();
@@ -612,14 +549,8 @@ mod tests {
         static PACKAGES: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
     }
 
-    unsafe extern "C-unwind" fn record(
-        _: *const Protocol,
-        _: Socket<'_>,
-        packet: &RecvData,
-    ) -> c_int {
-        // SAFETY: the receive's packet, `len` bytes at `data`.
-        let bytes = unsafe { core::slice::from_raw_parts(packet.data, packet.info.len as usize) };
-        PACKAGES.with_borrow_mut(|p| p.push(bytes.to_vec()));
+    fn record(_: *const Protocol, _: Socket<'_>, mut packet: Package<'_>) -> c_int {
+        PACKAGES.with_borrow_mut(|p| p.push(packet.bytes().to_vec()));
         0
     }
 
