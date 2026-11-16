@@ -1,18 +1,25 @@
+/// MQTT's remaining length continues beyond its four-byte limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RemainingLengthTooLong;
+
 /// Parse MQTT remaining-length bytes; packet type and nonminimal representations
-/// are intentionally not validated, matching the pinned protocol.
-#[must_use]
-pub fn mqtt_frame_length(bytes: &[u8]) -> i64 {
+/// are intentionally not validated, matching the pinned protocol. `None` means
+/// the length header is incomplete; a complete header yields the whole packet size.
+///
+/// # Errors
+/// [`RemainingLengthTooLong`] when the fourth length byte still has its continuation bit set.
+pub fn mqtt_frame_length(bytes: &[u8]) -> Result<Option<usize>, RemainingLengthTooLong> {
     let mut length = 0;
-    for (position, byte) in (0i64..).zip(bytes.iter().skip(1).take(4)) {
-        length += i64::from(byte & 127) << (7 * position);
+    for (position, byte) in (0usize..).zip(bytes.iter().skip(1).take(4)) {
+        length += usize::from(byte & 127) << (7 * position);
         if byte & 128 == 0 {
-            return length + position + 2;
+            return Ok(Some(length + position + 2));
         }
         if position == 3 {
-            return -1;
+            return Err(RemainingLengthTooLong);
         }
     }
-    0
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -21,7 +28,12 @@ pub fn mqtt_frame_length(bytes: &[u8]) -> i64 {
     reason = "tests drive the native integer interfaces with literal and loop values"
 )]
 mod tests {
-    use super::*;
+    // Original integer expectations stay at this test boundary.
+    fn mqtt_frame_length(bytes: &[u8]) -> i64 {
+        super::mqtt_frame_length(bytes).map_or(-1, |length| {
+            length.map_or(0, |n| i64::try_from(n).unwrap_or(-1))
+        })
+    }
     #[test]
     fn boundaries_prefixes_and_nonminimal_lengths() {
         for payload in [

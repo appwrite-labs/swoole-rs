@@ -21,7 +21,7 @@ pub fn http2_frame(bytes: &[u8]) {
     let Some((&[previous, client], data)) = bytes.split_first_chunk::<2>() else {
         return;
     };
-    let length = frame_length(data);
+    let length = frame_length(data).map_or(0, usize::cast_signed);
     let previous = u32::from(previous) << 23;
     let decoded = sw_rs_http2_decode_frame(data, previous, client & 1 != 0);
     let Some(header) = data.first_chunk::<9>() else {
