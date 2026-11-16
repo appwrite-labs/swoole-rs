@@ -161,9 +161,10 @@ pub(super) mod net {
         buffer: &mut swoole_rs_buffer::string::CppString,
     ) -> Option<usize> {
         let n = count(io("recv", buffer.spare().len()));
-        if let Some(count) = n {
-            unsafe { buffer.set_len(buffer.len() + count) };
-        }
+        // Zeros, as many as the read reports.
+        buffer.fill_within(n.unwrap_or(0), |spare| {
+            _ = spare.put(&vec![0; spare.room()]);
+        });
         n
     }
     pub(in super::super) fn recv_sync(
@@ -591,6 +592,30 @@ fn async_send_raises_buffer_full_at_the_high_watermark() {
     assert_eq!(taken(), ["write 4"]);
     log::set_last_error(ERROR_OUTPUT_BUFFER_OVERFLOW);
     assert_eq!(send(Handle(client), b"data", 0), None);
+    free(client);
+}
+
+#[test]
+fn an_async_socks5_reply_is_the_bytes_the_read_appended() {
+    let client = client(1, true, true);
+    set_proxy(client, false);
+    Handle(client).input_init();
+    Handle(client).set_proxy_state(Proxy::Socks5, SOCKS5_HANDSHAKE);
+    mock(|m| m.io.push(2));
+    assert!(on_read(Handle(client)));
+    let size = CLIENT_BUFFER_SIZE;
+    assert_eq!(
+        taken(),
+        [
+            format!("recv {size}"),
+            "socks5 2".into(),
+            "call Connect 0".into()
+        ]
+    );
+    assert_eq!(
+        Handle(client).proxy_state(Proxy::Socks5),
+        Some(SOCKS5_READY)
+    );
     free(client);
 }
 

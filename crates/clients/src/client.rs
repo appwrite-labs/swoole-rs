@@ -196,13 +196,6 @@ pub struct Socks5 {
     pub handshake: fn(&ProxyState, &[u8]) -> Option<usize>,
 }
 
-/// A `String`'s free tail: where the next read lands and how much fits.
-#[derive(Clone, Copy)]
-struct Tail {
-    str: *mut c_char,
-    size: usize,
-}
-
 /// The public, trivially copyable fields of `network::Client`.
 #[derive(Clone, Copy)]
 pub struct ClientRecord {
@@ -535,14 +528,11 @@ impl Handle {
         }
     }
 
-    /// The input buffer's free tail; the buffer exists.
-    fn input_tail(self) -> Tail {
+    /// Where the input buffer's next read lands; the buffer exists.
+    fn input_tail(self) -> *const c_char {
         self.edit_input(|buffer, _, _| {
             let length = buffer.len();
-            Tail {
-                str: buffer.as_mut_ptr().wrapping_add(length).cast(),
-                size: buffer.size() - length,
-            }
+            buffer.as_mut_ptr().wrapping_add(length).cast()
         })
     }
 
@@ -575,11 +565,9 @@ impl Handle {
         send(self, packet.get(..length).unwrap_or_default(), 0)
     }
 
-    /// `Client::socks5_handshake`: applies `length` received bytes at `data` and
-    /// sends the answer the proxy packed.
-    fn socks5_handshake(self, data: *const c_char, length: usize) -> bool {
-        // SAFETY: the received buffer lends `length` initialized bytes at `data`.
-        let reply = unsafe { std::slice::from_raw_parts(data.cast(), length) };
+    /// `Client::socks5_handshake`: applies the received `reply` and sends the answer
+    /// the proxy packed.
+    fn socks5_handshake(self, reply: &[u8]) -> bool {
         let n = self
             .with_proxy(Proxy::Socks5, |proxy| {
                 (native_host().socks5.handshake)(proxy, reply)
@@ -1267,10 +1255,9 @@ fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblo
         // Each answer lands at the start of the emptied buffer.
         let ready = this.with_buffer(|shared| {
             loop {
-                shared.clear();
-                let spare = shared.spare();
-                let n = recv(this, spare, 0).unwrap_or(0);
-                if n == 0 || !this.socks5_handshake(spare.as_ptr().cast(), n) {
+                // Zeroed first, so the reply is the bytes read.
+                shared.read_zeroed(shared.size(), |bytes| recv(this, bytes, 0).unwrap_or(0));
+                if shared.is_empty() || !this.socks5_handshake(shared.view()) {
                     return false;
                 }
                 if this.proxy_state(Proxy::Socks5) == Some(SOCKS5_READY) {
@@ -1745,7 +1732,7 @@ fn connect_failed(this: Handle) -> bool {
 /// `Client_onStreamRead`: the proxy and TLS handshakes that finish a connect,
 /// then framed or plain reads, on a live async stream client with its input buffer.
 fn on_read(this: Handle) -> bool {
-    let Tail { str: buf, size } = this.input_tail();
+    let buf = this.input_tail();
     let do_ssl_handshake = this.flag(Flag::OpenSsl);
     let http = this.proxy_state(Proxy::Http);
     if http.is_some_and(|state| state != HTTP_PROXY_READY) {
@@ -1766,13 +1753,20 @@ fn on_read(this: Handle) -> bool {
     }
     let socks5 = this.proxy_state(Proxy::Socks5);
     if socks5.is_some_and(|state| state != SOCKS5_READY) {
-        let n = this.edit_input(|input, socket, ops| (ops.recv_append)(socket, input));
-        if n <= Some(0) {
+        // What this read appended, copied: the handshake's send may reach the client.
+        let reply = this.edit_input(|input, socket, ops| {
+            let start = input.len();
+            (ops.recv_append)(socket, input)?;
+            Some(input.view().get(start..).unwrap_or_default().to_vec())
+        });
+        let Some(reply) = reply.filter(|reply| !reply.is_empty()) else {
             log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
             return connect_failed(this);
-        }
-        // Upstream hands the handshake the buffer's free size, not what was read.
-        if !this.socks5_handshake(buf, size) {
+        };
+        // Upstream hands the handshake the buffer's free size, past what was read. The
+        // handshake reads only a reply's first two bytes, so the two differ only when a
+        // byte arrives alone, which upstream pairs with whatever the buffer held next.
+        if !this.socks5_handshake(&reply) {
             log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
             return connect_failed(this);
         }

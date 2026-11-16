@@ -53,6 +53,9 @@ Proxy handshakes receive the scratch-buffer loan through the same table. The
 native entry uses the real thread buffer; recording tests keep their 64-byte
 fixture and original traces. The synchronous receive loops stay inside the loan,
 and async HTTP requests are still copied before a send can invoke callbacks.
+A SOCKS5 reply is the bytes the read wrote, where upstream passes the buffer's
+whole free tail; the handshake reads two bytes, so only a reply arriving one byte
+at a time tells them apart (`an_async_socks5_reply_is_the_bytes_the_read_appended`).
 
 ## network/client.cpp in Rust
 
