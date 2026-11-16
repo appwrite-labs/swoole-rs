@@ -159,6 +159,20 @@ impl<'a> Server<'a> {
         }
     }
 
+    /// `sw_server()`: the process's server (`SwooleG.server`), or `None` while it has
+    /// none.
+    ///
+    /// # Safety
+    /// The server is not deleted during `'a`: the last `SharedServer` drop frees it before
+    /// it clears `SwooleG.server`, so a view kept past that dangles.
+    #[must_use]
+    pub unsafe fn current() -> Option<Self> {
+        let serv = swoole_rs_corebase::swr_v1_core_server();
+        // SAFETY: null, or the process's server (only `swr_v1_server_new` sets it),
+        // live for `'a` per the caller.
+        (!serv.is_null()).then(|| unsafe { Server::from_raw(serv) })
+    }
+
     fn fields(self) -> &'a Fields {
         // SAFETY: the head of a live Server, per the module comment and `from_raw`'s caller.
         unsafe { &*self.raw.cast::<Fields>() }
@@ -476,34 +490,26 @@ impl<'a> Server<'a> {
     /// `Server::get_user_worker_num()`: the user workers added so far.
     #[must_use]
     pub fn user_worker_num(self) -> usize {
-        self.state().pending_count()
+        self.registry().pending_count()
     }
 
     /// The server's worker arrays and counts.
     #[must_use]
     pub fn workers(self) -> ServerWorkers<'a> {
         let config = self.config();
-        let array = |records: &swoole_rs_memory::members::Shm, count: usize| {
-            let base = records.as_ptr().cast::<WorkerRecord>();
-            if base.is_null() {
-                return &[][..];
-            }
-            // SAFETY: `create` maps `workers` with `worker_num` records, and the
-            // factory's start `user_workers` with one per added user worker
-            // (`add_worker` refuses once the factory exists); each stays mapped, as the
-            // counts stay, until the server is destroyed after its pools stop.
-            unsafe { core::slice::from_raw_parts::<'a, WorkerRecord>(base, count) }
-        };
-        let (events, users) = (config.worker_num.get(), self.user_worker_num());
-        ServerWorkers::new(
-            (
-                self.event_pool_ref(),
-                array(&config.workers, events as usize),
-                events,
-            ),
-            (self.task_pool_ref(), config.task_worker_num.get()),
-            (array(&config.user_workers, users), users),
-        )
+        let events = (
+            self.event_pool_ref(),
+            config.workers.as_ptr().cast(),
+            config.worker_num.get(),
+        );
+        let tasks = (self.task_pool_ref(), config.task_worker_num.get());
+        let users = (config.user_workers.as_ptr().cast(), self.user_worker_num());
+        // SAFETY: `create` maps `workers` with `worker_num` records, the task pool's
+        // create its array with `task_worker_num`, and the factory's start
+        // `user_workers` with one per added user worker (`add_worker` refuses once the
+        // factory exists); each stays mapped, as the counts stay, until the server is
+        // destroyed after its pools stop.
+        unsafe { ServerWorkers::new(events, tasks, users) }
     }
 
     /// `Server::get_worker(id)`: event workers, then task workers, then user
@@ -535,7 +541,13 @@ impl<'a> Server<'a> {
     /// The `index`th user worker `worker_methods::add_worker` added, or `None` past the
     /// last.
     pub(crate) fn pending_worker(self, index: usize) -> Option<Worker<'a>> {
-        self.state().pending(index)
+        let &worker = self.registry().pending().get(index)?;
+        if worker.is_null() {
+            return None;
+        }
+        // SAFETY: a live worker `add_worker` added, which outlives the server
+        // (its contract; nothing else adds to the server's pending workers).
+        Some(unsafe { Worker::new(worker.cast()) })
     }
 
     /// Worker `id`'s pipe socket, its master end or its worker end, or `None` while it has none.
@@ -795,15 +807,17 @@ pub(crate) fn set_nonblock(sock: Socket<'_>) {
     let _ = sock.edit(|sock| set(sock, 1, -1));
 }
 
-/// `conn->socket->recv_buffer->pop(size)`, its whole size: the block holding the
-/// buffer's bytes, now the caller's, while the buffer takes a fresh one as large;
-/// `None` without a socket or buffer.
+/// The connection socket's `recv_buffer` (a `swoole::String *`), or null.
 #[must_use]
-pub fn pop_recv_buffer(conn: Connection<'_>) -> Option<*mut u8> {
-    conn.socket()?.edit(|s| {
-        s.recv_buffer
-            .as_mut()
-            .map(|buffer| buffer.pop(buffer.size()))
+pub fn recv_buffer(conn: Connection<'_>) -> *mut c_void {
+    conn.socket().map_or(core::ptr::null_mut(), |socket| {
+        socket.edit(|s| {
+            s.recv_buffer
+                .as_mut()
+                .map_or(core::ptr::null_mut(), |buffer| {
+                    Box::as_mut_ptr(buffer).cast()
+                })
+        })
     })
 }
 
