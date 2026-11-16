@@ -303,34 +303,6 @@ impl<'a> Connection<'a> {
         request
     }
 
-    /// The redis request state a session holds, or `None`: a redis port's session
-    /// holds nothing else.
-    #[must_use]
-    pub fn resp_request(self) -> Option<*mut swoole_rs_protocols::RespRequest> {
-        decode(self.object())
-    }
-
-    /// The session holds `request`, whose address comes back; the slot keeps it until
-    /// [`Self::take_resp_request`].
-    #[must_use]
-    pub fn set_resp_request(
-        self,
-        request: Box<swoole_rs_protocols::RespRequest>,
-    ) -> *mut swoole_rs_protocols::RespRequest {
-        let request = Box::into_raw(request);
-        self.set_object(encode(request));
-        request
-    }
-
-    /// The redis request state the session held, which the slot no longer names: the
-    /// box [`Self::set_resp_request`] took, in the process that stored it.
-    #[must_use]
-    pub fn take_resp_request(self) -> Option<*mut swoole_rs_protocols::RespRequest> {
-        let request = self.resp_request();
-        self.clear_object();
-        request
-    }
-
     /// `Server::store_pipe_fd`: a pipe end's slot names its pipe, which nothing reads
     /// back as a port. An address with the top bit set, which no user-space pointer
     /// has, is not kept.

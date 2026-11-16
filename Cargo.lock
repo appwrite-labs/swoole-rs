@@ -1147,7 +1147,6 @@ dependencies = [
  "swoole-rs-oracle",
  "swoole-rs-ossupport",
  "swoole-rs-process",
- "swoole-rs-protocols",
  "swoole-rs-protocols-ffi",
  "swoole-rs-reactor",
  "swoole-rs-timer",
