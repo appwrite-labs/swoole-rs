@@ -627,7 +627,8 @@ pub fn nanosleep(request: &libc::timespec, remaining: &mut libc::timespec) -> c_
 /// at an address the kernel picks aliases nothing; unmapping it is the caller's.
 #[must_use]
 pub fn map_anonymous(len: usize, shared: bool, stack: bool) -> *mut libc::c_void {
-    let sharing = if shared {
+    // Miri maps only private memory, and it has no fork for sharing to matter across.
+    let sharing = if shared && !cfg!(miri) {
         libc::MAP_SHARED
     } else {
         libc::MAP_PRIVATE
