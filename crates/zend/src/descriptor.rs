@@ -1,11 +1,12 @@
 //! What a descriptor candidate (`php_swoole_convert_to_fd`) reads from a value,
 //! and the executor state an event loop checks around its wait.
+use crate::helpers::CText;
 use crate::{
     Array, Class, Value, ZStr,
     bailout::{self, Bailout},
     sys::{IS_RESOURCE, php_stream_context, zend_long},
 };
-use std::ffi::{CStr, CString, c_char, c_int, c_void};
+use std::ffi::{CStr, CString, c_int, c_void};
 use std::{marker::PhantomData, ptr, ptr::NonNull};
 
 unsafe extern "C" {
@@ -28,10 +29,11 @@ unsafe extern "C" {
     safe fn swr_zend_stream_select_fd(value: &Value, fd: &mut c_int) -> c_int;
     /// Whether the executor's last error was fatal; if so its message, its
     /// file and its line are written, the strings as PHP keeps them until the
-    /// next error. It reads the executor's globals only.
-    safe fn swr_zend_last_fatal_error(
-        message: &mut *const c_char,
-        file: &mut *const c_char,
+    /// next error. It reads the executor's globals only. Private: only
+    /// [`fatal_parts`] calls it, and lends the strings no longer than its call.
+    safe fn swr_zend_last_fatal_error<'a>(
+        message: &mut Option<CText<'a>>,
+        file: &mut Option<CText<'a>>,
         line: &mut c_int,
     ) -> bool;
     /// An ext/sockets `Socket`'s descriptor, with `closed` set when it was
@@ -138,17 +140,20 @@ impl Value {
     }
 }
 
-/// The executor's last error, when it was fatal: where PHP keeps its message
-/// and file until the next error, and its line.
-fn fatal_parts() -> Option<([*const c_char; 2], c_int)> {
-    let (mut message, mut file, mut line) = (ptr::null(), ptr::null(), 0);
-    swr_zend_last_fatal_error(&mut message, &mut file, &mut line).then_some(([message, file], line))
+/// `f` of the executor's last error, when it was fatal: its message and file,
+/// which PHP keeps until the next error, and its line.
+fn fatal_parts<R>(f: impl FnOnce([&CStr; 2], c_int) -> R) -> Option<R> {
+    let (mut message, mut file, mut line) = (None, None, 0);
+    if !swr_zend_last_fatal_error(&mut message, &mut file, &mut line) {
+        return None;
+    }
+    Some(f([message?.get(), file?.get()], line))
 }
 
 /// `php_swoole_is_fatal_error()`: the last error was fatal.
 #[must_use]
 pub fn last_fatal_error() -> bool {
-    fatal_parts().is_some()
+    fatal_parts(|_, _| ()).is_some()
 }
 
 /// A fatal error's message, file and line.
@@ -162,13 +167,9 @@ pub struct FatalError {
 /// the next error.
 #[must_use]
 pub fn fatal_error() -> Option<FatalError> {
-    let (texts, line) = fatal_parts()?;
-    // SAFETY: a fatal error's NUL-terminated message, then its file, each live
-    // until the next error.
-    let [message, file] = texts.map(|text| unsafe { CStr::from_ptr(text) }.to_owned());
-    Some(FatalError {
-        message,
-        file,
+    fatal_parts(|[message, file], line| FatalError {
+        message: message.to_owned(),
+        file: file.to_owned(),
         line,
     })
 }

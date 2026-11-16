@@ -19,7 +19,9 @@ use std::{
 };
 use swoole_rs_corebase::{Switch, built_with};
 use swoole_rs_zend::{
-    Call, E_WARNING, Owned, ZStr, ZString, bailout,
+    Call, E_WARNING, Owned, ZStr, ZString,
+    arginfo::raw,
+    bailout,
     host::{Callee, callable::Callable},
     sys::{
         PHP_VERSION_ID, ZEND_ACC_FAKE_CLOSURE, swr_zend_runtime_disabled,
@@ -152,7 +154,7 @@ fn same(a: zif_handler, b: zif_handler) -> bool {
 /// trampoline.
 fn hook(name: &CStr, handler: zif_handler, from: Option<Entry>) {
     let library = handler.is_none();
-    let handler = handler.or(Some(crate::zif_swoole_user_func_handler));
+    let handler = handler.or(raw(crate::zif_swoole_user_func_handler));
     let key = name.to_bytes();
     let mut table = table();
     let Table {
@@ -322,7 +324,7 @@ pub(crate) fn unsafe_functions(disable: bool) {
 pub(crate) fn start() {
     table().hooked = Some(HashMap::new());
     if built_with(Switch::Thread) {
-        hook(c"putenv", Some(crate::putenv::zif_swoole_putenv), None);
+        hook(c"putenv", raw(crate::putenv::zif_swoole_putenv), None);
     }
     if PHP_VERSION_ID >= 80400 {
         hook(c"exit", Some(zif_swoole_exit), None);
@@ -608,11 +610,11 @@ pub(crate) fn hook_all(mut requested: u32, installed: u32) -> Result<(), Bailout
         &[
             (
                 c"stream_select",
-                Some(crate::select::zif_swoole_stream_select),
+                raw(crate::select::zif_swoole_stream_select),
             ),
             (
                 c"stream_socket_pair",
-                Some(crate::stream::zif_swoole_stream_socket_pair),
+                raw(crate::stream::zif_swoole_stream_socket_pair),
             ),
         ],
     );
@@ -621,13 +623,10 @@ pub(crate) fn hook_all(mut requested: u32, installed: u32) -> Result<(), Bailout
         installed,
         flags::SLEEP,
         &[
-            (c"sleep", Some(sleep::zif_swoole_sleep)),
-            (c"usleep", Some(sleep::zif_swoole_usleep)),
-            (c"time_nanosleep", Some(sleep::zif_swoole_time_nanosleep)),
-            (
-                c"time_sleep_until",
-                Some(sleep::zif_swoole_time_sleep_until),
-            ),
+            (c"sleep", raw(sleep::zif_swoole_sleep)),
+            (c"usleep", raw(sleep::zif_swoole_usleep)),
+            (c"time_nanosleep", raw(sleep::zif_swoole_time_nanosleep)),
+            (c"time_sleep_until", raw(sleep::zif_swoole_time_sleep_until)),
         ],
     );
     family(
