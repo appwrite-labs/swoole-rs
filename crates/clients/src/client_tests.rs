@@ -230,13 +230,9 @@ fn listener(event: ClientEvent, _: *const c_char, length: usize) {
         sock().object = core::ptr::null_mut();
     }
 }
-/// crates/timer's `add_fn_sec_id`: logs, adds nothing.
+/// The connect timer: logs, adds nothing.
 #[expect(clippy::unnecessary_wraps, reason = "crates/timer's signature")]
-pub(super) fn add_fn_sec_id(
-    timeout: f64,
-    _: bool,
-    _: impl Fn() + Copy + 'static,
-) -> Option<swoole_rs_timer::Held> {
+pub(super) fn timer_add(timeout: f64, _: Handle) -> Option<swoole_rs_timer::Held> {
     log(format!("timer {timeout}"));
     Some(swoole_rs_timer::Held::detached(1))
 }
@@ -322,6 +318,8 @@ fn new_client(kind: c_int, is_async: bool) -> *mut Client {
         connect: ops::connect,
         event: ops::event,
         socket_error: ops::socket_error,
+        timer_add,
+        timer_delete: del_id,
         tls_freeze,
         tls_session,
         tls_connect: socket_ssl_connect,
