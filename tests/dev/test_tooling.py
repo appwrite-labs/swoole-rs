@@ -371,6 +371,16 @@ class Lanes(unittest.TestCase):
             command = run.call_args.args[0]
             self.assertIn('SWR_JOBS', command[:command.index('bash')])
             self.assertEqual(dev.default_jobs(), 2)
+        with patch.dict(dev.os.environ, {'SWR_JOBS': '', 'CARGO_BUILD_JOBS': '3'}, clear=False):
+            with patch.object(dev.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stdout='')) as run, \
+                    patch.object(dev.subprocess, 'check_output', return_value=f'{ROOT}/.git\n'), \
+                    patch.object(dev.Path, 'mkdir'):
+                dev.docker(['--', 'cargo', 'test'])
+            command = run.call_args.args[0]
+            # An empty SWR_JOBS isn't forwarded; a positive CARGO_BUILD_JOBS is, and is used.
+            self.assertNotIn('SWR_JOBS', command[:command.index('bash')])
+            self.assertIn('CARGO_BUILD_JOBS', command[:command.index('bash')])
+            self.assertEqual(dev.default_jobs(), 3)
         with patch.dict(dev.os.environ, {'SWR_JOBS': '', 'CARGO_BUILD_JOBS': '-1'}, clear=False):
             self.assertEqual(dev.default_jobs(), min(dev.os.cpu_count() or 2, 4))
 
