@@ -10,7 +10,6 @@ use std::{
     ffi::{CString, c_int, c_long},
     rc::Rc,
 };
-use swoole_rs_buffer::string::CppString;
 use swoole_rs_corebase::log::LogLevel::{SW_LOG_ERROR as LOG_ERROR, SW_LOG_NOTICE as LOG_NOTICE};
 use swoole_rs_corebase::{constants::EventDataFlag, log, sys::Text};
 pub use swoole_rs_ports::PortCallback;
@@ -118,18 +117,15 @@ pub fn php_swoole_get_recv_data(serv: view::Server<'_>, req: &RecvData) -> Owned
         let data = req.data().cast_mut().cast();
         serv.move_worker_packet();
         data
-    } else if let Some(buffer) = flags
+    } else if let Some(data) = flags
         .contains(EventDataFlag::SW_EVENT_DATA_POP_PTR)
         .then(|| serv.by_session(req.info().fd))
         .flatten()
-        .map(|conn| view::recv_buffer(conn))
-        .filter(|buffer| !buffer.is_null())
+        .and_then(view::pop_recv_buffer)
     {
-        // SAFETY: the connection's receive buffer, which holds the payload; nothing else borrows it.
-        let buffer = unsafe { &mut *buffer.cast::<CppString>() };
         // The reader gets a buffer as large as the one it gives up: how much a buffer
         // holds decides how the connection's next request is read.
-        buffer.pop(buffer.size())
+        data
     } else {
         return Owned::string(ZString::new(req.payload()));
     };

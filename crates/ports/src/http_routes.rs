@@ -98,7 +98,7 @@ pub mod exports {
     use swoole_rs_clients::protocol::Protocol;
     use swoole_rs_corebase::DataHead;
     use swoole_rs_corebase::lent::lend_spare;
-    use swoole_rs_corebase::net_types::{PacketLength, RecvData};
+    use swoole_rs_corebase::net_types::PacketLength;
     use swoole_rs_corebase::{WebSocketStatus, log};
     use swoole_rs_reactor::Socket;
     use swoole_rs_server::{Connection, view};
@@ -108,7 +108,8 @@ pub mod exports {
     use swoole_rs_websocket_ffi::frame_api::decode_frame;
 
     use super::{Session, WEBSOCKET_FRAME_HEADER_SIZE, length_size, route};
-    use crate::framing_recv::{Package, Packages, Recv, paused};
+    use crate::framing_recv::{Packages, Recv, paused, send_data};
+    use swoole_rs_clients::protocol::Package;
 
     /// `swoole::http2::get_frame_length(const Protocol *, Socket *, PacketLength *)`:
     /// the length callback of an HTTP/2 port, and of crates/phphttp2's client and
@@ -277,7 +278,7 @@ pub mod exports {
 
     impl Handler for Task {
         fn handle(s: Session<'_>, mut package: Package<'_>, info: DataHead) -> bool {
-            s.task(package.send_data(info))
+            s.task(send_data(&mut package, info))
         }
     }
 
@@ -314,23 +315,25 @@ pub mod exports {
     ///
     /// [`OnPackage`]: swoole_rs_clients::protocol::OnPackage
     #[must_use]
-    pub(crate) extern "C-unwind" fn on_package<H: Handler>(
+    pub(crate) fn on_package<H: Handler>(
         _: *const Protocol,
         socket: Socket<'_>,
-        rdata: &RecvData,
+        package: Package<'_>,
     ) -> c_int {
         let handled = view::Server::with_reactor(|server| {
             let Some(conn) = server.at(socket.fd()) else {
                 return false;
             };
-            // SAFETY: the package's `len` bytes, as `OnPackage`'s caller guarantees.
-            let package = unsafe { Package::from_raw(rdata.data, rdata.info.len as usize) };
+            let info = DataHead {
+                len: u32::try_from(package.len()).unwrap_or(u32::MAX),
+                ..DataHead::default()
+            };
             let s = Session {
                 server,
                 conn,
                 socket,
             };
-            H::handle(s, package, rdata.info)
+            H::handle(s, package, info)
         });
         if handled == Some(true) { 0 } else { -1 }
     }
@@ -343,7 +346,7 @@ pub mod exports {
         const HEAD: Option<u32> = None;
         #[inline(always)]
         fn dispatch(&self, _: &Recv<'_>, mut package: Package<'_>) -> bool {
-            self.0.task(package.send_data(DataHead::default()))
+            self.0.task(send_data(&mut package, DataHead::default()))
         }
         fn paused(&self) -> bool {
             paused(self.0.conn)
