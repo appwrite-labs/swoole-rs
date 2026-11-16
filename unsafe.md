@@ -1,37 +1,37 @@
 # Unsafe code by crate
 
-`unsafe` blocks, fns and impls in non-test code of each crate under `crates/`, counted by `tools/budget.py` on `3716902`. ✅ marks a crate whose `lib.rs` has `#![forbid(unsafe_code)]`. The PR tier fails a pull request that raises a crate's count or drops its `forbid`.
+`unsafe` blocks, fns and impls in non-test code of each crate under `crates/`, counted by `tools/budget.py` on `062d2b2`. ✅ marks a crate whose `lib.rs` has `#![forbid(unsafe_code)]`. The PR tier fails a pull request that raises a crate's count or drops its `forbid`.
 
 | crate | unsafe | forbids |
 | --- | ---: | :---: |
-| `zend` | 113 |  |
-| `server` | 93 |  |
-| `hooks` | 80 |  |
-| `phpcoroutines` | 53 |  |
+| `zend` | 103 |  |
+| `server` | 84 |  |
+| `hooks` | 73 |  |
 | `corebase` | 52 |  |
-| `tls` | 52 |  |
 | `reactor` | 46 |  |
-| `phpruntime` | 43 |  |
-| `coroutine` | 42 |  |
+| `coroutine` | 45 |  |
 | `ports` | 42 |  |
-| `phphttp` | 36 |  |
+| `phpcoroutines` | 39 |  |
+| `tls` | 39 |  |
 | `process` | 36 |  |
-| `phpstdext` | 34 |  |
+| `phphttp` | 34 |  |
 | `memory` | 30 |  |
-| `phpswoole` | 30 |  |
-| `clients` | 22 |  |
+| `phpruntime` | 22 |  |
+| `phpswoole` | 22 |  |
 | `phpclients` | 21 |  |
-| `curl` | 19 |  |
+| `clients` | 20 |  |
+| `phpstdext` | 19 |  |
+| `curl` | 18 |  |
 | `timer` | 13 |  |
 | `buffer` | 12 |  |
-| `phpprocess` | 11 |  |
 | `bus` | 10 |  |
+| `phpprocess` | 10 |  |
 | `oracle` | 8 |  |
 | `http-ffi` | 7 |  |
 | `phpserver` | 6 |  |
 | `utilities` | 6 |  |
-| `phpthread` | 5 |  |
 | `ossupport` | 4 |  |
+| `phpthread` | 4 |  |
 | `zlib` | 4 |  |
 | `brotli` | 3 |  |
 | `firebird` | 3 |  |
@@ -72,4 +72,4 @@
 | `websocket` | 0 | ✅ |
 | `zend-sys` | 0 |  |
 
-Total 957. Goal: the hardened runtime ([#1893](https://github.com/appwrite-labs/swoole-rs/issues/1893), [#1902](https://github.com/appwrite-labs/swoole-rs/issues/1902)).
+Total 856. Goal: the hardened runtime ([#1893](https://github.com/appwrite-labs/swoole-rs/issues/1893), [#1902](https://github.com/appwrite-labs/swoole-rs/issues/1902)).
