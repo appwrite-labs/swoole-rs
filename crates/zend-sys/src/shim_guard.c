@@ -49,6 +49,14 @@ void *swr_zend_guard_target(void) {
     return NULL;
 }
 
+void swr_zend_guard_bailout(void) {
+    void *target = swr_zend_guard_target();
+    if (target) {
+        EG(bailout) = (JMP_BUF *) target;
+        zend_bailout();
+    }
+}
+
 int swr_zend_guard_pending(void) { return thread_exit; }
 void swr_zend_guard_mark(void) { thread_exit = 2; }
 void swr_zend_guard_clear(void) { thread_exit = 0; }
