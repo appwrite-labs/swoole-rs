@@ -2,9 +2,9 @@
 // Compatibility derived from Swoole v6.2.4 src/core/string.cc and include/swoole_string.h
 // (Swoole contributors).
 //! `swoole::String`: the C++ object itself (its layout pinned on both sides), and
-//! every method upstream gives a body. With `upstream-symbols` (the hybrid's build)
-//! each is defined under its upstream (Itanium) symbol and the C++ sources no
-//! longer define it.
+//! every method upstream gives a body. With `upstream-symbols` (on in the real
+//! build, through crates/ffi) each is also exported under its upstream (Itanium)
+//! symbol.
 //!
 //! An allocation failure aborts: upstream throws `std::bad_alloc`, which no
 //! first-party code catches. Arithmetic wraps, as upstream's `size_t` does, and

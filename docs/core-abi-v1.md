@@ -3,9 +3,12 @@
 Reference: Swoole v6.2.5, `76c657d88be39b7af6bf85e46bcbac0da7387760`. Feature
 values: base64 8, CRC32 16, error messages 32.
 
-The primitives allocate nothing, retain no pointer, invoke no callback,
-have no mutable global state and cannot panic or throw. They are safe on
-independent inputs from any thread and after fork.
+The primitives this page describes (Base64, CRC32 and the error-message
+lookup) allocate nothing, retain no pointer, invoke no callback, have no
+mutable global state and cannot panic or throw. They are safe on independent
+inputs from any thread and after fork. The error exports with a formatter
+callback, a per-thread buffer or the ignored-error set keep their own rules in
+[the error contract](../native/error/contract.md).
 
 ## M09 Base64 (crate `swoole-rs-base64`)
 
@@ -32,15 +35,5 @@ For each case in pinned `src/core/error.cc`, returns the exact NUL-terminated
 message for its `swoole_error.h` value. The pointer is immutable static storage.
 Unknown codes and system errno values return null.
 
-Additional exports (`swr_v1_error_resolve`, `swr_v1_error_strerror`, [contract](../native/error/contract.md)):
-
-- The resolver classifies codes and formats unknown ones; it may call only the
-  synchronous, non-throwing native system formatter and retains nothing. Native
-  exceptions are raised after it returns.
-- Unknown-code formatting uses one mutable 32-byte buffer with upstream's pointer
-  lifetime; callers serialize format-and-use. Known strings may be read
-  concurrently.
-- The ignored-error set is a Rust `HashSet` behind an opaque handle. Allocation
-  failure leaves it unchanged and returns -2; native raises `bad_alloc`. It is
-  copied on fork; writes need external exclusion, reads may be concurrent; each
-  process destroys its own handle.
+`swr_v1_error_resolve`, `swr_v1_error_strerror`, the per-thread unknown-code
+buffer and the ignored-error set are in [the error contract](../native/error/contract.md).
