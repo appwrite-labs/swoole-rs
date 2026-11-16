@@ -32,12 +32,11 @@ fn swr_v1_server_new(mode: c_int) -> ServerObject {
         );
         swoole_rs_corebase::fatal("out of memory for the server's counters");
     }
-    // SAFETY: a fresh mapping of a whole `ServerGS`; only the place of its counters is
-    // named.
-    let counters = unsafe { &raw mut (*gs.cast::<ServerShared>()).counters };
-    // SAFETY: those counters, which nothing reads yet, freed only by the last share's
-    // drop after the message bus.
-    let counters = crate::swr_v1_server_shared_init(unsafe { &mut *counters.cast() });
+    // SAFETY: a fresh, zeroed mapping of a whole `ServerGS` (all-zero is a valid one),
+    // which nothing else reads yet, freed only by the last share's drop after the
+    // message bus.
+    let shared: &'static ServerShared = unsafe { &*gs.cast() };
+    let counters = crate::swr_v1_server_shared_init(&shared.counters);
     config.mode_ = Mode::from_code(mode.into())
         .unwrap_or_else(|| swoole_rs_corebase::fatal("an unknown server mode"));
     tables.message_bus = Some(Box::new(crate::pool_native::new_bus(
