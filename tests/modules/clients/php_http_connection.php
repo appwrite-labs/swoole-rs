@@ -13,6 +13,8 @@ try {
   try{$result=$client->get('/first');}catch(Throwable $error){$exception=$error->getMessage();$error=null;}
   if($mode==='reconnect'){
    check($result===true&&$client->body==='A'&&$client->connected===true,'first keepalive result');check(fgets($pipes[1])==="first-closed\n",'stale FIN synchronized');check($client->get('/second')===true&&$client->body==='B','reconnected response');check($client->connected===true,'fresh connected');check($client->close(),'final close');check($client->connected===false,'final disconnected');
+  }elseif($mode==='fragmented'){
+   check($result===true&&$client->body===str_repeat('x',131072),'fragmented headers and multiple body reads');check($client->get('/second')===true&&$client->body==='B','reused response buffer');check($client->close(),'close reused connection');
   }elseif($mode==='close-callback'){
    check($close_result===true&&$callbacks===['41'],'deferred close inside body callback');check($result===false&&$client->connected===false,'outer receive fails after deferred close');check($client->statusCode===SWOOLE_HTTP_CLIENT_ESTATUS_SERVER_RESET,'reset status');
   }elseif($mode==='throw-callback'){
