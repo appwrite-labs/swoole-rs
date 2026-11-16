@@ -543,11 +543,6 @@ unsafe fn request(host: &Host, timeout: f64, entry: squeue::Entry) -> io::Result
     Event::new(host, entry).with_timeout(timeout).execute(host)
 }
 
-// Transfer callers still use the syscall protocol until their Result migration.
-fn transfer_result(result: io::Result<isize>) -> isize {
-    result.unwrap_or(-1)
-}
-
 fn byte_count(result: io::Result<isize>) -> io::Result<usize> {
     // Successful CQE values are nonnegative; complete rejects every negative one.
     result.map(isize::cast_unsigned)
@@ -603,8 +598,8 @@ safe_operations! {
     pub fn futex_wakeup(futex: &AtomicU32) -> io::Result<c_int>,
         timeout -1.0, opcode::FutexWake::new(futex.as_ptr(), 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32), |result: io::Result<isize>| result.map(CCast::c_cast::<c_int>);
     /// `IORING_OP_TIMEOUT` for `ts`.
-    fn timer(ts: &Timespec) -> isize,
-        timeout -1.0, opcode::Timeout::new(ts), transfer_result;
+    fn timer(ts: &Timespec) -> io::Result<()>,
+        timeout -1.0, opcode::Timeout::new(ts), file_status;
     /// `IORING_OP_STATX` of `path` under `dfd` into `buf`.
     fn statx_into(dfd: c_int, path: &CStr, flags: c_int, buf: &mut libc::statx) -> io::Result<()>,
         timeout -1.0, opcode::Statx::new(Fd(dfd), path.as_ptr(), ptr::from_mut(buf).cast()).flags(flags).mask(libc::STATX_BASIC_STATS | libc::STATX_BTIME), file_status;
@@ -682,22 +677,30 @@ pub fn vector(host: &Host, fd: c_int, vector: &IoVector<'_>, timeout: f64) -> io
     byte_count(result)
 }
 
-/// Sleep `seconds` in the ring's timer: 0 when it expired, -1 if cancelled.
-#[must_use]
-pub fn sleep(host: &Host, seconds: f64) -> c_int {
+/// Sleep `seconds` in the ring's timer.
+/// # Errors
+/// The ambient errno after the timer call, unless it is `ETIME`. This preserves
+/// upstream's sleep contract, which ignores the request's result.
+pub fn sleep(host: &Host, seconds: f64) -> io::Result<()> {
     sleep_timespec(host, timespec(seconds))
 }
 
 /// Upstream's `sleep(tv_sec, tv_nsec)`, which `sleep(seconds)` converts to.
-fn sleep_timespec(host: &Host, ts: libc::timespec) -> c_int {
+fn sleep_timespec(host: &Host, ts: libc::timespec) -> io::Result<()> {
     let _expired = timer(host, &kernel_timespec(ts));
-    if errno() == libc::ETIME { 0 } else { -1 }
+    if errno() == libc::ETIME {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
 }
 
 /// `size` bytes of `in_fd` from `offset` (the file position without one) to
 /// `out_fd`, spliced through a pipe. Upstream's zero-copy sendmsg needs
 /// `MSG_SPLICE_PAGES`, which is kernel-internal: no build's headers have it.
-#[must_use]
+/// # Errors
+/// Pipe creation or a splice failed before any output was sent. A zero-byte
+/// splice also fails with the ambient errno, matching upstream.
 pub fn sendfile(
     host: &Host,
     out_fd: c_int,
@@ -705,66 +708,76 @@ pub fn sendfile(
     offset: Option<&mut libc::off_t>,
     size: usize,
     timeout: f64,
-) -> isize {
+) -> io::Result<usize> {
     if size == 0 {
-        return 0;
+        return Ok(0);
     }
-    let Some([read_end, write_end]) = os::pipe() else {
-        return -1;
-    };
+    let [read_end, write_end] = os::pipe().ok_or_else(io::Error::last_os_error)?;
     let _resized = os::fcntl(write_end, libc::F_SETPIPE_SZ, 1024 * 1024);
     let pipe_size = os::fcntl(read_end, libc::F_GETPIPE_SZ, 0).unwrap_or(-1);
     let pipe_size = usize::try_from(pipe_size).unwrap_or(65536);
-    let close_pipe = || {
-        _ = os::close(read_end);
-        _ = os::close(write_end);
-    };
-    let start = offset.as_deref().copied();
-    let mut total_sent = 0_usize;
     // Each splice completes before the next, and carries no pointers.
     let splice = |fd_in, off_in, fd_out, nbytes| {
         let splice = opcode::Splice::new(Fd(fd_in), off_in, Fd(fd_out), -1, nbytes).build();
-        transfer_result(Event::new(host, splice).with_timeout(timeout).execute(host))
+        byte_count(Event::new(host, splice).with_timeout(timeout).execute(host))
     };
-    while total_sent < size {
-        let to_send = (size - total_sent).min(pipe_size);
-        let from = start.map_or(-1, |start| {
-            start + i64::try_from(total_sent).unwrap_or(i64::MAX)
-        });
-        let nbytes = c_uint::try_from(to_send).unwrap_or(c_uint::MAX);
-        let ret1 = splice(in_fd, from, write_end, nbytes);
-        if ret1 <= 0 {
-            if total_sent > 0 {
-                break;
-            }
-            let saved = errno();
-            close_pipe();
-            set_errno(saved);
-            return -1;
-        }
-        let spliced = c_uint::try_from(ret1).unwrap_or(c_uint::MAX);
-        let ret2 = splice(read_end, -1, out_fd, spliced);
-        if ret2 <= 0 {
-            if total_sent > 0 {
-                break;
-            }
-            let saved = errno();
-            close_pipe();
-            set_errno(saved);
-            return -1;
-        }
-        total_sent += ret2.unsigned_abs();
-        if ret2 < ret1 {
-            break;
-        }
+    let result = splice_copy(
+        size,
+        pipe_size,
+        offset.as_deref().copied(),
+        |from, count| splice(in_fd, from, write_end, count),
+        |count| splice(read_end, -1, out_fd, count),
+    );
+    let saved = errno();
+    _ = os::close(read_end);
+    _ = os::close(write_end);
+    if result.is_err() {
+        set_errno(saved);
     }
-    close_pipe();
-    if total_sent > 0
+    if let Ok(total) = result
+        && total > 0
         && let Some(offset) = offset
     {
-        *offset += libc::off_t::try_from(total_sent).unwrap_or(libc::off_t::MAX);
+        *offset += libc::off_t::try_from(total).unwrap_or(libc::off_t::MAX);
     }
-    total_sent.cast_signed()
+    result
+}
+
+/// Splice through the pipe in pairs, retaining completed output on a later error.
+fn splice_copy(
+    size: usize,
+    pipe_size: usize,
+    start: Option<libc::off_t>,
+    mut read: impl FnMut(i64, c_uint) -> io::Result<usize>,
+    mut write: impl FnMut(c_uint) -> io::Result<usize>,
+) -> io::Result<usize> {
+    let mut total = 0_usize;
+    while total < size {
+        let from = start.map_or(-1, |start| start + i64::try_from(total).unwrap_or(i64::MAX));
+        let count = c_uint::try_from((size - total).min(pipe_size)).unwrap_or(c_uint::MAX);
+        let next = (|| {
+            let input = read(from, count)?;
+            if input == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let output = write(c_uint::try_from(input).unwrap_or(c_uint::MAX))?;
+            if output == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok((input, output))
+        })();
+        match next {
+            Ok((input, output)) => {
+                total += output;
+                if output < input {
+                    break;
+                }
+            }
+            Err(error) if total == 0 => return Err(error),
+            Err(_) => break,
+        }
+    }
+    Ok(total)
 }
 
 fn device(major: u32, minor: u32) -> libc::dev_t {
@@ -1246,18 +1259,159 @@ mod tests {
 
     #[test]
     fn completion_maps_cancel_to_timeout() {
-        assert_eq!(transfer_result(complete(5)), 5, "success passes through");
+        assert_eq!(complete(5).unwrap_or(-1), 5, "success passes through");
         assert_eq!(
-            transfer_result(complete(-(libc::ECANCELED as isize))),
+            complete(-(libc::ECANCELED as isize)).unwrap_or(-1),
             -1,
             "failure is -1"
         );
         assert_eq!(errno(), libc::ETIMEDOUT, "cancelled reads as a timeout");
         assert_eq!(
-            transfer_result(complete(-(libc::EBADF as isize))),
+            complete(-(libc::EBADF as isize)).unwrap_or(-1),
             -1,
             "failure is -1"
         );
         assert_eq!(errno(), libc::EBADF, "other errors pass through");
+    }
+
+    #[test]
+    fn sleep_retains_the_ambient_errno_contract() {
+        let host = Host {
+            instance: || None,
+            ..testing::HOST
+        };
+        for code in [libc::ETIME, 0, libc::EPERM, libc::ETIMEDOUT] {
+            set_errno(code);
+            let result = sleep(&host, 0.1);
+            assert_eq!(errno(), code);
+            set_errno(libc::EINTR);
+            if code == libc::ETIME {
+                assert!(result.is_ok());
+            } else {
+                assert_eq!(result.unwrap_err().raw_os_error(), Some(code));
+            }
+        }
+    }
+
+    #[test]
+    fn sendfile_empty_and_creation_failure_leave_offset_unchanged() {
+        let host = Host {
+            instance: || {
+                set_errno(libc::EPERM);
+                None
+            },
+            ..testing::HOST
+        };
+        let mut offset = 9;
+        set_errno(libc::EINTR);
+        assert_eq!(
+            sendfile(&host, -1, -1, Some(&mut offset), 0, 1.0).unwrap(),
+            0
+        );
+        assert_eq!(errno(), libc::EINTR);
+        let error = sendfile(&host, -1, -1, Some(&mut offset), 1, 1.0).unwrap_err();
+        assert_eq!(errno(), libc::EPERM);
+        set_errno(libc::EBADF);
+        assert_eq!(error.raw_os_error(), Some(libc::EPERM));
+        assert_eq!(offset, 9);
+    }
+
+    #[test]
+    fn splice_copy_retains_chunk_offsets_and_short_output() {
+        let mut reads = Vec::new();
+        let mut writes = Vec::new();
+        let copied = splice_copy(
+            9,
+            4,
+            Some(7),
+            |from, count| {
+                reads.push((from, count));
+                Ok(count as usize)
+            },
+            |count| {
+                writes.push(count);
+                Ok(count as usize)
+            },
+        )
+        .unwrap();
+        assert_eq!(copied, 9);
+        assert_eq!(reads, [(7, 4), (11, 4), (15, 1)]);
+        assert_eq!(writes, [4, 4, 1]);
+        let mut calls = 0;
+        assert_eq!(
+            splice_copy(
+                9,
+                4,
+                None,
+                |from, count| {
+                    calls += 1;
+                    assert_eq!((from, count), (-1, 4));
+                    Ok(4)
+                },
+                |count| {
+                    assert_eq!(count, 4);
+                    Ok(3)
+                }
+            )
+            .unwrap(),
+            3
+        );
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn splice_copy_preserves_first_errors_and_later_progress() {
+        for write_fails in [false, true] {
+            for first in [false, true] {
+                for eof in [false, true] {
+                    let mut read_calls = 0;
+                    let mut write_calls = 0;
+                    let failure = || {
+                        set_errno(libc::EIO);
+                        if eof {
+                            Ok(0)
+                        } else {
+                            Err(io::Error::last_os_error())
+                        }
+                    };
+                    let result = splice_copy(
+                        8,
+                        4,
+                        None,
+                        |_, _| {
+                            read_calls += 1;
+                            if !write_fails && (first || read_calls > 1) {
+                                failure()
+                            } else {
+                                Ok(4)
+                            }
+                        },
+                        |_| {
+                            write_calls += 1;
+                            if write_fails && (first || write_calls > 1) {
+                                failure()
+                            } else {
+                                Ok(4)
+                            }
+                        },
+                    );
+                    set_errno(libc::EINTR);
+                    if first {
+                        assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::EIO));
+                    } else {
+                        assert_eq!(result.unwrap(), 4);
+                    }
+                    assert_eq!(read_calls, if first { 1 } else { 2 });
+                    assert_eq!(
+                        write_calls,
+                        if write_fails {
+                            read_calls
+                        } else {
+                            read_calls - 1
+                        }
+                    );
+                }
+            }
+        }
     }
 }

@@ -438,3 +438,9 @@ retaining it when a case or inventory check fails and deleting it after a passin
 suite. CI uploads retained copies with the reports. To investigate, use that copy
 with the same Linux dependencies and the suite's fixture working directory; a
 subsequent Cargo rebuild does not replace it.
+
+Ring timer/sleep and sendfile outcomes use `io::Result`. Sleep retains the pinned
+ambient-errno `ETIME` rule even when ring creation fails. Sendfile retains the
+first failure, completed output on a later error/EOF, short-output stopping and
+explicit offset advancement. Scripted splice tests cover those branches without
+a ring; original runtime tests still require successful io_uring setup.

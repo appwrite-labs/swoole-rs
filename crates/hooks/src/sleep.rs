@@ -151,7 +151,7 @@ pub fn swr_v1_hooks_sleep_until(
 pub extern "C-unwind" fn system_sleep(sec: f64) -> i32 {
     #[cfg(feature = "iouring")]
     {
-        crate::uring::sleep(&crate::iouring::HOST, sec)
+        crate::uring::sleep(&crate::iouring::HOST, sec).map_or(-1, |()| 0)
     }
     #[cfg(not(feature = "iouring"))]
     {
