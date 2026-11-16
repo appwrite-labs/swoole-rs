@@ -468,8 +468,9 @@ impl<'a, S: ReadSlot> Fill<'a, S> {
         count(self.lend(|buf, n| pread(fd, buf, n, offset)))
     }
 
-    /// recvfrom(2) into the bytes, the sender into `address`'s storage, and its length,
-    /// given the room `address` has, into `address.len`.
+    /// recvfrom(2) into the bytes, the sender into `address`'s whole storage, and its
+    /// length into `address.len`. The room is the whole storage whatever `len` held: a
+    /// zero `len` would otherwise leave the sender unwritten.
     /// How many bytes it wrote, or None with errno set.
     #[inline]
     pub fn recvfrom_one(
@@ -478,7 +479,7 @@ impl<'a, S: ReadSlot> Fill<'a, S> {
         flags: c_int,
         address: &mut SocketAddress,
     ) -> Option<usize> {
-        let mut room = address.room();
+        let mut room = Room::FULL;
         let storage = &mut address.addr;
         let received = self.lend(|buf, n| recvfrom(fd, buf, n, flags, storage, &mut room));
         address.len = room.length();
