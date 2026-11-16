@@ -7,7 +7,7 @@
     clippy::indexing_slicing,
     reason = "test helpers outside #[test] fns; a panic fails the case"
 )]
-use swoole_rs_http2::hpack::{Decoder, Encoder, Error};
+use swoole_rs_http2::hpack::{Decoder, Encoder, Error, Field};
 use swoole_rs_oracle::nghttp2;
 
 type Headers = Vec<(Vec<u8>, Vec<u8>)>;
@@ -27,15 +27,15 @@ fn list(headers: &[(&str, &str)]) -> Headers {
 }
 
 /// A whole block, in fragments of `split` bytes, the last one final.
-fn decode(decoder: &mut Decoder, block: &[u8], split: usize) -> Result<Headers, Error> {
-    let mut headers = Vec::new();
+fn decode(decoder: &Decoder, block: &[u8], split: usize) -> Result<Headers, Error> {
+    let (mut headers, mut field) = (Vec::new(), Field::default());
     let fragments: Vec<&[u8]> = block.chunks(split.max(1)).collect();
     let count = fragments.len().max(1);
     for at in 0..count {
         let mut input = fragments.get(at).copied().unwrap_or_default();
         let last = at + 1 == count;
         loop {
-            let step = decoder.decode(input, last)?;
+            let step = decoder.decode(input, last, &mut field)?;
             input = &input[step.read..];
             if let Some((name, value)) = step.header {
                 headers.push((name.to_vec(), value.to_vec()));
@@ -172,10 +172,10 @@ const SIZE_256: &str = "3fe101";
 
 fn decode_examples(examples: &[Example], prefix: &str) {
     for split in [usize::MAX, 1, 2, 3, 7] {
-        let mut decoder = Decoder::default();
+        let decoder = Decoder::default();
         for (at, &(block, headers, size)) in examples.iter().enumerate() {
             let block = hex(&format!("{}{block}", if at == 0 { prefix } else { "" }));
-            let decoded = decode(&mut decoder, &block, split).unwrap();
+            let decoded = decode(&decoder, &block, split).unwrap();
             assert_eq!(decoded, list(headers), "block {at}, fragments of {split}");
             assert_eq!(decoder.table_size(), size, "table after block {at}");
         }
@@ -190,7 +190,7 @@ fn integers() {
     assert_eq!(encode(&mut Encoder::new(10), &Vec::new()), hex("2a"));
     assert_eq!(encode(&mut Encoder::new(1337), &Vec::new()), hex("3f9a0a"));
     let block = hex("3f9a0a");
-    assert_eq!(decode(&mut Decoder::default(), &block, 1), Ok(Vec::new()));
+    assert_eq!(decode(&Decoder::default(), &block, 1), Ok(Vec::new()));
 }
 
 /// C.2: one field of each representation.
@@ -210,8 +210,8 @@ fn fields() {
         ),
         ("82", (":method", "GET"), 0),
     ] {
-        let mut decoder = Decoder::default();
-        let decoded = decode(&mut decoder, &hex(block), usize::MAX).unwrap();
+        let decoder = Decoder::default();
+        let decoded = decode(&decoder, &hex(block), usize::MAX).unwrap();
         assert_eq!(decoded, list(&[header]), "{block}");
         assert_eq!(decoder.table_size(), size, "{block}");
     }
@@ -257,11 +257,11 @@ fn encode_requests() {
 /// with both tables in step.
 #[test]
 fn encode_responses() {
-    let (mut encoder, mut decoder) = (Encoder::new(256), Decoder::default());
+    let (mut encoder, decoder) = (Encoder::new(256), Decoder::default());
     for (at, &(_, headers, _)) in C6.iter().enumerate() {
         let block = encode(&mut encoder, &list(headers));
         assert_eq!(block.starts_with(&hex(SIZE_256)), at == 0, "response {at}");
-        let decoded = decode(&mut decoder, &block, usize::MAX).unwrap();
+        let decoded = decode(&decoder, &block, usize::MAX).unwrap();
         assert_eq!(decoded, list(headers), "response {at}");
         assert_eq!(
             decoder.table_size(),
@@ -286,8 +286,8 @@ fn encode_indexing() {
     let block = encode(&mut encoder, &headers);
     assert_eq!(encoder.table_size(), 0, "nothing indexed");
     assert_eq!(block[0], 0x1f, "authorization never indexed, by name 23");
-    let mut decoder = Decoder::default();
-    assert_eq!(decode(&mut decoder, &block, 5), Ok(headers.clone()));
+    let decoder = Decoder::default();
+    assert_eq!(decode(&decoder, &block, 5), Ok(headers.clone()));
     let again = encode(&mut encoder, &headers);
     assert_eq!(again, block, "nothing to reuse");
 }
@@ -307,10 +307,10 @@ fn encode_table_size() {
     let block = encode(&mut encoder, &Vec::new());
     assert!(block.is_empty(), "sent once");
     encoder.set_table_size(100);
-    let mut decoder = Decoder::default();
+    let decoder = Decoder::default();
     let block = encode(&mut encoder, &headers);
     assert_eq!(block[..2], hex("3f45"), "100");
-    assert_eq!(decode(&mut decoder, &block, usize::MAX), Ok(headers));
+    assert_eq!(decode(&decoder, &block, usize::MAX), Ok(headers));
     assert_eq!(decoder.table_size(), encoder.table_size(), "in step");
 }
 
@@ -331,14 +331,14 @@ fn decode_errors() {
         ("ff80808080808000", "integer too long"),
         ("407f818004", "name longer than 65536"),
     ] {
-        let mut decoder = Decoder::default();
+        let decoder = Decoder::default();
         assert_eq!(
-            decode(&mut decoder, &hex(block), usize::MAX),
+            decode(&decoder, &hex(block), usize::MAX),
             Err(Error),
             "{why}"
         );
         assert_eq!(
-            decoder.decode(&hex("82"), true),
+            decoder.decode(&hex("82"), true, &mut Field::default()),
             Err(Error),
             "{why}: stays bad"
         );
@@ -348,29 +348,50 @@ fn decode_errors() {
 }
 
 /// The step contract callers loop on: a field is returned with what it took,
-/// and the block ends on an empty final call.
+/// decoded into the caller's `Field` (where one split across fragments
+/// carries over), and the block ends on an empty final call.
 #[test]
 fn steps() {
-    let mut decoder = Decoder::default();
+    let (decoder, mut field) = (Decoder::default(), Field::default());
     let block = hex("8286");
-    let step = decoder.decode(&block, true).unwrap();
+    let step = decoder.decode(&block, true, &mut field).unwrap();
     assert_eq!((step.read, step.flags()), (1, 2), "first field");
-    let step = decoder.decode(&block[1..], true).unwrap();
+    assert_eq!(
+        step.header,
+        Some((&b":method"[..], &b"GET"[..])),
+        "first field"
+    );
+    // After a step that emits, the decoder keeps nothing in the field.
+    let mut other = Field::default();
+    let step = decoder.decode(&block[1..], true, &mut other).unwrap();
     assert_eq!((step.read, step.flags()), (1, 2), "second field");
-    let step = decoder.decode(&[], true).unwrap();
+    assert_eq!(
+        step.header,
+        Some((&b":scheme"[..], &b"http"[..])),
+        "second field, in another field"
+    );
+    let step = decoder.decode(&[], true, &mut field).unwrap();
     assert_eq!(
         (step.read, step.flags(), step.header),
         (0, 1, None),
         "final"
     );
-    let step = decoder.decode(&hex("40"), false).unwrap();
+    let step = decoder.decode(&hex("400161"), false, &mut field).unwrap();
+    assert_eq!((step.read, step.flags()), (3, 0), "a field's name");
+    let step = decoder.decode(&hex("0162"), false, &mut field).unwrap();
+    assert_eq!(
+        (step.read, step.header),
+        (2, Some((&b"a"[..], &b"b"[..]))),
+        "its value, a fragment on"
+    );
+    let step = decoder.decode(&hex("40"), false, &mut field).unwrap();
     assert_eq!(
         (step.read, step.flags()),
         (1, 0),
         "a fragment's partial field"
     );
     assert_eq!(
-        decoder.decode(&[], true),
+        decoder.decode(&[], true, &mut field),
         Err(Error),
         "cut short at the end"
     );
@@ -382,10 +403,10 @@ fn steps() {
 /// is refused, as nghttp2 refuses it.
 #[test]
 fn client_block_then_table_size_update() {
-    let client_block = |decoder: &mut Decoder, block: &[u8], end: bool| {
-        let mut input = block;
+    let client_block = |decoder: &Decoder, block: &[u8], end: bool| {
+        let (mut input, mut field) = (block, Field::default());
         loop {
-            let step = decoder.decode(input, true)?;
+            let step = decoder.decode(input, true, &mut field)?;
             input = &input[step.read..];
             let plan = swoole_rs_http2::sw_rs_http2_inflate_step(step.flags(), input.len(), true);
             if plan.end_headers || plan.finish {
@@ -397,20 +418,16 @@ fn client_block_then_table_size_update() {
         }
     };
     let (first, second) = (hex("82"), hex("3fe1018286"));
-    let mut decoder = Decoder::default();
-    client_block(&mut decoder, &first, false).unwrap();
+    let decoder = Decoder::default();
+    client_block(&decoder, &first, false).unwrap();
     assert_eq!(
-        client_block(&mut decoder, &second, false),
+        client_block(&decoder, &second, false),
         Err(Error),
         "still in block"
     );
-    let mut decoder = Decoder::default();
-    client_block(&mut decoder, &first, true).unwrap();
-    assert_eq!(
-        client_block(&mut decoder, &second, true),
-        Ok(()),
-        "a new block"
-    );
+    let decoder = Decoder::default();
+    client_block(&decoder, &first, true).unwrap();
+    assert_eq!(client_block(&decoder, &second, true), Ok(()), "a new block");
 }
 
 /// A small deterministic generator.
@@ -434,12 +451,12 @@ impl Random {
 /// bytes read, flags and fields, and the same call fails. Returns the fields
 /// and whether the block ended rather than failed.
 fn lockstep(
-    decoder: &mut Decoder,
+    decoder: &Decoder,
     inflater: *mut core::ffi::c_void,
     block: &[u8],
     split: usize,
 ) -> (Headers, bool) {
-    let mut headers = Vec::new();
+    let (mut headers, mut field) = (Vec::new(), Field::default());
     let fragments: Vec<&[u8]> = block.chunks(split.max(1)).collect();
     let count = fragments.len().max(1);
     for at in 0..count {
@@ -465,7 +482,8 @@ fn lockstep(
                     i32::from(last),
                 )
             };
-            let (read, step) = match (usize::try_from(read), decoder.decode(input, last)) {
+            let decoded = decoder.decode(input, last, &mut field);
+            let (read, step) = match (usize::try_from(read), decoded) {
                 (Ok(read), Ok(step)) => (read, step),
                 (read, step) => {
                     assert!(
@@ -514,7 +532,7 @@ fn lockstep_once(block: &str, split: usize) -> (Headers, bool) {
         0,
         "inflater"
     );
-    let result = lockstep(&mut Decoder::default(), inflater, &hex(block), split);
+    let result = lockstep(&Decoder::default(), inflater, &hex(block), split);
     // SAFETY: the inflater made above.
     unsafe { nghttp2::nghttp2_hd_inflate_del(inflater) };
     result
@@ -550,7 +568,7 @@ fn matches_nghttp2() {
     let mut random = Random(7541);
     for connection in 0..400 {
         let mut encoder = Encoder::new(if connection % 3 == 0 { 256 } else { 4096 });
-        let mut decoder = Decoder::default();
+        let decoder = Decoder::default();
         let mut inflater = std::ptr::null_mut();
         // SAFETY: `inflater` is writable.
         assert_eq!(
@@ -579,7 +597,7 @@ fn matches_nghttp2() {
                 mutated = true;
             }
             let split = 1 + random.below(block.len().max(1));
-            let actual = lockstep(&mut decoder, inflater, &block, split);
+            let actual = lockstep(&decoder, inflater, &block, split);
             if !mutated {
                 assert_eq!(actual, (headers, true), "round trip");
             }

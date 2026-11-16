@@ -2,6 +2,8 @@
 //! `nghttp2_hd` subset upstream bundles: the same indexing choices, table-size
 //! updates, limits and errors, so either peer sees the bytes it saw before.
 
+use std::cell::Cell;
+
 /// Bytes an entry costs beyond its name and value (RFC 7541 4.1).
 const ENTRY_OVERHEAD: usize = 32;
 /// `SETTINGS_HEADER_TABLE_SIZE`'s default, and the decoder's fixed limit.
@@ -237,6 +239,7 @@ fn static_index(name: &[u8], value: Option<&[u8]>) -> Option<usize> {
 type Entry = (Box<[u8]>, Box<[u8]>);
 
 /// The dynamic table, oldest entry first.
+#[derive(Default)]
 struct Table {
     entries: Vec<Entry>,
     size: usize,
@@ -349,12 +352,21 @@ fn encode_string(out: &mut Vec<u8>, text: &[u8]) {
     }
 }
 
+/// The buffers `Decoder::decode` decodes a header field into. The caller owns
+/// them, so a field a step returns borrows them and not the decoder, and the
+/// decoder reuses their capacity field after field.
+#[derive(Debug, Default)]
+pub struct Field {
+    name: Vec<u8>,
+    value: Vec<u8>,
+}
+
 /// One `decode` call's outcome.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Step<'a> {
     /// Input bytes consumed.
     pub read: usize,
-    /// The header field decoded, valid until the next call.
+    /// The header field decoded, in the `Field` passed.
     pub header: Option<(&'a [u8], &'a [u8])>,
     /// The header block ended: the input was its last and is all consumed.
     pub done: bool,
@@ -406,31 +418,31 @@ enum State {
 }
 
 /// The header block decoder (`nghttp2_hd_inflater`), whose table limit is
-/// `SETTINGS_HEADER_TABLE_SIZE`'s default.
+/// `SETTINGS_HEADER_TABLE_SIZE`'s default. Its state is in cells, so it
+/// decodes through a shared reference: a holder never takes it out or borrows
+/// it between steps, and the field a step emits is in the caller's `Field`.
 pub struct Decoder {
-    table: Table,
-    state: State,
+    /// Taken out only past the static table: a dynamic lookup, an insertion or
+    /// a resize.
+    table: Cell<Table>,
+    state: Cell<State>,
     /// A representation opened this block, so no table size update may follow.
-    in_block: bool,
+    in_block: Cell<bool>,
     /// The literal being read is added to the table.
-    indexing: bool,
-    huffman: Bits,
-    bad: bool,
-    name: Vec<u8>,
-    value: Vec<u8>,
+    indexing: Cell<bool>,
+    huffman: Cell<Bits>,
+    bad: Cell<bool>,
 }
 
 impl Default for Decoder {
     fn default() -> Self {
         Self {
-            table: Table::new(DEFAULT_TABLE_SIZE),
-            state: State::Opcode,
-            in_block: false,
-            indexing: false,
-            huffman: Bits::default(),
-            bad: false,
-            name: Vec::new(),
-            value: Vec::new(),
+            table: Cell::new(Table::new(DEFAULT_TABLE_SIZE)),
+            state: Cell::new(State::Opcode),
+            in_block: Cell::new(false),
+            indexing: Cell::new(false),
+            huffman: Cell::default(),
+            bad: Cell::new(false),
         }
     }
 }
@@ -439,22 +451,29 @@ impl Decoder {
     /// Decode up to the next header field of a block (`nghttp2_hd_inflate_hd`):
     /// call again with the rest of the input until it is consumed, and with
     /// `last` on the block's final fragment. A representation cut short by a
-    /// fragment's end is consumed and finished by the next call.
+    /// fragment's end is consumed and finished by the next call, so pass the
+    /// same `field` until a step emits it; after that step the decoder keeps
+    /// nothing in it.
     ///
     /// # Errors
     /// Malformed input, or any call after one that failed.
-    pub fn decode(&mut self, input: &[u8], last: bool) -> Result<Step<'_>, Error> {
-        if self.bad {
+    pub fn decode<'a>(
+        &self,
+        input: &[u8],
+        last: bool,
+        field: &'a mut Field,
+    ) -> Result<Step<'a>, Error> {
+        if self.bad.get() {
             return Err(Error);
         }
-        match self.step(input, last) {
+        match self.step(input, last, field) {
             Ok((read, emitted)) => Ok(Step {
                 read,
-                header: emitted.then_some((self.name.as_slice(), self.value.as_slice())),
+                header: emitted.then_some((field.name.as_slice(), field.value.as_slice())),
                 done: last && !emitted && read == input.len(),
             }),
             Err(error) => {
-                self.bad = true;
+                self.bad.set(true);
                 Err(error)
             }
         }
@@ -463,71 +482,85 @@ impl Decoder {
     /// The bytes the dynamic table holds (RFC 7541 4.1).
     #[must_use]
     pub fn table_size(&self) -> usize {
-        self.table.size
+        self.with_table(|table| table.size)
     }
 
     /// The block ended (`nghttp2_hd_inflate_end_headers`): the next may open
     /// with table size updates.
-    pub fn end_headers(&mut self) {
-        self.state = State::Opcode;
-        self.in_block = false;
+    pub fn end_headers(&self) {
+        self.state.set(State::Opcode);
+        self.in_block.set(false);
+    }
+
+    /// `f` over the dynamic table, taken out and put back. Out of line, so
+    /// the static table's fields, which never touch it, don't pay for it.
+    #[inline(never)]
+    fn with_table<R>(&self, f: impl FnOnce(&mut Table) -> R) -> R {
+        let mut table = self.table.take();
+        let result = f(&mut table);
+        self.table.set(table);
+        result
     }
 
     /// The bytes read, and whether they ended in a field.
-    fn step(&mut self, input: &[u8], last: bool) -> Result<(usize, bool), Error> {
+    fn step(&self, input: &[u8], last: bool, field: &mut Field) -> Result<(usize, bool), Error> {
         let mut rest = input;
         loop {
             if let State::Text {
                 value,
                 huffman,
                 left,
-            } = self.state
+            } = self.state.get()
             {
                 let (text, after) = rest.split_at(left.min(rest.len()));
                 rest = after;
                 let out = if value {
-                    &mut self.value
+                    &mut field.value
                 } else {
-                    &mut self.name
+                    &mut field.name
                 };
+                let mut bits = self.huffman.get();
                 if huffman {
-                    self.huffman.decode(text, out)?;
+                    bits.decode(text, out)?;
+                    self.huffman.set(bits);
                 } else {
                     out.extend_from_slice(text);
                 }
                 let left = left - text.len();
-                self.state = State::Text {
+                self.state.set(State::Text {
                     value,
                     huffman,
                     left,
-                };
+                });
                 if left > 0 {
                     break;
                 }
                 if huffman {
-                    self.huffman.finish()?;
+                    bits.finish()?;
                 }
                 if value {
-                    return Ok((input.len() - rest.len(), self.emit()));
+                    return Ok((input.len() - rest.len(), self.emit(field)));
                 }
-                self.state = State::Length { value: true };
+                self.state.set(State::Length { value: true });
                 continue;
             }
             let Some((&byte, after)) = rest.split_first() else {
                 break;
             };
             rest = after;
-            let (integer, value, shift, last_byte) = match self.state {
+            let (integer, value, shift, last_byte) = match self.state.get() {
                 State::Opcode => {
                     let (integer, prefix) = match byte {
                         0x80.. => (Integer::Index, 7),
                         0x40.. => (Integer::Name, 6),
-                        0x20.. if self.in_block => return Err(Error),
+                        0x20.. if self.in_block.get() => return Err(Error),
                         0x20.. => (Integer::TableSize, 5),
                         _ => (Integer::Name, 4),
                     };
-                    self.in_block |= !matches!(integer, Integer::TableSize);
-                    self.indexing = byte & 0xc0 == 0x40;
+                    if !matches!(integer, Integer::TableSize) {
+                        self.in_block.set(true);
+                    }
+                    self.indexing.set(byte & 0xc0 == 0x40);
                     let limit = (1 << prefix) - 1;
                     (integer, u32::from(byte & limit), 0, byte & limit < limit)
                 }
@@ -548,84 +581,107 @@ impl Decoder {
                 ),
                 State::Text { .. } => unreachable!("read above"),
             };
-            let max = match integer {
-                Integer::TableSize => DEFAULT_TABLE_SIZE,
-                Integer::Index | Integer::Name => self.table.len(),
-                Integer::Length { .. } => MAX_STRING,
-            };
             // nghttp2 bounds a partial integer too.
             let checked = usize::try_from(value)
                 .ok()
-                .filter(|&checked| checked <= max)
+                .filter(|&checked| match integer {
+                    Integer::TableSize => checked <= DEFAULT_TABLE_SIZE,
+                    Integer::Index | Integer::Name => {
+                        checked <= STATIC.len() || checked <= self.with_table(|table| table.len())
+                    }
+                    Integer::Length { .. } => checked <= MAX_STRING,
+                })
                 .ok_or(Error)?;
             if !last_byte {
-                self.state = State::Integer {
+                self.state.set(State::Integer {
                     integer,
                     value,
                     shift,
-                };
+                });
                 continue;
             }
-            if self.integer(integer, checked)? {
+            if self.integer(integer, checked, field)? {
                 return Ok((input.len() - rest.len(), true));
             }
         }
-        if last && !matches!(self.state, State::Opcode) {
+        if last && !matches!(self.state.get(), State::Opcode) {
             return Err(Error);
         }
         Ok((input.len(), false))
     }
 
     /// Act on a complete integer: whether that emitted a field.
-    fn integer(&mut self, integer: Integer, value: usize) -> Result<bool, Error> {
-        self.state = State::Opcode;
+    fn integer(&self, integer: Integer, value: usize, field: &mut Field) -> Result<bool, Error> {
+        self.state.set(State::Opcode);
         match integer {
-            Integer::TableSize => self.table.resize(value),
+            Integer::TableSize => self.with_table(|table| table.resize(value)),
             Integer::Index => {
-                let (name, field) = self.table.get(value).ok_or(Error)?;
-                self.name.clear();
-                self.name.extend_from_slice(name);
-                self.value.clear();
-                self.value.extend_from_slice(field);
+                let Some(&(name, text)) = STATIC.get(value.wrapping_sub(1)) else {
+                    self.dynamic(value, field, true)?;
+                    return Ok(true);
+                };
+                field.name.clear();
+                field.name.extend_from_slice(name);
+                field.value.clear();
+                field.value.extend_from_slice(text);
                 return Ok(true);
             }
-            Integer::Name if value == 0 => self.state = State::Length { value: false },
+            Integer::Name if value == 0 => self.state.set(State::Length { value: false }),
             Integer::Name => {
-                let (name, _) = self.table.get(value).ok_or(Error)?;
-                self.name.clear();
-                self.name.extend_from_slice(name);
-                self.state = State::Length { value: true };
+                if let Some(&(name, _)) = STATIC.get(value - 1) {
+                    field.name.clear();
+                    field.name.extend_from_slice(name);
+                } else {
+                    self.dynamic(value, field, false)?;
+                }
+                self.state.set(State::Length { value: true });
             }
             Integer::Length { value: true, .. } if value == 0 => {
-                self.value.clear();
-                return Ok(self.emit());
+                field.value.clear();
+                return Ok(self.emit(field));
             }
             Integer::Length {
                 value: is_value,
                 huffman,
             } => {
                 if is_value {
-                    &mut self.value
+                    &mut field.value
                 } else {
-                    &mut self.name
+                    &mut field.name
                 }
                 .clear();
-                self.huffman = Bits::default();
-                self.state = State::Text {
+                self.huffman.set(Bits::default());
+                self.state.set(State::Text {
                     value: is_value,
                     huffman,
                     left: value,
-                };
+                });
             }
         }
         Ok(false)
     }
 
+    /// Entry `index` (from 1), past the static table: its name into `field`,
+    /// and its value too if `value`.
+    fn dynamic(&self, index: usize, field: &mut Field, value: bool) -> Result<(), Error> {
+        self.with_table(|table| {
+            let (name, text) = table.get(index)?;
+            field.name.clear();
+            field.name.extend_from_slice(name);
+            if value {
+                field.value.clear();
+                field.value.extend_from_slice(text);
+            }
+            Some(())
+        })
+        .ok_or(Error)
+    }
+
     /// A literal is complete: index it if asked.
-    fn emit(&mut self) -> bool {
-        self.state = State::Opcode;
-        if self.indexing {
-            self.table.insert(&self.name, &self.value);
+    fn emit(&self, field: &Field) -> bool {
+        self.state.set(State::Opcode);
+        if self.indexing.get() {
+            self.with_table(|table| table.insert(&field.name, &field.value));
         }
         true
     }

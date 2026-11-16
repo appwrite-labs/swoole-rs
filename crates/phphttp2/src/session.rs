@@ -4,13 +4,13 @@
 //! `swoole::http::Context`, a copy of the session's settings context, released
 //! with the stream.
 use std::{
-    cell::{Cell, RefCell},
+    cell::Cell,
     collections::HashMap,
     hash::{BuildHasherDefault, Hasher},
     rc::Rc,
 };
 use swoole_rs_http2::{
-    hpack::{Decoder, Encoder},
+    hpack::{Decoder, Encoder, Field},
     sw_rs_http2_default_settings,
 };
 use swoole_rs_phphttp::http2::{Ctx, Handler, ServerCtx, StreamCtx};
@@ -53,13 +53,15 @@ type Sessions = IdMap<i64, Session>;
 pub(crate) struct SessionState {
     fd: i64,
     streams: Cell<Streams>,
-    /// A `RefCell`, not taken out and put back: `parse_header` hands
-    /// `request_header` each field borrowed from the decoder, and
-    /// `request_header` can run PHP code (`treat_data`'s `max_input_vars`
-    /// warning reaches a user error handler), so a take would span it.
-    /// Copying each field out first cost 3 to 10% more instructions per
-    /// HTTP/2 request (#4073).
-    pub(crate) inflater: RefCell<Decoder>,
+    /// Decodes through a shared reference, so it is never taken out or
+    /// borrowed: `request_header`, which gets each field `inflater` emits,
+    /// can run PHP code (`treat_data`'s `max_input_vars` warning reaches a
+    /// user error handler).
+    pub(crate) inflater: Decoder,
+    /// The buffers `inflater` decodes fields into, out while `parse_header`
+    /// parses a fragment (the decoder keeps nothing in them between a step
+    /// that emits and the next). Boxed, so a take moves a pointer.
+    pub(crate) field: Cell<Option<Box<Field>>>,
     /// Made on first use, sized by the peer's `SETTINGS_HEADER_TABLE_SIZE` then.
     deflater: Cell<Option<Encoder>>,
     /// `local_settings`, in `swoole::http2::Settings` order; never changed.
@@ -147,7 +149,8 @@ impl SessionState {
         Self {
             fd,
             streams: Cell::default(),
-            inflater: RefCell::default(),
+            inflater: Decoder::default(),
+            field: Cell::default(),
             deflater: Cell::default(),
             local,
             remote: local.map(Cell::new),

@@ -1222,15 +1222,18 @@ fn parse_header(
         input = block;
     }
     stream.ctx.header_arrays();
-    let mut inflater = session.inflater.borrow_mut();
-    loop {
-        let step = match inflater.decode(input, flags & FLAG_END_HEADERS != 0) {
+    let mut field = session.field.take().unwrap_or_default();
+    let parsed = loop {
+        let step = match session
+            .inflater
+            .decode(input, flags & FLAG_END_HEADERS != 0, &mut field)
+        {
             Ok(step) => step,
             Err(error) => {
                 let code = Error::CODE;
                 let text = format!("inflate failed, Error: {error}[{code}]");
                 warn(c"http2_server_parse_header", &text);
-                return false;
+                break false;
             }
         };
         input = input.get(step.read..).unwrap_or_default();
@@ -1243,14 +1246,15 @@ fn parse_header(
         }
         let step = sw_rs_http2_inflate_step(inflate_flags, input.len(), false);
         if step.end_headers {
-            inflater.end_headers();
-            break;
+            session.inflater.end_headers();
+            break true;
         }
         if step.finish {
-            break;
+            break true;
         }
-    }
-    true
+    };
+    session.field.set(Some(field));
+    parsed
 }
 
 /// `add_assoc_stringl_ex` on the request's `$server` or `$header`.
