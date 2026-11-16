@@ -66,9 +66,6 @@ const SIGIO: c_int = 29;
 const SIGPIPE: c_int = 13;
 
 unsafe extern "C" {
-    fn swr_v1_clients_address_host(address: *const c_void) -> *const c_char;
-    fn swr_v1_clients_address_port(address: *const c_void) -> c_int;
-
     #[link_name = "_ZNK6swoole7network6Socket12has_timedoutEv"]
     fn socket_has_timedout(socket: *const c_void) -> bool;
     #[link_name = "_Z17swoole_event_initi"]
@@ -351,12 +348,11 @@ impl<'a> Client<'a> {
         } else {
             SW_ERR
         };
-        let address = (&raw const address).cast();
-        // SAFETY: the address Rust filled.
-        let host = unsafe { CStr::from_ptr(swr_v1_clients_address_host(address)) };
-        // SAFETY: as above.
-        let port = unsafe { swr_v1_clients_address_port(address) };
-        (result, host.to_str().unwrap().to_owned(), port)
+        let host = swoole_rs_clients::address::with_host(&address, |host| {
+            host.to_str().unwrap().to_owned()
+        });
+        let port = swoole_rs_clients::address::address_port(&address).into();
+        (result, host, port)
     }
 
     pub(super) fn enable_ssl_encrypt(&self) -> c_int {

@@ -1,7 +1,10 @@
 //! Server connections, sessions and lookup tables owned and operated by Rust.
 use core::cell::Cell;
 use core::ffi::{c_int, c_void};
-use core::sync::atomic::{AtomicU8, AtomicU32, Ordering::Relaxed};
+use core::sync::atomic::{
+    AtomicU8, AtomicU32,
+    Ordering::{Acquire, Relaxed},
+};
 use swoole_rs_corebase::WebSocketStatus;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_memory::members::Shm;
@@ -76,10 +79,10 @@ pub struct ConnectionRecord {
 }
 
 impl ConnectionRecord {
-    /// Whether the slot holds a connection (`active`).
+    /// Whether the slot holds a connection (`active`), whose fields `add` published.
     #[must_use]
     pub fn is_active(&self) -> bool {
-        self.active.load(Relaxed) != 0
+        self.active.load(Acquire) != 0
     }
 }
 
@@ -361,10 +364,10 @@ impl<'a> Connection<'a> {
     field!(atomic lock: AtomicU32);
     field!(atomic closed: AtomicU32);
 
-    /// Whether the slot holds a connection (`active`).
+    /// Whether the slot holds a connection (`active`), whose fields `add` published.
     #[must_use]
     pub fn is_active(self) -> bool {
-        self.active().load(Relaxed) != 0
+        self.active().load(Acquire) != 0
     }
 
     /// A reactor event over the connection's socket, as the reactor would deliver it.

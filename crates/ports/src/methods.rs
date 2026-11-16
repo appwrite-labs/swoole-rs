@@ -5,7 +5,7 @@
 use std::ffi::{CStr, c_char, c_int};
 use swoole_rs_corebase::CCast;
 
-use swoole_rs_clients::address::{assign, swr_v1_clients_address_port, type_name};
+use swoole_rs_clients::address::{address_port, assign, type_name};
 use swoole_rs_clients::protocol::{GetPackageLength, GetPackageLengthSize, OnPackage};
 use swoole_rs_corebase::constants::SW_DATA_EOF_MAXLEN;
 use swoole_rs_corebase::log;
@@ -215,7 +215,7 @@ pub(crate) fn create_socket(config: &PortConfig, reuse_port: bool) -> bool {
         return fail(made);
     }
     let info = made.info;
-    config.port.set(swr_v1_clients_address_port(&info));
+    config.port.set(address_port(&info).into());
     // Only a bound record: each failure above frees its own, which the port's
     // delete would otherwise free again.
     config.set_listening_socket(made.into_socket());
@@ -768,7 +768,7 @@ mod tests {
         assert!(socket.bound, "bound");
         assert_ne!(config.port.get(), 0, "the kernel's port");
         assert_eq!(
-            swr_v1_clients_address_port(&socket.info),
+            c_int::from(address_port(&socket.info)),
             config.port.get(),
             "getsockname's port"
         );
