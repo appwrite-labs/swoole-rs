@@ -476,7 +476,7 @@ impl<'a> Server<'a> {
     /// `Server::get_user_worker_num()`: the user workers added so far.
     #[must_use]
     pub fn user_worker_num(self) -> usize {
-        self.state().pending_count()
+        self.registry().pending_count()
     }
 
     /// The server's worker arrays and counts.
@@ -535,7 +535,13 @@ impl<'a> Server<'a> {
     /// The `index`th user worker `worker_methods::add_worker` added, or `None` past the
     /// last.
     pub(crate) fn pending_worker(self, index: usize) -> Option<Worker<'a>> {
-        self.state().pending(index)
+        let &worker = self.registry().pending().get(index)?;
+        if worker.is_null() {
+            return None;
+        }
+        // SAFETY: a live worker `add_worker` added, which outlives the server
+        // (its contract; nothing else adds to the server's pending workers).
+        Some(unsafe { Worker::new(worker.cast()) })
     }
 
     /// Worker `id`'s pipe socket, its master end or its worker end, or `None` while it has none.
