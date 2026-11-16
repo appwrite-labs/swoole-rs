@@ -182,7 +182,7 @@ aliases are never uninstalled.
 - DNS async-timeout error mapping is scalar policy in both host/address lookup
   wrappers; requests, parsing and c-ares/libc stay native. The DNS cache
   (LRU, expiry, family key, hit/miss counters) is Rust, and so are `System`'s
-  four DNS cache settings, under their upstream symbols.
+  four DNS cache settings, which Rust calls by path (no C caller).
 - io_uring: CQ harvesting, SQ admission and task counter decrement stay native
   and precede resume. Rust maps negative CQ results (ECANCELED -> ETIMEDOUT).
   Submit keeps EAGAIN defer, EBUSY sleep, EINTR retry and the native fatal
