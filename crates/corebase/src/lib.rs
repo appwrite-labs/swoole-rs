@@ -18,6 +18,7 @@ pub mod constants;
 mod global;
 pub mod hook;
 mod host;
+pub mod lent;
 mod lifecycle;
 pub mod log;
 

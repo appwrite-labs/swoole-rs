@@ -77,7 +77,7 @@ pub use socket_io::*;
 #[cfg(unix)]
 mod lent;
 #[cfg(unix)]
-pub use lent::{Drain, Fill};
+pub use swoole_rs_corebase::lent::{Drain, Fill};
 #[cfg(unix)]
 mod socket_rw;
 #[cfg(unix)]
