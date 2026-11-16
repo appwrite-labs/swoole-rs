@@ -253,7 +253,8 @@ header names its reasons from this list:
 
 A shim that fits none of these is a port waiting to happen: write it in
 `crates/zend` against the bindgen'd layout, as `zend::module_loaded` replaced
-`swr_zend_module_loaded`.
+`swr_zend_module_loaded`. `tools/budget.py` counts these lines,
+and a PR that adds some names the reasons in a `Stays C: <reason>` line of its body.
 
 ## Stdext
 
