@@ -5,10 +5,12 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/types.h>
-#include "swoole_rs_utilities.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
+/* Rust's Text (crates/corebase/src/sys.rs): a NUL-terminated string, live and unchanged
+ * for the call, never null. */
+typedef const char *SwrText;
 bool swr_v1_clients_address_verify(int family, SwrText host);
 #ifdef __cplusplus
 }

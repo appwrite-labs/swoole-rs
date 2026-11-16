@@ -327,15 +327,10 @@ def plan(args, reports):
         script('utilities-wait', 'tests/modules/utilities/wait.py', '--source', ROOT / 'target/upstream/src',
                '--archive', archive, '--sanitize', *report('utilities-wait'))
     if 'utilities' in modules and integrate:
-        for family in ['logger', 'hash']:
-            name = 'utilities-' + family + '-originals'
-            script(name, 'tests/modules/utilities/storage.py', '--source', ROOT / 'target/upstream/src',
-                   *php_for('curl'), *engines, '--build-manifest', built, '--archive', archive,
-                   '--' + family + '-originals', *report(name))
+        script('utilities-hash-originals', 'tests/modules/utilities/hash_originals.py', '--source', ROOT / 'target/upstream/src',
+               *php_for('curl'), *engines, '--build-manifest', built, '--archive', archive, *report('utilities-hash-originals'))
         script('utilities-php-logger', 'tests/modules/utilities/php_logger.py', *php, *engines,
                '--build-manifest', built, *report('utilities-php-logger'))
-        script('utilities-public-storage', 'tests/modules/utilities/storage.py', '--source', ROOT / 'target/upstream/src',
-               *php, *engines, '--build-manifest', built, '--archive', archive, *report('utilities-public-storage'))
     if 'memory' in modules:
         script('memory-rust-asan', 'tools/cargo_asan.py', '--package', 'swoole-rs-memory', '--report', reports / 'memory-rust-asan.json')
     if 'memory' in modules and integrate:
