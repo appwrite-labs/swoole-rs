@@ -224,8 +224,8 @@ impl TlsContext {
     #[must_use]
     pub fn copy_of(source: &mut Lent<'_>) -> Option<Self> {
         let owner = fresh(tls_warning);
-        let status = owner_assign(&mut owner.borrow_configuration(), source).status;
-        (status == 0).then(|| Self(owner))
+        let copied = owner_assign(&mut owner.borrow_configuration(), source);
+        copied.ok().map(|()| Self(owner))
     }
     /// The owner, for native code and the raw-owner API; the handle keeps it live.
     #[must_use]
@@ -436,38 +436,35 @@ pub fn ssl_context_create(context: &mut Lent<'_>) -> bool {
     crate::swoole_ssl_init();
     create(context)
 }
-#[repr(C)]
-pub struct OwnedTlsCopy {
-    pub status: i32,
-    pub index: u32,
+/// What [`owner_assign`] couldn't copy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CopyError {
+    /// The configuration string at this index.
+    String(usize),
+    /// The scalar values and the context reference.
+    Fields,
 }
 /// `SSLContext`'s assignment: `source`'s configuration values copied into
 /// `destination`, with its own reference to the OpenSSL context when ready.
 /// Destination slots stay where they are. A string that can't be copied stops the
-/// copy with -2 and its index; assigning an owner to itself copies nothing.
-pub fn owner_assign(destination: &mut Lent<'_>, source: &mut Lent<'_>) -> OwnedTlsCopy {
+/// copy; assigning an owner to itself copies nothing.
+///
+/// # Errors
+/// The first part that couldn't be copied.
+pub fn owner_assign(destination: &mut Lent<'_>, source: &mut Lent<'_>) -> Result<(), CopyError> {
     if std::ptr::eq(destination.owner, source.owner) {
-        return OwnedTlsCopy {
-            status: 0,
-            index: 0,
-        };
+        return Ok(());
     }
     for (index, from) in source.owner.strings.iter().enumerate() {
         // The source's bytes, a distinct owner's, stay unchanged while they are copied.
         if !destination.store(index, from.bytes()) {
-            return OwnedTlsCopy {
-                status: -2,
-                index: u32::try_from(index).unwrap_or(0),
-            };
+            return Err(CopyError::String(index));
         }
     }
     // Copy scalar values after string allocation/cache updates have succeeded; the
     // destination takes its own reference to the source's context.
     let Some(fields) = source.edit(|fields| fields.try_clone()) else {
-        return OwnedTlsCopy {
-            status: -2,
-            index: 0,
-        };
+        return Err(CopyError::Fields);
     };
     // Independent retention of the context's actual live password value.
     let password = source.password();
@@ -476,10 +473,7 @@ pub fn owner_assign(destination: &mut Lent<'_>, source: &mut Lent<'_>) -> OwnedT
     destination.edit(|to| *to = fields);
     // Release old password ownership only after releasing its OpenSSL reference.
     destination.retain(password);
-    OwnedTlsCopy {
-        status: 0,
-        index: 0,
-    }
+    Ok(())
 }
 
 /// Why a coroutine socket got no context.
@@ -901,9 +895,8 @@ mod tests {
                 owner_assign(
                     &mut (&*destination.owner).borrow_configuration(),
                     &mut (&*source.owner).borrow_configuration()
-                )
-                .status,
-                0
+                ),
+                Ok(())
             );
             assert_eq!((*destination.fields).context_ptr(), context);
             assert!((*destination.strings[PASSPHRASE]).set_shared(b"copy"));

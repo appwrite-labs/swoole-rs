@@ -47,7 +47,6 @@ pub fn swr_v1_socket_ssl_clear(tls: &mut SocketTls) {
 
 /// A TLS read or write: what `ssl_recv`/`ssl_send` return, the errno to set when
 /// nonzero, and whether to log a protocol error first.
-#[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SslIoResult {
     pub value: isize,
