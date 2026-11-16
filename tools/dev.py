@@ -323,9 +323,6 @@ def plan(args, reports):
                '--exclude', 'http_server.node_websocket_client_1=' + NODE_WS, '--exclude', 'http_server.node_websocket_client_2=' + NODE_WS,
                '--exclude', 'redis.get=needs a Redis server on 127.0.0.1:6379', '--exclude', 'mqtt.echo=needs Node.js and its mqtt and pino packages',
                *report('http-server-rust'))
-    if 'utilities' in modules and sys.platform.startswith('linux'):  # Rust implements only the futex path; others run upstream's registry.
-        script('utilities-wait', 'tests/modules/utilities/wait.py', '--source', ROOT / 'target/upstream/src',
-               '--archive', archive, '--sanitize', *report('utilities-wait'))
     if 'utilities' in modules and integrate:
         script('utilities-hash-originals', 'tests/modules/utilities/hash_originals.py', '--source', ROOT / 'target/upstream/src',
                *php_for('curl'), *engines, '--build-manifest', built, '--archive', archive, *report('utilities-hash-originals'))

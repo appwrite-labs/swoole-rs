@@ -211,3 +211,126 @@ fn spinlock_across_threads_and_a_fork() {
     assert_eq!(count.load(Ordering::Relaxed), 30000);
     assert_eq!(unsafe { libc::munmap(page, 4096) }, 0);
 }
+
+/// The former `wait.cc`'s differential: the pinned misc.cc futex wait and wake against
+/// Rust's `sw_atomic_futex_wait`/`_wakeup`, each from errno `EDOM` on its own copy of
+/// the word, with the same result, errno and word after.
+#[cfg(target_os = "linux")]
+#[test]
+fn futex_wait_and_wake_match_the_pin() {
+    use crate::misc::{sw_atomic_futex_wait, sw_atomic_futex_wakeup};
+    use swoole_rs_oracle::locks as pinned;
+    let call = |word: u32, f: &dyn Fn(&AtomicU32) -> i32| {
+        let word = AtomicU32::new(word);
+        unsafe { *errno() = libc::EDOM };
+        let result = f(&word);
+        (result, unsafe { *errno() }, word.into_inner())
+    };
+    for word in [0, 1, 2, 0x7fff_ffff, 0x8000_0000, 0xffff_ffff] {
+        for n in [i32::MIN, -2, -1, 0, 1, 2, i32::MAX] {
+            assert_eq!(
+                call(word, &|a| unsafe { pinned::wake(a.as_ptr(), n) }),
+                call(word, &|a| sw_atomic_futex_wakeup(Some(a), n)),
+                "wake {word:#x} {n}"
+            );
+        }
+        // Nonpositive waits on zero are indefinite; exercise only immediate paths.
+        let nonpositive: &[f64] = if word == 0 { &[] } else { &[-123.0, -0.0, 0.0] };
+        for &timeout in [0.000_001, 0.001, 0.0015].iter().chain(nonpositive) {
+            assert_eq!(
+                call(word, &|a| unsafe { pinned::wait(a.as_ptr(), timeout) }),
+                call(word, &|a| sw_atomic_futex_wait(Some(a), timeout)),
+                "wait {word:#x} {timeout}"
+            );
+        }
+    }
+}
+
+/// The former `wait.cc`'s shared processes: a forked child blocks in the futex on a shared
+/// word until the parent's one wake, with the pinned wait and wake, then with Rust's.
+#[cfg(target_os = "linux")]
+#[test]
+fn futex_wakes_a_shared_waiter() {
+    use crate::misc::{sw_atomic_futex_wait, sw_atomic_futex_wakeup};
+    use swoole_rs_oracle::locks as pinned;
+    if crate::isolated_process::run_in_child("upstream::futex_wakes_a_shared_waiter") {
+        return;
+    }
+    shared_waiter(
+        |a, timeout| unsafe { pinned::wait(a.as_ptr(), timeout) },
+        |a, n| unsafe { pinned::wake(a.as_ptr(), n) },
+    );
+    shared_waiter(
+        |a, timeout| sw_atomic_futex_wait(Some(a), timeout),
+        |a, n| sw_atomic_futex_wakeup(Some(a), n),
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn shared_waiter(wait: impl Fn(&AtomicU32, f64) -> i32, wake: impl Fn(&AtomicU32, i32) -> i32) {
+    use std::time::{Duration, Instant};
+    let size = size_of::<AtomicU32>();
+    let page = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            size,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED | libc::MAP_ANON,
+            -1,
+            0,
+        )
+    };
+    assert_ne!(page, libc::MAP_FAILED, "shared mmap");
+    let word = unsafe { &*page.cast::<AtomicU32>() };
+    let mut channel = [0; 2];
+    assert_eq!(unsafe { libc::pipe(channel.as_mut_ptr()) }, 0, "pipe");
+    let child = unsafe { libc::fork() };
+    assert!(child >= 0, "fork");
+    if child == 0 {
+        unsafe {
+            libc::close(channel[0]);
+            libc::alarm(5);
+        }
+        let result = wait(word, 2.0);
+        let wrote = unsafe { libc::write(channel[1], (&raw const result).cast(), 4) } == 4;
+        unsafe { libc::_exit(i32::from(!(wrote && result == 0))) };
+    }
+    unsafe { libc::close(channel[1]) };
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let blocked = loop {
+        if std::fs::read_to_string(format!("/proc/{child}/wchan"))
+            .is_ok_and(|state| state.contains("futex"))
+        {
+            break true;
+        }
+        if Instant::now() >= deadline {
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    if !blocked {
+        unsafe {
+            libc::kill(child, libc::SIGKILL);
+            libc::waitpid(child, std::ptr::null_mut(), 0);
+        }
+    }
+    assert!(blocked, "child actually waiting before wake");
+    assert_eq!(wake(word, 1), 1, "wake actual shared waiter");
+    let mut result = -2;
+    assert_eq!(
+        unsafe { libc::read(channel[0], (&raw mut result).cast(), 4) },
+        4,
+        "read child result"
+    );
+    let mut status = 0;
+    assert_eq!(unsafe { libc::waitpid(child, &raw mut status, 0) }, child);
+    assert!(
+        libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0 && result == 0,
+        "shared child completed"
+    );
+    assert_eq!(word.load(Ordering::Relaxed), 0, "shared final word");
+    unsafe {
+        libc::close(channel[0]);
+        libc::munmap(page, size);
+    }
+}

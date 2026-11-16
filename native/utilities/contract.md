@@ -4,8 +4,8 @@ Feature bit 512 (`utilities`). Patches `include/swoole.h`; this directory's
 `swoole_log.h`, `swoole_hash.h` and `swoole_version.h` replace
 upstream's and keep what C++ and the utilities gates use; nothing built includes upstream's
 `swoole_util.h`. `swoole_log.h` keeps the levels, the fatal-error forwarder and the
-compiled-off trace macro: no C++ left logs through `swoole::Logger` or the other log macros. Declarations are in
-[swoole_rs_utilities.h](swoole_rs_utilities.h). Tests:
+compiled-off trace macro: no C++ left logs through `swoole::Logger` or the other log macros. Nothing
+C++ calls is declared here: the spinlock and the futex wait/wake are Rust's, called by path. Tests:
 `tests/modules/utilities/README.md`. Depends on the locks module for wait/wake.
 
 ## General rules
@@ -30,13 +30,12 @@ compiled-off trace macro: no C++ left logs through `swoole::Logger` or the other
   defined parity, Rust wraps deterministically otherwise.
 ## Concurrency primitives
 
-- `swr_v1_utils_spinlock(u32 *, cpus, backoff_limit)`: SeqCst compare-exchange like
+- `swr_v1_utils_spinlock(&AtomicU32, cpus, backoff_limit)`: SeqCst compare-exchange like
   native `__sync`, relaxed reads, `spin_loop` backoff, OS thread-yield on exhaustion.
   Caller unlocks with its existing native release store. Backoff multiplication is
   checked. Null/unaligned pointers return immediately.
-- `swr_v1_utils_wait(u32 *, timeout)` / `swr_v1_utils_wakeup(u32 *, n)`:
-  the locks module's futex wait, called by `sw_atomic_futex_wait`
-  (`crates/utilities/src/misc.rs`) only when `HAVE_FUTEX` is set. Other builds use `wait_registry.rs`'s `registry_wait`/`_wakeup` over a Rust registry
+- `sw_atomic_futex_wait` / `sw_atomic_futex_wakeup` (`crates/utilities/src/misc.rs`):
+  the locks module's futex wait where `HAVE_FUTEX` is set (Linux). Other builds use `wait_registry.rs`'s `registry_wait`/`_wakeup` over a Rust registry
   that `sw_atomic_wait_init` adopts from the shared memory pool before any fork.
   Caller owns aligned process-shared storage and its lifetime. errno is
   preserved. Timeouts outside the positive `time_t` range are undefined upstream.
