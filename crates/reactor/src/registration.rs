@@ -28,7 +28,7 @@ mod epoll {
     }
 
     /// `epoll_ctl` for `op` of `fd` with `socket` as its token,
-    /// which the kernel keeps as a number; the kernel's result. The wait loop reads the
+    /// which the kernel keeps as a number; the kernel's error. The wait loop reads the
     /// token back as the registered socket, which `change::Request` keeps live while it is
     /// registered.
     pub(crate) fn epoll_ctl(
@@ -37,7 +37,7 @@ mod epoll {
         fd: c_int,
         socket: *mut c_void,
         events: Events,
-    ) -> c_int {
+    ) -> std::io::Result<()> {
         let op = match op {
             crate::ChangeOp::Add => libc::EPOLL_CTL_ADD,
             crate::ChangeOp::Set => libc::EPOLL_CTL_MOD,
@@ -48,7 +48,10 @@ mod epoll {
             u64: socket as usize as u64,
         };
         let event = (op != libc::EPOLL_CTL_DEL).then_some(&mut event);
-        swoole_rs_corebase::sys::epoll_ctl(epfd, op, fd, event)
+        if swoole_rs_corebase::sys::epoll_ctl(epfd, op, fd, event) < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -71,21 +74,15 @@ mod epoll {
                 assert_eq!(libc::pipe(fds.as_mut_ptr()), 0);
                 let epfd = libc::epoll_create1(0);
                 let token = 7 as *mut c_void;
-                assert_eq!(
-                    epoll_ctl(epfd, crate::ChangeOp::Add, fds[0], token, SW_EVENT_READ),
-                    0
+                assert!(
+                    epoll_ctl(epfd, crate::ChangeOp::Add, fds[0], token, SW_EVENT_READ).is_ok()
                 );
-                assert_eq!(
-                    epoll_ctl(epfd, crate::ChangeOp::Set, fds[0], token, SW_EVENT_WRITE),
-                    0
+                assert!(
+                    epoll_ctl(epfd, crate::ChangeOp::Set, fds[0], token, SW_EVENT_WRITE).is_ok()
                 );
-                assert_eq!(
-                    epoll_ctl(epfd, crate::ChangeOp::Del, fds[0], token, Events::NONE),
-                    0
-                );
-                assert_eq!(
-                    epoll_ctl(epfd, crate::ChangeOp::Del, fds[0], token, Events::NONE),
-                    -1
+                assert!(epoll_ctl(epfd, crate::ChangeOp::Del, fds[0], token, Events::NONE).is_ok());
+                assert!(
+                    epoll_ctl(epfd, crate::ChangeOp::Del, fds[0], token, Events::NONE).is_err()
                 );
                 libc::close(epfd);
                 libc::close(fds[0]);

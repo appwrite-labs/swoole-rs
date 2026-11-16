@@ -228,7 +228,7 @@ impl<S: TlsSocket> Tls<'_, S> {
 
     /// `UringSocket::ssl_sendfile`: `size` bytes of `file` from `*offset`,
     /// encrypted ([`crate::sendfile::tls_sendfile`]); the bytes sent and the
-    /// warning to log (`crate::sendfile::TLS_WARN_*`, or 0). `classify` is the
+    /// optional warning to log. `classify` is the
     /// socket's `catch_write_error`, given errno.
     pub(crate) fn sendfile(
         &self,
@@ -236,7 +236,7 @@ impl<S: TlsSocket> Tls<'_, S> {
         offset: &mut libc::off_t,
         size: usize,
         mut classify: impl FnMut(c_int) -> Option<swoole_rs_reactor::Caught>,
-    ) -> (usize, c_int) {
+    ) -> (usize, Option<crate::sendfile::TlsWarning>) {
         crate::sendfile::tls_sendfile(
             size,
             offset,

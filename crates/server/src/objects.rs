@@ -210,7 +210,8 @@ impl Reactor {
     pub(crate) fn if_exit(self) -> bool {
         reactor_if_exit(self.handle())
     }
-    pub(crate) fn wait(self) -> c_int {
-        reactor_wait(self.handle())
+    /// `reactor->wait()`: whether the loop ended without an error.
+    pub(crate) fn wait(self) -> bool {
+        reactor_wait(self.handle()) == 0
     }
 }

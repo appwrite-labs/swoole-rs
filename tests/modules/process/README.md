@@ -11,3 +11,9 @@ The scripted host retains the original operation logs and integer test inputs;
 those five Op variants exist only in tests. Regressions cover send-buffer fallback
 and clamping, failed allocation ownership, failed detach preserving running state,
 and the async loop's deliberately ignored pipe-registration failure.
+
+`corebase::sys::waitpid` and both Rust wait registries distinguish a reaped PID,
+`WNOHANG` with no ready child, and a captured OS error. Corebase regressions use a
+pipe-controlled child to check pending/exit/status behavior and error capture.
+The original process/reaper assertions retain their integer observations only at
+the test or C boundary; manager service/reload ordering and timeout policy stay intact.

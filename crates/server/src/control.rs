@@ -193,7 +193,9 @@ fn child_exit(serv: Server<'_>) -> bool {
     }
     let mut status: c_int = 0;
     let pid = swoole_rs_corebase::sys::waitpid(-1, Some(&mut status), libc::WNOHANG);
-    if pid > 0 && pid == serv.counters().manager_pid.load(Relaxed) {
+    if let Ok(Some(pid)) = pid
+        && pid == serv.counters().manager_pid.load(Relaxed)
+    {
         let signal = swoole_rs_process::signal::signal_name(libc::WTERMSIG(status));
         let signal = signal.as_cstr().to_string_lossy();
         let exit = libc::WEXITSTATUS(status);

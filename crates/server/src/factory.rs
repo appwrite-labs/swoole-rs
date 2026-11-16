@@ -120,15 +120,14 @@ fn lifecycle_step(serv: crate::view::Server<'_>, step: crate::hybrid::Step) -> b
             // timers.
             let reactor = crate::reactor_handle::Reactor::thread();
             let timer = swoole_rs_timer::add_fn(msec, true, move || {
-                crate::reactor_process::with_server(reactor, |serv| {
+                if let Some(serv) = reactor.server() {
                     crate::reactor_process::heartbeat(serv, reactor);
-                    0
-                });
+                }
             });
             config.heartbeat_timer.store(timer);
             return timer.is_some();
         }
-        Step::ReactorWait => return crate::reactor_handle::Reactor::thread().wait() >= 0,
+        Step::ReactorWait => return crate::reactor_handle::Reactor::thread().wait(),
     }
     true
 }

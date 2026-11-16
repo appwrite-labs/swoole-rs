@@ -84,16 +84,12 @@ impl Coroutines {
 }
 
 /// What `System::waitpid` returns.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct Waited {
-    pub pid: libc::pid_t,
+    /// A reaped child, no child ready, or the wait's captured error.
+    pub pid: std::io::Result<Option<libc::pid_t>>,
     /// The wait gave up at its timeout (native sets errno and the last error).
     pub timed_out: bool,
-}
-
-fn waitpid(pid: libc::pid_t, status: &mut c_int, options: c_int) -> libc::pid_t {
-    swoole_rs_corebase::sys::waitpid(pid, Some(status), options)
 }
 
 /// `System::waitpid(pid, status, options, timeout)`: an already reaped child first;
@@ -116,21 +112,21 @@ pub fn wait_pid(
     if let Some((child, code)) = exited {
         *status = code;
         return Waited {
-            pid: child,
+            pid: Ok(Some(child)),
             timed_out: false,
         };
     }
     let co = (ops.current)();
     if co.is_null() || options & libc::WNOHANG != 0 {
         return Waited {
-            pid: waitpid(pid, status, options),
+            pid: swoole_rs_corebase::sys::waitpid(pid, Some(status), options),
             timed_out: false,
         };
     }
     // SIGCHLD must be registered before this last try, or its signal may be lost.
     (ops.signal_init)();
-    let child = waitpid(pid, status, options | libc::WNOHANG);
-    if child != 0 {
+    let child = swoole_rs_corebase::sys::waitpid(pid, Some(status), options | libc::WNOHANG);
+    if !matches!(child, Ok(None)) {
         return Waited {
             pid: child,
             timed_out: false,
@@ -163,10 +159,16 @@ pub fn wait_pid(
     if child > 0 {
         *status = task.status.load(Relaxed);
     }
+    // `co` is the current coroutine again. Preserve the callback's errno when
+    // an interrupted wait has no child; the C adapter handles timeouts separately.
+    let timed_out = child <= 0 && (ops.timed_out)();
     Waited {
-        pid: child,
-        // `co` is the current coroutine again.
-        timed_out: child <= 0 && (ops.timed_out)(),
+        pid: if child > 0 {
+            Ok(Some(child))
+        } else {
+            Err(std::io::Error::last_os_error())
+        },
+        timed_out,
     }
 }
 
@@ -178,10 +180,10 @@ pub fn wait_reap(signo: c_int, ops: &Coroutines) {
     }
     loop {
         let mut code = 0;
-        let child = waitpid(-1, &mut code, libc::WNOHANG);
-        if child <= 0 {
+        let Ok(Some(child)) = swoole_rs_corebase::sys::waitpid(-1, Some(&mut code), libc::WNOHANG)
+        else {
             break;
-        }
+        };
         let task = waits(|waits| {
             let task = waits
                 .by_pid
@@ -270,7 +272,10 @@ pub(crate) mod tests {
         let child = spawn(3);
         let mut status = 0;
         let waited = wait_pid(child, &mut status, 0, -1.0, &PLAIN);
-        assert_eq!((waited.pid, libc::WEXITSTATUS(status)), (child, 3));
+        assert_eq!(
+            (waited.pid.unwrap().unwrap(), libc::WEXITSTATUS(status)),
+            (child, 3)
+        );
 
         let coroutine = unsafe {
             Coroutines::new(
@@ -283,7 +288,10 @@ pub(crate) mod tests {
         };
         let child = spawn(5);
         let waited = wait_pid(-1, &mut status, 0, -1.0, &coroutine);
-        assert_eq!((waited.pid, waited.timed_out), (child, false));
+        assert_eq!(
+            (waited.pid.unwrap().unwrap(), waited.timed_out),
+            (child, false)
+        );
         assert_eq!(libc::WEXITSTATUS(status), 5);
         assert_eq!(wait_count(), 0);
 
@@ -291,6 +299,9 @@ pub(crate) mod tests {
         unsafe { libc::usleep(50_000) };
         wait_reap(libc::SIGCHLD, &coroutine);
         let waited = wait_pid(child, &mut status, 0, -1.0, &coroutine);
-        assert_eq!((waited.pid, libc::WEXITSTATUS(status)), (child, 7));
+        assert_eq!(
+            (waited.pid.unwrap().unwrap(), libc::WEXITSTATUS(status)),
+            (child, 7)
+        );
     }
 }

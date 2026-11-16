@@ -563,14 +563,15 @@ extern "C-unwind" fn count_coroutines() {
     _ = with_current(|worker| worker.write_coroutine_num(count));
 }
 
-/// `Server::start_event_worker(worker)`: the process-mode worker's main loop.
-pub(crate) fn start_event_worker(serv: view::Server<'_>, worker: Worker<'_>) -> c_int {
+/// `Server::start_event_worker(worker)`: the process-mode worker's main loop; whether
+/// it ran and ended without an error.
+pub(crate) fn start_event_worker(serv: view::Server<'_>, worker: Worker<'_>) -> bool {
     let config = serv.config();
     swoole_set_worker_id(worker.id());
     set_worker_type(WorkerType::Event);
     crate::worker_methods::init_event_worker(serv, worker);
     if swoole_rs_reactor::swoole_event_init(0) < 0 {
-        return -1;
+        return false;
     }
     worker_signal_init(serv);
     for id in 0..all_core_workers(config) {
