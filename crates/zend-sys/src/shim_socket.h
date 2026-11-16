@@ -20,8 +20,8 @@ int swr_zend_gethostbyname4(const char *host, struct in_addr *address);
  * of its own (none for an immutable one), in place of what it held, which is not
  * released. */
 int swr_zend_try_object_properties(zend_object *object, zval *out);
-/* convert_to_array(value), then Z_ARRVAL_P(value). */
-HashTable *swr_zend_convert_to_array(zval *value);
+/* convert_to_array(value) inside zend_try: nonzero for a bailout. */
+int swr_zend_try_convert_to_array(zval *value);
 /* zend_zval_value_name (PHP 8.3+), else zend_zval_type_name. */
 const char *swr_zend_zval_value_name(const zval *value);
 const char *swr_zend_zval_type_name(const zval *value);

@@ -2,9 +2,8 @@
 //! start and stop callbacks, its signals, the async stop and its exit wait, and the
 //! process-mode main loop.
 use crate::{DispatchMode, Mode};
-use core::ffi::{c_int, c_long, c_void};
+use core::ffi::{c_int, c_long};
 use core::sync::atomic::Ordering::Relaxed;
-use swoole_rs_corebase::HookType;
 use swoole_rs_corebase::ServerEvent;
 use swoole_rs_reactor::Events;
 
@@ -203,21 +202,6 @@ fn client_cert(data: &[u8]) -> CppString {
     cert
 }
 
-/// `Worker_global_hook`: the worker start/stop and server shutdown hooks.
-fn global_hook(serv: view::Server<'_>, worker: Worker<'_>, hook: HookType) {
-    if !swoole_rs_corebase::swoole_isset_hook(hook) {
-        return;
-    }
-    if hook == HookType::BEFORE_SERVER_SHUTDOWN {
-        serv.call_hook(view::ServerHook::BeforeShutdown);
-        return;
-    }
-    let id = worker.id() as usize;
-    let mut args: [*mut c_void; 2] = [serv.raw(), core::ptr::without_provenance_mut(id)];
-    // SAFETY: the worker hooks take { server, worker id }.
-    unsafe { swoole_rs_corebase::swoole_call_hook(hook, args.as_mut_ptr().cast()) };
-}
-
 /// `Server::worker_start_callback(worker)`.
 pub(crate) fn worker_start_callback(serv: view::Server<'_>, worker: Worker<'_>) {
     let config = serv.config();
@@ -250,7 +234,7 @@ pub(crate) fn call_worker_start_callback(serv: view::Server<'_>, worker: Worker<
     if serv.config().open_cpu_affinity.get() {
         set_cpu_affinity(serv.config(), worker.id());
     }
-    global_hook(serv, worker, HookType::BEFORE_WORKER_START);
+    serv.call_hook(view::ServerHook::BeforeWorkerStart(worker.id()));
     log::set_last_error(0);
     swoole_rs_error::swoole_clear_last_error_msg();
     let callbacks = &serv.state().callbacks;
@@ -259,7 +243,7 @@ pub(crate) fn call_worker_start_callback(serv: view::Server<'_>, worker: Worker<
 
 /// `Server::call_worker_stop_callback(worker)`.
 pub(crate) fn call_worker_stop_callback(serv: view::Server<'_>, worker: Worker<'_>) {
-    global_hook(serv, worker, HookType::BEFORE_WORKER_STOP);
+    serv.call_hook(view::ServerHook::BeforeWorkerStop(worker.id()));
     serv.state()
         .callbacks
         .worker(WorkerSlot::Stop, serv, worker);
@@ -354,7 +338,7 @@ pub fn stop_async_worker(serv: view::Server<'_>, worker: Worker<'_>) {
         Mode::Base if event_worker => {
             let pool = crate::shared::ServerShared::of(serv).event_pool();
             if worker.id() == 0 && !pool.running() {
-                global_hook(serv, worker, HookType::BEFORE_SERVER_SHUTDOWN);
+                serv.call_hook(view::ServerHook::BeforeShutdown);
                 serv.state()
                     .callbacks
                     .call_server(ServerSlot::BeforeShutdown, serv);

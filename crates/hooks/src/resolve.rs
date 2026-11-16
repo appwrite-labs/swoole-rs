@@ -23,13 +23,8 @@ pub(crate) fn park(waker: &WakerSlot) {
     swoole_rs_coroutine::park(current().cast(), |park| waker.set(Some(park)));
 }
 
-/// `co->yield_ex(timeout)` of the current coroutine (fatal outside one).
-pub(crate) fn park_for(timeout: f64) -> bool {
-    let code = swoole_rs_coroutine::yield_timed(current().cast(), timeout);
-    swoole_rs_coroutine::yield_resumed(code)
-}
-
-/// [`park_for`], its waker in `waker`.
+/// `co->yield_ex(timeout)` of the current coroutine (fatal outside one), its waker
+/// in `waker`.
 pub(crate) fn park_for_armed(timeout: f64, waker: &WakerSlot) -> bool {
     let arm = |park| waker.set(Some(park));
     let code = swoole_rs_coroutine::yield_timed_armed(current().cast(), timeout, arm);
