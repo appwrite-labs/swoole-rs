@@ -258,19 +258,22 @@ impl Multi {
             active: Cell::default(),
         });
         let data = Rc::as_ptr(&multi).cast_mut().cast::<c_void>();
-        for option in [CURLMOPT_SOCKETDATA, CURLMOPT_TIMERDATA] {
-            // SAFETY: the handle just made (curl refuses a null one), and the multi,
-            // which outlives it: only `Multi::close` cleans the handle up, before the
-            // last reference to the multi goes.
-            unsafe { curl_multi_setopt(handle, option, data) };
-        }
         let on_socket: OnSocket = handle_socket;
         let on_timer: OnTimer = handle_timeout;
-        // SAFETY: as above. Curl calls the callback with its own arguments and the
-        // socket data set above, the live multi, which is what `OnSocket` takes.
-        unsafe { curl_multi_setopt(handle, CURLMOPT_SOCKETFUNCTION, on_socket) };
-        // SAFETY: as above, with the timer data, for `OnTimer`.
-        unsafe { curl_multi_setopt(handle, CURLMOPT_TIMERFUNCTION, on_timer) };
+        for (option, value) in [
+            (CURLMOPT_SOCKETDATA, data),
+            (CURLMOPT_TIMERDATA, data),
+            (CURLMOPT_SOCKETFUNCTION, on_socket as *mut c_void),
+            (CURLMOPT_TIMERFUNCTION, on_timer as *mut c_void),
+        ] {
+            // SAFETY: the handle just made (curl refuses a null one), and for each
+            // option the one pointer it reads: the multi, which outlives the handle
+            // (only `Multi::close` cleans the handle up, before the last reference to
+            // the multi goes), or the callback, which curl calls with its own
+            // arguments and that multi as its data, what `OnSocket` and `OnTimer`
+            // take. A function pointer passes as a data pointer does (POSIX).
+            unsafe { curl_multi_setopt(handle, option, value) };
+        }
         multi
     }
 
