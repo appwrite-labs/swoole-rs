@@ -18,8 +18,7 @@ pub struct SessionRecord {
     pub reactor_bits: Cell<u32>,
 }
 
-/// The wire connection record; native code holds a borrowed view of these fields.
-#[repr(C)]
+/// A connection-table slot's record.
 pub struct ConnectionRecord {
     /// Read by every reactor thread (`is_valid_connection` over the fd range).
     pub active: AtomicU8,
@@ -82,6 +81,59 @@ impl ConnectionRecord {
     #[must_use]
     pub fn is_active(&self) -> bool {
         self.active.load(Acquire) != 0
+    }
+
+    /// Upstream's `memset` of the slot from `socket_type` up to `closed`: every field
+    /// but `active`, `closed` and `server_fd` back to its zero value.
+    fn clear(&self) {
+        self.socket_type.set(0);
+        self.fd.set(0);
+        self.worker_id.set(0);
+        self.session_id.set(0);
+        for flag in [
+            &self.ssl,
+            &self.ssl_ready,
+            &self.overflow,
+            &self.high_watermark,
+            &self.http_upgrade,
+            &self.http2_stream,
+            &self.websocket_compression,
+            &self.close_actively,
+            &self.close_queued,
+            &self.closing,
+            &self.close_reset,
+            &self.peer_closed,
+            &self.protect,
+            &self.close_notify,
+            &self.close_force,
+        ] {
+            flag.set(false);
+        }
+        self.reactor_id.set(0);
+        self.close_errno.set(0);
+        self.recv_queued_bytes.store(0, Relaxed);
+        self.send_queued_bytes.set(0);
+        self.waiting_time.set(0);
+        self.local_port.set(0);
+        self.local_addr_index.set(0);
+        self.timer.set(None);
+        self.info.set(SocketAddress::default());
+        self.object.set(core::ptr::null_mut());
+        self.socket.set(None);
+        for time in [
+            &self.connect_time,
+            &self.last_recv_time,
+            &self.last_send_time,
+            &self.last_dispatch_time,
+        ] {
+            time.set(0.0);
+        }
+        self.uid.set(0);
+        self.websocket_status.set(WebSocketStatus::None);
+        self.websocket_buffer.set(None);
+        self.ssl_client_cert.set(core::ptr::null_mut());
+        self.ssl_client_cert_pid.set(0);
+        self.lock.store(0, Relaxed);
     }
 }
 
@@ -177,6 +229,12 @@ impl Session<'_> {
 }
 
 impl<'a> Connection<'a> {
+    /// Resets the slot for a new connection: every field but `active`, `closed` and
+    /// `server_fd` back to zero, as `Server::add_connection`'s `memset`.
+    pub(crate) fn clear(self) {
+        self.record.clear();
+    }
+
     field!(socket_type, set_socket_type: c_int);
     field!(fd, set_fd: c_int);
     field!(worker_id, set_worker_id: c_int);
@@ -461,24 +519,19 @@ impl ServerTables {
         Some(self.connections().get(usize::try_from(fd).ok()?)?.into())
     }
 
-    /// Zeroes `fd`'s slot from after `active` up to `closed`, as upstream does on
-    /// reuse. Borrow the slot again afterwards.
+    /// Resets `fd`'s slot for reuse: every field but `active`, `closed` and
+    /// `server_fd` back to zero, as upstream's `memset` up to `closed`.
     pub(crate) fn reset_connection(&self, fd: c_int) {
-        let start = core::mem::offset_of!(ConnectionRecord, socket_type);
-        self.zero_connection(fd, start..core::mem::offset_of!(ConnectionRecord, closed));
+        if let Some(conn) = self.connection_at(fd) {
+            conn.clear();
+        }
     }
 
     /// Zeroes all of `fd`'s slot, as a DTLS session that fails its setup leaves it.
-    /// Borrow the slot again afterwards.
+    /// It writes through the table's own pointer: the padding between the cells is no
+    /// cell, so a slot's shared borrow can't write it. Borrow the slot again afterwards.
     #[cfg(any(test, feature = "upstream-symbols"))]
     pub(crate) fn clear_connection(&self, fd: c_int) {
-        self.zero_connection(fd, 0..size_of::<ConnectionRecord>());
-    }
-
-    /// Zeroes `bytes` of `fd`'s slot, a range within a record. It writes through the
-    /// table's own pointer: the padding between the cells is no cell, so a slot's
-    /// shared borrow can't write it.
-    fn zero_connection(&self, fd: c_int, bytes: core::ops::Range<usize>) {
         let Some(index) = usize::try_from(fd)
             .ok()
             .filter(|&i| i < self.connections().len())
@@ -486,13 +539,9 @@ impl ServerTables {
             return;
         };
         let record = self.connection_list.as_ptr().cast::<ConnectionRecord>();
-        let start = record
-            .wrapping_add(index)
-            .cast::<u8>()
-            .wrapping_add(bytes.start);
-        // SAFETY: bytes of a slot of the mapped table, which `connections` bounds,
-        // written through the mapping's own pointer.
-        unsafe { start.write_bytes(0, bytes.len()) };
+        // SAFETY: a slot of the mapped table, which `connections` bounds, written
+        // through the mapping's own pointer.
+        unsafe { record.wrapping_add(index).write_bytes(0, 1) };
     }
 
     /// Session slot `index` (below `SW_SESSION_LIST_SIZE`), or none before the table is
@@ -693,6 +742,34 @@ pub(crate) mod tests {
         // SAFETY: `Shm` is `repr(transparent)` over its payload pointer, and no code under
         // test frees these tables.
         unsafe { core::mem::transmute::<*mut c_void, Shm>(items.cast()) }
+    }
+
+    #[test]
+    fn clearing_a_slot_keeps_only_active_closed_and_server_fd() {
+        // SAFETY: a connection record is plain data; zero is a closed one.
+        let record: ConnectionRecord = unsafe { core::mem::zeroed() };
+        let conn = Connection::from(&record);
+        record.active.store(1, Relaxed);
+        record.closed.store(1, Relaxed);
+        conn.set_server_fd(3);
+        conn.set_fd(4);
+        conn.set_session_id(5);
+        conn.set_close_force(true);
+        conn.set_last_recv_time(1.5);
+        conn.set_uid(6);
+        conn.set_websocket_status(WebSocketStatus::Active);
+        conn.set_ssl_client_cert_pid(7);
+        record.lock.store(1, Relaxed);
+        conn.clear();
+        assert!(conn.is_active());
+        assert_eq!(record.closed.load(Relaxed), 1);
+        assert_eq!(conn.server_fd(), 3);
+        assert_eq!((conn.fd(), conn.session_id(), conn.uid()), (0, 0, 0));
+        assert!(!conn.close_force());
+        assert_eq!(conn.last_recv_time().to_bits(), 0);
+        assert_eq!(conn.websocket_status(), WebSocketStatus::None);
+        assert_eq!(conn.ssl_client_cert_pid(), 0);
+        assert_eq!(record.lock.load(Relaxed), 0);
     }
 
     #[test]
