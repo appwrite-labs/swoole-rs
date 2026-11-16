@@ -10,9 +10,11 @@ try {
   if(in_array($mode,['close-callback','throw-callback'],true))$settings['write_func']=static function($owner,$data)use($mode,&$callbacks,&$close_result){$callbacks[]=bin2hex($data);if($mode==='throw-callback')throw new RuntimeException('http-write-stop');$close_result=$owner->close();return strlen($data);};
   if($mode==='defer')$settings['defer']=true;
   check($client->set($settings),'settings');$result=null;
-  try{$result=$client->get('/first');}catch(Throwable $error){$exception=$error->getMessage();$error=null;}
+  try{$result=$mode==='upgrade-tail'?$client->upgrade('/first'):$client->get('/first');}catch(Throwable $error){$exception=$error->getMessage();$error=null;}
   if($mode==='reconnect'){
    check($result===true&&$client->body==='A'&&$client->connected===true,'first keepalive result');check(fgets($pipes[1])==="first-closed\n",'stale FIN synchronized');check($client->get('/second')===true&&$client->body==='B','reconnected response');check($client->connected===true,'fresh connected');check($client->close(),'final close');check($client->connected===false,'final disconnected');
+  }elseif($mode==='upgrade-tail'){
+   check($result===true&&$client->statusCode===101,'upgrade response');$frame=$client->recv(1);check($frame instanceof Swoole\WebSocket\Frame&&$frame->data==='Z'&&$frame->opcode===WEBSOCKET_OPCODE_TEXT,'frame received with handshake');check($client->close(),'close upgraded connection');
   }elseif($mode==='fragmented'){
    check($result===true&&$client->body===str_repeat('x',131072),'fragmented headers and multiple body reads');check($client->get('/second')===true&&$client->body==='B','reused response buffer');check($client->close(),'close reused connection');
   }elseif($mode==='close-callback'){

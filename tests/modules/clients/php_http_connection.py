@@ -26,7 +26,7 @@ def main():
         else:
             if not a.build_manifest:raise ValueError('Selected HTTP connection proof requires --build-manifest')
             report['attestation']=attest(a.build_manifest,identities)
-        outcomes={mode:[] for mode in ['reconnect','fragmented','close-callback','throw-callback','defer','refused']}
+        outcomes={mode:[] for mode in ['reconnect','fragmented','upgrade-tail','close-callback','throw-callback','defer','refused']}
         for engine,identity in zip(engines,identities):
             for mode in outcomes:
                 result=run_isolated(engine.command(fixture,mode),timeout=35)

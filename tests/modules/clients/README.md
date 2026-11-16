@@ -180,4 +180,5 @@ Upstream PHPTs for this module run in the merge tier's PHPT gate (the `phpt-*` j
 The HTTP connection fixture also splits response headers across writes, receives a
 128 KiB body across multiple reads, and reuses the same connection for a second
 response. Existing callback-close and callback-throw cases cover response-buffer
-ownership while the parser invokes PHP.
+ownership while the parser invokes PHP. A local WebSocket handshake includes its
+first frame in the same write, checking that upgrade retains the received tail.
