@@ -9,7 +9,7 @@ use swoole_rs_corebase::CCast;
 /// `setsockopt(fd, level, name, &value, sizeof(value)) == 0`, for the plain option
 /// values (`int`, `timeval`, `linger`).
 fn set<T: swoole_rs_corebase::sys::Pod>(fd: c_int, level: c_int, name: c_int, value: T) -> bool {
-    swoole_rs_corebase::sys::setsockopt(fd, level, name, &value) == 0
+    swoole_rs_corebase::sys::setsockopt(fd, level, name, &value).is_ok()
 }
 
 /// `setsockopt` of an `int` option, without logging a failure.

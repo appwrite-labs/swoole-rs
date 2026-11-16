@@ -114,7 +114,7 @@ pub(crate) fn listen(config: &PortConfig) -> bool {
     config.listening.set(true);
     let fd = socket.fd();
     for (level, option, name, value) in listen_options(config) {
-        if swoole_rs_corebase::sys::setsockopt(fd, level, option, &value) != 0 {
+        if swoole_rs_corebase::sys::setsockopt(fd, level, option, &value).is_err() {
             log::sys_warning(
                 c"ListenPort::listen",
                 format_args!("setsockopt({name}) failed"),
@@ -133,8 +133,8 @@ fn host_text(config: &PortConfig) -> std::borrow::Cow<'_, str> {
     config.host_c_str().to_string_lossy()
 }
 
-/// An int option set to 1; 0 or -1 as setsockopt(2).
-fn set_option(fd: c_int, level: c_int, option: c_int) -> c_int {
+/// An int option set to 1, or the syscall error.
+fn set_option(fd: c_int, level: c_int, option: c_int) -> std::io::Result<()> {
     swoole_rs_corebase::sys::setsockopt::<c_int>(fd, level, option, &1)
 }
 
@@ -171,7 +171,7 @@ pub(crate) fn create_socket(config: &PortConfig, reuse_port: bool) -> bool {
         target_os = "dragonfly"
     ));
     if kqueue && config.is_dtls() {
-        set_option(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT);
+        drop(set_option(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT));
     }
     // The record just made, closed and freed on a failure path.
     let fail = |made: Box<SocketRecord>| {
@@ -179,7 +179,7 @@ pub(crate) fn create_socket(config: &PortConfig, reuse_port: bool) -> bool {
         made.close_and_free();
         false
     };
-    if reuse_port && set_option(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT) < 0 {
+    if reuse_port && set_option(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT).is_err() {
         return fail(made);
     }
     let mut address = SocketAddress {
@@ -209,7 +209,7 @@ pub(crate) fn create_socket(config: &PortConfig, reuse_port: bool) -> bool {
         );
         return fail(made);
     }
-    if set_option(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR) < 0 {
+    if set_option(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR).is_err() {
         log::sys_warning(
             c"ListenPort::create_socket",
             format_args!("setsockopt({fd}, SO_REUSEADDR) failed"),

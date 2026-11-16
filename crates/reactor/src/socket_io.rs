@@ -148,8 +148,9 @@ pub fn socket_error(fd: c_int) -> Result<c_int, c_int> {
     let mut pending: c_int = 0;
     // Upstream passes sizeof(len), which equals sizeof(int).
     let read =
-        swoole_rs_corebase::sys::getsockopt_int(fd, libc::SOL_SOCKET, libc::SO_ERROR, &mut pending);
-    if read < 0 { Err(errno()) } else { Ok(pending) }
+        swoole_rs_corebase::sys::getsockopt(fd, libc::SOL_SOCKET, libc::SO_ERROR, &mut pending);
+    read.map_err(|error| error.raw_os_error().unwrap_or(0))?;
+    Ok(pending)
 }
 
 /// Why `check_sendfile_parameters` refuses a range.

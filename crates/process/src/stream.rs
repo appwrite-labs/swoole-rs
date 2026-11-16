@@ -149,8 +149,8 @@ impl Stream {
         };
         while sys::poll(std::slice::from_mut(&mut poll), -1) < 0 && errno() == libc::EINTR {}
         let mut error: c_int = 0;
-        let got = sys::getsockopt_int(fd, libc::SOL_SOCKET, libc::SO_ERROR, &mut error);
-        self.err_code = if got < 0 { errno() } else { error };
+        let got = sys::getsockopt(fd, libc::SOL_SOCKET, libc::SO_ERROR, &mut error);
+        self.err_code = got.map_or_else(|error| error.raw_os_error().unwrap_or(0), |_| error);
         if self.err_code != 0 {
             connect_failed(self.err_code);
             return false;

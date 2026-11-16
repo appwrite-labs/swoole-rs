@@ -209,7 +209,8 @@ pub fn add<'a>(
         ),
     ] {
         if size > 0
-            && swoole_rs_corebase::sys::setsockopt(listen_fd, libc::SOL_SOCKET, name, &size) != 0
+            && swoole_rs_corebase::sys::setsockopt(listen_fd, libc::SOL_SOCKET, name, &size)
+                .is_err()
         {
             let m = format_args!("setsockopt({label}, {size}) failed");
             log::sys_warning(c"Server::add_connection", m);

@@ -217,9 +217,8 @@ fn other_socket_listed<F: Facts>(f: &mut F, index: u64, fd: c_int) -> bool {
     }
     for option in [SO_DOMAIN, libc::SO_TYPE] {
         let mut value: c_int = 0;
-        let read =
-            swoole_rs_corebase::sys::getsockopt_int(fd, libc::SOL_SOCKET, option, &mut value);
-        if read < 0 {
+        let read = swoole_rs_corebase::sys::getsockopt(fd, libc::SOL_SOCKET, option, &mut value);
+        if read.is_err() {
             return false;
         }
     }
@@ -409,7 +408,7 @@ const TCP_INFO_SUPPORTED: bool = false;
 #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
 fn tcp_info_of(fd: i32) -> Option<Vec<(&'static str, Json)>> {
     let mut info: TcpInfo = swoole_rs_corebase::sys::zeroed();
-    swoole_rs_corebase::sys::getsockopt(fd, libc::IPPROTO_TCP, TCP_INFO, &mut info)?;
+    swoole_rs_corebase::sys::getsockopt(fd, libc::IPPROTO_TCP, TCP_INFO, &mut info).ok()?;
     let fields = tcp_fields(&info);
     Some(
         fields
