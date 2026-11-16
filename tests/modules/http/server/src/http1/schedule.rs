@@ -317,9 +317,9 @@ fn schedule_9() {
     test_worker_schedule(
         DISPATCH_CO_REQ_LB,
         // SAFETY: the live record's field.
-        |worker| unsafe { (*worker.raw()).coroutine_num },
+        |worker| unsafe { (*worker.raw()).coroutine_num.get() },
         // SAFETY: as above.
-        |worker, value| unsafe { (*worker.raw()).coroutine_num = value },
+        |worker, value| unsafe { (*worker.raw()).coroutine_num.set(value) },
     );
 }
 
