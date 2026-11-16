@@ -54,7 +54,15 @@ void swr_zend_stream_factory_set(swr_zend_stream_factory_body body);
 php_stream *swr_zend_stream_factory(const char *proto, size_t protolen, const char *name,
     size_t namelen, const char *persistent, int options, int flags, struct timeval *timeout,
     php_stream_context *context STREAMS_DC);
-/* Individual allocator/close effects below owned Rust stream frames. */
-int swr_zend_try_stream_alloc(const php_stream_ops *, void *, const char *, php_stream **);
+/* The "socket/coroutine" operations: C entries that type each argument for
+ * crates/phpruntime's. */
+extern const php_stream_ops swoole_runtime_socket_ops;
+/* php_stream_alloc of those operations, with no abstract yet, inside zend_try:
+ * 1 if it bailed out. */
+int swr_zend_try_socket_stream_alloc(const char *persistent, php_stream **stream);
 int swr_zend_try_stream_close(php_stream *);
+/* php_network_populate_name_from_sockaddr of the first `size` bytes of `peer`,
+ * at most all of it. */
+void swr_zend_stream_populate_name(const struct sockaddr_storage *peer, socklen_t size,
+    zend_string **textaddr, struct sockaddr **addr, socklen_t *addrlen);
 #endif
