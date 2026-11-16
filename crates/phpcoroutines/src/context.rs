@@ -18,16 +18,16 @@ use std::{
 use swoole_rs_coroutine::{CoroutineTask, State};
 use swoole_rs_timer::Held;
 use swoole_rs_zend::sys::{
-    IS_UNDEF, swr_zend_callable, swr_zend_callable_hold, swr_zend_coroutine_fcc_discard,
+    IS_NULL, IS_UNDEF, swr_zend_callable, swr_zend_callable_hold, swr_zend_coroutine_fcc_discard,
     swr_zend_coroutine_output_reset, swr_zend_coroutine_restore, swr_zend_coroutine_set_frame,
     swr_zend_coroutine_start, swr_zend_coroutine_switch, swr_zend_coroutine_vm,
-    swr_zend_coroutine_vm_destroy, swr_zend_efree, swr_zend_object_release, zend_class_entry,
-    zend_execute_data, zend_fcall_info, zend_fcall_info_cache, zend_fiber_context,
-    zend_fiber_status, zend_fiber_status_ZEND_FIBER_STATUS_DEAD,
-    zend_fiber_status_ZEND_FIBER_STATUS_INIT, zend_fiber_status_ZEND_FIBER_STATUS_RUNNING,
-    zend_fiber_status_ZEND_FIBER_STATUS_SUSPENDED, zend_object, zval, zval_ptr_dtor,
+    swr_zend_coroutine_vm_destroy, swr_zend_efree, zend_class_entry, zend_execute_data,
+    zend_fcall_info, zend_fcall_info_cache, zend_fiber_context, zend_fiber_status,
+    zend_fiber_status_ZEND_FIBER_STATUS_DEAD, zend_fiber_status_ZEND_FIBER_STATUS_INIT,
+    zend_fiber_status_ZEND_FIBER_STATUS_RUNNING, zend_fiber_status_ZEND_FIBER_STATUS_SUSPENDED,
+    zend_object, zval,
 };
-use swoole_rs_zend::{Callable, Function, Value, bailout};
+use swoole_rs_zend::{Callable, Function, Owned, Value, bailout};
 
 unsafe extern "C" {
     /// `save_context`: this PHP thread's executor, output and serializer state,
@@ -85,9 +85,12 @@ pub(crate) struct Args {
 /// One coroutine's PHP context; the main context is a thread-local one.
 pub(crate) struct Context {
     vm: swr_zend_coroutine_vm,
-    /// The coroutine's callable, laid out as `zend::Function`.
+    /// The coroutine's callable, laid out as `zend::Function`; its
+    /// `function_name` stays undefined, since `callable` holds that reference.
     call: swr_zend_callable,
-    return_value: zval,
+    /// The callable zval's reference (upstream's `Z_TRY_ADDREF` of it).
+    callable: Owned,
+    return_value: Owned,
     /// The coroutine, which outlives its context; none for the main context.
     co: Option<host::Co>,
     fiber: Option<Fiber>,
@@ -103,8 +106,9 @@ pub(crate) struct Context {
     /// The `Co::join()` waiting for this coroutine to close.
     join: Option<Rc<Join>>,
     pcid: c_long,
-    /// `Coroutine\Context`, null until asked for, `INVALID` once destroyed.
-    context: *mut zend_object,
+    /// `Coroutine\Context`'s object: undefined until asked for, null once
+    /// destroyed (upstream's `INVALID_PTR`).
+    context: Owned,
     /// Whether [`TIME_LIMITS`] holds a `Co::setTimeLimit` timer of this coroutine.
     time_limited: bool,
     last_msec: c_long,
@@ -114,23 +118,26 @@ pub(crate) struct Context {
 }
 
 impl Context {
-    const EMPTY: Self = Self {
-        vm: swoole_rs_zend::zeroed(),
-        call: swoole_rs_zend::zeroed(),
-        return_value: swoole_rs_zend::UNDEF,
-        co: None,
-        fiber: None,
-        fiber_init_notified: false,
-        enable_scheduler: false,
-        defer: None,
-        join: None,
-        pcid: 0,
-        context: ptr::null_mut(),
-        time_limited: false,
-        last_msec: 0,
-        watch_switches: false,
-        switch_count: 0,
-    };
+    const fn empty() -> Self {
+        Self {
+            vm: swoole_rs_zend::zeroed(),
+            call: swoole_rs_zend::zeroed(),
+            callable: Owned::empty(),
+            return_value: Owned::empty(),
+            co: None,
+            fiber: None,
+            fiber_init_notified: false,
+            enable_scheduler: false,
+            defer: None,
+            join: None,
+            pcid: 0,
+            context: Owned::empty(),
+            time_limited: false,
+            last_msec: 0,
+            watch_switches: false,
+            switch_count: 0,
+        }
+    }
 }
 
 /// `&raw mut (*callable).fcc`.
@@ -185,7 +192,6 @@ fields! {
     fiber_init_notified, set_fiber_init_notified: bool;
     enable_scheduler, set_enable_scheduler: bool;
     pcid, set_pcid: c_long;
-    context, set_context: *mut zend_object;
     time_limited, set_time_limited: bool;
     last_msec, set_last_msec: c_long;
     watch_switches, set_watch_switches: bool;
@@ -304,10 +310,28 @@ impl Ctx {
     fn defers<R>(self, f: impl FnOnce(&mut Option<Box<Vec<Callable>>>) -> R) -> R {
         self.with(|ctx| f(&mut ctx.defer))
     }
+
+    /// A new reference to its `Coroutine\Context` object, made on the first ask
+    /// (null when Zend made none); none once destroyed.
+    pub(crate) fn context_object(self) -> Option<Owned> {
+        let kind = self.with(|ctx| ctx.context.kind());
+        if kind == IS_NULL {
+            return None;
+        }
+        if kind == IS_UNDEF {
+            let created = crate::classes::CONTEXT.create_object();
+            if created.object().is_none() {
+                return Some(Owned::null());
+            }
+            // The context takes the object's first reference.
+            self.with(|ctx| ctx.context = created);
+        }
+        Some(self.with(|ctx| ctx.context.copy()))
+    }
 }
 
 per_thread! {
-    static MAIN: UnsafeCell<Context> = UnsafeCell::new(Context::EMPTY);
+    static MAIN: UnsafeCell<Context> = UnsafeCell::new(Context::empty());
     /// The armed `Co::setTimeLimit` timers, by coroutine id: few at a time, so a
     /// list. Taken out and put back around one swap, which releases nothing.
     static TIME_LIMITS: Cell<Vec<(c_long, Held)>> = Cell::new(Vec::new());
@@ -435,8 +459,8 @@ pub(crate) fn open(args: Args) -> Option<Ctx> {
     let co = host::current()?;
     let pcid = host::origin_cid(co);
     let ctx = swoole_rs_zend::value::emalloc(size_of::<Context>()).cast::<Context>();
-    // Built in place: a `Context::EMPTY` literal is staged on the stack and
-    // copied over. All-zero bytes are `Context::EMPTY`.
+    // Built in place: a `Context::empty()` literal is staged on the stack and
+    // copied over. All-zero bytes are `Context::empty()`.
     // SAFETY: fresh storage for one context.
     unsafe { ctx.write_bytes(0, 1) };
     // Every field now holds a valid value, and the context lives until `on_close`.
@@ -467,7 +491,7 @@ pub(crate) fn open(args: Args) -> Option<Ctx> {
         // SAFETY: null, or the creator's live callable zval.
         if let Some(callable) = unsafe { Value::from_ptr(args.callable) } {
             // The copy takes a reference.
-            fci.function_name = callable.copy().into_zval();
+            context.callable = callable.copy();
         }
     });
     // SAFETY: a resolved callable (sw_zend_fci_cache_persist).
@@ -504,7 +528,7 @@ pub(crate) fn enter(ctx: Ctx) -> *mut swr_zend_callable {
 #[inline]
 pub(crate) fn defer_next(ctx: Ctx) -> Option<(Callable, Option<*mut zval>)> {
     let task = ctx.defers(|defers| defers.as_mut()?.pop())?;
-    let returned = ctx.with(|context| Value::of(&mut context.return_value).kind()) != IS_UNDEF;
+    let returned = ctx.with(|context| context.return_value.kind()) != IS_UNDEF;
     Some((task, returned.then(|| ctx.return_value())))
 }
 
@@ -533,25 +557,21 @@ pub(crate) fn close(ctx: Ctx) {
     }
     // Object destruction may yield and let the origin coroutine finish: the
     // origin is looked up again before each use.
-    let object = ctx.context();
-    if !object.is_null() {
-        ctx.set_context(ptr::without_provenance_mut(INVALID));
-        // SAFETY: the context's own reference.
-        unsafe { swr_zend_object_release(object) };
-    }
+    // Each release below is the coroutine's last, and a destructor's bailout
+    // raised at once, as an unguarded `zval_ptr_dtor` would.
+    let object = ctx.with(|context| {
+        (context.context.kind() != IS_UNDEF)
+            .then(|| mem::replace(&mut context.context, Owned::null()))
+    });
+    bailout::finish_after(|| drop(object));
     // Upstream only drops the references (Z_TRY_DELREF), leaking a callable or
     // return value the coroutine held last, such as `go([new Foo, 'bar'])`'s array.
-    let call = ctx.call();
-    let function_name = call
-        .wrapping_byte_add(mem::offset_of!(swr_zend_callable, fci.function_name))
-        .cast::<zval>();
-    // SAFETY: a live context's callable; `open` added this reference.
-    unsafe { zval_ptr_dtor(function_name) };
-    ctx.with(|context| context.call.fci.function_name.u1.type_info = IS_UNDEF);
-    // SAFETY: as above; `open` held its object and closure.
-    unsafe { swr_zend_coroutine_fcc_discard(fcc(call)) };
-    // SAFETY: a live context's return value.
-    unsafe { zval_ptr_dtor(ctx.return_value()) };
+    let callable = ctx.with(|context| mem::take(&mut context.callable));
+    bailout::finish_after(|| drop(callable));
+    // SAFETY: a live context's callable, whose object and closure `open` held.
+    unsafe { swr_zend_coroutine_fcc_discard(fcc(ctx.call())) };
+    let returned = ctx.with(|context| mem::take(&mut context.return_value));
+    bailout::finish_after(|| drop(returned));
     fiber_try_destroy(ctx, origin(ctx));
     // A context-owned __destruct() may have rearmed the time limit.
     if ctx.time_limited()
@@ -577,7 +597,7 @@ pub(crate) fn init_main() {
 
 /// `free_main_context`, at RSHUTDOWN.
 pub(crate) fn free_main() {
-    main().with(|context| *context = Context::EMPTY);
+    main().with(|context| *context = Context::empty());
 }
 
 /// `PHPCoroutine::defer`: keep a task on the running context.
@@ -662,13 +682,13 @@ mod tests {
 
     #[test]
     fn field_pointers_match_the_fields() {
-        let mut context = Context::EMPTY;
+        let mut context = Context::empty();
         let ctx = &raw mut context;
         let handle = Ctx(NonNull::new(ctx).unwrap());
         assert_eq!(handle.vm(), unsafe { &raw mut (*ctx).vm });
         assert_eq!(handle.call(), unsafe { &raw mut (*ctx).call });
         assert_eq!(handle.return_value(), unsafe {
-            &raw mut (*ctx).return_value
+            (&raw mut (*ctx).return_value).cast::<zval>()
         });
         let callable = unsafe { &raw mut (*ctx).call };
         assert_eq!(fcc(callable), unsafe { &raw mut (*callable).fcc });
@@ -676,10 +696,12 @@ mod tests {
 
     #[test]
     fn a_new_context_has_no_pending_state() {
-        let context = Context::EMPTY;
+        let context = Context::empty();
         assert!(context.defer.is_none());
-        assert!(context.join.is_none() && context.context.is_null() && !context.time_limited);
-        assert_eq!(unsafe { context.return_value.u1.type_info }, IS_UNDEF);
+        assert!(context.join.is_none() && !context.time_limited);
+        assert_eq!(context.context.kind(), IS_UNDEF);
+        assert_eq!(context.callable.kind(), IS_UNDEF);
+        assert_eq!(context.return_value.kind(), IS_UNDEF);
         assert!(!context.vm.in_silence && context.vm.output_ptr.is_null());
     }
 }
