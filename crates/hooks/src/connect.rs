@@ -920,7 +920,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no inet_pton")]
     fn tls_host_name_and_proxy_family_switch() {
         // An IPv4 socket whose proxy (::1) is IPv6 reopens as TCP6.
         let mut ops = connect_ops(Some(Proxy::Socks5), true, libc::AF_INET);
@@ -1130,7 +1129,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no inet_pton")]
     fn ip_checks_match_inet_pton() {
         assert!(is_ip(libc::AF_INET, b"127.0.0.1"));
         assert!(!is_ip(libc::AF_INET, b"localhost"));

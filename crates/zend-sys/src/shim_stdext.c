@@ -6,7 +6,7 @@
 #include "SAPI.h"
 #include "php_variables.h"
 
-/* crates/phpstdext's opcode handlers return these by value. */
+/* crates/zend's opcode::handler returns these by value. */
 _Static_assert(ZEND_USER_OPCODE_CONTINUE == 0, "ZEND_USER_OPCODE_CONTINUE");
 _Static_assert(ZEND_USER_OPCODE_DISPATCH == 2, "ZEND_USER_OPCODE_DISPATCH");
 
@@ -63,11 +63,5 @@ void swr_zend_treat_string(char *text, zval *array) {
 int swr_zend_try_stdext_nogc_dtor(zval *value) {
     volatile int bailed = 0;
     SWR_ZEND_TRY { zval_ptr_dtor_nogc(value); } SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
-    return bailed;
-}
-int swr_zend_try_stdext_cannot_add(void) {
-    volatile int bailed = 0;
-    SWR_ZEND_TRY { zend_throw_error(NULL, "Cannot add element to the array as the next element is already occupied"); }
-    SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
 }

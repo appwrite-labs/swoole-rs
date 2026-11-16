@@ -29,7 +29,7 @@ pub(crate) fn debug_step(
     } else {
         cursor.next
     };
-    let node = pool.nodes().get(slice)?;
+    let node = pool.nodes().at(slice)?.get();
     let record = DebugRecord {
         slice,
         prev: node.prev,

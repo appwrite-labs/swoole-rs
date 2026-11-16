@@ -9,11 +9,11 @@ use crate::{
     socket_options::{Stop, checked, errno, fd, long, string, text},
 };
 use libc::{c_int, c_uint, in_addr, in6_addr, sockaddr_in, sockaddr_in6};
+#[cfg(not(target_vendor = "apple"))]
+use std::ptr;
 use std::{
     ffi::CStr,
-    mem::size_of,
     net::{Ipv4Addr, Ipv6Addr},
-    ptr,
     str::FromStr,
 };
 use swoole_rs_corebase::net_types::AddressStorage;
@@ -663,6 +663,7 @@ pub(crate) fn get_ipv6(_call: &Call, _socket: Co, _level: c_int, _name: c_int) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(target_vendor = "apple"))]
     use libc::socklen_t;
 
     #[test]

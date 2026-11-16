@@ -125,10 +125,6 @@ HashTable *swr_phpstdext_typed_new(zval *made, uint32_t size, size_t extra) {
     return ht;
 }
 
-void swr_phpstdext_pcre_release(void *entry) {
-    php_pcre_pce_decref(entry);
-}
-
 uint8_t swr_phpstdext_pcre_match(void *entry, zend_string *subject, zval *count, zval *result, bool global,
                                  bool flags_passed, int64_t flags, int64_t offset) {
     volatile uint8_t bailed = 0;
