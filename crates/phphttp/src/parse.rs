@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use std::{mem::ManuallyDrop, ptr};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{WebSocketStatus, log};
-use swoole_rs_http::llhttp::{self, Callbacks, Parser};
+use swoole_rs_http::llhttp::{self, Callbacks, Flow as Step, Parser};
 use swoole_rs_http::multipart_parser::{Flow, MultipartParser};
 use swoole_rs_httpbindings::{
     RequestHeader, body_prefix, compression, request_header, request_key, request_url,
@@ -92,36 +92,36 @@ impl<'i> Callbacks<'i> for Server<'_, 'i> {
         &mut self.0.parser
     }
 
-    fn on_url(&mut self, data: &[u8]) -> c_int {
+    fn on_url(&mut self, data: &[u8]) -> Step {
         url(self.0, data)
     }
 
-    fn on_header_field(&mut self, data: &'i [u8]) -> c_int {
+    fn on_header_field(&mut self, data: &'i [u8]) -> Step {
         // A request's trailer fields are ignored.
         if self.0.parser.flags & TRAILING != 0 {
-            return 0;
+            return Step::Go;
         }
         self.1 = data;
         self.0.parse.header_value_len = 0;
-        0
+        Step::Go
     }
 
-    fn on_header_value(&mut self, data: &[u8]) -> c_int {
+    fn on_header_value(&mut self, data: &[u8]) -> Step {
         if self.0.parser.flags & TRAILING != 0 {
-            return 0;
+            return Step::Go;
         }
         header_value(self.0, self.1, data)
     }
 
-    fn on_headers_complete(&mut self) -> c_int {
+    fn on_headers_complete(&mut self) -> Step {
         on_headers_complete(self.0)
     }
 
-    fn on_body(&mut self, data: &[u8]) -> c_int {
+    fn on_body(&mut self, data: &[u8]) -> Step {
         on_body(self.0, data)
     }
 
-    fn on_message_complete(&mut self) -> c_int {
+    fn on_message_complete(&mut self) -> Step {
         on_message_complete(self.0)
     }
 }
@@ -131,27 +131,27 @@ impl Callbacks<'_> for Pieces<'_> {
         &mut self.0.parser
     }
 
-    fn on_url(&mut self, data: &[u8]) -> c_int {
+    fn on_url(&mut self, data: &[u8]) -> Step {
         on_piece_url(self.0, data.as_ptr().cast(), data.len())
     }
 
-    fn on_header_field(&mut self, data: &[u8]) -> c_int {
+    fn on_header_field(&mut self, data: &[u8]) -> Step {
         on_piece_header_field(self.0, data.as_ptr().cast(), data.len())
     }
 
-    fn on_header_value(&mut self, data: &[u8]) -> c_int {
+    fn on_header_value(&mut self, data: &[u8]) -> Step {
         on_piece_header_value(self.0, data.as_ptr().cast(), data.len())
     }
 
-    fn on_headers_complete(&mut self) -> c_int {
+    fn on_headers_complete(&mut self) -> Step {
         on_headers_complete(self.0)
     }
 
-    fn on_body(&mut self, data: &[u8]) -> c_int {
+    fn on_body(&mut self, data: &[u8]) -> Step {
         on_body(self.0, data)
     }
 
-    fn on_message_complete(&mut self) -> c_int {
+    fn on_message_complete(&mut self) -> Step {
         on_message_complete(self.0)
     }
 }
@@ -494,11 +494,11 @@ fn zdata_span(state: &State) -> (*const u8, usize) {
     (bytes.as_ptr(), bytes.len())
 }
 
-fn url(state: &mut State, span: &[u8]) -> c_int {
+fn url(state: &mut State, span: &[u8]) -> Step {
     let (path, query) = request_url(span);
     state.request.path = Some(path.into());
     if query.is_empty() {
-        return 0;
+        return Step::Go;
     }
     add_server(state, Key::QueryString, stringl(query));
     treat_data(
@@ -506,15 +506,15 @@ fn url(state: &mut State, span: &[u8]) -> c_int {
         Copied::of(query),
         property(&mut state.request, Property::Get),
     );
-    0
+    Step::Go
 }
 
-fn on_piece_url(state: &mut State, at: *const c_char, length: usize) -> c_int {
+fn on_piece_url(state: &mut State, at: *const c_char, length: usize) -> Step {
     state.parse.url_length += length;
     let (start, total) = zdata_span(state);
     // llhttp flushes unfinished spans at the end of each input buffer.
     if at.wrapping_add(length).cast() == start.wrapping_add(total) {
-        return 0;
+        return Step::Go;
     }
     // A reference of its own to `zdata`, which `url` reads but doesn't replace.
     let held = state.request.zdata.copy();
@@ -522,26 +522,26 @@ fn on_piece_url(state: &mut State, at: *const c_char, length: usize) -> c_int {
     url(state, span)
 }
 
-fn on_piece_header_field(state: &mut State, at: *const c_char, length: usize) -> c_int {
+fn on_piece_header_field(state: &mut State, at: *const c_char, length: usize) -> Step {
     if state.parser.flags & TRAILING != 0 {
-        return 0;
+        return Step::Go;
     }
     if state.parse.header_name_length == 0 {
         let (start, _) = zdata_span(state);
         state.parse.header_name_offset = at.addr().wrapping_sub(start.addr());
     }
     state.parse.header_name_length += length;
-    0
+    Step::Go
 }
 
-fn on_piece_header_value(state: &mut State, at: *const c_char, length: usize) -> c_int {
+fn on_piece_header_value(state: &mut State, at: *const c_char, length: usize) -> Step {
     if state.parser.flags & TRAILING != 0 {
-        return 0;
+        return Step::Go;
     }
     state.parse.header_value_length += length;
     let (start, total) = zdata_span(state);
     if at.wrapping_add(length).cast() == start.wrapping_add(total) {
-        return 0;
+        return Step::Go;
     }
     state.parse.header_value_len = 0;
     // A reference of its own to `zdata`, which `header_value` reads but doesn't replace.
@@ -592,7 +592,7 @@ fn websocket_connection(state: &State) -> bool {
     true
 }
 
-fn header_value(state: &mut State, name: &[u8], value_: &[u8]) -> c_int {
+fn header_value(state: &mut State, name: &[u8], value_: &[u8]) -> Step {
     let length = value_.len();
     let compression = CAPABILITIES.load(Relaxed) & COMPRESSION != 0 && state.enable_compression;
     let action = request_header(
@@ -605,20 +605,20 @@ fn header_value(state: &mut State, name: &[u8], value_: &[u8]) -> c_int {
     match action {
         RequestHeader::Cookie => {
             parse_cookie(property(&mut state.request, Property::Cookie), value_);
-            return 0;
+            return Step::Go;
         }
         RequestHeader::Upgrade => {
             const MAX_LENGTH: usize = STACK_BUFFER_SIZE - 1;
             let seen = state.parse.header_value_len;
             if seen > MAX_LENGTH || length > MAX_LENGTH - seen {
                 set_error_reason(state, &"Upgrade header value exceeds the maximum length");
-                return USER;
+                return Step::Error(USER);
             }
             state.parse.header_value_len += length;
             match contains_websocket(value_) {
                 None => {
                     set_error_reason(state, &"Upgrade header value exceeds the maximum length");
-                    return USER;
+                    return Step::Error(USER);
                 }
                 Some(true) => {
                     state.websocket = true;
@@ -630,7 +630,7 @@ fn header_value(state: &mut State, name: &[u8], value_: &[u8]) -> c_int {
                             c"http_request_on_header_value",
                             message,
                         );
-                        return -1;
+                        return Step::Fail;
                     }
                 }
                 Some(false) => {}
@@ -639,7 +639,7 @@ fn header_value(state: &mut State, name: &[u8], value_: &[u8]) -> c_int {
         RequestHeader::Form => state.request.post_form_urlencoded = true,
         RequestHeader::Multipart => {
             if !multipart_start(state, value_) {
-                return -1;
+                return Step::Fail;
             }
         }
         RequestHeader::Compression => compression_method(state, value_),
@@ -648,17 +648,17 @@ fn header_value(state: &mut State, name: &[u8], value_: &[u8]) -> c_int {
     let value_ = stringl(value_);
     // The request's `header` array, created with the request.
     let Some(header) = state.request.zheader.array_mut() else {
-        return 0;
+        return Step::Go;
     };
     let known = request_key(name).and_then(|index| HEADER_KEYS.get(index));
     match known.and_then(|&known| key(known)) {
         Some(known) => header.update(known, value_),
         None => header.merge(&name.to_ascii_lowercase(), value_),
     }
-    0
+    Step::Go
 }
 
-fn on_headers_complete(state: &mut State) -> c_int {
+fn on_headers_complete(state: &mut State) -> Step {
     let request = &mut state.request;
     request.version =
         c_int::from(state.parser.http_major) * 100 + c_int::from(state.parser.http_minor);
@@ -682,7 +682,7 @@ fn on_headers_complete(state: &mut State) -> c_int {
 
     state.keepalive = state.parser.should_keep_alive();
     state.recv_chunked = state.parser.flags & CHUNKED != 0;
-    0
+    Step::Go
 }
 
 /// `$request->server`'s `request_time` (`time(nullptr)`) and `request_time_float`
@@ -705,10 +705,10 @@ pub(crate) fn add_protocol(state: &mut State, protocol: Key) {
     }
 }
 
-fn on_body(state: &mut State, span: &[u8]) -> c_int {
+fn on_body(state: &mut State, span: &[u8]) -> Step {
     let (at, length) = (span.as_ptr(), span.len());
     if length == 0 {
-        return 0;
+        return Step::Go;
     }
     let received = state
         .parse
@@ -729,13 +729,17 @@ fn on_body(state: &mut State, span: &[u8]) -> c_int {
     if state.mt_parser.is_some() && !state.recv_chunked {
         let prefix = body_prefix(span, beginning);
         if !multipart_parse(state, span.get(prefix..).unwrap_or_default()) {
-            return -1;
+            return Step::Fail;
         }
     }
-    if state.completed { PAUSED } else { 0 }
+    if state.completed {
+        Step::Pause
+    } else {
+        Step::Go
+    }
 }
 
-fn on_message_complete(state: &mut State) -> c_int {
+fn on_message_complete(state: &mut State) -> Step {
     let chunked = state.parse.chunked_body.is_some();
     if chunked && state.mt_parser.is_some() {
         // The bundled multipart parser rejects calls that end inside a part header. llhttp body spans can end at
@@ -747,7 +751,7 @@ fn on_message_complete(state: &mut State) -> c_int {
         let parsed = multipart_parse(state, body.get(prefix..).unwrap_or_default());
         state.parse.chunked_body = Some(body);
         if !parsed {
-            return -1;
+            return Step::Fail;
         }
     }
     let form_source = swr_v1_httpbindings_form_source(
@@ -784,7 +788,7 @@ fn on_message_complete(state: &mut State) -> c_int {
     state.parse.form_data = None;
     state.completed = true;
     // The analysis of the http protocol has been completed, no further processing is needed.
-    PAUSED
+    Step::Pause
 }
 
 fn multipart_free(state: &mut State) {

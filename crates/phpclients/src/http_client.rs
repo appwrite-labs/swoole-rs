@@ -19,7 +19,7 @@ use std::{
     sync::atomic::{AtomicU32, Ordering},
 };
 use swoole_rs_corebase::CCast;
-use swoole_rs_http::llhttp::{self, Callbacks, Parser};
+use swoole_rs_http::llhttp::{self, Callbacks, Flow, Parser};
 use swoole_rs_inflate::{Inflate, brotli, zstd};
 use swoole_rs_phpstubs::http_client_coro;
 use swoole_rs_reactor::Events;
@@ -199,25 +199,29 @@ impl<'i> Callbacks<'i> for Spans<'_, '_, 'i> {
         self.hooks.parser
     }
 
-    fn on_header_field(&mut self, data: &'i [u8]) -> c_int {
+    fn on_header_field(&mut self, data: &'i [u8]) -> Flow {
         self.field = data;
-        0
+        Flow::Go
     }
 
-    fn on_header_value(&mut self, data: &[u8]) -> c_int {
+    fn on_header_value(&mut self, data: &[u8]) -> Flow {
         on_header_value(self.hooks, self.field, data)
     }
 
-    fn on_headers_complete(&mut self) -> c_int {
+    fn on_headers_complete(&mut self) -> Flow {
         let hooks = &self.hooks;
-        c_int::from(hooks.client.head.get() || hooks.parser.status_code == NO_CONTENT)
+        if hooks.client.head.get() || hooks.parser.status_code == NO_CONTENT {
+            Flow::SkipBody
+        } else {
+            Flow::Go
+        }
     }
 
-    fn on_body(&mut self, data: &[u8]) -> c_int {
+    fn on_body(&mut self, data: &[u8]) -> Flow {
         on_body(self.hooks.client, data)
     }
 
-    fn on_message_complete(&mut self) -> c_int {
+    fn on_message_complete(&mut self) -> Flow {
         on_message_complete(self.hooks)
     }
 }
@@ -1439,7 +1443,7 @@ impl<'a> FilePart<'a> {
     }
 }
 
-fn on_header_value(hooks: &Hooks, name: &[u8], data: &[u8]) -> c_int {
+fn on_header_value(hooks: &Hooks, name: &[u8], data: &[u8]) -> Flow {
     let client = hooks.client;
     let lowered;
     let name = if client.lowercase_header.get() {
@@ -1482,10 +1486,10 @@ fn on_header_value(hooks: &Hooks, name: &[u8], data: &[u8]) -> c_int {
             .event_stream
             .set(request::starts_with_ignore_case(data, b"text/event-stream"));
     }
-    0
+    Flow::Go
 }
 
-fn on_body(client: &Client, data: &[u8]) -> c_int {
+fn on_body(client: &Client, data: &[u8]) -> Flow {
     let decompress = client.body_decompression.get()
         && !client.compression_error.get()
         && client.compress.get() != Compress::None;
@@ -1499,7 +1503,7 @@ fn on_body(client: &Client, data: &[u8]) -> c_int {
             let decoded = client.body.take();
             if decoded.is_empty() {
                 client.body.set(decoded);
-                return 0;
+                return Flow::Go;
             }
             Some(decoded)
         } else {
@@ -1521,7 +1525,11 @@ fn on_body(client: &Client, data: &[u8]) -> c_int {
         if result.is_err() {
             client.bailout.set(true);
         }
-        return if matches!(result, Ok(true)) { 0 } else { -1 };
+        return if matches!(result, Ok(true)) {
+            Flow::Go
+        } else {
+            Flow::Fail
+        };
     }
     if decompress {
         if !client.decompress(data) {
@@ -1535,7 +1543,7 @@ fn on_body(client: &Client, data: &[u8]) -> c_int {
     let downloading = name.is_some();
     client.download_name.set(name);
     if !downloading {
-        return 0;
+        return Flow::Go;
     }
     // Out of the client while the file calls yield to other coroutines.
     let written = client.with_body(|body| {
@@ -1545,7 +1553,7 @@ fn on_body(client: &Client, data: &[u8]) -> c_int {
         }
         written
     });
-    if written { 0 } else { -1 }
+    if written { Flow::Go } else { Flow::Fail }
 }
 
 /// Append a body chunk to the download, opening its file first: whether it was written.
@@ -1565,12 +1573,12 @@ fn write_download(client: &Client, body: &[u8]) -> bool {
         .is_some_and(|fd| native::swoole_http_client_coro_file_write(fd, body))
 }
 
-fn on_message_complete(hooks: &mut Hooks) -> c_int {
+fn on_message_complete(hooks: &mut Hooks) -> Flow {
     let client = hooks.client;
     client.completed.set(true);
     if hooks.parser.upgrade && !client.websocket.get() {
         hooks.parser.upgrade = false;
-        return llhttp::HPE_PAUSED;
+        return Flow::Pause;
     }
     client
         .props()
@@ -1581,7 +1589,7 @@ fn on_message_complete(hooks: &mut Hooks) -> c_int {
     } else {
         drop(client.download_name.take());
     }
-    llhttp::HPE_PAUSED
+    Flow::Pause
 }
 
 method_table! {

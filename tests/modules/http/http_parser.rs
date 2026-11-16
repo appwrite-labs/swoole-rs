@@ -1,7 +1,7 @@
 //! Upstream's `core-tests/src/server/http_parser.cpp`, one Rust test per TEST: crates/http's
 //! llhttp, driven as `swoole_llhttp_parser_init`/`_execute` drove the bundled C, with the
 //! same inputs, callbacks and expected values.
-use swoole_rs_http::llhttp::{self, Callbacks, Parser};
+use swoole_rs_http::llhttp::{self, Callbacks, Flow, Parser};
 
 const HTTP_REQUEST: llhttp::Kind = llhttp::Kind::Request;
 const HTTP_RESPONSE: llhttp::Kind = llhttp::Kind::Response;
@@ -36,24 +36,24 @@ impl Callbacks<'_> for Http {
         &mut self.parser
     }
 
-    fn on_url(&mut self, data: &[u8]) -> i32 {
+    fn on_url(&mut self, data: &[u8]) -> Flow {
         self.ctx.query_string = text(data);
-        0
+        Flow::Go
     }
 
-    fn on_header_field(&mut self, data: &[u8]) -> i32 {
+    fn on_header_field(&mut self, data: &[u8]) -> Flow {
         self.ctx.header_fields.push(text(data));
-        0
+        Flow::Go
     }
 
-    fn on_header_value(&mut self, data: &[u8]) -> i32 {
+    fn on_header_value(&mut self, data: &[u8]) -> Flow {
         self.ctx.header_values.push(text(data));
-        0
+        Flow::Go
     }
 
-    fn on_message_complete(&mut self) -> i32 {
+    fn on_message_complete(&mut self) -> Flow {
         self.ctx.completed = 1;
-        0
+        Flow::Go
     }
 }
 
