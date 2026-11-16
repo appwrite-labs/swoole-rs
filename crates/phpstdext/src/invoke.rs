@@ -14,7 +14,7 @@ use std::{
 };
 use swoole_rs_zend::{
     Call, Emalloc, Value,
-    bailout::{Bailout, trap},
+    bailout::Bailout,
     opcode::Handler,
     sys::{
         IS_ARRAY, IS_CONST, IS_RESOURCE, IS_STRING, IS_VAR, swr_zend_zval_release, zend_function,
