@@ -287,7 +287,7 @@ pub fn finish(
         }
         reply(&mut buf, super::nonblocking_flags(flags, task.ext_flags));
         match stream_connection(worker) {
-            Some(socket) => send_stream(socket, data),
+            Some(connection) => send_stream(connection.socket(), data),
             None => send_pipe_message(
                 crate::process_pool_native(),
                 worker,
@@ -388,12 +388,12 @@ fn write_waitall(
 
 /// The stream pool's connection for the task `worker` runs: none in an event
 /// worker's pool, which has no IPC state.
-fn stream_connection(worker: Worker<'_>) -> Option<Socket<'_>> {
+fn stream_connection(worker: Worker<'_>) -> Option<std::rc::Rc<swoole_rs_reactor::OwnedSocket>> {
     let pool = worker.pool_ref()?;
     if !pool.use_socket() {
         return None;
     }
-    pool.ipc_connection().map(Socket::lent)
+    pool.ipc_connection()?.downcast().ok()
 }
 
 /// The result over a stream: its length, big-endian, then its bytes.

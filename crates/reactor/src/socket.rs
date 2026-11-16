@@ -185,7 +185,7 @@ impl<'a> Socket<'a> {
     }
 
     /// The native socket crates/process lends for `'a`, whose writers vouched for it
-    /// (a pipe end, a hook's socket, or a stream listener or connection): a live
+    /// (a pipe end, a hook's socket, or a stream listener): a live
     /// record of this crate's.
     #[must_use]
     pub fn lent(native: swoole_rs_process::worker_record::NativeSocket<'a>) -> Self {
