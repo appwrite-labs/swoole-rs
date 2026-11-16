@@ -715,7 +715,9 @@ mod tests {
     impl Drop for Object {
         fn drop(&mut self) {
             unsafe {
-                SocketRecord::free(Socket::from_ptr(self.record().socket_ptr()));
+                if let Some(s) = Socket::from_ptr(self.record().socket_ptr()) {
+                    swoole_rs_reactor::OwnedSocket::from_socket(s).free();
+                }
                 (*self.0).record.fini();
                 drop(Box::from_raw(self.0));
             }

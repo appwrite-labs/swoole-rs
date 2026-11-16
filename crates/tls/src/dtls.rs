@@ -633,6 +633,6 @@ mod tests {
         assert_eq!(swr_v1_tls_dtls_length(DtlsSession::of(socket).unwrap()), 3);
         unsafe { crate::upstream::socket_ssl_close(socket) };
         assert!(DtlsSession::of(socket).is_none());
-        unsafe { swoole_rs_reactor::SocketRecord::free(Socket::from_ptr(raw)) };
+        drop(unsafe { Box::from_raw(raw) });
     }
 }

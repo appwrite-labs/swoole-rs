@@ -374,8 +374,11 @@ impl PortConfig {
             reason = "a port kept past this owns the callable to the exit"
         )]
         std::mem::forget(self.length_owner.replace(None));
-        // SAFETY: the record of a port `destroy` never closed (a server never started),
-        // which nothing else holds. Its descriptor stays open to the exit, as upstream's.
-        unsafe { swoole_rs_reactor::SocketRecord::free(self.take_socket()) };
+        if let Some(socket) = self.take_socket() {
+            // SAFETY: the heap record of a port `destroy` never closed (a server never
+            // started), which nothing else holds. Its descriptor stays open to the exit,
+            // as upstream's.
+            unsafe { swoole_rs_reactor::OwnedSocket::from_socket(socket) }.free();
+        }
     }
 }

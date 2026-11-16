@@ -519,8 +519,10 @@ pub(crate) fn close_connection(
     // The slot's last write before close(fd): an accept that gets the fd back
     // acquires it (OP_CONN_RESET) before reusing the slot.
     conn.closed().store(1, Release);
-    // SAFETY: the closing socket, which nothing uses afterwards.
-    _ = unsafe { swoole_rs_tls::reactor_write::reactor_close(reactor.handle(), sock) };
+    // SAFETY: the closing socket, the accepted heap record the slot no longer names,
+    // which nothing uses afterwards.
+    let sock = unsafe { swoole_rs_reactor::OwnedSocket::from_socket(sock) };
+    _ = swoole_rs_tls::reactor_write::reactor_close(reactor.handle(), sock);
     true
 }
 

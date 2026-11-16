@@ -460,11 +460,11 @@ mod tests {
         CLOSED.with_borrow_mut(core::mem::take)
     }
 
-    unsafe extern "C-unwind" fn record_close(
+    extern "C-unwind" fn record_close(
         _: swoole_rs_reactor::Running<'_>,
-        socket: Socket<'_>,
+        socket: swoole_rs_reactor::OwnedSocket,
     ) -> c_int {
-        CLOSED.with_borrow_mut(|closed| closed.push(socket.fd()));
+        CLOSED.with_borrow_mut(|closed| closed.push(socket.socket().fd()));
         0
     }
 

@@ -13,7 +13,7 @@ use std::sync::{Arc, PoisonError, RwLockReadGuard};
 use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
 use swoole_rs_corebase::constants::{SW_SSL_CIPHER_LIST, SW_SSL_ECDH_CURVE};
 use swoole_rs_corebase::{log, sys};
-use swoole_rs_reactor::{Socket, SocketRecord, swr_v1_socket_type};
+use swoole_rs_reactor::{OwnedSocket, Socket, SocketRecord, swr_v1_socket_type};
 use swoole_rs_server::port_config::{PortConfig, TlsState};
 use swoole_rs_server::view;
 use swoole_rs_tls::{
@@ -277,8 +277,8 @@ pub(crate) fn close(config: &PortConfig) {
     }
     // Taken first, so nothing finds the record once it is freed.
     let socket = config.take_socket();
-    // SAFETY: none, or the port's live socket, which nothing uses after.
-    unsafe { socket_free(socket) };
+    // SAFETY: none, or the port's live heap record, which nothing uses after.
+    socket_free(socket.map(|socket| unsafe { OwnedSocket::from_socket(socket) }));
     if matches!(config.r#type, 5 | 6) {
         let mut path = config.host_bytes().to_vec();
         path.push(0);
