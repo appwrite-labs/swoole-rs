@@ -48,9 +48,33 @@ impl<'id> In<'id, u8> {
     pub fn bytes(self) -> In<'id> {
         In(self.0.cast(), PhantomData)
     }
+
+    /// The bytes as the [`Drain`] they are, `count` of them (a C lender's negative
+    /// count is none): what a callback C lends bytes to reads them through.
+    #[inline]
+    #[must_use]
+    pub fn drain<N: TryInto<usize>>(self, count: Count<'id, N>) -> Drain<'id> {
+        Drain {
+            at: self.0,
+            len: count.0.try_into().unwrap_or(0),
+            lent: PhantomData,
+        }
+    }
 }
 
 impl<'id, S: ReadSlot> Out<'id, S> {
+    /// The slots as the [`Fill`] they are, `count` of them (a C lender's negative
+    /// count is none): what a callback C lends a buffer to writes it through.
+    #[inline]
+    #[must_use]
+    pub fn fill<N: TryInto<usize>>(self, count: Count<'id, N>) -> Fill<'id, S> {
+        Fill {
+            at: self.0,
+            len: count.0.try_into().unwrap_or(0),
+            lent: PhantomData,
+        }
+    }
+
     /// The same one-byte slots, as the untyped address a call takes.
     #[inline]
     #[must_use]

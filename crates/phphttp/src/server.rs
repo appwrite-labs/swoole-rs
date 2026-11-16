@@ -664,18 +664,16 @@ pub fn http_server_on_close(server: view::Server<'_>, info: &DataHead) {
 /// The counters of the worker serving requests, for one admission or release.
 /// `sw_worker()->concurrency`, which the master resets as it retires the
 /// worker, goes through [`with_current`].
-struct Worker {
+struct Worker<'a> {
     /// `ServerGS::concurrency`, shared by every worker.
-    server_concurrency: &'static AtomicU32,
+    server_concurrency: &'a AtomicU32,
     max_concurrency: u32,
     shutdown: bool,
 }
 
-/// `sw_server()` and `sw_worker()`'s counters; none when this process is no
-/// server worker.
-fn worker() -> Option<Worker> {
-    // SAFETY: a worker's server, which outlives the worker's requests.
-    let server = unsafe { view::Server::<'static>::current() }?;
+/// The counters of `server` (the request's, `sw_server()` upstream) and
+/// `sw_worker()`; none when this process is no server worker.
+fn worker(server: view::Server<'_>) -> Option<Worker<'_>> {
     with_current(|_| ())?;
     Some(Worker {
         server_concurrency: &server.counters().concurrency,
@@ -693,9 +691,10 @@ fn abandon(mut ctx: Ctx) {
 }
 
 /// `swoole_http_server_onBeforeRequest` after it swaps the hooks: count the
-/// request, or queue it past `worker_max_concurrency` (false: not now).
-pub(crate) fn admit(ctx: Ctx) -> bool {
-    let Some(worker) = worker().filter(|worker| !worker.shutdown) else {
+/// request to `server`, the one its context is bound to, or queue it past
+/// `worker_max_concurrency` (false: not now).
+pub(crate) fn admit(server: view::Server<'_>, ctx: Ctx) -> bool {
+    let Some(worker) = worker(server).filter(|worker| !worker.shutdown) else {
         return false;
     };
     worker.server_concurrency.fetch_add(1, SeqCst);
@@ -709,10 +708,10 @@ pub(crate) fn admit(ctx: Ctx) -> bool {
 }
 
 /// `swoole_http_server_onAfterResponse` after it clears the hook: uncount the
-/// request and start the next queued one, or answer every queued one with
-/// 503 once the worker is shutting down.
-pub(crate) fn release_request() {
-    let Some(worker) = worker() else {
+/// request to `server` and start the next queued one, or answer every queued
+/// one with 503 once the worker is shutting down.
+pub(crate) fn release_request(server: view::Server<'_>) {
+    let Some(worker) = worker(server) else {
         return;
     };
     if worker.shutdown {

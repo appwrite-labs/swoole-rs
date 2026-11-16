@@ -736,15 +736,13 @@ mod tests {
     }
 
     /// A socketless port of `kind` on `host`:`number`, of a server that reuses
-    /// ports when `reuse_port` (a `Server` head over a leaked config).
+    /// ports when `reuse_port` (a leaked base-mode server).
     fn unbound_port(kind: c_int, host: &str, number: c_int, reuse_port: bool) -> *mut PortConfig {
         let config = port_config::swr_v1_port_config_new(1000);
         if reuse_port {
-            let server = Box::leak(Box::<swoole_rs_server::ServerConfig>::default());
-            server.enable_reuse_port.set(true);
-            let head: &mut [*mut c_void; 2] =
-                Box::leak(Box::new([std::ptr::null_mut(), (&raw mut *server).cast()]));
-            unsafe { (*config).protocol.get_mut().private_data_2 = head.as_mut_ptr().cast() };
+            let share = Box::leak(Box::new(swoole_rs_server::SharedServer::new(1)));
+            share.view().config().enable_reuse_port.set(true);
+            unsafe { (*config).protocol.get_mut().private_data_2 = share.view().raw().cast() };
         }
         unsafe {
             (*config).r#type = kind;

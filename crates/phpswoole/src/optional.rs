@@ -170,7 +170,7 @@ pub(crate) fn rinit(families: &Families) -> Vec<Step> {
         #[cfg(feature = "oci")]
         Step::Hook(swoole_rs_oci::php_swoole_oracle_rinit),
     ]);
-    let switched = [(Switch::Thread, Step::Hook(families.thread_rinit))];
+    let switched = [(Switch::Thread, Step::Request(families.thread_rinit))];
     drivers.into_iter().chain(built(switched)).collect()
 }
 

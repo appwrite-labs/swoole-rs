@@ -76,15 +76,6 @@ pub struct ClassEntry<'a>(
 );
 
 impl<'a> ClassEntry<'a> {
-    /// The class at `entry`, or None for null.
-    /// # Safety
-    /// `entry` is null or a class entry that lives for `'a`.
-    #[must_use]
-    #[inline]
-    pub unsafe fn from_ptr(entry: *mut zend_class_entry) -> Option<Self> {
-        Self::live(entry)
-    }
-
     /// A class entry Zend holds for `'a`, or None for null: the parent a
     /// class keeps, a function's scope, a registered class.
     #[inline]
@@ -320,6 +311,19 @@ pub fn lookup_class(name: &ZStr) -> Result<*mut zend_class_entry, crate::bailout
     let mut class = ptr::null_mut();
     crate::bailout::trapped(swr_zend_try_lookup_class(name, &mut class))?;
     Ok(class)
+}
+
+impl<'a> crate::Php<'a> {
+    /// [`lookup_class`], borrowed: the running request keeps the class it
+    /// found while PHP runs, and a class outlives the request's values.
+    /// # Errors
+    /// An autoloader bailed out.
+    pub fn lookup_class(
+        self,
+        name: &ZStr,
+    ) -> Result<Option<ClassEntry<'a>>, crate::bailout::Bailout> {
+        lookup_class(name).map(ClassEntry::live)
+    }
 }
 
 impl crate::Value {

@@ -730,15 +730,9 @@ impl Server {
 
     fn is_healthy_connection(self, now: f64, conn: &Connection) -> bool {
         // SAFETY: the crate's record, whose layout `check_layout` matched this one's.
-        let conn = unsafe {
-            swoole_rs_server::Connection::from_ptr(ptr::from_ref(conn).cast_mut().cast())
-        };
-        self.view().healthy(
-            now,
-            conn.unwrap_or_else(|| {
-                swoole_rs_corebase::fatal("a live connection with a null record")
-            }),
-        )
+        let conn = unsafe { &*ptr::from_ref(conn).cast::<swoole_rs_server::ConnectionRecord>() };
+        self.view()
+            .healthy(now, swoole_rs_server::Connection::from(conn))
     }
 
     fn feedback(self, conn: &mut Connection, event: ServerEvent) -> bool {

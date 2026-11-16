@@ -6,23 +6,22 @@ use crate::{CONTINUE, DISPATCH, Frame, Op};
 use std::{
     cell::Cell,
     ffi::{CStr, CString, c_int},
+    io::IoSlice,
     marker::PhantomData,
     mem::{MaybeUninit, offset_of},
     ptr, slice,
     sync::OnceLock,
 };
 use swoole_rs_zend::{
-    Call, ClassEntry, Owned, UNDEF, Value, ZString,
+    Call, ClassEntry, Owned, Php, Value, ZString,
     bailout::Bailout,
     handlers,
     opcode::Handler,
     sys::{
-        _zend_hash_init, _zval_struct__bindgen_ty_2, HashTable, IS_ARRAY, IS_ARRAY_EX, IS_DOUBLE,
-        IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT, IS_RESOURCE, IS_STRING, IS_TRUE, IS_UNDEF,
-        swr_zend_efree, zend_class_entry, zend_internal_function, zend_long, zend_value,
-        zif_handler, zval_ptr_dtor,
+        HashTable, IS_ARRAY, IS_DOUBLE, IS_FALSE, IS_LONG, IS_NULL, IS_OBJECT, IS_RESOURCE,
+        IS_STRING, IS_TRUE, IS_UNDEF, zend_internal_function, zend_long, zif_handler,
     },
-    throw_error, type_error, value,
+    throw_error, type_error,
 };
 
 /// `HASH_FLAG_TYPED_ARRAY`, a `HashTable` flag bit Zend leaves unused.
@@ -48,11 +47,13 @@ struct TypeValue {
 }
 
 /// Upstream's `ArrayTypeInfo`, followed by `len` bytes of definition and a NUL.
+/// Its `ce` is the class of an object value type, which outlives the request's
+/// arrays: borrowed for `'a`, as long as the array it describes.
 #[repr(C)]
-struct TypeInfo {
+struct TypeInfo<'a> {
     this: TypeValue,
     element: TypeValue,
-    ce: *mut zend_class_entry,
+    ce: Option<ClassEntry<'a>>,
     len: u16,
     text: [u8; 0],
 }
@@ -81,13 +82,13 @@ const _: () = assert!(
 );
 
 /// `get_type_info`: the definition behind a typed array's table.
-fn info_of(ht: *mut HashTable) -> *mut TypeInfo {
+fn info_of<'a>(ht: *mut HashTable) -> *mut TypeInfo<'a> {
     ht.wrapping_byte_add(size_of::<HashTable>()).cast()
 }
 
 /// Bytes a `TypeInfo` with `len` bytes of text takes.
 fn info_size(len: usize) -> usize {
-    size_of::<TypeInfo>() + len + 1
+    size_of::<TypeInfo<'static>>() + len + 1
 }
 
 /// The value part of a definition's text.
@@ -144,8 +145,9 @@ impl<'a> Typed<'a> {
         flags.set(flags.get() | TYPED);
     }
 
-    fn header(self) -> &'a TypeInfo {
-        // SAFETY: a typed table carries a parsed definition right after it.
+    fn header(self) -> &'a TypeInfo<'a> {
+        // SAFETY: a typed table carries a parsed definition right after it,
+        // whose class (one `Php::lookup_class` found) outlives the table.
         unsafe { &*info_of(self.ht) }
     }
 
@@ -153,11 +155,21 @@ impl<'a> Typed<'a> {
         self.header().this
     }
 
+    /// The definition behind the table: its header, text and NUL.
+    fn info(self) -> &'a [u8] {
+        let length = info_size(usize::from(self.header().len));
+        // SAFETY: a parsed definition, `info_size` of its text's length,
+        // follows the table, which Zend never writes.
+        unsafe { slice::from_raw_parts(info_of(self.ht).cast::<u8>(), length) }
+    }
+
     /// The definition's text.
     fn text(self) -> &'a [u8] {
-        let start = info_of(self.ht).wrapping_byte_add(offset_of!(TypeInfo, text));
-        // SAFETY: a parsed definition's `len` bytes of text follow its header.
-        unsafe { slice::from_raw_parts(start.cast::<u8>(), usize::from(self.header().len)) }
+        let start = offset_of!(TypeInfo, text);
+        let text = self
+            .info()
+            .get(start..start + usize::from(self.header().len));
+        text.unwrap_or_default()
     }
 
     /// `get_value_type_str()` with its length.
@@ -193,15 +205,15 @@ impl<'a> Typed<'a> {
 
 /// A definition parsed from a `swoole_typed_array` or `swoole_array_is_typed`
 /// argument.
-struct Parsed {
+struct Parsed<'a> {
     this: TypeValue,
     element: TypeValue,
-    ce: *mut zend_class_entry,
+    ce: Option<ClassEntry<'a>>,
     /// Lowercase, without spaces, then a NUL.
     text: Vec<u8>,
 }
 
-impl Parsed {
+impl Parsed<'_> {
     /// The text without its NUL.
     fn text(&self) -> &[u8] {
         self.text.split_last().map_or(&[], |(_, text)| text)
@@ -250,10 +262,21 @@ unsafe extern "C" {
     /// libc's `isspace`, as upstream's `remove_all_spaces` classifies bytes.
     safe fn isspace(c: c_int) -> c_int;
     /// `SEPARATE_ARRAY` of an array zval (anything else is left alone): a
-    /// shared table is copied for the slot, and its count only drops, so it
-    /// stays live for whoever else holds it.
-    #[link_name = "swr_zend_separate_array"]
-    safe fn separate_array(array: &Value);
+    /// shared table is copied for the slot, with the lent bytes (an `IoSlice`
+    /// is an iovec) behind the copy, and its count only drops, so it stays
+    /// live for whoever else holds it.
+    #[link_name = "swr_phpstdext_separate"]
+    safe fn separate_array(array: &Value, info: IoSlice<'_>);
+    /// `ZVAL_ARR(made, ...)` of a new table of `size` elements with `extra`
+    /// uninitialised bytes behind it, which it returns; what `made` held is
+    /// not released.
+    /// `FE_RESET_RW`'s failure at `frame`'s instruction: `ZVAL_UNDEF` of its
+    /// result, then `Z_FE_ITER_P(result) = -1`; nothing for any other
+    /// instruction or an unused result.
+    #[link_name = "swr_phpstdext_foreach_undef"]
+    safe fn foreach_undef(frame: Frame<'_>);
+    #[link_name = "swr_phpstdext_typed_new"]
+    safe fn typed_new(made: &Owned, size: u32, extra: usize) -> *mut HashTable;
 }
 
 /// `get_type`.
@@ -327,7 +350,7 @@ fn split_value(text: &[u8], start: usize, len: usize) -> Result<TypeValue, usize
 }
 
 /// `ArrayTypeInfo::parse`.
-fn parse(source: &[u8]) -> Result<Parsed, Failure> {
+fn parse<'a>(php: Php<'a>, source: &[u8]) -> Result<Parsed<'a>, Failure> {
     if u16::try_from(source.len()).is_err() || source.len() == usize::from(u16::MAX) {
         throw_error(c"The type definition string is too long (must be less than 65535 characters)");
         return Err(Failure::Thrown);
@@ -348,23 +371,18 @@ fn parse(source: &[u8]) -> Result<Parsed, Failure> {
     let mut parsed = Parsed {
         this,
         element: TypeValue::default(),
-        ce: ptr::null_mut(),
+        ce: None,
         text,
     };
     if u32::from(this.value) == IS_OBJECT {
-        parsed.ce = lookup_class(&ZString::new(value_part(parsed.text(), this)))?;
+        let name = ZString::new(value_part(parsed.text(), this));
+        let Some(ce) = php.lookup_class(&name).map_err(Failure::Bailout)? else {
+            throw_error(&message(&[b"Class '", name.bytes(), b"' not found"]));
+            return Err(Failure::Thrown);
+        };
+        parsed.ce = Some(ce);
     }
     Ok(parsed)
-}
-
-/// `zend_lookup_class(name)`, throwing "Class '%s' not found".
-fn lookup_class(name: &ZString) -> Result<*mut zend_class_entry, Failure> {
-    let ce = swoole_rs_zend::lookup_class(name).map_err(Failure::Bailout)?;
-    if ce.is_null() {
-        throw_error(&message(&[b"Class '", name.bytes(), b"' not found"]));
-        return Err(Failure::Thrown);
-    }
-    Ok(ce)
 }
 
 /// The parts in a row, each as printf's `%s` (or `%.*s`) prints it: up to its
@@ -471,9 +489,8 @@ fn check_key(typed: Typed, this: TypeValue, key: KeyType) -> bool {
 /// Whether `value`, an object of class `actual`, is of the class `typed`'s
 /// values have.
 fn check_object(typed: Typed, value: &Value, actual: ClassEntry<'_>) -> bool {
-    // SAFETY: the class the definition's parse looked up for its object values,
-    // and so never null; classes outlive the request's arrays.
-    let expected = unsafe { ClassEntry::from_ptr(typed.header().ce) };
+    // The class the definition's parse looked up for its object values.
+    let expected = typed.header().ce;
     if expected.is_some_and(|expected| actual.instance_of(expected)) {
         return true;
     }
@@ -514,42 +531,27 @@ fn check_array(typed: Typed, element: Option<Typed>) -> bool {
     false
 }
 
-/// `SEPARATE_ARRAY(container)`, then `copy_array_type_info`: a copy the
-/// separation made gets `source`'s definition, in a fresh allocation that has
-/// room for it behind the table. The typed table `container` holds afterwards.
-/// # Safety
-/// `container` holds `source`, which nothing uses afterwards.
-pub(crate) unsafe fn separate<'a>(value: &'a Value, source: Typed<'a>) -> Typed<'a> {
-    let container = value.as_ptr();
-    separate_array(value);
-    // Separation leaves the container holding an array: `source`'s, or its copy.
-    let Some(ht) = value.array_ptr() else {
-        return source;
-    };
+/// `SEPARATE_ARRAY(container)`, then `copy_array_type_info`: the typed array
+/// `value` holds, unshared. A copy the separation made gets the definition, in
+/// a fresh allocation that has room for it behind the table; the shared
+/// original stays with its other holders. None unless `value` holds a typed
+/// array.
+pub(crate) fn separate(value: &Value) -> Option<Typed<'_>> {
+    let source = Typed::of(value)?;
+    separate_array(value, IoSlice::new(source.info()));
+    // Separation leaves the container holding an array: `source`'s, or its
+    // copy with the definition behind it.
+    let ht = value.array_ptr()?;
     if source.ht == ht {
-        return source;
+        return Some(source);
     }
-    // `source` remains shared or immutable; `ht` is the fresh unshared copy.
-    let source_info = info_of(source.ht);
-    let extra = info_size(usize::from(source.header().len));
-    // The real table header and trailing type metadata.
-    let copy = value::emalloc(size_of::<HashTable>() + extra).cast::<HashTable>();
-    // SAFETY: both hold a table.
-    unsafe { ptr::copy_nonoverlapping(ht, copy, 1) };
-    // SAFETY: the source holds `extra` bytes of definition; the copy has room.
-    unsafe { ptr::copy_nonoverlapping(source_info.cast::<u8>(), info_of(copy).cast(), extra) };
-    // The table just made, with the definition copied behind it, which
-    // `container` holds for `'a` in place of `ht`.
+    // The fresh unshared copy, which `value` holds for `'a`.
     let own = Typed {
-        ht: copy,
+        ht,
         live: PhantomData,
     };
     own.mark();
-    // SAFETY: an array zval, which now holds the copy.
-    unsafe { (*container).value = zend_value { arr: copy } };
-    // SAFETY: the old allocation, which nothing references now.
-    unsafe { swr_zend_efree(ht.cast()) };
-    own
+    Some(own)
 }
 
 /// The `ASSIGN_DIM_OP` restriction: concatenation needs string values,
@@ -602,14 +604,7 @@ impl Handler for ForeachBegin {
         throw_error(
             c"The type array do not support using references for element value during iteration",
         );
-        if let Some(result) = op.result() {
-            let mut undefined = UNDEF;
-            undefined.u2 = _zval_struct__bindgen_ty_2 {
-                fe_iter_idx: u32::MAX,
-            };
-            // SAFETY: the result slot: `ZVAL_UNDEF`, then `Z_FE_ITER_P(result) = -1`.
-            unsafe { result.as_ptr().write(undefined) };
-        }
+        foreach_undef(frame);
         CONTINUE
     }
 }
@@ -632,7 +627,7 @@ fn typed_array(call: &Call) {
         return;
     };
     let init = call.value(2);
-    let outcome = parse(definition.bytes()).and_then(|parsed| match init {
+    let outcome = parse(call.php(), definition.bytes()).and_then(|parsed| match init {
         Some(init) => from_array(call, &parsed, init),
         None => fill(call, &parsed, None),
     });
@@ -658,15 +653,6 @@ fn from_array(call: &Call, parsed: &Parsed, init: &Value) -> Result<(), Failure>
     Ok(())
 }
 
-/// `make_typed_array`: a table with room for `len` bytes of definition.
-fn make_typed_array(size: u32, len: usize) -> *mut HashTable {
-    // Zend's request allocator.
-    let ht = value::emalloc(size_of::<HashTable>() + info_size(len)).cast();
-    // SAFETY: room for a table.
-    unsafe { _zend_hash_init(ht, size, Some(zval_ptr_dtor), false) };
-    ht
-}
-
 /// A new typed array of `parsed`'s definition, holding `init`'s entries.
 fn fill(call: &Call, parsed: &Parsed, init: Option<&Value>) -> Result<(), Failure> {
     let init = init.and_then(Value::array);
@@ -683,25 +669,24 @@ fn fill(call: &Call, parsed: &Parsed, init: Option<&Value>) -> Result<(), Failur
             parse_value(&parsed.text, start, usize::from(this.len)).ok_or(Failure::Thrown)?;
     }
     let len = parsed.text().len();
-    let array = make_typed_array(init.map_or(0, swoole_rs_zend::Array::count), len);
+    // `made` takes the new table's reference.
+    let mut made = Owned::default();
+    let array = typed_new(
+        &made,
+        init.map_or(0, swoole_rs_zend::Array::count),
+        info_size(len),
+    );
     // SAFETY: the table just made has `info_size(len)` bytes behind it, which
     // nothing else references yet.
     let room = unsafe { slice::from_raw_parts_mut(info_of(array).cast(), info_size(len)) };
     definition.write(room);
-    // The table just made, with its definition, which `made` holds below and
-    // this frame keeps until it returns it.
+    // The table just made, with its definition, which `made` holds and this
+    // frame keeps until it returns it.
     let typed = Typed {
         ht: array,
         live: PhantomData,
     };
     typed.mark();
-    let mut made = Owned::default();
-    let mut zval = UNDEF;
-    zval.value = zend_value { arr: array };
-    zval.u1.type_info = IS_ARRAY_EX;
-    // SAFETY: `ZVAL_ARR(made, array)`: `made`, undefined, takes the new
-    // table's reference.
-    unsafe { made.as_ptr().write(zval) };
     if let Some(init) = init
         && let Some(target) = made.array_mut()
     {
@@ -746,7 +731,7 @@ fn array_is_typed(call: &Call) {
         call.set_bool(true);
         return;
     };
-    match parse(definition.bytes()) {
+    match parse(call.php(), definition.bytes()) {
         Ok(parsed) => call.set_bool(parsed.equals(typed)),
         Err(failure) => {
             call.set_bool(false);
@@ -877,10 +862,10 @@ mod tests {
     #[test]
     fn layout_matches_upstream() {
         assert_eq!(size_of::<TypeValue>(), 6);
-        assert_eq!(offset_of!(TypeInfo, ce), 16);
-        assert_eq!(offset_of!(TypeInfo, len), 24);
-        assert_eq!(offset_of!(TypeInfo, text), 26);
-        assert_eq!(size_of::<TypeInfo>(), 32);
+        assert_eq!(offset_of!(TypeInfo<'static>, ce), 16);
+        assert_eq!(offset_of!(TypeInfo<'static>, len), 24);
+        assert_eq!(offset_of!(TypeInfo<'static>, text), 26);
+        assert_eq!(size_of::<TypeInfo<'static>>(), 32);
     }
 
     #[test]
@@ -927,7 +912,7 @@ mod tests {
         let parsed = Parsed {
             this: TypeValue::default(),
             element: TypeValue::default(),
-            ce: ptr::null_mut(),
+            ce: None,
             text: b"<string,int>\0".to_vec(),
         };
         let mut buffer = vec![u64::MAX; info_size(12).div_ceil(8)];

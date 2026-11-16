@@ -16,14 +16,24 @@ use swoole_rs_corebase::{
     swr_v1_core_name_resolver_resolve,
 };
 
-/// `co->yield()` of the current coroutine (fatal outside one).
-pub(crate) fn park() {
-    swoole_rs_coroutine::suspend(current().cast());
+/// Where a park stores its waker before it switches out.
+pub(crate) type WakerSlot = core::cell::Cell<Option<swoole_rs_coroutine::Waker>>;
+
+/// `co->yield()` of the current coroutine (fatal outside one), its waker in `waker`.
+pub(crate) fn park(waker: &WakerSlot) {
+    swoole_rs_coroutine::park(current().cast(), |park| waker.set(Some(park)));
 }
 
 /// `co->yield_ex(timeout)` of the current coroutine (fatal outside one).
 pub(crate) fn park_for(timeout: f64) -> bool {
     let code = swoole_rs_coroutine::yield_timed(current().cast(), timeout);
+    swoole_rs_coroutine::yield_resumed(code)
+}
+
+/// [`park_for`], its waker in `waker`.
+pub(crate) fn park_for_armed(timeout: f64, waker: &WakerSlot) -> bool {
+    let arm = |park| waker.set(Some(park));
+    let code = swoole_rs_coroutine::yield_timed_armed(current().cast(), timeout, arm);
     swoole_rs_coroutine::yield_resumed(code)
 }
 
@@ -36,8 +46,8 @@ pub static COROUTINE_ASYNC: AsyncOps = AsyncOps {
     current,
     dispatch: crate::async_threads::dispatch,
     park,
-    park_for,
-    resume: swoole_rs_coroutine::resume,
+    park_for: park_for_armed,
+    resume: swoole_rs_coroutine::Waker::wake,
     last_error,
 };
 

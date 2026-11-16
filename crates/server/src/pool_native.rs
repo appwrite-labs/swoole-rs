@@ -153,15 +153,43 @@ fn max_wait_ms(pool: Pool<'_>) -> c_long {
     c_long::from(pool.max_wait_time()) * 1000
 }
 
-/// A one-shot timer of the pool's `max_wait_time` that runs `f`, owned: dropping it
-/// deletes the timer unless it has fired.
-fn armed(pool: Pool<'_>, f: impl Fn() + Copy + 'static) -> Option<ArmedTimer> {
-    let held = swoole_rs_timer::add_fn(max_wait_ms(pool), false, f)?;
-    Some(ArmedTimer::new(
-        u64::from(held.generation()),
-        held.id(),
-        swoole_rs_timer::cancel_issued,
-    ))
+/// The pool's timers that kill its workers once they outstay `max_wait_time`.
+#[derive(Clone, Copy)]
+enum PoolTimer {
+    /// The reload task's: its workers that haven't exited yet.
+    Reload,
+    /// `kill_timer`: all of them.
+    Kill,
+}
+
+/// Arms the one-shot timer `which` of the pool's `max_wait_time` and gives it to the
+/// pool, whose reload task's drop (`Reload`), or `wait`, `destroy` or free (`Kill`),
+/// deletes it unless it has fired.
+fn arm(pool: Pool<'_>, which: PoolTimer) {
+    let raw = pool.raw();
+    let fire = move || {
+        // SAFETY: the pool holds the timer and deletes it before it is freed, so the
+        // pool is live whenever the timer fires.
+        let pool = unsafe { PoolRef::new(raw) };
+        match which {
+            PoolTimer::Reload => {
+                pool.with_reload_task(|task| task.kill_all(libc::SIGKILL, reload_warn));
+            }
+            PoolTimer::Kill => kill_all_workers(crate::process_pool_native(), pool, libc::SIGKILL),
+        }
+    };
+    let armed = || {
+        let held = swoole_rs_timer::add_fn(max_wait_ms(pool), false, fire)?;
+        Some(ArmedTimer::new(
+            u64::from(held.generation()),
+            held.id(),
+            swoole_rs_timer::cancel_issued,
+        ))
+    };
+    match which {
+        PoolTimer::Reload => pool.arm_reload_timer(armed),
+        PoolTimer::Kill => pool.set_kill_timer(armed()),
+    }
 }
 
 thread_local! {
@@ -349,17 +377,7 @@ fn master_ops(pool: Pool<'_>, op: Op, arg: u64) {
                 .into_iter()
                 .for_each(swoole_rs_utilities::Logger::reopen);
         }
-        Op::ReloadTimer => {
-            let raw = pool.raw();
-            pool.arm_reload_timer(|| {
-                armed(pool, move || {
-                    // SAFETY: the pool whose reload task owns the timer and deletes
-                    // it on drop, so it is live while the timer can fire.
-                    let pool = unsafe { PoolRef::new(raw) };
-                    pool.with_reload_task(|task| task.kill_all(libc::SIGKILL, reload_warn));
-                })
-            });
-        }
+        Op::ReloadTimer => arm(pool, PoolTimer::Reload),
         Op::TimerInit => {
             if swoole_timer_is_available() {
                 swoole_rs_timer::thread_timer_reinit(true);
@@ -374,19 +392,7 @@ fn master_ops(pool: Pool<'_>, op: Op, arg: u64) {
         Op::OnAfterReload => {
             pool.call_on_after_reload();
         }
-        Op::KillTimer => {
-            // The pool owns the timer in `kill_timer`, so `wait`, `destroy` or
-            // freeing the pool deletes it.
-            let raw = pool.raw();
-            pool.set_kill_timer(armed(pool, move || {
-                // SAFETY: the pool that owns the timer, so it is live while it can fire.
-                kill_all_workers(
-                    crate::process_pool_native(),
-                    unsafe { PoolRef::new(raw) },
-                    libc::SIGKILL,
-                );
-            }));
-        }
+        Op::KillTimer => arm(pool, PoolTimer::Kill),
         _ => {}
     }
 }
