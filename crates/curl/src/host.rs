@@ -296,14 +296,8 @@ pub extern "C" fn swoole_curl_easy_perform(cp: Idle<'_>) -> CURLcode {
     handle.easy_multi.set(Some(Rc::clone(&multi)));
     let result = multi.exec(handle);
     if result == EXEC_NEEDS_COROUTINE {
-        // The fatal error may longjmp past this frame, so it gives up its `Rc` first:
-        // the handle's `easy_multi` holds another, which keeps the multi live.
-        let at = Rc::as_ptr(&multi);
-        drop(multi);
-        // SAFETY: the multi the handle's own `Rc` keeps live through the check.
-        let multi = unsafe { &*at };
-        // SAFETY: this frame now owns nothing that needs a drop.
-        unsafe { swoole_curl_check_bound_co(multi) };
+        // SAFETY: this frame owns nothing that needs a drop.
+        unsafe { swoole_curl_check_bound_co(&multi) };
     }
     result
 }

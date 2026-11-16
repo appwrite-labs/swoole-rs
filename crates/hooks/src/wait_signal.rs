@@ -364,7 +364,7 @@ mod tests {
             log(format!("restore {signo} {}", previous.get().handler.raw()));
         } else if !previous.get().registered {
             previous.set(Previous {
-                handler: Handler::IGNORE,
+                handler: unsafe { Handler::from_raw(7) },
                 registered: true,
             });
             log(format!("listen {signo}"));
@@ -465,8 +465,8 @@ mod tests {
             format!("listen {two}"),
             "waiting true".into(),
             "resume".into(),
-            format!("restore {one} {}", Handler::IGNORE.raw()),
-            format!("restore {two} {}", Handler::IGNORE.raw()),
+            format!("restore {one} 7"),
+            format!("restore {two} 7"),
             "waiting false".into(),
         ];
         assert_eq!(log, expected);

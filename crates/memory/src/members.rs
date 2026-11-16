@@ -14,7 +14,6 @@
 use crate::global::{self, Global};
 use crate::table::{Handle, Table};
 use core::cell::Cell;
-use core::marker::PhantomData;
 use std::ffi::{c_int, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
@@ -24,6 +23,8 @@ use swoole_rs_corebase::sys;
 
 const INVALID: i32 = -1;
 const NO_MEMORY: i32 = -2;
+/// `SW_ERROR_MALLOC_FAIL`.
+const MALLOC_FAIL: c_int = swoole_rs_error::ErrorCode::SW_ERROR_MALLOC_FAIL as c_int;
 /// `SW_MIN_PAGE_SIZE`.
 const MIN_PAGE_SIZE: u32 = 4096;
 
@@ -276,14 +277,13 @@ impl Shm {
     }
 
     /// The mapping's base and total, if there is one.
-    fn extent(&self) -> Option<(Region<'_>, usize)> {
+    fn extent(&self) -> Option<(*mut c_void, usize)> {
         if self.0.get().is_null() {
             return None;
         }
         let base = self.0.get().cast::<usize>().wrapping_sub(1);
         // SAFETY: only `map` filled the field, so its header precedes the payload.
-        let total = unsafe { base.read() };
-        Some((Region(base.cast(), PhantomData), total))
+        Some((base.cast(), unsafe { base.read() }))
     }
 
     /// The payload's bytes, 0 without a mapping.
@@ -308,10 +308,11 @@ impl Shm {
     /// # Errors
     /// `mprotect`'s errno, or `EINVAL` without a mapping.
     pub fn protect(&self, flags: c_int) -> std::io::Result<()> {
-        let Some((region, total)) = self.extent() else {
+        let Some((base, total)) = self.extent() else {
             return Err(std::io::Error::from_raw_os_error(libc::EINVAL));
         };
-        if mprotect(region, total, flags) == 0 {
+        // SAFETY: the mapping its header describes.
+        if unsafe { libc::mprotect(base, total, flags) } == 0 {
             Ok(())
         } else {
             Err(std::io::Error::last_os_error())
@@ -332,37 +333,18 @@ impl Shm {
 
     /// `SharedMemory::free`: unmaps the mapping, if any, and leaves the field null.
     pub fn free(&mut self) {
-        let Some((Region(base, _), total)) = self.extent() else {
+        let Some((base, total)) = self.extent() else {
             return;
         };
-        // The field goes null with the one `Mapping` made of it.
         self.0.set(ptr::null_mut());
-        if munmap(Mapping(base), total) < 0 {
+        // SAFETY: the mapping its header describes, unmapped once: the field is null now.
+        if unsafe { libc::munmap(base, total) } < 0 {
             log::sys_warning(
                 c"SharedMemory::free",
                 format_args!("munmap({base:p}, {total}) failed"),
             );
         }
     }
-}
-
-/// A [`Shm`]'s mapping, as its base, for as long as the field is borrowed: one `map`
-/// made, whose header holds the total. Only [`Shm::extent`] makes one.
-#[repr(transparent)]
-#[derive(Clone, Copy)]
-struct Region<'a>(*mut c_void, PhantomData<&'a Shm>);
-
-/// A mapping `map` made, as its base, which [`Shm::free`] makes once, from the field it
-/// empties: so each mapping has one, and `munmap` takes it by value.
-#[repr(transparent)]
-struct Mapping(*mut c_void);
-
-// libc's. Each takes a whole mapping this module made, as its header's total says, of
-// which `Shm` lends no reference; `munmap` takes the one owner of a mapping no field
-// names any more. They keep nothing, so they are declared `safe`.
-unsafe extern "C" {
-    safe fn mprotect(region: Region<'_>, len: usize, protection: c_int) -> c_int;
-    safe fn munmap(mapping: Mapping, len: usize) -> c_int;
 }
 
 /// An anonymous mapping (`sharing`: `MAP_SHARED` or `MAP_PRIVATE`) of `size` bytes,
@@ -399,11 +381,12 @@ upstream! {
         count.checked_mul(size).map_or(ptr::null_mut(), |size| sw_shm_malloc(size))
     }
     "_Z11sw_shm_freePv", "_Z11sw_shm_freePv" =>
-    /// `void sw_shm_free(void *ptr)`, for native code, whose payload pointer is the
-    /// [`Shm`] it gives up, as the C caller's contract (null or a live `sw_shm_malloc`
-    /// payload, freed once) makes it.
-    pub extern "C" fn sw_shm_free(mut payload: Shm) {
-        payload.free();
+    /// `void sw_shm_free(void *ptr)`, for native code: Rust holds a mapping as [`Shm`].
+    ///
+    /// # Safety
+    /// `payload` is null or a live `sw_shm_malloc` payload, freed once.
+    pub unsafe extern "C" fn sw_shm_free(payload: *mut c_void) {
+        Shm(Cell::new(payload)).free();
     }
 }
 
@@ -452,7 +435,9 @@ pub mod pool {
         let adopted = words::<AtomicU64>(count)
             .is_some_and(swoole_rs_utilities::swr_v1_utils_wait_registry_init);
         if !adopted {
-            swoole_rs_corebase::fatal("failed to allocate atomic wait registry");
+            let message = c"failed to allocate atomic wait registry";
+            // SAFETY: `swoole_init`'s hook exits; no frame here owns anything.
+            unsafe { swoole_rs_corebase::fatal_error(super::MALLOC_FAIL, message) };
         }
     }
 

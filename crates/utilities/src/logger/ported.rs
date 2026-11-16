@@ -362,18 +362,14 @@ fn ignore_error() {
 #[test]
 #[cfg_attr(miri, ignore = "Miri has no open_memstream")]
 fn set_stream() {
-    unsafe extern "C" {
-        /// A stream open until the `fclose` below, as a [`Stream`] (`FILE *`).
-        fn open_memstream(buffer: *mut *mut c_char, size: *mut usize) -> Option<Stream>;
-    }
     let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
     let logger = sw_logger();
     logger.reset();
     let mut buffer: *mut c_char = std::ptr::null_mut();
     let mut size = 0;
-    let stream = unsafe { open_memstream(&raw mut buffer, &raw mut size) };
+    let stream = unsafe { libc::open_memstream(&raw mut buffer, &raw mut size) };
 
-    logger.set_stream(stream);
+    logger.set_stream(unsafe { Stream::new(stream) });
     put(logger, SW_LOG_ERROR, "hello world");
 
     logger.set_stream(Some(Stream::stdout()));
@@ -382,7 +378,7 @@ fn set_stream() {
     let written = unsafe { CStr::from_ptr(buffer) };
     assert!(contains(written.to_bytes(), "ERROR\thello world"));
     unsafe {
-        libc::fclose(stream.unwrap().as_ptr());
+        libc::fclose(stream);
         libc::free(buffer.cast());
     }
 }

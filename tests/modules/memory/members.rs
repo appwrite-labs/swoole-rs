@@ -2,9 +2,6 @@ use super::*;
 use crate::fixed::tests::{DebugCursor, debug_step};
 use crate::fixed::{self, Fixed, Layout};
 use std::mem;
-
-/// `SW_ERROR_MALLOC_FAIL`.
-const MALLOC_FAIL: c_int = swoole_rs_error::ErrorCode::SW_ERROR_MALLOC_FAIL as c_int;
 use std::ptr::NonNull;
 use swoole_rs_corebase::log::last_error;
 use swoole_rs_corebase::{sw_free, sw_malloc};
@@ -176,7 +173,7 @@ fn shared_mappings_are_zeroed_protected_and_freed() {
             .read();
         assert_eq!(total, 112);
     }
-    sw_shm_free(Shm(Cell::new(memory.cast())));
+    unsafe { sw_shm_free(memory.cast()) };
     assert!(sw_shm_malloc(usize::MAX).is_null());
     assert!(sw_shm_calloc(usize::MAX, 2).is_null());
 }

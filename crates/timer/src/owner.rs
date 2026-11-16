@@ -224,22 +224,11 @@ extern "C" fn alarm(_signo: c_int) {
 #[derive(Clone, Copy)]
 struct Calls {
     closure: Option<Closure>,
-    plain: Option<PlainCall>,
+    plain: Option<Plain>,
     callback: Option<Callback>,
+    data: *mut c_void,
     destructor: Option<Destructor>,
-    plain_drop: Option<PlainCall>,
-}
-
-/// A node's [`Plain`] function with the node's own data, what it was made to be called
-/// with: only [`applied`] pairs them, from one node.
-#[derive(Clone, Copy)]
-struct PlainCall(Plain, *mut c_void);
-
-impl PlainCall {
-    fn run(self) {
-        // SAFETY: the node's function of its own data, the pair it was made with.
-        unsafe { (self.0)(self.1) };
-    }
+    plain_drop: Option<Plain>,
 }
 
 /// Copies a view Rust hands back into its node, so the node is current: the node,
@@ -255,13 +244,13 @@ fn applied(view: &TimerView) -> (*mut TimerNode, Calls) {
     node_ref.exec_count = view.exec_count;
     node_ref.round = view.birth_round;
     node_ref.removed = view.removed;
-    let data = node_ref.data;
     let calls = Calls {
         closure: node_ref.closure,
-        plain: node_ref.plain.map(|f| PlainCall(f, data)),
+        plain: node_ref.plain,
         callback: node_ref.callback,
+        data: node_ref.data,
         destructor: node_ref.destructor,
-        plain_drop: node_ref.plain_drop.map(|f| PlainCall(f, data)),
+        plain_drop: node_ref.plain_drop,
     };
     (node, calls)
 }
@@ -409,7 +398,8 @@ impl Owner {
             // The detached node, live until its box is dropped below.
             destructor(node);
         } else if let Some(plain_drop) = calls.plain_drop {
-            plain_drop.run();
+            // SAFETY: the node's destructor of its own data.
+            unsafe { plain_drop(calls.data) };
         }
         // SAFETY: `add` boxed it; the queue no longer holds it.
         drop(unsafe { Box::from_raw(node) });
@@ -580,7 +570,8 @@ impl Owner {
                 if let Some(closure) = calls.closure {
                     closure.run();
                 } else if let Some(plain) = calls.plain {
-                    plain.run();
+                    // SAFETY: the node's function of its own data.
+                    unsafe { plain(calls.data) };
                 } else if let Some((callback, node)) = calls.callback.zip(Lent::of(node)) {
                     // The selected node, which the queue holds until `complete`.
                     callback(self, node);

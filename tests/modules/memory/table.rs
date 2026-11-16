@@ -551,10 +551,7 @@ fn handle(table: *mut Table) -> Handle {
 /// `Table::destroy()`.
 fn destroy(table: *mut Table, mut handle: Handle) {
     handle.destroy().free();
-    // The mapping `make` made for the table, given up here.
-    let mapping =
-        unsafe { std::mem::transmute::<*mut std::ffi::c_void, crate::members::Shm>(table.cast()) };
-    crate::members::sw_shm_free(mapping);
+    unsafe { crate::members::sw_shm_free(table.cast()) };
 }
 
 struct Upstream(*mut Table, Option<Handle>);

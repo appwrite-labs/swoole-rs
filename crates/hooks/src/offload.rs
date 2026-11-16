@@ -219,19 +219,18 @@ pub fn swr_v1_hook_async(
         return false;
     }
     // Parks this coroutine until `completed`, a timeout or a cancel.
-    let parked = (ops.park_for)(timeout, &waker);
-    // SAFETY: the pool's copy lives until its completion on this thread returns:
-    // resumed by `completed`, which has not returned, or pending after a timeout or cancel.
-    let done = unsafe { &*dispatched };
-    if parked {
+    if (ops.park_for)(timeout, &waker) {
+        // SAFETY: the pool's copy lives until `completed` returns, which resumed us.
+        let done = unsafe { &*dispatched };
         *event.canceled.get_mut() = done.canceled.load(Relaxed);
         let (retval, error) = done.result();
         event.set_result(retval, error);
         set_errno(error);
         true
     } else {
-        // Canceling the pending copy keeps `completed` off `task`.
-        done.canceled.store(1, Relaxed);
+        // SAFETY: the pool's copy is pending, live until its completion on this
+        // thread; canceling it keeps `completed` off `task`.
+        unsafe { (*dispatched).canceled.store(1, Relaxed) };
         *event.canceled.get_mut() = 1;
         let error = (ops.last_error)();
         event.set_result(-1, error);
