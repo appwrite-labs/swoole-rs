@@ -61,14 +61,8 @@ fn fake_sock(fd: c_int, address: Option<(c_int, &str, c_int)>) -> *mut c_void {
     sock
 }
 
-/// `port->get_fd()`: the fd heads the port's socket record.
-fn port_fd(port: Port) -> c_int {
-    // SAFETY: a listening port's live socket.
-    unsafe { *port.config().socket.cast::<c_int>() }
-}
-
 /// `serv.add_connection(port, sock, port->get_fd())`.
-fn add_connection(serv: Server, port: Port, sock: *mut c_void) -> &'static mut Connection {
+fn add_connection(serv: Server, port: Port, sock: *mut c_void) -> Connection<'static> {
     let serv_view = serv.view();
     let listen = serv_view
         .ports()
@@ -77,9 +71,7 @@ fn add_connection(serv: Server, port: Port, sock: *mut c_void) -> &'static mut C
         .unwrap();
     // SAFETY: a live socket.
     let sock = unsafe { swoole_rs_ffi::Socket::from_ptr(sock.cast()) }.unwrap();
-    let conn = server_methods::add_connection(serv_view, listen, sock, port_fd(port)).unwrap();
-    // SAFETY: the new connection, live as long as the server.
-    unsafe { &mut *conn.as_ptr().cast::<Connection>() }
+    server_methods::add_connection(serv_view, listen, sock, port.get_fd()).unwrap()
 }
 
 fn schedule_worker(serv: Server, fd: c_int, data: Option<&swoole_rs_server::SendData>) -> usize {
@@ -93,8 +85,8 @@ type Worker = swoole_rs_process::worker_record::Worker<'static>;
 
 /// `serv.workers[i]`: the event worker array.
 fn worker(serv: Server, id: usize) -> Worker {
-    assert!(id < serv.config().worker_num as usize);
-    let workers = serv.config().workers.cast::<WorkerRecord>();
+    assert!(id < serv.config().worker_num.get() as usize);
+    let workers = serv.config().workers.as_ptr().cast::<WorkerRecord>();
     // SAFETY: the created server's `worker_num` event workers.
     unsafe { Worker::new(workers.add(id)) }
 }
@@ -103,8 +95,8 @@ fn worker(serv: Server, id: usize) -> Worker {
 /// `TEST_HOST` (and `::` when `ipv6`), created.
 fn create(worker_num: u32, dispatch_mode: u8, ipv6: bool) -> (Server, Port, Option<Port>) {
     let serv = Server::new(MODE_PROCESS);
-    serv.config().worker_num = worker_num;
-    serv.config().dispatch_mode = dispatch_mode;
+    serv.config().worker_num.set(worker_num);
+    serv.config().dispatch_mode.set(dispatch_mode);
     let port = serv.add_port(SW_SOCK_TCP, TEST_HOST, 0);
     assert!(port.is_some());
     let port6 = ipv6.then(|| serv.add_port(SW_SOCK_TCP6, "::", 0));
@@ -118,7 +110,7 @@ fn create(worker_num: u32, dispatch_mode: u8, ipv6: bool) -> (Server, Port, Opti
 /// `TEST(server, schedule)`.
 fn schedule() {
     let (serv, _, _) = create(6, DISPATCH_IDLE_WORKER, false);
-    let worker_num = serv.config().worker_num as usize;
+    let worker_num = serv.config().worker_num.get() as usize;
 
     for i in 0..worker_num {
         worker(serv, i).set_status(SW_WORKER_BUSY);
@@ -147,7 +139,7 @@ fn schedule() {
 /// `TEST(server, schedule_1)`.
 fn schedule_1() {
     let (serv, _, _) = create(8, DISPATCH_ROUND, false);
-    let worker_num = serv.config().worker_num as usize;
+    let worker_num = serv.config().worker_num.get() as usize;
 
     let schedule_count = 1024;
     let mut counter = vec![0usize; worker_num];
@@ -173,7 +165,7 @@ fn average_combined(v1: &[usize], v2: &[usize]) -> f64 {
 /// field the mode balances, read by `get` and written by `set`.
 fn test_worker_schedule(dispatch_mode: u8, get: fn(Worker) -> usize, set: fn(Worker, usize)) {
     let (serv, port, _) = create(8, dispatch_mode, false);
-    let worker_num = serv.config().worker_num as usize;
+    let worker_num = serv.config().worker_num.get() as usize;
 
     let mut counter = vec![0usize; worker_num];
     let schedule_count = 256 * worker_num;
@@ -211,7 +203,7 @@ fn test_worker_schedule(dispatch_mode: u8, get: fn(Worker) -> usize, set: fn(Wor
 fn schedule_4() {
     let (serv, port, port6) = create(4, DISPATCH_IPMOD, true);
     let port6 = port6.unwrap();
-    let worker_num = serv.config().worker_num as usize;
+    let worker_num = serv.config().worker_num.get() as usize;
 
     let mut counter = vec![0usize; worker_num];
     let schedule_count = 256 * worker_num;
@@ -258,19 +250,19 @@ fn schedule_4() {
 fn schedule_5() {
     let (serv, port, port6) = create(4, DISPATCH_UIDMOD, true);
     let port6 = port6.unwrap();
-    let worker_num = serv.config().worker_num as usize;
+    let worker_num = serv.config().worker_num.get() as usize;
 
     let mut counter = vec![0usize; worker_num];
     let schedule_count = 256 * worker_num;
 
     let sock = fake_sock(100, Some((SW_SOCK_TCP, "127.0.0.1", 9501)));
-    add_connection(serv, port, sock).uid = 0;
+    add_connection(serv, port, sock).set_uid(0);
     for _ in 0..schedule_count {
         counter[schedule_worker(serv, 100, None)] += 1;
     }
 
     let sock6 = fake_sock(101, Some((SW_SOCK_TCP6, "::1", 9502)));
-    add_connection(serv, port6, sock6).uid = 839922;
+    add_connection(serv, port6, sock6).set_uid(839922);
     for _ in 0..schedule_count {
         counter[schedule_worker(serv, 101, None)] += 1;
     }
@@ -286,13 +278,13 @@ fn schedule_5() {
 fn schedule_8() {
     let (serv, port, port6) = create(4, DISPATCH_CO_CONN_LB, true);
     let port6 = port6.unwrap();
-    let worker_num = serv.config().worker_num as usize;
+    let worker_num = serv.config().worker_num.get() as usize;
 
     let mut counter = vec![0usize; worker_num];
     let schedule_count = 256 * worker_num;
 
     let sock = fake_sock(100, Some((SW_SOCK_TCP, "127.0.0.1", 9501)));
-    add_connection(serv, port, sock).worker_id = 1;
+    add_connection(serv, port, sock).set_worker_id(1);
     for _ in 0..schedule_count {
         counter[schedule_worker(serv, 100, None)] += 1;
     }

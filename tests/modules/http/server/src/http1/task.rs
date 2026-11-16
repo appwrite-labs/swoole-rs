@@ -411,6 +411,7 @@ impl TaskServer for Server {
         let id = pool::swoole_get_worker_id() as usize;
         self.config()
             .task_results
+            .as_ptr()
             .cast::<u8>()
             .wrapping_add(id * IPC_MAX_SIZE)
             .cast()
@@ -458,8 +459,8 @@ fn task_worker_on_task(serv: view::Server<'_>, task: Packed<'_>) -> c_int {
 fn task_worker() {
     counter_init();
     let serv = Server::new(MODE_BASE);
-    serv.config().worker_num = 1;
-    serv.config().task_worker_num = 1;
+    serv.config().worker_num.set(1);
+    serv.config().task_worker_num.set(1);
 
     listen(serv);
 
@@ -480,7 +481,7 @@ fn task_worker() {
         serv.tasking_num().fetch_sub(1, Ordering::SeqCst);
         check(serv.get_tasking_num() == 0, "serv.get_tasking_num() == 0");
         check(
-            serv.get_idle_task_worker_num() == serv.config().task_worker_num,
+            serv.get_idle_task_worker_num() == serv.config().task_worker_num.get(),
             "serv.get_idle_task_worker_num() == serv.task_worker_num",
         );
     });
@@ -561,8 +562,8 @@ fn task_worker2_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
 /// `TEST(server, task_worker2)`.
 fn task_worker2() {
     let serv = Server::new(MODE_PROCESS);
-    serv.config().worker_num = 1;
-    serv.config().task_worker_num = 2;
+    serv.config().worker_num.set(1);
+    serv.config().task_worker_num.set(2);
     counter_init();
 
     assert!(serv.add_port(SW_SOCK_TCP, TEST_HOST, 0).is_some());
@@ -642,8 +643,8 @@ fn task_worker_3_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
 /// `TEST(server, task_worker_3)`.
 fn task_worker_3() {
     let serv = Server::new(MODE_BASE);
-    serv.config().worker_num = 1;
-    serv.config().task_worker_num = 2;
+    serv.config().worker_num.set(1);
+    serv.config().task_worker_num.set(2);
     counter_init();
 
     // A missed worker restart must fail the test instead of leaving the server running
@@ -716,9 +717,9 @@ fn test_task_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
 fn test_task(mode: c_int, task_ipc_mode: u8) {
     counter_init();
     let serv = Server::new(mode);
-    serv.config().worker_num = 2;
-    serv.config().task_ipc_mode = task_ipc_mode;
-    serv.config().task_worker_num = 3;
+    serv.config().worker_num.set(2);
+    serv.config().task_ipc_mode.set(task_ipc_mode);
+    serv.config().task_worker_num.set(3);
 
     listen(serv);
 
@@ -755,9 +756,9 @@ fn task_ipc_stream() {
 fn coroutine_task_server(on_worker_start: swoole_rs_server::callbacks::WorkerFn) -> Server {
     counter_init();
     let serv = Server::new(MODE_PROCESS);
-    serv.config().worker_num = 2;
-    serv.config().task_worker_num = 3;
-    serv.config().task_enable_coroutine = true;
+    serv.config().worker_num.set(2);
+    serv.config().task_worker_num.set(3);
+    serv.config().task_enable_coroutine.set(true);
 
     listen(serv);
 
@@ -915,8 +916,8 @@ fn task_sync_multi_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
 fn task_sync_multi_task() {
     counter_init();
     let serv = Server::new(MODE_PROCESS);
-    serv.config().worker_num = 2;
-    serv.config().task_worker_num = 3;
+    serv.config().worker_num.set(2);
+    serv.config().task_worker_num.set(3);
 
     let n_task = 16;
     let len_task = IPC_MAX_SIZE * 2;
@@ -989,8 +990,8 @@ fn task_sync_on_worker_start(serv: view::Server<'_>, worker: Worker<'_>) {
 fn task_sync() {
     counter_init();
     let serv = Server::new(MODE_PROCESS);
-    serv.config().worker_num = 2;
-    serv.config().task_worker_num = 2;
+    serv.config().worker_num.set(2);
+    serv.config().task_worker_num.set(2);
 
     listen(serv);
 
@@ -1052,9 +1053,9 @@ fn test_task_ipc(serv: Server) {
 fn task_ipc_server(mode: c_int, task_ipc_mode: u8) -> Server {
     counter_init();
     let serv = Server::new(mode);
-    serv.config().worker_num = 2;
-    serv.config().task_worker_num = 2;
-    serv.config().task_ipc_mode = task_ipc_mode;
+    serv.config().worker_num.set(2);
+    serv.config().task_worker_num.set(2);
+    serv.config().task_ipc_mode.set(task_ipc_mode);
     serv
 }
 
@@ -1159,7 +1160,7 @@ fn thread_on_pipe_message(_: view::Server<'_>, _: Packed<'_>) {
 /// Its trace logging is left out.
 fn thread() {
     let serv = Server::new(MODE_THREAD);
-    serv.config().worker_num = 2;
+    serv.config().worker_num.set(2);
 
     counter_init();
 
@@ -1263,8 +1264,8 @@ fn task_thread_on_receive(serv: view::Server<'_>, req: &RecvData) -> c_int {
 /// thread, and the worker's `onFinish` answers the client.
 fn task_thread() {
     let serv = Server::new(MODE_THREAD);
-    serv.config().worker_num = 2;
-    serv.config().task_worker_num = 2;
+    serv.config().worker_num.set(2);
+    serv.config().task_worker_num.set(2);
 
     counter_init();
     case::log_level(case::SW_LOG_INFO);
@@ -1303,7 +1304,7 @@ fn task_thread() {
     join_client();
 
     // `serv.get_core_worker_num()`: the workers and the task workers.
-    let core_worker_num = serv.config().worker_num + serv.config().task_worker_num;
+    let core_worker_num = serv.config().worker_num.get() + serv.config().task_worker_num.get();
     assert_eq!(counter_get(1), i32::try_from(core_worker_num).unwrap());
     wait_all_child_processes();
     assert_no_failure();
@@ -1378,9 +1379,9 @@ fn no_idle_on_task(_: view::Server<'_>, task: Packed<'_>) -> c_int {
 fn no_idle_task_worker() {
     counter_init();
     let serv = Server::new(MODE_PROCESS);
-    serv.config().worker_num = 1;
-    serv.config().task_worker_num = 4;
-    serv.config().dispatch_mode = DISPATCH_IDLE_WORKER;
+    serv.config().worker_num.set(1);
+    serv.config().task_worker_num.set(4);
+    serv.config().dispatch_mode.set(DISPATCH_IDLE_WORKER);
 
     let log_file = CString::new(TEST_LOG_FILE).unwrap();
     set_log_file(&log_file);

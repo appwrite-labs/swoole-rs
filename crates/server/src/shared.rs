@@ -95,8 +95,8 @@ pub struct ServerCounters {
 }
 
 /// `ServerGS`, the record a server maps shared (`serv->gs`): the counters, the
-/// task and event worker pools, and the manager's barrier. `layout.rs` checks
-/// native's against it (record 8).
+/// task and event worker pools, and the manager's barrier. It starts with the
+/// counters, which `swr_v1_server_shared_init` initializes in place.
 #[repr(C)]
 pub(crate) struct ServerShared {
     pub(crate) counters: ServerCounters,

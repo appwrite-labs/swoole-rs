@@ -40,7 +40,7 @@ use swoole_rs_tls::{
     OwnedTlsContext, OwnedTlsFields, SslCreateFlag, SslState, SslVersion, TlsContext, TlsSettings,
 };
 #[cfg(test)]
-use tests::{async_dispatch, net};
+use tests::net;
 
 /// The flags [`Client::flag`] reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -155,7 +155,7 @@ const ERROR_HTTP_PROXY_HANDSHAKE_ERROR: c_int =
 pub type Framed = fn(*const Protocol, Socket<'_>, *mut CppString) -> c_int;
 
 /// The framed receives crates/ports defines; ports depends on this crate, so
-/// `swoole_init` (crates/ffi) registers them with [`set_framing`]. Only a
+/// `swoole_init` (crates/ffi) registers them with [`set_host`]. Only a
 /// client's `on_read` calls them, so the fields stay private.
 pub struct Framing {
     length: Framed,
@@ -171,11 +171,25 @@ impl Framing {
     }
 }
 
-static FRAMING: OnceLock<Framing> = OnceLock::new();
+struct Host {
+    framing: Framing,
+    dispatch_dns: fn(&AsyncEvent<'_>) -> bool,
+}
 
-/// Registers crates/ports' framed receives; later registrations are ignored.
-pub fn set_framing(framing: Framing) {
-    FRAMING.get_or_init(|| framing);
+static HOST: OnceLock<Host> = OnceLock::new();
+
+/// Registers framed receives and the DNS pool dispatch; later registrations are
+/// ignored. A successful dispatch holds the request until its completion returns.
+pub fn set_host(framing: Framing, dispatch_dns: fn(&AsyncEvent<'_>) -> bool) {
+    HOST.get_or_init(|| Host {
+        framing,
+        dispatch_dns,
+    });
+}
+
+fn native_host() -> &'static Host {
+    HOST.get()
+        .unwrap_or_else(|| swoole_rs_corebase::fatal("client host is not registered"))
 }
 
 // crates/protocols-ffi's definitions (the SOCKS5 codec), which the hybrid links (the
@@ -225,7 +239,7 @@ type AsyncCallback = extern "C" fn(&AsyncEvent<'_>);
 /// pool makes holds a reference of its own, so the record outlives every borrow of
 /// an event.
 #[repr(C)]
-struct AsyncEvent<'a> {
+pub struct AsyncEvent<'a> {
     task_id: usize,
     canceled: u8,
     error: c_int,
@@ -252,21 +266,6 @@ const _: () = assert!(
         && core::mem::offset_of!(AsyncEvent, object) == 48,
     "crates/hooks' AsyncEvent layout moved"
 );
-
-// crates/hooks' pool (async_threads.rs), which the hybrid links; it sits
-// above this crate. Its `dispatch` is a safe fn over this layout: only this module
-// builds an event, whose request is null or live.
-#[cfg(not(test))]
-unsafe extern "C" {
-    /// `async::dispatch`: queues a copy of the event, holding its own reference
-    /// to the request; null without a pool.
-    #[link_name = "_ZN6swoole5async8dispatchEPKNS_10AsyncEventE"]
-    #[expect(
-        improper_ctypes,
-        reason = "the request record is opaque behind its pointer; Rust defines both sides"
-    )]
-    safe fn async_dispatch(event: &AsyncEvent<'_>) -> *mut c_void;
-}
 
 /// The public, trivially copyable fields of `network::Client`.
 #[derive(Clone, Copy)]
@@ -1255,7 +1254,7 @@ fn dns_lookup(this: Handle) -> bool {
         callback: Some(resolve_completed),
     };
     // The pool's copy holds its own reference to the request.
-    !async_dispatch(&event).is_null()
+    (native_host().dispatch_dns)(&event)
 }
 
 /// `async::handler_gethostbyname`, on a pool thread, over a copy of the event
@@ -1844,9 +1843,7 @@ fn on_read(this: Handle) -> bool {
     let (eof, length) = (record.open_eof_check, record.open_length_check);
     if eof || length {
         // `swoole_init` registered them before any client existed.
-        let framing = FRAMING
-            .get()
-            .unwrap_or_else(|| swoole_rs_corebase::fatal("client framing is not registered"));
+        let framing = &native_host().framing;
         let framed = if eof { framing.eof } else { framing.length };
         let socket = this.socket();
         let protocol = this.protocol();

@@ -67,7 +67,7 @@ impl Plain for f64 {
 
 /// A server setting: written through `&` while the server is configured and
 /// read by every thread once it runs, so an atomic, read and written relaxed.
-/// It is laid out as the value it holds, which C++'s view of the record reads.
+/// It is laid out as the value it holds.
 #[repr(transparent)]
 pub struct Setting<T: Plain>(T::Atomic);
 
@@ -178,7 +178,6 @@ impl<T> Published<T> {
 }
 
 /// The independently configurable server fields and borrowed native handles.
-#[repr(C)]
 pub struct ServerConfig {
     pub reactor_num: Setting<u16>,
     pub worker_num: Setting<u32>,
@@ -188,11 +187,6 @@ pub struct ServerConfig {
     pub scheduler_warning: AtomicBool,
     pub max_request: Setting<u32>,
     pub max_request_grace: Setting<u32>,
-    /// Upstream's last UDP, UDP6 and unix datagram listeners, kept null for the
-    /// record's layout: [`crate::view::Server::dgram_socket`] finds them among the ports.
-    pub udp_socket_ipv4: *mut c_void,
-    pub udp_socket_ipv6: *mut c_void,
-    pub dgram_socket: *mut c_void,
     pub max_wait_time: Setting<u32>,
     pub worker_max_concurrency: Setting<u32>,
     pub daemonize: Setting<bool>,
@@ -386,9 +380,6 @@ impl Default for ServerConfig {
             scheduler_warning: AtomicBool::new(false),
             max_request: Setting::new(0),
             max_request_grace: Setting::new(0),
-            udp_socket_ipv4: core::ptr::null_mut(),
-            udp_socket_ipv6: core::ptr::null_mut(),
-            dgram_socket: core::ptr::null_mut(),
             max_wait_time: Setting::new(3),
             worker_max_concurrency: Setting::new(u32::MAX),
             daemonize: Setting::new(false),

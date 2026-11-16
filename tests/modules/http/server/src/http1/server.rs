@@ -50,7 +50,7 @@ fn send_buffer_worker_start(serv: view::Server<'_>, _: Worker<'_>) {
 /// `TEST(server, send_buffer)`.
 fn send_buffer() {
     let serv = Server::new(MODE_BASE);
-    serv.config().worker_num = 1;
+    serv.config().worker_num.set(1);
 
     set_log_warning();
 

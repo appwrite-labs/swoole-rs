@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 core-tests/src/core/log.cpp (Swoole contributors).
-//! Upstream's `core-tests/src/core/log.cpp` TESTs that read the log back, one function
+//! Upstream's `core-tests/src/core/log.cpp` TESTs, one function
 //! per TEST with the same inputs and expected values, over a logger of their own.
 //! `sw_logger()`'s worker identity is the host's: the worker type sets its symbol.
 //! tests/modules/utilities/README.md maps each TEST.
@@ -14,6 +14,11 @@ use std::sync::{LazyLock, Mutex, PoisonError};
 const SW_LOG_DEBUG: c_int = 0;
 const SW_LOG_TRACE: c_int = 1;
 const SW_LOG_NONE: c_int = 6;
+// `SW_LOG_ROTATION_*`, upstream's `swoole_log.h`.
+const SW_LOG_ROTATION_MONTHLY: c_int = 1;
+const SW_LOG_ROTATION_DAILY: c_int = 2;
+const SW_LOG_ROTATION_HOURLY: c_int = 3;
+const SW_LOG_ROTATION_EVERY_MINUTE: c_int = 4;
 /// `const char *file` and `TEST_LOG_FILE`: upstream's names, in a directory of this
 /// test process's own, so no other run's or user's /tmp file is appended to or unlinked.
 static PATHS: LazyLock<(CString, CString)> = LazyLock::new(|| {
@@ -42,20 +47,17 @@ thread_local! {
     static SYMBOL: Cell<u8> = const { Cell::new(b'%') };
 }
 
-extern "C" fn identity() -> LoggerIdentity {
+fn identity() -> LoggerIdentity {
     LoggerIdentity {
         worker_symbol: c_char::from_ne_bytes([SYMBOL.get()]),
         ..LoggerIdentity::default()
     }
 }
 
-extern "C" fn backtrace() {}
-
 /// `sw_logger()`, with the process's `swoole_redirect_stdout`.
 fn sw_logger() -> &'static Logger {
     let host = LoggerHost {
         redirect: swoole_rs_corebase::swoole_redirect_stdout,
-        backtrace,
         identity,
     };
     Box::leak(Box::new(Logger::new(None, host)))
@@ -68,7 +70,7 @@ fn put(logger: &Logger, level: c_int, text: &str) {
 fn open(logger: &Logger, file: &CStr) -> bool {
     // unlink removes the directory with the last file; a test that opens again recreates it.
     std::fs::create_dir_all(path(file).parent().unwrap()).unwrap();
-    swr_v1_logger_open(logger, file.into())
+    logger.open(file)
 }
 
 fn real_file(logger: &Logger) -> String {
@@ -94,6 +96,12 @@ fn unlink(file: &Path) {
     }
 }
 
+/// `access(file, R_OK)`.
+fn access(file: &str) -> c_int {
+    let file = CString::new(file).unwrap();
+    unsafe { libc::access(file.as_ptr(), libc::R_OK) }
+}
+
 /// `printf` to a line-buffered stdout, as the upstream run's terminal left it: one write.
 fn printf(text: &str) {
     // SAFETY: `text` is readable for its length.
@@ -108,20 +116,20 @@ fn level() {
     // SW_MASTER, SW_MANAGER, SW_WORKER and SW_TASK_WORKER.
     for symbol in *b"#$*^" {
         SYMBOL.set(symbol);
-        swr_v1_logger_set(logger, LoggerSetting::Reset, 0);
+        logger.reset();
 
-        assert!(!swr_v1_logger_is_opened(logger));
+        assert!(!logger.is_opened());
 
-        swr_v1_logger_set_level(logger, 999);
-        assert_eq!(swr_v1_logger_level(logger), SW_LOG_NONE);
+        logger.set_level(999);
+        assert_eq!(logger.level(), SW_LOG_NONE);
 
-        swr_v1_logger_set_level(logger, SW_LOG_DEBUG - 10);
-        assert_eq!(swr_v1_logger_level(logger), SW_LOG_DEBUG);
+        logger.set_level(SW_LOG_DEBUG - 10);
+        assert_eq!(logger.level(), SW_LOG_DEBUG);
 
-        swr_v1_logger_set_level(logger, SW_LOG_NOTICE);
+        logger.set_level(SW_LOG_NOTICE);
         open(logger, file());
 
-        assert!(swr_v1_logger_is_opened(logger));
+        assert!(logger.is_opened());
 
         put(logger, SW_LOG_DEBUG, "hello no debug");
         put(logger, SW_LOG_TRACE, "hello no trace");
@@ -129,13 +137,13 @@ fn level() {
         put(logger, SW_LOG_NOTICE, "hello notice");
         put(logger, LOG_WARNING, "hello warning");
 
-        swr_v1_logger_set_level(logger, SW_LOG_DEBUG);
+        logger.set_level(SW_LOG_DEBUG);
         put(logger, SW_LOG_DEBUG, "hello debug");
         put(logger, SW_LOG_TRACE, "hello trace");
 
         let content = file_get_contents(file()).unwrap();
 
-        swr_v1_logger_close(logger);
+        logger.close();
         unlink(path(file()));
 
         assert!(!contains(&content, "hello no debug"));
@@ -153,12 +161,12 @@ fn level() {
 #[cfg_attr(miri, ignore = "Miri has no localtime")]
 fn date_format_long_string() {
     let logger = sw_logger();
-    swr_v1_logger_set(logger, LoggerSetting::Reset, 0);
-    swr_v1_logger_set_level(logger, SW_LOG_ERROR);
+    logger.reset();
+    logger.set_level(SW_LOG_ERROR);
     let format = "x".repeat(120) + "day %d of %B in the year %Y. Time: %I:%S %p";
     let format = CString::new(format).unwrap();
 
-    let retval = swr_v1_logger_set_date_format(logger, (&*format).into());
+    let retval = logger.set_date_format(&format);
 
     assert!(!retval);
     assert_eq!(log::last_error(), INVALID_PARAMS);
@@ -197,17 +205,49 @@ fn microsecond_line(content: &str) -> bool {
 fn date_with_microseconds() {
     let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
     let logger = sw_logger();
-    swr_v1_logger_set(logger, LoggerSetting::Reset, 0);
-    swr_v1_logger_set(logger, LoggerSetting::Microseconds, 1);
+    logger.reset();
+    logger.set_date_with_microseconds(true);
     open(logger, file());
 
     put(logger, LOG_WARNING, "hello world");
     let content = file_get_contents(file()).unwrap();
 
-    swr_v1_logger_close(logger);
+    logger.close();
     unlink(path(file()));
 
     assert!(microsecond_line(&String::from_utf8_lossy(&content)));
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "Miri has no fdopen")]
+fn rotation() {
+    let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+    let logger = sw_logger();
+    let types = [
+        SW_LOG_ROTATION_DAILY,
+        SW_LOG_ROTATION_EVERY_MINUTE,
+        SW_LOG_ROTATION_HOURLY,
+        SW_LOG_ROTATION_MONTHLY,
+    ];
+    for rotation in types {
+        logger.reset();
+        logger.set_rotation(rotation);
+        open(logger, file());
+
+        put(logger, SW_LOG_DEBUG, "hello world");
+        put(logger, SW_LOG_TRACE, "hello world");
+        put(logger, SW_LOG_NOTICE, "hello world");
+        put(logger, LOG_WARNING, "hello world");
+        put(logger, SW_LOG_ERROR, "hello world");
+        put(logger, SW_LOG_INFO, "hello world");
+
+        assert_eq!(access(&super::tests::file(logger, false)), -1);
+        assert_eq!(errno(), libc::ENOENT);
+        assert_eq!(access(&real_file(logger)), 0);
+
+        logger.close();
+        unlink(Path::new(&real_file(logger)));
+    }
 }
 
 #[test]
@@ -222,20 +262,20 @@ fn redirect_1() {
         return;
     }
     let logger = sw_logger();
-    swr_v1_logger_set(logger, LoggerSetting::Reset, 0);
-    assert!(!swr_v1_logger_redirect(logger, true)); // no log file opened
-    assert!(!swr_v1_logger_redirect(logger, false)); // no redirected
+    logger.reset();
+    assert!(!logger.redirect_stdout_and_stderr(true)); // no log file opened
+    assert!(!logger.redirect_stdout_and_stderr(false)); // no redirected
 
     assert!(open(logger, file()));
-    assert!(swr_v1_logger_redirect(logger, true));
-    assert!(!swr_v1_logger_redirect(logger, true)); // has been redirected
+    assert!(logger.redirect_stdout_and_stderr(true));
+    assert!(!logger.redirect_stdout_and_stderr(true)); // has been redirected
 
     printf("hello world\n");
     let content = file_get_contents(file());
     assert!(content.is_some());
 
-    swr_v1_logger_close(logger);
-    assert!(swr_v1_logger_redirect(logger, false));
+    logger.close();
+    assert!(logger.redirect_stdout_and_stderr(false));
     unlink(Path::new(&real_file(logger)));
 
     assert!(contains(&content.unwrap(), "hello world\n"));
@@ -256,9 +296,9 @@ fn redirect_2() {
     let str = "hello world, hello swoole\n";
 
     let logger = sw_logger();
-    swr_v1_logger_set(logger, LoggerSetting::Reset, 0);
+    logger.reset();
     open(logger, file);
-    swr_v1_logger_redirect(logger, true);
+    logger.redirect_stdout_and_stderr(true);
 
     printf(&format!("{str}\n"));
 
@@ -266,10 +306,10 @@ fn redirect_2() {
     let rs = std::fs::read(path(file)).unwrap();
 
     assert!(contains(&rs, str));
-    swr_v1_logger_redirect(logger, false);
+    logger.redirect_stdout_and_stderr(false);
     printf(&format!("{str}\n"));
 
-    swr_v1_logger_close(logger);
+    logger.close();
     unlink(Path::new(&real_file(logger)));
 }
 
@@ -288,8 +328,8 @@ fn ignore_error() {
     let logger = sw_logger();
     let cpp: &'static &'static Logger = Box::leak(Box::new(logger));
     swoole_rs_corebase::swr_v1_core_set_logger(std::ptr::from_ref(cpp).cast_mut().cast());
-    swr_v1_logger_set(logger, LoggerSetting::Reset, 0);
-    swr_v1_logger_set_level(logger, SW_LOG_NOTICE);
+    logger.reset();
+    logger.set_level(SW_LOG_NOTICE);
     open(logger, file());
 
     let ignored_errcode = 999_999;
@@ -312,9 +352,33 @@ fn ignore_error() {
 
     let content = file_get_contents(file()).unwrap();
 
-    swr_v1_logger_close(logger);
+    logger.close();
     unlink(path(file()));
 
     assert!(!contains(&content, "error 1"));
     assert!(contains(&content, "error 2"));
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "Miri has no open_memstream")]
+fn set_stream() {
+    let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+    let logger = sw_logger();
+    logger.reset();
+    let mut buffer: *mut c_char = std::ptr::null_mut();
+    let mut size = 0;
+    let stream = unsafe { libc::open_memstream(&raw mut buffer, &raw mut size) };
+
+    logger.set_stream(unsafe { Stream::new(stream) });
+    put(logger, SW_LOG_ERROR, "hello world");
+
+    logger.set_stream(Some(Stream::stdout()));
+    put(logger, SW_LOG_ERROR, "hello world");
+
+    let written = unsafe { CStr::from_ptr(buffer) };
+    assert!(contains(written.to_bytes(), "ERROR\thello world"));
+    unsafe {
+        libc::fclose(stream);
+        libc::free(buffer.cast());
+    }
 }

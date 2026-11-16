@@ -387,6 +387,12 @@ impl<'a> Server<'a> {
         self.state().connection(session_id, Lookup::BySession)
     }
 
+    /// `session_list`'s slot for session `id`, or `None` before the list is mapped.
+    #[must_use]
+    pub fn session(self, id: c_long) -> Option<crate::Session<'a>> {
+        self.state().session(id)
+    }
+
     /// `Server::get_connection_for_iterator(fd)`.
     #[must_use]
     pub fn iterated(self, fd: c_int) -> Option<Connection<'a>> {

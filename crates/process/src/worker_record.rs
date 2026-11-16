@@ -852,11 +852,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore = "Miri has no msgget")]
     fn a_queue_pools_process_balances_over_the_pools_queue() {
-        extern "C-unwind" fn on_message(
-            _: crate::process_pool::PoolRef<'_>,
-            _: &crate::process_pool::RecvData<'_>,
-        ) {
-        }
+        fn on_message(_: crate::process_pool::PoolRef<'_>, _: &crate::process_pool::RecvData<'_>) {}
         let mut workers: [WorkerRecord; 2] = unsafe { core::mem::zeroed() };
         let mut pool: crate::process_pool::PoolRecord = unsafe { core::mem::zeroed() };
         pool.workers = workers.as_mut_ptr();
