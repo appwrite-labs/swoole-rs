@@ -2,11 +2,12 @@
 //! their methods, a `create_object` that refuses instances, and array results.
 //! Also [`Function`], a borrowed `zend_function`.
 use crate::{
-    Call, ClassEntry, ZStr,
+    Call, ClassEntry, Invalid, ZStr,
     arginfo::Table,
     sys::{
-        _zend_function__bindgen_ty_1, zend_class_entry, zend_function, zend_function_entry,
-        zend_internal_function, zend_object, zend_object_handlers, zend_op, zend_op_array,
+        _zend_function__bindgen_ty_1, zend_class_entry, zend_fcall_info, zend_fcall_info_cache,
+        zend_function, zend_function_entry, zend_internal_function, zend_object,
+        zend_object_handlers, zend_op, zend_op_array,
     },
 };
 use std::{ffi::CStr, marker::PhantomData, mem::offset_of};
@@ -34,15 +35,6 @@ impl<'a> Function<'a> {
     pub const INTERNAL: u8 = 1;
     /// `zend_function.type`'s `ZEND_USER_FUNCTION`.
     pub const USER: u8 = 2;
-
-    /// The function at `function`, or None for null.
-    /// # Safety
-    /// `function` is null or a function that lives for `'a`.
-    #[must_use]
-    #[inline]
-    pub unsafe fn from_ptr(function: *mut zend_function) -> Option<Self> {
-        (!function.is_null()).then_some(Self(function, PhantomData))
-    }
 
     #[must_use]
     #[inline]
@@ -151,7 +143,49 @@ impl<'a> Function<'a> {
     }
 }
 
+/// A callable's cache, lent for `'a`, whose function (none while it is
+/// unresolved) the callable keeps live as long: one [`Call::resolve`] parsed, a
+/// kept [`crate::Callable`]'s, or the one a coroutine call's shim lends its
+/// [`crate::host::Create`] leaf. Only those make one.
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub struct Fcc<'a>(pub(crate) &'a zend_fcall_info_cache);
+
+impl<'a> Fcc<'a> {
+    /// The cache's fields.
+    #[must_use]
+    #[inline]
+    pub fn get(self) -> &'a zend_fcall_info_cache {
+        self.0
+    }
+
+    /// `fcc->function_handler`: the function, None while unresolved.
+    #[must_use]
+    #[inline]
+    pub fn function(self) -> Option<Function<'a>> {
+        let function = self.0.function_handler;
+        (!function.is_null()).then_some(Function(function, PhantomData))
+    }
+}
+
 impl Call {
+    /// `Z_PARAM_FUNC` of passed argument `n` (1-based) into `fci` and `fcc`, as
+    /// [`Call::callable`]: the resolved cache, lent while the argument keeps
+    /// its function.
+    /// # Errors
+    /// It is not callable; Zend has raised its parameter error.
+    /// # Panics
+    /// Argument `n` was not passed (the caller's arity check allows it).
+    pub fn resolve<'c>(
+        &'c self,
+        n: u32,
+        fci: &mut zend_fcall_info,
+        fcc: &'c mut zend_fcall_info_cache,
+    ) -> Result<Fcc<'c>, Invalid> {
+        self.callable(n, fci, fcc)?;
+        Ok(Fcc(fcc))
+    }
+
     /// `add_assoc_bool_ex(return_value, key, value)`, after `set_array`
     /// (nothing unless the return slot holds an array).
     pub fn add_assoc_bool(&self, key: &CStr, value: bool) {
@@ -161,14 +195,9 @@ impl Call {
 
 /// Swoole's `sw_zend_create_object_deny`: the `create_object` of a class that
 /// cannot be instantiated. It throws and returns the bare object Zend expects
-/// (declared properties undefined), which Zend then releases.
-/// # Safety
-/// Installed as `create_object`, so Zend passes a registered class.
-pub unsafe extern "C" fn create_object_deny(ce: *mut zend_class_entry) -> *mut zend_object {
-    // Per Zend, a registered class, which lives for the process.
-    let Some(class) = ClassEntry::live(ce) else {
-        return std::ptr::null_mut();
-    };
+/// (declared properties undefined), which Zend then releases. Installed as
+/// `create_object` ([`deny`]), so Zend passes a registered class.
+extern "C" fn create_object_deny(class: ClassEntry<'_>) -> *mut zend_object {
     let mut bailed = false;
     let object = swr_zend_object_deny(class, &mut bailed);
     if bailed {
@@ -180,8 +209,7 @@ pub unsafe extern "C" fn create_object_deny(ce: *mut zend_class_entry) -> *mut z
 
 /// `SW_SET_CLASS_CREATE(.., sw_zend_create_object_deny)`.
 pub(crate) fn deny(entry: &mut zend_class_entry, _: &mut zend_object_handlers) {
-    // `ce->create_object`, in the union it shares with an interface's hook.
-    entry.__bindgen_anon_2.create_object = Some(create_object_deny);
+    crate::object::set_create(entry, create_object_deny);
 }
 
 /// The row of `method` in a method table, with its arginfo.
@@ -192,12 +220,9 @@ pub(crate) fn arg_info(methods: Table, method: &CStr) -> Option<&'static zend_fu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        arginfo::{ArgInfo, END, Methods, begin, entry},
-        sys::{zend_execute_data, zval},
-    };
+    use crate::arginfo::{ArgInfo, END, Methods, begin, entry};
 
-    unsafe extern "C" fn handler(_: *mut zend_execute_data, _: *mut zval) {}
+    extern "C" fn handler(_: crate::Entered<'_>, _: crate::Returned<'_>) {}
 
     static TICK: ArgInfo<1> = ArgInfo::new([begin(0, 0)]);
     static AFTER: ArgInfo<1> = ArgInfo::new([begin(0, 0)]);
