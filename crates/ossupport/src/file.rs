@@ -19,16 +19,16 @@ pub struct FileIo {
 }
 
 /// Upstream `catch_fs_error`: zero stops, transient errors retry, others warn.
-fn transfer(length: usize, mut io: impl FnMut(usize) -> isize) -> FileIo {
+fn transfer(length: usize, mut io: impl FnMut(usize) -> Option<usize>) -> FileIo {
     let mut done = 0;
     while done < length {
-        let n = io(done);
-        if n > 0 {
-            done += n.unsigned_abs();
-        } else if n == 0 {
-            break;
-        } else if !matches!(errno(), libc::EINTR | libc::EAGAIN) {
-            return FileIo { done, failed: true };
+        match io(done) {
+            Some(0) => break,
+            Some(n) => done += n,
+            None if !matches!(errno(), libc::EINTR | libc::EAGAIN) => {
+                return FileIo { done, failed: true };
+            }
+            None => {}
         }
     }
     FileIo {

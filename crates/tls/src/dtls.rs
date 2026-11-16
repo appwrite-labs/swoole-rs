@@ -104,7 +104,7 @@ pub fn dtls_session_receive(owner: &DtlsSession, fd: c_int, size: usize) -> bool
         }
         queue.push_back(Datagram {
             bytes,
-            length: read.c_cast::<u16>(),
+            length: read.map_or(-1, usize::cast_signed).c_cast::<u16>(),
         });
         true
     })
@@ -580,7 +580,7 @@ mod tests {
     fn taken_native_datagram_and_scalar_aliases_have_one_canonical_owner() {
         let owner = Owner::new();
         let [read, write] = swoole_rs_corebase::sys::pipe().unwrap();
-        assert_eq!(swoole_rs_corebase::sys::write(write, b"abc"), 3);
+        assert_eq!(swoole_rs_corebase::sys::write(write, b"abc"), Some(3));
         assert!(dtls_session_receive(owner.session(), read, 5));
         _ = swoole_rs_corebase::sys::close(read);
         _ = swoole_rs_corebase::sys::close(write);

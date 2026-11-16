@@ -187,7 +187,7 @@ pub enum Received {
 pub fn signalfd_receive(fd: c_int) -> Received {
     // One `signalfd_siginfo`, which begins with its `ssi_signo`.
     let mut info = [0_u8; size_of::<libc::signalfd_siginfo>()];
-    if sys::read(fd, &mut info) < 0 {
+    if sys::read(fd, &mut info).is_none() {
         return Received::ReadFailed(errno());
     }
     let [a, b, c, d, ..] = info;

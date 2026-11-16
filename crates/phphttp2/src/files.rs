@@ -31,7 +31,7 @@ impl File {
     /// when `pooled`; `None` if it failed.
     fn read(&self, offset: i64, buf: &mut [u8], pooled: bool) -> Option<usize> {
         let fd = self.0;
-        let mut result = -1;
+        let mut result = None;
         let mut read = || result = swoole_rs_corebase::sys::pread(fd, buf, offset);
         if pooled {
             if !async_job(&mut read) {
@@ -40,7 +40,7 @@ impl File {
         } else {
             read();
         }
-        usize::try_from(result).ok()
+        result
     }
 }
 
@@ -233,12 +233,7 @@ fn content(path: &[u8]) -> Option<Vec<u8>> {
     let mut content = Vec::new();
     let file = File::open(path.as_bytes())?;
     let mut buf = [0u8; 8192];
-    loop {
-        let n = swoole_rs_corebase::sys::read(file.0, &mut buf);
-        let Ok(n) = usize::try_from(n) else { break };
-        if n == 0 {
-            break;
-        }
+    while let Some(n @ 1..) = swoole_rs_corebase::sys::read(file.0, &mut buf) {
         content.extend_from_slice(buf.get(..n).unwrap_or(&buf));
     }
     Some(content)

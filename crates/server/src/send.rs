@@ -92,7 +92,7 @@ pub fn send_parts(
     }
     let (conn, socket) = writes_now(state, session_id)?;
     let parts = [IoSlice::new(head), IoSlice::new(body)];
-    let write = |fd| usize::try_from(swoole_rs_tls::upstream::writev(fd, &parts)).ok();
+    let write = |fd| swoole_rs_tls::upstream::writev(fd, &parts);
     // A failed write sent nothing: all of it is queued, where the reactor meets the error.
     let sent = record_write(socket, write, steady_ms).unwrap_or(0);
     let total = head.len() + body.len();
