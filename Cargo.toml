@@ -4,6 +4,10 @@
 members = ["crates/*", "tests/modules/hooks/system", "tests/modules/reactor/base", "tests/modules/http/server"]
 resolver = "3"
 
+# swoole-rs's own version, which `php --ri swoole` reports beside upstream's (#4505).
+[workspace.package]
+version = "0.1.0"
+
 # A Rust panic must never unwind into PHP; tests still unwind.
 [profile.dev]
 panic = "abort"

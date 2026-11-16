@@ -131,15 +131,8 @@ impl<'a> Bus<'a> {
         self,
         f: impl FnOnce(swoole_rs_process::task_file::Packed<'_>) -> R,
     ) -> Option<R> {
-        if !self.rust().holds_whole() {
-            return None;
-        }
-        // SAFETY: the buffer's head and the `len` bytes after it, within the buffer,
-        // which keeps them until the bus reads again or frees it, which this thread
-        // alone would do and not during `f`.
-        let event =
-            unsafe { swoole_rs_process::task_file::Packed::from_raw(self.rust().buffer().cast()) };
-        Some(f(event))
+        self.rust()
+            .with_whole(|event| swoole_rs_process::task_file::Packed::from_bytes(event).map(f))?
     }
     pub(crate) fn pop(self) {
         self.rust().pop();

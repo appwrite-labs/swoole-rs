@@ -10,7 +10,6 @@ pub struct ReadBuffer {
     pub length: usize,
     pub size: usize,
     pub offset: libc::off_t,
-    pub str: *mut u8,
 }
 
 /// Why a packet receive gave up, for the host's diagnostics.
@@ -85,15 +84,7 @@ impl Packet {
     }
     fn receive(&mut self, at: usize, length: usize, all: bool) -> Option<usize> {
         self.sync(BufferSync::Store);
-        let free = self
-            .view
-            .str
-            .wrapping_add(at)
-            .cast::<core::mem::MaybeUninit<u8>>();
-        // SAFETY: the requested free space in the read String the view refreshed,
-        // which the receive borrows; it may be uninitialized, so it is lent as slots.
-        let buf = unsafe { core::slice::from_raw_parts_mut(free, length) };
-        (crate::co_io::host().recv)(self.socket, buf, all)
+        (crate::co_io::host().recv)(self.socket, at, length, all)
     }
     fn recv(&mut self, at: usize, length: usize) -> Option<usize> {
         self.receive(at, length, false)
@@ -207,7 +198,7 @@ impl Packet {
             }
             buffered = false;
             let buffer = self.buffer();
-            if let Some(found) = find(&buffer, eof) {
+            if let Some(found) = find(self.socket, &buffer, eof) {
                 let offset = found + eof.len();
                 self.set_offset(offset);
                 return Some(offset);
@@ -225,16 +216,20 @@ impl Packet {
 }
 
 /// `swoole_strnpos` over the buffered bytes, whose length it takes as `uint32_t`.
-fn find(buffer: &ReadBuffer, needle: &[u8]) -> Option<usize> {
+fn find(socket: crate::co_socket::Co, buffer: &ReadBuffer, needle: &[u8]) -> Option<usize> {
     let length = buffer.length.c_cast::<u32>() as usize;
     if needle.is_empty() || needle.len() > length {
         return None;
     }
-    // SAFETY: the buffer's first `length` bytes are initialized.
-    let haystack = unsafe { core::slice::from_raw_parts(buffer.str, length) };
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
+    let mut found = None;
+    (crate::co_io::host().read_bytes)(socket, &mut |bytes| {
+        found = bytes
+            .get(..length)
+            .unwrap_or_default()
+            .windows(needle.len())
+            .position(|window| window == needle);
+    });
+    found
 }
 
 /// `Socket::recv_packet`, including availability, timer and buffer allocation.
@@ -260,7 +255,6 @@ pub fn recv_packet(socket: crate::co_socket::Co, timeout: f64) -> Option<usize> 
             length: 0,
             size: 0,
             offset: 0,
-            str: core::ptr::null_mut(),
         },
         protocol: socket.protocol(),
         length_check: socket.open_length_check(),
@@ -325,31 +319,6 @@ pub(crate) mod tests {
         unsafe { &mut *context.cast::<Fake>() }
     }
 
-    unsafe extern "C" fn recv(context: *mut c_void, at: *mut u8, length: usize) -> isize {
-        let fake = unsafe { fake(context) };
-        fake.receives += 1;
-        let Some(mut chunk) = fake.chunks.pop_front() else {
-            return 0;
-        };
-        if chunk.len() > length {
-            fake.chunks.push_front(chunk.split_off(length));
-        }
-        unsafe { at.copy_from_nonoverlapping(chunk.as_ptr(), chunk.len()) };
-        chunk.len().c_cast::<isize>()
-    }
-
-    unsafe extern "C" fn recv_all(context: *mut c_void, at: *mut u8, length: usize) -> isize {
-        let mut total = 0;
-        while total < length {
-            let received = unsafe { recv(context, at.add(total), length - total) };
-            if received <= 0 {
-                break;
-            }
-            total += received.c_cast::<usize>();
-        }
-        total.c_cast::<isize>()
-    }
-
     /// A 4-byte big-endian body length after a 2-byte tag.
     unsafe extern "C" fn package_length(
         _: *mut c_void,
@@ -409,7 +378,6 @@ pub(crate) mod tests {
         match sync {
             BufferSync::Extend(size) => {
                 fake.storage.resize(size, 0);
-                fake.buffer.str = fake.storage.as_mut_ptr();
                 fake.buffer.size = size;
             }
             BufferSync::Reduce(size) => {
@@ -421,19 +389,38 @@ pub(crate) mod tests {
         }
         *view = fake.buffer;
     }
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "the scripted receiver implements Host::recv, which can fail"
+    )]
     pub(crate) fn receive(
         _: crate::co_socket::Co,
-        buf: &mut [core::mem::MaybeUninit<u8>],
+        at: usize,
+        length: usize,
         all: bool,
     ) -> Option<usize> {
-        let ctx = context();
-        let (at, size) = (buf.as_mut_ptr().cast::<u8>(), buf.len());
-        usize::try_from(if all {
-            unsafe { recv_all(ctx, at, size) }
-        } else {
-            unsafe { recv(ctx, at, size) }
-        })
-        .ok()
+        let fake = unsafe { fake(context()) };
+        let mut written = 0;
+        while !all || written < length {
+            fake.receives += 1;
+            let Some(mut chunk) = fake.chunks.pop_front() else {
+                break;
+            };
+            if chunk.len() > length - written {
+                fake.chunks.push_front(chunk.split_off(length - written));
+            }
+            fake.storage[at + written..at + written + chunk.len()].copy_from_slice(&chunk);
+            written += chunk.len();
+            if !all || chunk.is_empty() {
+                break;
+            }
+        }
+        fake.buffer.length = fake.buffer.length.max(at + written);
+        Some(written)
+    }
+    pub(crate) fn read_bytes(_: crate::co_socket::Co, read: &mut dyn FnMut(&[u8])) {
+        let fake = unsafe { fake(context()) };
+        read(&fake.storage[..fake.buffer.length]);
     }
     pub(crate) fn get_length(
         _: crate::co_socket::Co,
@@ -441,7 +428,7 @@ pub(crate) mod tests {
         header: &mut u32,
     ) -> super::Length {
         let ctx = context();
-        let at = unsafe { fake(ctx) }.buffer.str;
+        let at = unsafe { fake(ctx) }.storage.as_ptr();
         super::Length::of(unsafe { package_length(ctx, at, size, header) })
     }
     pub(crate) fn failure(_: crate::co_socket::Co, kind: super::Failure) {
@@ -462,7 +449,6 @@ pub(crate) mod tests {
                 length: 0,
                 size,
                 offset: 0,
-                str: core::ptr::null_mut(),
             },
             chunks: chunks.iter().map(|chunk| chunk.to_vec()).collect(),
             failures: Vec::new(),
@@ -470,7 +456,7 @@ pub(crate) mod tests {
             gets: 0,
             receives: 0,
         });
-        fake.buffer.str = fake.storage.as_mut_ptr();
+
         let mut socket = socket_for(&mut fake, length_check, eof, max_length);
         let mut results = Vec::new();
         loop {
@@ -526,7 +512,6 @@ pub(crate) mod tests {
                     length: 0,
                     size: 64,
                     offset: 0,
-                    str: core::ptr::null_mut(),
                 },
                 chunks: VecDeque::from([wire.clone()]),
                 failures: Vec::new(),
@@ -534,7 +519,7 @@ pub(crate) mod tests {
                 gets: 0,
                 receives: 0,
             });
-            fake.buffer.str = fake.storage.as_mut_ptr();
+
             let mut socket = socket_for(&mut fake, true, b"", 1024);
             assert_eq!(recv_packet(socket.co(), 0.0), expected);
             assert_eq!(fake.buffer.length, kept);
@@ -549,28 +534,25 @@ pub(crate) mod tests {
     }
     /// The socket points at the fake, so the caller makes it once the box has stopped
     /// moving: a move reasserts the box's unique ownership and ends that pointer.
-    fn buffered_fake() -> Box<Fake> {
-        let mut fake = Box::new(Fake {
+    fn buffered_fake() -> Fake {
+        Fake {
             storage: vec![0; 8],
             buffer: ReadBuffer {
                 length: 0,
                 size: 8,
                 offset: 0,
-                str: core::ptr::null_mut(),
             },
             chunks: VecDeque::from([b"abcdefghij".to_vec()]),
             failures: vec![],
             timed_out: false,
             gets: 0,
             receives: 0,
-        });
-        fake.buffer.str = fake.storage.as_mut_ptr();
-        fake
+        }
     }
 
     #[test]
     fn buffered_record_reads_publish_the_buffer_across_receives() {
-        let mut fake = buffered_fake();
+        let mut fake = Box::new(buffered_fake());
         let mut socket = socket_for(&mut fake, false, b"", 1024);
         let mut out = [0; 4];
         for (length, expected) in [(3, &b"abc"[..]), (4, &b"defg"[..]), (4, &b"hij"[..])] {
@@ -593,7 +575,7 @@ pub(crate) mod tests {
 
     #[test]
     fn unavailable_record_reads_do_not_allocate_or_receive() {
-        let mut fake = buffered_fake();
+        let mut fake = Box::new(buffered_fake());
         let mut socket = socket_for(&mut fake, false, b"", 1024);
         socket.0.sock_fd.set(-1);
         let mut out = [0; 1];
@@ -605,7 +587,7 @@ pub(crate) mod tests {
 
     #[test]
     fn packet_timer_failure_precedes_buffer_allocation() {
-        let mut fake = buffered_fake();
+        let mut fake = Box::new(buffered_fake());
         let mut socket = socket_for(&mut fake, false, b"", 1024);
         crate::co_io::test_host::TIMER_OK.set(false);
         assert_eq!(recv_packet(socket.co(), 1.0), Some(0));
