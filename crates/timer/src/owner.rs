@@ -8,7 +8,7 @@ use crate::{
     swr_v1_timer_delay_deadline, swr_v1_timer_rearm_after_add, swr_v1_timer_relative_msec,
     swr_v1_timer_system_set,
 };
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::ffi::{CStr, c_int, c_long, c_void};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{log, swr_v1_core_set_signal_alarm, thread_reactor};
@@ -256,10 +256,11 @@ fn apply(view: &TimerView) -> *mut TimerNode {
 }
 
 /// `swoole::Timer`. Callbacks re-enter it, so every mutable field is a `Cell`, and the
-/// queue a `RefCell` that no borrow holds across a callback or destructor.
+/// queue a boxed one that [`Owner::lend`] takes out only for a queue operation, never
+/// across a callback or destructor.
 pub struct Owner {
     reactor: Cell<*mut c_void>,
-    queue: RefCell<Queue>,
+    queue: Cell<Option<Box<Queue>>>,
     owner_pid: libc::pid_t,
     backend: Cell<u32>,
     abandoned: Cell<bool>,
@@ -278,7 +279,7 @@ impl Owner {
     pub(crate) fn create(manually_trigger: bool) -> *mut Owner {
         let timer = Box::new(Owner {
             reactor: Cell::new(std::ptr::null_mut()),
-            queue: RefCell::default(),
+            queue: Cell::new(Some(Box::default())),
             owner_pid: std::process::id().cast_signed(),
             backend: Cell::new(MANUAL),
             abandoned: Cell::new(false),
@@ -303,28 +304,43 @@ impl Owner {
         self.generation
     }
 
+    /// `f` over the queue, taken out for the call and put back after it. `f` is a
+    /// queue operation alone: nothing it calls reaches this timer, so a second take,
+    /// which finds no queue, is a broken invariant.
+    #[inline]
+    fn lend<R>(&self, f: impl FnOnce(&mut Queue) -> R) -> R {
+        let Some(mut queue) = self.queue.take() else {
+            lent();
+        };
+        let out = f(&mut queue);
+        let nested = self.queue.replace(Some(queue));
+        debug_assert!(nested.is_none(), "a nested lend put a queue back");
+        // Only `lend` writes the cell after `create`, and a nested one stops at its
+        // take, so this is the `None` the take left. Dropping it (`set`, or a check
+        // here) joins every path of `f` at the put-back, which cost the hot paths
+        // more than the borrow flag did.
+        #[expect(clippy::mem_forget, reason = "the `None` the take left")]
+        std::mem::forget(nested);
+        out
+    }
+
     pub(crate) fn count(&self) -> usize {
-        self.queue.borrow().heap.len()
+        self.lend(|queue| queue.heap.len())
     }
 
     /// `Timer::get_round()`.
     pub(crate) fn round(&self) -> u64 {
-        self.queue.borrow().round
+        self.lend(|queue| queue.round)
     }
 
     /// `Timer::get_ids()`, in heap order.
     pub(crate) fn ids(&self) -> Vec<i64> {
-        self.queue
-            .borrow()
-            .heap
-            .iter()
-            .map(|view| view.id)
-            .collect()
+        self.lend(|queue| queue.heap.iter().map(|view| view.id).collect())
     }
 
     /// `Timer::get(id)`: the node, or null.
     pub(crate) fn token(&self, id: c_long) -> *mut TimerNode {
-        self.queue.borrow().token(id).cast()
+        self.lend(|queue| queue.token(id)).cast()
     }
 
     /// `Timer::get(id)`, borrowed.
@@ -406,8 +422,10 @@ impl Owner {
         let now = self.relative_msec();
         // The queue boxes the node only once it has room for it, so a refused node
         // drops here with the closure.
-        let added = self.queue.borrow_mut().add(now, msec, persistent, || {
-            Box::into_raw(Box::new(node)).cast()
+        let added = self.lend(|queue| {
+            queue.add(now, msec, persistent, || {
+                Box::into_raw(Box::new(node)).cast()
+            })
         });
         let view = match added {
             Ok(view) => view,
@@ -430,7 +448,7 @@ impl Owner {
 
     /// Whether `id` was removed.
     pub(crate) fn remove(&self, id: c_long) -> bool {
-        let (status, view) = self.queue.borrow_mut().remove(id);
+        let (status, view) = self.lend(|queue| queue.remove(id));
         match status {
             Status::Deferred => {
                 apply(&view);
@@ -448,10 +466,7 @@ impl Owner {
     /// value, as for [`Self::delay`].
     #[cfg(test)]
     fn update(&self, id: i64, exec_msec: i64) {
-        let view = {
-            let mut queue = self.queue.borrow_mut();
-            queue.update(id, exec_msec).or_else(|_| queue.get(id))
-        };
+        let view = self.lend(|queue| queue.update(id, exec_msec).or_else(|_| queue.get(id)));
         if let Ok(view) = view {
             apply(&view);
         }
@@ -462,8 +477,10 @@ impl Owner {
     /// no reference to it may be live.
     pub(crate) fn delay(&self, id: i64, exec_msec: Option<i64>, delay_ms: c_long) {
         let now = self.relative_msec();
-        let updated = self.queue.borrow_mut().reschedule(id, |deadline| {
-            swr_v1_timer_delay_deadline(now, exec_msec.unwrap_or(deadline), delay_ms)
+        let updated = self.lend(|queue| {
+            queue.reschedule(id, |deadline| {
+                swr_v1_timer_delay_deadline(now, exec_msec.unwrap_or(deadline), delay_ms)
+            })
         });
         if let Ok(view) = updated {
             apply(&view);
@@ -472,7 +489,7 @@ impl Owner {
 
     /// Completes the active node.
     fn complete(&self, id: i64) {
-        let (status, view) = self.queue.borrow_mut().complete(id);
+        let (status, view) = self.lend(|queue| queue.complete(id));
         match status {
             Status::Ok => {
                 apply(&view);
@@ -489,7 +506,7 @@ impl Owner {
 
     /// Ends the selection and arms the next wakeup; false if Rust refused.
     fn end(&self) -> bool {
-        let Ok(delay) = self.queue.borrow_mut().end() else {
+        let Ok(delay) = self.lend(Queue::end) else {
             return false;
         };
         self.next_msec.set(delay);
@@ -503,20 +520,21 @@ impl Owner {
     pub(crate) fn select(&self) {
         let now = self.relative_msec();
         // Most loop turns find no timer due.
-        let idle = self.queue.borrow_mut().select_idle(now);
+        let idle = self.lend(|queue| queue.select_idle(now));
         if let Some(delay) = idle {
             self.next_msec.set(delay);
             self.set(delay);
             return;
         }
-        let begin = self.queue.borrow_mut().begin(now);
+        let begin = self.lend(|queue| queue.begin(now));
         match begin {
             Ok(()) => {}
             Err(Status::Busy | Status::Closing) => return,
             Err(status) => check(status),
         }
         loop {
-            let (status, view) = self.queue.borrow_mut().select_next();
+            // The queue is back before the node's callback runs.
+            let (status, view) = self.lend(Queue::select_next);
             if status == Status::Empty || status == Status::Closing {
                 break;
             }
@@ -551,11 +569,10 @@ impl Owner {
     /// Zend bailout will never resume an active selection, so it is closed here;
     /// same-process deletion during a live callback aborts.
     pub(crate) fn destroy(&self) {
-        self.queue.borrow_mut().close();
+        self.lend(Queue::close);
         self.set(-1);
         if self.abandoned.get() || std::process::id().cast_signed() != self.owner_pid {
-            let (active, view) = {
-                let mut queue = self.queue.borrow_mut();
+            let (active, view) = self.lend(|queue| {
                 let stats = queue.stats();
                 let (status, view) = if stats.active_id == 0 {
                     (Status::Release, TimerView::default())
@@ -571,23 +588,30 @@ impl Owner {
                     check(status);
                 }
                 (stats.active_id != 0, view)
-            };
+            });
             if active {
                 self.release(applied(&view));
             }
         }
         let status = loop {
-            let (status, view) = self.queue.borrow_mut().drain();
+            let (status, view) = self.lend(Queue::drain);
             if status != Status::Release {
                 break status;
             }
             self.release(applied(&view));
         };
         // The record's drop frees the drained queue.
-        if status != Status::Empty || !self.queue.borrow().idle() {
+        if status != Status::Empty || !self.lend(|queue| queue.idle()) {
             swoole_rs_corebase::fatal("a timer queue still busy when dropped");
         }
     }
+}
+
+/// A second take of a timer's queue while an operation holds it.
+#[cold]
+#[inline(never)]
+fn lent() -> ! {
+    swoole_rs_corebase::fatal("a timer queue re-entered during a queue operation")
 }
 
 /// A new timer's generation: the next after the last, skipping 0, which
@@ -631,12 +655,6 @@ extern "C-unwind" fn destroyed(_data: *mut c_void) {
     crate::wrapper::swoole_timer_free();
 }
 
-/// The timer's queue, for `Server::get_timer_stats`.
-#[must_use]
-pub fn owner_queue(timer: &Owner) -> *mut Queue {
-    timer.queue.as_ptr()
-}
-
 /// `Timer::get_reactor()`.
 pub(crate) fn owner_reactor(timer: &Owner) -> *mut c_void {
     timer.reactor.get()
@@ -653,6 +671,7 @@ pub fn owner_reinit(timer: &Owner, manually_trigger: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
     use std::rc::Rc;
 
     /// `Owner::init` declares the reactor's `swoole_signal_set` by symbol: naming it
