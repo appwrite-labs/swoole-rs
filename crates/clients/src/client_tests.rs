@@ -343,7 +343,7 @@ fn new_client(kind: c_int, is_async: bool) -> *mut Client {
         tls_verify: socket_ssl_verify,
         tls_check_host: socket_ssl_check_host,
     };
-    create_with(kind, is_async, &OPS).map_or(core::ptr::null_mut(), |handle| handle.0)
+    create_with(kind, is_async, &OPS).map_or(core::ptr::null_mut(), |owner| owner.handle().0)
 }
 
 /// A client of `kind`, its construction log dropped, listened to for every event
@@ -369,9 +369,9 @@ fn client(kind: c_int, is_async: bool, callbacks: bool) -> *mut Client {
     client
 }
 
+/// The test's live client, not used afterwards.
 fn free(client: *mut Client) {
-    // SAFETY: the test's live client, not used afterwards.
-    unsafe { Handle(client).free() };
+    Owner(Handle(client)).free();
 }
 
 /// `Client_onWrite` with a reactor and event the mocks ignore.

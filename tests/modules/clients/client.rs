@@ -127,6 +127,8 @@ type ReceiveSlot<'a> = RefCell<Option<Box<dyn FnMut(&Client<'a>, &[u8]) + 'a>>>;
 /// `network::Client`, deleted on drop; `created`/`connected` are `SyncClient`'s.
 pub(super) struct Client<'a> {
     state: *mut c_void,
+    /// `state`'s owner, which the drop frees.
+    owner: Option<native::Owner>,
     created: Cell<bool>,
     connected: Cell<bool>,
     sync: bool,
@@ -165,13 +167,10 @@ unsafe extern "C" fn listener(
 impl<'a> Client<'a> {
     /// `Client cli(type, async)`; None when it has no socket (`!cli.ready()`).
     pub(super) fn new(kind: c_int, is_async: bool) -> Option<Box<Self>> {
-        let state: *mut c_void = native::create(kind, is_async)
-            .map_or(std::ptr::null_mut(), |client| client.as_ptr().cast());
-        if state.is_null() {
-            return None;
-        }
+        let owner = native::create(kind, is_async)?;
         Some(Box::new(Self {
-            state,
+            state: owner.handle().as_ptr().cast(),
+            owner: Some(owner),
             created: Cell::new(true),
             connected: Cell::new(false),
             sync: false,
@@ -479,8 +478,9 @@ impl Drop for Client<'_> {
         if self.sync && self.created.get() {
             self.sync_close();
         }
-        // SAFETY: the client `new` made, deleted once.
-        unsafe { self.handle().free() };
+        if let Some(owner) = self.owner.take() {
+            owner.free();
+        }
     }
 }
 

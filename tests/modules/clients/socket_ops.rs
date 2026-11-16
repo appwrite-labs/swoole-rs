@@ -1,10 +1,19 @@
 use super::*;
 
-struct NativeClient(Handle);
+/// Frees its client when the test ends, failed or not.
+struct NativeClient(Option<Owner>);
+
+impl NativeClient {
+    fn handle(&self) -> Handle {
+        self.0.as_ref().unwrap().handle()
+    }
+}
 
 impl Drop for NativeClient {
     fn drop(&mut self) {
-        unsafe { self.0.free() };
+        if let Some(owner) = self.0.take() {
+            owner.free();
+        }
     }
 }
 
@@ -13,8 +22,8 @@ impl Drop for NativeClient {
 fn native_receive_preserves_initialized_tails_and_fills_spare_capacity() {
     use std::io::Write;
     let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
-    let owner = NativeClient(create(SocketType::SW_SOCK_TCP as c_int, false).unwrap());
-    let this = owner.0;
+    let owner = NativeClient(create(SocketType::SW_SOCK_TCP as c_int, false));
+    let this = owner.handle();
     let effects = this.get().socket_ops;
     assert!((effects.assign)(
         this,
@@ -42,8 +51,8 @@ fn native_receive_preserves_initialized_tails_and_fills_spare_capacity() {
 #[cfg_attr(miri, ignore = "requires UDP sockets")]
 fn native_async_datagram_receive_records_the_sender_for_both_buffer_kinds() {
     let peer = std::net::UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
-    let owner = NativeClient(create(SocketType::SW_SOCK_UDP as c_int, true).unwrap());
-    let this = owner.0;
+    let owner = NativeClient(create(SocketType::SW_SOCK_UDP as c_int, true));
+    let this = owner.handle();
     assert!(this.bind(c"127.0.0.1", 0));
     assert!(
         this.socket()
@@ -77,8 +86,8 @@ fn native_socket_control_connects_and_keeps_failed_assignment_atomic() {
     let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
     let port = c_int::from(listener.local_addr().unwrap().port());
     for mode in [Some(ConnectMode::Raw), Some(ConnectMode::Sync), None] {
-        let owner = NativeClient(create(SocketType::SW_SOCK_TCP as c_int, false).unwrap());
-        let this = owner.0;
+        let owner = NativeClient(create(SocketType::SW_SOCK_TCP as c_int, false));
+        let this = owner.handle();
         let effects = this.get().socket_ops;
         let fd = this.socket().fd();
         assert_ne!(
@@ -146,8 +155,8 @@ fn native_connect_timer_is_cancelled_before_client_release() {
     assert!(!swoole_rs_timer::swoole_timer_is_available());
     swoole_rs_timer::swoole_timer_create(true);
     let _timer = Timer;
-    let client = NativeClient(create(SocketType::SW_SOCK_TCP as c_int, true).unwrap());
-    let this = client.0;
+    let client = NativeClient(create(SocketType::SW_SOCK_TCP as c_int, true));
+    let this = client.handle();
     let held = (this.get().socket_ops.timer_add)(60.0, this).unwrap();
     this.get().timer.set(Some(held));
     assert_eq!(swoole_rs_timer::thread_timer_count(), 1);
@@ -162,8 +171,8 @@ fn native_connect_timer_is_cancelled_before_client_release() {
 #[cfg_attr(miri, ignore = "requires TCP sockets and OpenSSL")]
 fn native_tls_effects_keep_the_session_and_settings_while_the_peer_is_pending() {
     let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
-    let owner = NativeClient(create(SocketType::SW_SOCK_TCP as c_int, false).unwrap());
-    let this = owner.0;
+    let owner = NativeClient(create(SocketType::SW_SOCK_TCP as c_int, false));
+    let this = owner.handle();
     let effects = this.get().socket_ops;
     assert!(!(effects.tls_connect)(this.socket()));
     assert!(!(effects.tls_verify)(this.socket(), false));

@@ -556,11 +556,16 @@ pub(crate) fn length_callable(socket: Co, value: &Value) {
 }
 
 /// A live `network::Client` (crates/clients' state), from [`create`] until
-/// [`destroy`]: crates/clients' handle, made once by `create`.
+/// [`destroy`]: crates/clients' handle, lent by the client's owner.
 #[derive(Clone, Copy)]
 pub(crate) struct Cli(client::Handle);
 
 impl Cli {
+    /// The client `owner` holds.
+    pub(crate) const fn of(owner: &client::Owner) -> Self {
+        Self(owner.handle())
+    }
+
     pub(crate) fn get(&self) -> &Client {
         self.0.client()
     }
@@ -595,28 +600,22 @@ pub(crate) fn c_text(bytes: &[u8]) -> CString {
     CString::new(text).unwrap_or_default()
 }
 
-/// `new Client(type, async)`: the client, or the errno of its failed socket.
-pub(crate) fn create(kind: c_int, is_async: bool) -> Result<Cli, c_int> {
-    // Live until `destroy` frees it as its last operation.
+/// `new Client(type, async)`: the client's owner, or the errno of its failed socket.
+pub(crate) fn create(kind: c_int, is_async: bool) -> Result<client::Owner, c_int> {
     client::create(kind, is_async)
-        .map(Cli)
         .ok_or_else(|| std::io::Error::last_os_error().raw_os_error().unwrap_or(0))
 }
 
 /// `delete cli`, after the length callable of `package_length_func`.
 /// # Errors
 /// Freeing the callable or closing the client ran PHP code that bailed out.
-pub(crate) fn destroy(cli: Cli) -> Result<(), Bailout> {
+pub(crate) fn destroy(owner: client::Owner) -> Result<(), Bailout> {
+    let cli = Cli::of(&owner);
     cli.get()
         .edit_record(|record| record.protocol.private_data_1 = ptr::null_mut());
     free_owner(cli.get().replace_length_owner(None))?;
-    let handle = cli.handle();
-    let free = || {
-        // SAFETY: `destroy` is the client's last operation.
-        unsafe { handle.free() };
-    };
     // As in `Cli::run`.
-    swoole_rs_zend::contain_with(free)
+    swoole_rs_zend::contain_with(|| owner.free())
 }
 
 /// Drop a `package_length_func` owner, out of its socket or client.

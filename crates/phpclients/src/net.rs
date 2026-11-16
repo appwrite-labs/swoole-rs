@@ -13,7 +13,7 @@ use std::{
 };
 use swoole_rs_clients::protocol::Protocol;
 use swoole_rs_clients::{
-    client::{self as state, Handle},
+    client::{self as state, Handle, Owner},
     pool::Pool,
     valid_port,
 };
@@ -60,6 +60,8 @@ pub(crate) const INVALID_PARAMS: c_int =
 /// pools a connection a method holds, so the pool's copy is never in use.
 pub(crate) struct Conn {
     pub(crate) cli: Cli,
+    /// `cli`'s owner, until [`Conn::detach`] hands it to the pool's copy.
+    owner: Cell<Option<Owner>>,
     /// [`release`] ran while a method held it: the last drop destroys `cli`.
     released: Cell<bool>,
     key: Vec<u8>,
@@ -78,9 +80,10 @@ struct Frame {
 }
 
 impl Conn {
-    pub(crate) fn new(cli: Cli) -> Self {
+    pub(crate) fn new(owner: Owner) -> Self {
         Self {
-            cli,
+            cli: Cli::of(&owner),
+            owner: Cell::new(Some(owner)),
             released: Cell::new(false),
             key: Vec::new(),
             keep: false,
@@ -90,11 +93,13 @@ impl Conn {
         }
     }
 
-    /// The connection for the pool: the same client and state, apart from any
-    /// handle a re-entered method still holds (upstream pools the pointer).
+    /// The connection for the pool: the same client, which it now owns, and state,
+    /// apart from any handle a re-entered method still holds (upstream pools the
+    /// pointer).
     fn detach(&self) -> Self {
         Self {
             cli: self.cli,
+            owner: Cell::new(self.owner.take()),
             released: Cell::new(false),
             key: self.key.clone(),
             keep: self.keep,
@@ -158,9 +163,14 @@ impl Drop for Conn {
     /// or event that dropped it raises a bailout as its last step.
     fn drop(&mut self) {
         if self.released.get() {
-            bailout::defer(native::destroy(self.cli));
+            bailout::defer(destroy(self));
         }
     }
+}
+
+/// [`native::destroy`] of the connection's client, if it still owns it.
+fn destroy(conn: &Conn) -> Result<(), Bailout> {
+    conn.owner.take().map_or(Ok(()), native::destroy)
 }
 
 /// `ClientObject` without its `zend_object`; `Swoole\Async\Client` inherits
@@ -475,7 +485,7 @@ pub(crate) fn release(object: Obj, conn: Rc<Conn>) -> Result<(), Bailout> {
     let data = object.data();
     data.set_conn(None);
     let destroyed = match Rc::try_unwrap(conn) {
-        Ok(conn) => native::destroy(conn.cli),
+        Ok(conn) => destroy(&conn),
         Err(held) => {
             held.released.set(true);
             Ok(())
@@ -592,15 +602,15 @@ fn connection(object: Obj, host: &[u8], port: i64) -> Option<Rc<Conn>> {
     let mut connection = if let Some(conn) = conn {
         *conn
     } else {
-        let cli = match native::create(type_code(kind), false) {
-            Ok(cli) => cli,
+        let owner = match native::create(type_code(kind), false) {
+            Ok(owner) => owner,
             Err(error) => {
                 warn_sys("Client_create() failed", error);
                 set_err_code(object, error);
                 return None;
             }
         };
-        let mut fresh = Conn::new(cli);
+        let mut fresh = Conn::new(owner);
         fresh.key = key;
         fresh
     };

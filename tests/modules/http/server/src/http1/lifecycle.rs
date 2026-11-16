@@ -1656,12 +1656,9 @@ fn test_clean_worker(mode: c_int) {
 
     counter_init();
 
-    let client = native::create(SW_SOCK_TCP, true).map_or(std::ptr::null_mut(), Handle::as_ptr);
-    assert!(
-        !client.is_null(),
-        "AsyncClient ac(SW_SOCK_TCP) has a socket"
-    );
-    CLEAN_CLIENT.store(client, Ordering::SeqCst);
+    let client =
+        native::create(SW_SOCK_TCP, true).expect("AsyncClient ac(SW_SOCK_TCP) has a socket");
+    CLEAN_CLIENT.store(client.handle().as_ptr(), Ordering::SeqCst);
 
     let port = serv.add_port(SW_SOCK_TCP, TEST_HOST, 0);
     assert!(port.is_some());
@@ -1681,8 +1678,7 @@ fn test_clean_worker(mode: c_int) {
     assert_eq!(counter_get(2), 0); // Server on_close
     assert_eq!(counter_get(3), 0); // Client on_receive
     assert_no_failure();
-    // SAFETY: the client this test made, deleted once.
-    unsafe { clean_client().free() };
+    client.free();
     serv.delete();
 }
 

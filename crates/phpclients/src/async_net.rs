@@ -262,15 +262,15 @@ fn connection(object: Obj, port: i64) -> Option<Rc<Conn>> {
         set_last_error(INVALID_PARAMS);
         return None;
     }
-    let cli = match native::create(type_code(kind), true) {
-        Ok(cli) => cli,
+    let owner = match native::create(type_code(kind), true) {
+        Ok(owner) => owner,
         Err(error) => {
             warn_sys("failed to create client", error);
             set_err_code(object, error);
             return None;
         }
     };
-    let conn = Conn::new(cli);
+    let conn = Conn::new(owner);
     object.props().long(c"sock", i64::from(conn.fd()));
     // `SW_SOCK_SSL`.
     if kind & (1 << 9) != 0 {

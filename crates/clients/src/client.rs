@@ -698,15 +698,15 @@ fn is_dgram(kind: c_int) -> bool {
     SocketType::from_raw(kind).is_some_and(SocketType::is_dgram)
 }
 
-/// `new Client(type, async)`: a handle on the new client, live until [`Handle::free`];
+/// `new Client(type, async)`: the new client's owner, live until [`Owner::free`];
 /// None with errno set when the socket could not be made (logged as upstream's
 /// constructor does).
 #[must_use]
-pub fn create(kind: c_int, is_async: bool) -> Option<Handle> {
+pub fn create(kind: c_int, is_async: bool) -> Option<Owner> {
     create_with(kind, is_async, &SocketOps::NATIVE)
 }
 
-fn create_with(kind: c_int, is_async: bool, socket_ops: &'static SocketOps) -> Option<Handle> {
+fn create_with(kind: c_int, is_async: bool, socket_ops: &'static SocketOps) -> Option<Owner> {
     let fd_type = if is_stream(kind) {
         FD_STREAM_CLIENT
     } else {
@@ -773,12 +773,60 @@ fn create_with(kind: c_int, is_async: bool, socket_ops: &'static SocketOps) -> O
     client
         .socket()
         .edit(|record| record.object = client.0.cast());
-    Some(client)
+    Some(Owner(client))
+}
+
+/// The one owner of a client [`create`] made, which lends [`Handle`]s on it: only
+/// [`Owner::free`] releases the client, and it takes the owner.
+#[must_use = "only `Owner::free` releases the client"]
+pub struct Owner(Handle);
+
+impl Owner {
+    /// A handle on the client, live until [`Owner::free`].
+    #[must_use]
+    pub const fn handle(&self) -> Handle {
+        self.0
+    }
+
+    /// `delete client`, which may raise `onClose`.
+    pub fn free(self) {
+        let this = self.0;
+        if !this.flag(Flag::Closed) {
+            close(this);
+        }
+        this.input_free();
+        // A pending connect timer would fire on a freed client.
+        this.timer_clear();
+        let is_async = this.flag(Flag::Async);
+        if is_async {
+            // A cleared object tells a close in progress that the client is gone.
+            this.socket()
+                .edit(|socket| socket.object = core::ptr::null_mut());
+        }
+        // SAFETY: the Box `create` made, whose one owner this call consumed.
+        let client = unsafe { Box::from_raw(this.0) };
+        let Client {
+            socket,
+            socket_ops,
+            socks5,
+            http_proxy,
+            ..
+        } = *client;
+        if is_async {
+            (socket_ops.free_socket)(Some(socket));
+        } else {
+            // `delete socket`.
+            socket.free();
+        }
+        // The proxies first, then the rest of the state.
+        drop(socks5);
+        drop(http_proxy);
+    }
 }
 
 impl Handle {
     /// `f` over the protocol, socket and input buffer a framed receive acts on, live
-    /// while the client is (per [`Handle::new`]): the record's protocol in place, as
+    /// while the client is: the record's protocol in place, as
     /// its callbacks take it by address, and the input buffer an async connect made.
     pub fn with_framed<R>(
         self,
@@ -790,8 +838,8 @@ impl Handle {
     /// A handle on `client`.
     ///
     /// # Safety
-    /// `client` came from [`create`] ([`Handle::as_ptr`]) and stays live while this
-    /// handle or a copy of it is used.
+    /// `client` came from [`Handle::as_ptr`] and stays live while this handle or a
+    /// copy of it is used.
     #[must_use]
     pub const unsafe fn new(client: *mut Client) -> Self {
         Self(client)
@@ -803,7 +851,7 @@ impl Handle {
         self.0
     }
 
-    /// The client, borrowed while this handle is: live per [`Handle::new`].
+    /// The client, borrowed while this handle is, which its [`Owner`] keeps live.
     #[must_use]
     pub fn client(&self) -> &Client {
         self.get()
@@ -831,43 +879,6 @@ impl Handle {
             .tls
             .get()
             .and_then(|tls| NonNull::new(tls.as_ptr().cast_mut()))
-    }
-
-    /// `delete client`, which may raise `onClose`.
-    ///
-    /// # Safety
-    /// Neither this handle nor a copy of it is used afterwards.
-    pub unsafe fn free(self) {
-        if !self.flag(Flag::Closed) {
-            close(self);
-        }
-        self.input_free();
-        // A pending connect timer would fire on a freed client.
-        self.timer_clear();
-        let is_async = self.flag(Flag::Async);
-        if is_async {
-            // A cleared object tells a close in progress that the client is gone.
-            self.socket()
-                .edit(|socket| socket.object = core::ptr::null_mut());
-        }
-        // SAFETY: a Box from `create`, released once (per the caller).
-        let client = unsafe { Box::from_raw(self.0) };
-        let Client {
-            socket,
-            socket_ops,
-            socks5,
-            http_proxy,
-            ..
-        } = *client;
-        if is_async {
-            (socket_ops.free_socket)(Some(socket));
-        } else {
-            // `delete socket`.
-            socket.free();
-        }
-        // The proxies first, then the rest of the state.
-        drop(socks5);
-        drop(http_proxy);
     }
 
     /// `Client::get_peer_name`: datagram peers are value snapshots of the last

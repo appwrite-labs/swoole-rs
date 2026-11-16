@@ -145,6 +145,8 @@ impl Server {
 /// `network::SyncClient`, closed and deleted on drop.
 struct SyncClient {
     state: *mut c_void,
+    /// `state`'s owner, which the drop frees.
+    owner: Option<native::Owner>,
     dgram: bool,
     connected: bool,
     created: bool,
@@ -152,11 +154,10 @@ struct SyncClient {
 
 impl SyncClient {
     fn new(kind: c_int) -> Self {
-        let state: *mut c_void = native::create(kind, false)
-            .map_or(std::ptr::null_mut(), |client| client.as_ptr().cast());
-        assert!(!state.is_null(), "the client has a socket");
+        let owner = native::create(kind, false).expect("the client has a socket");
         Self {
-            state,
+            state: owner.handle().as_ptr().cast(),
+            owner: Some(owner),
             dgram: kind == SW_SOCK_UDP || kind == SW_SOCK_UDP6,
             connected: false,
             created: true,
@@ -224,8 +225,9 @@ impl Drop for SyncClient {
         if self.created {
             self.close();
         }
-        // SAFETY: the client `new` made, deleted once.
-        unsafe { self.handle().free() };
+        if let Some(owner) = self.owner.take() {
+            owner.free();
+        }
     }
 }
 
