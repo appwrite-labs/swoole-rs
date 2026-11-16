@@ -365,11 +365,7 @@ impl Connection for Read<'_> {
 
     fn serve_static(&mut self) -> bool {
         let conn = self.conn;
-        let request = conn.http_request().unwrap_or(ptr::null_mut());
-        let session = conn.session_id();
-        // SAFETY: the connection's live request; the handler's last send may close
-        // the connection and free it, and nothing here reads it afterwards.
-        unsafe { static_select(self.server, request, session, self.socket) }
+        static_select(self.server, conn, conn.session_id(), self.socket)
     }
 
     #[inline]

@@ -3,7 +3,7 @@ name = "swoole-rs-phpswoole"
 version.workspace = true
 edition = "2024"
 publish = false
-license = "Apache-2.0"
+license.workspace = true
 description = "The swoole module host: global constants, Swoole\\Exception/Error and the global functions"
 
 [features]
