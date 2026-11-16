@@ -92,8 +92,7 @@ const _: () = {
 
 const FD_CO_SOCKET: c_int = FdType::SW_FD_CO_SOCKET as c_int;
 const SOCK_RAW: c_int = SocketType::SW_SOCK_RAW as c_int;
-const OPEN_FLAGS: c_int =
-    SocketFlag::SW_SOCK_NONBLOCK as c_int | SocketFlag::SW_SOCK_CLOEXEC as c_int;
+const OPEN_FLAGS: SocketFlag = SocketFlag::SW_SOCK_NONBLOCK.union(SocketFlag::SW_SOCK_CLOEXEC);
 const BUFFER_SIZE_BIG: usize = SW_BUFFER_SIZE_BIG as usize;
 
 /// How a constructor makes its `network::Socket` (`swr_v1_hook_co_socket_new`); the
@@ -619,7 +618,7 @@ impl CoSocket {
             self.sock_domain.get(),
             self.sock_type.get(),
             self.sock_protocol.get(),
-            OPEN_FLAGS,
+            OPEN_FLAGS.bits(),
         );
         self.attach(socket, owner)
     }
@@ -885,7 +884,7 @@ impl CoSocket {
             domain,
             kind,
             socket.sock_protocol.get(),
-            OPEN_FLAGS,
+            OPEN_FLAGS.bits(),
         );
         let old = socket.socket.get();
         // Upstream records the old type on the new socket before taking the new one.

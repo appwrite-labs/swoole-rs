@@ -4,8 +4,9 @@
 use core::ffi::{CStr, c_int};
 use std::ffi::CString;
 use swoole_rs_corebase::ServerEvent;
-
-use swoole_rs_corebase::constants::{SW_BUFFER_SIZE_UDP, SW_SSL_BUFFER_SIZE, SocketType};
+use swoole_rs_corebase::constants::{
+    SW_BUFFER_SIZE_UDP, SW_SSL_BUFFER_SIZE, SocketFlag, SocketType,
+};
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_corebase::{DataHead, log};
 use swoole_rs_reactor::Socket;
@@ -16,10 +17,8 @@ use swoole_rs_tls::{
 
 use crate::reactor_entry::DgramPacket;
 
-/// `SW_FD_SESSION`, `SW_SOCK_NONBLOCK` and `SW_SOCK_CLOEXEC`.
+/// `SW_FD_SESSION`.
 const FD_SESSION: c_int = 0;
-const SOCK_NONBLOCK: c_int = swoole_rs_corebase::constants::SocketFlag::SW_SOCK_NONBLOCK as c_int;
-const SOCK_CLOEXEC: c_int = swoole_rs_corebase::constants::SocketFlag::SW_SOCK_CLOEXEC as c_int;
 
 /// `setsockopt(fd, level, option, value)` for an int option.
 fn set_option(fd: c_int, level: c_int, option: c_int, value: c_int) {
@@ -67,7 +66,12 @@ fn accept(
         (config.r#type, config.port.get(), host)
     };
     let server_fd = listen.fd();
-    let socket = make_typed(kind, FD_SESSION, SOCK_CLOEXEC | SOCK_NONBLOCK)?.into_socket();
+    let socket = make_typed(
+        kind,
+        FD_SESSION,
+        (SocketFlag::SW_SOCK_CLOEXEC | SocketFlag::SW_SOCK_NONBLOCK).bits(),
+    )?
+    .into_socket();
     let fd = socket.fd();
     set_option(fd, libc::SOL_SOCKET, libc::SO_REUSEADDR, 1);
     if cfg!(any(

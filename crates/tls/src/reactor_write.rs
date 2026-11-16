@@ -151,6 +151,8 @@ pub fn reactor_writev(
 pub const WRITERS: Writers = Writers {
     write: reactor_write,
     writev: reactor_writev,
+    close: reactor_close,
+    writable: |reactor, event| reactor_writable_callback(reactor, event),
 };
 
 impl FlushEffects for Flush<'_> {

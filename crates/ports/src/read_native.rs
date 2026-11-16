@@ -9,9 +9,8 @@ use core::sync::atomic::Ordering;
 use std::cell::Cell;
 use swoole_rs_buffer::string::{CppString, boxed_sized_string};
 use swoole_rs_corebase::constants::{
-    EventDataFlag::SW_EVENT_DATA_POP_PTR, SW_BUFFER_SIZE_BIG, SW_HTTP_100_CONTINUE_PACKET,
-    SW_HTTP_BAD_REQUEST_PACKET, SW_HTTP_REQUEST_ENTITY_TOO_LARGE_PACKET,
-    SW_HTTP_SERVICE_UNAVAILABLE_PACKET,
+    EventDataFlag, SW_BUFFER_SIZE_BIG, SW_HTTP_100_CONTINUE_PACKET, SW_HTTP_BAD_REQUEST_PACKET,
+    SW_HTTP_REQUEST_ENTITY_TOO_LARGE_PACKET, SW_HTTP_SERVICE_UNAVAILABLE_PACKET,
 };
 use swoole_rs_corebase::{DataHead, WebSocketStatus, log};
 use swoole_rs_framing::recv::{Mode, Status};
@@ -260,7 +259,7 @@ impl Connection for Read<'_> {
     fn dispatch(&mut self, dispatch: Dispatch, length: u64) -> bool {
         let head = DataHead {
             flags: if self.whole_buffer(length) {
-                SW_EVENT_DATA_POP_PTR as u8
+                EventDataFlag::SW_EVENT_DATA_POP_PTR.bits()
             } else {
                 0
             },

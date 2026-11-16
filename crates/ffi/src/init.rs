@@ -74,6 +74,10 @@ extern "C-unwind" fn swoole_init() {
         event_is_available: || swoole_rs_reactor::event_api::swoole_event_is_available(),
     });
     swoole_rs_reactor::event_api::set_writers(swoole_rs_tls::reactor_write::WRITERS);
+    swoole_rs_reactor::event_api::set_init_reactor([
+        |reactor| swoole_rs_hooks::reactor_handlers::system_init_reactor(reactor),
+        swoole_rs_clients::client::init_reactor,
+    ]);
     swoole_rs_clients::client::set_host(swoole_rs_ports::framing_recv::FRAMING, |event| {
         !async_dispatch(event).is_null()
     });

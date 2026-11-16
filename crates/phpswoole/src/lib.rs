@@ -46,9 +46,9 @@ pub use info::swr_v1_phpswoole_minfo;
 pub use interfaces::sys_warning;
 pub use memory::{sw_zend_string_allocator, zend_string_allocator};
 pub use module::{
-    Families, Globals, Hook, Http, HttpMinit, Minit, MinitArgs, ProcessSteps, ReqStatus,
-    RuntimeSteps, SocketSettings, codecs, display_errors, enable_library, families, globals,
-    load_library, php_swoole_register_shutdown_function, zif_swoole_set_process_name,
+    EventSteps, Families, Globals, Hook, Http, HttpMinit, Minit, MinitArgs, ProcessSteps,
+    ReqStatus, RuntimeSteps, SocketSettings, codecs, display_errors, enable_library, families,
+    globals, load_library, php_swoole_register_shutdown_function, zif_swoole_set_process_name,
 };
 pub use optional::{set_blocking, socket_cast, socket_create};
 pub use options::{
@@ -192,7 +192,29 @@ fn begin(minit: &swoole_rs_zend::Minit, kind: c_int) {
 pub fn check_reactor() {
     let shutting_down = module::globals().req_status.get() == ReqStatus::RshutdownBegin;
     if !shutting_down && swoole_rs_corebase::thread_reactor().is_null() {
-        php_swoole_reactor_init();
+        _ = reactor_init();
+    }
+}
+
+/// [`EventSteps::reactor_init`]: false before crates/ffi registers the families.
+#[must_use]
+pub fn reactor_init() -> bool {
+    families().is_some_and(|families| (families.events.reactor_init)())
+}
+
+/// [`EventSteps::convert_to_fd`]: the fd, or `None` after its warning (or before
+/// crates/ffi registers the families).
+#[must_use]
+pub fn convert_to_fd(value: Option<&swoole_rs_zend::Value>) -> Option<c_int> {
+    families()
+        .map(|families| (families.events.convert_to_fd)(value))
+        .filter(|&fd| fd >= 0)
+}
+
+/// [`EventSteps::wait`], once crates/ffi has registered the families.
+pub fn event_wait() {
+    if let Some(families) = families() {
+        (families.events.wait)();
     }
 }
 
@@ -200,12 +222,6 @@ pub fn check_reactor() {
 #[unsafe(no_mangle)]
 pub extern "C" fn php_swoole_check_reactor() {
     check_reactor();
-}
-
-// crates/phpevents' functions: declared, since crates/phpevents depends on this crate.
-unsafe extern "C" {
-    /// crates/phpevents' loop setup, on this thread.
-    safe fn php_swoole_reactor_init() -> c_int;
 }
 
 /// `Coroutine::get_current() != nullptr`: whether this thread runs a coroutine.

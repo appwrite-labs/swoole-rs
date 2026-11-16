@@ -67,11 +67,7 @@ impl Co {
 
 use swoole_rs_hooks::sleep::system_sleep;
 
-// Declared, since crates/phpevents (its `php_swoole_reactor_init` and
-// `swr_v1_phpevents_wait`) depends on this crate.
 unsafe extern "C" {
-    safe fn php_swoole_reactor_init() -> i32;
-    safe fn swr_v1_phpevents_wait();
     /// A coroutine's body (`main_func`) inside `zend_first_try`: Zend calls the
     /// callable `enter(context)` returns (none: nothing), reports an uncaught
     /// exception as `E_ERROR`, then runs `defers(context)`; a bailout's exception
@@ -662,14 +658,7 @@ pub(crate) fn exit_fallback(message: Option<&[u8]>, status: c_long) {
     swoole_rs_phpswoole::sw_php_exit(status.c_cast::<c_int>());
 }
 
-/// `php_swoole_reactor_init()`: whether the event loop is ready.
-pub(crate) fn reactor_init() -> bool {
-    php_swoole_reactor_init() >= 0
-}
-
-pub(crate) fn event_wait() {
-    swr_v1_phpevents_wait();
-}
+pub(crate) use swoole_rs_phpswoole::{event_wait, reactor_init};
 
 /// `Coroutine::set_stack_size(php_swoole_parse_to_size(size))`.
 pub(crate) fn set_stack_size(size: &swoole_rs_zend::Value) {
