@@ -7,23 +7,13 @@ documentation = false
 autogen_warning = "/* Generated from crates/corebase by cbindgen (tools/headers.sh); do not edit. */"
 [export]
 item_types = ["constants", "enums"]
-include = ["SslState", "ResultCode", "ReturnCode", "FdType", "SocketFlag", "SocketType", "TimeoutType", "EventType", "ForkType", "TraverseOperation", "EventDataFlag", "TaskFlag", "DNSLookupFlag", "PipeType", "EventInitFlag", "SW_IPC_MAX_SIZE", "SW_IPC_BUFFER_SIZE"]
+# The enums native code reads; the rest stay in Rust (tests/modules/corebase/constants.py).
+include = ["FdType", "SocketType", "ForkType", "SW_IPC_MAX_SIZE", "SW_IPC_BUFFER_SIZE"]
+exclude = ["SW_PIPE_READ", "SW_PIPE_WRITE"]
 [export.rename]
-"SslState" = "swSSLState"
-"ResultCode" = "swResultCode"
-"ReturnCode" = "swReturnCode"
 "FdType" = "swFdType"
-"SocketFlag" = "swSocketFlag"
 "SocketType" = "swSocketType"
-"TimeoutType" = "swTimeoutType"
-"EventType" = "swEventType"
 "ForkType" = "swForkType"
-"TraverseOperation" = "swTraverseOperation"
-"EventDataFlag" = "swEventDataFlag"
-"TaskFlag" = "swTaskFlag"
-"DNSLookupFlag" = "swDNSLookupFlag"
-"PipeType" = "swPipeType"
-"EventInitFlag" = "swEventInitFlag"
 [enum]
 prefix_with_name = false
 [defines]

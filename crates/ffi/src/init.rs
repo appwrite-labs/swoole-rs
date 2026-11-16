@@ -61,6 +61,18 @@ extern "C-unwind" fn swoole_init() {
         event_free: || _ = swoole_rs_reactor::swoole_event_free(),
         coroutine_is_in: || !swoole_rs_coroutine::current().is_null(),
     });
+    swoole_rs_coroutine::set_host(swoole_rs_coroutine::Host {
+        timer_after: |timeout, f, arg| {
+            swoole_rs_timer::add_fn_sec(timeout, false, move || f(arg))
+                .map_or(0, swoole_rs_timer::Held::id)
+        },
+        timer_is_available: || swoole_rs_timer::swoole_timer_is_available(),
+        timer_clear: |id| _ = swoole_rs_timer::swoole_timer_clear(id),
+        async_threads_ensure: || _ = swoole_rs_hooks::async_threads::ensure(),
+        event_init: |flags| swoole_rs_reactor::swoole_event_init(flags),
+        event_wait: || swoole_rs_reactor::event_api::swoole_event_wait(),
+        event_is_available: || swoole_rs_reactor::event_api::swoole_event_is_available(),
+    });
     swoole_rs_reactor::event_api::set_writers(swoole_rs_tls::reactor_write::WRITERS);
     swoole_rs_clients::client::set_host(swoole_rs_ports::framing_recv::FRAMING, |event| {
         !async_dispatch(event).is_null()

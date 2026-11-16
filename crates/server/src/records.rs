@@ -450,6 +450,25 @@ impl ServerTables {
         Some(self.connections().get(usize::try_from(fd).ok()?)?.into())
     }
 
+    /// Zeroes `fd`'s slot from after `active` up to `closed`, as upstream does on
+    /// reuse. It writes through the table's own pointer: the padding between the
+    /// cells is no cell, so a slot's shared borrow can't write it. Borrow the slot
+    /// again afterwards.
+    pub(crate) fn reset_connection(&self, fd: c_int) {
+        let Some(index) = usize::try_from(fd)
+            .ok()
+            .filter(|&i| i < self.connections().len())
+        else {
+            return;
+        };
+        let start = core::mem::offset_of!(ConnectionRecord, socket_type);
+        let record = self.connection_list.as_ptr().cast::<ConnectionRecord>();
+        let bytes = record.wrapping_add(index).cast::<u8>().wrapping_add(start);
+        // SAFETY: a slot of the mapped table, which `connections` bounds, written
+        // through the mapping's own pointer.
+        unsafe { bytes.write_bytes(0, core::mem::offset_of!(ConnectionRecord, closed) - start) };
+    }
+
     /// Session slot `index` (below `SW_SESSION_LIST_SIZE`), or none before the table is
     /// mapped. Only that slot is borrowed: a unit test maps a smaller table.
     pub(crate) fn session_slot(&self, index: usize) -> Option<&SessionRecord> {

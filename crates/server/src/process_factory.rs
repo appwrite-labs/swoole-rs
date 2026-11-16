@@ -257,7 +257,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn dispatch_drops_closed_connections_but_not_their_forced_close() {
         let (live, _clients) = accepted();
         let conn = session(&live, 1);
@@ -289,7 +289,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn finish_checks_size_session_and_overflow() {
         let (live, _clients) = accepted();
         let serv = live.server();
@@ -316,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn end_forwards_active_closes_owned_elsewhere() {
         let (live, _clients) = accepted();
         let serv = live.server();

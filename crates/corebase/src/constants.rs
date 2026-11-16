@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 include/swoole{,_config}.h (Swoole contributors).
-//! Canonical legacy event, socket and configuration identifiers. Both native
-//! headers and Rust operations use these definitions.
+//! Canonical legacy event, socket and configuration identifiers. Rust operations use
+//! them all; `swoole_rs_corebase_constants.h` exports the integer constants and the
+//! three enums native code reads (`FdType`, `SocketType`, `ForkType`). The
+//! `corebase-constants` gate compares every one with the pinned headers.
 
-/// The socket TLS handshake state, shared by reactor storage and TLS operations.
+/// The socket TLS handshake state, shared by reactor storage and TLS operations. It
+/// keeps C's layout: the socket record native code shares holds it as `ssl_state`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[expect(non_camel_case_types, reason = "preserve the native SDK names")]
+#[expect(non_camel_case_types, reason = "upstream's identifiers")]
 pub enum SslState {
     #[default]
     SW_SSL_STATE_HANDSHAKE = 0,
@@ -14,23 +17,15 @@ pub enum SslState {
     SW_SSL_STATE_WAIT_STREAM = 2,
 }
 
-#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[expect(
-    non_camel_case_types,
-    reason = "the stable native identifiers are preserved by generated bindings"
-)]
+#[expect(non_camel_case_types, reason = "upstream's identifiers")]
 pub enum ResultCode {
     SW_OK = 0,
     SW_ERR = -1,
 }
 
-#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[expect(
-    non_camel_case_types,
-    reason = "the stable native identifiers are preserved by generated bindings"
-)]
+#[expect(non_camel_case_types, reason = "upstream's identifiers")]
 pub enum ReturnCode {
     SW_SUCCESS = 0,
     SW_CONTINUE = 1,
@@ -67,12 +62,8 @@ pub enum FdType {
     SW_FD_DGRAM_CLIENT = 18,
 }
 
-#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[expect(
-    non_camel_case_types,
-    reason = "the stable native identifiers are preserved by generated bindings"
-)]
+#[expect(non_camel_case_types, reason = "upstream's identifiers")]
 pub enum SocketFlag {
     SW_SOCK_NONBLOCK = 4,
     SW_SOCK_CLOEXEC = 8,
@@ -174,12 +165,8 @@ impl SocketType {
     }
 }
 
-#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[expect(
-    non_camel_case_types,
-    reason = "the stable native identifiers are preserved by generated bindings"
-)]
+#[expect(non_camel_case_types, reason = "upstream's identifiers")]
 pub enum TimeoutType {
     SW_TIMEOUT_DNS = 1,
     SW_TIMEOUT_CONNECT = 2,
@@ -189,12 +176,8 @@ pub enum TimeoutType {
     SW_TIMEOUT_ALL = 15,
 }
 
-#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[expect(
-    non_camel_case_types,
-    reason = "the stable native identifiers are preserved by generated bindings"
-)]
+#[expect(non_camel_case_types, reason = "upstream's identifiers")]
 pub enum EventType {
     SW_EVENT_NULL = 0,
     SW_EVENT_DEAULT = 256,
@@ -218,24 +201,16 @@ pub enum ForkType {
     SW_FORK_PRECHECK = 8,
 }
 
-#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[expect(
-    non_camel_case_types,
-    reason = "the stable native identifiers are preserved by generated bindings"
-)]
+#[expect(non_camel_case_types, reason = "upstream's identifiers")]
 pub enum TraverseOperation {
     SW_TRAVERSE_KEEP = 0,
     SW_TRAVERSE_REMOVE = 1,
     SW_TRAVERSE_STOP = 2,
 }
 
-#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[expect(
-    non_camel_case_types,
-    reason = "the stable native identifiers are preserved by generated bindings"
-)]
+#[expect(non_camel_case_types, reason = "upstream's identifiers")]
 pub enum EventDataFlag {
     SW_EVENT_DATA_NORMAL = 0,
     SW_EVENT_DATA_PTR = 2,
@@ -246,12 +221,8 @@ pub enum EventDataFlag {
     SW_EVENT_DATA_POP_PTR = 64,
 }
 
-#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[expect(
-    non_camel_case_types,
-    reason = "the stable native identifiers are preserved by generated bindings"
-)]
+#[expect(non_camel_case_types, reason = "upstream's identifiers")]
 pub enum TaskFlag {
     SW_TASK_TMPFILE = 1,
     SW_TASK_SERIALIZE = 2,
@@ -263,22 +234,14 @@ pub enum TaskFlag {
     SW_TASK_NOREPLY = 128,
 }
 
-#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[expect(
-    non_camel_case_types,
-    reason = "the stable native identifiers are preserved by generated bindings"
-)]
+#[expect(non_camel_case_types, reason = "upstream's identifiers")]
 pub enum DNSLookupFlag {
     SW_DNS_LOOKUP_RANDOM = 2048,
 }
 
-#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[expect(
-    non_camel_case_types,
-    reason = "the stable native identifiers are preserved by generated bindings"
-)]
+#[expect(non_camel_case_types, reason = "upstream's identifiers")]
 pub enum PipeType {
     SW_PIPE_WORKER = 0,
     SW_PIPE_MASTER = 1,
@@ -287,12 +250,8 @@ pub enum PipeType {
 pub const SW_PIPE_READ: PipeType = PipeType::SW_PIPE_WORKER;
 pub const SW_PIPE_WRITE: PipeType = PipeType::SW_PIPE_MASTER;
 
-#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[expect(
-    non_camel_case_types,
-    reason = "the stable native identifiers are preserved by generated bindings"
-)]
+#[expect(non_camel_case_types, reason = "upstream's identifiers")]
 pub enum EventInitFlag {
     SW_EVENTLOOP_WAIT_EXIT = 1,
 }

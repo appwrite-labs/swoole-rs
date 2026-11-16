@@ -467,7 +467,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn commands_need_a_pipe_outside_base_mode() {
         let base = live(Mode::Base);
         assert!(add(&base, b"a", 2));
@@ -502,7 +502,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn commands_keep_binary_names_for_the_listing() {
         let live = live(Mode::Base);
         let name = b"admin\0command";
@@ -539,7 +539,7 @@ mod tests {
     use swoole_rs_process::command::{EVENT_WORKER, MASTER};
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn a_base_master_answers_its_own_commands_at_once() {
         let live = live(Mode::Base);
         assert!(add(&live, b"hi", MASTER | EVENT_WORKER));
@@ -557,7 +557,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn a_failed_send_forgets_its_callback_and_unknown_names_take_no_request() {
         let live = live(Mode::Base);
         assert!(add(&live, b"hi", EVENT_WORKER));
