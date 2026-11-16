@@ -32,7 +32,8 @@ pub extern "C" fn sw_atomic_futex_wait(atomic: Option<&AtomicU32>, timeout: f64)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        crate::wait_registry::atomic(atomic).map_or_else(|e| e, |word| futex_wait(word, timeout))
+        crate::wait_registry::atomic(atomic)
+            .map_or_else(|e| e, |word| if futex_wait(word, timeout) { 0 } else { -1 })
     }
 }
 
@@ -49,12 +50,19 @@ pub extern "C" fn sw_atomic_futex_wakeup(atomic: Option<&AtomicU32>, n: c_int) -
     }
     #[cfg(not(target_os = "linux"))]
     {
-        crate::wait_registry::atomic(atomic).map_or_else(|e| e, |word| futex_wakeup(word, n))
+        crate::wait_registry::atomic(atomic).map_or_else(
+            |e| e,
+            |word| {
+                futex_wakeup(word, n)
+                    .map_or(-1, |woken| c_int::try_from(woken).unwrap_or(c_int::MAX))
+            },
+        )
     }
 }
 
-/// [`sw_atomic_futex_wait`] on a word.
-pub fn futex_wait(word: &AtomicU32, timeout: f64) -> c_int {
+/// [`sw_atomic_futex_wait`] on a word: whether it took the word's token.
+#[must_use]
+pub fn futex_wait(word: &AtomicU32, timeout: f64) -> bool {
     #[cfg(target_os = "linux")]
     {
         swoole_rs_locks::wait(word, timeout)
@@ -65,8 +73,9 @@ pub fn futex_wait(word: &AtomicU32, timeout: f64) -> c_int {
     }
 }
 
-/// [`sw_atomic_futex_wakeup`] on a word.
-pub fn futex_wakeup(word: &AtomicU32, n: c_int) -> c_int {
+/// [`sw_atomic_futex_wakeup`] on a word: the waiters woken, or none on failure.
+#[must_use]
+pub fn futex_wakeup(word: &AtomicU32, n: c_int) -> Option<u32> {
     #[cfg(target_os = "linux")]
     {
         swoole_rs_locks::wakeup(word, n)

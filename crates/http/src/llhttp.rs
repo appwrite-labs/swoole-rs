@@ -160,30 +160,75 @@ const CONNECTION_STARTS: [u64; 256] = starts(&CONNECTION);
 const CHUNKED_STARTS: [u64; 256] = starts(&CHUNKED);
 const PREFACE_STARTS: [u64; 256] = starts(&PREFACE);
 
-/// The callbacks: each returns 0 to go on, `HPE_PAUSED` to pause, or an error.
-/// A span is a slice of the input `execute` was given, lent for that whole call
-/// (`'i`), so a callback may keep one span to read with a later one.
+/// A callback's answer, which llhttp's C callbacks give as an int.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Flow {
+    /// 0: go on.
+    Go,
+    /// 1, from `on_headers_complete`: skip the body.
+    SkipBody,
+    /// 2, from `on_headers_complete`: skip the body and treat the message as an upgrade.
+    Upgrade,
+    /// `HPE_PAUSED`: stop where the parser is, to resume later.
+    Pause,
+    /// -1: fail; a span callback's failure is `HPE_USER` with that span's reason.
+    Fail,
+    /// Any other int, the error a span callback's caller sees as it is.
+    Error(i32),
+}
+
+impl Flow {
+    /// The int a C callback returns for this answer.
+    #[must_use]
+    pub const fn code(self) -> i32 {
+        match self {
+            Self::Go => 0,
+            Self::SkipBody => 1,
+            Self::Upgrade => 2,
+            Self::Pause => HPE_PAUSED,
+            Self::Fail => -1,
+            Self::Error(code) => code,
+        }
+    }
+
+    /// The answer a C callback's int gives.
+    #[must_use]
+    pub const fn from_code(code: i32) -> Self {
+        match code {
+            0 => Self::Go,
+            1 => Self::SkipBody,
+            2 => Self::Upgrade,
+            HPE_PAUSED => Self::Pause,
+            -1 => Self::Fail,
+            code => Self::Error(code),
+        }
+    }
+}
+
+/// The callbacks, each answering a [`Flow`]. A span is a slice of the input
+/// `execute` was given, lent for that whole call (`'i`), so a callback may keep one
+/// span to read with a later one.
 pub trait Callbacks<'i> {
     /// The parser these callbacks drive, which they may read and change.
     fn parser(&mut self) -> &mut Parser;
-    fn on_url(&mut self, _data: &'i [u8]) -> i32 {
-        0
+    fn on_url(&mut self, _data: &'i [u8]) -> Flow {
+        Flow::Go
     }
-    fn on_header_field(&mut self, _data: &'i [u8]) -> i32 {
-        0
+    fn on_header_field(&mut self, _data: &'i [u8]) -> Flow {
+        Flow::Go
     }
-    fn on_header_value(&mut self, _data: &'i [u8]) -> i32 {
-        0
+    fn on_header_value(&mut self, _data: &'i [u8]) -> Flow {
+        Flow::Go
     }
-    /// 1 skips the body, 2 also treats the message as an upgrade.
-    fn on_headers_complete(&mut self) -> i32 {
-        0
+    /// [`Flow::SkipBody`] or [`Flow::Upgrade`] as well as the others.
+    fn on_headers_complete(&mut self) -> Flow {
+        Flow::Go
     }
-    fn on_body(&mut self, _data: &'i [u8]) -> i32 {
-        0
+    fn on_body(&mut self, _data: &'i [u8]) -> Flow {
+        Flow::Go
     }
-    fn on_message_complete(&mut self) -> i32 {
-        0
+    fn on_message_complete(&mut self) -> Flow {
+        Flow::Go
     }
 }
 
@@ -503,7 +548,7 @@ pub fn finish<'i>(cb: &mut (impl Callbacks<'i> + ?Sized)) -> i32 {
     }
     match parser.finish {
         Finish::Safe => 0,
-        Finish::SafeWithCb => cb.on_message_complete(),
+        Finish::SafeWithCb => cb.on_message_complete().code(),
         Finish::Unsafe => {
             parser.reason = Some(&"Invalid EOF state");
             HPE_INVALID_EOF_STATE
@@ -689,16 +734,22 @@ impl<'i, C: Callbacks<'i> + ?Sized> Run<'_, 'i, C> {
         let data = self.data.get(start..end).unwrap_or_default();
         let (error, reason) = match span {
             Span::None => return 0,
-            Span::Url => (self.cb.on_url(data), &"Span callback error in on_url"),
+            Span::Url => (
+                self.cb.on_url(data).code(),
+                &"Span callback error in on_url",
+            ),
             Span::Field => (
-                self.cb.on_header_field(data),
+                self.cb.on_header_field(data).code(),
                 &"Span callback error in on_header_field",
             ),
             Span::Value => (
-                self.cb.on_header_value(data),
+                self.cb.on_header_value(data).code(),
                 &"Span callback error in on_header_value",
             ),
-            Span::Body => (self.cb.on_body(data), &"Span callback error in on_body"),
+            Span::Body => (
+                self.cb.on_body(data).code(),
+                &"Span callback error in on_body",
+            ),
         };
         if error == -1 {
             self.parser().reason = Some(reason);
@@ -996,7 +1047,7 @@ impl<'i, C: Callbacks<'i> + ?Sized> Run<'_, 'i, C> {
 
     fn headers_complete(&mut self) -> Next {
         self.parser().before_headers_complete();
-        match self.cb.on_headers_complete() {
+        match self.cb.on_headers_complete().code() {
             0 => {}
             1 => self.parser().flags |= F_SKIPBODY,
             2 => {
@@ -1018,7 +1069,7 @@ impl<'i, C: Callbacks<'i> + ?Sized> Run<'_, 'i, C> {
 
     fn after_headers_complete(&mut self) -> Next {
         match self.parser().after_headers_complete() {
-            1 => match self.cb.on_message_complete() {
+            1 => match self.cb.on_message_complete().code() {
                 0 => Ok(State::PauseUpgrade),
                 HPE_PAUSED => self.stop(
                     HPE_PAUSED,
@@ -1037,7 +1088,7 @@ impl<'i, C: Callbacks<'i> + ?Sized> Run<'_, 'i, C> {
                 Ok(State::Eof)
             }
             5 => self.fail(15, &"Request has invalid `Transfer-Encoding`"),
-            _ => match self.cb.on_message_complete() {
+            _ => match self.cb.on_message_complete().code() {
                 0 => Ok(self.after_message_complete()),
                 HPE_PAUSED => self.stop(
                     HPE_PAUSED,
@@ -1050,7 +1101,7 @@ impl<'i, C: Callbacks<'i> + ?Sized> Run<'_, 'i, C> {
     }
 
     fn message_complete(&mut self) -> Next {
-        match self.cb.on_message_complete() {
+        match self.cb.on_message_complete().code() {
             0 => Ok(State::UpgradeCheck),
             HPE_PAUSED => self.stop(
                 HPE_PAUSED,

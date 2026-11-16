@@ -31,6 +31,7 @@ class ParallelPhases(unittest.TestCase):
             root = Path(directory)
             with patch.object(dev, 'ROOT', root), patch.object(dev, 'plan', return_value=planned), \
                  patch.object(dev, 'execute', side_effect=fake), \
+                 patch.object(dev, 'require_build_space'), \
                  patch('sys.argv', ['dev.py', 'integrate', '--module', 'locks', '--jobs', str(jobs)]):
                 self.assertEqual(dev.main(), 0)
             report = json.loads(next(root.glob('target/reports/dev/*/loop.json')).read_text())
