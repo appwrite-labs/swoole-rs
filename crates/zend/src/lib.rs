@@ -13,7 +13,6 @@
     )
 )]
 
-mod access;
 pub mod arginfo;
 pub mod bailout;
 mod call;
@@ -36,7 +35,6 @@ pub mod string;
 pub mod value;
 mod zval;
 
-pub use access::{key_ptr, set_key};
 pub use call::{Call, Invalid, ReturnSlot};
 pub use callable::{Callable, Callback, Holder, Parsed};
 pub use class::{Class, ClassEntry, Declared, lookup_class, unset_property_deny};
@@ -60,7 +58,7 @@ pub use sys::add_next_index_long;
 pub use value::push_str as push_string;
 pub use zval::{
     Array, ArrayMut, Entries, HeldArray, Interned, Kept, Key, Owned, OwnedArray, Separated, UNDEF,
-    Value, ZStr, ZString, Zvals,
+    Value, ZStr, ZString, Zvals, set_key,
 };
 
 /// Export Zend handlers under Zend's own names (`zim_<class>_<method>` for

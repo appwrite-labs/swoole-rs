@@ -77,6 +77,10 @@ int swr_zend_try_hash_update(HashTable *table, zend_string *key, zend_ulong inde
     SWR_TRAP(zend_hash_index_update(table, index, value));
 }
 
+int swr_zend_try_hash_index_del(HashTable *table, zend_ulong index) {
+    SWR_TRAP(zend_hash_index_del(table, index));
+}
+
 int swr_zend_try_hash_clean(zval *array) {
     if (Z_TYPE_P(array) != IS_ARRAY) {
         return 0;
@@ -85,8 +89,11 @@ int swr_zend_try_hash_clean(zval *array) {
     SWR_TRAP(zend_hash_clean(Z_ARRVAL_P(array)));
 }
 
-int swr_zend_try_symtable_update(zval *array, const char *key, size_t length, zval *value) {
-    /* add_assoc_zval_ex; as above, only a key already there needs the trap. */
+int swr_lent_symtable_update(zval *array, struct iovec name, zval *value) {
+    /* add_assoc_zval_ex; as above, only a key already there needs the trap.
+     * ZEND_HANDLE_NUMERIC_STR reads a first byte even of an empty key. */
+    const char *key = name.iov_len ? name.iov_base : "";
+    size_t length = name.iov_len;
     zend_ulong index;
     HashTable *table = Z_ARRVAL_P(array);
     if (ZEND_HANDLE_NUMERIC_STR(key, length, index)) {
