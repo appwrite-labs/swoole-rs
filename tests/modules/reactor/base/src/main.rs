@@ -307,7 +307,8 @@ unsafe fn create() {
         let view = &*fields(reactor);
         assert_eq!(view.max_event_num, SW_REACTOR_MAXEVENTS);
         assert!(view.ready);
-        assert!(view.write.is_some());
+        // `reactor->write`: every reactor writes through the writers `swoole_init` registered.
+        assert!(event_api::registered_writers().is_some());
         assert!(view.close.is_some());
         assert!(view.defer_tasks.is_none());
         assert!(reactor_upstream::reactor_default_write_handler(reactor).is_some());
@@ -630,15 +631,10 @@ unsafe fn write_2m() {
             error(ErrorCode::SW_ERROR_OUTPUT_BUFFER_OVERFLOW)
         );
 
-        // Past the data's end, as upstream's length: the write refuses it unread.
-        assert_eq!(
-            event_api::swoole_event_write(
-                socket,
-                data.as_ptr().cast(),
-                (*socket).fields.output.buffer_size as usize + 8192
-            ),
-            SW_ERR as isize
-        );
+        // Upstream's length, past its data's end, which the write refuses unread: here
+        // bytes of that length (SW_ERR is `None`).
+        let oversize = vec![0; (*socket).fields.output.buffer_size as usize + 8192];
+        assert_eq!(event_api::event_write(handle(socket), &oversize), None);
         assert_eq!(
             last_error(),
             error(ErrorCode::SW_ERROR_PACKAGE_LENGTH_TOO_LARGE)
