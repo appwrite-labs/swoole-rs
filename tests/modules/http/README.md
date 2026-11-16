@@ -126,8 +126,8 @@ The TESTs that start a server run in `server/` (the merge tier's `http-server-ru
 phase): a Rust case binary over the crates and system.py's static libswoole.a (the pin's thirdparty and native/'s Zend-free sources), built and run by
 `tests/modules/hooks/system.py --package tests/modules/http/server`. `server/src/http1/case.rs`
 builds the Servers upstream's `test_base_server`, `test_http_server` and `test_ssl_http`
-built, over the same records as `http1.rs` (below), with each callback slot holding the
-case's function as its closure context; the callbacks, cpp-httplib's WebSocket client
+built, over the same records as `http1.rs` (below); where upstream's lambdas captured
+the case's function, the slot's fn reads it from a static the case set. The callbacks, cpp-httplib's WebSocket client
 (the same upgrade request, frames from the hybrid's `websocket::encode`/`mask`/`decode`),
 the curl runs and every assertion are in `server/src/main.rs`, one function per TEST
 under its own name: `websocket_small`, `websocket_medium`, `websocket_big`,
@@ -148,8 +148,9 @@ frames and expected values; its HTTP/2 frame is the bytes `http2::init_settings`
 
 The HTTP/1 TESTs that start a server are `server/src/http1.rs`, in the same binary and
 phase: `SharedServer::new` and its drop (crates/server/src/server_object.rs)
-make and delete the `Server`, and the cases set its configuration, callback slots,
-tables, port configuration and static-handler sets through the Rust records
+make and delete the `Server`, and the cases set its callback slots with
+`view::Server::set_callback` (each callback a Rust fn of its slot's signature), and its
+configuration, tables, port configuration and static-handler sets through the Rust records
 whose pointers head the `Server` and its `ListenPort`s, whose layouts each new server checks against
 `http1.rs`'s copies (`server_record_layout`). Upstream's fixtures, inputs and
 expected values are kept; where they ran llhttp the handlers read the request line and

@@ -238,7 +238,7 @@ fn dns_lookup(call: &Call) {
     } else {
         0
     };
-    let address = answers.swap_remove(pick).into_bytes();
+    let address = answers.swap_remove(pick);
     call.set_bytes(&address);
     let refresh = f64::from_bits(DNS_REFRESH_SECONDS.load(Ordering::Relaxed));
     let now = swoole_rs_timer::absolute_msec();

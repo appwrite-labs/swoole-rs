@@ -367,10 +367,10 @@ fn write_waitall(
     reply: impl Fn(&mut TaskBuffer),
 ) {
     let path = slot.result_path();
-    let file = swoole_rs_ossupport::file_open(-1, &path, libc::O_APPEND | libc::O_WRONLY, 0);
-    if file == -1 {
+    let Ok(file) = swoole_rs_ossupport::file_open(-1, &path, libc::O_APPEND | libc::O_WRONLY, 0)
+    else {
         return;
-    }
+    };
     // A failed pack leaves the result empty.
     if !buf.pack(data) {
         log::warning(c"Server::finish", format_args!("large task pack failed()"));

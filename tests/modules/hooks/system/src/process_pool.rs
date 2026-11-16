@@ -360,7 +360,8 @@ unsafe fn pool_wait(pool: *mut Pool) -> c_int {
             swoole_rs_server::process_pool_native(),
             swoole_rs_process::process_pool::PoolRef::new(pool.cast()),
         )
-    }
+    };
+    SW_OK
 }
 
 unsafe fn pool_destroy(pool: *mut Pool) {

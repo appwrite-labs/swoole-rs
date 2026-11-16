@@ -142,12 +142,11 @@ pub fn file_put_contents(path: &CStr, data: &[u8]) -> bool {
         return false;
     }
     let flags = libc::O_WRONLY | libc::O_TRUNC | libc::O_CREAT;
-    let fd = file_open(-1, path, flags, 0o666);
-    if fd < 0 {
+    let Ok(fd) = file_open(-1, path, flags, 0o666) else {
         let name = path.to_string_lossy();
         log::sys_warning(c"file_put_contents", format_args!("open('{name}') failed"));
         return false;
-    }
+    };
     let record = FileRecord::adopt(fd, flags);
     let io = record.write_all(data);
     warn_io(
