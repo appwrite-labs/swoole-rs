@@ -30,7 +30,7 @@ const HEAD_LEN: usize = 16;
 )]
 const EVENT_SIZE: usize = SW_IPC_MAX_SIZE as usize;
 /// `SW_TASK_WAITALL`.
-const TASK_WAITALL: u16 = 1 << 4;
+const TASK_WAITALL: u16 = swoole_rs_corebase::constants::TaskFlag::SW_TASK_WAITALL.bits();
 /// `SW_ERROR_TASK_DISPATCH_FAIL`.
 const ERROR_TASK_DISPATCH_FAIL: c_int =
     swoole_rs_error::ErrorCode::SW_ERROR_TASK_DISPATCH_FAIL as c_int;
