@@ -149,11 +149,11 @@ pub fn swr_v1_hooks_sleep_until(
 )]
 #[must_use]
 pub extern "C-unwind" fn system_sleep(sec: f64) -> i32 {
-    #[cfg(feature = "iouring")]
+    #[cfg(all(feature = "iouring", feature = "upstream-symbols"))]
     {
         crate::uring::sleep(&crate::iouring::HOST, sec).map_or(-1, |()| 0)
     }
-    #[cfg(not(feature = "iouring"))]
+    #[cfg(not(all(feature = "iouring", feature = "upstream-symbols")))]
     {
         /// `SW_ERROR_CO_CANCELED`: what `yield_ex` sets when the coroutine was canceled.
         const CANCELED: i32 = 10017;

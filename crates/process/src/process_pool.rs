@@ -798,7 +798,16 @@ pub enum PipeError {
 /// a [`PoolCall`] this crate filled over live objects.
 pub trait PoolNative: Sync {
     /// One effect on the call's pool and worker.
-    fn call(&self, call: &PoolCall, op: Op, arg: u64) -> i64;
+    fn call(&self, call: &PoolCall, op: Op, arg: u64);
+    /// `swoole_event_init`: this thread's event loop, run for the call's pool;
+    /// false when it can't be made.
+    fn event_init(&self, call: &PoolCall) -> bool;
+    /// `swoole_event_is_available()`.
+    fn event_available(&self) -> bool;
+    /// `swoole_event_wait()`: the loop's return value.
+    fn event_wait(&self) -> c_int;
+    /// `swoole_waitpid(pid)`: false when it failed.
+    fn waitpid(&self, pid: c_int) -> bool;
     /// Create and retain the worker's datagram pipe.
     /// # Errors
     /// Missing worker, pipe creation failure, or closed pool ownership.
@@ -1007,6 +1016,7 @@ pub fn head_view(head: &DataHead) -> &[u8; EVENT_DATA] {
 /// worker and signal effects run here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Op {
+    #[cfg(test)]
     HaveMsgqueue,
     AllocWorkers,
     NewMessageBox,
@@ -1020,12 +1030,15 @@ pub enum Op {
     BusBuffer,
     WorkerType,
     UnlimitPipes,
+    #[cfg(test)]
     Fork,
     WorkerShutdown,
+    #[cfg(test)]
     EventAvailable,
     RemovePipe,
     ExitCallback,
     ReopenLogger,
+    #[cfg(test)]
     IsMaster,
     ReloadTimer,
     DontRestart,
@@ -1034,6 +1047,7 @@ pub enum Op {
     #[cfg(test)]
     AddPipe,
     PipeHandler,
+    #[cfg(test)]
     EventWait,
     CurrentWorker,
     #[cfg(test)]
@@ -1044,10 +1058,12 @@ pub enum Op {
     WorkerError,
     OnAfterReload,
     KillTimer,
+    #[cfg(test)]
     Waitpid,
     FreeMessageBox,
     FreeWorkers,
     WorkerInit,
+    #[cfg(test)]
     EventInit,
     BoxPush,
     /// A warning, which [`Native`] logs itself.
@@ -1081,7 +1097,21 @@ pub enum Callback {
 
 /// What a pool operation asks of native code.
 pub(crate) trait PoolHost {
-    fn op(&mut self, worker: *mut c_void, op: Op, arg: u64) -> i64;
+    fn op(&mut self, worker: *mut c_void, op: Op, arg: u64);
+    /// The platform has System V message queues.
+    fn have_msgqueue(&mut self) -> bool;
+    /// This thread's event loop for the pool's worker: false when it can't be made.
+    fn event_init(&mut self) -> bool;
+    fn event_available(&mut self) -> bool;
+    /// `swoole_event_wait()`: the loop's return value.
+    fn event_wait(&mut self) -> c_int;
+    /// This process is the pool's master.
+    fn is_master(&mut self) -> bool;
+    /// `swoole_fork(0)` for `worker`: 0 in the child, the child's pid in the parent,
+    /// or `None` when it failed.
+    fn fork(&mut self, worker: *mut WorkerRecord) -> Option<c_int>;
+    /// `swoole_waitpid(pid)`: false when it failed.
+    fn waitpid(&mut self, pid: c_int) -> bool;
     fn new_pipe(&mut self, worker: *mut WorkerRecord) -> Result<(), PipeError>;
     #[cfg(target_os = "linux")]
     fn send_buffer_size(&mut self, worker: *mut WorkerRecord) -> std::io::Result<c_int>;
@@ -1119,17 +1149,53 @@ pub(crate) struct Native<'a> {
 }
 
 impl PoolHost for Native<'_> {
-    fn op(&mut self, worker: *mut c_void, op: Op, arg: u64) -> i64 {
+    fn op(&mut self, worker: *mut c_void, op: Op, arg: u64) {
         if let Op::Log(kind) = op {
             log(kind, arg);
-            return 0;
+            return;
         }
         #[cfg(feature = "upstream-symbols")]
-        if let Some(result) = effect(op, arg) {
-            return result;
+        if effect(op, arg) {
+            return;
         }
         // A native effect on the live pool this export runs over.
-        self.native.call(&PoolCall::new(self.pool, worker), op, arg)
+        self.native.call(&PoolCall::new(self.pool, worker), op, arg);
+    }
+
+    /// The message queue is Rust's on every platform (crates/ossupport).
+    fn have_msgqueue(&mut self) -> bool {
+        true
+    }
+
+    fn event_init(&mut self) -> bool {
+        self.native
+            .event_init(&PoolCall::new(self.pool, ptr::null_mut()))
+    }
+
+    fn event_available(&mut self) -> bool {
+        self.native.event_available()
+    }
+
+    fn event_wait(&mut self) -> c_int {
+        self.native.event_wait()
+    }
+
+    fn is_master(&mut self) -> bool {
+        cfg!(feature = "upstream-symbols")
+            && crate::methods::worker_type() == Some(WorkerType::Master)
+    }
+
+    /// crates/corebase's fork, with its process bookkeeping.
+    fn fork(&mut self, _: *mut WorkerRecord) -> Option<c_int> {
+        #[cfg(feature = "upstream-symbols")]
+        let pid = swoole_rs_corebase::swoole_fork(0);
+        #[cfg(not(feature = "upstream-symbols"))]
+        let pid = 0;
+        (pid >= 0).then_some(pid)
+    }
+
+    fn waitpid(&mut self, pid: c_int) -> bool {
+        self.native.waitpid(pid)
     }
 
     fn new_pipe(&mut self, worker: *mut WorkerRecord) -> Result<(), PipeError> {
@@ -1243,23 +1309,13 @@ fn new_message_box(size: usize, maxlen: usize) -> SharedChannel {
 /// `None` for the rest, which native code does (the timer, event loop and wait
 /// effects too, since crates/reactor and crates/timer depend on this crate).
 #[cfg(feature = "upstream-symbols")]
-fn effect(op: Op, arg: u64) -> Option<i64> {
-    use crate::methods::{swoole_set_worker_type, worker_type};
-    let int = arg.c_cast::<c_int>();
-    Some(match op {
-        Op::WorkerType => {
-            swoole_set_worker_type(int);
-            0
-        }
-        Op::IsMaster => i64::from(worker_type() == Some(WorkerType::Master)),
-        Op::SignalDispatch => {
-            crate::signal::swoole_signal_dispatch();
-            0
-        }
-        // crates/corebase's fork, with its process bookkeeping.
-        Op::Fork => i64::from(swoole_rs_corebase::swoole_fork(0)),
-        _ => return None,
-    })
+fn effect(op: Op, arg: u64) -> bool {
+    match op {
+        Op::WorkerType => crate::methods::swoole_set_worker_type(arg.c_cast::<c_int>()),
+        Op::SignalDispatch => crate::signal::swoole_signal_dispatch(),
+        _ => return false,
+    }
+    true
 }
 
 /// `LOG_*`'s warning, under the `ProcessPool` method upstream logged it from.
@@ -1477,12 +1533,12 @@ fn exited(pid: c_int, status: c_int) -> u64 {
 }
 
 impl<H: PoolHost> Pool<'_, H> {
-    fn op(&mut self, op: Op, arg: u64) -> i64 {
-        self.h.op(ptr::null_mut(), op, arg)
+    fn op(&mut self, op: Op, arg: u64) {
+        self.h.op(ptr::null_mut(), op, arg);
     }
 
-    fn on(&mut self, worker: *mut WorkerRecord, op: Op, arg: u64) -> i64 {
-        self.h.op(worker.cast(), op, arg)
+    fn on(&mut self, worker: *mut WorkerRecord, op: Op, arg: u64) {
+        self.h.op(worker.cast(), op, arg);
     }
 
     fn worker(&self, index: u32) -> *mut WorkerRecord {
@@ -1520,7 +1576,7 @@ impl<H: PoolHost> Pool<'_, H> {
     /// `ProcessPool::create`.
     fn create(&mut self, worker_num: u32, key: c_int, mode: u8) -> bool {
         let mode = IpcMode::from_code(mode.into());
-        if mode == IpcMode::MsgQueue && self.op(Op::HaveMsgqueue, 0) == 0 {
+        if mode == IpcMode::MsgQueue && !self.h.have_msgqueue() {
             self.op(Op::Log(Log::NoSysvmsg), 0);
             return false;
         }
@@ -1687,12 +1743,11 @@ impl<H: PoolHost> Pool<'_, H> {
             return Ok(SW_ERR);
         };
         self.with_registry(|registry| registry.unregister(old));
-        let pid = self.on(worker, Op::Fork, 0);
+        let pid = self.h.fork(worker).unwrap_or(-1);
         if pid == 0 {
             self.child(worker)?;
             return Ok(0);
         }
-        let pid = c_int::try_from(pid).unwrap_or(-1);
         if let Some(worker) = self.record().own(worker) {
             worker.set_pid(pid);
         }
@@ -1705,7 +1760,7 @@ impl<H: PoolHost> Pool<'_, H> {
     /// The forked worker: its callbacks and loop, then `exit`.
     fn child(&mut self, worker: *mut WorkerRecord) -> Result<(), Bailed> {
         self.on(worker, Op::WorkerInit, 0);
-        if self.is_async() && self.op(Op::EventInit, 0) < 0 {
+        if self.is_async() && !self.h.event_init() {
             // exit(3), as upstream.
             std::process::exit(254);
         }
@@ -1727,7 +1782,7 @@ impl<H: PoolHost> Pool<'_, H> {
     /// `ProcessPool::stop`.
     pub(crate) fn stop(&mut self, worker: *mut WorkerRecord) {
         self.on(worker, Op::WorkerShutdown, 0);
-        if self.op(Op::EventAvailable, 0) == 0 {
+        if !self.h.event_available() {
             return;
         }
         self.on(worker, Op::RemovePipe, 1);
@@ -1784,14 +1839,14 @@ impl<H: PoolHost> Pool<'_, H> {
     /// `ProcessPool::reopen_logger`.
     pub(crate) fn reopen_logger(&mut self) {
         self.op(Op::ReopenLogger, 0);
-        if self.op(Op::IsMaster, 0) != 0 {
+        if self.h.is_master() {
             self.kill_all_workers(libc::SIGWINCH);
         }
     }
 
     /// `ProcessPool::shutdown`.
     pub(crate) fn shutdown(&mut self) -> bool {
-        if self.op(Op::IsMaster, 0) != 0 {
+        if self.h.is_master() {
             self.set_running(false);
             true
         } else {
@@ -1893,7 +1948,7 @@ impl<H: PoolHost> Pool<'_, H> {
                 self.op(Op::PipeHandler, 0);
             }
         }
-        self.op(Op::EventWait, 0)
+        i64::from(self.h.event_wait())
     }
 
     /// `ProcessPool::wait`'s per-iteration service: signals, timers, then the
@@ -1978,7 +2033,7 @@ impl<H: PoolHost> Pool<'_, H> {
         // Upstream waits for the first worker only.
         if self.worker_num() > 0 {
             let pid = self.worker_at(0).pid();
-            if self.op(Op::Waitpid, u64::from(pid.cast_unsigned())) < 0 {
+            if !self.h.waitpid(pid) {
                 self.op(Op::Log(Log::WaitpidFailed), u64::from(pid.cast_unsigned()));
             }
         }
@@ -2340,8 +2395,9 @@ mod tests {
         record: Option<std::ptr::NonNull<PoolRecord>>,
     }
 
-    impl PoolHost for Script {
-        fn op(&mut self, _: *mut c_void, op: Op, arg: u64) -> i64 {
+    impl Script {
+        /// Logs `op` and answers it from the script: 1 unless it says otherwise.
+        fn ask(&mut self, op: Op, arg: u64) -> i64 {
             self.log.push((op, arg));
             if op == Op::KillTimer
                 && let Some(mut record) = self.record
@@ -2352,14 +2408,43 @@ mod tests {
             }
             self.answers.get(&op).copied().unwrap_or(1)
         }
-        fn new_pipe(&mut self, worker: *mut WorkerRecord) -> Result<(), PipeError> {
-            (self.op(worker.cast(), Op::NewPipe, 0) != 0)
+    }
+
+    impl PoolHost for Script {
+        fn op(&mut self, _: *mut c_void, op: Op, arg: u64) {
+            self.ask(op, arg);
+        }
+        fn have_msgqueue(&mut self) -> bool {
+            self.ask(Op::HaveMsgqueue, 0) != 0
+        }
+        fn event_init(&mut self) -> bool {
+            self.ask(Op::EventInit, 0) >= 0
+        }
+        fn event_available(&mut self) -> bool {
+            self.ask(Op::EventAvailable, 0) != 0
+        }
+        fn event_wait(&mut self) -> c_int {
+            self.ask(Op::EventWait, 0).c_cast::<c_int>()
+        }
+        fn is_master(&mut self) -> bool {
+            self.ask(Op::IsMaster, 0) != 0
+        }
+        fn fork(&mut self, _: *mut WorkerRecord) -> Option<c_int> {
+            c_int::try_from(self.ask(Op::Fork, 0))
+                .ok()
+                .filter(|pid| *pid >= 0)
+        }
+        fn waitpid(&mut self, pid: c_int) -> bool {
+            self.ask(Op::Waitpid, u64::from(pid.cast_unsigned())) >= 0
+        }
+        fn new_pipe(&mut self, _: *mut WorkerRecord) -> Result<(), PipeError> {
+            (self.ask(Op::NewPipe, 0) != 0)
                 .then_some(())
                 .ok_or(PipeError::Open)
         }
         #[cfg(target_os = "linux")]
-        fn send_buffer_size(&mut self, worker: *mut WorkerRecord) -> std::io::Result<c_int> {
-            let size = self.op(worker.cast(), Op::Sndbuf, 0);
+        fn send_buffer_size(&mut self, _: *mut WorkerRecord) -> std::io::Result<c_int> {
+            let size = self.ask(Op::Sndbuf, 0);
             if size < 0 {
                 Err(std::io::Error::from_raw_os_error(libc::EBADF))
             } else {
@@ -2367,17 +2452,17 @@ mod tests {
             }
         }
         fn bus_buffer(&mut self, size: usize) -> Result<(), PipeError> {
-            (self.op(ptr::null_mut(), Op::BusBuffer, size as u64) != 0)
+            (self.ask(Op::BusBuffer, size as u64) != 0)
                 .then_some(())
                 .ok_or(PipeError::Buffer)
         }
-        fn add_pipe(&mut self, worker: *mut WorkerRecord) -> Result<(), PipeError> {
-            (self.op(worker.cast(), Op::AddPipe, 0) >= 0)
+        fn add_pipe(&mut self, _: *mut WorkerRecord) -> Result<(), PipeError> {
+            (self.ask(Op::AddPipe, 0) >= 0)
                 .then_some(())
                 .ok_or(PipeError::Register)
         }
-        fn push_stop(&mut self, worker: *mut WorkerRecord) -> Result<(), PipeError> {
-            (self.op(worker.cast(), Op::PushStop, 0) >= 0)
+        fn push_stop(&mut self, _: *mut WorkerRecord) -> Result<(), PipeError> {
+            (self.ask(Op::PushStop, 0) >= 0)
                 .then_some(())
                 .ok_or(PipeError::StopMessage)
         }
@@ -2403,33 +2488,33 @@ mod tests {
         }
         fn close(&self, _: *mut c_void) {}
         fn new_box(&mut self, size: u64) -> SharedChannel {
-            if self.op(ptr::null_mut(), Op::NewMessageBox, size) == 0 {
+            if self.ask(Op::NewMessageBox, size) == 0 {
                 return SharedChannel::none();
             }
             SharedChannel::make(64, 16, 0).unwrap_or_default()
         }
         fn push_box(&mut self, message: &[u8]) -> bool {
-            self.op(ptr::null_mut(), Op::BoxPush, message.len() as u64) >= 0
+            self.ask(Op::BoxPush, message.len() as u64) >= 0
         }
         fn free_box(&mut self) {
             if let Some(mut record) = self.record
                 // SAFETY: the fixture's record, which outlives its pool.
                 && !unsafe { record.as_ref() }.message_box.is_none()
             {
-                self.op(ptr::null_mut(), Op::FreeMessageBox, 0);
+                self.ask(Op::FreeMessageBox, 0);
                 // SAFETY: as above.
                 unsafe { record.as_mut() }.message_box.free();
             }
         }
         fn alloc_workers(&mut self, count: u32) -> *mut WorkerRecord {
-            pointer(self.op(ptr::null_mut(), Op::AllocWorkers, count.into()))
+            pointer(self.ask(Op::AllocWorkers, count.into()))
         }
         fn new_message_bus(&mut self) -> Option<Box<dyn std::any::Any>> {
-            (self.op(ptr::null_mut(), Op::NewMessageBus, 0) != 0)
+            (self.ask(Op::NewMessageBus, 0) != 0)
                 .then(|| -> Box<dyn std::any::Any> { Box::new(()) })
         }
         fn current_worker(&mut self) -> *mut WorkerRecord {
-            pointer(self.op(ptr::null_mut(), Op::CurrentWorker, 0))
+            pointer(self.ask(Op::CurrentWorker, 0))
         }
     }
 

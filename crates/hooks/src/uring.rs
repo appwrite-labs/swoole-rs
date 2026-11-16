@@ -548,14 +548,6 @@ fn byte_count(result: io::Result<isize>) -> io::Result<usize> {
     result.map(isize::cast_unsigned)
 }
 
-fn count_result(result: isize) -> io::Result<c_int> {
-    if result < 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(result.c_cast::<c_int>())
-    }
-}
-
 fn file_status(result: io::Result<isize>) -> io::Result<()> {
     result.map(|_| ())
 }
@@ -853,7 +845,7 @@ pub fn waitpid(
     timeout: f64,
 ) -> io::Result<libc::pid_t> {
     if options & libc::WNOHANG != 0 {
-        return count_result(os::waitpid(pid, stat_loc, options).c_cast::<isize>());
+        return os::waitpid(pid, stat_loc, options).map(|child| child.unwrap_or(0));
     }
     let mut info = ChildInfo::default();
     let (idtype, id) = if pid > 0 {
