@@ -10,10 +10,6 @@ use libc::{c_int, c_void};
 use std::ptr;
 use swoole_rs_corebase::HookType;
 
-pub type ReactorWrite =
-    unsafe extern "C-unwind" fn(*mut c_void, *mut SocketRecord, *const c_void, usize) -> isize;
-pub type ReactorWritev =
-    unsafe extern "C-unwind" fn(*mut c_void, *mut SocketRecord, *const libc::iovec, usize) -> isize;
 /// `Reactor::close`: frees `socket`, one of the reactor's.
 pub type ReactorClose = extern "C-unwind" fn(crate::Running<'_>, crate::OwnedSocket) -> c_int;
 
@@ -43,8 +39,11 @@ pub struct ReactorFields {
     pub id: u16,
     pub max_socket: u32,
     pub last_malloc_trim_time: libc::time_t,
-    pub write: Option<ReactorWrite>,
-    pub writev: Option<ReactorWritev>,
+    /// `Reactor::write` and `writev` (C++'s function pointers): crates/tls's, which the
+    /// constructor sets, or null. Rust only reads whether they are set, then calls
+    /// crates/tls's typed write directly.
+    pub write: *const c_void,
+    pub writev: *const c_void,
     pub close: Option<ReactorClose>,
     /// `Reactor::defer_tasks`: null (`None`) until a task is deferred.
     pub defer_tasks: Option<Box<crate::ReactorDeferred>>,
@@ -209,8 +208,8 @@ impl ReactorState {
                 id: 0,
                 max_socket: 0,
                 last_malloc_trim_time: 0,
-                write: None,
-                writev: None,
+                write: ptr::null(),
+                writev: ptr::null(),
                 close: None,
                 defer_tasks: None,
                 destroy_callbacks: None,
@@ -375,8 +374,8 @@ pub fn swr_v1_reactor_new(max_event: c_int, kind: c_int) -> OwnedReactor {
     owner.fields.timeout_msec = -1;
     #[cfg(feature = "upstream-symbols")]
     {
-        owner.fields.write = Some(reactor_write);
-        owner.fields.writev = Some(reactor_writev);
+        owner.fields.write = reactor_write as *const c_void;
+        owner.fields.writev = reactor_writev as *const c_void;
         owner.fields.close = Some(reactor_close);
         owner.handlers.defaults[0].set(Some(reactor_writable_callback));
     }

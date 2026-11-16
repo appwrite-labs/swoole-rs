@@ -114,6 +114,37 @@ fn write(reactor: Running<'_>, socket: Socket<'static>, payload: WritePayload<'_
     -1
 }
 
+/// `Reactor::_write` of bytes or `Reactor::_writev` of vectors, which refuses a TLS
+/// socket: what crates/reactor's `swoole_event_write` and `swoole_event_writev` call
+/// for the write functions the reactor's constructor set: the bytes taken, `None` when
+/// it failed.
+#[cfg_attr(feature = "upstream-symbols", unsafe(no_mangle))]
+#[must_use]
+pub extern "Rust" fn swr_v1_reactor_write_payload(
+    reactor: Running<'_>,
+    socket: Socket<'static>,
+    payload: WritePayload<'_>,
+) -> Option<usize> {
+    if matches!(payload, WritePayload::Vectors(_)) && over_tls(socket) {
+        return None;
+    }
+    usize::try_from(write(reactor, socket, payload)).ok()
+}
+
+/// `Reactor::_writev`'s refusal: whether `socket` runs TLS, after warning that it does.
+fn over_tls(socket: Socket<'_>) -> bool {
+    if socket.read(swoole_rs_reactor::SocketFields::ssl).is_null() {
+        return false;
+    }
+    log::error_log(
+        log::LogLevel::SW_LOG_WARNING,
+        SW_ERROR_OPERATION_NOT_SUPPORT,
+        c"Reactor::_writev",
+        format_args!("does not support SSL"),
+    );
+    true
+}
+
 /// `ssize_t Reactor::_write(Reactor *, Socket *, const void *buf, size_t n)`.
 ///
 /// # Safety
@@ -144,19 +175,14 @@ pub unsafe extern "C-unwind" fn reactor_write(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7Reactor7_writevEPS0_PNS_7network6SocketEPK5iovecm")
 )]
+#[must_use]
 pub unsafe extern "C-unwind" fn reactor_writev(
     reactor: Running<'_>,
     socket: Socket<'static>,
     iov: *const libc::iovec,
     count: usize,
 ) -> isize {
-    if !socket.read(swoole_rs_reactor::SocketFields::ssl).is_null() {
-        log::error_log(
-            log::LogLevel::SW_LOG_WARNING,
-            SW_ERROR_OPERATION_NOT_SUPPORT,
-            c"Reactor::_writev",
-            format_args!("does not support SSL"),
-        );
+    if over_tls(socket) {
         return -1;
     }
     if count == 0 {
