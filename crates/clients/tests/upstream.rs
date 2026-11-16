@@ -2,7 +2,7 @@
 
 use std::ffi::{CStr, c_char, c_int, c_void};
 use swoole_rs_clients::address::{
-    address_string, assign_with, swr_v1_clients_address_loopback, swr_v1_clients_address_verify,
+    address_string, assign_with, is_loopback, swr_v1_clients_address_verify,
 };
 use swoole_rs_clients::dns::{
     DnsExchange, INVALID_DOMAIN, RecvError, hosts_lookup, received, set_hosts_path,
@@ -253,7 +253,7 @@ fn rust_assign(kind: c_int, host: &[u8], port: c_int, resolve_name: bool) -> ups
     }
     trace.len = address.len;
     trace.kind = address.kind;
-    trace.loopback = c_int::from(swr_v1_clients_address_loopback(&address));
+    trace.loopback = c_int::from(is_loopback(&address));
     // SAFETY: `addr` holds `size` bytes.
     let stored =
         unsafe { std::slice::from_raw_parts((&raw const address.addr).cast::<u8>(), size) };
@@ -349,7 +349,7 @@ fn check_loopback(bytes: &[u8; 16]) -> usize {
         unsafe { field.copy_from_nonoverlapping(bytes.as_ptr(), length) };
         // SAFETY: `bytes` holds 16 bytes.
         let expected = unsafe { upstream::loopback(kind, bytes.as_ptr()) };
-        let actual = swr_v1_clients_address_loopback(&address);
+        let actual = is_loopback(&address);
         assert_eq!(actual, expected, "{bytes:?} {kind}");
     }
     8

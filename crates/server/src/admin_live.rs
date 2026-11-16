@@ -10,7 +10,7 @@ use core::ffi::c_int;
 use core::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use std::sync::OnceLock;
-use swoole_rs_clients::address::{swr_v1_clients_address_port, with_host};
+use swoole_rs_clients::address::{address_port, with_host};
 use swoole_rs_corebase::constants::SW_SESSION_LIST_SIZE;
 use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_process::worker_record::WorkerRecord;
@@ -61,7 +61,7 @@ fn address(info: &SocketAddress) -> String {
 
 /// `Address::get_port()`.
 fn port(info: &SocketAddress) -> i64 {
-    swr_v1_clients_address_port(info).into()
+    address_port(info).into()
 }
 
 /// `Socket::get_out_buffer_length()`.

@@ -10,7 +10,7 @@ use std::{
     rc::Rc,
 };
 use swoole_rs_clients::{
-    address::{swr_v1_clients_address_port, with_host},
+    address::{address_port, with_host},
     client::{self, Client},
 };
 use swoole_rs_corebase::CCast;
@@ -642,7 +642,7 @@ pub(crate) fn net_address(socket: Net<'_>) -> (CString, c_int) {
 /// The address and port of `address`: `get_addr()` and `get_port()`.
 pub(crate) fn address(address: &SocketAddress) -> (CString, c_int) {
     let host = with_host(address, CStr::to_owned);
-    (host, swr_v1_clients_address_port(address))
+    (host, address_port(address).into())
 }
 
 /// `swoole_error_log(SW_LOG_WARNING, SW_ERROR_PACKAGE_LENGTH_TOO_LARGE, ...)`
