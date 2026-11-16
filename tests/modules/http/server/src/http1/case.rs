@@ -105,8 +105,10 @@ const _: () = assert!(
     offset_of!(SocketHead, removed) == 18
         && offset_of!(SocketHead, chunk_size) == 36
         && offset_of!(SocketHead, object) == 64
-        && size_of::<Address>() == 120
 );
+// `sockaddr_un` is shorter on the BSDs, so the address is Linux's size only there.
+#[cfg(target_os = "linux")]
+const _: () = assert!(size_of::<Address>() == 120);
 pub(super) const SOCKET_INFO: usize = 176;
 
 /// A timer's data: what upstream's lambdas capture.
