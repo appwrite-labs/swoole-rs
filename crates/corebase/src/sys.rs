@@ -736,10 +736,10 @@ pub fn unlink(path: &CStr) -> std::io::Result<()> {
 /// `bytes` to C's `stdout`, which native code's own `printf` shares, so the two
 /// keep their order.
 pub fn print(bytes: &[u8]) {
+    let stdout = crate::Stream::stdout();
     for chunk in bytes.chunks(c_int::MAX.unsigned_abs() as usize) {
-        let length = c_int::try_from(chunk.len()).unwrap_or(c_int::MAX);
-        // SAFETY: "%.*s" reads at most `length` bytes of `chunk`.
-        unsafe { libc::printf(c"%.*s".as_ptr(), length, chunk.as_ptr()) };
+        // What `printf("%.*s", length, chunk)` writes: the chunk up to its first NUL.
+        stdout.write(chunk.split(|&byte| byte == 0).next().unwrap_or_default());
     }
 }
 
