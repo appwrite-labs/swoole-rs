@@ -215,11 +215,7 @@ pub(crate) fn join_reactor_threads(serv: view::Server<'_>) {
         };
         // Only the field is read: the thread itself holds its record meanwhile.
         if let Some(thread) = state.tables_ref().reactor_thread(usize::from(id)) {
-            let notify = thread.notify_pipe.get();
-            // SAFETY: null or the thread's notify pipe, which it keeps until the server
-            // joins it, after this notice.
-            let pipe = unsafe { Socket::from_ptr(notify) };
-            send_event(pipe, 0, ServerEvent::Shutdown);
+            send_event(thread.notify_pipe.get(), 0, ServerEvent::Shutdown);
         }
         joining.join().unwrap_or_default();
     }
