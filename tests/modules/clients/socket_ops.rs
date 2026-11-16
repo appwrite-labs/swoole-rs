@@ -1,6 +1,6 @@
 use super::*;
 
-struct NativeClient(Handle);
+struct NativeClient(Handle<'static>);
 
 impl Drop for NativeClient {
     fn drop(&mut self) {
@@ -57,7 +57,7 @@ fn native_async_datagram_receive_records_the_sender_for_both_buffer_kinds() {
     let mut initialized = [0xa5; 6];
     assert_eq!(recv(this, &mut initialized, 0), Some(3));
     assert_eq!(initialized, [b'A', 0, b'B', 0xa5, 0xa5, 0xa5]);
-    let sender = |this: Handle| u16::from_be(this.record().remote_addr.addr.v4().sin_port);
+    let sender = |this: Handle<'_>| u16::from_be(this.record().remote_addr.addr.v4().sin_port);
     assert_eq!(sender(this), peer.local_addr().unwrap().port());
     peer.send_to(b"C\0D", (std::net::Ipv4Addr::LOCALHOST, port))
         .unwrap();

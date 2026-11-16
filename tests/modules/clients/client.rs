@@ -126,7 +126,7 @@ type ReceiveSlot<'a> = RefCell<Option<Box<dyn FnMut(&Client<'a>, &[u8]) + 'a>>>;
 
 /// `network::Client`, deleted on drop; `created`/`connected` are `SyncClient`'s.
 pub(super) struct Client<'a> {
-    state: Handle,
+    state: Handle<'static>,
     created: Cell<bool>,
     connected: Cell<bool>,
     sync: bool,
@@ -263,7 +263,7 @@ impl<'a> Client<'a> {
         })
     }
 
-    fn handle(&self) -> Handle {
+    fn handle(&self) -> Handle<'static> {
         self.state
     }
 

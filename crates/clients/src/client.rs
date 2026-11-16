@@ -13,6 +13,7 @@
 use crate::protocol::{Package, Protocol};
 use core::cell::{Cell, OnceCell};
 use core::ffi::{c_char, c_int, c_void};
+use core::marker::PhantomData;
 use core::ptr::NonNull;
 use std::ffi::{CStr, CString};
 use std::rc::Rc;
@@ -146,7 +147,7 @@ const ERROR_HTTP_PROXY_HANDSHAKE_ERROR: c_int =
 
 /// One of `Protocol::recv_with_length_protocol` and `recv_with_eof_protocol` over a
 /// live client's protocol, socket and input buffer ([`Handle::with_framed`]).
-pub type Framed = fn(Handle) -> c_int;
+pub type Framed = fn(Handle<'_>) -> c_int;
 
 /// The framed receives crates/ports defines; ports depends on this crate, so
 /// `swoole_init` (crates/ffi) registers them with [`set_host`]. Only a
@@ -321,9 +322,14 @@ impl Client {
 
 /// A client under an operation: a raw pointer, since a callback may free it.
 #[derive(Clone, Copy)]
-pub struct Handle(*mut Client);
+pub struct Handle<'a>(*mut Client, PhantomData<&'a Client>);
 
-impl Handle {
+impl Handle<'_> {
+    /// A handle on `client`, which came from [`create`].
+    const fn raw(client: *mut Client) -> Self {
+        Self(client, PhantomData)
+    }
+
     fn get(self) -> &'static Client {
         // SAFETY: the client is live between callbacks; callers drop the reference
         // before any effect that may release it.
@@ -627,7 +633,7 @@ impl Handle {
     reason = "`OnPackage` lends the package by value"
 )]
 fn on_package(_: *const Protocol, socket: Socket<'_>, package: Package<'_>) -> c_int {
-    Handle(socket.read(|socket| socket.object).cast()).call(
+    Handle::raw(socket.read(|socket| socket.object).cast()).call(
         ClientEvent::Receive,
         package.as_ptr().cast(),
         package.len(),
@@ -640,9 +646,9 @@ fn on_package(_: *const Protocol, socket: Socket<'_>, package: Package<'_>) -> c
 }
 
 /// The client of the reactor event's socket, None without a socket.
-fn event_client(event: &Event) -> Option<Handle> {
+fn event_client(event: &Event) -> Option<Handle<'static>> {
     let socket = event.socket()?;
-    Some(Handle(socket.read(|socket| socket.object).cast()))
+    Some(Handle::raw(socket.read(|socket| socket.object).cast()))
 }
 
 /// A handler's success as the reactor's `SW_OK`/`SW_ERR`.
@@ -702,11 +708,15 @@ fn is_dgram(kind: c_int) -> bool {
 /// None with errno set when the socket could not be made (logged as upstream's
 /// constructor does).
 #[must_use]
-pub fn create(kind: c_int, is_async: bool) -> Option<Handle> {
+pub fn create(kind: c_int, is_async: bool) -> Option<Handle<'static>> {
     create_with(kind, is_async, &SocketOps::NATIVE)
 }
 
-fn create_with(kind: c_int, is_async: bool, socket_ops: &'static SocketOps) -> Option<Handle> {
+fn create_with(
+    kind: c_int,
+    is_async: bool,
+    socket_ops: &'static SocketOps,
+) -> Option<Handle<'static>> {
     let fd_type = if is_stream(kind) {
         FD_STREAM_CLIENT
     } else {
@@ -769,14 +779,14 @@ fn create_with(kind: c_int, is_async: bool, socket_ops: &'static SocketOps) -> O
     if let Some((domain, _)) = socket_domain_and_type(kind) {
         client.domain = domain;
     }
-    let client = Handle(Box::into_raw(client));
+    let client = Handle::raw(Box::into_raw(client));
     client
         .socket()
         .edit(|record| record.object = client.0.cast());
     Some(client)
 }
 
-impl Handle {
+impl Handle<'_> {
     /// `f` over the protocol, socket and input buffer a framed receive acts on, live
     /// while the client is (until [`Handle::free`]): the record's protocol in place, as
     /// its callbacks take it by address, and the input buffer an async connect made.
@@ -896,7 +906,7 @@ impl Handle {
 
 /// The client protocol's length of the packet in `data`.
 #[must_use]
-pub fn package_length(this: Handle, data: &[u8]) -> isize {
+pub fn package_length(this: Handle<'_>, data: &[u8]) -> isize {
     let record = this.record();
     let Some(get) = record.protocol.get_package_length else {
         return -1;
@@ -911,7 +921,7 @@ pub fn package_length(this: Handle, data: &[u8]) -> isize {
     clippy::must_use_candidate,
     reason = "most callers close for the effect"
 )]
-pub fn close(this: Handle) -> bool {
+pub fn close(this: Handle<'_>) -> bool {
     if this.flag(Flag::Closed) {
         return false;
     }
@@ -955,7 +965,7 @@ pub fn close(this: Handle) -> bool {
 
 /// `Client::shutdown(how)`. Upstream's `SHUT_RDWR` records only a read shutdown.
 #[must_use]
-pub fn shutdown(this: Handle, how: c_int) -> bool {
+pub fn shutdown(this: Handle<'_>, how: c_int) -> bool {
     if this.flag(Flag::Closed) {
         return false;
     }
@@ -982,7 +992,7 @@ pub fn shutdown(this: Handle, how: c_int) -> bool {
 
 /// `Client::sleep()`: stop reading (keeping write interest). Whether it worked.
 #[must_use]
-pub fn sleep(this: Handle) -> bool {
+pub fn sleep(this: Handle<'_>) -> bool {
     if this
         .socket()
         .read(|socket| socket.events)
@@ -996,7 +1006,7 @@ pub fn sleep(this: Handle) -> bool {
 
 /// `Client::wakeup()`: read again. Whether it worked.
 #[must_use]
-pub fn wakeup(this: Handle) -> bool {
+pub fn wakeup(this: Handle<'_>) -> bool {
     if this
         .socket()
         .read(|socket| socket.events)
@@ -1011,13 +1021,13 @@ pub fn wakeup(this: Handle) -> bool {
 /// `swoole_event_set(socket, SW_EVENT_WRITE)`, to finish a handshake: whether it
 /// worked.
 #[must_use]
-pub fn ssl_wait(this: Handle) -> bool {
+pub fn ssl_wait(this: Handle<'_>) -> bool {
     this.event(EventOp::Set, Events::WRITE)
 }
 
 /// `Client::enable_ssl_encrypt()`: a TLS context, TLS on, and DTLS for a datagram
 /// client. The context, or None when TLS was already on.
-fn enable_ssl(this: Handle) -> Option<NonNull<OwnedTlsContext>> {
+fn enable_ssl(this: Handle<'_>) -> Option<NonNull<OwnedTlsContext>> {
     // A new context and the client's reference to it.
     if this.get().tls.set(TlsContext::new()).is_err() {
         return None;
@@ -1041,7 +1051,7 @@ pub fn set_proxy(
     password: &[u8],
 ) {
     // Only read through, as `Handle`'s methods do.
-    let this = Handle(core::ptr::from_ref(client).cast_mut());
+    let this = Handle::raw(core::ptr::from_ref(client).cast_mut());
     let port = port.c_cast::<c_int>();
     let which = if http { Proxy::Http } else { Proxy::Socks5 };
     let proxy = if http {
@@ -1063,7 +1073,7 @@ pub fn set_proxy(
 }
 
 /// `Client::enable_dtls()`: the context's protocols become DTLS.
-fn enable_dtls(this: Handle) {
+fn enable_dtls(this: Handle<'_>) {
     this.edit_tls(|fields, _| fields.protocols = SSL_DTLS);
     this.socket().edit(|socket| {
         socket.dtls = true;
@@ -1078,7 +1088,7 @@ fn tls_freeze(owner: &TlsContext) -> Option<TlsSettings> {
 
 /// `Client::ssl_handshake()`.
 #[must_use]
-pub fn ssl_handshake(this: Handle) -> bool {
+pub fn ssl_handshake(this: Handle<'_>) -> bool {
     if this.tls_state() == SSL_STATE_READY {
         return false;
     }
@@ -1125,7 +1135,7 @@ pub fn ssl_handshake(this: Handle) -> bool {
 /// `Client::ssl_verify(allow_self_signed)`: the peer's certificate, and its host
 /// when the context names one.
 #[must_use]
-pub fn ssl_verify(this: Handle, allow_self_signed: bool) -> bool {
+pub fn ssl_verify(this: Handle<'_>, allow_self_signed: bool) -> bool {
     if !(this.get().socket_ops.tls_verify)(this.socket(), allow_self_signed) {
         return false;
     }
@@ -1136,7 +1146,7 @@ pub fn ssl_verify(this: Handle, allow_self_signed: bool) -> bool {
 /// `Client_inet_addr`: the first call routes through the proxies and records the
 /// server; every call assigns `server_addr`, or waits for DNS. False when the
 /// address does not assign and no DNS wait covers it.
-fn inet_addr(this: Handle, host: &CStr, port: c_int) -> bool {
+fn inet_addr(this: Handle<'_>, host: &CStr, port: c_int) -> bool {
     let (mut host, mut port) = (host, port);
     // The last proxy's host, NUL-terminated, which `host` borrows.
     let mut proxy_host;
@@ -1171,7 +1181,7 @@ fn inet_addr(this: Handle, host: &CStr, port: c_int) -> bool {
 /// Dispatches a `GethostbynameRequest` for the server host to the async pool,
 /// completing in [`resolved`].
 /// Whether the pool took the lookup.
-fn dns_lookup(this: Handle) -> bool {
+fn dns_lookup(this: Handle<'_>) -> bool {
     // The request copies the host's bytes, so nothing points into it once it is back.
     let host = this.get().server_host.take();
     let name = host.as_deref().map_or(&b""[..], CStr::to_bytes);
@@ -1179,7 +1189,8 @@ fn dns_lookup(this: Handle) -> bool {
     this.get().server_host.set(host);
     let id = LAST_LOOKUP.get() + 1;
     LAST_LOOKUP.set(id);
-    with_awaiting(|awaiting| awaiting.push((id, this)));
+    // The entry outlives this call; `free` drops it with the client.
+    with_awaiting(|awaiting| awaiting.push((id, Handle::raw(this.0))));
     let lookup = Lookup(id);
     // The pool's copy holds its own reference to the request.
     let dispatched = (native_host().dispatch_dns)(lookup, &request);
@@ -1213,11 +1224,11 @@ thread_local! {
     static LAST_LOOKUP: Cell<usize> = const { Cell::new(0) };
     /// The clients awaiting a lookup on this thread, each with its lookup's id;
     /// [`Handle::free`] drops a client's entry.
-    static AWAITING: Cell<Vec<(usize, Handle)>> = const { Cell::new(Vec::new()) };
+    static AWAITING: Cell<Vec<(usize, Handle<'static>)>> = const { Cell::new(Vec::new()) };
 }
 
 /// `f` over the clients awaiting a lookup, taken out and put back.
-fn with_awaiting<R>(f: impl FnOnce(&mut Vec<(usize, Handle)>) -> R) -> R {
+fn with_awaiting<R>(f: impl FnOnce(&mut Vec<(usize, Handle<'static>)>) -> R) -> R {
     let mut awaiting = AWAITING.take();
     let result = f(&mut awaiting);
     AWAITING.set(awaiting);
@@ -1225,7 +1236,7 @@ fn with_awaiting<R>(f: impl FnOnce(&mut Vec<(usize, Handle)>) -> R) -> R {
 }
 
 /// The client awaiting `lookup`, now no longer: none once it was freed.
-fn awaiting(lookup: Lookup) -> Option<Handle> {
+fn awaiting(lookup: Lookup) -> Option<Handle<'static>> {
     with_awaiting(|awaiting| {
         let at = awaiting.iter().position(|&(id, _)| id == lookup.0)?;
         Some(awaiting.swap_remove(at).1)
@@ -1245,7 +1256,7 @@ pub fn resolve_completed(lookup: Lookup, request: &ResolverRequest, error: c_int
 /// `Client::connect(host, port, timeout, flags)`: `host` is NUL-terminated.
 /// Whether it connected, or, async, began to.
 #[must_use]
-pub fn connect(this: Handle, host: &CStr, port: c_int, timeout: f64, flags: c_int) -> bool {
+pub fn connect(this: Handle<'_>, host: &CStr, port: c_int, timeout: f64, flags: c_int) -> bool {
     if !this.flag(Flag::Stream) {
         udp_connect(this, host, port, timeout, flags)
     } else if this.flag(Flag::Async) {
@@ -1256,7 +1267,13 @@ pub fn connect(this: Handle, host: &CStr, port: c_int, timeout: f64, flags: c_in
 }
 
 /// `Client_tcp_connect_sync`: connect, then the proxy handshake and TLS.
-fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblock: bool) -> bool {
+fn tcp_connect_sync(
+    this: Handle<'_>,
+    host: &CStr,
+    port: c_int,
+    timeout: f64,
+    nonblock: bool,
+) -> bool {
     this.set_timeout(timeout);
     if timeout > 0.0 {
         (this.get().socket_ops.kernel_timeout)(this, timeout);
@@ -1322,7 +1339,7 @@ fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblo
 }
 
 /// `Client_tcp_connect_async`: a nonblocking connect finished by the write handler.
-fn tcp_connect_async(this: Handle, host: &CStr, port: c_int, timeout: f64) -> bool {
+fn tcp_connect_async(this: Handle<'_>, host: &CStr, port: c_int, timeout: f64) -> bool {
     if ![
         ClientEvent::Connect,
         ClientEvent::Error,
@@ -1383,7 +1400,13 @@ fn tcp_connect_async(this: Handle, host: &CStr, port: c_int, timeout: f64) -> bo
 }
 
 /// `Client_udp_connect`.
-fn udp_connect(this: Handle, host: &CStr, port: c_int, timeout: f64, udp_connect: c_int) -> bool {
+fn udp_connect(
+    this: Handle<'_>,
+    host: &CStr,
+    port: c_int,
+    timeout: f64,
+    udp_connect: c_int,
+) -> bool {
     let is_async = this.flag(Flag::Async);
     this.set_timeout(timeout);
     if !is_async && timeout > 0.0 {
@@ -1451,7 +1474,7 @@ fn udp_connect(this: Handle, host: &CStr, port: c_int, timeout: f64, udp_connect
 /// Binds a Unix datagram client to `/tmp/swoole-client.<pid>.<fd>.sock`, its
 /// address kept in the socket's `info` for the unlink on close; false, with a
 /// warning, when the bind fails.
-fn bind_unix(this: Handle) -> bool {
+fn bind_unix(this: Handle<'_>) -> bool {
     let socket = this.socket();
     let pid = std::process::id();
     let path = format!("/tmp/swoole-client.{pid}.{}.sock", socket.fd());
@@ -1495,13 +1518,13 @@ struct SocketOps {
     write: fn(Socket<'static>, &[u8]) -> Option<usize>,
     writable: extern "C-unwind" fn(Running<'_>, &mut Event) -> c_int,
     make_socket: fn(c_int, c_int, c_int) -> Option<OwnedSocket>,
-    kernel_timeout: fn(Handle, f64),
-    assign: fn(Handle, &CStr, c_int, bool) -> bool,
-    connect_async: fn(Handle) -> Connect,
-    connect: fn(Handle, ConnectMode) -> bool,
-    event: fn(Handle, EventOp, Events) -> bool,
-    socket_error: fn(Handle, &mut c_int) -> bool,
-    timer_add: fn(f64, Handle) -> Option<swoole_rs_timer::Held>,
+    kernel_timeout: fn(Handle<'_>, f64),
+    assign: fn(Handle<'_>, &CStr, c_int, bool) -> bool,
+    connect_async: fn(Handle<'_>) -> Connect,
+    connect: fn(Handle<'_>, ConnectMode) -> bool,
+    event: fn(Handle<'_>, EventOp, Events) -> bool,
+    socket_error: fn(Handle<'_>, &mut c_int) -> bool,
+    timer_add: fn(f64, Handle<'_>) -> Option<swoole_rs_timer::Held>,
     timer_delete: fn(swoole_rs_timer::Held),
     tls_freeze: fn(&TlsContext) -> Option<TlsSettings>,
     tls_session: fn(&TlsSettings, Socket<'_>) -> bool,
@@ -1545,6 +1568,8 @@ impl SocketOps {
         event: ops::event,
         socket_error: ops::socket_error,
         timer_add: |timeout, this| {
+            // `free` deletes the timer with the client.
+            let this = Handle::raw(this.0);
             swoole_rs_timer::add_fn_sec(timeout, false, move || on_timeout(this))
         },
         timer_delete: swoole_rs_timer::del_id,
@@ -1574,7 +1599,7 @@ mod ops {
 
     /// `socket->set_kernel_timeout(timeout)`, the write timeout only once the
     /// read one is set.
-    pub(super) fn kernel_timeout(this: Handle, timeout: f64) {
+    pub(super) fn kernel_timeout(this: Handle<'_>, timeout: f64) {
         this.socket().edit(|socket| {
             if socket_upstream::socket_set_kernel_read_timeout(socket, timeout) {
                 socket_upstream::socket_set_kernel_write_timeout(socket, timeout);
@@ -1583,7 +1608,7 @@ mod ops {
     }
 
     /// `server_addr.assign(socket_type, host, port, resolve)`.
-    pub(super) fn assign(this: Handle, host: &CStr, port: c_int, resolve: bool) -> bool {
+    pub(super) fn assign(this: Handle<'_>, host: &CStr, port: c_int, resolve: bool) -> bool {
         let Some(address) = address_of(this.socket_type(), host, port, resolve) else {
             return false;
         };
@@ -1593,7 +1618,7 @@ mod ops {
     }
 
     /// `connect_async` of the socket to `server_addr`; errno is the call's.
-    pub(super) fn connect_async(this: Handle) -> Connect {
+    pub(super) fn connect_async(this: Handle<'_>) -> Connect {
         let address = &this.record().server_addr;
         this.socket()
             .edit(|socket| socket_upstream::socket_connect_async(socket, address))
@@ -1601,7 +1626,7 @@ mod ops {
 
     /// Connects the socket to `server_addr`, by `mode`: whether it connected, else
     /// errno is the call's.
-    pub(super) fn connect(this: Handle, mode: ConnectMode) -> bool {
+    pub(super) fn connect(this: Handle<'_>, mode: ConnectMode) -> bool {
         let socket = this.socket();
         let address = &this.record().server_addr;
         match mode {
@@ -1613,7 +1638,7 @@ mod ops {
     /// The reactor's `swoole_event_*` on the socket: whether it worked, false without a
     /// reactor. The client's socket stays live while it is registered: `close` deletes
     /// it from the reactor before the record is freed.
-    pub(super) fn event(this: Handle, op: EventOp, events: swoole_rs_reactor::Events) -> bool {
+    pub(super) fn event(this: Handle<'_>, op: EventOp, events: swoole_rs_reactor::Events) -> bool {
         let socket = this.socket();
         match op {
             EventOp::Add => event_api::event_add(socket, events),
@@ -1624,7 +1649,7 @@ mod ops {
     }
 
     /// `getsockopt(SOL_SOCKET, SO_ERROR)` into `error`: whether it succeeded.
-    pub(super) fn socket_error(this: Handle, error: &mut c_int) -> bool {
+    pub(super) fn socket_error(this: Handle<'_>, error: &mut c_int) -> bool {
         let fd = this.socket().fd();
         swoole_rs_corebase::sys::getsockopt(fd, libc::SOL_SOCKET, libc::SO_ERROR, error).is_ok()
     }
@@ -1652,7 +1677,7 @@ fn address_of(kind: c_int, host: &CStr, port: c_int, resolve: bool) -> Option<So
 /// `Client::sendto(host, port, data, length)`: one datagram to the host, resolved
 /// unless the client is async.
 #[must_use]
-pub fn sendto(this: Handle, host: &CStr, port: c_int, data: &[u8]) -> bool {
+pub fn sendto(this: Handle<'_>, host: &CStr, port: c_int, data: &[u8]) -> bool {
     if !is_dgram(this.socket_type()) {
         log::set_last_error(ERROR_OPERATION_NOT_SUPPORT);
         log::warning(
@@ -1674,7 +1699,7 @@ pub fn sendto(this: Handle, host: &CStr, port: c_int, data: &[u8]) -> bool {
 
 /// `Client::send(data, length, flags)`: the bytes sent, or none (`SW_ERR`).
 #[must_use]
-pub fn send(this: Handle, data: &[u8], flags: c_int) -> Option<usize> {
+pub fn send(this: Handle<'_>, data: &[u8], flags: c_int) -> Option<usize> {
     if this.flag(Flag::Dtls) || this.flag(Flag::Stream) && !this.flag(Flag::Async) {
         (this.get().socket_ops.send_sync)(this.socket(), data, flags)
     } else if this.flag(Flag::Stream) {
@@ -1686,7 +1711,7 @@ pub fn send(this: Handle, data: &[u8], flags: c_int) -> Option<usize> {
 }
 
 /// `Client_tcp_send_async`: queue on the reactor, raising `onBufferFull` at the high watermark.
-fn send_async(this: Handle, data: &[u8]) -> Option<usize> {
+fn send_async(this: Handle<'_>, data: &[u8]) -> Option<usize> {
     let mut n = Some(data.len());
     // The live client's socket, deleted from the reactor before its record is freed.
     if (this.get().socket_ops.write)(this.socket(), data).is_none() {
@@ -1708,7 +1733,7 @@ fn send_async(this: Handle, data: &[u8]) -> Option<usize> {
 
 /// `Client::sendfile(file, offset, length)`.
 #[must_use]
-pub fn sendfile(this: Handle, file: &CStr, offset: i64, length: usize) -> bool {
+pub fn sendfile(this: Handle<'_>, file: &CStr, offset: i64, length: usize) -> bool {
     if !this.flag(Flag::Stream) {
         return false;
     }
@@ -1728,7 +1753,7 @@ pub fn sendfile(this: Handle, file: &CStr, offset: i64, length: usize) -> bool {
 
 /// `Client::recv(data, length, flags)`: the bytes read, or none (`SW_ERR`).
 #[must_use]
-pub fn recv(this: Handle, buffer: &mut [impl ReadSlot], flags: c_int) -> Option<usize> {
+pub fn recv(this: Handle<'_>, buffer: &mut [impl ReadSlot], flags: c_int) -> Option<usize> {
     if this.flag(Flag::Stream) || this.flag(Flag::Dtls) {
         let n = (this.get().socket_ops.recv_sync)(this.socket(), ReadSlot::buffer(buffer), flags);
         // A poll timeout reads as recv(2)'s EAGAIN, as it did before poll.
@@ -1746,7 +1771,7 @@ pub fn recv(this: Handle, buffer: &mut [impl ReadSlot], flags: c_int) -> Option<
 /// [`recv`] into lent room, counting the prefix that the receive initialized.
 #[inline]
 pub fn recv_spare(
-    this: Handle,
+    this: Handle<'_>,
     out: &mut swoole_rs_corebase::lent::Spare<'_>,
     flags: c_int,
 ) -> Option<usize> {
@@ -1756,7 +1781,7 @@ pub fn recv_spare(
 }
 
 /// A handshake in the read or write handler failed: close and report.
-fn connect_failed(this: Handle) -> bool {
+fn connect_failed(this: Handle<'_>) -> bool {
     this.set(Flag::Active, false);
     close(this);
     if this.has(ClientEvent::Error) {
@@ -1767,7 +1792,7 @@ fn connect_failed(this: Handle) -> bool {
 
 /// `Client_onStreamRead`: the proxy and TLS handshakes that finish a connect,
 /// then framed or plain reads, on a live async stream client with its input buffer.
-fn on_read(this: Handle) -> bool {
+fn on_read(this: Handle<'_>) -> bool {
     let buf = this.input_tail();
     let do_ssl_handshake = this.flag(Flag::OpenSsl);
     let http = this.proxy_state(Proxy::Http);
@@ -1862,7 +1887,7 @@ fn on_read(this: Handle) -> bool {
 }
 
 /// `Client_onDgramRead`, on a live async datagram client.
-fn on_datagram(this: Handle) -> bool {
+fn on_datagram(this: Handle<'_>) -> bool {
     #[expect(
         clippy::large_stack_arrays,
         reason = "upstream's stack buffer: nothing to drop if the callback longjmps"
@@ -1883,7 +1908,7 @@ fn on_datagram(this: Handle) -> bool {
 
 /// `Client_onWrite`: drain queued output, or finish an async connect, on a live
 /// async stream client; `reactor` and `event` are the handler's.
-fn on_write(this: Handle, reactor: Running<'_>, event: &mut Event) -> bool {
+fn on_write(this: Handle<'_>, reactor: Running<'_>, event: &mut Event) -> bool {
     if this.flag(Flag::Active) {
         if this.flag(Flag::OpenSsl) && this.tls_state() == SSL_STATE_WAIT_STREAM {
             if !ssl_handshake(this) {
@@ -1949,7 +1974,7 @@ fn on_write(this: Handle, reactor: Running<'_>, event: &mut Event) -> bool {
 }
 
 /// The write handler's failure: unlike the read handler's, `onError` is required.
-fn write_failed(this: Handle) -> bool {
+fn write_failed(this: Handle<'_>) -> bool {
     this.set(Flag::Active, false);
     close(this);
     this.call(ClientEvent::Error, core::ptr::null(), 0);
@@ -1957,7 +1982,7 @@ fn write_failed(this: Handle) -> bool {
 }
 
 /// `Client_onError`, as [`on_write`].
-fn on_error(this: Handle, reactor: Running<'_>, event: &mut Event) -> bool {
+fn on_error(this: Handle<'_>, reactor: Running<'_>, event: &mut Event) -> bool {
     if this.flag(Flag::Active) {
         return close(this);
     }
@@ -1966,7 +1991,7 @@ fn on_error(this: Handle, reactor: Running<'_>, event: &mut Event) -> bool {
 }
 
 /// `Client_onTimeout`: the async connect of the client timed out.
-fn on_timeout(this: Handle) {
+fn on_timeout(this: Handle<'_>) {
     log::set_last_error(libc::ETIMEDOUT);
     this.get().timer.set(None);
     if this.flag(Flag::OpenSsl) && this.tls_state() != SSL_STATE_READY {
@@ -1987,7 +2012,7 @@ fn on_timeout(this: Handle) {
 
 /// Connects to the resolved `address`, or reports the failure through `onError`.
 /// `this` is a live async client waiting for DNS.
-fn resolved(this: Handle, error: c_int, address: &CStr) {
+fn resolved(this: Handle<'_>, error: c_int, address: &CStr) {
     this.set(Flag::WaitDns, false);
     this.set(Flag::DnsCompleted, true);
     if error == 0 {

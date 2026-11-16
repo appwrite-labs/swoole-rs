@@ -72,10 +72,10 @@ pub(super) mod ops {
         Some(socket)
     }
 
-    pub(in super::super) fn kernel_timeout(_: Handle, timeout: f64) {
+    pub(in super::super) fn kernel_timeout(_: Handle<'_>, timeout: f64) {
         log(format!("kernel {timeout}"));
     }
-    pub(in super::super) fn assign(_: Handle, host: &CStr, port: c_int, resolve: bool) -> bool {
+    pub(in super::super) fn assign(_: Handle<'_>, host: &CStr, port: c_int, resolve: bool) -> bool {
         let host = host.to_string_lossy().into_owned();
         log(format!("assign {host}:{port} {resolve}"));
         if host == "dns.test" {
@@ -84,7 +84,7 @@ pub(super) mod ops {
         }
         true
     }
-    pub(in super::super) fn connect(_: Handle, mode: ConnectMode) -> bool {
+    pub(in super::super) fn connect(_: Handle<'_>, mode: ConnectMode) -> bool {
         log(format!("connect {mode:?}"));
         let connected = mock(|m| m.connect.pop()).unwrap_or(true);
         if !connected {
@@ -92,19 +92,19 @@ pub(super) mod ops {
         }
         connected
     }
-    pub(in super::super) fn connect_async(_: Handle) -> Connect {
+    pub(in super::super) fn connect_async(_: Handle<'_>) -> Connect {
         log("connect Async");
         mock(|m| m.connect_async.pop()).unwrap_or(Connect::Error)
     }
     pub(in super::super) fn event(
-        _: Handle,
+        _: Handle<'_>,
         op: EventOp,
         events: swoole_rs_reactor::Events,
     ) -> bool {
         log(format!("event {op:?} {events}"));
         true
     }
-    pub(in super::super) fn socket_error(_: Handle, error: &mut c_int) -> bool {
+    pub(in super::super) fn socket_error(_: Handle<'_>, error: &mut c_int) -> bool {
         *error = mock(|m| m.socket_error);
         true
     }
@@ -242,7 +242,7 @@ fn listener(event: ClientEvent, _: *const c_char, length: usize) {
 }
 /// The connect timer: logs, adds nothing.
 #[expect(clippy::unnecessary_wraps, reason = "crates/timer's signature")]
-pub(super) fn timer_add(timeout: f64, _: Handle) -> Option<swoole_rs_timer::Held> {
+pub(super) fn timer_add(timeout: f64, _: Handle<'_>) -> Option<swoole_rs_timer::Held> {
     log(format!("timer {timeout}"));
     Some(swoole_rs_timer::Held::detached(1))
 }
@@ -374,7 +374,7 @@ fn client(kind: c_int, is_async: bool, callbacks: bool) -> *mut Client {
 
 fn free(client: *mut Client) {
     // SAFETY: the test's live client, not used afterwards.
-    unsafe { Handle(client).free() };
+    unsafe { Handle::raw(client).free() };
 }
 
 /// `Client_onWrite` with a reactor and event the mocks ignore.
@@ -382,7 +382,7 @@ fn writable(client: *mut Client) -> bool {
     let mut event = swoole_rs_reactor::Event::of(0, 0, 0, None);
     // SAFETY: the mocked effects never touch the reactor.
     let reactor = unsafe { Running::new(core::ptr::null_mut()) };
-    on_write(Handle(client), reactor, &mut event)
+    on_write(Handle::raw(client), reactor, &mut event)
 }
 
 fn flag(client: *mut Client, name: Flag) -> bool {
@@ -391,7 +391,7 @@ fn flag(client: *mut Client, name: Flag) -> bool {
 }
 
 fn connect(client: *mut Client, host: &CStr, timeout: f64, flags: c_int) -> c_int {
-    if super::connect(Handle(client), host, 80, timeout, flags) {
+    if super::connect(Handle::raw(client), host, 80, timeout, flags) {
         OK
     } else {
         ERR
@@ -423,10 +423,10 @@ fn a_call_measures_with_the_protocol_and_frees_the_client() {
         2 * isize::try_from(packet.bytes().len()).unwrap()
     }
     let client = client(1, true, false);
-    Handle(client)
+    Handle::raw(client)
         .get()
         .edit_record(|record| record.protocol.get_package_length = Some(twice));
-    assert_eq!(package_length(Handle(client), b"abc"), 6);
+    assert_eq!(package_length(Handle::raw(client), b"abc"), 6);
     free(client);
     assert_eq!(taken(), ["event Del 0", "free"]);
 }
@@ -434,11 +434,11 @@ fn a_call_measures_with_the_protocol_and_frees_the_client() {
 #[test]
 fn async_close_detaches_then_runs_on_close_once() {
     let client = client(1, true, true);
-    Handle(client).set(Flag::Active, true);
-    assert!(!close(Handle(client)), "close(-1) fails");
+    Handle::raw(client).set(Flag::Active, true);
+    assert!(!close(Handle::raw(client)), "close(-1) fails");
     assert_eq!(taken(), ["event Del 0", "call Close 0"]);
     assert!(flag(client, Flag::Closed) && !flag(client, Flag::Active));
-    assert!(!close(Handle(client)));
+    assert!(!close(Handle::raw(client)));
     assert_eq!(taken(), Vec::<String>::new());
     free(client);
 }
@@ -446,9 +446,9 @@ fn async_close_detaches_then_runs_on_close_once() {
 #[test]
 fn close_returns_zero_when_on_close_released_the_client() {
     let client = client(1, true, true);
-    Handle(client).set(Flag::Active, true);
+    Handle::raw(client).set(Flag::Active, true);
     mock(|m| m.releases = Some(ClientEvent::Close));
-    assert!(close(Handle(client)));
+    assert!(close(Handle::raw(client)));
     assert_eq!(sock().fd, -1);
     free(client);
 }
@@ -456,15 +456,15 @@ fn close_returns_zero_when_on_close_released_the_client() {
 #[test]
 fn shutdown_records_each_direction_once() {
     let client = client(1, false, false);
-    let shutdown = |how| shutdown(Handle(client), how);
+    let shutdown = |how| shutdown(Handle::raw(client), how);
     assert!(!shutdown(99));
     assert_eq!(log::last_error(), libc::EINVAL);
     // The fd is -1, so the system call fails.
     assert!(!shutdown(libc::SHUT_RD));
     assert!(!flag(client, Flag::ShutdownRead));
-    Handle(client).set(Flag::ShutdownWrite, true);
+    Handle::raw(client).set(Flag::ShutdownWrite, true);
     assert!(!shutdown(libc::SHUT_WR));
-    Handle(client).set(Flag::Closed, true);
+    Handle::raw(client).set(Flag::Closed, true);
     assert!(!shutdown(libc::SHUT_RDWR));
     free(client);
 }
@@ -506,7 +506,7 @@ fn async_connect_waits_for_dns_then_connects_the_resolved_address() {
     assert_eq!(connect(client, c"dns.test", 1.0, 0), OK);
     assert!(flag(client, Flag::WaitDns));
     assert_eq!(taken(), ["assign dns.test:80 false", "dns dns.test 2"]);
-    resolved(Handle(client), 0, c"192.0.2.1");
+    resolved(Handle::raw(client), 0, c"192.0.2.1");
     assert!(!flag(client, Flag::WaitDns));
     assert_eq!(
         taken(),
@@ -554,7 +554,7 @@ fn failed_resolution_closes_and_reports_once() {
     let client = client(1, true, true);
     connect(client, c"dns.test", 1.0, 0);
     taken();
-    resolved(Handle(client), 1, c"");
+    resolved(Handle::raw(client), 1, c"");
     assert_eq!(log::last_error(), ERROR_DNSLOOKUP_RESOLVE_FAILED);
     assert!(flag(client, Flag::OnerrorCalled) && flag(client, Flag::Closed));
     assert_eq!(
@@ -580,7 +580,10 @@ fn sync_nonblocking_connect_reports_ready_and_wait() {
 fn sync_connect_through_socks5_routes_and_handshakes() {
     let client = client(1, false, false);
     set_proxy(client, false);
-    assert_eq!(Handle(client).proxy_state(Proxy::Socks5), Some(SOCKS5_WAIT));
+    assert_eq!(
+        Handle::raw(client).proxy_state(Proxy::Socks5),
+        Some(SOCKS5_WAIT)
+    );
     assert_eq!(connect(client, c"example.test", 3.0, 0), OK);
     assert_eq!(
         taken(),
@@ -595,17 +598,17 @@ fn sync_connect_through_socks5_routes_and_handshakes() {
     );
     assert!(flag(client, Flag::Active));
     assert_eq!(
-        Handle(client).proxy_state(Proxy::Socks5),
+        Handle::raw(client).proxy_state(Proxy::Socks5),
         Some(SOCKS5_READY)
     );
-    let (target, target_port) = Handle(client)
+    let (target, target_port) = Handle::raw(client)
         .with_proxy(Proxy::Socks5, |proxy| {
             (proxy.string(3), proxy.fields().target_port)
         })
         .unwrap();
     assert_eq!(target, b"example.test");
     assert_eq!(target_port, 80);
-    let host = Handle(client).get().server_host.take();
+    let host = Handle::raw(client).get().server_host.take();
     assert_eq!(
         host.as_deref().map(CStr::to_bytes),
         Some(&b"proxy.test"[..])
@@ -622,13 +625,13 @@ fn async_send_raises_buffer_full_at_the_high_watermark() {
     sock().output.out_buffer = Some(queue);
     // SAFETY: a live state.
     unsafe { &*client }.set_watermark(true, 8);
-    assert_eq!(send(Handle(client), b"data", 0), Some(4));
+    assert_eq!(send(Handle::raw(client), b"data", 0), Some(4));
     assert_eq!(taken(), ["write 4", "call BufferFull 0"]);
     // Already high: no second call.
-    _ = send(Handle(client), b"data", 0);
+    _ = send(Handle::raw(client), b"data", 0);
     assert_eq!(taken(), ["write 4"]);
     log::set_last_error(ERROR_OUTPUT_BUFFER_OVERFLOW);
-    assert_eq!(send(Handle(client), b"data", 0), None);
+    assert_eq!(send(Handle::raw(client), b"data", 0), None);
     free(client);
 }
 
@@ -641,7 +644,7 @@ fn writable_after_connect_starts_the_socks5_handshake() {
     assert!(writable(client));
     assert_eq!(taken(), ["event Set 512", "write 3"]);
     assert_eq!(
-        Handle(client).proxy_state(Proxy::Socks5),
+        Handle::raw(client).proxy_state(Proxy::Socks5),
         Some(SOCKS5_HANDSHAKE)
     );
     assert!(flag(client, Flag::Active));
@@ -653,13 +656,13 @@ fn stream_read_hands_the_socks5_handshake_the_bytes_received() {
     let client = client(1, true, true);
     set_proxy(client, false);
     assert!(writable(client));
-    Handle(client).input_init();
+    Handle::raw(client).input_init();
     taken();
     mock(|m| m.io = vec![2]);
-    assert!(on_read(Handle(client)));
+    assert!(on_read(Handle::raw(client)));
     assert_eq!(taken()[..2], ["recv 65536", "socks5 2"]);
     assert_eq!(
-        Handle(client).proxy_state(Proxy::Socks5),
+        Handle::raw(client).proxy_state(Proxy::Socks5),
         Some(SOCKS5_READY)
     );
     free(client);
@@ -685,7 +688,7 @@ fn writable_after_a_failed_connect_reports_the_error() {
 #[cfg_attr(miri, ignore = "Miri has no OPENSSL_init_ssl")]
 fn tls_connect_waits_for_the_stream_then_connects() {
     let client = client(1, true, true);
-    assert!(enable_ssl(Handle(client)).is_some());
+    assert!(enable_ssl(Handle::raw(client)).is_some());
     taken();
     writable(client);
     assert_eq!(sock().tls.state, SSL_STATE_WAIT_STREAM);
@@ -699,13 +702,13 @@ fn tls_connect_waits_for_the_stream_then_connects() {
 #[test]
 fn connect_timeout_with_a_pending_proxy_fails_without_on_close() {
     let client = client(1, true, true);
-    Handle(client).set(Flag::Active, true);
+    Handle::raw(client).set(Flag::Active, true);
     set_proxy(client, true);
     assert_eq!(
-        Handle(client).proxy_state(Proxy::Http),
+        Handle::raw(client).proxy_state(Proxy::Http),
         Some(HTTP_PROXY_WAIT)
     );
-    on_timeout(Handle(client));
+    on_timeout(Handle::raw(client));
     assert_eq!(log::last_error(), libc::ETIMEDOUT);
     assert_eq!(
         taken(),
@@ -720,13 +723,13 @@ fn connect_timeout_with_a_pending_proxy_fails_without_on_close() {
 #[test]
 fn stream_read_delivers_data_and_closes_at_eof() {
     let client = client(1, true, true);
-    Handle(client).set(Flag::Active, true);
-    Handle(client).input_init();
+    Handle::raw(client).set(Flag::Active, true);
+    Handle::raw(client).input_init();
     mock(|m| m.io = vec![5]);
-    assert!(on_read(Handle(client)));
+    assert!(on_read(Handle::raw(client)));
     assert_eq!(taken(), ["recv 65536", "call Receive 5"]);
     mock(|m| m.io = vec![0]);
-    on_read(Handle(client));
+    on_read(Handle::raw(client));
     assert_eq!(taken(), ["recv 65536", "event Del 0", "call Close 0"]);
     free(client);
 }
@@ -736,12 +739,12 @@ fn stream_read_delivers_data_and_closes_at_eof() {
 fn datagram_sends_fail_with_sendto_and_dtls_sends_as_a_stream() {
     let client = client(2, false, false);
     // The record's descriptor is -1, so sendto(2) fails.
-    assert_eq!(send(Handle(client), b"data", 0), None);
+    assert_eq!(send(Handle::raw(client), b"data", 0), None);
     assert_eq!(errno(), libc::EBADF);
-    assert!(enable_ssl(Handle(client)).is_some());
+    assert!(enable_ssl(Handle::raw(client)).is_some());
     assert_eq!(sock().chunk_size, SSL_BUFFER_SIZE);
     taken();
-    assert_eq!(send(Handle(client), b"data", 0), Some(4));
+    assert_eq!(send(Handle::raw(client), b"data", 0), Some(4));
     assert_eq!(taken(), ["send_sync 4"]);
     free(client);
 }
@@ -767,14 +770,14 @@ fn public_record_defaults_and_direct_framing_writes_drive_reads() {
         }
         // The client owns the record make_socket made.
         let made = mock(|m| m.socket).map(core::ptr::NonNull::as_ptr);
-        assert_eq!(Some(Handle(client).socket().as_ptr()), made);
+        assert_eq!(Some(Handle::raw(client).socket().as_ptr()), made);
         assert!((*fields).object.is_null() && (*fields).buffer.is_null());
-        Handle(client).input_init();
+        Handle::raw(client).input_init();
         (*fields).open_length_check = true;
-        assert!(on_read(Handle(client)));
+        assert!(on_read(Handle::raw(client)));
         assert!(taken().contains(&"framed false".to_owned()));
         (*fields).open_eof_check = true;
-        assert!(on_read(Handle(client)));
+        assert!(on_read(Handle::raw(client)));
         assert!(taken().contains(&"framed true".to_owned()));
     }
     free(client);
@@ -790,7 +793,7 @@ fn datagram_peer_is_a_snapshot() {
         (*fields).remote_addr.kind = 4;
     }
     let mut result = SocketAddress::default();
-    assert!(Handle(client).peer_name(&mut result));
+    assert!(Handle::raw(client).peer_name(&mut result));
     unsafe { (*fields).remote_addr.len = 29 };
     assert_eq!(result.len, 17);
     assert_eq!(result.kind, 4);
@@ -813,7 +816,7 @@ fn a_failed_socket_makes_no_client_and_keeps_its_errno() {
 #[test]
 fn framed_packages_reach_on_receive_until_the_socket_waits_to_close() {
     let client = client(1, true, true);
-    let socket = Handle(client).socket();
+    let socket = Handle::raw(client).socket();
     let mut data = swoole_rs_buffer::string::boxed_string(b"data");
     let package = Package::of(&mut data, 0, 4);
     assert_eq!(on_package(core::ptr::null(), socket, package), OK);
@@ -829,9 +832,9 @@ fn framed_packages_reach_on_receive_until_the_socket_waits_to_close() {
 #[cfg_attr(miri, ignore = "Miri has no OPENSSL_init_ssl")]
 fn tls_handshake_names_the_host_and_verifies_the_peer() {
     let client = client(1, false, false);
-    assert!(enable_ssl(Handle(client)).is_some());
-    assert!(enable_ssl(Handle(client)).is_none());
-    let tls = Handle(client).get().tls.get().unwrap().clone();
+    assert!(enable_ssl(Handle::raw(client)).is_some());
+    assert!(enable_ssl(Handle::raw(client)).is_none());
+    let tls = Handle::raw(client).get().tls.get().unwrap().clone();
     let name = c"example.test";
     {
         let mut owner = tls.borrow_configuration();
@@ -840,7 +843,7 @@ fn tls_handshake_names_the_host_and_verifies_the_peer() {
         owner.set_value(swoole_rs_tls::Value::AllowSelfSigned(true));
     }
     mock(|m| m.ssl_connect_ready = true);
-    assert!(ssl_handshake(Handle(client)));
+    assert!(ssl_handshake(Handle::raw(client)));
     assert_eq!(
         taken(),
         [
@@ -875,7 +878,7 @@ fn proxy_states_are_upstreams() {
 #[cfg_attr(miri, ignore = "Miri has no OPENSSL_init_ssl")]
 fn pending_handshake_keeps_its_hostname_and_verification_snapshot() {
     let client = client(1, false, false);
-    let handle = Handle(client);
+    let handle = Handle::raw(client);
     assert!(enable_ssl(handle).is_some());
     let owner = handle.get().tls_context().unwrap().clone();
     {
@@ -915,14 +918,14 @@ fn pending_handshake_keeps_its_hostname_and_verification_snapshot() {
 #[test]
 fn the_framed_receive_buffer_stays_usable_across_input_edits() {
     let client = client(1, true, true);
-    Handle(client).input_init();
-    Handle(client).input_clear();
+    Handle::raw(client).input_init();
+    Handle::raw(client).input_clear();
     // crates/ports' framed receive reads the buffer through the record's pointer.
-    let size = Handle(client).with_framed(|_, _, buffer| unsafe { (*buffer).size() });
+    let size = Handle::raw(client).with_framed(|_, _, buffer| unsafe { (*buffer).size() });
     assert!(size >= CLIENT_BUFFER_SIZE);
-    Handle(client).input_clear();
+    Handle::raw(client).input_clear();
     assert_eq!(
-        Handle(client).with_framed(|_, _, buffer| unsafe { (*buffer).len() }),
+        Handle::raw(client).with_framed(|_, _, buffer| unsafe { (*buffer).len() }),
         0
     );
     free(client);
