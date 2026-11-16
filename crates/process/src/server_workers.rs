@@ -73,7 +73,8 @@ impl<'a> ServerWorkers<'a> {
     }
 
     /// User worker `index`, or `None` past the last or before the array exists.
-    fn user(&self, index: usize) -> Option<Worker<'a>> {
+    #[must_use]
+    pub fn user(&self, index: usize) -> Option<Worker<'a>> {
         Self::slot(self.user_workers, self.user_count, index)
     }
 
