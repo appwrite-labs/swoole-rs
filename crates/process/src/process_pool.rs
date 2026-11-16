@@ -246,7 +246,7 @@ impl PoolRecord {
         }
         // SAFETY: `workers` holds the pool's `worker_num` records, live as long as the
         // pool (the field is crate-private, and only `PoolRef::set_workers` publishes it).
-        Some(unsafe { Worker::new(self.workers.get().wrapping_add(index)) })
+        Some(unsafe { Worker::from(&*self.workers.get().wrapping_add(index)) })
     }
 
     /// The pool's worker at `raw`, or `None` when `raw` is none of its records.
@@ -2770,8 +2770,11 @@ mod tests {
         assert_eq!(pool.master_pid(), getpid());
         // SAFETY: the fixture's records.
         unsafe {
-            assert_eq!(Worker::new(pool.worker(1)).id(), 6);
-            assert_eq!(Worker::new(pool.worker(1)).kind(), Some(WorkerType::Task));
+            assert_eq!(Worker::from(&*(pool.worker(1))).id(), 6);
+            assert_eq!(
+                Worker::from(&*(pool.worker(1))).kind(),
+                Some(WorkerType::Task)
+            );
         }
     }
 

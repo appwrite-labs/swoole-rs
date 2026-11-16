@@ -208,7 +208,7 @@ fn add_worker(serv: view::Server<'_>, process: &Value) -> Result<i64, AddFailed>
     let worker = checked_worker(process).ok_or(AddFailed::Bailed)?;
     // SAFETY: the process's live worker, which the server's copy of the
     // Process object keeps for the server's life.
-    let worker = unsafe { Worker::new(worker.raw()) };
+    let worker = unsafe { Worker::from(&*worker.raw()) };
     swoole_rs_server::worker_methods::add_worker(serv, worker)
         .map(i64::from)
         .ok_or(AddFailed::Refused)
