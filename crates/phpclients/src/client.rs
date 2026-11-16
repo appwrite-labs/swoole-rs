@@ -499,7 +499,7 @@ fn recv(call: &Call) {
         return;
     };
     let (received, result) = if socket.packet_mode() {
-        let received = usize::try_from(socket.recv_packet(timeout, false)).ok();
+        let received = socket.recv_packet(timeout, false);
         match received {
             Some(length @ 1..) => socket
                 .pop_packet(length)

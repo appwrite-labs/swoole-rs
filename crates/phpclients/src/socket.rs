@@ -561,7 +561,7 @@ fn recv_packet(call: &Call) {
     let Some(socket) = open(call) else { return };
     let bytes = socket.recv_packet(timeout, true);
     sync(call, socket);
-    let Ok(length) = usize::try_from(bytes) else {
+    let Some(length) = bytes else {
         return call.set_bool(false);
     };
     if length == 0 {

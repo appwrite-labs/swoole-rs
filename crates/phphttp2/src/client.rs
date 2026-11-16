@@ -792,12 +792,11 @@ impl Client {
             let Some(socket) = self.socket().filter(|_| self.is_available()) else {
                 return call.set_bool(false);
             };
-            let received = recv_packet(socket, timeout);
-            if received <= 0 {
+            let Some(received @ 1..) = recv_packet(socket, timeout) else {
                 self.io_error(socket);
                 return call.set_bool(false);
-            }
-            match self.parse_frame(call, socket, received.unsigned_abs(), pipeline_read) {
+            };
+            match self.parse_frame(call, socket, received, pipeline_read) {
                 Frame::Continue => {}
                 Frame::Ready => return,
                 Frame::Fail => {

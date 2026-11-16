@@ -386,7 +386,7 @@ impl Sock {
     }
 
     fn recv_packet(&self, timeout: f64) -> isize {
-        packet::recv_packet(self.co(), timeout)
+        packet::recv_packet(self.co(), timeout).map_or(-1, usize::cast_signed)
     }
 
     fn read_buffer(&self) -> &mut CppString {
