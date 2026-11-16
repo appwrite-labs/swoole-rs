@@ -444,7 +444,7 @@ pub(crate) fn store_listen_socket(serv: view::Server<'_>) {
         let mut info = conn.info();
         info.kind = port.r#type;
         let host = port.host.bytes_with_nul();
-        let error = assign(
+        let assigned = assign(
             &mut info.addr,
             &mut info.len,
             port.r#type,
@@ -453,7 +453,7 @@ pub(crate) fn store_listen_socket(serv: view::Server<'_>) {
             true,
         );
         conn.set_info(info);
-        if error != 0 {
+        if let Err(error) = assigned {
             log::set_last_error(error);
         }
         socket.edit(|socket| socket.object = ls);

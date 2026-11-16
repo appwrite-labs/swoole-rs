@@ -125,18 +125,16 @@ const SSL_EMPTY_PEER_CERTIFICATE: c_int =
 pub(crate) fn assign(address: &mut SocketAddress, kind: c_int, host: &[u8], port: c_int) -> bool {
     address.kind = kind;
     let terminated = [host, &[0]].concat();
-    let error = swoole_rs_clients::address::assign(
+    swoole_rs_clients::address::assign(
         &mut address.addr,
         &mut address.len,
         kind,
         &terminated,
         port,
         false,
-    );
-    if error != 0 {
-        log::set_last_error(error);
-    }
-    error == 0
+    )
+    .map_err(log::set_last_error)
+    .is_ok()
 }
 
 use swoole_rs_corebase::sys::setsockopt_bytes as setsockopt;

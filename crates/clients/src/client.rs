@@ -1630,7 +1630,7 @@ fn address_of(kind: c_int, host: &CStr, port: c_int, resolve: bool) -> Option<So
         kind,
         ..SocketAddress::default()
     };
-    let error = crate::address::assign(
+    let assigned = crate::address::assign(
         &mut address.addr,
         &mut address.len,
         kind,
@@ -1638,10 +1638,7 @@ fn address_of(kind: c_int, host: &CStr, port: c_int, resolve: bool) -> Option<So
         port,
         resolve,
     );
-    if error != 0 {
-        log::set_last_error(error);
-        return None;
-    }
+    assigned.map_err(log::set_last_error).ok()?;
     Some(address)
 }
 

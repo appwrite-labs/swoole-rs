@@ -36,7 +36,7 @@ fn bind(sock: Socket<'_>, kind: c_int, host: &CStr, port: c_int) -> bool {
         kind,
         ..SocketAddress::default()
     };
-    let error = swoole_rs_clients::address::assign(
+    let assigned = swoole_rs_clients::address::assign(
         &mut address.addr,
         &mut address.len,
         kind,
@@ -44,7 +44,7 @@ fn bind(sock: Socket<'_>, kind: c_int, host: &CStr, port: c_int) -> bool {
         port,
         false,
     );
-    if error != 0 {
+    if let Err(error) = assigned {
         log::set_last_error(error);
         return false;
     }

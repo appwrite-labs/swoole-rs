@@ -243,11 +243,11 @@ fn rust_assign(kind: c_int, host: &[u8], port: c_int, resolve_name: bool) -> ups
         Ok(found)
     };
     let (storage, length) = (&mut address.addr, &mut address.len);
-    let error = assign_with(storage, length, kind, &text, port, lookup);
+    let assigned = assign_with(storage, length, kind, &text, port, lookup);
     trace.error = errno();
     let (dns_calls, dns_host) = RESOLVED.with_borrow(Clone::clone);
-    trace.result = c_int::from(error == 0);
-    trace.last_error = if error == 0 { 11 } else { error };
+    trace.result = c_int::from(assigned.is_ok());
+    trace.last_error = assigned.err().unwrap_or(11);
     trace.dns_calls = dns_calls;
     trace.dns_host_length = dns_host.len();
     for (slot, &byte) in trace.dns_host.iter_mut().zip(&dns_host) {
@@ -873,7 +873,7 @@ fn dns_lookup_matches_upstream() {
                                 if timeout > 0.0 {
                                     exchange.lookup.effects.push(b"timeout".to_vec());
                                 }
-                                let error = swoole_rs_clients::dns::query(
+                                let queried = swoole_rs_clients::dns::query(
                                     domain,
                                     family,
                                     request_id,
@@ -881,7 +881,9 @@ fn dns_lookup_matches_upstream() {
                                     signed_char(),
                                 );
                                 request_id = request_id.wrapping_add(1);
-                                if error != 0 && error != INVALID_DOMAIN {
+                                if let Err(error) = queried
+                                    && error != INVALID_DOMAIN
+                                {
                                     exchange
                                         .lookup
                                         .effects

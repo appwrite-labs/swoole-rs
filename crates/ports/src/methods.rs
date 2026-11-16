@@ -183,7 +183,7 @@ pub(crate) fn create_socket(config: &PortConfig, reuse_port: bool) -> bool {
         len: 0,
         kind,
     };
-    let error = assign(
+    let assigned = assign(
         &mut address.addr,
         &mut address.len,
         kind,
@@ -191,7 +191,7 @@ pub(crate) fn create_socket(config: &PortConfig, reuse_port: bool) -> bool {
         config.port.get(),
         true,
     );
-    if error != 0 {
+    if let Err(error) = assigned {
         log::set_last_error(error);
         let name = type_name(kind);
         log::warning(
