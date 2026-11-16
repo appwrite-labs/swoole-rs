@@ -411,6 +411,7 @@ pub struct ServerTables {
     reactor_threads: Cell<*mut c_void>,
     /// `&Server::message_bus`, whose `MessageBus` starts with its Rust bus: the
     /// one `swr_v1_server_new` made, which the tables own.
+    #[cfg(feature = "upstream-symbols")]
     pub(crate) message_bus: Option<Box<crate::reactor_ops::PoolBus>>,
 }
 
@@ -459,6 +460,7 @@ impl ServerTables {
 
     /// Zeroes all of `fd`'s slot, as a DTLS session that fails its setup leaves it.
     /// Borrow the slot again afterwards.
+    #[cfg(any(test, feature = "upstream-symbols"))]
     pub(crate) fn clear_connection(&self, fd: c_int) {
         self.zero_connection(fd, 0..size_of::<ConnectionRecord>());
     }
@@ -557,6 +559,7 @@ impl Default for ServerTables {
             reactor_pipe_num: Cell::new(0),
             reactor_thread_num: Cell::new(0),
             reactor_threads: Cell::new(core::ptr::null_mut()),
+            #[cfg(feature = "upstream-symbols")]
             message_bus: None,
         }
     }

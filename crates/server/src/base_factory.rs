@@ -116,6 +116,7 @@ impl<'a> SendData<'a> {
     }
 
     /// The payload under the head `info`, whose `len` stays the payload's.
+    #[cfg(feature = "upstream-symbols")]
     #[must_use]
     pub(crate) fn rehead(self, info: DataHead) -> Self {
         let len = self.info.len;
