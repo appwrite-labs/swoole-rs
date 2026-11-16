@@ -376,7 +376,7 @@ impl crate::hybrid::Hybrid for Linked {
             message.bytes(),
             PIPE_MASTER_NONBLOCK,
         );
-        sent > 0
+        sent.is_some_and(|sent| sent > 0)
     }
 
     fn create_thread_factory(&self, serv: crate::view::Server<'_>) -> *mut c_void {

@@ -50,11 +50,7 @@ fn already_gone(error: c_int) -> bool {
 
 /// `kill(pid, signo)`: `Ok` or the `errno` it failed with.
 fn kill(pid: c_int, signo: c_int) -> Result<(), c_int> {
-    if crate::os::kill(pid, signo) == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(0))
-    }
+    crate::os::kill(pid, signo).map_err(|error| error.raw_os_error().unwrap_or(0))
 }
 
 impl ReloadTask {

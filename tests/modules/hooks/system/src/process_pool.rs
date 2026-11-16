@@ -487,7 +487,7 @@ unsafe fn worker_send_pipe_message(
     data: *const u8,
     n: usize,
     flags: c_int,
-) -> isize {
+) -> Option<usize> {
     // SAFETY: as the caller guarantees: a live worker and `n` bytes at `data`.
     let (worker, data) = unsafe {
         (
@@ -1541,7 +1541,7 @@ extern "C" fn malformed_on_task(pool: *mut Pool, _: *mut Worker, task: *mut Even
 }
 
 /// `get_worker(0)->send_pipe_message(event, n, SW_PIPE_MASTER)`.
-fn send_to_worker(pool: *mut Pool, event: &EventData, n: usize) -> isize {
+fn send_to_worker(pool: *mut Pool, event: &EventData, n: usize) -> Option<usize> {
     // SAFETY: the created pool's worker and `n` of the event's bytes.
     unsafe {
         worker_send_pipe_message(
@@ -1569,24 +1569,24 @@ fn task_protocol_rejects_malformed_packets() {
 
     let mut task = EventData::new();
     task.info.len = u32::MAX;
-    assert_eq!(send_to_worker(pool, &task, head - 1), (head - 1) as isize);
+    assert_eq!(send_to_worker(pool, &task, head - 1), Some(head - 1));
 
     task.info.len = 5000;
-    assert_eq!(send_to_worker(pool, &task, 100), 100);
+    assert_eq!(send_to_worker(pool, &task, 100), Some(100));
 
     task.info.ext_flags = SW_TASK_TMPFILE;
     task.info.len = 1;
     task.data[0] = b't';
-    assert_eq!(send_to_worker(pool, &task, head + 1), (head + 1) as isize);
+    assert_eq!(send_to_worker(pool, &task, head + 1), Some(head + 1));
 
     task.info.ext_flags = 0;
     task.info.len = SW_IPC_BUFFER_SIZE as u32;
     let whole = size_of::<EventData>();
-    assert_eq!(send_to_worker(pool, &task, whole), whole as isize);
+    assert_eq!(send_to_worker(pool, &task, whole), Some(whole));
 
     task.info.len = 1;
     task.data[0] = b'x';
-    assert_eq!(send_to_worker(pool, &task, head + 1), (head + 1) as isize);
+    assert_eq!(send_to_worker(pool, &task, head + 1), Some(head + 1));
 
     main_loop(pool, get_worker(pool, 0));
 
@@ -1704,7 +1704,7 @@ fn stream_protocol_small_packet() {
     // SAFETY: the created pool's worker and one byte.
     let sent =
         unsafe { worker_send_pipe_message(get_worker(pool, 0), b"x".as_ptr(), 1, SW_PIPE_MASTER) };
-    assert_eq!(sent, 1);
+    assert_eq!(sent, Some(1));
     main_loop(pool, get_worker(pool, 0));
     // SAFETY: the case's pool.
     assert!(!unsafe { (*pool).running });

@@ -194,20 +194,14 @@ impl Stream {
     }
 }
 
-/// `Stream::recv_sync`: one framed packet into `buf`. Its length, or -1 (`SW_ERR`) for a short
-/// read or a length that is not positive as a C `int` or exceeds `buf`.
-pub fn recv_sync(socket: &mut impl Read, buf: &mut [u8]) -> isize {
+/// `Stream::recv_sync`: one framed packet into `buf`. Its length, or none (`SW_ERR`) for a
+/// short read or a length that is not positive as a C `int` or exceeds `buf`.
+pub fn recv_sync(socket: &mut impl Read, buf: &mut [u8]) -> Option<usize> {
     let mut head = [0; 4];
-    if socket.read_exact(&mut head).is_err() {
-        return -1;
-    }
-    let length = usize::try_from(i32::from_be_bytes(head)).unwrap_or(0);
-    match buf.get_mut(..length) {
-        Some(body) if length > 0 => socket
-            .read_exact(body)
-            .map_or(-1, |()| length.cast_signed()),
-        _ => -1,
-    }
+    socket.read_exact(&mut head).ok()?;
+    let length = usize::try_from(i32::from_be_bytes(head)).ok()?;
+    let body = buf.get_mut(..length).filter(|_| length > 0)?;
+    socket.read_exact(body).ok().map(|()| length)
 }
 
 /// Upstream's `core-tests/src/network/stream.cpp`, one test per TEST, its inputs and expected values.
@@ -226,13 +220,13 @@ mod tests {
         let packet_len = u32::try_from(buffer.len()).unwrap().to_be_bytes();
         sender.write_all(&packet_len[..3]).unwrap();
         sender.shutdown(Shutdown::Write).unwrap();
-        assert_eq!(recv_sync(&mut receiver, &mut buffer), -1);
+        assert_eq!(recv_sync(&mut receiver, &mut buffer), None);
 
         let (mut sender, mut receiver) = UnixStream::pair().unwrap();
         sender.write_all(&8u32.to_be_bytes()).unwrap();
         sender.write_all(b"ab").unwrap();
         sender.shutdown(Shutdown::Write).unwrap();
-        assert_eq!(recv_sync(&mut receiver, &mut buffer), -1);
+        assert_eq!(recv_sync(&mut receiver, &mut buffer), None);
     }
 
     /// The server replies as upstream's test server does: `"Server: " + body`, framed, then a

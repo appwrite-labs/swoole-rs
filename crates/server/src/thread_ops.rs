@@ -351,7 +351,7 @@ fn pipe_read(ctx: &ReactorContext<'_>, event: &Event) -> Option<c_int> {
             }
             Some(ServerEvent::Shutdown) => shutdown(ctx)?,
             Some(ServerEvent::ShutdownSignal) => {
-                swoole_rs_process::os::kill(std::process::id().cast_signed(), libc::SIGTERM);
+                _ = swoole_rs_process::os::kill(std::process::id().cast_signed(), libc::SIGTERM);
             }
             Some(ServerEvent::Finish) => {
                 _ = bus.with_event(|event| state.callbacks.task(TaskSlot::Finish, serv, event));

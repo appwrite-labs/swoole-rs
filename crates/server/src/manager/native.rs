@@ -426,7 +426,7 @@ extern "C" fn signal_handler(signo: c_int) {
                 format_args!("wait timeout, all worker processes will be forcibly terminated"),
             );
             for pid in pids {
-                kill(pid, libc::SIGKILL);
+                _ = kill(pid, libc::SIGKILL);
             }
         }
         _ if signo == libc::SIGWINCH || sigrtmin() == Some(signo) => {
@@ -438,7 +438,7 @@ extern "C" fn signal_handler(signo: c_int) {
             let all = config.worker_num.get() + config.task_worker_num.get();
             let all = all + u32::try_from(serv.workers().user_count()).unwrap_or(u32::MAX);
             for id in 0..all {
-                kill(worker_at(serv, id).map_or(0, Worker::pid), libc::SIGWINCH);
+                _ = kill(worker_at(serv, id).map_or(0, Worker::pid), libc::SIGWINCH);
             }
         }
         _ => {}
@@ -539,7 +539,7 @@ pub fn reload(serv: view::Server<'_>, reload_all_workers: bool) -> bool {
         } else {
             libc::SIGUSR2
         };
-        return kill(manager_pid, signo) == 0;
+        return kill(manager_pid, signo).is_ok();
     }
     if !methods::reload(serv.event_pool_ref()) {
         return false;

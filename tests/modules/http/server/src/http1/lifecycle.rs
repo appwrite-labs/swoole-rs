@@ -1101,7 +1101,10 @@ unsafe extern "C" fn kill_on_worker_start(
             )
         };
         let sent = send_pipe_message(dst, head, SW_PIPE_MASTER | SW_PIPE_NONBLOCK);
-        check(sent > 0, "send_to_worker_from_worker(1, &ev, ...) > 0");
+        check(
+            sent.is_some_and(|sent| sent > 0),
+            "send_to_worker_from_worker(1, &ev, ...) > 0",
+        );
     }
 }
 
