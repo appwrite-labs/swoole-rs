@@ -22,8 +22,11 @@ unit-test binary: descriptor flags, successful and failed address assignment,
 both kernel timeouts, raw/synchronous/nonblocking TCP connects, `SO_ERROR`, and
 an event with no socket. The existing recording cases receive their table at
 construction and retain their original inputs and expected traces. The socket
-record operations compile in both builds; the remaining I/O, TLS, timer and host
-stand-ins are tracked by #4093.
+record operations and the one-shot connect-timer closure compile in both builds;
+recording clients explicitly supply timer creation/cancellation effects and retain
+their cancellation-before-free and timeout traces. Original async client cases
+exercise timeout delivery; the native-table test verifies real timer creation and
+idempotent cancellation with a manually driven thread timer. Remaining I/O, TLS and host stand-ins are tracked by #4093.
 
 ## network/client.cpp in Rust
 
