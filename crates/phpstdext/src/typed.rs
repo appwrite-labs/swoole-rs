@@ -74,9 +74,9 @@ const FLAGS: usize = offset_of!(HashTable, u) / 4;
 const COUNT: usize = offset_of!(HashTable, nNumOfElements) / 4;
 
 const _: () = assert!(
-    offset_of!(HashTable, u) % 4 == 0
-        && offset_of!(HashTable, nNumOfElements) % 4 == 0
-        && size_of::<HashTable>() % 4 == 0,
+    offset_of!(HashTable, u).is_multiple_of(4)
+        && offset_of!(HashTable, nNumOfElements).is_multiple_of(4)
+        && size_of::<HashTable>().is_multiple_of(4),
     "Table words are a HashTable's header"
 );
 
