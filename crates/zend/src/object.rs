@@ -3,9 +3,8 @@
 use crate::{
     ArrayMut, Class, ClassEntry, Owned, OwnedArray, Value, ZString, bailout,
     sys::{
-        object_properties_init, swr_zend_object_alloc, zend_class_entry, zend_long, zend_object,
-        zend_object_handlers, zend_object_std_dtor, zend_object_std_init,
-        zend_objects_destroy_object,
+        swr_zend_object_new, zend_class_entry, zend_long, zend_object, zend_object_handlers,
+        zend_object_std_dtor, zend_objects_destroy_object,
     },
 };
 use std::{
@@ -186,15 +185,10 @@ impl<T: Custom> LaidOut<T> {
     #[must_use]
     fn create(self, data: T) -> *mut zend_object {
         let Self(ce, _) = self;
-        // SAFETY: Zend's allocator; it zeroes everything before `std`.
-        let this = unsafe { swr_zend_object_alloc(size_of::<Object<T>>(), ce) }.cast::<Object<T>>();
-        let std = Object::std(this);
-        // SAFETY: `std` is freshly allocated storage for an object of class `ce`.
-        unsafe { zend_object_std_init(std, ce) };
-        // SAFETY: as above; the property slots follow `std`.
-        unsafe { object_properties_init(std, ce) };
-        // SAFETY: `std` is initialised and not yet shared.
-        unsafe { (*std).handlers = T::class().handlers() };
+        let (size, offset) = (size_of::<Object<T>>(), Object::<T>::OFFSET);
+        // SAFETY: an `Object<T>` laid out for class `ce`, its `zend_object`
+        // last, `offset` bytes in, with `T`'s class's handlers.
+        let std = unsafe { swr_zend_object_new(size, offset, ce, T::class().handlers()) };
         // SAFETY: the object's data, allocated above and unused.
         unsafe { Object::<T>::data_ptr(std).write(data) };
         std

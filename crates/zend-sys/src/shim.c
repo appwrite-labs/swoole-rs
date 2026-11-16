@@ -4,8 +4,13 @@
  * signature) and budget (Z_TRY_ADDREF_P, ZVAL_STR). */
 #include "shim.h"
 
-void *swr_zend_object_alloc(size_t size, zend_class_entry *ce) {
-    return zend_object_alloc(size, ce);
+zend_object *swr_zend_object_new(size_t size, size_t offset, zend_class_entry *ce,
+                                 const zend_object_handlers *handlers) {
+    zend_object *std = (zend_object *) ((char *) zend_object_alloc(size, ce) + offset);
+    zend_object_std_init(std, ce);
+    object_properties_init(std, ce);
+    std->handlers = handlers;
+    return std;
 }
 
 zend_class_entry *swr_zend_register_class(const char *name, const zend_function_entry *functions,
