@@ -32,7 +32,7 @@ use swoole_rs_zend::sys::{
     zend_fiber_status_ZEND_FIBER_STATUS_RUNNING, zend_fiber_status_ZEND_FIBER_STATUS_SUSPENDED,
     zend_object, zval,
 };
-use swoole_rs_zend::{Callable, Function, Owned, Value, bailout};
+use swoole_rs_zend::{Callable, Emalloc, Function, Owned, Value, bailout};
 
 unsafe extern "C" {
     /// `init_main_context`'s VM half: clears `EG(opline_before_exception)`,
@@ -87,9 +87,6 @@ unsafe extern "C" {
     safe fn zend_observer_fiber_switch_notify(from: Fiber, to: Fiber);
     /// The fiber observers' notice that a live fiber goes; it stays allocated.
     safe fn zend_observer_fiber_destroy_notify(fiber: Fiber);
-    /// `efree` of a mock fiber, which the handle spends.
-    #[link_name = "swr_zend_efree"]
-    safe fn free_mock(fiber: Mock);
 }
 
 /// A live fiber context: the main context's `EG(main_fiber_context)`, or a
@@ -101,8 +98,7 @@ pub(crate) struct Fiber(NonNull<zend_fiber_context>);
 
 /// A coroutine's mock fiber, which [`fiber_init`] allocates and its context
 /// holds until [`fiber_try_destroy`] frees it: never copied, so freed once.
-#[repr(transparent)]
-pub(crate) struct Mock(Fiber);
+pub(crate) struct Mock(Box<UnsafeCell<zend_fiber_context>, Emalloc>);
 
 impl Fiber {
     /// Set its status, as Zend's fiber observers read it.
@@ -752,13 +748,11 @@ fn fiber_init(ctx: Ctx) {
     this.kind = invalid;
     this.function = Some(never_switched);
     this.stack = invalid.cast();
-    let fiber = swoole_rs_zend::value::enew(this);
-    // A new fiber context, which lives until `fiber_try_destroy`.
-    let Some(fiber) = NonNull::new(fiber).map(Fiber) else {
-        return;
-    };
+    let mock = Mock(Box::new_in(UnsafeCell::new(this), Emalloc::default()));
+    // UnsafeCell permits observer writes through the Fiber while the box owns it.
+    let fiber = Fiber(NonNull::from(mock.0.as_ref()).cast());
     ctx.set_fiber(Some(fiber));
-    ctx.with(|context| context.mock = Some(Mock(fiber)));
+    ctx.with(|context| context.mock = Some(mock));
     zend_observer_fiber_init_notify(fiber);
 }
 
@@ -771,12 +765,12 @@ fn fiber_try_destroy(ctx: Ctx, origin: Ctx) {
     let Some(mock) = ctx.with(|context| context.mock.take()) else {
         return;
     };
-    let fiber = mock.0;
+    let fiber = Fiber(NonNull::from(mock.0.as_ref()).cast());
     fiber.set_status(zend_fiber_status_ZEND_FIBER_STATUS_DEAD);
     fiber_switch_try_notify(ctx, origin);
     ctx.set_fiber(None);
     zend_observer_fiber_destroy_notify(fiber);
-    free_mock(mock);
+    drop(mock);
 }
 
 fn fiber_status(ctx: Ctx) -> zend_fiber_status {

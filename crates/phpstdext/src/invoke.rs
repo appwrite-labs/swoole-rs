@@ -13,14 +13,13 @@ use std::{
     sync::atomic::{AtomicPtr, Ordering},
 };
 use swoole_rs_zend::{
-    Call, Value,
+    Call, Emalloc, Value,
     bailout::{Bailout, trap},
     opcode::Handler,
     sys::{
-        IS_ARRAY, IS_CONST, IS_RESOURCE, IS_STRING, IS_VAR, swr_zend_efree, swr_zend_zval_release,
-        zend_function, zval,
+        IS_ARRAY, IS_CONST, IS_RESOURCE, IS_STRING, IS_VAR, swr_zend_zval_release, zend_function,
+        zval,
     },
-    value,
 };
 
 unsafe extern "C" {
@@ -87,11 +86,15 @@ impl Handler for MethodCall {
         };
         // Zend's request allocator, freed by the method call. The literal is
         // a plain copy, as upstream's.
-        let info = value::enew(CallInfo {
-            func: name.copy_value(),
-            this: object.copy_value(),
-            op1_type: op.op1_type,
-        });
+        let info = Box::into_raw_with_allocator(Box::new_in(
+            CallInfo {
+                func: name.copy_value(),
+                this: object.copy_value(),
+                op1_type: op.op1_type,
+            },
+            Emalloc::default(),
+        ))
+        .0;
         let method = match receiver {
             Receiver::Array => &METHODS[0],
             Receiver::String => &METHODS[1],
@@ -131,7 +134,7 @@ fn call_method(receiver: Receiver, frame: &Call) {
     // SAFETY: the handler's initialized allocation, which the frame's
     // `run_time_cache` alone pointed to, until the take above, and which is
     // freed below.
-    let info = unsafe { &mut *allocation };
+    let mut info = unsafe { Box::from_raw_in(allocation, Emalloc::default()) };
     // op2 of INIT_METHOD_CALL is the method name, a string literal.
     let name = Value::of(&mut info.func).str();
     let alias = name.and_then(|name| aliases::find(receiver, name.bytes()));
@@ -148,10 +151,9 @@ fn call_method(receiver: Receiver, frame: &Call) {
             ]));
             Ok(())
         }
-        Some(alias) => call_alias(alias, info, frame),
+        Some(alias) => call_alias(alias, &mut info, frame),
     };
-    // SAFETY: the handler's allocation; nothing else holds it.
-    unsafe { swr_zend_efree(allocation.cast()) };
+    drop(info);
     swoole_rs_zend::bailout::raise(outcome);
 }
 

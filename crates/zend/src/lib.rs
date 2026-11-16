@@ -13,6 +13,7 @@
     )
 )]
 
+mod allocator;
 pub mod arginfo;
 pub mod bailout;
 mod call;
@@ -37,6 +38,7 @@ pub mod thread;
 pub mod value;
 mod zval;
 
+pub use allocator::Emalloc;
 pub use call::{Call, CallFrame, Invalid, ReturnSlot};
 pub use callable::{Callable, Callback, Holder, Parsed};
 pub use class::{Class, ClassEntry, Declared, lookup_class, unset_property_deny};

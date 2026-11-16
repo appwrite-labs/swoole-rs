@@ -1,25 +1,22 @@
 //! Callables kept past the call that passed them, with their bound arguments:
 //! Swoole's `zend::Function`, as timer and event callbacks hold them.
 use crate::{
-    Call, Invalid,
+    Call, Emalloc, Invalid,
     bailout::{self, Bailout},
     sys::{IS_LONG, swr_zend_callable, zend_fcall_info_cache, zend_value, zval},
-    value::{emalloc, enew},
 };
 use std::{
     ffi::{c_int, c_void},
-    mem::MaybeUninit,
     ptr,
 };
 
-// What takes one of this module's handles whole. Each handle is its record's
-// pointer (`repr(transparent)`), made only here, so C receives a live record in
-// the state the handle's type says; none of these runs PHP code.
+// Callable is a linear pointer handle made only here, so C receives a live
+// record in the state its type says. Parsed retains Rust ownership until keep.
 unsafe extern "C" {
     /// `sw_zend_fci_cache_persist`: one more reference to the object and the
-    /// closure of the function `parse` resolved. The handle is spent: `keep`
-    /// makes the [`Callable`] of the same record.
-    safe fn swr_zend_callable_hold(parsed: Parsed);
+    /// closure of the function `parse` resolved. `keep` hands its boxed
+    /// record to the native owner after this returns.
+    safe fn swr_zend_callable_hold(parsed: &mut swr_zend_callable);
     /// `sw_zend_fci_params_discard` and `sw_zend_fci_cache_discard` when no
     /// release can run PHP code (no arguments, and neither the object nor the
     /// closure loses its last reference), then nonzero; otherwise zero, and
@@ -29,11 +26,12 @@ unsafe extern "C" {
     /// The release `swr_zend_callable_release_quiet` declined, inside
     /// `zend_try`, as `swr_zend_try` returns. The handle is spent, as there.
     safe fn swr_zend_try_callable_release(callable: Callable) -> c_int;
-    /// `efree` of the record of a callable that holds nothing.
-    #[link_name = "swr_zend_efree"]
-    safe fn discard(parsed: Parsed);
     /// `efree` of the record of a callable whose references were released.
     #[link_name = "swr_zend_efree"]
+    #[expect(
+        clashing_extern_declarations,
+        reason = "Callable and the allocator's NonNull both have the C pointer ABI; this handle proves the record is owned"
+    )]
     safe fn free_released(callable: Callable);
 }
 
@@ -49,9 +47,15 @@ pub struct Callable(*mut swr_zend_callable);
 /// closure are still the frame's: [`Parsed::keep`] makes it a [`Callable`], or
 /// [`Parsed::discard`] frees it. Releasing it as a `Callable` would release
 /// references it never took.
-#[derive(Debug)]
-#[repr(transparent)]
-pub struct Parsed(*mut swr_zend_callable);
+pub struct Parsed(Box<swr_zend_callable, Emalloc>);
+
+impl std::fmt::Debug for Parsed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Parsed")
+            .field(&Box::as_ptr(&self.0))
+            .finish()
+    }
+}
 
 impl Callable {
     /// `Z_PARAM_FUNC` of argument `n`, then `Z_PARAM_VARIADIC('*')` of the
@@ -60,7 +64,10 @@ impl Callable {
     /// Argument `n` is not callable; Zend has raised its parameter error.
     pub fn parse(call: &Call, n: u32) -> Result<Parsed, Invalid> {
         // Zend's allocator, for one empty callable (`ecalloc`).
-        let mut this = Parsed(enew(crate::zeroed::<swr_zend_callable>()));
+        let mut this = Parsed(Box::new_in(
+            crate::zeroed::<swr_zend_callable>(),
+            Emalloc::default(),
+        ));
         let callable = this.record();
         if let Err(invalid) = call.callable(n, &mut callable.fci, &mut callable.fcc) {
             this.discard();
@@ -148,9 +155,7 @@ impl Callable {
 impl Parsed {
     /// The callable's record, which only this owner reaches until it is kept.
     fn record(&mut self) -> &mut swr_zend_callable {
-        // SAFETY: `parse`'s live allocation, written before this is made; the
-        // exclusive borrow is the only way to it.
-        unsafe { &mut *self.0 }
+        &mut self.0
     }
 
     /// Keep the callable past this call: copy its arguments out of the frame
@@ -158,54 +163,22 @@ impl Parsed {
     /// tick's timer id), and hold its object and closure
     /// (`sw_zend_fci_cache_persist`).
     #[must_use]
+    #[inline]
     pub fn keep(mut self, first: Option<i64>) -> Callable {
         let callable = self.record();
         let count = callable.fci.param_count as usize;
         let lead = usize::from(first.is_some());
         if count + lead > 0 {
-            // Zend's allocator, for the arguments.
-            let params = emalloc((count + lead) * size_of::<zval>()).cast::<zval>();
-            // SAFETY: the allocation above, which `emalloc` never returns null
-            // for and aligns for a zval: `count + lead` unwritten zvals that
-            // only this reaches until they are written below.
-            let slots = unsafe {
-                std::slice::from_raw_parts_mut(params.cast::<MaybeUninit<zval>>(), count + lead)
-            };
-            let mut slots = slots.iter_mut();
-            // `ZVAL_LONG(params, value)`, in the slot `lead` counted.
-            if let Some(value) = first
-                && let Some(slot) = slots.next()
-            {
-                slot.write(long(value));
-            }
-            for (index, slot) in slots.enumerate() {
-                // `index` is below the frame's argument count.
-                let source = callable.fci.params.wrapping_add(index);
-                // SAFETY: a live argument, which the frame holds for this call.
-                let value = unsafe { &*source.cast::<crate::Value>() };
-                // `ZVAL_COPY` takes a reference.
-                slot.write(value.copy().into_zval());
-            }
-            callable.fci.params = params;
-            let total = u32::try_from(count + lead).unwrap_or(u32::MAX);
-            callable.fci.param_count = total;
+            keep_params(callable, first, count, lead);
         }
-        let record = self.0;
-        swr_zend_callable_hold(self);
-        Callable(record)
-    }
-
-    /// The callable for C++ (`zend::Function *`), which is [`Parsed::keep`]'s
-    /// `Callable` too.
-    #[must_use]
-    pub fn as_raw(&self) -> *mut c_void {
-        self.0.cast()
+        swr_zend_callable_hold(&mut self.0);
+        Callable(Box::into_raw_with_allocator(self.0).0)
     }
 
     /// Free a callable that was never kept.
     pub fn discard(self) {
-        // Emalloc'd by `parse`; nothing was taken from the frame.
-        discard(self);
+        // No argument references were taken from the frame.
+        drop(self);
     }
 }
 
@@ -230,6 +203,26 @@ unsafe extern "C-unwind" fn run<H: Holder>(data: *mut c_void) {
 /// `data` is a callable's [`Callable::as_raw`], not used again.
 unsafe extern "C-unwind" fn free<H: Holder>(data: *mut c_void) {
     H::free(Callable(data.cast()));
+}
+
+/// Copy bound arguments only when there are any; keep the empty-callable path small.
+fn keep_params(callable: &mut swr_zend_callable, first: Option<i64>, count: usize, lead: usize) {
+    // Zend's allocator, for the arguments.
+    let mut params = Vec::with_capacity_in(count + lead, Emalloc::default());
+    if let Some(value) = first {
+        params.push(long(value));
+    }
+    for index in 0..count {
+        let source = callable.fci.params.wrapping_add(index);
+        // SAFETY: a live argument, which the frame holds for this call.
+        let value = unsafe { &*source.cast::<crate::Value>() };
+        params.push(value.copy().into_zval());
+    }
+    callable.fci.params = Box::into_raw_with_allocator(params.into_boxed_slice())
+        .0
+        .cast();
+    let total = u32::try_from(count + lead).unwrap_or(u32::MAX);
+    callable.fci.param_count = total;
 }
 
 /// `ZVAL_LONG`.

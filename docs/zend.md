@@ -201,6 +201,14 @@ against one.
 `tests/modules/zend/memory_limit.php` reaches the limit inside a `ZBuf` and
 compares the outcome with upstream's.
 
+Rust-owned request allocations use `Emalloc` with `Box::new_in` or
+`Vec::with_capacity_in`. The zero-sized allocator is neither Send nor Sync and
+rejects alignment above Zend's eight-byte guarantee. Empty layouts need no Zend
+allocation. Its owners must drop or transfer their storage before request shutdown.
+Callable records and argument slices transfer to their native callback owner;
+custom PHP objects still use `zend_object_alloc`, including their variable property
+tail, and Zend frees them after the Rust data destructor.
+
 ### Native scopes and C++ exceptions
 
 `native/corebase/swoole_rs_zend_guard.h` defines native scope outcomes: normal
