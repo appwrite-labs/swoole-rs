@@ -115,11 +115,37 @@ manual setup:
   phase needs run first
 - runs a repository script instead of a lane when the first argument ends in `.py`,
   for example `dev.py docker -- benchmarks/callgrind.py --engine … --profiles DIR`
-  (the image has valgrind)
+  (the image has valgrind), and a `cargo` command as itself, building into the same
+  `target/docker/` dir
 
 It warns when the disk has less than 20 GB free. `dev.py prune` also removes
 `target/worktrees/*` older than its window. It keeps Docker images shared with
 other worktrees.
+
+#### io_uring: `dev.py docker --iouring`
+
+Docker's default seccomp profile answers `io_uring_setup` with EPERM, so in a default
+`dev.py docker` run every original io_uring test fails at ring creation (the
+`io_uring is available` assertion, `Err(Create)`). That is the expected, visible result
+of an unsupported run. To run them against a real ring, opt in:
+
+```sh
+python3 tools/dev.py docker --iouring -- cargo test --locked -p swoole-rs-hooks --features iouring,upstream-symbols uring
+```
+
+`--iouring` adds exactly `--security-opt seccomp=tools/docker-seccomp-iouring.json` to
+`docker run`: Docker's default profile (moby/profiles `seccomp/default.json`) plus one
+rule allowing `io_uring_setup`, `io_uring_enter` and `io_uring_register`. Capabilities,
+AppArmor, devices and ulimits stay Docker's defaults; it is not `--privileged` and not
+`seccomp=unconfined`. Ring memory is charged to the container's memory cgroup, so no
+`memlock` ulimit is needed. The flag applies to whatever command the run executes.
+
+The host must still allow io_uring: a Linux kernel built with `CONFIG_IO_URING` and
+`kernel.io_uring_disabled` at 0 (`1` limits it to the `kernel.io_uring_group` group, `2`
+disables it for everyone), and a VM whose kernel refuses it (#4167 saw EPERM on an
+OrbStack aarch64 kernel without this flag; check `--iouring` there) is no better. On such
+a host the tests still fail at ring creation with `--iouring`, visibly; native CI's
+iouring variant remains the qualifying run.
 
 Any other image a tool or README builds gets one fixed name per purpose (for
 example `swoole-protocols-core`), never a hash or `:local` tag, so a rebuild

@@ -566,8 +566,8 @@ rustup install >/dev/null
 cargo fetch --locked -q
 python3 tools/build_upstream.py > target/upstream/build-upstream.log 2>&1 || { tail -20 target/upstream/build-upstream.log; exit 1; }
 } 9>target/upstream/prepare.lock
-# A repository script (benchmarks/callgrind.py, a gate) runs as itself.
-case "$1" in *.py) exec python3 "$@" ;; esac
+# A repository script (benchmarks/callgrind.py, a gate) or a cargo command runs as itself.
+case "$1" in *.py) exec python3 "$@" ;; cargo) exec "$@" ;; esac
 extensions=
 case " $* " in *" --php-extension "*) ;; *" candidate "*|*" integrate "*)
     for name in $(sed -n 's/^extension=\(.*\)/\1/p' /etc/php/*/cli/conf.d/*.ini | sed 's/\.so$//' | sort -u); do
@@ -578,13 +578,24 @@ exec python3 tools/dev.py "$@" $extensions
 '''
 
 
+# Docker's default seccomp profile (moby/profiles seccomp/default.json at 9ee3204f0d0c)
+# plus one rule allowing io_uring_setup, io_uring_enter and io_uring_register, which the
+# default answers with EPERM. Nothing else about the container changes.
+DOCKER_IOURING_SECCOMP = ROOT / 'tools/docker-seccomp-iouring.json'
+
+
 def docker(arguments):
-    """dev.py docker [-- dev.py arguments | -- SCRIPT.py arguments]: run a dev.py command, or a
-    repository script, in the Linux dev image."""
+    """dev.py docker [--iouring] [-- dev.py arguments | -- SCRIPT.py arguments | -- cargo arguments]:
+    run a dev.py command, a repository script or a cargo command in the Linux dev image;
+    --iouring lets it create io_uring rings."""
+    iouring = arguments[:1] == ['--iouring']
+    if iouring:
+        arguments = arguments[1:]
     if arguments[:1] == ['--']:
         arguments = arguments[1:]
     if not arguments:
-        sys.exit('usage: dev.py docker [--] LANE [dev.py options] | [--] SCRIPT.py [arguments]')
+        sys.exit('usage: dev.py docker [--iouring] [--] LANE [dev.py options] | [--] SCRIPT.py [arguments]'
+                 ' | [--] cargo [arguments]')
     if '--phase' in arguments and '--with-prerequisites' not in arguments:
         arguments = [*arguments, '--with-prerequisites']
     free = shutil.disk_usage(ROOT).free
@@ -616,6 +627,7 @@ def docker(arguments):
         (private / name).mkdir(parents=True, exist_ok=True)
         builds += ['-v', f'{private / name}:{ROOT / "target" / name}']
     command = ['docker', 'run', '--rm', '--init', '-w', str(ROOT),
+               *(['--security-opt', f'seccomp={DOCKER_IOURING_SECCOMP}'] if iouring else []),
                *[part for mount in mounts for part in ('-v', f'{mount}:{mount}')], *builds,
                '-v', f'swr-rustup-{architecture}:/usr/local/rustup',
                '-v', f'swr-cargo-{architecture}:/usr/local/cargo/registry',
