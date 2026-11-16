@@ -76,8 +76,8 @@ pub(crate) struct Ops {
     pub in_coroutine: fn() -> bool,
     /// `coroutine::async_job`.
     pub offload: Offload,
-    /// `System::sleep`.
-    pub sleep: fn(f64) -> c_int,
+    /// Whether `System::sleep` completed without cancellation.
+    pub sleep: fn(f64) -> bool,
     /// `swoole_set_last_error`.
     pub set_last_error: fn(c_int),
 }
@@ -91,14 +91,12 @@ pub(crate) static NATIVE: Ops = Ops {
 };
 
 mod native {
-    use libc::c_int;
-
     pub(super) fn in_coroutine() -> bool {
         !swoole_rs_corebase::thread_reactor().is_null() && !swoole_rs_coroutine::current().is_null()
     }
 
-    pub(super) fn sleep(seconds: f64) -> c_int {
-        crate::sleep::system_sleep(seconds)
+    pub(super) fn sleep(seconds: f64) -> bool {
+        crate::sleep::system_sleep(seconds) == 0
     }
 }
 
@@ -294,14 +292,28 @@ pub extern "C" fn swoole_coroutine_usleep(usec: c_int) {
     (runtime().sleep)(f64::from(usec) / 1024.0 / 1024.0);
 }
 
+/// A resolver failure, kept distinct from refusal to run the lookup.
+#[derive(Debug)]
+pub enum AddrInfoError {
+    /// The resolver's `EAI_*` code, other than `EAI_SYSTEM`.
+    Resolver(c_int),
+    /// `EAI_SYSTEM`, with errno captured on the resolving thread.
+    System(std::io::Error),
+    /// The pool refused the lookup; no resolver ran.
+    PoolRefused,
+}
+
 /// Hooked `getaddrinfo`, always on the pool: upstream does not test for a coroutine.
 /// A found list is stored in `pai` for the caller to `freeaddrinfo`.
-pub fn swoole_coroutine_getaddrinfo(
+///
+/// # Errors
+/// Returns the resolver error, capturing errno for `EAI_SYSTEM`, or pool refusal.
+pub fn resolve_addrinfo(
     name: Option<&CStr>,
     service: Option<&CStr>,
     req: Option<&addrinfo>,
     pai: &mut *mut addrinfo,
-) -> c_int {
+) -> Result<(), AddrInfoError> {
     // getaddrinfo reads only the hints' integers; the rest must be zero.
     let hints = req.map(|req| {
         (
@@ -326,13 +338,19 @@ pub fn swoole_coroutine_getaddrinfo(
         });
         let (name, service) = (name.map(Text::from), service.map(Text::from));
         let mut list = std::ptr::null_mut();
-        let found = getaddrinfo(name, service, hints.as_ref(), &mut list);
+        let found = match getaddrinfo(name, service, hints.as_ref(), &mut list) {
+            0 => Ok(()),
+            libc::EAI_SYSTEM => Err(AddrInfoError::System(std::io::Error::last_os_error())),
+            code => Err(AddrInfoError::Resolver(code)),
+        };
         // The list is the caller's to free on this thread: only its address crosses.
         (found, list.expose_provenance())
     };
-    let Some((found, list)) = on_pool(Some(runtime().offload), None, || Some(call())) else {
-        return -1;
-    };
+    let (found, list) = on_pool(
+        Some(runtime().offload),
+        (Err(AddrInfoError::PoolRefused), 0),
+        call,
+    );
     // getaddrinfo stores a list only when it finds one.
     if list != 0 {
         *pai = std::ptr::with_exposed_provenance_mut(list);
@@ -341,7 +359,7 @@ pub fn swoole_coroutine_getaddrinfo(
 }
 
 /// `getaddrinfo`'s hints: integers, with every pointer null as getaddrinfo requires.
-/// Only [`swoole_coroutine_getaddrinfo`] makes one, so getaddrinfo reads no pointer
+/// Only [`resolve_addrinfo`] makes one, so getaddrinfo reads no pointer
 /// of it.
 #[repr(transparent)]
 struct Hints(addrinfo);
@@ -420,9 +438,9 @@ pub(crate) mod tests {
         std::thread::scope(|scope| scope.spawn(job).join().unwrap());
         true
     }
-    fn sleep(seconds: f64) -> c_int {
+    fn sleep(seconds: f64) -> bool {
         SLEPT.set(seconds);
-        0
+        true
     }
     pub(crate) const OPS: Ops = Ops {
         in_coroutine,
@@ -521,7 +539,14 @@ pub(crate) mod tests {
         unsafe {
             let mut list: *mut addrinfo = std::ptr::null_mut();
             let lookup = |service: Option<&CStr>, list: &mut *mut addrinfo| {
-                swoole_coroutine_getaddrinfo(Some(c"127.0.0.1"), service, None, list)
+                resolve_addrinfo(Some(c"127.0.0.1"), service, None, list).map_or_else(
+                    |error| match error {
+                        AddrInfoError::Resolver(code) => code,
+                        AddrInfoError::System(_) => libc::EAI_SYSTEM,
+                        AddrInfoError::PoolRefused => -1,
+                    },
+                    |()| 0,
+                )
             };
             // Upstream offloads the resolver even outside a coroutine.
             assert_eq!(with(Here, || lookup(Some(c"80"), &mut list)), 0);
@@ -529,6 +554,31 @@ pub(crate) mod tests {
             assert!(!list.is_null());
             libc::freeaddrinfo(list);
             assert_eq!(with(Refuse, || lookup(None, &mut list)), -1);
+            let before = list;
+            assert!(matches!(
+                with(Refuse, || resolve_addrinfo(
+                    Some(c"127.0.0.1"),
+                    None,
+                    None,
+                    &mut list
+                )),
+                Err(AddrInfoError::PoolRefused)
+            ));
+            assert_eq!(list, before);
+            // AI_NUMERICHOST rejects this name locally, on the real pool thread.
+            let mut hints: addrinfo = std::mem::zeroed();
+            hints.ai_flags = libc::AI_NUMERICHOST;
+            hints.ai_socktype = libc::SOCK_STREAM;
+            assert!(matches!(
+                with(Pool, || resolve_addrinfo(
+                    Some(c"not-a-number"),
+                    None,
+                    Some(&hints),
+                    &mut list
+                )),
+                Err(AddrInfoError::Resolver(libc::EAI_NONAME))
+            ));
+            assert_eq!(list, before);
 
             // The entry lives in the looking-up thread's storage, which may end with
             // the test's pool thread: read it only from a lookup run here.

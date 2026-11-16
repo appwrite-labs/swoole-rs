@@ -73,6 +73,14 @@ cases convert those results back to their original integer expectations at the
 assertion boundary; descriptor ownership, transfer flags and coroutine routing
 are unchanged.
 
+The original `coroutine_hook.getaddrinfo` calls `stdio::resolve_addrinfo` by path.
+Its `Result` separates resolver codes, `EAI_SYSTEM` with the executing thread's
+errno, and pool refusal; the test adapter retains the original 0/`EAI_NONAME`
+assertions. The stdio sleep effect reports completion as a boolean: flock preserves its
+cancellation behavior, while the exported sleep hooks discard it. Flock keeps
+invalid operations, captured I/O errors and cancellation distinct until its C
+export maps them to the original statuses. Duration conversions are unchanged.
+
 `core-tests/src/coroutine/gethostbyname.cpp` is `system/src/gethostbyname.rs`
 (`coroutine_gethostbyname.<name>`, upstream's names, inputs and expected values):
 `System::gethostbyname` is `resolve::system_gethostbyname` and the DNS cache calls

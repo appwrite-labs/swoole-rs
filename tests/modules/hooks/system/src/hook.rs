@@ -8,7 +8,7 @@
 //! `address::assign`), the pollfds as a slice and the message as its borrowed buffers.
 //! The Rust socket operations return `io::Result`; local conversions below keep
 //! the original integer assertions. `hooked::send` and `recv` take byte slices.
-//! `swoole_coroutine_getaddrinfo` and `_gethostbyname` are `stdio`'s, over `&CStr` names.
+//! `resolve_addrinfo` and `swoole_coroutine_gethostbyname` are `stdio`'s, over `&CStr` names.
 
 use super::socket::SW_SOCK_TCP;
 use super::{
@@ -25,7 +25,7 @@ use swoole_rs_corebase::net_types::SocketAddress;
 use swoole_rs_hooks::hooked::{
     self, swoole_coroutine_get_socket_object, swoole_coroutine_get_socket_object_ex,
 };
-use swoole_rs_hooks::stdio::{swoole_coroutine_getaddrinfo, swoole_coroutine_gethostbyname};
+use swoole_rs_hooks::stdio::{AddrInfoError, resolve_addrinfo, swoole_coroutine_gethostbyname};
 
 // glibc's values (the core-tests build is Linux).
 const O_RDWR: c_int = 2;
@@ -41,6 +41,7 @@ const POLLIN: i16 = 1;
 const POLLOUT: i16 = 4;
 const AI_PASSIVE: c_int = 1;
 const EAI_NONAME: c_int = -2;
+const EAI_SYSTEM: c_int = -11;
 const HOST_NOT_FOUND: c_int = 1;
 const ENOTSOCK: c_int = 88;
 const EWOULDBLOCK: c_int = 11;
@@ -389,6 +390,17 @@ fn gethostbyname() {
     });
 }
 
+fn addrinfo_status(result: Result<(), AddrInfoError>) -> c_int {
+    result.map_or_else(
+        |error| match error {
+            AddrInfoError::Resolver(code) => code,
+            AddrInfoError::System(_) => EAI_SYSTEM,
+            AddrInfoError::PoolRefused => -1,
+        },
+        |()| 0,
+    )
+}
+
 fn getaddrinfo() {
     run(|| {
         let hints = AddrInfo {
@@ -406,7 +418,12 @@ fn getaddrinfo() {
         // SAFETY: the hints and the result slot as glibc's `addrinfo`, which `AddrInfo` is.
         let (hints, slot) =
             unsafe { (&*(&raw const hints).cast(), &mut *(&raw mut result).cast()) };
-        let result1 = swoole_coroutine_getaddrinfo(Some(HOST_1), Some(c"http"), Some(hints), slot);
+        let result1 = addrinfo_status(resolve_addrinfo(
+            Some(HOST_1),
+            Some(c"http"),
+            Some(hints),
+            slot,
+        ));
         assert_eq!(result1, 0);
 
         let mut curr = result;
@@ -424,7 +441,7 @@ fn getaddrinfo() {
         result = std::ptr::null_mut();
         // SAFETY: as above.
         let slot = unsafe { &mut *(&raw mut result).cast() };
-        let result2 = swoole_coroutine_getaddrinfo(Some(HOST_2), None, Some(hints), slot);
+        let result2 = addrinfo_status(resolve_addrinfo(Some(HOST_2), None, Some(hints), slot));
         assert_eq!(result2, EAI_NONAME);
         assert!(result.is_null());
         // SAFETY: freeaddrinfo(NULL), as upstream.
