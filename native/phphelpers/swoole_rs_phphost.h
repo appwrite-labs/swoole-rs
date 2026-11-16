@@ -39,11 +39,6 @@ BEGIN_EXTERN_C()
 #error "require PHP version 8.5 or earlier"
 #endif
 
-// The php_swoole_req_status value C reads (crates/phpswoole's ReqStatus::RshutdownBegin).
-enum {
-    PHP_SWOOLE_RSHUTDOWN_BEGIN = 3,
-};
-
 // The curl hooks' exception extends this (SW_INIT_CLASS_ENTRY_EX pastes the names):
 // its handlers, which MINIT points at Swoole\Exception's.
 extern zend_class_entry *swoole_exception_ce;
@@ -52,7 +47,7 @@ extern const zend_object_handlers *swr_swoole_exception_handlers;
 
 
 // Defined in Rust.
-int php_swoole_reactor_init();
+void php_swoole_check_reactor();
 zend_bool php_swoole_signal_isset_handler(int signo);
 
 #define SW_INIT_CLASS_ENTRY_EX(module, namespace_name, short_name, methods, parent_module)                             \
@@ -65,17 +60,6 @@ zend_bool php_swoole_signal_isset_handler(int signo);
         }                                                                                                              \
     } while (0);                                                                                                       \
     memcpy(&module##_handlers, &parent_module##_handlers, sizeof(zend_object_handlers))
-
-static sw_inline int php_swoole_check_reactor() {
-    if (SWOOLE_G(req_status) == PHP_SWOOLE_RSHUTDOWN_BEGIN) {
-        return -1;
-    }
-    if (sw_unlikely(!sw_reactor())) {
-        return php_swoole_reactor_init() == SW_OK ? 1 : -1;
-    } else {
-        return 0;
-    }
-}
 
 END_EXTERN_C()
 
