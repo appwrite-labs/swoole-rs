@@ -12,13 +12,13 @@ pub trait PhpFdHandler {
 struct OnPhp<H>(PhantomData<H>);
 
 impl<H: PhpFdHandler> FdHandler for OnPhp<H> {
-    fn handle(fd: c_int) -> c_int {
+    fn handle(fd: c_int) -> bool {
         // SAFETY: only `set_fd_handler` installs it, on the reactor of a thread
         // running PHP. Only threads running PHP drive that reactor (its own thread,
         // or under thread contexts the coroutine threads sharing it), so this call
         // runs on one, and the lease ends with the call.
         let php = unsafe { Php::assume() };
-        if H::handle(php, fd) { 0 } else { -1 }
+        H::handle(php, fd)
     }
 }
 
