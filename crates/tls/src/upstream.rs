@@ -702,8 +702,7 @@ fn ssl_sendfile(
     size: usize,
 ) -> Option<usize> {
     let mut nobufs = false;
-    let send =
-        |data: &[u8]| ssl_send_drain(socket, Drain::new(data)).map_or(-1, usize::cast_signed);
+    let send = |data: &[u8]| ssl_send_drain(socket, Drain::new(data));
     let result = ssl_sendfile_fd(fd, offset, size, send, &mut nobufs);
     if nobufs {
         socket.edit(|record| record.kernel_nobufs = true);
