@@ -107,7 +107,7 @@ pub(crate) fn start(serv: view::Server<'_>) -> bool {
 /// upstream returns `SW_OK` from this bool function.
 pub(crate) fn shutdown(serv: view::Server<'_>) -> bool {
     let pid = serv.counters().manager_pid.load(Relaxed);
-    if swoole_rs_process::os::kill(pid, libc::SIGTERM) < 0 {
+    if swoole_rs_process::os::kill(pid, libc::SIGTERM).is_err() {
         log::sys_warning(
             c"ProcessFactory::shutdown",
             format_args!("kill({pid}) failed"),
@@ -256,7 +256,7 @@ pub(crate) fn send(serv: view::Server<'_>, to: Pipe, send: &mut SendData) -> boo
             };
             let head = swoole_rs_process::process_pool::head_view(send.info());
             let sent = swoole_rs_process::methods::send_pipe_message(target, head, PIPE_MASTER);
-            sent > 0
+            sent.is_some_and(|sent| sent > 0)
         }
     }
 }

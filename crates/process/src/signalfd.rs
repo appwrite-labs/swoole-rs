@@ -38,14 +38,22 @@ fn sigset() -> libc::sigset_t {
     set
 }
 
-/// `sigprocmask(how, mask, NULL)`.
-fn sigprocmask(how: c_int, mask: &libc::sigset_t) -> c_int {
-    sys::sigprocmask(how, Some(mask), None)
+/// `sigprocmask(how, mask, NULL)`, or the errno it failed with.
+fn sigprocmask(how: c_int, mask: &libc::sigset_t) -> Result<(), i32> {
+    if sys::sigprocmask(how, Some(mask), None) == -1 {
+        return Err(errno());
+    }
+    Ok(())
 }
 
-/// `signalfd(fd, mask, FLAGS)`: a new signalfd for -1, else `fd` with the new mask.
-fn signalfd(fd: c_int, mask: &libc::sigset_t) -> c_int {
-    sys::signalfd(fd, mask, FLAGS)
+/// `signalfd(fd, mask, FLAGS)`: a new signalfd for -1, else `fd` with the new mask;
+/// or the errno it failed with.
+fn signalfd(fd: c_int, mask: &libc::sigset_t) -> Result<c_int, i32> {
+    let fd = sys::signalfd(fd, mask, FLAGS);
+    if fd < 0 {
+        return Err(errno());
+    }
+    Ok(fd)
 }
 
 fn clear_mask() {
@@ -104,8 +112,8 @@ pub fn signalfd_set(signo: c_int, handler: Handler) -> Handler {
     let fd = FD.load(Relaxed);
     if fd != -1 {
         let mask = sigset();
-        sigprocmask(libc::SIG_SETMASK, &mask);
-        signalfd(fd, &mask);
+        _ = sigprocmask(libc::SIG_SETMASK, &mask);
+        _ = signalfd(fd, &mask);
     }
     Handler(previous)
 }
@@ -131,12 +139,8 @@ pub fn signalfd_create() -> Result<c_int, CreateError> {
         return Err(CreateError::Exists);
     }
     let mask = sigset();
-    let fd = signalfd(-1, &mask);
-    if fd < 0 {
-        return Err(CreateError::Signalfd(errno()));
-    }
-    if sigprocmask(libc::SIG_BLOCK, &mask) == -1 {
-        let error = errno();
+    let fd = signalfd(-1, &mask).map_err(CreateError::Signalfd)?;
+    if let Err(error) = sigprocmask(libc::SIG_BLOCK, &mask) {
         // `fd` was just opened here.
         sys::close(fd);
         return Err(CreateError::Mask(error));
@@ -163,7 +167,7 @@ pub fn signalfd_clear() -> bool {
     let result = sigprocmask(libc::SIG_UNBLOCK, &mask);
     signal_reset();
     clear_mask();
-    result >= 0
+    result.is_ok()
 }
 
 /// What one readable event on the descriptor asks for.

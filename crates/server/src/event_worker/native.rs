@@ -317,8 +317,7 @@ pub fn kill_worker(serv: view::Server<'_>, worker_id: c_int) -> bool {
         ..DataHead::default()
     };
     let data = swoole_rs_process::process_pool::head_view(&head);
-    let sent = swoole_rs_process::methods::send_pipe_message(worker, data, PIPE_MASTER);
-    sent != -1
+    swoole_rs_process::methods::send_pipe_message(worker, data, PIPE_MASTER).is_some()
 }
 
 /// `Server::stop_async_worker(worker)`: stop reading, leave the pool and wait for the

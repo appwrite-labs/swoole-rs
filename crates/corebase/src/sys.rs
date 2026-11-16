@@ -1051,9 +1051,12 @@ pub fn sysconf(name: c_int) -> libc::c_long {
 }
 
 /// `kill(2)`.
-pub fn kill(pid: pid_t, signo: c_int) -> c_int {
+///
+/// # Errors
+/// The syscall's errno.
+pub fn kill(pid: pid_t, signo: c_int) -> std::io::Result<()> {
     // The signal is the caller's intent.
-    c::kill(pid, signo)
+    status_result(c::kill(pid, signo))
 }
 
 /// `getpriority(2)`: -1 is a priority too, so the caller clears errno first.
@@ -1271,7 +1274,7 @@ mod tests {
         assert!(stat(c"/no/such/path").is_none());
         assert_eq!(access(c"/", libc::R_OK).map_or(-1, |()| 0), 0);
         assert!(sysconf(libc::_SC_PAGESIZE) > 0);
-        assert_eq!(kill(getpid(), 0), 0);
+        assert!(kill(getpid(), 0).is_ok());
         assert_eq!(if_nametoindex(c"no-such-interface"), 0);
         let interfaces = Interfaces::new().unwrap();
         assert!(interfaces.iter().all(|entry| !entry.name().is_empty()));

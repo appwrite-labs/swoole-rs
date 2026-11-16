@@ -221,7 +221,7 @@ fn sleep_forever() -> ! {
 fn add_user_worker(serv: Server) -> *mut WorkerRecord {
     let worker = Worker::from(Box::leak(WorkerRecord::boxed()));
     let id = worker_methods::add_worker(serv.view(), worker);
-    assert_eq!(id, worker_id(worker.raw()).cast_signed());
+    assert_eq!(id, Some(worker_id(worker.raw())));
     worker.raw()
 }
 
@@ -1101,7 +1101,10 @@ unsafe extern "C" fn kill_on_worker_start(
             )
         };
         let sent = send_pipe_message(dst, head, SW_PIPE_MASTER | SW_PIPE_NONBLOCK);
-        check(sent > 0, "send_to_worker_from_worker(1, &ev, ...) > 0");
+        check(
+            sent.is_some_and(|sent| sent > 0),
+            "send_to_worker_from_worker(1, &ev, ...) > 0",
+        );
     }
 }
 
@@ -1632,7 +1635,7 @@ fn test_process(single_thread: bool) {
 
     clear_last_error();
     let fake_worker = Worker::from(Box::leak(WorkerRecord::boxed()));
-    assert_eq!(worker_methods::add_worker(serv.view(), fake_worker), SW_ERR);
+    assert_eq!(worker_methods::add_worker(serv.view(), fake_worker), None);
     assert_eq!(last_error(), SW_ERROR_WRONG_OPERATION);
     delete_worker(fake_worker.raw());
 

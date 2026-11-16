@@ -300,8 +300,8 @@ trait TaskServer: Copy {
     fn finish(self, data: &[u8], task: *mut c_void) -> bool;
     /// `get_task_worker_pool()->dispatch(&buf, &dst_worker_id)`.
     fn dispatch(self, buf: &mut EventData, dst_worker_id: &mut c_int) -> c_int;
-    fn get_tasking_num(self) -> c_int;
-    fn get_idle_task_worker_num(self) -> c_int;
+    fn get_tasking_num(self) -> u32;
+    fn get_idle_task_worker_num(self) -> u32;
     fn tasking_num(self) -> &'static AtomicU32;
     fn task_count(self) -> u64;
     fn shutdown(self) -> bool;
@@ -311,7 +311,7 @@ trait TaskServer: Copy {
     /// `serv->kill_worker(worker_id)`.
     fn kill_worker(self, worker_id: c_int) -> bool;
     /// `serv->send_to_worker_from_worker(id, &ev, flags)`.
-    fn send_to_worker_from_worker(self, id: u16, ev: &EventData, flags: c_int) -> isize;
+    fn send_to_worker_from_worker(self, id: u16, ev: &EventData, flags: c_int) -> Option<usize>;
     /// `serv->send_pipe_message(worker_id, data, len)`.
     fn send_pipe_message(self, worker_id: u32, data: &[u8]) -> bool;
     /// `serv->get_task_result()`: this worker's slot of `task_results`.
@@ -348,11 +348,11 @@ impl TaskServer for Server {
         if sent { SW_OK } else { SW_ERR }
     }
 
-    fn get_tasking_num(self) -> c_int {
+    fn get_tasking_num(self) -> u32 {
         server_methods::get_tasking_num(self.view())
     }
 
-    fn get_idle_task_worker_num(self) -> c_int {
+    fn get_idle_task_worker_num(self) -> u32 {
         server_methods::get_idle_task_worker_num(self.view())
     }
 
@@ -388,7 +388,7 @@ impl TaskServer for Server {
         swoole_rs_server::event_worker::native::kill_worker(self.view(), worker_id)
     }
 
-    fn send_to_worker_from_worker(self, id: u16, ev: &EventData, flags: c_int) -> isize {
+    fn send_to_worker_from_worker(self, id: u16, ev: &EventData, flags: c_int) -> Option<usize> {
         // SAFETY: one of the server's workers, and the event's bytes.
         let (worker, bytes) = unsafe {
             (
@@ -486,7 +486,7 @@ fn task_worker() {
         serv.tasking_num().fetch_sub(1, Ordering::SeqCst);
         check(serv.get_tasking_num() == 0, "serv.get_tasking_num() == 0");
         check(
-            serv.get_idle_task_worker_num() == serv.config().task_worker_num as c_int,
+            serv.get_idle_task_worker_num() == serv.config().task_worker_num,
             "serv.get_idle_task_worker_num() == serv.task_worker_num",
         );
     });
@@ -547,7 +547,8 @@ unsafe extern "C" fn task_worker2_on_worker_start(
             ev.info.type_ = SW_SERVER_EVENT_SHUTDOWN;
             ev.info.len = 0;
             check(
-                serv.send_to_worker_from_worker(1, &ev, PIPE_MASTER | PIPE_NONBLOCK) > 0,
+                serv.send_to_worker_from_worker(1, &ev, PIPE_MASTER | PIPE_NONBLOCK)
+                    .is_some_and(|sent| sent > 0),
                 "serv->send_to_worker_from_worker(1, &ev, ..) > 0",
             );
             task_worker2_mark(10);
@@ -565,7 +566,8 @@ unsafe extern "C" fn task_worker2_on_worker_start(
             ev.info.type_ = SW_SERVER_EVENT_SHUTDOWN + 99;
             ev.info.len = 0;
             check(
-                serv.send_to_worker_from_worker(0, &ev, PIPE_MASTER | PIPE_NONBLOCK) > 0,
+                serv.send_to_worker_from_worker(0, &ev, PIPE_MASTER | PIPE_NONBLOCK)
+                    .is_some_and(|sent| sent > 0),
                 "serv->send_to_worker_from_worker(0, &ev, ..) > 0",
             );
         });

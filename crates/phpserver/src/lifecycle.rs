@@ -178,12 +178,21 @@ fn start_server(serv: view::Server<'_>) -> Result<bool, bailout::Bailout> {
     Ok(started)
 }
 
-/// `addProcess`'s worker: -3 bailed out, -2 a thread that is not a user
-/// worker, -1 `add_worker` failed, else the id.
-fn add_worker(serv: view::Server<'_>, process: &Value) -> i64 {
+/// Why `addProcess` added no worker.
+enum AddFailed {
+    /// An unconstructed process raised its error, which is deferred.
+    Bailed,
+    /// A thread that is not a user worker.
+    UnrelatedThread,
+    /// The server's `add_worker` refused it.
+    Refused,
+}
+
+/// `addProcess`'s worker: its id.
+fn add_worker(serv: view::Server<'_>, process: &Value) -> Result<i64, AddFailed> {
     if fact(serv, Fact::WorkerThread) {
         if crate::server::worker_type() != Some(crate::server::WorkerType::User) {
-            return -2;
+            return Err(AddFailed::UnrelatedThread);
         }
         let id = swoole_rs_process::methods::swoole_get_worker_id();
         if let Some(worker) = serv.worker_record(id.c_cast::<u16>()) {
@@ -192,19 +201,17 @@ fn add_worker(serv: view::Server<'_>, process: &Value) -> i64 {
             worker.set_redirect_stderr(false);
         }
         let config = serv.config();
-        return i64::from(id)
+        return Ok(i64::from(id)
             - i64::from(config.worker_num.get())
-            - i64::from(config.task_worker_num.get());
+            - i64::from(config.task_worker_num.get()));
     }
-    // None once an unconstructed process raised its error, which is deferred.
-    let Some(worker) = checked_worker(process) else {
-        return -3;
-    };
+    let worker = checked_worker(process).ok_or(AddFailed::Bailed)?;
     // SAFETY: the process's live worker, which the server's copy of the
     // Process object keeps for the server's life.
     let worker = unsafe { Worker::new(worker.raw()) };
-    let id = swoole_rs_server::worker_methods::add_worker(serv, worker);
-    if id >= 0 { id.into() } else { -1 }
+    swoole_rs_server::worker_methods::add_worker(serv, worker)
+        .map(i64::from)
+        .ok_or(AddFailed::Refused)
 }
 
 /// `send_yield`'s coroutines waiting on one session, each with its token.
@@ -830,7 +837,7 @@ fn construct(call: &Call) {
         server.config().worker_num.set(1);
     }
     if port == 0 && address.eq_ignore_ascii_case(b"SYSTEMD") {
-        if server_methods::add_systemd_socket(server) <= 0 {
+        if server_methods::add_systemd_socket(server) == 0 {
             call.throw_error(c"failed to add systemd socket");
             kept().push((share, true));
             return call.set_bool(false);
@@ -884,16 +891,16 @@ fn add_process(call: &Call) {
     let copy = process.copy();
     ServerObject::this(call).property(|p| p.user_processes.push(copy));
     match add_worker(serv, process) {
-        -3 => bailout::defer(Err(bailout::Bailout)),
-        -2 => {
+        Err(AddFailed::Bailed) => bailout::defer(Err(bailout::Bailout)),
+        Err(AddFailed::UnrelatedThread) => {
             set_last_error(SW_ERROR_SERVER_UNRELATED_THREAD);
             call.set_bool(false);
         }
-        -1 => {
+        Err(AddFailed::Refused) => {
             fatal(E_WARNING, c"failed to add worker");
             call.set_bool(false);
         }
-        id => {
+        Ok(id) => {
             // The process object, which the copy holds too.
             if let Some(props) = process.props(Some(swoole_rs_phpprocess::process_class())) {
                 props.long(c"id", id);

@@ -290,11 +290,10 @@ pub fn finish(
             return false;
         }
         reply(&mut buf, super::nonblocking_flags(flags, task.ext_flags));
-        let sent = match stream_connection(worker) {
+        match stream_connection(worker) {
             Some(socket) => send_stream(socket, data),
             None => send_pipe_message(worker, buf.bytes(), PIPE_MASTER),
-        };
-        usize::try_from(sent).ok()
+        }
     } else {
         let Some(slot) = super::result_slot(serv, source) else {
             log::warning(
@@ -398,10 +397,13 @@ fn stream_connection(worker: Worker<'_>) -> Option<Socket<'_>> {
 }
 
 /// The result over a stream: its length, big-endian, then its bytes.
-fn send_stream(socket: Socket<'_>, data: &[u8]) -> isize {
-    let send = |data: &[u8]| swoole_rs_tls::upstream::send_sync(socket, data, 0);
-    let sent = send(&data.len().c_cast::<u32>().to_be_bytes());
-    if sent > 0 { send(data) } else { sent }
+fn send_stream(socket: Socket<'_>, data: &[u8]) -> Option<usize> {
+    let send =
+        |data: &[u8]| usize::try_from(swoole_rs_tls::upstream::send_sync(socket, data, 0)).ok();
+    match send(&data.len().c_cast::<u32>().to_be_bytes())? {
+        0 => Some(0),
+        _ => send(data),
+    }
 }
 
 fn errno() -> c_int {

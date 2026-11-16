@@ -3,7 +3,7 @@
 //! reasons, and the socket's TLS state group they set. `upstream` defines the
 //! `Socket` methods over them, errno, the last error and logs included.
 use crate::SslState;
-use crate::handle::Ssl;
+use crate::handle::{Ssl, SslFailure};
 use crate::handle::{clear_errors, peek_error, pop_error, reason_string};
 use openssl_sys::{
     SSL_ERROR_SSL, SSL_ERROR_SYSCALL, SSL_ERROR_WANT_READ, SSL_ERROR_WANT_WRITE,
@@ -56,16 +56,25 @@ pub struct SslIoResult {
     pub protocol_error: bool,
 }
 
-fn classify(tls: &mut SocketTls, ssl: Ssl, n: c_int, write: bool) -> SslIoResult {
+fn classify(tls: &mut SocketTls, moved: Result<usize, SslFailure>, write: bool) -> SslIoResult {
     want(tls, false, false);
+    let failure = match moved {
+        Ok(count) => {
+            return SslIoResult {
+                value: isize::try_from(count).unwrap_or(isize::MAX),
+                ..SslIoResult::default()
+            };
+        }
+        Err(failure) => failure,
+    };
     let mut result = SslIoResult {
-        value: n as isize,
+        value: failure.returned as isize,
         ..SslIoResult::default()
     };
-    if n >= 0 {
+    if failure.returned == 0 {
         return result;
     }
-    match ssl.error(n) {
+    match failure.code {
         SSL_ERROR_WANT_READ => {
             want(tls, true, false);
             result.error = libc::EAGAIN;
@@ -96,16 +105,14 @@ pub fn swr_v1_socket_ssl_recv(
     buffer: &mut [impl ReadSlot],
 ) -> SslIoResult {
     clear_errors();
-    let n = ssl.read(buffer);
-    classify(tls, ssl, n, false)
+    classify(tls, ssl.read(buffer), false)
 }
 
 /// `Socket::ssl_send`: `SSL_write` of `data` (native code applies the DTLS chunk
 /// limit first).
 pub fn swr_v1_socket_ssl_send(tls: &mut SocketTls, ssl: Ssl, data: &[u8]) -> SslIoResult {
     clear_errors();
-    let n = ssl.write(data);
-    classify(tls, ssl, n, true)
+    classify(tls, ssl.write(data), true)
 }
 
 /// What a failed handshake step logs.
@@ -158,15 +165,17 @@ pub fn swr_v1_socket_ssl_accept(
 ) -> SslHandshakeResult<Accept> {
     want(tls, false, false);
     clear_errors();
-    let n = ssl.accept();
-    if n == 1 {
-        tls.state = STATE_READY;
-        return SslHandshakeResult::returning(Accept::Ready);
-    }
-    if n == 0 {
+    let failure = match ssl.accept() {
+        Ok(()) => {
+            tls.state = STATE_READY;
+            return SslHandshakeResult::returning(Accept::Ready);
+        }
+        Err(failure) => failure,
+    };
+    if failure.returned == 0 {
         return SslHandshakeResult::returning(Accept::Error);
     }
-    let error = ssl.error(n);
+    let error = failure.code;
     let mut result = SslHandshakeResult::returning(Accept::Error);
     match error {
         SSL_ERROR_WANT_READ => {
@@ -193,12 +202,16 @@ pub fn swr_v1_socket_ssl_accept(
 pub fn swr_v1_socket_ssl_connect(tls: &mut SocketTls, ssl: Ssl) -> SslHandshakeResult<bool> {
     want(tls, false, false);
     clear_errors();
-    let n = ssl.connect();
-    if n == 1 {
-        tls.state = STATE_READY;
-        return SslHandshakeResult::returning(true);
-    }
-    let error = ssl.error(n);
+    let SslFailure {
+        returned,
+        code: error,
+    } = match ssl.connect() {
+        Ok(()) => {
+            tls.state = STATE_READY;
+            return SslHandshakeResult::returning(true);
+        }
+        Err(failure) => failure,
+    };
     let mut result = SslHandshakeResult::returning(false);
     match error {
         SSL_ERROR_WANT_READ | SSL_ERROR_WANT_WRITE => {
@@ -215,7 +228,7 @@ pub fn swr_v1_socket_ssl_connect(tls: &mut SocketTls, ssl: Ssl) -> SslHandshakeR
             result.last_error = RESET;
             return result;
         }
-        SSL_ERROR_SYSCALL if n != 0 => {
+        SSL_ERROR_SYSCALL if returned != 0 => {
             result.last_error = errno();
             return result;
         }

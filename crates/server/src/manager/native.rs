@@ -324,7 +324,7 @@ impl Reap for Reaping<'_> {
                 let worker = worker_at(serv, id.into());
                 if u32::from(id) >= serv.config().worker_num.get() {
                     let worker = worker.map_or(core::ptr::null_mut(), Worker::raw);
-                    _ = methods::spawn(serv.task_pool_ref(), worker);
+                    methods::spawn(serv.task_pool_ref(), worker);
                 } else {
                     _ = spawn(serv, spawn_event_worker, worker);
                 }
@@ -426,7 +426,7 @@ extern "C" fn signal_handler(signo: c_int) {
                 format_args!("wait timeout, all worker processes will be forcibly terminated"),
             );
             for pid in pids {
-                kill(pid, libc::SIGKILL);
+                _ = kill(pid, libc::SIGKILL);
             }
         }
         _ if signo == libc::SIGWINCH || sigrtmin() == Some(signo) => {
@@ -438,7 +438,7 @@ extern "C" fn signal_handler(signo: c_int) {
             let all = config.worker_num.get() + config.task_worker_num.get();
             let all = all + u32::try_from(serv.workers().user_count()).unwrap_or(u32::MAX);
             for id in 0..all {
-                kill(worker_at(serv, id).map_or(0, Worker::pid), libc::SIGWINCH);
+                _ = kill(worker_at(serv, id).map_or(0, Worker::pid), libc::SIGWINCH);
             }
         }
         _ => {}
@@ -507,7 +507,7 @@ pub fn restart_worker_process(serv: view::Server<'_>, status: &ExitStatus) {
     check_exit_status(serv, Some(worker), status);
     match worker.kind() {
         Some(WorkerType::Event) => _ = spawn_event_worker(serv, worker),
-        Some(WorkerType::Task) => _ = methods::spawn(serv.task_pool_ref(), worker.raw()),
+        Some(WorkerType::Task) => methods::spawn(serv.task_pool_ref(), worker.raw()),
         Some(WorkerType::User) => _ = spawn_user_worker(serv, worker),
         _ => log::warning(
             ORIGIN,
@@ -539,7 +539,7 @@ pub fn reload(serv: view::Server<'_>, reload_all_workers: bool) -> bool {
         } else {
             libc::SIGUSR2
         };
-        return kill(manager_pid, signo) == 0;
+        return kill(manager_pid, signo).is_ok();
     }
     if !methods::reload(serv.event_pool_ref()) {
         return false;

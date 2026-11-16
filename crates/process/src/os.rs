@@ -1,5 +1,4 @@
 //! The process system calls that take only integers, as safe functions.
-use std::ffi::c_int;
 
 /// getpid(2).
 #[must_use]
@@ -8,11 +7,4 @@ pub fn getpid() -> libc::pid_t {
     std::process::id().cast_signed()
 }
 
-/// kill(2): 0, or -1 with `errno` set.
-#[expect(
-    clippy::must_use_candidate,
-    reason = "upstream ignores kill's result where it only sends a signal"
-)]
-pub fn kill(pid: libc::pid_t, signo: c_int) -> c_int {
-    swoole_rs_corebase::sys::kill(pid, signo)
-}
+pub use swoole_rs_corebase::sys::kill;

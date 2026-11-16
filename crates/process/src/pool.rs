@@ -916,7 +916,7 @@ pub(crate) fn swr_v1_process_worker_send(
     worker_id: u32,
     data: &[u8],
     flags: c_int,
-) -> isize {
+) -> Option<usize> {
     let length = data.len();
     let mut call = PoolCall::new(pool, ptr::null_mut());
     if queue {
@@ -931,15 +931,11 @@ pub(crate) fn swr_v1_process_worker_send(
             }))
             .collect();
         // The queue's push, which cannot reach PHP.
-        return if pool.queue_push(&message, length) {
-            length.cast_signed()
-        } else {
-            -1
-        };
+        return pool.queue_push(&message, length).then_some(length);
     }
     if pipe.is_null() {
         // A worker without a pipe, which upstream doesn't send through.
-        return -1;
+        return None;
     }
     // A worker's pipe end, a live socket (the record's invariant).
     call.socket = pipe;
@@ -949,7 +945,7 @@ pub(crate) fn swr_v1_process_worker_send(
     // The native pipe write, which cannot reach PHP.
     native.pipe_write(&mut call);
     set_errno(call.error);
-    call.result
+    usize::try_from(call.result).ok()
 }
 
 /// `ProcessPool::dispatch`/`dispatch_sync` to a worker's pipe or queue: offset
@@ -985,8 +981,7 @@ pub(crate) fn pool_dispatch<'a>(
     };
     let (id, pipe) = (worker.id(), worker.pipe_master());
     let flags = PIPE_MASTER | if blocking { 0 } else { PIPE_NONBLOCK };
-    let sent = swr_v1_process_worker_send(native, pool, pipe, queue, id, event, flags);
-    if sent < 0 {
+    if swr_v1_process_worker_send(native, pool, pipe, queue, id, event, flags).is_none() {
         let call = PoolCall::new(pool, ptr::null_mut());
         native.warn(
             &call,

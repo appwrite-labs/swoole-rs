@@ -1,7 +1,7 @@
 //! `dtls::Session`: its datagram queue, the BIO OpenSSL reads it through, and
 //! `init`/`listen`. The BIO owns its session: the socket's SSL holds the BIO, and the
 //! session goes when OpenSSL destroys it, so a session is reached through its socket.
-use crate::handle::BioMethod;
+use crate::handle::{BioMethod, SslFailure};
 use core::cell::Cell;
 use core::ffi::{c_char, c_int, c_long, c_void};
 use core::marker::{PhantomData, PhantomPinned};
@@ -195,11 +195,11 @@ fn swr_v1_tls_dtls_control(
 
 /// Whether `DTLSv1_listen`'s `result` succeeded, marking the session listened unless
 /// it is still pending (zero).
-pub fn swr_v1_tls_dtls_listen(owner: &DtlsSession, result: c_int) -> bool {
-    if result > 0 {
+pub fn swr_v1_tls_dtls_listen(owner: &DtlsSession, result: Result<bool, SslFailure>) -> bool {
+    if result == Ok(true) {
         owner.listened.set(true);
     }
-    result >= 0
+    result.is_ok()
 }
 
 /// A BIO of the table `methods` makes, which OpenSSL lends each callback for the
@@ -585,10 +585,14 @@ mod tests {
         swoole_rs_corebase::sys::close(read);
         swoole_rs_corebase::sys::close(write);
         assert_eq!(owner.read(3).1, b"abc");
-        assert!(!unsafe { swr_v1_tls_dtls_listen(&*owner.handle(), -1) });
-        assert!(unsafe { swr_v1_tls_dtls_listen(&*owner.handle(), 0) });
+        let fatal = SslFailure {
+            returned: -1,
+            code: openssl_sys::SSL_ERROR_SSL,
+        };
+        assert!(!unsafe { swr_v1_tls_dtls_listen(&*owner.handle(), Err(fatal)) });
+        assert!(unsafe { swr_v1_tls_dtls_listen(&*owner.handle(), Ok(false)) });
         assert!(!owner.session().listened());
-        assert!(unsafe { swr_v1_tls_dtls_listen(&*owner.handle(), 1) });
+        assert!(unsafe { swr_v1_tls_dtls_listen(&*owner.handle(), Ok(true)) });
         assert!(owner.session().listened());
         let control = |control, shutdown| unsafe {
             swr_v1_tls_dtls_control(&*owner.handle(), control, shutdown, -7)
