@@ -283,6 +283,31 @@ class Phpt(unittest.TestCase):
 
 
 class Cleanup(unittest.TestCase):
+    def test_server_cleanup_preserves_only_existing_failures_with_exited_leaders(self):
+        from unittest.mock import Mock
+        cases = [
+            ('assertion', 7, AssertionError, 'original failure'),
+            ('startup', 7, RuntimeError, 'PHP exited during startup'),
+            ('success', 0, PermissionError, 'denied'),
+            ('assertion', None, PermissionError, 'denied'),
+        ]
+        for phase, exited, error, message in cases:
+            with self.subTest(phase=phase, exited=exited):
+                process = Mock(pid=12345, returncode=exited)
+                process.poll.side_effect = [exited if phase == 'startup' else None, exited]
+                with patch.object(harness.subprocess, 'Popen', return_value=process), \
+                     patch.object(harness.socket, 'create_connection', return_value=harness.contextlib.nullcontext()), \
+                     patch.object(harness, 'stop_process_group', side_effect=PermissionError('denied')), \
+                     patch.object(harness.sys, 'stderr'), \
+                     self.assertRaisesRegex(error, message):
+                    try:
+                        raise LookupError('already handled by the caller')
+                    except LookupError:
+                        with harness.server(Engine('test', Path('/unused')), Path('/unused.php')):
+                            if phase == 'assertion':
+                                raise AssertionError('original failure')
+                self.assertEqual(process.poll.call_count, 2)
+
     def test_permission_error_preserves_exited_failure_and_output(self):
         from tools import harness
         from unittest.mock import Mock

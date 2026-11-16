@@ -111,6 +111,7 @@ def server(engine, script, env=None):
         proc = subprocess.Popen(engine.command(script),
                                 env={**os.environ, 'TEST_PORT': str(port), 'TEST_DATA': data, **(env or {})},
                                 stdout=logs, stderr=logs, start_new_session=True)
+        failed = False
         try:
             deadline = time.monotonic() + 10
             while True:
@@ -125,13 +126,21 @@ def server(engine, script, env=None):
                     time.sleep(.02)
             yield port, proc
         except BaseException:
+            failed = True
             logs.seek(0)
             print(logs.read().decode(errors='replace'), file=sys.stderr)
             raise
         finally:
             # Upstream can fork workers. Kill the entire isolated process group,
             # including on failed startup, assertion failures, and Ctrl+C.
-            stop_process_group(proc)
+            try:
+                stop_process_group(proc)
+            except PermissionError:
+                # poll reaps an exited leader. macOS may refuse killpg when only
+                # zombies remain; preserve the test's failure, never hide cleanup
+                # uncertainty after a successful test or while its leader is live.
+                if proc.poll() is None or not failed:
+                    raise
 
 
 def stop_process_group(proc):
