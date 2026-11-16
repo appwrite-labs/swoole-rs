@@ -90,13 +90,11 @@ fn read_buffer(_: Co, view: &mut ReadBuffer, sync: BufferSync) {
             length: buffer.length,
             size: buffer.bytes.len(),
             offset: buffer.offset.try_into().unwrap(),
-            str: buffer.bytes.as_mut_ptr(),
         };
     });
 }
 
-fn recv(_: Co, buf: &mut [core::mem::MaybeUninit<u8>], all: bool) -> Option<usize> {
-    let n = buf.len();
+fn recv(_: Co, at: usize, n: usize, all: bool) -> Option<usize> {
     with(|s| {
         let Script {
             trace,
@@ -104,9 +102,11 @@ fn recv(_: Co, buf: &mut [core::mem::MaybeUninit<u8>], all: bool) -> Option<usiz
             consumed,
             reads,
             read,
+            buffer,
             ..
         } = s;
         trace.push(format!("{}:{n}", if all { "recv-all" } else { "recv" }));
+        let buffer = buffer.as_mut().unwrap();
         let mut total = 0;
         loop {
             let requested = reads.get(*read).copied().unwrap_or(0);
@@ -122,15 +122,24 @@ fn recv(_: Co, buf: &mut [core::mem::MaybeUninit<u8>], all: bool) -> Option<usiz
             if count == 0 {
                 break;
             }
-            buf[total..total + count].write_copy_of_slice(&input[*consumed..*consumed + count]);
+            buffer.bytes[at + total..at + total + count]
+                .copy_from_slice(&input[*consumed..*consumed + count]);
             *consumed += count;
             total += count;
+            buffer.length = buffer.length.max(at + total);
             if !all || total >= n {
                 break;
             }
         }
         Some(total)
     })
+}
+
+fn read_bytes(_: Co, read: &mut dyn FnMut(&[u8])) {
+    with(|s| {
+        let buffer = s.buffer.as_ref().unwrap();
+        read(&buffer.bytes[..buffer.length]);
+    });
 }
 
 fn package_length(_: Co, n: u32, header: &mut u32) -> Length {
@@ -164,6 +173,7 @@ static SCRIPTED: Host = Host {
     timer_add,
     timer_del,
     read_buffer,
+    read_bytes,
     recv,
     package_length,
     packet_fail,

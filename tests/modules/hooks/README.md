@@ -17,6 +17,12 @@ checked against the pinned bodies' traces in `ported.txt`:
 | 96-191, 228-239 (EOF protocol, raw when EOF is off) | `packet::ported::ported_eof_protocol_scenarios` |
 | 192-215 (raw receive, availability, timer failure) | `packet::ported::ported_raw_receive_scenarios` |
 
+The framing host lends initialized bytes and receives into `CppString` through
+`Co::recv_spare`; its metadata view carries no pointer. The 240 trace expectations
+are unchanged. `co_socket::tests::tls_scratch_is_stable_and_independent_of_application_loans`
+checks that TLS BIO scratch remains distinct and reusable while both application
+buffers are lent; the scratch keeps the socket allocator and is freed with its state.
+
 ## Original tests
 
 `core-tests/src/coroutine/system.cpp` is Rust: `system/` holds its 20 TESTs, one

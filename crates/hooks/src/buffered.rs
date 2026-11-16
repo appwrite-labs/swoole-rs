@@ -1,10 +1,8 @@
-//! `Socket::recv_with_buffer` and `Socket::recv_line` of the coroutine socket:
-//! reads served from the socket's read buffer, refilled by one `recv`. Native code
-//! keeps the buffer, which it lends as `BufferFields`, and the `recv`.
+//! Buffered coroutine reads. The host lends written bytes only for each copy;
+//! receives commit their initialized content through the native buffer owner.
 use crate::co_io::{available, host};
 use crate::co_socket::Co;
 use crate::packet::{BufferSync, ReadBuffer};
-use core::mem::MaybeUninit;
 use swoole_rs_corebase::sys::ReadSlot;
 use swoole_rs_reactor::Events;
 
@@ -12,76 +10,38 @@ fn to_off(offset: usize) -> libc::off_t {
     libc::off_t::try_from(offset).unwrap_or(libc::off_t::MAX)
 }
 
-/// The socket's read String as this read borrows it: its allocation, of which the
-/// first `filled` bytes are written and the rest may be uninitialized. Only this
-/// module makes one, from the native view, and only [`Bytes::recv`] (or the tests,
-/// which write what they count) grows `filled`.
-struct Bytes<'a> {
-    all: &'a mut [MaybeUninit<u8>],
-    filled: usize,
+/// Operations over the stored bytes, each loan ending before another operation.
+trait Buffer {
+    fn length(&self) -> usize;
+    fn capacity(&self) -> usize;
+    fn copy<S: ReadSlot>(&mut self, at: usize, out: &mut [S]) -> usize;
+    fn reduce(&mut self, at: usize);
+    fn recv(&mut self, offset: usize) -> Option<usize>;
 }
 
-impl Bytes<'_> {
-    /// The written bytes.
-    fn content(&self) -> &[u8] {
-        let written = self.all.get(..self.filled).unwrap_or_default();
-        // SAFETY: the first `filled` slots are written: the native view's length when
-        // the read began, then only what `recv` reported writing.
-        unsafe { written.assume_init_ref() }
-    }
-
-    /// Moves the written bytes from `at` to the start: `String::reduce`.
-    fn drop_front(&mut self, at: usize) {
-        let at = at.min(self.filled);
-        self.all.copy_within(at..self.filled, 0);
-        self.filled -= at;
-    }
-
-    /// The host's `recv` of `socket` into the free space, which then counts what it
-    /// wrote.
-    fn recv(&mut self, socket: Co) -> Option<usize> {
-        let free = self.all.get_mut(self.filled..).unwrap_or_default();
-        let received = (host().recv)(socket, free, false);
-        if let Some(count) = received {
-            self.filled = (self.filled + count).min(self.all.len());
-        }
-        received
-    }
-}
-
-/// `recv_with_buffer` after the availability check, over the buffer `data`, read up
-/// to `*offset`: up to `out.len()` bytes into `out`, refilling it with one `recv`
-/// when it holds too few. `recv` gets the buffer's length and offset, to publish
-/// before it may yield, and the buffer to receive into; it returns the bytes read,
-/// 0 at EOF or None on error.
 fn read_buffered<S: ReadSlot>(
-    data: &mut Bytes<'_>,
+    data: &mut impl Buffer,
     offset: &mut usize,
     out: &mut [S],
-    recv: impl FnOnce(usize, usize, &mut Bytes<'_>) -> Option<usize>,
 ) -> Option<usize> {
-    let mut at = (*offset).min(data.filled);
-    let held = data.filled - at;
-    let take = S::copy_in(out, data.content().get(at..).unwrap_or_default());
+    let mut at = (*offset).min(data.length());
+    let held = data.length() - at;
+    let take = data.copy(at, out);
     at += take;
     if out.len() <= held {
         *offset = at;
         return Some(take);
     }
-    // `String::reduce`: drop the consumed half.
-    if at >= data.all.len() / 2 && at > 0 {
-        data.drop_front(at);
+    if at >= data.capacity() / 2 && at > 0 {
+        data.reduce(at);
         at = 0;
     }
     *offset = at;
-    let received = recv(data.filled, at, data);
+    let received = data.recv(at);
     if received <= Some(0) {
         return if held > 0 { Some(held) } else { received };
     }
-    let copied = S::copy_in(
-        out.get_mut(held..).unwrap_or_default(),
-        data.content().get(at..).unwrap_or_default(),
-    );
+    let copied = data.copy(at, out.get_mut(held..).unwrap_or_default());
     *offset = at + copied;
     Some(held + copied)
 }
@@ -128,18 +88,37 @@ impl Context {
     }
 }
 
-fn buffer(socket: Co) -> Context {
-    let mut ctx = Context {
-        socket,
-        view: ReadBuffer {
-            length: 0,
-            size: 0,
-            offset: 0,
-            str: core::ptr::null_mut(),
-        },
-    };
-    ctx.sync(BufferSync::Get);
-    ctx
+impl Buffer for Context {
+    fn length(&self) -> usize {
+        self.view.length
+    }
+    fn capacity(&self) -> usize {
+        self.view.size
+    }
+    fn copy<S: ReadSlot>(&mut self, at: usize, out: &mut [S]) -> usize {
+        let mut copied = 0;
+        (host().read_bytes)(self.socket, &mut |bytes| {
+            copied = S::copy_in(out, bytes.get(at..).unwrap_or_default());
+        });
+        copied
+    }
+    fn reduce(&mut self, at: usize) {
+        self.sync(BufferSync::Reduce(at));
+    }
+    fn recv(&mut self, offset: usize) -> Option<usize> {
+        self.view.offset = to_off(offset);
+        self.sync(BufferSync::Store);
+        let received = (host().recv)(
+            self.socket,
+            self.view.length,
+            self.view.size.saturating_sub(self.view.length),
+            false,
+        );
+        if let Some(n) = received {
+            self.view.length += n;
+        }
+        received
+    }
 }
 
 /// `Socket::recv_with_buffer`, including availability and lazy buffer allocation.
@@ -148,26 +127,17 @@ pub fn recv_buffered(socket: Co, out: &mut [impl ReadSlot]) -> Option<usize> {
     if !available(socket, Events::READ) {
         return None;
     }
-    let mut ctx = buffer(socket);
-    let all = if ctx.view.str.is_null() {
-        &mut [][..]
-    } else {
-        // SAFETY: the socket's read String lends its `size` bytes to this read, the
-        // socket's only reader, as slots (the room past its length is uninitialized);
-        // `out` is outside them.
-        unsafe { core::slice::from_raw_parts_mut(ctx.view.str.cast(), ctx.view.size) }
+    let mut ctx = Context {
+        socket,
+        view: ReadBuffer {
+            length: 0,
+            size: 0,
+            offset: 0,
+        },
     };
-    // The String's first `length` bytes are its written content.
-    let filled = ctx.view.length.min(all.len());
-    let mut data = Bytes { all, filled };
+    ctx.sync(BufferSync::Get);
     let mut offset = usize::try_from(ctx.view.offset).unwrap_or(0);
-    let result = read_buffered(&mut data, &mut offset, out, |length, offset, data| {
-        ctx.view.length = length;
-        ctx.view.offset = to_off(offset);
-        ctx.sync(BufferSync::Store);
-        data.recv(socket)
-    });
-    ctx.view.length = data.filled;
+    let result = read_buffered(&mut ctx, &mut offset, out);
     ctx.view.offset = to_off(offset);
     ctx.sync(BufferSync::Store);
     result
@@ -176,35 +146,43 @@ pub fn recv_buffered(socket: Co, out: &mut [impl ReadSlot]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     struct Source {
         data: Vec<u8>,
         calls: usize,
     }
-
-    impl Source {
-        fn recv(&mut self, into: &mut Bytes<'_>) -> usize {
-            self.calls += 1;
-            let at = &mut into.all[into.filled..];
-            let n = at.len().min(self.data.len());
-            at[..n].write_copy_of_slice(&self.data[..n]);
-            into.filled += n;
-            self.data.drain(..n);
-            n
-        }
-    }
-
     struct Buffered {
-        storage: Vec<MaybeUninit<u8>>,
+        storage: Vec<u8>,
         length: usize,
         offset: usize,
         source: Source,
     }
-
+    impl Buffer for Buffered {
+        fn length(&self) -> usize {
+            self.length
+        }
+        fn capacity(&self) -> usize {
+            self.storage.len()
+        }
+        fn copy<S: ReadSlot>(&mut self, at: usize, out: &mut [S]) -> usize {
+            S::copy_in(out, &self.storage[at..self.length])
+        }
+        fn reduce(&mut self, at: usize) {
+            self.storage.copy_within(at..self.length, 0);
+            self.length -= at;
+        }
+        fn recv(&mut self, _: usize) -> Option<usize> {
+            self.source.calls += 1;
+            let n = (self.storage.len() - self.length).min(self.source.data.len());
+            self.storage[self.length..self.length + n].copy_from_slice(&self.source.data[..n]);
+            self.length += n;
+            self.source.data.drain(..n);
+            Some(n)
+        }
+    }
     impl Buffered {
         fn new(size: usize, data: &[u8]) -> Self {
             Self {
-                storage: vec![MaybeUninit::new(0); size],
+                storage: vec![0; size],
                 length: 0,
                 offset: 0,
                 source: Source {
@@ -213,23 +191,15 @@ mod tests {
                 },
             }
         }
-
         fn read(&mut self, n: usize) -> (Option<usize>, Vec<u8>) {
             let mut out = vec![0; n];
-            let source = &mut self.source;
-            let mut data = Bytes {
-                all: &mut self.storage,
-                filled: self.length,
-            };
-            let got = read_buffered(&mut data, &mut self.offset, &mut out, |_, _, data| {
-                Some(source.recv(data))
-            });
-            self.length = data.filled;
+            let mut offset = self.offset;
+            let got = read_buffered(self, &mut offset, &mut out);
+            self.offset = offset;
             out.truncate(got.unwrap_or(0));
             (got, out)
         }
     }
-
     #[test]
     fn reads_are_served_from_the_buffer_and_refilled() {
         let mut b = Buffered::new(8, b"abcdefghij");

@@ -45,7 +45,7 @@ impl TlsSocket for Co {
     }
 
     fn buffer(self, write: bool) -> (*mut c_char, usize) {
-        self.with_buffer(write, |buffer| (buffer.as_mut_ptr().cast(), buffer.size()))
+        self.tls_buffer(write)
     }
 
     /// `ssl_bio_perform`'s failure: OpenSSL's text for `code`, logged with the

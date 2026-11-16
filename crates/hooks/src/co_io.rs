@@ -14,6 +14,9 @@ use swoole_rs_reactor::Events;
 /// `SW_ERROR_CO_SOCKET_CLOSE_WAIT`.
 pub(crate) const CLOSE_WAIT_ERROR: c_int = 10019;
 
+/// A synchronous loan of initialized socket bytes.
+pub type ReadBytes = fn(Co, &mut dyn FnMut(&[u8]));
+
 /// The native socket's effects the packet framing uses: the timers, the read
 /// `String`, `recv`, the `Protocol` callback and the packet diagnostics. The
 /// runtime's table is installed when native registers the hooks host; tests set
@@ -25,10 +28,11 @@ pub struct Host {
     pub timer_del: fn(Held),
     /// Syncs the read String with the view, then refreshes the view.
     pub read_buffer: fn(Co, &mut crate::packet::ReadBuffer, crate::packet::BufferSync),
-    /// `Socket::recv/recv_all` (all selects the latter) into the read String's
-    /// free space, which may be uninitialized: how many of its first slots it wrote,
-    /// or None on error. The read buffers count those as written (`crate::buffered`).
-    pub recv: fn(Co, &mut [core::mem::MaybeUninit<u8>], bool) -> Option<usize>,
+    /// Lend the initialized content for a synchronous read; it cannot escape.
+    pub read_bytes: ReadBytes,
+    /// Receive into the buffer at `at`, up to `length`, recording initialized
+    /// content before returning its count. TLS uses separate BIO scratch.
+    pub recv: fn(Co, usize, usize, bool) -> Option<usize>,
     /// The protocol's `get_package_length` over the read buffer's first bytes;
     /// writes the header length.
     pub package_length: fn(Co, u32, &mut u32) -> crate::packet::Length,
@@ -134,7 +138,6 @@ mod native {
     use crate::co_socket::Co;
     use crate::packet::ReadBuffer;
     use core::ffi::{CStr, c_int, c_long, c_void};
-    use swoole_rs_buffer::string::CppString;
     use swoole_rs_corebase::net_types::PacketLength;
     use swoole_rs_coroutine::print_socket_bound_error;
     use swoole_rs_reactor::Events;
@@ -143,6 +146,7 @@ mod native {
         timer_add,
         timer_del: swoole_rs_timer::del_id,
         read_buffer,
+        read_bytes,
         recv,
         package_length,
         packet_fail,
@@ -184,9 +188,9 @@ mod native {
         use crate::packet::BufferSync;
         socket.with_buffer(false, |string| {
             if sync != BufferSync::Get {
-                // SAFETY: the packet receive's view of this String counts only
-                // the bytes its receives wrote (crate::packet).
-                unsafe { string.set_len(view.length) };
+                // Receives already committed their initialized bytes; a sync
+                // may discard content but cannot claim unwritten space.
+                string.truncate(view.length);
                 string.set_offset(view.offset);
                 match sync {
                     BufferSync::Extend(size) => {
@@ -202,44 +206,48 @@ mod native {
                 length: string.len(),
                 size: string.size(),
                 offset: string.offset(),
-                str: string.as_mut_ptr(),
             };
         });
     }
 
-    fn recv(socket: Co, buf: &mut [core::mem::MaybeUninit<u8>], all: bool) -> Option<usize> {
-        if all {
-            socket.recv_all(buf)
-        } else {
-            socket.recv(buf)
-        }
+    fn read_bytes(socket: Co, read: &mut dyn FnMut(&[u8])) {
+        socket.with_buffer(false, |string| read(string.view()));
+    }
+
+    fn recv(socket: Co, at: usize, length: usize, all: bool) -> Option<usize> {
+        use crate::socket_members::Receive;
+        socket.with_buffer(false, |string| {
+            if at > string.len() {
+                return None;
+            }
+            string.truncate(at);
+            let result = string.fill_within(length, |spare| {
+                socket.recv_spare(if all { Receive::All } else { Receive::Recv }, spare)
+            });
+            result.map(|_| string.len() - at)
+        })
     }
 
     fn package_length(socket: Co, size: u32, header: &mut u32) -> crate::packet::Length {
-        // The record's read String, which the packet receive fills.
-        let buf = socket.with_buffer(false, CppString::as_mut_ptr);
-        let bytes = if buf.is_null() {
-            &[][..]
-        } else {
-            // SAFETY: its initialized prefix of `size` bytes, which nothing changes
-            // while the length function reads it.
-            unsafe { std::slice::from_raw_parts(buf, size as usize) }
-        };
-        let mut packet = PacketLength::new(bytes);
-        let (protocol, callback) = (socket.protocol_ptr(), socket.protocol().get_package_length);
-        let Some(call) = callback else {
-            return crate::packet::Length::NotFound;
-        };
-        // SAFETY: the record's protocol and network socket, if open, and `size` bytes
-        // at `buf`.
-        let mut measure = |net: Option<swoole_rs_reactor::Socket<'_>>| unsafe {
-            call(protocol, net, &mut packet)
-        };
-        let length = socket
-            .with_network(|net| measure(Some(net)))
-            .unwrap_or_else(|| measure(None));
-        *header = packet.header_len;
-        crate::packet::Length::of(length)
+        socket.with_buffer(false, |string| {
+            let bytes = string.view().get(..size as usize).unwrap_or_default();
+            let mut packet = PacketLength::new(bytes);
+            let (protocol, callback) =
+                (socket.protocol_ptr(), socket.protocol().get_package_length);
+            let Some(call) = callback else {
+                return crate::packet::Length::NotFound;
+            };
+            // SAFETY: the record's live protocol and network socket, if open,
+            // and the initialized bytes held by the String loan.
+            let mut measure = |net: Option<swoole_rs_reactor::Socket<'_>>| unsafe {
+                call(protocol, net, &mut packet)
+            };
+            let length = socket
+                .with_network(|net| measure(Some(net)))
+                .unwrap_or_else(|| measure(None));
+            *header = packet.header_len;
+            crate::packet::Length::of(length)
+        })
     }
 
     /// `SW_ERROR_PACKAGE_LENGTH_TOO_LARGE`, `SW_ERROR_PACKAGE_LENGTH_NOT_FOUND` and
@@ -713,6 +721,7 @@ pub(crate) mod test_host {
         timer_add,
         timer_del,
         read_buffer: crate::packet::tests::read_buffer,
+        read_bytes: crate::packet::tests::read_bytes,
         recv: crate::packet::tests::receive,
         package_length: crate::packet::tests::get_length,
         packet_fail: crate::packet::tests::failure,
