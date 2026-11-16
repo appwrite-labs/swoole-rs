@@ -1,7 +1,6 @@
 //! A `Socket` record this owns, on the thread's reactor: `Swoole\Event`'s user
 //! sockets, a pipe's ends and an event waiter's watch.
-use crate::upstream::socket_free;
-use std::ffi::c_int;
+use std::ffi::{c_int, c_void};
 use swoole_rs_reactor::{Socket, SocketRecord, event_api, socket_upstream};
 
 /// A heap record this owns until [`EventSocket::free`], lending it only for a borrow
@@ -92,10 +91,77 @@ impl EventSocket {
         self.release();
     }
 
-    /// `socket->free()` of the record as it is: its fd, `-1` for none, is closed.
+    /// `void Socket::free()` of the record as it is: deletes the timers and buffers,
+    /// then, while the thread's event loop is available, removes the record from it
+    /// and defers the close to it; otherwise closes its fd (`-1` for none) and frees
+    /// it at once. Outside the hybrid there are no timers, buffers or loop.
     pub fn release(self) {
-        // SAFETY: the record this owned, which nothing uses afterwards; a reactor
-        // still holding it is told by `free` itself.
-        unsafe { socket_free(self.0.as_ptr()) };
+        let record = self.0;
+        #[cfg(feature = "upstream-symbols")]
+        {
+            // The buffers leave the record here and go below, after the timers and
+            // outside the record's borrow: an entry's disposer runs as its buffer goes.
+            let (timers, buffers) = record.edit(|record| {
+                (
+                    [record.recv_timer, record.output.send_timer],
+                    [record.in_buffer.take(), record.output.out_buffer.take()],
+                )
+            });
+            for timer in timers.into_iter().flatten() {
+                swoole_rs_timer::del_id(timer);
+            }
+            // `delete in_buffer; delete out_buffer`.
+            drop(buffers);
+            if socket_upstream::event_reactor().is_some() {
+                if record.read(|record| record.fd != -1 && !record.removed) {
+                    // `swoole_event_del(this)` on the thread's reactor, which logs a
+                    // failure.
+                    _ = event_api::event_del(record);
+                }
+                // SAFETY: `swoole_event_defer(socket_free_defer, this)` of the record
+                // this owned, which nothing else frees; a reactor freed before it runs
+                // closes the socket all the same. The loop may still read the record
+                // through an event of this pass, so it stays a raw pointer until then.
+                let deferred = unsafe {
+                    swoole_rs_reactor::defer(
+                        free_deferred,
+                        record.as_ptr().cast(),
+                        Some(free_deferred),
+                    )
+                };
+                if deferred {
+                    return;
+                }
+            }
+        }
+        // SAFETY: the record this owned, the leaked box `adopt` (or the caller of
+        // `socket_free`) gave it, which nothing uses afterwards.
+        unsafe { free_deferred(record.as_ptr().cast()) };
+    }
+}
+
+/// base.cc's `socket_free_defer`: closes the descriptor and frees the record.
+///
+/// # Safety
+/// `socket` is a live record [`SocketRecord`] allocated, which nothing uses afterwards.
+unsafe extern "C-unwind" fn free_deferred(socket: *mut c_void) {
+    // SAFETY: as the caller promises: the record's own allocation, used no more.
+    unsafe { Box::from_raw(socket.cast::<SocketRecord>()) }.close_and_free();
+}
+
+/// `void Socket::free()`: [`EventSocket::release`] of the record.
+///
+/// # Safety
+/// `socket` is null or a live record [`SocketRecord`] allocated, which nothing uses
+/// afterwards.
+#[cfg_attr(
+    feature = "upstream-symbols",
+    unsafe(export_name = "_ZN6swoole7network6Socket4freeEv")
+)]
+pub unsafe extern "C-unwind" fn socket_free(socket: *mut SocketRecord) {
+    // SAFETY: as the caller promises: null or a record it gives up, as `EventSocket`
+    // owns one.
+    if let Some(record) = unsafe { Socket::from_ptr(socket) } {
+        EventSocket(record).release();
     }
 }

@@ -11,7 +11,7 @@ use crate::{
     swr_v1_socket_ssl_shutdown, swr_v1_socket_ssl_verify,
 };
 use openssl_sys::{X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT, X509_V_OK};
-use std::ffi::{CStr, c_char, c_int, c_long, c_void};
+use std::ffi::{CStr, c_char, c_int, c_long};
 use std::io::IoSlice;
 use std::mem::MaybeUninit;
 use swoole_rs_buffer::string::CppString;
@@ -997,7 +997,7 @@ pub fn socket_sendfile_async(
 #[must_use]
 pub unsafe extern "C-unwind" fn socket_send_async(
     socket: Socket<'_>,
-    data: *const c_void,
+    data: *const std::ffi::c_void,
     length: usize,
 ) -> isize {
     if swoole_rs_reactor::socket_upstream::event_reactor().is_none() {
@@ -1081,67 +1081,7 @@ pub fn socket_ssl_create(
         .is_ok()
 }
 
-/// base.cc's `socket_free_defer`: closes the descriptor and frees the record.
-///
-/// # Safety
-/// `socket` is a live record [`SocketRecord`] allocated, which nothing uses afterwards.
-unsafe extern "C-unwind" fn socket_free_defer(socket: *mut c_void) {
-    // SAFETY: as the caller promises: the record's own allocation, used no more.
-    unsafe { Box::from_raw(socket.cast::<SocketRecord>()) }.close_and_free();
-}
-
-/// `void Socket::free()`: deletes the timers and buffers, then, while the thread's
-/// event loop is available, removes the socket from it and defers the close to it;
-/// otherwise closes at once. Outside the hybrid there are no timers, buffers or loop.
-///
-/// # Safety
-/// `socket` is null or a live record [`SocketRecord`] allocated, which nothing uses
-/// afterwards.
-#[cfg_attr(
-    feature = "upstream-symbols",
-    unsafe(export_name = "_ZN6swoole7network6Socket4freeEv")
-)]
-pub unsafe extern "C-unwind" fn socket_free(socket: *mut SocketRecord) {
-    #[cfg(feature = "upstream-symbols")]
-    {
-        // SAFETY: as the caller promises.
-        let Some(record) = (unsafe { Socket::from_ptr(socket) }) else {
-            return;
-        };
-        // The buffers leave the record here and go below, after the timers and outside
-        // the record's borrow: an entry's disposer runs as its buffer goes.
-        let (timers, buffers) = record.edit(|record| {
-            (
-                [record.recv_timer, record.output.send_timer],
-                [record.in_buffer.take(), record.output.out_buffer.take()],
-            )
-        });
-        for timer in timers.into_iter().flatten() {
-            swoole_rs_timer::del_id(timer);
-        }
-        // `delete in_buffer; delete out_buffer`.
-        drop(buffers);
-        if swoole_rs_reactor::socket_upstream::event_reactor().is_some() {
-            if record.read(|record| record.fd != -1 && !record.removed) {
-                // `swoole_event_del(this)` on the thread's reactor, which logs a failure.
-                _ = swoole_rs_reactor::event_api::event_del(record);
-            }
-            // SAFETY: `swoole_event_defer(socket_free_defer, this)`; a reactor freed
-            // before it runs closes the socket all the same. The loop may still read the
-            // record through an event of this pass, so it stays a raw pointer until then.
-            let deferred = unsafe {
-                swoole_rs_reactor::defer(socket_free_defer, socket.cast(), Some(socket_free_defer))
-            };
-            if deferred {
-                return;
-            }
-        }
-    }
-    if !socket.is_null() {
-        // SAFETY: as the caller promises.
-        unsafe { socket_free_defer(socket.cast()) };
-    }
-}
+pub use crate::event_socket::socket_free;
 
 /// `Socket::bind(host, port)`: the address resolved without DNS, the last error set
 /// when it is invalid.

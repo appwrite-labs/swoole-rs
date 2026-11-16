@@ -120,6 +120,14 @@ impl Scheduler {
             .map_or(ptr::null_mut(), native)
     }
 
+    /// Whether coroutine `cid` is live and parked in a yield.
+    #[must_use]
+    pub fn waiting(&self, cid: c_long) -> bool {
+        self.live()
+            .and_then(|live| live.get(cid))
+            .is_some_and(|co| co.with(|co| co.state == State::Waiting))
+    }
+
     /// The newest live coroutine older than `before` (`LONG_MAX` starts a walk):
     /// its id and its facade.
     #[must_use]

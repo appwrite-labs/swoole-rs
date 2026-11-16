@@ -11,31 +11,15 @@ use swoole_rs_ssh2_sys::{
     libssh2_userauth_keyboard_interactive_ex, libssh2_userauth_publickey_fromfile_ex,
 };
 
-/// One export per alias. Its body is a block over the safe helpers or, in brackets,
-/// the canonical libssh2 call with the alias's defaults filled in, retried as the
-/// hooked calls are.
+/// One export per alias: a block over the safe helpers or, in brackets, the
+/// canonical libssh2 call with the alias's defaults filled in.
 macro_rules! aliases {
     ($($name:ident => $export:ident($ops:ident, $wait:ident; $($arg:ident: $ty:ty),*) -> $ret:ty = $body:tt)*) => {
         /// Native call-site forwarding; all argument policy executes in Rust.
         pub const DISPATCH: &str = concat!($(concat!("#undef ", stringify!($name), "\n#define ", stringify!($name),
             "(", hooks!(@params $($arg),*), ") ", stringify!($export), "(ssh2_bound(session), session", $(", ", stringify!($arg),)* ")\n")),*);
-        $(
-            #[doc = concat!("Original `", stringify!($name), "` convenience operation.")]
-            /// # Safety
-            /// The caller lends the original SDK arguments, the live session to wait on and
-            /// the host table.
-            #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn $export($ops: &Ops, $wait: Session, $($arg: $ty),*) -> $ret {
-                aliases!(@body $ops, $wait, $body)
-            }
-        )*
-    };
-    (@body $ops:ident, $wait:ident, { $($body:tt)* }) => {{ $($body)* }};
-    (@body $ops:ident, $wait:ident, [ $function:ident($($call:expr),*) ]) => {
-        // SAFETY: the caller's live handles and buffers, as libssh2 takes them; each
-        // string libssh2 reads for its measured length, and each default a plain value
-        // or a static string.
-        Wait { ops: $ops, session: $wait }.run(|| unsafe { $function($($call),*) })
+        $(hooks!(@define concat!("Original `", stringify!($name), "` convenience operation."),
+            $ops, $wait, $export($($arg: $ty),*) -> $ret = $body);)*
     };
 }
 
