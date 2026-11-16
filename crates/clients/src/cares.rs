@@ -5,7 +5,7 @@
 use crate::ip::swr_v1_clients_ip_text;
 use std::{
     cell::{Cell, OnceCell},
-    ffi::{CStr, c_int, c_void},
+    ffi::{CStr, c_int, c_long, c_void},
     ptr,
     sync::{
         Arc,
@@ -64,22 +64,19 @@ unsafe extern "C" {
     );
 }
 
-/// The coroutine a query parks: a `swoole::Coroutine`, which starts with its
-/// `swoole_rs_coroutine::Coroutine`.
+/// The coroutine a query parks.
 mod co {
-    use std::ffi::c_void;
-    use swoole_rs_coroutine::{Coroutine, State};
+    use std::ffi::c_long;
+    use swoole_rs_coroutine::State;
 
-    pub(super) use swoole_rs_coroutine::{Resume, resume, yield_resumed, yield_timed};
+    pub(super) use swoole_rs_coroutine::{Resume, current_cid, resume, yield_resumed, yield_timed};
 
     /// `Coroutine::get_current_safe()`.
     pub(super) use swoole_rs_coroutine::current_safe as current;
 
-    pub(super) fn suspending(co: *mut c_void) -> bool {
-        let co = co.cast::<Coroutine>();
-        // SAFETY: a live coroutine's scalar field.
-        let state = unsafe { (*co).state };
-        state == State::Waiting
+    /// `co->is_suspending()` of coroutine `cid`: false once it ended.
+    pub(super) fn suspending(cid: c_long) -> bool {
+        swoole_rs_coroutine::coroutine_state(cid) == Some(State::Waiting)
     }
 }
 const ORIGIN: &std::ffi::CStr = c"coroutine::dns_lookup_impl_with_cares";
@@ -92,7 +89,10 @@ struct Query {
     channel: OnceCell<sdk::OwnedChannel>,
     error: Cell<i32>,
     completed: Cell<bool>,
+    /// The coroutine to resume, null once a completion is queued.
     coroutine: Cell<*mut c_void>,
+    /// The query's coroutine's id, which the coroutine crate looks up.
+    cid: c_long,
     retired: Arc<AtomicBool>,
     /// The wrapper of each descriptor c-ares watches, live until `socket_state` detaches it: one per
     /// server it asks, so a list beats a hash map.
@@ -229,8 +229,9 @@ extern "C" fn host(query: &Query, status: i32, timeouts: i32, entry: Option<Host
         }
     }
     let coroutine = query.coroutine.get();
-    // A nonnull identity is the query's original live coroutine.
-    if !coroutine.is_null() && co::suspending(coroutine) {
+    // A nonnull identity is the query's original coroutine, which waits for this
+    // completion while suspended.
+    if !coroutine.is_null() && co::suspending(query.cid) {
         let retired = query.retired.clone();
         let task = Completion {
             retired,
@@ -272,6 +273,7 @@ pub(crate) fn lookup(domain: &CStr, family: i32, timeout: f64) -> Vec<Vec<u8>> {
         error: Cell::new(0),
         completed: Cell::new(false),
         coroutine: Cell::new(coroutine),
+        cid: co::current_cid(),
         retired: Arc::new(AtomicBool::new(false)),
         sockets: Cell::new(Vec::new()),
         results: Cell::new(Vec::new()),
