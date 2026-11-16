@@ -7,12 +7,7 @@
 #error "this PHP bails out of the allocator at memory_limit, over Rust frames: build against 8.2.35, 8.3.36, 8.4.27, 8.5.12 or later"
 #endif
 
-/* Any length: one whose header and NUL would wrap the size aborts, so the Rust
- * declaration takes no precondition. */
 zend_string *swr_zend_string_alloc(size_t length) {
-    if (length > (size_t)PTRDIFF_MAX - _ZSTR_STRUCT_SIZE(0)) {
-        abort();
-    }
     return zend_string_alloc(length, 0);
 }
 

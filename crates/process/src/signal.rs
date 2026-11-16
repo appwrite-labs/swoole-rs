@@ -371,13 +371,12 @@ impl SignalName {
 /// allocate.
 #[must_use]
 pub fn signal_name(signo: c_int) -> SignalName {
-    // libc's `strsignal(3)`, which takes any number and reads no caller memory.
+    // libc's `strsignal(3)`, which takes any number, reads no caller memory and
+    // returns a C string that stays put (glibc, musl and Apple's never null).
     unsafe extern "C" {
-        safe fn strsignal(signo: c_int) -> *const core::ffi::c_char;
+        safe fn strsignal(signo: c_int) -> Option<swoole_rs_corebase::sys::Text<'static>>;
     }
-    let name = strsignal(signo);
-    // SAFETY: strsignal returns a C string.
-    let text = unsafe { CStr::from_ptr(name) };
+    let text = strsignal(signo).map_or(c"", swoole_rs_corebase::sys::Text::get);
     let mut buf = [0; 64];
     signal_text(text.to_bytes(), signo, &mut buf);
     SignalName(buf)

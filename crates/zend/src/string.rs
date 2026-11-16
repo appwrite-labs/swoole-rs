@@ -1,17 +1,12 @@
 //! Non-persistent `zend_string`s: allocated here, handed to Zend by a return
 //! value or an array, or freed.
-use crate::sys::{zend_string, zend_ulong};
+use crate::sys::{swr_zend_string_alloc, zend_string, zend_ulong};
 use std::{io::IoSlice, mem::offset_of};
 use swoole_rs_corebase::lent::{Spare, SpareVectors, lend_spare, lend_spare_vectors};
 
 unsafe extern "C" {
     /// `zend_hash_func`: it reads the lent bytes (an `IoSlice` is an iovec) only.
     safe fn swr_bytes_hash(key: IoSlice<'_>) -> zend_ulong;
-    /// `zend_string_alloc(length, 0)`: a new string's address, from Zend's
-    /// request allocator, which never returns null nor, past `memory_limit`,
-    /// bails out (docs/zend.md, `memory_limit`). It takes any length and reads
-    /// nothing: the shim aborts on one whose header and NUL would wrap.
-    safe fn swr_zend_string_alloc(length: usize) -> *mut zend_string;
 }
 
 /// `zend_hash_func`: the hash a `zend_string` of these bytes caches
@@ -38,12 +33,20 @@ pub fn from_val(val: *mut u8) -> *mut zend_string {
 }
 
 /// `zend_string_alloc(length, 0)`: room for `length` bytes and a NUL.
-/// The shim aborts if the length plus the string header and NUL exceeds
-/// `PTRDIFF_MAX`, before doing the allocation.
+/// # Panics
+/// `length` exceeds `isize::MAX`, past which Zend's size sum wraps to a small
+/// allocation.
 #[must_use]
 #[inline]
 pub fn alloc(length: usize) -> *mut zend_string {
-    swr_zend_string_alloc(length)
+    assert!(
+        isize::try_from(length).is_ok(),
+        "string length {length} overflows"
+    );
+    // SAFETY: Zend's request allocator, which never returns null nor, past
+    // memory_limit, bails out (docs/zend.md, memory_limit); the header plus
+    // `length` plus the NUL cannot wrap.
+    unsafe { swr_zend_string_alloc(length) }
 }
 
 /// `zend_string_init(bytes, len, 0)`: a new string holding a copy of `bytes`.

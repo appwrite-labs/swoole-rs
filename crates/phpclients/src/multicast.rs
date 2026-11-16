@@ -257,13 +257,12 @@ fn inet46(s: Sock, host: &[u8]) -> Result<Option<AddressStorage>, Stop> {
 fn stored(address: &AddressStorage) -> libc::sockaddr_storage {
     const {
         assert!(
-            core::mem::size_of::<AddressStorage>()
-                <= core::mem::size_of::<libc::sockaddr_storage>(),
+            size_of::<AddressStorage>() <= size_of::<libc::sockaddr_storage>(),
             "a sockaddr fits"
         );
     }
     let mut storage: libc::sockaddr_storage = zeroed();
-    let at = core::ptr::from_mut(&mut storage).cast::<AddressStorage>();
+    let at = ptr::from_mut(&mut storage).cast::<AddressStorage>();
     // SAFETY: a sockaddr_storage has room for the address, as checked above, at any
     // alignment.
     unsafe { at.write_unaligned(*address) };

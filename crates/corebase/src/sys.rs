@@ -814,8 +814,17 @@ mod anonymous {
 /// # Errors
 /// The syscall's errno.
 pub fn open(path: &CStr, flags: c_int, mode: libc::mode_t) -> std::io::Result<c_int> {
-    // SAFETY: `path` is NUL-terminated; the mode is promoted as C does.
-    nonnegative_result(unsafe { libc::open(path.as_ptr(), flags, libc::c_uint::from(mode)) })
+    // `open(2)` reads only the path, and its one optional argument as a mode.
+    #[expect(
+        suspicious_runtime_symbol_definitions,
+        reason = "`Text` is a transparent `const char *` that is never null"
+    )]
+    unsafe extern "C" {
+        #[link_name = "open"]
+        safe fn libc_open(path: Text<'_>, flags: c_int, ...) -> c_int;
+    }
+    // The mode is promoted as C does.
+    nonnegative_result(libc_open(path.into(), flags, libc::c_uint::from(mode)))
 }
 
 /// `execv(3)`: runs `path` in place of this process, with `argv` as its arguments,

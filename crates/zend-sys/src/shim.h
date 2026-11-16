@@ -55,9 +55,6 @@ int swr_zend_try(void (*body)(void *), void *arg);
  * *result is 1 on SUCCESS. */
 int swr_zend_try_call(zend_fcall_info_cache *fcc, swr_zvals args, zval *name, zval *retval, int *result);
 
-/* Whether `fcc` is a resolved cache: not null, and naming a function. */
-bool swr_zend_fcc_resolved(const zend_fcall_info_cache *fcc);
-
 /* Z_PARAM_FUNC of argument `number` (not nullable): 1, or 0 after raising
  * Zend's own parameter error. */
 int swr_zend_parse_func(zval *arg, uint32_t number, zend_fcall_info *fci, zend_fcall_info_cache *fcc);

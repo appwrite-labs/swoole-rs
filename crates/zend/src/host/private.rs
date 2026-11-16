@@ -19,9 +19,6 @@ unsafe extern "C" {
         retval: &Owned,
         result: &mut c_int,
     ) -> c_int;
-    /// Whether the cache is resolved: not null, and naming a function. It reads
-    /// one field of a cache its callable keeps initialised (`Callee`).
-    safe fn swr_zend_fcc_resolved(cache: Callee<'_>) -> bool;
     /// `EG(exception)`: one pointer of the executor's is read; null for none.
     safe fn swr_zend_facade_exception() -> *mut zend_object;
     /// `zend_exception_error(EG(exception), E_ERROR)` inside `zend_try`, as
@@ -129,9 +126,12 @@ pub(super) fn direct_call(
     args: crate::zval::Zvals<'_>,
     retval: Option<&crate::Value>,
 ) -> bool {
+    let cache = callee.0;
     // The call's result when the caller wants none; undefined otherwise.
     let temporary = Owned::default();
-    if !swr_zend_fcc_resolved(callee) {
+    // SAFETY: a non-null cache is a callable's, which keeps it initialised
+    // (`Callee`).
+    if cache.is_null() || unsafe { (*cache).function_handler }.is_null() {
         callable_warning(c"Bad function");
         return false;
     }
