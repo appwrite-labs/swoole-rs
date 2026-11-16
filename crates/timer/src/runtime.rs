@@ -1,7 +1,7 @@
 //! The timer's backend choice and clock arithmetic, and the system timer
 //! (`setitimer`, upstream `src/os/timer.cc`).
 
-#[repr(C)]
+/// `timeval`'s seconds and microseconds, before the platform's field types.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NativeTime {
     pub seconds: i64,

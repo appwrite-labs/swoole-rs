@@ -47,41 +47,38 @@ enum Handshake {
 const MAX_WAITING_TIME: u16 = 1024;
 
 /// `ReactorThread_onRead`: finish a pending TLS (or DTLS) handshake, then let the
-/// port read, and pause reading while the workers hold too many of its bytes.
-pub(crate) fn read(serv: view::Server<'_>, reactor: Reactor, event: &mut Event) -> c_int {
+/// port read, and pause reading while the workers hold too many of its bytes; false
+/// where upstream returns `SW_ERR`.
+pub(crate) fn read(serv: view::Server<'_>, reactor: Reactor, event: &mut Event) -> bool {
     read_as(BUILT_PREQUEUE, serv, reactor, event)
 }
 
 /// [`read`], as a build with `prequeue` (the `halfclose` feature) or without.
-fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut Event) -> c_int {
+fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut Event) -> bool {
     let state = serv.state();
     let fd = event.fd();
     let conn = state.connection(c_long::from(fd), Lookup::ByFd);
     // The server closed the connection (and the fd may be reused) before the event.
     let Some(conn) = conn.filter(|conn| conn.server_fd() != 0) else {
-        return OK;
+        return true;
     };
     if prequeue {
         let Some((notified, want_read)) = event
             .socket()
             .map(|s| s.read(|s| (s.close_notified, !s.ssl().is_null() && s.tls.want_read)))
         else {
-            return OK;
+            return true;
         };
         if notified {
-            return OK;
+            return true;
         }
         // Once a close is queued, a read only drives a TLS shutdown that wants one.
         if conn.close_queued() {
-            return if want_read {
-                status(write(serv, reactor, event))
-            } else {
-                OK
-            };
+            return !want_read || write(serv, reactor, event);
         }
     }
     let Some(sock) = event.socket() else {
-        return OK;
+        return true;
     };
     let port = serv.port_by_fd(fd);
     if let Some(config) = port.map(view::Port::config)
@@ -89,24 +86,24 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
         && hybrid().dtls_read(config, sock, fd)
     {
         crate::connection::abort(serv, reactor, port, sock);
-        return OK;
+        return true;
     }
     match verify_ssl(serv, reactor, port, sock) {
         Handshake::Error => {
             crate::connection::abort(serv, reactor, port, sock);
-            return OK;
+            return true;
         }
-        Handshake::Ready if sock.read(|s| s.dtls) => return OK,
-        Handshake::Wait => return OK,
+        Handshake::Ready if sock.read(|s| s.dtls) => return true,
+        Handshake::Wait => return true,
         Handshake::Ready | Handshake::Continue => {}
     }
     let Some(port) = port else {
-        return ERR;
+        return false;
     };
     conn.set_last_recv_time(microtime());
     let last_recv_bytes = sock.read(|s| s.total_recv_bytes);
     let Some(on_read) = port.config().on_read.get() else {
-        return ERR;
+        return false;
     };
     // A readable event on the live connection of `fd`, of this server's port `port`.
     let retval = on_read(reactor.handle(), port, ReadEvent::new(serv, event, conn));
@@ -795,13 +792,13 @@ pub(crate) mod tests {
         static READS: core::cell::RefCell<Vec<c_int>> = const { core::cell::RefCell::new(Vec::new()) };
     }
 
-    /// The port's `onRead`: receives 5 bytes and returns 42.
-    fn on_read(_: swoole_rs_reactor::Running<'_>, _: view::Port<'_>, read: ReadEvent<'_>) -> c_int {
+    /// The port's `onRead`: receives 5 bytes and fails, so its result is told apart.
+    fn on_read(_: swoole_rs_reactor::Running<'_>, _: view::Port<'_>, read: ReadEvent<'_>) -> bool {
         let (_, event, _) = read.into_parts();
         READS.with_borrow_mut(|reads| reads.push(event.fd()));
         let sock = event.socket().unwrap();
         sock.edit(|s| s.total_recv_bytes += 5);
-        42
+        false
     }
 
     /// The fds the port read since the last call.
@@ -823,14 +820,17 @@ pub(crate) mod tests {
         let (live, _clients) = reading();
         let (serv, reactor) = (live.server(), live.reactor());
         let conn = session(&live, 1);
-        assert_eq!(read(serv, reactor, &mut conn.event(0, 0)), 42);
+        assert!(
+            !read(serv, reactor, &mut conn.event(0, 0)),
+            "the port's result"
+        );
         assert_eq!(reads(), [conn.fd()]);
         assert!(conn.last_recv_time() > 0.0, "stamped");
         assert_eq!(live.counters().total_recv_bytes.load(SeqCst), 5);
         assert_eq!(live.port_counters().total_recv_bytes.load(SeqCst), 5);
         assert_eq!(conn.waiting_time(), 0, "no queue limit");
         conn.set_server_fd(0);
-        assert_eq!(read(serv, reactor, &mut conn.event(0, 0)), OK);
+        assert!(read(serv, reactor, &mut conn.event(0, 0)));
         assert_eq!(reads(), [], "a stale event");
     }
 
@@ -840,10 +840,7 @@ pub(crate) mod tests {
         let (live, _clients) = reading();
         live.port().on_read.set(None);
         let conn = session(&live, 1);
-        assert_eq!(
-            read(live.server(), live.reactor(), &mut conn.event(0, 0)),
-            ERR
-        );
+        assert!(!read(live.server(), live.reactor(), &mut conn.event(0, 0)));
         assert_eq!(reads(), [], "nothing read");
         assert_eq!(live.counters().total_recv_bytes.load(SeqCst), 0);
         assert_eq!(live.port_counters().total_recv_bytes.load(SeqCst), 0);
@@ -857,7 +854,10 @@ pub(crate) mod tests {
         live.state().config_ref().max_queued_bytes.set(8);
         let conn = session(&live, 1);
         conn.recv_queued_bytes().store(9, SeqCst);
-        assert_eq!(read(serv, reactor, &mut conn.event(0, 0)), 42);
+        assert!(
+            !read(serv, reactor, &mut conn.event(0, 0)),
+            "the port's result"
+        );
         assert_eq!(conn.waiting_time(), 1);
         assert!(conn.timer().is_some(), "resumes on a timer");
         let events = conn.socket().unwrap().read(|s| s.events);
@@ -883,7 +883,7 @@ pub(crate) mod tests {
         let fd = conn.fd();
         conn.socket().unwrap().edit(|s| s.socket_type = 2);
         let event = &mut conn.event(0, 0);
-        assert_eq!(read(live.server(), live.reactor(), event), OK);
+        assert!(read(live.server(), live.reactor(), event));
         assert_eq!(calls(), [Call::DtlsRead(fd)]);
         assert_eq!(reads(), [], "not read");
         assert_eq!(live.counters().abort_count.load(SeqCst), 1);
@@ -898,15 +898,21 @@ pub(crate) mod tests {
         let (serv, reactor) = (live.server(), live.reactor());
         let conn = session(&live, 1);
         conn.set_close_queued(true);
-        assert_eq!(read_as(false, serv, reactor, &mut conn.event(0, 0)), 42);
+        assert!(
+            !read_as(false, serv, reactor, &mut conn.event(0, 0)),
+            "the port's result"
+        );
         assert_eq!(reads(), [conn.fd()], "upstream reads");
-        assert_eq!(read_as(true, serv, reactor, &mut conn.event(0, 0)), OK);
+        assert!(read_as(true, serv, reactor, &mut conn.event(0, 0)));
         assert_eq!(reads(), [], "a queued plain close is not read");
         conn.set_close_queued(false);
         conn.socket().unwrap().edit(|s| s.close_notified = true);
-        assert_eq!(read_as(true, serv, reactor, &mut conn.event(0, 0)), OK);
+        assert!(read_as(true, serv, reactor, &mut conn.event(0, 0)));
         assert_eq!(reads(), [], "notified is terminal");
-        assert_eq!(read_as(false, serv, reactor, &mut conn.event(0, 0)), 42);
+        assert!(
+            !read_as(false, serv, reactor, &mut conn.event(0, 0)),
+            "the port's result"
+        );
     }
 
     #[test]

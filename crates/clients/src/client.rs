@@ -34,8 +34,8 @@ use swoole_rs_reactor::event_api::event_write;
 use swoole_rs_reactor::reactor_upstream::set_handler;
 use swoole_rs_reactor::socket_upstream::Connect;
 use swoole_rs_reactor::{
-    Caught, OwnedSocket, SOCKET_DEFAULTS, Socket, SocketRecord, fd_clean,
-    swr_v1_socket_buffer_size, swr_v1_socket_domain_and_type,
+    Caught, OwnedSocket, SOCKET_DEFAULTS, Socket, SocketRecord, fd_clean, set_socket_buffer_size,
+    socket_domain_and_type,
 };
 use swoole_rs_reactor::{Event, Events, Running};
 #[cfg(not(test))]
@@ -48,7 +48,7 @@ use swoole_rs_tls::{
 };
 #[cfg(test)]
 use tests::{
-    async_dispatch, event_write, net, ops, sendfile_sync, socket_free, socket_sendfile_async,
+    async_dispatch, event_write, net, sendfile_sync, socket_free, socket_sendfile_async,
     socket_ssl_check_host, socket_ssl_close, socket_ssl_connect, socket_ssl_set_host_name,
     socket_ssl_verify, tls_session, with_thread_buffer, writable_callback,
 };
@@ -318,6 +318,7 @@ const _: () = {
 #[repr(C)]
 pub struct Client {
     record: Cell<ClientRecord>,
+    socket_ops: &'static SocketOps,
     flags: Cell<u32>,
     domain: c_int,
     sock_flags: Cell<c_int>,
@@ -499,7 +500,7 @@ impl Handle {
     }
 
     fn event(self, op: EventOp, events: Events) -> bool {
-        ops::event(self, op, events)
+        (self.get().socket_ops.event)(self, op, events)
     }
 
     /// `Socket::sendto(server_addr, data, length)`: one sendto(2).
@@ -808,6 +809,10 @@ pub extern "C" fn swr_v1_clients_new(kind: c_int, is_async: bool) -> *mut Client
 /// [`Handle::free`]; None with errno set when the socket could not be made.
 #[must_use]
 pub fn create(kind: c_int, is_async: bool) -> Option<Handle> {
+    create_with(kind, is_async, &SocketOps::NATIVE)
+}
+
+fn create_with(kind: c_int, is_async: bool, socket_ops: &'static SocketOps) -> Option<Handle> {
     let fd_type = if is_stream(kind) {
         FD_STREAM_CLIENT
     } else {
@@ -815,13 +820,14 @@ pub fn create(kind: c_int, is_async: bool) -> Option<Handle> {
     };
     let flags = if is_async { SOCK_NONBLOCK } else { 0 } | SOCK_CLOEXEC;
     // The new socket record, which nothing else holds yet.
-    let Some(record) = ops::make_socket(kind, fd_type, flags) else {
+    let Some(record) = (socket_ops.make_socket)(kind, fd_type, flags) else {
         let error = errno();
         log::sys_warning(c"Client", format_args!("socket() failed"));
         set_errno(error);
         return None;
     };
     let mut client = Box::new(Client {
+        socket_ops,
         record: Cell::new(ClientRecord {
             http2: false,
             open_length_check: false,
@@ -862,8 +868,9 @@ pub fn create(kind: c_int, is_async: bool) -> Option<Handle> {
         record.socket_type
     });
     client.set(Flag::Stream, is_stream(socket_type));
-    let mut kind_out = 0;
-    swr_v1_socket_domain_and_type(kind, &mut client.domain, &mut kind_out);
+    if let Some((domain, _)) = socket_domain_and_type(kind) {
+        client.domain = domain;
+    }
     let client = Box::into_raw(client);
     record.edit(|record| record.object = client.cast());
     Some(Handle(client))
@@ -1255,7 +1262,7 @@ fn inet_addr(this: Handle, host: &CStr, port: c_int) -> bool {
         this.set(Flag::HostPreset, true);
     }
     let resolve = !this.flag(Flag::Async);
-    if ops::assign(this, host, port, resolve) {
+    if (this.get().socket_ops.assign)(this, host, port, resolve) {
         return true;
     }
     let wait = !this.flag(Flag::DnsCompleted) && log::last_error() == ERROR_BAD_HOST_ADDR;
@@ -1331,13 +1338,13 @@ pub fn connect(this: Handle, host: &CStr, port: c_int, timeout: f64, flags: c_in
 fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblock: bool) -> bool {
     this.set_timeout(timeout);
     if timeout > 0.0 {
-        ops::kernel_timeout(this, timeout);
+        (this.get().socket_ops.kernel_timeout)(this, timeout);
     }
     if !inet_addr(this, host, port) {
         return false;
     }
     if nonblock {
-        return match ops::connect_async(this) {
+        return match (this.get().socket_ops.connect_async)(this) {
             Connect::Ready => true,
             Connect::Wait => {
                 this.set(Flag::AsyncConnect, true);
@@ -1346,7 +1353,7 @@ fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblo
             Connect::Error => false,
         };
     }
-    if !ops::connect(this, ConnectMode::Sync) {
+    if !(this.get().socket_ops.connect)(this, ConnectMode::Sync) {
         return false;
     }
     this.set(Flag::Active, true);
@@ -1425,7 +1432,7 @@ fn tcp_connect_async(this: Handle, host: &CStr, port: c_int, timeout: f64) -> bo
         return dns_lookup(this);
     }
     loop {
-        let connected = ops::connect(this, ConnectMode::Raw);
+        let connected = (this.get().socket_ops.connect)(this, ConnectMode::Raw);
         let error = errno();
         if !connected && error == libc::EINTR {
             continue;
@@ -1460,7 +1467,7 @@ fn udp_connect(this: Handle, host: &CStr, port: c_int, timeout: f64, udp_connect
     let is_async = this.flag(Flag::Async);
     this.set_timeout(timeout);
     if !is_async && timeout > 0.0 {
-        ops::kernel_timeout(this, timeout);
+        (this.get().socket_ops.kernel_timeout)(this, timeout);
     }
     this.get().sock_flags.set(udp_connect);
     if !inet_addr(this, host, port) {
@@ -1487,7 +1494,7 @@ fn udp_connect(this: Handle, host: &CStr, port: c_int, timeout: f64, udp_connect
     this.set(Flag::Active, true);
     let fd = this.socket().fd();
     let default_size = SOCKET_DEFAULTS.buffer_size();
-    swr_v1_socket_buffer_size(fd, true, true, default_size);
+    _ = set_socket_buffer_size(fd, true, true, default_size);
     if timeout > 0.0 {
         this.set_timeout(timeout);
     }
@@ -1500,7 +1507,7 @@ fn udp_connect(this: Handle, host: &CStr, port: c_int, timeout: f64, udp_connect
         enable_dtls(this);
     }
     if udp_connect == 1 {
-        if !ops::connect(this, ConnectMode::Raw) {
+        if !(this.get().socket_ops.connect)(this, ConnectMode::Raw) {
             this.set(Flag::Active, false);
             this.mark_removed();
             close(this);
@@ -1549,9 +1556,32 @@ fn bind_unix(this: Handle) -> bool {
     bound_ok
 }
 
-/// The socket record operations: crates/reactor's, which the unit tests replace
-/// with recording doubles.
-#[cfg(not(test))]
+/// Socket control effects, selected when the client is constructed. Keeping the
+/// table outside the record preserves its C layout; callbacks copy the function
+/// pointer before an effect can release the client.
+struct SocketOps {
+    make_socket: fn(c_int, c_int, c_int) -> Option<Socket<'static>>,
+    kernel_timeout: fn(Handle, f64),
+    assign: fn(Handle, &CStr, c_int, bool) -> bool,
+    connect_async: fn(Handle) -> Connect,
+    connect: fn(Handle, ConnectMode) -> bool,
+    event: fn(Handle, EventOp, Events) -> bool,
+    socket_error: fn(Handle, &mut c_int) -> bool,
+}
+
+impl SocketOps {
+    const NATIVE: Self = Self {
+        make_socket: ops::make_socket,
+        kernel_timeout: ops::kernel_timeout,
+        assign: ops::assign,
+        connect_async: ops::connect_async,
+        connect: ops::connect,
+        event: ops::event,
+        socket_error: ops::socket_error,
+    };
+}
+
+/// The reactor and socket operations used by production clients.
 mod ops {
     use super::{Connect, ConnectMode, EventOp, Handle, SocketRecord, address_of};
     use core::ffi::{CStr, c_int};
@@ -1899,7 +1929,7 @@ fn on_write(this: Handle, reactor: Running<'_>, event: &mut Event) -> bool {
         return true;
     }
     let mut error = 0;
-    let read = ops::socket_error(this, &mut error);
+    let read = (this.get().socket_ops.socket_error)(this, &mut error);
     log::set_last_error(error);
     if !read {
         let fd = this.socket().fd();
@@ -1998,3 +2028,7 @@ fn resolved(this: Handle, error: c_int, address: &CStr) {
 #[cfg(test)]
 #[path = "client_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../../tests/modules/clients/socket_ops.rs"]
+mod socket_ops_tests;

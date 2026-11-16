@@ -373,12 +373,11 @@ impl SocketRecord {
         flags: c_int,
         unknown: &mut bool,
     ) -> Option<Box<Self>> {
-        let (mut domain, mut kind) = (0, 0);
-        if !crate::swr_v1_socket_domain_and_type(socket_type, &mut domain, &mut kind) {
+        let Some((domain, kind)) = crate::socket_domain_and_type(socket_type) else {
             *unknown = true;
             crate::socket_sync::set_errno(libc::ESOCKTNOSUPPORT);
             return None;
-        }
+        };
         Self::opened(socket_type, fd_type, domain, kind, 0, flags)
     }
 }

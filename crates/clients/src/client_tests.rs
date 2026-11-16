@@ -288,7 +288,16 @@ fn set_proxy(client: *mut Client, http: bool) {
 }
 
 fn new_client(kind: c_int, is_async: bool) -> *mut Client {
-    swr_v1_clients_new(kind, is_async)
+    const OPS: SocketOps = SocketOps {
+        make_socket: ops::make_socket,
+        kernel_timeout: ops::kernel_timeout,
+        assign: ops::assign,
+        connect_async: ops::connect_async,
+        connect: ops::connect,
+        event: ops::event,
+        socket_error: ops::socket_error,
+    };
+    create_with(kind, is_async, &OPS).map_or(core::ptr::null_mut(), |handle| handle.0)
 }
 
 /// A client of `kind`, its construction log dropped, listened to for every event

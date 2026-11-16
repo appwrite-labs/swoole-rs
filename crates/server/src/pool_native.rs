@@ -259,7 +259,7 @@ macro_rules! main_loops {
     ($($name:ident = $protocol:expr;)*) => {$(
         extern "C-unwind" fn $name(pool: PoolRef<'_>, worker: Record<'_>) -> c_int {
             // A callback's bailout is raised once the export's frames are gone.
-            raised(pool_run_main(&NATIVE, pool, worker, $protocol)).c_cast::<c_int>()
+            raised(pool_run_main(&NATIVE, pool, worker, $protocol).map(crate::conn_io::status))
         }
     )*};
 }
@@ -467,8 +467,8 @@ impl PoolNative for Native {
         swoole_event_is_available()
     }
 
-    fn event_wait(&self) -> c_int {
-        swoole_rs_reactor::event_api::swoole_event_wait()
+    fn event_wait(&self) -> bool {
+        swoole_rs_reactor::event_api::swoole_event_wait() >= 0
     }
 
     fn waitpid(&self, pid: c_int) -> bool {

@@ -663,7 +663,7 @@ impl CoSocket {
         }
         if matches!(socket_type, 2 | 4) {
             let size = swoole_rs_reactor::SOCKET_DEFAULTS.buffer_size();
-            swoole_rs_reactor::swr_v1_socket_buffer_size(fd, true, true, size);
+            _ = swoole_rs_reactor::set_socket_buffer_size(fd, true, true, size);
         }
         let protocol = self.protocol.get_mut();
         protocol.package_length_type = b'N';
@@ -692,7 +692,9 @@ use swoole_rs_corebase::sys::socklen;
 
 /// `domain` and `kind` for `socket_type`, left alone for a type with none.
 fn domain_and_type(socket_type: c_int, domain: &mut c_int, kind: &mut c_int) {
-    swoole_rs_reactor::swr_v1_socket_domain_and_type(socket_type, domain, kind);
+    if let Some(pair) = swoole_rs_reactor::socket_domain_and_type(socket_type) {
+        (*domain, *kind) = pair;
+    }
 }
 
 /// `~Socket()`: the destructor callback if it has not run, the buffers, the
@@ -832,7 +834,7 @@ impl CoSocket {
                 socket.sock_protocol.set(protocol);
                 socket
                     .kind
-                    .set(swoole_rs_reactor::swr_v1_socket_type(domain, kind));
+                    .set(swoole_rs_reactor::socket_type(domain, kind).raw());
             }
             New::ByType | New::FdByType => {
                 socket.kind.set(socket_type);

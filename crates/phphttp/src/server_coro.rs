@@ -408,7 +408,8 @@ fn construct(call: &Call) {
             return None;
         }
         let kind = swoole_rs_reactor::host_type(host);
-        let Ok(listener) = swoole_rs_phpclients::new_socket(-1, 0, kind.socket_type, 0, false)
+        let Ok(listener) =
+            swoole_rs_phpclients::new_socket(-1, 0, kind.socket_type.raw(), 0, false)
         else {
             bailout::Bailout.defer();
             return None;
