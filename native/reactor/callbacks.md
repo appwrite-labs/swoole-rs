@@ -34,10 +34,11 @@ reads through `reactor_get_handler` and `reactor_default_write_handler`.
 ## Deferred queues
 
 `defer_tasks` and `destroy_callbacks` are fields of the Rust reactor state:
-FIFO queues of native callbacks and Rust values (`crates/reactor/src/deferred.rs`).
+FIFO queues of Rust values (`crates/reactor/src/deferred.rs`).
 The first task lives inline; only additional tasks allocate queue storage. The
-queues follow the native head and are absent from its C++ declaration. Only Rust pushes to them (`deferred::defer` and
-`swoole_event_defer_value`); no C or C++ caller is left.
+queues follow the native head and are absent from its C++ declaration. Only Rust pushes to them
+(`swoole_event_defer_value` and the socket and destroy-callback helpers beside it); no C or C++
+caller is left.
 
 - The `PRIORITY_DEFER_TASK` end callback detaches `defer_tasks`, runs it and
   frees it, so a task that defers again lands on the next end pass. A present

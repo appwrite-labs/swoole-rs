@@ -16,14 +16,13 @@ mod native {
             .output()
             .ok()
             .filter(|output| output.status.success())
-            .map(|output| {
+            .map_or_default(|output| {
                 String::from_utf8_lossy(&output.stdout)
                     .split_whitespace()
                     .filter_map(|flag| flag.strip_prefix("-I"))
                     .map(PathBuf::from)
                     .collect()
             })
-            .unwrap_or_default()
     }
 
     pub(super) fn compile() {
