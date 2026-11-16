@@ -16,7 +16,7 @@ use swoole_rs_corebase::{HookType, swoole_call_hook};
 use swoole_rs_phpruntime::co;
 use swoole_rs_server::{server_methods, view};
 use swoole_rs_zend::{
-    Declared, Owned, Value, ZStr,
+    Call, Declared, Owned, Value, ZStr,
     bailout::{self, Bailout},
     host::Then,
     sys::{swr_zend_http_release_objects, zend_object, zval},
@@ -105,18 +105,41 @@ pub(crate) enum Kind {
 /// A new `Swoole\Http\Request` or `Response` in the context's `slot`,
 /// pointing at `ctx`.
 pub(crate) fn new_object(slot: &mut Slot, kind: Kind, ctx: Ctx) -> Option<*mut zend_object> {
-    let class = match kind {
-        Kind::Request => &*crate::request::REQUEST,
-        Kind::Response => &*crate::response::RESPONSE,
-    };
     // The context keeps the object's reference.
-    slot.put(class.create_object());
-    let object = slot.get()?;
+    slot.put(kind.class().create_object());
+    point(slot.get()?, kind, ctx)
+}
+
+/// A new `Swoole\Http\Request` or `Response` as `call`'s return value,
+/// pointing at `ctx`, whose `slot` borrows it, as upstream's `RETVAL_OBJ`
+/// and `ctx->request.zobject` do.
+pub(crate) fn lend_object(call: &Call, slot: &mut Slot, kind: Kind, ctx: Ctx) {
+    call.set_owned(kind.class().create_object());
+    // SAFETY: the return value holds the object, and the object (`point`) the
+    // context and so the slot: the object's free handler clears the slot
+    // before the object goes.
+    unsafe { slot.keep(call.ret()) };
+    if let Some(object) = slot.get() {
+        point(object, kind, ctx);
+    }
+}
+
+/// Point `object`, a new `kind` object, at `ctx`.
+fn point(object: &Value, kind: Kind, ctx: Ctx) -> Option<*mut zend_object> {
     match kind {
         Kind::Request => object.custom::<crate::request::Data>()?.0.set(Some(ctx)),
         Kind::Response => object.custom::<crate::response::Data>()?.0.set(Some(ctx)),
     }
     object.object()
+}
+
+impl Kind {
+    fn class(self) -> &'static swoole_rs_zend::Class {
+        match self {
+            Self::Request => &crate::request::REQUEST,
+            Self::Response => &crate::response::RESPONSE,
+        }
+    }
 }
 
 /// A new object in `slot`, pointing at `ctx`, with its declared `fd`

@@ -3,13 +3,12 @@
 use crate::{
     ArrayMut, Class, ClassEntry, Owned, OwnedArray, Value, ZString, bailout,
     sys::{
-        IS_OBJECT, object_properties_init, swr_zend_object_alloc, zend_class_entry, zend_long,
-        zend_object, zend_object_handlers, zend_object_std_dtor, zend_object_std_init,
-        zend_objects_destroy_object, zend_update_property,
+        swr_zend_object_new, zend_class_entry, zend_long, zend_object, zend_object_handlers,
+        zend_object_std_dtor, zend_objects_destroy_object,
     },
 };
 use std::{
-    ffi::{CStr, c_char, c_int},
+    ffi::{CStr, c_int},
     io::IoSlice,
     marker::PhantomData,
     mem::offset_of,
@@ -29,6 +28,15 @@ unsafe extern "C" {
     /// sees, or none; Zend reads the lent name and copies `value` first, so the
     /// PHP code the write runs can't free what it reads.
     safe fn swr_lent_update_property(
+        scope: Option<ClassEntry<'_>>,
+        object: ObjectRef<'_>,
+        name: IoSlice<'_>,
+        value: &Value,
+    ) -> c_int;
+    /// As `swr_lent_update_property`, but an internal class's object takes a
+    /// value that is no object outside `zend_try` (zero then): no PHP code runs
+    /// for it.
+    safe fn swr_lent_set_property(
         scope: Option<ClassEntry<'_>>,
         object: ObjectRef<'_>,
         name: IoSlice<'_>,
@@ -89,12 +97,11 @@ impl<'a> ObjectRef<'a> {
     #[must_use]
     #[inline]
     pub fn class_entry(self) -> ClassEntry<'a> {
-        let class = self.read(|object| object.ce);
-        // SAFETY: every live object has its class, which is never null.
-        ClassEntry(
-            unsafe { std::ptr::NonNull::new_unchecked(class) },
-            PhantomData,
-        )
+        // Every live object has its class, which outlives it.
+        match ClassEntry::live(self.read(|object| object.ce)) {
+            Some(class) => class,
+            None => unreachable!("every live object has its class"),
+        }
     }
 
     /// `ZVAL_OBJ`: a zval naming the object without a reference of its own, for
@@ -178,15 +185,10 @@ impl<T: Custom> LaidOut<T> {
     #[must_use]
     fn create(self, data: T) -> *mut zend_object {
         let Self(ce, _) = self;
-        // SAFETY: Zend's allocator; it zeroes everything before `std`.
-        let this = unsafe { swr_zend_object_alloc(size_of::<Object<T>>(), ce) }.cast::<Object<T>>();
-        let std = Object::std(this);
-        // SAFETY: `std` is freshly allocated storage for an object of class `ce`.
-        unsafe { zend_object_std_init(std, ce) };
-        // SAFETY: as above; the property slots follow `std`.
-        unsafe { object_properties_init(std, ce) };
-        // SAFETY: `std` is initialised and not yet shared.
-        unsafe { (*std).handlers = T::class().handlers() };
+        let (size, offset) = (size_of::<Object<T>>(), Object::<T>::OFFSET);
+        // SAFETY: an `Object<T>` laid out for class `ce`, its `zend_object`
+        // last, `offset` bytes in, with `T`'s class's handlers.
+        let std = unsafe { swr_zend_object_new(size, offset, ce, T::class().handlers()) };
         // SAFETY: the object's data, allocated above and unused.
         unsafe { Object::<T>::data_ptr(std).write(data) };
         std
@@ -416,21 +418,13 @@ impl Props<'_> {
     /// written while a bailout is pending: upstream never ran past it.
     #[inline]
     pub fn value(self, name: &CStr, value: &Value) {
-        /// `ZEND_INTERNAL_CLASS` (`zend_compile.h`).
-        const INTERNAL: c_char = 1;
         if bailout::pending() {
             return;
         }
-        let internal = self.class_entry().read(|ce| ce.type_) == INTERNAL;
-        if internal && value.kind() != IS_OBJECT {
-            let scope = self.0.map_or(std::ptr::null_mut(), ClassEntry::as_ptr);
-            let (object, length) = (self.1.as_ptr(), name.count_bytes());
-            // SAFETY: a live object, a registered class or null, and a live value
-            // Zend copies.
-            unsafe { zend_update_property(scope, object, name.as_ptr(), length, value.as_ptr()) };
-            return;
-        }
-        bailout::defer(self.update_trapped(name.to_bytes(), value));
+        let name = IoSlice::new(name.to_bytes());
+        bailout::defer(bailout::trapped(swr_lent_set_property(
+            self.0, self.1, name, value,
+        )));
     }
 
     /// The `set()` merge: `php_array_merge` of `settings` into the array

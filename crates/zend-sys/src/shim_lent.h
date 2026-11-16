@@ -22,6 +22,9 @@ int swr_lent_class_alias(struct iovec alias, zend_class_entry *ce, bool *registe
  * to null first). */
 zval *swr_lent_property_slot(zend_object *object, struct iovec name);
 
+/* zend_hash_str_find(table, key): null, or the element under the key's bytes. */
+zval *swr_lent_hash_find(const HashTable *table, struct iovec key);
+
 /* zend_read_property(scope, object, name, silent, rv) inside zend_try (nonzero for a
  * bailout): `rv` then holds what it read, a copy (ZVAL_COPY) unless Zend computed it
  * there. */
@@ -31,6 +34,10 @@ int swr_lent_read_property(zend_class_entry *scope, zend_object *object, struct 
 /* zend_update_property(scope, object, name, value) inside zend_try (nonzero for a
  * bailout). */
 int swr_lent_update_property(zend_class_entry *scope, zend_object *object, struct iovec name, zval *value);
+
+/* swr_lent_update_property, but an internal class's object takes a value that is no
+ * object outside zend_try, as no PHP code runs for it (zero then). */
+int swr_lent_set_property(zend_class_entry *scope, zend_object *object, struct iovec name, zval *value);
 
 /* zend_call_method(object, scope, NULL, name, retval, ...) inside zend_try (nonzero
  * for a bailout), with `arg1`, then `arg2`, as far as they are not null. A null scope

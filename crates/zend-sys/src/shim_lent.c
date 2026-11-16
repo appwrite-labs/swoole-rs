@@ -23,6 +23,10 @@ int swr_lent_class_alias(struct iovec alias, zend_class_entry *ce, bool *registe
     return bailed;
 }
 
+zval *swr_lent_hash_find(const HashTable *table, struct iovec key) {
+    return zend_hash_str_find(table, key.iov_base, key.iov_len);
+}
+
 zval *swr_lent_property_slot(zend_object *object, struct iovec name) {
     zend_property_info *info = zend_hash_str_find_ptr(&object->ce->properties_info, name.iov_base, name.iov_len);
     if (UNEXPECTED(info == NULL || (info->flags & ZEND_ACC_STATIC))) {
@@ -53,6 +57,14 @@ int swr_lent_update_property(zend_class_entry *scope, zend_object *object, struc
     SWR_ZEND_TRY { zend_update_property(scope, object, name.iov_base, name.iov_len, value); }
     SWR_ZEND_CATCH { bailed = 1; } SWR_ZEND_END_TRY();
     return bailed;
+}
+
+int swr_lent_set_property(zend_class_entry *scope, zend_object *object, struct iovec name, zval *value) {
+    if (EXPECTED(object->ce->type == ZEND_INTERNAL_CLASS && Z_TYPE_P(value) != IS_OBJECT)) {
+        zend_update_property(scope, object, name.iov_base, name.iov_len, value);
+        return 0;
+    }
+    return swr_lent_update_property(scope, object, name, value);
 }
 
 int swr_lent_call_method(zend_object *object, zend_class_entry *scope, struct iovec name, zval *retval,
