@@ -64,6 +64,10 @@ The project-written `compatibility.cc` consumer is ported there too:
 | --- | --- |
 | `compatibility.cc` (44 checks of append, write, integer, repeat, copy, termination and reduce) | `string::originals::compatibility` |
 
+`thread_buffer.rs` (`cargo test -p swoole-rs-buffer`) checks that a thread
+`swoole_thread_init` never set up gets `None` from `try_with_thread_buffer`, not a
+null String.
+
 The header declares only what C++ still calls or a fixture links: the sized constructor,
 copy and move construction, the destructor, `substr`, `extend`, `reserve`,
 `release`, `append` (bytes and `int`), `append_random_bytes` (the http server fixture
