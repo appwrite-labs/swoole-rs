@@ -156,11 +156,10 @@ fn content_range(offset: i64, length: usize, size: usize) -> String {
 /// context) held while a coroutine reads it.
 fn send_ranges(ctx: Ctx, handler: &mut StaticHandler<'_>) -> bool {
     let _held = of(ctx);
-    let trailer = begin_file(ctx, &handler.content_type(), handler.content_length());
-    if trailer < 0 {
+    let Some(trailer) = begin_file(ctx, &handler.content_type(), handler.content_length()) else {
         return false;
-    }
-    let end_stream = trailer == 0;
+    };
+    let end_stream = !trailer;
     let tasks = handler.tasks();
     let first = if let [task] = tasks.as_slice() {
         task.length
@@ -203,7 +202,7 @@ fn send_ranges(ctx: Ctx, handler: &mut StaticHandler<'_>) -> bool {
             }
         }
     }
-    finish_file(ctx, trailer != 0, error);
+    finish_file(ctx, trailer, error);
     true
 }
 
@@ -242,10 +241,9 @@ fn content(path: &[u8]) -> Option<Vec<u8>> {
 fn send_content(ctx: Ctx, path: &[u8], content: &[u8], offset: i64, length: usize) -> bool {
     let available = sw_rs_http2_file_length(length, content.len());
     let content_type = swoole_rs_framing::mime::get(path);
-    let trailer = begin_file(ctx, &content_type, available);
-    if trailer < 0 {
+    let Some(trailer) = begin_file(ctx, &content_type, available) else {
         return false;
-    }
+    };
     let mut error = false;
     if available > 0 {
         let wanted = if length == 0 { available } else { length };
@@ -253,15 +251,11 @@ fn send_content(ctx: Ctx, path: &[u8], content: &[u8], offset: i64, length: usiz
             .unwrap_or_default()
             .min(content.len());
         let end = start.saturating_add(wanted).min(content.len());
-        if !body(
-            ctx,
-            content.get(start..end).unwrap_or_default(),
-            trailer == 0,
-        ) {
+        if !body(ctx, content.get(start..end).unwrap_or_default(), !trailer) {
             error = true;
         }
     }
-    finish_file(ctx, trailer != 0, error)
+    finish_file(ctx, trailer, error)
 }
 
 #[cfg(test)]
