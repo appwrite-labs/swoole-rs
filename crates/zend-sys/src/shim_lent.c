@@ -59,14 +59,6 @@ int swr_lent_update_property(zend_class_entry *scope, zend_object *object, struc
     return bailed;
 }
 
-int swr_lent_set_property(zend_class_entry *scope, zend_object *object, struct iovec name, zval *value) {
-    if (EXPECTED(object->ce->type == ZEND_INTERNAL_CLASS && Z_TYPE_P(value) != IS_OBJECT)) {
-        zend_update_property(scope, object, name.iov_base, name.iov_len, value);
-        return 0;
-    }
-    return swr_lent_update_property(scope, object, name, value);
-}
-
 int swr_lent_call_method(zend_object *object, zend_class_entry *scope, struct iovec name, zval *retval,
                          zval *arg1, zval *arg2) {
     if (scope && !instanceof_function(object->ce, scope)) {
