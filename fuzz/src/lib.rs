@@ -228,8 +228,20 @@ pub fn ws_frame_length(bytes: &[u8]) {
     let mut want_header = 0;
     // SAFETY: reads `bytes` and writes one local u32.
     let want = unsafe { upstream_ws::frame_length(bytes.as_ptr(), bytes.len(), &mut want_header) };
-    let (got, got_header) = frame_length(bytes);
-    let got_header = got_header.unwrap_or(0);
+    let (got, got_header) = match frame_length(bytes) {
+        Ok(frame) => (
+            i64::try_from(frame.total).unwrap(),
+            Some(frame.header_length),
+        ),
+        Err(error) => (
+            match error {
+                swoole_rs_websocket::LengthError::IncompleteHeader { .. } => 0,
+                swoole_rs_websocket::LengthError::Overflow { .. } => -1,
+            },
+            error.header_length(),
+        ),
+    };
+    let got_header = u32::try_from(got_header.unwrap_or(0)).unwrap();
     // Some lengths are outside the compared domain; Rust reports -1 there.
     assert!(
         want as i64 == got || got == -1 && want < 0,

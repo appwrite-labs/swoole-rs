@@ -141,15 +141,20 @@ pub extern "C" fn get_package_length(
 /// [`get_package_length`]'s measure: it reads only `pl`.
 #[inline]
 pub fn package_length(pl: &mut PacketLength) -> isize {
-    let bytes = pl.bytes();
-    if bytes.len() < 2 {
-        return 0;
-    }
-    let (length, header) = frame_length(bytes);
+    let (length, header) = match frame_length(pl.bytes()) {
+        Ok(frame) => (frame.total.c_cast::<isize>(), Some(frame.header_length)),
+        Err(error) => (
+            match error {
+                swoole_rs_websocket::LengthError::IncompleteHeader { .. } => 0,
+                swoole_rs_websocket::LengthError::Overflow { .. } => -1,
+            },
+            error.header_length(),
+        ),
+    };
     if let Some(header) = header {
-        pl.header_len = header;
+        pl.header_len = header.c_cast::<u32>();
     }
-    length.c_cast::<isize>()
+    length
 }
 
 /// `bool encode(String *buffer, const char *data, size_t length, uint8_t opcode, uint8_t flags)`

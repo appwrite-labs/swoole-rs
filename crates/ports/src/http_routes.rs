@@ -280,7 +280,11 @@ pub mod exports {
         const HEAD: Option<u32> = Some(WEBSOCKET_FRAME_HEADER_SIZE as u32);
         #[inline(always)]
         fn length(_: &Recv, bytes: &[u8]) -> i64 {
-            swoole_rs_websocket::frame_length(bytes).0
+            match swoole_rs_websocket::frame_length(bytes) {
+                Ok(frame) => i64::try_from(frame.total).unwrap_or(-1),
+                Err(swoole_rs_websocket::LengthError::IncompleteHeader { .. }) => 0,
+                Err(swoole_rs_websocket::LengthError::Overflow { .. }) => -1,
+            }
         }
         #[inline(always)]
         fn dispatch(r: &Recv, data: *const u8, offset: i64) -> c_int {
