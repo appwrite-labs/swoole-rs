@@ -175,8 +175,7 @@ impl<'a> Socket<'a> {
     /// # Safety
     /// A non-null `record` is a live `network::Socket` for the handle's lifetime, which
     /// nothing frees or reaches through a Rust reference to its fields meanwhile (native
-    /// code and raw pointers may, between this handle's calls). Its `ssl` is null or a
-    /// live `SSL` it owns, as [`SocketFields::set_ssl`] requires.
+    /// code and raw pointers may, between this handle's calls).
     #[must_use]
     pub unsafe fn from_ptr(record: *mut SocketRecord) -> Option<Self> {
         Some(Self {
@@ -187,7 +186,7 @@ impl<'a> Socket<'a> {
 
     /// The native socket crates/process lends for `'a`, whose writers vouched for it
     /// (a pipe end, a hook's socket, or a stream listener or connection): a live
-    /// record of this crate's, with its `ssl` null or owned.
+    /// record of this crate's.
     #[must_use]
     pub fn lent(native: swoole_rs_process::worker_record::NativeSocket<'a>) -> Self {
         Self {
@@ -197,8 +196,7 @@ impl<'a> Socket<'a> {
     }
 
     /// The socket of a record this side holds alone for `'a` (one on the caller's
-    /// frame, say). Its `ssl` is null or owned, which only the unsafe
-    /// [`SocketFields::set_ssl`] can change.
+    /// frame, say).
     #[must_use]
     pub fn new(record: &'a mut SocketRecord) -> Self {
         Self {

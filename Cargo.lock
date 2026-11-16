@@ -1109,6 +1109,7 @@ name = "swoole-rs-reactor"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "openssl-sys",
  "swoole-rs-buffer",
  "swoole-rs-corebase",
  "swoole-rs-coroutine",

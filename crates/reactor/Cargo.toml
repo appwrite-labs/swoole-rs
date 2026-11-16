@@ -20,6 +20,7 @@ swoole-rs-memory = { path = "../memory" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.191"
+openssl-sys = "=0.9.117"
 
 [lib]
 crate-type = ["rlib", "staticlib"]

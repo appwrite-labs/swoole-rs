@@ -807,7 +807,7 @@ mod tests {
                     0
                 );
                 assert_eq!(socket_session(None, handle, None), Ok(()));
-                openssl_sys::SSL_free(ssl);
+                // The record frees its SSL.
                 drop(Box::from_raw(socket));
             }
         }

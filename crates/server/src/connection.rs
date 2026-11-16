@@ -60,9 +60,7 @@ pub(crate) fn accept(serv: view::Server<'_>, reactor: Reactor, event: &Event) {
                 return;
             }
         } else {
-            sock.edit(|s| {
-                s.take_ssl();
-            });
+            sock.edit(|s| s.set_ssl(None));
         }
         let Some(conn) = add(serv, port, sock, server_fd) else {
             abort(serv, reactor, Some(port), sock);

@@ -287,12 +287,7 @@ mod tests {
     fn native_event_want_preserves_write_priority_and_default() {
         let mut socket: SocketRecord = unsafe { std::mem::zeroed() };
         for ssl in [false, true] {
-            let live = if ssl {
-                std::ptr::dangling_mut()
-            } else {
-                std::ptr::null_mut()
-            };
-            unsafe { socket.set_ssl(live) };
+            socket.set_ssl(ssl.then(crate::SocketSsl::stub));
             for read in [false, true] {
                 for write in [false, true] {
                     for default in [-1, 0, 512, 1024] {
@@ -313,6 +308,8 @@ mod tests {
                 }
             }
         }
+        // The stub goes unfreed.
+        socket.set_ssl(None);
     }
 
     unsafe extern "C" fn no_tls(_: *mut c_void, _: *mut c_void, _: usize) -> isize {
