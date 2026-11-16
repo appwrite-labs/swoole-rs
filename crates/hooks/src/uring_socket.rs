@@ -146,6 +146,7 @@ impl UringSocketOps<'_> {
         let (host, tls) = (self.host(), self.tls);
         self.transfer(Events::READ, false, || {
             uring::recvmsg(host, tls.fd, message, flags, tls.read_timeout)
+                .map_or(-1, usize::cast_signed)
         })
     }
 
@@ -154,6 +155,7 @@ impl UringSocketOps<'_> {
         let (host, tls) = (self.host(), self.tls);
         self.transfer(Events::WRITE, false, || {
             uring::sendmsg(host, tls.fd, message, flags, tls.write_timeout)
+                .map_or(-1, usize::cast_signed)
         })
     }
 
@@ -176,7 +178,7 @@ impl UringSocketOps<'_> {
                         Lent::Read(slots) => tls.recv(slots),
                     })
                 } else {
-                    uring::vector(host, tls.fd, vector, timeout)
+                    uring::vector(host, tls.fd, vector, timeout).map_or(-1, usize::cast_signed)
                 };
                 vector.update(result);
                 if !(result < 0 && errno() == libc::EINTR) {
@@ -191,7 +193,7 @@ impl UringSocketOps<'_> {
 pub(crate) fn read(ops: &UringSocketOps<'_>, buf: &mut [impl ReadSlot]) -> isize {
     let (host, tls) = (ops.host(), ops.tls);
     ops.transfer(Events::READ, false, || {
-        uring::read(host, tls.fd, buf, tls.read_timeout)
+        uring::read(host, tls.fd, buf, tls.read_timeout).map_or(-1, usize::cast_signed)
     })
 }
 
@@ -202,7 +204,7 @@ pub(crate) fn recv(ops: &UringSocketOps<'_>, buf: &mut [impl ReadSlot]) -> isize
         if ops.ssl() {
             return tls.recv(buf);
         }
-        uring::recv(host, tls.fd, buf, 0, tls.read_timeout)
+        uring::recv(host, tls.fd, buf, 0, tls.read_timeout).map_or(-1, usize::cast_signed)
     })
 }
 
@@ -216,7 +218,8 @@ pub(crate) fn recvfrom_into(
     let (host, tls) = (ops.host(), ops.tls);
     let mut size = swoole_rs_corebase::sys::socklen::<libc::sockaddr_storage>();
     let received = ops.transfer(Events::READ, false, || {
-        let peeked = uring::recv(host, tls.fd, buf, libc::MSG_PEEK, tls.read_timeout);
+        let peeked = uring::recv(host, tls.fd, buf, libc::MSG_PEEK, tls.read_timeout)
+            .map_or(-1, usize::cast_signed);
         if peeked <= 0 {
             return peeked;
         }
@@ -233,7 +236,8 @@ pub(crate) fn recvfrom_into(
 pub(crate) fn recvfrom_peer(ops: &UringSocketOps<'_>, buf: &mut [impl ReadSlot]) -> isize {
     let (host, tls) = (ops.host(), ops.tls);
     ops.transfer(Events::READ, false, || {
-        let peeked = uring::recv(host, tls.fd, buf, libc::MSG_PEEK, tls.read_timeout);
+        let peeked = uring::recv(host, tls.fd, buf, libc::MSG_PEEK, tls.read_timeout)
+            .map_or(-1, usize::cast_signed);
         if peeked <= 0 {
             return peeked;
         }
@@ -251,7 +255,7 @@ pub(crate) fn recvfrom_peer(ops: &UringSocketOps<'_>, buf: &mut [impl ReadSlot])
 pub(crate) fn sendto(ops: &UringSocketOps<'_>, buf: &[u8], address: &SocketAddress) -> isize {
     let (host, tls) = (ops.host(), ops.tls);
     ops.transfer(Events::WRITE, true, || {
-        uring::sendto(host, tls.fd, buf, address, tls.write_timeout)
+        uring::sendto(host, tls.fd, buf, address, tls.write_timeout).map_or(-1, usize::cast_signed)
     })
 }
 
@@ -261,9 +265,9 @@ pub(crate) fn send(ops: &UringSocketOps<'_>, op: c_int, buf: &[u8]) -> isize {
     let (host, tls) = (ops.host(), ops.tls);
     let wt = tls.write_timeout;
     ops.transfer(Events::WRITE, false, || match op {
-        WRITE => uring::write(host, tls.fd, buf, wt),
+        WRITE => uring::write(host, tls.fd, buf, wt).map_or(-1, usize::cast_signed),
         _ if ops.ssl() => tls.send(buf),
-        _ => uring::send(host, tls.fd, buf, 0, wt),
+        _ => uring::send(host, tls.fd, buf, 0, wt).map_or(-1, usize::cast_signed),
     })
 }
 
@@ -341,10 +345,10 @@ pub(crate) fn swr_v1_hook_uring_accept(
     let fd = ops.bound(Events::READ, || {
         uring::accept(host, tls.fd, address, flags, tls.read_timeout)
     });
-    if fd < 0 {
-        (ops.set_err)(ops.socket, errno());
-    }
-    fd
+    fd.unwrap_or_else(|error| {
+        (ops.set_err)(ops.socket, error.raw_os_error().unwrap_or(0));
+        -1
+    })
 }
 
 /// `connect(addr, len)` through the ring under the connect timeout.
@@ -356,7 +360,7 @@ pub(crate) fn swr_v1_hook_uring_connect(ops: &UringSocketOps<'_>, peer: &SocketA
     let result = ops.bound(Events::RDWR, || {
         uring::connect(host, fd, peer, ops.connect_timeout)
     });
-    if result < 0 {
+    if result.is_err() {
         return false;
     }
     ops.socket.with_state(|state| state.flags.connected = true);

@@ -548,8 +548,9 @@ fn transfer_result(result: io::Result<isize>) -> isize {
     result.unwrap_or(-1)
 }
 
-fn int(result: io::Result<isize>) -> c_int {
-    transfer_result(result).c_cast::<c_int>()
+fn byte_count(result: io::Result<isize>) -> io::Result<usize> {
+    // Successful CQE values are nonnegative; complete rejects every negative one.
+    result.map(isize::cast_unsigned)
 }
 
 fn count_result(result: isize) -> io::Result<c_int> {
@@ -587,16 +588,16 @@ macro_rules! safe_operations {
 }
 
 safe_operations! {
-    pub fn recv(fd: c_int, buf: &mut [impl ReadSlot], flags: c_int, timeout: f64) -> isize,
-        timeout timeout, opcode::Recv::new(Fd(fd), buf.as_mut_ptr().cast(), buf.len().c_cast::<u32>()).flags(flags), transfer_result;
-    pub fn send(fd: c_int, buf: &[u8], flags: c_int, timeout: f64) -> isize,
-        timeout timeout, opcode::Send::new(Fd(fd), buf.as_ptr(), buf.len().c_cast::<u32>()).flags(flags), transfer_result;
+    pub fn recv(fd: c_int, buf: &mut [impl ReadSlot], flags: c_int, timeout: f64) -> io::Result<usize>,
+        timeout timeout, opcode::Recv::new(Fd(fd), buf.as_mut_ptr().cast(), buf.len().c_cast::<u32>()).flags(flags), byte_count;
+    pub fn send(fd: c_int, buf: &[u8], flags: c_int, timeout: f64) -> io::Result<usize>,
+        timeout timeout, opcode::Send::new(Fd(fd), buf.as_ptr(), buf.len().c_cast::<u32>()).flags(flags), byte_count;
     pub fn close_fd(fd: c_int) -> io::Result<()>,
         timeout -1.0, opcode::Close::new(Fd(fd)), file_status;
-    pub fn read(fd: c_int, buf: &mut [impl ReadSlot], timeout: f64) -> isize,
-        timeout timeout, opcode::Read::new(Fd(fd), buf.as_mut_ptr().cast(), buf.len().c_cast::<c_uint>()).offset(u64::MAX), transfer_result;
-    pub fn write(fd: c_int, buf: &[u8], timeout: f64) -> isize,
-        timeout timeout, opcode::Write::new(Fd(fd), buf.as_ptr(), buf.len().c_cast::<c_uint>()).offset(u64::MAX), transfer_result;
+    pub fn read(fd: c_int, buf: &mut [impl ReadSlot], timeout: f64) -> io::Result<usize>,
+        timeout timeout, opcode::Read::new(Fd(fd), buf.as_mut_ptr().cast(), buf.len().c_cast::<c_uint>()).offset(u64::MAX), byte_count;
+    pub fn write(fd: c_int, buf: &[u8], timeout: f64) -> io::Result<usize>,
+        timeout timeout, opcode::Write::new(Fd(fd), buf.as_ptr(), buf.len().c_cast::<c_uint>()).offset(u64::MAX), byte_count;
     pub fn futex_wait(futex: &AtomicU32) -> io::Result<c_int>,
         timeout -1.0, opcode::FutexWait::new(futex.as_ptr(), 1, FUTEX_BITSET_MATCH_ANY, FUTEX2_SIZE_U32), |result: io::Result<isize>| result.map(CCast::c_cast::<c_int>);
     pub fn futex_wakeup(futex: &AtomicU32) -> io::Result<c_int>,
@@ -612,29 +613,29 @@ safe_operations! {
         timeout timeout, opcode::WaitId::new(idtype, id, options).infop(ptr::from_mut(info).cast()), file_status;
     /// `IORING_OP_ACCEPT` on `fd`: the peer's address into `address`'s storage, at most
     /// `address.len` bytes of it (and no more than it holds), and its length into `address.len`.
-    pub fn accept(fd: c_int, address: &mut SocketAddress, flags: c_int, timeout: f64) -> c_int,
+    pub fn accept(fd: c_int, address: &mut SocketAddress, flags: c_int, timeout: f64) -> io::Result<c_int>,
         timeout timeout, {
             address.len = address.len.min(SocketAddress::CAPACITY);
             opcode::Accept::new(Fd(fd), (&raw mut address.addr).cast(), &raw mut address.len).flags(flags)
-        }, int;
+        }, |result: io::Result<isize>| result.map(CCast::c_cast::<c_int>);
     /// `IORING_OP_SEND` of `buf` to `address`, of which the kernel reads at most its storage.
-    pub fn sendto(fd: c_int, buf: &[u8], address: &SocketAddress, timeout: f64) -> isize,
+    pub fn sendto(fd: c_int, buf: &[u8], address: &SocketAddress, timeout: f64) -> io::Result<usize>,
         timeout timeout, opcode::Send::new(Fd(fd), buf.as_ptr(), buf.len().c_cast::<u32>())
             .dest_addr((&raw const address.addr).cast())
-            .dest_addr_len(address.len.min(SocketAddress::CAPACITY)), transfer_result;
+            .dest_addr_len(address.len.min(SocketAddress::CAPACITY)), byte_count;
     /// `IORING_OP_CONNECT` of `fd` to `address`, of which the kernel reads at most its storage.
-    pub fn connect(fd: c_int, address: &SocketAddress, timeout: f64) -> c_int,
+    pub fn connect(fd: c_int, address: &SocketAddress, timeout: f64) -> io::Result<()>,
         timeout timeout, opcode::Connect::new(
             Fd(fd),
             (&raw const address.addr).cast(),
             address.len.min(SocketAddress::CAPACITY),
-        ), int;
+        ), file_status;
     /// `IORING_OP_RECVMSG` into `message`'s buffers.
-    pub fn recvmsg(fd: c_int, message: &mut RecvMessage<'_>, flags: c_int, timeout: f64) -> isize,
-        timeout timeout, opcode::RecvMsg::new(Fd(fd), message.as_mut_ptr()).flags(flags.cast_unsigned()), transfer_result;
+    pub fn recvmsg(fd: c_int, message: &mut RecvMessage<'_>, flags: c_int, timeout: f64) -> io::Result<usize>,
+        timeout timeout, opcode::RecvMsg::new(Fd(fd), message.as_mut_ptr()).flags(flags.cast_unsigned()), byte_count;
     /// `IORING_OP_SENDMSG` of `message`'s buffers.
-    pub fn sendmsg(fd: c_int, message: &SendMessage<'_>, flags: c_int, timeout: f64) -> isize,
-        timeout timeout, opcode::SendMsg::new(Fd(fd), message.as_ptr()).flags(flags.cast_unsigned()), transfer_result;
+    pub fn sendmsg(fd: c_int, message: &SendMessage<'_>, flags: c_int, timeout: f64) -> io::Result<usize>,
+        timeout timeout, opcode::SendMsg::new(Fd(fd), message.as_ptr()).flags(flags.cast_unsigned()), byte_count;
     /// `IORING_OP_POLL_ADD` of `fd`, which carries no pointer.
     fn poll_add(fd: c_int, events: u32, timeout: f64) -> io::Result<c_int>,
         timeout timeout, opcode::PollAdd::new(Fd(fd), events), |result: io::Result<isize>| result.map(CCast::c_cast::<c_int>);
@@ -658,8 +659,10 @@ safe_operations! {
 
 /// `IORING_OP_READV` into `vector`'s remaining buffers, or `IORING_OP_WRITEV` from
 /// them, as the vector was made for.
-#[must_use]
-pub fn vector(host: &Host, fd: c_int, vector: &IoVector<'_>, timeout: f64) -> isize {
+/// # Errors
+/// The completion's captured errno, including linked timeouts.
+#[must_use = "check the transfer result"]
+pub fn vector(host: &Host, fd: c_int, vector: &IoVector<'_>, timeout: f64) -> io::Result<usize> {
     let iovecs = vector.iovecs();
     let count = c_int::try_from(iovecs.len()).unwrap_or(0).cast_unsigned();
     let iov = iovecs.as_ptr();
@@ -676,7 +679,7 @@ pub fn vector(host: &Host, fd: c_int, vector: &IoVector<'_>, timeout: f64) -> is
     // `&mut` methods move, and their buffers, valid in its direction while it lives
     // (the type's invariant); the request completes before `request` returns.
     let result = unsafe { request(host, timeout, entry) };
-    transfer_result(result)
+    byte_count(result)
 }
 
 /// Sleep `seconds` in the ring's timer: 0 when it expired, -1 if cancelled.
@@ -1128,6 +1131,60 @@ mod tests {
         assert_eq!(status, 123);
         set_errno(libc::EINTR);
         assert_eq!(error.raw_os_error(), Some(libc::ECHILD));
+    }
+
+    #[test]
+    fn transfer_creation_errors_retain_errno_and_buffers() {
+        let host = Host {
+            instance: || {
+                set_errno(libc::EPERM);
+                None
+            },
+            ..testing::HOST
+        };
+        let mut buffer = [7_u8, 8];
+        let mut message_buffer = [9_u8, 10];
+        let output = [std::io::IoSlice::new(b"xy")];
+        let mut input = [std::io::IoSliceMut::new(&mut message_buffer)];
+        let message = SendMessage::new(&output);
+        let mut received = RecvMessage::new(&mut input);
+        let vectors = IoVector::new(crate::vector::Vectors::Write(&output)).unwrap();
+        let stopped = vectors.stopped();
+        let mut address = SocketAddress {
+            len: 16,
+            ..SocketAddress::default()
+        };
+        let errors = [
+            read(&host, -1, &mut buffer, -1.0).unwrap_err(),
+            recv(&host, -1, &mut buffer, 0, -1.0).unwrap_err(),
+            write(&host, -1, b"xy", -1.0).unwrap_err(),
+            send(&host, -1, b"xy", 0, -1.0).unwrap_err(),
+            sendto(&host, -1, b"xy", &address, -1.0).unwrap_err(),
+            sendmsg(&host, -1, &message, 0, -1.0).unwrap_err(),
+            recvmsg(&host, -1, &mut received, 0, -1.0).unwrap_err(),
+            vector(&host, -1, &vectors, -1.0).unwrap_err(),
+            accept(&host, -1, &mut address, 0, -1.0).unwrap_err(),
+            connect(&host, -1, &address, -1.0).unwrap_err(),
+        ];
+        set_errno(libc::EINTR);
+        for error in errors {
+            assert_eq!(error.raw_os_error(), Some(libc::EPERM));
+        }
+        assert_eq!(buffer, [7, 8]);
+        assert_eq!(message_buffer, [9, 10]);
+        assert_eq!(vectors.stopped(), stopped);
+        assert_eq!(address.len, 16);
+    }
+
+    #[test]
+    fn byte_counts_keep_eof_partial_success_and_completion_errors() {
+        set_errno(libc::EINTR);
+        assert_eq!(byte_count(complete(0)).unwrap(), 0);
+        assert_eq!(byte_count(complete(3)).unwrap(), 3);
+        assert_eq!(errno(), libc::EINTR);
+        let error = byte_count(complete(-(libc::ECANCELED as isize))).unwrap_err();
+        set_errno(libc::EBADF);
+        assert_eq!(error.raw_os_error(), Some(libc::ETIMEDOUT));
     }
 
     #[test]
