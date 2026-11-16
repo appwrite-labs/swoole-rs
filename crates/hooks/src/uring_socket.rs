@@ -11,7 +11,7 @@ use crate::co_io::{available, check, owned_err, set_err};
 use crate::co_socket::{Co, OwnedCo};
 use crate::uring::{self, Host};
 use crate::uring_tls::{SSL_BAD_PROTOCOL, Tls, TlsSocket};
-use crate::vector::{IoVector, Lent, RecvMessage, SendMessage};
+use crate::vector::{IoVector, IovBuffer, RecvMessage, SendMessage};
 use core::ffi::{CStr, c_char, c_int, c_ulong};
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::log;
@@ -177,8 +177,8 @@ impl UringSocketOps<'_> {
             loop {
                 let result = if self.ssl() {
                     vector.transfer_each(|buffer| match buffer {
-                        Lent::Write(bytes) => tls.send(bytes),
-                        Lent::Read(slots) => tls.recv(slots),
+                        IovBuffer::Write(data) => tls.send(data.bytes()),
+                        IovBuffer::Read(mut fill) => tls.recv(fill.slots()),
                     })
                 } else {
                     uring::vector(host, tls.fd, vector, timeout).ok()
@@ -327,7 +327,7 @@ pub(crate) fn swr_v1_hook_uring_vector(
             break result;
         };
         total += moved;
-        if vector.iovecs().is_empty() {
+        if vector.remaining() == 0 {
             break result;
         }
     };
@@ -590,9 +590,10 @@ mod tests {
         let mut transfer = |vector: &mut IoVector, results: &[isize]| {
             let mut results = results.iter().copied();
             let result = vector.transfer_each(|lent| {
-                let Lent::Read(slots) = lent else {
+                let IovBuffer::Read(mut fill) = lent else {
                     panic!("a vector to read into");
                 };
+                let slots = fill.slots();
                 calls.push((slots.as_ptr().addr() - base.addr(), slots.len()));
                 usize::try_from(results.next().unwrap()).ok()
             });
@@ -608,7 +609,7 @@ mod tests {
         assert_eq!(vector.stopped(), (1, 2));
         let (moved, made) = transfer(&mut vector, &[2]);
         assert_eq!((moved, made), (2, vec![(6, 2)]));
-        assert!(vector.iovecs().is_empty());
+        assert_eq!(vector.remaining(), 0);
         // Nothing moved: the failure itself.
         drop(vector);
         // SAFETY: as above.

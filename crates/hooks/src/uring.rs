@@ -662,9 +662,8 @@ struct Vectored(squeue::Entry);
 
 impl Vectored {
     fn new(fd: c_int, vector: &IoVector<'_>) -> Self {
-        let iovecs = vector.iovecs();
-        let count = c_int::try_from(iovecs.len()).unwrap_or(0).cast_unsigned();
-        let iov = iovecs.as_ptr();
+        let (iov, count) = vector.iovecs();
+        let count = c_int::try_from(count).unwrap_or(0).cast_unsigned();
         Self(if vector.write() {
             opcode::Writev::new(Fd(fd), iov, count)
                 .offset(u64::MAX)
