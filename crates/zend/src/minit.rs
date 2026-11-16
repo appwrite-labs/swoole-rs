@@ -112,7 +112,7 @@ unsafe extern "C" {
     /// handler written for that opcode.
     safe fn zend_set_user_opcode_handler(
         opcode: u8,
-        handler: crate::sys::user_opcode_handler_t,
+        handler: Option<crate::opcode::Entry>,
     ) -> crate::sys::zend_result;
 }
 

@@ -14,7 +14,7 @@ use std::{
 };
 use swoole_rs_zend::{
     Call, Value,
-    bailout::{Bailout, trap},
+    bailout::Bailout,
     opcode::Handler,
     sys::{
         IS_ARRAY, IS_CONST, IS_RESOURCE, IS_STRING, IS_VAR, swr_zend_efree, swr_zend_zval_release,
@@ -172,9 +172,10 @@ fn call_alias(alias: &CStr, info: &mut CallInfo, frame: &Call) -> Result<(), Bai
     let mut argv = arguments(slice::from_ref(&this), frame);
     frame.call_known(function, &mut argv)?;
     if u32::from(info.op1_type) == IS_VAR {
-        // SAFETY: a C body releasing the receiver (`CallInfo::this`), which
-        // may run destructors.
-        unsafe { trap(swr_zend_zval_release, (&raw mut info.this).cast()) }?;
+        let receiver = (&raw mut info.this).cast();
+        // SAFETY: the receiver's reference (`CallInfo::this`), released once,
+        // inside the trap: its destructors may bail out.
+        swoole_rs_zend::contain_with(|| unsafe { swr_zend_zval_release(receiver) })?;
     }
     Ok(())
 }

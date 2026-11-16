@@ -1,11 +1,12 @@
 //! What a descriptor candidate (`php_swoole_convert_to_fd`) reads from a value,
 //! and the executor state an event loop checks around its wait.
+use crate::helpers::CText;
 use crate::{
     Array, Class, Value, ZStr,
     bailout::{self, Bailout},
     sys::{IS_RESOURCE, php_stream_context, zend_long},
 };
-use std::ffi::{CStr, CString, c_char, c_int, c_void};
+use std::ffi::{CStr, CString, c_int, c_void};
 use std::{marker::PhantomData, ptr, ptr::NonNull};
 
 unsafe extern "C" {
@@ -28,10 +29,11 @@ unsafe extern "C" {
     safe fn swr_zend_stream_select_fd(value: &Value, fd: &mut c_int) -> c_int;
     /// Whether the executor's last error was fatal; if so its message, its
     /// file and its line are written, the strings as PHP keeps them until the
-    /// next error. It reads the executor's globals only.
-    safe fn swr_zend_last_fatal_error(
-        message: &mut *const c_char,
-        file: &mut *const c_char,
+    /// next error. It reads the executor's globals only. Private: only
+    /// [`fatal_parts`] calls it, and lends the strings no longer than its call.
+    safe fn swr_zend_last_fatal_error<'a>(
+        message: &mut Option<CText<'a>>,
+        file: &mut Option<CText<'a>>,
         line: &mut c_int,
     ) -> bool;
     /// An ext/sockets `Socket`'s descriptor, with `closed` set when it was
@@ -138,17 +140,20 @@ impl Value {
     }
 }
 
-/// The executor's last error, when it was fatal: where PHP keeps its message
-/// and file until the next error, and its line.
-fn fatal_parts() -> Option<([*const c_char; 2], c_int)> {
-    let (mut message, mut file, mut line) = (ptr::null(), ptr::null(), 0);
-    swr_zend_last_fatal_error(&mut message, &mut file, &mut line).then_some(([message, file], line))
+/// `f` of the executor's last error, when it was fatal: its message and file,
+/// which PHP keeps until the next error, and its line.
+fn fatal_parts<R>(f: impl FnOnce([&CStr; 2], c_int) -> R) -> Option<R> {
+    let (mut message, mut file, mut line) = (None, None, 0);
+    if !swr_zend_last_fatal_error(&mut message, &mut file, &mut line) {
+        return None;
+    }
+    Some(f([message?.get(), file?.get()], line))
 }
 
 /// `php_swoole_is_fatal_error()`: the last error was fatal.
 #[must_use]
 pub fn last_fatal_error() -> bool {
-    fatal_parts().is_some()
+    fatal_parts(|_, _| ()).is_some()
 }
 
 /// A fatal error's message, file and line.
@@ -162,13 +167,9 @@ pub struct FatalError {
 /// the next error.
 #[must_use]
 pub fn fatal_error() -> Option<FatalError> {
-    let (texts, line) = fatal_parts()?;
-    // SAFETY: a fatal error's NUL-terminated message, then its file, each live
-    // until the next error.
-    let [message, file] = texts.map(|text| unsafe { CStr::from_ptr(text) }.to_owned());
-    Some(FatalError {
-        message,
-        file,
+    fatal_parts(|[message, file], line| FatalError {
+        message: message.to_owned(),
+        file: file.to_owned(),
         line,
     })
 }
@@ -217,23 +218,40 @@ pub fn contain<T: Copy>(body: fn() -> T) -> Result<T, Bailout> {
 /// # Errors
 /// `body` bailed out.
 pub fn contain_with<F: FnOnce()>(body: F) -> Result<(), Bailout> {
-    /// Takes and runs the closure: a bailout leaves the slot empty, so nothing
-    /// is dropped twice.
-    unsafe extern "C" fn run<F: FnOnce()>(slot: *mut c_void) {
-        // SAFETY: `contain_with`'s live slot, which it lends for this call only.
-        let body = unsafe { &mut *slot.cast::<Option<F>>() }.take();
-        if let Some(body) = body {
-            body();
-        }
-    }
     const {
         assert!(
             !std::mem::needs_drop::<F>(),
             "a bailout skips the drop of what the trap holds"
         );
     };
+    // Taken by its one run: a bailout leaves the slot empty, so nothing is
+    // dropped twice.
     let mut slot = Some(body);
-    // SAFETY: `run::<F>` takes the slot of an `F`; `body` needs no drop
-    // (asserted above), and its frames are its caller's (above).
-    unsafe { bailout::trap(run::<F>, (&raw mut slot).cast()) }
+    let mut once = || {
+        if let Some(body) = slot.take() {
+            body();
+        }
+    };
+    let mut body: Body<'_> = &mut once;
+    bailout::trapped(swr_zend_try_body(run, &mut body))
+}
+
+/// A closure [`contain_with`] lends its trap, which C passes on untouched.
+type Body<'a> = &'a mut dyn FnMut();
+
+/// Runs the closure the trap was lent.
+extern "C" fn run(body: &mut Body<'_>) {
+    body();
+}
+
+unsafe extern "C" {
+    /// `body(arg)` inside `zend_try` (nonzero for a bailout): C only passes
+    /// `arg` on, so the closure `body` runs is the one lent with it, and a
+    /// bailout jumps over `run` and what it calls to the shim's `setjmp`.
+    #[link_name = "swr_zend_try"]
+    #[expect(
+        improper_ctypes,
+        reason = "C passes the closure's address on to `run` without reading it"
+    )]
+    safe fn swr_zend_try_body(body: extern "C" fn(&mut Body<'_>), arg: &mut Body<'_>) -> c_int;
 }

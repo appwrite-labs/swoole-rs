@@ -190,7 +190,7 @@ impl Then {
     /// # Safety
     /// `body(arg)` (none: nothing) may run, inside a `zend_try`, during any [`function_call`]
     /// given this: `arg` stays what `body` takes until each returns. As
-    /// [`bailout::trap`]'s body, `body`'s frame owns nothing that needs a drop.
+    /// [`crate::contain_with`]'s body, `body`'s frame owns nothing that needs a drop.
     #[must_use]
     pub const unsafe fn new(body: sys::swr_zend_then, arg: *mut c_void) -> Self {
         Self(body, arg)

@@ -29,7 +29,7 @@ void swr_zend_http_uploads_release(zend_object *object, uint32_t offset);
 void swr_zend_http_uploads_rinit(void);
 void swr_zend_http_uploads_rshutdown(void);
 /* A context's references to its request and response objects, released in
- * that order as a zend::bailout::trap body (a property's __destruct may run):
+ * that order as a zend::host::Then body (a property's __destruct may run):
  * `arg` is a swr_zend_http_release, whose `begun` counts the releases begun,
  * so after a bailout in the request's a second call releases the response,
  * and a call once both have begun does nothing. */
