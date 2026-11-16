@@ -35,7 +35,17 @@ timeout delivery; the native-table test verifies real timer creation and idempot
 cancellation with a manually driven thread timer. Synchronous sends, sync/async
 sendfile and socket/TLS release also use the supplied table; recording cases retain their original send and cleanup traces. The native
 TLS test closes a pending session through the production client and checks that a
-second close does nothing. Remaining receive and host stand-ins are tracked by #4093.
+second close does nothing.
+The client host registers the DNS pool dispatcher alongside framed receives.
+Unit fixtures register their recording dispatcher and retain the original DNS
+success/error traces; the composition root adapts the existing pool ABI, which
+still copies and retains each resolver request until completion.
+Remaining receive and host stand-ins are tracked by #4093.
+
+Proxy handshakes receive the scratch-buffer loan through the same table. The
+native entry uses the real thread buffer; recording tests keep their 64-byte
+fixture and original traces. The synchronous receive loops stay inside the loan,
+and async HTTP requests are still copied before a send can invoke callbacks.
 
 ## network/client.cpp in Rust
 
