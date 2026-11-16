@@ -17,6 +17,8 @@ const WRONG_OPERATION: i32 = swoole_rs_error::ErrorCode::SW_ERROR_WRONG_OPERATIO
 /// A coroutine waiting for a signal (upstream's `SignalListener`).
 struct Listener {
     co: *mut c_void,
+    /// The wait's operations, whose `resume` the signal handler calls.
+    ops: &'static SignalOps,
     signo: Cell<Option<i32>>,
 }
 
@@ -134,7 +136,7 @@ pub extern "C" fn swr_v1_hook_signal_wake(signo: i32) {
     waiting.signo.set(Some(signo));
     // SAFETY: the listener's coroutine, parked in `wait_signal`, which unpublishes
     // every slot before it returns.
-    unsafe { (NATIVE.resume)(waiting.co) };
+    unsafe { (waiting.ops.resume)(waiting.co) };
 }
 
 /// `signo` as upstream's `std::vector<int>` holds it.
@@ -163,10 +165,15 @@ pub fn system_wait_signal(signals: &[c_long], timeout: f64) -> Result<i32, Signa
 }
 
 /// Waits for any of `signals` for up to `timeout` seconds.
-fn wait_signal(signals: &[c_long], timeout: f64, ops: &SignalOps) -> Result<i32, SignalWaitError> {
+fn wait_signal(
+    signals: &[c_long],
+    timeout: f64,
+    ops: &'static SignalOps,
+) -> Result<i32, SignalWaitError> {
     let co = (ops.current)();
     let waiting = Rc::new(Listener {
         co,
+        ops,
         signo: Cell::new(None),
     });
     if (ops.busy)() {
@@ -221,7 +228,6 @@ fn wait_signal(signals: &[c_long], timeout: f64, ops: &SignalOps) -> Result<i32,
 
 /// System's signal operations: registration through the signal table (on the loop's
 /// thread under thread contexts), the reactor's exit condition and the coroutine.
-#[cfg(not(test))]
 static NATIVE: SignalOps = SignalOps {
     current: crate::wait_event::native::current,
     busy: native::busy,
@@ -231,11 +237,6 @@ static NATIVE: SignalOps = SignalOps {
     resume: swoole_rs_coroutine::resume,
 };
 
-/// The unit tests link no signal table: theirs is the fake.
-#[cfg(test)]
-static NATIVE: SignalOps = tests::OPS;
-
-#[cfg(not(test))]
 mod native {
     use super::{Previous, Records};
     use core::ffi::c_int;
@@ -395,8 +396,6 @@ mod tests {
         log("resume".into());
     }
 
-    pub(super) const OPS: SignalOps = ops(idle, timed_out);
-
     const fn ops(busy_check: fn() -> bool, park: fn(f64) -> bool) -> SignalOps {
         SignalOps {
             current,
@@ -417,7 +416,7 @@ mod tests {
         last_error: i32,
     }
 
-    fn wait(signals: &[i32], ops: &SignalOps) -> (Signalled, Vec<String>) {
+    fn wait(signals: &[i32], ops: &'static SignalOps) -> (Signalled, Vec<String>) {
         LOG.with_borrow_mut(Vec::clear);
         let signals: Vec<c_long> = signals.iter().map(|&signo| signo.into()).collect();
         let result = match wait_signal(&signals, 1.0, ops) {
@@ -445,7 +444,7 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (result, log) = wait(
             &[libc::SIGUSR1, libc::SIGUSR2, libc::SIGUSR1],
-            &ops(idle, signalled),
+            &const { ops(idle, signalled) },
         );
         assert_eq!(
             result,
@@ -467,22 +466,31 @@ mod tests {
         assert_eq!(log, expected);
         assert!(LISTENERS.iter().all(|slot| slot.load(Relaxed).is_null()));
 
-        let (result, _) = wait(&[libc::SIGUSR1], &ops(idle, timed_out));
+        let (result, _) = wait(&[libc::SIGUSR1], &const { ops(idle, timed_out) });
         assert_eq!(result.signo, -1);
         assert_eq!(
-            wait(&[libc::SIGUSR1], &ops(busy, timed_out)).0.last_error,
+            wait(&[libc::SIGUSR1], &const { ops(busy, timed_out) })
+                .0
+                .last_error,
             libc::EBUSY
         );
         assert_eq!(
-            wait(&[libc::SIGCHLD], &ops(idle, timed_out)).0.last_error,
+            wait(&[libc::SIGCHLD], &const { ops(idle, timed_out) })
+                .0
+                .last_error,
             libc::EINVAL
         );
         assert_eq!(
-            wait(&[SIGNO_MAX], &ops(idle, timed_out)).0.last_error,
+            wait(&[SIGNO_MAX], &const { ops(idle, timed_out) })
+                .0
+                .last_error,
             libc::EINVAL
         );
         // An invalid signal anywhere in the list registers none of them.
-        let (result, log) = wait(&[libc::SIGUSR1, libc::SIGCHLD], &ops(idle, timed_out));
+        let (result, log) = wait(
+            &[libc::SIGUSR1, libc::SIGCHLD],
+            &const { ops(idle, timed_out) },
+        );
         assert_eq!(result.last_error, libc::EINVAL);
         assert_eq!(log, Vec::<String>::new());
     }
@@ -492,11 +500,13 @@ mod tests {
         let _serial = SERIAL
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let ops = SignalOps {
-            listen: unreachable_loop,
-            ..ops(idle, signalled)
+        let ops = &const {
+            SignalOps {
+                listen: unreachable_loop,
+                ..ops(idle, signalled)
+            }
         };
-        let (result, log) = wait(&[libc::SIGUSR1, libc::SIGUSR2], &ops);
+        let (result, log) = wait(&[libc::SIGUSR1, libc::SIGUSR2], ops);
         assert_eq!(
             result,
             Signalled {
@@ -514,12 +524,14 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         QUEUED.with_borrow_mut(Vec::clear);
-        let ops = SignalOps {
-            listen: deferred,
-            ..ops(idle, timed_out)
+        let ops = &const {
+            SignalOps {
+                listen: deferred,
+                ..ops(idle, timed_out)
+            }
         };
         let (one, two) = (libc::SIGUSR1, libc::SIGUSR2);
-        let (result, log) = wait(&[one, two], &ops);
+        let (result, log) = wait(&[one, two], ops);
         assert_eq!(result.signo, -1);
         let expected = [
             format!("queued {one}"),

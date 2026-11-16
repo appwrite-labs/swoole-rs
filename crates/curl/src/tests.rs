@@ -1,5 +1,5 @@
 use super::*;
-use std::{ffi::CString, net::TcpListener};
+use std::{cell::RefCell, ffi::CString, net::TcpListener};
 use swoole_rs_curl_sys::{CURLOPT_URL, curl_easy_cleanup, curl_easy_init};
 
 thread_local! {
@@ -209,14 +209,18 @@ fn transfer() -> Transfer {
     assert_eq!(multi.add_handle(unsafe { &*handle }), CURLM_OK, "added");
     for _ in 0..100 {
         assert_eq!(multi.perform(), CURLM_OK, "performed");
-        if !multi.sockets.borrow().is_empty() {
+        if !with(&multi.sockets, |sockets| sockets.is_empty()) {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
         multi.timer_callback.set(true);
     }
     assert_eq!(swr_v1_curl_multi_running(multi), 1, "running");
-    assert_eq!(multi.sockets.borrow().len(), 1, "one socket");
+    assert_eq!(
+        with(&multi.sockets, |sockets| sockets.len()),
+        1,
+        "one socket"
+    );
     assert!(
         take().iter().any(|entry| entry.starts_with("new ")),
         "made a reactor socket"
@@ -240,7 +244,10 @@ impl Transfer {
             take().contains(&"free".to_string()),
             "socket freed with the transfer"
         );
-        assert!(self.multi.sockets.borrow().is_empty(), "no sockets");
+        assert!(
+            with(&self.multi.sockets, |sockets| sockets.is_empty()),
+            "no sockets"
+        );
         assert_eq!(self.multi.ready(), 0, "no active socket");
         free(self.multi);
         close(self.cp);
@@ -256,7 +263,9 @@ fn perform_registers_the_transfer_socket_and_removal_frees_it() {
 fn a_waiterless_socket_event_leaves_the_reactor() {
     let transfer = transfer();
     let multi = transfer.multi;
-    let socket = Rc::as_ptr(multi.sockets.borrow().values().next().unwrap()).cast_mut();
+    let socket = with(&multi.sockets, |sockets| {
+        Rc::as_ptr(sockets.values().next().unwrap()).cast_mut()
+    });
     socket_event(unsafe { &*socket }, CURL_CSELECT_IN);
     assert_eq!(take(), ["del"], "no waiter: out of the reactor");
     multi.selector_prepare();

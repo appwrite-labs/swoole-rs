@@ -2434,6 +2434,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no mmap")]
     fn create_makes_a_pipe_per_worker_and_sets_the_defaults() {
         struct PipeOwner(std::rc::Rc<std::cell::Cell<usize>>);
         impl Drop for PipeOwner {
@@ -2473,6 +2474,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no mmap")]
     fn create_stops_at_the_first_pipe_that_fails() {
         let mut fixture = Fixture::new(3);
         let mut script = Script::default();
@@ -2490,6 +2492,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no mmap")]
     fn an_unknown_ipc_mode_is_none() {
         let mut fixture = Fixture::new(1);
         let mut pool = fixture.pool(Script::default());
@@ -2571,6 +2574,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no mmap")]
     fn detach_needs_a_running_pool_with_a_message_box() {
         let mut fixture = Fixture::new(0);
         let mut pool = fixture.pool(Script::default());
@@ -2624,6 +2628,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri has no mmap")]
     fn push_message_needs_a_message_box_then_wakes_the_master() {
         let mut fixture = Fixture::new(0);
         let mut pool = fixture.pool(Script::default());

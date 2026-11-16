@@ -693,7 +693,7 @@ pub fn pool_ipc_free(ipc: PoolIpc, close: impl FnOnce(*mut c_void)) {
         && !stream.socket.is_null()
     {
         if let Some(file) = &stream.file {
-            swoole_rs_corebase::sys::unlink(file);
+            _ = swoole_rs_corebase::sys::unlink(file);
         }
         // The listener, freed once.
         close(stream.socket);

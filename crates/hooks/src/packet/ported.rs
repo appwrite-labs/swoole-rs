@@ -5,7 +5,7 @@
 //! traces, one line per scenario, without their EOF scans and `String::clear`
 //! calls, which Rust performs itself.
 use super::{BufferSync, Failure, ReadBuffer, recv_packet};
-use crate::co_io::{HOST, Host, errno, set_errno};
+use crate::co_io::{Host, TEST_HOST as HOST, errno, set_errno};
 use crate::co_socket::{Co, CoSocket, TestSocket};
 use core::fmt::Write;
 use std::cell::RefCell;
@@ -319,7 +319,7 @@ fn run(scenario: usize) -> String {
     set_errno(0);
     let (result, error) = if available {
         with(|s| s.trace.push("timer:new:0x1p+0".into()));
-        let previous = HOST.replace(&SCRIPTED);
+        let previous = HOST.replace(Some(&SCRIPTED));
         let result = recv_packet(socket.co(), 0.0);
         let error = errno();
         HOST.set(previous);
