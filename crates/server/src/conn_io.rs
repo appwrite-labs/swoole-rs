@@ -170,20 +170,16 @@ fn verify_ssl(
     match certificate(wanted, verify_peer, peer, verified) {
         Certificate::Rejected => return Handshake::Error,
         Certificate::Dispatched => {
-            // The peer's certificate filled this thread's buffer.
-            let (len, data) = with_thread_buffer(|buffer| (buffer.len(), buffer.as_ptr()));
+            // The peer's certificate filled this thread's buffer: a copy, which the
+            // dispatch reads while the buffer is free to lend again.
+            let cert = with_thread_buffer(|buffer| buffer.view().to_vec());
             let info = DataHead {
                 fd: sock.fd().into(),
                 kind: ServerEvent::Connect.code(),
                 reactor_id: reactor.handle().id().cast_signed(),
-                len: u32::try_from(len).unwrap_or(u32::MAX),
                 ..DataHead::default()
             };
-            // SAFETY: the thread's buffer, which lives as long as the thread and holds
-            // the certificate's `len` bytes; the dispatch reads them before anything on
-            // this thread fills the buffer again.
-            let mut task = unsafe { SendData::from_raw(info, data.cast()) };
-            hybrid().factory_dispatch(serv, &mut task);
+            hybrid().factory_dispatch(serv, &mut SendData::new(info, &cert));
         }
         Certificate::None => {
             let on_connect = state.callbacks.slot(CallbackKind::Connect);
