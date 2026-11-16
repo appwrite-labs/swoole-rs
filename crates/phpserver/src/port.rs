@@ -77,16 +77,13 @@ pub(crate) fn callback(
     kind: swoole_rs_ports::PortCallback,
 ) -> Option<Callable> {
     let config = port.config();
-    let property = if crate::server::THREAD.load(Ordering::Relaxed) {
+    if crate::server::THREAD.load(Ordering::Relaxed) {
         let index = usize::from(config.object_id);
-        with_properties(|properties| properties.get(index).and_then(Weak::upgrade))
+        with_properties(|properties| properties.get(index).and_then(Weak::upgrade))?.callback(kind)
     } else {
-        let weak = config.property.replace(None);
-        let property = weak.as_ref().and_then(Weak::upgrade);
-        config.property.set(weak);
-        property.and_then(|property| property.downcast::<PortProperty>().ok())
-    };
-    property?.callback(kind)
+        let property = config.property.get()?.upgrade()?;
+        property.downcast_ref::<PortProperty>()?.callback(kind)
+    }
 }
 
 /// `ServerPortObject` without its `zend_object`: the `ListenPort` and property.
@@ -212,7 +209,8 @@ pub(crate) fn new_object(serv: SharedServer, port: view::Port<'_>) -> Owned {
             }
         });
     } else {
-        config.property.set(Some(property));
+        // Each non-threaded ListenPort gets its object once: during bind, or listen.
+        config.property.get_or_init(|| property);
     }
     zport
 }

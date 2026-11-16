@@ -161,9 +161,10 @@ pub struct PortConfig {
     pub kernel_socket_recv_buffer_size: Setting<c_int>,
     pub kernel_socket_send_buffer_size: Setting<c_int>,
     pub gs: Shared<*mut c_void>,
-    /// The non-threaded PHP Port object's property. The object owns it; dispatch
-    /// upgrades this weak reference only while selecting a callback.
-    pub property: Shared<Option<std::rc::Weak<dyn core::any::Any>>>,
+    /// The non-threaded PHP Port object's property, installed once at bind/listen.
+    /// The object owns it; dispatch upgrades this weak reference only while
+    /// selecting a callback.
+    pub property: std::cell::OnceCell<std::rc::Weak<dyn core::any::Any>>,
     /// `open_websocket_{close,ping,pong}_frame` as bits 0, 1 and 2.
     pub websocket_frames: Setting<u8>,
     /// `websocket_subprotocol`, the handshake's `Sec-WebSocket-Protocol`.
@@ -343,7 +344,7 @@ impl PortConfig {
             kernel_socket_recv_buffer_size: Setting::new(0),
             kernel_socket_send_buffer_size: Setting::new(0),
             gs: Shared::new(core::ptr::null_mut()),
-            property: Shared::new(None),
+            property: std::cell::OnceCell::new(),
             websocket_frames: Setting::new(0),
             websocket_protocol: Published::default(),
             host: Box::default(),
