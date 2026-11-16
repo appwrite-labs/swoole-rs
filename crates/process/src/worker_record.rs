@@ -690,20 +690,26 @@ impl<'a> Worker<'a> {
         self.set_start_time(swoole_rs_corebase::time_now());
         self.set_request_count(0);
         self.set_status(WorkerStatus::Idle);
-        crate::worker_globals::swr_v1_worker_global_set(3, 1);
-        crate::worker_globals::swr_v1_worker_global_set(4, 0);
+        crate::worker_globals::with_globals(|globals| {
+            globals.running.store(true, Ordering::Relaxed);
+            globals.shutdown.store(false, Ordering::Relaxed);
+        });
     }
 
     /// `Worker::shutdown()`: marks the current worker exited.
     pub fn shutdown(self) {
         self.set_status(WorkerStatus::Exit);
-        crate::worker_globals::swr_v1_worker_global_set(4, 1);
+        crate::worker_globals::with_globals(|globals| {
+            globals.shutdown.store(true, Ordering::Relaxed);
+        });
     }
 
     /// `has_exceeded_max_request()`: this thread's request limit against the count.
     #[must_use]
     pub fn exceeded_max_request(self) -> bool {
-        let limit = crate::worker_globals::swr_v1_worker_global_get(5).cast_unsigned();
+        let limit = crate::worker_globals::with_globals(|globals| {
+            u64::from(globals.max_request.load(Ordering::Relaxed))
+        });
         limit != 0 && self.request_count().cast_unsigned() >= limit
     }
 

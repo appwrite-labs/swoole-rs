@@ -160,10 +160,6 @@ void swr_phpstdext_foreach_undef(zend_execute_data *execute_data) {
     Z_FE_ITER_P(result) = (uint32_t) -1;
 }
 
-void swr_phpstdext_pcre_release(void *entry) {
-    php_pcre_pce_decref(entry);
-}
-
 uint8_t swr_phpstdext_pcre_match(void *entry, zend_string *subject, zval *count, zval *result, bool global,
                                  bool flags_passed, int64_t flags, int64_t offset) {
     volatile uint8_t bailed = 0;

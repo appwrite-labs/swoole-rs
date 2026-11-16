@@ -59,9 +59,6 @@ unsafe extern "C" {
     /// `source` holds; what `target` held is left alone, never released.
     #[link_name = "swr_zval_copy"]
     safe fn copy_into(target: &Value, source: &Value);
-    /// Zend's "Cannot add element" error, thrown inside `zend_try`: nonzero
-    /// for a bailout.
-    safe fn swr_zend_try_stdext_cannot_add() -> c_int;
 }
 
 fn leaf(code: impl Into<c_int>) -> Result<(), Bailout> {
@@ -153,9 +150,11 @@ fn assign(op: Op, data: Data, own: Typed, container: &Value, key: &Value) -> Res
         // successful insertion.
         let slot = unsafe { next_index_insert(ht, value.as_ptr()) };
         if slot.is_none() {
-            // Zend's exact occupied-next-index error, below a native trap.
-            leaf(swr_zend_try_stdext_cannot_add())?;
-
+            // Zend's exact occupied-next-index error; this handler's frame is
+            // executing, so Zend only sets the exception.
+            swoole_rs_zend::throw_error(
+                c"Cannot add element to the array as the next element is already occupied",
+            );
             // This assignment failed before publishing its result.
             return data.abandon(op);
         }

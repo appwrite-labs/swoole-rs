@@ -70,9 +70,9 @@ Pages are anonymous mappings, `MAP_SHARED` (shared, as `sw_shm_malloc`'s) or
 `MAP_PRIVATE` (which a fork copies, as it would `sw_malloc`'s memory), rounded up to
 whole system pages, and are unmapped when the pool is.
 
-- alloc writes the 8-byte block header size and returns a zeroed, 8-aligned
-  payload: a mapping starts zeroed and no block is handed out twice, so nothing
-  zeroes it again. Size 0 still consumes a header. A full page starts a new one. A block
+- alloc leaves 8 bytes of room for upstream's block header, which nothing reads,
+  and returns a zeroed, 8-aligned payload: a mapping starts zeroed and no block is
+  handed out twice, so nothing zeroes it again. Size 0 still consumes a header. A full page starts a new one. A block
   that can't fit a page is refused with upstream's warning.
 - Fork: a shared GlobalMemory used in a different PID starts a new pool, which
   keeps the inherited one: its pages and pointers stay valid until the pool is

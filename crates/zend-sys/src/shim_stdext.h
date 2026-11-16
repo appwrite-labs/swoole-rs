@@ -31,5 +31,4 @@ void swr_zend_push_nested_call(zend_execute_data *execute_data, zend_function *f
 void swr_zend_treat_string(char *text, zval *array);
 
 int swr_zend_try_stdext_nogc_dtor(zval *);
-int swr_zend_try_stdext_cannot_add(void);
 #endif
