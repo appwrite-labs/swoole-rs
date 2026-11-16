@@ -35,7 +35,6 @@ sockets = ["swoole-rs-phpswoole?/sockets"]
 
 [dependencies]
 swoole-rs-websocket = { path = "../websocket" }
-swoole-rs-websocket-ffi = { path = "../websocket-ffi", features = ["upstream-symbols"] }
 swoole-rs-buffer = { path = "../buffer", features = ["upstream-symbols"] }
 swoole-rs-timer = { path = "../timer", features = ["upstream-symbols"] }
 swoole-rs-error = { path = "../error" }

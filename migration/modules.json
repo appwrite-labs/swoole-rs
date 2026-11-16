@@ -71,7 +71,6 @@
       ],
       "owned_paths": [
         "crates/websocket/",
-        "crates/websocket-ffi/",
         "native/websocket/",
         "tests/modules/websocket/"
       ],

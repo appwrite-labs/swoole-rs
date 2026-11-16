@@ -35,9 +35,8 @@ same target.
 ## WebSocket kernel (feature value 1)
 
 The WebSocket codec has no C ABI of its own any more: crates/websocket's safe codec
-(`mask`, `encode`, `decode`, `pack_close_frame`) is called from Rust. What
-crates/websocket-ffi still exports is `websocket::get_package_length`, the protocol
-table's length function, under its upstream symbol.
+(`mask`, `encode`, `decode`, `pack_close_frame`) is called from Rust, through
+crates/ports' `frame_api` where it takes upstream's records.
 
 ## Other module contracts
 
