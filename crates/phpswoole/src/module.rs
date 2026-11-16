@@ -18,10 +18,7 @@ use swoole_rs_zend::{
     Call, Class, E_WARNING, Request, Shutdown,
     bailout::{self, Bailout},
     contain_with, report,
-    sys::{
-        HashTable, swr_zend_after_fork, swr_zend_fatal_error, swr_zend_print_stack_trace,
-        zend_class_entry,
-    },
+    sys::{HashTable, swr_zend_after_fork, swr_zend_fatal_error, zend_class_entry},
 };
 
 unsafe extern "C" {
@@ -487,9 +484,12 @@ extern "C" fn php_hooks() {
 
 /// PHP's stack trace, for `SwooleG.print_backtrace`.
 extern "C" fn print_stack_trace() {
-    // SAFETY: installed at MINIT's end, so it runs in a PHP process whose engine
-    // has started; the shim fetches and frees its own backtrace.
-    unsafe { swr_zend_print_stack_trace() };
+    unsafe extern "C" {
+        /// PHP's backtrace, fetched, printed and freed. Only this hook calls
+        /// it, which MINIT's end installs, so the engine has started.
+        safe fn swr_zend_print_stack_trace();
+    }
+    swr_zend_print_stack_trace();
 }
 
 // Declared: crates/ffi depends on this crate, and the rest is C.
