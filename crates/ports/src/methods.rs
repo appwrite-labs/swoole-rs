@@ -1119,7 +1119,7 @@ mod tests {
         // SAFETY: an all-zero record is a closed connection with no object.
         let mut conn: ConnectionRecord = unsafe { std::mem::zeroed() };
         // `request_new`'s boxed request.
-        let request = swoole_rs_http_ffi::HttpRequest::new(None);
+        let request = swoole_rs_http_ffi::HttpRequest::default();
         let slot = swoole_rs_server::Connection::from(&mut conn);
         let held = slot.set_http_request(Box::new(request));
         assert_eq!(slot.http_request(), Some(held));
