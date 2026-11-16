@@ -152,7 +152,7 @@ pub(crate) fn execute_end(reactor: Running<'_>, timed_out: bool) {
         match end {
             End::Call(call) => call(),
             End::Defer => crate::deferred::run_defer(reactor),
-            End::Idle => run_task(reactor.with(|state| state.fields.idle_task.clone())),
+            End::Idle => run_idle(reactor),
             End::Signal => swoole_rs_process::signal::swoole_signal_dispatch(),
             End::TryExit => {
                 if reactor.with(|state| state.fields.wait_exit) && if_exit(reactor) {
@@ -165,6 +165,12 @@ pub(crate) fn execute_end(reactor: Running<'_>, timed_out: bool) {
             }
         }
     }
+}
+
+// Keep the Rc clone out of the end-callback walk so LLVM can unroll its eight slots.
+#[inline(never)]
+fn run_idle(reactor: Running<'_>) {
+    run_task(reactor.with(|state| state.fields.idle_task.clone()));
 }
 
 /// `Swoole\Event::cycle`'s idle or future task, when set, given a reference of its own.
