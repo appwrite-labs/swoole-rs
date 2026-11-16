@@ -96,7 +96,7 @@ mod native {
     }
 
     pub(super) fn sleep(seconds: f64) -> bool {
-        crate::sleep::system_sleep(seconds) == 0
+        crate::sleep::system_sleep(seconds)
     }
 }
 
