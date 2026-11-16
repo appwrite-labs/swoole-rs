@@ -173,6 +173,14 @@ fn int(length: usize) -> c_int {
     c_int::try_from(length).unwrap_or(c_int::MAX)
 }
 
+/// An OpenSSL I/O or handshake call that made no progress: what it returned (0 or
+/// negative) and `SSL_get_error`'s code for that, read straight after the call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SslFailure {
+    pub returned: c_int,
+    pub code: c_int,
+}
+
 /// Clears this thread's OpenSSL error queue.
 pub fn clear_errors() {
     ERR_clear_error();
@@ -266,45 +274,79 @@ impl<'a> Ssl<'a> {
         SSL_get_error(self, result)
     }
 
+    /// The bytes an `SSL_read`, `SSL_write` or `SSL_peek` that returned `n` moved.
+    fn count(self, n: c_int) -> Result<usize, SslFailure> {
+        match usize::try_from(n) {
+            Ok(count) if count > 0 => Ok(count),
+            _ => Err(SslFailure {
+                returned: n,
+                code: self.error(n),
+            }),
+        }
+    }
+
+    /// Whether a handshake step that returned `n` finished.
+    fn step(self, n: c_int) -> Result<(), SslFailure> {
+        if n == 1 {
+            return Ok(());
+        }
+        Err(SslFailure {
+            returned: n,
+            code: self.error(n),
+        })
+    }
+
     /// `SSL_read` into `buffer`, which may be uninitialized: OpenSSL only writes it.
-    #[must_use]
-    pub fn read(self, buffer: &mut [impl ReadSlot]) -> c_int {
+    ///
+    /// # Errors
+    /// Nothing was read.
+    pub fn read(self, buffer: &mut [impl ReadSlot]) -> Result<usize, SslFailure> {
         let length = int(buffer.len());
         // SAFETY: a live SSL, into the buffer's writable bytes.
-        unsafe { SSL_read(self.as_ptr(), buffer.as_mut_ptr().cast(), length) }
+        self.count(unsafe { SSL_read(self.as_ptr(), buffer.as_mut_ptr().cast(), length) })
     }
 
     /// `SSL_write` of `data`.
-    #[must_use]
-    pub fn write(self, data: &[u8]) -> c_int {
+    ///
+    /// # Errors
+    /// Nothing was written.
+    pub fn write(self, data: &[u8]) -> Result<usize, SslFailure> {
         // SAFETY: a live SSL, from the data's readable bytes.
-        unsafe { SSL_write(self.as_ptr(), data.as_ptr().cast(), int(data.len())) }
+        self.count(unsafe { SSL_write(self.as_ptr(), data.as_ptr().cast(), int(data.len())) })
     }
 
     /// `SSL_peek` into `buffer`.
-    #[must_use]
-    pub fn peek(self, buffer: &mut [impl ReadSlot]) -> c_int {
+    ///
+    /// # Errors
+    /// Nothing was peeked.
+    pub fn peek(self, buffer: &mut [impl ReadSlot]) -> Result<usize, SslFailure> {
         let length = int(buffer.len());
         // SAFETY: a live SSL, into the buffer's writable bytes.
-        unsafe { SSL_peek(self.as_ptr(), buffer.as_mut_ptr().cast(), length) }
+        self.count(unsafe { SSL_peek(self.as_ptr(), buffer.as_mut_ptr().cast(), length) })
     }
 
     /// One `SSL_accept` step.
-    #[must_use]
-    pub fn accept(self) -> c_int {
-        SSL_accept(self)
+    ///
+    /// # Errors
+    /// The handshake isn't done.
+    pub fn accept(self) -> Result<(), SslFailure> {
+        self.step(SSL_accept(self))
     }
 
     /// One `SSL_connect` step.
-    #[must_use]
-    pub fn connect(self) -> c_int {
-        SSL_connect(self)
+    ///
+    /// # Errors
+    /// The handshake isn't done.
+    pub fn connect(self) -> Result<(), SslFailure> {
+        self.step(SSL_connect(self))
     }
 
     /// One `SSL_do_handshake` step.
-    #[must_use]
-    pub fn do_handshake(self) -> c_int {
-        SSL_do_handshake(self)
+    ///
+    /// # Errors
+    /// The handshake isn't done.
+    pub fn do_handshake(self) -> Result<(), SslFailure> {
+        self.step(SSL_do_handshake(self))
     }
 
     /// `SSL_shutdown`.
@@ -466,10 +508,20 @@ impl<'a> Ssl<'a> {
         SSL_ctrl(self, SslCtrl::HostName, kind, Some(name.into())) != 0
     }
 
-    /// One `DTLSv1_listen` step, without the peer's address.
-    #[must_use]
-    pub fn dtls_listen(self) -> c_int {
-        DTLSv1_listen(self, None)
+    /// One `DTLSv1_listen` step, without the peer's address: whether a client
+    /// answered the cookie exchange.
+    ///
+    /// # Errors
+    /// The listen failed fatally.
+    pub fn dtls_listen(self) -> Result<bool, SslFailure> {
+        let n = DTLSv1_listen(self, None);
+        if n < 0 {
+            return Err(SslFailure {
+                returned: n,
+                code: self.error(n),
+            });
+        }
+        Ok(n > 0)
     }
 }
 
@@ -499,19 +551,21 @@ impl Bio<'_> {
         BIO_method_type(self) == BIO_TYPE_MEM
     }
 
-    /// `BIO_read` into `buffer`.
+    /// `BIO_read` into `buffer`: the bytes read, or None for none.
     #[must_use]
-    pub fn read(self, buffer: &mut [impl ReadSlot]) -> c_int {
+    pub fn read(self, buffer: &mut [impl ReadSlot]) -> Option<usize> {
         let length = int(buffer.len());
         // SAFETY: a live BIO, into the buffer's writable bytes.
-        unsafe { BIO_read(self.as_ptr(), buffer.as_mut_ptr().cast(), length) }
+        let n = unsafe { BIO_read(self.as_ptr(), buffer.as_mut_ptr().cast(), length) };
+        usize::try_from(n).ok().filter(|&n| n > 0)
     }
 
-    /// `BIO_write` of `data`.
+    /// `BIO_write` of `data`: the bytes written, or None for none.
     #[must_use]
-    pub fn write(self, data: &[u8]) -> c_int {
+    pub fn write(self, data: &[u8]) -> Option<usize> {
         // SAFETY: a live BIO, from the data's readable bytes.
-        unsafe { BIO_write(self.as_ptr(), data.as_ptr().cast(), int(data.len())) }
+        let n = unsafe { BIO_write(self.as_ptr(), data.as_ptr().cast(), int(data.len())) };
+        usize::try_from(n).ok().filter(|&n| n > 0)
     }
 
     /// `BIO_set_write_buffer_size` (`BIO_C_SET_BUFF_SIZE`, 117) of a buffering BIO.
@@ -593,8 +647,11 @@ impl CertRef<'_> {
             return Err(PemError::Write);
         }
         let count = bio.bio().pending().min(buffer.len());
+        if count == 0 {
+            return Ok(0);
+        }
         let read = bio.bio().read(buffer.get_mut(..count).unwrap_or_default());
-        usize::try_from(read).map_err(|_| PemError::Read)
+        read.ok_or(PemError::Read)
     }
 }
 

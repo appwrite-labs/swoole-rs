@@ -113,15 +113,20 @@ impl Sock {
     /// `ssl_handshake()`.
     fn ssl_handshake(&self) -> bool {
         loop {
-            let rc = self
+            // Without a session, OpenSSL's answer is a protocol error.
+            let none = swoole_rs_tls::SslFailure {
+                returned: -1,
+                code: openssl_sys::SSL_ERROR_SSL,
+            };
+            let step = self
                 .ops
                 .tls
                 .ssl
-                .map_or(-1, swoole_rs_tls::Ssl::do_handshake);
-            if rc == 1 {
+                .map_or(Err(none), swoole_rs_tls::Ssl::do_handshake);
+            let Err(failure) = step else {
                 return true;
-            }
-            if !self.ops.tls.perform(rc, c"ssl_handshake") {
+            };
+            if !self.ops.tls.perform(failure, c"ssl_handshake") {
                 return false;
             }
         }

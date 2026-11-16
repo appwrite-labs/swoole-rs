@@ -367,7 +367,10 @@ fn tls_peek<S: ReadSlot>(socket: Socket<'_>, mut buffer: Fill<'_, S>) -> isize {
     let Some(ssl) = Ssl::of(socket) else {
         return -1;
     };
-    ssl.peek(buffer.slots()) as isize
+    match ssl.peek(buffer.slots()) {
+        Ok(count) => isize::try_from(count).unwrap_or(isize::MAX),
+        Err(failure) => failure.returned as isize,
+    }
 }
 
 /// `ssize_t Socket::recv(void *, size_t, int)` into the bytes `buffer` lends: a slice's

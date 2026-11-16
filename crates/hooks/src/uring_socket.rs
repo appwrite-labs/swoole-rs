@@ -514,16 +514,15 @@ fn handshake_step(socket: Co, ops: &UringSocketOps<'_>) -> crate::connect::Step 
     let Some(session) = ops.tls.ssl else {
         return Step::Failed;
     };
-    let rc = session.do_handshake();
-    if rc == 1 {
+    let Err(failure) = session.do_handshake() else {
         return Step::Ready;
-    }
+    };
     let function = if socket.ssl_is_server() {
         c"ssl_accept"
     } else {
         c"ssl_connect"
     };
-    if ops.tls.perform(rc, function) {
+    if ops.tls.perform(failure, function) {
         Step::Again
     } else {
         Step::Failed
