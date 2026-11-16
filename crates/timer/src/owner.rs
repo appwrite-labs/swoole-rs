@@ -13,7 +13,6 @@ use std::ffi::{CStr, c_int, c_long, c_void};
 use std::marker::PhantomData;
 use swoole_rs_corebase::CCast;
 use swoole_rs_corebase::{log, swr_v1_core_set_signal_alarm, thread_reactor};
-use swoole_rs_reactor::ReactorPrepared;
 use swoole_rs_reactor::{
     event_api, swr_v1_event_set_end_callback, swr_v1_event_set_exit_condition,
 };
@@ -391,13 +390,9 @@ impl Owner {
     fn set(&self, msec: i64) {
         match self.backend.get() {
             MANUAL => {}
-            REACTOR => {
-                // The live reactor the backend attached to.
-                let fields = ReactorPrepared::of(self.reactor.get()).fields;
-                let msec = msec.c_cast::<i32>();
-                // SAFETY: its live fields.
-                unsafe { (*fields).timeout_msec = msec };
-            }
+            // The thread's reactor is the one the backend attached to: its destroy
+            // callback frees this timer before the thread's reactor is cleared.
+            REACTOR => event_api::swoole_event_set_timeout_msec(msec.c_cast::<i32>()),
             _ => {
                 swr_v1_timer_system_set(msec);
             }

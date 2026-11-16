@@ -276,6 +276,12 @@ pub fn swoole_event_set_running(running: bool) {
     field_mut(|fields| fields.running = running);
 }
 
+/// `sw_reactor()->timeout_msec = msec`, when there is a reactor.
+#[inline]
+pub fn swoole_event_set_timeout_msec(msec: c_int) {
+    field_mut(|fields| fields.timeout_msec = msec);
+}
+
 /// `sw_reactor()->once = once`, when there is a reactor.
 pub fn swoole_event_set_once(once: bool) {
     field_mut(|fields| fields.once = once);
