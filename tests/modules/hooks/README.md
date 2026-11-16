@@ -95,8 +95,8 @@ ipv6.sjtu.edu.cn, www.gov.cn), so `hooks-system-rust` excludes them as it does `
 `core-tests/src/coroutine/socket.cpp` is Rust: `system/src/socket.rs` holds its 54
 TESTs, one function each (`coroutine_socket.<name>`, upstream's names, inputs, ports
 and expected values), run by `hooks-system-rust`. A `Socket` is the hooks crate's
-`Co`, whose methods the cases call: made by `co_socket::make` and deleted by
-`swr_v1_hook_co_socket_free`, the vectored members over an `IOVector` owner
+`Co`, whose methods the cases call: made by `co_socket::make_quiet` and deleted
+by dropping its `OwnedCo`, the vectored members over an `IOVector` owner
 `swoole_rs_reactor::ReactorIov::new` makes, and its fields
 through the record layout (`swoole_rs_co_socket.h`). `enable_ssl_encrypt` and the
 `set_ssl_*` setters write the `SSLContext` owner (`swr_v1_tls_owner_new`,
