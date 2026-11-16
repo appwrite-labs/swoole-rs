@@ -253,7 +253,7 @@ pub(crate) fn send(serv: view::Server<'_>, to: Pipe, send: &mut SendData) -> boo
                 return false;
             };
             let head = swoole_rs_process::process_pool::head_view(send.info());
-            let sent = swoole_rs_process::methods::send_pipe_message(target, head, PIPE_MASTER);
+            let sent = swoole_rs_process::methods::send_pipe_message(target, &head, PIPE_MASTER);
             sent.is_some_and(|sent| sent > 0)
         }
     }
