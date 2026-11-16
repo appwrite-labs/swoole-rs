@@ -567,7 +567,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn dispatch_converts_stream_events_to_their_session() {
         let (live, _clients) = accepted();
         let (serv, conn) = (live.server(), session(&live, 1));
@@ -605,7 +605,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn base_mode_receives_without_the_bus() {
         use swoole_rs_process::worker_record::WorkerRecord;
         let (live, _clients) = accepted();
@@ -662,7 +662,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn notify_converts_to_the_session() {
         let (live, _clients) = accepted();
         let (serv, conn) = (live.server(), session(&live, 1));
@@ -679,7 +679,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn end_forwards_foreign_sessions() {
         let (live, _clients) = accepted();
         let (serv, conn) = (live.server(), session(&live, 1));
@@ -694,7 +694,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn end_closes_once_with_the_callback() {
         let (live, _clients) = accepted();
         let serv = live.server();
@@ -716,7 +716,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn end_queues_the_close_behind_output() {
         let (live, _clients) = accepted();
         let (serv, conn) = (live.server(), session(&live, 1));
@@ -738,7 +738,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn finish_sends_here_or_forwards() {
         use std::io::Read;
         let (live, [mut client, _]) = accepted();
@@ -762,7 +762,7 @@ mod tests {
     /// `$server->exist()` and `close()` use, and writes through its own
     /// reference to the slot; the caller's write after it is still valid.
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn on_close_reaches_the_record_by_session() {
         let (live, _clients) = accepted();
         let (state, conn) = (live.state(), session(&live, 1));

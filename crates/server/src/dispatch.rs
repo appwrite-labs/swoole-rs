@@ -538,7 +538,7 @@ mod tests {
     const UNLISTED: c_int = 5000;
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn schedule_by_mode() {
         assert_eq!(
             Workers::new(4, DispatchMode::FdMod).schedule(10),
@@ -605,7 +605,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn a_dispatch_function_comes_first_unless_it_falls_back() {
         let w = Workers::new(4, DispatchMode::FdMod);
         let callbacks = &w.live.state().callbacks;
@@ -616,7 +616,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn a_datagram_hashes_its_sender() {
         let w = Workers::new(4, DispatchMode::IpMod);
         // SAFETY: a plain record, for which zero is valid.
@@ -639,7 +639,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn worker_side_sends() {
         use crate::hybrid::tests::{Call, calls};
         let live = LiveServer::new();
@@ -656,7 +656,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn idle_and_tasking_counts() {
         let w = Workers::new(3, DispatchMode::FdMod);
         w.set(&[0, 2], WorkerStatus::Idle);
@@ -671,7 +671,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn sendfile_checks() {
         use crate::hybrid::tests::{Call, calls};
         let live = LiveServer::new();
@@ -728,7 +728,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn add_port_checks_then_keeps_the_port() {
         fake_port_methods();
         let live = LiveServer::new();
@@ -764,7 +764,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "a live reactor takes Miri ~40 s a test")]
     fn systemd_sockets_import_from_listen_fds_start() {
         fake_port_methods();
         let live = LiveServer::new();

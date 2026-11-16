@@ -497,7 +497,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn a_missing_session_fails() {
         let a = Accepted::new();
         assert_eq!(a.send(ServerEvent::SendData, 9, b"data"), SW_ERR);
@@ -505,7 +504,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn overflow_outside_process_mode_refuses() {
         let mut a = Accepted::new();
         a.conn().set_overflow(true);
@@ -526,7 +524,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn pause_and_resume_move_the_read_event() {
         let a = Accepted::new();
         let events = || {
@@ -551,7 +548,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn a_direct_send_reaches_the_peer() {
         let mut a = Accepted::new();
         assert_eq!(a.send(ServerEvent::SendData, 1, b"hello"), SW_OK);
@@ -561,7 +557,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn parts_go_out_in_one_write_where_the_worker_writes_to_the_socket() {
         let mut a = Accepted::new();
         assert_eq!(
@@ -581,7 +576,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
+    #[cfg_attr(miri, ignore = "building a 16 MiB body takes Miri over half an hour")]
     fn parts_the_socket_does_not_take_are_queued_in_order() {
         let mut a = Accepted::new();
         a.live.config_mut().mode_ = Mode::Base;
@@ -604,7 +599,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn without_direct_send_the_data_is_buffered_for_the_write_event() {
         let a = Accepted::new();
         a.sock().edit(|s| s.direct_send = false);
@@ -625,7 +619,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn a_send_made_first_is_not_repeated() {
         let mut a = Accepted::new();
         let data = b"0123456789";
@@ -647,7 +640,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn a_full_buffer_overflows_and_the_watermark_notifies() {
         extern "C" fn full(_: crate::callbacks::Ctx, _: Server<'_>, _: &DataHead) {}
         let a = Accepted::new();
@@ -685,7 +677,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn close_closes_now_or_queues_behind_the_output() {
         let a = Accepted::new();
         a.closes();
@@ -702,7 +693,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn a_forced_close_skips_the_output() {
         let a = Accepted::new();
         a.closes();
@@ -714,7 +704,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn files_are_queued_never_sent_directly() {
         let task = |name: &[u8]| {
             let mut task = 0i64.to_ne_bytes().to_vec();
@@ -734,7 +723,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll for the live reactor")]
     fn send_goes_through_the_factory_in_process_mode_and_here_otherwise() {
         let mut a = Accepted::new();
         let counters = |a: &Accepted| {

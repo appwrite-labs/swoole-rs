@@ -562,7 +562,7 @@ mod tests {
     /// The pinned loops' before/begin/wait/dispatch/end frame, `once`, `running` and the
     /// deferred zero timeout, over the actual kernel wait of poll and the native backend.
     #[test]
-    #[cfg_attr(miri, ignore = "Miri has no epoll_create")]
+    #[cfg_attr(miri, ignore = "Miri's epoll has no EPOLLONESHOT")]
     fn whole_wait_runs_upstreams_frame_on_each_backend() {
         #[cfg(target_os = "linux")]
         let native_kind = 1;

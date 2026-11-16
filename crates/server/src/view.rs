@@ -66,10 +66,11 @@ impl ServerObject {
 
 #[cfg(test)]
 impl Fields {
-    /// A head over `state`, as a server's own: a test's server.
-    pub(crate) fn of(state: &ServerState) -> Self {
+    /// A head over `state`, as a server's own: a test's server. It keeps the
+    /// `Rc`'s own pointer, as [`ServerObject::new`] keeps the `Arc`'s.
+    pub(crate) fn of(state: &std::rc::Rc<ServerState>) -> Self {
         Self {
-            state,
+            state: std::rc::Rc::as_ptr(state),
             config: state.config(),
         }
     }
