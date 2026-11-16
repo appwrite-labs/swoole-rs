@@ -17,20 +17,20 @@ use swoole_rs_corebase::CCast;
 
 /// A coroutine's context record, which follows its state in its [`Native`]
 /// record and never moves once switched in, so the switch hands its stack the
-/// coroutine's `Co`. Both stacks reach it through that handle, and neither holds a
-/// mutable borrow across a switch. Dropping it frees its stack, or joins its
-/// thread, so it is dropped only once its coroutine ended (or never ran).
+/// coroutine's `Co`. Both stacks reach it through that handle and only share it: what
+/// a switch changes sits in cells. Dropping it frees its stack, or joins its thread,
+/// so it is dropped only once its coroutine ended (or never ran).
 pub struct Context {
     /// The suspended context.
-    fctx: *mut c_void,
-    swap_fctx: *mut c_void,
+    fctx: Cell<*mut c_void>,
+    swap_fctx: Cell<*mut c_void>,
     /// The stack it runs on and its flags: none under [`THREAD`].
     stack: Stack,
     /// What the first switch in runs: none under [`THREAD`], or once it started.
-    entry: Option<Entry>,
+    entry: Cell<Option<Entry>>,
     /// The stack that last switched in, which `swap_out` returns to (`AddressSanitizer` only).
-    asan_bottom: *const c_void,
-    asan_size: usize,
+    asan_bottom: Cell<*const c_void>,
+    asan_size: Cell<usize>,
     /// The context's `ThreadSanitizer` fiber, and the one that last switched it in.
     #[cfg(tsan)]
     tsan_fiber: Option<tsan::Fiber>,
@@ -66,12 +66,12 @@ impl Context {
     /// thread failed to start.
     pub fn new(stack_size: usize, flags: u32, entry: Entry) -> Result<Self, Unmade> {
         let mut context = Self {
-            fctx: ptr::null_mut(),
-            swap_fctx: ptr::null_mut(),
+            fctx: Cell::new(ptr::null_mut()),
+            swap_fctx: Cell::new(ptr::null_mut()),
             stack: Stack::none(flags),
-            entry: None,
-            asan_bottom: ptr::null(),
-            asan_size: 0,
+            entry: Cell::new(None),
+            asan_bottom: Cell::new(ptr::null()),
+            asan_size: Cell::new(0),
             #[cfg(tsan)]
             tsan_fiber: tsan::create(),
             #[cfg(tsan)]
@@ -88,9 +88,11 @@ impl Context {
         let stack = Stack::alloc(stack_size, flags).ok_or(Unmade::NoStack)?;
         let top = stack.base().wrapping_add(size);
         // SAFETY: a fresh `size`-byte stack, which boost builds the context down from.
-        context.fctx = unsafe { make_fcontext(top.cast(), size, first_frame) };
+        context
+            .fctx
+            .set(unsafe { make_fcontext(top.cast(), size, first_frame) });
         context.stack = stack;
-        context.entry = Some(entry);
+        context.entry.set(Some(entry));
         Ok(context)
     }
 }
@@ -231,23 +233,16 @@ const _: () = assert!(
 
 impl Co {
     /// Its context, which follows it in the [`Native`] record facade.rs boxed for it.
-    fn context(self) -> *mut Context {
+    fn context(self) -> *const Context {
         self.ptr().wrapping_add(1).cast()
     }
 
     /// Its context, shared for `f`. Both stacks (or threads) take only shared borrows
-    /// of it while `f` switches away, so `f` may.
+    /// of it, so `f` may switch away.
     fn read_context<R>(self, f: impl FnOnce(&Context) -> R) -> R {
         // SAFETY: only the scheduler's hooks below and the first frame reach this, with
         // a live coroutine that facade.rs boxed in a `Native`; shared, until `f` returns.
         f(unsafe { &*self.context() })
-    }
-
-    /// Its context, borrowed for `f`, which does not switch.
-    fn with_context<R>(self, f: impl FnOnce(&mut Context) -> R) -> R {
-        // SAFETY: as `read_context`, on the stack that owns the record between switches;
-        // the borrow ends with `f`.
-        f(unsafe { &mut *self.context() })
     }
 }
 
@@ -281,7 +276,7 @@ pub(crate) fn swap_in(co: Co) -> bool {
                 fiber.to().switch();
             }
         }
-        Ok(ctx.fctx)
+        Ok(ctx.fctx.get())
     });
     let fctx = match fctx {
         Ok(fctx) => fctx,
@@ -290,8 +285,8 @@ pub(crate) fn swap_in(co: Co) -> bool {
     // SAFETY: `fctx` is the context's suspended state; it resumes with its coroutine.
     let transfer = unsafe { jump_fcontext(fctx, co) };
     // The context switched back out, so this stack owns the record again.
-    co.with_context(|ctx| {
-        ctx.fctx = transfer.fctx;
+    co.read_context(|ctx| {
+        ctx.fctx.set(transfer.fctx);
         if let Some((_, finish)) = asan {
             // Completes the switch back that `swap_out` started.
             finish(fake_stack, None, None);
@@ -315,14 +310,14 @@ pub(crate) fn swap_out(co: Co) {
             // A finished context never resumes, so ASan may free its fake stack now.
             let save = (!ctx.end.get()).then_some(&mut fake_stack);
             // Announces the switch back to the stack that switched in.
-            start(save, ctx.asan_bottom, ctx.asan_size);
+            start(save, ctx.asan_bottom.get(), ctx.asan_size.get());
         }
         // The fiber that switched this context in, which runs from the jump on.
         #[cfg(tsan)]
         if let Some(caller) = ctx.tsan_caller.get() {
             caller.switch();
         }
-        Some(ctx.swap_fctx)
+        Some(ctx.swap_fctx.get())
     });
     let Some(swap_fctx) = swap_fctx else {
         return;
@@ -330,24 +325,23 @@ pub(crate) fn swap_out(co: Co) {
     // SAFETY: `swap_fctx` is the suspended caller of `swap_in`.
     let transfer = unsafe { jump_fcontext(swap_fctx, co) };
     // Switched back in, so this stack owns the record again.
-    co.with_context(|ctx| switched_in(ctx, transfer.fctx, asan, fake_stack));
+    co.read_context(|ctx| switched_in(ctx, transfer.fctx, asan, fake_stack));
 }
 
 /// Records the stack that switched in and completes the sanitizer's switch.
 fn switched_in(
-    ctx: &mut Context,
+    ctx: &Context,
     swap_fctx: *mut c_void,
     asan: Option<(StartSwitch, FinishSwitch)>,
     fake_stack: FakeStack,
 ) {
-    ctx.swap_fctx = swap_fctx;
+    ctx.swap_fctx.set(swap_fctx);
     if let Some((_, finish)) = asan {
+        let (mut bottom, mut size) = (ctx.asan_bottom.get(), ctx.asan_size.get());
         // `fake_stack` is what this stack's last start saved (none on a first switch).
-        finish(
-            fake_stack,
-            Some(&mut ctx.asan_bottom),
-            Some(&mut ctx.asan_size),
-        );
+        finish(fake_stack, Some(&mut bottom), Some(&mut size));
+        ctx.asan_bottom.set(bottom);
+        ctx.asan_size.set(size);
     }
 }
 
@@ -355,7 +349,7 @@ fn switched_in(
 /// `swap_in` jumped here with its coroutine, which now runs.
 extern "C" fn first_frame(transfer: Transfer) {
     let co = transfer.data;
-    let entry = co.with_context(|record| {
+    let entry = co.read_context(|record| {
         switched_in(record, transfer.fctx, asan(), FakeStack::NONE);
         record.entry.take()
     });
