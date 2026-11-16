@@ -5,7 +5,6 @@ use swoole_rs_reactor::Events;
 const BIG: usize = 65536;
 
 /// A view of the native read String, refreshed after every resize.
-#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ReadBuffer {
     pub length: usize,
