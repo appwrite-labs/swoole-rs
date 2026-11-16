@@ -1,0 +1,117 @@
+name: Release
+# A `v*` tag builds swoole.so for PHP 8.2 to 8.5, thread-safe or not, glibc and musl, x86-64
+# and arm64, and publishes them as a GitHub release with checksums and build provenance.
+# Each binary is built by tools/release.sh inside the official php image it targets (Debian
+# 12, the oldest glibc those images still ship, and Alpine) and must then load in a clean
+# copy of that image, reporting the pinned upstream version and this commit's swoole-rs
+# version. Run by hand, or by a PR that changes this workflow or release.sh, it is a dry
+# run: everything is built, checked and uploaded as workflow artifacts; nothing is published.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+  pull_request:
+    paths: [.github/workflows/release.yml, tools/release.sh]
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: PHP ${{ matrix.php }} ${{ matrix.threads }} ${{ matrix.distro }} ${{ matrix.arch }}
+    # gcrunner has no arm64 shape; GitHub's arm64 runner has 4 cores where `build` has 8.
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || format('gcrunner={0}/runner=build', github.run_id) }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.2', '8.3', '8.4', '8.5']
+        threads: [cli, zts]
+        distro: [bookworm, alpine]
+        arch: [x64, arm64]
+    env:
+      PHP: php:${{ matrix.php }}-${{ matrix.threads }}
+      DISTRO: ${{ matrix.distro }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # A tag names the workspace version it releases; a dry run takes the workspace's.
+      - name: Read the version
+        run: |
+          version=v$(python3 -c "import tomllib; print(tomllib.load(open('Cargo.toml', 'rb'))['workspace']['package']['version'])")
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME, but Cargo.toml's workspace version is $version"; exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: Build
+        run: docker run --rm -v "$PWD:/work" -w /work "$PHP-$DISTRO" tools/release.sh "$VERSION"
+      # In images that never saw the build's packages: the one it was built in and, for
+      # glibc, the series' current Debian.
+      - name: Load in a clean PHP
+        run: |
+          upstream=$(python3 -c 'from tools.build_upstream import VERSION; print(VERSION.removeprefix("v"))')
+          images="$PHP-$DISTRO"
+          if [ "$DISTRO" = bookworm ]; then images="$images $PHP"; fi
+          for image in $images; do
+            docker run --rm -v "$PWD/dist:/dist:ro" "$image" sh -c 'php -d extension="$(ls /dist/*.so)" --ri swoole' | tee info.txt
+            grep -qx "Version => $upstream" info.txt
+            grep -qxF "swoole-rs => ${VERSION#v} ($(git rev-parse --short=12 HEAD))" info.txt
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          retention-days: ${{ github.event_name == 'pull_request' && 1 || 0 }}
+          name: swoole-${{ matrix.php }}-${{ matrix.threads }}-${{ matrix.distro }}-${{ matrix.arch }}
+          path: dist/
+          if-no-files-found: error
+
+  # Every binary or no release: a target that failed to build or load publishes nothing.
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: swoole-*
+          path: dist
+          merge-multiple: true
+      - name: Add the licences and checksums
+        run: |
+          cp LICENSE NOTICE dist/
+          cp native/swoole-src/thirdparty/LICENSE dist/LICENSE-PHP
+          cd dist
+          set -- ./*.so
+          [ $# = 32 ]
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          retention-days: ${{ github.event_name == 'pull_request' && 1 || 0 }}
+          name: release
+          path: dist/
+      - if: github.ref_type == 'tag'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+        with:
+          subject-path: dist/*.so
+      # A 0.x version is always a pre-release, as is one with a suffix (v1.0.0-rc.1).
+      - name: Publish
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          case $GITHUB_REF_NAME in v0.*|*-*) prerelease=true;; *) prerelease=false;; esac
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --prerelease=$prerelease --generate-notes --notes "$(cat <<'NOTES'
+          Prebuilt `swoole.so` for PHP 8.2 to 8.5 on Linux, x86-64 and arm64. Pick the file for your PHP series, `nts` or `zts`, and `gnu` (glibc 2.36 or newer; built on Debian 12) or `musl` (Alpine), check it against `SHA256SUMS`, and load it with `extension=`.
+
+          Built in: OpenSSL (TLS and DTLS), HTTP/2, Brotli, zstd and zlib. The `zts` builds add `Swoole\Thread`.
+          Not built in, so that the binary loads in a PHP with no other extension: PHP sockets integration, the native cURL hook, the coroutine PDO drivers, ssh2, c-ares and io_uring. Build from source for those (README, Build).
+
+          `gh attestation verify <file> --repo ${{ github.repository }}` checks a file's build provenance.
+          NOTES
+          )"
