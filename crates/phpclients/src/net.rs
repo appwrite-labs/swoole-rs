@@ -779,17 +779,17 @@ fn send(call: &Call) {
         return call.set_bool(false);
     };
     set_last_error(0);
-    let Some(sent) = bailed(io(conn.cli, |h| state::send(h, data, int(flags)) as i64)) else {
+    let Some(sent) = bailed(io(conn.cli, |h| state::send(h, data, int(flags)))) else {
         return call.set_bool(false);
     };
-    if sent < 0 {
+    let Some(sent) = sent else {
         let error = errno();
         let message = format!("failed to send({}) {} bytes", conn.fd(), data.len());
         warn_sys(&message, error);
         set_err_code(Obj::this(call), last_error());
         return call.set_bool(false);
-    }
-    call.set_long(sent);
+    };
+    call.set_long(i64::try_from(sent).unwrap_or(i64::MAX));
 }
 
 /// `sendto(string $ip, int $port, string $data): bool`.
@@ -871,9 +871,11 @@ fn io<T: Default>(cli: Cli, op: impl FnOnce(Handle) -> T) -> Result<T, Bailout> 
     }
 }
 
-/// `cli->recv(buffer, length, flags)`.
+/// `cli->recv(buffer, length, flags)`: the count read, or -1 (`SW_ERR`).
 fn receive(cli: Cli, buffer: &mut [u8], flags: i64) -> Result<i64, Bailout> {
-    io(cli, |h| state::recv(h, buffer, int(flags)) as i64)
+    io(cli, |h| {
+        state::recv(h, buffer, int(flags)).map_or(-1, |n| i64::try_from(n).unwrap_or(i64::MAX))
+    })
 }
 
 /// C++'s implicit conversion of a PHP int to an `int` argument.
@@ -887,7 +889,9 @@ fn receive_into(conn: &Conn, buffer: &mut ZBuf, length: usize, flags: i64) -> Re
     let room = buffer.spare_capacity_mut();
     let length = room.len().min(length);
     let slots = room.get_mut(..length).unwrap_or_default();
-    let read = io(conn.cli, |h| state::recv(h, slots, int(flags)) as i64)?;
+    let read = io(conn.cli, |h| {
+        state::recv(h, slots, int(flags)).map_or(-1, |n| i64::try_from(n).unwrap_or(i64::MAX))
+    })?;
     if let Ok(count) = usize::try_from(read) {
         // `MSG_TRUNC` reports a datagram's whole length, which may exceed the room.
         let len = buffer.len() + count.min(length);
