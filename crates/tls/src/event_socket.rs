@@ -1,6 +1,6 @@
 //! A `Socket` record this owns, on the thread's reactor: `Swoole\Event`'s user
 //! sockets, a pipe's ends and an event waiter's watch.
-use std::ffi::{c_int, c_void};
+use std::ffi::c_int;
 use swoole_rs_reactor::{OwnedSocket, Socket, SocketRecord, event_api, socket_upstream};
 
 /// A heap record this owns until [`EventSocket::free`], lending it only for a borrow
@@ -97,9 +97,13 @@ impl EventSocket {
     /// and defers the close to it; otherwise closes its fd (`-1` for none) and frees
     /// it at once. Outside the hybrid there are no timers, buffers or loop.
     pub fn release(self) {
-        let record = self.0;
+        // SAFETY: the record this owns, the leaked box `adopt` (or the caller of
+        // `socket_free`) gave it: no other owner holds it, and nothing uses a handle to
+        // it once it is freed below or by the reactor's deferred task.
+        let owned = unsafe { OwnedSocket::from_socket(self.0) };
         #[cfg(feature = "upstream-symbols")]
-        {
+        let owned = {
+            let record = owned.socket();
             // The buffers leave the record here and go below, after the timers and
             // outside the record's borrow: an entry's disposer runs as its buffer goes.
             let (timers, buffers) = record.edit(|record| {
@@ -119,35 +123,19 @@ impl EventSocket {
                     // failure.
                     _ = event_api::event_del(record);
                 }
-                // SAFETY: `swoole_event_defer(socket_free_defer, this)` of the record
-                // this owned, which nothing else frees; a reactor freed before it runs
-                // closes the socket all the same. The loop may still read the record
-                // through an event of this pass, so it stays a raw pointer until then.
-                let deferred = unsafe {
-                    swoole_rs_reactor::defer(
-                        free_deferred,
-                        record.as_ptr().cast(),
-                        Some(free_deferred),
-                    )
-                };
-                if deferred {
-                    return;
+                // `swoole_event_defer(socket_free_defer, this)`; a reactor freed before
+                // it runs closes the socket all the same.
+                match swoole_rs_reactor::defer_free(owned) {
+                    Ok(()) => return,
+                    Err(owned) => owned,
                 }
+            } else {
+                owned
             }
-        }
-        // SAFETY: the record this owned, the leaked box `adopt` (or the caller of
-        // `socket_free`) gave it, which nothing uses afterwards.
-        unsafe { free_deferred(record.as_ptr().cast()) };
+        };
+        // base.cc's `socket_free_defer`, at once.
+        owned.into_box().close_and_free();
     }
-}
-
-/// base.cc's `socket_free_defer`: closes the descriptor and frees the record.
-///
-/// # Safety
-/// `socket` is a live record [`SocketRecord`] allocated, which nothing uses afterwards.
-unsafe extern "C-unwind" fn free_deferred(socket: *mut c_void) {
-    // SAFETY: as the caller promises: the record's own allocation, used no more.
-    unsafe { Box::from_raw(socket.cast::<SocketRecord>()) }.close_and_free();
 }
 
 impl From<OwnedSocket> for EventSocket {
