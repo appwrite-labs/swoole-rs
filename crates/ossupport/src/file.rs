@@ -11,7 +11,6 @@ use swoole_rs_corebase::sys::{self, ReadSlot, errno};
 
 /// Bytes moved by a `File::read_all`/`write_all` loop, and whether it stopped on
 /// an error native must warn about (errno is still the failing call's).
-#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileIo {
     pub done: usize,
@@ -124,32 +123,17 @@ pub fn read_all(fd: c_int, buf: &mut [impl ReadSlot]) -> FileIo {
     })
 }
 
-/// `file_get_size(fd)`: the size of a regular file, or the error to publish.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FileSize {
-    pub size: i64,
-    pub error: c_int,
-}
-
-#[must_use]
-pub fn file_size(fd: c_int) -> FileSize {
-    let Some(stat) = swoole_rs_corebase::sys::fstat(fd) else {
-        return FileSize {
-            size: -1,
-            error: errno(),
-        };
-    };
+/// `file_get_size(fd)`: the size of a regular file; `fstat`'s error, or `EISDIR` for
+/// anything else.
+///
+/// # Errors
+/// `fstat`'s errno, or `EISDIR` when `fd` is not a regular file.
+pub fn file_size(fd: c_int) -> std::io::Result<u64> {
+    let stat = swoole_rs_corebase::sys::fstat(fd).ok_or_else(std::io::Error::last_os_error)?;
     if stat.st_mode & libc::S_IFMT != libc::S_IFREG {
-        return FileSize {
-            size: -1,
-            error: libc::EISDIR,
-        };
+        return Err(std::io::Error::from_raw_os_error(libc::EISDIR));
     }
-    FileSize {
-        size: stat.st_size,
-        error: 0,
-    }
+    u64::try_from(stat.st_size).map_err(|_| std::io::Error::from_raw_os_error(libc::EOVERFLOW))
 }
 
 /// A platform sendfile result and whether the caller should log `sendfile failed`.
@@ -335,11 +319,7 @@ mod tests {
             (11, &b"HELLO world"[..]),
             "pwrite starts at zero"
         );
-        assert_eq!(
-            file_size(fd),
-            FileSize { size: 11, error: 0 },
-            "regular size"
-        );
+        assert_eq!(file_size(fd).ok(), Some(11), "regular size");
         let io = write_all(-1, true, b"x");
         assert_eq!(
             io,
@@ -359,20 +339,14 @@ mod tests {
     #[test]
     fn size_rejects_failures_and_non_regular_files() {
         assert_eq!(
-            file_size(-1),
-            FileSize {
-                size: -1,
-                error: libc::EBADF
-            },
+            file_size(-1).map_err(|e| e.raw_os_error()),
+            Err(Some(libc::EBADF)),
             "fstat errno"
         );
         let dir = std::fs::File::open(std::env::temp_dir()).unwrap_or_else(|e| unreachable!("{e}"));
         assert_eq!(
-            file_size(dir.as_raw_fd()),
-            FileSize {
-                size: -1,
-                error: libc::EISDIR
-            },
+            file_size(dir.as_raw_fd()).map_err(|e| e.raw_os_error()),
+            Err(Some(libc::EISDIR)),
             "non-regular files are EISDIR"
         );
     }

@@ -50,7 +50,6 @@ pub enum Status {
     Capacity,
 }
 
-#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TimerView {
     pub id: i64,
@@ -74,7 +73,6 @@ impl Default for TimerView {
         }
     }
 }
-#[repr(C)]
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub struct TimerStats {
     pub count: usize,
