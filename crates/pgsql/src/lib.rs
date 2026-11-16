@@ -266,7 +266,7 @@ fn socket_poll(conn: Conn, event: Events) -> c_int {
         return if interrupted { 0 } else { result };
     }
     // The hook is on, so a coroutine runs the request, as upstream requires.
-    if wait_event(fd, event, POLL_TIMEOUT).is_some() {
+    if wait_event(fd, event, POLL_TIMEOUT).is_ok() {
         return 1;
     }
     let code = swoole_rs_corebase::log::last_error();

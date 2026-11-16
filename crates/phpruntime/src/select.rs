@@ -1,9 +1,10 @@
 //! `stream_select` in a coroutine (`HOOK_STREAM_FUNCTION`): the streams'
 //! fds are polled by `System::socket_poll`, which yields; streams with
 //! buffered reads answer at once, as PHP's own `stream_select` does.
-use crate::socket::{Report, convert_to_fd, coroutine_check, poll, report};
+use crate::socket::{Report, convert_to_fd, coroutine_check, report};
 use std::{collections::HashMap, ptr};
 use swoole_rs_corebase::CCast;
+use swoole_rs_hooks::poll::socket_poll_rows as poll;
 use swoole_rs_reactor::Events;
 use swoole_rs_zend::{
     ArrayMut, Call, E_WARNING, Owned, Value, ZStr, ZString,
@@ -198,7 +199,7 @@ fn select(call: &Call) -> Result<(), Bailout> {
     }
 
     // a timeout or a failure to add a socket
-    let Some(polled) = poll(&rows, timeout) else {
+    let Ok(polled) = poll(&rows, timeout) else {
         call.set_long(0);
         return Ok(());
     };

@@ -127,8 +127,9 @@ aliases are never uninstalled.
   socket, timer, deferred completion and coroutine operations are Rust too
   (`poll::NATIVE`); `stream_select`'s rows merge by fd in the order libstdc++'s
   `unordered_map<int, _>` iterated upstream's map (`socket_poll_rows`).
-- `System::wait_event` and `System::init_reactor` are Rust under their upstream
-  symbols (`wait_event.rs`, `reactor_handlers.rs`). `wait_event` masks to read/write
+- Event waits return `Result<Events, WaitError>` in Rust (`wait_event.rs`); the
+  unused `System::wait_event` symbol is removed. `System::init_reactor` retains its
+  upstream symbol (`reactor_handlers.rs`). `wait_event` masks to read/write
   (none is EINVAL), answers a zero timeout with one `poll(2)` (POLLNVAL is EBADF,
   nothing ready is ETIMEDOUT), and otherwise parks as an `EventWaiter` on a
   `SW_FD_CO_EVENT` socket, yielding through `Coroutine::yield_ex`; it sets the last
