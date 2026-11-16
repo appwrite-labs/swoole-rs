@@ -86,17 +86,13 @@ pub(crate) struct Ops {
 pub(crate) static NATIVE: Ops = Ops {
     in_coroutine: native::in_coroutine,
     offload: crate::offload::async_job,
-    sleep: native::sleep,
+    sleep: crate::sleep::system_sleep,
     set_last_error: swoole_rs_corebase::log::set_last_error,
 };
 
 mod native {
     pub(super) fn in_coroutine() -> bool {
         !swoole_rs_corebase::thread_reactor().is_null() && !swoole_rs_coroutine::current().is_null()
-    }
-
-    pub(super) fn sleep(seconds: f64) -> bool {
-        crate::sleep::system_sleep(seconds) == 0
     }
 }
 

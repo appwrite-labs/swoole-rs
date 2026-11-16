@@ -202,7 +202,7 @@ pub(crate) fn current_safe() -> Co {
 /// outside a coroutine, where upstream's raises a fatal error.
 #[must_use]
 pub fn sleep(seconds: f64) -> bool {
-    in_coroutine() && system_sleep(seconds) == 0
+    in_coroutine() && system_sleep(seconds)
 }
 
 pub(crate) fn current_task() -> Option<Ctx> {
