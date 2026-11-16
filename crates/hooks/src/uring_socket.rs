@@ -30,7 +30,7 @@ pub struct UringSocketOps<'a> {
     /// `is_available(event)`.
     pub available: fn(Co, Events) -> bool,
     /// `check_return_value(retval)`.
-    pub check: fn(Co, isize),
+    pub check: fn(Co, Option<usize>),
     /// `set_err(code)`.
     pub set_err: fn(Co, c_int),
 }
@@ -41,7 +41,7 @@ impl TlsSocket for Co {
     }
 
     fn check_failure(self) {
-        check(self, -1);
+        check(self, None);
     }
 
     fn buffer(self, write: bool) -> (*mut c_char, usize) {
@@ -117,7 +117,7 @@ impl UringSocketOps<'_> {
     }
 
     fn check(&self, result: isize) {
-        (self.check)(self.socket, result);
+        (self.check)(self.socket, usize::try_from(result).ok());
     }
 
     /// `call` with the current coroutine bound to `event`.
@@ -557,8 +557,8 @@ mod tests {
         log(format!("available {event}"));
         AVAILABLE.with(|a| *a.borrow())
     }
-    fn check(_: Co, result: isize) {
-        log(format!("check {result}"));
+    fn check(_: Co, result: Option<usize>) {
+        log(format!("check {}", result.map_or(-1, usize::cast_signed)));
     }
     fn set_err(_: Co, code: c_int) {
         log(format!("err {code}"));

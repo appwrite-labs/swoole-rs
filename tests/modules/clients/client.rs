@@ -1424,7 +1424,10 @@ fn ssl_vector(sock: *mut c_void, iov: &[IoVec], write: bool) -> isize {
     // SAFETY: the connected socket.
     let sock = unsafe { swoole_rs_reactor::Socket::from_ptr(sock.cast()) }.unwrap();
     let vector = IoVector::new(vectors);
-    vector.expect("IOVector(iov, count)").transfer(sock)
+    vector
+        .expect("IOVector(iov, count)")
+        .transfer(sock)
+        .map_or(-1, usize::cast_signed)
 }
 
 /// `Socket::ssl_get_peer_cert_chain(limit)`, inline C++ upstream: the PEM of each of

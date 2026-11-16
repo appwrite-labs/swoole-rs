@@ -112,7 +112,7 @@ pub fn swoole_coroutine_send(fd: c_int, buf: &[u8], flags: c_int) -> ssize_t {
 pub fn sendmsg(fd: c_int, msg: &SendMessage<'_>, flags: c_int) -> ssize_t {
     match hooked(fd) {
         Some((_, socket)) => socket.sendmsg(msg, flags).map_or(-1, usize::cast_signed),
-        None => msg.send(fd, flags),
+        None => msg.send(fd, flags).map_or(-1, usize::cast_signed),
     }
 }
 
@@ -120,7 +120,7 @@ pub fn sendmsg(fd: c_int, msg: &SendMessage<'_>, flags: c_int) -> ssize_t {
 pub fn recvmsg(fd: c_int, msg: &mut RecvMessage<'_>, flags: c_int) -> ssize_t {
     match hooked(fd) {
         Some((_, socket)) => socket.recvmsg(msg, flags).map_or(-1, usize::cast_signed),
-        None => msg.recv(fd, flags),
+        None => msg.recv(fd, flags).map_or(-1, usize::cast_signed),
     }
 }
 

@@ -348,8 +348,8 @@ pub(crate) fn set_err(socket: Co, error: c_int) {
 
 /// `check_return_value`: clear the error after a success; publish errno after a
 /// failure that set none.
-pub(crate) fn check(socket: Co, result: isize) {
-    if result >= 0 {
+pub(crate) fn check(socket: Co, result: Option<usize>) {
+    if result.is_some() {
         set_err(socket, 0);
     } else if socket.err_code() == 0 {
         set_err(socket, errno());
@@ -965,7 +965,7 @@ mod tests {
             } else {
                 None
             };
-            check(socket.co(), result);
+            check(socket.co(), usize::try_from(result).ok());
             let message = unsafe { CStr::from_ptr(socket.0.err_msg.get()) }
                 .to_str()
                 .unwrap();
@@ -1066,16 +1066,16 @@ mod tests {
         install();
         let mut socket = TestSocket::new();
         set_errno(libc::EINVAL);
-        check(socket.co(), -1);
+        check(socket.co(), None);
         assert_eq!(socket.0.err_code.get(), libc::EINVAL);
         assert_eq!(
             unsafe { core::ffi::CStr::from_ptr(socket.0.err_msg.get()) },
             c"native-error"
         );
         set_errno(libc::EAGAIN);
-        check(socket.co(), -1);
+        check(socket.co(), None);
         assert_eq!(socket.0.err_code.get(), libc::EINVAL);
-        check(socket.co(), 0);
+        check(socket.co(), Some(0));
         assert_eq!((socket.0.err_code.get(), errno()), (0, 0));
         assert_eq!(unsafe { *socket.0.err_msg.get() }, 0);
         assert_eq!(take(), ["last-error:22", "last-error:0"]);
