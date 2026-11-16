@@ -64,10 +64,28 @@ enum Failure {
     Bailout(Bailout),
 }
 
-/// `HT_FLAGS(ht)`.
-fn flags_of(ht: *mut HashTable) -> *mut u32 {
-    ht.wrapping_byte_add(offset_of!(HashTable, u)).cast()
+/// A `HashTable`'s header as this module reads it, each word a `Cell`: Zend
+/// rewrites the table in place, through pointers, as it changes it.
+#[repr(C)]
+struct Table {
+    _gc: [Cell<u32>; 2],
+    /// `HT_FLAGS(ht)`.
+    flags: Cell<u32>,
+    _mask: Cell<u32>,
+    _data: Cell<usize>,
+    _used: Cell<u32>,
+    /// `zend_hash_num_elements`.
+    count: Cell<u32>,
+    _rest: [Cell<u64>; 3],
 }
+
+const _: () = assert!(
+    offset_of!(Table, flags) == offset_of!(HashTable, u)
+        && offset_of!(Table, count) == offset_of!(HashTable, nNumOfElements)
+        && size_of::<Table>() == size_of::<HashTable>()
+        && align_of::<Table>() <= align_of::<HashTable>(),
+    "Table is a HashTable's header"
+);
 
 /// `get_type_info`: the definition behind a typed array's table.
 fn info_of(ht: *mut HashTable) -> *mut TypeInfo {
@@ -112,12 +130,19 @@ impl<'a> Typed<'a> {
         self.ht
     }
 
-    /// `HT_FLAGS(ht)`, which Zend rewrites in place as it changes the table.
+    /// The table's header, which Zend rewrites in place as it changes the table.
+    #[inline]
+    fn table_header(self) -> &'a Table {
+        // SAFETY: a live table for `'a` (every `Typed` is made from one), which
+        // Zend writes only through pointers, never a reference; `Table` is its
+        // header word for word, each a `Cell`.
+        unsafe { &*self.ht.cast::<Table>() }
+    }
+
+    /// `HT_FLAGS(ht)`.
+    #[inline]
     fn flags(self) -> &'a Cell<u32> {
-        // SAFETY: a live table for `'a` (every `Typed` is made from one), whose
-        // flags word Zend writes only through pointers, never a reference; `Cell`
-        // is a transparent `u32`.
-        unsafe { &*flags_of(self.ht).cast::<Cell<u32>>() }
+        &self.table_header().flags
     }
 
     /// Flag the table typed again, after a builtin rebuilt it in place.
@@ -149,8 +174,7 @@ impl<'a> Typed<'a> {
 
     /// `zend_hash_num_elements`.
     fn count(self) -> u32 {
-        // SAFETY: a live table.
-        unsafe { (*self.ht).nNumOfElements }
+        self.table_header().count.get()
     }
 
     /// `ArrayTypeInfo::element_type_equals`: whether `element` is the type of
