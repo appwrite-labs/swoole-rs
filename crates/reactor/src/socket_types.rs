@@ -39,10 +39,9 @@ pub fn socket_domain_and_type(socket_type: c_int) -> Option<(c_int, c_int)> {
 
 /// The type a host string names, and how many leading bytes `convert_to_type`
 /// erases from it.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HostType {
-    pub socket_type: c_int,
+    pub socket_type: SocketType,
     pub erase: usize,
 }
 
@@ -57,12 +56,12 @@ pub fn host_type(host: &[u8]) -> HostType {
             .position(|&b| b != b'/')
             .map_or(host.len(), |first| 5 + first - 1);
         return HostType {
-            socket_type: UNIX_STREAM.raw(),
+            socket_type: UNIX_STREAM,
             erase,
         };
     }
     HostType {
-        socket_type: if host.contains(&b':') { TCP6 } else { TCP }.raw(),
+        socket_type: if host.contains(&b':') { TCP6 } else { TCP },
         erase: 0,
     }
 }
@@ -152,10 +151,7 @@ mod tests {
     fn hosts_name_their_type() {
         fn erased(host: &[u8]) -> (Option<SocketType>, &[u8]) {
             let plan = host_type(host);
-            (
-                SocketType::from_raw(plan.socket_type),
-                &host[plan.erase.min(host.len())..],
-            )
+            (Some(plan.socket_type), &host[plan.erase.min(host.len())..])
         }
         assert_eq!(erased(b"unix:/tmp/s"), (Some(UNIX_STREAM), &b"/tmp/s"[..]));
         assert_eq!(

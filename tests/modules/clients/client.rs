@@ -430,7 +430,7 @@ impl<'a> Client<'a> {
                 &mut owner(self.ssl_context()),
                 &mut owner(prepared.owner),
             );
-            assert_eq!(copied.status, 0);
+            assert_eq!(copied, Ok(()));
             drop(std::rc::Rc::<swoole_rs_tls::OwnedTlsContext>::from_raw(
                 prepared.owner.cast(),
             ));

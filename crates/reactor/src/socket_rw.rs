@@ -72,7 +72,6 @@ pub fn catch_pipe_error(error: c_int, kernel_nobufs: &mut bool) -> Caught {
 }
 
 /// An `IOVector`'s cursor, owned with its descriptor allocation.
-#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct IovState {
     pub iterator: *mut libc::iovec,
