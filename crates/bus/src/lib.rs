@@ -177,9 +177,9 @@ pub struct Bus {
 impl Drop for Bus {
     /// `~MessageBus`: the pipe records go, their descriptors stay open.
     fn drop(&mut self) {
-        // Outside the hybrid (and in tests, which link no C++) a record has no
-        // timers, buffers or loop: `Socket::free` is the record's deallocation.
-        #[cfg(not(all(feature = "upstream-symbols", not(test))))]
+        // Outside the hybrid a record has no timers, buffers or loop: `Socket::free`
+        // is the record's deallocation.
+        #[cfg(not(feature = "upstream-symbols"))]
         let free_socket: unsafe fn(*mut SocketRecord) = SocketRecord::free;
         // By descriptor, as `init_pipe_socket` recorded them.
         for record in self.pipe_sockets.get_mut().drain(..).flatten() {
@@ -191,7 +191,7 @@ impl Drop for Bus {
     }
 }
 
-#[cfg(all(feature = "upstream-symbols", not(test)))]
+#[cfg(feature = "upstream-symbols")]
 use swoole_rs_tls::upstream::socket_free as free_socket;
 #[cfg(feature = "upstream-symbols")]
 use swoole_rs_tls::upstream::writev_sync;
