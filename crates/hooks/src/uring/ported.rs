@@ -15,6 +15,11 @@ use std::time::{Duration, Instant};
 use std::{mem, thread};
 use swoole_rs_corebase::net_types::{AddressStorage, SocketAddress};
 
+// Keep the original integer assertions at the test boundary.
+fn status(result: std::io::Result<()>) -> c_int {
+    result.map_or(-1, |()| 0)
+}
+
 const TEST_TMP_FILE: &CStr = c"/tmp/swoole_core_test_file";
 const TEST_STR: &str = "hello world, hello swoole\n";
 const TEST_HTTP_DOMAIN: &str = "www.gov.cn";
@@ -116,9 +121,9 @@ fn create() {
         ..Config::default()
     };
     with_config(config, || {
-        let fd = uring::open_file(&HOST, TEST_TMP_FILE, libc::O_CREAT, 0o666);
+        let fd = uring::open_file(&HOST, TEST_TMP_FILE, libc::O_CREAT, 0o666).unwrap_or(-1);
         assert!(fd >= 0, "open");
-        assert_ne!(uring::close_fd(&HOST, fd), -1, "close");
+        assert_ne!(status(uring::close_fd(&HOST, fd)), -1, "close");
     });
 }
 
@@ -127,12 +132,12 @@ fn open_and_close() {
     let _serial = serial();
     with_engine(|| {
         let test_file = c"/tmp/file_1";
-        let fd = uring::open_file(&HOST, test_file, libc::O_CREAT, 0o666);
+        let fd = uring::open_file(&HOST, test_file, libc::O_CREAT, 0o666).unwrap_or(-1);
         assert!(fd > 0, "open");
 
-        assert_eq!(uring::close_fd(&HOST, fd), 0, "close");
+        assert_eq!(status(uring::close_fd(&HOST, fd)), 0, "close");
 
-        assert_eq!(uring::unlink(&HOST, test_file), 0, "unlink");
+        assert_eq!(status(uring::unlink(&HOST, test_file)), 0, "unlink");
     });
 }
 
@@ -142,9 +147,9 @@ fn mkdir_and_rmdir() {
     with_engine(|| {
         let directory = c"/tmp/aaaa";
 
-        assert_eq!(uring::mkdir(&HOST, directory, 0o755), 0, "mkdir");
+        assert_eq!(status(uring::mkdir(&HOST, directory, 0o755)), 0, "mkdir");
 
-        assert_eq!(uring::rmdir(&HOST, directory), 0, "rmdir");
+        assert_eq!(status(uring::rmdir(&HOST, directory)), 0, "rmdir");
     });
 }
 
@@ -153,7 +158,8 @@ fn write_and_read() {
     let _serial = serial();
     with_engine(|| unsafe {
         let test_file = c"/tmp/file_2";
-        let fd = uring::open_file(&HOST, test_file, libc::O_CREAT | libc::O_RDWR, 0o666);
+        let fd =
+            uring::open_file(&HOST, test_file, libc::O_CREAT | libc::O_RDWR, 0o666).unwrap_or(-1);
         assert!(fd > 0, "open");
 
         let data = b"aaaaaaaaaaaaaaaaaaaaaaa";
@@ -170,9 +176,9 @@ fn write_and_read() {
         assert_eq!(result, length.cast_signed(), "read back");
         assert_eq!(&buf[..length], data, "contents");
 
-        assert_eq!(uring::close_fd(&HOST, fd), 0, "close");
+        assert_eq!(status(uring::close_fd(&HOST, fd)), 0, "close");
 
-        assert_eq!(uring::unlink(&HOST, test_file), 0, "unlink");
+        assert_eq!(status(uring::unlink(&HOST, test_file)), 0, "unlink");
     });
 }
 
@@ -182,15 +188,16 @@ fn rename() {
     with_engine(|| {
         let oldpath = c"/tmp/file_2";
         let newpath = c"/tmp/file_3";
-        let fd = uring::open_file(&HOST, oldpath, libc::O_CREAT | libc::O_RDWR, 0o666);
+        let fd =
+            uring::open_file(&HOST, oldpath, libc::O_CREAT | libc::O_RDWR, 0o666).unwrap_or(-1);
         assert!(fd > 0, "open");
 
-        assert_eq!(uring::close_fd(&HOST, fd), 0, "close");
+        assert_eq!(status(uring::close_fd(&HOST, fd)), 0, "close");
 
-        let result = uring::rename(&HOST, oldpath, newpath);
+        let result = status(uring::rename(&HOST, oldpath, newpath));
         assert_eq!(result, 0, "rename");
 
-        assert_eq!(uring::unlink(&HOST, newpath), 0, "unlink");
+        assert_eq!(status(uring::unlink(&HOST, newpath)), 0, "unlink");
     });
 }
 
@@ -199,19 +206,20 @@ fn fstat_and_stat() {
     let _serial = serial();
     with_engine(|| unsafe {
         let mut statbuf: libc::stat = mem::zeroed();
-        let fd = uring::open_file(&HOST, TEST_TMP_FILE, libc::O_CREAT | libc::O_RDWR, 0o666);
+        let fd = uring::open_file(&HOST, TEST_TMP_FILE, libc::O_CREAT | libc::O_RDWR, 0o666)
+            .unwrap_or(-1);
         assert!(fd > 0, "open");
 
         let written = uring::write(&HOST, fd, TEST_STR.as_bytes(), -1.0);
         assert_eq!(written, TEST_STR.len().cast_signed(), "write");
 
-        assert_eq!(uring::fstat(&HOST, fd, &mut statbuf), 0, "fstat");
+        assert_eq!(status(uring::fstat(&HOST, fd, &mut statbuf)), 0, "fstat");
         assert!(statbuf.st_size > 0, "fstat size");
 
-        assert_eq!(uring::close_fd(&HOST, fd), 0, "close");
+        assert_eq!(status(uring::close_fd(&HOST, fd)), 0, "close");
 
         statbuf = mem::zeroed();
-        let result = uring::stat(&HOST, TEST_TMP_FILE, &mut statbuf);
+        let result = status(uring::stat(&HOST, TEST_TMP_FILE, &mut statbuf));
         assert_eq!(result, 0, "stat");
         assert!(statbuf.st_size > 0, "stat size");
     });
@@ -222,7 +230,8 @@ fn fsync_and_fdatasync() {
     let _serial = serial();
     with_engine(|| {
         let test_file = c"/tmp/file_2";
-        let fd = uring::open_file(&HOST, test_file, libc::O_CREAT | libc::O_RDWR, 0o666);
+        let fd =
+            uring::open_file(&HOST, test_file, libc::O_CREAT | libc::O_RDWR, 0o666).unwrap_or(-1);
         assert!(fd > 0, "open");
 
         let data = b"aaaaaaaaaaaaaaaaaaaaaaa";
@@ -230,16 +239,16 @@ fn fsync_and_fdatasync() {
         let write_length = uring::write(&HOST, fd, &data[..length], -1.0);
         assert_eq!(write_length, length.cast_signed(), "write");
 
-        assert_eq!(uring::fsync(&HOST, fd), 0, "fsync");
+        assert_eq!(status(uring::fsync(&HOST, fd)), 0, "fsync");
 
         let write_length = uring::write(&HOST, fd, &data[..length], -1.0);
         assert_eq!(write_length, length.cast_signed(), "write");
 
-        assert_eq!(uring::fdatasync(&HOST, fd), 0, "fdatasync");
+        assert_eq!(status(uring::fdatasync(&HOST, fd)), 0, "fdatasync");
 
-        assert_eq!(uring::close_fd(&HOST, fd), 0, "close");
+        assert_eq!(status(uring::close_fd(&HOST, fd)), 0, "close");
 
-        assert_eq!(uring::unlink(&HOST, test_file), 0, "unlink");
+        assert_eq!(status(uring::unlink(&HOST, test_file)), 0, "unlink");
     });
 }
 
@@ -248,7 +257,8 @@ fn ftruncate() {
     let _serial = serial();
     with_engine(|| {
         let test_file = c"/tmp/file_3";
-        let fd = uring::open_file(&HOST, test_file, libc::O_CREAT | libc::O_RDWR, 0o666);
+        let fd =
+            uring::open_file(&HOST, test_file, libc::O_CREAT | libc::O_RDWR, 0o666).unwrap_or(-1);
         assert!(fd > 0, "open");
 
         let data = b"aaaaaaaaaaaaaaaaaaaaaaa";
@@ -256,8 +266,8 @@ fn ftruncate() {
         let write_length = uring::write(&HOST, fd, &data[..length], -1.0);
         assert_eq!(write_length, length.cast_signed(), "write");
 
-        assert_eq!(uring::ftruncate(&HOST, fd, 0), 0, "ftruncate");
-        let _closed = uring::close_fd(&HOST, fd);
+        assert_eq!(status(uring::ftruncate(&HOST, fd, 0)), 0, "ftruncate");
+        let _closed = status(uring::close_fd(&HOST, fd));
     });
 }
 
@@ -296,7 +306,7 @@ fn http_get(socket_calls: bool) {
         let response = String::from_utf8_lossy(&buf[..rv.unsigned_abs()]);
         assert!(response.contains(TEST_HTTP_EXPECT), "{response}");
 
-        let _closed = uring::close_fd(&HOST, fd);
+        let _closed = status(uring::close_fd(&HOST, fd));
     });
 }
 
@@ -350,7 +360,7 @@ fn sendfile() {
     with_engine(|| {
         let mut data = vec![0_u8; 250_000];
         let result = uring::read(&HOST, pairs[1], &mut data, -1.0);
-        let _closed = uring::close_fd(&HOST, pairs[1]);
+        let _closed = status(uring::close_fd(&HOST, pairs[1]));
         assert_eq!(result, TEST_JPG_SIZE.cast_signed(), "read");
     });
     drop(file);
@@ -392,7 +402,7 @@ fn accept() {
                 let sent_bytes = uring::send(&HOST, client_sock, test_message, 0, -1.0);
                 assert_eq!(sent_bytes, test_message.len().cast_signed(), "send");
 
-                let _closed = uring::close_fd(&HOST, client_sock);
+                let _closed = status(uring::close_fd(&HOST, client_sock));
             });
         });
 
@@ -408,8 +418,8 @@ fn accept() {
             "received"
         );
 
-        let _closed = uring::close_fd(&HOST, client_sock);
-        let _closed = uring::close_fd(&HOST, server_sock);
+        let _closed = status(uring::close_fd(&HOST, client_sock));
+        let _closed = status(uring::close_fd(&HOST, server_sock));
         client.join().unwrap();
     });
 }
@@ -593,6 +603,6 @@ fn accept_timeout() {
         let client_sock = uring::accept(&HOST, server_sock, &mut client_addr, 0, 0.1);
         assert_eq!(client_sock, -1, "timed out");
 
-        let _closed = uring::close_fd(&HOST, server_sock);
+        let _closed = status(uring::close_fd(&HOST, server_sock));
     });
 }
