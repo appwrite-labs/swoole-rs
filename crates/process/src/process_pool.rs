@@ -280,11 +280,11 @@ impl PoolRecord {
             .unwrap_or(ptr::null_mut())
     }
 
-    /// The stream connection being served (a native socket), or null.
+    /// The stream connection being served, if any.
     #[must_use]
-    pub fn ipc_connection(&self) -> *mut c_void {
+    pub fn ipc_connection(&self) -> Option<crate::pool::Connection> {
         self.with_ipc(|ipc| crate::pool::pool_ipc_connection(ipc))
-            .unwrap_or(ptr::null_mut())
+            .flatten()
     }
 
     /// The registry `create` made, or null.
@@ -561,8 +561,8 @@ impl<'a> PoolRef<'a> {
     /// The stream connection being served, which the worker loop frees once it is
     /// answered, or `None` without one.
     #[must_use]
-    pub fn ipc_connection(self) -> Option<crate::worker_record::NativeSocket<'a>> {
-        crate::worker_record::NativeSocket::lend(self.record().ipc_connection())
+    pub fn ipc_connection(self) -> Option<crate::pool::Connection> {
+        self.record().ipc_connection()
     }
 
     /// The worker loop's receive buffer and its size in bytes; null and 0 before
@@ -882,14 +882,16 @@ pub trait PoolNative: Sync {
     fn running(&self, call: &PoolCall) -> bool;
     /// Run the expired timers and dispatch the pending signals.
     fn end(&self);
-    /// The stream listener's `accept()`: the connection in `socket`.
+    /// The stream listener's `accept()`: the connection, set with
+    /// [`PoolCall::set_connection`].
     fn accept(&self, call: &mut PoolCall);
-    /// `socket->recv_sync(data, length, flags)`.
+    /// `socket->recv_sync(data, length, flags)` on the call's connection.
     fn recv(&self, call: &mut PoolCall);
-    /// `socket->send_sync(data, length)`.
+    /// `socket->send_sync(data, length)` on the call's connection.
     fn send(&self, call: &mut PoolCall);
-    /// `socket->free()` of the call's socket, which is not used again.
-    fn close(&self, call: &PoolCall);
+    /// `socket->free()` of the call's connection, or else of its socket (the
+    /// listener), which is not used again.
+    fn close(&self, call: &mut PoolCall);
     /// The worker's pipe, with the next timer as its read timeout: `read_sync`.
     fn pipe_read(&self, call: &mut PoolCall);
     /// `pipe_worker->wait_event(next timer, SW_EVENT_READ)`.
@@ -1317,7 +1319,7 @@ impl PoolHost for Native<'_> {
     fn close(&self, socket: *mut c_void) {
         let mut call = PoolCall::new(self.pool, None);
         call.socket = socket;
-        self.native.close(&call);
+        self.native.close(&mut call);
     }
 
     fn new_box(&mut self, size: u64) -> SharedChannel {

@@ -79,9 +79,8 @@ impl WorkerType {
 
 /// A native socket record this crate keeps for its owner, lent for `'a`. Only the
 /// fields whose writers vouch for them are lent as one: a worker's pipe ends (the
-/// unsafe [`Worker::set_pipes`], or copies of them), a hook's socket (the unsafe
-/// [`crate::pool::PoolCall::set_socket`], or one of the former), and the stream
-/// listener and connection the pool makes and frees itself. So the record is live
+/// unsafe [`Worker::set_pipes`], or copies of them), a hook's socket (one of
+/// these), and the stream listener the pool makes and frees itself. So the record is live
 /// for `'a`, and crates/reactor takes one as its `Socket`.
 #[derive(Clone, Copy)]
 pub struct NativeSocket<'a> {

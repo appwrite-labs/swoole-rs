@@ -146,6 +146,4 @@ caller, so they are plain Rust over `&CStr` and slices, without their C++ symbol
 `sw_snprintf`, `sw_vsnprintf` and `sw_printf` are C variadics, so they're a C
 shim in the Rust archive (`crates/corebase/src/format.c`, C linkage).
 
-Still native: C++ containers/objects, filesystem IO and other runtime operations.
-
 `swoole::Thread` is Rust (`crates/corebase/src/thread.rs`); upstream's header is deleted.

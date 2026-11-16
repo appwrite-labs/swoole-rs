@@ -287,7 +287,7 @@ pub fn finish(
         }
         reply(&mut buf, super::nonblocking_flags(flags, task.ext_flags));
         match stream_connection(worker) {
-            Some(socket) => send_stream(socket, data),
+            Some(connection) => send_stream(connection.socket(), data),
             None => send_pipe_message(
                 crate::process_pool_native(),
                 worker,
@@ -296,7 +296,10 @@ pub fn finish(
             ),
         }
     } else {
-        let Some(slot) = super::result_slot(serv, source) else {
+        let (Some(slot), Some(pipe)) = (
+            super::result_slot(serv, source),
+            serv.task_notify_pipe(source),
+        ) else {
             log::warning(
                 c"Server::finish",
                 format_args!("no result slot for worker {source}"),
@@ -321,8 +324,6 @@ pub fn finish(
             log::warning(c"Server::finish", format_args!("large task pack failed()"));
             return false;
         }
-        // SAFETY: the source worker's live notify pipe.
-        let pipe = unsafe { &*serv.state().task_pipe(source.into()) };
         let flag = 1u64.to_ne_bytes();
         super::notify(
             || swoole_rs_tls::socket_pair::write_from(pipe, &flag),
@@ -388,12 +389,12 @@ fn write_waitall(
 
 /// The stream pool's connection for the task `worker` runs: none in an event
 /// worker's pool, which has no IPC state.
-fn stream_connection(worker: Worker<'_>) -> Option<Socket<'_>> {
+fn stream_connection(worker: Worker<'_>) -> Option<std::rc::Rc<swoole_rs_reactor::OwnedSocket>> {
     let pool = worker.pool_ref()?;
     if !pool.use_socket() {
         return None;
     }
-    pool.ipc_connection().map(Socket::lent)
+    pool.ipc_connection()?.downcast().ok()
 }
 
 /// The result over a stream: its length, big-endian, then its bytes.

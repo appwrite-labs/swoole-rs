@@ -11,7 +11,10 @@ The Zend surface (upstream's `ext-src/`) is Rust. `Swoole\Atomic`
   build on a mismatch. `src/shim*.c` are the macros and inline functions bindgen
   can't see that have to stay C ([What stays C](#what-stays-c)); anything else
   is Rust over the bindgen'd layouts (`zend::value::set`, `empty_string`,
-  `module_loaded`, a `php_stream`'s bitfields).
+  `module_loaded`, a `php_stream`'s bitfields). The `extern "C"` declarations
+  the crates write by hand over wrapper types aren't bindgen's:
+  `tools/externs.py` (PR tier) checks each one's arity and argument widths
+  against the PHP, shim, OpenSSL and glibc header that declares it.
 - `crates/zend`: the safe layer. `Call` (argument count, `$this`, `long`/`double`
   parsed as `Z_PARAM_LONG`/`Z_PARAM_DOUBLE`, `set_long`/`set_bool`), `Object<T>`
   (`struct { T data; zend_object std; }`: `create`, `data`, `install`, `dtor`;

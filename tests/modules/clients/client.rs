@@ -126,7 +126,7 @@ type ReceiveSlot<'a> = RefCell<Option<Box<dyn FnMut(&Client<'a>, &[u8]) + 'a>>>;
 
 /// `network::Client`, deleted on drop; `created`/`connected` are `SyncClient`'s.
 pub(super) struct Client<'a> {
-    state: *mut c_void,
+    state: Handle,
     created: Cell<bool>,
     connected: Cell<bool>,
     sync: bool,
@@ -165,11 +165,7 @@ unsafe extern "C" fn listener(
 impl<'a> Client<'a> {
     /// `Client cli(type, async)`; None when it has no socket (`!cli.ready()`).
     pub(super) fn new(kind: c_int, is_async: bool) -> Option<Box<Self>> {
-        let state: *mut c_void = native::create(kind, is_async)
-            .map_or(std::ptr::null_mut(), |client| client.as_ptr().cast());
-        if state.is_null() {
-            return None;
-        }
+        let state = native::create(kind, is_async)?;
         Some(Box::new(Self {
             state,
             created: Cell::new(true),
@@ -219,10 +215,8 @@ impl<'a> Client<'a> {
             }
         }
         let object = std::ptr::from_ref(self).cast::<c_void>();
-        // SAFETY: a live state.
-        let state = unsafe { &*self.state.cast::<swoole_rs_clients::client::Client>() };
         swoole_rs_clients::client::listen(
-            state,
+            self.client(),
             events,
             // SAFETY: the boxed client outlives its callbacks.
             std::rc::Rc::new(move |kind, data, length| unsafe {
@@ -258,8 +252,7 @@ impl<'a> Client<'a> {
     /// crates/clients' handle on the client.
     /// The crates' client `state` is.
     fn client(&self) -> &swoole_rs_clients::client::Client {
-        // SAFETY: the client `new` made, live until the drop frees it.
-        unsafe { &*self.state.cast() }
+        self.state.client()
     }
 
     /// The client's `SSLContext` owner, null while TLS is off.
@@ -271,8 +264,7 @@ impl<'a> Client<'a> {
     }
 
     fn handle(&self) -> Handle {
-        // SAFETY: the client `new` made, live until the drop frees it.
-        unsafe { Handle::new(self.state.cast()) }
+        self.state
     }
 
     pub(super) fn connect(&self, host: &str, port: c_int, timeout: f64, flags: c_int) -> c_int {
@@ -393,10 +385,8 @@ impl<'a> Client<'a> {
     }
 
     fn set_proxy(&self, http: bool, host: &str, port: c_int, user: &str, password: &str) {
-        // SAFETY: `state` is this test's live client.
-        let client = unsafe { &*self.state.cast::<swoole_rs_clients::client::Client>() };
         swoole_rs_clients::client::set_proxy(
-            client,
+            self.client(),
             http,
             host.as_bytes(),
             i64::from(port),

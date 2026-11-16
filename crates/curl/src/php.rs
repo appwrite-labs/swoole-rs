@@ -1,47 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 // Compatibility derived from Swoole v6.2.4 ext-src/swoole_curl.cc (Swoole contributors).
-//! `swoole_curl_get_handle`: the bundled `ext/curl`'s `php_curl` behind a
-//! `CurlHandle` zval, checked against the coroutine its multi waits in.
+//! The check behind `swoole_curl_get_handle`: whether the bundled `ext/curl`'s
+//! `php_curl` may be used by the current coroutine, given the multi its easy
+//! handle waits in.
 use crate::{Easy, host};
-use swoole_rs_curl_sys::CURL;
-use swoole_rs_zend::{E_WARNING, Value, bailout};
+use swoole_rs_zend::{E_WARNING, bailout};
 
 /// `SW_ERROR_PHP_FATAL_ERROR`.
 const PHP_FATAL_ERROR: i32 = swoole_rs_error::ErrorCode::SW_ERROR_PHP_FATAL_ERROR as i32;
 
-/// The `php_curl` of `zid` (whose first field is its easy handle) on behalf
-/// of the current coroutine; null after the warning of a missing coroutine
-/// handle or the fatal error of a multi another coroutine waits on.
-/// # Safety
-/// `zid` is null or a `CurlHandle` zval, in a request.
+/// Whether the current coroutine may use the `php_curl` whose easy handle is
+/// `cp`: false after the warning of a missing coroutine handle or the fatal
+/// error of a multi another coroutine waits on.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swoole_curl_get_handle(
-    zid: Option<&Value>,
-    exclusive: bool,
-    required: bool,
-) -> *mut *mut CURL {
-    let Some(object) = zid.and_then(Value::object_ref) else {
-        return std::ptr::null_mut();
-    };
-    let handlers = object.handlers();
-    let object = object.as_ptr();
-    // SAFETY: its live handlers; `offset` is where `std` sits in `php_curl`.
-    let offset = unsafe { (*handlers).offset };
-    #[expect(
-        clippy::cast_ptr_alignment,
-        reason = "Z_CURL_P: php_curl, which is pointer-aligned, starts `offset` bytes before its std"
-    )]
-    let ch = object
-        .cast::<u8>()
-        .wrapping_sub(usize::try_from(offset).unwrap_or(0))
-        .cast::<*mut CURL>();
+pub extern "C" fn swr_v1_curl_check_handle(cp: Easy<'_>, exclusive: bool, required: bool) -> bool {
     let shut_down = swoole_rs_phpswoole::globals().req_status.get()
         == swoole_rs_phpswoole::ReqStatus::RshutdownEnd;
     if !exclusive || shut_down || host::current().is_null() {
-        return ch;
+        return true;
     }
-    // SAFETY: `ch` is the live `php_curl`, which starts with its live easy handle.
-    let cp = unsafe { *ch.cast::<Easy<'_>>() };
     let Some(handle) = cp.handle() else {
         if required {
             swoole_rs_corebase::log::set_last_error(PHP_FATAL_ERROR);
@@ -49,17 +26,20 @@ pub unsafe extern "C" fn swoole_curl_get_handle(
                 E_WARNING,
                 c"The given handle is not initialized in coroutine",
             ));
-            return std::ptr::null_mut();
+            return false;
         }
-        return ch;
+        return true;
     };
     // SAFETY: null or the handle's live multi.
     let Some(multi) = (unsafe { handle.multi.get().as_ref() }) else {
-        return ch;
+        return true;
     };
-    // SAFETY: this frame owns nothing that needs a drop.
-    if unsafe { host::swoole_curl_check_bound_co(multi) }.is_null() {
-        return std::ptr::null_mut();
-    }
-    ch
+    let mut buffer = [0; 128];
+    let Err((code, message)) = host::bound_co(multi, &mut buffer) else {
+        return true;
+    };
+    // SAFETY: Swoole's fatal error hook; C++ calls this, and this frame owns
+    // nothing that needs a drop.
+    unsafe { swoole_rs_corebase::fatal_error(code, message) };
+    false
 }
