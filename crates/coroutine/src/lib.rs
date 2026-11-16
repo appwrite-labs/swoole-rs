@@ -29,10 +29,10 @@ mod live;
 pub use live::*;
 mod scheduler;
 pub use scheduler::{
-    Counters, coroutine_count, coroutine_get, coroutine_older, counters, current, current_cid,
-    current_native, current_resume_code, current_safe, resume, scheduler, set_callback,
-    set_current_task, set_socket_bound_cid, set_stack_size, socket_bound_cid, suspend,
-    swr_v1_coroutine_bail, yield_with_cancel,
+    Counters, coroutine_count, coroutine_get, coroutine_older, coroutine_state, counters, current,
+    current_cid, current_native, current_resume_code, current_safe, resume, scheduler,
+    set_callback, set_current_task, set_socket_bound_cid, set_stack_size, socket_bound_cid,
+    suspend, swr_v1_coroutine_bail, yield_with_cancel,
 };
 mod stack;
 pub use stack::*;

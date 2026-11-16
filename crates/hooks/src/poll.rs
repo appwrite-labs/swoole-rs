@@ -159,10 +159,7 @@ fn poll_now(fds: &[Cell<PollFd>]) -> Result<(), PollError> {
             revents: 0,
         })
         .collect();
-    let ready = swoole_rs_corebase::sys::poll(&mut list, 0);
-    if ready < 0 {
-        return Err(PollError::Io(std::io::Error::last_os_error()));
-    }
+    let ready = swoole_rs_corebase::sys::poll(&mut list, 0).map_err(PollError::Io)?;
     if ready == 0 {
         return Err(PollError::Timeout);
     }

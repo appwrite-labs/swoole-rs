@@ -489,8 +489,8 @@ impl Multi {
         if fds.is_empty() {
             return CURLM_OK;
         }
-        if swoole_rs_corebase::sys::poll(&mut fds, 0) < 0 {
-            return if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+        if let Err(error) = swoole_rs_corebase::sys::poll(&mut fds, 0) {
+            return if error.raw_os_error() == Some(libc::EINTR) {
                 CURLM_OK
             } else {
                 CURLM_INTERNAL_ERROR

@@ -33,9 +33,10 @@ pub trait PackageLength {
         true
     }
 
-    /// The packet length `callable` returns for `bytes` so far, or -1, with
-    /// any bailout deferred.
-    fn length(callable: &Callable, bytes: &[u8]) -> isize;
+    /// The packet length `callable` returns for `bytes` so far (0: not yet
+    /// known), or `None` when it failed or returned a negative length, with any
+    /// bailout deferred.
+    fn length(callable: &Callable, bytes: &[u8]) -> Option<usize>;
 }
 
 /// `php_swoole_length_func`: `L`'s length for the packet so far. A bailout is
@@ -58,5 +59,5 @@ pub unsafe extern "C" fn length<L: PackageLength>(
     // Released first: `finish` may jump over this frame.
     drop(held);
     bailout::finish();
-    length
+    length.map_or(-1, usize::cast_signed)
 }

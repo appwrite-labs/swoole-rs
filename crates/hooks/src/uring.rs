@@ -713,8 +713,8 @@ pub fn sendfile(
         return Ok(0);
     }
     let [read_end, write_end] = os::pipe().ok_or_else(io::Error::last_os_error)?;
-    os::fcntl(write_end, libc::F_SETPIPE_SZ, 1024 * 1024);
-    let pipe_size = os::fcntl(read_end, libc::F_GETPIPE_SZ, 0);
+    let _resized = os::fcntl(write_end, libc::F_SETPIPE_SZ, 1024 * 1024);
+    let pipe_size = os::fcntl(read_end, libc::F_GETPIPE_SZ, 0).unwrap_or(-1);
     let pipe_size = usize::try_from(pipe_size).unwrap_or(65536);
     // Each splice completes before the next, and carries no pointers.
     let splice = |fd_in, off_in, fd_out, nbytes| {
@@ -876,7 +876,7 @@ pub fn waitpid(
 /// The poll failed, including a linked timeout expiring.
 pub fn poll(host: &Host, pollfd: &mut libc::pollfd, timeout: c_int) -> io::Result<c_int> {
     if timeout == 0 {
-        return count_result(os::poll(core::slice::from_mut(pollfd), timeout).c_cast::<isize>());
+        return os::poll(core::slice::from_mut(pollfd), timeout);
     }
     let (descriptor, events) = (pollfd.fd, pollfd.events);
     let rc = poll_add(
