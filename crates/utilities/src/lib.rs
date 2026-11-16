@@ -177,7 +177,11 @@ pub extern "C" fn swr_v1_utils_spinlock(lock: Option<&AtomicU32>, cpus: u32, bac
 #[must_use]
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_utils_wait(word: Option<&AtomicU32>, timeout: f64) -> i32 {
-    swoole_rs_locks::swr_v1_locks_wait(word, timeout)
+    if word.is_some_and(|word| swoole_rs_locks::wait(word, timeout)) {
+        0
+    } else {
+        -1
+    }
 }
 
 /// Futex wake for the native atomic utility's waiters.
@@ -185,7 +189,8 @@ pub extern "C" fn swr_v1_utils_wait(word: Option<&AtomicU32>, timeout: f64) -> i
 #[must_use]
 #[unsafe(no_mangle)]
 pub extern "C" fn swr_v1_utils_wakeup(word: Option<&AtomicU32>, n: i32) -> i32 {
-    swoole_rs_locks::swr_v1_locks_wakeup(word, n)
+    word.and_then(|word| swoole_rs_locks::wakeup(word, n))
+        .map_or(-1, |woken| i32::try_from(woken).unwrap_or(i32::MAX))
 }
 
 /// Return the exact pinned pretty-function substring as a byte span. `name` is a

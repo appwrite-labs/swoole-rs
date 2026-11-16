@@ -1242,7 +1242,7 @@ mod tests {
     #[test]
     fn ssl_create_then_close_frees_the_ssl() {
         unsafe {
-            let owner = crate::swr_v1_tls_owner_new();
+            let owner = crate::owner_new(crate::tls_warning);
             (*owner.fields).context = Some(crate::SslContext::tls());
             let mut fds = [0; 2];
             assert_eq!(
@@ -1281,7 +1281,7 @@ mod tests {
         let handle = unsafe { Socket::from_ptr(&raw mut socket) }.unwrap();
         assert_eq!(socket_ssl_session(handle), None);
         unsafe {
-            let owner = crate::swr_v1_tls_owner_new();
+            let owner = crate::owner_new(crate::tls_warning);
             (*owner.fields).context = Some(crate::SslContext::tls());
             assert!(socket_ssl_create(
                 Socket::from_ptr(&raw mut socket).unwrap(),
