@@ -63,22 +63,24 @@ pub const REQUEST_KEYS: [&[u8]; 8] = [
 #[must_use]
 #[inline(always)]
 pub fn request_key(name: &[u8]) -> Option<usize> {
-    let index = match name.len() {
-        4 => 0,
-        6 => 2,
+    // Keep each expected name constant so the locale comparison can fold its
+    // length and word masks instead of dispatching through a dynamic slice.
+    match name.len() {
+        4 => case_equal(name, b"host").then_some(0),
+        6 => case_equal(name, b"accept").then_some(2),
         10 => {
-            if case_equal(name, REQUEST_KEYS.get(1)?) {
-                return Some(1);
+            if case_equal(name, b"user-agent") {
+                Some(1)
+            } else {
+                case_equal(name, b"connection").then_some(6)
             }
-            6
         }
-        12 => 3,
-        13 => 5,
-        14 => 4,
-        15 => 7,
-        _ => return None,
-    };
-    case_equal(name, REQUEST_KEYS.get(index)?).then_some(index)
+        12 => case_equal(name, b"content-type").then_some(3),
+        13 => case_equal(name, b"authorization").then_some(5),
+        14 => case_equal(name, b"content-length").then_some(4),
+        15 => case_equal(name, b"accept-encoding").then_some(7),
+        _ => None,
+    }
 }
 
 /// `swoole_http_token_list_contains_value`'s fast path: `SW_STRCASEEQ` with
