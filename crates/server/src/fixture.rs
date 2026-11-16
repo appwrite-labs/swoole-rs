@@ -140,9 +140,11 @@ impl LiveServer {
         &self.port_counters
     }
 
-    /// The port's listening socket.
-    pub(crate) fn listener(&self) -> *mut SocketRecord {
-        self.listener
+    /// The read event of the port's listening socket, as the reactor hands `accept` it.
+    pub(crate) fn accept_event(&self) -> swoole_rs_reactor::Event {
+        // SAFETY: the fixture's listener, live until the fixture drops.
+        let listener = unsafe { swoole_rs_reactor::Socket::from_ptr(self.listener) };
+        swoole_rs_reactor::Event::of(self.listener_fd, 0, FD_STREAM_SERVER, listener)
     }
 
     /// A client connected to the port, once the listener can accept it. Readiness
@@ -209,11 +211,8 @@ mod tests {
     fn accepts_a_real_connection_into_the_tables_and_counters() {
         let live = LiveServer::new();
         let client = live.connect();
-        let listener = live.listener();
         let fd = live.listener_fd;
-        // SAFETY: as above, for the event's life.
-        let event =
-            unsafe { swoole_rs_reactor::Event::new(fd, 0, FD_STREAM_SERVER, listener.cast()) };
+        let event = live.accept_event();
         // The batch ends at EAGAIN.
         crate::connection::accept(live.server(), live.reactor(), &event);
 

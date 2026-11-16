@@ -306,12 +306,12 @@ impl SocketRecord {
     /// `Socket::operator delete`.
     ///
     /// # Safety
-    /// `socket` is null or came from [`Self::into_raw`] (or a call here that returns
-    /// a record) and is not used again.
-    pub unsafe fn free(socket: *mut Self) {
-        if !socket.is_null() {
+    /// `socket` is none or came from [`Self::into_raw`] (or a call here that returns
+    /// a record, or [`Self::into_socket`]) and is not used again.
+    pub unsafe fn free(socket: Option<crate::Socket<'_>>) {
+        if let Some(socket) = socket {
             // SAFETY: as the caller promises.
-            drop(unsafe { Box::from_raw(socket) });
+            drop(unsafe { Box::from_raw(socket.as_ptr()) });
         }
     }
 
@@ -584,7 +584,7 @@ mod tests {
         let record = unsafe { &*socket };
         assert_eq!((record.fd, record.fd_type, record.removed), (7, 3, true));
         // SAFETY: as above, not used again.
-        unsafe { SocketRecord::free(socket) };
+        unsafe { SocketRecord::free(crate::Socket::from_ptr(socket)) };
     }
 
     #[test]
@@ -613,7 +613,7 @@ mod tests {
         // SAFETY: the socket's own fd.
         unsafe { libc::close(record.fd) };
         // SAFETY: not used again.
-        unsafe { SocketRecord::free(socket) };
+        unsafe { SocketRecord::free(crate::Socket::from_ptr(socket)) };
     }
 
     #[test]
@@ -633,7 +633,7 @@ mod tests {
             unsafe { libc::close(fd) };
         }
         // SAFETY: not used again.
-        unsafe { SocketRecord::free(copy) };
+        unsafe { SocketRecord::free(crate::Socket::from_ptr(copy)) };
     }
 
     #[test]
@@ -649,6 +649,6 @@ mod tests {
         // SAFETY: the listener's own fd.
         unsafe { libc::close(record.fd) };
         // SAFETY: not used again.
-        unsafe { SocketRecord::free(listener) };
+        unsafe { SocketRecord::free(crate::Socket::from_ptr(listener)) };
     }
 }

@@ -714,7 +714,9 @@ mod tests {
             unsafe { Co::new(self.0.cast()) }
         }
         fn event(&mut self) -> Event {
-            unsafe { Event::new(-1, 0, 6, self.record().socket_ptr().cast()) }
+            Event::of(-1, 0, 6, unsafe {
+                Socket::from_ptr(self.record().socket_ptr())
+            })
         }
         fn bind(&mut self, event: Events, co: *mut c_long) {
             self.co().with_state(|state| state.bind(event, co.cast()));
@@ -724,7 +726,7 @@ mod tests {
     impl Drop for Object {
         fn drop(&mut self) {
             unsafe {
-                SocketRecord::free(self.record().socket_ptr());
+                SocketRecord::free(Socket::from_ptr(self.record().socket_ptr()));
                 (*self.0).record.fini();
                 drop(Box::from_raw(self.0));
             }

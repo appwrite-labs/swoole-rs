@@ -129,8 +129,9 @@ fn init_thread(ctx: &mut ReactorContext<'_>, state: &ServerState, id: u16) -> Op
             return Some(-1);
         }
         // Only synchronous sends go to the notify pipe: thread-safe, no separate memory.
-        if thread.notify_pipe.get().is_null() {
-            thread.notify_pipe.set(worker.pipe_worker().cast());
+        if thread.notify_pipe.get().is_none() {
+            let pipe = worker_pipe(worker, false).and_then(crate::reactor_handle::registered);
+            thread.notify_pipe.set(pipe);
         }
     }
     Some(0)

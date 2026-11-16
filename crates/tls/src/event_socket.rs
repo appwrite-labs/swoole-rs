@@ -152,16 +152,14 @@ unsafe extern "C-unwind" fn free_deferred(socket: *mut c_void) {
 /// `void Socket::free()`: [`EventSocket::release`] of the record.
 ///
 /// # Safety
-/// `socket` is null or a live record [`SocketRecord`] allocated, which nothing uses
-/// afterwards.
+/// `socket` is none or a record [`SocketRecord`] allocated, which its caller gives up as
+/// an `EventSocket` owns one: nothing uses it afterwards.
 #[cfg_attr(
     feature = "upstream-symbols",
     unsafe(export_name = "_ZN6swoole7network6Socket4freeEv")
 )]
-pub unsafe extern "C-unwind" fn socket_free(socket: *mut SocketRecord) {
-    // SAFETY: as the caller promises: null or a record it gives up, as `EventSocket`
-    // owns one.
-    if let Some(record) = unsafe { Socket::from_ptr(socket) } {
+pub unsafe extern "C-unwind" fn socket_free(socket: Option<Socket<'static>>) {
+    if let Some(record) = socket {
         EventSocket(record).release();
     }
 }

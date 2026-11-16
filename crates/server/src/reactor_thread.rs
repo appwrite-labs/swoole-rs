@@ -215,11 +215,7 @@ pub(crate) fn join_reactor_threads(serv: view::Server<'_>) {
         };
         // Only the field is read: the thread itself holds its record meanwhile.
         if let Some(thread) = state.tables_ref().reactor_thread(usize::from(id)) {
-            let notify = thread.notify_pipe.get();
-            // SAFETY: null or the thread's notify pipe, which it keeps until the server
-            // joins it, after this notice.
-            let pipe = unsafe { Socket::from_ptr(notify) };
-            send_event(pipe, 0, ServerEvent::Shutdown);
+            send_event(thread.notify_pipe.get(), 0, ServerEvent::Shutdown);
         }
         joining.join().unwrap_or_default();
     }
@@ -324,10 +320,7 @@ mod tests {
     fn accepted() -> (crate::fixture::LiveServer, std::net::TcpStream) {
         let live = crate::fixture::LiveServer::new();
         let client = live.connect();
-        // SAFETY: the fixture's listener, live for the event.
-        let event = unsafe {
-            swoole_rs_reactor::Event::new(live.listener_fd, 0, 1, live.listener().cast())
-        };
+        let event = live.accept_event();
         crate::connection::accept(live.server(), live.reactor(), &event);
         live.reactor().set_error_handler(record_error);
         drop(handled());

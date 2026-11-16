@@ -132,7 +132,7 @@ pub extern "C" fn on_write(reactor: Running<'_>, event: &mut Event) -> c_int {
 #[must_use]
 pub unsafe extern "C-unwind" fn close_connection(
     reactor: Running<'_>,
-    socket: swoole_rs_reactor::Socket<'_>,
+    socket: swoole_rs_reactor::Socket<'static>,
 ) -> c_int {
     let reactor = Reactor::running(reactor);
     // SAFETY: per the caller.

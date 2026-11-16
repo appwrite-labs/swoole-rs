@@ -81,8 +81,6 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
             };
         }
     }
-    // The port reads the event through its pointer while the socket is borrowed.
-    let raw = core::ptr::from_mut(event);
     let Some(sock) = event.socket() else {
         return OK;
     };
@@ -111,10 +109,8 @@ fn read_as(prequeue: bool, serv: view::Server<'_>, reactor: Reactor, event: &mut
     let Some(on_read) = port.config().on_read.get() else {
         return ERR;
     };
-    // SAFETY: the reactor's event, which no reference is used through during the read.
-    let event = unsafe { &mut *raw };
     // A readable event on the live connection of `fd`, of this server's port `port`.
-    let retval = on_read(reactor.handle(), port, ReadEvent::new(serv, event));
+    let retval = on_read(reactor.handle(), port, ReadEvent::new(serv, event, conn));
     // Upstream reads the socket after the read too.
     let (total_recv_bytes, notified) = sock.read(|s| (s.total_recv_bytes, s.close_notified));
     let received = total_recv_bytes.wrapping_sub(last_recv_bytes);
@@ -453,7 +449,7 @@ fn fin_ends(prequeue: bool, state: &crate::ServerState, conn: Connection<'_>) ->
 pub(crate) fn close_connection(
     serv: view::Server<'_>,
     reactor: Reactor,
-    sock: Option<Socket<'_>>,
+    sock: Option<Socket<'static>>,
 ) -> bool {
     let state = serv.state();
     let Some(sock) = sock else {
@@ -609,8 +605,7 @@ pub(crate) mod tests {
         let live = LiveServer::new();
         let clients = [(); 2].map(|()| {
             let client = live.connect();
-            // SAFETY: the fixture's listener, live for the event.
-            let event = unsafe { Event::new(live.listener_fd, 0, 1, live.listener().cast()) };
+            let event = live.accept_event();
             crate::connection::accept(live.server(), live.reactor(), &event);
             client
         });
@@ -806,7 +801,7 @@ pub(crate) mod tests {
 
     /// The port's `onRead`: receives 5 bytes and returns 42.
     fn on_read(_: swoole_rs_reactor::Running<'_>, _: view::Port<'_>, read: ReadEvent<'_>) -> c_int {
-        let (_, event) = read.into_parts();
+        let (_, event, _) = read.into_parts();
         READS.with_borrow_mut(|reads| reads.push(event.fd()));
         let sock = event.socket().unwrap();
         sock.edit(|s| s.total_recv_bytes += 5);

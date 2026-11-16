@@ -722,27 +722,31 @@ pub(crate) fn worker_pipe(worker: Worker<'_>, master: bool) -> Option<Socket<'_>
 /// own record of one (kept by the bus, which outlives its loop). Either outlives any
 /// event loop that watches it, so a write that queues on it may register it.
 #[derive(Clone, Copy)]
-pub(crate) struct PipeSocket<'a>(Socket<'a>);
+pub(crate) struct PipeSocket(Socket<'static>);
 
 #[cfg_attr(
     not(feature = "upstream-symbols"),
     expect(dead_code, reason = "only the hybrid's factories write to a pipe")
 )]
-impl<'a> PipeSocket<'a> {
+impl PipeSocket {
     /// The master end (`master`) or the worker end of `worker`'s pipe.
     #[inline]
-    pub(crate) fn of_worker(worker: Worker<'a>, master: bool) -> Option<Self> {
-        worker_pipe(worker, master).map(Self)
+    pub(crate) fn of_worker(worker: Worker<'_>, master: bool) -> Option<Self> {
+        worker_pipe(worker, master)
+            .and_then(crate::reactor_handle::registered)
+            .map(Self)
     }
 
     /// `bus`'s own record of the pipe `end`, if it has one.
     #[inline]
-    pub(crate) fn of_bus(bus: &'a swoole_rs_bus::MessageBus, end: Self) -> Option<Self> {
-        bus.pipe(end.0.fd()).map(Self)
+    pub(crate) fn of_bus(bus: &swoole_rs_bus::MessageBus, end: Self) -> Option<Self> {
+        bus.pipe(end.0.fd())
+            .and_then(crate::reactor_handle::registered)
+            .map(Self)
     }
 
     #[inline]
-    pub(crate) fn socket(self) -> Socket<'a> {
+    pub(crate) fn socket(self) -> Socket<'static> {
         self.0
     }
 }

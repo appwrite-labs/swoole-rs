@@ -876,7 +876,7 @@ impl Released {
 impl Drop for Released {
     fn drop(&mut self) {
         // SAFETY: the record's own socket, which it gave up and nothing uses afterwards.
-        unsafe { socket_free(self.0.as_ptr()) };
+        unsafe { socket_free(Some(self.0)) };
     }
 }
 
@@ -1105,7 +1105,7 @@ mod test_support {
                         swoole_rs_buffer::string::delete_string(buffer.cast());
                     }
                 }
-                SocketRecord::free(self.0.socket_ptr());
+                SocketRecord::free(Socket::from_ptr(self.0.socket_ptr()));
                 self.0.fini();
             }
         }
@@ -1134,7 +1134,7 @@ mod tests {
         if !socket.socket_ptr().is_null() {
             unsafe {
                 libc::close((*socket.socket_ptr()).fields.fd);
-                SocketRecord::free(socket.socket_ptr());
+                SocketRecord::free(Socket::from_ptr(socket.socket_ptr()));
             }
         }
         socket.fini();
