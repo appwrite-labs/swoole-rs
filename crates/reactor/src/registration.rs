@@ -3,11 +3,11 @@
 //! `kevent` calls in upstream's order. Each returns which call failed, with `errno`
 //! as the kernel left it, for `change::apply`'s warnings.
 use crate::Events;
-use std::ffi::{c_int, c_void};
+use std::ffi::c_int;
 
 #[cfg(target_os = "linux")]
 mod epoll {
-    use super::{Events, c_int, c_void};
+    use super::{Events, c_int};
 
     /// `ReactorEpoll::get_events`.
     fn interest(events: Events) -> u32 {
@@ -27,15 +27,12 @@ mod epoll {
         interest.cast_unsigned()
     }
 
-    /// `epoll_ctl` for `op` of `fd` with `socket` as its token,
-    /// which the kernel keeps as a number; the kernel's error. The wait loop reads the
-    /// token back as the registered socket, which `change::Request` keeps live while it is
-    /// registered.
+    /// `epoll_ctl` for `op` of `fd`, which is its token: the wait loop finds the socket
+    /// by it in the reactor's registry. The kernel's error.
     pub(crate) fn epoll_ctl(
         epfd: c_int,
         op: crate::ChangeOp,
         fd: c_int,
-        socket: *mut c_void,
         events: Events,
     ) -> std::io::Result<()> {
         let op = match op {
@@ -45,7 +42,7 @@ mod epoll {
         };
         let mut event = libc::epoll_event {
             events: interest(events),
-            u64: socket as usize as u64,
+            u64: fd.cast_unsigned().into(),
         };
         let event = (op != libc::EPOLL_CTL_DEL).then_some(&mut event);
         if swoole_rs_corebase::sys::epoll_ctl(epfd, op, fd, event) < 0 {
@@ -73,17 +70,10 @@ mod epoll {
             unsafe {
                 assert_eq!(libc::pipe(fds.as_mut_ptr()), 0);
                 let epfd = libc::epoll_create1(0);
-                let token = 7 as *mut c_void;
-                assert!(
-                    epoll_ctl(epfd, crate::ChangeOp::Add, fds[0], token, SW_EVENT_READ).is_ok()
-                );
-                assert!(
-                    epoll_ctl(epfd, crate::ChangeOp::Set, fds[0], token, SW_EVENT_WRITE).is_ok()
-                );
-                assert!(epoll_ctl(epfd, crate::ChangeOp::Del, fds[0], token, Events::NONE).is_ok());
-                assert!(
-                    epoll_ctl(epfd, crate::ChangeOp::Del, fds[0], token, Events::NONE).is_err()
-                );
+                assert!(epoll_ctl(epfd, crate::ChangeOp::Add, fds[0], SW_EVENT_READ).is_ok());
+                assert!(epoll_ctl(epfd, crate::ChangeOp::Set, fds[0], SW_EVENT_WRITE).is_ok());
+                assert!(epoll_ctl(epfd, crate::ChangeOp::Del, fds[0], Events::NONE).is_ok());
+                assert!(epoll_ctl(epfd, crate::ChangeOp::Del, fds[0], Events::NONE).is_err());
                 libc::close(epfd);
                 libc::close(fds[0]);
                 libc::close(fds[1]);
@@ -112,7 +102,7 @@ pub(crate) use kqueue::*;
     target_os = "dragonfly"
 ))]
 mod kqueue {
-    use super::{Events, c_int, c_void};
+    use super::{Events, c_int};
     use swoole_rs_corebase::CCast;
 
     /// `NOTE_EOF` where the platform defines it (upstream's `#ifdef NOTE_EOF`): only
@@ -123,14 +113,8 @@ mod kqueue {
     const NOTE_EOF: u32 = 0;
 
     /// One change for `fd`: `EV_ADD` or `EV_DELETE` on `filter`; whether it took.
-    fn change(
-        kq: c_int,
-        fd: c_int,
-        filter: i16,
-        flags: u16,
-        fflags: u32,
-        socket: *mut c_void,
-    ) -> bool {
+    /// The wait loop finds the socket by the entry's ident, `fd`, in the reactor's registry.
+    fn change(kq: c_int, fd: c_int, filter: i16, flags: u16, fflags: u32) -> bool {
         let mut event: libc::kevent = swoole_rs_corebase::sys::zeroed();
         // Upstream's `EV_SET` converts the int fd to `uintptr_t` the same way.
         let ident = (fd as isize).c_cast::<usize>();
@@ -138,19 +122,18 @@ mod kqueue {
         event.filter = filter;
         event.flags = flags;
         event.fflags = fflags;
-        event.udata = socket.cast();
         swoole_rs_corebase::sys::kevent_change(kq, &event).is_ok()
     }
 
-    type Filter = fn(c_int, c_int, u16, *mut c_void) -> bool;
+    type Filter = fn(c_int, c_int, u16) -> bool;
 
-    fn read(kq: c_int, fd: c_int, flags: u16, socket: *mut c_void) -> bool {
+    fn read(kq: c_int, fd: c_int, flags: u16) -> bool {
         let fflags = if flags == libc::EV_ADD { NOTE_EOF } else { 0 };
-        change(kq, fd, libc::EVFILT_READ, flags, fflags, socket)
+        change(kq, fd, libc::EVFILT_READ, flags, fflags)
     }
 
-    fn write(kq: c_int, fd: c_int, flags: u16, socket: *mut c_void) -> bool {
-        change(kq, fd, libc::EVFILT_WRITE, flags, 0, socket)
+    fn write(kq: c_int, fd: c_int, flags: u16) -> bool {
+        change(kq, fd, libc::EVFILT_WRITE, flags, 0)
     }
 
     /// The kernel call that failed: its filter, and whether it added or deleted.
@@ -161,21 +144,14 @@ mod kqueue {
     }
 
     /// `ReactorKqueue::add`'s kernel calls, stopping at the one that fails.
-    /// The kernel keeps `socket` as a number: the wait loop reads it back as the socket
-    /// `change::Request` keeps live while it is registered.
-    pub(crate) fn kqueue_add(
-        kq: c_int,
-        fd: c_int,
-        socket: *mut c_void,
-        events: Events,
-    ) -> Result<(), Failed> {
-        if events.reads() && !read(kq, fd, libc::EV_ADD, socket) {
+    pub(crate) fn kqueue_add(kq: c_int, fd: c_int, events: Events) -> Result<(), Failed> {
+        if events.reads() && !read(kq, fd, libc::EV_ADD) {
             return Err(Failed {
                 write: false,
                 add: true,
             });
         }
-        if events.writes() && !write(kq, fd, libc::EV_ADD, socket) {
+        if events.writes() && !write(kq, fd, libc::EV_ADD) {
             return Err(Failed {
                 write: true,
                 add: true,
@@ -184,14 +160,8 @@ mod kqueue {
         Ok(())
     }
 
-    /// `ReactorKqueue::set`'s kernel calls, stopping at the one that fails. The token
-    /// is [`kqueue_add`]'s.
-    pub(crate) fn kqueue_set(
-        kq: c_int,
-        fd: c_int,
-        socket: *mut c_void,
-        events: Events,
-    ) -> Result<(), Failed> {
+    /// `ReactorKqueue::set`'s kernel calls, stopping at the one that fails.
+    pub(crate) fn kqueue_set(kq: c_int, fd: c_int, events: Events) -> Result<(), Failed> {
         let filters: [(bool, Filter); 2] = [(false, read), (true, write)];
         for (write, filter) in filters {
             let add = if write {
@@ -200,7 +170,7 @@ mod kqueue {
                 events.reads()
             };
             let flags = if add { libc::EV_ADD } else { libc::EV_DELETE };
-            if !filter(kq, fd, flags, socket) {
+            if !filter(kq, fd, flags) {
                 return Err(Failed { write, add });
             }
         }
@@ -213,7 +183,6 @@ mod kqueue {
     pub(crate) fn kqueue_del(
         kq: c_int,
         fd: c_int,
-        socket: *mut c_void,
         events: Events,
         errors: &mut [c_int; 2],
     ) -> bool {
@@ -223,7 +192,7 @@ mod kqueue {
             (events.intersects(Events::WRITE), write),
         ];
         for (slot, (registered, filter)) in errors.iter_mut().zip(filters) {
-            if registered && !filter(kq, fd, libc::EV_DELETE, socket) {
+            if registered && !filter(kq, fd, libc::EV_DELETE) {
                 let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
                 *slot = errno;
                 if errno != libc::EBADF && errno != libc::ENOENT {
@@ -248,28 +217,27 @@ mod kqueue {
             unsafe {
                 assert_eq!(libc::pipe(fds.as_mut_ptr()), 0);
                 let kq = libc::kqueue();
-                let token = 7 as *mut c_void;
-                assert_eq!(kqueue_add(kq, fds[0], token, SW_EVENT_READ), Ok(()));
+                assert_eq!(kqueue_add(kq, fds[0], SW_EVENT_READ), Ok(()));
                 assert_eq!(
-                    kqueue_set(kq, fds[0], token, SW_EVENT_READ | SW_EVENT_WRITE),
+                    kqueue_set(kq, fds[0], SW_EVENT_READ | SW_EVENT_WRITE),
                     Ok(())
                 );
-                assert_eq!(kqueue_set(kq, fds[0], token, SW_EVENT_READ), Ok(()));
+                assert_eq!(kqueue_set(kq, fds[0], SW_EVENT_READ), Ok(()));
                 // The write filter is gone, so deleting it again reports ENOENT and continues.
                 let both = SW_EVENT_READ | SW_EVENT_WRITE;
-                assert!(kqueue_del(kq, fds[0], token, both, &mut errors));
+                assert!(kqueue_del(kq, fds[0], both, &mut errors));
                 assert_eq!(errors, [0, libc::ENOENT]);
                 // A bad descriptor fails the first call.
                 let read_add = Failed {
                     write: false,
                     add: true,
                 };
-                assert_eq!(kqueue_add(kq, -1, token, SW_EVENT_READ), Err(read_add));
+                assert_eq!(kqueue_add(kq, -1, SW_EVENT_READ), Err(read_add));
                 let read_delete = Failed {
                     write: false,
                     add: false,
                 };
-                assert_eq!(kqueue_set(kq, -1, token, SW_EVENT_WRITE), Err(read_delete));
+                assert_eq!(kqueue_set(kq, -1, SW_EVENT_WRITE), Err(read_delete));
                 libc::close(kq);
                 libc::close(fds[0]);
                 libc::close(fds[1]);
