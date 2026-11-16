@@ -103,9 +103,8 @@ into a `Vec<u8>`, added and removed with `swr_v1_core_name_resolver_add`/`_remov
 
 `network::Client` is Rust's (`crates/clients/src/client.rs`): its construction,
 state (flags, server host and port, connect timer, watermarks, the TLS context
-and the proxies), operations, callbacks, reactor handlers and DNS lookup. The
-state starts with the public record (`ClientRecord`), so a client pointer is also
-its record's. The operations are `Handle::run` calls over typed `Op`s, which
+and the proxies), operations, callbacks, reactor handlers and DNS lookup. Its
+public fields are a `ClientRecord`. The operations are `Handle::run` calls over typed `Op`s, which
 crates/phpclients runs inside its `zend_try` and the core-tests port runs directly. The callbacks are one listener closure and an
 event mask (`listen`); a PHP bailout in one longjmps out, so no C++
 exception crosses Rust. The socket's `object` is the Rust state, which the handlers and
