@@ -156,7 +156,6 @@ pub fn url_decode(input: &mut [u8]) -> usize {
     }
     write
 }
-#[repr(C)]
 #[derive(Default, Debug, PartialEq, Eq)]
 pub struct HttpSpan {
     pub offset: usize,

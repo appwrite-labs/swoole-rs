@@ -2,7 +2,6 @@
 //! send snapshot and executes RNG/MIME/date/allocation/IO effects after return.
 use crate::range_response::{HttpRangeFormat, range_format};
 
-#[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HttpStaticTask {
     pub offset: i64,
