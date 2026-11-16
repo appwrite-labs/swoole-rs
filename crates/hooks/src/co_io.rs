@@ -36,38 +36,37 @@ pub struct Host {
     pub packet_fail: fn(Co, crate::packet::Failure, isize),
 }
 
-#[cfg(not(test))]
 static HOST: std::sync::OnceLock<&'static Host> = std::sync::OnceLock::new();
 
 #[cfg(test)]
 thread_local! {
-    /// Each test thread's table: the recording host's unless a test sets its own.
-    pub(crate) static HOST: core::cell::Cell<&'static Host> =
-        const { core::cell::Cell::new(&test_host::HOST_TABLE) };
+    /// Each test thread's table, which [`host`] answers before the installed one: the
+    /// recording host's unless a test sets its own.
+    pub(crate) static TEST_HOST: core::cell::Cell<Option<&'static Host>> =
+        const { core::cell::Cell::new(Some(&test_host::HOST_TABLE)) };
+    /// Each test thread's runtime effects, which [`ops`] answers before the runtime's.
+    static TEST_OPS: core::cell::Cell<Option<&'static Ops>> =
+        const { core::cell::Cell::new(Some(&test_host::OPS)) };
 }
 
 /// Installs the runtime's table when native registers the hooks host
 /// (`stdio::swr_v1_hook_install`), so the runtime's timer and coroutine symbols
 /// link only then, not into every binary that links hooks.
-#[cfg(not(test))]
 pub(crate) fn install_native() {
     HOST.get_or_init(|| &native::HOST);
 }
 
 /// The installed table.
-#[cfg(not(test))]
 pub(crate) fn host() -> &'static Host {
+    #[cfg(test)]
+    if let Some(host) = TEST_HOST.get() {
+        return host;
+    }
     // swoole_init installs it (stdio::swr_v1_hook_install) before any socket
     // operation runs.
     HOST.get()
         .copied()
         .unwrap_or_else(|| swoole_rs_corebase::fatal("the hook table is not installed"))
-}
-
-/// This thread's table.
-#[cfg(test)]
-pub(crate) fn host() -> &'static Host {
-    HOST.get()
 }
 
 /// The runtime effects the operations use, each over a live record or coroutine.
@@ -105,7 +104,6 @@ pub(crate) struct Ops {
 }
 
 /// The runtime's effects: the error slot, the coroutine, the timer and the reactor.
-#[cfg(not(test))]
 pub(crate) static NATIVE: Ops = Ops {
     set_last_error: swoole_rs_corebase::log::set_last_error,
     strerror: |error| swoole_rs_error_ffi::swoole_strerror(error),
@@ -122,11 +120,15 @@ pub(crate) static NATIVE: Ops = Ops {
     buffer: native::buffer,
 };
 
-/// The unit tests link no runtime: theirs is the recording fake.
-#[cfg(test)]
-pub(crate) static NATIVE: Ops = test_host::OPS;
+/// The runtime effects the operations use: [`NATIVE`], or a test thread's.
+pub(crate) fn ops() -> &'static Ops {
+    #[cfg(test)]
+    if let Some(ops) = TEST_OPS.get() {
+        return ops;
+    }
+    &NATIVE
+}
 
-#[cfg(not(test))]
 mod native {
     use super::Host;
     use crate::co_socket::Co;
@@ -379,7 +381,7 @@ pub(crate) fn available(socket: Co, event: Events) -> bool {
 pub(crate) fn check_bound(socket: Co, event: Events) {
     let cid = socket.bound_cid(event);
     if cid != 0 {
-        (NATIVE.bound_error)(socket.sock_fd(), event_str(socket, event), cid);
+        (ops().bound_error)(socket.sock_fd(), event_str(socket, event), cid);
     }
 }
 
@@ -404,7 +406,7 @@ impl Co {
     /// `get_bound_cid(event)`: the id of the coroutine holding `event`, or 0.
     #[must_use]
     pub fn bound_cid(self, event: Events) -> c_long {
-        (NATIVE.cid)(self, event)
+        (ops().cid)(self, event)
     }
 
     /// `check_bound_co(event)`: a fatal error if another coroutine holds `event`.
@@ -540,7 +542,7 @@ pub(crate) fn timer_fired(socket: Co, event: Events) {
 
 /// Resumes the coroutine bound to `socket` for `event`, if one is.
 pub(crate) fn resume_bound(socket: Co, event: Events) {
-    (NATIVE.resume)(socket, event);
+    (ops().resume)(socket, event);
 }
 
 /// A recording host for the operations' tests. Each thread records its own events.
@@ -620,7 +622,7 @@ pub(crate) mod test_host {
 
     /// Installs the host and clears this thread's events and settings.
     pub(crate) fn install() {
-        super::HOST.set(&HOST_TABLE);
+        super::TEST_HOST.set(Some(&HOST_TABLE));
         take();
         TIMER_OK.set(true);
         REACTOR_OK.set(true);
@@ -884,7 +886,7 @@ mod tests {
             let mut cells = ids;
             bind(&socket, bound, &mut cells);
             let (cid, name, effects) = upstream_bound(100, bound, ids, event);
-            assert_eq!((NATIVE.cid)(socket.co(), event), cid);
+            assert_eq!((ops().cid)(socket.co(), event), cid);
             let state = unsafe { &*socket.state() };
             assert_eq!(state.event_name(event).to_str(), Ok(name), "scenario {k}");
             take();
@@ -1130,10 +1132,6 @@ pub(crate) enum Message {
     /// `swoole_strerror(error)`.
     Strerror,
     /// The thread's last error message.
-    #[cfg_attr(
-        test,
-        expect(dead_code, reason = "only the native host's packet failures use it")
-    )]
     LastError,
 }
 
@@ -1143,7 +1141,7 @@ impl Message {
     pub(crate) fn text(self, error: c_int) -> *const c_char {
         match self {
             Self::Static(text) => text.as_ptr(),
-            Self::Strerror => (NATIVE.strerror)(error),
+            Self::Strerror => (ops().strerror)(error),
             Self::LastError => swoole_rs_error::swoole_get_last_error_msg(),
         }
     }
@@ -1153,7 +1151,7 @@ impl Message {
 pub(crate) fn borrowed_err(socket: Co, error: c_int, message: Message) {
     socket.set_err_code(error);
     set_errno(error);
-    (NATIVE.set_last_error)(error);
+    (ops().set_last_error)(error);
     socket.set_borrowed_err_msg(error, message);
 }
 
@@ -1167,6 +1165,6 @@ pub(crate) fn borrowed_err(socket: Co, error: c_int, message: Message) {
 pub fn owned_err(socket: Co, error: c_int, message: &[u8]) -> bool {
     socket.set_err_code(error);
     set_errno(error);
-    (NATIVE.set_last_error)(error);
+    (ops().set_last_error)(error);
     socket.set_owned_err_msg(message)
 }

@@ -196,13 +196,6 @@ pub(crate) fn ready() -> c_int {
 
 /// The engine's operations crates/reactor calls; it sits below this crate, so
 /// `swoole_init` registers them (`stdio::swr_v1_hook_install`).
-#[cfg_attr(
-    test,
-    expect(
-        dead_code,
-        reason = "swr_v1_hook_install registers it, and test builds leave that out"
-    )
-)]
 pub(crate) static REACTOR: UringOps = UringOps {
     interrupted,
     interrupt,

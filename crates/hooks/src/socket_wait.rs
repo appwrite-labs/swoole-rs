@@ -4,7 +4,7 @@
 //! that retries a transfer before the waiter wakes, and removing the event after.
 //! `poll` waits the same way under a timer. Native code keeps the yield and the
 //! write buffer ([`Host`](crate::co_io::Host)).
-use crate::co_io::{CLOSE_WAIT_ERROR, NATIVE, Timer, available, set_err};
+use crate::co_io::{CLOSE_WAIT_ERROR, Timer, available, ops, set_err};
 use crate::co_socket::Co;
 use crate::vector::Barrier;
 use core::ffi::c_void;
@@ -75,7 +75,7 @@ impl Wait {
             state.events | event
         };
         let added =
-            state.events.intersects(event) || (NATIVE.reactor)(self.0, events, state.removed);
+            state.events.intersects(event) || (ops().reactor)(self.0, events, state.removed);
         set_err(self.0, if added { 0 } else { crate::co_io::errno() });
         added
     }
@@ -92,7 +92,7 @@ impl Wait {
         };
         if state.nobufs {
             self.bind(event, co);
-            (NATIVE.sleep)();
+            (ops().sleep)();
             self.bind(event, core::ptr::null_mut());
             return !self.0.is_closed();
         }
@@ -113,11 +113,11 @@ impl Wait {
         if event == Events::WRITE
             && let Some(mut slot) = buffer
         {
-            (NATIVE.buffer)(self.0, &mut slot);
+            (ops().buffer)(self.0, &mut slot);
         }
         self.bind(event, co);
         // Suspends this coroutine until a callback, timer or cancel resumes it.
-        (NATIVE.suspend)(self.0, co, event);
+        (ops().suspend)(self.0, co, event);
         self.bind(event, core::ptr::null_mut());
         // Both coroutines may wait for the same event under TLS.
         let bound = !self
@@ -125,7 +125,7 @@ impl Wait {
             .with_state(|state| state.bound_co(Events::READ | Events::WRITE))
             .is_null();
         if self.want().is_empty() || !bound {
-            (NATIVE.remove)(self.0, added);
+            (ops().remove)(self.0, added);
         }
         self.set_want(Events::NONE);
         !self.0.is_closed() && self.0.err_code() == 0
@@ -135,7 +135,6 @@ impl Wait {
 /// A write's buffer slot: where its bytes are. A wait may move them to the socket's
 /// write buffer and point the slot there.
 pub(crate) struct WriteSlot<'a> {
-    #[cfg_attr(test, expect(dead_code, reason = "the test host only logs the length"))]
     at: &'a mut *mut u8,
     length: usize,
 }
@@ -148,7 +147,6 @@ impl<'a> WriteSlot<'a> {
     }
 
     /// Where the bytes are now.
-    #[cfg(not(test))]
     pub(crate) fn bytes(&self) -> *mut u8 {
         *self.at
     }
@@ -158,7 +156,6 @@ impl<'a> WriteSlot<'a> {
     }
 
     /// The bytes moved to `bytes`, still `length` of them and live as long.
-    #[cfg(not(test))]
     pub(crate) fn moved_to(&mut self, bytes: *mut u8) {
         *self.at = bytes;
     }
@@ -168,7 +165,7 @@ impl<'a> WriteSlot<'a> {
 /// buffer slot, which may move to the socket's write buffer. True when woken with
 /// the socket open and no error.
 pub(crate) fn wait(socket: Co, event: Events, buffer: Option<WriteSlot<'_>>) -> bool {
-    let co = (NATIVE.current)();
+    let co = (ops().current)();
     !co.is_null() && Wait(socket).wait(co, event, buffer)
 }
 
@@ -184,7 +181,7 @@ impl Drop for Installed {
 /// [`wait_for`] with `barrier` retrying the transfer while it is installed: the
 /// ready callback calls it, and holds the coroutine while it returns true.
 pub(crate) fn wait_barrier(socket: Co, event: Events, barrier: &mut dyn FnMut() -> bool) -> bool {
-    let co = (NATIVE.current)();
+    let co = (ops().current)();
     if co.is_null() {
         return false;
     }
@@ -204,7 +201,7 @@ pub(crate) fn wait_barrier(socket: Co, event: Events, barrier: &mut dyn FnMut() 
 
 /// [`wait`] with no barrier and no buffer.
 pub(crate) fn wait_for(socket: Co, event: Events) -> bool {
-    let co = (NATIVE.current)();
+    let co = (ops().current)();
     !co.is_null() && Wait(socket).wait(co, event, None)
 }
 

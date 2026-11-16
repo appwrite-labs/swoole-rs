@@ -5,7 +5,7 @@
 //! retries, the wait to write and the `SO_ERROR` check) and `check_liveness`.
 //! The coroutine resume, the TLS shutdown and the liveness probe are
 //! [`NATIVE`](crate::co_io::NATIVE)'s.
-use crate::co_io::{CLOSE_WAIT_ERROR, NATIVE, Timer, available, errno, set_err};
+use crate::co_io::{CLOSE_WAIT_ERROR, Timer, available, errno, ops, set_err};
 use crate::co_socket::Co;
 use crate::socket_wait::wait_for;
 use core::ffi::c_int;
@@ -76,7 +76,7 @@ impl Co {
             set_err(self, libc::EBADF);
             return false;
         }
-        let alive = (NATIVE.liveness)(self);
+        let alive = (ops().liveness)(self);
         let error = match (alive, errno()) {
             (true, _) => 0,
             (false, 0) => libc::ECONNRESET,
@@ -97,7 +97,7 @@ fn shutdown(socket: Co, how: c_int, sys: Sys) -> bool {
     set_err(socket, 0);
     let closed = socket.is_closed();
     let tls = !closed && socket.net(|record| !record.ssl().is_null()) == Some(true);
-    let ssl_shutdown = || (NATIVE.ssl_shutdown)(socket);
+    let ssl_shutdown = || (ops().ssl_shutdown)(socket);
     let ssl_shutdown: Option<&dyn Fn()> = tls.then_some(&ssl_shutdown);
     let fd = socket.sock_fd();
     let error = socket.with_state(|state| {
@@ -233,7 +233,7 @@ mod tests {
             error = libc::ENOTCONN;
         } else {
             if !unsafe { (*s.socket()).fields.ssl().is_null() } {
-                (NATIVE.ssl_shutdown)(s);
+                (ops().ssl_shutdown)(s);
             }
             if (sys.shutdown)(s.sock_fd(), how) < 0 {
                 error = errno();
@@ -266,7 +266,7 @@ mod tests {
         }
         if event == Events::READ || event == Events::WRITE {
             set_err(s, libc::ECANCELED);
-            (NATIVE.resume)(s, event);
+            (ops().resume)(s, event);
             true
         } else {
             set_err(s, libc::EINVAL);
@@ -345,7 +345,7 @@ mod tests {
             set_err(s, libc::EBADF);
             return false;
         }
-        if !(NATIVE.liveness)(s) {
+        if !(ops().liveness)(s) {
             let error = errno();
             set_err(s, if error != 0 { error } else { libc::ECONNRESET });
             return false;

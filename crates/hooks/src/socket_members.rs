@@ -8,7 +8,7 @@
 //! which crates/phpclients and crates/phphttp link by name.
 use crate::buffered::{recv_buffered, recv_line};
 use crate::co_io::{
-    Message, NATIVE, Timer, available, borrowed_err, check, default_err, errno, owned_err, set_err,
+    Message, Timer, available, borrowed_err, check, default_err, errno, ops, owned_err, set_err,
 };
 use crate::co_socket::{Co, OwnedCo, peer_name};
 use crate::sendfile::{SendFailure, send_range};
@@ -48,7 +48,7 @@ fn on_ready(event: &Event, kind: Events) -> c_int {
     set_err(socket, 0);
     let hup = source.read(|record| record.event_hup);
     if let Some(event) = ready(socket, kind, hup) {
-        (NATIVE.resume)(socket, event);
+        (ops().resume)(socket, event);
     }
     0
 }
