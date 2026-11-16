@@ -79,28 +79,42 @@ impl Task {
 }
 
 #[derive(Default)]
-pub struct ReactorDeferred {
+pub struct ReactorDeferred(Queue);
+
+#[derive(Default)]
+enum Queue {
+    #[default]
+    Empty,
     // Most passes defer one socket release: keep it inside the reactor.
-    first: Option<Task>,
-    rest: VecDeque<Task>,
+    One(Task),
+    Many(VecDeque<Task>),
 }
 
 impl ReactorDeferred {
     /// Pop before calling: a destroy callback may append to this same queue.
     fn pop(&mut self) -> Option<Task> {
-        std::mem::replace(&mut self.first, self.rest.pop_front())
+        match &mut self.0 {
+            Queue::Many(tasks) => tasks.pop_front(),
+            _ => match std::mem::take(&mut self.0) {
+                Queue::One(task) => Some(task),
+                _ => None,
+            },
+        }
     }
 }
 
 /// Appends `task` to the queue in `slot` (a reactor's `defer_tasks` or
 /// `destroy_callbacks`), creating it on first use.
 fn push(slot: &mut Option<ReactorDeferred>, task: Task) {
-    let queue = slot.get_or_insert_default();
-    if queue.first.is_none() {
-        queue.first = Some(task);
-    } else {
-        queue.rest.push_back(task);
-    }
+    let queue = &mut slot.get_or_insert_default().0;
+    *queue = match std::mem::take(queue) {
+        Queue::Empty => Queue::One(task),
+        Queue::One(first) => Queue::Many([first, task].into()),
+        Queue::Many(mut tasks) => {
+            tasks.push_back(task);
+            Queue::Many(tasks)
+        }
+    };
 }
 
 /// Appends `value` to the reactor's `defer_tasks`.
@@ -112,8 +126,11 @@ pub(crate) fn defer_value(fields: &mut ReactorFields, value: impl Deferred) {
 /// slot. The slot owns its queue, so nothing runs it meanwhile.
 pub(crate) fn deferred_free(slot: &mut Option<ReactorDeferred>) {
     if let Some(owner) = slot.take() {
-        let ReactorDeferred { first, rest } = owner;
-        first.into_iter().chain(rest).for_each(Task::dispose);
+        match owner.0 {
+            Queue::Empty => {}
+            Queue::One(task) => task.dispose(),
+            Queue::Many(tasks) => tasks.into_iter().for_each(Task::dispose),
+        }
     }
 }
 
