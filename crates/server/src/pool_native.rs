@@ -215,7 +215,7 @@ extern "C-unwind" fn worker_exit() {
 }
 
 /// `ProcessPool::recv_packet`: the event loop's pipe handler under the stream protocol.
-extern "C" fn recv_packet(_: Running<'_>, event: &mut Event) -> c_int {
+fn recv_packet(_: Running<'_>, event: &mut Event) -> c_int {
     let Some(pool) = LOOP_POOL.get() else {
         return 0;
     };
@@ -245,7 +245,7 @@ extern "C" fn recv_packet(_: Running<'_>, event: &mut Event) -> c_int {
 }
 
 /// `ProcessPool::recv_message`: the event loop's pipe handler under the message protocol.
-extern "C" fn recv_message(_: Running<'_>, event: &mut Event) -> c_int {
+fn recv_message(_: Running<'_>, event: &mut Event) -> c_int {
     if let Some(pool) = LOOP_POOL.get()
         && bus_read(pool, event.socket()) > Some(0)
     {

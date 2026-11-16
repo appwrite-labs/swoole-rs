@@ -225,7 +225,7 @@ extern "C-unwind" fn loop_async(pool: PoolRef<'_>, worker: Worker<'_>) -> c_int 
 }
 
 /// `TaskWorker_onPipeReceive`: a task from a worker, in the coroutine loop.
-extern "C" fn on_pipe_receive(reactor: Running<'_>, event: &mut Event) -> c_int {
+fn on_pipe_receive(reactor: Running<'_>, event: &mut Event) -> c_int {
     let Some(serv) = Reactor::running(reactor).server() else {
         return ERR;
     };

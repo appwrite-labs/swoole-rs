@@ -73,7 +73,7 @@ pub(crate) fn set_pipe_handler() {
 }
 
 /// `ReactorProcess_onPipeRead`: a message from another worker or a task worker.
-extern "C" fn on_pipe_read(reactor: Running<'_>, event: &mut Event) -> c_int {
+fn on_pipe_read(reactor: Running<'_>, event: &mut Event) -> c_int {
     let reactor = Reactor::running(reactor);
     let Some(serv) = reactor.server() else {
         return -1;
