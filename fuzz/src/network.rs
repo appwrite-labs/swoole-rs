@@ -257,7 +257,8 @@ pub fn http2_hpack(bytes: &[u8]) {
         return;
     };
     let last = role & 2 == 0;
-    let mut decoder = swoole_rs_http2::hpack::Decoder::default();
+    let decoder = swoole_rs_http2::hpack::Decoder::default();
+    let mut field = swoole_rs_http2::hpack::Field::default();
     let mut inflater = std::ptr::null_mut();
     // SAFETY: `inflater` is a writable pointer.
     assert_eq!(unsafe { nghttp2::nghttp2_hd_inflate_new(&mut inflater) }, 0);
@@ -286,7 +287,7 @@ pub fn http2_hpack(bytes: &[u8]) {
                     c_int::from(last),
                 )
             };
-            let rust = decoder.decode(input, last);
+            let rust = decoder.decode(input, last, &mut field);
             // A decoding error ends the connection.
             let Ok(read) = usize::try_from(read) else {
                 assert!(rust.is_err(), "nghttp2 failed on {input:?}");
