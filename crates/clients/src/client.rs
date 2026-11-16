@@ -509,6 +509,18 @@ impl Handle {
         result
     }
 
+    /// `read` over the input buffer, which exists, and `arg`. `read` is a plain fn,
+    /// which cannot reach the client to borrow the buffer again.
+    fn read_input<A, R>(self, arg: A, read: fn(&CppString, A) -> R) -> R {
+        if self.input().is_null() {
+            swoole_rs_corebase::fatal("client input buffer is not available");
+        }
+        let buffer = self.get().input.replace(CppString::EMPTY);
+        let result = read(&buffer, arg);
+        self.get().input.set(buffer);
+        result
+    }
+
     /// `new String(SW_CLIENT_BUFFER_SIZE)`, once.
     fn input_init(self) {
         if self.input().is_null() {
@@ -563,17 +575,19 @@ impl Handle {
         send(self, packet.get(..length).unwrap_or_default(), 0)
     }
 
-    /// `Client::socks5_handshake`: applies `length` received bytes at `data` and
-    /// sends the answer the proxy packed.
-    fn socks5_handshake(self, data: *const c_char, length: usize) -> bool {
-        // SAFETY: `data` is where the last receive wrote `length` bytes, in the live
-        // input buffer.
-        let reply = unsafe { std::slice::from_raw_parts(data.cast(), length) };
+    /// `Client::socks5_handshake`: applies the received `reply` and sends the answer
+    /// the proxy packed.
+    fn socks5_handshake(self, reply: &[u8]) -> bool {
         let n = self
             .with_proxy(Proxy::Socks5, |proxy| {
                 (native_host().socks5.handshake)(proxy, reply)
             })
             .flatten();
+        self.socks5_answer(n)
+    }
+
+    /// Sends the `n`-byte answer a handshake step packed: whether it went (0, none).
+    fn socks5_answer(self, n: Option<usize>) -> bool {
         n.is_some_and(|n| n == 0 || self.socks5_send(n) == Some(n))
     }
 
@@ -1254,9 +1268,10 @@ fn tcp_connect_sync(this: Handle, host: &CStr, port: c_int, timeout: f64, nonblo
         let ready = this.with_buffer(|shared| {
             loop {
                 shared.clear();
-                let spare = shared.spare();
-                let n = recv(this, spare, 0).unwrap_or(0);
-                if n == 0 || !this.socks5_handshake(spare.as_ptr().cast(), n) {
+                let size = shared.size();
+                shared.read_zeroed(size, |bytes| recv(this, bytes, 0).unwrap_or(0));
+                let reply = shared.view();
+                if reply.is_empty() || !this.socks5_handshake(reply) {
                     return false;
                 }
                 if this.proxy_state(Proxy::Socks5) == Some(SOCKS5_READY) {
@@ -1754,7 +1769,18 @@ fn on_read(this: Handle) -> bool {
             log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
             return connect_failed(this);
         };
-        if !this.socks5_handshake(buf, n) {
+        // The step reads the bytes this read appended. (Upstream passes the whole
+        // free size, which runs past them into bytes no read wrote.)
+        let step = this.with_proxy(Proxy::Socks5, |proxy| {
+            this.read_input((proxy, n), |input, (proxy, n)| {
+                let bytes = input.view();
+                let reply = bytes
+                    .get(bytes.len().saturating_sub(n)..)
+                    .unwrap_or_default();
+                (native_host().socks5.handshake)(proxy, reply)
+            })
+        });
+        if !this.socks5_answer(step.flatten()) {
             log::set_last_error(ERROR_SOCKS5_HANDSHAKE_FAILED);
             return connect_failed(this);
         }
