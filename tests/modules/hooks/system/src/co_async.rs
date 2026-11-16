@@ -38,13 +38,13 @@ fn co_async_fn(mut job: impl FnMut() + Send) -> bool {
 extern "C" fn sleep_1ms(event: &mut AsyncEvent) {
     // SAFETY: usleep(3).
     unsafe { usleep(1000) };
-    event.retval = MAGIC_CODE;
+    event.set_result(MAGIC_CODE, event.result().1);
 }
 
 extern "C" fn sleep_200ms(event: &mut AsyncEvent) {
     // SAFETY: usleep(3).
     unsafe { usleep(200_000) };
-    event.retval = MAGIC_CODE;
+    event.set_result(MAGIC_CODE, event.result().1);
 }
 
 fn usleep_() {
@@ -52,7 +52,7 @@ fn usleep_() {
         let mut ev = empty();
         let retval = co_async(sleep_1ms, &mut ev, -1.0);
         assert!(retval);
-        assert_eq!(ev.retval, MAGIC_CODE);
+        assert_eq!(ev.result().0, MAGIC_CODE);
     });
 }
 
@@ -107,7 +107,7 @@ fn cancel() {
         let retval = co_async(sleep_200ms, &mut ev, -1.0);
 
         assert!(!retval);
-        assert_eq!(ev.error, SW_ERROR_CO_CANCELED);
+        assert_eq!(ev.result().1, SW_ERROR_CO_CANCELED);
     });
 }
 
@@ -118,7 +118,7 @@ fn timeout() {
         let retval = co_async(sleep_200ms, &mut ev, 0.1);
 
         assert!(!retval);
-        assert_eq!(ev.error, SW_ERROR_CO_TIMEDOUT);
+        assert_eq!(ev.result().1, SW_ERROR_CO_TIMEDOUT);
     });
 }
 

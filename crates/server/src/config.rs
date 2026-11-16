@@ -478,9 +478,7 @@ impl ServerConfig {
 
 /// `serv->pipe_command`: the command pipe `add_command` opened, if it has, which the
 /// server keeps as long as its configuration.
-pub struct CommandPipe(
-    std::sync::OnceLock<crate::state::Heap<swoole_rs_tls::socket_pair::SocketPair>>,
-);
+pub struct CommandPipe(std::sync::OnceLock<std::sync::Arc<swoole_rs_tls::socket_pair::SocketPair>>);
 
 impl CommandPipe {
     /// `serv->pipe_command = pipe`: the server keeps it, unless it kept one already,
@@ -490,15 +488,15 @@ impl CommandPipe {
             swoole_rs_tls::socket_pair::drop(&mut pipe);
             return;
         }
-        let _kept = self.0.set(crate::state::Heap::from(pipe));
+        let _kept = self.0.set(std::sync::Arc::from(pipe));
     }
 
     /// The pipe's address, or null.
     #[must_use]
     pub fn as_ptr(&self) -> *mut c_void {
-        self.0
-            .get()
-            .map_or(core::ptr::null_mut(), |pipe| pipe.as_ptr().cast())
+        self.0.get().map_or(core::ptr::null_mut(), |pipe| {
+            std::sync::Arc::as_ptr(pipe).cast_mut().cast()
+        })
     }
 }
 
